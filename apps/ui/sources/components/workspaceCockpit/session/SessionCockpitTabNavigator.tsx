@@ -1,3 +1,5 @@
+import { useSessionCollaborationDestinationAdmitted } from '@/hooks/session/useSessionCollaborationAvailability';
+import { useSessionBoardFeatureEnabled } from '@/components/sessions/board/useSessionBoardFeatureEnabled';
 import * as React from 'react';
 import {
     createBottomTabNavigator,
@@ -15,7 +17,6 @@ import {
     usePersistSessionLastMobileSurface,
 } from '@/sync/domains/state/storage';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
-import { useScopedPluginUiProjection } from '@/components/plugins/projection/useScopedPluginUiProjection';
 import { selectPluginRightSidebarTabPlacements } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
 import { PluginSurfacePaneLaunchScope } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
 import { resolvePluginUiRuntimeFormFactor } from '@/components/appShell/panes/layout/resolveMultiPaneDeviceType';
@@ -30,14 +31,15 @@ import {
     resolveSessionCockpitMobileCatalog,
     resolveSessionCockpitMobileNavigatorSurfaces,
 } from './sessionCockpitMobileCatalog';
-import { useSessionMachineTarget } from '@/components/sessions/model/useSessionMachineTarget';
-import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import { SessionCockpitSurfaceNavigationProvider } from './SessionCockpitSurfaceNavigation';
 import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 import {
     SessionCockpitSurfaceScreen,
     type SessionCockpitSurfaceScreenProps,
 } from './SessionCockpitSurfaceScreen';
+import { SessionBoardControllerProvider } from '@/components/sessions/board/SessionBoardControllerProvider';
+import { useSessionPluginRuntime } from '@/components/sessions/plugins/useSessionPluginRuntime';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 type SessionCockpitTabParamList = {
     [key: string]: undefined;
@@ -136,34 +138,45 @@ export const SessionCockpitTabNavigator = React.memo((props: SessionCockpitTabNa
     const persistenceAccountRealmKey = activeServerAccountScope
         ? serverAccountScopeKeySuffix(activeServerAccountScope)
         : null;
-    const sessionMachineTarget = useSessionMachineTarget(props.sessionId);
-    const sessionServerId = usePreferredServerIdForSession(props.sessionId, props.routeServerId);
+    // Navigation/catalog admission follows the exact routed Session address;
+    // an ambient preferred Home is not evidence that this Session belongs there.
+    const sessionServerId = props.routeServerId?.trim()
+        || props.routeHydrationState?.serverId?.trim()
+        || null;
+    const sessionAddress = React.useMemo(
+        () => normalizeSessionAddress(sessionServerId, props.sessionId),
+        [props.sessionId, sessionServerId],
+    );
+    const collaborationAdmitted = useSessionCollaborationDestinationAdmitted(sessionServerId ?? '');
+    const sessionSharingAvailable = Boolean(sessionServerId) && collaborationAdmitted;
+    const boardFeatureEnabled = useSessionBoardFeatureEnabled(sessionServerId);
     const retentionRealm = React.useMemo(() => Object.freeze({
         sessionId: props.sessionId,
         serverId: sessionServerId ?? null,
         accountRealmKey: persistenceAccountRealmKey,
     }), [persistenceAccountRealmKey, props.sessionId, sessionServerId]);
-    const pluginProjection = useScopedPluginUiProjection({
-        machineId: sessionMachineTarget?.machineId ?? null,
-        serverId: sessionServerId,
-    });
+    const boardPluginRuntime = useSessionPluginRuntime({ address: sessionAddress });
     const runtimeAdmission = React.useMemo(() => Object.freeze({
-        platform: pluginProjection.platform,
+        platform: boardPluginRuntime.platform,
         formFactor: resolvePluginUiRuntimeFormFactor({ deviceType }),
-    }), [deviceType, pluginProjection.platform]);
+    }), [boardPluginRuntime.platform, deviceType]);
     const pluginPlacements = React.useMemo(() => (
-        pluginProjection.pluginUiProjection
-            ? selectPluginRightSidebarTabPlacements(pluginProjection.pluginUiProjection, 'session')
+        boardPluginRuntime.pluginUiProjection
+            ? selectPluginRightSidebarTabPlacements(boardPluginRuntime.pluginUiProjection, 'session')
             : []
-    ), [pluginProjection.pluginUiProjection]);
+    ), [boardPluginRuntime.pluginUiProjection]);
     const catalog = React.useMemo(() => resolveSessionCockpitMobileCatalog({
+        sessionSharingAvailable,
+        boardFeatureEnabled,
         terminalTabAvailable,
         pluginPlacements,
-        projectionGeneration: pluginProjection.pluginUiProjection?.generation ?? null,
+        projectionGeneration: boardPluginRuntime.pluginUiProjection?.generation ?? null,
         runtimeAdmission,
     }), [
+        boardFeatureEnabled,
+        sessionSharingAvailable,
         pluginPlacements,
-        pluginProjection.pluginUiProjection?.generation,
+        boardPluginRuntime.pluginUiProjection?.generation,
         runtimeAdmission,
         terminalTabAvailable,
     ]);
@@ -182,7 +195,7 @@ export const SessionCockpitTabNavigator = React.memo((props: SessionCockpitTabNa
         // has settled, retain the exact restored identity even when it no longer
         // resolves: the existing screen owner will render its typed tombstone
         // instead of silently replacing the user's destination with Chat.
-        if (!isSessionPluginMobileSurface(props.initialSurface) || !pluginProjection.pluginUiProjection) {
+        if (!isSessionPluginMobileSurface(props.initialSurface) || !boardPluginRuntime.pluginUiProjection) {
             return;
         }
         setRetainedPluginSelection((current) => (
@@ -190,7 +203,7 @@ export const SessionCockpitTabNavigator = React.memo((props: SessionCockpitTabNa
                 ? current
                 : Object.freeze({ ...retentionRealm, surface: props.initialSurface })
         ));
-    }, [pluginProjection.pluginUiProjection, props.initialSurface, retentionRealm]);
+    }, [boardPluginRuntime.pluginUiProjection, props.initialSurface, retentionRealm]);
     const surfaces = React.useMemo(() => resolveSessionCockpitMobileNavigatorSurfaces({
         catalog,
         retainedPluginSurface,
@@ -230,46 +243,59 @@ export const SessionCockpitTabNavigator = React.memo((props: SessionCockpitTabNa
     }, [commitNavigatorSurface]);
 
     return (
-        <NavigationIndependentTree>
-            <NavigationContainer
-                linking={DISABLED_NAVIGATION_LINKING}
-                onStateChange={handleNavigatorStateChange}
-            >
-                <PluginSurfacePaneLaunchScope>
-                    <Tab.Navigator
-                        backBehavior="history"
-                        initialRouteName={initialSurface}
-                        screenOptions={SESSION_COCKPIT_TAB_SCREEN_OPTIONS}
-                        tabBar={(tabBarProps) => (
-                            <SessionCockpitNavigatorInitialSurfaceBridge
-                                {...tabBarProps}
-                                fallbackInitialSurface={isSessionPluginMobileSurface(props.initialSurface) ? 'chat' : initialSurface}
-                                requestedInitialSurface={props.initialSurface}
-                            />
-                        )}
-                    >
-                        {surfaces.map((surface) => (
-                            <Tab.Screen key={surface} name={surface}>
-                                {({ navigation }) => (
-                                    <SessionCockpitSceneActivityBoundary surface={surface}>
-                                        <SessionCockpitSurfaceNavigationProvider
-                                            value={{
-                                                switchSurface: (targetSurface) => {
-                                                    navigation.navigate(targetSurface);
-                                                    commitNavigatorSurface(targetSurface);
-                                                },
-                                            }}
-                                        >
-                                            <SessionCockpitSurfaceScreen {...props} surface={surface} />
-                                        </SessionCockpitSurfaceNavigationProvider>
-                                    </SessionCockpitSceneActivityBoundary>
-                                )}
-                            </Tab.Screen>
-                        ))}
-                    </Tab.Navigator>
-                </PluginSurfacePaneLaunchScope>
-            </NavigationContainer>
-        </NavigationIndependentTree>
+        <SessionBoardControllerProvider
+            sessionId={props.sessionId}
+            serverId={sessionServerId}
+            pluginRuntime={boardPluginRuntime}
+        >
+            <NavigationIndependentTree>
+                <NavigationContainer
+                    linking={DISABLED_NAVIGATION_LINKING}
+                    onStateChange={handleNavigatorStateChange}
+                >
+                    <PluginSurfacePaneLaunchScope>
+                        <Tab.Navigator
+                            backBehavior="history"
+                            initialRouteName={initialSurface}
+                            screenOptions={SESSION_COCKPIT_TAB_SCREEN_OPTIONS}
+                            tabBar={(tabBarProps) => (
+                                <SessionCockpitNavigatorInitialSurfaceBridge
+                                    {...tabBarProps}
+                                    fallbackInitialSurface={isSessionPluginMobileSurface(props.initialSurface) ? 'chat' : initialSurface}
+                                    requestedInitialSurface={props.initialSurface}
+                                />
+                            )}
+                        >
+                            {surfaces.map((surface) => (
+                                <Tab.Screen key={surface} name={surface}>
+                                    {({ navigation }) => (
+                                        <SessionCockpitSceneActivityBoundary surface={surface}>
+                                            <SessionCockpitSurfaceNavigationProvider
+                                                value={{
+                                                    returnToPreviousSurface: () => {
+                                                        if (navigation.canGoBack()) {
+                                                            navigation.goBack();
+                                                        } else {
+                                                            navigation.navigate('chat');
+                                                        }
+                                                    },
+                                                    switchSurface: (targetSurface) => {
+                                                        navigation.navigate(targetSurface);
+                                                        commitNavigatorSurface(targetSurface);
+                                                    },
+                                                }}
+                                            >
+                                                <SessionCockpitSurfaceScreen {...props} surface={surface} />
+                                            </SessionCockpitSurfaceNavigationProvider>
+                                        </SessionCockpitSceneActivityBoundary>
+                                    )}
+                                </Tab.Screen>
+                            ))}
+                        </Tab.Navigator>
+                    </PluginSurfacePaneLaunchScope>
+                </NavigationContainer>
+            </NavigationIndependentTree>
+        </SessionBoardControllerProvider>
     );
 });
 

@@ -2,11 +2,20 @@ import { Encryption } from '@/sync/encryption/encryption';
 import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { RawRecord } from '@/sync/typesRaw';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 
 const initialStorageState = storage.getState();
 
-export function resetPendingQueueState(): void {
+export async function resetPendingQueueState(activeScope?: ServerAccountScope): Promise<void> {
     storage.setState(initialStorageState, true);
+    if (activeScope) {
+        const server = await upsertServerProfile({ serverUrl: `https://${activeScope.serverId}` });
+        if (server.id !== activeScope.serverId) throw new Error('Pending queue fixture requires its exact Home profile');
+        await setActiveServerId(server.id, { scope: 'device' });
+        storage.getState().activateProfileScope(activeScope);
+        storage.getState().activateSettingsScope(activeScope);
+    }
 }
 
 export async function createPendingQueueEncryption(params: {

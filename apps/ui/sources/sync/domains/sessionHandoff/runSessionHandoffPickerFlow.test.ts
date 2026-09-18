@@ -7,9 +7,13 @@ const releaseUserRequestLeaseMock = vi.hoisted(() => vi.fn());
 const acquireUserRequestLeaseMock = vi.hoisted(() => vi.fn(() => releaseUserRequestLeaseMock));
 const presentationRegisterMock = vi.hoisted(() => vi.fn());
 const progressCloseMock = vi.hoisted(() => vi.fn());
-const openObservedProgressMock = vi.hoisted(() => vi.fn(() => ({
+const openObservedProgressMock = vi.hoisted(() => vi.fn((_input: unknown) => ({
     close: progressCloseMock,
     isAttached: () => true,
+})));
+const randomUUIDMock = vi.hoisted(() => vi.fn(() => 'new-request-id'));
+const getStorageMock = vi.hoisted(() => vi.fn(() => ({
+    getState: () => ({ profileScope: { serverId: 'server', accountId: 'account' } }),
 })));
 
 vi.mock('@/components/sessions/handoff/openSessionHandoffPicker', () => ({
@@ -25,8 +29,10 @@ vi.mock('@/components/inbox/actionOperations/actionOperationPresentationRuntime'
     actionOperationPresentationCoordinator: { register: presentationRegisterMock },
 }));
 vi.mock('@/components/sessions/handoff/openSessionHandoffProgressModal', () => ({
-    openObservedSessionHandoffProgressModal: (...args: unknown[]) => openObservedProgressMock(...args),
+    openObservedSessionHandoffProgressModal: (input: unknown) => openObservedProgressMock(input),
 }));
+vi.mock('@/platform/randomUUID', () => ({ randomUUID: randomUUIDMock }));
+vi.mock('@/sync/domains/state/storageStore', () => ({ getStorage: getStorageMock }));
 
 const policyFields = {
     v: 1 as const,
@@ -58,6 +64,43 @@ describe('runSessionHandoffPickerFlow', () => {
         presentationRegisterMock.mockReset();
         progressCloseMock.mockReset();
         openObservedProgressMock.mockClear();
+        randomUUIDMock.mockClear();
+    });
+
+    it('reuses the existing recoverable handoff request instead of minting a duplicate operation', async () => {
+        openSessionHandoffPickerMock.mockResolvedValueOnce({
+            targetMachineId: 'target', targetPath: '/target/repo',
+            workspaceAction: { kind: 'copy_once', contentPolicy },
+        });
+        executeSessionHandoffActionMock.mockResolvedValueOnce(completedResult());
+        const operationStore = {
+            getSnapshot: () => ({
+                operationsByKey: new Map([['operation', {
+                    serverId: 'server',
+                    snapshot: {
+                        version: 1, operationId: 'operation-1', revision: 3,
+                        actionId: 'session.handoff', state: 'running',
+                        scope: { accountId: 'account', machineId: 'source', sessionId: 'sess_1' },
+                        title: 'Handoff', requestId: 'retained-request-id', createdAt: 1,
+                        startedAt: 2, cancellation: 'supported',
+                    },
+                }]]),
+            }),
+        };
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+
+        await runSessionHandoffPickerFlow({
+            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source', serverId: 'server',
+            placement: 'session_info', operationStore: operationStore as never,
+        });
+
+        expect(randomUUIDMock).not.toHaveBeenCalled();
+        expect(executeSessionHandoffActionMock).toHaveBeenCalledWith(expect.objectContaining({
+            context: expect.objectContaining({ actionRequestId: 'retained-request-id' }),
+        }));
+        expect(openObservedProgressMock).toHaveBeenCalledWith(expect.objectContaining({
+            requestId: 'retained-request-id',
+        }));
     });
 
     it('returns null when the picker is dismissed', async () => {

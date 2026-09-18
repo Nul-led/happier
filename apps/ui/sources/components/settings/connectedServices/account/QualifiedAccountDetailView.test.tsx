@@ -307,6 +307,15 @@ describe('QualifiedAccountDetailView', () => {
         expect(onReconnect).toHaveBeenCalledTimes(1);
     });
 
+    it('offers the connected account to a Team through the mounted source action', async () => {
+        const onShareWithTeam = vi.fn();
+        const screen = await renderDetail({ onShareWithTeam });
+
+        screen.pressByTestId('qualified-account-detail:action:share-with-team');
+
+        expect(onShareWithTeam).toHaveBeenCalledTimes(1);
+    });
+
     it('offers no add-to-pool affordance: membership is edited from the pool detail', async () => {
         const screen = await renderDetail({
             groups: [makeGroup({ groupId: 'fallback', displayName: 'Fallback pool', memberAccountIds: ['work'] })],

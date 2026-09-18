@@ -43,6 +43,14 @@ export type SessionUsageLimitRecoverySecondaryActionPresentation = Readonly<{
 }>;
 
 export type SessionUsageLimitRecoveryTranslationKey =
+    | 'session.usageLimitRecovery.overloadTitle'
+    | 'session.usageLimitRecovery.overloadWaiting'
+    | 'session.usageLimitRecovery.overloadDispatching'
+    | 'session.usageLimitRecovery.overloadAwaiting'
+    | 'session.usageLimitRecovery.overloadStopped'
+    | 'session.usageLimitRecovery.overloadExhausted'
+    | 'session.usageLimitRecovery.overloadOffline'
+    | 'session.usageLimitRecovery.stopRetrying'
     | 'session.usageLimitRecovery.banner.title'
     | 'session.usageLimitRecovery.banner.body'
     | 'session.usageLimitRecovery.banner.waitingTitle'
@@ -76,6 +84,8 @@ export type SessionUsageLimitRecoveryTranslationParams = Readonly<{
 }>;
 
 export type SessionUsageLimitRecoveryBannerPresentation = Readonly<{
+    temporaryThrottle?: Readonly<{ nextCheckAtMs: number | null; attemptCount: number }>;
+    actionsDisabled?: boolean;
     testID: string;
     actionTestID: string;
     title: string;
@@ -106,7 +116,7 @@ function isUsageLimitIssue(issue: SessionRuntimeIssueV1 | null | undefined): iss
     return issue?.source === 'usage_limit' || issue?.code === 'usage_limit';
 }
 
-function isTemporaryThrottleIssue(issue: SessionRuntimeIssueV1 | null | undefined): issue is SessionRuntimeIssueV1 {
+function isTemporaryThrottleIssue(issue: SessionRuntimeIssueV1 | null | undefined): boolean {
     return issue?.temporaryThrottle?.v === 1 && issue.temporaryThrottle.recoverability === 'retry';
 }
 
@@ -268,6 +278,7 @@ export function buildSessionUsageLimitRecoveryPresentation(params: Readonly<{
     checkNowSupported?: boolean;
     recoveryCredits?: ConnectedServiceQuotaRecoveryCreditsV1 | null;
     runtimeWorking?: boolean;
+    machineReachable?: boolean;
     hasActivityAfterRuntimeIssue?: boolean;
     hasInterruptedWorkToResume?: boolean;
     nowMs?: number | null;
@@ -279,11 +290,48 @@ export function buildSessionUsageLimitRecoveryPresentation(params: Readonly<{
     // switch the runtime resumes "working" before the provider has confirmed recovery. Hiding the
     // banner on runtimeWorking made an unproven recovery look resolved. Hide only on genuine
     // provider-outcome proof (activity after the runtime issue boundary).
-    if (params.hasActivityAfterRuntimeIssue === true) return null;
-    if (params.latestTurnStatus != null && params.latestTurnStatus !== 'failed') return null;
     const lastRuntimeIssue = params.lastRuntimeIssue;
+    if (!lastRuntimeIssue) return null;
     const temporaryThrottle = isTemporaryThrottleIssue(lastRuntimeIssue);
     if (!isUsageLimitIssue(lastRuntimeIssue) && !temporaryThrottle) return null;
+    if (temporaryThrottle) {
+        const recovery = params.recoveryState?.issueFingerprint.startsWith('temporary-throttle:')
+            ? params.recoveryState : null;
+        const active = isActiveRecoveryStatus(recovery?.status);
+        if (params.latestTurnStatus === 'completed' || (!recovery && params.hasActivityAfterRuntimeIssue === true)) return null;
+        const offline = params.machineReachable === false;
+        const dispatching = recovery?.status === 'checking';
+        const nextCheckAtMs = !offline && !dispatching && active ? recovery?.nextCheckAtMs ?? null : null;
+        const mode = active ? 'cancel' : 'retry_temporary_throttle';
+        const actionLabel = params.translate(active ? 'session.usageLimitRecovery.stopRetrying' : 'session.usageLimitRecovery.actions.retryTemporaryThrottle');
+        const retryLabel = params.translate('session.usageLimitRecovery.actions.retryTemporaryThrottle');
+        const title = params.translate('session.usageLimitRecovery.overloadTitle');
+        const body = params.translate(offline ? 'session.usageLimitRecovery.overloadOffline'
+            : dispatching ? 'session.usageLimitRecovery.overloadDispatching'
+            : nextCheckAtMs !== null ? 'session.usageLimitRecovery.overloadWaiting'
+            : active ? 'session.usageLimitRecovery.overloadAwaiting'
+            : recovery?.status === 'exhausted' ? 'session.usageLimitRecovery.overloadExhausted'
+            : 'session.usageLimitRecovery.overloadStopped');
+        return {
+            issueFingerprint: recovery?.issueFingerprint ?? buildIssueFingerprint(lastRuntimeIssue),
+            armedAtMs: recovery?.armedAtMs ?? lastRuntimeIssue.occurredAt,
+            waiting: active,
+            banner: {
+                testID: 'session-usageLimit-recovery', actionTestID: actionTestIdForMode(mode),
+                title, body, mode, actionLabel, actionAccessibilityLabel: actionLabel,
+                actionsDisabled: offline || (!active && params.checkNowSupported !== true),
+                temporaryThrottle: { nextCheckAtMs, attemptCount: recovery?.attemptCount ?? 0 },
+                secondaryActions: active && nextCheckAtMs !== null && params.checkNowSupported === true ? [{
+                    kind: 'retry_temporary_throttle', label: retryLabel, accessibilityLabel: retryLabel,
+                    testID: 'session-usageLimit-recovery-retryTemporaryThrottle',
+                }] : [],
+            },
+            statusBadge: { key: SESSION_USAGE_LIMIT_RECOVERY_BADGE_KEY, label: title,
+                testID: 'session-usageLimit-status-badge', tone: active && !offline ? 'active' : 'warning' },
+        };
+    }
+    if (params.hasActivityAfterRuntimeIssue === true) return null;
+    if (params.latestTurnStatus != null && params.latestTurnStatus !== 'failed') return null;
 
     const resetAtMs = readUsageLimitResetAtMs(lastRuntimeIssue, params.recoveryState);
     const ready = params.operationStatus === 'ready'

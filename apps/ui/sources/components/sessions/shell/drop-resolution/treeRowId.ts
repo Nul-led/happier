@@ -1,18 +1,47 @@
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 export const treeRowId = Object.freeze({
-    folder: (id: string) => `folder:${id.trim()}`,
-    session: (serverId: string, sessionId: string) => `session:${serverId.trim()}:${sessionId.trim()}`,
-    workspaceRoot: (workspaceKey: string) => `workspace-root:${workspaceKey.trim()}`,
+    folder: (serverId: string, folderId: string) => JSON.stringify([
+        'folder',
+        serverId.trim(),
+        folderId.trim(),
+    ]),
+    session: (serverId: string, sessionId: string) => JSON.stringify([
+        'session',
+        sessionAddressKey({ serverId: serverId.trim(), sessionId: sessionId.trim() }),
+    ]),
+    workspaceRoot: (workspaceKey: string) => JSON.stringify(['workspace-root', workspaceKey.trim()]),
 });
+
+function readTreeRowTuple(rowId: string): readonly unknown[] | null {
+    try {
+        const value: unknown = JSON.parse(rowId);
+        return Array.isArray(value) ? value : null;
+    } catch {
+        return null;
+    }
+}
+
+export function isFolderTreeRowId(rowId: string): boolean {
+    const tuple = readTreeRowTuple(rowId);
+    return tuple?.length === 3
+        && tuple[0] === 'folder'
+        && typeof tuple[1] === 'string'
+        && typeof tuple[2] === 'string';
+}
+
+export function isWorkspaceRootTreeRowId(rowId: string): boolean {
+    const tuple = readTreeRowTuple(rowId);
+    return tuple?.length === 2 && tuple[0] === 'workspace-root' && typeof tuple[1] === 'string';
+}
 
 export function resolveWorkspaceRootTreeRowId(item: Extract<SessionListIndexItem, { type: 'header' }>, fallbackTitle?: string): string {
     const baseKey = String(item.groupKey ?? item.workspaceKey ?? fallbackTitle ?? item.title ?? '').trim();
-    const seedSessionId = String(item.seedSessionId ?? '').trim();
-    return treeRowId.workspaceRoot(seedSessionId ? `${baseKey}:seed:${seedSessionId}` : baseKey);
+    return treeRowId.workspaceRoot(baseKey);
 }
 
 export function readFolderIdFromTreeRowId(rowId: string): string | null {
-    const prefix = 'folder:';
-    return rowId.startsWith(prefix) ? rowId.slice(prefix.length).trim() || null : null;
+    const tuple = readTreeRowTuple(rowId);
+    return isFolderTreeRowId(rowId) ? String(tuple?.[2] ?? '').trim() || null : null;
 }

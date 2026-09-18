@@ -56,6 +56,16 @@ describe('settings catalog rail shape', () => {
         expect((root.children ?? []).every((child) => !child.route)).toBe(true);
     });
 
+    it('registers Machine Pool creation beneath the searchable Machines catalog node', () => {
+        const machines = walk(catalog).find(({ node }) => node.id === 'machines')?.node;
+
+        expect(machines?.children?.map((child) => child.route)).toEqual([
+            '/settings/machines/pools/new',
+            '/settings/machines/add',
+            '/settings/machines/this-computer',
+        ]);
+    });
+
     it('registers the routed Voice pages beneath the searchable Voice catalog node', () => {
         const voice = walk(catalog).find(({ node }) => node.id === 'voice')?.node;
 

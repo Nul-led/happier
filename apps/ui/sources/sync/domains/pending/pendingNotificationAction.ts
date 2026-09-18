@@ -11,6 +11,7 @@ import {
 
 export type PendingNotificationAction = Readonly<{
     serverUrl: string;
+    serverId?: string;
     sessionId: string;
     requestId: string;
     turnId?: string;
@@ -55,12 +56,20 @@ function readScopedPendingNotificationAction(key: string): PendingNotificationAc
     try {
         const parsed = JSON.parse(raw) as Partial<PendingNotificationAction>;
         const serverUrl = normalizeUrl(parsed.serverUrl ?? '');
+        const serverId = String(parsed.serverId ?? '').trim();
         const sessionId = String(parsed.sessionId ?? '').trim();
         const requestId = String(parsed.requestId ?? '').trim();
         const turnId = String(parsed.turnId ?? '').trim();
         const action = parsed.action === 'allow' ? 'allow' : parsed.action === 'deny' ? 'deny' : null;
         if (serverUrl && sessionId && requestId && action) {
-            return { serverUrl, sessionId, requestId, ...(turnId ? { turnId } : {}), action };
+            return {
+                serverUrl,
+                ...(serverId ? { serverId } : {}),
+                sessionId,
+                requestId,
+                ...(turnId ? { turnId } : {}),
+                action,
+            };
         }
     } catch {
         // ignore corrupt scoped payload
@@ -76,6 +85,7 @@ function resolveActiveServerScopedKey(): string | null {
 
 export function setPendingNotificationAction(value: PendingNotificationAction): void {
     const serverUrl = normalizeUrl(value?.serverUrl ?? '');
+    const serverId = String(value?.serverId ?? '').trim();
     const sessionId = String(value?.sessionId ?? '').trim();
     const requestId = String(value?.requestId ?? '').trim();
     const turnId = String(value?.turnId ?? '').trim();
@@ -84,6 +94,7 @@ export function setPendingNotificationAction(value: PendingNotificationAction): 
     if (!serverUrl || !sessionId || !requestId || !action) return;
     const record = JSON.stringify({
         serverUrl,
+        ...(serverId ? { serverId } : {}),
         sessionId,
         requestId,
         ...(turnId ? { turnId } : {}),

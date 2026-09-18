@@ -8,7 +8,12 @@ import type { Machine } from '@/sync/domains/state/storageTypes';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import type { BackendTargetRefV2 } from '@happier-dev/protocol';
 import {
+    BUNDLED_AGENT_ROUTE_PARAMS,
+    createConfiguredAcpBackendCatalogSettings,
+    createConfiguredBackendRouteParams,
+    createDiscoveredPluginBackendDescribeResult,
     createNavigationMock,
+    createProjectionDescribeMock,
     createRouterMock,
     enableReactActEnvironment,
     installPickerCommonModuleMocks,
@@ -37,15 +42,7 @@ const settingsState = vi.hoisted(() => ({
         acpCatalogSettingsV1: null as unknown,
     },
 }));
-type MachineContributionRegistryProjectionDescribeFn =
-    typeof import('@/sync/ops/machineContributionRegistryProjection').machineContributionRegistryProjectionDescribe;
-const {
-    machineContributionRegistryProjectionDescribe,
-} = vi.hoisted(() => ({
-    machineContributionRegistryProjectionDescribe: vi.fn<MachineContributionRegistryProjectionDescribeFn>(
-        async () => ({ supported: false, reason: 'not-supported' }),
-    ),
-}));
+const machineContributionRegistryProjectionDescribe = createProjectionDescribeMock();
 
 const previewMachine = {
     id: 'machine-picked',
@@ -106,6 +103,7 @@ installPickerCommonModuleMocks({
                 }),
             },
         }),
+    projectionSeam: { describe: machineContributionRegistryProjectionDescribe },
 });
 
 vi.mock('@/components/sessions/new/components/MachineSelector', () => ({
@@ -113,20 +111,6 @@ vi.mock('@/components/sessions/new/components/MachineSelector', () => ({
         machineSelectorPropsRef.current = props;
         return null;
     },
-}));
-
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    getActiveServerId: () => 'server-2',
-}));
-
-vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
-    machineContributionRegistryProjectionDescribe: (...args: Parameters<MachineContributionRegistryProjectionDescribeFn>) =>
-        machineContributionRegistryProjectionDescribe(...args),
-    getMachineContributionRegistryProjectionRevision: () => 0,
-    subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
-    machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
 }));
 
 describe('PreviewMachinePickerScreen replace fallback', () => {
@@ -185,9 +169,10 @@ describe('PreviewMachinePickerScreen replace fallback', () => {
         expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
             params: {
+                // A real bundled `agentType` already on the route survives as
+                // the UI placeholder next to the qualified V2 target.
                 agentType: 'claude',
-                backendTarget: JSON.stringify({ kind: 'backend', backendId: 'claude' }),
-                backendTargetKey: 'backend:claude',
+                ...BUNDLED_AGENT_ROUTE_PARAMS.claude,
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 previewMachineId: 'machine-picked',
@@ -201,8 +186,7 @@ describe('PreviewMachinePickerScreen replace fallback', () => {
     it('preserves configured backend route params when replace fallback is needed without reserializing the legacy customAcp agentType', async () => {
         routeParamsState.value = {
             agentType: 'customAcp',
-            backendTarget: JSON.stringify({ kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' }),
-            backendTargetKey: 'backend:review-bot:configured:review-bot',
+            ...createConfiguredBackendRouteParams('review-bot'),
             dataId: 'draft-1',
             machineId: 'machine-2',
             spawnServerId: 'server-2',
@@ -269,12 +253,7 @@ describe('PreviewMachinePickerScreen replace fallback', () => {
         expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
             params: {
-                backendTarget: JSON.stringify({
-                    kind: 'backend',
-                    backendId: 'review-bot',
-                    configuredBackendId: 'review-bot',
-                }),
-                backendTargetKey: 'backend:review-bot:configured:review-bot',
+                ...createConfiguredBackendRouteParams('review-bot'),
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 previewMachineId: 'machine-picked',
@@ -288,27 +267,7 @@ describe('PreviewMachinePickerScreen replace fallback', () => {
             lastUsedAgent: 'codex',
             lastUsedBackendTarget: { kind: 'backend', backendId: 'stale-review-bot', configuredBackendId: 'stale-review-bot', sourceKind: 'configured' },
             backendEnabledByTargetKey: { 'agent:codex': true },
-            acpCatalogSettingsV1: {
-                v: 2,
-                backends: [{
-                id: 'review-bot',
-                name: 'review-bot',
-                title: 'Review Bot',
-                command: 'review-bot',
-                args: [],
-                env: {},
-                transportProfile: 'generic',
-                capabilities: {
-                    supportsLoadSession: false,
-                    supportsModes: 'unknown',
-                    supportsModels: 'unknown',
-                    supportsConfigOptions: 'unknown',
-                    promptImageSupport: 'unknown',
-                },
-                createdAt: 1,
-                updatedAt: 1,
-                }],
-            },
+            acpCatalogSettingsV1: createConfiguredAcpBackendCatalogSettings('review-bot'),
         };
         routeParamsState.value = {
             agentType: 'customAcp',
@@ -330,9 +289,7 @@ describe('PreviewMachinePickerScreen replace fallback', () => {
         expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
             params: {
-                agentType: 'codex',
-                backendTarget: JSON.stringify({ kind: 'backend', backendId: 'codex' }),
-                backendTargetKey: 'backend:codex',
+                ...BUNDLED_AGENT_ROUTE_PARAMS.codex,
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 previewMachineId: 'machine-picked',
@@ -354,29 +311,7 @@ describe('PreviewMachinePickerScreen replace fallback', () => {
             machineId: 'machine-2',
             spawnServerId: 'server-2',
         };
-        machineContributionRegistryProjectionDescribe.mockResolvedValue({
-            supported: true,
-            projection: {
-                v: 1,
-                agentsById: {
-                    'acme.review.provider': {
-                        id: 'acme.review.provider',
-                        title: 'Acme Review Provider',
-                        channel: 'plugin',
-                        isBuiltIn: false,
-                        settingsBackendId: 'acme.review.backend',
-                    },
-                },
-                backendsById: {
-                    'acme.review.backend': {
-                        id: 'acme.review.backend',
-                        backendId: 'acme.review.backend',
-                        agentId: 'acme.review.provider',
-                        title: 'Acme Review Backend',
-                    },
-                },
-            },
-        });
+        machineContributionRegistryProjectionDescribe.mockResolvedValue(createDiscoveredPluginBackendDescribeResult());
         const PreviewMachinePickerScreen = (await import('@/app/(app)/new/pick/preview-machine')).default;
 
         await renderScreen(React.createElement(PreviewMachinePickerScreen));
@@ -397,9 +332,7 @@ describe('PreviewMachinePickerScreen replace fallback', () => {
         expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
             params: {
-                agentType: 'claude',
-                backendTarget: JSON.stringify({ kind: 'backend', backendId: 'claude' }),
-                backendTargetKey: 'backend:claude',
+                ...BUNDLED_AGENT_ROUTE_PARAMS.claude,
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 previewMachineId: 'machine-picked',

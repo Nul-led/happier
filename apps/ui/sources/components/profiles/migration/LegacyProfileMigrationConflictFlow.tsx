@@ -7,6 +7,7 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import { t } from '@/text';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 
 import { LegacyProfileMigrationConflictReview } from './LegacyProfileMigrationConflictReview';
 import { useLegacyProfileMigrationTarget } from './useLegacyProfileMigrationTarget';
@@ -18,8 +19,9 @@ export const LegacyProfileMigrationConflictFlow = React.memo(function LegacyProf
     rehydrateSettings?: (minimumVersion: number) => Promise<void>;
 }>) {
     const { machineId, serverId, targetMachines, setPreferredMachineId } = useLegacyProfileMigrationTarget();
+    const expectedSettingsScope = useAccountSettingsScope();
     const rehydrate = props.rehydrateSettings ?? (async (minimumVersion: number) => {
-        await getSyncSingleton().refreshAccountSettingsFromServer(minimumVersion);
+        await getSyncSingleton().refreshAccountSettingsFromServer(minimumVersion, expectedSettingsScope);
     });
 
     if (!machineId) {

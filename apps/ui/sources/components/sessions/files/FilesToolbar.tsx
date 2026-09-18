@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
+import { Platform, View } from 'react-native';
 
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
@@ -29,7 +29,6 @@ type FilesToolbarProps = {
     onToggleScmPanel: () => void;
     onRefresh?: () => void;
     showScmToggle?: boolean;
-    showAttributionReliabilityNotice?: boolean;
 };
 
 /**
@@ -78,7 +77,6 @@ export function FilesToolbar(props: FilesToolbarProps) {
         onToggleScmPanel,
         onRefresh,
         showScmToggle = true,
-        showAttributionReliabilityNotice = true,
     } = props;
     const hasScopedChangedFilesView =
         showTurnViewToggle
@@ -192,32 +190,7 @@ export function FilesToolbar(props: FilesToolbarProps) {
                 ) : null}
             </View>
 
-            {showAttributionReliabilityNotice
-            && !showAllRepositoryFiles
-            && changedFilesCount > 0
-            && !hasScopedChangedFilesView && (
-                <View
-                    style={{
-                        marginTop: 10,
-                        paddingHorizontal: 10,
-                        paddingVertical: 8,
-                        borderRadius: 10,
-                        borderWidth: 1,
-                        borderColor: theme.colors.border.default,
-                        backgroundColor: theme.colors.surface.inset,
-                    }}
-                >
-                    <Text
-                        style={{
-                            fontSize: 11,
-                            color: theme.colors.text.secondary,
-                            ...Typography.default(),
-                        }}
-                    >
-                        {t('files.attributionReliabilityLimited')}
-                    </Text>
-                </View>
-            )}
+
         </View>
     );
 }

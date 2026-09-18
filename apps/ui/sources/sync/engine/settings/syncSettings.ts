@@ -1,3 +1,5 @@
+import { deriveAccountRemoteAlertPolicyV1 } from '@happier-dev/protocol';
+import { fetchPushTokensRemoteAlertProjection } from '@/sync/api/session/apiPush';
 import { tracking } from '@/track';
 import { applySettings, settingsParse, type Settings } from '@/sync/domains/settings/settings';
 import {
@@ -18,8 +20,15 @@ import {
     accountSettingsScopeKeySuffix,
     type AccountSettingsScope,
 } from '@/sync/domains/settings/scope/accountSettingsScope';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { getServerProfileLegacyServerIds } from '@/sync/domains/server/serverProfiles';
+import {
+    getActiveServerHomeCarrier,
+    getActiveServerSnapshot,
+} from '@/sync/domains/server/serverRuntime';
+import {
+    getServerProfileById,
+    getServerProfileLegacyServerIds,
+    resolveServerProfileScopeId,
+} from '@/sync/domains/server/serverProfiles';
 import { storage } from '@/sync/domains/state/storage';
 import { loadPendingSettings } from '@/sync/domains/state/persistence';
 import { getPersistenceStorage } from '@/sync/domains/state/persistenceStorage';
@@ -39,11 +48,12 @@ import {
     normalizeAccountSettingsForServerStorage,
     openAccountSettingsStoredContent,
 } from '@/sync/domains/settings/accountSettingsNormalization';
-import { serverFetch } from '@/sync/http/client';
+import { createServerFetchAtEndpoint, type ServerFetch } from '@/sync/http/client';
 import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
 import { getRandomBytes } from '@/platform/cryptoRandom';
 import {
     applyAccountSettingMutationV1,
+    assertAccountWorkspaceSettingsTransition,
     AccountSettingsV2UpdateResponseSchema,
     sealAccountScopedBlobCiphertext,
     type AccountSettingMutationV1,
@@ -71,6 +81,7 @@ import {
     removeCommittedPendingSettings,
 } from './writeback/accountSettingsRawDeltaMerge';
 import { areAccountSettingsRawObjectsEqual } from './writeback/accountSettingsRawEquality';
+import { assertUiAccountEncryptionModeAllowed } from '@/sync/domains/settings/clientEncryptionRequirement';
 
 function legacySessionOrganizationImportMarkerKey(scope: AccountSettingsScope): string {
     return `session-organization:legacy-import:v1:${accountSettingsScopeKeySuffix(scope)}`;
@@ -112,6 +123,12 @@ export type OneShotAccountSettingsMutationResult<T> =
         safeSnapshotVersion?: number;
     }>;
 
+export type OneShotAccountSettingsPreparedCommitResult =
+    | Readonly<{ status: 'applied'; settingsVersion: number }>
+    | Readonly<{ status: 'conflict' }>
+    | Readonly<{ status: 'outcomeUnknown' }>
+    | Readonly<{ status: 'rejected'; error: Error }>;
+
 export function requireOneShotAccountSettingsMutationApplied<T>(
     result: OneShotAccountSettingsMutationResult<T>,
 ): Extract<OneShotAccountSettingsMutationResult<T>, Readonly<{ status: 'applied' }>> {
@@ -128,13 +145,26 @@ export function requireOneShotAccountSettingsMutationApplied<T>(
 }
 
 export type SyncSettingsParams<TOneShotMutationValue = never> = {
+    signal?: AbortSignal;
     credentials: AuthCredentials;
     encryption: Encryption | null;
     settingsScope?: AccountSettingsScope | null;
     pendingSettings: Partial<Settings>;
+    /** Republish only from the fetched exact-Home settings CAS baseline. */
+    republishRemoteAlertPolicy?: boolean;
     clearPendingSettings: (nextPendingSettings: Partial<Settings>) => void;
     settingsSecretsKey?: Uint8Array | null;
     settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
+    /**
+     * A caller-captured request for the same explicit Account Settings scope.
+     * History restore uses this to keep its snapshot read and one-shot CAS on
+     * one endpoint/credential capture across every await.
+     */
+    requestContext?: Readonly<{
+        scope: AccountSettingsScope;
+        endpointUrl: string;
+        request: ServerFetch;
+    }>;
     /** Immutable set/reset operations reapplied to each fetched CAS winner. */
     accountSettingsMutation?: AccountSettingMutationV1;
     /**
@@ -150,6 +180,16 @@ export type SyncSettingsParams<TOneShotMutationValue = never> = {
             settings: Record<string, unknown>;
             value: TOneShotMutationValue;
         }>;
+        /**
+         * Lets another Home transaction commit the canonical prepared Settings
+         * envelope. Promotion uses this seam so resource creation and every
+         * Settings reference rewrite share one server transaction.
+         */
+        commitPrepared?: (input: Readonly<{
+            content: AccountSettingsStoredContentEnvelope;
+            expectedSettingsVersion: number;
+            accountMode: 'plain' | 'e2ee';
+        }>) => Promise<OneShotAccountSettingsPreparedCommitResult>;
     }>;
 };
 
@@ -160,11 +200,67 @@ export async function syncSettings<TOneShotMutationValue = never>(
     const settingsScope = params.settingsScope ?? null;
     const settingsSecretsKey = params.settingsSecretsKey ?? null;
     const settingsSecretsReadKeys = params.settingsSecretsReadKeys ?? (settingsSecretsKey ? [settingsSecretsKey] : []);
+    const requestContext = params.requestContext;
+    if (requestContext && !areAccountSettingsScopesEqual(settingsScope, requestContext.scope)) {
+        throw new Error('Account settings request scope does not match the settings scope');
+    }
     const legacyServerIdsForSettingsKeys = settingsScope
         ? getServerProfileLegacyServerIds(settingsScope.serverId)
         : [];
 
-    const activeServerUrl = getActiveServerSnapshot().serverUrl;
+    const activeServerSnapshot = requestContext ? null : getActiveServerSnapshot();
+    const scopedProfile = settingsScope ? getServerProfileById(settingsScope.serverId) : null;
+    const scopedProfileMatches = Boolean(
+        settingsScope
+        && scopedProfile
+        && resolveServerProfileScopeId(scopedProfile) === settingsScope.serverId,
+    );
+    const activeSnapshotMatches = settingsScope && activeServerSnapshot
+        ? activeServerSnapshot.serverId === settingsScope.serverId
+        : true;
+    const settingsEndpointUrl = String(
+        requestContext?.endpointUrl
+        ?? (scopedProfileMatches
+            ? scopedProfile?.canonicalServerUrl ?? scopedProfile?.serverUrl
+            : activeSnapshotMatches
+                ? activeServerSnapshot?.serverUrl
+                : ''),
+    ).trim();
+    if (!settingsEndpointUrl) {
+        throw new Error('Account settings endpoint is unavailable for the captured scope');
+    }
+    // Runtime-origin and browser-Iroh carrier publication are active-Home
+    // capabilities today. Never borrow them for another captured scope: a
+    // non-active scope uses its canonical URL when reachable, otherwise its
+    // pending delta remains scoped and retries when that Home becomes active.
+    const activeHomeCarrier = !requestContext && activeSnapshotMatches ? getActiveServerHomeCarrier() : null;
+    const capturedRequest = requestContext?.request ?? createServerFetchAtEndpoint({
+        endpointUrl: settingsEndpointUrl,
+        ...(activeSnapshotMatches && activeServerSnapshot?.runtimeOrigin
+            ? { runtimeOrigin: activeServerSnapshot.runtimeOrigin }
+            : {}),
+        ...(activeHomeCarrier ? { homeCarrier: activeHomeCarrier } : {}),
+        credentials,
+        serverId: settingsScope?.serverId ?? activeServerSnapshot?.serverId ?? '',
+        signal: params.signal,
+    });
+    let oneShotWriteIssued = false;
+    const request = (path: string, init?: RequestInit): Promise<Response> => {
+        if (params.signal?.aborted) throw new Error('Account Settings request was cancelled before issuance');
+        if (init?.method === 'POST' && (path === '/v1/account/settings' || path === '/v2/account/settings')) {
+            oneShotWriteIssued = true;
+        }
+        return capturedRequest(path, init, { includeAuth: false });
+    };
+    let remoteProjectionPromise: ReturnType<typeof fetchPushTokensRemoteAlertProjection> | null = null;
+    const fetchRemoteProjection = () => remoteProjectionPromise ??= fetchPushTokensRemoteAlertProjection(credentials, request)
+        .catch(() => null);
+    const supportsRemoteProjection = () => fetchRemoteProjection().then((projection) => projection !== null);
+    const remoteAlertPolicyReconciliationStatus = params.republishRemoteAlertPolicy === true
+        ? (await fetchRemoteProjection())?.accountRemoteAlerts.status ?? null
+        : null;
+    const shouldInspectRemoteAlertPolicy = remoteAlertPolicyReconciliationStatus === 'stale'
+        || remoteAlertPolicyReconciliationStatus === 'disabled';
     const maxRetries = 3;
     let retryCount = 0;
     let lastVersionMismatch: { expectedVersion: number; currentVersion: number; pendingKeys: string[] } | null = null;
@@ -186,7 +282,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
         }
     }
 
-    const encryptionMode = await fetchAccountEncryptionMode(credentials);
+    const encryptionMode = await fetchAccountEncryptionMode(credentials, { request });
     const accountMode = encryptionMode.mode === 'plain' ? 'plain' : 'e2ee';
     const requireEncryption = (): Encryption => {
         if (!encryption) {
@@ -229,16 +325,12 @@ export async function syncSettings<TOneShotMutationValue = never>(
         storage.getState().applySettings(nextSettings, nextVersion);
     }
 
-    function replaceSettingsForCapturedScope(nextSettings: Settings, nextVersion: number): void {
-        if (settingsScope) {
-            storage.getState().replaceSettingsForScope(settingsScope, nextSettings, nextVersion);
-            return;
-        }
-        storage.getState().replaceSettings(nextSettings, nextVersion);
-    }
-
-    function applyActiveSettingsSideEffects(nextSettings: Settings): void {
+    function applyActiveSettingsSideEffects(): void {
         if (!isSettingsScopeActive()) return;
+        // The store may reject an older acknowledgement or publish a newer
+        // update synchronously. Privacy effects follow its accepted projection,
+        // never the incoming document that merely attempted to replace it.
+        const nextSettings = storage.getState().settings;
         if (tracking) {
             nextSettings.analyticsOptOut ? tracking.optOut() : tracking.optIn();
         }
@@ -249,18 +341,22 @@ export async function syncSettings<TOneShotMutationValue = never>(
         serverIdentityKeysChanged: boolean;
     };
 
-    async function updateSettingsV2(params: { content: unknown; expectedVersion: number }): Promise<unknown> {
-        const response = await serverFetch('/v2/account/settings', {
+    async function updateSettingsV2(params: { content: unknown; expectedVersion: number; raw: Readonly<Record<string, unknown>> }): Promise<unknown> {
+        const remotePolicy = await supportsRemoteProjection()
+            ? { remoteAlertPolicy: deriveAccountRemoteAlertPolicyV1(params.raw) }
+            : {};
+        const response = await request('/v2/account/settings', {
             method: 'POST',
             body: JSON.stringify({
                 content: params.content,
                 expectedVersion: params.expectedVersion,
+                ...remotePolicy,
             }),
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json',
             },
-        }, { includeAuth: false });
+        });
 
         const data: unknown = await response.json().catch(() => null);
         const parsed = AccountSettingsV2UpdateResponseSchema.safeParse(data);
@@ -273,7 +369,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
     }
 
     async function updateSettingsV1(params: { settings: string | null; expectedVersion: number }): Promise<any> {
-        const response = await serverFetch('/v1/account/settings', {
+        const response = await request('/v1/account/settings', {
             method: 'POST',
             body: JSON.stringify({
                 settings: params.settings,
@@ -283,7 +379,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json',
             },
-        }, { includeAuth: false });
+        });
 
         const data: any = await response.json().catch(() => null);
         if (!data || typeof data !== 'object') {
@@ -329,12 +425,19 @@ export async function syncSettings<TOneShotMutationValue = never>(
         // this wrapper adds only the captured-scope identity-key migration and
         // its local normalization side effect.
         const fetched = await readAccountSettingsBaseline({
-            request: (path, init) => serverFetch(path, init, { includeAuth: false }),
+            request,
             credentials,
             encryption,
             accountMode,
         });
         const migrated = migrateRawServerIdentityKeys(fetched.raw);
+        if (accountMode === 'plain') {
+            assertUiAccountEncryptionModeAllowed({
+                mode: 'plain',
+                syncedSettings: migrated.raw ?? {},
+                localSettings: loadSettingsForCapturedScope().settings,
+            });
+        }
         normalizeSettingsForLocalStorage({
             raw: migrated.raw,
             mode: accountMode,
@@ -353,6 +456,13 @@ export async function syncSettings<TOneShotMutationValue = never>(
             expectedMode: accountMode,
         });
         const migrated = migrateRawServerIdentityKeys(opened.raw);
+        if (opened.mode === 'plain') {
+            assertUiAccountEncryptionModeAllowed({
+                mode: 'plain',
+                syncedSettings: migrated.raw ?? {},
+                localSettings: loadSettingsForCapturedScope().settings,
+            });
+        }
         normalizeSettingsForLocalStorage({
             raw: migrated.raw,
             mode: opened.mode,
@@ -420,6 +530,11 @@ export async function syncSettings<TOneShotMutationValue = never>(
         v1Settings: string | null;
     } {
         if (accountMode === 'plain') {
+            assertUiAccountEncryptionModeAllowed({
+                mode: 'plain',
+                syncedSettings: raw,
+                localSettings: loadSettingsForCapturedScope().settings,
+            });
             return { content: { t: 'plain', v: raw }, v1Settings: null };
         }
         const ciphertext = sealAccountScopedBlobCiphertext({
@@ -435,7 +550,6 @@ export async function syncSettings<TOneShotMutationValue = never>(
         raw: Record<string, unknown> | null;
         version: number;
         remainingPendingSettings?: Partial<Settings>;
-        replace?: boolean;
     }): Settings {
         const parsedSettings = params.raw
             ? normalizeSettingsForLocalStorage({ raw: params.raw, mode: accountMode })
@@ -453,12 +567,8 @@ export async function syncSettings<TOneShotMutationValue = never>(
             ? applySettings(parsedSettings, remainingServerPending)
             : parsedSettings;
         const nextSettings = mergedWithPending;
-        if (params.replace) {
-            replaceSettingsForCapturedScope(nextSettings, params.version);
-        } else {
-            applySettingsForCapturedScope(nextSettings, params.version);
-        }
-        applyActiveSettingsSideEffects(nextSettings);
+        applySettingsForCapturedScope(nextSettings, params.version);
+        applyActiveSettingsSideEffects();
         return nextSettings;
     }
 
@@ -547,7 +657,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
             } as const;
             const existing = await fetchSessionOrganizationSnapshot({
                 credentials,
-                serverUrl: activeServerUrl,
+                requestAtEndpoint: request,
                 request: snapshotRequest,
             });
             const plan = buildLegacySessionOrganizationImportPlan({
@@ -559,7 +669,8 @@ export async function syncSettings<TOneShotMutationValue = never>(
                 await importLegacySessionOrganizationOp({
                     credentials,
                     serverId: settingsScope.serverId,
-                    serverUrl: activeServerUrl,
+                    requestAtEndpoint: request,
+                    accountMode,
                     request: plan.request,
                 });
             } else {
@@ -574,7 +685,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
             return true;
         } catch (error) {
             dbgSettings('syncSettings: legacy session organization import skipped', {
-                endpoint: activeServerUrl,
+                endpoint: settingsEndpointUrl,
                 error: error instanceof Error ? error.message : String(error),
             });
             return false;
@@ -586,9 +697,10 @@ export async function syncSettings<TOneShotMutationValue = never>(
     // Apply pending settings
     if (Object.keys(pendingServerSettings).length > 0
         || params.accountSettingsMutation
-        || params.oneShotServerSettingsMutation) {
+        || params.oneShotServerSettingsMutation
+        || shouldInspectRemoteAlertPolicy) {
         dbgSettings('syncSettings: pending detected; will POST', {
-            endpoint: activeServerUrl,
+            endpoint: settingsEndpointUrl,
             pendingKeys: Object.keys(pendingServerSettings).sort(),
             pendingSummary: summarizeSettingsDelta(pendingServerSettings as Partial<Settings>),
             base: summarizeSettings(storage.getState().settings, { version: storage.getState().settingsVersion }),
@@ -638,6 +750,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
                 pendingSettings: pendingServerSettings,
                 normalizeForPersistedStorage: (raw) => normalizeSettingsForServerStorageResult({ raw, mode: accountMode }),
             });
+            assertAccountWorkspaceSettingsTransition(baseline.raw ?? {}, merged.outgoingRaw);
             const normalizedUnmutatedBaseline = normalizeSettingsForServerStorageResult({
                 raw: baseline.raw ?? {},
                 mode: accountMode,
@@ -646,8 +759,12 @@ export async function syncSettings<TOneShotMutationValue = never>(
                 normalizedUnmutatedBaseline,
                 merged.comparisonRaw,
             );
+            const shouldRepublishRemoteAlertPolicy = remoteAlertPolicyReconciliationStatus === 'stale'
+                || (remoteAlertPolicyReconciliationStatus === 'disabled'
+                    && deriveAccountRemoteAlertPolicyV1(merged.outgoingRaw) !== null);
 
-            if (!baseline.serverIdentityKeysChanged
+            if (!shouldRepublishRemoteAlertPolicy
+                && !baseline.serverIdentityKeysChanged
                 && !serverMutationChanged
                 && !merged.comparisonChanged
                 && areAccountSettingsRawObjectsEqual(merged.comparisonRaw, merged.outgoingRaw)) {
@@ -656,7 +773,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
                         && !pendingLegacySessionOrganizationImported,
                 });
                 dbgSettings('syncSettings: pending merge produced no server change; skipped POST', {
-                    endpoint: activeServerUrl,
+                    endpoint: settingsEndpointUrl,
                     serverVersion: version,
                     pendingKeys: Object.keys(pendingServerSettings).sort(),
                 });
@@ -680,25 +797,53 @@ export async function syncSettings<TOneShotMutationValue = never>(
             });
             const { content, v1Settings } = createSettingsContentForWrite(merged.outgoingRaw);
             dbgSettings('syncSettings: POST attempt', {
-                endpoint: activeServerUrl,
+                endpoint: settingsEndpointUrl,
                 attempt: retryCount + 1,
                 expectedVersion: version,
                 merged: summarizeSettings(merged.outgoingRaw as any, { version }),
             });
 
             let data: any;
+            let preparedCommitResult: OneShotAccountSettingsPreparedCommitResult | null = null;
             try {
                 // From this point the one-shot external mutation may have
                 // reached storage. Missing or malformed acknowledgement is
                 // reconciled once, never retried as another mutation.
-                data = baseline.api === 'v2'
-                    ? await updateSettingsV2({ content, expectedVersion: version })
-                    : await updateSettingsV1({ settings: v1Settings, expectedVersion: version });
+                if (params.oneShotServerSettingsMutation?.commitPrepared) {
+                    preparedCommitResult = await params.oneShotServerSettingsMutation.commitPrepared({
+                        content,
+                        expectedSettingsVersion: version,
+                        accountMode,
+                    });
+                    data = preparedCommitResult.status === 'applied'
+                        ? { success: true, version: preparedCommitResult.settingsVersion }
+                        : null;
+                } else {
+                    data = baseline.api === 'v2'
+                        ? await updateSettingsV2({ content, expectedVersion: version, raw: merged.outgoingRaw })
+                        : await updateSettingsV1({ settings: v1Settings, expectedVersion: version });
+                }
             } catch (error) {
                 if (params.oneShotServerSettingsMutation) {
+                    if (!oneShotWriteIssued) throw error;
                     return await recoverOneShotOutcomeUnknown(version);
                 }
                 throw error;
+            }
+
+            if (preparedCommitResult?.status === 'outcomeUnknown') {
+                return await recoverOneShotOutcomeUnknown(version);
+            }
+            if (preparedCommitResult?.status === 'rejected') {
+                throw preparedCommitResult.error;
+            }
+            if (preparedCommitResult?.status === 'conflict') {
+                const current = await fetchAccountSettingsBaseline();
+                applyRawSettingsProjection({ raw: current.raw, version: current.version, remainingPendingSettings: {} });
+                return Object.freeze({
+                    status: 'conflict' as const,
+                    currentSettingsVersion: current.version,
+                });
             }
 
             if (data.success) {
@@ -707,7 +852,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
                         && !pendingLegacySessionOrganizationImported,
                 });
                 dbgSettings('syncSettings: POST success; pending cleared', {
-                    endpoint: activeServerUrl,
+                    endpoint: settingsEndpointUrl,
                     expectedVersion: version,
                     responseVersion: data.version,
                 });
@@ -747,7 +892,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
                     });
                 }
                 dbgSettings('syncSettings: version-mismatch merge', {
-                    endpoint: activeServerUrl,
+                    endpoint: settingsEndpointUrl,
                     expectedVersion: version,
                     currentVersion: data.currentVersion,
                     pendingKeys: Object.keys(pendingServerSettings).sort(),
@@ -773,20 +918,20 @@ export async function syncSettings<TOneShotMutationValue = never>(
                     clearCommittedPendingSettings(pendingSettings);
                 } else {
                     dbgSettings('syncSettings: kept pending legacy session organization settings after failed import', {
-                        endpoint: activeServerUrl,
+                        endpoint: settingsEndpointUrl,
                         pendingKeys: Object.keys(pendingSettings).sort(),
                     });
                 }
             } else {
                 dbgSettings('syncSettings: kept pending legacy session organization settings without account scope', {
-                    endpoint: activeServerUrl,
+                    endpoint: settingsEndpointUrl,
                     pendingKeys: Object.keys(pendingSettings).sort(),
                 });
             }
         } else {
             clearCommittedPendingSettings(pendingSettings);
             dbgSettings('syncSettings: cleared local-only pending settings keys', {
-                endpoint: activeServerUrl,
+                endpoint: settingsEndpointUrl,
                 pendingKeys: Object.keys(pendingSettings).sort(),
             });
         }
@@ -820,7 +965,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
     });
 
     dbgSettings('syncSettings: GET applied', {
-        endpoint: activeServerUrl,
+        endpoint: settingsEndpointUrl,
         serverVersion: fetched.version,
         parsed: summarizeSettings(nextSettings, { version: fetched.version }),
     });
@@ -844,6 +989,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
                 const migrateRes = await updateSettingsV2({
                     content: migrateContent,
                     expectedVersion: fetched.version,
+                    raw: migratedServerSettings.value,
                 });
                 if ((migrateRes as any)?.success) {
                     applySettingsForCapturedScope(nextSettings, (migrateRes as any).version);
@@ -856,6 +1002,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
 }
 
 export function applySettingsLocalDelta(params: {
+    expectedSettingsScope: AccountSettingsScope | null;
     delta: Partial<Settings>;
     settingsSecretsKey: Uint8Array | null;
     getPendingSettings: () => Partial<Settings>;
@@ -865,6 +1012,17 @@ export function applySettingsLocalDelta(params: {
 }): void {
     const { settingsSecretsKey, getPendingSettings, setPendingSettings, schedulePendingSettingsFlush } = params;
     let { delta } = params;
+
+    const currentScope = storage.getState().settingsScope;
+    const isExpectedScopeActive = (currentScope === null && params.expectedSettingsScope === null)
+        || areAccountSettingsScopesEqual(currentScope, params.expectedSettingsScope);
+    if (!isExpectedScopeActive) {
+        dbgSettings('applySettings skipped (account settings scope changed)', {
+            expectedSettingsScope: params.expectedSettingsScope,
+            currentSettingsScope: currentScope,
+        });
+        return;
+    }
 
     // Generic writes cannot name runtime-derived keys in TypeScript, and this
     // boundary also drops stale/untyped deltas before local or pending writes.

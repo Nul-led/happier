@@ -3,13 +3,19 @@ import * as React from 'react';
 import { Platform } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 
+import type { AccountSettings } from '@happier-dev/protocol';
+
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useChangelog } from '@/hooks/inbox/useChangelog';
 import { useUpdates } from '@/hooks/inbox/useUpdates';
-import { storage, useFriendRequests, useLocalSetting, useSetting } from '@/sync/domains/state/storage';
+import { storage, useFriendRequests, useLocalSetting } from '@/sync/domains/state/storage';
 import { serverFetch } from '@/sync/http/client';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { fireAndForget } from '@/utils/system/fireAndForget';
+import { useExactHomeAccountSettings } from '@/activity/delivery/useExactHomeAccountSettings';
+import { useActivityPersonalSessionMembership } from '@/activity/source/activityPersonalSessionMembership';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { useServerCredentialAccountScopeResolutions } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 
 import { applyExpoNativeBadgeState } from './channels/applyExpoNativeBadgeState';
 import { applyTauriBadgeState } from './channels/applyTauriBadgeState';
@@ -76,11 +82,37 @@ function useActivityBadgeLocalSettingsInput(): LocalActivityBadgeSnapshotSelecto
     ]);
 }
 
-function useActivityBadgeAccountSettingsInput(): LocalActivityBadgeSnapshotSelectorParams['accountSettings'] {
-    const attentionDeliveryPolicyV1 = useSetting('attentionDeliveryPolicyV1');
-    return React.useMemo(() => ({
-        attentionDeliveryPolicyV1,
-    }), [attentionDeliveryPolicyV1]);
+/**
+ * Each badge-corpus Home's own persisted Account policy.
+ *
+ * The badge aggregates Sessions from every Home onto one app icon, so it reads each Home's exact
+ * Account settings through the canonical exact-Home resolver every other Activity channel uses.
+ * Reading the *active* Account's `attentionDeliveryPolicyV1` instead applied one Home's preference
+ * to the whole corpus, which made switching the active Home change whether a sibling Home's
+ * Sessions were eligible. A Home whose Account this device cannot name is absent here and the
+ * snapshot owner fails closed for it.
+ */
+function useActivityBadgeAccountSettingsByServerId(
+    badgeHomeServerIds: readonly string[],
+): LocalActivityBadgeSnapshotSelectorParams['accountSettingsByServerId'] {
+    const scopeResolutions = useServerCredentialAccountScopeResolutions(badgeHomeServerIds);
+    const badgeHomeScopes = React.useMemo(() => {
+        const scopes = new Map<string, ServerAccountScope>();
+        for (const [serverId, resolution] of scopeResolutions) {
+            if (resolution.kind === 'bound') scopes.set(serverId, resolution.scope);
+        }
+        return scopes;
+    }, [scopeResolutions]);
+    const resolveExactHomeAccountSettings = useExactHomeAccountSettings(badgeHomeScopes);
+
+    return React.useMemo(() => {
+        const accountSettingsByServerId: Record<string, Partial<AccountSettings>> = {};
+        for (const serverId of badgeHomeServerIds) {
+            const exactHomeAccountSettings = resolveExactHomeAccountSettings(serverId);
+            if (exactHomeAccountSettings) accountSettingsByServerId[serverId] = exactHomeAccountSettings;
+        }
+        return accountSettingsByServerId;
+    }, [badgeHomeServerIds, resolveExactHomeAccountSettings]);
 }
 
 function useLocalActivityBadgeSnapshot(
@@ -96,8 +128,17 @@ function useLocalActivityBadgeSnapshot(
 export function ActivityBadgeRuntime(): React.ReactElement | null {
     const friendRequests = useFriendRequests();
     const localSettings = useActivityBadgeLocalSettingsInput();
-    const accountSettings = useActivityBadgeAccountSettingsInput();
     const activeServer = useActiveServerSnapshot();
+    const personalSessionMembership = useActivityPersonalSessionMembership();
+    // The existing canonical Activity Home set: every saved Home plus the active one. Reusing the
+    // personal-query membership keys keeps one owner for "which Homes does Activity cover".
+    const personalMembershipByServerId = personalSessionMembership.membershipByServerId;
+    const badgeHomeServerIdsKey = Object.keys(personalMembershipByServerId).sort().join('\u0000');
+    const badgeHomeServerIds = React.useMemo(
+        () => (badgeHomeServerIdsKey ? badgeHomeServerIdsKey.split('\u0000') : []),
+        [badgeHomeServerIdsKey],
+    );
+    const accountSettingsByServerId = useActivityBadgeAccountSettingsByServerId(badgeHomeServerIds);
     const { updateAvailable } = useUpdates();
     const { hasUnread: changelogHasUnread } = useChangelog();
     const isDesktopShell = isDesktopHost();
@@ -105,19 +146,26 @@ export function ActivityBadgeRuntime(): React.ReactElement | null {
     const [serverBadgeSnapshot, setServerBadgeSnapshot] = React.useState<ServerBadgeSnapshot | null>(null);
     const hasNonNumericInboxAttention = updateAvailable || changelogHasUnread;
     const badgeSnapshotParams = React.useMemo<LocalActivityBadgeSnapshotSelectorParams>(() => ({
-        accountSettings,
+        accountSettingsByServerId,
         friendRequestCount: friendRequests.length,
         hasNonNumericInboxAttention,
         localSettings,
+        personalSessionListCoverageComplete: personalSessionMembership.coverageComplete,
+        personalSessionListMembershipByServerId: personalSessionMembership.membershipByServerId,
+        personalSessionListQueryStatesByServerId: personalSessionMembership.statesByServerId,
     }), [
-        accountSettings,
+        accountSettingsByServerId,
         friendRequests.length,
         hasNonNumericInboxAttention,
         localSettings,
+        personalSessionMembership.coverageComplete,
+        personalSessionMembership.membershipByServerId,
+        personalSessionMembership.statesByServerId,
     ]);
     const localBadgeSnapshot = useLocalActivityBadgeSnapshot(badgeSnapshotParams);
 
-    const serverSnapshotAllowed = !localBadgeSnapshot.channelDisabled
+    const serverSnapshotAllowed = localBadgeSnapshot.policyReady
+        && !localBadgeSnapshot.channelDisabled
         && canUseServerBadgeSnapshot(localBadgeSnapshot.sessionOptions);
 
     React.useEffect(() => {
@@ -149,6 +197,9 @@ export function ActivityBadgeRuntime(): React.ReactElement | null {
     ]);
 
     const badgeState = React.useMemo(() => {
+        // Until one Home has answered with its own badge policy there is no truthful value to
+        // write: clearing to 0 here would wipe a correct badge on every launch.
+        if (!localBadgeSnapshot.policyReady) return null;
         if (localBadgeSnapshot.channelDisabled) return localBadgeSnapshot.localBadgeState;
         if (localBadgeSnapshot.isDataReady || localBadgeSnapshot.hasLocalActivitySource) {
             return localBadgeSnapshot.localBadgeState;

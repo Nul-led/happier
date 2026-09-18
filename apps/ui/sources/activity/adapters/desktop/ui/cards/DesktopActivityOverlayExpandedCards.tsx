@@ -3,7 +3,12 @@ import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { t } from '@/text';
+import { activityInstanceKey, normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
+import type {
+    DesktopActivityOverlayFocusTargetRef,
+    DesktopActivityOverlayInitialFocusTarget,
+} from '../resolveDesktopActivityOverlayInitialFocusTarget';
 import type { DesktopActivityOverlayVisualMode } from '../DesktopActivityOverlayVisualMode';
 import { DesktopActivityOverlaySessionRow } from '../DesktopActivityOverlaySessionRow';
 import type {
@@ -26,9 +31,17 @@ function wrapCard(
     child: React.ReactElement,
 ): React.ReactElement {
     return (
-        <View key={resolveDesktopActivityOverlayCardInstanceTestID(card)} testID={resolveDesktopActivityOverlayCardKindTestID(card.kind)}>
+        <View key={card.id} testID={resolveDesktopActivityOverlayCardKindTestID(card.kind)}>
             {child}
         </View>
+    );
+}
+
+function buildSessionRowKey(sessionId: string, serverId: string | null): string {
+    const address = normalizeSessionAddress(serverId, sessionId);
+    return activityInstanceKey(
+        address ?? { serverId: null, sessionId },
+        'desktop_overlay_row',
     );
 }
 
@@ -61,8 +74,26 @@ function renderCard(params: Readonly<{
     onAction?: (action: DesktopActivityOverlayActionDescriptor) => void;
     completionAutoDismissPaused: boolean;
     onDismissCompletionCard: (cardId: string) => void;
+    onDismissKey?: () => void;
+    initialFocusTarget: DesktopActivityOverlayInitialFocusTarget | null;
+    initialFocusRef?: DesktopActivityOverlayFocusTargetRef;
 }>): React.ReactElement {
     const instanceTestID = resolveDesktopActivityOverlayCardInstanceTestID(params.card);
+    const focusTarget = params.initialFocusTarget;
+    const initialFocusActionId = focusTarget?.kind === 'card_action' && focusTarget.cardId === params.card.id
+        ? focusTarget.actionId
+        : null;
+    const resolveRowFocusRef = (sessionId: string, serverId: string | null) => (
+        focusTarget?.kind === 'session_row'
+        && focusTarget.cardId === params.card.id
+        && focusTarget.sessionId === sessionId
+        && focusTarget.serverId === serverId
+            ? params.initialFocusRef
+            : undefined
+    );
+    const cardFocusProps = initialFocusActionId
+        ? { initialFocusActionId, initialFocusRef: params.initialFocusRef }
+        : {};
 
     switch (params.card.kind) {
         case 'idle_state':
@@ -82,6 +113,7 @@ function renderCard(params: Readonly<{
                     card={params.card}
                     testID={instanceTestID}
                     visualMode={params.visualMode}
+                    {...cardFocusProps}
                     onAction={params.onAction}
                 />,
             );
@@ -92,7 +124,9 @@ function renderCard(params: Readonly<{
                     card={params.card}
                     testID={instanceTestID}
                     visualMode={params.visualMode}
+                    {...cardFocusProps}
                     onAction={params.onAction}
+                    onDismissKey={params.onDismissKey}
                 />,
             );
         case 'quota_summary':
@@ -116,6 +150,7 @@ function renderCard(params: Readonly<{
                         card={params.card}
                         testID={instanceTestID}
                         visualMode={params.visualMode}
+                        {...cardFocusProps}
                         onAction={params.onAction}
                     />
                 </DesktopActivityOverlayAutoDismissCompletionCard>,
@@ -129,6 +164,7 @@ function renderCard(params: Readonly<{
                         isLast
                         testID={`desktop-activity-overlay-session-row-${card.sessionId}`}
                         visualMode={params.visualMode}
+                        pressableRef={resolveRowFocusRef(card.sessionId, card.serverId)}
                         title={card.title}
                         subtitle={card.subtitle}
                         statusText={card.statusText ?? null}
@@ -146,7 +182,8 @@ function renderCard(params: Readonly<{
                     <View style={styles.rows}>
                         {rows.map((row, rowIndex) => (
                             <DesktopActivityOverlaySessionRow
-                                key={row.sessionId}
+                                key={buildSessionRowKey(row.sessionId, row.serverId)}
+                                pressableRef={resolveRowFocusRef(row.sessionId, row.serverId)}
                                 isLast={rowIndex === rows.length - 1}
                                 testID={`desktop-activity-overlay-session-row-${row.sessionId}`}
                                 visualMode={params.visualMode}
@@ -173,6 +210,9 @@ export function DesktopActivityOverlayExpandedCards(props: Readonly<{
     onOpenSession: (sessionId: string, serverId?: string | null) => void;
     onAction?: (action: DesktopActivityOverlayActionDescriptor) => void;
     completionAutoDismissPaused?: boolean;
+    initialFocusTarget?: DesktopActivityOverlayInitialFocusTarget | null;
+    initialFocusRef?: DesktopActivityOverlayFocusTargetRef;
+    onDismissKey?: () => void;
 }>): React.ReactElement {
     const cards = props.model.expanded.cards ?? [];
     const [dismissedCompletionCardIds, setDismissedCompletionCardIds] = React.useState<ReadonlySet<string>>(
@@ -221,6 +261,9 @@ export function DesktopActivityOverlayExpandedCards(props: Readonly<{
                 onAction: props.onAction,
                 completionAutoDismissPaused: props.completionAutoDismissPaused === true,
                 onDismissCompletionCard: dismissCompletionCard,
+                initialFocusTarget: props.initialFocusTarget ?? null,
+                initialFocusRef: props.initialFocusRef,
+                onDismissKey: props.onDismissKey,
             }))}
         </View>
     );

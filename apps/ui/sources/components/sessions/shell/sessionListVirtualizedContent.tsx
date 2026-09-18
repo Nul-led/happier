@@ -16,14 +16,13 @@ import type { SessionFolderFocusScope } from '@/sync/domains/session/folders';
 import type { SessionListRowViewModel } from './sessionListRowViewModels';
 import { Icon } from '@/components/ui/icons/Icon';
 import { NewSessionDraftsSection } from './NewSessionDraftsSection';
+import { SessionListViewEmptyState } from './SessionListViewEmptyState';
+import type { SessionListQueryPresentation } from '@/sync/domains/session/listing/sessionListIndexPresentation';
+import type { SessionListViewContext, SessionListViewFilters } from './search/sessionListViewFilters';
 
 export type SessionListVirtualizedNode = Readonly<{
     id: string;
     rowViewModel?: SessionListRowViewModel | null;
-}>;
-
-type SessionListScrollableRef = Readonly<{
-    scrollToOffset?: (params: { offset: number; animated?: boolean }) => void;
 }>;
 
 type SessionListScrollEvent = Readonly<{
@@ -171,7 +170,7 @@ export function SessionListFilteredNoResultsMessage(props: Readonly<{
 }
 
 export const SessionListVirtualizedContent = React.memo(function SessionListVirtualizedContent(props: Readonly<{
-    listRef?: React.Ref<SessionListScrollableRef>;
+    listRef?: React.Ref<VirtualizedListRef>;
     nodes: ReadonlyArray<SessionListVirtualizedNode>;
     rowDensity?: SessionListRowDensity;
     rowHeight: number;
@@ -197,8 +196,26 @@ export const SessionListVirtualizedContent = React.memo(function SessionListVirt
     onStopScrollEventPropagationOnWeb: (event: any) => void;
     onPressArchivedSessions: () => void;
     filteredNoResultsMessage?: TranslationKey;
+    queryPresentationState?: Readonly<{
+        presentation: SessionListQueryPresentation;
+        visibleSessionCount: number;
+        filters: SessionListViewFilters;
+        defaults: SessionListViewFilters;
+        viewContext: SessionListViewContext;
+        includeInactive: boolean;
+        hasHiddenInactiveSessions: boolean;
+        onRetry: () => void;
+        onLoadMore: () => void;
+        onClearFilters: () => void;
+        onBrowseAllAccessible: () => void;
+        onShowInactive: () => void;
+    }>;
+    /** Qualified corpus context remains available even when no empty/query presentation is mounted. */
+    viewContext?: SessionListViewContext;
     folderFocus: SessionFolderFocusScope | null;
     folderFocusRootTitle?: string | null;
+    showDrafts?: boolean;
+    showArchivedShortcut?: boolean;
     onClearFolderFocus: () => void;
     onSelectFolderBreadcrumb: (folderId: string) => void;
 }>) {
@@ -218,12 +235,16 @@ export const SessionListVirtualizedContent = React.memo(function SessionListVirt
     const rowDensity: SessionListRowDensity = props.rowDensity ?? 'default';
     const footerComponent = React.useMemo(() => (
         <>
-            {props.filteredNoResultsMessage ? (
+            {props.queryPresentationState ? (
+                <SessionListViewEmptyState {...props.queryPresentationState} />
+            ) : props.filteredNoResultsMessage ? (
                 <SessionListFilteredNoResultsMessage message={props.filteredNoResultsMessage} />
             ) : null}
-            <SessionsListArchivedFooter onPress={handlePressArchivedSessions} />
+            {props.showArchivedShortcut !== false ? (
+                <SessionsListArchivedFooter onPress={handlePressArchivedSessions} />
+            ) : null}
         </>
-    ), [handlePressArchivedSessions, props.filteredNoResultsMessage]);
+    ), [handlePressArchivedSessions, props.filteredNoResultsMessage, props.queryPresentationState, props.showArchivedShortcut]);
     const headerComponent = React.useMemo(() => {
         const folderFocus = props.folderFocus;
         const onClearFolderFocus = props.onClearFolderFocus;
@@ -232,7 +253,12 @@ export const SessionListVirtualizedContent = React.memo(function SessionListVirt
             return (
                 <>
                     <SessionsListHeader />
-                    <NewSessionDraftsSection density={rowDensity} />
+                    {props.showDrafts !== false ? (
+                        <NewSessionDraftsSection
+                            density={rowDensity}
+                            viewContext={props.viewContext}
+                        />
+                    ) : null}
                     {folderFocus ? (
                         <SessionFolderFocusBreadcrumbs
                             breadcrumbs={folderFocus.breadcrumbs}
@@ -244,7 +270,7 @@ export const SessionListVirtualizedContent = React.memo(function SessionListVirt
                 </>
             );
         };
-    }, [props.folderFocus, props.folderFocusRootTitle, props.onClearFolderFocus, props.onSelectFolderBreadcrumb, rowDensity]);
+    }, [props.folderFocus, props.folderFocusRootTitle, props.onClearFolderFocus, props.onSelectFolderBreadcrumb, props.showDrafts, props.viewContext, rowDensity]);
     const getNodeType = React.useCallback(
         (node: SessionListVirtualizedNode) => getSessionListNodeType(node, rowDensity),
         [rowDensity],

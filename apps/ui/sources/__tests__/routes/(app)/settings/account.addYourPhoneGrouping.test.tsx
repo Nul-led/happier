@@ -14,6 +14,7 @@ import { createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/stora
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let windowDimensions: { width: number; height: number } = { width: 1200, height: 800 };
+let runningOnMac = false;
 
 
 installSessionSettingsEntryModuleMocks({
@@ -83,16 +84,16 @@ vi.mock('@/sync/sync', () => ({
 }));
 
 vi.mock('@/utils/platform/platform', () => ({
-    isRunningOnMac: () => false,
+    isRunningOnMac: () => runningOnMac,
 }));
 
-vi.mock('@/sync/domains/state/storageStore', () => ({
-    storage: () => vi.fn(),
-}));
-
-vi.mock('@/sync/domains/profiles/profile', () => ({
-    getDisplayName: () => null,
-}));
+vi.mock('@/sync/domains/profiles/profile', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/profiles/profile')>();
+    return {
+        ...actual,
+        getDisplayName: () => null,
+    };
+});
 
 vi.mock('@/hooks/server/useFriendsEnabled', () => ({
     useFriendsEnabled: () => false,
@@ -106,8 +107,24 @@ vi.mock('@/components/account/ProviderIdentityItems', () => ({
     ProviderIdentityItems: () => null,
 }));
 
+// Sibling sections that start Home/Account Service feature or history network
+// work on mount are outside this route's access-row grouping contract; keep
+// the rendered tree bounded to the rows under test.
+vi.mock('@/components/settings/SettingsCatalogOverviewGroup', () => ({
+    SettingsCatalogPageChildren: () => null,
+}));
+
+vi.mock('@/components/settings/account/AccountServiceSettingsSection', () => ({
+    AccountServiceSettingsSection: () => null,
+}));
+
+vi.mock('@/components/settings/account/SettingsHistorySection', () => ({
+    SettingsHistorySection: () => null,
+}));
+
 describe('Settings → Account (grouping)', () => {
     afterEach(() => {
+        runningOnMac = false;
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
         resetSessionSettingsEntryState();
@@ -139,7 +156,7 @@ describe('Settings → Account (grouping)', () => {
         );
     });
 
-    it('hides "Add your phone" on phone-sized web', async () => {
+    it('hides "Add your phone" on phone-sized web but keeps "Add another Home" without a camera', async () => {
         windowDimensions = { width: 360, height: 800 };
         vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
         vi.resetModules();
@@ -147,6 +164,42 @@ describe('Settings → Account (grouping)', () => {
         const { default: AccountScreen } = await import('@/app/(app)/settings/account');
         const screen = await renderScreen(<AccountScreen />);
         expect(screen.findByTestId('settings-account-add-your-phone')).toBeNull();
+        expect(screen.findByTestId('settings-account-link-new-device')).toBeNull();
+        expect(screen.findByTestId('settings-account-add-home')).toBeTruthy();
+    });
+
+    it('keeps "Add another Home" reachable on camera-unavailable desktop web and gates only "Link new device"', async () => {
+        windowDimensions = { width: 1200, height: 800 };
+        vi.stubGlobal('navigator', { maxTouchPoints: 0, userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' } as any);
+        vi.resetModules();
+
+        const { default: AccountScreen } = await import('@/app/(app)/settings/account');
+        const screen = await renderScreen(<AccountScreen />);
+        expect(screen.findByTestId('settings-account-add-your-phone')).toBeTruthy();
+        expect(screen.findByTestId('settings-account-link-new-device')).toBeNull();
+        expect(screen.findByTestId('settings-account-add-home')).toBeTruthy();
+
+        screen.pressByTestId('settings-account-add-home');
+
+        expect(sessionSettingsEntryState.routerPushSpy).toHaveBeenCalledWith(
+            '/restore?entryIntent=add_home',
+        );
+    });
+
+    it('keeps "Add another Home" reachable on macOS where the device scanner is never offered', async () => {
+        runningOnMac = true;
+        windowDimensions = { width: 1200, height: 800 };
+        vi.stubGlobal('navigator', {
+            maxTouchPoints: 0,
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+            mediaDevices: { getUserMedia: async () => ({}) },
+        } as any);
+        vi.resetModules();
+
+        const { default: AccountScreen } = await import('@/app/(app)/settings/account');
+        const screen = await renderScreen(<AccountScreen />);
+        expect(screen.findByTestId('settings-account-add-your-phone')).toBeTruthy();
+        expect(screen.findByTestId('settings-account-link-new-device')).toBeNull();
         expect(screen.findByTestId('settings-account-add-home')).toBeTruthy();
     });
 

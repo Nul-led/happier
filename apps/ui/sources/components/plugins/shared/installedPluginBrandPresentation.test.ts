@@ -29,6 +29,9 @@ const rpc = vi.hoisted(() => ({
     read: vi.fn(),
 }));
 
+// These reads use the supplied RPC/Account sources, never a live socket client.
+vi.mock('@/sync/api/session/apiSocket', () => ({ apiSocket: { request: vi.fn() } }));
+
 // The daemon RPC is the only substituted boundary. The adapter and contextual
 // Resource client remain real so this proves the exact host-stamped request.
 vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
@@ -36,6 +39,8 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
     machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsGet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
 }));
 
 import {

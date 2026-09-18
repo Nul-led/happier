@@ -52,21 +52,6 @@ installPickerCommonModuleMocks({
         }),
 });
 
-vi.mock('@expo/vector-icons', async () => {
-    const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
-    return createExpoVectorIconsMock();
-});
-
-vi.mock('@react-navigation/native', () => ({
-    CommonActions: {
-        setParams: (params: Record<string, unknown>) => ({ type: 'SET_PARAMS', payload: { params } }),
-    },
-}));
-
-vi.mock('@/components/ui/lists/ItemList', () => ({
-    ItemList: ({ children }: React.PropsWithChildren<Record<string, never>>) => React.createElement(React.Fragment, null, children),
-}));
-
 vi.mock('@/components/sessions/new/components/MachineSelector', () => ({
     MachineSelector: () => null,
 }));
@@ -116,7 +101,9 @@ describe('MachinePickerScreen (back fallback)', () => {
         expect(typeof backButton?.props?.onPress).toBe('function');
         backButton?.props?.onPress?.();
 
-        expect(routerMock.replace).toHaveBeenCalledWith('/new');
+        // The picker's own `selectedId` is not new-session context, so the
+        // structured fallback href carries no params.
+        expect(routerMock.replace).toHaveBeenCalledWith({ pathname: '/new', params: {} });
         expect(routerMock.back).toHaveBeenCalledTimes(0);
     });
 });

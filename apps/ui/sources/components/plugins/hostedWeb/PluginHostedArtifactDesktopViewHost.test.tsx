@@ -22,11 +22,7 @@ function bootstrapMessage() {
     return {
         version: 1,
         direction: 'hostToFrame',
-        pluginId: 'acme.preview',
-        contributionId: 'preview-web',
-        surfaceId: 'preview-surface',
-        sessionId: 'session-1',
-        nonce: 'nonce-1',
+        identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
         sequence: 1,
         origin: frameOrigin,
         kind: 'bootstrap',
@@ -34,11 +30,8 @@ function bootstrapMessage() {
             apiVersion: '1.0.0',
             wireVersion: 1,
             identity: {
-                pluginId: 'acme.preview',
-                pluginVersion: '1.2.3',
-                viewId: 'preview',
-                generation: '7',
-                sessionId: 'session-1',
+                instanceId: 'instance-1',
+                mountNonce: 'nonce-1',
             },
         },
     } as const;
@@ -47,10 +40,7 @@ function bootstrapMessage() {
 function readyMessage() {
     return {
         version: 1,
-        pluginId: 'acme.preview',
-        contributionId: 'preview-web',
-        surfaceId: 'preview-surface',
-        nonce: 'nonce-1',
+        identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
         sequence: 1,
         kind: 'ready',
         payload: null,
@@ -60,11 +50,7 @@ function readyMessage() {
 function readyResponse() {
     return {
         version: 1,
-        pluginId: 'acme.preview',
-        contributionId: 'preview-web',
-        surfaceId: 'preview-surface',
-        sessionId: 'session-1',
-        nonce: 'nonce-1',
+        identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
         sequence: 2,
         requestSequence: 1,
         kind: 'ack',
@@ -81,7 +67,7 @@ describe('PluginHostedArtifactDesktopViewHost', () => {
     it('opens one token-bound child and relays only strict host and exact-frame bridge messages', async () => {
         let nativeEventHandler: ((payload: unknown) => void) | undefined;
         let sendHostMessage: ((message: unknown) => void) | undefined;
-        const onMessage = vi.fn(() => readyResponse());
+        const onMessage = vi.fn((_envelope: unknown, _receipt: Readonly<{ consumeTransientActivation(): boolean }>) => readyResponse());
         const unlisten = vi.fn();
         listenDesktopHostEvent.mockImplementation(async (event: string, handler: (payload: unknown) => void) => {
             expect(event).toBe('desktop-hosted-artifact-event');
@@ -102,11 +88,7 @@ describe('PluginHostedArtifactDesktopViewHost', () => {
             }}
             bridge={{
                 expectedOrigin: frameOrigin,
-                expectedPluginId: 'acme.preview',
-                expectedContributionId: 'preview-web',
-                expectedSurfaceId: 'preview-surface',
-                expectedNonce: 'nonce-1',
-                expectedSessionId: 'session-1',
+                identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
                 allowedMessageKinds: new Set(['ready']),
                 attachHostMessages: (send) => {
                     sendHostMessage = send;
@@ -163,7 +145,12 @@ describe('PluginHostedArtifactDesktopViewHost', () => {
             await Promise.resolve();
         });
         expect(onMessage).toHaveBeenCalledTimes(1);
-        expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'ready' }));
+        expect(onMessage).toHaveBeenCalledWith(
+            expect.objectContaining({ kind: 'ready' }),
+            expect.objectContaining({ consumeTransientActivation: expect.any(Function) }),
+        );
+        const receipt = onMessage.mock.calls[0]?.[1];
+        expect(receipt?.consumeTransientActivation()).toBe(false);
         expect(invokeDesktopHost).toHaveBeenCalledWith('desktop_hosted_artifact_post_message', {
             request: {
                 viewId,
@@ -182,6 +169,105 @@ describe('PluginHostedArtifactDesktopViewHost', () => {
                 token: 'hpat_test_token',
             },
         });
+    });
+
+    it('keeps the native child mounted but hides it when presentation becomes ineligible', async () => {
+        listenDesktopHostEvent.mockResolvedValue(() => {});
+        invokeDesktopHost.mockImplementation(async (command: string) => (
+            command === 'desktop_hosted_artifact_open_view' ? { kind: 'opened' } : { kind: 'ok' }
+        ));
+        const { PluginHostedArtifactDesktopViewHost } = await import('./PluginHostedArtifactDesktopViewHost');
+        const element = (presentationEligible: boolean) => (
+            <PluginHostedArtifactDesktopViewHost
+                title="Plugin preview"
+                artifact={{ artifactHandleToken: 'hpat_test_token', initialPathAndQuery: '/' }}
+                nativeArtifactLoadState="ready"
+                presentationEligible={presentationEligible}
+                testID="plugin-hosted-web-frame"
+            />
+        );
+        const screen = await renderScreen(element(true), {
+            createNodeMock: (node) => (node.props as Readonly<{ testID?: string }>).testID === 'plugin-hosted-web-frame'
+                ? { getBoundingClientRect: () => ({ x: 10, y: 20, width: 300, height: 200 }) }
+                : {},
+        });
+
+        await act(async () => {
+            await Promise.resolve();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        expect(invokeDesktopHost).toHaveBeenCalledWith('desktop_hosted_artifact_set_bounds', {
+            request: expect.objectContaining({ visible: true }),
+        });
+
+        await screen.update(element(false));
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        expect(invokeDesktopHost).toHaveBeenLastCalledWith('desktop_hosted_artifact_set_bounds', {
+            request: expect.objectContaining({ visible: false }),
+        });
+        expect(invokeDesktopHost.mock.calls.filter(([command]) => command === 'desktop_hosted_artifact_open_view'))
+            .toHaveLength(1);
+
+        await screen.unmount();
+    });
+
+    it.each([
+        ['a rejected bounds update', () => Promise.reject(new Error('native child disappeared'))],
+        ['a resolved unavailable bounds update', () => Promise.resolve({
+            kind: 'unavailable',
+            code: 'desktop_hosted_artifact_view_unavailable',
+        })],
+    ] as const)('retires the bridge through the existing load-error owner after %s', async (_label, boundsResult) => {
+        const onNativeArtifactLoadError = vi.fn();
+        listenDesktopHostEvent.mockResolvedValue(() => {});
+        invokeDesktopHost.mockImplementation((command: string) => {
+            if (command === 'desktop_hosted_artifact_open_view') return Promise.resolve({ kind: 'opened' });
+            if (command === 'desktop_hosted_artifact_set_bounds') return boundsResult();
+            return Promise.resolve({ kind: 'ok' });
+        });
+
+        const { PluginHostedArtifactDesktopViewHost } = await import('./PluginHostedArtifactDesktopViewHost');
+        const screen = await renderScreen(<PluginHostedArtifactDesktopViewHost
+            title="Plugin preview"
+            artifact={{ artifactHandleToken: 'hpat_test_token', initialPathAndQuery: '/' }}
+            nativeArtifactLoadState="ready"
+            onNativeArtifactLoadError={onNativeArtifactLoadError}
+            testID="plugin-hosted-web-frame"
+        />, {
+            createNodeMock: (node) => (node.props as Readonly<{ testID?: string }>).testID === 'plugin-hosted-web-frame'
+                ? { getBoundingClientRect: () => ({ x: 10, y: 20, width: 300, height: 200 }) }
+                : {},
+        });
+
+        await act(async () => {
+            await Promise.resolve();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            await Promise.resolve();
+        });
+
+        expect(onNativeArtifactLoadError).toHaveBeenCalledExactlyOnceWith({
+            nativeEvent: {
+                code: 'desktop_hosted_artifact_view_unavailable',
+            },
+        });
+
+        await screen.update(<PluginHostedArtifactDesktopViewHost
+            title="Plugin preview"
+            artifact={{ artifactHandleToken: 'hpat_test_token', initialPathAndQuery: '/' }}
+            nativeArtifactLoadState="ready"
+            presentationEligible={false}
+            onNativeArtifactLoadError={onNativeArtifactLoadError}
+            testID="plugin-hosted-web-frame"
+        />);
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        expect(invokeDesktopHost.mock.calls.filter(([command]) => command === 'desktop_hosted_artifact_set_bounds'))
+            .toHaveLength(1);
+
+        await screen.unmount();
     });
 
     it.each([
@@ -209,11 +295,7 @@ describe('PluginHostedArtifactDesktopViewHost', () => {
             }}
             bridge={{
                 expectedOrigin: frameOrigin,
-                expectedPluginId: 'acme.preview',
-                expectedContributionId: 'preview-web',
-                expectedSurfaceId: 'preview-surface',
-                expectedNonce: 'nonce-1',
-                expectedSessionId: 'session-1',
+                identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
                 allowedMessageKinds: new Set(['ready']),
                 attachHostMessages: (send) => {
                     sendHostMessage = send;
@@ -284,11 +366,7 @@ describe('PluginHostedArtifactDesktopViewHost', () => {
             }}
             bridge={{
                 expectedOrigin: frameOrigin,
-                expectedPluginId: 'acme.preview',
-                expectedContributionId: 'preview-web',
-                expectedSurfaceId: 'preview-surface',
-                expectedNonce: 'nonce-1',
-                expectedSessionId: 'session-1',
+                identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
                 allowedMessageKinds: new Set(['ready']),
                 attachHostMessages: (send) => {
                     sendHostMessage = send;

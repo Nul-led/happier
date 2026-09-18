@@ -90,4 +90,44 @@ describe('Tauri Artifact byte-cache adapter', () => {
 
         await expect(store.read(identity)).resolves.toBeNull();
     });
+
+    it('returns only the native cache owner\'s explicit persistence disposition', async () => {
+        const invoke: TauriArtifactCacheInvoke = async <T>(command: string): Promise<T> => {
+            if (command === 'desktop_hosted_artifact_cache_write') {
+                return 'notPersistedOversize' as unknown as T;
+            }
+            return undefined as T;
+        };
+        const store = createTauriPluginUiPersistentArtifactStore({ invoke });
+        const record = Object.freeze({
+            persistentIdentity: identity,
+            entryRelativePath: 'hosted/index.html',
+            bytes: entryBytes,
+            files: Object.freeze([Object.freeze({
+                relativePath: 'hosted/index.html',
+                digest: identity.artifactDigest,
+                byteSize: entryBytes.byteLength,
+                bytes: entryBytes,
+            })]),
+        });
+
+        await expect(store.write(record)).resolves.toBe('notPersistedOversize');
+
+        const persisted = createTauriPluginUiPersistentArtifactStore({
+            invoke: async <T>(): Promise<T> => 'persisted' as unknown as T,
+        });
+        await expect(persisted.write(record)).resolves.toBe('persisted');
+
+        const protectedCapacity = createTauriPluginUiPersistentArtifactStore({
+            invoke: async <T>(): Promise<T> => 'notPersistedCapacity' as unknown as T,
+        });
+        await expect(protectedCapacity.write(record)).resolves.toBe('notPersistedCapacity');
+
+        const invalid = createTauriPluginUiPersistentArtifactStore({
+            invoke: async <T>(): Promise<T> => 'unexpected' as unknown as T,
+        });
+        await expect(invalid.write(record)).rejects.toThrow(
+            'desktop_hosted_artifact_cache_write_result_invalid',
+        );
+    });
 });

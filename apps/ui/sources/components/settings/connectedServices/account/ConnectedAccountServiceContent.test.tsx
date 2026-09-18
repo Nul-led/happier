@@ -22,12 +22,13 @@ const routerMethods = vi.hoisted(() => ({
  * optional, server-gated capabilities. Both default DISABLED here for any
  * feature this screen does not read, so a missing gate can never read as on.
  */
-const featureState = vi.hoisted(() => ({ accountGroups: true, accountFallback: true }));
+const featureState = vi.hoisted(() => ({ accountGroups: true, accountFallback: true, teamCredentials: false }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: (featureId: string) => {
         if (featureId === 'connectedServices.accountGroups') return featureState.accountGroups;
         if (featureId === 'connectedServices.accountFallback') return featureState.accountFallback;
+        if (featureId === 'teams.credentialResources') return featureState.teamCredentials;
         return false;
     },
 }));
@@ -254,6 +255,7 @@ describe('ConnectedAccountServiceContent', () => {
     beforeEach(() => {
         featureState.accountGroups = true;
         featureState.accountFallback = true;
+        featureState.teamCredentials = false;
     });
 
     it('lists every descriptor mode and reconnects only the exact qualified account', async () => {
@@ -803,6 +805,8 @@ describe('ConnectedAccountServiceContent', () => {
             <ConnectedAccountServiceContent
                 title="Acme"
                 service={service}
+                serverId="server-a"
+                teamCredentialResourcesEnabled
                 focus={{ kind: 'group', groupId: 'team' }}
                 modes={[]}
                 accounts={[accounts[0], secondAccount]}
@@ -828,6 +832,10 @@ describe('ConnectedAccountServiceContent', () => {
         expect(detail.props.accountLabels).toEqual({ 'account-a': 'Work' });
         expect(detail.props.accounts).toHaveLength(2);
         expect(detail.props.fallbackControlsEnabled).toBe(true);
+        expect(detail.props.sharedWithTeamsAdministration.props).toMatchObject({
+            serverId: 'server-a',
+            source: { v: 1, kind: 'connected_pool', target: { kind: 'group', service, groupId: 'team' } },
+        });
 
         // The runtime-cooldown override stays with THIS owner: the detail view's
         // mutation surface never prompts, so a rejected activation is confirmed
@@ -852,6 +860,33 @@ describe('ConnectedAccountServiceContent', () => {
         });
         expect(deleteGroup).toHaveBeenCalledWith(group);
         expect(routerMethods.back).toHaveBeenCalledTimes(1);
+    });
+
+    it('continues a Pool Share with Team intent with its exact qualified identity', async () => {
+        featureState.teamCredentials = true;
+        routerMethods.push.mockClear();
+        const group = makePoolGroup();
+        const { ConnectedAccountServiceContent } = await import('./ConnectedAccountServiceContent');
+        const tree = (await renderScreen(
+            <ConnectedAccountServiceContent
+                serverId="home-a"
+                teamCredentialResourcesEnabled
+                title="Acme"
+                service={service}
+                focus={{ kind: 'group', groupId: 'team' }}
+                modes={[]}
+                accounts={accounts}
+                groups={{ ...EMPTY_GROUPS_FOR_TEST, status: 'loaded', source: { protocol: 'v4' }, groups: [group] }}
+                busy={false}
+            />,
+        )).tree;
+        const detail = tree.find((node) => String(node.type) === 'QualifiedPoolDetailView');
+
+        detail.props.onShareWithTeam();
+
+        expect(routerMethods.push).toHaveBeenCalledWith(
+            '/settings/teams?credentialSourceKind=connected_pool&credentialSourceServerId=home-a&credentialSourcePluginId=acme.accounts&credentialSourceLocalId=work&credentialSourceGroupId=team',
+        );
     });
 
     it('disables the pool fallback controls when the server has not enabled account fallback', async () => {
@@ -924,6 +959,8 @@ describe('ConnectedAccountServiceContent', () => {
             <ConnectedAccountServiceContent
                 title="Acme"
                 service={service}
+                serverId="server-a"
+                teamCredentialResourcesEnabled
                 focus={{ kind: 'account', accountId: 'account-a' }}
                 modes={modes}
                 accounts={accounts}
@@ -960,6 +997,10 @@ describe('ConnectedAccountServiceContent', () => {
         expect(detail.props.groups).toEqual([group]);
         expect(detail.props.onEditLabel).toBeUndefined();
         expect(detail.props.onToggleDefault).toBeUndefined();
+        expect(detail.props.sharedWithTeamsAdministration.props).toMatchObject({
+            serverId: 'server-a',
+            source: { v: 1, kind: 'connected_account', target: { kind: 'account', account: { service, accountId: 'account-a' } } },
+        });
 
         detail.props.onOpenPool('team');
         expect(routerMethods.push).toHaveBeenCalledWith(expect.objectContaining({
@@ -979,6 +1020,31 @@ describe('ConnectedAccountServiceContent', () => {
         });
         expect(onDisconnectAccount).toHaveBeenCalledWith({ service, accountId: 'account-a' });
         expect(routerMethods.back).toHaveBeenCalledTimes(1);
+    });
+
+    it('mounts Share with Team only for a positively enabled Home and preserves the exact source identity', async () => {
+        featureState.teamCredentials = true;
+        routerMethods.push.mockClear();
+        const { ConnectedAccountServiceContent } = await import('./ConnectedAccountServiceContent');
+        const tree = (await renderScreen(
+            <ConnectedAccountServiceContent
+                serverId="home-a"
+                teamCredentialResourcesEnabled
+                title="Acme"
+                service={service}
+                focus={{ kind: 'account', accountId: 'account-a' }}
+                modes={modes}
+                accounts={accounts}
+                busy={false}
+            />,
+        )).tree;
+        const detail = tree.find((node) => String(node.type) === 'QualifiedAccountDetailView');
+
+        detail.props.onShareWithTeam();
+
+        expect(routerMethods.push).toHaveBeenCalledWith(
+            '/settings/teams?credentialSourceKind=connected_account&credentialSourceServerId=home-a&credentialSourcePluginId=acme.accounts&credentialSourceLocalId=work&credentialSourceAccountId=account-a',
+        );
     });
 
     it('hides the pools section for an account of a service without a pool source', async () => {

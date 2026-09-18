@@ -502,8 +502,9 @@ describe('createBuiltinVoiceAdapterAssembly', () => {
       adapterId: providerId,
       controlSessionId,
       conversationSessionId,
+      conversationSessionAddress: { serverId: 'server-a', sessionId: conversationSessionId },
       transcriptMode: 'native_session',
-      targetSessionId: conversationSessionId,
+      targetSessionAddress: { serverId: 'server-a', sessionId: conversationSessionId },
       updatedAt: Date.now(),
     });
 
@@ -604,8 +605,9 @@ describe('createBuiltinVoiceAdapterAssembly', () => {
           adapterId: providerId,
           controlSessionId,
           conversationSessionId,
+          conversationSessionAddress: { serverId: 'server-a', sessionId: conversationSessionId },
           transcriptMode: 'native_session',
-          targetSessionId: conversationSessionId,
+          targetSessionAddress: { serverId: 'server-a', sessionId: conversationSessionId },
           updatedAt,
         });
       };
@@ -783,8 +785,9 @@ describe('createBuiltinVoiceAdapterAssembly', () => {
         adapterId: providerId,
         controlSessionId,
         conversationSessionId,
+        conversationSessionAddress: { serverId: 'server-a', sessionId: conversationSessionId },
         transcriptMode: 'native_session',
-        targetSessionId: conversationSessionId,
+        targetSessionAddress: { serverId: 'server-a', sessionId: conversationSessionId },
         updatedAt: Date.now(),
       });
       const createBoundService = async (

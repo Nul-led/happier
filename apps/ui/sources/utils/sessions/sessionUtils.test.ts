@@ -113,6 +113,7 @@ beforeEach(async () => {
 function createBaseSession(overrides: Partial<Session> = {}): Session {
     return {
         id: 's1',
+        encryptionMode: 'plain',
         seq: 1,
         createdAt: 0,
         updatedAt: 0,
@@ -149,6 +150,24 @@ function createPendingUserMessage(overrides: Partial<PendingMessage> = {}): Pend
 }
 
 describe('getSessionStatus', () => {
+    it.each([
+        ['encrypted_access_pending', 'access_pending'],
+        ['recipient_encryption_setup_required', 'setup_required'],
+        ['encrypted_access_needs_repair', 'repair_needed'],
+        ['encrypted_content_unavailable', 'content_unavailable'],
+        [undefined, 'unknown'],
+    ] as const)('keeps %s visible without working motion', async (encryptedContentAvailability, state) => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const session = createBaseSession({ encryptionMode: 'e2ee', encryptedContentAvailability,
+            metadata: null, latestTurnStatus: 'in_progress', activeAt: 1_000 });
+        expect(getSessionStatus(session, 1_000)).toMatchObject({ state, isPulsing: false, shouldShowStatus: true });
+    });
+    it('stops working motion while the runtime observation is stale', async () => {
+        const { getSessionStatus } = await import('./sessionUtils');
+        const session = createBaseSession({ activeAt: 1, latestTurnStatus: 'in_progress' });
+        expect(getSessionStatus(session, 200_000)).toMatchObject({ state: 'stale', isPulsing: false });
+    });
+
     it('returns disconnected when presence is not online', async () => {
         const { getSessionStatus } = await import('./sessionUtils');
         const session = createBaseSession({ presence: 123 });
@@ -276,6 +295,7 @@ describe('getSessionStatus', () => {
         const { getSessionStatus } = await import('./sessionUtils');
         const status = getSessionStatus({
             id: 's-renderable',
+            encryptionMode: 'plain',
             seq: 1,
             createdAt: 0,
             updatedAt: 0,
@@ -349,6 +369,7 @@ describe('getSessionStatus', () => {
         const { getSessionStatus } = await import('./sessionUtils');
         const status = getSessionStatus({
             id: 's-renderable',
+            encryptionMode: 'plain',
             seq: 1,
             createdAt: 0,
             updatedAt: 0,
@@ -382,7 +403,7 @@ describe('getSessionStatus', () => {
 
         expect(status.state).toBe('waiting');
         expect(status.shouldShowStatus).toBe(false);
-        expect(status.isPulsing).toBeUndefined();
+        expect(status.isPulsing).toBeFalsy();
     });
 
     it('does not return permission_required when agentState.requests is stale relative to completedRequests', async () => {
@@ -579,7 +600,7 @@ describe('getSessionStatus', () => {
         const session = createBaseSession({
             thinking: false,
             thinkingAt: 0,
-            latestTurnStatus: 'completed',
+            latestTurnStatus: null,
             latestTurnStatusObservedAt: now - 10_000,
             runtimeActivityState: 'active',
             runtimeActivityActiveCount: 1,
@@ -629,7 +650,7 @@ describe('getSessionStatus', () => {
         expect(status.isPulsing).toBe(true);
     });
 
-    it('does not return thinking when the latest primary turn in progress signal is stale', async () => {
+    it('retains canonical in-progress work until a terminal update when runtime freshness is unknown', async () => {
         const { getSessionStatus } = await import('./sessionUtils');
         const session = createBaseSession({
             latestTurnStatus: 'in_progress',
@@ -637,7 +658,7 @@ describe('getSessionStatus', () => {
             thinking: false,
         });
         const status = getSessionStatus(session, 130_001, 0);
-        expect(status.state).toBe('waiting');
+        expect(status.state).toBe('thinking');
     });
 
     it('clears stale thinking after a completed primary turn projection', async () => {
@@ -653,8 +674,9 @@ describe('getSessionStatus', () => {
             latestTurnStatusObservedAt: 1_000,
         };
         const status = getSessionStatus(session, 1_000, 0);
-        expect(status.state).toBe('waiting');
-        expect(status.shouldShowStatus).toBe(false);
+        expect(status.state).toBe('ready');
+        expect(status.shouldShowStatus).toBe(true);
+        expect(status.isPulsing).toBe(false);
     });
 
     it('does not keep active sessions working when only meaningful activity is newer than the completed turn projection', async () => {
@@ -670,8 +692,9 @@ describe('getSessionStatus', () => {
             latestTurnStatusObservedAt: 1_000,
         };
         const status = getSessionStatus(session, 1_600, 0);
-        expect(status.state).toBe('waiting');
-        expect(status.shouldShowStatus).toBe(false);
+        expect(status.state).toBe('ready');
+        expect(status.shouldShowStatus).toBe(true);
+        expect(status.isPulsing).toBe(false);
     });
 
     it('does not let sourceClass turn provider runtime activity into foreground work', async () => {
@@ -691,8 +714,9 @@ describe('getSessionStatus', () => {
 
         const status = getSessionStatus(session, now, 0);
 
-        expect(status.state).toBe('background_active');
+        expect(status.state).toBe('ready');
         expect(status.isPulsing).toBe(false);
+        expect(status.awareness?.runtime).toBe('background_active');
     });
 
     it('keeps offline precedence over provider runtime activity', async () => {
@@ -743,8 +767,9 @@ describe('getSessionStatus', () => {
 
         const status = getSessionStatus(session, now, 0);
 
-        expect(status.state).toBe('waiting');
-        expect(status.shouldShowStatus).toBe(false);
+        expect(status.state).toBe('ready');
+        expect(status.shouldShowStatus).toBe(true);
+        expect(status.isPulsing).toBe(false);
     });
 
     it('does not use legacy thinking after an older completed turn projection', async () => {
@@ -760,8 +785,9 @@ describe('getSessionStatus', () => {
             latestTurnStatusObservedAt: 1_000,
         };
         const status = getSessionStatus(session, 1_600, 0);
-        expect(status.state).toBe('waiting');
-        expect(status.shouldShowStatus).toBe(false);
+        expect(status.state).toBe('ready');
+        expect(status.shouldShowStatus).toBe(true);
+        expect(status.isPulsing).toBe(false);
     });
 
     it('does not return thinking when optimisticThinkingAt is recent', async () => {
@@ -796,7 +822,7 @@ describe('getSessionStatus', () => {
         const status = getSessionStatus(session, now, 0);
         expect(status.state).toBe('disconnected');
         expect(status.shouldShowStatus).toBe(true);
-        expect(status.isPulsing).toBeUndefined();
+        expect(status.isPulsing).toBeFalsy();
     });
 
     it('returns one shared resuming state while the explicit resume lifecycle marker is fresh', async () => {
@@ -826,8 +852,8 @@ describe('getSessionStatus', () => {
 
         expect(status).toMatchObject({
             state: 'resuming',
-            isConnected: true,
-            isPulsing: true,
+            isConnected: false,
+            isPulsing: false,
         });
     });
 
@@ -842,8 +868,8 @@ describe('getSessionStatus', () => {
 
         expect(status).toMatchObject({
             state: 'resuming',
-            isConnected: true,
-            isPulsing: true,
+            isConnected: false,
+            isPulsing: false,
         });
     });
 
@@ -1529,7 +1555,7 @@ describe('useSessionStatus', () => {
                 optimisticThinkingAt: null,
             })));
 
-            expect(hook.getCurrent().state).toBe('waiting');
+            expect(hook.getCurrent().state).toBe('pending_input');
         } finally {
             vi.useRealTimers();
         }
@@ -1670,7 +1696,7 @@ describe('useSessionStatus', () => {
         }
     });
 
-    it('shows working from the canonical in-progress projection without activity freshness', async () => {
+    it('shows stale status without motion when runtime heartbeat has expired', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
         try {
@@ -1683,7 +1709,8 @@ describe('useSessionStatus', () => {
                 meaningfulActivityAt: Date.now() - 5,
             })));
 
-            expect(hook.getCurrent().state).toBe('thinking');
+            expect(hook.getCurrent().state).toBe('stale');
+            expect(hook.getCurrent().isPulsing).toBe(false);
         } finally {
             vi.useRealTimers();
         }
@@ -1771,7 +1798,7 @@ describe('useSessionStatus', () => {
             expect(hook.getCurrent().state).toBe('thinking');
 
             await flushHookEffects({ cycles: 1, turns: 0, advanceTimersMs: 400 });
-            expect(hook.getCurrent().state).toBe('waiting');
+            expect(hook.getCurrent().state).toBe('pending_input');
         } finally {
             vi.useRealTimers();
         }

@@ -1,15 +1,18 @@
-import type { CreateSessionShareRequest, ShareAccessLevel } from '@/sync/domains/social/sharingTypes';
+import type {
+    ReleasedDirectSessionShareCreateRequestV1,
+    SessionAccessLevelV1,
+} from '@happier-dev/protocol';
 
 export function buildCreateSessionShareRequest(params: {
     sessionEncryptionMode: 'e2ee' | 'plain' | undefined;
     userId: string;
-    accessLevel: ShareAccessLevel;
+    accessLevel: SessionAccessLevelV1;
     canApprovePermissions?: boolean;
     encryptedDataKey?: string;
-}): CreateSessionShareRequest {
+}): ReleasedDirectSessionShareCreateRequestV1 {
     const { sessionEncryptionMode, userId, accessLevel, canApprovePermissions } = params;
 
-    const base: CreateSessionShareRequest = {
+    const base: ReleasedDirectSessionShareCreateRequestV1 = {
         userId,
         accessLevel,
         ...(canApprovePermissions !== undefined ? { canApprovePermissions } : {}),
@@ -25,4 +28,3 @@ export function buildCreateSessionShareRequest(params: {
     }
     return { ...base, encryptedDataKey };
 }
-

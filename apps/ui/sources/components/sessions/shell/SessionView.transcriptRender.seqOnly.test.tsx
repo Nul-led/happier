@@ -132,7 +132,8 @@ function getStorageStateForTest() {
         machines: {},
         sessionMessages: {},
         sessionPending: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
         sessionTranscriptLoadIssues: {},
         settings: {
             sessionMessageSendMode: 'agent_queue',
@@ -329,7 +330,11 @@ installSessionShellCommonModuleMocks({
                     return {};
                 },
                 useLocalSettingMutable: () => [null, vi.fn()],
-                useSetting: () => null,
+                // Collection-valued Account settings are always arrays for the
+                // real store, and the mounted shell maps over them directly.
+                useSetting: (key: string) => (
+                    key === 'workspaceRefsV1' || key === 'workspaceSyncRelationshipsV1' ? [] : null
+                ),
                 useSettings: () => ({ experiments: true, featureToggles: {} }),
                 useAutomations: () => [],
                 useMachine: () => null,
@@ -488,22 +493,20 @@ vi.mock('@/utils/system/versionUtils', () => ({
     MINIMUM_CLI_VERSION: '0.0.0',
     MINIMUM_CLI_PENDING_QUEUE_V2_VERSION: '0.0.0',
 }));
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: ['codex'],
-    DEFAULT_AGENT_ID: 'codex',
-    buildResumeSessionExtrasFromUiState: () => null,
-    getAgentCore: () => ({
-        displayNameKey: 'agents.codex',
-        cli: { spawnAgent: 'codex' },
-        model: { defaultMode: 'default' },
-        resume: { vendorResumeIdField: null },
-        uiConnectedService: { serviceId: null, labelKey: 'agentInput.agent.codex', connectRoute: null },
-    }),
-    getAgentResumeExperimentsFromSettings: () => null,
-    getNewSessionRelevantInstallableDepKeys: () => [],
-    isBundledAgentId: (value: unknown) => value === 'codex',
-    resolveAgentIdFromFlavor: () => 'codex',
-}));
+vi.mock('@/agents/catalog/catalog', async (importOriginal) => {
+    // The generated Agent catalog is real internal logic, not a boundary. A
+    // hand-written core drifts every time the catalog grows a field the shell
+    // reads, so keep the canonical entries and stub only the resume/install
+    // helpers this suite pins.
+    const original = await importOriginal<typeof import('@/agents/catalog/catalog')>();
+    return {
+        ...original,
+        buildResumeSessionExtrasFromUiState: () => null,
+        getAgentResumeExperimentsFromSettings: () => null,
+        getNewSessionRelevantInstallableDepKeys: () => [],
+        resolveAgentIdFromFlavor: () => 'codex',
+    };
+});
 vi.mock('@/agents/hooks/useResumeCapabilityOptions', () => ({
     useResumeCapabilityOptions: () => ({ resumeCapabilityOptions: {} }),
 }));
@@ -974,6 +977,71 @@ describe('SessionView (transcript rendering for seq-only sessions)', () => {
 
         await screen.unmount();
         expect(unmountedSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves an exact Session address subtree but remounts address-local state when the Home changes', async () => {
+        const { SessionView } = await import('./SessionView');
+        const mountedTokens: object[] = [];
+
+        function ContinuityProbe() {
+            const [token] = React.useState(() => ({}));
+            mountedTokens.push(token);
+            return React.createElement('ContinuityProbe');
+        }
+
+        const render = (serverId: string) => {
+            sessionState = { ...sessionState, serverId };
+            return (
+                <SessionView
+                    id="s1"
+                    routeServerId={serverId}
+                    contentOverride={<ContinuityProbe />}
+                    surfaceFocusedOverride={true}
+                    surfaceVisibleOverride={true}
+                    routeAnchorOverride={true}
+                />
+            );
+        };
+        const screen = await renderScreen(render('server-a'), {
+            wrapper: AppPaneProviderWrapper,
+            flushOptions: { cycles: 0, turns: 0 },
+        });
+        const serverAToken = mountedTokens.at(-1);
+
+        await screen.update(render('server-a'));
+        expect(mountedTokens.at(-1)).toBe(serverAToken);
+
+        await screen.update(render('server-b'));
+        expect(mountedTokens.at(-1)).not.toBe(serverAToken);
+
+        await screen.unmount();
+    });
+
+    it('keeps the transcript data key qualified and remounts when hydration resolves a different Home', async () => {
+        const { SessionView } = await import('./SessionView');
+        const screen = await renderScreen(
+            <SessionView
+                id="s1"
+                routeHydrationState={{ kind: 'loading', sessionId: 's1', serverId: 'server-a', reason: 'refreshing' }}
+            />,
+            { wrapper: AppPaneProviderWrapper },
+        );
+
+        expect(chatListRenderSpy.mock.calls.at(-1)?.[0]?.sessionSurfaceKey).toBe(
+            JSON.stringify(['server-a', 's1']),
+        );
+
+        await screen.update(
+            <SessionView
+                id="s1"
+                routeHydrationState={{ kind: 'available', sessionId: 's1', serverId: 'server-b' }}
+            />,
+        );
+
+        expect(chatListRenderSpy.mock.calls.at(-1)?.[0]?.sessionSurfaceKey).toBe(
+            JSON.stringify(['server-b', 's1']),
+        );
+        await screen.unmount();
     });
 
     it('marks a visible route-anchor surface as visible even while navigation focus is false', async () => {

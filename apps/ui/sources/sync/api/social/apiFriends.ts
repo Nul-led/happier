@@ -6,36 +6,55 @@ import {
     UserProfile,
     UserResponseSchema,
     FriendsResponseSchema,
-    UsersSearchResponseSchema
+    UsersSearchResponseSchema,
+    type UsersSearchResponse,
 } from '@/sync/domains/social/friendTypes';
 
 type RetryMode = 'default' | 'none';
 type RetryOptions = Readonly<{ retry?: RetryMode }>;
 type FriendsListRequest = (path: string, init?: RequestInit) => Promise<Response>;
 type FriendsListOptions = RetryOptions & Readonly<{ request?: FriendsListRequest }>;
+type UserSearchOptions = FriendsListOptions & Readonly<{
+    cursor?: string | null;
+    purpose?: 'collaboration';
+}>;
 
 /**
  * Search for users by username (returns multiple results)
  */
 export async function searchUsersByUsername(
     credentials: AuthCredentials,
-    username: string
+    username: string,
+    options?: FriendsListOptions,
 ): Promise<UserProfile[]> {
-    return await backoff(async () => {
-        const response = await serverFetch(
-            `/v1/user/search?${new URLSearchParams({ query: username })}`,
+    return [...(await searchUsersPageByUsername(credentials, username, options)).users];
+}
+
+/** Pages the canonical username directory while keeping the released array
+ * helper above for callers that deliberately consume only the first page. */
+export async function searchUsersPageByUsername(
+    credentials: AuthCredentials,
+    username: string,
+    options?: UserSearchOptions,
+): Promise<Readonly<{ users: readonly UserProfile[]; nextCursor: string | null }>> {
+    const load = async () => {
+        const request = options?.request ?? ((path: string, init?: RequestInit) => serverFetch(path, init, { includeAuth: false }));
+        const query = new URLSearchParams({ query: username });
+        if (options?.cursor) query.set('cursor', options.cursor);
+        if (options?.purpose) query.set('purpose', options.purpose);
+        const response = await request(
+            `/v1/user/search?${query}`,
             {
                 method: 'GET',
                 headers: {
                     'Authorization': `Bearer ${credentials.token}`,
                 },
             },
-            { includeAuth: false },
         );
 
         if (!response.ok) {
             if (response.status === 404) {
-                return [];
+                return { users: [], nextCursor: null };
             }
             if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
                 let message = 'Failed to search users';
@@ -56,8 +75,10 @@ export async function searchUsersByUsername(
             throw new HappyError('Invalid user search response', false, { kind: 'server' });
         }
         
-        return parsed.data.users;
-    });
+        const page: UsersSearchResponse = parsed.data;
+        return { users: page.users, nextCursor: page.nextCursor ?? null };
+    };
+    return options?.retry === 'none' ? await load() : await backoff(load);
 }
 
 /**

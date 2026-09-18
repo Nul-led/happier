@@ -336,6 +336,7 @@ export const MonacoEditorSurface = React.forwardRef<CodeEditorHandle, CodeEditor
             flushPendingChange: async () => {
                 flushPendingChange();
             },
+            focus: () => editorRef.current?.focus?.(),
         }),
         [flushPendingChange],
     );

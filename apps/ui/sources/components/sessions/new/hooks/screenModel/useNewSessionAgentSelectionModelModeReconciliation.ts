@@ -19,11 +19,11 @@ export function useNewSessionAgentSelectionModelModeReconciliation(
         const next = coerceNewSessionModelMode({
             modelMode: String(params.modelMode),
             modelConfig: {
-                defaultMode: core?.model.defaultMode ?? 'default',
-                allowedModes: core?.model.allowedModes ?? [],
-                supportsFreeform: core?.model.supportsFreeform ?? false,
-                freeformModelIdPrefixes: core?.model.freeformModelIdPrefixes ?? [],
-                dynamicProbe: core?.model.dynamicProbe ?? 'auto',
+                defaultMode: core?.model?.defaultMode ?? 'default',
+                allowedModes: core?.model?.allowedModes ?? [],
+                supportsFreeform: core?.model?.supportsFreeform ?? false,
+                freeformModelIdPrefixes: core?.model?.freeformModelIdPrefixes ?? [],
+                dynamicProbe: core?.model?.dynamicProbe ?? 'auto',
             },
             preflight: params.preflightModels
                 ? {

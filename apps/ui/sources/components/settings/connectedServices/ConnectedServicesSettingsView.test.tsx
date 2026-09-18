@@ -39,6 +39,14 @@ vi.mock('@expo/vector-icons', () => ({
 }));
 
 const profileState = vi.hoisted(() => ({
+    activeAccountScope: null as null | { serverId: string; accountId: string },
+    teamCredentialCatalog: {
+        resources: [] as Array<Record<string, unknown>>,
+        teamNameById: {} as Record<string, string>,
+        homeNameByTeamId: {} as Record<string, string>,
+        currentResourceKeys: new Set<string>(),
+        current: true,
+    },
     connectedServicesV2: [
         {
             serviceId: 'openai-codex',
@@ -72,6 +80,24 @@ const connectedServiceRegistryState = vi.hoisted(() => ({
 const serverFeaturesState = vi.hoisted(() => ({
     qualifiedAccounts: undefined as { protocolVersion: number } | undefined,
 }));
+const daemonAgentProjectionState = vi.hoisted(() => ({
+    mergedProviderProjectionById: {} as Record<string, Record<string, unknown>>,
+}));
+
+vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    useAppShellPluginUiProjection: () => ({ machineId: 'machine-a', serverId: 'server-1' }),
+}));
+
+vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
+    useDaemonMergedProjectionInputs: () => ({
+        phase: 'ready',
+        inputs: {
+            mergedProviderProjectionById: daemonAgentProjectionState.mergedProviderProjectionById,
+            mergedBackendProjectionById: {},
+        },
+    }),
+}));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => false,
@@ -91,6 +117,7 @@ vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({
 }));
 
 vi.mock('@/sync/store/hooks', () => ({
+    useActiveServerAccountScope: () => profileState.activeAccountScope,
     useProfile: () => ({
         connectedServicesV2: profileState.connectedServicesV2,
     }),
@@ -102,6 +129,10 @@ vi.mock('@/sync/store/hooks', () => ({
     }),
     useSettingMutable: () => [{}, vi.fn()],
     useLocalSetting: () => 1,
+}));
+
+vi.mock('@/hooks/teams/useHomeTeamCredentialModelCatalog', () => ({
+    useHomeTeamCredentialModelCatalog: () => profileState.teamCredentialCatalog,
 }));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
@@ -149,6 +180,24 @@ vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries', ()
 
 describe('ConnectedServicesSettingsView', () => {
     beforeEach(() => {
+        profileState.activeAccountScope = null;
+        profileState.teamCredentialCatalog = {
+            resources: [], teamNameById: {}, homeNameByTeamId: {}, currentResourceKeys: new Set(), current: true,
+        };
+        daemonAgentProjectionState.mergedProviderProjectionById = {
+            codex: {
+                agentId: 'codex',
+                qualifiedId: 'happier.agent.codex/codex',
+                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+                catalogAgentId: 'codex',
+                isBuiltIn: true,
+                connectedAccounts: [{
+                    purpose: 'primary',
+                    service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+                    required: false,
+                }],
+            },
+        };
         serverFeaturesState.qualifiedAccounts = undefined;
         connectedServiceRegistryState.status = 'ready';
         connectedServiceRegistryState.errorReason = null;
@@ -179,6 +228,29 @@ describe('ConnectedServicesSettingsView', () => {
                 profiles: [{ profileId: 'work', status: 'connected', kind: 'oauth' }],
             },
         ];
+    });
+
+    it('opens a Team-shared Connected Service resource on its exact Home route', async () => {
+        profileState.activeAccountScope = { serverId: 'server-1', accountId: 'account-1' };
+        profileState.teamCredentialCatalog = {
+            resources: [{
+                id: 'resource-1', teamId: 'team-1', displayName: 'Shared GitHub', resourceRevision: 3,
+                readiness: { kind: 'available' }, recoveryAction: null, deliveryMode: 'direct',
+                mayBroker: false, mayReceiveDirect: true, directMaterialState: 'current',
+                sessionUsePolicy: 'personal_allowed', providerModels: [],
+                sourcePresentation: {
+                    kind: 'connected_service', service: { pluginId: 'github', localId: 'github' },
+                },
+            }],
+            teamNameById: { 'team-1': 'Acme' }, homeNameByTeamId: { 'team-1': 'Home A' },
+            currentResourceKeys: new Set(['team-1:resource-1']), current: true,
+        };
+        const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
+        const screen = await renderScreen(<ConnectedServicesSettingsView />);
+
+        await screen.pressByTestIdAsync('team-credential-catalog-resource:team-1:resource-1');
+        expect(connectedServicesModuleState.routerPushSpy)
+            .toHaveBeenCalledWith('/settings/teams/server-1/team-1/credentials/resource-1');
     });
 
     it('keeps boundary diagnostics out of the primary row and exposes only bounded product-safe support detail', async () => {
@@ -250,6 +322,78 @@ describe('ConnectedServicesSettingsView', () => {
             node.children.includes('connectedServices.list.empty'),
         )).toHaveLength(0);
         expect(tree.findAllByType('Item' as any).length).toBeGreaterThan(0);
+    });
+
+    it('renders default-auth rows from the live qualified external Agent projection', async () => {
+        daemonAgentProjectionState.mergedProviderProjectionById['acme.agent/native'] = {
+            agentId: 'acme.agent/native',
+            qualifiedId: 'acme.agent/native',
+            identity: { pluginId: 'acme.agent', localId: 'native' },
+            title: 'Acme Native',
+            isBuiltIn: false,
+            connectedAccounts: [{
+                purpose: 'primary',
+                service: { pluginId: 'acme.agent', localId: 'account' },
+                required: false,
+            }],
+        };
+        const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
+
+        const tree = (await renderScreen(<ConnectedServicesSettingsView />)).tree;
+        const row = tree.root.findAllByType('ConnectedServicesDefaultAuthRow' as never)
+            .find((candidate) => candidate.props.agentId === 'acme.agent/native');
+
+        expect(row?.props.agentTitle).toBe('Acme Native');
+        expect(row?.props.connectedAccountServiceKeys).toEqual(['acme.agent/account']);
+    });
+
+    it('threads the exact Account scope and current Team resource catalog into the sole default-auth row', async () => {
+        const resource = {
+            id: 'resource-1',
+            teamId: 'team-1',
+            displayName: 'Shared Codex',
+            resourceRevision: 3,
+            readiness: { kind: 'available' },
+            recoveryAction: null,
+            connectedServiceSelections: [{
+                source: 'team_resource', resourceId: 'resource-1', deliveryMode: 'brokered',
+            }],
+            sourcePresentation: {
+                kind: 'connected_service',
+                service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+            },
+        };
+        profileState.activeAccountScope = { serverId: 'server-1', accountId: 'account-1' };
+        profileState.teamCredentialCatalog = {
+            resources: [resource],
+            teamNameById: { 'team-1': 'Acme' },
+            homeNameByTeamId: { 'team-1': 'Home A' },
+            currentResourceKeys: new Set(['team-1:resource-1']),
+            current: true,
+        };
+        const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
+        const tree = (await renderScreen(<ConnectedServicesSettingsView />)).tree;
+        const row = tree.root.findAllByType('ConnectedServicesDefaultAuthRow' as never)
+            .find((candidate) => candidate.props.agentId === 'codex');
+
+        expect(row?.props).toMatchObject({
+            serverId: 'server-1',
+            accountId: 'account-1',
+            teamCredentialResources: [resource],
+            teamNameById: { 'team-1': 'Acme' },
+        });
+        expect(row?.props.currentTeamCredentialResourceKeys).toEqual(new Set(['team-1:resource-1']));
+    });
+
+    it('preserves the released bundled Agent routing id as the default-auth settings key', async () => {
+        const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
+
+        const tree = (await renderScreen(<ConnectedServicesSettingsView />)).tree;
+        const agentIds = tree.root.findAllByType('ConnectedServicesDefaultAuthRow' as never)
+            .map((candidate) => candidate.props.agentId);
+
+        expect(agentIds).toContain('codex');
+        expect(agentIds).not.toContain('happier.agent.codex/codex');
     });
 
     it('does not route a default-auth connect action without an executable projected service owner', async () => {

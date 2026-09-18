@@ -1,18 +1,30 @@
+import 'fake-indexeddb/auto';
 import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import type { PermissionMode, ModelMode } from '@/sync/domains/permissions/permissionTypes';
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { UseMachineEnvPresenceResult } from '@/hooks/machine/useMachineEnvPresence';
-import { SPAWN_SESSION_ERROR_CODES } from '@happier-dev/protocol';
+import { SessionSpawnNewInputV2Schema, type SessionSpawnNewInputV2, type SessionSpawnNewResultV1 } from '@happier-dev/protocol';
 import { createDeferred, flushHookEffects, renderHook } from '@/dev/testkit';
-import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { createTextModuleMock } from '@/dev/testkit/mocks/text';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
-import { installNewSessionScreenModelCommonModuleMocks } from './newSessionScreenModelTestHelpers';
+import { installNewSessionScreenModelCommonModuleMocks, selectNewSessionTestHome } from './newSessionScreenModelTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const syncSingletonBridge = vi.hoisted(() => ({
+  current: null as typeof import('@/sync/sync').sync | null,
+}));
+vi.mock('@/sync/runtime/getSyncSingleton', () => ({
+  getSyncSingleton: () => {
+    if (!syncSingletonBridge.current) throw new Error('Test Sync singleton is not loaded');
+    return syncSingletonBridge.current;
+  },
+}));
 
 /**
  * New Session create admission vs machine-projection currentness.
@@ -27,38 +39,12 @@ import { installNewSessionScreenModelCommonModuleMocks } from './newSessionScree
  * parameter is proven by `useNewSessionScreenModel.projectionCurrentness.test.tsx`.
  */
 
-type NewSessionHarnessStorageState = {
-  settings: Record<string, unknown>;
-  machines: Record<string, { id: string }>;
-  sessions: Record<string, { id: string }>;
-  upsertPendingMessage: ReturnType<typeof vi.fn>;
-  markSessionOptimisticThinking: ReturnType<typeof vi.fn>;
-  updateSessionPermissionMode: ReturnType<typeof vi.fn>;
-  updateSessionModelMode: ReturnType<typeof vi.fn>;
-};
-
-type SessionSpawnNewActionBoundaryOutcome =
-  | Readonly<{
-      type: 'error';
-      errorCode: typeof SPAWN_SESSION_ERROR_CODES.DAEMON_RPC_UNAVAILABLE;
-      errorMessage: string;
-      spawnAttemptCustody?: SpawnAttemptCustodyTestResult;
-    }>
-  | Readonly<{
-      type: 'success';
-      sessionId: string;
-      spawnAttemptCustody?: SpawnAttemptCustodyTestResult;
-    }>;
-
-type SpawnAttemptCustodyTestResult = Readonly<{
-  userAttemptId: string;
-  spawnNonce: string;
-}>;
+type NewSessionHarnessStorageState = ReturnType<(typeof import('@/sync/domains/state/storageStore'))['storage']['getState']>;
 
 const ACME_AGENT_ID = 'acme.review.provider';
 const ACME_IDENTITY = { pluginId: 'acme.review', localId: 'provider' } as const;
 const ACME_AGENT_TARGET = { kind: 'agent' as const, identity: ACME_IDENTITY };
-const ACME_SPAWN_BACKEND_TARGET = { kind: 'backend' as const, backendId: ACME_AGENT_ID };
+const ACME_SPAWN_BACKEND_TARGET = { kind: 'backend' as const, backendId: 'acme.review.backend' };
 
 function buildAcmeProjectionInputs(): Record<string, unknown> {
   return {
@@ -80,116 +66,36 @@ function buildAcmeProjectionInputs(): Record<string, unknown> {
   };
 }
 
-const activeHarnessStorageState: { current: NewSessionHarnessStorageState | null } = { current: null };
-
 async function setupHarness() {
   const modalAlertSpy = vi.fn((..._args: unknown[]) => {});
-  const sessionSpawnNewActionBoundarySpy = vi.fn(async (_input: unknown): Promise<SessionSpawnNewActionBoundaryOutcome> => ({
-    type: 'error',
-    errorCode: SPAWN_SESSION_ERROR_CODES.DAEMON_RPC_UNAVAILABLE,
-    errorMessage: 'Daemon RPC is not available',
-  }));
-  const storageState: NewSessionHarnessStorageState = {
-    settings: {},
-    machines: { m1: { id: 'm1' } },
-    sessions: {} as Record<string, { id: string }>,
-    upsertPendingMessage: vi.fn(),
-    markSessionOptimisticThinking: vi.fn(),
-    updateSessionPermissionMode: vi.fn(),
-    updateSessionModelMode: vi.fn(),
-  };
-  activeHarnessStorageState.current = storageState;
-
+  const defaultSpawnResult = async (_input: SessionSpawnNewInputV2): Promise<SessionSpawnNewResultV1> => ({
+    type: 'error', code: 'machine_offline', retryable: true,
+  } as const);
+  const sessionSpawnNewActionBoundarySpy = vi.fn(defaultSpawnResult);
   installNewSessionScreenModelCommonModuleMocks({
     text: () =>
       createTextModuleMock({
         translate: (key: string) => key,
       }),
-    storage: async () =>
-      createStorageModuleStub({
-        storage: {
-          getState: () => activeHarnessStorageState.current ?? storageState,
-        },
-      }),
   });
+  vi.doUnmock('@/sync/domains/state/storage');
+  vi.doUnmock('@/sync/domains/state/persistence');
   vi.doMock('@/modal', () => ({ Modal: { alert: modalAlertSpy, confirm: vi.fn(async () => false) } }));
-  vi.doMock('@/sync/sync', () => ({
-    sync: {
-      applySettings: vi.fn(),
-      encryption: { encryptRaw: vi.fn(), encryptAutomationTemplateRaw: vi.fn() },
-      decryptSecretValue: vi.fn(),
-      refreshAutomations: vi.fn(async () => {}),
-      refreshSessions: vi.fn(async () => {}),
-      refreshMachines: vi.fn(async () => {}),
-      sendMessage: vi.fn(async () => {}),
-      acquireUserRequestLease: vi.fn(() => () => {}),
-      getCredentials: vi.fn(() => ({ secret: 'test-secret' })),
-      ensureSessionVisibleForMessageRoute: vi.fn(async (sessionId: string) => {
-        const currentStorageState = activeHarnessStorageState.current ?? storageState;
-        currentStorageState.sessions[sessionId] = { id: sessionId };
-      }),
-    },
-  }));
   vi.doMock('@/sync/store/settingsWriters', () => ({
     useApplySettings: () => vi.fn(),
   }));
-  vi.doMock('@/sync/domains/state/persistence', () => ({
-    clearNewSessionDraft: vi.fn(),
-    loadSettings: () => ({ settings: {}, version: null }),
-    loadDeviceAnalyticsId: () => null,
-    saveDeviceAnalyticsId: vi.fn(),
-    saveSettings: vi.fn(),
-    loadPendingSettings: () => ({}),
-    savePendingSettings: vi.fn(),
-    loadLocalSettings: () => ({}),
-    saveLocalSettings: () => ({}),
-    loadThemePreference: () => 'adaptive',
-    loadPurchases: () => ({}),
-    savePurchases: vi.fn(),
-    loadSessionDrafts: () => ({}),
-    saveSessionDrafts: vi.fn(),
-    loadSessionReviewCommentsDrafts: () => ({}),
-    saveSessionReviewCommentsDrafts: vi.fn(),
-    loadWorkspaceReviewCommentsDrafts: () => ({}),
-    saveWorkspaceReviewCommentsDrafts: vi.fn(),
-    loadSessionActionDrafts: () => ({}),
-    saveSessionActionDrafts: vi.fn(),
-    loadNewSessionDraft: () => null,
-    saveNewSessionDraft: vi.fn(),
-    loadSessionPermissionModes: () => ({}),
-    saveSessionPermissionModes: vi.fn(),
-    loadSessionPermissionModeUpdatedAts: () => ({}),
-    saveSessionPermissionModeUpdatedAts: vi.fn(),
-    loadSessionLastViewed: () => ({}),
-    saveSessionLastViewed: vi.fn(),
-    loadSessionModelModes: () => ({}),
-    saveSessionModelModes: vi.fn(),
-    loadSessionModelModeUpdatedAts: () => ({}),
-    saveSessionMaterializedMaxSeqById: () => ({}),
-    saveSessionMaterializedMaxSeqById: vi.fn(),
-    loadChangesCursor: () => null,
-    saveChangesCursor: vi.fn(),
-    loadLastChangesCursorByAccountId: () => ({}),
-    saveLastChangesCursorByAccountId: vi.fn(),
-    loadProfile: () => ({}),
-    saveProfile: vi.fn(),
-    clearPersistence: vi.fn(),
-  }));
-  vi.doMock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: vi.fn(() => ({
-      serverId: 'server-a',
-      serverUrl: 'https://server-a.example.test',
-      kind: 'custom',
-      generation: 1,
-    })),
-    setActiveServer: vi.fn(),
-  }));
-  vi.doMock('@/sync/domains/server/selection/serverSelectionResolver', () => ({
-    resolveNewSessionServerTarget: vi.fn((params: { requestedServerId?: string | null; allowedServerIds: string[] }) => ({
-      targetServerId: params.requestedServerId ?? params.allowedServerIds[0] ?? null,
-      rejectedRequestedServerId: null,
-    })),
-  }));
+  await selectNewSessionTestHome();
+  const { storage } = await import('@/sync/domains/state/storageStore');
+  storage.getState().activateProfileScope({ serverId: 'server-a', accountId: 'account-a' });
+  storage.getState().activateSettingsScope({ serverId: 'server-a', accountId: 'account-a' });
+  storage.getState().applySettings(storage.getState().settings, 1);
+  storage.getState().applyMachines([createMachineFixture({ id: 'm1' })], true, { sourceServerId: 'server-a' });
+  const initialStore = storage.getState();
+  let storageState: NewSessionHarnessStorageState = storage.getState();
+  vi.spyOn(storageState, 'upsertPendingMessage');
+  vi.spyOn(storageState, 'markSessionOptimisticThinking');
+  vi.spyOn(storageState, 'updateSessionPermissionMode');
+  vi.spyOn(storageState, 'updateSessionModelMode');
   vi.doMock('@/sync/domains/features/featureLocalPolicy', () => ({
     resolveLocalFeaturePolicyEnabled: vi.fn((featureId: string, settings: { featureToggles?: Record<string, boolean> }) => settings.featureToggles?.[featureId] === true),
   }));
@@ -213,6 +119,9 @@ async function setupHarness() {
     },
   }));
   vi.doMock('@/sync/domains/settings/terminalSettings', () => ({ resolveTerminalSpawnOptions: vi.fn(() => null) }));
+  vi.doMock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', () => ({
+    BUNDLED_PLUGIN_UI_APP_ARTIFACTS: Object.freeze([]),
+  }));
   vi.doMock('@/hooks/server/useMachineCapabilitiesCache', () => ({
     getMachineCapabilitiesSnapshot: vi.fn(() => ({ supported: true, response: { protocolVersion: 1, results: {} } })),
     prefetchMachineCapabilities: vi.fn(async () => {}),
@@ -235,70 +144,71 @@ async function setupHarness() {
   vi.doMock('@/agents/runtime/resumeCapabilities', () => ({ canAgentResume: vi.fn(() => false) }));
   vi.doMock('@/components/sessions/new/modules/formatResumeSupportDetailCode', () => ({ formatResumeSupportDetailCode: vi.fn(() => '') }));
   vi.doMock('@/sync/ops', () => ({}));
-  vi.doMock('@/sync/ops/actions/sessionSpawnNewAction', async () => {
-    const actual = await vi.importActual<typeof import('@/sync/ops/actions/sessionSpawnNewAction')>(
-      '@/sync/ops/actions/sessionSpawnNewAction',
-    );
-    return {
-      ...actual,
-      executeManualSessionSpawnNewAction: async (input: any, _context: any, params: any) => {
-        const outcome = await sessionSpawnNewActionBoundarySpy(input);
-        const custody = {
-          v: 3 as const,
-          scope: params.scope,
-          machineId: input.executionTarget.machineId,
-          targetFingerprint: 'test-fingerprint',
-          userAttemptId: outcome.spawnAttemptCustody?.userAttemptId ?? params.userAttemptId,
-          nonce: outcome.spawnAttemptCustody?.spawnNonce ?? params.seedNonce,
-          submissionState: 'submitted' as const,
-          createdSessionId: outcome.type === 'success' ? outcome.sessionId : null,
-          firstTurnLocalId: `spawn-first-turn:${params.seedNonce}`,
-          attachmentMessageLocalId: `spawn-attachment:${params.seedNonce}`,
-        };
-        if (outcome.type === 'success') {
-          return {
-            status: 'executed' as const,
-            action: {
-              ok: true as const,
-              result: {
-                type: 'success' as const,
-                disposition: 'created' as const,
-                sessionId: outcome.sessionId,
-                executionTarget: input.executionTarget,
-                organizationPlacement: input.organizationPlacement ?? { folderId: null, tagIds: [] },
-                initialInput: input.initialInput
-                  ? { status: 'accepted' as const, localId: `input-${outcome.sessionId}` }
-                  : { status: 'notRequested' as const },
-              },
-            },
-            custody,
-          };
-        }
-        return {
-          status: 'executed' as const,
-          action: {
-            ok: true as const,
-            result: {
-              type: 'error' as const,
-              code: outcome.errorCode === SPAWN_SESSION_ERROR_CODES.DAEMON_RPC_UNAVAILABLE
-                ? 'machine_offline' as const
-                : 'spawn_failed' as const,
-              retryable: true,
+  const { apiSocket } = await import('@/sync/api/session/apiSocket');
+  // Keep Action policy and custody real; only daemon network I/O is substituted.
+  vi.spyOn(apiSocket, 'machineRPC').mockImplementation(async (_machineId, method, input) => {
+    if (method === RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE) {
+      return {
+        protocolVersion: 1,
+        projection: {
+          v: 2,
+          generation: 7,
+          agentsById: {
+            [ACME_AGENT_ID]: {
+              id: ACME_AGENT_ID,
+              identity: ACME_IDENTITY,
+              title: 'Acme Review Provider',
             },
           },
-          custody,
-        };
-      },
-      completeManualSessionSpawnNewActionCustody: async () => true,
-    };
+          backendsById: {},
+          installedPackagesById: {},
+          actionsById: {},
+          toolsById: {},
+          commandsById: {},
+          resourcesById: {},
+          settingsById: {},
+          familiesById: {},
+          diagnostics: [],
+        },
+      } as never;
+    }
+    return sessionSpawnNewActionBoundarySpy(SessionSpawnNewInputV2Schema.parse(input));
   });
+  const { sync } = await import('@/sync/sync');
+  syncSingletonBridge.current = sync;
+  await import('@/sync/ops/actions/defaultActionExecutor');
 
   const { useCreateNewSession: useCreateNewSessionOwner } = await import('./useCreateNewSession');
-  const useCreateNewSession: typeof useCreateNewSessionOwner = (params) => useCreateNewSessionOwner({
+  type UseCreateNewSessionTestParams = Omit<Parameters<typeof useCreateNewSessionOwner>[0], 'resolveSavedSecretReference'> & Readonly<{
+    resolveSavedSecretReference?: Parameters<typeof useCreateNewSessionOwner>[0]['resolveSavedSecretReference'];
+  }>;
+  const useCreateNewSession = (params: UseCreateNewSessionTestParams) => useCreateNewSessionOwner({
     ...params,
     draftScope: params.draftScope ?? { serverId: 'server-a', accountId: 'account-a' },
+    resolveSavedSecretReference: params.resolveSavedSecretReference ?? ((ref) => ({
+      ref,
+      kind: 'personal',
+      status: 'temporarily_unavailable',
+      entry: null,
+      secret: null,
+      revision: null,
+      fingerprint: null,
+    })),
   });
   return {
+    async reset() {
+      storage.setState({ ...initialStore, sessions: {}, sessionPending: {} });
+      storageState = storage.getState();
+      const { actionOperationStore } = await import('@/sync/domains/actionOperations/actionOperationStore');
+      actionOperationStore.reset();
+      await selectNewSessionTestHome();
+      modalAlertSpy.mockClear();
+      storageState.upsertPendingMessage.mockClear();
+      storageState.markSessionOptimisticThinking.mockClear();
+      storageState.updateSessionPermissionMode.mockClear();
+      storageState.updateSessionModelMode.mockClear();
+      sessionSpawnNewActionBoundarySpy.mockReset().mockImplementation(defaultSpawnResult);
+    },
     useCreateNewSession,
     modalAlertSpy,
     sessionSpawnNewActionBoundarySpy,
@@ -307,8 +217,13 @@ async function setupHarness() {
 }
 
 async function renderCreateHook(
-  useCreateNewSession: ReturnType<typeof setupHarness>['useCreateNewSession'],
-  params: Readonly<{ daemonMergedProjectionInputs: Record<string, unknown> | null }>,
+  useCreateNewSession: Awaited<ReturnType<typeof setupHarness>>['useCreateNewSession'],
+  params: Readonly<{
+    daemonMergedProjectionInputs: Record<string, unknown> | null;
+    authoringCommitPending?: boolean;
+    profile?: AIBackendProfile;
+    selectedSecretId?: string;
+  }>,
 ) {
   const setIsCreating = vi.fn();
   const settings = { experiments: false } as unknown as Settings;
@@ -323,6 +238,7 @@ async function renderCreateHook(
   return await renderHook(() =>
     useCreateNewSession({
       launchIntentSignature: 'projection-currentness-launch-intent',
+      authoringCommitPending: params.authoringCommitPending,
       router: { push: vi.fn(), replace: vi.fn() },
       selectedMachineId: 'm1',
       selectedPath: '/tmp',
@@ -330,9 +246,9 @@ async function renderCreateHook(
       setIsCreating,
       setIsResumeSupportChecking: vi.fn(),
       settings,
-      useProfiles: false,
-      selectedProfileId: null,
-      profileMap: new Map(),
+      useProfiles: params.profile !== undefined,
+      selectedProfileId: params.profile?.id ?? null,
+      profileMap: new Map(params.profile ? [[params.profile.id, params.profile]] : []),
       recentMachinePaths: [],
       // An installed (non-bundled) Agent selected through the projected catalog.
       agentType: ACME_AGENT_ID,
@@ -347,8 +263,12 @@ async function renderCreateHook(
       agentNewSessionOptions: null,
       machineEnvPresence,
       secrets: [],
-      secretBindingsByProfileId: {},
-      selectedSecretIdByProfileIdByEnvVarName: {},
+      secretBindingsByProfileId: params.profile && params.selectedSecretId
+        ? { [params.profile.id]: { SHARED_API_KEY: params.selectedSecretId } }
+        : {},
+      selectedSecretIdByProfileIdByEnvVarName: params.profile && params.selectedSecretId
+        ? { [params.profile.id]: { SHARED_API_KEY: params.selectedSecretId } }
+        : {},
       sessionOnlySecretValueByProfileIdByEnvVarName: {},
       selectedMachineCapabilities: {},
       targetServerId: 'server-a',
@@ -359,25 +279,30 @@ async function renderCreateHook(
 }
 
 describe('useCreateNewSession (projection currentness admission)', () => {
-  beforeEach(() => {
-    vi.resetModules();
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-02-05T00:00:00.000Z'));
+  let harness: Awaited<ReturnType<typeof setupHarness>>;
+
+  beforeAll(async () => {
+    harness = await setupHarness();
   });
 
-  afterEach(() => {
+  beforeEach(async () => {
+    await harness.reset();
+  });
+
+  afterAll(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    activeHarnessStorageState.current = null;
+    syncSingletonBridge.current = null;
   });
 
   it('emits the exact qualified Agent identity of the current projection on the spawn payload', async () => {
-    const { useCreateNewSession, sessionSpawnNewActionBoundarySpy } = await setupHarness();
-    const deferred = createDeferred<SessionSpawnNewActionBoundaryOutcome>();
+    const { useCreateNewSession, modalAlertSpy, sessionSpawnNewActionBoundarySpy } = harness;
+    const deferred = createDeferred<SessionSpawnNewResultV1>();
     sessionSpawnNewActionBoundarySpy.mockImplementationOnce(async () => deferred.promise);
 
+    const daemonMergedProjectionInputs = buildAcmeProjectionInputs();
     const hook = await renderCreateHook(useCreateNewSession, {
-      daemonMergedProjectionInputs: buildAcmeProjectionInputs(),
+      daemonMergedProjectionInputs,
     });
 
     let createPromise: Promise<void> | void | null = null;
@@ -387,17 +312,16 @@ describe('useCreateNewSession (projection currentness admission)', () => {
         await flushHookEffects({ turns: 2 });
       });
 
-      expect(sessionSpawnNewActionBoundarySpy).toHaveBeenCalledTimes(1);
-      const actionInput = sessionSpawnNewActionBoundarySpy.mock.calls[0]?.[0] as {
-        agentTarget?: { kind?: string; identity?: { pluginId?: string; localId?: string } };
-      };
+      expect(modalAlertSpy).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(sessionSpawnNewActionBoundarySpy).toHaveBeenCalledTimes(1));
+      const actionInput = sessionSpawnNewActionBoundarySpy.mock.calls[0]?.[0];
       expect(actionInput?.agentTarget).toEqual(ACME_AGENT_TARGET);
       expect(actionInput?.agentTarget?.identity).toEqual({ pluginId: 'acme.review', localId: 'provider' });
     } finally {
       deferred.resolve({
         type: 'error',
-        errorCode: SPAWN_SESSION_ERROR_CODES.DAEMON_RPC_UNAVAILABLE,
-        errorMessage: 'Daemon RPC is not available',
+        code: 'machine_offline',
+        retryable: true,
       });
       await act(async () => {
         await createPromise;
@@ -406,8 +330,23 @@ describe('useCreateNewSession (projection currentness admission)', () => {
     }
   });
 
+  it('does not issue a Session request while an authoring selection commit is pending', async () => {
+    const { useCreateNewSession, modalAlertSpy, sessionSpawnNewActionBoundarySpy } = harness;
+    const hook = await renderCreateHook(useCreateNewSession, {
+      daemonMergedProjectionInputs: buildAcmeProjectionInputs(),
+      authoringCommitPending: true,
+    });
+    try {
+      await act(async () => { await hook.getCurrent().handleCreateSession(); });
+      expect(sessionSpawnNewActionBoundarySpy).not.toHaveBeenCalled();
+      expect(modalAlertSpy).not.toHaveBeenCalled();
+    } finally {
+      await hook.unmount();
+    }
+  });
+
   it('fails closed without emitting a spawn payload when the current projection cannot qualify the target', async () => {
-    const { useCreateNewSession, modalAlertSpy, sessionSpawnNewActionBoundarySpy } = await setupHarness();
+    const { useCreateNewSession, modalAlertSpy, sessionSpawnNewActionBoundarySpy } = harness;
 
     const hook = await renderCreateHook(useCreateNewSession, {
       // Authoritative-only contract: null while the selected machine's
@@ -418,7 +357,7 @@ describe('useCreateNewSession (projection currentness admission)', () => {
     await act(async () => {
       await hook.getCurrent().handleCreateSession();
     });
-    await flushHookEffects({ runAllTimers: true });
+    await flushHookEffects();
 
     expect(sessionSpawnNewActionBoundarySpy).not.toHaveBeenCalled();
     expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'newSession.failedToStart');

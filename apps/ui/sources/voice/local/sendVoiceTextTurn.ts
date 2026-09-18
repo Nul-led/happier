@@ -30,6 +30,7 @@ import type {
   VoiceAgentSendTurnOptions,
 } from '@/voice/agent/types';
 import type { VoiceCurrentUiToolPort } from '@/voice/tools/currentUiContextToolPort';
+import { resolveSessionAddressFromLocalState } from '@/sync/domains/session/resolveSessionAddressFromLocalState';
 
 type VoicePlaybackControllerLike = Readonly<{
   registerStopper: VoicePlaybackStopperRegistrar;
@@ -96,9 +97,11 @@ export async function sendVoiceTextTurn(params: {
   const sessionBinding = resolveVoiceBindingBySessionId({ sessionId });
   const projectedConversationSessionId = sessionBinding?.conversationSessionId ?? null;
   const uiOwnsTranscriptProjection = sessionBinding?.transcriptMode === 'synthetic';
-  const currentToolSessionId =
-    sessionBinding?.targetSessionId
-    ?? (sessionId === VOICE_AGENT_GLOBAL_SESSION_ID ? null : sessionId);
+  const currentToolSessionAddress =
+    sessionBinding?.targetSessionAddress
+    ?? (sessionId === VOICE_AGENT_GLOBAL_SESSION_ID
+      ? null
+      : resolveSessionAddressFromLocalState(storage.getState(), sessionId));
 
   if (conversationMode === 'agent' && !params.durableDispatch) {
     if (!projectedConversationSessionId) throw new Error('voice_session_binding_required');
@@ -421,7 +424,7 @@ export async function sendVoiceTextTurn(params: {
         sessionId,
         userText,
         durableLocalId: params.durableDispatch!.localId,
-        currentToolSessionId,
+        currentToolSessionAddress,
         ...(params.currentUiContext ? { currentUiContext: params.currentUiContext } : {}),
         voiceAgentSessions: params.voiceAgentSessions,
         signal: params.signal,

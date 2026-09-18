@@ -78,16 +78,20 @@ const IDLE_DICTATION_SNAPSHOT = Object.freeze({
 const subscribeToNothing = (): (() => void) => () => {};
 
 export function useVoiceDictation(
-    sessionId: string | undefined,
+    composerControlId: string | undefined,
     isPresented = true,
     isEditable = true,
+    transcriptionSessionId?: string | null,
 ): Readonly<{
     dismissFailure: (failureId: number) => void;
     failure: VoiceDictationFailure | null;
     status: VoiceDictationSnapshot['status'];
     toggle: () => Promise<VoiceDictationToggleResult>;
 }> {
-    const normalizedSessionId = sessionId?.trim() ?? '';
+    // The capture runtime retains its historical `sessionId` field name, but
+    // Dictation only needs one exact live Composer correlation identity. It may
+    // therefore be a real Session id or an origin-neutral Composer reference key.
+    const normalizedSessionId = composerControlId?.trim() ?? '';
     const presentedSessionId = isPresented ? normalizedSessionId : '';
     const voiceEnabled = useFeatureEnabled('voice');
     const snapshot = React.useSyncExternalStore(
@@ -117,8 +121,15 @@ export function useVoiceDictation(
         if (!normalizedSessionId || !voiceEnabled || !isPresented || !isEditable) {
             return { kind: 'cancelled' } as const;
         }
-        return await voiceDictationController.toggle(normalizedSessionId);
-    }, [isEditable, isPresented, normalizedSessionId, voiceEnabled]);
+        return await voiceDictationController.toggle({
+            controlId: normalizedSessionId,
+            // Preserve the released Session-addressed hook call shape. Only an
+            // explicit null declares that this authoring surface has no Session.
+            transcriptionSessionId: transcriptionSessionId === undefined
+                ? normalizedSessionId
+                : transcriptionSessionId?.trim() || null,
+        });
+    }, [isEditable, isPresented, normalizedSessionId, transcriptionSessionId, voiceEnabled]);
 
     const dismissFailure = React.useCallback((failureId: number) => {
         voiceDictationController.dismissFailure(failureId);

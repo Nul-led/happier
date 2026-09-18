@@ -11,8 +11,19 @@ describe('resolveSystemTaskStepLabel', () => {
         expect(resolveSystemTaskStepLabel('ssh.trust')).not.toBe('ssh.trust');
     });
 
-    it('translates known relay drift repair step ids', () => {
-        expect(resolveSystemTaskStepLabel('relay.drift.repair.start')).not.toBe('relay.drift.repair.start');
+    it('translates every local repair step id the repair task emits', () => {
+        for (const stepId of [
+            'setup.repairThisComputer.prepare',
+            'setup.repairThisComputer.configureRelay',
+            'setup.repairThisComputer.authRequest',
+            'setup.repairThisComputer.authenticate',
+            'setup.repairThisComputer.installService',
+            'setup.repairThisComputer.startService',
+            'setup.repairThisComputer.waitForReady',
+            'setup.repairThisComputer.finish',
+        ]) {
+            expect(resolveSystemTaskStepLabel(stepId), stepId).not.toBe(stepId);
+        }
     });
 
     it('translates known Tailscale secure access step ids', () => {

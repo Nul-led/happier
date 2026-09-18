@@ -41,6 +41,16 @@ const binaryOpen: PeerTcpTunnelOpenV1 = {
     selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
 };
 
+function binaryEnvelopeKind(envelope: PeerTcpTunnelRelayEnvelope): string | null {
+    if (envelope.v !== 2) return null;
+    const decoded = decodePeerTcpTunnelBinaryFrameV2({
+        frame: envelope.frame,
+        maxHeaderBytes: 1024 * 1024,
+        maxPayloadBytes: 1024 * 1024,
+    });
+    return decoded.ok ? decoded.header.kind : null;
+}
+
 describe('openPeerTcpTunnelRelayStream', () => {
     it('retires its exact subscription when the initial OPEN send fails', async () => {
         const mod = await loadModule('./relayStream');
@@ -90,7 +100,7 @@ describe('openPeerTcpTunnelRelayStream', () => {
         await stream.close();
 
         expect(detach).toHaveBeenCalledOnce();
-        expect(sent.filter((envelope) => envelope.v === 1 && envelope.frame.kind === 'close')).toHaveLength(1);
+        expect(sent.filter((envelope) => binaryEnvelopeKind(envelope) === 'close')).toHaveLength(1);
         expect(() => stream.sendFrame({
             v: 1,
             kind: 'ack',
@@ -128,16 +138,15 @@ describe('openPeerTcpTunnelRelayStream', () => {
             signal: controller.signal,
             send: (_event: string, envelope: PeerTcpTunnelRelayEnvelope) => {
                 sent.push(envelope);
-                if (envelope.v !== 1) return;
-                if (envelope.frame.kind === 'open') controller.abort();
-                if (envelope.frame.kind === 'close') throw new Error('relay close unavailable');
+                if (envelope.v === 1 && envelope.frame.kind === 'open') controller.abort();
+                if (binaryEnvelopeKind(envelope) === 'close') throw new Error('relay close unavailable');
             },
             onEnvelope: () => detach,
         });
 
         await expect(opening).rejects.toMatchObject({ name: 'AbortError' });
         expect(detach).toHaveBeenCalledOnce();
-        expect(sent.filter((envelope) => envelope.v === 1 && envelope.frame.kind === 'close')).toHaveLength(1);
+        expect(sent.filter((envelope) => binaryEnvelopeKind(envelope) === 'close')).toHaveLength(1);
     });
 
     it('preserves an exact CLOSE transport failure when subscription retirement also fails', async () => {
@@ -157,7 +166,7 @@ describe('openPeerTcpTunnelRelayStream', () => {
             relaySocketId: 'relay_socket_1',
             open,
             send: (_event: string, envelope: PeerTcpTunnelRelayEnvelope) => {
-                if (envelope.v === 1 && envelope.frame.kind === 'close') throw closeFailure;
+                if (binaryEnvelopeKind(envelope) === 'close') throw closeFailure;
             },
             onEnvelope: () => detach,
         }) as TestStream;
@@ -168,78 +177,6 @@ describe('openPeerTcpTunnelRelayStream', () => {
         // failures; a repeated close cannot touch the shared socket/subscription.
         expect(() => stream.close()).not.toThrow();
         expect(detach).toHaveBeenCalledOnce();
-    });
-
-    it('uses the generic relay socket event for explicit JSON/base64 fallback frames', async () => {
-        const mod = await loadModule('./relayStream');
-        const openRelayStream = mod.openPeerTcpTunnelRelayStream;
-        expect(openRelayStream).toBeTypeOf('function');
-        if (typeof openRelayStream !== 'function') return;
-
-        const sent: Array<{ event: string; envelope: PeerTcpTunnelRelayEnvelope }> = [];
-        let listener: ((envelope: PeerTcpTunnelRelayEnvelope) => void) | null = null;
-        const getListener = (): ((envelope: PeerTcpTunnelRelayEnvelope) => void) => {
-            if (!listener) throw new Error('expected relay envelope listener');
-            return listener;
-        };
-        const stream = await openRelayStream({
-            scopeUserId: 'user_1',
-            relaySocketId: 'relay_socket_1',
-            open,
-            send: (event: string, envelope: PeerTcpTunnelRelayEnvelope) => sent.push({ event, envelope }),
-            onEnvelope: (handler: (envelope: PeerTcpTunnelRelayEnvelope) => void) => {
-                listener = handler;
-                return () => {
-                    listener = null;
-                };
-            },
-        }) as TestStream;
-        const seen: PeerTcpTunnelFrame[] = [];
-        stream.onFrame((frame) => seen.push(frame));
-
-        const frame: PeerTcpTunnelFrame = {
-            v: 1,
-            kind: 'ack',
-            tunnelId: 'tun_1',
-            direction: 'client_to_daemon',
-            nextSequence: 1,
-            windowBytes: 1024,
-        };
-        await stream.sendFrame(frame);
-        getListener()({
-            v: 1,
-            scopeUserId: 'user_1',
-            sender: { kind: 'machine', machineId: 'machine_1' },
-            recipient: { kind: 'user' },
-            frame: {
-                ...frame,
-                direction: 'daemon_to_client',
-            },
-        });
-
-        expect(sent).toEqual([
-            {
-                event: PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
-                envelope: {
-                    v: 1,
-                    scopeUserId: 'user_1',
-                    sender: { kind: 'user', socketId: 'relay_socket_1' },
-                    recipient: { kind: 'machine', machineId: 'machine_1' },
-                    frame: { v: 1, kind: 'open', open },
-                },
-            },
-            {
-                event: PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
-                envelope: {
-                    v: 1,
-                    scopeUserId: 'user_1',
-                    sender: { kind: 'user', socketId: 'relay_socket_1' },
-                    recipient: { kind: 'machine', machineId: 'machine_1' },
-                    frame,
-                },
-            },
-        ]);
-        expect(seen).toEqual([{ ...frame, direction: 'daemon_to_client' }]);
     });
 
     it('sends relay data as PeerTcpTunnelRelayBinaryEnvelopeV2 with a Uint8Array binary_frame_v2 payload', async () => {

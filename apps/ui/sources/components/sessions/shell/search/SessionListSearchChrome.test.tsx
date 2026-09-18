@@ -8,8 +8,6 @@ import { Text } from '@/components/ui/text/Text';
 import { installSessionShellCommonModuleMocks } from '../sessionShellTestHelpers';
 
 const dropdownMenuSpy = vi.fn();
-const setStorageFilterSpy = vi.hoisted(() => vi.fn());
-const featureFlags = vi.hoisted(() => ({ externalSessionsEnabled: true }));
 const reducedMotion = vi.hoisted(() => ({ value: false }));
 
 vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
@@ -36,35 +34,99 @@ vi.mock('expo-image', () => ({
 
 installSessionShellCommonModuleMocks({
     storage: async () => ({
-        useLocalSettingMutable: (key: string) => {
-            if (key === 'sessionsListStorageFilter') return ['direct', setStorageFilterSpy] as const;
-            return [undefined, vi.fn()] as const;
-        },
+        useLocalSettingMutable: () => [undefined, vi.fn()] as const,
     }),
 });
-
-vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: (featureId: string) => featureId === 'sessions.direct' && featureFlags.externalSessionsEnabled,
-}));
 
 afterEach(() => {
     standardCleanup();
     dropdownMenuSpy.mockClear();
-    setStorageFilterSpy.mockClear();
-    featureFlags.externalSessionsEnabled = true;
     reducedMotion.value = false;
 });
 
 describe('SessionListSearchChrome', () => {
+    it('keeps the canonical corpus filter control beside the stable search field', async () => {
+        const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
+        const screen = await renderScreen(
+            <SessionListSearchChrome
+                filterControl={<Text testID="filter-control">My work</Text>}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
+                searchQuery=""
+                onToggleTagOption={vi.fn()}
+                onSearchQueryChange={vi.fn()}
+            />,
+        );
+
+        expect(screen.findByTestId('filter-control')).toBeDefined();
+        expect(screen.findByTestId('session-list-search-trigger')).toBeDefined();
+    });
+
+    it('exposes selected and expanded state for the tag menu', async () => {
+        const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
+        const screen = await renderScreen(
+            <SessionListSearchChrome
+                tagOptions={[{ id: 'tag:a', label: 'alpha' }, { id: 'tag:b', label: 'beta' }]}
+                selectedTagOptionIds={['tag:a']}
+                searchQuery=""
+                onToggleTagOption={vi.fn()}
+                onSearchQueryChange={vi.fn()}
+            />,
+        );
+
+        expect(screen.findByTestId('session-list-tag-filter-trigger')?.props.accessibilityState).toEqual({
+            expanded: false,
+            selected: true,
+        });
+    });
+
+    it('shows tag labels while toggling the exact qualified option id', async () => {
+        const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
+        const onToggleTagOption = vi.fn();
+        // Two Homes own a tag that reads `urgent`. The labels disambiguate them for
+        // sighted and screen-reader users; the ids keep them two distinct selections.
+        const homeATag = { id: 'tag:["home-a","tag_01HX"]', label: 'urgent · Home A' };
+        const homeBTag = { id: 'tag:["home-b","tag_7ZQ"]', label: 'urgent · Home B' };
+        await renderScreen(
+            <SessionListSearchChrome
+                tagOptions={[homeATag, homeBTag]}
+                selectedTagOptionIds={[homeATag.id]}
+                searchQuery=""
+                onToggleTagOption={onToggleTagOption}
+                onSearchQueryChange={vi.fn()}
+            />,
+        );
+
+        const tagMenuProps = dropdownMenuSpy.mock.calls
+            .map(([props]) => props as {
+                items?: Array<{ id: string; title: string }>;
+                onSelect?: (itemId: string) => void;
+            })
+            .find((props) => props.items?.some((item) => item.id === homeATag.id));
+        expect(tagMenuProps?.items?.map((item) => item.title)).toEqual(['urgent · Home A', 'urgent · Home B']);
+
+        await act(async () => {
+            tagMenuProps?.onSelect?.(homeBTag.id);
+        });
+        expect(onToggleTagOption).toHaveBeenCalledWith(homeBTag.id);
+
+        // A label is not an identity: nothing the menu did not present may write.
+        onToggleTagOption.mockClear();
+        await act(async () => {
+            tagMenuProps?.onSelect?.('urgent');
+        });
+        expect(onToggleTagOption).not.toHaveBeenCalled();
+    });
+
     it('renders the query from its single owner without a second local echo state', async () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const onSearchQueryChange = vi.fn();
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
                 searchQuery="sta"
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={onSearchQueryChange}
             />,
         );
@@ -86,10 +148,10 @@ describe('SessionListSearchChrome', () => {
         const onSearchEverything = vi.fn();
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
                 searchQuery="  vector  "
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
                 onSearchEverything={onSearchEverything}
             />,
@@ -111,14 +173,14 @@ describe('SessionListSearchChrome', () => {
         const onRetrySearch = vi.fn();
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
                 searchQuery="vector"
                 searchStatus={{
                     message: 'Transcript search is temporarily unavailable.',
                     onRetry: onRetrySearch,
                 }}
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
                 onSearchEverything={vi.fn()}
             />,
@@ -135,14 +197,48 @@ describe('SessionListSearchChrome', () => {
         expect(onRetrySearch).toHaveBeenCalledOnce();
     });
 
+    it('labels the exact Home searched for transcript and Other matches results', async () => {
+        const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
+        const screen = await renderScreen(
+            <SessionListSearchChrome
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
+                searchQuery="vector"
+                searchScopeLabel="Server: Studio Home"
+                onToggleTagOption={vi.fn()}
+                onSearchQueryChange={vi.fn()}
+            />,
+        );
+
+        const scope = screen.root.findByProps({ testID: 'session-list-search-scope' });
+        expect(scope.props.accessibilityLiveRegion).toBe('polite');
+        expect(scope.findByType(Text).props.children).toBe('Server: Studio Home');
+    });
+
+    it('does not show transcript scope when there is no active query', async () => {
+        const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
+        const screen = await renderScreen(
+            <SessionListSearchChrome
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
+                searchQuery=""
+                searchScopeLabel="Server: Studio Home"
+                onToggleTagOption={vi.fn()}
+                onSearchQueryChange={vi.fn()}
+            />,
+        );
+
+        expect(screen.root.findAllByProps({ testID: 'session-list-search-scope' })).toHaveLength(0);
+    });
+
     it('hides the escalation while the contextual query is empty', async () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
                 searchQuery=""
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
                 onSearchEverything={vi.fn()}
             />,
@@ -155,10 +251,10 @@ describe('SessionListSearchChrome', () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
                 searchQuery="vector"
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
             />,
         );
@@ -178,10 +274,10 @@ describe('SessionListSearchChrome', () => {
             const [query, setQuery] = React.useState('vector');
             return (
                 <SessionListSearchChrome
-                    allKnownTags={[]}
-                    selectedTags={[]}
+                    tagOptions={[]}
+                    selectedTagOptionIds={[]}
                     searchQuery={query}
-                    onSelectedTagsChange={vi.fn()}
+                    onToggleTagOption={vi.fn()}
                     onSearchQueryChange={setQuery}
                 />
             );
@@ -213,10 +309,10 @@ describe('SessionListSearchChrome', () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
                 searchQuery="vector"
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
                 searchTrailingAccessory={React.createElement('ActivityIndicator', {
                     testID: 'session-list-memory-search-loading-indicator',
@@ -234,10 +330,10 @@ describe('SessionListSearchChrome', () => {
     it('keeps the same input instance when an async search accessory publishes', async () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const baseProps = {
-            allKnownTags: [] as string[],
-            selectedTags: [] as string[],
+            tagOptions: [] as Array<{ id: string; label: string }>,
+            selectedTagOptionIds: [] as string[],
             searchQuery: 'vector',
-            onSelectedTagsChange: vi.fn(),
+            onToggleTagOption: vi.fn(),
             onSearchQueryChange: vi.fn(),
         };
         const screen = await renderScreen(<SessionListSearchChrome {...baseProps} />);
@@ -262,10 +358,10 @@ describe('SessionListSearchChrome', () => {
             const [query, setQuery] = React.useState('');
             return (
                 <SessionListSearchChrome
-                    allKnownTags={[]}
-                    selectedTags={[]}
+                    tagOptions={[]}
+                    selectedTagOptionIds={[]}
                     searchQuery={query}
-                    onSelectedTagsChange={vi.fn()}
+                    onToggleTagOption={vi.fn()}
                     onSearchQueryChange={setQuery}
                 />
             );
@@ -289,31 +385,25 @@ describe('SessionListSearchChrome', () => {
         expect(screen.root.findByProps({ testID: 'session-list-search-input' })).toBe(openedInput);
     });
 
-    it('persists storage filter selection and exposes the active-filter affordance', async () => {
+    it('keeps source filtering in the corpus editor instead of View options', async () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
                 searchQuery=""
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
             />,
         );
 
-        expect(screen.root.findByProps({ testID: 'session-list-ordering-menu-trigger' }).props.accessibilityState)
-            .toEqual({ selected: true });
-        expect(screen.root.findByProps({ testID: 'session-list-active-filter-indicator' })).toBeTruthy();
+        expect(screen.root.findByProps({ testID: 'session-list-view-options-trigger' })).toBeTruthy();
+        expect(screen.root.findAllByProps({ testID: 'session-list-active-filter-indicator' })).toHaveLength(0);
 
-        const orderingMenuProps = dropdownMenuSpy.mock.calls
-            .map(([props]) => props as { items?: Array<{ id: string }>; onSelect?: (id: string) => void })
-            .find((props) => props.items?.some((item) => item.id === 'sessionListStorageFilterAll'));
-        expect(orderingMenuProps).toBeTruthy();
-
-        await act(async () => {
-            orderingMenuProps?.onSelect?.('sessionListStorageFilterPersisted');
-        });
-        expect(setStorageFilterSpy).toHaveBeenCalledWith('persisted');
+        const viewOptionsProps = dropdownMenuSpy.mock.calls
+            .map(([props]) => props as { items?: Array<{ id: string }> })
+            .find((props) => props.items?.some((item) => item.id.startsWith('layout:')));
+        expect(viewOptionsProps?.items?.some((item) => item.id.startsWith('sessionListStorageFilter'))).toBe(false);
     });
 
     it('uses non-overlapping real minimum touch boxes for every chrome action', async () => {
@@ -321,10 +411,10 @@ describe('SessionListSearchChrome', () => {
         const { resolveMinimumInteractiveTargetSize } = await import('@/components/ui/interactiveTargetSize');
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={['alpha']}
-                selectedTags={[]}
+                tagOptions={[{ id: 'tag:a', label: 'alpha' }]}
+                selectedTagOptionIds={[]}
                 searchQuery=""
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
             />,
         );
@@ -344,7 +434,7 @@ describe('SessionListSearchChrome', () => {
         expect(flatten(tagTrigger.props.style)).toMatchObject({ minWidth: minimum, minHeight: minimum });
         expect(tagTrigger.props.hitSlop).toBeUndefined();
 
-        const orderingTrigger = screen.root.findByProps({ testID: 'session-list-ordering-menu-trigger' });
+        const orderingTrigger = screen.root.findByProps({ testID: 'session-list-view-options-trigger' });
         expect(flatten(orderingTrigger.props.style)).toMatchObject({ minWidth: minimum, minHeight: minimum });
         expect(orderingTrigger.props.hitSlop).toBeUndefined();
     });
@@ -354,10 +444,10 @@ describe('SessionListSearchChrome', () => {
         const { resolveMinimumInteractiveTargetSize } = await import('@/components/ui/interactiveTargetSize');
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
                 searchQuery="vector"
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
             />,
         );
@@ -380,10 +470,10 @@ describe('SessionListSearchChrome', () => {
         const { resolveMinimumInteractiveTargetSize } = await import('@/components/ui/interactiveTargetSize');
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={['alpha']}
-                selectedTags={[]}
+                tagOptions={[{ id: 'tag:a', label: 'alpha' }]}
+                selectedTagOptionIds={[]}
                 searchQuery="responsive"
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
                 onSearchEverything={vi.fn()}
             />,
@@ -419,10 +509,10 @@ describe('SessionListSearchChrome', () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
                 searchQuery=""
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
             />,
         );
@@ -439,10 +529,10 @@ describe('SessionListSearchChrome', () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
+                tagOptions={[]}
+                selectedTagOptionIds={[]}
                 searchQuery=""
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
             />,
         );
@@ -473,26 +563,4 @@ describe('SessionListSearchChrome', () => {
         expect(flatten(blurred.props.style).outlineStyle).not.toBe('solid');
     });
 
-    it('does not advertise a persisted external filter while the feature is disabled', async () => {
-        featureFlags.externalSessionsEnabled = false;
-        const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
-        const screen = await renderScreen(
-            <SessionListSearchChrome
-                allKnownTags={[]}
-                selectedTags={[]}
-                searchQuery=""
-                onSelectedTagsChange={vi.fn()}
-                onSearchQueryChange={vi.fn()}
-            />,
-        );
-
-        expect(screen.root.findByProps({ testID: 'session-list-ordering-menu-trigger' }).props.accessibilityState)
-            .toEqual({ selected: false });
-        expect(screen.root.findAllByProps({ testID: 'session-list-active-filter-indicator' })).toHaveLength(0);
-
-        const orderingMenuProps = dropdownMenuSpy.mock.calls
-            .map(([props]) => props as { items?: Array<{ id: string }> })
-            .find((props) => props.items?.some((item) => item.id === 'custom'));
-        expect(orderingMenuProps?.items?.some((item) => item.id.startsWith('sessionListStorageFilter'))).toBe(false);
-    });
 });

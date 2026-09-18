@@ -3,22 +3,24 @@ import type { Message } from '@/sync/domains/messages/messageTypes';
 import { readRegisteredStorageState } from '@/sync/domains/state/storageStateReaderBridge';
 import type { AgentState, Session } from '@/sync/domains/state/storageTypes';
 import { buildStableJsonSignature } from '@/sync/domains/session/metadata/sessionMetadataStability';
-import { readSessionPresentationCompletedRequests } from '@/sync/domains/session/presentation/readSessionPresentationCompletedRequests';
+import {
+    readSessionPresentationCompletedRequests,
+    readSharedMetadataActionConfirmationState,
+} from '@/sync/domains/session/presentation/readSessionPresentationCompletedRequests';
 import { isRequestInterruptedPlaceholder } from './requestInterruptedPlaceholder';
 import {
     isAgentStateRequestCoveredByCompletedRequests,
     resolveAgentStateRequestCoverageOptions,
 } from '@happier-dev/agents';
-import { SessionPublicCompletedRequestV1Schema } from '@happier-dev/protocol';
+import { SessionPublicCompletedRequestV1Schema, resolveAgentRequestKind, type AgentRequestKind } from '@happier-dev/protocol';
 import {
-    resolveAgentRequestKind,
     shouldShowGenericPermissionPromptForRequest,
-    type AgentRequestKind,
 } from '@/utils/sessions/permissions/permissionPromptPolicy';
 
 export type SessionPendingRequest = Readonly<{
     id: string;
     turnId?: string;
+    source?: string;
     tool: string;
     kind: AgentRequestKind;
     arguments: unknown;
@@ -108,6 +110,11 @@ function mergePendingRequestMetadata(
             ? { turnId: preferred.turnId }
             : secondary.turnId
                 ? { turnId: secondary.turnId }
+                : {}),
+        ...(preferred.source
+            ? { source: preferred.source }
+            : secondary.source
+                ? { source: secondary.source }
                 : {}),
         arguments: typeof preferred.arguments !== 'undefined' ? preferred.arguments : secondary.arguments,
         createdAt: preferred.createdAt ?? secondary.createdAt,
@@ -310,6 +317,9 @@ function listPendingAgentStateRequests(agentState: AgentState | null | undefined
             ...(typeof request.turnId === 'string' && request.turnId.trim().length > 0
                 ? { turnId: request.turnId.trim() }
                 : {}),
+            ...(typeof request.source === 'string' && request.source.trim().length > 0
+                ? { source: request.source.trim() }
+                : {}),
             tool: toolName,
             kind: resolveAgentRequestKind({
                 toolName,
@@ -371,7 +381,11 @@ function hasProjectedPendingRequestCounts(session: Session): boolean {
 }
 
 function hasPendingAgentRequests(session: Session): boolean {
-    return listPendingAgentStateRequests(session.agentState).length > 0;
+    return listPendingAgentStateRequests(session.agentState).length > 0
+        || listPendingAgentStateRequests(readSharedMetadataActionConfirmationState(
+            session.metadata,
+            session.metadataLayoutVersion,
+        ) as AgentState | null).length > 0;
 }
 
 function hasPendingAgentUserActionRequests(session: Session): boolean {
@@ -418,10 +432,15 @@ export function deriveLatestPendingAgentStateRequestObservedAt(agentState: Agent
 }
 
 export function buildPendingSessionRequestsSourceSignature(session: Session): string {
+    const sharedActionState = readSharedMetadataActionConfirmationState(
+        session.metadata,
+        session.metadataLayoutVersion,
+    );
     return buildStableJsonSignature({
         active: session.active === true,
         presentationCompletedRequests: readSessionPresentationCompletedRequests(session),
         agentStateRequests: session.agentState?.requests ?? null,
+        sharedActionRequests: sharedActionState?.requests ?? null,
         pendingPermissionRequestCount: buildProjectedPendingRequestCountSignature(session.pendingPermissionRequestCount),
         pendingRequestObservedAt: readProjectedPendingRequestObservedAt(session),
         pendingUserActionRequestCount: buildProjectedPendingRequestCountSignature(session.pendingUserActionRequestCount),
@@ -455,7 +474,14 @@ export function listPendingSessionRequests(
     messages?: ReadonlyArray<Message>,
     statesCache?: TranscriptRequestStatesCache,
 ): SessionPendingRequest[] {
-    const pendingAgentStateRequests = listPendingAgentStateRequests(session.agentState);
+    const sharedActionState = readSharedMetadataActionConfirmationState(
+        session.metadata,
+        session.metadataLayoutVersion,
+    );
+    const pendingAgentStateRequests = [
+        ...listPendingAgentStateRequests(session.agentState),
+        ...listPendingAgentStateRequests(sharedActionState as AgentState | null),
+    ];
 
     if (session.active !== true) {
         return pendingAgentStateRequests.filter((request) => request.kind === 'user_action');
@@ -599,31 +625,51 @@ export function derivePendingRequestFlagsFromSession(
         };
     }
 
+    const actionFlags = derivePendingRequestFlagsFromAgentState(
+        readSharedMetadataActionConfirmationState(
+            session.metadata,
+            session.metadataLayoutVersion,
+        ) as AgentState | null,
+    );
+
     if (hasProjectedPendingRequestCounts(session)) {
         const transcriptStates = getTranscriptRequestStates(session, messages, statesCache);
         if (shouldUseProjectedPendingRequestCounts(session, transcriptStates)) {
             const projectedFlags = readProjectedPendingRequestFlags(session);
             const agentStateFlags = derivePendingRequestFlagsFromAgentState(session.agentState);
             return {
-                hasPendingPermissionRequests: projectedFlags.hasPendingPermissionRequests,
+                hasPendingPermissionRequests:
+                    projectedFlags.hasPendingPermissionRequests || actionFlags.hasPendingPermissionRequests,
                 hasPendingUserActionRequests:
-                    projectedFlags.hasPendingUserActionRequests || agentStateFlags.hasPendingUserActionRequests,
+                    projectedFlags.hasPendingUserActionRequests
+                    || agentStateFlags.hasPendingUserActionRequests
+                    || actionFlags.hasPendingUserActionRequests,
             };
         }
         const pendingTranscriptRequests = Array.from(transcriptStates.values())
             .flatMap((state) => (state.status === 'pending' ? [state.request] : []));
         if (pendingTranscriptRequests.length === 0) {
-            return EMPTY_PENDING_REQUEST_FLAGS;
+            return actionFlags;
         }
         return {
-            hasPendingPermissionRequests: pendingTranscriptRequests.some((request) => request.kind !== 'user_action'),
-            hasPendingUserActionRequests: pendingTranscriptRequests.some((request) => request.kind === 'user_action'),
+            hasPendingPermissionRequests:
+                pendingTranscriptRequests.some((request) => request.kind !== 'user_action')
+                || actionFlags.hasPendingPermissionRequests,
+            hasPendingUserActionRequests:
+                pendingTranscriptRequests.some((request) => request.kind === 'user_action')
+                || actionFlags.hasPendingUserActionRequests,
         };
     }
 
     const transcriptStates = getTranscriptRequestStates(session, messages, statesCache);
     if (shouldUseProjectedPendingRequestCounts(session, transcriptStates)) {
-        return readProjectedPendingRequestFlags(session);
+        const projectedFlags = readProjectedPendingRequestFlags(session);
+        return {
+            hasPendingPermissionRequests:
+                projectedFlags.hasPendingPermissionRequests || actionFlags.hasPendingPermissionRequests,
+            hasPendingUserActionRequests:
+                projectedFlags.hasPendingUserActionRequests || actionFlags.hasPendingUserActionRequests,
+        };
     }
 
     const requests = listPendingSessionRequests(session, messages, statesCache);

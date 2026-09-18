@@ -85,7 +85,10 @@ vi.mock(
 );
 
 vi.mock('@/encryption/base64', () => ({
-    decodeBase64: () => new Uint8Array(32).fill(1),
+    decodeBase64: (value: string) => {
+        if (value === 'invalid-key') throw new Error('invalid');
+        return new Uint8Array(32).fill(1);
+    },
 }));
 
 vi.mock('@/modal', async () => {
@@ -126,6 +129,10 @@ vi.mock('@/components/ui/text/Text', () => ({
 
 vi.mock('@/components/ui/buttons/RoundButton', () => ({
     RoundButton: (props: Record<string, unknown>) => React.createElement('RoundButton', props),
+}));
+
+vi.mock('@/components/ui/buttons/IconButton', () => ({
+    IconButton: (props: Record<string, unknown>) => React.createElement('IconButton', props),
 }));
 
 vi.mock('@/track', () => ({
@@ -252,6 +259,7 @@ describe('SecretKeyLoginForm', () => {
         expect(activateStackRuntimeServerSpy).not.toHaveBeenCalled();
         expect(authGetTokenSpy).not.toHaveBeenCalled();
         expect(loginSpy).not.toHaveBeenCalled();
+        expect(screen.findByTestId('restore-manual-submit')?.props.loading).toBe(false);
     });
 
     it('gives the secret-key input its accessible name', async () => {
@@ -260,5 +268,74 @@ describe('SecretKeyLoginForm', () => {
 
         expect(screen.findByTestId('restore-manual-secret-input')?.props.accessibilityLabel)
             .toBe('connect.secretKeyInputLabel');
+    });
+
+    it('keeps invalid key material in the field and reports it inline', async () => {
+        const { SecretKeyLoginForm } = await import('./SecretKeyLoginForm');
+        const screen = await renderScreen(<SecretKeyLoginForm />);
+        const secretInput = screen.findByTestId('restore-manual-secret-input');
+        if (!secretInput) throw new Error('Expected restore secret input to render');
+
+        await act(async () => {
+            secretInput.props.onChangeText('invalid-key');
+        });
+        await act(async () => {
+            await secretInput.props.onSubmitEditing();
+        });
+
+        expect(screen.findByTestId('restore-manual-secret-input')?.props.value).toBe('invalid-key');
+        expect(screen.findByTestId('restore-manual-secret-error')?.props.children).toBe('connect.invalidSecretKey');
+        expect(authGetTokenSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not mislabel a transport failure as an invalid key', async () => {
+        authGetTokenSpy.mockRejectedValueOnce(new TypeError('offline'));
+        const { SecretKeyLoginForm } = await import('./SecretKeyLoginForm');
+        const screen = await renderScreen(<SecretKeyLoginForm />);
+        const secretInput = screen.findByTestId('restore-manual-secret-input');
+        const submitButton = screen.findByTestId('restore-manual-submit');
+        if (!secretInput || !submitButton) throw new Error('Expected restore key form to render');
+
+        await act(async () => {
+            secretInput.props.onChangeText('valid-key');
+        });
+        await act(async () => {
+            await submitButton.props.action();
+        });
+
+        expect(screen.findByTestId('restore-manual-secret-input')?.props.value).toBe('valid-key');
+        expect(screen.findByTestId('restore-manual-secret-error')?.props.children).toBe('welcome.serverUnavailableTitle');
+    });
+
+    it('admits only one ceremony when Enter is followed by the submit button while authentication is pending', async () => {
+        let resolveToken!: (token: string) => void;
+        authGetTokenSpy.mockImplementationOnce(async () => await new Promise<string>((resolve) => {
+            resolveToken = resolve;
+        }));
+        const { SecretKeyLoginForm } = await import('./SecretKeyLoginForm');
+        const screen = await renderScreen(<SecretKeyLoginForm />);
+        const secretInput = screen.findByTestId('restore-manual-secret-input');
+        const submitButton = screen.findByTestId('restore-manual-submit');
+        if (!secretInput || !submitButton) throw new Error('Expected restore key form to render');
+
+        await act(async () => {
+            secretInput.props.onChangeText('valid-key');
+        });
+        act(() => {
+            secretInput.props.onSubmitEditing();
+        });
+        await vi.waitFor(() => expect(authGetTokenSpy).toHaveBeenCalledTimes(1));
+        expect(screen.findByTestId('restore-manual-submit')?.props.loading).toBe(true);
+
+        await act(async () => {
+            await submitButton.props.action();
+        });
+        expect(authGetTokenSpy).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            resolveToken('tok_restore');
+            await Promise.resolve();
+        });
+        await vi.waitFor(() => expect(screen.findByTestId('restore-manual-submit')?.props.loading).toBe(false));
     });
 });

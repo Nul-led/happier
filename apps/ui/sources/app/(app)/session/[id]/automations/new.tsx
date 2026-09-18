@@ -2,7 +2,7 @@ import React from 'react';
 import { useLocalSearchParams } from 'expo-router';
 
 import { AutomationsGate } from '@/components/automations/gating/AutomationsGate';
-import { SessionAutomationCreateScreen } from '@/components/automations/screens/SessionAutomationCreateScreen';
+import { SessionWorkflowEditorScreen } from '@/components/workflows/screens/SessionWorkflowEditorScreen';
 import { createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 
@@ -12,7 +12,7 @@ export default function SessionAutomationCreateRoute() {
     const sessionId = normalizeSessionId(params.id);
     return (
         <AutomationsGate>
-            <SessionAutomationCreateScreen sessionId={sessionId} hydrationOptions={routeScope.hydrationOptions} />
+            <SessionWorkflowEditorScreen sessionId={sessionId} hydrationOptions={routeScope.hydrationOptions} />
         </AutomationsGate>
     );
 }

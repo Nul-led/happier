@@ -3,6 +3,7 @@ import { storage } from '@/sync/domains/state/storage';
 import { delay } from '@/utils/timing/time';
 import { t } from '@/text';
 import type { SessionStopRecovery } from '@/sync/ops/sessionStopContract';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 type SessionMutationResult = Readonly<{
     success: boolean;
@@ -12,7 +13,7 @@ type SessionMutationResult = Readonly<{
 }>;
 
 export type StopSessionAndMaybeArchiveParams = Readonly<{
-    sessionId: string;
+    address: SessionAddress;
     hideInactiveSessions: boolean;
     isPinned: boolean;
     archiveAfterStop: 'never' | 'always';
@@ -81,19 +82,21 @@ async function archiveAfterStopWithRetry(params: Readonly<{
     }
 }
 
-export function keepSessionVisibleWhenInactive(sessionId: string): void {
-    storage.getState().applySessionListRenderablePatches([
+export function keepSessionVisibleWhenInactive(address: SessionAddress): void {
+    const state = storage.getState();
+    state.applyServerScopedSessionListRowPatches(address.serverId, [
         {
-            sessionId,
+            sessionId: address.sessionId,
             patch: { keepVisibleWhenInactive: true },
         },
     ]);
 }
 
-export function clearSessionVisibleWhenInactive(sessionId: string): void {
-    storage.getState().applySessionListRenderablePatches([
+export function clearSessionVisibleWhenInactive(address: SessionAddress): void {
+    const state = storage.getState();
+    state.applyServerScopedSessionListRowPatches(address.serverId, [
         {
-            sessionId,
+            sessionId: address.sessionId,
             patch: { keepVisibleWhenInactive: false },
         },
     ]);
@@ -103,13 +106,13 @@ export async function stopSessionAndMaybeArchive(params: StopSessionAndMaybeArch
     const keepVisibleWhenStopping = params.archiveAfterStop === 'always';
 
     if (keepVisibleWhenStopping) {
-        keepSessionVisibleWhenInactive(params.sessionId);
+        keepSessionVisibleWhenInactive(params.address);
     }
 
     const stopResult = await params.stopSession();
     if (!stopResult.success && !isAcceptedPendingSessionStop(stopResult)) {
         if (keepVisibleWhenStopping) {
-            clearSessionVisibleWhenInactive(params.sessionId);
+            clearSessionVisibleWhenInactive(params.address);
         }
         throw new HappyError(resolveSessionStopFailureMessage(stopResult, params.stopErrorMessage), false);
     }
@@ -125,7 +128,7 @@ export async function stopSessionAndMaybeArchive(params: StopSessionAndMaybeArch
         });
     } finally {
         if (keepVisibleWhenStopping) {
-            clearSessionVisibleWhenInactive(params.sessionId);
+            clearSessionVisibleWhenInactive(params.address);
         }
     }
 }

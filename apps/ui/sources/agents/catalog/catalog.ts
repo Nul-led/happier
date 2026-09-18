@@ -1,5 +1,5 @@
 import type { AgentCoreConfig, MachineLoginKey } from '@/agents/registry/registryCore';
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 import {
     AGENT_IDS,
     DEFAULT_AGENT_ID,
@@ -21,6 +21,7 @@ type AgentIconTintTheme = Parameters<RegistryUiModule['getAgentIconTintColor']>[
 import * as RegistryUi from '@/agents/registry/registryUi';
 
 import type { AgentUiBehavior } from '@/agents/registry/registryUiBehavior';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import {
     buildResumeCapabilityOptionsFromUiState,
     buildNewSessionOptionsFromUiState,
@@ -61,7 +62,7 @@ export function resolveBundledAgentIdFromContributionIdentity(identity: unknown)
     const parsed = PluginContributionIdentityV1Schema.safeParse(identity);
     if (!parsed.success) return null;
     for (const agentId of AGENT_IDS) {
-        const bundledIdentity = BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[agentId];
+        const bundledIdentity = BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[agentId];
         if (
             bundledIdentity.pluginId === parsed.data.pluginId
             && bundledIdentity.localId === parsed.data.localId
@@ -109,8 +110,8 @@ export function getAgentCliGlyph(agentId: string): ReturnType<RegistryUiModule['
     return registryUi().getAgentCliGlyph(agentId);
 }
 
-export function getAgentBehavior(id: AgentId, machineId?: string | null): AgentUiBehavior {
-    return resolveAgentUiBehavior(id, machineId);
+export function getAgentBehavior(id: AgentId, machineId?: string | null, accountScope?: ServerAccountScope | null): AgentUiBehavior {
+    return resolveAgentUiBehavior(id, machineId, accountScope);
 }
 
 export function getAgent(id: BundledAgentId): AgentCatalogEntry {

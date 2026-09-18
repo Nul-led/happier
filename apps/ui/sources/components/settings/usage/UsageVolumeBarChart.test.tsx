@@ -30,7 +30,7 @@ describe('UsageVolumeBarChart', () => {
         expect(scrollView.props.contentOffset).toBeUndefined();
         expect(screen.findByType(ScrollEdgeFades as never)).toBeTruthy();
         expect(screen.findByType(ScrollEdgeIndicators as never)).toBeTruthy();
-        expect(screen.findAllByTestId('usage-volume-point-trigger')).toHaveLength(points.length);
+        expect(screen.findAllHostsByTestId('usage-volume-point-trigger')).toHaveLength(points.length);
         expect(screen.findByTestId('usage-volume-point-anchor-0')).toBeTruthy();
     });
 

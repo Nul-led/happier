@@ -4,7 +4,6 @@ export {
     PluginInlineSurfaceHost,
     PluginSettingsPageHost,
     type PluginInlineSurfaceHostProps,
-    type PluginInlineSurfaceMountV1,
 } from './PluginSurfaceHost';
 // §3.1: a placement supplies FACTS (`binding`), never a composed Host API. The
 // mounted API type is deliberately not re-exported here — the only way to obtain

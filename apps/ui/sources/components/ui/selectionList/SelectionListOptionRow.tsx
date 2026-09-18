@@ -108,7 +108,7 @@ export type RenderPlanRowsProps = Readonly<{
     plan: SectionRenderPlan;
     rootTestID: string | undefined;
     stepId: string;
-    selectedOptionId: string | null | undefined;
+    selectedOptionIds: ReadonlySet<string>;
     focusedOptionId: string | null;
     onSelect: (id: string, option: SelectionListOption) => void;
     onPushStep: (step: SelectionListStep) => void;
@@ -486,7 +486,7 @@ export function PlanSuccessRows(props: RenderPlanRowsProps): React.ReactElement 
             option={option}
             rootTestID={props.rootTestID}
             stepId={props.stepId}
-            isSelected={props.selectedOptionId === option.id}
+            isSelected={props.selectedOptionIds.has(option.id)}
             isFocused={props.focusedOptionId === option.id}
             onSelect={props.onSelect}
             onPushStep={props.onPushStep}
@@ -582,7 +582,7 @@ export function PlanAnimatedSuccessRows(props: RenderPlanRowsProps & {
                 plan={props.plan}
                 rootTestID={props.rootTestID}
                 stepId={props.stepId}
-                selectedOptionId={props.selectedOptionId}
+                selectedOptionIds={props.selectedOptionIds}
                 focusedOptionId={props.focusedOptionId}
                 onSelect={props.onSelect}
                 onPushStep={props.onPushStep}

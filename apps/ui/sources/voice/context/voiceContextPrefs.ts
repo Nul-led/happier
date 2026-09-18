@@ -1,6 +1,7 @@
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
 import type { ResolvedVoiceContextFormatterPrefs } from '@/voice/context/contextFormatters';
 import { resolveVoiceSessionUpdatePolicy } from '@/voice/runtime/voiceUpdatePolicy';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 function resolveVoicePrivacySettings(settings: unknown) {
   const privacy = readVoicePrivacySettings(settings);
@@ -19,7 +20,9 @@ function resolveVoicePrivacySettings(settings: unknown) {
 export function getVoiceContextFormatterPrefs(params: Readonly<{
   settings: unknown;
   sessionId?: string | null;
-  trackedSessionIds?: ReadonlyArray<string>;
+  sessionAddress?: SessionAddress | null;
+  includeInVoice?: boolean;
+  isCurrentAttemptTarget?: boolean;
 }>): ResolvedVoiceContextFormatterPrefs {
   const privacy = resolveVoicePrivacySettings(params.settings);
   const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : '';
@@ -39,8 +42,10 @@ export function getVoiceContextFormatterPrefs(params: Readonly<{
 
   const level = resolveVoiceSessionUpdatePolicy({
     sessionId,
+    sessionAddress: params.sessionAddress,
     settings: params.settings,
-    trackedSessionIds: params.trackedSessionIds ?? [],
+    includeInVoice: params.includeInVoice,
+    isCurrentAttemptTarget: params.isCurrentAttemptTarget,
   }).level;
   const allowSummaries = level === 'summaries' || level === 'snippets';
   const allowSnippets = level === 'snippets';

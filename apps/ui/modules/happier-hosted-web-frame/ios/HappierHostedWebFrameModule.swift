@@ -2,8 +2,9 @@ import ExpoModulesCore
 
 /**
  Expo entrypoint for the one token-scoped hosted-web Artifact frame. The
- registry remains the native consumer of opaque Artifact cache coordinates;
- this module deliberately has no URL, byte, or cache-path API.
+ registry remains the native consumer of opaque Artifact cache coordinates or
+ token-owned current-load bytes. Neither URLs, cache paths, nor bytes are
+ exposed to hosted content.
  */
 public final class HappierHostedWebFrameModule: Module {
   public func definition() -> ModuleDefinition {
@@ -28,6 +29,17 @@ public final class HappierHostedWebFrameModule: Module {
       HostedWebArtifactRegistryOwner.shared.unregister(token)
     }
 
+    AsyncFunction("registerInlineDocument") { (input: [String: Any]) -> [String: Any] in
+      if HostedInlineDocumentRegistry.shared.register(input) {
+        return ["kind": "registered"]
+      }
+      return ["kind": "unavailable", "code": "native_inline_document_registration_failed"]
+    }
+
+    Function("unregisterInlineDocument") { (token: String) -> Bool in
+      HostedInlineDocumentRegistry.shared.unregister(token)
+    }
+
     View(HostedWebArtifactView.self) {
       Events("onMessage", "onLoadStart", "onLoadEnd", "onLoadError", "onExternalNavigation", "onBlockedNavigation", "onHistoryStateChange")
 
@@ -37,11 +49,17 @@ public final class HappierHostedWebFrameModule: Module {
       Prop("artifactHandleToken") { (view: HostedWebArtifactView, token: String?) in
         view.setArtifactHandleToken(token)
       }
+      Prop("inlineDocumentHandleToken") { (view: HostedWebArtifactView, token: String?) in
+        view.setInlineDocumentHandleToken(token)
+      }
       Prop("initialPathAndQuery") { (view: HostedWebArtifactView, pathAndQuery: String?) in
         view.setInitialPathAndQuery(pathAndQuery)
       }
       Prop("allowedNavigationOrigins") { (view: HostedWebArtifactView, origins: [String]) in
         view.setAllowedNavigationOrigins(origins)
+      }
+      Prop("externalHttpLinks") { (view: HostedWebArtifactView, enabled: Bool) in
+        view.setExternalHttpLinks(enabled)
       }
 
       // Expo view AsyncFunctions live on the view ref and execute on the main
@@ -57,6 +75,7 @@ public final class HappierHostedWebFrameModule: Module {
 
     OnDestroy {
       HostedWebArtifactRegistryOwner.shared.clear()
+      HostedInlineDocumentRegistry.shared.clear()
     }
   }
 }

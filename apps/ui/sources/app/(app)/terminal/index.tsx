@@ -9,11 +9,10 @@ import { clearPendingTerminalConnect, setPendingTerminalConnect } from '@/sync/d
 import { getServerUrl } from '@/sync/domains/server/serverConfig';
 import {
     buildTerminalConnectAuthRedirectHref,
-    buildTerminalConnectDeepLink,
     parseTerminalConnectRouteParams,
+    resolveTerminalConnectPreAuthTarget,
 } from '@/utils/path/terminalConnectUrl';
 import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
-import { resolveEffectiveServerUrlOverride } from '@/sync/domains/server/url/serverUrlOverridePolicy';
 
 export default function TerminalScreen() {
     const router = useRouter();
@@ -23,60 +22,96 @@ export default function TerminalScreen() {
 
     const parsed = React.useMemo(() => parseTerminalConnectRouteParams(searchParams), [searchParams]);
     const publicKey = parsed?.publicKeyB64Url ?? null;
-    const serverUrl = parsed?.serverUrl ?? null;
+    const serverUrl = parsed?.serverUrl ?? parsed?.homeConnectionDescriptor?.canonicalServerUrl ?? null;
     const serverIdentityId = parsed?.serverIdentityId ?? null;
     const pairing = parsed?.pairing;
     const supportsTokenOnly = parsed?.supportsTokenOnly === true;
+    const homeConnectionDescriptor = parsed?.homeConnectionDescriptor;
+    const preAuthTarget = resolveTerminalConnectPreAuthTarget({
+        requestedServerUrl: serverUrl,
+        activeServerUrl: canonicalizeServerUrl(getServerUrl()),
+        ...(homeConnectionDescriptor ? { homeConnectionDescriptor } : {}),
+    });
+    const requiresUpdate = parsed?.compatibility?.admission === 'update_required';
+    const compatibilityHandledRef = React.useRef(false);
 
-    const { processAuthUrl, isLoading } = useConnectTerminal({
+    const { processParsedAuthUrl, isLoading } = useConnectTerminal({
         onSuccess: () => {
             router.back();
         },
     });
 
     React.useEffect(() => {
-        if (auth.isAuthenticated || !publicKey || authRedirectTriggeredRef.current) {
+        if (!parsed || !requiresUpdate || compatibilityHandledRef.current) return;
+        compatibilityHandledRef.current = true;
+        void processParsedAuthUrl(parsed);
+    }, [parsed, processParsedAuthUrl, requiresUpdate]);
+
+    React.useEffect(() => {
+        if (auth.isAuthenticated || !publicKey || requiresUpdate || authRedirectTriggeredRef.current) {
             return;
         }
 
         authRedirectTriggeredRef.current = true;
-        const currentServerUrl = canonicalizeServerUrl(getServerUrl());
-        const effectiveTarget = resolveEffectiveServerUrlOverride({
-            requestedServerUrl: serverUrl,
-            activeServerUrl: currentServerUrl,
-        });
+        if (!preAuthTarget) return;
+        const effectiveTarget = preAuthTarget.pendingServerUrl;
         setPendingTerminalConnect({
             publicKeyB64Url: publicKey,
-            serverUrl: effectiveTarget || currentServerUrl || getServerUrl(),
+            serverUrl: effectiveTarget,
             serverIdentityId: serverIdentityId ?? '',
             ...(pairing ? { pairing } : {}),
             ...(supportsTokenOnly ? { supportsTokenOnly: true } : {}),
+            ...(homeConnectionDescriptor ? { homeConnectionDescriptor } : {}),
         });
-        router.replace(buildTerminalConnectAuthRedirectHref({
-            serverUrl: effectiveTarget || currentServerUrl || getServerUrl(),
-        }));
-    }, [auth.isAuthenticated, pairing, publicKey, router, serverIdentityId, serverUrl, supportsTokenOnly]);
+        if (preAuthTarget.canNavigateToAuth) {
+            router.replace(buildTerminalConnectAuthRedirectHref({
+                serverUrl: effectiveTarget,
+            }));
+        }
+    }, [auth.isAuthenticated, homeConnectionDescriptor, pairing, preAuthTarget, publicKey, requiresUpdate, router, serverIdentityId, supportsTokenOnly]);
 
     const handleConnect = React.useCallback(async () => {
         if (!publicKey) {
             return;
         }
-        const authUrl = buildTerminalConnectDeepLink({
-            publicKeyB64Url: publicKey,
-            serverUrl,
-            serverIdentityId: serverIdentityId ?? undefined,
-            ...(pairing ? { pairing } : {}),
-            ...(supportsTokenOnly ? { supportsTokenOnly: true } : {}),
-        });
-        await processAuthUrl(authUrl);
-    }, [pairing, processAuthUrl, publicKey, serverIdentityId, serverUrl, supportsTokenOnly]);
+        if (parsed) await processParsedAuthUrl(parsed);
+    }, [parsed, processParsedAuthUrl, publicKey]);
 
     const handleReject = React.useCallback(() => {
         clearPendingTerminalConnect();
         router.back();
     }, [router]);
 
+    if (requiresUpdate) {
+        return (
+            <TerminalConnectSurface
+                testID="terminal-connect-surface"
+                state={{
+                    kind: 'message',
+                    title: t('connect.updateRequiredTitle'),
+                    description: t('connect.legacyPairingUpdateRequiredBody'),
+                    tone: 'critical',
+                }}
+            />
+        );
+    }
+
     if (!auth.isAuthenticated && publicKey) {
+        if (preAuthTarget?.canNavigateToAuth === false) {
+            return (
+                <TerminalConnectSurface
+                    testID="terminal-connect-surface"
+                    state={{
+                        kind: 'message',
+                        title: t('welcome.serverUnavailableTitle'),
+                        description: t('welcome.serverUnavailableBody', {
+                            serverUrl: preAuthTarget.pendingServerUrl,
+                        }),
+                        tone: 'critical',
+                    }}
+                />
+            );
+        }
         return (
             <TerminalConnectSurface
                 testID="terminal-connect-surface"

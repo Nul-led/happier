@@ -1,91 +1,20 @@
-import { deriveSessionAttentionFlags, type SessionAttentionFlags, type SessionAttentionOptions } from '@/sync/domains/session/attention/sessionAttention';
-import { deriveSessionListAttentionState } from '@/sync/domains/session/listing/deriveSessionListActivity';
-import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import type { SessionAttentionOptions } from '@/sync/domains/session/attention/sessionAttention';
 import type { Message } from '@/sync/domains/messages/messageTypes';
-import {
-    deriveLatestPendingAgentStateRequestObservedAt,
-    deriveLatestPendingRequestObservedAtFromSession,
-    derivePendingRequestFlagsFromSession,
-} from '@/sync/domains/session/pending/listPendingSessionRequests';
-import { deriveSessionRuntimePresentationState } from '@/sync/domains/session/attention/runtimePresentation';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import { getSessionName, getSessionStatus, getSessionSubtitle } from '@/utils/sessions/sessionUtils';
+import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
+import { resolveSessionPersonalAttentionForViewer } from '@/sync/domains/session/readState/sessionViewerAttention';
+import { getSessionName, getSessionSubtitle } from '@/utils/sessions/sessionUtils';
+import { isSessionAwarenessContentReadableV1 } from '@happier-dev/protocol';
+import { t } from '@/text';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
+import {
+    presentSessionPersonalAttentionReason,
+    resolveSessionListAttentionRank,
+    resolveSessionListAttentionState,
+} from '@/sync/domains/session/listing/deriveSessionListActivity';
 
 import type { SessionActivityAttention } from './activityAttentionTypes';
-import { isRecentActivityCompletion } from './activityCompletionTiming';
-
-function resolveAttentionPriority(state: SessionActivityAttention['attentionState']): number {
-    switch (state) {
-        case 'failed':
-            return 700;
-        case 'permission_required':
-            return 600;
-        case 'action_required':
-            return 550;
-        case 'thinking':
-            return 400;
-        case 'pending':
-            return 300;
-        case 'unread':
-            return 200;
-        case 'quiet':
-        default:
-            return 0;
-    }
-}
-
-function readNumber(value: unknown): number | null {
-    return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null;
-}
-
-function deriveActivityAttentionFlags(params: Readonly<{
-    session: Session;
-    sessionMessages?: readonly Message[];
-    sessionOptions?: SessionAttentionOptions;
-    nowMs?: number;
-}>): Readonly<{
-    flags: SessionAttentionFlags;
-    pendingRequestObservedAt: number | null;
-}> {
-    const baseFlags = deriveSessionAttentionFlags(params.session, params.sessionOptions);
-    const pendingFlags = derivePendingRequestFlagsFromSession(params.session, params.sessionMessages);
-    const pendingRequestObservedAt = deriveLatestPendingRequestObservedAtFromSession(
-        params.session,
-        params.sessionMessages,
-    ) ?? deriveLatestPendingAgentStateRequestObservedAt(params.session.agentState);
-    const runtimePresentation = deriveSessionRuntimePresentationState({
-        active: params.session.active,
-        activeAt: params.session.activeAt,
-        presence: params.session.presence,
-        thinking: params.session.thinking,
-        thinkingAt: params.session.thinkingAt,
-        optimisticThinkingAt: params.session.optimisticThinkingAt ?? null,
-        hasPendingUserMessages: (params.session.pendingCount ?? 0) > 0,
-        latestTurnStatus: params.session.latestTurnStatus ?? null,
-        latestTurnStatusObservedAt: params.session.latestTurnStatusObservedAt ?? null,
-        meaningfulActivityAt: params.session.meaningfulActivityAt ?? null,
-        lastRuntimeIssue: params.session.lastRuntimeIssue ?? null,
-        hasPendingPermissionRequests: pendingFlags.hasPendingPermissionRequests,
-        hasPendingUserActionRequests: pendingFlags.hasPendingUserActionRequests,
-        pendingRequestObservedAt,
-        nowMs: params.nowMs,
-    });
-
-    return {
-        flags: {
-            ...baseFlags,
-            hasPendingPermissionRequests:
-                params.session.active === true
-                && params.sessionOptions?.showPendingPermissionRequests !== false
-                && runtimePresentation.freshPermissionRequired,
-            hasPendingUserActionRequests:
-                params.session.active === true
-                && params.sessionOptions?.showPendingUserActionRequests !== false
-                && runtimePresentation.freshActionRequired,
-        },
-        pendingRequestObservedAt,
-    };
-}
+import { isSessionAdmittedToPersonalActivity } from './isSessionAdmittedToPersonalActivity';
 
 export function buildSessionActivityAttention(params: Readonly<{
     session: Session;
@@ -93,60 +22,63 @@ export function buildSessionActivityAttention(params: Readonly<{
     sessionOptions?: SessionAttentionOptions;
     nowMs?: number;
 }>): SessionActivityAttention {
-    const renderableSession = buildSessionListRenderableFromSession(params.session);
-    const status = getSessionStatus(renderableSession, params.nowMs);
-    const {
-        flags: reasons,
-        pendingRequestObservedAt,
-    } = deriveActivityAttentionFlags(params);
-    const lastTurnCompletedAt = typeof params.session.lastTurnCompletedAt === 'number'
-        && Number.isFinite(params.session.lastTurnCompletedAt)
-        ? params.session.lastTurnCompletedAt
-        : null;
-    const derivedAttentionState = deriveSessionListAttentionState({
-        hasUnreadMessages: reasons.hasUnread,
-        pendingCount: 0,
-        pendingBlockedCount: params.session.pendingBlockedCount ?? 0,
-        sessionState: status.state,
-        latestTurnStatus: params.session.latestTurnStatus ?? null,
-        lastRuntimeIssue: params.session.lastRuntimeIssue ?? null,
-        active: renderableSession.active,
-        activeAt: renderableSession.activeAt,
-        presence: renderableSession.presence,
-        thinking: renderableSession.thinking,
-        thinkingAt: renderableSession.thinkingAt,
-        optimisticThinkingAt: renderableSession.optimisticThinkingAt ?? null,
-        latestTurnStatusObservedAt: renderableSession.latestTurnStatusObservedAt ?? null,
-        pendingRequestObservedAt,
-        nowMs: params.nowMs,
+    const nowMs = params.nowMs ?? Date.now();
+    const personal = resolveSessionPersonalAttentionForViewer(params.session, nowMs, params.sessionMessages);
+    const personalReasons = personal.reasons.filter((reason) => {
+        if (reason === 'unread' || reason === 'unread_discussion' || reason === 'ready_after_read') return params.sessionOptions?.showUnread !== false;
+        if (reason === 'permission_required') return params.sessionOptions?.showPendingPermissionRequests !== false;
+        if (reason === 'user_action_required') return params.sessionOptions?.showPendingUserActionRequests !== false;
+        return true;
     });
-    const pendingAttentionState = reasons.hasPendingPermissionRequests
-        ? 'permission_required'
-        : reasons.hasPendingUserActionRequests
-            ? 'action_required'
-            : derivedAttentionState;
-    const attentionState = isRecentActivityCompletion(lastTurnCompletedAt, params.nowMs ?? Date.now())
-        ? 'pending'
-        : pendingAttentionState;
-
+    const awareness = projectUiSessionAwareness(params.session, nowMs);
+    const mayShowPrivateContent = personal.presentation !== 'status_only'
+        && isSessionAwarenessContentReadableV1(awareness.encryption);
+    const admitted = isSessionAdmittedToPersonalActivity(params.session);
+    const operational = admitted ? awareness.operational.primary : 'none';
+    const operationalAttentionState = resolveSessionListAttentionState({
+        operational,
+        hasUnreadMessages: personalReasons.some(
+            (reason) => reason === 'unread' || reason === 'unread_discussion',
+        ),
+    });
+    const primaryPersonalReason = personalReasons[0] ?? null;
+    const personalAttentionState = presentSessionPersonalAttentionReason(primaryPersonalReason);
+    // Reuse the Session list's operational-vs-transcript-read composition only
+    // for the read-like reasons it was designed to compose. Server-authoritative
+    // manual/reminder/actionable reasons keep their own presentation even when
+    // an operational ready fact exists alongside them.
+    const isTranscriptReadPresentation = primaryPersonalReason === 'unread'
+        || primaryPersonalReason === 'ready_after_read';
+    const attentionState = primaryPersonalReason === null
+        ? operationalAttentionState
+        : isTranscriptReadPresentation && operationalAttentionState !== 'quiet'
+            ? operationalAttentionState
+            : personalAttentionState;
+    const address = normalizeSessionAddress(params.session.serverId, params.session.id);
     return {
         session: params.session,
+        awareness,
         sessionId: params.session.id,
-        title: getSessionName(params.session),
-        subtitle: getSessionSubtitle(params.session),
+        ...(address ? { address, serverId: address.serverId } : null),
+        title: mayShowPrivateContent ? getSessionName(params.session) : t('sessionBoard.item.locked.title'),
+        subtitle: mayShowPrivateContent ? getSessionSubtitle(params.session) : '',
         attentionState,
-        hasAttention: attentionState !== 'quiet',
-        priority: resolveAttentionPriority(attentionState),
-        lastTurnCompletedAt,
+        personalAttention: {
+            ...personal,
+            reasons: personalReasons,
+            needsAttention: personal.needsAttention && personalReasons.length > 0,
+            primary: personalReasons[0] ?? null,
+        },
+        hasAttention: personal.needsAttention && personalReasons.length > 0,
+        priority: resolveSessionListAttentionRank(attentionState),
+        lastTurnCompletedAt: params.session.lastTurnCompletedAt ?? null,
         reasons: {
-            hasUnread: reasons.hasUnread,
-            hasPendingPermissionRequests:
-                reasons.hasPendingPermissionRequests || attentionState === 'permission_required',
-            hasPendingUserActionRequests:
-                reasons.hasPendingUserActionRequests || attentionState === 'action_required',
-            hasBlockedPendingDelivery: (params.session.pendingBlockedCount ?? 0) > 0,
-            hasQueuedUserInput: reasons.hasQueuedUserInput,
-            isThinking: status.state === 'thinking',
+            hasUnread: personalReasons.some((reason) => reason === 'unread' || reason === 'unread_discussion'),
+            hasPendingPermissionRequests: personalReasons.includes('permission_required'),
+            hasPendingUserActionRequests: personalReasons.includes('user_action_required'),
+            hasBlockedPendingDelivery: personalReasons.includes('pending_blocked'),
+            hasQueuedUserInput: admitted && (params.session.pendingCount ?? 0) > 0,
+            isThinking: operational === 'working',
         },
     };
 }

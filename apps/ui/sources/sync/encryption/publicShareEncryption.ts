@@ -1,6 +1,12 @@
 import { deriveKey } from '@/encryption/deriveKey';
-import { encryptSecretBox, decryptSecretBox } from '@/encryption/libsodium';
 import { encodeBase64, decodeBase64 } from '@/encryption/base64';
+import {
+    openPublicShareEncryptedDataKeyEnvelopeV0,
+    PUBLIC_SHARE_KEY_DERIVATION_PATH_V1,
+    PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
+    sealPublicShareEncryptedDataKeyEnvelopeV0,
+} from '@happier-dev/protocol';
+import { getRandomBytes } from '@/platform/cryptoRandom';
 
 /**
  * Encrypt a data encryption key for public sharing using a token
@@ -19,14 +25,16 @@ export async function encryptDataKeyForPublicShare(
 ): Promise<string> {
     // Derive encryption key from token
     const tokenBytes = new TextEncoder().encode(token);
-    const encryptionKey = await deriveKey(tokenBytes, 'Happy Public Share', ['v1']);
-
-    // IMPORTANT: encryptSecretBox JSON-stringifies its input, so we must not pass Uint8Array directly.
-    const payload = {
-        v: 0,
-        keyB64: encodeBase64(dataEncryptionKey, 'base64'),
-    };
-    const encrypted = encryptSecretBox(payload, encryptionKey);
+    const encryptionKey = await deriveKey(
+        tokenBytes,
+        PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
+        [...PUBLIC_SHARE_KEY_DERIVATION_PATH_V1],
+    );
+    const encrypted = sealPublicShareEncryptedDataKeyEnvelopeV0({
+        dataKey: dataEncryptionKey,
+        wrappingKey: encryptionKey,
+        randomBytes: getRandomBytes,
+    });
 
     // Return as base64
     return encodeBase64(encrypted, 'base64');
@@ -49,19 +57,17 @@ export async function decryptDataKeyFromPublicShare(
     try {
         // Derive decryption key from token
         const tokenBytes = new TextEncoder().encode(token);
-        const decryptionKey = await deriveKey(tokenBytes, 'Happy Public Share', ['v1']);
+        const decryptionKey = await deriveKey(
+            tokenBytes,
+            PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
+            [...PUBLIC_SHARE_KEY_DERIVATION_PATH_V1],
+        );
 
         // Decode from base64
-        const encrypted = decodeBase64(encryptedDataKey, 'base64');
-
-        const payload = decryptSecretBox(encrypted, decryptionKey) as { v: number; keyB64: string } | null;
-        if (!payload || payload.v !== 0) {
-            return null;
-        }
-        if (typeof payload.keyB64 !== 'string') {
-            return null;
-        }
-        return decodeBase64(payload.keyB64, 'base64');
+        return openPublicShareEncryptedDataKeyEnvelopeV0({
+            envelope: decodeBase64(encryptedDataKey, 'base64'),
+            wrappingKey: decryptionKey,
+        });
     } catch (error) {
         return null;
     }

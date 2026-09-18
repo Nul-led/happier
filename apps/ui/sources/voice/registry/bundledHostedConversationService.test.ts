@@ -7,9 +7,13 @@ const mocks = vi.hoisted(() => ({
   releaseSession: vi.fn(),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-  TokenStorage: { getCredentials: mocks.getCredentials },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+  return {
+    ...actual,
+    TokenStorage: { ...actual.TokenStorage, getCredentials: mocks.getCredentials },
+  };
+});
 
 vi.mock('@/sync/api/voice/apiVoice', () => ({
   fetchHappierVoiceToken: mocks.fetchToken,

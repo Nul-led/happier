@@ -1,0 +1,308 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import tweetnacl from 'tweetnacl';
+
+afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    vi.resetModules();
+});
+
+/**
+ * The manager Account's real content key pair. Persisted data-key credentials carry the content
+ * private key as `machineKey`, which is exactly what the canonical Account encryption owner opens
+ * the caller's own Session envelope with — so the composed test never fabricates a key.
+ */
+const MANAGER_CONTENT_KEYS = tweetnacl.box.keyPair();
+
+async function setup(options?: Readonly<{ accountEncryption?: 'plain' | 'e2ee' }>) {
+    vi.stubEnv('EXPO_PUBLIC_HAPPY_STORAGE_SCOPE', `envelope-${crypto.randomUUID()}`);
+    const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
+    const { upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
+    const active = await upsertAndActivateServer({ serverUrl: 'https://active.example', name: 'Active' });
+    const target = await upsertServerProfile({ serverUrl: 'https://target.example', name: 'Target' });
+    const { storage } = await import('@/sync/domains/state/storageStore');
+    storage.getState().activateProfileScope({ serverId: active.id, accountId: 'active-account' });
+    const token = (sub: string) => `e30.${Buffer.from(JSON.stringify({ sub })).toString('base64url')}.signature`;
+    const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+    const { encodeBase64 } = await import('@/encryption/base64');
+    // Persistent credentials and HTTP are the replaced system boundaries.
+    vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockImplementation(async url => ({
+        token: token(url === 'https://target.example' ? 'target-account' : 'active-account'),
+        ...(options?.accountEncryption === 'e2ee' ? {
+            encryption: {
+                publicKey: encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
+                machineKey: encodeBase64(MANAGER_CONTENT_KEYS.secretKey, 'base64'),
+            },
+        } : {}),
+    }));
+    const request = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => new Response(JSON.stringify({ status: 'not_required' })));
+    const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
+    setRuntimeFetch(async (url, init) => {
+        if (new URL(String(url)).pathname === '/v1/auth/ping') return new Response('{}');
+        return request(String(url), init);
+    });
+    return { target, request, token, TokenStorage };
+}
+
+describe('Session envelope exact Account transport', () => {
+    it('reads the nested resource with target credentials and rejects an Account mismatch before discovery', async () => {
+        const env = await setup();
+        const { createSessionDataKeyEnvelopeClient } = await import('./sessionDataKeyEnvelopesApi');
+        const args = {
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            sessionId: 'same/id', availability: 'full_collaboration' as const,
+            isCurrent: () => true,
+        };
+        await expect(createSessionDataKeyEnvelopeClient(args).fetchPage(null)).resolves.toEqual({ status: 'not_required' });
+        expect(env.request.mock.calls[0]?.[0]).toBe('https://target.example/v2/sessions/same%2Fid/data-key/envelopes?state=action_required');
+        expect(new Headers(env.request.mock.calls[0]?.[1]?.headers).get('Authorization')).toBe(`Bearer ${env.token('target-account')}`);
+        env.request.mockClear();
+        await expect(createSessionDataKeyEnvelopeClient({ ...args, scope: { ...args.scope, accountId: 'wrong' } }).fetchPage(null)).rejects.toThrow();
+        expect(env.request).not.toHaveBeenCalled();
+    });
+
+    it('fails unsupported collection access without probing and preserves typed server errors', async () => {
+        const env = await setup();
+        const { createSessionDataKeyEnvelopeClient } = await import('./sessionDataKeyEnvelopesApi');
+        const args = { scope: { serverId: env.target.id, accountId: 'target-account' }, sessionId: 'same', isCurrent: () => true };
+        await expect(createSessionDataKeyEnvelopeClient({ ...args, availability: 'direct_only' }).fetchPage(null)).rejects.toMatchObject({ code: 'unsupported_action' });
+        expect(env.request).not.toHaveBeenCalled();
+        env.request.mockImplementation(async () => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
+        await expect(createSessionDataKeyEnvelopeClient({ ...args, availability: 'full_collaboration' }).fetchPage(null)).rejects.toMatchObject({ code: 'forbidden', status: 403 });
+        expect(env.request.mock.calls).toHaveLength(1);
+    });
+
+    it('prepares a plain Session without opening keys or discovering recipient identities', async () => {
+        const env = await setup();
+        const { prepareSessionDataKeyEnvelopesForScope } = await import('./sessionDataKeyEnvelopesApi');
+        env.request.mockImplementation(async url => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) return new Response(JSON.stringify({ mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 }));
+            if (path === '/v2/sessions/same') return new Response(JSON.stringify({ session: {
+                id: 'same', createdAt: 1, updatedAt: 2, seq: 0, active: true, activeAt: 2,
+                encryptionMode: 'plain', dataEncryptionKey: null, metadataVersion: 1, metadata: '{}',
+                agentStateVersion: 1, agentState: null, share: null,
+            } }));
+            if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
+            throw new Error(`Unexpected request ${path}`);
+        });
+        await expect(prepareSessionDataKeyEnvelopesForScope({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            sessionId: 'same', availability: 'full_collaboration', isCurrent: () => true,
+        })).resolves.toMatchObject({ status: 'not_required', preparedCount: 0 });
+        expect(env.request.mock.calls.every(([url]) => !url.includes('/data-key/envelopes'))).toBe(true);
+    });
+
+    it.each(['missing', 'prepared'] as const)('prepares a real E2EE Session for a %s recipient so it opens the exact Session DEK', async (envelopeState) => {
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { encodeBase64, decodeBase64 } = await import('@/encryption/base64');
+        const { encodeHex } = await import('@/encryption/hex');
+        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
+        const { openEncryptedDataKeyEnvelopeV1, signAccountContentKeyBindingV1 } = await import('@happier-dev/protocol');
+        const { prepareSessionDataKeyEnvelopesForScope } = await import('./sessionDataKeyEnvelopesApi');
+
+        // The one Session DEK, sealed to the manager exactly as the Home stores it.
+        const sessionDataKey = new Uint8Array(32).fill(11);
+        const callerEnvelope = encryptDataKeyForRecipientV0(
+            sessionDataKey,
+            encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
+        );
+        const recipient = { content: tweetnacl.box.keyPair(), signing: tweetnacl.sign.keyPair() };
+        const contentPublicKey = encodeBase64(recipient.content.publicKey, 'base64');
+        const item = {
+            recipientAccountId: 'recipient-1',
+            envelopeState,
+            contentKey: {
+                status: 'available',
+                accountSigningPublicKey: encodeHex(recipient.signing.publicKey),
+                contentPublicKey,
+                contentPublicKeySignature: encodeBase64(signAccountContentKeyBindingV1({
+                    accountSigningSecretKey: recipient.signing.secretKey,
+                    contentPublicKey: recipient.content.publicKey,
+                }), 'base64'),
+            },
+        };
+
+        const events: string[] = [];
+        let uploaded: { recipientAccountId: string; encryptedDataKey: string } | null = null;
+        let envelopePages = 0;
+        env.request.mockImplementation(async (url, init) => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) return new Response(JSON.stringify({
+                mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing-current',
+                contentKeyFingerprint: 'content-current', updatedAt: 1,
+                recipientEnvelopeReadiness: { status: 'available' },
+            }));
+            if (path === '/v2/sessions/same') {
+                events.push('session');
+                return new Response(JSON.stringify({ session: {
+                    id: 'same', createdAt: 1, updatedAt: 2, seq: 3, active: true, activeAt: 2,
+                    encryptionMode: 'e2ee', dataEncryptionKey: callerEnvelope,
+                    metadataLayoutVersion: 0, metadataVersion: 4, metadata: 'sealed-metadata',
+                    agentStateVersion: 5, agentState: null, share: null,
+                } }));
+            }
+            if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
+            if (path.endsWith('/data-key/envelopes') && init?.method === 'PATCH') {
+                events.push('patch');
+                const body = JSON.parse(String(init.body)) as { entries: typeof uploaded[] };
+                expect(body.entries.map(entry => entry?.recipientAccountId)).toEqual(['recipient-1']);
+                uploaded = body.entries[0] ?? null;
+                return new Response(JSON.stringify({ appliedCount: 1 }));
+            }
+            if (path.endsWith('/data-key/envelopes')) {
+                envelopePages += 1;
+                events.push(`get:${envelopePages}`);
+                const includesRecipient = envelopeState === 'missing' || new URL(url).searchParams.get('state') === 'all';
+                return new Response(JSON.stringify(envelopePages === 1
+                    ? { status: 'required', summary: { prepared: envelopeState === 'prepared' ? 2 : 0, pending: envelopeState === 'missing' ? 1 : 0, invalid: 0, recipientKeyUnavailable: 0 }, items: includesRecipient ? (envelopeState === 'prepared' ? [{ ...item, recipientAccountId: 'unrelated-recipient' }, item] : [item]) : [], nextCursor: null }
+                    : { status: 'required', summary: { prepared: envelopeState === 'prepared' ? 2 : 1, pending: 0, invalid: 0, recipientKeyUnavailable: 0 }, items: [], nextCursor: null }));
+            }
+            throw new Error(`Unexpected request ${path}`);
+        });
+
+        const onProgress = vi.fn(() => { events.push('progress'); });
+        const outcome = await prepareSessionDataKeyEnvelopesForScope({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            sessionId: 'same', availability: 'full_collaboration', isCurrent: () => true,
+            ...(envelopeState === 'prepared' ? { reprepareRecipientAccountId: 'recipient-1' } : {}),
+            onProgress,
+        });
+
+        expect(outcome.status).toBe('complete');
+        expect(outcome.preparedCount).toBe(1);
+        // The recipient recovers the exact 32 bytes the manager opened from its own envelope —
+        // not a re-keyed value, and not the manager's Account material.
+        const opened = openEncryptedDataKeyEnvelopeV1({
+            envelope: decodeBase64(uploaded!.encryptedDataKey, 'base64'),
+            recipientSecretKeyOrSeed: recipient.content.secretKey,
+        });
+        expect(opened).toEqual(sessionDataKey);
+        expect(opened?.byteLength).toBe(32);
+        // Nobody else can open it, including the manager whose envelope supplied the key.
+        expect(openEncryptedDataKeyEnvelopeV1({
+            envelope: decodeBase64(uploaded!.encryptedDataKey, 'base64'),
+            recipientSecretKeyOrSeed: MANAGER_CONTENT_KEYS.secretKey,
+        })).toBeNull();
+        // Snapshot before discovery, and progress only after the server acknowledged the commit.
+        expect(events).toEqual(['session', 'get:1', 'patch', 'progress', 'get:2']);
+        expect(onProgress).toHaveBeenCalledWith({
+            preparedCount: 1,
+            pagesCommitted: 1,
+            actionableTotal: 1,
+        });
+        // The rendered aggregate is the server's own, refreshed by the final recheck page.
+        expect(outcome.summary).toEqual({ prepared: envelopeState === 'prepared' ? 2 : 1, pending: 0, invalid: 0, recipientKeyUnavailable: 0 });
+    });
+
+    it('does not carry a Session DEK across an Account-encryption generation change while opening it', async () => {
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { Encryption } = await import('@/sync/encryption/encryption');
+        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
+        const { prepareSessionDataKeyEnvelopesForScope } = await import('./sessionDataKeyEnvelopesApi');
+
+        const sessionDataKey = new Uint8Array(32).fill(11);
+        const callerEnvelope = encryptDataKeyForRecipientV0(
+            sessionDataKey,
+            encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
+        );
+        const originalOpen = Encryption.prototype.decryptEncryptionKey;
+        vi.spyOn(Encryption.prototype, 'decryptEncryptionKey').mockImplementation(async function (this: typeof Encryption.prototype, encrypted, scope) {
+            const opened = await originalOpen.call(this, encrypted, scope);
+            // This is the exact dangerous boundary: the caller's old Session DEK has opened, but
+            // the Account encryption owner has moved to a new generation before recipient work
+            // begins. Capturing generation only after this await would bless the retired bytes.
+            const captured = this.getCurrentEncryptionGenerationScope({ serverId: env.target.id });
+            this.configureNativeCryptoWorker({
+                scope: {
+                    accountId: captured.accountId,
+                    serverId: captured.serverId,
+                    generation: captured.generation + 1,
+                },
+            });
+            return opened;
+        });
+
+        env.request.mockImplementation(async (url) => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) return new Response(JSON.stringify({
+                mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing-current',
+                contentKeyFingerprint: 'content-current', updatedAt: 1,
+                recipientEnvelopeReadiness: { status: 'available' },
+            }));
+            if (path === '/v2/sessions/same') return new Response(JSON.stringify({ session: {
+                id: 'same', createdAt: 1, updatedAt: 2, seq: 3, active: true, activeAt: 2,
+                encryptionMode: 'e2ee', dataEncryptionKey: callerEnvelope,
+                metadataLayoutVersion: 0, metadataVersion: 4, metadata: 'sealed-metadata',
+                agentStateVersion: 5, agentState: null, share: null,
+            } }));
+            if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
+            if (path.endsWith('/data-key/envelopes')) {
+                throw new Error('stale key material must not reach recipient discovery');
+            }
+            throw new Error(`Unexpected request ${path}`);
+        });
+
+        await expect(prepareSessionDataKeyEnvelopesForScope({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            sessionId: 'same', availability: 'full_collaboration', isCurrent: () => true,
+        })).resolves.toMatchObject({ status: 'scope_changed', preparedCount: 0 });
+        expect(env.request.mock.calls.every(([url]) => !url.includes('/data-key/envelopes'))).toBe(true);
+    });
+
+    it('returns scope_changed when Account encryption changes during the Session snapshot read', async () => {
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { Encryption } = await import('@/sync/encryption/encryption');
+        const originalCreate = Encryption.createFromContentKeyPair;
+        let manager: typeof Encryption.prototype | null = null;
+        vi.spyOn(Encryption, 'createFromContentKeyPair').mockImplementation(async params => {
+            manager = await originalCreate(params);
+            return manager;
+        });
+        const { prepareSessionDataKeyEnvelopesForScope } = await import('./sessionDataKeyEnvelopesApi');
+        env.request.mockImplementation(async url => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) {
+                return new Response(JSON.stringify({
+                    mode: 'e2ee',
+                    version: 1,
+                    signingKeyFingerprint: 'signing-current',
+                    contentKeyFingerprint: 'content-current',
+                    updatedAt: 1,
+                    recipientEnvelopeReadiness: { status: 'available' },
+                }));
+            }
+            if (path === '/v2/sessions/same') {
+                if (!manager) throw new Error('Expected Account encryption before Session fetch');
+                const scope = manager.getCurrentEncryptionGenerationScope({ serverId: env.target.id });
+                manager.configureNativeCryptoWorker({ scope: { ...scope, generation: scope.generation + 1 } });
+                return new Response(JSON.stringify({ session: {
+                    id: 'same', createdAt: 1, updatedAt: 2, seq: 3, active: true, activeAt: 2,
+                    encryptionMode: 'e2ee', dataEncryptionKey: 'retired-envelope',
+                    metadataLayoutVersion: 0, metadataVersion: 4, metadata: 'sealed',
+                    agentStateVersion: 5, agentState: null, share: null,
+                } }));
+            }
+            if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
+            throw new Error(`Unexpected request ${path}`);
+        });
+        await expect(prepareSessionDataKeyEnvelopesForScope({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            sessionId: 'same', availability: 'full_collaboration', isCurrent: () => true,
+        })).resolves.toMatchObject({ status: 'scope_changed', preparedCount: 0 });
+    });
+
+    it('suppresses a response after target credentials change', async () => {
+        const env = await setup();
+        const { createSessionDataKeyEnvelopeClient } = await import('./sessionDataKeyEnvelopesApi');
+        env.request.mockImplementation(async () => {
+            await env.TokenStorage.setCredentialsForServerUrl('https://target.example', { serverId: env.target.id }, { token: env.token('replacement') });
+            return new Response(JSON.stringify({ status: 'not_required' }));
+        });
+        await expect(createSessionDataKeyEnvelopeClient({
+            scope: { serverId: env.target.id, accountId: 'target-account' }, sessionId: 'same',
+            availability: 'full_collaboration', isCurrent: () => true,
+        }).fetchPage(null)).rejects.toMatchObject({ code: 'scope_changed' });
+    });
+});

@@ -34,6 +34,8 @@ export function createExpoRouterMock(options: ExpoRouterMockOptions = {}) {
 
     return {
         state: runtime.state,
+        /** Clears every `router.setParams` override this module-level mock accumulated. */
+        resetParams: runtime.resetParams,
         spies: runtime.spies as {
             push: ReturnType<typeof vi.fn<RouterMethod<[unknown], unknown>>>;
             back: ReturnType<typeof vi.fn<RouterMethod<[], unknown>>>;

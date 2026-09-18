@@ -45,7 +45,6 @@ import {
     resolveMachineCarrierRoute,
     type MachineCarrierHttpLease,
     type MachineCarrierRoute,
-    type MachineCarrierTransferFlow,
 } from '@/sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierHttpLease';
 import { createSyncSocketTransport } from '@/sync/api/session/connection/createSyncSocketTransport';
 import { apiSocket } from '@/sync/api/session/apiSocket';
@@ -54,8 +53,9 @@ import type { BrowserIrohHomeCarrier } from '@/sync/runtime/browserIroh/homeCarr
 import { browserIrohHomeCarrierOwner } from '@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrierRuntime';
 import { createBufferedTransferDestination } from '@/sync/domains/transfers/runtime/transferRuntime/carriers/createBufferedTransferDestination';
 import { downloadBulkPayloadViaDirectExportToDestination } from '@/sync/domains/transfers/runtime/transferRuntime/plumbing/directTransferExportDownload';
-import { uploadBulkPayloadFromFileWithCarrierFallbacks } from '@/sync/domains/transfers/runtime/transferRuntime/plumbing/uploadBulkPayloadFromFileWithCarrierFallbacks';
-import { uploadSessionAttachmentFromReaderWithCarrierFallbacks } from '@/sync/domains/transfers/runtime/transferRuntime/families/uploadSessionAttachmentFromReaderWithCarrierFallbacks';
+import { uploadBulkPayloadFromFileViaMachineCarrier } from '@/sync/domains/transfers/runtime/transferRuntime/plumbing/uploadBulkPayloadFromFileViaMachineCarrier';
+import { uploadSessionAttachmentFromReaderViaMachineCarrier } from '@/sync/domains/transfers/runtime/transferRuntime/families/uploadSessionAttachmentFromReaderViaMachineCarrier';
+import type { MachineDaemonTransferState } from '@/sync/domains/transfers/runtime/transferRuntime/availability/machineDaemonTransferState';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -90,6 +90,16 @@ const carriers = new Map<string, BrowserIrohHomeCarrier>();
 const httpOutcomes = new Map<string, HttpOutcomeRecord>();
 let httpSequence = 0;
 let socketSession: SocketSession | null = null;
+
+/** The current daemon declaration for the loopback direct-transfer owner this journey starts. */
+const currentMachineTransferState = {
+    supported: { import: true, export: true },
+    listenerClasses: {
+        loopback_http: { enabled: true, configured: true, active: true },
+        tailscale_serve_https: { enabled: false, configured: false, active: false, available: false },
+    },
+    lifecycle: { mode: 'lazy_idle_shutdown', version: 1 },
+} satisfies MachineDaemonTransferState;
 
 /**
  * A7.4 machine-carrier leases, keyed by the journey's own label so one page can
@@ -328,8 +338,6 @@ async function probeMachineCarrierSeam(input: Readonly<{
     const lease = await acquireBrowserMachineCarrierStreamLease({
         operationId: input.operationId,
         machineId: input.machineId,
-        flow: 'file_transfer',
-        maxBytes: input.maxBytes,
         acquireEndpointLease: async () => {
             throw new Error('unreachable: the grant is minted before any endpoint lease');
         },
@@ -499,6 +507,7 @@ function publishMachineDescriptor(input: Readonly<{
                     },
                 },
             },
+            transfer: currentMachineTransferState,
         },
         daemonStateVersion: 1,
     }], false, { sourceServerId: input.serverId });
@@ -560,8 +569,6 @@ async function acquireMachineCarrier(input: Readonly<{
     machineId: string;
     serverId: string;
     operationId: string;
-    flow: MachineCarrierTransferFlow;
-    maxBytes: number;
 }>): Promise<JsonRecord> {
     const route: MachineCarrierRoute = await resolveMachineCarrierRoute(input.machineId, input.serverId);
     if (route.kind !== 'iroh_peer') {
@@ -569,8 +576,6 @@ async function acquireMachineCarrier(input: Readonly<{
     }
     const lease = await route.acquire({
         operationId: input.operationId,
-        flow: input.flow,
-        maxBytes: input.maxBytes,
     });
     machineLeases.set(input.leaseKey, lease);
     return { leaseKey: input.leaseKey, carrierKind: route.carrierKind, leaseKind: lease.kind };
@@ -690,7 +695,6 @@ async function productionDirectImport(input: Readonly<{
     const payload = new Uint8Array(decodeBase64(input.payloadBase64));
     const controller = new AbortController();
     let readCalls = 0;
-    const relayCalls: string[] = [];
     const fileReader = {
         sizeBytes: payload.byteLength,
         readBytes: async (offset: number, length: number) => {
@@ -703,7 +707,7 @@ async function productionDirectImport(input: Readonly<{
         close: async () => undefined,
     };
     const result = input.transferKind === 'attachment'
-        ? await uploadSessionAttachmentFromReaderWithCarrierFallbacks({
+        ? await uploadSessionAttachmentFromReaderViaMachineCarrier({
             machineId: input.machineId,
             serverId: input.serverId,
             fileReader,
@@ -721,7 +725,7 @@ async function productionDirectImport(input: Readonly<{
             },
             signal: controller.signal,
         })
-        : await uploadBulkPayloadFromFileWithCarrierFallbacks({
+        : await uploadBulkPayloadFromFileViaMachineCarrier({
             machineId: input.machineId,
             serverId: input.serverId,
             fileReader,
@@ -732,23 +736,9 @@ async function productionDirectImport(input: Readonly<{
                 sizeBytes: input.declaredSizeBytes ?? payload.byteLength,
                 overwrite: true,
             },
-            relay: {
-                init: async () => {
-                    relayCalls.push('init');
-                    return { success: false as const, error: 'forbidden fallback' };
-                },
-                sendChunk: async () => {
-                    relayCalls.push('chunk');
-                    return { success: false as const, error: 'forbidden fallback' };
-                },
-                finalize: async () => {
-                    relayCalls.push('finalize');
-                    return { success: false as const, error: 'forbidden fallback' };
-                },
-            },
             signal: controller.signal,
         });
-    return { result, relayCalls, readCalls };
+    return { result, readCalls };
 }
 
 async function productionDirectExport(input: Readonly<{
@@ -789,15 +779,13 @@ async function productionDirectExport(input: Readonly<{
         },
         destination,
         signal: controller.signal,
-        acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
+        acquirePreparedCarrier: async ({ operationId }) => {
             const route = machineRouteState.selected
                 ?? await resolveMachineCarrierRoute(input.machineId, input.serverId);
             machineRouteState.selected = route;
             return route.kind === 'iroh_peer'
                 ? await route.acquire({
                     operationId,
-                    maxBytes,
-                    flow: 'file_transfer',
                     signal: controller.signal,
                 })
                 : null;

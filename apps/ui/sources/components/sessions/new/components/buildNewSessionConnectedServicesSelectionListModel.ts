@@ -1,4 +1,9 @@
 import type * as React from 'react';
+import {
+    buildQualifiedPluginContributionKey,
+    type TeamResourceConnectedServiceSelectionV2,
+} from '@happier-dev/protocol';
+import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 
 import {
     type SelectionListOption,
@@ -6,11 +11,16 @@ import {
     type SelectionListStep,
 } from '@/components/ui/selectionList';
 import { connectedServiceProfileKey, resolveConnectedServiceDefaultProfileId } from '@/sync/domains/connectedServices/connectedServiceProfilePreferences';
-import type { ConnectedServicesServiceBinding } from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
+import {
+    areTeamResourceConnectedServiceSelectionsEqual,
+    type ConnectedServicesServiceBinding,
+} from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
 import {
     formatConnectedServiceIdentityVisibleLabel,
     resolveConnectedServiceProfileIdentityDisplay,
 } from '@/components/settings/connectedServices/model/resolveConnectedServiceProfileIdentityDisplay';
+import { teamCredentialRecoveryPresentation } from '@/components/settings/teams/credentials/teamCredentialPresentation';
+import type { TranslationParams } from '@/text';
 
 import type {
     ConnectedServicesAccountGroupOptionsByServiceId,
@@ -39,12 +49,29 @@ export type ConnectedServicesSelectionListTranslationKey =
     | 'connectedServices.authModal.notConnectedTitle'
     | 'connectedServices.authModal.notConnectedSubtitle'
     | 'connectedServices.title'
+    | 'teams.credentials.delivery.brokered'
+    | 'teams.credentials.delivery.direct'
     | 'connectedServices.defaultAuth.warning.connected_service_unsupported'
-    | 'connectedServices.detail.connectSetupTokenSubtitle';
+    | 'connectedServices.detail.connectSetupTokenSubtitle'
+    | 'teams.unavailable.retry'
+    | 'teams.credentials.recovery.openSettings'
+    | 'teams.credentials.recovery.selectBroker'
+    | 'teams.credentials.recovery.ownerHandoff'
+    | 'teams.credentials.recovery.updateApp'
+    | 'teams.credentials.recovery.chooseAnother'
+    | 'common.unavailable';
 
-type ConnectedServicesSelectionListActiveMemberTranslate = (
-    key: 'connectedServices.detail.groups.activeMember',
-    params: { profileId: string },
+/**
+ * The exact slice of the canonical `t` contract this builder consumes: the keys
+ * above, each with the params the canonical catalog declares for it. Deriving
+ * the params from {@link TranslationParams} keeps one authority for "does this
+ * key take arguments", so the app translator is assignable as-is and a
+ * parameterised key such as `connectedServices.detail.groups.activeMember`
+ * cannot be reached through a cast that hides its arguments.
+ */
+export type ConnectedServicesSelectionListTranslate = <K extends ConnectedServicesSelectionListTranslationKey>(
+    key: K,
+    ...params: TranslationParams<K> extends never ? [] : [params: TranslationParams<K>]
 ) => string;
 
 export type NewSessionConnectedServicesSelectionListModel = Readonly<{
@@ -57,6 +84,9 @@ export type BuildNewSessionConnectedServicesSelectionListModelParams = Readonly<
     profileOptionsByServiceId: ConnectedServicesProfileOptionsByServiceId;
     groupOptionsByServiceId: ConnectedServicesAccountGroupOptionsByServiceId;
     bindingsByServiceId: Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>;
+    teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+    teamNameById?: Readonly<Record<string, string>>;
+    onRecoverTeamCredentialResource?: (resource: TeamCredentialResourceCatalogEntryV1) => void;
     defaultProfileIdByServiceId?: Readonly<Record<string, string | undefined>>;
     /** Connected-account-only consumers can suppress the implicit local CLI auth fallback. */
     includeNativeAuthOption?: boolean;
@@ -65,7 +95,7 @@ export type BuildNewSessionConnectedServicesSelectionListModelParams = Readonly<
     quotaBadgesByKey: Readonly<Record<string, ReadonlyArray<ConnectedServicesSelectionListBadge> | undefined>>;
     setBindingForService: (serviceId: string, binding: ConnectedServicesServiceBinding) => void;
     onOpenSettings: (serviceId: string) => void;
-    translate: (key: ConnectedServicesSelectionListTranslationKey) => string;
+    translate: ConnectedServicesSelectionListTranslate;
     resolveServiceTitle: (serviceId: string) => string;
     renderSelectionIcon: (params: Readonly<{ selected: boolean; variant?: ConnectedServicesSelectionIconVariant }>) => React.ReactNode;
     renderSettingsIcon: () => React.ReactNode;
@@ -99,6 +129,15 @@ export function createReauthServiceOptionId(serviceId: string, profileId: string
     return `connected-service:${encodeURIComponent(serviceId)}:reauth:${encodeURIComponent(profileId)}`;
 }
 
+export function createTeamResourceServiceOptionId(
+    selection: TeamResourceConnectedServiceSelectionV2,
+): string {
+    const disclosedMember = selection.disclosedMember;
+    return `connected-service:team-resource:${encodeURIComponent(selection.resourceId)}:${selection.deliveryMode}:${disclosedMember
+        ? `${encodeURIComponent(buildQualifiedPluginContributionKey(disclosedMember.service))}:${encodeURIComponent(disclosedMember.accountId)}`
+        : 'brokered'}`;
+}
+
 function resolveProfileTitle(option: ConnectedServicesProfileOption): string {
     const label = (option.label ?? '').trim();
     if (label) return label;
@@ -123,7 +162,7 @@ function resolveGroupSubtitle(params: Readonly<{
     serviceId: string;
     activeProfileId: string;
     profiles: ReadonlyArray<ConnectedServicesProfileOption>;
-    translate: (key: ConnectedServicesSelectionListTranslationKey) => string;
+    translate: ConnectedServicesSelectionListTranslate;
 }>): string {
     const activeProfile = params.profiles.find((option) => option.profileId.trim() === params.activeProfileId) ?? null;
     if (!activeProfile) return params.translate('connectedServices.authModal.groupSubtitle');
@@ -134,8 +173,7 @@ function resolveGroupSubtitle(params: Readonly<{
         labelsByKey: {},
         profile: activeProfile,
     });
-    const translateActiveMember = params.translate as typeof params.translate & ConnectedServicesSelectionListActiveMemberTranslate;
-    return translateActiveMember('connectedServices.detail.groups.activeMember', {
+    return params.translate('connectedServices.detail.groups.activeMember', {
         profileId: formatConnectedServiceIdentityVisibleLabel(display),
     });
 }
@@ -175,7 +213,7 @@ export function buildNewSessionConnectedServicesSelectionListModel(
         const needsReauthProfiles = serviceOptions.filter((option) => !isConnectedServiceProfileOptionSelectable(option));
         const connectedProfileIds = connectedProfiles.map((option) => option.profileId.trim()).filter(Boolean);
         const binding = params.bindingsByServiceId[serviceId];
-        const explicitProfileId = (binding?.profileId ?? '').trim();
+        const explicitProfileId = binding?.source === 'connected' ? (binding.profileId ?? '').trim() : '';
         const effectiveProfileId = binding?.source === 'connected' && binding.selection !== 'group'
             ? explicitProfileId && connectedProfileIds.includes(explicitProfileId)
                 ? explicitProfileId
@@ -190,6 +228,8 @@ export function buildNewSessionConnectedServicesSelectionListModel(
         const usesConnectedProfile = Boolean(effectiveProfileId);
         const options: SelectionListOption[] = [];
         let usesConnectedGroup = false;
+        let usesTeamResource = binding?.source === 'team_resource';
+        let renderedSelectedTeamResource = false;
 
         for (const group of groupOptions) {
             if (group.status !== 'ready') continue;
@@ -231,6 +271,95 @@ export function buildNewSessionConnectedServicesSelectionListModel(
                 }),
                 disabled: availability.disabled === true,
                 onSelect: () => params.setBindingForService(serviceId, optionBinding),
+            });
+        }
+
+        for (const resource of params.teamCredentialResources ?? []) {
+            if (
+                resource.sourcePresentation?.kind !== 'connected_service'
+                || buildQualifiedPluginContributionKey(resource.sourcePresentation.service) !== serviceId
+            ) continue;
+            // An unavailable resource keeps its row: hiding it would also hide
+            // a current selection and leave the person without the Home's
+            // recovery instruction. Only the Home's recovery is presented here;
+            // repair authority is decided again by the destination it names.
+            const selectable = resource.readiness.kind === 'available';
+            const recovery = selectable
+                ? null
+                : teamCredentialRecoveryPresentation(resource.recoveryAction, { isSourceCustodian: false });
+            const seenSelectionIds = new Set<string>();
+            for (const selection of resource.connectedServiceSelections) {
+                if (selection.deliveryMode === 'brokered' && selection.disclosedMember) continue;
+                if (selection.deliveryMode === 'direct' && (!selection.disclosedMember
+                    || buildQualifiedPluginContributionKey(selection.disclosedMember.service) !== serviceId)) continue;
+                const selected = binding?.source === 'team_resource'
+                    && areTeamResourceConnectedServiceSelectionsEqual(binding, selection);
+                const optionId = createTeamResourceServiceOptionId(selection);
+                if (seenSelectionIds.has(optionId)) continue;
+                seenSelectionIds.add(optionId);
+                if (selected && firstSelectedOptionId === null) firstSelectedOptionId = optionId;
+                if (selected) usesTeamResource = true;
+                if (selected) renderedSelectedTeamResource = true;
+                const availability = resolveAvailability({
+                    rootParams: params,
+                    serviceId,
+                    optionId,
+                    binding: selection,
+                });
+                const teamName = params.teamNameById?.[resource.teamId]?.trim();
+                options.push({
+                    id: optionId,
+                    label: resource.displayName,
+                    subtitle: availability.subtitle ?? [
+                        teamName,
+                        selectable ? params.translate(selection.deliveryMode === 'brokered'
+                            ? 'teams.credentials.delivery.brokered'
+                            : 'teams.credentials.delivery.direct') : null,
+                        recovery === null ? null : params.translate(recovery.labelKey),
+                    ].filter((part): part is string => Boolean(part))
+                        .join(' · '),
+                    icon: params.renderSelectionIcon({ selected, variant: selectable && !availability.disabled ? 'default' : 'warning' }),
+                    disabled: availability.disabled === true || (!selectable && !params.onRecoverTeamCredentialResource),
+                    onSelect: selectable
+                        ? () => params.setBindingForService(serviceId, selection)
+                        : () => params.onRecoverTeamCredentialResource?.(resource),
+                });
+            }
+        }
+
+        if (binding?.source === 'team_resource' && !renderedSelectedTeamResource) {
+            const optionId = createTeamResourceServiceOptionId(binding);
+            if (firstSelectedOptionId === null) firstSelectedOptionId = optionId;
+            const retainedResource = (params.teamCredentialResources ?? []).find((resource) => (
+                resource.id === binding.resourceId
+                && resource.sourcePresentation?.kind === 'connected_service'
+                && buildQualifiedPluginContributionKey(resource.sourcePresentation.service) === serviceId
+            ));
+            const retainedRecovery = retainedResource?.readiness.kind === 'available'
+                ? null
+                : teamCredentialRecoveryPresentation(retainedResource?.recoveryAction, { isSourceCustodian: false });
+            const retainedTeamName = retainedResource
+                ? params.teamNameById?.[retainedResource.teamId]?.trim()
+                : undefined;
+            options.push({
+                id: optionId,
+                label: retainedResource?.displayName ?? binding.resourceId,
+                subtitle: retainedResource
+                    ? [
+                        retainedTeamName,
+                        params.translate(binding.deliveryMode === 'brokered'
+                            ? 'teams.credentials.delivery.brokered'
+                            : 'teams.credentials.delivery.direct'),
+                        retainedRecovery === null ? null : params.translate(retainedRecovery.labelKey),
+                    ].filter((part): part is string => Boolean(part)).join(' · ')
+                    : params.translate('common.unavailable'),
+                icon: params.renderSelectionIcon({ selected: true, variant: 'warning' }),
+                disabled: retainedResource === undefined
+                    || retainedRecovery === null
+                    || !params.onRecoverTeamCredentialResource,
+                onSelect: retainedResource && retainedRecovery
+                    ? () => params.onRecoverTeamCredentialResource?.(retainedResource)
+                    : () => undefined,
             });
         }
 
@@ -289,7 +418,7 @@ export function buildNewSessionConnectedServicesSelectionListModel(
 
         if (params.includeNativeAuthOption !== false) {
             const nativeOptionId = createNativeServiceOptionId(serviceId);
-            const nativeSelected = !usesConnectedProfile && !usesConnectedGroup;
+            const nativeSelected = !usesConnectedProfile && !usesConnectedGroup && !usesTeamResource;
             const nativeBinding = { source: 'native' } satisfies ConnectedServicesServiceBinding;
             const nativeAvailability = resolveAvailability({
                 rootParams: params,

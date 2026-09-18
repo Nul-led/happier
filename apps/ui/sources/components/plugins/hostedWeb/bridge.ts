@@ -3,17 +3,15 @@
 // and this leaf needs exactly one hosted-web schema.
 import {
     PluginHostedWebBridgeEnvelopeV1Schema,
+    pluginUiHostApiWireIdentitiesEqual,
     type PluginHostedWebBridgeEnvelopeV1,
+    type PluginUiHostApiWireIdentityV1,
 } from '@happier-dev/protocol/plugins/ui';
 
 export type PluginHostedWebBridgeValidationCode =
     | 'invalid_message'
     | 'origin_mismatch'
-    | 'nonce_mismatch'
-    | 'session_mismatch'
-    | 'plugin_mismatch'
-    | 'contribution_mismatch'
-    | 'surface_mismatch'
+    | 'identity_mismatch'
     | 'message_kind_denied';
 
 export type PluginHostedWebBridgeValidationResult =
@@ -24,11 +22,7 @@ export function validatePluginHostedWebBridgeMessage(params: Readonly<{
     message: unknown;
     origin: string;
     expectedOrigin: string;
-    expectedPluginId: string;
-    expectedContributionId: string;
-    expectedSurfaceId: string;
-    expectedNonce: string;
-    expectedSessionId?: string | null;
+    identity: PluginUiHostApiWireIdentityV1;
     allowedMessageKinds: ReadonlySet<string>;
 }>): PluginHostedWebBridgeValidationResult {
     if (params.origin !== params.expectedOrigin) {
@@ -41,25 +35,8 @@ export function validatePluginHostedWebBridgeMessage(params: Readonly<{
     }
     const envelope = parsed.data;
 
-    if (envelope.nonce !== params.expectedNonce) {
-        return Object.freeze({ ok: false, code: 'nonce_mismatch' });
-    }
-    // The first guest-ready packet has no canonical wire identity yet. Its
-    // source/origin, nonce, destination, and bound surface lifetime are the
-    // bootstrap authority; the host bootstrap then stamps the Session before
-    // every later guest envelope is admitted.
-    const sessionlessInitialReady = envelope.kind === 'ready' && envelope.sessionId === undefined;
-    if (params.expectedSessionId && envelope.sessionId !== params.expectedSessionId && !sessionlessInitialReady) {
-        return Object.freeze({ ok: false, code: 'session_mismatch' });
-    }
-    if (envelope.pluginId !== params.expectedPluginId) {
-        return Object.freeze({ ok: false, code: 'plugin_mismatch' });
-    }
-    if (envelope.contributionId !== params.expectedContributionId) {
-        return Object.freeze({ ok: false, code: 'contribution_mismatch' });
-    }
-    if (envelope.surfaceId !== params.expectedSurfaceId) {
-        return Object.freeze({ ok: false, code: 'surface_mismatch' });
+    if (!pluginUiHostApiWireIdentitiesEqual(params.identity, envelope.identity)) {
+        return Object.freeze({ ok: false, code: 'identity_mismatch' });
     }
     if (!params.allowedMessageKinds.has(envelope.kind)) {
         return Object.freeze({ ok: false, code: 'message_kind_denied' });

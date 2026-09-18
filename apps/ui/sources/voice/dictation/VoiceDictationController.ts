@@ -104,6 +104,13 @@ export type VoiceDictationToggleResult =
     | Readonly<{ kind: 'completed'; text: string | null }>
     | Readonly<{ kind: 'cancelled' }>;
 
+export type VoiceDictationTarget = Readonly<{
+    /** Exact live capture/control owner. This need not be a Session. */
+    controlId: string;
+    /** Real Session routing context when one exists; never a fabricated substitute. */
+    transcriptionSessionId: string | null;
+}>;
+
 type DictationCaptureOwner = Pick<
     LocalVoiceCaptureOwner,
     'startCapture' | 'stopCapture' | 'stopSession'
@@ -112,6 +119,7 @@ type DictationCaptureOwner = Pick<
 type ActiveDictation = {
     generation: number;
     sessionId: string;
+    transcriptionSessionId: string | null;
     provider: LocalVoiceCaptureProvider;
     executionMachineId: string | null;
     settings: any;
@@ -135,7 +143,7 @@ export type VoiceDictationController = Readonly<{
     getSnapshot: () => VoiceDictationSnapshot;
     reportCaptureError: (error: VoiceDictationCaptureError) => void;
     subscribe: (listener: () => void) => () => void;
-    toggle: (sessionId: string) => Promise<VoiceDictationToggleResult>;
+    toggle: (target: string | VoiceDictationTarget) => Promise<VoiceDictationToggleResult>;
 }>;
 
 export function createVoiceDictationController(deps: Readonly<{
@@ -460,7 +468,7 @@ export function createVoiceDictationController(deps: Readonly<{
                         }
                         try {
                             rawText = await deps.transcribeRecordedAudio({
-                                sessionId: attempt.sessionId,
+                                sessionId: attempt.transcriptionSessionId,
                                 uri: stopped.uri,
                                 executionMachineId: attempt.executionMachineId,
                                 settings: attempt.settings,
@@ -604,6 +612,7 @@ export function createVoiceDictationController(deps: Readonly<{
 
     const start = async (
         sessionId: string,
+        transcriptionSessionId: string | null,
     ): Promise<VoiceDictationToggleResult> => {
         const {
             plan,
@@ -612,6 +621,7 @@ export function createVoiceDictationController(deps: Readonly<{
         const attempt: ActiveDictation = {
             generation: ++latestAttemptGeneration,
             sessionId,
+            transcriptionSessionId,
             provider: plan.provider,
             executionMachineId: deps.resolveExecutionMachineId?.() ?? null,
             settings,
@@ -713,14 +723,19 @@ export function createVoiceDictationController(deps: Readonly<{
                 listeners.delete(listener);
             };
         },
-        toggle: async (requestedSessionId) => {
-            const sessionId = requestedSessionId.trim();
+        toggle: async (requestedTarget) => {
+            const sessionId = (typeof requestedTarget === 'string'
+                ? requestedTarget
+                : requestedTarget.controlId).trim();
+            const transcriptionSessionId = typeof requestedTarget === 'string'
+                ? sessionId
+                : requestedTarget.transcriptionSessionId?.trim() || null;
             if (!sessionId) {
                 throw new Error('dictation_session_required');
             }
             const attempt = active;
             if (!attempt) {
-                return await start(sessionId);
+                return await start(sessionId, transcriptionSessionId);
             }
             if (attempt.cancelled) {
                 // Navigation cancellation is intentionally prompt while a
@@ -735,7 +750,7 @@ export function createVoiceDictationController(deps: Readonly<{
                 if (active !== null) {
                     return { kind: 'cancelled' };
                 }
-                return await start(sessionId);
+                return await start(sessionId, transcriptionSessionId);
             }
             if (attempt.failed) {
                 cleanupInBackground(attempt);
@@ -743,7 +758,7 @@ export function createVoiceDictationController(deps: Readonly<{
             }
             if (attempt.sessionId !== sessionId) {
                 await cancel(attempt.sessionId, { awaitTeardown: true });
-                return await start(sessionId);
+                return await start(sessionId, transcriptionSessionId);
             }
             if (snapshot.status === 'listening') {
                 return await finishAttempt(attempt);

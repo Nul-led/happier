@@ -1,3 +1,4 @@
+import { useFilesystemTreeKeyboard } from '@/components/ui/filesystemBrowser/useFilesystemTreeKeyboard';
 import * as React from 'react';
 import { Platform, View, type ScrollViewProps } from 'react-native';
 import type { useUnistyles } from 'react-native-unistyles';
@@ -39,6 +40,10 @@ type WorkspaceRepositoryTreeListProps = Readonly<{
     scope: WorkspaceScopeBase;
     reloadToken?: number;
     detailsMode?: boolean;
+    visibilityMode?: 'project' | 'all';
+    revealedPaths?: readonly string[];
+    revealRequest?: Readonly<{ path: string }>;
+    onGitIgnoreAvailableChange?: (available: boolean | undefined) => void;
     onRequestRefresh?: (() => void) | null;
     onRequestDownload?: ((params: Readonly<{ path: string; asZip: boolean }>) => Promise<{ ok: true } | { ok: false; error: string }>) | null;
     onWebDropTargetChange?: ((target: WorkspaceRepositoryTreeWebDropTarget) => void) | null;
@@ -99,21 +104,42 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
     const { theme, expandedPaths, onExpandedPathsChange, onOpenFile } = props;
     const detailsMode = props.detailsMode === true;
 
-    const { rootLoading, rootError, nodes, toggleDirectory, retryRoot, retryDirectory } = useWorkspaceRepositoryTreeBrowser({
+    const preservedPaths = React.useMemo(() => [
+        ...(props.revealedPaths ?? []),
+        ...(props.scmSnapshot?.entries.flatMap(entry => entry.previousPath ? [entry.path, entry.previousPath] : [entry.path]) ?? []),
+    ], [props.revealedPaths, props.scmSnapshot]);
+    const { rootLoading, rootError, nodes, toggleDirectory, retryRoot, retryDirectory, gitIgnoreAvailable } = useWorkspaceRepositoryTreeBrowser({
         scope: props.scope,
         enabled: true,
         expandedPaths,
         onExpandedPathsChange,
         reloadToken: props.reloadToken,
+        visibilityMode: props.visibilityMode,
+        preservedPaths,
     });
 
     React.useEffect(() => {
         props.onRootLoadingChange?.(rootLoading);
     }, [props.onRootLoadingChange, rootLoading]);
 
+    React.useEffect(() => {
+        props.onGitIgnoreAvailableChange?.(gitIgnoreAvailable);
+    }, [props.onGitIgnoreAvailableChange, gitIgnoreAvailable]);
+
+    const keyboardListRef = React.useRef<import('@/components/ui/lists/virtualized/virtualizedListTypes').VirtualizedListRef>(null);
+    const focusIndex = React.useCallback((index: number) => keyboardListRef.current?.scrollToIndex({ index, animated: false }), []);
+    const treeKeyboard = useFilesystemTreeKeyboard(nodes, focusIndex);
+    const focusedRevealRef = React.useRef<typeof props.revealRequest>(undefined);
+    React.useEffect(() => {
+        const request = props.revealRequest;
+        if (!request || focusedRevealRef.current === request || !nodes.some(node => node.path === request.path)) return;
+        focusedRevealRef.current = request;
+        treeKeyboard.focusPath(request.path);
+    }, [nodes, props.revealRequest, treeKeyboard.focusPath]);
     const badgeIndex = useScmTreeBadgeIndex(props.scmSnapshot ?? null);
     const badgeSignature = buildScmTreeBadgeSignature(props.scmSnapshot ?? null);
     const rowRenderState = React.useMemo(() => ({
+        treeKeyboard,
         badgeIndex,
         detailsMode,
         onOpenFile,
@@ -126,6 +152,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
         toggleDirectory,
         webDropHoverPath: props.webDropHoverPath,
     }), [
+        treeKeyboard,
         badgeIndex,
         detailsMode,
         onOpenFile,
@@ -141,6 +168,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
     const rowRenderStateRef = React.useRef(rowRenderState);
     rowRenderStateRef.current = rowRenderState;
     const rowVisualExtraData = React.useMemo(() => [
+        treeKeyboard.activePath,
         badgeSignature,
         detailsMode ? 'details' : 'compact',
         props.renderRowActions ? 'actions' : 'no-actions',
@@ -153,6 +181,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
         theme.colors.state?.success?.foreground,
         theme.colors.state?.danger?.foreground,
     ].join('|'), [
+        treeKeyboard.activePath,
         badgeSignature,
         detailsMode,
         props.onWebDropTargetChange,
@@ -269,6 +298,10 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
         return (
             <FilesystemBrowserRow
                 testID={rowTestId}
+                treeItemProps={rowState.treeKeyboard.getRowProps(node,
+                    node.type === 'directory' ? () => { void rowState.toggleDirectory(node.path); } : undefined,
+                    node.type === 'file' ? () => (rowState.onOpenFilePinned ?? rowState.onOpenFile)(node.path) : undefined,
+                )}
                 node={node}
                 title={node.type === 'directory' ? `${node.name}/` : node.name}
                 subtitle={subtitle}
@@ -357,6 +390,8 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
 
     return (
         <FilesystemBrowser
+            treeRole
+            listRef={keyboardListRef}
             nodes={nodes}
             rootLoading={rootLoading}
             showInlineLoadingHeader={props.showInlineLoadingHeader}

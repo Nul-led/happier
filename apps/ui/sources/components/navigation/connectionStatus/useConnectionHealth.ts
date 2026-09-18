@@ -141,3 +141,76 @@ export function useConnectionHealth() {
         endpointStatus: endpointConnectivity.status,
     };
 }
+
+/**
+ * Active-Home-only health for always-mounted shell chrome. Unlike the
+ * selection-wide hook above, this never subscribes to secondary-Home maps or
+ * Home-view settings; expanded selectors own those subscriptions.
+ */
+export function useActiveHomeConnectionHealth() {
+    const { theme } = useUnistyles();
+    const socketStatus = useSocketStatus();
+    const endpointConnectivity = useEndpointConnectivity();
+    const syncError = useSyncError();
+    const activeMachines = useAllMachines();
+    const activeServerSnapshot = useActiveServerSnapshot();
+    const activeSyncError = React.useMemo(() => (
+        selectSyncErrorForServer(syncError, activeServerSnapshot.serverId)
+    ), [activeServerSnapshot.serverId, syncError]);
+
+    const visibleMachines = React.useMemo(
+        () => activeMachines.filter((machine) => !machine.revokedAt),
+        [activeMachines],
+    );
+    const onlineMachines = React.useMemo(
+        () => visibleMachines.filter((machine) => isMachineOnline(machine)),
+        [visibleMachines],
+    );
+    const primaryMachineLabel = React.useMemo(() => {
+        if (visibleMachines.length !== 1) return null;
+        const machine = visibleMachines[0];
+        const metadata = machine?.metadata && typeof machine.metadata === 'object'
+            ? machine.metadata as { displayName?: unknown; host?: unknown }
+            : null;
+        const displayName = typeof metadata?.displayName === 'string' ? metadata.displayName.trim() : '';
+        if (displayName) return displayName;
+        const host = typeof metadata?.host === 'string' ? metadata.host.trim() : '';
+        return host || machine?.id || null;
+    }, [visibleMachines]);
+
+    const health = React.useMemo(() => resolveConnectionHealth({
+        socketStatus: socketStatus.status,
+        endpointStatus: endpointConnectivity.status,
+        endpointReason: endpointConnectivity.reason,
+        hasSyncError: Boolean(activeSyncError),
+        syncErrorKind: activeSyncError?.kind,
+        machineGroups: [{
+            machineCount: visibleMachines.length,
+            onlineCount: onlineMachines.length,
+            readyCount: onlineMachines.filter(isMachineReadyForConnectionHealth).length,
+            status: 'idle',
+        }],
+    }), [
+        activeSyncError,
+        endpointConnectivity.reason,
+        endpointConnectivity.status,
+        onlineMachines,
+        socketStatus.status,
+        visibleMachines.length,
+    ]);
+    const presentation = React.useMemo(() => resolveConnectionHealthPresentation(health, {
+        connected: theme.colors.status.connected,
+        connecting: theme.colors.status.connecting,
+        actionRequired: theme.colors.status.actionRequired,
+        disconnected: theme.colors.status.disconnected,
+        error: theme.colors.status.error,
+        default: theme.colors.status.default,
+    }), [health, theme.colors.status]);
+
+    return {
+        ...health,
+        ...presentation,
+        primaryMachineLabel,
+        endpointStatus: endpointConnectivity.status,
+    };
+}

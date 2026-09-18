@@ -48,12 +48,14 @@ describe('buildMachinePickerRouteParams', () => {
             buildMachinePickerRouteParams({
                 dataId: 'draft-1',
                 draftId: 'draft-id',
+                machinePoolId: 'pool-1',
                 selectedMachineId: 'machine-1',
                 targetServerId: 'server-2',
             }),
         ).toEqual({
             dataId: 'draft-1',
             draftId: 'draft-id',
+            machinePoolId: 'pool-1',
             selectedId: 'machine-1',
             spawnServerId: 'server-2',
         });
@@ -63,6 +65,7 @@ describe('buildMachinePickerRouteParams', () => {
         expect(
             buildMachinePickerRouteParams({
                 dataId: '',
+                machinePoolId: '',
                 selectedMachineId: '',
                 targetServerId: '',
             }),

@@ -1,18 +1,28 @@
 import * as React from 'react';
 import { Platform, Pressable, View, type ViewStyle } from 'react-native';
+import {
+    type CheckpointOverlapObservation,
+    type SessionChangeAttribution,
+} from '@happier-dev/protocol';
 import { VirtualizedList } from '@/components/ui/lists/virtualized/VirtualizedList';
 
 import { SourceControlBranchSummary } from '@/components/workspaces/scm/SourceControlBranchSummary';
 import { ChangedFilesList } from '@/components/sessions/files/content/ChangedFilesList';
 import { SourceControlBranchMenu } from '@/components/sessions/sourceControl/branches/SourceControlBranchMenu';
 import { ChangedFilesViewModeMenu } from '@/components/sessions/files/ChangedFilesViewModeMenu';
+import {
+    ChangedFileEvidenceDisclosure,
+    checkpointAttributionDescription,
+    sessionAttributedFileAccessibilityQualification,
+    sessionAttributionDescriptions,
+} from '@/components/workspaces/scm/changes/ChangedFileEvidenceDisclosure';
 import { ScmCommitComposerCard, type ScmCommitComposerCardProps } from '@/components/workspaces/scm/commitComposer/ScmCommitComposerCard';
 import { ScmChangeRow, resolveScmChangeStatsColumnWidth } from '@/components/workspaces/scm/changes/ScmChangeRow';
 import { Text } from '@/components/ui/text/Text';
 import type { ScmFileStatus, ScmStatusFiles } from '@/scm/scmStatusFiles';
 import type { ScmProjectInFlightOperation } from '@/sync/runtime/orchestration/projectManager';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
-import type { ChangedFilesViewMode, SessionAttributedFile, SessionAttributionReliability } from '@/scm/scmAttribution';
+import type { ChangedFilesViewMode, SessionAttributedFile } from '@/scm/scmAttribution';
 import { t } from '@/text';
 import { Typography } from '@/constants/Typography';
 import { useScrollEdgeFades } from '@/components/ui/scroll/useScrollEdgeFades';
@@ -29,6 +39,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 export type SessionRightPanelGitCommitTabProps = Readonly<{
     theme: any;
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     backendLabel: string;
     commitActionLabel: string;
@@ -43,7 +54,9 @@ export type SessionRightPanelGitCommitTabProps = Readonly<{
     commitBlockedMessage: string | null;
 
     changedFilesViewMode: ChangedFilesViewMode;
-    attributionReliability: SessionAttributionReliability;
+    sessionAttribution: SessionChangeAttribution;
+    sessionCheckpointOverlap: CheckpointOverlapObservation;
+
     allRepositoryChangedFiles: ScmFileStatus[];
     selectedRepositoryChangedFiles?: ScmFileStatus[];
     turnAttributedFiles?: SessionAttributedFile[];
@@ -53,7 +66,7 @@ export type SessionRightPanelGitCommitTabProps = Readonly<{
     turnRepositoryOnlyFiles?: ScmFileStatus[];
     sessionAttributedFiles: SessionAttributedFile[];
     repositoryOnlyFiles: ScmFileStatus[];
-    suppressedInferredCount: number;
+
     showTurnViewToggle?: boolean;
     showTurnAgentReportedViewToggle?: boolean;
     showTurnCheckpointViewToggle?: boolean;
@@ -99,10 +112,6 @@ const COMMIT_CHANGED_FILES_RENDER_BATCH_SIZE = 12;
 const COMMIT_CHANGED_FILES_WINDOW_SIZE = 5;
 const repositoryChangedFileKeyExtractor = (file: ScmFileStatus) => `repo-all-${file.fullPath}`;
 const selectedChangedFileKeyExtractor = (file: ScmFileStatus) => `selected-${file.fullPath}`;
-const turnChangedFileKeyExtractor = (file: ScmFileStatus) => `turn-${file.fullPath}`;
-const turnAgentReportedChangedFileKeyExtractor = (file: ScmFileStatus) => `turn-agent-${file.fullPath}`;
-const turnCheckpointChangedFileKeyExtractor = (file: ScmFileStatus) => `turn-checkpoint-${file.fullPath}`;
-const sessionChangedFileKeyExtractor = (file: ScmFileStatus) => `session-${file.fullPath}`;
 const compactScmChangeRowWebItemLayout = (_data: unknown, index: number) => {
     // ScmChangeRow in compact density is effectively fixed-height on web.
     // Providing a layout hint improves RN-web VirtualizedList performance with large diffs.
@@ -110,11 +119,19 @@ const compactScmChangeRowWebItemLayout = (_data: unknown, index: number) => {
     return { length, offset: length * index, index };
 };
 
-function filterAttributedScmFiles(files: readonly SessionAttributedFile[] | undefined): ScmFileStatus[] {
+function filterAttributedScmFiles(files: readonly SessionAttributedFile[] | undefined): SessionAttributedFile[] {
     if (!files) return [];
-    return files
-        .filter((entry) => entry?.file && !isDirectoryLikeScmFileStatus(entry.file))
-        .map((entry) => entry.file);
+    return files.filter((entry) => entry?.file && !isDirectoryLikeScmFileStatus(entry.file));
+}
+
+type CommitChangedFileItem = ScmFileStatus | SessionAttributedFile;
+
+function isAttributedChangedFileItem(item: CommitChangedFileItem | undefined): item is SessionAttributedFile {
+    return item !== undefined && 'file' in item && 'attribution' in item;
+}
+
+function getCommitChangedFile(item: CommitChangedFileItem): ScmFileStatus {
+    return isAttributedChangedFileItem(item) ? item.file : item;
 }
 
 export const SessionRightPanelGitCommitTab = React.memo((props: SessionRightPanelGitCommitTabProps) => {
@@ -126,6 +143,7 @@ export const SessionRightPanelGitCommitTab = React.memo((props: SessionRightPane
             <CommitChangesSurface
                 theme={props.theme}
                 sessionId={props.sessionId}
+                serverId={props.serverId}
                 sessionPath={props.sessionPath}
                 backendLabel={props.backendLabel}
                 scmStatusFiles={props.scmStatusFiles}
@@ -135,7 +153,8 @@ export const SessionRightPanelGitCommitTab = React.memo((props: SessionRightPane
                 hasGlobalOperationInFlight={props.hasGlobalOperationInFlight}
                 inFlightScmOperation={props.inFlightScmOperation}
                 changedFilesViewMode={props.changedFilesViewMode}
-                attributionReliability={props.attributionReliability}
+                sessionAttribution={props.sessionAttribution}
+                sessionCheckpointOverlap={props.sessionCheckpointOverlap}
                 allRepositoryChangedFiles={props.allRepositoryChangedFiles}
                 selectedRepositoryChangedFiles={props.selectedRepositoryChangedFiles}
                 turnAttributedFiles={props.turnAttributedFiles}
@@ -145,7 +164,6 @@ export const SessionRightPanelGitCommitTab = React.memo((props: SessionRightPane
                 turnRepositoryOnlyFiles={props.turnRepositoryOnlyFiles}
                 sessionAttributedFiles={props.sessionAttributedFiles}
                 repositoryOnlyFiles={props.repositoryOnlyFiles}
-                suppressedInferredCount={props.suppressedInferredCount}
                 showTurnViewToggle={props.showTurnViewToggle}
                 showTurnAgentReportedViewToggle={props.showTurnAgentReportedViewToggle}
                 showTurnCheckpointViewToggle={props.showTurnCheckpointViewToggle}
@@ -288,6 +306,7 @@ const CommitComposerFooter = React.memo((props: Readonly<{
 type CommitChangesSurfaceProps = Readonly<{
     theme: any;
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     backendLabel: string;
     scmStatusFiles: ScmStatusFiles | null;
@@ -297,7 +316,9 @@ type CommitChangesSurfaceProps = Readonly<{
     hasGlobalOperationInFlight: boolean;
     inFlightScmOperation: ScmProjectInFlightOperation | null;
     changedFilesViewMode: ChangedFilesViewMode;
-    attributionReliability: SessionAttributionReliability;
+    sessionAttribution: SessionChangeAttribution;
+    sessionCheckpointOverlap: CheckpointOverlapObservation;
+
     allRepositoryChangedFiles: ScmFileStatus[];
     selectedRepositoryChangedFiles?: ScmFileStatus[];
     turnAttributedFiles?: SessionAttributedFile[];
@@ -307,7 +328,7 @@ type CommitChangesSurfaceProps = Readonly<{
     turnRepositoryOnlyFiles?: ScmFileStatus[];
     sessionAttributedFiles: SessionAttributedFile[];
     repositoryOnlyFiles: ScmFileStatus[];
-    suppressedInferredCount: number;
+
     showTurnViewToggle?: boolean;
     showTurnAgentReportedViewToggle?: boolean;
     showTurnCheckpointViewToggle?: boolean;
@@ -356,8 +377,8 @@ function resolveChangedFilesScopeTitle(params: Readonly<{
 
 function resolveChangedFilesScopeDescriptions(params: Readonly<{
     changedFilesViewMode: ChangedFilesViewMode;
-    attributionReliability: SessionAttributionReliability;
-    suppressedInferredCount: number;
+    sessionAttribution: SessionChangeAttribution;
+    sessionCheckpointOverlap: CheckpointOverlapObservation;
     turnCheckpointMetadata: React.ComponentProps<typeof ChangedFilesList>['turnCheckpointMetadata'];
 }>): string[] {
     if (params.changedFilesViewMode === 'turn') {
@@ -367,32 +388,18 @@ function resolveChangedFilesScopeDescriptions(params: Readonly<{
         return [t('files.agentReportedTurnDescription')];
     }
     if (params.changedFilesViewMode === 'turn_checkpoint') {
-        if (params.turnCheckpointMetadata?.contentConfidence === 'unavailable') {
-            return [t('files.checkpointUnavailable')];
-        }
-        if (params.turnCheckpointMetadata?.attributionScope === 'shared_worktree') {
-            return [t('files.checkpointAttributionShared')];
-        }
-        return [t('files.checkpointAttributionUnknown')];
+        const description = checkpointAttributionDescription(params.turnCheckpointMetadata);
+        return description ? [description] : [];
     }
     if (params.changedFilesViewMode !== 'session') {
         return [];
     }
-
-    const descriptions = [
-        params.attributionReliability === 'high'
-            ? t('files.attributionReliabilityHigh')
-            : t('files.attributionReliabilityLimited'),
-        params.attributionReliability === 'high'
-            ? t('files.attributionLegendFull')
-            : t('files.attributionLegendDirectOnly'),
-    ];
-
-    if (params.suppressedInferredCount > 0) {
-        descriptions.push(t('files.inferredSuppressed', { count: params.suppressedInferredCount }));
-    }
-
-    return descriptions;
+    // The Session scope is qualified by canonical Protocol attribution, not by how many other
+    // Sessions a UI Project happens to group.
+    return sessionAttributionDescriptions({
+        attribution: params.sessionAttribution,
+        checkpointOverlap: params.sessionCheckpointOverlap,
+    });
 }
 
 const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
@@ -418,7 +425,7 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
         [props.turnCheckpointFiles],
     );
     const sessionChangedFiles = React.useMemo(() => filterAttributedScmFiles(props.sessionAttributedFiles), [props.sessionAttributedFiles]);
-    const virtualizedChangedFiles = React.useMemo(() => {
+    const virtualizedChangedFiles = React.useMemo<CommitChangedFileItem[]>(() => {
         if (selectedMode) return selectedChangedFiles;
         if (props.changedFilesViewMode === 'turn') return turnChangedFiles;
         if (props.changedFilesViewMode === 'turn_agent_reported') return turnAgentReportedChangedFiles;
@@ -436,16 +443,17 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
         turnCheckpointChangedFiles,
     ]);
     const virtualizedStatsColumnWidth = React.useMemo(
-        () => resolveScmChangeStatsColumnWidth(virtualizedChangedFiles),
+        () => resolveScmChangeStatsColumnWidth(virtualizedChangedFiles.map(getCommitChangedFile)),
         [virtualizedChangedFiles],
     );
-    const virtualizedKeyExtractor = React.useMemo(() => {
-        if (selectedMode) return selectedChangedFileKeyExtractor;
-        if (props.changedFilesViewMode === 'turn') return turnChangedFileKeyExtractor;
-        if (props.changedFilesViewMode === 'turn_agent_reported') return turnAgentReportedChangedFileKeyExtractor;
-        if (props.changedFilesViewMode === 'turn_checkpoint') return turnCheckpointChangedFileKeyExtractor;
-        if (props.changedFilesViewMode === 'session') return sessionChangedFileKeyExtractor;
-        return repositoryChangedFileKeyExtractor;
+    const virtualizedKeyExtractor = React.useCallback((item: CommitChangedFileItem) => {
+        const file = getCommitChangedFile(item);
+        if (selectedMode) return selectedChangedFileKeyExtractor(file);
+        if (props.changedFilesViewMode === 'turn') return `turn-${file.fullPath}`;
+        if (props.changedFilesViewMode === 'turn_agent_reported') return `turn-agent-${file.fullPath}`;
+        if (props.changedFilesViewMode === 'turn_checkpoint') return `turn-checkpoint-${file.fullPath}`;
+        if (props.changedFilesViewMode === 'session') return `session-${file.fullPath}`;
+        return repositoryChangedFileKeyExtractor(file);
     }, [props.changedFilesViewMode, selectedMode]);
     const showSelectedViewToggle = props.showSelectedViewToggle === true || selectedChangedFiles.length > 0;
     const hasChangedFilesViewSelector = props.showTurnViewToggle === true
@@ -477,14 +485,14 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
     const scopedChangedFilesDescriptions = React.useMemo(() => {
         return resolveChangedFilesScopeDescriptions({
             changedFilesViewMode: props.changedFilesViewMode,
-            attributionReliability: props.attributionReliability,
-            suppressedInferredCount: props.suppressedInferredCount,
+            sessionAttribution: props.sessionAttribution,
+            sessionCheckpointOverlap: props.sessionCheckpointOverlap,
             turnCheckpointMetadata: props.turnCheckpointMetadata ?? null,
         });
     }, [
-        props.attributionReliability,
         props.changedFilesViewMode,
-        props.suppressedInferredCount,
+        props.sessionAttribution,
+        props.sessionCheckpointOverlap,
         props.turnCheckpointMetadata,
     ]);
 
@@ -502,8 +510,8 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
     const stashCount = useScmStashSummaryCount({
         enabled: canReadStashes,
         snapshotCount: snapshotStashCount,
-        refreshKey: `${props.sessionId}:${props.scmSnapshot?.fetchedAt ?? 0}`,
-        load: React.useCallback(async () => await sessionScmStashList(props.sessionId, {}), [props.sessionId]),
+        refreshKey: JSON.stringify([props.serverId, props.sessionId, props.scmSnapshot?.fetchedAt ?? 0]),
+        load: React.useCallback(async () => await sessionScmStashList(props.sessionId, {}, props.serverId), [props.sessionId, props.serverId]),
     });
     const headerContent = React.useMemo(() => {
         const lockedByOtherSession = Boolean(
@@ -513,6 +521,7 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
         const branchTrigger = props.scmStatusFiles ? (
             <SourceControlBranchMenu
                 sessionId={props.sessionId}
+                serverId={props.serverId}
                 currentBranch={props.scmStatusFiles.branch ?? null}
                 snapshot={props.scmSnapshot}
                 writeEnabled={props.scmWriteEnabled}
@@ -661,7 +670,7 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
         props.hasGlobalOperationInFlight,
         props.inFlightScmOperation,
         props.scmOperationBusy,
-        props.sessionId,
+        props.sessionId, props.serverId,
         props.showSessionViewToggle,
         showSelectedViewToggle,
         props.showTurnAgentReportedViewToggle,
@@ -721,7 +730,9 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
         props.renderFileTrailingActions,
     ]);
 
-    const renderVirtualizedRow = React.useCallback(({ item: file, index }: { item: ScmFileStatus; index: number }) => {
+    const renderVirtualizedRow = React.useCallback(({ item, index }: { item: CommitChangedFileItem; index: number }) => {
+        const file = getCommitChangedFile(item);
+        const attributedEntry = isAttributedChangedFileItem(item) ? item : null;
         const {
             onFilePress,
             onFilePressPinned,
@@ -732,7 +743,7 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
             virtualizedChangedFilesLength,
             virtualizedStatsColumnWidth,
         } = virtualizedRowStateRef.current;
-        return (
+        const row = (
             <ScmChangeRow
                 theme={theme}
                 file={file}
@@ -744,7 +755,17 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
                 onToggleSelection={onToggleSelectionForFile ? () => onToggleSelectionForFile(file) : undefined}
                 statsColumnWidth={virtualizedStatsColumnWidth}
                 showDivider={index < virtualizedChangedFilesLength - 1}
+                accessibilityQualification={attributedEntry
+                    ? sessionAttributedFileAccessibilityQualification(attributedEntry)
+                    : undefined}
             />
+        );
+        if (!attributedEntry) return row;
+        return (
+            <View>
+                {row}
+                <ChangedFileEvidenceDisclosure entry={attributedEntry} />
+            </View>
         );
     }, []);
 
@@ -785,7 +806,9 @@ const CommitChangesSurface = React.memo((props: CommitChangesSurfaceProps) => {
                 onContentSizeChange={scrollFades.onContentSizeChange}
                 onScroll={scrollFades.onScroll}
                 scrollEventThrottle={16}
-                getItemLayout={Platform.OS === 'web' ? compactScmChangeRowWebItemLayout : undefined}
+                getItemLayout={Platform.OS === 'web' && !isAttributedChangedFileItem(virtualizedChangedFiles[0])
+                    ? compactScmChangeRowWebItemLayout
+                    : undefined}
             />
 
             <ScrollEdgeFades

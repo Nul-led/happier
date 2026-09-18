@@ -10,6 +10,7 @@ import {
   mutateAccountVoiceCredentialSource,
   removeAccountVoiceCredential,
   resolveAccountVoiceCredential,
+  resolveAccountVoiceCredentialApprovalDigest,
   resolveAccountVoiceCredentialSourceSelection,
   resolveAccountVoiceCredentialStatus,
   resolveExactAccountVoiceCredentialSecretId,
@@ -416,7 +417,7 @@ describe('account Voice credential ownership', () => {
       contribution: OPENAI_VOICE_CONTRIBUTION,
       credentialSlotId: 'api_key',
       purpose,
-      value: 'sk-new',
+      value: '  sk-new\n',
       generateId: () => 'voice-openai-secret',
       now: 10,
       expectedSecretId: null,
@@ -433,6 +434,12 @@ describe('account Voice credential ownership', () => {
       selection: { kind: 'savedSecret' },
       savedSecret: { secretId: 'voice-openai-secret' },
     });
+    expect(created.settings.secrets).toEqual([
+      expect.objectContaining({
+        id: 'voice-openai-secret',
+        encryptedValue: { _isSecretValue: true, value: '  sk-new\n' },
+      }),
+    ]);
 
     expect(() => saveAndUseAccountVoiceCredential({
       settings: created.settings,
@@ -656,6 +663,65 @@ describe('account Voice credential ownership', () => {
       status: 'missing',
       reference: null,
     });
+  });
+
+  it('requires a current shared catalog materialization and renews approval after rotation', () => {
+    const ref = 'happier:shared-secret:v1:resource-a';
+    const requiredDigest = `sha256:${'b'.repeat(64)}`;
+    const shared = (revision: number) => ({
+      ref,
+      kind: 'shared_resource' as const,
+      status: 'ready' as const,
+      entry: null,
+      secret: {
+        id: ref,
+        name: 'Shared',
+        kind: 'apiKey' as const,
+        encryptedValue: { _isSecretValue: true as const, value: 'opened' },
+        createdAt: 1,
+        updatedAt: revision,
+      },
+      revision,
+      fingerprint: `shared:${ref}:${revision}`,
+    });
+    const approvedDigest = resolveAccountVoiceCredentialApprovalDigest({
+      requiredRecipientContractDigest: requiredDigest,
+      savedSecret: shared(1),
+    });
+    if (!approvedDigest) throw new Error('expected shared approval digest');
+    const settings = settingsParse({
+      voiceSettingsV1: {
+        credentialBindings: [{
+          contribution: PACKED_VOICE_CONTRIBUTION,
+          credentialSlotId: 'api_key',
+          credentialSource: { kind: 'savedSecret' },
+          credentialBindings: { account: { api_key: ref }, byMachineId: {} },
+          approvedRecipientContractDigest: approvedDigest,
+        }],
+      },
+    });
+
+    expect(resolveAccountVoiceCredentialStatus({
+      settings,
+      contribution: PACKED_VOICE_CONTRIBUTION,
+      credentialSlotId: 'api_key',
+      requiredRecipientContractDigest: requiredDigest,
+      resolveSavedSecret: () => shared(1),
+    }).status).toBe('ready');
+    expect(resolveAccountVoiceCredentialStatus({
+      settings,
+      contribution: PACKED_VOICE_CONTRIBUTION,
+      credentialSlotId: 'api_key',
+      requiredRecipientContractDigest: requiredDigest,
+      resolveSavedSecret: () => shared(2),
+    }).status).toBe('review_required');
+    expect(resolveAccountVoiceCredentialStatus({
+      settings,
+      contribution: PACKED_VOICE_CONTRIBUTION,
+      credentialSlotId: 'api_key',
+      requiredRecipientContractDigest: requiredDigest,
+      resolveSavedSecret: () => ({ ...shared(2), status: 'temporarily_unavailable', secret: null }),
+    })).toMatchObject({ status: 'unknown', reference: { secretId: ref } });
   });
 
   it('reports an unresolvable account-settings snapshot as unknown rather than missing', () => {

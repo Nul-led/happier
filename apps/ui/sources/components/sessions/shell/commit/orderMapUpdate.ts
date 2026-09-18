@@ -73,7 +73,6 @@ export function buildOrderMapAfterMove(params: Readonly<{
     directKeys: ReadonlyArray<string>;
     beforeKey?: string | null;
     afterKey?: string | null;
-    maxKeys: number;
 }>): Record<string, string[]> {
     const currentMap = copyOrderMapWithoutMovedKey(params.currentMap, params.movedKey);
     const existingKeys = currentMap[params.scopeKey] ?? [];
@@ -86,7 +85,7 @@ export function buildOrderMapAfterMove(params: Readonly<{
         movedKey: params.movedKey,
         beforeKey: params.beforeKey,
         afterKey: params.afterKey,
-    }).slice(0, params.maxKeys);
+    });
 
     return {
         ...currentMap,

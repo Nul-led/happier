@@ -151,6 +151,9 @@ vi.mock('@/sync/ops/capabilities', () => ({
 
 vi.mock('@/sync/store/hooks', () => ({
     useSettings: () => storageBoundary.settings ?? settingsParse({}),
+    useSetting: (key: string) => (
+        (storageBoundary.settings ?? settingsParse({})) as Record<string, unknown>
+    )[key],
     useSettingsVersion: () => 1,
     useMachineCliDetectionTarget: () => passiveSetupBoundary.machineTarget,
     useProfile: () => passiveSetupBoundary.profile ?? { connectedServicesV2: [] },

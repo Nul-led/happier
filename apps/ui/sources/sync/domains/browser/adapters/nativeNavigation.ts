@@ -6,8 +6,13 @@ export type BrowserNativeNavigationGuard = (request: BrowserNativeNavigationRequ
 
 export type CreateBrowserNativeNavigationGuardInput = Readonly<{
     allowedOrigins: readonly string[];
+    inlineDocument?: boolean;
     onBlockedNavigation?: (url: string) => void;
 }>;
+
+export function isBrowserInlineDocumentUrl(url: string): boolean {
+    return url === 'about:blank' || url.startsWith('about:blank#');
+}
 
 function readOrigin(rawUrl: string): string | null {
     try {
@@ -24,6 +29,11 @@ export function createBrowserNativeNavigationGuard(
 
     return (request) => {
         const url = typeof request.url === 'string' ? request.url : '';
+        if (input.inlineDocument) {
+            if (isBrowserInlineDocumentUrl(url)) return true;
+            if (url.length > 0) input.onBlockedNavigation?.(url);
+            return false;
+        }
         const origin = readOrigin(url);
         if (origin && allowedOrigins.has(origin)) {
             return true;

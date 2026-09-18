@@ -466,6 +466,57 @@ describe('sync stale-reopen targeted refetch (C6/D2a)', () => {
         expect(readStoredSessionMessages(storage.getState(), SESSION_ID)).toEqual([]);
     });
 
+    it.each(['success', 'failure'] as const)('keeps catch-up active until a hidden-edit repair settles with %s after the tail probe', async (outcome) => {
+        const { sync } = await seedLoadedHistorySession();
+        const syncForTest = sync as unknown as SyncStaleReopenTestAccess;
+        const oldRow = readStoredSessionMessages(storage.getState(), SESSION_ID)
+            .find((message) => message.realID === 'mm1');
+        expect(oldRow).toBeDefined();
+        markSessionSurfaceVisible(SESSION_ID);
+        syncForTest.markSessionTranscriptStale(SESSION_ID, {
+            updateType: 'message-updated', seq: 15, messageId: 'mm15',
+        });
+
+        let settleRepair: () => void = () => { throw new Error('Repair request was not issued'); };
+        requestMock.mockImplementation((path: string) => {
+            if (!String(path).includes('afterSeq=14')) return Promise.resolve(emptyMessagesResponse());
+            return new Promise<Response>((resolve, reject) => {
+                settleRepair = () => {
+                    if (outcome === 'failure') {
+                        reject(new Error('Hidden-edit repair unavailable'));
+                        return;
+                    }
+                    resolve(new Response(JSON.stringify({
+                        messages: [plainTranscriptApiMessage('mm15', 15, 'edited while hidden', 30)],
+                        nextAfterSeq: null,
+                    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+                };
+            });
+        });
+
+        try {
+            sync.onSessionVisible(SESSION_ID);
+            await sync.refreshSessionMessages(SESSION_ID);
+            expect(messagesRequestPaths().filter((path) => path.includes('afterSeq=14'))).toHaveLength(1);
+            expect(messagesRequestPaths().some((path) => path.includes('afterSeq=20'))).toBe(true);
+            // The tail probe has settled while exact hidden-update repair remains pending.
+            expect(storage.getState().isSessionCatchingUpNewer(SESSION_ID)).toBe(true);
+            expect(storage.getState().sessionMessages[SESSION_ID].isLoaded).toBe(true);
+            expect(readStoredSessionMessages(storage.getState(), SESSION_ID)).toContain(oldRow);
+
+            settleRepair();
+            await expect.poll(() => storage.getState().isSessionCatchingUpNewer(SESSION_ID)).toBe(false);
+            const rows = readStoredSessionMessages(storage.getState(), SESSION_ID);
+            expect(rows).toHaveLength(20);
+            expect(rows.find((message) => message.realID === 'mm1')).toBe(oldRow);
+            expect(readStoredTranscriptText('mm15')).toBe(outcome === 'success' ? 'edited while hidden' : 'mm15');
+        } finally {
+            settleRepair();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            markSessionSurfaceHidden(SESSION_ID);
+        }
+    });
+
     it('probes the loaded transcript tail once when reopening with a stale equal sequence hint', async () => {
         const { sync } = await seedLoadedHistorySession();
         markSessionSurfaceVisible(SESSION_ID);

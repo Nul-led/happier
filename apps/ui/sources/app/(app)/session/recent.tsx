@@ -1,304 +1,42 @@
-import React from 'react';
+import * as React from 'react';
 import { View } from 'react-native';
-import { VirtualizedList } from '@/components/ui/lists/virtualized/VirtualizedList';
-import { Text } from '@/components/ui/text/Text';
-import { useAllSessions } from '@/sync/domains/state/storage';
-import { Session } from '@/sync/domains/state/storageTypes';
-import { Avatar } from '@/components/ui/avatar/Avatar';
-import { getSessionName, getSessionSubtitle, getSessionAvatarId } from '@/utils/sessions/sessionUtils';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native-unistyles';
-import { Typography } from '@/constants/Typography';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
-import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
-import { Pressable } from 'react-native';
-import { t } from '@/text';
 import { useIsFocused } from '@react-navigation/native';
-import { useSessionListPaneSourceScopeKey } from '@/components/sessions/shell/sessionListPaneRetention';
-import { useSessionNavigationCursorPublisher } from '@/sync/domains/session/navigation/useSessionNavigationCursorPublisher';
-import type { SessionListLikeItem } from '@/sync/domains/session/navigation/sessionNavigationOrder';
-import { isUserFacingSession } from '@/sync/domains/session/listing/isUserFacingSession';
 
-interface SessionHistoryItem {
-    type: 'session' | 'date-header';
-    session?: Session;
-    date?: string;
-}
+import { SessionsList } from '@/components/sessions/shell/SessionsList';
+import { resolveFocusedSessionListSurfaceOwnership } from '@/components/sessions/shell/surface/sessionListSurfaceOwnership';
+import { SessionListLayoutIntentProvider } from '@/hooks/session/sessionListLayoutIntent';
 
-const styles = StyleSheet.create((theme) => ({
-    container: {
+const stylesheet = StyleSheet.create(() => ({
+    root: {
         flex: 1,
-        flexDirection: 'row',
-        justifyContent: 'center',
-        alignItems: 'stretch',
-        backgroundColor: theme.colors.background.canvas,
-    },
-    contentContainer: {
-        flex: 1,
-    },
-    dateHeader: {
-        backgroundColor: theme.colors.background.canvas,
-        paddingTop: 20,
-        paddingBottom: 8,
-        paddingHorizontal: 24,
-    },
-    dateHeaderText: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.secondary,
-        fontSize: 14,
-        fontWeight: '600',
-        letterSpacing: 0.1,
-    },
-    sessionCard: {
-        backgroundColor: theme.colors.surface.base,
-        marginHorizontal: 16,
-        marginBottom: 1,
-        paddingVertical: 16,
-        paddingHorizontal: 16,
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    sessionCardFirst: {
-        borderTopLeftRadius: 12,
-        borderTopRightRadius: 12,
-    },
-    sessionCardLast: {
-        borderBottomLeftRadius: 12,
-        borderBottomRightRadius: 12,
-        marginBottom: 12,
-    },
-    sessionCardSingle: {
-        borderRadius: 12,
-        marginBottom: 12,
-    },
-    sessionContent: {
-        flex: 1,
-        marginLeft: 16,
-    },
-    sessionTitle: {
-        fontSize: 15,
-        fontWeight: '500',
-        color: theme.colors.text.primary,
-        marginBottom: 2,
-        ...Typography.default('semiBold'),
-    },
-    sessionSubtitle: {
-        fontSize: 13,
-        color: theme.colors.text.secondary,
-        ...Typography.default(),
-    },
-    emptyContainer: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        paddingHorizontal: 32,
-    },
-    emptyText: {
-        fontSize: 16,
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-        ...Typography.default(),
     },
 }));
 
-function formatDateHeader(date: Date): string {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
-    const sessionDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    
-    if (sessionDate.getTime() === today.getTime()) {
-        return t('sessionHistory.today');
-    } else if (sessionDate.getTime() === yesterday.getTime()) {
-        return t('sessionHistory.yesterday');
-    } else {
-        const diffTime = today.getTime() - sessionDate.getTime();
-        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-        return t('sessionHistory.daysAgo', { count: diffDays });
-    }
-}
+const RECENT_SESSIONS_PATHNAME = '/session/recent';
 
-function groupSessionsByDate(sessions: Session[]): SessionHistoryItem[] {
-    const sortedSessions = sessions
-        .slice()
-        .sort((a, b) => b.updatedAt - a.updatedAt);
-    
-    const items: SessionHistoryItem[] = [];
-    let currentDateGroup: Session[] = [];
-    let currentDateString: string | null = null;
-    
-    for (const session of sortedSessions) {
-        const sessionDate = new Date(session.updatedAt);
-        const dateString = sessionDate.toDateString();
-        
-        if (currentDateString !== dateString) {
-            // Process previous group
-            if (currentDateGroup.length > 0) {
-                items.push({
-                    type: 'date-header',
-                    date: formatDateHeader(new Date(currentDateString!)),
-                });
-                currentDateGroup.forEach(sess => {
-                    items.push({ type: 'session', session: sess });
-                });
-            }
-            
-            // Start new group
-            currentDateString = dateString;
-            currentDateGroup = [session];
-        } else {
-            currentDateGroup.push(session);
-        }
-    }
-    
-    // Process final group
-    if (currentDateGroup.length > 0) {
-        items.push({
-            type: 'date-header',
-            date: formatDateHeader(new Date(currentDateString!)),
-        });
-        currentDateGroup.forEach(sess => {
-            items.push({ type: 'session', session: sess });
-        });
-    }
-    
-    return items;
-}
-
-export default function SessionHistory() {
-    const safeArea = useSafeAreaInsets();
-    // Composed at render time: the module-scope stylesheet evaluates once, so a
-    // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-    const contentMaxWidthStyle = useLayoutMaxWidthStyle();
-    const contentContainerStyle = React.useMemo(
-        () => [styles.contentContainer, contentMaxWidthStyle],
-        [contentMaxWidthStyle],
-    );
-    const allSessions = useAllSessions();
-    const navigateToSession = useNavigateToSession();
-    
+/**
+ * Compatibility host for links that predate Recent activity as a list layout.
+ *
+ * It is a presentation intent, not a preference: the canonical Sessions list renders
+ * Recent activity for this visit while the Account's saved layout is untouched, so
+ * Back returns to whatever the person last chose in View options and no
+ * Session-list, query or settings request is made by opening the link.
+ */
+export default function LegacyRecentSessionsRoute() {
     const isFocused = useIsFocused();
-    const sessionNavigationSourceScopeKey = useSessionListPaneSourceScopeKey();
+    const surfaceOwnership = resolveFocusedSessionListSurfaceOwnership(isFocused);
+    const styles = stylesheet;
 
-    const groupedItems = React.useMemo(() => {
-        return groupSessionsByDate(allSessions.filter(isUserFacingSession));
-    }, [allSessions]);
-
-    // These rows carry the session record rather than a list row, so the owning server is
-    // lifted onto the row shape the ordering owner reads; without it every captured key
-    // would be unscoped and the server-scoped session route would never anchor on one.
-    const sessionNavigationItems = React.useMemo<SessionListLikeItem[]>(
-        () => groupedItems.map((item) => (
-            item.type === 'session' && item.session
-                ? { type: 'session', sessionId: item.session.id, serverId: item.session.serverId }
-                : { type: item.type }
-        )),
-        [groupedItems],
-    );
-    useSessionNavigationCursorPublisher({
-        active: isFocused,
-        origin: 'recent',
-        sourceScopeKey: sessionNavigationSourceScopeKey,
-        storageKind: 'all',
-        items: sessionNavigationItems,
-    });
-    
-    const renderItem = React.useCallback(({ item, index }: { item: SessionHistoryItem, index: number }) => {
-        if (item.type === 'date-header') {
-            return (
-                <View style={styles.dateHeader}>
-                    <Text style={styles.dateHeaderText}>
-                        {item.date}
-                    </Text>
-                </View>
-            );
-        }
-        
-        if (item.type === 'session' && item.session) {
-            const session = item.session;
-            const sessionName = getSessionName(session);
-            const sessionSubtitle = getSessionSubtitle(session);
-            const avatarId = getSessionAvatarId(session);
-            
-            // Determine card styling based on position within date group
-            const prevItem = index > 0 ? groupedItems[index - 1] : null;
-            const nextItem = index < groupedItems.length - 1 ? groupedItems[index + 1] : null;
-            
-            const isFirst = prevItem?.type === 'date-header';
-            const isLast = nextItem?.type === 'date-header' || nextItem == null;
-            const isSingle = isFirst && isLast;
-            
-            return (
-                <Pressable
-                    style={[
-                        styles.sessionCard,
-                        isSingle ? styles.sessionCardSingle : 
-                        isFirst ? styles.sessionCardFirst :
-                        isLast ? styles.sessionCardLast : {}
-                    ]}
-                    onPress={() => navigateToSession(session.id, session.serverId ? { serverId: session.serverId } : undefined)}
-                >
-                    <Avatar id={avatarId} size={48} />
-                    <View style={styles.sessionContent}>
-                        <Text style={styles.sessionTitle} numberOfLines={1}>
-                            {sessionName}
-                        </Text>
-                        <Text style={styles.sessionSubtitle} numberOfLines={1}>
-                            {sessionSubtitle}
-                        </Text>
-                    </View>
-                </Pressable>
-            );
-        }
-        
-        return null;
-    }, [groupedItems, navigateToSession]);
-    
-    const keyExtractor = React.useCallback((item: SessionHistoryItem, index: number) => {
-        if (item.type === 'date-header') {
-            return `date-${item.date}-${index}`;
-        }
-        if (item.type === 'session' && item.session) {
-            return `session-${item.session.id}`;
-        }
-        return `item-${index}`;
-    }, []);
-    
-    if (!allSessions) {
-        return (
-            <View style={styles.container}>
-                <View style={contentContainerStyle} />
-            </View>
-        );
-    }
-    
-    if (groupedItems.length === 0) {
-        return (
-            <View style={styles.container}>
-                <View style={contentContainerStyle}>
-                    <View style={styles.emptyContainer}>
-                        <Text style={styles.emptyText}>
-                            {t('sessionHistory.empty')}
-                        </Text>
-                    </View>
-                </View>
-            </View>
-        );
-    }
-    
     return (
-        <View style={styles.container}>
-            <View style={contentContainerStyle}>
-                <VirtualizedList
-                    data={groupedItems}
-                    renderItem={renderItem}
-                    keyExtractor={keyExtractor}
-                    contentContainerStyle={{ 
-                        paddingBottom: safeArea.bottom + 16,
-                        paddingTop: 8,
-                    }}
+        <SessionListLayoutIntentProvider choice="recent_activity">
+            <View style={styles.root} testID="recent-sessions-screen">
+                <SessionsList
+                    pathname={RECENT_SESSIONS_PATHNAME}
+                    releaseRetentionOnRouteRemoval
+                    surfaceOwnership={surfaceOwnership}
                 />
             </View>
-        </View>
+        </SessionListLayoutIntentProvider>
     );
 }

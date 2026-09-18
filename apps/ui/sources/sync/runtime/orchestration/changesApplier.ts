@@ -1,6 +1,7 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import {
     classifyChangeForCheckpoint,
+    changeRequiresSavedSecretCatalogRefresh,
     getChangeSessionDraftHint,
     getChangeTargetMessageSeq,
     getChangeUpdatedMessageHint,
@@ -9,7 +10,7 @@ import {
 } from './changesPlanner';
 import { runTasksWithLimit } from './runTasksWithLimit';
 import type { ApiChangeEntry } from '@/sync/api/types/apiTypes';
-import { canonicalSessionDraftAddressV1, type SessionDraftAddressV1 } from '@happier-dev/protocol';
+import { canonicalSessionDraftAddressV2, type SessionDraftAddressV2 } from '@happier-dev/protocol';
 
 export type TodoSocketUpdate = Readonly<{
     key: string;
@@ -49,6 +50,7 @@ export async function applyPlannedChangeActions(params: {
         settings?: () => Promise<void>;
         profile?: () => Promise<void>;
         machines?: () => Promise<void>;
+        machinePools?: () => Promise<void>;
         artifacts?: () => Promise<void>;
         friends?: () => Promise<void>;
         friendRequests?: () => Promise<void>;
@@ -58,34 +60,55 @@ export async function applyPlannedChangeActions(params: {
         sessionFolderAssignments?: (sessionIds: string[]) => Promise<void>;
         todos?: () => Promise<void>;
         pets?: () => Promise<void>;
+        savedSecretResources?: () => Promise<void>;
     };
+    refreshWorkflowRun?: (runId: string) => Promise<void>;
     refreshSessionOrganization?: (plan: Exclude<PlannedChangeActions['sessionOrganization'], { mode: 'none' }>) => Promise<void>;
+    applyAuthoritativeSessionOrganizationDeletions?: (
+        plan: Exclude<PlannedChangeActions['sessionOrganization'], { mode: 'none' }>,
+    ) => void;
     /**
-     * Data owns filtering and delivery of its closed content-free
-     * `pluginDomain.dataCollection` invalidations. The shared Account-change
-     * applier only hands it the canonical page before checkpointing.
+     * Each projection owner filters its own content-free invalidations. The shared
+     * Account-change applier hands the canonical page to those owners before
+     * checkpointing; this callback creates no second durable cursor.
      */
-    publishPluginCollectionChanges?: (changes: readonly ApiChangeEntry[]) => void;
+    publishAccountChanges?: (changes: readonly ApiChangeEntry[]) => void;
     invalidateMessagesForSession: (sessionId: string) => Promise<void>;
     repairSessionTranscriptRevision?: (repair: PlannedChangeActions['sessionTranscriptRepairs'][number]) => Promise<void>;
     invalidateScmStatusForSession: (sessionId: string) => void;
     applyTodoSocketUpdates: (changes: TodoSocketUpdate[]) => Promise<void>;
     kvBulkGet: (credentials: AuthCredentials, keys: string[]) => Promise<{ values: TodoSocketUpdate[] }>;
     convergePendingForSession?: (sessionId: string) => Promise<void>;
-    materializeSessionDraft?: (address: SessionDraftAddressV1) => Promise<void>;
+    materializeSessionDraft?: (address: SessionDraftAddressV2) => Promise<void>;
 }): Promise<PlannedChangesApplyResult> {
     const { planned } = params;
 
     // Registering Data's wakeup before any awaited work preserves the
     // subscribe-then-initial-query race contract without giving UI a second
     // AccountChange broker or a collection query engine.
-    params.publishPluginCollectionChanges?.(planned.changes);
+    params.publishAccountChanges?.(planned.changes);
 
     const concurrencyLimit = typeof params.concurrencyLimit === 'number' && params.concurrencyLimit > 0
         ? Math.trunc(params.concurrencyLimit)
         : 2;
 
     const tasks: Array<() => Promise<void>> = [];
+    const completedWorkflowRunIds = new Set<string>();
+    const failedWorkflowRunIds = new Set<string>();
+    for (const runId of planned.workflowRunIdsToRefresh) {
+        tasks.push(async () => {
+            try {
+                if (!params.refreshWorkflowRun) {
+                    failedWorkflowRunIds.add(runId);
+                    return;
+                }
+                await params.refreshWorkflowRun(runId);
+                completedWorkflowRunIds.add(runId);
+            } catch {
+                failedWorkflowRunIds.add(runId);
+            }
+        });
+    }
     const completedMessageCatchUpSessionIds = new Set<string>();
     const failedMessageCatchUpSessionIds = new Set<string>();
     const completedTranscriptRepairSessionIds = new Set<string>();
@@ -111,9 +134,11 @@ export async function applyPlannedChangeActions(params: {
     );
 
     let sessionsInvalidationFailed = false;
+    let machinePoolsInvalidationFailed = false;
     let sessionFolderAssignmentsInvalidationFailed = false;
     let sessionOrganizationRefreshFailed = false;
     let petsInvalidationFailed = false;
+    let savedSecretResourcesInvalidationFailed = false;
     let sessionsInvalidationDone: Promise<boolean> | null = null;
     let resolveSessionsInvalidationDone: ((succeeded: boolean) => void) | null = null;
     if (planned.invalidate.sessions) {
@@ -125,6 +150,19 @@ export async function applyPlannedChangeActions(params: {
     if (planned.invalidate.settings) tasks.push(() => params.invalidate.settings?.() ?? Promise.resolve());
     if (planned.invalidate.profile) tasks.push(() => params.invalidate.profile?.() ?? Promise.resolve());
     if (planned.invalidate.machines) tasks.push(() => params.invalidate.machines?.() ?? Promise.resolve());
+    if (planned.invalidate.machinePools) {
+        tasks.push(async () => {
+            try {
+                if (!params.invalidate.machinePools) {
+                    machinePoolsInvalidationFailed = true;
+                    return;
+                }
+                await params.invalidate.machinePools();
+            } catch {
+                machinePoolsInvalidationFailed = true;
+            }
+        });
+    }
     if (planned.invalidate.artifacts) tasks.push(() => params.invalidate.artifacts?.() ?? Promise.resolve());
     if (planned.invalidate.friends) {
         tasks.push(() => params.invalidate.friends?.() ?? Promise.resolve());
@@ -142,6 +180,19 @@ export async function applyPlannedChangeActions(params: {
                 await params.invalidate.pets();
             } catch {
                 petsInvalidationFailed = true;
+            }
+        });
+    }
+    if (planned.invalidate.savedSecretResources) {
+        tasks.push(async () => {
+            try {
+                if (!params.invalidate.savedSecretResources) {
+                    savedSecretResourcesInvalidationFailed = true;
+                    return;
+                }
+                await params.invalidate.savedSecretResources();
+            } catch {
+                savedSecretResourcesInvalidationFailed = true;
             }
         });
     }
@@ -183,6 +234,7 @@ export async function applyPlannedChangeActions(params: {
                     return;
                 }
                 await params.refreshSessionOrganization(sessionOrganizationPlan);
+                params.applyAuthoritativeSessionOrganizationDeletions?.(sessionOrganizationPlan);
             } catch {
                 sessionOrganizationRefreshFailed = true;
             }
@@ -263,7 +315,7 @@ export async function applyPlannedChangeActions(params: {
 
     for (const address of planned.sessionDraftAddresses ?? []) {
         tasks.push(async () => {
-            const key = canonicalSessionDraftAddressV1(address);
+            const key = canonicalSessionDraftAddressV2(address);
             try {
                 if (!params.materializeSessionDraft) {
                     failedSessionDraftAddresses.add(key);
@@ -323,10 +375,29 @@ export async function applyPlannedChangeActions(params: {
             };
         }
 
+        if (classification.materializationProof === 'workflow-run') {
+            const runId = classification.entityId.startsWith('workflow-run:')
+                ? classification.entityId.slice('workflow-run:'.length)
+                : '';
+            if (!runId || !completedWorkflowRunIds.has(runId) || failedWorkflowRunIds.has(runId)) {
+                return {
+                    status: 'partial',
+                    safeAdvanceCursor,
+                    blockedCursor: classification.cursor,
+                    blockedReason: 'partial-materialization',
+                    processedChanges,
+                    blockedChanges: planned.changes.length - processedChanges,
+                };
+            }
+            safeAdvanceCursor = classification.cursor;
+            processedChanges += 1;
+            continue;
+        }
+
 
         if (classification.materializationProof === 'session-draft') {
             const hint = getChangeSessionDraftHint(change);
-            const key = hint ? canonicalSessionDraftAddressV1(hint.address) : '';
+            const key = hint ? canonicalSessionDraftAddressV2(hint.address) : '';
             if (!key || !completedSessionDraftAddresses.has(key) || failedSessionDraftAddresses.has(key)) {
                 return {
                     status: 'partial',
@@ -344,7 +415,7 @@ export async function applyPlannedChangeActions(params: {
 
         if (
             sessionsInvalidationFailed
-            && (classification.kind === 'session' || classification.kind === 'share')
+            && (classification.kind === 'session' || classification.kind === 'share' || classification.materializationProof === 'sessions')
         ) {
             return {
                 status: 'partial',
@@ -357,6 +428,28 @@ export async function applyPlannedChangeActions(params: {
         }
 
         if (petsInvalidationFailed && classification.kind === 'pet') {
+            return {
+                status: 'partial',
+                safeAdvanceCursor,
+                blockedCursor: classification.cursor,
+                blockedReason: 'partial-materialization',
+                processedChanges,
+                blockedChanges: planned.changes.length - processedChanges,
+            };
+        }
+
+        if (savedSecretResourcesInvalidationFailed && changeRequiresSavedSecretCatalogRefresh(change)) {
+            return {
+                status: 'partial',
+                safeAdvanceCursor,
+                blockedCursor: classification.cursor,
+                blockedReason: 'partial-materialization',
+                processedChanges,
+                blockedChanges: planned.changes.length - processedChanges,
+            };
+        }
+
+        if (machinePoolsInvalidationFailed && classification.kind === 'machinePool') {
             return {
                 status: 'partial',
                 safeAdvanceCursor,

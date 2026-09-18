@@ -1,11 +1,11 @@
 import {
     buildBackendTargetKeyV2,
     readBackendTargetRefV2,
-    SessionDraftPredecessorAuthoringValueV1Schema,
-    SYNCED_SESSION_AUTHORING_FIELD_IDS_V1,
+    SYNCED_SESSION_AUTHORING_FIELD_IDS_V2,
     SyncedSessionAuthoringValueV1Schema,
-    type SyncedSessionAuthoringFieldIdV1,
-    type SyncedSessionAuthoringValueV1,
+    SyncedSessionAuthoringValueV2Schema,
+    type SyncedSessionAuthoringFieldIdV2,
+    type SyncedSessionAuthoringValueV2,
 } from '@happier-dev/protocol';
 
 import { resolveAgentExecutionTargetForPersistedSelection } from '@/agents/backendCatalog/resolveAgentExecutionTargetForBackendTarget';
@@ -20,18 +20,18 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
  * Fields are parsed independently so one malformed optional selection cannot
  * discard otherwise recoverable authoring intent.
  */
-export function projectSyncedSessionAuthoringFields(value: unknown): Partial<SyncedSessionAuthoringValueV1> {
+export function projectSyncedSessionAuthoringFields(value: unknown): Partial<SyncedSessionAuthoringValueV2> {
     if (!isRecord(value)) return {};
 
-    const projected: Partial<Record<SyncedSessionAuthoringFieldIdV1, unknown>> = {};
-    for (const fieldId of SYNCED_SESSION_AUTHORING_FIELD_IDS_V1) {
+    const projected: Partial<Record<SyncedSessionAuthoringFieldIdV2, unknown>> = {};
+    for (const fieldId of SYNCED_SESSION_AUTHORING_FIELD_IDS_V2) {
         if (!Object.prototype.hasOwnProperty.call(value, fieldId)) continue;
-        const parsed = SyncedSessionAuthoringValueV1Schema.shape[fieldId].safeParse(value[fieldId]);
+        const parsed = SyncedSessionAuthoringValueV2Schema.shape[fieldId].safeParse(value[fieldId]);
         if (parsed.success) {
             projected[fieldId] = parsed.data;
         }
     }
-    return projected as Partial<SyncedSessionAuthoringValueV1>;
+    return projected as Partial<SyncedSessionAuthoringValueV2>;
 }
 
 /**
@@ -41,14 +41,14 @@ export function projectSyncedSessionAuthoringFields(value: unknown): Partial<Syn
 export function projectPredecessorSessionDraftAuthoringFields(
     value: unknown,
     updatedAt: number,
-): Partial<SyncedSessionAuthoringValueV1> {
+): Partial<SyncedSessionAuthoringValueV2> {
     if (!isRecord(value)) return {};
 
-    const machineId = SessionDraftPredecessorAuthoringValueV1Schema.shape.machineId.safeParse(value.machineId);
-    const serverId = SessionDraftPredecessorAuthoringValueV1Schema.shape.serverId.safeParse(value.serverId);
-    const agentId = SessionDraftPredecessorAuthoringValueV1Schema.shape.agentId.safeParse(value.agentId);
-    const backendTarget = SessionDraftPredecessorAuthoringValueV1Schema.shape.backendTarget.safeParse(value.backendTarget);
-    const modelId = SessionDraftPredecessorAuthoringValueV1Schema.shape.modelId.safeParse(value.modelId);
+    const machineId = SyncedSessionAuthoringValueV1Schema.shape.machineId.safeParse(value.machineId);
+    const serverId = SyncedSessionAuthoringValueV1Schema.shape.serverId.safeParse(value.serverId);
+    const agentId = SyncedSessionAuthoringValueV1Schema.shape.agentId.safeParse(value.agentId);
+    const backendTarget = SyncedSessionAuthoringValueV1Schema.shape.backendTarget.safeParse(value.backendTarget);
+    const modelId = SyncedSessionAuthoringValueV1Schema.shape.modelId.safeParse(value.modelId);
 
     let canonicalBackendTarget = null;
     if (backendTarget.success && backendTarget.data) {
@@ -63,7 +63,10 @@ export function projectPredecessorSessionDraftAuthoringFields(
         fallbackAgentId: agentId.success ? agentId.data : null,
     });
     const executionTarget = machineId.success && machineId.data && serverId.success && serverId.data
-        ? { machineId: machineId.data, serverId: serverId.data }
+        ? {
+            kind: 'machine' as const,
+            target: { machineId: machineId.data, serverId: serverId.data },
+        }
         : undefined;
     const modelSelection = modelId.success && modelId.data && agentTarget
         ? {
@@ -93,19 +96,27 @@ export function projectPredecessorSessionDraftAuthoringFields(
 export function projectNewSessionDraftSyncedAuthoringFields(params: Readonly<{
     draft: NewSessionDraft;
     scopeServerId: string;
-}>): Partial<SyncedSessionAuthoringValueV1> {
+}>): Partial<SyncedSessionAuthoringValueV2> {
     const draft = params.draft;
-    const executionTarget = draft.executionTarget ?? (draft.selectedMachineId
+    const executionTarget = draft.executionTarget !== undefined ? draft.executionTarget : (draft.selectedMachineId
         ? {
-            serverId: draft.targetServerId?.trim() || params.scopeServerId,
-            machineId: draft.selectedMachineId,
+            kind: 'machine' as const,
+            target: {
+                serverId: draft.targetServerId?.trim() || params.scopeServerId,
+                machineId: draft.selectedMachineId,
+            },
         }
         : null);
     return projectSyncedSessionAuthoringFields({
         targetType: 'new_session',
         executionTarget,
+        ...(draft.temporaryComputerActivationRef !== undefined
+            ? { temporaryComputerActivationRef: draft.temporaryComputerActivationRef }
+            : {}),
         ...(draft.selectedPath ? { directory: draft.selectedPath } : {}),
         ...(draft.checkoutCreationDraft ? { checkoutCreationDraft: draft.checkoutCreationDraft } : {}),
+        ...(draft.access !== undefined ? { access: draft.access } : {}),
+        ...(draft.primaryTeamId !== undefined ? { primaryTeamId: draft.primaryTeamId } : {}),
         ...(draft.organizationPlacement ? { organizationPlacement: draft.organizationPlacement } : {}),
         agentTarget: draft.agentTarget
             ?? resolveAgentExecutionTargetForPersistedSelection({

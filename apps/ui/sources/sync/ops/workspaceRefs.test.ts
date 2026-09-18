@@ -12,6 +12,7 @@ import {
 const refreshAccountSettingsFromServerSpy = vi.hoisted(() => vi.fn());
 const mutateAccountSettingsOnceSpy = vi.hoisted(() => vi.fn());
 const getStateSpy = vi.hoisted(() => vi.fn());
+const settingsScope = { serverId: 'server', accountId: 'account' } as const;
 
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
     getSyncSingleton: () => ({
@@ -30,8 +31,8 @@ describe('removeWorkspaceRefFromAccount', () => {
         mutateAccountSettingsOnceSpy.mockReset();
         getStateSpy.mockReset();
         getStateSpy
-            .mockReturnValueOnce({ settingsVersion: 4 })
-            .mockReturnValue({ settingsVersion: 5 });
+            .mockReturnValueOnce({ settingsVersion: 4, settingsScope })
+            .mockReturnValue({ settingsVersion: 5, settingsScope });
         refreshAccountSettingsFromServerSpy.mockResolvedValue(undefined);
     });
 
@@ -68,8 +69,9 @@ describe('removeWorkspaceRefFromAccount', () => {
             workspaceRefId: 'target-ref',
         })).resolves.toEqual({ ok: true });
 
-        expect(refreshAccountSettingsFromServerSpy).toHaveBeenCalledWith(4);
+        expect(refreshAccountSettingsFromServerSpy).toHaveBeenCalledWith(4, settingsScope);
         expect(mutateAccountSettingsOnceSpy).toHaveBeenCalledWith(expect.objectContaining({
+            expectedSettingsScope: settingsScope,
             expectedSettingsVersion: 5,
         }));
     });
@@ -114,8 +116,8 @@ describe('workspace ref semantic Account Settings mutations', () => {
         mutateAccountSettingsOnceSpy.mockReset();
         getStateSpy.mockReset();
         getStateSpy
-            .mockReturnValueOnce({ settingsVersion: 10 })
-            .mockReturnValue({ settingsVersion: 11 });
+            .mockReturnValueOnce({ settingsVersion: 10, settingsScope })
+            .mockReturnValue({ settingsVersion: 11, settingsScope });
         refreshAccountSettingsFromServerSpy.mockResolvedValue(undefined);
     });
 
@@ -135,9 +137,12 @@ describe('workspace ref semantic Account Settings mutations', () => {
 
         await expect(mutate()).resolves.toEqual({ ok: true });
 
-        expect(refreshAccountSettingsFromServerSpy).toHaveBeenCalledWith(10);
+        expect(refreshAccountSettingsFromServerSpy).toHaveBeenCalledWith(10, settingsScope);
         expect(mutateAccountSettingsOnceSpy).toHaveBeenCalledTimes(1);
-        expect(mutateAccountSettingsOnceSpy).toHaveBeenCalledWith(expect.objectContaining({ expectedSettingsVersion: 11 }));
+        expect(mutateAccountSettingsOnceSpy).toHaveBeenCalledWith(expect.objectContaining({
+            expectedSettingsScope: settingsScope,
+            expectedSettingsVersion: 11,
+        }));
     });
 
     it('returns the winning ref identity when add commits after a rendered snapshot becomes stale', async () => {

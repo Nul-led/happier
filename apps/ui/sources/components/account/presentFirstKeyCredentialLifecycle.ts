@@ -1,5 +1,3 @@
-import { router } from 'expo-router';
-
 import {
     getCurrentAuth,
     type AuthCredentialLifecycleResult,
@@ -7,15 +5,10 @@ import {
 import {
     abandonAccountEncryptionFirstKeyExternalAuth,
     recoverAccountEncryptionFirstKeyRejectedCredential,
+    retryPendingAccountEncryptionFirstKeyExternalAuth,
 } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
 import { Modal } from '@/modal';
-import {
-    listServerProfiles,
-} from '@/sync/domains/server/serverProfiles';
-import { setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
-import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
-import { isDesktopHost } from '@/utils/platform/desktopHost';
-import { Platform } from 'react-native';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
 import {
     FirstKeyRecoveryModal,
     type FirstKeyRecoveryActionResult,
@@ -62,14 +55,6 @@ export async function presentFirstKeyCredentialLifecycle(
                     if (
                         !targetServerId
                         || !targetServerUrl
-                        || !listServerProfiles().some(
-                            (profile) => (
-                                profile.id
-                                    === targetServerId
-                                && profile.serverUrl
-                                    === targetServerUrl
-                            ),
-                        )
                     ) {
                         return {
                             kind:
@@ -77,34 +62,16 @@ export async function presentFirstKeyCredentialLifecycle(
                         };
                     }
                     const auth = getCurrentAuth();
-                    const switchResult = await setActiveServerAndSwitch({
-                        serverId: targetServerId,
-                        scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
-                        refreshAuth: auth?.refreshFromActiveServer ?? null,
-                    });
-                    if (switchResult === 'blocked') {
+                    if (!auth) {
                         return { kind: 'recovery_failed' };
                     }
+                    const target = { serverId: targetServerId, serverUrl: targetServerUrl };
                     const recovered =
                         await recoverAccountEncryptionFirstKeyRejectedCredential({
                             recovery:
                                 result.recovery,
-                            persistCredentials:
-                                async (
-                                    credentials,
-                                    options,
-                                ) => (
-                                    auth
-                                        ? await auth
-                                            .loginWithCredentials(
-                                                credentials,
-                                                options,
-                                            )
-                                        : {
-                                            kind:
-                                                'recovery_failed',
-                                        }
-                                ),
+                            target,
+                            persistCredentials: auth.loginWithCredentials,
                         });
                     if (
                         recovered.kind
@@ -115,7 +82,12 @@ export async function presentFirstKeyCredentialLifecycle(
                                 'recovery_failed',
                         };
                     }
-                    router.push('/settings/account');
+                    if (recovered.kind === 'not_applicable') {
+                        const currentCredentials = await TokenStorage.getCredentialsForServerUrl(targetServerUrl, { serverId: targetServerId });
+                        if (!currentCredentials || !await retryPendingAccountEncryptionFirstKeyExternalAuth({
+                            currentCredentials, target, persistCredentials: auth.loginWithCredentials,
+                        })) return { kind: 'recovery_failed' };
+                    }
                     return { kind: 'completed' };
                 }),
                 abandon: async (): Promise<
@@ -156,7 +128,8 @@ export async function presentFirstKeyCredentialLifecycle(
         });
     });
     if (outcome === 'finish') {
-        await params.onFinishCompleted?.();
+        if (params.onFinishCompleted) await params.onFinishCompleted();
+        else if ((await params.run()).kind === 'completed') await params.onCompleted?.();
     } else if (outcome === 'abandon') {
         await params.onCompleted?.();
     }

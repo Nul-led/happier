@@ -1,3 +1,4 @@
+import { VoiceRuntimePlatformSchema, type VoiceRuntimePlatform } from '@happier-dev/protocol';
 import type { VoiceSettings } from '@/sync/domains/settings/voiceSettings';
 import type { VoiceProviderRegistry } from '@/voice/registry/providerRegistry';
 import {
@@ -39,6 +40,7 @@ export function resolveVoiceStartAdmission(input: Readonly<{
     /** A start with no session bound to the caller is authorized. */
     globalStartAuthorized: boolean;
     providerId: string;
+    platform: VoiceRuntimePlatform | 'unknown';
     providerSettings: ExternalVoiceProviderSettingsDescriptor | null;
     registry: VoiceProviderRegistry;
     /** The session a scoped start would bind to, when the caller has one. */
@@ -50,6 +52,10 @@ export function resolveVoiceStartAdmission(input: Readonly<{
         input.bindingScope,
         input.registry,
     ) === input.providerId;
+    const entry = input.registry.get(input.providerId);
+    const platformSupported = input.platform !== 'unknown'
+        && entry !== null
+        && entry.supportedPlatforms.includes(input.platform);
     // A session-scoped start binds through the session, so the global connected-services
     // reference is not its prerequisite.
     const connectedServicesBindingReady =
@@ -63,8 +69,14 @@ export function resolveVoiceStartAdmission(input: Readonly<{
         canStart:
             !input.daemonLocalVoiceUnavailable
             && providerReadyForBinding
+            && platformSupported
             && connectedServicesBindingReady
             && (input.globalStartAuthorized || Boolean(input.startSessionId)),
         connectedServicesBindingReady,
     };
+}
+
+export function resolveCurrentVoiceRuntimePlatform(platform: unknown): VoiceRuntimePlatform | 'unknown' {
+    const parsed = VoiceRuntimePlatformSchema.safeParse(platform);
+    return parsed.success ? parsed.data : 'unknown';
 }

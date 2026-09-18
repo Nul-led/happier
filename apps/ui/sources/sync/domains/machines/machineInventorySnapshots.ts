@@ -3,6 +3,7 @@ import {
 } from '@/sync/domains/state/machineDisplayWarmCacheAdapters';
 import type { MachineDisplayCacheEntryV1 } from '@/sync/domains/state/warmCachePersistence';
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import { isPersistentMachine } from '@happier-dev/protocol';
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 
 import {
@@ -90,6 +91,7 @@ function readWarmMachineDisplays(params: Readonly<{
     }
     return Object.freeze([...entriesByMachineId.values()]
         .map(buildMachineDisplayRenderableFromCacheEntry)
+        .filter(isPersistentMachine)
         .sort(compareMachineDisplays));
 }
 
@@ -195,6 +197,7 @@ export function resolveAllProfileMachineInventorySnapshots(params: Readonly<{
                 serverName,
                 observation: raw.observation,
                 machines: Object.freeze(raw.machines
+                    .filter(isPersistentMachine)
                     .map(buildMachineDisplayRenderableFromMachine)
                     .sort(compareMachineDisplays)),
             }));

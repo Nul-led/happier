@@ -44,7 +44,33 @@ export function hasBase64Decryptor(decryptor: Decryptor): decryptor is Decryptor
 
 export type DecryptOptions = Readonly<{
     signal?: AbortSignal;
+    onAuthenticationFailure?: (index: number) => void;
 }>;
+
+// The native JSON ABI uses null for both authenticated JSON null and failed
+// opening. Recheck only those ambiguous items with the same cipher, without
+// changing that ABI or guessing from a domain schema. Ordinary valid rows stay
+// on the native batch path.
+async function decryptWithNativeAuthenticationClassification<T>(
+    data: readonly T[],
+    binding: NativeJsonDecryptWorkerBinding,
+    run: () => Promise<unknown[]>,
+    classify: (item: T, onFailure: () => void) => Promise<unknown>,
+    options: DecryptOptions,
+): Promise<unknown[]> {
+    const scope = binding.getScope();
+    const results = await run();
+    if (!options.onAuthenticationFailure || options.signal?.aborted || binding.isScopeCurrent?.(scope) === false) return results;
+    const failures: number[] = [];
+    for (let index = 0; index < results.length; index++) {
+        if (results[index] !== null) continue;
+        await classify(data[index], () => failures.push(index));
+    }
+    if (!options.signal?.aborted && binding.isScopeCurrent?.(scope) !== false) {
+        for (const index of failures) options.onAuthenticationFailure(index);
+    }
+    return results;
+}
 
 export type SecretBoxEncryptionOptions = Readonly<{
     nativeCryptoWorker?: NativeJsonDecryptWorkerBinding;
@@ -130,10 +156,11 @@ export class SecretBoxEncryption implements Encryptor, Decryptor {
         }
     }
 
-    private decryptReference(data: readonly Uint8Array[]): (any | null)[] {
+    private decryptReference(data: readonly Uint8Array[], options: DecryptOptions = {}): (any | null)[] {
         const results: (any | null)[] = [];
         for (const item of data) {
-            results.push(decryptSecretBox(item, this.secretKey));
+            const index = results.length;
+            results.push(decryptSecretBox(item, this.secretKey, () => options.onAuthenticationFailure?.(index)));
         }
         return results;
     }
@@ -145,25 +172,27 @@ export class SecretBoxEncryption implements Encryptor, Decryptor {
             async () => {
                 const referenceRun = async () => this.decryptReference(data);
                 if (this.nativeCryptoWorker) {
-                    return await decryptSecretboxJsonBatchWithNativeWorker(
+                    return await decryptWithNativeAuthenticationClassification(data, this.nativeCryptoWorker, () => decryptSecretboxJsonBatchWithNativeWorker(
                         data,
                         this.secretKey,
                         this.nativeCryptoWorker,
                         referenceRun,
                         { signal: options.signal },
-                    );
+                    ), async (item, onFailure) => this.decryptReference([item], { onAuthenticationFailure: onFailure })[0], options);
                 }
-                return await referenceRun();
+                return this.decryptReference(data, options);
             },
         );
     }
 
-    private decryptBase64Reference(data: readonly string[]): (any | null)[] {
+    private decryptBase64Reference(data: readonly string[], options: DecryptOptions = {}): (any | null)[] {
         const results: (any | null)[] = [];
         for (const item of data) {
             try {
-                results.push(decryptSecretBox(decodeBase64(item, 'base64'), this.secretKey));
+                const index = results.length;
+                results.push(decryptSecretBox(decodeBase64(item, 'base64'), this.secretKey, () => options.onAuthenticationFailure?.(index)));
             } catch {
+                options.onAuthenticationFailure?.(results.length);
                 results.push(null);
             }
         }
@@ -180,15 +209,15 @@ export class SecretBoxEncryption implements Encryptor, Decryptor {
             async () => {
                 const referenceRun = async () => this.decryptBase64Reference(data);
                 if (this.nativeCryptoWorker) {
-                    return await decryptSecretboxJsonBase64BatchWithNativeWorker(
+                    return await decryptWithNativeAuthenticationClassification(data, this.nativeCryptoWorker, () => decryptSecretboxJsonBase64BatchWithNativeWorker(
                         data,
                         this.secretKey,
                         this.nativeCryptoWorker,
                         referenceRun,
                         { signal: options.signal },
-                    );
+                    ), async (item, onFailure) => this.decryptBase64Reference([item], { onAuthenticationFailure: onFailure })[0], options);
                 }
-                return await referenceRun();
+                return this.decryptBase64Reference(data, options);
             },
         );
     }
@@ -307,45 +336,54 @@ export class AES256Encryption implements Encryptor, Decryptor {
             async () => {
                 const referenceRun = async () => this.decryptReference(data);
                 if (this.nativeCryptoWorker) {
-                    return await decryptAesGcmJsonBatchWithNativeWorker(
+                    return await decryptWithNativeAuthenticationClassification(data, this.nativeCryptoWorker, () => decryptAesGcmJsonBatchWithNativeWorker(
                         data,
                         this.secretKey,
                         this.nativeCryptoWorker,
                         referenceRun,
                         { signal: options.signal },
-                    );
+                    ), (item, onFailure) => this.decryptReference([item], { onAuthenticationFailure: onFailure }), options);
                 }
-                return await referenceRun();
+                return await this.decryptReference(data, options);
             },
         );
     }
 
-    private async decryptReference(data: readonly Uint8Array[]): Promise<(any | null)[]> {
-        return await mapWithConcurrency(data, this.batchConcurrencyLimit, async (item) => {
+    private async decryptReference(data: readonly Uint8Array[], options: DecryptOptions = {}): Promise<(any | null)[]> {
+        return await mapWithConcurrency(data, this.batchConcurrencyLimit, async (item, index) => {
+            let decryptedString: string | null;
             try {
                 if (item[0] !== 0) {
+                    options.onAuthenticationFailure?.(index);
                     return null;
                 }
-                const decryptedString = await this.decryptString(encodeBase64(item.slice(1)), this.secretKeyB64);
-                if (!decryptedString) {
-                    return null;
-                } else {
-                    // Parse JSON string back to object
-                    return parseSerializedJsonValue(decryptedString);
-                }
+                decryptedString = await this.decryptString(encodeBase64(item.slice(1)), this.secretKeyB64);
             } catch (error) {
+                options.onAuthenticationFailure?.(index);
+                return null;
+            }
+            if (decryptedString === null) {
+                options.onAuthenticationFailure?.(index);
+                return null;
+            }
+            try {
+                return parseSerializedJsonValue(decryptedString);
+            } catch {
                 return null;
             }
         });
     }
 
-    private async decryptBase64Reference(data: readonly string[]): Promise<(any | null)[]> {
+    private async decryptBase64Reference(data: readonly string[], options: DecryptOptions = {}): Promise<(any | null)[]> {
         const hasLargePayload = shouldUseLargePayloadAesBase64Path(data);
-        const decryptOne = async (item: string): Promise<any | null> => {
+        const decryptOne = async (item: string, index: number): Promise<any | null> => {
             try {
-                const decrypted = await this.decryptReference([decodeBase64(item, 'base64')]);
+                const decrypted = await this.decryptReference([decodeBase64(item, 'base64')], {
+                    onAuthenticationFailure: () => options.onAuthenticationFailure?.(index),
+                });
                 return decrypted.length > 0 ? decrypted[0] : null;
             } catch {
+                options.onAuthenticationFailure?.(index);
                 return null;
             }
         };
@@ -354,7 +392,7 @@ export class AES256Encryption implements Encryptor, Decryptor {
         }
         const results: (any | null)[] = [];
         for (const item of data) {
-            results.push(await decryptOne(item));
+            results.push(await decryptOne(item, results.length));
             if (estimateBase64PayloadBytes(item) >= readAesBase64DecryptWorkerThresholdBytes()) {
                 await yieldToEventLoop();
             }
@@ -372,27 +410,27 @@ export class AES256Encryption implements Encryptor, Decryptor {
             async () => {
                 const referenceRun = async () => this.decryptBase64Reference(data);
                 if (this.nativeCryptoWorker) {
-                    return await decryptAesGcmJsonBase64BatchWithNativeWorker(
+                    return await decryptWithNativeAuthenticationClassification(data, this.nativeCryptoWorker, () => decryptAesGcmJsonBase64BatchWithNativeWorker(
                         data,
                         this.secretKey,
                         this.nativeCryptoWorker,
                         referenceRun,
                         { signal: options.signal },
-                    );
+                    ), (item, onFailure) => this.decryptBase64Reference([item], { onAuthenticationFailure: onFailure }), options);
                 }
-                return await referenceRun();
+                return await this.decryptBase64Reference(data, options);
             },
         );
     }
 
     private async decryptBase64WithoutNativeWorker(
         data: readonly string[],
-        _options: DecryptOptions = {},
+        options: DecryptOptions = {},
     ): Promise<(any | null)[]> {
         return await syncPerformanceTelemetry.measureAsync(
             'sync.encryption.crypto.aes.decrypt',
             { items: data.length, concurrency: this.batchConcurrencyLimit },
-            async () => this.decryptBase64Reference(data),
+            async () => this.decryptBase64Reference(data, options),
         );
     }
 }

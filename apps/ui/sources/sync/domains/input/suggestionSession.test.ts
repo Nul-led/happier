@@ -33,12 +33,12 @@ function state(args: Readonly<{
     // only the fields the narrow composer projection reads.
     return {
         sessions: { current: { serverId: 'server-a' } },
-        sessionListRowStateByServerId: Object.fromEntries(
+        sessionListRowsByServerId: Object.fromEntries(
             Object.entries(args.byServer).map(([serverId, sessions]) => [
                 serverId,
                 Object.fromEntries(sessions.map((session) => [session.id, session])),
             ]),
-        ) as ComposerSessionSuggestionState['sessionListRowStateByServerId'],
+        ) as ComposerSessionSuggestionState['sessionListRowsByServerId'],
     };
 }
 

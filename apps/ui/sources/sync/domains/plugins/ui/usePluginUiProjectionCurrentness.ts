@@ -6,7 +6,6 @@ import {
     type PluginUiReactNativeRuntimeProjectionSource,
 } from '@/components/plugins/reactNative/projectionInvalidation';
 import type { LocalServicePreviewPlatform } from '@/sync/domains/local/services/preview/url';
-import { resolveLocalServicePreviewPlatform } from '@/sync/domains/local/services/preview/platform';
 import {
     EMPTY_PLUGIN_BROWSER_PROJECTION,
     resolvePluginBrowserProjectionState,
@@ -14,6 +13,7 @@ import {
 } from '@/sync/domains/plugins/browser/targets';
 import {
     EMPTY_PLUGIN_UI_PROJECTION,
+    resolvePluginUiProjectionPlatform,
     resolvePluginUiProjectionState,
     type PluginUiProjectionModel,
 } from '@/sync/domains/plugins/ui/projection';
@@ -99,14 +99,12 @@ export type PluginUiProjectionCurrentness = Readonly<{
 }>;
 
 /**
- * The host platform every projection currentness reports. Exported because the
- * app-scope union has no single machine hook to read it from, and a second
- * `Platform.OS` mapping beside this one would be exactly the split-brain §8
- * forbids.
+ * The host platform every projection currentness reports. Re-exported because
+ * the app-scope union has no single machine hook to read it from, and a second
+ * `Platform.OS` mapping beside the projection owner's would be exactly the
+ * split-brain §8 forbids.
  */
-export function resolvePluginUiProjectionPlatform(): LocalServicePreviewPlatform {
-    return resolveLocalServicePreviewPlatform();
-}
+export { resolvePluginUiProjectionPlatform };
 
 /**
  * Client executable declarations have web/iOS/Android targets. Desktop uses
@@ -166,12 +164,14 @@ function createRestoredLoadedProjectionState(input: Readonly<{
     targetKey: string;
     machineId: string;
     accountLifetime: ActiveServerAccountScopeLifetime | null;
+    platform: LocalServicePreviewPlatform;
 }>): LoadedProjectionState {
     const restored = input.accountLifetime && input.accountLifetime.isCurrent()
         ? readPluginUiProjectionAdmissionSnapshot({
             scope: input.accountLifetime.scope,
             targetKey: input.targetKey,
             machineId: input.machineId,
+            platform: input.platform,
         })
         : null;
     if (!restored) return createEmptyLoadedProjectionState(input.targetKey, input.accountLifetime);
@@ -323,6 +323,7 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
             targetKey,
             machineId: target.machineId,
             accountLifetime,
+            platform,
         });
         setLoadedProjection((previous) => {
             if (previous.targetKey !== targetKey || previous.accountLifetime !== accountLifetime) {
@@ -431,7 +432,10 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
                         pluginUiProjection: resolvePluginUiProjectionState(
                             previous.pluginUiProjection,
                             result.projection,
-                            { reuseSameGeneration: previous.authorityKey === authorityKey },
+                            {
+                                reuseSameGeneration: previous.authorityKey === authorityKey,
+                                platform,
+                            },
                         ),
                         pluginBrowserProjection: resolvePluginBrowserProjectionState(
                             previous.pluginBrowserProjection,
@@ -455,7 +459,7 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
             if (retryTimer !== null) clearTimeout(retryTimer);
             activeRequestController?.abort();
         };
-    }, [accountLifetime, authorityKey, target, targetKey]);
+    }, [accountLifetime, authorityKey, platform, target, targetKey]);
 
     const hasLoadedCurrentScope = Boolean(
         targetKey

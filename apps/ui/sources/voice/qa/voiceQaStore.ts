@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+
 import { randomUUID } from '@/platform/randomUUID';
 
 const MAX_VOICE_QA_ENTRIES = 500;
@@ -18,17 +20,17 @@ export type VoiceQaEntry = Readonly<{
 type VoiceQaState = Readonly<{
   provider: VoiceQaProvider | null;
   sessionId: string | null;
-  targetSessionId: string | null;
+  targetSessionAddress: SessionAddress | null;
   runtimeSessionId: string | null;
   status: VoiceQaStatus;
   entries: ReadonlyArray<VoiceQaEntry>;
   begin: (
     provider: VoiceQaProvider,
     sessionId: string,
-    options?: Readonly<{ targetSessionId?: string | null; runtimeSessionId?: string | null }>,
+    options?: Readonly<{ targetSessionAddress?: SessionAddress | null; runtimeSessionId?: string | null }>,
   ) => void;
   setStatus: (status: VoiceQaStatus) => void;
-  setResolvedSessions: (params: Readonly<{ targetSessionId?: string | null; runtimeSessionId?: string | null }>) => void;
+  setResolvedSessions: (params: Readonly<{ targetSessionAddress?: SessionAddress | null; runtimeSessionId?: string | null }>) => void;
   clear: () => void;
   appendSystem: (text: string) => void;
   appendUser: (text: string) => void;
@@ -62,7 +64,7 @@ function appendEntry(state: VoiceQaState, entry: VoiceQaEntry): VoiceQaState {
 export const useVoiceQaStore = create<VoiceQaState>((set) => ({
   provider: null,
   sessionId: null,
-  targetSessionId: null,
+  targetSessionAddress: null,
   runtimeSessionId: null,
   status: 'idle',
   entries: [],
@@ -71,7 +73,7 @@ export const useVoiceQaStore = create<VoiceQaState>((set) => ({
       ...state,
       provider,
       sessionId: sessionId.trim(),
-      targetSessionId: normalizeText(options?.targetSessionId) || null,
+      targetSessionAddress: normalizeSessionAddress(options?.targetSessionAddress?.serverId, options?.targetSessionAddress?.sessionId),
       runtimeSessionId: normalizeText(options?.runtimeSessionId) || null,
       status: 'starting',
     })),
@@ -80,10 +82,10 @@ export const useVoiceQaStore = create<VoiceQaState>((set) => ({
       ...state,
       status,
     })),
-  setResolvedSessions: ({ targetSessionId, runtimeSessionId }) =>
+  setResolvedSessions: ({ targetSessionAddress, runtimeSessionId }) =>
     set((state) => ({
       ...state,
-      targetSessionId: normalizeText(targetSessionId) || null,
+      targetSessionAddress: normalizeSessionAddress(targetSessionAddress?.serverId, targetSessionAddress?.sessionId),
       runtimeSessionId: normalizeText(runtimeSessionId) || null,
     })),
   clear: () =>
@@ -121,7 +123,7 @@ export function resetVoiceQaStoreForTests(): void {
   useVoiceQaStore.setState({
     provider: null,
     sessionId: null,
-    targetSessionId: null,
+    targetSessionAddress: null,
     runtimeSessionId: null,
     status: 'idle',
     entries: [],

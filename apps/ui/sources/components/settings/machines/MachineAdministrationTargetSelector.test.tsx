@@ -1,227 +1,168 @@
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { MachineAdministrationTargetV1 } from '@happier-dev/protocol';
-
-import type {
-    ServerScopedMachineGroup,
-    ServerScopedMachinePresentation,
-} from '@/components/sessions/new/hooks/machines/useServerScopedMachineOptions';
 import { renderScreen } from '@/dev/testkit';
 import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
-import type {
-    MachineAdministrationCandidateV1,
-    MachineAdministrationTargetStateV1,
+import {
+    resolveMachineAdministrationTargetState,
+    type MachineAdministrationCandidateV1,
 } from '@/sync/domains/machines/administration/targetSelection';
-import type {
-    MachineAdministrationTargetPickerRowV1,
-    MachineAdministrationTargetSelectionV1,
-} from '@/sync/domains/machines/administration/useTargetSelection';
+import type { MachineAdministrationTargetSelectionV1 } from '@/sync/domains/machines/administration/useTargetSelection';
+import { clearActiveUnsavedChangesGuard, setActiveUnsavedChangesGuard } from '@/utils/navigation/runGuardedNavigation';
 
 import { installNewSessionComponentsCommonModuleMocks } from '../../sessions/new/components/newSessionComponentsTestHelpers';
 
-type PresentedMachine = ServerScopedMachinePresentation & Readonly<{
-    target: MachineAdministrationTargetV1;
-    candidate: MachineAdministrationCandidateV1;
-}>;
-
-type CapturedPickerProps = Readonly<{
-    groups: readonly ServerScopedMachineGroup<PresentedMachine>[];
-    selectedMachineId: string | null;
-    selectedServerId: string | null;
-    onSelect: (machine: PresentedMachine) => void;
-    resolveMachineAvailability?: (machine: PresentedMachine) => Readonly<{
-        detail: string;
-        selectable: boolean;
-    }>;
-    testIdPrefix?: string;
-}>;
-
-type CapturedItemProps = Readonly<{
-    testID?: string;
-    title?: React.ReactNode;
-    subtitle?: React.ReactNode;
-    detail?: string;
-    selected?: boolean;
-    mode?: string;
-    showChevron?: boolean;
-    onPress?: () => void;
-    accessibilityLabel?: string;
-}>;
-
-const capturedPickerProps: CapturedPickerProps[] = [];
-const capturedItemProps: CapturedItemProps[] = [];
-const runGuardedNavigationMock = vi.hoisted(() => vi.fn());
-
 installNewSessionComponentsCommonModuleMocks({
+    storage: (importOriginal) => importOriginal(),
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({ translate: (key) => key });
     },
 });
 
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: CapturedItemProps) => {
-        capturedItemProps.push(props);
-        return null;
-    },
-}));
-
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
-}));
-
-vi.mock('@/components/sessions/new/components/ServerScopedMachineSelector', () => ({
-    ServerScopedMachineSelector: (props: CapturedPickerProps) => {
-        capturedPickerProps.push(props);
-        return null;
-    },
-}));
-vi.mock('@/utils/navigation/runGuardedNavigation', () => ({
-    runGuardedNavigation: runGuardedNavigationMock,
-}));
-
-function createSelection(params: Readonly<{
-    availability: 'online' | 'offline';
-    observation?: 'live' | 'stale';
-}>): Readonly<{
-    selection: MachineAdministrationTargetSelectionV1;
-    selectTarget: ReturnType<typeof vi.fn>;
-}> {
-    const target: MachineAdministrationTargetV1 = {
-        serverIdentityId: 'portable-server-b',
-        machineId: 'machine-b',
+function createSelection(availability: MachineAdministrationCandidateV1['availability'] = 'online', observation: 'live' | 'stale' = 'live') {
+    const target = { serverIdentityId: 'portable-server-b', machineId: 'machine-b' };
+    const candidate: MachineAdministrationCandidateV1 = {
+        target, displayName: 'Machine B', serverLabel: 'Server B', availability, observation, observedAt: 100,
     };
     const machine: MachineDisplayRenderable = {
-        id: target.machineId,
-        updatedAt: 100,
-        active: params.availability === 'online',
-        activeAt: params.availability === 'online' ? 100 : 0,
-        revokedAt: null,
-        metadataVersion: 1,
-        metadata: { displayName: 'Machine B', host: 'host-b', homeDir: '/home/b' },
+        id: target.machineId, updatedAt: 100, active: availability === 'online',
+        activeAt: 100, metadataVersion: 1, metadata: { displayName: 'Machine B', host: 'host-b' },
     };
-    const candidate: MachineAdministrationCandidateV1 = {
-        target,
-        displayName: 'Machine B',
-        serverLabel: 'Server B',
-        availability: params.availability,
-        observation: params.observation ?? 'live',
-        observedAt: 100,
-    };
-    const pickerRows: readonly MachineAdministrationTargetPickerRowV1[] = [{
-        candidate,
-        serverId: 'local-profile-b',
-        serverName: 'Server B',
-        machine,
-    }];
-    const state: MachineAdministrationTargetStateV1 = params.availability === 'online'
-        && candidate.observation === 'live'
-        ? { kind: 'online', target, machine: candidate }
-        : { kind: 'offline', target, snapshot: candidate };
     const selectTarget = vi.fn();
-
-    return {
-        selection: {
-            candidates: [candidate],
-            pickerRows,
-            state,
-            selectedTarget: target,
-            selectedTargetServerMatchesActiveAccount: false,
-            canExecute: params.availability === 'online' && candidate.observation === 'live',
-            selectTarget,
-            clearTarget: vi.fn(),
-            resolveExecutionTarget: () => null,
-        },
+    const clearTarget = vi.fn();
+    const state = resolveMachineAdministrationTargetState({ storedTarget: target, candidates: [candidate] });
+    const selection: MachineAdministrationTargetSelectionV1 = {
+        candidates: [candidate],
+        pickerRows: [{ candidate, serverId: 'local-profile-b', serverName: 'Server B', machine }],
+        state,
+        selectedTarget: target,
+        selectedTargetServerMatchesActiveAccount: false,
+        canExecute: state.kind === 'online',
         selectTarget,
+        clearTarget,
+        resolveExecutionTarget: () => null,
     };
+    return { selection, selectTarget, clearTarget };
 }
 
+afterEach(clearActiveUnsavedChangesGuard);
+
 describe('MachineAdministrationTargetSelector', () => {
-    it('routes administration target changes through the active unsaved-draft guard', async () => {
+    it('opens the real picker on demand and preserves the exact portable target on selection', async () => {
         const { MachineAdministrationTargetSelector } = await import('./MachineAdministrationTargetSelector');
-        const { selection, selectTarget } = createSelection({ availability: 'online' });
-        capturedPickerProps.length = 0;
-        capturedItemProps.length = 0;
-        runGuardedNavigationMock.mockReset();
-        runGuardedNavigationMock.mockImplementation((navigate: () => void) => {
-            navigate();
-            return true;
-        });
-
-        await renderScreen(React.createElement(MachineAdministrationTargetSelector, {
-            selection,
-            testIDPrefix: 'administration.target',
-        }));
-
-        const picker = capturedPickerProps[0]!;
-        picker.onSelect(picker.groups[0]!.machines[0]!);
-
-        expect(runGuardedNavigationMock).toHaveBeenCalledTimes(1);
-        expect(selectTarget).toHaveBeenCalledWith({
-            serverIdentityId: 'portable-server-b',
-            machineId: 'machine-b',
-        });
+        const { selection, selectTarget } = createSelection();
+        const screen = await renderScreen(<MachineAdministrationTargetSelector selection={selection} testIDPrefix="administration.target" />);
+        const option = 'administration.target.picker-option:machine-b';
+        expect(screen.findHostByTestId(option)).toBeNull();
+        await screen.pressByTestIdAsync('administration.target.current');
+        expect(screen.findHostByTestId(option)).not.toBeNull();
+        expect(selectTarget).not.toHaveBeenCalled();
+        await screen.pressByTestIdAsync(option);
+        expect(selectTarget).toHaveBeenCalledWith({ serverIdentityId: 'portable-server-b', machineId: 'machine-b' });
+        expect(screen.findHostByTestId(option)).toBeNull();
     });
 
-    it('keeps the exact selected portable target visible and stale rows unavailable before the clear control', async () => {
+    it('preserves the draft and open picker when the real unsaved-change guard rejects a target change', async () => {
         const { MachineAdministrationTargetSelector } = await import('./MachineAdministrationTargetSelector');
-        const { selection } = createSelection({ availability: 'online', observation: 'stale' });
-        capturedPickerProps.length = 0;
-        capturedItemProps.length = 0;
-
-        await renderScreen(React.createElement(MachineAdministrationTargetSelector, {
-            selection,
-            testIDPrefix: 'administration.target',
-        }));
-
-        const currentIndex = capturedItemProps.findIndex((props) => props.testID === 'administration.target.current');
-        const clearIndex = capturedItemProps.findIndex((props) => props.testID === 'administration.target.clear');
-        expect(currentIndex).toBeGreaterThanOrEqual(0);
-        expect(clearIndex).toBeGreaterThan(currentIndex);
-        expect(capturedItemProps[clearIndex]).toEqual(expect.objectContaining({
-            accessibilityLabel: 'common.remove: settingsProviders.detail.targetMachine',
-        }));
-        expect(capturedItemProps[currentIndex]).toEqual(expect.objectContaining({
-            testID: 'administration.target.current',
-            title: 'Machine B',
-            subtitle: 'Server B',
-            detail: 'settingsProviders.detail.machineOffline',
-            selected: true,
-            mode: 'info',
-            showChevron: false,
-        }));
-
-        expect(capturedPickerProps).toHaveLength(1);
-        expect(capturedPickerProps[0]).toEqual(expect.objectContaining({
-            selectedMachineId: 'machine-b',
-            selectedServerId: 'local-profile-b',
-            testIdPrefix: 'administration.target.picker',
-        }));
-        const staleMachine = capturedPickerProps[0]!.groups[0]!.machines[0]!;
-        expect(capturedPickerProps[0]!.resolveMachineAvailability?.(staleMachine)).toEqual({
-            detail: 'settingsProviders.detail.machineOffline',
-            selectable: false,
+        const { selection, selectTarget } = createSelection();
+        setActiveUnsavedChangesGuard({
+            isDirtyRef: { current: true }, requestDecision: async () => 'keepEditing', tag: 'target-test',
         });
+        const screen = await renderScreen(<MachineAdministrationTargetSelector selection={selection} testIDPrefix="administration.target" />);
+        await screen.pressByTestIdAsync('administration.target.current');
+        await screen.pressByTestIdAsync('administration.target.picker-option:machine-b');
+        expect(selectTarget).not.toHaveBeenCalled();
+        expect(screen.findHostByTestId('administration.target.picker-option:machine-b')).not.toBeNull();
     });
 
-    it('converts the incumbent picker result back to its exact portable target', async () => {
+    it.each(['offline', 'locked', 'missing', 'replaced', 'revoked'] as const)('keeps the %s target visible and unavailable in the real picker', async (availability) => {
         const { MachineAdministrationTargetSelector } = await import('./MachineAdministrationTargetSelector');
-        const { selection, selectTarget } = createSelection({ availability: 'online' });
-        capturedPickerProps.length = 0;
-        capturedItemProps.length = 0;
+        const { selection, selectTarget, clearTarget } = createSelection(availability);
+        const screen = await renderScreen(<MachineAdministrationTargetSelector selection={selection} testIDPrefix="administration.target" />);
+        const current = screen.findHostByTestId('administration.target.current');
+        expect(current?.props.accessibilityLabel ?? current?.props['aria-label']).toContain('Machine B');
+        const reason = availability === 'offline' ? 'settingsProviders.detail.machineOffline' : 'settingsPlugins.targetSelection.' + availability;
+        expect(current?.props.accessibilityLabel ?? current?.props['aria-label']).toContain(reason);
+        await screen.pressByTestIdAsync('administration.target.current');
+        const option = screen.findHostByTestId('administration.target.picker-option:machine-b');
+        expect(option?.props.disabled ?? option?.props.accessibilityState?.disabled ?? option?.props['aria-disabled']).toBe(true);
+        expect(selectTarget).not.toHaveBeenCalled();
+        await screen.pressByTestIdAsync('administration.target.clear');
+        expect(clearTarget).toHaveBeenCalledOnce();
+        expect(selectTarget).not.toHaveBeenCalled();
+    });
 
-        await renderScreen(React.createElement(MachineAdministrationTargetSelector, {
-            selection,
-            testIDPrefix: 'administration.target',
-        }));
+    it('does not allow a stale online snapshot to become an execution target', async () => {
+        const { MachineAdministrationTargetSelector } = await import('./MachineAdministrationTargetSelector');
+        const { selection, selectTarget } = createSelection('online', 'stale');
+        const screen = await renderScreen(<MachineAdministrationTargetSelector selection={selection} testIDPrefix="administration.target" />);
+        await screen.pressByTestIdAsync('administration.target.current');
+        const option = screen.findHostByTestId('administration.target.picker-option:machine-b');
+        expect(option?.props.disabled ?? option?.props.accessibilityState?.disabled ?? option?.props['aria-disabled']).toBe(true);
+        expect(selectTarget).not.toHaveBeenCalled();
+    });
 
-        const picker = capturedPickerProps[0]!;
-        picker.onSelect(picker.groups[0]!.machines[0]!);
+    it('lets a consuming domain keep an offline eligible machine selectable while disabling update-required with its reason', async () => {
+        const { MachineAdministrationTargetSelector } = await import('./MachineAdministrationTargetSelector');
+        const offline = createSelection('offline');
+        const screen = await renderScreen(
+            <MachineAdministrationTargetSelector
+                selection={offline.selection}
+                testIDPrefix="broker.target"
+                resolveCandidateAvailability={(candidate) => candidate.availability === 'offline'
+                    ? { detail: 'offline but selectable', selectable: true }
+                    : { detail: 'update required', selectable: false }}
+                resolveCandidatePresentation={() => ({ title: 'Safe machine name', subtitle: 'Server B' })}
+            />,
+        );
 
-        expect(selectTarget).toHaveBeenCalledWith({
-            serverIdentityId: 'portable-server-b',
-            machineId: 'machine-b',
-        });
+        await screen.pressByTestIdAsync('broker.target.current');
+        const option = screen.findHostByTestId('broker.target.picker-option:machine-b');
+        expect(option?.props.disabled ?? option?.props.accessibilityState?.disabled).not.toBe(true);
+        expect(`${String(option?.props.title)} ${String(option?.props.subtitle)}`).not.toContain('machine-b');
+        await screen.pressByTestIdAsync('broker.target.picker-option:machine-b');
+        expect(offline.selectTarget).toHaveBeenCalledWith({ serverIdentityId: 'portable-server-b', machineId: 'machine-b' });
+    });
+
+    it('closes a controlled picker without changing the selected draft', async () => {
+        const { MachineAdministrationTargetSelector } = await import('./MachineAdministrationTargetSelector');
+        const { selection, selectTarget } = createSelection();
+        const screen = await renderScreen(
+            <MachineAdministrationTargetSelector selection={selection} testIDPrefix="broker.target" />,
+        );
+
+        await screen.pressByTestIdAsync('broker.target.current');
+        expect(screen.findHostByTestId('broker.target.picker-option:machine-b')).not.toBeNull();
+        await screen.pressByTestIdAsync('broker.target.current');
+        expect(screen.findHostByTestId('broker.target.picker-option:machine-b')).toBeNull();
+        expect(selectTarget).not.toHaveBeenCalled();
+        expect(screen.findHostByTestId('broker.target.current')?.props.accessibilityLabel).toContain('Machine B');
+    });
+
+    it('lets a consuming domain suppress opaque ids for a selected target missing from canonical inventory', async () => {
+        const { MachineAdministrationTargetSelector } = await import('./MachineAdministrationTargetSelector');
+        const fixture = createSelection();
+        const target = fixture.selection.selectedTarget!;
+        const selection: MachineAdministrationTargetSelectionV1 = {
+            ...fixture.selection,
+            candidates: [],
+            pickerRows: [],
+            state: resolveMachineAdministrationTargetState({ storedTarget: target, candidates: [] }),
+        };
+        const screen = await renderScreen(
+            <MachineAdministrationTargetSelector
+                selection={selection}
+                testIDPrefix="broker.target"
+                missingTargetTitle="Unavailable Machine"
+                missingTargetSubtitle={null}
+            />,
+        );
+
+        const current = screen.findHostByTestId('broker.target.current');
+        const presentation = `${String(current?.props.title)} ${String(current?.props.subtitle)} ${String(current?.props.accessibilityLabel)}`;
+        expect(presentation).toContain('Unavailable Machine');
+        expect(presentation).not.toContain(target.machineId);
+        expect(presentation).not.toContain(target.serverIdentityId);
     });
 });

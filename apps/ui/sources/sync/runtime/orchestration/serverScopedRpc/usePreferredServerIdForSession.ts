@@ -1,23 +1,28 @@
-import * as React from 'react';
-
-import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { useSessionServerId } from '@/sync/store/hooks';
-import { normalizeServerId } from './normalizeServerId';
 
-export function usePreferredServerIdForSession(
+export type PreferredSessionServerTarget = SessionAddress | Readonly<{
+    serverId?: string | null;
+    sessionId: string;
+}>;
+
+/** Legacy boundary for callers that genuinely have only a Home-local Session id. */
+export function useLegacyUniqueServerIdForBareSessionId(
     sessionId: string,
-    fallbackServerId?: string | null,
     enabled = true,
 ): string | null {
-    const sessionServerId = useSessionServerId(sessionId, enabled);
-    const activeServerSnapshot = useActiveServerSnapshot(enabled);
+    return useSessionServerId(sessionId, enabled);
+}
 
-    return React.useMemo(
-        () => enabled
-            ? normalizeServerId(sessionServerId)
-                ?? normalizeServerId(fallbackServerId)
-                ?? normalizeServerId(activeServerSnapshot.serverId)
-            : null,
-        [activeServerSnapshot.serverId, enabled, fallbackServerId, sessionServerId],
+export function usePreferredServerIdForSession(
+    target: PreferredSessionServerTarget,
+    enabled = true,
+): string | null {
+    const exactAddress = normalizeSessionAddress(target.serverId, target.sessionId);
+    const legacyServerId = useLegacyUniqueServerIdForBareSessionId(
+        target.sessionId,
+        enabled && exactAddress === null,
     );
+
+    return enabled ? exactAddress?.serverId ?? legacyServerId : null;
 }

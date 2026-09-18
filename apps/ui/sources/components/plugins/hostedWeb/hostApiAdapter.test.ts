@@ -32,11 +32,8 @@ const surface: PluginUiSurfaceContextV1 = {
 };
 
 const canonicalIdentity = {
-    pluginId: 'acme.preview',
-    pluginVersion: '1.2.3',
-    viewId: 'preview-pane',
-    generation: '7',
-    sessionId: 'session-1',
+    instanceId: 'instance-1',
+    mountNonce: 'nonce-1',
 } as const;
 
 const canonicalSurface = {
@@ -71,11 +68,7 @@ function createEnvelope(
 ): PluginHostedWebBridgeEnvelopeV1 {
     return {
         version: 1,
-        pluginId: 'acme.preview',
-        contributionId: 'preview-web',
-        surfaceId: 'sessionSurface:acme.preview:preview-pane',
-        sessionId: 'session-1',
-        nonce: 'nonce-1',
+        identity: canonicalIdentity,
         sequence: 7,
         kind,
         payload,
@@ -89,7 +82,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-composer-watch',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -184,7 +177,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-composer-lock',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -256,7 +249,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-composer-duplicate',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -340,7 +333,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-composer-pending-reuse',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -447,7 +440,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             handleRequest,
             canonicalHostApi: {
                 identity: canonicalIdentity,
@@ -496,7 +489,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -514,7 +507,7 @@ describe('hosted web plugin host API adapter', () => {
             direction: 'hostToFrame',
             kind: 'bootstrap',
             origin: 'https://preview.happier.test',
-            nonce: 'nonce-1',
+            identity: canonicalIdentity,
             payload: {
                 apiVersion: PLUGIN_UI_HOST_API_VERSION_V1,
                 wireVersion: 1,
@@ -529,12 +522,12 @@ describe('hosted web plugin host API adapter', () => {
         expect(postToFrame).toHaveBeenCalledTimes(1);
     });
 
-    it('accepts every canonical frame\'s sessionless ready and requires the stamped Session thereafter', async () => {
+    it('requires the exact opaque mount identity from ready through subsequent host API traffic', async () => {
         const postToFrame = vi.fn();
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -543,9 +536,15 @@ describe('hosted web plugin host API adapter', () => {
             postToFrame,
             bootstrap: { frameOrigin: 'https://artifacts.happier.test' },
         });
-        const { sessionId: _sessionId, ...sessionlessReady } = createEnvelope('ready', { ready: true });
+        const ready = createEnvelope('ready', { ready: true });
 
-        await expect(handler(sessionlessReady)).resolves.toMatchObject({
+        await expect(handler({
+            ...ready,
+            identity: { ...canonicalIdentity, mountNonce: 'nonce-old' },
+        })).resolves.toMatchObject({ kind: 'error', payload: { code: 'stale_surface' } });
+        expect(postToFrame).not.toHaveBeenCalled();
+
+        await expect(handler(ready)).resolves.toMatchObject({
             kind: 'ack',
             payload: { accepted: true, readyState: 'recorded' },
         });
@@ -555,7 +554,8 @@ describe('hosted web plugin host API adapter', () => {
         }));
 
         await expect(handler({
-            ...sessionlessReady,
+            ...ready,
+            identity: { ...canonicalIdentity, instanceId: 'instance-other' },
             sequence: 8,
         })).resolves.toMatchObject({
             kind: 'error',
@@ -563,7 +563,8 @@ describe('hosted web plugin host API adapter', () => {
         });
 
         await expect(handler({
-            ...sessionlessReady,
+            ...ready,
+            identity: { ...canonicalIdentity, mountNonce: 'nonce-old' },
             kind: 'hostApi',
             sequence: 9,
             payload: {
@@ -582,7 +583,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -620,7 +621,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -685,7 +686,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-domain-result',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -721,7 +722,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-selection',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -826,6 +827,7 @@ describe('hosted web plugin host API adapter', () => {
                 contributor: targetedOperation.contributor,
             },
             connectedAccount: { kind: 'none' },
+            presentation: { connectedAccountLabel: null, machineDisplayName: null },
         };
         const handleRequest = vi.fn(async (request: PluginUiHostApiRequestEnvelopeV1): Promise<PluginUiJsonValueV1> => {
             if (request.method === 'selectActionInput') {
@@ -836,7 +838,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-server-start-draft',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -929,6 +931,7 @@ describe('hosted web plugin host API adapter', () => {
                 contributor: retainedTargetedOperation.contributor,
             },
             connectedAccount: { kind: 'none' },
+            presentation: { connectedAccountLabel: null, machineDisplayName: null },
         };
         const contributed = vi.fn(async () => ({
             supported: true as const,
@@ -982,7 +985,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-targeted-carrier',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1183,13 +1186,14 @@ describe('hosted web plugin host API adapter', () => {
                 contributor: operation.contributor,
             },
             connectedAccount: { kind: 'none' },
+            presentation: { connectedAccountLabel: null, machineDisplayName: null },
         };
         let openDispatches = 0;
         let openOptions: unknown;
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-open-prepared',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1280,6 +1284,7 @@ describe('hosted web plugin host API adapter', () => {
                         contributor: targetedOperation.contributor,
                     },
                     connectedAccount: { kind: 'none' },
+                    presentation: { connectedAccountLabel: null, machineDisplayName: null },
                 };
             }
             if (request.method !== 'executeAction') throw new Error('unexpected_request');
@@ -1298,7 +1303,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-terminal-selected-settlement',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1425,7 +1430,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-context-version',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: targetedSurface,
@@ -1470,7 +1475,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1486,7 +1491,7 @@ describe('hosted web plugin host API adapter', () => {
         await expect(handler(createEnvelope('hostApi', {
             wireVersion: 1,
             kind: 'negotiate',
-            identity: { ...canonicalIdentity, generation: '6' },
+            identity: { ...canonicalIdentity, mountNonce: 'nonce-old' },
             apiRange: '^1.0.0',
         }))).resolves.toMatchObject({
             payload: { kind: 'disconnected', reason: 'stale_surface' },
@@ -1529,7 +1534,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-resource-disposal',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1583,7 +1588,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-resource-admission',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1634,7 +1639,7 @@ describe('hosted web plugin host API adapter', () => {
         handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-resource-establishment',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1697,7 +1702,7 @@ describe('hosted web plugin host API adapter', () => {
         handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-resource-terminal',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1744,7 +1749,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-context-identity',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1776,7 +1781,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web-context-activity',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1825,7 +1830,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1885,7 +1890,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -1967,7 +1972,7 @@ describe('hosted web plugin host API adapter', () => {
         expect(postToFrame).toHaveBeenLastCalledWith(expect.objectContaining({
             direction: 'hostToFrame',
             kind: 'accountData',
-            nonce: 'nonce-1',
+            identity: canonicalIdentity,
             payload: { kind: 'change', queryId: 'query_1' },
         }));
 
@@ -1990,7 +1995,7 @@ describe('hosted web plugin host API adapter', () => {
         const withoutData = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -2001,7 +2006,7 @@ describe('hosted web plugin host API adapter', () => {
         const withData = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -2044,7 +2049,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -2113,7 +2118,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             canonicalHostApi: {
                 identity: canonicalIdentity,
                 surface: canonicalSurface,
@@ -2182,22 +2187,24 @@ describe('hosted web plugin host API adapter', () => {
         await expect(first).resolves.toMatchObject({ kind: 'ack', requestSequence: 9 });
     });
 
-    it('acks ready bridge messages with the resolved surface context', async () => {
+    it('acks ready bridge messages without exposing the authoritative surface context', async () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             handleRequest: vi.fn(),
         });
 
-        await expect(handler(createEnvelope('ready', { ready: true }))).resolves.toMatchObject({
+        const response = await handler(createEnvelope('ready', { ready: true }));
+        expect(response).toMatchObject({
             kind: 'ack',
             requestSequence: 7,
+            identity: canonicalIdentity,
             payload: {
                 accepted: true,
-                surface,
             },
         });
+        expect(response.payload).not.toHaveProperty('surface');
     });
 
     it('types duplicate ready bridge messages without recording a new ready transition', async () => {
@@ -2205,7 +2212,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             handleRequest: async () => null,
             onReadyStateChange: (state) => readyStates.push(state.state),
         });
@@ -2225,17 +2232,17 @@ describe('hosted web plugin host API adapter', () => {
         expect(readyStates).toEqual(['ready']);
     });
 
-    it('returns a typed stale-surface error for ready messages bound to an old surface context', async () => {
+    it('returns a typed stale-surface error for ready messages bound to another mount', async () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             handleRequest: vi.fn(),
         });
 
         await expect(handler({
             ...createEnvelope('ready', { ready: true }),
-            sessionId: 'stale-session',
+            identity: { ...canonicalIdentity, instanceId: 'instance-other' },
         })).resolves.toMatchObject({
             kind: 'error',
             requestSequence: 7,
@@ -2245,13 +2252,15 @@ describe('hosted web plugin host API adapter', () => {
         });
     });
 
-    it('acks passive lifecycle bridge messages without dispatching host API requests', async () => {
+    it('publishes only valid intrinsic-height reports without dispatching host API requests', async () => {
         const handleRequest = vi.fn();
+        const onHeightChanged = vi.fn();
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             handleRequest,
+            onHeightChanged,
         });
 
         await expect(handler(createEnvelope('heightChanged', { height: 320 }))).resolves.toMatchObject({
@@ -2259,7 +2268,21 @@ describe('hosted web plugin host API adapter', () => {
             requestSequence: 7,
             payload: { accepted: true },
         });
+        expect(onHeightChanged).toHaveBeenCalledOnce();
+        expect(onHeightChanged).toHaveBeenCalledWith(320);
         expect(handleRequest).not.toHaveBeenCalled();
+
+        await expect(handler(createEnvelope('heightChanged', { height: Number.NaN }))).resolves.toMatchObject({
+            kind: 'error',
+            requestSequence: 7,
+            payload: { code: 'invalid_payload' },
+        });
+        await expect(handler(createEnvelope('heightChanged', { height: -1 }))).resolves.toMatchObject({
+            kind: 'error',
+            requestSequence: 7,
+            payload: { code: 'invalid_payload' },
+        });
+        expect(onHeightChanged).toHaveBeenCalledOnce();
     });
 
     it('rejects a predecessor direct host-method bridge envelope without bypassing negotiation', async () => {
@@ -2267,7 +2290,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             handleRequest,
         });
 
@@ -2304,7 +2327,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             handleRequest: hostApi.handleRequest,
             canonicalHostApi: {
                 identity: canonicalIdentity,
@@ -2373,11 +2396,11 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             handleRequest,
         });
 
-        for (const retired of ['requestSessionResource', 'requestHostAction', 'copy', 'logDiagnostic', 'openExternal']) {
+        for (const retired of ['requestSessionResource', 'requestHostAction', 'copy', 'logDiagnostic']) {
             await expect(handler(createEnvelope(
                 retired as PluginHostedWebBridgeEnvelopeV1['kind'],
                 { probe: retired },
@@ -2394,7 +2417,7 @@ describe('hosted web plugin host API adapter', () => {
         const handler = createPluginHostedWebHostApiBridgeHandler({
             surface,
             requestIdPrefix: 'hosted-web',
-            bridgeNonce: 'nonce-1',
+            identity: canonicalIdentity,
             handleRequest,
             canonicalHostApi: {
                 identity: canonicalIdentity,

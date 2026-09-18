@@ -334,4 +334,58 @@ describe('QrCodeScannerView', () => {
                 />);
         expect(lastCameraProps).toBeNull();
     });
+
+    it('keeps the manual-entry footer reachable when the camera is denied or unavailable', async () => {
+        const { QrCodeScannerView } = await import('./QrCodeScannerView');
+        const footer = React.createElement('ManualEntry', { testID: 'test-enter-url' });
+
+        cameraState.permission = { granted: false };
+        const denied = await renderScreen(<QrCodeScannerView
+                    title="t"
+                    permissionRequiredMessage="perm"
+                    onCancel={vi.fn()}
+                    onScan={vi.fn()}
+                    footer={footer}
+                    testIDPrefix="test"
+                />);
+        expect(denied.findAllByTestId('test-enter-url')).toHaveLength(1);
+
+        deviceState.platformOs = 'web';
+        vi.stubGlobal('navigator', {
+            maxTouchPoints: 0,
+            userAgent: 'Mozilla/5.0 (X11; Linux x86_64)',
+        } as any);
+        const unavailable = await renderScreen(<QrCodeScannerView
+                    title="t"
+                    permissionRequiredMessage="perm"
+                    onCancel={vi.fn()}
+                    onScan={vi.fn()}
+                    footer={footer}
+                    testIDPrefix="test"
+                />);
+        expect(unavailable.findAllByTestId('test-enter-url')).toHaveLength(1);
+    });
+
+    it('keeps manual entry and cancel reachable while the camera permission is undetermined', async () => {
+        const { QrCodeScannerView } = await import('./QrCodeScannerView');
+        const footer = React.createElement('ManualEntry', { testID: 'test-enter-url' });
+        const onCancel = vi.fn();
+
+        // `useCameraPermissions` reports `null` until the platform answers, and an
+        // unanswered request leaves it there. A pasted pairing link and the exit must
+        // stay reachable instead of stranding the screen on a spinner.
+        cameraState.permission = null;
+        const undetermined = await renderScreen(<QrCodeScannerView
+                    title="t"
+                    permissionRequiredMessage="perm"
+                    onCancel={onCancel}
+                    onScan={vi.fn()}
+                    footer={footer}
+                    testIDPrefix="test"
+                />);
+
+        expect(undetermined.findAllByTestId('test-enter-url')).toHaveLength(1);
+        await undetermined.root.findByProps({ testID: 'test-cancel' }).props.action();
+        expect(onCancel).toHaveBeenCalledTimes(1);
+    });
 });

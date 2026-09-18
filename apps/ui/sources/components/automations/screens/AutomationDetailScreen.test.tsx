@@ -24,6 +24,7 @@ import {
     renderScreen,
 } from '@/dev/testkit';
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { createAutomationRunFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 import { installAutomationScreensCommonModuleMocks } from './automationScreensTestHelpers';
 
 type FetchAutomationRuns = (
@@ -272,7 +273,12 @@ installAutomationScreensCommonModuleMocks({
         return createStorageModuleStub({
             storage: createLiveStorageStoreMock(() => ({
                 automations: { [automationState.automation.id]: automationState.automation },
-                automationRunsByAutomationId: { a1: automationRunsState.list },
+                workflowRunsById: Object.fromEntries(
+                    automationRunsState.list.map((entry: { id: string }) => [entry.id, entry]),
+                ),
+                automationRunIdsByAutomationId: {
+                    a1: automationRunsState.list.map((entry: { id: string }) => entry.id),
+                },
                 profileScope: { serverId: 'server-1', accountId: 'account-1' },
             })),
             useActiveServerAccountScope: () => activeAccountScopeState.scope,
@@ -1478,6 +1484,79 @@ describe('AutomationDetailScreen', () => {
 
         expect(syncSpies.runAutomationNow).toHaveBeenCalledWith('a1');
         expect(syncSpies.fetchAutomationRuns).toHaveBeenCalledTimes(fetchRunsCallsBeforeRunNow);
+        // A legacy receipt keeps the incumbent behaviour: acknowledgement in
+        // place, no navigation invented from a history row.
+        expect(routerPushSpy).not.toHaveBeenCalledWith('/workflows/runs/run-managed');
+    });
+
+    it.each([
+        {
+            name: 'managed workflow recipe',
+            targetType: null,
+            expected: { pathname: '/workflows/runs/[runId]', params: { runId: 'history-run-1' } },
+        },
+        {
+            name: 'legacy one-shot target',
+            targetType: 'newSession' as const,
+            expected: {
+                pathname: '/automations/[id]/runs/[runId]',
+                params: { id: 'a1', runId: 'history-run-1' },
+            },
+        },
+    ])('opens a history row of a $name in its own Run detail', async ({ targetType, expected }) => {
+        automationState.automation = createAutomationDefinitionSummary(AutomationDefinitionListItemSchema.parse({
+            id: 'a1', name: 'Nightly', enabled: true, description: null,
+            triggers: [{
+                id: 'schedule-trigger-1', revision: 1, enabled: true, createdAt: 1, updatedAt: 1,
+                kind: 'schedule',
+                schedule: { kind: 'interval', everyMs: 60_000, scheduleExpr: null, timezone: null },
+                nextRunAt: null,
+            }],
+            targetType,
+            existingSessionId: null,
+            templateVersion: 1, assignments: [], lastRunAt: null, createdAt: 1, updatedAt: 1,
+        }));
+        automationRunsState.list = [createAutomationRunFixture({ id: 'history-run-1', state: 'queued' })];
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        const runRow = findTestInstanceByTypeContainingText(screen, 'Pressable', 'Queued');
+        await act(async () => {
+            await pressTestInstance(runRow, 'Queued');
+        });
+
+        expect(routerPushSpy).toHaveBeenCalledWith(expected);
+    });
+
+    it('opens the exact managed Run the admission receipt declared', async () => {
+        syncSpies.runAutomationNow.mockResolvedValueOnce({
+            run: { id: 'run-managed', state: 'running' },
+            workflowRun: { recipeKind: 'workflow-v2', workflowRunId: 'run-managed' },
+        });
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        const runNowButton = findTestInstanceByTypeContainingText(screen, 'Pressable', 'Run now');
+        await act(async () => {
+            await pressTestInstance(runNowButton, 'Run now');
+        });
+
+        expect(routerPushSpy).toHaveBeenCalledWith('/workflows/runs/run-managed');
+    });
+
+    it('does not navigate when the admission receipt declares no workflow correspondence', async () => {
+        syncSpies.runAutomationNow.mockResolvedValueOnce({
+            run: { id: 'run-legacy', state: 'running' },
+        });
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        const runNowButton = findTestInstanceByTypeContainingText(screen, 'Pressable', 'Run now');
+        await act(async () => {
+            await pressTestInstance(runNowButton, 'Run now');
+        });
+
+        expect(routerPushSpy).not.toHaveBeenCalledWith(expect.stringContaining('/workflows/runs/'));
     });
 
     it('submits Run now once and exposes the detail row as pending until it settles', async () => {

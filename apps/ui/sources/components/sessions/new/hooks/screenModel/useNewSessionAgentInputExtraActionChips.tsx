@@ -1,3 +1,4 @@
+import { createSessionAccessActionChip } from '@/components/sessions/agentInput/definitions/createSessionAccessActionChip';
 import * as React from 'react';
 import type { ActionId, WindowsRemoteSessionLaunchMode } from '@happier-dev/protocol';
 
@@ -5,9 +6,8 @@ import type { AgentId } from '@/agents/catalog/catalog';
 import {
     getNewSessionAgentInputExtraActionChips,
 } from '@/agents/catalog/catalog';
-import type { NewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
 import type { AgentInputExtraActionChip } from '@/components/sessions/agentInput/agentInputContracts';
-import { createAutomationToggleActionChip } from '@/components/sessions/agentInput/definitions/createAutomationToggleActionChip';
+import { createAutomationEditorActionChip } from '@/components/sessions/agentInput/definitions/createAutomationEditorActionChip';
 import { createServerActionChip } from '@/components/sessions/agentInput/definitions/createServerActionChip';
 import { createTranscriptStorageActionChip } from '@/components/sessions/agentInput/definitions/createTranscriptStorageActionChip';
 import { createWindowsRemoteSessionLaunchModeActionChip } from '@/components/sessions/agentInput/definitions/createWindowsRemoteSessionLaunchModeActionChip';
@@ -18,6 +18,7 @@ import type { NewSessionTranscriptStorage } from '@/components/sessions/new/modu
 import { resolveNewSessionBehaviorAgentId } from '@/components/sessions/new/modules/newSessionBehaviorAgent';
 
 export function useNewSessionAgentInputExtraActionChips(params: Readonly<{
+    sessionAccess?: Parameters<typeof createSessionAccessActionChip>[0] | null;
     /** Explicit bundled behavior backing for built-in action chips. */
     staticAgentId?: AgentId | null;
     /**
@@ -40,9 +41,9 @@ export function useNewSessionAgentInputExtraActionChips(params: Readonly<{
     connectedServicesAuthChip?: AgentInputExtraActionChip | null;
     seededPlacementActionChip?: AgentInputExtraActionChip | null;
     showAutomationActionChips: boolean;
-    automationDraft: NewSessionAutomationDraft;
     automationLabel: string;
-    onAutomationChange: (next: NewSessionAutomationDraft) => void;
+    /** Opens the shared Automation editor with the composed draft. */
+    onOpenAutomationEditor: () => void;
     checkoutActionChip?: AgentInputExtraActionChip | null;
     organizationPlacementActionChips?: readonly AgentInputExtraActionChip[];
     showServerPickerChip: boolean;
@@ -82,16 +83,12 @@ export function useNewSessionAgentInputExtraActionChips(params: Readonly<{
         });
     }, [params.showServerPickerChip, params.targetServerId, params.targetServerName]);
 
-    const automationActionChip = React.useMemo<AgentInputExtraActionChip>(() => {
-        return createAutomationToggleActionChip({
-            enabled: params.automationDraft.enabled,
+    const automationActionChip = React.useMemo<AgentInputExtraActionChip>(() => (
+        createAutomationEditorActionChip({
             label: params.automationLabel,
-            value: params.automationDraft,
-            onChange: params.onAutomationChange,
-            machineId: params.selectedMachineId,
-            targetServerId: params.targetServerId,
-        });
-    }, [params.automationDraft, params.automationLabel, params.onAutomationChange, params.selectedMachineId, params.targetServerId]);
+            onPress: params.onOpenAutomationEditor,
+        })
+    ), [params.automationLabel, params.onOpenAutomationEditor]);
 
     const storageActionChip = React.useMemo<AgentInputExtraActionChip | null>(() => {
         if (!params.externalSessionsFeatureEnabled || !params.supportsDirectTranscriptStorage) return null;
@@ -116,6 +113,7 @@ export function useNewSessionAgentInputExtraActionChips(params: Readonly<{
             }) ?? []
             : [];
         const chips: AgentInputExtraActionChip[] = [];
+        if (params.sessionAccess) chips.push(createSessionAccessActionChip(params.sessionAccess));
 
         if (params.connectedServicesAuthChip) {
             chips.push(params.connectedServicesAuthChip);
@@ -154,6 +152,7 @@ export function useNewSessionAgentInputExtraActionChips(params: Readonly<{
 
         return [...chips, ...baseChips];
     }, [
+        params.sessionAccess,
         params.agentOptionState,
         params.checkoutActionChip,
         params.connectedServicesAuthChip,

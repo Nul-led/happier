@@ -36,7 +36,7 @@ import {
 } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
-import type { ServerAccountSessionRequestAuthority } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import type { ServerAccountRequestAuthority } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import {
     requestPeerMediationServerJson,
     requestPeerMediationServerJsonForCredential,
@@ -80,7 +80,7 @@ export type OperationResult<T> =
 
 /** Canonical authenticated UI HTTP seam for a V2 peer-route grant. */
 export async function requestPeerRouteGrantV2(input: Readonly<{
-    authority: Pick<ServerAccountSessionRequestAuthority, 'request'>;
+    authority: Pick<ServerAccountRequestAuthority, 'request'>;
     request: ReturnType<typeof DirectRouteGrantRequestV2Schema.parse>;
     timeoutMs?: number;
 }>): Promise<OperationResult<SignedDirectRouteGrantV2>> {

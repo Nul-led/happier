@@ -1,3 +1,5 @@
+import { resolveAgentRequestKind } from '@happier-dev/protocol';
+
 export type PermissionPromptSurfaceSetting = 'composer' | 'transcript' | 'both';
 
 export type ResolvedPermissionPromptSurface = 'composer' | 'transcript';
@@ -10,35 +12,6 @@ export type ResolvedPermissionPromptSurface = 'composer' | 'transcript';
  */
 export function resolvePermissionPromptSurface(setting: unknown): ResolvedPermissionPromptSurface {
     return setting === 'transcript' ? 'transcript' : 'composer';
-}
-
-export const TOOLS_WITH_CUSTOM_PERMISSION_UI = new Set<string>([
-    'AskUserQuestion',
-    'ask_user_question',
-    'ExitPlanMode',
-    'exit_plan_mode',
-    'AcpHistoryImport',
-]);
-
-export type AgentRequestKind = 'permission' | 'user_action';
-
-function normalizeAgentRequestKind(rawKind: unknown): AgentRequestKind | null {
-    if (rawKind === 'permission') return 'permission';
-    if (rawKind === 'user_action') return 'user_action';
-    return null;
-}
-
-export function resolveAgentRequestKind(params: Readonly<{ toolName: string; requestKind?: unknown }>): AgentRequestKind {
-    const normalized = normalizeAgentRequestKind(params.requestKind);
-    if (normalized) return normalized;
-
-    // Back-compat / defensive fallback: older agents may not publish requestKind, so we infer using
-    // the existing "custom UI tool" list (these should never render a generic permission prompt).
-    if (TOOLS_WITH_CUSTOM_PERMISSION_UI.has(params.toolName)) {
-        return 'user_action';
-    }
-
-    return 'permission';
 }
 
 export function shouldShowGenericPermissionPromptForToolName(toolName: string): boolean {

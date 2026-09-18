@@ -1,7 +1,9 @@
 import React from 'react';
+import { Platform } from 'react-native';
 import { describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { flattenTestStyle, renderScreen, standardCleanup } from '@/dev/testkit';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { ExecutionRunProfilePicker } from './ExecutionRunProfilePicker';
 
 vi.mock('react-native', async () => {
@@ -35,6 +37,38 @@ describe('ExecutionRunProfilePicker', () => {
             .toEqual({ selected: true, disabled: false });
         expect(screen.findByTestId('execution-run-launcher-profile:review.deepsec/audit')?.props.accessibilityState)
             .toEqual({ selected: false, disabled: true });
+        standardCleanup();
+    });
+
+    it('meets the shared platform interactive target for every profile choice', async () => {
+        const originalPlatform = Platform.OS;
+
+        try {
+            for (const platform of ['android', 'ios', 'web'] as const) {
+                Object.defineProperty(Platform, 'OS', { configurable: true, value: platform });
+                const screen = await renderScreen(<ExecutionRunProfilePicker
+                    choices={[
+                        { id: 'review.coderabbit/review', intent: 'review', title: 'CodeRabbit', compatibleAgentIds: ['coderabbit'], compatibleAgentId: 'coderabbit', generationId: 'g1', available: true, disabled: false, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
+                    ]}
+                    selectedId="review.coderabbit/review"
+                    selectedGenerationId="g1"
+                    sectionLabel="Profiles"
+                    resolveAccessibilityLabel={(title) => `Select profile ${title}`}
+                    onSelect={vi.fn()}
+                />);
+                const targetSize = resolveMinimumInteractiveTargetSize(platform);
+
+                const style = flattenTestStyle(
+                    screen.findByTestId('execution-run-launcher-profile:review.coderabbit/review')?.props.style,
+                );
+                expect(style.minWidth).toBe(targetSize);
+                expect(style.minHeight).toBe(targetSize);
+
+                await screen.unmount();
+            }
+        } finally {
+            Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatform });
+        }
         standardCleanup();
     });
 });

@@ -177,6 +177,44 @@ describe('ServerScopedMachineSelector', () => {
         expect(onSelect).not.toHaveBeenCalled();
     });
 
+    it('uses an owner-supplied safe row presentation instead of falling back to an opaque machine id', async () => {
+        const { ServerScopedMachineSelector } = await import('./ServerScopedMachineSelector');
+        const machine = {
+            id: 'opaque-machine-id',
+            serverId: 'server-b',
+            serverName: 'Server B',
+            active: false,
+            metadata: null,
+        } as ServerScopedMachine;
+
+        capturedItemProps.length = 0;
+
+        await renderScreen(React.createElement(ServerScopedMachineSelector, {
+            groups: [{
+                serverId: 'server-b',
+                serverName: 'Server B',
+                loading: false,
+                signedOut: false,
+                machines: [machine],
+            }],
+            selectedMachineId: null,
+            selectedServerId: null,
+            onSelect: vi.fn(),
+            resolveMachinePresentation: () => ({
+                title: 'Unnamed computer',
+                subtitle: 'Server B',
+            }),
+            testIdPrefix: 'safe-machine',
+        }));
+
+        const item = capturedItemProps.find((props) => props.testID === 'safe-machine-option:opaque-machine-id');
+        expect(item).toEqual(expect.objectContaining({
+            title: 'Unnamed computer',
+            subtitle: 'Server B',
+        }));
+        expect(`${String(item?.title)} ${String(item?.subtitle)}`).not.toContain('opaque-machine-id');
+    });
+
     it('keeps same-machine domain rows distinct through owner-supplied exact keys and selection', async () => {
         const { ServerScopedMachineSelector } = await import('./ServerScopedMachineSelector');
         type MaterializedServerScopedMachine = ServerScopedMachine & Readonly<{

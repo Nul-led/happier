@@ -4,6 +4,9 @@ import {
 } from '@/activity/actions/resolveActivityInteractionCommand';
 import { normalizeServerUrl } from '@/sync/domains/server/activeServerSwitch';
 import { isLoopbackHostname } from '@happier-dev/protocol';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+
+import { resolveIncomingActivityRemoteAlert } from './remoteAlerts/activityRemoteAlertRouting';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -62,16 +65,51 @@ export function parseNotificationTap(params: Readonly<{
     defaultActionIdentifier: string;
 }>): ParsedNotificationTap | null {
     const actionIdentifier = readNotificationActionIdentifier(params);
+    const data = readNotificationData({ response: params.response });
+    const notificationId = readNotificationId({ response: params.response });
+    const dedupeKey = notificationId ? `${notificationId}:${actionIdentifier}` : null;
+
+    // A Home-submitted collaborator alert names its Home by portable identity.
+    // Qualify it through the existing profile owner first, then reuse the one
+    // interaction resolver; an unresolvable Home never falls back to the active
+    // Home (Lane 09C §10.4).
+    const remoteAlert = resolveIncomingActivityRemoteAlert(data);
+    if (remoteAlert.kind !== 'not_remote_alert') {
+        if (remoteAlert.kind === 'unroutable') {
+            return { command: { kind: 'ignore', reason: 'unknown_server' }, dedupeKey };
+        }
+        const command = resolveActivityInteractionCommand({
+                actionIdentifier,
+                defaultActionIdentifier: params.defaultActionIdentifier,
+                data: {
+                    sessionId: remoteAlert.target.address.sessionId,
+                    serverId: remoteAlert.target.address.serverId,
+                    serverUrl: remoteAlert.target.serverUrl,
+                },
+                requireKnownIdentity: false,
+            });
+        return {
+            command: remoteAlert.target.discussionId && command.kind === 'openSession'
+                ? {
+                    ...command,
+                    route: buildScopedSessionRouteHref({
+                        sessionId: command.sessionId,
+                        serverId: command.serverId,
+                        suffix: `/discussions/${encodeURIComponent(remoteAlert.target.discussionId)}`,
+                        query: { sourceSurface: 'collaboration' },
+                    }),
+                }
+                : command,
+            dedupeKey,
+        };
+    }
+
     const command = resolveActivityInteractionCommand({
         actionIdentifier,
         defaultActionIdentifier: params.defaultActionIdentifier,
-        data: readNotificationData({ response: params.response }),
+        data,
         requireKnownIdentity: false,
     });
 
-    const notificationId = readNotificationId({ response: params.response });
-    return {
-        command,
-        dedupeKey: notificationId ? `${notificationId}:${actionIdentifier}` : null,
-    };
+    return { command, dedupeKey };
 }

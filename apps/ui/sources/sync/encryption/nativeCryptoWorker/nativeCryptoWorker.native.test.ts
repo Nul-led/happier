@@ -157,3 +157,31 @@ describe('createNativeCryptoWorker native', () => {
         expect(decryptAesGcmJsonBatch).toHaveBeenCalledWith(request.items);
     });
 });
+
+
+describe('native password derivation', () => {
+    beforeEach(() => { vi.resetModules(); nativeModuleMock.requireNativeModule.mockReset(); });
+    const request = { passwordBase64: 'YWJjZGVmZ2hpamtsbW5v', saltBase64: 'AAAAAAAAAAAAAAAAAAAAAA==', opsLimit: 3, memLimitBytes: 67108864, outputBytes: 32 as const };
+    it('fails closed when an older native build lacks password derivation', async () => {
+        nativeModuleMock.requireNativeModule.mockReturnValue({});
+        const { derivePasswordEnvelopeKey } = await import('./nativeCryptoWorker.native');
+        await expect(derivePasswordEnvelopeKey(request)).rejects.toMatchObject({ code: 'native_crypto_worker_unavailable' });
+    });
+    it('decodes a fixed-length result and rejects malformed native key material', async () => {
+        const derive = vi.fn().mockResolvedValueOnce('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=').mockResolvedValueOnce('AA==');
+        nativeModuleMock.requireNativeModule.mockReturnValue({ derivePasswordEnvelopeKey: derive });
+        const { derivePasswordEnvelopeKey } = await import('./nativeCryptoWorker.native');
+        await expect(derivePasswordEnvelopeKey(request)).resolves.toEqual(new Uint8Array(32));
+        await expect(derivePasswordEnvelopeKey(request)).rejects.toThrow();
+    });
+    it('fences a late native completion after cancellation', async () => {
+        let complete!: (key: string) => void;
+        nativeModuleMock.requireNativeModule.mockReturnValue({ derivePasswordEnvelopeKey: () => new Promise<string>((resolve) => { complete = resolve; }) });
+        const { derivePasswordEnvelopeKey } = await import('./nativeCryptoWorker.native');
+        const controller = new AbortController();
+        const pending = derivePasswordEnvelopeKey(request, controller.signal);
+        controller.abort();
+        complete('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    });
+});

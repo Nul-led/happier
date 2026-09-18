@@ -2,6 +2,7 @@ import * as React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import type { PluginUiResourceSnapshot } from '@happier-dev/plugin-ui/hostApi';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 const machineResourceRpc = vi.hoisted(() => ({
     read: vi.fn(),
@@ -10,23 +11,32 @@ const machineResourceRpc = vi.hoisted(() => ({
     close: vi.fn(),
 }));
 
-// Resource RPC is the process boundary. Keep the provider, contextual clients,
-// Resource store, and watch pump real so lifecycle assertions cannot pass by
-// bypassing the owner under test.
-vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('@/sync/ops/machineContributionRegistryProjection')>()),
-    machinePluginUiResourceRead: (...args: never[]) => (
-        machineResourceRpc.read as (...values: unknown[]) => unknown
-    )(...args),
-    machinePluginUiResourceWatchOpen: (...args: never[]) => (
-        machineResourceRpc.open as (...values: unknown[]) => unknown
-    )(...args),
-    machinePluginUiResourceWatchNext: (...args: never[]) => (
-        machineResourceRpc.next as (...values: unknown[]) => unknown
-    )(...args),
-    machinePluginUiResourceWatchClose: (...args: never[]) => (
-        machineResourceRpc.close as (...values: unknown[]) => unknown
-    )(...args),
+// Mock only the daemon network boundary. Keep RPC request/response admission,
+// contextual clients, Resource store, and watch pump real.
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
+    machineRpcWithServerScope: async (request: Readonly<{
+        machineId: string;
+        method: string;
+        payload: Readonly<Record<string, unknown>>;
+        signal?: AbortSignal;
+    }>) => {
+        const options = { ...request.payload, signal: request.signal };
+        if (request.method === RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_WATCH_CLOSE) {
+            await machineResourceRpc.close(request.machineId, options);
+            return { ok: true };
+        }
+        const call = request.method === RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_READ
+            ? machineResourceRpc.read
+            : request.method === RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_WATCH_OPEN
+                ? machineResourceRpc.open
+                : request.method === RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_WATCH_NEXT
+                    ? machineResourceRpc.next
+                    : null;
+        if (!call) throw new Error(`Unexpected daemon RPC: ${request.method}`);
+        const response = await call(request.machineId, options);
+        if (!response.supported) throw Object.assign(new Error(response.reason), { name: 'AbortError' });
+        return response.result;
+    },
 }));
 
 import {
@@ -227,8 +237,13 @@ describe('PluginContextualResourceStoreProvider', () => {
 
     it('shares one exact mounted context and disposes its real watch only after the final release', async () => {
         const rpc = installLiveResourceRpc();
-        const account = createAccountLifetime({ accountId: 'account-a' });
-        const exactBinding = binding(account.lifetime);
+        const account = createAccountLifetime({ accountId: 'ab516d49-4112-4459-857e-7560beffb41a' });
+        // Ordinary UUID coordinates must fit the actual daemon watch contract;
+        // transport identity must not grow with the serialized context.
+        const exactBinding = Object.freeze({
+            ...binding(account.lifetime),
+            machineId: 'fb489c9b-54f3-4093-9055-70c496253d48',
+        });
         let first: PluginUiResourceSnapshot | null = null;
         let second: PluginUiResourceSnapshot | null = null;
 
@@ -250,6 +265,8 @@ describe('PluginContextualResourceStoreProvider', () => {
         await vi.waitFor(() => {
             expect(first?.digest).toBe(`sha256:${'a'.repeat(64)}`);
             expect(second?.digest).toBe(`sha256:${'a'.repeat(64)}`);
+            expect(first?.error).toBeUndefined();
+            expect(first).toMatchObject({ subscription: 'live' });
         });
         await vi.waitFor(() => { expect(rpc.nextSignals).toHaveLength(1); });
         expect(machineResourceRpc.read).toHaveBeenCalledTimes(1);
@@ -274,11 +291,15 @@ describe('PluginContextualResourceStoreProvider', () => {
 
     it('keeps Account A and B isolated and fences a late A watch event after synchronous retirement', async () => {
         let resolveLateA: ((value: ReturnType<typeof invalidatedResponse>) => void) | null = null;
+        let accountASubscriptionId: string | null = null;
         const rpc = installLiveResourceRpc({
             read: (call) => call === 1 ? resourceResponse('a') : resourceResponse('b'),
-            openMarker: (options) => options.subscriptionId.includes('account-a') ? 'a' : 'b',
+            openMarker: (options) => {
+                accountASubscriptionId ??= options.subscriptionId;
+                return options.subscriptionId === accountASubscriptionId ? 'a' : 'b';
+            },
             onNext: async (options) => {
-                if (options.subscriptionId.includes('account-a')) {
+                if (options.subscriptionId === accountASubscriptionId) {
                     return await new Promise<ReturnType<typeof invalidatedResponse>>((resolve) => {
                         resolveLateA = resolve;
                     });
@@ -323,7 +344,7 @@ describe('PluginContextualResourceStoreProvider', () => {
         const readsBeforeLateA = machineResourceRpc.read.mock.calls.length;
 
         await act(async () => {
-            resolveLateA!(invalidatedResponse('late-account-a', 'c'));
+            resolveLateA!(invalidatedResponse(accountASubscriptionId!, 'c'));
             await Promise.resolve();
             await Promise.resolve();
         });

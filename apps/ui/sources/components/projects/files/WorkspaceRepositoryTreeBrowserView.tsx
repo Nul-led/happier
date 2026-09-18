@@ -1,3 +1,5 @@
+import { useRepositoryTreeVisibility } from '@/hooks/workspaces/files/useRepositoryTreeVisibility';
+import { RepositoryTreeVisibilityControl } from '@/components/workspaces/files/repositoryTree/RepositoryTreeVisibilityControl';
 import * as React from 'react';
 import { Platform, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
@@ -18,7 +20,7 @@ import { searchWorkspaceFiles, workspaceFileSearchCache } from '@/sync/domains/w
 import { workspaceCreateDirectory, workspaceWriteFile } from '@/sync/ops/workspaceFileSystem';
 import { isSafeWorkspaceRelativePath } from '@/utils/path/isSafeWorkspaceRelativePath';
 import { tryBuildWorkspaceCacheKey, type WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
-import { storage, useMachine, useWorkspaceRepositoryTreeExpandedPaths } from '@/sync/domains/state/storage';
+import { storage, useMachine, useServerScopedMachine, useWorkspaceRepositoryTreeExpandedPaths } from '@/sync/domains/state/storage';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import { useWorkspaceScmSnapshotController } from '@/hooks/workspaces/scm/useWorkspaceScmSnapshotController';
 import { useWorkspaceFileTransfers, type WorkspaceUploadEntry } from '@/hooks/workspaces/transfers/useWorkspaceFileTransfers';
@@ -38,7 +40,15 @@ import { useWorkspaceRepositoryTreeWebDropState } from '@/hooks/workspaces/files
 import { useWorkspaceRepositoryTreeRowActions } from '@/hooks/workspaces/files/useWorkspaceRepositoryTreeRowActions';
 import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
-import { resolveTransferAvailability } from '@/sync/domains/transfers/runtime/transferRuntime';
+import { useMachineRpcDirectRouteAvailability } from '@/sync/domains/transfers/runtime/useMachineRpcDirectRouteAvailability';
+import { isMachineDaemonFiniteTransferApplicationSupported, isMachineDaemonLegacyTransferRpcEligible } from '@/sync/domains/transfers/runtime/transferRuntime/availability/machineDaemonTransferState';
+import { isMachineFiniteTransferRpcDeclared, resolveMachineCarrierPreselection } from '@/sync/domains/transfers/runtime/transferRuntime/routing/resolveMachineCarrierPreselection';
+import { isBrowserIrohHost } from '@/sync/runtime/browserIroh/hostEligibility';
+import {
+    isIrohMachineTransferLifecycleAvailable,
+    probeIrohMachineTransferLifecycleAvailability,
+    subscribeIrohMachineTransferLifecycleAvailability,
+} from '@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle';
 import { WorkspaceRepositoryTreeList, type WorkspaceRepositoryTreeWebDropTarget } from './WorkspaceRepositoryTreeList';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
@@ -59,6 +69,7 @@ export type WorkspaceRepositoryTreeBrowserViewProps = Readonly<{
     onSearchQueryChange?: (value: string) => void;
     showSearchBar?: boolean;
     onRequestClose?: () => void;
+    revealRequest?: Readonly<{ path: string }>;
     scmSnapshot?: ScmWorkingSnapshot | null;
     expandedPaths?: readonly string[];
     onExpandedPathsChange?: (paths: string[]) => void;
@@ -96,21 +107,52 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
         () => props.scope,
         [props.scope.serverId, props.scope.machineId, props.scope.rootPath],
     );
+    const { visibilityMode, setVisibilityMode, gitIgnoreAvailable, setGitIgnoreAvailable, revealedPaths, revealPath, latestRequest } = useRepositoryTreeVisibility(tryBuildWorkspaceCacheKey(workspaceScope) ?? '');
     const workspaceScmController = useWorkspaceScmSnapshotController(props.scmSnapshot === undefined ? workspaceScope : null);
     const effectiveScmSnapshot = props.scmSnapshot ?? workspaceScmController.snapshot ?? null;
-    const machine = useMachine(workspaceScope.machineId);
+    const globalMachine = useMachine(workspaceScope.machineId);
+    const scopedMachine = useServerScopedMachine(workspaceScope.serverId, workspaceScope.machineId);
+    const machine = scopedMachine ?? globalMachine;
     const machineRpcTargetAvailable = Boolean(machine && isMachineOnline(machine));
     const serverSnapshot = useServerFeaturesSnapshotForServerId(workspaceScope.serverId, {
         enabled: Boolean(workspaceScope.serverId) && machineRpcTargetAvailable,
     });
-    const machineTransferEnabled = serverSnapshot.status === 'ready'
-        ? resolveTransferAvailability({
-            serverFeatures: serverSnapshot.features,
-            directPeerRoute: { status: 'unknown' },
-            machineRpcDirectRoute: { status: 'unknown' },
-        }).machineTransferEnabled
-        : false;
-    const transferActionsAvailable = machineTransferEnabled && machineRpcTargetAvailable;
+    const machineRpcRouteAvailability = useMachineRpcDirectRouteAvailability({
+        serverId: workspaceScope.serverId,
+        remoteMachineId: machineRpcTargetAvailable ? workspaceScope.machineId : null,
+    });
+    const nativeMachineCarrierAvailable = React.useSyncExternalStore(
+        subscribeIrohMachineTransferLifecycleAvailability,
+        isIrohMachineTransferLifecycleAvailable,
+        isIrohMachineTransferLifecycleAvailable,
+    );
+    React.useEffect(() => {
+        void probeIrohMachineTransferLifecycleAvailability();
+    }, []);
+    const runnerFiniteTransferRpcDeclared = machine?.kind === 'ephemeral_session_runner' && isMachineFiniteTransferRpcDeclared({
+        capabilities: machine?.operationProtocolCapabilities,
+        revision: machine?.operationProtocolCapabilitiesRevision,
+        active: machine?.active,
+        revokedAt: machine?.revokedAt,
+    });
+    const transferPreselection = resolveMachineCarrierPreselection({
+        serverFeatures: serverSnapshot.status === 'ready' ? serverSnapshot.features : null,
+        targetEndpoint: machine?.daemonState?.peerMediation?.iroh?.endpoint,
+        host: isBrowserIrohHost()
+            ? { kind: 'browser' }
+            : { kind: 'native', lifecycleAvailable: nativeMachineCarrierAvailable },
+        legacyTransferSupported: isMachineDaemonLegacyTransferRpcEligible(machine?.daemonState),
+        finiteTransferApplicationSupported: machine?.kind === 'ephemeral_session_runner'
+            ? runnerFiniteTransferRpcDeclared
+            : isMachineDaemonFiniteTransferApplicationSupported(machine?.daemonState),
+        runnerFiniteTransferRpcDeclared,
+        machineRpcDirectRoute: machineRpcRouteAvailability === 'viable'
+            ? { status: 'viable', checkedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER }
+            : machineRpcRouteAvailability === 'unavailable'
+                ? { status: 'unavailable', checkedAt: 0, expiresAt: 0, failureReason: 'machine_rpc_direct_unavailable' }
+                : { status: 'unknown' },
+    });
+    const transferActionsAvailable = machineRpcTargetAvailable && transferPreselection.kind !== 'unavailable';
 
     const workspaceExpandedPaths = useWorkspaceRepositoryTreeExpandedPaths(workspaceScope);
 
@@ -131,6 +173,31 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
         webFolderInputRef.current = node;
         applyWebDirectoryInputAttributes(node);
     }, []);
+
+    const handleRevealPath = React.useCallback((path: string, isDirectory = false) => {
+        if (!isSafeWorkspaceRelativePath(path)) return;
+        setSearchQuery('');
+        setShowChangedOnly(false);
+        revealPath(path, { focus: true });
+        const current = storage.getState().getWorkspaceRepositoryTreeExpandedPaths(workspaceScope);
+        const ancestors = computeExpandedPathsForReveal({ expandedPaths: current, fullPath: path });
+        const next = isDirectory && !ancestors.includes(path) ? [...ancestors, path] : ancestors;
+        if (props.onExpandedPathsChange) props.onExpandedPathsChange(next);
+        else storage.getState().setWorkspaceRepositoryTreeExpandedPaths(workspaceScope, next);
+    }, [workspaceScope, props.onExpandedPathsChange, setSearchQuery, revealPath]);
+
+    React.useEffect(() => {
+        if (props.revealRequest) handleRevealPath(props.revealRequest.path);
+    }, [props.revealRequest, handleRevealPath]);
+
+    const handleTreeOpenFile = React.useCallback((path: string) => {
+        revealPath(path);
+        props.onOpenFile(path);
+    }, [props.onOpenFile, revealPath]);
+    const handleTreeOpenFilePinned = React.useCallback((path: string) => {
+        revealPath(path);
+        (props.onOpenFilePinned ?? props.onOpenFile)(path);
+    }, [props.onOpenFile, props.onOpenFilePinned, revealPath]);
 
     React.useEffect(() => {
         const q = searchQuery.trim();
@@ -243,9 +310,10 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
             });
             setExpandedPaths(nextExpanded);
             refresh();
+            revealPath(path);
             (props.onOpenFilePinned ?? props.onOpenFile)(path);
         })();
-    }, [allowCreateActions, expandedPaths, props.onOpenFile, props.onOpenFilePinned, refresh, setExpandedPaths, workspaceScope]);
+    }, [allowCreateActions, expandedPaths, props.onOpenFile, props.onOpenFilePinned, refresh, setExpandedPaths, workspaceScope, revealPath]);
 
     const createFolder = React.useCallback(() => {
         if (!allowCreateActions) return;
@@ -273,11 +341,12 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                 expandedPaths,
                 fullPath: `${directoryPath}/.placeholder`,
             });
+            revealPath(directoryPath);
             const withDir = nextExpanded.includes(directoryPath) ? nextExpanded : [...nextExpanded, directoryPath];
             setExpandedPaths(withDir);
             refresh();
         })();
-    }, [allowCreateActions, expandedPaths, refresh, setExpandedPaths, workspaceScope]);
+    }, [allowCreateActions, expandedPaths, refresh, setExpandedPaths, workspaceScope, revealPath]);
 
     const transfers = useWorkspaceFileTransfers({
         workspaceScope,
@@ -643,6 +712,7 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                     renderActionNode={renderToolbarIconButton}
                 />
             ) : null}
+            {!showChangedOnly && !shouldShowSearchResults ? <RepositoryTreeVisibilityControl mode={visibilityMode} available={gitIgnoreAvailable} onChange={setVisibilityMode} /> : null}
             {Platform.OS === 'web' ? (
                 <>
                     <input
@@ -683,6 +753,7 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                             isSearching={isSearching}
                             searchQuery={searchQuery}
                             searchResults={searchResults}
+                            onFolderPress={(folder) => handleRevealPath(folder.fullPath.replace(/\/+$/, ''), true)}
                             onFilePress={(file) => props.onOpenFile(file.fullPath)}
                             onFilePressPinned={(file) => (props.onOpenFilePinned ?? props.onOpenFile)(file.fullPath)}
                         />
@@ -691,8 +762,8 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                             theme={theme}
                             snapshot={effectiveScmSnapshot}
                             searchQuery={searchQuery}
-                            onOpenFile={props.onOpenFile}
-                            onOpenFilePinned={props.onOpenFilePinned}
+                            onOpenFile={handleTreeOpenFile}
+                            onOpenFilePinned={handleTreeOpenFilePinned}
                         />
                     ) : (
                         <WorkspaceRepositoryTreeList
@@ -700,10 +771,14 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                             scope={workspaceScope}
                             reloadToken={treeReloadNonce}
                             detailsMode={detailsMode}
+                        visibilityMode={visibilityMode}
+                        revealedPaths={revealedPaths}
+                        revealRequest={latestRequest}
+                        onGitIgnoreAvailableChange={setGitIgnoreAvailable}
                             expandedPaths={expandedPaths}
                             onExpandedPathsChange={(paths) => setExpandedPaths(paths)}
-                            onOpenFile={props.onOpenFile}
-                            onOpenFilePinned={props.onOpenFilePinned}
+                            onOpenFile={handleTreeOpenFile}
+                            onOpenFilePinned={handleTreeOpenFilePinned}
                             scmSnapshot={effectiveScmSnapshot}
                             onWebDropTargetChange={Platform.OS === 'web' ? handleWebDropTargetChange : null}
                             webDropHoverPath={props.webDropHoverPath ?? webDropState.dropHoverPath}

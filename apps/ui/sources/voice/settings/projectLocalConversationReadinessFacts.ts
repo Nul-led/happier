@@ -11,6 +11,7 @@ import type {
   VoiceRoleReadiness,
 } from '@/voice/registry/readiness';
 import type { VoiceProviderRegistry } from '@/voice/registry/providerRegistry';
+import type { SavedSecretReferenceResolution } from '@/sync/store/settings/savedSecretCatalogSnapshot';
 import { projectVoiceSpeechCredentialReadiness } from '@/voice/registry/speechCredentialReadiness';
 import { projectVoiceSpeechEndpointReadiness } from '@/voice/registry/speechEndpointReadiness';
 import { resolveLocalNeuralExecutionPolicy } from '@/voice/runtime/daemonInference/daemonVoiceInferencePolicy';
@@ -69,6 +70,7 @@ export function projectLocalConversationReadinessFacts(input: Readonly<{
     phase: 'speech';
     status: 'ready' | 'approval_required' | 'unknown';
   }>>>;
+  resolveSavedSecret?: (ref: string) => SavedSecretReferenceResolution;
 }>): Readonly<{
   serverFeature: VoiceReadinessFact;
   executionMachine: VoiceReadinessFact;
@@ -117,6 +119,7 @@ export function projectLocalConversationReadinessFacts(input: Readonly<{
       executionMachineId: input.executionMachineId,
       providerEnvelope: input.voice.providers[stt.provider] ?? null,
       rawAuthorization: input.rawCredentialAuthorizationByContribution?.[stt.provider] ?? null,
+      resolveSavedSecret: input.resolveSavedSecret,
     }),
     projectVoiceSpeechCredentialReadiness({
       registry: input.registry,
@@ -130,6 +133,7 @@ export function projectLocalConversationReadinessFacts(input: Readonly<{
       executionMachineId: input.executionMachineId,
       providerEnvelope: input.voice.providers[tts.provider] ?? null,
       rawAuthorization: input.rawCredentialAuthorizationByContribution?.[tts.provider] ?? null,
+      resolveSavedSecret: input.resolveSavedSecret,
     }),
   ];
   const credential: VoiceCredentialReadinessFact = credentialFacts.includes('missing')

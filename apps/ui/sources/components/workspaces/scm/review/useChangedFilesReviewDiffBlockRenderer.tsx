@@ -1,5 +1,7 @@
+import type { CodeLinesExternalScrollView } from '@/components/ui/code/view/CodeLinesViewCore';
 import * as React from 'react';
 
+import type { ChangedFilesReviewLineTarget } from './ChangedFilesReviewNavigation';
 import type { ReviewCommentDraft } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 import { ChangedFilesReviewDiffBlock } from '@/components/workspaces/scm/review/ChangedFilesReviewDiffBlock';
 import type { ChangedFilesReviewDiffStateSource } from '@/components/workspaces/scm/review/ChangedFilesReviewDiffStore';
@@ -20,6 +22,9 @@ export function useChangedFilesReviewDiffBlockRenderer(input: Readonly<{
     onUpsertReviewCommentDraft?: (draft: ReviewCommentDraft) => void;
     onDeleteReviewCommentDraft?: (commentId: string) => void;
     onReviewCommentError?: (message: string) => void;
+    onScrollToLine?: (windowY: number) => void;
+    externalScrollView?: CodeLinesExternalScrollView;
+    lineTarget?: ChangedFilesReviewLineTarget | null;
 }>): (path: string) => React.ReactNode {
     const {
         theme,
@@ -32,6 +37,9 @@ export function useChangedFilesReviewDiffBlockRenderer(input: Readonly<{
         onUpsertReviewCommentDraft,
         onDeleteReviewCommentDraft,
         onReviewCommentError,
+        onScrollToLine,
+        externalScrollView,
+        lineTarget,
         getEstimatedChangedLines,
     } = input;
 
@@ -74,6 +82,9 @@ export function useChangedFilesReviewDiffBlockRenderer(input: Readonly<{
                 onUpsertReviewCommentDraft={onUpsertReviewCommentDraft}
                 onDeleteReviewCommentDraft={onDeleteReviewCommentDraft}
                 onReviewCommentError={onReviewCommentError}
+                onScrollToLine={onScrollToLine}
+                externalScrollView={externalScrollView}
+                scrollToLineId={lineTarget?.filePath === path ? lineTarget.lineId : undefined}
             />
         );
     }, [
@@ -81,6 +92,9 @@ export function useChangedFilesReviewDiffBlockRenderer(input: Readonly<{
         getEstimatedChangedLines,
         onDeleteReviewCommentDraft,
         onReviewCommentError,
+        onScrollToLine,
+        externalScrollView,
+        lineTarget,
         onUpsertReviewCommentDraft,
         reviewCommentDraftsByDiffFilePath,
         reviewCommentsEnabled,

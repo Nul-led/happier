@@ -5,6 +5,7 @@ import {
     sanitizeSessionUserMessageSendMeta,
     type ComposerAttachmentDraftV1,
     type ComposerAttachmentInputV1,
+    type ComposerSnapshotV1,
     type JsonValue,
     type RawIngressStructuredInputV1,
 } from '@happier-dev/protocol';
@@ -12,9 +13,9 @@ import {
     admitMentionRefsV1ForText,
     hasRawStructuredInputSemanticContentV1,
     readAdmittedHappierStructuredInputV1FromMeta,
-    type MentionRefV1,
 } from '@happier-dev/protocol/runtime';
 import { buildStructuredInputMetaOverrides } from '@/components/sessions/agentInput/structuredInputMentions';
+import { placePositionlessComposerReferences } from '@/components/sessions/composer/composerScopeAdapters';
 import type { MutableComposerDocumentOwner } from '@/components/sessions/composer/composerDocumentOwner';
 import { createPendingMessageComposerDocumentOwner } from '@/components/sessions/composer/pendingMessageComposerDocumentOwner';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
@@ -64,7 +65,7 @@ type PendingMessageComposerAttachmentHydration =
     | Readonly<{
         status: 'ready';
         attachments: readonly ComposerAttachmentDraftV1[];
-        mentions?: readonly MentionRefV1[];
+        mentions?: ComposerSnapshotV1['references'];
     }>
     | Readonly<{ status: 'unavailable' }>;
 
@@ -121,7 +122,10 @@ export function hydratePendingMessageComposerAttachmentDrafts(
         return {
             status: 'ready',
             attachments,
-            mentions: admittedMentions,
+            mentions: placePositionlessComposerReferences({
+                text,
+                references: admittedMentions,
+            }),
         };
     }
     return {

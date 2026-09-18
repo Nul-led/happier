@@ -19,14 +19,14 @@ describe('applySecretRequirementResult', () => {
     it('stores session-only secret value and marks selection as machine-env preferred', () => {
         const out = applySecretRequirementResult({
             profileId: 'p1',
-            result: { action: 'enterOnce', envVarName: 'OPENAI_API_KEY', value: 'sk-test' },
+            result: { action: 'enterOnce', envVarName: 'OPENAI_API_KEY', value: '  sk-test\n' },
             selectedSecretIdByProfileIdByEnvVarName: { p1: {} },
             sessionOnlySecretValueByProfileIdByEnvVarName: {},
             secretBindingsByProfileId: {},
         });
 
         expect(out.nextSelectedSecretIdByProfileIdByEnvVarName.p1?.OPENAI_API_KEY).toBe('');
-        expect(out.nextSessionOnlySecretValueByProfileIdByEnvVarName.p1?.OPENAI_API_KEY).toBe('sk-test');
+        expect(out.nextSessionOnlySecretValueByProfileIdByEnvVarName.p1?.OPENAI_API_KEY).toBe('  sk-test\n');
     });
 
     it('selects a saved secret without changing defaults when setDefault=false', () => {

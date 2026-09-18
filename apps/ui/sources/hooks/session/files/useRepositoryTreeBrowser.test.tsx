@@ -36,6 +36,7 @@ const cachedDirectoryEntries = new Map<string, Array<{ name: string; type: 'file
 vi.mock('@/sync/domains/input/repositoryDirectory', () => ({
     listRepositoryDirectoryEntries: (input: any) => listRepositoryDirectoryEntriesSpy(input),
     warmRepositoryDirectoryCache: (input: any) => listRepositoryDirectoryEntriesSpy(input),
+    getCachedRepositoryGitIgnoreAvailable: () => undefined,
     getCachedRepositoryDirectoryEntries: (input: any) => cachedDirectoryEntries.get(`${input.sessionId}:${input.directoryPath}`) ?? null,
     setCachedRepositoryDirectoryEntries: (input: any) => {
         cachedDirectoryEntries.set(`${input.sessionId}:${input.directoryPath}`, input.entries);

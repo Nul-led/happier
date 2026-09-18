@@ -26,7 +26,7 @@ function createBaseSubagent(overrides: Partial<SessionSubagent>): SessionSubagen
 }
 
 describe('resolveSessionSubagentFullRoute', () => {
-    it('routes execution runs to the transcript route when a transcript route id exists', () => {
+    it('keeps execution runs on canonical Run Details when transcript evidence arrives', () => {
         const route = resolveSessionSubagentFullRoute({
             sessionId: 's1',
             subagent: createBaseSubagent({
@@ -37,7 +37,7 @@ describe('resolveSessionSubagentFullRoute', () => {
             }),
         });
 
-        expect(route).toBe('/session/s1/message/tool-msg-1');
+        expect(route).toBe('/session/s1/runs/run_1');
     });
 
     it('falls back to the advanced run details screen when no transcript route exists', () => {
@@ -51,6 +51,39 @@ describe('resolveSessionSubagentFullRoute', () => {
         });
 
         expect(route).toBe('/session/s1/runs/run_1');
+    });
+
+    it('keeps the exact Home on transcript and run routes for duplicate Session ids', () => {
+        const subagent = createBaseSubagent({
+            id: 'execution_run:run_1',
+            kind: 'execution_run',
+            transcript: { toolMessageRouteId: 'tool-msg-1' },
+            runRef: { runId: 'run_1' },
+        });
+
+        expect(resolveSessionSubagentFullRoute({
+            serverId: 'https://home.example.test:8443',
+            sessionId: 'same/session',
+            subagent,
+        })).toBe('/session/same%2Fsession/runs/run_1?serverId=https%3A%2F%2Fhome.example.test%3A8443');
+        expect(resolveSessionSubagentFullRoute({
+            serverId: 'https://home.example.test:8443',
+            sessionId: 'same/session',
+            subagent: { ...subagent, transcript: {} },
+        })).toBe('/session/same%2Fsession/runs/run_1?serverId=https%3A%2F%2Fhome.example.test%3A8443');
+    });
+
+    it('keeps historical transcript-only execution rows readable when no Run identity exists', () => {
+        const route = resolveSessionSubagentFullRoute({
+            sessionId: 's1',
+            subagent: createBaseSubagent({
+                id: 'execution_run:historical',
+                kind: 'execution_run',
+                transcript: { toolMessageRouteId: 'tool-msg-historical' },
+            }),
+        });
+
+        expect(route).toBe('/session/s1/message/tool-msg-historical');
     });
 
     it('routes task-like subagents to the message details screen when a transcript route id exists', () => {

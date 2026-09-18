@@ -889,6 +889,7 @@ export function createBoundPluginSurfaceController(input: Readonly<{
     const hostActionContext: ActionExecutorContext | undefined = input.facts.serverId || daemonBoundAtConstruction
         ? {
             ...(input.facts.serverId ? { serverId: input.facts.serverId } : {}),
+            ...(surfaceContext.sessionId ? { defaultSessionId: surfaceContext.sessionId } : {}),
             // Only the admitted daemon binding can stamp a detached target.
             // It is never Action input and V2 preflight still selects the final
             // exact machine used by the execution.run transport.

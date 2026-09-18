@@ -6,8 +6,7 @@ import {
     type WritableSettingsKey,
 } from '@/sync/domains/settings/settings';
 import { localSettingsDefaults, type LocalSettings } from '@/sync/domains/settings/localSettings';
-import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
-import { normalizeTrimmedString } from '@/sync/domains/session/listing/normalizeTrimmedString';
+import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
 import { createReducer } from '@/sync/reducer/reducer';
 import type { StorageState } from '@/sync/store/types';
 import type { StoreApi, UseBoundStore } from 'zustand';
@@ -47,15 +46,14 @@ const defaultProfile: Profile = Object.freeze({
     connectedAccountGroupsV4: [],
 });
 
-const buildSessionListReachabilityRenderableKey: StorageModule['buildSessionListReachabilityRenderableKey'] = (
-    serverId,
-    sessionId,
-) => {
-    const normalizedServerId = normalizeTrimmedString(serverId);
-    const normalizedSessionId = normalizeSessionId(sessionId);
-    if (!normalizedServerId || !normalizedSessionId) return null;
-    return `${normalizedServerId}\u0000${normalizedSessionId}`;
-};
+const buildSessionListReachabilityRenderableKey: StorageModule['buildSessionListReachabilityRenderableKey'] =
+    buildSessionListServerScopedRowKey;
+
+// Stable identity so a multi-Home organization consumer does not rebuild its view state on
+// every render, matching the real selector's shared empty result.
+const emptySessionOrganizationProjectionsByServerId: ReturnType<
+    StorageModule['useSessionOrganizationProjections']
+> = Object.freeze({});
 
 function resolveMutableSetterFactory(options?: StorageRuntimeOptions): StorageMutableSetterFactory {
     return options?.createMutableSetter ?? createDefaultMutableSetter;
@@ -158,7 +156,9 @@ export function createStorageModuleStub<TOverrides extends object>(
     const messagesByRefs = [] as ReturnType<StorageModule['useMessagesByRefs']>;
     const sessionMessagesReducerState = createReducer();
     const sessionListRenderablesById = {} as ReturnType<StorageModule['useSessionListRenderablesById']>;
-    const sessionListRowStateByServerId = {} as ReturnType<StorageModule['useSessionListRowStateByServerId']>;
+    const sessionListRowsByServerId = {} as ReturnType<StorageModule['useSessionListRowsByServerId']>;
+    const ordinarySessionListMembershipByServerId = {} as ReturnType<StorageModule['useOrdinarySessionListMembershipByServerId']>;
+    const archivedSessionListMembershipByServerId = {} as ReturnType<StorageModule['useArchivedSessionListMembershipByServerId']>;
     const sessionListIndexByServerId = {} as ReturnType<StorageModule['useSessionListIndexByServerId']>;
     const useSetting = createUseSettingMock();
     const useSettingMutable = createUseSettingMutableMock(useSetting, options);
@@ -182,8 +182,6 @@ export function createStorageModuleStub<TOverrides extends object>(
         sessions: {},
         machines: {},
         getProjectForSession: () => null,
-        mergeSessionListRenderables: () => undefined,
-        applySessionListRenderablePatches: () => undefined,
         updateWorkspaceScmSnapshot,
         updateWorkspaceScmSnapshotError,
         updateWorkspaceScmStatus,
@@ -208,6 +206,8 @@ export function createStorageModuleStub<TOverrides extends object>(
         useActiveServerAccountScope: () => null,
         useSessionLastMobileSurface: () => null,
         usePersistSessionLastMobileSurface: () => () => undefined,
+        useSessionCompanionPreferenceSlot: () => ({ storageKey: null, stored: undefined }),
+        useMutateSessionCompanionPreference: () => () => false,
         useProjectLastMobileSurface: () => null,
         useProjectLastMobileSurfacesByWorkspaceRefId: () => ({}),
         usePersistProjectLastMobileSurface: () => () => undefined,
@@ -264,11 +264,15 @@ export function createStorageModuleStub<TOverrides extends object>(
         useSessionListReachabilityRenderablesForItems: () => new Map(),
         useSessionListRowRenderablesForItems: () => new Map(),
         useSessionListRenderablesById: () => sessionListRenderablesById,
-        useSessionListRowStateByServerId: () => sessionListRowStateByServerId,
+        useSessionListRowsByServerId: () => sessionListRowsByServerId,
+        useOrdinarySessionListMembershipByServerId: () => ordinarySessionListMembershipByServerId,
+        useArchivedSessionListMembershipByServerId: () => archivedSessionListMembershipByServerId,
         useSessionListIndexByServerId: () => sessionListIndexByServerId,
         useSessionOrganizationProjection: () => null,
+        useSessionOrganizationProjections: () => emptySessionOrganizationProjectionsByServerId,
         useArtifacts: () => [],
-        useOpenApprovalSessionIds: () => [],
+        useArtifact: () => null,
+        useOpenApprovalSessionReferences: () => [],
         useOpenApprovalArtifactsForSession: () => [],
         useEnabledAutomationsCountForSession: () => 0,
         useWorkspaceReviewCommentsDrafts: () => [],
@@ -391,7 +395,9 @@ export function createStorageStoreMock(state: Partial<StorageState>): UseBoundSt
         machines: {},
         sessionMessages: {},
         sessionPending: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionTailContiguousFloorSeq: {},
         sessionTranscriptLoadIssues: {},
         ...state,
@@ -421,7 +427,9 @@ export function createLiveStorageStoreMock(readState: () => Partial<StorageState
             machines: {},
             sessionMessages: {},
             sessionPending: {},
-            sessionListRenderables: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
+            archivedSessionListMembershipByServerId: {},
             sessionTailContiguousFloorSeq: {},
             sessionTranscriptLoadIssues: {},
             ...state,

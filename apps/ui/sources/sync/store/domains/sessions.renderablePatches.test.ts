@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '../../domains/state/storageTypes';
+import type { SessionListRenderableSession } from '../../domains/session/listing/sessionListRenderable';
 
 beforeEach(() => {
     vi.resetModules();
@@ -10,7 +11,7 @@ beforeEach(() => {
 function mockSessionsDomainBoundaries() {
     vi.doMock('../../domains/state/persistence', () => ({
         loadSettings: () => ({
-            settings: { groupInactiveSessionsByProject: false },
+            settings: {},
             version: null,
         }),
         loadLocalSettings: () => ({}),
@@ -78,8 +79,9 @@ function mockSessionsDomainBoundaries() {
 function createHarness(createSessionsDomain: any) {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
-        sessionListRowStateByServerId: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
@@ -88,13 +90,13 @@ function createHarness(createSessionsDomain: any) {
         workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey: {},
         reviewCommentsDraftsBySessionId: {},
         reviewCommentsDraftsByWorkspaceCacheKey: {},
-        actionDraftsBySessionId: {},
+        sessionActionDraftsByAddressKey: {},
         isDataReady: false,
         machines: {},
         machineDisplayById: {},
         sessionMessages: {},
         profile: { id: 'account_a' },
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
     };
 
     const get = () => state;
@@ -107,7 +109,224 @@ function createHarness(createSessionsDomain: any) {
     return { get, domain };
 }
 
+function replaceSessionListRows(domain: any, rows: SessionListRenderableSession[]): void {
+    domain.applyServerScopedSessionListRows('server_1', rows, { source: 'ordinary', mode: 'replace' });
+}
+
+function mergeSessionListRows(domain: any, rows: SessionListRenderableSession[]): void {
+    domain.applyServerScopedSessionListRows('server_1', rows, { source: 'ordinary', mode: 'append' });
+}
+
+function patchSessionListRows(domain: any, patches: unknown[]): void {
+    domain.applyServerScopedSessionListRowPatches('server_1', patches);
+}
+
 describe('sessions domain: renderable patches', () => {
+    it('publishes active-Home warm-cache and row deltas for scoped merge, reconcile, and clear', async () => {
+        mockSessionsDomainBoundaries();
+
+        const warmCache = await import('../../domains/state/warmCachePersistence');
+        const { buildSessionListRenderableFromSession } = await import('../../domains/session/listing/sessionListRenderable');
+        const { createSessionsDomain } = await import('./sessions');
+        const { get, domain } = createHarness(createSessionsDomain);
+        const row = buildSessionListRenderableFromSession({
+            id: 's1',
+            serverId: 'server_1',
+            seq: 1,
+            createdAt: 1,
+            updatedAt: 10,
+            active: false,
+            activeAt: 10,
+            metadata: null,
+            metadataVersion: 0,
+            agentState: null,
+            agentStateVersion: 0,
+            thinking: false,
+            thinkingAt: 0,
+            presence: 10,
+        } as Session);
+        const saveWarmCache = warmCache.saveSessionListWarmCacheEntries as unknown as ReturnType<typeof vi.fn>;
+
+        domain.mergeSessionListRowsForServerScope('server_1', [row]);
+        expect(get().sessionListRenderableDelta).toEqual(expect.objectContaining({
+            changedSessionIds: ['s1'],
+            removedSessionIds: [],
+        }));
+        expect(saveWarmCache).toHaveBeenCalledTimes(1);
+
+        const baseline = { ...(get().sessionListRowsByServerId.server_1 ?? {}) };
+        domain.reconcileSessionListRowsForServerScope('server_1', [], baseline);
+        expect(get().sessionListRenderableDelta).toEqual(expect.objectContaining({
+            changedSessionIds: [],
+            removedSessionIds: ['s1'],
+        }));
+        expect(saveWarmCache).toHaveBeenCalledTimes(2);
+
+        domain.mergeSessionListRowsForServerScope('server_1', [row]);
+        domain.clearSessionListRowsForServerScope('server_1');
+        expect(get().sessionListRenderableDelta).toEqual(expect.objectContaining({
+            changedSessionIds: [],
+            removedSessionIds: ['s1'],
+        }));
+        expect(saveWarmCache).toHaveBeenCalledTimes(4);
+    });
+
+    it('moves scoped rows between ordinary and archived membership when archivedAt changes', async () => {
+        mockSessionsDomainBoundaries();
+
+        const { buildSessionListRenderableFromSession } = await import('../../domains/session/listing/sessionListRenderable');
+        const { createSessionsDomain } = await import('./sessions');
+        const { get, domain } = createHarness(createSessionsDomain);
+        const row = buildSessionListRenderableFromSession({
+            id: 's1',
+            serverId: 'server_1',
+            seq: 1,
+            createdAt: 1,
+            updatedAt: 10,
+            active: false,
+            activeAt: 10,
+            archivedAt: null,
+            metadata: null,
+            metadataVersion: 0,
+            agentState: null,
+            agentStateVersion: 0,
+            thinking: false,
+            thinkingAt: 0,
+            presence: 10,
+        } as Session);
+        replaceSessionListRows(domain, [row]);
+
+        patchSessionListRows(domain, [{ sessionId: 's1', patch: { archivedAt: 20 } }]);
+        expect(get().ordinarySessionListMembershipByServerId.server_1).toEqual([]);
+        expect(get().archivedSessionListMembershipByServerId.server_1).toEqual(['s1']);
+
+        patchSessionListRows(domain, [{ sessionId: 's1', patch: { archivedAt: null } }]);
+        expect(get().ordinarySessionListMembershipByServerId.server_1).toEqual(['s1']);
+        expect(get().archivedSessionListMembershipByServerId.server_1).toEqual([]);
+    });
+
+    it('moves materialized membership and rebuilds the owning index across active and inactive Homes', async () => {
+        mockSessionsDomainBoundaries();
+
+        const { buildSessionListRenderableFromSession } = await import('../../domains/session/listing/sessionListRenderable');
+        const { createSessionsDomain } = await import('./sessions');
+        const { get, domain } = createHarness(createSessionsDomain);
+        const base = {
+            id: 's1',
+            serverId: 'server_1',
+            seq: 1,
+            createdAt: 1,
+            updatedAt: 10,
+            active: false,
+            activeAt: 10,
+            archivedAt: null,
+            metadata: null,
+            metadataVersion: 0,
+            agentState: null,
+            agentStateVersion: 0,
+            thinking: false,
+            thinkingAt: 0,
+            presence: 10,
+            encryptionMode: 'plain',
+            optimisticThinkingAt: null,
+        } as Session;
+        domain.applySessions([base]);
+        replaceSessionListRows(domain, [buildSessionListRenderableFromSession(base)]);
+
+        domain.applySessions([{ ...base, seq: 2, updatedAt: 20, archivedAt: 20 }]);
+        expect(get().ordinarySessionListMembershipByServerId.server_1).toEqual([]);
+        expect(get().archivedSessionListMembershipByServerId.server_1).toEqual(['s1']);
+
+        domain.applySessions([{ ...base, seq: 3, updatedAt: 30, archivedAt: null }]);
+        expect(get().ordinarySessionListMembershipByServerId.server_1).toEqual(['s1']);
+        expect(get().archivedSessionListMembershipByServerId.server_1).toEqual([]);
+
+        const inactiveHome = createHarness(createSessionsDomain);
+        const inactiveBase = {
+            ...base,
+            id: 'inactive-home-session',
+            serverId: 'server_2',
+        } as Session;
+        inactiveHome.domain.applyServerScopedSessionListRows(
+            'server_2',
+            [buildSessionListRenderableFromSession(inactiveBase)],
+            { source: 'ordinary', mode: 'replace' },
+        );
+        inactiveHome.domain.applySessions([inactiveBase]);
+        expect(inactiveHome.get().sessionListIndexByServerId.server_2).toEqual(
+            expect.arrayContaining([expect.objectContaining({ type: 'session', sessionId: inactiveBase.id })]),
+        );
+
+        inactiveHome.domain.applySessions([{ ...inactiveBase, seq: 2, updatedAt: 20, archivedAt: 20 }]);
+
+        expect(inactiveHome.get().ordinarySessionListMembershipByServerId.server_2).toEqual([]);
+        expect(inactiveHome.get().archivedSessionListMembershipByServerId.server_2).toEqual([inactiveBase.id]);
+        expect(inactiveHome.get().sessionListIndexByServerId.server_2).toEqual([]);
+
+        inactiveHome.domain.applySessions([{ ...inactiveBase, seq: 3, updatedAt: 30, archivedAt: null }]);
+
+        expect(inactiveHome.get().ordinarySessionListMembershipByServerId.server_2).toEqual([inactiveBase.id]);
+        expect(inactiveHome.get().archivedSessionListMembershipByServerId.server_2).toEqual([]);
+        expect(inactiveHome.get().sessionListIndexByServerId.server_2).toEqual(
+            expect.arrayContaining([expect.objectContaining({ type: 'session', sessionId: inactiveBase.id })]),
+        );
+    });
+
+    it('applies responsibility only to the exact Home projection and rejects a switched active Account', async () => {
+        mockSessionsDomainBoundaries();
+        const { createSessionsDomain } = await import('./sessions');
+        const { get, domain } = createHarness(createSessionsDomain);
+        const scope = { serverId: 'server_1', accountId: 'account_a' };
+        const original = { id: 'same-id', responsibleAccountId: null };
+        get().sessionLocalStateScope = scope;
+        get().sessions = { 'same-id': original };
+        get().sessionListRowsByServerId = {
+            server_1: { 'same-id': original },
+            server_2: { 'same-id': original },
+        };
+        domain.applySessionResponsibleAccount('same-id', 'person-a', scope);
+        expect(get().sessionListRowsByServerId.server_1['same-id'].responsibleAccountId).toBe('person-a');
+        expect((get().sessionListRowsByServerId['server_1'] ?? {})['same-id'].responsibleAccountId).toBe('person-a');
+        expect(get().sessionListRowsByServerId.server_2['same-id']).toBe(original);
+        get().sessionLocalStateScope = { ...scope, accountId: 'account_b' };
+        domain.applySessionResponsibleAccount('same-id', 'person-b', scope);
+        expect(get().sessions['same-id'].responsibleAccountId).toBe('person-a');
+        expect(get().sessionListRowsByServerId.server_1['same-id'].responsibleAccountId).toBe('person-a');
+    });
+
+    it('preserves store references when an equal responsibility summary has different key order', async () => {
+        mockSessionsDomainBoundaries();
+        const { createSessionsDomain } = await import('./sessions');
+        const { get, domain } = createHarness(createSessionsDomain);
+        const scope = { serverId: 'server_1', accountId: 'account_a' };
+        const summary = {
+            kind: 'account' as const,
+            accountId: 'person-a',
+            firstName: 'Alice',
+            lastName: null,
+            username: 'alice',
+            avatarUrl: null,
+        };
+        const original = { id: 'same-id', responsibleAccountId: 'person-a', responsibleAccount: summary };
+        get().sessionLocalStateScope = scope;
+        get().sessions = { 'same-id': original };
+        get().sessionListRowsByServerId = { server_1: { 'same-id': original } };
+        const sessionsBefore = get().sessions;
+        const rowsBefore = get().sessionListRowsByServerId;
+
+        domain.applySessionResponsibleAccount('same-id', 'person-a', scope, {
+            avatarUrl: null,
+            username: 'alice',
+            lastName: null,
+            firstName: 'Alice',
+            accountId: 'person-a',
+            kind: 'account',
+        });
+
+        expect(get().sessions).toBe(sessionsBefore);
+        expect(get().sessionListRowsByServerId).toBe(rowsBefore);
+    });
+
     it('merges append-page renderables without removing existing list rows omitted from the page', async () => {
         mockSessionsDomainBoundaries();
 
@@ -135,15 +354,15 @@ describe('sessions domain: renderable patches', () => {
             presence: 'online',
         } satisfies Session);
 
-        domain.replaceSessionListRenderables([buildRenderable('s_existing', 10)]);
-        const storedExisting = get().sessionListRenderables.s_existing;
+        replaceSessionListRows(domain, [buildRenderable('s_existing', 10)]);
+        const storedExisting = (get().sessionListRowsByServerId['server_1'] ?? {}).s_existing;
         syncPerformanceTelemetry.configure({ enabled: true, slowThresholdMs: 0 });
         syncPerformanceTelemetry.reset();
 
-        domain.mergeSessionListRenderables([buildRenderable('s_appended', 5)]);
+        mergeSessionListRows(domain, [buildRenderable('s_appended', 5)]);
 
-        expect(get().sessionListRenderables.s_existing).toBe(storedExisting);
-        expect(get().sessionListRenderables.s_appended).toEqual(expect.objectContaining({
+        expect((get().sessionListRowsByServerId['server_1'] ?? {}).s_existing).toBe(storedExisting);
+        expect((get().sessionListRowsByServerId['server_1'] ?? {}).s_appended).toEqual(expect.objectContaining({
             id: 's_appended',
             createdAt: 5,
         }));
@@ -175,7 +394,7 @@ describe('sessions domain: renderable patches', () => {
         const { get, domain } = createHarness(createSessionsDomain);
 
         try {
-            domain.replaceSessionListRenderables([buildSessionListRenderableFromSession({
+            replaceSessionListRows(domain, [buildSessionListRenderableFromSession({
                 id: 's1',
                 seq: 1,
                 createdAt: 1,
@@ -192,15 +411,15 @@ describe('sessions domain: renderable patches', () => {
             } as any)]);
 
             expect(get().sessions['s1']).toBeUndefined();
-            expect(get().sessionListRenderables['s1']?.active).toBe(true);
+            expect((get().sessionListRowsByServerId['server_1'] ?? {})['s1']?.active).toBe(true);
             syncPerformanceTelemetry.configure({ enabled: true, slowThresholdMs: 0 });
             syncPerformanceTelemetry.reset();
 
-            domain.applySessionListRenderablePatches([
+            patchSessionListRows(domain, [
                 { sessionId: 's1', patch: { active: false, activeAt: 20, presence: 20 } },
             ]);
 
-            expect(get().sessionListRenderables['s1']?.active).toBe(false);
+            expect((get().sessionListRowsByServerId['server_1'] ?? {})['s1']?.active).toBe(false);
             expect(get().sessionListIndexByServerId['server_1']).not.toBeUndefined();
             const saveWarmCache = warmCache.saveSessionListWarmCacheEntries as unknown as ReturnType<typeof vi.fn>;
             expect(saveWarmCache).toHaveBeenCalledTimes(1);
@@ -248,7 +467,7 @@ describe('sessions domain: renderable patches', () => {
         const { createSessionsDomain } = await import('./sessions');
         const { get, domain } = createHarness(createSessionsDomain);
 
-        domain.replaceSessionListRenderables([buildSessionListRenderableFromSession({
+        replaceSessionListRows(domain, [buildSessionListRenderableFromSession({
             id: 's1',
             seq: 1,
             createdAt: 1,
@@ -271,19 +490,19 @@ describe('sessions domain: renderable patches', () => {
             presence: 'online',
         } as any)]);
 
-        const initialRenderables = get().sessionListRenderables;
+        const initialRenderables = (get().sessionListRowsByServerId['server_1'] ?? {});
         const initialRenderable = initialRenderables['s1'];
         const saveWarmCache = warmCache.saveSessionListWarmCacheEntries as unknown as ReturnType<typeof vi.fn>;
         expect(initialRenderable).toBeDefined();
         expect(saveWarmCache).toHaveBeenCalledTimes(1);
 
-        domain.applySessionListRenderablePatches([
+        patchSessionListRows(domain, [
             { sessionId: 's1', patch: { presence: 20 } },
         ]);
 
-        expect(get().sessionListRenderables).not.toBe(initialRenderables);
-        expect(get().sessionListRenderables['s1']).not.toBe(initialRenderable);
-        expect(get().sessionListRenderables['s1']).toEqual(expect.objectContaining({
+        expect((get().sessionListRowsByServerId['server_1'] ?? {})).not.toBe(initialRenderables);
+        expect((get().sessionListRowsByServerId['server_1'] ?? {})['s1']).not.toBe(initialRenderable);
+        expect((get().sessionListRowsByServerId['server_1'] ?? {})['s1']).toEqual(expect.objectContaining({
             presence: 20,
         }));
         const initialEntries = saveWarmCache.mock.calls.at(0)?.[2] as Record<string, any>;
@@ -302,7 +521,7 @@ describe('sessions domain: renderable patches', () => {
         syncPerformanceTelemetry.configure({ enabled: true, slowThresholdMs: 0 });
         syncPerformanceTelemetry.reset();
 
-        domain.replaceSessionListRenderables([buildSessionListRenderableFromSession({
+        replaceSessionListRows(domain, [buildSessionListRenderableFromSession({
             id: 's1',
             seq: 1,
             createdAt: 1,
@@ -327,7 +546,7 @@ describe('sessions domain: renderable patches', () => {
         } as any)]);
         syncPerformanceTelemetry.reset();
 
-        domain.replaceSessionListRenderables([
+        replaceSessionListRows(domain, [
             {
                 id: 's1',
                 seq: 1,
@@ -346,7 +565,7 @@ describe('sessions domain: renderable patches', () => {
             } as any,
         ]);
 
-        expect(get().sessionListRenderables.s1).toEqual(expect.objectContaining({
+        expect((get().sessionListRowsByServerId['server_1'] ?? {}).s1).toEqual(expect.objectContaining({
             id: 's1',
             updatedAt: 20,
             pendingCount: 2,
@@ -410,7 +629,7 @@ describe('sessions domain: renderable patches', () => {
         const { createSessionsDomain } = await import('./sessions');
         const { get, domain } = createHarness(createSessionsDomain);
 
-        domain.replaceSessionListRenderables([buildSessionListRenderableFromSession({
+        replaceSessionListRows(domain, [buildSessionListRenderableFromSession({
             id: 's1',
             seq: 1,
             createdAt: 1,
@@ -436,7 +655,7 @@ describe('sessions domain: renderable patches', () => {
         syncPerformanceTelemetry.configure({ enabled: true, slowThresholdMs: 0 });
         syncPerformanceTelemetry.reset();
 
-        domain.mergeSessionListRenderables([{
+        mergeSessionListRows(domain, [{
             id: 's1',
             seq: 1,
             createdAt: 1,
@@ -453,7 +672,7 @@ describe('sessions domain: renderable patches', () => {
             presence: 'online',
         } as any]);
 
-        expect(get().sessionListRenderables.s1).toEqual(expect.objectContaining({
+        expect((get().sessionListRowsByServerId['server_1'] ?? {}).s1).toEqual(expect.objectContaining({
             id: 's1',
             updatedAt: 20,
             metadataVersion: 1,
@@ -491,7 +710,7 @@ describe('sessions domain: renderable patches', () => {
         const { createSessionsDomain } = await import('./sessions');
         const { get, domain } = createHarness(createSessionsDomain);
 
-        domain.replaceSessionListRenderables([buildSessionListRenderableFromSession({
+        replaceSessionListRows(domain, [buildSessionListRenderableFromSession({
             id: 's1',
             seq: 0,
             createdAt: 1,
@@ -519,7 +738,7 @@ describe('sessions domain: renderable patches', () => {
             presence: 10,
         } as any)]);
 
-        domain.replaceSessionListRenderables([
+        replaceSessionListRows(domain, [
             {
                 id: 's1',
                 seq: 0,
@@ -543,7 +762,7 @@ describe('sessions domain: renderable patches', () => {
             } as any,
         ]);
 
-        expect(get().sessionListRenderables.s1).toEqual(expect.objectContaining({
+        expect((get().sessionListRowsByServerId['server_1'] ?? {}).s1).toEqual(expect.objectContaining({
             id: 's1',
             updatedAt: 20,
             metadata: expect.objectContaining({
@@ -585,7 +804,7 @@ describe('sessions domain: renderable patches', () => {
         syncPerformanceTelemetry.configure({ enabled: true, slowThresholdMs: 0 });
         syncPerformanceTelemetry.reset();
 
-        domain.replaceSessionListRenderables([buildSessionListRenderableFromSession({
+        replaceSessionListRows(domain, [buildSessionListRenderableFromSession({
             id: 's1',
             seq: 1,
             createdAt: 1,
@@ -603,7 +822,7 @@ describe('sessions domain: renderable patches', () => {
             presence: 'online',
         } as any)]);
 
-        const initialRenderables = get().sessionListRenderables;
+        const initialRenderables = (get().sessionListRowsByServerId['server_1'] ?? {});
         const initialRenderable = initialRenderables['s1'];
         const saveWarmCache = warmCache.saveSessionListWarmCacheEntries as unknown as ReturnType<typeof vi.fn>;
         const buildPreviousEntries = warmCacheAdapters.buildPersistedSessionListCacheEntriesFromRenderables as unknown as ReturnType<typeof vi.fn>;
@@ -611,12 +830,12 @@ describe('sessions domain: renderable patches', () => {
         expect(saveWarmCache).toHaveBeenCalledTimes(1);
         buildPreviousEntries.mockClear();
 
-        domain.applySessionListRenderablePatches([
+        patchSessionListRows(domain, [
             { sessionId: 's1', patch: { pendingCount: 0, pendingVersion: 1 } },
         ]);
 
-        expect(get().sessionListRenderables).toBe(initialRenderables);
-        expect(get().sessionListRenderables['s1']).toBe(initialRenderable);
+        expect((get().sessionListRowsByServerId['server_1'] ?? {})).toBe(initialRenderables);
+        expect((get().sessionListRowsByServerId['server_1'] ?? {})['s1']).toBe(initialRenderable);
         expect(saveWarmCache).toHaveBeenCalledTimes(1);
         expect(buildPreviousEntries).not.toHaveBeenCalled();
 
@@ -635,7 +854,7 @@ describe('sessions domain: renderable patches', () => {
         syncPerformanceTelemetry.configure({ enabled: false });
     });
 
-    it('removes renderables missing from a same-size full replacement', async () => {
+    it('removes ordinary membership missing from a same-size full replacement while retaining canonical rows', async () => {
         mockSessionsDomainBoundaries();
 
         const { buildSessionListRenderableFromSession } = await import('../../domains/session/listing/sessionListRenderable');
@@ -667,20 +886,24 @@ describe('sessions domain: renderable patches', () => {
             return buildSessionListRenderableFromSession(session);
         };
 
-        domain.replaceSessionListRenderables([
+        replaceSessionListRows(domain, [
             buildRenderable('s1', 1),
             buildRenderable('s2', 2),
         ]);
         syncPerformanceTelemetry.configure({ enabled: true, slowThresholdMs: 0 });
         syncPerformanceTelemetry.reset();
 
-        domain.replaceSessionListRenderables([
+        replaceSessionListRows(domain, [
             buildRenderable('s2', 3),
             buildRenderable('s3', 4),
         ]);
 
-        expect(Object.keys(get().sessionListRenderables).sort()).toEqual(['s2', 's3']);
-        expect(get().sessionListRenderables.s1).toBeUndefined();
+        expect(Object.keys((get().sessionListRowsByServerId['server_1'] ?? {})).sort()).toEqual(['s1', 's2', 's3']);
+        expect(get().ordinarySessionListMembershipByServerId['server_1']).toEqual(['s2', 's3']);
+        expect((get().sessionListRowsByServerId['server_1'] ?? {}).s1).toBeDefined();
+        expect((get().sessionListIndexByServerId['server_1'] ?? []).some(
+            (item: { type: string; sessionId?: string }) => item.type === 'session' && item.sessionId === 's1',
+        )).toBe(false);
         const indexRebuildEvent = syncPerformanceTelemetry.snapshot().events.find(
             (candidate) => candidate.name === 'sync.store.sessions.renderables.replace.indexRebuild',
         );
@@ -703,7 +926,7 @@ describe('sessions domain: renderable patches', () => {
         const { createSessionsDomain } = await import('./sessions');
         const { get, domain } = createHarness(createSessionsDomain);
 
-        domain.replaceSessionListRenderables([buildSessionListRenderableFromSession({
+        replaceSessionListRows(domain, [buildSessionListRenderableFromSession({
             id: 's1',
             seq: 1,
             createdAt: 1,
@@ -726,7 +949,7 @@ describe('sessions domain: renderable patches', () => {
             presence: 'online',
         } as any)]);
 
-        const initialRenderables = get().sessionListRenderables;
+        const initialRenderables = (get().sessionListRowsByServerId['server_1'] ?? {});
         const initialRenderable = initialRenderables['s1'];
         const saveWarmCache = warmCache.saveSessionListWarmCacheEntries as unknown as ReturnType<typeof vi.fn>;
         const buildPreviousEntries = warmCacheAdapters.buildPersistedSessionListCacheEntriesFromRenderables as unknown as ReturnType<typeof vi.fn>;
@@ -734,15 +957,15 @@ describe('sessions domain: renderable patches', () => {
         expect(saveWarmCache).toHaveBeenCalledTimes(1);
         buildPreviousEntries.mockClear();
 
-        domain.replaceSessionListRenderables([
+        replaceSessionListRows(domain, [
             {
                 ...initialRenderable,
                 metadata: initialRenderable?.metadata ? { ...initialRenderable.metadata } : null,
             },
         ]);
 
-        expect(get().sessionListRenderables).toBe(initialRenderables);
-        expect(get().sessionListRenderables['s1']).toBe(initialRenderable);
+        expect((get().sessionListRowsByServerId['server_1'] ?? {})).toBe(initialRenderables);
+        expect((get().sessionListRowsByServerId['server_1'] ?? {})['s1']).toBe(initialRenderable);
         expect(saveWarmCache).toHaveBeenCalledTimes(1);
         expect(buildPreviousEntries).not.toHaveBeenCalled();
     });

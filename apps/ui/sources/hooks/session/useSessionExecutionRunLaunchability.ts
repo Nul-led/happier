@@ -16,6 +16,7 @@ import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/ser
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { useSettings } from '@/sync/domains/state/storage';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
 export type UseSessionExecutionRunLaunchabilityResult = Readonly<{
     canLaunchExecutionRuns: boolean;
@@ -28,18 +29,34 @@ export type UseSessionExecutionRunLaunchabilityResult = Readonly<{
 export function useSessionExecutionRunLaunchability(
     sessionId: string,
     session: Session | null | undefined,
+    explicitServerId?: string | null,
 ): UseSessionExecutionRunLaunchabilityResult {
     const settings = useSettings();
-    const executionRunsEnabled = useFeatureEnabled('execution.runs');
-    const sessionTargetServerId = usePreferredServerIdForSession(sessionId, session?.serverId);
+    const normalizedExplicitServerId = typeof explicitServerId === 'string' && explicitServerId.trim().length > 0
+        ? explicitServerId.trim()
+        : null;
+    const preferredServerId = usePreferredServerIdForSession({
+        serverId: normalizedExplicitServerId ?? session?.serverId,
+        sessionId,
+    });
+    const sessionTargetServerId = preferredServerId;
+    const scopedSession = normalizedExplicitServerId && session?.serverId
+        && !areServerProfileIdentifiersEquivalent(session.serverId, sessionTargetServerId)
+        ? null
+        : session;
+    const executionRunsEnabled = useFeatureEnabled(
+        'execution.runs',
+        sessionTargetServerId ? { scopeKind: 'spawn', serverId: sessionTargetServerId } : undefined,
+    );
     const executionRunsSupported = useSessionExecutionRunsSupported(sessionId, sessionTargetServerId);
     const executionRunsBackends = useExecutionRunsBackendsForSession(sessionId, sessionTargetServerId);
-    const { machineReachable } = useSessionMachineReachability(sessionId);
-    const machineTarget = useSessionMachineTarget(sessionId);
-    const ownerMetadata = session ? readSessionOwnerMetadataView(session) : null;
+    const { machineReachable } = useSessionMachineReachability(sessionId, sessionTargetServerId);
+    const machineTarget = useSessionMachineTarget(sessionId, sessionTargetServerId);
+    const ownerMetadata = scopedSession ? readSessionOwnerMetadataView(scopedSession) : null;
     const externalSessionRuntime = useSessionExternalSessionRuntime({
         sessionId,
         metadata: ownerMetadata,
+        serverId: sessionTargetServerId,
     });
     // A Session whose Agent identity cannot be read must not borrow the default
     // Agent's resume capabilities; the hook already treats a null id as "no
@@ -51,20 +68,21 @@ export function useSessionExecutionRunLaunchability(
     const { resumeCapabilityOptions } = useResumeCapabilityOptions({
         agentId,
         machineId: machineTarget?.machineId ?? resolveSessionMachineId(ownerMetadata),
+        serverId: sessionTargetServerId,
         settings,
-        enabled: session?.active === false,
+        enabled: scopedSession?.active === false,
     });
     const allowWhileInactive = React.useMemo(() => {
-        if (session?.active !== false) return false;
+        if (scopedSession?.active !== false) return false;
         if (!machineReachable) return false;
         return canResumeSessionWithOptions(ownerMetadata, resumeCapabilityOptions);
-    }, [machineReachable, ownerMetadata, resumeCapabilityOptions, session?.active]);
+    }, [machineReachable, ownerMetadata, resumeCapabilityOptions, scopedSession?.active]);
 
     const canShowExecutionRunLauncher = React.useMemo(() => {
         if (executionRunsEnabled !== true) {
             return false;
         }
-        if (session?.active === false && allowWhileInactive !== true) {
+        if (scopedSession?.active === false && allowWhileInactive !== true) {
             return false;
         }
         if (externalSessionRuntime.externalSessionLink !== null && externalSessionRuntime.status?.runnerActive !== true) {
@@ -76,11 +94,11 @@ export function useSessionExecutionRunLaunchability(
         externalSessionRuntime.externalSessionLink,
         externalSessionRuntime.status?.runnerActive,
         executionRunsEnabled,
-        session?.active,
+        scopedSession?.active,
     ]);
 
     const canLaunchExecutionRuns = React.useMemo(() => canLaunchExecutionRunsForSession({
-        session,
+        session: scopedSession,
         executionRunsSupported,
         executionRunsBackends,
         allowWhileInactive,
@@ -92,7 +110,7 @@ export function useSessionExecutionRunLaunchability(
         externalSessionRuntime.status?.runnerActive,
         executionRunsBackends,
         executionRunsSupported,
-        session,
+        scopedSession,
     ]);
 
     return {

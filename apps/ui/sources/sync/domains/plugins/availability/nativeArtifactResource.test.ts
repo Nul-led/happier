@@ -29,7 +29,10 @@ import {
 } from './nativeArtifactResource';
 import { projectSelectedHostedWebArtifactAvailability } from './hostedWebArtifactLease';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import type { PluginUiPersistentArtifactRecord } from '@/sync/domains/plugins/ui/artifactByteCache';
+import {
+    derivePluginUiPersistentArtifactKey,
+    type PluginUiPersistentArtifactRecord,
+} from '@/sync/domains/plugins/ui/artifactByteCache';
 
 const nativeModuleMock = vi.hoisted(() => ({
     requireNativeModule: vi.fn(),
@@ -75,6 +78,7 @@ function fixture(current: boolean) {
     };
     const response: PluginAccountAvailabilityIntentReadResponseV1 = {
         availabilityCursor: 1,
+        packageAssets: [],
         hostingCapability: { enabled: false },
         intent: {
             pluginId: slot.pluginId,
@@ -180,6 +184,7 @@ function createPersistentStore(events: string[], present = false): PluginNativeA
         write: async (record) => {
             events.push('write');
             records.set(record.persistentIdentity.artifactDigest, record);
+            return 'persisted';
         },
         remove: async () => undefined,
         removeAccount: async () => undefined,
@@ -278,21 +283,165 @@ describe('native Artifact resource bridge', () => {
         }));
         expect(register).toHaveBeenCalledWith(expect.objectContaining({
             token: 'opaque-1',
-            storageLocator: {
-                namespace: 'happier-plugin-ui-artifacts-v1',
-                accountKeyHash: 'account-hash',
-                artifactKeyHash: 'artifact-hash',
+            storage: {
+                kind: 'persistent',
+                locator: {
+                    namespace: 'happier-plugin-ui-artifacts-v1',
+                    accountKeyHash: 'account-hash',
+                    artifactKeyHash: 'artifact-hash',
+                },
+                resources: [
+                    expect.objectContaining({ resourceId: 'r0', storedFileName: 'stored-1.bin' }),
+                    expect.objectContaining({ resourceId: 'r1', storedFileName: 'stored-0.bin' }),
+                ],
             },
-            resources: [
-                expect.objectContaining({ resourceId: 'r0', storedFileName: 'stored-1.bin' }),
-                expect.objectContaining({ resourceId: 'r1', storedFileName: 'stored-0.bin' }),
-            ],
         }));
         const nativeRegistration = register.mock.calls[0]?.[0] as Record<string, unknown>;
         expect(nativeRegistration).not.toHaveProperty('relativePath');
         expect(nativeRegistration).not.toHaveProperty('bytes');
         expect(JSON.stringify(nativeRegistration)).not.toContain('hosted-web/acme');
         expect(unregister).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        'notPersistedOversize',
+        'notPersistedCapacity',
+    ] as const)('keeps a verified %s current load available only through the existing native token lifetime', async (disposition) => {
+        const { lease } = await acquireFixtureLease();
+        const register = vi.fn(async () => nativeRegistrationAccepted);
+        const unregister = vi.fn(() => true);
+        const registry = createPluginNativeArtifactResourceRegistry({
+            registrar: Object.freeze({ register, unregister }),
+            createOpaqueId: () => 'opaque-current-load',
+        });
+        const { lifetime } = createLifetime();
+        const store: PluginNativeArtifactPersistentStore = Object.freeze({
+            ...createPersistentStore([]),
+            write: async () => disposition,
+            describeNativeResource: vi.fn(async () => null),
+        });
+
+        const result = await registry.materialize({
+            lease,
+            persistent: Object.freeze({ scope, store, isCurrent: () => true }),
+            accountLifetime: lifetime,
+            isCurrent: () => true,
+            hostedWebPolicy: hostedWebPolicyInput(),
+        });
+
+        expect(result).toEqual(expect.objectContaining({ kind: 'available' }));
+        if (result.kind !== 'available') throw new Error('expected native Artifact handle');
+        expect(register).toHaveBeenCalledWith(expect.objectContaining({
+            token: 'opaque-current-load',
+            storage: {
+                kind: 'currentLoad',
+                resources: expect.arrayContaining([
+                    expect.objectContaining({ resourceId: 'r0', bytes: expect.any(Uint8Array) }),
+                    expect.objectContaining({ resourceId: 'r1', bytes: expect.any(Uint8Array) }),
+                ]),
+            },
+        }));
+        expect(registry.isPersistentArtifactIdentityInUse(derivePluginUiPersistentArtifactKey({
+            accountScope: scope,
+            releaseVersion: lease.artifact.releaseVersion,
+            pluginId: lease.artifact.pluginId,
+            contributionId: lease.artifact.contributionId,
+            tier: lease.artifact.tier,
+            platform: lease.artifact.platform,
+            artifactDigest: lease.artifact.digest,
+        }))).toBe(false);
+        result.handle.dispose();
+        expect(unregister).toHaveBeenCalledWith('opaque-current-load');
+    });
+
+    it('keeps a failed current-load token retirement in the existing replacement fence', async () => {
+        const { lease } = await acquireFixtureLease();
+        const register = vi.fn(async () => nativeRegistrationAccepted);
+        const registry = createPluginNativeArtifactResourceRegistry({
+            registrar: Object.freeze({ register, unregister: vi.fn(() => false) }),
+            createOpaqueId: () => 'opaque-current-load-pending',
+        });
+        const { lifetime } = createLifetime();
+        const store: PluginNativeArtifactPersistentStore = Object.freeze({
+            ...createPersistentStore([]),
+            write: async () => 'notPersistedCapacity',
+            describeNativeResource: vi.fn(async () => null),
+        });
+        const materialize = () => registry.materialize({
+            lease,
+            persistent: Object.freeze({ scope, store, isCurrent: () => true }),
+            accountLifetime: lifetime,
+            isCurrent: () => true,
+            hostedWebPolicy: hostedWebPolicyInput(),
+        });
+
+        const first = await materialize();
+        if (first.kind !== 'available') throw new Error('expected native Artifact handle');
+        first.handle.dispose();
+
+        await expect(materialize()).resolves.toEqual({
+            kind: 'unavailable',
+            code: 'native_artifact_revocation_pending',
+        });
+        expect(register).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports the existing persistent identity as in use until every native token is acknowledged retired', async () => {
+        const { lease } = await acquireFixtureLease();
+        const unregister = vi.fn(() => true);
+        const registry = createPluginNativeArtifactResourceRegistry({
+            registrar: Object.freeze({ register: async () => nativeRegistrationAccepted, unregister }),
+            createOpaqueId: () => 'opaque-retention',
+        });
+        const { lifetime } = createLifetime();
+        const identityKey = derivePluginUiPersistentArtifactKey({
+            accountScope: scope,
+            releaseVersion: lease.artifact.releaseVersion,
+            pluginId: lease.artifact.pluginId,
+            contributionId: lease.artifact.contributionId,
+            tier: lease.artifact.tier,
+            platform: lease.artifact.platform,
+            artifactDigest: lease.artifact.digest,
+        });
+
+        const result = await registry.materialize({
+            lease,
+            persistent: Object.freeze({ scope, store: createPersistentStore([]), isCurrent: () => true }),
+            accountLifetime: lifetime,
+            isCurrent: () => true,
+            hostedWebPolicy: hostedWebPolicyInput(),
+        });
+        if (result.kind !== 'available') throw new Error('expected native Artifact handle');
+
+        expect(registry.isPersistentArtifactIdentityInUse(identityKey)).toBe(true);
+        result.handle.dispose();
+        expect(unregister).toHaveBeenCalledWith('opaque-retention');
+        expect(registry.isPersistentArtifactIdentityInUse(identityKey)).toBe(false);
+    });
+
+    it('does not reinterpret a persistent-store failure as an oversized current load', async () => {
+        const { lease } = await acquireFixtureLease();
+        const register = vi.fn(async () => nativeRegistrationAccepted);
+        const registry = createPluginNativeArtifactResourceRegistry({
+            registrar: Object.freeze({ register, unregister: vi.fn(() => true) }),
+            createOpaqueId: () => 'opaque-store-failure',
+        });
+        const { lifetime } = createLifetime();
+        const store: PluginNativeArtifactPersistentStore = Object.freeze({
+            ...createPersistentStore([]),
+            write: async () => {
+                throw new Error('disk unavailable');
+            },
+        });
+
+        await expect(registry.materialize({
+            lease,
+            persistent: Object.freeze({ scope, store, isCurrent: () => true }),
+            accountLifetime: lifetime,
+            isCurrent: () => true,
+            hostedWebPolicy: hostedWebPolicyInput(),
+        })).resolves.toEqual({ kind: 'unavailable', code: 'native_artifact_store_unavailable' });
+        expect(register).not.toHaveBeenCalled();
     });
 
     it('preserves the exact native frame origin as an opaque adapter fact on the current handle', async () => {

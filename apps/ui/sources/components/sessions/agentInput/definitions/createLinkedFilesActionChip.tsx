@@ -96,6 +96,7 @@ function createBaseLinkFileChip(params: Readonly<{
 
 export function createLinkedFilesActionChip(params: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     disabled: boolean;
     onPickPath: (path: string) => void;
 }>): AgentInputExtraActionChip {
@@ -108,6 +109,7 @@ export function createLinkedFilesActionChip(params: Readonly<{
         popoverContent: ({ requestClose, maxHeight }) => (
             <LinkFilePickerPopoverContent
                 sessionId={params.sessionId}
+                serverId={params.serverId}
                 maxHeight={maxHeight}
                 onPickPath={params.onPickPath}
                 onRequestClose={requestClose}

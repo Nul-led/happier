@@ -1,7 +1,158 @@
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
-import { ChangeKindSchema } from '@happier-dev/protocol/changes';
-import { CHANGE_CHECKPOINT_COVERAGE, classifyChangeForCheckpoint, planSyncActionsFromChanges } from './changesPlanner';
+import {
+    ChangeEntrySchema,
+    ChangeKindSchema,
+    TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1,
+} from '@happier-dev/protocol/changes';
+import {
+    CHANGE_CHECKPOINT_COVERAGE,
+    classifyChangeForCheckpoint,
+    planSyncActionsFromChanges,
+    plannedChangesAffectSessionListQuery,
+} from './changesPlanner';
 import type { ApiChangeEntry } from '@/sync/api/types/apiTypes';
+
+const TEST_FILE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const REPOSITORY_ROOT = resolve(TEST_FILE_DIRECTORY, '..', '..', '..', '..', '..', '..');
+const RELEASED_UI_ACCOUNT_CHANGE_READER = {
+    tag: 'ui-web-v0.2.11',
+    commit: '98ea8fb76733b1dd785d38c31360179cafa84824',
+} as const;
+
+type ReleasedUiAccountChangeReaderResult = Readonly<{
+    parsed: boolean;
+    settings: boolean;
+    profile: boolean;
+    unsupportedCount: number;
+    checkpointDecisions: readonly string[];
+    checkpointMaterializationProofs: readonly string[];
+}>;
+
+function hasReleasedUiAccountChangeReader(): boolean {
+    return spawnSync('git', ['cat-file', '-e', `${RELEASED_UI_ACCOUNT_CHANGE_READER.commit}^{commit}`], {
+        cwd: REPOSITORY_ROOT,
+        stdio: 'ignore',
+    }).status === 0;
+}
+
+function executeReleasedUiAccountChangeReader(entries: readonly unknown[]): ReleasedUiAccountChangeReaderResult {
+    const tagResolution = spawnSync(
+        'git',
+        ['rev-parse', '--verify', '--quiet', `${RELEASED_UI_ACCOUNT_CHANGE_READER.tag}^{}`],
+        { cwd: REPOSITORY_ROOT, encoding: 'utf8' },
+    );
+    if (tagResolution.status === 0) {
+        const resolvedCommit = tagResolution.stdout.trim();
+        if (resolvedCommit !== RELEASED_UI_ACCOUNT_CHANGE_READER.commit) {
+            throw new Error(
+                `Released UI reader tag ${RELEASED_UI_ACCOUNT_CHANGE_READER.tag} resolved to ${resolvedCommit}, expected ${RELEASED_UI_ACCOUNT_CHANGE_READER.commit}`,
+            );
+        }
+    }
+
+    const artifactDirectory = mkdtempSync(join(tmpdir(), 'happier-released-account-change-reader-'));
+    try {
+        writeFileSync(join(artifactDirectory, 'package.json'), JSON.stringify({ type: 'module' }));
+
+        const archive = execFileSync('git', [
+            'archive',
+            RELEASED_UI_ACCOUNT_CHANGE_READER.commit,
+            '--',
+            'apps/ui/sources/sync/runtime/orchestration/changesPlanner.ts',
+            'packages/protocol/src',
+        ], { cwd: REPOSITORY_ROOT, maxBuffer: 32 * 1024 * 1024 });
+        const extracted = spawnSync('tar', ['-x', '-C', artifactDirectory], {
+            cwd: REPOSITORY_ROOT,
+            input: archive,
+            encoding: 'utf8',
+        });
+        if (extracted.status !== 0) {
+            throw new Error(`Unable to extract released UI reader: ${extracted.stderr || extracted.error?.message || 'unknown error'}`);
+        }
+
+        const protocolPackageDirectory = join(artifactDirectory, 'packages', 'protocol');
+        writeFileSync(join(protocolPackageDirectory, 'package.json'), JSON.stringify({
+            name: '@happier-dev/protocol',
+            type: 'module',
+            exports: {
+                // The released planner imports these draft symbols from the
+                // package root. Point that root at their exact released owner
+                // so this artifact test executes released code without loading
+                // unrelated protocol exports or reconstructing their behavior.
+                '.': './src/drafts/sessionDrafts.ts',
+                './changes': './src/changes.ts',
+            },
+        }));
+
+        const nodeModulesDirectory = join(artifactDirectory, 'node_modules');
+        mkdirSync(join(nodeModulesDirectory, '@happier-dev'), { recursive: true });
+        symlinkSync(protocolPackageDirectory, join(nodeModulesDirectory, '@happier-dev', 'protocol'), 'dir');
+        for (const [dependency, source] of [
+            ['zod', join(REPOSITORY_ROOT, 'packages', 'protocol', 'node_modules', 'zod')],
+            ['base64-js', join(REPOSITORY_ROOT, 'node_modules', 'base64-js')],
+            ['tweetnacl', join(REPOSITORY_ROOT, 'node_modules', 'tweetnacl')],
+            ['tsx', join(REPOSITORY_ROOT, 'node_modules', 'tsx')],
+        ] as const) {
+            symlinkSync(source, join(nodeModulesDirectory, dependency), 'dir');
+        }
+        mkdirSync(join(nodeModulesDirectory, '@noble'), { recursive: true });
+        symlinkSync(
+            join(REPOSITORY_ROOT, 'node_modules', '@noble', 'hashes'),
+            join(nodeModulesDirectory, '@noble', 'hashes'),
+            'dir',
+        );
+
+        const runnerPath = join(artifactDirectory, 'run-released-reader.mts');
+        writeFileSync(runnerPath, `
+import { ChangeEntrySchema } from '@happier-dev/protocol/changes';
+import {
+    classifyChangeForCheckpoint,
+    planSyncActionsFromChanges,
+} from './apps/ui/sources/sync/runtime/orchestration/changesPlanner.ts';
+
+const entries = JSON.parse(process.env.HAPPIER_RELEASED_ACCOUNT_CHANGE_ENTRIES_JSON);
+const parsed = entries.map((entry) => ChangeEntrySchema.safeParse(entry));
+if (parsed.some((result) => !result.success)) {
+    process.stdout.write(JSON.stringify({ parsed: false }));
+} else {
+    const changes = parsed.map((result) => result.data);
+    const plan = planSyncActionsFromChanges(changes);
+    const classifications = changes.map((change) => classifyChangeForCheckpoint(change, {
+        isSessionMessagesLoaded: () => false,
+    }));
+    process.stdout.write(JSON.stringify({
+        parsed: true,
+        settings: plan.invalidate.settings,
+        profile: plan.invalidate.profile,
+        unsupportedCount: plan.unsupportedChanges.length,
+        checkpointDecisions: classifications.map((classification) => classification.decision),
+        checkpointMaterializationProofs: classifications.map((classification) => classification.materializationProof),
+    }));
+}
+`);
+
+        const executed = spawnSync(process.execPath, ['--import', 'tsx', runnerPath], {
+            cwd: artifactDirectory,
+            encoding: 'utf8',
+            env: {
+                ...process.env,
+                HAPPIER_RELEASED_ACCOUNT_CHANGE_ENTRIES_JSON: JSON.stringify(entries),
+            },
+        });
+        if (executed.status !== 0) {
+            throw new Error(`Released UI reader execution failed: ${executed.stderr || executed.error?.message || 'unknown error'}`);
+        }
+        return JSON.parse(executed.stdout) as ReleasedUiAccountChangeReaderResult;
+    } finally {
+        rmSync(artifactDirectory, { recursive: true, force: true });
+    }
+}
 
 function buildChange(params: {
     cursor: number;
@@ -20,13 +171,234 @@ function buildChange(params: {
 }
 
 describe('planSyncActionsFromChanges', () => {
-    it('plans exact SessionDraft materialization without broad Account invalidation', () => {
+    it('retains exact tag deletions separately from ordinary tag invalidations', () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({
+                cursor: 1,
+                kind: 'account',
+                entityId: 'session-organization',
+                hint: {
+                    sessionOrganization: true,
+                    scope: 'tags',
+                    tagIds: ['deleted-tag', 'updated-tag'],
+                    deletedTagIds: ['deleted-tag'],
+                },
+            }),
+        ]);
+
+        expect(planned.sessionOrganization).toMatchObject({
+            mode: 'snapshot',
+            tagIds: ['deleted-tag', 'updated-tag'],
+            deletedTagIds: ['deleted-tag'],
+            includeTags: true,
+        });
+    });
+
+    it('routes an exact workflow Run change to its canonical body refresh without broad Account invalidation', () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({ cursor: 1, kind: 'account', entityId: 'workflow-run:run-42' }),
+        ]);
+
+        expect(planned.workflowRunIdsToRefresh).toEqual(['run-42']);
+        expect(planned.invalidate.settings).toBe(false);
+        expect(planned.invalidate.profile).toBe(false);
+    });
+
+    it('routes Saved Secret AccountChange through the catalog materialization owner', () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({ cursor: 1, kind: 'savedSecretResource', entityId: 'resource-a' }),
+        ]);
+
+        expect(planned.invalidate.savedSecretResources).toBe(true);
+        expect(classifyChangeForCheckpoint(planned.changes[0]!, {
+            isSessionMessagesLoaded: () => false,
+        })).toMatchObject({
+            decision: 'critical',
+            plannerOwner: 'saved-secrets',
+            snapshotDomain: 'saved-secret-resource-catalog',
+            materializationProof: 'saved-secret-resource-catalog',
+        });
+    });
+
+    it('withdraws and refreshes Saved Secret material when Team or Group membership changes', () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({ cursor: 1, kind: 'account', entityId: TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 }),
+        ]);
+
+        expect(planned.invalidate.savedSecretResources).toBe(true);
+        expect(planned.invalidate.settings).toBe(false);
+        expect(planned.invalidate.profile).toBe(false);
+    });
+
+    it('refreshes Saved Secret material for recipient key currentness but not a settings-only write', () => {
+        const bindingChanged = planSyncActionsFromChanges([
+            buildChange({ cursor: 1, kind: 'account', entityId: 'self', hint: { accountEncryptionTransitionId: 'transition-a' } }),
+        ]);
+        const settingsOnly = planSyncActionsFromChanges([
+            buildChange({ cursor: 2, kind: 'account', entityId: 'self', hint: { settingsVersion: 8 } }),
+        ]);
+
+        expect(bindingChanged.invalidate.savedSecretResources).toBe(true);
+        expect(settingsOnly.invalidate.savedSecretResources).toBe(false);
+    });
+
+    it('derives filtered-list membership invalidation from the canonical change plan', () => {
+        const cases = [
+            {
+                label: 'Session access or content',
+                changes: [buildChange({ cursor: 1, kind: 'session', entityId: 'session-1' })],
+                expected: true,
+            },
+            {
+                label: 'Team or Group membership',
+                changes: [buildChange({ cursor: 1, kind: 'account', entityId: 'teams' })],
+                expected: true,
+            },
+            {
+                label: 'Home authentication method availability',
+                changes: [buildChange({ cursor: 1, kind: 'account', entityId: 'home-governance' })],
+                expected: true,
+            },
+            {
+                label: 'tag assignment',
+                changes: [buildChange({
+                    cursor: 1,
+                    kind: 'account',
+                    entityId: 'session-organization',
+                    hint: { sessionOrganization: true, scope: 'tagAssignments', tagIds: ['tag-1'] },
+                })],
+                expected: true,
+            },
+            {
+                label: 'Follow membership',
+                changes: [buildChange({
+                    cursor: 1,
+                    kind: 'account',
+                    entityId: 'session-follows',
+                    hint: { sessionFollows: true, full: true },
+                })],
+                expected: true,
+            },
+            {
+                label: 'obsolete targeted Follow defaults hint remains conservative',
+                changes: [buildChange({
+                    cursor: 1,
+                    kind: 'account',
+                    entityId: 'session-follows',
+                    hint: { sessionFollows: true, preferences: true },
+                })],
+                expected: true,
+            },
+            {
+                label: 'presentation-only Account settings',
+                changes: [buildChange({
+                    cursor: 1,
+                    kind: 'account',
+                    entityId: 'self',
+                    hint: { settingsVersion: 2 },
+                })],
+                expected: false,
+            },
+            {
+                label: 'Account or credential currentness',
+                changes: [buildChange({
+                    cursor: 1,
+                    kind: 'account',
+                    entityId: 'self',
+                    hint: null,
+                })],
+                expected: true,
+            },
+        ] as const;
+
+        for (const testCase of cases) {
+            const planned = planSyncActionsFromChanges([...testCase.changes]);
+            expect(plannedChangesAffectSessionListQuery(planned), testCase.label).toBe(testCase.expected);
+        }
+    });
+
+    it.each(['teams', 'home-governance'] as const)(
+        'routes account/%s through the scoped snapshot owner without broad Settings or Profile refresh',
+        (entityId) => {
+            const planned = planSyncActionsFromChanges([
+                buildChange({ cursor: 1, kind: 'account', entityId }),
+            ]);
+
+            // applyPlannedChangeActions publishes the AccountChange page to the
+            // scoped snapshot owners. These stable Lane 01 entity IDs must not
+            // also take the legacy broad Account refresh path.
+            expect(planned.invalidate.settings).toBe(false);
+            expect(planned.invalidate.profile).toBe(false);
+            expect(planned.unsupportedChanges).toEqual([]);
+        },
+    );
+
+    it.skipIf(!hasReleasedUiAccountChangeReader())(
+        'executes the immutable v0.2.11 AccountChange reader vector in both reachable directions',
+        () => {
+            // Current-server -> released-UI direction. The entity IDs are new,
+            // while kind/account, the optional additive hint, and every other
+            // field retain the released wire. Execute the immutable released
+            // parser and planner rather than reconstructing their behavior.
+            const releasedReader = executeReleasedUiAccountChangeReader([
+                {
+                    cursor: 41,
+                    kind: 'account',
+                    entityId: 'teams',
+                    changedAt: 1_725_555_555_001,
+                    hint: null,
+                },
+                {
+                    cursor: 42,
+                    kind: 'account',
+                    entityId: 'home-governance',
+                    changedAt: 1_725_555_555_002,
+                    hint: null,
+                },
+            ]);
+
+            expect(releasedReader).toEqual({
+                parsed: true,
+                settings: true,
+                profile: true,
+                unsupportedCount: 0,
+                checkpointDecisions: ['critical', 'critical'],
+                checkpointMaterializationProofs: ['account-settings-profile', 'account-settings-profile'],
+            });
+
+            // Released-server -> current-UI direction. This entry is frozen
+            // from the v0.2.11 AccountChange writer's ordinary Account shape.
+            const releasedWriterEntry = {
+                cursor: 7,
+                kind: 'account',
+                entityId: 'self',
+                changedAt: 1_725_555_555_000,
+                hint: null,
+            } as const;
+            expect(ChangeEntrySchema.parse(releasedWriterEntry)).toEqual(releasedWriterEntry);
+            expect(planSyncActionsFromChanges([releasedWriterEntry])).toMatchObject({
+                invalidate: { settings: true, profile: true },
+                unsupportedChanges: [],
+            });
+        },
+    );
+
+    it('refreshes Session relevance after Follow changes without reloading encrypted settings', () => {
+        const planned = planSyncActionsFromChanges([buildChange({
+            cursor: 1, kind: 'account', entityId: 'session-follows',
+            hint: { sessionFollows: true, full: true },
+        })]);
+        expect(planned.invalidate.sessions).toBe(true);
+        expect(planned.invalidate.settings).toBe(false);
+        expect(planned.invalidate.profile).toBe(false);
+    });
+    it.each([1, 2] as const)('plans exact SessionDraft materialization without broad Account invalidation (epoch %s)', (epoch) => {
         const address = { kind: 'newSession', draftId: '00000000-0000-4000-8000-000000000001' } as const;
         const planned = planSyncActionsFromChanges([
             buildChange({
                 cursor: 1,
                 kind: 'account',
-                hint: { v: 1, sessionDraft: true, address, revision: 2, status: 'present' },
+                hint: { ...(epoch === 1 ? { v: 1, sessionDraft: true } : { v: 2, sessionDraftV2: true }), address, revision: 2, status: 'present' },
             }),
         ]);
 
@@ -54,6 +426,7 @@ describe('planSyncActionsFromChanges', () => {
         expect(planned.invalidate).toEqual({
             sessions: true,
             machines: true,
+            machinePools: false,
             artifacts: true,
             settings: true,
             profile: true,
@@ -61,6 +434,7 @@ describe('planSyncActionsFromChanges', () => {
             feed: true,
             automations: false,
             pets: false,
+            savedSecretResources: true,
             sessionFolderAssignments: false,
         });
         expect(planned.kv).toEqual({ type: 'none' });
@@ -168,6 +542,7 @@ describe('planSyncActionsFromChanges', () => {
             assignmentSessionIds: ['s1'],
             folderIds: ['folder-a'],
             tagIds: ['tag-a'],
+            deletedTagIds: [],
             orderScopes: [{ scopeKind: 'workspace', scopeKey: 'server-a' }],
             includeFolders: false,
             includeTags: false,
@@ -248,6 +623,7 @@ describe('planSyncActionsFromChanges', () => {
         expect(planned.invalidate).toEqual({
             sessions: false,
             machines: false,
+            machinePools: false,
             artifacts: false,
             settings: false,
             profile: false,
@@ -255,12 +631,29 @@ describe('planSyncActionsFromChanges', () => {
             feed: false,
             automations: false,
             pets: false,
+            savedSecretResources: false,
             sessionFolderAssignments: false,
         });
     });
 
     it('maps every protocol change kind in the checkpoint coverage matrix', () => {
         expect(Object.keys(CHANGE_CHECKPOINT_COVERAGE).sort()).toEqual([...ChangeKindSchema.options].sort());
+    });
+
+    it('plans Machine Pool projection materialization before checkpointing its change', () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({ cursor: 8, kind: 'machinePool', entityId: 'pool-a' }),
+        ]);
+
+        expect(planned.invalidate.machinePools).toBe(true);
+        expect(classifyChangeForCheckpoint(planned.changes[0]!, {
+            isSessionMessagesLoaded: () => false,
+        })).toMatchObject({
+            decision: 'critical',
+            plannerOwner: 'machine-pools',
+            snapshotDomain: 'machine-pools',
+            materializationProof: 'machine-pools',
+        });
     });
 
     it('classifies every session shell change as critical regardless of transcript load state', () => {

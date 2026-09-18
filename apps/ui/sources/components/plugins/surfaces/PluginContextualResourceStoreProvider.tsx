@@ -11,6 +11,7 @@ import { createPluginContextualResourceReadClient } from './pluginSurfaceResourc
 import { createPluginContextualResourceWatchClient } from './pluginSurfaceResourceWatch';
 import { logPluginSurfaceDiagnostic } from '@/components/plugins/shared/pluginSurfaceDiagnosticLog';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { randomUUID } from '@/platform/randomUUID';
 
 type PluginContextualResourceStore = ReturnType<typeof createPluginUiResourceStore>;
 
@@ -79,12 +80,6 @@ function resourceBindingFamilyKey(input: ResourceStoreBinding): string {
     ]);
 }
 
-function subscriptionIdPrefix(input: ResourceStoreBinding): string {
-    // This is only a mounted-provider-local transport identifier. The store
-    // below is never a process-global or app-root Session cache.
-    return `contextual-resource:${encodeURIComponent(resourceBindingKey(input))}`;
-}
-
 /** Host chrome mounts these stores; there is no plugin-authored surface id to name. */
 const CONTEXTUAL_RESOURCE_SURFACE_ID = 'host:plugin-contextual-resource';
 
@@ -141,7 +136,9 @@ function createPluginContextualResourceStoreOwner(): PluginContextualResourceSto
                     ...createPluginContextualResourceWatchClient({
                         pluginId: input.pluginId,
                         resource,
-                        subscriptionIdPrefix: subscriptionIdPrefix(input),
+                        // Transport identity is bounded independently of context;
+                        // Account and Resource authority stay in the binding above.
+                        subscriptionIdPrefix: `contextual-resource:${randomUUID()}`,
                         isCurrent,
                     }),
                     // A contextual mount has no plugin-authored surface to route

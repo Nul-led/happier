@@ -21,6 +21,11 @@ const runtime = vi.hoisted(() => ({
     completeAnimationCallbacks: true,
     reducedMotion: false,
     setClipboardStringSafe: vi.fn(async (_value: string) => true),
+    activeServerAccountScope: { serverId: 'home-a', accountId: 'account-a' } as Readonly<{
+        serverId: string;
+        accountId: string;
+    }> | null,
+    activeServerSnapshot: { serverId: 'home-a', serverUrl: 'https://home-a.example.test' },
 }));
 
 installSettingsViewCommonModuleMocks({
@@ -50,6 +55,13 @@ installSettingsViewCommonModuleMocks({
         },
     }),
     router: async () => createExpoRouterMock({ router: { push: runtime.push } }).module,
+    storage: async () => {
+        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        return {
+            ...createStorageModuleStub({}),
+            useActiveServerAccountScope: () => runtime.activeServerAccountScope,
+        };
+    },
     text: async () => createTextModuleMock({
         translate: (key) => {
             if (key === 'settingsApiTokens.reveal.accessibilityAnnouncement') return ACCESSIBILITY_ANNOUNCEMENT;
@@ -72,6 +84,10 @@ vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
 
 vi.mock('@/utils/ui/clipboard', () => ({
     setClipboardStringSafe: (value: string) => runtime.setClipboardStringSafe(value),
+}));
+
+vi.mock('@/sync/domains/server/serverRuntime', () => ({
+    getActiveServerSnapshot: () => runtime.activeServerSnapshot,
 }));
 
 function flattenStyle(style: unknown): Record<string, unknown> {
@@ -101,6 +117,8 @@ function createState(reveal: ApiTokenSettingsState['reveal']): ApiTokenSettingsS
         isRefreshing: false,
         listError: null,
         createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
         createPending: false,
         createError: null,
         reveal,
@@ -116,6 +134,7 @@ function createController(state: ApiTokenSettingsState): ApiTokenSettingsControl
         getState: () => state,
         subscribe: () => () => {},
         refresh: async () => {},
+        refreshEncryptionAvailability: async () => {},
         setCreateDraft: () => {},
         resetCreateDraft: () => {},
         createToken: async () => {},
@@ -139,9 +158,83 @@ afterEach(() => {
     runtime.setClipboardStringSafe.mockClear();
     runtime.setClipboardStringSafe.mockResolvedValue(true);
     runtime.reducedMotion = false;
+    runtime.activeServerAccountScope = { serverId: 'home-a', accountId: 'account-a' };
 });
 
 describe('ApiTokenCreateModal', () => {
+    it('carries only the non-secret create draft through recovery and returns to this modal', async () => {
+        const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
+        const state = {
+            ...createState(null),
+            createDraft: { label: 'Release deploy', expiryPreset: '1y' as const, encryptionAccess: true },
+            createError: 'api_token_encryption_not_ready' as const,
+        };
+        const onClose = vi.fn();
+        const screen = await renderScreen(
+            <ApiTokenCreateModal controller={createController(state)} onClose={onClose} setChrome={vi.fn()} />,
+        );
+
+        await screen.pressByTestIdAsync('settings-api-tokens-restore-encryption');
+
+        expect(onClose).toHaveBeenCalledOnce();
+        const destination = String(runtime.push.mock.calls[0]?.[0]);
+        expect(destination).toContain('/restore/manual?returnTo=');
+        expect(destination).toContain('label=Release%20deploy');
+        expect(destination).toContain('expiry=1y');
+        expect(destination).toContain('targetServerId=home-a');
+        expect(destination).toContain('targetServerUrl=https%3A%2F%2Fhome-a.example.test');
+        expect(destination).toContain('expectedAccountId=account-a');
+        expect(destination).not.toContain('token=');
+        expect(destination).not.toContain('secret=');
+        expect(destination).not.toContain('encryptionAccess');
+    });
+
+    it('offers the shared recovery continuation for a bearer-only create whose outcome is unknown', async () => {
+        const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
+        const requestedTokenId = '11111111-1111-4111-8111-111111111111';
+        const state = {
+            ...createState(null),
+            createDraft: { label: 'Release deploy', expiryPreset: '90d' as const },
+            createError: 'outcome_unknown' as const,
+            recoveryTokenId: requestedTokenId,
+        };
+        const setChrome = vi.fn<(chrome: CustomModalChromeCardConfig | null) => void>();
+        const screen = await renderScreen(
+            <ApiTokenCreateModal controller={createController(state)} onClose={vi.fn()} setChrome={setChrome} />,
+        );
+
+        expect(screen.findByTestId('settings-api-tokens-create-recovery')).toBeTruthy();
+        expect(screen.getTextContent()).toContain(requestedTokenId);
+        // No credential material exists for an unknown outcome, and a
+        // replacement stays blocked until the list reconciles that exact row.
+        expect(screen.findAllHostsByTestId('settings-api-tokens-reveal-copy')).toHaveLength(0);
+        const footer = setChrome.mock.calls.at(-1)?.[0]?.footer;
+        const footerScreen = await renderScreen(<>{footer}</>);
+        expect(footerScreen.findByTestId('settings-api-tokens-create-submit')?.props.disabled).toBe(true);
+    });
+
+    it('offers encryption consent on capable devices and preserves the selected choice', async () => {
+        const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
+        const state = { ...createState(null), canCreateEncrypted: true };
+        const controller = createController(state);
+        const update = vi.spyOn(controller, 'setCreateDraft');
+        const screen = await renderScreen(<ApiTokenCreateModal controller={controller} onClose={vi.fn()} setChrome={vi.fn()} />);
+        const choice = screen.findByTestId('settings-api-tokens-encryption-access');
+        await act(async () => choice!.props.onValueChange(true));
+        expect(update).toHaveBeenCalledWith({ ...state.createDraft, encryptionAccess: true });
+    });
+
+    it('offers an independent explicit unattended Team-access choice', async () => {
+        const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
+        const state = createState(null);
+        const controller = createController(state);
+        const update = vi.spyOn(controller, 'setCreateDraft');
+        const screen = await renderScreen(<ApiTokenCreateModal controller={controller} onClose={vi.fn()} setChrome={vi.fn()} />);
+        const choice = screen.findByTestId('settings-api-tokens-unattended-team-access');
+        await act(async () => choice!.props.onValueChange(true));
+        expect(update).toHaveBeenCalledWith({ ...state.createDraft, authorizeUnattendedTeamAccess: true });
+    });
+
     it('exposes the selected expiry preset through web radio semantics', async () => {
         const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
         const screen = await renderScreen(
@@ -230,6 +323,8 @@ describe('ApiTokenCreateModal', () => {
                 createdAt: '2026-08-22T12:00:00.000Z',
                 lastUsedAt: null,
                 expiresAt: null,
+                hasEncryptionAccess: false,
+                hasUnattendedTeamAccess: false,
             },
             acknowledged: false,
         }));
@@ -262,6 +357,8 @@ describe('ApiTokenCreateModal', () => {
                 createdAt: '2026-08-22T12:00:00.000Z',
                 lastUsedAt: null,
                 expiresAt: null,
+                hasEncryptionAccess: false,
+                hasUnattendedTeamAccess: false,
             },
             acknowledged: false,
         }));
@@ -303,6 +400,8 @@ describe('ApiTokenCreateModal', () => {
                         createdAt: '2026-08-22T12:00:00.000Z',
                         lastUsedAt: null,
                         expiresAt: null,
+                        hasEncryptionAccess: false,
+                        hasUnattendedTeamAccess: false,
                     },
                     acknowledged: false,
                 }))}
@@ -336,6 +435,8 @@ describe('ApiTokenCreateModal', () => {
                         createdAt: '2026-08-22T12:00:00.000Z',
                         lastUsedAt: null,
                         expiresAt: null,
+                        hasEncryptionAccess: false,
+                        hasUnattendedTeamAccess: false,
                     },
                     acknowledged: false,
                 }))}
@@ -367,6 +468,8 @@ describe('ApiTokenCreateModal', () => {
                 createdAt: '2026-08-22T12:00:00.000Z',
                 lastUsedAt: null,
                 expiresAt: null,
+                hasEncryptionAccess: false,
+                hasUnattendedTeamAccess: false,
             },
             acknowledged: false,
         }));
@@ -411,6 +514,8 @@ describe('ApiTokenCreateModal', () => {
                 createdAt: '2026-08-22T12:00:00.000Z',
                 lastUsedAt: null,
                 expiresAt: null,
+                hasEncryptionAccess: false,
+                hasUnattendedTeamAccess: false,
             },
             acknowledged: false,
         }));
@@ -482,6 +587,8 @@ describe('ApiTokenCreateModal', () => {
                         createdAt: '2026-08-22T12:00:00.000Z',
                         lastUsedAt: null,
                         expiresAt: null,
+                        hasEncryptionAccess: false,
+                        hasUnattendedTeamAccess: false,
                     },
                     acknowledged: false,
                 }))}

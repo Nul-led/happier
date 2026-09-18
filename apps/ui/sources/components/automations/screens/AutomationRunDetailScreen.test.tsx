@@ -170,7 +170,10 @@ installAutomationScreensCommonModuleMocks({
     storage: async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
-            useAutomationRuns: () => runsState.list,
+            // The screen resolves its Run from the one Account-scoped row owner
+            // by exact `runId`, so the stub answers by identity too.
+            useAutomationRunById: (runId: string | null | undefined) =>
+                runsState.list.find((entry: { id: string }) => entry.id === runId) ?? null,
             useAllMachines: () => runDetailMachinesState.list,
         });
     },

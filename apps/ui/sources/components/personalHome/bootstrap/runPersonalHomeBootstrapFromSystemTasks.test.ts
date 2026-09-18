@@ -454,12 +454,20 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.adoptionAttempts()).toBe(0);
     });
 
-    it('rejects completion until the server publishes an Iroh descriptor', async () => {
-        const harness = createHarness({ suppressDescriptor: true });
+    it('completes local bootstrap with a valid authenticated HTTPS descriptor before Iroh is available', async () => {
+        const descriptor: HomeConnectionDescriptorV1 = {
+            v: 1,
+            homeServerIdentityId: 'home-b-identity',
+            canonicalServerUrl: 'http://127.0.0.1:43123',
+            revision: 4,
+            endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
+        };
+        const harness = createHarness({ homeConnectionDescriptor: descriptor });
 
-        await expect(runPersonalHomeBootstrapFromSystemTasks({ deps: harness.deps }))
-            .rejects.toBeInstanceOf(PersonalHomeDescriptorUnverifiedError);
-        expect(harness.adoptionAttempts()).toBe(0);
+        const result = await runPersonalHomeBootstrapFromSystemTasks({ deps: harness.deps });
+
+        expect(result.profileId).toBe('home-b-profile');
+        expect(harness.adoptedInputs()[0]?.connectionDescriptor).toEqual(descriptor);
     });
 
     it('admits an installed generic runtime only when it has no data', async () => {

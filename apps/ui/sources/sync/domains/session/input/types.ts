@@ -6,16 +6,19 @@ import type {
     SessionMessageDirectBypassReason,
 } from '@/sync/domains/session/control/submitMode';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import type { CurrentSessionRunnerProcessIdentity } from '@/sync/domains/models/resolveSessionModelSelectionDisposition';
 import type { ResumeSessionOptions, ResumeSessionResult } from '@/sync/ops/sessions';
 import type {
     PendingRequestedActionV1,
+    ParticipantRecipientV1,
     SessionInactiveResumePolicy,
     SessionInputAdmissionRejectionCodeV1,
 } from '@happier-dev/protocol';
 
 export const SESSION_INPUT_TARGET_UPDATE_REQUIRED_ERROR_CODE =
     'session_input_target_update_required' satisfies SessionInputAdmissionRejectionCodeV1;
+export const SESSION_INPUT_ACCOUNT_SCOPE_RETIRED_ERROR_CODE = 'session_account_scope_retired';
 
 export type SubmitResultType =
     | 'success'
@@ -83,6 +86,7 @@ export type SessionMessageHostAdmissionOrigin = 'voice';
 
 export type SubmitSessionUserMessageOptions = Readonly<{
     sessionId: string;
+    recipient?: ParticipantRecipientV1;
     session: Session;
     text: string;
     displayText?: string;
@@ -102,6 +106,8 @@ export type SubmitSessionUserMessageOptions = Readonly<{
     resumeTargetOverride?: SessionSubmitWakeTargetOverride | null;
     permissionOverride?: PermissionModeOverrideForSpawn | null;
     serverId?: string | null;
+    /** Exact route credential lifetime; authoritative for every asynchronous admission effect. */
+    accountLifetime?: ServerAccountScopeLifetime;
     requestRemoteControlAfterPendingEnqueue?: boolean;
     onOutboundHandoff?: (handoff: SubmitSessionOutboundHandoff) => void;
     callerSurface?: SessionMessageCallerSurface | null;
@@ -156,9 +162,13 @@ export interface SessionSubmitPort {
         metaOverrides?: Record<string, unknown>,
         options?: Readonly<{
             localId?: string | null;
+            serverId?: string | null;
+            accountLifetime?: ServerAccountScopeLifetime;
+            recipient?: ParticipantRecipientV1;
             hostAdmissionOrigin?: SessionMessageHostAdmissionOrigin;
             onLocalPendingProjectionCreated?: (event: DirectMessageLocalPendingProjection) => void;
             requestedAction: PendingRequestedActionV1;
+            resumeWhenAvailable?: true;
         }>,
     ): Promise<PendingMessageSubmitResult>;
     sendMessage(
@@ -169,6 +179,9 @@ export interface SessionSubmitPort {
         options?: Readonly<{
             profileId?: string | null;
             localId?: string | null;
+            serverId?: string | null;
+            accountLifetime?: ServerAccountScopeLifetime;
+            session?: Session;
             hostAdmissionOrigin?: SessionMessageHostAdmissionOrigin;
             bypassPendingQueueReason?: DirectMessageBypassReason;
             onLocalPendingProjectionCreated?: (event: DirectMessageLocalPendingProjection) => void;
@@ -184,15 +197,29 @@ export interface SessionSubmitPort {
     isMachineReachable?(machineId: string): boolean;
     refreshSessionForSubmit?(
         sessionId: string,
-        options?: Readonly<{ serverId?: string | null }>,
+        options?: Readonly<{
+            serverId?: string | null;
+            accountLifetime?: ServerAccountScopeLifetime;
+        }>,
     ): Promise<Session | null | undefined>;
     abortSession?(sessionId: string): Promise<void>;
     updatePendingRequestedAction?(
         sessionId: string,
         localId: string,
         requestedAction: PendingRequestedActionV1,
+        options?: Readonly<{
+            resumeWhenAvailable?: boolean;
+            serverId?: string | null;
+            accountLifetime?: ServerAccountScopeLifetime;
+        }>,
     ): Promise<void> | void;
-    switchSessionControlToRemote?(sessionId: string): Promise<void>;
+    switchSessionControlToRemote?(
+        sessionId: string,
+        options?: Readonly<{
+            serverId?: string | null;
+            accountLifetime?: ServerAccountScopeLifetime;
+        }>,
+    ): Promise<void>;
     canWakeMachineId?(machineId: string): boolean;
     /**
      * Source-owned routing fact for the current active server. Host admission

@@ -164,9 +164,13 @@ export function createSessionOpenLatch(): SessionOpenLatch {
         onHostFacts(facts) {
             if (!armed || armed.sessionId !== facts.sessionId) return decision();
             if (phase === 'disarmed' || phase === 'done') return decision();
-            // Bounded open authority: past the web open-phase deadline the open is
-            // over, whatever state its fill/settlement machinery died in.
+            // Bound a started fill, not the preceding data load. Expiring an idle
+            // fill fabricated readiness and prevented a delayed page from starting
+            // its fill at all. A started fill still cannot retain open authority
+            // indefinitely if its settlement never arrives.
             if (
+                facts.isLoaded &&
+                initialFillStatus !== 'idle' &&
                 armed.webOpenPhaseDeadlineAtMs !== null &&
                 facts.nowMs >= armed.webOpenPhaseDeadlineAtMs
             ) {

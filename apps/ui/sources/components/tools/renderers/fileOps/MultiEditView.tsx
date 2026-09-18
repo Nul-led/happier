@@ -11,7 +11,7 @@ import { t } from '@/text';
 import { Text } from '@/components/ui/text/Text';
 
 
-export const MultiEditView = React.memo<ToolViewProps>(({ tool, detailLevel, sessionId }) => {
+export const MultiEditView = React.memo<ToolViewProps>(({ tool, detailLevel, sessionId, serverId }) => {
     const showLineNumbersInToolViews = useSetting('showLineNumbersInToolViews');
     
     let edits: Array<{ old_string: string; new_string: string; replace_all?: boolean }> = [];
@@ -73,6 +73,7 @@ export const MultiEditView = React.memo<ToolViewProps>(({ tool, detailLevel, ses
                             ) : null}
                             <ToolDiffView
                                 sessionId={sessionId}
+                                serverId={serverId}
                                 filePath={filePath}
                                 oldText={oldString}
                                 newText={newString}

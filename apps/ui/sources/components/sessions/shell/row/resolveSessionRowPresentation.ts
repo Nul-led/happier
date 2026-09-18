@@ -1,9 +1,9 @@
-import { deriveSessionListAttentionState } from '../../../../sync/domains/session/listing/deriveSessionListActivity';
+import type { SessionListAttentionState } from '@/sync/domains/session/listing/deriveSessionListActivity';
 import type { SessionListSecondaryLineMode } from '../../../../sync/domains/session/listing/deriveSessionListActivity';
-import type { SessionStatus } from '@/utils/sessions/sessionUtils';
 
 export type SessionRowAttentionState =
     | 'quiet'
+    | 'attention'
     | 'unread'
     | 'pending'
     | 'working'
@@ -13,33 +13,42 @@ export type SessionRowAttentionState =
     | 'action_required';
 
 export type SessionRowDensity = 'default' | 'compact' | 'minimal';
-export type SessionRowAttentionIndicator = 'none' | 'working' | 'ready' | 'failed' | 'unread' | 'pending' | 'permission' | 'action' | 'standing';
+export type SessionRowAttentionIndicator = 'none' | 'working' | 'ready' | 'failed' | 'attention' | 'unread' | 'pending' | 'permission' | 'action' | 'standing';
 export type SessionRowTitleTone = 'quiet' | 'normal' | 'emphasized';
 export type SessionRowSecondaryLine = 'none' | 'path' | 'status';
+
+export type SessionRowStatusTextKey =
+    | 'status.readyForReview'
+    | 'status.error'
+    | 'status.backgroundActive'
+    | 'status.keptInAttention';
+
+/**
+ * The row's own words for a state it otherwise only draws as a coloured marker.
+ *
+ * `statusTextKey` is what the row *writes*; this is what the row *says*. They are the same thing
+ * wherever the row already prints a sentence, and they differ exactly where it does not: a minimal
+ * row draws no secondary line at all, and unread/queued-input rows never had one in any density.
+ * Those rows were announced as the bare Session name, so a screen-reader user could not tell a
+ * quiet Session from one holding their unread work — the marker is hidden from accessibility on
+ * purpose, which leaves this projection as the only place the state can be said out loud.
+ */
+export type SessionRowAccessibilityStatusTextKey =
+    | SessionRowStatusTextKey
+    | 'status.unread'
+    | 'status.queuedInput'
+    | 'sessionsList.attentionSectionTitle';
 
 export type SessionRowPresentation = Readonly<{
     attentionIndicator: SessionRowAttentionIndicator;
     titleTone: SessionRowTitleTone;
     secondaryLine: SessionRowSecondaryLine;
-    statusTextKey?: 'status.readyForReview' | 'status.error' | 'status.workingRetained' | 'status.backgroundActive' | 'status.keptInAttention';
+    statusTextKey?: SessionRowStatusTextKey;
+    accessibilityStatusTextKey?: SessionRowAccessibilityStatusTextKey;
 }>;
 
-export function resolveLegacySessionRowAttentionState(input: Readonly<{
-    hasUnreadMessages: boolean;
-    pendingCount: number;
-    pendingBlockedCount?: number;
-    sessionStatus: SessionStatus;
-}>): SessionRowAttentionState {
-    return resolveSessionRowAttentionState(deriveSessionListAttentionState({
-        hasUnreadMessages: input.hasUnreadMessages,
-        pendingCount: input.pendingCount,
-        pendingBlockedCount: input.pendingBlockedCount,
-        sessionState: input.sessionStatus.state,
-    }));
-}
-
 export function resolveSessionRowAttentionState(
-    attentionState: ReturnType<typeof deriveSessionListAttentionState>,
+    attentionState: SessionListAttentionState,
 ): SessionRowAttentionState {
     return attentionState === 'thinking' ? 'working' : attentionState;
 }
@@ -50,12 +59,6 @@ export function resolveSessionRowPresentation(input: Readonly<{
     requestedSecondaryLineMode: SessionListSecondaryLineMode;
     hasPathSubtitle: boolean;
     backgroundActive?: boolean;
-    /**
-     * Retained working placement: the session is held in the working group
-     * while its live signals are stale, so the status line must not imply
-     * live activity (e.g. "online") under the paused indicator.
-     */
-    workingRetained?: boolean;
     /**
      * Attention standing: the person asked for this session to stay in Needs
      * attention, so it sits there with nothing of its own to say. It is a
@@ -76,21 +79,23 @@ export function resolveSessionRowPresentation(input: Readonly<{
         : signalIndicator === 'none'
             ? 'normal'
             : 'emphasized';
+    const accessibilityStatusTextKey = resolveAccessibilityStatusTextKey({
+        attentionState: input.attentionState,
+        backgroundActive: input.backgroundActive === true,
+        presentsStanding,
+    });
+    const spoken = accessibilityStatusTextKey ? { accessibilityStatusTextKey } : {};
 
     if (input.density === 'minimal') {
         // A minimal row draws no secondary line, but the marker still needs the
         // key: it is what the row is announced with.
         return presentsStanding
-            ? { attentionIndicator, titleTone, secondaryLine: 'none', statusTextKey: 'status.keptInAttention' }
-            : { attentionIndicator, titleTone, secondaryLine: 'none' };
+            ? { attentionIndicator, titleTone, secondaryLine: 'none', statusTextKey: 'status.keptInAttention', ...spoken }
+            : { attentionIndicator, titleTone, secondaryLine: 'none', ...spoken };
     }
 
     if (input.attentionState === 'failed') {
-        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.error' };
-    }
-
-    if (input.attentionState === 'working' && input.workingRetained === true) {
-        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.workingRetained' };
+        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.error', ...spoken };
     }
 
     if (
@@ -98,40 +103,60 @@ export function resolveSessionRowPresentation(input: Readonly<{
         || input.attentionState === 'permission_required'
         || input.attentionState === 'action_required'
     ) {
-        return { attentionIndicator, titleTone, secondaryLine: 'status' };
+        return { attentionIndicator, titleTone, secondaryLine: 'status', ...spoken };
     }
 
     if (input.backgroundActive === true) {
-        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.backgroundActive' };
+        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.backgroundActive', ...spoken };
     }
 
     if (input.attentionState === 'ready') {
-        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.readyForReview' };
+        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.readyForReview', ...spoken };
     }
 
     if (presentsStanding) {
-        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.keptInAttention' };
+        return { attentionIndicator, titleTone, secondaryLine: 'status', statusTextKey: 'status.keptInAttention', ...spoken };
     }
 
     if (input.requestedSecondaryLineMode === 'path' && input.hasPathSubtitle) {
-        return { attentionIndicator, titleTone, secondaryLine: 'path' };
+        return { attentionIndicator, titleTone, secondaryLine: 'path', ...spoken };
     }
 
-    return { attentionIndicator, titleTone, secondaryLine: 'none' };
+    return { attentionIndicator, titleTone, secondaryLine: 'none', ...spoken };
 }
 
-export function shouldEmphasizeSessionRowTitle(input: Readonly<{
-    hasUnreadMessages: boolean;
-    pendingCount: number;
-    pendingBlockedCount?: number;
-    sessionStatus: SessionStatus;
-}>): boolean {
-    return resolveLegacySessionRowAttentionState(input) !== 'quiet';
-}
-
-export function shouldShowMinimalSessionStatusLine(sessionStatus: SessionStatus): boolean {
-    void sessionStatus;
-    return false;
+/**
+ * The key a row falls back to when it has a marker but no sentence.
+ *
+ * `undefined` means the row's own status line already states the fact in richer words (working,
+ * permission, action, background activity and every unreadable-content state reach the reader
+ * through `statusLineText`), so adding a second phrasing here would create two vocabularies for
+ * one state.
+ */
+function resolveAccessibilityStatusTextKey(input: Readonly<{
+    attentionState: SessionRowAttentionState;
+    backgroundActive: boolean;
+    presentsStanding: boolean;
+}>): SessionRowAccessibilityStatusTextKey | undefined {
+    if (input.presentsStanding) return 'status.keptInAttention';
+    if (input.backgroundActive) return undefined;
+    switch (input.attentionState) {
+        case 'failed':
+            return 'status.error';
+        case 'ready':
+            return 'status.readyForReview';
+        case 'unread':
+            return 'status.unread';
+        case 'pending':
+            return 'status.queuedInput';
+        case 'attention':
+            return 'sessionsList.attentionSectionTitle';
+        case 'working':
+        case 'permission_required':
+        case 'action_required':
+        case 'quiet':
+            return undefined;
+    }
 }
 
 function resolveAttentionIndicator(
@@ -154,6 +179,8 @@ function resolveAttentionIndicator(
             return 'ready';
         case 'failed':
             return 'failed';
+        case 'attention':
+            return 'attention';
         case 'unread':
             return 'unread';
         case 'pending':

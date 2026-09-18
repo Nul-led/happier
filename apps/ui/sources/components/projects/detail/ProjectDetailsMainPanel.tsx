@@ -87,6 +87,7 @@ export const ProjectDetailsMainPanel = React.memo((props: ProjectDetailsMainPane
             workspaceRef={props.workspaceRef}
             scopeId={props.scopeId}
             activeRootPath={props.activeRootPath}
+            activeWorktreeId={props.activeWorktreeId}
             displayPathOverride={props.workspaceRef.rootPath}
             forceOverviewMode={props.forceOverviewMode}
             showTerminalHeaderAction={false}

@@ -1,18 +1,26 @@
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import type { QualifiedTagAddress } from './search/sessionListViewFilters';
 
 import { sessionTagKey } from './sessionTagUtils';
 import { isSessionListPrimaryHeaderKind } from './sessionListPrimaryHeader';
 
 export type SessionListHeaderFilterInput = Readonly<{
     searchQuery: string;
-    selectedTags: ReadonlyArray<string>;
+    /**
+     * Qualified tag selections this surface must apply locally.
+     *
+     * Only the legacy owner/direct adapter populates it: when the Home answered
+     * the strict query it already applied the tag predicate before pagination, so
+     * a second local pass would re-decide membership from whatever rows happen to
+     * be hydrated. Tags match by Home-local id, never by display label, so a tag
+     * rename keeps the selection and two Homes' same-label tags stay distinct.
+     */
+    selectedTagIds: ReadonlyArray<QualifiedTagAddress>;
+    /** Home-local tag ids assigned to each loaded Session, keyed by `sessionTagKey`. */
+    sessionTagIdsBySessionKey?: Readonly<Record<string, readonly string[]>>;
     searchableTextBySessionKey: Readonly<Record<string, string>>;
     primarySearchableTextBySessionKey?: Readonly<Record<string, string>>;
     memoryMatchedSessionKeys?: ReadonlySet<string>;
-}>;
-
-export type SessionListHeaderFilterState = SessionListHeaderFilterInput & Readonly<{
-    sessionTags: Readonly<Record<string, readonly string[]>>;
 }>;
 
 function normalizeSearchTokens(query: string): string[] {
@@ -31,15 +39,36 @@ function buildSessionKey(item: Extract<SessionListIndexItem, { type: 'session' }
     return sessionTagKey(serverId, sessionId);
 }
 
+function buildSelectedTagIdsByServerId(
+    selectedTagIds: ReadonlyArray<QualifiedTagAddress>,
+): Map<string, Set<string>> {
+    const byServerId = new Map<string, Set<string>>();
+    for (const tag of selectedTagIds) {
+        const serverId = tag.serverId.trim();
+        const tagId = tag.tagId.trim();
+        if (!serverId || !tagId) continue;
+        const existing = byServerId.get(serverId);
+        if (existing) existing.add(tagId);
+        else byServerId.set(serverId, new Set([tagId]));
+    }
+    return byServerId;
+}
+
 function sessionMatchesSelectedTags(
+    item: Extract<SessionListIndexItem, { type: 'session' }>,
     sessionKey: string | null,
-    selectedTags: ReadonlySet<string>,
-    sessionTags: Readonly<Record<string, readonly string[]>>,
+    selectedTagIdsByServerId: ReadonlyMap<string, ReadonlySet<string>>,
+    sessionTagIdsBySessionKey: Readonly<Record<string, readonly string[]>>,
 ): boolean {
-    if (selectedTags.size === 0) return true;
+    if (selectedTagIdsByServerId.size === 0) return true;
     if (!sessionKey) return false;
-    const tags = sessionTags[sessionKey] ?? [];
-    return tags.some((tag) => selectedTags.has(tag));
+    // The tag facet is active but this Home owns none of the selected tags, so it
+    // cannot match — exactly how the structural query treats a Home with no value
+    // in an active facet. Treating it as unrestricted would widen the corpus.
+    const selectedForHome = selectedTagIdsByServerId.get(String(item.serverId ?? '').trim());
+    if (!selectedForHome || selectedForHome.size === 0) return false;
+    const assigned = sessionTagIdsBySessionKey[sessionKey] ?? [];
+    return assigned.some((tagId) => selectedForHome.has(tagId));
 }
 
 export type SessionListSearchMatchClass = 'exact' | 'metadata' | 'transcript';
@@ -67,7 +96,7 @@ function resolveSessionSearchMatchClass(
 
 function rankContiguousSessionRuns(
     items: SessionListIndexItem[],
-    input: SessionListHeaderFilterState,
+    input: SessionListHeaderFilterInput,
     normalizedQuery: string,
     searchTokens: ReadonlyArray<string>,
 ): SessionListIndexItem[] {
@@ -124,20 +153,44 @@ function rankContiguousSessionRuns(
     return next;
 }
 
-export function hasActiveSessionListHeaderFilters(input: Pick<SessionListHeaderFilterInput, 'searchQuery' | 'selectedTags'> | null | undefined): boolean {
+/**
+ * Nesting level of a group header, used to decide which pending headers a newly
+ * opened group closes. Containers nest as primary section > server > project/date >
+ * folder subtree, and a folder's own depth extends that chain.
+ *
+ * A primary section header (Needs attention, Working, Pinned, Active, Inactive,
+ * Sessions) contains every container that follows it until the next primary header,
+ * so it sits strictly above the server level and no nested group can close it.
+ */
+function resolveSessionListHeaderNestingDepth(
+    header: Extract<SessionListIndexItem, { type: 'header' }>,
+): number {
+    if (isSessionListPrimaryHeaderKind(header.headerKind)) return -1;
+    if (header.headerKind === 'server') return 0;
+    if (header.headerKind === 'folder') {
+        const folderDepth = typeof header.folderDepth === 'number' && Number.isFinite(header.folderDepth)
+            ? Math.max(0, Math.trunc(header.folderDepth))
+            : 0;
+        return 2 + folderDepth;
+    }
+    return 1;
+}
+
+export function hasActiveSessionListHeaderFilters(input: Pick<SessionListHeaderFilterInput, 'searchQuery' | 'selectedTagIds'> | null | undefined): boolean {
     if (!input) return false;
-    return input.searchQuery.trim().length > 0 || input.selectedTags.length > 0;
+    return input.searchQuery.trim().length > 0 || input.selectedTagIds.length > 0;
 }
 
 export function filterSessionListItemsForHeaderControls(
     items: ReadonlyArray<SessionListIndexItem>,
-    input: SessionListHeaderFilterState,
+    input: SessionListHeaderFilterInput,
 ): SessionListIndexItem[] {
     if (!hasActiveSessionListHeaderFilters(input)) return items as SessionListIndexItem[];
 
     const searchTokens = normalizeSearchTokens(input.searchQuery);
     const normalizedQuery = input.searchQuery.trim().toLocaleLowerCase();
-    const selectedTags = new Set(input.selectedTags);
+    const selectedTagIdsByServerId = buildSelectedTagIdsByServerId(input.selectedTagIds);
+    const sessionTagIdsBySessionKey = input.sessionTagIdsBySessionKey ?? {};
     const result: SessionListIndexItem[] = [];
     let pendingHeaders: Extract<SessionListIndexItem, { type: 'header' }>[] = [];
 
@@ -145,15 +198,27 @@ export function filterSessionListItemsForHeaderControls(
         if (item.type === 'header') {
             if (isSessionListPrimaryHeaderKind(item.headerKind)) {
                 pendingHeaders = [item];
-            } else {
-                pendingHeaders.push(item);
+                continue;
             }
+            // Only strict ancestors of the new header can still gain a visible
+            // descendant. Anything at the same or deeper level has been closed by
+            // this header, so keeping it would emit a childless group — an empty
+            // `Today` above a `Yesterday` that matched, or a stale folder above its
+            // sibling.
+            const depth = resolveSessionListHeaderNestingDepth(item);
+            while (
+                pendingHeaders.length > 0
+                && resolveSessionListHeaderNestingDepth(pendingHeaders[pendingHeaders.length - 1]!) >= depth
+            ) {
+                pendingHeaders.pop();
+            }
+            pendingHeaders.push(item);
             continue;
         }
 
         const key = buildSessionKey(item);
         if (
-            !sessionMatchesSelectedTags(key, selectedTags, input.sessionTags)
+            !sessionMatchesSelectedTags(item, key, selectedTagIdsByServerId, sessionTagIdsBySessionKey)
             || resolveSessionSearchMatchClass(
                 key,
                 normalizedQuery,

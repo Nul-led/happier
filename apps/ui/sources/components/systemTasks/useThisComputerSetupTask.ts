@@ -1,13 +1,11 @@
 import * as React from 'react';
 import type { SystemTaskResult } from '@happier-dev/protocol';
 
-import { buildLocalMachineSetupSystemTaskSpec } from './buildLocalMachineSetupSystemTaskSpec';
-import {
-    readTokenOnlyAuthRequestPrompt,
-    respondToTokenOnlyAuthRequestPrompt,
-    type SystemTaskAuthRequestApproval,
-} from './approveSystemTaskAuthRequestPrompt';
+import type { SystemTaskAuthRequestApproval } from './approveSystemTaskAuthRequestPrompt';
+import { useSystemTaskAuthRequestApproval } from './useSystemTaskAuthRequestApproval';
+import { readLatestSystemTaskPrompt } from './prompts/readLatestSystemTaskPrompt';
 import { getSystemTasksRunner } from './systemTasksRuntime';
+import { useThisComputerSetupPromptModals } from './thisComputerSetup/useThisComputerSetupPromptModals';
 import { useSystemTaskSnapshot } from './useSystemTaskSnapshot';
 import type { SystemTaskRunState, SystemTaskRunner } from './types';
 import type { SystemTaskSpec } from '@happier-dev/protocol';
@@ -26,7 +24,6 @@ export function resolveThisComputerSetupFollowUp(result: SystemTaskResult | null
 
 export function useThisComputerSetupTask(options: Readonly<{
     runner?: SystemTaskRunner;
-    autoStart?: boolean;
     onNeedsAuth?: () => void;
     onSucceeded?: (snapshot: SystemTaskRunState) => void;
     /** When set, blocking token-only pairing prompts are answered through the explicit endpoint. */
@@ -37,14 +34,13 @@ export function useThisComputerSetupTask(options: Readonly<{
     const [isStarting, setIsStarting] = React.useState(false);
     const [startError, setStartError] = React.useState<string | null>(null);
     const activeTaskSnapshot = useSystemTaskSnapshot(runner, activeTaskId);
-    const autoStartAttemptedRef = React.useRef(false);
     const handledResultTaskIdRef = React.useRef<string | null>(null);
 
-    const start = React.useCallback(async (specOverride?: SystemTaskSpec) => {
+    const start = React.useCallback(async (spec: SystemTaskSpec) => {
         setIsStarting(true);
         setStartError(null);
         try {
-            const taskId = await runner.start(specOverride ?? buildLocalMachineSetupSystemTaskSpec());
+            const taskId = await runner.start(spec);
             handledResultTaskIdRef.current = null;
             setActiveTaskId(taskId);
             return taskId;
@@ -63,52 +59,30 @@ export function useThisComputerSetupTask(options: Readonly<{
         void runner.cancel(activeTaskId);
     }, [activeTaskId, runner]);
 
-    React.useEffect(() => {
-        if (!options.autoStart || autoStartAttemptedRef.current || activeTaskId) {
-            return;
-        }
-        autoStartAttemptedRef.current = true;
-        void start().catch(() => {});
-    }, [activeTaskId, options.autoStart, start]);
 
-    // Answers blocking token-only pairing prompts through the explicit target endpoint. The
-    // prompt's target identity is validated against the expected Home before any credential is
-    // read, and the answer itself never carries credential material. The three-argument runner
-    // subscription replays already-recorded events, so a prompt emitted between runner.start()
-    // and this subscription is still delivered here; the signature set keeps handling
-    // exactly-once across replays.
-    const expectedRelayUrl = options.authRequestApproval?.expectedRelayUrl;
-    const approvalServerId = options.authRequestApproval?.serverId;
-    const handledApprovalPromptSignaturesRef = React.useRef(new Set<string>());
-    React.useEffect(() => {
-        if (!activeTaskId || !expectedRelayUrl) {
-            return;
-        }
-        const handled = handledApprovalPromptSignaturesRef.current;
-        return runner.subscribe(
-            activeTaskId,
-            (event) => {
-                const prompt = readTokenOnlyAuthRequestPrompt(event);
-                if (!prompt) {
-                    return;
-                }
-                const signature = `${event.taskId}:${event.tsMs}:${prompt.publicKey}:${prompt.response}`;
-                if (handled.has(signature)) {
-                    return;
-                }
-                handled.add(signature);
-                void respondToTokenOnlyAuthRequestPrompt({
-                    prompt,
-                    approval: {
-                        expectedRelayUrl,
-                        ...(approvalServerId ? { serverId: approvalServerId } : {}),
-                    },
-                    respond: (answer) => runner.respond(activeTaskId, answer),
-                });
-            },
-            () => {},
-        );
-    }, [activeTaskId, approvalServerId, expectedRelayUrl, runner]);
+    // Blocking token-only pairing prompts are answered by the one approval owner.
+    useSystemTaskAuthRequestApproval({
+        runner,
+        taskId: activeTaskId,
+        ...(options.authRequestApproval ? { approval: options.authRequestApproval } : {}),
+    });
+
+    // The service-consent prompts the setup kind raises before it mutates anything
+    // (`releaseChannel.switchDefaultForSetup`, `daemon.takeOverManualRelayRuntimeForSetup`,
+    // `daemon.replaceLocalBackgroundServices`) are blocking too: `ctx.prompt` is an unbounded
+    // promise, so a starter with no responder leaves the run waiting forever with no affordance.
+    // The responder therefore lives beside the approval owner here, so every starter of this hook
+    // answers them — not only the surface that happened to mount the modal hook itself.
+    const activeTaskPrompt = React.useMemo(
+        () => readLatestSystemTaskPrompt(activeTaskSnapshot),
+        [activeTaskSnapshot],
+    );
+    useThisComputerSetupPromptModals({
+        runner,
+        taskId: activeTaskId,
+        snapshot: activeTaskSnapshot,
+        prompt: activeTaskPrompt,
+    });
 
     React.useEffect(() => {
         if (!activeTaskSnapshot?.result) {

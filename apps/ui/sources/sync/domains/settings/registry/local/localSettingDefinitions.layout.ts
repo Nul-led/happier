@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { SessionCompanionPreferencesV1Schema } from '@/components/sessions/companion/state/sessionCompanionPreference';
+
 import {
     EMPTY_PERSISTED_PANE_SCOPE_STATE,
     objectKeyCount,
@@ -8,7 +10,7 @@ import {
 } from './localSettingDefinitions.shared';
 
 const sessionMobileSurfaceSchema = z.union([
-    z.enum(['chat', 'browse', 'git', 'navigation', 'tabs', 'browser', 'services', 'terminal']),
+    z.enum(['chat', 'browse', 'git', 'navigation', 'board', 'collaboration', 'companion', 'tabs', 'browser', 'services', 'terminal']),
     z.custom<`plugin:${string}:${string}`>((value) => typeof value === 'string' && /^plugin:[^:]+:.+$/.test(value)),
 ]);
 
@@ -128,6 +130,22 @@ export const LAYOUT_LOCAL_SETTING_DEFINITIONS = {
             trackCurrentState: true,
             trackChanges: true,
             valueKind: 'count',
+            privacy: 'count_only',
+            identityScope: 'device_user',
+            serializeCurrent: objectKeyCount,
+        },
+    },
+    sessionCompanionPreferencesBySessionV1: {
+        schema: SessionCompanionPreferencesV1Schema,
+        default: {},
+        description: 'Viewer-local Session Companion presentation preference by realm-qualified session key',
+        storageScope: 'local',
+        analytics: {
+            trackCurrentState: true,
+            trackChanges: true,
+            valueKind: 'count',
+            // Session ids, item ids, titles and content never leave the device;
+            // only how many Sessions this viewer has customized.
             privacy: 'count_only',
             identityScope: 'device_user',
             serializeCurrent: objectKeyCount,

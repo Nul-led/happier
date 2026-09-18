@@ -16,9 +16,166 @@ function createMetadata(overrides: Partial<NonNullable<Session['metadata']>> = {
 }
 
 describe('buildSessionActivityAttention', () => {
+    it('does not expose retained metadata when E2EE availability is unknown', () => {
+        const session = createSessionFixture({
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: undefined,
+            metadata: createMetadata({
+                name: 'Private retained title',
+                path: '/private/retained/path',
+            }),
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 0, unreadSince: 1 },
+                relevance: { relevant: true, reasons: ['owned_by_me'] },
+                follow: { follows: false, notificationLevel: null },
+                notification: { level: 'important', source: 'owner' },
+                attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'full' },
+            },
+        });
+
+        const attention = buildSessionActivityAttention({ session, nowMs: 1_000 });
+
+        expect(attention.title).not.toContain('Private retained title');
+        expect(attention.subtitle).not.toContain('/private/retained/path');
+    });
+
+    it('preserves linked external progress unread only for a tracked owner', () => {
+        const session = createSessionFixture({ seq: 1, lastViewedSessionSeq: 1,
+            metadata: { ...createMetadata(),
+                externalSessionV1: { v: 1, agentId: 'codex', machineId: 'machine-1', remoteSessionId: 'remote-1', source: { kind: 'codexHome', home: 'user' } },
+                externalSessionAttentionV1: { v: 1, observedProgressToken: 'new', viewedProgressToken: 'old' },
+            },
+        });
+        expect(buildSessionActivityAttention({ session }).reasons.hasUnread).toBe(true);
+        expect(buildSessionActivityAttention({ session: { ...session, owner: 'another-account', accessLevel: 'view' } }).hasAttention).toBe(false);
+    });
+
+    it('does not invent unread attention when a pre-viewer Home has no released read cursor', () => {
+        const session = createSessionFixture({
+            seq: 8,
+            lastViewedSessionSeq: undefined,
+            metadata: createMetadata(),
+            pendingBlockedCount: 0,
+            pendingPermissionRequestCount: 0,
+            pendingUserActionRequestCount: 0,
+            latestReadyEventSeq: null,
+        });
+
+        const attention = buildSessionActivityAttention({ session, nowMs: 1_000 });
+
+        expect(attention.hasAttention).toBe(false);
+        expect(attention.reasons.hasUnread).toBe(false);
+    });
+
+    it('uses viewer attention instead of raw unread or permission facts', () => {
+        const session = Object.assign(createSessionFixture({
+            encryptionMode: 'plain',
+            seq: 20,
+            lastViewedSessionSeq: 0,
+            active: true,
+            presence: 'online',
+            pendingPermissionRequestCount: 1,
+            pendingRequestObservedAt: 990,
+        }), {
+            viewer: {
+                readState: { state: 'not_started' },
+                relevance: { relevant: true, reasons: ['responsible_for_me'] },
+                follow: { follows: false, notificationLevel: 'none' },
+                notification: { level: 'none', source: 'preference' },
+                attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+            },
+        } as const);
+        const attention = buildSessionActivityAttention({ session, nowMs: 1_000 });
+        expect(attention.hasAttention).toBe(false);
+        expect(attention.reasons.hasUnread).toBe(false);
+        expect(attention.reasons.hasPendingPermissionRequests).toBe(false);
+    });
+
+    it('uses the session-list operational projection before viewer unread while work is active', () => {
+        const session = Object.assign(createSessionFixture({
+            encryptionMode: 'plain',
+            active: true,
+            presence: 'online',
+            latestTurnStatus: 'in_progress',
+        }), {
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: 2 },
+                relevance: { relevant: true, reasons: ['owned_by_me'] },
+                follow: { follows: false, notificationLevel: null },
+                notification: { level: 'important', source: 'owner' },
+                attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'full' },
+            },
+        } as const);
+
+        const attention = buildSessionActivityAttention({ session, nowMs: 1_000 });
+
+        expect(attention.hasAttention).toBe(true);
+        expect(attention.personalAttention.reasons).toEqual(['unread']);
+        expect(attention.awareness.operational.reasons).toContain('working');
+        expect(attention.attentionState).toBe('thinking');
+    });
+
+    it('surfaces canonical discussion attention without inventing transcript unread', () => {
+        const session = Object.assign(createSessionFixture({ seq: 20, lastViewedSessionSeq: 20 }), {
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 20, unreadSince: null },
+                relevance: { relevant: true, reasons: ['followed_by_me'] },
+                follow: { follows: true, notificationLevel: 'none' },
+                notification: { level: 'none', source: 'preference' },
+                attention: { needsAttention: true, reasons: ['unread_discussion'], primary: 'unread_discussion', presentation: 'full' },
+            },
+        } as const);
+        const attention = buildSessionActivityAttention({ session, nowMs: 1_000 });
+        expect(attention.hasAttention).toBe(true);
+        expect(attention.attentionState).toBe('unread');
+        expect(attention.personalAttention.reasons).toEqual(['unread_discussion']);
+    });
+
+    it.each(['manual', 'reminder_due'] as const)(
+        'presents canonical %s attention without mislabeling it as unread',
+        (reason) => {
+            const session = Object.assign(createSessionFixture({ seq: 20, lastViewedSessionSeq: 20 }), {
+                viewer: {
+                    readState: { state: 'tracking', lastViewedSessionSeq: 20, unreadSince: null },
+                    relevance: { relevant: true, reasons: ['followed_by_me'] },
+                    follow: { follows: true, notificationLevel: 'none' },
+                    notification: { level: 'none', source: 'preference' },
+                    attention: { needsAttention: true, reasons: [reason], primary: reason, presentation: 'full' },
+                },
+            } as const);
+
+            expect(buildSessionActivityAttention({ session, nowMs: 1_000 })).toMatchObject({
+                hasAttention: true,
+                attentionState: 'attention',
+                reasons: { hasUnread: false },
+            });
+        },
+    );
+
+    it.each(['manual', 'reminder_due'] as const)(
+        'preserves canonical %s presentation when the operational projection is ready',
+        (reason) => {
+            const session = Object.assign(createSessionFixture({
+                latestTurnStatus: 'completed',
+                lastTurnCompletedAt: 900,
+            }), {
+                viewer: {
+                    readState: { state: 'tracking', lastViewedSessionSeq: 20, unreadSince: null },
+                    relevance: { relevant: true, reasons: ['followed_by_me'] },
+                    follow: { follows: true, notificationLevel: 'none' },
+                    notification: { level: 'none', source: 'preference' },
+                    attention: { needsAttention: true, reasons: [reason], primary: reason, presentation: 'full' },
+                },
+            } as const);
+
+            expect(buildSessionActivityAttention({ session, nowMs: 1_000 }).attentionState).toBe('attention');
+        },
+    );
+
     it('prioritizes permission-required sessions above unread sessions', () => {
         const attention = buildSessionActivityAttention({
             session: createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'session-permission',
                 active: true,
                 presence: 'online',
@@ -55,9 +212,32 @@ describe('buildSessionActivityAttention', () => {
         expect(attention.priority).toBeGreaterThan(0);
     });
 
+    it('does not retain permission attention after its request evidence expires', () => {
+        const attention = buildSessionActivityAttention({
+            session: createSessionFixture({
+                encryptionMode: 'plain',
+                id: 'session-expired-permission',
+                active: true,
+                presence: 'online',
+                pendingPermissionRequestCount: 1,
+                pendingRequestObservedAt: 1_000,
+                seq: 3,
+                lastViewedSessionSeq: 3,
+                metadata: createMetadata(),
+            }),
+            nowMs: 121_001,
+        });
+
+        expect(attention.awareness.operational.primary).toBe('none');
+        expect(attention.attentionState).toBe('quiet');
+        expect(attention.hasAttention).toBe(false);
+        expect(attention.reasons.hasPendingPermissionRequests).toBe(false);
+    });
+
     it('does not surface inactive permission counts as permission-required attention', () => {
         const attention = buildSessionActivityAttention({
             session: createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'session-inactive',
                 active: false,
                 presence: 'online',
@@ -85,10 +265,13 @@ describe('buildSessionActivityAttention', () => {
     it('does not treat queued user input as attention', () => {
         const attention = buildSessionActivityAttention({
             session: createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'session-pending',
                 active: true,
                 presence: 'online',
                 pendingCount: 2,
+                pendingPermissionRequestCount: 0,
+                pendingUserActionRequestCount: 0,
                 lastViewedSessionSeq: 1,
                 metadata: createMetadata({
                     path: '/Users/tester/project/packages/app',
@@ -98,7 +281,7 @@ describe('buildSessionActivityAttention', () => {
 
         expect(attention).toMatchObject({
             sessionId: 'session-pending',
-            attentionState: 'quiet',
+            attentionState: 'pending',
             hasAttention: false,
             reasons: {
                 hasQueuedUserInput: true,
@@ -110,12 +293,15 @@ describe('buildSessionActivityAttention', () => {
     it('treats fresh optimistic queued user input as working attention', () => {
         const attention = buildSessionActivityAttention({
             session: createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'session-pending-working',
                 active: true,
                 presence: 'online',
                 thinking: false,
                 thinkingAt: 1,
                 pendingCount: 1,
+                pendingPermissionRequestCount: 0,
+                pendingUserActionRequestCount: 0,
                 optimisticThinkingAt: 1_000,
                 metadata: createMetadata(),
             }),
@@ -125,7 +311,7 @@ describe('buildSessionActivityAttention', () => {
         expect(attention).toMatchObject({
             sessionId: 'session-pending-working',
             attentionState: 'thinking',
-            hasAttention: true,
+            hasAttention: false,
             reasons: {
                 hasQueuedUserInput: true,
                 isThinking: true,
@@ -136,6 +322,7 @@ describe('buildSessionActivityAttention', () => {
     it('surfaces a recent explicit turn completion as ready attention', () => {
         const attention = buildSessionActivityAttention({
             session: Object.assign(createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'session-turn-complete',
                 active: false,
                 presence: 900,
@@ -150,8 +337,8 @@ describe('buildSessionActivityAttention', () => {
 
         expect(attention).toMatchObject({
             sessionId: 'session-turn-complete',
-            attentionState: 'pending',
-            hasAttention: true,
+            attentionState: 'quiet',
+            hasAttention: false,
             lastTurnCompletedAt: 980,
             reasons: {
                 hasQueuedUserInput: false,
@@ -165,6 +352,7 @@ describe('buildSessionActivityAttention', () => {
     it('keeps stale explicit turn completion timestamps without surfacing attention', () => {
         const attention = buildSessionActivityAttention({
             session: Object.assign(createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'session-stale-turn-complete',
                 active: false,
                 presence: 1,
@@ -188,6 +376,7 @@ describe('buildSessionActivityAttention', () => {
     it('surfaces failed primary-session runtime issues through activity attention', () => {
         const attention = buildSessionActivityAttention({
             session: Object.assign(createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'session-runtime-failed',
                 active: false,
                 presence: 'online',
@@ -219,6 +408,7 @@ describe('buildSessionActivityAttention', () => {
     it('keeps same-id pending requests fresh when completed request arguments differ', () => {
         const attention = buildSessionActivityAttention({
             session: createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'session-permission-retry',
                 active: true,
                 presence: 'online',

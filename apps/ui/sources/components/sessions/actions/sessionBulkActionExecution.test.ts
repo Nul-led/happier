@@ -28,7 +28,7 @@ function target(input: Partial<SessionBulkActionTarget> & Pick<SessionBulkAction
         serverId: 'server-a',
         active: false,
         archived: false,
-        hasAdminAccess: true,
+        canUnarchive: true,
         canStop: true,
         canArchive: true,
         pinned: false,
@@ -197,6 +197,7 @@ describe('executeSessionBulkAction', () => {
         expect(stopSessionAndMaybeArchive).toHaveBeenCalledTimes(1);
         expect(stopSessionAndMaybeArchive).toHaveBeenCalledWith(expect.objectContaining({
             target: expect.objectContaining({ sessionId: 'active' }),
+            address: { serverId: 'server-a', sessionId: 'active' },
             archiveAfterStop: 'always',
             hideInactiveSessions: false,
             isPinned: true,
@@ -205,6 +206,28 @@ describe('executeSessionBulkAction', () => {
         expect(archiveSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'inactive' }));
         expect(result.failed).toEqual([]);
         expect(result.succeeded.map((entry) => entry.target.sessionId)).toEqual(['active', 'inactive']);
+    });
+
+    it('fails an active archive before effects when its exact Home-qualified address is unavailable', async () => {
+        const stopSessionAndMaybeArchive = vi.fn(async () => undefined);
+        const archiveSession = vi.fn(async () => ({ success: true }));
+        const stopSession = vi.fn(async () => ({ success: true }));
+
+        const result = await executeSessionBulkAction({
+            action: { id: SESSION_BULK_ACTION_IDS.archive },
+            targets: [target({ key: 'unqualified', sessionId: 'active', serverId: null, active: true })],
+            context: {
+                archiveSession,
+                stopSession,
+                stopSessionAndMaybeArchive,
+            },
+        });
+
+        expect(stopSession).not.toHaveBeenCalled();
+        expect(archiveSession).not.toHaveBeenCalled();
+        expect(stopSessionAndMaybeArchive).not.toHaveBeenCalled();
+        expect(result.failed).toHaveLength(1);
+        expect(result.failed[0]?.reasonCode).toBe('missing_session_address');
     });
 
     it('fails bulk move-to-folder closed when the sessions.folders feature is unavailable', async () => {
@@ -450,7 +473,7 @@ describe('executeSessionBulkAction', () => {
         });
         const unarchiveResult = await executeSessionBulkAction({
             action: { id: SESSION_BULK_ACTION_IDS.unarchive },
-            targets: [target({ key: 'server-a:archived', sessionId: 'archived', active: false, archived: true, hasAdminAccess: false })],
+            targets: [target({ key: 'server-a:archived', sessionId: 'archived', active: false, archived: true, canUnarchive: false })],
             context: { unarchiveSession },
         });
 
@@ -479,7 +502,7 @@ describe('executeSessionBulkAction', () => {
         });
         const unarchiveResult = await executeSessionBulkAction({
             action: { id: SESSION_BULK_ACTION_IDS.unarchive },
-            targets: [target({ key: 'server-a:archived', sessionId: 'archived', active: false, archived: true, hasAdminAccess: undefined })],
+            targets: [target({ key: 'server-a:archived', sessionId: 'archived', active: false, archived: true, canUnarchive: undefined })],
             context: { unarchiveSession },
         });
 

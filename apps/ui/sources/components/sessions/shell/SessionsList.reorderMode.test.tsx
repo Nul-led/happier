@@ -1,16 +1,56 @@
 import React, { act } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createPartialStorageModuleMock, findGestureByKind, renderScreen } from '@/dev/testkit';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+    createPartialStorageModuleMock,
+    createStorageStoreMock,
+    findGestureByKind,
+    renderScreen,
+    standardCleanup,
+} from '@/dev/testkit';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 import {
     buildSessionListIndexFromViewData,
     type SessionListIndexItem,
 } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
 import type { SessionListReachabilityRenderable } from '@/sync/domains/state/storage';
 import { buildSessionOrganizationProjectionFromLegacyTestSettings } from './sessionOrganizationProjectionTestFixture';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const sessionStoreFixture = vi.hoisted(() => {
+    const sessionA = {
+        id: 'sess_a',
+        createdAt: 1,
+        active: true,
+        presence: 'online',
+        metadata: { host: 'h', path: '/p', homeDir: '/h' },
+    } as any;
+    const sessionB = {
+        id: 'sess_b',
+        createdAt: 2,
+        active: false,
+        presence: 'offline',
+        metadata: { host: 'h', path: '/p', homeDir: '/h' },
+    } as any;
+    return {
+        sessionA,
+        sessionB,
+        state: {
+            ordinarySessionListMembershipByServerId: {
+                server_a: ['sess_a', 'sess_b'],
+            },
+            sessionListRowsByServerId: {
+                server_a: { sess_a: sessionA, sess_b: sessionB },
+            },
+            profileScope: {
+                serverId: 'server_a',
+                accountId: 'u1',
+            },
+        },
+    };
+});
 
 vi.mock('react-native-gesture-handler', async () => {
     const { createGestureHandlerMock } = await import('@/dev/testkit/mocks/gestureHandler');
@@ -40,6 +80,7 @@ vi.mock('@/hooks/session/useNavigateToSession', () => ({
 }));
 
 const routerPushSpy = vi.fn();
+const openUniversalSearchSpy = vi.hoisted(() => vi.fn());
 const setSessionListGroupOrderV1 = vi.fn();
 const setSessionListOrderingModeV1 = vi.fn();
 const setSessionListFolderSortModeV1 = vi.fn();
@@ -50,6 +91,10 @@ const setHideInactiveSessions = vi.fn();
 const setSessionFoldersV1 = vi.fn();
 const recoveryBannerMountSpy = vi.fn();
 const recoveryBannerUnmountSpy = vi.fn();
+const applySettings = vi.hoisted(() => vi.fn());
+const fetchMoreSessionsSpy = vi.hoisted(() => vi.fn(async () => undefined));
+const refreshSessionsSpy = vi.hoisted(() => vi.fn(async () => undefined));
+const markSessionListScrollActivitySpy = vi.hoisted(() => vi.fn());
 const getCredentialsForServerUrlSpy = vi.hoisted(() => vi.fn(async () => ({ token: 'folder-token', secret: 'folder-secret' })));
 const resolveSessionOrganizationMutationScopeSpy = vi.hoisted(() => vi.fn(async (serverId: string) => ({
     ok: true as const,
@@ -61,6 +106,13 @@ const resolveSessionOrganizationMutationScopeSpy = vi.hoisted(() => vi.fn(async 
     },
 })));
 const setSessionFolderAssignmentSpy = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', () => ({
+    useUniversalSearchRuntime: () => ({
+        open: openUniversalSearchSpy,
+        buildCommands: vi.fn(),
+    }),
+}));
 
 let pinnedSessionKeysV1: string[] = [];
 let sessionListGroupOrderV1: Record<string, string[]> = {};
@@ -96,8 +148,17 @@ type DropdownMenuTriggerParams = {
     selectedItem: unknown;
 };
 
+type DropdownMenuCapturedItem = {
+    id?: string;
+    category?: string;
+    subtitle?: string;
+    rightElement?: unknown;
+    disabled?: boolean;
+    submenu?: { items?: DropdownMenuCapturedItem[] };
+};
+
 type DropdownMenuCapture = {
-    items?: Array<{ id?: string; category?: string; subtitle?: string; rightElement?: unknown; disabled?: boolean }>;
+    items?: DropdownMenuCapturedItem[];
     selectedId?: string;
     showCategoryTitles?: boolean;
     onSelect?: (id: string) => void;
@@ -140,7 +201,7 @@ installSessionShellCommonModuleMocks({
     storage: async (importOriginal) => createPartialStorageModuleMock(importOriginal, {
         useAllMachines: () => [],
         useProfile: () => ({ id: 'u1' } as any),
-        useSessionListRowStateByServerId: () => ({
+        useSessionListRowsByServerId: () => ({
             server_a: {
                 sess_a: sessionA,
                 sess_b: sessionB,
@@ -159,7 +220,9 @@ installSessionShellCommonModuleMocks({
                 if (!serverId || !sessionId) continue;
                 const session = findSessionListRenderable(sessionId);
                 if (!session) continue;
-                renderables.set(`${serverId}\u0000${sessionId}`, {
+                const key = buildSessionListServerScopedRowKey(serverId, sessionId);
+                if (!key) continue;
+                renderables.set(key, {
                     id: sessionId,
                     metadata: session.metadata ?? null,
                 });
@@ -177,7 +240,9 @@ installSessionShellCommonModuleMocks({
                 if (!serverId || !sessionId) continue;
                 const session = findSessionListRenderable(sessionId);
                 if (!session) continue;
-                renderables.set(`${serverId}\u0000${sessionId}`, session);
+                const key = buildSessionListServerScopedRowKey(serverId, sessionId);
+                if (!key) continue;
+                renderables.set(key, session);
             }
             return renderables;
         },
@@ -188,6 +253,19 @@ installSessionShellCommonModuleMocks({
             sessionFoldersV1,
             sessionTagsV1,
         }),
+        useSessionOrganizationProjections: (serverIds: readonly string[]) => React.useMemo(
+            () => Object.fromEntries(serverIds.map((serverId) => [
+                serverId,
+                buildSessionOrganizationProjectionFromLegacyTestSettings({
+                    serverId,
+                    pinnedSessionKeysV1,
+                    sessionListGroupOrderV1,
+                    sessionFoldersV1,
+                    sessionTagsV1,
+                }),
+            ])),
+            [serverIds.join('\u0000'), pinnedSessionKeysV1, sessionListGroupOrderV1, sessionFoldersV1, sessionTagsV1],
+        ),
         useSetting: (key: string) => {
             if (key === 'compactSessionView') return false;
             if (key === 'compactSessionViewMinimal') return false;
@@ -211,6 +289,7 @@ installSessionShellCommonModuleMocks({
             if (key === 'sessionFoldersV1') return [sessionFoldersV1, setSessionFoldersV1];
             return [null, vi.fn()];
         },
+        storage: createStorageStoreMock(sessionStoreFixture.state),
     }),
 });
 
@@ -231,11 +310,36 @@ vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
     },
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentialsForServerUrl: getCredentialsForServerUrlSpy,
-    },
-}));
+vi.mock('@/sync/store/settingsWriters', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/store/settingsWriters')>();
+    return {
+        ...actual,
+        useApplySettings: () => applySettings,
+    };
+});
+
+vi.mock('@/sync/sync', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/sync')>();
+    return {
+        ...actual,
+        sync: {
+            ...actual.sync,
+            fetchMoreSessions: fetchMoreSessionsSpy,
+            refreshSessions: refreshSessionsSpy,
+            markSessionListScrollActivity: markSessionListScrollActivitySpy,
+        },
+    };
+});
+
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return await createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: getCredentialsForServerUrlSpy,
+        },
+    });
+});
 
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
@@ -253,13 +357,17 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
 
 vi.mock('@/sync/ops/sessionOrganization', () => ({
     resolveSessionOrganizationMutationScope: resolveSessionOrganizationMutationScopeSpy,
+    requireSessionOrganizationMutationScope: async (serverId: string) => {
+        const result = await resolveSessionOrganizationMutationScopeSpy(serverId);
+        if (result.ok) return result.scope;
+        const { HappyError } = await import('@/utils/errors/errors');
+        throw new HappyError(`homeGovernance.unavailableTitle: ${result.requestedServerId || serverId}`, true);
+    },
     writeSessionOrganizationFolderAssignment: setSessionFolderAssignmentSpy,
     writeSessionOrganizationFolders: vi.fn(async () => undefined),
     writeSessionOrganizationGroupOrder: vi.fn(async () => undefined),
     writeSessionOrganizationPin: vi.fn(async () => undefined),
-    writeSessionOrganizationPinForSessionKey: vi.fn(async () => undefined),
     writeSessionOrganizationTagLabels: vi.fn(async () => undefined),
-    writeSessionOrganizationTagLabelsForSessionKey: vi.fn(async () => undefined),
     writeSessionOrganizationWorkspaceLabels: vi.fn(async () => undefined),
     writeSessionOrganizationWorkspaceOrder: vi.fn(async () => undefined),
 }));
@@ -324,8 +432,8 @@ vi.mock('@/hooks/server/useEffectiveServerSelection', () => ({
 
 const groupKey = 'active:server_a';
 const inactiveGroupKey = 'inactive:server_a';
-const sessionA = { id: 'sess_a', createdAt: 1, active: true, presence: 'online', metadata: { host: 'h', path: '/p', homeDir: '/h' } } as any;
-const sessionB = { id: 'sess_b', createdAt: 2, active: false, presence: 'offline', metadata: { host: 'h', path: '/p', homeDir: '/h' } } as any;
+const sessionA = sessionStoreFixture.sessionA;
+const sessionB = sessionStoreFixture.sessionB;
 
 function findSessionListRenderable(sessionId: string): SessionListRenderableSession | null {
     if (sessionId === 'sess_a') return sessionA;
@@ -335,7 +443,7 @@ function findSessionListRenderable(sessionId: string): SessionListRenderableSess
 
 const mockVisibleSessionListViewData: any[] = [
     { type: 'header', title: 'Active', headerKind: 'active', groupKey, serverId: 'server_a', serverName: 'Server A' },
-    { type: 'session', session: sessionA, groupKey, groupKind: 'date', serverId: 'server_a', serverName: 'Server A' },
+    { type: 'session', session: sessionA, groupKey, groupKind: 'project', serverId: 'server_a', serverName: 'Server A' },
     { type: 'header', title: 'Inactive', headerKind: 'inactive', groupKey: inactiveGroupKey, serverId: 'server_a', serverName: 'Server A' },
     { type: 'session', session: sessionB, groupKey: inactiveGroupKey, groupKind: 'date', serverId: 'server_a', serverName: 'Server A' },
 ];
@@ -351,6 +459,7 @@ vi.mock('@/hooks/session/useVisibleSessionListPaneState', () => ({
             sessionCount: mockVisibleSessionListViewData.filter((item) => item.type === 'session').length,
         },
         visibleSessionListIndex: mockVisibleSessionListIndex,
+        folderFeatureEnabledServerIds: ['server_a'],
         showLoading: false,
         showEmptyState: false,
     }),
@@ -370,12 +479,19 @@ describe('SessionsList (inline reorder)', () => {
         sessionListOrderingModeV1 = 'custom';
         sessionListFolderSortModeV1 = 'foldersFirst';
         sessionListSectionModeV1 = 'activity';
+        sessionListActiveGroupingV1 = 'project';
+        sessionListInactiveGroupingV1 = 'date';
+        hideInactiveSessions = false;
         pinnedSessionKeysV1 = [];
         sessionListGroupOrderV1 = {};
         sessionTagsV1 = {};
         sessionFoldersV1 = { v: 1, folders: [] };
         dropdownMenuCaptures.length = 0;
         requestReviewSpy.mockClear();
+        applySettings.mockClear();
+        fetchMoreSessionsSpy.mockClear();
+        refreshSessionsSpy.mockClear();
+        markSessionListScrollActivitySpy.mockClear();
         setSessionListActiveGroupingV1.mockClear();
         setSessionListInactiveGroupingV1.mockClear();
         setHideInactiveSessions.mockClear();
@@ -391,6 +507,10 @@ describe('SessionsList (inline reorder)', () => {
         recoveryBannerUnmountSpy.mockClear();
     });
 
+    afterEach(() => {
+        standardCleanup();
+    });
+
     it('does not trigger store-review prompts automatically when the list renders', async () => {
         requestReviewSpy.mockClear();
         const { SessionsList } = await import('./SessionsList');
@@ -400,7 +520,7 @@ describe('SessionsList (inline reorder)', () => {
         expect(requestReviewSpy).not.toHaveBeenCalled();
     });
 
-    it('renders SessionItem rows with reorder drag props', async () => {
+    it('advertises reorder only for rows whose effective group uses custom ordering', async () => {
         pinnedSessionKeysV1 = [];
         sessionListGroupOrderV1 = {};
         sessionTagsV1 = {};
@@ -414,6 +534,7 @@ describe('SessionsList (inline reorder)', () => {
         // reorderDragStyle is no longer passed (Animated.View is in SessionListRow).
         expect(items[0].props).toHaveProperty('reorderHandleGesture');
         expect(findGestureByKind(items[0].props.reorderHandleGesture, 'pan')).toBeTruthy();
+        expect(items[1].props.reorderHandleGesture).toBeUndefined();
         // isBeingDragged is passed from SessionListRow
         expect(items[0].props.isBeingDragged).toBe(false);
     });
@@ -427,6 +548,24 @@ describe('SessionsList (inline reorder)', () => {
         const items = screen.findAll((node) => String(node.type) === 'SessionItem');
         expect(items.length).toBe(2);
         expect(items[0].props.reorderHandleGesture).toBeUndefined();
+    });
+
+    it('disables row drag in Recent activity while preserving custom project ordering', async () => {
+        sessionListSectionModeV1 = 'single';
+        sessionListActiveGroupingV1 = 'date';
+        sessionListOrderingModeV1 = 'custom';
+
+        const { SessionsList } = await import('./SessionsList');
+        const screen = await renderScreen(<SessionsList />);
+
+        const rowBoundaries = screen.findAll((node) => (
+            typeof node.props?.dragEnabled === 'boolean'
+            && node.props?.item?.type === 'session'
+            && Array.isArray(node.props?.items)
+        ));
+        expect(rowBoundaries).toHaveLength(2);
+        expect(rowBoundaries[0].props.dragEnabled).toBe(false);
+        expect(sessionListOrderingModeV1).toBe('custom');
     });
 
     it('keeps drag-end persistence disabled when ordering mode is not custom', async () => {
@@ -460,86 +599,63 @@ describe('SessionsList (inline reorder)', () => {
         expect(findGestureByKind(reorderedItems[0].props.reorderHandleGesture, 'pan')).toBeTruthy();
     });
 
-    it('exposes quick-access ordering, grouping, and visibility controls and writes canonical settings on select', async () => {
+    it('exposes View options and writes canonical settings atomically on select', async () => {
         const { SessionsList } = await import('./SessionsList');
 
-        const screen = await renderScreen(<SessionsList />);
+        await renderScreen(<SessionsList />);
 
         const menuProps = dropdownMenuCaptures.find((captured) => {
             const items = captured.items ?? [];
-            return items.some((item: any) => item?.id === 'activeGroupingProject')
-                && items.some((item: any) => item?.id === 'inactiveGroupingProject')
-                && items.some((item: any) => item?.id === 'hideInactiveSessions');
+            return items.some((item) => item?.id === 'layout:projects')
+                && items.some((item) => item?.id === 'layout:recent_activity')
+                && items.some((item) => item?.id === 'layout:active_inactive');
         });
         expect(menuProps).toBeTruthy();
-        expect(menuProps?.selectedId).toBe('custom');
         expect(menuProps?.showCategoryTitles).toBe(true);
-        const itemIds = (menuProps?.items ?? []).map((item: any) => String(item?.id ?? ''));
-        expect(itemIds).toEqual(expect.arrayContaining([
-            'custom',
-            'created',
-            'updated',
-            'sectionModeActivity',
-            'sectionModeSingle',
-            'activeGroupingProject',
-            'activeGroupingDate',
-            'inactiveGroupingProject',
-            'inactiveGroupingDate',
-            'sessionFolderViewModeTree',
-            'sessionListFolderSortModeFoldersFirst',
-            'sessionListFolderSortModeMixed',
-            'hideInactiveSessions',
-        ]));
-        expect(menuProps?.items?.map((item: any) => item?.category)).toEqual([
-            'settingsSession.sessionList.menuSections.sortBy',
-            'settingsSession.sessionList.menuSections.sortBy',
-            'settingsSession.sessionList.menuSections.sortBy',
-            'settingsSession.sessionList.sectionModeTitle',
-            'settingsSession.sessionList.sectionModeTitle',
-            'settingsFeatures.sessionListActiveGrouping',
-            'settingsFeatures.sessionListActiveGrouping',
-            'settingsFeatures.sessionListInactiveGrouping',
-            'settingsFeatures.sessionListInactiveGrouping',
-            'settingsSession.sessionList.menuSections.show',
-            'settingsSession.sessionList.menuSections.folderSortMode',
-            'settingsSession.sessionList.menuSections.folderSortMode',
-            'settingsSession.sessionList.menuSections.show',
+        expect(menuProps?.items?.map((item) => item.id)).toEqual([
+            'layout:projects',
+            'layout:recent_activity',
+            'layout:active_inactive',
+            'activeGrouping',
+            'inactiveGrouping',
+            'attentionPlacement',
+            'workingPlacement',
+            'ordering:custom',
+            'ordering:updated',
+            'ordering:created',
+            'folderDisplay',
+            'folderSort',
         ]);
-        const activeGroupingProjectItem = menuProps?.items?.find((item: any) => item?.id === 'activeGroupingProject');
-        const sectionModeActivityItem = menuProps?.items?.find((item: any) => item?.id === 'sectionModeActivity');
-        const inactiveGroupingDateItem = menuProps?.items?.find((item: any) => item?.id === 'inactiveGroupingDate');
-        const hideInactiveSessionsItem = menuProps?.items?.find((item: any) => item?.id === 'hideInactiveSessions');
-        const foldersFirstItem = menuProps?.items?.find((item: any) => item?.id === 'sessionListFolderSortModeFoldersFirst');
-        const mixedFolderSortItem = menuProps?.items?.find((item: any) => item?.id === 'sessionListFolderSortModeMixed');
-        expect(activeGroupingProjectItem?.subtitle).toBeUndefined();
-        expect(sectionModeActivityItem?.subtitle).toBe('settingsSession.sessionList.sectionModeActivitySubtitle');
-        expect(inactiveGroupingDateItem?.subtitle).toBeUndefined();
-        expect(hideInactiveSessionsItem?.subtitle).toBeUndefined();
-        expect(foldersFirstItem?.subtitle).toBe('settingsSession.sessionList.folderSortModeFoldersFirstSubtitle');
-        expect(mixedFolderSortItem?.subtitle).toBe('settingsSession.sessionList.folderSortModeMixedSubtitle');
-        expect((activeGroupingProjectItem as { rightElement?: unknown } | undefined)?.rightElement).toBeTruthy();
-        expect((sectionModeActivityItem as { rightElement?: unknown } | undefined)?.rightElement).toBeTruthy();
-        expect((inactiveGroupingDateItem as { rightElement?: unknown } | undefined)?.rightElement).toBeTruthy();
+        expect(menuProps?.items?.some((item) => item.id === 'hideInactiveSessions')).toBe(false);
+        expect(menuProps?.items?.find((item) => item.id === 'activeGrouping')?.submenu?.items?.map((item) => item.id)).toEqual([
+            'grouping:active:project',
+            'grouping:active:date',
+        ]);
+        expect(menuProps?.items?.find((item) => item.id === 'attentionPlacement')?.submenu?.items?.map((item) => item.id)).toEqual([
+            'attention:off',
+            'attention:global',
+            'attention:withinGroups',
+        ]);
 
-        const firstMenuItems = menuProps?.items;
-
-        await screen.update(<SessionsList />);
-
-        const rerenderedMenuProps = dropdownMenuCaptures.at(-1);
-        expect(rerenderedMenuProps?.items).toBe(firstMenuItems);
-
-        rerenderedMenuProps?.onSelect?.('created');
-        expect(setSessionListOrderingModeV1).toHaveBeenCalledWith('created');
-        rerenderedMenuProps?.onSelect?.('sessionListFolderSortModeMixed');
-        expect(setSessionListFolderSortModeV1).toHaveBeenCalledWith('mixed');
-        rerenderedMenuProps?.onSelect?.('activeGroupingDate');
-        expect(setSessionListActiveGroupingV1).toHaveBeenCalledWith('date');
-        rerenderedMenuProps?.onSelect?.('sectionModeSingle');
-        expect(setSessionListSectionModeV1).toHaveBeenCalledWith('single');
-        rerenderedMenuProps?.onSelect?.('inactiveGroupingProject');
-        expect(setSessionListInactiveGroupingV1).toHaveBeenCalledWith('project');
-        rerenderedMenuProps?.onSelect?.('hideInactiveSessions');
-        expect(setHideInactiveSessions).toHaveBeenCalledWith(true);
+        menuProps?.onSelect?.('ordering:created');
+        expect(applySettings).toHaveBeenLastCalledWith({ sessionListOrderingModeV1: 'created' });
+        menuProps?.onSelect?.('folderSort:mixed');
+        expect(applySettings).toHaveBeenLastCalledWith({ sessionListFolderSortModeV1: 'mixed' });
+        menuProps?.onSelect?.('grouping:active:date');
+        expect(applySettings).toHaveBeenLastCalledWith({ sessionListActiveGroupingV1: 'date' });
+        applySettings.mockClear();
+        fetchMoreSessionsSpy.mockClear();
+        refreshSessionsSpy.mockClear();
+        menuProps?.onSelect?.('layout:projects');
+        expect(applySettings).toHaveBeenCalledTimes(1);
+        expect(applySettings).toHaveBeenCalledWith({
+            sessionListSectionModeV1: 'single',
+            sessionListActiveGroupingV1: 'project',
+        });
+        expect(fetchMoreSessionsSpy).not.toHaveBeenCalled();
+        expect(refreshSessionsSpy).not.toHaveBeenCalled();
+        menuProps?.onSelect?.('grouping:inactive:project');
+        expect(applySettings).toHaveBeenLastCalledWith({ sessionListInactiveGroupingV1: 'project' });
     });
 
     it('uses folders-first as the effective folder sort mode while preserving mixed as a dormant date-mode preference', async () => {
@@ -551,19 +667,19 @@ describe('SessionsList (inline reorder)', () => {
 
         const menuProps = dropdownMenuCaptures.find((captured) => {
             const items = captured.items ?? [];
-            return items.some((item) => item?.id === 'sessionListFolderSortModeFoldersFirst')
-                && items.some((item) => item?.id === 'sessionListFolderSortModeMixed');
+            return items.some((item) => item?.id === 'layout:projects');
         });
-        const foldersFirstItem = menuProps?.items?.find((item) => item?.id === 'sessionListFolderSortModeFoldersFirst');
-        const mixedFolderSortItem = menuProps?.items?.find((item) => item?.id === 'sessionListFolderSortModeMixed');
+        const folderSortItems = menuProps?.items?.find((item) => item?.id === 'folderSort')?.submenu?.items;
+        const foldersFirstItem = folderSortItems?.find((item) => item?.id === 'folderSort:foldersFirst');
+        const mixedFolderSortItem = folderSortItems?.find((item) => item?.id === 'folderSort:mixed');
 
         expect((foldersFirstItem as { rightElement?: unknown } | undefined)?.rightElement).toBeTruthy();
         expect((mixedFolderSortItem as { rightElement?: unknown } | undefined)?.rightElement).toBeFalsy();
         expect(mixedFolderSortItem?.disabled).toBe(true);
         expect(mixedFolderSortItem?.subtitle).toBe('settingsSession.sessionList.folderSortModeMixedDisabledInDateModeSubtitle');
 
-        menuProps?.onSelect?.('sessionListFolderSortModeMixed');
-        expect(setSessionListFolderSortModeV1).not.toHaveBeenCalled();
+        menuProps?.onSelect?.('folderSort:mixed');
+        expect(applySettings).not.toHaveBeenCalled();
     });
 
     it('moves a session to a folder through the row menu with server-scoped credentials', async () => {
@@ -612,30 +728,20 @@ describe('SessionsList (inline reorder)', () => {
         });
     });
 
-    it('renders ordering triggers on the active and inactive section headers and keeps stopPropagation bound', async () => {
+    it('renders one View options trigger in search chrome and keeps stopPropagation bound', async () => {
         const { SessionsList } = await import('./SessionsList');
 
         const screen = await renderScreen(<SessionsList />);
 
         const menuProps = dropdownMenuCaptures.find((captured) => {
             const items = captured.items ?? [];
-            return items.some((item: any) => item?.id === 'activeGroupingProject')
-                && items.some((item: any) => item?.id === 'inactiveGroupingProject')
-                && items.some((item: any) => item?.id === 'hideInactiveSessions');
+            return items.some((item) => item?.id === 'layout:projects');
         });
         expect(menuProps).toBeTruthy();
 
-        expect(screen.findAllByProps({ testID: 'session-list-ordering-menu-anchor' })).toHaveLength(0);
-
-        const triggers = screen.findAllByProps({ testID: 'session-list-ordering-menu-trigger' });
-        expect(triggers).toHaveLength(2);
-        expect(triggers[0].props.style).toEqual(expect.objectContaining({
-            width: 18,
-            height: 14,
-        }));
-        expect(triggers[0].props.style.backgroundColor).toBeUndefined();
-        expect(triggers[0].props.style.borderWidth).toBeUndefined();
-        expect(triggers[0].props.style.borderColor).toBeUndefined();
+        expect(screen.findAllByProps({ testID: 'session-list-ordering-menu-trigger' })).toHaveLength(0);
+        const triggers = screen.findAllHostsByTestId('session-list-view-options-trigger');
+        expect(triggers).toHaveLength(1);
 
         const event = {
             nativeEvent: {},

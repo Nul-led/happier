@@ -4,6 +4,9 @@ import { View, TouchableOpacity, Platform } from 'react-native';
 import { sessionAbort, sessionAllow, sessionAllowWithPermissionUpdates, sessionDeny } from '@/sync/ops';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { storage } from '@/sync/domains/state/storage';
+import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { t } from '@/text';
 import { resolveAgentIdForPermissionUi } from '@/agents/catalog/resolve';
 import { useHistoricalTranscriptAgentId } from '@/components/sessions/transcript/attribution/SessionTranscriptAgentAttributionContext';
@@ -35,6 +38,7 @@ interface PermissionFooterProps {
         suggestions?: unknown;
     };
     sessionId: string;
+    serverId?: string;
     toolName: string;
     toolInput?: any;
     metadata?: any;
@@ -46,6 +50,7 @@ interface PermissionFooterProps {
 
 type PermissionRequestIdentity = Readonly<{
     sessionId: string;
+    serverId?: string;
     permissionId: string;
     turnId?: string;
 }>;
@@ -66,6 +71,7 @@ function isSamePermissionRequest(
 ): boolean {
     return left !== null
         && left.sessionId === right.sessionId
+        && left.serverId === right.serverId
         && left.permissionId === right.permissionId
         && left.turnId === right.turnId;
 }
@@ -207,6 +213,7 @@ const stylesheet = StyleSheet.create((theme) => ({
 export const PermissionFooter: React.FC<PermissionFooterProps> = ({
     permission,
     sessionId,
+    serverId,
     toolName,
     toolInput,
     metadata,
@@ -218,13 +225,18 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const historicalAgentId = useHistoricalTranscriptAgentId();
+    const accountScopeResolution = useServerCredentialAccountScopeResolution(serverId);
+    const accountScope = serverId === undefined ? undefined
+        : accountScopeResolution.kind === 'bound' ? accountScopeResolution.scope : null;
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
     const minimumInteractiveTargetStyle = {
         minWidth: minimumInteractiveTargetSize,
         minHeight: minimumInteractiveTargetSize,
     };
     const alignedButtonStyle = alignFirstButtonToStart ? styles.buttonAlignedToStart : null;
-    const storedTurnId = storage.getState().sessions[sessionId]?.agentState?.requests?.[permission.id]?.turnId;
+    const storedTurnId = (serverId === undefined || areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId)
+        ? storage.getState().sessions[sessionId]
+        : undefined)?.agentState?.requests?.[permission.id]?.turnId;
     const projectedTurnId = typeof permission.turnId === 'string' && permission.turnId.trim().length > 0
         ? permission.turnId.trim()
         : typeof storedTurnId === 'string' && storedTurnId.trim().length > 0
@@ -232,6 +244,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
             : undefined;
     const requestIdentity: PermissionRequestIdentity = {
         sessionId,
+        serverId,
         permissionId: permission.id,
         ...(projectedTurnId ? { turnId: projectedTurnId } : {}),
     };
@@ -284,7 +297,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
     // behavior therefore requires an owning machine and otherwise fails closed.
     const owningMachineId = resolveSessionMachineId(metadata);
     const permissionBehavior = agentId && (isBundledAgentId(agentId) || owningMachineId !== null)
-        ? getAgentBehavior(agentId, owningMachineId).permissions
+        ? getAgentBehavior(agentId, owningMachineId, accountScope).permissions
         : undefined;
     const copy = getPermissionFooterCopy(permissionBehavior?.promptProtocol);
     const permissionFooterBehavior = permissionBehavior?.footer;
@@ -395,7 +408,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession) return;
 
         await runPermissionAction('approve', (loading) => setLoadingButton(loading ? 'allow' : null), async () => {
-            await sessionAllow(sessionId, permission.id, undefined, undefined, undefined, undefined, projectedTurnId);
+            await sessionAllow(sessionId, permission.id, undefined, undefined, undefined, undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
         });
     };
 
@@ -408,12 +421,15 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                     mode: 'acceptEdits',
                     updatedPermissions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }],
                     turnId: projectedTurnId,
+                    ...(serverId !== undefined ? { serverId } : {}),
                 });
             } else {
-                await sessionAllow(sessionId, permission.id, 'acceptEdits', undefined, undefined, undefined, projectedTurnId);
+                await sessionAllow(sessionId, permission.id, 'acceptEdits', undefined, undefined, undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
             }
             // Update the session permission mode to 'acceptEdits' for future permissions
-            storage.getState().updateSessionPermissionMode(sessionId, 'acceptEdits');
+            if (serverId === undefined || areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId)) {
+                storage.getState().updateSessionPermissionMode(sessionId, 'acceptEdits');
+            }
         });
     };
 
@@ -433,9 +449,10 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                     allowedTools: [toolIdentifier],
                     updatedPermissions: [{ type: 'addRules', rules, behavior: 'allow', destination: 'session' }],
                     turnId: projectedTurnId,
+                    ...(serverId !== undefined ? { serverId } : {}),
                 });
             } else {
-                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId);
+                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
             }
         });
     };
@@ -472,9 +489,10 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                     allowedTools: [toolIdentifier],
                     updatedPermissions: [{ type: 'addRules', rules, behavior: 'allow', destination: 'session' }],
                     turnId: projectedTurnId,
+                    ...(serverId !== undefined ? { serverId } : {}),
                 });
             } else {
-                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId);
+                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
             }
         });
     };
@@ -503,9 +521,10 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                     allowedTools: [toolIdentifier],
                     updatedPermissions: [{ type: 'addRules', rules, behavior: 'allow', destination: 'session' }],
                     turnId: projectedTurnId,
+                    ...(serverId !== undefined ? { serverId } : {}),
                 });
             } else {
-                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId);
+                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
             }
         });
     };
@@ -514,7 +533,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession) return;
 
         await runPermissionAction('deny', (loading) => setLoadingButton(loading ? 'deny' : null), async () => {
-            await sessionDeny(sessionId, permission.id, undefined, undefined, 'denied', undefined, projectedTurnId);
+            await sessionDeny(sessionId, permission.id, undefined, undefined, 'denied', undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
         });
     };
 
@@ -522,11 +541,11 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession) return;
 
         await runPermissionAction('stop', (loading) => setLoadingButton(loading ? 'abort' : null), async () => {
-            await sessionDeny(sessionId, permission.id, undefined, undefined, 'abort', undefined, projectedTurnId);
+            await sessionDeny(sessionId, permission.id, undefined, undefined, 'abort', undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
             // Denying a single tool call is not always enough to stop the agent from continuing.
             // Also abort the current session run so the agent stops and waits for the user.
-            await sessionAbort(sessionId);
-            if (shouldForceReadOnlyAfterStop) {
+            await sessionAbort(sessionId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
+            if (shouldForceReadOnlyAfterStop && (serverId === undefined || areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId))) {
                 storage.getState().updateSessionPermissionMode(sessionId, 'read-only');
             }
         });
@@ -536,7 +555,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingForSession || loadingExecPolicy) return;
         
         await runPermissionAction('approve', (loading) => setLoadingButton(loading ? 'allow' : null), async () => {
-            await sessionAllow(sessionId, permission.id, undefined, undefined, 'approved', undefined, projectedTurnId);
+            await sessionAllow(sessionId, permission.id, undefined, undefined, 'approved', undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
         });
     };
     
@@ -544,7 +563,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingForSession || loadingExecPolicy) return;
         
         await runPermissionAction('approve_for_session', setLoadingForSession, async () => {
-            await sessionAllow(sessionId, permission.id, undefined, undefined, 'approved_for_session', undefined, projectedTurnId);
+            await sessionAllow(sessionId, permission.id, undefined, undefined, 'approved_for_session', undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
         });
     };
 
@@ -560,6 +579,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                 'approved_execpolicy_amendment',
                 { command: execPolicyCommand },
                 projectedTurnId,
+                ...(serverId !== undefined ? [{ serverId }] as const : [] as const),
             );
         });
     };
@@ -570,7 +590,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession || loadingExecPolicy) return;
         
         await runPermissionAction('stop', (loading) => setLoadingButton(loading ? 'abort' : null), async () => {
-            await sessionDeny(sessionId, permission.id, undefined, undefined, 'denied', undefined, projectedTurnId);
+            await sessionDeny(sessionId, permission.id, undefined, undefined, 'denied', undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
         });
     };
 

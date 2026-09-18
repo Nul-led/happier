@@ -39,7 +39,9 @@ export type LiveActivityRemoteRegistrationSkipReason =
     | 'direct_apns_client_metadata_missing'
     | 'background_wake_client_metadata_missing'
     | 'background_wake_expo_push_token_missing'
-    | 'background_wake_runtime_task_blocked';
+    | 'background_wake_runtime_task_blocked'
+    /** The Activity names a Session with no Home binding, so no Home can own a remote target. */
+    | 'home_binding_missing';
 
 export type LiveActivityRemoteRegistrationResult =
     | Readonly<{ status: 'registered'; targetId: string; activityInstanceKey: string; mode: LiveActivityRemoteTransportMode }>
@@ -110,6 +112,11 @@ export async function registerLiveActivityRemoteTargetFromTokenEvent(params: Rea
         };
     }
 
+    const serverId = normalizeNonEmpty(params.snapshot.serverId);
+    if (!serverId) {
+        return { status: 'skipped', reason: 'home_binding_missing', mode };
+    }
+
     const deviceId = normalizeNonEmpty(params.clientMetadata.deviceId);
     const bundleId = normalizeNonEmpty(params.clientMetadata.bundleId);
     const environment = params.clientMetadata.environment;
@@ -128,7 +135,7 @@ export async function registerLiveActivityRemoteTargetFromTokenEvent(params: Rea
 
     const result = await params.registerTarget({
         deviceId,
-        serverId: params.snapshot.serverId,
+        serverId,
         sessionId: params.snapshot.sessionId,
         activityInstanceKey: params.snapshot.activityInstanceKey,
         activityId,
@@ -179,6 +186,11 @@ export async function registerLiveActivityBackgroundWakeTarget(params: Readonly<
         };
     }
 
+    const serverId = normalizeNonEmpty(params.snapshot.serverId);
+    if (!serverId) {
+        return { status: 'skipped', reason: 'home_binding_missing', mode };
+    }
+
     const deviceId = normalizeNonEmpty(params.clientMetadata.deviceId);
     const expoPushToken = normalizeNonEmpty(params.expoPushToken);
 
@@ -199,7 +211,7 @@ export async function registerLiveActivityBackgroundWakeTarget(params: Readonly<
 
     const result = await params.registerTarget({
         deviceId,
-        serverId: params.snapshot.serverId,
+        serverId,
         sessionId: params.snapshot.sessionId,
         activityInstanceKey: params.snapshot.activityInstanceKey,
         activityId: params.snapshot.activityInstanceKey,
@@ -223,12 +235,31 @@ export type LiveActivityRemoteTargetRegistry = Readonly<{
         activityInstanceKey: string;
         targetId: string;
         mode: LiveActivityRemoteTransportMode;
+        serverId?: string | null;
     }>) => void;
     getTarget: (activityInstanceKey: string) => Readonly<{
         targetId: string;
         mode: LiveActivityRemoteTransportMode;
     }> | null;
     getTargetId: (activityInstanceKey: string) => string | null;
+    /** Snapshot for the incumbent reconciler; this is the same in-memory registry, not an outbox. */
+    listTargets: () => readonly Readonly<{
+        activityInstanceKey: string;
+        targetId: string;
+        mode: LiveActivityRemoteTransportMode;
+        serverId: string | null;
+    }>[];
+    /** Retries only superseded targets; the current target remains registered and discoverable. */
+    retryPendingEnds: (params: Readonly<{
+        activityInstanceKey: string;
+        markTargetEnded: (targetId: string, serverId: string | null) => Promise<void>;
+    }>) => Promise<void>;
+    /**
+     * Ends the remote target for this Activity instance. The mapping is forgotten only once the
+     * end request has actually succeeded — or resolved as already gone. A transport or server
+     * failure keeps the exact qualified target so the incumbent termination/reconnect lifecycle
+     * can retry it; no outbox, retry worker or second registry is introduced (L07-I38).
+     */
     markEnded: (params: Readonly<{
         activityInstanceKey: string;
         markTargetEnded: (targetId: string) => Promise<void>;
@@ -237,35 +268,100 @@ export type LiveActivityRemoteTargetRegistry = Readonly<{
 }>;
 
 export function createLiveActivityRemoteTargetRegistry(): LiveActivityRemoteTargetRegistry {
-    const targetsByActivityKey = new Map<string, Readonly<{
+    type RegisteredTarget = Readonly<{
         targetId: string;
         mode: LiveActivityRemoteTransportMode;
-    }>>();
+        serverId: string | null;
+    }>;
+    const targetsByActivityKey = new Map<string, RegisteredTarget>();
+    const pendingEndsByActivityKey = new Map<string, Map<string, RegisteredTarget>>();
+
+    async function endPendingTargets(params: Readonly<{
+        activityInstanceKey: string;
+        markTargetEnded: (targetId: string, serverId: string | null) => Promise<void>;
+    }>): Promise<void> {
+        const pending = pendingEndsByActivityKey.get(params.activityInstanceKey);
+        if (!pending) return;
+        for (const target of [...pending.values()]) {
+            await params.markTargetEnded(target.targetId, target.serverId);
+            if (pending.get(target.targetId) === target) pending.delete(target.targetId);
+        }
+        if (pending.size === 0) pendingEndsByActivityKey.delete(params.activityInstanceKey);
+    }
 
     return {
         remember(target) {
             const activityInstanceKey = normalizeNonEmpty(target.activityInstanceKey);
             const targetId = normalizeNonEmpty(target.targetId);
             if (!activityInstanceKey || !targetId) return;
-            targetsByActivityKey.set(activityInstanceKey, {
+            const next = {
                 targetId,
                 mode: target.mode,
-            });
+                serverId: normalizeNonEmpty(target.serverId),
+            };
+            const pendingForKey = pendingEndsByActivityKey.get(activityInstanceKey);
+            pendingForKey?.delete(targetId);
+            if (pendingForKey?.size === 0) pendingEndsByActivityKey.delete(activityInstanceKey);
+            const previous = targetsByActivityKey.get(activityInstanceKey);
+            if (previous && previous.targetId !== targetId) {
+                let pending = pendingEndsByActivityKey.get(activityInstanceKey);
+                if (!pending) {
+                    pending = new Map();
+                    pendingEndsByActivityKey.set(activityInstanceKey, pending);
+                }
+                pending.set(previous.targetId, previous);
+            }
+            targetsByActivityKey.set(activityInstanceKey, next);
         },
         getTarget(activityInstanceKey) {
-            return targetsByActivityKey.get(activityInstanceKey) ?? null;
+            const target = targetsByActivityKey.get(activityInstanceKey);
+            return target ? { targetId: target.targetId, mode: target.mode } : null;
         },
         getTargetId(activityInstanceKey) {
             return targetsByActivityKey.get(activityInstanceKey)?.targetId ?? null;
         },
+        listTargets() {
+            const targets = Array.from(targetsByActivityKey, ([activityInstanceKey, target]) => ({
+                activityInstanceKey,
+                targetId: target.targetId,
+                mode: target.mode,
+                serverId: target.serverId,
+            }));
+            for (const [activityInstanceKey, pending] of pendingEndsByActivityKey) {
+                for (const target of pending.values()) {
+                    targets.push({ activityInstanceKey, ...target });
+                }
+            }
+            return targets;
+        },
+        retryPendingEnds(params) {
+            return endPendingTargets(params);
+        },
         async markEnded(params) {
+            // Capture the current target before the first await. A replacement registered while
+            // cleanup is in flight is a new current target and must not be ended by this request.
             const target = targetsByActivityKey.get(params.activityInstanceKey);
+            await endPendingTargets({
+                activityInstanceKey: params.activityInstanceKey,
+                markTargetEnded: (targetId) => params.markTargetEnded(targetId),
+            });
             if (!target) return;
-            targetsByActivityKey.delete(params.activityInstanceKey);
             await params.markTargetEnded(target.targetId);
+            // Only a settled end forgets the mapping. Re-read it first: a concurrent registration
+            // may have replaced this target while the request was in flight.
+            if (targetsByActivityKey.get(params.activityInstanceKey) === target) {
+                targetsByActivityKey.delete(params.activityInstanceKey);
+                return;
+            }
+            const pending = pendingEndsByActivityKey.get(params.activityInstanceKey);
+            if (pending?.get(target.targetId) === target) {
+                pending.delete(target.targetId);
+                if (pending.size === 0) pendingEndsByActivityKey.delete(params.activityInstanceKey);
+            }
         },
         clear() {
             targetsByActivityKey.clear();
+            pendingEndsByActivityKey.clear();
         },
     };
 }

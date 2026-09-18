@@ -18,6 +18,62 @@ const localPermissionBridgeCoverageOptions = resolveAgentStateRequestCoverageOpt
 const LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE = localPermissionBridgeCoverageOptions.equivalentSources?.[0] ?? '';
 const LOCAL_PERMISSION_BRIDGE_STOPPED_REASON = localPermissionBridgeCoverageOptions.equivalentCompletedReasons?.[0] ?? '';
 
+const SHARED_ACTION_REQUEST = {
+    tool: 'Happier Action confirmation' as const,
+    kind: 'user_action' as const,
+    arguments: {
+        actionId: 'session.activity.get',
+        preview: { sessionId: 'session-action' },
+        sessionId: 'session-action',
+        turnId: 'turn-action',
+    },
+    createdAt: 1_000,
+    turnId: 'turn-action',
+    source: 'happier_action' as const,
+    responseTarget: {
+        kind: 'happier_action_confirmation_v1' as const,
+        requestId: 'action:req-1',
+        actionId: 'session.activity.get',
+        inputDigestV1: `sha256:${'0'.repeat(64)}`,
+        runtimeAccountId: 'runtime-account',
+        sessionId: 'session-action',
+        turnId: 'turn-action',
+    },
+};
+
+describe('shared Action confirmation projection', () => {
+    it('renders an Action-only request without exposing owner AgentState', () => {
+        const session = createSessionFixture({
+            id: 'session-action',
+            active: true,
+            accessLevel: 'edit',
+            metadataLayoutVersion: 1,
+            metadata: {
+                v: 1,
+                actionConfirmationsV1: {
+                    v: 1,
+                    requests: { 'action:req-1': SHARED_ACTION_REQUEST },
+                    completedRequests: {},
+                },
+            } as unknown as Metadata,
+            agentState: null,
+        });
+
+        expect(listPendingSessionRequests(session, [])).toEqual([
+            expect.objectContaining({
+                id: 'action:req-1',
+                source: 'happier_action',
+                tool: 'Happier Action confirmation',
+                turnId: 'turn-action',
+            }),
+        ]);
+        expect(derivePendingRequestFlagsFromSession(session, [])).toEqual({
+            hasPendingPermissionRequests: false,
+            hasPendingUserActionRequests: true,
+        });
+    });
+});
+
 describe('derivePendingRequestFlagsFromSession', () => {
     it('uses the strict public completion projection only for recipient presentation', () => {
         const requestId = 'permission-publicly-completed';
@@ -203,6 +259,38 @@ describe('derivePendingRequestFlagsFromSession', () => {
             hasPendingUserActionRequests: true,
         });
         expect(deriveLatestPendingRequestObservedAtFromSession(session)).toBe(123);
+    });
+
+    it('preserves the canonical Action request source for presentation', () => {
+        const session = createSessionFixture({
+            active: true,
+            agentState: {
+                requests: {
+                    'action:request-1': {
+                        tool: 'Happier Action confirmation',
+                        kind: 'user_action',
+                        source: 'happier_action',
+                        arguments: {
+                            actionId: 'session.title.set',
+                            preview: { summary: 'Rename the session' },
+                            sessionId: 'session-1',
+                            turnId: 'turn-1',
+                        },
+                        createdAt: 789,
+                        turnId: 'turn-1',
+                    },
+                },
+                completedRequests: null,
+            },
+        });
+
+        expect(listPendingSessionRequests(session)).toEqual([
+            expect.objectContaining({
+                id: 'action:request-1',
+                source: 'happier_action',
+                kind: 'user_action',
+            }),
+        ]);
     });
 
     it('surfaces live agentState user-action requests even while the session is inactive', () => {

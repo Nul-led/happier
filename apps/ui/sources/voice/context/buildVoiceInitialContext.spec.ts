@@ -5,17 +5,22 @@ import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 
 import { buildVoiceInitialContext, resolveVoiceInitialContext } from './buildVoiceInitialContext';
 
 function createSession(summaryText: string): Session {
   return {
     id: 's1',
+    serverId: getActiveServerSnapshot().serverId,
     seq: 0,
     createdAt: 0,
     updatedAt: 0,
     active: true,
     activeAt: 0,
+    // Content availability is evidence, never inference: an undeclared mode projects `locked`
+    // and would make every context assertion below pass by withholding everything.
+    encryptionMode: 'plain',
     metadata: {
       path: '/tmp/project',
       host: 'localhost',
@@ -41,6 +46,20 @@ function createUserMessage(text: string): Message {
 }
 
 describe('buildVoiceInitialContext', () => {
+  it('does not borrow an active Home transcript for a qualified target on another Home', () => {
+    storage.setState((state) => ({
+      ...state,
+      sessionListRowsByServerId: {
+        'other-home': { s1: { ...createSession('Other Home summary'), metadata: { summaryText: 'Other Home summary' } } },
+      },
+      ordinarySessionListMembershipByServerId: {
+        'other-home': ['s1'],
+      },
+    }) as never);
+    const out = buildVoiceInitialContext('s1', { targetSessionAddress: { serverId: 'other-home', sessionId: 's1' } });
+    expect(out).toContain('Other Home summary');
+    expect(out).not.toContain('Recent context');
+  });
   beforeEach(() => {
     storage.setState((state: any) => ({
       ...state,
@@ -60,11 +79,12 @@ describe('buildVoiceInitialContext', () => {
       },
       sessions: { s1: createSession('Summary visible only for tracked sessions') },
       sessionMessages: { s1: { messages: [createUserMessage('Recent context')] } },
-      sessionListRenderables: {},
+      sessionListRowsByServerId: {},
+      ordinarySessionListMembershipByServerId: {},
       sessionListIndexByServerId: {},
       concurrentSessionListCacheByServerId: {},
     }));
-    useVoiceTargetStore.getState().setTrackedSessionIds([]);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([]);
   });
 
   it('resolves current-UI-only, targetless, missing, and scoped session startup outcomes canonically', () => {
@@ -90,6 +110,7 @@ describe('buildVoiceInitialContext', () => {
     expect(scoped).toEqual({
       kind: 'session',
       sessionId: 's1',
+      sessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 's1' },
       initialContext: expect.stringContaining('THIS IS AN ACTIVE SESSION:'),
     });
   });
@@ -108,7 +129,7 @@ describe('buildVoiceInitialContext', () => {
   });
 
   it('includes summary and recent messages when the session is tracked', () => {
-    useVoiceTargetStore.getState().setTrackedSessionIds(['s1']);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{ serverId: getActiveServerSnapshot().serverId, sessionId: 's1' }]);
 
     const out = buildVoiceInitialContext('s1');
 
@@ -131,28 +152,36 @@ describe('buildVoiceInitialContext', () => {
           },
         },
       },
-      sessionListRenderables: {
-        s1: {
-          id: 's1',
-          updatedAt: 99,
-          metadata: {
-            ...createSession('Lookup session summary').metadata,
-            path: '/Users/alice/project-alpha',
+      sessionListRowsByServerId: {
+        [getActiveServerSnapshot().serverId]: {
+          s1: {
+            id: 's1',
+            updatedAt: 99,
+            // The canonical row is the projection Voice formats, so it carries its own
+            // content-availability evidence rather than inheriting the raw session's.
+            encryptionMode: 'plain',
+            metadata: {
+              ...createSession('Lookup session summary').metadata,
+              path: '/Users/alice/project-alpha',
+            },
           },
         },
       },
+      ordinarySessionListMembershipByServerId: {
+        [getActiveServerSnapshot().serverId]: ['s1'],
+      },
       sessionListIndexByServerId: {
-        'active-server': [
+        [getActiveServerSnapshot().serverId]: [
           {
             type: 'session',
             sessionId: 's1',
-            serverId: 'active-server',
+            serverId: getActiveServerSnapshot().serverId,
             serverName: 'Active',
           },
         ],
       },
     }));
-    useVoiceTargetStore.getState().setTrackedSessionIds(['s1']);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{ serverId: getActiveServerSnapshot().serverId, sessionId: 's1' }]);
 
     const out = buildVoiceInitialContext('s1');
 
@@ -185,9 +214,11 @@ describe('buildVoiceInitialContext', () => {
       sessionListIndexByServerId: {},
       concurrentSessionListCacheByServerId: {},
     }));
-    useVoiceTargetStore.getState().setTrackedSessionIds(['s1']);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{ serverId: getActiveServerSnapshot().serverId, sessionId: 's1' }]);
 
-    const out = buildVoiceInitialContext('hidden_voice', { targetSessionId: 's1' });
+    const out = buildVoiceInitialContext('hidden_voice', {
+      targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 's1' },
+    });
 
     expect(out).toContain('THIS IS THE CURRENT TARGET SESSION:');
     expect(out).toContain('## Session Summary');
@@ -242,9 +273,11 @@ describe('buildVoiceInitialContext', () => {
         s1: { messages: [createUserMessage('Target transcript')] },
       },
     }));
-    useVoiceTargetStore.getState().setTrackedSessionIds(['s1']);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{ serverId: getActiveServerSnapshot().serverId, sessionId: 's1' }]);
 
-    const out = buildVoiceInitialContext('hidden_voice', { targetSessionId: 's1' });
+    const out = buildVoiceInitialContext('hidden_voice', {
+      targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 's1' },
+    });
 
     expect(out).toContain('## Pending Requests');
     expect(out).toContain('Coding assistant needs user input to continue');
@@ -302,9 +335,11 @@ describe('buildVoiceInitialContext', () => {
         },
       },
     }));
-    useVoiceTargetStore.getState().setTrackedSessionIds(['s1']);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{ serverId: getActiveServerSnapshot().serverId, sessionId: 's1' }]);
 
-    const out = buildVoiceInitialContext('hidden_voice', { targetSessionId: 's1' });
+    const out = buildVoiceInitialContext('hidden_voice', {
+      targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 's1' },
+    });
 
     expect(out).toContain('## Pending Requests');
     expect(out).toContain('Coding assistant is requesting permission to use write in');
@@ -344,7 +379,7 @@ describe('buildVoiceInitialContext', () => {
       },
       sessionMessages: { s1: { messages: [] } },
     }));
-    useVoiceTargetStore.getState().setTrackedSessionIds(['s1']);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{ serverId: getActiveServerSnapshot().serverId, sessionId: 's1' }]);
 
     const out = buildVoiceInitialContext('s1');
 
@@ -410,9 +445,11 @@ describe('buildVoiceInitialContext', () => {
         },
       },
     }));
-    useVoiceTargetStore.getState().setTrackedSessionIds(['s1']);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{ serverId: getActiveServerSnapshot().serverId, sessionId: 's1' }]);
 
-    const out = buildVoiceInitialContext('hidden_voice', { targetSessionId: 's1' });
+    const out = buildVoiceInitialContext('hidden_voice', {
+      targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 's1' },
+    });
 
     expect(out).toContain('## Pending Requests');
     expect(out).toContain('Coding assistant needs user input to continue in');
@@ -538,9 +575,11 @@ describe('buildVoiceInitialContext', () => {
         },
       },
     }));
-    useVoiceTargetStore.getState().setTrackedSessionIds(['s1']);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{ serverId: getActiveServerSnapshot().serverId, sessionId: 's1' }]);
 
-    const out = buildVoiceInitialContext('hidden_voice', { targetSessionId: 's1' });
+    const out = buildVoiceInitialContext('hidden_voice', {
+      targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 's1' },
+    });
 
     expect(out).toContain('## Pending Requests');
     expect(out).not.toContain('<request_id>req_completed_transcript</request_id>');
@@ -609,9 +648,11 @@ describe('buildVoiceInitialContext', () => {
         },
       },
     }));
-    useVoiceTargetStore.getState().setTrackedSessionIds(['s1']);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{ serverId: getActiveServerSnapshot().serverId, sessionId: 's1' }]);
 
-    const out = buildVoiceInitialContext('hidden_voice', { targetSessionId: 's1' });
+    const out = buildVoiceInitialContext('hidden_voice', {
+      targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 's1' },
+    });
 
     expect(out).not.toContain('## Pending Requests');
     expect(out).not.toContain('<request_id>req_inactive</request_id>');
@@ -644,7 +685,7 @@ describe('buildVoiceInitialContext', () => {
         },
       },
     }));
-    useVoiceTargetStore.getState().setTrackedSessionIds(['s1']);
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{ serverId: getActiveServerSnapshot().serverId, sessionId: 's1' }]);
 
     const out = buildVoiceInitialContext('s1');
 

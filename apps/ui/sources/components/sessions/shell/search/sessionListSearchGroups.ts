@@ -4,7 +4,7 @@ import type {
 } from '@/sync/domains/sessionList/sessionListIndex';
 import {
     filterSessionListItemsForHeaderControls,
-    type SessionListHeaderFilterState,
+    type SessionListHeaderFilterInput,
 } from '../sessionListFilters';
 import { sessionTagKey } from '../sessionTagUtils';
 
@@ -21,7 +21,7 @@ export type SessionListSearchOutsideMatch = Readonly<{
 
 export function resolveSessionListMetadataSearchTargets(params: Readonly<{
     inventoryItems: ReadonlyArray<Extract<SessionListIndexItem, { type: 'session' }>>;
-    filters: SessionListHeaderFilterState;
+    filters: SessionListHeaderFilterInput;
 }>): ReadonlyArray<SessionListSearchOutsideMatch> {
     return filterSessionListItemsForHeaderControls(params.inventoryItems, params.filters).flatMap((item) => {
         if (item.type !== 'session' || !item.serverId) return [];

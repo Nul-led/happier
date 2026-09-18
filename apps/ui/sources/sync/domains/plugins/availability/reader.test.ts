@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+    createPackageAssetArchiveV1,
     PluginAccountAvailabilityIntentReadResponseV1Schema,
     PluginMachineMaterializationV1Schema,
 } from '@happier-dev/protocol/plugins/availability';
@@ -88,6 +89,7 @@ function intentRead() {
                 resources: [],
             },
         },
+        packageAssets: [],
         uiArtifacts: [{
             release: { pluginId: 'com.acme.fixture', version: '1.2.3' },
             ...hostedSlot,
@@ -363,6 +365,60 @@ describe('Plugin Account Availability reader', () => {
         });
         expect(reader.readCurrentPackageAsset({ pluginId: 'com.acme.fixture' }))
             .not.toHaveProperty('packageAsset.artifactId');
+    });
+
+    it('projects the selected package archive into hosting administration without requiring a UI slot', () => {
+        const response = intentRead();
+        if (!response.release) throw new Error('Fixture requires a release.');
+        const reader = createPluginAccountAvailabilityReader({
+            scope,
+            snapshot: snapshot({
+                intentReads: [{
+                    pluginId: 'com.acme.fixture',
+                    response: { ...response, release: { ...response.release, uiSlots: [] }, uiArtifacts: [] },
+                }],
+            }),
+        });
+        expect(reader.readCurrentHostedArtifactAdministration({ pluginId: 'com.acme.fixture' }))
+            .toMatchObject({
+                kind: 'available',
+                release: { packageAssetArchive: response.release.packageAssetArchive },
+            });
+    });
+
+    it('admits package publication only for an enabled opted-in release with server hosting and no exact hosted archive', () => {
+        const response = intentRead();
+        if (!response.release || !response.intent) throw new Error('Fixture requires a selected release.');
+        const manifest = {
+            ...response.release.normalizedManifest,
+            contributes: {
+                resources: [{ id: 'mark', kind: 'asset', path: 'assets/mark.png', contentType: 'image/png' }],
+            },
+        };
+        const archive = createPackageAssetArchiveV1({
+            manifest,
+            files: [{ path: 'assets/mark.png', bytes: new Uint8Array([1, 2, 3]) }],
+        });
+        if (!archive) throw new Error('Fixture requires a package archive.');
+        const release = { ...response.release, normalizedManifest: manifest, packageAssetArchive: archive.descriptor, uiSlots: [] };
+        const read = (overrides: Readonly<Record<string, unknown>> = {}) => createPluginAccountAvailabilityReader({
+            scope,
+            snapshot: snapshot({ intentReads: [{ pluginId: release.ref.pluginId, response:
+                PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
+                    ...response, release, uiArtifacts: [], packageAssets: [], ...overrides,
+                }),
+            }] }),
+        }).readCurrentHostedPackageAssetPublicationTarget({ pluginId: release.ref.pluginId });
+
+        expect(read()).toMatchObject({ kind: 'available', target: { release: release.ref, descriptor: archive.descriptor } });
+        expect(read({ hostingCapability: { enabled: false } })).toMatchObject({ kind: 'unavailable' });
+        expect(read({ intent: { ...response.intent, offlineUiHosting: 'disabled' } })).toMatchObject({ kind: 'unavailable' });
+        expect(read({ intent: { ...response.intent, enabled: false } })).toMatchObject({ kind: 'unavailable' });
+        expect(read({ packageAssets: [{
+            release: release.ref,
+            descriptor: archive.descriptor,
+            artifactId: '00000000-0000-4000-8000-000000000002',
+        }] })).toMatchObject({ kind: 'unavailable', code: 'artifact_already_hosted' });
     });
 
     it('admits the current normalized declaration for Account Settings even when activation is disabled', () => {

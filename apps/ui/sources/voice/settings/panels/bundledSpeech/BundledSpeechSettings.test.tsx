@@ -8,6 +8,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { createDeferred, renderScreen } from '@/dev/testkit';
+import { getStorage as getActualStorage } from '@/sync/domains/state/storageStore';
 import { VoiceLocalTtsSchema } from '@/sync/domains/settings/voiceLocalTtsSettings';
 import {
   readLocalConversationVoiceSettings,
@@ -229,9 +230,11 @@ const openAiCompatTtsEntry = createVoiceProviderRegistry({
   }],
 }).get(OPENAI_COMPAT_TTS_ID)!;
 
-const fetchCatalog = vi.fn(async (_entry: unknown, catalog: string): Promise<CatalogRows> => catalog === 'models'
-  ? [{ id: 'gemini-test', name: 'Gemini Test', metadata: {} }]
-  : [{ id: 'en-US-Test-A', name: 'English Test', metadata: {} }]);
+const fetchCatalog = vi.hoisted(() => vi.fn(
+  async (_entry: unknown, catalog: string): Promise<CatalogRows> => catalog === 'models'
+    ? [{ id: 'gemini-test', name: 'Gemini Test', metadata: {} }]
+    : [{ id: 'en-US-Test-A', name: 'English Test', metadata: {} }],
+));
 const executionMachine = {
   machineId: 'machine-a' as string | null,
   machineLabel: 'Machine A' as string | null,
@@ -285,7 +288,7 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
   return await createPartialStorageModuleMock(importOriginal, {
     storage: createLiveStorageStoreMock(() => ({
       settings: { voice: settingsActionState.voice } as never,
-      settingsScope: null,
+      settingsScope: { serverId: 'server-1', accountId: 'account-1' },
       settingsVersion: settingsActionState.settingsVersion,
     })),
   });
@@ -492,12 +495,17 @@ describe('BundledSpeechSettings', () => {
         signal,
       }),
     });
+    expect(createDefaultVoiceProviderRegistry().get(providerId)).toBe(entry);
     const { createBundledLocalSttProviderSpec } = await import('./BundledSpeechSettings');
     const spec = createBundledLocalSttProviderSpec(entry);
     if (!spec) throw new Error('speech settings spec is required');
     const voice = localConversationVoiceWithSttProvider(providerId, { model: 'speech-1' });
     settingsActionState.voice = voice;
     executeSettingsAction.mockResolvedValueOnce({ patch: { model: 'speech-2' } });
+    const settingsStore = getActualStorage();
+    const previousSettingsScope = settingsStore.getState().settingsScope;
+    settingsStore.setState({ settingsScope: { serverId: 'server-1', accountId: 'account-1' } });
+    onTestFinished(() => settingsStore.setState({ settingsScope: previousSettingsScope }));
     const rendered = await renderScreen(React.createElement(spec.Settings, {
       cfgStt: {
         provider: providerId,
@@ -1108,6 +1116,7 @@ describe('BundledSpeechSettings', () => {
         format: 'mp3',
       }),
       setVoice: vi.fn(),
+      networkTimeoutMs: 15_000,
       popoverBoundaryRef: null,
     }));
 
@@ -1298,6 +1307,7 @@ describe('BundledSpeechSettings', () => {
         format: 'mp3',
       }),
       setVoice: vi.fn(),
+      networkTimeoutMs: 15_000,
       popoverBoundaryRef: null,
     }));
 

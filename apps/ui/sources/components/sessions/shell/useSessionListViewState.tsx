@@ -1,3 +1,7 @@
+import {
+    normalizeSessionAddress,
+    sessionAddressKey as audienceSessionAddressKey,
+} from '@/sync/domains/session/sessionAddress';
 import * as React from 'react';
 import { Platform, type ViewToken } from 'react-native';
 import { usePathname } from 'expo-router';
@@ -10,7 +14,7 @@ import {
     useProfile,
     useLocalSettingMutable,
     useSessionListRowRenderablesForItems,
-    useSessionOrganizationProjection,
+    useSessionOrganizationProjections,
 } from '@/sync/domains/state/storage';
 import { useIsTablet } from '@/utils/platform/responsive';
 import { useSessionListSelectionState } from '@/hooks/session/useSessionListSelectionState';
@@ -34,6 +38,7 @@ import {
     type SessionListSurfaceOwnership,
 } from './surface/sessionListSurfaceOwnership';
 import { useVisibleSessionListPaneState, type VisibleSessionListPaneState } from '@/hooks/session/useVisibleSessionListPaneState';
+import { useSessionListLayoutChoice } from '@/hooks/session/sessionListLayoutIntent';
 import {
     areSessionListIndexItemsEqual,
     buildSessionListIndexNodeId,
@@ -50,6 +55,7 @@ import { useSessionListMoveSheet } from './move-sheet/useSessionListMoveSheet';
 import {
     buildServerScopedSessionKey,
     buildVisibleSessionNavigationEntries,
+    findVisibleSessionNavigationEntryByScope,
     moveSessionMruEntryToFront,
     resolveVisibleSessionEdgeNavigation,
     resolveSessionMruNavigation,
@@ -59,6 +65,7 @@ import {
 import { useSessionNavigationCursorPublisher } from '@/sync/domains/session/navigation/useSessionNavigationCursorPublisher';
 import { ESCAPE_LAYER_PRIORITIES, useEscapeLayer } from '@/keyboard/escape';
 import {
+    useFocusedSessionAddress,
     useSessionSurfaceVisibilitySnapshot,
 } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
@@ -68,7 +75,13 @@ import { t } from '@/text';
 import type { TranslationKey } from '@/text';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import type { TreeDropMeasurableRef } from '@/components/ui/treeDragDrop';
+import type { VirtualizedListRef } from '@/components/ui/lists/virtualized/virtualizedListTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import {
+    normalizeSessionListSectionModeV1,
+    resolveSessionListLayoutApplicability,
+    resolveSessionListSessionRowDragPolicy,
+} from '@/sync/domains/session/listing/sessionListLayout';
 import {
     replaceExternalSessionStatusDemandViewport,
 } from '@/sync/runtime/orchestration/externalSessions/externalSessionStatusDemandCoordinator';
@@ -77,14 +90,12 @@ import {
 } from '@/sync/runtime/orchestration/externalSessions/collectExternalSessionStatusDemandViewportEntries';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import {
-    resolveSessionOrganizationMutationScope,
+    requireSessionOrganizationMutationScope,
     writeSessionOrganizationFolderAssignment,
     writeSessionOrganizationFolders,
     writeSessionOrganizationGroupOrder,
     writeSessionOrganizationPin,
-    writeSessionOrganizationPinForSessionKey,
     writeSessionOrganizationTagLabels,
-    writeSessionOrganizationTagLabelsForSessionKey,
     writeSessionOrganizationWorkspaceOrder,
     type SessionOrganizationMutationScope,
 } from '@/sync/ops/sessionOrganization';
@@ -110,7 +121,14 @@ import {
     resolveDurableWorkspaceRefForSessionListHeader,
     type SessionFoldersV1,
 } from '@/sync/domains/session/folders';
-import { buildSessionOrganizationListViewState } from '@/sync/domains/session/organization/viewState';
+import {
+    buildSessionOrganizationListViewStateForServers,
+    completeSessionOrganizationOrderItemAddresses,
+    partitionSessionFolderWritesByServerId,
+    partitionSessionOrganizationGroupOrderByServerId,
+    partitionSessionWorkspaceOrderByServerId,
+} from '@/sync/domains/session/organization/viewState';
+import { resolveSessionListOrganizationServerIds } from '@/sync/domains/session/organization/sessionListOrganizationServerIds';
 import {
     resolveSessionAttentionStanding,
     type SessionAttentionStandingPolicy,
@@ -123,8 +141,19 @@ import {
 } from './sessionListFilters';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { HappyError } from '@/utils/errors/errors';
-import { useActiveServerAccountScope, useSessionListRowStateByServerId } from '@/sync/store/hooks';
+import {
+    useActiveServerAccountScope,
+    useOrdinarySessionListMembershipByServerId,
+    useSessionListHomeObservations,
+    useSessionListRowsByServerId,
+} from '@/sync/store/hooks';
 import { readSessionListRowsForServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
+import {
+    readSessionListSearchCorpusSessionIdsForHome,
+    resolveSessionListSearchCorpus,
+    reuseSessionListSearchCorpus,
+    type SessionListSearchCorpus,
+} from './search/sessionListSearchCorpus';
 import { deleteSessionDraft } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import {
     SESSION_LIST_MEMORY_SEARCH_MIN_QUERY_LENGTH,
@@ -132,20 +161,21 @@ import {
     useSessionListMemorySearchContext,
     type SessionListMemorySearchTarget,
 } from './search/useSessionListMemorySearchAugmentation';
-import { useSessionListHeaderFilterRetention } from './search/useSessionListHeaderFilterRetention';
+import {
+    useSessionListViewFilterController,
+    type SessionListCorpusStorage,
+    type SessionListViewFilterController,
+} from './search/useSessionListViewFilterController';
 import {
     resolveSessionListMetadataSearchTargets,
     type SessionListSearchOutsideMatch,
 } from './search/sessionListSearchGroups';
-import { buildSessionListRetentionKey } from './scroll/sessionListRetentionKey';
-import { useSessionListPaneSourceScopeKey } from './sessionListPaneRetention';
 import {
     SESSION_LIST_FILTERED_NO_RESULTS_MESSAGE_KEY,
     type SessionListVirtualizedNode,
 } from './sessionListVirtualizedContent';
 import {
     buildSessionListRowStorePriorityKeys,
-    isSessionListRowStorePriorityItem,
     resolveSessionListRowStoreScopeKey,
     resolveSessionListRowStoreSubscriptionKeysForViewport,
     reuseSessionListRowStoreKeySet,
@@ -157,7 +187,7 @@ import type {
     SessionBulkActionTarget,
 } from '@/components/sessions/actions/sessionBulkActionExecution';
 import {
-    buildSessionListSelectionScopeKey,
+    buildSessionListSelectionScopeKeyForView,
     readSessionListSelectionKeysFromVisibleEntries,
 } from './selection/sessionListSelectionKeys';
 import {
@@ -165,11 +195,24 @@ import {
 } from './selection/SessionListSelectionContext';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { transcriptSearchUnavailableHint } from '@/components/appShell/search/transcriptSearchUnavailableHint';
+import { SessionListFilterControl } from './search/SessionListFilterControl';
+import {
+    buildSessionListFilterTagOptionId,
+    reduceSessionListFilterEditorSelection,
+} from './search/sessionListFilterEditorModel';
+import { buildSessionListFilterTagOptions } from './search/sessionListFilterTagOptions';
+import type { SessionListTagShortcutOption } from './search/SessionListSearchChrome';
+import type {
+    QualifiedTagAddress,
+    SessionListViewContext,
+} from './search/sessionListViewFilters';
 
 const NATIVE_LIST_ALL_RENDERED_ROW_STORE_MAX_ITEMS = 200;
 const EMPTY_MEMORY_MATCHED_SESSION_KEYS: ReadonlySet<string> = new Set();
 const EMPTY_VIEWABLE_SESSION_ROW_KEYS: ReadonlySet<string> = new Set();
 const EMPTY_KNOWN_TAGS: ReadonlyArray<string> = [];
+const EMPTY_LOCAL_TAG_SELECTIONS: ReadonlyArray<QualifiedTagAddress> = [];
+const EMPTY_TAG_SHORTCUT_OPTIONS: ReadonlyArray<SessionListTagShortcutOption> = [];
 const EMPTY_MEMORY_MATCHED_SESSION_TARGETS: ReadonlyArray<SessionListMemorySearchTarget> = [];
 const EMPTY_SESSION_FOLDER_MOVE_TARGETS: readonly SessionFolderMoveTarget[] = [];
 const SESSION_LIST_IDLE_MOVE_RESULT = Object.freeze({
@@ -205,27 +248,13 @@ function mergeSessionListRowStoreKeySets(
     return merged;
 }
 
-function resolveSessionTreeRowId(sessionKey: string | null): string | null {
+function resolveSessionTreeRowId(
+    sessionKey: string | null,
+    knownSessionEntries: readonly VisibleSessionNavigationEntry[],
+): string | null {
     if (!sessionKey) return null;
-    const separatorIndex = sessionKey.indexOf(':');
-    if (separatorIndex <= 0) return null;
-    const serverId = sessionKey.slice(0, separatorIndex);
-    const sessionId = sessionKey.slice(separatorIndex + 1);
-    return serverId && sessionId ? treeRowId.session(serverId, sessionId) : null;
-}
-
-function buildStatusDemandSessionItemFromRowKey(
-    rowKey: string,
-): Extract<SessionListIndexItem, { type: 'session' }> | null {
-    const separatorIndex = rowKey.indexOf('\u0000');
-    const serverId = separatorIndex >= 0 ? rowKey.slice(0, separatorIndex) : '';
-    const sessionId = separatorIndex >= 0 ? rowKey.slice(separatorIndex + 1) : rowKey;
-    if (!sessionId) return null;
-    return {
-        type: 'session',
-        sessionId,
-        ...(serverId ? { serverId } : null),
-    };
+    const entry = knownSessionEntries.find((candidate) => candidate.sessionKey === sessionKey);
+    return entry?.serverId ? treeRowId.session(entry.serverId, entry.sessionId) : null;
 }
 
 function resolveAdjacentSessionSelectionKey(params: Readonly<{
@@ -286,7 +315,7 @@ function buildSessionBulkActionTargetFromSessionItem(params: Readonly<{
         active: actionTarget.isActive,
         archived: actionTarget.isArchived,
         pinned: actionTarget.isPinned,
-        hasAdminAccess: actionTarget.hasAdminAccess,
+        canUnarchive: actionTarget.canUnarchive,
         canStop: actionTarget.canStop,
         canArchive: actionTarget.canArchive,
         canMoveToFolder: organizationEligibility.canUseSessionFolders,
@@ -303,17 +332,14 @@ function buildSessionBulkActionTargetFromSessionItem(params: Readonly<{
 
 function buildStringListSignature(values: ReadonlyArray<string> | null | undefined): string {
     if (!values || values.length === 0) return '';
-    return values.join('\u0001');
+    return JSON.stringify(values);
 }
 
 function buildStringRecordSignature(value: Readonly<Record<string, string>> | null | undefined): string {
     if (!value) return '';
     const entries = Object.entries(value);
     if (entries.length === 0) return '';
-    return entries
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entryValue]) => `${key}\u0001${entryValue}`)
-        .join('\u0002');
+    return JSON.stringify(entries.sort(([left], [right]) => left.localeCompare(right)));
 }
 
 /**
@@ -326,59 +352,79 @@ function buildAttentionStandingSignature(policy: SessionAttentionStandingPolicy)
     const defaultPart = policy.defaultStanding ? '1' : '0';
     const overrides = Object.entries(policy.overridesBySessionKey);
     if (overrides.length === 0) return defaultPart;
-    return [
+    return JSON.stringify([
         defaultPart,
-        ...overrides
-            .sort(([left], [right]) => left.localeCompare(right))
-            .map(([key, standing]) => `${key}\u0001${standing ? '1' : '0'}`),
-    ].join('\u0002');
+        ...overrides.sort(([left], [right]) => left.localeCompare(right)),
+    ]);
 }
 
 function buildStringArrayRecordSignature(value: Readonly<Record<string, readonly string[]>> | null | undefined): string {
     if (!value) return '';
     const entries = Object.entries(value);
     if (entries.length === 0) return '';
-    return entries
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entryValue]) => `${key}\u0001${buildStringListSignature(entryValue)}`)
-        .join('\u0002');
+    return JSON.stringify(entries.sort(([left], [right]) => left.localeCompare(right)));
 }
 
 function buildSessionFolderWorkspaceSignature(workspace: SessionFolderWorkspaceRefV1): string {
     if (workspace.t === 'workspaceScope') {
-        return [
+        return JSON.stringify([
             workspace.t,
             workspace.serverId ?? '',
             workspace.machineId ?? '',
             workspace.rootPath,
-        ].join('\u0001');
+        ]);
     }
-    return [
+    return JSON.stringify([
         workspace.t,
         workspace.serverId ?? '',
         workspace.workspaceRefId,
-    ].join('\u0001');
+    ]);
 }
 
 function buildSessionFoldersSignature(value: SessionFoldersV1): string {
     if (value.folders.length === 0) return '';
-    return value.folders
-        .map((folder) => [
+    return JSON.stringify(value.folders.map((folder) => [
             folder.id,
             folder.name,
             folder.parentId ?? '',
             folder.renderWorkspaceKey ?? '',
             buildSessionFolderWorkspaceSignature(folder.workspace),
             folder.sortKey ?? '',
-        ].join('\u0001'))
-        .join('\u0002');
+        ]));
+}
+
+async function runSessionOrganizationWriteForHome(
+    serverId: string,
+    write: () => Promise<void>,
+): Promise<void> {
+    try {
+        await write();
+    } catch (error) {
+        const message = error instanceof HappyError ? error.message : t('errors.unknownError');
+        const canTryAgain = error instanceof HappyError ? error.canTryAgain : true;
+        throw new HappyError(
+            `${t('teams.homeLabel')} ${serverId}: ${message}${canTryAgain ? ` ${t('common.retry')}` : ''}`,
+            canTryAgain,
+            { code: error instanceof HappyError ? error.code : 'session_organization_write_failed' },
+        );
+    }
+}
+
+export function buildSessionFolderMoveTargetSignature(
+    foldersSignature: string,
+    workspace: SessionFolderWorkspaceRefV1,
+    folderId: string | null | undefined,
+): string {
+    return JSON.stringify([
+        foldersSignature,
+        buildSessionFolderWorkspaceSignature(workspace),
+        folderId ?? '',
+    ]);
 }
 
 function buildRowLabelSignature(labels: ReadonlyMap<string, string>): string {
     if (labels.size === 0) return '';
-    return Array.from(labels.entries())
-        .map(([key, label]) => `${key}\u0001${label}`)
-        .join('\u0002');
+    return JSON.stringify(Array.from(labels.entries()));
 }
 
 function stringArraysEqual(left: readonly string[], right: readonly string[]): boolean {
@@ -422,6 +468,13 @@ function useStableSessionListRowStoreKeySet<T extends ReadonlySet<string>>(value
     return stableValue;
 }
 
+function useStableSessionListSearchCorpus(value: SessionListSearchCorpus): SessionListSearchCorpus {
+    const previousRef = React.useRef<SessionListSearchCorpus | null>(null);
+    const stableValue = reuseSessionListSearchCorpus(previousRef.current, value);
+    previousRef.current = stableValue;
+    return stableValue;
+}
+
 function useStableNullableSessionListRowStoreKeySet<T extends ReadonlySet<string>>(
     value: T | null,
 ): T | null {
@@ -445,6 +498,8 @@ function areVirtualizedNodeArraysReferenceEqual(
 export type SessionListViewStateOptions = Readonly<{
     pathname?: string;
     surfaceOwnership?: Partial<SessionListSurfaceOwnership>;
+    corpusStorage?: SessionListCorpusStorage;
+    viewContext?: SessionListViewContext;
 }>;
 
 export function useSessionListViewState(
@@ -452,11 +507,19 @@ export function useSessionListViewState(
     options: SessionListViewStateOptions = {},
 ) {
     const surfaceOwnership = normalizeSessionListSurfaceOwnership(options.surfaceOwnership);
-    const sessionListPaneState = useVisibleSessionListPaneState(storageKind, {
+    const filterController = useSessionListViewFilterController(
+        options.corpusStorage ?? 'active',
+        options.viewContext,
+    );
+    const effectiveStorageKind = filterController.sourceAvailable ? filterController.filters.source : 'persisted';
+    const sessionListPaneState = useVisibleSessionListPaneState(effectiveStorageKind, {
         pathname: options.pathname,
         sessionListSurfaceDataActive: surfaceOwnership.dataActive,
+        queryHomes: filterController.pagingHomes,
+        emptyQuerySelectionComplete: filterController.emptyQuerySelectionComplete,
+        corpusStorage: options.corpusStorage ?? 'active',
     });
-    return useSessionListViewStateFromPaneState(storageKind, sessionListPaneState, {
+    return useSessionListViewStateFromPaneState(effectiveStorageKind, sessionListPaneState, filterController, {
         ...options,
         surfaceOwnership,
     });
@@ -465,6 +528,7 @@ export function useSessionListViewState(
 export function useSessionListViewStateFromPaneState(
     storageKind: SessionListStorageFilter,
     sessionListPaneState: VisibleSessionListPaneState,
+    filterController: SessionListViewFilterController,
     options: SessionListViewStateOptions = {},
 ) {
     const pathname = usePathname();
@@ -476,27 +540,23 @@ export function useSessionListViewStateFromPaneState(
         : '';
     // Same scope identity the pane retention keys by, so a published order and the pane
     // it was captured from can never describe different server/selection scopes.
-    const sessionNavigationSourceScopeKey = useSessionListPaneSourceScopeKey();
-    const memorySearchContext = useSessionListMemorySearchContext({ serverId: activeOrganizationServerId });
+    const sessionNavigationSourceScopeKey = filterController.retentionScopeKey;
+    const transcriptSearchServerId = filterController.viewContext.kind === 'team'
+        ? filterController.viewContext.team.serverId
+        : activeOrganizationServerId;
+    // Team surfaces are already qualified to one Home and must not borrow the
+    // globally focused Home for transcript search. Global surfaces deliberately
+    // retain the selected Home's incumbent contextual-provider semantics.
+    const memorySearchContext = useSessionListMemorySearchContext({ serverId: transcriptSearchServerId });
     const renderPaneState = sessionListPaneState;
-    const retentionKey = React.useMemo(
-        () => buildSessionListRetentionKey(
-            storageKind,
-            `${sessionNavigationSourceScopeKey}\u0000transcript:${memorySearchContext.activeScopeKey}`,
-        ),
-        [memorySearchContext.activeScopeKey, sessionNavigationSourceScopeKey, storageKind],
-    );
-    const {
-        searchQuery,
-        setSearchQuery,
-        selectedHeaderTags,
-        setSelectedHeaderTags,
-    } = useSessionListHeaderFilterRetention(retentionKey);
+    const searchQuery = filterController.filters.searchQuery;
+    const setSearchQuery = filterController.setSearchQuery;
     const isTablet = useIsTablet();
     const [sessionListOrderingModeV1] = useSettingMutable('sessionListOrderingModeV1');
-    const sessionListSectionModeV1 = useSetting('sessionListSectionModeV1') === 'single'
-        ? 'single'
-        : 'activity';
+    const sessionListSectionModeV1 = normalizeSessionListSectionModeV1(useSetting('sessionListSectionModeV1'));
+    const sessionListActiveGroupingV1 = useSetting('sessionListActiveGroupingV1');
+    const sessionListInactiveGroupingV1 = useSetting('sessionListInactiveGroupingV1');
+    const sessionListLayoutChoice = useSessionListLayoutChoice();
     const sessionListFolderSortModeV1 = useSetting('sessionListFolderSortModeV1') === 'mixed' ? 'mixed' : 'foldersFirst';
     const sessionFolderViewModeV1 = useSetting('sessionFolderViewModeV1') === 'tree' ? 'tree' : 'off';
     const sessionTagsEnabled = useSetting('sessionTagsEnabled');
@@ -507,8 +567,22 @@ export function useSessionListViewStateFromPaneState(
     const [collapsedGroupKeysV1, setCollapsedGroupKeysV1] = useLocalSettingMutable('collapsedGroupKeysV1');
     const [sessionMruOrderV1, setSessionMruOrderV1] = useLocalSettingMutable('sessionMruOrderV1');
     const [sessionListFocusedFolderV1, setSessionListFocusedFolderV1] = useLocalSettingMutable('sessionListFocusedFolderV1');
-    const sessionFoldersFeatureEnabled = useFeatureEnabled('sessions.folders');
-    const folderActionsEnabled = sessionFoldersFeatureEnabled;
+    const folderFeatureEnabledServerIds = renderPaneState.folderFeatureEnabledServerIds ?? EMPTY_KNOWN_TAGS;
+    const folderFeatureEnabledServerIdSet = React.useMemo(
+        () => new Set(folderFeatureEnabledServerIds),
+        [folderFeatureEnabledServerIds],
+    );
+    const isFolderActionsEnabledForServerId = React.useCallback((serverId: string | null | undefined) => (
+        Boolean(serverId && folderFeatureEnabledServerIdSet.has(serverId))
+    ), [folderFeatureEnabledServerIdSet]);
+    const folderActionsEnabled = folderFeatureEnabledServerIds.length > 0;
+    const sessionListLayoutApplicability = resolveSessionListLayoutApplicability({
+        choice: sessionListLayoutChoice,
+        activeGroupingV1: sessionListActiveGroupingV1,
+        inactiveGroupingV1: sessionListInactiveGroupingV1,
+        folderViewModeV1: sessionFolderViewModeV1,
+        foldersFeatureEnabled: folderActionsEnabled,
+    });
     const sessionListDensity = useSetting('sessionListDensity');
     const sessionListWorkingIndicatorStyle = useSetting('sessionListNarrowWorkingIndicatorStyle');
     const sessionListWorkingStatusAnimatedTextEnabled = useSetting('sessionListWorkingStatusAnimatedTextEnabled');
@@ -533,11 +607,66 @@ export function useSessionListViewStateFromPaneState(
         platform: Platform.OS,
     });
     const currentUserId = typeof profile?.id === 'string' ? profile.id : null;
-    const organizationProjection = useSessionOrganizationProjection(activeOrganizationServerId);
-    const organizationListViewState = React.useMemo(() => buildSessionOrganizationListViewState({
-        serverId: activeOrganizationServerId,
-        projection: organizationProjection,
-    }), [activeOrganizationServerId, organizationProjection]);
+    // The exact Homes this surface can present rows for. Resolved through the one
+    // organization owner both here and in the index hook, so a legacy/ordinary corpus
+    // cannot show a Home's rows while their organization state is never read.
+    const organizationServerIds = React.useMemo(() => resolveSessionListOrganizationServerIds({
+        queryHomeServerIds: filterController.pagingHomes?.map((home) => home.serverId),
+        allowedServerIds: selection.allowedServerIds,
+        activeServerId: selection.activeServerId,
+    }), [filterController.pagingHomes, selection.activeServerId, selection.allowedServerIds]);
+    const organizationProjectionServerIds = React.useMemo(
+        () => filterController.homeOptions.map((home) => home.serverId),
+        [filterController.homeOptions],
+    );
+    const selectedOrganizationProjectionsByServerId = useSessionOrganizationProjections(
+        organizationServerIds,
+    );
+    const organizationProjectionsByServerId = useSessionOrganizationProjections(
+        organizationProjectionServerIds,
+    );
+    const organizationListViewState = React.useMemo(() => buildSessionOrganizationListViewStateForServers({
+        serverIds: organizationServerIds,
+        projectionsByServerId: selectedOrganizationProjectionsByServerId,
+    }), [organizationServerIds, selectedOrganizationProjectionsByServerId]);
+    // The compact shortcut and the full editor present the same qualified tag
+    // options and hand the same option id back to the one filter writer. The
+    // shortcut shows a tag's label but selects its Home-local id, so equal labels
+    // on two Homes stay two selections and changing the focused Home retargets
+    // nothing. Only the Homes this corpus is currently reading are offered.
+    const selectedHomeServerIdSet = React.useMemo(
+        () => new Set(filterController.filters.homeServerIds),
+        [filterController.filters.homeServerIds],
+    );
+    const tagShortcutOptions = React.useMemo(() => buildSessionListFilterTagOptions({
+        homeOptions: filterController.homeOptions,
+        organizationProjectionsByServerId,
+    })
+        .filter((tag) => selectedHomeServerIdSet.has(tag.serverId))
+        .map((tag): SessionListTagShortcutOption => ({
+            id: buildSessionListFilterTagOptionId(tag),
+            label: tag.label,
+        })), [
+        filterController.homeOptions,
+        organizationProjectionsByServerId,
+        selectedHomeServerIdSet,
+    ]);
+    const selectedTagShortcutOptionIds = React.useMemo(
+        () => filterController.filters.tagIds.map(buildSessionListFilterTagOptionId),
+        [filterController.filters.tagIds],
+    );
+    const handleToggleTagShortcutOption = React.useCallback((optionId: string) => {
+        filterController.updateFilters((current) => (
+            reduceSessionListFilterEditorSelection(current, optionId)
+        ));
+    }, [filterController]);
+    // A Home that answered the strict query already applied the tag predicate
+    // before pagination, so its rows are authoritative. Only the legacy
+    // owner/direct adapter, whose released GET cannot express tags, filters the
+    // loaded rows locally.
+    const locallyFilteredTagIds = filterController.corpusPresentation === 'legacy_owner_or_direct'
+        ? filterController.filters.tagIds
+        : EMPTY_LOCAL_TAG_SELECTIONS;
     // One policy for the whole selection instead of a per-row settings subscription: the selection
     // bar needs the same stored standing the row's own menu reads, and the overrides record is
     // already held by the organization view state above.
@@ -557,6 +686,17 @@ export function useSessionListViewStateFromPaneState(
                             ? [tag.display.value]
                             : []),
                 ],
+            ),
+        ),
+        [organizationListViewState.sessionTagsV1],
+    );
+    // Home-local tag ids per loaded Session. The legacy adapter filters by these
+    // opaque ids rather than by the labels beside them, so renaming a tag keeps the
+    // selection and two Homes' same-label tags never match each other's rows.
+    const sessionTagIdsBySessionKey = React.useMemo(
+        () => Object.fromEntries(
+            Object.entries(organizationListViewState.sessionTagsV1).map(
+                ([sessionKey, tags]) => [sessionKey, tags.map((tag) => tag.tagId)],
             ),
         ),
         [organizationListViewState.sessionTagsV1],
@@ -612,19 +752,19 @@ export function useSessionListViewStateFromPaneState(
         selectionPresentation: selection.presentation,
         isTablet,
         sessionListOrderingModeV1,
-        folderActionsEnabled,
-        folderViewMode: sessionFolderViewModeV1,
+        sessionListLayoutChoice,
+        usesProjectGrouping: sessionListLayoutApplicability.usesProjectGrouping,
+        usesFolderTreePresentation: sessionListLayoutApplicability.usesFolderTreePresentation,
         hasAnySessionFolderInAccount: sessionFoldersV1.folders.length > 0,
     });
     const allKnownTags = getAllKnownTags(normalizedShellState.sessionTags);
     const getAvailableOrganizationMutationScope = React.useCallback(async (
         serverIdRaw?: string | null,
-    ): Promise<SessionOrganizationMutationScope | null> => {
+    ): Promise<SessionOrganizationMutationScope> => {
         const serverId = typeof serverIdRaw === 'string' && serverIdRaw.trim()
             ? serverIdRaw.trim()
             : activeOrganizationServerId;
-        const result = await resolveSessionOrganizationMutationScope(serverId);
-        return result.ok ? result.scope : null;
+        return await requireSessionOrganizationMutationScope(serverId);
     }, [activeOrganizationServerId]);
     const runOrganizationMutation = React.useCallback((mutation: () => Promise<void>) => {
         void mutation().catch((error: unknown) => {
@@ -639,9 +779,6 @@ export function useSessionListViewStateFromPaneState(
         pinned: boolean,
     ) => {
         const scope = await getAvailableOrganizationMutationScope(target.serverId ?? null);
-        if (!scope) {
-            throw new Error('Session pin requires an available server profile');
-        }
         await writeSessionOrganizationPin({
             scope,
             sessionId: target.sessionId,
@@ -653,90 +790,137 @@ export function useSessionListViewStateFromPaneState(
         tags: readonly string[],
     ) => {
         const scope = await getAvailableOrganizationMutationScope(target.serverId ?? null);
-        if (!scope) {
-            throw new Error('Session tags require an available server profile');
-        }
         await writeSessionOrganizationTagLabels({
             scope,
             sessionId: target.sessionId,
             tags,
         });
     }, [getAvailableOrganizationMutationScope]);
-    const setSessionPinForSessionKey = React.useCallback((sessionKey: string, pinned: boolean) => {
-        runOrganizationMutation(async () => {
-            const separatorIndex = sessionKey.indexOf(':');
-            const serverId = separatorIndex > 0 ? sessionKey.slice(0, separatorIndex) : activeOrganizationServerId;
-            const scope = await getAvailableOrganizationMutationScope(serverId);
-            if (!scope) return;
-            await writeSessionOrganizationPinForSessionKey({
-                scope,
-                sessionKey,
-                pinned,
-            });
-        });
-    }, [activeOrganizationServerId, getAvailableOrganizationMutationScope, runOrganizationMutation]);
-    const setSessionTagsForSessionKey = React.useCallback((sessionKey: string, tags: readonly string[]) => {
-        runOrganizationMutation(async () => {
-            const separatorIndex = sessionKey.indexOf(':');
-            const serverId = separatorIndex > 0 ? sessionKey.slice(0, separatorIndex) : activeOrganizationServerId;
-            const scope = await getAvailableOrganizationMutationScope(serverId);
-            if (!scope) return;
-            await writeSessionOrganizationTagLabelsForSessionKey({
-                scope,
-                sessionKey,
-                tags,
-            });
-        });
-    }, [activeOrganizationServerId, getAvailableOrganizationMutationScope, runOrganizationMutation]);
+    // Structural admission for every contextual search result. The per-Home paging
+    // owner's applied addresses (or the canonical ordinary membership when no paging
+    // owner is mounted) decide what belongs to the current corpus; the row cache only
+    // resolves an admitted address into a row.
+    const ordinarySessionListMembershipByServerId = useOrdinarySessionListMembershipByServerId();
+    // One exact-Home currentness fact for rows and every secondary surface. A mounted query
+    // controller is the authority for the Homes it applies; the ordinary list lifecycle owns the
+    // rest. Rows never time their own staleness (Lane 07.4 §2).
+    const homeObservations = useSessionListHomeObservations(
+        renderPaneState.query?.active === true ? renderPaneState.query.statesByServerId : undefined,
+    );
+    const searchCorpus = useStableSessionListSearchCorpus(React.useMemo(() => resolveSessionListSearchCorpus(
+        renderPaneState.query?.active === true
+            ? {
+                query: {
+                    homes: filterController.queryHomes,
+                    statesByServerId: renderPaneState.query.statesByServerId,
+                },
+            }
+            : {
+                ordinary: {
+                    serverIds: filterController.homeOptions.map((home) => home.serverId),
+                    membershipByServerId: ordinarySessionListMembershipByServerId,
+                },
+            },
+    ), [
+        filterController.homeOptions,
+        filterController.queryHomes,
+        ordinarySessionListMembershipByServerId,
+        renderPaneState.query,
+    ]));
+    // A drag produces one merged order map for the whole selected corpus. Each Home owns
+    // and persists only its own items, resolved from published addresses rather than from the
+    // current viewport, so an offscreen row keeps its place and no Home is asked to store
+    // another Home's Session, folder or workspace ordering.
+    const orderItemAddressByItemKey = React.useMemo(() => completeSessionOrganizationOrderItemAddresses({
+        orderItemAddressByItemKey: organizationListViewState.orderItemAddressByItemKey,
+        memberHomes: searchCorpus.homes,
+    }), [organizationListViewState.orderItemAddressByItemKey, searchCorpus]);
     const setSessionListGroupOrderV1 = React.useCallback((nextOrder: Record<string, readonly string[] | undefined>) => {
         runOrganizationMutation(async () => {
-            const scope = await getAvailableOrganizationMutationScope(activeOrganizationServerId);
-            if (!scope) return;
-            await writeSessionOrganizationGroupOrder({ scope, next: nextOrder });
+            const nextByServerId = partitionSessionOrganizationGroupOrderByServerId({
+                next: nextOrder,
+                orderItemAddressByItemKey,
+            });
+            const writes = Object.entries(nextByServerId);
+            const scopedWrites = await Promise.all(writes.map(async ([serverId, next]) => ({
+                next,
+                scope: await getAvailableOrganizationMutationScope(serverId),
+            })));
+            await Promise.all(scopedWrites.map(({ scope, next }) => runSessionOrganizationWriteForHome(
+                scope.serverId,
+                () => writeSessionOrganizationGroupOrder({ scope, next, orderItemAddressByItemKey }),
+            )));
         });
-    }, [activeOrganizationServerId, getAvailableOrganizationMutationScope, runOrganizationMutation]);
+    }, [getAvailableOrganizationMutationScope, orderItemAddressByItemKey, runOrganizationMutation]);
     const setSessionWorkspaceOrderV1 = React.useCallback((nextOrder: Record<string, readonly string[] | undefined>) => {
         runOrganizationMutation(async () => {
-            const scope = await getAvailableOrganizationMutationScope(activeOrganizationServerId);
-            if (!scope) return;
-            await writeSessionOrganizationWorkspaceOrder({ scope, next: nextOrder });
+            const nextByServerId = partitionSessionWorkspaceOrderByServerId({
+                next: nextOrder,
+                fallbackServerId: activeOrganizationServerId,
+            });
+            const writes = Object.entries(nextByServerId);
+            const scopedWrites = await Promise.all(writes.map(async ([serverId, next]) => ({
+                next,
+                scope: await getAvailableOrganizationMutationScope(serverId),
+            })));
+            await Promise.all(scopedWrites.map(({ scope, next }) => runSessionOrganizationWriteForHome(
+                scope.serverId,
+                () => writeSessionOrganizationWorkspaceOrder({ scope, next }),
+            )));
         });
     }, [activeOrganizationServerId, getAvailableOrganizationMutationScope, runOrganizationMutation]);
     const setSessionFoldersV1 = React.useCallback((nextFolders: SessionFoldersV1) => {
         runOrganizationMutation(async () => {
-            const scope = await getAvailableOrganizationMutationScope(activeOrganizationServerId);
-            if (!scope) return;
-            await writeSessionOrganizationFolders({
-                scope,
+            // The edited tree is the merged multi-Home tree. Each Home receives only the folders
+            // it actually stores, so editing one Home's folder never recreates or deletes another
+            // Home's same-id folder through the focused Home.
+            const writesByServerId = partitionSessionFolderWritesByServerId({
                 current: availableSessionFoldersV1,
                 next: nextFolders,
+                orderItemAddressByItemKey,
+                fallbackServerId: activeOrganizationServerId,
             });
+            const writes = Object.entries(writesByServerId);
+            const scopedWrites = await Promise.all(writes.map(async ([serverId, write]) => ({
+                write,
+                scope: await getAvailableOrganizationMutationScope(serverId),
+            })));
+            await Promise.all(scopedWrites.map(({ scope, write }) => runSessionOrganizationWriteForHome(
+                scope.serverId,
+                () => writeSessionOrganizationFolders({ scope, current: write.current, next: write.next }),
+            )));
         });
-    }, [activeOrganizationServerId, availableSessionFoldersV1, getAvailableOrganizationMutationScope, runOrganizationMutation]);
+    }, [
+        activeOrganizationServerId,
+        availableSessionFoldersV1,
+        getAvailableOrganizationMutationScope,
+        orderItemAddressByItemKey,
+        runOrganizationMutation,
+    ]);
+    // The transcript provider request is bound to one exact Home. Passing the admitted
+    // ids lets the canonical adapter filter before limiting, and an unselected Home
+    // resolves to an explicit empty eligibility rather than an unrestricted search.
+    const transcriptEligibleSessionIds = React.useMemo(
+        () => readSessionListSearchCorpusSessionIdsForHome(searchCorpus, memorySearchContext.serverId),
+        [memorySearchContext.serverId, searchCorpus],
+    );
     const memorySearch = useSessionListMemorySearchAugmentationForContext(
         {
             searchQuery,
             enabled: surfaceOwnership.dataActive,
+            eligibleSessionIds: transcriptEligibleSessionIds,
         },
         memorySearchContext,
     );
-    const activeMemoryMatchedSessionKeys = React.useMemo(() => {
-        const query = searchQuery.trim();
-        if (
-            !query
-            || memorySearch.lastSuccessfulQuery !== query
-            || memorySearch.lastSuccessfulScopeKey !== memorySearch.activeScopeKey
-        ) {
-            return EMPTY_MEMORY_MATCHED_SESSION_KEYS;
-        }
-        return memorySearch.memoryMatchedSessionKeys;
-    }, [
-        memorySearch.activeScopeKey,
-        memorySearch.lastSuccessfulQuery,
-        memorySearch.lastSuccessfulScopeKey,
-        memorySearch.memoryMatchedSessionKeys,
-        searchQuery,
-    ]);
+    const transcriptSearchHomeLabel = React.useMemo(() => {
+        const serverId = memorySearchContext.serverId.trim();
+        if (!serverId) return undefined;
+        const homeLabel = filterController.homeOptions.find((home) => home.serverId === serverId)?.label ?? serverId;
+        return `${t('sessionsList.searchMatchTranscript')} · ${t('teams.homeLabel')} · ${homeLabel}`;
+    }, [filterController.homeOptions, memorySearchContext.serverId]);
+    // A hit that arrived under an earlier corpus is never promoted by identity alone:
+    // accessible-by-ID is not membership, so admission is re-checked against the
+    // current structural corpus every render.
     const activeMemoryMatchedSessionTargets = React.useMemo(() => {
         const query = searchQuery.trim();
         if (
@@ -746,14 +930,22 @@ export function useSessionListViewStateFromPaneState(
         ) {
             return EMPTY_MEMORY_MATCHED_SESSION_TARGETS;
         }
-        return memorySearch.memoryMatchedSessionTargets;
+        const targets = memorySearch.memoryMatchedSessionTargets;
+        const admitted = targets.filter((target) => searchCorpus.sessionKeys.has(target.sessionKey));
+        if (admitted.length === 0) return EMPTY_MEMORY_MATCHED_SESSION_TARGETS;
+        return admitted.length === targets.length ? targets : admitted;
     }, [
         memorySearch.activeScopeKey,
         memorySearch.lastSuccessfulQuery,
         memorySearch.lastSuccessfulScopeKey,
         memorySearch.memoryMatchedSessionTargets,
+        searchCorpus,
         searchQuery,
     ]);
+    const activeMemoryMatchedSessionKeys = React.useMemo(() => {
+        if (activeMemoryMatchedSessionTargets.length === 0) return EMPTY_MEMORY_MATCHED_SESSION_KEYS;
+        return new Set(activeMemoryMatchedSessionTargets.map((target) => target.sessionKey));
+    }, [activeMemoryMatchedSessionTargets]);
     const searchOrganization = React.useMemo(() => ({
         sessionTags: normalizedShellState.sessionTags,
         workspaceRefs: normalizedShellState.workspaceRefs,
@@ -763,18 +955,29 @@ export function useSessionListViewStateFromPaneState(
         normalizedShellState.workspaceRefs,
         workspacePathDisplayModeV1,
     ]);
-    const sessionListRowsByServerId = useSessionListRowStateByServerId();
+    const sessionListRowsByServerId = useSessionListRowsByServerId();
+    // Structural membership admits; the canonical row cache only resolves an admitted
+    // address. Enumerating the cache itself would readmit rows that satisfied an older
+    // query, another Home's corpus, or another storage/scope/audience/tag selection.
     const inventorySessionItems = React.useMemo<ReadonlyArray<Extract<SessionListIndexItem, { type: 'session' }>>>(() => {
-        if (!activeOrganizationServerId || searchQuery.trim().length === 0) return [];
-        const rows = readSessionListRowsForServerId(sessionListRowsByServerId, activeOrganizationServerId);
-        if (!rows) return [];
-        return Object.values(rows).map((session) => ({
-            type: 'session',
-            sessionId: session.id,
-            serverId: activeOrganizationServerId,
-            archivedAt: session.archivedAt ?? null,
-        }));
-    }, [activeOrganizationServerId, searchQuery, sessionListRowsByServerId]);
+        if (searchQuery.trim().length === 0) return [];
+        const items: Array<Extract<SessionListIndexItem, { type: 'session' }>> = [];
+        for (const home of searchCorpus.homes) {
+            const rows = readSessionListRowsForServerId(sessionListRowsByServerId, home.serverId);
+            if (!rows) continue;
+            for (const sessionId of home.sessionIds) {
+                const session = rows[sessionId];
+                if (!session) continue;
+                items.push({
+                    type: 'session',
+                    sessionId: session.id,
+                    serverId: home.serverId,
+                    archivedAt: session.archivedAt ?? null,
+                });
+            }
+        }
+        return items;
+    }, [searchCorpus, searchQuery, sessionListRowsByServerId]);
     const {
         searchableTextBySessionKey,
         primarySearchableTextBySessionKey,
@@ -791,19 +994,19 @@ export function useSessionListViewStateFromPaneState(
             inventoryItems: inventorySessionItems,
             filters: {
                 searchQuery,
-                selectedTags: selectedHeaderTags,
+                selectedTagIds: locallyFilteredTagIds,
+                sessionTagIdsBySessionKey,
                 searchableTextBySessionKey,
                 primarySearchableTextBySessionKey,
-                sessionTags: normalizedShellState.sessionTags,
             },
         });
     }, [
         inventorySessionItems,
-        normalizedShellState.sessionTags,
+        locallyFilteredTagIds,
         primarySearchableTextBySessionKey,
         searchQuery,
         searchableTextBySessionKey,
-        selectedHeaderTags,
+        sessionTagIdsBySessionKey,
     ]);
     // Metadata bands lead, transcript-only matches retain provider order, and a
     // duplicate exact identity becomes one ordinary Session row with all reasons.
@@ -838,24 +1041,17 @@ export function useSessionListViewStateFromPaneState(
     }, [activeContextualSearchTargets]);
     const searchTrailingAccessory = React.useMemo(() => {
         const queryLength = searchQuery.trim().length;
-        const inventoryLoading = memorySearch.sessionInventoryStatus === 'loading' && queryLength > 0;
         const transcriptLoading = memorySearch.isSearchingMemory
             && queryLength >= SESSION_LIST_MEMORY_SEARCH_MIN_QUERY_LENGTH;
-        if (!inventoryLoading && !transcriptLoading) return undefined;
+        if (!transcriptLoading) return undefined;
         return (
             <ActivitySpinner
                 testID="session-list-memory-search-loading-indicator"
                 size={14}
             />
         );
-    }, [memorySearch.isSearchingMemory, memorySearch.sessionInventoryStatus, searchQuery]);
+    }, [memorySearch.isSearchingMemory, searchQuery]);
     const searchStatus = React.useMemo(() => {
-        if (memorySearch.sessionInventoryStatus === 'error' && searchQuery.trim().length > 0) {
-            return {
-                message: t('errors.searchFailed'),
-                onRetry: memorySearch.retrySessionInventory,
-            };
-        }
         if (
             searchQuery.trim().length < SESSION_LIST_MEMORY_SEARCH_MIN_QUERY_LENGTH
             || !memorySearch.memorySearchUnavailableReason
@@ -867,74 +1063,101 @@ export function useSessionListViewStateFromPaneState(
         };
     }, [
         memorySearch.memorySearchUnavailableReason,
-        memorySearch.retrySessionInventory,
-        memorySearch.sessionInventoryStatus,
         searchQuery,
     ]);
     const headerFilters = React.useMemo(() => ({
         searchQuery,
-        selectedTags: selectedHeaderTags,
+        selectedTagIds: locallyFilteredTagIds,
+        sessionTagIdsBySessionKey,
         searchableTextBySessionKey,
         primarySearchableTextBySessionKey,
         memoryMatchedSessionKeys: activeMemoryMatchedSessionKeys,
     }), [
         activeMemoryMatchedSessionKeys,
+        locallyFilteredTagIds,
         primarySearchableTextBySessionKey,
         searchQuery,
         searchableTextBySessionKey,
-        selectedHeaderTags,
+        sessionTagIdsBySessionKey,
     ]);
+    const universalSearchAccountId = memorySearchContext.accountBinding?.accountId
+        ?? (filterController.viewContext.kind === 'global' && draftScope?.serverId === transcriptSearchServerId
+            ? draftScope.accountId
+            : null);
     const universalSearchScope = React.useMemo(() => (
-        draftScope && activeOrganizationServerId
+        universalSearchAccountId && transcriptSearchServerId
             ? {
-                accountId: draftScope.accountId,
-                serverId: activeOrganizationServerId,
+                accountId: universalSearchAccountId,
+                serverId: transcriptSearchServerId,
                 sessionId: null,
                 machineId: null,
                 rootPath: null,
             }
             : undefined
-    ), [activeOrganizationServerId, draftScope]);
+    ), [transcriptSearchServerId, universalSearchAccountId]);
     const {
         handleOpenProject,
         handleCreateSessionFromWorkspaceScope,
         handleOpenArchivedSessions,
         handleOpenUniversalSearch,
     } = useSessionListNavigationActions(universalSearchScope);
+    // The filter editor is the only host of `Hide inactive sessions`, Source, Homes
+    // and Tags, so it stays mounted for every corpus. Each section is individually
+    // availability-gated inside the editor model, and the control's own
+    // `legacy_owner_or_direct` label already names a corpus with no semantic query.
+    const filterControl = React.useMemo(() => (
+        <SessionListFilterControl
+            controller={filterController}
+            organizationProjectionsByServerId={organizationProjectionsByServerId}
+        />
+    ), [
+        filterController,
+        organizationProjectionsByServerId,
+    ]);
     const searchChrome = React.useMemo(() => ({
-        allKnownTags: sessionTagsEnabled === true ? allKnownTags : EMPTY_KNOWN_TAGS,
-        selectedTags: selectedHeaderTags,
+        filterControl,
+        tagOptions: sessionTagsEnabled === true ? tagShortcutOptions : EMPTY_TAG_SHORTCUT_OPTIONS,
+        selectedTagOptionIds: selectedTagShortcutOptionIds,
         searchQuery,
+        searchScopeLabel: transcriptSearchHomeLabel,
+        organizationServerId: transcriptSearchServerId,
         searchStatus,
         searchTrailingAccessory,
-        onSelectedTagsChange: setSelectedHeaderTags,
+        onToggleTagOption: handleToggleTagShortcutOption,
         onSearchQueryChange: setSearchQuery,
-        onSearchEverything: handleOpenUniversalSearch,
+        // A Team-context escalation must never fall through to Universal Search's
+        // ambient (globally focused Home) scope while its exact credential-backed
+        // Account binding is still resolving. Keep the action unavailable until
+        // the qualified Team Home/Account seed exists.
+        onSearchEverything: filterController.viewContext.kind === 'global' || universalSearchScope
+            ? handleOpenUniversalSearch
+            : undefined,
     }), [
-        allKnownTags,
+        filterControl,
+        filterController.viewContext.kind,
         handleOpenUniversalSearch,
+        handleToggleTagShortcutOption,
         searchQuery,
+        transcriptSearchHomeLabel,
+        transcriptSearchServerId,
+        universalSearchScope,
         searchStatus,
         searchTrailingAccessory,
-        selectedHeaderTags,
+        selectedTagShortcutOptionIds,
         sessionTagsEnabled,
+        tagShortcutOptions,
         setSearchQuery,
-        setSelectedHeaderTags,
     ]);
 
-    React.useEffect(() => {
-        if (selectedHeaderTags.length === 0) return;
-        const known = new Set(allKnownTags);
-        const next = selectedHeaderTags.filter((tag) => known.has(tag));
-        if (next.length === selectedHeaderTags.length) return;
-        setSelectedHeaderTags(next);
-    }, [allKnownTags, selectedHeaderTags]);
-    const selectedSessionId = useSessionCanvasSelection({
+    const selectedSession = useSessionCanvasSelection({
         selectable: shellFlags.selectable,
         pathname: effectivePathname,
     });
+    const selectedSessionId = selectedSession?.sessionId ?? null;
+    const selectedSessionServerId = selectedSession?.serverId ?? null;
     const sessionSurfaceVisibility = useSessionSurfaceVisibilitySnapshot();
     const focusedSessionId = sessionSurfaceVisibility.focusedSessionId;
+    const focusedSessionAddress = useFocusedSessionAddress();
     const statusDemandViewportId = React.useId();
     const activeMruSessionId = React.useMemo(() => resolveSelectedSessionIdForList({
         selectable: true,
@@ -948,8 +1171,8 @@ export function useSessionListViewStateFromPaneState(
     }, [viewableSessionRowKeys]);
     const indexPrioritySessionRowKeysRaw = React.useMemo(() => buildSessionListRowStorePriorityKeys(
         renderPaneState.visibleSessionListIndex ?? [],
-        { selectedSessionId },
-    ), [selectedSessionId, renderPaneState.visibleSessionListIndex]);
+        { selectedSessionId, selectedSessionServerId },
+    ), [selectedSessionId, selectedSessionServerId, renderPaneState.visibleSessionListIndex]);
     const runtimePrioritySessionRowKeysRaw = useSessionListRuntimePriorityRowKeysForItems(
         renderPaneState.visibleSessionListIndex,
     );
@@ -1000,6 +1223,7 @@ export function useSessionListViewStateFromPaneState(
         headerFilters,
         searchOtherMatches,
         selectedSessionId,
+        selectedSessionServerId,
         showServerBadge: shellFlags.showServerBadge,
         showPinnedServerBadge: shellFlags.showPinnedServerBadge,
         attentionStandingEnabled: attentionStanding.actionEnabled,
@@ -1041,24 +1265,50 @@ export function useSessionListViewStateFromPaneState(
         () => buildVisibleSessionNavigationEntries(renderModels.selectionScopeListItems),
         [renderModels.selectionScopeListItems],
     );
-    const knownSessionKeys = React.useMemo(() => (
-        visibleSessionNavigationEntries.map((entry) => entry.sessionKey)
-    ), [visibleSessionNavigationEntries]);
+    const knownSessionEntries = visibleSessionNavigationEntries;
+    // Row-level pin/tag writes resolve their exact Home through the same published addresses the
+    // order writes use, so one Session key never means two different Homes on two surfaces.
+    const resolveOrganizationTargetForSessionKey = React.useCallback((sessionKey: string): Readonly<{ serverId: string; sessionId: string }> | null => {
+        const address = orderItemAddressByItemKey[sessionKey];
+        return address?.itemKind === 'session'
+            ? { serverId: address.serverId, sessionId: address.sessionId }
+            : null;
+    }, [orderItemAddressByItemKey]);
+    const setSessionPinForSessionKey = React.useCallback((sessionKey: string, pinned: boolean) => {
+        runOrganizationMutation(async () => {
+            const target = resolveOrganizationTargetForSessionKey(sessionKey);
+            if (!target) throw new HappyError(t('errors.unknownError'), false, { code: 'session_organization_target_unavailable' });
+            const scope = await getAvailableOrganizationMutationScope(target.serverId);
+            await writeSessionOrganizationPin({
+                scope,
+                sessionId: target.sessionId,
+                pinned,
+            });
+        });
+    }, [getAvailableOrganizationMutationScope, resolveOrganizationTargetForSessionKey, runOrganizationMutation]);
+    const setSessionTagsForSessionKey = React.useCallback((sessionKey: string, tags: readonly string[]) => {
+        runOrganizationMutation(async () => {
+            const target = resolveOrganizationTargetForSessionKey(sessionKey);
+            if (!target) throw new HappyError(t('errors.unknownError'), false, { code: 'session_organization_target_unavailable' });
+            const scope = await getAvailableOrganizationMutationScope(target.serverId);
+            await writeSessionOrganizationTagLabels({
+                scope,
+                sessionId: target.sessionId,
+                tags,
+            });
+        });
+    }, [getAvailableOrganizationMutationScope, resolveOrganizationTargetForSessionKey, runOrganizationMutation]);
 
     const activeSessionKey = React.useMemo(() => {
         if (!activeMruSessionId) return null;
-        const activeServerEntry = renderModels.listItems.find((item): item is Extract<SessionListIndexItem, { type: 'session' }> => (
-            item.type === 'session'
-            && item.sessionId === activeMruSessionId
-            && item.serverId === selection.activeServerId
-        ));
-        const fallbackEntry = renderModels.listItems.find((item): item is Extract<SessionListIndexItem, { type: 'session' }> => (
-            item.type === 'session'
-            && item.sessionId === activeMruSessionId
-        ));
-        const entry = activeServerEntry ?? fallbackEntry;
-        return entry ? buildServerScopedSessionKey(entry.sessionId, entry.serverId) : null;
-    }, [activeMruSessionId, renderModels.listItems, selection.activeServerId]);
+        return findVisibleSessionNavigationEntryByScope(
+            visibleSessionNavigationEntries,
+            activeMruSessionId,
+            focusedSessionAddress?.sessionId === activeMruSessionId
+                ? focusedSessionAddress.serverId
+                : null,
+        )?.sessionKey ?? null;
+    }, [activeMruSessionId, focusedSessionAddress, visibleSessionNavigationEntries]);
 
     const visibleCursorSessionKeyRef = React.useRef<string | null>(null);
     const mruCursorSessionKeyRef = React.useRef<string | null>(null);
@@ -1073,19 +1323,24 @@ export function useSessionListViewStateFromPaneState(
         [selectionScopeSessionNavigationEntries],
     );
     const focusedFolderId = renderPaneState.folderFocus?.folder.id ?? sessionListFocusedFolderV1?.folderId ?? null;
-    const sessionListSelectionScopeKey = React.useMemo(() => buildSessionListSelectionScopeKey({
+    const sessionListSelectionScopeKey = React.useMemo(() => buildSessionListSelectionScopeKeyForView({
+        filters: filterController.filters,
+        eligibility: {
+            eligibleHomeServerIds: filterController.homeOptions.map((home) => home.serverId),
+            // The filter lifetime owner removes these only after their canonical
+            // producers prove deletion. Until then a retained qualified value is
+            // eligible even while its catalog is loading or its Home is offline.
+            eligibleAudiences: filterController.filters.audiences,
+            eligibleTagIds: filterController.filters.tagIds,
+        },
         storageKind,
-        activeServerId: selection.activeServerId ?? null,
         focusedFolderId,
-        searchQuery,
-        selectedTags: selectedHeaderTags,
-        hideInactiveSessions,
+        includeInactive: filterController.includeInactive,
     }), [
+        filterController.filters,
+        filterController.homeOptions,
+        filterController.includeInactive,
         focusedFolderId,
-        hideInactiveSessions,
-        searchQuery,
-        selectedHeaderTags,
-        selection.activeServerId,
         storageKind,
     ]);
     const sessionListSelectionStore = useSessionListSelectionController({
@@ -1125,11 +1380,11 @@ export function useSessionListViewStateFromPaneState(
         const nextOrder = moveSessionMruEntryToFront({
             order: currentOrder,
             activeSessionKey,
-            knownSessionKeys,
+            knownSessionEntries,
         });
         if (stringArraysEqual(currentOrder, nextOrder)) return;
         setSessionMruOrderV1(nextOrder);
-    }, [activeSessionKey, knownSessionKeys, sessionMruOrderV1, setSessionMruOrderV1, surfaceOwnership.dataActive]);
+    }, [activeSessionKey, knownSessionEntries, sessionMruOrderV1, setSessionMruOrderV1, surfaceOwnership.dataActive]);
 
     const navigateToSessionTarget = React.useCallback((target: VisibleSessionNavigationEntry | null) => {
         if (!target) return;
@@ -1151,10 +1406,11 @@ export function useSessionListViewStateFromPaneState(
         const order = moveSessionMruEntryToFront({
             order: currentOrder,
             activeSessionKey,
-            knownSessionKeys,
+            knownSessionEntries,
         });
         const target = resolveSessionMruNavigation({
             order,
+            knownSessionEntries,
             activeSessionKey,
             cursorSessionKey: mruCursorSessionKeyRef.current,
             direction,
@@ -1162,7 +1418,7 @@ export function useSessionListViewStateFromPaneState(
         if (!target) return;
         mruCursorSessionKeyRef.current = target.sessionKey;
         navigateToSessionTarget(target);
-    }, [activeSessionKey, knownSessionKeys, navigateToSessionTarget, sessionMruOrderV1]);
+    }, [activeSessionKey, knownSessionEntries, navigateToSessionTarget, sessionMruOrderV1]);
     const resolveSelectionKeyboardCurrentKey = React.useCallback(() => {
         const snapshot = sessionListSelectionStore.getSnapshot();
         return snapshot.focusedKey
@@ -1262,24 +1518,21 @@ export function useSessionListViewStateFromPaneState(
         folderId: string | null,
     ) => {
         try {
-            const result = await resolveSessionOrganizationMutationScope(serverId);
-            if (!result.ok) {
-                Modal.alert(t('common.error'), t('sessionsList.failedToMoveSessionToFolder'));
-                return;
-            }
+            const scope = await getAvailableOrganizationMutationScope(serverId);
             await writeSessionOrganizationFolderAssignment({
-                scope: result.scope,
+                scope,
                 sessionId,
                 folderId,
             });
-        } catch {
-            Modal.alert(t('common.error'), t('sessionsList.failedToMoveSessionToFolder'));
+        } catch (error) {
+            Modal.alert(
+                t('common.error'),
+                error instanceof HappyError ? error.message : t('sessionsList.failedToMoveSessionToFolder'),
+            );
         }
-    }, []);
+    }, [getAvailableOrganizationMutationScope]);
 
-    const virtualizedListRef = React.useRef<{
-        scrollToOffset?: (params: { offset: number; animated?: boolean }) => void;
-    } | null>(null);
+    const virtualizedListRef = React.useRef<VirtualizedListRef | null>(null);
     const treeViewportRef = React.useRef<TreeDropMeasurableRef | null>(null);
     const scrollToTreeOffset = React.useCallback((offsetY: number) => {
         virtualizedListRef.current?.scrollToOffset?.({ offset: offsetY, animated: false });
@@ -1287,9 +1540,17 @@ export function useSessionListViewStateFromPaneState(
     const scrollToRetainedOffset = React.useCallback((params: { offset: number; animated?: boolean }) => {
         virtualizedListRef.current?.scrollToOffset?.(params);
     }, []);
-
+    const scrollToRetainedIndex = React.useCallback((params: {
+        index: number;
+        animated?: boolean;
+        viewOffset?: number;
+        viewPosition?: number;
+    }) => {
+        void virtualizedListRef.current?.scrollToIndex(params);
+    }, []);
     const rowInteractions = useSessionListRowInteractions({
         folderActionsEnabled: Boolean(folderActionsEnabled),
+        isFolderActionsEnabledForServerId,
         sessionFoldersV1: availableSessionFoldersV1,
         listItems: renderModels.listItems,
         currentGroupOrderMap: orderingPersistenceState.currentGroupOrderMap,
@@ -1297,6 +1558,7 @@ export function useSessionListViewStateFromPaneState(
         sessionListFolderSortModeV1,
         sessionListOrderingModeV1,
         sessionListSectionModeV1,
+        manualSessionOrderingEnabled: shellFlags.canReorderSessions,
         setSessionListGroupOrderV1,
         setSessionWorkspaceOrderV1,
         setSessionFoldersV1,
@@ -1306,16 +1568,29 @@ export function useSessionListViewStateFromPaneState(
         setSessionTagsForKey: setSessionTagsForSessionKey,
         scrollToOffset: scrollToTreeOffset,
     });
+    const measureVirtualizedNodeViewportOffset = React.useCallback((nodeId: string) => {
+        const listRef = virtualizedListRef.current;
+        const viewportRef = (listRef?.getNativeScrollRef?.() ?? listRef?.getScrollableNode?.() ?? null) as TreeDropMeasurableRef | null;
+        return rowInteractions.measureTreeRowViewportOffset(nodeId, viewportRef);
+    }, [rowInteractions]);
     const frozenListProjection = useFrozenSessionListItemsDuringDrag({
         activeSnapshot: rowInteractions.activeDragSnapshot,
         liveViewItems: renderModels.listItems,
     });
     const renderedListItems = frozenListProjection.viewItems;
+    const sessionListItemBySelectionKey = React.useMemo(() => {
+        const map = new Map<string, Extract<SessionListIndexItem, { type: 'session' }>>();
+        for (const item of renderedListItems) {
+            if (item.type !== 'session') continue;
+            map.set(buildServerScopedSessionKey(item.sessionId, item.serverId), item);
+        }
+        return map;
+    }, [renderedListItems]);
     const statusDemandSubscriptionItems = React.useMemo(() => {
         if (viewableSessionRowKeys !== null) {
             const visibleItems: Array<Extract<SessionListIndexItem, { type: 'session' }>> = [];
             for (const rowKey of viewableSessionRowKeys) {
-                const item = buildStatusDemandSessionItemFromRowKey(rowKey);
+                const item = sessionListItemBySelectionKey.get(rowKey) ?? null;
                 if (!item) continue;
                 visibleItems.push(item);
                 if (visibleItems.length >= EXTERNAL_SESSION_STATUS_DEMAND_MAX_ENTRIES_V1) break;
@@ -1330,7 +1605,7 @@ export function useSessionListViewStateFromPaneState(
             if (loadedItems.length >= EXTERNAL_SESSION_STATUS_DEMAND_MAX_ENTRIES_V1) break;
         }
         return loadedItems;
-    }, [renderedListItems, viewableSessionRowKeys]);
+    }, [renderedListItems, sessionListItemBySelectionKey, viewableSessionRowKeys]);
     const statusDemandRowRenderableByKey = useSessionListRowRenderablesForItems(
         statusDemandSubscriptionItems,
     );
@@ -1381,7 +1656,7 @@ export function useSessionListViewStateFromPaneState(
                 currentUserId,
                 pinnedKeySet: orderingPersistenceState.pinnedKeySet,
                 sessionTags: normalizedShellState.sessionTags,
-                foldersFeatureEnabled: folderActionsEnabled,
+                foldersFeatureEnabled: isFolderActionsEnabledForServerId(item.serverId),
                 attentionStandingEnabled: attentionStanding.actionEnabled,
                 attentionStandingPolicy: attentionStanding.policy,
             });
@@ -1392,21 +1667,12 @@ export function useSessionListViewStateFromPaneState(
         attentionStanding.actionEnabled,
         attentionStanding.policy,
         currentUserId,
-        folderActionsEnabled,
+        isFolderActionsEnabledForServerId,
         normalizedShellState.sessionTags,
         orderingPersistenceState.pinnedKeySet,
         selectedRowRenderableByKey,
         selectedSessionListItems,
     ]);
-    const sessionListItemBySelectionKey = React.useMemo(() => {
-        const map = new Map<string, Extract<SessionListIndexItem, { type: 'session' }>>();
-        for (const item of renderedListItems) {
-            if (item.type !== 'session') continue;
-            map.set(buildServerScopedSessionKey(item.sessionId, item.serverId), item);
-        }
-        return map;
-    }, [renderedListItems]);
-
     const rowLabelByTreeRowId = React.useMemo(() => {
         const labels = new Map<string, string>();
         for (const item of renderedListItems) {
@@ -1415,7 +1681,8 @@ export function useSessionListViewStateFromPaneState(
                 continue;
             }
             if (item.headerKind === 'folder' && item.folderId) {
-                labels.set(treeRowId.folder(item.folderId), item.title);
+                const serverId = item.serverId ?? item.workspace?.serverId;
+                if (serverId) labels.set(treeRowId.folder(serverId, item.folderId), item.title);
             } else if (item.headerKind === 'project' && (item.groupKey || item.workspaceKey)) {
                 labels.set(resolveWorkspaceRootTreeRowId(item), item.title);
             }
@@ -1445,8 +1712,9 @@ export function useSessionListViewStateFromPaneState(
         sourceLabel: string,
         target: SessionListMoveSheetTarget,
     ) => {
-        rowInteractions.applyMoveSheetTarget(sourceRowId, target);
-        sessionListA11y.announceDropResult({
+        const committed = rowInteractions.applyMoveSheetTarget(sourceRowId, target);
+        if (!committed) return;
+        void sessionListA11y.announceDropResultAfterCommit(committed, {
             label: sourceLabel,
             destinationLabel: resolveDropDestinationLabel(target),
             result: target.result,
@@ -1477,12 +1745,12 @@ export function useSessionListViewStateFromPaneState(
         sourceLabel: string,
         direction: 'up' | 'down',
     ) => {
-        const result = rowInteractions.applyKeyboardMove(sourceRowId, direction);
-        if (!result) return;
-        sessionListA11y.announceDropResult({
+        const move = rowInteractions.applyKeyboardMove(sourceRowId, direction);
+        if (!move) return;
+        void sessionListA11y.announceDropResultAfterCommit(move.committed, {
             label: sourceLabel,
-            destinationLabel: resolveDropResultDestinationLabel(result),
-            result,
+            destinationLabel: resolveDropResultDestinationLabel(move.result),
+            result: move.result,
         });
     }, [resolveDropResultDestinationLabel, rowInteractions, sessionListA11y]);
     const getRowMoveActionHandlers = useSessionListRowMoveActionHandlers({
@@ -1496,22 +1764,22 @@ export function useSessionListViewStateFromPaneState(
         surfaceOwnership.interactive
             ? {
                 'sessions.row.moveToFolder': () => {
-                    const rowId = resolveSessionTreeRowId(activeSessionKey);
+                    const rowId = resolveSessionTreeRowId(activeSessionKey, knownSessionEntries);
                     if (!rowId) return;
                     void openMoveSheetForTreeRow(rowId, rowLabelByTreeRowId.get(rowId) ?? t('sessionsList.sessionFallbackLabel'));
                 },
                 'sessions.row.moveToWorkspaceRoot': () => {
-                    const rowId = resolveSessionTreeRowId(activeSessionKey);
+                    const rowId = resolveSessionTreeRowId(activeSessionKey, knownSessionEntries);
                     if (!rowId) return;
                     moveTreeRowToWorkspaceRoot(rowId, rowLabelByTreeRowId.get(rowId) ?? t('sessionsList.sessionFallbackLabel'));
                 },
                 'sessions.row.moveUp': () => {
-                    const rowId = resolveSessionTreeRowId(activeSessionKey);
+                    const rowId = resolveSessionTreeRowId(activeSessionKey, knownSessionEntries);
                     if (!rowId) return;
                     moveTreeRowByKeyboard(rowId, rowLabelByTreeRowId.get(rowId) ?? t('sessionsList.sessionFallbackLabel'), 'up');
                 },
                 'sessions.row.moveDown': () => {
-                    const rowId = resolveSessionTreeRowId(activeSessionKey);
+                    const rowId = resolveSessionTreeRowId(activeSessionKey, knownSessionEntries);
                     if (!rowId) return;
                     moveTreeRowByKeyboard(rowId, rowLabelByTreeRowId.get(rowId) ?? t('sessionsList.sessionFallbackLabel'), 'down');
                 },
@@ -1519,6 +1787,7 @@ export function useSessionListViewStateFromPaneState(
             : {}
     ), [
         activeSessionKey,
+        knownSessionEntries,
         moveTreeRowByKeyboard,
         moveTreeRowToWorkspaceRoot,
         openMoveSheetForTreeRow,
@@ -1565,7 +1834,7 @@ export function useSessionListViewStateFromPaneState(
         setSessionListFocusedFolderV1({
             folderId: item.folderId,
             workspace: item.workspace,
-            serverId: item.serverId ?? item.workspace.serverId ?? null,
+            serverId: item.serverId ?? item.workspace.serverId,
         });
     }, [rowInteractions.consumeFolderFocusPressAfterDrag, setSessionListFocusedFolderV1]);
 
@@ -1611,6 +1880,7 @@ export function useSessionListViewStateFromPaneState(
         if (name == null) return;
         const renamed = renameSessionFolder({
             current: availableSessionFoldersV1,
+            serverId: item.serverId ?? item.workspace?.serverId ?? '',
             folderId: item.folderId,
             name,
             now: Date.now(),
@@ -1619,7 +1889,7 @@ export function useSessionListViewStateFromPaneState(
     }, [availableSessionFoldersV1, setSessionFoldersV1]);
 
     const handleDeleteFolder = React.useCallback(async (item: Extract<SessionListIndexItem, { type: 'header' }>) => {
-        if (!item.folderId) return;
+        if (!item.folderId || !(item.serverId ?? item.workspace?.serverId)) return;
         const confirmed = await Modal.confirm(
             t('sessionsList.deleteFolderPromptTitle'),
             t('sessionsList.deleteFolderPromptDescription'),
@@ -1632,12 +1902,14 @@ export function useSessionListViewStateFromPaneState(
         if (!confirmed) return;
         const deleted = deleteSessionFolder({
             current: availableSessionFoldersV1,
+            serverId: item.serverId ?? item.workspace?.serverId ?? '',
             folderId: item.folderId,
         });
         if (deleted.deletedFolderIds.length === 0) return;
         setSessionFoldersV1(deleted.next);
         if (
             sessionListFocusedFolderV1
+            && sessionListFocusedFolderV1.serverId === (item.serverId ?? item.workspace?.serverId ?? null)
             && deleted.deletedFolderIds.includes(sessionListFocusedFolderV1.folderId)
         ) {
             setSessionListFocusedFolderV1(null);
@@ -1656,17 +1928,17 @@ export function useSessionListViewStateFromPaneState(
         item: Extract<SessionListIndexItem, { type: 'session' }>,
     ): readonly SessionFolderMoveTarget[] => {
         const organizationEligibility = resolveSessionListItemOrganizationEligibility(item, {
-            foldersFeatureEnabled: folderActionsEnabled,
+            foldersFeatureEnabled: isFolderActionsEnabledForServerId(item.serverId),
         });
         if (!organizationEligibility.canUseSessionFolders || !item.workspace) {
             return EMPTY_SESSION_FOLDER_MOVE_TARGETS;
         }
         const rowId = resolveTreeRowIdForSessionItem(item);
-        const signature = [
+        const signature = buildSessionFolderMoveTargetSignature(
             sessionFoldersSignature,
-            buildSessionFolderWorkspaceSignature(item.workspace),
-            item.folderId ?? '',
-        ].join('\u0001');
+            item.workspace,
+            item.folderId,
+        );
         const cached = folderMoveTargetsByRowIdRef.current.get(rowId);
         if (cached?.signature === signature) return cached.value;
         const value = buildSessionFolderMoveTargets({
@@ -1677,7 +1949,7 @@ export function useSessionListViewStateFromPaneState(
         });
         folderMoveTargetsByRowIdRef.current.set(rowId, { signature, value });
         return value;
-    }, [availableSessionFoldersV1, folderActionsEnabled, sessionFoldersSignature]);
+    }, [availableSessionFoldersV1, isFolderActionsEnabledForServerId, sessionFoldersSignature]);
     const sessionListBulkActionContext = React.useMemo<SessionBulkActionExecutionContext>(() => ({
         setSessionPin: async ({ target, pinned }) => {
             await setSessionPinForTarget(target, pinned);
@@ -1703,7 +1975,8 @@ export function useSessionListViewStateFromPaneState(
         archiveSession: async (target) => {
             const result = await sessionArchiveWithServerScope(target.sessionId, { serverId: target.serverId ?? null });
             if (result.success) {
-                clearSessionVisibleWhenInactive(target.sessionId);
+                const address = normalizeSessionAddress(target.serverId, target.sessionId);
+                if (address) clearSessionVisibleWhenInactive(address);
             }
             return result;
         },
@@ -1715,7 +1988,7 @@ export function useSessionListViewStateFromPaneState(
         ),
         stopSessionAndMaybeArchive: async (params) => {
             await stopSessionAndMaybeArchive({
-                sessionId: params.sessionId,
+                address: params.address,
                 hideInactiveSessions: params.hideInactiveSessions,
                 isPinned: params.isPinned,
                 archiveAfterStop: params.archiveAfterStop,
@@ -1727,9 +2000,6 @@ export function useSessionListViewStateFromPaneState(
         },
         setSessionFolderAssignment: async ({ target, folderId }) => {
             const scope = await getAvailableOrganizationMutationScope(target.serverId);
-            if (!scope) {
-                throw new Error('Session folder assignment requires an available server profile');
-            }
             await writeSessionOrganizationFolderAssignment({
                 scope,
                 sessionId: target.sessionId,
@@ -1808,22 +2078,30 @@ export function useSessionListViewStateFromPaneState(
             onDeleteFolder={handleDeleteFolder}
             onMoveFolder={(folderItem) => {
                 if (!folderItem.folderId) return;
-                const rowId = treeRowId.folder(folderItem.folderId);
+                const serverId = folderItem.serverId ?? folderItem.workspace?.serverId;
+                if (!serverId) return;
+                const rowId = treeRowId.folder(serverId, folderItem.folderId);
                 void openMoveSheetForTreeRow(rowId, rowLabelByTreeRowId.get(rowId) ?? folderItem.title);
             }}
             onMoveFolderToWorkspaceRoot={(folderItem) => {
                 if (!folderItem.folderId) return;
-                const rowId = treeRowId.folder(folderItem.folderId);
+                const serverId = folderItem.serverId ?? folderItem.workspace?.serverId;
+                if (!serverId) return;
+                const rowId = treeRowId.folder(serverId, folderItem.folderId);
                 moveTreeRowToWorkspaceRoot(rowId, rowLabelByTreeRowId.get(rowId) ?? folderItem.title);
             }}
             onMoveFolderUp={(folderItem) => {
                 if (!folderItem.folderId) return;
-                const rowId = treeRowId.folder(folderItem.folderId);
+                const serverId = folderItem.serverId ?? folderItem.workspace?.serverId;
+                if (!serverId) return;
+                const rowId = treeRowId.folder(serverId, folderItem.folderId);
                 moveTreeRowByKeyboard(rowId, rowLabelByTreeRowId.get(rowId) ?? folderItem.title, 'up');
             }}
             onMoveFolderDown={(folderItem) => {
                 if (!folderItem.folderId) return;
-                const rowId = treeRowId.folder(folderItem.folderId);
+                const serverId = folderItem.serverId ?? folderItem.workspace?.serverId;
+                if (!serverId) return;
+                const rowId = treeRowId.folder(serverId, folderItem.folderId);
                 moveTreeRowByKeyboard(rowId, rowLabelByTreeRowId.get(rowId) ?? folderItem.title, 'down');
             }}
             workspaceFaviconsEnabled={workspaceFaviconsEnabled}
@@ -1854,6 +2132,8 @@ export function useSessionListViewStateFromPaneState(
         moveTreeRowToWorkspaceRoot,
         openMoveSheetForTreeRow,
         projectHeaderViewModelByGroupKey,
+        homeObservations,
+        renderModels.audience,
         renderModels.hasMultipleMachines,
         rowInteractions.dropOverlayShared,
         rowInteractions.handleFolderHeaderTreeDropResult,
@@ -1877,16 +2157,22 @@ export function useSessionListViewStateFromPaneState(
             serverId: item.serverId ?? null,
         });
         const rowAttentionAnimationEnabled = rowSubscriptionKeys === null
-            || rowSubscriptionKeys.has(rowScopeKey)
-            || isSessionListRowStorePriorityItem(item, { selectedSessionId });
+            || rowSubscriptionKeys.has(rowScopeKey);
         const moveActionHandlers = getRowMoveActionHandlers({
             sourceRowId: treeRowIdForItem,
             sourceLabel: rowLabelByTreeRowId.get(treeRowIdForItem) ?? item.sessionId,
             item,
         });
         const canUseSessionFolders = resolveSessionListItemOrganizationEligibility(item, {
-            foldersFeatureEnabled: folderActionsEnabled,
+            foldersFeatureEnabled: isFolderActionsEnabledForServerId(item.serverId),
         }).canUseSessionFolders;
+        const rowDragPolicy = resolveSessionListSessionRowDragPolicy({
+            manualSessionOrderingEnabled: shellFlags.canReorderSessions,
+            folderContainmentEnabled: shellFlags.canMoveSessionRowsBetweenFolders && canUseSessionFolders,
+            item,
+            sectionModeV1: sessionListSectionModeV1,
+            orderingModeV1: sessionListOrderingModeV1,
+        });
         const draftServerId = item.serverId ?? draftScope?.serverId ?? null;
         const draftKey = draftServerId ? sessionTagKey(draftServerId, item.sessionId) : null;
         const draft = draftKey ? renderModels.existingDraftBySessionKey.get(draftKey) ?? null : null;
@@ -1900,11 +2186,14 @@ export function useSessionListViewStateFromPaneState(
             : undefined;
         return (
             <SessionListRowViewModelBoundary
+                audienceScope={item.serverId ? renderModels.audience.scopes.get(item.serverId) : undefined}
+                homeObservation={item.serverId ? homeObservations[item.serverId] ?? null : null}
+                audienceLabel={item.serverId ? renderModels.audience.labelsBySessionKey.get(audienceSessionAddressKey({ serverId: item.serverId, sessionId: item.sessionId })) : null}
                 item={item}
                 items={renderedListItems}
                 rowHeight={densityViewState.rowHeight}
                 dataActive={surfaceOwnership.dataActive}
-                dragEnabled={shellFlags.canDragSessionRows}
+                dragEnabled={rowDragPolicy.canDrag}
                 treeRowId={treeRowIdForItem}
                 onDragStart={rowInteractions.handleDragStart}
                 resolveDropResult={rowInteractions.resolveTreeDropResult}
@@ -1940,6 +2229,7 @@ export function useSessionListViewStateFromPaneState(
                 reachableSessionDisplayByKey={renderModels.reachableSessionDisplayByKey}
                 rowAttentionAnimationEnabled={rowAttentionAnimationEnabled}
                 selectedSessionId={selectedSessionId}
+                selectedSessionServerId={selectedSessionServerId}
                 sessionTags={normalizedShellState.sessionTags}
                 showPinnedServerBadge={shellFlags.showPinnedServerBadge}
                 showServerBadge={shellFlags.showServerBadge}
@@ -1950,8 +2240,8 @@ export function useSessionListViewStateFromPaneState(
                 onMoveToSessionFolder={canUseSessionFolders ? moveActionHandlers.onMoveToSessionFolder : undefined}
                 onMoveToFolder={canUseSessionFolders ? moveActionHandlers.onMoveToFolder : undefined}
                 onMoveToWorkspaceRoot={canUseSessionFolders ? moveActionHandlers.onMoveToWorkspaceRoot : undefined}
-                onMoveUp={canUseSessionFolders ? moveActionHandlers.onMoveUp : undefined}
-                onMoveDown={canUseSessionFolders ? moveActionHandlers.onMoveDown : undefined}
+                onMoveUp={canUseSessionFolders && rowDragPolicy.canReorderSiblings ? moveActionHandlers.onMoveUp : undefined}
+                onMoveDown={canUseSessionFolders && rowDragPolicy.canReorderSiblings ? moveActionHandlers.onMoveDown : undefined}
                 onDeleteDraft={deleteDraft}
             />
         );
@@ -1966,11 +2256,14 @@ export function useSessionListViewStateFromPaneState(
         draftScope,
         rowSubscriptionKeys,
         selectedSessionId,
-        folderActionsEnabled,
+        selectedSessionServerId,
+        isFolderActionsEnabledForServerId,
         forkActionContext,
         hideInactiveSessions,
         normalizedShellState.sessionTags,
         orderingPersistenceState.pinnedKeySet,
+        homeObservations,
+        renderModels.audience,
         renderModels.hasMultipleMachines,
         renderModels.existingDraftBySessionKey,
         renderModels.reachableSessionDisplayById,
@@ -1993,7 +2286,10 @@ export function useSessionListViewStateFromPaneState(
         sessionListIdentityDisplay,
         sessionListWorkingIndicatorStyle,
         sessionListWorkingStatusAnimatedTextEnabled,
-        shellFlags.canDragSessionRows,
+        sessionListOrderingModeV1,
+        sessionListSectionModeV1,
+        shellFlags.canMoveSessionRowsBetweenFolders,
+        shellFlags.canReorderSessions,
         shellFlags.showPinnedServerBadge,
         shellFlags.showServerBadge,
         surfaceOwnership.dataActive,
@@ -2117,6 +2413,8 @@ export function useSessionListViewStateFromPaneState(
         attentionStandingEnabled: attentionStanding.actionEnabled,
         attentionStandingSignature,
         canDragSessionRows: shellFlags.canDragSessionRows,
+        canMoveSessionRowsBetweenFolders: shellFlags.canMoveSessionRowsBetweenFolders,
+        canReorderSessions: shellFlags.canReorderSessions,
         compact: Boolean(densityViewState.compact),
         compactMinimal: Boolean(densityViewState.compact && densityViewState.compactMinimal),
         currentUserId,
@@ -2147,6 +2445,8 @@ export function useSessionListViewStateFromPaneState(
         sessionTagsEnabled,
         sessionTagsSignature,
         shellFlags.canDragSessionRows,
+        shellFlags.canMoveSessionRowsBetweenFolders,
+        shellFlags.canReorderSessions,
         workspaceLabelsSignature,
     ]);
 
@@ -2165,7 +2465,7 @@ export function useSessionListViewStateFromPaneState(
         setSessionListFocusedFolderV1({
             folderId: folder.id,
             workspace: folder.workspace,
-            serverId: folder.workspace.serverId ?? null,
+            serverId: folder.workspace.serverId,
         });
     }, [renderPaneState.folderFocus?.breadcrumbs, setSessionListFocusedFolderV1]);
     const handleTreeViewportLayout = React.useCallback((event: { nativeEvent?: { layout?: { y?: number; height?: number } } }) => {
@@ -2202,6 +2502,8 @@ export function useSessionListViewStateFromPaneState(
         filteredNoResultsMessage,
         renderVirtualizedItem,
         scrollToOffset: scrollToRetainedOffset,
+        scrollToIndex: scrollToRetainedIndex,
+        measureNodeViewportOffset: measureVirtualizedNodeViewportOffset,
         virtualizedRowExtraData,
         onViewableItemsChanged: handleViewableItemsChangedRef.current,
         viewabilityConfig: viewabilityConfigRef.current,

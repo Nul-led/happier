@@ -10,6 +10,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 
 export type ProjectFileLinkPickerModalProps = Readonly<{
     sessionId: string;
+    serverId?: string | null;
     onPickPath: (path: string) => void;
     onClose: () => void;
 }>;
@@ -70,6 +71,7 @@ export const ProjectFileLinkPickerModal = React.memo((props: ProjectFileLinkPick
             <View style={styles.body}>
                 <LinkFilePickerPopoverContent
                     sessionId={props.sessionId}
+                    serverId={props.serverId}
                     onPickPath={props.onPickPath}
                     onRequestClose={props.onClose}
                 />

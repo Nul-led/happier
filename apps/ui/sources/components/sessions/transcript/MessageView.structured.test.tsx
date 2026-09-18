@@ -2,6 +2,7 @@ import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import { createReducer } from '@/sync/reducer/reducer';
 import { deriveTranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import { installMessageViewCommonModuleMocks } from './messageViewTestHelpers';
@@ -101,6 +102,7 @@ installMessageViewCommonModuleMocks({
             }),
             useSessionInteractionSource: () => ({
                 accessLevel: null,
+                access: OWNER_SESSION_ACCESS,
                 canApprovePermissions: true,
                 active: true,
             }),
@@ -227,17 +229,53 @@ vi.mock('@/utils/sessions/discardedCommittedMessages', () => ({
 }));
 
 const routerPushSpy = structuredRouterState.push;
+// Current interaction contract: grants come from the Session access projection's
+// capability bits (deriveTranscriptInteraction fails closed without `access`).
+const OWNER_SESSION_ACCESS = {
+    role: 'owner',
+    level: 'owner',
+    capabilities: {
+        readTranscript: true,
+        submitAgentInput: true,
+        editSessionRecords: true,
+        approveRuntimePermissions: true,
+        manageAccess: true,
+        managePermissionDelegation: true,
+        managePublicLink: true,
+        archiveSession: true,
+        renameSession: true,
+        assignResponsibility: true,
+        stopSession: true,
+        deleteSession: true,
+    },
+} as const;
+const VIEW_ONLY_SESSION_ACCESS = {
+    role: 'recipient',
+    level: 'view',
+    capabilities: {
+        readTranscript: true,
+        submitAgentInput: false,
+        editSessionRecords: false,
+        approveRuntimePermissions: false,
+        manageAccess: false,
+        managePermissionDelegation: false,
+        managePublicLink: false,
+        archiveSession: false,
+        renameSession: false,
+        assignResponsibility: false,
+        stopSession: false,
+        deleteSession: false,
+    },
+} as const;
 const sessionInteraction = deriveTranscriptInteraction({
     kind: 'session',
-    accessLevel: null,
-    canApprovePermissions: true,
+    access: OWNER_SESSION_ACCESS,
     isSessionActive: true,
 });
 const publicInteraction = deriveTranscriptInteraction({ kind: 'public' });
 const viewOnlyInteraction = deriveTranscriptInteraction({
     kind: 'session',
-    accessLevel: 'view',
-    canApprovePermissions: false,
+    access: VIEW_ONLY_SESSION_ACCESS,
     isSessionActive: true,
 });
 
@@ -773,8 +811,13 @@ describe('MessageView (structured meta)', { timeout: 60_000 }, () => {
                 },
             };
 
+            // StructuredReferencesRow resolves its pane scope through
+            // AppPaneProvider (multi-Home-qualified opening), so the harness
+            // provides the same provider the row's own tests use.
             const screen = await renderScreen(
-                <MessageView message={message} metadata={null} sessionId="s1" />,
+                <AppPaneProvider>
+                    <MessageView message={message} metadata={null} sessionId="s1" />
+                </AppPaneProvider>,
             );
 
             expect(screen.findByTestId('transcript-session-reference:sess-42')).not.toBeNull();
@@ -835,8 +878,7 @@ describe('MessageView (structured meta)', { timeout: 60_000 }, () => {
         const { ReviewCommentsMessageCard } = await import('../reviews/messages/ReviewCommentsMessageCard');
         const interaction = deriveTranscriptInteraction({
             kind: 'session',
-            accessLevel: null,
-            canApprovePermissions: true,
+            access: OWNER_SESSION_ACCESS,
             isSessionActive: true,
         });
         const routerA = vi.fn();
@@ -1893,5 +1935,202 @@ describe('MessageView (structured meta)', { timeout: 60_000 }, () => {
         expect(indicator?.props.accessibilityLabel).toContain('message.recoveredHistory');
         expect(String(indicator?.props.children)).toContain('message.recoveredHistory');
         expect(String(indicator?.props.children)).not.toBe('message.recoveredHistory');
+    });
+});
+
+describe('in-session file/media deep links carry the exact Home', () => {
+    afterEach(() => {
+        structuredRouterState.push = routerPushSpy;
+        routerPushSpy.mockReset();
+        standardCleanup();
+    });
+
+    // One Session id can exist on two Homes. Opening a file from the Home-B
+    // transcript must target Home B, or the file route hydrates a different
+    // Home's Session (or an ambiguity chooser) instead of the file in view.
+    it('keeps the exact Home serverId when a user markdown file link opens', async () => {
+        const { MessageView } = await import('./MessageView');
+
+        const message: any = {
+            kind: 'user-text',
+            id: 'message-link-user-b',
+            localId: 'local-link-user-b',
+            createdAt: 0,
+            text: '[open range](src/foo.ts:5-8)',
+            meta: {},
+        };
+
+        routerPushSpy.mockClear();
+        const screen = await renderScreen(
+            <MessageView message={message} metadata={null} sessionId="s1" serverId="home-b" />,
+        );
+        const markdownView = screen.findByType('MarkdownView' as any);
+
+        expect(markdownView.props.onLinkPress('src/foo.ts:5-8')).toBe(true);
+        expect(routerPushSpy).toHaveBeenCalledWith(
+            '/session/s1/file?path=src%2Ffoo.ts&serverId=home-b&source=file&anchor=range&startLine=5&endLine=8',
+        );
+    });
+
+    it('keeps the exact Home serverId when an agent markdown file link opens', async () => {
+        const { MessageView } = await import('./MessageView');
+
+        const message: any = {
+            kind: 'agent-text',
+            id: 'message-link-agent-b',
+            localId: null,
+            createdAt: 0,
+            text: '[open range](src/foo.ts:5-8)',
+            meta: {},
+        };
+
+        routerPushSpy.mockClear();
+        const screen = await renderScreen(
+            <MessageView message={message} metadata={null} sessionId="s1" serverId="home-b" />,
+        );
+        const markdownView = screen.findByType('MarkdownView' as any);
+
+        expect(markdownView.props.onLinkPress('src/foo.ts:5-8')).toBe(true);
+        expect(routerPushSpy).toHaveBeenCalledWith(
+            '/session/s1/file?path=src%2Ffoo.ts&serverId=home-b&source=file&anchor=range&startLine=5&endLine=8',
+        );
+    });
+
+    it('keeps the exact Home serverId when a user attachment opens', async () => {
+        const { MessageView } = await import('./MessageView');
+
+        const message: any = {
+            kind: 'user-text',
+            id: 'message-attach-b',
+            localId: 'local-attach-b',
+            createdAt: 0,
+            text: 'see attachment',
+            displayText: 'see attachment',
+            meta: {
+                happier: {
+                    kind: 'attachments.v1',
+                    payload: {
+                        attachments: [
+                            { name: 'icon.svg', path: '.happier/uploads/messages/m1/icon.svg', mimeType: 'image/svg+xml', sizeBytes: 12, sha256: 'svg-hash-b' },
+                        ],
+                    },
+                },
+            },
+        };
+
+        routerPushSpy.mockClear();
+        const screen = await renderScreen(
+            <MessageView message={message} metadata={null} sessionId="s1" serverId="home-b" />,
+        );
+
+        const row = screen.findByTestId('message-attachments-row');
+        expect(row).not.toBeNull();
+        if (!row) throw new Error('attachments row missing');
+        const chip = row.findAll((node: any) => node.props?.onPress).at(0);
+        expect(chip).toBeTruthy();
+        if (!chip) throw new Error('attachment chip missing');
+        await act(async () => {
+            chip.props.onPress();
+        });
+
+        expect(routerPushSpy).toHaveBeenCalledWith(
+            '/session/s1/file?path=.happier%2Fuploads%2Fmessages%2Fm1%2Ficon.svg&serverId=home-b',
+        );
+    });
+
+    it('keeps the exact Home serverId when agent session media opens', async () => {
+        const { MessageView } = await import('./MessageView');
+
+        // The video tile routes its press straight to onOpenPath when file-open
+        // is granted, independent of preview resolution state.
+        const message: any = {
+            kind: 'agent-text',
+            id: 'message-agent-media-b',
+            localId: null,
+            createdAt: 0,
+            text: 'Generated recording',
+            meta: {
+                happierMedia: {
+                    kind: 'session_media.v1',
+                    payload: {
+                        media: [{
+                            id: 'media-agent-b',
+                            role: 'output',
+                            category: 'generated',
+                            mediaKind: 'video',
+                            mimeType: 'video/webm',
+                            name: 'generated.webm',
+                            path: '.happier/uploads/generated/session-1/message-1/generated.webm',
+                            sizeBytes: 42,
+                            origin: { source: 'provider-generated' },
+                        }],
+                    },
+                },
+            },
+        };
+
+        routerPushSpy.mockClear();
+        const screen = await renderScreen(
+            <MessageView message={message} metadata={null} sessionId="s1" serverId="home-b" />,
+        );
+
+        await screen.pressByTestIdAsync('message-session-media-inline-video:.happier/uploads/generated/session-1/message-1/generated.webm');
+
+        expect(routerPushSpy).toHaveBeenCalledWith(
+            '/session/s1/file?path=.happier%2Fuploads%2Fgenerated%2Fsession-1%2Fmessage-1%2Fgenerated.webm&serverId=home-b',
+        );
+    });
+
+    it('keeps the exact Home serverId when tool session media opens', async () => {
+        const { MessageView } = await import('./MessageView');
+
+        const message: any = {
+            kind: 'tool-call',
+            id: 'message-tool-media-b',
+            localId: null,
+            createdAt: 1,
+            tool: {
+                id: 'call-tool-media-b',
+                name: 'Read',
+                state: 'completed',
+                input: {},
+                createdAt: 1,
+                startedAt: 1,
+                completedAt: 2,
+                description: null,
+                result: { content: 'done' },
+                children: [],
+            },
+            children: [],
+            meta: {
+                happierMedia: {
+                    kind: 'session_media.v1',
+                    payload: {
+                        media: [{
+                            id: 'media-tool-b',
+                            role: 'output',
+                            category: 'tool-artifact',
+                            mediaKind: 'video',
+                            mimeType: 'video/webm',
+                            name: 'screenshot-recording.webm',
+                            path: '.happier/uploads/tools/t1/screenshot-recording.webm',
+                            sizeBytes: 42,
+                            origin: { source: 'tool-output' },
+                        }],
+                    },
+                },
+            },
+        };
+
+        routerPushSpy.mockClear();
+        const screen = await renderScreen(
+            <MessageView message={message} metadata={null} sessionId="s1" serverId="home-b" />,
+        );
+
+        await screen.pressByTestIdAsync('message-session-media-inline-video:.happier/uploads/tools/t1/screenshot-recording.webm');
+
+        expect(routerPushSpy).toHaveBeenCalledWith(
+            '/session/s1/file?path=.happier%2Fuploads%2Ftools%2Ft1%2Fscreenshot-recording.webm&serverId=home-b',
+        );
     });
 });

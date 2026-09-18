@@ -411,6 +411,20 @@ describe('NewSessionWizard agent input chips', () => {
         expect(agentInputProps.onResumeClick).toBeUndefined();
     });
 
+    it('shows the shared Temporary-computer destination instead of asking the Wizard to select a machine', async () => {
+        const { NewSessionWizard } = await import('./NewSessionWizard');
+        const props = buildProps();
+        // The same label the Simple composer resolves from the committed target.
+        props.footer.machineName = 'newSession.temporaryComputer.destination.windows';
+        props.machine.selectedMachine = null;
+
+        AgentInputMock.mockClear();
+        await renderScreen(React.createElement(NewSessionWizard, props as any));
+
+        const agentInputProps = (AgentInputMock.mock.calls[0]?.[0] ?? {}) as any;
+        expect(agentInputProps.machineName).toBe('newSession.temporaryComputer.destination.windows');
+    });
+
     it('passes ACP config probe props through to AgentInput for the wizard action menu popover', async () => {
         const { NewSessionWizard } = await import('./NewSessionWizard');
         const props = buildProps();

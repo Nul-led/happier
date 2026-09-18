@@ -1,12 +1,12 @@
 import {
   PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-  PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
   type PeerTcpTunnelEncoding,
 } from '@happier-dev/protocol';
 
 import { encodeBase64 } from '@/encryption/base64';
 import {
   resolveMachineStreamCarrierProfile,
+  MACHINE_RPC_JSON_BASE64_ENCODING,
   type MachineStreamCarrierProfile,
   type MachineStreamRouteKind,
 } from '@/sync/domains/machines/peer/mediation/stream/carrier';
@@ -19,7 +19,7 @@ type DaemonSpeechStreamSequence = Readonly<{
 
 type DaemonSpeechStreamCarrierFrameBase = Readonly<{
   profile: MachineStreamCarrierProfile;
-  frameEncoding: PeerTcpTunnelEncoding;
+  frameEncoding: PeerTcpTunnelEncoding | typeof MACHINE_RPC_JSON_BASE64_ENCODING;
   sequence: DaemonSpeechStreamSequence;
 }>;
 
@@ -30,8 +30,8 @@ export type DaemonSpeechStreamBinaryFrameV2 = DaemonSpeechStreamCarrierFrameBase
 }>;
 
 export type DaemonSpeechStreamJsonBase64FallbackFrame = DaemonSpeechStreamCarrierFrameBase & Readonly<{
-  kind: 'json_base64_v1_fallback';
-  frameEncoding: typeof PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1;
+  kind: 'machine_rpc_json_base64';
+  frameEncoding: typeof MACHINE_RPC_JSON_BASE64_ENCODING;
   fallbackReason: 'carrier_binary_unavailable';
   jsonBase64Envelope: Readonly<{
     pcm16Base64: string;
@@ -51,7 +51,7 @@ export type DaemonSpeechStreamCarrierAdapter = Readonly<{
 
 export type DaemonSpeechStreamRpcCompatibilityTransportDescriptor = Readonly<{
   kind: 'machine_rpc_json_base64_compatibility';
-  carrierFrameEncoding: typeof PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1;
+  carrierFrameEncoding: typeof MACHINE_RPC_JSON_BASE64_ENCODING;
   payloadShape: 'json_base64_envelope';
 }>;
 
@@ -80,9 +80,9 @@ export function createDaemonSpeechStreamCarrierAdapter(input: Readonly<{
         };
       }
       return {
-        kind: 'json_base64_v1_fallback',
+        kind: 'machine_rpc_json_base64',
         profile,
-        frameEncoding: PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
+        frameEncoding: MACHINE_RPC_JSON_BASE64_ENCODING,
         sequence,
         fallbackReason: 'carrier_binary_unavailable',
         jsonBase64Envelope: {
@@ -103,7 +103,7 @@ export function createDaemonSpeechStreamRpcCompatibilityCarrierAdapter(): Daemon
 export function describeDaemonSpeechStreamRpcCompatibilityTransport(): DaemonSpeechStreamRpcCompatibilityTransportDescriptor {
   return {
     kind: 'machine_rpc_json_base64_compatibility',
-    carrierFrameEncoding: PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
+    carrierFrameEncoding: MACHINE_RPC_JSON_BASE64_ENCODING,
     payloadShape: 'json_base64_envelope',
   };
 }

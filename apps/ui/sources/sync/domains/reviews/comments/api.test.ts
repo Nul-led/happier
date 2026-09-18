@@ -1,12 +1,101 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ReviewCommentV1 } from '@happier-dev/protocol';
+import {
+    ReviewCommentPublicationTransportRequestV1Schema,
+    createReviewCommentPublicationSettlementRequestV1,
+    type AccountScopedCryptoMaterial,
+    type ReviewCommentClaimPublicationDispatchResponseV1,
+    type ReviewCommentPublicationPlanV1,
+    type ReviewCommentPublicationTransportRequestV1,
+    type ReviewCommentV1,
+} from '@happier-dev/protocol';
 
 const serverFetchSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/http/client', () => ({
     serverFetch: serverFetchSpy,
 }));
+
+/**
+ * Every private plan string carries `PRIVATE-`, so one substring sweep over the
+ * bytes `serverFetch` actually received covers present and future request
+ * fields. `happierCommentId` is excluded: the Happier server owns that row.
+ */
+const publicationPlan: ReviewCommentPublicationPlanV1 = {
+    target: {
+        providerId: 'PRIVATE-provider',
+        configuredAccountId: 'PRIVATE-connected-account',
+        entryRef: {
+            sourceId: 'PRIVATE-source',
+            kindId: 'PRIVATE-entry-kind',
+            collisionScope: 'PRIVATE-repository',
+            entryId: 'PRIVATE-pull-request',
+        },
+        subtarget: null,
+    },
+    baseRevision: 'PRIVATE-base-revision',
+    headRevision: 'PRIVATE-head-revision',
+    entries: [{
+        happierCommentId: 'comment-1',
+        expectedServerRevision: 1,
+        anchor: { kind: 'line', filePath: 'PRIVATE-source/file.ts', line: 4 },
+        snapshot: {
+            kind: 'text',
+            selectedLines: ['PRIVATE-selected-code'],
+            beforeContext: ['PRIVATE-before-context'],
+            afterContext: ['PRIVATE-after-context'],
+            selectedLinesHash: 'PRIVATE-selected-hash',
+            contextWindowHash: 'PRIVATE-context-hash',
+            capturedAt: 1,
+            fileLength: 5,
+            source: 'workingTree',
+            isUncommitted: true,
+            isUntracked: false,
+            truncated: false,
+            hasBidiControls: false,
+            likelyMinified: false,
+        },
+        body: 'PRIVATE-review-body',
+    }],
+    verdict: { kind: 'comment', body: 'PRIVATE-verdict-body' },
+};
+
+const e2eeMaterial: AccountScopedCryptoMaterial = { type: 'legacy', secret: new Uint8Array(32).fill(5) };
+
+/** Distinct bytes per call so every seal gets its own nonce. */
+function countingRandomBytes(): (length: number) => Uint8Array {
+    let counter = 0;
+    return (length) => {
+        counter += 1;
+        const bytes = new Uint8Array(length);
+        for (let index = 0; index < length; index += 1) bytes[index] = (counter * 17 + index * 7) % 256;
+        return bytes;
+    };
+}
+
+function postedTransportRequest(callIndex: number): ReviewCommentPublicationTransportRequestV1 {
+    const init = serverFetchSpy.mock.calls[callIndex]?.[1] as RequestInit | undefined;
+    return ReviewCommentPublicationTransportRequestV1Schema.parse(JSON.parse(String(init?.body)));
+}
+
+function publicationResponseFor(body: unknown, settled: boolean): unknown {
+    const request = ReviewCommentPublicationTransportRequestV1Schema.parse(JSON.parse(String(body)));
+    return {
+        disposition: settled ? 'reconcile' : 'dispatch',
+        dispatchToken: settled ? null : 'dispatch-token-1',
+        publicationPlanId: request.publicationPlanId,
+        entries: request.entries.map(({ happierCommentId, publicationCorrelationId }) => ({
+            happierCommentId,
+            publicationCorrelationId,
+        })),
+        verdict: request.verdict,
+        instructions: {
+            entries: request.entries.map(() => settled ? 'confirmed' : 'dispatch'),
+            verdict: request.verdict === null ? null : settled ? 'confirmed' : 'dispatch',
+        },
+        priorResult: request.settlement?.result ?? null,
+    };
+}
 
 function comment(overrides: Partial<ReviewCommentV1> = {}): ReviewCommentV1 {
     return {
@@ -165,53 +254,139 @@ describe('review comments HTTP action executor', () => {
         expect(serverFetchSpy).not.toHaveBeenCalled();
     });
 
-    it('claims one publication dispatch without manufacturing a comment mutation event', async () => {
-        const claim = {
-            disposition: 'dispatch' as const,
+    it('claims one plaintext-Account publication dispatch opaquely and without a comment mutation event', async () => {
+        serverFetchSpy.mockImplementationOnce(async (_path: string, init: RequestInit) =>
+            jsonResponse(publicationResponseFor(init.body, false)));
+        const { createReviewCommentsHttpActionExecutor } = await import('./api');
+
+        const execute = createReviewCommentsHttpActionExecutor({
+            resolveEventStorageContext: async () => ({ accountId: 'account-1', mode: 'plain' }),
+            randomBytes: countingRandomBytes(),
+        });
+        const claim = await execute('reviews.comments.claimPublicationDispatch', publicationPlan);
+
+        expect(serverFetchSpy).toHaveBeenCalledTimes(1);
+        const [path, init, options] = serverFetchSpy.mock.calls[0] ?? [];
+        expect(path).toBe('/v1/reviews/comments/publication/claim');
+        expect(init).toEqual(expect.objectContaining({ method: 'POST' }));
+        expect(options).toEqual({ includeAuth: true });
+        expect(String((init as RequestInit).body)).not.toContain('PRIVATE-');
+        expect(String((init as RequestInit).body)).not.toContain('eventEnvelope');
+
+        const wire = postedTransportRequest(0);
+        expect(wire.mode).toBe('plain');
+        expect(wire.contentPublicKeyFingerprint).toBeNull();
+        expect(wire.entries).toEqual([{
+            happierCommentId: 'comment-1',
+            expectedServerRevision: 1,
+            publicationCorrelationId: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+        }]);
+        expect(claim).toEqual({
+            disposition: 'dispatch',
+            dispatchToken: 'dispatch-token-1',
+            publicationPlanId: wire.publicationPlanId,
+            entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: wire.entries[0]!.publicationCorrelationId }],
+            verdict: { publicationCorrelationId: wire.verdict!.publicationCorrelationId },
+            instructions: { entries: ['dispatch'], verdict: 'dispatch' },
+            priorResult: null,
+        });
+    });
+
+    it('settles an E2EE publication without putting provider references or failure text on the wire', async () => {
+        serverFetchSpy
+            .mockImplementationOnce(async (_path: string, init: RequestInit) =>
+                jsonResponse(publicationResponseFor(init.body, false)))
+            .mockImplementationOnce(async (_path: string, init: RequestInit) =>
+                jsonResponse(publicationResponseFor(init.body, true)));
+        const { createReviewCommentsHttpActionExecutor } = await import('./api');
+
+        const plan: ReviewCommentPublicationPlanV1 = {
+            ...publicationPlan,
+            entries: [
+                publicationPlan.entries[0]!,
+                { ...publicationPlan.entries[0]!, happierCommentId: 'comment-2', expectedServerRevision: 2 },
+            ],
+        };
+        const execute = createReviewCommentsHttpActionExecutor({
+            resolveEventStorageContext: async () => ({ accountId: 'account-1', mode: 'e2ee', material: e2eeMaterial }),
+            randomBytes: countingRandomBytes(),
+        });
+
+        const claim = await execute(
+            'reviews.comments.claimPublicationDispatch',
+            plan,
+        ) as ReviewCommentClaimPublicationDispatchResponseV1;
+        const result = {
+            publicationPlanId: claim.publicationPlanId,
+            entries: [
+                {
+                    happierCommentId: 'comment-1',
+                    publicationCorrelationId: claim.entries[0]!.publicationCorrelationId,
+                    outcome: { kind: 'published' as const, externalRef: 'PRIVATE-native-comment-ref' },
+                },
+                {
+                    happierCommentId: 'comment-2',
+                    publicationCorrelationId: claim.entries[1]!.publicationCorrelationId,
+                    outcome: {
+                        kind: 'failed' as const,
+                        code: 'PRIVATE-provider-code',
+                        message: 'PRIVATE-provider-message',
+                    },
+                },
+            ],
+            verdict: {
+                publicationCorrelationId: claim.verdict!.publicationCorrelationId,
+                outcome: { kind: 'published' as const, externalRef: 'PRIVATE-native-verdict-ref' },
+            },
+        };
+
+        const settled = await execute(
+            'reviews.comments.claimPublicationDispatch',
+            createReviewCommentPublicationSettlementRequestV1(plan, claim, result),
+        ) as ReviewCommentClaimPublicationDispatchResponseV1;
+
+        expect(serverFetchSpy).toHaveBeenCalledTimes(2);
+        const settlementBody = String((serverFetchSpy.mock.calls[1]?.[1] as RequestInit).body);
+        expect(settlementBody).not.toContain('PRIVATE-');
+        const wire = postedTransportRequest(1);
+        expect(wire.mode).toBe('e2ee');
+        expect(wire.contentPublicKeyFingerprint).toEqual(expect.any(String));
+        const outcomes = [
+            ...wire.settlement!.result.entries.map((entry) => entry.outcome),
+            ...('kind' in wire.settlement!.result.verdict ? [] : [wire.settlement!.result.verdict.outcome]),
+        ];
+        expect(outcomes.map((outcome) => outcome.content?.t)).toEqual(['encrypted', 'encrypted', 'encrypted']);
+        expect(settled.priorResult).toEqual(result);
+    });
+
+    it('fails a token-only E2EE publication claim before POST', async () => {
+        const { createReviewCommentsHttpActionExecutor } = await import('./api');
+        const execute = createReviewCommentsHttpActionExecutor({
+            resolveEventStorageContext: async () => ({ accountId: 'account-1', mode: 'e2ee' }),
+        });
+
+        await expect(execute('reviews.comments.claimPublicationDispatch', publicationPlan))
+            .rejects.toThrow('review_comment_encryption_material_unavailable');
+        expect(serverFetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('refuses a publication response whose plan binding the server substituted', async () => {
+        serverFetchSpy.mockResolvedValueOnce(jsonResponse({
+            disposition: 'dispatch',
             dispatchToken: 'dispatch-token-1',
             publicationPlanId: 'P'.repeat(43),
             entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: 'A'.repeat(43) }],
-            verdict: null,
-            instructions: { entries: ['dispatch'] as const, verdict: null },
+            verdict: { publicationCorrelationId: 'V'.repeat(43) },
+            instructions: { entries: ['dispatch'], verdict: 'dispatch' },
             priorResult: null,
-        };
-        serverFetchSpy.mockResolvedValueOnce(jsonResponse(claim));
+        }));
         const { createReviewCommentsHttpActionExecutor } = await import('./api');
+        const execute = createReviewCommentsHttpActionExecutor({
+            resolveEventStorageContext: async () => ({ accountId: 'account-1', mode: 'plain' }),
+        });
 
-        const execute = createReviewCommentsHttpActionExecutor();
-        const target = {
-            providerId: 'github',
-            configuredAccountId: 'account-1',
-            entryRef: {
-                sourceId: 'github',
-                kindId: 'pull-request-comment',
-                collisionScope: 'repo-1',
-                entryId: 'comment-1',
-            },
-            subtarget: null,
-        };
-        const publicationPlan = {
-            target,
-            baseRevision: 'base-1',
-            headRevision: 'head-1',
-            entries: [{
-                happierCommentId: 'comment-1',
-                expectedServerRevision: 1,
-                anchor: { kind: 'file' as const, filePath: 'src/a.ts' },
-                snapshot: { kind: 'too_large' as const, filePath: 'src/a.ts', sizeBytes: 2, capBytes: 1, capturedAt: 1 },
-                body: 'body',
-            }],
-            verdict: null,
-        };
-        await expect(execute('reviews.comments.claimPublicationDispatch', publicationPlan)).resolves.toEqual(claim);
-
-        expect(serverFetchSpy).toHaveBeenCalledWith(
-            '/v1/reviews/comments/publication/claim',
-            expect.objectContaining({
-                method: 'POST',
-                body: JSON.stringify(publicationPlan),
-            }),
-            { includeAuth: true },
-        );
+        await expect(execute('reviews.comments.claimPublicationDispatch', publicationPlan))
+            .rejects.toThrow('review_comment_publication_binding_mismatch');
+        expect(serverFetchSpy).toHaveBeenCalledTimes(1);
     });
 });

@@ -217,3 +217,22 @@ export function subscribeIrohHomeTransportDiagnostics(listener: () => void): () 
 export function readIrohHomeTransportDiagnosticsRevision(): number {
     return diagnosticsRevision;
 }
+
+/** Forget diagnostics only when the Home itself is explicitly forgotten. */
+export function retireIrohHomeTransportDiagnostics(homeServerIdentityIdRaw: string): void {
+    const homeServerIdentityId = homeServerIdentityIdRaw.trim();
+    if (!homeServerIdentityId) return;
+    let changed = false;
+    for (const [key, observation] of activeObservationsByIdentity) {
+        if (observation.identity.homeServerIdentityId !== homeServerIdentityId) continue;
+        activeObservationsByIdentity.delete(key);
+        currentGenerationByIdentity.delete(key);
+        changed = true;
+    }
+    for (const [key, observation] of inactiveDiagnosticsByProducerAndHome) {
+        if (observation.diagnostics.homeServerIdentityId !== homeServerIdentityId) continue;
+        inactiveDiagnosticsByProducerAndHome.delete(key);
+        changed = true;
+    }
+    if (changed) notifyDiagnosticsListeners();
+}

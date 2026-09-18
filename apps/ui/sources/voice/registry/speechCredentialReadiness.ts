@@ -5,6 +5,7 @@ import {
 } from '@happier-dev/protocol';
 
 import type { Settings } from '@/sync/domains/settings/settings';
+import type { SavedSecretReferenceResolution } from '@/sync/store/settings/savedSecretCatalogSnapshot';
 import {
   resolveAccountVoiceCredentialSourceSelection,
   resolveAccountVoiceCredentialStatus,
@@ -72,6 +73,7 @@ export function projectVoiceSpeechCredentialReadiness(input: Readonly<{
     phase: 'speech';
     status: 'ready' | 'approval_required' | 'unknown';
   }> | null;
+  resolveSavedSecret?: (ref: string) => SavedSecretReferenceResolution;
 }>): VoiceCredentialReadinessFact {
   const entry = input.registry.get(input.providerId);
   if (!entry || !entry.roles.includes(input.role) || !isSpeechReadinessRole(input.role)) {
@@ -125,6 +127,7 @@ export function projectVoiceSpeechCredentialReadiness(input: Readonly<{
       credentialSlotId,
       machineId: input.executionMachineId ?? null,
       requiredRecipientContractDigest: entry.accountCredentialSlot?.recipientContractDigest ?? null,
+      resolveSavedSecret: input.resolveSavedSecret,
     }).status;
     if (status !== 'ready') {
       return status === 'review_required' ? 'approval_required' : status;

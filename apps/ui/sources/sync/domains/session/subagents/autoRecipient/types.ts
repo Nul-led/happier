@@ -6,6 +6,7 @@ import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionSubagent, SessionSubagentActiveExecutionRunState } from '../types';
 
 export type SessionSubagentAutoRecipientContext = Readonly<{
+    accountScope?: import('@/sync/domains/scope/serverAccountScope').ServerAccountScope | null;
     session: Session;
     tool: ToolCall;
     messages: readonly Message[];

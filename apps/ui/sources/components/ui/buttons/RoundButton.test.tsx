@@ -24,6 +24,7 @@ vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock();
 });
+vi.mock('@/components/ui/text/Text', () => ({ Text: (props: React.Attributes & Record<string, unknown>) => React.createElement('Text', props) }));
 
 describe('RoundButton', () => {
     it('forwards the press event to modifier-aware actions', async () => {
@@ -120,5 +121,25 @@ describe('RoundButton', () => {
 
         expect(flatten(defaultLabel.props.style).textAlign).toBeUndefined();
         expect(flatten(wrappedLabel.props.style).textAlign).toBe('center');
+    });
+
+    it('uses a scoped default size while preserving the global large default', async () => {
+        const { RoundButton, RoundButtonSizeScope } = await import('./RoundButton');
+        const screen = await renderScreen(<>
+            <RoundButton title="Global" testID="global-button" />
+            <RoundButtonSizeScope size="normal">
+                <RoundButton title="Footer" testID="footer-button" />
+                <RoundButton title="Explicit" size="small" testID="explicit-button" />
+            </RoundButtonSizeScope>
+        </>);
+        const flatten = (style: unknown): Record<string, unknown> => Array.isArray(style)
+            ? style.reduce((result, entry) => ({ ...result, ...flatten(entry) }), {})
+            : ((style as Record<string, unknown> | null | undefined) ?? {});
+        const fontSizeFor = (testID: string) => flatten(
+            screen.findByTestId(testID)?.findByType('Text').props.style,
+        ).fontSize;
+        expect(fontSizeFor('global-button')).toBe(21);
+        expect(fontSizeFor('footer-button')).toBe(16);
+        expect(fontSizeFor('explicit-button')).toBe(14);
     });
 });

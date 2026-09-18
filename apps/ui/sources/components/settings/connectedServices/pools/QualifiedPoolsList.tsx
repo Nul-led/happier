@@ -20,6 +20,7 @@ import {
     type ConnectedServiceQuotaGaugeLabelFormatter,
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 import { deriveAccountCapacityPct } from '@/sync/domains/connectedServices/deriveAccountCapacityPct';
+import { projectConnectedServiceQuotaSnapshotForLimitSelection } from '@/sync/domains/connectedServices/projectConnectedServiceQuotaSnapshotForLimitSelection';
 import {
     deriveAccountHealth,
     worstAccountHealth,
@@ -34,6 +35,7 @@ import {
 import { t } from '@/text';
 import type {
     ConnectedServiceCredentialHealthStatusV1,
+    ConnectedServiceQuotaLimitSelectionV1,
     QualifiedConnectedAccountQuotaSnapshotV4,
     QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
@@ -139,12 +141,17 @@ export type QualifiedPoolAccount = QualifiedConnectedAccountPresentationAccount 
 const QualifiedPoolMemberProbe = React.memo(function QualifiedPoolMemberProbe(props: Readonly<{
     account: QualifiedConnectedAccountRef;
     status: ConnectedServiceCredentialHealthStatusV1 | null;
+    quotaLimitSelection?: ConnectedServiceQuotaLimitSelectionV1;
     onResolve: (accountId: string, resolution: QualifiedPoolMemberResolution) => void;
 }>) {
     const { account, status, onResolve } = props;
     const { snapshot, loading } = useQualifiedConnectedAccountQuota(account);
 
-    const gauge = React.useMemo(() => deriveSnapshotGauge(snapshot), [snapshot]);
+    const displaySnapshot = React.useMemo(
+        () => projectConnectedServiceQuotaSnapshotForLimitSelection(snapshot, props.quotaLimitSelection),
+        [props.quotaLimitSelection, snapshot],
+    );
+    const gauge = React.useMemo(() => deriveSnapshotGauge(displaySnapshot), [displaySnapshot]);
     // The V4 quota surface reports no staleness flag, so it is derived from the
     // snapshot's own freshness window — the same rule `QualifiedAccountBlock` uses.
     const isStale = snapshot != null && Date.now() > snapshot.fetchedAt + snapshot.staleAfterMs;
@@ -390,6 +397,7 @@ const QualifiedPoolRow = React.memo(function QualifiedPoolRow(props: Readonly<{
                             key={member.ref.accountId}
                             account={member.ref}
                             status={account?.status ?? null}
+                            quotaLimitSelection={group.policy.quotaLimitSelection}
                             onResolve={onResolve}
                         />
                     );

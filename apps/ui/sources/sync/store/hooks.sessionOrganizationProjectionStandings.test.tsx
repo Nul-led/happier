@@ -3,13 +3,14 @@ import { act } from 'react-test-renderer';
 
 import { renderHook, standardCleanup } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storageStore';
+import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization/keys';
 
 import { useSessionOrganizationProjection } from './hooks';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const SERVER_ID = 'server-attention-standing-projection';
-const SESSION_KEY = `${SERVER_ID}:session-1`;
+const SESSION_KEY = buildSessionOrganizationSessionKey(SERVER_ID, 'session-1');
 
 /**
  * The organization projection is memoized behind a hand-written identity chain over the store

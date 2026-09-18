@@ -1,3 +1,4 @@
+import type { Session } from '@/sync/domains/state/storageTypes';
 import * as React from 'react';
 import { EditView } from '../fileOps/EditView';
 import { BashView } from '../system/BashView';
@@ -42,6 +43,8 @@ export type ToolViewProps = {
     metadata: Metadata | null;
     messages: Message[];
     sessionId?: string;
+    serverId?: string;
+    session?: Session;
     messageId?: string;
     detailLevel?: ToolViewDetailLevel;
     interaction?: TranscriptInteraction;

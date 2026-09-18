@@ -2,7 +2,10 @@ import type { DetailsTab } from '@/components/appShell/panes/model/appPaneReduce
 import { resolveExecutionRunAvailableBackends, type ExecutionRunBackendCapabilityMap } from '@/sync/domains/executionRuns/resolveExecutionRunAvailableBackends';
 import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import { t } from '@/text';
-import { ExecutionRunIntentSchema } from '@happier-dev/protocol';
+import {
+    ExecutionRunIntentSchema,
+    type SessionDiscussionSelectionSourceV1,
+} from '@happier-dev/protocol';
 
 export const EXECUTION_RUN_LAUNCH_INTENTS = ['review', 'plan', 'delegate'] as const;
 
@@ -55,5 +58,49 @@ export function createExecutionRunLauncherDetailsTab(intent?: ExecutionRunIntent
             kind: 'executionRunLauncher',
             ...(intent ? { intent } : {}),
         },
+    };
+}
+
+/**
+ * An empty Agent conversation draft. Unlike the bounded launcher above, this
+ * resource does not create a Run until the canonical composer hands off its
+ * first outbound message.
+ */
+export function createInteractiveExecutionRunDraftDetailsTab(): DetailsTab {
+    return {
+        key: 'execution-run-conversation-draft',
+        kind: 'executionRunLauncher',
+        title: t('session.subagents.panel.newAgentConversation'),
+        resource: {
+            kind: 'executionRunLauncher',
+            mode: 'conversation',
+        },
+    };
+}
+
+export function createDiscussionSelectionInteractiveExecutionRunDraftDetailsTab(input: Readonly<{
+    source: SessionDiscussionSelectionSourceV1 & Readonly<{ draftCorrelationId: string }>;
+    initialText: string;
+}>): DetailsTab {
+    return {
+        key: `execution-run-conversation-draft:discussion:${input.source.draftCorrelationId}`,
+        kind: 'executionRunLauncher',
+        title: t('session.subagents.panel.newAgentConversation'),
+        resource: {
+            kind: 'executionRunLauncher',
+            mode: 'conversation',
+            source: input.source,
+            initialInstructions: input.initialText,
+        },
+    };
+}
+
+/** A stable Details resource for a materialized execution Run. */
+export function createExecutionRunDetailsTab(runId: string, recovery?: Readonly<{ retryInputLocalId: string }>): DetailsTab {
+    return {
+        key: `execution-run:${runId}`,
+        kind: 'executionRun',
+        title: t('runs.runLabel', { runId }),
+        resource: { kind: 'executionRun', runId, ...(recovery ?? {}) },
     };
 }

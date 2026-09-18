@@ -29,6 +29,11 @@ type ServerScopedMachineSelectorProps<TMachine extends ServerScopedMachinePresen
         detail: string;
         selectable: boolean;
     }>;
+    /** Lets the owning domain suppress opaque ids and add safe disambiguation. */
+    resolveMachinePresentation?: (machine: TMachine) => Readonly<{
+        title: string;
+        subtitle?: string;
+    }>;
     /** Exact row identity for domains whose choice is finer than machine id. */
     getMachineKey?: (machine: TMachine) => string;
     /** Exact selection predicate for domains whose choice is finer than machine id. */
@@ -112,12 +117,13 @@ export function ServerScopedMachineSelector<
                                         && props.selectedServerId === group.serverId);
                                 const availability = props.resolveMachineAvailability?.(machine)
                                     ?? resolveGroupedMachineAvailability(machine);
+                                const presentation = props.resolveMachinePresentation?.(machine);
                                 return (
                                     <Item
                                         key={`${group.serverId}::${machineKey}`}
                                         testID={optionTestIdPrefix ? `${optionTestIdPrefix}:${machineKey}` : undefined}
-                                        title={machine.metadata?.displayName || machine.metadata?.host || machine.id}
-                                        subtitle={machine.metadata?.host || machine.id}
+                                        title={presentation?.title ?? machine.metadata?.displayName ?? machine.metadata?.host ?? machine.id}
+                                        subtitle={presentation?.subtitle ?? machine.metadata?.host ?? machine.id}
                                         icon={<Icon name="desktop" size={20} color={theme.colors.text.secondary} />}
                                         selected={isSelected}
                                         detail={availability.detail}

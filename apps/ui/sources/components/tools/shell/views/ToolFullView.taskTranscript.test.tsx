@@ -15,6 +15,7 @@ import {
     standardCleanup,
 } from '@/dev/testkit';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -401,6 +402,64 @@ describe('ToolFullView (Task transcript reuse)', () => {
             animated: true,
             index: 0,
         }));
+    });
+
+    it('resets the sidechain dataset when the exact Home changes for the same Session id', async () => {
+        const buildProps = (serverId: string, text: string) => ({
+            tool: makeToolCall({
+                name: 'Task',
+                input: { operation: 'run', description: text },
+                result: null,
+            }),
+            owningMessageId: 'shared-owner',
+            serverId,
+            metadata: null,
+            messages: [{
+                kind: 'agent-text' as const,
+                id: 'shared-thinking-message',
+                localId: null,
+                createdAt: 1000,
+                text,
+                isThinking: true,
+            }],
+            sessionId: 'shared-session',
+            interaction: { canSendMessages: true, canApprovePermissions: true },
+        });
+
+        const screen = await renderScreen(React.createElement(ToolFullView, buildProps('home-a', 'Home A')));
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(screen.findByType('LegendList' as any).props.dataKey).toBe(JSON.stringify([
+            sessionAddressKey({ serverId: 'home-a', sessionId: 'shared-session' }),
+            'shared-owner',
+        ]));
+        const homeAThinking = renderedMessageViewSpy.mock.calls
+            .map(([props]) => props)
+            .slice()
+            .reverse()
+            .find((props: any) => props.message?.text === 'Home A');
+        expect(homeAThinking?.thinkingExpanded).toBe(false);
+        await act(async () => {
+            homeAThinking?.onThinkingExpandedChange(true);
+            await flushHookEffects({ cycles: 2, turns: 2 });
+        });
+        expect(renderedMessageViewSpy.mock.calls
+            .map(([props]) => props)
+            .slice()
+            .reverse()
+            .find((props: any) => props.message?.text === 'Home A')?.thinkingExpanded).toBe(true);
+
+        await screen.update(React.createElement(ToolFullView, buildProps('home-b', 'Home B')));
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(screen.findByType('LegendList' as any).props.dataKey).toBe(JSON.stringify([
+            sessionAddressKey({ serverId: 'home-b', sessionId: 'shared-session' }),
+            'shared-owner',
+        ]));
+        expect(renderedMessageViewSpy.mock.calls
+            .map(([props]) => props)
+            .slice()
+            .reverse()
+            .find((props: any) => props.message?.text === 'Home B')?.thinkingExpanded).toBe(false);
     });
 
     it('isolates dirty pagination state and late completions when switching resolved sidechains in one session', async () => {

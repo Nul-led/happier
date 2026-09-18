@@ -240,7 +240,7 @@ describe('AutomationsScreen', () => {
         expect(screen.findAllByType('FAB' as any)).toHaveLength(0);
     });
 
-    it('shows generic empty state when machines are connected and links create action to New Session automation mode', async () => {
+    it('shows generic empty state when machines are connected and opens the shared Automation editor', async () => {
         machinesState.list = [{ id: 'm1' }];
         const { AutomationsScreen } = await import('./AutomationsScreen');
 
@@ -254,13 +254,9 @@ describe('AutomationsScreen', () => {
         expect(createButton.props.accessibilityLabel).toBe('automations.screen.createAutomationA11y');
         await pressTestInstanceAsync(createButton);
 
-        expect(routerPushSpy).toHaveBeenCalledWith({
-            pathname: '/new',
-            params: {
-                automation: '1',
-                draftId: expect.any(String),
-            },
-        });
+        // Creation reaches the one shared Automation editor rather than
+        // mounting the New Session screen as a second authoring surface.
+        expect(routerPushSpy).toHaveBeenCalledWith('/automations/new');
     });
 
     it('keeps the server-owned automation settings reachable before any machine is connected', async () => {

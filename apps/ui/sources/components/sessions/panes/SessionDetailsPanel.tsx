@@ -25,7 +25,7 @@ import { useDeviceType } from '@/utils/platform/responsive';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { SidebarCollapseIcon, SidebarExpandIcon } from '@/components/navigation/shell/SidebarIcons';
 import { resolveOptionalSessionScreenTestId, useSessionScreenTestIdsEnabled } from '../shell/sessionScreenTestIds';
-import { createSessionFileDetailsTab } from './details/sessionDetailsTabBuilders';
+import { createSessionBoardDetailsTab, createSessionFileDetailsTab } from './details/sessionDetailsTabBuilders';
 import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { usePaneFocusMode } from '@/components/appShell/panes/focusMode/usePaneFocusMode';
 import {
@@ -53,10 +53,17 @@ import { usePeerMediationObservabilityStore } from '@/sync/domains/machines/peer
 import type { SimulatorPreviewSurfaceRuntime } from '@/sync/domains/devices/simulator/useSimulatorPreviewRuntime';
 import { useSimulatorPreviewLiveSurface } from '@/components/devices/simulator/relay/useSimulatorPreviewLiveSurface';
 import { useSimulatorLiveStreamRelaySocket } from '@/components/devices/simulator/relay/useSimulatorLiveStreamRelaySocket';
+import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import { useSessionBrowserContextRuntimeContext } from '@/components/sessions/browser/sessionBrowserContextRuntime';
 import { useSessionBrowserRecordingRuntime } from '@/components/sessions/browser/sessionBrowserRecordingRuntime';
 import { createManagedChromiumBrowserAnnotationCaptureProvider } from '@/sync/domains/browser/context';
 import { Icon } from '@/components/ui/icons/Icon';
+import { useSessionBoardFeatureEnabled } from '@/components/sessions/board/useSessionBoardFeatureEnabled';
+import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
+import type { SessionBoardPrimaryMountResolver } from '@/sync/domains/session/board';
+import { SESSION_BOARD_DESTINATION } from '@/components/sessions/board/sessionBoardDestination';
+import { useMountedSessionBoardController } from '@/components/sessions/board/SessionBoardControllerProvider';
+import { isSessionBoardVisibleInDetails } from '@/components/sessions/board/sessionBoardDetailsVisibility';
 
 export type SessionDetailsPanelProps = Readonly<{
     sessionId: string;
@@ -84,6 +91,8 @@ export type SessionDetailsPanelProps = Readonly<{
     browserProductModels?: BrowserSurfaceProductModels | null;
     browserRecording?: BrowserShellRecordingState | null;
     nowMs?: () => number;
+    /** One executable-mount decision derived by the enclosing Session shell. */
+    resolveBoardPrimaryHost?: SessionBoardPrimaryMountResolver;
 }>;
 
 export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) => {
@@ -105,6 +114,8 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         peerMediationObservabilityScope: props.peerMediationObservabilityScope,
         platform: props.platform,
     });
+    const session = useSessionViewShellSession(props.sessionId, pluginRuntime.serverId);
+    const boardFeatureEnabled = useSessionBoardFeatureEnabled(pluginRuntime.serverId);
     const deviceType = useDeviceType();
     const pluginRuntimeFormFactor = React.useMemo(
         () => resolvePluginUiRuntimeFormFactor({ deviceType }),
@@ -149,12 +160,22 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         serverId: pluginRuntime.serverId,
         enabled: props.simulatorPreview === undefined,
     });
+    const mountedSessionAddress = normalizeSessionAddress(pluginRuntime.serverId, props.sessionId);
+    const mountedBoard = useMountedSessionBoardController(mountedSessionAddress);
+    const callerHostedHtmlRuntime = mountedBoard?.callerHostedHtmlRuntime ?? null;
+    const boardHasContent = mountedBoard?.binding.status === 'ready'
+        && mountedBoard.binding.snapshot.itemsById.size > 0;
+    const showDedicatedBoardAction = boardFeatureEnabled
+        && (boardHasContent || isSessionBoardVisibleInDetails(pane.scopeState?.details));
     const liveSimulatorPreview = useSimulatorPreviewLiveSurface({
         runtime: {
             machineId: pluginRuntime.machineId,
             serverId: pluginRuntime.serverId,
             enabled: props.simulatorPreview === undefined,
-            viewerId: `session:${props.sessionId}:simulator-preview`,
+            viewerId: JSON.stringify([
+                mountedSessionAddress ? sessionAddressKey(mountedSessionAddress) : props.scopeId,
+                'simulator-preview',
+            ]),
             nowMs: props.nowMs,
         },
         relay: { socket: simulatorRelaySocket },
@@ -199,7 +220,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
     }, [managedAnnotationCaptureProvider, sessionBrowserContextRuntime?.browserShellContext]);
     const liveBrowserRecordingRuntime = useSessionBrowserRecordingRuntime({
         enabled: props.browserRecording === undefined,
-        scopeKey: props.sessionId,
+        scopeKey: mountedSessionAddress ? sessionAddressKey(mountedSessionAddress) : props.scopeId,
         sessionId: props.sessionId,
         machineId: pluginRuntime.machineId,
         serverId: pluginRuntime.serverId,
@@ -225,6 +246,10 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
 
     const openBrowserLaunchpadTab = React.useCallback(() => {
         pane.openDetailsTab(createBrowserLaunchpadDetailsTab(), { intent: 'pinned' });
+    }, [pane]);
+
+    const openBoardTab = React.useCallback(() => {
+        pane.openDetailsTab(createSessionBoardDetailsTab(), { intent: 'pinned' });
     }, [pane]);
 
     const paneRef = React.useRef(pane);
@@ -269,8 +294,9 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         pane.unpinDetailsTab,
     ]);
 
-    const detailsSurfaceRenderers = React.useMemo(() => createSessionDetailsSurfaceRenderers({
+    const detailsSurfaceRenderers = React.useMemo(() => session ? createSessionDetailsSurfaceRenderers({
             sessionId: props.sessionId,
+            session,
             scopeId: props.scopeId,
             machineId: pluginRuntime.machineId,
             serverId: pluginRuntime.serverId,
@@ -279,6 +305,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
             pluginUiInteractionEnabled: pluginRuntime.phase === 'current'
                 && pluginRuntime.interactionEnabled === true,
             pluginBrowserProjection: pluginRuntime.pluginBrowserProjection,
+            callerHostedHtmlRuntime,
             localServicePreviewState,
             peerMediationObservabilityState,
             peerMediationObservabilityScope: pluginRuntime.peerMediationObservabilityScope,
@@ -297,7 +324,9 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
             sessionScreenTestIdsEnabled,
             closeDetailsTab: pane.closeDetailsTab,
             openDetailsTab: pane.openDetailsTab,
-    }), [
+            boardHost: paneFocusMode.active ? 'focusedDetails' : 'details',
+            resolveBoardPrimaryHost: props.resolveBoardPrimaryHost,
+        }) : [], [
         browserLaunchpad,
         browserProductModels,
         getStartEditingFileHandler,
@@ -306,6 +335,8 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         openFileTab,
         pane.closeDetailsTab,
         pane.openDetailsTab,
+        paneFocusMode.active,
+        props.resolveBoardPrimaryHost,
         peerMediationObservabilityState,
         pluginRuntime.machineId,
         pluginRuntime.interactionEnabled,
@@ -315,11 +346,13 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         pluginRuntimeFormFactor,
         pluginRuntime.pluginUiProjection,
         pluginRuntime.pluginBrowserProjection,
+        callerHostedHtmlRuntime,
         pluginRuntime.serverId,
         browserRecording,
         props.nowMs,
         props.scopeId,
         props.sessionId,
+        session,
         requestClose,
         sessionScreenTestIdsEnabled,
         simulatorPreview,
@@ -423,6 +456,16 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
     ), [closeButton, closeButtonAtStart, showHeaderActions]);
 
     const renderHeaderActions = React.useCallback(() => {
+        const boardOpenButton = (
+            <IconButton
+                variant="plain"
+                size={34}
+                onPress={openBoardTab}
+                testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-details-open-board') ?? 'session-details-open-board'}
+                accessibilityLabel={t(SESSION_BOARD_DESTINATION.labelKey)}
+                icon={<Icon name={SESSION_BOARD_DESTINATION.icon} size={16} color={theme.colors.text.secondary} />}
+            />
+        );
         const browserOpenButton = (
             <BrowserSurfaceOpenButton
                 onPress={openBrowserLaunchpadTab}
@@ -434,16 +477,18 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         );
 
         if (!showHeaderActions) {
-            return browserOpenButton;
+            return <>{showDedicatedBoardAction ? boardOpenButton : null}{browserOpenButton}</>;
         }
 
         return (
             <>
+                {showDedicatedBoardAction ? boardOpenButton : null}
                 {browserOpenButton}
                 {Platform.OS === 'web' ? (
                     <IconButton
                         variant="plain"
                         size={34}
+                        tooltip={paneFocusMode.active ? t('session.detailsPanel.exitFocusModeA11y') : t('session.detailsPanel.enterFocusModeA11y')}
                         onPress={paneFocusMode.toggle}
                         testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-details-focus-toggle')}
                         disabled={!paneFocusMode.canEnter}
@@ -483,6 +528,8 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         closeButton,
         closeButtonAtStart,
         iconButtonStyle,
+        openBoardTab,
+        showDedicatedBoardAction,
         openBrowserLaunchpadTab,
         paneFocusMode.active,
         paneFocusMode.canEnter,

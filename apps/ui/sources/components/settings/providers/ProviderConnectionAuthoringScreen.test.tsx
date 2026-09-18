@@ -38,6 +38,7 @@ const state = vi.hoisted(() => ({
         createdAt: number;
         updatedAt: number;
     }>,
+    sharedSecretStatus: 'ready' as 'ready' | 'temporarily_unavailable',
 }));
 const run = vi.hoisted(() => vi.fn());
 const providerDecisionListeners = vi.hoisted(() => new Set<() => void>());
@@ -156,6 +157,29 @@ installSettingsViewCommonModuleMocks({
     }),
 });
 
+vi.mock('@/components/secrets/useSavedSecretCatalog', () => ({
+    useSavedSecretCatalog: () => ({
+        resolveReference: (ref: string) => ({
+            ref,
+            kind: 'shared_resource',
+            status: state.sharedSecretStatus,
+            entry: null,
+            secret: state.sharedSecretStatus === 'ready'
+                ? {
+                    id: ref,
+                    name: 'Shared provider key',
+                    kind: 'apiKey',
+                    encryptedValue: { _isSecretValue: true, value: 'shared-provider-secret' },
+                    createdAt: 1,
+                    updatedAt: 1,
+                }
+                : null,
+            revision: 1,
+            fingerprint: `shared:${ref}:1`,
+        }),
+    }),
+}));
+
 vi.mock('@react-navigation/native', async () => {
     const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
     return createReactNavigationNativeMock({
@@ -236,6 +260,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
         modalShow.mockClear();
         modalHide.mockClear();
         state.savedSecrets = [];
+        state.sharedSecretStatus = 'ready';
         navigationDispatch.mockReset();
         routerPush.mockReset();
         routerReplace.mockReset();
@@ -387,6 +412,28 @@ describe('ProviderConnectionAuthoringScreen', () => {
             request.method === RPC_METHODS.DAEMON_PROVIDERS_CONNECTIONS_DESCRIBE
             && request.serverId === 'server-b'
         ))).toBe(true);
+    });
+
+    it('stops presenting a retained shared Saved Secret as selected when its canonical projection becomes stale', async () => {
+        state.credential = { required: true };
+        state.sharedSecretStatus = 'temporarily_unavailable';
+        const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
+        const screen = await renderScreen(
+            <ProviderConnectionAuthoringScreen contributionKey="acme.plugin/ollama" />,
+        );
+        await flushHookEffects();
+
+        await React.act(async () => {
+            screen.findByTestId('settings-provider-authoring-api-key')?.props.onPress?.();
+        });
+        const picker = modalShow.mock.calls.at(-1)?.[0] as {
+            props?: { onSelectId?: (id: string | null) => void };
+        } | undefined;
+        await React.act(async () => {
+            picker?.props?.onSelectId?.('happier:shared-secret:v1:provider-key');
+        });
+        expect(screen.findByTestId('settings-provider-authoring-api-key')?.props.subtitle)
+            .toBe('settingsProviders.authoring.apiKeyDescription');
     });
 
     it('refuses a selected Account A secret when the target switches to B before save dispatch', async () => {

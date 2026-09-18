@@ -35,6 +35,9 @@ import { useProviderConnections } from '@/providers/hooks/useProviderConnections
 import { t } from '@/text';
 import { useNavigationFocusReturn } from '@/utils/navigation/useNavigationFocusReturn';
 import { Icon } from '@/components/ui/icons/Icon';
+import { TeamCredentialCatalogSettingsGroup } from '@/components/settings/teams/credentials/TeamCredentialCatalogSettingsGroup';
+import { teamCredentialDetailPath } from '@/components/settings/teams/teamsRoutes';
+import { useHomeTeamCredentialModelCatalog } from '@/hooks/teams/useHomeTeamCredentialModelCatalog';
 import {
     ProviderConnectionsCatalogSection,
     type ProviderConfiguredConnectionRow,
@@ -57,6 +60,14 @@ export const ProviderConnectionsSettingsScreen = React.memo(function ProviderCon
     const localDiscoveryEnabled = useFeatureEnabled('providers.localDiscovery');
     const providerTarget = useProviderSettingsTarget();
     const { machineId, resolveCurrentTarget, serverId } = providerTarget;
+    const teamCredentialResourcesEnabled = useFeatureEnabled('teams.credentialResources', {
+        scopeKind: 'spawn',
+        serverId: serverId ?? undefined,
+    });
+    const teamCredentialCatalog = useHomeTeamCredentialModelCatalog({
+        serverId,
+        enabled: teamCredentialResourcesEnabled,
+    });
     const { data, error, loading, refresh } = useProviderConnections({
         enabled, machineId, serverId,
     });
@@ -71,7 +82,10 @@ export const ProviderConnectionsSettingsScreen = React.memo(function ProviderCon
     const navigateWithFocusReturn = useNavigationFocusReturn({
         ready: !enabled || (!loading && (data !== null || error !== null || machineId === null)),
     });
-    const mutation = useProviderConnectionMutation({ resolveTarget: resolveCurrentTarget, refresh });
+    const refreshConnections = React.useCallback(async (): Promise<void> => {
+        await refresh();
+    }, [refresh]);
+    const mutation = useProviderConnectionMutation({ resolveTarget: resolveCurrentTarget, refresh: refreshConnections });
     const [searchQuery, setSearchQuery] = React.useState('');
     const [discoverySelectionError, setDiscoverySelectionError] = React.useState<ProviderErrorV1 | null>(null);
     const [optimisticEnabledByConnectionId, setOptimisticEnabledByConnectionId] = React.useState<Readonly<Record<string, boolean>>>({});
@@ -223,6 +237,15 @@ export const ProviderConnectionsSettingsScreen = React.memo(function ProviderCon
                 <ItemGroup title={t('settingsProviders.title')}>
                     <ProviderFeatureAvailabilityNotice presentation={availabilityPresentation} />
                 </ItemGroup>
+                <TeamCredentialCatalogSettingsGroup
+                    title={t('teams.credentials.providedByTeams')}
+                    sourceKind="provider"
+                    catalog={teamCredentialCatalog}
+                    onOpen={(resource) => {
+                        if (!serverId) return;
+                        router.push(teamCredentialDetailPath({ serverId, teamId: resource.teamId }, resource.id) as never);
+                    }}
+                />
             </ItemList>
         );
     }
@@ -233,6 +256,15 @@ export const ProviderConnectionsSettingsScreen = React.memo(function ProviderCon
             <MachineAdministrationTargetSelector
                 selection={providerTarget.selection}
                 testIDPrefix="settings.providers.administration.target"
+            />
+            <TeamCredentialCatalogSettingsGroup
+                title={t('teams.credentials.providedByTeams')}
+                sourceKind="provider"
+                catalog={teamCredentialCatalog}
+                onOpen={(resource) => navigateWithFocusReturn(() => {
+                    if (!serverId) return;
+                    router.push(teamCredentialDetailPath({ serverId, teamId: resource.teamId }, resource.id) as never);
+                })}
             />
             {!machineId ? (
                 <ItemGroup title={t('settingsProviders.title')}>
@@ -364,10 +396,10 @@ export const ProviderConnectionsSettingsScreen = React.memo(function ProviderCon
                     ? {
                         error: mutation.error,
                         retry: mutation.retry,
-                        reviewCurrentState: refresh,
+                        reviewCurrentState: refreshConnections,
                     }
                     : error
-                        ? { error, retry: refresh }
+                        ? { error, retry: refreshConnections }
                         : { error: discoverySelectionError };
                 return <ItemGroup>
                     <ProviderErrorItems

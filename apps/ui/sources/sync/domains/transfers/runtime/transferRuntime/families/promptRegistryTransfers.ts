@@ -23,7 +23,7 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 
-import { downloadJsonPayloadViaMachineTransferCarriers } from '../carriers/createJsonMachineRpcCarrierDownloads';
+import { downloadJsonPayloadViaMachineCarrier } from '../carriers/downloadJsonPayloadViaMachineCarrier';
 import { throwUnsupportedMachineTransferResponse } from '../carriers/throwUnsupportedMachineTransferResponse';
 import { resolvePreferScopedMachineRpc } from '../routing/resolvePreferScopedMachineRpc';
 
@@ -161,25 +161,21 @@ export async function downloadDaemonPromptRegistryItem(
     opts?: MachinePromptRegistriesTransferOpts,
 ): Promise<DaemonPromptRegistryDownloadItemResponse> {
     const payload = PromptRegistryFetchItemRequestV1Schema.parse(input);
-    const preferScoped = await resolvePreferScopedMachineRpc({
-        machineId,
-        serverId: opts?.serverId,
-        timeoutMs: opts?.timeoutMs ?? null,
-    });
-    const result = await downloadJsonPayloadViaMachineTransferCarriers({
+    const result = await downloadJsonPayloadViaMachineCarrier({
         machineId,
         serverId: opts?.serverId,
         timeoutMs: opts?.timeoutMs ?? undefined,
-        preferScoped,
-        payloadWithRecipient: (recipientPublicKeyBase64) => ({
-            ...payload,
-            recipientPublicKeyBase64,
-        }),
-        initMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_INIT,
-        chunkMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_CHUNK,
-        finalizeMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_FINALIZE,
-        abortMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_ABORT,
         parsePayload: parsePromptRegistryTransferPayload,
+        predecessorRpc: {
+            payloadWithRecipient: (recipientPublicKeyBase64) => ({
+                ...payload,
+                recipientPublicKeyBase64,
+            }),
+            initMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_INIT,
+            chunkMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_CHUNK,
+            finalizeMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_FINALIZE,
+            abortMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_ABORT,
+        },
         directExportRequest: {
             t: 'prompt_registry_download_v1',
             sourceId: payload.sourceId,

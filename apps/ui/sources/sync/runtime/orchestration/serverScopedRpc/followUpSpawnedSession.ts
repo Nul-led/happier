@@ -10,7 +10,7 @@ import {
     requireLocalSessionVisibleForRoute,
     type EnsureSessionVisibleForMessageRoute,
 } from './localSessionRouteReadiness';
-import { resolveServerScopedSessionContext } from './resolveServerScopedSessionContext';
+import { resolveServerAccountRequestContext } from './resolveServerAccountRequestContext';
 import {
     createServerScopedSessionSendMessage,
     sendSessionMessageWithServerScope,
@@ -152,7 +152,7 @@ function getDefaultApplySessions(): (sessions: AppliedSession[]) => void {
 }
 
 export function createFollowUpSpawnedSessionWithServerScope(deps?: Readonly<{
-    resolveContext?: typeof resolveServerScopedSessionContext;
+    resolveContext?: typeof resolveServerAccountRequestContext;
     fetchSessionById?: typeof fetchSessionByIdWithServerScope;
     sendSessionMessageWithServerScope?: typeof sendSessionMessageWithServerScope;
     activeSync?: Partial<ActiveSyncLike> & Pick<ActiveSyncLike, 'refreshSessions'>;
@@ -170,7 +170,7 @@ export function createFollowUpSpawnedSessionWithServerScope(deps?: Readonly<{
         messageLocalId?: string | null;
     }>) => Promise<void>;
 }> {
-    const resolveContext = deps?.resolveContext ?? resolveServerScopedSessionContext;
+    const resolveContext = deps?.resolveContext ?? resolveServerAccountRequestContext;
     const fetchSessionById = deps?.fetchSessionById ?? fetchSessionByIdWithServerScope;
     const activeSync = { ...getDefaultActiveSync(), ...(deps?.activeSync ?? {}) };
     const ensureSessionVisibleForMessageRoute = deps?.ensureSessionVisibleForMessageRoute
@@ -195,7 +195,10 @@ export function createFollowUpSpawnedSessionWithServerScope(deps?: Readonly<{
         const recoverablePayload = buildRecoverableFollowUpPayload(params);
 
         try {
-            const context = await resolveContext({ serverId: params.targetServerId ?? null });
+            const context = await resolveContext({
+                serverId: params.targetServerId ?? null,
+                preferScoped: true,
+            });
             try {
             const sendScopedMessage = deps?.sendSessionMessageWithServerScope
                 ?? createServerScopedSessionSendMessage({

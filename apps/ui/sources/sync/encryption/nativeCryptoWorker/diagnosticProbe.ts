@@ -34,6 +34,7 @@ export type NativeCryptoWorkerProbeReport = Readonly<{
         secretbox: NativeCryptoWorkerProbeCheck;
         aesGcm: NativeCryptoWorkerProbeCheck;
         invalidItems: NativeCryptoWorkerProbeCheck;
+        fixedLengthDataKey: NativeCryptoWorkerProbeCheck;
         jsResponsive: NativeCryptoWorkerProbeCheck;
     }>;
     evidence: Readonly<{
@@ -49,6 +50,7 @@ export type NativeCryptoWorkerProbeReport = Readonly<{
         secretbox: Readonly<{ validItems: number; nullItems: number }>;
         aesGcm: Readonly<{ validItems: number; nullItems: number }>;
         invalidItems: Readonly<{ nullItems: number; validItemsAfterInvalid: number }>;
+        fixedLengthDataKey: Readonly<{ rejectedItems: number; expectedItems: number }>;
         jsResponsiveness: Readonly<{ ticks: number; batchItems: number; elapsedMs: number }>;
     }>;
 }>;
@@ -66,9 +68,10 @@ const probeScope: CryptoWorkerScope = {
     generation: 1,
 };
 
-const invalidDataKeyItems = 2;
+const invalidDataKeyItems = 4;
 const invalidSecretboxItems = 2;
 const invalidAesGcmItems = 2;
+const fixedLengthDataKeyItems = 2;
 
 function nowMs(): number {
     if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
@@ -163,6 +166,8 @@ function supportedOperationsMatch(supportedOperations: readonly NativeCryptoWork
 function buildDataKeyItems(): readonly NativeCryptoWorkerDataKeyEnvelopeItem[] {
     const direct = CRYPTO_GOLDEN_VECTORS.encryptedDataKeyEnvelopeV1.directSecretKey;
     const compatibility = CRYPTO_GOLDEN_VECTORS.encryptedDataKeyEnvelopeV1.compatibilitySeed;
+    const undersized = CRYPTO_GOLDEN_VECTORS.encryptedDataKeyEnvelopeV1.undersizedDataKeyEnvelope;
+    const oversized = CRYPTO_GOLDEN_VECTORS.encryptedDataKeyEnvelopeV1.oversizedDataKeyEnvelope;
     const wrongRecipientSecret = base64FromHex('11'.repeat(32));
 
     return [
@@ -190,6 +195,18 @@ function buildDataKeyItems(): readonly NativeCryptoWorkerDataKeyEnvelopeItem[] {
             envelopeBase64: base64FromHex(CRYPTO_GOLDEN_VECTORS.encryptedDataKeyEnvelopeV1.malformedEnvelope.hex),
             recipientSecretKeyOrSeedBase64: base64FromHex(direct.recipientSecretKeyOrSeed.hex),
         },
+        // Sealed to the real recipient and cryptographically openable, but they
+        // carry a 31- and a 33-byte payload. Nothing but the fixed-length data-key
+        // contract can reject them, so they are the only vectors that catch a
+        // runtime which returns whatever plaintext the box happened to hold.
+        {
+            envelopeBase64: base64FromHex(undersized.envelope.hex),
+            recipientSecretKeyOrSeedBase64: base64FromHex(undersized.recipientSecretKeyOrSeed.hex),
+        },
+        {
+            envelopeBase64: base64FromHex(oversized.envelope.hex),
+            recipientSecretKeyOrSeedBase64: base64FromHex(oversized.recipientSecretKeyOrSeed.hex),
+        },
         {
             envelopeBase64: base64FromHex(direct.envelope.hex),
             recipientSecretKeyOrSeedBase64: base64FromHex(direct.recipientSecretKeyOrSeed.hex),
@@ -206,6 +223,8 @@ function buildExpectedDataKeyItems(): readonly (string | null)[] {
         base64FromHex(compatibility.dataKey.hex),
         base64FromHex(direct.dataKey.hex),
         base64FromHex(direct.dataKey.hex),
+        null,
+        null,
         null,
         null,
         base64FromHex(direct.dataKey.hex),
@@ -420,8 +439,11 @@ export async function runNativeCryptoWorkerProbe(
     const dataKeyItems = dataKeyResult?.items ?? [];
     const secretboxItems = secretboxResult?.items ?? [];
     const aesGcmItems = aesGcmResult?.items ?? [];
-    const dataKeyValidIndexes = [0, 1, 2, 3, 6] as const;
-    const dataKeyInvalidIndexes = [4, 5] as const;
+    const dataKeyValidIndexes = [0, 1, 2, 3, 8] as const;
+    const dataKeyInvalidIndexes = [4, 5, 6, 7] as const;
+    // The only two probe vectors a runtime can open cryptographically and must
+    // still reject, because their payload is not exactly one data key.
+    const dataKeyFixedLengthIndexes = [6, 7] as const;
     const secretboxValidIndexes = [0, 1, 2, 3, 4, 5, 6, 7, 10] as const;
     const secretboxInvalidIndexes = [8, 9] as const;
     const aesGcmValidIndexes = [0, 1, 2, 3, 4, 5, 6, 7, 10] as const;
@@ -436,8 +458,10 @@ export async function runNativeCryptoWorkerProbe(
     const dataKeyValidItems = countMatchingIndexes(dataKeyItems, dataKeyExpected, dataKeyValidIndexes);
     const secretboxValidItems = countMatchingIndexes(secretboxItems, secretboxExpected, secretboxValidIndexes);
     const aesGcmValidItems = countMatchingIndexes(aesGcmItems, aesGcmExpected, aesGcmValidIndexes);
+    const fixedLengthRejectedItems = countNullIndexes(dataKeyItems, dataKeyFixedLengthIndexes);
+    const fixedLengthPass = dataKeyResult !== null && fixedLengthRejectedItems === fixedLengthDataKeyItems;
     const validItemsAfterInvalid = [
-        dataKeyItems[6] !== null && valuesMatch(dataKeyItems[6], dataKeyExpected[6]),
+        dataKeyItems[8] !== null && valuesMatch(dataKeyItems[8], dataKeyExpected[8]),
         secretboxItems[10] !== null && valuesMatch(secretboxItems[10], secretboxExpected[10]),
         aesGcmItems[10] !== null && valuesMatch(aesGcmItems[10], aesGcmExpected[10]),
     ].filter(Boolean).length;
@@ -471,6 +495,10 @@ export async function runNativeCryptoWorkerProbe(
             invalidItemsPass ? 'pass' : 'fail',
             `${invalidNulls} invalid nulls; ${validItemsAfterInvalid} valid items after invalid inputs`,
         ),
+        fixedLengthDataKey: check(
+            fixedLengthPass ? 'pass' : 'fail',
+            `${fixedLengthRejectedItems} of ${fixedLengthDataKeyItems} wrong-length data keys rejected`,
+        ),
         jsResponsive: jsResponsiveness.check,
     } as const;
     const status = Object.values(checks).some((probeCheck) => probeCheck.status === 'fail') ? 'fail' : 'pass';
@@ -485,6 +513,7 @@ export async function runNativeCryptoWorkerProbe(
             secretbox: { validItems: secretboxValidItems, nullItems: secretboxInvalidNulls },
             aesGcm: { validItems: aesGcmValidItems, nullItems: aesGcmInvalidNulls },
             invalidItems: { nullItems: invalidNulls, validItemsAfterInvalid },
+            fixedLengthDataKey: { rejectedItems: fixedLengthRejectedItems, expectedItems: fixedLengthDataKeyItems },
             jsResponsiveness: {
                 ticks: jsResponsiveness.ticks,
                 batchItems: jsResponsiveness.batchItems,

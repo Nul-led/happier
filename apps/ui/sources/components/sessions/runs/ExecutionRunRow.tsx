@@ -1,11 +1,13 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { ExecutionRunPublicState } from '@happier-dev/protocol';
 import { ExecutionRunStatusPill } from './ExecutionRunStatusPill';
 import { Text } from '@/components/ui/text/Text';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { resolveExecutionRunBackendLabel } from '@/components/sessions/runs/resolveExecutionRunBackendLabel';
+import { t } from '@/text';
 
 
 export type ExecutionRunRowRun =
@@ -17,9 +19,12 @@ export const ExecutionRunRow = React.memo((props: Readonly<{
     onPress?: () => void;
     subtitle?: string;
     rightAccessory?: React.ReactNode;
+    selected?: boolean;
 }>) => {
     const { theme } = useUnistyles();
     const { run, onPress } = props;
+    const actionable = typeof onPress === 'function';
+    const interactiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
     const subtitle = typeof props.subtitle === 'string' ? props.subtitle : run.runId;
     const backendLabel = resolveExecutionRunBackendLabel(run.backendTarget);
     const title =
@@ -31,6 +36,17 @@ export const ExecutionRunRow = React.memo((props: Readonly<{
 
     return (
         <Pressable
+            // A row without `onPress` is a read-only summary. Announcing it as a
+            // button — or padding it out to a touch target — would promise an
+            // interaction this host did not wire.
+            {...(actionable
+                ? {
+                    accessibilityRole: 'button' as const,
+                    accessibilityLabel: title,
+                    accessibilityHint: t('runs.openRun'),
+                }
+                : {})}
+            accessibilityState={{ selected: props.selected === true, disabled: !onPress }}
             onPress={onPress}
             disabled={!onPress}
             style={({ pressed }) => ({
@@ -38,9 +54,12 @@ export const ExecutionRunRow = React.memo((props: Readonly<{
                 borderRadius: 12,
                 backgroundColor: theme.colors.surface.inset,
                 borderWidth: 1,
-                borderColor: theme.colors.border.default,
+                borderColor: props.selected ? theme.colors.text.link : theme.colors.border.default,
                 gap: 8,
                 opacity: pressed ? 0.8 : 1,
+                ...(actionable
+                    ? { minWidth: interactiveTargetSize, minHeight: interactiveTargetSize, justifyContent: 'center' as const }
+                    : {}),
             })}
         >
             <View style={styles.row}>

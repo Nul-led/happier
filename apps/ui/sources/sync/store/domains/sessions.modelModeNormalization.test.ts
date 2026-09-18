@@ -1,3 +1,5 @@
+import { buildBackendTargetKeyV2 } from '@happier-dev/protocol';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createSessionsDomain } from './sessions';
@@ -13,8 +15,7 @@ import {
 function createHarness(initialState: Record<string, unknown> = {}) {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
-        sessionListRowStateByServerId: {},
+        sessionListRowsByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
@@ -23,7 +24,7 @@ function createHarness(initialState: Record<string, unknown> = {}) {
         machines: {},
         machineDisplayById: {},
         sessionMessages: {},
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
         ...initialState,
     };
 
@@ -148,7 +149,7 @@ describe('sessions domain: modelMode normalization', () => {
                     v: 1,
                     updatedAt: 1000,
                     selection: {
-                        agentTargetKey: 'backend:claude',
+                        agentTargetKey: buildBackendTargetKeyV2({ kind: 'agent', identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude }),
                         providerConnectionId: 'pc_01J00000000000000000000000',
                         modelId: 'provider/claude-sonnet',
                     },
@@ -642,5 +643,34 @@ describe('sessions domain: modelMode normalization', () => {
         expect(contracted.agentStateVersion).toBe(7);
         expect(contracted.agentState).toBeNull();
         expect(JSON.stringify(contracted)).not.toContain('stale-private-tool');
+    });
+
+    it('treats a current effective-access recipient projection as an authoritative privacy contraction', () => {
+        const { get, domain } = createHarness();
+        domain.applySessions([createRevisionedSession({
+            seq: 10,
+            metadataLayoutVersion: 0,
+            metadata: { path: '/private/legacy-worktree', host: 'private-host', machineId: 'private-machine' },
+            metadataVersion: 9,
+            ownerMetadataView: { path: '/private/owner-worktree', host: 'private-owner-host', machineId: 'private-owner-machine' },
+            agentState: { controlledByUser: true, requests: { privateRequest: { tool: 'private-tool', arguments: { secret: 'private' } } }, completedRequests: {} },
+            agentStateVersion: 8,
+        })]);
+
+        domain.applySessions([createRevisionedSession({
+            seq: 11,
+            metadataLayoutVersion: 1,
+            access: { role: 'recipient', level: 'view', capabilities: {} as NonNullable<Session['access']>['capabilities'] },
+            metadata: { v: 1, summary: { text: 'Shared title', updatedAt: 11 } } as unknown as Session['metadata'],
+            metadataVersion: 1,
+            ownerMetadataView: null,
+            agentState: null,
+            agentStateVersion: 7,
+        })]);
+
+        const contracted = get().sessions['revisioned-session'] as Session;
+        expect(contracted.ownerMetadataView).toBeNull();
+        expect(contracted.agentState).toBeNull();
+        expect(JSON.stringify(contracted)).not.toContain('private-worktree');
     });
 });

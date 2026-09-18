@@ -101,9 +101,93 @@ vi.mock('@/components/ui/icons/Icon', async () => {
     const { createPassThroughModule: createModule } = await import('@/dev/testkit/mocks/components');
     return createModule(['Icon']);
 });
-vi.mock('@/components/ui/popover', () => ({ usePopoverBoundaryRef: () => ({ current: null }) }));
+vi.mock('@/components/ui/popover', () => ({
+    usePopoverBoundaryRef: () => ({ current: null }),
+    PopoverScrollSourceProvider: ({ children }: { children?: React.ReactNode }) => children ?? null,
+}));
 vi.mock('@/modal', () => ({ Modal: { confirm: vi.fn(async () => true) } }));
-vi.mock('./AutomationRecipeComposer', () => createPassThroughModule(['AutomationRecipeComposer']));
+// The canonical keyboard catalog is a host boundary; this captures what the
+// page registers so the shortcut contract can be asserted without a key event.
+const keyboardRegistration = vi.hoisted(() => ({
+    handlers: null as Record<string, () => void> | null,
+}));
+vi.mock('@/keyboard', () => ({
+    useKeyboardShortcutHandlers: (handlers: Record<string, () => void>) => {
+        keyboardRegistration.handlers = handlers;
+        return true;
+    },
+}));
+
+/** First-appearance order of host nodes carrying the given test ids. */
+function renderedOrder(
+    screen: Awaited<ReturnType<typeof renderScreen>>,
+    testIDs: readonly string[],
+): string[] {
+    const seen: string[] = [];
+    for (const node of screen.findAll((candidate) => (
+        typeof candidate.type === 'string'
+        && typeof candidate.props?.testID === 'string'
+        && testIDs.includes(candidate.props.testID)
+    ))) {
+        const testID = node.props.testID as string;
+        if (!seen.includes(testID)) seen.push(testID);
+    }
+    return seen;
+}
+
+/**
+ * The pinned page-action contract both Automation authoring pages share: one
+ * keyboard-aware scroll owner whose first, sticky child carries the primary
+ * action, Cancel and the refusal reason, with the whole authored document —
+ * metadata, the host's recipe and the triggers — scrolling beneath it.
+ */
+async function expectPinnedPageActions(
+    screen: Awaited<ReturnType<typeof renderScreen>>,
+    params: Readonly<{ primaryLabel: string }>,
+): Promise<void> {
+    const { KeyboardAwareScrollView } = await import('@/components/ui/keyboardAvoidance/KeyboardAwareScrollView');
+    expect(screen.findAllByType(KeyboardAwareScrollView as never)).toHaveLength(1);
+    const scroll = screen.findHostByTestId('automation-editor-scroll');
+    expect(scroll).not.toBeNull();
+    expect(scroll?.props.stickyHeaderIndices).toEqual([0]);
+    expect(scroll?.props.keyboardShouldPersistTaps).toBe('handled');
+
+    const commandBar = screen.findHostByTestId('automation-editor-command-bar');
+    expect(commandBar).not.toBeNull();
+    for (const testID of [
+        'automation-editor-submit',
+        'automation-editor-cancel',
+        'automation-editor-submit-blocked-reason',
+    ]) {
+        expect(commandBar?.findAll((node) => node.props?.testID === testID).length, testID).toBeGreaterThan(0);
+    }
+    // The document is not inside the pinned surface.
+    for (const testID of ['automation-name', 'host-recipe-editor', 'automation-trigger-add']) {
+        expect(commandBar?.findAll((node) => node.props?.testID === testID), testID).toHaveLength(0);
+    }
+    expect(renderedOrder(screen, [
+        'automation-editor-command-bar',
+        'automation-name',
+        'host-recipe-editor',
+        'automation-trigger-add',
+    ])).toEqual([
+        'automation-editor-command-bar',
+        'automation-name',
+        'host-recipe-editor',
+        'automation-trigger-add',
+    ]);
+
+    // Semantics travel with the relocated controls.
+    const submit = screen.findByProps({ testID: 'automation-editor-submit' });
+    expect(submit.props.accessibilityRole).toBe('button');
+    expect(submit.props.accessibilityState).toEqual({ disabled: true, busy: false });
+    expect(submit.props.accessibilityHint).toBe('workflows.issue.invalid_input');
+    expect(submit.findByType('Text' as never).props.children).toBe(params.primaryLabel);
+    const reason = screen.findByProps({ testID: 'automation-editor-submit-blocked-reason' });
+    expect(reason.props.accessibilityRole).toBe('alert');
+    expect(reason.props.children).toBe('workflows.issue.invalid_input');
+    expect(screen.findByProps({ testID: 'automation-editor-cancel' }).props.accessibilityRole).toBe('button');
+}
 
 function createDraft(): AutomationEditorDraft {
     return {
@@ -477,13 +561,228 @@ describe('AutomationPluralEditorScreen', () => {
         }
     });
 
-    it('keeps target authoring with the outer Session composer in embedded mode', async () => {
+    /**
+     * A disabled Save that says nothing is a silent no-op. The host already
+     * knows the exact blocker it disabled Save for, so the surface states it
+     * beside the control and to screen readers — without revalidating anything
+     * or inventing a reason the host did not name.
+     */
+    it('states the host-named reason Save is refused, and clears it once repaired', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const screen = await renderScreen(
+            <AutomationPluralEditorScreen
+                variant="edit"
+                value={createDraft()}
+                onChange={() => {}}
+                onSubmit={() => {}}
+                submitDisabled
+                submitDisabledReason="workflows.issue.invalid_input"
+            />,
+        );
+
+        const reason = screen.findByProps({ testID: 'automation-editor-submit-blocked-reason' });
+        expect(reason.props.children).toBe('workflows.issue.invalid_input');
+        expect(reason.props.accessibilityRole).toBe('alert');
+        const submit = screen.findByProps({ testID: 'automation-editor-submit' });
+        expect(submit.props.accessibilityHint).toBe('workflows.issue.invalid_input');
+        expect(submit.props.accessibilityState.disabled).toBe(true);
+        await screen.unmount();
+
+        const repaired = await renderScreen(
+            <AutomationPluralEditorScreen
+                variant="edit"
+                value={createDraft()}
+                onChange={() => {}}
+                onSubmit={() => {}}
+                submitDisabledReason={null}
+            />,
+        );
+        expect(repaired.findAllByProps({ testID: 'automation-editor-submit-blocked-reason' })).toHaveLength(0);
+        expect(repaired.findByProps({ testID: 'automation-editor-submit' }).props.accessibilityHint)
+            .toBeUndefined();
+        await repaired.unmount();
+    });
+
+    /**
+     * UX handbook §3.6: the page Save answers the canonical `workflow.save`
+     * command through exactly the same gate as the pinned control, so a
+     * keyboard user editing step prompts in the Automation wrapper saves the
+     * same way the neutral editor does — and a refused Save stays refused.
+     */
+    it('registers the pinned Save as workflow.save under the same eligibility as the control', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const submitted = vi.fn();
+        keyboardRegistration.handlers = null;
+        const screen = await renderScreen(
+            <AutomationPluralEditorScreen
+                variant="edit"
+                value={createDraft()}
+                onChange={() => {}}
+                onSubmit={submitted}
+            />,
+        );
+        const save = keyboardRegistration.handlers?.['workflow.save'];
+        if (typeof save !== 'function') throw new Error('Expected workflow.save to be registered');
+        await act(async () => { save(); });
+        expect(submitted).toHaveBeenCalledTimes(1);
+        expect(submitted.mock.calls[0]?.[0]).toMatchObject({ name: 'Ship notes' });
+        await screen.unmount();
+
+        keyboardRegistration.handlers = null;
+        const refused = await renderScreen(
+            <AutomationPluralEditorScreen
+                variant="edit"
+                value={createDraft()}
+                onChange={() => {}}
+                onSubmit={submitted}
+                submitDisabled
+                submitDisabledReason="workflows.issue.invalid_input"
+            />,
+        );
+        await act(async () => { keyboardRegistration.handlers?.['workflow.save']?.(); });
+        expect(submitted).toHaveBeenCalledTimes(1);
+        await refused.unmount();
+
+        keyboardRegistration.handlers = null;
+        const embedded = await renderScreen(
+            <AutomationPluralEditorScreen
+                variant="edit"
+                value={createDraft()}
+                onChange={() => {}}
+            />,
+        );
+        expect(keyboardRegistration.handlers?.['workflow.save']).toBeUndefined();
+        await embedded.unmount();
+    });
+
+    it('renders the host-supplied recipe editor instead of owning a second recipe surface', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const screen = await renderScreen(
+            <AutomationPluralEditorScreen
+                variant="edit"
+                value={createDraft()}
+                onChange={() => {}}
+                recipeEditor={React.createElement('HostRecipeEditor', { testID: 'host-recipe-editor' })}
+            />,
+        );
+
+        expect(screen.findByProps({ testID: 'host-recipe-editor' })).toBeDefined();
+    });
+
+    /**
+     * Create, edit and the Session-origin wrapper are one authoring page, so the
+     * recipe slot belongs to the one shared composition rather than to whichever
+     * host happens to render the recipe first. Ordering is the contract: the
+     * Automation's own metadata precedes the recipe, and the triggers follow it.
+     */
+    it('composes a host recipe editor in the one shared create/edit position', async () => {
+        const { AutomationTriggerEditor } = await import('./AutomationPluralEditorScreen');
+        const screen = await renderScreen(
+            <AutomationTriggerEditor
+                value={createDraft()}
+                onChange={() => {}}
+                recipeEditor={React.createElement('HostRecipeEditor', { testID: 'host-recipe-editor' })}
+            />,
+        );
+
+        const order = ['automation-name', 'host-recipe-editor', 'automation-trigger-add'];
+        const rendered: string[] = [];
+        for (const node of screen.findAll((candidate) => (
+            typeof candidate.props?.testID === 'string' && order.includes(candidate.props.testID)
+        ))) {
+            const testID = node.props.testID as string;
+            if (!rendered.includes(testID)) rendered.push(testID);
+        }
+        expect(rendered).toEqual(order);
+    });
+
+    /**
+     * On a phone, the embedded create page composes a long Workflow recipe
+     * into the shared slot, and Create/Cancel sat at the very bottom of that
+     * document — beneath the recipe, the triggers and the software keyboard.
+     * The page actions are one pinned surface the document scrolls under.
+     */
+    it('pins Create, Cancel and the refusal reason above the long embedded create document', async () => {
+        const { AutomationTriggerEditor } = await import('./AutomationPluralEditorScreen');
+        const onSubmit = vi.fn();
+        const onCancel = vi.fn();
+        const screen = await renderScreen(
+            <AutomationTriggerEditor
+                value={{ ...createDraft(), automationId: null, pendingAutomationId: 'automation-new', expectedTemplateVersion: null }}
+                onChange={() => {}}
+                onSubmit={onSubmit}
+                onCancel={onCancel}
+                submitDisabled
+                submitDisabledReason="workflows.issue.invalid_input"
+                recipeEditor={React.createElement('HostRecipeEditor', { testID: 'host-recipe-editor', style: { height: 4_000 } })}
+            />,
+        );
+
+        await expectPinnedPageActions(screen, { primaryLabel: 'common.create' });
+        await act(async () => screen.findByProps({ testID: 'automation-editor-cancel' }).props.onPress());
+        expect(onCancel).toHaveBeenCalledTimes(1);
+        expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('pins Save, Cancel and the refusal reason above the long edit document', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const screen = await renderScreen(
+            <AutomationPluralEditorScreen
+                variant="edit"
+                value={createDraft()}
+                onChange={() => {}}
+                onSubmit={() => {}}
+                onCancel={() => {}}
+                submitDisabled
+                submitDisabledReason="workflows.issue.invalid_input"
+                recipeEditor={React.createElement('HostRecipeEditor', { testID: 'host-recipe-editor', style: { height: 4_000 } })}
+            />,
+        );
+
+        await expectPinnedPageActions(screen, { primaryLabel: 'common.save' });
+    });
+
+    /**
+     * The edit host's exact-turn staleness card is part of the scrolling
+     * document, ahead of the Automation's metadata, not a second surface
+     * competing with the pinned actions.
+     */
+    it('composes host-leading content at the top of the scrolling document, beneath the pinned actions', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const screen = await renderScreen(
+            <AutomationPluralEditorScreen
+                variant="edit"
+                value={createDraft()}
+                onChange={() => {}}
+                onSubmit={() => {}}
+                onCancel={() => {}}
+                leading={React.createElement('HostNotice', { testID: 'host-leading-notice' })}
+            />,
+        );
+
+        const commandBar = screen.findHostByTestId('automation-editor-command-bar');
+        expect(commandBar?.findAll((node) => node.props?.testID === 'host-leading-notice')).toHaveLength(0);
+        expect(renderedOrder(screen, [
+            'automation-editor-command-bar',
+            'host-leading-notice',
+            'automation-name',
+        ])).toEqual(['automation-editor-command-bar', 'host-leading-notice', 'automation-name']);
+    });
+
+    it('keeps recipe authoring with the host in embedded mode', async () => {
         const { AutomationTriggerEditor } = await import('./AutomationPluralEditorScreen');
         const screen = await renderScreen(
             <AutomationTriggerEditor value={createDraft()} onChange={() => {}} />,
         );
 
-        expect(screen.findAllByType('AutomationRecipeComposer' as any)).toHaveLength(0);
+        // The embedded trigger editor owns metadata and triggers only; the
+        // recipe belongs to whichever host composes the shared Workflow editor.
+        expect(screen.findAllByProps({ testID: 'host-recipe-editor' })).toHaveLength(0);
+        // Without page actions there is nothing to pin, so the composition
+        // brings no scroll owner of its own.
+        const { KeyboardAwareScrollView } = await import('@/components/ui/keyboardAvoidance/KeyboardAwareScrollView');
+        expect(screen.findAllByType(KeyboardAwareScrollView as never)).toHaveLength(0);
+        expect(screen.findAllByProps({ testID: 'automation-editor-command-bar' })).toHaveLength(0);
         expect(screen.findByProps({ testID: 'automation-name' }).props.accessibilityLabel)
             .toBe('automations.form.labels.name');
         expect(screen.findByProps({ testID: 'automation-description' }).props.accessibilityLabel)

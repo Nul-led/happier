@@ -25,6 +25,7 @@ import { projectVoiceSpeechEndpointReadiness } from '@/voice/registry/speechEndp
 import type {
   VoiceProviderLocalAvailability,
 } from '@/voice/settings/voiceProviderLocalAvailability';
+import type { SavedSecretReferenceResolution } from '@/sync/store/settings/savedSecretCatalogSnapshot';
 import {
   projectVoiceDaemonModelReadinessFact,
   projectVoiceDaemonRuntimeReadinessFact,
@@ -146,6 +147,7 @@ export function resolveVoiceDictationReadiness(input: Readonly<{
   rawCredentialAuthorization?: NonNullable<Parameters<
     typeof projectVoiceSpeechCredentialReadiness
   >[0]['rawAuthorization']>;
+  resolveSavedSecret?: (ref: string) => SavedSecretReferenceResolution;
 }>): VoiceRoleReadiness {
   const projection = projectVoiceDictationProvider(input);
   const { providerId, providerEnvelope, settingsProjection } = projection;
@@ -205,6 +207,7 @@ export function resolveVoiceDictationReadiness(input: Readonly<{
         executionMachineId: input.executionMachineId,
         providerEnvelope,
         rawAuthorization: input.rawCredentialAuthorization ?? null,
+        resolveSavedSecret: input.resolveSavedSecret,
       }),
     },
   });

@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SessionStatus } from '@/utils/sessions/sessionUtils';
-import {
-    shouldEmphasizeSessionRowTitle,
-    shouldShowMinimalSessionStatusLine,
-} from './resolveSessionRowPresentation';
-
 type SessionRowAttentionState =
     | 'quiet'
     | 'unread'
@@ -21,14 +15,21 @@ type ResolveSessionRowPresentation = (input: Readonly<{
     density: 'default' | 'compact' | 'minimal';
     requestedSecondaryLineMode: 'status' | 'path';
     hasPathSubtitle: boolean;
-    workingRetained?: boolean;
     backgroundActive?: boolean;
     standing?: boolean;
 }>) => Readonly<{
     attentionIndicator: 'none' | 'working' | 'ready' | 'failed' | 'unread' | 'pending' | 'permission' | 'action' | 'standing';
     titleTone: 'quiet' | 'normal' | 'emphasized';
     secondaryLine: 'none' | 'path' | 'status';
-    statusTextKey?: 'status.readyForReview' | 'status.error' | 'status.workingRetained' | 'status.backgroundActive' | 'status.keptInAttention';
+    statusTextKey?: 'status.readyForReview' | 'status.error' | 'status.backgroundActive' | 'status.keptInAttention';
+    accessibilityStatusTextKey?:
+        | 'status.readyForReview'
+        | 'status.error'
+        | 'status.backgroundActive'
+        | 'status.keptInAttention'
+        | 'status.unread'
+        | 'status.queuedInput'
+        | 'sessionsList.attentionSectionTitle';
 }>;
 
 async function loadRowPresentationResolver(): Promise<ResolveSessionRowPresentation> {
@@ -40,62 +41,7 @@ async function loadRowPresentationResolver(): Promise<ResolveSessionRowPresentat
     return resolver as ResolveSessionRowPresentation;
 }
 
-function createSessionStatus(overrides: Partial<SessionStatus> = {}): SessionStatus {
-    return {
-        state: 'waiting',
-        isConnected: true,
-        statusText: 'online',
-        shouldShowStatus: false,
-        statusColor: '#0f0',
-        statusDotColor: '#0f0',
-        isPulsing: false,
-        ...overrides,
-    };
-}
-
 describe('resolveSessionRowPresentation', () => {
-    it('does not emphasize a quiet viewed waiting session title', () => {
-        expect(shouldEmphasizeSessionRowTitle({
-            hasUnreadMessages: false,
-            pendingCount: 0,
-            sessionStatus: createSessionStatus(),
-        })).toBe(false);
-    });
-
-    it('emphasizes the title when the session has unread messages', () => {
-        expect(shouldEmphasizeSessionRowTitle({
-            hasUnreadMessages: true,
-            pendingCount: 0,
-            sessionStatus: createSessionStatus(),
-        })).toBe(true);
-    });
-
-    it('emphasizes the title when the session needs user attention', () => {
-        expect(shouldEmphasizeSessionRowTitle({
-            hasUnreadMessages: false,
-            pendingCount: 0,
-            sessionStatus: createSessionStatus({
-                state: 'permission_required',
-                shouldShowStatus: true,
-                statusText: 'Permission required',
-            }),
-        })).toBe(true);
-    });
-
-    it('hides minimal-row status text for working states because the indicator owns attention', () => {
-        expect(shouldShowMinimalSessionStatusLine(
-            createSessionStatus({
-                state: 'thinking',
-                shouldShowStatus: true,
-                statusText: 'Working on it',
-            }),
-        )).toBe(false);
-    });
-
-    it('hides a minimal-row status line for quiet online sessions', () => {
-        expect(shouldShowMinimalSessionStatusLine(createSessionStatus())).toBe(false);
-    });
-
     it('keeps minimal working rows to an indicator without a secondary line', async () => {
         const resolveSessionRowPresentation = await loadRowPresentationResolver();
 
@@ -124,6 +70,7 @@ describe('resolveSessionRowPresentation', () => {
             titleTone: 'emphasized',
             secondaryLine: 'status',
             statusTextKey: 'status.readyForReview',
+            accessibilityStatusTextKey: 'status.readyForReview',
         });
     });
 
@@ -140,36 +87,8 @@ describe('resolveSessionRowPresentation', () => {
             titleTone: 'emphasized',
             secondaryLine: 'status',
             statusTextKey: 'status.error',
+            accessibilityStatusTextKey: 'status.error',
         });
-    });
-
-    it('gives retained working rows a dedicated status text instead of live status', async () => {
-        const resolveSessionRowPresentation = await loadRowPresentationResolver();
-
-        expect(resolveSessionRowPresentation({
-            attentionState: 'working',
-            workingRetained: true,
-            density: 'default',
-            requestedSecondaryLineMode: 'path',
-            hasPathSubtitle: true,
-        })).toEqual({
-            attentionIndicator: 'working',
-            titleTone: 'emphasized',
-            secondaryLine: 'status',
-            statusTextKey: 'status.workingRetained',
-        });
-    });
-
-    it('does not apply the retained status text to live working rows', async () => {
-        const resolveSessionRowPresentation = await loadRowPresentationResolver();
-
-        expect(resolveSessionRowPresentation({
-            attentionState: 'working',
-            workingRetained: false,
-            density: 'default',
-            requestedSecondaryLineMode: 'path',
-            hasPathSubtitle: true,
-        }).statusTextKey).toBeUndefined();
     });
 
     it('uses the normal working spinner and precise background copy without replacing actionable indicators', async () => {
@@ -294,6 +213,7 @@ describe('session row attention standing presentation', () => {
             titleTone: 'quiet',
             secondaryLine: 'status',
             statusTextKey: 'status.keptInAttention',
+            accessibilityStatusTextKey: 'status.keptInAttention',
         });
     });
 
@@ -310,6 +230,7 @@ describe('session row attention standing presentation', () => {
             attentionIndicator: 'unread',
             titleTone: 'emphasized',
             secondaryLine: 'path',
+            accessibilityStatusTextKey: 'status.unread',
         });
 
         expect(resolveSessionRowPresentation({
@@ -338,6 +259,7 @@ describe('session row attention standing presentation', () => {
             titleTone: 'quiet',
             secondaryLine: 'none',
             statusTextKey: 'status.keptInAttention',
+            accessibilityStatusTextKey: 'status.keptInAttention',
         });
     });
 });

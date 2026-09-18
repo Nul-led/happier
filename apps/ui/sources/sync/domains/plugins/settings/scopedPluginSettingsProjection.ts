@@ -3,11 +3,13 @@ import { DaemonPluginSettingsMutationSchema } from '@happier-dev/protocol';
 
 import type { PluginProjectionEditableSettingField } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { readReleasedFlatPluginSettingValue } from '@/sync/domains/settings/releasedFlatPluginSettings';
 
 import {
     projectSafeScopedPluginSettingsValues,
     readScopedPluginSettingValue,
     resolveScopedPluginSettingMutation,
+    withoutScopedPluginSettingsWriteSnapshot,
     type ScopedPluginSettingsAdapter,
     type ScopedPluginSettingsField,
     type ScopedPluginSettingsMutation,
@@ -326,6 +328,7 @@ function readDeclaredFieldValue(params: Readonly<{
     values: Readonly<Record<string, unknown>>;
     field: PluginProjectionEditableSettingField;
     serverIdentityId: string | null;
+    releasedFlatSettings?: Readonly<Record<string, unknown>> | null;
 }>): unknown {
     const value = readScopedPluginSettingValue({
         values: params.values,
@@ -333,6 +336,15 @@ function readDeclaredFieldValue(params: Readonly<{
         serverIdentityId: params.serverIdentityId,
     });
     if (value !== undefined) return value;
+    // An Account upgraded from a released build has no scoped record yet, but
+    // still carries the value it persisted as a flat Settings root. Consult it
+    // before the declaration default so the upgrade preserves the user's
+    // choice instead of silently resetting it.
+    const released = readReleasedFlatPluginSettingValue({
+        settings: params.releasedFlatSettings,
+        localId: params.field.key,
+    });
+    if (released !== undefined) return released;
     if (params.field.control === 'switch') return params.field.defaultBooleanValue === true;
     return params.field.defaultValue;
 }
@@ -391,11 +403,19 @@ export function createScopedPluginSettingsSetMutation(
     return parsed.success && parsed.data.kind === 'set' ? parsed.data : null;
 }
 
-/** Read one declared field through its canonical storage binding. */
+/**
+ * Read one declared field through its canonical storage binding.
+ *
+ * `releasedFlatSettings` is the Account Settings document a caller already
+ * holds. Supplying it lets an Account upgraded from a released build keep the
+ * value it persisted as a flat Settings root; omitting it falls straight
+ * through to the declaration default.
+ */
 export function readScopedPluginSettingsDeclaredFieldValue(params: Readonly<{
     values: Readonly<Record<string, unknown>>;
     field: PluginProjectionEditableSettingField;
     serverIdentityId: string | null;
+    releasedFlatSettings?: Readonly<Record<string, unknown>> | null;
 }>): unknown {
     return readDeclaredFieldValue(params);
 }
@@ -916,7 +936,7 @@ function createScopedPluginSettingsRecordStore(params: Readonly<{
             }
             if (!isRecordCurrent()) {
                 retireRecord();
-                return null;
+                return withoutScopedPluginSettingsWriteSnapshot(result);
             }
             // A reconnect may already have retired this write's lifetime and
             // admitted a new mutation. The old transport response is no
@@ -933,7 +953,7 @@ function createScopedPluginSettingsRecordStore(params: Readonly<{
             ) {
                 state = { ...state, writePending: pendingWriteCount > 0 };
                 notify();
-                return null;
+                return withoutScopedPluginSettingsWriteSnapshot(result);
             }
             const resultSnapshot = 'snapshot' in result ? result.snapshot : undefined;
             if (
@@ -961,6 +981,14 @@ function createScopedPluginSettingsRecordStore(params: Readonly<{
                 };
                 loadedFieldsKey = scopedPluginSettingsFieldsKey(fields);
                 notify();
+                return result;
+            }
+            if (result.status === 'applied') {
+                state = { ...state, writePending: pendingWriteCount > 0, error: null };
+                notify();
+                // Acceptance is already known. Refresh only presentation through
+                // the existing owner; unavailable content cannot undo settlement.
+                await refresh();
                 return result;
             }
             if (result.status === 'outcomeUnknown') {
@@ -1363,6 +1391,7 @@ function useScopedPluginSettingsFieldModels(
         });
         const latest = currentRef.current;
         const latestDraft = draftsRef.current[field.key];
+        if (!remainsCurrent()) return result;
         if (
             latest.context !== current.context
             || latest.declarationIdentityByKey.get(field.key) !== identity
@@ -1384,7 +1413,7 @@ function useScopedPluginSettingsFieldModels(
             setDrafts(next);
             return result;
         }
-        if (result?.status === 'ready') {
+        if (result?.status === 'ready' || result?.status === 'applied') {
             const next = { ...draftsRef.current };
             delete next[field.key];
             draftsRef.current = next;
@@ -1614,6 +1643,7 @@ export function useScopedPluginSettingsProjection(
         if (!store || !params.enabled || !params.target) return null;
         const draftFieldId = input.draftFieldId ?? input.fieldId;
         const draftVersion = draftVersionByKeyRef.current.get(draftFieldId) ?? 0;
+        const submittedSource = subscriberRef.current.sourceLifetimeIdentity;
         const revisionBeforeCommit = store.state().snapshot?.revision ?? null;
         const result = await store.commit(input);
         const recoveredRevision = store.state().snapshot?.revision ?? null;
@@ -1622,7 +1652,16 @@ export function useScopedPluginSettingsProjection(
         // revision, however, that draft no longer describes the current
         // record and must not obscure the recovered value.
         const adoptAuthoritativeDraft = result?.status === 'ready'
-            || result?.status === 'conflict'
+            || (
+                result?.status === 'applied'
+                && subscriptionRef.current?.store === store
+                && subscriberRef.current.enabled
+                && subscriberRef.current.sourceLifetimeIdentity === submittedSource
+                && scopedPluginSettingsFieldsKey(subscriberRef.current.fields) === fieldsKey
+                && isCurrentAccountLifetime(params.accountLifetime)
+                && isWriteCurrent(input.isCurrent)
+            )
+            || (result?.status === 'conflict' && result.snapshot !== undefined)
             || (
                 result?.status === 'unavailable'
                 && recoveredRevision !== null
@@ -1641,7 +1680,7 @@ export function useScopedPluginSettingsProjection(
             });
         }
         return result;
-    }, [params.enabled, params.target, store]);
+    }, [fieldsKey, params.accountLifetime, params.enabled, params.target, store]);
 
     const refresh = React.useCallback(async (): Promise<void> => {
         await store?.refresh();

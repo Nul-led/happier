@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ExternalSessionOperationSharedPresentationV1Schema,
   createPlainSessionOwnerMetadataEnvelopeV1,
+  projectLegacySessionAccessCapabilitiesV1,
   projectSessionSharedMetadataV1,
   sealSessionOwnerMetadataEnvelopeV1,
   SessionOwnerMetadataV1Schema,
@@ -29,6 +30,9 @@ const PLAIN_ACCOUNT_CURRENTNESS = {
   contentKeyFingerprint: null,
   updatedAt: 1,
 } satisfies AccountEncryptionCurrentnessResponse;
+function sessionDataKey(): Uint8Array {
+  return new Uint8Array(32).fill(7);
+}
 
 function fetchAndApplySessionById(
   params: Omit<
@@ -86,6 +90,191 @@ function createDeferred<T>(): {
 }
 
 describe('fetchAndApplySessionById', () => {
+  it('refuses a plaintext session before parsing or applying it when this client requires E2EE', async () => {
+    const applySessions = vi.fn();
+    const request = vi.fn(async () => new Response(JSON.stringify({
+      session: {
+        id: 's_plain_blocked',
+        createdAt: 1,
+        updatedAt: 2,
+        seq: 3,
+        active: true,
+        activeAt: 2,
+        encryptionMode: 'plain',
+        dataEncryptionKey: null,
+        metadataVersion: 1,
+        metadata: JSON.stringify({ path: '/must-not-open' }),
+        agentStateVersion: 1,
+        agentState: null,
+        share: null,
+      },
+    }), { status: 200 }));
+
+    const result = await fetchAndApplySessionById({
+      sessionId: 's_plain_blocked',
+      accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+      credentials: { token: 'token' },
+      encryption: {
+        decryptEncryptionKey: async () => null,
+        initializeSessions: async () => {},
+        getSessionEncryption: () => null,
+      },
+      sessionDataKeys: new Map(),
+      request,
+      applySessions,
+      log: { log: () => {} },
+      includeTurnsProjection: false,
+      clientEncryptionRequirement: 'require_e2ee',
+    });
+
+    expect(result).toEqual({ ok: false, session: null, errorCode: 'client_e2ee_required' });
+    expect(applySessions).not.toHaveBeenCalled();
+  });
+
+  it('rejects a qualified current detail response that omits responsibility', async () => {
+    const applySessions = vi.fn();
+    const request = vi.fn(async () => new Response(JSON.stringify({
+      session: {
+        id: 's_qualified_responsibility',
+        createdAt: 1,
+        updatedAt: 2,
+        seq: 3,
+        active: true,
+        activeAt: 2,
+        encryptionMode: 'plain',
+        dataEncryptionKey: null,
+        metadataVersion: 1,
+        metadata: JSON.stringify({ readStateV1: null }),
+        agentStateVersion: 1,
+        agentState: JSON.stringify({ controlledByUser: true }),
+        share: { accessLevel: 'view', canApprovePermissions: false },
+        effectiveAccess: {
+          v: 1,
+          level: 'view',
+          sources: [{ kind: 'direct', shareId: 'share-1' }],
+          capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }),
+        },
+        viewer: {
+          readState: { state: 'not_started' },
+          relevance: { relevant: false, reasons: [] },
+          attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+          follow: { follows: false, notificationLevel: null },
+          notification: { level: 'none', source: 'none' },
+        },
+      },
+    }), { status: 200 }));
+
+    await expect(fetchAndApplySessionById({
+      sessionId: 's_qualified_responsibility',
+      accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+      credentials: { token: 't' },
+      encryption: null,
+      sessionDataKeys: new Map<string, Uint8Array>(),
+      request,
+      applySessions,
+      log: { log: () => {} },
+      includeTurnsProjection: false,
+      accessProjectionVersion: 1,
+    })).resolves.toMatchObject({ ok: false, errorCode: 'invalid_response' });
+    expect(applySessions).not.toHaveBeenCalled();
+  });
+
+  it('rejects a qualified detail response that omits the negotiated effective-access projection', async () => {
+    const applySessions = vi.fn();
+    const request = vi.fn(async (path: string) => {
+      expect(path).toBe('/v2/sessions/s_qualified?accessProjectionVersion=1');
+      return new Response(JSON.stringify({
+        session: {
+          id: 's_qualified',
+          createdAt: 1,
+          updatedAt: 2,
+          seq: 3,
+          active: true,
+          activeAt: 2,
+          encryptionMode: 'plain',
+          dataEncryptionKey: null,
+          metadataVersion: 1,
+          metadata: JSON.stringify({ readStateV1: null }),
+          agentStateVersion: 1,
+          agentState: JSON.stringify({ controlledByUser: true }),
+          share: null,
+        },
+      }), { status: 200 });
+    });
+
+    await expect(fetchAndApplySessionById({
+      sessionId: 's_qualified',
+      accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+      credentials: { token: 't' },
+      encryption: {
+        decryptEncryptionKey: async () => null,
+        initializeSessions: async () => {},
+        getSessionEncryption: () => null,
+      },
+      sessionDataKeys: new Map<string, Uint8Array>(),
+      request,
+      applySessions,
+      log: { log: () => {} },
+      includeTurnsProjection: false,
+      accessProjectionVersion: 1,
+    })).resolves.toEqual({
+      ok: false,
+      session: null,
+      errorCode: 'invalid_response',
+    });
+    expect(applySessions).not.toHaveBeenCalled();
+  });
+
+  it('fails closed instead of hiding a malformed current access projection behind the legacy list fallback', async () => {
+    const applySessions = vi.fn();
+    const request = vi.fn(async (path: string) => {
+      if (path === '/v2/sessions/s_malformed_access') {
+        return new Response(JSON.stringify({
+          session: {
+            id: 's_malformed_access',
+            createdAt: 1,
+            updatedAt: 2,
+            seq: 3,
+            active: true,
+            activeAt: 2,
+            encryptionMode: 'plain',
+            dataEncryptionKey: null,
+            metadataVersion: 1,
+            metadata: JSON.stringify({ readStateV1: null }),
+            agentStateVersion: 1,
+            agentState: JSON.stringify({ controlledByUser: true }),
+            share: null,
+            effectiveAccess: { v: 1, role: 'owner' },
+          },
+        }), { status: 200 });
+      }
+
+      throw new Error(`legacy fallback must not run after an explicit current projection: ${path}`);
+    });
+
+    await expect(fetchAndApplySessionById({
+      sessionId: 's_malformed_access',
+      accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+      credentials: { token: 't' },
+      encryption: {
+        decryptEncryptionKey: async () => null,
+        initializeSessions: async () => {},
+        getSessionEncryption: () => null,
+      },
+      sessionDataKeys: new Map<string, Uint8Array>(),
+      request,
+      applySessions,
+      log: { log: () => {} },
+      includeTurnsProjection: false,
+    })).resolves.toEqual({
+      ok: false,
+      session: null,
+      errorCode: 'invalid_response',
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(applySessions).not.toHaveBeenCalled();
+  });
+
   it('hydrates owner shared metadata, owner metadata, and full agent state without merging envelopes', async () => {
     const privateLegacyMetadata = {
       path: '/private/worktree',
@@ -178,6 +367,7 @@ describe('fetchAndApplySessionById', () => {
     expect(result.ok).toBe(true);
     const hydrated = applySessions.mock.calls[0]?.[0]?.[0];
     expect(hydrated.metadata).toEqual(sharedMetadata);
+    expect(hydrated).not.toHaveProperty('presence');
     expect(hydrated).not.toHaveProperty('ownerMetadata');
     expect(hydrated.ownerMetadataView).toEqual(expect.objectContaining({
       path: '/private/worktree',
@@ -254,7 +444,7 @@ describe('fetchAndApplySessionById', () => {
       sessionId: 's_shared',
       credentials: OWNER_TEST_CREDENTIALS as never,
       encryption: {
-        decryptEncryptionKey: async () => new Uint8Array([1, 2, 3]),
+        decryptEncryptionKey: async () => sessionDataKey(),
         initializeSessions: async () => {},
         getSessionEncryption: () => ({
           decryptMetadata: async () => null,
@@ -305,7 +495,7 @@ describe('fetchAndApplySessionById', () => {
       sessionId: 's_encrypted_owner_without_material',
       credentials: { token: 'token-only' },
       encryption: {
-        decryptEncryptionKey: async () => new Uint8Array([1, 2, 3]),
+        decryptEncryptionKey: async () => sessionDataKey(),
         initializeSessions: async () => {},
         getSessionEncryption: () => ({
           decryptMetadata: async () => null,
@@ -402,7 +592,7 @@ describe('fetchAndApplySessionById', () => {
       sessionId: 's_layout0_owner',
       credentials: OWNER_TEST_CREDENTIALS as never,
       encryption: {
-        decryptEncryptionKey: async () => new Uint8Array([1, 2, 3]),
+        decryptEncryptionKey: async () => sessionDataKey(),
         initializeSessions: async () => {},
         getSessionEncryption: () => ({
           encryptRaw: async (payload) => JSON.stringify(payload),
@@ -780,6 +970,41 @@ describe('fetchAndApplySessionById', () => {
     ]);
   });
 
+  it('rejects a malformed responsibility tuple from by-id without scanning legacy lists', async () => {
+    const applySessions = vi.fn();
+    const request = vi.fn(async () => new Response(JSON.stringify({ session: {
+      id: 's_responsibility_invalid',
+      seq: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      active: true,
+      activeAt: 1,
+      metadata: '{}',
+      metadataVersion: 1,
+      agentState: null,
+      agentStateVersion: 1,
+      encryptionMode: 'plain',
+      dataEncryptionKey: null,
+      share: null,
+      responsibleAccountId: 'account-a',
+    } }), { status: 200 }));
+
+    const result = await fetchAndApplySessionById({
+      sessionId: 's_responsibility_invalid',
+      credentials: { token: 't' } as any,
+      accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+      encryption: null,
+      sessionDataKeys: new Map<string, Uint8Array>(),
+      request,
+      applySessions,
+      log: { log: () => {} },
+    });
+
+    expect(result).toMatchObject({ ok: false, errorCode: 'invalid_response' });
+    expect(applySessions).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ['an empty body', () => new Response(null, { status: 404 })],
     ['a plain-text body', () => new Response('Not found', {
@@ -918,6 +1143,7 @@ describe('fetchAndApplySessionById', () => {
 
     await fetchAndApplySessionById({
       sessionId: 's1',
+      serverId: 'server-a',
       credentials: { token: 't' } as any,
       encryption: {
         decryptEncryptionKey: async () => null,
@@ -939,7 +1165,7 @@ describe('fetchAndApplySessionById', () => {
     });
 
     expect(onAgentRequest).toHaveBeenCalledWith(
-      's1',
+      { serverId: 'server-a', sessionId: 's1' },
       'req_1',
       'user_action',
       'AskUserQuestion',
@@ -990,6 +1216,7 @@ describe('fetchAndApplySessionById', () => {
 
     await fetchAndApplySessionById({
       sessionId: 's1',
+      serverId: 'server-a',
       credentials: { token: 't' } as any,
       encryption: {
         decryptEncryptionKey: async () => null,
@@ -1006,7 +1233,7 @@ describe('fetchAndApplySessionById', () => {
     });
 
     expect(onAgentRequest).toHaveBeenCalledWith(
-      's1',
+      { serverId: 'server-a', sessionId: 's1' },
       'req_1',
       'user_action',
       'AskUserQuestion',
@@ -1122,7 +1349,7 @@ describe('fetchAndApplySessionById', () => {
   it('initializes session encryption when dataEncryptionKey is present', async () => {
     onAgentRequest.mockReset();
     const applySessions = vi.fn();
-    const decryptEncryptionKey = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const decryptEncryptionKey = vi.fn(async () => sessionDataKey());
     const initializeSessions = vi.fn(async () => {});
     const externalSessionOperationPresentationV1 =
       ExternalSessionOperationSharedPresentationV1Schema.parse({
@@ -1184,11 +1411,16 @@ describe('fetchAndApplySessionById', () => {
 
     expect(decryptEncryptionKey).toHaveBeenCalledWith('dek');
     expect(initializeSessions).toHaveBeenCalledWith(
-      new Map([['s1', new Uint8Array([1, 2, 3])]]),
+      new Map([['s1', sessionDataKey()]]),
       { shouldContinue: expect.any(Function) },
     );
-    expect(sessionDataKeys.get('s1')).toEqual(new Uint8Array([1, 2, 3]));
-    expect(decryptMetadataPayload).toHaveBeenCalledWith(1, 'enc-meta');
+    expect(sessionDataKeys.get('s1')).toEqual(sessionDataKey());
+
+    expect(decryptMetadataPayload).toHaveBeenCalledWith(
+      1,
+      'enc-meta',
+      expect.objectContaining({ onAuthenticationFailure: expect.any(Function) }),
+    );
     expect(decryptMetadata).not.toHaveBeenCalled();
     expect(decryptAgentState).toHaveBeenCalledWith(1, 'enc-state');
     expect(applySessions).toHaveBeenCalledWith([
@@ -1240,7 +1472,7 @@ describe('fetchAndApplySessionById', () => {
       sessionId: 'stale-account-session',
       credentials: { token: 'account-a-token', secret: 'account-a-secret' } as any,
       encryption: {
-        decryptEncryptionKey: async () => new Uint8Array([1, 2, 3]),
+        decryptEncryptionKey: async () => sessionDataKey(),
         initializeSessions,
         getSessionEncryption,
       },
@@ -1263,9 +1495,75 @@ describe('fetchAndApplySessionById', () => {
     expect(applySessions).not.toHaveBeenCalled();
   });
 
+  it('does not retain a data key after the Account/server encryption generation changes during initialization', async () => {
+    let generation = 7;
+    let releaseInitialization!: () => void;
+    const initialization = new Promise<void>((resolve) => {
+      releaseInitialization = resolve;
+    });
+    const sessionDataKeys = new Map<string, Uint8Array>();
+    const initializeSessions = vi.fn(async () => await initialization);
+    const applySessions = vi.fn();
+    const decryptEncryptionKey = vi.fn(async () => new Uint8Array(32).fill(8));
+    const request = vi.fn(async () => new Response(JSON.stringify({
+      session: {
+        id: 'generation-scoped-session',
+        createdAt: 1,
+        updatedAt: 2,
+        seq: 3,
+        active: false,
+        activeAt: 2,
+        encryptionMode: 'e2ee',
+        dataEncryptionKey: 'account-a-envelope',
+        metadataVersion: 1,
+        metadata: 'encrypted-metadata',
+        agentStateVersion: 1,
+        agentState: 'encrypted-agent-state',
+        share: null,
+      },
+    }), { status: 200 }));
+
+    const hydration = fetchAndApplySessionById({
+      sessionId: 'generation-scoped-session',
+      serverId: 'server-a',
+      credentials: { token: 'account-a-token', secret: 'account-a-secret' } as any,
+      encryption: {
+        decryptEncryptionKey,
+        initializeSessions,
+        getSessionEncryption: () => null,
+        getCurrentEncryptionGenerationScope: (scope) => ({
+          accountId: scope?.accountId ?? 'account-a',
+          serverId: scope?.serverId ?? null,
+          generation,
+        }),
+        isCurrentEncryptionGenerationScope: (scope) => scope.generation === generation,
+      },
+      sessionDataKeys,
+      request,
+      applySessions,
+      log: { log: () => {} },
+    });
+
+    await vi.waitFor(() => expect(initializeSessions).toHaveBeenCalledTimes(1));
+    generation += 1;
+    releaseInitialization();
+
+    await expect(hydration).resolves.toMatchObject({
+      ok: false,
+      session: null,
+      errorCode: 'stale_response',
+    });
+    expect(sessionDataKeys.has('generation-scoped-session')).toBe(false);
+    expect(initializeSessions).toHaveBeenCalledWith(
+      new Map([['generation-scoped-session', new Uint8Array(32).fill(8)]]),
+      expect.objectContaining({ serverId: 'server-a', shouldContinue: expect.any(Function) }),
+    );
+    expect(applySessions).not.toHaveBeenCalled();
+  });
+
   it('reuses a cached session data key when the encrypted envelope is unchanged', async () => {
     const applySessions = vi.fn();
-    const decryptEncryptionKey = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const decryptEncryptionKey = vi.fn(async () => sessionDataKey());
     const initializeSessions = vi.fn(async () => {});
     const sharedMetadata = projectSessionSharedMetadataV1({ metadata: {} });
     const decryptMetadataPayload = vi.fn(async () => sharedMetadata);
@@ -1273,7 +1571,7 @@ describe('fetchAndApplySessionById', () => {
       throw new Error('layout-v1 metadata must bypass the legacy parser');
     });
     const decryptAgentState = vi.fn(async () => ({ controlledByUser: true }));
-    const cachedKey = new Uint8Array([7, 7, 7]);
+    const cachedKey = sessionDataKey();
 
     const request = vi.fn(async () => new Response(JSON.stringify({
       session: {
@@ -1368,7 +1666,7 @@ describe('fetchAndApplySessionById', () => {
       sessionId: 's_parallel',
       credentials: OWNER_TEST_CREDENTIALS as any,
       encryption: {
-        decryptEncryptionKey: async () => new Uint8Array([1, 2, 3]),
+        decryptEncryptionKey: async () => sessionDataKey(),
         initializeSessions: async () => {},
         getSessionEncryption: () => ({
           decryptMetadata,
@@ -1455,8 +1753,7 @@ describe('fetchAndApplySessionById', () => {
       sessionId: 's_stale_decrypt',
       credentials: OWNER_TEST_CREDENTIALS as never,
       encryption: {
-        decryptEncryptionKey: async () =>
-          new Uint8Array([1, 2, 3]),
+        decryptEncryptionKey: async () => sessionDataKey(),
         initializeSessions: async () => {},
         getSessionEncryption: () => ({
           decryptMetadata: async () => null,
@@ -1658,6 +1955,75 @@ describe('fetchAndApplySessionById', () => {
     expect(detailRequests).toBe(1);
     expect(firstApplySessions).toHaveBeenCalledWith([expect.objectContaining({ id: 's_scoped_coalesced' })]);
     expect(secondApplySessions).toHaveBeenCalledWith([expect.objectContaining({ id: 's_scoped_coalesced' })]);
+  });
+
+  it('does not coalesce distinct qualified detail reads whose parts contain the legacy delimiter', async () => {
+    const detailGate = createDeferred<void>();
+    let detailRequests = 0;
+    const requestAuthority = {};
+    const createRequest = () => vi.fn(async (path: string) => {
+      if (path === '/v2/sessions/s_delimiter_collision') {
+        detailRequests += 1;
+        await detailGate.promise;
+        return new Response(JSON.stringify({
+          session: {
+            id: 's_delimiter_collision',
+            createdAt: 1,
+            updatedAt: 2,
+            seq: 3,
+            active: true,
+            activeAt: 2,
+            encryptionMode: 'plain',
+            dataEncryptionKey: null,
+            metadataVersion: 1,
+            metadata: JSON.stringify({ readStateV1: null }),
+            agentStateVersion: 1,
+            agentState: JSON.stringify({ controlledByUser: true }),
+            share: null,
+          },
+        }), { status: 200 });
+      }
+
+      if (path === '/v1/sessions/s_delimiter_collision/turns') {
+        return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 });
+      }
+
+      throw new Error(`unexpected path ${path}`);
+    });
+    const encryption = {
+      decryptEncryptionKey: async () => null,
+      initializeSessions: async () => {},
+      getSessionEncryption: () => null,
+    } satisfies SessionByIdEncryption;
+    const baseParams = {
+      sessionId: 's_delimiter_collision',
+      encryption,
+      sessionDataKeys: new Map<string, Uint8Array>(),
+      log: { log: () => {} },
+      requestAuthority,
+    };
+
+    const first = fetchAndApplySessionById({
+      ...baseParams,
+      serverId: 'home\u0000credential-part',
+      credentials: { token: 'credential' } as any,
+      request: createRequest(),
+      applySessions: vi.fn(),
+    });
+    const second = fetchAndApplySessionById({
+      ...baseParams,
+      serverId: 'home',
+      credentials: { token: 'credential-part\u0000credential' } as any,
+      request: createRequest(),
+      applySessions: vi.fn(),
+    });
+
+    await expect.poll(() => detailRequests, { timeout: 100 }).toBe(2);
+    detailGate.resolve();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ ok: true }),
+      expect.objectContaining({ ok: true }),
+    ]);
   });
 
   it('does not adopt an old in-flight detail response under a new request authority', async () => {

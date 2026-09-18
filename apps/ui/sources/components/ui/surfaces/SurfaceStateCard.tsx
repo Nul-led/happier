@@ -187,7 +187,7 @@ export function SurfaceStateCard(props: Readonly<{
                                     size="small"
                                     title={props.action.label}
                                     accessibilityLabel={props.action.label}
-                                    onPress={() => { void props.action?.onPress(); }}
+                                    action={() => Promise.resolve(props.action!.onPress())}
                                 />
                             ) : null}
                             {props.secondaryAction ? (
@@ -197,7 +197,7 @@ export function SurfaceStateCard(props: Readonly<{
                                     display="inverted"
                                     title={props.secondaryAction.label}
                                     accessibilityLabel={props.secondaryAction.label}
-                                    onPress={() => { void props.secondaryAction?.onPress(); }}
+                                    action={() => Promise.resolve(props.secondaryAction!.onPress())}
                                 />
                             ) : null}
                         </View>

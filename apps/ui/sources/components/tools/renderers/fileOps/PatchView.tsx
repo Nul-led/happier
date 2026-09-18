@@ -110,7 +110,7 @@ function hasAppliedResult(result: unknown): boolean {
     return asRecord(result)?.applied === true;
 }
 
-export const PatchView = React.memo<ToolViewProps>(({ tool, metadata, detailLevel, sessionId }) => {
+export const PatchView = React.memo<ToolViewProps>(({ tool, metadata, detailLevel, sessionId, serverId }) => {
     const { theme } = useUnistyles();
     const { input } = tool;
     const errorMessage = tool.state === 'error' ? extractErrorMessage(tool.result) : null;
@@ -137,7 +137,7 @@ export const PatchView = React.memo<ToolViewProps>(({ tool, metadata, detailLeve
                         {applied ? <Text style={styles.applied}>{t('common.applied')}</Text> : null}
                     </View>
                 ) : null}
-                <ToolFileDiffListView files={diffFiles} detailLevel={detailLevel} sessionId={sessionId} />
+                <ToolFileDiffListView files={diffFiles} detailLevel={detailLevel} sessionId={sessionId} serverId={serverId} />
             </ToolSectionView>
         );
     }

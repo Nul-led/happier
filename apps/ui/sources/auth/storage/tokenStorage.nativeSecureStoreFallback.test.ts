@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+    createPasswordCredentialMutationDigestV1,
+    createPasswordCredentialTargetDigestV1,
+    encodePasswordCredentialFieldV1,
+} from '@happier-dev/protocol';
 import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
 
 const secureStoreState = vi.hoisted(() => ({
@@ -136,6 +141,53 @@ describe('TokenStorage (native secure-store entitlement fallback)', () => {
 
         const reloaded = await import('./tokenStorage');
         await expect(reloaded.TokenStorage.getAuthAutoRedirectSuppressedUntil()).resolves.toBe(123456);
+    });
+
+    it('rejects password-enrollment custody before native secure storage or its fallback can receive secret bytes', async () => {
+        const targetCredential = {
+            v: 1 as const,
+            kind: 'plain_password_hash' as const,
+            hash: {
+                v: 1 as const,
+                algorithm: 'scrypt' as const,
+                parameters: { n: 2 ** 14, r: 8 as const, p: 5, keyLength: 32 as const },
+                salt: encodePasswordCredentialFieldV1(new Uint8Array(16).fill(3)),
+                digest: encodePasswordCredentialFieldV1(new Uint8Array(32).fill(5)),
+            },
+        };
+        const requestDigest = createPasswordCredentialMutationDigestV1({
+            v: 1,
+            action: 'connect',
+            accountId: 'account-a',
+            expectedCredentialRevision: null,
+            normalizedNativeEmail: 'person@example.test',
+            newCredentialDigest: createPasswordCredentialTargetDigestV1(targetCredential),
+        });
+        const { TokenStorage } = await import('./tokenStorage');
+
+        const forbiddenEnrollmentCustody = {
+            provider: 'github',
+            proof: 'local-proof',
+            serverId: 'server-a',
+            serverUrl: 'https://server-a.example.test',
+            returnTo: '/settings/account/security?verificationToken=mailbox-proof',
+            accountPasswordEnrollment: {
+                v: 1,
+                accountId: 'account-a',
+                normalizedNativeEmail: 'person@example.test',
+                targetCredential,
+                requestDigest,
+                createdAt: Date.now(),
+                expiresAt: Date.now() + 60_000,
+            },
+        };
+        await expect(TokenStorage.setPendingExternalAuth(
+            forbiddenEnrollmentCustody,
+        )).resolves.toBe(false);
+
+        expect(secureStoreState.setItemAsync).not.toHaveBeenCalled();
+        expect(asyncStorageState.setItem).not.toHaveBeenCalled();
+        expect([...asyncStorageState.values.values()].join('\n')).not.toContain(requestDigest);
     });
 
     it('does not fall back to MMKV outside dev mode', async () => {

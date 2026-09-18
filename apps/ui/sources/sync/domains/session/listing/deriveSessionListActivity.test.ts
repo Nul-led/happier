@@ -1,17 +1,41 @@
+import { SessionAwarenessOperationalPrimaryV1Schema } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
-    deriveSessionListAttentionState,
+    projectUiSessionRuntimeAwareness,
+    type SessionRuntimePresentationInput,
+} from '@/sync/domains/session/attention/runtimePresentation';
+import {
+    MAX_SESSION_LIST_ATTENTION_RANK,
     deriveSessionListMeaningfulActivityAt,
+    isUrgentSessionListAttentionState,
+    resolveSessionListAttentionRank,
+    resolveSessionListAttentionState,
     resolveSessionListSecondaryLineMode,
 } from './deriveSessionListActivity';
+
+/**
+ * The list row's real path: canonical runtime awareness, then the one composition with 09B's
+ * unread fact. Exercising it end to end keeps these cases pointed at raw session evidence — the
+ * shape a row actually holds — while the semantics stay owned by Protocol.
+ */
+function listAttentionFor(
+    input: SessionRuntimePresentationInput & Readonly<{ hasUnreadMessages: boolean; pendingCount: number }>,
+) {
+    return resolveSessionListAttentionState({
+        operational: projectUiSessionRuntimeAwareness({
+            ...input,
+            hasPendingUserMessages: input.pendingCount > 0,
+        }).operational.primary,
+        hasUnreadMessages: input.hasUnreadMessages,
+    });
+}
 
 describe('deriveSessionListMeaningfulActivityAt', () => {
     it('prefers real transcript activity over session updatedAt churn', () => {
         const result = deriveSessionListMeaningfulActivityAt({
             sessionCreatedAt: 100,
             latestCommittedMessageCreatedAt: 1_200,
-            latestThinkingActivityAt: null,
             latestPendingMessageCreatedAt: null,
         });
 
@@ -23,29 +47,16 @@ describe('deriveSessionListMeaningfulActivityAt', () => {
             sessionMeaningfulActivityAt: 2_400,
             sessionCreatedAt: 100,
             latestCommittedMessageCreatedAt: 1_200,
-            latestThinkingActivityAt: null,
             latestPendingMessageCreatedAt: null,
         });
 
         expect(result).toBe(2_400);
     });
 
-    it('ignores thinking heartbeat activity when choosing meaningful activity', () => {
-        const result = deriveSessionListMeaningfulActivityAt({
-            sessionCreatedAt: 100,
-            latestCommittedMessageCreatedAt: 1_200,
-            latestThinkingActivityAt: 1_800,
-            latestPendingMessageCreatedAt: null,
-        });
-
-        expect(result).toBe(1_200);
-    });
-
     it('falls back to the session createdAt when there is no transcript activity', () => {
         const result = deriveSessionListMeaningfulActivityAt({
             sessionCreatedAt: 321,
             latestCommittedMessageCreatedAt: null,
-            latestThinkingActivityAt: null,
             latestPendingMessageCreatedAt: null,
         });
 
@@ -63,62 +74,122 @@ describe('resolveSessionListSecondaryLineMode', () => {
     });
 });
 
-describe('deriveSessionListAttentionState', () => {
+describe('resolveSessionListAttentionRank', () => {
+    it('ranks every state exactly as the canonical operational ladder orders them', () => {
+        const canonicalOrder = SessionAwarenessOperationalPrimaryV1Schema.options;
+        const listOrder = canonicalOrder.map((primary) =>
+            resolveSessionListAttentionState({ operational: primary, hasUnreadMessages: false }));
+        const ranks = listOrder.map(resolveSessionListAttentionRank);
+
+        expect(ranks).toEqual([...ranks].sort((left, right) => right - left));
+        expect(new Set(ranks).size).toBe(ranks.length);
+    });
+
+    it('ranks permission-required above action-required, matching Protocol', () => {
+        expect(resolveSessionListAttentionRank('permission_required'))
+            .toBeGreaterThan(resolveSessionListAttentionRank('action_required'));
+    });
+
+    it('keeps unread above a quiet session and below every operational state', () => {
+        expect(resolveSessionListAttentionRank('unread'))
+            .toBeGreaterThan(resolveSessionListAttentionRank('quiet'));
+        expect(resolveSessionListAttentionRank('unread'))
+            .toBeLessThan(resolveSessionListAttentionRank('pending'));
+    });
+
+    it('exposes failure as the top rank so normalized consumers score it highest', () => {
+        expect(MAX_SESSION_LIST_ATTENTION_RANK).toBe(resolveSessionListAttentionRank('failed'));
+    });
+});
+
+describe('isUrgentSessionListAttentionState', () => {
+    it('treats a failed session as urgent', () => {
+        expect(isUrgentSessionListAttentionState('failed')).toBe(true);
+    });
+
+    it('treats states that need a person as urgent', () => {
+        expect(isUrgentSessionListAttentionState('permission_required')).toBe(true);
+        expect(isUrgentSessionListAttentionState('action_required')).toBe(true);
+    });
+
+    it('leaves ordinary progress and quiet states non-urgent', () => {
+        expect(isUrgentSessionListAttentionState('thinking')).toBe(false);
+        expect(isUrgentSessionListAttentionState('ready')).toBe(false);
+        expect(isUrgentSessionListAttentionState('unread')).toBe(false);
+        expect(isUrgentSessionListAttentionState('quiet')).toBe(false);
+    });
+});
+
+describe('resolveSessionListAttentionState', () => {
+    it('does not let a stale localized permission status override offline runtime evidence', () => {
+        expect(listAttentionFor({
+            hasUnreadMessages: false, pendingCount: 0,
+            active: false, presence: 1, latestTurnStatus: null, nowMs: 1_000_000,
+        })).toBe('quiet');
+    });
+
+    it('preserves operational ready after the viewer has read the session', () => {
+        expect(listAttentionFor({
+            hasUnreadMessages: false, pendingCount: 0,
+            latestTurnStatus: 'completed', latestReadyEventSeq: 5,
+        })).toBe('ready');
+    });
+
     it('marks unread sessions as needing emphasis even when otherwise quiet', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: true,
             pendingCount: 0,
-            sessionState: 'waiting',
         })).toBe('unread');
     });
 
     it('preserves explicit permission-required attention over generic unread state', () => {
-        expect(deriveSessionListAttentionState({
+        const nowMs = 1_000_000;
+        expect(listAttentionFor({
+            nowMs,
             hasUnreadMessages: true,
             pendingCount: 0,
-            sessionState: 'permission_required',
+            hasPendingPermissionRequests: true,
+            pendingRequestObservedAt: nowMs - 1_000,
+            active: true,
+            presence: 'online',
         })).toBe('permission_required');
     });
 
     it('treats pending queue activity as an attention state', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: false,
             pendingCount: 2,
-            sessionState: 'waiting',
         })).toBe('pending');
     });
 
     it('treats blocked pending delivery as action-required attention', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: false,
             pendingCount: 2,
             pendingBlockedCount: 1,
-            sessionState: 'waiting',
         })).toBe('action_required');
     });
 
     it('treats resuming sessions as active attention before generic pending activity', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: false,
             pendingCount: 2,
-            sessionState: 'resuming',
+            resumingAt: 1_000,
         })).toBe('thinking');
     });
 
     it('uses failed attention for failed primary turns without requiring runtime issue audit data', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: true,
             pendingCount: 2,
-            sessionState: 'thinking',
             latestTurnStatus: 'failed',
         })).toBe('failed');
     });
 
     it('keeps failed attention when only meaningful activity is newer than a failed primary turn projection', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: true,
             pendingCount: 0,
-            sessionState: 'thinking',
             latestTurnStatus: 'failed',
             lastRuntimeIssue: {
                 v: 1,
@@ -131,35 +202,30 @@ describe('deriveSessionListAttentionState', () => {
             },
             latestTurnStatusObservedAt: 1_000,
             meaningfulActivityAt: 1_500,
-            seq: 10,
             latestReadyEventSeq: null,
-            lastViewedSessionSeq: 9,
         })).toBe('failed');
     });
 
     it('prioritizes failed primary turns over action-required attention', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: true,
             pendingCount: 2,
-            sessionState: 'action_required',
             latestTurnStatus: 'failed',
         })).toBe('failed');
     });
 
     it('uses the canonical in-progress primary turn as thinking attention without a timestamp', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: false,
             pendingCount: 0,
-            sessionState: 'waiting',
             latestTurnStatus: 'in_progress',
         })).toBe('thinking');
     });
 
     it('uses timestamped in-progress primary turns as thinking attention', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: false,
             pendingCount: 0,
-            sessionState: 'waiting',
             latestTurnStatus: 'in_progress',
             latestTurnStatusObservedAt: 1_000,
             active: true,
@@ -169,10 +235,9 @@ describe('deriveSessionListAttentionState', () => {
     });
 
     it('uses fresh local outbound pending messages as working attention', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: false,
             pendingCount: 1,
-            sessionState: 'waiting',
             active: true,
             presence: 'online',
             thinking: false,
@@ -182,13 +247,12 @@ describe('deriveSessionListAttentionState', () => {
         })).toBe('thinking');
     });
 
-    it('uses fresh detached provider runtime activity after a completed turn as background attention', () => {
+    it('uses fresh detached provider runtime activity after a completed turn as ready attention', () => {
         const nowMs = 1_000_000;
 
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: false,
             pendingCount: 0,
-            sessionState: 'waiting',
             active: true,
             presence: 'online',
             thinking: false,
@@ -200,16 +264,15 @@ describe('deriveSessionListAttentionState', () => {
             runtimeActivityObservedAt: nowMs - 1_000,
             runtimeActivityRevision: nowMs + 60_000,
             nowMs,
-        })).toBe('quiet');
+        })).toBe('ready');
     });
 
     it('ignores stale untrusted provider runtime activity after a completed foreground turn for list attention', () => {
         const nowMs = 1_000_000;
 
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: false,
             pendingCount: 0,
-            sessionState: 'waiting',
             active: false,
             presence: 0,
             thinking: false,
@@ -220,66 +283,43 @@ describe('deriveSessionListAttentionState', () => {
             runtimeActivityObservedAt: nowMs - 300_000,
             runtimeActivityRevision: nowMs - 1,
             nowMs,
-        })).toBe('quiet');
+        })).toBe('ready');
     });
 
     it('uses unread completed primary turns as ready attention', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: true,
             pendingCount: 0,
-            sessionState: 'thinking',
             latestTurnStatus: 'completed',
             latestTurnStatusObservedAt: 1_000,
             meaningfulActivityAt: 1_000,
-            seq: 10,
-            lastViewedSessionSeq: 9,
         })).toBe('ready');
     });
 
     it('uses unread attention when only meaningful activity is clearly newer than a completed primary turn projection', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: true,
             pendingCount: 0,
-            sessionState: 'thinking',
             latestTurnStatus: 'completed',
             latestTurnStatusObservedAt: 1_000,
             meaningfulActivityAt: 3_500,
-            seq: 10,
-            lastViewedSessionSeq: 9,
         })).toBe('unread');
     });
 
     it('uses ready attention when final activity lands just after the completed primary turn projection', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: true,
             pendingCount: 0,
-            sessionState: 'thinking',
             latestTurnStatus: 'completed',
             latestTurnStatusObservedAt: 1_000,
             meaningfulActivityAt: 1_044,
-            seq: 10,
-            lastViewedSessionSeq: 9,
         })).toBe('ready');
     });
 
-    it('does not mark post-terminal work as ready just because later tool events advance the session seq', () => {
-        expect(deriveSessionListAttentionState({
-            hasUnreadMessages: true,
-            pendingCount: 0,
-            sessionState: 'waiting',
-            latestTurnStatus: 'completed',
-            latestTurnStatusObservedAt: 1_000,
-            meaningfulActivityAt: 3_500,
-            seq: 10,
-            lastViewedSessionSeq: 9,
-        })).toBe('unread');
-    });
-
     it('preserves running attention while a new turn is in progress with a previous audit issue', () => {
-        expect(deriveSessionListAttentionState({
+        expect(listAttentionFor({
             hasUnreadMessages: true,
             pendingCount: 0,
-            sessionState: 'thinking',
             latestTurnStatus: 'in_progress',
             lastRuntimeIssue: {
                 v: 1,

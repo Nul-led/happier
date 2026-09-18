@@ -10,19 +10,24 @@ import { assertRpcResponseWithSuccess } from '../runtime/assertRpcResponseWithSu
 import { buildResumeHappySessionRpcParams, type ResumeHappySessionRpcParams } from '../domains/session/resume/resumeSessionPayload';
 import { readSpawnSessionRpcTimeoutMsFromEnv } from '../domains/session/spawn/spawnSessionRpcTimeout';
 import { storage } from '../domains/state/storage';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { readMachineDaemonCliVersionForServerScope } from '../domains/machines/readMachineDaemonCliVersionForServerScope';
 import { nowServerMs } from '../runtime/time';
 import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 import { emitSessionMetadataUpdateWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/emitSessionMetadataUpdateWithServerScope';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
-import { resolveServerScopedSessionContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedSessionContext';
+import { resolveServerAccountRequestContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext';
 import type {
-    ServerAccountSessionRequestAuthority,
-} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
-import { createSessionRequestForResolvedServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+    ServerAccountRequestAuthority,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
+import { createServerRequestForResolvedServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { sessionRpcWithPreferredSessionScope } from '@/sync/runtime/orchestration/serverScopedRpc/sessionRpcWithPreferredSessionScope';
-import { sessionRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc';
+import {
+    sessionRpcWithServerAccountScope,
+    sessionRpcWithServerScope,
+} from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc';
 import { prepareAccountSettingsForDaemonSpawnIfNeeded } from './accountSettingsDaemonSpawnPreparation';
 import type {
     BackendTargetRefV1,
@@ -64,8 +69,10 @@ import { buildResumeCapabilityOptionsFromUiState } from '@/agents/registry/regis
 import { readAgentScopedPluginSettingsSnapshot } from '@/agents/registry/agentScopedPluginSettings';
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import { getPendingQueueWakeResumeOptions } from '@/sync/domains/pending/pendingQueueWake';
 import { supportsSessionForkRequestId } from '@/utils/system/versionUtils';
+import { machineResolveSpawnSessionByNonceUntilSettled } from './machines';
 export {
     sessionScmBranchCheckout,
     sessionScmBranchCreate,
@@ -131,9 +138,12 @@ function resolveSessionPermissionTurnId(
     sessionId: string,
     requestId: string,
     explicitTurnId?: string,
+    serverId?: string,
 ): string | undefined {
     const candidate = explicitTurnId
-        ?? storage.getState().sessions[sessionId]?.agentState?.requests?.[requestId]?.turnId;
+        ?? (serverId === undefined || areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId)
+            ? storage.getState().sessions[sessionId]
+            : undefined)?.agentState?.requests?.[requestId]?.turnId;
     return typeof candidate === 'string' && candidate.trim().length > 0
         ? candidate.trim()
         : undefined;
@@ -215,6 +225,8 @@ export interface ResumeSessionOptions {
     attachMetadataIdentityPolicy?: SessionAttachMetadataIdentityPolicy;
     /** Optional explicit server scope for resume spawn routing. */
     serverId?: string;
+    /** Exact route credential lifetime; fences daemon admission and forbids ambient Account fallback. */
+    accountLifetime?: ServerAccountScopeLifetime;
     /**
      * Optional: publish an explicit UI-selected permission mode at resume time.
      * Use only when the UI selection is newer than metadata.permissionModeUpdatedAt.
@@ -249,21 +261,45 @@ export interface ResumeSessionOptions {
      * reachable yet through the app's active machine socket route.
      */
     preferScopedMachineRpc?: boolean;
+    /** Stable operation identity used by the existing daemon spawn-readiness owner. */
+    spawnNonce?: string;
+    /** Do not expose spawn acknowledgement as an active Session runtime. */
+    waitForReady?: boolean;
 }
 
 async function runResumeSession(
     options: ResumeSessionOptions,
     presentation: 'explicit_resume' | 'ensure_pending_consumer',
 ): Promise<ResumeSessionResult> {
+    const exactAccountLifetime = options.accountLifetime;
+    const exactAccountScopeRetiredError = () => Object.assign(
+        new Error('Session Account authority retired before runtime admission'),
+        { code: 'session_account_scope_retired' },
+    );
+    const assertExactAccountCurrent = (): void => {
+        if (!exactAccountLifetime) return;
+        if (
+            !exactAccountLifetime.isCurrent()
+            || (options.serverId !== undefined
+                && !areServerProfileIdentifiersEquivalent(options.serverId, exactAccountLifetime.scope.serverId))
+        ) {
+            throw exactAccountScopeRetiredError();
+        }
+    };
+    assertExactAccountCurrent();
     let providerSafeRpcRequired = false;
-    const shouldPresentAsResuming = presentation === 'explicit_resume'
-        || storage.getState().sessions[options.sessionId]?.active !== true;
+    const shouldPresentAsResuming = !exactAccountLifetime && (
+        presentation === 'explicit_resume'
+        || storage.getState().sessions[options.sessionId]?.active !== true
+    );
     if (shouldPresentAsResuming) {
         storage.getState().markSessionResuming(options.sessionId);
     }
     try {
-        const serverId = typeof options.serverId === 'string' ? options.serverId.trim() : null;
-        const session = storage.getState().sessions[options.sessionId];
+        assertExactAccountCurrent();
+        const serverId = exactAccountLifetime?.scope.serverId
+            ?? (typeof options.serverId === 'string' ? options.serverId.trim() : null);
+        const session = exactAccountLifetime ? null : storage.getState().sessions[options.sessionId];
         if (session?.archivedAt != null) {
             const unarchiveResult = await sessionUnarchiveWithServerScope(options.sessionId, { serverId });
             if (!unarchiveResult.success) {
@@ -300,11 +336,14 @@ async function runResumeSession(
             initialGoal,
             preferRequestedMachineTarget,
             preferScopedMachineRpc,
+            spawnNonce,
+            waitForReady,
         } = options;
 
-        const machineTarget = readMachineControlTargetForSession(sessionId);
-        const machineId = preferRequestedMachineTarget ? rawMachineId.trim() : machineTarget?.machineId ?? rawMachineId.trim();
-        const directory = preferRequestedMachineTarget ? rawDirectory.trim() : machineTarget?.basePath ?? rawDirectory.trim();
+        const machineTarget = exactAccountLifetime ? null : readMachineControlTargetForSession(sessionId);
+        const useRequestedMachineTarget = Boolean(exactAccountLifetime) || preferRequestedMachineTarget;
+        const machineId = useRequestedMachineTarget ? rawMachineId.trim() : machineTarget?.machineId ?? rawMachineId.trim();
+        const directory = useRequestedMachineTarget ? rawDirectory.trim() : machineTarget?.basePath ?? rawDirectory.trim();
         if (!machineId || !directory) {
             if (shouldPresentAsResuming) {
                 storage.getState().clearSessionResuming(sessionId);
@@ -316,7 +355,7 @@ async function runResumeSession(
             };
         }
 
-        const storedSession = storage.getState().sessions[sessionId];
+        const storedSession = exactAccountLifetime ? null : storage.getState().sessions[sessionId];
         const storedSessionOwnerMetadata = storedSession
             ? readSessionOwnerMetadataView(storedSession)
             : null;
@@ -327,7 +366,10 @@ async function runResumeSession(
                 : { state: 'unknown' },
         });
 
-        const preparation = await prepareAccountSettingsForDaemonSpawnIfNeeded(options.accountSettingsVersionHint);
+        const preparation = exactAccountLifetime
+            ? {}
+            : await prepareAccountSettingsForDaemonSpawnIfNeeded(options.accountSettingsVersionHint);
+        assertExactAccountCurrent();
 
         const parsedConnectedServicesRaw: SessionAuthoringValueV1['connectedServices'] | undefined =
             connectedServices === undefined
@@ -355,21 +397,69 @@ async function runResumeSession(
             ...(typeof initialTranscriptAfterSeq === 'number' ? { initialTranscriptAfterSeq } : {}),
             ...(executionAuthorization ? { executionAuthorization } : {}),
             ...(initialGoal ? { initialGoal } : {}),
+            ...(spawnNonce ? { spawnNonce } : {}),
             ...preparation,
             ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
         });
 
-        const result = await machineRpcWithServerScope<unknown, ResumeHappySessionRpcParams>({
-            machineId,
-            method: providerSafeRpcRequired
-                ? RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE
-                : RPC_METHODS.SPAWN_HAPPY_SESSION,
-            payload: params,
-            serverId,
-            timeoutMs: readSpawnSessionRpcTimeoutMsFromEnv(),
-            ...(preferScopedMachineRpc ? { preferScoped: true } : {}),
-        });
-        const normalizedResult = normalizeSpawnSessionResult(result);
+        const retirementAbort = exactAccountLifetime ? new AbortController() : null;
+        const retirementSubscription = exactAccountLifetime?.onRetire(() => retirementAbort?.abort());
+        let result: unknown;
+        try {
+            result = await machineRpcWithServerScope<unknown, ResumeHappySessionRpcParams>({
+                machineId,
+                method: providerSafeRpcRequired
+                    ? RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE
+                    : RPC_METHODS.SPAWN_HAPPY_SESSION,
+                payload: params,
+                serverId,
+                timeoutMs: readSpawnSessionRpcTimeoutMsFromEnv(),
+                ...(exactAccountLifetime ? {
+                    accountId: exactAccountLifetime.scope.accountId,
+                    preferScoped: true,
+                    signal: retirementAbort!.signal,
+                    onIssued: assertExactAccountCurrent,
+                } : preferScopedMachineRpc ? { preferScoped: true } : {}),
+            });
+        } finally {
+            retirementSubscription?.dispose();
+        }
+        assertExactAccountCurrent();
+        let normalizedResult = normalizeSpawnSessionResult(result);
+        if (
+            waitForReady
+            && normalizedResult.type === 'success'
+            && (normalizedResult.sessionIdStatus === 'pending' || normalizedResult.sessionId !== sessionId)
+        ) {
+            const readinessNonce = normalizedResult.spawnNonce ?? spawnNonce;
+            if (!readinessNonce) {
+                normalizedResult = {
+                    type: 'error',
+                    errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
+                    errorMessage: 'Session resume was accepted without a readiness identity',
+                };
+            } else {
+                const readiness = await machineResolveSpawnSessionByNonceUntilSettled({
+                    machineId,
+                    spawnNonce: readinessNonce,
+                    serverId,
+                });
+                normalizedResult = readiness.status === 'success' && readiness.sessionId === sessionId
+                    ? { type: 'success', sessionId }
+                    : readiness.status === 'error'
+                        ? {
+                            type: 'error',
+                            errorCode: readiness.errorCode,
+                            errorMessage: readiness.errorMessage,
+                            ...(readiness.errorDetail ? { errorDetail: readiness.errorDetail } : {}),
+                        }
+                        : {
+                            type: 'error',
+                            errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
+                            errorMessage: 'Session resume was accepted but runtime readiness is still unknown',
+                        };
+            }
+        }
         if (shouldPresentAsResuming) {
             if (normalizedResult.type === 'error') {
                 storage.getState().clearSessionResuming(sessionId);
@@ -555,6 +645,7 @@ export async function rollbackSessionConversation(options: Readonly<{
             machineId,
             serverId,
             accountLifetime,
+            accountSettings: state.settings,
         });
         if (accountLifetime && !accountLifetime.isCurrent()) {
             return {
@@ -755,10 +846,11 @@ export async function rollbackSessionCheckpointCode(options: Readonly<{
     }
 }
 
-export async function sessionAbort(sessionId: string): Promise<void> {
+export async function sessionAbort(sessionId: string, options?: Readonly<{ serverId?: string }>): Promise<void> {
     try {
         await sessionRpcWithPreferredSessionScope<void, { reason: string }>({
             sessionId,
+            ...(options?.serverId !== undefined ? { serverId: options.serverId } : {}),
             method: 'abort',
             payload: {
             reason: `The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.`
@@ -792,6 +884,7 @@ export async function sessionAbort(sessionId: string): Promise<void> {
 
     // Best-effort local UX recovery: aborts should immediately return the session to non-thinking state
     // even if lifecycle events arrive out of order or providers publish intermittent thinking=false.
+    if (options?.serverId !== undefined && !areServerProfileIdentifiersEquivalent(options.serverId, getActiveServerSnapshot().serverId)) return;
     const session = storage.getState().sessions[sessionId];
     storage.getState().clearSessionOptimisticThinking(sessionId);
     storage.getState().clearSessionThinkingGrace(sessionId);
@@ -819,10 +912,11 @@ export async function sessionAllow(
     decision?: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment',
     execPolicyAmendment?: { command: string[] },
     turnId?: string,
+    options?: Readonly<{ serverId?: string }>,
 ): Promise<void> {
     const request: SessionPermissionRequest = {
         id,
-        turnId: resolveSessionPermissionTurnId(sessionId, id, turnId),
+        turnId: resolveSessionPermissionTurnId(sessionId, id, turnId, options?.serverId),
         approved: true,
         mode,
         allowedTools,
@@ -831,6 +925,7 @@ export async function sessionAllow(
     };
     await sessionRpcWithPreferredSessionScope<void, SessionPermissionRequest>({
         sessionId,
+        ...(options?.serverId !== undefined ? { serverId: options.serverId } : {}),
         method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
         payload: request,
     });
@@ -851,11 +946,12 @@ export async function sessionAllowWithPermissionUpdates(
         decision?: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment';
         updatedPermissions: unknown;
         turnId?: string;
+        serverId?: string;
     }>,
 ): Promise<void> {
     const request: SessionPermissionRequest = {
         id,
-        turnId: resolveSessionPermissionTurnId(sessionId, id, params.turnId),
+        turnId: resolveSessionPermissionTurnId(sessionId, id, params.turnId, params.serverId),
         approved: true,
         mode: params.mode,
         allowedTools: params.allowedTools,
@@ -864,6 +960,7 @@ export async function sessionAllowWithPermissionUpdates(
     };
     await sessionRpcWithPreferredSessionScope<void, SessionPermissionRequest>({
         sessionId,
+        ...(params.serverId !== undefined ? { serverId: params.serverId } : {}),
         method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
         payload: request,
     });
@@ -878,6 +975,7 @@ export async function sessionAllowWithAnswers(
     sessionId: string,
     id: string,
     answers: StructuredQuestionAnswersV1,
+    options?: Readonly<{ serverId?: string }>,
 ): Promise<void> {
     const request: SessionPermissionRequest = {
         id,
@@ -886,6 +984,7 @@ export async function sessionAllowWithAnswers(
     };
     await sessionRpcWithPreferredSessionScope<void, SessionPermissionRequest>({
         sessionId,
+        ...(options?.serverId !== undefined ? { serverId: options.serverId } : {}),
         method: RPC_METHODS.SESSION_USER_ACTION_ANSWER,
         payload: request,
     });
@@ -902,10 +1001,11 @@ export async function sessionDeny(
     decision?: 'denied' | 'abort',
     reason?: string,
     turnId?: string,
+    options?: Readonly<{ serverId?: string }>,
 ): Promise<void> {
     const request: SessionPermissionRequest = {
         id,
-        turnId: resolveSessionPermissionTurnId(sessionId, id, turnId),
+        turnId: resolveSessionPermissionTurnId(sessionId, id, turnId, options?.serverId),
         approved: false,
         mode,
         allowedTools,
@@ -914,12 +1014,14 @@ export async function sessionDeny(
     };
     await sessionRpcWithPreferredSessionScope<void, SessionPermissionRequest>({
         sessionId,
+        ...(options?.serverId !== undefined ? { serverId: options.serverId } : {}),
         method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
         payload: request,
     });
 
     // Best-effort local UX recovery: deny/abort decisions should immediately return
     // the session to non-thinking state even if lifecycle events arrive out of order.
+    if (options?.serverId !== undefined && !areServerProfileIdentifiersEquivalent(options.serverId, getActiveServerSnapshot().serverId)) return;
     const session = storage.getState().sessions[sessionId];
     storage.getState().clearSessionOptimisticThinking(sessionId);
     storage.getState().clearSessionThinkingGrace(sessionId);
@@ -939,10 +1041,44 @@ export async function sessionDeny(
 /**
  * Request mode change for a session
  */
-export async function sessionSwitch(sessionId: string, to: 'remote' | 'local'): Promise<boolean> {
+export async function sessionSwitch(
+    sessionId: string,
+    to: 'remote' | 'local',
+    options?: Readonly<{
+        serverId?: string | null;
+        accountLifetime?: ServerAccountScopeLifetime;
+    }>,
+): Promise<boolean> {
     const request: SessionModeChangeRequest = { to };
+    if (options?.accountLifetime) {
+        const lifetime = options.accountLifetime;
+        const assertCurrent = (): void => {
+            if (
+                !lifetime.isCurrent()
+                || (options.serverId !== undefined
+                    && options.serverId !== null
+                    && !areServerProfileIdentifiersEquivalent(options.serverId, lifetime.scope.serverId))
+            ) {
+                throw Object.assign(
+                    new Error('Session Account authority retired before control switch'),
+                    { code: 'session_account_scope_retired' },
+                );
+            }
+        };
+        assertCurrent();
+        const response = await sessionRpcWithServerAccountScope<boolean, SessionModeChangeRequest>({
+            sessionId,
+            scope: lifetime.scope,
+            method: 'switch',
+            payload: request,
+            onIssued: assertCurrent,
+        });
+        assertCurrent();
+        return response;
+    }
     const response = await sessionRpcWithPreferredSessionScope<boolean, SessionModeChangeRequest>({
         sessionId,
+        ...(options?.serverId ? { serverId: options.serverId } : {}),
         method: 'switch',
         payload: request,
     });
@@ -1074,13 +1210,13 @@ async function archiveRequestWithContext(params: Readonly<{
     serverId?: string | null;
     action: 'archive' | 'unarchive';
 }>): Promise<Readonly<{ response: Response; release: () => Promise<void> }>> {
-    const context = await resolveServerScopedSessionContext({
+    const context = await resolveServerAccountRequestContext({
         serverId: params.serverId ?? resolvePreferredServerIdForSessionId(params.sessionId) ?? null,
     });
     const path = `/v2/sessions/${params.sessionId}/${params.action}`;
 
     try {
-        const response = await createSessionRequestForResolvedServerScope({
+        const response = await createServerRequestForResolvedServerScope({
             context,
             activeRequest: (requestPath, init) => apiSocket.request(requestPath, init),
         })(path, { method: 'POST' });
@@ -1211,7 +1347,7 @@ export async function sessionDelete(sessionId: string): Promise<SessionDeleteRes
 
 export async function sessionDeleteWithServerAccountAuthority(
     sessionId: string,
-    authority: ServerAccountSessionRequestAuthority,
+    authority: ServerAccountRequestAuthority,
 ): Promise<SessionDeleteResult> {
     try {
         const response = await authority.request(
@@ -1235,9 +1371,9 @@ export async function sessionDeleteWithServerScope(
     sessionId: string,
     opts?: Readonly<{ serverId?: string | null }>,
 ): Promise<SessionDeleteResult> {
-    const context = await resolveServerScopedSessionContext({ serverId: opts?.serverId ?? null });
+    const context = await resolveServerAccountRequestContext({ serverId: opts?.serverId ?? null });
     try {
-        const response = await createSessionRequestForResolvedServerScope({
+        const response = await createServerRequestForResolvedServerScope({
             context,
             activeRequest: (path, init) => apiSocket.request(path, init),
         })(`/v1/sessions/${sessionId}`, { method: 'DELETE' });
@@ -1290,7 +1426,10 @@ export async function sessionRename(
                 await sync.patchSessionMetadataWithRetry(
                     targetSessionId,
                     updater,
-                    { serverId: options?.serverId ?? null },
+                    {
+                        serverId: options?.serverId ?? null,
+                        mutationIntent: 'rename_session',
+                    },
                 );
             },
         });

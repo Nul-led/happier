@@ -19,6 +19,7 @@ import { useScrollRectIntoViewRegistry } from '@/components/ui/scroll/useScrollR
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { Icon } from '@/components/ui/icons/Icon';
 
+const DROPDOWN_ACTION_FRAME_FALLBACK_MS = 100;
 
 export type DropdownMenuItem = Readonly<{
     id: string;
@@ -32,6 +33,8 @@ export type DropdownMenuItem = Readonly<{
     rightElement?: React.ReactNode;
     rowContainerStyle?: StyleProp<ViewStyle>;
     disabled?: boolean;
+    /** Current choice state, independent of keyboard highlight. */
+    checked?: boolean;
     submenu?: DropdownMenuSubmenu;
 }>;
 
@@ -273,6 +276,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
                 accessibilityLabel: item.accessibilityLabel,
                 category: item.category,
                 disabled: item.disabled,
+                checked: item.checked,
                 left: item.icon ?? null,
                 rowContainerStyle: item.rowContainerStyle,
                 right: item.rightElement
@@ -289,12 +293,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
 
     const closeOnSelect = props.closeOnSelect !== false;
     const onRequestClose = React.useCallback(() => props.onOpenChange(false), [props]);
-    const schedule = React.useCallback((cb: () => void) => {
-        // Opening an overlay on the same click can sometimes immediately trigger a backdrop close
-        // (especially on web). Deferring by one tick ensures the opening press completes first.
+    const schedule = React.useCallback((cb: () => void, fallbackDelayMs = 0) => {
+        // Let the current press and any menu teardown finish before opening or committing.
         // Note: some runtimes can throttle or suppress `requestAnimationFrame` (background tabs,
         // headless automation, etc). Always also schedule a timeout fallback so the menu can open
-        // even if rAF never fires.
+        // even if rAF never fires. Closing actions delay that fallback so it cannot beat a
+        // healthy foreground frame and launch the next overlay before teardown commits.
         let fired = false;
         const runOnce = () => {
             if (fired) return;
@@ -304,7 +308,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
         if (typeof requestAnimationFrame === 'function') {
             requestAnimationFrame(runOnce);
         }
-        setTimeout(runOnce, 0);
+        setTimeout(runOnce, fallbackDelayMs);
     }, []);
     const openMenu = React.useCallback(() => {
         schedule(() => props.onOpenChange(true));
@@ -446,8 +450,16 @@ export function DropdownMenu(props: DropdownMenuProps) {
         const query = searchQuery.trim();
         if (!query || !props.onCreateItem) return;
         props.onOpenChange(false);
-        props.onCreateItem(query);
-    }, [props, searchQuery]);
+        schedule(() => props.onCreateItem?.(query), DROPDOWN_ACTION_FRAME_FALLBACK_MS);
+    }, [props, schedule, searchQuery]);
+    const commitSelection = React.useCallback((itemId: string) => {
+        if (!closeOnSelect) {
+            props.onSelect(itemId);
+            return;
+        }
+        props.onOpenChange(false);
+        schedule(() => props.onSelect(itemId), DROPDOWN_ACTION_FRAME_FALLBACK_MS);
+    }, [closeOnSelect, props, schedule]);
 
     const handleKeyDown = React.useCallback((e: any) => {
         if (Platform.OS !== 'web') return;
@@ -462,13 +474,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
                 return;
             }
             if (item.hasSubmenu) return;
-            if (closeOnSelect) props.onOpenChange(false);
-            props.onSelect(item.id);
+            commitSelection(item.id);
         });
         if (!handled) return;
         e.preventDefault?.();
         e.stopPropagation?.();
-    }, [closeOnSelect, handleCreate, handleKeyPress, props]);
+    }, [commitSelection, handleCreate, handleKeyPress, props.search]);
     const handleOpenSubmenu = React.useCallback((itemId: string, itemAnchorRef: React.RefObject<unknown>) => {
         const item = props.items.find((candidate) => candidate.id === itemId);
         if (!item?.submenu || item.disabled) return;
@@ -499,14 +510,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
             return;
         }
         if (item.hasSubmenu) return;
-        if (closeOnSelect) props.onOpenChange(false);
-        props.onSelect(item.id);
-    }, [closeOnSelect, handleCreate, props]);
+        commitSelection(item.id);
+    }, [commitSelection, handleCreate]);
     const handleSubmenuSelect = React.useCallback((itemId: string) => {
         setActiveSubmenu(null);
-        if (closeOnSelect) props.onOpenChange(false);
-        props.onSelect(itemId);
-    }, [closeOnSelect, props]);
+        commitSelection(itemId);
+    }, [commitSelection]);
 
     const overlayArrowCfg = React.useMemo((): Omit<Exclude<FloatingOverlayArrow, boolean>, 'placement'> | null => {
         const arrow = props.overlayArrow;
@@ -547,7 +556,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
                     boundaryRef={props.popoverBoundaryRef}
                     onRequestClose={onRequestClose}
                 >
-                    {({ maxHeight, maxWidth, placement }) => (
+                    {({ maxHeight, maxWidth, placement }) => (<>
                         <FloatingOverlay
                             maxHeight={maxHeight}
                             edgeFades={{ top: true, bottom: true }}
@@ -625,36 +634,34 @@ export function DropdownMenu(props: DropdownMenuProps) {
                                 />
                             </View>
                         </FloatingOverlay>
-                    )}
+                        {activeSubmenu && activeSubmenuItem?.submenu ? (
+                            <DropdownMenu
+                                open={true}
+                                onOpenChange={(next) => {
+                                    if (!next) setActiveSubmenu(null);
+                                }}
+                                items={activeSubmenuItem.submenu.items}
+                                onSelect={handleSubmenuSelect}
+                                trigger={null}
+                                placement={activeSubmenuItem.submenu.placement ?? 'auto-horizontal'}
+                                gap={4}
+                                maxHeightCap={activeSubmenuItem.submenu.maxHeightCap ?? props.maxHeightCap}
+                                maxWidthCap={activeSubmenuItem.submenu.maxWidthCap ?? props.maxWidthCap}
+                                matchTriggerWidth={false}
+                                popoverAnchorRef={activeSubmenu.anchorRef}
+                                popoverBoundaryRef={null}
+                                search={activeSubmenuItem.submenu.search}
+                                searchPlaceholder={activeSubmenuItem.submenu.searchPlaceholder}
+                                emptyLabel={activeSubmenuItem.submenu.emptyLabel}
+                                variant={props.variant}
+                                rowKind={props.rowKind}
+                                itemRowProps={props.itemRowProps}
+                                showCategoryTitles={props.showCategoryTitles}
+                                allowEmptySelection={props.allowEmptySelection}
+                            />
+                        ) : null}
+                    </>)}
                 </Popover>
-            ) : null}
-            {props.open && activeSubmenu && activeSubmenuItem?.submenu ? (
-                <DropdownMenu
-                    open={true}
-                    onOpenChange={(next) => {
-                        if (!next) setActiveSubmenu(null);
-                    }}
-                    items={activeSubmenuItem.submenu.items}
-                    onSelect={handleSubmenuSelect}
-                    closeOnSelect={false}
-                    trigger={null}
-                    placement={activeSubmenuItem.submenu.placement ?? 'auto-horizontal'}
-                    gap={4}
-                    maxHeightCap={activeSubmenuItem.submenu.maxHeightCap ?? props.maxHeightCap}
-                    maxWidthCap={activeSubmenuItem.submenu.maxWidthCap ?? props.maxWidthCap}
-                    matchTriggerWidth={false}
-                    popoverAnchorRef={activeSubmenu.anchorRef}
-                    popoverBoundaryRef={null}
-                    popoverPortalWebTarget="body"
-                    search={activeSubmenuItem.submenu.search}
-                    searchPlaceholder={activeSubmenuItem.submenu.searchPlaceholder}
-                    emptyLabel={activeSubmenuItem.submenu.emptyLabel}
-                    variant={props.variant}
-                    rowKind={props.rowKind}
-                    itemRowProps={props.itemRowProps}
-                    showCategoryTitles={props.showCategoryTitles}
-                    allowEmptySelection={props.allowEmptySelection}
-                />
             ) : null}
         </View>
     );

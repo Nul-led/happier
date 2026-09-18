@@ -22,9 +22,10 @@ const externalSessionRuntimeState = {
 const runningExecutionRunsState = { current: [] as readonly any[] };
 const useSessionRunningExecutionRunsSpy = vi.fn<(...args: any[]) => any>(() => runningExecutionRunsState.current);
 const useExternalSessionRuntimeSpy = vi.fn<(...args: any[]) => any>(() => externalSessionRuntimeState);
+const useFeatureEnabledSpy = vi.fn(() => true);
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: () => true,
+    useFeatureEnabled: (...args: any[]) => useFeatureEnabledSpy(...args),
 }));
 
 vi.mock('@/hooks/session/useSessionRunningExecutionRuns', () => ({
@@ -42,6 +43,7 @@ beforeEach(() => {
     runningExecutionRunsState.current = [];
     useSessionRunningExecutionRunsSpy.mockClear();
     useExternalSessionRuntimeSpy.mockClear();
+    useFeatureEnabledSpy.mockClear();
 });
 
 describe('useSessionSubagents', () => {
@@ -140,6 +142,34 @@ describe('useSessionSubagents', () => {
             participantTargets: [],
             sidechainIds: [],
         });
+    });
+
+    it('keeps execution-run discovery and direct-runtime hydration on the exact Session Home', async () => {
+        await renderHookAndCollectValues(() =>
+            useSessionSubagents({
+                sessionId: 'same-session',
+                serverId: 'home-b',
+                session: {
+                    id: 'same-session',
+                    serverId: 'home-b',
+                    metadata: null,
+                } as any,
+                messages: [],
+            }),
+        );
+
+        expect(useFeatureEnabledSpy).toHaveBeenCalledWith('execution.runs', {
+            scopeKind: 'spawn',
+            serverId: 'home-b',
+        });
+        expect(useSessionRunningExecutionRunsSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 'same-session',
+            serverId: 'home-b',
+        }));
+        expect(useExternalSessionRuntimeSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 'same-session',
+            serverId: 'home-b',
+        }));
     });
 
     it('does not enable an internal direct-session runtime when one is already provided', async () => {

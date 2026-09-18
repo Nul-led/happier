@@ -29,6 +29,7 @@ import {
 import { createBoundPluginSurfaceController } from './boundPluginSurfaceController';
 import type { PluginSurfaceResourceReadTransport } from './pluginSurfaceResourceRead';
 import type { PreparedDaemonPluginUiTargetedSurfaceMountV1 } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import { createPluginDeclarativeModelFixture } from '@/dev/testkit/fixtures/pluginDeclarativeModelFixture';
 
 function prepareTargetedMount(
     rawMount: DaemonPluginUiTargetedSurfaceMountV1,
@@ -80,17 +81,14 @@ const rawMount = DaemonPluginUiTargetedSurfaceMountV1Schema.parse({
         renderer: Object.freeze({
             kind: 'declarative' as const,
             contributionId: 'review-detail',
-            model: Object.freeze({
-                visible: true,
+            model: createPluginDeclarativeModelFixture({
                 // This is the projection-response generation, not the B
                 // immutable generation. Its B association comes from the
                 // correlated producer-selected renderer mount below.
-                identity: Object.freeze({
-                    pluginId: 'acme.review',
-                    localId: 'review-detail',
-                    generation: 'projection-generation-11',
-                }),
-                root: Object.freeze({ kind: 'state', state: 'empty', title: 'No review selected' }),
+                pluginId: 'acme.review',
+                localId: 'review-detail',
+                generation: 'projection-generation-11',
+                document: { version: 1, root: { kind: 'state', state: 'empty', title: 'No review selected' } },
             }),
         }),
         availability: Object.freeze({ state: 'available' as const, reason: 'available', diagnostics: Object.freeze([]) }),

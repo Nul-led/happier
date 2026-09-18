@@ -15,15 +15,16 @@ import { startRuntimeActiveGatedInterval } from '@/utils/runtime/isRuntimeActive
  */
 export function useScmSessionAutoRefresh(params: Readonly<{
     sessionId: string | null | undefined;
+    serverId?: string | null;
     intervalMs: number;
 }>): void {
-    const { sessionId, intervalMs } = params;
+    const { sessionId, serverId, intervalMs } = params;
 
     React.useEffect(() => {
         if (!sessionId) return undefined;
-        scmStatusSync.invalidateFromAutoRefresh(sessionId);
+        scmStatusSync.invalidateFromAutoRefresh(sessionId, ...(serverId == null ? [] : [serverId]));
         return startRuntimeActiveGatedInterval(() => {
-            scmStatusSync.invalidateFromAutoRefresh(sessionId);
+            scmStatusSync.invalidateFromAutoRefresh(sessionId, ...(serverId == null ? [] : [serverId]));
         }, intervalMs);
-    }, [intervalMs, sessionId]);
+    }, [intervalMs, serverId, sessionId]);
 }

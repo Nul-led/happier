@@ -94,7 +94,7 @@ vi.mock('@/sync/store/hooks', () => ({
         updatedAt: 1,
         metadata: { name: 'Home B session', path: '/repo/b' },
     }],
-    useSessionListRowStateByServerId: () => harness.sessionListRows.reduce<Record<string, Record<string, typeof harness.sessionListRows[number]['session']>>>((byServer, row) => {
+    useSessionListRowsByServerId: () => harness.sessionListRows.reduce<Record<string, Record<string, typeof harness.sessionListRows[number]['session']>>>((byServer, row) => {
         const serverId = row.serverId ?? '';
         if (!serverId) return byServer;
         byServer[serverId] ??= {};
@@ -142,7 +142,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/fetchSessionByIdWithServer
 vi.mock('@/sync/domains/state/storage', () => ({
     useSetting: () => [],
     storage: { getState: () => ({
-        sessionListRowStateByServerId: harness.sessionListRows.reduce<Record<string, Record<string, typeof harness.sessionListRows[number]['session']>>>((byServer, row) => {
+        sessionListRowsByServerId: harness.sessionListRows.reduce<Record<string, Record<string, typeof harness.sessionListRows[number]['session']>>>((byServer, row) => {
             const serverId = row.serverId ?? '';
             if (!serverId) return byServer;
             byServer[serverId] ??= {};
@@ -195,21 +195,37 @@ vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
 vi.mock('@/sync/domains/memory/searchHomeMemory', () => ({
     searchHomeMemory: harness.searchHomeMemory,
 }));
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-    captureSessionRequestAuthorityForServerAccountScope: async ({ scope }: { scope: { serverId: string; accountId: string } }) => ({
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+    captureServerRequestAuthorityForServerAccountScope: async ({ scope }: { scope: { serverId: string; accountId: string } }) => ({
         scope,
         context: { scope: 'scoped', credentials: { token: scope.accountId } },
         request: async () => new Response('{}'),
         release: async () => undefined,
     }),
 }));
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentialsForServerUrl: async (_url: string, options: { serverId?: string }) => ({
-            token: options.serverId === 'home-b' ? 'account-1' : 'account-a',
-        }),
-    },
-    subscribeHomeCredentialMutations: (listener: (event: { kind: 'credentials_set' | 'credentials_removed'; serverId: string; serverUrl: string }) => void) => {
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+    return {
+        ...actual,
+        accountDirectoryAuthCredentials: {
+        read: async () => ({ kind: 'absent' as const }),
+        get: async () => null,
+        set: async () => false,
+        remove: async () => false,
+        clear: async () => false,
+        logout: async () => false,
+        },
+        TokenStorage: {
+            ...actual.TokenStorage,
+            getCredentialsForServerUrl: async (_url: string, options: { serverId?: string }) => ({
+                token: options.serverId === 'home-b' ? 'account-1' : 'account-a',
+            }),
+        },
+        subscribeHomeCredentialMutations: () => () => undefined,
+    };
+});
+vi.mock('@/sync/runtime/orchestration/homeAccountChange', () => ({
+    subscribeHomeCredentialChange: (listener: (event: { kind: 'credentials_set' | 'credentials_removed'; serverId: string; serverUrl: string }) => void) => {
         harness.homeCredentialMutationListeners.add(listener);
         return () => harness.homeCredentialMutationListeners.delete(listener);
     },

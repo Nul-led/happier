@@ -1,9 +1,8 @@
 import { router } from 'expo-router';
 
-import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
-
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { acknowledgeActionOperationPresented } from '@/sync/domains/actionOperations/acknowledgeActionOperationPresented';
+import type { QualifiedActionOperation } from '@/sync/domains/actionOperations/qualifiedActionOperation';
 
 import { openActionOperationDetail } from './openActionOperationDetail';
 import { createActionOperationPresentationCoordinator } from './actionOperationPresentationCoordinator';
@@ -11,17 +10,17 @@ import { readActionOperationDestinationServerId } from './actionOperationPresent
 
 export const actionOperationPresentationCoordinator = createActionOperationPresentationCoordinator({
     openDetail: openActionOperationDetail,
-    openDestination: (sessionId: string, snapshot: ActionOperationSnapshotV1) => {
+    openDestination: (sessionId: string, operation: QualifiedActionOperation) => {
         router.push(buildScopedSessionRouteHref({
             sessionId,
-            serverId: readActionOperationDestinationServerId(snapshot),
+            serverId: readActionOperationDestinationServerId(operation.snapshot, operation.serverId),
         }) as never);
     },
-    markPresented: (snapshot) => {
-        acknowledgeActionOperationPresented(snapshot);
+    markPresented: (operation) => {
+        acknowledgeActionOperationPresented(operation.snapshot, operation.serverId);
     },
 });
 
-export function openActionOperation(snapshot: ActionOperationSnapshotV1): void {
-    actionOperationPresentationCoordinator.open(snapshot);
+export function openActionOperation(operation: QualifiedActionOperation): void {
+    actionOperationPresentationCoordinator.open(operation);
 }

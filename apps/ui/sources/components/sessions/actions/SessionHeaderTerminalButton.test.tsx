@@ -115,6 +115,17 @@ describe('SessionHeaderTerminalButton', () => {
         expect(openBottomSpy).toHaveBeenCalledWith({ tabId: 'terminal' });
     });
 
+    it('switches only the requested Home terminal mode when session ids match', async () => {
+        const { setSessionTerminalMode, readSessionTerminalMode } = await import('../terminal/sessionTerminalMode');
+        setSessionTerminalMode('same-session', 'session_attach', 'home-a');
+        setSessionTerminalMode('same-session', 'session_attach', 'home-b');
+        const { SessionHeaderTerminalButton } = await import('./SessionHeaderTerminalButton');
+        const screen = await renderScreen(<SessionHeaderTerminalButton sessionId="same-session" scopeId="session:address:home-b:same-session" />);
+        await screen.pressByTestIdAsync('session-header-terminal-button');
+        expect(readSessionTerminalMode('same-session', 'home-b')).toBe('workspace_shell');
+        expect(readSessionTerminalMode('same-session', 'home-a')).toBe('session_attach');
+    });
+
     it('opens terminal in the bottom pane when docked to bottom', async () => {
         const { SessionHeaderTerminalButton } = await import('./SessionHeaderTerminalButton');
 

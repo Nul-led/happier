@@ -27,9 +27,10 @@ const resolveContextSpy = vi.hoisted(() => vi.fn());
 const fetchAndApplySessionByIdSpy = vi.hoisted(() => vi.fn());
 const runtimeFetchSpy = vi.hoisted(() => vi.fn());
 const fetchAccountEncryptionCurrentnessSpy = vi.hoisted(() => vi.fn());
+const getCachedServerFeaturesSnapshotSpy = vi.hoisted(() => vi.fn());
 
-vi.mock('./resolveServerScopedSessionContext', () => ({
-    resolveServerScopedSessionContext: (params: unknown) => resolveContextSpy(params),
+vi.mock('./resolveServerAccountRequestContext', () => ({
+    resolveServerAccountRequestContext: (params: unknown) => resolveContextSpy(params),
 }));
 
 vi.mock('@/sync/engine/sessions/sessionById', () => ({
@@ -43,10 +44,17 @@ vi.mock('@/utils/system/runtimeFetch', () => ({
 vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
     fetchAccountEncryptionCurrentness: (...args: unknown[]) =>
         fetchAccountEncryptionCurrentnessSpy(...args),
+    subscribeAccountEncryptionModeCacheInvalidation: () => () => {},
+}));
+
+vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
+    getCachedServerFeaturesSnapshot: (...args: unknown[]) =>
+        getCachedServerFeaturesSnapshotSpy(...args),
 }));
 
 describe('fetchSessionByIdWithServerScope', () => {
     beforeEach(() => {
+        getCachedServerFeaturesSnapshotSpy.mockReturnValue(null);
         fetchAccountEncryptionCurrentnessSpy.mockResolvedValue({
             mode: 'e2ee',
             version: 1,
@@ -62,6 +70,7 @@ describe('fetchSessionByIdWithServerScope', () => {
         fetchAndApplySessionByIdSpy.mockReset();
         runtimeFetchSpy.mockReset();
         fetchAccountEncryptionCurrentnessSpy.mockReset();
+        getCachedServerFeaturesSnapshotSpy.mockReset();
     });
 
     it('uses the active session-by-id request when the preferred owner server is active', async () => {
@@ -100,11 +109,53 @@ describe('fetchSessionByIdWithServerScope', () => {
             { request: activeRequest },
         );
         expect(runtimeFetchSpy).not.toHaveBeenCalled();
+        expect(fetchAndApplySessionByIdSpy.mock.calls[0]?.[0].accessProjectionVersion).toBeUndefined();
+    });
+
+    it('requests effective detail access only for an enabled exact Home decision', async () => {
+        resolveContextSpy.mockResolvedValue({ scope: 'active', timeoutMs: 5000 });
+        getCachedServerFeaturesSnapshotSpy.mockReturnValue({
+            status: 'ready',
+            features: {
+                features: {
+                    sessions: {
+                        enabled: true,
+                        collaboration: { enabled: true },
+                    },
+                    sharing: {
+                        session: { enabled: true },
+                    },
+                },
+            },
+        });
+        fetchAndApplySessionByIdSpy.mockResolvedValue({ ok: true, session: { id: 'session-1' } });
+
+        const { fetchSessionByIdWithServerScope } = await import('./fetchSessionByIdWithServerScope');
+        await fetchSessionByIdWithServerScope({
+            sessionId: 'session-1',
+            serverId: 'server-a',
+            activeCredentials: { token: 'active-token', secret: 'active-secret' },
+            activeEncryption: {} as any,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            activeRequest: vi.fn(),
+            applySessions: vi.fn(),
+            log: { log: vi.fn() },
+        });
+
+        expect(getCachedServerFeaturesSnapshotSpy).toHaveBeenCalledWith({ serverId: 'server-a' });
+        expect(fetchAndApplySessionByIdSpy.mock.calls[0]?.[0].accessProjectionVersion).toBe(1);
     });
 
     it('uses a scoped session-by-id request after discovering V3 server support', async () => {
         const decryptEncryptionKey = vi.fn(async () => new Uint8Array([1]));
         const initializeSessions = vi.fn(async () => {});
+        const generationScope = {
+            accountId: 'account-b',
+            serverId: 'server-b',
+            generation: 4,
+        } as const;
+        const getCurrentEncryptionGenerationScope = vi.fn(() => generationScope);
+        const isCurrentEncryptionGenerationScope = vi.fn(() => true);
         const getSessionEncryption = vi.fn(() => ({
             decryptAgentState: vi.fn(async () => null),
             decryptMetadata: vi.fn(async () => null),
@@ -123,6 +174,8 @@ describe('fetchSessionByIdWithServerScope', () => {
                 decryptEncryptionKey,
                 initializeSessions,
                 getSessionEncryption,
+                getCurrentEncryptionGenerationScope,
+                isCurrentEncryptionGenerationScope,
             },
         });
         fetchAndApplySessionByIdSpy.mockImplementationOnce(async (params: {
@@ -182,6 +235,18 @@ describe('fetchSessionByIdWithServerScope', () => {
                 secret: 'scoped-secret',
             },
             { request: params.request },
+        );
+        expect(params.encryption.getCurrentEncryptionGenerationScope({
+            serverId: 'server-b',
+        })).toEqual(generationScope);
+        expect(params.encryption.isCurrentEncryptionGenerationScope(
+            generationScope,
+        )).toBe(true);
+        expect(getCurrentEncryptionGenerationScope).toHaveBeenCalledWith({
+            serverId: 'server-b',
+        });
+        expect(isCurrentEncryptionGenerationScope).toHaveBeenCalledWith(
+            generationScope,
         );
     });
 

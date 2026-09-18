@@ -1,9 +1,13 @@
 import {
     buildAgentRequestSemanticSummary,
+    isSessionAwarenessContentReadableV1,
     classifyPermissionRequestRisk,
     formatPermissionRequestSummary,
 } from '@happier-dev/protocol';
 import type { SessionActivityAttention } from '@/activity/attention/activityAttentionTypes';
+import type { ActivitySurfaceCandidatePrivacyModeResolver } from '@/activity/presentation/buildActivitySurfaceViewModel';
+import { createActivitySurfaceSessionTarget } from '@/activity/actions/activitySurfaceTargets';
+import { activityInstanceKey } from '@/sync/domains/session/sessionAddress';
 import {
     listPendingPermissionRequestsFromSession,
     listPendingUserActionRequestsFromSession,
@@ -11,8 +15,16 @@ import {
 
 import type { DesktopActivityOverlayRequestSnapshot } from './desktopActivityOverlaySnapshotTypes';
 
-function createOpenActionIdentifier(sessionId: string): string {
-    return `open-session:${sessionId}`;
+function buildRequestActivityInstanceId(params: Readonly<{
+    serverId: string | null;
+    sessionId: string;
+    kind: DesktopActivityOverlayRequestSnapshot['kind'];
+    requestId: string;
+}>): string {
+    return activityInstanceKey(
+        { serverId: params.serverId, sessionId: params.sessionId },
+        JSON.stringify([params.kind, params.requestId]),
+    );
 }
 
 function buildAskUserQuestionDirectOptions(request: {
@@ -63,7 +75,7 @@ function buildAskUserQuestionDirectOptions(request: {
 
 export function buildDesktopActivityOverlayRequestSnapshots(params: Readonly<{
     candidates: readonly SessionActivityAttention[];
-    serverIdBySessionId?: ReadonlyMap<string, string>;
+    resolveCandidatePrivacyMode?: ActivitySurfaceCandidatePrivacyModeResolver;
 }>): Readonly<{
     permissionRequests: readonly DesktopActivityOverlayRequestSnapshot[];
     userQuestions: readonly DesktopActivityOverlayRequestSnapshot[];
@@ -72,11 +84,15 @@ export function buildDesktopActivityOverlayRequestSnapshots(params: Readonly<{
     const userQuestions: DesktopActivityOverlayRequestSnapshot[] = [];
 
     for (const candidate of params.candidates) {
+        // A Home whose Account only permits runtime status withholds request content
+        // here for the same reason the viewer's own status-only presentation does.
+        if (params.resolveCandidatePrivacyMode?.(candidate) === 'status_only') continue;
+        if (candidate.session.viewer?.attention.presentation === 'status_only'
+            || !isSessionAwarenessContentReadableV1(candidate.awareness.encryption)) continue;
         const sessionId = candidate.sessionId;
-        const serverId = typeof candidate.session.serverId === 'string'
-            && candidate.session.serverId.trim().length > 0
-            ? candidate.session.serverId.trim()
-            : params.serverIdBySessionId?.get(sessionId) ?? null;
+        const serverId = candidate.address?.serverId
+            ?? candidate.serverId
+            ?? (typeof candidate.session.serverId === 'string' ? candidate.session.serverId.trim() || null : null);
 
         for (const request of listPendingPermissionRequestsFromSession(candidate.session)) {
             const semantic = buildAgentRequestSemanticSummary({
@@ -87,6 +103,12 @@ export function buildDesktopActivityOverlayRequestSnapshots(params: Readonly<{
 
             permissionRequests.push({
                 kind: 'permission_request',
+                activityInstanceId: buildRequestActivityInstanceId({
+                    serverId,
+                    sessionId,
+                    kind: 'permission_request',
+                    requestId: request.id,
+                }),
                 requestId: request.id,
                 ...(request.turnId ? { turnId: request.turnId } : {}),
                 sessionId,
@@ -102,7 +124,7 @@ export function buildDesktopActivityOverlayRequestSnapshots(params: Readonly<{
                 toolLabel: semantic.normalizedToolLabel,
                 questionText: semantic.firstQuestionText,
                 count: 1,
-                openActionIdentifier: createOpenActionIdentifier(sessionId),
+                openActionIdentifier: createActivitySurfaceSessionTarget(sessionId, serverId),
                 allowActionIdentifier: 'session.permission.respond',
                 denyActionIdentifier: 'session.permission.respond',
                 risk: classifyPermissionRequestRisk({
@@ -122,6 +144,12 @@ export function buildDesktopActivityOverlayRequestSnapshots(params: Readonly<{
 
             userQuestions.push({
                 kind: 'user_question',
+                activityInstanceId: buildRequestActivityInstanceId({
+                    serverId,
+                    sessionId,
+                    kind: 'user_question',
+                    requestId: request.id,
+                }),
                 requestId: request.id,
                 sessionId,
                 serverId,
@@ -132,7 +160,7 @@ export function buildDesktopActivityOverlayRequestSnapshots(params: Readonly<{
                 toolLabel: semantic.normalizedToolLabel,
                 questionText: semantic.firstQuestionText,
                 count: Math.max(semantic.questionCount, 1),
-                openActionIdentifier: createOpenActionIdentifier(sessionId),
+                openActionIdentifier: createActivitySurfaceSessionTarget(sessionId, serverId),
                 directOptions: buildAskUserQuestionDirectOptions(request),
             });
         }

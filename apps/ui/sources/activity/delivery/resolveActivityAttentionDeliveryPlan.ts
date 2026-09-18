@@ -1,6 +1,6 @@
 import {
     accountSettingsParse,
-    AttentionDeliveryPolicyV1Schema,
+    composeAttentionDeliveryPolicyDeviceOverrides,
     resolveAttentionDeliveryPolicyDecision,
     type AccountSettings,
     type AttentionDeliveryPolicyV1,
@@ -20,6 +20,7 @@ import type {
     ActivityAttentionUpdateBudgetHint,
 } from './activityAttentionDeliveryPlanTypes';
 import type { ActivitySurfaceSelectionSpec } from '../selection/activitySurfaceSelectionTypes';
+import type { ActivitySurfacePrivacyMode } from '../attention/resolveActivitySurfacePolicy';
 import { resolveDeviceQuietHoursOverride } from './resolveQuietHoursState';
 
 type ResolveActivityAttentionDeliveryPlanParams = Readonly<{
@@ -42,64 +43,6 @@ type ResolveActivityAttentionDeliveryPlanParams = Readonly<{
 
 function readAccountPolicy(accountSettings: Partial<AccountSettings> | Readonly<Record<string, unknown>>): AttentionDeliveryPolicyV1 {
     return accountSettingsParse(accountSettings).attentionDeliveryPolicyV1;
-}
-
-function clonePolicy(policy: AttentionDeliveryPolicyV1): AttentionDeliveryPolicyV1 {
-    return AttentionDeliveryPolicyV1Schema.parse({
-        ...policy,
-        events: { ...policy.events },
-        channels: Object.fromEntries(
-            Object.entries(policy.channels).map(([channel, config]) => [
-                channel,
-                {
-                    ...config,
-                    events: Object.fromEntries(
-                        Object.entries(config.events).map(([event, eventConfig]) => [
-                            event,
-                            { ...eventConfig },
-                        ]),
-                    ),
-                },
-            ]),
-        ),
-        quietHours: {
-            ...policy.quietHours,
-            windows: policy.quietHours.windows.map((window) => ({ ...window })),
-        },
-        privacy: {
-            ...policy.privacy,
-            surfaces: { ...policy.privacy.surfaces },
-        },
-        sounds: {
-            ...policy.sounds,
-            eventSoundIds: { ...policy.sounds.eventSoundIds },
-        },
-    });
-}
-
-function applyQuietHoursOverride(
-    policy: AttentionDeliveryPolicyV1,
-    overrides: AttentionDeviceOverridesV1,
-): void {
-    const quietHoursOverride = resolveDeviceQuietHoursOverride(overrides);
-    if (quietHoursOverride.mode === 'account') return;
-    if (quietHoursOverride.mode === 'disabled') {
-        policy.quietHours = {
-            ...policy.quietHours,
-            enabled: false,
-            windows: [],
-        };
-        return;
-    }
-    policy.quietHours = {
-        ...policy.quietHours,
-        enabled: true,
-        timezone: quietHoursOverride.timezone,
-        windows: quietHoursOverride.windows.map((window) => ({
-            ...window,
-            days: window.days ? [...window.days] : undefined,
-        })),
-    };
 }
 
 function setChannelEventEnabled(
@@ -145,19 +88,20 @@ function applyLocalNotificationOverrides(
         'user_action_request',
         overrides.localNotifications.events.user_action_request,
     );
-    if (overrides.localNotifications.previewBehavior !== 'account') {
-        policy.channels.local_notification.previewBehavior = overrides.localNotifications.previewBehavior;
-    }
-    if (overrides.foregroundBehavior !== 'account') {
-        policy.foregroundBehavior = overrides.foregroundBehavior;
+    for (const event of ['ready', 'permission_request', 'user_action_request'] as const) {
+        const previewBehavior = event === 'ready'
+            ? overrides.localNotifications.previewBehavior
+            : overrides.localNotifications.requestPreviewBehavior;
+        if (previewBehavior !== 'account') {
+            policy.channels.local_notification.events[event] = {
+                ...policy.channels.local_notification.events[event],
+                previewBehavior,
+            };
+        }
     }
 }
 
 function applySoundOverrides(policy: AttentionDeliveryPolicyV1, overrides: AttentionDeviceOverridesV1): void {
-    policy.sounds = {
-        ...policy.sounds,
-        volume: overrides.sounds.volume,
-    };
     if (overrides.sounds.enabled === false) {
         policy.channels.local_notification = {
             ...policy.channels.local_notification,
@@ -173,16 +117,49 @@ function applyBadgeOverrides(policy: AttentionDeliveryPolicyV1, overrides: Atten
     setChannelEventEnabled(policy, 'badge', 'user_action_request', overrides.badge.includePendingUserActionRequests);
 }
 
+const ACTIVITY_SURFACE_PRIVACY_RANK: Readonly<Record<ActivitySurfacePrivacyMode, number>> = {
+    status_only: 0,
+    title_only: 1,
+    include_preview: 2,
+};
+
+/**
+ * Return the stricter of two presentation modes. Account and device privacy are
+ * independent ceilings: either may withhold more, but neither may widen the
+ * other.
+ */
+export function resolveStricterActivitySurfacePrivacyMode(
+    left: ActivitySurfacePrivacyMode,
+    right: ActivitySurfacePrivacyMode,
+): ActivitySurfacePrivacyMode {
+    return ACTIVITY_SURFACE_PRIVACY_RANK[left] <= ACTIVITY_SURFACE_PRIVACY_RANK[right] ? left : right;
+}
+
 function applySurfacePrivacyOverrides(policy: AttentionDeliveryPolicyV1, overrides: AttentionDeviceOverridesV1): void {
     if (overrides.liveActivities.privacyMode !== 'account') {
-        policy.privacy.surfaces.live_activity = overrides.liveActivities.privacyMode;
+        policy.privacy.surfaces.live_activity = resolveStricterActivitySurfacePrivacyMode(
+            policy.privacy.surfaces.live_activity ?? policy.privacy.defaultPreviewBehavior,
+            overrides.liveActivities.privacyMode,
+        );
     }
     if (overrides.widgets.privacyMode !== 'account') {
-        policy.privacy.surfaces.home_widget = overrides.widgets.privacyMode;
+        policy.privacy.surfaces.home_widget = resolveStricterActivitySurfacePrivacyMode(
+            policy.privacy.surfaces.home_widget ?? policy.privacy.defaultPreviewBehavior,
+            overrides.widgets.privacyMode,
+        );
     }
-    if (overrides.privacy.previewBehavior !== 'account') {
-        policy.privacy.defaultPreviewBehavior = overrides.privacy.previewBehavior;
-    }
+}
+
+function applyDefaultPrivacyOverride(
+    policy: AttentionDeliveryPolicyV1,
+    accountPolicy: AttentionDeliveryPolicyV1,
+    overrides: AttentionDeviceOverridesV1,
+): void {
+    if (overrides.privacy.previewBehavior === 'account') return;
+    policy.privacy.defaultPreviewBehavior = resolveStricterActivitySurfacePrivacyMode(
+        accountPolicy.privacy.defaultPreviewBehavior,
+        overrides.privacy.previewBehavior,
+    );
 }
 
 function readDeviceOverrides(
@@ -197,19 +174,36 @@ function buildEffectivePolicy(params: Readonly<{
     accountSettings: Partial<AccountSettings> | Readonly<Record<string, unknown>>;
     overrides: AttentionDeviceOverridesV1;
 }>): AttentionDeliveryPolicyV1 {
-    const policy = clonePolicy(readAccountPolicy(params.accountSettings));
+    const accountPolicy = readAccountPolicy(params.accountSettings);
     const overrides = params.overrides;
 
     if (!overrides.enabled) {
-        return policy;
+        return accountPolicy;
     }
 
-    applyQuietHoursOverride(policy, overrides);
+    const policy = composeAttentionDeliveryPolicyDeviceOverrides(accountPolicy, {
+        quietHoursOverride: resolveDeviceQuietHoursOverride(overrides),
+        foregroundBehavior: overrides.foregroundBehavior,
+        previewBehavior: 'account',
+        soundVolume: overrides.sounds.volume,
+    });
+    applyDefaultPrivacyOverride(policy, accountPolicy, overrides);
     applyLocalNotificationOverrides(policy, overrides);
     applySoundOverrides(policy, overrides);
     applyBadgeOverrides(policy, overrides);
     applySurfacePrivacyOverrides(policy, overrides);
     return policy;
+}
+
+function resolveActivitySurface(
+    surface: ActivityAttentionSurface | null | undefined,
+    channel: ActivityAttentionDeliveryChannel,
+): ActivityAttentionSurface | null {
+    if (surface) return surface;
+    if (channel === 'desktop_overlay' || channel === 'live_activity' || channel === 'home_widget') {
+        return channel;
+    }
+    return null;
 }
 
 export function resolveActivityAttentionDeliveryPlan(
@@ -235,8 +229,16 @@ export function resolveActivityAttentionDeliveryPlan(
         featureEnabled: params.featureEnabled,
         platformSupported: params.platformSupported,
     });
+    const privacySurface = resolveActivitySurface(params.surface, params.channel);
+    const previewBehavior = privacySurface
+        ? resolveStricterActivitySurfacePrivacyMode(
+            decision.previewBehavior,
+            policy.privacy.surfaces[privacySurface] ?? policy.privacy.defaultPreviewBehavior,
+        )
+        : decision.previewBehavior;
     return {
         ...decision,
+        previewBehavior,
         channelDecision: {
             channel: params.channel,
             delivery: decision.delivery,
@@ -245,7 +247,7 @@ export function resolveActivityAttentionDeliveryPlan(
         surfacePolicy: {
             surface: params.surface ?? null,
             selection: params.requestedSelection ?? null,
-            privacyMode: decision.previewBehavior,
+            privacyMode: previewBehavior,
             staleAfterMs: typeof params.staleAfterMs === 'number' ? params.staleAfterMs : null,
             dwellMs: typeof params.dwellMs === 'number' ? params.dwellMs : null,
             updateBudget: params.updateBudget ?? null,

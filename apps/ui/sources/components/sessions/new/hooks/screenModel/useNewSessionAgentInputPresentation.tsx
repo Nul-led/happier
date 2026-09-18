@@ -8,13 +8,12 @@ import { useNewSessionCheckoutActionChip } from '@/components/sessions/new/hooks
 import { useNewSessionAgentInputExtraActionChips } from '@/components/sessions/new/hooks/screenModel/useNewSessionAgentInputExtraActionChips';
 import { getAutomationChipLabel } from '@/components/sessions/new/modules/automationChipModel';
 import type { NewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
-import { sanitizeNewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
 import { buildExecutionRunActionDraftInputForUi } from '@/sync/domains/actions/buildExecutionRunActionDraftInputForUi';
 import type { AgentId } from '@/agents/catalog/catalog';
 import type { AgentInputExtraActionChip } from '@/components/sessions/agentInput/agentInputContracts';
 import type { HandleCreateSessionOptions } from '@/components/sessions/new/hooks/useCreateNewSession';
 import type { ScmWorkingSnapshot, Machine } from '@/sync/domains/state/storageTypes';
-import { storage } from '@/sync/domains/state/storage';
+import { storage, useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import type { NewSessionCheckoutChipModel } from '@/components/sessions/new/modules/newSessionCheckoutChipModel';
 import type { NewSessionCheckoutCreationDraft } from '@/sync/domains/state/newSessionCheckoutDraft';
 import type { NewSessionTranscriptStorage } from '@/components/sessions/new/modules/newSessionTranscriptStorage';
@@ -23,6 +22,7 @@ import { createNewSessionLinkedFilesActionChip } from '@/components/sessions/age
 import type { MachineSpawnReadiness } from '@/sync/domains/machines/identity/resolveMachineSpawnReadiness';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import type { NewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
+import { createTemporaryComputerTeamAccessActionChip } from '@/components/sessions/agentInput/definitions/createTemporaryComputerTeamAccessActionChip';
 
 type ThemeLike = Readonly<{
     colors: Readonly<{
@@ -77,8 +77,6 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
     selectedMachineSpawnReadiness?: MachineSpawnReadiness | null;
     automationFeatureEnabled: boolean;
     automationDraft: NewSessionAutomationDraft;
-    effectiveAutomationDraft: NewSessionAutomationDraft;
-    setAutomationDraft: React.Dispatch<React.SetStateAction<NewSessionAutomationDraft>>;
     repoScmSnapshot: ScmWorkingSnapshot | null;
     checkoutChipModel: NewSessionCheckoutChipModel;
     checkoutPickerOpen: boolean;
@@ -106,7 +104,10 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
     /** One-shot unresolved placement offered by a host-seeded New Session draft. */
     seededPlacementActionChip?: AgentInputExtraActionChip | null;
     organizationPlacementActionChips?: readonly AgentInputExtraActionChip[];
+    sessionAccess?: Parameters<typeof useNewSessionAgentInputExtraActionChips>[0]['sessionAccess'];
     showAutomationActionChips: boolean;
+    /** Hands the composed draft to the shared Automation editor. */
+    onOpenAutomationEditor: () => void;
     showServerPickerChip: boolean;
     targetServerId: string | null;
     targetServerName: string;
@@ -120,6 +121,10 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
     effectiveWindowsRemoteSessionLaunchMode: WindowsRemoteSessionLaunchMode | null;
     windowsTerminalAvailable: boolean;
     setWindowsRemoteSessionLaunchModeOverride: (mode: WindowsRemoteSessionLaunchMode | null) => void;
+    temporaryComputerTeamAccess?: Readonly<{
+        authorized: boolean;
+        onChange: (authorized: boolean) => void;
+    }> | null;
 }>): Readonly<{
     connectionStatus: Readonly<{
         text: string;
@@ -144,7 +149,15 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
     ]);
     const selectedMachineReadinessStatus = params.selectedMachineSpawnReadiness?.status;
     const connectionStatus = React.useMemo(() => {
-        if (!params.selectedMachine) return undefined;
+        if (!params.selectedMachineId) return undefined;
+        if (!params.selectedMachine) {
+            return {
+                text: t('common.unavailable'),
+                color: params.theme.colors.state.danger.foreground,
+                dotColor: params.theme.colors.state.danger.foreground,
+                isPulsing: false,
+            };
+        }
         const online = selectedMachineReadinessStatus === 'ready'
             || (
                 (
@@ -163,15 +176,13 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
         };
     }, [
         params.selectedMachine?.id,
+        params.selectedMachineId,
         selectedMachineOnline,
         selectedMachineReadinessStatus,
         params.theme.colors.state.success.foreground,
         params.theme.colors.state.danger.foreground,
     ]);
 
-    const handleAutomationSettingsChange = React.useCallback((next: NewSessionAutomationDraft) => {
-        params.setAutomationDraft(sanitizeNewSessionAutomationDraft(next));
-    }, [params.setAutomationDraft]);
 
     const handleAppendLinkedPath = React.useCallback((path: string) => {
         const base = params.promptStore.getPrompt();
@@ -213,11 +224,13 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
         router: params.router,
     });
 
+    const actionDraftAccountScope = useActiveServerAccountScope();
     const handleActionShortcutPress = React.useCallback((actionId: ActionId) => {
         const instructions = params.promptStore.getPrompt();
         params.handleCreateSession({
             initialMessage: 'skip',
             afterCreated: async ({ sessionId }) => {
+                if (!actionDraftAccountScope || actionDraftAccountScope.serverId !== params.targetServerId) return;
                 const input = buildExecutionRunActionDraftInputForUi({
                     actionId,
                     sessionId,
@@ -225,13 +238,14 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
                     defaultBackendId: params.agentType,
                     instructions,
                 });
-                storage.getState().createSessionActionDraft(sessionId, {
-                    actionId,
-                    input,
-                });
+                storage.getState().createSessionActionDraft(
+                    actionDraftAccountScope,
+                    { serverId: actionDraftAccountScope.serverId, sessionId },
+                    { actionId, input },
+                );
             },
         });
-    }, [params.agentType, params.backendTarget, params.handleCreateSession, params.promptStore]);
+    }, [actionDraftAccountScope, params.agentType, params.backendTarget, params.handleCreateSession, params.promptStore, params.targetServerId]);
 
     const agentInputExtraActionChips = useNewSessionAgentInputExtraActionChips({
         staticAgentId: params.staticAgentId,
@@ -242,11 +256,11 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
         connectedServicesAuthChip: params.connectedServicesAuthChip,
         seededPlacementActionChip: params.seededPlacementActionChip,
         showAutomationActionChips: params.showAutomationActionChips,
-        automationDraft: params.effectiveAutomationDraft,
         automationLabel: getAutomationChipLabel(params.automationDraft),
-        onAutomationChange: handleAutomationSettingsChange,
+        onOpenAutomationEditor: params.onOpenAutomationEditor,
         checkoutActionChip,
         organizationPlacementActionChips: params.organizationPlacementActionChips,
+        sessionAccess: params.sessionAccess,
         showServerPickerChip: params.showServerPickerChip,
         targetServerId: params.targetServerId,
         targetServerName: params.targetServerName,
@@ -261,9 +275,19 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
         onWindowsRemoteSessionLaunchModeChange: params.setWindowsRemoteSessionLaunchModeOverride,
         onActionShortcutPress: handleActionShortcutPress,
     });
+    const temporaryComputerTeamAccessChip = React.useMemo(
+        () => params.temporaryComputerTeamAccess
+            ? createTemporaryComputerTeamAccessActionChip(params.temporaryComputerTeamAccess)
+            : null,
+        [params.temporaryComputerTeamAccess],
+    );
     const combinedExtraActionChips = React.useMemo(
-        () => [linkFileChip, ...agentInputExtraActionChips],
-        [agentInputExtraActionChips, linkFileChip],
+        () => [
+            linkFileChip,
+            ...(temporaryComputerTeamAccessChip ? [temporaryComputerTeamAccessChip] : []),
+            ...agentInputExtraActionChips,
+        ],
+        [agentInputExtraActionChips, linkFileChip, temporaryComputerTeamAccessChip],
     );
     const combinedExtraActionChipsSignature = React.useMemo(() => buildExtraActionChipsSignature({
         chips: combinedExtraActionChips,

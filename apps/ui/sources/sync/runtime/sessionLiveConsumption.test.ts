@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { resetSessionSurfaceVisibilityForTests } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { storage } from '@/sync/domains/state/storage';
+import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
 import {
     clearMountedSessionRealtimeScmConsumerScopes,
     registerSessionRealtimeScmConsumerScope,
@@ -48,12 +49,18 @@ function registerRepoScmScope(): () => void {
 describe('resolveSessionScmMutationSignal', () => {
     beforeEach(() => {
         storage.setState(initialStorageState, true);
+        useVoiceTargetStore.getState().setPrimaryActionSessionAddress(null);
+        useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([]);
+        useVoiceTargetStore.getState().setLastFocusedSessionAddress(null);
         clearMountedSessionRealtimeScmConsumerScopes();
         resetSessionSurfaceVisibilityForTests();
     });
 
     afterEach(() => {
         storage.setState(initialStorageState, true);
+        useVoiceTargetStore.getState().setPrimaryActionSessionAddress(null);
+        useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([]);
+        useVoiceTargetStore.getState().setLastFocusedSessionAddress(null);
         clearMountedSessionRealtimeScmConsumerScopes();
         resetSessionSurfaceVisibilityForTests();
     });
@@ -112,5 +119,27 @@ describe('resolveSessionScmMutationSignal', () => {
         } finally {
             unregister();
         }
+    });
+
+    it('uses only attempt-local current targets as Voice transcript consumers', () => {
+        useVoiceTargetStore.getState().setPrimaryActionSessionAddress({
+            serverId: 'home-a',
+            sessionId: 'same-session',
+        });
+        useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([{
+            serverId: 'home-b',
+            sessionId: 'tracked-session',
+        }]);
+        useVoiceTargetStore.getState().setLastFocusedSessionAddress({
+            serverId: 'home-b',
+            sessionId: 'focused-session',
+        });
+
+        expect(resolveSessionLiveConsumption('same-session', 'home-a').isFullContentConsumer).toBe(true);
+        expect(resolveSessionLiveConsumption('same-session', 'home-b').isFullContentConsumer).toBe(false);
+        expect(resolveSessionLiveConsumption('tracked-session', 'home-b').isFullContentConsumer).toBe(false);
+        expect(resolveSessionLiveConsumption('tracked-session', 'home-a').isFullContentConsumer).toBe(false);
+        expect(resolveSessionLiveConsumption('focused-session', 'home-b').isFullContentConsumer).toBe(true);
+        expect(resolveSessionLiveConsumption('focused-session', 'home-a').isFullContentConsumer).toBe(false);
     });
 });

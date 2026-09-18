@@ -82,6 +82,7 @@ describe('persistSessionTranscriptMessage', () => {
 
         const storedBody = storedBodies.at(-1);
         if (!storedBody) throw new Error('Expected a stored request body');
+        expect(storedBody).not.toHaveProperty('transcriptOnly');
         const storedContent = storedBody.content;
         const decrypted = await readStoredSessionMessage({
             message: {

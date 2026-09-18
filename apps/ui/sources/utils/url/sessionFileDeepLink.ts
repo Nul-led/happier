@@ -22,11 +22,12 @@ function getAnchorStartLine(anchor: ReviewCommentAnchor): number {
 
 export function buildSessionFileDeepLink(params: {
     sessionId: string;
+    serverId?: string | null;
     filePath: string;
     source?: ReviewCommentSource;
     anchor?: ReviewCommentAnchor;
 }): string {
-    const base = `/session/${params.sessionId}/file?path=${encodeURIComponent(params.filePath)}`;
+    const base = `/session/${params.sessionId}/file?path=${encodeURIComponent(params.filePath)}${params.serverId ? `&serverId=${encodeURIComponent(params.serverId)}` : ''}`;
     if (!params.anchor || !params.source) return base;
 
     const anchor = params.anchor;

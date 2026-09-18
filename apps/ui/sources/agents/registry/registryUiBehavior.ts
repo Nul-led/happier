@@ -27,6 +27,7 @@ import type { ResumeCapabilityOptions } from '@/agents/runtime/resumeCapabilitie
 import type { TranslationKey } from '@/text';
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { CurrentSessionRunnerProcessIdentity } from '@/sync/domains/models/resolveSessionModelSelectionDisposition';
 import { buildAgentUniverseBackendTargetKey } from '@/agents/catalog/agentUniverse';
 import type { GoalActionCapabilities } from '@/components/sessions/workState/goalActionVisibility';
@@ -285,6 +286,13 @@ export type AgentUiBehavior = Readonly<{
         }>) => Record<string, unknown> | undefined;
     }>;
     newSession?: Readonly<{
+        /** Agent-authored portable runtime choice, bound to its declared setting. */
+        runtimeDescriptorV1?: Readonly<{
+            backendMode: Readonly<{
+                settingKey: AgentUiSettingReferenceV1;
+                values: readonly string[];
+            }>;
+        }>;
         resolveConfiguredRuntimeKind?: (ctx: {
             agentId: AgentLookupId;
             settings: Settings;
@@ -643,8 +651,9 @@ const BUNDLED_PROJECTED_AGENT_UI_BEHAVIOR_BY_ENTRY = new WeakMap<ProjectedAgentU
 function resolveProjectedAgentUiBehavior(
     agentId: string | null | undefined,
     machineId: string | null | undefined,
+    accountScope?: ServerAccountScope | null,
 ): AgentUiBehavior | null {
-    const entry = resolveProjectedAgentUiBehaviorEntry(agentId, machineId);
+    const entry = resolveProjectedAgentUiBehaviorEntry(agentId, machineId, accountScope);
     if (!entry) return null;
     const retained = PROJECTED_AGENT_UI_BEHAVIOR_BY_ENTRY.get(entry);
     if (retained) return retained;
@@ -664,6 +673,7 @@ function resolveProjectedAgentUiBehavior(
 export function resolveAgentUiBehavior(
     agentId: string | null | undefined,
     machineId?: string | null,
+    accountScope?: ServerAccountScope | null,
 ): AgentUiBehavior {
     const behavior = resolveKnownAgentUiBehavior(agentId);
     if (behavior) {
@@ -673,7 +683,7 @@ export function resolveAgentUiBehavior(
         // localized/public declaration facts without granting a private UI
         // callback or falling back to another machine.
         const entry = machineId
-            ? resolveProjectedAgentUiBehaviorEntry(agentId, machineId)
+            ? resolveProjectedAgentUiBehaviorEntry(agentId, machineId, accountScope)
             : null;
         if (entry) {
             const retained = BUNDLED_PROJECTED_AGENT_UI_BEHAVIOR_BY_ENTRY.get(entry);
@@ -686,7 +696,7 @@ export function resolveAgentUiBehavior(
     }
     // An Agent that ships a descriptor is projected from it; the neutral
     // fallback is reserved for one that ships none.
-    return resolveProjectedAgentUiBehavior(agentId, machineId) ?? UNKNOWN_AGENT_UI_BEHAVIOR;
+    return resolveProjectedAgentUiBehavior(agentId, machineId, accountScope) ?? UNKNOWN_AGENT_UI_BEHAVIOR;
 }
 
 export function resolveConfiguredAgentRuntimeKindFromUiBehavior(params: Readonly<{
@@ -709,11 +719,14 @@ export function resolveAgentUiBehaviorFromFlavor(flavor: unknown): AgentUiBehavi
     return agentId ? resolveAgentUiBehavior(agentId) : null;
 }
 
-export function resolveAgentUiBehaviorFromSessionMetadata(metadata: unknown): AgentUiBehavior | null {
+export function resolveAgentUiBehaviorFromSessionMetadata(
+    metadata: unknown,
+    accountScope?: ServerAccountScope | null,
+): AgentUiBehavior | null {
     const agentId = resolveAgentIdFromSessionMetadata(metadata);
     // The Session's own metadata already carries the machine that runs it, so
     // the machine-scoped read costs no call-site change anywhere.
-    return agentId ? resolveAgentUiBehavior(agentId, resolveSessionMachineId(metadata)) : null;
+    return agentId ? resolveAgentUiBehavior(agentId, resolveSessionMachineId(metadata), accountScope) : null;
 }
 
 /**

@@ -3,8 +3,7 @@ import * as React from 'react';
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { buildNewSessionLaunchRouteParams } from '@/components/sessions/new/navigation/newSessionRouteParams';
 import { resolveNewSessionDraftRouteIdentity } from '@/components/sessions/new/navigation/newSessionDraftRouteIdentity';
-import { computeExpandedPathsForReveal } from '@/components/workspaces/files/repositoryTree/computeExpandedPathsForReveal';
-import { storage } from '@/sync/domains/state/storage';
+import { useWorkspaceFilePaneNavigation } from '@/components/workspaces/files/useWorkspaceFilePaneNavigation';
 import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
 import { t } from '@/text';
 import { deferOnWeb } from '@/utils/platform/deferOnWeb';
@@ -16,6 +15,7 @@ export function useProjectSurfaceActions(params: Readonly<{
     workspaceRef: WorkspaceRefV1;
     activeRootPath: string;
     onRevealInFilesTreeNavigate?: () => void;
+    onOpenChangesNavigate?: () => void;
 }>) {
     const pane = useAppPaneScope(params.scopeId);
     const routerRef = useProjectRouteRouterRef();
@@ -82,25 +82,11 @@ export function useProjectSurfaceActions(params: Readonly<{
         });
     }, [pane]);
 
-    const revealInFilesTree = React.useCallback((fullPath: string) => {
-        params.onRevealInFilesTreeNavigate?.();
-        const scope = {
-            serverId: params.workspaceRef.serverId,
-            machineId: params.workspaceRef.machineId,
-            rootPath: params.activeRootPath,
-        };
-        const currentExpandedPaths = storage.getState().getWorkspaceRepositoryTreeExpandedPaths(scope);
-        const nextExpandedPaths = computeExpandedPathsForReveal({
-            expandedPaths: currentExpandedPaths,
-            fullPath,
-        });
-        storage.getState().setWorkspaceRepositoryTreeExpandedPaths(scope, nextExpandedPaths);
-    }, [
-        params.activeRootPath,
-        params.onRevealInFilesTreeNavigate,
-        params.workspaceRef.machineId,
-        params.workspaceRef.serverId,
-    ]);
+    const navigateFilesPane = React.useCallback((tabId: 'files' | 'git') => {
+        if (tabId === 'files') params.onRevealInFilesTreeNavigate?.();
+        else params.onOpenChangesNavigate?.();
+    }, [params.onRevealInFilesTreeNavigate, params.onOpenChangesNavigate]);
+    const { revealInFilesTree, openChanges } = useWorkspaceFilePaneNavigation(params.scopeId, navigateFilesPane);
 
     return {
         openFileInDetails,
@@ -110,5 +96,6 @@ export function useProjectSurfaceActions(params: Readonly<{
         openCreateWorktreeFlow,
         openCommitInDetails,
         revealInFilesTree,
+        openChanges,
     };
 }

@@ -2,14 +2,23 @@ import { SYSTEM_TASK_PROTOCOL_VERSION, type SystemTaskSpec } from '@happier-dev/
 
 import { resolvePreferredPublicReleaseRingLabelForCurrentApp } from '@/sync/runtime/resolvePublicReleaseRing';
 
+/**
+ * Builds the `setup.thisComputer.v1` spec for a desktop-initiated local setup run.
+ *
+ * The relay pair is **required**: the executor falls back to whatever relay the local CLI happens
+ * to have selected when a task supplies no explicit target, so a caller that omits it would
+ * silently configure this computer's background service for the wrong Home. Requiring it here
+ * makes that omission a compile error at every UI caller. The terminal-initiated `hsetup` path,
+ * which legitimately has no app selection to send, keeps the executor's ambient fallback.
+ */
 export function buildLocalMachineSetupSystemTaskSpec(params: Readonly<{
-    activeRelayUrl?: string;
-    activeWebappUrl?: string;
+    activeRelayUrl: string;
+    activeWebappUrl: string;
     activeLocalRelayUrl?: string | null;
     installService?: boolean;
     startService?: boolean;
     verifyService?: boolean;
-}> = {}): SystemTaskSpec {
+}>): SystemTaskSpec {
     const channel = resolvePreferredPublicReleaseRingLabelForCurrentApp();
     return {
         protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,

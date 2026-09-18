@@ -12,6 +12,8 @@ import type { VoiceAdapterTranscriptMode } from '@/voice/session/types';
 
 import type { VoiceConversationBindingResolution } from './voiceConversationBindingTypes';
 import { readLocalConversationVoiceSettings, voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 /**
  * Read the provider-owned transcript-mode decision for a voice adapter from the
@@ -56,6 +58,7 @@ export async function ensureVoiceConversationBindingResolution(params: Readonly<
     providerId: string;
     controlSessionId: string;
     requestedTargetSessionId?: string | null;
+    requestedTargetServerId?: string | null;
     settings: any;
 }>): Promise<VoiceConversationBindingResolution | null> {
     const providerId = normalizeNonEmptyString(params.providerId);
@@ -63,44 +66,60 @@ export async function ensureVoiceConversationBindingResolution(params: Readonly<
     const controlSessionId = normalizeNonEmptyString(params.controlSessionId);
     if (!controlSessionId) return null;
     const targetSessionId = normalizeNonEmptyString(params.requestedTargetSessionId);
+    const targetServerId = normalizeNonEmptyString(params.requestedTargetServerId)
+        ?? normalizeNonEmptyString(getActiveServerSnapshot().serverId);
+    const targetSessionAddress = normalizeSessionAddress(targetServerId, targetSessionId);
 
     const providerOwnedResolution = await getVoiceAdapterRegistry().get(providerId)?.resolveConversationBinding?.({
         controlSessionId,
-        requestedTargetSessionId: targetSessionId,
+        requestedTargetSessionAddress: targetSessionAddress,
         settings: params.settings,
     });
     if (providerOwnedResolution) {
-        const conversationSessionId = normalizeNonEmptyString(providerOwnedResolution.conversationSessionId);
-        if (!conversationSessionId) return null;
+        const conversationSessionAddress = normalizeSessionAddress(
+            providerOwnedResolution.conversationSessionAddress.serverId,
+            providerOwnedResolution.conversationSessionAddress.sessionId,
+        );
+        if (!conversationSessionAddress) return null;
         return {
             controlSessionId,
-            conversationSessionId,
+            conversationSessionId: conversationSessionAddress.sessionId,
+            conversationSessionAddress,
             transcriptMode: providerOwnedResolution.transcriptMode,
-            targetSessionId: normalizeNonEmptyString(providerOwnedResolution.targetSessionId),
+            targetSessionAddress: providerOwnedResolution.targetSessionAddress,
         };
     }
 
     const transcriptMode = resolveBindingTranscriptMode(providerId, params.settings);
     if (!transcriptMode) return null;
 
-    const rootSessionId =
+    // The hidden conversation Session belongs to the same Home as its root Session: for the
+    // global voice agent that is the resolved target address, and for a Session-attached
+    // control session it is that Session in the Home the request was scoped to.
+    const rootSessionAddress =
         controlSessionId === VOICE_AGENT_GLOBAL_SESSION_ID
-            ? targetSessionId
-            : controlSessionId;
+            ? targetSessionAddress
+            : normalizeSessionAddress(targetServerId, controlSessionId);
 
     const conversationSessionId =
-        rootSessionId && !shouldForceVoiceHomeForLocalConversation(params.settings)
-            ? await ensureVoiceConversationSessionForSessionRoot({ sessionId: rootSessionId })
+        rootSessionAddress && !shouldForceVoiceHomeForLocalConversation(params.settings)
+            ? await ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: rootSessionAddress })
             : await ensureVoiceHomeConversationSessionIdWithRecovery({
                   transcriptMode,
                   controlSessionId,
                   settings: params.settings,
               });
+    const conversationSessionAddress = normalizeSessionAddress(
+        rootSessionAddress?.serverId ?? targetServerId,
+        conversationSessionId,
+    );
+    if (!conversationSessionAddress) return null;
 
     return {
         controlSessionId,
         conversationSessionId,
+        conversationSessionAddress,
         transcriptMode,
-        targetSessionId,
+        targetSessionAddress,
     };
 }

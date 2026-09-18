@@ -1,42 +1,57 @@
 import { describe, expect, it } from 'vitest';
+import {
+  ApprovalRequestV1Schema,
+  ExecutionRunHostActionApprovalRequestV1Schema,
+  TargetActionApprovalRequestV1Schema,
+  buildApprovalRequestArtifactHeaderV1,
+  buildExecutionRunHostActionApprovalArtifactHeaderV1,
+  buildTargetActionApprovalArtifactHeaderV1,
+} from '@happier-dev/protocol';
 
 import { isOpenApprovalInboxArtifact } from './approvalInboxHeader';
 
-function artifact(header: Record<string, unknown>) {
-  return { id: 'a1', header } as never;
+function artifact(header: Record<string, unknown>, body?: unknown) {
+  return { id: 'a1', header, body: body === undefined ? undefined : JSON.stringify(body) } as never;
 }
 
 describe('isOpenApprovalInboxArtifact', () => {
-  it('admits bounded target headers and rejects malformed or oversized copies', () => {
-    expect(isOpenApprovalInboxArtifact(artifact({
-      kind: 'target_action_approval.v1', approvalStatus: 'open', title: 'Publish',
-      qualifiedActionId: 'acme.publisher/actions/releases/publish', subjectFingerprint: 'a'.repeat(64),
-    }))).toBe(true);
-    expect(isOpenApprovalInboxArtifact(artifact({
-      kind: 'target_action_approval.v1', approvalStatus: 'open', title: 'Publish',
-      qualifiedActionId: 'not-qualified', subjectFingerprint: 'a'.repeat(64),
-    }))).toBe(false);
-    expect(isOpenApprovalInboxArtifact(artifact({
-      kind: 'target_action_approval.v1', approvalStatus: 'open', title: 'x'.repeat(1_025),
-      qualifiedActionId: 'acme.publisher/actions/releases/publish', subjectFingerprint: 'a'.repeat(64),
-    }))).toBe(false);
+  const target = TargetActionApprovalRequestV1Schema.parse({
+    v: 1, kind: 'plugin_target_action', status: 'open', createdAtMs: 1, updatedAtMs: 1,
+    createdBy: { surface: 'system' }, requestedSurface: 'ui',
+    qualifiedActionId: 'acme.publisher/actions/releases/publish', input: null,
+    generation: 'generation-1', policyFingerprint: '0'.repeat(64), subjectFingerprint: 'a'.repeat(64),
+    summary: 'Publish',
+  });
+  const host = ExecutionRunHostActionApprovalRequestV1Schema.parse({
+    v: 1, kind: 'execution_run_host_action', status: 'open', createdAtMs: 1, updatedAtMs: 1,
+    createdBy: { surface: 'agent', sessionId: 'session-1' }, requestedSurface: 'agent',
+    actionId: 'reviews.comments.create', sessionId: 'session-1', runId: 'run-1', callId: 'call-1',
+    profileId: 'profile-1', pluginId: 'plugin-1', agentId: 'agent-1', projectId: 'project-1',
+    workspaceId: 'workspace-1', serverId: 'server-1', proposalCount: 1,
+    proposalPreview: [{ pathLabel: 'src/a.ts', pathSha256: 'b'.repeat(64), bodySha256: 'c'.repeat(64), bodyPreview: 'Change' }],
+    subjectFingerprint: 'd'.repeat(64), summary: 'Create 1 proposed review comment',
   });
 
-  it('preserves the existing open built-in approval admission', () => {
-    expect(isOpenApprovalInboxArtifact(artifact({ kind: 'approval_request.v1', approvalStatus: 'open' }))).toBe(true);
-    expect(isOpenApprovalInboxArtifact(artifact({ kind: 'approval_request.v1', approvalStatus: 'approved' }))).toBe(false);
+  it('requires a hydrated body that corresponds exactly to a target-action header', () => {
+    const header = buildTargetActionApprovalArtifactHeaderV1(target);
+    expect(isOpenApprovalInboxArtifact(artifact(header, target))).toBe(true);
+    expect(isOpenApprovalInboxArtifact(artifact(header))).toBe(false);
+    expect(isOpenApprovalInboxArtifact(artifact({ ...header, subjectFingerprint: 'e'.repeat(64) }, target))).toBe(false);
   });
 
-  it('admits only coherent execution-run host-action headers', () => {
-    expect(isOpenApprovalInboxArtifact(artifact({
-      kind: 'execution_run_host_action_approval.v1', approvalStatus: 'open',
-      title: 'Create 1 proposed review comment', actionId: 'reviews.comments.create',
-      sessionId: 'session-1', runId: 'run-1', subjectFingerprint: 'a'.repeat(64), serverId: 'server-1',
-    }))).toBe(true);
-    expect(isOpenApprovalInboxArtifact(artifact({
-      kind: 'execution_run_host_action_approval.v1', approvalStatus: 'open',
-      title: 'Create 1 proposed review comment', actionId: 'plugins.reload',
-      sessionId: 'session-1', runId: 'run-1', subjectFingerprint: 'a'.repeat(64), serverId: 'server-1',
-    }))).toBe(false);
+  it('preserves coherent open built-in approval admission', () => {
+    const request = ApprovalRequestV1Schema.parse({
+      v: 1, status: 'open', createdAtMs: 1, updatedAtMs: 1, createdBy: { surface: 'system' },
+      actionId: 'session.list', actionArgs: {}, summary: 'List sessions',
+    });
+    const header = buildApprovalRequestArtifactHeaderV1(request);
+    expect(isOpenApprovalInboxArtifact(artifact(header, request))).toBe(true);
+    expect(isOpenApprovalInboxArtifact(artifact({ ...header, approvalStatus: 'approved' }, request))).toBe(false);
+  });
+
+  it('admits only coherent execution-run host-action Artifacts', () => {
+    const header = buildExecutionRunHostActionApprovalArtifactHeaderV1(host);
+    expect(isOpenApprovalInboxArtifact(artifact(header, host))).toBe(true);
+    expect(isOpenApprovalInboxArtifact(artifact({ ...header, profileId: 'other-profile' }, host))).toBe(false);
   });
 });

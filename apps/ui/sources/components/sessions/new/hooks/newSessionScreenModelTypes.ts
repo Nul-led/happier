@@ -20,11 +20,21 @@ export type NewSessionScreenModel =
     | Readonly<{
         variant: 'simple';
         popoverBoundaryRef: React.RefObject<View>;
+        launchOverlay: React.ReactNode | null;
+        launchOnRequestClose: () => void;
+        overlayPresentation?: 'card' | 'screen';
+        overlayFocusReturnRef?: React.RefObject<View | null>;
+        overlayAccessibilityLabel?: string;
         simpleProps: NewSessionSimpleScreenProps;
     }>
     | Readonly<{
         variant: 'wizard';
         popoverBoundaryRef: React.RefObject<View>;
+        launchOverlay: React.ReactNode | null;
+        launchOnRequestClose: () => void;
+        overlayPresentation?: 'card' | 'screen';
+        overlayFocusReturnRef?: React.RefObject<View | null>;
+        overlayAccessibilityLabel?: string;
         wizardProps: Readonly<{
             layout: NewSessionWizardLayoutProps;
             sectionPresentation?: NewSessionWizardProps['sectionPresentation'];

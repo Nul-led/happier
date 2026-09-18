@@ -11,14 +11,14 @@ import {
     type PluginContributionIdentityV1,
 } from '@happier-dev/protocol';
 
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 
 function resolveAgentIdentityForBackendId(backendId: string): PluginContributionIdentityV1 | null {
     // One bundled Agent carries exactly one canonical binding key: the qualified
     // contribution identity. The retired `backend:<bundledId>` spelling must
     // rekey onto it so persisted selections join current targets.
-    const bundledIdentity = BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[
-        backendId as keyof typeof BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES
+    const bundledIdentity = BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[
+        backendId as keyof typeof BUNDLED_AGENT_CONTRIBUTION_IDENTITIES
     ] ?? null;
     if (bundledIdentity) return bundledIdentity;
     // An installed Agent's host routing id *is* its qualified contribution key,

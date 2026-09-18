@@ -22,6 +22,8 @@ const ELEVENLABS_PROVIDER_ID = 'happier.voice.elevenlabs/realtime-elevenlabs';
 const OPENAI_PROVIDER_ID = 'happier.voice.openai/realtime-openai';
 const CODEX_CONNECTED_SERVICE_KEY = readBuiltInLegacyConnectedAccountServiceKeyIngress('openai-codex')!;
 
+const sessionAddress = (sessionId: string) => ({ serverId: 'server-1', sessionId });
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 // The Account lifetime reads the process-global active-server snapshot rather
@@ -646,9 +648,12 @@ describe('VoiceSessionRuntime', () => {
     expect(selected.controller.stop).not.toHaveBeenCalled();
 
     await act(async () => {
-      await getVoiceSessionLifecycleController()?.toggle('voice-session-retry');
+      await getVoiceSessionLifecycleController()?.toggle(sessionAddress('voice-session-retry'));
     });
-    expect(selected.controller.start).toHaveBeenCalledWith({ sessionId: 'voice-session-retry' });
+    expect(selected.controller.start).toHaveBeenCalledWith({
+      sessionId: 'voice-session-retry',
+      requestedTargetSessionAddress: sessionAddress('voice-session-retry'),
+    });
   });
 
   it('retires each Account scope transition once at the Account lifetime boundary', async () => {
@@ -1025,7 +1030,7 @@ describe('VoiceSessionRuntime', () => {
     const screen = await renderScreen(React.createElement(VoiceSessionRuntime));
     const controller = getVoiceSessionLifecycleController();
     if (!controller) throw new Error('voice lifecycle controller unavailable');
-    const start = controller.toggle('voice-session');
+    const start = controller.toggle(sessionAddress('voice-session'));
     await vi.waitFor(() => expect(pending.controller.start).toHaveBeenCalledOnce());
 
     secrets = [
@@ -1720,7 +1725,7 @@ describe('VoiceSessionRuntime', () => {
     if (!controller) throw new Error('voice lifecycle controller unavailable');
 
     expect(assemblyPort).toBe(currentUiContext);
-    await controller.toggle('voice-session-account-a');
+    await controller.toggle(sessionAddress('voice-session-account-a'));
     expect(runtime.controller.start).toHaveBeenCalledOnce();
     expect(retainedAttemptHandlerRef.current).not.toBeNull();
     expect(attemptLive).toBe(true);
@@ -1879,7 +1884,7 @@ describe('VoiceSessionRuntime', () => {
     if (!controller) throw new Error('voice lifecycle controller unavailable');
 
     await act(async () => {
-      await controller.toggle('voice-session-no-account');
+      await controller.toggle(sessionAddress('voice-session-no-account'));
     });
     expect(runtime.controller.start).toHaveBeenCalledOnce();
     expect(retainedAttemptHandlerRef.current).not.toBeNull();
@@ -1972,7 +1977,7 @@ describe('VoiceSessionRuntime', () => {
     const screen = await renderScreen(React.createElement(VoiceSessionRuntime));
     const controller = getVoiceSessionLifecycleController();
     if (!controller) throw new Error('voice lifecycle controller unavailable');
-    const start = controller.toggle('voice-session-account-a');
+    const start = controller.toggle(sessionAddress('voice-session-account-a'));
     await vi.waitFor(() => expect(pending.controller.start).toHaveBeenCalledOnce());
 
     accountScope = { serverId: 'server-b', accountId: 'account-b' };
@@ -2145,7 +2150,10 @@ describe('VoiceSessionRuntime', () => {
       });
     });
 
-    expect(selected.controller.start).toHaveBeenCalledWith({ sessionId: 's1' });
+    expect(selected.controller.start).toHaveBeenCalledWith({
+      sessionId: 's1',
+      requestedTargetSessionAddress: null,
+    });
     expect(getVoiceSessionSnapshot()).toEqual({
       adapterId: 'local_conversation',
       sessionId: 's1',
@@ -2387,7 +2395,7 @@ describe('VoiceSessionRuntime', () => {
     const screen = await renderScreen(React.createElement(VoiceSessionRuntime));
 
     await act(async () => {
-      await getVoiceSessionLifecycleController()?.toggle('voice-session');
+      await getVoiceSessionLifecycleController()?.toggle(sessionAddress('voice-session'));
     });
 
     await act(async () => {
@@ -2538,7 +2546,7 @@ describe('VoiceSessionRuntime', () => {
     const oldScreen = await renderScreen(React.createElement(VoiceSessionRuntime));
 
     await act(async () => {
-      await getVoiceSessionLifecycleController()?.toggle('old-session');
+      await getVoiceSessionLifecycleController()?.toggle(sessionAddress('old-session'));
     });
     await act(async () => {
       oldScreen.tree.unmount();
@@ -2546,7 +2554,7 @@ describe('VoiceSessionRuntime', () => {
 
     const freshScreen = await renderScreen(React.createElement(VoiceSessionRuntime));
     const freshController = getVoiceSessionLifecycleController();
-    await expect(freshController?.toggle('fresh-session')).rejects.toMatchObject({
+    await expect(freshController?.toggle(sessionAddress('fresh-session'))).rejects.toMatchObject({
       name: 'VoiceCaptureBusyError',
       activeOwner: 'conversation',
     });
@@ -2573,9 +2581,12 @@ describe('VoiceSessionRuntime', () => {
     expect(oldAssemblyDispose).toHaveBeenCalledOnce();
 
     await act(async () => {
-      await freshController?.toggle('fresh-session');
+      await freshController?.toggle(sessionAddress('fresh-session'));
     });
-    expect(freshRuntime.controller.start).toHaveBeenCalledWith({ sessionId: 'fresh-session' });
+    expect(freshRuntime.controller.start).toHaveBeenCalledWith({
+      sessionId: 'fresh-session',
+      requestedTargetSessionAddress: sessionAddress('fresh-session'),
+    });
     expect(getVoiceSessionSnapshot()).toMatchObject({
       sessionId: 'fresh-session',
       status: 'connecting',
@@ -2644,9 +2655,12 @@ describe('VoiceSessionRuntime', () => {
     const freshScreen = await renderScreen(React.createElement(VoiceSessionRuntime));
     const freshController = getVoiceSessionLifecycleController();
     await act(async () => {
-      await freshController?.toggle('fresh-local-session');
+      await freshController?.toggle(sessionAddress('fresh-local-session'));
     });
-    expect(freshRuntime.controller.start).toHaveBeenCalledWith({ sessionId: 'fresh-local-session' });
+    expect(freshRuntime.controller.start).toHaveBeenCalledWith({
+      sessionId: 'fresh-local-session',
+      requestedTargetSessionAddress: sessionAddress('fresh-local-session'),
+    });
     expect(getVoiceSessionSnapshot()).toMatchObject({
       sessionId: 'fresh-local-session',
       status: 'connecting',

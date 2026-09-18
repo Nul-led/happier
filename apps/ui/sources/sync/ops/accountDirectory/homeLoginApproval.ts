@@ -20,20 +20,23 @@ import { decryptBox } from '@/encryption/libsodium';
 import {
     resolveHomeEnrollmentTransport,
     type HomeEnrollmentTransportFailureReason,
-    type HomeEnrollmentTransport,
 } from '@/auth/enrollment/homeEnrollmentTransport';
 import {
     adoptHomeProfileWithCredentials,
-    createHomeProfileCredentialWriteAuthorization,
     HomeProfileAdoptionPartialCommitError,
     type HomeProfileCredentialRollbackOutcome,
 } from '@/sync/domains/server/adoptHomeProfile';
-import { decodeServerFeaturesResponse } from '@/sync/api/capabilities/serverFeaturesParse';
-import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
+import {
+    observeAuthenticatedServerFeaturesFresh,
+    probeServerFeaturesAtUrl,
+} from '@/sync/api/capabilities/serverFeaturesClient';
 import {
     reconcileServerProfileHomeConnectionDescriptor,
 } from '@/sync/domains/server/serverProfiles';
 import { adoptDirectoryHome } from './adoptDirectoryHome';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { parseToken } from '@/utils/auth/parseToken';
+import { HappyError } from '@/utils/errors/errors';
 
 /**
  * Home-authoritative existing-device approval continuation. All requests target the exact
@@ -68,7 +71,7 @@ export type HomeLoginContinuationResult =
         adoptionError: unknown;
         rollbackOutcome: Exclude<HomeProfileCredentialRollbackOutcome, { kind: 'succeeded' }>;
     }>
-    | Readonly<{ kind: 'failed' }>;
+    | Readonly<{ kind: 'failed'; error?: unknown }>;
 
 /**
  * Decrypts and strictly parses the exact protocol-owned `{ token }` plaintext.
@@ -102,14 +105,14 @@ function decodeHomeCredentialPayload(
 }
 
 function terminalRedemptionError(error: unknown): HomeLoginContinuationResult | null {
-    if (error instanceof AccountDirectoryResponseError) return { kind: 'failed' };
+    if (error instanceof AccountDirectoryResponseError) return { kind: 'failed', error };
     if (error instanceof AccountDirectoryRequestError && !error.transient) {
         if (
             error.code === ACCOUNT_DIRECTORY_ERROR_CODES_V1.assertionExpired
             || error.code === ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalExpired
         ) return { kind: 'expired' };
         if (error.code === ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalRejected) return { kind: 'rejected' };
-        return { kind: 'failed' };
+        return { kind: 'failed', error };
     }
     return null;
 }
@@ -128,13 +131,13 @@ type HomeLoginApprovalContinuation = Extract<
 type HomeLoginCancellationState = {
     cancelled: boolean;
     readonly externalShouldCancel?: () => boolean;
-    readonly retained?: true;
+    readonly credentialCustodyIsCurrent?: () => boolean;
+    retained: boolean;
 };
 
 function retainCancellationState(state: HomeLoginCancellationState): HomeLoginCancellationState {
-    return state.retained
-        ? state
-        : { cancelled: state.cancelled, retained: true };
+    state.retained = true;
+    return state;
 }
 
 function createSingleFlightResume(
@@ -148,7 +151,9 @@ function createSingleFlightResume(
 }
 
 function isCancelled(state: HomeLoginCancellationState): boolean {
-    return state.cancelled || state.externalShouldCancel?.() === true;
+    return state.cancelled
+        || state.credentialCustodyIsCurrent?.() === false
+        || (!state.retained && state.externalShouldCancel?.() === true);
 }
 
 function createApprovalContinuation(
@@ -224,11 +229,14 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
     approvalId?: string;
     approvalExpiresAtMs?: number;
     shouldCancel?: () => boolean;
+    credentialCustodyIsCurrent?: () => boolean;
     cancellationState?: HomeLoginCancellationState;
 }>): Promise<HomeLoginContinuationResult> {
     const cancellationState = input.cancellationState ?? {
         cancelled: false,
+        retained: false,
         ...(input.shouldCancel ? { externalShouldCancel: input.shouldCancel } : {}),
+        ...(input.credentialCustodyIsCurrent ? { credentialCustodyIsCurrent: input.credentialCustodyIsCurrent } : {}),
     };
     const continuationInput = { ...input, cancellationState };
     if (isCancelled(cancellationState)) return { kind: 'cancelled' };
@@ -237,7 +245,7 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
     }
     const descriptor = input.home.connectionDescriptor;
     const targetIdentity = descriptor.homeServerIdentityId;
-    let selectedCredentialDestination: HomeEnrollmentTransport['authenticatedCredentialDestination'] = null;
+    let authenticatedDescriptor: typeof descriptor | null = null;
     const result: AccountServiceHomeEnrollmentResult<Uint8Array, void> =
         await continueAccountServiceHomeEnrollment({
             home: input.home,
@@ -263,7 +271,6 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
                     if (!resolved.transport.authenticatedCredentialDestination) {
                         throw new HomeEnrollmentBoundaryError({ kind: 'failed' });
                     }
-                    selectedCredentialDestination = resolved.transport.authenticatedCredentialDestination;
                     return {
                         transport: resolved.transport,
                         authenticatedCredentialDestination:
@@ -277,6 +284,10 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
                         ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
                         serverId: targetIdentity,
                         force: true,
+                        // Enrollment is not a latency-sensitive diagnostic. Wait for the shared
+                        // observation's request-owned safety bound instead of imposing the probe
+                        // helper's short interactive wait budget.
+                        timeoutMs: 0,
                     });
                     if (observation.status !== 'ready') {
                         throw new HomeEnrollmentBoundaryError(createExplicitResumeContinuation(
@@ -299,7 +310,11 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
                                 : undefined,
                         ));
                     }
-                    return { homeServerIdentityId: observedIdentity, connectionDescriptor: publishedDescriptor };
+                    return {
+                        homeServerIdentityId: observedIdentity,
+                        connectionDescriptor: publishedDescriptor,
+                        provenance: 'public',
+                    };
                 },
                 redeemAssertion: async ({ transport, assertion, approvalId }) => {
                     try {
@@ -322,19 +337,23 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
                     decodeHomeCredentialPayload(redemption.sealedHomeTokenBase64Url, secretKey),
                 observeAuthenticatedHome: async ({ transport, credential }) => {
                     try {
-                        const response = await transport.createRequest({
-                            serverId: targetIdentity,
-                            credentials: { token: credential.token },
-                        })('/v1/features/authenticated', { method: 'GET' }, {
-                            includeAuth: true,
-                            retry: 'none',
+                        const observation = await observeAuthenticatedServerFeaturesFresh({
+                            request: transport.createRequest({
+                                serverId: targetIdentity,
+                                credentials: { token: credential.token },
+                            }),
                         });
-                        if (!response.ok) throw new Error('authenticated observation unavailable');
-                        const features = await decodeServerFeaturesResponse(response);
-                        const exactDescriptor = features?.homeConnectionDescriptor;
-                        const observedIdentity = features?.capabilities.serverIdentity.serverIdentityId;
+                        if (observation.status !== 'ready') {
+                            throw new Error('authenticated observation unavailable');
+                        }
+                        const exactDescriptor = observation.features.homeConnectionDescriptor;
+                        const observedIdentity = observation.serverIdentityId;
                         if (!exactDescriptor || !observedIdentity) throw new Error('authenticated descriptor unavailable');
-                        return { homeServerIdentityId: observedIdentity, connectionDescriptor: exactDescriptor };
+                        return {
+                            homeServerIdentityId: observedIdentity,
+                            connectionDescriptor: exactDescriptor,
+                            provenance: 'authenticated',
+                        };
                     } catch {
                         throw new HomeEnrollmentBoundaryError(createExplicitResumeContinuation(
                             continuationInput,
@@ -346,25 +365,32 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
                     }
                 },
                 commitHomeCredential: async ({ credential }) => {
-                    if (!selectedCredentialDestination) {
+                    if (!authenticatedDescriptor) {
                         throw new HomeEnrollmentBoundaryError({ kind: 'failed' });
                     }
                     try {
-                        const credentialWriteAuthorization = createHomeProfileCredentialWriteAuthorization({
-                            descriptor,
-                            credentialDestinationDigestBase64Url:
-                                input.assertion.credentialDestinationDigestBase64Url,
-                            selectedDestination: selectedCredentialDestination,
-                        });
-                        if (!credentialWriteAuthorization) throw new Error('credential authorization failed');
+                        const existing = await TokenStorage.getCredentialsForServerUrl(descriptor.canonicalServerUrl, { serverId: targetIdentity });
+                        if (existing && existing.token !== credential.token) {
+                            let sameAccount = false;
+                            try {
+                                sameAccount = parseToken(existing.token) === parseToken(credential.token);
+                            } catch {
+                                sameAccount = false;
+                            }
+                            if (!sameAccount) throw new HomeEnrollmentBoundaryError({
+                                kind: 'failed', error: new HappyError('Home credential belongs to a different Account', false, { kind: 'auth' }),
+                            });
+                        }
+                        // Preserve same-Account material, including recoverable inconsistent
+                        // bytes. The post-auth owner validates it after authoritative Account
+                        // mode lookup; material repair must not discard this fresh bearer.
                         await adoptHomeProfileWithCredentials({
-                            descriptor,
+                            descriptor: authenticatedDescriptor,
                             source: 'account-directory',
                             preserveUserLabel: true,
                             suggestedName: input.home.label,
-                            descriptorAuthority: 'advisory',
-                            credentials: { token: credential.token },
-                            credentialWriteAuthorization,
+                            descriptorAuthority: 'current_connection_observation',
+                            credentials: { ...existing, token: credential.token },
                             shouldCancel: () => isCancelled(cancellationState),
                         });
                     } catch (error) {
@@ -400,6 +426,7 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
                     if (reconciliation.kind !== 'applied' && reconciliation.kind !== 'unchanged') {
                         throw new HomeEnrollmentBoundaryError({ kind: 'failed' });
                     }
+                    authenticatedDescriptor = observation.connectionDescriptor;
                 },
                 closeHomeTransport: async (transport) => await transport.close(),
             },

@@ -31,6 +31,7 @@ vi.mock('@expo/vector-icons', () => ({
     Octicons: 'Octicons',
 }));
 vi.mock('react-native-safe-area-context', () => ({
+    initialWindowMetrics: null,
     useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
@@ -312,8 +313,8 @@ vi.mock('@/components/sessions/agentInput/routing/useSessionRecipientState', () 
         selectedParticipant: null,
     }),
 }));
-vi.mock('@/components/sessions/agentInput/routing/ExecutionRunDeliveryChip', () => ({
-    ExecutionRunDeliveryChip: () => null,
+vi.mock('@/components/sessions/agentInput/routing/ExecutionRunRequestedActionChip', () => ({
+    ExecutionRunRequestedActionChip: () => null,
 }));
 vi.mock('@/sync/domains/input/participants/resolveParticipantRoutedSend', async () => {
     const actual = await vi.importActual<typeof import('@/sync/domains/input/participants/resolveParticipantRoutedSend')>(
@@ -382,7 +383,7 @@ describe('SessionView read cursor on blur', () => {
     it('bounds the blur read mark to the seq visible when leaving the session', async () => {
         const { useSessionViewedLifecycle } = await import('./view/useSessionViewedLifecycle');
         const hook = await renderHook((props: {
-            sessionId: string;
+            address: { serverId: string; sessionId: string };
             visibleReadSeq: number | null;
             surfaceFocused: boolean;
         }) => {
@@ -390,7 +391,7 @@ describe('SessionView read cursor on blur', () => {
             return null;
         }, {
             initialProps: {
-                sessionId: 's1',
+                address: { serverId: 'server-1', sessionId: 's1' },
                 visibleReadSeq: 2,
                 surfaceFocused: true,
             },
@@ -401,7 +402,7 @@ describe('SessionView read cursor on blur', () => {
         markSessionViewedSpy.mockClear();
 
         await hook.rerender({
-            sessionId: 's1',
+            address: { serverId: 'server-1', sessionId: 's1' },
             visibleReadSeq: 2,
             surfaceFocused: false,
         });
@@ -417,15 +418,15 @@ describe('SessionView read cursor on blur', () => {
         });
 
         expect(markSessionViewedSpy).toHaveBeenCalledTimes(1);
-        expect(markSessionViewedSpy).toHaveBeenCalledWith('s1', { sessionSeq: 2 });
+        expect(markSessionViewedSpy).toHaveBeenCalledWith({ serverId: 'server-1', sessionId: 's1' }, { sessionSeq: 2 });
 
         await hook.unmount();
     });
 
-    it('uses the previous session seq when a focused session view switches sessions', async () => {
+    it('keeps a deferred blur mark bound to the Home observed before focus changes', async () => {
         const { useSessionViewedLifecycle } = await import('./view/useSessionViewedLifecycle');
         const hook = await renderHook((props: {
-            sessionId: string;
+            address: { serverId: string; sessionId: string };
             visibleReadSeq: number | null;
             surfaceFocused: boolean;
         }) => {
@@ -433,7 +434,7 @@ describe('SessionView read cursor on blur', () => {
             return null;
         }, {
             initialProps: {
-                sessionId: 's1',
+                address: { serverId: 'home-b', sessionId: 'same-session' },
                 visibleReadSeq: 2,
                 surfaceFocused: true,
             },
@@ -443,7 +444,47 @@ describe('SessionView read cursor on blur', () => {
         markSessionViewedSpy.mockClear();
 
         await hook.rerender({
-            sessionId: 's2',
+            address: { serverId: 'home-a', sessionId: 'same-session' },
+            visibleReadSeq: 9,
+            surfaceFocused: false,
+        });
+
+        expect(scheduledInteractionCallbacks).toHaveLength(1);
+        await act(async () => {
+            scheduledInteractionCallbacks.shift()?.();
+        });
+
+        expect(markSessionViewedSpy).toHaveBeenCalledTimes(1);
+        expect(markSessionViewedSpy).toHaveBeenCalledWith(
+            { serverId: 'home-b', sessionId: 'same-session' },
+            { sessionSeq: 2 },
+        );
+
+        await hook.unmount();
+    });
+
+    it('uses the previous session seq when a focused session view switches sessions', async () => {
+        const { useSessionViewedLifecycle } = await import('./view/useSessionViewedLifecycle');
+        const hook = await renderHook((props: {
+            address: { serverId: string; sessionId: string };
+            visibleReadSeq: number | null;
+            surfaceFocused: boolean;
+        }) => {
+            useSessionViewedLifecycle(props);
+            return null;
+        }, {
+            initialProps: {
+                address: { serverId: 'server-1', sessionId: 's1' },
+                visibleReadSeq: 2,
+                surfaceFocused: true,
+            },
+        });
+
+        scheduledInteractionCallbacks.length = 0;
+        markSessionViewedSpy.mockClear();
+
+        await hook.rerender({
+            address: { serverId: 'server-1', sessionId: 's2' },
             visibleReadSeq: 9,
             surfaceFocused: true,
         });
@@ -454,9 +495,9 @@ describe('SessionView read cursor on blur', () => {
             }
         });
 
-        expect(markSessionViewedSpy).toHaveBeenCalledWith('s1', { sessionSeq: 2 });
-        expect(markSessionViewedSpy).toHaveBeenCalledWith('s2', { sessionSeq: 9 });
-        expect(markSessionViewedSpy).not.toHaveBeenCalledWith('s1', { sessionSeq: 9 });
+        expect(markSessionViewedSpy).toHaveBeenCalledWith({ serverId: 'server-1', sessionId: 's1' }, { sessionSeq: 2 });
+        expect(markSessionViewedSpy).toHaveBeenCalledWith({ serverId: 'server-1', sessionId: 's2' }, { sessionSeq: 9 });
+        expect(markSessionViewedSpy).not.toHaveBeenCalledWith({ serverId: 'server-1', sessionId: 's1' }, { sessionSeq: 9 });
 
         await hook.unmount();
     });
@@ -472,7 +513,7 @@ describe('SessionView read cursor on blur', () => {
 
         const { useSessionViewedLifecycle } = await import('./view/useSessionViewedLifecycle');
         const hook = await renderHook((props: {
-            sessionId: string;
+            address: { serverId: string; sessionId: string };
             visibleReadSeq: number | null;
             surfaceFocused: boolean;
         }) => {
@@ -480,7 +521,7 @@ describe('SessionView read cursor on blur', () => {
             return null;
         }, {
             initialProps: {
-                sessionId: 's1',
+                address: { serverId: 'server-1', sessionId: 's1' },
                 visibleReadSeq: 4,
                 surfaceFocused: true,
             },
@@ -495,7 +536,7 @@ describe('SessionView read cursor on blur', () => {
         vi.useFakeTimers();
         try {
             await hook.rerender({
-                sessionId: 's1',
+                address: { serverId: 'server-1', sessionId: 's1' },
                 visibleReadSeq: 5,
                 surfaceFocused: true,
             });
@@ -517,17 +558,17 @@ describe('SessionView read cursor on blur', () => {
         sessionState.current.seq = 2;
 
         const initialHookProps: {
-            sessionId: string;
+            address: { serverId: string; sessionId: string };
             visibleReadSeq: number | null;
             surfaceFocused: boolean;
         } = {
-            sessionId: 's1',
+            address: { serverId: 'server-1', sessionId: 's1' },
             visibleReadSeq: 2,
             surfaceFocused: true,
         };
         const { useSessionViewedLifecycle } = await import('./view/useSessionViewedLifecycle');
         const hook = await renderHook((props: {
-            sessionId: string;
+            address: { serverId: string; sessionId: string };
             visibleReadSeq: number | null;
             surfaceFocused: boolean;
         }) => {
@@ -543,17 +584,17 @@ describe('SessionView read cursor on blur', () => {
         vi.useFakeTimers();
         try {
             await hook.rerender({
-                sessionId: 's1',
+                address: { serverId: 'server-1', sessionId: 's1' },
                 visibleReadSeq: 4,
                 surfaceFocused: true,
             });
             await hook.rerender({
-                sessionId: 's1',
+                address: { serverId: 'server-1', sessionId: 's1' },
                 visibleReadSeq: null,
                 surfaceFocused: true,
             });
             await hook.rerender({
-                sessionId: 's1',
+                address: { serverId: 'server-1', sessionId: 's1' },
                 visibleReadSeq: 4,
                 surfaceFocused: true,
             });
@@ -566,7 +607,7 @@ describe('SessionView read cursor on blur', () => {
         }
 
         expect(markSessionViewedSpy).toHaveBeenCalledTimes(1);
-        expect(markSessionViewedSpy).toHaveBeenCalledWith('s1', { sessionSeq: 4 });
+        expect(markSessionViewedSpy).toHaveBeenCalledWith({ serverId: 'server-1', sessionId: 's1' }, { sessionSeq: 4 });
 
         await hook.unmount();
     });
@@ -576,7 +617,7 @@ describe('SessionView read cursor on blur', () => {
 
         const { useSessionViewedLifecycle } = await import('./view/useSessionViewedLifecycle');
         const hook = await renderHook((props: {
-            sessionId: string;
+            address: { serverId: string; sessionId: string };
             visibleReadSeq: number | null;
             surfaceFocused: boolean;
         }) => {
@@ -584,7 +625,7 @@ describe('SessionView read cursor on blur', () => {
             return null;
         }, {
             initialProps: {
-                sessionId: 's1',
+                address: { serverId: 'server-1', sessionId: 's1' },
                 visibleReadSeq: 2,
                 surfaceFocused: true,
             },
@@ -596,7 +637,7 @@ describe('SessionView read cursor on blur', () => {
         vi.useFakeTimers();
         try {
             await hook.rerender({
-                sessionId: 's1',
+                address: { serverId: 'server-1', sessionId: 's1' },
                 visibleReadSeq: 4,
                 surfaceFocused: true,
             });
@@ -612,7 +653,7 @@ describe('SessionView read cursor on blur', () => {
         }
 
         expect(markSessionViewedSpy).toHaveBeenCalledTimes(1);
-        expect(markSessionViewedSpy).toHaveBeenCalledWith('s1', { sessionSeq: 4 });
+        expect(markSessionViewedSpy).toHaveBeenCalledWith({ serverId: 'server-1', sessionId: 's1' }, { sessionSeq: 4 });
 
         await hook.unmount();
     });
@@ -622,7 +663,7 @@ describe('SessionView read cursor on blur', () => {
 
         const { useSessionViewedLifecycle } = await import('./view/useSessionViewedLifecycle');
         const hook = await renderHook((props: {
-            sessionId: string;
+            address: { serverId: string; sessionId: string };
             visibleReadSeq: number | null;
             surfaceFocused: boolean;
         }) => {
@@ -630,7 +671,7 @@ describe('SessionView read cursor on blur', () => {
             return null;
         }, {
             initialProps: {
-                sessionId: 's1',
+                address: { serverId: 'server-1', sessionId: 's1' },
                 visibleReadSeq: null,
                 surfaceFocused: true,
             },
@@ -661,7 +702,7 @@ describe('SessionView read cursor on blur', () => {
             }
         });
 
-        expect(markSessionViewedSpy).toHaveBeenCalledWith('s1', { sessionSeq: 2 });
+        expect(markSessionViewedSpy).toHaveBeenCalledWith({ serverId: 'server-1', sessionId: 's1' }, { sessionSeq: 2 });
 
         await screen.unmount();
     });

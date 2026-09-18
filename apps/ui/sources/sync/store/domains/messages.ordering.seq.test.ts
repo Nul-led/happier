@@ -7,19 +7,27 @@ vi.mock('../../domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => ({ serverId: 'server-active', serverUrl: 'https://example.com', generation: 1 }),
 }));
 
+function withSessionListRows(rows: Record<string, unknown>) {
+    return {
+        sessionListRowsByServerId: { 'server-active': rows },
+        ordinarySessionListMembershipByServerId: { 'server-active': Object.keys(rows) },
+    };
+}
+
 function createHarness(initial: any) {
     let state: any = {
         sessions: {},
         sessionPending: {},
         sessionMessages: {},
-        sessionListRenderables: {},
-        sessionListRowStateByServerId: {},
+        ...withSessionListRows({
+            }),
+        sessionListRowsByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         machines: {},
         machineDisplayById: {},
         profile: { id: 'account_a' },
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
         getProjectForSession: () => null,
         ...initial,
     };
@@ -87,7 +95,7 @@ describe('messages domain: ordering', () => {
                     permissionModeUpdatedAt: 0,
                 },
             },
-            sessionListRenderables: {
+            ...withSessionListRows({
                 s1: {
                     id: 's1',
                     seq: 1,
@@ -104,7 +112,8 @@ describe('messages domain: ordering', () => {
                     presence: 'online',
                     hasUnreadMessages: false,
                 },
-            },
+
+            }),
         });
 
         domain.applyMessages('s1', [
@@ -120,8 +129,8 @@ describe('messages domain: ordering', () => {
         ]);
 
         expect(get().sessions.s1.seq).toBe(3);
-        expect(get().sessionListRenderables.s1.seq).toBe(3);
-        expect(get().sessionListRenderables.s1.hasUnreadMessages).toBe(true);
+        expect((get().sessionListRowsByServerId['server-active'] ?? {}).s1.seq).toBe(3);
+        expect((get().sessionListRowsByServerId['server-active'] ?? {}).s1.hasUnreadMessages).toBe(true);
     });
 
     it('persists ready-event metadata from filtered ready events into active-server row projections', () => {
@@ -162,8 +171,9 @@ describe('messages domain: ordering', () => {
         };
         const { get, domain } = createHarness({
             sessions: { s1: session },
-            sessionListRenderables: { s1: renderable },
-            sessionListRowStateByServerId: { 'server-active': { s1: renderable } },
+            ...withSessionListRows({ s1: renderable
+            }),
+            sessionListRowsByServerId: { 'server-active': { s1: renderable } },
             sessionListIndexByServerId: {
                 'server-active': [
                     {
@@ -201,9 +211,9 @@ describe('messages domain: ordering', () => {
         expect(get().sessionMessages.s1.latestReadyEventAt).toBe(9000);
         expect(get().sessions.s1.latestReadyEventSeq).toBe(9);
         expect(get().sessions.s1.latestReadyEventAt).toBe(9000);
-        expect(get().sessionListRenderables.s1.latestReadyEventSeq).toBe(9);
-        expect(get().sessionListRenderables.s1.latestReadyEventAt).toBe(9000);
-        expect(get().sessionListRowStateByServerId['server-active'].s1.latestReadyEventSeq).toBe(9);
+        expect((get().sessionListRowsByServerId['server-active'] ?? {}).s1.latestReadyEventSeq).toBe(9);
+        expect((get().sessionListRowsByServerId['server-active'] ?? {}).s1.latestReadyEventAt).toBe(9000);
+        expect(get().sessionListRowsByServerId['server-active'].s1.latestReadyEventSeq).toBe(9);
         expect(get().sessionListIndexByServerId['server-active']).toBe(initialIndex);
 
         const nextIndex = get().sessionListIndexByServerId['server-active'];
@@ -435,7 +445,8 @@ describe('messages domain: ordering', () => {
                     isLoaded: true,
                 },
             },
-            sessionListRenderables: {},
+            ...withSessionListRows({
+            }),
         });
 
         domain.applyMessages('s1', []);
@@ -521,7 +532,8 @@ describe('messages domain: ordering', () => {
                     isLoaded: true,
                 },
             },
-            sessionListRenderables: {},
+            ...withSessionListRows({
+            }),
         });
 
         const randomSpy = vi.spyOn(Math, 'random')
@@ -774,7 +786,7 @@ describe('messages domain: ordering', () => {
                     isLoaded: true,
                 },
             },
-            sessionListRenderables: {
+            ...withSessionListRows({
                 s1: {
                     id: 's1',
                     seq: messageCount,
@@ -792,7 +804,8 @@ describe('messages domain: ordering', () => {
                     hasPendingPermissionRequests: false,
                     hasPendingUserActionRequests: false,
                 },
-            },
+
+            }),
         });
 
         syncPerformanceTelemetry.configure({

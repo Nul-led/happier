@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createServerProfilesModuleMock } from '@/dev/testkit';
+import {
+    createServerProfilesModuleMock,
+    createSessionListRenderableSessionFixture,
+    createTokenStorageModuleMock,
+} from '@/dev/testkit';
 import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 import type { HomeCredentialMutationEvent } from '@/auth/storage/tokenStorage';
 
@@ -22,9 +26,29 @@ type SnapshotRequest = (path: string, init: RequestInit) => Promise<Response>;
 type SessionSnapshotParams = {
     applySessions: (sessions: unknown[]) => void;
     request?: SnapshotRequest;
+    sessionListCursor?: string | null;
+    sessionListAttentionCursor?: string | null;
 };
+type SessionSnapshotResult = Readonly<{
+    sessionIds: string[];
+    nextCursor: string | null;
+    hasNext: boolean;
+    attentionNextCursor: string | null;
+    attentionHasNext: boolean;
+    current: boolean;
+    source: 'v2' | 'v1';
+}>;
+const completeSessionSnapshotResult = (): SessionSnapshotResult => ({
+    sessionIds: [],
+    nextCursor: null,
+    hasNext: false,
+    attentionNextCursor: null,
+    attentionHasNext: false,
+    current: true,
+    source: 'v2',
+});
 const fetchAndApplySessionsSpy = vi.hoisted(() =>
-    vi.fn<(params: SessionSnapshotParams) => Promise<void>>(async ({ applySessions }) => {
+    vi.fn<(params: SessionSnapshotParams) => Promise<SessionSnapshotResult | void>>(async ({ applySessions }) => {
         applySessions([]);
     }),
 );
@@ -155,7 +179,9 @@ function mockConcurrentSessionCacheRuntimeDeps() {
         decodeBase64: () => new Uint8Array(32),
     }));
     vi.doMock('@/sync/engine/sessions/sessionSnapshot', () => ({
-        fetchAndApplySessions: (params: SessionSnapshotParams) => fetchAndApplySessionsSpy(params),
+        fetchAndApplySessions: async (params: SessionSnapshotParams) => (
+            await fetchAndApplySessionsSpy(params) ?? completeSessionSnapshotResult()
+        ),
     }));
     vi.doMock('@/sync/engine/machines/syncMachines', () => ({
         fetchAndApplyMachines: (params: { applyMachines: (machines: unknown[]) => void }) => fetchAndApplyMachinesSpy(params),
@@ -169,15 +195,11 @@ function mockConcurrentSessionCacheRuntimeDeps() {
 }
 
 function mockTokenStorageCredentialReads() {
-    vi.doMock('@/auth/storage/tokenStorage', () => ({
-        TokenStorage: {
+    vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => await createTokenStorageModuleMock({
+        importOriginal: async () => await importOriginal<typeof import('@/auth/storage/tokenStorage')>(),
+        tokenStorage: {
             getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
         },
-        subscribeHomeCredentialMutations: () => () => {},
-        isLegacyAuthCredentials: (credentials: unknown) =>
-            Boolean(credentials && typeof credentials === 'object' && typeof (credentials as { secret?: unknown }).secret === 'string'),
-        isDataKeyAuthCredentials: () => false,
-        isTokenOnlyAuthCredentials: () => false,
     }));
 }
 
@@ -274,6 +296,63 @@ afterEach(async () => {
 });
 
 describe('concurrent session cache supervised sockets', () => {
+    it('retains an open attention frontier across bounded refresh pumps and publishes ready only after it closes', async () => {
+        runtimeFetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: new Headers(),
+        }));
+        ioSpy.mockReturnValue(createSocketStub());
+        getCredentialsForServerUrlSpy.mockResolvedValue({ token: 'token-b', secret: 'secret-b' });
+        listServerProfilesSpy.mockReturnValue([
+            { id: 'server-a', serverUrl: 'https://stack-a.example.test', name: 'Server A' },
+            { id: 'server-b', serverUrl: 'https://stack-b.example.test', name: 'Server B' },
+        ]);
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'server-a',
+            serverUrl: 'https://stack-a.example.test',
+            kind: 'stack',
+            generation: 1,
+        });
+        let finishAttentionContinuation!: () => void;
+        fetchAndApplySessionsSpy
+            .mockResolvedValueOnce({
+                ...completeSessionSnapshotResult(),
+                attentionNextCursor: 'attention-100',
+                attentionHasNext: true,
+            })
+            .mockImplementationOnce(async () => {
+                await new Promise<void>((resolve) => { finishAttentionContinuation = resolve; });
+                return {
+                    ...completeSessionSnapshotResult(),
+                    sessionIds: ['attention-page-101'],
+                };
+            });
+        mockConcurrentSessionCacheDeps();
+        await configureConcurrentSelection();
+
+        const { stopConcurrentSessionCacheSync } = await startConcurrentCacheAndWaitForReconcile();
+        const { storage } = await import('@/sync/domains/state/storageStore');
+
+        await vi.waitFor(() => expect(fetchAndApplySessionsSpy).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+        expect(fetchAndApplySessionsSpy.mock.calls[0]?.[0]).toMatchObject({
+            sessionListCursor: null,
+            sessionListAttentionCursor: null,
+        });
+        expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase)
+            .not.toBe('ready');
+        expect(fetchAndApplySessionsSpy.mock.calls[1]?.[0]).toMatchObject({
+            sessionListCursor: null,
+            sessionListAttentionCursor: 'attention-100',
+        });
+        finishAttentionContinuation();
+        await vi.waitFor(() => {
+            expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase)
+                .toBe('ready');
+        });
+
+        stopConcurrentSessionCacheSync();
+    });
+
     it('aborts an owned secondary snapshot request before releasing the managed transport', async () => {
         let snapshotSignal: AbortSignal | null = null;
         runtimeFetchSpy.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -438,6 +517,192 @@ describe('concurrent session cache supervised sockets', () => {
         stopConcurrentSessionCacheSync();
     });
 
+    it('publishes the whole observation lifecycle and marks an online secondary Home stale when its Session-list refresh fails', async () => {
+        runtimeFetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: new Headers(),
+        }));
+        const fakeSocket = createSocketStub();
+        ioSpy.mockReturnValue(fakeSocket);
+        getCredentialsForServerUrlSpy.mockResolvedValue({ token: 'token-b', secret: 'secret-b' });
+        listServerProfilesSpy.mockReturnValue([
+            { id: 'server-a', serverUrl: 'https://stack-a.example.test', name: 'Server A' },
+            { id: 'server-b', serverUrl: 'https://stack-b.example.test', name: 'Server B' },
+        ]);
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'server-a',
+            serverUrl: 'https://stack-a.example.test',
+            kind: 'stack',
+            generation: 1,
+        });
+        fetchAndApplySessionsSpy
+            .mockImplementationOnce(async ({ applySessions }: SessionSnapshotParams) => applySessions([]))
+            .mockRejectedValueOnce(new Error('secondary list unavailable'));
+        mockConcurrentSessionCacheDeps();
+        await configureConcurrentSelection();
+
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        // Every phase this Home publishes, in order. A surface reads currentness only from this
+        // fact, so an unobserved Home must say `loading`, a retained one `refreshing`, and a
+        // failed attempt `error` — never silence that reads as "still current".
+        const observedPhases: string[] = [];
+        const unsubscribeObservation = storage.subscribe((state) => {
+            const phase = state.concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase;
+            if (phase && observedPhases[observedPhases.length - 1] !== phase) observedPhases.push(phase);
+        });
+        const { stopConcurrentSessionCacheSync } = await startConcurrentCacheAndWaitForReconcile();
+
+        await vi.waitFor(() => {
+            expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase)
+                .toBe('ready');
+        });
+        // A Home nothing has observed yet announces its first attempt as `loading`, never as
+        // silence that reads as current.
+        expect(observedPhases.slice(0, 2)).toEqual(['loading', 'ready']);
+        const firstSuccessAt = storage.getState()
+            .concurrentSessionListCacheByServerId['server-b']?.listObservation?.lastSuccessAt;
+        expect(firstSuccessAt).toEqual(expect.any(Number));
+
+        fakeSocket.emitServerEvent('update', { body: { t: 'update-session' } });
+
+        await vi.waitFor(() => {
+            expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation)
+                .toEqual({ phase: 'error', lastSuccessAt: firstSuccessAt });
+        });
+        // The retained rows were observed once, so the failed refresh announces itself as a
+        // refresh of known rows rather than a first load, and `loading` never returns.
+        expect(observedPhases.slice(-2)).toEqual(['refreshing', 'error']);
+        expect(observedPhases.slice(1)).not.toContain('loading');
+
+        unsubscribeObservation();
+        stopConcurrentSessionCacheSync();
+    });
+
+    it('keeps a Session list observed by the failing attempt current instead of publishing its own error', async () => {
+        runtimeFetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: new Headers(),
+        }));
+        const fakeSocket = createSocketStub();
+        ioSpy.mockReturnValue(fakeSocket);
+        getCredentialsForServerUrlSpy.mockResolvedValue({ token: 'token-b', secret: 'secret-b' });
+        listServerProfilesSpy.mockReturnValue([
+            { id: 'server-a', serverUrl: 'https://stack-a.example.test', name: 'Server A' },
+            { id: 'server-b', serverUrl: 'https://stack-b.example.test', name: 'Server B' },
+        ]);
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'server-a',
+            serverUrl: 'https://stack-a.example.test',
+            kind: 'stack',
+            generation: 1,
+        });
+        // The production list path applies its rows during the Session fetch, before the machine
+        // inventory runs, so this attempt really did observe the list.
+        fetchAndApplySessionsSpy.mockImplementation(async (
+            { applySessionListRenderables }: SessionSnapshotParams & {
+                applySessionListRenderables?: (rows: unknown[]) => void;
+            },
+        ) => {
+            applySessionListRenderables?.([createSessionListRenderableSessionFixture({ id: 'session-b' })]);
+        });
+        let machineRefresh = 0;
+        fetchAndApplyMachinesSpy.mockImplementation(async ({ applyMachines }: { applyMachines: (machines: unknown[]) => void }) => {
+            machineRefresh += 1;
+            if (machineRefresh === 1) {
+                applyMachines([]);
+                return;
+            }
+            throw new Error('machine refresh failed');
+        });
+        mockConcurrentSessionCacheDeps();
+        await configureConcurrentSelection();
+
+        const { stopConcurrentSessionCacheSync } = await startConcurrentCacheAndWaitForReconcile();
+        const { storage } = await import('@/sync/domains/state/storageStore');
+
+        await vi.waitFor(() => {
+            expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase)
+                .toBe('ready');
+        });
+
+        fakeSocket.emitServerEvent('update', { body: { t: 'update-machine' } });
+        await vi.waitFor(() => expect(machineRefresh).toBeGreaterThanOrEqual(2), { timeout: 2_000 });
+
+        // Machine staleness is not list staleness: the list success this same attempt produced is
+        // more current than the attempt's rejection, so it is never downgraded to `error`.
+        expect(storage.getState().machineListStatusByServerId['server-b']).toBe('error');
+        expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase)
+            .toBe('ready');
+
+        stopConcurrentSessionCacheSync();
+    });
+
+    it('leaves the reachability owner\'s offline fact in place when the refresh it interrupted fails', async () => {
+        runtimeFetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: new Headers(),
+        }));
+        const fakeSocket = createSocketStub();
+        ioSpy.mockReturnValue(fakeSocket);
+        getCredentialsForServerUrlSpy.mockResolvedValue({ token: 'token-b', secret: 'secret-b' });
+        listServerProfilesSpy.mockReturnValue([
+            { id: 'server-a', serverUrl: 'https://stack-a.example.test', name: 'Server A' },
+            { id: 'server-b', serverUrl: 'https://stack-b.example.test', name: 'Server B' },
+        ]);
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'server-a',
+            serverUrl: 'https://stack-a.example.test',
+            kind: 'stack',
+            generation: 1,
+        });
+        let failInterruptedRefresh: (() => void) | null = null;
+        fetchAndApplySessionsSpy
+            .mockImplementationOnce(async ({ applySessions }: SessionSnapshotParams) => applySessions([]))
+            .mockImplementationOnce(async () => {
+                await new Promise<void>((resolve) => {
+                    failInterruptedRefresh = resolve;
+                });
+                throw new Error('secondary list unavailable');
+            });
+        mockConcurrentSessionCacheDeps();
+        await configureConcurrentSelection();
+
+        const { stopConcurrentSessionCacheSync } = await startConcurrentCacheAndWaitForReconcile();
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        const reachability = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
+
+        await vi.waitFor(() => {
+            expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase)
+                .toBe('ready');
+        });
+
+        fakeSocket.emitServerEvent('update', { body: { t: 'update-session' } });
+        await vi.waitFor(() => expect(failInterruptedRefresh).not.toBeNull());
+
+        reachability.reportServerUnreachable('https://stack-b.example.test', new Error('socket unreachable'));
+        await vi.waitFor(() => {
+            expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase)
+                .toBe('offline');
+        });
+
+        // The machine cache is the one write this Home's failure path always performs, so
+        // clearing it first makes the rejection observable instead of time-based.
+        storage.setState((state) => ({
+            ...state,
+            machineListStatusByServerId: { ...state.machineListStatusByServerId, 'server-b': 'idle' },
+        }));
+        (failInterruptedRefresh as unknown as () => void)();
+        await vi.waitFor(() => {
+            expect(storage.getState().machineListStatusByServerId['server-b']).toBe('error');
+        });
+        // Reachability already answered this Home more recently than the request it cut off. A
+        // late rejection must not relabel an offline Home as a reachable Home that failed.
+        expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase)
+            .toBe('offline');
+
+        stopConcurrentSessionCacheSync();
+    });
+
     it('keeps last-known secondary rows but marks their inventory stale while reachability is offline, then restores currentness without duplication', async () => {
         let reachable = true;
         runtimeFetchSpy.mockImplementation(async () => {
@@ -499,9 +764,10 @@ describe('concurrent session cache supervised sockets', () => {
 
         await vi.waitFor(() => {
             expect(storage.getState().machineListStatusByServerId['server-b']).toBe('idle');
-            expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.sessions?.['session-b']).toBeDefined();
+            expect(storage.getState().sessionListRowsByServerId['server-b']?.['session-b']).toBeDefined();
+            expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase).toBe('ready');
         });
-        const currentSessions = storage.getState().concurrentSessionListCacheByServerId['server-b']?.sessions;
+        const currentRows = storage.getState().sessionListRowsByServerId['server-b'];
         const currentMachines = storage.getState().machineListByServerId['server-b'];
         schedulePushTokenReconciliationSpy.mockClear();
 
@@ -510,8 +776,9 @@ describe('concurrent session cache supervised sockets', () => {
 
         await vi.waitFor(() => {
             expect(storage.getState().machineListStatusByServerId['server-b']).toBe('error');
+            expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase).toBe('offline');
         });
-        expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.sessions).toBe(currentSessions);
+        expect(storage.getState().sessionListRowsByServerId['server-b']).toBe(currentRows);
         expect(storage.getState().machineListByServerId['server-b']).toBe(currentMachines);
         expect(resolveAllProfileMachineInventorySnapshots({
             profiles: [{
@@ -541,9 +808,10 @@ describe('concurrent session cache supervised sockets', () => {
         });
         await vi.waitFor(() => {
             expect(storage.getState().machineListStatusByServerId['server-b']).toBe('idle');
+            expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.listObservation?.phase).toBe('ready');
         });
         expect(schedulePushTokenReconciliationSpy).toHaveBeenCalledTimes(1);
-        expect(Object.keys(storage.getState().concurrentSessionListCacheByServerId['server-b']?.sessions ?? {})).toEqual(['session-b']);
+        expect(Object.keys(storage.getState().sessionListRowsByServerId['server-b'] ?? {})).toEqual(['session-b']);
         expect(storage.getState().machineListByServerId['server-b']?.map((machine) => machine.id)).toEqual(['machine-b']);
         expect(scheduleMachineListDisplayWarmCacheSaveSpy).not.toHaveBeenCalled();
 
@@ -592,14 +860,14 @@ describe('concurrent session cache supervised sockets', () => {
         const { storage } = await import('@/sync/domains/state/storageStore');
         await vi.waitFor(() => expect(storage.getState().machineListStatusByServerId['server-b']).toBe('idle'));
         const currentMachines = storage.getState().machineListByServerId['server-b'];
-        const currentSessions = storage.getState().concurrentSessionListCacheByServerId['server-b']?.sessions;
+        const currentRows = storage.getState().sessionListRowsByServerId['server-b'];
 
         fakeSocket.emitServerEvent('update', { body: { t: 'update-machine' } });
         await vi.waitFor(() => expect(machineRefresh).toBeGreaterThanOrEqual(2), { timeout: 2_000 });
 
         expect(storage.getState().machineListStatusByServerId['server-b']).toBe('error');
         expect(storage.getState().machineListByServerId['server-b']).toBe(currentMachines);
-        expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.sessions).toBe(currentSessions);
+        expect(storage.getState().sessionListRowsByServerId['server-b']).toBe(currentRows);
 
         stopConcurrentSessionCacheSync();
     });
@@ -840,6 +1108,7 @@ describe('concurrent session cache supervised sockets', () => {
         stopConcurrentSessionCacheSync();
     });
 
+
     it('feeds concurrent-server machine activity transitions to status-demand recovery', async () => {
         runtimeFetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: new Headers() }));
         const fakeSocket = createSocketStub();
@@ -1022,6 +1291,10 @@ describe('concurrent session cache supervised sockets', () => {
         const machineRefreshCount = fetchAndApplyMachinesSpy.mock.calls.length;
         schedulePushTokenReconciliationSpy.mockClear();
 
+        const { subscribeHomeAccountChange } = await import('./homeAccountChange');
+        const accountChangeObserver = vi.fn();
+        const disposeObserver = subscribeHomeAccountChange(accountChangeObserver);
+
         fakeSocket.emitServerEvent('update', {
             id: 'update-account-1',
             seq: 11,
@@ -1033,10 +1306,94 @@ describe('concurrent session cache supervised sockets', () => {
         });
 
         expect(schedulePushTokenReconciliationSpy).toHaveBeenCalledTimes(1);
+        // The wake is observable per exact Home, and stays content-free.
+        expect(accountChangeObserver).toHaveBeenCalledTimes(1);
+        expect(accountChangeObserver).toHaveBeenCalledWith({ serverId: 'server-b' });
         await new Promise<void>((resolve) => setTimeout(resolve, 700));
         expect(fetchAndApplySessionsSpy).toHaveBeenCalledTimes(sessionRefreshCount);
         expect(fetchAndApplyMachinesSpy).toHaveBeenCalledTimes(machineRefreshCount);
 
+        disposeObserver();
+        fakeSocket.emitServerEvent('update', {
+            id: 'update-account-2',
+            seq: 12,
+            createdAt: 12,
+            body: { t: 'update-account' },
+        });
+        expect(accountChangeObserver).toHaveBeenCalledTimes(1);
+
+        stopConcurrentSessionCacheSync();
+    });
+
+    it('does not observe a non-account update as an Account-change wake', async () => {
+        runtimeFetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: new Headers() }));
+        const fakeSocket = createSocketStub();
+        ioSpy.mockReturnValue(fakeSocket);
+        getCredentialsForServerUrlSpy.mockResolvedValue({ token: 'token-b', secret: 'secret-b' });
+        listServerProfilesSpy.mockReturnValue([
+            { id: 'server-a', serverUrl: 'https://stack-a.example.test', name: 'Server A' },
+            { id: 'server-b', serverUrl: 'https://stack-b.example.test', name: 'Server B' },
+        ]);
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'server-a',
+            serverUrl: 'https://stack-a.example.test',
+            kind: 'stack',
+            generation: 1,
+        });
+
+        mockConcurrentSessionCacheDeps();
+        await configureConcurrentSelection();
+
+        const { stopConcurrentSessionCacheSync } = await startConcurrentCacheAndWaitForReconcile();
+        await vi.waitFor(() => {
+            expect(fetchAndApplySessionsSpy).toHaveBeenCalled();
+        });
+
+        const { subscribeHomeAccountChange } = await import('./homeAccountChange');
+        const accountChangeObserver = vi.fn();
+        const disposeObserver = subscribeHomeAccountChange(accountChangeObserver);
+
+        fakeSocket.emitServerEvent('update', { body: { t: 'update-machine' } });
+        expect(accountChangeObserver).not.toHaveBeenCalled();
+
+        disposeObserver();
+        stopConcurrentSessionCacheSync();
+    });
+
+    it('conservatively invalidates exact-Home projections when a secondary socket reconnects', async () => {
+        runtimeFetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: new Headers() }));
+        const fakeSocket = createSocketStub();
+        ioSpy.mockReturnValue(fakeSocket);
+        getCredentialsForServerUrlSpy.mockResolvedValue({ token: 'token-b', secret: 'secret-b' });
+        listServerProfilesSpy.mockReturnValue([
+            { id: 'server-a', serverUrl: 'https://stack-a.example.test', name: 'Server A' },
+            { id: 'server-b', serverUrl: 'https://stack-b.example.test', name: 'Server B' },
+        ]);
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'server-a',
+            serverUrl: 'https://stack-a.example.test',
+            kind: 'stack',
+            generation: 1,
+        });
+
+        mockConcurrentSessionCacheDeps();
+        await configureConcurrentSelection();
+
+        const { subscribeHomeAccountChange } = await import('./homeAccountChange');
+        const accountChangeObserver = vi.fn();
+        const disposeObserver = subscribeHomeAccountChange(accountChangeObserver);
+        const { stopConcurrentSessionCacheSync } = await startConcurrentCacheAndWaitForReconcile();
+        await vi.waitFor(() => expect(fakeSocket.connect).toHaveBeenCalledTimes(1));
+        expect(accountChangeObserver).not.toHaveBeenCalled();
+
+        // A reconnect may have missed any number of content-free Account wakes.
+        // The existing projection owners therefore receive one conservative
+        // invalidation for this captured secondary Home, never the focused Home.
+        fakeSocket.emitServerEvent('connect', undefined);
+        expect(accountChangeObserver).toHaveBeenCalledTimes(1);
+        expect(accountChangeObserver).toHaveBeenCalledWith({ serverId: 'server-b' });
+
+        disposeObserver();
         stopConcurrentSessionCacheSync();
     });
 
@@ -1120,7 +1477,9 @@ describe('concurrent session cache exact-target credential reconciliation', () =
             // Let all startup-triggered reconciles settle before exercising global forget.
             await new Promise<void>((resolve) => setTimeout(resolve, 100));
             expect(ioSpy).toHaveBeenCalledTimes(1);
-            expect(secondarySocket.disconnect).not.toHaveBeenCalled();
+            // Initial supervisor/socket convergence can legitimately issue an
+            // intentional disconnect. Observe only the credential-removal edge.
+            secondarySocket.disconnect.mockClear();
 
             await expect(TokenStorage.removeCredentials()).resolves.toBe(true);
             expect(mutations).toContainEqual({

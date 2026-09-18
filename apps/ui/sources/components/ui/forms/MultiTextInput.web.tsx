@@ -84,6 +84,7 @@ interface MultiTextInputProps {
     onBlur?: () => void;
     submitBehavior?: MultiTextInputSubmitBehavior;
     onSubmitEditing?: () => void;
+    accessibilityLabel?: string;
     onFilesPasted?: (files: readonly File[]) => void;
     onFilesDropped?: (files: readonly File[]) => void;
     onFileDragActiveChange?: (active: boolean) => void;
@@ -631,6 +632,7 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
         autoCapitalize: 'sentences',
         autoCorrect: 'on',
         autoComplete: 'off',
+        'aria-label': props.accessibilityLabel,
         role: props.accessibilityRole,
         'aria-expanded': props.accessibilityState?.expanded,
         'aria-haspopup': props['aria-haspopup'],

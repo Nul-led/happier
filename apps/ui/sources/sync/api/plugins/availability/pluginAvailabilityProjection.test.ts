@@ -74,6 +74,7 @@ function materializationSnapshot(cursor: number, pluginIds: readonly string[]) {
 function intentRead(cursor: number, id: string) {
     return {
         availabilityCursor: cursor,
+        packageAssets: [],
         hostingCapability: { enabled: false },
         intent: {
             pluginId: id,

@@ -97,13 +97,25 @@ export interface ItemProps {
     onHoverIn?: () => void;
     onHoverOut?: () => void;
     accessibilityRole?: AccessibilityRole;
+    /** Overrides the checked state without changing the visual keyboard highlight. */
+    accessibilityChecked?: boolean;
     accessibilityLabel?: string;
     accessibilityHint?: string;
     accessibilityLiveRegion?: ViewProps['accessibilityLiveRegion'];
+    /**
+     * Platform screen-reader actions on the row itself. Use when a row owns a
+     * secondary action that must not become its own focus stop on touch.
+     */
+    accessibilityActions?: ViewProps['accessibilityActions'];
+    onAccessibilityAction?: ViewProps['onAccessibilityAction'];
     accessibilityExpanded?: boolean;
     webRole?: ViewProps['role'];
     /** Explicit web Tab-order override for a parent-owned composite widget. */
     webTabIndex?: 0 | -1;
+    accessibilityLevel?: number;
+    webKeyShortcuts?: string;
+    onFocus?: () => void;
+    onKeyDown?: (event: { key?: string; nativeEvent?: { key?: string }; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; preventDefault?: () => void; target?: unknown; currentTarget?: unknown; defaultPrevented?: boolean }) => void;
     /** Web DOM id used by composite widgets such as listbox/aria-activedescendant. */
     webId?: string;
     /** Web ARIA position metadata for option-like rows. */
@@ -353,12 +365,19 @@ export const Item = React.memo<ItemProps>((props) => {
         onHoverIn,
         onHoverOut,
         accessibilityRole,
+        accessibilityChecked,
         accessibilityLabel,
         accessibilityHint,
         accessibilityLiveRegion,
+        accessibilityActions,
+        onAccessibilityAction,
         accessibilityExpanded,
         webRole,
         webTabIndex,
+        accessibilityLevel,
+        webKeyShortcuts,
+        onFocus,
+        onKeyDown,
         webId,
         accessibilityPositionInSet,
         accessibilitySetSize,
@@ -415,12 +434,17 @@ export const Item = React.memo<ItemProps>((props) => {
     }, [copy, copyFeedback, detail, subtitle, titleLabel]);
     
     const longPressConsumedRef = React.useRef(false);
+    const [isSplitPrimaryPressed, setIsSplitPrimaryPressed] = React.useState(false);
 
     // Handle long press for copy functionality
     const handlePressIn = React.useCallback(() => {
         longPressConsumedRef.current = false;
+        if (rightElementOutsidePressable && rightElement) setIsSplitPrimaryPressed(true);
         onPressIn?.();
-    }, [onPressIn]);
+    }, [onPressIn, rightElement, rightElementOutsidePressable]);
+    const handlePressOut = React.useCallback(() => {
+        setIsSplitPrimaryPressed(false);
+    }, []);
     
     const webDoublePressHandledAtMsRef = React.useRef<number>(0);
     const webLastPressAtMsRef = React.useRef<number | null>(null);
@@ -865,6 +889,7 @@ export const Item = React.memo<ItemProps>((props) => {
     const resolveInteractiveRowStyle = React.useCallback((pressed: boolean) => {
         const backgroundColor = (() => {
             if (pressed && isIOS && !isWeb) return theme.colors.surface.pressedOverlay;
+            if (pressed && splitRightElementOutsidePressable) return theme.colors.surface.pressed;
             if (showSelectedBackground) return theme.colors.surface.selected;
             // Web-only hover affordance for interactive rows (no hover when disabled).
             if (isWeb && isHovered && !disabled && !loading) return hoverBackgroundColor;
@@ -894,6 +919,8 @@ export const Item = React.memo<ItemProps>((props) => {
         pressableStyle,
         rowPosition,
         showSelectedBackground,
+        splitRightElementOutsidePressable,
+        theme.colors.surface.pressed,
         theme.colors.surface.pressedOverlay,
         theme.colors.surface.selected,
     ]);
@@ -914,7 +941,7 @@ export const Item = React.memo<ItemProps>((props) => {
     // and model-pack status rows). Keep `selected` as the visual owner while
     // omitting the invalid web semantic everywhere that has no selection role.
     const interactiveAccessibilityState = isCheckboxRole
-        ? { ...sharedItemBehavior.accessibilityState, selected: undefined, checked: selected === true }
+        ? { ...sharedItemBehavior.accessibilityState, selected: undefined, checked: accessibilityChecked ?? selected === true }
         : isWeb && !supportsSelectedAccessibilityState
             ? { ...sharedItemBehavior.accessibilityState, selected: undefined }
             : sharedItemBehavior.accessibilityState;
@@ -938,7 +965,7 @@ export const Item = React.memo<ItemProps>((props) => {
     if (splitRightElementOutsidePressable) {
         return (
             <>
-                <View style={[containerCore, style]}>
+                <View style={[containerCore, style, resolveInteractiveRowStyle(isSplitPrimaryPressed)]}>
                     <Pressable
                         ref={assignPressableRef}
                         testID={testID}
@@ -959,6 +986,7 @@ export const Item = React.memo<ItemProps>((props) => {
                             onDoublePress();
                         } : undefined}
                         onPressIn={handlePressIn}
+                        onPressOut={handlePressOut}
                         onHoverIn={isWeb && !disabled && !loading ? () => {
                             setIsHovered(true);
                             onHoverIn?.();
@@ -969,20 +997,29 @@ export const Item = React.memo<ItemProps>((props) => {
                         } : undefined}
                         onMouseDownCapture={isWeb ? (onMouseDownCapture as any) : undefined}
                         onContextMenu={isWeb ? (onContextMenu as any) : undefined}
-                        onKeyDown={isWeb && isKeyboardActivatableRole ? handleSemanticKeyDown : undefined}
+                        onFocus={onFocus}
+                        {...(isWeb ? { 'aria-level': accessibilityLevel, 'aria-keyshortcuts': webKeyShortcuts } : undefined)}
+                        onKeyDown={isWeb ? (event: Parameters<NonNullable<ItemProps['onKeyDown']>>[0]) => {
+                            onKeyDown?.(event);
+                            if (!event.defaultPrevented && isKeyboardActivatableRole) handleSemanticKeyDown(event);
+                        } : undefined}
                         {...(interactiveWebRole ? { role: interactiveWebRole } : undefined)}
                         accessibilityRole={interactiveAccessibilityRole}
                         accessibilityLabel={resolvedAccessibilityLabel}
                         accessibilityHint={accessibilityHint}
+                        accessibilityLiveRegion={accessibilityLiveRegion}
+                        accessibilityActions={accessibilityActions}
+                        onAccessibilityAction={onAccessibilityAction}
                         aria-label={resolvedAccessibilityLabel}
+                        aria-live={accessibilityLiveRegion === 'none' ? 'off' : accessibilityLiveRegion}
                         accessibilityState={interactiveAccessibilityState}
                         aria-selected={interactiveWebRole === 'option' && selected !== undefined ? selected : undefined}
-                        aria-checked={isRadioRole || isCheckboxRole ? selected === true : undefined}
+                        aria-checked={isRadioRole || isCheckboxRole ? accessibilityChecked ?? selected === true : undefined}
                         aria-expanded={accessibilityExpanded}
                         aria-disabled={disabled || loading ? true : undefined}
                         tabIndex={interactiveTabIndex as 0 | -1 | undefined}
                         disabled={disabled || loading}
-                        style={({ pressed }) => [styles.splitPressable, resolveInteractiveRowStyle(pressed)]}
+                        style={styles.splitPressable}
                         android_ripple={(isAndroid || isWeb) ? {
                             color: theme.colors.surface.ripple,
                             borderless: false,
@@ -1039,15 +1076,24 @@ export const Item = React.memo<ItemProps>((props) => {
                 } : undefined}
                 onMouseDownCapture={isWeb ? (onMouseDownCapture as any) : undefined}
                 onContextMenu={isWeb ? (onContextMenu as any) : undefined}
-                onKeyDown={isWeb && isKeyboardActivatableRole ? handleSemanticKeyDown : undefined}
+                onFocus={onFocus}
+                        {...(isWeb ? { 'aria-level': accessibilityLevel, 'aria-keyshortcuts': webKeyShortcuts } : undefined)}
+                        onKeyDown={isWeb ? (event: Parameters<NonNullable<ItemProps['onKeyDown']>>[0]) => {
+                            onKeyDown?.(event);
+                            if (!event.defaultPrevented && isKeyboardActivatableRole) handleSemanticKeyDown(event);
+                        } : undefined}
                 {...(interactiveWebRole ? { role: interactiveWebRole } : undefined)}
                 accessibilityRole={interactiveAccessibilityRole}
                 accessibilityLabel={resolvedAccessibilityLabel}
                 accessibilityHint={accessibilityHint}
+                accessibilityLiveRegion={accessibilityLiveRegion}
+                accessibilityActions={accessibilityActions}
+                onAccessibilityAction={onAccessibilityAction}
                 aria-label={resolvedAccessibilityLabel}
+                aria-live={accessibilityLiveRegion === 'none' ? 'off' : accessibilityLiveRegion}
                 accessibilityState={interactiveAccessibilityState}
                 aria-selected={interactiveWebRole === 'option' && selected !== undefined ? selected : undefined}
-                aria-checked={isRadioRole || isCheckboxRole ? selected === true : undefined}
+                aria-checked={isRadioRole || isCheckboxRole ? accessibilityChecked ?? selected === true : undefined}
                 aria-expanded={accessibilityExpanded}
                 aria-disabled={disabled || loading ? true : undefined}
                 tabIndex={interactiveTabIndex as 0 | -1 | undefined}
@@ -1074,11 +1120,13 @@ export const Item = React.memo<ItemProps>((props) => {
             accessibilityLabel={accessibilityLabel ?? (webRole ? generatedAccessibilityLabel : undefined)}
             accessibilityHint={accessibilityHint}
             accessibilityLiveRegion={accessibilityLiveRegion}
+            accessibilityActions={accessibilityActions}
+            onAccessibilityAction={onAccessibilityAction}
             aria-label={accessibilityLabel ?? (webRole ? generatedAccessibilityLabel : undefined)}
             aria-live={accessibilityLiveRegion === 'none' ? 'off' : accessibilityLiveRegion}
             accessibilityState={interactiveAccessibilityState}
             aria-selected={interactiveWebRole === 'option' && selected !== undefined ? selected : undefined}
-            aria-checked={isRadioRole || isCheckboxRole ? selected === true : undefined}
+            aria-checked={isRadioRole || isCheckboxRole ? accessibilityChecked ?? selected === true : undefined}
             aria-expanded={accessibilityExpanded}
             aria-disabled={disabled || loading ? true : undefined}
             tabIndex={isWeb && webRole && (disabled || loading) ? -1 : undefined}

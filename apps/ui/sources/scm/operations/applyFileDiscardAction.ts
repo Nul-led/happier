@@ -19,6 +19,7 @@ import { tryShowDaemonUnavailableAlertForScmOperationFailure } from '@/scm/opera
 
 export async function applyFileDiscardAction(input: Readonly<{
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     file: Pick<ScmFileStatus, 'fullPath' | 'status'>;
     snapshot: ScmWorkingSnapshot | null;
@@ -30,6 +31,7 @@ export async function applyFileDiscardAction(input: Readonly<{
 }>): Promise<void> {
     const {
         sessionId,
+        serverId,
         sessionPath,
         file,
         snapshot,
@@ -74,11 +76,12 @@ export async function applyFileDiscardAction(input: Readonly<{
     const lockResult = await withSessionProjectScmOperationLock({
         state: storage.getState(),
         sessionId,
+        ...(serverId ? { serverId } : {}),
         operation: 'discard',
         run: async () => {
             const runScmOperation = async () => sessionScmChangeDiscard(sessionId, {
                 entries: [{ path: file.fullPath, kind: file.status }],
-            });
+            }, serverId);
             let response = await runScmOperation();
 
             if (!response.success) {
@@ -86,7 +89,7 @@ export async function applyFileDiscardAction(input: Readonly<{
                     response = await runScmOperationWithGitIndexLockRecovery({
                         cwd: sessionPath,
                         failedResponse: response,
-                        removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request),
+                        removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request, serverId),
                         retryOriginalOperation: runScmOperation,
                     });
                 }
@@ -110,6 +113,7 @@ export async function applyFileDiscardAction(input: Readonly<{
                 reportSessionScmOperation({
                     state: storage.getState(),
                     sessionId,
+                    ...(serverId ? { serverId } : {}),
                     operation: 'discard',
                     status: 'failed',
                     path: file.fullPath,
@@ -126,6 +130,7 @@ export async function applyFileDiscardAction(input: Readonly<{
             reportSessionScmOperation({
                 state: storage.getState(),
                 sessionId,
+                ...(serverId ? { serverId } : {}),
                 operation: 'discard',
                 status: 'success',
                 path: file.fullPath,
@@ -133,7 +138,7 @@ export async function applyFileDiscardAction(input: Readonly<{
                 surface,
                 tracking,
             });
-            await scmStatusSync.invalidateFromMutationAndAwait(sessionId);
+            await scmStatusSync.invalidateFromMutationAndAwait(sessionId, serverId);
             if (refreshAll) {
                 await refreshAll();
             }

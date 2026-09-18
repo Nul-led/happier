@@ -13,6 +13,7 @@ import {
     resolveMachineTargetForSessionFromState,
     type SessionDisplayIdentity,
     type ExactSessionMachineTargetIdentity,
+    type SessionMachineTargetIdentity,
     type SessionMachineControlTarget,
     type SessionMachineTarget,
     type SessionMachineTargetState,
@@ -21,13 +22,13 @@ import {
 export { INACTIVE_SESSION_RPC_UNAVAILABLE_ERROR } from '@/sync/runtime/sessionMachineRpcErrorCodes';
 
 export function readMachineTargetForSession(
-    session: string | ExactSessionMachineTargetIdentity,
+    session: SessionMachineTargetIdentity,
 ): SessionMachineTarget | null {
     return resolveMachineTargetForSessionFromState(storage.getState() as SessionMachineTargetState, session);
 }
 
 export function readMachineControlTargetForSession(
-    session: string | ExactSessionMachineTargetIdentity,
+    session: SessionMachineTargetIdentity,
 ): SessionMachineControlTarget | null {
     return resolveMachineControlTargetForSessionFromState(storage.getState() as SessionMachineTargetState, session);
 }
@@ -68,11 +69,13 @@ export function readDisplayPathForSession(input: Readonly<{
 export function readDisplayIdentityForSession(input: Readonly<{
     sessionId?: string | null;
     metadata?: SessionTargetMetadataLike;
+    preferProvidedMetadata?: boolean;
 }>): SessionDisplayIdentity {
     return resolveDisplayIdentityForSessionFromState({
         state: storage.getState() as SessionMachineTargetState,
         sessionId: input.sessionId,
         metadata: input.metadata,
+        ...(input.preferProvidedMetadata === true ? { preferProvidedMetadata: true } : {}),
     });
 }
 
@@ -117,4 +120,4 @@ export {
     resolveMachineControlTargetForSessionFromState,
     resolveMachineTargetForSessionFromState,
 };
-export type { ExactSessionMachineTargetIdentity, SessionDisplayIdentity, SessionMachineControlTarget, SessionMachineTarget, SessionMachineTargetState };
+export type { SessionMachineTargetIdentity, ExactSessionMachineTargetIdentity, SessionDisplayIdentity, SessionMachineControlTarget, SessionMachineTarget, SessionMachineTargetState };

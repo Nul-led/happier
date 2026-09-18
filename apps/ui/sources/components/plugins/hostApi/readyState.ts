@@ -2,18 +2,18 @@ import type { PluginUiSurfaceContextV1 } from '@happier-dev/protocol/plugins/ui'
 
 export type PluginUiHostReadyStateStatus = 'pending' | 'ready' | 'timedOut';
 
-export type PluginUiHostReadyStateSnapshot = Readonly<{
+export type PluginUiHostReadyStateSnapshot<TSurface = PluginUiSurfaceContextV1> = Readonly<{
     state: PluginUiHostReadyStateStatus;
-    surface: PluginUiSurfaceContextV1;
+    surface: TSurface;
     updatedAtMs: number;
     diagnostics: readonly string[];
 }>;
 
 export type PluginUiHostReadyRecordResult = 'recorded' | 'duplicate';
 
-export type PluginUiHostReadyStateChange = Readonly<{
+export type PluginUiHostReadyStateChange<TSurface = PluginUiSurfaceContextV1> = Readonly<{
     state: 'ready' | 'timedOut';
-    surface: PluginUiSurfaceContextV1;
+    surface: TSurface;
     updatedAtMs: number;
     diagnostics: readonly string[];
 }>;
@@ -38,15 +38,15 @@ export function pluginUiSurfaceContextsMatch(
  * inside its own per-surface handler and can never bind a second surface to it,
  * so the state is a single scalar rather than a keyed collection.
  */
-export function createPluginUiHostReadyStateStore(options: Readonly<{
-    surface: PluginUiSurfaceContextV1;
+export function createPluginUiHostReadyStateStore<TSurface = PluginUiSurfaceContextV1>(options: Readonly<{
+    surface: TSurface;
     nowMs?: () => number;
 }>) {
     const nowMs = options.nowMs ?? (() => Date.now());
     const surface = options.surface;
-    let state: PluginUiHostReadyStateSnapshot | null = null;
+    let state: PluginUiHostReadyStateSnapshot<TSurface> | null = null;
 
-    function read(): PluginUiHostReadyStateSnapshot {
+    function read(): PluginUiHostReadyStateSnapshot<TSurface> {
         if (state) {
             return state;
         }
@@ -61,7 +61,7 @@ export function createPluginUiHostReadyStateStore(options: Readonly<{
 
     function recordReady(): Readonly<{
         result: PluginUiHostReadyRecordResult;
-        snapshot: PluginUiHostReadyStateSnapshot;
+        snapshot: PluginUiHostReadyStateSnapshot<TSurface>;
     }> {
         const current = read();
         if (current.state === 'ready') {
@@ -78,7 +78,7 @@ export function createPluginUiHostReadyStateStore(options: Readonly<{
 
     function recordTimeout(
         diagnostics: readonly string[] = ['ready_timeout'],
-    ): PluginUiHostReadyStateSnapshot {
+    ): PluginUiHostReadyStateSnapshot<TSurface> {
         const current = read();
         if (current.state === 'ready') {
             return current;

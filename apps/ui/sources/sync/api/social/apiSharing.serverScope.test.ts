@@ -1,4 +1,4 @@
-import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION } from '@happier-dev/protocol';
+import { CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION_PROTOCOL_VERSION } from '@happier-dev/protocol';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const kvStore = vi.hoisted(() => new Map<string, string>());
@@ -59,14 +59,19 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdFo
 import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 
 import {
-    createPublicShare,
     createSessionShare,
+    deleteSessionShare,
     getSessionShares,
+    updateSessionShare,
 } from './apiSharing';
-import { getSessionFriendsList } from './createSessionSocialRequest';
+import { createSessionSocialRequest, getSessionFriendsList } from './createSessionSocialRequest';
 
 function expectHeaderValue(headers: HeadersInit | undefined, key: string, value: string) {
     expect(new Headers(headers).get(key)).toBe(value);
+}
+
+function mutationCalls(url: string, method: string) {
+    return runtimeFetchMock.mock.calls.filter(([input, init]) => String(input) === url && init?.method === method);
 }
 
 function tokenForSub(sub: string): string {
@@ -76,6 +81,21 @@ function tokenForSub(sub: string): string {
         .replaceAll('=', '');
     return `e30.${payload}.signature`;
 }
+
+const releasedShare = Object.freeze({
+    id: 'share-1',
+    sharedWithUser: Object.freeze({
+        id: 'user-2',
+        username: 'lee',
+        firstName: null,
+        lastName: null,
+        avatar: null,
+    }),
+    accessLevel: 'edit' as const,
+    canApprovePermissions: false,
+    createdAt: 1,
+    updatedAt: 1,
+});
 
 describe('apiSharing server-scoped session routes', () => {
     beforeEach(() => {
@@ -87,10 +107,46 @@ describe('apiSharing server-scoped session routes', () => {
         resolvePreferredServerIdForSessionIdMock.mockReset();
     });
 
+    it('uses the explicit Home and Account even when the same session id prefers another Home', async () => {
+        const preferred = await upsertServerProfile({ serverUrl: 'https://preferred.example', name: 'Preferred' });
+        const target = await upsertServerProfile({ serverUrl: 'https://target.example', name: 'Target' });
+        await setActiveServerId(preferred.id, { scope: 'device' });
+        resolvePreferredServerIdForSessionIdMock.mockReturnValue(preferred.id);
+        const token = tokenForSub('target-account');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token, secret: 'secret' });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+        runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({
+            shares: [{ ...releasedShare, id: 'target-share' }],
+        })));
+        serverFetchMock.mockResolvedValue(new Response(JSON.stringify({
+            shares: [{ ...releasedShare, id: 'wrong-share' }],
+        })));
+
+        const result = await getSessionShares({ token, secret: 'secret' }, 'same-id', {
+            scope: { serverId: target.id, accountId: 'target-account' },
+        });
+
+        expect(result.map((share) => share.id)).toEqual(['target-share']);
+        expect(serverFetchMock).not.toHaveBeenCalled();
+        expect(runtimeFetchMock.mock.calls.some(([url]) => url === 'https://target.example/v1/sessions/same-id/shares')).toBe(true);
+    });
+
+    it('rejects a changed Account before a scoped social request leaves the process', async () => {
+        const target = await upsertServerProfile({ serverUrl: 'https://target.example', name: 'Target' });
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('new-account'), secret: 'secret' });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+        const request = createSessionSocialRequest({ token: 'stale', secret: 'secret' }, 'same-id', {
+            scope: { serverId: target.id, accountId: 'original-account' },
+        });
+        await expect(request('/v1/sessions/same-id/public-share')).rejects.toThrow('does not match requested scope');
+        expect(runtimeFetchMock).not.toHaveBeenCalled();
+        expect(serverFetchMock).not.toHaveBeenCalled();
+    });
+
     it('gets session shares through the preferred owner server when the owner is not active', async () => {
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
         const ownerToken = tokenForSub('owner-account');
         getCredentialsForServerUrlMock.mockResolvedValue({ token: ownerToken, secret: 'owner-secret' });
@@ -114,33 +170,21 @@ describe('apiSharing server-scoped session routes', () => {
         expectHeaderValue(
             sharesCall?.[1]?.headers,
             'x-happier-account-stored-content-protocol',
-            String(CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION),
+            String(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION_PROTOCOL_VERSION),
         );
     });
 
     it('creates session shares through the preferred owner server and preserves the request body', async () => {
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
         const ownerToken = tokenForSub('owner-account');
         getCredentialsForServerUrlMock.mockResolvedValue({ token: ownerToken, secret: 'owner-secret' });
         createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
         runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({
             share: {
-                id: 'share-1',
-                sessionId: 'session-1',
-                sharedWithUser: {
-                    id: 'user-2',
-                    username: 'lee',
-                    firstName: null,
-                    lastName: null,
-                    avatar: null,
-                },
-                accessLevel: 'edit',
-                canApprovePermissions: false,
-                createdAt: 1,
-                updatedAt: 1,
+                ...releasedShare,
             },
         }), {
             status: 200,
@@ -169,51 +213,103 @@ describe('apiSharing server-scoped session routes', () => {
         expectHeaderValue(
             createCall?.[1]?.headers,
             'x-happier-account-stored-content-protocol',
-            String(CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION),
+            String(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION_PROTOCOL_VERSION),
         );
     });
 
-    it('creates a public share through the preferred owner server with the current declaration', async () => {
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
-        resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
-        const ownerToken = tokenForSub('owner-account');
-        getCredentialsForServerUrlMock.mockResolvedValue({ token: ownerToken, secret: 'owner-secret' });
-        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
-        runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({
-            publicShare: { id: 'public-share-1' },
-        }), {
+    it.each([
+        ['list 400', 400, () => getSessionShares({ token: 'token', secret: 'secret' }, 'session-1')],
+        ['list 403', 403, () => getSessionShares({ token: 'token', secret: 'secret' }, 'session-1')],
+        ['list 404', 404, () => getSessionShares({ token: 'token', secret: 'secret' }, 'session-1')],
+        ['create 400', 400, () => createSessionShare(
+            { token: 'token', secret: 'secret' }, 'session-1',
+            { userId: 'user-2', accessLevel: 'edit' },
+        )],
+        ['create 403', 403, () => createSessionShare(
+            { token: 'token', secret: 'secret' }, 'session-1',
+            { userId: 'user-2', accessLevel: 'edit' },
+        )],
+        ['create 404', 404, () => createSessionShare(
+            { token: 'token', secret: 'secret' }, 'session-1',
+            { userId: 'user-2', accessLevel: 'edit' },
+        )],
+        ['update 400', 400, () => updateSessionShare(
+            { token: 'token', secret: 'secret' }, 'session-1', 'share-1', { accessLevel: 'view' },
+        )],
+        ['update 403', 403, () => updateSessionShare(
+            { token: 'token', secret: 'secret' }, 'session-1', 'share-1', { accessLevel: 'view' },
+        )],
+        ['update 404', 404, () => updateSessionShare(
+            { token: 'token', secret: 'secret' }, 'session-1', 'share-1', { accessLevel: 'view' },
+        )],
+        ['delete 400', 400, () => deleteSessionShare(
+            { token: 'token', secret: 'secret' }, 'session-1', 'share-1',
+        )],
+        ['delete 403', 403, () => deleteSessionShare(
+            { token: 'token', secret: 'secret' }, 'session-1', 'share-1',
+        )],
+        ['delete 404', 404, () => deleteSessionShare(
+            { token: 'token', secret: 'secret' }, 'session-1', 'share-1',
+        )],
+    ])('sends exactly one request for terminal direct-share %s', async (_name, status, run) => {
+        serverFetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'terminal' }), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        vi.useFakeTimers();
+        try {
+            const result = run();
+            const rejection = expect(result).rejects.toThrow();
+            await vi.runAllTimersAsync();
+            await rejection;
+            expect(serverFetchMock).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it.each([
+        ['network failure', () => serverFetchMock.mockRejectedValue(new TypeError('network unavailable'))],
+        ['server failure', () => serverFetchMock.mockResolvedValue(new Response('{}', { status: 503 }))],
+    ])('retains the bounded retry budget for ambiguous %s', async (_name, arrange) => {
+        arrange();
+        vi.useFakeTimers();
+        try {
+            const result = getSessionShares({ token: 'token', secret: 'secret' }, 'session-1');
+            const rejection = expect(result).rejects.toThrow();
+            await vi.runAllTimersAsync();
+            await rejection;
+            expect(serverFetchMock).toHaveBeenCalledTimes(8);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it.each([
+        ['access level', { ...releasedShare, accessLevel: 'write' }],
+        ['profile', { ...releasedShare, sharedWithUser: { ...releasedShare.sharedWithUser, username: 42 } }],
+        ['timestamp', { ...releasedShare, updatedAt: 'later' }],
+    ])('rejects a malformed released direct-share %s at ingress without retrying', async (_name, share) => {
+        serverFetchMock.mockResolvedValue(new Response(JSON.stringify({ shares: [share] }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         }));
-
-        const publicShare = await createPublicShare(
-            { token: 'active-token', secret: 'active-secret' },
-            'session-1',
-            { token: 'public-token' },
-        );
-
-        expect(publicShare.id).toBe('public-share-1');
-        expect(serverFetchMock).not.toHaveBeenCalled();
-        const requestCall = runtimeFetchMock.mock.calls.find(([input]) =>
-            String(input) === 'https://owner.example/v1/sessions/session-1/public-share');
-        expect(requestCall?.[1]).toEqual(expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({ token: 'public-token' }),
-        }));
-        expectHeaderValue(requestCall?.[1]?.headers, 'Authorization', `Bearer ${ownerToken}`);
-        expectHeaderValue(
-            requestCall?.[1]?.headers,
-            'x-happier-account-stored-content-protocol',
-            String(CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION),
-        );
+        vi.useFakeTimers();
+        try {
+            const result = getSessionShares({ token: 'token', secret: 'secret' }, 'session-1');
+            const rejection = expect(result).rejects.toThrow();
+            await vi.runAllTimersAsync();
+            await rejection;
+            expect(serverFetchMock).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('gets shareable friends through the preferred session owner server', async () => {
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
         const ownerToken = tokenForSub('owner-account');
         getCredentialsForServerUrlMock.mockResolvedValue({ token: ownerToken, secret: 'owner-secret' });

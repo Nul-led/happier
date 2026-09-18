@@ -21,8 +21,8 @@ vi.mock('../../api/session/apiSocket', () => ({
   },
 }));
 
-vi.mock('../../runtime/orchestration/serverScopedRpc/resolveServerScopedSessionContext', () => ({
-  resolveServerScopedSessionContext: mockResolveContext,
+vi.mock('../../runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext', () => ({
+  resolveServerAccountRequestContext: mockResolveContext,
 }));
 
 vi.mock('@/utils/system/runtimeFetch', () => ({

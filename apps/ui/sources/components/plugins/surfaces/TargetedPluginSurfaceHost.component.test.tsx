@@ -16,6 +16,7 @@ import {
     type TargetedPluginSurfaceMountRequest,
 } from './TargetedPluginSurfaceHost';
 import type { PreparedDaemonPluginUiTargetedSurfaceMountV1 } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import { createPluginDeclarativeModelFixture } from '@/dev/testkit/fixtures/pluginDeclarativeModelFixture';
 
 function prepareTargetedMount(
     rawMount: ReturnType<typeof DaemonPluginUiTargetedSurfaceMountV1Schema.parse>,
@@ -64,10 +65,11 @@ const mount = prepareTargetedMount(DaemonPluginUiTargetedSurfaceMountV1Schema.pa
         renderer: Object.freeze({
             kind: 'declarative' as const,
             contributionId: 'review-detail',
-            model: Object.freeze({
-                visible: true,
-                identity: Object.freeze({ pluginId: 'acme.review', generation: 'review-generation-b' }),
-                root: Object.freeze({ kind: 'state', state: 'empty', title: 'No review selected' }),
+            model: createPluginDeclarativeModelFixture({
+                pluginId: 'acme.review',
+                localId: 'review-detail',
+                generation: 'review-generation-b',
+                document: { version: 1, root: { kind: 'state', state: 'empty', title: 'No review selected' } },
             }),
         }),
         availability: Object.freeze({ state: 'available' as const, reason: 'available', diagnostics: Object.freeze([]) }),

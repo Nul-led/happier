@@ -1,6 +1,5 @@
 import {
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-    PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
     type PeerTcpTunnelEncoding,
 } from '@happier-dev/protocol';
 
@@ -8,6 +7,7 @@ export type MachineStreamRouteKind = 'loopback_direct' | 'server_relay';
 export type MachineStreamDeliveryMode = 'demand_pull' | 'push_event' | 'input_append';
 export type MachineStreamKind = 'audio_pcm' | 'terminal' | 'live_stream' | 'generic';
 export type MachineStreamPayloadShape = 'bytes' | 'json_base64_envelope';
+export const MACHINE_RPC_JSON_BASE64_ENCODING = 'machine_rpc_json_base64' as const;
 
 export type MachineStreamFlowControlCapabilities = Readonly<{
     ack: boolean;
@@ -33,7 +33,7 @@ export type MachineStreamCarrierProfile = Readonly<{
     deliveryMode: MachineStreamDeliveryMode;
     streamKind: MachineStreamKind;
     binaryCapable: boolean;
-    frameEncoding: PeerTcpTunnelEncoding;
+    frameEncoding: PeerTcpTunnelEncoding | typeof MACHINE_RPC_JSON_BASE64_ENCODING;
     payloadShape: MachineStreamPayloadShape;
     flowControl: MachineStreamFlowControlCapabilities;
     orderedInputAppend?: MachineStreamOrderedInputAppendContract;
@@ -45,7 +45,7 @@ export type TerminalStreamCarrierMapping = Readonly<{
     routeKinds: readonly MachineStreamRouteKind[];
     deliveryMode: 'demand_pull';
     binaryCapable: false;
-    frameEncoding: typeof PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1;
+    frameEncoding: typeof MACHINE_RPC_JSON_BASE64_ENCODING;
     payloadShape: 'json_base64_envelope';
     migrationRequiredForB0: false;
     terminalCapabilities: Readonly<{
@@ -90,7 +90,7 @@ export function resolveMachineStreamCarrierProfile(input: Readonly<{
         binaryCapable: usesTunnelBinaryFrame,
         frameEncoding: usesTunnelBinaryFrame
             ? PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2
-            : PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
+            : MACHINE_RPC_JSON_BASE64_ENCODING,
         payloadShape: usesTunnelBinaryFrame ? 'bytes' : 'json_base64_envelope',
         flowControl: ACK_CREDIT_REPLAY_FLOW_CONTROL,
         ...(input.deliveryMode === 'input_append'
@@ -108,7 +108,7 @@ export function describeTerminalStreamCarrierMapping(): TerminalStreamCarrierMap
         routeKinds: ['loopback_direct', 'server_relay'],
         deliveryMode: 'demand_pull',
         binaryCapable: false,
-        frameEncoding: PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
+        frameEncoding: MACHINE_RPC_JSON_BASE64_ENCODING,
         payloadShape: 'json_base64_envelope',
         migrationRequiredForB0: false,
         terminalCapabilities: {

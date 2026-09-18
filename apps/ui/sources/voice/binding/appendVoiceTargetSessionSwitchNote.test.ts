@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { installVoiceStorageModuleMocks } from '@/voice/persistence/installVoiceStorageModuleMocks';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+
+// Hydrated `sessions` fixtures below belong to the active Home's entity map, so the
+// qualified switch-note targets address that Home.
+const activeServerId = getActiveServerSnapshot().serverId;
 
 const appendVoiceConversationNoteText = vi.fn();
 
@@ -16,7 +21,8 @@ const state: any = {
     s1: { id: 's1', metadata: { summary: { text: 'Private summary A' } } },
     s2: { id: 's2', metadata: { summary: { text: 'Private summary B' } } },
   },
-  sessionListRenderables: {},
+  sessionListRowsByServerId: {},
+  ordinarySessionListMembershipByServerId: {},
   sessionListIndexByServerId: {},
   concurrentSessionListCacheByServerId: {},
 };
@@ -46,7 +52,8 @@ describe('appendVoiceTargetSessionSwitchNote', () => {
       s1: { id: 's1', metadata: { summary: { text: 'Private summary A' } } },
       s2: { id: 's2', metadata: { summary: { text: 'Private summary B' } } },
     };
-    state.sessionListRenderables = {};
+    state.sessionListRowsByServerId = {};
+    state.ordinarySessionListMembershipByServerId = {};
     state.sessionListIndexByServerId = {};
     state.concurrentSessionListCacheByServerId = {};
   });
@@ -57,8 +64,8 @@ describe('appendVoiceTargetSessionSwitchNote', () => {
 
     appendVoiceTargetSessionSwitchNote({
       conversationSessionId: 'carrier-s1',
-      previousTargetSessionId: 's1',
-      targetSessionId: 's2',
+      previousTargetSessionAddress: { serverId: activeServerId, sessionId: 's1' },
+      targetSessionAddress: { serverId: activeServerId, sessionId: 's2' },
     });
 
     expect(appendVoiceConversationNoteText).toHaveBeenCalledWith({
@@ -75,8 +82,8 @@ describe('appendVoiceTargetSessionSwitchNote', () => {
 
     appendVoiceTargetSessionSwitchNote({
       conversationSessionId: 'carrier-s1',
-      previousTargetSessionId: 's1',
-      targetSessionId: 's2',
+      previousTargetSessionAddress: { serverId: activeServerId, sessionId: 's1' },
+      targetSessionAddress: { serverId: activeServerId, sessionId: 's2' },
     });
 
     expect(appendVoiceConversationNoteText).toHaveBeenCalledWith({
@@ -93,8 +100,8 @@ describe('appendVoiceTargetSessionSwitchNote', () => {
 
     appendVoiceTargetSessionSwitchNote({
       conversationSessionId: 'carrier-s1',
-      previousTargetSessionId: 's1',
-      targetSessionId: 's2',
+      previousTargetSessionAddress: { serverId: activeServerId, sessionId: 's1' },
+      targetSessionAddress: { serverId: activeServerId, sessionId: 's2' },
     });
 
     expect(appendVoiceConversationNoteText).toHaveBeenCalledWith({
@@ -106,30 +113,33 @@ describe('appendVoiceTargetSessionSwitchNote', () => {
   it('does not disclose lookup session-list names when summary sharing is disabled', async () => {
     state.settings.voice.privacy.shareSessionSummary = false;
     state.sessions = {};
-    state.sessionListRenderables = {
-      s1: {
-        id: 's1',
-        updatedAt: 1,
-        metadata: { name: 'Voice Target Alpha', summaryText: 'Private summary A', path: '/tmp/alpha' },
-      },
-      s2: {
-        id: 's2',
-        updatedAt: 2,
-        metadata: { name: 'Voice Tracked Beta', summaryText: 'Private summary B', path: '/tmp/beta' },
+    state.sessionListRowsByServerId = {
+      [activeServerId]: {
+        s1: {
+          id: 's1',
+          updatedAt: 1,
+          metadata: { name: 'Voice Target Alpha', summaryText: 'Private summary A', path: '/tmp/alpha' },
+        },
+        s2: {
+          id: 's2',
+          updatedAt: 2,
+          metadata: { name: 'Voice Tracked Beta', summaryText: 'Private summary B', path: '/tmp/beta' },
+        },
       },
     };
+    state.ordinarySessionListMembershipByServerId = { [activeServerId]: ['s1', 's2'] };
     state.sessionListIndexByServerId = {
-      'active-server': [
-        { type: 'session', sessionId: 's1', serverId: 'active-server', serverName: 'Active' },
-        { type: 'session', sessionId: 's2', serverId: 'active-server', serverName: 'Active' },
+      [activeServerId]: [
+        { type: 'session', sessionId: 's1', serverId: activeServerId, serverName: 'Active' },
+        { type: 'session', sessionId: 's2', serverId: activeServerId, serverName: 'Active' },
       ],
     };
     const { appendVoiceTargetSessionSwitchNote } = await import('./appendVoiceTargetSessionSwitchNote');
 
     appendVoiceTargetSessionSwitchNote({
       conversationSessionId: 'carrier-s1',
-      previousTargetSessionId: 's1',
-      targetSessionId: 's2',
+      previousTargetSessionAddress: { serverId: activeServerId, sessionId: 's1' },
+      targetSessionAddress: { serverId: activeServerId, sessionId: 's2' },
     });
 
     expect(appendVoiceConversationNoteText).toHaveBeenCalledWith({
@@ -148,8 +158,8 @@ describe('appendVoiceTargetSessionSwitchNote', () => {
 
     appendVoiceTargetSessionSwitchNote({
       conversationSessionId: 'carrier-s1',
-      previousTargetSessionId: 's1',
-      targetSessionId: 's2',
+      previousTargetSessionAddress: { serverId: activeServerId, sessionId: 's1' },
+      targetSessionAddress: { serverId: activeServerId, sessionId: 's2' },
     });
 
     expect(appendVoiceConversationNoteText).toHaveBeenCalledWith({

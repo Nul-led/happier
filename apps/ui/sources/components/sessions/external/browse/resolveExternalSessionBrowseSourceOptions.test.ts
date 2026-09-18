@@ -51,7 +51,10 @@ const CODEX_SOURCE_DECLARATION = {
     ],
 } as const;
 
-function createProjection(agentIds: readonly string[]): PluginProjectionV2 {
+function createProjection(
+    agentIds: readonly string[],
+    resumeOnlyAgentIds: ReadonlySet<string> = new Set(),
+): PluginProjectionV2 {
     return PluginProjectionV2Schema.parse({
         v: 2,
         generation: 17,
@@ -84,6 +87,7 @@ function createProjection(agentIds: readonly string[]): PluginProjectionV2 {
                         ? [CODEX_SOURCE_DECLARATION]
                         : [{
                             sourceKind: `${agentId}Archive`,
+                            ...(resumeOnlyAgentIds.has(agentId) ? { resumeOnly: true } : {}),
                             schema: {
                                 fields: [{ name: 'kind', kind: 'literal', value: `${agentId}Archive` }],
                             },
@@ -140,6 +144,21 @@ function createOpenCodeProjection(): PluginProjectionV2 {
 }
 
 describe('resolveExternalSessionBrowseSourceOptions', () => {
+    it('offers resume-only sources only to the remote-session-id picker', async () => {
+        const { resolveExternalSessionBrowseSourceOptions } = await externalSessionBrowseModulePromise;
+        const projection = createProjection(['fx'], new Set(['fx']));
+
+        expect(resolveExternalSessionBrowseSourceOptions({
+            providerId: 'fx', profile: null, settings: { connectedServicesProfileLabelByKey: {} }, projection,
+        })).toEqual([]);
+        expect(resolveExternalSessionBrowseSourceOptions({
+            providerId: 'fx', profile: null, settings: { connectedServicesProfileLabelByKey: {} }, projection,
+            interaction: 'pickRemoteSessionId',
+        })).toEqual([
+            expect.objectContaining({ source: { kind: 'fxArchive' } }),
+        ]);
+    });
+
     it('admits background follow for a currently declared source and refuses an undeclared or unparsable one', async () => {
         const { supportsExternalSessionBackgroundFollow } = await externalSessionBrowseModulePromise;
         const projection = createProjection(['codex']);
@@ -179,6 +198,25 @@ describe('resolveExternalSessionBrowseSourceOptions', () => {
             source: { kind: 'codexHome', home: 'user' },
             projection: staleProjection,
         })).toBe(false);
+    });
+
+    it('refuses background follow for a resume-only source while admitting the same source when it is not resume-only', async () => {
+        const { supportsExternalSessionBackgroundFollow } = await externalSessionBrowseModulePromise;
+
+        // A resume-only source declares listing plus "resume in Happier" and
+        // nothing else. A retained link to one must never expose observation
+        // -backed background follow, even though the source kind still parses.
+        expect(supportsExternalSessionBackgroundFollow({
+            providerId: 'fx',
+            source: { kind: 'fxArchive' } as never,
+            projection: createProjection(['fx'], new Set(['fx'])),
+        })).toBe(false);
+
+        expect(supportsExternalSessionBackgroundFollow({
+            providerId: 'fx',
+            source: { kind: 'fxArchive' } as never,
+            projection: createProjection(['fx']),
+        })).toBe(true);
     });
 
     it('resolves a non-bundled auxiliary-only Agent from the daemon projection without static Agent catalog membership', async () => {

@@ -14,6 +14,7 @@ export type AgentInputHostControlId =
     | 'checkout'
     | 'automation'
     | 'stop'
+    | 'sessionAccess'
     | 'recipient'
     | 'delivery'
     | 'attachments'

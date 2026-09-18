@@ -327,11 +327,27 @@ describe('composerSubmissionCoordinator', () => {
             references: [],
             attachments: [issueAttachment],
         });
+        expect(admit.mock.calls[0]?.[0]).not.toBe(snapshot);
         expect(clearAcceptedSnapshot).toHaveBeenCalledWith(expect.objectContaining({
             revision: 7,
             attachments: [issueAttachment],
         }));
+        expect(clearAcceptedSnapshot.mock.calls[0]?.[0]).toBe(snapshot);
         expect(result).toMatchObject({ status: 'accepted', cleared: false });
+    });
+
+    it('admits a textless snapshot when the same mounted composer owns sendable transfer attachments', async () => {
+        const admit = vi.fn(async () => ({ status: 'accepted' as const }));
+
+        const result = await submitComposerSnapshot({
+            snapshot: createSnapshot({ text: '', references: [], attachments: [] }),
+            additionalSendableContent: true,
+            route: { kind: 'session', ref: { kind: 'session', sessionId: 'session-1' }, admit },
+            clearAcceptedSnapshot: () => true,
+        });
+
+        expect(result.status).toBe('accepted');
+        expect(admit).toHaveBeenCalledOnce();
     });
 
     it('takes Triage entry context only from the exact current composer snapshot across selection and scope changes', async () => {

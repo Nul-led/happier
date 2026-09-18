@@ -106,6 +106,22 @@ export function useServerFeaturesRuntimeSnapshot(options?: Readonly<{ enabled?: 
                 serverId ? { serverId } : undefined,
             );
             setSnapshot(cached ?? LOADING_SERVER_FEATURES_SNAPSHOT);
+            if (cached && !retryTimer) {
+                const retryDelayMs = getServerFeaturesSnapshotRetryDelayMs({
+                    serverId: serverId || undefined,
+                    snapshot: cached,
+                });
+                if (retryDelayMs !== null) {
+                    const generation = requestGeneration;
+                    retryTimer = setTimeout(() => {
+                        if (cancelled || generation !== requestGeneration) return;
+                        retryTimer = null;
+                        fireAndForget(loadForServerId(serverId || undefined, generation), {
+                            tag: 'useServerFeaturesRuntimeSnapshot.retryPublishedTransientError',
+                        });
+                    }, retryDelayMs);
+                }
+            }
         });
 
         const initialActive = getActiveServerSnapshot();
@@ -157,6 +173,18 @@ export function useServerFeaturesSnapshotForServerId(
             if (cancelled || !serverId) return;
             const cached = getCachedServerFeaturesSnapshot({ serverId });
             setSnapshot(cached ?? LOADING_SERVER_FEATURES_SNAPSHOT);
+            if (cached && !retryTimer) {
+                const retryDelayMs = getServerFeaturesSnapshotRetryDelayMs({ serverId, snapshot: cached });
+                if (retryDelayMs !== null) {
+                    retryTimer = setTimeout(() => {
+                        if (cancelled) return;
+                        retryTimer = null;
+                        fireAndForget(load(serverId), {
+                            tag: 'useServerFeaturesSnapshotForServerId.retryPublishedTransientError',
+                        });
+                    }, retryDelayMs);
+                }
+            }
         });
 
         const load = async (serverId: string) => {
@@ -169,6 +197,7 @@ export function useServerFeaturesSnapshotForServerId(
                 if (retryDelayMs !== null) {
                     retryTimer = setTimeout(() => {
                         if (cancelled) return;
+                        retryTimer = null;
                         fireAndForget(load(serverId), {
                             tag: 'useServerFeaturesSnapshotForServerId.retryTransientError',
                         });
@@ -339,7 +368,10 @@ export function useServerFeaturesMainSelectionSnapshot(
 
         if (missing.length === 0) {
             setState({ status: 'ready', serverIds, snapshotsByServerId });
-            if (Object.values(snapshotsByServerId).some((snapshot) => snapshot.status === 'error')) {
+            if (serverIds.some((serverId) => getServerFeaturesSnapshotRetryDelayMs({
+                serverId,
+                snapshot: snapshotsByServerId[serverId]!,
+            }) !== null)) {
                 fireAndForget(load(serverIds), { tag: 'useServerFeaturesMainSelectionSnapshot.retryTransientError' });
             }
             return cleanup;

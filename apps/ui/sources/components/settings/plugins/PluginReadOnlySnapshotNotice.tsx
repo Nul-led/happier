@@ -9,6 +9,12 @@ import { Icon } from '@/components/ui/icons/Icon';
 import type { PluginReadOnlySnapshotReason } from './model/pluginMarketplaceModel';
 
 function resolveNoticeSubtitle(reason: PluginReadOnlySnapshotReason): string {
+    if (reason === 'refreshing') {
+        return t('settingsPlugins.readOnlyRefreshing');
+    }
+    if (reason === 'installationUnavailable') {
+        return t('settingsPlugins.installationReadUnavailable');
+    }
     if (reason === 'projectionUnavailable') {
         return t('settingsPlugins.readOnlyProjectionUnavailable');
     }
@@ -25,8 +31,8 @@ export const PluginReadOnlySnapshotNotice = React.memo(function PluginReadOnlySn
 }>) {
     const { theme } = useUnistyles();
     const subtitle = resolveNoticeSubtitle(props.reason);
-    // Only a reachable machine projection can be retried; Account recovery has no machine action.
-    const onRetry = props.reason === 'projectionUnavailable' ? props.onRetry : undefined;
+    // Only failed reads from a reachable machine can be retried here.
+    const onRetry = props.reason === 'projectionUnavailable' || props.reason === 'installationUnavailable' ? props.onRetry : undefined;
 
     return (
         <View
@@ -37,9 +43,10 @@ export const PluginReadOnlySnapshotNotice = React.memo(function PluginReadOnlySn
         >
             <Item
                 testID={onRetry ? `${props.testID}-retry` : undefined}
-                title={t('common.unavailable')}
+                title={t(props.reason === 'refreshing' ? 'common.loading' : 'common.unavailable')}
                 subtitle={subtitle}
-                icon={<Icon name="cloud-slash" size={29} color={theme.colors.text.secondary} />}
+                subtitleLines={0}
+                icon={<Icon name={props.reason === 'refreshing' ? 'arrow-clockwise' : 'cloud-slash'} size={29} color={theme.colors.text.secondary} />}
                 showChevron={false}
                 mode={onRetry ? 'interactive' : 'info'}
                 {...(onRetry ? { detail: t('common.retry'), onPress: onRetry, accessibilityLabel: `${subtitle} ${t('common.retry')}` } : {})}

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IDBFactory } from 'fake-indexeddb';
 
 // Sync imports persistence, which instantiates MMKV. Mock it for deterministic tests.
 const kvStore = vi.hoisted(() => new Map<string, string>());
@@ -95,12 +96,14 @@ vi.mock('@/agents/registry/registryCore', () => ({
     CANONICAL_AGENT_IDS: ['claude', 'codex', 'pi'],
     DEFAULT_AGENT_ID: 'codex',
     getAgentCore: agentCatalogMocks.getAgentCore,
+    isBundledAgentId: (agentId: unknown) => typeof agentId === 'string' && ['claude', 'codex', 'pi'].includes(agentId),
     resolveAgentIdFromFlavor: agentCatalogMocks.resolveAgentIdFromFlavor,
     resolveAgentIdFromSessionMetadata: (metadata: Record<string, unknown> | null | undefined) =>
         agentCatalogMocks.resolveAgentIdFromFlavor(metadata?.flavor),
 }));
 
 vi.mock('@/agents/catalog/catalog', () => ({
+    AGENT_IDS: ['claude', 'codex', 'pi'],
     getAgentCore: agentCatalogMocks.getAgentCore,
     isBundledAgentId: (agentId: unknown) => typeof agentId === 'string' && ['claude', 'codex', 'pi'].includes(agentId),
     resolveAgentIdFromFlavor: agentCatalogMocks.resolveAgentIdFromFlavor,
@@ -136,6 +139,10 @@ import { FeaturesResponseSchema } from '@happier-dev/protocol';
 import { RpcError } from '@happier-dev/protocol/rpcErrors';
 import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 import { getActiveServerAccountScope } from './domains/scope/activeServerAccountScope';
+import {
+    captureActiveServerAccountScopeLifetime,
+    retireActiveServerAccountScopeLifetime,
+} from './domains/scope/activeServerAccountScope';
 import { readPersistedSessionViewport } from './domains/state/sessionViewportPersistence';
 import { currentPendingEnqueueAck } from './engine/pending/pendingQueueV2.testHelpers';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
@@ -203,6 +210,7 @@ function createRpcMethodNotAvailableError(): RpcError {
 
 describe('sync.sendMessage wake-after-send', () => {
     beforeEach(() => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
         storage.setState(initialStorageState, true);
         storage.getState().activateProfileScope({
             serverId: getActiveServerSnapshot().serverId,
@@ -234,6 +242,7 @@ describe('sync.sendMessage wake-after-send', () => {
     });
 
     afterEach(() => {
+        vi.unstubAllGlobals();
         resetServerFeaturesClientForTests();
         vi.restoreAllMocks();
     });
@@ -417,6 +426,57 @@ describe('sync.sendMessage wake-after-send', () => {
                 initialTranscriptAfterSeq: 36,
             }),
         );
+    });
+
+    it('threads exact Account authority and the addressed Session machine into post-commit wake', async () => {
+        const sessionId = 's_exact_wake';
+        const activeServerId = getActiveServerSnapshot().serverId;
+        const exactSession: Session = {
+            ...createPlainSession({ sessionId }),
+            serverId: activeServerId,
+            metadata: {
+                machineId: 'm-exact',
+                path: '/exact/project',
+                flavor: 'codex',
+                codexSessionId: 'codex-exact',
+            } as any,
+        };
+        storage.getState().applyMachines([
+            createMachine({ id: 'm-exact', active: false, replacedByMachineId: 'm-ambient' }),
+            createMachine({ id: 'm-ambient', active: true }),
+        ], true);
+        storage.getState().applySessions([exactSession]);
+        const accountLifetime = captureActiveServerAccountScopeLifetime();
+        expect(accountLifetime).not.toBeNull();
+
+        const { sync } = await import('./sync');
+        (sync as any).encryption = { getMachineEncryption: () => ({}) };
+        vi.spyOn(apiSocket, 'sessionRPC').mockRejectedValue(createRpcMethodNotAvailableError());
+        sync.setMessageTransport({
+            emitWithAck: vi.fn(async (_event: string, payload: { localId: string }) => ({
+                ok: true,
+                id: 'm1',
+                seq: 37,
+                localId: payload.localId,
+                didWrite: true,
+            })) as any,
+            send: vi.fn(),
+        });
+
+        await sync.sendMessage(sessionId, 'hello', undefined, undefined, {
+            serverId: activeServerId,
+            accountLifetime: accountLifetime!,
+            session: exactSession,
+        });
+
+        expect(ensureSessionRuntimeForPendingInputSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId,
+            machineId: 'm-exact',
+            directory: '/exact/project',
+            serverId: activeServerId,
+            accountLifetime,
+        }));
+        retireActiveServerAccountScopeLifetime();
     });
 
     it('rejects direct sends to inactive replay forks that cannot resume before creating local or server state', async () => {

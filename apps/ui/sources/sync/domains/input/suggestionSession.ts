@@ -47,7 +47,7 @@ export type ComposerSessionSuggestionItem = Readonly<{
 export type ComposerSessionSuggestionState = Readonly<
     Parameters<typeof resolveServerIdForSessionIdFromLocalState>[0]
     & {
-        sessionListRowStateByServerId?: Readonly<
+        sessionListRowsByServerId?: Readonly<
             Record<string, Readonly<Record<string, SessionListRenderableSession>> | null | undefined>
         > | null | undefined;
     }
@@ -121,7 +121,7 @@ export function projectComposerSessionSuggestionItems(
         ?? (currentSessionId ? resolveServerIdForSessionIdFromLocalState(state, currentSessionId) : null);
     if (!serverId) return [];
 
-    const rows = state.sessionListRowStateByServerId?.[serverId];
+    const rows = state.sessionListRowsByServerId?.[serverId];
     if (!rows || typeof rows !== 'object') return [];
 
     const seen = new Set<string>();
@@ -145,8 +145,7 @@ export function readComposerSessionSuggestionItems(
         {
             sessions: state.sessions,
             sessionListIndexByServerId: state.sessionListIndexByServerId,
-            concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId,
-            sessionListRowStateByServerId: state.sessionListRowStateByServerId,
+            sessionListRowsByServerId: state.sessionListRowsByServerId,
         },
         scope,
     );

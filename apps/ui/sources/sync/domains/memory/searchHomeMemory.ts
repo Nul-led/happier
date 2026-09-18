@@ -8,9 +8,9 @@ import {
 
 import { serverFetch } from '@/sync/http/client';
 import {
-    createSessionRequestWithServerScope,
-    runWithSessionRequestAuthorityForServerAccountScope,
-} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+    createServerRequestWithServerScope,
+    runWithServerRequestAuthorityForServerAccountScope,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { applyMemorySearchSessionEligibility } from './applyMemorySearchSessionEligibility';
 
@@ -34,7 +34,7 @@ function createHomeMemorySearchAbortError(): Error {
 export async function rebuildHomeSearchIndex(args: Readonly<{ serverId: string }>): Promise<void> {
     const serverId = args.serverId.trim();
     if (!serverId) throw new Error('Rebuilding Home search requires an explicit Home target.');
-    const request = createSessionRequestWithServerScope({
+    const request = createServerRequestWithServerScope({
         serverId,
         preferScoped: true,
         activeRequest: async (path, init) => await serverFetch(path, init),
@@ -94,7 +94,7 @@ export async function searchHomeMemory(args: Readonly<{
     }
 
     try {
-        return await runWithSessionRequestAuthorityForServerAccountScope({
+        return await runWithServerRequestAuthorityForServerAccountScope({
             scope: accountScope,
             activeRequest: async (path, init) => await serverFetch(path, init),
         }, async (authority) => {

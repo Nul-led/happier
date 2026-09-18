@@ -1,9 +1,13 @@
 import type { SessionActivityAttention } from '@/activity/attention/activityAttentionTypes';
 
 import type { ActivitySurfaceSelectionSpec } from './activitySurfaceSelectionTypes';
+import {
+    areSessionAddressesEqual,
+    type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
 
 export type ActivitySelectionPreviousPrimary = Readonly<{
-    sessionId?: string | null;
+    address?: SessionAddress | null;
     activityInstanceKey?: string | null;
     changedAtMs?: number | null;
 }>;
@@ -28,8 +32,11 @@ function candidateMatchesPrevious(
         return normalizeString(candidate.activityInstanceKey) === previousActivityInstanceKey;
     }
 
-    const previousSessionId = normalizeString(previous.sessionId);
-    return previousSessionId !== null && candidate.sessionId === previousSessionId;
+    if (previous.address) {
+        return areSessionAddressesEqual(candidate.address, previous.address);
+    }
+
+    return false;
 }
 
 function isCandidateFresh(
@@ -72,12 +79,18 @@ export function applyActivitySelectionDwell(params: Readonly<{
         return params.selectedSessions;
     }
 
-    if (params.selectedSessions[0]?.sessionId === previous.sessionId) {
+    if (
+        params.selectedSessions[0] === previous
+        || areSessionAddressesEqual(params.selectedSessions[0]?.address, previous.address)
+    ) {
         return params.selectedSessions;
     }
 
     return [
         previous,
-        ...params.selectedSessions.filter((candidate) => candidate.sessionId !== previous.sessionId),
+        ...params.selectedSessions.filter((candidate) => (
+            candidate !== previous
+            && !areSessionAddressesEqual(candidate.address, previous.address)
+        )),
     ].slice(0, params.selectedSessions.length);
 }

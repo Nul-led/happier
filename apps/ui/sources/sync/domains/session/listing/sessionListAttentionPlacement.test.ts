@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListRenderableSession } from './sessionListRenderable';
+import { sessionAddressKey } from '../sessionAddress';
 import {
     applySessionListAttentionPlacementWithinGroups,
     applySessionListWorkingPlacementWithinGroups,
@@ -202,6 +203,32 @@ describe('unread attention placement', () => {
         });
     });
 
+    it('does not promote a released shared-recipient row from the owner legacy cursor', () => {
+        const source = createSource(['legacy-shared-recipient']);
+        const result = buildSessionListAttentionPlacement({
+            source,
+            options: { mode: 'global' },
+            nowMs,
+            resolveSessionRow: () => createRow({
+                id: 'legacy-shared-recipient',
+                seq: 8,
+                lastViewedSessionSeq: 2,
+                hasUnreadMessages: true,
+                unreadSince: nowMs - 2_000,
+                accessLevel: 'view',
+                metadata: {
+                    path: '/repo',
+                    host: 'host',
+                    readStateV1: { v: 1, sessionSeq: 2, pendingActivityAt: 0, updatedAt: 1 },
+                },
+                latestTurnStatus: undefined,
+                latestTurnStatusObservedAt: undefined,
+            }),
+        });
+
+        expect(result).toBeNull();
+    });
+
     it('marks unread activity within its own group without moving it out', () => {
         const source = createSource(['read-neighbour', 'unread-provider-activity']);
 
@@ -343,6 +370,32 @@ describe('unread attention placement', () => {
         ]);
     });
 
+    it('orders operational attention with the canonical failed then permission then action precedence', () => {
+        const source = createSource(['action', 'permission', 'failed']);
+        const result = buildSessionListAttentionPlacement({
+            source,
+            options: { mode: 'global' },
+            nowMs,
+            resolveSessionRow: (_serverId, sessionId) => createRow({
+                id: sessionId,
+                ...(sessionId === 'failed' ? {
+                    latestTurnStatus: 'failed' as const,
+                    latestTurnStatusObservedAt: nowMs - 3_000,
+                } : {
+                    latestTurnStatus: undefined,
+                    latestTurnStatusObservedAt: undefined,
+                    pendingRequestObservedAt: nowMs - 1_000,
+                    hasPendingPermissionRequests: sessionId === 'permission',
+                    hasPendingUserActionRequests: sessionId === 'action',
+                }),
+            }),
+        });
+
+        expect(result?.attentionItems.map((item) => (
+            item.type === 'session' ? item.sessionId : item.headerKind
+        ))).toEqual(['attention', 'failed', 'permission', 'action']);
+    });
+
     it('orders two unread rows by their activity time, not their source order', () => {
         const source = createSource(['older-unread', 'newer-unread']);
 
@@ -368,6 +421,81 @@ describe('unread attention placement', () => {
         ]);
     });
 
+    it('uses the canonical viewer decision instead of promoting a modern quiet row from raw facts', () => {
+        const source = createSource(['quiet-modern']);
+        const result = buildSessionListAttentionPlacement({
+            source,
+            options: { mode: 'global' },
+            nowMs,
+            resolveSessionRow: () => createRow({
+                id: 'quiet-modern',
+                seq: 20,
+                lastViewedSessionSeq: 0,
+                hasUnreadMessages: true,
+                pendingBlockedCount: 1,
+                viewer: {
+                    readState: { state: 'not_started' },
+                    relevance: { relevant: false, reasons: [] },
+                    follow: { follows: false, notificationLevel: null },
+                    notification: { level: 'none', source: 'none' },
+                    attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+                },
+            }),
+        });
+
+        expect(result).toBeNull();
+    });
+
+    it('does not treat an absent pre-viewer cursor as zero for completed-turn placement', () => {
+        const source = createSource(['legacy-without-cursor']);
+        const result = buildSessionListAttentionPlacement({
+            source,
+            options: { mode: 'global' },
+            nowMs,
+            resolveSessionRow: () => createRow({
+                id: 'legacy-without-cursor',
+                seq: 20,
+                lastViewedSessionSeq: undefined,
+                hasUnreadMessages: false,
+                latestTurnStatus: 'completed',
+                lastTurnCompletedAt: nowMs - 1_000,
+                meaningfulActivityAt: nowMs - 1_000,
+            }),
+        });
+
+        expect(result).toBeNull();
+    });
+
+    it('orders modern unread rows by stable viewer unreadSince instead of changing activity time', () => {
+        const source = createSource(['older-entry-new-activity', 'newer-entry-old-activity']);
+        const result = buildSessionListAttentionPlacement({
+            source,
+            options: { mode: 'global' },
+            nowMs,
+            resolveSessionRow: (_serverId, sessionId) => createRow({
+                id: sessionId,
+                meaningfulActivityAt: sessionId === 'older-entry-new-activity' ? nowMs - 100 : nowMs - 500_000,
+                viewer: {
+                    readState: {
+                        state: 'tracking',
+                        lastViewedSessionSeq: 0,
+                        unreadSince: sessionId === 'older-entry-new-activity' ? 100 : 200,
+                    },
+                    relevance: { relevant: true, reasons: ['followed_by_me'] },
+                    follow: { follows: true, notificationLevel: 'none' },
+                    notification: { level: 'none', source: 'preference' },
+                    attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'full' },
+                },
+            }),
+        });
+
+        expect(result?.attentionItems.map((item) => (item.type === 'session' ? item.sessionId : item.headerKind))).toEqual([
+            'attention',
+            'newer-entry-old-activity',
+            'older-entry-new-activity',
+        ]);
+    });
+
     it('holds the read selected row with the neutral reason instead of replaying the one it resolved', () => {
         const source = createSource(['selected-now-read']);
 
@@ -375,7 +503,7 @@ describe('unread attention placement', () => {
             source,
             options: {
                 mode: 'global',
-                retainSessionKeys: ['server-a:selected-now-read'],
+                retainSessionKeys: [sessionAddressKey({ serverId: 'server-a', sessionId: 'selected-now-read' })],
             },
             nowMs,
             resolveSessionRow: () => createRow({
@@ -406,7 +534,9 @@ describe('unread attention placement', () => {
         const source = createSource(['selected-now-read']);
         const standingPolicy = {
             defaultStanding: false,
-            overridesBySessionKey: { 'server-a:selected-now-read': true },
+            overridesBySessionKey: {
+                [sessionAddressKey({ serverId: 'server-a', sessionId: 'selected-now-read' })]: true,
+            },
         };
         const resolveRow = () => createRow({
             id: 'selected-now-read',
@@ -423,7 +553,7 @@ describe('unread attention placement', () => {
             options: {
                 mode: 'global',
                 standingPolicy,
-                retainSessionKeys: ['server-a:selected-now-read'],
+                retainSessionKeys: [sessionAddressKey({ serverId: 'server-a', sessionId: 'selected-now-read' })],
             },
             nowMs,
             resolveSessionRow: resolveRow,

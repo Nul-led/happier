@@ -1,9 +1,12 @@
 import * as React from 'react';
-import { Platform, Pressable, View, type LayoutChangeEvent, type ViewStyle } from 'react-native';
+import { Platform, Pressable, View, type LayoutChangeEvent } from 'react-native';
 
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { HorizontalScrollableRow } from '@/components/ui/scroll/HorizontalScrollableRow';
 import { Text } from '@/components/ui/text/Text';
+import { InlineRepoPathLabel } from '@/components/ui/path/InlineRepoPathLabel';
+import { Tooltip } from '@/components/ui/overlays/Tooltip';
+import { IconButton } from '@/components/ui/buttons/IconButton';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import type { ScmProjectInFlightOperation } from '@/sync/runtime/orchestration/projectManager';
@@ -11,10 +14,13 @@ import type { MarkdownEditMode } from '@/components/ui/markdown/editor/markdownE
 import type { MarkdownRichIneligibleReason } from '@/components/ui/markdown/editor/core/eligibility/markdownRichEligibility';
 import { resolveMarkdownRichDisabledReasonCopy } from '@/components/ui/markdown/editor/core/eligibility/markdownRichDisabledReasonCopy';
 import { Icon } from '@/components/ui/icons/Icon';
+import { ToolbarButton } from '@/components/ui/buttons/ToolbarButton';
 import { WrapLinesToggleButton } from '@/components/ui/code/WrapLinesToggleButton';
 
 export type FileDisplayMode = 'file' | 'diff' | 'markdown';
 export type FileDiffMode = 'included' | 'pending' | 'both';
+
+const selectionActionStyle = { minHeight: Platform.select({ ios: 44, android: 48, default: 34 }) };
 
 const FILE_ACTION_TOOLBAR_COMPACT_WIDTH = 520;
 const FILE_ACTION_TOOLBAR_COMPACT_HORIZONTAL_PADDING = 12;
@@ -157,7 +163,7 @@ export function FileActionToolbar(props: FileActionToolbarProps) {
         && onMarkdownEditMode != null;
     const [displayMenuOpen, setDisplayMenuOpen] = React.useState(false);
     const [diffAreaMenuOpen, setDiffAreaMenuOpen] = React.useState(false);
-    const stageLabel = virtualSelectionEnabled ? t('files.fileActions.selectForCommit') : t('files.fileActions.stageFile');
+    const stageLabel = virtualSelectionEnabled ? t('files.fileActions.selectEntireFileForCommit') : t('files.fileActions.stageFile');
     const unstageLabel = virtualSelectionEnabled ? t('files.fileActions.removeFromCommitSelection') : t('files.fileActions.unstageFile');
     const commandIconSize = 14;
     const isLineSelectionActive = lineSelectionActive === true;
@@ -169,11 +175,7 @@ export function FileActionToolbar(props: FileActionToolbarProps) {
         && lineSelectionEnabled
         && virtualSelectionEnabled
         && (appliedLineSelectionCount ?? 0) > 0;
-    const showEmptyLineSelectionActions = lineSelectionEnabled && isLineSelectionActive && !hasSelectedLines;
-    const stageFileActionLabel = showEmptyLineSelectionActions && virtualSelectionEnabled
-        ? t('files.fileActions.selectEntireFileForCommit')
-        : stageLabel;
-    const showCompactCommitSelectionEntry = virtualSelectionEnabled && !isLineSelectionActive;
+    const showEmptyLineSelectionActions = isLineSelectionActive && !hasSelectedLines;
     const selectedLineActionIsRemoval = !virtualSelectionEnabled && diffMode === 'included';
     const selectedLineActionColor = selectedLineActionIsRemoval ? theme.colors.state.neutral.foreground : theme.colors.state.success.foreground;
     const selectedLineActionLabel = virtualSelectionEnabled
@@ -181,48 +183,6 @@ export function FileActionToolbar(props: FileActionToolbarProps) {
         : selectedLineActionIsRemoval
             ? t('files.fileActions.selectedLines.unstageSelectedLines')
             : t('files.fileActions.selectedLines.stageSelectedLines');
-    const handleStageFilePress = React.useCallback(() => {
-        if (canStartLineSelection && !isLineSelectionActive) {
-            onStartLineSelection?.();
-            return;
-        }
-        onStageFile();
-    }, [canStartLineSelection, isLineSelectionActive, onStageFile, onStartLineSelection]);
-    const stageFileButtonStyle = (showCompactCommitSelectionEntry
-        ? {
-            width: 32,
-            height: 32,
-            minHeight: 32,
-            paddingHorizontal: 0,
-            paddingVertical: 0,
-            borderRadius: 10,
-            backgroundColor: theme.colors.surface.base,
-            borderWidth: 1,
-            borderColor: theme.colors.border.default,
-            alignItems: 'center',
-            justifyContent: 'center',
-            opacity: actionBusy ? 0.6 : 1,
-        }
-        : {
-            paddingHorizontal: 12,
-            paddingVertical: 6,
-            minHeight: 32,
-            borderRadius: 10,
-            backgroundColor: theme.colors.surface.base,
-            borderWidth: 1,
-            borderColor: theme.colors.state.success.foreground,
-            opacity: actionBusy ? 0.6 : 1,
-        }) satisfies ViewStyle;
-    const stageFileButtonContent = showCompactCommitSelectionEntry ? (
-        <Icon name="plus" size={commandIconSize} color={theme.colors.text.secondary} />
-    ) : (
-        <Text
-            pointerEvents="none"
-            style={{ color: theme.colors.state.success.foreground, fontSize: 13, ...Typography.default('semiBold') }}
-        >
-            {stageFileActionLabel}
-        </Text>
-    );
     const pathDir = typeof filePathDir === 'string' ? filePathDir.trim().replace(/\/+$/, '') : '';
     const pathName = typeof fileName === 'string' ? fileName.trim() : '';
     const pathLabel = pathDir && pathName
@@ -384,27 +344,19 @@ export function FileActionToolbar(props: FileActionToolbarProps) {
     ), [chipStyle, theme.colors.text.primary, theme.colors.text.secondary]);
 
     const pathElement = pathLabel ? (
-        <View
+        <Tooltip
             testID="file-details-path"
-            style={{
-                minHeight: 32,
-                justifyContent: 'center',
-                maxWidth: useCompactLayout ? '100%' : 190,
-                width: useCompactLayout ? '100%' : undefined,
-                paddingHorizontal: 4,
-            }}
+            label={pathLabel}
+            style={{ flexBasis: '32%', flexShrink: 0, minWidth: 0, minHeight: 32, justifyContent: 'center' }}
         >
-            <Text
-                style={{
-                    fontSize: 12,
-                    color: theme.colors.text.secondary,
-                    ...(Typography.mono ? Typography.mono() : Typography.default()),
-                }}
-                numberOfLines={1}
-            >
-                {pathLabel}
-            </Text>
-        </View>
+            <InlineRepoPathLabel
+                fullPath={pathLabel}
+                preferNameOverPath
+                alignForRootFiles={false}
+                pathTextStyle={{ fontSize: 12, color: theme.colors.text.secondary, ...(Typography.mono ? Typography.mono() : Typography.default()) }}
+                nameTextStyle={{ fontSize: 12, color: theme.colors.text.primary, ...(Typography.mono ? Typography.mono() : Typography.default()) }}
+            />
+        </Tooltip>
     ) : null;
 
     const viewActionsElement = (
@@ -412,7 +364,7 @@ export function FileActionToolbar(props: FileActionToolbarProps) {
             testID="file-details-view-actions"
             style={{
                 flexDirection: 'row',
-                flexWrap: useCompactSelectedLineActions ? 'nowrap' : 'wrap',
+                flexWrap: 'nowrap',
                 alignItems: 'center',
                 gap: actionGap,
                 flexShrink: 0,
@@ -559,12 +511,11 @@ export function FileActionToolbar(props: FileActionToolbarProps) {
             testID="file-details-change-actions"
             style={{
                 flexDirection: 'row',
-                flexWrap: useCompactSelectedLineActions ? 'nowrap' : 'wrap',
+                flexWrap: 'nowrap',
                 alignItems: 'center',
-                justifyContent: useCompactSelectedLineActions ? 'flex-start' : useCompactLayout ? 'space-between' : 'flex-start',
+                justifyContent: 'flex-start',
                 gap: actionGap,
-                flex: useCompactLayout && !useCompactSelectedLineActions ? 1 : undefined,
-                flexShrink: useCompactSelectedLineActions ? 0 : undefined,
+                flexShrink: 0,
             }}
         >
             {lineSelectionEnabled ? (
@@ -593,66 +544,53 @@ export function FileActionToolbar(props: FileActionToolbarProps) {
                 </Pressable>
             ) : null}
             {scmWriteEnabled && canUseSelectionActions && canIncludeFileInSelection && !hasSelectedLines && (
-                <Pressable
+                <IconButton
                     disabled={actionBusy}
-                    onPress={handleStageFilePress}
+                    onPress={onStageFile}
                     testID="file-details-stage-file"
-                    accessibilityRole="button"
-                    accessibilityLabel={stageFileActionLabel}
-                    style={stageFileButtonStyle}
-                >
-                    {stageFileButtonContent}
-                </Pressable>
+                    accessibilityLabel={stageLabel}
+                    tooltip={stageLabel}
+                    variant="plain"
+                    size={selectionActionStyle.minHeight}
+                    iconSize={commandIconSize}
+                    iconName="plus"
+                />
+            )}
+
+            {scmWriteEnabled && canUseSelectionActions && canStartLineSelection && onStartLineSelection && !isLineSelectionActive && (
+                <ToolbarButton
+                    disabled={actionBusy}
+                    onPress={onStartLineSelection}
+                    testID={hasAppliedPartialLineSelection ? 'file-details-edit-line-selection' : 'file-details-select-lines'}
+                    label={t('files.fileActions.selectLines')}
+                    size="md"
+                    style={selectionActionStyle}
+                />
             )}
 
             {showEmptyLineSelectionActions ? (
-                <Pressable
+                <ToolbarButton
                     onPress={onClearSelection}
                     testID="file-details-clear-selection"
-                    style={chipStyle(false)}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('common.cancel')}
-                >
-                    <Text style={{ color: theme.colors.text.primary, fontSize: 13, ...Typography.default('semiBold') }}>
-                        {t('common.cancel')}
-                    </Text>
-                </Pressable>
+                    label={t('common.cancel')}
+                    size="md"
+                    style={selectionActionStyle}
+                />
             ) : null}
 
             {scmWriteEnabled && canUseSelectionActions && canRemoveFromSelection && !hasSelectedLines && (
-                <Pressable
+                <IconButton
                     disabled={actionBusy}
                     onPress={onUnstageFile}
                     testID="file-details-unstage-file"
-                    style={{
-                        paddingHorizontal: 12,
-                        paddingVertical: 6,
-                        minHeight: 32,
-                        borderRadius: 10,
-                        backgroundColor: theme.colors.surface.base,
-                        borderWidth: 1,
-                        borderColor: theme.colors.state.neutral.foreground,
-                        opacity: actionBusy ? 0.6 : 1,
-                    }}
-                >
-                    <Text style={{ color: theme.colors.state.neutral.foreground, fontSize: 13, ...Typography.default('semiBold') }}>
-                        {unstageLabel}
-                    </Text>
-                </Pressable>
+                    accessibilityLabel={unstageLabel}
+                    tooltip={unstageLabel}
+                    variant="plain"
+                    size={selectionActionStyle.minHeight}
+                    iconSize={commandIconSize}
+                    iconName="minus"
+                />
             )}
-
-            {scmWriteEnabled && canUseSelectionActions && hasAppliedPartialLineSelection && onStartLineSelection ? (
-                <Pressable
-                    disabled={actionBusy}
-                    onPress={onStartLineSelection}
-                    testID="file-details-edit-line-selection"
-                    style={[chipStyle(false), { width: 32, height: 32, paddingHorizontal: 0, paddingVertical: 0 }]}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('common.edit')}
-                >
-                    <Icon name="pencil" size={commandIconSize} color={theme.colors.text.primary} />
-                </Pressable>
-            ) : null}
 
             {scmWriteEnabled && canUseSelectionActions && diffMode === 'both' && !hasSelectedLines && (
                 <Text
@@ -715,9 +653,9 @@ export function FileActionToolbar(props: FileActionToolbarProps) {
             testID="file-action-toolbar"
             onLayout={onToolbarLayout}
             style={{
-                flexDirection: useCompactLayout ? 'column' : 'row',
+                flexDirection: 'row',
                 flexWrap: 'nowrap',
-                alignItems: useCompactLayout ? 'stretch' : 'center',
+                alignItems: 'center',
                 paddingHorizontal: toolbarHorizontalPadding,
                 paddingVertical: 12,
                 borderBottomWidth: Platform.select({ ios: 0.33, default: 1 }),
@@ -727,44 +665,21 @@ export function FileActionToolbar(props: FileActionToolbarProps) {
             }}
         >
             {pathElement}
-            {useCompactSelectedLineActions ? (
-                <HorizontalScrollableRow
-                    testID="file-details-compact-action-scroll"
-                    contentTestID="file-details-compact-action-scroll-content"
-                    fadeColor={theme.colors.surface.base}
-                    indicatorColor={theme.colors.text.secondary}
-                    containerStyle={{ marginHorizontal: -toolbarHorizontalPadding }}
-                    contentStyle={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: actionGap,
-                        paddingHorizontal: toolbarHorizontalPadding,
-                        paddingRight: toolbarHorizontalPadding + 24,
-                    }}
-                >
-                    {viewActionsElement}
-                    {changeActionsElement}
-                </HorizontalScrollableRow>
-            ) : useCompactLayout ? (
-                <View
-                    testID="file-details-compact-action-row"
-                    style={{
-                        flexDirection: 'row',
-                        flexWrap: useCompactSelectedLineActions ? 'nowrap' : 'wrap',
-                        alignItems: 'center',
-                        justifyContent: useCompactSelectedLineActions ? 'flex-start' : 'space-between',
-                        gap: actionGap,
-                    }}
-                >
-                    {viewActionsElement}
-                    {changeActionsElement}
-                </View>
-            ) : (
-                <>
-                    {viewActionsElement}
-                    {changeActionsElement}
-                </>
-            )}
+            <HorizontalScrollableRow
+                testID="file-details-action-scroll"
+                contentTestID="file-details-action-scroll-content"
+                fadeColor={theme.colors.surface.base}
+                indicatorColor={theme.colors.text.secondary}
+                containerStyle={{ flex: 1, minWidth: 0 }}
+                contentStyle={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: actionGap,
+                }}
+            >
+                {viewActionsElement}
+                {changeActionsElement}
+            </HorizontalScrollableRow>
         </View>
     );
 }

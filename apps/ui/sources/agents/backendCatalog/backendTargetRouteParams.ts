@@ -9,7 +9,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { isBundledAgentId } from '@/agents/catalog/catalog';
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 import { isLegacyCompatAgentType } from './legacyCompatAgents';
 import { resolveBackendTargetKeyV2 } from './backendTargetKeyV2';
 
@@ -100,7 +100,7 @@ function resolveBackendTargetV2FromRouteParams(params: Readonly<{
 
         return {
             kind: 'agent',
-            identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[normalizedAgentType],
+            identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[normalizedAgentType],
         };
     }
 

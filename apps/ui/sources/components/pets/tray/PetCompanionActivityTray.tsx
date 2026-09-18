@@ -68,7 +68,7 @@ export type PetCompanionActivityTrayProps = Readonly<{
     onDismissItem: (item: PetCompanionTrayItem) => void;
     onQuickReply: (item: PetCompanionTrayItem, message: string) => void | Promise<void>;
     onInteractionLayoutChange?: () => void;
-    externalActiveSessionId?: string | null;
+    externalActiveItemId?: string | null;
     style?: StyleProp<ViewStyle>;
 }>;
 
@@ -147,8 +147,13 @@ function PetCompanionActivityTrayItemCard(props: Readonly<{
     const replyInputOverflowY = replyInputNumberOfLines >= REPLY_INPUT_MAX_LINES ? 'auto' : 'hidden';
     const trayItemDragProps = React.useMemo(() => ({
         'data-pet-tray-session-id': props.item.sessionId,
-        dataSet: { petNoDrag: 'true', petTraySessionId: props.item.sessionId },
-    } as const), [props.item.sessionId]);
+        'data-pet-tray-server-id': props.item.address.serverId,
+        dataSet: {
+            petNoDrag: 'true',
+            petTraySessionId: props.item.sessionId,
+            petTrayServerId: props.item.address.serverId,
+        },
+    } as const), [props.item.address.serverId, props.item.sessionId]);
     const backgroundFillStyle = React.useMemo<WebBackgroundFillStyle>(() => ({
         background: bubbleTheme.background,
         backgroundColor: bubbleTheme.background,
@@ -397,8 +402,8 @@ function PetCompanionActivityTrayItemCard(props: Readonly<{
 }
 
 export function PetCompanionActivityTray(props: PetCompanionActivityTrayProps): React.ReactElement | null {
-    const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null);
-    const [replySessionId, setReplySessionId] = React.useState<string | null>(null);
+    const [activeItemId, setActiveItemId] = React.useState<string | null>(null);
+    const [replyItemId, setReplyItemId] = React.useState<string | null>(null);
     const deactivateTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const { onInteractionLayoutChange } = props;
     const clearDeactivateTimer = React.useCallback(() => {
@@ -409,21 +414,21 @@ export function PetCompanionActivityTray(props: PetCompanionActivityTrayProps): 
     const handleActiveChange = React.useCallback((item: PetCompanionTrayItem, active: boolean) => {
         if (active) {
             clearDeactivateTimer();
-            setActiveSessionId(item.sessionId);
+            setActiveItemId(item.id);
             return;
         }
         clearDeactivateTimer();
         deactivateTimerRef.current = setTimeout(() => {
-            setActiveSessionId((current) => (current === item.sessionId ? null : current));
+            setActiveItemId((current) => (current === item.id ? null : current));
             deactivateTimerRef.current = null;
         }, 120);
     }, [clearDeactivateTimer]);
     const handleReplyOpenChange = React.useCallback((item: PetCompanionTrayItem, open: boolean) => {
         clearDeactivateTimer();
         onInteractionLayoutChange?.();
-        setReplySessionId(open ? item.sessionId : null);
+        setReplyItemId(open ? item.id : null);
         if (open) {
-            setActiveSessionId(item.sessionId);
+            setActiveItemId(item.id);
         }
     }, [clearDeactivateTimer, onInteractionLayoutChange]);
     const scrollFades = useScrollEdgeFades({
@@ -472,8 +477,8 @@ export function PetCompanionActivityTray(props: PetCompanionActivityTrayProps): 
                     <PetCompanionActivityTrayItemCard
                         key={item.id}
                         item={item}
-                        active={activeSessionId === item.sessionId || props.externalActiveSessionId === item.sessionId}
-                        replyOpen={replySessionId === item.sessionId}
+                        active={activeItemId === item.id || props.externalActiveItemId === item.id}
+                        replyOpen={replyItemId === item.id}
                         onActiveChange={handleActiveChange}
                         onReplyOpenChange={handleReplyOpenChange}
                         onOpen={props.onOpenItem}

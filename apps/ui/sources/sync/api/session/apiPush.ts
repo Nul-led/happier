@@ -5,11 +5,14 @@ import { HappyError } from '@/utils/errors/errors';
 import { serverFetch } from '@/sync/http/client';
 import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
 import { z } from 'zod';
+import { PushTokenSchema, PushTokenRegisterResponseSchema, PushTokensResponseSchema,
+    PushTokensRemoteAlertProjectionV2Schema, type DeviceRemoteAlertPolicyV1,
+    type PushTokensRemoteAlertProjectionV2 } from '@happier-dev/protocol';
 
 export async function registerPushToken(
     credentials: AuthCredentials,
     token: string,
-    opts: Readonly<{ serverId?: string; apiEndpoint?: string; clientServerUrl?: string; retry?: 'default' | 'none'; runtimeOrigin?: string }> = {},
+    opts: Readonly<{ serverId?: string; apiEndpoint?: string; clientServerUrl?: string; retry?: 'default' | 'none'; runtimeOrigin?: string; remoteAlerts?: { registrationId: string; policy: DeviceRemoteAlertPolicyV1 | null } }> = {},
 ): Promise<void> {
     const API_ENDPOINT = (opts.apiEndpoint ?? '').trim().replace(/\/+$/, '');
     const CLIENT_SERVER_URL = (opts.clientServerUrl ?? '').trim().replace(/\/+$/, '');
@@ -43,7 +46,7 @@ export async function registerPushToken(
                 'Authorization': `Bearer ${effectiveCredentials.token}`,
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify(CLIENT_SERVER_URL ? { token, clientServerUrl: CLIENT_SERVER_URL } : { token }),
+            body: JSON.stringify({ token, ...(CLIENT_SERVER_URL ? { clientServerUrl: CLIENT_SERVER_URL } : {}), ...(opts.remoteAlerts === undefined ? {} : { remoteAlerts: opts.remoteAlerts }) }),
         });
 
         if (!response.ok) {
@@ -96,27 +99,23 @@ export async function registerPushToken(
     await backoff(run);
 }
 
-const PushTokenSchema = z.object({
-    id: z.string(),
-    token: z.string(),
-    createdAt: z.number(),
-    updatedAt: z.number(),
-    clientServerUrl: z.string().nullable().optional(),
-});
-
-const PushTokenRegisterResponseSchema = z.object({
-    success: z.literal(true),
-});
-
-const PushTokensResponseSchema = z.object({
-    tokens: z.array(PushTokenSchema),
-});
-
 const PushTokenDeleteResponseSchema = z.object({
     success: z.literal(true),
 });
 
 export type PushToken = z.infer<typeof PushTokenSchema>;
+
+export async function fetchPushTokensRemoteAlertProjection(
+    credentials: AuthCredentials,
+    request: (path: string, init?: RequestInit) => Promise<Response>,
+): Promise<PushTokensRemoteAlertProjectionV2 | null> {
+    const response = await request('/v1/push-tokens?projectionVersion=2', {
+        method: 'GET', headers: { Authorization: `Bearer ${credentials.token}` },
+    });
+    if (!response.ok) return null;
+    const parsed = PushTokensRemoteAlertProjectionV2Schema.safeParse(await response.json().catch(() => null));
+    return parsed.success ? parsed.data : null;
+}
 
 export async function fetchPushTokens(
     credentials: AuthCredentials,

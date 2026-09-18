@@ -24,12 +24,17 @@ import { areAccountSettingsScopesEqual } from '@/sync/domains/settings/scope/acc
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { sync } from '@/sync/sync';
 import {
+  resolveSavedSecretReference,
+  type SavedSecretReferenceResolution,
+} from '@/sync/store/settings/savedSecretCatalogSnapshot';
+import {
   BoundedResponseBodyError,
   readBoundedResponseBody,
 } from '@/utils/system/readBoundedResponseBody';
 
 import {
   resolveAccountVoiceCredential,
+  resolveAccountVoiceCredentialApprovalDigest,
   resolveAccountVoiceCredentialSourceSelection,
 } from './accountVoiceCredential';
 
@@ -118,6 +123,7 @@ type AccountCredentialAuthority = Readonly<{
   providerEnvelope: unknown;
   binding: ReturnType<typeof storage.getState>['settings']['voiceSettingsV1']['credentialBindings'][number] | null;
   secret: ReturnType<typeof storage.getState>['settings']['secrets'][number] | null;
+  savedSecret: SavedSecretReferenceResolution | null;
   source: ReturnType<typeof resolveAccountVoiceCredentialSourceSelection>;
 }>;
 
@@ -182,6 +188,9 @@ function captureAccountCredentialAuthority(
     purpose,
     machineId,
   });
+  const savedSecret = reference
+    ? resolveSavedSecretReference(state.settingsScope, state.settings.secrets, reference.secretId)
+    : null;
   return {
     settingsScope: state.settingsScope,
     providerEnvelope,
@@ -190,9 +199,8 @@ function captureAccountCredentialAuthority(
         && candidate.contribution.localId === contribution.localId
         && candidate.credentialSlotId === credentialSlotId,
     ) ?? null,
-    secret: reference
-      ? state.settings.secrets.find((candidate) => candidate.id === reference.secretId) ?? null
-      : null,
+    secret: savedSecret?.status === 'ready' ? savedSecret.secret : null,
+    savedSecret,
     source,
   };
 }
@@ -228,6 +236,7 @@ function isSameAccountCredentialAuthority(
     || areAccountSettingsScopesEqual(left.settingsScope, right.settingsScope))
     && areAccountSettingsJsonValuesEqual(left.providerEnvelope, right.providerEnvelope)
     && areAccountSettingsJsonValuesEqual(left.binding, right.binding)
+    && areAccountSettingsJsonValuesEqual(left.savedSecret, right.savedSecret)
     && areAccountSettingsJsonValuesEqual(left.secret, right.secret)
     && areAccountSettingsJsonValuesEqual(left.source, right.source);
 }
@@ -472,11 +481,13 @@ export function createAccountVoiceOperationService(input: Readonly<{
     if (accountAuthority.source.selection.kind !== 'savedSecret' || !accountAuthority.secret) {
       throw operationError('credential_unavailable');
     }
-    if (
-      requiredRecipientContractDigest
-      && accountAuthority.binding?.approvedRecipientContractDigest
-        !== requiredRecipientContractDigest
-    ) {
+    const requiredApprovalDigest = resolveAccountVoiceCredentialApprovalDigest({
+      requiredRecipientContractDigest,
+      savedSecret: accountAuthority.savedSecret,
+    });
+    if (requiredRecipientContractDigest
+      && (!requiredApprovalDigest
+        || accountAuthority.binding?.approvedRecipientContractDigest !== requiredApprovalDigest)) {
       throw operationError('credential_access_review_required');
     }
     return authorization;

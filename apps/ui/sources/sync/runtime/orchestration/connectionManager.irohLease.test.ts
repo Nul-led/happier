@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createTokenStorageModuleMock } from '@/dev/testkit';
 import { IrohError } from '@happier-dev/iroh-native';
 
 function createIrohRuntimeMock() {
@@ -59,7 +60,8 @@ function mockActiveSnapshot(snapshot: Record<string, unknown>): void {
 }
 
 function buildExactIrohProfileFixture(profile: Record<string, unknown>): Record<string, unknown> {
-    if (!profile.irohEndpoint) return profile;
+    const { irohEndpoint: endpoint, connectionDescriptorRevision: revision, ...persistedProfile } = profile;
+    if (!endpoint) return persistedProfile;
     const canonicalServerUrl = String(profile.canonicalServerUrl ?? profile.serverUrl ?? '');
     const publicServerUrl = typeof profile.publicServerUrl === 'string' && profile.publicServerUrl.trim()
         ? (() => {
@@ -70,16 +72,16 @@ function buildExactIrohProfileFixture(profile: Record<string, unknown>): Record<
         })()
         : null;
     return {
-        ...profile,
+        ...persistedProfile,
         canonicalServerUrl,
         homeConnectionDescriptor: {
             v: 1,
             homeServerIdentityId: String(profile.serverIdentityId ?? ''),
             canonicalServerUrl,
-            revision: Number(profile.connectionDescriptorRevision ?? 1),
+            revision: Number(revision ?? 1),
             endpoints: [
                 ...(publicServerUrl ? [{ kind: 'https', url: publicServerUrl }] : []),
-                { kind: 'iroh', ...(profile.irohEndpoint as Record<string, unknown>) },
+                { kind: 'iroh', ...(endpoint as Record<string, unknown>) },
             ],
         },
     };
@@ -93,8 +95,9 @@ function mockProfile(profile: Record<string, unknown> | null): void {
 }
 
 function mockTokenStorage(credentials: { token: string; secret: string } | null): void {
-    vi.doMock('@/auth/storage/tokenStorage', () => ({
-        TokenStorage: {
+    vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => await createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
             getCredentials: vi.fn(async () => credentials),
             getCredentialsForServerUrl: vi.fn(async () => credentials),
         },
@@ -314,6 +317,9 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         { name: 'invalid endpoint input', failure: new Error('iroh_home_tunnel_invalid_endpoint') },
         { name: 'stale generation', failure: new Error('iroh_home_tunnel_stale_generation') },
         { name: 'stale focus', failure: new Error('iroh_home_tunnel_stale_focus') },
+        { name: 'native transport loss', failure: new IrohError('transport', 'transport closed') },
+        { name: 'health unreachability', failure: new Error('iroh_home_tunnel_probe_failed:health-unavailable') },
+        { name: 'bounded probe timeout', failure: new Error('iroh_home_tunnel_probe_failed:probe-timeout') },
         { name: 'relay auth or unknown native failure', failure: new Error('iroh relay admission rejected') },
     ];
 
@@ -353,13 +359,11 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         expect(syncSwitchServer).not.toHaveBeenCalled();
     });
 
-    // Transport/native availability and bounded health-reachability failures are
-    // the only classes that may hand the switch to descriptor-proven HTTPS ingress.
+    // Only safe pre-acquisition unavailability may hand initial selection to
+    // descriptor-proven HTTPS ingress. Transport and probe failures remain on
+    // the selected Iroh path rather than replaying through another carrier.
     const fallbackAllowedFailures: ReadonlyArray<Readonly<{ name: string; failure: unknown }>> = [
         { name: 'native unavailability', failure: new IrohError('unavailable', 'Native Iroh transport is unavailable.') },
-        { name: 'native transport loss', failure: new IrohError('transport', 'transport closed') },
-        { name: 'health unreachability', failure: new Error('iroh_home_tunnel_probe_failed:health-unavailable') },
-        { name: 'bounded probe timeout', failure: new Error('iroh_home_tunnel_probe_failed:probe-timeout') },
         { name: 'suspended runtime', failure: new Error('iroh_home_tunnel_suspended') },
     ];
 
@@ -593,9 +597,10 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
                 }),
         }));
         let resolveCredentials: ((value: { token: string; secret: string }) => void) | null = null;
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: vi.fn(async () => await new Promise((resolve) => {
+        vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => await createTokenStorageModuleMock({
+            importOriginal,
+            tokenStorage: {
+                getCredentialsForServerUrl: vi.fn(async () => await new Promise<{ token: string; secret: string }>((resolve) => {
                     resolveCredentials = resolve;
                 })),
             },

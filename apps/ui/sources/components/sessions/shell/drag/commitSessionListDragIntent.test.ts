@@ -5,8 +5,14 @@ import type { SessionFolderWorkspaceRefV1, SessionFoldersV1 } from '@/sync/domai
 
 import { commitSessionListDragIntent } from './commitSessionListDragIntent';
 import type { SessionListDragIntent } from './_types';
-import { treeRowId } from '../drop-resolution/treeRowId';
+import { resolveWorkspaceRootTreeRowId, treeRowId } from '../drop-resolution/treeRowId';
 import { buildSessionListTreeRows } from '../drop-resolution/buildSessionListTreeRows';
+import { buildSessionWorkspaceOrderAfterTreeDrop } from '../commit/applyWorkspaceOrderUpdate';
+import {
+    buildSessionProjectGroupingIdentity,
+    sessionProjectGroupingIdentityKey,
+} from '@/sync/domains/session/listing/sessionListProjectGroupingKeys';
+import { buildSessionWorkspaceOrderItemKey } from '@/sync/domains/session/listing/sessionWorkspaceOrderStateV1';
 
 const workspaceA: SessionFolderWorkspaceRefV1 = {
     t: 'workspaceScope',
@@ -150,6 +156,30 @@ describe('commitSessionListDragIntent', () => {
         expect(spies.setSessionFolderAssignment).not.toHaveBeenCalled();
     });
 
+    it('blocks sibling reorder when the active layout suppresses manual ordering', async () => {
+        const intent: SessionListDragIntent = {
+            sourceRowId: treeRowId.session('server-a', 'root-b'),
+            sourceKind: 'leaf',
+            instructionKind: 'reorder-before',
+            targetRowId: treeRowId.session('server-a', 'root-a'),
+            containerId: treeRowId.workspaceRoot(projectGroupKey),
+            parentRowId: null,
+            depth: 0,
+            edge: 'top',
+            sourceSnapshotSignature: 'sig',
+        };
+        const { context, spies } = makeContext({
+            sessionListOrderingModeV1: 'custom',
+            manualSessionOrderingEnabled: false,
+        });
+
+        const result = await commitSessionListDragIntent({ intent, context });
+
+        expect(result).toEqual({ ok: false, reason: 'date-ordering-mode' });
+        expect(spies.setSessionListGroupOrderV1).not.toHaveBeenCalled();
+        expect(spies.setSessionFolderAssignment).not.toHaveBeenCalled();
+    });
+
     it('no-ops with source-missing when the dragged source vanished mid-drag', async () => {
         const intent: SessionListDragIntent = {
             sourceRowId: treeRowId.session('server-a', 'gone'),
@@ -175,9 +205,9 @@ describe('commitSessionListDragIntent', () => {
             sourceRowId: treeRowId.session('server-a', 'root-b'),
             sourceKind: 'leaf',
             instructionKind: 'nest-into',
-            targetRowId: treeRowId.folder('gone'),
-            containerId: treeRowId.folder('gone'),
-            parentRowId: treeRowId.folder('gone'),
+            targetRowId: treeRowId.folder('server-a', 'gone'),
+            containerId: treeRowId.folder('server-a', 'gone'),
+            parentRowId: treeRowId.folder('server-a', 'gone'),
             depth: 1,
             edge: null,
             sourceSnapshotSignature: 'sig',
@@ -254,12 +284,12 @@ describe('commitSessionListDragIntent', () => {
             ],
         };
         const intent: SessionListDragIntent = {
-            sourceRowId: treeRowId.folder('folder-a'),
+            sourceRowId: treeRowId.folder('server-a', 'folder-a'),
             sourceKind: 'container',
             instructionKind: 'nest-into',
-            targetRowId: treeRowId.folder('folder-b'),
-            containerId: treeRowId.folder('folder-b'),
-            parentRowId: treeRowId.folder('folder-b'),
+            targetRowId: treeRowId.folder('server-a', 'folder-b'),
+            containerId: treeRowId.folder('server-a', 'folder-b'),
+            parentRowId: treeRowId.folder('server-a', 'folder-b'),
             depth: 2,
             edge: null,
             sourceSnapshotSignature: 'sig',
@@ -286,12 +316,11 @@ describe('commitSessionListDragIntent', () => {
             edge: 'bottom',
             sourceSnapshotSignature: 'sig',
         };
-        const { context, spies } = makeContext();
+        const { context, spies } = makeContext({ manualSessionOrderingEnabled: false });
 
         const result = await commitSessionListDragIntent({ intent, context });
 
-        // Moving the session out of folder-a to the project root persists both the
-        // folder assignment change and the order update.
+        // Containment remains valid while the layout suppresses sibling ordering.
         expect(result.ok).toBe(true);
         expect(spies.setSessionFolderAssignment).toHaveBeenCalledTimes(1);
         expect(spies.setSessionFolderAssignment.mock.calls[0]?.[0]).toEqual({
@@ -299,6 +328,7 @@ describe('commitSessionListDragIntent', () => {
             sessionId: 'inside-a',
             folderId: null,
         });
+        expect(spies.setSessionListGroupOrderV1).not.toHaveBeenCalled();
     });
 });
 
@@ -308,5 +338,60 @@ describe('commitSessionListDragIntent — latest-tree rebuild', () => {
         const tree = buildSessionListTreeRows({ items: items() });
         expect(tree.rows).toEqual([]);
         expect(tree.rowMetadataById.size).toBeGreaterThan(0);
+    });
+
+    it('keeps legacy-FNV-colliding workspace roots as independent move targets', () => {
+        const identityForMachine = (machineId: string) => sessionProjectGroupingIdentityKey(
+            buildSessionProjectGroupingIdentity('home-a', { machineId, pathKey: '/repo' }),
+        );
+        const identityA = identityForMachine('m29645');
+        const identityB = identityForMachine('m41845');
+        const headerA: Extract<SessionListIndexItem, { type: 'header' }> = {
+            type: 'header', title: 'A', headerKind: 'project', serverId: 'home-a',
+            groupKey: identityA, workspaceKey: identityA,
+        };
+        const headerB: Extract<SessionListIndexItem, { type: 'header' }> = {
+            type: 'header', title: 'B', headerKind: 'project', serverId: 'home-a',
+            groupKey: identityB, workspaceKey: identityB,
+        };
+        const tree = buildSessionListTreeRows({ items: [headerA, headerB] });
+        const rowA = resolveWorkspaceRootTreeRowId(headerA);
+        const rowB = resolveWorkspaceRootTreeRowId(headerB);
+        const metadataA = tree.rowMetadataById.get(rowA);
+        const metadataB = tree.rowMetadataById.get(rowB);
+
+        expect(rowA).not.toBe(rowB);
+        expect(metadataA?.orderKey).not.toBe(metadataB?.orderKey);
+
+        const next = buildSessionWorkspaceOrderAfterTreeDrop({
+            tree,
+            currentMap: {},
+            movedRowId: rowB,
+            containerId: metadataA!.containerId,
+            beforeRowId: rowA,
+        });
+        expect(next?.[metadataA!.containerGroupKey]).toEqual([
+            metadataB?.orderKey,
+            metadataA?.orderKey,
+        ]);
+    });
+
+    it('keeps one project root identity when the seed Session is removed or reordered', () => {
+        const identity = sessionProjectGroupingIdentityKey(
+            buildSessionProjectGroupingIdentity('home-a', { machineId: 'machine-a', pathKey: '/repo' }),
+        );
+        const first: Extract<SessionListIndexItem, { type: 'header' }> = {
+            type: 'header', title: 'Repo', headerKind: 'project', serverId: 'home-a',
+            groupKey: identity, workspaceKey: identity, seedSessionId: 'session-first',
+        };
+        const afterRemoval: Extract<SessionListIndexItem, { type: 'header' }> = {
+            ...first,
+            seedSessionId: 'session-second',
+        };
+
+        expect(resolveWorkspaceRootTreeRowId(first)).toBe(resolveWorkspaceRootTreeRowId(afterRemoval));
+        expect(buildSessionWorkspaceOrderItemKey(first.workspaceKey)).toBe(
+            buildSessionWorkspaceOrderItemKey(afterRemoval.workspaceKey),
+        );
     });
 });

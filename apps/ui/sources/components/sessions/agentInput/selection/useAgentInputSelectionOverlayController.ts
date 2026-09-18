@@ -16,6 +16,16 @@ function isCollapsedExtraOverlay(
     return overlay?.id === 'collapsedExtra';
 }
 
+function hasSameOverlayIdentity(
+    left: AgentInputSelectionOverlayState | null,
+    right: AgentInputSelectionOverlayState | null,
+): boolean {
+    if (!left || !right) return left === right;
+    if (left.id !== right.id) return false;
+    if (left.id !== 'collapsedExtra' || right.id !== 'collapsedExtra') return true;
+    return left.chipKey === right.chipKey;
+}
+
 function hasCollapsedExtraPopover(chip: AgentInputExtraActionChip): boolean {
     return Boolean(
         chip.renderCollapsedPopover
@@ -80,6 +90,7 @@ export function useAgentInputSelectionOverlayController(params: Readonly<{
     hasAgentPickerOptions: boolean;
     extraActionChips?: ReadonlyArray<AgentInputExtraActionChip>;
     retainKeyboardLift?: () => () => void;
+    onSelectionOverlayDismiss?: (id: AgentInputSelectionOverlayId) => void;
 }>): Readonly<{
     activeSelectionOverlay: AgentInputSelectionOverlayState | null;
     isSelectionOverlayOpen: (id: AgentInputSelectionOverlayId) => boolean;
@@ -99,7 +110,19 @@ export function useAgentInputSelectionOverlayController(params: Readonly<{
     activeExtraCollapsedPopoverChip: AgentInputExtraActionChip | null;
 }> {
     const [activeSelectionOverlay, setActiveSelectionOverlay] = React.useState<AgentInputSelectionOverlayState | null>(null);
+    const activeSelectionOverlayRef = React.useRef<AgentInputSelectionOverlayState | null>(null);
+    const onSelectionOverlayDismissRef = React.useRef(params.onSelectionOverlayDismiss);
+    onSelectionOverlayDismissRef.current = params.onSelectionOverlayDismiss;
     const releaseKeyboardLiftRef = React.useRef<(() => void) | null>(null);
+
+    const replaceActiveSelectionOverlay = React.useCallback((next: AgentInputSelectionOverlayState | null) => {
+        const previous = activeSelectionOverlayRef.current;
+        activeSelectionOverlayRef.current = next;
+        if (previous && !hasSameOverlayIdentity(previous, next)) {
+            onSelectionOverlayDismissRef.current?.(previous.id);
+        }
+        setActiveSelectionOverlay(next);
+    }, []);
 
     const retainKeyboardLift = React.useCallback(() => {
         if (releaseKeyboardLiftRef.current) return;
@@ -126,7 +149,7 @@ export function useAgentInputSelectionOverlayController(params: Readonly<{
 
     React.useEffect(() => {
         if (!isSelectionOverlaySupported(activeSelectionOverlay, params)) {
-            setActiveSelectionOverlay(null);
+            replaceActiveSelectionOverlay(null);
         }
     }, [
         activeSelectionOverlay,
@@ -139,6 +162,7 @@ export function useAgentInputSelectionOverlayController(params: Readonly<{
         params.hasEnvVarsPopover,
         params.hasProfilePopover,
         params.shouldRenderSessionModeChip,
+        replaceActiveSelectionOverlay,
     ]);
 
     React.useEffect(() => {
@@ -163,16 +187,16 @@ export function useAgentInputSelectionOverlayController(params: Readonly<{
         if (id === 'collapsedExtra') {
             if (!chipKey || chipKey.length === 0) {
                 releaseKeyboardLift();
-                setActiveSelectionOverlay(null);
+                replaceActiveSelectionOverlay(null);
                 return;
             }
             retainKeyboardLift();
-            setActiveSelectionOverlay({ id, anchor, chipKey });
+            replaceActiveSelectionOverlay({ id, anchor, chipKey });
             return;
         }
         retainKeyboardLift();
-        setActiveSelectionOverlay({ id, anchor });
-    }, [releaseKeyboardLift, retainKeyboardLift]);
+        replaceActiveSelectionOverlay({ id, anchor });
+    }, [releaseKeyboardLift, replaceActiveSelectionOverlay, retainKeyboardLift]);
 
     const toggleSelectionOverlay = React.useCallback((
         id: AgentInputSelectionOverlayId,
@@ -180,36 +204,32 @@ export function useAgentInputSelectionOverlayController(params: Readonly<{
         chipKey?: string,
     ) => {
         retainKeyboardLift();
-        setActiveSelectionOverlay((current) => {
-            const collapsedChipKey = current?.id === 'collapsedExtra' ? current.chipKey : null;
-            const matchesRequestedOverlay = current?.id === id
-                && current.anchor === anchor
-                && (id !== 'collapsedExtra' || collapsedChipKey === chipKey);
-            if (matchesRequestedOverlay) {
-                return null;
-            }
-            if (id === 'collapsedExtra') {
-                if (!chipKey || chipKey.length === 0) return null;
-                return { id, anchor, chipKey };
-            }
-            return { id, anchor };
-        });
-    }, [retainKeyboardLift]);
+        const current = activeSelectionOverlayRef.current;
+        const collapsedChipKey = current?.id === 'collapsedExtra' ? current.chipKey : null;
+        const matchesRequestedOverlay = current?.id === id
+            && current.anchor === anchor
+            && (id !== 'collapsedExtra' || collapsedChipKey === chipKey);
+        if (matchesRequestedOverlay) {
+            replaceActiveSelectionOverlay(null);
+            return;
+        }
+        if (id === 'collapsedExtra') {
+            replaceActiveSelectionOverlay(chipKey ? { id, anchor, chipKey } : null);
+            return;
+        }
+        replaceActiveSelectionOverlay({ id, anchor });
+    }, [replaceActiveSelectionOverlay, retainKeyboardLift]);
 
     const closeSelectionOverlay = React.useCallback((id?: AgentInputSelectionOverlayId) => {
-        setActiveSelectionOverlay((current) => {
-            if (!current) return null;
-            if (!id || current.id === id) {
-                return null;
-            }
-            return current;
-        });
-    }, []);
+        const current = activeSelectionOverlayRef.current;
+        if (!current || (id && current.id !== id)) return;
+        replaceActiveSelectionOverlay(null);
+    }, [replaceActiveSelectionOverlay]);
 
     const resetSelectionOverlays = React.useCallback(() => {
         releaseKeyboardLift();
-        setActiveSelectionOverlay(null);
-    }, [releaseKeyboardLift]);
+        replaceActiveSelectionOverlay(null);
+    }, [releaseKeyboardLift, replaceActiveSelectionOverlay]);
 
     return {
         activeSelectionOverlay,

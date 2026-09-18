@@ -11,7 +11,7 @@ const capturedScopeIdRef = vi.hoisted(() => ({ current: '' }));
 const sessionCommitDetailsViewSpy = vi.hoisted(() => vi.fn((props: any) => React.createElement('SessionCommitDetailsView', props)));
 
 const routerMock = createExpoRouterMock({
-    params: { id: ['s1', 's2'], sha: 'abc def' },
+    params: { id: ['s1', 's2'], sha: 'abc def', serverId: 'home-b' },
     router: {
         push: vi.fn(),
         back: vi.fn(),
@@ -90,10 +90,11 @@ describe('session commit route', () => {
 
         await renderScreen(<CommitRoute />);
 
-        expect(capturedScopeIdRef.current).toBe('session:s1');
+        expect(capturedScopeIdRef.current).toBe('session:address:home-b:s1');
         expect(sessionCommitDetailsViewSpy).toHaveBeenCalledWith(
             expect.objectContaining({
                 sessionId: 's1',
+                serverId: 'home-b',
                 sha: 'abc',
             }),
         );

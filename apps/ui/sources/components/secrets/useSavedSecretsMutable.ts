@@ -5,6 +5,7 @@ import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import { useSetting, useSettingsVersion } from '@/sync/store/hooks';
 import { t } from '@/text';
 import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 
 import {
     applySavedSecretReplacementIntent,
@@ -22,11 +23,13 @@ export function useSavedSecretsMutable(): readonly [
 ] {
     const secrets = useSetting('secrets');
     const settingsVersion = useSettingsVersion();
+    const expectedSettingsScope = useAccountSettingsScope();
     const replace = React.useCallback(async (next: SavedSecret[]) => {
         try {
             if (settingsVersion === null) throw new Error('Account settings version is unavailable');
             requireOneShotAccountSettingsMutationApplied(
                 await getSyncSingleton().mutateAccountSettingsOnce({
+                    expectedSettingsScope,
                     expectedSettingsVersion: settingsVersion,
                     mutate: (current) => ({
                         settings: applySavedSecretReplacementIntent({
@@ -43,9 +46,9 @@ export function useSavedSecretsMutable(): readonly [
                 t('common.error'),
                 error instanceof Error
                     ? error.message
-                    : 'SavedSecret mutation failed',
+                    : t('errors.operationFailed'),
             );
         }
-    }, [secrets, settingsVersion]);
+    }, [expectedSettingsScope, secrets, settingsVersion]);
     return [secrets, replace] as const;
 }

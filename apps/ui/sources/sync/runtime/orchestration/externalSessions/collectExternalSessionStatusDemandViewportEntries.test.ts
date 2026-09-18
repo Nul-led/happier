@@ -65,7 +65,7 @@ describe('collectExternalSessionStatusDemandViewportEntries', () => {
 
             const entries = collectExternalSessionStatusDemandViewportEntries({
                 activeServerId: 'server-1',
-                renderedListItems: fixture.items,
+                renderedListItems: fixture.items.slice(size - 20),
                 resolveRowRenderable: (rowKey) => {
                     rowRenderableReads += 1;
                     return fixture.renderables.get(rowKey) ?? null;

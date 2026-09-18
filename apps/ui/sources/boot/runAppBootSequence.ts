@@ -41,6 +41,8 @@ export type AppBootSequence = Readonly<{
      * `restoreSync` runs or the boot hydrates nothing.
      */
     prepareWarmCache: () => Promise<unknown>;
+    /** Authoritative user input must be loaded before any synchronous reader can mount. */
+    prepareSessionDrafts: () => Promise<void>;
     /**
      * `null` when this host must not restore sync (the desktop activity overlay window renders
      * against the already-running main window's sync).
@@ -145,6 +147,10 @@ export async function runAppBootSequence(sequence: AppBootSequence): Promise<voi
             console.error('Warm cache key missed its boot deadline, painting cold:', error);
         },
     );
+
+    // Unlike the disposable warm cache, drafts cannot degrade to an empty snapshot on failure.
+    // Attach this await immediately so a rejected storage open reaches the boot recovery owner.
+    await start(sequence.prepareSessionDrafts);
 
     let gatedCredentials: CredentialOutcome | null = null;
     try {

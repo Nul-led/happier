@@ -7,6 +7,7 @@ import { installAppPaneScopeHostCommonModuleMocks } from './appPaneScopeHostTest
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let lastProps: any = null;
+let lastLayoutValue: any = null;
 let mockedWindowHeightPx = 900;
 let mockedSettings: Record<string, any> = {
     uiMultiPanePanelsEnabled: true,
@@ -36,6 +37,13 @@ vi.mock('@/components/ui/panels/MultiPaneHostWithBottom', () => ({
     },
 }));
 
+vi.mock('./hooks/useAppPaneScopeLayout', () => ({
+    AppPaneScopeLayoutProvider: (props: Readonly<{ value: unknown; children: React.ReactNode }>) => {
+        lastLayoutValue = props.value;
+        return props.children;
+    },
+}));
+
 vi.mock('@/utils/platform/responsive', () => ({
     useDeviceType: () => 'tablet',
 }));
@@ -61,6 +69,7 @@ describe('AppPaneScopeHost (bottom overlay height)', () => {
     it('promotes the bottom pane to overlay when the preferred height no longer fits docked layout', async () => {
         const { AppPaneScopeHost } = await import('./AppPaneScopeHost');
         lastProps = null;
+        lastLayoutValue = null;
         mockedWindowHeightPx = 900;
         mockedSettings = {
             uiMultiPanePanelsEnabled: true,
@@ -84,11 +93,16 @@ describe('AppPaneScopeHost (bottom overlay height)', () => {
         expect(lastProps.bottomPresentation).toBe('overlay');
         expect(lastProps.bottomDockHeightPx).toBe(560);
         expect(lastProps.bottomDockMaxHeightPx).toBe(900);
+        expect(lastLayoutValue).toMatchObject({
+            bottomPresentation: 'overlay',
+            mainRegionHeightPx: 900,
+        });
     });
 
     it('promotes the bottom pane to overlay while the user drags it beyond the dock budget', async () => {
         const { AppPaneScopeHost } = await import('./AppPaneScopeHost');
         lastProps = null;
+        lastLayoutValue = null;
         mockedWindowHeightPx = 900;
         mockedSettings = {
             uiMultiPanePanelsEnabled: true,
@@ -110,6 +124,10 @@ describe('AppPaneScopeHost (bottom overlay height)', () => {
 
         expect(lastProps).not.toBeNull();
         expect(lastProps.bottomPresentation).toBe('docked');
+        expect(lastLayoutValue).toMatchObject({
+            bottomPresentation: 'docked',
+            mainRegionHeightPx: 580,
+        });
 
         await act(async () => {
             lastProps.onDragBottomDockHeightPx(560);
@@ -118,6 +136,10 @@ describe('AppPaneScopeHost (bottom overlay height)', () => {
         expect(lastProps.bottomPresentation).toBe('overlay');
         expect(lastProps.bottomDockHeightPx).toBe(560);
         expect(lastProps.bottomDockMaxHeightPx).toBe(900);
+        expect(lastLayoutValue).toMatchObject({
+            bottomPresentation: 'overlay',
+            mainRegionHeightPx: 900,
+        });
     });
 
     it('updates measured height even when the reported width is still zero', async () => {

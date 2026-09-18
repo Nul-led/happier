@@ -37,13 +37,16 @@ vi.mock('@/utils/errors/daemonUnavailableAlert', () => ({
 
 type HarnessProps = Readonly<{
     displayMode: 'file' | 'diff';
-    fileText: string;
+    fileText: string | null;
     fileHash?: string | null;
     persistedDraft?: Parameters<typeof import('./useWorkspaceFileEditorState').useWorkspaceFileEditorState>[0]['persistedDraft'];
 }>;
 
 describe('useWorkspaceFileEditorState (start from diff)', () => {
-    it('enters edit mode after switching to file display mode', async () => {
+    it.each([
+        { displayMode: 'diff' as const, fileText: 'console.log(1);' },
+        { displayMode: 'file' as const, fileText: null },
+    ])('enters edit mode once requested file content is available ($displayMode)', async (initial) => {
         const { useWorkspaceFileEditorState } = await import('./useWorkspaceFileEditorState');
 
         let latest: WorkspaceFileEditorState | null = null;
@@ -51,7 +54,7 @@ describe('useWorkspaceFileEditorState (start from diff)', () => {
         function Harness(props: HarnessProps) {
             latest = useWorkspaceFileEditorState({
                 scope: { serverId: 'srv1', machineId: 'm1', rootPath: '/repo' },
-                filePath: 'src/a.ts',
+                filePath: `src/start-${initial.displayMode}.ts`,
                 displayMode: props.displayMode,
                 fileText: props.fileText,
                 fileHash: props.fileHash ?? null,
@@ -78,7 +81,7 @@ describe('useWorkspaceFileEditorState (start from diff)', () => {
         };
 
         let tree: renderer.ReactTestRenderer;
-        tree = (await renderScreen(<Harness displayMode="diff" fileText={'console.log(1);'} />)).tree;
+        tree = (await renderScreen(<Harness displayMode={initial.displayMode} fileText={initial.fileText} />)).tree;
 
         expect(latest).not.toBeNull();
 

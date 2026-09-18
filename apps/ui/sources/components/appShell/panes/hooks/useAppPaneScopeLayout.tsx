@@ -1,14 +1,19 @@
 import * as React from 'react';
 
 import type { ResolvedPaneLayout } from '@/components/ui/panels/paneBreakpoints';
+import type { ResolvedBottomPanePresentation } from '@/components/ui/panels/resolveBottomPaneLayout';
 
 export type AppPaneScopeLayoutState = Readonly<{
     containerWidthPx: number;
     containerHeightPx: number;
     mainRegionWidthPx: number;
+    /** Height that remains for main after an open docked bottom pane reserves space. */
+    mainRegionHeightPx: number;
     multiPaneEnabled: boolean;
     deviceType: 'phone' | 'tablet';
     layout: ResolvedPaneLayout;
+    /** Canonical bottom-pane presentation resolved by the pane host. */
+    bottomPresentation: ResolvedBottomPanePresentation;
 }>;
 
 const AppPaneScopeLayoutContext = React.createContext<AppPaneScopeLayoutState | null>(null);

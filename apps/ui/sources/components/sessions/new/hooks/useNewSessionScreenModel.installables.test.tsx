@@ -207,7 +207,7 @@ const storageState = vi.hoisted(() => ({
     workspaceLocations: {} as Record<string, unknown>,
     workspaceCheckouts: {} as Record<string, unknown>,
     // The `@session` picker's real candidate source: session-list rows, per server.
-    sessionListRowStateByServerId: {} as Record<string, Record<string, unknown>>,
+    sessionListRowsByServerId: {} as Record<string, Record<string, unknown>>,
 }));
 const routeParamsState = vi.hoisted(() => ({
     value: {} as Record<string, string | string[] | undefined>,
@@ -218,7 +218,7 @@ const getMockStorageState = vi.hoisted(() => () => ({
     workspaceLocations: storageState.workspaceLocations,
     workspaceCheckouts: storageState.workspaceCheckouts,
     sessions: {} as Record<string, unknown>,
-    sessionListRowStateByServerId: storageState.sessionListRowStateByServerId,
+    sessionListRowsByServerId: storageState.sessionListRowsByServerId,
     createSessionActionDraft: createSessionActionDraftMock,
 }));
 
@@ -333,6 +333,7 @@ installNewSessionScreenModelCommonModuleMocks({
                 s1: includeLaunchSelectionMachinesState.value ? machineState.value as any : [],
             }),
             useMachineListStatusByServerId: () => ({}),
+            useActiveServerAccountScope: () => ({ serverId: 's1', accountId: 'account-1' }),
             storage: Object.assign((selector: (state: ReturnType<typeof getMockStorageState>) => unknown) => selector(getMockStorageState()), {
                 getState: () => getMockStorageState(),
             }) as any,
@@ -1551,7 +1552,8 @@ describe('useNewSessionScreenModel (installables)', () => {
 
         expect(handleCreateSessionMock).toHaveBeenCalledTimes(1);
         expect(createSessionActionDraftMock).toHaveBeenCalledWith(
-            'session-created',
+            { serverId: 's1', accountId: 'account-1' },
+            { serverId: 's1', sessionId: 'session-created' },
             expect.objectContaining({
                 actionId: 'review.start',
                 input: expect.objectContaining({
@@ -1859,7 +1861,7 @@ describe('useNewSessionScreenModel (installables)', () => {
         });
         // `s1` is the mocked `targetServerId`; `s_active` is the activated profile scope,
         // deliberately different, so scoping to the wrong one is observable.
-        storageState.sessionListRowStateByServerId = {
+        storageState.sessionListRowsByServerId = {
             s1: { peer: row('peer') },
             s_active: { elsewhere: row('elsewhere') },
         };
@@ -1872,7 +1874,7 @@ describe('useNewSessionScreenModel (installables)', () => {
 
             expect(suggestions?.map((suggestion: { key: string }) => suggestion.key)).toEqual(['session-peer']);
         } finally {
-            storageState.sessionListRowStateByServerId = {};
+            storageState.sessionListRowsByServerId = {};
         }
     });
 

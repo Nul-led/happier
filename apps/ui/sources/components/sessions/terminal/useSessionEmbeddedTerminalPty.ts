@@ -8,12 +8,13 @@ import type { SessionTerminalMode } from './sessionTerminalMode';
 
 export function useSessionEmbeddedTerminalPty(params: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     terminalKey: string;
     terminalMode: SessionTerminalMode;
     terminalRef: React.MutableRefObject<EmbeddedTerminalRendererHandle | null>;
 }>) {
-    const machineTarget = useSessionMachineTarget(params.sessionId);
-    const { machineReachable, machineRpcTargetAvailable } = useSessionMachineReachability(params.sessionId);
+    const machineTarget = useSessionMachineTarget(params.sessionId, params.serverId);
+    const { machineReachable, machineRpcTargetAvailable } = useSessionMachineReachability(params.sessionId, params.serverId);
     const launch = React.useMemo(
         () => params.terminalMode === 'session_attach'
             ? { kind: 'session_attach' as const, sessionId: params.sessionId }
@@ -22,6 +23,7 @@ export function useSessionEmbeddedTerminalPty(params: Readonly<{
     );
 
     return useMachineTerminalSession({
+        serverId: params.serverId,
         machineId: machineTarget?.machineId ?? null,
         cwd: params.terminalMode === 'workspace_shell' ? machineTarget?.basePath ?? null : null,
         launch,

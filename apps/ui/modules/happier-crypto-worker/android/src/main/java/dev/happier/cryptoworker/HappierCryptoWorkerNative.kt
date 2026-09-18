@@ -7,6 +7,9 @@ internal class HappierCryptoWorkerNative private constructor() {
     }
 
     @JvmStatic
+    external fun derivePasswordEnvelopeKey(password: ByteArray, salt: ByteArray, opsLimit: Long, memLimitBytes: Long, outputBytes: Int): ByteArray?
+
+    @JvmStatic
     external fun openDataKeyEnvelopeV1(envelope: ByteArray, recipientSecretKeyOrSeed: ByteArray): ByteArray?
 
     @JvmStatic

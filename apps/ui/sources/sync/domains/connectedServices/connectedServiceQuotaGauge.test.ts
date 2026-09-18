@@ -469,6 +469,87 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         expect(viewModel?.badgeLabel).toBe('7% left');
     });
 
+    it('projects a qualified runtime snapshot ref onto its released scalar quota identity', () => {
+        const quotaSnapshot = deriveConnectedServiceQuotaSnapshotFromRuntimeIssue({
+            v: 1,
+            scope: 'primary_session',
+            status: 'failed',
+            code: 'usage_limit',
+            source: 'usage_limit',
+            occurredAt: 1_000,
+            agentId: 'codex',
+            usageLimit: {
+                v: 1,
+                resetAtMs: 8_200_000,
+                retryAfterMs: null,
+                quotaScope: 'account',
+                recoverability: 'wait',
+                limitCategory: 'usage_limit',
+                // What the canonical runtime-issue ingress actually produces.
+                quotaSnapshotRef: { serviceId: 'happier.agent.codex/openai-codex', profileId: 'work', fetchedAtMs: 2_000 },
+                effectiveMeterId: 'weekly',
+                effectiveRemainingPct: 7,
+            },
+        });
+
+        expect(quotaSnapshot?.serviceId).toBe('openai-codex');
+        expect(quotaSnapshot?.profileId).toBe('work');
+    });
+
+    it('projects a qualified runtime connected-service key onto its released scalar quota identity', () => {
+        const quotaSnapshot = deriveConnectedServiceQuotaSnapshotFromRuntimeIssue({
+            v: 1,
+            scope: 'primary_session',
+            status: 'failed',
+            code: 'usage_limit',
+            source: 'usage_limit',
+            occurredAt: 1_000,
+            agentId: 'claude',
+            usageLimit: {
+                v: 1,
+                resetAtMs: 8_200_000,
+                retryAfterMs: null,
+                quotaScope: 'account',
+                recoverability: 'wait',
+                limitCategory: 'usage_limit',
+                effectiveMeterId: 'five_hour',
+                effectiveRemainingPct: 12,
+                connectedService: {
+                    serviceId: 'happier.agent.claude/claude-subscription',
+                    profileId: 'work',
+                    groupId: null,
+                },
+            },
+        });
+
+        expect(quotaSnapshot?.serviceId).toBe('claude-subscription');
+    });
+
+    it('does not attribute a novel external service quota to the agent default service', () => {
+        const quotaSnapshot = deriveConnectedServiceQuotaSnapshotFromRuntimeIssue({
+            v: 1,
+            scope: 'primary_session',
+            status: 'failed',
+            code: 'usage_limit',
+            source: 'usage_limit',
+            occurredAt: 1_000,
+            agentId: 'codex',
+            usageLimit: {
+                v: 1,
+                resetAtMs: 8_200_000,
+                retryAfterMs: null,
+                quotaScope: 'account',
+                recoverability: 'wait',
+                limitCategory: 'usage_limit',
+                quotaSnapshotRef: { serviceId: 'acme.review/reviewer-service', profileId: 'work', fetchedAtMs: 2_000 },
+                effectiveMeterId: 'weekly',
+                effectiveRemainingPct: 7,
+            },
+        });
+
+        expect(quotaSnapshot).toBeNull();
+    });
+
     it('derives a provisional native provider usage projection from runtime quota evidence without a connected-service ref', () => {
         const quotaSnapshot = deriveConnectedServiceQuotaSnapshotFromRuntimeIssue({
             v: 1,

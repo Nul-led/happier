@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createAccountEncryptionModeModuleMock } from '@/dev/testkit';
 
 const mocks = vi.hoisted(() => ({
     createEncryptionFromAuthCredentials: vi.fn(),
@@ -10,9 +11,11 @@ vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', () => ({
     createEncryptionFromAuthCredentials: mocks.createEncryptionFromAuthCredentials,
 }));
 
-vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
-    fetchAccountEncryptionMode: mocks.fetchAccountEncryptionMode,
-}));
+vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) =>
+    await createAccountEncryptionModeModuleMock({
+        importOriginal,
+        overrides: { fetchAccountEncryptionMode: mocks.fetchAccountEncryptionMode },
+    }));
 
 vi.mock('@/sync/http/client', () => ({
     serverFetch: mocks.serverFetch,
@@ -76,9 +79,13 @@ describe('fetchAndApplySessionOrganizationSnapshot', () => {
             request: { includeFolders: true },
         });
 
-        expect(getStorage().getState().sessionOrganizationFoldersByFolderKey['server-a:folder-a']?.display).toEqual({
-            t: 'plain',
-            v: { name: 'Encrypted folder' },
+        const { buildSessionOrganizationServerKey } = await import('@/sync/domains/session/organization');
+        const folderKey = buildSessionOrganizationServerKey('server-a', 'folder-a');
+        const folder = getStorage().getState().sessionOrganizationFoldersByFolderKey[folderKey];
+        expect(folder?.display).toEqual(display);
+        expect(folder?.displayState).toEqual({
+            status: 'available',
+            value: { name: 'Encrypted folder' },
         });
     });
 
@@ -126,6 +133,8 @@ describe('fetchAndApplySessionOrganizationSnapshot', () => {
         });
 
         expect(checks).toBeGreaterThanOrEqual(2);
-        expect(getStorage().getState().sessionOrganizationFoldersByFolderKey['server-a:folder-stale']).toBeUndefined();
+        const { buildSessionOrganizationServerKey } = await import('@/sync/domains/session/organization');
+        const folderKey = buildSessionOrganizationServerKey('server-a', 'folder-stale');
+        expect(getStorage().getState().sessionOrganizationFoldersByFolderKey[folderKey]).toBeUndefined();
     });
 });

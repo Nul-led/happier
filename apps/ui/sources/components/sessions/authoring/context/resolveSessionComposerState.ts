@@ -32,7 +32,7 @@ export function resolveSessionComposerState(params: Readonly<{
         || null;
     const modelMode = params.modelModeOverride
         ?? params.snapshot.modelId
-        ?? (agentId ? getAgentCore(agentId)?.model.defaultMode : null)
+        ?? (agentId ? getAgentCore(agentId)?.model?.defaultMode : null)
         ?? 'default';
 
     return {

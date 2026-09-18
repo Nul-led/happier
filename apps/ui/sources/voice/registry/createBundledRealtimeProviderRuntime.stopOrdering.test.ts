@@ -193,7 +193,10 @@ describe('createBundledRealtimeProviderRuntime stop ordering', () => {
     const mic = createInvalidationOnlyMic();
     const { runtime } = createHarness({ providerId: 'realtime_stop_deadlock', mic });
 
-    const start = runtime.adapter.start({ sessionId: CONTROL_SESSION_ID });
+    const start = runtime.adapter.start({
+      sessionId: CONTROL_SESSION_ID,
+      requestedTargetSessionAddress: null,
+    });
     void start.catch(() => undefined);
     await vi.waitFor(() => expect(mic.ensureActive).toHaveBeenCalledTimes(1));
     expect(mic.teardown).not.toHaveBeenCalled();

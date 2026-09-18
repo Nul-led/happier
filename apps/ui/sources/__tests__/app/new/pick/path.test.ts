@@ -9,6 +9,7 @@ import {
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 
 import {
+    BUNDLED_AGENT_ROUTE_PARAMS,
     cloneNavigationState,
     createNavigationMock,
     createRouterMock,
@@ -102,18 +103,6 @@ installPickerCommonModuleMocks({
             },
         }),
 });
-
-vi.mock('@react-navigation/native', () => ({
-    CommonActions: {
-        setParams: (params: Record<string, unknown>) => ({ type: 'SET_PARAMS', payload: { params } }),
-    },
-}));
-
-vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
-
-vi.mock('@/components/ui/lists/ItemList', () => ({
-    ItemList: ({ children }: React.PropsWithChildren<Record<string, never>>) => React.createElement(React.Fragment, null, children),
-}));
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 900 },
@@ -216,9 +205,7 @@ describe('PathPickerScreen', () => {
         expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
             params: {
-                agentType: 'claude',
-                backendTarget: JSON.stringify({ kind: 'backend', backendId: 'claude' }),
-                backendTargetKey: 'backend:claude',
+                ...BUNDLED_AGENT_ROUTE_PARAMS.claude,
                 dataId: 'draft-1',
                 machineId: 'm1',
                 directory: '/home',

@@ -44,6 +44,27 @@ const VALID_INPUT = {
     mode: 'secret_link',
     ttlMs: 600_000,
 } as const;
+const VALID_OUTPUT = {
+    protocolVersion: 1,
+    exposure: {
+        exposureId: 'public-preview-1',
+        previewId: 'p1',
+        sessionId: 's1',
+        machineId: 'm1',
+        mode: 'secret_link',
+        state: 'active',
+        publicUrl: 'https://preview.example.test/s/public-preview-1',
+        issuedAt: 1_000,
+        expiresAt: 601_000,
+        auditEventIds: [],
+        rateLimitProfileId: 'default',
+    },
+} as const;
+
+const EXECUTION_CONTEXT = {
+    serverId: 'home-1',
+    actionRequestId: 'action-request-1',
+} as const;
 
 function unsupported(): never {
     throw new Error('unexpected executor dependency invocation');
@@ -59,7 +80,7 @@ function createTestExecutor(overrides: Partial<ActionExecutorDeps>) {
         executionRunStart: unsupported,
         executionRunList: unsupported,
         executionRunGet: unsupported,
-        executionRunSend: unsupported,
+        detachedExecutionRunSend: unsupported,
         executionRunStop: unsupported,
         executionRunAction: unsupported,
         executionRunWait: unsupported,
@@ -91,7 +112,9 @@ function createTestExecutor(overrides: Partial<ActionExecutorDeps>) {
             actionId: Parameters<NonNullable<ActionExecutorDeps['isActionApprovalRequired']>>[0],
             ctx: ActionExecutorContext,
         ) =>
-            isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, { surface: ctx.surface ?? null }),
+            isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, ctx),
+        // Durable replay is permitted only after the host revalidates the immutable origin.
+        isApprovalExecutionOriginCurrent: async () => true,
         ...overrides,
     } as unknown as ActionExecutorDeps;
     return createActionExecutor(baseDeps);
@@ -105,12 +128,15 @@ describe('front door approval default (agent vs ui)', () => {
             isApprovalRequiredByActionsSettings(APPROVAL_ACTION_ID, EMPTY_SETTINGS, { surface: 'agent' }),
         ).toBe(true);
         expect(
-            isApprovalRequiredByActionsSettings(APPROVAL_ACTION_ID, EMPTY_SETTINGS, { surface: 'ui' }),
+            isApprovalRequiredByActionsSettings(APPROVAL_ACTION_ID, EMPTY_SETTINGS, {
+                surface: 'ui',
+                authority: 'present_user',
+            }),
         ).toBe(false);
     });
 
     it('executes a user-initiated (ui) dispatch directly through the front door — no approval prompt', async () => {
-        const runtimeLeaf = vi.fn<RuntimeActionExecute>(async () => ({ snapshot: { previewId: 'p1' } }));
+        const runtimeLeaf = vi.fn<RuntimeActionExecute>(async () => VALID_OUTPUT);
         const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval_unused' }));
         const executor = createTestExecutor({
             runtimeActionExecute: runtimeLeaf,
@@ -121,7 +147,7 @@ describe('front door approval default (agent vs ui)', () => {
         const result = await bridge({
             actionId: APPROVAL_ACTION_ID,
             input: VALID_INPUT,
-            context: { surface: 'ui' },
+            context: { surface: 'ui', authority: 'present_user', ...EXECUTION_CONTEXT },
         });
 
         // OUTCOME: user-initiated invocation runs straight through to the runtime leaf, never the
@@ -133,15 +159,14 @@ describe('front door approval default (agent vs ui)', () => {
             input: expect.objectContaining(VALID_INPUT),
             context: expect.objectContaining({ surface: 'ui' }),
         }));
-        expect(result).toEqual({ snapshot: { previewId: 'p1' } });
+        expect(result).toEqual(VALID_OUTPUT);
     });
 
-    it('routes through approval-then-execute end-to-end when policy requires approval on an enabled surface (routing proof)', async () => {
-        // Proves the front door's approval ROUTING works end-to-end (independent of the Phase 3.2
-        // surface flip): a persisted `approvalRequiredSurfaces` override on the enabled `ui` surface
-        // is honored by `isApprovalRequiredByActionsSettings`, so the executor diverts to approvals
-        // FIRST (runtime leaf gated), and only runs the runtime leaf AFTER the request is approved.
-        // This is the same mechanism the `agent` default uses once 3.2 enables the family.
+    it('returns exact deferred custody when present-user UI policy requires approval', async () => {
+        // A mounted UI cannot retain this invocation as a blocking waiter. Its
+        // operation-specific ActionApprovalContinuation follows the Artifact and
+        // consumes the eventual typed result, while Agent/CLI blocking callers
+        // keep the Action row's ordinary flow.
         const settingsRequiringUiApproval: ActionsSettingsV1 = ActionsSettingsV1Schema.parse({
             ...DEFAULT_ACTIONS_SETTINGS_V1,
             actions: {
@@ -149,39 +174,42 @@ describe('front door approval default (agent vs ui)', () => {
                 [APPROVAL_ACTION_ID]: { approvalRequiredSurfaces: ['ui'] },
             },
         });
-        const runtimeLeaf = vi.fn<RuntimeActionExecute>(async () => ({ snapshot: { previewId: 'p1' } }));
+        const runtimeLeaf = vi.fn<RuntimeActionExecute>(async () => VALID_OUTPUT);
         const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval_2' }));
         const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-        // Approve the blocking request: the executor must then run the action through the leaf.
-        const approvalsWaitForDecision = vi.fn(async (args: { request: ApprovalRequestV1 }) => ({
-            decision: 'approve' as const,
-            request: { ...args.request, status: 'approved' as const },
-        }));
+        const approvalsWaitForDecision = vi.fn(async () => {
+            throw new Error('present-user UI must return custody instead of blocking');
+        });
         const executor = createTestExecutor({
             runtimeActionExecute: runtimeLeaf,
             approvalsCreate,
             approvalsUpdate,
             approvalsWaitForDecision,
             isActionApprovalRequired: (actionId, ctx: ActionExecutorContext) =>
-                isApprovalRequiredByActionsSettings(actionId, settingsRequiringUiApproval, { surface: ctx.surface ?? null }),
+                isApprovalRequiredByActionsSettings(actionId, settingsRequiringUiApproval, ctx),
         });
         const bridge = createFrontDoorRuntimeActionExecutor(executor);
 
         const result = await bridge({
             actionId: APPROVAL_ACTION_ID,
             input: VALID_INPUT,
-            context: { surface: 'ui' },
+            context: { surface: 'ui', authority: 'present_user', ...EXECUTION_CONTEXT },
         });
 
-        // OUTCOME: the action was diverted into the approvals store (gating the leaf) and only
-        // executed after approval — proving approval routing precedes execution end-to-end.
+        // OUTCOME: the action is gated and its mounted screen receives the
+        // Artifact identity it must register. It never redispatches the mutation.
         expect(approvalsCreate).toHaveBeenCalledTimes(1);
         expect(approvalsCreate).toHaveBeenCalledWith(expect.objectContaining({
             request: expect.objectContaining({ actionId: APPROVAL_ACTION_ID, status: 'open' }),
         }));
-        expect(approvalsWaitForDecision).toHaveBeenCalledTimes(1);
-        expect(runtimeLeaf).toHaveBeenCalledTimes(1);
-        expect(result).toEqual({ snapshot: { previewId: 'p1' } });
+        expect(approvalsWaitForDecision).not.toHaveBeenCalled();
+        expect(approvalsUpdate).not.toHaveBeenCalled();
+        expect(runtimeLeaf).not.toHaveBeenCalled();
+        expect(result).toEqual({
+            kind: 'approval_request_created',
+            artifactId: 'approval_2',
+            actionId: APPROVAL_ACTION_ID,
+        });
     });
 
     it('routes an agent-initiated (agent) dispatch through the approval gate — Phase 3.2 flip active', async () => {
@@ -189,12 +217,16 @@ describe('front door approval default (agent vs ui)', () => {
         // dispatch now passes the enablement gate and REACHES the surface-keyed approval floor
         // (it no longer short-circuits to `action_disabled`). `publicPreview.create` is in
         // RESULT_REQUIRED → a `blocking` flow; we reject the request to prove the leaf is gated.
-        const runtimeLeaf = vi.fn<RuntimeActionExecute>(async () => ({ snapshot: { previewId: 'p1' } }));
+        const runtimeLeaf = vi.fn<RuntimeActionExecute>(async () => VALID_OUTPUT);
         const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval_1' }));
         const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
         const approvalsWaitForDecision = vi.fn(async (args: { request: ApprovalRequestV1 }) => ({
             decision: 'reject' as const,
-            request: { ...args.request, status: 'rejected' as const },
+            request: {
+                ...args.request,
+                status: 'rejected' as const,
+                decision: { kind: 'reject' as const, decidedAtMs: 2 },
+            },
         }));
         const executor = createTestExecutor({
             runtimeActionExecute: runtimeLeaf,
@@ -207,7 +239,7 @@ describe('front door approval default (agent vs ui)', () => {
         const result = await bridge({
             actionId: APPROVAL_ACTION_ID,
             input: VALID_INPUT,
-            context: { surface: 'agent' },
+            context: { surface: 'agent', ...EXECUTION_CONTEXT },
         });
 
         // OUTCOME: the agent dispatch reached the APPROVAL gate (request created), and the leaf was
@@ -219,12 +251,16 @@ describe('front door approval default (agent vs ui)', () => {
     });
 
     it('executes the same agent-initiated dispatch once approval is granted', async () => {
-        const runtimeLeaf = vi.fn<RuntimeActionExecute>(async () => ({ snapshot: { previewId: 'p1' } }));
+        const runtimeLeaf = vi.fn<RuntimeActionExecute>(async () => VALID_OUTPUT);
         const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval_ok' }));
         const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
         const approvalsWaitForDecision = vi.fn(async (args: { request: ApprovalRequestV1 }) => ({
             decision: 'approve' as const,
-            request: { ...args.request, status: 'approved' as const },
+            request: {
+                ...args.request,
+                status: 'approved' as const,
+                decision: { kind: 'approve' as const, decidedAtMs: 2 },
+            },
         }));
         const executor = createTestExecutor({
             runtimeActionExecute: runtimeLeaf,
@@ -237,11 +273,11 @@ describe('front door approval default (agent vs ui)', () => {
         const result = await bridge({
             actionId: APPROVAL_ACTION_ID,
             input: VALID_INPUT,
-            context: { surface: 'agent' },
+            context: { surface: 'agent', ...EXECUTION_CONTEXT },
         });
 
         expect(approvalsCreate).toHaveBeenCalledTimes(1);
         expect(runtimeLeaf).toHaveBeenCalledTimes(1);
-        expect(result).toEqual({ snapshot: { previewId: 'p1' } });
+        expect(result).toEqual(VALID_OUTPUT);
     });
 });

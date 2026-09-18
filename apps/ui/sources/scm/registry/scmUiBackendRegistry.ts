@@ -1,5 +1,10 @@
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
-import type { ScmUiBackendPlugin } from './scmUiBackendPlugin';
+import {
+    resolveScmCommitSelectionPolicy,
+    resolveScmUiPolicy,
+    resolveSupportedDiffAreas,
+    type ScmUiBackendPlugin,
+} from './scmUiBackendPlugin';
 import { gitScmUiPlugin } from '@/scm/backends/git/plugin';
 import { saplingScmUiPlugin } from '@/scm/backends/sapling/plugin';
 import { inferScmRemoteTarget } from '@happier-dev/protocol';
@@ -11,19 +16,10 @@ function createFallbackPlugin(id: string, displayName: string): ScmUiBackendPlug
         id,
         displayName,
         mapCapabilitiesToUiPolicy(snapshot) {
-            const supportsIncludeExclude = snapshot?.capabilities?.writeInclude === true
-                && snapshot?.capabilities?.writeExclude === true;
-            return {
-                supportsIncludeExclude,
-                supportsLineSelection: supportsIncludeExclude,
-                changeSetModel: supportsIncludeExclude ? 'index' : 'working-copy',
-                supportedDiffAreas: supportsIncludeExclude ? ['included', 'pending', 'both'] : ['pending', 'both'],
-            };
+            return resolveScmUiPolicy(snapshot?.capabilities);
         },
         diffModeConfig(snapshot) {
-            const supportsIncludeExclude = snapshot?.capabilities?.writeInclude === true
-                && snapshot?.capabilities?.writeExclude === true;
-            const availableModes = supportsIncludeExclude ? (['included', 'pending'] as const) : (['pending'] as const);
+            const availableModes = resolveSupportedDiffAreas(snapshot?.capabilities);
             return {
                 defaultMode: availableModes.includes('pending') ? 'pending' : (availableModes[0] ?? 'pending'),
                 availableModes: [...availableModes],
@@ -37,9 +33,7 @@ function createFallbackPlugin(id: string, displayName: string): ScmUiBackendPlug
         commitActionConfig(snapshot) {
             return {
                 label: snapshot?.capabilities?.operationLabels?.commit ?? 'Commit',
-                supportsPathScopedCommit: true,
-                supportsLineSelection: snapshot?.capabilities?.writeInclude === true
-                    && snapshot?.capabilities?.writeExclude === true,
+                ...resolveScmCommitSelectionPolicy(snapshot?.capabilities),
             };
         },
         remoteActionConfig(snapshot) {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
+import type { ServerCredentialLookupOptions } from '@/auth/storage/tokenStorage';
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 import type { PersonalHomeFacts } from './personalHomeBootstrapTypes';
 
@@ -125,7 +126,7 @@ const harness = vi.hoisted(() => {
     /** When set, the endpoint commits the Account and then fails before the token returns. */
     let failCreateAfterCommit = false;
 
-    function seedKey(serverUrl: string, options: Readonly<{ serverId?: string }> | undefined): string {
+    function seedKey(serverUrl: string, options: ServerCredentialLookupOptions | undefined): string {
         return `${serverUrl}|${options?.serverId ?? ''}`;
     }
 
@@ -317,6 +318,7 @@ const harness = vi.hoisted(() => {
                                 responseKind: 'tokenOnly',
                                 relayUrl: params.activeRelayUrl,
                                 webappUrl: params.activeWebappUrl,
+                                cliProvenance: 'managed',
                             },
                         });
                     }, 4);
@@ -514,25 +516,25 @@ const harness = vi.hoisted(() => {
                 events.push('storage:read');
                 return credentialsStore;
             },
-            getPendingSeed: async (serverUrl: string, options: Readonly<{ serverId?: string }> | undefined) => {
+            getPendingSeed: async (serverUrl: string, options: ServerCredentialLookupOptions | undefined) => {
                 if (pendingSeedReadbackFailure) return null;
                 const seed = pendingSeedStore.get(seedKey(serverUrl, options));
                 return seed ? new Uint8Array(seed) : null;
             },
             setPendingSeed: async (
                 serverUrl: string,
-                options: Readonly<{ serverId?: string }> | undefined,
+                options: ServerCredentialLookupOptions | undefined,
                 seed: Uint8Array,
             ) => {
                 if (pendingSeedWriteFailure) return false;
                 pendingSeedStore.set(seedKey(serverUrl, options), new Uint8Array(seed));
                 return true;
             },
-            clearPendingSeed: async (serverUrl: string, options: Readonly<{ serverId?: string }> | undefined) => {
+            clearPendingSeed: async (serverUrl: string, options: ServerCredentialLookupOptions | undefined) => {
                 pendingSeedStore.delete(seedKey(serverUrl, options));
                 return true;
             },
-            persistCredentials: async (serverUrl: string, options: { serverId?: string }, credentials: { token: string }) => {
+            persistCredentials: async (serverUrl: string, options: ServerCredentialLookupOptions, credentials: { token: string }) => {
                 events.push('storage:persist');
                 persistCalls.push({
                     serverUrl,
@@ -658,29 +660,33 @@ vi.mock('@/auth/flows/getToken', () => ({
 
 // Home-scoped secure token storage boundary (native storage beneath the owner), including the
 // pending Personal Home bootstrap-seed custody used before the account-creating endpoint call.
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
         getCredentialsForServerUrl: vi.fn(async () => await harness.storage.readCredentials()),
         setCredentialsForServerUrl: vi.fn(async (
             serverUrl: string,
-            options: Readonly<{ serverId?: string }>,
+            options: ServerCredentialLookupOptions,
             credentials: Readonly<{ token: string }>,
         ) => await harness.storage.persistCredentials(serverUrl, options, credentials)),
         getPendingPersonalHomeBootstrapSeed: vi.fn(async (
             serverUrl: string,
-            options?: Readonly<{ serverId?: string }>,
+            options?: ServerCredentialLookupOptions,
         ) => await harness.storage.getPendingSeed(serverUrl, options)),
         setPendingPersonalHomeBootstrapSeed: vi.fn(async (
             serverUrl: string,
-            options: Readonly<{ serverId?: string }> | undefined,
+            options: ServerCredentialLookupOptions | undefined,
             seed: Uint8Array,
         ) => await harness.storage.setPendingSeed(serverUrl, options, seed)),
         clearPendingPersonalHomeBootstrapSeed: vi.fn(async (
             serverUrl: string,
-            options?: Readonly<{ serverId?: string }>,
+            options?: ServerCredentialLookupOptions,
         ) => await harness.storage.clearPendingSeed(serverUrl, options)),
-    },
-}));
+        },
+    });
+});
 
 // Endpoint/network feature probe boundary.
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
@@ -697,7 +703,7 @@ vi.mock('@/sync/api/capabilities/probeAuthenticatedServerAuthPingEndpoint', () =
 async function resetProfileRegistry(): Promise<void> {
     const profiles = await import('@/sync/domains/server/serverProfiles');
     profiles.clearTabActiveServerId();
-    for (const profile of profiles.listServerProfiles()) profiles.removeServerProfile(profile.id);
+    for (const profile of profiles.listServerProfiles()) await profiles.removeServerProfile(profile.id);
 }
 
 const initialFacts: PersonalHomeFacts = {
@@ -750,7 +756,7 @@ async function runHookOperation<Result>(operation: (() => Promise<Result>) | und
 describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
     beforeEach(async () => {
         vi.useFakeTimers();
-        harness.reset();
+        await harness.reset();
         await resetProfileRegistry();
     });
 
@@ -759,7 +765,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
             standardCleanup();
             await resetProfileRegistry();
         } finally {
-            harness.reset();
+            await harness.reset();
             vi.useRealTimers();
         }
     });
@@ -767,12 +773,12 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
     it('drives the real relay runtime control and bootstrap helper through canonical install/update readbacks and ends healthy with signup closed', async () => {
         // Arrange the unrelated focused Home A through the real profile owner.
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const focusedHome = profiles.upsertServerProfile({
+        const focusedHome = await profiles.upsertServerProfile({
             serverUrl: 'https://home-a.example',
             name: 'Focused Home A',
             source: 'manual',
         });
-        profiles.setActiveServerId(focusedHome.id);
+        await profiles.setActiveServerId(focusedHome.id);
         const homeABefore: ServerProfile | null = profiles.getServerProfileById(focusedHome.id);
         expect(homeABefore).not.toBeNull();
         const profileEmissions: Array<readonly ServerProfile[]> = [];
@@ -1067,12 +1073,12 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
 
     it('rejects a daemon that is connected to another Home instead of accepting it for the Personal Home', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const focusedHome = profiles.upsertServerProfile({
+        const focusedHome = await profiles.upsertServerProfile({
             serverUrl: 'https://home-a.example',
             name: 'Focused Home A',
             source: 'manual',
         });
-        profiles.setActiveServerId(focusedHome.id);
+        await profiles.setActiveServerId(focusedHome.id);
 
         const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
         const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
@@ -1125,20 +1131,20 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
 
     it('rejects an identity/URL conflict before persisting Personal Home credentials or changing focused Home state', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const focusedHome = profiles.upsertServerProfile({
+        const focusedHome = await profiles.upsertServerProfile({
             serverUrl: 'https://focused-home.example',
             name: 'Focused Home A',
             source: 'manual',
         });
-        profiles.setServerProfileIdentityForUrl(focusedHome.serverUrl, harness.HOME_B_IDENTITY);
-        const conflictingUrlProfile = profiles.upsertServerProfile({
+        await profiles.setServerProfileIdentityForUrl(focusedHome.serverUrl, harness.HOME_B_IDENTITY);
+        const conflictingUrlProfile = await profiles.upsertServerProfile({
             serverUrl: harness.CANONICAL_SERVER_URL,
             name: 'Existing Home at Personal URL',
             source: 'manual',
         });
-        profiles.setServerProfileIdentityForUrl(conflictingUrlProfile.serverUrl, 'srv_conflicting_home_identity');
-        profiles.setActiveServerId(focusedHome.id);
-        profiles.saveHomeViewState({
+        await profiles.setServerProfileIdentityForUrl(conflictingUrlProfile.serverUrl, 'srv_conflicting_home_identity');
+        await profiles.setActiveServerId(focusedHome.id);
+        await profiles.saveHomeViewState({
             version: 1,
             groups: [{
                 id: 'focused-group',
@@ -1339,17 +1345,20 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
             canonicalServerUrl: harness.CANONICAL_SERVER_URL,
             serverIdentityId: harness.HOME_B_IDENTITY,
             // The persisted transport identity rides on the profile through adoption.
-            irohEndpoint: {
-                endpointId: 'a'.repeat(64),
-                relayUrls: ['https://relay.example.test'],
+            homeConnectionDescriptor: {
+                revision: 5,
+                endpoints: [{
+                    kind: 'iroh',
+                    endpointId: 'a'.repeat(64),
+                    relayUrls: ['https://relay.example.test'],
+                }],
             },
-            connectionDescriptorRevision: 5,
         });
         await hook.unmount();
 
         // Fail-closed negative path on a fresh registry: a descriptor whose homeServerIdentityId
         // disagrees with the independently observed server identity cannot complete adoption.
-        for (const profile of profiles.listServerProfiles()) profiles.removeServerProfile(profile.id);
+        for (const profile of profiles.listServerProfiles()) await profiles.removeServerProfile(profile.id);
         harness.probes.setPublishedHomeConnectionDescriptor({
             v: 1,
             homeServerIdentityId: 'srv_other_home_identity',

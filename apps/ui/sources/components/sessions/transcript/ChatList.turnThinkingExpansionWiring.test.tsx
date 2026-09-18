@@ -159,7 +159,7 @@ describe('ChatList (turn thinking expansion wiring)', () => {
     await act(async () => {
       // Message updates bump the session seq in production; the ChatList memo
       // (buildTranscriptRenderSignature) needs a signature-relevant change to re-render.
-      await screen.update(<ChatList session={{ ...chatListHarnessState.sessionState, seq: 1 }} />);
+      await screen.update(<ChatList session={{ ...chatListHarnessState.sessionState, seq: 1 }} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />);
     });
 
     const lastUserProps = [...renderedMessageViewProps].reverse().find((p) => p?.message?.id === 'u1');

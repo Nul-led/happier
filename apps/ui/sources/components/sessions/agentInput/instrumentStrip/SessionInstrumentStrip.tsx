@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { Pressable, View, type LayoutChangeEvent } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withDelay, withTiming } from 'react-native-reanimated';
 import { useUnistyles } from 'react-native-unistyles';
@@ -47,6 +48,7 @@ export type SessionInstrumentStripQuota = Readonly<{
 }>;
 
 export type SessionInstrumentStripProps = Readonly<{
+    serverId?: string;
     sessionId?: string;
     agentId?: string | null;
     agentTargetKey?: string | null;
@@ -73,9 +75,14 @@ export const SessionInstrumentStrip = React.memo(function SessionInstrumentStrip
     const { theme } = useUnistyles();
     const motion = useMotionPreferences();
     const alwaysShowContextSize = useSetting('alwaysShowContextSize') === true;
+    const accountScopeResolution = useServerCredentialAccountScopeResolution(props.serverId);
+    const accountScope = props.serverId === undefined ? undefined
+        : accountScopeResolution.kind === 'bound' ? accountScopeResolution.scope : null;
 
     const model = useInstrumentStripModel({
+        accountScope,
         sessionId: props.sessionId,
+        serverId: props.serverId,
         agentId: props.agentId,
         agentTargetKey: props.agentTargetKey,
         metadata: props.metadata,
@@ -117,6 +124,7 @@ export const SessionInstrumentStrip = React.memo(function SessionInstrumentStrip
     const contextTextWarning = React.useMemo(() => {
         if (contextGaugeStyle !== 'text' || !props.agentId) return null;
         const windowTokens = resolveContextWarningWindowTokens({
+            accountScope,
             agentId: props.agentId,
             agentTargetKey: props.agentTargetKey,
             metadata: props.metadata ?? null,
@@ -139,6 +147,7 @@ export const SessionInstrumentStrip = React.memo(function SessionInstrumentStrip
             theme,
         });
     }, [
+        accountScope,
         alwaysShowContextSize,
         contextGaugeStyle,
         model.context,

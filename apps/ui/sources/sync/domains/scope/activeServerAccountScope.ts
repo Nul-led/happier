@@ -5,20 +5,10 @@ import { readRegisteredStorageState } from '@/sync/domains/state/storageStateRea
 import {
     areServerAccountScopesEqual,
     type ServerAccountScope,
+    type ServerAccountScopeLifetime,
 } from './serverAccountScope';
 
-export type ActiveServerAccountScopeLifetime = Readonly<{
-    /** The exact active server/account scope this consumer captured. */
-    scope: ServerAccountScope;
-    /** False as soon as this Account scope retires or is no longer active. */
-    isCurrent(): boolean;
-    /**
-     * Register owner-local synchronous retirement work. The callback is never
-     * awaited: it only gives the consumer an immediate chance to abort/retire
-     * its own work before the next Account mounts.
-     */
-    onRetire(cancel: () => void): Readonly<{ dispose(): void }>;
-}>;
+export type ActiveServerAccountScopeLifetime = ServerAccountScopeLifetime;
 
 type MutableActiveServerAccountScopeLifetime = ActiveServerAccountScopeLifetime & {
     retire(): void;

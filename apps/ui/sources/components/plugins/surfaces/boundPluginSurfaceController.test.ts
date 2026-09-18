@@ -795,6 +795,35 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
         );
     });
 
+    it('host-stamps the mounted exact Session for contextual Board Actions', async () => {
+        const executeHostAction = vi.fn(async () => ({ ok: true as const, result: { items: [] } }));
+        const controller = createBoundPluginSurfaceController({
+            facts: { ...FACTS, sessionId: 'session-mounted' },
+            binding: { executeHostAction },
+        });
+
+        await expect(controller.hostApi.handleRequest(request('executeAction', {
+            action: 'session.board.get',
+            input: {},
+        }))).resolves.toEqual({ items: [] });
+
+        expect(executeHostAction).toHaveBeenCalledWith(
+            'session.board.get',
+            {},
+            expect.objectContaining({
+                serverId: 'server-1',
+                defaultSessionId: 'session-mounted',
+                surface: 'plugin',
+                actionCaller: {
+                    kind: 'plugin',
+                    pluginId: FACTS.pluginId,
+                    contributionLocalId: FACTS.contributionId,
+                    materialization: FACTS.executionOrigin.materializationRef,
+                },
+            }),
+        );
+    });
+
     it('keeps the exact mounted caller for a local host Action when daemon transport is unavailable', async () => {
         const executeHostAction = vi.fn(async () => ({ ok: true as const, result: { reloaded: true } }));
         const controller = createBoundPluginSurfaceController({

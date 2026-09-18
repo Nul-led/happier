@@ -58,6 +58,9 @@ export type QualifiedAccountDetailViewProps = Readonly<{
     onOpenPool?: (groupId: string) => void;
     onToggleDefault?: () => void;
     onEditLabel?: () => void;
+    /** Starts the canonical Team credential offer journey for this source. */
+    onShareWithTeam?: () => void;
+    sharedWithTeamsAdministration?: React.ReactNode;
     onReconnect?: () => void;
     onDisconnect?: () => void | Promise<void>;
     testID?: string;
@@ -110,6 +113,7 @@ export const QualifiedAccountDetailView = React.memo(function QualifiedAccountDe
         onOpenPool,
         onToggleDefault,
         onEditLabel,
+        onShareWithTeam,
         onReconnect,
         onDisconnect,
     } = props;
@@ -277,6 +281,18 @@ export const QualifiedAccountDetailView = React.memo(function QualifiedAccountDe
                     ) : null}
                 </ItemGroup>
             ) : null}
+
+            {onShareWithTeam ? (
+                <ItemGroup>
+                    <Item
+                        testID={`${testID}:action:share-with-team`}
+                        title={t('teams.credentials.create.action')}
+                        icon={<Icon name="users" size={ICON_SIZE.md} color={theme.colors.accent.blue} />}
+                        onPress={onShareWithTeam}
+                    />
+                </ItemGroup>
+            ) : null}
+            {props.sharedWithTeamsAdministration}
 
             {onReconnect ? (
                 <ItemGroup title={t('connectedServices.profile.connectionGroupTitle')}>

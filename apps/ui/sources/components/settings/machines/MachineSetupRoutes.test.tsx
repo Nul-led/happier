@@ -13,7 +13,10 @@ const expoRouterMock = createExpoRouterMock({
 vi.mock('expo-router', () => expoRouterMock.module);
 
 const isDesktopHostMock = vi.fn();
-vi.mock('@/utils/platform/desktopHost', () => ({
+// Only the desktop-host answer this suite steers is replaced. The rest of the platform boundary
+// stays real, so a module reached later through this screen's import graph still finds it.
+vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/desktopHost')>(),
     isDesktopHost: () => isDesktopHostMock(),
 }));
 

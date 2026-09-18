@@ -91,10 +91,11 @@ function publishedPending(): Array<Readonly<{
 const COEXISTING_ROW = { localId: LOCAL_ID, deliveryStatus: 'blocked' } as const;
 
 describe('pendingQueueV2 durable pending/committed coexistence', () => {
-    beforeEach(() => resetPendingQueueState());
+    beforeEach(async () => await resetPendingQueueState());
 
     function armSession(params?: { sessionSeq?: number }) {
-        const server = upsertServerProfile({ serverUrl: 'https://durable.example.test', name: 'Durable' });
+        const server = await upsertServerProfile({ serverUrl: 'https://durable.example.test', name: 'Durable' });
+        await resetPendingQueueState({ serverId: server.id, accountId: 'account' });
         storage.getState().applySessions([{
             ...buildSession({ sessionId: SESSION_ID }),
             encryptionMode: 'plain',

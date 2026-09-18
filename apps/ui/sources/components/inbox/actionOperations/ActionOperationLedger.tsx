@@ -3,16 +3,31 @@ import { Pressable, View, type GestureResponderEvent } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import {
+    ItemGroupRowPositionProvider,
+    useItemGroupRowPosition,
+} from '@/components/ui/lists/ItemGroupRowPosition';
+import { InboxSection } from '@/components/inbox/InboxSection';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { t } from '@/text';
-import { useMachine, useSessionListPreferredMetadata } from '@/sync/domains/state/storage';
-import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
-import { getSessionName } from '@/utils/sessions/sessionUtils';
+import {
+    useServerScopedMachine,
+    useSessionListRenderableWithServerScope,
+} from '@/sync/domains/state/storage';
+import { useSessionListHomeObservations } from '@/sync/store/hooks';
 import { useAllActionOperations } from '@/sync/domains/actionOperations/useActionOperations';
 import { actionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
 import type { ActionOperationProjection } from '@/sync/domains/actionOperations/actionOperationSelectors';
+import {
+    actionOperationAddress,
+    actionOperationAddressKey,
+} from '@/sync/domains/actionOperations/qualifiedActionOperation';
+import { areSessionAddressesEqual, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
+import { useSessionAudienceContext } from '@/hooks/teams/useSessionAudienceContext';
 
 import { openActionOperation } from './actionOperationPresentationRuntime';
 import {
@@ -22,6 +37,7 @@ import {
     type ActionOperationSection,
 } from './actionOperationPresentation';
 import { requestAcceptedActionOperationStop } from './requestActionOperationStop';
+import { projectActionOperationSourceContext } from './actionOperationSourceContext';
 
 const SECTION_ORDER: readonly ActionOperationSection[] = ['inProgress', 'needsAttention', 'recent'];
 
@@ -47,38 +63,63 @@ function translateSection(section: ActionOperationSection): string {
 
 const ActionOperationRow = React.memo(function ActionOperationRow(props: Readonly<{
     operation: ActionOperationProjection;
-    onOpenOperation: (operationId: string) => void;
-    onCancelOperation?: (operationId: string) => Promise<void> | void;
-    onDismissOperation?: (operationId: string) => void;
+    presentation?: 'activity' | 'inbox';
+    audienceScopes: ReadonlyMap<string, ServerAccountScope>;
+    onOpenOperation: (operation: ActionOperationProjection) => void;
+    onCancelOperation?: (operation: ActionOperationProjection) => Promise<void> | void;
+    onDismissOperation?: (operation: ActionOperationProjection) => void;
+    showDivider?: boolean;
 }>) {
     const { theme } = useUnistyles();
     const { snapshot, observation } = props.operation;
     const sessionId = snapshot.scope.sessionId ?? null;
-    const sessionMetadata = useSessionListPreferredMetadata(sessionId);
-    const machine = useMachine(sessionId ? '' : snapshot.scope.machineId);
+    const serverId = props.operation.serverId;
+    const session = useSessionListRenderableWithServerScope(serverId, serverId && sessionId ? sessionId : '');
+    const machine = useServerScopedMachine(serverId, serverId ? snapshot.scope.machineId : '');
+    // Row-local, like this row's Session and Machine reads, so a Home observation change repaints
+    // only the rows bound to that Home rather than the whole ledger.
+    const homeObservations = useSessionListHomeObservations();
     const status = resolveActionOperationStatus(snapshot, observation);
     const statusLabel = status.label.kind === 'producer'
         ? status.label.value
         : translateHostStatus(status.label.value);
-    const context = sessionId
-        ? sessionMetadata
-            ? getSessionName({ id: sessionId, metadata: sessionMetadata })
-            : ''
-        : getMachineDisplayName(machine) ?? '';
+    const sourceContext = projectActionOperationSourceContext({
+        serverId,
+        snapshot,
+        session,
+        machine,
+        serverProfile: serverId ? getServerProfileById(serverId) : null,
+        audienceScope: serverId ? props.audienceScopes.get(serverId) : null,
+        homeObservation: serverId ? homeObservations[serverId] ?? null : null,
+    });
+    const sourceTitle = sourceContext.sessionTitle ?? sourceContext.machineTitle ?? snapshot.actionId;
     const determinateProgress = snapshot.progress?.kind === 'determinate'
         ? t('inbox.actionOperations.progress', {
             current: snapshot.progress.current,
             total: snapshot.progress.total,
         })
         : null;
-    const detailText = [
-        props.operation.followUpAttention,
-        formatActionOperationAge(snapshot),
-        determinateProgress,
-    ].filter(Boolean).join(' · ');
+    const inboxPresentation = props.presentation === 'inbox';
+    const subtitleText = inboxPresentation
+        ? [props.operation.followUpAttention ?? statusLabel, sourceTitle].filter(Boolean).join(' · ')
+        : sourceTitle;
+    const detailText = (inboxPresentation
+        ? [determinateProgress, sourceContext.contextLine]
+        : [
+            props.operation.followUpAttention,
+            formatActionOperationAge(snapshot),
+            determinateProgress,
+            sourceContext.contextLine,
+        ]).filter(Boolean).join(' · ');
     const active = snapshot.state === 'accepted' || snapshot.state === 'running';
-    const canDismiss = active && props.operation.isUnavailableProjection;
-    const canStop = !canDismiss && observation === 'available' && active && snapshot.cancellation === 'supported';
+    const canDismiss = Boolean(props.onDismissOperation)
+        && (inboxPresentation || (active && props.operation.isUnavailableProjection));
+    const canStop = Boolean(serverId)
+        && !inboxPresentation
+        && !canDismiss
+        && observation === 'available'
+        && active
+        && snapshot.cancellation === 'supported';
     const [stopPending, setStopPending] = React.useState(false);
     const [stopFailed, setStopFailed] = React.useState(false);
     const iconColor = props.operation.followUpAttention || status.tone === 'danger'
@@ -91,19 +132,20 @@ const ActionOperationRow = React.memo(function ActionOperationRow(props: Readonl
         if (!props.onCancelOperation || stopPending) return;
         setStopPending(true);
         setStopFailed(false);
-        Promise.resolve(props.onCancelOperation(snapshot.operationId))
+        Promise.resolve(props.onCancelOperation(props.operation))
             .catch(() => setStopFailed(true))
             .finally(() => setStopPending(false));
-    }, [props.onCancelOperation, snapshot.operationId, stopPending]);
+    }, [props.onCancelOperation, props.operation, stopPending]);
 
     return (
         <Item
             testID={`inbox.action-operation.${snapshot.operationId}`}
             title={snapshot.title}
-            subtitle={context || snapshot.actionId}
-            detail={detailText}
-            accessibilityLabel={`${snapshot.title}, ${props.operation.followUpAttention ?? statusLabel}, ${detailText}${context ? `, ${context}` : ''}`}
+            subtitle={subtitleText}
+            detail={detailText || undefined}
+            accessibilityLabel={`${snapshot.title}, ${props.operation.followUpAttention ?? statusLabel}, ${detailText}${sourceContext.accessibilityContext ? `, ${sourceContext.accessibilityContext}` : ''}`}
             accessibilityLiveRegion="polite"
+            density="compact"
             leftElement={active && observation === 'available'
                 ? <ActivitySpinner size="small" color={theme.colors.text.secondary} />
                 : <Icon
@@ -141,7 +183,7 @@ const ActionOperationRow = React.memo(function ActionOperationRow(props: Readonl
                     accessibilityLabel={t('inbox.actionOperations.dismiss')}
                     onPress={(event) => {
                         event?.stopPropagation();
-                        props.onDismissOperation?.(snapshot.operationId);
+                        props.onDismissOperation?.(props.operation);
                     }}
                     style={({ pressed }) => [
                         styles.stopButton,
@@ -151,19 +193,76 @@ const ActionOperationRow = React.memo(function ActionOperationRow(props: Readonl
                     <Icon name="x" size={ICON_SIZE.sm} color={theme.colors.text.secondary} />
                 </Pressable>
             ) : undefined}
-            onPress={() => props.onOpenOperation(snapshot.operationId)}
+            rightElementOutsidePressable={true}
+            keepChevronWithRightElement={inboxPresentation && canDismiss}
+            showDivider={props.showDivider}
+            onPress={() => props.onOpenOperation(props.operation)}
         />
     );
 });
 
+/**
+ * Headerless operation rows for a section whose hierarchy is owned by its host.
+ * The row itself remains the one owner of source context, status, and controls.
+ */
+export const ActionOperationRows = React.memo(function ActionOperationRows(props: Readonly<{
+    operations: readonly ActionOperationProjection[];
+    presentation?: 'activity' | 'inbox';
+    onOpenOperation: (operation: ActionOperationProjection) => void;
+    onCancelOperation?: (operation: ActionOperationProjection) => Promise<void> | void;
+    onDismissOperation?: (operation: ActionOperationProjection) => void;
+    /** Supplied by ItemGroup when this row collection sits among sibling rows. */
+    showDivider?: boolean;
+}>) {
+    useServerProfilesGeneration();
+    const sessionAddresses = React.useMemo(() => props.operations.flatMap((operation) => {
+        const sessionId = operation.snapshot.scope.sessionId;
+        return operation.serverId && sessionId ? [{ serverId: operation.serverId, sessionId }] : [];
+    }), [props.operations]);
+    const audienceContext = useSessionAudienceContext(sessionAddresses);
+    const parentRowPosition = useItemGroupRowPosition();
+
+    return props.operations.map((operation, index) => {
+        const isLast = index === props.operations.length - 1;
+        return (
+            <ItemGroupRowPositionProvider
+                key={actionOperationAddressKey(actionOperationAddress(
+                    operation.serverId,
+                    operation.snapshot.operationId,
+                ))}
+                value={parentRowPosition ? {
+                    isFirst: parentRowPosition.isFirst && index === 0,
+                    isLast: parentRowPosition.isLast && isLast,
+                } : null}
+            >
+                <ActionOperationRow
+                    operation={operation}
+                    presentation={props.presentation}
+                    audienceScopes={audienceContext.scopes}
+                    onOpenOperation={props.onOpenOperation}
+                    onCancelOperation={props.onCancelOperation}
+                    onDismissOperation={props.onDismissOperation}
+                    showDivider={isLast ? props.showDivider : true}
+                />
+            </ItemGroupRowPositionProvider>
+        );
+    });
+});
+
 export const ActionOperationLedgerView = React.memo(function ActionOperationLedgerView(props: Readonly<{
     operations: readonly ActionOperationProjection[];
-    preferredSessionId?: string | null;
-    onOpenOperation: (operationId: string) => void;
-    onCancelOperation?: (operationId: string) => Promise<void> | void;
-    onDismissOperation?: (operationId: string) => void;
+    preferredSessionAddress?: SessionAddress | null;
+    onOpenOperation: (operation: ActionOperationProjection) => void;
+    onCancelOperation?: (operation: ActionOperationProjection) => Promise<void> | void;
+    onDismissOperation?: (operation: ActionOperationProjection) => void;
     onClearRecent?: () => void;
 }>) {
+    useServerProfilesGeneration();
+    const sessionAddresses = React.useMemo(() => props.operations.flatMap((operation) => {
+        const sessionId = operation.snapshot.scope.sessionId;
+        return operation.serverId && sessionId ? [{ serverId: operation.serverId, sessionId }] : [];
+    }), [props.operations]);
+    const audienceContext = useSessionAudienceContext(sessionAddresses);
     const sections = React.useMemo(() => {
         const grouped: Record<ActionOperationSection, ActionOperationProjection[]> = {
             inProgress: [],
@@ -175,33 +274,47 @@ export const ActionOperationLedgerView = React.memo(function ActionOperationLedg
                 ? 'needsAttention'
                 : classifyActionOperationSection(operation.snapshot, operation.observation)].push(operation);
         }
-        const preferredSessionId = props.preferredSessionId ?? null;
-        if (preferredSessionId) {
+        const preferredSessionAddress = props.preferredSessionAddress ?? null;
+        if (preferredSessionAddress) {
             for (const section of SECTION_ORDER) {
                 grouped[section].sort((left, right) => {
-                    const leftPreferred = left.snapshot.scope.sessionId === preferredSessionId;
-                    const rightPreferred = right.snapshot.scope.sessionId === preferredSessionId;
+                    const leftPreferred = areSessionAddressesEqual(
+                        left.serverId && left.snapshot.scope.sessionId
+                            ? { serverId: left.serverId, sessionId: left.snapshot.scope.sessionId }
+                            : null,
+                        preferredSessionAddress,
+                    );
+                    const rightPreferred = areSessionAddressesEqual(
+                        right.serverId && right.snapshot.scope.sessionId
+                            ? { serverId: right.serverId, sessionId: right.snapshot.scope.sessionId }
+                            : null,
+                        preferredSessionAddress,
+                    );
                     return leftPreferred === rightPreferred ? 0 : leftPreferred ? -1 : 1;
                 });
             }
         }
         return grouped;
-    }, [props.operations, props.preferredSessionId]);
+    }, [props.operations, props.preferredSessionAddress]);
 
     if (props.operations.length === 0) return null;
 
     return (
         <View testID="inbox.action-operations" style={styles.container}>
             {SECTION_ORDER.map((section) => sections[section].length > 0 ? (
-                <ItemGroup
+                <InboxSection
                     key={section}
+                    testID={`inbox.section.operations.${section}`}
                     title={translateSection(section)}
-                    selectableItemCountOverride={sections[section].length}
                 >
                     {sections[section].map((operation) => (
                         <ActionOperationRow
-                            key={operation.snapshot.operationId}
+                            key={actionOperationAddressKey(actionOperationAddress(
+                                operation.serverId,
+                                operation.snapshot.operationId,
+                            ))}
                             operation={operation}
+                            audienceScopes={audienceContext.scopes}
                             onOpenOperation={props.onOpenOperation}
                             onCancelOperation={props.onCancelOperation}
                             onDismissOperation={props.onDismissOperation}
@@ -211,33 +324,32 @@ export const ActionOperationLedgerView = React.memo(function ActionOperationLedg
                         <Item
                             testID="action-operations-clear-recent"
                             title={t('inbox.actionOperations.clearRecent')}
+                            density="compact"
                             onPress={props.onClearRecent}
                         />
                     ) : null}
-                </ItemGroup>
+                </InboxSection>
             ) : null)}
         </View>
     );
 });
 
 export const ActionOperationLedger = React.memo(function ActionOperationLedger(props: Readonly<{
-    preferredSessionId?: string | null;
+    preferredSessionAddress?: SessionAddress | null;
 }> = {}) {
     const operations = useAllActionOperations();
-    const stopOperation = React.useCallback(async (operationId: string) => {
-        const operation = operations.find((candidate) => candidate.snapshot.operationId === operationId);
-        if (operation) await requestAcceptedActionOperationStop(operation.snapshot);
-    }, [operations]);
+    const stopOperation = React.useCallback(async (operation: ActionOperationProjection) => {
+        await requestAcceptedActionOperationStop(operation);
+    }, []);
     return (
         <ActionOperationLedgerView
             operations={operations}
-            preferredSessionId={props.preferredSessionId}
-            onOpenOperation={(operationId) => {
-                const operation = operations.find((candidate) => candidate.snapshot.operationId === operationId);
-                if (operation) openActionOperation(operation.snapshot);
-            }}
+            preferredSessionAddress={props.preferredSessionAddress}
+            onOpenOperation={openActionOperation}
             onCancelOperation={stopOperation}
-            onDismissOperation={actionOperationStore.dismissUnavailable}
+            onDismissOperation={(operation) => actionOperationStore.dismissUnavailable(
+                actionOperationAddress(operation.serverId, operation.snapshot.operationId),
+            )}
             onClearRecent={actionOperationStore.dismissRecentSucceeded}
         />
     );

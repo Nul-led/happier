@@ -38,6 +38,8 @@ import {
     MACHINE_RPC_TIMEOUT_ERROR_CODE,
 } from './machineRpcTimeoutError';
 import { scopedSocketEmitWithAck } from './scopedSocketEmitWithAck';
+import { resolveExpectedRunnerMachineContentKeyBindingV1 } from '@/sync/domains/machines/runnerMachineContentKeyTrust';
+import { isTokenOnlyAuthCredentials } from '@/auth/storage/tokenStorage';
 
 const SCOPED_MACHINE_RPC_SESSION_WRITE_METHODS = new Set<string>([
     RPC_METHODS.SPAWN_HAPPY_SESSION,
@@ -291,15 +293,31 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
         }
 
         try {
-        const machineTransport = await timeoutBudget.runWithinTimeout(
-            'scoped',
-            async (timeoutMs) =>
-                await resolveScopedMachineTransport({
+            const expectedRunnerBinding = context.credentials
+                ? resolveExpectedRunnerMachineContentKeyBindingV1({
+                    credentials: context.credentials,
+                    homeServerIdentityId: context.targetServerId,
+                    machineId: context.machineId,
+                })
+                : null;
+            const machineTransport = await timeoutBudget.runWithinTimeout(
+                'scoped',
+                async (timeoutMs) =>
+                    await resolveScopedMachineTransport({
                     serverId: context.targetServerId,
                     serverUrl: context.targetServerUrl,
                     ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
                     token: context.token,
                     machineId: context.machineId,
+                    accountId: context.targetAccountId,
+                    ...(context.credentials
+                        ? {
+                            expectedAccountMode: isTokenOnlyAuthCredentials(context.credentials)
+                                ? 'plain' as const
+                                : 'e2ee' as const,
+                        }
+                        : {}),
+                    ...(expectedRunnerBinding ? { expectedRunnerBinding } : {}),
                     timeoutMs,
                     ...(context.encryption
                         ? {
@@ -307,8 +325,8 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
                                 context.encryption!.decryptEncryptionKey(value),
                         }
                         : {}),
-                }),
-        );
+                    }),
+            );
         throwIfMachineRpcAborted(params.method, params.signal);
 
         const usePlaintextTransport = machineTransport?.mode === 'plain';

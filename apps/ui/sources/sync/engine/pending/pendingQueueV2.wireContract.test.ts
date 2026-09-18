@@ -18,6 +18,24 @@ describe('Pending queue server-wire serialization', () => {
         expect(serializePendingEnqueueBodyForServerWire(canonicalBody, 'pending_input_v1')).toBe(canonicalBody);
     });
 
+    it('keeps resume authorization separate on the current wire and strips it for v1 replay', () => {
+        const body = JSON.stringify({
+            localId: 'local-resume',
+            content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'hello' } } },
+            messageRole: 'user',
+            requestedAction: { v: 1, kind: 'enqueue' },
+            resumeWhenAvailable: true,
+        });
+
+        expect(serializePendingEnqueueBodyForServerWire(body, 'pending_input_v3')).toBe(body);
+        expect(JSON.parse(serializePendingEnqueueBodyForServerWire(body, 'pending_input_v1')!)).toEqual({
+            localId: 'local-resume',
+            content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'hello' } } },
+            messageRole: 'user',
+            requestedAction: { v: 1, kind: 'enqueue' },
+        });
+    });
+
     it.each([
         [JSON.stringify({
             localId: 'local-1',

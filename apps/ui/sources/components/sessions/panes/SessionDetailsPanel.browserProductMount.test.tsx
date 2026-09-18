@@ -72,6 +72,9 @@ vi.mock('@/components/sessions/terminal/SessionEmbeddedTerminalPane', () => ({
     SessionEmbeddedTerminalPane: () => React.createElement('SessionEmbeddedTerminalPane'),
 }));
 
+// The Board editor wrapper selects its platform module through a bundler-only require.
+vi.mock('@/components/ui/code/editor/CodeEditor', () => ({ CodeEditor: () => null }));
+
 vi.mock('./SessionDetailsPanelDetailViews', () => ({
     SessionCommitDetailsViewForPanel: () => React.createElement('SessionCommitDetailsViewForPanel'),
     SessionFileDetailsViewForPanel: () => React.createElement('SessionFileDetailsViewForPanel'),
@@ -380,5 +383,47 @@ describe('SessionDetailsPanel browser product mount', () => {
         const browserHost = browserScreen.findByTestId('browser-view-details-surface');
 
         expect(browserHost?.props.productModels?.browserRecording?.state).toBeTruthy();
+    });
+
+    it('forwards the exact caller-hosted HTML runtime into the Board details mount', async () => {
+        const { createSessionDetailsSurfaceRenderers } = await import('./surfaces/sessionDetailsSurfaceRenderers');
+        const callerHostedHtmlRuntime = Object.freeze({ serverIdentityId: 'server-identity-1' }) as never;
+        const renderers = createSessionDetailsSurfaceRenderers({
+            sessionId: 's1',
+            scopeId: 'session:s1',
+            serverId: 'server-1',
+            callerHostedHtmlRuntime,
+            requestClose: vi.fn(),
+            openFileTab: vi.fn(),
+            getStartEditingFileHandler: () => vi.fn(),
+            sessionScreenTestIdsEnabled: false,
+            closeDetailsTab: vi.fn(),
+        });
+        const renderer = renderers.find((candidate) => candidate.id === 'session-board');
+        const rendered = renderer?.render({
+            tab: {
+                key: 'board',
+                kind: 'session-board',
+                title: 'Board',
+                resource: { kind: 'board' },
+                isPinned: true,
+                isPreview: false,
+            },
+            descriptor: {
+                surfaceId: 'session:s1:board',
+                resourceKey: 'board',
+                scope: { kind: 'session', sessionId: 's1', serverId: 'server-1' },
+                region: 'details',
+                status: 'available',
+            },
+            scope: { kind: 'session', sessionId: 's1', serverId: 'server-1' },
+            region: 'details',
+            active: true,
+            callbacks: {},
+        });
+
+        expect(React.isValidElement(rendered)).toBe(true);
+        if (!React.isValidElement<{ callerHostedHtmlRuntime?: unknown }>(rendered)) return;
+        expect(rendered.props.callerHostedHtmlRuntime).toBe(callerHostedHtmlRuntime);
     });
 });

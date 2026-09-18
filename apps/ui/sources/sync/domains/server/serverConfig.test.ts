@@ -21,6 +21,17 @@ function stubWebRuntime(origin: string) {
     })();
     vi.stubGlobal('window', { location: { origin, hostname } });
     vi.stubGlobal('document', {});
+    const lockTails = new Map<string, Promise<void>>();
+    vi.stubGlobal('navigator', {
+        locks: {
+            request: <T>(name: string, callback: () => T | PromiseLike<T>): Promise<T> => {
+                const previous = lockTails.get(name) ?? Promise.resolve();
+                const result = previous.then(callback);
+                lockTails.set(name, result.then(() => undefined, () => undefined));
+                return result;
+            },
+        },
+    });
 }
 
 async function importFreshServerConfig() {
@@ -164,10 +175,10 @@ describe('getServerUrl', () => {
 
         const { getServerUrl, setServerUrl } = await importFreshServerConfig();
         try {
-            setServerUrl('https://custom.example.test');
+            await setServerUrl('https://custom.example.test');
             expect(getServerUrl()).toBe('https://custom.example.test');
         } finally {
-            setServerUrl(null);
+            await setServerUrl(null);
         }
     });
 
@@ -178,10 +189,10 @@ describe('getServerUrl', () => {
 
         const { getServerUrl, setServerUrl } = await importFreshServerConfig();
         try {
-            setServerUrl('https://admin:secret@custom.example.test:9443/path/?token=abc#frag');
+            await setServerUrl('https://admin:secret@custom.example.test:9443/path/?token=abc#frag');
             expect(getServerUrl()).toBe('https://custom.example.test:9443/path');
         } finally {
-            setServerUrl(null);
+            await setServerUrl(null);
         }
     });
 
@@ -195,9 +206,9 @@ describe('getServerUrl', () => {
             return await import('./serverProfiles');
         })();
 
-        const created = profiles.upsertServerProfile({ serverUrl: 'https://device.example.test', name: 'Device' });
-        profiles.setActiveServerId(created.id, { scope: 'device' });
-        profiles.setActiveServerId('missing-server', { scope: 'tab' });
+        const created = await profiles.upsertServerProfile({ serverUrl: 'https://device.example.test', name: 'Device' });
+        await profiles.setActiveServerId(created.id, { scope: 'device' });
+        await profiles.setActiveServerId('missing-server', { scope: 'tab' });
 
         const { getServerUrl } = await importFreshServerConfig();
         expect(getServerUrl()).toBe('https://device.example.test');
@@ -213,12 +224,12 @@ describe('getServerUrl', () => {
         expect(getServerUrl()).toBe('http://localhost:3013');
         expect(isUsingCustomServer()).toBe(false);
 
-        setServerUrl('https://custom.example.test/');
+        await setServerUrl('https://custom.example.test/');
         expect(getServerUrl()).toBe('https://custom.example.test');
         expect(isUsingCustomServer()).toBe(true);
 
         // Reset should return to the stack default server.
-        setServerUrl(null);
+        await setServerUrl(null);
         expect(getServerUrl()).toBe('http://localhost:3013');
         expect(isUsingCustomServer()).toBe(false);
 

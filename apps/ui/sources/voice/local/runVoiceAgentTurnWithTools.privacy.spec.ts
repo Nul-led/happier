@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { getActionSpec, parseVoiceToolResultsFollowUp } from '@happier-dev/protocol';
+import {
+  getActionSpec,
+  parseVoiceToolResultsFollowUp,
+  projectSessionActivityCompatibilityV1,
+} from '@happier-dev/protocol';
 
 import {
   buildToolResultsFollowUpPrompt,
@@ -290,16 +294,25 @@ describe('runVoiceAgentTurnWithTools follow-up prompt privacy', () => {
     ]);
   });
 
-  it('strips pending permission-request identifiers when sharePermissionRequests is false', () => {
+  it('strips pending permission-request state when sharePermissionRequests is false', () => {
     const toolResults: LocalVoiceAgentToolResultEntry[] = [
       {
         t: 'getSessionActivity',
         args: { sessionId: 's1' },
-        result: {
-          ok: true,
-          sessionId: 's1',
-          permissionRequestIds: ['req_secret_1', 'req_secret_2'],
-        },
+        // The exact released digest the Action answers with. Identities and the requirement
+        // itself are both withheld: a surviving `permissionRequired` would still tell the model
+        // the user is being asked for permission.
+        result: projectSessionActivityCompatibilityV1({
+          awareness: {
+            v: 1, sessionId: 's1', lifecycle: 'active', runtime: 'waiting', freshness: 'live',
+            operational: { primary: 'permission_required', reasons: ['permission_required'] },
+            encryption: 'plain', availability: 'complete',
+          },
+          facts: {
+            presence: 'online', active: true, thinking: false, updatedAt: 123,
+            permissionRequestIds: ['req_secret_1', 'req_secret_2'],
+          },
+        }),
       },
     ];
 
@@ -312,8 +325,14 @@ describe('runVoiceAgentTurnWithTools follow-up prompt privacy', () => {
     expect(promptOff).not.toContain('req_secret_1');
     expect(promptOff).not.toContain('req_secret_2');
     const parsedOff = parseFollowUpJson(promptOff);
-    const offResult = parsedOff.toolResults[0]!.result as { permissionRequestIds?: unknown };
+    const offResult = parsedOff.toolResults[0]!.result as {
+      permissionRequestIds?: unknown;
+      permissionRequired?: unknown;
+      actionRequired?: unknown;
+      blocked?: unknown;
+    };
     expect(offResult.permissionRequestIds).toBeUndefined();
+    expect(offResult).toMatchObject({ permissionRequired: false, actionRequired: false, blocked: false });
 
     const promptOn = buildToolResultsFollowUpPrompt(toolResults, {
       shareFilePaths: true,

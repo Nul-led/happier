@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { computePluginUiArtifactSha256DigestV1 } from '@happier-dev/protocol/plugins/ui';
 
 import {
+    derivePluginUiPersistentArtifactKey,
+    PLUGIN_UI_PERSISTENT_ARTIFACT_NATIVE_BYTE_BUDGET,
+} from '@/sync/domains/plugins/ui/artifactByteCache';
+
+import {
     createReactNativeInstalledArtifactDiskGc,
     createReactNativeInstalledArtifactFileMaterializer,
     createReactNativePersistentArtifactStore,
@@ -484,6 +489,82 @@ describe('React Native persistent artifact store', () => {
         expect(fake.files).toEqual(new Map());
     });
 
+    it('rejects a persisted manifest that redirects a member outside its canonical hashed name', async () => {
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const bytes = new TextEncoder().encode('// persistent native bytes');
+        const persistentIdentity = {
+            accountScope: { serverId: 'server-a', accountId: 'account-a' },
+            releaseVersion: '1.2.3',
+            pluginId: 'acme.plugin',
+            contributionId: 'native',
+            tier: 'reactNative' as const,
+            platform: 'ios',
+            artifactDigest: computePluginUiArtifactSha256DigestV1(bytes),
+        };
+        const store = createReactNativePersistentArtifactStore({ fileSystem: fake.fileSystem });
+        await store.write({
+            persistentIdentity,
+            bytes,
+            entryRelativePath: 'entry.js',
+            files: [{
+                relativePath: 'entry.js',
+                digest: persistentIdentity.artifactDigest,
+                byteSize: bytes.byteLength,
+                bytes,
+            }],
+        });
+        const manifestPath = [...fake.files.keys()].find((path) => path.endsWith('/record.v1.json'));
+        if (!manifestPath) throw new Error('Fixture must contain the persistent manifest.');
+        const manifestBytes = fake.files.get(manifestPath);
+        if (!manifestBytes) throw new Error('Fixture must contain the persistent manifest bytes.');
+        const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as {
+            files: Array<{ storedName: string }>;
+        };
+        const originalMember = `${manifestPath.slice(0, -'/record.v1.json'.length)}/${manifest.files[0]!.storedName}`;
+        manifest.files[0]!.storedName = '../escape.bin';
+        fake.files.delete(originalMember);
+        fake.files.set(
+            `${manifestPath.slice(0, -'/record.v1.json'.length)}/../escape.bin`,
+            bytes,
+        );
+        fake.files.set(manifestPath, new TextEncoder().encode(JSON.stringify(manifest)));
+
+        await expect(store.read(persistentIdentity)).resolves.toBeNull();
+        expect(fake.files).toEqual(new Map());
+    });
+
+    it('discards a committed record when persisted bytes no longer match the manifest digest', async () => {
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const bytes = new TextEncoder().encode('// persistent native bytes');
+        const persistentIdentity = {
+            accountScope: { serverId: 'server-a', accountId: 'account-a' },
+            releaseVersion: '1.2.3',
+            pluginId: 'acme.plugin',
+            contributionId: 'native',
+            tier: 'reactNative' as const,
+            platform: 'ios',
+            artifactDigest: computePluginUiArtifactSha256DigestV1(bytes),
+        };
+        const store = createReactNativePersistentArtifactStore({ fileSystem: fake.fileSystem });
+        await store.write({
+            persistentIdentity,
+            bytes,
+            entryRelativePath: 'entry.js',
+            files: [{
+                relativePath: 'entry.js',
+                digest: persistentIdentity.artifactDigest,
+                byteSize: bytes.byteLength,
+                bytes,
+            }],
+        });
+        const storedMember = [...fake.files.keys()].find((path) => path.endsWith('.bin'));
+        if (!storedMember) throw new Error('Fixture must contain the persisted member.');
+        fake.files.set(storedMember, new Uint8Array(bytes.byteLength).fill(120));
+
+        await expect(store.read(persistentIdentity)).resolves.toBeNull();
+        expect(fake.files).toEqual(new Map());
+    });
+
     it('describes a committed hosted Artifact through opaque native storage coordinates only', async () => {
         const fake = createFakeExpoFileSystem();
         const entryPath = 'hosted-web/acme/index.html';
@@ -587,6 +668,275 @@ describe('React Native persistent artifact store', () => {
 
         await expect(store.read(accountA)).resolves.toBeNull();
         await expect(store.read(accountB)).resolves.toMatchObject({ bytes });
+    });
+});
+
+/**
+ * PEP-ARTIFACTS r0.19 / PEP-MASTER r0.146: one global cross-Account byte-LRU at
+ * this physical byte owner. The fixtures supply a budget so the exact/+1
+ * boundary is provable without allocating the shipped 640 MiB.
+ */
+describe('React Native persistent artifact byte budget', () => {
+    const payloadFor = (marker: string) => new TextEncoder().encode(`// persistent native bytes ${marker} pad`);
+
+    function identityFor(input: Readonly<{ accountId: string; pluginId: string; bytes: Uint8Array }>) {
+        return {
+            accountScope: { serverId: 'server-a', accountId: input.accountId },
+            releaseVersion: '1.2.3',
+            pluginId: input.pluginId,
+            contributionId: 'native',
+            tier: 'reactNative' as const,
+            platform: 'ios',
+            artifactDigest: computePluginUiArtifactSha256DigestV1(input.bytes),
+        };
+    }
+
+    function graphFor(persistentIdentity: ReturnType<typeof identityFor>, bytes: Uint8Array) {
+        return {
+            persistentIdentity,
+            bytes,
+            entryRelativePath: 'entry.js',
+            files: [{
+                relativePath: 'entry.js',
+                digest: computePluginUiArtifactSha256DigestV1(bytes),
+                byteSize: bytes.byteLength,
+                bytes,
+            }],
+        };
+    }
+
+    /** The charge one single-file record adds: payload plus its persisted manifest. */
+    async function measureChargedBytes(bytes: Uint8Array): Promise<number> {
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const store = createReactNativePersistentArtifactStore({ fileSystem: fake.fileSystem });
+        await store.write(graphFor(identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes }), bytes));
+        const manifestPath = [...fake.files.keys()].find((path) => path.endsWith('/record.v1.json'));
+        if (!manifestPath) throw new Error('Fixture must persist a manifest.');
+        return bytes.byteLength + (fake.files.get(manifestPath)?.byteLength ?? 0);
+    }
+
+    it('enforces the shipped 640 MiB budget by default', () => {
+        expect(PLUGIN_UI_PERSISTENT_ARTIFACT_NATIVE_BYTE_BUDGET).toBe(640 * 1024 * 1024);
+    });
+
+    it('evicts the least recently accessed record across Accounts, never the Account that was written first', async () => {
+        const bytesA = payloadFor('aa');
+        const bytesB = payloadFor('bb');
+        const bytesC = payloadFor('cc');
+        const charged = await measureChargedBytes(bytesA);
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const store = createReactNativePersistentArtifactStore({
+            fileSystem: fake.fileSystem,
+            budgetBytes: charged * 2,
+        });
+        const first = identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes: bytesA });
+        const second = identityFor({ accountId: 'account-b', pluginId: 'acme.bb', bytes: bytesB });
+        const third = identityFor({ accountId: 'account-a', pluginId: 'acme.cc', bytes: bytesC });
+
+        await store.write(graphFor(first, bytesA));
+        await store.write(graphFor(second, bytesB));
+        await expect(store.read(first)).resolves.toMatchObject({ bytes: bytesA });
+        await expect(store.read(second)).resolves.toMatchObject({ bytes: bytesB });
+
+        await store.read(first);
+        await store.write(graphFor(third, bytesC));
+
+        await expect(store.read(second)).resolves.toBeNull();
+        await expect(store.read(first)).resolves.toMatchObject({ bytes: bytesA });
+        await expect(store.read(third)).resolves.toMatchObject({ bytes: bytesC });
+    });
+
+    it('refreshes eviction ordering when a native resource description succeeds', async () => {
+        const bytesA = payloadFor('aa');
+        const bytesB = payloadFor('bb');
+        const bytesC = payloadFor('cc');
+        const charged = await measureChargedBytes(bytesA);
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const store = createReactNativePersistentArtifactStore({
+            fileSystem: fake.fileSystem,
+            budgetBytes: charged * 2,
+        });
+        const first = identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes: bytesA });
+        const second = identityFor({ accountId: 'account-b', pluginId: 'acme.bb', bytes: bytesB });
+        const third = identityFor({ accountId: 'account-a', pluginId: 'acme.cc', bytes: bytesC });
+        await store.write(graphFor(first, bytesA));
+        await store.write(graphFor(second, bytesB));
+
+        await expect(store.describeNativeResource({
+            identity: first,
+            files: [{
+                relativePath: 'entry.js',
+                digest: computePluginUiArtifactSha256DigestV1(bytesA),
+                byteSize: bytesA.byteLength,
+            }],
+        })).resolves.not.toBeNull();
+        await store.write(graphFor(third, bytesC));
+
+        await expect(store.read(first)).resolves.toMatchObject({ bytes: bytesA });
+        await expect(store.read(second)).resolves.toBeNull();
+    });
+
+    it('charges persisted metadata to the same total as the payload', async () => {
+        const bytesA = payloadFor('aa');
+        const bytesB = payloadFor('bb');
+        const charged = await measureChargedBytes(bytesA);
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const store = createReactNativePersistentArtifactStore({
+            fileSystem: fake.fileSystem,
+            budgetBytes: charged * 2 - 1,
+        });
+        const first = identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes: bytesA });
+        const second = identityFor({ accountId: 'account-b', pluginId: 'acme.bb', bytes: bytesB });
+
+        await store.write(graphFor(first, bytesA));
+        await store.write(graphFor(second, bytesB));
+
+        expect(charged * 2 - 1).toBeGreaterThan(bytesA.byteLength + bytesB.byteLength);
+        await expect(store.read(first)).resolves.toBeNull();
+        await expect(store.read(second)).resolves.toMatchObject({ bytes: bytesB });
+    });
+
+    it('charges a replaced record once instead of accumulating its predecessor', async () => {
+        const bytesA = payloadFor('aa');
+        const bytesB = payloadFor('bb');
+        const charged = await measureChargedBytes(bytesA);
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const store = createReactNativePersistentArtifactStore({
+            fileSystem: fake.fileSystem,
+            budgetBytes: charged * 2,
+        });
+        const first = identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes: bytesA });
+        const second = identityFor({ accountId: 'account-b', pluginId: 'acme.bb', bytes: bytesB });
+
+        await store.write(graphFor(first, bytesA));
+        await store.write(graphFor(first, bytesA));
+        await store.write(graphFor(first, bytesA));
+        await store.write(graphFor(second, bytesB));
+
+        await expect(store.read(first)).resolves.toMatchObject({ bytes: bytesA });
+        await expect(store.read(second)).resolves.toMatchObject({ bytes: bytesB });
+    });
+
+    it('serializes concurrent mutations so two Accounts cannot overrun the one physical budget', async () => {
+        const bytesA = payloadFor('aa');
+        const bytesB = payloadFor('bb');
+        const charged = await measureChargedBytes(bytesA);
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const store = createReactNativePersistentArtifactStore({
+            fileSystem: fake.fileSystem,
+            budgetBytes: charged,
+        });
+        const first = identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes: bytesA });
+        const second = identityFor({ accountId: 'account-b', pluginId: 'acme.bb', bytes: bytesB });
+
+        await Promise.all([
+            store.write(graphFor(first, bytesA)),
+            store.write(graphFor(second, bytesB)),
+        ]);
+
+        expect([...fake.files.keys()].filter((path) => path.endsWith('/record.v1.json'))).toHaveLength(1);
+    });
+
+    it('keeps an artifact larger than the whole budget out of persistent storage without leaving partial files', async () => {
+        const bytes = payloadFor('aa');
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const store = createReactNativePersistentArtifactStore({
+            fileSystem: fake.fileSystem,
+            budgetBytes: bytes.byteLength,
+        });
+        const identity = identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes });
+
+        // The caller's already-verified lease keeps serving this load: refusing
+        // adoption is a typed disposition, not a failure.
+        await expect(store.write(graphFor(identity, bytes))).resolves.toBe('notPersistedOversize');
+
+        await expect(store.read(identity)).resolves.toBeNull();
+        expect(fake.files).toEqual(new Map());
+    });
+
+    it('keeps bytes used by a live native token and declines persistence when no inactive record can be evicted', async () => {
+        const bytesA = payloadFor('aa');
+        const bytesB = payloadFor('bb');
+        const charged = await measureChargedBytes(bytesA);
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const retainedIdentityKeys = new Set<string>();
+        const store = createReactNativePersistentArtifactStore({
+            fileSystem: fake.fileSystem,
+            budgetBytes: charged,
+            isPersistentArtifactIdentityInUse: (identityKey) => retainedIdentityKeys.has(identityKey),
+        });
+        const mounted = identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes: bytesA });
+        const incoming = identityFor({ accountId: 'account-b', pluginId: 'acme.bb', bytes: bytesB });
+
+        await expect(store.write(graphFor(mounted, bytesA))).resolves.toBe('persisted');
+        retainedIdentityKeys.add(derivePluginUiPersistentArtifactKey(mounted));
+
+        await expect(store.write(graphFor(incoming, bytesB))).resolves.toBe('notPersistedCapacity');
+        await expect(store.read(mounted)).resolves.toMatchObject({ bytes: bytesA });
+        await expect(store.read(incoming)).resolves.toBeNull();
+    });
+
+    it('does not commit another record when required physical eviction fails', async () => {
+        const bytesA = payloadFor('aa');
+        const bytesB = payloadFor('bb');
+        const charged = await measureChargedBytes(bytesA);
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion('file:///cache/', {
+            failDirectoryDeletion: true,
+        });
+        const store = createReactNativePersistentArtifactStore({
+            fileSystem: fake.fileSystem,
+            budgetBytes: charged,
+        });
+        const first = identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes: bytesA });
+        const second = identityFor({ accountId: 'account-b', pluginId: 'acme.bb', bytes: bytesB });
+        await store.write(graphFor(first, bytesA));
+
+        await expect(store.write(graphFor(second, bytesB)))
+            .rejects.toThrow('plugin_ui_artifact_cache_delete_failed');
+        await expect(store.read(second)).resolves.toBeNull();
+    });
+
+    it('reclaims an orphaned record directory with no commit marker when the next record is written', async () => {
+        const bytesA = payloadFor('aa');
+        const bytesB = payloadFor('bb');
+        const charged = await measureChargedBytes(bytesA);
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const store = createReactNativePersistentArtifactStore({
+            fileSystem: fake.fileSystem,
+            budgetBytes: charged * 2,
+        });
+        const first = identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes: bytesA });
+        const second = identityFor({ accountId: 'account-b', pluginId: 'acme.bb', bytes: bytesB });
+        await store.write(graphFor(first, bytesA));
+        const manifestPath = [...fake.files.keys()].find((path) => path.endsWith('/record.v1.json'));
+        if (!manifestPath) throw new Error('Fixture must persist a manifest.');
+        fake.files.delete(manifestPath);
+        expect(fake.files.size).toBe(1);
+
+        await store.write(graphFor(second, bytesB));
+
+        expect(fake.files.size).toBe(2);
+        await expect(store.read(first)).resolves.toBeNull();
+        await expect(store.read(second)).resolves.toMatchObject({ bytes: bytesB });
+    });
+
+    it('retains another Account\'s inert bytes instead of deleting them on a switch-scoped write', async () => {
+        const bytesA = payloadFor('aa');
+        const bytesB = payloadFor('bb');
+        const charged = await measureChargedBytes(bytesA);
+        const fake = createFakeExpoFileSystemWithDirectoryDeletion();
+        const store = createReactNativePersistentArtifactStore({
+            fileSystem: fake.fileSystem,
+            budgetBytes: charged * 4,
+        });
+        const accountA = identityFor({ accountId: 'account-a', pluginId: 'acme.aa', bytes: bytesA });
+        const accountB = identityFor({ accountId: 'account-b', pluginId: 'acme.bb', bytes: bytesB });
+
+        await store.write(graphFor(accountA, bytesA));
+        await store.write(graphFor(accountB, bytesB));
+
+        await expect(store.read(accountA)).resolves.toMatchObject({ bytes: bytesA });
+        await expect(store.read(accountB)).resolves.toMatchObject({ bytes: bytesB });
     });
 });
 

@@ -3,13 +3,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
-import { createActionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
+import { createActionOperationStore, type ActionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
+import { actionOperationAddressKey } from '@/sync/domains/actionOperations/qualifiedActionOperation';
 
 import { installSessionHandoffCommonModuleMocks } from './sessionHandoffTestHelpers';
 
 const modalShowMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => 'handoff-progress-modal'));
 const modalHideMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => {}));
 const modalUpdateMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => {}));
+const SERVER_ID = 'server-1';
+
+function merge(store: ActionOperationStore, snapshots: readonly ActionOperationSnapshotV1[]): void {
+    store.mergeSnapshots({ serverId: SERVER_ID, snapshots });
+}
 
 // The common helper owns the react-native/unistyles/text mock registrations.
 // The modal factory keeps the same spy triples the direct component tests
@@ -149,11 +155,13 @@ describe('observed session handoff progress presentation', () => {
         const presentation = openObservedSessionHandoffProgressModal({
             requestId: 'handoff-request-1',
             sessionId: 'session-1',
+            serverId: SERVER_ID,
+            accountId: 'account-1',
             workspaceSyncEnabled: true,
             store,
         });
 
-        store.mergeSnapshots([{
+        merge(store, [{
             version: 1,
             operationId: 'handoff-operation-1',
             requestId: 'handoff-request-1',
@@ -175,8 +183,11 @@ describe('observed session handoff progress presentation', () => {
 
         const config = modalShowMock.mock.calls[0]?.[0] as { onRequestClose?: () => void } | undefined;
         config?.onRequestClose?.();
-        store.mergeSnapshots([{
-            ...store.getSnapshot().operationsById.get('handoff-operation-1')!,
+        merge(store, [{
+            ...store.getSnapshot().operationsByKey.get(actionOperationAddressKey({
+                serverId: SERVER_ID,
+                operationId: 'handoff-operation-1',
+            }))!.snapshot,
             revision: 2,
         }]);
 
@@ -190,11 +201,13 @@ describe('observed session handoff progress presentation', () => {
         openObservedSessionHandoffProgressModal({
             requestId: 'handoff-request-terminal',
             sessionId: 'session-1',
+            serverId: SERVER_ID,
+            accountId: 'account-1',
             store,
         });
 
         // While the operation runs, the modal presents active progress.
-        store.mergeSnapshots([runningSnapshot()]);
+        merge(store, [runningSnapshot()]);
         const running = await renderObservedModal(lastPushedOperation());
         expect(running.setChrome).toHaveBeenLastCalledWith(
             expect.objectContaining({ title: 'sessionHandoff.progress.title' }),
@@ -203,7 +216,7 @@ describe('observed session handoff progress presentation', () => {
 
         // A failed terminal revision must stop the spinner and present the
         // bounded actionable failure, with the technical error under Details.
-        store.mergeSnapshots([runningSnapshot({
+        merge(store, [runningSnapshot({
             revision: 2,
             state: 'failed',
             settledAt: 3,
@@ -232,14 +245,16 @@ describe('observed session handoff progress presentation', () => {
         openObservedSessionHandoffProgressModal({
             requestId: 'handoff-request-terminal',
             sessionId: 'session-1',
+            serverId: SERVER_ID,
+            accountId: 'account-1',
             store,
         });
 
-        store.mergeSnapshots([runningSnapshot()]);
+        merge(store, [runningSnapshot()]);
         const running = await renderObservedModal(lastPushedOperation());
         expect(findProgressIndicators(running.screen).length).toBeGreaterThanOrEqual(1);
 
-        store.mergeSnapshots([runningSnapshot({
+        merge(store, [runningSnapshot({
             revision: 2,
             state: 'cancelled',
             settledAt: 3,
@@ -262,11 +277,13 @@ describe('observed session handoff progress presentation', () => {
         openObservedSessionHandoffProgressModal({
             requestId: 'handoff-request-outcome',
             sessionId: 'session-1',
+            serverId: SERVER_ID,
+            accountId: 'account-1',
             workspaceSyncEnabled: true,
             store,
         });
 
-        store.mergeSnapshots([runningSnapshot({
+        merge(store, [runningSnapshot({
             requestId: 'handoff-request-outcome',
             revision: 2,
             state: 'succeeded',

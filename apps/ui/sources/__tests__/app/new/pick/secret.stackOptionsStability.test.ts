@@ -20,7 +20,6 @@ const navigationApi = createNavigationMock();
 const routerApi = createRouterMock();
 let localSearchParams = { selectedId: '' };
 
-vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 installPickerCommonModuleMocks({
     text: async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock(),
     reactNative: async () =>

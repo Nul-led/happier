@@ -16,6 +16,19 @@ function createMetadata(overrides: Partial<NonNullable<Session['metadata']>> = {
 }
 
 describe('buildActivityOverviewSnapshot', () => {
+    it('changes the fingerprint when content availability changes without changing generic copy', () => {
+        const session = createSessionFixture({ encryptionMode: 'e2ee', encryptedContentAvailability: undefined });
+        const unknown = buildActivityOverviewSnapshot({ sessions: [session], nowMs: 1_000 });
+        const unavailable = buildActivityOverviewSnapshot({
+            sessions: [{ ...session, encryptedContentAvailability: 'encrypted_content_unavailable' }], nowMs: 1_000,
+        });
+        expect(unknown.candidates[0]?.title).toBe(unavailable.candidates[0]?.title);
+        expect(unknown.fingerprint).not.toBe(unavailable.fingerprint);
+    });
+
+    it('omits the dormant queued-input aggregate', () => {
+        expect(buildActivityOverviewSnapshot({ sessions: [] }).counts).not.toHaveProperty('queuedInput');
+    });
     it('sorts the highest-urgency sessions first and counts overview buckets', () => {
         const snapshot = buildActivityOverviewSnapshot({
             sessions: [
@@ -56,11 +69,12 @@ describe('buildActivityOverviewSnapshot', () => {
 
         expect(snapshot.counts).toMatchObject({
             unread: 1,
+            // A running Session is still counted as running, and still a candidate below. It just
+            // is not something asking this Account for anything, so it stays out of attention.
             thinking: 1,
             permissionRequired: 1,
             actionRequired: 0,
-            queuedInput: 0,
-            totalAttention: 3,
+            totalAttention: 2,
         });
         expect(snapshot.candidates.map((candidate) => candidate.sessionId)).toEqual([
             'permission',
@@ -93,7 +107,6 @@ describe('buildActivityOverviewSnapshot', () => {
         expect(snapshot.counts).toMatchObject({
             unread: 1,
             permissionRequired: 1,
-            queuedInput: 0,
             totalAttention: 1,
         });
     });

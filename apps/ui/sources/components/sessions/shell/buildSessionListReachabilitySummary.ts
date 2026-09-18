@@ -6,9 +6,8 @@ import type { WorkspacePathDisplayModeV1 } from '@/sync/domains/workspaces/works
 import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
 import { readDisplayMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
-import { LruMap } from '@/utils/cache/lruMap';
-
-import { readSessionListShellCacheMaxEntriesFromEnv } from './sessionListShellCacheConfig';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
 type ReachableSessionDisplay = Readonly<{
     machineId: string | null;
@@ -18,6 +17,7 @@ type ReachableSessionDisplay = Readonly<{
 }>;
 
 type SessionDisplayRow = Readonly<{
+    serverId: string | null;
     sessionId: string;
     sessionKey: string | null;
     machineKey: string;
@@ -51,9 +51,6 @@ const EMPTY_SESSION_LIST_REACHABILITY_SUMMARY: SessionListReachabilitySummary = 
     displayByKey: new Map<string, ReachableSessionDisplay>(),
     hasMultipleMachines: false,
 };
-const SESSION_LIST_REACHABILITY_SUMMARY_CACHE = new LruMap<string, SessionListReachabilitySummary>({
-    maxEntries: readSessionListShellCacheMaxEntriesFromEnv(),
-});
 
 export function createSessionListReachabilitySummaryCache(): SessionListReachabilitySummaryCache {
     return {
@@ -63,9 +60,26 @@ export function createSessionListReachabilitySummaryCache(): SessionListReachabi
     };
 }
 
+export function retireSessionListReachabilitySummaryCacheServerScope(
+    cache: SessionListReachabilitySummaryCache,
+    serverId: string,
+): void {
+    for (const [key, entry] of cache.entriesByKey) {
+        if (entry.serverId && areServerProfileIdentifiersEquivalent(entry.serverId, serverId)) {
+            cache.entriesByKey.delete(key);
+        }
+    }
+    cache.previousRows = cache.previousRows.filter((row) => (
+        !row.serverId || !areServerProfileIdentifiersEquivalent(row.serverId, serverId)
+    ));
+    // The summary maps aggregate all rows. Rebuild them on the next render while
+    // retaining unaffected per-row cache entries from the same valid lifetimes.
+    cache.previousSummary = null;
+}
+
 function resolveRowCacheKey(item: Extract<SessionListIndexItem, { type: 'session' }>, sessionId: string): string {
     const serverId = typeof item.serverId === 'string' ? item.serverId.trim() : '';
-    return serverId ? `${serverId}:${sessionId}` : sessionId;
+    return serverId ? sessionAddressKey({ serverId, sessionId }) : sessionId;
 }
 
 function buildSessionDisplayRow(input: Readonly<{
@@ -76,6 +90,7 @@ function buildSessionDisplayRow(input: Readonly<{
     workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
     workspacePathDisplayModeV1?: WorkspacePathDisplayModeV1 | null;
 }>): SessionDisplayRow {
+    const serverId = typeof input.item.serverId === 'string' ? input.item.serverId.trim() : '';
     const metadata = input.renderable?.metadata ?? null;
     const machineTarget = readDisplayMachineTargetForSession({
         sessionId: input.sessionId,
@@ -101,8 +116,11 @@ function buildSessionDisplayRow(input: Readonly<{
     } satisfies ReachableSessionDisplay;
 
     return {
+        serverId: serverId || null,
         sessionId: input.sessionId,
-        sessionKey: input.item.serverId ? `${input.item.serverId}:${input.sessionId}` : null,
+        sessionKey: serverId
+            ? sessionAddressKey({ serverId, sessionId: input.sessionId })
+            : null,
         machineKey: machineId ?? machineLabel ?? '',
         display,
     };
@@ -223,24 +241,6 @@ function buildSummaryFromDisplayRows(rows: readonly SessionDisplayRow[]): Sessio
     };
 }
 
-function buildSummaryCacheKey(input: Readonly<{
-    rows: readonly SessionDisplayRow[];
-    machinesById: ReadonlyMap<string, unknown>;
-}>): string {
-    return JSON.stringify([
-        input.rows,
-        Array.from(input.machinesById.entries()).map(([machineId, machine]) => [
-            machineId,
-            machine && typeof machine === 'object'
-                ? {
-                    id: (machine as { id?: unknown }).id ?? null,
-                    host: (machine as { metadata?: { host?: unknown } | null }).metadata?.host ?? null,
-                }
-                : machine,
-        ]),
-    ]);
-}
-
 export function buildSessionListReachabilitySummary(input: Readonly<{
     listItems: ReadonlyArray<SessionListIndexItem>;
     machinesById: ReadonlyMap<string, unknown>;
@@ -272,13 +272,5 @@ export function buildSessionListReachabilitySummary(input: Readonly<{
         return summary;
     }
 
-    const cacheKey = buildSummaryCacheKey({ rows, machinesById: input.machinesById });
-    const cached = SESSION_LIST_REACHABILITY_SUMMARY_CACHE.get(cacheKey);
-    if (cached) {
-        return cached;
-    }
-
-    const next = buildSummaryFromDisplayRows(rows);
-    SESSION_LIST_REACHABILITY_SUMMARY_CACHE.set(cacheKey, next);
-    return next;
+    return buildSummaryFromDisplayRows(rows);
 }

@@ -26,6 +26,7 @@ export type ServerScopedMachineGroup<
     machines: TMachine[];
     loading: boolean;
     signedOut: boolean;
+    error?: boolean;
 }>;
 
 type UseServerScopedMachineOptionsParams = Readonly<{
@@ -155,6 +156,7 @@ export function useServerScopedMachineOptions(params: UseServerScopedMachineOpti
             const hasCachedRemote = Object.prototype.hasOwnProperty.call(machineListByServerId, serverId);
             const isActive = Boolean(activeServerId) && areServerProfileIdentifiersEquivalent(serverId, activeServerId);
             const signedOut = status === 'signedOut';
+            const error = status === 'error';
             const loading = !isActive && !signedOut && (status === 'loading' || !hasCachedRemote);
 
             const baseMachines = resolveServerScopedMachines({
@@ -172,6 +174,7 @@ export function useServerScopedMachineOptions(params: UseServerScopedMachineOpti
                 machines,
                 loading,
                 signedOut,
+                error,
             };
         });
     }, [

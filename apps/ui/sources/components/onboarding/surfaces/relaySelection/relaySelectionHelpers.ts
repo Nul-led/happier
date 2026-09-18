@@ -55,12 +55,12 @@ export function resolveCanonicalCloudRelayProfile(): CanonicalCloudRelayProfile 
     return { serverId: existing?.id ?? null, serverUrl };
 }
 
-export function ensureCanonicalCloudRelayProfile(): Readonly<{ serverId: string; serverUrl: string }> | null {
+export async function ensureCanonicalCloudRelayProfile(): Promise<Readonly<{ serverId: string; serverUrl: string }> | null> {
     const resolved = resolveCanonicalCloudRelayProfile();
     if (!resolved) return null;
     if (resolved.serverId) return { serverId: resolved.serverId, serverUrl: resolved.serverUrl };
 
-    const profile = getOrCreateHappierCloudServerProfile();
+    const profile = await getOrCreateHappierCloudServerProfile();
     const serverUrl = profile?.serverUrl ? normalizeServerUrl(profile.serverUrl) : '';
     if (!profile || !serverUrl) return null;
     return { serverId: profile.id, serverUrl };

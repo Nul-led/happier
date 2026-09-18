@@ -187,6 +187,48 @@ describe('syncArtifacts plaintext account storage', () => {
         expect(artifactDataKeys.size).toBe(0);
     });
 
+    it('hydrates approval bodies before publishing an actionable approval list row', async () => {
+        const request = {
+            v: 1,
+            status: 'open',
+            createdAtMs: 1,
+            updatedAtMs: 1,
+            createdBy: { surface: 'system', sessionId: 'session-1' },
+            actionId: 'session.list',
+            actionArgs: {},
+            summary: 'List sessions',
+        };
+        const full = {
+            ...buildPlainArtifact(),
+            header: encodePlainArtifactStoredContent({
+                v: 1,
+                kind: 'approval_request.v1',
+                title: request.summary,
+                approvalStatus: request.status,
+                actionId: request.actionId,
+                sessionId: 'session-1',
+                sessions: ['session-1'],
+            }),
+            body: encodePlainArtifactStoredContent({ body: JSON.stringify(request) }),
+        };
+        const { body: _body, ...listRow } = full;
+        mocks.fetchArtifacts.mockResolvedValueOnce([listRow]);
+        mocks.fetchArtifact.mockResolvedValueOnce(full);
+        const applyArtifacts = vi.fn();
+
+        await fetchAndApplyArtifactsList({
+            credentials: { token: 'token-only' },
+            encryption: null,
+            artifactDataKeys: new Map(),
+            applyArtifacts,
+        });
+
+        expect(mocks.fetchArtifact).toHaveBeenCalledWith({ token: 'token-only' }, full.id, { request: undefined });
+        expect(applyArtifacts).toHaveBeenCalledWith([
+            expect.objectContaining({ id: full.id, body: JSON.stringify(request) }),
+        ]);
+    });
+
     it('surfaces retained malformed plain Artifact reads and socket updates as locked instead of throwing', async () => {
         const artifact = {
             ...buildPlainArtifact(),
@@ -315,15 +357,11 @@ describe('syncArtifacts plaintext account storage', () => {
         });
 
         expect(mocks.fetchArtifact).not.toHaveBeenCalled();
-        expect(mocks.updateArtifact).toHaveBeenCalledWith(
-            { token: 'token-only' },
-            current.id,
-            expect.objectContaining({
-                expectedHeaderVersion: 1,
-                expectedBodyVersion: 1,
-            }),
-        );
         const request = mocks.updateArtifact.mock.calls[0]?.[2];
+        expect(request).toMatchObject({
+            expectedHeaderVersion: 1,
+            expectedBodyVersion: 1,
+        });
         expect(decodePlainArtifactStoredContent(request.header)).toMatchObject({ title: 'Approved' });
         expect(decodePlainArtifactStoredContent(request.body)).toEqual({ body: '{"v":2}' });
         expect(updated[0]).toMatchObject({

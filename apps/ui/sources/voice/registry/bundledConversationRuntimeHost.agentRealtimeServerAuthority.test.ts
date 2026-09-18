@@ -104,7 +104,7 @@ describe('Agent-realtime voice RPCs keep the server they were bound to', () => {
         provider: PROVIDER,
         agent: AGENT,
         controlSessionId: SESSION_ID,
-        requestedTargetSessionId: null,
+        requestedTargetSessionAddress: { serverId: 'server-a', sessionId: SESSION_ID },
         settings: {},
       });
     } finally {
@@ -128,9 +128,10 @@ describe('Agent-realtime voice RPCs keep the server they were bound to', () => {
         adapterId: ADAPTER_ID,
         controlSessionId: SESSION_ID,
         conversationSessionId: SESSION_ID,
+        conversationSessionAddress: { serverId: 'server-a', sessionId: SESSION_ID },
         lifetime: 'runtime_attempt',
         transcriptMode: 'native_session',
-        targetSessionId: null,
+        targetSessionAddress: null,
         updatedAt: 1,
       },
     });

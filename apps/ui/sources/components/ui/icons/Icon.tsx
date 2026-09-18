@@ -90,6 +90,9 @@ const ICON_INK_SCALE: Partial<Record<IconName, number>> = {
     // This table briefly held guesses (`dots-three` 1.2, `sidebar` 0.92). Measured in the running
     // app they were the size bug, not the fix: they rendered a nominal-20 glyph at 24 and 18 next to
     // true-20 neighbours. Anything added here must come from a measurement, not an impression.
+    // The mailbox outline is the measured exception: its sparse interior reads smaller than the
+    // pulse and sliders glyphs at the same declared size in the desktop sidebar chrome.
+    mailbox: 1.08,
 };
 
 /**

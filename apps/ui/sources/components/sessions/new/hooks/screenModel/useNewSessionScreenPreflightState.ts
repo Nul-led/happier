@@ -1,5 +1,5 @@
 import * as React from 'react';
-import type { ConnectedServiceBindingsV1, PersistedBackendTargetRefV2 } from '@happier-dev/protocol';
+import type { ConnectedServiceBindingsV2, PersistedBackendTargetRefV2 } from '@happier-dev/protocol';
 
 import {
     resolveNewSessionCapabilityProbeContext,
@@ -33,13 +33,14 @@ type AcpConfigOptionsProbeState = Readonly<{
 export function useNewSessionScreenPreflightState(params: Readonly<{
     backendTarget: PersistedBackendTargetRefV2;
     runtimeCarrierAgentId?: string | null;
+    selectedProfileId?: string | null;
     settings: Settings;
     pluginSettings?: AgentPluginSettingsSnapshot | null;
     pluginSettingsReadiness?: AgentPluginSettingsReadiness | null;
     selectedMachineId: string | null;
     capabilityServerId: string;
     cwd: string | null;
-    connectedServicesBindingsPayload?: ConnectedServiceBindingsV1 | null;
+    connectedServicesBindingsPayload?: ConnectedServiceBindingsV2 | null;
     connectedServicesModelProbeCacheIdentity?: string | null;
 }>): Readonly<{
     preflightModels: ReturnType<typeof useNewSessionPreflightModelsState>['preflightModels'];
@@ -65,23 +66,25 @@ export function useNewSessionScreenPreflightState(params: Readonly<{
         return resolveNewSessionCapabilityProbeContext({
             backendTarget: params.backendTarget,
             settings: params.settings,
+            selectedProfileId: params.selectedProfileId,
             runtimeCarrierAgentId: params.runtimeCarrierAgentId,
             machineId: params.selectedMachineId,
             pluginSettings: effectivePluginSettings,
         });
-    }, [effectivePluginSettings, params.backendTarget, params.runtimeCarrierAgentId, params.selectedMachineId, params.settings, probesEnabled]);
+    }, [effectivePluginSettings, params.backendTarget, params.runtimeCarrierAgentId, params.selectedMachineId, params.selectedProfileId, params.settings, probesEnabled]);
     const modelCapabilityProbeContext = React.useMemo(() => {
         if (!probesEnabled) return null;
         return resolveNewSessionModelCapabilityProbeContext({
             backendTarget: params.backendTarget,
             settings: params.settings,
+            selectedProfileId: params.selectedProfileId,
             runtimeCarrierAgentId: params.runtimeCarrierAgentId,
             machineId: params.selectedMachineId,
             pluginSettings: effectivePluginSettings,
             connectedServices: params.connectedServicesBindingsPayload,
             connectedServicesCacheIdentity: params.connectedServicesModelProbeCacheIdentity,
         });
-    }, [effectivePluginSettings, params.backendTarget, params.connectedServicesBindingsPayload, params.connectedServicesModelProbeCacheIdentity, params.runtimeCarrierAgentId, params.selectedMachineId, params.settings, probesEnabled]);
+    }, [effectivePluginSettings, params.backendTarget, params.connectedServicesBindingsPayload, params.connectedServicesModelProbeCacheIdentity, params.runtimeCarrierAgentId, params.selectedMachineId, params.selectedProfileId, params.settings, probesEnabled]);
 
     const { preflightModels, preflightModelsTargetKey, modelOptions, probe: modelOptionsProbe } = useNewSessionPreflightModelsState({
         backendTarget: operationalBackendTarget,

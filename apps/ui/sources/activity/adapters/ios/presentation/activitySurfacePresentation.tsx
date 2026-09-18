@@ -20,6 +20,7 @@ import type { SFSymbol } from 'sf-symbols-typescript';
 import { ACTIVITY_SURFACE_TARGETS, createActivitySurfaceSessionTarget } from '@/activity/actions/activitySurfaceTargets';
 import type { ActivitySurfaceSnapshot } from '@/activity/presentation/activitySurfaceSnapshot';
 import type { ActivitySurfaceSessionViewModel } from '@/activity/presentation/activitySurfaceViewModels';
+import { activityInstanceKey } from '@/sync/domains/session/sessionAddress';
 
 export type ActivitySurfaceWidgetPreset = 'focus' | 'sessions';
 
@@ -45,7 +46,7 @@ export function resolveActivitySurfaceSessionLimit(
 
 type ActivitySurfaceRenderableSession = Pick<
     ActivitySurfaceSessionViewModel,
-    'title' | 'subtitle' | 'previewText' | 'statusText' | 'attentionState'
+    'title' | 'contextLine' | 'subtitle' | 'previewText' | 'statusText' | 'attentionState'
 >;
 
 export function isActivitySurfaceUrgentAttentionState(
@@ -66,6 +67,8 @@ export function resolveActivitySurfaceAttentionSymbol(
             return Math.floor(Date.now() / 1_000) % 2 === 0 ? 'sparkles' : 'sparkles.rectangle.stack.fill';
         case 'pending':
             return 'clock.badge.exclamationmark';
+        case 'attention':
+            return 'bell.fill';
         case 'unread':
             return 'tray.full.fill';
         case 'quiet':
@@ -86,6 +89,7 @@ export function resolveActivitySurfaceAttentionTintName(
             return 'systemBlue';
         case 'pending':
             return 'systemYellow';
+        case 'attention':
         case 'unread':
             return 'systemIndigo';
         case 'quiet':
@@ -143,6 +147,7 @@ export function resolveActivitySurfaceDetailLines(
             maybePush(session.statusText);
         }
     }
+    maybePush(session.contextLine);
     if (options.showPreviewText !== false) {
         maybePush(session.previewText);
     }
@@ -397,7 +402,10 @@ export function renderActivitySurfaceSessionStrip(
     return (
         <VStack spacing={6}>
             {sessions.map((session) => (
-                <React.Fragment key={session.sessionId}>
+                <React.Fragment key={activityInstanceKey({
+                    serverId: session.serverId,
+                    sessionId: session.sessionId,
+                }, 'activity-surface-session')}>
                     {renderActivitySurfaceSessionCard(session, {
                         showPreviewText: options.showPreviewText,
                         showStatus: options.showStatus,

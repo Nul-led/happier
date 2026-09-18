@@ -1,12 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListViewItem } from './sessionListViewData';
+import { sessionAddressKey } from '../sessionAddress';
 import {
     normalizeSessionListGroupOrderV1ForSource,
     PINNED_GROUP_KEY_V1,
-    SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP,
     sortSessionListViewItemsByOrderingMode,
 } from './sessionListOrderingStateV1';
+import {
+    applySessionWorkspaceOrderV1ToIndex,
+    buildSessionWorkspaceOrderItemKey,
+    buildSessionWorkspaceOrderScopeKey,
+    normalizeSessionWorkspaceOrderV1ForSource,
+} from './sessionWorkspaceOrderStateV1';
+import {
+    buildSessionProjectGroupingIdentity,
+    sessionProjectGroupingIdentityKey,
+} from './sessionListProjectGroupingKeys';
+import { buildSessionListFolderOrderItemKey } from '@/sync/domains/session/listing/sessionListOrderingStateV1';
+
+function folderOrderKey(folderId: string): string {
+    return buildSessionListFolderOrderItemKey({ serverId: 's1', folderId })!;
+}
+
 
 function makeSessionItem(
     opts: Readonly<{ serverId: string; sessionId: string; groupKey: string }>,
@@ -138,6 +155,7 @@ describe('sessionListOrderingStateV1', () => {
 
     it('removes missing session keys from group order when the group is present in the source', () => {
         const g = 'server:s1:day:2026-02-17';
+        const sessionKey = sessionAddressKey({ serverId: 's1', sessionId: 'a' });
         const source: SessionListViewItem[] = [
             { type: 'header', title: 'Today', headerKind: 'date', groupKey: g, serverId: 's1' },
             makeSessionItem({ serverId: 's1', sessionId: 'a', groupKey: g }),
@@ -146,15 +164,18 @@ describe('sessionListOrderingStateV1', () => {
         const normalized = normalizeSessionListGroupOrderV1ForSource({
             source,
             pinnedSessionKeysV1: [],
-            sessionListGroupOrderV1: { [g]: ['s1:a', 's1:missing'] },
+            sessionListGroupOrderV1: {
+                [g]: [sessionKey, sessionAddressKey({ serverId: 's1', sessionId: 'missing' })],
+            },
         });
 
-        expect(normalized).toEqual({ [g]: ['s1:a'] });
+        expect(normalized).toEqual({ [g]: [sessionKey] });
     });
 
     it('preserves folder keys that are direct children of the ordered group', () => {
         const rootFolderGroupKey = 'folder:s1:workspaceScope:s1:m1:/repo:root';
         const planningFolderGroupKey = 'folder:s1:workspaceScope:s1:m1:/repo:planning';
+        const rootSessionKey = sessionAddressKey({ serverId: 's1', sessionId: 'root' });
         const source: SessionListViewItem[] = [
             { type: 'header', title: 'Repo', headerKind: 'project', groupKey: 'server:s1:project:repo', serverId: 's1' },
             {
@@ -173,18 +194,23 @@ describe('sessionListOrderingStateV1', () => {
             source,
             pinnedSessionKeysV1: [],
             sessionListGroupOrderV1: {
-                [rootFolderGroupKey]: ['s1:root', 'folder:planning', 'folder:missing'],
+                [rootFolderGroupKey]: [rootSessionKey, folderOrderKey('planning'), folderOrderKey('missing')],
             },
         });
 
         expect(normalized).toEqual({
-            [rootFolderGroupKey]: ['s1:root', 'folder:planning'],
+            [rootFolderGroupKey]: [rootSessionKey, folderOrderKey('planning')],
         });
     });
 
     it('returns the original map when group order is already normalized for the source', () => {
         const g = 'server:s1:day:2026-02-17';
-        const normalizedOrder = { [g]: ['s1:a', 's1:b'] };
+        const normalizedOrder = {
+            [g]: [
+                sessionAddressKey({ serverId: 's1', sessionId: 'a' }),
+                sessionAddressKey({ serverId: 's1', sessionId: 'b' }),
+            ],
+        };
         const source: SessionListViewItem[] = [
             { type: 'header', title: 'Today', headerKind: 'date', groupKey: g, serverId: 's1' },
             makeSessionItem({ serverId: 's1', sessionId: 'a', groupKey: g }),
@@ -202,10 +228,13 @@ describe('sessionListOrderingStateV1', () => {
 
     it('reuses already-normalized group arrays when other entries still need normalization', () => {
         const g = 'server:s1:day:2026-02-17';
-        const normalizedKeys = ['s1:a', 's1:b'];
+        const normalizedKeys = [
+            sessionAddressKey({ serverId: 's1', sessionId: 'a' }),
+            sessionAddressKey({ serverId: 's1', sessionId: 'b' }),
+        ];
         const groupOrder = {
             [g]: normalizedKeys,
-            '   ': [' s1:c '],
+            '   ': [` ${sessionAddressKey({ serverId: 's1', sessionId: 'c' })} `],
         };
         const source: SessionListViewItem[] = [
             { type: 'header', title: 'Today', headerKind: 'date', groupKey: g, serverId: 's1' },
@@ -226,6 +255,8 @@ describe('sessionListOrderingStateV1', () => {
 
     it('reuses the same normalized group order object for repeated normalization of the same source and inputs', () => {
         const g = 'server:s1:day:2026-02-17';
+        const aKey = sessionAddressKey({ serverId: 's1', sessionId: 'a' });
+        const bKey = sessionAddressKey({ serverId: 's1', sessionId: 'b' });
         const source: SessionListViewItem[] = [
             { type: 'header', title: 'Today', headerKind: 'date', groupKey: g, serverId: 's1' },
             makeSessionItem({ serverId: 's1', sessionId: 'a', groupKey: g }),
@@ -233,7 +264,7 @@ describe('sessionListOrderingStateV1', () => {
         ];
         const pinnedSessionKeysV1: string[] = [];
         const groupOrder = {
-            [g]: [' s1:b ', 's1:a', 's1:missing'],
+            [g]: [` ${bKey} `, aKey, sessionAddressKey({ serverId: 's1', sessionId: 'missing' })],
         };
 
         const first = normalizeSessionListGroupOrderV1ForSource({
@@ -248,7 +279,7 @@ describe('sessionListOrderingStateV1', () => {
         });
 
         expect(first).toBe(second);
-        expect(first).toEqual({ [g]: ['s1:b', 's1:a'] });
+        expect(first).toEqual({ [g]: [bKey, aKey] });
     });
 
     it('reuses a shared empty map when normalization removes all group order entries', () => {
@@ -300,18 +331,18 @@ describe('sessionListOrderingStateV1', () => {
         expect(normalized).toBe(secondNormalized);
     });
 
-    it('caps per-group order lists to the configured max', () => {
+    it('preserves custom order for every valid sibling beyond the former 100-item cap', () => {
         const g = 'server:s1:active';
         const source: SessionListViewItem[] = [
             { type: 'header', title: 'Active', headerKind: 'active', groupKey: g, serverId: 's1' },
         ];
-        for (let i = 0; i < SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP + 10; i++) {
+        for (let i = 0; i < 111; i++) {
             source.push(makeSessionItem({ serverId: 's1', sessionId: `s${i}`, groupKey: g }));
         }
 
         const order = source
             .filter((i): i is Extract<SessionListViewItem, { type: 'session' }> => i.type === 'session')
-            .map((i) => `s1:${i.session.id}`);
+            .map((i) => sessionAddressKey({ serverId: 's1', sessionId: i.session.id }));
 
         const normalized = normalizeSessionListGroupOrderV1ForSource({
             source,
@@ -319,8 +350,64 @@ describe('sessionListOrderingStateV1', () => {
             sessionListGroupOrderV1: { [g]: order },
         });
 
-        expect(normalized[g]).toHaveLength(SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP);
-        expect(normalized[g][0]).toBe('s1:s0');
+        expect(normalized[g]).toHaveLength(111);
+        expect(normalized[g][0]).toBe(sessionAddressKey({ serverId: 's1', sessionId: 's0' }));
+        expect(normalized[g][110]).toBe(sessionAddressKey({ serverId: 's1', sessionId: 's110' }));
+    });
+
+    it('preserves custom workspace order beyond the former 100-item cap', () => {
+        const serverId = 's1';
+        const scopeKey = buildSessionWorkspaceOrderScopeKey(serverId);
+        const workspaceKeys = Array.from({ length: 111 }, (_, index) => `/repo-${index}`);
+        const itemKeys = workspaceKeys.map((workspaceKey) => buildSessionWorkspaceOrderItemKey(workspaceKey)!);
+        const source: SessionListViewItem[] = workspaceKeys.map((workspaceKey, index) => ({
+            type: 'header',
+            title: `Repo ${index}`,
+            headerKind: 'project',
+            groupKey: `server:${serverId}:project:${index}`,
+            serverId,
+            workspaceKey,
+        }));
+
+        const normalized = normalizeSessionWorkspaceOrderV1ForSource({
+            source,
+            sessionWorkspaceOrderV1: { [scopeKey]: itemKeys },
+        });
+
+        expect(normalized[scopeKey]).toHaveLength(111);
+        expect(normalized[scopeKey]?.[0]).toBe('/repo-0');
+        expect(normalized[scopeKey]?.[110]).toBe('/repo-110');
+    });
+
+    it('reorders legacy-FNV-colliding project identities independently', () => {
+        const serverId = 'home-a';
+        const identityA = sessionProjectGroupingIdentityKey(buildSessionProjectGroupingIdentity(serverId, {
+            machineId: 'm29645',
+            pathKey: '/repo',
+        }));
+        const identityB = sessionProjectGroupingIdentityKey(buildSessionProjectGroupingIdentity(serverId, {
+            machineId: 'm41845',
+            pathKey: '/repo',
+        }));
+        const groupA = identityA;
+        const groupB = identityB;
+        const source = [
+            { type: 'header', title: 'A', headerKind: 'project', groupKey: groupA, workspaceKey: identityA, serverId },
+            { type: 'session', sessionId: 'a', groupKey: groupA, groupKind: 'project', serverId },
+            { type: 'header', title: 'B', headerKind: 'project', groupKey: groupB, workspaceKey: identityB, serverId },
+            { type: 'session', sessionId: 'b', groupKey: groupB, groupKind: 'project', serverId },
+        ] satisfies SessionListIndexItem[];
+
+        const reordered = applySessionWorkspaceOrderV1ToIndex(source, {
+            [buildSessionWorkspaceOrderScopeKey(serverId)]: [
+                buildSessionWorkspaceOrderItemKey(identityB)!,
+                buildSessionWorkspaceOrderItemKey(identityA)!,
+            ],
+        });
+
+        expect(reordered.map((item) => item.type === 'header' ? item.title : item.sessionId)).toEqual([
+            'B', 'b', 'A', 'a',
+        ]);
     });
 
     it('prunes pinned group ordering keys to only pinned sessions that exist in the source', () => {

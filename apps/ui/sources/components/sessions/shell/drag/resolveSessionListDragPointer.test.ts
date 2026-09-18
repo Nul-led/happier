@@ -140,6 +140,27 @@ describe('resolveSessionListDragPointer', () => {
         }
     });
 
+    it('forwards effective sibling-order policy and suppresses an invalid overlay', () => {
+        const snapshot = snapshotFor('row-0');
+        const registry = liveRegistry(contentRows());
+        const resolved = resolveSessionListDragPointer({
+            snapshot,
+            registry,
+            pointer: { x: 160, y: 100 },
+            viewport: {
+                viewportWindowY: 20,
+                viewportWindowX: 0,
+                scrollOffsetY: 2 * ROW_HEIGHT,
+                viewportHeight: 600,
+            },
+            canReorderSessionSiblings: false,
+        });
+
+        expect(resolved.result.instruction.kind).toBe('blocked');
+        expect(resolved.result.visual).toEqual({ kind: 'none' });
+        expect(resolved.geometry).toEqual({ kind: 'none' });
+    });
+
     it('produces VIEWPORT-coordinate overlay geometry from content bounds + live scroll', () => {
         const snapshot = snapshotFor('row-0');
         const registry = liveRegistry(contentRows());
@@ -397,7 +418,7 @@ function folderViewItems(): SessionListIndexItem[] {
 function folderContentRows(): TreeContentRow[] {
     const entries: ReadonlyArray<Readonly<{ id: string; kind: 'container' | 'leaf' }>> = [
         { id: treeRowId.workspaceRoot('project-a'), kind: 'container' },
-        { id: treeRowId.folder('folder-a'), kind: 'container' },
+        { id: treeRowId.folder('server-a', 'folder-a'), kind: 'container' },
         { id: treeRowId.session('server-a', 'root-a'), kind: 'leaf' },
     ];
     return entries.map((entry, index) => ({
@@ -437,7 +458,7 @@ describe('resolveSessionListDragPointer — folder topology', () => {
 
         expect(resolved.result.instruction.kind).toBe('nest-into');
         if (resolved.result.instruction.kind === 'nest-into') {
-            expect(resolved.result.instruction.targetId).toBe(treeRowId.folder('folder-a'));
+            expect(resolved.result.instruction.targetId).toBe(treeRowId.folder('server-a', 'folder-a'));
         }
         expect(resolved.result.visual.kind).toBe('outline');
     });
@@ -446,7 +467,7 @@ describe('resolveSessionListDragPointer — folder topology', () => {
         const snapshot = buildSessionListDragSnapshot({
             items: folderIndexItems(),
             viewItems: folderViewItems(),
-            sessionDragKey: treeRowId.folder('folder-a'),
+            sessionDragKey: treeRowId.folder('server-a', 'folder-a'),
             foldersFeatureEnabled: true,
         });
         const registry = liveRegistry(folderContentRows());

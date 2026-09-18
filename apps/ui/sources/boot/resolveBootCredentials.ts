@@ -185,11 +185,11 @@ export async function resolveBootCredentials(platformOs: string): Promise<AuthCr
             return await readRetainedBootCredentials();
         }
         if (webServerOverride) {
-            bootstrapActiveServerFromWebLocation({
+            await bootstrapActiveServerFromWebLocation({
                 scope: routineSelectionScope,
             });
         }
-        const bootServerProfile = upsertAndActivateServer({
+        const bootServerProfile = await upsertAndActivateServer({
             serverUrl: bootServerUrl,
             source: 'url',
             scope: routineSelectionScope,
@@ -221,7 +221,7 @@ export async function resolveBootCredentials(platformOs: string): Promise<AuthCr
         ) {
             return await readRetainedBootCredentials();
         }
-        const stackRuntimeServerProfile = activateStackRuntimeServer({ scope: 'device' });
+        const stackRuntimeServerProfile = await activateStackRuntimeServer({ scope: 'device' });
         if (stackRuntimeServerUrl) {
             const credentials = await TokenStorage.getCredentialsForServerUrl(stackRuntimeServerUrl, {
                 serverId: stackRuntimeServerProfile?.id,

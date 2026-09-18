@@ -43,7 +43,7 @@ import {
     clearVoiceAgentRunMetadata,
     resolveBoundConversationSessionId,
     persistVoiceAgentRunMetadata,
-    resolveBoundTargetSessionId,
+    resolveBoundTargetSessionAddress,
     resolvePersistedDaemonConversationSessionId,
     resolveVoiceRunMetadataSessionId,
 } from '@/voice/agent/voiceAgentRunState';
@@ -52,6 +52,9 @@ import { readLocalConversationSettingsFromAccountSettings } from '@/voice/local/
 import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { buildAgentUniverseBackendTargetKey } from '@/agents/catalog/agentUniverse';
+import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 
 type InitializeVoiceAgentHandleParams = Readonly<{
     sessionId: string;
@@ -214,20 +217,34 @@ export async function initializeVoiceAgentHandle({
         return directSession;
     };
 
-    const hydratedSessionIds = new Set<string>();
+    const hydratedSessions = new Set<string>();
     const ensureSessionTranscriptReady = async (
-        nextSessionId: string | null,
+        target: SessionAddress | string | null,
         options?: Readonly<{ forceRefresh?: boolean }>,
     ): Promise<void> => {
-        const normalizedSessionId = normalizeNonEmptyString(nextSessionId);
-        if (!normalizedSessionId || hydratedSessionIds.has(normalizedSessionId)) {
+        const normalizedSessionId = normalizeNonEmptyString(
+            typeof target === 'string' ? target : target?.sessionId,
+        );
+        if (!normalizedSessionId) {
             return;
         }
-        hydratedSessionIds.add(normalizedSessionId);
+        const serverId = typeof target === 'object' && target
+            ? normalizeNonEmptyString(target.serverId)
+            : null;
+        const hydrationKey = serverId
+            ? sessionAddressKey({ serverId, sessionId: normalizedSessionId })
+            : JSON.stringify(['legacy_unscoped_session', normalizedSessionId]);
+        if (hydratedSessions.has(hydrationKey)) return;
+        hydratedSessions.add(hydrationKey);
         await Promise.resolve(
-            sync.ensureSessionVisibleForMessageRoute(normalizedSessionId, options as any),
+            sync.ensureSessionVisibleForMessageRoute(normalizedSessionId, {
+                ...options,
+                ...(serverId ? { serverId } : {}),
+            }),
         ).catch(() => {});
-        await Promise.resolve(sync.refreshSessionMessages(normalizedSessionId)).catch(() => {});
+        if (!serverId || areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId)) {
+            await Promise.resolve(sync.refreshSessionMessages(normalizedSessionId)).catch(() => {});
+        }
     };
 
     // The configured voice models are the one model fact that does not depend on
@@ -263,13 +280,19 @@ export async function initializeVoiceAgentHandle({
         }) ?? resolveConfiguredModelIds();
     };
 
-    const boundTargetSessionId = resolveBoundTargetSessionId(sessionId);
+    const boundTargetSessionAddress = resolveBoundTargetSessionAddress(sessionId);
+    const boundTargetSessionId = boundTargetSessionAddress?.sessionId ?? null;
     const boundConversationSessionId = resolveBoundConversationSessionId(sessionId);
     const daemonTargetSessionId = normalizeNonEmptyString(
         boundTargetSessionId ?? (sessionId === VOICE_AGENT_GLOBAL_SESSION_ID ? null : sessionId),
     );
     if (daemonTargetSessionId) {
-        await ensureSessionTranscriptReady(daemonTargetSessionId, { forceRefresh: true });
+        await ensureSessionTranscriptReady(
+            boundTargetSessionAddress?.sessionId === daemonTargetSessionId
+                ? boundTargetSessionAddress
+                : daemonTargetSessionId,
+            { forceRefresh: true },
+        );
         if (agentSource === 'session') {
             const session = resolveDaemonSessionFromState(daemonTargetSessionId);
             const targetAgentId = resolveAgentIdFromSessionMetadata(
@@ -277,7 +300,12 @@ export async function initializeVoiceAgentHandle({
             );
             if (!targetAgentId) throwVoiceAgentSelectionUnavailable();
         }
-        assertActiveDaemonTargetSession(daemonTargetSessionId);
+        // Keep the bound target's Home: capability is answered by that Home's daemon projection.
+        await assertActiveDaemonTargetSession(
+            boundTargetSessionAddress?.sessionId === daemonTargetSessionId
+                ? boundTargetSessionAddress
+                : daemonTargetSessionId,
+        );
     } else if (boundTargetSessionId) {
         await ensureSessionTranscriptReady(boundTargetSessionId);
     }
@@ -287,13 +315,13 @@ export async function initializeVoiceAgentHandle({
         bootstrapInitialContext,
         deferredTargetSessionContext,
     } = resolveVoiceAgentInitialContexts(sessionId, {
-        targetSessionId: boundTargetSessionId,
+        targetSessionAddress: boundTargetSessionAddress,
     });
 
     const shouldFallbackFromDaemon = (error: unknown) => shouldRecoverUnavailableGlobalVoiceAutoMachine(error);
 
     if (daemonTargetSessionId == null) {
-        assertActiveDaemonTargetSession(sessionId);
+        await assertActiveDaemonTargetSession(sessionId);
     }
     await assertDaemonVoiceAgentRuntimeSupported();
 

@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Pressable, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import type { SessionAgentActivityRow } from '@/components/sessions/agents/presentation/sessionAgentActivityRows';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import { Text } from '@/components/ui/text/Text';
 import { resolveSubagentStructuredSend } from '@/sync/domains/input/subagents/resolveSubagentStructuredSend';
@@ -71,10 +72,10 @@ const stylesheet = StyleSheet.create((theme) => ({
 
 export const SessionSubagentGroup = React.memo((props: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     label: string | null;
-    subagents: readonly SessionSubagent[];
+    rows: readonly SessionAgentActivityRow[];
     activityPreviewById: ReadonlyMap<string, string>;
-    pendingPermissionById: ReadonlyMap<string, boolean>;
     onOpenPreview: (subagent: SessionSubagent) => void;
     onOpenFull: (subagent: SessionSubagent) => void;
     onOpenAdvanced: (subagent: SessionSubagent) => void;
@@ -82,22 +83,22 @@ export const SessionSubagentGroup = React.memo((props: Readonly<{
 }>) => {
     const styles = stylesheet;
     const deletableTeamId = React.useMemo(() => {
-        for (const subagent of props.subagents) {
+        for (const { subagent } of props.rows) {
             if (subagent.kind !== 'agent_team_member' || subagent.status !== 'running') continue;
             const teamId = subagent.display.groupKey?.trim();
             if (teamId) return teamId;
         }
         return null;
-    }, [props.subagents]);
+    }, [props.rows]);
     const launchableTeamId = React.useMemo(() => {
         if (typeof props.onLaunchTeammate !== 'function') return null;
-        for (const subagent of props.subagents) {
+        for (const { subagent } of props.rows) {
             if (subagent.kind !== 'agent_team_member' || subagent.status !== 'running') continue;
             const teamId = subagent.display.groupKey?.trim();
             if (teamId) return teamId;
         }
         return null;
-    }, [props.onLaunchTeammate, props.subagents]);
+    }, [props.onLaunchTeammate, props.rows]);
 
     const deleteTeam = React.useCallback(() => {
         if (!deletableTeamId) return;
@@ -128,7 +129,7 @@ export const SessionSubagentGroup = React.memo((props: Readonly<{
                     <View style={styles.titleRow}>
                         <Text style={styles.title}>{props.label}</Text>
                         <View testID={`session-subagent-group-count:${props.label}`} style={styles.countPill}>
-                            <Text style={styles.countText}>{t('session.subagents.panel.groupCount', { count: props.subagents.length })}</Text>
+                            <Text style={styles.countText}>{t('session.subagents.panel.groupCount', { count: props.rows.length })}</Text>
                         </View>
                     </View>
                     <View style={styles.headerActions}>
@@ -157,16 +158,16 @@ export const SessionSubagentGroup = React.memo((props: Readonly<{
                     </View>
                 </View>
             ) : null}
-            {props.subagents.map((subagent) => (
+            {props.rows.map((row) => (
                 <SessionSubagentRow
-                    key={subagent.id}
+                    key={row.subagent.id}
                     sessionId={props.sessionId}
-                    subagent={subagent}
-                    activityPreview={props.activityPreviewById.get(subagent.id) ?? null}
-                    hasPendingPermission={props.pendingPermissionById.get(subagent.id) === true}
-                    onOpenPreview={() => props.onOpenPreview(subagent)}
-                    onOpenFull={(() => props.onOpenFull(subagent))}
-                    onOpenAdvanced={subagent.capabilities.canOpenAdvancedRun ? (() => props.onOpenAdvanced(subagent)) : null}
+                    serverId={props.serverId}
+                    row={row}
+                    activityPreview={props.activityPreviewById.get(row.subagent.id) ?? null}
+                    onOpenPreview={() => props.onOpenPreview(row.subagent)}
+                    onOpenFull={(() => props.onOpenFull(row.subagent))}
+                    onOpenAdvanced={row.subagent.capabilities.canOpenAdvancedRun ? (() => props.onOpenAdvanced(row.subagent)) : null}
                 />
             ))}
         </View>

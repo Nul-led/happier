@@ -69,10 +69,11 @@ function publishedPendingLocalIds(): string[] {
 }
 
 describe('pendingQueueV2 snapshot vs committed crossover', () => {
-    beforeEach(() => resetPendingQueueState());
+    beforeEach(async () => await resetPendingQueueState());
 
     function armSession() {
-        const server = upsertServerProfile({ serverUrl: 'https://crossover.example.test', name: 'Crossover' });
+        const server = await upsertServerProfile({ serverUrl: 'https://crossover.example.test', name: 'Crossover' });
+        await resetPendingQueueState({ serverId: server.id, accountId: 'account' });
         storage.getState().applySessions([{
             ...buildSession({ sessionId: SESSION_ID }),
             encryptionMode: 'plain',

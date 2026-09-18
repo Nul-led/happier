@@ -1,3 +1,5 @@
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+
 export const ACTIVITY_SURFACE_TARGETS = {
     openInbox: 'open-inbox',
     openPrimarySession: 'open-primary-session',
@@ -74,10 +76,5 @@ export function createActivitySurfaceSessionRoute(
     sessionId: string,
     serverId?: string | null,
 ): string {
-    const route = `/session/${encodeURIComponent(sessionId)}`;
-    const normalizedServerId = typeof serverId === 'string' ? serverId.trim() : '';
-    if (!normalizedServerId) {
-        return route;
-    }
-    return `${route}?serverId=${encodeURIComponent(normalizedServerId)}`;
+    return buildScopedSessionRouteHref({ sessionId, serverId });
 }

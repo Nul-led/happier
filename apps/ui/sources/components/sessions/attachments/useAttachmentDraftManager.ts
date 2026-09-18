@@ -56,10 +56,6 @@ export function useAttachmentDraftManager(params: Readonly<{
     const webPreviewUrlsRef = React.useRef<Map<string, string>>(new Map());
     const [webPreviewUrlsVersion, setWebPreviewUrlsVersion] = React.useState(0);
 
-    React.useEffect(() => {
-        draftsRef.current = drafts;
-    }, [drafts]);
-
     const getDraftsSnapshot = React.useCallback(() => draftsRef.current, []);
     const getDraftRevisionSnapshot = React.useCallback(() => draftRevisionRef.current, []);
 
@@ -68,9 +64,14 @@ export function useAttachmentDraftManager(params: Readonly<{
         // updater functions, but one public mutation call gets exactly one
         // currentness revision.
         draftRevisionRef.current += 1;
-        setDrafts((previous) => {
-            return updater(previous);
-        });
+        // This manager is the process-local draft owner. Advance its snapshot
+        // synchronously so an immediate Send observes the attachment even
+        // before React commits the visual row. Using the ref as the input also
+        // preserves multiple same-turn mutations without updater replay side
+        // effects in Strict Mode.
+        const next = updater(draftsRef.current);
+        draftsRef.current = next;
+        setDrafts(next);
     }, []);
 
     React.useEffect(() => {

@@ -12,6 +12,7 @@ import { useSessionBrowserContextRuntimeContext } from '@/components/sessions/br
 import { useSessionBrowserRecordingRuntime } from '@/components/sessions/browser/sessionBrowserRecordingRuntime';
 import { createManagedChromiumBrowserAnnotationCaptureProvider } from '@/sync/domains/browser/context';
 import type { PluginUiProjectionCurrentness } from '@/sync/domains/plugins/ui/usePluginUiProjectionCurrentness';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 
 export function SessionRightPanelBrowserView(props: Readonly<{
     sessionId: string;
@@ -23,27 +24,35 @@ export function SessionRightPanelBrowserView(props: Readonly<{
      */
     pluginProjection?: PluginUiProjectionCurrentness;
 }>): React.ReactElement {
-    const machineTarget = useSessionMachineTarget(props.sessionId);
-    const preferredServerId = usePreferredServerIdForSession(props.sessionId);
-    const sessionBrowserContextRuntime = useSessionBrowserContextRuntimeContext();
     const hasOverrideMachineId = props.overrides !== undefined
         && Object.prototype.hasOwnProperty.call(props.overrides, 'machineId');
     const hasOverrideServerId = props.overrides !== undefined
         && Object.prototype.hasOwnProperty.call(props.overrides, 'serverId');
     const hasAdmittedPluginProjection = props.pluginProjection !== undefined;
+    const preferredServerId = usePreferredServerIdForSession({
+        serverId: hasOverrideServerId
+            ? props.overrides?.serverId
+            : props.pluginProjection?.serverId,
+        sessionId: props.sessionId,
+    }, !hasOverrideServerId || props.overrides?.serverId != null);
+    const sessionBrowserContextRuntime = useSessionBrowserContextRuntimeContext();
     // A driver-rendered Session pane already carries the AppPane-admitted
     // target. Direct Browser routes omit it and retain their incumbent lookup;
     // an explicit null from a stale pane scope stays unavailable.
-    const machineId = hasOverrideMachineId
-        ? props.overrides?.machineId ?? null
-        : hasAdmittedPluginProjection
-            ? props.pluginProjection?.machineId ?? null
-            : machineTarget?.machineId ?? null;
     const serverId = hasOverrideServerId
         ? props.overrides?.serverId ?? null
         : hasAdmittedPluginProjection
             ? props.pluginProjection?.serverId ?? null
             : preferredServerId;
+    const machineTarget = useSessionMachineTarget(
+        hasOverrideServerId && !serverId ? null : props.sessionId,
+        serverId,
+    );
+    const machineId = hasOverrideMachineId
+        ? props.overrides?.machineId ?? null
+        : hasAdmittedPluginProjection
+            ? props.pluginProjection?.machineId ?? null
+            : machineTarget?.machineId ?? null;
     const hostProps = useBrowserSurfaceHostProps({
         scope: 'sessionSidebar',
         sessionId: props.sessionId,
@@ -69,7 +78,7 @@ export function SessionRightPanelBrowserView(props: Readonly<{
     }, [machineId, serverId]);
     const browserRecordingRuntime = useSessionBrowserRecordingRuntime({
         enabled: true,
-        scopeKey: props.sessionId,
+        scopeKey: createSessionPaneScopeId(props.sessionId, serverId),
         sessionId: props.sessionId,
         machineId,
         serverId,

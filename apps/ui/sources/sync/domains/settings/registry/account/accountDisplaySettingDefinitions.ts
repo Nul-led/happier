@@ -41,6 +41,7 @@ export const ACCOUNT_DISPLAY_SETTING_ANALYTICS = defineAccountSettingAnalytics({
         serializeCurrent: (value: number) => bucketCount(value, 80000, 200000),
     },
     executionRunsGuidanceEnabled: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },
+    executionRunsNotifyParentOnCompletionDefault: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },
     executionRunsGuidanceMaxChars: {
         trackCurrentState: true,
         trackChanges: true,

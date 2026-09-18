@@ -252,7 +252,7 @@ export class BrowserIrohHomeTunnelWebSocket {
         head: WebSocketUpgradeResponseHead;
         carryOver: Uint8Array;
     }>> {
-        let buffer = new Uint8Array(0);
+        let buffer: Uint8Array = new Uint8Array(0);
         let ended = false;
         for (;;) {
             const parsed = readWebSocketUpgradeResponseHead(buffer);
@@ -316,7 +316,7 @@ export class BrowserIrohHomeTunnelWebSocket {
                 'Home sent a close frame with a one-byte payload',
             );
         }
-        let code = WEB_SOCKET_CLOSE_CODE.noStatus;
+        let code: number = WEB_SOCKET_CLOSE_CODE.noStatus;
         let reason = '';
         if (payload.length >= 2) {
             code = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint16(0);
@@ -354,7 +354,7 @@ export class BrowserIrohHomeTunnelWebSocket {
 
     private toBinary(payload: Uint8Array): ArrayBuffer | Uint8Array | Blob {
         if (this.binaryType === 'nodebuffer') return payload;
-        if (this.binaryType === 'blob' && typeof Blob === 'function') return new Blob([payload]);
+        if (this.binaryType === 'blob' && typeof Blob === 'function') return new Blob([payload.slice().buffer]);
         return payload.slice().buffer;
     }
 

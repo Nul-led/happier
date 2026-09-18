@@ -16,6 +16,7 @@ import type { ComposerStructuredInputMention } from '@/sync/domains/input/draftV
 import {
     composerAttachmentDraftToView,
     composerAttachmentViewToDraft,
+    buildComposerSnapshotStructuredInputMetaOverrides,
     composerReferencesFromStructuredMentions,
     composerStructuredMentionsFromReferences,
     summarizeComposerAttachmentDraftAvailability,
@@ -82,6 +83,30 @@ function composerAttachmentCatalog(
 }
 
 describe('composer scope adapters', () => {
+    it('projects a detached Composer snapshot through the canonical structured-input writer', () => {
+        const reference: ComposerMentionRef = {
+            kind: 'acme.issue',
+            ref: 'issue:42',
+            token: '@issue-42',
+            label: 'Issue #42',
+            start: 8,
+            end: 17,
+        };
+
+        const envelope = readHappierStructuredInputV1FromMeta(
+            buildComposerSnapshotStructuredInputMetaOverrides({
+                text: 'Inspect @issue-42',
+                references: [reference],
+                attachments: [],
+            }),
+        );
+
+        expect(envelope?.mentions).toEqual([expect.objectContaining({
+            kind: 'acme.issue',
+            ref: 'issue:42',
+        })]);
+    });
+
     it('reduces persisted attachment values to safe current availability flags', () => {
         const readyDraft: ComposerAttachmentDraftV1 = {
             v: 1,

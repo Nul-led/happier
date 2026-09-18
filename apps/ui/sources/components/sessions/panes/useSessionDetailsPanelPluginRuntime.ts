@@ -6,12 +6,13 @@ import type { LocalServicePreviewPlatform } from '@/sync/domains/local/services/
 import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
 import { useProfile } from '@/sync/store/hooks';
 import {
-    useSessionPanePluginRuntime,
-    type SessionPanePluginRuntimeState,
+    useSessionAddressForSessionId,
+    useSessionPluginRuntime,
     type SessionPaneSurfaceScope,
-} from './useSessionPanePluginRuntime';
+    type SessionPluginRuntimeState,
+} from '@/components/sessions/plugins/useSessionPluginRuntime';
 
-export type SessionDetailsPanelPluginRuntimeState = SessionPanePluginRuntimeState & Readonly<{
+export type SessionDetailsPanelPluginRuntimeState = SessionPluginRuntimeState & Readonly<{
     peerMediationObservabilityScope: PeerMediationObservabilityScopeV1 | null;
 }>;
 
@@ -34,8 +35,14 @@ export function useSessionDetailsPanelPluginRuntime(params: Readonly<{
     peerMediationObservabilityScope?: PeerMediationObservabilityScopeV1 | null;
     platform?: LocalServicePreviewPlatform;
 }>): SessionDetailsPanelPluginRuntimeState {
-    const pluginRuntime = useSessionPanePluginRuntime({
-        sessionId: params.sessionId,
+    // Qualify the Home-local Session id once, at this entry boundary, through
+    // the canonical Session server owner.
+    const address = useSessionAddressForSessionId(
+        params.sessionId,
+        params.paneSurfaceScope?.serverId,
+    );
+    const pluginRuntime = useSessionPluginRuntime({
+        address,
         paneSurfaceScope: params.paneSurfaceScope,
         pluginUiProjection: params.pluginUiProjection,
         platform: params.platform,

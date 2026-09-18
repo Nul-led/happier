@@ -1,31 +1,20 @@
-import { ParticipantMessageV1Schema, type ParticipantRecipientV1 } from '@happier-dev/protocol';
+import { normalizeParticipantRecipientRoutingIdentityV1, withParticipantRecipientV1, type ParticipantRecipientV1, type PendingRequestedActionV1 } from '@happier-dev/protocol';
 
 import type { SessionParticipantTarget } from '@/sync/domains/session/participants/participantTargets';
 
-export type ParticipantRoutingDescriptor =
-    | Readonly<{
-        type: 'session_message';
-        recipient: ParticipantRecipientV1;
-    }>
-    | Readonly<{
-        type: 'execution_run_send';
-        recipient: Extract<ParticipantRecipientV1, { kind: 'execution_run' }>;
-        runId: string;
-    }>;
+export type ParticipantRoutingDescriptor = Readonly<{
+    type: 'session_message';
+    recipient: ParticipantRecipientV1;
+}>;
 
-export type ParticipantRoutedSend =
-    | Readonly<{
-        type: 'session_message';
-        text: string;
-        displayText?: string;
-        metaOverrides: Record<string, unknown>;
-    }>
-    | Readonly<{
-        type: 'execution_run_send';
-        runId: string;
-        message: string;
-        delivery: 'prompt' | 'steer_if_supported' | 'interrupt';
-    }>;
+export type ParticipantRoutedSend = Readonly<{
+    type: 'session_message';
+    text: string;
+    displayText?: string;
+    recipient: ParticipantRecipientV1;
+    requestedAction?: PendingRequestedActionV1;
+    metaOverrides: Record<string, unknown>;
+}>;
 
 export function participantRecipientsMatch(a: ParticipantRecipientV1, b: ParticipantRecipientV1): boolean {
     if (a.kind !== b.kind) return false;
@@ -50,46 +39,25 @@ export function resolveParticipantRoutingDescriptor(params: Readonly<{
     targets?: readonly SessionParticipantTarget[];
 }>): ParticipantRoutingDescriptor | null {
     if (!params.recipient) return null;
-    if (params.targets && !isParticipantRecipientAvailable({ targets: params.targets, recipient: params.recipient })) {
-        return null;
-    }
-    if (params.recipient.kind === 'execution_run') {
-        return {
-            type: 'execution_run_send',
-            recipient: params.recipient,
-            runId: params.recipient.runId,
-        };
-    }
+    // A missing local roster entry is not authoritative target unavailability.
+    // Preserve the exact recipient for Pending's daemon-owned classification.
     return {
         type: 'session_message',
-        recipient: params.recipient,
+        recipient: normalizeParticipantRecipientRoutingIdentityV1(params.recipient),
     };
 }
 
 export function resolveParticipantRoutedSend(params: Readonly<{
     text: string;
     recipient: ParticipantRecipientV1;
-    executionRunDelivery?: 'prompt' | 'steer_if_supported' | 'interrupt';
+    requestedAction?: PendingRequestedActionV1;
 }>): ParticipantRoutedSend {
-    const descriptor = resolveParticipantRoutingDescriptor({ recipient: params.recipient });
-    if (descriptor?.type === 'execution_run_send') {
-        return {
-            type: 'execution_run_send',
-            runId: descriptor.runId,
-            message: params.text,
-            delivery: params.executionRunDelivery ?? 'steer_if_supported',
-        };
-    }
-
-    const payload = ParticipantMessageV1Schema.parse({ recipient: params.recipient });
+    const recipient = normalizeParticipantRecipientRoutingIdentityV1(params.recipient);
     return {
         type: 'session_message',
         text: params.text,
-        metaOverrides: {
-            happier: {
-                kind: 'participant_message.v1',
-                payload,
-            },
-        },
+        recipient,
+        ...(params.requestedAction ? { requestedAction: params.requestedAction } : {}),
+        metaOverrides: withParticipantRecipientV1({}, recipient),
     };
 }

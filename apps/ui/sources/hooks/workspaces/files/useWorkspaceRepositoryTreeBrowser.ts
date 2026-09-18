@@ -5,11 +5,17 @@ import type { LazyDirectoryTreeEntry, LazyDirectoryTreeLoadResult } from '@/hook
 import type { ListRepositoryDirectoryEntriesResult, RepositoryDirectoryEntry } from '@/sync/domains/input/repositoryDirectory';
 import {
     getCachedWorkspaceRepositoryDirectoryEntries,
+    getCachedWorkspaceRepositoryGitIgnoreAvailable,
     listWorkspaceRepositoryDirectoryEntries,
     warmWorkspaceRepositoryDirectoryCache,
 } from '@/sync/domains/workspaces/files/workspaceRepositoryDirectory';
 import { tryBuildWorkspaceCacheKey, type WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import { useWorkspaceRepositoryDirectoryRevision } from './useWorkspaceRepositoryDirectoryRevision';
+
+import { readRepositoryTreeClassification } from '@/hooks/workspaces/files/repositoryTreeClassification';
+import { projectRepositoryTreeNodes } from '@/hooks/workspaces/files/repositoryTreeVisibility';
+
+const NO_PRESERVED_PATHS: readonly string[] = [];
 
 function joinPath(parent: string, name: string): string {
     const trimmedParent = parent.trim().replace(/\/+$/g, '');
@@ -51,6 +57,8 @@ export function useWorkspaceRepositoryTreeBrowser(input: Readonly<{
     expandedPaths?: readonly string[];
     onExpandedPathsChange?: (paths: string[]) => void;
     reloadToken?: number;
+    visibilityMode?: 'project' | 'all';
+    preservedPaths?: readonly string[];
 }>) {
     const scope = input.scope;
     const workspaceCacheKey = React.useMemo(() => tryBuildWorkspaceCacheKey(scope) ?? '', [scope]);
@@ -77,7 +85,7 @@ export function useWorkspaceRepositoryTreeBrowser(input: Readonly<{
         return toLazyLoadResult(directoryPath, result);
     }, [scope]);
 
-    return useLazyDirectoryTree({
+    const tree = useLazyDirectoryTree({
         scopeKey: workspaceCacheKey,
         enabled: input.enabled,
         rootDirectoryPath: '',
@@ -89,4 +97,14 @@ export function useWorkspaceRepositoryTreeBrowser(input: Readonly<{
         warmDirectoryEntries,
         warmChildDirectoriesLimit: 2,
     });
+    const classification = React.useMemo(() => readRepositoryTreeClassification(tree.nodes, (directoryPath) => ({
+        available: getCachedWorkspaceRepositoryGitIgnoreAvailable({ workspaceCacheKey, directoryPath }),
+        entries: getCachedWorkspaceRepositoryDirectoryEntries({ workspaceCacheKey, directoryPath }),
+    })), [tree.nodes, workspaceCacheKey]);
+    const gitIgnoreAvailable = classification.available;
+    const preservedPaths = input.preservedPaths ?? NO_PRESERVED_PATHS;
+    const nodes = React.useMemo(() => input.visibilityMode === 'project' && gitIgnoreAvailable === true
+        ? projectRepositoryTreeNodes(tree.nodes, classification.ignoredPaths, preservedPaths)
+        : tree.nodes, [tree.nodes, input.visibilityMode, gitIgnoreAvailable, classification.ignoredPaths, preservedPaths]);
+    return { ...tree, nodes, gitIgnoreAvailable };
 }

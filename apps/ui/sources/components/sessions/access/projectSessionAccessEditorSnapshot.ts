@@ -1,0 +1,132 @@
+import type {
+    PrincipalRefV1,
+    SessionAccessGrantsListResponseV1,
+    SessionAccessPrincipalSummaryV1,
+    SessionAccessSourceV1,
+} from '@happier-dev/protocol';
+import { t } from '@/text';
+import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
+import { projectSessionAccessChipSummary } from './projectSessionAccessChipSummary';
+import { projectSessionAccessLevelLabel } from './projectSessionAccessLevelLabel';
+import type { SessionAccessDelegationControlModel, SessionAccessEditorModel, SessionAccessGrantOperationModel, SessionAccessLevel, SessionAccessPrincipalPresentation, SessionAccessGrantRowModel, SessionAccessUiReason } from './sessionAccessEditorTypes';
+import { presentSessionAccessReason } from './presentSessionAccessFailure';
+
+export function sessionAccessSubjectKey(subject: PrincipalRefV1): string {
+    switch (subject.kind) {
+        case 'account': return `account:${subject.accountId}`;
+        case 'team': return `team:${subject.teamId}`;
+        case 'group': return `group:${subject.teamId}:${subject.groupId}`;
+    }
+}
+
+export function projectSessionAccessPrincipal(principal: SessionAccessPrincipalSummaryV1): SessionAccessPrincipalPresentation {
+    const ref: PrincipalRefV1 = principal.kind === 'account' ? {kind:'account',accountId:principal.accountId}
+        : principal.kind === 'team' ? {kind:'team',teamId:principal.teamId}
+            : {kind:'group',teamId:principal.teamId,groupId:principal.groupId};
+    const displayName = principal.kind === 'account'
+        ? formatAccountDisplayName(principal) ?? t('session.access.account') : principal.name;
+    const secondaryLabel = principal.kind === 'group' ? principal.teamName
+        : principal.kind === 'account' && principal.username ? `@${principal.username}` : undefined;
+    // The Account's safe display profile already travels with the row. Dropping
+    // its picture here is what forced every principal to render as text alone.
+    const avatar = principal.kind === 'account'
+        ? { id: principal.accountId, ...(principal.avatarUrl ? { imageUrl: principal.avatarUrl } : {}) }
+        : undefined;
+    return {ref,key:sessionAccessSubjectKey(ref),displayName,secondaryLabel,...(avatar ? {avatar} : {}),accessibilityLabel:secondaryLabel ? `${displayName}, ${secondaryLabel}` : displayName};
+}
+
+/**
+ * Effective-access sources have already been filtered by the server's canonical
+ * access authority. Only their kind is safe/useful for an inspection-only UI;
+ * grant ids and Team/Group ids remain authorization facts, never presentation.
+ */
+function accessSourceLabels(sources: readonly SessionAccessSourceV1[]): readonly string[] {
+    const labels = new Set<string>();
+    for (const source of sources) {
+        switch (source.kind) {
+            case 'owner': break;
+            case 'direct': labels.add(t('session.access.sourceDirect')); break;
+            case 'team':
+                labels.add(t('session.access.sourceTeam'));
+                if (source.requiredByTeamPolicy) labels.add(t('session.access.required'));
+                break;
+            case 'group': labels.add(t('session.access.sourceGroup')); break;
+        }
+    }
+    return [...labels];
+}
+
+/**
+ * The one runtime-permission-delegation control rule, shared by the live and
+ * draft adapters.
+ *
+ * A View grant delegates nothing: the canonical grant mutation owner normalizes
+ * its `canApprovePermissions` to false, so a row at View must offer no control
+ * and state no value — a retained `true` from an earlier Edit/Admin level would
+ * otherwise render as an enabled switch the server will never honor.
+ */
+export function projectSessionAccessDelegationControl(input: Readonly<{
+    accessLevel: SessionAccessLevel;
+    canApprovePermissions: boolean;
+    /** Whether this actor may change delegation on this exact grant right now. */
+    canChange: boolean;
+    reason: SessionAccessUiReason;
+}>): SessionAccessDelegationControlModel {
+    if (input.accessLevel === 'view') return { kind: 'hidden' };
+    return input.canChange
+        ? { kind: 'editable', value: input.canApprovePermissions }
+        : { kind: 'locked', value: input.canApprovePermissions, reason: input.reason };
+}
+
+export function projectSessionAccessEditorSnapshot(input: Readonly<{
+    snapshot: SessionAccessGrantsListResponseV1;
+    operations?: Readonly<Record<string, SessionAccessGrantOperationModel>>;
+    confirmingRemoval?: string | null;
+}>): Pick<SessionAccessEditorModel, 'owner' | 'viewerAccess' | 'grants' | 'accessMode' | 'readOnlyReason' | 'summary'> {
+    const { snapshot } = input;
+    const editable = snapshot.effectiveAccess.capabilities.manageAccess;
+    const denied = presentSessionAccessReason('session_access_forbidden');
+    const viewerAccess = snapshot.effectiveAccess.level === 'owner' ? undefined : (() => {
+        const levelLabel = projectSessionAccessLevelLabel(snapshot.effectiveAccess.level);
+        const sourceLabels = accessSourceLabels(snapshot.effectiveAccess.sources);
+        return {
+            level: snapshot.effectiveAccess.level,
+            levelLabel,
+            sourceLabels,
+            accessibilityLabel: t('session.access.accessibleSummary', {
+                title: t('session.access.yourAccess'),
+                label: [levelLabel, ...sourceLabels].join('. '),
+            }),
+        };
+    })();
+    const grants: SessionAccessGrantRowModel[] = snapshot.grants.map((row) => {
+        const key = sessionAccessSubjectKey(row.grant.subject);
+        const transitions = row.allowedTransitions;
+        const reason = transitions.reason ? presentSessionAccessReason(transitions.reason) : denied;
+        return {
+            grant: row.grant.subject,
+            principal: projectSessionAccessPrincipal(row.principal),
+            level: editable && transitions.accessLevels.length > 0
+                ? {kind:'editable',value:row.grant.accessLevel,options:transitions.accessLevels.map(value=>({value,label:t(`session.access.${value}`)}))}
+                : {kind:'locked',value:row.grant.accessLevel,reason},
+            permissionDelegation: projectSessionAccessDelegationControl({
+                accessLevel: row.grant.accessLevel,
+                canApprovePermissions: row.grant.canApprovePermissions,
+                canChange: editable && transitions.canChangePermissionDelegation,
+                reason,
+            }),
+            removal: editable && transitions.canRemove
+                ? {kind:input.confirmingRemoval === key ? 'confirming' : 'allowed'}
+                : {kind:'blocked',reason},
+            requiredByTeamPolicy: row.grant.subject.kind === 'team' && 'requiredByTeamPolicy' in row.grant && row.grant.requiredByTeamPolicy,
+            operation: input.operations?.[key] ?? {kind:'idle'},
+        };
+    });
+    return {
+        owner:{principal:projectSessionAccessPrincipal(snapshot.owner)},grants,
+        ...(viewerAccess ? { viewerAccess } : {}),
+        accessMode:editable?'editable':'read_only',
+        ...(!editable ? {readOnlyReason:{code:'session_access_read_only',message:t('session.access.readOnly')}} : {}),
+        summary:projectSessionAccessChipSummary({grants,audienceComplete:snapshot.visibility==='complete'}),
+    };
+}

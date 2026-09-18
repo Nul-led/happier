@@ -6,6 +6,7 @@ import {
     buildRenderableHomeQrInviteDeepLink,
     buildHomeQrInviteRestoreRoutePath,
     classifyLegacyPairingDeepLink,
+    consumeHomeQrInviteRestoreHandoff,
     parseHomeQrInviteDeepLink,
 } from './pairingUrl';
 import { createQRMatrix } from '@/components/qr/qrMatrix';
@@ -28,6 +29,12 @@ const INVITE_BASE = {
 };
 
 describe('HomeQrInviteV2 deep link', () => {
+    it('does not admit another Home or the approver direction for pinned material recovery', () => {
+        const link = buildHomeQrInviteDeepLink({ invite: INVITE_BASE });
+        expect(parseHomeQrInviteDeepLink(link, { homeServerIdentityId: 'srv_other', direction: 'trusted_home_displays' })).toBeNull();
+        expect(parseHomeQrInviteDeepLink(link, { homeServerIdentityId: INVITE_BASE.home.homeServerIdentityId, direction: 'requester_displays' })).toBeNull();
+        expect(parseHomeQrInviteDeepLink(link, { homeServerIdentityId: INVITE_BASE.home.homeServerIdentityId, direction: 'trusted_home_displays' })).toEqual({ invite: INVITE_BASE });
+    });
     it('builds one opaque bounded payload carrying the strict invite', () => {
         const link = buildHomeQrInviteDeepLink({ invite: INVITE_BASE });
         expect(link).toMatch(/^happier:\/\/\/pair\?v=2&payload=/);
@@ -141,14 +148,20 @@ describe('HomeQrInviteV2 deep link', () => {
         });
     });
 
-    it('carries the caller-selected entry intent alongside the unchanged opaque V2 link', () => {
+    it('routes a validated invite with only a non-secret handoff handle and caller-selected intent', () => {
         const link = buildHomeQrInviteDeepLink({ invite: INVITE_BASE });
-        expect(buildHomeQrInviteRestoreRoutePath(link, 'add_home')).toBe(
-            `/restore?pairingLink=${encodeURIComponent(link)}&entryIntent=add_home`,
-        );
-        expect(buildHomeQrInviteRestoreRoutePath(link, 'enter_home')).toBe(
-            `/restore?pairingLink=${encodeURIComponent(link)}&entryIntent=enter_home`,
-        );
+        const addHomeRoute = buildHomeQrInviteRestoreRoutePath(link, 'add_home');
+        const addHomeHandle = new URL(addHomeRoute!, 'https://app.example.test').searchParams.get('pairingHandoff');
+        expect(consumeHomeQrInviteRestoreHandoff(addHomeHandle!)).toBe(link);
+        expect(consumeHomeQrInviteRestoreHandoff(addHomeHandle!)).toBeNull();
+        const enterHomeRoute = buildHomeQrInviteRestoreRoutePath(link, 'enter_home');
+        expect(addHomeRoute).toMatch(/^\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=add_home$/u);
+        expect(enterHomeRoute).toMatch(/^\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=enter_home$/u);
+        expect(addHomeRoute).not.toContain(encodeURIComponent(link));
+        expect(addHomeRoute).not.toContain(INVITE_BASE.qrSecretBase64Url);
+        expect(addHomeRoute).not.toContain('pairingLink=');
+        const enterHomeHandle = new URL(enterHomeRoute!, 'https://app.example.test').searchParams.get('pairingHandoff');
+        expect(consumeHomeQrInviteRestoreHandoff(enterHomeHandle!)).toBe(link);
         expect(buildHomeQrInviteRestoreRoutePath('happier:///pair?v=1&pairId=p&secret=s', 'enter_home')).toBeNull();
     });
 

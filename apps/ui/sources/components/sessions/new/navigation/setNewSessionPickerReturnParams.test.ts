@@ -12,10 +12,12 @@ describe('pickNewSessionRouteParams', () => {
         expect(pickNewSessionRouteParams({
             draftId: '4a506d8a-85bd-4c42-a662-6f502f3acc45',
             draftOrigin: 'ordinary',
+            machinePoolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
             unrelated: 'drop-me',
         })).toEqual({
             draftId: '4a506d8a-85bd-4c42-a662-6f502f3acc45',
             draftOrigin: 'ordinary',
+            machinePoolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
         });
     });
 });

@@ -31,6 +31,9 @@ installSessionExecutionRunDetailsCommonModuleMocks({
                 if (key === 'executionRuns.details.labels.mode' && values?.value) return `Mode: ${String(values.value)}`;
                 if (key === 'executionRuns.details.labels.runId' && values?.value) return `Run ID: ${String(values.value)}`;
                 if (key === 'executionRuns.details.labels.statusValue' && values?.value) return `Status: ${String(values.value)}`;
+                if (key === 'executionRuns.details.launchOrigin.discussion' && values?.discussionId) {
+                    return `Started from discussion ${String(values.discussionId)}`;
+                }
                 if (key === 'executionRuns.details.titles.executionRunWithIntent' && values?.intent) {
                     return `${String(values.intent)} Subagent`;
                 }
@@ -122,6 +125,37 @@ describe('SessionExecutionRunInfoCard', () => {
         const text = JSON.stringify(tree!.toJSON());
         expect(text).toContain('Review Subagent');
         expect(text).toContain('Backend: review-bot');
+    });
+
+    it('renders Discussion launch provenance without presenting it as execution authority', async () => {
+        const { SessionExecutionRunInfoCard } = await import('./SessionExecutionRunInfoCard');
+        const tree = (await renderScreen(
+            <SessionExecutionRunInfoCard
+                run={{
+                    runId: 'run_discussion',
+                    callId: 'toolu_discussion',
+                    sidechainId: 'toolu_discussion',
+                    intent: 'delegate',
+                    backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                    launchOrigin: {
+                        kind: 'session_discussion',
+                        sessionId: 'session_1',
+                        discussionId: 'discussion_1',
+                        messageIds: ['message_1'],
+                    },
+                    permissionMode: 'safe_yolo',
+                    runClass: 'long_lived',
+                    ioMode: 'streaming',
+                    status: 'running',
+                    startedAtMs: 1,
+                } as any}
+                hostSessionId="session_1"
+            />,
+        )).tree;
+
+        const text = JSON.stringify(tree!.toJSON());
+        expect(text).toContain('Started from discussion discussion_1');
+        expect(text).not.toContain('acting as');
     });
 
     it('shows no finish time for a run whose finish was never recorded, instead of 1 January 1970', async () => {

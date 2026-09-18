@@ -111,7 +111,7 @@ export async function seedDemoWorld(options: SeedDemoWorldOptions = {}): Promise
     const activeServerSnapshot = getActiveServerSnapshot();
     const homeViewState = loadHomeViewState();
     const demoServerProfileExisted = listServerProfiles().some((profile) => profile.serverUrl === DEMO_SERVER_BASE_URL);
-    const demoServerProfile = upsertAndActivateServer({
+    const demoServerProfile = await upsertAndActivateServer({
         serverUrl: DEMO_SERVER_BASE_URL,
         name: 'Demo Relay',
         source: 'preconfigured',
@@ -135,7 +135,7 @@ export async function seedDemoWorld(options: SeedDemoWorldOptions = {}): Promise
 
     enterDemoMode();
     if (homeViewState) {
-        saveHomeViewState({
+        await saveHomeViewState({
             ...homeViewState,
             activeTargetKind: 'server',
             activeTargetId: getActiveServerSnapshot().serverId,
@@ -218,8 +218,8 @@ export async function clearDemoWorld(options: ClearDemoWorldOptions = {}): Promi
         sessionIds: active.sessionIds,
         machineIds: active.machineIds,
     }));
-    setActiveServer({ serverId: active.activeServerSnapshot.serverId, scope: 'device' });
-    if (active.homeViewState) saveHomeViewState(active.homeViewState);
+    await setActiveServer({ serverId: active.activeServerSnapshot.serverId, scope: 'device' });
+    if (active.homeViewState) await saveHomeViewState(active.homeViewState);
     for (const serverId of active.primedServerFeatureIds) {
         deleteServerFeaturesSnapshot({ serverId });
     }
@@ -227,7 +227,7 @@ export async function clearDemoWorld(options: ClearDemoWorldOptions = {}): Promi
         !active.demoServerProfileExisted
         && listServerProfiles().some((profile) => profile.id === active.demoServerProfileId)
     ) {
-        removeServerProfile(active.demoServerProfileId);
+        await removeServerProfile(active.demoServerProfileId);
     }
     // The residue policy is one decision, fixed at seed time. Teardown honors
     // the seeded policy unless a caller explicitly overrides it, so a

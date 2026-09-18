@@ -5,13 +5,14 @@ import {
     readPendingAgentStateRequestSignature,
 } from '@/sync/domains/session/pending/listPendingSessionRequests';
 import {
-    deriveSessionRuntimePresentationState,
-    isFreshTimestamp,
-    SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS,
+    projectUiSessionRuntimeAwareness,
+    readSessionRuntimePresentationFreshnessExpirations,
 } from '@/sync/domains/session/attention/runtimePresentation';
 import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { StorageState } from '@/sync/store/types';
+import { readSessionViewerAttentionSignature, resolveSessionPersonalAttentionForViewer } from '@/sync/domains/session/readState/sessionViewerAttention';
+import { isSessionAdmittedToPersonalActivity } from '@/activity/attention/isSessionAdmittedToPersonalActivity';
 
 import {
     createSessionRuntimeFreshnessLedger,
@@ -38,20 +39,11 @@ function readNumber(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null;
 }
 
-function readFreshnessRefreshDelayMs(timestamp: number | null | undefined, nowMs: number): number | null {
-    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return null;
-    const normalizedTimestamp = Math.trunc(timestamp);
-    if (!isFreshTimestamp(normalizedTimestamp, nowMs, SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS)) return null;
-    return Math.max(
-        0,
-        normalizedTimestamp + SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS - nowMs + 1,
-    );
-}
-
 function buildSessionPermissionSignature(session: Session): string {
     const agentState = session.agentState;
     return [
         session.id,
+        readSessionViewerAttentionSignature(session),
         session.active === true ? 1 : 0,
         readNumber(session.activeAt) ?? '',
         session.presence,
@@ -81,25 +73,6 @@ function buildSessionMessagesPermissionSignature(
     ].join('\u001f');
 }
 
-function deriveFreshPermissionRefreshDelayMs(
-    session: Session,
-    pendingRequestObservedAt: number | null,
-    nowMs: number,
-): number | null {
-    const delays: number[] = [];
-    const addDelay = (timestamp: number | null | undefined) => {
-        const delay = readFreshnessRefreshDelayMs(timestamp, nowMs);
-        if (delay !== null) delays.push(delay);
-    };
-
-    addDelay(pendingRequestObservedAt);
-    addDelay(session.latestTurnStatusObservedAt);
-    addDelay(session.thinkingAt);
-    addDelay(session.activeAt);
-
-    return delays.length === 0 ? null : Math.min(...delays);
-}
-
 function deriveFaviconPermissionSnapshotFromSessions(
     state: StorageState,
     sessionIds: readonly string[],
@@ -110,11 +83,17 @@ function deriveFaviconPermissionSnapshotFromSessions(
 
     for (const sessionId of sessionIds) {
         const session = state.sessions[sessionId];
-        if (!session) continue;
+        if (!session || !isSessionAdmittedToPersonalActivity(session)) continue;
         const messages = readStoredSessionMessages(state, session.id);
+        const personal = resolveSessionPersonalAttentionForViewer(session, nowMs, messages);
+        if (!personal.reasons.includes('permission_required')) continue;
+        if (session.viewer !== undefined) {
+            hasFreshPermission = true;
+            continue;
+        }
         const pendingFlags = derivePendingRequestFlagsFromSession(session, messages);
         const pendingRequestObservedAt = deriveLatestPendingRequestObservedAtFromSession(session, messages);
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeInput = {
             active: session.active,
             activeAt: session.activeAt,
             presence: session.presence,
@@ -128,12 +107,16 @@ function deriveFaviconPermissionSnapshotFromSessions(
             hasPendingUserActionRequests: pendingFlags.hasPendingUserActionRequests,
             pendingRequestObservedAt,
             nowMs,
-        });
+        };
+        const runtimeState = projectUiSessionRuntimeAwareness(runtimeInput);
 
         if (!runtimeState.freshPermissionRequired) continue;
 
         hasFreshPermission = true;
-        const refreshDelayMs = deriveFreshPermissionRefreshDelayMs(session, pendingRequestObservedAt, nowMs);
+        const expirations = readSessionRuntimePresentationFreshnessExpirations(runtimeInput, nowMs);
+        const refreshDelayMs = expirations.length === 0
+            ? null
+            : Math.max(0, Math.min(...expirations) - nowMs + 1);
         if (refreshDelayMs !== null) {
             nextRefreshDelayMs = nextRefreshDelayMs === null
                 ? refreshDelayMs

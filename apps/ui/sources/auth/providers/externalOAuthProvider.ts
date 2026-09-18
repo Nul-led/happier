@@ -13,8 +13,11 @@ import type {
     AuthProvider,
     ExternalAuthStartInput,
     HomeOAuthRequestContext,
+    TeamOAuthRequestContext,
+    TeamOAuthStart,
 } from '@/auth/providers/types';
 import {
+    ExternalOAuthFinalizeConnectSuccessResponseSchema,
     ExternalOAuthParamsResponseSchema,
     type AuthProviderId,
 } from '@happier-dev/protocol';
@@ -43,9 +46,18 @@ export function createExternalOAuthProvider(params: {
     ): Promise<AccountDirectoryOAuthStart>;
     async function getExternalAuthUrl(
         input: ExternalAuthStartInput,
-        context?: AccountDirectoryOAuthRequestContext | HomeOAuthRequestContext,
-    ): Promise<string | AccountDirectoryOAuthStart> {
+        context: TeamOAuthRequestContext,
+    ): Promise<TeamOAuthStart>;
+    async function getExternalAuthUrl(
+        input: ExternalAuthStartInput,
+        context?: AccountDirectoryOAuthRequestContext | HomeOAuthRequestContext | TeamOAuthRequestContext,
+    ): Promise<string | AccountDirectoryOAuthStart | TeamOAuthStart> {
         const directoryContext = context && 'purpose' in context
+            && context.purpose === 'account_directory'
+            ? context
+            : null;
+        const teamContext = context && 'purpose' in context
+            && context.purpose === 'team_admission'
             ? context
             : null;
         const query =
@@ -80,11 +92,19 @@ export function createExternalOAuthProvider(params: {
                 `endpointServerIdentityId=${encodeURIComponent(directoryContext.endpointServerIdentityId)}`,
                 `canonicalServerUrl=${encodeURIComponent(directoryContext.canonicalServerUrl)}`,
             ].join('&')
-            : '';
+            : teamContext
+                ? [
+                    `purpose=team_admission`,
+                    `teamId=${encodeURIComponent(teamContext.teamId)}`,
+                    `origin=${encodeURIComponent(teamContext.origin)}`,
+                ].join('&')
+                : '';
         const request = context?.request ?? serverFetch;
         const response = await request(
             `/v1/auth/external/${encodeURIComponent(providerId)}/params?${query}${restrictedContextQuery ? `&${restrictedContextQuery}` : ''}`,
-            undefined,
+            teamContext?.invitationToken ? {
+                headers: { 'x-happier-team-invitation': teamContext.invitationToken },
+            } : undefined,
             context
                 ? { includeAuth: false, retry: 'none' }
                 : { includeAuth: false },
@@ -105,8 +125,16 @@ export function createExternalOAuthProvider(params: {
             await response.json().catch(() => null),
         );
         if (!parsed.success) throw new Error('external-auth-unavailable');
+        if (teamContext) {
+            if (!('purpose' in parsed.data)
+                || parsed.data.purpose !== 'team_admission'
+                || parsed.data.teamId !== teamContext.teamId) {
+                throw new Error('external-auth-unavailable');
+            }
+            return parsed.data;
+        }
         if (!directoryContext) return parsed.data.url;
-        if (!('purpose' in parsed.data)) {
+        if (!('purpose' in parsed.data) || parsed.data.purpose !== 'account_directory') {
             throw new Error('external-auth-unavailable');
         }
         const row = parsed.data;
@@ -119,8 +147,7 @@ export function createExternalOAuthProvider(params: {
         const endpointServerIdentityId = row.endpointServerIdentityId.trim();
         const expiresAt = Date.parse(row.expiresAt);
         if (
-            row.purpose !== 'account_directory'
-            || row.credentialTarget !== 'account_directory'
+            row.credentialTarget !== 'account_directory'
             || !expectedEndpointUrl
             || endpointUrl !== expectedEndpointUrl
             || !expectedCanonicalServerUrl
@@ -162,7 +189,7 @@ export function createExternalOAuthProvider(params: {
         getConnectUrl: async (credentials: AuthCredentials) => {
             return await backoff(async () => {
                 const response = await serverFetch(
-                    `/v1/connect/external/${encodeURIComponent(providerId)}/params`,
+                    `/v1/connect/external/${encodeURIComponent(providerId)}/params?connectFinalization=credential_adoption_v1`,
                     {
                         method: 'GET',
                         headers: {
@@ -250,10 +277,11 @@ export function createExternalOAuthProvider(params: {
                     throw new Error(`Failed to finalize ${providerName} connect: ${response.status}`);
                 }
 
-                const data = (await response.json()) as unknown;
-                if (!data || typeof data !== 'object' || (data as any).success !== true) {
+                const result = ExternalOAuthFinalizeConnectSuccessResponseSchema.safeParse(await response.json());
+                if (!result.success) {
                     throw new Error(`Failed to finalize ${providerName} connection`);
                 }
+                return result.data.token ? { token: result.data.token } : {};
             });
         },
         cancelConnectPending: async (credentials: AuthCredentials, pending: string) => {

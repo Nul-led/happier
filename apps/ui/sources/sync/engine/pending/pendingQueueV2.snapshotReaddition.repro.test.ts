@@ -123,10 +123,11 @@ function committedTranscriptLocalIds(): string[] {
 }
 
 describe('pending snapshot re-addition after a committed twin', () => {
-    beforeEach(() => resetPendingQueueState());
+    beforeEach(async () => await resetPendingQueueState());
 
     function armSession() {
-        const server = upsertServerProfile({ serverUrl: 'https://readdition.example.test', name: 'Readdition' });
+        const server = await upsertServerProfile({ serverUrl: 'https://readdition.example.test', name: 'Readdition' });
+        await resetPendingQueueState({ serverId: server.id, accountId: 'account' });
         storage.getState().applySessions([{
             ...buildSession({ sessionId: SESSION_ID }),
             encryptionMode: 'plain',
@@ -280,7 +281,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
      */
     it('withholds an adopted pre-ACK response that omits a localId accepted while it was in flight', async () => {
         const scope = armSession();
-        setActiveServerId(scope.serverId, { scope: 'tab' });
+        await setActiveServerId(scope.serverId, { scope: 'device' });
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         let release!: () => void;
@@ -345,7 +346,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
      */
     it('keeps a localId accepted in flight when a requested-action PATCH invalidates the refresh', async () => {
         const scope = armSession();
-        setActiveServerId(scope.serverId, { scope: 'tab' });
+        await setActiveServerId(scope.serverId, { scope: 'device' });
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         let release!: () => void;
@@ -406,7 +407,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
      */
     it('withholds a settled row for a refresh registered after a requested-action PATCH', async () => {
         const scope = armSession();
-        setActiveServerId(scope.serverId, { scope: 'tab' });
+        await setActiveServerId(scope.serverId, { scope: 'device' });
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         // Accepted BEFORE any refresh is registered, so nothing is recorded on a refresh token and

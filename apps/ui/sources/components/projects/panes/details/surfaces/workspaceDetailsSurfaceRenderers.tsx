@@ -34,6 +34,8 @@ type WorkspaceDetailsOpenFile = (path: string, intent?: 'default' | 'pinned') =>
 
 export type WorkspaceDetailsSurfaceRendererOptions = Readonly<{
     scopeId: string;
+    onRevealInFilesTree?: (path: string) => void;
+    onOpenChanges?: () => void;
     workspaceRefId: string;
     workspaceCacheKey: string;
     workspaceScope: WorkspaceScopeBase;
@@ -175,6 +177,8 @@ export function createWorkspaceDetailsSurfaceRenderers(
                 if (!isFileResource(input.tab.resource)) return null;
                 return (
                     <WorkspaceFileDetailsView
+                        onRevealInFilesTree={options.onRevealInFilesTree}
+                        onOpenChanges={options.onOpenChanges}
                         scopeId={options.scopeId}
                         scope={options.workspaceScope}
                         filePath={input.tab.resource.path}

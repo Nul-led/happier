@@ -131,6 +131,7 @@ export function useChangedFilesReviewDiffLoading(input: {
     }, [diffArea, sessionId]);
 
     React.useEffect(() => {
+        inFlightPathsRef.current = new Set();
         // Force a revalidate on the next effect run without clearing already-loaded diffs.
         // This is used for manual refresh, and for snapshot signature changes from SCM refresh.
         lastFetchAtMsByPathRef.current = {};
@@ -166,6 +167,8 @@ export function useChangedFilesReviewDiffLoading(input: {
         if (reviewFiles.length === 0) return;
 
         let cancelled = false;
+        const inFlightPaths = new Set<string>();
+        inFlightPathsRef.current = inFlightPaths;
 
         const loadDiff = async (path: string) => {
             const existing = diffStateSource.getDiffState(path);
@@ -183,7 +186,7 @@ export function useChangedFilesReviewDiffLoading(input: {
                     }
                 }
             }
-            if (inFlightPathsRef.current.has(path)) {
+            if (inFlightPaths.has(path)) {
                 return;
             }
             const providerDiff = providerDiffByPath?.get(path);
@@ -196,18 +199,7 @@ export function useChangedFilesReviewDiffLoading(input: {
                 lastFetchAtMsByPathRef.current[path] = Date.now();
                 return;
             }
-            inFlightPathsRef.current.add(path);
-
-            const signature = typeof snapshotSignature === 'string' && snapshotSignature.trim().length > 0 ? snapshotSignature : null;
-            if (signature && diffCache) {
-                const cached = diffCache.get({ sessionId, snapshotSignature: signature, diffArea, path });
-                if (cached && typeof cached.diff === 'string') {
-                    diffStateSource.setDiffState(path, { status: 'loaded', diff: cached.diff, error: null });
-                    lastFetchAtMsByPathRef.current[path] = Date.now();
-                    inFlightPathsRef.current.delete(path);
-                    return;
-                }
-            }
+            inFlightPaths.add(path);
 
             diffStateSource.updateDiffState(path, (prev) => {
                 // Stale-while-revalidate: keep already-loaded diffs visible while we refresh in the background.
@@ -225,6 +217,8 @@ export function useChangedFilesReviewDiffLoading(input: {
                         file,
                         normalizeError,
                         fallbackError,
+                        snapshotSignature,
+                        diffCache,
                     })
                     : await fetchSessionUnifiedDiffForPath({
                         sessionId,
@@ -233,9 +227,11 @@ export function useChangedFilesReviewDiffLoading(input: {
                         file,
                         normalizeError,
                         fallbackError,
+                        snapshotSignature,
+                        diffCache,
                     });
-                lastFetchAtMsByPathRef.current[path] = Date.now();
                 if (cancelled) return;
+                lastFetchAtMsByPathRef.current[path] = Date.now();
                 if (!response.success) {
                     diffStateSource.updateDiffState(path, (prev) => {
                         if (prev?.status === 'loaded' && prev.diff) {
@@ -247,9 +243,7 @@ export function useChangedFilesReviewDiffLoading(input: {
                 }
 
                 diffStateSource.setDiffState(path, { status: 'loaded', diff: response.diff ?? '', error: null });
-                if (signature && diffCache) {
-                    diffCache.set({ sessionId, snapshotSignature: signature, diffArea, path }, response.diff ?? '');
-                }
+
             } catch (err) {
                 if (cancelled) return;
                 const normalized = normalizeError(err);
@@ -265,7 +259,7 @@ export function useChangedFilesReviewDiffLoading(input: {
                 });
                 lastFetchAtMsByPathRef.current[path] = Date.now();
             } finally {
-                inFlightPathsRef.current.delete(path);
+                inFlightPaths.delete(path);
             }
         };
 

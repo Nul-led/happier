@@ -58,6 +58,7 @@ describe('authApproveAtEndpoint explicit target', () => {
             publicKey: 'pub-key-b64',
             response: 'opaque-response-b64',
             responseKind: 'tokenOnly',
+            authorizeUnattendedTeamAccess: true,
         });
         expect(postCall?.[2]).toMatchObject({ includeAuth: false });
     });
@@ -80,6 +81,7 @@ describe('authApproveAtEndpoint explicit target', () => {
             publicKey: 'pub-key-b64',
             response: 'opaque-datakey-response-b64',
             responseKind: 'dataKey',
+            authorizeUnattendedTeamAccess: true,
         });
     });
 

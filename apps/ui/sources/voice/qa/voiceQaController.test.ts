@@ -1,3 +1,6 @@
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+const qaAddress = (sessionId: string): SessionAddress => ({ serverId: getActiveServerSnapshot().serverId, sessionId });
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { sync } from '@/sync/sync';
@@ -38,6 +41,17 @@ describe('voiceQaController', () => {
     } as any);
   });
 
+  it('rejects ambiguous explicit targets before changing QA state', async () => {
+    storage.setState({ sessionListIndexByServerId: {
+      a: [{ type: 'session', sessionId: 'collision', serverId: 'a', serverName: 'A' }],
+      b: [{ type: 'session', sessionId: 'collision', serverId: 'b', serverName: 'B' }],
+    } });
+    const before = useVoiceQaStore.getState();
+    await expect(createVoiceQaController().start({ sessionId: 'collision' }))
+      .rejects.toThrow('voice_qa_target_session_unresolved');
+    expect(useVoiceQaStore.getState()).toBe(before);
+  });
+
   it('starts a real local voice-agent QA run through the bound hidden voice conversation when the binding is native-session backed', async () => {
     const ensureLocalRunningAndMaybeWelcome = vi.fn(async () => 'Hey! What are we working on today?');
     const ensureSessionVisibleForMessageRoute = vi.fn(async () => {});
@@ -46,8 +60,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: qaAddress('voice-hidden-s1'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: qaAddress('s1'),
       updatedAt: 1,
     }));
     const controller = createVoiceQaController({
@@ -57,7 +72,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding,
       ensureLocalRunningAndMaybeWelcome,
       ensureSessionVisibleForMessageRoute,
@@ -76,13 +91,16 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await controller.start({ sessionId: 's1' });
+    await controller.start({ sessionAddress: qaAddress('s1') });
 
     expect(ensureLocalBinding).toHaveBeenCalledWith({
       controlSessionId: '__voice_agent__',
-      requestedTargetSessionId: 's1',
+      requestedTargetSessionAddress: qaAddress('s1'),
     });
-    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith('s1');
+    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ serverId: qaAddress('s1').serverId }),
+    );
     expect(refreshSessionMessages).toHaveBeenCalledWith('s1');
     expect(ensureLocalRunningAndMaybeWelcome).toHaveBeenCalledWith('voice-hidden-s1');
     expect(useVoiceQaStore.getState().status).toBe('running');
@@ -96,6 +114,7 @@ describe('voiceQaController', () => {
         ...((storage.getState() as any).sessions ?? {}),
         s1: {
           id: 's1',
+          encryptionMode: 'plain',
           presence: 'online',
           active: true,
           updatedAt: 1,
@@ -142,13 +161,14 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => ({
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice-hidden-s1',
+        conversationSessionAddress: qaAddress('voice-hidden-s1'),
         transcriptMode: 'native_session' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: qaAddress('s1'),
         updatedAt: 1,
       })),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
@@ -168,7 +188,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await controller.start({ sessionId: 's1' });
+    await controller.start({ sessionAddress: qaAddress('s1') });
 
     expect(
       useVoiceQaStore.getState().entries.some(
@@ -187,6 +207,7 @@ describe('voiceQaController', () => {
         ...((storage.getState() as any).sessions ?? {}),
         s1: {
           id: 's1',
+          encryptionMode: 'plain',
           presence: 'online',
           active: true,
           updatedAt: 1,
@@ -228,13 +249,14 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => ({
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice-hidden-s1',
+        conversationSessionAddress: qaAddress('voice-hidden-s1'),
         transcriptMode: 'native_session' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: qaAddress('s1'),
         updatedAt: 1,
       })),
       ensureLocalRunningAndMaybeWelcome,
@@ -254,7 +276,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await expect(controller.start({ sessionId: 's1' })).resolves.toBeDefined();
+    await expect(controller.start({ sessionAddress: qaAddress('s1') })).resolves.toBeDefined();
     expect(ensureLocalRunningAndMaybeWelcome).toHaveBeenCalledWith('voice-hidden-s1');
     expect(appendLocalContextUpdate).toHaveBeenCalled();
     expect(ensureLocalRunningAndMaybeWelcome.mock.invocationCallOrder[0]).toBeLessThan(
@@ -269,6 +291,7 @@ describe('voiceQaController', () => {
         ...((storage.getState() as any).sessions ?? {}),
         s1: {
           id: 's1',
+          encryptionMode: 'plain',
           presence: 'online',
           active: true,
           updatedAt: 1,
@@ -282,7 +305,7 @@ describe('voiceQaController', () => {
       },
     } as any);
 
-    const ensureSessionVisibleForMessageRoute = vi.fn(async (_sessionId: string, options?: { forceRefresh?: boolean }) => {
+    const ensureSessionVisibleForMessageRoute = vi.fn(async (_address: SessionAddress, options?: { forceRefresh?: boolean }) => {
       if (options?.forceRefresh !== true) return;
       storage.setState((state: any) => ({
         ...state,
@@ -315,13 +338,14 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => ({
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice-hidden-s1',
+        conversationSessionAddress: qaAddress('voice-hidden-s1'),
         transcriptMode: 'native_session' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: qaAddress('s1'),
         updatedAt: 1,
       })),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
@@ -341,10 +365,10 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await controller.start({ sessionId: 's1' });
+    await controller.start({ sessionAddress: qaAddress('s1') });
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith('s1', { forceRefresh: true });
+    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith(qaAddress('s1'), { forceRefresh: true });
     expect(
       useVoiceQaStore.getState().entries.some(
         (entry) =>
@@ -372,6 +396,7 @@ describe('voiceQaController', () => {
         ...((storage.getState() as any).sessions ?? {}),
         s1: {
           id: 's1',
+          encryptionMode: 'plain',
           presence: 'online',
           active: true,
           updatedAt: 1,
@@ -386,12 +411,12 @@ describe('voiceQaController', () => {
     } as any);
 
     let sessionVisible = false;
-    const ensureSessionVisibleForMessageRoute = vi.fn(async (_sessionId: string, options?: { forceRefresh?: boolean }) => {
+    const ensureSessionVisibleForMessageRoute = vi.fn(async (_address: SessionAddress, options?: { forceRefresh?: boolean }) => {
       if (options?.forceRefresh === true) {
         sessionVisible = true;
       }
     });
-    const refreshSessionMessages = vi.fn(async (_sessionId: string) => {
+    const refreshSessionMessages = vi.fn(async (_address: SessionAddress) => {
       if (!sessionVisible) return;
       storage.setState((state: any) => ({
         ...state,
@@ -447,13 +472,14 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => ({
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice-hidden-s1',
+        conversationSessionAddress: qaAddress('voice-hidden-s1'),
         transcriptMode: 'native_session' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: qaAddress('s1'),
         updatedAt: 1,
       })),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
@@ -473,10 +499,10 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await controller.start({ sessionId: 's1' });
+    await controller.start({ sessionAddress: qaAddress('s1') });
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith('s1', { forceRefresh: true });
+    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith(qaAddress('s1'), { forceRefresh: true });
     expect(refreshSessionMessages).toHaveBeenCalledTimes(2);
     expect(
       useVoiceQaStore.getState().entries.some(
@@ -502,6 +528,7 @@ describe('voiceQaController', () => {
         ...((storage.getState() as any).sessions ?? {}),
         s1: {
           id: 's1',
+          encryptionMode: 'plain',
           presence: 'online',
           active: true,
           updatedAt: 1,
@@ -519,7 +546,7 @@ describe('voiceQaController', () => {
     const forcedRefresh = new Promise<void>((resolve) => {
       resolveForcedRefresh = resolve;
     });
-    const ensureSessionVisibleForMessageRoute = vi.fn(async (_sessionId: string, options?: { forceRefresh?: boolean }) => {
+    const ensureSessionVisibleForMessageRoute = vi.fn(async (_address: SessionAddress, options?: { forceRefresh?: boolean }) => {
       if (options?.forceRefresh === true) {
         await forcedRefresh;
       }
@@ -533,13 +560,14 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => ({
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice-hidden-s1',
+        conversationSessionAddress: qaAddress('voice-hidden-s1'),
         transcriptMode: 'native_session' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: qaAddress('s1'),
         updatedAt: 1,
       })),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
@@ -559,7 +587,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    const startPromise = controller.start({ sessionId: 's1' }).then(() => 'resolved');
+    const startPromise = controller.start({ sessionAddress: qaAddress('s1') }).then(() => 'resolved');
     await expect(
       Promise.race([startPromise, new Promise((resolve) => setTimeout(() => resolve('pending'), 0))]),
     ).resolves.toBe('resolved');
@@ -576,16 +604,17 @@ describe('voiceQaController', () => {
   it('keeps using the started target session for follow-up local QA prompts when the global voice target drifts', async () => {
     const getVoiceTargetState = vi
       .fn()
-      .mockReturnValueOnce({ primaryActionSessionId: 's1', lastFocusedSessionId: null })
-      .mockReturnValue({ primaryActionSessionId: 'voice-hidden-s1', lastFocusedSessionId: null });
+      .mockReturnValueOnce({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null })
+      .mockReturnValue({ primaryActionSessionAddress: qaAddress('voice-hidden-s1'), lastFocusedSessionAddress: null });
     const ensureLocalBinding = vi
       .fn()
       .mockResolvedValue({
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice-hidden-s1',
+        conversationSessionAddress: qaAddress('voice-hidden-s1'),
         transcriptMode: 'native_session' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: qaAddress('s1'),
         updatedAt: 1,
       });
     const sendLocalTurn = vi.fn(async () => ({ assistantText: 'Still targeting s1.', actions: [] }));
@@ -623,11 +652,11 @@ describe('voiceQaController', () => {
 
     expect(ensureLocalBinding).toHaveBeenNthCalledWith(1, {
       controlSessionId: '__voice_agent__',
-      requestedTargetSessionId: 's1',
+      requestedTargetSessionAddress: qaAddress('s1'),
     });
     expect(ensureLocalBinding).toHaveBeenNthCalledWith(2, {
       controlSessionId: '__voice_agent__',
-      requestedTargetSessionId: 's1',
+      requestedTargetSessionAddress: qaAddress('s1'),
     });
     expect(sendLocalTurn).toHaveBeenCalledWith(
       'voice-hidden-s1',
@@ -637,21 +666,22 @@ describe('voiceQaController', () => {
         onUserTranscriptAccepted: expect.any(Function),
       }),
     );
-    expect(useVoiceQaStore.getState().targetSessionId).toBe('s1');
+    expect(useVoiceQaStore.getState().targetSessionAddress).toEqual(qaAddress('s1'));
     expect(useVoiceQaStore.getState().runtimeSessionId).toBe('voice-hidden-s1');
   });
 
   it('updates the QA target session after a global local-voice retarget even if the binding store lags behind', async () => {
     const getVoiceTargetState = vi
       .fn()
-      .mockReturnValueOnce({ primaryActionSessionId: 's1', lastFocusedSessionId: null })
-      .mockReturnValue({ primaryActionSessionId: 'session_matrix', lastFocusedSessionId: null });
+      .mockReturnValueOnce({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null })
+      .mockReturnValue({ primaryActionSessionAddress: qaAddress('session_matrix'), lastFocusedSessionAddress: null });
     const binding = {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: qaAddress('voice-hidden-s1'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: null,
+      targetSessionAddress: null,
       updatedAt: 1,
     };
     const ensureLocalBinding = vi.fn(async () => binding);
@@ -691,7 +721,7 @@ describe('voiceQaController', () => {
       autoStart: false,
     });
 
-    expect(useVoiceQaStore.getState().targetSessionId).toBe('session_matrix');
+    expect(useVoiceQaStore.getState().targetSessionAddress).toEqual(qaAddress('session_matrix'));
     expect(useVoiceQaStore.getState().runtimeSessionId).toBe('voice-hidden-s1');
   });
 
@@ -716,8 +746,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s2',
+      conversationSessionAddress: qaAddress('voice-hidden-s2'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: null,
+      targetSessionAddress: null,
       updatedAt: 1,
     }));
 
@@ -728,7 +759,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: null, lastFocusedSessionId: 'voice-hidden-s1' }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: null, lastFocusedSessionAddress: qaAddress('voice-hidden-s1') }),
       ensureLocalBinding,
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       ensureSessionVisibleForMessageRoute: vi.fn(async () => {}),
@@ -751,9 +782,9 @@ describe('voiceQaController', () => {
 
     expect(ensureLocalBinding).toHaveBeenCalledWith({
       controlSessionId: '__voice_agent__',
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: null,
     });
-    expect(useVoiceQaStore.getState().targetSessionId).toBe('__voice_agent__');
+    expect(useVoiceQaStore.getState().targetSessionAddress).toBeNull();
   });
 
   it('warns when the target session permission mode will auto-deny write-like actions', async () => {
@@ -763,6 +794,7 @@ describe('voiceQaController', () => {
         ...((storage.getState() as any).sessions ?? {}),
         s1: {
           id: 's1',
+          encryptionMode: 'plain',
           presence: 'online',
           active: true,
           updatedAt: 1,
@@ -784,13 +816,14 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => ({
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice-hidden-s1',
+        conversationSessionAddress: qaAddress('voice-hidden-s1'),
         transcriptMode: 'native_session' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: qaAddress('s1'),
         updatedAt: 1,
       })),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
@@ -810,7 +843,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await controller.start({ sessionId: 's1' });
+    await controller.start({ sessionAddress: qaAddress('s1') });
 
     expect(
       useVoiceQaStore.getState().entries.some(
@@ -849,8 +882,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: qaAddress('voice-hidden-s1'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: qaAddress('s1'),
       updatedAt: 1,
     }));
     const controller = createVoiceQaController({
@@ -860,7 +894,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding,
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       ensureSessionVisibleForMessageRoute: vi.fn(async () => {}),
@@ -879,11 +913,11 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await controller.sendPrompt({ sessionId: 's1', prompt: 'List the available backends.' });
+    await controller.sendPrompt({ sessionAddress: qaAddress('s1'), prompt: 'List the available backends.' });
 
     expect(ensureLocalBinding).toHaveBeenCalledWith({
       controlSessionId: '__voice_agent__',
-      requestedTargetSessionId: 's1',
+      requestedTargetSessionAddress: qaAddress('s1'),
     });
     expect(pendingPort.enqueuePendingMessage).toHaveBeenCalledTimes(1);
     const durableLocalId = pendingPort.enqueuePendingMessage.mock.calls[0]?.[0]?.localId;
@@ -920,8 +954,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-home-hidden',
+      conversationSessionAddress: qaAddress('voice-home-hidden'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: null as string | null,
+      targetSessionAddress: null as SessionAddress | null,
       updatedAt: 1,
     };
     const ensureLocalBinding = vi.fn(async () => currentBinding);
@@ -929,7 +964,8 @@ describe('voiceQaController', () => {
       currentBinding = {
         ...currentBinding,
         conversationSessionId: 'voice-hidden-s1',
-        targetSessionId: 's1',
+        conversationSessionAddress: qaAddress('voice-hidden-s1'),
+        targetSessionAddress: qaAddress('s1'),
         updatedAt: 2,
       };
       return { assistantText: 'Teleported.', actions: [] };
@@ -941,7 +977,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: null, lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: null, lastFocusedSessionAddress: null }),
       ensureLocalBinding,
       getLocalBinding: () => currentBinding,
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
@@ -963,7 +999,7 @@ describe('voiceQaController', () => {
 
     await controller.sendPrompt({ prompt: 'Teleport into the active coding session.' });
 
-    expect(useVoiceQaStore.getState().targetSessionId).toBe('s1');
+    expect(useVoiceQaStore.getState().targetSessionAddress).toEqual(qaAddress('s1'));
     expect(useVoiceQaStore.getState().runtimeSessionId).toBe('voice-hidden-s1');
     expect(sendLocalTurn).toHaveBeenCalledWith(
       'voice-home-hidden',
@@ -1014,8 +1050,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: qaAddress('voice-hidden-s1'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: qaAddress('s1'),
       updatedAt: 1,
     }));
     const controller = createVoiceQaController({
@@ -1025,15 +1062,16 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding,
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
-      ensureSessionVisibleForMessageRoute: (
-        ...args: Parameters<typeof sync.ensureSessionVisibleForMessageRoute>
-      ) => sync.ensureSessionVisibleForMessageRoute(...args),
-      refreshSessionMessages: (
-        ...args: Parameters<typeof sync.refreshSessionMessages>
-      ) => sync.refreshSessionMessages(...args),
+      ensureSessionVisibleForMessageRoute: (address, options) =>
+        sync.ensureSessionVisibleForMessageRoute(address.sessionId, {
+          ...options,
+          serverId: address.serverId,
+        }),
+      refreshSessionMessages: (address) =>
+        sync.refreshSessionMessages(address.sessionId),
       pendingPort: createAcceptedPendingPort(),
       sendLocalTurn,
       stopLocal: vi.fn(async () => {}),
@@ -1048,10 +1086,10 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await controller.sendPrompt({ sessionId: 's1', prompt: 'Answer the pending question with: Implement a feature.' });
+    await controller.sendPrompt({ sessionAddress: qaAddress('s1'), prompt: 'Answer the pending question with: Implement a feature.' });
 
-    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith('s1');
-    expect(refreshSessionMessages).toHaveBeenCalledWith('s1');
+    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith(qaAddress('s1'));
+    expect(refreshSessionMessages).toHaveBeenCalledWith(qaAddress('s1'));
     expect(sendLocalTurn).toHaveBeenNthCalledWith(
       2,
       'voice-hidden-s1',
@@ -1073,8 +1111,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: qaAddress('voice-hidden-s1'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: qaAddress('s1'),
       updatedAt: 1,
     }));
     const blockPendingDelivery = vi.fn(async () => {});
@@ -1085,7 +1124,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding,
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: {
@@ -1113,7 +1152,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await expect(controller.sendPrompt({ sessionId: 's1', prompt: 'Answer the pending question.' }))
+    await expect(controller.sendPrompt({ sessionAddress: qaAddress('s1'), prompt: 'Answer the pending question.' }))
       .rejects.toThrow('RPC method not available: execution.run.stream.start.v2');
 
     expect(useVoiceQaStore.getState().status).toBe('error');
@@ -1134,8 +1173,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: qaAddress('voice-hidden-s1'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: qaAddress('s1'),
       updatedAt: 1,
     }));
     const blockPendingDelivery = vi.fn(async () => {});
@@ -1146,7 +1186,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding,
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: {
@@ -1171,7 +1211,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await expect(controller.sendPrompt({ sessionId: 's1', prompt: 'Answer the pending question.' }))
+    await expect(controller.sendPrompt({ sessionAddress: qaAddress('s1'), prompt: 'Answer the pending question.' }))
       .rejects.toThrow('voice_turn_dispatch_ambiguous');
 
     expect(blockPendingDelivery).toHaveBeenCalledWith({
@@ -1189,8 +1229,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: qaAddress('voice-hidden-s1'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: qaAddress('s1'),
       updatedAt: 1,
     }));
     const waitForInterruptedLocalAssistantTurn = vi.fn(async () => 'A read-only permission request is pending. Should I allow or deny it?');
@@ -1201,7 +1242,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding,
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1220,7 +1261,7 @@ describe('voiceQaController', () => {
 
     await expect(
       controller.sendPrompt({
-        sessionId: 's1',
+        sessionAddress: qaAddress('s1'),
         prompt: 'Ask the coding session to create a file and then ask me for permission.',
       }),
     ).resolves.toMatchObject({ assistantText: 'A read-only permission request is pending. Should I allow or deny it?' });
@@ -1246,8 +1287,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: qaAddress('voice-hidden-s1'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: qaAddress('s1'),
       updatedAt: 1,
     }));
     const waitForInterruptedLocalAssistantTurn = vi.fn(async () => 'The coding session finished and needs your approval.');
@@ -1258,7 +1300,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding,
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1277,7 +1319,7 @@ describe('voiceQaController', () => {
 
     await expect(
       controller.sendPrompt({
-        sessionId: 's1',
+        sessionAddress: qaAddress('s1'),
         prompt: 'Ask the coding session to create a file, then tell me when it needs approval.',
       }),
     ).resolves.toMatchObject({ assistantText: 'The coding session finished and needs your approval.' });
@@ -1304,6 +1346,7 @@ describe('voiceQaController', () => {
         ...((storage.getState() as any).sessions ?? {}),
         s1: {
           id: 's1',
+          encryptionMode: 'plain',
           presence: 'online',
           active: true,
           updatedAt: 1,
@@ -1331,8 +1374,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: qaAddress('voice-hidden-s1'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: qaAddress('s1'),
       updatedAt: 1,
     }));
     const waitForInterruptedLocalAssistantTurn = vi.fn(async () => 'The coding session is now asking which color you prefer: Red or Blue.');
@@ -1343,7 +1387,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding,
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1362,7 +1406,7 @@ describe('voiceQaController', () => {
 
     await expect(
       controller.sendPrompt({
-        sessionId: 's1',
+        sessionAddress: qaAddress('s1'),
         prompt: 'Ask the coding session which color I prefer.',
       }),
     ).resolves.toBeDefined();
@@ -1401,7 +1445,7 @@ describe('voiceQaController', () => {
           providerId: 'happier.voice.elevenlabs/realtime-elevenlabs',
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's9', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s9'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => null),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1419,8 +1463,9 @@ describe('voiceQaController', () => {
         adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
         controlSessionId: 's9',
         conversationSessionId: 'voice-hidden-s9',
+        conversationSessionAddress: qaAddress('voice-hidden-s9'),
         transcriptMode: 'native_session',
-        targetSessionId: 's9',
+        targetSessionAddress: qaAddress('s9'),
         updatedAt: 1,
       }),
       sendRealtimeTextTurn,
@@ -1446,7 +1491,7 @@ describe('voiceQaController', () => {
           providerId: 'happier.voice.elevenlabs/realtime-elevenlabs',
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's9', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s9'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => null),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1463,9 +1508,9 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await controller.start({ sessionId: 's9', initialContext: 'ctx' });
+    await controller.start({ sessionAddress: qaAddress('s9'), initialContext: 'ctx' });
 
-    expect(startRealtime).toHaveBeenCalledWith('s9', 'ctx', { textOnly: true });
+    expect(startRealtime).toHaveBeenCalledWith(qaAddress('s9'), 'ctx', { textOnly: true });
   });
 
   it('fails realtime QA start when the provider did not actually connect', async () => {
@@ -1475,7 +1520,7 @@ describe('voiceQaController', () => {
           providerId: 'happier.voice.elevenlabs/realtime-elevenlabs',
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's9', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s9'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => null),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1492,7 +1537,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await expect(controller.start({ sessionId: 's9' })).rejects.toThrow('realtime_voice_session_not_started');
+    await expect(controller.start({ sessionAddress: qaAddress('s9') })).rejects.toThrow('realtime_voice_session_not_started');
     expect(useVoiceQaStore.getState().status).toBe('error');
   });
 
@@ -1504,7 +1549,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'direct_session' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => null),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1521,7 +1566,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await expect(controller.start({ sessionId: 's1' })).rejects.toThrow('voice_qa_local_agent_requires_local_conversation_agent_mode');
+    await expect(controller.start({ sessionAddress: qaAddress('s1') })).rejects.toThrow('voice_qa_local_agent_requires_local_conversation_agent_mode');
     expect(useVoiceQaStore.getState().status).toBe('error');
     expect(
       useVoiceQaStore.getState().entries.some(
@@ -1540,7 +1585,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: null, lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: null, lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => {
         throw Object.assign(new Error('voice_conversation_spawn_target_missing'), {
           code: 'VOICE_CONVERSATION_TARGET_MISSING',
@@ -1580,7 +1625,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: null, lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: null, lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => {
         throw new Error('voice_conversation_session_target_missing');
       }),
@@ -1599,7 +1644,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await expect(controller.start({ sessionId: 's-explicit' })).rejects.toThrow('voice_conversation_session_target_missing');
+    await expect(controller.start({ sessionAddress: qaAddress('s-explicit') })).rejects.toThrow('voice_conversation_session_target_missing');
 
     expect(
       useVoiceQaStore.getState().entries.some(
@@ -1643,7 +1688,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'agent' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: null, lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: null, lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => {
         throw new Error('voice_conversation_session_target_missing');
       }),
@@ -1662,7 +1707,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await expect(controller.start({ sessionId: 's-explicit' })).rejects.toThrow('voice_conversation_session_target_missing');
+    await expect(controller.start({ sessionAddress: qaAddress('s-explicit') })).rejects.toThrow('voice_conversation_session_target_missing');
 
     expect(
       useVoiceQaStore.getState().entries.some(
@@ -1680,8 +1725,9 @@ describe('voiceQaController', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: qaAddress('voice-hidden-s1'),
       transcriptMode: 'native_session' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: qaAddress('s1'),
       updatedAt: 1,
     }));
     const settings = {
@@ -1692,7 +1738,7 @@ describe('voiceQaController', () => {
     };
     const controller = createVoiceQaController({
       getSettings: () => settings,
-      getVoiceTargetState: () => ({ primaryActionSessionId: 's1', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => null),
       getLocalBinding,
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
@@ -1710,7 +1756,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await controller.start({ sessionId: 's1' });
+    await controller.start({ sessionAddress: qaAddress('s1') });
     settings.voice.providerId = 'happier.voice.elevenlabs/realtime-elevenlabs';
 
     await controller.stop({ sessionId: 's1' });
@@ -1730,7 +1776,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'direct_session' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 'session-media', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('session-media'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => null),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1756,9 +1802,9 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await controller.start({ sessionId: 'session-media', mode: 'media' });
+    await controller.start({ sessionAddress: qaAddress('session-media'), mode: 'media' });
 
-    expect(startMedia).toHaveBeenCalledWith('session-media');
+    expect(startMedia).toHaveBeenCalledWith(qaAddress('session-media'));
     expect(useVoiceQaStore.getState().status).toBe('running');
     expect(
       useVoiceQaStore.getState().entries.some(
@@ -1783,7 +1829,7 @@ describe('voiceQaController', () => {
           providers: { local_conversation: { schemaVersion: 1, config: { conversationMode: 'direct_session' } } },
         },
       }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 'session-relay', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('session-relay'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => null),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1811,13 +1857,13 @@ describe('voiceQaController', () => {
     });
 
     await controller.start({
-      sessionId: 'session-relay',
+      sessionAddress: qaAddress('session-relay'),
       mode: 'media',
       transportRouteRequirement: 'server_relay',
     });
 
     expect(installMediaTransportRouteRequirement).toHaveBeenCalledWith({
-      sessionId: 'session-relay',
+      target: qaAddress('session-relay'),
       routeKind: 'server_relay',
     });
     expect(releaseTransportRouteRequirement).not.toHaveBeenCalled();
@@ -1838,7 +1884,7 @@ describe('voiceQaController', () => {
     const stopMedia = vi.fn(async () => {});
     const controller = createVoiceQaController({
       getSettings: () => ({ voice: { providerId: 'local_conversation' } }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 'session-relay', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('session-relay'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => null),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1866,12 +1912,12 @@ describe('voiceQaController', () => {
     });
 
     const firstStart = controller.start({
-      sessionId: 'session-relay',
+      sessionAddress: qaAddress('session-relay'),
       mode: 'media',
       transportRouteRequirement: 'server_relay',
     });
     const repeatedStart = controller.start({
-      sessionId: 'session-relay',
+      sessionAddress: qaAddress('session-relay'),
       mode: 'media',
       transportRouteRequirement: 'server_relay',
     });
@@ -1885,7 +1931,7 @@ describe('voiceQaController', () => {
       { provider: 'local_voice_agent', sessionId: 'session-relay' },
     ]);
     await expect(controller.start({
-      sessionId: 'session-relay',
+      sessionAddress: qaAddress('session-relay'),
       mode: 'media',
       transportRouteRequirement: 'server_relay',
     })).resolves.toEqual({ provider: 'local_voice_agent', sessionId: 'session-relay' });
@@ -1904,7 +1950,7 @@ describe('voiceQaController', () => {
     const releaseTransportRouteRequirement = vi.fn();
     const controller = createVoiceQaController({
       getSettings: () => ({ voice: { providerId: 'local_conversation' } }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 'session-relay', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('session-relay'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => null),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1934,7 +1980,7 @@ describe('voiceQaController', () => {
     });
 
     await expect(controller.start({
-      sessionId: 'session-relay',
+      sessionAddress: qaAddress('session-relay'),
       mode: 'media',
       transportRouteRequirement: 'server_relay',
     })).rejects.toThrow('media_start_failed');
@@ -1945,7 +1991,7 @@ describe('voiceQaController', () => {
   it('fails media mode when the production session owner does not establish an active session', async () => {
     const controller = createVoiceQaController({
       getSettings: () => ({ voice: { providerId: 'local_conversation' } }),
-      getVoiceTargetState: () => ({ primaryActionSessionId: 'session-media', lastFocusedSessionId: null }),
+      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('session-media'), lastFocusedSessionAddress: null }),
       ensureLocalBinding: vi.fn(async () => null),
       ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
       pendingPort: createAcceptedPendingPort(),
@@ -1973,7 +2019,7 @@ describe('voiceQaController', () => {
       qaStore: useVoiceQaStore,
     });
 
-    await expect(controller.start({ sessionId: 'session-media', mode: 'media' })).rejects.toThrow(
+    await expect(controller.start({ sessionAddress: qaAddress('session-media'), mode: 'media' })).rejects.toThrow(
       'voice_qa_media_session_not_started:adapter=local_conversation,status=disconnected,mode=idle,error=provider_error,reason=recorder_start_failed',
     );
     expect(useVoiceQaStore.getState().status).toBe('error');

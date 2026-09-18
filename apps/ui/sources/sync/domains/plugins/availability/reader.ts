@@ -189,6 +189,18 @@ export type PluginAccountAvailabilityHostedPublicationAdmission =
             | 'artifact_already_hosted';
     }>;
 
+export type PluginAccountAvailabilityHostedPackageAssetPublicationAdmission =
+    | Readonly<{
+        kind: 'available';
+        availabilityCursor: number;
+        target: Readonly<{
+            release: NonNullable<PluginAccountAvailabilityIntentReadResponseV1['release']>['ref'];
+            normalizedManifest: PluginPortableReleaseManifestV1;
+            descriptor: PackageAssetArchiveDescriptorV1;
+        }>;
+    }>
+    | Extract<PluginAccountAvailabilityHostedPublicationAdmission, { kind: 'unavailable' }>;
+
 /**
  * Immutable package-asset facts selected by the current Account release. This
  * carries no Artifact id, transport, cache location, or daemon authority.
@@ -341,8 +353,10 @@ export type PluginAccountAvailabilityHostedArtifactAdministrationAdmission =
         release: Readonly<{
             ref: NonNullable<PluginAccountAvailabilityIntentReadResponseV1['release']>['ref'];
             uiSlots: NonNullable<PluginAccountAvailabilityIntentReadResponseV1['release']>['uiSlots'];
+            packageAssetArchive: PackageAssetArchiveDescriptorV1;
         }>;
         uiArtifacts: PluginAccountAvailabilityIntentReadResponseV1['uiArtifacts'];
+        packageAssets: PluginAccountAvailabilityIntentReadResponseV1['packageAssets'];
     }>
     | Readonly<{
         kind: 'unavailable';
@@ -367,6 +381,10 @@ export type PluginAccountAvailabilityReader = Readonly<{
     readCurrentHostedPublicationTarget: (
         slot: PluginAccountAvailabilityArtifactSlot,
     ) => PluginAccountAvailabilityHostedPublicationAdmission;
+    /** Same hosting intent, for the selected release's declared packaged assets. */
+    readCurrentHostedPackageAssetPublicationTarget: (input: Readonly<{
+        pluginId: string;
+    }>) => PluginAccountAvailabilityHostedPackageAssetPublicationAdmission;
     /**
      * Current immutable package-asset declaration for one enabled release.
      * Stored-envelope access remains with the protected Account source.
@@ -502,6 +520,13 @@ function snapshotIntentReadResponse(
         // The reader snapshots its remaining projection facts here instead of
         // recreating that normalizer in the UI layer.
         release: response.release ? normalizePluginReleaseFactsV1(response.release) : null,
+        packageAssets: freezeAvailabilitySnapshotValue(response.packageAssets.map((artifact) => (
+            freezeAvailabilitySnapshotValue({
+                ...artifact,
+                release: freezeAvailabilitySnapshotValue({ ...artifact.release }),
+                descriptor: clonePackageAssetDescriptor(artifact.descriptor),
+            })
+        ))),
         uiArtifacts: freezeAvailabilitySnapshotValue(response.uiArtifacts.map((artifact) => (
             freezeAvailabilitySnapshotValue({
                 ...artifact,
@@ -616,6 +641,9 @@ function readMaterializationAdmission(
                     uiArtifacts: hosted.kind === 'available'
                         ? hosted.uiArtifacts
                         : Object.freeze([]),
+                    packageAssets: hosted.kind === 'available'
+                        ? hosted.packageAssets
+                        : Object.freeze([]),
                 }),
             });
         })),
@@ -635,6 +663,7 @@ type CurrentReleaseAdmission =
         intent: NonNullable<PluginAccountAvailabilityIntentReadResponseV1['intent']>;
         release: NonNullable<PluginAccountAvailabilityIntentReadResponseV1['release']>;
         uiArtifacts: PluginAccountAvailabilityIntentReadResponseV1['uiArtifacts'];
+        packageAssets: PluginAccountAvailabilityIntentReadResponseV1['packageAssets'];
     }>
     | Readonly<{
         kind: 'unavailable';
@@ -681,6 +710,7 @@ function readCurrentReleaseAdmission(
         intent,
         release,
         uiArtifacts: response.uiArtifacts,
+        packageAssets: response.packageAssets,
     });
 }
 
@@ -713,13 +743,19 @@ function readCurrentHostedArtifactAdministrationAdmission(
         const exact = selectExactHostedLinks(current, slot);
         return exact.length === 1 ? [exact[0]!] : [];
     });
+    const packageAssets = selectExactHostedPackageAssetLinks(current);
     return Object.freeze({
         kind: 'available',
         availabilityCursor: current.availabilityCursor,
         hostingCapability: current.hostingCapability,
         intent: cloneSelectionIntent(current.intent),
-        release: Object.freeze({ ref: Object.freeze({ ...current.release.ref }), uiSlots: current.release.uiSlots }),
+        release: Object.freeze({
+            ref: Object.freeze({ ...current.release.ref }),
+            uiSlots: current.release.uiSlots,
+            packageAssetArchive: current.release.packageAssetArchive,
+        }),
         uiArtifacts: Object.freeze(uiArtifacts),
+        packageAssets: Object.freeze(packageAssets.length === 1 ? packageAssets : []),
     });
 }
 
@@ -890,8 +926,7 @@ function selectCurrentHostedSlot(
     // opt-in. A disabled/malformed capability must not admit Account-hosted
     // provenance, while the release identity remains available to the other
     // canonical Artifact sources.
-    const accountHostedEnabled = current.hostingCapability.enabled === true
-        && current.intent.offlineUiHosting === 'enabled';
+    const accountHostedEnabled = isAccountArtifactHostingAdmitted(current);
     return Object.freeze({
         kind: 'available',
         releaseSlot,
@@ -1008,10 +1043,50 @@ function readCurrentHostedPublicationAdmission(
 
 function clonePackageAssetDescriptor(
     descriptor: PackageAssetArchiveDescriptorV1,
-): PluginAccountAvailabilityPackageAssetDescriptor {
-    return Object.freeze({
+): PackageAssetArchiveDescriptorV1 {
+    return freezeAvailabilitySnapshotValue({
         archiveDigestSha256: descriptor.archiveDigestSha256,
-        resources: Object.freeze(descriptor.resources.map((resource) => Object.freeze({ ...resource }))),
+        resources: freezeAvailabilitySnapshotValue(descriptor.resources.map((resource) => freezeAvailabilitySnapshotValue({ ...resource }))),
+    });
+}
+
+function isAccountArtifactHostingAdmitted(current: Extract<CurrentReleaseAdmission, { kind: 'available' }>): boolean {
+    return current.hostingCapability.enabled === true && current.intent.offlineUiHosting === 'enabled';
+}
+
+function selectExactHostedPackageAssetLinks(current: Extract<CurrentReleaseAdmission, { kind: 'available' }>) {
+    return current.packageAssets.filter((link) => (
+        link.release.pluginId === current.release.ref.pluginId
+        && link.release.version === current.release.ref.version
+        && link.descriptor.archiveDigestSha256 === current.release.packageAssetArchive.archiveDigestSha256
+        && JSON.stringify(link.descriptor.resources) === JSON.stringify(current.release.packageAssetArchive.resources)
+    ));
+}
+
+function readCurrentHostedPackageAssetPublicationAdmission(
+    state: AvailabilityProjectionState | null,
+    scope: ServerAccountScope,
+    input: Readonly<{ pluginId: string }>,
+): PluginAccountAvailabilityHostedPackageAssetPublicationAdmission {
+    const current = readCurrentReleaseAdmission(state, scope, input.pluginId);
+    if (current.kind !== 'available') return current;
+    if (!current.intent.enabled || current.release.packageAssetArchive.resources.length === 0) {
+        return Object.freeze({ kind: 'unavailable', code: 'artifact_not_current' });
+    }
+    if (!isAccountArtifactHostingAdmitted(current)) {
+        return Object.freeze({ kind: 'unavailable', code: 'artifact_hosting_not_admitted' });
+    }
+    const links = selectExactHostedPackageAssetLinks(current);
+    if (links.length > 1) return Object.freeze({ kind: 'unavailable', code: 'artifact_slot_ambiguous' });
+    if (links.length === 1) return Object.freeze({ kind: 'unavailable', code: 'artifact_already_hosted' });
+    return Object.freeze({
+        kind: 'available',
+        availabilityCursor: current.availabilityCursor,
+        target: Object.freeze({
+            release: Object.freeze({ ...current.release.ref }),
+            normalizedManifest: current.release.normalizedManifest,
+            descriptor: current.release.packageAssetArchive,
+        }),
     });
 }
 
@@ -1153,6 +1228,11 @@ function createBoundReader(input: Readonly<{
             input.readState(),
             input.scope,
             slot,
+        ),
+        readCurrentHostedPackageAssetPublicationTarget: (packageAsset) => readCurrentHostedPackageAssetPublicationAdmission(
+            input.readState(),
+            input.scope,
+            packageAsset,
         ),
         readCurrentPackageAsset: (packageAsset) => readCurrentPackageAssetAdmission(
             input.readState(),

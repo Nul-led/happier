@@ -1,11 +1,11 @@
-import type { ApprovalRequestV1 } from '@happier-dev/protocol';
+import type { ApprovalRequest } from '@happier-dev/protocol';
 
 import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
 import type { PermissionToolCallMessageLocation } from '@/utils/sessions/permissions/permissionToolCallLocationTypes';
 
 type ApprovalLocationEntry = Readonly<{
     artifactId: string;
-    approval: ApprovalRequestV1;
+    approval: ApprovalRequest;
 }>;
 
 function normalizeSeq(seq: unknown): number | null {
@@ -32,7 +32,7 @@ function stableSerialize(value: unknown): string | null {
     }
 }
 
-function hasExactOriginAnchor(origin: ApprovalRequestV1['origin']): boolean {
+function hasExactOriginAnchor(origin: ApprovalRequest['origin']): boolean {
     return Boolean(origin?.messageId || origin?.parentMessageId || origin?.toolCallId);
 }
 

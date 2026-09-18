@@ -37,6 +37,35 @@ function inlineBinding(input: Parameters<typeof normalizePluginUiInlineSurfaceBi
     return PluginUiInlineSurfaceBindingV1Schema.parse(normalized);
 }
 
+/**
+ * One projected placement whose registry-admitted binding advertises a narrowed
+ * platform subset, which is exactly what a conservative predecessor producer may
+ * write. The binding still round-trips through the canonical schema, so the
+ * fixture cannot advertise a platform the registry slot rejects.
+ */
+function placementEntryWithPlatforms(input: Readonly<{
+    descriptorId: string;
+    binding: Readonly<{ kind: 'destination' | 'inline' }> & Readonly<Record<string, unknown>>;
+    platforms: readonly ('android' | 'desktop' | 'ios' | 'web')[];
+}>) {
+    const narrowed = { ...input.binding, platforms: [...input.platforms] };
+    const parsed = input.binding.kind === 'destination'
+        ? PluginUiDestinationBindingV1Schema.parse(narrowed)
+        : PluginUiInlineSurfaceBindingV1Schema.parse(narrowed);
+    const id = `surfacePlacement:acme.preview:${input.descriptorId}`;
+    return parsePluginUiEntry(id, {
+        id,
+        pluginId: 'acme.preview',
+        contributionKind: 'surfacePlacement',
+        descriptorId: input.descriptorId,
+        binding: parsed,
+        target: parsed.target,
+        renderer: { kind: 'declarative', contributionId: 'preview-placeholder' },
+        display: { titleKey: 'title' },
+        availability: { state: 'available', reason: 'available', diagnostics: [] },
+    });
+}
+
 function parsePluginUiEntry(
     id: string,
     entry: Readonly<Record<string, unknown>>,
@@ -126,7 +155,16 @@ function createProjection(): PluginProjectionV2 {
         },
         toolsById: {},
         commandsById: {},
-        resourcesById: {},
+        resourcesById: {
+            'acme.preview/status': {
+                id: 'status',
+                pluginId: 'acme.preview',
+                resourceKind: 'config',
+                path: 'status.json',
+                digest: `sha256:${'a'.repeat(64)}`,
+                contentType: 'application/json',
+            },
+        },
         settingsById: {},
         familiesById: {
             voiceProviders: {
@@ -217,6 +255,12 @@ function createProjection(): PluginProjectionV2 {
                         descriptorId: 'entries',
                         identity: { pluginId: 'acme.preview', localId: 'entries' },
                         action: { pluginId: 'acme.preview', localId: 'entries/search-v1' },
+                        serverIdentityId: 'srv_preview',
+                        materializationRef: {
+                            pluginId: 'acme.preview',
+                            machineId: 'machine-preview',
+                            materializationId: 'materialization-preview',
+                        },
                     },
                     'searchProvider:acme.preview:foreign': {
                         id: 'searchProvider:acme.preview:foreign',
@@ -507,6 +551,104 @@ describe('plugin UI projection normalization', () => {
             .surfacePlacementsById['surfacePlacement:acme.preview:preview-pane']).toBeUndefined();
     });
 
+    it('publishes only surface placements the canonical predicate admits on this client platform', () => {
+        const projection = createProjection();
+        const entries = projection.familiesById.pluginUi?.entriesById;
+        if (!entries) throw new Error('pluginUi fixture family is required');
+        // A conservative predecessor writer may narrow `platforms` below its
+        // registry slot. These are the exact rows the projection-time predicate
+        // exists to separate.
+        entries['surfacePlacement:acme.preview:native-only'] = placementEntryWithPlatforms({
+            descriptorId: 'native-only',
+            binding: binding({
+                pluginId: 'acme.preview',
+                destinationId: 'native-only',
+                rendererId: 'preview-placeholder',
+                container: 'appPage',
+                target: { kind: 'app' },
+            }),
+            platforms: ['ios'],
+        });
+        entries['surfacePlacement:acme.preview:desktop-tablet'] = placementEntryWithPlatforms({
+            descriptorId: 'desktop-tablet',
+            binding: binding({
+                pluginId: 'acme.preview',
+                destinationId: 'desktop-tablet',
+                rendererId: 'preview-placeholder',
+                container: 'appPage',
+                target: { kind: 'app' },
+            }),
+            platforms: ['desktop', 'web'],
+        });
+        entries['surfacePlacement:acme.preview:web-only-widget'] = placementEntryWithPlatforms({
+            descriptorId: 'web-only-widget',
+            binding: inlineBinding({
+                pluginId: 'acme.preview',
+                surfaceId: 'web-only-widget',
+                rendererId: 'preview-placeholder',
+                availableRendererIds: ['preview-placeholder'],
+                role: 'sessionWidget',
+                target: { kind: 'session' },
+            }),
+            platforms: ['web'],
+        });
+
+        const web = normalizePluginUiProjection(projection, 'web');
+        const ios = normalizePluginUiProjection(projection, 'ios');
+        const android = normalizePluginUiProjection(projection, 'android');
+
+        // Web admits both web-capable rows and rejects the native-only one; a
+        // publish-everything normalizer would keep all three on every platform.
+        expect(Object.keys(web.surfacePlacementsById)).toContain('surfacePlacement:acme.preview:desktop-tablet');
+        expect(Object.keys(web.surfacePlacementsById)).toContain('surfacePlacement:acme.preview:web-only-widget');
+        expect(Object.keys(web.surfacePlacementsById)).not.toContain('surfacePlacement:acme.preview:native-only');
+
+        // A native client keeps its own row and the desktop/tablet destination
+        // row, because the mounted host — not projection — owns the final
+        // phone/tablet form-factor decision for that one.
+        expect(Object.keys(ios.surfacePlacementsById)).toContain('surfacePlacement:acme.preview:native-only');
+        expect(Object.keys(ios.surfacePlacementsById)).toContain('surfacePlacement:acme.preview:desktop-tablet');
+        expect(Object.keys(android.surfacePlacementsById)).toContain('surfacePlacement:acme.preview:desktop-tablet');
+        expect(Object.keys(android.surfacePlacementsById)).not.toContain('surfacePlacement:acme.preview:native-only');
+
+        // Inline roles get no desktop/tablet exception: they declare concrete
+        // platforms, so a web-only widget is absent from every native catalog.
+        expect(Object.keys(ios.surfacePlacementsById)).not.toContain('surfacePlacement:acme.preview:web-only-widget');
+        expect(Object.keys(android.surfacePlacementsById)).not.toContain('surfacePlacement:acme.preview:web-only-widget');
+
+        // Only the physical placement family is gated; unrelated families keep
+        // their exact contents.
+        expect(Object.keys(ios.settingsPagesById)).toEqual(Object.keys(web.settingsPagesById));
+    });
+
+    it('carries the current client platform through the currentness resolver', () => {
+        const projection = createProjection();
+        const entries = projection.familiesById.pluginUi?.entriesById;
+        if (!entries) throw new Error('pluginUi fixture family is required');
+        entries['surfacePlacement:acme.preview:native-only'] = placementEntryWithPlatforms({
+            descriptorId: 'native-only',
+            binding: binding({
+                pluginId: 'acme.preview',
+                destinationId: 'native-only',
+                rendererId: 'preview-placeholder',
+                container: 'appPage',
+                target: { kind: 'app' },
+            }),
+            platforms: ['ios'],
+        });
+
+        expect(Object.keys(resolvePluginUiProjectionState(
+            EMPTY_PLUGIN_UI_PROJECTION,
+            projection,
+            { platform: 'web' },
+        ).surfacePlacementsById)).not.toContain('surfacePlacement:acme.preview:native-only');
+        expect(Object.keys(resolvePluginUiProjectionState(
+            EMPTY_PLUGIN_UI_PROJECTION,
+            projection,
+            { platform: 'ios' },
+        ).surfacePlacementsById)).toContain('surfacePlacement:acme.preview:native-only');
+    });
+
     it('admits a daemon-projected openable-content viewer without reconstructing its declaration', () => {
         const projection = createProjection();
         const entries = projection.familiesById.pluginUi?.entriesById;
@@ -629,7 +771,7 @@ describe('plugin UI projection normalization', () => {
         expect(model.unknownEntriesById['settingsPage:acme.preview:review-settings']).toBeUndefined();
     });
 
-    it('keeps a generated V2 surface with its canonical binding when no legacy placement exists', () => {
+    it.each(['hostedWeb', 'hostedHtml'] as const)('keeps a %s V2 surface with its canonical binding when no legacy placement exists', (kind) => {
         const projection = createProjection();
         const entries = projection.familiesById.pluginUi?.entriesById;
         if (!entries) throw new Error('pluginUi fixture family is required');
@@ -651,9 +793,11 @@ describe('plugin UI projection normalization', () => {
             target: binding.target,
             binding,
             renderer: {
-                kind: 'hostedWeb',
+                kind,
                 contributionId: 'review-renderer',
-                source: { kind: 'artifact', artifact: 'review-renderer' },
+                source: kind === 'hostedHtml'
+                    ? { kind: 'html', html: '<p>Review</p>' }
+                    : { kind: 'artifact', artifact: 'review-renderer' },
                 requiredHostMethods: [],
             },
             display: { developerFallback: 'Review' },
@@ -670,6 +814,7 @@ describe('plugin UI projection normalization', () => {
         const entry = model.surfacePlacementsById['surfacePlacement:acme.generated:review'];
         expect(entry).toBeDefined();
         expect(entry?.binding).toBe(generatedEntry.binding);
+        expect(entry?.renderer).toEqual(generatedEntry.renderer);
         expect(entry?.placement).toBeUndefined();
     });
 
@@ -686,6 +831,12 @@ describe('plugin UI projection normalization', () => {
             surfaces: ['ui'],
             execution: { target: 'daemon' },
             available: true,
+        });
+        expect(model.resourcesById['acme.preview/status']).toMatchObject({
+            id: 'status',
+            pluginId: 'acme.preview',
+            resourceKind: 'config',
+            path: 'status.json',
         });
         const conversation = model.voiceProvidersById['acme.preview/conversation']?.definition;
         expect(conversation?.kind).toBe('conversation');
@@ -719,6 +870,12 @@ describe('plugin UI projection normalization', () => {
         expect(model.searchProvidersById['searchProvider:acme.preview:entries']).toMatchObject({
             descriptorId: 'entries',
             action: { pluginId: 'acme.preview', localId: 'entries/search-v1' },
+            serverIdentityId: 'srv_preview',
+            materializationRef: {
+                pluginId: 'acme.preview',
+                machineId: 'machine-preview',
+                materializationId: 'materialization-preview',
+            },
         });
         // A descriptor whose reference names another plugin has no reachable
         // executor here, so it is dropped rather than repaired.

@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
+import { LocalCliPathExposureSection } from '@/components/settings/machines/localControl/LocalCliPathExposureSection';
 import { LocalDaemonControlSection } from '@/components/settings/machines/localControl/LocalDaemonControlSection';
 import { t } from '@/text';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
@@ -23,7 +24,12 @@ export default function ThisComputerSetupRoute() {
                     onPress={() => router.push(buildMachineSetupWizardHref({ action: 'local', step: 'setup_this_computer' }))}
                 />
             </ItemGroup>
-            {isDesktop ? <LocalDaemonControlSection /> : null}
+            {isDesktop ? (
+                <>
+                    <LocalDaemonControlSection />
+                    <LocalCliPathExposureSection />
+                </>
+            ) : null}
         </ItemList>
     );
 }

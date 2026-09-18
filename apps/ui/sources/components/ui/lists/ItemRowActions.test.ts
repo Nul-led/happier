@@ -13,6 +13,22 @@ const popoverCapture = vi.hoisted(() => ({
     lastProps: null as Record<string, any> | null,
 }));
 
+// The remote source mirror intentionally omits build-generated app artifact bytes.
+vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
+    createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
+        kind: 'appExact' as const,
+        readFile: vi.fn(async () => null),
+    }),
+}));
+vi.mock('@/sync/domains/plugins/availability/reader', () => ({
+    createPluginAccountAvailabilityReader: vi.fn(() => null),
+    createPluginAccountAvailabilityReaderStore: vi.fn(() => ({
+        get: vi.fn(() => null),
+        subscribe: vi.fn(() => () => {}),
+    })),
+    projectPluginAccountAvailabilityMaterializationIdentity: vi.fn(() => null),
+}));
+
 vi.mock('@/components/ui/overlays/FloatingOverlay', () => {
     const React = require('react');
     return {
@@ -132,6 +148,47 @@ describe('ItemRowActions', () => {
         expect(screen.findByTestId('switch-home')?.props.accessibilityLabel).toBe('Switch: Home B');
     });
 
+    it('announces the expanded state owned by an inline popover action', async () => {
+        const { ItemRowActions } = await import('./ItemRowActions');
+        const screen = await renderScreen(React.createElement(ItemRowActions, {
+            title: 'Navigation',
+            compactThreshold: 200,
+            actions: [{
+                id: 'inbox',
+                inlineTestID: 'inbox',
+                title: 'Inbox',
+                icon: 'mailbox',
+                expanded: true,
+                onPress: vi.fn(),
+            }],
+        }));
+
+        expect(screen.findByTestId('inbox')?.props.accessibilityState).toEqual({
+            expanded: true,
+        });
+    });
+
+    it('exposes an applied inline choice as a pressed button on web', async () => {
+        const { ItemRowActions } = await import('./ItemRowActions');
+        const screen = await renderScreen(React.createElement(ItemRowActions, {
+            title: 'Width',
+            compactThreshold: 200,
+            actions: [{
+                id: 'width-compact',
+                inlineTestID: 'width-compact',
+                title: 'Compact',
+                icon: 'arrows-left-right',
+                selected: true,
+                onPress: vi.fn(),
+            }],
+        }));
+
+        expect(screen.findByTestId('width-compact')?.props['aria-pressed']).toBe(true);
+        expect(screen.findByTestId('width-compact')?.props.accessibilityState).toMatchObject({
+            selected: true,
+        });
+    });
+
     it('invokes overflow actions even when InteractionManager does not run callbacks', async () => {
         const { ItemRowActions } = await import('./ItemRowActions');
 
@@ -167,6 +224,54 @@ describe('ItemRowActions', () => {
 
         expect(onEdit).toHaveBeenCalledTimes(1);
         expect(screen.findAllByTestId('edit')).toHaveLength(0);
+    });
+
+    it('renders optional action groups as ordered labelled sections without changing ungrouped menus', async () => {
+        const { ItemRowActions } = await import('./ItemRowActions');
+
+        const screen = await renderScreen(React.createElement(ItemRowActions, {
+            title: 'Release plan',
+            overflowTriggerTestID: 'row-actions-trigger',
+            actions: [
+                {
+                    id: 'read',
+                    title: 'Read full',
+                    icon: 'article',
+                    group: { id: 'content', title: 'Read and edit' },
+                    onPress: vi.fn(),
+                },
+                {
+                    id: 'move',
+                    title: 'Move down',
+                    icon: 'arrow-down',
+                    group: { id: 'movement', title: 'Movement' },
+                    onPress: vi.fn(),
+                },
+                {
+                    id: 'remove',
+                    title: 'Remove',
+                    icon: 'trash',
+                    group: { id: 'destructive', title: 'Remove' },
+                    onPress: vi.fn(),
+                },
+            ],
+        }));
+
+        await screen.pressByTestIdAsync('row-actions-trigger');
+
+        const sections = screen.tree.root.findAll(
+            (node) => node.type instanceof Function
+                && node.type.name === 'ActionListSection',
+            { deep: true },
+        );
+        expect(sections.map((section) => ({
+            title: section.props.title,
+            ids: section.props.actions.map((action: { id: string }) => action.id),
+        }))).toEqual([
+            { title: 'Read and edit', ids: ['read'] },
+            { title: 'Movement', ids: ['move'] },
+            { title: 'Remove', ids: ['remove'] },
+        ]);
     });
 
     it('does not render overflow trigger when there are no actions', async () => {

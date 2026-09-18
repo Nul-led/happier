@@ -196,7 +196,7 @@ export function useTranscriptRootDerivedItems(params: Readonly<{
                 });
                 const withForkDividers = !forkedTranscriptEnabled || !fork
                     ? base
-                    : insertForkDividersIntoTranscriptItems({ items: base, fork });
+                    : insertForkDividersIntoTranscriptItems({ items: base, fork, sourceWindowComplete: true });
                 const withExternalOperation = appendExternalSessionOperationTranscriptItem(
                     withForkDividers,
                     {
@@ -243,7 +243,7 @@ export function useTranscriptRootDerivedItems(params: Readonly<{
             const base: ForkDividerTranscriptItem[] = [...turnItems, ...trailing, ...operationItems];
             const withForkDividers = !forkedTranscriptEnabled || !fork
                 ? base
-                : insertForkDividersIntoTranscriptItems({ items: base, fork }) as ChatTranscriptListItem[];
+                : insertForkDividersIntoTranscriptItems({ items: base, fork, sourceWindowComplete: true }) as ChatTranscriptListItem[];
             return appendPluginTranscriptActivityTranscriptItems(withForkDividers, {
                 sessionId,
                 activities: pluginTranscriptActivities,

@@ -235,13 +235,14 @@ function PluginUiPrivateDiffViewer(props: HappierDiffViewerRequest): React.React
 function PluginUiPrivateQRCode(props: Readonly<{ data: string; size: number; testID?: string }>): React.ReactElement {
     const { theme } = useUnistyles();
     return (
-        <QRCode
-            data={props.data}
-            size={props.size}
-            foregroundColor={theme.colors.text.primary}
-            backgroundColor={theme.colors.surface.base}
-            testID={props.testID}
-        />
+        <View testID={props.testID} collapsable={false}>
+            <QRCode
+                data={props.data}
+                size={props.size}
+                foregroundColor={theme.colors.text.primary}
+                backgroundColor={theme.colors.surface.base}
+            />
+        </View>
     );
 }
 

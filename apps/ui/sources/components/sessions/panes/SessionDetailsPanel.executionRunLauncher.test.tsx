@@ -11,10 +11,6 @@ vi.mock('@/components/ui/text/Text', () => ({
     TextInput: 'TextInput',
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
 installSessionDetailsPanelCommonModuleMocks({
     icons: async () => ({
         Octicons: 'Octicons',
@@ -63,6 +59,41 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
     }),
 }));
 
+vi.mock('@/components/appShell/panes/details/workspace/DetailsSplitWorkspace', () => ({
+    DetailsSplitWorkspace: (props: Readonly<{
+        pane: { scopeState: { details: { tabs: readonly unknown[] } } };
+        renderTabContent: (tab: unknown) => React.ReactNode;
+    }>) => React.createElement(
+        React.Fragment,
+        null,
+        props.renderTabContent(props.pane.scopeState.details.tabs[0]),
+    ),
+}));
+
+vi.mock('@/components/appShell/panes/details/surfaces', () => ({
+    createDetailsSurfacePaneCallbacks: (callbacks: unknown) => callbacks,
+    DetailsSurfaceHost: (props: Readonly<{
+        tab: Record<string, unknown>;
+        scope: Record<string, unknown>;
+        region: string;
+        renderers: readonly Array<{
+            canRender: (input: Record<string, unknown>) => boolean;
+            render: (input: Record<string, unknown>) => React.ReactNode;
+        }>;
+        callbacks: Record<string, unknown>;
+    }>) => {
+        const input = {
+            tab: props.tab,
+            scope: props.scope,
+            region: props.region,
+            callbacks: props.callbacks,
+            active: true,
+        };
+        const renderer = props.renderers.find((candidate) => candidate.canRender(input));
+        return React.createElement(React.Fragment, null, renderer?.render(input) ?? null);
+    },
+}));
+
 const launcherViewSpy = vi.fn();
 
 vi.mock('@/components/sessions/runs/launcher/SessionExecutionRunLauncherView', () => ({
@@ -70,6 +101,60 @@ vi.mock('@/components/sessions/runs/launcher/SessionExecutionRunLauncherView', (
         launcherViewSpy(props);
         return React.createElement('SessionExecutionRunLauncherView');
     },
+}));
+
+vi.mock('@/components/sessions/runs/launcher/SessionInteractiveExecutionRunDraftView', () => ({
+    SessionInteractiveExecutionRunDraftView: () => React.createElement('SessionInteractiveExecutionRunDraftView'),
+}));
+
+vi.mock('@/components/sessions/runs/details/SessionExecutionRunDetailsView', () => ({
+    SessionExecutionRunDetailsView: () => React.createElement('SessionExecutionRunDetailsView'),
+}));
+
+vi.mock('./useSessionDetailsPanelPluginRuntime', () => ({
+    useSessionDetailsPanelPluginRuntime: () => ({
+        machineId: null,
+        serverId: 'server-1',
+        pluginUiProjection: null,
+        pluginBrowserProjection: null,
+        phase: 'unavailable',
+        interactionEnabled: false,
+        peerMediationObservabilityScope: null,
+        platform: 'web',
+    }),
+}));
+
+vi.mock('@/hooks/server/useFeatureEnabled', () => ({ useFeatureEnabled: () => false }));
+vi.mock('@/sync/domains/local/services/preview/useLocalServicePreviewState', () => ({ useLocalServicePreviewState: () => null }));
+vi.mock('@/sync/domains/local/services/launch', () => ({ useLocalServiceLauncherState: () => null }));
+vi.mock('@/sync/domains/machines/peer/mediation/observability/usePeerMediationObservabilityStore', () => ({ usePeerMediationObservabilityStore: () => null }));
+vi.mock('@/components/devices/simulator/relay/useSimulatorPreviewLiveSurface', () => ({ useSimulatorPreviewLiveSurface: () => null }));
+vi.mock('@/components/devices/simulator/relay/useSimulatorLiveStreamRelaySocket', () => ({ useSimulatorLiveStreamRelaySocket: () => null }));
+vi.mock('@/components/browser/surfaces/useBrowserSurfaceHostProps', () => ({
+    useBrowserSurfaceHostProps: () => ({
+        feed: { rows: [], refreshStatus: 'idle', refreshError: null },
+    }),
+}));
+vi.mock('@/components/sessions/browser/sessionBrowserContextRuntime', () => ({ useSessionBrowserContextRuntimeContext: () => null }));
+vi.mock('@/components/sessions/browser/sessionBrowserRecordingRuntime', () => ({ useSessionBrowserRecordingRuntime: () => null }));
+vi.mock('@/components/appShell/panes/focusMode/usePaneFocusMode', () => ({
+    usePaneFocusMode: () => ({ active: false, canEnter: false, toggle: vi.fn() }),
+}));
+vi.mock('@/utils/platform/responsive', () => ({ useDeviceType: () => 'desktop' }));
+vi.mock('@/components/ui/layout/useChromeSafeAreaInsets', () => ({
+    useChromeSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+}));
+vi.mock('@/components/sessions/shell/sessionScreenTestIds', () => ({
+    useSessionScreenTestIdsEnabled: () => false,
+    resolveOptionalSessionScreenTestId: () => undefined,
+}));
+
+vi.mock('@/components/sessions/board/SessionBoardPane', () => ({
+    SessionBoardPane: () => React.createElement('SessionBoardPane'),
+}));
+
+vi.mock('@/components/sessions/conversations/SessionDiscussionDetailsView', () => ({
+    SessionDiscussionDetailsView: () => React.createElement('SessionDiscussionDetailsView'),
 }));
 
 vi.mock('@/components/sessions/terminal/SessionEmbeddedTerminalPane', () => ({
@@ -96,6 +181,7 @@ describe('SessionDetailsPanel (execution run launcher resource)', () => {
         expect(launcherViewSpy.mock.calls.length).toBeGreaterThan(0);
         expect(launcherViewSpy.mock.calls.at(-1)?.[0]).toMatchObject({
             sessionId: 's1',
+            serverId: 'server-1',
             scopeId: 'session:s1',
             presentation: 'panel',
             initialIntent: 'review',

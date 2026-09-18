@@ -470,7 +470,7 @@ function LegendListTranscriptRendererInner<TItem>(
     const {
         armVisibleAnchorHold,
         beginExplicitJumpTakeover,
-        cancelLegendInitialScrollPreservation,
+        cancelLegendScroll,
         hasActiveEntryPlacement,
         hasHeldEndPositioningOwnership,
         hasLiveKeyedHeldIntent,
@@ -972,12 +972,11 @@ function LegendListTranscriptRendererInner<TItem>(
                 && deltaY > 0
                 && affirmWebHeldEndFromTowardEndInput();
             if (!followAffirming) {
-                cancelLegendInitialScrollPreservation();
                 releaseHeldScrollIntent();
             }
         }
         props.platformInteractionProps?.onWheel?.(event);
-    }, [affirmWebHeldEndFromTowardEndInput, cancelLegendInitialScrollPreservation, invalidateNativePhysicalViewportCapture, isWebFrame, props.platformInteractionProps, props.webDomObservation, releaseHeldScrollIntent, userScrollIntent]);
+    }, [affirmWebHeldEndFromTowardEndInput, invalidateNativePhysicalViewportCapture, isWebFrame, props.platformInteractionProps, props.webDomObservation, releaseHeldScrollIntent, userScrollIntent]);
 
     const handleLegendScrollBeginDrag = React.useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
         invalidateNativePhysicalViewportCapture();
@@ -995,11 +994,10 @@ function LegendListTranscriptRendererInner<TItem>(
             // any held-tail intent and cancels the in-flight settle window so the user's drag
             // detaches normally. Ending the drag at the tail re-latches through the next
             // at-end observation.
-            cancelLegendInitialScrollPreservation();
             releaseHeldScrollIntent();
         }
         props.onScrollBeginDrag?.(event);
-    }, [cancelLegendInitialScrollPreservation, invalidateNativePhysicalViewportCapture, isWebFrame, props.onScrollBeginDrag, props.webDomObservation, releaseHeldScrollIntent, userScrollIntent]);
+    }, [invalidateNativePhysicalViewportCapture, isWebFrame, props.onScrollBeginDrag, props.webDomObservation, releaseHeldScrollIntent, userScrollIntent]);
 
     const handleLegendScrollEndDrag = React.useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
         if (userScrollIntent.isGestureActive()) {
@@ -1086,10 +1084,9 @@ function LegendListTranscriptRendererInner<TItem>(
                     : heldScrollIntentRef.current?.kind === 'end'
             );
         if (!followAffirmingHeldEndInput) {
-            cancelLegendInitialScrollPreservation();
             releaseHeldScrollIntent();
         }
-    }, [affirmWebHeldEndFromTowardEndInput, cancelLegendInitialScrollPreservation, invalidateNativePhysicalViewportCapture, isWebFrame, props.webDomObservation, releaseHeldScrollIntent, userScrollIntent]);
+    }, [affirmWebHeldEndFromTowardEndInput, invalidateNativePhysicalViewportCapture, isWebFrame, props.webDomObservation, releaseHeldScrollIntent, userScrollIntent]);
     const handleLegendTouchMove = React.useCallback((event: unknown) => {
         const previousCoordinate = webTouchVerticalCoordinateRef.current;
         const currentCoordinate = readTouchVerticalCoordinate(event);
@@ -1358,7 +1355,7 @@ function LegendListTranscriptRendererInner<TItem>(
             nowMs: Date.now(),
         });
         userScrollIntent.setGestureActive({ active: true, atMs: Date.now(), gesture: 'drag' });
-        cancelLegendInitialScrollPreservation();
+        cancelLegendScroll();
         if (webScrollbarDragCleanupRef.current) return;
         const listenerHost = globalThis.window ?? globalThis;
         if (typeof listenerHost.addEventListener !== 'function') return;
@@ -1371,7 +1368,7 @@ function LegendListTranscriptRendererInner<TItem>(
             listenerHost.removeEventListener('pointercancel', onRelease);
             listenerHost.removeEventListener('mouseup', onRelease);
         };
-    }, [cancelLegendInitialScrollPreservation, endWebScrollbarDrag, props.webDomObservation, userScrollIntent]);
+    }, [cancelLegendScroll, endWebScrollbarDrag, props.webDomObservation, userScrollIntent]);
     React.useEffect(() => () => {
         webScrollbarDragCleanupRef.current?.();
         webScrollbarDragCleanupRef.current = null;

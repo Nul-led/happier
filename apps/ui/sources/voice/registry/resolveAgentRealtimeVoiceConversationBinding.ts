@@ -1,5 +1,6 @@
 import type { VoiceMachineErrorKind } from '@/voice/runtime/machine/voiceConversationRuntimeTypes';
 import type { VoiceAdapterConversationBinding } from '@/voice/session/types';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export type AgentRealtimeContributionRef = Readonly<{
   pluginId: string;
@@ -41,7 +42,7 @@ export type AgentRealtimeSessionAvailability =
   | Readonly<{ available: false; code: AgentRealtimeVoiceBindingDeclineCode | null }>;
 
 type InspectAgentRealtimeSession = (input: Readonly<{
-  sessionId: string;
+  sessionAddress: SessionAddress;
   provider: AgentRealtimeContributionRef;
   agent: AgentRealtimeContributionRef;
 }>) => Promise<AgentRealtimeSessionAvailability>;
@@ -62,31 +63,36 @@ export async function resolveAgentRealtimeVoiceConversationBinding(input: Readon
   agent: AgentRealtimeContributionRef;
   controlSessionId: string;
   globalSessionId: string;
-  requestedTargetSessionId: string | null;
+  requestedTargetSessionAddress: SessionAddress | null;
+  globalConversationServerId: string;
   inspect: InspectAgentRealtimeSession;
   ensureGlobalConversation(input: Readonly<{
     agent: AgentRealtimeContributionRef;
     isReusableSession(input: Readonly<{ sessionId: string }>): Promise<boolean>;
   }>): Promise<string>;
 }>): Promise<VoiceAdapterConversationBinding | null> {
-  const bind = (conversationSessionId: string): VoiceAdapterConversationBinding =>
+  const bind = (conversationSessionAddress: SessionAddress): VoiceAdapterConversationBinding =>
     Object.freeze({
-      conversationSessionId,
+      conversationSessionAddress,
       transcriptMode: 'native_session' as const,
-      targetSessionId: input.requestedTargetSessionId,
+      targetSessionAddress: input.requestedTargetSessionAddress,
     });
   const settle = (
-    conversationSessionId: string,
+    conversationSessionAddress: SessionAddress,
     availability: AgentRealtimeSessionAvailability,
   ): VoiceAdapterConversationBinding | null => {
-    if (availability.available) return bind(conversationSessionId);
+    if (availability.available) return bind(conversationSessionAddress);
     if (availability.code) throw agentRealtimeVoiceBindingDeclined(availability.code);
     return null;
   };
 
   if (input.controlSessionId !== input.globalSessionId) {
-    return settle(input.controlSessionId, await input.inspect({
-      sessionId: input.controlSessionId,
+    const conversationSessionAddress = input.requestedTargetSessionAddress;
+    if (!conversationSessionAddress || conversationSessionAddress.sessionId !== input.controlSessionId) {
+      throw agentRealtimeVoiceBindingDeclined('session_unavailable');
+    }
+    return settle(conversationSessionAddress, await input.inspect({
+      sessionAddress: conversationSessionAddress,
       provider: input.provider,
       agent: input.agent,
     }));
@@ -97,13 +103,17 @@ export async function resolveAgentRealtimeVoiceConversationBinding(input: Readon
     // Reuse is a yes/no question about a candidate the caller may replace, not
     // a Start refusal: an unusable candidate means "make another one".
     isReusableSession: async ({ sessionId }) => (await input.inspect({
-      sessionId,
+      sessionAddress: { serverId: input.globalConversationServerId, sessionId },
       provider: input.provider,
       agent: input.agent,
     })).available,
   });
-  return settle(conversationSessionId, await input.inspect({
+  const conversationSessionAddress = {
+    serverId: input.globalConversationServerId,
     sessionId: conversationSessionId,
+  };
+  return settle(conversationSessionAddress, await input.inspect({
+    sessionAddress: conversationSessionAddress,
     provider: input.provider,
     agent: input.agent,
   }));

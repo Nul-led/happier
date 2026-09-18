@@ -1,272 +1,92 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountDirectorySession } from './accountDirectorySession';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { createDirectoryHttpFixture } from '@/sync/ops/accountDirectory/accountDirectoryTestFixtures';
 
-const logoutMock = vi.hoisted(() => vi.fn(async () => true));
-vi.mock('@/auth/accountDirectory/accountDirectoryCredentialStorage', () => ({
-    accountDirectoryCredentialStorage: { logout: logoutMock },
-    normalizeAccountDirectoryEndpoint: (value: string) => value.trim().replace(/\/+$/, ''),
-}));
-
-function home(identity: string) {
-    return {
-        v: 1 as const,
-        homeServerIdentityId: identity,
-        canonicalServerUrl: `https://${identity}.test`,
-        label: identity,
-        connectionDescriptor: {
-            v: 1 as const,
-            homeServerIdentityId: identity,
-            canonicalServerUrl: `https://${identity}.test`,
-            revision: 1,
-            endpoints: [{ kind: 'https' as const, url: `https://${identity}.test` }],
-        },
-        createdAtMs: 1,
-        updatedAtMs: 1,
-        preferred: false,
-    };
-}
+const request = vi.hoisted(() => vi.fn());
+vi.mock('@/sync/http/client', () => ({ createServerFetchAtEndpoint: () => request }));
 
 describe('AccountDirectorySession', () => {
-    const supportedCapability = {
-        version: 1 as const,
-        homeDirectory: true,
-        homeEnrollment: true,
-        homeLoginAssertion: {
-            keyId: 'a'.repeat(64),
-            publicKeyBase64Url: 'A'.repeat(43),
-        },
-    };
+    const fixture = createDirectoryHttpFixture();
+    const target = { endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId };
+    const createSession = (capability: unknown = fixture.service.capability) => new AccountDirectorySession(target, {
+        // Malformed server capability is a real network boundary input.
+        capability: capability as typeof fixture.service.capability,
+    });
+    const json = (body: unknown) => new Response(JSON.stringify(body));
 
-    it('disconnects only the selected Account Service identity at a reused URL', async () => {
-        const client = { getMe: vi.fn(), listHomes: vi.fn() };
-        const session = new AccountDirectorySession({
-            endpoint: 'https://directory.test',
-            serverIdentityId: 'directory-new',
-        }, { client: client as never, capability: supportedCapability });
-
-        await expect(session.logout()).resolves.toBe(true);
-
-        expect(logoutMock).toHaveBeenCalledWith({
-            endpoint: 'https://directory.test',
-            serverIdentityId: 'directory-new',
-        });
+    beforeEach(async () => {
+        request.mockReset();
+        await TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'directory-token' });
     });
 
-    it('deduplicates concurrent refresh and retains cached homes during outage', async () => {
-        let resolveList: ((value: { homes: ReturnType<typeof home>[] }) => void) | null = null;
-        const client = {
-            getMe: vi.fn(async () => ({ accountId: 'a' })),
-            listHomes: vi.fn(() => new Promise<{ homes: ReturnType<typeof home>[] }>((resolve) => { resolveList = resolve; })),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: supportedCapability,
-        });
+    it('disconnects only the selected identity at a reused URL', async () => {
+        const other = { ...target, serverIdentityId: 'other-directory' };
+        await TokenStorage.accountDirectoryAuthCredentials.set(other, { token: 'other-token' });
+        await expect(createSession().logout()).resolves.toBe(true);
+        expect(await TokenStorage.accountDirectoryAuthCredentials.get(target)).toBeNull();
+        expect(await TokenStorage.accountDirectoryAuthCredentials.get(other)).toEqual({ token: 'other-token' });
+    });
+
+    it('deduplicates refresh and retains cached Homes during an outage', async () => {
+        let release!: (response: Response) => void;
+        request.mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve; }));
+        const session = createSession();
         const first = session.refresh();
         const second = session.refresh();
-        expect(client.listHomes).toHaveBeenCalledTimes(1);
-        resolveList!({ homes: [home('home-1')] });
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+        release(json({ v: 1, homes: [fixture.home], preferredHomeServerIdentityId: fixture.home.homeServerIdentityId }));
         await Promise.all([first, second]);
-        expect(session.snapshot.status).toBe('ready');
-        expect(client.getMe).not.toHaveBeenCalled();
-
-        client.listHomes.mockRejectedValueOnce(new Error('offline'));
-        const stale = await session.refresh();
-        expect(stale.status).toBe('stale');
-        expect(stale.homes).toHaveLength(1);
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(session.snapshot).toMatchObject({ status: 'ready', homes: [fixture.home] });
+        request.mockRejectedValueOnce(new Error('offline'));
+        expect(await session.refresh()).toMatchObject({ status: 'stale', homes: [fixture.home] });
     });
 
-    it('keeps logout authoritative when an older refresh resolves late', async () => {
-        let resolveList: ((value: { homes: ReturnType<typeof home>[]; preferredHomeServerIdentityId: string }) => void) | null = null;
-        const client = {
-            getMe: vi.fn(async () => ({ accountId: 'a' })),
-            listHomes: vi.fn(() => new Promise<{ homes: ReturnType<typeof home>[]; preferredHomeServerIdentityId: string }>((resolve) => {
-                resolveList = resolve;
-            })),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: supportedCapability,
-        });
-
+    it('keeps logout authoritative when an earlier refresh resolves late', async () => {
+        let release!: (response: Response) => void;
+        request.mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve; }));
+        const session = createSession();
         const refresh = session.refresh();
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'));
         await session.logout();
-        resolveList!({ homes: [home('home-late')], preferredHomeServerIdentityId: 'home-late' });
+        release(json({ v: 1, homes: [fixture.home], preferredHomeServerIdentityId: null }));
         await refresh;
-
-        expect(session.snapshot).toMatchObject({ status: 'idle' });
-        expect(session.snapshot.homes).toEqual([]);
+        expect(session.snapshot).toMatchObject({ status: 'idle', homes: [] });
     });
 
-    it.each([
-        ['missing', undefined],
-        ['malformed', { version: 1, homeDirectory: true, homeEnrollment: true }],
-        ['unsupported version', { ...supportedCapability, version: 2 }],
-    ])('fails closed before refresh for a %s capability', async (_name, capability) => {
-        const client = {
-            getMe: vi.fn(async () => ({ accountId: 'a' })),
-            listHomes: vi.fn(async () => ({ homes: [] })),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: capability as never,
-        });
-
-        await expect(session.refresh()).resolves.toMatchObject({ status: 'unsupported' });
-        expect(client.getMe).not.toHaveBeenCalled();
-        expect(client.listHomes).not.toHaveBeenCalled();
+    it.each([undefined, { version: 1, homeDirectory: true }, { ...fixture.service.capability, version: 2 }])('fails closed on invalid capability %j', async (capability) => {
+        const session = new AccountDirectorySession(target, { capability: capability as typeof fixture.service.capability });
+        expect(await session.refresh()).toMatchObject({ status: 'unsupported' });
+        expect(request).not.toHaveBeenCalled();
     });
 
-    it('does not let assertion mint bypass a capability without Home enrollment', async () => {
-        const client = {
-            getMe: vi.fn(),
-            listHomes: vi.fn(),
-            requestLoginAssertion: vi.fn(async () => ({ v: 1 })),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: { ...supportedCapability, homeEnrollment: false },
-        });
-
-        await expect(session.requestLoginAssertion('home-1', 'client-key')).rejects.toThrow();
-        expect(client.requestLoginAssertion).not.toHaveBeenCalled();
-        expect(session.snapshot.status).toBe('idle');
+    it('keeps Directory reading available without Home enrollment and refuses assertion mint', async () => {
+        request.mockResolvedValueOnce(json({ v: 1, homes: [fixture.home], preferredHomeServerIdentityId: fixture.home.homeServerIdentityId }));
+        const session = createSession({ ...fixture.service.capability, homeEnrollment: false });
+        expect(await session.refresh()).toMatchObject({ status: 'ready', homes: [fixture.home] });
+        await expect(session.requestLoginAssertion(fixture.home.homeServerIdentityId, 'client-key')).rejects.toThrow();
+        expect(request).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps a healthy Directory projection ready when Home enrollment is unavailable', async () => {
-        const client = {
-            getMe: vi.fn(async () => ({ accountId: 'a' })),
-            listHomes: vi.fn(async () => ({ homes: [home('home-1')] })),
-            requestLoginAssertion: vi.fn(),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: { ...supportedCapability, homeEnrollment: false },
-        });
-
-        await expect(session.refresh()).resolves.toMatchObject({
-            status: 'ready',
-            homes: [expect.objectContaining({ homeServerIdentityId: 'home-1' })],
-        });
-        await expect(session.requestLoginAssertion('home-1', 'client-key')).rejects.toThrow();
-        expect(session.snapshot.status).toBe('ready');
-        expect(session.supportsHomeEnrollment).toBe(false);
+    it('does not publish or delete Directory metadata when the capability is absent', async () => {
+        const session = createSession({ ...fixture.service.capability, homeDirectory: false });
+        await expect(session.putHome(fixture.home)).rejects.toThrow();
+        await expect(session.deleteHome(fixture.home.homeServerIdentityId)).rejects.toThrow();
+        await expect(session.setPreferredHome(fixture.home.homeServerIdentityId)).rejects.toThrow();
+        await expect(session.readHomeDescriptor(fixture.home.homeServerIdentityId)).rejects.toThrow();
+        expect(request).not.toHaveBeenCalled();
     });
 
-    it('allows assertion mint when the published capability supports Home enrollment', async () => {
-        const client = {
-            getMe: vi.fn(),
-            listHomes: vi.fn(),
-            requestLoginAssertion: vi.fn(async () => ({ v: 1 })),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: supportedCapability,
-        });
-
-        await expect(session.requestLoginAssertion('home-1', 'client-key')).resolves.toEqual({ v: 1 });
-        expect(client.requestLoginAssertion).toHaveBeenCalledOnce();
-    });
-
-    it('does not let directory publication bypass a capability without Home directory', async () => {
-        const client = {
-            getMe: vi.fn(),
-            listHomes: vi.fn(),
-            putHome: vi.fn(async () => home('home-1')),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: { ...supportedCapability, homeDirectory: false },
-        });
-
-        await expect(session.putHome({
-            homeServerIdentityId: 'home-1',
-            label: 'home-1',
-            connectionDescriptor: home('home-1').connectionDescriptor,
-        })).rejects.toThrow();
-        expect(client.putHome).not.toHaveBeenCalled();
-    });
-
-    it('reads the account summary and publishes a Home entry through the client', async () => {
-        const client = {
-            getMe: vi.fn(async () => ({ accountId: 'account-1' })),
-            listHomes: vi.fn(),
-            putHome: vi.fn(async () => home('home-1')),
-            publishHomeDescriptor: vi.fn(async () => ({ kind: 'published' as const, entry: home('home-1') })),
-            readHomeDescriptor: vi.fn(async () => home('home-1')),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: supportedCapability,
-        });
-
-        await expect(session.readAccountSummary()).resolves.toEqual({ accountId: 'account-1' });
-        await expect(session.putHome({
-            homeServerIdentityId: 'home-1',
-            label: 'home-1',
-            connectionDescriptor: home('home-1').connectionDescriptor,
-        })).resolves.toEqual(home('home-1'));
-        expect(client.putHome).toHaveBeenCalledWith({
-            homeServerIdentityId: 'home-1',
-            label: 'home-1',
-            connectionDescriptor: home('home-1').connectionDescriptor,
-        });
-        await expect(session.publishHomeDescriptor({
-            homeServerIdentityId: 'home-1',
-            label: 'home-1',
-            minimumOuterRevisionExclusive: 1,
-            canonicalServerUrl: 'https://home-1.test',
-            endpoints: [{ kind: 'https', url: 'https://home-1.test' }],
-        })).resolves.toEqual({ kind: 'published', entry: home('home-1') });
-        await expect(session.readHomeDescriptor('home-1')).resolves.toEqual(home('home-1'));
-    });
-
-    it('routes preferred and remove commands through the capability-gated Directory client', async () => {
-        const client = {
-            getMe: vi.fn(),
-            listHomes: vi.fn(),
-            setPreferredHome: vi.fn(async () => ({
-                v: 1,
-                preferredHomeServerIdentityId: 'home-2',
-            })),
-            deleteHome: vi.fn(async () => ({
-                v: 1,
-                deleted: true,
-                homeServerIdentityId: 'home-1',
-                preferredHomeServerIdentityId: 'home-2',
-            })),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: supportedCapability,
-        });
-
-        await expect(session.setPreferredHome('home-2')).resolves.toMatchObject({
-            preferredHomeServerIdentityId: 'home-2',
-        });
-        await expect(session.deleteHome('home-1')).resolves.toMatchObject({
-            deleted: true,
-            homeServerIdentityId: 'home-1',
-        });
-        expect(client.setPreferredHome).toHaveBeenCalledWith('home-2');
-        expect(client.deleteHome).toHaveBeenCalledWith('home-1');
-    });
-
-    it('fails closed before preferred and remove commands without Home Directory capability', async () => {
-        const client = {
-            getMe: vi.fn(),
-            listHomes: vi.fn(),
-            setPreferredHome: vi.fn(),
-            deleteHome: vi.fn(),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: { ...supportedCapability, homeDirectory: false },
-        });
-
-        await expect(session.setPreferredHome('home-2')).rejects.toThrow();
-        await expect(session.deleteHome('home-1')).rejects.toThrow();
-        expect(client.setPreferredHome).not.toHaveBeenCalled();
-        expect(client.deleteHome).not.toHaveBeenCalled();
+    it('invalidates old sessions even when logout is followed by the same bearer', async () => {
+        const session = createSession();
+        const isCurrent = session.captureLifecycle();
+        await TokenStorage.accountDirectoryAuthCredentials.logout(target);
+        await TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'directory-token' });
+        expect(isCurrent()).toBe(false);
+        await expect(session.readAccountSummary()).rejects.toThrow();
+        await session.logout();
+        expect(await TokenStorage.accountDirectoryAuthCredentials.get(target)).toEqual({ token: 'directory-token' });
+        expect(request).not.toHaveBeenCalled();
     });
 });

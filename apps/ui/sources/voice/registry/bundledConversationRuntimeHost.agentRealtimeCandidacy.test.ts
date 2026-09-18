@@ -17,6 +17,7 @@ function installSession(overrides: Partial<Session>): void {
       [SESSION_ID]: createSessionFixture({
         id: SESSION_ID,
         active: true,
+        serverId: 'server-a',
         ...overrides,
       }),
     },
@@ -30,7 +31,7 @@ async function resolveAgentRealtimeBinding() {
       provider: PROVIDER,
       agent: AGENT,
       controlSessionId: SESSION_ID,
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: SESSION_ID },
       settings: {},
     });
   } finally {

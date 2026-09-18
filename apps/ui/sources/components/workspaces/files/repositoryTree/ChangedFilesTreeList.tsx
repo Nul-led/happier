@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { Platform, View, type ScrollViewProps } from 'react-native';
 import { VirtualizedList } from '@/components/ui/lists/virtualized/VirtualizedList';
+import type { VirtualizedListRef } from '@/components/ui/lists/virtualized/virtualizedListTypes';
+import { useFilesystemTreeKeyboard } from '@/components/ui/filesystemBrowser/useFilesystemTreeKeyboard';
 
 import { Item } from '@/components/ui/lists/Item';
 import { FileIcon } from '@/components/ui/media/FileIcon';
@@ -35,10 +37,12 @@ function entryToFileStatus(entry: any): ScmFileStatus {
         fullPath: entry.path,
         status: entry.kind,
         isIncluded: preferIncluded,
+        hasIncludedDelta: entry.hasIncludedDelta,
         linesAdded: preferIncluded ? (entry.stats?.includedAdded ?? 0) : (entry.stats?.pendingAdded ?? 0),
         linesRemoved: preferIncluded ? (entry.stats?.includedRemoved ?? 0) : (entry.stats?.pendingRemoved ?? 0),
         oldPath: entry.previousPath ?? undefined,
         isBinary: entry.stats?.isBinary ?? undefined,
+        isComplete: entry.stats?.isComplete,
     };
 }
 
@@ -101,46 +105,63 @@ export const ChangedFilesTreeList = React.memo((props: ChangedFilesTreeListProps
         return flattenTree(tree, 0, expandedDirs);
     }, [expandedDirs, filteredNodes, tree]);
 
-    return (
-        <VirtualizedList
-            data={nodesToRender}
-            keyExtractor={(node) => `${node.kind}:${node.fullPath}`}
-            style={{ flex: 1, minHeight: 0 }}
-            contentContainerStyle={{ paddingBottom: 20 }}
-            renderItem={({ item: node, index }) => {
-                const indent = Math.min(6, Math.max(0, node.depth));
-                const paddingLeft = 12 + indent * 12;
-                const showDivider = index < nodesToRender.length - 1;
+    const listRef = React.useRef<VirtualizedListRef>(null);
+    const focusIndex = React.useCallback((index: number) => {
+        void listRef.current?.scrollToIndex({ index, animated: false });
+    }, []);
+    const keyboardNodes = React.useMemo(() => nodesToRender.map(node => ({
+        path: node.fullPath,
+        depth: node.depth,
+        type: node.kind === 'dir' ? 'directory' : 'file',
+        isExpanded: node.kind === 'dir' && expandedDirs.has(node.fullPath),
+    })), [nodesToRender, expandedDirs]);
+    const keyboard = useFilesystemTreeKeyboard(keyboardNodes, focusIndex);
 
-                if (node.kind === 'dir') {
-                    const badge = badgeIndex?.getDirectoryBadge(node.fullPath) ?? null;
-                    const rightElement = badge ? (
-                        <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
-                            <Text style={{ fontSize: 12, color: props.theme.colors.state.neutral.foreground, ...Typography.mono('semiBold') }}>
-                                {`${badge.kindLetter}${badge.changedCount}`}
-                            </Text>
-                            {badge.added > 0 ? (
-                                <Text style={{ fontSize: 12, color: props.theme.colors.state.success.foreground, ...Typography.mono('semiBold') }}>
-                                    {`+${badge.added}`}
+    return (
+        <View role={Platform.OS === 'web' ? 'tree' : undefined} testID="changed-files-tree" style={{ flex: 1, minHeight: 0 }}>
+            <VirtualizedList
+                ref={listRef}
+                data={nodesToRender}
+                extraData={keyboard.activePath}
+                keyExtractor={(node) => `${node.kind}:${node.fullPath}`}
+                style={{ flex: 1, minHeight: 0 }}
+                contentContainerStyle={{ paddingBottom: 20 }}
+                renderItem={({ item: node, index }) => {
+                    const indent = Math.min(6, Math.max(0, node.depth));
+                    const paddingLeft = 12 + indent * 12;
+                    const showDivider = index < nodesToRender.length - 1;
+
+                    if (node.kind === 'dir') {
+                        const badge = badgeIndex?.getDirectoryBadge(node.fullPath) ?? null;
+                        const rightElement = badge ? (
+                            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
+                                <Text style={{ fontSize: 12, color: props.theme.colors.state.neutral.foreground, ...Typography.mono('semiBold') }}>
+                                    {`${badge.kindLetter}${badge.changedCount}`}
                                 </Text>
-                            ) : null}
-                            {badge.removed > 0 ? (
-                                <Text
-                                    style={{
-                                        fontSize: 12,
-                                        color: props.theme.colors.state.danger.foreground ?? props.theme.colors.state.danger.foreground ?? props.theme.colors.state.neutral.foreground,
-                                        ...Typography.mono('semiBold'),
-                                    }}
-                                >
-                                    {`-${badge.removed}`}
-                                </Text>
-                            ) : null}
+                                {badge.isComplete !== false && badge.added > 0 ? (
+                                    <Text style={{ fontSize: 12, color: props.theme.colors.state.success.foreground, ...Typography.mono('semiBold') }}>
+                                        {`+${badge.added}`}
+                                    </Text>
+                                ) : null}
+                                {badge.isComplete !== false && badge.removed > 0 ? (
+                                    <Text
+                                        style={{
+                                            fontSize: 12,
+                                            color: props.theme.colors.state.danger.foreground ?? props.theme.colors.state.danger.foreground ?? props.theme.colors.state.neutral.foreground,
+                                            ...Typography.mono('semiBold'),
+                                        }}
+                                    >
+                                        {`-${badge.removed}`}
+                                    </Text>
+                                ) : null}
                         </View>
                     ) : undefined;
 
                     const isExpanded = expandedDirs.has(node.fullPath);
                     return (
                         <Item
+                            testID={`changed-files-tree-directory:${node.fullPath}`}
+                            {...keyboard.getRowProps(keyboardNodes[index], () => toggleDir(node.fullPath))}
                             title={`${node.name}/`}
                             icon={<Icon name={isExpanded ? 'folder-open' : 'folder'} size={16} color={props.theme.colors.text.link} />}
                             density="tight"
@@ -162,12 +183,12 @@ export const ChangedFilesTreeList = React.memo((props: ChangedFilesTreeListProps
                         <Text style={{ fontSize: 12, color: props.theme.colors.state.neutral.foreground, ...Typography.mono('semiBold') }}>
                             {resolved.kindLetter}
                         </Text>
-                        {resolved.added > 0 ? (
+                        {resolved.isComplete !== false && resolved.added > 0 ? (
                             <Text style={{ fontSize: 12, color: props.theme.colors.state.success.foreground, ...Typography.mono('semiBold') }}>
                                 {`+${resolved.added}`}
                             </Text>
                         ) : null}
-                        {resolved.removed > 0 ? (
+                        {resolved.isComplete !== false && resolved.removed > 0 ? (
                             <Text
                                 style={{
                                     fontSize: 12,
@@ -183,6 +204,12 @@ export const ChangedFilesTreeList = React.memo((props: ChangedFilesTreeListProps
 
                 return (
                     <Item
+                        testID={`changed-files-tree-file:${node.fullPath}`}
+                        {...keyboard.getRowProps(
+                            keyboardNodes[index],
+                            () => props.onOpenFile(node.fullPath),
+                            () => (props.onOpenFilePinned ?? props.onOpenFile)(node.fullPath),
+                        )}
                         title={node.name}
                         icon={<FileIcon fileName={node.name} size={16} />}
                         density="tight"
@@ -215,5 +242,6 @@ export const ChangedFilesTreeList = React.memo((props: ChangedFilesTreeListProps
                     : undefined
             }
         />
+        </View>
     );
 });

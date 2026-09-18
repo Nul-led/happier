@@ -15,6 +15,25 @@ vi.mock('@/sync/http/client', () => ({
     StaleServerGenerationError: mocks.StaleServerGenerationError,
 }));
 
+// Device credential storage and the person's own answer are the two genuine
+// boundaries this policy consults; everything below them stays real.
+const boundaries = vi.hoisted(() => ({
+    confirm: vi.fn(async () => false),
+    getCredentialsForServerUrl: vi.fn(async () => null as { token: string } | null),
+}));
+vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal'))
+    .createModalModuleMock({ spies: { confirm: boundaries.confirm } }).module);
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+    return {
+        ...actual,
+        TokenStorage: {
+            ...actual.TokenStorage,
+            getCredentialsForServerUrl: boundaries.getCredentialsForServerUrl,
+        },
+    };
+});
+
 import { authGetToken } from './getToken';
 import { resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
 import {
@@ -25,9 +44,14 @@ import {
 } from '@happier-dev/protocol';
 import { HappyError } from '@/utils/errors/errors';
 import {
+    getServerProfileById,
     setActiveServerId,
     upsertServerProfile,
 } from '@/sync/domains/server/serverProfiles';
+import {
+    HOME_ADDRESS_MISMATCH_AUTH_CODE,
+    HOME_IDENTITY_MISMATCH_AUTH_CODE,
+} from './authenticationFailure';
 import {
     readStorageScopeFromEnv,
     scopedStorageId,
@@ -60,6 +84,10 @@ describe('authGetToken key-challenge gate', () => {
     beforeEach(() => {
         resetServerFeaturesClientForTests();
         mocks.serverFetch.mockReset();
+        boundaries.confirm.mockReset();
+        boundaries.confirm.mockResolvedValue(false);
+        boundaries.getCredentialsForServerUrl.mockReset();
+        boundaries.getCredentialsForServerUrl.mockResolvedValue(null);
     });
 
     it('fails fast when server disables key-challenge login', async () => {
@@ -274,11 +302,11 @@ describe('authGetToken key-challenge gate', () => {
     });
 
     it('sends the signed expected Account id through negotiated v2 Account-bound login', async () => {
-        const profile = upsertServerProfile({
+        const profile = await upsertServerProfile({
             serverUrl: 'https://selected.example.test/api',
             name: 'Selected test server',
         });
-        setActiveServerId(profile.id);
+        await setActiveServerId(profile.id);
 
         mocks.serverFetch
             .mockResolvedValueOnce(
@@ -453,12 +481,12 @@ describe('authGetToken key-challenge gate', () => {
             .toBe('/v1/features');
     });
 
-    it('refuses a mismatched v2 audience before signing or redeeming', async () => {
-        const profile = upsertServerProfile({
+    it('refuses a v2 challenge issued by a different Home identity before signing or redeeming', async () => {
+        const profile = await upsertServerProfile({
             serverUrl: 'https://selected.example.test/api',
             name: 'Selected test server',
         });
-        setActiveServerId(profile.id);
+        await setActiveServerId(profile.id);
 
         mocks.serverFetch
             .mockResolvedValueOnce(
@@ -477,17 +505,162 @@ describe('authGetToken key-challenge gate', () => {
                     issuedAt: '2026-08-22T12:00:00.000Z',
                     expiresAt: '2026-08-22T12:05:00.000Z',
                     audience: {
-                        origin: 'https://attacker.example.test',
-                        serverIdentityId: 'srv_attacker',
+                        // Relayed proof: the reached origin looks right, the Home does not.
+                        origin: 'https://selected.example.test',
+                        serverIdentityId: 'srv_other_home',
                     },
                 }),
             );
 
-        await expect(authGetToken(new Uint8Array(32))).rejects.toThrow(/audience/i);
+        await expect(authGetToken(new Uint8Array(32))).rejects.toMatchObject({
+            kind: 'auth',
+            code: HOME_IDENTITY_MISMATCH_AUTH_CODE,
+        } satisfies Partial<HappyError>);
         expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
             '/v1/features',
             '/v1/auth/challenge',
         ]);
+    });
+
+    async function prepareAlternateAddressLogin(params: Readonly<{
+        serverUrl: string;
+        identity: string;
+        issuedOrigin: string;
+        token: string;
+    }>) {
+        const profile = await upsertServerProfile({ serverUrl: params.serverUrl, name: 'Home over LAN' });
+        await setActiveServerId(profile.id);
+        mocks.serverFetch
+            .mockResolvedValueOnce(
+                jsonResponse({
+                    features: {
+                        auth: { login: { keyChallenge: { enabled: true } } },
+                        sharing: { contentKeys: { enabled: false } },
+                    },
+                    capabilities: keyChallengeV2Capabilities(params.identity),
+                }),
+            )
+            .mockResolvedValueOnce(
+                jsonResponse({
+                    challengeId: `challenge-${params.identity}`,
+                    nonce: `nonce-${params.identity}`,
+                    issuedAt: '2026-08-22T12:00:00.000Z',
+                    expiresAt: '2026-08-22T12:05:00.000Z',
+                    // A Home always binds its own canonical origin, even when this
+                    // device reached it over the LAN.
+                    audience: { origin: params.issuedOrigin, serverIdentityId: params.identity },
+                }),
+            )
+            .mockResolvedValueOnce(jsonResponse({ token: params.token }));
+        return profile;
+    }
+
+    it('refuses a first-contact challenge naming another address until the person confirms it', async () => {
+        const profile = await prepareAlternateAddressLogin({
+            serverUrl: 'http://192.168.2.7:3005',
+            identity: 'srv_first_contact',
+            issuedOrigin: 'https://first-contact.example.test',
+            token: 'must-not-redeem',
+        });
+        expect(getServerProfileById(profile.id)?.serverIdentityId).toBeUndefined();
+
+        await expect(authGetToken(new Uint8Array(32).fill(5))).rejects.toMatchObject({
+            kind: 'auth',
+            code: HOME_ADDRESS_MISMATCH_AUTH_CODE,
+        } satisfies Partial<HappyError>);
+        expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
+            '/v1/features',
+            '/v1/auth/challenge',
+        ]);
+        expect(boundaries.confirm).toHaveBeenCalledTimes(1);
+    });
+
+    it('signs a first-contact alternate address once the person confirms it and pins the identity', async () => {
+        boundaries.confirm.mockResolvedValue(true);
+        const profile = await prepareAlternateAddressLogin({
+            serverUrl: 'http://192.168.1.5:3005',
+            identity: 'srv_lan_home',
+            issuedOrigin: 'https://home.example.test',
+            token: 'lan-home-token',
+        });
+
+        await expect(authGetToken(new Uint8Array(32).fill(5))).resolves.toBe('lan-home-token');
+        expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
+            '/v1/features',
+            '/v1/auth/challenge',
+            '/v1/auth',
+        ]);
+        expect(boundaries.confirm).toHaveBeenCalledTimes(1);
+        expect(getServerProfileById(profile.id)?.serverIdentityId).toBe('srv_lan_home');
+    });
+
+    it('still asks at first contact when the contacted endpoint publishes the Home address it claims', async () => {
+        // A proxying endpoint can serve the real Home's feature response, descriptor
+        // included, so the profile's canonical URL is not a fact it did not choose.
+        const profile = await upsertServerProfile({
+            serverUrl: 'http://proxy.example.test',
+            name: 'Home added by URL',
+        });
+        await setActiveServerId(profile.id);
+
+        mocks.serverFetch
+            .mockResolvedValueOnce(
+                jsonResponse({
+                    features: {
+                        auth: { login: { keyChallenge: { enabled: true } } },
+                        sharing: { contentKeys: { enabled: false } },
+                    },
+                    capabilities: keyChallengeV2Capabilities('srv_proxied_home'),
+                    homeConnectionDescriptor: {
+                        v: 1,
+                        homeServerIdentityId: 'srv_proxied_home',
+                        canonicalServerUrl: 'https://real-home.example.test',
+                        revision: 1,
+                        endpoints: [{ kind: 'https', url: 'https://real-home.example.test' }],
+                    },
+                }),
+            )
+            .mockResolvedValueOnce(
+                jsonResponse({
+                    challengeId: 'challenge-proxied',
+                    nonce: 'nonce-proxied',
+                    issuedAt: '2026-08-22T12:00:00.000Z',
+                    expiresAt: '2026-08-22T12:05:00.000Z',
+                    audience: {
+                        origin: 'https://real-home.example.test',
+                        serverIdentityId: 'srv_proxied_home',
+                    },
+                }),
+            )
+            .mockResolvedValueOnce(jsonResponse({ token: 'must-not-redeem' }));
+
+        await expect(authGetToken(new Uint8Array(32).fill(5))).rejects.toMatchObject({
+            kind: 'auth',
+            code: HOME_ADDRESS_MISMATCH_AUTH_CODE,
+        } satisfies Partial<HappyError>);
+        expect(boundaries.confirm).toHaveBeenCalledTimes(1);
+        expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
+            '/v1/features',
+            '/v1/auth/challenge',
+        ]);
+    });
+
+    it('signs for an established Home answering on another address without asking again', async () => {
+        boundaries.getCredentialsForServerUrl.mockResolvedValue({ token: 'stored-token' });
+        await prepareAlternateAddressLogin({
+            serverUrl: 'http://192.168.3.9:3005',
+            identity: 'srv_established_home',
+            issuedOrigin: 'https://established.example.test',
+            token: 'established-home-token',
+        });
+
+        await expect(authGetToken(new Uint8Array(32).fill(5))).resolves.toBe('established-home-token');
+        expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
+            '/v1/features',
+            '/v1/auth/challenge',
+            '/v1/auth',
+        ]);
+        expect(boundaries.confirm).not.toHaveBeenCalled();
     });
 
     it('signs focused v2 authentication for the canonical Home URL instead of its legacy profile alias', async () => {
@@ -516,7 +689,7 @@ describe('authGetToken key-challenge gate', () => {
                 },
             },
         }));
-        setActiveServerId('canonical-audience-home');
+        await setActiveServerId('canonical-audience-home');
 
         mocks.serverFetch
             .mockResolvedValueOnce(
@@ -551,11 +724,11 @@ describe('authGetToken key-challenge gate', () => {
     });
 
     it("refreshes a cached v1 capability snapshot before ordinary login can select the auth assertion", async () => {
-        const profile = upsertServerProfile({
+        const profile = await upsertServerProfile({
             serverUrl: "https://fresh-probe.example.test",
             name: "Fresh-probe server",
         });
-        setActiveServerId(profile.id);
+        await setActiveServerId(profile.id);
 
         mocks.serverFetch
             .mockResolvedValueOnce(
@@ -604,11 +777,11 @@ describe('authGetToken key-challenge gate', () => {
     });
 
     it('redeems a negotiated v2 challenge without sending the legacy assertion', async () => {
-        const profile = upsertServerProfile({
+        const profile = await upsertServerProfile({
             serverUrl: 'https://selected.example.test/api',
             name: 'Selected test server',
         });
-        setActiveServerId(profile.id);
+        await setActiveServerId(profile.id);
 
         mocks.serverFetch
             .mockResolvedValueOnce(

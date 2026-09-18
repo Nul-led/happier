@@ -53,6 +53,11 @@ const APPROVED_CONSUMERS = [
     // callers retain only their distinct publication/proof/release duties.
     'sync/runtime/homeCarrierPolicy.ts',
     'sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierHttpLease.ts',
+    // A12 lets presentation read the pure host capability while deciding
+    // whether finite Machine transfer is available. These consumers must not
+    // acquire the endpoint or import the heavy browser carrier runtime.
+    'components/projects/files/WorkspaceRepositoryTreeBrowserView.tsx',
+    'components/sessions/files/useSessionFileTransferAvailability.ts',
 ];
 
 function stripComments(text: string): string {

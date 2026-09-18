@@ -93,7 +93,7 @@ describe('metro.config.js (web)', () => {
             EXPO_NO_METRO_WORKSPACE_ROOT: '1',
             HAPPIER_UI_METRO_NARROW_WATCH_FOLDERS: '1',
         });
-        const expectedEntry = createRequire(join(uiDir, 'package.json')).resolve('@react-native/virtualized-lists');
+        const expectedEntry = createRequire(join(reactNativeDir, 'package.json')).resolve('@react-native/virtualized-lists');
         const reactNativePackage = JSON.parse(
             readFileSync(join(reactNativeDir, 'package.json'), 'utf8'),
         ) as { dependencies?: Record<string, string> };
@@ -447,6 +447,8 @@ describe('metro.config.js (web)', () => {
             'dist.staging.publish-1',
             'dist.probe.publish-1',
             'dist.__finalize_backup__.publish-1',
+            '.happier-plugin-ui-stage-publish-1',
+            '.happier-plugin-ui-staging',
         ]) {
             expect(
                 isBlocked(join(packageRoot, transientDirectoryName, 'src/index.ts')),

@@ -21,12 +21,6 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' }, deviceName: 'test-device' },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
-
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({

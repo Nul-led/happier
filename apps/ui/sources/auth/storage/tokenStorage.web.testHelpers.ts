@@ -8,6 +8,81 @@ export type LocalStorageMockHandle = {
     restore: () => void;
 };
 
+export type WebLockManagerMockHandle = {
+    isHeld: (name?: string) => boolean;
+    restore: () => void;
+};
+
+/**
+ * Installs the browser storage-lock boundary used by web persistence tests.
+ * Requests for the same name run FIFO while unrelated lock names remain independent.
+ */
+export function installWebLockManagerMock(): WebLockManagerMockHandle {
+    const previousNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    if (typeof globalThis.navigator === 'undefined') {
+        Object.defineProperty(globalThis, 'navigator', {
+            configurable: true,
+            value: {},
+        });
+    }
+
+    const navigatorTarget = globalThis.navigator;
+    const previousLocksDescriptor = Object.getOwnPropertyDescriptor(navigatorTarget, 'locks');
+    const pendingByName = new Map<string, Promise<void>>();
+    const heldNames = new Set<string>();
+    const request = async <T>(
+        name: string,
+        optionsOrCallback: LockOptions | ((lock: Lock | null) => T | PromiseLike<T>),
+        optionalCallback?: (lock: Lock | null) => T | PromiseLike<T>,
+    ): Promise<T> => {
+        const callback = typeof optionsOrCallback === 'function'
+            ? optionsOrCallback
+            : optionalCallback;
+        if (!callback) throw new TypeError('Web Lock callback is required');
+
+        const predecessor = pendingByName.get(name) ?? Promise.resolve();
+        let release!: () => void;
+        const current = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const tail = predecessor.then(() => current);
+        pendingByName.set(name, tail);
+
+        await predecessor;
+        heldNames.add(name);
+        try {
+            return await callback({ name, mode: 'exclusive' });
+        } finally {
+            heldNames.delete(name);
+            release();
+            if (pendingByName.get(name) === tail) pendingByName.delete(name);
+        }
+    };
+    const lockManager = {
+        request,
+        query: async (): Promise<LockManagerSnapshot> => ({ held: [], pending: [] }),
+    } as LockManager;
+
+    Object.defineProperty(navigatorTarget, 'locks', {
+        configurable: true,
+        value: lockManager,
+    });
+
+    return {
+        isHeld: (name?: string) => name === undefined ? heldNames.size > 0 : heldNames.has(name),
+        restore: () => {
+            if (previousLocksDescriptor) {
+                Object.defineProperty(navigatorTarget, 'locks', previousLocksDescriptor);
+            } else {
+                Reflect.deleteProperty(navigatorTarget, 'locks');
+            }
+            if (previousNavigatorDescriptor === undefined) {
+                Reflect.deleteProperty(globalThis, 'navigator');
+            }
+        },
+    };
+}
+
 export function installLocalStorageMock(): LocalStorageMockHandle {
     const previousDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     const store = new Map<string, string>();

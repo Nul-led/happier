@@ -1,6 +1,7 @@
 import type { NormalizedMessage } from '@/sync/typesRaw';
 
 import { scmStatusSync } from '@/scm/scmStatusSync';
+import { resolveWorkspaceTargetForSession } from '@/sync/domains/session/resolveWorkspaceTargetForSession';
 import { scmDiffCache } from '@/scm/diffCache/scmDiffCacheSingleton';
 
 import { createWorkspaceMutationIngestion } from './workspaceMutationIngestion';
@@ -12,7 +13,8 @@ const ingestion = createWorkspaceMutationIngestion({
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (handle) => clearTimeout(handle as any),
     invalidateKnownMutation: (sessionId, changedPaths) => {
-        scmDiffCache.invalidatePaths({ sessionId, paths: new Set(changedPaths) });
+        const target = resolveWorkspaceTargetForSession(sessionId);
+        if (target) scmDiffCache.invalidatePaths({ sessionId: target.workspaceCacheKey, paths: new Set(changedPaths) });
         scmStatusSync.invalidateFromMutation(sessionId);
     },
     invalidateUnknownMutation: (sessionId) => {

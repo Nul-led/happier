@@ -1,13 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
+// The publisher's HTTP transport is injected below; do not initialize a live socket client.
+vi.mock('@/sync/api/session/apiSocket', () => ({ apiSocket: { request: vi.fn() } }));
+
 import {
-    CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
     createAccountScopedCryptoMaterialSnapshotV1,
     convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
 } from '@happier-dev/protocol';
 import {
     PluginAvailabilityActionHttpPathsV1,
     PluginAvailabilityUiArtifactPublishActionOutputV1Schema,
+    createPackageAssetArchiveV1,
+    decodePackageAssetArchiveBodyV1,
+    openPackageAssetArchiveV1,
 } from '@happier-dev/protocol/plugins/availability';
 import {
     computePluginUiArtifactFileSetSha256DigestV1,
@@ -17,14 +22,14 @@ import {
 } from '@happier-dev/protocol/plugins/ui';
 
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
-import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { openAccountArtifactStoredEnvelope } from '@/sync/domains/artifacts/accountArtifactEnvelope';
 
 import {
-    createActivePluginAccountHostedArtifactPublisher,
-} from './activePluginAccountHostedArtifactRead';
+    createLifetime as createScopedLifetime,
+    createPublisher,
+} from './activePluginAccountHostedArtifactPublish.testkit';
 
 const scope: ServerAccountScope = Object.freeze({
     serverId: 'server-a',
@@ -87,66 +92,7 @@ const e2eeContentKeyFingerprint =
     );
 
 function createLifetime() {
-    let current = true;
-    const retireListeners = new Set<() => void>();
-    const lifetime: ActiveServerAccountScopeLifetime = Object.freeze({
-        scope,
-        isCurrent: () => current,
-        onRetire: (listener) => {
-            retireListeners.add(listener);
-            return Object.freeze({ dispose: () => retireListeners.delete(listener) });
-        },
-    });
-    return Object.freeze({
-        lifetime,
-        retire: () => {
-            current = false;
-            for (const listener of [...retireListeners]) listener();
-        },
-    });
-}
-
-function createPublisher(params: Readonly<{
-    lifetime: ActiveServerAccountScopeLifetime;
-    request: (path: string, init?: RequestInit) => Promise<Response>;
-    currentness?: Readonly<{
-        mode: 'plain' | 'e2ee';
-        contentKeyFingerprint: string | null;
-    }>;
-    credentials?: AuthCredentials;
-}>) {
-    const captureRequestAuthority = vi.fn(async () => Object.freeze({
-        scope,
-        request: params.request,
-        ...(params.credentials ? { credentials: params.credentials } : {}),
-    }));
-    return Object.freeze({
-        publisher: createActivePluginAccountHostedArtifactPublisher({
-            captureLifetime: () => params.lifetime,
-            getServerSnapshot: () => Object.freeze({
-                serverId: scope.serverId,
-                serverUrl: 'https://server.example',
-                generation: 7,
-            }),
-            captureRequestAuthority,
-            readAccountCurrentness: async () => Object.freeze({
-                mode: params.currentness?.mode ?? 'plain',
-                version: 1,
-                signingKeyFingerprint: null,
-                updatedAt: 0,
-                contentKeyFingerprint: params.currentness?.contentKeyFingerprint ?? null,
-            }),
-            resolveStoredContentCompatibility: () => Object.freeze({
-                status: 'available' as const,
-                declaration: CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
-                headers: new Headers({
-                    'Content-Type': 'application/json',
-                    'x-happier-account-stored-content-protocol': '3',
-                }),
-            }),
-        }),
-        captureRequestAuthority,
-    });
+    return createScopedLifetime(scope);
 }
 
 function input(accountLifetime: ActiveServerAccountScopeLifetime) {
@@ -159,6 +105,118 @@ function input(accountLifetime: ActiveServerAccountScopeLifetime) {
         files: [{ relativePath: 'entry.js', bytes: entryBytes }],
     });
 }
+
+function packageArchive() {
+    const archive = createPackageAssetArchiveV1({
+        manifest: {
+            schemaVersion: 2, id: release.pluginId, version: release.version,
+            displayName: 'Package', engines: { happier: '^1.0.0' }, runtime: { apiVersion: 1 },
+            contributes: { resources: [{ id: 'mark', kind: 'asset', path: 'mark.png', contentType: 'image/png' }] },
+        },
+        files: [{ path: 'mark.png', bytes: entryBytes }],
+    });
+    if (!archive) throw new Error('Invalid package fixture');
+    return archive;
+}
+
+describe('active Account package Asset publisher', () => {
+    it.each(['plain', 'e2ee'] as const)('publishes exact package bytes through the protected %s Artifact envelope', async (mode) => {
+        const { lifetime } = createLifetime();
+        const archive = packageArchive();
+        const request = vi.fn(async (_path: string, init?: RequestInit) => {
+            const body = JSON.parse(String(init?.body));
+            return new Response(JSON.stringify({ outcome: 'created', link: {
+                release, artifactId: body.artifactId, descriptor: archive.descriptor,
+            } }), { status: 200 });
+        });
+        const { publisher } = createPublisher({ lifetime, request, ...(mode === 'e2ee' ? {
+            credentials: e2eeCredentials, currentness: { mode, contentKeyFingerprint: e2eeContentKeyFingerprint },
+        } : {}) });
+        await expect(publisher.publishPackageAssets({ accountLifetime: lifetime, release, archive })).resolves.toMatchObject({ kind: 'published' });
+        const [path, init] = request.mock.calls[0]!;
+        expect(path).toBe(PluginAvailabilityActionHttpPathsV1['account.plugins.availability.packageAsset.publish']);
+        const body = JSON.parse(String(init?.body));
+        const encryption = mode === 'e2ee' ? await createEncryptionFromAuthCredentials(e2eeCredentials) : null;
+        const envelope = await openAccountArtifactStoredEnvelope({ mode, envelope: body.artifact,
+            ...(encryption ? { decryptDataEncryptionKey: (key: string) => encryption.decryptEncryptionKey(key) } : {}),
+        });
+        expect(envelope).not.toBeNull();
+        expect(await openAccountArtifactStoredEnvelope({ mode: mode === 'plain' ? 'e2ee' : 'plain', envelope: body.artifact })).toBeNull();
+        const opened = openPackageAssetArchiveV1({ expectedDescriptor: archive.descriptor,
+            header: envelope?.header, body: decodePackageAssetArchiveBodyV1(envelope?.body.body ?? ''),
+        });
+        expect(opened?.resources.get('mark')).toEqual(entryBytes);
+    });
+
+    it.each([undefined, e2eeCredentials])('rejects missing or mismatched current E2EE material before transport', async (credentials) => {
+        const { lifetime } = createLifetime();
+        const request = vi.fn();
+        const { publisher } = createPublisher({ lifetime, request, credentials,
+            currentness: { mode: 'e2ee', contentKeyFingerprint: 'different-key' },
+        });
+        await expect(publisher.publishPackageAssets({ accountLifetime: lifetime, release, archive: packageArchive() })).resolves.toEqual({
+            kind: 'unavailable', code: 'account_encryption_material_unavailable',
+        });
+        expect(request).not.toHaveBeenCalled();
+    });
+
+    it('rejects changed archive bytes before acquiring transport authority', async () => {
+        const { lifetime } = createLifetime();
+        const current = createPublisher({ lifetime, request: vi.fn() });
+        const archive = packageArchive();
+        await expect(current.publisher.publishPackageAssets({ accountLifetime: lifetime, release, archive: {
+            ...archive, body: { ...archive.body, resources: [{ ...archive.body.resources[0]!, bytesBase64: 'AAAA' }] },
+        } })).resolves.toEqual({ kind: 'unavailable', code: 'source_archive_invalid' });
+        expect(current.captureRequestAuthority).not.toHaveBeenCalled();
+    });
+
+    it('rejoins the exact canonical package descriptor with an existing Artifact identity', async () => {
+        const { lifetime } = createLifetime();
+        const archive = packageArchive();
+        const artifactId = '00000000-0000-4000-8000-000000000099';
+        const { publisher } = createPublisher({
+            lifetime,
+            request: async () => new Response(JSON.stringify({
+                outcome: 'rejoined', link: { release, artifactId, descriptor: archive.descriptor },
+            }), { status: 200 }),
+        });
+        await expect(publisher.publishPackageAssets({ accountLifetime: lifetime, release, archive })).resolves.toMatchObject({
+            kind: 'published', value: { outcome: 'rejoined', link: { artifactId } },
+        });
+    });
+
+    it('does not acquire transport authority for a cancelled package publication', async () => {
+        const { lifetime } = createLifetime();
+        const current = createPublisher({ lifetime, request: vi.fn() });
+        const controller = new AbortController();
+        controller.abort();
+        await expect(current.publisher.publishPackageAssets({
+            accountLifetime: lifetime, release, archive: packageArchive(), signal: controller.signal,
+        })).resolves.toEqual({ kind: 'unavailable', code: 'operation_cancelled' });
+        expect(current.captureRequestAuthority).not.toHaveBeenCalled();
+    });
+
+    it.each(['retired', 'wrong_digest', 'wrong_release', 'wrong_resource'] as const)('rejects a %s response', async (failure) => {
+        const active = createLifetime();
+        const archive = packageArchive();
+        const { publisher } = createPublisher({ lifetime: active.lifetime, request: async (_path, init) => {
+            const body = JSON.parse(String(init?.body));
+            if (failure === 'retired') active.retire();
+            return new Response(JSON.stringify({ outcome: 'created', link: {
+                release: failure === 'wrong_release' ? { ...release, version: '2.0.0' } : release,
+                artifactId: body.artifactId,
+                descriptor: failure === 'wrong_digest'
+                    ? { ...archive.descriptor, archiveDigestSha256: `sha256:${'0'.repeat(64)}` }
+                    : failure === 'wrong_resource'
+                        ? { ...archive.descriptor, resources: [{ ...archive.descriptor.resources[0]!, path: 'different.png' }] }
+                        : archive.descriptor,
+            } }), { status: 200 });
+        } });
+        await expect(publisher.publishPackageAssets({ accountLifetime: active.lifetime, release, archive })).resolves.toEqual({
+            kind: 'unavailable', code: failure === 'retired' ? 'account_scope_changed' : 'response_identity_mismatch',
+        });
+    });
+});
 
 describe('active Account-hosted plugin Artifact publisher', () => {
     it('wraps one verified archive in the existing plain Artifact envelope before exact qualified publication', async () => {
@@ -230,13 +288,18 @@ describe('active Account-hosted plugin Artifact publisher', () => {
         expect(openedArchive?.files.get('entry.js')).toEqual(entryBytes);
     });
 
-    it('rejects a rejoin response whose Artifact identity differs from the proposed exact identity', async () => {
+    it.each(['plain', 'e2ee'] as const)('rejoins the canonical Artifact after %s response loss with a fresh publication identity', async (mode) => {
         const { lifetime } = createLifetime();
         const existingArtifactId = '00000000-0000-4000-8000-000000000099';
         let proposedArtifactId: string | null = null;
+        let lostResponseId: string | null = null;
         const request = vi.fn(async (_path: string, init?: RequestInit) => {
             const body = JSON.parse(String(init?.body));
             proposedArtifactId = body.artifactId;
+            if (lostResponseId === null) {
+                lostResponseId = body.artifactId;
+                throw new Error('Response lost after commit');
+            }
             return new Response(JSON.stringify(
                 PluginAvailabilityUiArtifactPublishActionOutputV1Schema.parse({
                     outcome: 'rejoined',
@@ -247,7 +310,7 @@ describe('active Account-hosted plugin Artifact publisher', () => {
                         platform: slot.platform,
                         artifactId: existingArtifactId,
                         artifactDigest,
-                        compatibility: hostCompatibility,
+                        compatibility: { ...hostCompatibility, hostAppVersion: '2.0.0' },
                     },
                 }),
             ), {
@@ -255,13 +318,54 @@ describe('active Account-hosted plugin Artifact publisher', () => {
                 headers: { 'Content-Type': 'application/json' },
             });
         });
-        const current = createPublisher({ lifetime, request });
+        const current = createPublisher({
+            lifetime,
+            request,
+            ...(mode === 'e2ee' ? {
+                credentials: e2eeCredentials,
+                currentness: { mode, contentKeyFingerprint: e2eeContentKeyFingerprint },
+            } : {}),
+        });
 
+        await expect(current.publisher.publish(input(lifetime))).resolves.toEqual({
+            kind: 'unavailable',
+            code: 'transport_unavailable',
+        });
+        await expect(current.publisher.publish(input(lifetime))).resolves.toMatchObject({
+            kind: 'published',
+            value: { outcome: 'rejoined', link: { artifactId: existingArtifactId } },
+        });
+        expect(proposedArtifactId).not.toBe(existingArtifactId);
+        expect(proposedArtifactId).not.toBe(lostResponseId);
+    });
+
+    it.each([
+        { name: 'release', patch: { release: { ...release, version: '9.0.0' } } },
+        { name: 'slot', patch: { contributionId: 'other' } },
+        { name: 'digest', patch: { artifactDigest: `sha256:${'0'.repeat(64)}` } },
+        { name: 'compatibility', patch: { compatibility: { ...hostCompatibility, hostUiApiVersion: '2.0.0' } } },
+    ])('rejects a canonical rejoin with different $name facts', async ({ patch }) => {
+        const { lifetime } = createLifetime();
+        const current = createPublisher({
+            lifetime,
+            request: async () => new Response(JSON.stringify({
+                outcome: 'rejoined',
+                link: {
+                    release,
+                    contributionId: slot.contributionId,
+                    tier: slot.tier,
+                    platform: slot.platform,
+                    artifactId: '00000000-0000-4000-8000-000000000099',
+                    artifactDigest,
+                    compatibility: hostCompatibility,
+                    ...patch,
+                },
+            }), { status: 200 }),
+        });
         await expect(current.publisher.publish(input(lifetime))).resolves.toEqual({
             kind: 'unavailable',
             code: 'response_identity_mismatch',
         });
-        expect(proposedArtifactId).not.toBe(existingArtifactId);
     });
 
     it('fails closed before publishing E2EE archive bytes without current Account encryption material', async () => {

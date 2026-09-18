@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Message } from '@/sync/domains/messages/messageTypes';
+import { mergeTurnChangeSets } from '@happier-dev/protocol';
+
+import { buildTurnChangeSetDiffInput } from '../../../../../../../cli/src/agent/tools/diff/buildTurnChangeSetDiffInput';
+import { projectRepositoryCheckpointTurnChangeSet } from '../../../../../../../cli/src/scm/checkpoints/projection';
 
 import { deriveTurnChangeSetsFromMessages } from '../derivation/deriveTurnChangeSetsFromMessages';
 
@@ -95,6 +99,93 @@ function makePatchMessage(): Message {
 }
 
 describe('deriveTurnChangeSetsFromMessages', () => {
+    it('composes the CLI provider/checkpoint projection through transcript parsing and the Protocol Session combiner', () => {
+        const projected = projectRepositoryCheckpointTurnChangeSet({
+            providerTurnChangeSet: {
+                sessionId: 'session-composed',
+                turnId: 'turn-composed',
+                seqRange: { startSeqInclusive: 8, endSeqInclusive: 12 },
+                status: 'completed',
+                provider: 'codex',
+                derivedAt: 20,
+                files: [{
+                    filePath: 'src/app.ts',
+                    changeKind: 'modified',
+                    oldText: 'before\n',
+                    newText: 'after\n',
+                    source: 'provider_tool',
+                    confidence: 'exact',
+                    provider: 'codex',
+                    agentTurnId: 'provider-turn-composed',
+                    providerMessageId: 'apply-patch-composed',
+                }],
+            },
+            checkpointDiff: {
+                success: true,
+                kind: 'diff',
+                baseRefSource: 'turn_start',
+                contentConfidence: 'exact',
+                attributionScope: 'shared_worktree',
+                receipts: [{ id: 'checkpoint.diff_computed' }],
+                files: [{
+                    filePath: 'src/app.ts',
+                    changeKind: 'modified',
+                    unifiedDiff: '@@ -1 +1 @@\n-before\n+after',
+                    binary: false,
+                    source: 'scm_checkpoint',
+                    confidence: 'exact',
+                    provider: 'scm:git',
+                }],
+            },
+            scopeId: 'session-composed:/repo',
+            startRef: 'refs/happier/checkpoints/start',
+            finalRef: 'refs/happier/checkpoints/final',
+        });
+        const input = buildTurnChangeSetDiffInput({
+            turnChangeSet: projected,
+            protocol: 'codex',
+            rawToolName: 'RepositoryCheckpointDiff',
+        });
+        const message: Message = {
+            kind: 'tool-call',
+            id: 'turn-diff-composed',
+            localId: null,
+            createdAt: 20,
+            tool: {
+                name: 'Diff',
+                state: 'completed',
+                input,
+                createdAt: 20,
+                startedAt: 20,
+                completedAt: 21,
+                description: null,
+                result: { status: 'completed' },
+            },
+            children: [],
+        };
+
+        const turns = deriveTurnChangeSetsFromMessages([message]);
+        const session = mergeTurnChangeSets({ sessionId: 'session-composed', turns });
+
+        expect(turns).toHaveLength(1);
+        expect(session.files).toEqual([
+            expect.objectContaining({
+                filePath: 'src/app.ts',
+                source: 'scm_checkpoint',
+                confidence: 'exact',
+                attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+                checkpointOverlap: 'observed',
+                provider: 'codex',
+                agentTurnId: 'provider-turn-composed',
+                providerMessageId: 'apply-patch-composed',
+            }),
+        ]);
+        expect(turns[0]?.files).toEqual(expect.arrayContaining([
+            expect.objectContaining({ source: 'provider_tool', agentTurnId: 'provider-turn-composed' }),
+            expect.objectContaining({ source: 'scm_checkpoint' }),
+        ]));
+    });
+
     it('reads canonical turn-scoped Diff tool messages into turn change sets', async () => {
         vi.resetModules();
         const { deriveTurnChangeSetsFromMessages } = await import('../derivation/deriveTurnChangeSetsFromMessages');
@@ -132,6 +223,68 @@ describe('deriveTurnChangeSetsFromMessages', () => {
                         confidence: 'strong',
                     }),
                 ],
+            }),
+        ]);
+        expect(result[0]?.files[0]).not.toHaveProperty('agentTurnId');
+    });
+
+    it('preserves canonical raw apply_patch operations and rename lineage', () => {
+        const message = makePatchMessage();
+        if (message.kind !== 'tool-call') throw new Error('expected tool-call fixture');
+        message.tool.input = {
+            patch: [
+                '*** Begin Patch',
+                '*** Add File: src/added.ts',
+                '+added content',
+                '*** Delete File: src/deleted.ts',
+                '-deleted content',
+                '*** Update File: src/old-name.ts',
+                '*** Move to: src/new-name.ts',
+                '@@',
+                '-before rename',
+                '+after rename',
+                '*** End Patch',
+            ].join('\n'),
+            _happier: {
+                v: 2,
+                protocol: 'codex',
+                provider: 'codex',
+                rawToolName: 'apply_patch',
+                canonicalToolName: 'Patch',
+                sessionChangeScope: 'turn',
+                turnId: 'turn_patch_raw',
+                sessionId: 'session_1',
+                source: 'provider_tool',
+                confidence: 'exact',
+                turnStatus: 'completed',
+                seqRange: {
+                    startSeqInclusive: 5,
+                    endSeqInclusive: 5,
+                },
+            },
+        };
+
+        expect(deriveTurnChangeSetsFromMessages([message])[0]?.files).toEqual([
+            expect.objectContaining({
+                filePath: 'src/added.ts',
+                previousFilePath: null,
+                changeKind: 'added',
+                oldText: '',
+                newText: 'added content',
+            }),
+            expect.objectContaining({
+                filePath: 'src/deleted.ts',
+                previousFilePath: null,
+                changeKind: 'deleted',
+                oldText: 'deleted content',
+                newText: '',
+            }),
+            expect.objectContaining({
+                filePath: 'src/new-name.ts',
+                previousFilePath: 'src/old-name.ts',
+                changeKind: 'renamed',
+                oldText: 'before rename',
+                newText: 'after rename',
             }),
         ]);
     });
@@ -242,10 +395,52 @@ describe('deriveTurnChangeSetsFromMessages', () => {
                 source: 'provider_native',
                 confidence: 'exact',
                 provider: 'codex',
-                agentTurnId: 'turn_1',
             }),
         ]);
+        expect(result[0]?.files[0]).not.toHaveProperty('agentTurnId');
         expect(result[0]?.repositoryCheckpoint).toBeUndefined();
+    });
+
+    it('retains an unavailable checkpoint turn without fabricating file content', () => {
+        const message = makeDiffMessage();
+        if (message.kind !== 'tool-call') throw new Error('expected tool-call fixture');
+        message.tool.input = {
+            files: [],
+            _happier: {
+                v: 2,
+                protocol: 'codex',
+                provider: 'scm:git',
+                rawToolName: 'RepositoryCheckpointDiff',
+                canonicalToolName: 'Diff',
+                sessionChangeScope: 'turn',
+                turnId: 'turn_checkpoint_unavailable',
+                sessionId: 'session_1',
+                source: 'scm_checkpoint',
+                confidence: 'best_effort',
+                turnStatus: 'completed',
+                seqRange: { startSeqInclusive: 0, endSeqInclusive: 0 },
+                repositoryCheckpoint: {
+                    version: 1,
+                    scopeId: 'session_1:/not-a-repo',
+                    baseRefSource: 'unavailable',
+                    contentConfidence: 'unavailable',
+                    attributionScope: 'unknown',
+                    receipts: [],
+                    unavailableReason: 'not_repo',
+                },
+            },
+        };
+
+        expect(deriveTurnChangeSetsFromMessages([message])).toEqual([
+            expect.objectContaining({
+                turnId: 'turn_checkpoint_unavailable',
+                files: [],
+                repositoryCheckpoint: expect.objectContaining({
+                    contentConfidence: 'unavailable',
+                    unavailableReason: 'not_repo',
+                }),
+            }),
+        ]);
     });
 
     it('reconciles provider and checkpoint Diff messages for the same turn', () => {

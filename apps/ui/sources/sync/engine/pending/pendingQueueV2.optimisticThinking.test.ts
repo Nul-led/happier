@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createDeferred } from '@/dev/testkit';
 import { Encryption } from '@/sync/encryption/encryption';
 import { settingsParse } from '@/sync/domains/settings/settings';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { storage } from '@/sync/domains/state/storage';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { submitSessionUserMessage } from '@/sync/domains/session/input/submitSessionUserMessage';
+import type { SessionSubmitPort } from '@/sync/domains/session/input/types';
 import {
     loadPendingOutboxForSession,
     savePendingOutboxMessage,
@@ -45,15 +48,15 @@ function plainPendingBody(localId: string, text: string): string {
     });
 }
 
-function persistLocalPending(params: Readonly<{
+async function persistLocalPending(params: Readonly<{
     sessionId: string;
     localId: string;
     text: string;
     scope: ServerAccountScope;
     operation?: 'enqueue' | 'cancel';
-}>): void {
+}>): Promise<void> {
     const rawRecord = { role: 'user' as const, content: { type: 'text' as const, text: params.text }, meta: {} };
-    savePendingOutboxMessage({
+    (await savePendingOutboxMessage({
         sessionId: params.sessionId,
         localId: params.localId,
         createdAt: 111,
@@ -61,7 +64,7 @@ function persistLocalPending(params: Readonly<{
         rawRecord,
         ...(params.operation ? { operation: params.operation } : {}),
         request: { v: 1, body: plainPendingBody(params.localId, params.text) },
-    }, params.scope);
+    }, params.scope));
     storage.getState().upsertPendingMessage(params.sessionId, {
         id: params.localId,
         localId: params.localId,
@@ -79,12 +82,126 @@ function persistLocalPending(params: Readonly<{
 describe('pendingQueueV2 optimistic thinking', () => {
     beforeEach(() => {
         vi.useFakeTimers();
-        resetPendingQueueState();
+        await resetPendingQueueState(testOutboxScope);
     });
 
     afterEach(() => {
         vi.clearAllTimers();
         vi.useRealTimers();
+    });
+
+    it('admits exact Run input without activating the parent and preserves the route on replay', async () => {
+        const sessionId = 'target-session';
+        storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
+        const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+        const requests: Array<{ path: string; body: unknown }> = [];
+        await enqueuePendingMessageV2Impl({
+            sessionId, text: 'run only', localId: 'target-local', encryption: null,
+            recipient, targetMachineId: 'machine-a', serverWireMode: 'pending_input_v3',
+            outboxScope: testOutboxScope,
+            request: async (path, init) => {
+                requests.push({ path, body: JSON.parse(String(init?.body)) });
+                throw new Error('network disconnected');
+            },
+        });
+        expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).toBeNull();
+        expect(storage.getState().sessionPending[sessionId]?.messages[0]?.recipient).toEqual(recipient);
+        await retryPendingOutboxOperationV2Impl({
+            sessionId, localId: 'target-local', outboxScope: testOutboxScope, serverWireMode: 'pending_input_v3',
+            request: async (path, init) => {
+                requests.push({ path, body: JSON.parse(String(init?.body)) });
+                return currentPendingEnqueueAck(init, { recipient });
+            },
+        });
+        expect(requests.map(({ path }) => path)).toEqual([
+            '/v2/sessions/target-session/execution-runs/run-a/pending',
+            '/v2/sessions/target-session/execution-runs/run-a/pending',
+        ]);
+        expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).toBeNull();
+        expect(requests[1]?.body).toEqual(requests[0]?.body);
+        expect(requests[0]?.body).toMatchObject({ v: 1, targetMachineId: 'machine-a', content: { t: 'plain' } });
+    });
+
+    it('cancels exact Run custody without clearing the parent thinking state', async () => {
+        const sessionId = 'target-cancel';
+        storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
+        const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+        await enqueuePendingMessageV2Impl({
+            sessionId, text: 'run only', localId: 'target-local', encryption: null,
+            recipient, targetMachineId: 'machine-a', serverWireMode: 'pending_input_v3',
+            outboxScope: testOutboxScope,
+            request: async () => { throw new Error('network disconnected'); },
+        });
+        storage.getState().markSessionOptimisticThinking(sessionId);
+        const parentThinking = storage.getState().sessions[sessionId].optimisticThinkingAt;
+        const paths: string[] = [];
+        await deletePendingMessageV2({
+            sessionId, pendingId: 'target-local',
+            request: async (path) => { paths.push(path); return Response.json({}); },
+        });
+        expect(paths).toEqual(['/v2/sessions/target-cancel/execution-runs/run-a/pending/target-local']);
+        expect(storage.getState().sessions[sessionId].optimisticThinkingAt).toBe(parentThinking);
+        expect(await loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([]);
+    });
+
+    it('refuses unsupported target admission before local custody or any main request', async () => {
+        const sessionId = 'old-server';
+        storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
+        const request = vi.fn();
+        await expect(enqueuePendingMessageV2Impl({
+            sessionId, text: 'private', localId: 'unsupported', encryption: null,
+            recipient: { kind: 'execution_run', runId: 'run-a' }, targetMachineId: 'machine-a',
+            serverWireMode: 'pending_input_v1', outboxScope: testOutboxScope, request,
+        })).rejects.toMatchObject({ code: 'session_input_target_update_required' });
+        expect(request).not.toHaveBeenCalled();
+        expect(await loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([]);
+    });
+
+    it.each([
+        { status: 400, body: { error: 'invalid-params', code: 'session_input_target_update_required' }, expectedCode: 'session_input_target_update_required' },
+        { status: 404, body: { error: 'session-not-found', code: 'session_input_target_unavailable' }, expectedCode: 'session_input_target_unavailable' },
+        { status: 404, body: { error: 'not-found' }, expectedCode: 'session_input_target_update_required' },
+    ] as const)('preserves typed target rejection before released route-absence fallback ($expectedCode)', async ({ status, body, expectedCode }) => {
+        const sessionId = `target-rejection-${status}-${expectedCode}`;
+        storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
+        const request = vi.fn(async () => Response.json(body, { status }));
+
+        await expect(enqueuePendingMessageV2Impl({
+            sessionId, text: 'private', localId: `target-${status}-${expectedCode}`, encryption: null,
+            recipient: { kind: 'execution_run', runId: 'run-a' }, targetMachineId: 'machine-a',
+            serverWireMode: 'pending_input_v3', outboxScope: testOutboxScope, request,
+        })).rejects.toMatchObject({ code: expectedCode });
+
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(request.mock.calls[0]?.[0]).toContain('/execution-runs/run-a/pending');
+    });
+
+    it('submits Run input through real Pending despite an inactive parent, without parent resume or direct send', async () => {
+        const sessionId = 'inactive-parent';
+        const session = buildSession({ sessionId, overrides: { encryptionMode: 'plain', active: false, presence: 'offline' } });
+        storage.getState().applySessions([session]);
+        const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+        const paths: string[] = [];
+        // Runtime wake and direct send are process/transport boundaries; Pending stays real.
+        const ensureSessionRuntimeForPendingInput = vi.fn(async () => { throw new Error('Unexpected parent wake'); });
+        const sendMessage = vi.fn(async () => { throw new Error('Unexpected main send'); });
+        const port: SessionSubmitPort = {
+            enqueuePendingMessage: (id, text, displayText, metaOverrides, options) => enqueuePendingMessageV2Impl({
+                sessionId: id, text, displayText, metaOverrides, ...options, localId: options?.localId ?? undefined,
+                targetMachineId: 'machine-a', encryption: null, outboxScope: testOutboxScope, serverWireMode: 'pending_input_v3',
+                request: async (path, init) => { paths.push(path); return currentPendingEnqueueAck(init, { recipient }); },
+            }),
+            sendMessage, ensureSessionRuntimeForPendingInput, isSessionTargetRemoteToActiveServer: () => false,
+        };
+        const result = await submitSessionUserMessage(port, {
+            sessionId, session, text: 'continue run', recipient, localId: 'run-turn',
+            configuredMode: 'agent_queue', requestedAction: { v: 1, kind: 'steer_if_active' }, resumeCapabilityOptions: {},
+        });
+        expect(result).toMatchObject({ type: 'success', persistence: 'pending', wake: { attempted: false, state: 'not_needed' } });
+        expect(paths).toEqual(['/v2/sessions/inactive-parent/execution-runs/run-a/pending']);
+        expect(ensureSessionRuntimeForPendingInput).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).toBeNull();
     });
 
     it('keeps optimistic thinking and marks the pending row accepted after successful enqueue', async () => {
@@ -172,7 +289,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
             encryption,
             request: async (_path, init) => currentPendingEnqueueAck(init, { deliveryStatus: { status: 'queued' } }),
         })).resolves.toEqual({ localId: 'voice-local-1', accepted: false });
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([
+        expect((await loadPendingOutboxForSession(sessionId, testOutboxScope))).toEqual([
             expect.objectContaining({ localId: 'voice-local-1', operation: 'enqueue' }),
         ]);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
@@ -185,7 +302,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
         const localId = 'voice-frozen-local';
         const rawRecord = { role: 'user', content: { type: 'text', text: 'frozen' }, meta: {} } as const;
         storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId,
             localId,
             createdAt: 111,
@@ -201,7 +318,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
                     deliveryMode: 'external_handoff',
                 }),
             },
-        }, testOutboxScope);
+        }, testOutboxScope));
         const encryption = await createPendingQueueEncryption({ sessionId, seedByte: 7 });
 
         await expect(enqueuePendingMessageV2({
@@ -229,7 +346,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
             const rawRecord = { role: 'user' as const, content: { type: 'text' as const, text: 'provider custody' }, meta: {} };
             storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
             if (attempt === 'replay') {
-                savePendingOutboxMessage({
+                (await savePendingOutboxMessage({
                     sessionId,
                     localId,
                     createdAt: 111,
@@ -245,8 +362,8 @@ describe('pendingQueueV2 optimistic thinking', () => {
                             deliveryMode: 'external_handoff',
                         }),
                     },
-                }, testOutboxScope);
-                replayPersistedPendingOutboxForSession(sessionId, testOutboxScope);
+                }, testOutboxScope));
+                (await replayPersistedPendingOutboxForSession(sessionId, testOutboxScope));
             }
 
             let postStarted!: () => void;
@@ -282,7 +399,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
 
             await Promise.all([enqueue, cancellation]);
 
-            expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([]);
+            expect((await loadPendingOutboxForSession(sessionId, testOutboxScope))).toEqual([]);
             expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
                 expect.objectContaining({
                     localId,
@@ -349,7 +466,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
             outboxScope: testOutboxScope,
             isOutboxScopeCurrent: () => true,
         });
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, testOutboxScope))).toEqual([]);
         await deletePendingMessageV2({ sessionId, pendingId: localId, request });
         releasePost();
         await enqueue;
@@ -385,7 +502,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
             },
         });
 
-        expect(storage.getState().sessionPending[sessionId]?.messages[0]?.deliveryStatus).toBe('queued');
+        await vi.waitFor(() => expect(storage.getState().sessionPending[sessionId]?.messages[0]?.deliveryStatus).toBe('queued'));
 
         acceptRequest();
         await promise;
@@ -421,10 +538,10 @@ describe('pendingQueueV2 optimistic thinking', () => {
             },
         });
 
-        expect(localProjections).toEqual([{
+        await vi.waitFor(() => expect(localProjections).toEqual([{
             localId: expect.any(String),
             acceptedRows: 0,
-        }]);
+        }]));
 
         acceptRequest();
         await promise;
@@ -463,6 +580,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
             request,
         });
 
+        await postStartedGate;
         const localId = storage.getState().sessionPending[sessionId]?.messages[0]?.localId;
         expect(localId).toEqual(expect.any(String));
 
@@ -474,12 +592,12 @@ describe('pendingQueueV2 optimistic thinking', () => {
             request,
         });
 
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([
+        await vi.waitFor(async () => expect(await loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([
             expect.objectContaining({ localId, operation: 'cancel' }),
-        ]);
+        ]));
 
         storage.getState().removePendingMessage(sessionId, localId!);
-        replayPersistedPendingOutboxForSession(sessionId, testOutboxScope);
+        (await replayPersistedPendingOutboxForSession(sessionId, testOutboxScope));
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({ localId, pendingOutboxOperation: 'cancel' }),
         ]);
@@ -527,7 +645,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
         });
         await firstPostStartedGate;
 
-        persistLocalPending({ sessionId, localId: 'second-local', text: 'second', scope: testOutboxScope });
+        (await persistLocalPending({ sessionId, localId: 'second-local', text: 'second', scope: testOutboxScope }));
         const queuedRetry = retryPendingOutboxOperationV2({
             sessionId,
             localId: 'second-local',
@@ -536,9 +654,9 @@ describe('pendingQueueV2 optimistic thinking', () => {
         });
         const remove = deletePendingMessageV2({ sessionId, pendingId: 'second-local', request });
 
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual(expect.arrayContaining([
+        await vi.waitFor(async () => expect(await loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual(expect.arrayContaining([
             expect.objectContaining({ localId: 'second-local', operation: 'cancel' }),
-        ]));
+        ])));
 
         releaseFirstPost();
         await Promise.all([firstEnqueue, queuedRetry, remove]);
@@ -599,7 +717,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
             pendingId: 'encrypting-local',
             request,
         });
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, testOutboxScope))).toEqual([]);
 
         await fetchAndApplyPendingMessagesV2({
             sessionId,
@@ -753,12 +871,12 @@ describe('pendingQueueV2 optimistic thinking', () => {
         const sessionId = 's_test_retry_invalidates_snapshot';
         const localId = 'newly-accepted-retry-local';
         storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
-        persistLocalPending({
+        (await persistLocalPending({
             sessionId,
             localId,
             text: 'newly accepted retry',
             scope: testOutboxScope,
-        });
+        }));
         const encryption = await createPendingQueueEncryption({ sessionId, seedByte: 22 });
         let refreshStarted!: () => void;
         const refreshStartedGate = new Promise<void>((resolve) => { refreshStarted = resolve; });
@@ -786,7 +904,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
         releaseRefresh();
         await olderRefresh;
 
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, testOutboxScope))).toEqual([]);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({
                 localId,
@@ -803,12 +921,12 @@ describe('pendingQueueV2 optimistic thinking', () => {
             const localIds = ['accepted-after-capture-a', 'accepted-after-capture-b'] as const;
             storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
             for (const localId of localIds) {
-                persistLocalPending({
+                (await persistLocalPending({
                     sessionId,
                     localId,
                     text: `local ${localId}`,
                     scope: testOutboxScope,
-                });
+                }));
             }
             const encryption = await createPendingQueueEncryption({ sessionId, seedByte: 23 });
             let refreshStarted!: () => void;
@@ -857,7 +975,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
             releaseRefresh();
             await olderRefresh;
 
-            expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([]);
+            expect((await loadPendingOutboxForSession(sessionId, testOutboxScope))).toEqual([]);
             expect(storage.getState().sessionPending[sessionId]?.messages).toEqual(
                 expect.arrayContaining(localIds.map((localId) => expect.objectContaining({
                     localId,
@@ -1028,12 +1146,12 @@ describe('pendingQueueV2 optimistic thinking', () => {
             sessionId,
             overrides: { encryptionMode: 'plain' },
         })]);
-        persistLocalPending({
+        (await persistLocalPending({
             sessionId,
             localId,
             text: 'durable projection',
             scope: testOutboxScope,
-        });
+        }));
         const encryption = await createPendingQueueEncryption({ sessionId });
 
         await fetchAndApplyPendingMessagesV2({
@@ -1065,7 +1183,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
                 pendingDeliveryStatus: 'server_queued',
             }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, testOutboxScope))).toEqual([]);
     });
 
     it('publishes server-discarded authority while retaining durable cancellation custody', async () => {
@@ -1075,13 +1193,13 @@ describe('pendingQueueV2 optimistic thinking', () => {
             sessionId,
             overrides: { encryptionMode: 'plain' },
         })]);
-        persistLocalPending({
+        (await persistLocalPending({
             sessionId,
             localId,
             text: 'durable cancellation',
             scope: testOutboxScope,
             operation: 'cancel',
-        });
+        }));
         const encryption = await createPendingQueueEncryption({ sessionId });
 
         await fetchAndApplyPendingMessagesV2({
@@ -1115,7 +1233,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
                 pendingOutboxScope: testOutboxScope,
             })],
         }));
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([
+        expect((await loadPendingOutboxForSession(sessionId, testOutboxScope))).toEqual([
             expect.objectContaining({ localId, operation: 'cancel' }),
         ]);
     });
@@ -1153,9 +1271,9 @@ describe('pendingQueueV2 optimistic thinking', () => {
         });
         await postStartedGate;
         const removePromise = deletePendingMessageV2({ sessionId, pendingId: 'ambiguous-local', request });
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([
+        await vi.waitFor(async () => expect(await loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([
             expect.objectContaining({ localId: 'ambiguous-local', operation: 'cancel' }),
-        ]);
+        ]));
 
         releasePost();
         await expect(enqueuePromise).resolves.toEqual({ localId: 'ambiguous-local', accepted: false });
@@ -1164,7 +1282,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
             { path: `/v2/sessions/${sessionId}/pending`, method: 'POST' },
             { path: `/v2/sessions/${sessionId}/pending/ambiguous-local`, method: 'DELETE' },
         ]);
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, testOutboxScope))).toEqual([]);
     });
 
     it('serializes server-owned retained-outbox cancellation behind an in-flight POST', async () => {
@@ -1201,9 +1319,9 @@ describe('pendingQueueV2 optimistic thinking', () => {
         });
 
         const cancellation = deletePendingMessageV2({ sessionId, pendingId: localId, request });
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([
+        await vi.waitFor(async () => expect(await loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([
             expect.objectContaining({ localId, operation: 'cancel' }),
-        ]);
+        ]));
         expect(calls).toEqual([{ path: `/v2/sessions/${sessionId}/pending`, method: 'POST' }]);
 
         releasePost();
@@ -1213,7 +1331,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
             { path: `/v2/sessions/${sessionId}/pending`, method: 'POST' },
             { path: `/v2/sessions/${sessionId}/pending/${localId}`, method: 'DELETE' },
         ]);
-        expect(loadPendingOutboxForSession(sessionId, testOutboxScope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, testOutboxScope))).toEqual([]);
         expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
     });
 
@@ -1223,7 +1341,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
         const scopeA = { serverId: 'server-a', accountId: 'account-a' } as const;
         const scopeB = { serverId: 'server-b', accountId: 'account-b' } as const;
         storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
-        persistLocalPending({ sessionId, localId, text: 'cancel A', scope: scopeA });
+        (await persistLocalPending({ sessionId, localId, text: 'cancel A', scope: scopeA }));
 
         let deleteAStarted!: () => void;
         const deleteAStartedGate = new Promise<void>((resolve) => {
@@ -1251,9 +1369,10 @@ describe('pendingQueueV2 optimistic thinking', () => {
         const enqueueB = enqueuePendingMessageV2Impl({
             serverWireMode: 'pending_input_v1',
             sessionId,
+            session: buildSession({ sessionId, overrides: { serverId: scopeB.serverId, encryptionMode: 'plain' } }),
             localId,
             text: 'send B',
-            encryption: { getSessionEncryption: () => null } as unknown as Encryption,
+            encryption: null,
             outboxScope: scopeB,
             request: async (_path, init) => {
                 if (init?.method === 'POST') {
@@ -1267,9 +1386,9 @@ describe('pendingQueueV2 optimistic thinking', () => {
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(scopeBPostCount).toBe(1);
+        await vi.waitFor(() => expect(scopeBPostCount).toBe(1));
         await enqueueB;
-        expect(loadPendingOutboxForSession(sessionId, scopeB)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scopeB))).toEqual([]);
 
         releaseDeleteA();
         await Promise.all([deleteA, enqueueB]);
@@ -1281,7 +1400,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
         const scopeA = { serverId: 'server-a', accountId: 'account-a' } as const;
         const scopeB = { serverId: 'server-b', accountId: 'account-b' } as const;
         storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
-        persistLocalPending({ sessionId, localId, text: 'cancel A', scope: scopeA });
+        (await persistLocalPending({ sessionId, localId, text: 'cancel A', scope: scopeA }));
 
         let deleteStarted!: () => void;
         const deleteStartedGate = new Promise<void>((resolve) => { deleteStarted = resolve; });
@@ -1301,14 +1420,14 @@ describe('pendingQueueV2 optimistic thinking', () => {
         });
         await deleteStartedGate;
 
-        persistLocalPending({ sessionId, localId, text: 'keep B', scope: scopeB });
+        (await persistLocalPending({ sessionId, localId, text: 'keep B', scope: scopeB }));
         releaseDelete();
         await cancellation;
 
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({ localId, text: 'keep B', pendingOutboxScope: scopeB }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scopeB)).toEqual([
+        expect((await loadPendingOutboxForSession(sessionId, scopeB))).toEqual([
             expect.objectContaining({ localId, text: 'keep B', operation: 'enqueue' }),
         ]);
     });
@@ -1318,7 +1437,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
         const localId = 'same-local-cancel-entry';
         const scopeA = { serverId: 'server-a', accountId: 'account-a' } as const;
         const scopeB = { serverId: 'server-b', accountId: 'account-b' } as const;
-        persistLocalPending({ sessionId, localId, text: 'keep B', scope: scopeB });
+        (await persistLocalPending({ sessionId, localId, text: 'keep B', scope: scopeB }));
         const request = vi.fn(async () => new Response(null, { status: 200 }));
 
         await deletePendingMessageV2Impl({
@@ -1332,7 +1451,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({ localId, text: 'keep B', pendingOutboxScope: scopeB }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scopeB)).toHaveLength(1);
+        expect((await loadPendingOutboxForSession(sessionId, scopeB))).toHaveLength(1);
     });
 
     it('does not replace another scope projection when scoped enqueue is accepted', async () => {
@@ -1349,9 +1468,10 @@ describe('pendingQueueV2 optimistic thinking', () => {
         const enqueueA = enqueuePendingMessageV2Impl({
             serverWireMode: 'pending_input_v1',
             sessionId,
+            session: buildSession({ sessionId, overrides: { serverId: scopeA.serverId, encryptionMode: 'plain' } }),
             localId,
             text: 'accept A',
-            encryption: { getSessionEncryption: () => null } as unknown as Encryption,
+            encryption: null,
             outboxScope: scopeA,
             request: async (_path, init) => {
                 if (init?.method === 'POST') {
@@ -1364,14 +1484,14 @@ describe('pendingQueueV2 optimistic thinking', () => {
         });
         await postStartedGate;
 
-        persistLocalPending({ sessionId, localId, text: 'keep B', scope: scopeB });
+        (await persistLocalPending({ sessionId, localId, text: 'keep B', scope: scopeB }));
         releasePost();
         await enqueueA;
 
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({ localId, text: 'keep B', pendingOutboxScope: scopeB }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scopeB)).toEqual([
+        expect((await loadPendingOutboxForSession(sessionId, scopeB))).toEqual([
             expect.objectContaining({ localId, text: 'keep B', operation: 'enqueue' }),
         ]);
     });
@@ -1469,11 +1589,14 @@ describe('pendingQueueV2 optimistic thinking', () => {
         const sessionId = 's_test_encrypt_fail';
         storage.getState().applySessions([buildSession({ sessionId })]);
 
+        const encryptionStarted = createDeferred<void>();
+        const encryptionResult = createDeferred<string>();
         const encryption = {
             getSessionEncryption: () =>
                 ({
                     encryptRawRecord: async () => {
-                        throw new Error('encrypt-failed');
+                        encryptionStarted.resolve();
+                        return encryptionResult.promise;
                     },
                 }) as unknown as ReturnType<Encryption['getSessionEncryption']>,
         } as unknown as Encryption;
@@ -1485,11 +1608,14 @@ describe('pendingQueueV2 optimistic thinking', () => {
             text: 'hello',
             encryption,
             request: async (_path, init) => currentPendingEnqueueAck(init),
-        }).catch(() => null);
+        });
+        const rejection = expect(promise).rejects.toThrow('encrypt-failed');
+        await encryptionStarted.promise;
 
         expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).not.toBeNull();
 
-        await promise;
+        encryptionResult.reject(new Error('encrypt-failed'));
+        await rejection;
 
         expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).toBeNull();
     });

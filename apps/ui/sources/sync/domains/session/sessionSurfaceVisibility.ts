@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { SessionAddress } from './sessionAddress';
 
 import { resolveServerIdForSessionIdFromLocalCache } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache';
 import {
@@ -24,8 +25,10 @@ type MutableSessionSurfaceVisibilityState = {
     visibleScopedSessionServerIdsBySessionId: Map<string, Set<string>>;
     visibleScopedSessionServerIdBySessionKey: Map<string, string>;
     focusedSessionId: string | null;
+    focusedSessionAddress: SessionAddress | null;
     routeAnchorSessionId: string | null;
     snapshot: SessionSurfaceVisibilitySnapshot;
+    visibleSurfaces: readonly SessionAddress[];
 };
 
 const sessionSurfaceVisibilityStateKey = '__HAPPIER_SESSION_SURFACE_VISIBILITY_STATE__';
@@ -41,7 +44,9 @@ function createSessionSurfaceVisibilityState(): MutableSessionSurfaceVisibilityS
         visibleScopedSessionServerIdsBySessionId: new Map<string, Set<string>>(),
         visibleScopedSessionServerIdBySessionKey: new Map<string, string>(),
         focusedSessionId: null,
+        focusedSessionAddress: null,
         routeAnchorSessionId: null,
+        visibleSurfaces: [],
         snapshot: {
             focusedSessionId: null,
             routeAnchorSessionId: null,
@@ -56,6 +61,7 @@ function getSessionSurfaceVisibilityState(): MutableSessionSurfaceVisibilityStat
     const state = host[sessionSurfaceVisibilityStateKey];
     state.resetListeners ??= new Set<() => void>();
     state.resetVersion ??= 0;
+    state.focusedSessionAddress ??= null;
     return state;
 }
 
@@ -133,14 +139,7 @@ function removeVisibleScopedSessionKey(sessionId: string, sessionKey: string): v
 }
 
 function readVisibleScopedServerIds(sessionId: string): Set<string> {
-    const serverIds = new Set(visibleScopedSessionServerIdsBySessionId.get(sessionId) ?? []);
-    const sessionKeySuffix = `:${sessionId}`;
-    for (const sessionKey of visibleScopedSessionKeysBySessionId.get(sessionId) ?? []) {
-        if (!sessionKey.endsWith(sessionKeySuffix)) continue;
-        const serverId = sessionKey.slice(0, -sessionKeySuffix.length).trim();
-        if (serverId) serverIds.add(serverId);
-    }
-    return serverIds;
+    return new Set(visibleScopedSessionServerIdsBySessionId.get(sessionId) ?? []);
 }
 
 function hasEquivalentVisibleScopedServer(sessionId: string, serverId: string): boolean {
@@ -167,11 +166,29 @@ function emitReset(): void {
 }
 
 function refreshSnapshot(): void {
+    const surfaces: SessionAddress[] = [];
+    for (const [sessionId, keys] of visibleScopedSessionKeysBySessionId) {
+        for (const key of keys) {
+            const serverId = visibleScopedSessionServerIdBySessionKey.get(key);
+            if (serverId) surfaces.push({ serverId, sessionId });
+        }
+    }
+    surfaces.sort((a, b) => a.serverId.localeCompare(b.serverId) || a.sessionId.localeCompare(b.sessionId));
+    const previous = sessionSurfaceVisibilityState.visibleSurfaces;
+    if (!previous || previous.length !== surfaces.length || surfaces.some((value, index) => (
+        value.serverId !== previous[index].serverId || value.sessionId !== previous[index].sessionId
+    ))) sessionSurfaceVisibilityState.visibleSurfaces = surfaces;
+
     sessionSurfaceVisibilityState.snapshot = {
         focusedSessionId: sessionSurfaceVisibilityState.focusedSessionId,
         routeAnchorSessionId: sessionSurfaceVisibilityState.routeAnchorSessionId,
         visibleSessionIds: Array.from(visibleSessionRefCount.keys()),
     };
+}
+
+/** Only exact, actually rendered Home-qualified surfaces; no focus/subscription inference. */
+export function getVisibleSessionSurfaces(): readonly SessionAddress[] {
+    return sessionSurfaceVisibilityState.visibleSurfaces ?? [];
 }
 
 export function getSessionSurfaceVisibilitySnapshot(): SessionSurfaceVisibilitySnapshot {
@@ -206,6 +223,15 @@ export function useSessionSurfaceVisibilitySnapshot(): SessionSurfaceVisibilityS
 
 export function useFocusedSessionId(): string | null {
     return useSessionSurfaceVisibilitySnapshot().focusedSessionId;
+}
+
+export function getFocusedSessionAddress(): SessionAddress | null {
+    return sessionSurfaceVisibilityState.focusedSessionAddress;
+}
+
+export function useFocusedSessionAddress(): SessionAddress | null {
+    useSessionSurfaceVisibilitySnapshot();
+    return sessionSurfaceVisibilityState.focusedSessionAddress;
 }
 
 export function markSessionSurfaceVisible(sessionId: string, serverId?: string | null): void {
@@ -265,17 +291,27 @@ export function markSessionSurfaceHidden(sessionId: string, serverId?: string | 
     emitChange();
 }
 
-export function setFocusedSessionId(sessionId: string | null): void {
-    sessionSurfaceVisibilityState.focusedSessionId = normalizeNullableSessionId(sessionId);
+export function setFocusedSessionId(sessionId: string | null, serverId?: string | null): void {
+    const identity = resolveVisibleSessionIdentity(sessionId, serverId);
+    sessionSurfaceVisibilityState.focusedSessionId = identity.sessionId;
+    sessionSurfaceVisibilityState.focusedSessionAddress = identity.serverId && identity.sessionId
+        ? { serverId: identity.serverId, sessionId: identity.sessionId }
+        : null;
     refreshSnapshot();
     emitChange();
 }
 
-export function clearFocusedSessionId(sessionId: string): void {
-    const normalizedSessionId = normalizeNullableSessionId(sessionId);
+export function clearFocusedSessionId(sessionId: string, serverId?: string | null): void {
+    const identity = resolveVisibleSessionIdentity(sessionId, serverId);
+    const normalizedSessionId = identity.sessionId;
     if (!normalizedSessionId) return;
-    if (sessionSurfaceVisibilityState.focusedSessionId === normalizedSessionId) {
+    const focusedAddress = sessionSurfaceVisibilityState.focusedSessionAddress;
+    const clearsExactFocus = !identity.serverId
+        || !focusedAddress
+        || areServerProfileIdentifiersEquivalent(focusedAddress.serverId, identity.serverId);
+    if (sessionSurfaceVisibilityState.focusedSessionId === normalizedSessionId && clearsExactFocus) {
         sessionSurfaceVisibilityState.focusedSessionId = null;
+        sessionSurfaceVisibilityState.focusedSessionAddress = null;
         refreshSnapshot();
         emitChange();
     }
@@ -329,6 +365,7 @@ function clearSessionSurfaceVisibility(options: Readonly<{ notifyMountedSurfaces
     visibleScopedSessionServerIdsBySessionId.clear();
     visibleScopedSessionServerIdBySessionKey.clear();
     sessionSurfaceVisibilityState.focusedSessionId = null;
+    sessionSurfaceVisibilityState.focusedSessionAddress = null;
     sessionSurfaceVisibilityState.routeAnchorSessionId = null;
     refreshSnapshot();
     emitChange();

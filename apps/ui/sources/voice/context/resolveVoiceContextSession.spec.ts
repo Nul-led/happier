@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 
 import { resolveVoiceContextSessionFromState } from './resolveVoiceContextSession';
 
@@ -20,22 +21,25 @@ describe('resolveVoiceContextSessionFromState', () => {
           },
         },
       },
-      sessionListRenderables: {
-        s1: {
-          id: 's1',
-          active: false,
-          updatedAt: 99,
-          presence: 'away',
-          metadata: {
-            path: '/lookup/path',
-            homeDir: '/lookup/home',
-            name: 'lookup name',
-            machineId: 'lookup-machine',
-            summaryText: 'Lookup summary',
-            summary: { text: 'Lookup summary', updatedAt: 99 },
+      sessionListRowsByServerId: {
+        'server-a': {
+          s1: {
+            id: 's1',
+            active: false,
+            updatedAt: 99,
+            presence: 'away',
+            metadata: {
+              path: '/lookup/path',
+              homeDir: '/lookup/home',
+              name: 'lookup name',
+              machineId: 'lookup-machine',
+              summaryText: 'Lookup summary',
+              summary: { text: 'Lookup summary', updatedAt: 99 },
+            },
           },
         },
       },
+      ordinarySessionListMembershipByServerId: { 'server-a': ['s1'] },
       sessionListIndexByServerId: {
         'server-a': [
           { type: 'session', sessionId: 's1', serverId: 'server-a', serverName: 'Server A' },
@@ -79,22 +83,25 @@ describe('resolveVoiceContextSessionFromState', () => {
           },
         },
       },
-      sessionListRenderables: {
-        'wrong-id': {
-          id: 'wrong-id',
-          active: false,
-          updatedAt: 99,
-          presence: 'away',
-          metadata: {
-            path: '/lookup/path',
-            homeDir: '/lookup/home',
-            name: 'lookup name',
-            machineId: 'lookup-machine',
-            summaryText: 'Lookup summary',
-            summary: { text: 'Lookup summary', updatedAt: 99 },
+      sessionListRowsByServerId: {
+        'server-a': {
+          'wrong-id': {
+            id: 'wrong-id',
+            active: false,
+            updatedAt: 99,
+            presence: 'away',
+            metadata: {
+              path: '/lookup/path',
+              homeDir: '/lookup/home',
+              name: 'lookup name',
+              machineId: 'lookup-machine',
+              summaryText: 'Lookup summary',
+              summary: { text: 'Lookup summary', updatedAt: 99 },
+            },
           },
         },
       },
+      ordinarySessionListMembershipByServerId: { 'server-a': ['wrong-id'] },
       sessionListIndexByServerId: {
         'server-a': [
           { type: 'session', sessionId: 'wrong-id', serverId: 'server-a', serverName: 'Server A' },
@@ -121,6 +128,7 @@ describe('resolveVoiceContextSessionFromState', () => {
   });
 
   it('keeps a layout-v1 hydrated owner session instead of substituting a shared list projection', () => {
+    const serverId = getActiveServerSnapshot().serverId;
     const ownerMetadataView = {
       path: '/owner/path',
       machineId: 'owner-machine',
@@ -134,16 +142,19 @@ describe('resolveVoiceContextSessionFromState', () => {
           ownerMetadataView,
         },
       },
-      sessionListRenderables: {
-        s1: {
-          id: 's1',
-          updatedAt: 99,
-          metadataLayoutVersion: 1,
-          metadata: { summaryText: 'Shared summary', path: '/shared/list-lookalike' },
+      sessionListRowsByServerId: {
+        [serverId]: {
+          s1: {
+            id: 's1',
+            updatedAt: 99,
+            metadataLayoutVersion: 1,
+            metadata: { summaryText: 'Shared summary', path: '/shared/list-lookalike' },
+          },
         },
       },
+      ordinarySessionListMembershipByServerId: { [serverId]: ['s1'] },
       sessionListIndexByServerId: {
-        server: [{ type: 'session', sessionId: 's1', serverId: 'server' }],
+        [serverId]: [{ type: 'session', sessionId: 's1', serverId }],
       },
     };
 

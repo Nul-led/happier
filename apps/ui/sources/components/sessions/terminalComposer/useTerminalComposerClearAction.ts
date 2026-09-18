@@ -53,7 +53,7 @@ function getTerminalComposerClearFailureStatus(result: unknown): string | null {
     return null;
 }
 
-export function useTerminalComposerClearAction(sessionId: string): Readonly<{
+export function useTerminalComposerClearAction(sessionId: string, serverId?: string | null): Readonly<{
     busy: boolean;
     clearTerminalComposer: (options?: Readonly<{ expectedStateAtMs?: number | null }>) => Promise<void>;
 }> {
@@ -83,7 +83,12 @@ export function useTerminalComposerClearAction(sessionId: string): Readonly<{
                         ? { expectedStateAtMs }
                         : {}),
                 },
-                { defaultSessionId: sessionId, surface: 'ui', placement: 'pending_messages' },
+                {
+                    defaultSessionId: sessionId,
+                    ...(serverId?.trim() ? { serverId: serverId.trim() } : {}),
+                    surface: 'ui',
+                    placement: 'pending_messages',
+                },
             );
             const failureStatus = getTerminalComposerClearFailureStatus(result);
             if (failureStatus) {
@@ -94,7 +99,7 @@ export function useTerminalComposerClearAction(sessionId: string): Readonly<{
         } finally {
             setBusy(false);
         }
-    }, [actionExecutor, busy, sessionId]);
+    }, [actionExecutor, busy, serverId, sessionId]);
 
     return { busy, clearTerminalComposer };
 }

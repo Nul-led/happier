@@ -10,11 +10,12 @@ import { isDemoModeActive } from '@/demoMode/runtime/enterExitDemoMode';
 import { sync } from '@/sync/sync';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 const SESSION_VIEWED_SEQ_CHANGE_MARK_DELAY_MS = 250;
 
 export type UseSessionViewedLifecycleInput = Readonly<{
-    sessionId: string;
+    address: SessionAddress;
     visibleReadSeq: number | null;
     surfaceFocused: boolean;
 }>;
@@ -25,6 +26,9 @@ function normalizeVisibleReadSeq(value: number | null): number | null {
 }
 
 export function useSessionViewedLifecycle(input: UseSessionViewedLifecycleInput): void {
+    const address = normalizeSessionAddress(input.address.serverId, input.address.sessionId);
+    const serverId = address?.serverId ?? '';
+    const sessionId = address?.sessionId ?? '';
     const demoModeActive = isDemoModeActive();
     const markViewedTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const lastMarkedRef = React.useRef<{ sessionSeq: number } | null>(null);
@@ -52,35 +56,36 @@ export function useSessionViewedLifecycle(input: UseSessionViewedLifecycleInput)
         const sessionSeq = normalizeVisibleReadSeq(opts.sessionSeq);
         if (sessionSeq === null) return;
         if (shouldSuppressAutomaticMarkViewed({
-            sessionId: input.sessionId,
+            sessionId,
             sessionSeq,
             activationId: opts.activationId,
         })) {
             return;
         }
         fireAndForget(
-            sync.markSessionViewed(input.sessionId, { sessionSeq }).then(() => {
-                clearManualUnreadHold({ sessionId: input.sessionId, activationId: opts.activationId });
+            sync.markSessionViewed({ serverId, sessionId }, { sessionSeq }).then(() => {
+                clearManualUnreadHold({ sessionId, activationId: opts.activationId });
             }),
             { tag: 'SessionView.markSessionViewed' },
         );
-    }, [demoModeActive, input.sessionId]);
+    }, [demoModeActive, serverId, sessionId]);
 
     React.useLayoutEffect(() => {
         const active = activeViewingSeqRef.current;
-        if (active?.sessionId === input.sessionId) {
+        if (active?.sessionId === sessionId) {
             active.visibleReadSeq = currentVisibleReadSeq;
         }
-    }, [currentVisibleReadSeq, input.sessionId]);
+    }, [currentVisibleReadSeq, sessionId]);
 
     React.useEffect(() => {
         if (!input.surfaceFocused || demoModeActive) return;
 
-        const activationId = beginSessionViewingActivation(input.sessionId);
+        if (!serverId || !sessionId) return;
+        const activationId = beginSessionViewingActivation(sessionId);
         activationIdRef.current = activationId;
         const initialVisibleSeq = visibleReadSeqRef.current;
         activeViewingSeqRef.current = {
-            sessionId: input.sessionId,
+            sessionId,
             activationId,
             visibleReadSeq: initialVisibleSeq,
         };
@@ -93,7 +98,7 @@ export function useSessionViewedLifecycle(input: UseSessionViewedLifecycleInput)
 
         return () => {
             const activeViewingSeq = activeViewingSeqRef.current;
-            const activeViewingSeqMatches = activeViewingSeq?.sessionId === input.sessionId
+            const activeViewingSeqMatches = activeViewingSeq?.sessionId === sessionId
                 && activeViewingSeq.activationId === activationId;
             const sessionSeqAtBlur = activeViewingSeqMatches ? activeViewingSeq.visibleReadSeq : initialVisibleSeq;
             if (activeViewingSeqMatches) {
@@ -102,7 +107,7 @@ export function useSessionViewedLifecycle(input: UseSessionViewedLifecycleInput)
             cancelMarkViewed();
             clearDelayedMark();
             if (sessionSeqAtBlur !== null && !shouldSuppressAutomaticMarkViewed({
-                sessionId: input.sessionId,
+                sessionId,
                 sessionSeq: sessionSeqAtBlur,
                 activationId,
             })) {
@@ -110,12 +115,12 @@ export function useSessionViewedLifecycle(input: UseSessionViewedLifecycleInput)
                     markSessionViewed({ sessionSeq: sessionSeqAtBlur, activationId });
                 });
             }
-            endSessionViewingActivation(input.sessionId, activationId);
+            endSessionViewingActivation(sessionId, activationId);
             if (activationIdRef.current === activationId) {
                 activationIdRef.current = null;
             }
         };
-    }, [clearDelayedMark, demoModeActive, input.sessionId, input.surfaceFocused, markSessionViewed]);
+    }, [clearDelayedMark, demoModeActive, input.surfaceFocused, markSessionViewed, serverId, sessionId]);
 
     React.useEffect(() => {
         if (!input.surfaceFocused || demoModeActive) {
@@ -131,7 +136,7 @@ export function useSessionViewedLifecycle(input: UseSessionViewedLifecycleInput)
         if (pending && pending.sessionSeq >= sessionSeq) return;
 
         if (shouldSuppressAutomaticMarkViewed({
-            sessionId: input.sessionId,
+            sessionId,
             sessionSeq,
             activationId: activationIdRef.current,
         })) {
@@ -149,5 +154,5 @@ export function useSessionViewedLifecycle(input: UseSessionViewedLifecycleInput)
         }, SESSION_VIEWED_SEQ_CHANGE_MARK_DELAY_MS);
 
         return clearDelayedMark;
-    }, [clearDelayedMark, demoModeActive, input.sessionId, input.visibleReadSeq, input.surfaceFocused, markSessionViewed]);
+    }, [clearDelayedMark, demoModeActive, input.visibleReadSeq, input.surfaceFocused, markSessionViewed, sessionId]);
 }

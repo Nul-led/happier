@@ -253,6 +253,29 @@ describe('resolveVoiceToolResultHumanSummary', () => {
         expect(trackedSummary).not.toContain('sess_456');
     });
 
+    it('describes a partial tracked-set result as incomplete instead of announcing the projection as fully tracked', () => {
+        const summary = resolveVoiceToolResultHumanSummary({
+            toolName: 'setTrackedSessions',
+            toolInput: { sessionIds: ['sess_456'] },
+            toolResult: {
+                ok: false,
+                status: 'partial',
+                sessionIds: ['sess_123'],
+                sessionAddresses: [{ serverId: 'server-a', sessionId: 'sess_123' }],
+                sessions: [{ id: 'sess_123', title: 'Payments bugfix' }],
+                error: {
+                    code: 'session_follow_partial',
+                    message: 'Include in Voice was updated for only some sessions. Retry to finish the requested set.',
+                },
+            },
+            shareFilePaths: true,
+            shareSessionSummary: true,
+        });
+
+        expect(summary).toBe('Include in Voice was updated for only some sessions. Retry to finish the requested set.');
+        expect(summary).not.toContain('Tracking sessions');
+    });
+
     it('redacts repo-relative location labels when shareFilePaths is false', () => {
         const summary = resolveVoiceToolResultHumanSummary({
             toolName: 'listSessions',

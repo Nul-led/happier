@@ -6,8 +6,15 @@ type SetCredentialsForServerUrlWithRollback = TokenStorageModule['TokenStorage']
 
 const setCredentialsForServerUrlMock = vi.hoisted(() => vi.fn<SetCredentialsForServerUrl>(async () => true));
 const setCredentialsForServerUrlWithRollbackMock = vi.hoisted(() => vi.fn<SetCredentialsForServerUrlWithRollback>());
+const getHomeCredentialsUnderMutationAuthorityMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => null as { token: string } | null));
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
+    getHomeCredentialsUnderMutationAuthority: (...args: unknown[]) => getHomeCredentialsUnderMutationAuthorityMock(...args),
+    removeHomeCredentialsUnderMutationAuthority: vi.fn(async () => true),
+    setHomeCredentialsWithRollbackUnderMutationAuthority: (
+        _authority: unknown,
+        ...args: Parameters<SetCredentialsForServerUrlWithRollback>
+    ) => setCredentialsForServerUrlWithRollbackMock(...args),
     TokenStorage: {
         setCredentialsForServerUrl: (...args: Parameters<SetCredentialsForServerUrl>) => setCredentialsForServerUrlMock(...args),
         setCredentialsForServerUrlWithRollback: (...args: Parameters<SetCredentialsForServerUrlWithRollback>) => setCredentialsForServerUrlWithRollbackMock(...args),
@@ -21,20 +28,105 @@ describe('adoptHomeProfileWithCredentials', () => {
         setCredentialsForServerUrlMock.mockReset();
         setCredentialsForServerUrlMock.mockResolvedValue(true);
         setCredentialsForServerUrlWithRollbackMock.mockReset();
+        getHomeCredentialsUnderMutationAuthorityMock.mockReset();
+        getHomeCredentialsUnderMutationAuthorityMock.mockResolvedValue(null);
         if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
         vi.resetModules();
     });
 
+    it('leaves an established profile unchanged when the replacement credential cannot be stored before a canonical URL move', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `canonical_url_write_failure_${Date.now()}_${Math.random()}`;
+        const profiles = await import('./serverProfiles');
+        const established = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_moving_home',
+                canonicalServerUrl: 'https://moving-home-old.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://moving-home-old.test' }],
+            },
+        });
+        setCredentialsForServerUrlWithRollbackMock.mockResolvedValueOnce(null);
+        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+
+        await expect(adoptHomeProfileWithCanonicalUrlMigration({
+            source: 'qr',
+            credentials: { token: 'new-home-token' },
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_moving_home',
+                canonicalServerUrl: 'https://moving-home-new.test',
+                revision: 2,
+                endpoints: [{ kind: 'https', url: 'https://moving-home-new.test' }],
+            },
+        })).rejects.toThrow('Unable to store Home credentials');
+
+        expect(profiles.getServerProfileById(established.id)).toEqual(established);
+    });
+
+    it('serializes a competing profile claim until a same-identity credential and URL move commits', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `canonical_url_adoption_rollback_${Date.now()}_${Math.random()}`;
+        const profiles = await import('./serverProfiles');
+        const established = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_moving_home',
+                canonicalServerUrl: 'https://moving-home-old.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://moving-home-old.test' }],
+            },
+        });
+        const rollback = vi.fn(async () => true);
+        getHomeCredentialsUnderMutationAuthorityMock.mockResolvedValue({ token: 'new-home-token' });
+        let competitor: Promise<unknown> | null = null;
+        setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async () => {
+            competitor = (async () => {
+                const profile = await profiles.upsertServerProfile({
+                    serverUrl: 'https://moving-home-new.test',
+                    source: 'manual',
+                });
+                return await profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_competing_home');
+            })();
+            return {
+                serverUrl: 'https://moving-home-old.test',
+                serverId: 'srv_moving_home',
+                rollback,
+            };
+        });
+        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+
+        await expect(adoptHomeProfileWithCanonicalUrlMigration({
+            source: 'qr',
+            credentials: { token: 'new-home-token' },
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_moving_home',
+                canonicalServerUrl: 'https://moving-home-new.test',
+                revision: 2,
+                endpoints: [{ kind: 'https', url: 'https://moving-home-new.test' }],
+            },
+        })).resolves.toMatchObject({ kind: 'migrated' });
+
+        expect(rollback).not.toHaveBeenCalled();
+        await expect(competitor!).resolves.toBeNull();
+        expect(profiles.getServerProfileById(established.id)).toMatchObject({
+            canonicalServerUrl: 'https://moving-home-new.test',
+            serverIdentityId: 'srv_moving_home',
+        });
+    });
+
     it.each([
         ['the previous credential', { token: 'previous-home-b-token' }],
         ['an empty target', null],
-    ])('restores %s when final profile adoption fails after the credential write', async (_label, priorCredential) => {
+    ])('keeps the new credential when a competing profile claim waits for atomic adoption from %s', async (_label, priorCredential) => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_rollback_${Date.now()}_${Math.random()}`;
         const profiles = await import('./serverProfiles');
-        const focused = profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
-        profiles.setActiveServerId(focused.id);
-        profiles.saveHomeViewState({
+        const focused = await profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
+        await profiles.setActiveServerId(focused.id);
+        await profiles.saveHomeViewState({
             version: 1,
             activeTargetKind: 'server',
             activeTargetId: focused.id,
@@ -47,17 +139,20 @@ describe('adoptHomeProfileWithCredentials', () => {
             storedCredential = priorCredential;
             return true;
         });
+        let competitor: Promise<unknown> | null = null;
         setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async (
             _serverUrl: string,
             _options: unknown,
             credentials: typeof priorCredential,
         ) => {
             storedCredential = credentials;
-            const competitor = profiles.upsertServerProfile({
-                serverUrl: 'https://home-b.test',
-                source: 'manual',
-            });
-            profiles.setServerProfileIdentityForUrl(competitor.serverUrl, 'srv_competing_home');
+            competitor = (async () => {
+                const profile = await profiles.upsertServerProfile({
+                    serverUrl: 'https://home-b.test',
+                    source: 'manual',
+                });
+                return await profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_competing_home');
+            })();
             return {
                 serverUrl: 'https://home-b.test',
                 serverId: 'srv_home_b',
@@ -76,10 +171,11 @@ describe('adoptHomeProfileWithCredentials', () => {
             },
             source: 'qr',
             credentials: { token: 'new-home-b-token' },
-        })).rejects.toThrow('Home identity conflicts with URL');
+        })).resolves.toMatchObject({ serverIdentityId: 'srv_home_b' });
 
-        expect(rollback).toHaveBeenCalledOnce();
-        expect(storedCredential).toEqual(priorCredential);
+        expect(rollback).not.toHaveBeenCalled();
+        expect(storedCredential).toEqual({ token: 'new-home-b-token' });
+        await expect(competitor!).resolves.toBeNull();
         expect(profiles.getActiveServerSnapshot()).toMatchObject({
             serverId: focusBefore.serverId,
             serverUrl: focusBefore.serverUrl,
@@ -94,11 +190,11 @@ describe('adoptHomeProfileWithCredentials', () => {
             throw new Error('credential rollback failed');
         });
         setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async () => {
-            const competitor = profiles.upsertServerProfile({
+            const competitor = await profiles.upsertServerProfile({
                 serverUrl: 'https://home-b.test',
                 source: 'manual',
             });
-            profiles.setServerProfileIdentityForUrl(competitor.serverUrl, 'srv_competing_home');
+            await profiles.setServerProfileIdentityForUrl(competitor.serverUrl, 'srv_competing_home');
             return {
                 serverUrl: 'https://home-b.test',
                 serverId: 'srv_home_b',
@@ -138,9 +234,9 @@ describe('adoptHomeProfileWithCredentials', () => {
     it('reports a partial commit when rollback cannot apply after credential ownership changes', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_rollback_not_applied_${Date.now()}_${Math.random()}`;
         const profiles = await import('./serverProfiles');
-        const focused = profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
-        profiles.setActiveServerId(focused.id);
-        profiles.saveHomeViewState({
+        const focused = await profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
+        await profiles.setActiveServerId(focused.id);
+        await profiles.saveHomeViewState({
             version: 1,
             activeTargetKind: 'server',
             activeTargetId: focused.id,
@@ -155,11 +251,11 @@ describe('adoptHomeProfileWithCredentials', () => {
             return false;
         });
         setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async () => {
-            const competitor = profiles.upsertServerProfile({
+            const competitor = await profiles.upsertServerProfile({
                 serverUrl: 'https://home-b.test',
                 source: 'manual',
             });
-            profiles.setServerProfileIdentityForUrl(competitor.serverUrl, 'srv_competing_home');
+            await profiles.setServerProfileIdentityForUrl(competitor.serverUrl, 'srv_competing_home');
             storedCredential = concurrentWinner;
             return {
                 serverUrl: 'https://home-b.test',
@@ -203,10 +299,10 @@ describe('adoptHomeProfileWithCredentials', () => {
     it('writes credentials under the canonical preflight target, then adopts without changing focus or groups', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_${Date.now()}_${Math.random()}`;
         const profiles = await import('./serverProfiles');
-        const focused = profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
-        profiles.setActiveServerId(focused.id);
+        const focused = await profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
+        await profiles.setActiveServerId(focused.id);
         const activeBefore = profiles.getActiveServerSnapshot();
-        profiles.saveHomeViewState({
+        await profiles.saveHomeViewState({
             version: 1,
             activeTargetKind: 'server',
             activeTargetId: focused.id,
@@ -364,7 +460,7 @@ describe('adoptHomeProfileWithCredentials', () => {
         });
         expect(created.name).toBe('Directory Home');
 
-        profiles.renameServerProfile(created.id, 'My Home');
+        await profiles.renameServerProfile(created.id, 'My Home');
         const preserved = await profiles.adoptHomeProfile({
             descriptor: {
                 v: 1,

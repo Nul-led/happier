@@ -127,6 +127,7 @@ export function WebAlertModal({ config, onClose, onConfirm, showBackdrop = true,
             closeOnBackdrop={false}
             showBackdrop={showBackdrop}
             zIndexBase={zIndexBase}
+            focusReturnRef={config.focusReturnRef}
         >
             <ModalCardFrame dimensions={{ width: 270, maxHeightRatio: 0.48 }}>
                 <View style={styles.content}>

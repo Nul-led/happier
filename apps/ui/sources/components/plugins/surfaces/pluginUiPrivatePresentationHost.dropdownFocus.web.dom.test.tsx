@@ -50,7 +50,6 @@ vi.mock('react-native-unistyles', async () => {
 
 vi.mock('@/components/markdown/MarkdownView', () => ({ MarkdownView: () => null }));
 vi.mock('@/components/ui/code/blocks/CodeBlockView', () => ({ CodeBlockView: () => null }));
-vi.mock('@/components/ui/icons/Icon', () => ({ Icon: () => null }));
 
 vi.mock('@/utils/web/radixCjs', () => ({
     requireRadixDismissableLayer: () => ({

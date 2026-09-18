@@ -3,6 +3,7 @@ import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import { invokeTestInstanceHandler, renderScreen } from '@/dev/testkit';
+import { activityInstanceKey } from '@/sync/domains/session/sessionAddress';
 
 import type { DesktopActivityOverlayUiModel } from './shared/desktopActivityOverlayUiModel';
 import {
@@ -97,7 +98,7 @@ describe('DesktopActivityOverlayExpanded', () => {
     }
 
     function createPermissionRequestCard(overrides: Partial<PermissionRequestCard> = {}): PermissionRequestCard {
-        return {
+        const card: PermissionRequestCard = {
             id: 'permission-1',
             kind: 'permission_request',
             requestId: 'permission-1',
@@ -137,10 +138,17 @@ describe('DesktopActivityOverlayExpanded', () => {
             ],
             ...overrides,
         };
+        return {
+            ...card,
+            id: overrides.id ?? activityInstanceKey(
+                { serverId: card.serverId, sessionId: card.sessionId },
+                JSON.stringify(['permission_request', card.requestId]),
+            ),
+        };
     }
 
     function createUserQuestionCard(overrides: Partial<UserQuestionCard> = {}): UserQuestionCard {
-        return {
+        const card: UserQuestionCard = {
             id: 'question-1',
             kind: 'user_question',
             requestId: 'question-1',
@@ -162,6 +170,13 @@ describe('DesktopActivityOverlayExpanded', () => {
                 },
             ],
             ...overrides,
+        };
+        return {
+            ...card,
+            id: overrides.id ?? activityInstanceKey(
+                { serverId: card.serverId, sessionId: card.sessionId },
+                JSON.stringify(['user_question', card.requestId]),
+            ),
         };
     }
 
@@ -403,9 +418,14 @@ describe('DesktopActivityOverlayExpanded', () => {
         expect(screen.getTextContent()).toContain('Edit src/auth/middleware.ts');
         expect(screen.findByTestId(resolveDesktopActivityOverlayCardKindTestID('permission_request'))).toBeTruthy();
         expect(screen.findByTestId(resolveDesktopActivityOverlayCardInstanceTestID(createPermissionRequestCard()))).toBeTruthy();
-        expect(screen.findByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID('permission-1', 'open'))).toBeNull();
+        expect(screen.findByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID(createPermissionRequestCard().id, 'open'))).toBeNull();
+        const allowAction = screen.findByTestId(
+            resolveDesktopActivityOverlayCardActionInstanceTestID(createPermissionRequestCard().id, 'allow'),
+        );
+        expect(allowAction?.props.accessibilityRole).toBe('button');
+        expect(allowAction?.props.accessibilityLabel).toBe('Allow');
 
-        screen.pressByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID('permission-1', 'allow'));
+        screen.pressByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID(createPermissionRequestCard().id, 'allow'));
 
         expect(onAction).toHaveBeenCalledWith(expect.objectContaining({
             actionIdentifier: 'approve-permission',
@@ -467,9 +487,18 @@ describe('DesktopActivityOverlayExpanded', () => {
         );
 
         expect(screen.getTextContent()).toContain('Always allow Read');
-        expect(screen.findByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID('permission-low', 'always_allow'))).toBeTruthy();
-        expect(screen.findByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID('permission-high', 'allow'))).toBeNull();
-        expect(screen.findByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID('permission-high', 'open'))).toBeTruthy();
+        expect(screen.findByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID(
+            createPermissionRequestCard({ requestId: 'permission-low' }).id,
+            'always_allow',
+        ))).toBeTruthy();
+        expect(screen.findByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID(
+            createPermissionRequestCard({ requestId: 'permission-high' }).id,
+            'allow',
+        ))).toBeNull();
+        expect(screen.findByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID(
+            createPermissionRequestCard({ requestId: 'permission-high' }).id,
+            'open',
+        ))).toBeTruthy();
     });
 
     it('renders direct user-question choices from the card model', async () => {
@@ -501,7 +530,7 @@ describe('DesktopActivityOverlayExpanded', () => {
         expect(screen.getTextContent()).toContain('Which deployment target?');
         expect(screen.findByTestId(resolveDesktopActivityOverlayCardKindTestID('user_question'))).toBeTruthy();
 
-        screen.pressByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID('question-1', 'production'));
+        screen.pressByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID(createUserQuestionCard().id, 'production'));
 
         expect(onAction).toHaveBeenCalledWith(expect.objectContaining({
             actionIdentifier: 'answer-user-question',
@@ -512,6 +541,25 @@ describe('DesktopActivityOverlayExpanded', () => {
     it('renders numbered user-question chips with inline other input', async () => {
         const { DesktopActivityOverlayExpanded } = await import('./DesktopActivityOverlayExpanded');
         const onAction = vi.fn();
+        const questionCard = createUserQuestionCard({
+            actions: [
+                {
+                    id: 'option-1-production',
+                    label: '1. Production',
+                    actionIdentifier: 'answer-user-question',
+                    data: { requestId: 'question-1', sessionId: 'session-1', serverId: 'server-1', answers: ['production'] },
+                    tone: 'primary',
+                },
+                {
+                    id: 'other',
+                    label: 'Other',
+                    actionIdentifier: 'session.user_action.answer',
+                    data: { requestId: 'question-1', sessionId: 'session-1', serverId: 'server-1' },
+                    tone: 'secondary',
+                    inputKind: 'inline_text',
+                },
+            ],
+        });
 
         const screen = await renderScreen(
             <DesktopActivityOverlayExpanded
@@ -520,25 +568,7 @@ describe('DesktopActivityOverlayExpanded', () => {
                     expanded: {
                         title: 'Actions',
                         rows: [],
-                        cards: [createUserQuestionCard({
-                            actions: [
-                                {
-                                    id: 'option-1-production',
-                                    label: '1. Production',
-                                    actionIdentifier: 'answer-user-question',
-                                    data: { requestId: 'question-1', sessionId: 'session-1', serverId: 'server-1', answers: ['production'] },
-                                    tone: 'primary',
-                                },
-                                {
-                                    id: 'other',
-                                    label: 'Other',
-                                    actionIdentifier: 'session.user_action.answer',
-                                    data: { requestId: 'question-1', sessionId: 'session-1', serverId: 'server-1' },
-                                    tone: 'secondary',
-                                    inputKind: 'inline_text',
-                                },
-                            ],
-                        })],
+                        cards: [questionCard],
                     },
                 })}
                 onOpenSession={() => {}}
@@ -547,13 +577,13 @@ describe('DesktopActivityOverlayExpanded', () => {
         );
 
         expect(screen.getTextContent()).toContain('1. Production');
-        expect(screen.findByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID('question-1', 'other'))).toBeTruthy();
-        expect(screen.findByTestId('desktop-activity-overlay-question-other-input-question-1')).toBeTruthy();
+        expect(screen.findByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID(questionCard.id, 'other'))).toBeTruthy();
+        expect(screen.findByTestId(`desktop-activity-overlay-question-other-input-${questionCard.id}`)).toBeTruthy();
 
         await act(async () => {
-            screen.changeTextByTestId('desktop-activity-overlay-question-other-input-question-1', 'Canary');
+            screen.changeTextByTestId(`desktop-activity-overlay-question-other-input-${questionCard.id}`, 'Canary');
         });
-        screen.pressByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID('question-1', 'other'));
+        screen.pressByTestId(resolveDesktopActivityOverlayCardActionInstanceTestID(questionCard.id, 'other'));
 
         expect(onAction).toHaveBeenCalledWith(expect.objectContaining({
             actionIdentifier: 'session.user_action.answer',
@@ -653,6 +683,115 @@ describe('DesktopActivityOverlayExpanded', () => {
         expect(screen.findByTestId('desktop-activity-overlay-completion-tool')).toBeTruthy();
     });
 
+    it('does not hide a different qualified completion when one completion is dismissed', async () => {
+        vi.useFakeTimers();
+        const { act } = await import('react-test-renderer');
+        const { DesktopActivityOverlayExpanded } = await import('./DesktopActivityOverlayExpanded');
+        const homeACard = createCompletionStateCard({
+            id: activityInstanceKey({ serverId: 'server-a', sessionId: 'shared-session' }, 'completion'),
+            sessionId: 'shared-session',
+            serverId: 'server-a',
+            title: 'Home A complete',
+            autoDismissMs: 1,
+        });
+        const homeBCard = createCompletionStateCard({
+            id: activityInstanceKey({ serverId: 'server-b', sessionId: 'shared-session' }, 'completion'),
+            sessionId: 'shared-session',
+            serverId: 'server-b',
+            title: 'Home B complete',
+            autoDismissMs: 0,
+            sticky: true,
+        });
+        const screen = await renderScreen(
+            <DesktopActivityOverlayExpanded
+                visualMode="floating_overlay"
+                model={createModel({
+                    expanded: {
+                        title: 'Actions',
+                        rows: [],
+                        cards: [homeACard, homeBCard],
+                    },
+                })}
+                onOpenSession={() => {}}
+            />,
+        );
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1);
+        });
+
+        expect(screen.getTextContent()).not.toContain('Home A complete');
+        expect(screen.getTextContent()).toContain('Home B complete');
+    });
+
+    it('keeps the hover-only expanded shell out of the keyboard focus order', async () => {
+        const { DesktopActivityOverlayExpanded } = await import('./DesktopActivityOverlayExpanded');
+        const onHoverIn = vi.fn();
+        const onHoverOut = vi.fn();
+
+        const screen = await renderScreen(
+            <DesktopActivityOverlayExpanded
+                visualMode="floating_overlay"
+                model={createModel()}
+                onOpenSession={() => {}}
+                onHoverIn={onHoverIn}
+                onHoverOut={onHoverOut}
+            />,
+        );
+        const shell = screen.findByTestId('desktop-activity-overlay-expanded');
+
+        // react-native-web renders `Pressable` with `tabindex="0"`, so a hover-only shell built on
+        // one becomes a keyboard focus stop that performs nothing. The shell must stay a plain view.
+        expect(shell?.type).toBe('View');
+        expect(shell?.props.onPress).toBeUndefined();
+        expect(shell?.props.accessibilityRole).toBeUndefined();
+        expect(shell?.props.role).toBeUndefined();
+        expect(shell?.props.focusable).toBeUndefined();
+
+        await act(async () => {
+            invokeTestInstanceHandler(shell, 'onPointerEnter', {});
+        });
+        await act(async () => {
+            invokeTestInstanceHandler(
+                screen.findByTestId('desktop-activity-overlay-expanded'),
+                'onPointerLeave',
+                {},
+            );
+        });
+
+        expect(onHoverIn).toHaveBeenCalledTimes(1);
+        expect(onHoverOut).toHaveBeenCalledTimes(1);
+    });
+
+    it('exposes actionable session rows as buttons named from the projected session display', async () => {
+        const { DesktopActivityOverlayExpanded } = await import('./DesktopActivityOverlayExpanded');
+        const onOpenSession = vi.fn();
+
+        const screen = await renderScreen(
+            <DesktopActivityOverlayExpanded
+                visualMode="floating_overlay"
+                model={createModel({
+                    expanded: {
+                        title: 'Sessions',
+                        rows: [],
+                        cards: [createSessionOverviewCard()],
+                    },
+                })}
+                onOpenSession={onOpenSession}
+            />,
+        );
+        const row = screen.findByTestId('desktop-activity-overlay-session-row-session-1');
+
+        expect(row?.props.accessibilityRole).toBe('button');
+        expect(row?.props.accessibilityLabel).toBe('Primary session. Agent on machine. Needs attention');
+        // The preview repeats agent/session content; it stays visible but must not enter the name.
+        expect(String(row?.props.accessibilityLabel)).not.toContain('Need your approval');
+
+        screen.pressByTestId('desktop-activity-overlay-session-row-session-1');
+
+        expect(onOpenSession).toHaveBeenCalledWith('session-1', 'server-1');
+    });
+
     it('pauses completion auto-dismiss while the expanded island is hovered', async () => {
         vi.useFakeTimers();
         const { act } = await import('react-test-renderer');
@@ -674,8 +813,10 @@ describe('DesktopActivityOverlayExpanded', () => {
             />,
         );
 
+        expect(screen.findByTestId('desktop-activity-overlay-expanded')?.props.onPress).toBeUndefined();
+
         await act(async () => {
-            invokeTestInstanceHandler(screen.findByTestId('desktop-activity-overlay-expanded'), 'onHoverIn', {});
+            invokeTestInstanceHandler(screen.findByTestId('desktop-activity-overlay-expanded'), 'onPointerEnter', {});
         });
 
         await act(async () => {
@@ -685,7 +826,7 @@ describe('DesktopActivityOverlayExpanded', () => {
         expect(screen.findByTestId('desktop-activity-overlay-completion-turn')).toBeTruthy();
 
         await act(async () => {
-            invokeTestInstanceHandler(screen.findByTestId('desktop-activity-overlay-expanded'), 'onHoverOut', {});
+            invokeTestInstanceHandler(screen.findByTestId('desktop-activity-overlay-expanded'), 'onPointerLeave', {});
         });
 
         await act(async () => {

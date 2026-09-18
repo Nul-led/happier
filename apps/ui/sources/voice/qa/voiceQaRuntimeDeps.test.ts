@@ -94,11 +94,25 @@ vi.mock('@/voice/transcript/voiceConversationTranscript', () => ({
 vi.mock('@/sync/domains/state/storage', () => storageModuleMock);
 
 import { createDefaultVoiceQaControllerDeps } from './voiceQaRuntimeDeps';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { voiceAgentSessions } from '@/voice/agent/voiceAgentSessions';
+
+const mountedAddress = (sessionId: string) => ({
+    serverId: getActiveServerSnapshot().serverId,
+    sessionId,
+});
 
 describe('createDefaultVoiceQaControllerDeps', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+    });
+
+    it('refuses to start a realtime QA session for a target in an unmounted Home', async () => {
+        const deps = createDefaultVoiceQaControllerDeps();
+
+        await expect(deps.startRealtime({ serverId: 'other-home', sessionId: 'target-session' }))
+            .rejects.toThrow('voice_qa_target_home_not_mounted');
+        expect(adapterStart).not.toHaveBeenCalled();
     });
 
     it('forwards exact transcript-custody directives to the canonical voice session owner', async () => {
@@ -124,7 +138,7 @@ describe('createDefaultVoiceQaControllerDeps', () => {
     it('routes realtime QA through the configured registry adapter without a provider-specific owner', async () => {
         const deps = createDefaultVoiceQaControllerDeps();
 
-        await deps.startRealtime('target-session', 'context', { textOnly: true });
+        await deps.startRealtime(mountedAddress('target-session'), 'context', { textOnly: true });
 
         await deps.sendRealtimeTextTurn({
             controlSessionId: 'voice-global',
@@ -138,6 +152,7 @@ describe('createDefaultVoiceQaControllerDeps', () => {
         expect(adapterGet).toHaveBeenCalledWith('plugin_voice');
         expect(adapterStart).toHaveBeenCalledWith({
             sessionId: 'target-session',
+            requestedTargetSessionAddress: mountedAddress('target-session'),
             initialContext: 'context',
             textOnly: true,
         });

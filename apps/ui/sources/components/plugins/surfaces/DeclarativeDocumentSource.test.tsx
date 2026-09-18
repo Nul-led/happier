@@ -411,6 +411,7 @@ function Probe(props: Readonly<{
         value,
     ]);
     return React.createElement('output', {
+        model: source.model,
         value,
         action: readAction(source.model),
         query: readCollectionQuery(source.model),
@@ -467,6 +468,21 @@ function renderProbeWithPrivateResourceBinding(
 }
 
 describe('useDeclarativeDocumentSource', () => {
+    it('adopts a dynamic host Action request without a contributed Action inventory entry', async () => {
+        const hostApi = createDocumentHost({ readResource: async () => resourceRead({
+            version: 1,
+            root: { kind: 'action', hostAction: 'session.message.send', label: 'Send', input: { text: 'Hello' } },
+        }) });
+        let tree!: ReturnType<typeof create>;
+        await act(async () => {
+            tree = create(renderProbe(hostApi));
+            await flushMicrotasks();
+        });
+        expect(tree.root.findByType('output').props).toMatchObject({
+            strictProjectedModel: true,
+            model: { root: { kind: 'action', hostAction: 'session.message.send', enabled: true, input: { text: 'Hello' } } },
+        });
+    });
     it('keeps static first paint, then adopts a whole live Resource document through the mounted host API', async () => {
         const pendingRead = deferred<ResourceContent>();
         const readResource = vi.fn(() => pendingRead.promise);

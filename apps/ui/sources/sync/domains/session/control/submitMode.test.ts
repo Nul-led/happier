@@ -50,18 +50,18 @@ describe('decideSessionMessageDelivery row actions', () => {
             .toMatchObject({ requestedAction: { v: 1, kind: 'enqueue' } });
     });
 
-    it('uses the inactive-session resume policy for inactive and offline sessions', () => {
+    it('keeps inactive and offline ordinary input FIFO unless explicitly immediate', () => {
         const inactive = { ...idle, active: false, presence: 0 };
         const offline = { ...idle, presence: 0 };
 
         expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: inactive, nowMs: now }))
             .toMatchObject({ requestedAction: { v: 1, kind: 'enqueue' } });
         expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: inactive, nowMs: now, sessionInactiveResumePolicy: 'when_available' }))
-            .toMatchObject({ requestedAction: { v: 1, kind: 'send_now' } });
+            .toMatchObject({ requestedAction: { v: 1, kind: 'enqueue' } });
         expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: inactive, nowMs: now, sessionInactiveResumePolicy: 'manual' }))
             .toMatchObject({ requestedAction: { v: 1, kind: 'enqueue' } });
         expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: offline, nowMs: now, sessionInactiveResumePolicy: 'when_available' }))
-            .toMatchObject({ requestedAction: { v: 1, kind: 'send_now' } });
+            .toMatchObject({ requestedAction: { v: 1, kind: 'enqueue' } });
         expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: offline, nowMs: now, sessionInactiveResumePolicy: 'online_only' }))
             .toMatchObject({ requestedAction: { v: 1, kind: 'enqueue' } });
         expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', explicitMode: 'server_pending', session: offline, nowMs: now }))

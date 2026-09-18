@@ -155,6 +155,49 @@ describe('createVoiceDictationController', () => {
         }));
     });
 
+    it('keeps origin-neutral capture correlation out of Session-targeted transcription routing', async () => {
+        const captureOwner = {
+            startCapture: vi.fn(async () => {}),
+            stopCapture: vi.fn(async () => ({
+                provider: 'recorded_audio' as const,
+                uri: 'file:///dictation.m4a',
+            })),
+            stopSession: vi.fn(async () => {}),
+        };
+        const transcribeRecordedAudio = vi.fn(async () => 'workflow text');
+        const controller = createVoiceDictationController({
+            captureOwner,
+            ...TEST_RECORDED_AUDIO_BOUNDARY,
+            getSettings: () => ({
+                voice: {
+                    dictation: {
+                        sttBinding: 'explicit',
+                        language: null,
+                        stt: { provider: 'happier.voice.openai-compat/stt' },
+                    },
+                },
+            }),
+            transcribeRecordedAudio,
+        });
+        const target = {
+            controlId: '["workflowAuthoring","draft-1","step-1","mounted-1"]',
+            transcriptionSessionId: null,
+        } as const;
+
+        await expect(controller.toggle(target)).resolves.toEqual({ kind: 'started' });
+        await expect(controller.toggle(target)).resolves.toEqual({
+            kind: 'completed',
+            text: 'workflow text',
+        });
+
+        expect(captureOwner.startCapture).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: target.controlId,
+        }));
+        expect(transcribeRecordedAudio).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: null,
+        }));
+    });
+
     it('inherits Local Voice STT only through the visible same-as-local binding', async () => {
         const captureOwner = {
             startCapture: vi.fn(async () => {}),

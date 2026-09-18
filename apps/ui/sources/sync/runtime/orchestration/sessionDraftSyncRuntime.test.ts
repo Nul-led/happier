@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { SessionDraftAddressV2 } from '@happier-dev/protocol';
 
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 
@@ -79,8 +80,22 @@ describe('sessionDraftSyncRuntime', () => {
         expect(parseSessionDraftSocketWake({ type: 'machine-activity' })).toBeNull();
     });
 
+    it('accepts successor newSession wakes only on their V2 event and rejects content-bearing hints', () => {
+        const hint = {
+            v: 2, sessionDraftV2: true,
+            address: { kind: 'newSession', draftId: '00000000-0000-4000-8000-000000000010' },
+            revision: 4, status: 'present',
+        };
+        expect(parseSessionDraftSocketWake({ type: 'session-draft-v2-updated', ...hint })).toEqual(hint);
+        expect(parseSessionDraftSocketWake({ type: 'session-draft-updated', ...hint })).toBeNull();
+        expect(parseSessionDraftSocketWake({ type: 'session-draft-v2-updated', ...hint, content: 'private' })).toBeNull();
+    });
+
     it('exact-materializes only while the captured server/account scope remains active', async () => {
-        const materializeExact = vi.fn(async () => undefined);
+        const materializeExact = vi.fn(async (
+            _scope: ServerAccountScope,
+            _address: SessionDraftAddressV2,
+        ) => undefined);
         let activeScope: ServerAccountScope | null = SCOPE;
         const payload = {
             type: 'session-draft-updated',
@@ -132,39 +147,58 @@ describe('sessionDraftSyncRuntime', () => {
     });
 
     it('refreshes the visible existing-session draft after repository runtime hydration', async () => {
-        const ensureRuntimeReady = vi.fn(async () => undefined);
-        const materializeExact = vi.fn(async () => undefined);
+        const materializeExact = vi.fn(async (
+            _scope: ServerAccountScope,
+            _address: SessionDraftAddressV2,
+        ) => undefined);
 
         await expect(materializeVisibleExistingSessionDraft({
             sessionId: 'session-a',
             capturedScope: SCOPE,
-            readActiveScope: () => SCOPE,
-            ensureRuntimeReady,
+            isCurrent: () => true,
             materializeExact,
         })).resolves.toBe(true);
 
-        expect(ensureRuntimeReady).toHaveBeenCalledOnce();
         expect(materializeExact).toHaveBeenCalledWith(SCOPE, {
             kind: 'session',
             sessionId: 'session-a',
         });
     });
 
-    it('does not refresh a visible draft after its server/account scope changes', async () => {
-        let activeScope: ServerAccountScope | null = SCOPE;
+    it('materializes the exact routed scope while another Home remains active', async () => {
+        const routedScope = { serverId: 'server-b', accountId: 'account-b' } as const;
         const materializeExact = vi.fn(async () => undefined);
+
+        await expect(materializeVisibleExistingSessionDraft({
+            sessionId: 'shared-session-id',
+            capturedScope: routedScope,
+            isCurrent: () => true,
+            materializeExact,
+        })).resolves.toBe(true);
+
+        expect(materializeExact).toHaveBeenCalledWith(routedScope, {
+            kind: 'session',
+            sessionId: 'shared-session-id',
+        });
+    });
+
+    it('does not refresh a visible draft after its server/account scope changes', async () => {
+        let current = true;
+        const materializeExact = vi.fn(async (
+            _scope: ServerAccountScope,
+            _address: SessionDraftAddressV2,
+        ) => undefined);
 
         await expect(materializeVisibleExistingSessionDraft({
             sessionId: 'session-a',
             capturedScope: SCOPE,
-            readActiveScope: () => activeScope,
-            ensureRuntimeReady: async () => {
-                activeScope = { serverId: 'server-b', accountId: 'account-a' };
+            isCurrent: () => current,
+            materializeExact: async (...args) => {
+                current = false;
+                await materializeExact(...args);
             },
-            materializeExact,
         })).resolves.toBe(false);
 
-        expect(materializeExact).not.toHaveBeenCalled();
+        expect(materializeExact).toHaveBeenCalledOnce();
     });
 });
-

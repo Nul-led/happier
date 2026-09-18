@@ -22,12 +22,14 @@ export type ToolFileDiffListViewProps = Readonly<{
     files: readonly DiffFileEntry[];
     detailLevel?: ToolViewProps['detailLevel'];
     sessionId?: string | null;
+    serverId?: string | null;
 }>;
 
 export const ToolFileDiffListView = React.memo<ToolFileDiffListViewProps>(({
     files,
     detailLevel,
     sessionId: sessionIdProp,
+    serverId,
 }) => {
     const showLineNumbersInToolViews = useSetting('showLineNumbersInToolViews');
     const wrapLines = useSetting('wrapLinesInDiffs');
@@ -49,7 +51,7 @@ export const ToolFileDiffListView = React.memo<ToolFileDiffListViewProps>(({
     const showFileList = effectiveDetailLevel !== 'title';
 
     const reviewCommentsFeatureEnabled = useFeatureEnabled('files.reviewComments');
-    const reviewScope = useWorkspaceScopeForSession(sessionId);
+    const reviewScope = useWorkspaceScopeForSession(sessionId, serverId);
     const reviewCommentsEnabled = reviewCommentsFeatureEnabled === true && Boolean(reviewScope);
     const reviewCommentDrafts = useWorkspaceReviewCommentsDrafts(reviewScope);
     const reviewDraftHandlers = useWorkspaceReviewCommentDraftHandlers(reviewScope);

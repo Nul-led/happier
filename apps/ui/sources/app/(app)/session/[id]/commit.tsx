@@ -13,6 +13,7 @@ import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForRoute';
 import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from '@/sync/domains/session/sessionRouteHydrationState';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 
 function decodeSha(value: string): string {
     try {
@@ -48,7 +49,7 @@ export default function CommitScreen() {
         && sessionHydrated
         && shouldRedirectDetailsRouteToPanes({ containerWidthPx, deviceType, multiPaneEnabled });
 
-    const pane = useAppPaneScope(`session:${sessionId}`);
+    const pane = useAppPaneScope(createSessionPaneScopeId(sessionId, routeScope.serverId));
     const shouldUseDetailsScreen = Platform.OS !== 'web';
     const hasRedirectedToDetailsRef = React.useRef(false);
 
@@ -105,5 +106,5 @@ export default function CommitScreen() {
     }
     if (shouldRedirect) return null;
     if (shouldUseDetailsScreen) return null;
-    return <SessionCommitDetailsView sessionId={sessionId} sha={sha} onBack={() => router.back()} />;
+    return <SessionCommitDetailsView sessionId={sessionId} serverId={routeScope.serverId} sha={sha} onBack={() => router.back()} />;
 }

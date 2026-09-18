@@ -13,6 +13,9 @@ const sendLocalVoiceAgentTextTurn = vi.fn<(params: {
   await params.onAccepted?.();
 });
 const setLocalVoiceMuted = vi.fn<(sessionId: string, muted: boolean) => Promise<void>>(async () => {});
+const sendAutomaticUiContextUpdate = vi.fn();
+const sendBoundTextUpdate = vi.fn(async () => {});
+const announceAssistantText = vi.fn();
 
 const state: any = {
   settings: {
@@ -52,6 +55,17 @@ vi.mock('@/voice/local/localVoiceRuntimeController', () => ({
     }) => sendLocalVoiceAgentTextTurn(params),
     setMuted: (sessionId: string, muted: boolean) => setLocalVoiceMuted(sessionId, muted),
   },
+}));
+
+vi.mock('@/voice/context/resolveActiveLocalVoiceAgentBinding', () => ({
+  resolveActiveLocalVoiceAgentBinding: () => ({
+    binding: null,
+    operationalSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
+    announcementSessionId: 'voice-conversation-1',
+    sendAutomaticUiContextUpdate,
+    sendTextUpdate: sendBoundTextUpdate,
+    announceAssistantText,
+  }),
 }));
 
 describe('local conversation voice adapter', () => {
@@ -122,12 +136,25 @@ describe('local conversation voice adapter', () => {
     expect(toggleLocalVoiceTurn).toHaveBeenCalledWith('s1', undefined);
   });
 
-  it('sends context updates to the local agent buffer', async () => {
+  it('does not retain synchronized Session updates in a UI-owned buffer', async () => {
     const { createLocalConversationVoiceAdapter } = await import('./localConversationAdapter');
     const adapter = createLocalConversationVoiceAdapter();
 
     adapter.sendContextUpdate({ sessionId: 's1', update: 'context' });
-    expect(appendLocalVoiceAgentContextUpdate).toHaveBeenCalledWith('s1', 'context');
+    expect(appendLocalVoiceAgentContextUpdate).not.toHaveBeenCalled();
+  });
+
+  it('keeps current-UI context attempt-local while ignoring synchronized Session context', async () => {
+    const { createLocalConversationVoiceAdapter } = await import('./localConversationAdapter');
+    const adapter = createLocalConversationVoiceAdapter();
+    const channel = adapter.resolveContextChannel?.(state.settings.voice);
+
+    channel?.sendContextualUpdate('SESSION_CONTEXT_SENTINEL', 'session_context');
+    channel?.sendContextualUpdate('CURRENT_UI_SENTINEL', 'current_ui');
+
+    expect(sendAutomaticUiContextUpdate).toHaveBeenCalledOnce();
+    expect(sendAutomaticUiContextUpdate).toHaveBeenCalledWith('CURRENT_UI_SENTINEL');
+    expect(appendLocalVoiceAgentContextUpdate).not.toHaveBeenCalled();
   });
 
   it('projects a disconnected runtime snapshot as a disconnected local session snapshot', async () => {

@@ -35,7 +35,7 @@ import type {
     PluginActionInvocationSurfaceV2,
     PluginClientActionHandler,
 } from '@happier-dev/plugin-sdk/actions';
-import type { PluginUiHostApi } from '@happier-dev/plugin-sdk/ui';
+import type { PluginUiActionExecutionOptions, PluginUiHostApi } from '@happier-dev/plugin-sdk/ui';
 import {
     normalizePluginUiMountedContributedActionReferenceV1,
     PluginUiExecuteActionRequestV1Schema,
@@ -94,12 +94,18 @@ import {
     type PluginSurfaceOpenableContentBinding,
 } from './pluginSurfaceOpenableContent';
 import { createPluginSurfaceLocalHostHandlers } from './pluginSurfaceLocalHostHandlers';
+import { mergeAbortSignals } from '@/utils/runtime/abortSignals';
+import { getPluginUiEphemeralSharedScope } from './pluginUiEphemeralSharedScope';
 
 /** Exact producer-owned mounted binding, preserved only until RPC projection. */
 export type PluginSurfaceActionMountedBinding = DaemonPluginStructuredMessageActionMountedBinding;
 
 /** A host control may carry current Composer/Message intent, never a mount binding. */
-export type PluginSurfaceHostPresentedActionInvocation = Exclude<
+export type PluginSurfaceHostPresentedActionInvocation = Extract<
+    DaemonPluginStructuredMessageActionInvocationV1,
+    Readonly<{ kind: 'hostPresentedComposer' | 'hostPresentedMessage' }>
+>;
+type PluginSurfaceUnMountedActionInvocation = Exclude<
     DaemonPluginStructuredMessageActionInvocationV1,
     Readonly<{ kind: 'mountedPluginSurface' }>
 >;
@@ -193,6 +199,8 @@ export type PluginSurfaceActionInvocationSurface = Extract<
  */
 export type PluginSurfaceClientActionBinding = Readonly<{
     projectionGeneration: number;
+    /** Optional transport adapter only; exact routing comes from the selected registration. */
+    execute?: PluginSurfaceContributedActionTransport;
     sessionId?: string;
     openSurface?: PluginSurfaceOpenHandler;
     requestCurrentIntent?: (
@@ -257,7 +265,7 @@ export type DispatchPluginSurfaceActionInput = Readonly<{
      * the bound controller's private caller binding; a host control cannot
      * publish or manufacture that third union arm.
      */
-    invocation?: PluginSurfaceHostPresentedActionInvocation;
+    invocation?: PluginSurfaceUnMountedActionInvocation;
     /** Live daemon capability owned by the bound controller, never a new action owner. */
     isContributedActionAvailable?: () => boolean;
     signal?: AbortSignal;
@@ -433,6 +441,7 @@ function resolveClientContributedActionSelection(
     const isCurrent = (): boolean => {
         if (input.isCurrent?.() === false) return false;
         if (!registration.lifecycle.isCurrent() || registration.lifecycle.signal.aborted) return false;
+        if (registration.accountLifetime?.isCurrent() === false) return false;
         if (resolveProjectedContributedAction(input, identity) !== expectedAction) return false;
         return resolvePluginUiClientActionRegistration({
             action: expectedAction,
@@ -447,12 +456,13 @@ function resolveClientContributedActionSelection(
 
 function clientActionOpenSurface(
     selection: ClientContributedActionSelection,
+    invocationSignal: AbortSignal,
 ): PluginUiHostApi['openSurface'] {
     return async (view: PluginReference, actionInput, options): Promise<void> => {
         if (!selection.isCurrent()) {
             throw new PluginError({ code: 'plugin_action_generation_retired' });
         }
-        if (options?.signal?.aborted) {
+        if (invocationSignal.aborted || options?.signal?.aborted) {
             throw new PluginError({ code: 'plugin_action_aborted' });
         }
         const openSurface = selection.binding.openSurface;
@@ -476,6 +486,60 @@ function clientActionOpenSurface(
             throw new PluginError({ code: outcome.reason });
         }
     };
+}
+
+function clientActionExecuteAction(
+    input: DispatchPluginSurfaceActionInput,
+    selection: ClientContributedActionSelection,
+    invocationSignal: AbortSignal,
+): PluginUiHostApi['executeAction'] {
+    // Dynamic dispatch validates each selected Action's input/output schema;
+    // the SDK generic result relationship is restored at this host boundary.
+    return (async (action: PluginReference, actionInput?: PluginUiJsonValueV1, options?: PluginUiActionExecutionOptions) => {
+        if (!selection.isCurrent()) {
+            throw new PluginError({ code: 'plugin_action_generation_retired' });
+        }
+        const cancellation = mergeAbortSignals([invocationSignal, options?.signal]);
+        try {
+            // Activation already bound this exact transport authority. The
+            // outer adapter may supply a transport implementation, never the
+            // machine/generation of a different ambient projection.
+            const authority = selection.registration.authority;
+            const execute = selection.binding.execute ?? input.contributedAction?.execute;
+            const contributedAction = authority ? {
+                machineId: authority.machineId,
+                serverId: authority.serverId,
+                expectedGeneration: String(authority.projectionGeneration),
+                ...(selection.binding.sessionId ? { sessionId: selection.binding.sessionId } : {}),
+                ...(execute ? { execute } : {}),
+            } : undefined;
+            const outcome = await dispatchPluginSurfaceAction({
+                callerPluginId: selection.action.pluginId,
+                action,
+                ...(actionInput === undefined ? {} : { input: actionInput }),
+                ...(input.hostAction === undefined ? {} : { hostAction: input.hostAction }),
+                ...(contributedAction === undefined ? {} : { contributedAction }),
+                clientAction: selection.binding,
+                ...(input.resolveContributedAction === undefined
+                    ? {}
+                    : { resolveContributedAction: input.resolveContributedAction }),
+                invocationSurface: input.invocationSurface ?? 'ui',
+                invocation: {
+                    kind: 'clientPluginAction',
+                    clientActionBinding: {
+                        contributionLocalId: selection.action.id,
+                        materializationRef: selection.registration.executionOrigin.materializationRef,
+                    },
+                },
+                signal: cancellation.signal,
+                isCurrent: selection.isCurrent,
+            });
+            if (!outcome.ok) throw new PluginError({ code: outcome.reason });
+            return outcome.result;
+        } finally {
+            cancellation.dispose();
+        }
+    }) as PluginUiHostApi['executeAction'];
 }
 
 function readClientActionCurrentUiContext(
@@ -652,7 +716,19 @@ async function executeClientContributedAction(
                 },
                 invocationSurface,
                 signal,
-                ui: { openSurface: clientActionOpenSurface(current) },
+                ui: {
+                    executeAction: clientActionExecuteAction(input, current, signal),
+                    openSurface: clientActionOpenSurface(current, signal),
+                },
+                ephemeralSharedScope: current.registration.immutableGenerationId
+                    ? getPluginUiEphemeralSharedScope({
+                        accountLifetime: current.registration.accountLifetime ?? null,
+                        pluginId: current.action.pluginId,
+                        immutableGenerationId: current.registration.immutableGenerationId,
+                        executionOrigin: current.registration.executionOrigin,
+                        isCurrent: () => current.isCurrent() && !signal.aborted,
+                    })
+                    : null,
                 ...(currentUiContext === undefined ? {} : { currentUiContext }),
             });
         },

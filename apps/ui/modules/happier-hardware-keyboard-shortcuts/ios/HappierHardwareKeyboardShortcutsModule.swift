@@ -138,7 +138,7 @@ private final class HardwareKeyboardTextViewInterceptor {
 
       return [
         "key": normalizedKey,
-        "code": codeName(for: key.keyCode),
+        "code": codeName(for: key),
         "characters": key.characters,
         "modifiers": modifiers,
         "repeat": false,
@@ -170,8 +170,8 @@ private final class HardwareKeyboardTextViewInterceptor {
   }
 
   @available(iOS 13.4, *)
-  private func codeName(for keyCode: UIKeyboardHIDUsage) -> String {
-    switch keyCode {
+  private func codeName(for key: UIKey) -> String {
+    switch key.keyCode {
     case UIKeyboardHIDUsage.keyboardReturnOrEnter:
       return "Enter"
     case UIKeyboardHIDUsage.keypadEnter:

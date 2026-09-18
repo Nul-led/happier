@@ -106,16 +106,16 @@ const storageMock = createStorageModuleStub({
 
 vi.mock('@/sync/domains/state/storage', () => storageMock);
 
+vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
+    useSessionViewShellSession: (sessionId: string) => useSessionSpy(sessionId),
+}));
+
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
     useSessionReachableMachineTarget: () => null,
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => true,
-}));
-
-vi.mock('@/hooks/session/useSessionSharingSupport', () => ({
-    useSessionSharingSupport: () => true,
 }));
 
 vi.mock('@/hooks/server/useAutomationsSupport', () => ({
@@ -140,6 +140,7 @@ describe('session info route', () => {
         useSessionHandoffSourceReachabilitySpy.mockClear();
         machineContributionRegistryProjectionDescribeMock.mockReset();
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({ supported: false, reason: 'not-supported' });
+        routerMock.state.router.setParams({ serverId: undefined });
     });
 
     afterEach(() => {
@@ -173,5 +174,30 @@ describe('session info route', () => {
         expect(useSessionHandoffSourceReachabilitySpy).toHaveBeenCalledWith(expect.objectContaining({
             serverId: 'server-canonical',
         }));
+    });
+
+    // Two Homes can host one Session id. A route that names its Home is the screen's identity, so
+    // same-id cache discovery must not override it for reads or for mutation targets.
+    it('lets an explicit route Home outrank the same-id cached Home', async () => {
+        routerMock.state.router.setParams({ serverId: 'route-home' });
+        resolvePreferredServerIdForSessionIdSpy.mockReturnValue('cached-home');
+        useSessionSpy.mockReturnValue({
+            id: 's1',
+            seq: 1,
+            active: true,
+            serverId: 'cached-home',
+            metadata: { machineId: 'm1' },
+            accessLevel: 'edit',
+            canApprovePermissions: true,
+        });
+        const { default: InfoRoute } = await import('@/app/(app)/session/[id]/info');
+
+        await renderScreen(<InfoRoute />);
+
+        expect(useSessionExecutionRunsSupportedSpy).toHaveBeenCalledWith('s1', 'route-home');
+        expect(useSessionHandoffSourceReachabilitySpy).toHaveBeenCalledWith(expect.objectContaining({
+            serverId: 'route-home',
+        }));
+        expect(useSessionExecutionRunsSupportedSpy).not.toHaveBeenCalledWith('s1', 'cached-home');
     });
 });

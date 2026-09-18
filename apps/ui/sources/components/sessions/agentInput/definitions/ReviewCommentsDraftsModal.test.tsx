@@ -105,6 +105,7 @@ describe('ReviewCommentsDraftsModal', () => {
             <ReviewCommentsDraftsModal
                 onClose={() => {}}
                 sessionId="session-1"
+                reviewScope={{ serverId: 'home-b', machineId: 'machine-1', rootPath: '/repo' }}
                 reviewCommentDrafts={[draft]}
                 onUpdateDraft={() => {}}
                 onDeleteDraft={() => {}}
@@ -113,7 +114,7 @@ describe('ReviewCommentsDraftsModal', () => {
 
         screen.findByTestId('review-comment-draft-jump:draft-1')!.props.onPress();
 
-        expect(routerPushSpy).toHaveBeenCalledWith('/session/session-1/file?path=src%2Fmiddleware%2FrequestId.test.ts&source=diff&anchor=diffLine&startLine=8&side=after&newLine=8&lineHash=lh1%3A868452fa92233a56');
+        expect(routerPushSpy).toHaveBeenCalledWith('/session/session-1/file?path=src%2Fmiddleware%2FrequestId.test.ts&serverId=home-b&source=diff&anchor=diffLine&startLine=8&side=after&newLine=8&lineHash=lh1%3A868452fa92233a56');
     });
 
     it('places the editable comment at the anchored line inside the context preview', async () => {

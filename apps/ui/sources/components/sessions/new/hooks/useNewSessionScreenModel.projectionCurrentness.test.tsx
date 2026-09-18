@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 import { publishProjectedAgentUiBehaviorDescriptors } from '@/agents/registry/agentUiBehaviorProjection';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import {
@@ -36,7 +36,7 @@ const ACME_IDENTITY = { pluginId: ACME_PLUGIN_ID, localId: ACME_LOCAL_ID } as co
 const ACME_TARGET_KEY = resolveBackendTargetKeyV2({ kind: 'agent', identity: ACME_IDENTITY });
 const CLAUDE_TARGET_KEY = resolveBackendTargetKeyV2({
     kind: 'agent',
-    identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES.claude,
+    identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude,
 });
 
 type ProjectionPhase = 'idle' | 'loading' | 'ready' | 'unsupported' | 'error';
@@ -126,7 +126,7 @@ const routeParamsState = vi.hoisted(() => ({
 const storageState = vi.hoisted(() => ({
     workspaceLocations: {} as Record<string, unknown>,
     workspaceCheckouts: {} as Record<string, unknown>,
-    sessionListRowStateByServerId: {} as Record<string, Record<string, unknown>>,
+    sessionListRowsByServerId: {} as Record<string, Record<string, unknown>>,
 }));
 
 const getMockStorageState = vi.hoisted(() => () => ({
@@ -134,7 +134,7 @@ const getMockStorageState = vi.hoisted(() => () => ({
     workspaceLocations: storageState.workspaceLocations,
     workspaceCheckouts: storageState.workspaceCheckouts,
     sessions: {} as Record<string, unknown>,
-    sessionListRowStateByServerId: storageState.sessionListRowStateByServerId,
+    sessionListRowsByServerId: storageState.sessionListRowsByServerId,
     createSessionActionDraft: undefined,
 }));
 

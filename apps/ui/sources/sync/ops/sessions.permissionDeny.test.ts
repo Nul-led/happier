@@ -68,6 +68,21 @@ describe('sessionDeny', () => {
             payload: expect.objectContaining({ id: 'perm_1', approved: false, decision: 'abort' }),
         });
     });
+
+    it('uses Home B request context without clearing the same-ID Home A session', async () => {
+        const sessionId = 'same-session';
+        const activeSession = { ...buildSession(sessionId), serverId: 'home-a' };
+        storage.getState().applySessions([activeSession]);
+        const before = storage.getState().sessions[sessionId];
+
+        await sessionDeny(sessionId, 'request', undefined, undefined, 'denied', undefined, 'turn-b', { serverId: 'home-b' });
+
+        expect(mockSessionRpcWithPreferredSessionScope).toHaveBeenCalledWith(expect.objectContaining({
+            serverId: 'home-b', sessionId,
+            payload: expect.objectContaining({ turnId: 'turn-b', approved: false }),
+        }));
+        expect(storage.getState().sessions[sessionId]).toBe(before);
+    });
 });
 
 describe('session permission/user-action RPC methods', () => {

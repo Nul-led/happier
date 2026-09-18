@@ -5,6 +5,7 @@ internal object HappierCryptoWorkerTypes {
   const val platform = "android"
 
   val supportedOperations = listOf(
+    "derivePasswordEnvelopeKey",
     "decryptDataKeyEnvelopeV1",
     "decryptSecretboxJson",
     "decryptAesGcmJson",

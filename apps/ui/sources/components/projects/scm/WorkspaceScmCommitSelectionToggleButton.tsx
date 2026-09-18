@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable } from 'react-native';
+import { Platform, Pressable } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
@@ -234,6 +234,7 @@ export const WorkspaceScmCommitSelectionToggleButton = React.memo((props: Worksp
             style={{
                 width: 28,
                 height: 28,
+                marginVertical: Platform.OS === 'web' ? -3 : 0,
                 borderRadius: 10,
                 borderWidth: 1,
                 borderColor: theme.colors.border.default,

@@ -48,6 +48,21 @@ describe('resolveActionSettingsEntryStatusSummary', () => {
         });
     });
 
+    it('counts an inherited default approval policy as enabled', () => {
+        const settings = normalizeActionsSettings({ v: 1, actions: {} });
+
+        expect(resolveActionSettingsEntryStatusSummary({
+            settings,
+            actionId: 'review.start',
+            targets: [target('cli')],
+        })).toEqual({
+            allowedCount: 1,
+            askFirstCount: 0,
+            offCount: 0,
+            unavailableCount: 0,
+        });
+    });
+
     it('omits unavailable targets from the user-facing compact status by default', () => {
         expect(listActionSettingsEntryStatusParts({
             allowedCount: 1,

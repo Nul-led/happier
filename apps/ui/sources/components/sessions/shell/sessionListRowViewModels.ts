@@ -1,3 +1,5 @@
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { SessionListHomeObservationByServerId } from '@/sync/domains/session/listing/sessionListHomeObservation';
 import type {
     SessionListContextualSearchReason,
     SessionListIndexItem,
@@ -13,8 +15,14 @@ import {
 } from '@/sync/domains/session/attention/runtimePresentation';
 import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
 import {
+    buildSessionContextFacts,
+    projectSessionContextPresentation,
+} from '@/sync/domains/session/presentation/sessionContextPresentation';
+import {
     resolveSessionAttentionStanding,
+    resolveSessionReminderPresentation,
     type SessionAttentionStandingPolicy,
+    type SessionReminderPresentation,
 } from '@/sync/domains/session/organization/attentionStanding';
 import type { WorkspaceDisplayEllipsizeMode } from '@/sync/domains/workspaces/workspaceDisplayPresentation';
 import { getSessionName, getSessionStatus, type SessionStatus, type SessionWorkingTextMode } from '@/utils/sessions/sessionUtils';
@@ -121,6 +129,7 @@ export type SessionListRowViewModel = Readonly<{
      * menu target reads this and never `attentionStanding`.
      */
     isAttentionStanding: boolean;
+    reminder: SessionReminderPresentation | null;
     /** Whether the Keep / Remove action means anything at all (attention band on). */
     attentionStandingEnabled: boolean;
     draft: ExistingSessionDraftProjection | null;
@@ -145,6 +154,9 @@ export type BuildSessionListRowViewModelInput = Readonly<{
     reachableSessionDisplayById: ReadonlyMap<string, SessionReachableDisplay>;
     reachableSessionDisplayByKey?: ReadonlyMap<string, SessionReachableDisplay>;
     rowRenderableByKey?: ReadonlyMap<string, SessionListRenderableSession>;
+    audienceScopes?: ReadonlyMap<string, ServerAccountScope>;
+    /** Exact-Home list currentness from the canonical per-Home observation owner. */
+    homeObservations?: SessionListHomeObservationByServerId;
     relativeNowMs?: number;
     runtimeNowMs?: number;
     workingIndicatorMode?: 'spinner' | 'pulse';
@@ -156,6 +168,7 @@ export type BuildSessionListRowViewModelInput = Readonly<{
     pinnedSessionKeys: ReadonlySet<string>;
     sessionTags: Record<string, string[]>;
     selectedSessionId: string | null;
+    selectedSessionServerId?: string | null;
     showServerBadge: boolean;
     showPinnedServerBadge: boolean;
     attentionStandingEnabled?: boolean;
@@ -183,7 +196,7 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
     const workspaceSubtitle = reachableDisplay?.workspaceSubtitle ?? '';
     const subtitleEllipsizeMode = reachableDisplay?.workspaceSubtitleEllipsizeMode ?? 'head';
     const machineLabel = reachableDisplay?.machineLabel ?? '';
-    const subtitle = input.hasMultipleMachines
+    const workspaceLabel = input.hasMultipleMachines
         ? (machineLabel && workspaceSubtitle ? `${machineLabel} · ${workspaceSubtitle}` : machineLabel || workspaceSubtitle)
         : workspaceSubtitle;
     const session = rowKey ? input.rowRenderableByKey?.get(rowKey) ?? null : null;
@@ -207,7 +220,7 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
     const externalSessionRuntime = externalSessionLink && sessionStatus
         ? resolveExternalSessionRuntimePresentation({
             controlConnectivity: sessionStatus.isConnected ? 'connected' : 'offline',
-            detachedActivity: sessionStatus.state === 'background_active'
+            detachedActivity: sessionStatus.awareness?.runtime === 'background_active'
                 ? 'active'
                 : sessionStatus.isConnected
                     ? 'idle'
@@ -218,6 +231,31 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
         : null;
     const sessionName = session ? getSessionName(session) : '';
     const contextualSearchSubtitle = resolveContextualSearchSubtitle({ item, session });
+    const selectedSessionServerId = String(input.selectedSessionServerId ?? '').trim();
+    const unscopedSelectionIsUnique = !selectedSessionServerId
+        && input.selectedSessionId === sessionId
+        && input.listItems.filter((candidate) => (
+            candidate.type === 'session' && candidate.sessionId === sessionId
+        )).length === 1;
+    // One quiet secondary line, composed by the shared context owner rather than here: it decides
+    // whether this viewer may see the workspace at all and adds the single responsibility marker.
+    // The Home stays with the incumbent server badge, so it is deliberately not a segment here.
+    const subtitle = serverId && sessionId
+        ? projectSessionContextPresentation(buildSessionContextFacts({
+            address: { serverId, sessionId },
+            awareness: sessionStatus?.awareness ?? null,
+            viewer: session?.viewer,
+            audienceContext: session?.access?.audienceContext,
+            audienceScope: input.audienceScopes?.get(serverId),
+            workspaceLabel,
+            homeObservation: input.homeObservations?.[serverId] ?? null,
+            nowMs: relativeNowMs,
+        })).contextLine ?? ''
+        : workspaceLabel;
+    const reminder = input.attentionStandingPolicy && sessionKey
+        ? resolveSessionReminderPresentation(input.attentionStandingPolicy.overridesBySessionKey[sessionKey], runtimeNowMs)
+        : null;
+    const reminderWakeAtMs = reminder?.state === 'scheduled' ? reminder.remindAt : null;
 
     const rowViewModel: SessionListRowViewModel = {
         groupKey,
@@ -234,8 +272,11 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
             title: sessionName,
         }) : true,
         nextRuntimeFreshnessAtMs: resolveEarliestFreshnessAtMs(
-            session ? resolveNextRuntimeFreshnessAtMs(session, runtimeNowMs) : null,
-            externalSessionRuntime?.externalAgent.nextExpiryAtMs ?? null,
+            resolveEarliestFreshnessAtMs(
+                session ? resolveNextRuntimeFreshnessAtMs(session, runtimeNowMs) : null,
+                externalSessionRuntime?.externalAgent.nextExpiryAtMs ?? null,
+            ),
+            reminderWakeAtMs,
         ),
         hasUnreadMessages: session?.hasUnreadMessages === true,
         activityTimeLabel,
@@ -251,14 +292,21 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
         subtitleEllipsizeMode,
         pinned,
         showServerBadge: pinned ? input.showPinnedServerBadge : input.showServerBadge,
-        selected: input.selectedSessionId != null && input.selectedSessionId === sessionId,
+        selected: input.selectedSessionId != null
+            && input.selectedSessionId === sessionId
+            && (
+                selectedSessionServerId
+                    ? selectedSessionServerId === serverId
+                    : unscopedSelectionIsUnique
+            ),
         tags: getTagsForSession(input.sessionTags, sessionKey ?? ''),
         secondaryLineMode: resolveSessionListSecondaryLineMode({ groupKind: item.groupKind }),
         workingPlacementRetained: item.workingPlacementReason === 'working-retained',
         attentionStanding: item.attentionPlacementReason === 'standing',
         isAttentionStanding: input.attentionStandingPolicy != null && sessionKey != null
-            ? resolveSessionAttentionStanding(input.attentionStandingPolicy, sessionKey)
+            ? resolveSessionAttentionStanding(input.attentionStandingPolicy, sessionKey, runtimeNowMs)
             : false,
+        reminder,
         attentionStandingEnabled: input.attentionStandingEnabled === true && sessionKey != null,
         draft: input.existingDraft
             ?? (sessionKey ? input.existingDraftBySessionKey?.get(sessionKey) ?? null : null),
@@ -288,6 +336,9 @@ export function buildSessionListRowViewModels(input: Readonly<{
     reachableSessionDisplayById: ReadonlyMap<string, SessionReachableDisplay>;
     reachableSessionDisplayByKey?: ReadonlyMap<string, SessionReachableDisplay>;
     rowRenderableByKey?: ReadonlyMap<string, SessionListRenderableSession>;
+    audienceScopes?: ReadonlyMap<string, ServerAccountScope>;
+    /** Exact-Home list currentness from the canonical per-Home observation owner. */
+    homeObservations?: SessionListHomeObservationByServerId;
     relativeNowMs?: number;
     runtimeNowMs?: number;
     workingIndicatorMode?: 'spinner' | 'pulse';
@@ -299,6 +350,7 @@ export function buildSessionListRowViewModels(input: Readonly<{
     pinnedSessionKeys: ReadonlySet<string>;
     sessionTags: Record<string, string[]>;
     selectedSessionId: string | null;
+    selectedSessionServerId?: string | null;
     showServerBadge: boolean;
     showPinnedServerBadge: boolean;
     attentionStandingEnabled?: boolean;
@@ -325,7 +377,7 @@ export function buildSessionListRowViewModels(input: Readonly<{
 }
 
 function buildRowViewModelSignature(viewModel: SessionListRowViewModel): string {
-    return [
+    return JSON.stringify([
         viewModel.groupKey,
         viewModel.sessionKey ?? '',
         viewModel.sessionStatus?.state ?? '',
@@ -354,16 +406,18 @@ function buildRowViewModelSignature(viewModel: SessionListRowViewModel): string 
         viewModel.pinned ? '1' : '0',
         viewModel.showServerBadge ? '1' : '0',
         viewModel.selected ? '1' : '0',
-        viewModel.tags.join('\u0001'),
+        viewModel.tags,
         viewModel.secondaryLineMode,
         viewModel.workingPlacementRetained ? '1' : '0',
         viewModel.attentionStanding ? '1' : '0',
         viewModel.isAttentionStanding ? '1' : '0',
+        viewModel.reminder?.state ?? '',
+        viewModel.reminder?.remindAt ?? '',
         viewModel.attentionStandingEnabled ? '1' : '0',
         viewModel.draft?.updatedAt ?? '',
         viewModel.draft?.preview ?? '',
         viewModel.draft?.status ?? '',
-    ].join('\u0002');
+    ]);
 }
 
 function normalizeClockNow(value: number | null | undefined): number {

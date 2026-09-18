@@ -6,9 +6,17 @@ import {
     resolveSessionItemTagCollections,
     setTagsForSession,
     toggleTagForSession,
+    sessionTagKey,
 } from './sessionTagUtils';
 
 describe('sessionTagUtils', () => {
+    it('uses the canonical opaque SessionAddress key for URL-shaped Homes and delimiter-bearing Session ids', () => {
+        expect(sessionTagKey('https://home.example.test:8443', 'session:part'))
+            .toBe('["https://home.example.test:8443","session:part"]');
+        expect(sessionTagKey('https://home.example.test', '8443:session:part'))
+            .not.toBe(sessionTagKey('https://home.example.test:8443', 'session:part'));
+    });
+
     it('reuses a shared empty tag array for missing sessions', () => {
         const first = getTagsForSession(undefined, 'server_a:sess_a');
         const second = getTagsForSession(null, 'server_a:sess_a');

@@ -5,6 +5,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import {
     ConnectedServiceAuthGroupPolicyV1Schema,
+    type ConnectedServiceAuthGroupPolicyV1,
     QualifiedConnectedAccountQuotaSnapshotV4Schema,
     type ConnectedServiceCredentialHealthStatusV1,
     type QualifiedConnectedAccountQuotaSnapshotV4,
@@ -73,6 +74,7 @@ function accountRef(accountId: string): QualifiedConnectedAccountRef {
 function snapshotWithRemainingPct(
     accountId: string,
     remainingPct: number,
+    providerLimitId = 'standard',
 ): QualifiedConnectedAccountQuotaSnapshotV4 {
     return QualifiedConnectedAccountQuotaSnapshotV4Schema.parse({
         v: 1,
@@ -85,6 +87,7 @@ function snapshotWithRemainingPct(
             {
                 meterId: 'weekly',
                 label: 'Weekly',
+                providerLimitId,
                 used: 100 - remainingPct,
                 limit: 100,
                 unit: 'count',
@@ -92,6 +95,25 @@ function snapshotWithRemainingPct(
                 resetsAt: null,
                 status: 'ok',
                 details: {},
+            },
+        ],
+    });
+}
+
+function snapshotWithSelectedAndIgnoredCapacity(
+    accountId: string,
+): QualifiedConnectedAccountQuotaSnapshotV4 {
+    const base = snapshotWithRemainingPct(accountId, 80, 'standard');
+    return QualifiedConnectedAccountQuotaSnapshotV4Schema.parse({
+        ...base,
+        meters: [
+            base.meters[0],
+            {
+                ...base.meters[0],
+                meterId: 'spark:weekly',
+                label: 'Spark',
+                providerLimitId: 'spark',
+                used: 95,
             },
         ],
     });
@@ -113,7 +135,7 @@ function member(
 function buildGroup(
     overrides: Partial<Omit<QualifiedConnectedAccountUiGroup, 'ref' | 'policy'>> & {
         groupId?: string;
-        policy?: Readonly<{ autoSwitch?: boolean; strategy?: 'priority' | 'least_limited' | 'manual' }>;
+        policy?: Partial<ConnectedServiceAuthGroupPolicyV1>;
     } = {},
 ): QualifiedConnectedAccountUiGroup {
     const { groupId, policy, ...rest } = overrides;
@@ -123,6 +145,7 @@ function buildGroup(
         policy: ConnectedServiceAuthGroupPolicyV1Schema.parse({
             autoSwitch: policy?.autoSwitch ?? true,
             strategy: policy?.strategy ?? 'priority',
+            ...(policy?.quotaLimitSelection ? { quotaLimitSelection: policy.quotaLimitSelection } : {}),
         }),
         activeAccountId: 'work',
         revision: {
@@ -192,6 +215,7 @@ function renderPools(overrides: RenderOverrides = {}) {
 }
 
 beforeEach(() => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
     featureState.quotasEnabled = true;
     quotaState.snapshotsByAccountId = new Map();
     quotaState.loadingAccountIds = new Set();
@@ -294,6 +318,26 @@ describe('QualifiedPoolsList', () => {
         // The active member's capacity reads from the gauge avatar's center number.
         expect(flattenRenderedText(screen.findByTestId('connected-services-pool:pool-1:avatar:capacity')?.props.children))
             .toBe('5');
+    });
+
+    it('derives member capacity and warnings only from the pool-selected allowance families', async () => {
+        quotaState.snapshotsByAccountId.set('work', snapshotWithSelectedAndIgnoredCapacity('work'));
+
+        const screen = await renderPools({
+            groups: [buildGroup({
+                policy: {
+                    quotaLimitSelection: {
+                        mode: 'selected',
+                        providerLimitIds: ['standard'],
+                    },
+                },
+            })],
+        });
+        await flushHookEffects({ turns: 4 });
+
+        expect(flattenRenderedText(screen.findByTestId('connected-services-pool:pool-1:avatar:capacity')?.props.children))
+            .toBe('80');
+        expect(screen.findAllByTestId('connected-services-pool:pool-1:warnings')).toHaveLength(0);
     });
 
     it('counts a member that needs reauth without probing its quota', async () => {

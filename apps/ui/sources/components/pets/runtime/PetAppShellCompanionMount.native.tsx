@@ -211,8 +211,11 @@ function NativePetCompanionLayer({
     const handleOpenTrayItem = React.useCallback(async (item: PetCompanionTrayItem) => {
         await actionExecutor.execute(
             'session.open',
-            { sessionId: item.sessionId },
-            { defaultSessionId: item.sessionId },
+            { sessionId: item.address.sessionId },
+            {
+                defaultSessionId: item.address.sessionId,
+                serverId: item.address.serverId,
+            },
         );
     }, [actionExecutor]);
     const handleQuickReply = React.useCallback(async (item: PetCompanionTrayItem, message: string) => {
@@ -220,8 +223,11 @@ function NativePetCompanionLayer({
         if (!trimmedMessage) return;
         await actionExecutor.execute(
             'session.message.send',
-            { sessionId: item.sessionId, message: trimmedMessage },
-            { defaultSessionId: item.sessionId },
+            { sessionId: item.address.sessionId, message: trimmedMessage },
+            {
+                defaultSessionId: item.address.sessionId,
+                serverId: item.address.serverId,
+            },
         );
     }, [actionExecutor]);
     return (

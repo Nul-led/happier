@@ -55,8 +55,9 @@ async function registerControlSessionBinding(controlSessionId: string, conversat
         adapterId: 'local_direct',
         controlSessionId,
         conversationSessionId,
+        conversationSessionAddress: { serverId: 'server-a', sessionId: conversationSessionId },
         transcriptMode: 'native_session',
-        targetSessionId: null,
+        targetSessionAddress: null,
         updatedAt: Date.now(),
     });
 }

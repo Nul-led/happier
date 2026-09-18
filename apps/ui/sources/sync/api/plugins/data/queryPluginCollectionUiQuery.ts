@@ -3,15 +3,21 @@ import {
     PluginCollectionUiQueryErrorV1Schema,
     PluginCollectionUiQueryRequestV1Schema,
     PluginCollectionUiQueryResultV1Schema,
+    PluginCollectionUiQueryTransportResultV1Schema,
+    compilePluginJsonSchema,
     validatePluginCollectionUiQueryParametersV1,
     validatePluginCollectionUiQueryResultV1,
+    type NormalizedPluginAccountCollectionContractV1,
     type NormalizedPluginCollectionUiQueryDescriptorV1,
     type PluginCollectionUiQueryErrorV1,
     type PluginCollectionUiQueryRequestV1,
     type PluginCollectionUiQueryResultV1,
 } from '@happier-dev/protocol';
-import { PluginDomainChangeEntrySchema } from '@happier-dev/protocol/changes';
-
+import type {
+    PluginAccountCollectionDefinition,
+    PluginAccountCollectionValue,
+} from '@happier-dev/plugin-sdk/collections';
+import { mergeAbortSignals } from '@happier-dev/plugin-sdk/async';
 import { apiSocket } from '@/sync/api/session/apiSocket';
 import {
     captureActiveServerAccountScopeLifetime,
@@ -23,18 +29,43 @@ import {
     withAccountStoredContentCompatibilityRequestDeclaration,
     type AccountStoredContentCompatibilityUnavailableReason,
 } from '@/sync/http/accountStoredContentCompatibility';
-import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
+import {
+    mergeLogicalRow,
+    prepareCollectionOperation,
+    requestCollectionOperation,
+    type ActivePluginCollectionUnavailableReasonV1,
+} from './activePluginCollectionClient';
+import {
+    publishActivePluginCollectionChanges,
+    registerActivePluginCollectionChangeWatch,
+    resetActivePluginCollectionChanges,
+    type PluginCollectionChangeWatchV1,
+    type WatchActivePluginCollectionChangesInput,
+} from './pluginCollectionChangeWatch';
+
+export {
+    publishActivePluginCollectionChanges,
+    resetActivePluginCollectionChanges,
+    watchActivePluginCollectionChanges,
+} from './pluginCollectionChangeWatch';
+export type {
+    PluginCollectionChangeWatchV1,
+    WatchActivePluginCollectionChangesInput,
+} from './pluginCollectionChangeWatch';
 
 export const PLUGIN_COLLECTION_UI_QUERY_PATH_V1 = '/v1/plugins/data/ui-query';
 
 export type ActivePluginCollectionUiQueryInput = Readonly<{
     descriptor: NormalizedPluginCollectionUiQueryDescriptorV1;
     request: PluginCollectionUiQueryRequestV1;
+    /** Required only when the declared projection contains private logical fields. */
+    contract?: NormalizedPluginAccountCollectionContractV1;
 }>;
 
 export type PluginCollectionUiQueryUnavailableV1 = Readonly<{
     status: 'unavailable';
-    reason: AccountStoredContentCompatibilityUnavailableReason;
+    reason: AccountStoredContentCompatibilityUnavailableReason | ActivePluginCollectionUnavailableReasonV1;
 }>;
 
 export type PluginCollectionUiQueryOutcomeV1 =
@@ -51,16 +82,6 @@ export type PluginCollectionUiQueryWatchV1 = Readonly<{
  * static UI-query adapter and direct collection clients so AccountChange has
  * one local subscriber registry rather than a second UI change broker.
  */
-export type PluginCollectionChangeWatchV1 = PluginCollectionUiQueryWatchV1;
-
-export type WatchActivePluginCollectionChangesInput = Readonly<{
-    pluginId: string;
-    collectionId: string;
-    onInvalidated(): void;
-    /** A resolved direct client must retain its existing Account lifetime. */
-    accountLifetime?: ActiveServerAccountScopeLifetime;
-}>;
-
 export type PluginCollectionUiQueryPagerSnapshotV1 = Readonly<{
     /** One bounded server page; the opaque continuation never leaves Data. */
     rows: readonly PluginCollectionUiQueryResultV1['rows'][number][];
@@ -96,13 +117,6 @@ export type ActivePluginCollectionUiQueryBindingV1 = Readonly<{
     signal?: AbortSignal;
 }>;
 
-type ActivePluginCollectionUiQueryWatch = Readonly<{
-    pluginId: string;
-    collectionId: string;
-    lifetime: ActiveServerAccountScopeLifetime;
-    onInvalidated: () => void;
-}>;
-
 type CapturedActivePluginCollectionUiQuery = Readonly<{
     input: ActivePluginCollectionUiQueryInput;
     request: PluginCollectionUiQueryRequestV1;
@@ -110,8 +124,6 @@ type CapturedActivePluginCollectionUiQuery = Readonly<{
     serverSnapshot: ReturnType<typeof getActiveServerSnapshot>;
     signal?: AbortSignal;
 }>;
-
-const activePluginCollectionUiQueryWatches = new Set<ActivePluginCollectionUiQueryWatch>();
 
 function assertLifetimeCurrent(lifetime: ActiveServerAccountScopeLifetime): void {
     if (!lifetime.isCurrent()) {
@@ -179,6 +191,106 @@ function captureActivePluginCollectionUiQuery(
     };
 }
 
+function requiresPrivateLogicalProjection(input: ActivePluginCollectionUiQueryInput): boolean {
+    return input.contract !== undefined && input.descriptor.projectedFields.some(
+        (field) => !input.contract!.serverReadable.includes(field.field),
+    );
+}
+
+async function executePrivatePluginCollectionUiQuery(
+    captured: CapturedActivePluginCollectionUiQuery,
+    request: PluginCollectionUiQueryRequestV1,
+    signals: readonly (AbortSignal | undefined)[],
+): Promise<PluginCollectionUiQueryOutcomeV1> {
+    const contract = captured.input.contract;
+    if (!contract) throw new Error('Private Collection projection requires its admitted contract.');
+    if (
+        contract.pluginId !== request.pluginId
+        || contract.collectionId !== request.collectionId
+        || contract.schemaVersion !== request.readerContext.schemaVersion
+        || contract.contractDigest !== request.readerContext.contractDigest
+    ) {
+        throw new Error('Plugin Collection UI query contract does not match its admitted reader context.');
+    }
+
+    const cancellation = mergeAbortSignals(signals);
+    const prepared = await prepareCollectionOperation(
+        { signal: cancellation.signal },
+        captured.lifetime,
+    );
+    if (prepared.status === 'unavailable') {
+        cancellation.dispose();
+        return prepared;
+    }
+    try {
+        assertServerGenerationCurrent(captured.serverSnapshot);
+        const response = await requestCollectionOperation({
+            operation: prepared.operation,
+            path: PLUGIN_COLLECTION_UI_QUERY_PATH_V1,
+            body: request,
+            options: { signal: cancellation.signal },
+        });
+        if (response.status === 'unavailable') return response;
+        if (!response.ok) {
+            const error = PluginCollectionUiQueryErrorV1Schema.safeParse(response.body);
+            if (error.success) return error.data;
+            throw new Error('Plugin Collection UI query returned an invalid error response.');
+        }
+        const transport = PluginCollectionUiQueryTransportResultV1Schema.parse(response.body);
+        const validate = compilePluginJsonSchema(contract.schema);
+        const rows: PluginCollectionUiQueryResultV1['rows'] = [];
+        for (const row of transport.rows) {
+            if (!row.logicalRow) {
+                throw new Error('Plugin Collection UI query omitted its private logical row.');
+            }
+            const logical = mergeLogicalRow<PluginAccountCollectionValue<PluginAccountCollectionDefinition>>({
+                contract,
+                validate,
+                row: {
+                    rowId: row.context.rowId,
+                    revision: row.context.revision,
+                    content: row.logicalRow.content,
+                    projection: row.logicalRow.projection,
+                },
+                encryptionMode: prepared.operation.encryptionMode,
+                material: prepared.operation.material,
+            });
+            if (!logical) {
+                return { status: 'unavailable', reason: 'account-content-mismatch' };
+            }
+            const fields: Record<string, null | boolean | string | number> = {};
+            for (const field of captured.input.descriptor.projectedFields) {
+                const value = logical.value[field.field];
+                if (value === undefined || value === null) {
+                    fields[field.field] = null;
+                } else if (
+                    typeof value === 'string'
+                    || typeof value === 'boolean'
+                    || (typeof value === 'number' && Number.isFinite(value))
+                ) {
+                    fields[field.field] = value;
+                } else {
+                    throw new Error('Plugin Collection UI query projected a non-scalar logical field.');
+                }
+            }
+            rows.push({ context: row.context, fields });
+        }
+        const result = PluginCollectionUiQueryResultV1Schema.parse({
+            rows,
+            ...(transport.nextCursor ? { nextCursor: transport.nextCursor } : {}),
+            changeCursor: transport.changeCursor,
+        });
+        const validated = validatePluginCollectionUiQueryResultV1(captured.input.descriptor, result);
+        validateResponseIdentity(validated, request);
+        assertLifetimeCurrent(captured.lifetime);
+        assertServerGenerationCurrent(captured.serverSnapshot);
+        return validated;
+    } finally {
+        await prepared.operation.release();
+        cancellation.dispose();
+    }
+}
+
 async function executeCapturedActivePluginCollectionUiQuery(
     captured: CapturedActivePluginCollectionUiQuery,
     options?: Readonly<{
@@ -189,6 +301,13 @@ async function executeCapturedActivePluginCollectionUiQuery(
     const request = options?.cursor === undefined
         ? captured.request
         : { ...captured.request, cursor: options.cursor };
+    if (requiresPrivateLogicalProjection(captured.input)) {
+        return await executePrivatePluginCollectionUiQuery(
+            captured,
+            request,
+            [captured.signal, options?.signal],
+        );
+    }
     const compatibility = resolveAccountStoredContentCompatibilityHeaders(
         { 'Content-Type': 'application/json' },
         {
@@ -206,9 +325,9 @@ async function executeCapturedActivePluginCollectionUiQuery(
     const signals = [captured.signal, options?.signal];
     for (const signal of signals) signal?.addEventListener('abort', abort, { once: true });
     if (signals.some((signal) => signal?.aborted)) abort();
-    let authority: Awaited<ReturnType<typeof captureSessionRequestAuthorityForServerAccountScope>> | null = null;
+    let authority: Awaited<ReturnType<typeof captureServerRequestAuthorityForServerAccountScope>> | null = null;
     try {
-        authority = await captureSessionRequestAuthorityForServerAccountScope({
+        authority = await captureServerRequestAuthorityForServerAccountScope({
             scope: captured.lifetime.scope,
             activeRequest: (path, init) => apiSocket.request(path, init),
         });
@@ -248,46 +367,6 @@ async function executeCapturedActivePluginCollectionUiQuery(
     }
 }
 
-function registerActivePluginCollectionUiQueryWatch(input: Readonly<{
-    pluginId: string;
-    collectionId: string;
-    lifetime: ActiveServerAccountScopeLifetime;
-    onInvalidated(): void;
-}>): PluginCollectionUiQueryWatchV1 {
-    const watch: ActivePluginCollectionUiQueryWatch = Object.freeze({
-        pluginId: input.pluginId,
-        collectionId: input.collectionId,
-        lifetime: input.lifetime,
-        onInvalidated: input.onInvalidated,
-    });
-    let disposed = false;
-    let retirement: Readonly<{ dispose(): void }> | null = null;
-    const dispose = (): void => {
-        if (disposed) return;
-        disposed = true;
-        activePluginCollectionUiQueryWatches.delete(watch);
-        retirement?.dispose();
-        retirement = null;
-    };
-
-    activePluginCollectionUiQueryWatches.add(watch);
-    retirement = input.lifetime.onRetire(dispose);
-    if (!input.lifetime.isCurrent()) dispose();
-    return Object.freeze({ dispose });
-}
-
-function notifyWatches(watches: Iterable<ActivePluginCollectionUiQueryWatch>): void {
-    for (const watch of watches) {
-        if (!activePluginCollectionUiQueryWatches.has(watch) || !watch.lifetime.isCurrent()) continue;
-        try {
-            watch.onInvalidated();
-        } catch {
-            // A presentation callback cannot corrupt the canonical Account
-            // change stream or retain a stale Account scope.
-        }
-    }
-}
-
 /**
  * Registers the Data-owned level-triggered wakeup before a consumer performs
  * its initial read. The existing Account-change pipeline calls the publisher
@@ -302,7 +381,7 @@ export function watchActivePluginCollectionUiQuery(
         throw new Error('No active Account scope is available for plugin collection data.');
     }
     assertLifetimeCurrent(lifetime);
-    return registerActivePluginCollectionUiQueryWatch({
+    return registerActivePluginCollectionChangeWatch({
         pluginId: request.pluginId,
         collectionId: request.collectionId,
         lifetime,
@@ -315,19 +394,6 @@ export function watchActivePluginCollectionUiQuery(
  * A direct client captures the current Account scope here; it owns no global
  * store, scope epoch, or AccountChange producer.
  */
-export function watchActivePluginCollectionChanges(
-    input: WatchActivePluginCollectionChangesInput,
-): PluginCollectionChangeWatchV1 | null {
-    const lifetime = input.accountLifetime ?? captureActiveServerAccountScopeLifetime();
-    if (!lifetime || !lifetime.isCurrent()) return null;
-    return registerActivePluginCollectionUiQueryWatch({
-        pluginId: input.pluginId,
-        collectionId: input.collectionId,
-        lifetime,
-        onInvalidated: input.onInvalidated,
-    });
-}
-
 /**
  * Called only from the existing AccountChange application path. One page
  * coalesces to at most one wakeup per watched collection and unparseable or
@@ -338,36 +404,12 @@ export function publishActivePluginCollectionUiQueryChanges(changes: readonly un
 }
 
 /**
- * Shared AccountChange projection for every current UI collection consumer.
- * The hint remains content-free and collection-scoped.
- */
-export function publishActivePluginCollectionChanges(changes: readonly unknown[]): void {
-    const affected = new Set<ActivePluginCollectionUiQueryWatch>();
-    for (const rawChange of changes) {
-        const parsed = PluginDomainChangeEntrySchema.safeParse(rawChange);
-        if (!parsed.success || parsed.data.hint.pluginDomain !== 'dataCollection') continue;
-        const { pluginId, collectionId } = parsed.data.hint;
-        for (const watch of activePluginCollectionUiQueryWatches) {
-            if (watch.pluginId === pluginId && watch.collectionId === collectionId) {
-                affected.add(watch);
-            }
-        }
-    }
-    notifyWatches(affected);
-}
-
-/**
  * A retained cursor can fall below the server retention floor. A successful
  * canonical snapshot repairs that gap, so every current Data query gets one
  * content-free wakeup and re-reads through the normal authenticated route.
  */
 export function resetActivePluginCollectionUiQueryWatches(): void {
     resetActivePluginCollectionChanges();
-}
-
-/** A canonical snapshot repair invalidates every current collection consumer. */
-export function resetActivePluginCollectionChanges(): void {
-    notifyWatches(activePluginCollectionUiQueryWatches);
 }
 
 function freezePagerRows(
@@ -544,7 +586,7 @@ export function createActivePluginCollectionUiQueryPager(
         listeners.clear();
     };
 
-    watch = registerActivePluginCollectionUiQueryWatch({
+    watch = registerActivePluginCollectionChangeWatch({
         pluginId: captured.request.pluginId,
         collectionId: captured.request.collectionId,
         lifetime: captured.lifetime,

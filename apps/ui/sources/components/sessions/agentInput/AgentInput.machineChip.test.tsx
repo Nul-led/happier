@@ -359,6 +359,24 @@ describe('AgentInput (machine chip)', () => {
         expect(text.join(' ')).toContain('newSession.selectMachineTitle');
     });
 
+    it('keeps the full exact Machine name in both visible and accessible chip labels', async () => {
+        const fullMachineName = 'Mac Studio in the downstairs development rack';
+        const screen = await renderScreen(React.createElement(AgentInput, {
+            value: 'hello',
+            placeholder: 'placeholder',
+            onChangeText: () => {},
+            onSend: () => {},
+            autocompleteKinds: [],
+            autocompleteSuggestions: async () => [],
+            machineName: fullMachineName,
+            onMachineClick: () => {},
+        }));
+
+        const machineChip = screen.findByTestId('agent-input-machine-chip');
+        expect(screen.getTextContent()).toContain(fullMachineName);
+        expect(machineChip?.props.accessibilityLabel).toContain(fullMachineName);
+    });
+
     it('renders a select-path label when path is not yet selected (new-session bootstrap)', async () => {
         tree = (await renderScreen(React.createElement(AgentInput, {
                     value: 'hello',

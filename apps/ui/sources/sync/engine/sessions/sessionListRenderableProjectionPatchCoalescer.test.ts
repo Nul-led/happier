@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { createSessionListRenderableProjectionPatchCoalescer } from './sessionListRenderableProjectionPatchCoalescer';
 
@@ -29,21 +30,22 @@ describe('createSessionListRenderableProjectionPatchCoalescer', () => {
     it('clears immediate-only leading-window state when a session id is dropped', () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000);
-        const applied: Array<{ sessionId: string; patch: Readonly<{ updatedAt?: number }> }> = [];
+        const applied: Array<{ address: SessionAddress; patch: Readonly<{ updatedAt?: number }> }> = [];
         const coalescer = createSessionListRenderableProjectionPatchCoalescer<number>({
             getConfig: () => ({ enabled: true, windowMs: 1_000, maxBatchSize: 10 }),
-            readRenderable: (sessionId) => renderable(sessionId),
+            readRenderable: (address) => renderable(address.sessionId),
             buildPatch: ({ payload }) => ({ updatedAt: payload }),
             applyPatches: (patches) => {
                 applied.push(...patches);
             },
         });
 
-        coalescer.enqueue('session-1', 2, { forceImmediate: true });
+        const address = { serverId: 'server-a', sessionId: 'session-1' };
+        coalescer.enqueue(address, 2, { forceImmediate: true });
         expect(applied.map((entry) => entry.patch.updatedAt)).toEqual([2]);
 
-        coalescer.dropSessionIds(['session-1']);
-        coalescer.enqueue('session-1', 3);
+        coalescer.dropAddresses([address]);
+        coalescer.enqueue(address, 3);
 
         expect(applied.map((entry) => entry.patch.updatedAt)).toEqual([2, 3]);
     });
@@ -51,31 +53,60 @@ describe('createSessionListRenderableProjectionPatchCoalescer', () => {
     it('drops coalesced patches that leave the renderable unchanged after all entries are applied', () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000);
+        const address = { serverId: 'server-a', sessionId: 'session-1' };
         const renderables = new Map<string, SessionListRenderableSession>([
-            ['session-1', renderable('session-1')],
+            [sessionAddressKey(address), renderable('session-1')],
         ]);
         const applyPatches = vi.fn((patches: Array<{
-            sessionId: string;
+            address: SessionAddress;
             patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
         }>) => {
-            for (const { sessionId, patch } of patches) {
-                const previous = renderables.get(sessionId);
+            for (const { address: target, patch } of patches) {
+                const key = sessionAddressKey(target);
+                const previous = renderables.get(key);
                 if (!previous) continue;
-                renderables.set(sessionId, { ...previous, ...patch, id: previous.id });
+                renderables.set(key, { ...previous, ...patch, id: previous.id });
             }
         });
         const coalescer = createSessionListRenderableProjectionPatchCoalescer<number>({
             getConfig: () => ({ enabled: true, windowMs: 100, maxBatchSize: 10 }),
-            readRenderable: (sessionId) => renderables.get(sessionId),
+            readRenderable: (target) => renderables.get(sessionAddressKey(target)),
             buildPatch: ({ payload }) => ({ updatedAt: payload }),
             applyPatches,
         });
 
-        coalescer.enqueue('session-1', 2, { deferLeadingPatch: true });
-        coalescer.enqueue('session-1', 1);
+        coalescer.enqueue(address, 2, { deferLeadingPatch: true });
+        coalescer.enqueue(address, 1);
         vi.advanceTimersByTime(100);
 
         expect(applyPatches).not.toHaveBeenCalled();
-        expect(renderables.get('session-1')).toEqual(renderable('session-1'));
+        expect(renderables.get(sessionAddressKey(address))).toEqual(renderable('session-1'));
+    });
+
+    it('keeps matching session ids from different Homes in separate queued batches', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000);
+        const homeA = { serverId: 'server-a', sessionId: 'session-1' };
+        const homeB = { serverId: 'server-b', sessionId: 'session-1' };
+        const renderables = new Map<string, SessionListRenderableSession>([
+            [sessionAddressKey(homeA), renderable('session-1')],
+            [sessionAddressKey(homeB), renderable('session-1')],
+        ]);
+        const applied: Array<{ address: SessionAddress; patch: Readonly<{ updatedAt?: number }> }> = [];
+        const coalescer = createSessionListRenderableProjectionPatchCoalescer<number>({
+            getConfig: () => ({ enabled: true, windowMs: 100, maxBatchSize: 10 }),
+            readRenderable: (address) => renderables.get(sessionAddressKey(address)),
+            buildPatch: ({ payload }) => ({ updatedAt: payload }),
+            applyPatches: (patches) => applied.push(...patches),
+        });
+
+        coalescer.enqueue(homeA, 2, { deferLeadingPatch: true });
+        coalescer.enqueue(homeB, 3, { deferLeadingPatch: true });
+        vi.advanceTimersByTime(100);
+
+        expect(applied).toEqual([
+            { address: homeA, patch: { updatedAt: 2 } },
+            { address: homeB, patch: { updatedAt: 3 } },
+        ]);
     });
 });

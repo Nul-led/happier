@@ -47,18 +47,21 @@ const message = createToolCallMessageFixture({
 vi.mock('@/sync/domains/state/storage', async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleStub({
-    useSession: () => ({ metadata: {} }),
-    useSessionMessages: () => ({
+        useSession: () => ({ serverId: 'home-b', metadata: {} }),
+        useSessionMessages: () => ({
             messages: [message],
         }),
-});
+    });
 });
 
 describe('useDerivedSessionChangeSet', () => {
     it('derives a session change set and provider diffs from canonical Diff messages', async () => {
         vi.resetModules();
         const { useDerivedSessionChangeSet } = await import('./useDerivedSessionChangeSet');
-        const { getCurrent } = await renderHook(() => useDerivedSessionChangeSet('session_1'));
+        const { getCurrent } = await renderHook(() => useDerivedSessionChangeSet({
+            serverId: 'home-b',
+            sessionId: 'session_1',
+        }));
         const current = getCurrent();
 
         expect(current.sessionChangeSet).toEqual(expect.objectContaining({
@@ -72,5 +75,25 @@ describe('useDerivedSessionChangeSet', () => {
             throw new Error('Expected provider diff map');
         }
         expect(providerDiffMap.get('src/app.ts')).toContain('diff --git a/src/app.ts b/src/app.ts');
+    });
+
+    it('fails closed when the retained bare-id transcript belongs to another Home', async () => {
+        vi.resetModules();
+        const { useDerivedSessionChangeSet } = await import('./useDerivedSessionChangeSet');
+        const { getCurrent } = await renderHook(() => useDerivedSessionChangeSet({
+            serverId: 'home-a',
+            sessionId: 'session_1',
+        }));
+
+        expect(getCurrent()).toMatchObject({
+            turnChangeSets: [],
+            latestTurnChangeSet: null,
+            latestTurnScopedChangeSet: null,
+            sessionChangeSet: null,
+            latestTurnDiffByPath: null,
+            latestTurnAgentReportedDiffByPath: null,
+            latestTurnCheckpointDiffByPath: null,
+            providerDiffByPath: null,
+        });
     });
 });

@@ -9,6 +9,8 @@ import { Popover } from '@/components/ui/popover';
 import { t } from '@/text';
 import type { ActionOperationProjection } from '@/sync/domains/actionOperations/actionOperationSelectors';
 import { actionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
+import { actionOperationAddress } from '@/sync/domains/actionOperations/qualifiedActionOperation';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import {
     useActionOperationsHaveAttention,
     useAllActionOperations,
@@ -21,10 +23,10 @@ import { requestAcceptedActionOperationStop } from './requestActionOperationStop
 export type ActionOperationActivityButtonViewProps = Readonly<{
     operations: readonly ActionOperationProjection[];
     hasAttention: boolean;
-    preferredSessionId?: string | null;
-    onOpenOperation: (operationId: string) => void;
-    onCancelOperation?: (operationId: string) => Promise<void> | void;
-    onDismissOperation?: (operationId: string) => void;
+    preferredSessionAddress?: SessionAddress | null;
+    onOpenOperation: (operation: ActionOperationProjection) => void;
+    onCancelOperation?: (operation: ActionOperationProjection) => Promise<void> | void;
+    onDismissOperation?: (operation: ActionOperationProjection) => void;
     onMarkVisibleTerminalSeen: () => void;
     onClearRecent?: () => void;
     tintColor?: string;
@@ -60,9 +62,9 @@ export const ActionOperationActivityButtonView = React.memo(function ActionOpera
         if (open) props.onMarkVisibleTerminalSeen();
     }, [open, props.onMarkVisibleTerminalSeen, props.operations]);
 
-    const handleOpenOperation = React.useCallback((operationId: string) => {
+    const handleOpenOperation = React.useCallback((operation: ActionOperationProjection) => {
         setOpen(false);
-        props.onOpenOperation(operationId);
+        props.onOpenOperation(operation);
     }, [props.onOpenOperation]);
     const handleClearRecent = React.useCallback(() => {
         props.onClearRecent?.();
@@ -148,7 +150,7 @@ export const ActionOperationActivityButtonView = React.memo(function ActionOpera
                         >
                             <ActionOperationLedgerView
                                 operations={props.operations}
-                                preferredSessionId={props.preferredSessionId}
+                                preferredSessionAddress={props.preferredSessionAddress}
                                 onOpenOperation={handleOpenOperation}
                                 onCancelOperation={props.onCancelOperation}
                                 onDismissOperation={props.onDismissOperation}
@@ -164,7 +166,7 @@ export const ActionOperationActivityButtonView = React.memo(function ActionOpera
 });
 
 export const ActionOperationActivityButton = React.memo(function ActionOperationActivityButton(props: Readonly<{
-    preferredSessionId?: string | null;
+    preferredSessionAddress?: SessionAddress | null;
     tintColor?: string;
     buttonSize?: number;
     iconSize?: number;
@@ -175,25 +177,23 @@ export const ActionOperationActivityButton = React.memo(function ActionOperation
     const markVisibleTerminalSeen = React.useCallback(() => {
         actionOperationStore.markAllTerminalSeen();
     }, []);
-    const stopOperation = React.useCallback(async (operationId: string) => {
-        const operation = operations.find((candidate) => candidate.snapshot.operationId === operationId);
-        if (operation) await requestAcceptedActionOperationStop(operation.snapshot);
-    }, [operations]);
+    const stopOperation = React.useCallback(async (operation: ActionOperationProjection) => {
+        await requestAcceptedActionOperationStop(operation);
+    }, []);
     return (
         <ActionOperationActivityButtonView
             operations={operations}
             hasAttention={hasAttention}
-            preferredSessionId={props.preferredSessionId}
+            preferredSessionAddress={props.preferredSessionAddress}
             tintColor={props.tintColor}
             buttonSize={props.buttonSize}
             iconSize={props.iconSize}
             testID={props.testID}
-            onOpenOperation={(operationId) => {
-                const operation = operations.find((candidate) => candidate.snapshot.operationId === operationId);
-                if (operation) openActionOperation(operation.snapshot);
-            }}
+            onOpenOperation={openActionOperation}
             onCancelOperation={stopOperation}
-            onDismissOperation={actionOperationStore.dismissUnavailable}
+            onDismissOperation={(operation) => actionOperationStore.dismissUnavailable(
+                actionOperationAddress(operation.serverId, operation.snapshot.operationId),
+            )}
             onMarkVisibleTerminalSeen={markVisibleTerminalSeen}
             onClearRecent={actionOperationStore.dismissRecentSucceeded}
         />

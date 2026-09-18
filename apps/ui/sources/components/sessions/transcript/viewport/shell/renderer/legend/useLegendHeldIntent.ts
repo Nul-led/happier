@@ -97,7 +97,7 @@ function readEntryPlacementItemId(intent: LegendHeldScrollIntent | null): string
  * The renderer-owned held-intent transaction: ONE keyed target (held-'end', keyed index, or
  * web DOM anchor) that survives Legend MVCP replay and estimate corrections. Owns the intent
  * identity, settle cadence, one-shot web-tail materialization, and the phase-scoped keyed/native
- * residual writes that repair displacement. Legend alone owns steady web held-end positioning.
+ * residual writes that repair displacement. Legend alone owns steady held-end positioning.
  */
 export function useLegendHeldIntent<TItem>(params: Readonly<{
     data: readonly TItem[];
@@ -341,6 +341,7 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
     const releaseHeldScrollIntent = React.useCallback((
         outcome: 'preempted' | 'superseded' = 'preempted',
     ) => {
+        legendListRef.current?.cancelScroll();
         finishEntryPlacement(heldScrollIntentRef.current, outcome);
         setHeldScrollIntent(null);
         heldIntentSettleUntilRef.current = 0;
@@ -353,10 +354,11 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
     }, [
         cancelScheduledHeldIntentSettle,
         finishEntryPlacement,
+        legendListRef,
         setHeldScrollIntent,
     ]);
-    const cancelLegendInitialScrollPreservation = React.useCallback(() => {
-        legendListRef.current?.cancelInitialScrollPreservation();
+    const cancelLegendScroll = React.useCallback(() => {
+        legendListRef.current?.cancelScroll();
     }, [legendListRef]);
 
     const beginExplicitJumpTakeover = React.useCallback((
@@ -369,8 +371,10 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
         };
         const alreadyActive = explicitJumpTakeoverOperationRef.current !== null;
         explicitJumpTakeoverOperationRef.current = operationId;
-        cancelLegendInitialScrollPreservation();
-        if (alreadyActive) return releaseOperation;
+        if (alreadyActive) {
+            cancelLegendScroll();
+            return releaseOperation;
+        }
         const hadHeldEndOwnership = heldScrollIntentRef.current?.kind === 'end';
         invalidateUserInertiaContinuation();
         suppressAutoEndLatchRef.current = true;
@@ -378,7 +382,7 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
         if (!hadHeldEndOwnership) renderPositioningPhase();
         return releaseOperation;
     }, [
-        cancelLegendInitialScrollPreservation,
+        cancelLegendScroll,
         invalidateUserInertiaContinuation,
         releaseHeldScrollIntent,
         suppressAutoEndLatchRef,
@@ -561,7 +565,7 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
         resolveHeldIntentIndex,
     ]);
 
-    const readHeldIntentLanding = React.useCallback((intent: LegendHeldScrollIntent): LegendHeldIntentLanding | null => {
+    const readHeldIntentLanding = React.useCallback((intent: Exclude<LegendHeldScrollIntent, { kind: 'end' }>): LegendHeldIntentLanding | null => {
         if (intent.kind === 'anchor') {
             const metrics = readWebScrollMetrics();
             if (!metrics) return null;
@@ -612,9 +616,8 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
         }
         const state = legendListRef.current?.getState();
         if (!state) return null;
-        const index = intent.kind === 'index' ? resolveHeldIntentIndex(intent) : undefined;
+        const index = resolveHeldIntentIndex(intent);
         const stateLanding = resolveLegendStateHeldIntentLanding({ index, intent, state });
-        if (intent.kind === 'end') return stateLanding;
         const metrics = readWebScrollMetrics();
         if (!metrics) return stateLanding;
         const element = state.elementAtIndex?.(index ?? -1) as unknown as HTMLElement | null | undefined;
@@ -1085,23 +1088,11 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
             }
             if (requestWebHeldEndMaterialization(intent)) return false;
             if (intent.kind === 'end') {
-                if (isWebFrame) {
-                    // After the one-shot final-row materialization above, Legend's semantic
-                    // maintain-at-end lifecycle is the sole steady web positioning owner.
-                    // Its public isAtEnd fact can remain cached while a row remeasurement has
-                    // already changed DOM geometry, so DOM residual is not a settled-gap signal.
-                    pendingLargeResidualConfirmationRef.current = null;
-                    return true;
-                }
-                if (
-                    legendListRef.current?.getState()?.isWithinMaintainScrollAtEndThreshold
-                    === true
-                ) {
-                    // Stock Legend owns native item/footer/layout/data maintenance while this
-                    // fact is true. The app residual is only the beyond-threshold fallback.
-                    pendingLargeResidualConfirmationRef.current = null;
-                    return true;
-                }
+                // Legend consumes the durable held-end predicate even outside its physical
+                // threshold. An app residual would compete with native maintenance while its
+                // scroll acknowledgement is pending. Web only adds one-shot materialization.
+                pendingLargeResidualConfirmationRef.current = null;
+                return true;
             }
             if (
                 entryPlacementActive
@@ -1151,7 +1142,16 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
                 );
                 return;
             }
-            verifyLanding();
+            if (
+                verifyLanding()
+                && intent.kind === 'end'
+                && pendingInitialPresentationSettlementRef.current === null
+            ) {
+                // Stop only the poll. The held intent and provenance deadline remain live;
+                // later committed geometry requests verification through this same owner.
+                finishHeldIntentSettle('settled');
+                return;
+            }
             tryAcknowledgeInitialPresentationSettlement();
             const requestAnimationFrame = globalThis.requestAnimationFrame;
             if (typeof requestAnimationFrame !== 'function') {
@@ -1185,7 +1185,15 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
             // Most signals arrive after geometry commits and can verify synchronously.
             // Legend 3.3.3 invokes onItemSizeChanged before position/MVCP recalculation, so
             // that signal joins the already-owned settle frame and reads post-commit geometry.
-            if (!deferFirstVerification) verifyLanding();
+            if (
+                !deferFirstVerification
+                && verifyLanding()
+                && intent.kind === 'end'
+                && pendingInitialPresentationSettlementRef.current === null
+            ) {
+                finishHeldIntentSettle('settled');
+                return;
+            }
             const scheduled = heldIntentSettleFrameRef.current;
             // Already polling for THIS intent: one frame per transaction, unchanged. A frame
             // belonging to a superseded intent is not this transaction's poll and must not
@@ -1390,7 +1398,7 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
     return {
         armVisibleAnchorHold,
         beginExplicitJumpTakeover,
-        cancelLegendInitialScrollPreservation,
+        cancelLegendScroll,
         hasActiveEntryPlacement,
         hasHeldEndPositioningOwnership,
         hasLiveKeyedHeldIntent,

@@ -1,7 +1,13 @@
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import type { BackendTargetRefV1 } from '@happier-dev/protocol';
 import { sessionExecutionRunStop } from '@/sync/ops/sessionExecutionRuns';
-import { supportsAgentLifecycleCapability } from '@/agents/backendCatalog/currentAgentCapabilities';
+import {
+    readCurrentProjectedAgentCapabilities,
+    supportsAgentLifecycleCapability,
+} from '@/agents/backendCatalog/currentAgentCapabilities';
+import { loadDaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import { resolveSessionAddressFromLocalState } from '@/sync/domains/session/resolveSessionAddressFromLocalState';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { storage } from '@/sync/domains/state/storage';
 import { findSessionListLookupSession } from '@/sync/domains/session/listing/sessionListLookupState';
 import { resolveMachineForActiveServerFromState } from '@/sync/store/domains/machines/resolveMachinesForActiveServerFromState';
@@ -23,28 +29,65 @@ import {
 import type { VoiceAgentHandle, VoiceAgentStartParams } from './types';
 import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoiceSessionOwnerMetadata';
 
-function resolvePreferredVoiceAgentSessionFromState(sessionId: string): Readonly<{
+function resolvePreferredVoiceAgentSessionFromState(target: SessionAddress | string): Readonly<{
     active?: boolean;
     presence?: 'online' | number;
     metadata?: Readonly<{ flavor?: unknown; machineId?: unknown }> | null;
 }> | null {
     const state = storage.getState() as any;
-    return findSessionListLookupSession(state, sessionId)?.session ?? state.sessions?.[sessionId] ?? null;
+    const sessionId = typeof target === 'string' ? target : target.sessionId;
+    return findSessionListLookupSession(state, target)?.session ?? state.sessions?.[sessionId] ?? null;
 }
 
-export function assertActiveDaemonTargetSession(sessionId: string): void {
+/**
+ * The Agent declarations projected by the target's OWN Home and machine.
+ *
+ * `surface.terminal` has no static per-Agent declaration, so a Session that publishes no
+ * `agentRuntimeCapabilitiesV1.localControl` bit can only be answered from this projection —
+ * the same evidence the live Session surface uses. Both the machine and the Home are part of
+ * the projection scope, so a focused-Home substitution would answer for the wrong daemon.
+ */
+async function resolveTargetProjectedAgentCapabilities(params: Readonly<{
+    agentId: string | null;
+    machineId: string | null;
+    serverId: string | null;
+}>) {
+    if (!params.agentId || !params.machineId) return null;
+    const inputs = await loadDaemonMergedProjectionInputs({
+        machineId: params.machineId,
+        ...(params.serverId ? { serverId: params.serverId } : {}),
+    });
+    return readCurrentProjectedAgentCapabilities({
+        projection: inputs?.pluginProjectionV2,
+        agentId: params.agentId,
+    });
+}
+
+export async function assertActiveDaemonTargetSession(target: SessionAddress | string): Promise<void> {
+    const sessionId = typeof target === 'string' ? target : target.sessionId;
     if (sessionId === VOICE_AGENT_GLOBAL_SESSION_ID) return;
     const state = storage.getState();
-    const session: any = resolvePreferredVoiceAgentSessionFromState(sessionId);
+    const address = typeof target === 'string'
+        ? resolveSessionAddressFromLocalState(state as any, sessionId)
+        : normalizeSessionAddress(target.serverId, target.sessionId);
+    const lookupTarget = address ?? sessionId;
+    const session: any = resolvePreferredVoiceAgentSessionFromState(lookupTarget);
     if (!session) return;
-    const metadata = readVoiceSessionOwnerMetadataFromState(state, sessionId);
+    const metadata = readVoiceSessionOwnerMetadataFromState(state, lookupTarget);
+    const machineId = normalizeNonEmptyString(metadata?.machineId);
     // An unreadable Agent identity is not Claude. Local voice control needs the
     // Session's real Agent to declare a terminal surface, so an unknown identity
     // stays unsupported instead of borrowing the default Agent's facts.
+    const agentId = resolveAgentIdFromSessionMetadata(metadata);
     if (!supportsAgentLifecycleCapability({
-        agentId: resolveAgentIdFromSessionMetadata(metadata),
+        agentId,
         capability: 'surface.terminal',
         metadata,
+        currentAgentCapabilities: await resolveTargetProjectedAgentCapabilities({
+            agentId,
+            machineId,
+            serverId: address?.serverId ?? null,
+        }),
     })) {
         throw Object.assign(
             new Error('Target session provider does not support local voice control.'),
@@ -63,7 +106,6 @@ export function assertActiveDaemonTargetSession(sessionId: string): void {
             { code: 'VOICE_AGENT_TARGET_SESSION_OFFLINE' },
         );
     }
-    const machineId = normalizeNonEmptyString(metadata?.machineId);
     const machine = machineId ? resolveMachineForActiveServerFromState(storage.getState(), machineId) : null;
     if (machine && isMachineOnline(machine) !== true) {
         throw Object.assign(
@@ -95,12 +137,16 @@ function isReusableDaemonConversationSessionId(sessionId: string | null): sessio
     return isMachineOnline(machine);
 }
 
+/** The bound target keeps its Home: one resolution owner, projected for bare-id callers below. */
+export function resolveBoundTargetSessionAddress(sessionId: string): SessionAddress | null {
+    const address = voiceConversationBindingResolver.resolveByControlSessionId({ controlSessionId: sessionId })?.targetSessionAddress
+        ?? voiceConversationBindingResolver.resolveByConversationSessionId({ conversationSessionId: sessionId })?.targetSessionAddress
+        ?? null;
+    return address ? normalizeSessionAddress(address.serverId, address.sessionId) : null;
+}
+
 export function resolveBoundTargetSessionId(sessionId: string): string | null {
-    return normalizeNonEmptyString(
-        voiceConversationBindingResolver.resolveByControlSessionId({ controlSessionId: sessionId })?.targetSessionId
-        ?? voiceConversationBindingResolver.resolveByConversationSessionId({ conversationSessionId: sessionId })?.targetSessionId
-        ?? null,
-    );
+    return resolveBoundTargetSessionAddress(sessionId)?.sessionId ?? null;
 }
 
 export function resolvePersistedDaemonConversationSessionId(): string | null {

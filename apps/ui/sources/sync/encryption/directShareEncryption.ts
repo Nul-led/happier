@@ -1,11 +1,29 @@
-import { sealEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
+import {
+    sealEncryptedDataKeyEnvelopeV1,
+    verifyAccountContentKeyBindingV1,
+} from '@happier-dev/protocol';
 
 import { encodeBase64, decodeBase64 } from '@/encryption/base64';
 import { decodeHex } from '@/encryption/hex';
-import sodium from '@/encryption/libsodium.lib';
 import { getRandomBytes } from '@/platform/cryptoRandom';
 
-const CONTENT_KEY_BINDING_PREFIX = new TextEncoder().encode('Happy content key v1\u0000');
+/**
+ * Chunk size for Session data-key preparation batches passed to `mapCryptoBatchWithYield`.
+ *
+ * Measured on this corridor's real primitive (Protocol verify + seal, existing batch helper), not
+ * derived from the page bound: one `encryptDataKeyForRecipientV0` costs ~5.7-12 ms on an M5 Max
+ * (Node 22) and ~44-60 ms on a Linux arm64 shared host. A single seal therefore already exceeds a
+ * frame budget on the fastest host measured, so the smallest chunk is the only one that bounds the
+ * slice at all. At the 24-entry page bound the default chunk of 32 never yields and held the thread
+ * for 126.21 ms in one uninterrupted slice, while chunk 1 capped the longest slice at 5.89 ms for
+ * a ~22% increase in total batch time (126.24 ms -> 154.16 ms) — the right trade for a foreground
+ * operation that must stay responsive.
+ *
+ * This bounds local crypto only. It is deliberately unrelated to
+ * `SESSION_DATA_KEY_ENVELOPE_PAGE_MAX_ENTRIES_V1`, which bounds one atomic server commit; the page
+ * bound is not an implicit crypto budget.
+ */
+export const SESSION_DATA_KEY_SEAL_CHUNK_SIZE = 1;
 
 export function encryptDataKeyForRecipientV0(
     sessionDataKey: Uint8Array,
@@ -25,13 +43,11 @@ export function verifyRecipientContentPublicKeyBinding(params: {
     contentPublicKeySigB64: string;
 }): boolean {
     try {
-        const signingPublicKey = decodeHex(params.signingPublicKeyHex);
-        const contentPublicKey = decodeBase64(params.contentPublicKeyB64, 'base64');
-        const sig = decodeBase64(params.contentPublicKeySigB64, 'base64');
-        const message = new Uint8Array(CONTENT_KEY_BINDING_PREFIX.length + contentPublicKey.length);
-        message.set(CONTENT_KEY_BINDING_PREFIX, 0);
-        message.set(contentPublicKey, CONTENT_KEY_BINDING_PREFIX.length);
-        return sodium.crypto_sign_verify_detached(sig, message, signingPublicKey);
+        return verifyAccountContentKeyBindingV1({
+            accountSigningPublicKey: decodeHex(params.signingPublicKeyHex),
+            contentPublicKey: decodeBase64(params.contentPublicKeyB64, 'base64'),
+            signature: decodeBase64(params.contentPublicKeySigB64, 'base64'),
+        }) !== null;
     } catch {
         return false;
     }

@@ -46,6 +46,8 @@ type PersonalHomeInspection = Readonly<{
     }>;
     ownedErasePaths: readonly string[];
     estimatedOwnedBytes: number | null;
+    estimatedOwnedBytesComplete: boolean;
+    estimatedOwnedBytesReason: string | null;
     destinationEmpty: boolean | null;
     restoreRecovery: Readonly<{ status: 'none' | 'rollback_available' | 'finalization_available' | 'ambiguous'; affectedTargets: readonly string[] }>;
     relocationRecovery: Readonly<{
@@ -70,11 +72,11 @@ export type PersonalHomeInspectionOutcome =
     | Readonly<{ status: 'failed'; message: string }>;
 
 type PersonalHomeTaskOutcome =
-    | Readonly<{ status: 'completed'; result: SystemTaskResult }>
+    | Readonly<{ status: 'completed'; result: Extract<SystemTaskResult, { ok: true }> }>
     | Readonly<{ status: 'failed'; message: string }>;
 
 type SystemTaskStartOutcome =
-    | Readonly<{ status: 'started'; taskId: string }>
+    | Readonly<{ status: 'started'; taskId: string; spec: SystemTaskSpec }>
     | Readonly<{ status: 'failed'; message: string }>;
 
 type PersonalHomeVerification = Readonly<{
@@ -94,6 +96,7 @@ type PersonalHomeBackupFacts = Readonly<{
     homeServerIdentityId: string;
     createdAt: string;
     homeNeedsAttention: boolean;
+    cleanupRequired: Readonly<{ kind: 'backup_staging'; path: string; error: string }> | null;
 }>;
 
 type PersonalHomeRecoveryArchive = PersonalHomeBackupFacts & Readonly<{ verified: true }>;
@@ -102,11 +105,13 @@ type PersonalHomeLastOperation =
     | Readonly<{ operation: 'backup'; backup: PersonalHomeBackupFacts }>
     | Readonly<{ operation: 'restore'; restore: Readonly<{ outcome: string; recoveryArchive: PersonalHomeRecoveryArchive | null; error: string | null }> }>
     | Readonly<{ operation: 'erase'; erase: Readonly<{
-        outcome: 'completed' | 'partial';
+        outcome: 'completed' | 'completed_with_cleanup_attention' | 'partial';
         removedPaths: readonly string[];
         remainingOwnedPaths: readonly string[];
         remainingUnknownPaths: readonly string[];
         stoppedRunningHome: boolean;
+        inspectionComplete: boolean;
+        inspectionError: string | null;
         error: string | null;
     }> }>;
 
@@ -135,6 +140,16 @@ function readPersonalHomeBackupFacts(value: unknown): PersonalHomeBackupFacts | 
         homeServerIdentityId,
         createdAt,
         homeNeedsAttention: data.homeNeedsAttention === true,
+        cleanupRequired: data.cleanupRequired && typeof data.cleanupRequired === 'object'
+            && (data.cleanupRequired as Record<string, unknown>).kind === 'backup_staging'
+            && typeof (data.cleanupRequired as Record<string, unknown>).path === 'string'
+            && typeof (data.cleanupRequired as Record<string, unknown>).error === 'string'
+            ? {
+                kind: 'backup_staging',
+                path: (data.cleanupRequired as Record<string, unknown>).path as string,
+                error: (data.cleanupRequired as Record<string, unknown>).error as string,
+            }
+            : null,
     };
 }
 
@@ -193,13 +208,14 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
     const [statusTaskId, setStatusTaskId] = React.useState<string | null>(null);
     const [actionTaskId, setActionTaskId] = React.useState<string | null>(null);
     const [lastStatus, setLastStatus] = React.useState<RelayRuntimeStatusData | null>(null);
+    const lastStatusRef = React.useRef<RelayRuntimeStatusData | null>(null);
     const [lastErrorMessage, setLastErrorMessage] = React.useState<string | null>(null);
     const [inspection, setInspection] = React.useState<PersonalHomeInspection | null>(null);
     const inspectionRef = React.useRef<PersonalHomeInspection | null>(null);
     const [lastVerification, setLastVerification] = React.useState<PersonalHomeVerification | null>(null);
     const [lastOperation, setLastOperation] = React.useState<PersonalHomeLastOperation | null>(null);
     const [operationTaskId, setOperationTaskId] = React.useState<string | null>(null);
-    const [activeOperationKind, setActiveOperationKind] = React.useState<string | null>(null);
+    const [activeOperationSpec, setActiveOperationSpec] = React.useState<SystemTaskSpec | null>(null);
     const autoRefreshRequestedRef = React.useRef(false);
     const handledActionTaskIdRef = React.useRef<string | null>(null);
 
@@ -212,13 +228,15 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
         taskOptions: LocalRelayRuntimeTaskOptions = {},
     ): Promise<SystemTaskStartOutcome> => {
         try {
-            const taskId = await runner.start(buildLocalRelayRuntimeSystemTaskSpec(kind, {
-                ...(lastStatus ? { runtimeTarget: { channel: lastStatus.channel, mode: lastStatus.mode } } : {}),
+            const currentStatus = lastStatusRef.current;
+            const spec = buildLocalRelayRuntimeSystemTaskSpec(kind, {
+                ...(currentStatus ? { runtimeTarget: { channel: currentStatus.channel, mode: currentStatus.mode } } : {}),
                 ...taskOptions,
-            }));
+            });
+            const taskId = await runner.start(spec);
             setBridgeUnavailable(false);
             setLastErrorMessage(null);
-            return { status: 'started', taskId };
+            return { status: 'started', taskId, spec };
         } catch (error) {
             const message = readSystemTaskStartErrorMessage(error);
             const unavailable = isSystemTaskBridgeUnavailableError(error);
@@ -229,7 +247,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             setLastErrorMessage(failure);
             return { status: 'failed', message: failure };
         }
-    }, [lastStatus, runner]);
+    }, [runner]);
 
     const refreshStatus = React.useCallback(async () => {
         if (isUnavailable) {
@@ -283,6 +301,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             setLastErrorMessage(t('common.unavailable'));
             return null;
         }
+        lastStatusRef.current = status;
         setLastStatus(status);
         setLastErrorMessage(null);
         return status;
@@ -305,17 +324,22 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
     React.useEffect(() => {
         const continued = runner.listPromptContinuations?.().find((registration) => (
             registration.spec.kind === 'remote.ssh.manageHost.v1'
+            && registration.spec.params !== null
+            && typeof registration.spec.params === 'object'
+            && !Array.isArray(registration.spec.params)
+            && 'action' in registration.spec.params
             && registration.spec.params.action === 'personalHome.relocate'
         ));
         if (!continued) return;
         setActionTaskId(continued.taskId);
         setOperationTaskId(continued.taskId);
-        setActiveOperationKind(continued.spec.kind);
+        setActiveOperationSpec(continued.spec);
     }, [runner]);
 
     React.useEffect(() => {
         const nextStatus = readRelayRuntimeStatusData(statusSnapshot?.result ?? null);
         if (nextStatus) {
+            lastStatusRef.current = nextStatus;
             setLastStatus(nextStatus);
             setLastErrorMessage(null);
             return;
@@ -340,6 +364,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
 
         const inlineStatus = readRelayRuntimeStatusData(actionSnapshot.result);
         if (inlineStatus) {
+            lastStatusRef.current = inlineStatus;
             setLastStatus(inlineStatus);
             setLastErrorMessage(null);
         }
@@ -361,20 +386,22 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
         promptContinuation?: SystemTaskPromptContinuation,
     ): Promise<PersonalHomeTaskOutcome> => {
         if (isUnavailable) return { status: 'failed', message: t('settings.systemTaskBridgeUnavailable') };
-        if (lastStatus?.purpose?.kind !== 'personal-home') {
+        const currentStatus = lastStatusRef.current;
+        if (currentStatus?.purpose?.kind !== 'personal-home') {
             setLastErrorMessage(t('settings.localRelayRuntime.statusChecking'));
             return { status: 'failed', message: t('settings.localRelayRuntime.statusChecking') };
         }
         const started = await runAction(kind, {
             ...taskOptions,
-            purpose: lastStatus.purpose,
+            runtimeTarget: { channel: currentStatus.channel, mode: currentStatus.mode },
+            purpose: currentStatus.purpose,
         });
         if (started.status !== 'started') return started;
         const taskId = started.taskId;
         if (promptContinuation) runner.registerPromptContinuation?.(taskId, promptContinuation);
         if (retainSnapshot) {
             setOperationTaskId(taskId);
-            setActiveOperationKind(kind);
+            setActiveOperationSpec(started.spec);
         }
         const result = await waitForSystemTaskResult(runner, taskId);
         if (!result.ok) {
@@ -384,7 +411,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
         }
         setLastErrorMessage(null);
         return { status: 'completed', result };
-    }, [isUnavailable, lastStatus?.purpose, runAction, runner]);
+    }, [isUnavailable, runAction, runner]);
 
     const refreshInspection = React.useCallback(async (): Promise<PersonalHomeInspectionOutcome> => {
         const outcome = await runPersonalHomeTask('relay.runtime.personal_home.inspect.v1', {}, false);
@@ -424,7 +451,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             databasePresent: storage.databasePresent === true,
             databaseBytes: typeof storage.databaseBytes === 'number' ? storage.databaseBytes : 0,
             backupsCount: typeof storage.backupsCount === 'number' ? storage.backupsCount : 0,
-            // Older Personal Home task results predate bounded inventory projection and their
+            // Older Personal Home task results predate explicit inventory completeness and their
             // count was exact, so absence retains that released behavior.
             backupsCountComplete: storage.backupsCountComplete !== false,
             latestBackup,
@@ -436,6 +463,8 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             },
             ownedErasePaths: Array.isArray(storage.ownedErasePaths) ? storage.ownedErasePaths.filter((value): value is string => typeof value === 'string') : [],
             estimatedOwnedBytes: typeof storage.estimatedOwnedBytes === 'number' ? storage.estimatedOwnedBytes : null,
+            estimatedOwnedBytesComplete: storage.estimatedOwnedBytesComplete !== false,
+            estimatedOwnedBytesReason: typeof storage.estimatedOwnedBytesReason === 'string' ? storage.estimatedOwnedBytesReason : null,
             destinationEmpty: typeof storage.destinationEmpty === 'boolean'
                 ? storage.destinationEmpty
                 : null,
@@ -465,7 +494,12 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             return started.status === 'started' ? started.taskId : null;
         }, [runAction, startTask]),
         runTaskAndWait,
-        backupPersonalHome: React.useCallback(async (input: Readonly<{ outputPath?: string }> = {}) => {
+        backupPersonalHome: React.useCallback(async (input: Readonly<{
+            outputPath?: string;
+            /** A composed caller may own the next fresh read while it immediately
+             * continues into another Home operation under the fail-fast lease. */
+            refreshAfterSuccess?: boolean;
+        }> = {}) => {
             const outcome = await runPersonalHomeTask('relay.runtime.personal_home.backup.v1', {
                 personalHomeOperation: {
                     ...(input.outputPath?.trim() ? { outputPath: input.outputPath.trim() } : {}),
@@ -475,7 +509,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             const backup = readPersonalHomeBackupFacts(outcome.result.data);
             if (!backup) return null;
             setLastOperation({ operation: 'backup', backup });
-            refreshAfterMutation();
+            if (input.refreshAfterSuccess !== false) refreshAfterMutation();
             return backup;
         }, [refreshAfterMutation, runPersonalHomeTask]),
         verifyPersonalHomeBackup: React.useCallback(async (input: Readonly<{ archivePath: string }>) => {
@@ -550,11 +584,17 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             if (outcome.status !== 'completed') return null;
             const data = outcome.result.data as Record<string, unknown> | undefined;
             const erase = {
-                outcome: data?.outcome === 'partial' ? 'partial' as const : 'completed' as const,
+                outcome: data?.outcome === 'partial'
+                    ? 'partial' as const
+                    : data?.outcome === 'completed_with_cleanup_attention'
+                        ? 'completed_with_cleanup_attention' as const
+                        : 'completed' as const,
                 removedPaths: Array.isArray(data?.removedPaths) ? data.removedPaths.filter((value): value is string => typeof value === 'string') : [],
                 remainingOwnedPaths: Array.isArray(data?.remainingOwnedPaths) ? data.remainingOwnedPaths.filter((value): value is string => typeof value === 'string') : [],
                 remainingUnknownPaths: Array.isArray(data?.remainingUnknownPaths) ? data.remainingUnknownPaths.filter((value): value is string => typeof value === 'string') : [],
                 stoppedRunningHome: data?.stoppedRunningHome === true,
+                inspectionComplete: data?.inspectionComplete !== false,
+                inspectionError: typeof data?.inspectionError === 'string' ? data.inspectionError : null,
                 error: typeof data?.error === 'string' ? data.error : null,
             };
             setLastOperation({ operation: 'erase', erase });
@@ -574,7 +614,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
                 handledActionTaskIdRef.current = null;
                 setActionTaskId(taskId);
                 setOperationTaskId(taskId);
-                setActiveOperationKind(spec.kind);
+                setActiveOperationSpec(spec);
                 return taskId;
             } catch (error) {
                 const message = readSystemTaskStartErrorMessage(error);
@@ -590,11 +630,11 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
         lastOperation,
         lastVerification,
         operationSnapshot,
-        activeOperationKind,
+        activeOperationSpec,
         refreshInspection,
         dismissOperationResult: React.useCallback(() => {
             setOperationTaskId(null);
-            setActiveOperationKind(null);
+            setActiveOperationSpec(null);
             setLastOperation(null);
         }, []),
         cancelTask: React.useCallback(async (taskId: string) => {

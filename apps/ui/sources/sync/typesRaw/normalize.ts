@@ -10,6 +10,7 @@ import {
 import type { MessageMeta } from '../domains/messages/messageMetaTypes';
 import { markUnsupportedContentMeta } from '../domains/messages/unsupportedContentMeta';
 import type { TranscriptObservationMetadata } from '../domains/messages/transcriptObservationProvenance';
+import type { TranscriptAccountActorMetadata } from '../domains/messages/transcriptAccountActor';
 import {
     hasSyntheticNoResponseMeta,
     markSyntheticNoResponseMeta,
@@ -98,7 +99,7 @@ export type NormalizedMessage = ({
     structuredPresentation?: MessageStructuredPresentationV1,
     /** Set only by canonical ACK and socket readers for a server-declared durable row update. */
     isAuthoritativeUpdate?: true,
-} & TranscriptObservationMetadata;
+} & TranscriptObservationMetadata & TranscriptAccountActorMetadata;
 
 export type RawMessageNormalizationInput = Readonly<{
     id: string;

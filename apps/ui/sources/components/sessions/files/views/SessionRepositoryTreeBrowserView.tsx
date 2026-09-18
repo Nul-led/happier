@@ -1,3 +1,5 @@
+import { useRepositoryTreeVisibility } from '@/hooks/workspaces/files/useRepositoryTreeVisibility';
+import { RepositoryTreeVisibilityControl } from '@/components/workspaces/files/repositoryTree/RepositoryTreeVisibilityControl';
 import * as React from 'react';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
@@ -65,6 +67,7 @@ const repositoryTreeBrowserStyles = StyleSheet.create({
 
 export type SessionRepositoryTreeBrowserViewProps = Readonly<{
     sessionId: string;
+    serverId?: string | null;
     onOpenFile: (fullPath: string) => void;
     onOpenFilePinned?: (fullPath: string) => void;
     density?: 'panel' | 'screen' | 'modal';
@@ -72,6 +75,7 @@ export type SessionRepositoryTreeBrowserViewProps = Readonly<{
     onSearchQueryChange?: (value: string) => void;
     showSearchBar?: boolean;
     onRequestClose?: () => void;
+    revealRequest?: Readonly<{ path: string }>;
 }>;
 
 type ToolbarActionId =
@@ -87,10 +91,12 @@ type ToolbarActionId =
 
 type ToolbarActionConfig = FilesystemBrowserToolbarAction;
 
+const EMPTY_FILE_SEARCH_RESULTS: FileItem[] = [];
+
 export const SessionRepositoryTreeBrowserView = React.memo((props: SessionRepositoryTreeBrowserViewProps) => {
     const { theme } = useUnistyles();
-    const { machineRpcTargetAvailable } = useSessionMachineReachability(props.sessionId);
-    const workspaceTarget = useSessionWorkspaceTarget(props.sessionId);
+    const { machineRpcTargetAvailable } = useSessionMachineReachability(props.sessionId, props.serverId);
+    const workspaceTarget = useSessionWorkspaceTarget(props.sessionId, props.serverId);
     // One identity for the whole surface. Spreading the target into a key plus three separate
     // address parts is what let a sibling browser key by one server and read through another.
     //
@@ -109,24 +115,32 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     ), [workspaceTarget?.serverId, workspaceTarget?.machineId, workspaceTarget?.rootPath]);
 
     const expandedPaths = useSessionRepositoryTreeExpandedPaths(props.sessionId);
-    const scmSnapshot = useSessionProjectScmSnapshot(props.sessionId);
+    // Read through the same qualified Home the resolved workspace scope and the changed-files pane
+    // already use, so a second Home hosting this Session id cannot supply the working tree.
+    const scmSnapshot = useSessionProjectScmSnapshot(props.sessionId, workspaceScope?.serverId ?? props.serverId);
     const didWarmScmRef = React.useRef<string | null>(null);
 
     const [uncontrolledSearchQuery, setUncontrolledSearchQuery] = React.useState('');
     const searchQuery = props.searchQuery ?? uncontrolledSearchQuery;
     const setSearchQuery = props.onSearchQueryChange ?? setUncontrolledSearchQuery;
     const [showChangedOnly, setShowChangedOnly] = React.useState(false);
+    const { visibilityMode, setVisibilityMode, gitIgnoreAvailable, setGitIgnoreAvailable, revealedPaths, revealPath, latestRequest } = useRepositoryTreeVisibility(props.sessionId);
     const [detailsMode, setDetailsMode] = React.useState(false);
     const [treeReloadNonce, setTreeReloadNonce] = React.useState(0);
     const [treeRootLoading, setTreeRootLoading] = React.useState(false);
     const [uploadMenuOpen, setUploadMenuOpen] = React.useState(false);
     const [uploadDestinationDir, setUploadDestinationDir] = React.useState('');
-    const [searchResults, setSearchResults] = React.useState<FileItem[]>([]);
+    const [searchResultState, setSearchResultState] = React.useState<Readonly<{ sessionId: string; scope: WorkspaceScopeBase | null; query: string; files: FileItem[] }> | null>(null);
+    const searchResults = searchResultState?.sessionId === props.sessionId && searchResultState.scope === workspaceScope
+        ? searchResultState.files : EMPTY_FILE_SEARCH_RESULTS;
     const [isSearching, setIsSearching] = React.useState(false);
     const showSearchBar = props.showSearchBar !== false;
     const hasWorkspaceTarget = workspaceTarget !== null;
     const allowCreateActions = machineRpcTargetAvailable && hasWorkspaceTarget;
-    const uploadActionsAvailable = useSessionFileUploadAvailability(props.sessionId) && hasWorkspaceTarget;
+    const uploadActionsAvailable = useSessionFileUploadAvailability(
+        props.sessionId,
+        workspaceTarget?.serverId ?? props.serverId,
+    ) && hasWorkspaceTarget;
     const webDropState = useRepositoryTreeWebDropState({
         sessionId: props.sessionId,
         enabled: allowCreateActions && Platform.OS === 'web',
@@ -145,6 +159,36 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
         edgeThreshold: 1,
     });
 
+    const handleRevealPath = React.useCallback((path: string, isDirectory = false) => {
+        if (!isSafeWorkspaceRelativePath(path)) return;
+        setSearchQuery('');
+        setShowChangedOnly(false);
+        revealPath(path, { focus: true });
+        const expandedPaths = computeExpandedPathsForReveal({
+            expandedPaths: storage.getState().getSessionRepositoryTreeExpandedPaths(props.sessionId),
+            fullPath: path,
+        });
+        storage.getState().setSessionRepositoryTreeExpandedPaths(props.sessionId,
+            isDirectory && !expandedPaths.includes(path) ? [...expandedPaths, path] : expandedPaths);
+    }, [props.sessionId, setSearchQuery, revealPath]);
+
+    React.useEffect(() => {
+        if (props.revealRequest) handleRevealPath(props.revealRequest.path);
+    }, [props.revealRequest, handleRevealPath]);
+
+    const handleSearchFolderPress = React.useCallback((folder: FileItem) => {
+        handleRevealPath(folder.fullPath.replace(/\/+$/, ''), true);
+    }, [handleRevealPath]);
+
+    const handleTreeOpenFile = React.useCallback((path: string) => {
+        revealPath(path);
+        props.onOpenFile(path);
+    }, [props.onOpenFile, revealPath]);
+    const handleTreeOpenFilePinned = React.useCallback((path: string) => {
+        revealPath(path);
+        (props.onOpenFilePinned ?? props.onOpenFile)(path);
+    }, [props.onOpenFile, props.onOpenFilePinned, revealPath]);
+
     React.useEffect(() => {
         if (!machineRpcTargetAvailable) return;
         const key = `${props.sessionId}:${treeReloadNonce}`;
@@ -152,18 +196,18 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
         didWarmScmRef.current = key;
         // Warm SCM snapshot so the file tree can display change badges even if the user
         // hasn't opened the Source control panel yet.
-        scmStatusSync.invalidateFromUser(props.sessionId);
+        scmStatusSync.invalidateFromUser(props.sessionId, workspaceScope?.serverId ?? props.serverId);
     }, [machineRpcTargetAvailable, props.sessionId, treeReloadNonce]);
 
     React.useEffect(() => {
         const q = searchQuery.trim();
         if (showChangedOnly) {
-            setSearchResults([]);
+            setSearchResultState(null);
             setIsSearching(false);
             return;
         }
         if (!q) {
-            setSearchResults([]);
+            setSearchResultState(null);
             setIsSearching(false);
             return;
         }
@@ -177,7 +221,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             void (async () => {
                 try {
                     if (!workspaceScope) {
-                        setSearchResults([]);
+                        setSearchResultState(null);
                         return;
                     }
                     const results = await searchWorkspaceFiles({
@@ -186,7 +230,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                         limit: 200,
                         signal: controller.signal,
                     });
-                    setSearchResults(results);
+                    setSearchResultState({ sessionId: props.sessionId, scope: workspaceScope, query: q, files: results });
                 } catch {
                     // A superseded search rejects with its abort error; the newer query owns
                     // the results and spinner from here.
@@ -219,7 +263,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             workspaceFileSearchCache.clearCache(workspaceScope);
             clearCachedWorkspaceRepositoryDirectoryEntries({ workspaceCacheKey });
         }
-        scmStatusSync.invalidateFromUser(props.sessionId);
+        scmStatusSync.invalidateFromUser(props.sessionId, workspaceScope?.serverId ?? props.serverId);
         setTreeReloadNonce((n) => n + 1);
     }, [props.sessionId, workspaceScope]);
 
@@ -229,7 +273,10 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
         onAfterUploadSuccess: refresh,
     });
 
-    const transferAvailability = useSessionFileTransferAvailabilityState(props.sessionId);
+    const transferAvailability = useSessionFileTransferAvailabilityState(
+        props.sessionId,
+        workspaceTarget?.serverId ?? props.serverId,
+    );
     const canDownload = React.useCallback((_transferSizeBytes?: number | null) => {
         return transferAvailability.available;
     }, [transferAvailability.available]);
@@ -344,9 +391,10 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             storage.getState().setSessionRepositoryTreeExpandedPaths(props.sessionId, nextExpanded);
             refresh();
 
+            revealPath(path);
             (props.onOpenFilePinned ?? props.onOpenFile)(path);
         })();
-    }, [expandedPaths, props.onOpenFile, props.onOpenFilePinned, props.sessionId, refresh]);
+    }, [expandedPaths, props.onOpenFile, props.onOpenFilePinned, props.sessionId, refresh, revealPath]);
 
     const createFolder = React.useCallback(() => {
         void (async () => {
@@ -384,11 +432,12 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 // Expand the newly-created directory itself by using a synthetic child path.
                 fullPath: `${directoryPath}/.placeholder`,
             });
+            revealPath(directoryPath);
             const withDir = nextExpanded.includes(directoryPath) ? nextExpanded : [...nextExpanded, directoryPath];
             storage.getState().setSessionRepositoryTreeExpandedPaths(props.sessionId, withDir);
             refresh();
         })();
-    }, [expandedPaths, props.sessionId, refresh]);
+    }, [expandedPaths, props.sessionId, refresh, revealPath]);
 
     const startWebUploads = React.useCallback(async (files: readonly File[], destinationDir: string) => {
         const entries: WorkspaceUploadEntry[] = files.map((file) => ({
@@ -696,12 +745,13 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 {showChangedOnly ? (
                     <RepositoryTreeChangedFilesPane
                         sessionId={props.sessionId}
+                        serverId={workspaceScope?.serverId ?? props.serverId}
                         scmSnapshot={scmSnapshot}
                         searchQuery={searchQuery}
                         onSearchQueryChange={setSearchQuery}
                         onShowAllRepositoryFiles={handleShowAllRepositoryFiles}
-                        onOpenFile={props.onOpenFile}
-                        onOpenFilePinned={props.onOpenFilePinned}
+                        onOpenFile={handleTreeOpenFile}
+                        onOpenFilePinned={handleTreeOpenFilePinned}
                     />
                 ) : shouldShowSearchResults ? (
                     <SearchResultsList
@@ -709,6 +759,8 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                         isSearching={isSearching}
                         searchQuery={searchQuery}
                         searchResults={searchResults}
+                        searchResultsQuery={searchResultState?.query}
+                        onFolderPress={handleSearchFolderPress}
                         onFilePress={handleSearchFilePress}
                         onFilePressPinned={handleSearchFilePressPinned}
                         onLayout={scrollFades.onViewportLayout}
@@ -722,12 +774,16 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                         scope={workspaceScope}
                         reloadToken={treeReloadNonce}
                         detailsMode={detailsMode}
+                        visibilityMode={visibilityMode}
+                        revealedPaths={revealedPaths}
+                        revealRequest={latestRequest}
+                        onGitIgnoreAvailableChange={setGitIgnoreAvailable}
                         onWebDropTargetChange={webDropState.onDropTargetChange}
                         webDropHoverPath={webDropState.dropHoverPath}
                         expandedPaths={expandedPaths}
                         onExpandedPathsChange={handleExpandedPathsChange}
-                        onOpenFile={props.onOpenFile}
-                        onOpenFilePinned={props.onOpenFilePinned}
+                        onOpenFile={handleTreeOpenFile}
+                        onOpenFilePinned={handleTreeOpenFilePinned}
                         scmSnapshot={scmSnapshot}
                         showInlineLoadingHeader={false}
                         onRootLoadingChange={setTreeRootLoading}
@@ -769,6 +825,13 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
         detailsMode,
         expandedPaths,
         handleExpandedPathsChange,
+        visibilityMode,
+        revealedPaths,
+        latestRequest,
+        setGitIgnoreAvailable,
+        handleTreeOpenFile,
+        handleTreeOpenFilePinned,
+        handleSearchFolderPress,
         handleSearchFilePress,
         handleSearchFilePressPinned,
         handleShowAllRepositoryFiles,
@@ -786,6 +849,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
         scrollFades.visibility,
         searchQuery,
         searchResults,
+        searchResultState?.query,
         setSearchQuery,
         shouldShowSearchResults,
         showChangedOnly,
@@ -816,6 +880,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                     renderActionNode={renderToolbarIconButton}
                 />
             ) : null}
+            {!showChangedOnly && !shouldShowSearchResults ? <RepositoryTreeVisibilityControl mode={visibilityMode} available={gitIgnoreAvailable} onChange={setVisibilityMode} /> : null}
             {Platform.OS === 'web' ? (
                 <>
                     <input

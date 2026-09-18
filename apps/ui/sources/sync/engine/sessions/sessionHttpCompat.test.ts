@@ -1,14 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
-import { V2SessionRecordSchema } from '@happier-dev/protocol';
+import { V2SessionRecordSchema, type SessionListQueryV1 } from '@happier-dev/protocol';
 
-import { parseCompatSessionByIdResponse, scanSessionByIdFromCompatList } from './sessionHttpCompat';
+import {
+    fetchSessionListPageCompat,
+    parseCompatSessionByIdResponse,
+    scanSessionByIdFromCompatList,
+} from './sessionHttpCompat';
 
 /**
  * `coerceLegacySessionRecord` refuses outright any row that carries `ownerMetadata`
  * (a layout-1 owner envelope), so that field can never appear on a coerced record.
  * Every other declared field must have a carrier — see the KEYSTONE test below.
  */
-const COERCION_STRUCTURALLY_ABSENT_FIELDS: ReadonlySet<string> = new Set(['ownerMetadata']);
+const COERCION_STRUCTURALLY_ABSENT_FIELDS: ReadonlySet<string> = new Set([
+    'ownerMetadata',
+    'viewer',
+    // Legacy rows cannot prove the capability-complete access projection or
+    // the authenticated viewer's named-collaborator signal. Omitting both is
+    // the fail-closed compatibility contract.
+    'effectiveAccess',
+    'hasOtherNamedCollaborator',
+]);
 
 /**
  * A row that carries every declared field but fails the v2 schema (object `metadata`
@@ -31,13 +43,28 @@ function buildFullyPopulatedLegacyRow() {
         agentState: { ready: true },
         agentStateVersion: 3,
         lastViewedSessionSeq: 4,
+        unreadSince: 1_700_000_000_000,
         pendingPermissionRequestCount: 1,
         pendingUserActionRequestCount: 2,
         pendingRequestObservedAt: 1_700_000_000_000,
         pendingCount: 5,
         pendingBlockedCount: 1,
         pendingVersion: 9,
+        pendingActivationAuthorization: {
+            status: 'waiting',
+            requestId: 'activation-request-1',
+            requestedAt: 1_700_000_000_100,
+        },
         dataEncryptionKey: null,
+        responsibleAccountId: 'account-responsible',
+        responsibleAccount: {
+            kind: 'account',
+            accountId: 'account-responsible',
+            firstName: 'Robin',
+            lastName: null,
+            username: 'robin',
+            avatarUrl: null,
+        },
         share: { accessLevel: 'edit', canApprovePermissions: true },
         latestTurnId: 'turn-9',
         latestTurnStatus: 'completed',
@@ -67,6 +94,45 @@ function coerceFullyPopulatedLegacyRow(): Record<string, unknown> {
 }
 
 describe('legacy session record coercion', () => {
+    it('never downgrades a marked access projection into legacy owner authority', () => {
+        expect(parseCompatSessionByIdResponse({
+            session: {
+                ...buildFullyPopulatedLegacyRow(),
+                share: undefined,
+                effectiveAccess: { v: 1, level: 'owner', capabilities: {} },
+            },
+        })).toBeNull();
+    });
+    it('rejects a malformed explicit viewer projection instead of coercing it to legacy shared read state', () => {
+        const session = {
+            ...buildLegacyCompatSession('viewer-session'),
+            lastViewedSessionSeq: 2,
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: '2', unreadSince: null },
+                relevance: { relevant: true, reasons: ['owned_by_me'] },
+                attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+                follow: { follows: false, notificationLevel: null },
+                notification: { level: 'important', source: 'owner' },
+            },
+        };
+
+        expect(parseCompatSessionByIdResponse({ session })).toBeNull();
+    });
+
+    it('rejects an explicitly malformed encryption mode instead of treating it as a legacy omission', () => {
+        expect(parseCompatSessionByIdResponse({
+            session: {
+                ...buildFullyPopulatedLegacyRow(),
+                encryptionMode: 'encrypted-somehow',
+                dataEncryptionKey: 'legacy-looking-envelope',
+            },
+        })).toBeNull();
+
+        const withoutMode = buildFullyPopulatedLegacyRow();
+        delete (withoutMode as { encryptionMode?: unknown }).encryptionMode;
+        expect(parseCompatSessionByIdResponse({ session: withoutMode })).not.toBeNull();
+    });
+
     it('KEYSTONE: rebuilds a carrier for every field the protocol record schema declares', () => {
         const record = coerceFullyPopulatedLegacyRow();
 
@@ -89,6 +155,12 @@ describe('legacy session record coercion', () => {
         expect(record.thinking).toBe(true);
         expect(record.thinkingAt).toBe(1_700_000_350_000);
         expect(record.transcriptShareable).toBe(true);
+        expect(record.pendingActivationAuthorization).toEqual({
+            status: 'waiting',
+            requestId: 'activation-request-1',
+            requestedAt: 1_700_000_000_100,
+        });
+        expect(record.responsibleAccountId).toBe('account-responsible');
     });
 
     it('coerces absent or non-numeric edge facts to null rather than inventing a value', () => {
@@ -153,5 +225,132 @@ describe('scanSessionByIdFromCompatList', () => {
         })).resolves.toEqual(expect.objectContaining({
             id: 'older-session',
         }));
+    });
+
+    it('fails a malformed marked-current page after one request without retrying v1', async () => {
+        const request = vi.fn(async () => new Response(JSON.stringify({
+            sessions: [{
+                ...buildLegacyCompatSession('marked-malformed'),
+                effectiveAccess: { v: 1, level: 'admin', capabilities: {} },
+                responsibleAccountId: null,
+                responsibleAccount: null,
+            }],
+            nextCursor: null,
+            hasNext: false,
+        }), { status: 200 }));
+
+        await expect(scanSessionByIdFromCompatList({
+            request,
+            token: 'token',
+            sessionId: 'marked-malformed',
+        })).rejects.toMatchObject({ code: 'invalid_response' });
+        expect(request).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('fetchSessionListPageCompat query source', () => {
+    it('posts the strict Home-local query and never falls back to the ordinary GET routes', async () => {
+        const query = {
+            v: 1,
+            storage: 'active',
+            includeInactive: false,
+            scope: 'all_accessible',
+            attention: 'any',
+            audiences: [{ kind: 'team', teamId: 'team-a' }],
+            tagIds: ['tag-a'],
+        } satisfies SessionListQueryV1;
+        const request = vi.fn(async () => new Response(JSON.stringify({
+            error: 'Not found',
+            errorCode: 'operation_not_supported',
+        }), { status: 404 }));
+
+        await expect(fetchSessionListPageCompat({
+            request,
+            token: 'home-a-token',
+            source: { kind: 'query', body: query, allowV1Fallback: false },
+            cursor: 'next-page',
+            limit: 37,
+        })).rejects.toMatchObject({
+            status: 404,
+            code: 'operation_not_supported',
+        });
+
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(request).toHaveBeenCalledWith('/v2/sessions/query', {
+            method: 'POST',
+            headers: expect.objectContaining({
+                Authorization: 'Bearer home-a-token',
+                'Content-Type': 'application/json',
+            }),
+            body: JSON.stringify({
+                ...query,
+                cursor: 'next-page',
+                limit: 37,
+            }),
+        });
+    });
+
+    it.each([
+        {
+            name: 'mandatory attention continuation facts',
+            response: {
+                sessions: [],
+                nextCursor: null,
+                hasNext: false,
+            },
+        },
+        {
+            name: 'mandatory current access and viewer projections',
+            response: {
+                sessions: [buildLegacyCompatSession('legacy-shaped-query-row')],
+                nextCursor: null,
+                hasNext: false,
+                attentionNextCursor: null,
+                attentionHasNext: false,
+            },
+        },
+    ])('rejects a successful current query response missing $name', async ({ response }) => {
+        const request = vi.fn(async () => new Response(JSON.stringify(response), { status: 200 }));
+
+        await expect(fetchSessionListPageCompat({
+            request,
+            token: 'home-a-token',
+            source: {
+                kind: 'query',
+                body: {
+                    v: 1,
+                    storage: 'active',
+                    includeInactive: false,
+                    scope: 'all_accessible',
+                    attention: 'any',
+                    audiences: [],
+                    tagIds: [],
+                },
+                allowV1Fallback: false,
+            },
+            limit: 50,
+        })).rejects.toMatchObject({ code: 'invalid_response' });
+    });
+
+    it('keeps ordinary GET compatibility and treats missing legacy attention fields as exhausted', async () => {
+        const request = vi.fn(async (path: string) => {
+            expect(path).toBe('/v2/sessions?limit=50');
+            return new Response(JSON.stringify({
+                sessions: [buildLegacyCompatSession('ordinary')],
+                nextCursor: null,
+                hasNext: false,
+            }), { status: 200 });
+        });
+
+        await expect(fetchSessionListPageCompat({
+            request,
+            token: 'token',
+            source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: true },
+            limit: 50,
+        })).resolves.toMatchObject({
+            source: 'v2',
+            attentionNextCursor: null,
+            attentionHasNext: false,
+        });
     });
 });

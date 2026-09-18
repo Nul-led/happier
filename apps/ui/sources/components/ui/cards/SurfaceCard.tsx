@@ -7,7 +7,28 @@ import { shadowLevelStyle } from '@/shadowElevation';
 import { resolveThemeSurfaceBorderStyle } from '@/components/ui/surfaces/resolveThemeHairlineBorderStyle';
 
 type SurfaceCardTone = 'surface' | 'muted';
-type SurfaceCardPadding = 'none' | 'sm' | 'md' | 'lg';
+export type SurfaceCardPadding = 'none' | 'sm' | 'md' | 'lg';
+
+/**
+ * The card's corner and inset, published rather than copied.
+ *
+ * A consumer that has to reach the card's true edge — full-bleed media, an
+ * embedded surface, a renderer that owns its own frame — needs the exact numbers
+ * this card draws with. Publishing them keeps that consumer correct at every
+ * padding step; hardcoding "18" beside it silently overhangs the card at `sm`
+ * and clips outside its rounded corner.
+ */
+export const SURFACE_CARD_RADIUS_PX: number = Platform.select({ ios: 10, default: 16 }) ?? 16;
+
+export const SURFACE_CARD_PADDING_PX: Readonly<Record<
+    SurfaceCardPadding,
+    Readonly<{ horizontal: number; vertical: number }>
+>> = Object.freeze({
+    none: Object.freeze({ horizontal: 0, vertical: 0 }),
+    sm: Object.freeze({ horizontal: 14, vertical: 12 }),
+    md: Object.freeze({ horizontal: 18, vertical: 16 }),
+    lg: Object.freeze({ horizontal: 22, vertical: 20 }),
+});
 
 type SurfaceCardProps = Readonly<{
     children: React.ReactNode;
@@ -29,7 +50,7 @@ const styles = StyleSheet.create((theme) => {
         cardBase: {
             width: '100%',
             minWidth: 0,
-            borderRadius: Platform.select({ ios: 10, default: 16 }),
+            borderRadius: SURFACE_CARD_RADIUS_PX,
             backgroundColor: theme.colors.surface.base,
             ...surfaceBorderStyle,
             ...(hasVisibleSurfaceChrome ? shadowLevelStyle(theme.colors.shadowLevels[1]) : {}),
@@ -38,20 +59,20 @@ const styles = StyleSheet.create((theme) => {
             backgroundColor: theme.colors.surface.inset,
         },
         paddingSm: {
-            paddingHorizontal: 14,
-            paddingVertical: 12,
+            paddingHorizontal: SURFACE_CARD_PADDING_PX.sm.horizontal,
+            paddingVertical: SURFACE_CARD_PADDING_PX.sm.vertical,
         },
         paddingMd: {
-            paddingHorizontal: 18,
-            paddingVertical: 16,
+            paddingHorizontal: SURFACE_CARD_PADDING_PX.md.horizontal,
+            paddingVertical: SURFACE_CARD_PADDING_PX.md.vertical,
         },
         paddingLg: {
-            paddingHorizontal: 22,
-            paddingVertical: 20,
+            paddingHorizontal: SURFACE_CARD_PADDING_PX.lg.horizontal,
+            paddingVertical: SURFACE_CARD_PADDING_PX.lg.vertical,
         },
         pressable: {
             width: '100%',
-            borderRadius: Platform.select({ ios: 10, default: 16 }),
+            borderRadius: SURFACE_CARD_RADIUS_PX,
         },
         pressablePressed: {
             opacity: 0.985,

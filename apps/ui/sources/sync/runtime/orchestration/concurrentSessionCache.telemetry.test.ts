@@ -110,14 +110,14 @@ describe('concurrent session cache telemetry', () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const runtime = await import('@/sync/domains/server/serverRuntime');
         const active = runtime.upsertAndActivateServer({ serverUrl: 'https://home-a.example.test', scope: 'tab' });
-        const secondary = profiles.upsertServerProfile({ serverUrl: 'https://home-b.example.test', name: 'Home B' });
+        const secondary = await profiles.upsertServerProfile({ serverUrl: 'https://home-b.example.test', name: 'Home B' });
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         await TokenStorage.setCredentialsForServerUrl(
             secondary.serverUrl,
             { serverId: secondary.id },
             { token: 'secondary-token' },
         );
-        profiles.saveHomeViewState({
+        await profiles.saveHomeViewState({
             version: 1,
             groups: [{ id: 'global-group', name: 'Global Group', serverIds: [active.id, secondary.id] }],
             activeTargetKind: 'group',
@@ -153,9 +153,10 @@ describe('concurrent session cache telemetry', () => {
             { serverId: secondary.id },
         )).toMatchObject({ token: 'secondary-token' });
         cache.startConcurrentSessionCacheSync();
-        await vi.waitFor(() => expect(socketState.byUrl.get(secondary.serverUrl)).toBeDefined(), { timeout: 5_000 });
         const reachability = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
-        expect(reachability.peekServerReachabilityState(secondary.serverUrl)).toMatchObject({ phase: 'online' });
+        await vi.waitFor(() => {
+            expect(reachability.peekServerReachabilityState(secondary.serverUrl)).toMatchObject({ phase: 'online' });
+        }, { timeout: 5_000 });
         await vi.waitFor(() => {
             expect(syncPerformanceTelemetry.snapshot().events.some((event) =>
                 event.name === 'sync.concurrent.refresh')).toBe(true);
@@ -186,7 +187,7 @@ describe('concurrent session cache telemetry', () => {
         expect(JSON.stringify(summary)).not.toContain(secondary.id);
         expect(JSON.stringify(summary)).not.toContain(secondary.serverUrl);
 
-        const replacement = profiles.upsertServerProfile({
+        const replacement = await profiles.upsertServerProfile({
             serverUrl: 'https://home-c.example.test',
             name: 'Home C',
         });
@@ -195,7 +196,7 @@ describe('concurrent session cache telemetry', () => {
             { serverId: replacement.id },
             { token: 'replacement-token' },
         );
-        profiles.saveHomeViewState({
+        await profiles.saveHomeViewState({
             version: 1,
             groups: [{ id: 'global-next', name: 'Global Next', serverIds: [active.id, replacement.id] }],
             activeTargetKind: 'group',

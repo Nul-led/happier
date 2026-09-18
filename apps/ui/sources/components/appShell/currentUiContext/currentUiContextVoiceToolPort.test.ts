@@ -356,12 +356,13 @@ function clientActionIdentity(): PluginReactNativeBundleCacheIdentity {
 
 function createCurrentUiClientActionFixture(input: Readonly<{
     handler: PluginClientActionHandler;
+    scopes?: PluginProjectedActionV2['scopes'];
 }>) {
     const action = PluginProjectedActionV2Schema.parse({
         id: CLIENT_ACTION_ID.localId,
         pluginId: CLIENT_ACTION_ID.pluginId,
         title: 'Retiring client action',
-        scopes: ['global'],
+        scopes: input.scopes ?? ['global'],
         surfaces: ['voice'],
         execution: {
             target: 'client',
@@ -1155,6 +1156,7 @@ describe('current UI context Voice tool port', () => {
         const port = createCurrentUiContextVoiceToolPort({
             reader: {
                 readCurrentUiContext: () => null,
+                readCurrentSessionId: () => 'host-daemon-session',
                 resolveCurrentUiCommand: () => null,
                 subscribe: () => () => {},
             },
@@ -1178,6 +1180,7 @@ describe('current UI context Voice tool port', () => {
                 qualifiedActionId: 'acme.triage/file-ticket',
                 input: { title: 'private ticket title' },
                 executionSurface: 'voice',
+                sessionId: 'host-daemon-session',
             }),
         }));
     });
@@ -1342,6 +1345,116 @@ describe('current UI context Voice tool port', () => {
             resolveRpc({ ok: false, code: 'plugin_action_aborted' });
         }
         await expect(pending).resolves.toEqual({ ok: false, code: 'unavailable' });
+    });
+
+    it.each(['action', 'command'] as const)('admits a Session-scoped client %s using only the host current Session binding', async (entryPoint) => {
+        const fixture = createCurrentUiClientActionFixture({
+            scopes: ['session'],
+            handler: async () => ({ admitted: true }),
+        });
+        const current: CurrentUiContextResolvedCommand = {
+            id: COMMAND_ID,
+            command: { kind: 'executeAction', action: CLIENT_ACTION_ID },
+            retirementSignal: new AbortController().signal,
+        };
+        const port = createCurrentUiContextVoiceToolPort({
+            reader: {
+                readCurrentUiContext: () => null,
+                readCurrentSessionId: () => 'host-current-session',
+                resolveCurrentUiCommand: (id) => id === COMMAND_ID ? current : null,
+                subscribe: () => () => {},
+            },
+            readProjection: () => fixture.projection,
+            readNavigationBinding: () => null,
+        });
+        await fixture.composition.unload();
+        try {
+            await fixture.composition.reconcile([fixture.activation]);
+            await expect(entryPoint === 'action'
+                ? requireActionInvoker(port)({ action: CLIENT_ACTION_ID })
+                : requireCommandInvoker(port)({ commandId: COMMAND_ID })
+            ).resolves.toEqual({ ok: true, result: { admitted: true } });
+        } finally {
+            await fixture.composition.unload();
+        }
+    });
+
+    it('does not take Session authority from Action input when the host has no current Session', async () => {
+        const handler = vi.fn(async () => ({ admitted: true }));
+        const fixture = createCurrentUiClientActionFixture({ scopes: ['session'], handler });
+        const port = createCurrentUiContextVoiceToolPort({
+            reader: {
+                readCurrentUiContext: () => null,
+                readCurrentSessionId: () => null,
+                resolveCurrentUiCommand: () => null,
+                subscribe: () => () => {},
+            },
+            readProjection: () => fixture.projection,
+            readNavigationBinding: () => null,
+        });
+        await fixture.composition.unload();
+        try {
+            await fixture.composition.reconcile([fixture.activation]);
+            await expect(requireActionInvoker(port)({
+                action: CLIENT_ACTION_ID,
+                input: { sessionId: 'caller-chosen-session' },
+            })).resolves.toEqual({ ok: false, code: 'unavailable' });
+            expect(handler).not.toHaveBeenCalled();
+        } finally {
+            await fixture.composition.unload();
+        }
+    });
+
+    it('retires a pending Session Action when the host moves away and back before navigation', async () => {
+        let sessionId = 'host-session-a';
+        const listeners = new Set<() => void>();
+        let entered!: () => void;
+        const handlerEntered = new Promise<void>((resolve) => { entered = resolve; });
+        let resume!: () => void;
+        const providerReply = new Promise<void>((resolve) => { resume = resolve; });
+        let observedSignal: AbortSignal | undefined;
+        const navigation = vi.fn(async () => ({ ok: true as const }));
+        const fixture = createCurrentUiClientActionFixture({
+            scopes: ['session'],
+            handler: async (_input, context) => {
+                observedSignal = context.signal;
+                entered();
+                await providerReply;
+                await context.ui.openSurface('review-status');
+                return { opened: true };
+            },
+        });
+        const port = createCurrentUiContextVoiceToolPort({
+            reader: {
+                readCurrentUiContext: () => null,
+                readCurrentSessionId: () => sessionId,
+                resolveCurrentUiCommand: () => null,
+                subscribe: (listener) => {
+                    listeners.add(listener);
+                    return () => { listeners.delete(listener); };
+                },
+            },
+            readProjection: () => fixture.projection,
+            readNavigationBinding: () => ({ targetKind: 'app', openSurface: navigation, registerOwner: () => () => {} }),
+        });
+        await fixture.composition.unload();
+        try {
+            await fixture.composition.reconcile([fixture.activation]);
+            const pending = requireActionInvoker(port)({ action: CLIENT_ACTION_ID });
+            await handlerEntered;
+            sessionId = 'host-session-b';
+            for (const listener of listeners) listener();
+            sessionId = 'host-session-a';
+            for (const listener of listeners) listener();
+            expect(observedSignal?.aborted).toBe(true);
+            resume();
+            await expect(pending).resolves.toEqual({ ok: false, code: 'outcome_unknown' });
+            expect(navigation).not.toHaveBeenCalled();
+            expect(listeners.size).toBe(0);
+        } finally {
+            resume();
+            await fixture.composition.unload();
+        }
     });
 
     it('does not enter a client handler when its exact current command retirement is already signaled', async () => {

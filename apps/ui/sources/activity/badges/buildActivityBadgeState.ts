@@ -40,12 +40,11 @@ export function buildActivityBadgeStateFromOverview(params: Readonly<{
     hasNonNumericInboxAttention: boolean;
     sessionOptions?: ActivityBadgeSessionOptions;
 }>): ActivityBadgeState {
-    const selectedSessionCount = params.overview.candidates.filter((candidate) => (
-        (params.sessionOptions?.showUnread !== false && candidate.reasons.hasUnread)
-        || (params.sessionOptions?.showPendingPermissionRequests !== false && candidate.reasons.hasPendingPermissionRequests)
-        || (params.sessionOptions?.showPendingUserActionRequests !== false && candidate.reasons.hasPendingUserActionRequests)
-        || (params.sessionOptions?.showPendingUserActionRequests !== false && candidate.reasons.hasBlockedPendingDelivery)
-    )).length;
+    // The overview builder has already applied the presentation toggles while
+    // preserving every other canonical attention reason. Reinterpreting the
+    // reason booleans here made a mixed failure+unread candidate disappear when
+    // unread presentation was disabled, creating a second badge authority.
+    const selectedSessionCount = params.overview.candidates.filter((candidate) => candidate.hasAttention).length;
     const count = Math.max(0, selectedSessionCount + Math.max(0, Math.trunc(params.numericInboxCount)));
     return {
         count,

@@ -36,6 +36,37 @@ function createSavedSecret() {
 }
 
 describe('pruneSecretBindings', () => {
+    it('preserves syntactically valid shared Saved Secret references without a personal record', () => {
+        const base = settingsParse({});
+        const sharedRef = 'happier:shared-secret:v1:resource_01';
+        const settings = {
+            ...base,
+            profiles: [createCustomProfile('custom-1')],
+            secrets: [],
+            secretBindingsByProfileId: {
+                'custom-1': { OPENAI_API_KEY: sharedRef },
+            },
+        };
+
+        expect(pruneSecretBindings(settings).secretBindingsByProfileId).toEqual({
+            'custom-1': { OPENAI_API_KEY: sharedRef },
+        });
+    });
+
+    it('prunes malformed shared Saved Secret references as invalid', () => {
+        const base = settingsParse({});
+        const settings = {
+            ...base,
+            profiles: [createCustomProfile('custom-1')],
+            secrets: [],
+            secretBindingsByProfileId: {
+                'custom-1': { OPENAI_API_KEY: 'happier:shared-secret:v1:' },
+            },
+        };
+
+        expect(pruneSecretBindings(settings).secretBindingsByProfileId).toEqual({});
+    });
+
     it('prunes truly unknown bindings and dangling entries in a recognized current map', () => {
         const base = settingsParse({});
 

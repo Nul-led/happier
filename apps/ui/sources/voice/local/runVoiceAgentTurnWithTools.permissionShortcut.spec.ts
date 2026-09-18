@@ -326,6 +326,23 @@ describe('runVoiceAgentTurnWithTools permission shortcuts', () => {
       t: 'answerUserActionRequest',
       result: { ok: true, status: 'done', sessionId: 's1', requestId: 'req_question' },
     });
+
+    commitUserTranscript.mockClear();
+    sendTurn.mockClear();
+    sessionRpcWithServerScope.mockResolvedValue({ ok: false, errorCode: 'network_error' });
+    await runVoiceAgentTurnWithTools({
+      sessionId: 'voice-hidden-s1',
+      userText: 'Deny the pending permission request.',
+      durableLocalId: 'fallback-committed-id',
+      currentToolSessionId: 's1',
+      voiceAgentSessions: { sendTurn, commitUserTranscript },
+    });
+    expect(commitUserTranscript).toHaveBeenCalledTimes(1);
+    expect(sendTurn).toHaveBeenCalledWith(
+      'voice-hidden-s1',
+      'Deny the pending permission request.',
+      expect.objectContaining({ userTranscript: { mode: 'suppress', localId: 'fallback-committed-id' } }),
+    );
   });
 
   it('does not approve a request from another session', async () => {

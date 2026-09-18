@@ -20,6 +20,21 @@ const DEFAULT_FAILURE_CODES: Required<LoopbackTunnelFailureCodes> = {
 };
 
 /**
+ * A tunnel was already acquired and then failed verification. Cleanup errors
+ * remain available for lifecycle diagnostics and retry custody, but cannot
+ * replace the post-acquisition failure that carrier policy must classify.
+ */
+export class LoopbackTunnelPostAcquisitionError extends Error {
+    readonly cleanupError: unknown;
+
+    constructor(message: string, cleanupError: unknown) {
+        super(message);
+        this.name = 'LoopbackTunnelPostAcquisitionError';
+        this.cleanupError = cleanupError;
+    }
+}
+
+/**
  * Lifecycle-only owner for every native loopback tunnel (SSH, Iroh). Native
  * adapters retain all socket and byte-copy ownership; this owner provides lease
  * keying, in-flight dedupe with reference counts, bounded probes, failed-start
@@ -111,13 +126,17 @@ export function createLoopbackTunnelSupervisor<
     }
 
     /** Marks a stale ready lease degraded, stops its native tunnel, and keeps the entry for replacement. */
-    async function degradeStoredLease(key: string): Promise<void> {
+    async function degradeStoredLease(key: string, failureMessage: string): Promise<void> {
         const stale = store.getByKey(key);
         if (!stale) return;
         store.updateStatus(stale.lease.leaseId, 'degraded');
         if (stale.nativeTunnelId) {
             removeNativeSubscription(stale.nativeTunnelId);
-            await input.adapter.stopLoopbackTunnel(stale.nativeTunnelId);
+            try {
+                await input.adapter.stopLoopbackTunnel(stale.nativeTunnelId);
+            } catch (cleanupError) {
+                throw new LoopbackTunnelPostAcquisitionError(failureMessage, cleanupError);
+            }
             const degraded = store.getByKey(key);
             if (degraded) store.put(key, { ...degraded, nativeTunnelId: null });
         }
@@ -209,12 +228,22 @@ export function createLoopbackTunnelSupervisor<
                         return retained.lease;
                     }
                     retainedReferenceCount = existing.referenceCount;
-                    await degradeStoredLease(key);
+                    await degradeStoredLease(
+                        key,
+                        `${failureCodes.probeFailed}:${existingProbe.reason}`,
+                    );
                 }
                 const stoppedExisting = store.getByKey(key);
                 if (stoppedExisting && stoppedExisting.lease.status !== 'ready') {
                     retainedReferenceCount = Math.max(retainedReferenceCount, stoppedExisting.referenceCount);
-                    await detachStoppedNativeTunnel(key);
+                    try {
+                        await detachStoppedNativeTunnel(key);
+                    } catch (cleanupError) {
+                        throw new LoopbackTunnelPostAcquisitionError(
+                            `${failureCodes.probeFailed}:cleanup-pending`,
+                            cleanupError,
+                        );
+                    }
                 }
 
                 let started: Awaited<ReturnType<LoopbackTunnelAdapter<Request, Native>['startLoopbackTunnel']>>;
@@ -251,14 +280,24 @@ export function createLoopbackTunnelSupervisor<
                     try {
                         await input.adapter.stopLoopbackTunnel(started.nativeTunnelId);
                         store.deleteByKey(key);
-                    } catch (error) {
+                    } catch (cleanupError) {
                         store.updateStatus(failedLease.leaseId, 'failed');
-                        throw error;
+                        throw new LoopbackTunnelPostAcquisitionError(
+                            `${failureCodes.probeFailed}:${probeResult.reason}`,
+                            cleanupError,
+                        );
                     }
                     throw new Error(`${failureCodes.probeFailed}:${probeResult.reason}`);
                 }
                 if (generation !== undefined && input.getGeneration?.() !== generation) {
-                    await input.adapter.stopLoopbackTunnel(started.nativeTunnelId);
+                    try {
+                        await input.adapter.stopLoopbackTunnel(started.nativeTunnelId);
+                    } catch (cleanupError) {
+                        throw new LoopbackTunnelPostAcquisitionError(
+                            failureCodes.staleGeneration,
+                            cleanupError,
+                        );
+                    }
                     throw new Error(failureCodes.staleGeneration);
                 }
                 // A verified healthy lease invalidates stale failure diagnostics.

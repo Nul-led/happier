@@ -8,8 +8,8 @@ import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 import { renderScreen } from '@/dev/testkit';
 
 
-vi.mock('@/sync/ops', () => ({
-    sessionScmDiffFile: vi.fn(async (_sessionId: string, input: { path: string; area: ScmDiffArea }) => ({
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
+    machineRpcWithServerScope: vi.fn(async ({ payload: input }: { payload: { path: string; area: ScmDiffArea } }) => ({
         success: true,
         diff:
             `diff --git a/${input.path} b/${input.path}\n` +
@@ -20,17 +20,22 @@ vi.mock('@/sync/ops', () => ({
     })),
 }));
 
-vi.mock('@/sync/domains/session/resolveWorkspaceTargetForSession', () => ({
-    resolveWorkspaceTargetForSession: () => ({
-        workspaceCacheKey: 'server:m1:/repo',
-        machineId: 'm1',
-        rootPath: '/repo',
-        serverId: 'server',
-    }),
-}));
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    const { createMachineFixture } = await import('@/dev/testkit/fixtures/machineFixtures');
+    const { createSessionFixture } = await import('@/dev/testkit/fixtures/sessionFixtures');
+    const { settingsParse } = await import('@/sync/domains/settings/settings');
+    const settings = settingsParse({});
+    const metadata = createSessionFixture().metadata!;
+    const session = createSessionFixture({ id: 's1', metadata: { ...metadata, machineId: 'm1', path: '/repo' } });
+    return createStorageModuleStub({ storage: { getState: () => ({
+        settings, sessions: { s1: session }, machines: { m1: createMachineFixture({ id: 'm1' }) },
+        getProjectForSession: () => null,
+    }) } });
+});
 
-vi.mock('@/sync/ops/workspaceFileSystem', () => ({
-    workspaceReadFile: vi.fn(async () => ({ success: false, error: 'nope', content: '' })),
+vi.mock('@/sync/domains/server/serverRuntime', () => ({
+    getActiveServerSnapshot: () => ({ serverId: 'server', serverUrl: 'https://example.com', generation: 1 }),
 }));
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -93,7 +98,7 @@ function file(path: string, status: ScmFileStatus['status'] = 'modified'): ScmFi
 
 describe('useChangedFilesReviewDiffLoading', () => {
     it('defaults to fetching only a single diff when requestedPaths is missing', async () => {
-        const { sessionScmDiffFile } = await import('@/sync/ops');
+        const { machineRpcWithServerScope } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc');
         const { useChangedFilesReviewDiffLoading } = await import('./useChangedFilesReviewDiffLoading');
 
         const reviewFiles = [file('a.ts'), file('b.ts'), file('c.ts')];
@@ -112,11 +117,12 @@ describe('useChangedFilesReviewDiffLoading', () => {
             fallbackError: 'failed',
         } as any));
 
-        await waitForCondition(() => vi.mocked(sessionScmDiffFile).mock.calls.length === 1);
+        await waitForCondition(() => ['loaded', 'error'].includes(hook.getCurrent().diffStateSource.getDiffState('a.ts').status));
+        expect(hook.getCurrent().diffStateSource.getDiffState('a.ts')).toMatchObject({ status: 'loaded', error: null });
 
         // Without explicit requestedPaths, we should avoid fetching every diff up front.
-        expect(vi.mocked(sessionScmDiffFile)).toHaveBeenCalledTimes(1);
-        expect(vi.mocked(sessionScmDiffFile).mock.calls[0]?.[1]).toEqual({ path: 'a.ts', area: 'pending' });
+        expect(vi.mocked(machineRpcWithServerScope)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(machineRpcWithServerScope).mock.calls[0]?.[0]?.payload).toEqual(expect.objectContaining({ path: 'a.ts', area: 'pending', cwd: '/repo' }));
 
         expect(hook.getCurrent().diffStateSource.getDiffState('a.ts').status).toBe('loaded');
         expect(hook.getCurrent().diffStateSource.getDiffState('b.ts').status).toBe('idle');
@@ -125,7 +131,7 @@ describe('useChangedFilesReviewDiffLoading', () => {
     });
 
     it('only fetches diffs for requestedPaths', async () => {
-        const { sessionScmDiffFile } = await import('@/sync/ops');
+        const { machineRpcWithServerScope } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc');
         const { ScmDiffCache } = await import('@/scm/diffCache/scmDiffCache');
         const { useChangedFilesReviewDiffLoading } = await import('./useChangedFilesReviewDiffLoading');
 
@@ -146,10 +152,10 @@ describe('useChangedFilesReviewDiffLoading', () => {
             fallbackError: 'failed',
         } as any));
 
-        await waitForCondition(() => vi.mocked(sessionScmDiffFile).mock.calls.length === 1);
+        await waitForCondition(() => vi.mocked(machineRpcWithServerScope).mock.calls.length === 1);
 
-        expect(vi.mocked(sessionScmDiffFile)).toHaveBeenCalledTimes(1);
-        expect(vi.mocked(sessionScmDiffFile).mock.calls[0]?.[1]).toEqual({ path: 'b.ts', area: 'pending' });
+        expect(vi.mocked(machineRpcWithServerScope)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(machineRpcWithServerScope).mock.calls[0]?.[0]?.payload).toEqual(expect.objectContaining({ path: 'b.ts', area: 'pending', cwd: '/repo' }));
 
         expect(hook.getCurrent().diffStateSource.getDiffState('a.ts').status).toBe('idle');
         expect(hook.getCurrent().diffStateSource.getDiffState('b.ts').status).toBe('loaded');
@@ -158,7 +164,7 @@ describe('useChangedFilesReviewDiffLoading', () => {
     });
 
     it('uses a custom diff fetcher when provided', async () => {
-        const { sessionScmDiffFile } = await import('@/sync/ops');
+        const { machineRpcWithServerScope } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc');
         const { useChangedFilesReviewDiffLoading } = await import('./useChangedFilesReviewDiffLoading');
 
         const customFetchUnifiedDiffForPath = vi.fn(async (input: {
@@ -201,18 +207,20 @@ describe('useChangedFilesReviewDiffLoading', () => {
             diffArea: 'both',
             file: expect.objectContaining({ fullPath: 'workspace.ts' }),
         }));
-        expect(vi.mocked(sessionScmDiffFile)).not.toHaveBeenCalled();
+        expect(vi.mocked(machineRpcWithServerScope)).not.toHaveBeenCalled();
         expect(hook.getCurrent().diffStateSource.getDiffState('workspace.ts').status).toBe('loaded');
         expect(hook.getCurrent().diffStateSource.getDiffState('workspace.ts').diff).toContain('workspace.ts');
         hook.unmount();
     });
 
     it('starts fetching multiple requested diffs concurrently when maxConcurrency allows', async () => {
-        const { sessionScmDiffFile } = await import('@/sync/ops');
+        const { machineRpcWithServerScope } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc');
         const { useChangedFilesReviewDiffLoading } = await import('./useChangedFilesReviewDiffLoading');
 
         const pending: Array<{ resolve: (value: any) => void }> = [];
-        vi.mocked(sessionScmDiffFile).mockImplementation(async (_sessionId: string, input: any) => {
+        vi.mocked(machineRpcWithServerScope).mockImplementation(async (request) => {
+            // RPC boundary payload in this test is the SCM file-diff request.
+            const input = request.payload as { path: string; area: ScmDiffArea };
             return await new Promise((resolve) => {
                 pending.push({
                     resolve: () => resolve({
@@ -245,7 +253,7 @@ describe('useChangedFilesReviewDiffLoading', () => {
             fallbackError: 'failed',
         } as any));
 
-        await waitForCondition(() => vi.mocked(sessionScmDiffFile).mock.calls.length === 2);
+        await waitForCondition(() => vi.mocked(machineRpcWithServerScope).mock.calls.length === 2);
 
         pending.forEach((p) => p.resolve(null));
         await waitForCondition(() =>
@@ -259,13 +267,16 @@ describe('useChangedFilesReviewDiffLoading', () => {
     });
 
     it('serves cached diffs without fetching', async () => {
-        const { sessionScmDiffFile } = await import('@/sync/ops');
+        const { machineRpcWithServerScope } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc');
         const { ScmDiffCache } = await import('@/scm/diffCache/scmDiffCache');
         const { useChangedFilesReviewDiffLoading } = await import('./useChangedFilesReviewDiffLoading');
 
+        const { fetchWorkspaceUnifiedDiffForPath } = await import('@/scm/diff/fetchWorkspaceUnifiedDiffForPath');
+        const { buildWorkspaceCacheKey } = await import('@/sync/domains/workspaces/workspaceScope');
+        const scope = { serverId: 'server-a', machineId: 'machine-a', rootPath: '/repo' };
         const reviewFiles = [file('a.ts')];
         const diffCache = new ScmDiffCache({ maxEntries: 10, maxTotalBytes: 10_000, now: () => 1_000 });
-        diffCache.set({ sessionId: 's1', snapshotSignature: 'sig1', diffArea: 'pending', path: 'a.ts' }, 'cached-diff');
+        diffCache.set({ sessionId: buildWorkspaceCacheKey(scope), snapshotSignature: 'sig1', diffArea: 'pending', path: 'a.ts' }, 'cached-diff');
 
         const hook = await renderHook(() => useChangedFilesReviewDiffLoading({
             sessionId: 's1',
@@ -275,15 +286,16 @@ describe('useChangedFilesReviewDiffLoading', () => {
             requestedPaths: ['a.ts'],
             snapshotSignature: 'sig1',
             diffCache,
+            fetchUnifiedDiffForPath: (input) => fetchWorkspaceUnifiedDiffForPath({ ...input, scope }),
             tooLarge: false,
             selectedPath: '',
             normalizeError,
             fallbackError: 'failed',
-        } as any));
+        }));
 
         await waitForCondition(() => hook.getCurrent().diffStateSource.getDiffState('a.ts').status === 'loaded');
 
-        expect(vi.mocked(sessionScmDiffFile)).toHaveBeenCalledTimes(0);
+        expect(vi.mocked(machineRpcWithServerScope)).toHaveBeenCalledTimes(0);
         expect(hook.getCurrent().diffStateSource.getDiffState('a.ts').status).toBe('loaded');
         expect(hook.getCurrent().diffStateSource.getDiffState('a.ts').diff).toBe('cached-diff');
         hook.unmount();
@@ -339,7 +351,7 @@ describe('useChangedFilesReviewDiffLoading', () => {
     });
 
     it('fetches diffs for newly requested paths when requestedPaths changes', async () => {
-        const { sessionScmDiffFile } = await import('@/sync/ops');
+        const { machineRpcWithServerScope } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc');
         const { useChangedFilesReviewDiffLoading } = await import('./useChangedFilesReviewDiffLoading');
 
         const reviewFiles = [file('a.ts'), file('b.ts')];
@@ -366,8 +378,8 @@ describe('useChangedFilesReviewDiffLoading', () => {
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(React.createElement(Test))).tree;
 
-        expect(vi.mocked(sessionScmDiffFile)).toHaveBeenCalledTimes(1);
-        expect(vi.mocked(sessionScmDiffFile).mock.calls[0]?.[1]).toEqual({ path: 'a.ts', area: 'pending' });
+        expect(vi.mocked(machineRpcWithServerScope)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(machineRpcWithServerScope).mock.calls[0]?.[0]?.payload).toEqual(expect.objectContaining({ path: 'a.ts', area: 'pending', cwd: '/repo' }));
         expect(current!.diffStateSource.getDiffState('a.ts').status).toBe('loaded');
         expect(current!.diffStateSource.getDiffState('b.ts').status).toBe('idle');
 
@@ -376,8 +388,8 @@ describe('useChangedFilesReviewDiffLoading', () => {
             tree!.update(React.createElement(Test));
         });
 
-        await waitForCondition(() => vi.mocked(sessionScmDiffFile).mock.calls.length === 2);
-        expect(vi.mocked(sessionScmDiffFile).mock.calls[1]?.[1]).toEqual({ path: 'b.ts', area: 'pending' });
+        await waitForCondition(() => vi.mocked(machineRpcWithServerScope).mock.calls.length === 2);
+        expect(vi.mocked(machineRpcWithServerScope).mock.calls[1]?.[0]?.payload).toEqual(expect.objectContaining({ path: 'b.ts', area: 'pending', cwd: '/repo' }));
         await waitForCondition(() => current!.diffStateSource.getDiffState('b.ts').status === 'loaded');
 
         expect(current!.diffStateSource.getDiffState('b.ts').status).toBe('loaded');

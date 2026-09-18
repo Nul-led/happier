@@ -30,10 +30,10 @@ export default function ScanTerminalQrScreen() {
                 title={t('modals.authenticateTerminal')}
                 subtitle={t('connect.scanQrCodeOnDevice')}
                 permissionRequiredMessage={t('modals.cameraPermissionsRequiredToConnectTerminal')}
-                manualEntryPromptTitle={t('modals.authenticateTerminal')}
-                manualEntryPromptDescription={t('modals.pasteUrlFromTerminal')}
+                manualEntryTitle={t('modals.authenticateTerminal')}
+                manualEntryDescription={t('modals.pasteUrlFromTerminal')}
                 manualEntryPlaceholder={t('connect.terminalUrlPlaceholder')}
-                manualEntryConfirmText={t('common.authenticate')}
+                manualEntrySubmitText={t('common.authenticate')}
             />
         </WizardModalShell>
     );

@@ -80,6 +80,58 @@ describe('useSessionListA11yAnnouncements', () => {
         );
     });
 
+    it('announces a successful move only after its organization commit succeeds', async () => {
+        announceForAccessibilitySpy.mockClear();
+        let resolveCommit!: (succeeded: boolean) => void;
+        const committed = new Promise<boolean>((resolve) => {
+            resolveCommit = resolve;
+        });
+        const hook = await renderHook(() => useSessionListA11yAnnouncements());
+        const announcement = {
+            label: 'Planning',
+            destinationLabel: 'Workspace root',
+            result: {
+                instruction: {
+                    kind: 'move-to-root' as const,
+                    containerId: 'workspace-a',
+                    rootId: 'workspace-a',
+                    depth: 0,
+                },
+                visual: { kind: 'outline' as const, targetId: 'workspace-a' },
+            },
+        };
+
+        const announcementComplete = hook.getCurrent().announceDropResultAfterCommit(committed, announcement);
+        expect(announceForAccessibilitySpy).not.toHaveBeenCalled();
+        resolveCommit(true);
+        await announcementComplete;
+
+        expect(announceForAccessibilitySpy).toHaveBeenCalledWith(
+            expect.stringContaining('sessionsList.dragA11yDroppedRoot'),
+        );
+    });
+
+    it('does not announce success when the organization commit fails', async () => {
+        announceForAccessibilitySpy.mockClear();
+        const hook = await renderHook(() => useSessionListA11yAnnouncements());
+
+        await hook.getCurrent().announceDropResultAfterCommit(Promise.resolve(false), {
+            label: 'Planning',
+            destinationLabel: 'Workspace root',
+            result: {
+                instruction: {
+                    kind: 'move-to-root',
+                    containerId: 'workspace-a',
+                    rootId: 'workspace-a',
+                    depth: 0,
+                },
+                visual: { kind: 'outline', targetId: 'workspace-a' },
+            },
+        });
+
+        expect(announceForAccessibilitySpy).not.toHaveBeenCalled();
+    });
+
     it('announces session-list eligibility block reasons instead of the generic tree reason', async () => {
         announceForAccessibilitySpy.mockClear();
         const hook = await renderHook(() => useSessionListA11yAnnouncements());

@@ -19,6 +19,7 @@ import { tryShowDaemonUnavailableAlertForScmOperationFailure } from '@/scm/opera
 
 export async function applyFileStageAction(input: Readonly<{
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     filePath: string;
     snapshot: ScmWorkingSnapshot | null;
@@ -31,6 +32,7 @@ export async function applyFileStageAction(input: Readonly<{
 }>): Promise<void> {
     const {
         sessionId,
+        serverId,
         sessionPath,
         filePath,
         snapshot,
@@ -43,11 +45,12 @@ export async function applyFileStageAction(input: Readonly<{
 
     if (isAtomicCommitStrategy(commitStrategy)) {
         if (!stage) {
-            storage.getState().unmarkSessionProjectScmCommitSelectionPaths(sessionId, [filePath]);
-            storage.getState().removeSessionProjectScmCommitSelectionPatch(sessionId, filePath);
+            storage.getState().unmarkSessionProjectScmCommitSelectionPaths(sessionId, [filePath], serverId);
+            storage.getState().removeSessionProjectScmCommitSelectionPatch(sessionId, filePath, serverId);
             reportSessionScmOperation({
                 state: storage.getState(),
                 sessionId,
+                ...(serverId ? { serverId } : {}),
                 operation: 'unstage',
                 status: 'success',
                 path: filePath,
@@ -58,11 +61,12 @@ export async function applyFileStageAction(input: Readonly<{
             return;
         }
 
-        storage.getState().markSessionProjectScmCommitSelectionPaths(sessionId, [filePath]);
-        storage.getState().removeSessionProjectScmCommitSelectionPatch(sessionId, filePath);
+        storage.getState().markSessionProjectScmCommitSelectionPaths(sessionId, [filePath], serverId);
+        storage.getState().removeSessionProjectScmCommitSelectionPatch(sessionId, filePath, serverId);
         reportSessionScmOperation({
             state: storage.getState(),
             sessionId,
+            ...(serverId ? { serverId } : {}),
             operation: 'stage',
             status: 'success',
             path: filePath,
@@ -95,11 +99,12 @@ export async function applyFileStageAction(input: Readonly<{
     const lockResult = await withSessionProjectScmOperationLock({
         state: storage.getState(),
         sessionId,
+        ...(serverId ? { serverId } : {}),
         operation: stage ? 'stage' : 'unstage',
         run: async () => {
             const runScmOperation = async () => stage
-                ? await sessionScmChangeInclude(sessionId, { paths: [filePath] })
-                : await sessionScmChangeExclude(sessionId, { paths: [filePath] });
+                ? await sessionScmChangeInclude(sessionId, { paths: [filePath] }, serverId)
+                : await sessionScmChangeExclude(sessionId, { paths: [filePath] }, serverId);
             let response = await runScmOperation();
 
             if (!response.success) {
@@ -107,7 +112,7 @@ export async function applyFileStageAction(input: Readonly<{
                     response = await runScmOperationWithGitIndexLockRecovery({
                         cwd: sessionPath,
                         failedResponse: response,
-                        removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request),
+                        removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request, serverId),
                         retryOriginalOperation: runScmOperation,
                     });
                 }
@@ -131,6 +136,7 @@ export async function applyFileStageAction(input: Readonly<{
                 reportSessionScmOperation({
                     state: storage.getState(),
                     sessionId,
+                    ...(serverId ? { serverId } : {}),
                     operation: stage ? 'stage' : 'unstage',
                     status: 'failed',
                     path: filePath,
@@ -147,6 +153,7 @@ export async function applyFileStageAction(input: Readonly<{
             reportSessionScmOperation({
                 state: storage.getState(),
                 sessionId,
+                ...(serverId ? { serverId } : {}),
                 operation: stage ? 'stage' : 'unstage',
                 status: 'success',
                 path: filePath,
@@ -154,7 +161,7 @@ export async function applyFileStageAction(input: Readonly<{
                 surface,
                 tracking,
             });
-            await scmStatusSync.invalidateFromMutationAndAwait(sessionId);
+            await scmStatusSync.invalidateFromMutationAndAwait(sessionId, serverId);
             if (refreshAll) {
                 await refreshAll();
             }

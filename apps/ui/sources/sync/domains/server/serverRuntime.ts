@@ -41,20 +41,20 @@ export function isActiveServerSelectionExplicit(): boolean {
     return isExplicitFromProfiles();
 }
 
-export function activateServerProfileIfSelectionImplicit(serverId: string): boolean {
-    return activateIfImplicitFromProfiles(serverId);
+export async function activateServerProfileIfSelectionImplicit(serverId: string): Promise<boolean> {
+    return await activateIfImplicitFromProfiles(serverId);
 }
 
-export function setActiveServer(params: Readonly<{ serverId: string; scope?: 'device' | 'tab' }>): void {
+export async function setActiveServer(params: Readonly<{ serverId: string; scope?: 'device' | 'tab' }>): Promise<void> {
     const scope = params.scope ?? 'device';
     const serverId = String(params.serverId ?? '').trim();
-    setActiveServerId(serverId, { scope });
+    await setActiveServerId(serverId, { scope });
     if (scope === 'device' && getTabActiveServerId() && getDeviceDefaultServerId() === serverId) {
         clearTabActiveServerId();
     }
 }
 
-export function upsertAndActivateServer(
+export async function upsertAndActivateServer(
     params: Readonly<{
         serverUrl: string;
         name?: string;
@@ -62,26 +62,26 @@ export function upsertAndActivateServer(
         scope?: 'device' | 'tab';
         replaceEquivalentStoredUrl?: boolean;
     }>,
-): ServerProfile {
-    const profile = upsertServerProfile({
+): Promise<ServerProfile> {
+    const profile = await upsertServerProfile({
         serverUrl: params.serverUrl,
         name: params.name,
         source: params.source,
         replaceEquivalentStoredUrl: params.replaceEquivalentStoredUrl,
     });
-    setActiveServer({ serverId: profile.id, scope: params.scope ?? 'device' });
+    await setActiveServer({ serverId: profile.id, scope: params.scope ?? 'device' });
     return profile;
 }
 
-export function upsertServerProfileOnly(
+export async function upsertServerProfileOnly(
     params: Readonly<{
         serverUrl: string;
         name?: string;
         source?: ServerProfile['source'];
         replaceEquivalentStoredUrl?: boolean;
     }>,
-): ServerProfile {
-    return upsertServerProfile({
+): Promise<ServerProfile> {
+    return await upsertServerProfile({
         serverUrl: params.serverUrl,
         name: params.name,
         source: params.source,
@@ -89,20 +89,20 @@ export function upsertServerProfileOnly(
     });
 }
 
-export function setServerProfileShareableUrl(
+export async function setServerProfileShareableUrl(
     serverProfileId: string,
     serverUrl: string | null | undefined,
     options: Readonly<{ validatedAgainstServerUrl?: string | null | undefined }> = {},
-): void {
-    setServerProfileShareableUrlFromProfiles(serverProfileId, serverUrl, options);
+): Promise<void> {
+    await setServerProfileShareableUrlFromProfiles(serverProfileId, serverUrl, options);
 }
 
-export function setActiveShareableServerUrl(
+export async function setActiveShareableServerUrl(
     serverUrl: string | null | undefined,
     options: Readonly<{ validatedAgainstServerUrl?: string | null | undefined }> = {},
-): void {
+): Promise<void> {
     const snapshot = getSnapshotFromProfiles();
     const serverId = String(snapshot.serverId ?? '').trim();
     if (!serverId) return;
-    setServerProfileShareableUrlFromProfiles(serverId, serverUrl, options);
+    await setServerProfileShareableUrlFromProfiles(serverId, serverUrl, options);
 }

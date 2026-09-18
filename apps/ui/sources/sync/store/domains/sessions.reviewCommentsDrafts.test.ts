@@ -28,7 +28,7 @@ function createHarness() {
     let state: any = {
         sessions: {},
         sessionListIndexByServerId: {},
-        sessionListRowStateByServerId: {},
+        sessionListRowsByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
         sessionLastViewed: {},
@@ -36,12 +36,12 @@ function createHarness() {
         workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey: {},
         reviewCommentsDraftsBySessionId: {},
         reviewCommentsDraftsByWorkspaceCacheKey: {},
-        actionDraftsBySessionId: {},
+        sessionActionDraftsByAddressKey: {},
         isDataReady: false,
         machines: {},
         machineDisplayById: {},
         sessionMessages: {},
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
     };
 
     const get = () => state;

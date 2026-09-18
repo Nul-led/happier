@@ -1,15 +1,19 @@
 import type { Message } from '@/sync/domains/messages/messageTypes';
-import type { AgentRequestKind } from '@/utils/sessions/permissions/permissionPromptPolicy';
+import type { ActivitySequenceEventReferenceV1, AgentRequestKind } from '@happier-dev/protocol';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export type ActivityLocalNotificationEvent =
     | Readonly<{
         kind: 'ready';
-        sessionId: string;
+        event: 'ready';
+        address: SessionAddress;
         messages?: Message[];
+        committedSequence?: ActivitySequenceEventReferenceV1;
     }>
     | Readonly<{
         kind: 'agent-request';
-        sessionId: string;
+        event: 'permission_required' | 'user_action_required';
+        address: SessionAddress;
         requestId: string;
         turnId?: string;
         requestKind: AgentRequestKind;
@@ -28,14 +32,20 @@ export function subscribeActivityLocalNotifications(listener: Listener): () => v
     };
 }
 
-export function notifyActivityReady(sessionId: string, messages?: Message[]): void {
-    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!normalizedSessionId) return;
+export function notifyActivityReady(
+    addressInput: SessionAddress,
+    messages?: Message[],
+    committedSequence?: ActivitySequenceEventReferenceV1,
+): void {
+    const address = normalizeSessionAddress(addressInput.serverId, addressInput.sessionId);
+    if (!address) return;
 
     const event: ActivityLocalNotificationEvent = {
         kind: 'ready',
-        sessionId: normalizedSessionId,
+        event: 'ready',
+        address,
         messages,
+        ...(committedSequence ? { committedSequence } : {}),
     };
 
     for (const listener of Array.from(listeners)) {
@@ -48,21 +58,22 @@ export function notifyActivityReady(sessionId: string, messages?: Message[]): vo
 }
 
 export function notifyActivityAgentRequest(params: Readonly<{
-    sessionId: string;
+    address: SessionAddress;
     requestId: string;
     turnId?: string;
     requestKind: AgentRequestKind;
     toolName: string;
     toolArgs: unknown;
 }>): void {
-    const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : '';
+    const address = normalizeSessionAddress(params.address.serverId, params.address.sessionId);
     const requestId = typeof params.requestId === 'string' ? params.requestId.trim() : '';
     const toolName = typeof params.toolName === 'string' ? params.toolName.trim() : '';
-    if (!sessionId || !requestId || !toolName) return;
+    if (!address || !requestId || !toolName) return;
 
     const event: ActivityLocalNotificationEvent = {
         kind: 'agent-request',
-        sessionId,
+        event: params.requestKind === 'permission' ? 'permission_required' : 'user_action_required',
+        address,
         requestId,
         ...(typeof params.turnId === 'string' && params.turnId.trim().length > 0
             ? { turnId: params.turnId.trim() }

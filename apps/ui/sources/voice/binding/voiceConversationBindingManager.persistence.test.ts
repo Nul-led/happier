@@ -16,9 +16,10 @@ describe('voice conversation binding persistence publication', () => {
       nowMs: () => 123,
       resolveBinding: vi.fn(async () => ({
         conversationSessionId: 'carrier-s1',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
         controlSessionId: 'voice-global',
         transcriptMode: 'synthetic' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
       })),
       appendTargetSwitchNote: appendNote,
       persistBinding,
@@ -36,11 +37,11 @@ describe('voice conversation binding persistence publication', () => {
 
     await expect(manager.ensureBound(input)).resolves.toEqual(expect.objectContaining({
       conversationSessionId: 'carrier-s1',
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
     }));
     expect(store.getState().getByControlSessionId('voice-global')).toEqual(expect.objectContaining({
       conversationSessionId: 'carrier-s1',
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
     }));
     expect(persistBinding).toHaveBeenCalledTimes(2);
     expect(appendNote).not.toHaveBeenCalled();
@@ -59,9 +60,10 @@ describe('voice conversation binding persistence publication', () => {
       nowMs: () => 456,
       resolveBinding: vi.fn(async () => ({
         conversationSessionId: 'carrier-s1',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
         controlSessionId: 'voice-global',
         transcriptMode: 'synthetic' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
       })),
       appendTargetSwitchNote: appendNote,
       persistBinding,
@@ -75,21 +77,21 @@ describe('voice conversation binding persistence publication', () => {
 
     await expect(Promise.resolve().then(() => manager.syncTargetSession({
       controlSessionId: 'voice-global',
-      targetSessionId: 's2',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
     }))).rejects.toBe(persistenceFailure);
     expect(store.getState().getByControlSessionId('voice-global')).toEqual(expect.objectContaining({
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
     }));
     expect(appendNote).not.toHaveBeenCalled();
 
     await expect(manager.syncTargetSession({
       controlSessionId: 'voice-global',
-      targetSessionId: 's2',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
     })).resolves.toEqual(expect.objectContaining({
-      targetSessionId: 's2',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
     }));
     expect(store.getState().getByControlSessionId('voice-global')).toEqual(expect.objectContaining({
-      targetSessionId: 's2',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
     }));
     expect(persistBinding).toHaveBeenCalledTimes(3);
     expect(appendNote).toHaveBeenCalledTimes(1);
@@ -104,16 +106,18 @@ describe('voice conversation binding persistence publication', () => {
       nowMs: () => 2,
       resolveBinding: vi.fn(async () => ({
         conversationSessionId: 'carrier-s2',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s2' },
         controlSessionId: 'voice-global',
         transcriptMode: 'native_session' as const,
-        targetSessionId: 's2',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
       })),
       resolveExistingBindingByConversationSessionId: () => ({
         adapterId: 'local_conversation',
         controlSessionId: 'voice-global',
         conversationSessionId: 'carrier-s1',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
         transcriptMode: 'native_session',
-        targetSessionId: 's1',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
         updatedAt: 1,
       }),
       appendTargetSwitchNote: appendNote,

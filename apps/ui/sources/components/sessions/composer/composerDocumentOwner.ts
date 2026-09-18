@@ -10,6 +10,7 @@ import {
 import { composerRefsV1Equal } from '@happier-dev/protocol/plugins/ui/composerRef';
 
 import type { ComposerStructuredInputMention } from '@/sync/domains/input/draftValues/sessionDraftValueTypes';
+import { reconcileStructuredInputMentionsWithText } from '@/components/sessions/agentInput/structuredInputMentions';
 import {
     composerAttachmentViewToDraft,
     composerStructuredMentionsFromReferences,
@@ -121,6 +122,33 @@ function freezeDocument(document: ComposerDraftDocument): ComposerDraftDocument 
     });
 }
 
+/**
+ * A host text edit and a reference edit are separate Composer operations. When
+ * the host replaces only text, retain the incumbent exact-occurrence references
+ * by rebasing them through the same structured-input text-diff owner used by the
+ * mounted input. A caller that supplies a genuinely different reference set
+ * remains authoritative for that complete document replacement.
+ */
+export function reconcileComposerDraftDocumentTextReplacement(
+    previous: ComposerDraftDocument,
+    next: ComposerDraftDocument,
+): ComposerDraftDocument {
+    if (
+        previous.text === next.text
+        || !pluginJsonValuesEqual(previous.structuredInputMentions, next.structuredInputMentions)
+    ) {
+        return next;
+    }
+    return {
+        ...next,
+        structuredInputMentions: reconcileStructuredInputMentionsWithText({
+            previousText: previous.text,
+            nextText: next.text,
+            mentions: previous.structuredInputMentions,
+        }),
+    };
+}
+
 function invalidUnsupportedField(field: 'attachments' | 'references'): ComposerTransactionResultV1 {
     return {
         status: 'invalidOperation',
@@ -154,7 +182,7 @@ export function createEphemeralComposerDocumentOwner(input: Readonly<{
     };
 
     const replaceDocument = (nextInput: ComposerDraftDocument): number => {
-        const next = freezeDocument(nextInput);
+        const next = freezeDocument(reconcileComposerDraftDocumentTextReplacement(document, nextInput));
         const changes = readComposerDraftDocumentChanges(document, next);
         const textChanged = changes.text;
         const mentionsChanged = changes.structuredInputMentions;
@@ -208,16 +236,15 @@ export function createEphemeralComposerDocumentOwner(input: Readonly<{
                 return { changed: false, changes: NO_COMPOSER_DOCUMENT_CHANGES };
             }
             const textCurrent = textMutationRevision === currentness.textMutationRevision;
-            const mentionsCurrent = structuredInputMentionsMutationRevision
-                === currentness.structuredInputMentionsMutationRevision;
             const attachmentsCurrent = composerAttachmentsMutationRevision
                 === currentness.composerAttachmentsMutationRevision;
-            // Text and range-bound references form one currentness group. A
-            // reference-only edit after capture must retain both the newer
-            // reference and the visible token; clearing just the text would
-            // strand that edit, while clearing both would lose it.
-            const textAndMentionsCurrent = textCurrent && mentionsCurrent;
-            const nextText = textAndMentionsCurrent ? '' : document.text;
+            // Text owns the lifetime of every range-bound reference. If the
+            // accepted text is still current, clear it and all references in
+            // one replacement even when a reference-only transaction happened
+            // while admission was in flight. If the text changed, preserve it;
+            // replaceDocument already rebased still-valid exact occurrences.
+            const textAndMentionsWillClear = textCurrent;
+            const nextText = textAndMentionsWillClear ? '' : document.text;
             // "Cleared" is whether this accepted snapshot actually removed
             // something. Reporting true after an A -> B -> A edit, whose text is
             // no longer current and whose other fields were already empty, told
@@ -226,7 +253,7 @@ export function createEphemeralComposerDocumentOwner(input: Readonly<{
             const beforeClear = document;
             replaceDocument({
                 text: nextText,
-                structuredInputMentions: textAndMentionsCurrent ? [] : document.structuredInputMentions,
+                structuredInputMentions: textAndMentionsWillClear ? [] : document.structuredInputMentions,
                 composerAttachments: attachmentsCurrent ? [] : document.composerAttachments,
             });
             const changes = readComposerDraftDocumentChanges(beforeClear, document);

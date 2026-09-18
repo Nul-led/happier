@@ -7,6 +7,7 @@ import {
     PLUGIN_INVOCABLE_ACTION_IDS,
     PluginProjectionInstalledPackageV2Schema,
     PluginProjectedActionV2Schema,
+    PluginJsonValueV2Schema,
     type PluginActionCurrentIntentResult,
     type PluginContributionIdentityV1,
     type PluginMachineExecutionOriginV1,
@@ -63,6 +64,9 @@ import {
     type PluginSurfaceHostActionExecute,
 } from './pluginSurfaceActionDispatch';
 import { createBoundPluginSurfaceController } from './boundPluginSurfaceController';
+import { dispatchPluginResolvedSemanticCommand } from './dispatchPluginResolvedSemanticCommand';
+import { getPluginUiEphemeralSharedScope } from './pluginUiEphemeralSharedScope';
+import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
 // The dispatcher and serializer stay real. The server-scoped RPC is the
 // system boundary that terminates this UI-side transport path.
@@ -71,6 +75,13 @@ const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: machineRpcWithServerScopeMock,
 }));
+
+// Semantic routing keeps the real transient-interaction owner; only its
+// platform dialog boundary is substituted in this non-rendering suite.
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock().module;
+});
 
 const CALLER_PLUGIN_ID = 'happier.inspector';
 const CALLER_MATERIALIZATION = {
@@ -123,6 +134,23 @@ const CLIENT_ACTION_ORIGIN: PluginMachineExecutionOriginV1 = Object.freeze({
     }),
 });
 const CLIENT_ACTION_GENERATION = 9;
+function clientAccountLifetime() {
+    let current = true;
+    const listeners = new Set<() => void>();
+    return {
+        scope: { serverId: 'server-client-action', accountId: 'test-account' },
+        isCurrent: () => current,
+        onRetire(listener: () => void) {
+            listeners.add(listener);
+            return { dispose: () => { listeners.delete(listener); } };
+        },
+        retire() {
+            current = false;
+            for (const listener of listeners) listener();
+            listeners.clear();
+        },
+    } satisfies ActiveServerAccountScopeLifetime & { retire(): void };
+}
 const CLIENT_ACTION_ARTIFACT_GRAPH = PluginUiArtifactsManifestEntryV1Schema.parse({
     contributionId: CLIENT_ACTION_TARGET.artifactId,
     tier: 'reactNative',
@@ -147,9 +175,25 @@ const CLIENT_ACTION_HOST_ORIGIN = Object.freeze({
     executionOrigin: CLIENT_ACTION_ORIGIN,
 });
 
-function clientActionIdentity(localId: string): PluginReactNativeBundleCacheIdentity {
+function clientActionExecutionOrigin(pluginId: string): PluginMachineExecutionOriginV1 {
+    return pluginId === CALLER_PLUGIN_ID
+        ? CLIENT_ACTION_ORIGIN
+        : Object.freeze({
+            ...CLIENT_ACTION_ORIGIN,
+            materializationRef: Object.freeze({
+                ...CLIENT_ACTION_ORIGIN.materializationRef,
+                pluginId,
+                materializationId: `materialization-${pluginId}`,
+            }),
+        });
+}
+
+function clientActionIdentity(
+    localId: string,
+    pluginId = CALLER_PLUGIN_ID,
+): PluginReactNativeBundleCacheIdentity {
     return Object.freeze({
-        pluginId: CALLER_PLUGIN_ID,
+        pluginId,
         contributionId: localId,
         artifactDigest: CLIENT_ACTION_ARTIFACT_GRAPH.digest,
         hostAppVersion: '2.0.0',
@@ -182,6 +226,7 @@ function createClientTargetAction(input: Readonly<{
     outputSchema?: object;
 }>): PluginProjectedActionV2 {
     const dangerLevel = input.dangerLevel ?? 'safe';
+    const executionOrigin = clientActionExecutionOrigin(input.identity.pluginId);
     return PluginProjectedActionV2Schema.parse({
         id: input.identity.localId,
         pluginId: input.identity.pluginId,
@@ -198,8 +243,8 @@ function createClientTargetAction(input: Readonly<{
             },
             platforms: [CLIENT_ACTION_TARGET.platform],
         },
-        serverIdentityId: CLIENT_ACTION_ORIGIN.serverIdentityId,
-        materializationRef: CLIENT_ACTION_ORIGIN.materializationRef,
+        serverIdentityId: executionOrigin.serverIdentityId,
+        materializationRef: executionOrigin.materializationRef,
         dangerLevel,
         ...(input.inputSchema ? { inputSchema: input.inputSchema } : {}),
         ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
@@ -217,46 +262,59 @@ function createClientTargetAction(input: Readonly<{
 }
 
 function createClientActionActivation(input: Readonly<{
+    pluginId?: string;
     localId?: string;
     dangerLevel?: 'safe' | 'writesRemote';
     surfaces?: readonly ('ui' | 'voice')[];
     inputSchema?: object;
     outputSchema?: object;
     handler: PluginClientActionHandler;
+    accountLifetime?: ActiveServerAccountScopeLifetime;
+    immutableGenerationId?: string;
 }>) {
+    const pluginId = input.pluginId ?? CALLER_PLUGIN_ID;
     const localId = input.localId ?? 'refresh-index';
+    const executionOrigin = clientActionExecutionOrigin(pluginId);
+    const hostOrigin = Object.freeze({
+        ...CLIENT_ACTION_HOST_ORIGIN,
+        machineId: executionOrigin.materializationRef.machineId,
+        executionOrigin,
+    });
     const action = createClientTargetAction({
-        identity: { pluginId: CALLER_PLUGIN_ID, localId },
+        identity: { pluginId, localId },
         dangerLevel: input.dangerLevel,
         surfaces: input.surfaces,
         inputSchema: input.inputSchema,
         outputSchema: input.outputSchema,
     });
-    const identity = clientActionIdentity(localId);
+    const identity = clientActionIdentity(localId, pluginId);
     const projectedAction = Object.freeze({
         ...action,
-        [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: CLIENT_ACTION_HOST_ORIGIN,
+        serverIdentityId: executionOrigin.serverIdentityId,
+        materializationRef: executionOrigin.materializationRef,
+        [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: hostOrigin,
     });
-    const bundleId = `reactNativeBundle:${CALLER_PLUGIN_ID}:${localId}`;
+    const bundleId = `reactNativeBundle:${pluginId}:${localId}`;
     const projection = Object.freeze({
         ...EMPTY_PLUGIN_UI_PROJECTION,
         generation: CLIENT_ACTION_GENERATION,
         installedPackagesById: Object.freeze({
-            [CALLER_PLUGIN_ID]: PluginProjectionInstalledPackageV2Schema.parse({
-                id: CALLER_PLUGIN_ID,
+            [pluginId]: PluginProjectionInstalledPackageV2Schema.parse({
+                id: pluginId,
                 displayName: 'Happier Inspector',
                 version: '1.2.3',
+                immutableGenerationId: input.immutableGenerationId ?? `generation-${pluginId}`,
                 enabled: true,
-                source: { kind: 'localPath', locator: CALLER_PLUGIN_ID },
+                source: { kind: 'localPath', locator: pluginId },
             }),
         }),
         actionsById: Object.freeze({
-            [`${CALLER_PLUGIN_ID}/${localId}`]: projectedAction,
+            [`${pluginId}/${localId}`]: projectedAction,
         }),
         reactNativeBundlesById: Object.freeze({
             [bundleId]: Object.freeze({
                 id: bundleId,
-                pluginId: CALLER_PLUGIN_ID,
+                pluginId,
                 contributionKind: 'reactNativeBundle' as const,
                 contributionId: localId,
                 generatedOwnerKind: 'clientContribution' as const,
@@ -266,7 +324,7 @@ function createClientActionActivation(input: Readonly<{
                     loadPolicy: Object.freeze({ source: 'installedArtifact' }),
                     cacheIdentity: identity,
                 }),
-                [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: CLIENT_ACTION_HOST_ORIGIN,
+                [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: hostOrigin,
             }),
         }),
     }) satisfies PluginUiProjectionModel;
@@ -306,11 +364,14 @@ function createClientActionActivation(input: Readonly<{
         moduleReference: resolvedAction.moduleReference,
         backend,
         authority: resolvedAction.authority,
+        accountLifetime: input.accountLifetime,
+        immutableGenerationId: resolvedAction.immutableGenerationId,
         isCurrent: () => true,
     });
     return Object.freeze({
         activation,
         activate,
+        projection,
         action: projectedAction as PluginProjectedActionV2,
         composition: getInstalledPluginUiClientExecutableComposition(),
     });
@@ -522,6 +583,383 @@ describe('plugin-surface action branch selection', () => {
             expect(handler).toHaveBeenCalledTimes(1);
             expect(contributed).not.toHaveBeenCalled();
         } finally {
+            await activation.composition.unload();
+        }
+    });
+
+    it('addresses a client Action by its member generation while the union generation fences currentness', async () => {
+        const handler = vi.fn(async () => ({ executed: true }));
+        const activation = createClientActionActivation({ handler });
+        await activation.composition.unload();
+        try {
+            await activation.composition.reconcile([activation.activation]);
+            const unionGeneration = 999;
+
+            await expect(dispatchPluginResolvedSemanticCommand({
+                projection: Object.freeze({
+                    ...activation.projection,
+                    generation: unionGeneration,
+                }),
+                callerPluginId: CALLER_PLUGIN_ID,
+                command: {
+                    kind: 'executeAction',
+                    action: { pluginId: CALLER_PLUGIN_ID, localId: activation.action.id },
+                },
+                scopedLaunchFacts: {
+                    serverId: null,
+                    machineId: null,
+                    generation: unionGeneration,
+                    interactionEnabled: true,
+                },
+                scopeIsCurrent: () => true,
+            })).resolves.toEqual({ ok: true, result: { executed: true } });
+
+            expect(handler).toHaveBeenCalledTimes(1);
+        } finally {
+            await activation.composition.unload();
+        }
+    });
+
+    it('retains exact-origin nested daemon transport through the real client semantic Action router', async () => {
+        const transport = vi.fn<PluginSurfaceContributedActionTransport>(async () => ({
+            supported: true,
+            result: { ok: true, result: { rows: ['observed'] } },
+        }));
+        const activation = createClientActionActivation({
+            handler: async (_input, context) => context.ui.executeAction('list', { limit: 1 }),
+        });
+        const list = resolveDaemonTargetAction({ pluginId: CALLER_PLUGIN_ID, localId: 'list' });
+        await activation.composition.unload();
+        try {
+            await activation.composition.reconcile([activation.activation]);
+            const observed = await dispatchPluginResolvedSemanticCommand({
+                projection: {
+                    ...activation.projection,
+                    actionsById: { ...activation.projection.actionsById, [`${CALLER_PLUGIN_ID}/list`]: list },
+                },
+                callerPluginId: CALLER_PLUGIN_ID,
+                command: { kind: 'executeAction', action: { pluginId: CALLER_PLUGIN_ID, localId: activation.action.id }, input: null },
+                // The per-contribution origin must win over another ambient machine.
+                scopedLaunchFacts: { ...CLIENT_ACTION_HOST_ORIGIN, machineId: 'ambient-other-machine', serverId: 'ambient-other-server' },
+                scopeIsCurrent: () => true,
+                execute: transport,
+            });
+            expect(observed).toEqual({ ok: true, result: { rows: ['observed'] } });
+            expect(transport).toHaveBeenCalledWith(CLIENT_ACTION_ORIGIN.materializationRef.machineId, expect.objectContaining({
+                serverId: CLIENT_ACTION_HOST_ORIGIN.serverId,
+                expectedGeneration: String(CLIENT_ACTION_GENERATION),
+                invocation: {
+                    kind: 'clientPluginAction',
+                    clientActionBinding: {
+                        contributionLocalId: activation.action.id,
+                        materializationRef: CLIENT_ACTION_ORIGIN.materializationRef,
+                    },
+                },
+            }));
+        } finally {
+            await activation.composition.unload();
+        }
+    });
+
+    it('answers cold Triage Search through activation, semantic routing and the shared acquisition owner', async () => {
+        const { createTriageSearchEntriesActionHandler } = await import('../../../../../../packages/plugins/triage/src/actions/searchEntries');
+        const { TRIAGE_LIST_ENTRIES_ACTION_LOCAL_ID_V1, TriageListEntriesResultV1Schema } = await import('../../../../../../packages/plugins/triage/src/actions/listEntriesProtocol');
+        const { TRIAGE_SEARCH_ENTRIES_ACTION_LOCAL_ID_V1 } = await import('../../../../../../packages/plugins/triage/src/actions/searchEntriesProtocol');
+        const { acquireTriageListWindow } = await import('../../../../../../packages/plugins/triage/src/ui/window/mountedWindow');
+        const { testkitEntryRef, testkitObservation, TRIAGE_TESTKIT_SOURCE, TESTKIT_SOURCE_INSTANCE_ID } = await import('../../../../../../packages/plugins/triage/src/corpus/testkit/observations.test-support');
+        const { PluginSearchQueryV1Schema, PluginSearchResultV1Schema } = await import('@happier-dev/protocol');
+        const handler = createTriageSearchEntriesActionHandler();
+        const accountLifetime = clientAccountLifetime();
+        const activation = createClientActionActivation({
+            pluginId: 'happier.triage',
+            localId: TRIAGE_SEARCH_ENTRIES_ACTION_LOCAL_ID_V1,
+            handler: (value, context) => handler(PluginSearchQueryV1Schema.parse(value), context),
+            accountLifetime,
+            immutableGenerationId: 'triage-cold-search-generation',
+        });
+        const entryRef = testkitEntryRef();
+        const result = TriageListEntriesResultV1Schema.parse({
+            v: 1,
+            configuredSources: [{ sourceInstanceId: TESTKIT_SOURCE_INSTANCE_ID, source: TRIAGE_TESTKIT_SOURCE, available: true }],
+            configuredSourcesStatus: 'complete',
+            window: {
+                v: 1,
+                rows: [{
+                    entryRef,
+                    lane: '1-open',
+                    sortAtMs: 1,
+                    presence: { kind: 'present', observedAtMs: 1 },
+                    selected: { kind: 'selected', sourceInstanceId: TESTKIT_SOURCE_INSTANCE_ID, reason: 'onlyPresent' },
+                    observation: testkitObservation(),
+                    otherObservations: [],
+                    observedByCount: 1,
+                }],
+                lanes: [{ sourceInstanceId: TESTKIT_SOURCE_INSTANCE_ID, source: TRIAGE_TESTKIT_SOURCE, health: { kind: 'walkFinished' }, exhausted: true }],
+                coverage: 'complete',
+                assembledAtMs: 1,
+            },
+        });
+        // Only the daemon transport is substituted. The real client handler,
+        // host sharing scope, cold acquisition, folding and matching execute.
+        const mountedScope = getPluginUiEphemeralSharedScope({
+            accountLifetime,
+            pluginId: 'happier.triage',
+            immutableGenerationId: 'triage-cold-search-generation',
+            executionOrigin: clientActionExecutionOrigin('happier.triage'),
+            isCurrent: accountLifetime.isCurrent,
+        });
+        let mountedLease: ReturnType<typeof acquireTriageListWindow> | undefined;
+        const mountedRead = vi.fn(async () => result);
+        const transport = vi.fn<PluginSurfaceContributedActionTransport>(async () => {
+            // A surface joins after the client initiated the cold read. Its
+            // lease retains that same window for the next warm Search.
+            mountedLease ??= acquireTriageListWindow({ executeAction: mountedRead }, mountedScope);
+            return { supported: true, result: { ok: true, result: PluginJsonValueV2Schema.parse(result) } };
+        });
+        const list = resolveDaemonTargetAction({ pluginId: 'happier.triage', localId: TRIAGE_LIST_ENTRIES_ACTION_LOCAL_ID_V1 });
+        const projection = {
+            ...activation.projection,
+            installedPackagesById: {
+                ...activation.projection.installedPackagesById,
+                'happier.triage': {
+                    ...activation.projection.installedPackagesById['happier.triage']!,
+                    immutableGenerationId: 'triage-cold-search-generation',
+                },
+            },
+            actionsById: { ...activation.projection.actionsById, [`happier.triage/${list.id}`]: list },
+        };
+        await activation.composition.unload();
+        try {
+            await activation.composition.reconcile([activation.activation]);
+            const outcome = await dispatchPluginResolvedSemanticCommand({
+                projection,
+                callerPluginId: 'happier.triage',
+                command: { kind: 'executeAction', action: { pluginId: 'happier.triage', localId: activation.action.id }, input: { query: 'normalizer', limit: 8 } },
+                scopedLaunchFacts: CLIENT_ACTION_HOST_ORIGIN,
+                scopeIsCurrent: () => true,
+                accountLifetime,
+                execute: transport,
+            });
+            expect(outcome.ok).toBe(true);
+            if (!outcome.ok || !('result' in outcome)) throw new Error('Cold Triage Search did not execute');
+            expect(PluginSearchResultV1Schema.parse(outcome.result)).toMatchObject({
+                items: [{ title: 'Replace the duplicated normalizer', command: { kind: 'openSurface' } }],
+                truncated: false,
+            });
+            expect(transport).toHaveBeenCalledWith(CLIENT_ACTION_ORIGIN.materializationRef.machineId, expect.objectContaining({
+                qualifiedActionId: `happier.triage/${TRIAGE_LIST_ENTRIES_ACTION_LOCAL_ID_V1}`,
+            }));
+            const readsAfterColdSearch = transport.mock.calls.length;
+            const warm = await dispatchPluginResolvedSemanticCommand({
+                projection,
+                callerPluginId: 'happier.triage',
+                command: { kind: 'executeAction', action: { pluginId: 'happier.triage', localId: activation.action.id }, input: { query: 'normalizer', limit: 8 } },
+                scopedLaunchFacts: CLIENT_ACTION_HOST_ORIGIN,
+                scopeIsCurrent: accountLifetime.isCurrent,
+                accountLifetime,
+                execute: transport,
+            });
+            expect(warm).toEqual(outcome);
+            expect(mountedRead).not.toHaveBeenCalled();
+            expect(transport).toHaveBeenCalledTimes(readsAfterColdSearch);
+        } finally {
+            mountedLease?.release();
+            accountLifetime.retire();
+            await activation.composition.unload();
+        }
+    });
+
+    it('rejects a new navigation from a suspended client handler after its invocation is cancelled', async () => {
+        let enter!: () => void;
+        let resume!: () => void;
+        let finish!: () => void;
+        const entered = new Promise<void>((resolve) => { enter = resolve; });
+        const resumed = new Promise<void>((resolve) => { resume = resolve; });
+        const finished = new Promise<void>((resolve) => { finish = resolve; });
+        const navigation = vi.fn(async () => ({ ok: true as const }));
+        const abort = new AbortController();
+        let navigationError: unknown;
+        const activation = createClientActionActivation({
+            handler: async (_input, context) => {
+                enter();
+                await resumed;
+                try {
+                    await context.ui.openSurface('detail', null);
+                } catch (error) {
+                    navigationError = error;
+                } finally {
+                    finish();
+                }
+                return null;
+            },
+        });
+        await activation.composition.unload();
+        try {
+            await activation.composition.reconcile([activation.activation]);
+            const invocation = dispatchPluginSurfaceAction({
+                callerPluginId: CALLER_PLUGIN_ID,
+                action: activation.action.id,
+                input: null,
+                resolveContributedAction: resolveExactClientAction(activation.action),
+                clientAction: { projectionGeneration: CLIENT_ACTION_GENERATION, openSurface: navigation },
+                signal: abort.signal,
+                isCurrent: () => true,
+            });
+            await entered;
+            abort.abort();
+            resume();
+            await finished;
+            expect(await invocation).toMatchObject({ ok: false, reason: 'plugin_ui_action_outcome_unknown' });
+            expect(navigation).not.toHaveBeenCalled();
+            expect(navigationError).toMatchObject({ code: 'plugin_action_aborted' });
+        } finally {
+            resume();
+            await activation.composition.unload();
+        }
+    });
+
+    it('gives a client Action the shared scope and host-stamps nested daemon Action provenance', async () => {
+        const accountLifetime = clientAccountLifetime();
+        let nestedRequest: Parameters<PluginSurfaceContributedActionTransport> | undefined;
+        const contributed = vi.fn<PluginSurfaceContributedActionTransport>(async (...request) => {
+            nestedRequest = request;
+            return {
+                supported: true as const,
+                result: { ok: true as const, result: { rows: ['shared'] } },
+            };
+        });
+        let nestedError: unknown;
+        const handler: PluginClientActionHandler = async (_input, context) => {
+            expect(context.ephemeralSharedScope).not.toBeNull();
+            try {
+                return await context.ui.executeAction('list', { limit: 1 });
+            } catch (error) {
+                nestedError = error;
+                throw error;
+            }
+        };
+        const activation = createClientActionActivation({ handler, accountLifetime });
+        await activation.composition.unload();
+        try {
+            await activation.composition.reconcile([activation.activation]);
+            const resolveContributedAction = (identity: PluginContributionIdentityV1) => (
+                identity.localId === activation.action.id
+                    ? activation.action
+                    : resolveDaemonTargetAction(identity)
+            );
+            const outcome = await dispatchPluginSurfaceAction({
+                callerPluginId: CALLER_PLUGIN_ID,
+                action: activation.action.id,
+                input: null,
+                resolveContributedAction,
+                contributedAction: {
+                    ...mountedActionBinding({ machineId: CLIENT_ACTION_ORIGIN.materializationRef.machineId }),
+                    execute: contributed,
+                },
+                clientAction: {
+                    projectionGeneration: CLIENT_ACTION_GENERATION,
+                },
+            });
+            expect(nestedError).toBeUndefined();
+            expect(outcome).toEqual({ ok: true, result: { rows: ['shared'] } });
+            expect(contributed).toHaveBeenCalledTimes(1);
+            const [machineId, options] = nestedRequest!;
+            const { serverId: _serverId, timeoutMs: _timeoutMs, signal: _signal, ...wireOptions } = options;
+            expect(DaemonPluginStructuredMessageActionExecuteRequestSchema.parse({
+                machineId,
+                ...wireOptions,
+            }).invocation).toEqual({
+                kind: 'clientPluginAction',
+                clientActionBinding: {
+                    contributionLocalId: 'refresh-index',
+                    materializationRef: CLIENT_ACTION_ORIGIN.materializationRef,
+                },
+            });
+        } finally {
+            await activation.composition.unload();
+        }
+    });
+
+    it('does not give an outer plugin shared scope to a nested cross-plugin client Action', async () => {
+        const accountLifetime = clientAccountLifetime();
+        const targetPluginId = 'happier.cross-plugin-target';
+        const targetScope = getPluginUiEphemeralSharedScope({
+            accountLifetime,
+            pluginId: targetPluginId,
+            immutableGenerationId: `generation-${targetPluginId}`,
+            executionOrigin: clientActionExecutionOrigin(targetPluginId),
+            isCurrent: () => true,
+        });
+        const mountedLease = targetScope!.acquire('shared-window', () => ({ value: 'target-mounted-window', dispose() {} }))!;
+        const targetHandler = vi.fn<PluginClientActionHandler>(async (_input, context) => {
+            const lease = context.ephemeralSharedScope?.acquire('shared-window', () => ({ value: 'wrong-cold-window', dispose() {} }));
+            try { return { value: lease?.value ?? null }; } finally { lease?.release(); }
+        });
+        const target = createClientActionActivation({
+            pluginId: targetPluginId,
+            localId: 'target-action',
+            handler: targetHandler,
+            accountLifetime,
+        });
+        const caller = createClientActionActivation({
+            accountLifetime,
+            handler: async (_input, context) => context.ui.executeAction({
+                pluginId: targetPluginId,
+                localId: target.action.id,
+            }, null),
+        });
+        await caller.composition.unload();
+        try {
+            await caller.composition.reconcile([caller.activation, target.activation]);
+            const actions = [caller.action, target.action];
+            const outcome = await dispatchPluginSurfaceAction({
+                callerPluginId: CALLER_PLUGIN_ID,
+                action: caller.action.id,
+                input: null,
+                resolveContributedAction: (identity) => actions.find((candidate) => (
+                    candidate.pluginId === identity.pluginId && candidate.id === identity.localId
+                )) ?? null,
+                clientAction: {
+                    projectionGeneration: CLIENT_ACTION_GENERATION,
+                },
+            });
+            expect(outcome).toEqual({
+                ok: true,
+                result: { value: 'target-mounted-window' },
+            });
+            expect(targetHandler).toHaveBeenCalledTimes(1);
+        } finally {
+            mountedLease.release();
+            await caller.composition.unload();
+        }
+    });
+
+    it('retires client invocation scope with its Account and refuses stale nested work', async () => {
+        const accountLifetime = clientAccountLifetime();
+        let retainedContext: Parameters<PluginClientActionHandler>[1] | undefined;
+        const dispose = vi.fn();
+        const activation = createClientActionActivation({
+            accountLifetime,
+            handler: async (_input, context) => {
+                retainedContext = context;
+                const lease = context.ephemeralSharedScope?.acquire('account-window', () => ({ value: 'account-a', dispose }));
+                return { value: lease?.value ?? null };
+            },
+        });
+        await activation.composition.unload();
+        try {
+            await activation.composition.reconcile([activation.activation]);
+            expect(await dispatchPluginSurfaceAction({
+                action: { pluginId: CALLER_PLUGIN_ID, localId: activation.action.id },
+                resolveContributedAction: resolveExactClientAction(activation.action),
+                clientAction: { projectionGeneration: CLIENT_ACTION_GENERATION },
+            })).toEqual({ ok: true, result: { value: 'account-a' } });
+            accountLifetime.retire();
+            expect(dispose).toHaveBeenCalledOnce();
+            expect(retainedContext!.ephemeralSharedScope!.acquire('account-window', () => ({ value: 'invalid', dispose }))).toBeNull();
+            await expect(retainedContext!.ui.executeAction('list', null)).rejects.toMatchObject({ code: 'plugin_action_generation_retired' });
+        } finally {
+            accountLifetime.retire();
             await activation.composition.unload();
         }
     });
@@ -1851,10 +2289,8 @@ describe('mounted executeAction handler', () => {
  */
 const COMPOSED_HOST_ORIGIN = 'https://host.happier.test';
 const COMPOSED_IDENTITY = {
-    pluginId: CALLER_PLUGIN_ID,
-    pluginVersion: '1.4.2',
-    viewId: 'inspector-app',
-    generation: '9',
+    instanceId: 'inspector-instance-9',
+    mountNonce: 'composed-bridge-nonce',
 } as const;
 const COMPOSED_BRIDGE_NONCE = 'composed-bridge-nonce';
 const COMPOSED_SURFACE = surfaceContext();
@@ -1948,9 +2384,7 @@ const COMPOSED_CANONICAL_SURFACE: PluginUiJsonValueV1 = {
 
 function composedRealmHref(): string {
     const url = new URL('https://preview.happier.test/plugin-surface');
-    url.searchParams.set('happierPluginId', COMPOSED_IDENTITY.pluginId);
-    url.searchParams.set('happierContributionId', COMPOSED_SURFACE.contributionId);
-    url.searchParams.set('happierSurfaceId', COMPOSED_SURFACE.surfaceId);
+    url.searchParams.set('happierInstanceId', COMPOSED_IDENTITY.instanceId);
     url.searchParams.set('happierBridgeNonce', COMPOSED_BRIDGE_NONCE);
     url.searchParams.set('happierHostOrigin', COMPOSED_HOST_ORIGIN);
     return url.toString();
@@ -2059,7 +2493,7 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
         bridge = createPluginHostedWebHostApiBridgeHandler({
             surface: COMPOSED_SURFACE,
             requestIdPrefix: 'composed',
-            bridgeNonce: COMPOSED_BRIDGE_NONCE,
+            identity: COMPOSED_IDENTITY,
             handleRequest: async (request, options) => {
                 if (request.method === 'executeAction' && request.payload !== undefined) {
                     emittedExecuteActionPayloads.push(request.payload);

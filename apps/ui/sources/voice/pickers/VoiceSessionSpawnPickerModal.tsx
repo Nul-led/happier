@@ -240,7 +240,7 @@ export function VoiceSessionSpawnPickerModal(props: Props) {
               machinePlatform={machineMetadataPlatformToTarget(selectedMachine?.metadata?.platform)}
               onCommit={setSelectedPath}
               onChangeDraftPath={setSelectedPath}
-              onRequestClose={() => {}}
+              onRequestClose={() => setStep('machine')}
               isFavorite={(path) => favoriteDirectoryKeys.has(
                 resolveDirectoryFavoriteComparisonKey(path, selectedMachineHomeDir),
               )}

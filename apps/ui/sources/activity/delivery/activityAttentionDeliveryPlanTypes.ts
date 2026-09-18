@@ -1,11 +1,11 @@
-import type { AttentionDeliveryDecision } from '@happier-dev/protocol';
+import type {
+    AttentionDeliveryDecision,
+    AttentionDeliveryEventId,
+} from '@happier-dev/protocol';
 
 import type { ActivitySurfaceSelectionSpec } from '../selection/activitySurfaceSelectionTypes';
 
-export type ActivityAttentionDeliveryEventKind =
-    | 'ready'
-    | 'permission_request'
-    | 'user_action_request';
+export type ActivityAttentionDeliveryEventKind = AttentionDeliveryEventId;
 
 export type ActivityAttentionDeliveryChannel =
     | 'expo_push'

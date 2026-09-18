@@ -4,6 +4,11 @@ import { useVisibleSessionListSummaryState } from './useVisibleSessionListSummar
 import { useVisibleSessionListViewState, type VisibleSessionListViewState } from './useVisibleSessionListViewState';
 import type { SessionListStorageFilter } from '@/sync/domains/session/sessionStorageKind';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import type { VisibleSessionListSourceStateOptions } from './useVisibleSessionListSourceState';
+import {
+    resolveSessionListQueryPresentation,
+    type SessionListQueryPresentation,
+} from '@/sync/domains/session/listing/sessionListIndexPresentation';
 
 export type VisibleSessionListPaneState = Readonly<{
     summary: Readonly<{
@@ -13,8 +18,11 @@ export type VisibleSessionListPaneState = Readonly<{
     visibleSessionListIndex: ReadonlyArray<SessionListIndexItem> | null;
     hasHiddenInactiveSessions: boolean;
     folderFocus: VisibleSessionListViewState['folderFocus'];
+    folderFeatureEnabledServerIds: VisibleSessionListViewState['folderFeatureEnabledServerIds'];
     showLoading: boolean;
     showEmptyState: boolean;
+    query?: VisibleSessionListViewState['query'];
+    queryPresentation?: SessionListQueryPresentation;
 }>;
 
 export type VisibleSessionListPaneStateOptions = Readonly<{
@@ -22,6 +30,9 @@ export type VisibleSessionListPaneStateOptions = Readonly<{
     retainedPathname?: string | null;
     retainedVisibleSessionListIndex?: ReadonlyArray<SessionListIndexItem> | null;
     sessionListSurfaceDataActive?: boolean;
+    queryHomes?: VisibleSessionListSourceStateOptions['queryHomes'];
+    emptyQuerySelectionComplete?: boolean;
+    corpusStorage?: 'active' | 'archived';
 }>;
 
 function countVisibleSessions(index: ReadonlyArray<SessionListIndexItem> | null): number {
@@ -39,24 +50,50 @@ export function useVisibleSessionListPaneState(
     storageFilter: SessionListStorageFilter = 'all',
     options: VisibleSessionListPaneStateOptions = {},
 ): VisibleSessionListPaneState {
-    const { summary } = useVisibleSessionListSummaryState(storageFilter);
-    const { visibleSessionListIndex, hasHiddenInactiveSessions, folderFocus } = useVisibleSessionListViewState(storageFilter, {
+    const { summary: ordinarySummary } = useVisibleSessionListSummaryState(storageFilter);
+    const { visibleSessionListIndex, hasHiddenInactiveSessions, folderFocus, folderFeatureEnabledServerIds, query } = useVisibleSessionListViewState(storageFilter, {
         pathname: options.pathname,
         retainedPathname: options.retainedPathname,
         retainedVisibleSessionListIndex: options.retainedVisibleSessionListIndex,
         sessionListSurfaceDataActive: options.sessionListSurfaceDataActive,
+        queryHomes: options.queryHomes,
+        emptyQuerySelectionComplete: options.emptyQuerySelectionComplete,
+        corpusStorage: options.corpusStorage,
     });
     const visibleSessionCount = React.useMemo(
         () => countVisibleSessions(visibleSessionListIndex),
         [visibleSessionListIndex],
     );
+    const queryPresentation = React.useMemo(() => query?.active === true
+        ? resolveSessionListQueryPresentation({
+            selectedServerIds: (options.queryHomes ?? []).map((home) => home.serverId),
+            statesByServerId: query.statesByServerId,
+            coverageComplete: query.coverageComplete,
+            retainedRowCount: visibleSessionCount,
+        })
+        : undefined, [options.queryHomes, query, visibleSessionCount]);
+    const summary = React.useMemo(() => queryPresentation
+        ? {
+            sessionsReady: queryPresentation.kind !== 'initial_loading',
+            sessionCount: visibleSessionCount,
+        }
+        : ordinarySummary, [ordinarySummary, queryPresentation, visibleSessionCount]);
+    const queryActive = queryPresentation !== undefined;
 
     return React.useMemo(() => ({
         summary,
         visibleSessionListIndex,
         hasHiddenInactiveSessions,
         folderFocus,
-        showLoading: !summary.sessionsReady,
-        showEmptyState: summary.sessionsReady && visibleSessionCount === 0,
-    }), [folderFocus, hasHiddenInactiveSessions, summary, visibleSessionCount, visibleSessionListIndex]);
+        folderFeatureEnabledServerIds,
+        // Query loading stays inside the mounted canonical list so search focus,
+        // filters, and virtualizer identity survive query changes.
+        showLoading: !queryActive && !summary.sessionsReady,
+        // A query zero belongs to the canonical list surface so its filter
+        // control, completeness/error treatment and recovery actions remain
+        // available. Onboarding is only an ordinary-library empty state.
+        showEmptyState: !queryActive && summary.sessionsReady && visibleSessionCount === 0,
+        query,
+        queryPresentation,
+    }), [folderFeatureEnabledServerIds, folderFocus, hasHiddenInactiveSessions, query, queryActive, queryPresentation, summary, visibleSessionCount, visibleSessionListIndex]);
 }

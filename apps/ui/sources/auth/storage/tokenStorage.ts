@@ -1,7 +1,10 @@
 import { Platform } from 'react-native';
+import type { AccountContinuationIntent } from '@happier-dev/cli-common/accountService';
 import {
     AccountEncryptionMigrateRequestBindingDigestV1Schema,
+    TeamInvitationPostAuthContinuationV1Schema,
 } from '@happier-dev/protocol';
+import type { TeamInvitationPostAuthContinuationV1 } from '@happier-dev/protocol';
 import { readStorageScopeFromEnv, scopedStorageId } from '@/utils/system/storageScope';
 import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
 import {
@@ -11,6 +14,8 @@ import {
     listServerProfiles,
 } from '@/sync/domains/server/serverProfiles';
 import { normalizeAccountDirectoryEndpoint } from '@/sync/domains/accountDirectory/accountDirectoryEndpoint';
+import { retireIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
+import { withHomeMutationAuthority, type HomeMutationAuthority } from '@/sync/domains/server/homeMutationLock';
 import { digest } from '@/platform/digest';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import {
@@ -46,6 +51,8 @@ export const PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY =
     'pending_account_directory_auth';
 export const ACCOUNT_ENCRYPTION_FIRST_KEY_PENDING_TTL_MS =
     10 * 60 * 1000;
+const ACCOUNT_DIRECTORY_STORAGE_MUTATION_LOCK_PREFIX =
+    'happier:account-directory-storage-mutation';
 
 function textToUtf8Bytes(value: string): Uint8Array {
     return new TextEncoder().encode(value);
@@ -103,6 +110,55 @@ export type AccountDirectoryCredentialTarget = Readonly<{
     /** Account Service/server identity returned by the OAuth audience. */
     serverIdentityId: string;
 }>;
+
+export type AccountDirectoryOAuthReturnCustody = Readonly<{
+    endpoint: string;
+    serverIdentityId: string;
+    canonicalServerUrl: string;
+    entryIntent: AccountContinuationIntent;
+    returnTo: string;
+    accountEntryReturnTo?: string;
+    /** Non-secret binding to the exact restricted credential committed for this return. */
+    credentialTokenDigest: string;
+    keyAuthSecret?: Uint8Array;
+    authenticatedHome?: Readonly<{ homeServerIdentityId: string; credentials: AuthCredentials }>;
+    homeAuthenticationFailure?: Readonly<{ homeServerIdentityId: string; code: 'restore_required' }>;
+}>;
+
+export type AccountHomeAuthenticationContinuation = Readonly<Pick<AccountDirectoryOAuthReturnCustody,
+    'endpoint' | 'serverIdentityId' | 'canonicalServerUrl' | 'entryIntent' | 'returnTo' | 'accountEntryReturnTo'
+    | 'credentialTokenDigest'
+> & { homeServerIdentityId: string }>;
+
+export function parseAccountHomeAuthenticationContinuation(value: unknown): AccountHomeAuthenticationContinuation | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const row = value as Record<string, unknown>;
+    if (Object.keys(row).some((key) => !['endpoint', 'serverIdentityId', 'canonicalServerUrl', 'entryIntent', 'returnTo', 'accountEntryReturnTo', 'homeServerIdentityId', 'credentialTokenDigest'].includes(key))) return null;
+    const endpoint = typeof row.endpoint === 'string' ? normalizeAccountDirectoryEndpoint(row.endpoint) : null;
+    const canonicalServerUrl = typeof row.canonicalServerUrl === 'string' ? normalizeAccountDirectoryEndpoint(row.canonicalServerUrl) : null;
+    const entryIntent = parseAccountContinuationIntent(row.entryIntent);
+    const returnTo = normalizeInternalReturnPath(row.returnTo);
+    const accountEntryReturnTo = normalizeInternalReturnPath(row.accountEntryReturnTo);
+    if (!endpoint || !canonicalServerUrl || !entryIntent || !returnTo
+        || !isNonEmptyString(row.serverIdentityId) || !isNonEmptyString(row.homeServerIdentityId)
+        || !isAccountDirectoryCredentialTokenDigest(row.credentialTokenDigest)
+        || (row.accountEntryReturnTo !== undefined && !accountEntryReturnTo)) return null;
+    const homeServerIdentityId = row.homeServerIdentityId.trim();
+    const intentTarget = entryIntent.kind === 'enter'
+        ? entryIntent.target.kind === 'explicit' ? entryIntent.target.homeServerIdentityId : null
+        : entryIntent.kind === 'refresh' ? null : entryIntent.homeServerIdentityId;
+    if (intentTarget && intentTarget !== homeServerIdentityId) return null;
+    return { endpoint, canonicalServerUrl, entryIntent, returnTo, serverIdentityId: row.serverIdentityId.trim(), homeServerIdentityId,
+        credentialTokenDigest: row.credentialTokenDigest,
+        ...(accountEntryReturnTo ? { accountEntryReturnTo } : {}) };
+}
+
+let accountDirectoryOAuthReturnCustody: AccountDirectoryOAuthReturnCustody | null = null;
+
+function clearAccountDirectoryOAuthReturnCustody(): void {
+    accountDirectoryOAuthReturnCustody?.keyAuthSecret?.fill(0);
+    accountDirectoryOAuthReturnCustody = null;
+}
 
 export type AccountDirectoryStorageReadResult<T> =
     | Readonly<{ kind: 'absent' }>
@@ -187,7 +243,11 @@ async function getServerHashScopeForNormalizedUrl(normalizedUrl: string): Promis
     return encodeBase64(hash, 'base64url');
 }
 
-async function digestCredentialToken(
+function isAccountDirectoryCredentialTokenDigest(value: unknown): value is string {
+    return typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value);
+}
+
+export async function digestAccountDirectoryCredentialToken(
     token: string,
 ): Promise<string> {
     const hash =
@@ -563,8 +623,22 @@ function getAuthAutoRedirectSuppressedUntilGlobalKey(): string {
     return scopedStorageId(AUTH_AUTO_REDIRECT_SUPPRESSED_UNTIL_GLOBAL_KEY, scope);
 }
 
-async function getRecoveryKeyReminderDismissedKey(): Promise<string> {
-    return (await getActiveServerScopedKeys(RECOVERY_KEY_REMINDER_DISMISSED_KEY)).primary;
+type RecoveryKeyReminderTarget = Readonly<{
+    serverUrl: string;
+    serverId?: string;
+}>;
+
+async function getRecoveryKeyReminderDismissedKey(
+    target?: RecoveryKeyReminderTarget,
+): Promise<string | null> {
+    const keys = target
+        ? await getServerScopedKeys(
+            RECOVERY_KEY_REMINDER_DISMISSED_KEY,
+            target.serverUrl,
+            target.serverId ? { serverId: target.serverId } : {},
+        )
+        : await getActiveServerScopedKeys(RECOVERY_KEY_REMINDER_DISMISSED_KEY);
+    return keys?.primary ?? null;
 }
 
 function getRecoveryKeyReminderDismissedKeySync(): string | null {
@@ -671,7 +745,7 @@ export type PendingAccountDirectoryAuth = Readonly<{
     serverIdentityId: string;
     /** Canonical callback spelling retained for the plan/API boundary. */
     credentialTarget: 'account_directory';
-    entryIntent: AccountServiceEntryIntent;
+    entryIntent: AccountContinuationIntent;
     canonicalServerUrl: string;
     provider: string;
     purpose: 'account_directory';
@@ -683,12 +757,14 @@ export type PendingAccountDirectoryAuth = Readonly<{
     proof?: string;
     secret?: string;
     returnTo?: string;
+    accountEntryReturnTo?: string;
     /**
      * Optional stable identity of the Home that was authenticated when this login started.
      * Identity intent only — never Home credentials or a descriptor. Records without it are
      * accepted and behave like fresh-device discovery.
      */
-    homeServerIdentityId?: string;
+    linkHomeServerIdentityId?: string;
+    explicitHomeServerIdentityId?: string;
     /** Provider/state metadata is opaque to storage but retained for callback dispatch. */
     state?: string;
     nonce?: string;
@@ -698,7 +774,7 @@ export type PendingAccountDirectoryAuthInput = Readonly<{
     endpoint: string;
     serverIdentityId: string;
     credentialTarget: 'account_directory';
-    entryIntent: AccountServiceEntryIntent;
+    entryIntent: AccountContinuationIntent;
     canonicalServerUrl: string;
     provider: string;
     purpose: 'account_directory';
@@ -709,7 +785,9 @@ export type PendingAccountDirectoryAuthInput = Readonly<{
     proof?: string;
     secret?: string;
     returnTo?: string;
-    homeServerIdentityId?: string;
+    accountEntryReturnTo?: string;
+    linkHomeServerIdentityId?: string;
+    explicitHomeServerIdentityId?: string;
     state?: string;
     nonce?: string;
 }>;
@@ -718,7 +796,7 @@ type NormalizedPendingAccountDirectoryAuth = Readonly<{
     endpoint: string;
     serverIdentityId: string;
     credentialTarget: 'account_directory';
-    entryIntent: AccountServiceEntryIntent;
+    entryIntent: AccountContinuationIntent;
     canonicalServerUrl: string;
     provider: string;
     purpose: 'account_directory';
@@ -729,7 +807,9 @@ type NormalizedPendingAccountDirectoryAuth = Readonly<{
     proof?: string;
     secret?: string;
     returnTo?: string;
-    homeServerIdentityId?: string;
+    accountEntryReturnTo?: string;
+    linkHomeServerIdentityId?: string;
+    explicitHomeServerIdentityId?: string;
     state?: string;
     nonce?: string;
 }>;
@@ -746,7 +826,36 @@ export type PendingAccountDirectoryAuthCustodyResolution =
     | Readonly<{ kind: 'corrupt' }>
     | Readonly<{ kind: 'unavailable' }>;
 
-export type AccountServiceEntryIntent = 'enter_preferred_home' | 'connect_service';
+export type AccountDirectoryOAuthCredentialCommitResult =
+    | Readonly<{ kind: 'committed' }>
+    | Readonly<{ kind: 'custody_lost' }>
+    | Readonly<{
+        kind: 'storage_failed';
+        /** True only when replacement succeeded and restoration of the prior credential failed. */
+        accountCredentialCommitted: boolean;
+    }>;
+
+export function parseAccountContinuationIntent(value: unknown): AccountContinuationIntent | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const row = value as Record<string, unknown>;
+    if (row.kind === 'refresh') {
+        return Object.keys(row).length === 1 ? { kind: 'refresh' } : null;
+    }
+    if (row.kind === 'link' || row.kind === 'enroll') {
+        if (Object.keys(row).some((key) => key !== 'kind' && key !== 'homeServerIdentityId')
+            || !isNonEmptyString(row.homeServerIdentityId)) return null;
+        return { kind: row.kind, homeServerIdentityId: row.homeServerIdentityId.trim() };
+    }
+    if (row.kind !== 'enter' || Object.keys(row).some((key) => key !== 'kind' && key !== 'target')) return null;
+    if (!row.target || typeof row.target !== 'object' || Array.isArray(row.target)) return null;
+    const target = row.target as Record<string, unknown>;
+    if (target.kind === 'automatic' && Object.keys(target).length === 1) return { kind: 'enter', target: { kind: 'automatic' } };
+    if (target.kind === 'explicit' && isNonEmptyString(target.homeServerIdentityId)
+        && Object.keys(target).every((key) => key === 'kind' || key === 'homeServerIdentityId')) {
+        return { kind: 'enter', target: { kind: 'explicit', homeServerIdentityId: target.homeServerIdentityId.trim() } };
+    }
+    return null;
+}
 
 export function isLegacyAuthCredentials(credentials: AuthCredentials): credentials is LegacyAuthCredentials {
     return 'secret' in credentials
@@ -777,6 +886,17 @@ export interface PendingExternalAuth {
     serverId?: string;
     serverUrl?: string;
     returnTo?: string;
+    accountContinuation?: AccountHomeAuthenticationContinuation;
+    teamContinuation?: Readonly<{
+        v: 1;
+        purpose: 'team_admission';
+        admissionReference: string;
+        teamId: string;
+        homeServerIdentityId: string;
+        destination: Readonly<{ kind: 'team_sign_in'; teamId: string }>;
+    }>;
+    /** Server-held invitation authority returned after authentication; never a raw bearer copy. */
+    postAuthInvitation?: TeamInvitationPostAuthContinuationV1;
     accountEncryptionFirstKey?: Readonly<{
         accountId: string;
         requestDigest: string;
@@ -806,9 +926,21 @@ export type PendingExternalAuthFirstKeyRejectedCredentialClassification =
 
 export type PendingExternalAuthClearOptions = Readonly<{
     removeFirstKeyMigrationAttempted?: PendingExternalAuth;
+    /** Remove only this exact pending ceremony; a newer flow must survive stale callbacks. */
+    removeExact?: PendingExternalAuth;
     serverUrl?: string;
     serverId?: string;
 }>;
+
+function matchesPendingExternalAuthExact(current: PendingExternalAuth, expected: PendingExternalAuth): boolean {
+    return current.provider === expected.provider && current.proof === expected.proof
+        && current.secret === expected.secret && current.intent === expected.intent
+        && current.serverId === expected.serverId && current.serverUrl === expected.serverUrl
+        && current.returnTo === expected.returnTo
+        && JSON.stringify(current.teamContinuation) === JSON.stringify(expected.teamContinuation)
+        && JSON.stringify(current.postAuthInvitation) === JSON.stringify(expected.postAuthInvitation)
+        && JSON.stringify(current.accountContinuation) === JSON.stringify(expected.accountContinuation);
+}
 
 export interface PendingExternalConnect {
     provider: string;
@@ -924,13 +1056,14 @@ function isPendingAccountDirectoryAuthRecord(
         ? normalizeAccountDirectoryEndpoint(endpointRaw)
         : null;
     const identity = row.serverIdentityId;
+    const intent = parseAccountContinuationIntent(row.entryIntent);
     if (
         !endpoint
         || !isNonEmptyString(row.provider)
         || !normalizeAccountDirectoryEndpoint(typeof row.canonicalServerUrl === 'string' ? row.canonicalServerUrl : '')
         || row.purpose !== 'account_directory'
         || row.credentialTarget !== 'account_directory'
-        || (row.entryIntent !== 'enter_preferred_home' && row.entryIntent !== 'connect_service')
+        || !intent
         || (row.pending !== undefined && !isNonEmptyString(row.pending))
         || !Number.isSafeInteger(row.createdAt)
         || !Number.isSafeInteger(row.expiresAt)
@@ -942,7 +1075,10 @@ function isPendingAccountDirectoryAuthRecord(
         || (row.secret !== undefined && !isNonEmptyString(row.secret))
         || (row.mode === 'keyless' && row.secret !== undefined)
         || (row.returnTo !== undefined && !isInternalReturnTo(row.returnTo))
-        || (row.homeServerIdentityId !== undefined && !isNonEmptyString(row.homeServerIdentityId))
+        || (row.accountEntryReturnTo !== undefined && !isInternalReturnTo(row.accountEntryReturnTo))
+        || (row.linkHomeServerIdentityId !== undefined && (intent?.kind !== 'link' || row.linkHomeServerIdentityId !== intent.homeServerIdentityId))
+        || (row.explicitHomeServerIdentityId !== undefined && (intent?.kind !== 'enter' || intent.target.kind !== 'explicit'
+            || row.explicitHomeServerIdentityId !== intent.target.homeServerIdentityId))
         || (row.state !== undefined && !isNonEmptyString(row.state))
         || (row.nonce !== undefined && !isNonEmptyString(row.nonce))
     ) {
@@ -984,7 +1120,9 @@ function isPendingAccountDirectoryAuthRecord(
         'proof',
         'secret',
         'returnTo',
-        'homeServerIdentityId',
+        'accountEntryReturnTo',
+        'linkHomeServerIdentityId',
+        'explicitHomeServerIdentityId',
         'state',
         'nonce',
     ]);
@@ -1012,7 +1150,7 @@ function normalizePendingAccountDirectoryAuth(
         endpoint,
         serverIdentityId: identity,
         credentialTarget: 'account_directory',
-        entryIntent: value.entryIntent,
+        entryIntent: parseAccountContinuationIntent(value.entryIntent)!,
         canonicalServerUrl,
         provider: value.provider.trim(),
         purpose: 'account_directory',
@@ -1023,7 +1161,9 @@ function normalizePendingAccountDirectoryAuth(
         ...(value.proof ? { proof: value.proof.trim() } : {}),
         ...(value.secret ? { secret: value.secret.trim() } : {}),
         ...(value.returnTo ? { returnTo: normalizeInternalReturnPath(value.returnTo)! } : {}),
-        ...(value.homeServerIdentityId ? { homeServerIdentityId: value.homeServerIdentityId.trim() } : {}),
+        ...(value.accountEntryReturnTo ? { accountEntryReturnTo: normalizeInternalReturnPath(value.accountEntryReturnTo)! } : {}),
+        ...(value.linkHomeServerIdentityId ? { linkHomeServerIdentityId: value.linkHomeServerIdentityId.trim() } : {}),
+        ...(value.explicitHomeServerIdentityId ? { explicitHomeServerIdentityId: value.explicitHomeServerIdentityId.trim() } : {}),
         ...(value.state ? { state: value.state.trim() } : {}),
         ...(value.nonce ? { nonce: value.nonce.trim() } : {}),
     };
@@ -1038,9 +1178,35 @@ function pendingAccountDirectoryAuthMatchesTarget(
             === target.serverIdentityId;
 }
 
+function pendingAccountDirectoryAuthMatchesExact(
+    current: NormalizedPendingAccountDirectoryAuth,
+    expected: NormalizedPendingAccountDirectoryAuth,
+): boolean {
+    return current.endpoint === expected.endpoint
+        && current.serverIdentityId === expected.serverIdentityId
+        && current.credentialTarget === expected.credentialTarget
+        && JSON.stringify(current.entryIntent) === JSON.stringify(expected.entryIntent)
+        && current.canonicalServerUrl === expected.canonicalServerUrl
+        && current.provider === expected.provider
+        && current.purpose === expected.purpose
+        && current.pending === expected.pending
+        && current.createdAt === expected.createdAt
+        && current.expiresAt === expected.expiresAt
+        && current.mode === expected.mode
+        && current.proof === expected.proof
+        && current.secret === expected.secret
+        && current.returnTo === expected.returnTo
+        && current.accountEntryReturnTo === expected.accountEntryReturnTo
+        && current.linkHomeServerIdentityId === expected.linkHomeServerIdentityId
+        && current.explicitHomeServerIdentityId === expected.explicitHomeServerIdentityId
+        && current.state === expected.state
+        && current.nonce === expected.nonce;
+}
+
 function isPendingExternalAuthRecord(value: unknown): value is PendingExternalAuth {
     if (!value || typeof value !== 'object') return false;
     const maybe = value as Record<string, unknown>;
+    if (maybe.accountPasswordEnrollment !== undefined) return false;
     if (!isNonEmptyString(maybe.provider)) return false;
     const secret = maybe.secret;
     const proof = maybe.proof;
@@ -1048,11 +1214,63 @@ function isPendingExternalAuthRecord(value: unknown): value is PendingExternalAu
     const hasSecret = isNonEmptyString(secret);
     const hasProof = isNonEmptyString(proof);
     // New flow requires proof for binding. Accept legacy secret-only records for backward compatibility.
-    if (!hasProof && !hasSecret) return false;
+    const isNativeMtlsContinuation = maybe.provider === 'mtls'
+        && maybe.accountEncryptionFirstKey === undefined
+        && !hasProof
+        && !hasSecret;
+    if (!hasProof && !hasSecret && !isNativeMtlsContinuation) return false;
     if (mode !== undefined && mode !== 'keyed' && mode !== 'keyless') return false;
     if (maybe.serverId !== undefined && !isNonEmptyString(maybe.serverId)) return false;
     if (maybe.serverUrl !== undefined && !isNonEmptyString(maybe.serverUrl)) return false;
     if (maybe.returnTo !== undefined && !isInternalReturnTo(maybe.returnTo)) return false;
+    if (maybe.teamContinuation !== undefined) {
+        if (!maybe.teamContinuation || typeof maybe.teamContinuation !== 'object' || Array.isArray(maybe.teamContinuation)) return false;
+        const team = maybe.teamContinuation as Record<string, unknown>;
+        const destination = team.destination;
+        const teamKeys = Object.keys(team).sort();
+        const destinationKeys = destination && typeof destination === 'object' && !Array.isArray(destination)
+            ? Object.keys(destination).sort()
+            : [];
+        if (
+            JSON.stringify(teamKeys) !== JSON.stringify([
+                'admissionReference',
+                'destination',
+                'homeServerIdentityId',
+                'purpose',
+                'teamId',
+                'v',
+            ])
+            || team.v !== 1
+            || team.purpose !== 'team_admission'
+            || !isNonEmptyString(team.admissionReference)
+            || !isNonEmptyString(team.teamId)
+            || !isNonEmptyString(team.homeServerIdentityId)
+            || team.homeServerIdentityId !== maybe.serverId
+            || maybe.returnTo !== undefined
+            || maybe.accountContinuation !== undefined
+            || !destination
+            || typeof destination !== 'object'
+            || Array.isArray(destination)
+            || JSON.stringify(destinationKeys) !== JSON.stringify(['kind', 'teamId'])
+            || (destination as Record<string, unknown>).kind !== 'team_sign_in'
+            || (destination as Record<string, unknown>).teamId !== team.teamId
+        ) return false;
+    }
+    if (maybe.postAuthInvitation !== undefined) {
+        const parsed = TeamInvitationPostAuthContinuationV1Schema.safeParse(maybe.postAuthInvitation);
+        if (!parsed.success || maybe.teamContinuation?.teamId !== parsed.data.teamId) return false;
+    }
+    if (maybe.accountContinuation !== undefined) {
+        const continuation = parseAccountHomeAuthenticationContinuation(maybe.accountContinuation);
+        if (!continuation || maybe.serverId !== continuation.homeServerIdentityId || maybe.returnTo !== continuation.returnTo
+            || !isNonEmptyString(maybe.serverUrl) || maybe.accountEncryptionFirstKey !== undefined) return false;
+    }
+    if (isNativeMtlsContinuation) {
+        if (!isNonEmptyString(maybe.serverId) || !isNonEmptyString(maybe.serverUrl)) return false;
+        if (maybe.teamContinuation === undefined
+            && maybe.accountContinuation === undefined
+            && !isInternalReturnTo(maybe.returnTo)) return false;
+    }
     if (maybe.accountEncryptionFirstKey !== undefined) {
         if (
             !maybe.accountEncryptionFirstKey
@@ -1143,7 +1361,7 @@ function isPendingExternalAuthRecord(value: unknown): value is PendingExternalAu
     return maybe.intent === 'signup' || maybe.intent === 'reset';
 }
 
-function isPendingExternalAuthFirstKeyExpired(
+function isPendingPurposeBoundExternalAuthExpired(
     value: PendingExternalAuth,
 ): boolean {
     const continuation = value.accountEncryptionFirstKey;
@@ -1413,6 +1631,8 @@ async function writeAccountDirectoryCredentialRecords(
     records: readonly StoredAccountDirectoryCredentialRecord[],
 ): Promise<boolean> {
     try {
+        const previous = await readAccountDirectoryCredentialRecords();
+        if (previous.kind === 'corrupt' || previous.kind === 'unavailable') return false;
         if (records.length === 0) {
             await removeDeviceLocalStorageString(
                 getAccountDirectoryStorageKey(ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY),
@@ -1422,6 +1642,15 @@ async function writeAccountDirectoryCredentialRecords(
                 getAccountDirectoryStorageKey(ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY),
                 JSON.stringify(records),
             );
+        }
+        const scope = getAccountDirectoryStorageKey(ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY);
+        for (const custody of accountDirectoryCredentialCustodies.values()) {
+            if (custody.scope !== scope) continue;
+            const before = previous.kind === 'valid'
+                ? previous.value.find((record) => accountDirectoryCredentialRecordMatchesTarget(record, custody.target))?.credentials.token
+                : undefined;
+            const after = records.find((record) => accountDirectoryCredentialRecordMatchesTarget(record, custody.target))?.credentials.token;
+            if (before !== after) custody.revision += 1;
         }
         return true;
     } catch {
@@ -1545,6 +1774,25 @@ async function serializeCredentialScopeOperation<T>(primaryKey: string, run: () 
     }
 }
 
+async function serializeCredentialScopeOperations<T>(
+    keys: readonly string[],
+    run: () => Promise<T>,
+    authority?: HomeMutationAuthority,
+): Promise<T> {
+    return await withHomeMutationAuthority(authority, async () => {
+        const orderedKeys = uniqueStrings(keys).sort();
+        const acquire = async (index: number): Promise<T> => {
+            const key = orderedKeys[index];
+            if (!key) return await run();
+            return await serializeCredentialScopeOperation(
+                key,
+                async () => await acquire(index + 1),
+            );
+        };
+        return await acquire(0);
+    });
+}
+
 /**
  * Single owner for "read the credentials stored under this scope layout".
  *
@@ -1553,8 +1801,11 @@ async function serializeCredentialScopeOperation<T>(primaryKey: string, run: () 
  * path, so they are probed together instead of one round trip at a time. The declared scope order
  * still decides the winner, so precedence and the legacy -> primary migration are unchanged.
  */
-async function readCredentialsForScopedKeys(keys: ScopedStorageKeys): Promise<AuthCredentials | null> {
-    return await serializeCredentialScopeOperation(keys.primary, async () => {
+async function readCredentialsForScopedKeys(
+    keys: ScopedStorageKeys,
+    authority?: HomeMutationAuthority,
+): Promise<AuthCredentials | null> {
+    return await serializeCredentialScopeOperations([keys.primary, ...keys.legacy], async () => {
     const primaryRaw = await readCredentialRawByKey(keys.primary);
     const primaryParsed = parseCredentialsRaw(primaryRaw);
     if (primaryParsed) return primaryParsed;
@@ -1586,25 +1837,29 @@ async function readCredentialsForScopedKeys(keys: ScopedStorageKeys): Promise<Au
         return legacyParsed;
     }
         return null;
-    });
+    }, authority);
 }
 
 async function removeCredentialKeysAtomically(targetKeys: readonly string[]): Promise<boolean> {
     const keys = uniqueStrings(targetKeys);
-    const previousRawByKey = new Map<string, string>();
+    const previousRawByKey = new Map<string, string | null>();
     for (const key of keys) {
         const previousRaw = await readCredentialRawByKey(key);
-        if (previousRaw !== null) {
-            previousRawByKey.set(key, previousRaw);
-        }
+        previousRawByKey.set(key, previousRaw);
     }
 
     for (const key of keys) {
+        const previousRaw = previousRawByKey.get(key);
+        if (previousRaw === undefined) continue;
+        if (await readCredentialRawByKey(key) !== previousRaw) continue;
         const removed = await removeCredentialByKey(key);
         if (removed) continue;
 
         for (const [previousKey, previousRaw] of previousRawByKey) {
-            await writeCredentialRawByKey(previousKey, previousRaw);
+            if (previousRaw === null) continue;
+            if (await readCredentialRawByKey(previousKey) === null) {
+                await writeCredentialRawByKey(previousKey, previousRaw);
+            }
         }
         return false;
     }
@@ -1648,23 +1903,29 @@ function listKnownServerCleanupTargets(): CredentialCleanupTarget[] {
     return targets;
 }
 
-function listWebScopedCredentialKeysForCleanup(): string[] {
+type WebScopedCredentialSnapshot = Readonly<{
+    key: string;
+    raw: string;
+}>;
+
+function listWebScopedCredentialKeysForCleanup(): WebScopedCredentialSnapshot[] {
     if (Platform.OS !== 'web') return [];
     const storage = resolveWebStorageBackend();
     if (!storage) return [];
-    const keys: string[] = [];
+    const snapshots: WebScopedCredentialSnapshot[] = [];
     try {
         for (let i = 0; i < storage.length; i += 1) {
             const key = storage.key(i);
             if (!key) continue;
             if (key === AUTH_KEY || key.startsWith(`${AUTH_KEY}__srv_`)) {
-                keys.push(key);
+                const raw = storage.getItem(key);
+                if (raw !== null) snapshots.push({ key, raw });
             }
         }
     } catch {
         return [];
     }
-    return keys;
+    return snapshots;
 }
 
 let pendingExternalAuthMutationTail:
@@ -1683,6 +1944,41 @@ async function serializePendingExternalAuthMutation<T>(
             () => undefined,
             () => undefined,
         );
+    return await result;
+}
+
+let accountDirectoryStorageMutationTail: Promise<void> = Promise.resolve();
+
+function accountDirectoryStorageMutationLockName(): string {
+    return `${ACCOUNT_DIRECTORY_STORAGE_MUTATION_LOCK_PREFIX}:${getAccountDirectoryStorageKey('account-directory')}`;
+}
+
+/**
+ * Serializes the complete latest-read/mutate/write transaction for both Account
+ * Service custody arrays. Browser tabs share the Web Lock; non-web runtimes
+ * retain one process-local tail around their async store.
+ */
+async function serializeAccountDirectoryStorageMutation<T>(
+    mutation: () => Promise<T>,
+): Promise<T> {
+    if (Platform.OS === 'web') {
+        const lockManager = typeof navigator === 'undefined'
+            ? null
+            : navigator.locks ?? null;
+        if (!lockManager) {
+            throw new Error('Browser Account Service storage locking is unavailable');
+        }
+        return await lockManager.request(
+            accountDirectoryStorageMutationLockName(),
+            mutation,
+        );
+    }
+
+    const result = accountDirectoryStorageMutationTail.then(mutation, mutation);
+    accountDirectoryStorageMutationTail = result.then(
+        () => undefined,
+        () => undefined,
+    );
     return await result;
 }
 
@@ -1707,6 +2003,69 @@ async function getAccountDirectoryCredentialsForTarget(
         : { kind: 'absent' };
 }
 
+async function commitAccountDirectoryOAuthCredentialValue(input: Readonly<{
+    expectedPending: PendingAccountDirectoryAuth;
+    credentials: TokenOnlyAuthCredentials;
+}>): Promise<AccountDirectoryOAuthCredentialCommitResult> {
+    const expectedPending = normalizePendingAccountDirectoryAuth(
+        input.expectedPending,
+        { includeExpired: true },
+    );
+    const credentials = parseDirectoryTokenCredentials(input.credentials);
+    if (!expectedPending) return { kind: 'custody_lost' };
+    if (!credentials) return { kind: 'storage_failed', accountCredentialCommitted: false };
+
+    return await serializeAccountDirectoryStorageMutation(async () => {
+        const [credentialRead, pendingRead] = await Promise.all([
+            readAccountDirectoryCredentialRecords(),
+            readPendingAccountDirectoryAuthRecords(),
+        ]);
+        if (
+            credentialRead.kind === 'corrupt'
+            || credentialRead.kind === 'unavailable'
+            || pendingRead.kind === 'corrupt'
+            || pendingRead.kind === 'unavailable'
+        ) return { kind: 'storage_failed', accountCredentialCommitted: false };
+
+        const pendingRecords = pendingRead.kind === 'valid' ? pendingRead.value : [];
+        if (!pendingRecords.some((record) => pendingAccountDirectoryAuthMatchesExact(record, expectedPending))) {
+            return { kind: 'custody_lost' };
+        }
+
+        const target = {
+            endpoint: expectedPending.endpoint,
+            serverIdentityId: expectedPending.serverIdentityId,
+        };
+        const previousCredentials = credentialRead.kind === 'valid' ? credentialRead.value : [];
+        const nextCredentials = previousCredentials.filter(
+            (record) => !accountDirectoryCredentialRecordMatchesTarget(record, target),
+        );
+        nextCredentials.push({
+            ...target,
+            credentials,
+            updatedAt: Date.now(),
+        });
+        nextCredentials.sort((left, right) => right.updatedAt - left.updatedAt);
+        const nextPending = pendingRecords.filter(
+            (record) => !pendingAccountDirectoryAuthMatchesExact(record, expectedPending),
+        );
+
+        if (!await writeAccountDirectoryCredentialRecords(nextCredentials)) {
+            return { kind: 'storage_failed', accountCredentialCommitted: false };
+        }
+        if (await writePendingAccountDirectoryAuthRecords(nextPending)) {
+            if (
+                accountDirectoryOAuthReturnCustody?.endpoint === target.endpoint
+                && accountDirectoryOAuthReturnCustody.serverIdentityId === target.serverIdentityId
+            ) clearAccountDirectoryOAuthReturnCustody();
+            return { kind: 'committed' };
+        }
+
+        const restored = await writeAccountDirectoryCredentialRecords(previousCredentials);
+        return { kind: 'storage_failed', accountCredentialCommitted: !restored };
+    });
+}
+
 async function setAccountDirectoryCredentialsForTarget(
     target: AccountDirectoryCredentialTarget,
     credentials: TokenOnlyAuthCredentials,
@@ -1715,7 +2074,7 @@ async function setAccountDirectoryCredentialsForTarget(
     const parsedCredentials = parseDirectoryTokenCredentials(credentials);
     if (!normalized || !parsedCredentials) return false;
 
-    return await serializePendingExternalAuthMutation(async () => {
+    return await serializeAccountDirectoryStorageMutation(async () => {
         const read = await readAccountDirectoryCredentialRecords();
         if (read.kind === 'corrupt' || read.kind === 'unavailable') return false;
         const records = read.kind === 'valid' ? read.value : [];
@@ -1729,7 +2088,10 @@ async function setAccountDirectoryCredentialsForTarget(
             updatedAt: Date.now(),
         });
         next.sort((left, right) => right.updatedAt - left.updatedAt);
-        return await writeAccountDirectoryCredentialRecords(next);
+        const written = await writeAccountDirectoryCredentialRecords(next);
+        if (written && accountDirectoryOAuthReturnCustody?.endpoint === normalized.endpoint
+            && accountDirectoryOAuthReturnCustody.serverIdentityId === normalized.serverIdentityId) clearAccountDirectoryOAuthReturnCustody();
+        return written;
     });
 }
 
@@ -1738,18 +2100,21 @@ async function removeAccountDirectoryCredentialsForTarget(
 ): Promise<boolean> {
     const normalized = normalizeAccountDirectoryTarget(target);
     if (!normalized) return false;
-    return await serializePendingExternalAuthMutation(async () => {
+    return await serializeAccountDirectoryStorageMutation(async () => {
         const read = await readAccountDirectoryCredentialRecords();
         if (read.kind === 'corrupt' || read.kind === 'unavailable') return false;
         const records = read.kind === 'valid' ? read.value : [];
         const next = records.filter((record) => !accountDirectoryCredentialRecordMatchesTarget(record, normalized));
         if (next.length === records.length) return true;
-        return await writeAccountDirectoryCredentialRecords(next);
+        const written = await writeAccountDirectoryCredentialRecords(next);
+        if (written && accountDirectoryOAuthReturnCustody?.endpoint === normalized.endpoint
+            && accountDirectoryOAuthReturnCustody.serverIdentityId === normalized.serverIdentityId) clearAccountDirectoryOAuthReturnCustody();
+        return written;
     });
 }
 
 async function clearAccountDirectoryCredentials(): Promise<boolean> {
-    return await serializePendingExternalAuthMutation(async () => {
+    return await serializeAccountDirectoryStorageMutation(async () => {
         const [credentialRead, pendingRead] = await Promise.all([
             readAccountDirectoryCredentialRecords(),
             readPendingAccountDirectoryAuthRecords(),
@@ -1762,7 +2127,10 @@ async function clearAccountDirectoryCredentials(): Promise<boolean> {
         ) return false;
         const previousCredentials = credentialRead.kind === 'valid' ? credentialRead.value : [];
         if (!await writeAccountDirectoryCredentialRecords([])) return false;
-        if (await writePendingAccountDirectoryAuthRecords([])) return true;
+        if (await writePendingAccountDirectoryAuthRecords([])) {
+            clearAccountDirectoryOAuthReturnCustody();
+            return true;
+        }
         await writeAccountDirectoryCredentialRecords(previousCredentials);
         return false;
     });
@@ -1774,7 +2142,7 @@ async function setPendingAccountDirectoryAuthValue(
     const normalized = normalizePendingAccountDirectoryAuth(value);
     if (!normalized) return false;
 
-    return await serializePendingExternalAuthMutation(async () => {
+    return await serializeAccountDirectoryStorageMutation(async () => {
         const read = await readPendingAccountDirectoryAuthRecords();
         if (read.kind === 'corrupt' || read.kind === 'unavailable') return false;
         const records = read.kind === 'valid' ? read.value : [];
@@ -1783,7 +2151,9 @@ async function setPendingAccountDirectoryAuthValue(
             serverIdentityId: normalizeAccountDirectoryIdentity(normalized.serverIdentityId),
         }));
         next.push(normalized);
-        return await writePendingAccountDirectoryAuthRecords(next);
+        const written = await writePendingAccountDirectoryAuthRecords(next);
+        if (written) clearAccountDirectoryOAuthReturnCustody();
+        return written;
     });
 }
 
@@ -1822,21 +2192,31 @@ async function resolvePendingAccountDirectoryAuthCustodyValue(
 
 async function clearPendingAccountDirectoryAuthValue(
     target?: PendingAccountDirectoryAuthTarget,
+    options: Readonly<{ expected?: PendingAccountDirectoryAuth }> = {},
 ): Promise<boolean> {
     if (target === undefined) {
-        return await serializePendingExternalAuthMutation(async () => {
+        return await serializeAccountDirectoryStorageMutation(async () => {
             const read = await readPendingAccountDirectoryAuthRecords();
             if (read.kind === 'corrupt' || read.kind === 'unavailable') return false;
             return await writePendingAccountDirectoryAuthRecords([]);
         });
     }
     const normalized = normalizeAccountDirectoryTarget(target);
-    if (!normalized) return false;
-    return await serializePendingExternalAuthMutation(async () => {
+    const expected = options.expected
+        ? normalizePendingAccountDirectoryAuth(options.expected, { includeExpired: true })
+        : null;
+    if (
+        !normalized
+        || (options.expected !== undefined && !expected)
+        || (expected && !pendingAccountDirectoryAuthMatchesTarget(expected, normalized))
+    ) return false;
+    return await serializeAccountDirectoryStorageMutation(async () => {
         const read = await readPendingAccountDirectoryAuthRecords();
         if (read.kind === 'corrupt' || read.kind === 'unavailable') return false;
         const records = read.kind === 'valid' ? read.value : [];
-        const next = records.filter((record) => !pendingAccountDirectoryAuthMatchesTarget(record, normalized));
+        const next = records.filter((record) => expected
+            ? !pendingAccountDirectoryAuthMatchesExact(record, expected)
+            : !pendingAccountDirectoryAuthMatchesTarget(record, normalized));
         if (next.length === records.length) return true;
         return await writePendingAccountDirectoryAuthRecords(next);
     });
@@ -1844,10 +2224,13 @@ async function clearPendingAccountDirectoryAuthValue(
 
 async function logoutAccountDirectoryTarget(
     target: AccountDirectoryCredentialTarget,
+    isCurrent?: () => boolean,
+    expectedToken?: string | null,
 ): Promise<boolean> {
     const normalized = normalizeAccountDirectoryTarget(target);
     if (!normalized) return false;
-    return await serializePendingExternalAuthMutation(async () => {
+    return await serializeAccountDirectoryStorageMutation(async () => {
+        if (isCurrent && !isCurrent()) return false;
         const [credentialRead, pendingRead] = await Promise.all([
             readAccountDirectoryCredentialRecords(),
             readPendingAccountDirectoryAuthRecords(),
@@ -1859,6 +2242,12 @@ async function logoutAccountDirectoryTarget(
             || pendingRead.kind === 'unavailable'
         ) return false;
         const credentials = credentialRead.kind === 'valid' ? credentialRead.value : [];
+        if (expectedToken !== undefined) {
+            const currentToken = credentials.find(
+                (record) => accountDirectoryCredentialRecordMatchesTarget(record, normalized),
+            )?.credentials.token ?? null;
+            if (currentToken !== expectedToken) return false;
+        }
         const pending = pendingRead.kind === 'valid' ? pendingRead.value : [];
         const nextCredentials = credentials.filter(
             (record) => !accountDirectoryCredentialRecordMatchesTarget(record, normalized),
@@ -1867,9 +2256,199 @@ async function logoutAccountDirectoryTarget(
             (record) => !pendingAccountDirectoryAuthMatchesTarget(record, normalized),
         );
         if (!await writeAccountDirectoryCredentialRecords(nextCredentials)) return false;
-        if (await writePendingAccountDirectoryAuthRecords(nextPending)) return true;
+        if (await writePendingAccountDirectoryAuthRecords(nextPending)) {
+            if (accountDirectoryOAuthReturnCustody?.endpoint === normalized.endpoint
+                && accountDirectoryOAuthReturnCustody.serverIdentityId === normalized.serverIdentityId) clearAccountDirectoryOAuthReturnCustody();
+            return true;
+        }
         await writeAccountDirectoryCredentialRecords(credentials);
         return false;
+    });
+}
+
+// The local revision makes same-runtime invalidation immediate; the persisted-token
+// comparison below extends the same custody contract across browser tabs. This is not
+// an Account identity source: removing or changing the captured bearer invalidates old work.
+const accountDirectoryCredentialCustodies = new Map<string, {
+    scope: string;
+    target: AccountDirectoryCredentialTarget;
+    revision: number;
+}>();
+
+export type AccountDirectoryCredentialCustody = Readonly<{
+    isCurrent: () => boolean;
+    read: () => Promise<TokenOnlyAuthCredentials | null>;
+    issue: <T>(request: () => Promise<T>) => Promise<T>;
+    logout: () => Promise<boolean>;
+}>;
+
+function createAccountDirectoryCredentialCustody(
+    normalized: AccountDirectoryCredentialTarget,
+    credentialRead: Promise<AccountDirectoryStorageReadResult<TokenOnlyAuthCredentials>>,
+): AccountDirectoryCredentialCustody {
+    const scope = getAccountDirectoryStorageKey(ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY);
+    const key = JSON.stringify([scope, normalized.endpoint, normalized.serverIdentityId]);
+    let custody = accountDirectoryCredentialCustodies.get(key);
+    if (!custody) {
+        custody = { scope, target: normalized, revision: 0 };
+        accountDirectoryCredentialCustodies.set(key, custody);
+    }
+    const captured = custody;
+    const revision = captured.revision;
+    const isCurrent = () => captured.revision === revision
+        && scope === getAccountDirectoryStorageKey(ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY);
+    const readCapturedCredentials = async (): Promise<TokenOnlyAuthCredentials | null> => {
+        const result = await credentialRead;
+        if (result.kind === 'valid') return result.value;
+        if (result.kind === 'absent') return null;
+        throw new AccountDirectoryStorageReadError(result.kind);
+    };
+    return {
+        isCurrent,
+        async read() {
+            if (!isCurrent()) throw new Error('Account Service credential custody superseded');
+            const credentials = await readCapturedCredentials();
+            if (!isCurrent()) throw new Error('Account Service credential custody superseded');
+            return credentials;
+        },
+        async issue<T>(request: () => Promise<T>): Promise<T> {
+            const capturedCredentials = await readCapturedCredentials();
+            const admission = await serializeAccountDirectoryStorageMutation(async () => {
+                if (!isCurrent()) throw new Error('Account Service credential custody superseded');
+                const current = await getAccountDirectoryCredentialsForTarget(normalized);
+                if (current.kind === 'corrupt' || current.kind === 'unavailable') {
+                    throw new AccountDirectoryStorageReadError(current.kind);
+                }
+                const currentToken = current.kind === 'valid' ? current.value.token : null;
+                if (currentToken !== (capturedCredentials?.token ?? null)) {
+                    throw new Error('Account Service credential custody superseded');
+                }
+                // Start the transport while the storage lock is still held, but
+                // release the lock before awaiting the network response.
+                return { issued: request() };
+            });
+            return await admission.issued;
+        },
+        logout: async () => await logoutAccountDirectoryTarget(
+            normalized,
+            isCurrent,
+            (await readCapturedCredentials())?.token ?? null,
+        ),
+    };
+}
+
+export function captureAccountDirectoryCredentialCustody(
+    target: AccountDirectoryCredentialTarget,
+): AccountDirectoryCredentialCustody {
+    const normalized = normalizeAccountDirectoryTarget(target);
+    if (!normalized) throw new Error('Invalid Account Service credential target');
+    // Capture under the credential writer's ordering once. Requests never reread
+    // ambient credentials and therefore cannot borrow a replacement Account bearer.
+    return createAccountDirectoryCredentialCustody(
+        normalized,
+        serializeAccountDirectoryStorageMutation(
+            async () => await getAccountDirectoryCredentialsForTarget(normalized),
+        ),
+    );
+}
+
+export type AccountDirectoryOAuthReturnInput = Omit<
+    AccountDirectoryOAuthReturnCustody,
+    'credentialTokenDigest'
+>;
+
+export type AccountDirectoryOAuthReturnExpected = Readonly<{
+    endpoint: string;
+    serverIdentityId: string;
+    intent: AccountContinuationIntent;
+    invokingSurface: string;
+    accountEntryReturnTo?: string;
+}>;
+
+export type AccountDirectoryOAuthReturnClaim = Readonly<{
+    returnCustody: AccountDirectoryOAuthReturnCustody;
+    credentialCustody: AccountDirectoryCredentialCustody;
+}>;
+
+export type AccountDirectoryOAuthReturnCredentialExpectation =
+    | Readonly<{ expectedCredentialToken: string; expectedCredentialTokenDigest?: never }>
+    | Readonly<{ expectedCredentialTokenDigest: string; expectedCredentialToken?: never }>;
+
+function accountDirectoryOAuthReturnMatches(
+    custody: AccountDirectoryOAuthReturnCustody,
+    expected: AccountDirectoryOAuthReturnExpected,
+): boolean {
+    return custody.endpoint === normalizeAccountDirectoryEndpoint(expected.endpoint)
+        && custody.serverIdentityId === expected.serverIdentityId.trim()
+        && custody.returnTo === normalizeInternalReturnPath(expected.invokingSurface)
+        && custody.accountEntryReturnTo === expected.accountEntryReturnTo
+        && JSON.stringify(custody.entryIntent) === JSON.stringify(expected.intent);
+}
+
+async function recordAccountDirectoryOAuthReturnValue(
+    value: AccountDirectoryOAuthReturnInput,
+    expectation: AccountDirectoryOAuthReturnCredentialExpectation,
+): Promise<boolean> {
+    const entryIntent = parseAccountContinuationIntent(value.entryIntent);
+    const target = normalizeAccountDirectoryTarget(value);
+    if (!entryIntent || !target) return false;
+    return await serializeAccountDirectoryStorageMutation(async () => {
+        const [credentialRead, pendingRead] = await Promise.all([
+            getAccountDirectoryCredentialsForTarget(target),
+            readPendingAccountDirectoryAuthRecords(),
+        ]);
+        if (credentialRead.kind !== 'valid'
+            || pendingRead.kind === 'corrupt'
+            || pendingRead.kind === 'unavailable') return false;
+        const credentialTokenDigest = await digestAccountDirectoryCredentialToken(credentialRead.value.token);
+        if ('expectedCredentialToken' in expectation
+            ? credentialRead.value.token !== expectation.expectedCredentialToken
+            : !isAccountDirectoryCredentialTokenDigest(expectation.expectedCredentialTokenDigest)
+                || credentialTokenDigest !== expectation.expectedCredentialTokenDigest) return false;
+        const pending = pendingRead.kind === 'valid' ? pendingRead.value : [];
+        if (pending.some((record) => pendingAccountDirectoryAuthMatchesTarget(record, target))) return false;
+        clearAccountDirectoryOAuthReturnCustody();
+        accountDirectoryOAuthReturnCustody = {
+            ...value,
+            entryIntent,
+            credentialTokenDigest,
+            ...(value.keyAuthSecret ? { keyAuthSecret: value.keyAuthSecret.slice() } : {}),
+        };
+        return true;
+    });
+}
+
+async function claimAccountDirectoryOAuthReturnValue(
+    expected: AccountDirectoryOAuthReturnExpected,
+): Promise<AccountDirectoryOAuthReturnClaim | null> {
+    return await serializeAccountDirectoryStorageMutation(async () => {
+        const returnCustody = accountDirectoryOAuthReturnCustody;
+        if (!returnCustody || !accountDirectoryOAuthReturnMatches(returnCustody, expected)) return null;
+        const target = normalizeAccountDirectoryTarget(returnCustody);
+        if (!target) {
+            clearAccountDirectoryOAuthReturnCustody();
+            return null;
+        }
+        const [credentialRead, pendingRead] = await Promise.all([
+            getAccountDirectoryCredentialsForTarget(target),
+            readPendingAccountDirectoryAuthRecords(),
+        ]);
+        const pending = pendingRead.kind === 'valid' ? pendingRead.value : [];
+        const valid = credentialRead.kind === 'valid'
+            && pendingRead.kind !== 'corrupt'
+            && pendingRead.kind !== 'unavailable'
+            && !pending.some((record) => pendingAccountDirectoryAuthMatchesTarget(record, target))
+            && await digestAccountDirectoryCredentialToken(credentialRead.value.token) === returnCustody.credentialTokenDigest;
+        if (!valid || credentialRead.kind !== 'valid') {
+            clearAccountDirectoryOAuthReturnCustody();
+            return null;
+        }
+        const credentialCustody = createAccountDirectoryCredentialCustody(
+            target,
+            Promise.resolve(credentialRead),
+        );
+        accountDirectoryOAuthReturnCustody = null;
+        return { returnCustody, credentialCustody };
     });
 }
 
@@ -1943,6 +2522,7 @@ async function writeHomeCredentialsForServerScope(
     serverUrl: string,
     options: ServerCredentialLookupOptions,
     credentials: AuthCredentials,
+    authority?: HomeMutationAuthority,
 ): Promise<HomeCredentialWriteOutcome> {
     if (!isNonEmptyString((credentials as Record<string, unknown>).token)) {
         return { stored: false, serverId: null, rollback: null };
@@ -1960,7 +2540,7 @@ async function writeHomeCredentialsForServerScope(
     // scope that an existing profile's identity does not own.
     if (!keys) return { stored: false, serverId: null, rollback: null };
 
-    return await serializeCredentialScopeOperation(keys.primary, async () => {
+    return await serializeCredentialScopeOperations([keys.primary, ...keys.legacy], async () => {
     const json = JSON.stringify(credentials);
     const previousPrimaryRaw = await readCredentialRawByKey(keys.primary);
     const previousLegacyRaws = await Promise.all(keys.legacy.map((legacyKey) => readCredentialRawByKey(legacyKey)));
@@ -1973,31 +2553,94 @@ async function writeHomeCredentialsForServerScope(
     emitHomeCredentialMutation('credentials_set', serverUrl, options);
 
     const rollback = async (): Promise<boolean> => {
+        return await serializeCredentialScopeOperations([keys.primary, ...keys.legacy], async () => {
         let restored = true;
+        let mutated = false;
         // Remove what this write created only while its content is still ours;
         // a key rewritten concurrently belongs to its new writer.
         const currentPrimaryRaw = await readCredentialRawByKey(keys.primary);
-        if (currentPrimaryRaw === json) {
+        const ownsPrimary = currentPrimaryRaw === json;
+        if (ownsPrimary) {
             restored = previousPrimaryRaw !== null
                 ? await writeCredentialRawByKey(keys.primary, previousPrimaryRaw)
                 : await removeCredentialByKey(keys.primary);
+            mutated = restored;
         }
-        for (let index = 0; index < keys.legacy.length; index += 1) {
-            const previousRaw = previousLegacyRaws[index] ?? null;
-            if (previousRaw === null) continue;
-            const legacyKey = keys.legacy[index]!;
-            // Restore only reader-only scopes this write emptied; new content
-            // written after the write is owned by its writer, not by this rollback.
-            if (await readCredentialRawByKey(legacyKey) !== null) continue;
-            restored = await writeCredentialRawByKey(legacyKey, previousRaw) && restored;
+        const currentLegacyRaws = await Promise.all(
+            keys.legacy.map((legacyKey) => readCredentialRawByKey(legacyKey)),
+        );
+        // Alias restoration is one ownership decision. If any alias no longer
+        // has the exact empty state left by this write, a newer layout writer
+        // owns the complete alias set (including aliases it deliberately
+        // emptied), so restoring any older alias would resurrect stale bytes.
+        if (ownsPrimary && currentLegacyRaws.every((raw) => raw === null)) {
+            for (let index = 0; index < keys.legacy.length; index += 1) {
+                const previousRaw = previousLegacyRaws[index] ?? null;
+                if (previousRaw === null) continue;
+                const legacyRestored = await writeCredentialRawByKey(keys.legacy[index]!, previousRaw);
+                restored = legacyRestored && restored;
+                mutated = legacyRestored || mutated;
+            }
         }
-        if (restored) {
+        if (restored && mutated) {
             emitHomeCredentialMutation('credentials_removed', serverUrl, options);
         }
         return restored;
+        }, authority);
     };
     return { stored: true, serverId: identity.serverId, rollback };
-    });
+    }, authority);
+}
+
+/** Internal composition seam for profile adoption while it owns the Home lock. */
+export async function getHomeCredentialsUnderMutationAuthority(
+    authority: HomeMutationAuthority,
+    serverUrl: string,
+    options: ServerCredentialLookupOptions = {},
+): Promise<AuthCredentials | null> {
+    const keys = await getAuthKeys(serverUrl, options);
+    return keys ? await readCredentialsForScopedKeys(keys, authority) : null;
+}
+
+/** Internal composition seam for profile adoption while it owns the Home lock. */
+export async function setHomeCredentialsWithRollbackUnderMutationAuthority(
+    authority: HomeMutationAuthority,
+    serverUrl: string,
+    options: ServerCredentialLookupOptions,
+    credentials: AuthCredentials,
+): Promise<HomeCredentialWriteRollback | null> {
+    const outcome = await writeHomeCredentialsForServerScope(
+        serverUrl,
+        options,
+        credentials,
+        authority,
+    );
+    if (!outcome.stored || !outcome.rollback) return null;
+    return {
+        serverUrl: normalizeUrl(serverUrl),
+        serverId: outcome.serverId,
+        rollback: outcome.rollback,
+    };
+}
+
+/** Internal composition seam for profile adoption while it owns the Home lock. */
+export async function removeHomeCredentialsUnderMutationAuthority(
+    authority: HomeMutationAuthority,
+    serverUrl: string,
+    options: ServerCredentialLookupOptions = {},
+): Promise<boolean> {
+    const keys = await getAuthKeys(serverUrl, options);
+    if (!keys) return false;
+    const targetKeys = uniqueStrings([keys.primary, ...keys.legacy]);
+    const removed = await serializeCredentialScopeOperations(
+        targetKeys,
+        async () => await removeCredentialKeysAtomically(targetKeys),
+        authority,
+    );
+    if (!removed) return false;
+    emitHomeCredentialMutation('credentials_removed', serverUrl, options);
+    retireIrohHomeTransportDiagnostics(resolveHomeCredentialMutationTarget(serverUrl, options)?.serverId ?? '');
+    return true;
 }
 
 export const TokenStorage = {
@@ -2069,8 +2712,9 @@ export const TokenStorage = {
         await TokenStorage.setAuthAutoRedirectSuppressedUntil(Date.now() + durationMs);
     },
 
-    async getRecoveryKeyReminderDismissed(): Promise<boolean> {
-        const key = await getRecoveryKeyReminderDismissedKey();
+    async getRecoveryKeyReminderDismissed(target?: RecoveryKeyReminderTarget): Promise<boolean> {
+        const key = await getRecoveryKeyReminderDismissedKey(target);
+        if (!key) return false;
 
         if (Platform.OS === 'web') {
             const storage = resolveWebStorageBackend();
@@ -2110,8 +2754,9 @@ export const TokenStorage = {
         return parseRecoveryKeyReminderDismissedRaw(recoveryKeyReminderDismissedCacheByKey.get(key) ?? null);
     },
 
-    async setRecoveryKeyReminderDismissed(value: boolean): Promise<boolean> {
-        const key = await getRecoveryKeyReminderDismissedKey();
+    async setRecoveryKeyReminderDismissed(value: boolean, target?: RecoveryKeyReminderTarget): Promise<boolean> {
+        const key = await getRecoveryKeyReminderDismissedKey(target);
+        if (!key) return false;
         const raw = value ? '1' : '0';
 
         if (Platform.OS === 'web') {
@@ -2136,16 +2781,20 @@ export const TokenStorage = {
     },
 
     async getCredentials(): Promise<AuthCredentials | null> {
-        const keys = await getAuthKeys();
-        return keys ? await readCredentialsForScopedKeys(keys) : null;
+        return await withHomeMutationAuthority(undefined, async (authority) => {
+            const keys = await getAuthKeys();
+            return keys ? await readCredentialsForScopedKeys(keys, authority) : null;
+        });
     },
 
     async getCredentialsForServerUrl(
         serverUrl: string,
         options: ServerCredentialLookupOptions = {},
     ): Promise<AuthCredentials | null> {
-        const keys = await getAuthKeys(serverUrl, options);
-        return keys ? await readCredentialsForScopedKeys(keys) : null;
+        return await withHomeMutationAuthority(
+            undefined,
+            async (authority) => await getHomeCredentialsUnderMutationAuthority(authority, serverUrl, options),
+        );
     },
 
     /**
@@ -2217,9 +2866,10 @@ export const TokenStorage = {
     },
 
     async setCredentials(credentials: AuthCredentials): Promise<boolean> {
+        return await withHomeMutationAuthority(undefined, async (authority) => {
         const keys = await getAuthKeys();
         if (!keys) return false;
-        return await serializeCredentialScopeOperation(keys.primary, async () => {
+        return await serializeCredentialScopeOperations([keys.primary, ...keys.legacy], async () => {
         const json = JSON.stringify(credentials);
         const written = await writeCredentialRawByKey(keys.primary, json);
         if (!written) return false;
@@ -2231,6 +2881,7 @@ export const TokenStorage = {
             serverId: getActiveServerId(),
         });
         return true;
+        }, authority);
         });
     },
 
@@ -2240,7 +2891,9 @@ export const TokenStorage = {
         options: ServerCredentialLookupOptions,
         credentials: AuthCredentials,
     ): Promise<boolean> {
-        return (await writeHomeCredentialsForServerScope(serverUrl, options, credentials)).stored;
+        return await withHomeMutationAuthority(undefined, async (authority) => (
+            await writeHomeCredentialsForServerScope(serverUrl, options, credentials, authority)
+        ).stored);
     },
 
     /**
@@ -2258,16 +2911,19 @@ export const TokenStorage = {
         options: ServerCredentialLookupOptions,
         credentials: AuthCredentials,
     ): Promise<HomeCredentialWriteRollback | null> {
-        const outcome = await writeHomeCredentialsForServerScope(serverUrl, options, credentials);
-        if (!outcome.stored || !outcome.rollback) return null;
-        return {
-            serverUrl: normalizeUrl(serverUrl),
-            serverId: outcome.serverId,
-            rollback: outcome.rollback,
-        };
+        return await withHomeMutationAuthority(
+            undefined,
+            async (authority) => await setHomeCredentialsWithRollbackUnderMutationAuthority(
+                authority,
+                serverUrl,
+                options,
+                credentials,
+            ),
+        );
     },
 
     async removeCredentials(): Promise<boolean> {
+        return await withHomeMutationAuthority(undefined, async (authority) => {
         // Clearing credentials should not implicitly suppress auth redirects forever.
         // Reset any suppression so subsequent auth flows can run normally.
         await TokenStorage.setAuthAutoRedirectSuppressedUntil(0);
@@ -2288,7 +2944,11 @@ export const TokenStorage = {
             for (const key of targetKeys) {
                 knownTargetKeys.add(key);
             }
-            const targetRemoved = await removeCredentialKeysAtomically(targetKeys);
+            const targetRemoved = await serializeCredentialScopeOperations(
+                targetKeys,
+                async () => await removeCredentialKeysAtomically(targetKeys),
+                authority,
+            );
             allRemoved = allRemoved && targetRemoved;
 
             if (targetRemoved) {
@@ -2298,6 +2958,7 @@ export const TokenStorage = {
                     if (!emittedMutationTargets.has(mutationKey)) {
                         emittedMutationTargets.add(mutationKey);
                         emitHomeCredentialMutation('credentials_removed', target.serverUrl, options);
+                        retireIrohHomeTransportDiagnostics(mutationTarget.serverId);
                     }
                 }
             }
@@ -2305,32 +2966,31 @@ export const TokenStorage = {
 
         if (Platform.OS === 'web') {
             const webScopedKeys = listWebScopedCredentialKeysForCleanup();
-            for (const key of webScopedKeys) {
+            const storage = resolveWebStorageBackend();
+            for (const { key, raw } of webScopedKeys) {
                 if (knownTargetKeys.has(key)) continue;
-                const removed = await removeCredentialByKey(key);
+                const removed = await serializeCredentialScopeOperations([key], async () => {
+                    // Enumeration is only a snapshot. A later writer owns changed
+                    // bytes, so the orphan sweep must recheck before mutation.
+                    if (storage?.getItem(key) !== raw) return true;
+                    return await removeCredentialByKey(key);
+                }, authority);
                 allRemoved = allRemoved && removed;
             }
         }
 
         return allRemoved;
+        });
     },
 
     async removeCredentialsForServerUrl(
         serverUrl: string,
         options: ServerCredentialLookupOptions = {},
     ): Promise<boolean> {
-        const keys = await getAuthKeys(serverUrl, options);
-        if (!keys) return false;
-        const targetKeys = uniqueStrings([
-            keys.primary,
-            ...keys.legacy,
-        ]);
-        const removed = await removeCredentialKeysAtomically(targetKeys);
-        if (!removed) {
-            return false;
-        }
-        emitHomeCredentialMutation('credentials_removed', serverUrl, options);
-        return true;
+        return await withHomeMutationAuthority(
+            undefined,
+            async (authority) => await removeHomeCredentialsUnderMutationAuthority(authority, serverUrl, options),
+        );
     },
 
     async invalidateCredentialsTokenForServerUrl(
@@ -2338,6 +2998,7 @@ export const TokenStorage = {
         token: string,
         options: ServerCredentialLookupOptions = {},
     ): Promise<boolean> {
+        return await withHomeMutationAuthority(undefined, async (authority) => {
         const keys = await getAuthKeys(serverUrl, options);
         if (!keys) return false;
         const removeIfMatches = async (key: string): Promise<boolean> => {
@@ -2349,19 +3010,24 @@ export const TokenStorage = {
             return removed;
         };
 
-        const primaryRemoved = await removeIfMatches(keys.primary);
-        if (primaryRemoved) {
-            emitHomeCredentialMutation('credentials_removed', serverUrl, options);
-            return true;
-        }
-        for (const legacyKey of keys.legacy) {
-            const legacyRemoved = await removeIfMatches(legacyKey);
-            if (legacyRemoved) {
+        return await serializeCredentialScopeOperations([keys.primary, ...keys.legacy], async () => {
+            const primaryRemoved = await removeIfMatches(keys.primary);
+            if (primaryRemoved) {
                 emitHomeCredentialMutation('credentials_removed', serverUrl, options);
+                retireIrohHomeTransportDiagnostics(resolveHomeCredentialMutationTarget(serverUrl, options)?.serverId ?? '');
                 return true;
             }
-        }
-        return false;
+            for (const legacyKey of keys.legacy) {
+                const legacyRemoved = await removeIfMatches(legacyKey);
+                if (legacyRemoved) {
+                    emitHomeCredentialMutation('credentials_removed', serverUrl, options);
+                    retireIrohHomeTransportDiagnostics(resolveHomeCredentialMutationTarget(serverUrl, options)?.serverId ?? '');
+                    return true;
+                }
+            }
+            return false;
+        }, authority);
+        });
     },
 
     /**
@@ -2373,6 +3039,36 @@ export const TokenStorage = {
         value: PendingAccountDirectoryAuthInput,
     ): Promise<boolean> {
         return await setPendingAccountDirectoryAuthValue(value);
+    },
+
+    async commitAccountDirectoryOAuthCredential(input: Readonly<{
+        expectedPending: PendingAccountDirectoryAuth;
+        credentials: TokenOnlyAuthCredentials;
+    }>): Promise<AccountDirectoryOAuthCredentialCommitResult> {
+        return await commitAccountDirectoryOAuthCredentialValue(input);
+    },
+
+    async recordAccountDirectoryOAuthReturn(
+        value: AccountDirectoryOAuthReturnInput,
+        expectation: AccountDirectoryOAuthReturnCredentialExpectation,
+    ): Promise<boolean> {
+        return await recordAccountDirectoryOAuthReturnValue(value, expectation);
+    },
+
+    readAccountDirectoryOAuthReturn(expected: Readonly<{
+        endpoint: string; serverIdentityId: string; intent: AccountContinuationIntent; invokingSurface: string;
+        accountEntryReturnTo?: string;
+    }>): AccountDirectoryOAuthReturnCustody | null {
+        const custody = accountDirectoryOAuthReturnCustody;
+        if (!custody || !accountDirectoryOAuthReturnMatches(custody, expected)) return null;
+        return custody;
+    },
+
+    async claimAccountDirectoryOAuthReturn(expected: Readonly<{
+        endpoint: string; serverIdentityId: string; intent: AccountContinuationIntent; invokingSurface: string;
+        accountEntryReturnTo?: string;
+    }>): Promise<AccountDirectoryOAuthReturnClaim | null> {
+        return await claimAccountDirectoryOAuthReturnValue(expected);
     },
 
     async getPendingAccountDirectoryAuth(
@@ -2394,8 +3090,9 @@ export const TokenStorage = {
 
     async clearPendingAccountDirectoryAuth(
         target?: PendingAccountDirectoryAuthTarget,
+        options: Readonly<{ expected?: PendingAccountDirectoryAuth }> = {},
     ): Promise<boolean> {
-        return await clearPendingAccountDirectoryAuthValue(target);
+        return await clearPendingAccountDirectoryAuthValue(target, options);
     },
 
     async readPendingExternalAuthState(): Promise<PendingExternalReadState<PendingExternalAuth>> {
@@ -2408,7 +3105,7 @@ export const TokenStorage = {
                     isPendingExternalAuthRecord,
                 );
             if (!scoped) continue;
-            if (isPendingExternalAuthFirstKeyExpired(scoped)) {
+            if (isPendingPurposeBoundExternalAuthExpired(scoped)) {
                 await this.clearPendingExternalAuth(
                     hasAttemptedFirstKeyMigration(scoped)
                         ? {
@@ -2436,7 +3133,7 @@ export const TokenStorage = {
                 serverMismatch: false,
             };
         }
-        if (isPendingExternalAuthFirstKeyExpired(global)) {
+        if (isPendingPurposeBoundExternalAuthExpired(global)) {
             await this.clearPendingExternalAuth(
                 hasAttemptedFirstKeyMigration(global)
                     ? {
@@ -2464,7 +3161,7 @@ export const TokenStorage = {
             isPendingExternalAuthRecord,
         );
         if (!global) return await this.readPendingExternalAuthState();
-        if (isPendingExternalAuthFirstKeyExpired(global)) {
+        if (isPendingPurposeBoundExternalAuthExpired(global)) {
             await this.clearPendingExternalAuth(
                 hasAttemptedFirstKeyMigration(global)
                     ? { removeFirstKeyMigrationAttempted: global }
@@ -2485,6 +3182,13 @@ export const TokenStorage = {
                     { requireExplicitServerContext: true },
                 ),
         };
+    },
+
+    async isPendingExternalAuthContinuationCurrent(expected: PendingExternalAuth): Promise<boolean> {
+        const state = await this.readPendingExternalAuthContinuationState();
+        const current = state.value;
+        return !state.serverMismatch && current !== null
+            && matchesPendingExternalAuthExact(current, expected);
     },
 
     async getPendingExternalAuth(): Promise<PendingExternalAuth | null> {
@@ -2515,7 +3219,7 @@ export const TokenStorage = {
             );
             if (!value) continue;
             return {
-                value: isPendingExternalAuthFirstKeyExpired(
+                value: isPendingPurposeBoundExternalAuthExpired(
                     value,
                 )
                     ? null
@@ -2534,7 +3238,7 @@ export const TokenStorage = {
         );
         if (
             !global
-            || isPendingExternalAuthFirstKeyExpired(global)
+            || isPendingPurposeBoundExternalAuthExpired(global)
         ) {
             return { value: null, serverMismatch: false };
         }
@@ -2602,7 +3306,7 @@ export const TokenStorage = {
             return { kind: 'allowed' };
         }
         const candidateDigest =
-            await digestCredentialToken(params.token);
+            await digestAccountDirectoryCredentialToken(params.token);
         return candidateDigest === rejectedDigest
             ? {
                 kind: 'rejected',
@@ -2737,7 +3441,7 @@ export const TokenStorage = {
                 }
 
                 const rejectedCredentialTokenDigest =
-                    await digestCredentialToken(
+                    await digestAccountDirectoryCredentialToken(
                         params.token,
                     );
                 const confirmedCredentials =
@@ -2810,6 +3514,15 @@ export const TokenStorage = {
         value: PendingExternalAuth,
         target?: Readonly<{ serverUrl: string; serverId?: string }>,
     ): Promise<boolean> {
+        if (
+            'accountPasswordEnrollment'
+            in (value as PendingExternalAuth & Record<string, unknown>)
+        ) return false;
+        if (
+            (value.provider === 'mtls' || value.accountContinuation !== undefined
+                || value.teamContinuation !== undefined || value.postAuthInvitation !== undefined)
+            && !isPendingExternalAuthRecord(value)
+        ) return false;
         return await serializePendingExternalAuthMutation(
             async () => {
                 const keys = target
@@ -2938,6 +3651,36 @@ export const TokenStorage = {
         );
     },
 
+    async recordTeamInvitationPostAuthContinuation(
+        expected: PendingExternalAuth,
+        continuation: TeamInvitationPostAuthContinuationV1,
+        target: Readonly<{ serverUrl: string; serverId?: string }>,
+    ): Promise<PendingExternalAuth | null> {
+        return await serializePendingExternalAuthMutation(async () => {
+            const keys = await getServerScopedKeys(
+                PENDING_EXTERNAL_AUTH_KEY,
+                target.serverUrl,
+                target.serverId ? { serverId: target.serverId } : {},
+            );
+            if (!keys) return null;
+            const globalKey = getPendingExternalAuthGlobalKey();
+            const [scoped, global] = await Promise.all([
+                readStoredJson(keys.primary, 'pending external auth', isPendingExternalAuthRecord),
+                readStoredJson(globalKey, 'pending external auth', isPendingExternalAuthRecord),
+            ]);
+            if (!scoped || !global
+                || !matchesPendingExternalAuthExact(scoped, expected)
+                || !matchesPendingExternalAuthExact(global, expected)) return null;
+            const updated = { ...expected, postAuthInvitation: continuation };
+            if (!await writeStoredJson(keys.primary, 'pending external auth', updated)) return null;
+            if (!await writeStoredJson(globalKey, 'pending external auth', updated)) {
+                await writeStoredJson(keys.primary, 'pending external auth', expected).catch(() => false);
+                return null;
+            }
+            return updated;
+        });
+    },
+
     async clearPendingExternalAuth(
         options: PendingExternalAuthClearOptions = {},
     ): Promise<boolean> {
@@ -2965,7 +3708,8 @@ export const TokenStorage = {
                 );
                 const expected =
                     options.removeFirstKeyMigrationAttempted;
-                if (expected) {
+                const exact = options.removeExact;
+                if (expected || exact) {
                     const keys = [...scopedKeys, globalKey];
                     const observed = await Promise.all(
                         keys.map(async (key) => ({
@@ -2980,10 +3724,9 @@ export const TokenStorage = {
                     const matching = observed.filter(
                         (entry) =>
                             entry.value !== null
-                            && matchesAttemptedFirstKeyMigration(
-                                entry.value,
-                                expected,
-                            ),
+                            && (expected
+                                ? matchesAttemptedFirstKeyMigration(entry.value, expected)
+                                : matchesPendingExternalAuthExact(entry.value, exact!)),
                     );
                     if (matching.length === 0) {
                         return false;
@@ -3000,7 +3743,7 @@ export const TokenStorage = {
                                 await writeStoredJson(
                                     removedKey,
                                     'pending external auth',
-                                    expected,
+                                    expected ?? exact!,
                                 ).catch(() => false);
                             }
                             return false;

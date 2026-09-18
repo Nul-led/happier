@@ -124,6 +124,7 @@ describe('keyboard bindings', () => {
     it('declares browser-reserved defaults as data', () => {
         expect(browserShortcutConflicts.some((conflict) => conflict.binding === 'Mod+N')).toBe(true);
         expect(browserShortcutConflicts.some((conflict) => conflict.binding === 'Mod+Shift+N')).toBe(true);
+        expect(browserShortcutConflicts.some((conflict) => conflict.binding === 'Mod+S')).toBe(true);
         expect(browserShortcutConflicts.every((conflict) => conflict.platforms.includes('web'))).toBe(true);
     });
 });

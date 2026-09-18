@@ -15,13 +15,25 @@ import { createLocalActivityBadgeSnapshotSelector } from './createLocalActivityB
 let currentState: StorageState;
 
 function createStorageState(overrides: Partial<StorageState>): StorageState {
+    const sessionIds = Object.keys(overrides.sessions ?? {});
+    const derivedOrdinaryState = sessionIds.length > 0
+        ? {
+            sessionListRowsByServerId: {
+                server1: Object.fromEntries(sessionIds.map((id) => [id, createRenderable({ id })])),
+            },
+            ordinarySessionListMembershipByServerId: { server1: sessionIds },
+        }
+        : {};
     currentState = createStorageStoreMock({
         sessions: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionMessages: {},
         isDataReady: true,
+        profileScope: { serverId: 'server1', accountId: 'account1' },
+        ...derivedOrdinaryState,
         ...overrides,
     }).getState();
     return currentState;
@@ -136,7 +148,8 @@ function expectNoObjectKeysOrValuesOnRecords(action: () => void, guardedRecords:
 
 function createSelector() {
     return createLocalActivityBadgeSnapshotSelector({
-        accountSettings: accountSettingsParse({}),
+        // The badge corpus in these cases lives on `server1`, which is also the active Home.
+        accountSettingsByServerId: { server1: accountSettingsParse({}) },
         friendRequestCount: 0,
         hasNonNumericInboxAttention: false,
         localSettings: localSettingsDefaults,
@@ -153,13 +166,16 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
     it('reuses the previous badge snapshot when only unrelated renderable fields change', () => {
         const selector = createSelector();
         const first = selector(createStorageState({
-            sessionListRenderables: {
-                session1: createRenderable({
+            sessionListRowsByServerId: {
+                server1: { session1: createRenderable({
                     id: 'session1',
                     hasUnreadMessages: true,
                     metadata: { path: '/repo', host: 'local' },
                     updatedAt: 10,
-                }),
+                }) },
+            },
+            ordinarySessionListMembershipByServerId: {
+                server1: ['session1'],
             },
             sessionListIndexByServerId: {
                 server1: [{ type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined }],
@@ -167,13 +183,16 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         }));
 
         const second = selector(createStorageState({
-            sessionListRenderables: {
-                session1: createRenderable({
+            sessionListRowsByServerId: {
+                server1: { session1: createRenderable({
                     id: 'session1',
                     hasUnreadMessages: true,
                     metadata: { path: '/repo', host: 'local' },
                     updatedAt: 11,
-                }),
+                }) },
+            },
+            ordinarySessionListMembershipByServerId: {
+                server1: ['session1'],
             },
             sessionListIndexByServerId: {
                 server1: [{ type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined }],
@@ -192,17 +211,51 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         expect(second.localBadgeState).toEqual({ count: 1, showNonNumericDot: false });
     });
 
+    it('recomputes when qualified index tuples differ only by delimiter placement', () => {
+        const selector = createSelector();
+        const first = selector(createStorageState({
+            sessionListIndexByServerId: {
+                index: [{
+                    type: 'session',
+                    sessionId: 'alpha',
+                    serverId: 'home:b',
+                    serverName: 'Home',
+                }],
+            },
+        }));
+
+        const second = selector(createStorageState({
+            sessionListIndexByServerId: {
+                index: [{
+                    type: 'session',
+                    sessionId: 'alpha:home',
+                    serverId: 'b',
+                    serverName: 'Home',
+                }],
+            },
+        }));
+
+        // Both index shapes serialize to `s:alpha:home:b:Home` with the old delimiter join.
+        // No other source differs, so referential invalidation proves the tuple encoding itself.
+        expect(first.localBadgeState).toEqual({ count: 0, showNonNumericDot: false });
+        expect(second).not.toBe(first);
+        expect(second.localBadgeState).toEqual({ count: 0, showNonNumericDot: false });
+    });
+
     it('invalidates the badge snapshot when renderable blocked pending delivery changes', () => {
         const selector = createSelector();
         const first = selector(createStorageState({
-            sessionListRenderables: {
-                session1: createRenderable({
+            sessionListRowsByServerId: {
+                server1: { session1: createRenderable({
                     id: 'session1',
                     pendingCount: 4,
                     pendingBlockedCount: 0,
                     metadata: { path: '/repo', host: 'local' },
                     updatedAt: 10,
-                } as Partial<SessionListRenderableSession> & Pick<SessionListRenderableSession, 'id'>),
+                } as Partial<SessionListRenderableSession> & Pick<SessionListRenderableSession, 'id'>) },
+            },
+            ordinarySessionListMembershipByServerId: {
+                server1: ['session1'],
             },
             sessionListIndexByServerId: {
                 server1: [{ type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined }],
@@ -210,14 +263,17 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         }));
 
         const second = selector(createStorageState({
-            sessionListRenderables: {
-                session1: createRenderable({
+            sessionListRowsByServerId: {
+                server1: { session1: createRenderable({
                     id: 'session1',
                     pendingCount: 4,
                     pendingBlockedCount: 1,
                     metadata: { path: '/repo', host: 'local' },
                     updatedAt: 10,
-                } as Partial<SessionListRenderableSession> & Pick<SessionListRenderableSession, 'id'>),
+                } as Partial<SessionListRenderableSession> & Pick<SessionListRenderableSession, 'id'>) },
+            },
+            ordinarySessionListMembershipByServerId: {
+                server1: ['session1'],
             },
             sessionListIndexByServerId: {
                 server1: [{ type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined }],
@@ -330,12 +386,15 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
     it('reuses the previous badge snapshot when unrelated stored messages change', () => {
         const selector = createSelector();
         const first = selector(createStorageState({
-            sessionListRenderables: {
-                session1: createRenderable({
+            sessionListRowsByServerId: {
+                server1: { session1: createRenderable({
                     id: 'session1',
                     hasUnreadMessages: true,
                     metadata: { path: '/repo', host: 'local' },
-                }),
+                }) },
+            },
+            ordinarySessionListMembershipByServerId: {
+                server1: ['session1'],
             },
             sessionListIndexByServerId: {
                 server1: [{ type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined }],
@@ -346,12 +405,15 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         }));
 
         const second = selector(createStorageState({
-            sessionListRenderables: {
-                session1: createRenderable({
+            sessionListRowsByServerId: {
+                server1: { session1: createRenderable({
                     id: 'session1',
                     hasUnreadMessages: true,
                     metadata: { path: '/repo', host: 'local' },
-                }),
+                }) },
+            },
+            ordinarySessionListMembershipByServerId: {
+                server1: ['session1'],
             },
             sessionListIndexByServerId: {
                 server1: [{ type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined }],
@@ -364,7 +426,7 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         expect(second).toBe(first);
     });
 
-    it('reports local activity sources from index and concurrent cache while bootstrapping', () => {
+    it('reports local activity sources from index and ordinary membership while bootstrapping', () => {
         const selector = createSelector();
 
         expect(selector(createStorageState({
@@ -376,13 +438,11 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
 
         expect(selector(createStorageState({
             isDataReady: false,
-            concurrentSessionListCacheByServerId: {
-                server2: {
-                    serverName: null,
-                    sessions: {
-                        session2: createRenderable({ id: 'session2', hasUnreadMessages: true }),
-                    },
-                },
+            sessionListRowsByServerId: {
+                server2: { session2: createRenderable({ id: 'session2', hasUnreadMessages: true }) },
+            },
+            ordinarySessionListMembershipByServerId: {
+                server2: ['session2'],
             },
         })).hasLocalActivitySource).toBe(true);
     });
@@ -400,19 +460,22 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
                     metadata: { path: '/repo', host: 'local' },
                 }),
             },
-            sessionListRenderables: {
-                session2: createRenderable({
+            sessionListRowsByServerId: {
+                server1: { session2: createRenderable({
                     id: 'session2',
                     hasUnreadMessages: true,
                     metadata: { path: '/repo/other', host: 'local' },
-                }),
+                }) },
+            },
+            ordinarySessionListMembershipByServerId: {
+                server1: ['session2'],
             },
         });
         let snapshot: ReturnType<ReturnType<typeof createLocalActivityBadgeSnapshotSelector>> | undefined;
 
         expectNoObjectKeysOrValuesOnRecords(() => {
             snapshot = selector(state);
-        }, [state.sessions, state.sessionListRenderables]);
+        }, [state.sessions, state.sessionListRowsByServerId]);
 
         expect(snapshot?.hasLocalActivitySource).toBe(true);
     });
@@ -435,7 +498,8 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
                 return 0;
             },
         });
-        const sessionListRenderables = { session1: renderable };
+        const sessionListRowsByServerId = { server1: { session1: renderable } };
+        const ordinarySessionListMembershipByServerId = { server1: ['session1'] };
         const first = selector(createStorageState({
             sessionListRenderableDelta: {
                 revision: 1,
@@ -443,7 +507,8 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
                 removedSessionIds: [],
                 rebuiltSessionListIndex: true,
             },
-            sessionListRenderables,
+            sessionListRowsByServerId,
+            ordinarySessionListMembershipByServerId,
             sessionListIndexByServerId: {
                 server1: [{ type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined }],
             },
@@ -457,7 +522,8 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
                 removedSessionIds: [],
                 rebuiltSessionListIndex: false,
             },
-            sessionListRenderables,
+            sessionListRowsByServerId,
+            ordinarySessionListMembershipByServerId,
             sessionListIndexByServerId: {
                 server1: [{ type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined }],
             },
@@ -490,7 +556,8 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         });
         const sessions = {};
         const sessionMessages = {};
-        const sessionListRenderables = { session1: renderable };
+        const sessionListRowsByServerId = { server1: { session1: renderable } };
+        const ordinarySessionListMembershipByServerId = { server1: ['session1'] };
         const sessionListIndexByServerId = {
             server1: [{ type: 'session' as const, sessionId: 'session1', serverId: 'server1', serverName: undefined }],
         };
@@ -505,7 +572,8 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
             concurrentSessionListCacheByServerId,
             sessionListIndexByServerId,
             sessionListRenderableDelta,
-            sessionListRenderables,
+            sessionListRowsByServerId,
+            ordinarySessionListMembershipByServerId,
             sessionMessages,
             sessions,
         };
@@ -521,22 +589,22 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
         expect(thinkingAtReads).toBe(readsAfterFirstSelection);
     });
 
-    it('still re-derives when a source this selector reads moves, including the list index', () => {
+    it('still re-derives when canonical ordinary membership moves', () => {
         // The guard against porting a narrower source set than this repository's derivation reads:
-        // the badge here also consumes `sessionListIndexByServerId` and
-        // `concurrentSessionListCacheByServerId`, so movement in either must invalidate.
+        // the badge enumerates canonical scoped rows through ordinary membership, so movement in
+        // that membership must invalidate even when the scoped row object itself is unchanged.
         vi.useFakeTimers();
         vi.setSystemTime(new Date(10_000));
         const selector = createSelector();
         const sessions = {};
         const sessionMessages = {};
-        const sessionListRenderables = {
+        const sessionListRowsByServerId = { server1: {
             session1: createRenderable({
                 id: 'session1',
                 hasUnreadMessages: true,
                 metadata: { path: '/repo', host: 'local' },
             }),
-        };
+        } };
         const sessionListRenderableDelta = {
             revision: 7,
             changedSessionIds: ['session1'],
@@ -548,7 +616,8 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
             concurrentSessionListCacheByServerId: {},
             sessionListIndexByServerId: {},
             sessionListRenderableDelta,
-            sessionListRenderables,
+            sessionListRowsByServerId,
+            ordinarySessionListMembershipByServerId: {},
             sessionMessages,
             sessions,
         }));
@@ -556,12 +625,15 @@ describe('createLocalActivityBadgeSnapshotSelector', () => {
 
         const second = selector(createStorageState({
             concurrentSessionListCacheByServerId: {},
-            // Only this slice moved: the session becomes reachable through the list index.
+            // Only this slice moved: the scoped row becomes ordinary list membership.
+            sessionListRowsByServerId,
+            ordinarySessionListMembershipByServerId: {
+                server1: ['session1'],
+            },
             sessionListIndexByServerId: {
                 server1: [{ type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined }],
             },
             sessionListRenderableDelta,
-            sessionListRenderables,
             sessionMessages,
             sessions,
         }));

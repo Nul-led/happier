@@ -12,9 +12,6 @@ import {
     DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX,
     DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_DISABLED_OPACITY,
     DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_OPACITY,
-    DESKTOP_SIDEBAR_CHROME_TOP_NOTIFICATION_DOT_RIGHT_PX,
-    DESKTOP_SIDEBAR_CHROME_TOP_NOTIFICATION_DOT_SIZE_PX,
-    DESKTOP_SIDEBAR_CHROME_TOP_NOTIFICATION_DOT_TOP_PX,
     DESKTOP_SIDEBAR_CHROME_TOP_PADDING_PX,
     DESKTOP_SIDEBAR_CHROME_TOP_SETTINGS_ICON_BUTTON_SIZE_PX,
     DESKTOP_SIDEBAR_CHROME_TOP_SETTINGS_ICON_OPACITY,
@@ -52,6 +49,11 @@ export const desktopSidebarChromeStyles = StyleSheet.create((theme) => ({
         marginLeft: 'auto',
         position: 'relative',
         zIndex: 1,
+    },
+    inlineUtilityRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
     },
     windowControlsHost: {
         flexShrink: 0,
@@ -194,15 +196,6 @@ export const desktopSidebarChromeStyles = StyleSheet.create((theme) => ({
     notificationButton: {
         position: 'relative',
     },
-    topNotificationButton: {
-        // The BUTTON box, not the glyph: sizing a container off the glyph constant clipped the icon
-        // the moment the glyph grew.
-        width: DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX,
-        height: DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX,
-        alignItems: 'center',
-        justifyContent: 'center',
-        position: 'relative',
-    },
     badge: {
         position: 'absolute',
         top: -4,
@@ -219,24 +212,6 @@ export const desktopSidebarChromeStyles = StyleSheet.create((theme) => ({
         color: theme.colors.button.primary.tint,
         fontSize: 10,
         ...Typography.default('semiBold'),
-    },
-    indicatorDot: {
-        position: 'absolute',
-        top: 4,
-        right: 2,
-        width: 6,
-        height: 6,
-        borderRadius: 3,
-        backgroundColor: theme.colors.text.primary,
-    },
-    topIndicatorDot: {
-        position: 'absolute',
-        top: DESKTOP_SIDEBAR_CHROME_TOP_NOTIFICATION_DOT_TOP_PX,
-        right: DESKTOP_SIDEBAR_CHROME_TOP_NOTIFICATION_DOT_RIGHT_PX,
-        width: DESKTOP_SIDEBAR_CHROME_TOP_NOTIFICATION_DOT_SIZE_PX,
-        height: DESKTOP_SIDEBAR_CHROME_TOP_NOTIFICATION_DOT_SIZE_PX,
-        borderRadius: DESKTOP_SIDEBAR_CHROME_TOP_NOTIFICATION_DOT_SIZE_PX / 2,
-        backgroundColor: theme.colors.text.primary,
     },
     windowControlsButtons: {
         flexDirection: 'row',

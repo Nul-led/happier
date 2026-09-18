@@ -1,5 +1,5 @@
 import { t } from '@/text';
-import { deriveSessionRuntimePresentationState } from '@/sync/domains/session/attention/runtimePresentation';
+import { projectUiSessionRuntimeAwareness } from '@/sync/domains/session/attention/runtimePresentation';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 
 import {
@@ -10,7 +10,11 @@ import {
 
 import { normalizeSessionListKeyParts } from './sessionListKeyNormalization';
 import type { SessionListRenderableSession } from './sessionListRenderable';
-import { hasActivityClearlyAfterTerminalProjection } from './sessionListTerminalActivity';
+import {
+    hasActivityClearlyAfterTerminalProjectionV1,
+    readSessionAwarenessOperationalPrimaryRankV1,
+    type SessionPersonalAttentionReasonV1,
+} from '@happier-dev/protocol';
 import {
     normalizeSessionListAttentionPlacementMode,
     normalizeSessionListWorkingPlacementMode,
@@ -19,6 +23,8 @@ import {
     type SessionListWorkingPlacementMode,
     type SessionListWorkingPlacementReason,
 } from './sessionListAttentionPlacementTypes';
+import { presentSessionPersonalAttentionReason } from './deriveSessionListActivity';
+import { normalizeSessionViewerCompatibility } from '../readState/sessionViewer';
 
 export const ATTENTION_PLACEMENT_GROUP_KEY_V1 = 'attention-promotion-v1';
 export const WORKING_PLACEMENT_GROUP_KEY_V1 = 'working-placement-v1';
@@ -26,6 +32,8 @@ export const SESSION_LIST_WORKING_RETENTION_LIMIT_MS = 12 * 60 * 60 * 1000;
 
 export type SessionListAttentionPlacementOptions = Readonly<{
     mode: SessionListAttentionPlacementMode;
+    /** Archived corpus hosts opt in; active-library placement remains archive-excluding. */
+    includeArchived?: boolean;
     /**
      * Rows to hold in the band for one more pass even though they no longer
      * earn it — the session the user is currently reading. Retention carries
@@ -91,22 +99,28 @@ type PlacementLane<Reason extends PlacementReason> = Readonly<{
         standingPolicy: SessionAttentionStandingPolicy | undefined;
         nowMs: number;
         workingPlacementOptions?: SessionListWorkingPlacementOptions;
+        allowArchived?: boolean;
     }>) => PlacementCandidate<Reason> | null;
     compareCandidates: (left: PlacementCandidate<Reason>, right: PlacementCandidate<Reason>) => number;
     createGlobalSessionItem: (candidate: PlacementCandidate<Reason>) => SessionItem;
     createWithinGroupSessionItem: (candidate: PlacementCandidate<Reason>) => SessionItem;
 }>;
 
-const ATTENTION_REASON_PRIORITY: Readonly<Record<SessionListAttentionPlacementReason, number>> = {
-    action_required: 0,
-    permission_required: 1,
-    failed: 2,
-    ready: 3,
-    unread: 4,
-    // Standing is the floor of the band: it only reaches sessions whose own
-    // signals place them nowhere, so it always sorts behind every earned reason.
-    standing: 5,
-};
+function readAttentionReasonPriority(reason: SessionListAttentionPlacementReason): number {
+    switch (reason) {
+        case 'failed':
+        case 'permission_required':
+        case 'action_required':
+        case 'ready':
+            return readSessionAwarenessOperationalPrimaryRankV1(reason);
+        case 'unread':
+            return readSessionAwarenessOperationalPrimaryRankV1('ready') - 1;
+        case 'standing':
+            // Standing is the floor of the band: it only reaches sessions whose own
+            // signals place them nowhere, so it always sorts behind every earned reason.
+            return readSessionAwarenessOperationalPrimaryRankV1('none') - 1;
+    }
+}
 
 function normalizeSeq(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value)
@@ -119,7 +133,7 @@ function normalizePositiveTimestamp(value: unknown): number | null {
 }
 
 function deriveRuntimePresentationForSession(session: SessionListRenderableSession, nowMs: number) {
-    return deriveSessionRuntimePresentationState({
+    return projectUiSessionRuntimeAwareness({
         active: session.active,
         activeAt: session.thinking === false ? 0 : session.activeAt,
         archivedAt: session.archivedAt,
@@ -146,7 +160,7 @@ function deriveRuntimePresentationForSession(session: SessionListRenderableSessi
 function isWorkingPlacementSession(session: SessionListRenderableSession, nowMs: number): boolean {
     const runtimePresentation = deriveRuntimePresentationForSession(session, nowMs);
     return runtimePresentation.working
-        || (session.presence === 'online' && runtimePresentation.backgroundActive);
+        || runtimePresentation.runtime === 'background_active';
 }
 
 function isRetainableWorkingSession(session: SessionListRenderableSession, nowMs: number): boolean {
@@ -168,7 +182,7 @@ function isTerminalTurnAfterReadCursor(session: SessionListRenderableSession): b
     if (session.latestTurnStatus !== 'completed') {
         return false;
     }
-    if (hasActivityClearlyAfterTerminalProjection(session.meaningfulActivityAt, session.latestTurnStatusObservedAt)) {
+    if (hasActivityClearlyAfterTerminalProjectionV1(session.meaningfulActivityAt, session.latestTurnStatusObservedAt)) {
         return false;
     }
     const turnCompletedAt = normalizePositiveTimestamp(session.lastTurnCompletedAt);
@@ -177,8 +191,9 @@ function isTerminalTurnAfterReadCursor(session: SessionListRenderableSession): b
         return false;
     }
     const sessionSeq = normalizeSeq(session.seq);
-    if (sessionSeq == null) return false;
-    return sessionSeq > (normalizeSeq(session.lastViewedSessionSeq) ?? 0);
+    const readCursor = normalizeSeq(session.lastViewedSessionSeq);
+    if (sessionSeq == null || readCursor == null) return false;
+    return sessionSeq > readCursor;
 }
 
 function isPrimarySessionFailure(session: SessionListRenderableSession): boolean {
@@ -190,12 +205,26 @@ function shouldPromoteFailedSessionAttention(session: SessionListRenderableSessi
     return session.active === true || session.hasUnreadMessages === true;
 }
 
-function resolveAttentionReason(
+function presentCanonicalAttentionReason(
+    reason: SessionPersonalAttentionReasonV1 | null,
+): SessionListAttentionPlacementReason | null {
+    const presentation = presentSessionPersonalAttentionReason(reason);
+    switch (presentation) {
+        case 'attention': return 'standing';
+        case 'quiet': return null;
+        case 'thinking':
+        case 'pending':
+            return null;
+        default: return presentation;
+    }
+}
+
+function resolveLegacyAttentionReason(
     session: SessionListRenderableSession,
     nowMs: number,
     standingSource: SessionAttentionStandingSource = 'none',
 ): SessionListAttentionPlacementReason | null {
-    const runtimePresentation = deriveSessionRuntimePresentationState({
+    const runtimePresentation = projectUiSessionRuntimeAwareness({
         active: session.active,
         activeAt: session.thinking === false ? 0 : session.activeAt,
         archivedAt: session.archivedAt,
@@ -217,21 +246,21 @@ function resolveAttentionReason(
         pendingRequestObservedAt: session.pendingRequestObservedAt ?? null,
         nowMs,
     });
-    if (runtimePresentation.attention === 'failed' && isPrimarySessionFailure(session)) {
+    if (runtimePresentation.operational.primary === 'failed' && isPrimarySessionFailure(session)) {
         return 'failed';
-    }
-    if (runtimePresentation.freshActionRequired) {
-        return 'action_required';
     }
     if (runtimePresentation.freshPermissionRequired) {
         return 'permission_required';
+    }
+    if (runtimePresentation.freshActionRequired) {
+        return 'action_required';
     }
     if ((session.pendingBlockedCount ?? 0) > 0) {
         return 'action_required';
     }
     if (
         runtimePresentation.working
-        || (session.presence === 'online' && runtimePresentation.backgroundActive)
+        || runtimePresentation.runtime === 'background_active'
     ) {
         return null;
     }
@@ -249,6 +278,37 @@ function resolveAttentionReason(
     // the early `return null` above means "the working lane owns this row", not
     // "nothing places this row", so standing must never be resolved there.
     if (standingSource !== 'none') {
+        return 'standing';
+    }
+    return null;
+}
+
+function resolveAttentionReason(
+    session: SessionListRenderableSession,
+    nowMs: number,
+    standingSource: SessionAttentionStandingSource = 'none',
+): SessionListAttentionPlacementReason | null {
+    const viewer = normalizeSessionViewerCompatibility(session);
+    if (viewer.kind === 'legacy_owner') {
+        // Released pre-viewer owner rows retain their bounded compatibility
+        // adapter until the supported predecessor is contracted.
+        return resolveLegacyAttentionReason(session, nowMs, standingSource);
+    }
+    if (viewer.kind === 'untracked') return null;
+
+    // Operational working placement remains an orthogonal Lane 09A concern and
+    // keeps its established precedence. Every personal reason below comes from
+    // the Protocol-owned viewer decision; raw seq/pending/runtime facts cannot
+    // override a quiet modern projection.
+    if (isWorkingPlacementSession(session, nowMs)) return null;
+    const projected = viewer.viewer.attention;
+    if (projected.needsAttention) {
+        return presentCanonicalAttentionReason(projected.primary);
+    }
+    // The Account default is presentation-only and may apply only after the
+    // server has established personal relevance. It cannot enroll broad Team,
+    // Group, or direct-access history into attention.
+    if (standingSource !== 'none' && viewer.viewer.relevance.relevant) {
         return 'standing';
     }
     return null;
@@ -304,17 +364,21 @@ function resolveAttentionTimestamp(
  * unread, and further messages then cannot re-sort the attention lane under a
  * reader who has not read anything yet.
  *
- * This checkout carries no became-unread fact — neither a server column nor a
- * renderable stamp — so the closest correct key available is the same activity
- * time the row is already ordered by everywhere else. The limitation is
- * observable: an unread session that keeps receiving messages moves within the
- * unread run of the attention band. It costs no extra index work, because that
- * same activity already reorders the source index and re-runs placement.
+ * Modern rows carry that stable private instant in `viewer.readState`. The
+ * activity-time fallback below is retained only for supported pre-viewer Home
+ * rows whose released wire shape could not supply the private frontier stamp.
  */
 function resolveUnreadAttentionTimestamp(session: Pick<
     SessionListRenderableSession,
-    'meaningfulActivityAt' | 'updatedAt' | 'createdAt'
+    'viewer' | 'unreadSince' | 'meaningfulActivityAt' | 'updatedAt' | 'createdAt'
 >): number | null {
+    if (session.viewer?.readState.state === 'tracking') {
+        return normalizePositiveTimestamp(session.viewer.readState.unreadSince);
+    }
+    // Bounded pre-viewer wire compatibility: current rows carry the stable
+    // private value above, while released scalar rows may still project it.
+    const legacyUnreadSince = normalizePositiveTimestamp(session.unreadSince);
+    if (legacyUnreadSince !== null) return legacyUnreadSince;
     return normalizePositiveTimestamp(session.meaningfulActivityAt)
         ?? normalizePositiveTimestamp(session.updatedAt)
         ?? normalizePositiveTimestamp(session.createdAt);
@@ -365,7 +429,7 @@ function compareAttentionCandidates(
     left: PlacementCandidate<SessionListAttentionPlacementReason>,
     right: PlacementCandidate<SessionListAttentionPlacementReason>,
 ): number {
-    const priorityDelta = ATTENTION_REASON_PRIORITY[left.reason] - ATTENTION_REASON_PRIORITY[right.reason];
+    const priorityDelta = readAttentionReasonPriority(right.reason) - readAttentionReasonPriority(left.reason);
     if (priorityDelta !== 0) return priorityDelta;
     return compareByTimestamp(left, right);
 }
@@ -378,13 +442,14 @@ function resolveAttentionCandidate(params: Readonly<{
     retainedKeyRanks: ReadonlyMap<string, number>;
     standingPolicy: SessionAttentionStandingPolicy | undefined;
     nowMs: number;
+    allowArchived?: boolean;
 }>): PlacementCandidate<SessionListAttentionPlacementReason> | null {
     const key = normalizeSessionListKeyParts(params.item.serverId, params.item.sessionId).sessionKey;
     if (!key || !params.row) return null;
-    if (params.item.archivedAt != null || params.row.archivedAt != null) return null;
+    if (!params.allowArchived && (params.item.archivedAt != null || params.row.archivedAt != null)) return null;
 
     const standingSource = params.standingPolicy
-        ? resolveSessionAttentionStandingSource(params.standingPolicy, key)
+        ? resolveSessionAttentionStandingSource(params.standingPolicy, key, params.nowMs)
         : 'none';
     const reason = resolveAttentionReason(params.row, params.nowMs, standingSource);
     if (!reason && !params.retainedKeys.has(key)) return null;
@@ -429,7 +494,7 @@ function resolveWorkingCandidate(params: Readonly<{
     if (resolveAttentionReason(params.row, params.nowMs)) return null;
     const runtimePresentation = deriveRuntimePresentationForSession(params.row, params.nowMs);
     const liveWorking = runtimePresentation.working
-        || (params.row.presence === 'online' && runtimePresentation.backgroundActive);
+        || runtimePresentation.runtime === 'background_active';
     if (!liveWorking && !(params.retainedKeys.has(key) && isRetainableWorkingSession(params.row, params.nowMs))) {
         return null;
     }
@@ -554,6 +619,7 @@ function buildSessionListGlobalPlacement<Reason extends PlacementReason>(params:
     lane: PlacementLane<Reason>;
     header: Extract<SessionListIndexItem, { type: 'header' }>;
     nowMs: number;
+    allowArchived?: boolean;
 }>): SessionListPlacementResult | null {
     if (params.source.length === 0) return null;
 
@@ -573,6 +639,7 @@ function buildSessionListGlobalPlacement<Reason extends PlacementReason>(params:
             standingPolicy: params.standingPolicy,
             nowMs: params.nowMs,
             workingPlacementOptions: params.workingPlacementOptions,
+            allowArchived: params.allowArchived,
         });
         if (!candidate) return;
         promoted.push(candidate);
@@ -614,6 +681,7 @@ function reorderSessionRunWithinGroup<Reason extends PlacementReason>(
     lane: PlacementLane<Reason>,
     nowMs: number,
     workingPlacementOptions?: SessionListWorkingPlacementOptions,
+    allowArchived?: boolean,
 ): Readonly<{
     items: SessionListIndexItem[];
     changed: boolean;
@@ -630,6 +698,7 @@ function reorderSessionRunWithinGroup<Reason extends PlacementReason>(
             standingPolicy,
             nowMs,
             workingPlacementOptions,
+            allowArchived,
         });
         if (candidate) candidates.set(entry.item, candidate);
     }
@@ -662,6 +731,7 @@ function applySessionListPlacementWithinGroups<Reason extends PlacementReason>(p
     resolveSessionRow: (serverId: string | null | undefined, sessionId: string) => SessionListRenderableSession | null;
     lane: PlacementLane<Reason>;
     nowMs: number;
+    allowArchived?: boolean;
 }>): SessionListIndexItem[] {
     if (params.source.length === 0) {
         return params.source as SessionListIndexItem[];
@@ -681,6 +751,7 @@ function applySessionListPlacementWithinGroups<Reason extends PlacementReason>(p
             params.lane,
             params.nowMs,
             params.workingPlacementOptions,
+            params.allowArchived,
         );
         out.push(...reordered.items);
         changed = changed || reordered.changed;
@@ -718,6 +789,7 @@ export function buildSessionListAttentionPlacement(params: Readonly<{
         source: params.source,
         retainedKeys: params.options.retainSessionKeys,
         standingPolicy: params.options.standingPolicy,
+        allowArchived: params.options.includeArchived === true,
         resolveSessionRow: params.resolveSessionRow,
         lane: ATTENTION_LANE,
         nowMs: params.nowMs,
@@ -788,6 +860,7 @@ export function applySessionListAttentionPlacementWithinGroups(params: Readonly<
         source: params.source,
         retainedKeys: params.options.retainSessionKeys,
         standingPolicy: params.options.standingPolicy,
+        allowArchived: params.options.includeArchived === true,
         resolveSessionRow: params.resolveSessionRow,
         lane: ATTENTION_LANE,
         nowMs: params.nowMs,

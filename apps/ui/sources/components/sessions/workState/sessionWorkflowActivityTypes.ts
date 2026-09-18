@@ -5,6 +5,9 @@ import type {
     SessionWorkflowRunSnapshotV1,
     SessionWorkflowRunStatusV1,
 } from '@happier-dev/protocol';
+import type { WorkflowRunSnapshotObservation } from '@/sync/ops/sessionWorkflowActivity';
+
+export type WorkflowRunDetailFailure = Exclude<WorkflowRunSnapshotObservation['status'], 'ready' | 'loading'>;
 
 /**
  * UI view-model layer for workflow activity (UIW1). These types are derived ENTIRELY from the
@@ -90,5 +93,5 @@ export type WorkflowActivityRowViewModel =
 /** Loaded-detail state for one run, keyed off the durable `activity/workflow_run.v1` record. */
 export type WorkflowRunDetailState =
     | Readonly<{ state: 'loading'; runId: string }>
-    | Readonly<{ state: 'missing'; runId: string }>
-    | Readonly<{ state: 'loaded'; runId: string; snapshot: SessionWorkflowRunSnapshotV1 }>;
+    | Readonly<{ state: 'missing'; runId: string; reason?: WorkflowRunDetailFailure }>
+    | Readonly<{ state: 'loaded'; runId: string; snapshot: SessionWorkflowRunSnapshotV1; stale?: true; lastError?: WorkflowRunDetailFailure }>;

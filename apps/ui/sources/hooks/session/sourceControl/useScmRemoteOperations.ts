@@ -52,6 +52,7 @@ async function awaitScmRemotePostOperationRefresh(refresh: () => Promise<void>):
 
 export function useScmRemoteOperations(input: {
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     scmSnapshot: ScmWorkingSnapshot | null;
     scmWriteEnabled: boolean;
@@ -63,7 +64,7 @@ export function useScmRemoteOperations(input: {
     surface?: 'files' | 'update';
 }) {
     const {
-        sessionId,
+        sessionId, serverId,
         sessionPath,
         scmSnapshot,
         scmWriteEnabled,
@@ -129,7 +130,7 @@ export function useScmRemoteOperations(input: {
             runWithOperationLock: async (operation, run) => {
                 const lockResult = await withSessionProjectScmOperationLock({
                     state: storage.getState(),
-                    sessionId,
+                    sessionId, serverId,
                     operation,
                     run,
                 });
@@ -137,22 +138,22 @@ export function useScmRemoteOperations(input: {
             },
             executeRemoteOperation: async (operation, remoteTarget) => {
                 return operation === 'fetch'
-                    ? await sessionScmRemoteFetch(sessionId, { remote: remoteTarget.remote })
+                    ? await sessionScmRemoteFetch(sessionId, { remote: remoteTarget.remote }, serverId)
                     : operation === 'pull'
                         ? await sessionScmRemotePull(sessionId, {
                             remote: remoteTarget.remote,
                             branch: remoteTarget.branch ?? undefined,
-                        })
+                        }, serverId)
                         : await sessionScmRemotePush(sessionId, {
                             remote: remoteTarget.remote,
                             branch: remoteTarget.branch ?? undefined,
-                        });
+                        }, serverId);
             },
-            removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request),
+            removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request, serverId),
             reportOperation: ({ operation, status, detail, rawError, errorCode }) => {
                 reportSessionScmOperation({
                     state: storage.getState(),
-                    sessionId,
+                    sessionId, serverId,
                     operation,
                     status,
                     detail,
@@ -165,7 +166,7 @@ export function useScmRemoteOperations(input: {
             refreshAfterSuccess: async (operation) => {
                 if (operation === 'pull' || operation === 'push') {
                     await awaitScmRemotePostOperationRefresh(async () => {
-                        await scmStatusSync.invalidateFromMutationAndAwait(sessionId);
+                        await scmStatusSync.invalidateFromMutationAndAwait(sessionId, serverId);
                         if (mountedRef.current) {
                             await loadCommitHistory({ reset: true });
                         }
@@ -188,7 +189,7 @@ export function useScmRemoteOperations(input: {
         scmRemoteConfirmPolicy,
         scmSnapshot,
         scmWriteEnabled,
-        sessionId,
+        sessionId, serverId,
         sessionPath,
         surface,
     ]);

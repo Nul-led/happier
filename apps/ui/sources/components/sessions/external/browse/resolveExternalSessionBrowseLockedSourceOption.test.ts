@@ -1,9 +1,84 @@
 import { describe, expect, it } from 'vitest';
 import { PluginProjectionV2Schema } from '@happier-dev/protocol';
 
-import { resolveExternalSessionBrowseLockedSource } from './resolveExternalSessionBrowseLockedSourceOption';
+import {
+    canBrowseExternalSessions,
+    resolveExternalSessionBrowseLockedSource,
+} from './resolveExternalSessionBrowseLockedSourceOption';
+
+/**
+ * An ACP `session/list`-backed source: it can enumerate candidates to resume in
+ * Happier, but it declares neither link identity nor any takeover/follow
+ * guarantee, so it is offerable only to the remote-session-id picker.
+ */
+function createResumeOnlyListingProjection() {
+    return PluginProjectionV2Schema.parse({
+        v: 2,
+        generation: 4,
+        installedPackagesById: {
+            'happier.agent.fx': {
+                id: 'happier.agent.fx',
+                displayName: 'FX',
+                enabled: true,
+                source: { kind: 'bundled', locator: 'happier.agent.fx' },
+            },
+        },
+        agentsById: {
+            fx: {
+                id: 'fx',
+                title: 'FX',
+                externalSessions: {
+                    agent: { pluginId: 'happier.agent.fx', localId: 'fx' },
+                    generation: 4,
+                    operations: {
+                        listCandidates: true,
+                        resolveLinkIdentity: false,
+                        pageTranscript: false,
+                        readAfterTranscript: false,
+                    },
+                    sources: [{
+                        sourceKind: 'fxAcpSessionList',
+                        resumeOnly: true,
+                        schema: {
+                            fields: [{ name: 'kind', kind: 'literal', value: 'fxAcpSessionList' }],
+                        },
+                        key: { segments: [{ kind: 'literal', value: 'fxAcpSessionList' }] },
+                        instances: [{ kind: 'default', constants: {} }],
+                    }],
+                },
+            },
+        },
+    });
+}
 
 describe('resolveExternalSessionBrowseLockedSource', () => {
+    it('reaches a resume-only listing source only for the remote-session-id picker', () => {
+        const projection = createResumeOnlyListingProjection();
+        const lockParams = {
+            providerId: 'fx',
+            agentOptionState: null,
+            profile: null,
+            settings: { connectedServicesProfileLabelByKey: {} },
+            projection,
+        } as const;
+
+        // Ordinary External Sessions browsing (open/link a session) must never
+        // see a listing-only source.
+        expect(canBrowseExternalSessions({ agentId: 'fx', projection })).toBe(false);
+        expect(resolveExternalSessionBrowseLockedSource(lockParams)).toBeNull();
+
+        // The resume-id picker is the one interaction the declaration admits.
+        expect(canBrowseExternalSessions({
+            agentId: 'fx',
+            projection,
+            interaction: 'pickRemoteSessionId',
+        })).toBe(true);
+        expect(resolveExternalSessionBrowseLockedSource({
+            ...lockParams,
+            interaction: 'pickRemoteSessionId',
+        })).toEqual({ kind: 'fxAcpSessionList' });
+    });
+
     it('resolves a Codex connected-service group through the plugin-owned browse behavior', () => {
         const projection = PluginProjectionV2Schema.parse({
             v: 2,
@@ -65,7 +140,6 @@ describe('resolveExternalSessionBrowseLockedSource', () => {
                         source: 'connected',
                         selection: 'group',
                         groupId: 'primary-pool',
-                        profileId: 'member-a',
                     },
                 },
             },

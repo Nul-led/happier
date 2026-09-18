@@ -157,6 +157,48 @@ describe('buildAccountEncryptionMigrationStorageDirectives', () => {
             .not.toBe(ARTIFACT_PLAIN_DATA_KEY_MARKER);
     });
 
+    it('builds every Session replacement beyond the former 500-item ceiling', async () => {
+        const material = {
+            type: 'legacy' as const,
+            secret: new Uint8Array(32).fill(7),
+        };
+        const sourceOwnerMetadata = sealSessionOwnerMetadataEnvelopeV1({
+            material,
+            ownerMetadata: { v: 1 },
+            randomBytes: (length) => new Uint8Array(length).fill(11),
+        });
+
+        const result = await buildAccountEncryptionMigrationStorageDirectives({
+            toMode: 'plain',
+            fromMode: 'e2ee',
+            sourceEncryption: null,
+            targetEncryption: null,
+            machines: [],
+            todos: [],
+            artifacts: [],
+            sessions: Array.from({ length: 501 }, (_, index) => ({
+                id: `session-${index}`,
+                metadataLayoutVersion: 1 as const,
+                metadataVersion: index,
+                agentStateVersion: index,
+                ownerMetadata: sourceOwnerMetadata,
+            })),
+            ...emptyTransitionInventories,
+            sessionSourceCredentials: legacyCredentials,
+            sessionTargetCredentials: null,
+        });
+
+        expect(result.sessions.action).toBe('migrate');
+        if (result.sessions.action !== 'migrate') {
+            throw new Error('expected Session migration');
+        }
+        expect(result.sessions.items).toHaveLength(501);
+        expect(result.sessions.items.at(-1)).toMatchObject({
+            sessionId: 'session-500',
+            ownerMetadata: { t: 'plain', v: { v: 1 } },
+        });
+    });
+
     it('uses strict empty assertions rather than inventing migration work', async () => {
         await expect(
             buildAccountEncryptionMigrationStorageDirectives({

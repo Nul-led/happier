@@ -1,4 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// Localization is a platform boundary; the descriptor interpreter remains real.
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
+});
 
 import {
     canSelectAgentWithoutDetectedCli,
@@ -31,7 +37,7 @@ async function activateServerAccount(serverUrl: string, accountId: string): Prom
     const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
     const { createServerAccountScope } = await import('@/sync/domains/scope/serverAccountScope');
     const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
-    const server = upsertAndActivateServer({
+    const server = await upsertAndActivateServer({
         serverUrl,
         source: 'manual',
         scope: 'device',
@@ -70,6 +76,79 @@ describe('daemon-projected agent UI behavior descriptors', () => {
         clearProjectedAgentUiBehaviorDescriptors();
     });
 
+    it('exposes the parsed Agent-owned portable runtime choice without inventing presentation', () => {
+        publishProjectedAgentUiBehaviorDescriptors({
+            machineId: 'machine-runtime',
+            descriptorsByAgentId: {
+                [EXTERNAL_AGENT_ID]: {
+                    payload: {
+                        environmentVariables: {
+                            backendMode: {
+                                envKey: 'ACME_BACKEND_MODE',
+                                settingKey: { scope: 'account', localId: 'backendMode' },
+                                defaultValue: 'server',
+                                values: ['server', 'acp'],
+                            },
+                        },
+                    },
+                },
+            },
+        });
+
+        expect(resolveAgentUiBehavior(EXTERNAL_AGENT_ID, 'machine-runtime').newSession?.runtimeDescriptorV1)
+            .toEqual({
+                backendMode: {
+                    settingKey: { scope: 'account', localId: 'backendMode' },
+                    values: ['server', 'acp'],
+                },
+            });
+    });
+
+    it('keeps opposing Stop policies isolated for two routed servers sharing a machine', async () => {
+        const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+        await activateServerAccount('https://behavior-b.example.test', 'account-b');
+        const serverB = getActiveServerSnapshot().serverId;
+        await activateServerAccount('https://behavior-a.example.test', 'account-a');
+        const serverA = getActiveServerSnapshot().serverId;
+        const { createServerAccountScope } = await import('@/sync/domains/scope/serverAccountScope');
+        const scopeA = createServerAccountScope(serverA, 'account-a');
+        const scopeB = createServerAccountScope(serverB, 'account-b');
+        for (const [accountScope, stopHandling] of [
+            [scopeA, 'denyAndAbortRun'],
+            [scopeB, 'denyOnly'],
+        ] as const) {
+            publishProjectedAgentUiBehaviorDescriptors({
+                accountScope,
+                machineId: 'shared-machine',
+                descriptorsByAgentId: {
+                    [EXTERNAL_AGENT_ID]: { permissions: { footer: { stopHandling } } },
+                },
+            });
+        }
+        const metadata = sessionOnMachine('shared-machine');
+        const behaviorA = resolveAgentUiBehaviorFromSessionMetadata(metadata, scopeA);
+        const behaviorB = resolveAgentUiBehaviorFromSessionMetadata(metadata, scopeB);
+        expect(behaviorA?.permissions?.footer?.stopHandling).toBe('denyAndAbortRun');
+        expect(behaviorB?.permissions?.footer?.stopHandling).toBe('denyOnly');
+        expect(resolveAgentUiBehaviorFromSessionMetadata(metadata, scopeA)).toBe(behaviorA);
+    });
+
+    it('rejects publication captured before the active Account lifetime retired', async () => {
+        const { captureActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
+        await activateServerAccount('https://behavior-late.example.test', 'account-a');
+        const accountLifetime = captureActiveServerAccountScopeLifetime();
+        await activateServerAccount('https://behavior-late.example.test', 'account-b');
+        publishProjectedAgentUiBehaviorDescriptors({
+            machineId: 'shared-machine',
+            accountLifetime,
+            descriptorsByAgentId: {
+                [EXTERNAL_AGENT_ID]: { permissions: { footer: { stopHandling: 'denyOnly' } } },
+            },
+        });
+        expect(resolveAgentUiBehavior(EXTERNAL_AGENT_ID, 'shared-machine').permissions?.footer?.stopHandling)
+            .toBe('denyAndAbortRun');
+    });
+
     it('keys resume experiment reads to the exact machine declaration, never another machine', () => {
         publishProjectedAgentUiBehaviorDescriptors({
             machineId: 'machine-b',
@@ -93,7 +172,9 @@ describe('daemon-projected agent UI behavior descriptors', () => {
             enabled: true,
             switches: { legacyResume: false },
         });
-        expect(getAgentResumeExperimentsFromSettings(EXTERNAL_AGENT_ID, settings, 'machine-b')).toEqual({
+        expect(getAgentResumeExperimentsFromSettings(EXTERNAL_AGENT_ID, settings, 'machine-b', {
+            account: { codexAcpEnabled: true },
+        })).toEqual({
             enabled: true,
             switches: { acpResume: true },
         });
@@ -316,6 +397,36 @@ describe('daemon-projected agent UI behavior descriptors', () => {
 
         expect(resolveAgentUiBehaviorFromSessionMetadata(sessionOnB)?.permissions?.footer?.usePermissionUpdates)
             .toBe(false);
+    });
+
+    it('keeps same-machine declarations separate across concurrent Home Accounts', async () => {
+        await activateServerAccount('https://active.example.test', 'account-a');
+        const homeA = { serverId: 'home-a', accountId: 'account-a' };
+        const homeB = { serverId: 'home-b', accountId: 'account-b' };
+        publishProjectedAgentUiBehaviorDescriptors({
+            accountScope: homeA,
+            machineId: 'shared-machine',
+            descriptorsByAgentId: { [EXTERNAL_AGENT_ID]: footerDescriptor(true) },
+        });
+        publishProjectedAgentUiBehaviorDescriptors({
+            accountScope: homeB,
+            machineId: 'shared-machine',
+            descriptorsByAgentId: { [EXTERNAL_AGENT_ID]: footerDescriptor(false) },
+        });
+        expect(resolveAgentUiBehavior(EXTERNAL_AGENT_ID, 'shared-machine', homeA)
+            .permissions?.footer?.usePermissionUpdates).toBe(true);
+        expect(resolveAgentUiBehavior(EXTERNAL_AGENT_ID, 'shared-machine', homeB)
+            .permissions?.footer?.usePermissionUpdates).toBe(false);
+        expect(resolveAgentUiBehavior(EXTERNAL_AGENT_ID, 'shared-machine', {
+            ...homeA, accountId: 'replacement-account',
+        }).permissions?.footer?.usePermissionUpdates).toBe(false);
+        expect(resolveAgentUiBehavior(EXTERNAL_AGENT_ID, 'shared-machine', null)
+            .permissions?.footer?.usePermissionUpdates).toBe(false);
+        publishProjectedAgentUiBehaviorDescriptors({
+            accountScope: homeB, machineId: 'shared-machine', descriptorsByAgentId: {},
+        });
+        expect(resolveAgentUiBehavior(EXTERNAL_AGENT_ID, 'shared-machine', homeA)
+            .permissions?.footer?.usePermissionUpdates).toBe(true);
     });
 
     it('never reads a descriptor published under a retired Account', async () => {

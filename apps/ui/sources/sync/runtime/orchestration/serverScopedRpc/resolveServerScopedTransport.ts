@@ -3,18 +3,14 @@ import {
     canonicalizeServerUrl,
 } from '@/sync/domains/server/url/serverUrlCanonical';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
+import { ServerScopedTransportUnavailableError } from '@/sync/runtime/homeCarrier';
 import {
     acquireEligibleHomeCarrier,
     drainRetainedHomeCarrierReleases,
 } from '@/sync/runtime/homeCarrierPolicy';
 import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 
-export class ServerScopedTransportUnavailableError extends Error {
-    constructor() {
-        super('No verified transport is available for the target Home');
-        this.name = 'ServerScopedTransportUnavailableError';
-    }
-}
+export { ServerScopedTransportUnavailableError } from '@/sync/runtime/homeCarrier';
 
 type ServerTransportProfile = Readonly<{
     serverUrl: string;
@@ -99,6 +95,8 @@ export async function resolveServerScopedTransport(params: Readonly<{
 
     if (descriptor) {
         const acquired = await acquireEligibleHomeCarrier({
+            mode: 'initial_selection',
+            applicationCarrierEligibility: 'automatic',
             descriptor,
             verification: { kind: 'authenticated', token: params.credentials.token },
             credentials: params.credentials,

@@ -2,8 +2,6 @@ import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionLis
 
 import type { SessionListViewItem } from './sessionListViewData';
 
-export const SESSION_WORKSPACE_ORDER_MAX_KEYS_PER_SCOPE = 100;
-
 const UNKNOWN_SERVER_KEY = '__unknown_server__';
 
 export type SessionWorkspaceOrderV1 = Readonly<Record<string, ReadonlyArray<string> | undefined>>;
@@ -39,18 +37,33 @@ function dedupePreserveOrder(keys: ReadonlyArray<string>): string[] {
     return out;
 }
 
-function capKeys(keys: ReadonlyArray<string>, max: number): string[] {
-    if (keys.length <= max) return [...keys];
-    return keys.slice(0, max);
+export function buildSessionWorkspaceOrderScopeKey(serverIdRaw: unknown): string {
+    const serverId = normalizeServerIdForWorkspaceOrder(serverIdRaw);
+    return JSON.stringify(['workspace-order', serverId === UNKNOWN_SERVER_KEY ? null : serverId]);
 }
 
-export function buildSessionWorkspaceOrderScopeKey(serverIdRaw: unknown): string {
-    return `server:${normalizeServerIdForWorkspaceOrder(serverIdRaw)}:workspaces`;
+/**
+ * Inverse of {@link buildSessionWorkspaceOrderScopeKey}. A workspace order scope names the
+ * exact Home that owns it, so a write can be routed to that Home instead of the focused one.
+ * Returns `null` for the unknown-server scope and for any key this owner did not mint.
+ */
+export function readSessionWorkspaceOrderScopeServerId(scopeKeyRaw: unknown): string | null {
+    const scopeKey = typeof scopeKeyRaw === 'string' ? scopeKeyRaw.trim() : '';
+    if (!scopeKey.startsWith('[')) return null;
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(scopeKey);
+    } catch {
+        return null;
+    }
+    if (!Array.isArray(parsed) || parsed.length !== 2 || parsed[0] !== 'workspace-order') return null;
+    const serverId = typeof parsed[1] === 'string' ? parsed[1].trim() : '';
+    return serverId || null;
 }
 
 export function buildSessionWorkspaceOrderItemKey(workspaceKeyRaw: unknown): string | null {
     const workspaceKey = normalizeWorkspaceKey(workspaceKeyRaw);
-    return workspaceKey ? `workspace:${workspaceKey}` : null;
+    return workspaceKey || null;
 }
 
 function resolveWorkspaceOrderIdentity(
@@ -174,10 +187,7 @@ export function normalizeSessionWorkspaceOrderV1ForSource(params: Readonly<{
     for (const [scopeKeyRaw, keysRaw] of Object.entries(params.sessionWorkspaceOrderV1 ?? {})) {
         const scopeKey = typeof scopeKeyRaw === 'string' ? scopeKeyRaw.trim() : '';
         if (!scopeKey) continue;
-        const normalizedKeys = capKeys(
-            dedupePreserveOrder(Array.isArray(keysRaw) ? keysRaw : []),
-            SESSION_WORKSPACE_ORDER_MAX_KEYS_PER_SCOPE,
-        );
+        const normalizedKeys = dedupePreserveOrder(Array.isArray(keysRaw) ? keysRaw : []);
         const allowedKeys = allowedKeysByScope.get(scopeKey);
         const filtered = allowedKeys
             ? normalizedKeys.filter((key) => allowedKeys.has(key))

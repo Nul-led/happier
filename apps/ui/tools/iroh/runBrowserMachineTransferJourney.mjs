@@ -40,10 +40,6 @@ import { fileURLToPath } from 'node:url';
 
 import { Server as SocketIoServer } from 'socket.io';
 import tweetnacl from 'tweetnacl';
-import {
-  ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION,
-  ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
-} from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import {
@@ -72,9 +68,11 @@ export const REQUIRED_A74_OBSERVATIONS = [
   'productionAttachmentImportPrepareEncryptedChunksFinalizeReceiptAndDestinationBytes',
   'productionAttachmentCancellationAndTerminalFailureDoNotFallback',
   'wrongPeerRoleEndpointOrGrantRejectedBeforeApplicationBytes',
+  'corruptedSignedGrantRejectedBeforeApplicationBytes',
   'terminalSelectedIrohFailureDoesNotFallbackForImportOrExport',
   'browserReportsRelayOnlyNeverDirect',
   'releaseClosesOwnedMachineStream',
+  'terminalCleanupStopsPreparedTransferOwner',
 ];
 
 /** The production seam page commands this journey drives. */
@@ -173,6 +171,7 @@ async function loadCanonicalDaemonOwners() {
   let lifecycle;
   let payloadSource;
   let workspaceSource;
+  let clientCompatibility;
   try {
     // tsx resolves tsconfig `paths` from the active package working directory.
     // Load each package completely before switching to the other package's `@/`
@@ -190,7 +189,13 @@ async function loadCanonicalDaemonOwners() {
     ]);
     process.chdir(resolve(repoRoot, 'apps/server'));
     const server = register({ namespace: 'happier-a74-server', tsconfig: 'tsconfig.json' });
-    mint = await server.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.grantMintModule), import.meta.url);
+    [mint, clientCompatibility] = await Promise.all([
+      server.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.grantMintModule), import.meta.url),
+      server.import(
+        resolve(repoRoot, 'apps/server/sources/app/clientCompatibility/accountStoredContentCompatibility.ts'),
+        import.meta.url,
+      ),
+    ]);
   } finally {
     process.chdir(originalWorkingDirectory);
   }
@@ -200,7 +205,17 @@ async function loadCanonicalDaemonOwners() {
   if (typeof mint.mintDirectRouteGrantV2 !== 'function') {
     bail('the canonical server grant owner does not export mintDirectRouteGrantV2');
   }
-  return { admission, mint, rpcManager, importRpc, exportRpc, lifecycle, payloadSource, workspaceSource };
+  return {
+    admission,
+    mint,
+    rpcManager,
+    importRpc,
+    exportRpc,
+    lifecycle,
+    payloadSource,
+    workspaceSource,
+    clientCompatibility,
+  };
 }
 
 /** Runs one page command; a command that never settles is a named failure. */
@@ -242,7 +257,7 @@ async function requireCommand(page, name, argument) {
  * Only the HTTP shell is fixture; the grant itself is minted by the canonical
  * server owner with a key resolved by the canonical signing-config owner.
  */
-function startHomeApplication({ mint, signingKey, invokeMachineRpc }) {
+function startHomeApplication({ mint, signingKey, invokeMachineRpc, storedContentRequirements }) {
   const state = {
     requests: [],
     /** Every grant exchange, so a refusal names itself instead of being inferred. */
@@ -253,6 +268,7 @@ function startHomeApplication({ mint, signingKey, invokeMachineRpc }) {
     fallbackTransferRequests: [],
     socketUpgrades: 0,
     machineRpcInvocations: [],
+    corruptNextMintedGrant: false,
   };
 
   const signing = mint.resolvePeerMediationGrantSigningConfig({
@@ -279,13 +295,8 @@ function startHomeApplication({ mint, signingKey, invokeMachineRpc }) {
       },
     },
     capabilities: {
-      accountStoredContentCompatibility: {
-        v: 1,
-        minimumProtocolVersion: ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
-        currentProtocolVersion:
-          ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION,
-        declarationTransport: 'http-header-and-socket-auth-v1',
-      },
+      accountStoredContentCompatibility: storedContentRequirements,
+      serverIdentity: { serverIdentityId: HOME_IDENTITY },
       encryption: {
         storagePolicy: 'optional',
         allowAccountOptOut: true,
@@ -358,9 +369,25 @@ function startHomeApplication({ mint, signingKey, invokeMachineRpc }) {
           return;
         }
         state.mintedGrants.push(minted.grant);
-        state.grantExchanges.push({ outcome: 'minted', grantId: minted.grant.payload.grantId });
+        const deliverCorruptedGrant = state.corruptNextMintedGrant;
+        state.corruptNextMintedGrant = false;
+        const grant = deliverCorruptedGrant
+          ? {
+              ...minted.grant,
+              signature: {
+                ...minted.grant.signature,
+                valueBase64Url: `${minted.grant.signature.valueBase64Url.startsWith('A') ? 'B' : 'A'}`
+                  + minted.grant.signature.valueBase64Url.slice(1),
+              },
+            }
+          : minted.grant;
+        state.grantExchanges.push({
+          outcome: 'minted',
+          grantId: minted.grant.payload.grantId,
+          deliveredCorrupted: deliverCorruptedGrant,
+        });
         response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ v: 2, ok: true, grant: minted.grant }));
+        response.end(JSON.stringify({ v: 2, ok: true, grant }));
       });
       return;
     }
@@ -386,6 +413,7 @@ function startHomeApplication({ mint, signingKey, invokeMachineRpc }) {
         RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE,
         RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_ABORT,
         RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE,
+        RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_RELEASE,
       ]);
       if (!directControlMethods.has(daemonMethod)) {
         state.fallbackTransferRequests.push({ method: 'RPC', url: daemonMethod });
@@ -434,6 +462,25 @@ export function evaluateBrowserMachineTransferJourney({ observations = {}, failu
   }
   reasons.push(...failures);
   return { verdict: reasons.length === 0 ? 'PASS' : 'FAIL', reasons };
+}
+
+/**
+ * Full RPC records stay in-memory for journey assertions. Prepared-transfer
+ * responses contain bearer credentials, so emitted evidence keeps only the
+ * operation and stable outcome.
+ */
+export function summarizeMachineRpcInvocationsForEvidence(invocations) {
+  return invocations.map((invocation) => {
+    const result = invocation?.result;
+    const summary = {
+      method: invocation?.method,
+      success: result?.success === true,
+    };
+    if (typeof result?.errorCode === 'string') {
+      summary.errorCode = result.errorCode;
+    }
+    return summary;
+  });
 }
 
 /**
@@ -524,11 +571,13 @@ export async function runBrowserMachineTransferJourney({
         sizeBytes: resolved.source.sizeBytes,
       };
     },
+    releaseExportSession: (transferId) => directTransferLifecycle.clearPublishedTransfer(transferId),
   });
   const home = startHomeApplication({
     mint: owners.mint,
     signingKey,
     invokeMachineRpc: async (method, payload) => await rpcHandlerManager.invokeLocal(method, payload),
+    storedContentRequirements: owners.clientCompatibility.CURRENT_ACCOUNT_STORED_CONTENT_REQUIREMENTS,
   });
 
   let fixture = null;
@@ -653,13 +702,11 @@ export async function runBrowserMachineTransferJourney({
       importReply.result?.success === true
         && importReply.result?.sizeBytes === uploadPayload.byteLength
         && importReply.result?.sha256 === sha256(uploadPayload)
-        && importReply.relayCalls?.length === 0
         && importedBytes !== null
         && Buffer.compare(importedBytes, uploadPayload) === 0,
       {
         result: importReply.result,
         readCalls: importReply.readCalls,
-        relayCalls: importReply.relayCalls,
         destinationBytes: importedBytes?.byteLength ?? null,
         destinationSha256: importedBytes ? sha256(importedBytes) : null,
       },
@@ -718,14 +765,19 @@ export async function runBrowserMachineTransferJourney({
       maxBytes: uploadPayload.byteLength,
     });
     const exportedBytes = Buffer.from(String(exportReply.destinationBase64 ?? ''), 'base64');
+    const exportRelease = home.machineRpcInvocations.findLast(
+      (invocation) => invocation.method === RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_RELEASE,
+    );
     observe(
       'productionExportPrepareEncryptedChunksManifestResultAndDestinationBytes',
       exportReply.result?.ok === true
         && exportReply.result?.sizeBytes === uploadPayload.byteLength
         && exportReply.selectedRoute === 'iroh_peer'
+        && exportRelease?.result?.success === true
         && Buffer.compare(exportedBytes, uploadPayload) === 0,
       {
         result: exportReply.result,
+        release: exportRelease ?? null,
         writeCalls: exportReply.writeCalls,
         receivedBytes: exportedBytes.byteLength,
         receivedSha256: sha256(exportedBytes),
@@ -748,14 +800,12 @@ export async function runBrowserMachineTransferJourney({
     observe(
       'productionImportCancellationAbortsOwnedSessionWithoutDestination',
       cancelledImport.result?.success === false
-        && cancelledImport.relayCalls?.length === 0
         && cancelAbort?.result?.success === true
         && await stat(join(targetRoot, cancelledImportPath)).then(() => false, () => true),
       {
         result: cancelledImport.result,
         readCalls: cancelledImport.readCalls,
         abort: cancelAbort ?? null,
-        relayCalls: cancelledImport.relayCalls,
       },
     );
 
@@ -767,13 +817,18 @@ export async function runBrowserMachineTransferJourney({
       maxBytes: uploadPayload.byteLength,
       cancelAfterWrite: true,
     });
+    const cancelledExportRelease = home.machineRpcInvocations.findLast(
+      (invocation) => invocation.method === RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_RELEASE,
+    );
     observe(
       'productionExportCancellationCleansDestination',
       cancelledExport.result?.ok === false
         && cancelledExport.cleanupCalls >= 1
+        && cancelledExportRelease?.result?.success === true
         && cancelledExport.destinationBase64 === '',
       {
         result: cancelledExport.result,
+        release: cancelledExportRelease ?? null,
         cleanupCalls: cancelledExport.cleanupCalls,
         writeCalls: cancelledExport.writeCalls,
       },
@@ -800,12 +855,10 @@ export async function runBrowserMachineTransferJourney({
     observe(
       'terminalSelectedIrohFailureDoesNotFallbackForImportOrExport',
       failedImport.result?.errorCode === 'machine_carrier_transport_failed'
-        && failedImport.relayCalls?.length === 0
         && failedExport.result?.errorCode === 'machine_carrier_transport_failed'
         && home.fallbackTransferRequests.length === 0,
       {
         failedImport: failedImport.result,
-        importRelayCalls: failedImport.relayCalls,
         failedExport: failedExport.result,
         homeFallbackTransferRequests: home.fallbackTransferRequests,
       },
@@ -938,6 +991,44 @@ export async function runBrowserMachineTransferJourney({
     //     the transport, before any admission).
     const rpcRequestsBeforeRejections = home.machineRpcInvocations.length;
     const acceptorBeforeRejections = await fixture.machineAcceptorStatus(machineTarget);
+
+    // The Home still mints through the canonical signer; this fixture boundary
+    // corrupts only the copy delivered to Chromium. The production browser
+    // carrier signs its proof over that exact received grant, then the real
+    // daemon admission owner must reject the bad server signature before the
+    // prepared-transfer application receives a byte.
+    home.corruptNextMintedGrant = true;
+    const corruptedGrantAttempt = await command(page, 'acquireMachineCarrier', {
+      leaseKey: 'corrupted-grant',
+      machineId: MACHINE_ID,
+      serverId: seeded.serverId,
+      operationId: 'a74-corrupted-grant-operation',
+      flow: TRANSFER_FLOW,
+      maxBytes: TRANSFER_MAX_BYTES,
+    });
+    const corruptedGrantRejected = await waitFor(
+      async () => {
+        const status = await fixture.machineAcceptorStatus(machineTarget);
+        return status?.streamsRejected > (acceptorBeforeRejections?.streamsRejected ?? 0);
+      },
+      OBSERVE_TIMEOUT_MS,
+    );
+    const acceptorAfterCorruptedGrant = await fixture.machineAcceptorStatus(machineTarget);
+    observe(
+      'corruptedSignedGrantRejectedBeforeApplicationBytes',
+      corruptedGrantAttempt?.ok === false
+        && corruptedGrantRejected === true
+        && acceptorAfterCorruptedGrant?.streamsAccepted === acceptorBeforeRejections?.streamsAccepted
+        && home.machineRpcInvocations.length === rpcRequestsBeforeRejections,
+      {
+        attempt: corruptedGrantAttempt,
+        acceptorBefore: acceptorBeforeRejections,
+        acceptorAfter: acceptorAfterCorruptedGrant,
+        machineRpcRequestsBefore: rpcRequestsBeforeRejections,
+        machineRpcRequestsAfter: home.machineRpcInvocations.length,
+      },
+    );
+
     await requireCommand(page, 'publishMachineDescriptor', {
       serverId: seeded.serverId,
       // A machine id this acceptor does not own, published at the acceptor's
@@ -990,6 +1081,7 @@ export async function runBrowserMachineTransferJourney({
       {
         impostorAttempt,
         wrongEndpointAttempt,
+        corruptedGrantAttempt,
         acceptorBefore: acceptorBeforeRejections,
         acceptorAfter: acceptorRejectionStatus,
         machineRpcRequestsBefore: rpcRequestsBeforeRejections,
@@ -1155,13 +1247,33 @@ export async function runBrowserMachineTransferJourney({
       mintRejections: home.mintRejections,
       socketUpgrades: home.socketUpgrades,
       fallbackTransferRequests: home.fallbackTransferRequests,
-      machineRpcInvocations: home.machineRpcInvocations,
+      machineRpcInvocations: summarizeMachineRpcInvocationsForEvidence(home.machineRpcInvocations),
     };
+    const lifecycleStateBeforeStop = directTransferLifecycle.getState();
+    let lifecycleStopError = null;
+    try {
+      await directTransferLifecycle.stop();
+    } catch (error) {
+      lifecycleStopError = error instanceof Error ? error.message : String(error);
+    }
+    const lifecycleStateAfterStop = directTransferLifecycle.getState();
     report.machineApplication = {
-      lifecycleState: directTransferLifecycle.getState(),
+      lifecycleStateBeforeStop,
+      lifecycleStateAfterStop,
+      lifecycleStopError,
       targetRoot,
     };
-    await directTransferLifecycle.stop().catch(() => undefined);
+    observe(
+      'terminalCleanupStopsPreparedTransferOwner',
+      lifecycleStopError === null
+        && lifecycleStateAfterStop.status === 'stopped'
+        && lifecycleStateAfterStop.publishedTransferCount === 0,
+      {
+        lifecycleStateBeforeStop,
+        lifecycleStateAfterStop,
+        lifecycleStopError,
+      },
+    );
     await home.io.close().catch(() => undefined);
     home.server.closeAllConnections?.();
     await new Promise((resolve) => home.server.close(resolve));

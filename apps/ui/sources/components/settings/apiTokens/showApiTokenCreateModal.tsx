@@ -11,6 +11,7 @@ export function showApiTokenCreateModal(
     controller: ApiTokenSettingsController,
     modal: ApiTokenCreateModalHost = Modal,
 ): string {
+    void controller.refreshEncryptionAvailability();
     const confirmRevealDismiss = async (): Promise<boolean> => {
         try {
             return await modal.confirm(

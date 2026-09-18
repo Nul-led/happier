@@ -4,11 +4,11 @@ import { DEFAULT_ACTIONS_SETTINGS_V1, type ActionId, type ActionSurfaces, type A
 
 import * as actionSettingsTargets from './actionSettingsTargets';
 
-type ActionSettingsApprovalControlValue = 'off' | 'ask_first' | 'allowed';
+type ActionSettingsApprovalControlValue = 'off' | 'default' | 'ask_first' | 'allowed';
 type ActionSettingsBooleanControlValue = 'off' | 'on';
 type ActionSettingsTargetControlKind = 'approval' | 'switch' | 'unavailable';
 type ActionSettingsTargetControlState =
-    | Readonly<{ kind: 'approval'; value: ActionSettingsApprovalControlValue; approvalSurface: keyof ActionSurfaces; floored: boolean }>
+    | Readonly<{ kind: 'approval'; value: ActionSettingsApprovalControlValue; approvalSurface: keyof ActionSurfaces }>
     | Readonly<{ kind: 'switch'; value: ActionSettingsBooleanControlValue }>
     | Readonly<{ kind: 'unavailable'; value: 'off' }>;
 
@@ -47,7 +47,7 @@ function expectApplyControlStateExport(): ApplyActionSettingsTargetControlState 
 }
 
 describe('resolveActionSettingsTargetControlState', () => {
-    it('resolves approval-capable targets to allowed by default', () => {
+    it('resolves approval-capable targets to the inherited default', () => {
         const resolveControlState = expectResolveControlStateExport();
 
         expect(resolveControlState({
@@ -56,9 +56,8 @@ describe('resolveActionSettingsTargetControlState', () => {
             targetId: 'mcp',
         })).toEqual({
             kind: 'approval',
-            value: 'allowed',
+            value: 'default',
             approvalSurface: 'mcp',
-            floored: false,
         });
     });
 
@@ -108,7 +107,7 @@ describe('resolveActionSettingsTargetControlState', () => {
         });
     });
 
-    it('clamps a floored agent action to ask_first and marks it floored (CON-5)', () => {
+    it('requires confirmation for a dangerous Agent Action by default', () => {
         const resolveControlState = expectResolveControlStateExport();
 
         // `prompt_doc.update` is the LIVE-1 fixture: danger + agent with no persisted override.
@@ -122,7 +121,6 @@ describe('resolveActionSettingsTargetControlState', () => {
             kind: 'approval',
             value: 'ask_first',
             approvalSurface: 'agent',
-            floored: true,
         });
     });
 
@@ -135,7 +133,7 @@ describe('resolveActionSettingsTargetControlState', () => {
             actionId: 'browser.automation.snapshot' as ActionId,
             targetId: 'agent',
         });
-        expect(readOnly).toMatchObject({ kind: 'approval', floored: false });
+        expect(readOnly).toMatchObject({ kind: 'approval', value: 'default' });
     });
 
     it('preserves a disabled floored agent target as stricter than ask_first (LIVE-1)', () => {
@@ -155,11 +153,10 @@ describe('resolveActionSettingsTargetControlState', () => {
             kind: 'approval',
             value: 'off',
             approvalSurface: 'agent',
-            floored: true,
         });
     });
 
-    it('refuses to persist allowed for a floored agent action (CON-5)', () => {
+    it('persists an explicit dangerous Action waiver and restores the default', () => {
         const applyControlState = expectApplyControlStateExport();
 
         const next = applyControlState({
@@ -175,8 +172,41 @@ describe('resolveActionSettingsTargetControlState', () => {
             actionId: 'prompt_doc.update' as ActionId,
             targetId: 'agent',
         });
-        // Even though the caller asked for `allowed`, the floor clamps the effective state to ask_first.
-        expect(state).toMatchObject({ value: 'ask_first', floored: true });
+        expect(state).toMatchObject({ value: 'allowed' });
+        expect(next.approvalWaivedSurfaces?.['prompt_doc.update']).toEqual(['agent']);
+        const restored = actionSettingsTargets.setActionTargetApprovalRequired({
+            settings: next,
+            actionId: 'prompt_doc.update',
+            targetId: 'agent',
+            approvalRequired: null,
+        });
+        expect(resolveControlState({ settings: restored, actionId: 'prompt_doc.update', targetId: 'agent' }))
+            .toMatchObject({ value: 'default' });
+    });
+
+    it('restores inherited approval policy without disabling the surface', () => {
+        const applyControlState = expectApplyControlStateExport();
+        const required = applyControlState({
+            settings: DEFAULT_ACTIONS_SETTINGS_V1,
+            actionId: 'review.start',
+            targetId: 'mcp',
+            value: 'ask_first',
+        });
+
+        const restored = applyControlState({
+            settings: required,
+            actionId: 'review.start',
+            targetId: 'mcp',
+            value: 'default',
+        });
+
+        expect(restored.actions['review.start']?.approvalRequiredSurfaces ?? []).toEqual([]);
+        expect(restored.approvalWaivedSurfaces?.['review.start']).toBeUndefined();
+        expect(expectResolveControlStateExport()({
+            settings: restored,
+            actionId: 'review.start',
+            targetId: 'mcp',
+        })).toMatchObject({ kind: 'approval', value: 'default' });
     });
 
     it('does not expose approval controls for approval actions', () => {
@@ -231,7 +261,7 @@ describe('resolveActionSettingsTargetControlState', () => {
             value: 'off',
         });
 
-        expect(next.actions['review.start']).toEqual({
+        expect(next.actions['review.start']).toMatchObject({
             enabledPlacements: [],
             disabledSurfaces: ['mcp'],
             disabledPlacements: [],
@@ -260,7 +290,8 @@ describe('resolveActionSettingsTargetControlState', () => {
             value: 'allowed',
         });
 
-        expect(next.actions['review.start']).toBeUndefined();
+        expect(next.actions['review.start']?.approvalRequiredSurfaces ?? []).toEqual([]);
+        expect(next.approvalWaivedSurfaces?.['review.start']).toEqual(['mcp']);
     });
 
     it('applies simple off without clearing unrelated approval surfaces', () => {

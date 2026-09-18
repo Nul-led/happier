@@ -116,7 +116,8 @@ function createState(): any {
             },
         },
         sessionMessages: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
     };
@@ -166,7 +167,7 @@ describe('createVoiceTurnStreaming', () => {
             interruptActiveTurn: () => undefined,
             resetCachedHandle: () => undefined,
             trackActiveTurn: async (_sessionId, task) => await task(),
-            voiceAgentPendingSessionContextBySessionId: new Map(),
+            voiceAttemptExplicitContextBySessionId: new Map(),
             deferredTargetSessionContextBySessionId: new Map(),
             latestAutomaticUiContextBySessionId: new Map(),
             voiceAgentTurnAbortControllerBySessionId: new Map(),
@@ -223,7 +224,7 @@ describe('createVoiceTurnStreaming', () => {
             interruptActiveTurn: () => undefined,
             resetCachedHandle: () => undefined,
             trackActiveTurn: async (_sessionId, task) => await task(),
-            voiceAgentPendingSessionContextBySessionId: new Map(),
+            voiceAttemptExplicitContextBySessionId: new Map(),
             deferredTargetSessionContextBySessionId: new Map(),
             latestAutomaticUiContextBySessionId: new Map(),
             voiceAgentTurnAbortControllerBySessionId: new Map(),
@@ -259,7 +260,7 @@ describe('createVoiceTurnStreaming', () => {
             interruptActiveTurn: () => undefined,
             resetCachedHandle: () => undefined,
             trackActiveTurn: async (_sessionId, task) => await task(),
-            voiceAgentPendingSessionContextBySessionId: new Map(),
+            voiceAttemptExplicitContextBySessionId: new Map(),
             deferredTargetSessionContextBySessionId: new Map(),
             latestAutomaticUiContextBySessionId: new Map(),
             voiceAgentTurnAbortControllerBySessionId: new Map(),
@@ -292,7 +293,7 @@ describe('createVoiceTurnStreaming', () => {
             commit: vi.fn(async () => ({ commitText: 'unused' })),
             stop: vi.fn(async () => ({ ok: true as const })),
         };
-        const pendingSessionContextBySessionId = new Map<string, string[]>();
+        const attemptExplicitContextBySessionId = new Map<string, string[]>();
         const latestAutomaticUiContextBySessionId = new Map([
             ['__voice_agent__', 'CURRENT UI CONTEXT\n\n{"navigation":{"title":"LATEST_NAVIGATION_SENTINEL"}}'],
         ]);
@@ -303,7 +304,7 @@ describe('createVoiceTurnStreaming', () => {
             interruptActiveTurn: () => undefined,
             resetCachedHandle: () => undefined,
             trackActiveTurn: async (_sessionId, task) => await task(),
-            voiceAgentPendingSessionContextBySessionId: pendingSessionContextBySessionId,
+            voiceAttemptExplicitContextBySessionId: attemptExplicitContextBySessionId,
             deferredTargetSessionContextBySessionId: new Map<string, string | null>([
                 ['__voice_agent__', 'TARGET_CONTEXT:__voice_agent__->s1'],
             ]),
@@ -318,8 +319,48 @@ describe('createVoiceTurnStreaming', () => {
         expect(payloadText.match(/TARGET_CONTEXT:__voice_agent__->s1/g)).toHaveLength(1);
         expect(payloadText).toContain('LATEST_NAVIGATION_SENTINEL');
         expect(payloadText.match(/CURRENT UI CONTEXT/g)).toHaveLength(1);
-        expect(pendingSessionContextBySessionId.has('__voice_agent__')).toBe(false);
+        expect(attemptExplicitContextBySessionId.has('__voice_agent__')).toBe(false);
         expect(latestAutomaticUiContextBySessionId.has('__voice_agent__')).toBe(false);
+    });
+
+    it('retires explicit attempt context only after the provider accepts a turn', async () => {
+        stateRef.current.settings.voice.providers.local_conversation.config.streaming.enabled = false;
+        const sendTurn = vi.fn()
+            .mockRejectedValueOnce(new Error('provider unavailable'))
+            .mockResolvedValue({ assistantText: 'reply', actions: [] });
+        const client: VoiceAgentClient = {
+            start: vi.fn(async () => ({ voiceAgentId: 'run_1' })),
+            sendTurn,
+            welcome: vi.fn(async () => ({ assistantText: 'unused' })),
+            startTurnStream: vi.fn(async () => ({ streamId: 'stream_1' })),
+            readTurnStream: vi.fn(async () => ({ streamId: 'stream_1', events: [], nextCursor: 0, done: true })),
+            cancelTurnStream: vi.fn(async () => ({ ok: true as const })),
+            commit: vi.fn(async () => ({ commitText: 'unused' })),
+            stop: vi.fn(async () => ({ ok: true as const })),
+        };
+        const attemptExplicitContextBySessionId = new Map([
+            ['__voice_agent__', ['EXPLICIT_ATTEMPT_CONTEXT_SENTINEL']],
+        ]);
+        const { createVoiceTurnStreaming } = await import('./voiceTurnStreaming');
+        const turnStreaming = createVoiceTurnStreaming({
+            getVoiceAgentHandle: async () => createHandle(client),
+            interruptActiveTurn: () => undefined,
+            resetCachedHandle: () => undefined,
+            trackActiveTurn: async (_sessionId, task) => await task(),
+            voiceAttemptExplicitContextBySessionId: attemptExplicitContextBySessionId,
+            deferredTargetSessionContextBySessionId: new Map(),
+            latestAutomaticUiContextBySessionId: new Map(),
+            voiceAgentTurnAbortControllerBySessionId: new Map(),
+        });
+
+        await expect(turnStreaming.sendTurn('__voice_agent__', 'first')).rejects.toThrow('provider unavailable');
+        expect(attemptExplicitContextBySessionId.get('__voice_agent__')).toEqual([
+            'EXPLICIT_ATTEMPT_CONTEXT_SENTINEL',
+        ]);
+
+        await turnStreaming.sendTurn('__voice_agent__', 'retry');
+        expect(String(sendTurn.mock.calls[1]?.[0]?.userText ?? '')).toContain('EXPLICIT_ATTEMPT_CONTEXT_SENTINEL');
+        expect(attemptExplicitContextBySessionId.has('__voice_agent__')).toBe(false);
     });
 
     it.each(['on_demand', 'off'] as const)(
@@ -341,7 +382,7 @@ describe('createVoiceTurnStreaming', () => {
                 commit: vi.fn(async () => ({ commitText: 'unused' })),
                 stop: vi.fn(async () => ({ ok: true as const })),
             };
-            const pendingSessionContextBySessionId = new Map([
+            const attemptExplicitContextBySessionId = new Map([
                 ['__voice_agent__', ['ORDINARY_CONTEXT_SENTINEL']],
             ]);
             const latestAutomaticUiContextBySessionId = new Map([
@@ -358,7 +399,7 @@ describe('createVoiceTurnStreaming', () => {
                 interruptActiveTurn: () => undefined,
                 resetCachedHandle: () => undefined,
                 trackActiveTurn: async (_sessionId, task) => await task(),
-                voiceAgentPendingSessionContextBySessionId: pendingSessionContextBySessionId,
+                voiceAttemptExplicitContextBySessionId: attemptExplicitContextBySessionId,
                 deferredTargetSessionContextBySessionId: new Map(),
                 latestAutomaticUiContextBySessionId,
                 voiceAgentTurnAbortControllerBySessionId: new Map(),

@@ -12,7 +12,7 @@ vi.mock('@/sync/runtime/syncTuning', () => ({
 import type { ApiUpdateContainer } from '@/sync/api/types/apiTypes';
 import { buildActivityOverviewFromSource } from '@/activity/source/buildActivityOverviewFromSource';
 import type { ActivityAttentionSource } from '@/activity/source/activityAttentionSourceTypes';
-import { buildInboxSessionState } from '@/hooks/inbox/buildInboxSessionState';
+import { buildInboxSessionPresentation } from '@/activity/presentation/buildInboxSessionPresentation';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { NormalizedMessage } from '@/sync/typesRaw';
 import { storage } from '@/sync/domains/state/storage';
@@ -202,7 +202,7 @@ describe('socket realtime explicit transcript consumers', () => {
     const resultMessageId = 'global-voice-late-result-message';
     storage.getState().applySessions([
       buildSession(hiddenSessionId, {
-        serverId: 'server-a',
+        serverId: 'srv_server_a',
         seq: 1,
         lastViewedSessionSeq: 1,
         metadata: {
@@ -217,6 +217,12 @@ describe('socket realtime explicit transcript consumers', () => {
         },
       }),
     ]);
+    expect(storage.getState().sessionListRowsByServerId.srv_server_a?.[hiddenSessionId]).toMatchObject({
+      id: hiddenSessionId,
+      seq: 1,
+      lastViewedSessionSeq: 1,
+      hasUnreadMessages: false,
+    });
     const updateData = buildPlainNewMessageUpdate(hiddenSessionId, {
       messageId: resultMessageId,
       text: 'The delegated task completed after Voice ended.',
@@ -235,6 +241,7 @@ describe('socket realtime explicit transcript consumers', () => {
     const params = buildBaseParams({
       applyMessages,
       markSessionTranscriptDeferred,
+      sourceServerId: 'srv_server_a',
     });
 
     await handleUpdateContainer({
@@ -253,11 +260,11 @@ describe('socket realtime explicit transcript consumers', () => {
     const projectedSession = projectedState.sessions[hiddenSessionId];
     expect(projectedSession).toMatchObject({
       id: hiddenSessionId,
-      serverId: 'server-a',
+      serverId: 'srv_server_a',
       seq: 1,
       lastViewedSessionSeq: 1,
     });
-    const projectedRenderable = projectedState.sessionListRenderables[hiddenSessionId];
+    const projectedRenderable = projectedState.sessionListRowsByServerId.srv_server_a?.[hiddenSessionId];
     expect(projectedRenderable).toMatchObject({
       id: hiddenSessionId,
       seq: 2,
@@ -272,12 +279,15 @@ describe('socket realtime explicit transcript consumers', () => {
       isDataReady: true,
       sessionsById: { [hiddenSessionId]: projectedSession },
       sessionMessagesById: projectedState.sessionMessages,
-      sessionListRenderablesById: { [hiddenSessionId]: projectedRenderable },
-      sessionListIndexByServerId: { 'server-a': [] },
+      sessionListRowsByServerId: {
+        srv_server_a: { [hiddenSessionId]: projectedRenderable },
+      },
+      ordinarySessionListMembershipByServerId: {},
+      sessionListIndexByServerId: { srv_server_a: [] },
       concurrentSessionListCacheByServerId: {},
       serverProfilesById: {
-        'server-a': {
-          id: 'server-a',
+        srv_server_a: {
+          id: 'srv_server_a',
           name: 'Server A',
           serverUrl: 'https://a.example.test',
           createdAt: 1,
@@ -287,7 +297,7 @@ describe('socket realtime explicit transcript consumers', () => {
         },
       },
       activeServer: {
-        serverId: 'server-a',
+        serverId: 'srv_server_a',
         serverUrl: 'https://a.example.test',
         generation: 1,
       },
@@ -297,36 +307,26 @@ describe('socket realtime explicit transcript consumers', () => {
       nowMs: 2_001,
       directActionsEnabled: true,
     });
-    const inbox = buildInboxSessionState({
-      sessions: [projectedSession],
-      sessionRows: [{
-        serverId: 'server-a',
-        serverName: 'Server A',
-        session: projectedRenderable,
-      }],
-      sessionMessagesById: projectedState.sessionMessages,
-      nowMs: 2_001,
-    });
+    const inbox = buildInboxSessionPresentation({ overview: activity });
 
     expect(activity.candidates).toEqual([
       expect.objectContaining({
         sessionId: hiddenSessionId,
-        route: `/session/${hiddenSessionId}?serverId=server-a`,
+        route: `/session/${hiddenSessionId}?serverId=srv_server_a`,
         reasons: expect.objectContaining({ hasUnread: true }),
       }),
     ]);
     expect(inbox.sessionsNeedingAttention).toEqual([]);
-    expect(inbox.unreadSessions).toEqual([
-      expect.objectContaining({
-        serverId: 'server-a',
-        session: expect.objectContaining({ id: hiddenSessionId }),
-      }),
-    ]);
+    // Transport-owned unread remains truthful while the turn is still active,
+    // but Inbox follows the canonical Session-list readiness projection rather
+    // than turning each streamed message into a new Inbox task.
+    expect(inbox.readySessions).toEqual([]);
+    expect(inbox.markAllReadTargets).toEqual([]);
 
     // SessionView acquires this exact scoped visibility identity. Once revealed,
     // canonical delivery for this session must materialize instead of remaining
     // on the hidden projection-only path.
-    markSessionSurfaceVisible(hiddenSessionId, 'server-a');
+    markSessionSurfaceVisible(hiddenSessionId, 'srv_server_a');
     await handleUpdateContainer({
       ...params,
       updateData,
@@ -384,12 +384,12 @@ describe('socket realtime explicit transcript consumers', () => {
 
   it('materializes explicit transcript consumers registered under an equivalent server profile alias', async () => {
     const sharedSessionId = 'shared-session';
-    const profile = upsertServerProfile({
+    const profile = await upsertServerProfile({
       serverUrl: 'https://server-a.example.test',
       name: 'Server A',
       source: 'manual',
     });
-    setServerProfileIdentityForUrl(profile.serverUrl, 'srv_server_a');
+    await setServerProfileIdentityForUrl(profile.serverUrl, 'srv_server_a');
     storage.getState().applySessions([buildSession(sharedSessionId, { serverId: profile.id })]);
     unregisterConsumer = registerSessionRealtimeTranscriptConsumer(sharedSessionId, profile.id);
 

@@ -139,7 +139,10 @@ describe('UI execution.run Action dependencies', () => {
             { detachedScope: true, startAndWait: false },
             { serverId: 'server_1', originSessionId: 'session_context' },
         )).resolves.toEqual({ ok: true, exactMachineId: 'machine_context' });
-        expect(readMachineControlTargetForSessionMock).toHaveBeenCalledWith('session_context');
+        expect(readMachineControlTargetForSessionMock).toHaveBeenCalledWith({
+            serverId: 'server_1',
+            sessionId: 'session_context',
+        });
         expect(machineCapabilitiesDetectMock).toHaveBeenCalledWith(
             'machine_context',
             { requests: [{ id: 'tool.executionRuns' }] },
@@ -162,7 +165,6 @@ describe('UI execution.run Action dependencies', () => {
         await deps.executionRunStart('session_1', { intent: 'delegate' }, opts);
         await deps.executionRunList('session_1', {}, opts);
         await deps.executionRunGet('session_1', { runId: 'run_1' }, opts);
-        await deps.executionRunSend('session_1', { runId: 'run_1', message: 'continue' }, opts);
         await deps.executionRunStop('session_1', { runId: 'run_1' }, opts);
         await deps.executionRunAction('session_1', { runId: 'run_1', actionId: 'review.apply' }, opts);
         await expect(deps.executionRunWait('session_1', { runId: 'run_1' }, opts))
@@ -170,11 +172,7 @@ describe('UI execution.run Action dependencies', () => {
 
         expect(sessionExecutionRunStartMock).toHaveBeenCalledWith('session_1', { intent: 'delegate' }, { serverId: 'server_1' });
         expect(sessionExecutionRunListMock).toHaveBeenCalledWith('session_1', {}, { serverId: 'server_1' });
-        expect(sessionExecutionRunSendMock).toHaveBeenCalledWith(
-            'session_1',
-            { runId: 'run_1', message: 'continue' },
-            { serverId: 'server_1' },
-        );
+        expect(sessionExecutionRunSendMock).not.toHaveBeenCalled();
         expect(sessionExecutionRunStopMock).toHaveBeenCalledWith('session_1', { runId: 'run_1' }, { serverId: 'server_1' });
         expect(sessionExecutionRunActionMock).toHaveBeenCalledWith(
             'session_1',
@@ -187,5 +185,21 @@ describe('UI execution.run Action dependencies', () => {
             { serverId: 'server_1' },
         );
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+    });
+
+    it('carries the exact capability witness into the canonical Session Run-start owner', async () => {
+        sessionExecutionRunStartMock.mockResolvedValue({ runId: 'run_1' });
+        const deps = createUiExecutionRunActionDeps();
+
+        await deps.executionRunStart('session_1', { intent: 'delegate' }, {
+            serverId: 'server_1',
+            exactMachineId: 'machine_admitted',
+        });
+
+        expect(sessionExecutionRunStartMock).toHaveBeenCalledWith(
+            'session_1',
+            { intent: 'delegate' },
+            { serverId: 'server_1', expectedMachineId: 'machine_admitted' },
+        );
     });
 });

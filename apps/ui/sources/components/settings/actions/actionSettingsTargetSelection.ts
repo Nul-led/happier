@@ -97,7 +97,7 @@ export function writeActionSettingsEntry(settings: ActionsSettingsV1, actionId: 
     }
 
     return {
-        v: 1,
+        ...normalizedSettings,
         actions: nextActions as ActionsSettingsV1['actions'],
     };
 }

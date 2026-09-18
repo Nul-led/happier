@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 import {
@@ -12,14 +13,16 @@ import {
     parseInjectedBrowserDiagnosticsMessage,
 } from '../../adapters/diagnostics';
 import { createNativeWebViewAutomationOwner } from '../../adapters/automation';
-import { createBrowserNativeNavigationGuard } from '@/sync/domains/browser/adapters/nativeNavigation';
+import { createBrowserNativeNavigationGuard, isBrowserInlineDocumentUrl } from '@/sync/domains/browser/adapters/nativeNavigation';
 
 import type {
     BrowserAutomationEngineBridgeConfig,
     BrowserDiagnosticsEngineBridgeConfig,
+    BrowserFrameMessageReceipt,
     BrowserFrameNavigationCommand,
     BrowserFrameNavigationState,
     BrowserNativeFrameMessageBridgeConfig,
+    NativeWebViewSource,
 } from '../types';
 
 /**
@@ -78,7 +81,6 @@ function buildNativeBridgeResponseScript(response: unknown): string {
 
 export function NativeWebViewEngine(props: Readonly<{
     title: string;
-    url: string;
     testID: string;
     navigationCommand?: BrowserFrameNavigationCommand;
     originWhitelist: readonly string[];
@@ -94,19 +96,32 @@ export function NativeWebViewEngine(props: Readonly<{
      */
     onNavigationStateChange?: (navigationState: BrowserFrameNavigationState) => void;
     onBlockedNavigation?: (url: string) => void;
+    onUnexpectedNavigation?: () => void;
     diagnostics?: BrowserDiagnosticsEngineBridgeConfig;
     automation?: BrowserAutomationEngineBridgeConfig;
     nativeMessageBridge?: BrowserNativeFrameMessageBridgeConfig;
-}>): React.ReactElement {
+}> & NativeWebViewSource): React.ReactElement {
+    const inlineDocument = props.html !== undefined;
+    const bridgeDocument = React.useMemo(() => ({ active: true }), [props.html, props.url]);
+    React.useLayoutEffect(() => () => { bridgeDocument.active = false; }, [bridgeDocument]);
+    const hasLoadedInlineDocumentRef = React.useRef(false);
+    const inlineDocumentUrlRef = React.useRef('about:blank');
+    React.useLayoutEffect(() => {
+        hasLoadedInlineDocumentRef.current = false;
+        inlineDocumentUrlRef.current = 'about:blank';
+    }, [props.html, props.url]);
     const webViewRef = React.useRef<NativeWebViewInstance | null>(null);
+    const webViewFocusedRef = React.useRef(false);
+    const transientActivationTokenRef = React.useRef<object | null>(null);
     const automationMessageListenersRef = React.useRef(new Set<(raw: string) => void>());
     const setWebViewRef = React.useCallback((instance: NativeWebViewInstance | null) => {
         webViewRef.current = instance;
     }, []);
     const shouldStartLoad = React.useMemo(() => createBrowserNativeNavigationGuard({
         allowedOrigins: props.originWhitelist,
+        inlineDocument,
         onBlockedNavigation: props.onBlockedNavigation,
-    }), [props.onBlockedNavigation, props.originWhitelist]);
+    }), [inlineDocument, props.onBlockedNavigation, props.originWhitelist]);
     const diagnosticsEventSequenceRef = React.useRef(0);
 
     const nextNativeDiagnosticsEventId = React.useCallback((kind: string): string => {
@@ -135,7 +150,7 @@ export function NativeWebViewEngine(props: Readonly<{
                 viewId: diagnostics.viewId,
                 navigationGeneration: diagnostics.navigationGeneration,
                 capturedAtMs: Date.now(),
-                url: event?.nativeEvent?.url ?? props.url,
+                url: event?.nativeEvent?.url ?? props.url ?? 'about:blank',
                 loading: event?.nativeEvent?.loading ?? loading,
                 title: event?.nativeEvent?.title,
             }),
@@ -164,14 +179,27 @@ export function NativeWebViewEngine(props: Readonly<{
     }, [nextNativeDiagnosticsEventId, props.diagnostics]);
 
     const handleLoadStart = React.useCallback((event: NativeWebViewCallbackEvent) => {
+        if (inlineDocument && hasLoadedInlineDocumentRef.current) {
+            const url = event.nativeEvent?.url;
+            // Native load-start also reports history updates (Android) and
+            // accepted top-frame navigation actions (iOS), including anchors.
+            if (url && isBrowserInlineDocumentUrl(url) && url !== inlineDocumentUrlRef.current) {
+                inlineDocumentUrlRef.current = url;
+            } else {
+                bridgeDocument.active = false;
+                props.onUnexpectedNavigation?.();
+                return;
+            }
+        }
         props.onLoadStart?.();
         emitNativePageInfo(event, true);
-    }, [emitNativePageInfo, props.onLoadStart]);
+    }, [bridgeDocument, emitNativePageInfo, inlineDocument, props.onLoadStart, props.onUnexpectedNavigation]);
 
     const handleLoadEnd = React.useCallback((event: NativeWebViewCallbackEvent) => {
+        if (inlineDocument) hasLoadedInlineDocumentRef.current = true;
         props.onLoadEnd?.();
         emitNativePageInfo(event, false);
-    }, [emitNativePageInfo, props.onLoadEnd]);
+    }, [emitNativePageInfo, inlineDocument, props.onLoadEnd]);
 
     const handleLoadError = React.useCallback((event: NativeWebViewCallbackEvent) => {
         props.onError?.();
@@ -181,7 +209,7 @@ export function NativeWebViewEngine(props: Readonly<{
     const onNavigationStateChangeProp = props.onNavigationStateChange;
     const handleNavigationStateChange = React.useCallback((navigationState: NativeWebViewNavigationState) => {
         onNavigationStateChangeProp?.({
-            url: navigationState.url ?? props.url,
+            url: navigationState.url ?? props.url ?? 'about:blank',
             title: navigationState.title ?? null,
             loading: navigationState.loading === true,
             canGoBack: navigationState.canGoBack === true,
@@ -288,9 +316,27 @@ export function NativeWebViewEngine(props: Readonly<{
             props.automation.onRejectedMessage?.('schema_invalid');
         }
         if (props.nativeMessageBridge) {
-            Promise.resolve(props.nativeMessageBridge.onMessage(event)).then((response) => {
+            const view = webViewRef.current;
+            const activationToken = webViewFocusedRef.current
+                ? transientActivationTokenRef.current
+                : null;
+            let receiptConsumed = false;
+            const receipt: BrowserFrameMessageReceipt = Object.freeze({
+                consumeTransientActivation(): boolean {
+                    if (
+                        receiptConsumed
+                        || activationToken === null
+                        || transientActivationTokenRef.current !== activationToken
+                    ) return false;
+                    receiptConsumed = true;
+                    transientActivationTokenRef.current = null;
+                    return true;
+                },
+            });
+            Promise.resolve(props.nativeMessageBridge.onMessage(event, receipt)).then((response) => {
+                if (!bridgeDocument.active || !view || webViewRef.current !== view) return;
                 if (response === undefined || response === null) return;
-                webViewRef.current?.injectJavaScript?.(buildNativeBridgeResponseScript(response));
+                view.injectJavaScript?.(buildNativeBridgeResponseScript(response));
             }).catch(() => undefined);
         }
         if (!diagnostics || props.javaScriptEnabled === false || typeof data !== 'string') return;
@@ -329,7 +375,7 @@ export function NativeWebViewEngine(props: Readonly<{
             return;
         }
         diagnostics.onRejectedMessage?.(parsed.reasonCode);
-    }, [props.automation, props.diagnostics, props.javaScriptEnabled, props.nativeMessageBridge]);
+    }, [bridgeDocument, props.automation, props.diagnostics, props.javaScriptEnabled, props.nativeMessageBridge]);
 
     React.useEffect(() => {
         const diagnostics = props.diagnostics;
@@ -404,6 +450,22 @@ export function NativeWebViewEngine(props: Readonly<{
 
     return (
         <WebView
+            {...(inlineDocument ? {
+                // Android's incognito setter clears the global cookie jar.
+                // about:blank plus disabled DOM storage/cache has no origin to persist.
+                incognito: Platform.OS === 'ios',
+                cacheEnabled: false,
+                domStorageEnabled: false,
+                sharedCookiesEnabled: false,
+                thirdPartyCookiesEnabled: false,
+                allowFileAccess: false,
+                allowFileAccessFromFileURLs: false,
+                allowUniversalAccessFromFileURLs: false,
+                javaScriptCanOpenWindowsAutomatically: false,
+                onOpenWindow: (event: { nativeEvent: { targetUrl: string } }) => {
+                    props.onBlockedNavigation?.(event.nativeEvent.targetUrl);
+                },
+            } : {})}
             accessibilityLabel={props.title}
             injectedJavaScript={injectedJavaScript}
             javaScriptEnabled={props.javaScriptEnabled ?? true}
@@ -414,12 +476,24 @@ export function NativeWebViewEngine(props: Readonly<{
             onLoadEnd={handleLoadEnd}
             onLoadStart={handleLoadStart}
             onMessage={injectedJavaScript || props.nativeMessageBridge ? handleWebViewMessage : undefined}
+            onFocus={() => { webViewFocusedRef.current = true; }}
+            onBlur={() => {
+                webViewFocusedRef.current = false;
+                transientActivationTokenRef.current = null;
+            }}
+            onTouchStart={() => {
+                // Native owns this callback; authored DOM cannot mint a token.
+                webViewFocusedRef.current = true;
+                transientActivationTokenRef.current = {};
+            }}
             onNavigationStateChange={onNavigationStateChangeProp ? handleNavigationStateChange : undefined}
             onRenderProcessGone={handleProcessCrash}
             onShouldStartLoadWithRequest={shouldStartLoad}
-            originWhitelist={[...props.originWhitelist]}
+            // A whitelist miss launches Linking.openURL before RNWebView asks
+            // our guard. Inline documents send every URL to the rejecting guard.
+            originWhitelist={inlineDocument ? ['*'] : [...props.originWhitelist]}
             ref={setWebViewRef}
-            source={{ uri: props.url }}
+            source={props.html !== undefined ? { html: props.html, baseUrl: 'about:blank' } : { uri: props.url }}
             testID={props.testID}
         />
     );

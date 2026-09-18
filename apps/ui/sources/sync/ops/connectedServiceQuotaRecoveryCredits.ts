@@ -1,4 +1,5 @@
 import {
+    buildRecoveryCreditConsumeIdempotencyKey,
     ConnectedServiceQuotaRecoveryCreditConsumeRequestV1Schema,
     ConnectedServiceQuotaRecoveryCreditConsumeResponseV1Schema,
     type ConnectedServiceId,
@@ -28,15 +29,6 @@ function failure(
     };
 }
 
-function stableHash(input: string): string {
-    let hash = 2_166_136_261;
-    for (let i = 0; i < input.length; i += 1) {
-        hash ^= input.charCodeAt(i);
-        hash = Math.imul(hash, 16_777_619);
-    }
-    return (hash >>> 0).toString(36);
-}
-
 export function buildConnectedServiceQuotaRecoveryCreditIdempotencyKey(params: Readonly<{
     surface: string;
     sessionId?: string | null;
@@ -45,19 +37,12 @@ export function buildConnectedServiceQuotaRecoveryCreditIdempotencyKey(params: R
     providerCreditId?: string | null;
     snapshotFetchedAtMs?: number | null;
 }>): string {
-    const providerCreditId = typeof params.providerCreditId === 'string' && params.providerCreditId.trim().length > 0
-        ? params.providerCreditId.trim()
-        : null;
-    const aggregateDiscriminator = typeof params.snapshotFetchedAtMs === 'number' && Number.isFinite(params.snapshotFetchedAtMs)
-        ? `aggregate:${Math.trunc(params.snapshotFetchedAtMs)}`
-        : 'aggregate:unknown-snapshot';
-    const selector = providerCreditId
-        ? `credit:${providerCreditId}`
-        : aggregateDiscriminator;
-    const raw = `connected-service-quota-recovery-credit:v1:${params.serviceId}:${params.profileId}:${selector}`;
-    return raw.length <= 240
-        ? raw
-        : `connected-service-quota-recovery-credit:v1:${stableHash(raw)}:${raw.length}`;
+    return buildRecoveryCreditConsumeIdempotencyKey({
+        serviceId: params.serviceId,
+        profileId: params.profileId,
+        providerCreditId: params.providerCreditId,
+        sourceSnapshotFetchedAtMs: params.snapshotFetchedAtMs,
+    });
 }
 
 export async function connectedServiceQuotaRecoveryCreditConsume(params: Readonly<{

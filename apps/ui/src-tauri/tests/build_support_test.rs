@@ -1,7 +1,10 @@
 #[path = "../build_support.rs"]
 mod build_support;
 
-use build_support::{resolve_sidecar_update_action, SidecarSnapshot, SidecarUpdateAction};
+use build_support::{
+    resolve_sidecar_update_action, tauri_config_without_iroh_release_evidence, SidecarSnapshot,
+    SidecarUpdateAction,
+};
 
 fn snapshot(bytes: &[u8], unix_mode: Option<u32>) -> SidecarSnapshot {
     SidecarSnapshot {
@@ -52,4 +55,31 @@ fn content_and_permission_drift_requests_copy_and_permissions_update() {
         resolve_sidecar_update_action(&source, Some(&destination)),
         SidecarUpdateAction::CopyAndPermissions,
     );
+}
+
+#[test]
+fn source_test_config_excludes_only_iroh_release_evidence_resources() {
+    let existing = r#"{
+      "bundle": {
+        "resources": {
+          "other/source.txt": "other/target.txt"
+        }
+      },
+      "app": { "withGlobalTauri": false }
+    }"#;
+
+    let config = tauri_config_without_iroh_release_evidence(Some(existing)).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&config).unwrap();
+
+    assert_eq!(value["app"]["withGlobalTauri"], false);
+    assert_eq!(
+        value["bundle"]["resources"]["other/source.txt"],
+        "other/target.txt"
+    );
+    assert!(value["bundle"]["resources"]
+        ["../../../packages/iroh-native/release-evidence/THIRD-PARTY-NOTICES.txt"]
+        .is_null());
+    assert!(value["bundle"]["resources"]
+        ["../../../packages/iroh-native/release-evidence/sbom.cdx.json"]
+        .is_null());
 }

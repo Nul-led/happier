@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionAttentionStandingPolicy } from '@/sync/domains/session/organization/attentionStanding';
+import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization/keys';
 
 import { computeVisibleSessionListIndex } from './computeVisibleSessionListIndex';
 import type { SessionListRenderableSession } from './sessionListRenderable';
@@ -56,7 +57,9 @@ describe('computeVisibleSessionListIndex attention standing under hide-inactive'
     it('keeps an explicitly kept inactive session visible in the band', () => {
         const result = computeWithStanding({
             defaultStanding: false,
-            overridesBySessionKey: { 'server-a:kept': true },
+            overridesBySessionKey: {
+                [buildSessionOrganizationSessionKey('server-a', 'kept')]: { standing: true, updatedAt: 1 },
+            },
         });
 
         expect(result?.map((item) => (item.type === 'session' ? `s:${item.sessionId}` : `h:${item.headerKind}`)))

@@ -13,6 +13,7 @@ import type { Session } from '@/sync/domains/state/storageTypes';
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'https://example.com', generation: 1 }),
+    subscribeActiveServer: () => () => {},
 }));
 
 afterEach(() => {
@@ -72,7 +73,8 @@ describe('useSessionWorkspacePath', () => {
                         daemonStateVersion: 0,
                     },
                 },
-                sessionListRenderables: {},
+                sessionListRowsByServerId: {},
+                ordinarySessionListMembershipByServerId: {},
                 sessionListIndexByServerId: {},
                 getProjectForSession: () => null,
             }));
@@ -143,7 +145,8 @@ describe('useSessionWorkspacePath', () => {
                         daemonStateVersion: 0,
                     },
                 },
-                sessionListRenderables: {},
+                sessionListRowsByServerId: {},
+                ordinarySessionListMembershipByServerId: {},
                 sessionListIndexByServerId: {},
             }));
 
@@ -268,7 +271,8 @@ describe('useSessionWorkspacePath', () => {
                         isDataReady: true,
                         sessions: testCase.session ? { [testCase.session.id]: testCase.session } : {},
                         machines: { 'machine-1': machine as never },
-                        sessionListRenderables: {},
+                        sessionListRowsByServerId: {},
+                        ordinarySessionListMembershipByServerId: {},
                         sessionListIndexByServerId: {},
                     }));
 
@@ -284,7 +288,8 @@ describe('useSessionWorkspacePath', () => {
                     const legacy = normalizedSessionId
                         ? resolveWorkspaceTargetForSessionFromState({
                             sessions: state.sessions,
-                            sessionListRenderables: state.sessionListRenderables,
+                            sessionListRowsByServerId: state.sessionListRowsByServerId,
+                            ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
                             machines: state.machines,
                             sessionListIndexByServerId: state.sessionListIndexByServerId,
                             getProjectForSession: state.getProjectForSession,

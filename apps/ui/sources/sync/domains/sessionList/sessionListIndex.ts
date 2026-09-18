@@ -9,12 +9,13 @@ import type {
     SessionListAttentionPlacementReason,
     SessionListWorkingPlacementReason,
 } from '../session/listing/sessionListAttentionPlacementTypes';
+import { sessionAddressKey } from '../session/sessionAddress';
 
 export type SessionListIndexItem =
     | Readonly<{
         type: 'header';
         title: string;
-        headerKind?: 'date' | 'server' | 'active' | 'inactive' | 'sessions' | 'project' | 'pinned' | 'shared' | 'folder' | 'attention' | 'working';
+        headerKind?: 'date' | 'server' | 'active' | 'inactive' | 'sessions' | 'project' | 'pinned' | 'loading' | 'folder' | 'attention' | 'working';
         groupKey?: string;
         workspaceKey?: string;
         seedSessionId?: string | null;
@@ -44,7 +45,7 @@ export type SessionListIndexItem =
         storageKind?: SessionStorageKind;
         section?: 'active' | 'inactive';
         groupKey?: string;
-        groupKind?: 'active' | 'date' | 'project' | 'pinned' | 'shared' | 'folder' | 'attention' | 'working';
+        groupKind?: 'active' | 'date' | 'project' | 'pinned' | 'loading' | 'folder' | 'attention' | 'working';
         pinned?: boolean;
         variant?: 'default' | 'no-path';
         archivedAt?: number | null;
@@ -213,7 +214,7 @@ export function buildSessionListIndexNodeId(item: SessionListIndexItem): string 
 
     const serverId = String(item.serverId ?? '').trim();
     const sessionId = String(item.sessionId ?? '').trim();
-    if (serverId && sessionId) return `session:${serverId}:${sessionId}`;
+    if (serverId && sessionId) return `session:${sessionAddressKey({ serverId, sessionId })}`;
     return `session:${sessionId}`;
 }
 

@@ -37,6 +37,7 @@ import {
 } from './SidechainHydrationInlineStatus';
 import { isGenericSubAgentToolName, isSubAgentTranscriptToolName } from '@happier-dev/protocol/tools/v2';
 import { buildToolCallMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { PermissionFooter } from '../permissions/PermissionFooter';
 import { ApprovalPromptCard } from '../approvals/ApprovalPromptCard';
 import { resolveInactiveSessionToolCallFailure } from '../permissions/resolveInactiveSessionToolCallFailure';
@@ -52,6 +53,8 @@ import {
     TranscriptRowSeqProvider,
     useHistoricalTranscriptAgentId,
 } from '@/components/sessions/transcript/attribution/SessionTranscriptAgentAttributionContext';
+import { SessionBoardActionResultReference } from '@/components/sessions/transcript/references/SessionBoardActionResultReference';
+import { WorkflowRunActionResultReference } from '@/components/sessions/transcript/references/WorkflowRunActionResultReference';
 
 const TOOL_TIMELINE_ROW_HIGHLIGHT_RADIUS = 10;
 
@@ -60,6 +63,7 @@ export const ToolTimelineRow = React.memo((props: {
     metadata: Metadata | null;
     messages?: Message[];
     sessionId?: string;
+    serverId?: string;
     messageId?: string;
     /** Row seq, so a seq-targeted transcript jump can land its highlight here. */
     jumpHighlightSeq?: number | null;
@@ -139,9 +143,13 @@ export const ToolTimelineRow = React.memo((props: {
         const sessionId = props.sessionId;
         if (!sessionId || !routeMessageId) return;
         navigateWithBlurOnWeb(() => {
-            router.push(`/session/${encodeURIComponent(sessionId)}/message/${encodeURIComponent(routeMessageId)}`);
+            router.push(buildScopedSessionRouteHref({
+                sessionId,
+                serverId: props.serverId,
+                suffix: `/message/${encodeURIComponent(routeMessageId)}`,
+            }) as never);
         });
-    }, [props.sessionId, routeMessageId, router]);
+    }, [props.serverId, props.sessionId, routeMessageId, router]);
 
     const canOpen = !!(props.sessionId && routeMessageId);
     const primaryTapAction: 'expand' | 'open' =
@@ -438,6 +446,7 @@ export const ToolTimelineRow = React.memo((props: {
                             metadata={props.metadata}
                             messages={toolMessages}
                             sessionId={props.sessionId}
+                            serverId={props.serverId}
                             messageId={props.messageId}
                             interaction={props.interaction}
                             detailLevel={renderBodyDetailLevel}
@@ -446,6 +455,21 @@ export const ToolTimelineRow = React.memo((props: {
                     </View>
                 </TranscriptCollapsible>
             )}
+
+            {/*
+              * The same row-level outcome the card chrome renders: the Board item
+              * this call created, mirrored beside the row rather than inside its
+              * collapsible body.
+              */}
+            <SessionBoardActionResultReference
+                tool={toolForRendering}
+                sessionId={props.sessionId}
+                serverId={props.serverId}
+            />
+            <WorkflowRunActionResultReference
+                tool={toolForRendering}
+                serverId={props.serverId}
+            />
 
             {permissionFooter}
             {approvalCards}

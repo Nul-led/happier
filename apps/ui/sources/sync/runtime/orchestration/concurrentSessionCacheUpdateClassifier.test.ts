@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     shouldRefreshConcurrentSessionCacheForUpdate,
-    shouldSchedulePushTokenReconciliationForUpdate,
+    isAccountChangeUpdate,
 } from './concurrentSessionCacheUpdateClassifier';
 
 describe('shouldRefreshConcurrentSessionCacheForUpdate', () => {
@@ -28,9 +28,14 @@ describe('shouldRefreshConcurrentSessionCacheForUpdate', () => {
     it('recognizes account updates only as push truth changes', () => {
         const accountUpdate = { body: { t: 'update-account' } };
 
-        expect(shouldSchedulePushTokenReconciliationForUpdate(accountUpdate)).toBe(true);
+        expect(isAccountChangeUpdate(accountUpdate)).toBe(true);
         expect(shouldRefreshConcurrentSessionCacheForUpdate(accountUpdate)).toBe(false);
-        expect(shouldSchedulePushTokenReconciliationForUpdate({ body: { t: 'update-machine' } })).toBe(false);
-        expect(shouldSchedulePushTokenReconciliationForUpdate(null)).toBe(false);
+        expect(isAccountChangeUpdate({ body: { t: 'update-machine' } })).toBe(false);
+        expect(isAccountChangeUpdate(null)).toBe(false);
+    });
+    it('recognizes content-free AccountChange wakes for Follow and refreshes secondary Home lists', () => {
+        const wake = { body: { t: 'account-change' } };
+        expect(isAccountChangeUpdate(wake)).toBe(true);
+        expect(shouldRefreshConcurrentSessionCacheForUpdate(wake)).toBe(true);
     });
 });

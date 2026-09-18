@@ -71,6 +71,16 @@ function createAcmeSpeechContribution() {
           default: 'acme-voice',
           presentation: { control: 'select' },
         },
+        {
+          id: 'format',
+          title: 'Audio format',
+          schema: { type: 'string', enum: ['mp3', 'wav'] },
+          default: 'mp3',
+          presentation: {
+            control: 'select',
+            options: [{ value: 'mp3', title: 'MP3' }, { value: 'wav', title: 'WAV' }],
+          },
+        },
       ],
     },
   });

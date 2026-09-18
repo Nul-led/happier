@@ -181,6 +181,7 @@ function installDirectSessionState(): void {
       ...current.sessions,
       'codex-direct-session': createSessionFixture({
         id: 'codex-direct-session',
+        serverId: getActiveServerSnapshot().serverId,
         active: true,
         encryptionMode: 'plain',
         metadata: {
@@ -380,16 +381,19 @@ describe('realtime_codex normal web composed gate', () => {
 
     const binding = await runtime.adapter.resolveConversationBinding?.({
       controlSessionId: 'codex-direct-session',
-      requestedTargetSessionId: 'codex-direct-session',
+      requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
       settings: storage.getState().settings,
     });
     expect(binding).toEqual({
-      conversationSessionId: 'codex-direct-session',
+      conversationSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
       transcriptMode: 'native_session',
-      targetSessionId: 'codex-direct-session',
+      targetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
     });
 
-    const starting = runtime.adapter.start({ sessionId: 'codex-direct-session' });
+    const starting = runtime.adapter.start({
+      sessionId: 'codex-direct-session',
+      requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
+    });
     await vi.waitFor(() => expect(runtime.adapter.getSnapshot().status).toBe('connecting'));
     await vi.waitFor(() => expect(browser.peer.createDataChannel).toHaveBeenCalledWith('oai-events'));
     browser.peer.channel.open();
@@ -494,6 +498,10 @@ describe('realtime_codex normal web composed gate', () => {
               v: 1,
               channel: 'realtime_conversation',
               modality: 'voice',
+              source: {
+                pluginId: 'happier.agent.codex',
+                contributionId: 'realtime-codex',
+              },
             },
           }),
         }),
@@ -580,6 +588,10 @@ describe('realtime_codex normal web composed gate', () => {
               v: 1,
               channel: 'realtime_conversation',
               modality: 'voice',
+              source: {
+                pluginId: 'happier.agent.codex',
+                contributionId: 'realtime-codex',
+              },
             },
           }),
         }),
@@ -624,7 +636,10 @@ describe('realtime_codex normal web composed gate', () => {
         return remoteAudio;
       }),
     });
-    const thirdStarting = runtime.adapter.start({ sessionId: 'codex-direct-session' });
+    const thirdStarting = runtime.adapter.start({
+      sessionId: 'codex-direct-session',
+      requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
+    });
     const thirdRejected = expect(thirdStarting).rejects.toMatchObject({
       code: 'voice_webrtc_remote_audio_playback_failed',
       message: 'voice_webrtc_remote_audio_playback_failed',
@@ -677,7 +692,7 @@ describe('realtime_codex normal web composed gate', () => {
     try {
       await expect(runtime.adapter.resolveConversationBinding?.({
         controlSessionId: 'codex-direct-session',
-        requestedTargetSessionId: 'codex-direct-session',
+        requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
         settings: storage.getState().settings,
       })).resolves.toBeNull();
 
@@ -732,12 +747,13 @@ describe('realtime_codex normal web composed gate', () => {
     try {
       await expect(runtime.adapter.resolveConversationBinding?.({
         controlSessionId: 'codex-direct-session',
-        requestedTargetSessionId: 'codex-direct-session',
+        requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
         settings: storage.getState().settings,
       })).rejects.toMatchObject({ code: 'session_unavailable' });
 
       await expect(runtime.adapter.start({
         sessionId: 'codex-direct-session',
+        requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
       })).rejects.toMatchObject({ code: 'session_unavailable' });
 
       expect(runtime.adapter.getSnapshot()).toMatchObject({
@@ -877,6 +893,7 @@ describe('realtime_codex normal web composed gate', () => {
     try {
       await expect(runtime.adapter.start({
         sessionId: host.globalVoiceSessionId,
+        requestedTargetSessionAddress: null,
       })).rejects.toMatchObject({
         code: 'service_temporarily_unavailable',
         message: 'service_temporarily_unavailable',
@@ -941,14 +958,15 @@ describe('realtime_codex normal web composed gate', () => {
     try {
       await expect(runtime.adapter.resolveConversationBinding?.({
         controlSessionId: 'codex-direct-session',
-        requestedTargetSessionId: 'codex-direct-session',
+        requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
         settings: storage.getState().settings,
       })).resolves.toMatchObject({
-        conversationSessionId: 'codex-direct-session',
+        conversationSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
       });
 
       await expect(runtime.adapter.start({
         sessionId: 'codex-direct-session',
+        requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
       })).rejects.toMatchObject({
         code: 'update_required',
         message: 'update_required',
@@ -1005,6 +1023,7 @@ describe('realtime_codex normal web composed gate', () => {
       try {
         await expect(runtime.adapter.start({
           sessionId: 'codex-direct-session',
+          requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
         })).rejects.toMatchObject({
           code: diagnosticCode,
           message: diagnosticCode,
@@ -1067,7 +1086,10 @@ describe('realtime_codex normal web composed gate', () => {
       registerVoiceAdapters([runtime.adapter]);
 
       try {
-        const starting = runtime.adapter.start({ sessionId: 'codex-direct-session' });
+        const starting = runtime.adapter.start({
+          sessionId: 'codex-direct-session',
+          requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
+        });
         await vi.waitFor(() => expect(browser.peer.createDataChannel).toHaveBeenCalledWith('oai-events'));
         browser.peer.channel.open();
         await starting;
@@ -1344,7 +1366,7 @@ describe('realtime_codex normal web composed gate', () => {
     try {
       await expect(runtime.adapter.resolveConversationBinding?.({
         controlSessionId: host.globalVoiceSessionId,
-        requestedTargetSessionId: 'visible-global-target',
+        requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'visible-global-target' },
         settings: storage.getState().settings,
       })).rejects.toMatchObject({ code: 'VOICE_CONVERSATION_METADATA_COMMIT_FAILED' });
       expect(storage.getState().sessions['hidden-global-failed']).toMatchObject({
@@ -1355,7 +1377,10 @@ describe('realtime_codex normal web composed gate', () => {
       expect(globalMachineBoundary.completeCustody).not.toHaveBeenCalled();
 
       registerVoiceAdapters([runtime.adapter]);
-      const starting = runtime.adapter.start({ sessionId: host.globalVoiceSessionId });
+      const starting = runtime.adapter.start({
+        sessionId: host.globalVoiceSessionId,
+        requestedTargetSessionAddress: null,
+      });
       await vi.waitFor(() => {
         expect(events).toContain('service:hidden-global-ready');
         expect(browser.peer.createDataChannel).toHaveBeenCalledWith('oai-events');
@@ -1367,7 +1392,7 @@ describe('realtime_codex normal web composed gate', () => {
       )).toMatchObject({
         conversationSessionId: 'hidden-global-ready',
         transcriptMode: 'native_session',
-        targetSessionId: null,
+        targetSessionAddress: null,
       });
       expect(globalMachineBoundary.trustedSpawn).toHaveBeenCalledTimes(2);
       expect(globalMachineBoundary.projectionDescribe).toHaveBeenCalledWith(
@@ -1391,12 +1416,12 @@ describe('realtime_codex normal web composed gate', () => {
 
       await expect(runtime.adapter.resolveConversationBinding?.({
         controlSessionId: 'codex-direct-session',
-        requestedTargetSessionId: 'codex-direct-session',
+        requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
         settings: storage.getState().settings,
       })).resolves.toEqual({
-        conversationSessionId: 'codex-direct-session',
+        conversationSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
         transcriptMode: 'native_session',
-        targetSessionId: 'codex-direct-session',
+        targetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
       });
       expect(globalMachineBoundary.trustedSpawn).toHaveBeenCalledTimes(2);
     } finally {

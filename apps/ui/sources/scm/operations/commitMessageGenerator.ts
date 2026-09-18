@@ -28,10 +28,11 @@ function readActionError(
     };
 }
 
-function commitMessageActionContext(sessionId: string): ActionExecutorContext {
+function commitMessageActionContext(sessionId: string, serverId?: string): ActionExecutorContext {
     return {
         actionCaller: { kind: 'host' },
         defaultSessionId: sessionId,
+        ...(serverId === undefined ? {} : { serverId }),
         surface: 'ui',
     };
 }
@@ -48,6 +49,7 @@ function waitObservationFailure(code: string): ScmCommitMessageGeneratorResult {
 
 export async function generateScmCommitMessage(params: Readonly<{
     sessionId: string;
+    serverId?: string;
     backendId: string;
     instructions?: string;
     scopePaths?: ReadonlyArray<string>;
@@ -61,7 +63,7 @@ export async function generateScmCommitMessage(params: Readonly<{
         .map((v) => (typeof v === 'string' ? v.trim() : ''))
         .filter((v) => v.length > 0);
 
-    const context = commitMessageActionContext(params.sessionId);
+    const context = commitMessageActionContext(params.sessionId, params.serverId);
     const startResult = await executeAction(
         'execution.run.start',
         {

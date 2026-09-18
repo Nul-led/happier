@@ -4,6 +4,11 @@ import { Artifact, ArtifactCreateRequest, ArtifactUpdateRequest, ArtifactUpdateR
 import { HappyError } from '@/utils/errors/errors';
 import { serverFetch } from '@/sync/http/client';
 
+export type ArtifactApiOptions = Readonly<{
+    retry?: 'default' | 'none';
+    request?: (path: string, init?: RequestInit) => Promise<Response>;
+}>;
+
 /**
  * Fetch all artifacts for the account
  */
@@ -50,15 +55,15 @@ export async function fetchArtifacts(
 export async function fetchArtifact(
     credentials: AuthCredentials,
     artifactId: string,
-    opts: Readonly<{ retry?: 'default' | 'none' }> = {},
+    opts: ArtifactApiOptions = {},
 ): Promise<Artifact> {
     const run = async () => {
-        const response = await serverFetch(`/v1/artifacts/${artifactId}`, {
+        const response = await (opts.request ?? ((path, init) => serverFetch(path, init, { includeAuth: false })))(`/v1/artifacts/${artifactId}`, {
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json'
             }
-        }, { includeAuth: false });
+        });
 
         if (!response.ok) {
             if (response.status === 404) {
@@ -94,17 +99,17 @@ export async function fetchArtifact(
 export async function createArtifact(
     credentials: AuthCredentials, 
     request: ArtifactCreateRequest,
-    opts: Readonly<{ retry?: 'default' | 'none' }> = {},
+    opts: ArtifactApiOptions = {},
 ): Promise<Artifact> {
     const run = async () => {
-        const response = await serverFetch('/v1/artifacts', {
+        const response = await (opts.request ?? ((path, init) => serverFetch(path, init, { includeAuth: false })))('/v1/artifacts', {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify(request)
-        }, { includeAuth: false });
+        });
 
         if (!response.ok) {
             if (response.status === 409) {
@@ -141,17 +146,17 @@ export async function updateArtifact(
     credentials: AuthCredentials,
     artifactId: string,
     request: ArtifactUpdateRequest,
-    opts: Readonly<{ retry?: 'default' | 'none' }> = {},
+    opts: ArtifactApiOptions = {},
 ): Promise<ArtifactUpdateResponse> {
     const run = async () => {
-        const response = await serverFetch(`/v1/artifacts/${artifactId}`, {
+        const response = await (opts.request ?? ((path, init) => serverFetch(path, init, { includeAuth: false })))(`/v1/artifacts/${artifactId}`, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify(request)
-        }, { includeAuth: false });
+        });
 
         if (!response.ok) {
             if (response.status === 404) {

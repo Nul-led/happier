@@ -9,9 +9,12 @@ describe('API Tokens Settings route', () => {
         expect(SETTINGS_ROUTES.apiTokens).toBe('/settings/account/api-tokens');
         const catalog = flattenSettingsPageCatalog(SETTINGS_PAGE_CATALOG);
         const account = catalog.find((node) => node.id === 'account');
+        const security = catalog.find((node) => node.id === 'accountSecurity');
         const apiTokens = catalog.find((node) => node.id === 'apiTokens');
 
-        expect(account?.children?.some((child) => child.id === 'apiTokens')).toBe(true);
+        expect(account?.children?.some((child) => child.id === 'accountSecurity')).toBe(true);
+        expect(security?.route).toBe('/settings/account/security');
+        expect(security?.children?.some((child) => child.id === 'apiTokens')).toBe(true);
         expect(apiTokens).toMatchObject({
             route: '/settings/account/api-tokens',
             titleKey: 'settingsApiTokens.title',

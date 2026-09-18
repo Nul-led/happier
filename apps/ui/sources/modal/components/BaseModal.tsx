@@ -193,7 +193,9 @@ export function BaseModal({
     useWebOverlayFocusContainment({
         active: isWeb && visible && modalPresence.present,
         containerRef: webContentShellRef,
-        focusReturn: BASE_MODAL_FOCUS_RETURN,
+        focusReturn: focusReturnRef
+            ? { kind: 'provided', ref: focusReturnRef }
+            : BASE_MODAL_FOCUS_RETURN,
     });
     const restoreNativeFocus = useRestoreFocusToTrigger(focusReturnRef);
     useEffect(() => {

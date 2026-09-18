@@ -30,9 +30,12 @@ export function useExecutionRunsBackendsForSession(
   // session-field write re-ran the option resolver (MEASURED: 1 render per write, 0 after this).
   // `useSessionMachineTarget` is already narrow: it shallow-compares the resolved `{ machineId,
   // basePath }`, so it only fires when the target itself moves.
-  const machineTarget = useSessionMachineTarget(normalizedSessionId);
+  const machineTarget = useSessionMachineTarget(normalizedSessionId, serverId);
   const sessionMetadataMachineId = useSessionMachineId(normalizedSessionId);
-  const machineId = machineTarget?.machineId ?? sessionMetadataMachineId;
+  // A bare Session fallback is only safe at the legacy unqualified boundary.
+  // With an exact Home, absence of its target must fail closed rather than
+  // borrowing a same-id Session's Machine from another Home.
+  const machineId = machineTarget?.machineId ?? (serverId ? null : sessionMetadataMachineId);
 
   const machineCapabilities = useMachineCapabilitiesCache({
     machineId,

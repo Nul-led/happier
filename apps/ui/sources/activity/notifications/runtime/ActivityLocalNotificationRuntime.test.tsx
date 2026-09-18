@@ -1,8 +1,8 @@
 import * as React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
 import { accountSettingsParse } from '@happier-dev/protocol';
-import { renderScreen } from '@/dev/testkit';
+import { createDeferred, createSessionAccessFixture, renderScreen } from '@/dev/testkit';
 import { localSettingsParse } from '@/sync/domains/settings/localSettings';
 import {
     createActivityNotificationTextModuleMock,
@@ -18,9 +18,11 @@ type ReactActEnvironmentGlobal = typeof globalThis & {
 const reactNativeRuntime = vi.hoisted(() => ({
     platformOs: 'ios' as 'web' | 'ios' | 'android',
 }));
+const activeServerRuntime = vi.hoisted(() => ({ serverId: 'server-a' }));
 
 let isDesktopHostValue = false;
 let visibleSessionIdsValue: string[] = [];
+let visibleSessionAddressesValue: string[] = [];
 let localSettingsValue: Record<string, unknown> = {
     localNotificationsEnabled: true,
     localNotificationsShowReady: true,
@@ -32,6 +34,10 @@ let accountSettingsValue = accountSettingsParse({});
 let sessionsByIdValue: Record<string, unknown> = {
     'session-1': {
         id: 'session-1',
+        serverId: 'server-a',
+        encryptionMode: 'plain',
+        access: createSessionAccessFixture(),
+        active: true,
         metadata: {
             summary: {
                 text: 'Ready session',
@@ -39,9 +45,23 @@ let sessionsByIdValue: Record<string, unknown> = {
         },
     },
 };
+let concurrentSessionListCacheByServerIdValue: Record<string, unknown> = {
+    'server-a': { serverName: 'Home A', listObservation: { phase: 'ready', lastSuccessAt: 1 } },
+    'server-b': { serverName: 'Home B', listObservation: { phase: 'ready', lastSuccessAt: 1 } },
+};
 
-const sendExpoLocalNotification = vi.hoisted(() => vi.fn(async () => 'notif-1'));
+type ExpoLocalNotificationParams =
+    Parameters<typeof import('../channels/sendExpoLocalNotification')['sendExpoLocalNotification']>[0];
+
+const sendExpoLocalNotification = vi.hoisted(() => vi.fn(async (_params: ExpoLocalNotificationParams) => 'notif-1'));
 const sendTauriLocalNotification = vi.hoisted(() => vi.fn(async () => true));
+
+async function setActiveAccountSettings(raw: Record<string, unknown>): Promise<void> {
+    accountSettingsValue = accountSettingsParse(raw);
+    const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
+    const accountId = activeServerRuntime.serverId === 'server-b' ? 'account-b' : 'account-a';
+    saveAccountSettings({ serverId: activeServerRuntime.serverId, accountId }, accountSettingsValue, 3);
+}
 
 installActivityNotificationRuntimeCommonModuleMocks({
     reactNative: async () => {
@@ -67,20 +87,74 @@ installActivityNotificationRuntimeCommonModuleMocks({
             storage: {
                 getState: () => ({
                     sessions: sessionsByIdValue,
+                    sessionMessages: {},
                     localSettings: localSettingsValue,
                     settings: accountSettingsValue,
+                    concurrentSessionListCacheByServerId: concurrentSessionListCacheByServerIdValue,
                 }),
             },
         });
     },
 });
 
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    const { createAccountTokenForTests } = await import('@/dev/testkit/harness/homeGovernanceHarness');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: async (serverUrl: string) => ({
+                token: createAccountTokenForTests(serverUrl.includes('secondary') ? 'account-b' : 'account-a'),
+            }),
+        },
+    });
+});
+
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    getActiveServerUrl: () => 'https://stack.example.test',
+    getServerProfilesGeneration: () => '1',
+    loadHomeViewState: () => null,
+    listServerProfiles: () => [],
+    subscribeServerProfiles: () => () => undefined,
+    subscribeActiveServer: () => () => undefined,
+    areServerProfileIdentifiersEquivalent: (left: string, right: string) => left === right,
+    getActiveServerSnapshot: () => ({
+        serverId: activeServerRuntime.serverId,
+        serverUrl: activeServerRuntime.serverId === 'server-b'
+            ? 'https://secondary.example.test'
+            : 'https://stack.example.test',
+        generation: 1,
+    }),
+    getServerProfileById: (serverId: string) => ({
+        id: serverId,
+        name: serverId === 'server-b' ? 'Home B' : 'Home A',
+        serverUrl: serverId === 'server-b'
+            ? 'https://secondary.example.test'
+            : 'https://stack.example.test',
+        createdAt: 1,
+        updatedAt: 1,
+        lastUsedAt: 1,
+    }),
+    resolveServerProfileForPortableIdentity: (serverId: string) => serverId === 'srv_home_a'
+        ? {
+            kind: 'resolved',
+            profile: {
+                id: 'server-a',
+                name: 'Home A',
+                serverUrl: 'https://stack.example.test',
+                createdAt: 1,
+                updatedAt: 1,
+                lastUsedAt: 1,
+            },
+        }
+        : { kind: 'not_found' },
 }));
 
 vi.mock('@/sync/domains/session/sessionSurfaceVisibility', () => ({
-    isSessionSurfaceVisible: (sessionId: string) => visibleSessionIdsValue.includes(sessionId),
+    isSessionSurfaceVisible: (sessionId: string, serverId?: string | null) => (
+        visibleSessionIdsValue.includes(sessionId)
+        && (!serverId || visibleSessionAddressesValue.length === 0
+            || visibleSessionAddressesValue.includes(`${serverId}:${sessionId}`))
+    ),
 }));
 
 vi.mock('@/utils/platform/desktopHost', () => ({
@@ -96,10 +170,18 @@ vi.mock('../channels/sendTauriLocalNotification', () => ({
 }));
 
 describe('ActivityLocalNotificationRuntime', () => {
+    beforeEach(async () => {
+        activeServerRuntime.serverId = 'server-a';
+        const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
+        saveAccountSettings({ serverId: 'server-a', accountId: 'account-a' }, accountSettingsParse({}), 1);
+        saveAccountSettings({ serverId: 'server-b', accountId: 'account-b' }, accountSettingsParse({}), 1);
+    });
+
     afterEach(async () => {
         reactNativeRuntime.platformOs = 'ios';
         isDesktopHostValue = false;
         visibleSessionIdsValue = [];
+        visibleSessionAddressesValue = [];
         localSettingsValue = {
             localNotificationsEnabled: true,
             localNotificationsShowReady: true,
@@ -111,6 +193,10 @@ describe('ActivityLocalNotificationRuntime', () => {
         sessionsByIdValue = {
             'session-1': {
                 id: 'session-1',
+                serverId: 'server-a',
+                encryptionMode: 'plain',
+                access: createSessionAccessFixture(),
+                active: true,
                 metadata: {
                     summary: {
                         text: 'Ready session',
@@ -118,11 +204,530 @@ describe('ActivityLocalNotificationRuntime', () => {
                 },
             },
         };
+        concurrentSessionListCacheByServerIdValue = {
+            'server-a': { serverName: 'Home A', listObservation: { phase: 'ready', lastSuccessAt: 1 } },
+            'server-b': { serverName: 'Home B', listObservation: { phase: 'ready', lastSuccessAt: 1 } },
+        };
         sendExpoLocalNotification.mockClear();
         sendTauriLocalNotification.mockClear();
 
         const { resetActivityLocalNotificationRuntimeForTests } = await import('./activityLocalNotificationBus');
         resetActivityLocalNotificationRuntimeForTests();
+        const { resetActivityAlertPresentationNotesForTests } = await import('../remoteAlerts/activityAlertPresentationNotes');
+        resetActivityAlertPresentationNotesForTests();
+    });
+
+    it('does not notify an accessible but unfollowed Team reader', async () => {
+        sessionsByIdValue['session-1'] = {
+            id: 'session-1', serverId: 'server-a', accessLevel: 'edit', active: true,
+            viewer: {
+                readState: { state: 'not_started' },
+                relevance: { relevant: false, reasons: [] },
+                follow: { follows: false, notificationLevel: null },
+                attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+                notification: { level: 'none', source: 'none' },
+            },
+        };
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady, notifyActivityAgentRequest } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
+            notifyActivityAgentRequest({ address: { serverId: 'server-a', sessionId: 'session-1' },
+                requestId: 'request-1', requestKind: 'user_action', toolName: 'AskUserQuestion', toolArgs: {} });
+        });
+        expect(sendExpoLocalNotification).not.toHaveBeenCalled();
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('delivers the same Home currentness the list owner observed', async () => {
+        concurrentSessionListCacheByServerIdValue = {
+            'server-a': {
+                serverName: 'Home A',
+                listObservation: { phase: 'offline', lastSuccessAt: null },
+            },
+        };
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
+        });
+
+        // An alert from a Home Happier can no longer reach says so, using the one observation the
+        // list owner published rather than a delivery-time clock (Lane 07.4 §2, L07-R42). This
+        // harness renders translation keys, so the assertion names the shared copy owner's key;
+        // the words themselves are owned by the context projector's own suite.
+        expect(sendExpoLocalNotification.mock.calls[0]?.[0]?.title).toContain('homeFreshness.offline');
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('does not call a reachable Home stale however long ago it last succeeded', async () => {
+        concurrentSessionListCacheByServerIdValue = {
+            'server-a': { serverName: 'Home A', listObservation: { phase: 'ready', lastSuccessAt: 1 } },
+        };
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
+        });
+
+        expect(sendExpoLocalNotification.mock.calls[0]?.[0]?.title ?? '').not.toContain('homeFreshness');
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('suppresses one local/remote duplicate for the same V2 ready event in both arrival orders', async () => {
+        sessionsByIdValue['session-1'] = {
+            id: 'session-1', serverId: 'server-a', accessLevel: 'view',
+            // Real access on an active Session, so the assertions below turn on
+            // alert dedupe rather than on event eligibility.
+            access: createSessionAccessFixture(),
+            active: true,
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+                relevance: { relevant: true, reasons: ['followed_by_me'] },
+                follow: { follows: true, notificationLevel: 'important' },
+                attention: { needsAttention: true, reasons: ['ready_after_read'], primary: 'ready_after_read', presentation: 'full' },
+                notification: { level: 'important', source: 'preference' },
+            },
+        };
+        const { noteActivityAlertPresented, resetActivityAlertPresentationNotesForTests } =
+            await import('../remoteAlerts/activityAlertPresentationNotes');
+        const { resolveRemoteAlertForegroundPresentation } =
+            await import('../remoteAlerts/resolveRemoteAlertForegroundPresentation');
+        const remoteReady = (messageSeq: number) => ({
+            type: 'activity_alert',
+            v: 2,
+            serverId: 'srv_home_a',
+            sessionId: 'session-1',
+            accountId: 'account-1',
+            event: { type: 'ready', sequenceDomain: 'session_transcript', messageSeq },
+            previewBehavior: 'title_only',
+        });
+        resetActivityAlertPresentationNotesForTests();
+        const remoteFirst = resolveRemoteAlertForegroundPresentation({
+            data: remoteReady(7),
+            isSessionVisible: () => false,
+        });
+        expect(remoteFirst).toMatchObject({
+            kind: 'present',
+            target: { eventIdentity: 'message-seq:session_transcript:7' },
+        });
+        if (remoteFirst.kind !== 'present') throw new Error('Expected routable V2 ready alert');
+        noteActivityAlertPresented({
+            address: remoteFirst.target.address,
+            event: remoteFirst.target.event,
+            identity: remoteFirst.target.eventIdentity!,
+            source: 'home_remote_alert',
+        });
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, [{
+                kind: 'agent-text', id: 'ready-7', createdAt: 1, seq: 7, text: 'Ready',
+            } as any, {
+                // A later message in the same rich catch-up batch must not
+                // replace the identity of the committed ready event.
+                kind: 'agent-text', id: 'later-8', createdAt: 2, seq: 8, text: 'Later',
+            } as any], {
+                sequenceDomain: 'session_transcript',
+                sequence: 7,
+            });
+        });
+        expect(sendExpoLocalNotification).not.toHaveBeenCalled();
+
+        // The consumed note suppresses one duplicate, never the next committed event.
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, [{
+                kind: 'agent-text', id: 'ready-8', createdAt: 2, seq: 8, text: 'Ready again',
+            } as any]);
+        });
+        expect(sendExpoLocalNotification).toHaveBeenCalledTimes(1);
+
+        resetActivityAlertPresentationNotesForTests();
+        sendExpoLocalNotification.mockClear();
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, [{
+                kind: 'agent-text', id: 'ready-7-local-first', createdAt: 3, seq: 7, text: 'Ready locally',
+            } as any, {
+                kind: 'agent-text', id: 'later-8-local-first', createdAt: 4, seq: 8, text: 'Later locally',
+            } as any], {
+                sequenceDomain: 'session_transcript',
+                sequence: 7,
+            });
+        });
+        expect(sendExpoLocalNotification).toHaveBeenCalledTimes(1);
+        expect(resolveRemoteAlertForegroundPresentation({
+            data: remoteReady(7),
+            isSessionVisible: () => false,
+        })).toEqual({ kind: 'suppress', reason: 'already_presented' });
+        expect(resolveRemoteAlertForegroundPresentation({
+            data: remoteReady(8),
+            isSessionVisible: () => false,
+        })).toMatchObject({ kind: 'present' });
+
+        // Identityless local observations remain eligible and cannot consume a
+        // committed V2 note merely because the Session and category match.
+        noteActivityAlertPresented({
+            address: remoteFirst.target.address,
+            event: remoteFirst.target.event,
+            identity: remoteFirst.target.eventIdentity!,
+            source: 'home_remote_alert',
+        });
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
+        });
+        expect(sendExpoLocalNotification).toHaveBeenCalledTimes(2);
+        resetActivityAlertPresentationNotesForTests();
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('does not conflate identityless state-derived ready observations', async () => {
+        const { noteActivityAlertPresented } = await import('../remoteAlerts/activityAlertPresentationNotes');
+        noteActivityAlertPresented({
+            address: { serverId: 'server-a', sessionId: 'session-1' },
+            event: 'ready',
+            identity: 'message-seq:session_transcript:7',
+            source: 'home_remote_alert',
+        });
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
+        });
+
+        expect(sendExpoLocalNotification).toHaveBeenCalledTimes(1);
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('records an identified event only after the platform accepts the notification', async () => {
+        const accepted = createDeferred<string>();
+        sendExpoLocalNotification.mockImplementationOnce(() => accepted.promise);
+        const { consumeOtherLegActivityAlertPresentation } =
+            await import('../remoteAlerts/activityAlertPresentationNotes');
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+        const presentation = {
+            address: { serverId: 'server-a', sessionId: 'session-1' },
+            event: 'ready' as const,
+            identity: 'message-seq:session_transcript:21',
+            source: 'home_remote_alert' as const,
+        };
+
+        await act(async () => {
+            notifyActivityReady(presentation.address, [{
+                kind: 'agent-text', id: 'ready-21', createdAt: 1, seq: 21, text: 'Ready',
+            } as any], { sequenceDomain: 'session_transcript', sequence: 21 });
+        });
+        expect(consumeOtherLegActivityAlertPresentation(presentation)).toBe(false);
+
+        await act(async () => {
+            accepted.resolve('notification-accepted');
+            await accepted.promise;
+        });
+        expect(consumeOtherLegActivityAlertPresentation(presentation)).toBe(true);
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('does not record presentation when platform acceptance fails or its response is lost', async () => {
+        const response = createDeferred<string>();
+        sendExpoLocalNotification.mockImplementationOnce(() => response.promise);
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const { consumeOtherLegActivityAlertPresentation } =
+            await import('../remoteAlerts/activityAlertPresentationNotes');
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+        const presentation = {
+            address: { serverId: 'server-a', sessionId: 'session-1' },
+            event: 'ready' as const,
+            identity: 'message-seq:session_transcript:22',
+            source: 'home_remote_alert' as const,
+        };
+
+        await act(async () => {
+            notifyActivityReady(presentation.address, [{
+                kind: 'agent-text', id: 'ready-22', createdAt: 1, seq: 22, text: 'Ready',
+            } as any], { sequenceDomain: 'session_transcript', sequence: 22 });
+        });
+        await act(async () => {
+            response.reject(new Error('platform response lost'));
+            await response.promise.catch(() => undefined);
+        });
+
+        expect(consumeOtherLegActivityAlertPresentation(presentation)).toBe(false);
+        consoleError.mockRestore();
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('does not record presentation when the desktop platform declines the notification', async () => {
+        reactNativeRuntime.platformOs = 'web';
+        isDesktopHostValue = true;
+        sendTauriLocalNotification.mockResolvedValueOnce(false);
+        const { consumeOtherLegActivityAlertPresentation } =
+            await import('../remoteAlerts/activityAlertPresentationNotes');
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+        const presentation = {
+            address: { serverId: 'server-a', sessionId: 'session-1' },
+            event: 'ready' as const,
+            identity: 'message-seq:session_transcript:23',
+            source: 'home_remote_alert' as const,
+        };
+
+        await act(async () => {
+            notifyActivityReady(presentation.address, [{
+                kind: 'agent-text', id: 'ready-23', createdAt: 1, seq: 23, text: 'Ready',
+            } as any], { sequenceDomain: 'session_transcript', sequence: 23 });
+        });
+
+        expect(sendTauriLocalNotification).toHaveBeenCalledTimes(1);
+        expect(consumeOtherLegActivityAlertPresentation(presentation)).toBe(false);
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('delivers followed ready events with status-only privacy and honors explicit notification suppression', async () => {
+        const viewer = {
+            readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+            relevance: { relevant: true, reasons: ['followed_by_me'] },
+            follow: { follows: true, notificationLevel: 'important' },
+            attention: { needsAttention: true, reasons: ['ready_after_read'], primary: 'ready_after_read', presentation: 'status_only' },
+            notification: { level: 'important', source: 'preference' },
+        };
+        sessionsByIdValue['session-1'] = {
+            id: 'session-1', serverId: 'server-a', accessLevel: 'view', viewer,
+            metadata: { summary: { text: 'Private title' } },
+        };
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
+        });
+        // Status-only privacy withholds the private title and the message preview, not the
+        // authorized structural context this viewer already sees on the row (L07-R42/L07-I37).
+        expect(sendExpoLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
+            title: 'Session · Home A',
+            body: 'Turn finished. Open the session to continue.',
+        }));
+        const statusOnly = sendExpoLocalNotification.mock.calls[0]?.[0];
+        expect(`${statusOnly?.title} ${statusOnly?.body}`).not.toContain('Private title');
+        sendExpoLocalNotification.mockClear();
+        viewer.follow.notificationLevel = 'none';
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
+        });
+        expect(sendExpoLocalNotification).not.toHaveBeenCalled();
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('does not expose retained Session content when settled encrypted availability is locked', async () => {
+        sessionsByIdValue['session-1'] = {
+            id: 'session-1',
+            serverId: 'server-a',
+            access: createSessionAccessFixture(),
+            active: true,
+            encryptedContentAvailability: 'encrypted_access_pending',
+            metadata: { summary: { text: 'Private retained title' } },
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+                relevance: { relevant: true, reasons: ['owned_by_me'] },
+                follow: { follows: false, notificationLevel: null },
+                attention: { needsAttention: true, reasons: ['ready_after_read'], primary: 'ready_after_read', presentation: 'full' },
+                notification: { level: 'important', source: 'owner' },
+            },
+        };
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, [{
+                kind: 'agent-text',
+                id: 'private-message',
+                createdAt: 1,
+                text: 'Private retained response',
+            } as any]);
+        });
+
+        const notification = sendExpoLocalNotification.mock.calls[0]?.[0];
+        expect(notification?.title).toBe('Session · Home A · Encrypted access pending');
+        expect(notification?.body).not.toContain('Private');
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('does not expose retained Session content when E2EE availability is absent', async () => {
+        sessionsByIdValue['session-1'] = {
+            id: 'session-1',
+            serverId: 'server-a',
+            access: createSessionAccessFixture(),
+            active: true,
+            encryptionMode: 'e2ee',
+            metadata: { summary: { text: 'Private retained title' } },
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+                relevance: { relevant: true, reasons: ['owned_by_me'] },
+                follow: { follows: false, notificationLevel: null },
+                attention: { needsAttention: true, reasons: ['ready_after_read'], primary: 'ready_after_read', presentation: 'full' },
+                notification: { level: 'important', source: 'owner' },
+            },
+        };
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, [{
+                kind: 'agent-text',
+                id: 'private-message',
+                createdAt: 1,
+                text: 'Private retained response',
+            } as any]);
+        });
+
+        const notification = sendExpoLocalNotification.mock.calls[0]?.[0];
+        expect(notification?.title).toBe('Session · Home A');
+        expect(notification?.body).not.toContain('Private');
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it.each(['permission', 'user_action'] as const)('delivers generic %s notifications when device request previews are disabled', async (requestKind) => {
+        localSettingsValue = { attentionDeviceOverridesV1: { localNotifications: { requestPreviewBehavior: 'status_only' } } };
+        sessionsByIdValue['session-1'] = {
+            ...(sessionsByIdValue['session-1'] as Record<string, unknown>),
+            metadata: { summary: { text: 'Unique private request title' } },
+        };
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityAgentRequest } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+        await act(async () => { notifyActivityAgentRequest({
+            address: { serverId: 'server-a', sessionId: 'session-1' }, requestId: 'private-request', requestKind,
+            toolName: requestKind === 'permission' ? 'Bash' : 'AskUserQuestion',
+            toolArgs: requestKind === 'permission' ? { command: 'cat private.txt' }
+                : { questions: [{ question: 'Private question?', options: [{ label: 'Secret option' }] }] },
+        }); });
+        const notification = sendExpoLocalNotification.mock.calls[0]?.[0];
+        expect(notification).toEqual(expect.objectContaining({
+            // The device preview override hides the private request details and Session title while
+            // the authorized Home context still identifies the alert (L07-R42/L07-I37).
+            title: 'Session · Home A',
+            body: requestKind === 'permission' ? 'Approval required.' : 'This session needs your input.',
+            data: expect.objectContaining({ requestId: 'private-request' }),
+        }));
+        expect(`${notification?.title} ${notification?.body}`).not.toContain('Unique private request title');
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('keeps the Session title but omits ready message content under title-only privacy', async () => {
+        await setActiveAccountSettings({
+            attentionDeliveryPolicyV1: {
+                v: 1,
+                privacy: { defaultPreviewBehavior: 'title_only' },
+            },
+        });
+        sessionsByIdValue['session-1'] = {
+            ...(sessionsByIdValue['session-1'] as Record<string, unknown>),
+            metadata: { summary: { text: 'Readable private title' } },
+        };
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, [{
+                kind: 'agent-text', id: 'private-body', createdAt: 1, text: 'Private body preview',
+            } as any]);
+        });
+
+        expect(sendExpoLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
+            title: 'Readable private title · Home A',
+            body: 'Turn finished. Open the session to continue.',
+        }));
+        await act(async () => { screen.tree.unmount(); });
+    });
+
+    it('uses the exact recipient Home policy before and after active-Home switches for equal Session ids', async () => {
+        const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
+        saveAccountSettings({ serverId: 'server-a', accountId: 'account-a' }, accountSettingsParse({
+            attentionDeliveryPolicyV1: {
+                v: 1,
+                privacy: { defaultPreviewBehavior: 'include_preview' },
+            },
+        }), 2);
+        saveAccountSettings({ serverId: 'server-b', accountId: 'account-b' }, accountSettingsParse({
+            attentionDeliveryPolicyV1: {
+                v: 1,
+                quietHours: {
+                    enabled: true,
+                    timezone: 'UTC',
+                    windows: [{ startLocalTime: '00:00', endLocalTime: '23:59' }],
+                },
+                channels: {
+                    local_notification: { quietHoursBehavior: 'silent' },
+                },
+                privacy: { defaultPreviewBehavior: 'status_only' },
+            },
+        }), 2);
+        sessionsByIdValue['session-1'] = {
+            id: 'session-1',
+            serverId: 'server-b',
+            encryptionMode: 'plain',
+            access: createSessionAccessFixture(),
+            active: true,
+            metadata: { summary: { text: 'Home B private title' } },
+        };
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+
+        for (const activeServerId of ['server-a', 'server-b']) {
+            activeServerRuntime.serverId = activeServerId;
+            await act(async () => {
+                notifyActivityReady({ serverId: 'server-b', sessionId: 'session-1' }, [{
+                    kind: 'agent-text', id: `private-${activeServerId}`, createdAt: 1,
+                    text: 'Home B private body',
+                } as any]);
+            });
+        }
+
+        expect(sendExpoLocalNotification).toHaveBeenCalledTimes(2);
+        for (const [notification] of sendExpoLocalNotification.mock.calls) {
+            expect(notification).toEqual(expect.objectContaining({
+                // The recipient Home's status-only policy withholds its private title and body while
+                // still naming the exact Home the alert came from (L07-R42/L07-I37).
+                title: 'Session · Home B',
+                body: 'Turn finished. Open the session to continue.',
+                sound: null,
+                data: expect.objectContaining({
+                    serverId: 'server-b',
+                    sessionId: 'session-1',
+                    serverUrl: 'https://secondary.example.test',
+                }),
+            }));
+            expect(`${notification.title} ${notification.body}`).not.toContain('Home B private');
+        }
+
+        await act(async () => {
+            saveAccountSettings({ serverId: 'server-b', accountId: 'account-b' }, accountSettingsParse({
+                attentionDeliveryPolicyV1: {
+                    v: 1,
+                    channels: { local_notification: { enabled: false } },
+                },
+            }), 3);
+        });
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-b', sessionId: 'session-1' }, []);
+        });
+        expect(sendExpoLocalNotification).toHaveBeenCalledTimes(2);
+        await act(async () => { screen.tree.unmount(); });
     });
 
     it('sends ready events to the Expo local notification channel when enabled', async () => {
@@ -133,7 +738,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', [
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, [
                 {
                     kind: 'agent-text',
                     id: 'message-1',
@@ -144,7 +749,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         });
 
         expect(sendExpoLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
-            title: 'Ready session',
+            title: 'Ready session · Home A',
             body: 'Everything is ready.',
             data: expect.objectContaining({ sessionId: 'session-1' }),
             sound: 'happier_soft.wav',
@@ -154,6 +759,28 @@ describe('ActivityLocalNotificationRuntime', () => {
         await act(async () => {
             tree?.unmount();
         });
+    });
+
+    it('uses the captured secondary Home for lookup, context, routing, and suppression', async () => {
+        visibleSessionIdsValue = ['session-1'];
+        visibleSessionAddressesValue = ['server-a:session-1'];
+        sessionsByIdValue['session-1'] = { id: 'session-1', serverId: 'server-b' };
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+
+        await act(async () => {
+            notifyActivityReady({ serverId: 'server-b', sessionId: 'session-1' }, []);
+        });
+
+        expect(sendExpoLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
+            title: 'Session · Home B',
+            data: expect.objectContaining({
+                sessionId: 'session-1',
+                serverUrl: 'https://secondary.example.test',
+            }),
+        }));
+        await act(async () => { screen.tree.unmount(); });
     });
 
     it('uses the generic ready body when rich ready previews are disabled locally', async () => {
@@ -169,7 +796,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', [
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, [
                 {
                     kind: 'agent-text',
                     id: 'message-1',
@@ -180,7 +807,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         });
 
         expect(sendExpoLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
-            title: 'Ready session',
+            title: 'Ready session · Home A',
             body: 'Turn finished. Open the session to continue.',
         }));
 
@@ -199,7 +826,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
         });
 
         expect(sendExpoLocalNotification).not.toHaveBeenCalled();
@@ -229,12 +856,12 @@ describe('ActivityLocalNotificationRuntime', () => {
             tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
             await act(async () => {
-                notifyActivityReady('session-1', []);
+                notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
             });
 
             expect(sendExpoLocalNotification).not.toHaveBeenCalled();
             expect(sendTauriLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
-                title: 'Ready session',
+                title: 'Ready session · Home A',
             }));
 
             await act(async () => {
@@ -250,6 +877,8 @@ describe('ActivityLocalNotificationRuntime', () => {
         sessionsByIdValue = {
             'session-1': {
                 id: 'session-1',
+                serverId: 'server-a',
+                active: true,
                 metadata: {
                     summary: {
                         text: 'Direct session',
@@ -272,7 +901,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
         });
 
         expect(sendExpoLocalNotification).not.toHaveBeenCalled();
@@ -293,7 +922,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-2', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-2' }, []);
         });
 
         expect(sendExpoLocalNotification).not.toHaveBeenCalled();
@@ -319,9 +948,9 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
             notifyActivityAgentRequest({
-                sessionId: 'session-1',
+                address: { serverId: 'server-a', sessionId: 'session-1' },
                 requestId: 'req-7',
                 requestKind: 'permission',
                 toolName: 'Bash',
@@ -331,8 +960,8 @@ describe('ActivityLocalNotificationRuntime', () => {
 
         expect(sendExpoLocalNotification).not.toHaveBeenCalled();
         expect(sendTauriLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
-            title: 'Ready session',
-            body: 'Run: pwd',
+            title: 'Ready session · Home A',
+            body: 'Command: pwd',
         }));
 
         await act(async () => {
@@ -341,7 +970,7 @@ describe('ActivityLocalNotificationRuntime', () => {
     });
 
     it('suppresses local notifications during account quiet hours', async () => {
-        accountSettingsValue = accountSettingsParse({
+        await setActiveAccountSettings({
             attentionDeliveryPolicyV1: {
                 v: 1,
                 quietHours: {
@@ -359,7 +988,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
         });
 
         expect(sendExpoLocalNotification).not.toHaveBeenCalled();
@@ -371,7 +1000,7 @@ describe('ActivityLocalNotificationRuntime', () => {
     });
 
     it('lets a device quiet-hours override deliver local notifications during account quiet hours', async () => {
-        accountSettingsValue = accountSettingsParse({
+        await setActiveAccountSettings({
             attentionDeliveryPolicyV1: {
                 v: 1,
                 quietHours: {
@@ -396,7 +1025,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
         });
 
         expect(sendExpoLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
@@ -409,7 +1038,7 @@ describe('ActivityLocalNotificationRuntime', () => {
     });
 
     it('delivers quiet-hours silent local notifications without sound when configured by account policy', async () => {
-        accountSettingsValue = accountSettingsParse({
+        await setActiveAccountSettings({
             attentionDeliveryPolicyV1: {
                 v: 1,
                 quietHours: {
@@ -432,7 +1061,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
         });
 
         expect(sendExpoLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
@@ -446,7 +1075,7 @@ describe('ActivityLocalNotificationRuntime', () => {
     });
 
     it('suppresses account-disabled local notification events even when legacy device toggles are enabled', async () => {
-        accountSettingsValue = accountSettingsParse({
+        await setActiveAccountSettings({
             attentionDeliveryPolicyV1: {
                 v: 1,
                 channels: {
@@ -466,7 +1095,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
         });
 
         expect(sendExpoLocalNotification).not.toHaveBeenCalled();
@@ -478,7 +1107,7 @@ describe('ActivityLocalNotificationRuntime', () => {
     });
 
     it('passes resolved silent sound options to Expo local notifications', async () => {
-        accountSettingsValue = accountSettingsParse({
+        await setActiveAccountSettings({
             attentionDeliveryPolicyV1: {
                 v: 1,
                 sounds: {
@@ -494,7 +1123,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
         });
 
         expect(sendExpoLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
@@ -509,7 +1138,7 @@ describe('ActivityLocalNotificationRuntime', () => {
 
     it('passes bundled sound filenames and Android channel ids to Expo local notifications', async () => {
         reactNativeRuntime.platformOs = 'android';
-        accountSettingsValue = accountSettingsParse({
+        await setActiveAccountSettings({
             attentionDeliveryPolicyV1: {
                 v: 1,
                 sounds: {
@@ -525,7 +1154,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
         });
 
         expect(sendExpoLocalNotification).toHaveBeenCalledWith(expect.objectContaining({
@@ -540,7 +1169,7 @@ describe('ActivityLocalNotificationRuntime', () => {
     });
 
     it('does not pass unsupported custom sound ids to Expo local notifications', async () => {
-        accountSettingsValue = accountSettingsParse({
+        await setActiveAccountSettings({
             attentionDeliveryPolicyV1: {
                 v: 1,
                 sounds: {
@@ -556,7 +1185,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         tree = (await renderScreen(<ActivityLocalNotificationRuntime />)).tree;
 
         await act(async () => {
-            notifyActivityReady('session-1', []);
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
         });
 
         expect(sendExpoLocalNotification).toHaveBeenCalledWith(expect.objectContaining({

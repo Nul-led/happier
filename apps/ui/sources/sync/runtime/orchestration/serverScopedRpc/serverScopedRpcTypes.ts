@@ -1,6 +1,9 @@
 import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
 
+import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import type { EncryptionGenerationScopeAuthority, EncryptionScopeInput } from '@/sync/encryption/encryption';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
+import type { Metadata } from '@/sync/domains/state/storageTypes';
 
 /**
  * How long an unqualified server-scoped RPC operation may stay in flight.
@@ -52,6 +55,8 @@ export type ScopedServerRpcContext = Readonly<{
     homeCarrier?: HomeCarrier;
     release?: () => Promise<void>;
     token: string;
+    /** Runtime-produced contexts retain the exact credentials already resolved by the scope owner. */
+    credentials?: AuthCredentials;
     encryption: ScopedRpcEncryptionContext | null;
 }>;
 
@@ -63,12 +68,29 @@ export type ScopedRpcEncryptionContext = Readonly<{
     getMachineEncryption: (machineId: string) => ScopedMachineEncryption | null | undefined;
 }>;
 
+/**
+ * The generation methods are declared here, not discovered at runtime: the only producer of this
+ * context is the canonical Account encryption owner, which implements them. A consumer that has to
+ * know whether the material it captured is still current can therefore just take this context.
+ */
 export type ScopedRpcSessionEncryptionContext = Readonly<{
     anonID?: string;
     decryptEncryptionKey: (value: string) => Promise<Uint8Array | null>;
-    initializeSessions: (keys: Map<string, Uint8Array | null>) => Promise<void>;
+    /**
+     * The batch opener, declared for the same reason as the generation methods: the producer is the
+     * Account encryption owner, which owns native-worker routing and cooperative opening, so a
+     * consumer working a whole page asks for it instead of fanning the singular call out itself.
+     */
+    decryptEncryptionKeys: (
+        values: readonly string[],
+        scope?: EncryptionScopeInput,
+    ) => Promise<Array<Uint8Array | null>>;
+    initializeSessions: (
+        keys: Map<string, Uint8Array | null>,
+        scope?: EncryptionScopeInput,
+    ) => Promise<void>;
     getSessionEncryption: (sessionId: string) => ScopedSessionEncryption | null | undefined;
-}>;
+}> & EncryptionGenerationScopeAuthority;
 
 export type ScopedMachineEncryption = Readonly<{
     encryptRaw: (payload: unknown) => Promise<string>;
@@ -78,6 +100,8 @@ export type ScopedMachineEncryption = Readonly<{
 export type ScopedSessionEncryption = Readonly<{
     encryptRaw: (payload: unknown) => Promise<string>;
     decryptRaw: (payload: string) => Promise<unknown>;
+    encryptMetadata?: (metadata: Metadata) => Promise<string>;
+    decryptMetadata?: (version: number, value: string) => Promise<Metadata | null>;
 }>;
 
 export type ScopedSocketConnectParams = Readonly<{

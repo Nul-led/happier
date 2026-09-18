@@ -2,7 +2,6 @@ import * as React from 'react';
 
 import {
     useVoiceAttemptControl,
-    VOICE_ATTEMPT_IDLE_TARGET_GLOBAL,
     type VoiceAttemptIdleTarget,
 } from '@/components/voice/attempt/useVoiceAttemptControl';
 import { useVoiceEnergyIfMounted } from '@/components/voice/light/useVoiceEnergy';
@@ -26,8 +25,8 @@ import { VoiceComposerPlanet } from './VoiceComposerPlanet';
  * decides what a *start* creates.
  */
 export const VoiceComposerPlanetMount = React.memo(function VoiceComposerPlanetMount(props: Readonly<{
-    /** The composer's own session, or `null` in New Session where none exists yet. */
-    sessionId: string | null;
+    /** Explicit Session target (including unavailable) or intentional Global Voice. */
+    target: VoiceAttemptIdleTarget;
     /** The retaining Session surface's existing presented fact, when it has one. */
     isPresented?: boolean;
 }>): React.ReactElement | null {
@@ -36,11 +35,11 @@ export const VoiceComposerPlanetMount = React.memo(function VoiceComposerPlanetM
     // presentation without changing this component's hook order.
     if (props.isPresented === false) return null;
 
-    return <VoiceComposerPlanetPresentedMount sessionId={props.sessionId} />;
+    return <VoiceComposerPlanetPresentedMount target={props.target} />;
 });
 
 function VoiceComposerPlanetPresentedMount(props: Readonly<{
-    sessionId: string | null;
+    target: VoiceAttemptIdleTarget;
 }>): React.ReactElement | null {
     /*
      * The planet is drawn from the app's one energy clock; there is nothing to draw
@@ -52,24 +51,13 @@ function VoiceComposerPlanetPresentedMount(props: Readonly<{
      */
     const energy = useVoiceEnergyIfMounted();
     if (!energy) return null;
-    return <VoiceComposerPlanetRuntime sessionId={props.sessionId} />;
+    return <VoiceComposerPlanetRuntime target={props.target} />;
 }
 
 function VoiceComposerPlanetRuntime(props: Readonly<{
-    sessionId: string | null;
+    target: VoiceAttemptIdleTarget;
 }>): React.ReactElement | null {
-    const sessionId = props.sessionId;
-    const idleTarget = React.useMemo<VoiceAttemptIdleTarget>(
-        () => {
-            // `null` is the only Global sentinel: it is how New Session states that no session
-            // exists yet. A present-but-blank session id is an invalid session target and must
-            // retain that scope so `useVoiceAttemptControl` fails admission closed instead of
-            // silently starting a different, Global conversation.
-            if (sessionId === null) return VOICE_ATTEMPT_IDLE_TARGET_GLOBAL;
-            return { kind: 'session', sessionId: sessionId.trim() };
-        },
-        [sessionId],
-    );
+    const idleTarget = props.target;
     const control = useVoiceAttemptControl(idleTarget);
     const { availability, canStop, muted, primaryAction, primaryActionHint, primaryActionLabel, stop, onPrimaryAction } = control;
     const startsGlobal = idleTarget.kind === 'global';

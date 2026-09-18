@@ -27,11 +27,11 @@ describe('removeServerProfileUiAction', () => {
         const localStorageHandle = installLocalStorageMock();
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const profile = profiles.upsertServerProfile({
+        const profile = await profiles.upsertServerProfile({
             serverUrl: 'https://server-a.example.test',
             name: 'Server A',
         });
-        profiles.setActiveServerId(profile.id, { scope: 'device' });
+        await profiles.setActiveServerId(profile.id, { scope: 'device' });
 
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         await expect(TokenStorage.setCredentials({ token: 'token-a', secret: 'secret-a' })).resolves.toBe(true);
@@ -43,7 +43,7 @@ describe('removeServerProfileUiAction', () => {
         const { removeServerProfileUiAction } = await import('./removeServerProfileUiAction');
         await removeServerProfileUiAction({ profileId: profile.id, serverUrl: profile.serverUrl });
 
-        const readded = profiles.upsertServerProfile({ serverUrl: profile.serverUrl, name: 'Server A (again)' });
+        const readded = await profiles.upsertServerProfile({ serverUrl: profile.serverUrl, name: 'Server A (again)' });
         expect(readded.id).toBe(profile.id);
         await expect(TokenStorage.getCredentialsForServerUrl(profile.serverUrl)).resolves.toBeNull();
 
@@ -62,11 +62,11 @@ describe('removeServerProfileUiAction', () => {
         vi.stubGlobal('fetch', fetchSpy);
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const removedProfile = profiles.upsertServerProfile({
+        const removedProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://removed.example.test',
             name: 'Removed',
         });
-        const retainedProfile = profiles.upsertServerProfile({
+        const retainedProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://retained.example.test',
             name: 'Retained',
         });
@@ -132,7 +132,7 @@ describe('removeServerProfileUiAction', () => {
         const localStorageHandle = installLocalStorageMock();
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const profile = profiles.upsertServerProfile({
+        const profile = await profiles.upsertServerProfile({
             serverUrl: 'https://repeat-removal.example.test',
             name: 'Repeat removal',
         });
@@ -156,15 +156,15 @@ describe('removeServerProfileUiAction', () => {
         const localStorageHandle = installLocalStorageMock();
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const targetProfile = profiles.upsertServerProfile({
+        const targetProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://marked.example.test',
             name: 'Marked',
         });
-        const activeProfile = profiles.upsertServerProfile({
+        const activeProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://active.example.test',
             name: 'Active',
         });
-        profiles.setActiveServerId(targetProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(targetProfile.id, { scope: 'device' });
 
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         await expect(TokenStorage.setCredentials({
@@ -189,7 +189,7 @@ describe('removeServerProfileUiAction', () => {
                 migrationSubmissionAttempted: true,
             },
         })).resolves.toBe(true);
-        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
 
         const { removeServerProfileUiAction } = await import('./removeServerProfileUiAction');
         const result = await removeServerProfileUiAction({
@@ -217,11 +217,11 @@ describe('removeServerProfileUiAction', () => {
         const localStorageHandle = installLocalStorageMock();
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const profile = profiles.upsertServerProfile({
+        const profile = await profiles.upsertServerProfile({
             serverUrl: 'https://delete-failure.example.test',
             name: 'Delete failure',
         });
-        profiles.setActiveServerId(profile.id, { scope: 'device' });
+        await profiles.setActiveServerId(profile.id, { scope: 'device' });
 
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         vi.spyOn(TokenStorage, 'removeCredentialsForServerUrl')

@@ -1,23 +1,45 @@
+import { useActivityAttentionSource } from '@/activity/source/useActivityAttentionSource';
 import * as React from 'react';
 
 import { Platform } from 'react-native';
 
 import {
     isPushNotificationBundledSoundId,
+    isSessionAwarenessContentReadableV1,
+    resolveActivitySequenceEventIdentityV1,
+    resolveSessionPersonalEventEligibilityV1,
     resolveExpoNotificationSoundName,
     resolvePushNotificationAndroidChannelId,
-    type AccountSettings,
 } from '@happier-dev/protocol';
 import { resolveActivityAttentionDeliveryPlan } from '@/activity/delivery/resolveActivityAttentionDeliveryPlan';
+import { useExactHomeAccountSettings } from '@/activity/delivery/useExactHomeAccountSettings';
 import type { ActivityAttentionDeliveryEventKind } from '@/activity/delivery/activityAttentionDeliveryPlanTypes';
 import { localSettingsParse, type LocalSettings } from '@/sync/domains/settings/localSettings';
 import { isDesktopMainWindowFocused } from '@/desktop/window/desktopMainWindowPresence';
-import { storage, useLocalSetting, useSetting } from '@/sync/domains/state/storage';
+import { storage, useLocalSetting } from '@/sync/domains/state/storage';
 import { isSessionSurfaceVisible } from '@/sync/domains/session/sessionSurfaceVisibility';
-import { getActiveServerUrl } from '@/sync/domains/server/serverProfiles';
+import {
+    areServerProfileIdentifiersEquivalent,
+    getActiveServerSnapshot,
+    getServerProfileById,
+} from '@/sync/domains/server/serverProfiles';
+import { isSessionPersonallyTrackedForViewer } from '@/sync/domains/session/readState/sessionViewer';
+import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
+import { deriveTranscriptInteractionFromSession } from '@/utils/sessions/deriveTranscriptInteraction';
+import { findSessionListLookupSession } from '@/sync/domains/session/listing/sessionListLookupState';
+import { buildSessionFromListRenderable } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { fireAndForget } from '@/utils/system/fireAndForget';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import {
+    buildSessionContextFacts,
+    projectSessionContextPresentation,
+} from '@/sync/domains/session/presentation/sessionContextPresentation';
 
+import {
+    consumeOtherLegActivityAlertPresentation,
+    noteActivityAlertPresented,
+} from '../remoteAlerts/activityAlertPresentationNotes';
 import { buildActivityLocalNotificationContent } from '../buildActivityLocalNotificationContent';
 import { sendExpoLocalNotification } from '../channels/sendExpoLocalNotification';
 import { sendTauriLocalNotification } from '../channels/sendTauriLocalNotification';
@@ -26,6 +48,13 @@ import { subscribeActivityLocalNotifications, type ActivityLocalNotificationEven
 function resolveLocalNotificationEventKind(event: ActivityLocalNotificationEvent): ActivityAttentionDeliveryEventKind {
     if (event.kind === 'ready') return 'ready';
     return event.requestKind === 'permission' ? 'permission_request' : 'user_action_request';
+}
+
+function resolveLocalNotificationEventIdentity(event: ActivityLocalNotificationEvent): string | undefined {
+    if (event.kind === 'agent-request') return `request:${event.requestId}`;
+    return event.committedSequence
+        ? resolveActivitySequenceEventIdentityV1(event.committedSequence)
+        : undefined;
 }
 
 function resolveExpoLocalNotificationSound(
@@ -62,8 +91,8 @@ function resolveExpoLocalNotificationSound(
     };
 }
 
-function isSessionActivelyViewedForLocalNotification(sessionId: string): boolean {
-    if (!isSessionSurfaceVisible(sessionId)) {
+function isSessionActivelyViewedForLocalNotification(event: ActivityLocalNotificationEvent): boolean {
+    if (!isSessionSurfaceVisible(event.address.sessionId, event.address.serverId)) {
         return false;
     }
 
@@ -83,46 +112,133 @@ function useActivityLocalNotificationLocalSettings(): Partial<LocalSettings> {
     );
 }
 
-function useActivityLocalNotificationAccountSettings(): Partial<AccountSettings> {
-    const attentionDeliveryPolicyV1 = useSetting('attentionDeliveryPolicyV1');
-
-    return React.useMemo(
-        () => ({ attentionDeliveryPolicyV1 }),
-        [attentionDeliveryPolicyV1],
-    );
-}
-
 export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
     const localSettings = useActivityLocalNotificationLocalSettings();
-    const accountSettings = useActivityLocalNotificationAccountSettings();
+    const audienceSource = useActivityAttentionSource();
+    const resolveAccountSettings = useExactHomeAccountSettings(audienceSource.audienceScopes);
 
     React.useEffect(() => {
         return subscribeActivityLocalNotifications((event) => {
+            const state = storage.getState();
+            const directSession = state.sessions[event.address.sessionId];
+            const directServerId = typeof directSession?.serverId === 'string' ? directSession.serverId.trim() : '';
+            const directScopedSession = directServerId
+                && areServerProfileIdentifiersEquivalent(directServerId, event.address.serverId)
+                ? directSession
+                : null;
+            const scopedRow = findSessionListLookupSession(state, event.address, { activeServerId: getActiveServerSnapshot().serverId });
+            const session = directScopedSession ?? (scopedRow
+                ? buildSessionFromListRenderable(scopedRow.session, { serverId: event.address.serverId })
+                : null);
+            if (!session) return;
+            const viewer = session.viewer;
+            const tracked = isSessionPersonallyTrackedForViewer(session);
+            // Pre-viewer Homes carry no Follow facts. Only their identified owner
+            // retains the released default; unknown collaborators remain quiet.
+            if (!viewer && !tracked) return;
+            const isSessionOwner = viewer
+                ? viewer.relevance.reasons.includes('owned_by_me')
+                : tracked;
+            const interaction = deriveTranscriptInteractionFromSession({
+                access: session.access,
+                active: session.active,
+            });
+            const eligibility = resolveSessionPersonalEventEligibilityV1({
+                event: event.event,
+                isSessionOwner,
+                tracked,
+                // Session lookup is fed only by this authenticated viewer's authorized
+                // sync projection; revoked rows disappear through the existing owner.
+                accessible: true,
+                accountSuspended: false,
+                archived: session.archivedAt != null,
+                responsible: viewer?.relevance.reasons.includes('responsible_for_me') === true,
+                targeted: false,
+                followFacts: viewer ? viewer.follow : { follows: false, notificationLevel: null },
+                capabilities: {
+                    canSubmitAgentInput: interaction.canSendMessages,
+                    canApprovePermissions: interaction.canApprovePermissions,
+                },
+            });
+            if (!eligibility.eligible) return;
+            const accountSettings = resolveAccountSettings(event.address.serverId);
+            if (!accountSettings) return;
             const deliveryPlan = resolveActivityAttentionDeliveryPlan({
                 accountSettings,
                 localSettings,
                 event: resolveLocalNotificationEventKind(event),
                 channel: 'local_notification',
-                sameSessionVisible: isSessionActivelyViewedForLocalNotification(event.sessionId),
+                sameSessionVisible: isSessionActivelyViewedForLocalNotification(event),
                 now: new Date(),
             });
             if (deliveryPlan.delivery === 'suppress') {
                 return;
             }
 
-            const session = storage.getState().sessions[event.sessionId];
+            const eventIdentity = resolveLocalNotificationEventIdentity(event);
+            // One committed event gets one visible alert on this device: when the
+            // Home leg already presented it here, this device does not schedule a
+            // second independent alert for it (Lane 09C §10.4 C5b step 6).
+            // Identityless state observations always continue through the
+            // current eligibility and policy checks above.
+            if (eventIdentity && consumeOtherLegActivityAlertPresentation({
+                address: event.address,
+                event: event.event,
+                identity: eventIdentity,
+                source: 'local_notification',
+            })) {
+                return;
+            }
+
+            const serverProfile = getServerProfileById(event.address.serverId);
+            const activeServer = getActiveServerSnapshot();
+            const serverUrl = serverProfile?.serverUrl
+                ?? (areServerProfileIdentifiersEquivalent(activeServer.serverId, event.address.serverId)
+                    ? activeServer.serverUrl
+                    : null);
+            if (!serverUrl) return;
+            const nowMs = Date.now();
+            const awareness = projectUiSessionAwareness(session, nowMs);
+            const mayShowPrivateContent = viewer?.attention.presentation !== 'status_only'
+                && isSessionAwarenessContentReadableV1(awareness.encryption);
             const notification = buildActivityLocalNotificationContent({
                 event,
-                session,
-                serverUrl: getActiveServerUrl(),
-                includeReadyMessageText: deliveryPlan.previewBehavior === 'include_preview',
+                session: mayShowPrivateContent ? session : null,
+                serverUrl,
+                contextLine: projectSessionContextPresentation(buildSessionContextFacts({
+                    address: event.address,
+                    serverProfile,
+                    // Same projection the private-content gate above already consulted, so the
+                    // delivered context can never describe content this device could not open.
+                    awareness,
+                    viewer,
+                    audienceContext: session.access?.audienceContext,
+                    audienceScope: audienceSource.audienceScopes?.get(event.address.serverId),
+                    // Same Home-directory input Session rows use, so a delivered notification
+                    // never prints an absolute workspace path.
+                    homeDir: readSessionOwnerMetadataView(session)?.homeDir ?? null,
+                    // Same exact-Home currentness the row and Activity show: an alert from a Home
+                    // Happier can no longer reach says so instead of implying it is current.
+                    homeObservation: audienceSource.sessionListHomeObservationByServerId?.[event.address.serverId] ?? null,
+                    nowMs,
+                })).contextLine,
+                previewBehavior: mayShowPrivateContent ? deliveryPlan.previewBehavior : 'status_only',
             });
 
             if (isDesktopHost()) {
-                fireAndForget(sendTauriLocalNotification({
+                const submission = sendTauriLocalNotification({
                     title: notification.title,
                     body: notification.body,
-                }), { tag: 'ActivityLocalNotificationRuntime.sendTauriLocalNotification' });
+                }).then((accepted) => {
+                    if (!accepted || !eventIdentity) return;
+                    noteActivityAlertPresented({
+                        address: event.address,
+                        event: event.event,
+                        identity: eventIdentity,
+                        source: 'local_notification',
+                    });
+                });
+                fireAndForget(submission, { tag: 'ActivityLocalNotificationRuntime.sendTauriLocalNotification' });
                 return;
             }
 
@@ -137,11 +253,25 @@ export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
                 sound: resolvedSound.sound,
                 channelId: resolvedSound.channelId,
             };
-            fireAndForget(sendExpoLocalNotification(expoNotificationParams), {
+            const submission = sendExpoLocalNotification(expoNotificationParams).then(() => {
+                if (!eventIdentity) return;
+                noteActivityAlertPresented({
+                    address: event.address,
+                    event: event.event,
+                    identity: eventIdentity,
+                    source: 'local_notification',
+                });
+            });
+            fireAndForget(submission, {
                 tag: 'ActivityLocalNotificationRuntime.sendExpoLocalNotification',
             });
         });
-    }, [accountSettings, localSettings]);
+    }, [
+        localSettings,
+        resolveAccountSettings,
+        audienceSource.audienceScopes,
+        audienceSource.sessionListHomeObservationByServerId,
+    ]);
 
     return null;
 }

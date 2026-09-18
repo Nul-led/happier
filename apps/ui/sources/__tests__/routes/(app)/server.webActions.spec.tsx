@@ -60,8 +60,8 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
 describe('ServerConfigScreen (web row actions)', () => {
     it('adds per-row device switch action for server rows on web', async () => {
         const { upsertServerProfile, setActiveServerId } = await import('@/sync/domains/server/serverProfiles');
-        const company = upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
-        setActiveServerId(company.id, { scope: 'device' });
+        const company = await upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+        await setActiveServerId(company.id, { scope: 'device' });
 
         const Screen = (await import('@/app/(app)/server')).default;
         const screen = await renderScreen(React.createElement(Screen));

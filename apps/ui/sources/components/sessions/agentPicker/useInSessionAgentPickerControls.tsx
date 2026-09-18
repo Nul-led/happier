@@ -121,6 +121,8 @@ type UseInSessionAgentPickerControlsParams = Readonly<{
      * than in a second place with its own lifetime.
      */
     accountScope: ServerAccountScope | null;
+    accountScopeRevision?: number | null;
+    accountScopeIsCurrent?: (() => boolean) | null;
     /** The Agent running this Session, as the catalog knows it. */
     currentAgentId: string | null;
     currentAgentLabel: string;
@@ -159,6 +161,8 @@ type UseInSessionAgentPickerControlsParams = Readonly<{
      */
     detail: SessionAgentPickerTargetDetailContext;
 }>;
+
+const ACCOUNT_SCOPE_ALWAYS_CURRENT = () => true;
 
 /** The canonical decision's state is enough for this owner to distinguish a real disable from uncertainty. */
 export type SessionAgentContinuationFeatureDecision = Readonly<Pick<FeatureDecision, 'state'>> | null;
@@ -413,6 +417,7 @@ export function useInSessionAgentPickerControls(
     params: UseInSessionAgentPickerControlsParams,
 ): InSessionAgentPickerControls {
     const { accountScope, currentAgentId, currentAgentLabel, entries, sessionId, source } = params;
+    const accountScopeIsCurrent = params.accountScopeIsCurrent ?? ACCOUNT_SCOPE_ALWAYS_CURRENT;
     const featureEnabled = params.featureDecision?.state === 'enabled';
     const featureDefinitelyDisabled = params.featureDecision?.state === 'disabled';
     const accountScopeKey = accountScope ? serverAccountScopeKeySuffix(accountScope) : 'local';
@@ -431,7 +436,7 @@ export function useInSessionAgentPickerControls(
 
     const [armed, setArmed] = React.useState<ArmedAgentContinuation | null>(null);
     const draftSessionId = sessionId.trim().length > 0 ? sessionId.trim() : null;
-    const persistedArmedContinuation = draftSessionId === null
+    const persistedArmedContinuation = draftSessionId === null || !accountScopeIsCurrent()
         ? undefined
         : readPersistedArmedContinuation(accountScope, draftSessionId);
     // A submitted input remains custody even after the arm that promised a
@@ -449,6 +454,7 @@ export function useInSessionAgentPickerControls(
     // one lifetime. Arming is a deliberate, rare gesture rather than a keystroke, so
     // it is flushed immediately: the reader may leave the screen in the next frame.
     const persistArmedContinuation = React.useCallback((next: ArmedAgentContinuation | null) => {
+        if (!accountScopeIsCurrent()) return;
         if (draftSessionId === null) {
             setArmed(next);
             return;
@@ -465,7 +471,7 @@ export function useInSessionAgentPickerControls(
             setArmed(next);
             writePersistedArmedContinuation(accountScope, draftSessionId, next);
         }
-    }, [accountScope, draftSessionId]);
+    }, [accountScope, accountScopeIsCurrent, draftSessionId]);
     // Whether the composer's Agent picker is on screen. Its only job is to scope
     // the rail decision below to one open popover.
     const [pickerVisible, setPickerVisible] = React.useState(false);
@@ -638,21 +644,26 @@ export function useInSessionAgentPickerControls(
     // into a transition the machine now refuses, and a refusal deliberately KEEPS
     // the arm, so not even sending clears it. Leaving the Session was the only
     // escape.
-    const armScopeKey = `${accountScopeKey}\u0000${featureDefinitelyDisabled ? 'disabled' : 'not-disabled'}:${armMayRemain ? 'rail' : 'norail'}:${sessionId}\u0000${source.currentBackendTargetKey ?? ''}`;
-    const armScopeRef = React.useRef({ key: armScopeKey, accountScope });
+    const armScopeKey = `${accountScopeKey}\u0000${params.accountScopeRevision ?? 'legacy'}\u0000${featureDefinitelyDisabled ? 'disabled' : 'not-disabled'}:${armMayRemain ? 'rail' : 'norail'}:${sessionId}\u0000${source.currentBackendTargetKey ?? ''}`;
+    const armScopeRef = React.useRef({ key: armScopeKey, accountScope, accountScopeIsCurrent });
     // A render may not write to storage, so the invalidation records the fact and
     // the reconciler below compare-clears the old scope's persisted half with
     // the live one. It must never write into the newly active Account scope.
     const invalidatedArmRef = React.useRef<Readonly<{
         accountScope: ServerAccountScope | null;
+        accountScopeIsCurrent: () => boolean;
         arm: ArmedAgentContinuation;
     }> | null>(null);
     if (armScopeRef.current.key !== armScopeKey) {
         const previousScope = armScopeRef.current;
-        armScopeRef.current = { key: armScopeKey, accountScope };
+        armScopeRef.current = { key: armScopeKey, accountScope, accountScopeIsCurrent };
         if (armed !== null) {
             setArmed(null);
-            invalidatedArmRef.current = { accountScope: previousScope.accountScope, arm: armed };
+            invalidatedArmRef.current = {
+                accountScope: previousScope.accountScope,
+                accountScopeIsCurrent: previousScope.accountScopeIsCurrent,
+                arm: armed,
+            };
         }
     }
 
@@ -663,6 +674,7 @@ export function useInSessionAgentPickerControls(
     const clearArmedContinuationSubmissionIfCurrent = React.useCallback((
         expected: SessionArmedAgentContinuationSubmission,
     ): boolean => {
+        if (!accountScopeIsCurrent()) return false;
         if (draftSessionId === null) {
             return isSameArmedContinuationSubmission(armed?.submission, expected);
         }
@@ -670,7 +682,7 @@ export function useInSessionAgentPickerControls(
         if (!isSameArmedContinuationSubmission(persisted?.submission, expected)) return false;
         writePersistedArmedContinuation(accountScope, draftSessionId, null);
         return true;
-    }, [accountScope, armed?.submission, draftSessionId]);
+    }, [accountScope, accountScopeIsCurrent, armed?.submission, draftSessionId]);
 
     // The submission identity for the armed choice, derived from the choice
     // itself rather than minted at whichever affordance established it.
@@ -729,6 +741,7 @@ export function useInSessionAgentPickerControls(
         if (invalidation !== null) {
             invalidatedArmRef.current = null;
             reconciledArmScopeKeyRef.current = armScopeKey;
+            if (!invalidation.accountScopeIsCurrent()) return;
             const persisted = readPersistedArmedContinuation(invalidation.accountScope, draftSessionId);
             if (isSameArmedContinuation(persisted, invalidation.arm) && persisted?.submission === undefined) {
                 writePersistedArmedContinuation(invalidation.accountScope, draftSessionId, null);
@@ -737,6 +750,7 @@ export function useInSessionAgentPickerControls(
         }
 
         if (featureDefinitelyDisabled) {
+            if (!accountScopeIsCurrent()) return;
             reconciledArmScopeKeyRef.current = armScopeKey;
             const persisted = readPersistedArmedContinuation(accountScope, draftSessionId);
             if (persisted?.submission === undefined && typeof persisted !== 'undefined') {
@@ -746,7 +760,7 @@ export function useInSessionAgentPickerControls(
         }
 
         if (reconciledArmScopeKeyRef.current === armScopeKey) return;
-        if (!featureEnabled || !railDecisionSettled || currentAgentId === null) return;
+        if (!accountScopeIsCurrent() || !featureEnabled || !railDecisionSettled || currentAgentId === null) return;
         if (armed !== null) return;
 
         const persisted = readPersistedArmedContinuation(accountScope, draftSessionId);
@@ -789,6 +803,7 @@ export function useInSessionAgentPickerControls(
         }
     }, [
         accountScope,
+        accountScopeIsCurrent,
         armScopeKey,
         armed,
         currentAgentId,

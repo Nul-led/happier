@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runtime = vi.hoisted(() => ({
     current: true,
+    token: 'token-a',
     serverFetch: vi.fn(),
     daemonSettingsWatch: vi.fn(),
 }));
@@ -65,7 +66,7 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
 vi.mock('@/sync/sync', () => ({
     sync: {
         encryption: null,
-        getCredentials: () => ({ token: 'token-a' }),
+        getCredentials: () => ({ token: runtime.token }),
         mutateAccountSettingsOnce: vi.fn(),
     },
 }));
@@ -102,11 +103,60 @@ function jsonResponse(body: () => Promise<unknown>, status = 200) {
 
 beforeEach(() => {
     runtime.current = true;
+    runtime.token = 'token-a';
     runtime.serverFetch.mockReset();
     runtime.daemonSettingsWatch.mockReset();
 });
 
 describe('scopedPluginSettingsAdapter Account currentness', () => {
+    it('never retargets an Account A read-modify-write to Account B', async () => {
+        const writes: string[] = [];
+        runtime.serverFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') return jsonResponse(async () => ({ mode: 'plain', updatedAt: 1 }));
+            if (init?.method === 'POST') {
+                writes.push(String((init.headers as Record<string, string>).Authorization));
+                return jsonResponse(async () => ({ status: 'updated', revision: 5 }));
+            }
+            return jsonResponse(async () => ({
+                status: 'present', revision: 4,
+                content: { t: 'plain', v: { v: 1, values: { retained: 'Account A private value' } } },
+            }));
+        });
+        const mutation = {
+            kind: 'set' as const,
+            get value() {
+                runtime.token = 'token-b';
+                return 'new endpoint';
+            },
+        };
+        await expect(scopedPluginSettingsAdapter.write({
+            pluginId: 'acme.settings', scope: { kind: 'account' }, target: ACCOUNT_TARGET,
+            fields: ACCOUNT_FIELDS, fieldId: 'endpoint', mutation,
+            expectedRevision: { kind: 'account', value: 4 },
+        })).resolves.toEqual({ status: 'unavailable', reason: 'transport' });
+        expect(writes).toEqual([]);
+    });
+
+    it.each(['conflict', 'lost'] as const)('preserves %s settlement after Account retirement without another Account readback', async (settlement) => {
+        const readTokens: string[] = [];
+        runtime.serverFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') return jsonResponse(async () => ({ mode: 'plain', updatedAt: 1 }));
+            if (init?.method === 'POST') {
+                runtime.token = 'token-b';
+                if (settlement === 'lost') throw new Error('Response lost after dispatch');
+                return jsonResponse(async () => ({ status: 'conflict', revision: 5 }));
+            }
+            readTokens.push(String((init?.headers as Record<string, string>).Authorization));
+            return jsonResponse(async () => ({ status: 'absent' }));
+        });
+        await expect(scopedPluginSettingsAdapter.write({
+            pluginId: 'acme.settings', scope: { kind: 'account' }, target: ACCOUNT_TARGET,
+            fields: ACCOUNT_FIELDS, fieldId: 'endpoint', mutation: { kind: 'set', value: 'new endpoint' },
+            expectedRevision: { kind: 'account', value: 'absent' },
+        })).resolves.toEqual({ status: settlement === 'lost' ? 'outcomeUnknown' : 'conflict' });
+        expect(readTokens).toEqual(['Bearer token-a']);
+    });
+
     it('binds an exact daemon Settings record to the machine invalidation transport', () => {
         const onInvalidated = vi.fn();
         const dispose = vi.fn();
@@ -209,7 +259,7 @@ describe('scopedPluginSettingsAdapter Account currentness', () => {
         await expect(read).resolves.toEqual({ status: 'unavailable', reason: 'transport' });
     });
 
-    it('does not report a completed write after the Account lifetime becomes stale during mutation JSON decoding', async () => {
+    it('preserves content-free settlement after the Account lifetime becomes stale during mutation JSON decoding', async () => {
         const delayedMutation = deferred<unknown>();
         runtime.serverFetch
             .mockResolvedValueOnce(jsonResponse(async () => ({ mode: 'plain', updatedAt: 1 })))
@@ -231,7 +281,7 @@ describe('scopedPluginSettingsAdapter Account currentness', () => {
         runtime.current = false;
         delayedMutation.resolve({ status: 'updated', revision: 1 });
 
-        await expect(write).resolves.toEqual({ status: 'unavailable', reason: 'transport' });
+        await expect(write).resolves.toEqual({ status: 'applied', revision: { kind: 'account', value: 1 } });
     });
 
     it('does not accept a success-shaped mutation body from a non-success HTTP response', async () => {

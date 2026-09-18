@@ -4,6 +4,8 @@ export type ThisComputerSetupPreflight = Readonly<{
     activeRelayUrl: string | null;
     activeWebappUrl: string | null;
     activeLocalRelayUrl: string | null;
+    /** Identity of the Home this computer is being set up for; scopes its credential reads. */
+    activeServerId: string | null;
     localCliReady?: boolean;
     serviceInstalled: boolean;
     daemonRunning: boolean;

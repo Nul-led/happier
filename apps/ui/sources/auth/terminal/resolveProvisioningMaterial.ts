@@ -4,6 +4,7 @@ import {
 } from '@happier-dev/protocol';
 import tweetnacl from 'tweetnacl';
 
+import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import {
     type AuthCredentials,
     isDataKeyAuthCredentials,
@@ -11,15 +12,6 @@ import {
     isTokenOnlyAuthCredentials,
 } from '@/auth/storage/tokenStorage';
 import { decodeBase64 } from '@/encryption/base64';
-
-export class LegacyProvisioningUnavailableError extends Error {
-    readonly code = 'legacy_provisioning_unavailable' as const;
-
-    constructor() {
-        super('Legacy-only credentials cannot issue current provisioning material');
-        this.name = 'LegacyProvisioningUnavailableError';
-    }
-}
 
 function equalBytesConstantTime(left: Uint8Array, right: Uint8Array): boolean {
     if (left.length !== right.length) return false;
@@ -32,16 +24,28 @@ function equalBytesConstantTime(left: Uint8Array, right: Uint8Array): boolean {
 
 /**
  * Canonical credential-material decision for terminal/Home provisioning.
- * Plain accounts are token-only; keyed accounts retain the data key and never
- * collapse it into the legacy secret field.
+ * Plain accounts are token-only. Keyed accounts — data-key or legacy-secret
+ * credentials — both derive the same canonical content private key through
+ * the existing encryption owner (`createEncryptionFromAuthCredentials`), so
+ * secret-bearing credentials never mint a parallel derivation formula.
  */
-export function resolveProvisioningMaterial(credentials: AuthCredentials): TerminalProvisioningV2Response {
+export async function resolveProvisioningMaterial(credentials: AuthCredentials): Promise<TerminalProvisioningV2Response> {
+    // Check the two key-bearing shapes first. `TokenOnlyAuthCredentials` is a
+    // structural subset of both, so testing its guard first would make the
+    // later data-key branch collapse to `never` under strict narrowing.
+    if (!isDataKeyAuthCredentials(credentials) && !isLegacyAuthCredentials(credentials)) {
+        if (!isTokenOnlyAuthCredentials(credentials)) {
+            throw new Error('Unsupported provisioning credential shape');
+        }
+        const variant = resolveTerminalProvisioningVariantV2({ encryptionMode: 'plain' });
+        if (variant !== 'tokenOnly') throw new Error('Invalid plain provisioning policy result');
+        return { type: 'tokenOnly' };
+    }
+
+    const variant = resolveTerminalProvisioningVariantV2({ encryptionMode: 'e2ee' });
+    if (variant !== 'dataKey') throw new Error('Invalid E2EE provisioning policy result');
+
     if (isDataKeyAuthCredentials(credentials)) {
-        const variant = resolveTerminalProvisioningVariantV2({
-            encryptionMode: 'e2ee',
-            dataKeyMaterialAvailable: true,
-        });
-        if (variant !== 'dataKey') throw new Error('Invalid E2EE provisioning policy result');
         const key = decodeBase64(credentials.encryption.machineKey, 'base64');
         if (key.length !== 32) throw new Error('Invalid data-key credential key length');
         const publicKey = decodeBase64(credentials.encryption.publicKey, 'base64');
@@ -50,28 +54,8 @@ export function resolveProvisioningMaterial(credentials: AuthCredentials): Termi
         if (!equalBytesConstantTime(publicKey, derivedPublicKey)) {
             throw new Error('Data-key credential public key does not match its machine scalar');
         }
-        return { type: 'dataKey', key };
     }
 
-    if (isLegacyAuthCredentials(credentials)) {
-        const variant = resolveTerminalProvisioningVariantV2({
-            encryptionMode: 'e2ee',
-            dataKeyMaterialAvailable: false,
-        });
-        if (variant !== 'legacyProvisioningUnavailable') {
-            throw new Error('Invalid legacy provisioning policy result');
-        }
-        throw new LegacyProvisioningUnavailableError();
-    }
-
-    if (isTokenOnlyAuthCredentials(credentials)) {
-        const variant = resolveTerminalProvisioningVariantV2({
-            encryptionMode: 'plain',
-            dataKeyMaterialAvailable: false,
-        });
-        if (variant !== 'tokenOnly') throw new Error('Invalid plain provisioning policy result');
-        return { type: 'tokenOnly' };
-    }
-
-    throw new Error('Unsupported provisioning credential shape');
+    const encryption = await createEncryptionFromAuthCredentials(credentials);
+    return { type: 'dataKey', key: encryption.getContentPrivateKey() };
 }

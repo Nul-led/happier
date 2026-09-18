@@ -5,8 +5,10 @@ import { renderScreen } from '@/dev/testkit';
 import { installConnectedServicesCommonModuleMocks } from './connectedServicesTestHelpers';
 import type {
     AccountProfile,
+    ConnectedServicesDefaultAuthByAgentIdV1,
     PluginProjectedAgentConnectedAccountPurposeV2,
 } from '@happier-dev/protocol';
+import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 import type { ConnectedServicesServiceBinding } from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -66,6 +68,7 @@ type SelectionListProps = Readonly<{
         sections: ReadonlyArray<{
             options: ReadonlyArray<{
                 id: string;
+                disabled?: boolean;
                 onSelect: () => void;
             }>;
         }>;
@@ -126,13 +129,44 @@ const CODEX_V4_GROUP: AccountProfile['connectedAccountGroupsV4'][number] = {
     ],
 } as AccountProfile['connectedAccountGroupsV4'][number];
 
+const TEAM_RESOURCE: TeamCredentialResourceCatalogEntryV1 = {
+    id: 'resource-a',
+    teamId: 'team-a',
+    displayName: 'Team Codex',
+    resourceRevision: 7,
+    mayBroker: true,
+    mayReceiveDirect: true,
+    directMaterialState: 'current',
+    sessionUsePolicy: 'personal_allowed',
+    providerModels: [],
+    sourcePresentation: {
+        kind: 'connected_service',
+        service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+    },
+    readiness: { kind: 'available' },
+    recoveryAction: null,
+    connectedServiceSelections: [
+        { source: 'team_resource', resourceId: 'resource-a', deliveryMode: 'brokered' },
+        {
+            source: 'team_resource', resourceId: 'resource-a', deliveryMode: 'direct',
+            disclosedMember: {
+                service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+                accountId: 'account-a',
+            },
+        },
+    ],
+};
+
 function findSelectionListProps(tree: renderer.ReactTestRenderer): SelectionListProps {
     return tree.root.findByProps({
         testID: 'new-session.connected-services.selection-list',
     }).props as SelectionListProps;
 }
 
-function findSelectionOption(tree: renderer.ReactTestRenderer, optionId: string): { onSelect: () => void } {
+function findSelectionOption(
+    tree: renderer.ReactTestRenderer,
+    optionId: string,
+): { onSelect: () => void; disabled?: boolean } {
     const listProps = findSelectionListProps(tree);
     for (const section of listProps.rootStep.sections) {
         const option = section.options.find((candidate) => candidate.id === optionId);
@@ -286,6 +320,7 @@ describe('ConnectedServicesDefaultAuthRow', () => {
                 connectedAccountPurposes={CLAUDE_ACCOUNT_PURPOSES}
                 // No machine projection passed: the released bundled scalar
                 // declaration is the only source and must land qualified.
+                connectedAccountServiceKeys={['anthropic']}
                 connectedAccountsV4={[CLAUDE_V4_ACCOUNT]}
                 connectedAccountGroupsV4={[]}
                 accountGroupsEnabled={false}
@@ -393,6 +428,124 @@ describe('ConnectedServicesDefaultAuthRow', () => {
                 },
             },
         });
+    });
+
+    it.each(['brokered', 'direct'] as const)(
+        'persists and reloads an exact Home-qualified %s Team resource default',
+        async (deliveryMode) => {
+            const { ConnectedServicesDefaultAuthRow } = await import('./ConnectedServicesDefaultAuthRow');
+            const setDefaultAuthSettings = vi.fn();
+            const selection = TEAM_RESOURCE.connectedServiceSelections.find((candidate) => candidate.deliveryMode === deliveryMode)!;
+
+            const renderRow = async (
+                persisted: ConnectedServicesDefaultAuthByAgentIdV1 = { v: 1, bindingsByAgentId: {} },
+            ) => (await renderScreen(
+                <ConnectedServicesDefaultAuthRow
+                    agentId="codex"
+                    agentTitle="Codex"
+                    connectedAccountPurposes={CODEX_ACCOUNT_PURPOSES}
+                    connectedAccountServiceKeys={[CODEX_SERVICE_KEY]}
+                    connectedAccountsV4={[]}
+                    connectedAccountGroupsV4={[]}
+                    accountGroupsEnabled={true}
+                    serverId="home-a"
+                    accountId="recipient-account"
+                    teamCredentialResources={[TEAM_RESOURCE]}
+                    teamNameById={{ 'team-a': 'Acme' }}
+                    currentTeamCredentialResourceKeys={new Set(['team-a:resource-a'])}
+                    settings={{
+                        connectedServicesProfileLabelByKey: {},
+                        connectedServicesDefaultProfileByServiceId: {},
+                        connectedServicesDefaultAuthByAgentIdV1: persisted,
+                    }}
+                    setDefaultAuthSettings={setDefaultAuthSettings}
+                    onOpenConnectedServicesSettings={vi.fn()}
+                />,
+            )).tree;
+
+            const tree = await renderRow();
+            const modalTree = await openPickerModal(tree, 'codex');
+            const optionId = deliveryMode === 'brokered'
+                ? 'connected-service:team-resource:resource-a:brokered:brokered'
+                : `connected-service:team-resource:resource-a:direct:${CODEX_SERVICE_KEY.replace('/', '%2F')}:account-a`;
+            await act(async () => findSelectionOption(modalTree, optionId).onSelect());
+
+            const written = setDefaultAuthSettings.mock.calls[0]![0];
+            expect(written).toEqual({
+                v: 1,
+                bindingsByAgentId: {
+                    codex: {
+                        v: 2,
+                        bindingsByServiceId: {
+                            [CODEX_SERVICE_KEY]: {
+                                ...selection,
+                                serverId: 'home-a',
+                                accountId: 'recipient-account',
+                                teamId: 'team-a',
+                                expectedResourceRevision: 7,
+                            },
+                        },
+                    },
+                },
+            });
+
+            const reloadedTree = await renderRow(written);
+            const reloadedModal = await openPickerModal(reloadedTree, 'codex', 1);
+            expect(findSelectionListProps(reloadedModal).selectedOptionId).toBe(optionId);
+        },
+    );
+
+    it('keeps a stale Team resource default selected and unavailable without native fallback', async () => {
+        const { ConnectedServicesDefaultAuthRow } = await import('./ConnectedServicesDefaultAuthRow');
+        const persisted: ConnectedServicesDefaultAuthByAgentIdV1 = {
+            v: 1,
+            bindingsByAgentId: {
+                codex: {
+                    v: 2,
+                    bindingsByServiceId: {
+                        [CODEX_SERVICE_KEY]: {
+                            source: 'team_resource',
+                            serverId: 'home-a',
+                            accountId: 'recipient-account',
+                            teamId: 'team-a',
+                            resourceId: 'resource-a',
+                            expectedResourceRevision: 6,
+                            deliveryMode: 'brokered',
+                        },
+                    },
+                },
+            },
+        };
+        const { tree } = await renderScreen(
+            <ConnectedServicesDefaultAuthRow
+                agentId="codex"
+                agentTitle="Codex"
+                connectedAccountPurposes={CODEX_ACCOUNT_PURPOSES}
+                connectedAccountServiceKeys={[CODEX_SERVICE_KEY]}
+                connectedAccountsV4={[]}
+                connectedAccountGroupsV4={[]}
+                accountGroupsEnabled={true}
+                serverId="home-a"
+                accountId="recipient-account"
+                teamCredentialResources={[TEAM_RESOURCE]}
+                teamNameById={{ 'team-a': 'Acme' }}
+                currentTeamCredentialResourceKeys={new Set(['team-a:resource-a'])}
+                settings={{
+                    connectedServicesProfileLabelByKey: {},
+                    connectedServicesDefaultProfileByServiceId: {},
+                    connectedServicesDefaultAuthByAgentIdV1: persisted,
+                }}
+                setDefaultAuthSettings={vi.fn()}
+                onOpenConnectedServicesSettings={vi.fn()}
+            />,
+        );
+
+        const modalTree = await openPickerModal(tree, 'codex');
+        const list = findSelectionListProps(modalTree);
+        const teamOptionId = 'connected-service:team-resource:resource-a:brokered:brokered';
+        expect(list.selectedOptionId).toBe(teamOptionId);
+        expect(findSelectionOption(modalTree, teamOptionId).disabled).toBe(true);
+        expect(list.selectedOptionId).not.toBe(`connected-service:${ENCODED_CODEX_SERVICE_KEY}:native`);
     });
 
     it('offers the ready autoSwitch pool of a stored member profile as a pool-adoption suggestion', async () => {

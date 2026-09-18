@@ -12,6 +12,7 @@ import { deriveProviderParticipantTargets } from '@/sync/domains/session/provide
 import type { SessionParticipantTarget } from './participantTargets';
 
 export function deriveSessionParticipantTargets(params: Readonly<{
+    accountScope?: import('@/sync/domains/scope/serverAccountScope').ServerAccountScope | null;
     session: Session;
     messages: readonly Message[];
     activeExecutionRuns?: readonly SessionSubagentActiveExecutionRunState[];
@@ -23,6 +24,7 @@ export function deriveSessionParticipantTargets(params: Readonly<{
     const targets = [...deriveSessionSubagentRecipients(subagents)];
     return [
         ...deriveProviderParticipantTargets({
+            accountScope: params.accountScope,
             session: params.session,
             messages: params.messages,
             currentTargets: targets,
@@ -32,6 +34,7 @@ export function deriveSessionParticipantTargets(params: Readonly<{
 }
 
 export function deriveAutoRecipientFromFocusedToolTranscript(params: Readonly<{
+    accountScope?: import('@/sync/domains/scope/serverAccountScope').ServerAccountScope | null;
     session: Session;
     tool: ToolCall;
     messages: readonly Message[];
@@ -40,6 +43,7 @@ export function deriveAutoRecipientFromFocusedToolTranscript(params: Readonly<{
     canControlExecutionRuns?: boolean;
 }>): ParticipantRecipientV1 | null {
     return resolveSessionSubagentAutoRecipient({
+        accountScope: params.accountScope,
         session: params.session,
         tool: params.tool,
         messages: params.messages,

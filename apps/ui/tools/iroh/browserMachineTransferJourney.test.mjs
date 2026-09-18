@@ -43,9 +43,11 @@ const REQUIRED_OBSERVATIONS = [
   'productionAttachmentImportPrepareEncryptedChunksFinalizeReceiptAndDestinationBytes',
   'productionAttachmentCancellationAndTerminalFailureDoNotFallback',
   'wrongPeerRoleEndpointOrGrantRejectedBeforeApplicationBytes',
+  'corruptedSignedGrantRejectedBeforeApplicationBytes',
   'terminalSelectedIrohFailureDoesNotFallbackForImportOrExport',
   'browserReportsRelayOnlyNeverDirect',
   'releaseClosesOwnedMachineStream',
+  'terminalCleanupStopsPreparedTransferOwner',
 ];
 
 test('the one harness opts into the machine-transfer vertical without losing any existing mode', async () => {
@@ -82,7 +84,8 @@ test('the Chromium journey consumes the canonical direct import/export owners in
     const journeySource = readFileSync(resolve(toolsIrohDir, 'runBrowserMachineTransferJourney.mjs'), 'utf8');
     const pageSource = readFileSync(resolve(toolsIrohDir, 'productionCarrierSeamPage.ts'), 'utf8');
 
-    assert.match(pageSource, /uploadBulkPayloadFromFileWithCarrierFallbacks/u);
+    assert.match(pageSource, /uploadBulkPayloadFromFileViaMachineCarrier/u);
+    assert.doesNotMatch(pageSource, /uploadBulkPayloadFromFileWithCarrierFallbacks/u);
     assert.match(pageSource, /downloadBulkPayloadViaDirectExportToDestination/u);
     assert.match(journeySource, /createDirectTransferServerLifecycle/u);
     assert.match(journeySource, /registerMachineDirectTransferImportRpcHandlers/u);
@@ -90,12 +93,21 @@ test('the Chromium journey consumes the canonical direct import/export owners in
     assert.doesNotMatch(journeySource, /\/v1\/machine\/transfer\/(upload|download|hold)/u);
 });
 
+test('the Chromium Machine publisher declares the strict current finite-transfer application state', () => {
+    const pageSource = readFileSync(resolve(toolsIrohDir, 'productionCarrierSeamPage.ts'), 'utf8');
+
+    assert.match(pageSource, /satisfies MachineDaemonTransferState/u);
+    assert.match(pageSource, /supported:\s*\{\s*import:\s*true,\s*export:\s*true,?\s*\}/u);
+    assert.match(pageSource, /mode:\s*'lazy_idle_shutdown'/u);
+});
+
 test('the Chromium journey composes attachments through the existing transfer owners', () => {
     const journeySource = readFileSync(resolve(toolsIrohDir, 'runBrowserMachineTransferJourney.mjs'), 'utf8');
     const pageSource = readFileSync(resolve(toolsIrohDir, 'productionCarrierSeamPage.ts'), 'utf8');
 
-    assert.match(pageSource, /uploadSessionAttachmentFromReaderWithCarrierFallbacks/u);
-    assert.match(pageSource, /await uploadSessionAttachmentFromReaderWithCarrierFallbacks\(\{/u);
+    assert.match(pageSource, /uploadSessionAttachmentFromReaderViaMachineCarrier/u);
+    assert.match(pageSource, /await uploadSessionAttachmentFromReaderViaMachineCarrier\(\{/u);
+    assert.doesNotMatch(pageSource, /uploadSessionAttachmentFromReaderWithCarrierFallbacks/u);
     assert.match(journeySource, /allowedFlows:\s*\[FINITE_TRANSFER_CARRIER_FLOW\]/u);
     assert.match(journeySource, /productionAttachmentImportPrepareEncryptedChunksFinalizeReceiptAndDestinationBytes/u);
     assert.match(journeySource, /productionAttachmentCancellationAndTerminalFailureDoNotFallback/u);
@@ -218,4 +230,37 @@ test('the daemon side is the canonical admission and grant-signing owners', asyn
         /mintDirectRouteGrantV2/u,
         'the journey must mint through the canonical server grant owner, not sign a payload itself',
     );
+    assert.match(
+        journeySource,
+        /corruptNextMintedGrant/u,
+        'the journey must corrupt a canonically minted grant so signature rejection is observed at real admission',
+    );
+});
+
+test('Machine journey evidence summarizes RPC outcomes without logging prepared-transfer credentials', async () => {
+    const { summarizeMachineRpcInvocationsForEvidence } = await import(
+        resolve(toolsIrohDir, 'runBrowserMachineTransferJourney.mjs')
+    );
+    const summary = summarizeMachineRpcInvocationsForEvidence([
+        {
+            method: 'daemon.directTransfer.export.prepare',
+            payload: { path: 'payload.bin' },
+            result: {
+                success: true,
+                transferId: 'transfer-id',
+                endpointCandidates: [{ authorizationToken: 'prepared-transfer-secret' }],
+            },
+        },
+        {
+            method: 'daemon.directTransfer.import.abort',
+            payload: { uploadId: 'upload-id' },
+            result: { success: false, errorCode: 'transfer_aborted' },
+        },
+    ]);
+
+    assert.deepEqual(summary, [
+        { method: 'daemon.directTransfer.export.prepare', success: true },
+        { method: 'daemon.directTransfer.import.abort', success: false, errorCode: 'transfer_aborted' },
+    ]);
+    assert.doesNotMatch(JSON.stringify(summary), /prepared-transfer-secret|authorizationToken|payload\.bin/u);
 });

@@ -3,6 +3,13 @@ export type ServerAccountScope = Readonly<{
     accountId: string;
 }>;
 
+/** Currentness and synchronous retirement for one exact Home/Account scope. */
+export type ServerAccountScopeLifetime = Readonly<{
+    scope: ServerAccountScope;
+    isCurrent(): boolean;
+    onRetire(cancel: () => void): Readonly<{ dispose(): void }>;
+}>;
+
 function normalizeServerAccountScopePart(value: unknown): string | null {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
@@ -35,6 +42,19 @@ export function serverAccountScopeKeySuffix(scope: ServerAccountScope): string {
     return `${encodeScopePart(scope.serverId)}${encodeScopePart(scope.accountId)}`;
 }
 
+/** Collision-safe identity for an ordered set of exact Home/Account scopes. */
+export function serverAccountScopeListKey(scopes: readonly ServerAccountScope[]): string {
+    return scopes.map((scope) => encodeScopePart(serverAccountScopeKeySuffix(scope))).join('');
+}
+
 export function serverAccountScopedStorageKey(prefix: string, scope: ServerAccountScope): string {
     return `${prefix}:${serverAccountScopeKeySuffix(scope)}`;
+}
+
+/** Collision-safe identity for child projections within one Account scope. */
+export function serverAccountScopedResourceKey(
+    scope: ServerAccountScope,
+    ...parts: readonly string[]
+): string {
+    return `${serverAccountScopeKeySuffix(scope)}${parts.map(encodeScopePart).join('')}`;
 }

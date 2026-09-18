@@ -60,7 +60,7 @@ export function useServerSettingsGroupActions(params: Readonly<{
     setHomeViewSelectionSettings: (
         update: (current: HomeViewSelectionSettings) => HomeViewSelectionSettings,
         options?: Readonly<{ targetScope?: 'tab' | 'device' }>,
-    ) => void;
+    ) => Promise<void>;
 }>) {
     const onSwitchGroup = React.useCallback(async (profile: ServerSelectionGroup) => {
         const nextServerIds = Array.from(new Set(profile.serverIds.map((id) => String(id ?? '').trim()).filter(Boolean)));
@@ -80,11 +80,13 @@ export function useServerSettingsGroupActions(params: Readonly<{
         });
         if (!activation) return;
         const { serverId: nextServerId, authStatus } = activation;
-        if (nextServerId !== params.activeServerId) {
+        // Auth resolution above may await credential storage while another action
+        // changes focus. Compare with the canonical applied Home at switch time.
+        if (nextServerId !== getActiveServerId()) {
             const result = await params.onSwitchServerById(nextServerId);
             if (result === 'blocked') return;
         }
-        params.setHomeViewSelectionSettings((current) => ({
+        await params.setHomeViewSelectionSettings((current) => ({
             ...current,
             serverSelectionActiveTargetKind: 'group',
             serverSelectionActiveTargetId: profile.id,
@@ -107,7 +109,7 @@ export function useServerSettingsGroupActions(params: Readonly<{
         // The prompt awaited above; another writer may have changed groups meanwhile.
         // Derive the mutation from the state present at commit instead of the
         // snapshot this callback captured.
-        params.setHomeViewSelectionSettings((current) => {
+        await params.setHomeViewSelectionSettings((current) => {
             const groups = normalizeServerSelectionGroupsForSettings(current.serverSelectionGroups);
             if (!groups.some((item) => item.id === profile.id)) return current;
             return {
@@ -129,7 +131,7 @@ export function useServerSettingsGroupActions(params: Readonly<{
         // The confirmation awaited above; only the removed group is dropped from the
         // state present at commit, and the fallback target is derived from that
         // current target rather than the captured one.
-        params.setHomeViewSelectionSettings((current) => {
+        await params.setHomeViewSelectionSettings((current) => {
             const groups = normalizeServerSelectionGroupsForSettings(current.serverSelectionGroups)
                 .filter((item) => item.id !== profile.id);
             const removedCurrentTarget = current.serverSelectionActiveTargetKind === 'group'
@@ -176,7 +178,7 @@ export function useServerSettingsGroupActions(params: Readonly<{
         // The auth probe and focus switch awaited above: allocate the group id
         // against the groups present at commit so a concurrently created group
         // with the same derived id is neither overwritten nor dropped.
-        params.setHomeViewSelectionSettings((current) => {
+        await params.setHomeViewSelectionSettings((current) => {
             const groups = normalizeServerSelectionGroupsForSettings(current.serverSelectionGroups);
             const existingIds = new Set(groups.map((group) => group.id));
             let id = baseId;

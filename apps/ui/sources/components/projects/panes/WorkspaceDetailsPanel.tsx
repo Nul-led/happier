@@ -1,3 +1,6 @@
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { useProjectSurfaceActions } from '@/components/projects/detail/useProjectSurfaceActions';
+import { useProjectSurfaceController } from '@/components/projects/detail/useProjectSurfaceController';
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -63,6 +66,7 @@ export type WorkspaceDetailsPanelProps = Readonly<{
     workspaceRef: WorkspaceRefV1;
     scopeId: string;
     activeRootPath?: string;
+    activeWorktreeId?: string | null;
     displayPathOverride?: string;
     forceOverviewMode?: boolean;
     showTerminalHeaderAction?: boolean;
@@ -91,6 +95,17 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
     const deviceType = useDeviceType();
     const requestClose = props.onRequestClose ?? pane.closeDetails;
     const effectiveRootPath = props.activeRootPath ?? props.workspaceRef.rootPath;
+    const filesController = useProjectSurfaceController({ scopeId: props.scopeId, workspaceRef: props.workspaceRef, activeRootPath: effectiveRootPath, activeWorktreeId: props.activeWorktreeId });
+    const navigateFiles = React.useCallback(() => {
+        if (deviceType === 'phone') filesController.navigateToSurface('browse');
+    }, [deviceType, filesController]);
+    const navigateChanges = React.useCallback(() => {
+        if (deviceType === 'phone') filesController.navigateToSurface('git');
+    }, [deviceType, filesController]);
+    const { revealInFilesTree, openChanges } = useProjectSurfaceActions({
+        scopeId: props.scopeId, workspaceRef: props.workspaceRef, activeRootPath: effectiveRootPath,
+        onRevealInFilesTreeNavigate: navigateFiles, onOpenChangesNavigate: navigateChanges,
+    });
     const displayPath = props.displayPathOverride ?? props.workspaceRef.rootPath;
     const paneFocusMode = usePaneFocusMode(props.scopeId);
     const allMachines = useAllMachines();
@@ -281,6 +296,8 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
     ]);
 
     const detailsSurfaceRenderers = React.useMemo(() => createWorkspaceDetailsSurfaceRenderers({
+        onRevealInFilesTree: revealInFilesTree,
+        onOpenChanges: openChanges,
         scopeId: props.scopeId,
         workspaceRefId: props.workspaceRef.id,
         workspaceCacheKey,
@@ -307,6 +324,8 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
         formFactor: pluginSurfaceFormFactor,
         productModels: props.browserProductModels ?? undefined,
     }), [
+        revealInFilesTree,
+        openChanges,
         browserLaunchpad,
         deviceType,
         effectiveRootPath,
@@ -429,23 +448,24 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
                     </Pressable>
                 ) : null}
                 {props.showFocusModeToggle !== false && Platform.OS === 'web' ? (
-                    <Pressable
+                    <IconButton
                         onPress={paneFocusMode.toggle}
-                        style={iconButtonStyle}
-                        accessibilityRole="button"
+                        variant="plain"
+                        size={34}
+                        tooltip={paneFocusMode.active ? t('session.detailsPanel.exitFocusModeA11y') : t('session.detailsPanel.enterFocusModeA11y')}
+                        selected={paneFocusMode.active}
                         disabled={!paneFocusMode.canEnter}
                         accessibilityLabel={
                             paneFocusMode.active
                                 ? t('session.detailsPanel.exitFocusModeA11y')
                                 : t('session.detailsPanel.enterFocusModeA11y')
                         }
-                    >
-                        <Icon
+                        icon={<Icon
                             name={paneFocusMode.active ? 'arrows-in' : 'arrows-out'}
                             size={16}
                             color={theme.colors.text.secondary}
-                        />
-                    </Pressable>
+                        />}
+                    />
                 ) : null}
                 {props.onRequestClose && deviceType !== 'phone' ? (
                     <Pressable

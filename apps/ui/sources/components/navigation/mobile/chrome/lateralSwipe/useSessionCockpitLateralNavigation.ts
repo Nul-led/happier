@@ -12,10 +12,13 @@
  */
 
 import * as React from 'react';
+import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
 import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
+import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
+import { findSessionListLookupSession } from '@/sync/domains/session/listing/sessionListLookupState';
 import { t } from '@/text';
 import { SESSION_LATERAL_PICKER_MAX_REACHABLE_ENTRIES } from './sessionLateralPickerState';
 import {
@@ -96,7 +99,8 @@ function resolveAnchorSessionKey(
     if (!cursor || !sessionId) return null;
     const scopedKey = buildServerScopedSessionKey(sessionId, serverId ?? null);
     if (cursor.entries.some((entry) => entry.sessionKey === scopedKey)) return scopedKey;
-    return cursor.entries.find((entry) => entry.sessionId === sessionId)?.sessionKey ?? null;
+    const bareMatches = cursor.entries.filter((entry) => entry.sessionId === sessionId);
+    return bareMatches.length === 1 ? bareMatches[0].sessionKey : null;
 }
 
 /**
@@ -121,27 +125,35 @@ function resolveEntriesInDirection(
     return entries;
 }
 
-/** Non-reactive metadata read; see the call site for why this is not a subscription. */
-function readSessionMetadata(sessionId: string | undefined) {
-    if (!sessionId) return null;
-    return storage.getState().sessions[sessionId]?.metadata ?? null;
-}
-
 /**
- * One non-reactive presentation-identity read per target, through the same
- * canonical layout-aware view Session rows and the tab bar read: the exact
- * open Agent identity (a novel external Agent included), `null` when unknown —
- * never a flavor/default substitution — plus the machine fact that scopes
- * catalog resolution.
+ * One non-reactive presentation read per target. Qualified cursor entries read
+ * the canonical exact-Home row; an active-Home-only legacy cursor may still read
+ * the active Session record. A qualified entry never falls back through the bare
+ * Session map, where the same id from another Home may currently be hydrated.
  */
-function readSessionIdentityView(sessionId: string | undefined): Readonly<{
+function readSessionTargetView(entry: VisibleSessionNavigationEntry | null): Readonly<{
+    metadata: unknown;
     agentId: string | null;
     machineId: string | null;
 }> {
-    if (!sessionId) return { agentId: null, machineId: null };
-    const session = storage.getState().sessions[sessionId];
-    if (!session) return { agentId: null, machineId: null };
+    if (!entry) return { metadata: null, agentId: null, machineId: null };
+    const state = storage.getState();
+    if (entry.serverId) {
+        const row = findSessionListLookupSession(state, {
+            serverId: entry.serverId,
+            sessionId: entry.sessionId,
+        })?.session ?? null;
+        return {
+            metadata: row?.metadata ?? null,
+            agentId: resolveAgentIdFromSessionMetadata(row?.metadata ?? null),
+            machineId: resolveSessionMachineId(row?.metadata ?? null),
+        };
+    }
+
+    const session = state.sessions[entry.sessionId];
+    if (!session) return { metadata: null, agentId: null, machineId: null };
     return {
+        metadata: session.metadata,
         agentId: readSessionPresentationAgentId(session),
         machineId: readSessionOwnerMetadataView(session)?.machineId ?? null,
     };
@@ -150,8 +162,7 @@ function readSessionIdentityView(sessionId: string | undefined): Readonly<{
 function buildTarget(
     cursor: SessionNavigationCursor | null,
     entry: VisibleSessionNavigationEntry | null,
-    metadata: ReturnType<typeof readSessionMetadata>,
-    identity: ReturnType<typeof readSessionIdentityView>,
+    view: ReturnType<typeof readSessionTargetView>,
 ): SessionLateralNavigationTarget | null {
     if (!cursor || !entry) return null;
     const position = cursor.entries.findIndex((candidate) => candidate.sessionKey === entry.sessionKey) + 1;
@@ -159,9 +170,9 @@ function buildTarget(
     return {
         sessionId: entry.sessionId,
         ...(entry.serverId ? { serverId: entry.serverId } : null),
-        agentId: identity.agentId,
-        machineId: identity.machineId,
-        title: getSessionName({ id: entry.sessionId, metadata: metadata ?? null }),
+        agentId: view.agentId,
+        machineId: view.machineId,
+        title: getSessionName({ id: entry.sessionId, metadata: view.metadata ?? null }),
         position,
         total: cursor.entries.length,
     };
@@ -197,8 +208,7 @@ export function useSessionCockpitLateralNavigation(params: Readonly<{
         () => buildTarget(
             cursor,
             previousEntry,
-            readSessionMetadata(previousEntry?.sessionId),
-            readSessionIdentityView(previousEntry?.sessionId),
+            readSessionTargetView(previousEntry),
         ),
         [cursor, previousEntry],
     );
@@ -206,8 +216,7 @@ export function useSessionCockpitLateralNavigation(params: Readonly<{
         () => buildTarget(
             cursor,
             nextEntry,
-            readSessionMetadata(nextEntry?.sessionId),
-            readSessionIdentityView(nextEntry?.sessionId),
+            readSessionTargetView(nextEntry),
         ),
         [cursor, nextEntry],
     );
@@ -230,8 +239,7 @@ export function useSessionCockpitLateralNavigation(params: Readonly<{
             .map((entry) => buildTarget(
                 currentCursor,
                 entry,
-                readSessionMetadata(entry.sessionId),
-                readSessionIdentityView(entry.sessionId),
+                readSessionTargetView(entry),
             ))
             .filter((target): target is SessionLateralNavigationTarget => target !== null);
     }, []);

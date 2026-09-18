@@ -73,12 +73,18 @@ export function installMachineDetailsCommonModuleMocks(
         return createUnistylesMock();
     });
 
-    vi.mock('@/constants/Typography', () => ({
-        Typography: {
-            default: () => ({}),
-            mono: () => ({}),
-        },
-    }));
+    vi.mock('@/constants/Typography', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('@/constants/Typography')>();
+        return {
+            ...actual,
+            Typography: {
+                ...actual.Typography,
+                default: () => ({}),
+                mono: () => ({}),
+                rowMeta: () => ({}),
+            },
+        };
+    });
 
     vi.mock('@/text', async () => {
         const activeOptions = machineDetailsModuleState.options;

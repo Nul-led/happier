@@ -2,7 +2,13 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { createDeferred, flattenTestStyle, flushHookEffects, renderScreen } from '@/dev/testkit';
+import {
+  createDeferred,
+  createSessionAccessFixture,
+  flattenTestStyle,
+  flushHookEffects,
+  renderScreen,
+} from '@/dev/testkit';
 import {
   installSessionActionsCommonModuleMocks,
   resetSessionActionsCommonModuleMockState,
@@ -47,6 +53,7 @@ const emitSessionResumeRequestMock = vi.hoisted(() => vi.fn());
 const dropdownRenderCount = vi.hoisted(() => ({
   current: 0,
 }));
+const mutateSessionCompanionPreferenceMock = vi.hoisted(() => vi.fn());
 const patchSessionMetadataWithRetryMock = vi.hoisted(() => vi.fn(async (sessionId: string, updater: (metadata: any) => any, _options?: { serverId?: string }) => {
   const session = storageState.current.sessions[sessionId];
   if (session) {
@@ -98,8 +105,8 @@ const storageState = vi.hoisted(() => ({
     settings: { voice: null as any } as any,
     sessions: {} as Record<string, any>,
     sessionMessages: {} as Record<string, any>,
-    sessionListRenderables: {} as Record<string, any>,
-    sessionListRowStateByServerId: {} as Record<string, Record<string, any>>,
+    sessionListRowsByServerId: {} as Record<string, Record<string, any>>,
+    ordinarySessionListMembershipByServerId: {} as Record<string, readonly string[]>,
     machines: {} as Record<string, any>,
     machineListByServerId: {} as Record<string, any>,
     createSessionActionDraft: createSessionActionDraftMock,
@@ -218,6 +225,36 @@ function buildConfiguredInactiveDaemonTransferState() {
   };
 }
 
+const EXTERNAL_SESSION_RPC_METHOD_PREFIX = 'daemon.externalSessions.';
+const EXTERNAL_SESSION_FOLLOW_SET_METHOD = 'daemon.externalSessions.backgroundFollow.set';
+
+/**
+ * The header's handoff source-reachability probe issues its own unrelated
+ * `machineRpcWithServerScope` traffic through the same mocked transport, so a
+ * bare "was this transport used" assertion cannot distinguish it from the
+ * follow behavior under test. Name the method instead of counting every call.
+ */
+function machineRpcCallsWithMethodPrefix(prefix: string): readonly unknown[][] {
+  return machineRpcWithServerScopeMock.mock.calls.filter(
+    (call) => String((call[0] as { method?: unknown } | undefined)?.method ?? '').startsWith(prefix),
+  );
+}
+
+/**
+ * Answer exactly one method through the shared transport. `mockResolvedValueOnce`
+ * is not usable here: the reachability probe can consume the queued value before
+ * the action under test ever reaches the transport.
+ */
+function respondToMachineRpcMethod(
+  method: string,
+  respond: () => unknown,
+): void {
+  machineRpcWithServerScopeMock.mockImplementation(async (request: unknown) => {
+    if ((request as { method?: unknown } | undefined)?.method === method) return await respond();
+    throw new Error('unreachable');
+  });
+}
+
 installSessionActionsCommonModuleMocks({
   modal: async () => {
     const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
@@ -252,6 +289,12 @@ installSessionActionsCommonModuleMocks({
     return createStorageModuleStub({
       storage: createHeaderTestStorageStore(),
       useSettings: () => storageState.current.settings,
+      useActiveServerAccountScope: () => ({ serverId: 'server_a', accountId: 'account_a' }),
+      useSessionCompanionPreferenceSlot: (_sessionId: string | null, serverId?: string | null) => ({
+        stored: undefined,
+        storageKey: serverId ? `${serverId}:test-account:test-session` : null,
+      }),
+      useMutateSessionCompanionPreference: () => mutateSessionCompanionPreferenceMock,
       useSession: (sessionId: string) => storageState.current.sessions[sessionId] ?? null,
       useSetting: (key: string) => {
         if (key === 'actionsSettingsV1') return actionsSettingsState.current;
@@ -436,9 +479,16 @@ vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) 
   }),
 }));
 
-vi.mock('@/sync/domains/session/resolveSessionActionDefaultBackend', () => ({
-  resolveSessionActionDefaultBackend: (...args: unknown[]) => resolveSessionActionDefaultBackendMock(...args),
-}));
+vi.mock('@/sync/domains/session/resolveSessionActionDefaultBackend', async (importOriginal) => {
+  // Only the resolver itself is a test-controlled boundary; the target
+  // projection over its result stays real so callers keep the canonical
+  // agentTarget-before-backendTarget precedence.
+  const original = await importOriginal<typeof import('@/sync/domains/session/resolveSessionActionDefaultBackend')>();
+  return {
+    ...original,
+    resolveSessionActionDefaultBackend: (...args: unknown[]) => resolveSessionActionDefaultBackendMock(...args),
+  };
+});
 
 vi.mock('@/voice/session/voiceSession', () => ({
   useVoiceSessionSnapshot: () => voiceSessionSnapshotState.current,
@@ -470,6 +520,11 @@ describe('SessionHeaderActionMenu handoff', () => {
     sessionSetManualReadStateWithServerScopeMock.mockReset();
     emitSessionResumeRequestMock.mockReset();
     dropdownRenderCount.current = 0;
+    mutateSessionCompanionPreferenceMock.mockReset();
+    mutateSessionCompanionPreferenceMock.mockImplementation((
+      _sessionId: string,
+      project: (stored: unknown) => unknown,
+    ) => project(undefined) !== null);
     storageListeners.current.clear();
     patchSessionMetadataWithRetryMock.mockReset();
     applySessionMetadataLocallyMock.mockReset();
@@ -500,8 +555,8 @@ describe('SessionHeaderActionMenu handoff', () => {
       },
       sessions: {},
       sessionMessages: {},
-      sessionListRenderables: {},
-      sessionListRowStateByServerId: {},
+      sessionListRowsByServerId: {},
+      ordinarySessionListMembershipByServerId: {},
       machines: {},
       machineListByServerId: {},
       createSessionActionDraft: createSessionActionDraftMock,
@@ -517,12 +572,270 @@ describe('SessionHeaderActionMenu handoff', () => {
     };
 
     vi.resetModules();
+    // `storageStore` claims the storage-state reader bridge at module load, and
+    // this suite only replaces `@/sync/domains/state/storage`. Import the real
+    // store first so its registration happens before this fixture claims the
+    // bridge; otherwise the component graph's own transitive import silently
+    // replaces the test store and every bridge-backed reader — renderable
+    // row read-state, the External Session follow link fence — sees an empty
+    // Home instead of the fixture.
+    await import('@/sync/domains/state/storageStore');
     const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
     registerStorageStateReader(() => storageState.current as any);
     const { voiceSessionBindingStore } = await import('@/voice/binding/voiceConversationBindingStore');
     for (const binding of voiceSessionBindingStore.getState().list()) {
       voiceSessionBindingStore.getState().unbind(binding.conversationSessionId);
     }
+  });
+
+  it('keeps an untouched empty Companion reachable through the incumbent overflow menu', async () => {
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const { SessionCompanionRevealPortProvider } = await import(
+      '@/components/sessions/companion/presentation/SessionCompanionRevealPort'
+    );
+    const session = {
+      id: 'session-companion-entry',
+      serverId: 'server_a',
+      active: true,
+      seq: 1,
+      metadataLayoutVersion: 1,
+      metadata: {},
+      ownerMetadataView: {},
+      agentState: null,
+      access: null,
+    } as any;
+
+    const screen = await renderScreen(
+      <SessionCompanionRevealPortProvider
+        address={{ serverId: 'server_a', sessionId: session.id }}
+        openFullSurface={() => undefined}
+        revealAfterMutation={() => undefined}
+        revealBoardItem={() => undefined}
+      >
+        <SessionHeaderActionMenu
+          sessionId={session.id}
+          session={session}
+          companionHeaderActionPlacement="overflow"
+          companionHeaderIntent={{
+            operation: 'show',
+            accessibility: 'show',
+            itemCount: 0,
+            expanded: false,
+            checked: false,
+          }}
+        />
+      </SessionCompanionRevealPortProvider>,
+    );
+
+    const dropdown = screen.findByType('DropdownMenu' as any);
+    expect(dropdown.props.items.map((item: { id: string }) => item.id)).toContain('header.openCompanion');
+    expect(dropdown.props.items).toEqual(expect.arrayContaining([expect.objectContaining({
+      id: 'header.openCompanion',
+      title: 'sessionBoard.companion.a11y.headerAction',
+    })]));
+  });
+
+  it('hands a first show to the exact mounted reveal owner after the preference applies', async () => {
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const { SessionCompanionRevealPortProvider } = await import(
+      '@/components/sessions/companion/presentation/SessionCompanionRevealPort'
+    );
+    const session = {
+      id: 'session-companion-first-show',
+      serverId: 'server_a',
+      active: true,
+      seq: 1,
+      metadataLayoutVersion: 1,
+      metadata: {},
+      ownerMetadataView: {},
+      agentState: null,
+      access: null,
+    } as any;
+    const revealAfterMutation = vi.fn();
+    const screen = await renderScreen(
+      <SessionCompanionRevealPortProvider
+        address={{ serverId: 'server_a', sessionId: session.id }}
+        openFullSurface={() => undefined}
+        revealAfterMutation={revealAfterMutation}
+        revealBoardItem={() => undefined}
+      >
+        <SessionHeaderActionMenu
+          sessionId={session.id}
+          session={session}
+          companionHeaderActionPlacement="direct"
+          companionHeaderIntent={{
+            operation: 'show',
+            accessibility: 'show',
+            itemCount: 0,
+            expanded: false,
+            checked: false,
+          }}
+        />
+      </SessionCompanionRevealPortProvider>,
+    );
+
+    const companionButton = screen.findByTestId('session-header-companion');
+    if (!companionButton) throw new Error('Expected the direct Companion action');
+    act(() => companionButton.props.onPress());
+
+    expect(mutateSessionCompanionPreferenceMock).toHaveBeenCalledTimes(1);
+    expect(revealAfterMutation).toHaveBeenCalledTimes(1);
+    expect(revealAfterMutation).toHaveBeenCalledWith(expect.objectContaining({
+      applied: expect.objectContaining({ visible: true }),
+    }));
+    expect(sessionActionsModuleState.routerPushSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not publish a Companion header action without the exact mounted reveal owner', async () => {
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const { SessionCompanionRevealPortProvider } = await import(
+      '@/components/sessions/companion/presentation/SessionCompanionRevealPort'
+    );
+    const session = {
+      id: 'session-companion-wrong-home',
+      serverId: 'server_a',
+      active: true,
+      seq: 1,
+      metadataLayoutVersion: 1,
+      metadata: {},
+      ownerMetadataView: {},
+      agentState: null,
+      access: null,
+    } as any;
+    const screen = await renderScreen(
+      <SessionCompanionRevealPortProvider
+        address={{ serverId: 'server_b', sessionId: session.id }}
+        openFullSurface={() => undefined}
+        revealAfterMutation={() => undefined}
+        revealBoardItem={() => undefined}
+      >
+        <SessionHeaderActionMenu
+          sessionId={session.id}
+          session={session}
+          companionHeaderActionPlacement="direct"
+          companionHeaderIntent={{
+            operation: 'show',
+            accessibility: 'show',
+            itemCount: 0,
+            expanded: false,
+            checked: false,
+          }}
+        />
+      </SessionCompanionRevealPortProvider>,
+    );
+
+    expect(screen.findByTestId('session-header-companion')).toBeNull();
+    expect(screen.findByType('DropdownMenu' as any).props.items.map((item: { id: string }) => item.id))
+      .not.toContain('header.openCompanion');
+  });
+
+  it('does not open the full Companion when a show-and-open mutation was not applied', async () => {
+    mutateSessionCompanionPreferenceMock.mockImplementation(() => false);
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const { SessionCompanionRevealPortProvider } = await import(
+      '@/components/sessions/companion/presentation/SessionCompanionRevealPort'
+    );
+    const session = {
+      id: 'session-companion-noop-show',
+      serverId: 'server_a',
+      active: true,
+      seq: 1,
+      metadataLayoutVersion: 1,
+      metadata: {},
+      ownerMetadataView: {},
+      agentState: null,
+      access: null,
+    } as any;
+    const openFullSurface = vi.fn();
+    const screen = await renderScreen(
+      <SessionCompanionRevealPortProvider
+        address={{ serverId: 'server_a', sessionId: session.id }}
+        openFullSurface={openFullSurface}
+        revealAfterMutation={() => undefined}
+        revealBoardItem={() => undefined}
+      >
+        <SessionHeaderActionMenu
+          sessionId={session.id}
+          session={session}
+          companionHeaderActionPlacement="direct"
+          companionHeaderIntent={{
+            operation: 'show_and_open_full',
+            accessibility: 'open_full',
+            itemCount: 0,
+            expanded: false,
+            checked: false,
+          }}
+        />
+      </SessionCompanionRevealPortProvider>,
+    );
+
+    const companionButton = screen.findByTestId('session-header-companion');
+    if (!companionButton) throw new Error('Expected the direct Companion action');
+    act(() => companionButton.props.onPress());
+
+    expect(mutateSessionCompanionPreferenceMock).toHaveBeenCalledTimes(1);
+    expect(openFullSurface).not.toHaveBeenCalled();
+  });
+
+  it('projects one Companion descriptor in exactly one direct or overflow placement', async () => {
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const { SessionCompanionRevealPortProvider } = await import(
+      '@/components/sessions/companion/presentation/SessionCompanionRevealPort'
+    );
+    const session = {
+      id: 'session-companion-placement',
+      serverId: 'server_a',
+      active: true,
+      seq: 1,
+      metadataLayoutVersion: 1,
+      metadata: {},
+      ownerMetadataView: {},
+      agentState: null,
+      access: null,
+    } as any;
+    const intent = {
+      operation: 'show' as const,
+      accessibility: 'show' as const,
+      itemCount: 0,
+      expanded: false,
+      checked: false,
+    };
+    const wrap = (child: React.ReactElement) => (
+      <SessionCompanionRevealPortProvider
+        address={{ serverId: 'server_a', sessionId: session.id }}
+        openFullSurface={() => undefined}
+        revealAfterMutation={() => undefined}
+        revealBoardItem={() => undefined}
+      >
+        {child}
+      </SessionCompanionRevealPortProvider>
+    );
+    const direct = await renderScreen(wrap(<SessionHeaderActionMenu
+      sessionId={session.id}
+      session={session}
+      companionHeaderActionPlacement="direct"
+      companionHeaderIntent={intent}
+    />));
+
+    expect(direct.findByTestId('session-header-companion')).not.toBeNull();
+    expect(direct.findByType('DropdownMenu' as any).props.items.map((item: { id: string }) => item.id))
+      .not.toContain('header.openCompanion');
+
+    const overflow = await renderScreen(wrap(<SessionHeaderActionMenu
+      sessionId={session.id}
+      session={session}
+      companionHeaderActionPlacement="overflow"
+      companionHeaderIntent={intent}
+    />));
+
+    expect(overflow.findByTestId('session-header-companion')).toBeNull();
+    expect(overflow.findByType('DropdownMenu' as any).props.items)
+      .toEqual(expect.arrayContaining([expect.objectContaining({
+        id: 'header.openCompanion',
+        title: 'sessionBoard.companion.a11y.headerAction',
+        checked: false,
+        accessibilityLabel: 'sessionBoard.companion.a11y.show',
+      })]));
   });
 
   it('offers one standalone resume request for an inactive resumable session', async () => {
@@ -533,6 +846,9 @@ describe('SessionHeaderActionMenu handoff', () => {
       id: 'sess_resumable',
       active: false,
       seq: 4,
+      // `createSessionActionTarget` reads resume/rename authority from the
+      // canonical access projection, never from a legacy `accessLevel`.
+      access: createSessionAccessFixture(),
       metadataLayoutVersion: 1,
       metadata: { path: '/shared', host: 'shared' },
       agentState: null,
@@ -716,18 +1032,18 @@ describe('SessionHeaderActionMenu handoff', () => {
       basePath: '/workspace/repo',
     };
     readMachineTargetForSessionMock.mockReturnValue(null);
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
     const { recordCachedMachineRpcDirectRouteViable } = await import('@/sync/domains/transfers/runtime/transferRouteCache');
     recordCachedMachineRpcDirectRouteViable({
       serverId: 'server_a',
       remoteMachineId: 'machine_rebound',
     });
 
-    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
-
     const screen = await renderScreen(<SessionHeaderActionMenu
           sessionId="sess_1"
           session={{
             id: 'sess_1',
+            serverId: 'server_a',
             metadata: {
               machineId: 'machine_source',
               flavor: 'claude',
@@ -998,14 +1314,17 @@ describe('SessionHeaderActionMenu handoff', () => {
       ]),
     );
 
-    const rpcCallsBeforeOverflow = machineRpcWithServerScopeMock.mock.calls.length;
+    const actionRpcCalls = () => machineRpcCallsWithMethodPrefix(
+      RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE,
+    );
+    const rpcCallsBeforeOverflow = actionRpcCalls().length;
     await act(async () => {
       dropdown.props.onSelect('plugin-ui:sessionHeaderAction:acme.preview:run-preview');
       const pending = fireAndForgetMock.mock.calls.at(-1)?.[0] as Promise<unknown> | undefined;
       await pending;
     });
 
-    expect(machineRpcWithServerScopeMock.mock.calls).toHaveLength(rpcCallsBeforeOverflow + 1);
+    expect(actionRpcCalls()).toHaveLength(rpcCallsBeforeOverflow + 1);
     const expectedActionRpc = {
       machineId: 'machine-projection',
       serverId: 'server-projection',
@@ -1014,14 +1333,25 @@ describe('SessionHeaderActionMenu handoff', () => {
         machineId: 'machine-projection',
         expectedGeneration: '7',
         qualifiedActionId: 'acme.preview/run',
-        input: null,
         sessionId: 'sess_1',
         executionSurface: 'ui',
       },
       signal: undefined,
       timeoutMs: undefined,
+      // The canonical transport (`machinePluginStructuredMessageActionExecute`)
+      // observes issuance so an ambiguous settlement is not reported as a clean
+      // failure.
+      onIssued: expect.any(Function),
     };
-    expect(machineRpcWithServerScopeMock).toHaveBeenLastCalledWith(expectedActionRpc);
+    // A header descriptor carries no Action input, and the canonical transport
+    // omits the field entirely rather than transporting an explicit `null`
+    // the daemon would have to reinterpret as "no input".
+    const expectPayloadCarriesNoInput = () => {
+      const payload = (actionRpcCalls().at(-1)?.[0] as { payload?: object } | undefined)?.payload;
+      expect(payload && Object.hasOwn(payload, 'input')).toBe(false);
+    };
+    expect(actionRpcCalls().at(-1)?.[0]).toEqual(expectedActionRpc);
+    expectPayloadCarriesNoInput();
 
     await screen.update(<SessionHeaderActionMenu
       sessionId="sess_1"
@@ -1048,8 +1378,9 @@ describe('SessionHeaderActionMenu handoff', () => {
       await pending;
     });
 
-    expect(machineRpcWithServerScopeMock.mock.calls).toHaveLength(rpcCallsBeforeOverflow + 2);
-    expect(machineRpcWithServerScopeMock).toHaveBeenLastCalledWith(expectedActionRpc);
+    expect(actionRpcCalls()).toHaveLength(rpcCallsBeforeOverflow + 2);
+    expect(actionRpcCalls().at(-1)?.[0]).toEqual(expectedActionRpc);
+    expectPayloadCarriesNoInput();
   });
 
   it('does not transport a header action after its captured scope lifetime retires before either press arm', async () => {
@@ -1144,7 +1475,10 @@ describe('SessionHeaderActionMenu handoff', () => {
     />);
 
     const dropdown = screen.findByType('DropdownMenu' as any);
-    const rpcCallsBeforeOverflowPress = machineRpcWithServerScopeMock.mock.calls.length;
+    const retiredScopeActionRpcCalls = () => machineRpcCallsWithMethodPrefix(
+      RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE,
+    );
+    const rpcCallsBeforeOverflowPress = retiredScopeActionRpcCalls().length;
     overflowLifetime.retire();
     await act(async () => {
       dropdown.props.onSelect('plugin-ui:sessionHeaderAction:acme.preview:run-preview');
@@ -1152,7 +1486,7 @@ describe('SessionHeaderActionMenu handoff', () => {
       await pending;
     });
 
-    expect(machineRpcWithServerScopeMock.mock.calls).toHaveLength(rpcCallsBeforeOverflowPress);
+    expect(retiredScopeActionRpcCalls()).toHaveLength(rpcCallsBeforeOverflowPress);
 
     await screen.update(<SessionHeaderActionMenu
       sessionId="sess_1"
@@ -1173,7 +1507,7 @@ describe('SessionHeaderActionMenu handoff', () => {
     const directAction = screen.findByProps({
       testID: 'session-header-plugin-action-plugin-ui:sessionHeaderAction:acme.preview:run-preview',
     });
-    const rpcCallsBeforeDirectPress = machineRpcWithServerScopeMock.mock.calls.length;
+    const rpcCallsBeforeDirectPress = retiredScopeActionRpcCalls().length;
     directLifetime.retire();
     await act(async () => {
       directAction.props.onPress();
@@ -1181,7 +1515,7 @@ describe('SessionHeaderActionMenu handoff', () => {
       await pending;
     });
 
-    expect(machineRpcWithServerScopeMock.mock.calls).toHaveLength(rpcCallsBeforeDirectPress);
+    expect(retiredScopeActionRpcCalls()).toHaveLength(rpcCallsBeforeDirectPress);
   });
 
   it('routes one normalized openSurface descriptor through both overflow and direct header arms', async () => {
@@ -1224,13 +1558,24 @@ describe('SessionHeaderActionMenu handoff', () => {
       'sessionHeaderAction:acme.preview:open-preview',
       'Open preview',
     );
+    // openSurface is routed only while the header holds the exact Session scope
+    // authority the real header receives; without it the canonical router fails
+    // closed as `stale_surface`.
+    const pluginHeaderScope = {
+      serverId: 'server-projection',
+      machineId: 'machine-projection',
+      generation: 7,
+      interactionEnabled: true,
+    } as const;
     const overflowPluginHeaderProps = {
       pluginHeaderActions: [headerAction],
       pluginHeaderActionPlacement: 'overflow' as const,
+      pluginUiScopedLaunchFacts: pluginHeaderScope,
     };
     const directPluginHeaderProps = {
       pluginHeaderActions: [headerAction],
       pluginHeaderActionPlacement: 'direct' as const,
+      pluginUiScopedLaunchFacts: pluginHeaderScope,
     };
     const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
     const screen = await renderScreen(<SessionHeaderActionMenu
@@ -1314,6 +1659,41 @@ describe('SessionHeaderActionMenu handoff', () => {
     );
   });
 
+  it('does not replace an exact-Home header session with a same-id session from another Home when the menu opens', async () => {
+    preferredServerIdState.current = 'home-b';
+    storageState.current.sessions = {
+      duplicate_session: {
+        id: 'duplicate_session',
+        serverId: 'home-a',
+        seq: 5,
+        lastViewedSessionSeq: 0,
+        latestTurnStatus: 'completed',
+        metadata: { machineId: 'machine-a', flavor: 'claude' },
+      },
+    };
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const screen = await renderScreen(<SessionHeaderActionMenu
+      sessionId="duplicate_session"
+      session={{
+        id: 'duplicate_session',
+        serverId: 'home-b',
+        seq: 4,
+        lastViewedSessionSeq: 4,
+        latestTurnStatus: 'completed',
+        metadata: { machineId: 'machine-b', flavor: 'claude' },
+      } as any}
+    />);
+
+    let dropdown = screen.findByType('DropdownMenu' as any);
+    await act(async () => {
+      dropdown.props.onOpenChange(true);
+    });
+    dropdown = screen.findByType('DropdownMenu' as any);
+
+    expect(dropdown.props.items.some((item: any) => item?.id === SESSION_ACTION_MARK_UNREAD_ID)).toBe(true);
+    expect(dropdown.props.items.some((item: any) => item?.id === SESSION_ACTION_MARK_READ_ID)).toBe(false);
+  });
+
   it('refreshes header read-state actions from row renderable state while the session shell is stable', async () => {
     const sessionShell = {
       id: 'sess_read_header',
@@ -1326,14 +1706,22 @@ describe('SessionHeaderActionMenu handoff', () => {
         flavor: 'claude',
       },
     } as any;
+    // Rows are Home-scoped, so the resolved Home must be the one the shell
+    // belongs to or the header reads no row at all.
+    preferredServerIdState.current = 'server-header';
     storageState.current.sessions = {
       sess_read_header: sessionShell,
     };
-    storageState.current.sessionListRenderables = {
-      sess_read_header: {
-        ...sessionShell,
-        hasUnreadMessages: false,
+    storageState.current.sessionListRowsByServerId = {
+      'server-header': {
+        sess_read_header: {
+          ...sessionShell,
+          hasUnreadMessages: false,
+        },
       },
+    };
+    storageState.current.ordinarySessionListMembershipByServerId = {
+      'server-header': ['sess_read_header'],
     };
     const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
 
@@ -1345,11 +1733,13 @@ describe('SessionHeaderActionMenu handoff', () => {
     let dropdown = screen.findByType('DropdownMenu' as any);
     expect(dropdown.props.items.some((item: any) => item?.id === SESSION_ACTION_MARK_UNREAD_ID)).toBe(true);
 
-    storageState.current.sessionListRenderables = {
-      sess_read_header: {
-        ...sessionShell,
-        lastViewedSessionSeq: 741,
-        hasUnreadMessages: true,
+    storageState.current.sessionListRowsByServerId = {
+      'server-header': {
+        sess_read_header: {
+          ...sessionShell,
+          lastViewedSessionSeq: 741,
+          hasUnreadMessages: true,
+        },
       },
     };
     await act(async () => {
@@ -1371,6 +1761,7 @@ describe('SessionHeaderActionMenu handoff', () => {
             id: 'sess_rename_header',
             seq: 0,
             serverId: 'server-header',
+            access: createSessionAccessFixture(),
             metadata: {
               machineId: 'machine_source',
               flavor: 'claude',
@@ -1485,6 +1876,29 @@ describe('SessionHeaderActionMenu handoff', () => {
     };
     expect(updatedExecutorConfig.resolveServerIdForSessionId('sess_1')).toBe('server-updated');
 
+  });
+
+  it('opens execution Runs on the exact Session Home', async () => {
+    preferredServerIdState.current = 'home-b';
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+
+    const screen = await renderScreen(<SessionHeaderActionMenu
+      sessionId="duplicate_session"
+      session={{
+        id: 'duplicate_session',
+        serverId: 'home-b',
+        metadata: { machineId: 'machine-b', flavor: 'claude' },
+      } as any}
+      extraItems={[{ id: 'header.openRuns', title: 'Runs' }]}
+    />);
+
+    const dropdown = screen.findByType('DropdownMenu' as any);
+    await act(async () => {
+      dropdown.props.onSelect('header.openRuns');
+    });
+
+    expect(sessionActionsModuleState.routerPushSpy)
+      .toHaveBeenCalledWith('/session/duplicate_session/runs?serverId=home-b');
   });
 
   it('opens the fork strategy modal from the header menu and issues no fork effect', async () => {
@@ -1698,7 +2112,11 @@ describe('SessionHeaderActionMenu handoff', () => {
     );
   });
 
-  it('fails closed when the selected server only offers server-routed handoff transport', async () => {
+  // Server-routed transport does not depend on direct-peer viability, so the
+  // canonical availability owner (`resolveSessionHandoffUiAvailability`)
+  // negotiates `server_routed_stream` and reports the entry point as available.
+  // The header must project that decision, not keep a stricter second reading.
+  it('keeps session.handoff enabled when the selected server only offers server-routed handoff transport', async () => {
     const { FeaturesResponseSchema } = await import('@happier-dev/protocol');
     serverSnapshotState.current = {
       status: 'ready',
@@ -1733,15 +2151,10 @@ describe('SessionHeaderActionMenu handoff', () => {
 
     const dropdown = screen.findByType('DropdownMenu' as any);
     expect(Array.isArray(dropdown.props.items)).toBe(true);
-    expect(dropdown.props.items).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: 'session.handoff',
-          disabled: true,
-          subtitle: 'common.unavailable',
-        }),
-      ]),
-    );
+    const handoffItem = dropdown.props.items.find((item: any) => item?.id === 'session.handoff');
+    expect(handoffItem).toBeDefined();
+    expect(handoffItem?.disabled).not.toBe(true);
+    expect(handoffItem?.subtitle).not.toBe('common.unavailable');
   });
 
   it('reacts when machine-rpc direct-peer viability becomes available after mount', async () => {
@@ -1867,6 +2280,61 @@ describe('SessionHeaderActionMenu handoff', () => {
       ]),
     );
     expect(dropdown.props.items.find((item: any) => item?.id === 'session.handoff')?.disabled).not.toBe(true);
+  });
+
+  it('keeps session.handoff enabled and executable for a layout-v1 session whose owner metadata view has not landed yet', async () => {
+    // Cold owner projection: the layout is understood, but this device cannot read the owner view
+    // for this session yet. The reachable machine target is already canonical, so the entry point
+    // must not refuse the session — the daemon corridor stays the qualifying authority.
+    reachableMachineTargetState.current = {
+      machineId: 'machine_rebound',
+      basePath: '/workspace/repo',
+    };
+    readMachineTargetForSessionMock.mockReturnValue(null);
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const { recordCachedMachineRpcDirectRouteViable } = await import('@/sync/domains/transfers/runtime/transferRouteCache');
+    recordCachedMachineRpcDirectRouteViable({
+      serverId: 'server_a',
+      remoteMachineId: 'machine_rebound',
+    });
+
+    const screen = await renderScreen(<SessionHeaderActionMenu
+          sessionId="sess_1"
+          session={{
+            id: 'sess_1',
+            serverId: 'server_a',
+            metadataLayoutVersion: 1,
+            metadata: {
+              machineId: 'machine_stale_layout0',
+              flavor: 'claude',
+            },
+            ownerMetadataView: null,
+          } as any}
+        />);
+
+    const dropdown = screen.findByType('DropdownMenu' as any);
+    expect(dropdown.props.items.find((item: any) => item?.id === 'session.handoff')?.disabled).not.toBe(true);
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        dropdown.props.onSelect('session.handoff');
+      });
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await flushHookEffects({ cycles: 1 });
+
+    expect(runSessionHandoffPickerFlowMock).toHaveBeenCalledWith({
+      execute: expect.any(Function),
+      sessionId: 'sess_1',
+      sourceMachineId: 'machine_rebound',
+      serverId: 'server_a',
+      placement: 'session_action_menu',
+    });
   });
 
   it('surfaces session.handoff when the preferred session server id is resolved for the current session', async () => {
@@ -2045,6 +2513,13 @@ describe('SessionHeaderActionMenu handoff', () => {
               },
             },
           } as any}
+          // Draft-producing Session actions require the exact route Account
+          // authority the real header receives from `SessionView`.
+          actionAccountLifetime={{
+            scope: { serverId: 'server_a', accountId: 'account_a' },
+            isCurrent: () => true,
+            onRetire: () => ({ dispose() {} }),
+          }}
         />);
 
     const dropdown = screen.findByType('DropdownMenu' as any);
@@ -2060,10 +2535,14 @@ describe('SessionHeaderActionMenu handoff', () => {
       defaultBackendId: 'claude',
       instructions: '',
     }));
-    expect(createSessionActionDraftMock).toHaveBeenCalledWith('sess_1', {
+    expect(createSessionActionDraftMock).toHaveBeenCalledWith(
+      { serverId: 'server_a', accountId: 'account_a' },
+      { serverId: 'server_a', sessionId: 'sess_1' },
+      {
       actionId: 'subagents.plan.start',
       input: { draft: true },
-    });
+      },
+    );
   });
 
   it('adds a teleport action for session menus when a daemon voice agent conversation already exists', async () => {
@@ -2078,6 +2557,21 @@ describe('SessionHeaderActionMenu handoff', () => {
       },
     };
     storageState.current.settings.voice = voiceSettingState.current;
+    // The binding resolver admits a persisted binding only while its carrier
+    // still exists locally at the bound Home. The carrier is deliberately not
+    // an active reusable Voice system session, so only the live binding — not
+    // the shared-state lookup the next test covers — can answer here.
+    storageState.current.sessions = {
+      'carrier-s1': {
+        id: 'carrier-s1',
+        serverId: 'server_a',
+        active: false,
+        updatedAt: 1,
+        metadata: {
+          systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true },
+        },
+      },
+    };
     voiceSessionSnapshotState.current = {
       adapterId: 'local_conversation',
       sessionId: null,
@@ -2092,8 +2586,9 @@ describe('SessionHeaderActionMenu handoff', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'carrier-s1',
+      conversationSessionAddress: { serverId: 'server_a', sessionId: 'carrier-s1' },
       transcriptMode: 'synthetic',
-      targetSessionId: 'sess_1',
+      targetSessionAddress: { serverId: 'server_a', sessionId: 'sess_1' },
       updatedAt: 1,
     });
 
@@ -2141,9 +2636,15 @@ describe('SessionHeaderActionMenu handoff', () => {
       },
     };
     storageState.current.settings.voice = voiceSettingState.current;
+    // The Voice owner-metadata reader is Home-scoped and, for a session it can
+    // see locally, addresses it on the active Home. A shared system session
+    // filed under any other Home is simply not the one this device would read,
+    // so the fixture files it where the reader looks.
+    const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
     storageState.current.sessions = {
       sys_voice: {
         id: 'sys_voice',
+        serverId: getActiveServerSnapshot().serverId,
         active: true,
         updatedAt: 10,
         metadata: {
@@ -2221,7 +2722,10 @@ describe('SessionHeaderActionMenu handoff', () => {
 
     const dropdown = screen.findByType('DropdownMenu' as any);
     expect(dropdown.props.items.find((item: { id: string }) => item.id === 'session.externalSession.backgroundFollow')).toBeUndefined();
-    expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+    // Publishing the menu must not probe or mutate External Session follow
+    // state. Unrelated handoff-reachability traffic on the same transport is
+    // not evidence about this contract.
+    expect(machineRpcCallsWithMethodPrefix(EXTERNAL_SESSION_RPC_METHOD_PREFIX)).toHaveLength(0);
   });
 
   it('does not infer background follow from a session flavor when the linked source has no projection opt-in', async () => {
@@ -2321,14 +2825,17 @@ describe('SessionHeaderActionMenu handoff', () => {
       ]),
     );
 
+    respondToMachineRpcMethod(EXTERNAL_SESSION_FOLLOW_SET_METHOD, () => ({
+      ok: true,
+      enabled: false,
+      leaseActive: false,
+      updatedAtMs: 2,
+    }));
     await act(async () => {
-      machineRpcWithServerScopeMock.mockResolvedValueOnce({
-        ok: true,
-        enabled: false,
-        leaseActive: false,
-        updatedAtMs: 2,
-      });
       dropdown.props.onSelect('session.externalSession.backgroundFollow');
+      // Settle the exact dispatched mutation instead of guessing a tick budget.
+      const pending = fireAndForgetMock.mock.calls.at(-1)?.[0] as Promise<unknown> | undefined;
+      await pending;
     });
     await flushHookEffects({ cycles: 1 });
 
@@ -2394,9 +2901,12 @@ describe('SessionHeaderActionMenu handoff', () => {
 
     const dropdown = screen.findByType('DropdownMenu' as any);
     let resolveFollowPolicySet: ((value: unknown) => void) | undefined;
-    machineRpcWithServerScopeMock.mockImplementationOnce(() => new Promise((resolve) => {
-      resolveFollowPolicySet = resolve;
-    }));
+    respondToMachineRpcMethod(
+      EXTERNAL_SESSION_FOLLOW_SET_METHOD,
+      () => new Promise((resolve) => {
+        resolveFollowPolicySet = resolve;
+      }),
+    );
 
     await act(async () => {
       dropdown.props.onSelect('session.externalSession.backgroundFollow');

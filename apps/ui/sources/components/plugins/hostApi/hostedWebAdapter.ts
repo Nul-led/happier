@@ -6,6 +6,7 @@ import {
     ComposerSnapshotV1Schema,
     PluginHostedWebBridgeAccountDataMessageEnvelopeV1Schema,
     PluginHostedWebBridgeHostMessageEnvelopeV1Schema,
+    PluginHostedFrameOpenExternalPayloadV1Schema,
     PluginHostedWebBridgeResponseEnvelopeV1Schema,
     PluginHostedWebAccountDataBridgeRequestV1Schema,
     PluginUiHostApiRequestEnvelopeV1Schema,
@@ -27,6 +28,7 @@ import {
     type ComposerRefV1,
     type PluginHostedWebBridgeResponseEnvelopeV1,
     type PluginUiHostApiErrorCodeV1,
+    type PluginUiHostApiRequestMethodV1,
     type PluginUiHostMethodV1,
     type PluginUiHostApiRequestEnvelopeV1,
     type PluginUiHostApiWireEnvelopeV1,
@@ -39,23 +41,44 @@ import {
     type PluginUiSelectActionInputResultV1,
 } from '@happier-dev/protocol/plugins/ui';
 
+import { readHostedFrameIntrinsicHeight } from './hostedFrameIntrinsicHeight';
+
 import { resolveNegotiatedPluginSurfaceHostApiMethods } from './negotiatedMethods';
 import { pluginSurfaceSettlementSurvivesRetirement } from './outwardEffectSettlement';
 import {
     createPluginUiHostReadyStateStore,
-    pluginUiSurfaceContextsMatch,
     type PluginUiHostReadyStateChange,
     type PluginUiHostReadyStateSnapshot,
 } from './readyState';
 import {
     createPluginSurfaceHostApiPluginErrorData,
+    readPluginSurfaceHostApiErrorPayload,
     settlePluginSurfaceHostApiRequest,
     type PluginSurfaceHostApiRequestOptions,
 } from '../surfaces/createPluginSurfaceHostApi';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
+import type { BrowserFrameMessageReceipt } from '@/components/browser/frame/types';
 
 export type PluginHostedWebHostApiRequestHandler = (
     request: PluginUiHostApiRequestEnvelopeV1,
+    options?: PluginSurfaceHostApiRequestOptions,
+) => PluginUiJsonValueV1 | Promise<PluginUiJsonValueV1>;
+
+/** Host-private Session authority. It is never serialized into guest context. */
+export type CallerHostedHtmlMountAuthority = Readonly<{
+    kind: 'callerHostedHtml';
+    sessionId: string;
+    recordRevision: string;
+}>;
+
+export type CallerHostedHtmlHostApiRequest = Readonly<{
+    requestId: string;
+    method: PluginUiHostApiRequestMethodV1;
+    payload?: PluginUiJsonValueV1;
+}>;
+
+export type CallerHostedHtmlHostApiRequestHandler = (
+    request: CallerHostedHtmlHostApiRequest,
     options?: PluginSurfaceHostApiRequestOptions,
 ) => PluginUiJsonValueV1 | Promise<PluginUiJsonValueV1>;
 
@@ -79,6 +102,7 @@ export type PluginHostedWebAccountDataBridgeFactory = (
 
 export type PluginHostedWebCanonicalHostApiBinding = Readonly<{
     identity: PluginUiHostApiWireIdentityV1;
+    authorPlugin?: Readonly<{ id: string; version: string }>;
     surface: PluginUiJsonValueV1;
     methods: readonly PluginUiHostMethodV1[];
     activity?: Readonly<{ active: boolean }>;
@@ -132,11 +156,12 @@ export type PluginHostedWebComposerSubscriptionPublisher = (input: Readonly<{
     snapshot: ComposerSnapshotV1;
 }>) => boolean;
 
-export type PluginHostedWebHostApiBridgeHandler = ((
+export type HostedFrameHostApiBridgeHandler<TAuthority> = ((
     envelope: PluginHostedWebBridgeEnvelopeV1,
+    receipt?: BrowserFrameMessageReceipt,
 ) => Promise<PluginHostedWebBridgeResponseEnvelopeV1>) & Readonly<{
-    getReadyState(): PluginUiHostReadyStateSnapshot;
-    recordReadyTimeout(): PluginUiHostReadyStateSnapshot;
+    getReadyState(): PluginUiHostReadyStateSnapshot<TAuthority>;
+    recordReadyTimeout(): PluginUiHostReadyStateSnapshot<TAuthority>;
     /**
      * The mount's context producer for this transport — the hosted-web twin of
      * `CanonicalPluginReactNativeHostApiAdapter.pushSurfaceContext`. Every
@@ -162,6 +187,26 @@ export type PluginHostedWebHostApiBridgeHandler = ((
     dispose(): void;
 }>;
 
+export type PluginHostedWebHostApiBridgeHandler =
+    HostedFrameHostApiBridgeHandler<PluginUiSurfaceContextV1>;
+export type CallerHostedHtmlHostApiBridgeHandler =
+    HostedFrameHostApiBridgeHandler<CallerHostedHtmlMountAuthority>;
+
+type MountedRequestSettlement = Readonly<{
+    kind: 'result';
+    payload: PluginUiJsonValueV1;
+}> | Readonly<{
+    kind: 'error';
+    payload: Readonly<{ code: PluginUiHostApiErrorCodeV1; diagnostics: readonly string[] }>;
+}>;
+
+type HostedFrameMountedRequestHandler = (input: Readonly<{
+    requestId: string;
+    method: PluginUiHostApiRequestMethodV1;
+    payload?: PluginUiJsonValueV1;
+    options?: PluginSurfaceHostApiRequestOptions;
+}>) => Promise<MountedRequestSettlement>;
+
 /**
  * The hosted wire cannot retain the SDK client's object identity (the RN
  * transport has a retained value). This is a mount-local lookup key for one
@@ -174,11 +219,7 @@ function createBridgeResponse(params: Readonly<{
 }>): PluginHostedWebBridgeResponseEnvelopeV1 {
     return PluginHostedWebBridgeResponseEnvelopeV1Schema.parse({
         version: 1,
-        pluginId: params.envelope.pluginId,
-        contributionId: params.envelope.contributionId,
-        surfaceId: params.envelope.surfaceId,
-        sessionId: params.envelope.sessionId,
-        nonce: params.envelope.nonce,
+        identity: params.envelope.identity,
         sequence: params.envelope.sequence,
         requestSequence: params.envelope.sequence,
         kind: params.kind,
@@ -206,16 +247,16 @@ function isLifecycleBridgeMessage(kind: PluginHostedWebBridgeEnvelopeV1['kind'])
         || kind === 'error';
 }
 
-export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
-    surface: PluginUiSurfaceContextV1;
+type HostedFrameHostApiBridgeParams<TAuthority> = Readonly<{
+    /** Host-private authority used only for readiness/currentness diagnostics. */
+    authority: TAuthority;
     requestIdPrefix: string;
     /**
-     * The per-mount bridge nonce the host minted and the frame URL carries. A
-     * host push echoes it exactly as a response does, so the guest applies ONE
-     * addressing check to both directions.
+     * The opaque frame address minted by the physical mount lifetime. Both
+     * directions use this one identity without exposing plugin authority.
      */
-    bridgeNonce: string;
-    handleRequest?: PluginHostedWebHostApiRequestHandler;
+    identity: PluginUiHostApiWireIdentityV1;
+    handleMountedRequest?: HostedFrameMountedRequestHandler;
     /**
      * The mounted host supplies this only when its canonical Account-lifetime
      * Data client and the descriptor's declared bridge arm are both present.
@@ -228,6 +269,8 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
      * fact; it is deliberately not a second bridge or lifetime owner.
      */
     readInstalledMethods?: () => readonly PluginUiHostMethodV1[];
+    /** Optional exact outer-source ceiling after incumbent transport projection. */
+    negotiatedMethodCeiling?: readonly PluginUiHostMethodV1[];
     /**
      * EU-8: the mounted frame's host->frame sink. Absent when no frame is
      * attached, which is exactly when this transport must not advertise a
@@ -242,26 +285,46 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
     }>;
     /** The bound controller owns currentness; this adapter only consults it. */
     isCurrent?: () => boolean;
-    onReadyStateChange?: (state: PluginUiHostReadyStateChange) => void;
+    onReadyStateChange?: (state: PluginUiHostReadyStateChange<TAuthority>) => void;
+    onGuestError?: () => void;
+    onOpenExternal?: (url: string) => void | Promise<void>;
+    /** Validated intrinsic content height; outer presentation owns clamping. */
+    onHeightChanged?: (height: number) => void;
     nowMs?: () => number;
-}>): PluginHostedWebHostApiBridgeHandler {
-    const readyState = createPluginUiHostReadyStateStore({ surface: params.surface, nowMs: params.nowMs });
+}>;
+
+/**
+ * Neutral hosted-frame request/subscription/currentness kernel. Outer adapters
+ * bind either installed-plugin or caller-authored Session authority.
+ */
+export function createHostedFrameHostApiBridgeHandler<TAuthority>(
+    params: HostedFrameHostApiBridgeParams<TAuthority>,
+): HostedFrameHostApiBridgeHandler<TAuthority> {
+    const authority = params.authority;
+    const readyState = createPluginUiHostReadyStateStore({ surface: authority, nowMs: params.nowMs });
+    const hasMountedRequestHandler = params.handleMountedRequest !== undefined;
     // UI-D02/UI-D03: what this transport can actually serve. The mount's
     // factually installed methods run through the ONE negotiated-method rule
     // (shared with the React Native mount), are narrowed to what the hosted-web
     // transport carries, and are narrowed again to the mount-owned methods alone
     // when no host request handler is wired.
-    const resolveCanonicalMethods = () => new Set<PluginUiHostMethodV1>(
-        resolveNegotiatedPluginSurfaceHostApiMethods({
-            installedMethods: params.readInstalledMethods?.() ?? params.canonicalHostApi?.methods ?? [],
-            canPushToSurface: params.postToFrame !== undefined,
-        }).filter((method) => {
-            if (CANONICAL_SUBSCRIPTION_METHODS.has(method)) {
-                return HOSTED_WEB_PRODUCED_SUBSCRIPTION_METHODS.has(method);
-            }
-            return method === 'context' || params.handleRequest !== undefined;
-        }),
-    );
+    const resolveCanonicalMethods = () => {
+        const ceiling = params.negotiatedMethodCeiling === undefined
+            ? null
+            : new Set(params.negotiatedMethodCeiling);
+        return new Set<PluginUiHostMethodV1>(
+            resolveNegotiatedPluginSurfaceHostApiMethods({
+                installedMethods: params.readInstalledMethods?.() ?? params.canonicalHostApi?.methods ?? [],
+                canPushToSurface: params.postToFrame !== undefined,
+            }).filter((method) => {
+                if (ceiling && !ceiling.has(method)) return false;
+                if (CANONICAL_SUBSCRIPTION_METHODS.has(method)) {
+                    return HOSTED_WEB_PRODUCED_SUBSCRIPTION_METHODS.has(method);
+                }
+                return method === 'context' || hasMountedRequestHandler;
+            }),
+        );
+    };
     let canonicalMethods = resolveCanonicalMethods();
     /**
      * In-flight canonical requests, keyed by wire request id, each holding the
@@ -355,6 +418,16 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
         }
     }
 
+    async function settleMountedRequest(input: Readonly<{
+        requestId: string;
+        method: PluginUiHostApiRequestMethodV1;
+        payload?: PluginUiJsonValueV1;
+        options?: PluginSurfaceHostApiRequestOptions;
+    }>): Promise<MountedRequestSettlement> {
+        if (params.handleMountedRequest) return await params.handleMountedRequest(input);
+        return { kind: 'error', payload: { code: 'unavailable', diagnostics: [] } };
+    }
+
     /**
      * Post one canonical wire envelope to the frame.
      *
@@ -375,11 +448,7 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
         const envelope = PluginHostedWebBridgeHostMessageEnvelopeV1Schema.safeParse({
             version: 1,
             direction: 'hostToFrame',
-            pluginId: params.surface.pluginId,
-            contributionId: params.surface.contributionId,
-            surfaceId: params.surface.surfaceId,
-            ...(params.surface.sessionId === undefined ? {} : { sessionId: params.surface.sessionId }),
-            nonce: params.bridgeNonce,
+            identity: params.identity,
             sequence: pushSequence,
             kind: 'hostApi',
             payload: wire,
@@ -399,11 +468,7 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
         const envelope = PluginHostedWebBridgeAccountDataMessageEnvelopeV1Schema.safeParse({
             version: 1,
             direction: 'hostToFrame',
-            pluginId: params.surface.pluginId,
-            contributionId: params.surface.contributionId,
-            surfaceId: params.surface.surfaceId,
-            ...(params.surface.sessionId === undefined ? {} : { sessionId: params.surface.sessionId }),
-            nonce: params.bridgeNonce,
+            identity: params.identity,
             sequence: pushSequence,
             kind: PLUGIN_HOSTED_WEB_ACCOUNT_DATA_BRIDGE_KIND_V1,
             payload: change,
@@ -420,11 +485,7 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
         const envelope = PluginHostedWebBridgeHostMessageEnvelopeV1Schema.safeParse({
             version: 1,
             direction: 'hostToFrame',
-            pluginId: params.surface.pluginId,
-            contributionId: params.surface.contributionId,
-            surfaceId: params.surface.surfaceId,
-            ...(params.surface.sessionId === undefined ? {} : { sessionId: params.surface.sessionId }),
-            nonce: params.bridgeNonce,
+            identity: params.identity,
             sequence: pushSequence,
             origin: bootstrap.frameOrigin,
             kind: 'bootstrap',
@@ -432,6 +493,7 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
                 apiVersion: PLUGIN_UI_HOST_API_VERSION_V1,
                 wireVersion: PLUGIN_UI_HOST_API_WIRE_VERSION_V1,
                 identity: binding.identity,
+                ...(binding.authorPlugin === undefined ? {} : { authorPlugin: binding.authorPlugin }),
                 ...(bootstrap.subPath === undefined ? {} : { subPath: bootstrap.subPath }),
                 ...(bootstrap.launchInput === undefined ? {} : { launchInput: bootstrap.launchInput }),
                 ...(bootstrap.composerRef === undefined ? {} : { composerRef: bootstrap.composerRef }),
@@ -452,19 +514,12 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
      * the daemon reclaims a subscription nobody polls.
      */
     async function retireHostResourceSubscription(subscriptionId: string): Promise<void> {
-        if (!params.handleRequest) return;
-        const request = PluginUiHostApiRequestEnvelopeV1Schema.safeParse({
-            version: 1,
+        if (!hasMountedRequestHandler) return;
+        await settleMountedRequest({
             requestId: `${params.requestIdPrefix}:canonical:resource-retire:${subscriptionId}`,
-            surface: params.surface,
             method: 'disposeHostResource',
             payload: { subscriptionId },
         });
-        if (!request.success) return;
-        await settlePluginSurfaceHostApiRequest(
-            request.data,
-            () => params.handleRequest!(request.data),
-        );
     }
 
     function canonicalBridgeResponse(
@@ -519,6 +574,7 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
 
     async function handleCanonicalWireEnvelope(
         envelope: PluginHostedWebBridgeEnvelopeV1,
+        receipt?: BrowserFrameMessageReceipt,
     ): Promise<PluginHostedWebBridgeResponseEnvelopeV1> {
         const binding = params.canonicalHostApi;
         if (!binding) return createBridgeError(envelope, 'unsupported_method');
@@ -602,27 +658,21 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
                 // guest's own id is the key, so request retirement and typed
                 // event delivery address the same existing lifecycle rather
                 // than a second channel.
-                if (!params.handleRequest) {
+                if (!hasMountedRequestHandler) {
                     return canonicalRequestError(envelope, message, 'unavailable');
                 }
-                const request = PluginUiHostApiRequestEnvelopeV1Schema.safeParse({
-                    version: 1,
-                    requestId: `${params.requestIdPrefix}:canonical:${message.requestId}`,
-                    surface: params.surface,
-                    method: message.method,
-                    payload: {
-                        subscriptionId: message.subscriptionId,
-                        ...(message.payload && typeof message.payload === 'object' && !Array.isArray(message.payload)
-                            ? message.payload
-                            : {}),
-                    },
-                });
-                if (!request.success) return canonicalRequestError(envelope, message, 'invalid_payload');
+                const requestPayload = {
+                    subscriptionId: message.subscriptionId,
+                    ...(message.payload && typeof message.payload === 'object' && !Array.isArray(message.payload)
+                        ? message.payload
+                        : {}),
+                };
                 hostResourceSubscriptions.set(message.subscriptionId, 'pending');
-                const response = await settlePluginSurfaceHostApiRequest(
-                    request.data,
-                    () => params.handleRequest!(request.data),
-                );
+                const response = await settleMountedRequest({
+                    requestId: `${params.requestIdPrefix}:canonical:${message.requestId}`,
+                    method: message.method,
+                    payload: requestPayload,
+                });
                 if (response.kind === 'error') {
                     hostResourceSubscriptions.delete(message.subscriptionId);
                     return canonicalRequestError(
@@ -682,17 +732,9 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
                 },
             }));
         }
-        if (!params.handleRequest) return canonicalRequestError(envelope, message, 'unavailable');
-        const request = PluginUiHostApiRequestEnvelopeV1Schema.safeParse({
-            version: 1,
-            requestId: `${params.requestIdPrefix}:canonical:${message.requestId}`,
-            surface: params.surface,
-            method: message.method,
-            ...(message.payload === undefined ? {} : { payload: message.payload }),
-        });
-        if (!request.success) return canonicalRequestError(envelope, message, 'invalid_payload');
+        if (!hasMountedRequestHandler) return canonicalRequestError(envelope, message, 'unavailable');
         const selectionRequest = message.method === 'selectActionInput'
-            ? PluginUiSelectActionInputRequestV1Schema.safeParse(request.data.payload)
+            ? PluginUiSelectActionInputRequestV1Schema.safeParse(message.payload)
             : null;
         if (selectionRequest && !selectionRequest.success) {
             return canonicalRequestError(envelope, message, 'invalid_payload');
@@ -753,18 +795,23 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
         const cancellation = new AbortController();
         canonicalPending.set(message.requestId, cancellation);
         try {
-            const response = await settlePluginSurfaceHostApiRequest(
-                request.data,
-                () => params.handleRequest!(request.data, {
+            const response = await settleMountedRequest({
+                requestId: `${params.requestIdPrefix}:canonical:${message.requestId}`,
+                method: message.method,
+                ...(message.payload === undefined ? {} : { payload: message.payload }),
+                options: {
                     signal: cancellation.signal,
+                    ...(receipt === undefined
+                        ? {}
+                        : { consumeHostTransientActivation: receipt.consumeTransientActivation }),
                     ...(targetedSelection === undefined
                         ? {}
                         : {
                             targetedOperation: targetedSelection.operation,
                             selectedActionInput: targetedSelection.result,
                         }),
-                }),
-            );
+                },
+            });
             if (disposed || cancellation.signal.aborted) return canonicalBridgeAck(envelope);
             // §3.5: the ONE settlement rule, shared with the React Native
             // carrier. A retirement observed only AFTER the owner settled an
@@ -873,19 +920,12 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
 
     async function handleBridgeEnvelope(
         envelope: PluginHostedWebBridgeEnvelopeV1,
+        receipt?: BrowserFrameMessageReceipt,
     ): Promise<PluginHostedWebBridgeResponseEnvelopeV1> {
-        const sessionlessInitialReady = envelope.kind === 'ready'
-            && envelope.sessionId === undefined
-            && params.surface.pluginId === envelope.pluginId
-            && params.surface.contributionId === envelope.contributionId
-            && params.surface.surfaceId === envelope.surfaceId;
-        if (!sessionlessInitialReady && !pluginUiSurfaceContextsMatch(params.surface, envelope)) {
+        if (!pluginUiHostApiWireIdentitiesEqual(params.identity, envelope.identity)) {
             return createBridgeError(envelope, 'stale_surface');
         }
         if (!isCurrent()) {
-            return createBridgeError(envelope, 'stale_surface');
-        }
-        if (sessionlessInitialReady && readyState.read().state !== 'pending') {
             return createBridgeError(envelope, 'stale_surface');
         }
         if (envelope.kind === 'hostApi') {
@@ -894,7 +934,7 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
                     'hosted_web_bootstrap_required',
                 ]);
             }
-            return handleCanonicalWireEnvelope(envelope);
+            return handleCanonicalWireEnvelope(envelope, receipt);
         }
         if (envelope.kind === PLUGIN_HOSTED_WEB_ACCOUNT_DATA_BRIDGE_KIND_V1) {
             if (!disposed && readyState.read().state !== 'ready') {
@@ -920,7 +960,7 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
                 pushBootstrapToFrame();
                 params.onReadyStateChange?.({
                     state: 'ready',
-                    surface: params.surface,
+                    surface: authority,
                     updatedAtMs: recorded.snapshot.updatedAtMs,
                     diagnostics: [],
                 });
@@ -930,7 +970,6 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
                 kind: 'ack',
                 payload: {
                     accepted: true,
-                    surface: params.surface,
                     readyState: recorded.result,
                     capabilities: {
                         accountData: accountDataBridge !== undefined,
@@ -938,6 +977,40 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
                 },
             });
         }
+
+        if (envelope.kind === 'heightChanged') {
+            const height = readHostedFrameIntrinsicHeight(envelope.payload);
+            if (height === null) {
+                return createBridgeError(envelope, 'invalid_payload');
+            }
+            params.onHeightChanged?.(height);
+            return createBridgeResponse({
+                envelope,
+                kind: 'ack',
+                payload: { accepted: true },
+            });
+        }
+
+        if (envelope.kind === 'openExternal') {
+            const payload = PluginHostedFrameOpenExternalPayloadV1Schema.safeParse(envelope.payload);
+            if (!payload.success) return createBridgeError(envelope, 'invalid_payload');
+            let parsed: URL;
+            try {
+                parsed = new URL(payload.data.url);
+            } catch {
+                return createBridgeError(envelope, 'invalid_payload');
+            }
+            if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || payload.data.url !== payload.data.url.trim()) {
+                return createBridgeError(envelope, 'invalid_payload');
+            }
+            if (!receipt?.consumeTransientActivation() || !params.onOpenExternal) {
+                return createBridgeError(envelope, 'denied');
+            }
+            await params.onOpenExternal(parsed.href);
+            return createBridgeResponse({ envelope, kind: 'ack', payload: { accepted: true } });
+        }
+
+        if (envelope.kind === 'error') params.onGuestError?.();
 
         if (isLifecycleBridgeMessage(envelope.kind)) {
             return createBridgeResponse({
@@ -950,7 +1023,7 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
     }
 
     const handler = Object.assign(handleBridgeEnvelope, {
-        getReadyState: (): PluginUiHostReadyStateSnapshot => readyState.read(),
+        getReadyState: (): PluginUiHostReadyStateSnapshot<TAuthority> => readyState.read(),
         pushSurfaceContext: (
             surface: PluginUiJsonValueV1,
             activity: Readonly<{ active: boolean }> = currentActivity,
@@ -1016,12 +1089,12 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
             }));
             return true;
         },
-        recordReadyTimeout: (): PluginUiHostReadyStateSnapshot => {
+        recordReadyTimeout: (): PluginUiHostReadyStateSnapshot<TAuthority> => {
             const snapshot = readyState.recordTimeout();
             if (snapshot.state === 'timedOut') {
                 params.onReadyStateChange?.({
                     state: 'timedOut',
-                    surface: params.surface,
+                    surface: authority,
                     updatedAtMs: snapshot.updatedAtMs,
                     diagnostics: snapshot.diagnostics,
                 });
@@ -1061,4 +1134,94 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
     });
 
     return handler;
+}
+
+type InstalledPluginHostedWebBridgeParams = Omit<
+    HostedFrameHostApiBridgeParams<PluginUiSurfaceContextV1>,
+    'authority' | 'handleMountedRequest'
+> & Readonly<{
+    surface: PluginUiSurfaceContextV1;
+    handleRequest?: PluginHostedWebHostApiRequestHandler;
+}>;
+
+/** Trusted installed-plugin adapter. Its full public ABI remains unchanged. */
+export function createPluginHostedWebHostApiBridgeHandler(
+    params: InstalledPluginHostedWebBridgeParams,
+): PluginHostedWebHostApiBridgeHandler {
+    const { surface, handleRequest, ...bridgeParams } = params;
+    return createHostedFrameHostApiBridgeHandler({
+        ...bridgeParams,
+        authority: surface,
+        ...(handleRequest === undefined ? {} : {
+            handleMountedRequest: async (input): Promise<MountedRequestSettlement> => {
+                const request = PluginUiHostApiRequestEnvelopeV1Schema.safeParse({
+                    version: 1,
+                    requestId: input.requestId,
+                    surface,
+                    method: input.method,
+                    ...(input.payload === undefined ? {} : { payload: input.payload }),
+                });
+                if (!request.success) {
+                    return { kind: 'error', payload: { code: 'invalid_payload', diagnostics: [] } };
+                }
+                const settled = await settlePluginSurfaceHostApiRequest(
+                    request.data,
+                    () => input.options === undefined
+                        ? handleRequest(request.data)
+                        : handleRequest(request.data, input.options),
+                );
+                return settled.kind === 'error'
+                    ? { kind: 'error', payload: settled.payload }
+                    : { kind: 'result', payload: settled.payload ?? null };
+            },
+        }),
+    });
+}
+
+type CallerHostedHtmlBridgeParams = Omit<
+    HostedFrameHostApiBridgeParams<CallerHostedHtmlMountAuthority>,
+    'authority' | 'handleMountedRequest' | 'createAccountDataBridge' | 'negotiatedMethodCeiling'
+> & Readonly<{
+    callerAuthority: CallerHostedHtmlMountAuthority;
+    handleRequest?: CallerHostedHtmlHostApiRequestHandler;
+    authorizeRequest?: (request: CallerHostedHtmlHostApiRequest) => boolean;
+}>;
+
+/** Reduced caller-authored adapter; it never constructs plugin authority. */
+export function createCallerHostedHtmlHostApiBridgeHandler(
+    params: CallerHostedHtmlBridgeParams,
+): CallerHostedHtmlHostApiBridgeHandler {
+    const { callerAuthority, handleRequest, authorizeRequest, ...bridgeParams } = params;
+    return createHostedFrameHostApiBridgeHandler({
+        ...bridgeParams,
+        authority: callerAuthority,
+        negotiatedMethodCeiling: bridgeParams.canonicalHostApi?.methods ?? [],
+        ...(handleRequest === undefined ? {} : {
+            handleMountedRequest: async (input): Promise<MountedRequestSettlement> => {
+                const request = {
+                    requestId: input.requestId,
+                    method: input.method,
+                    ...(input.payload === undefined ? {} : { payload: input.payload }),
+                } satisfies CallerHostedHtmlHostApiRequest;
+                if (authorizeRequest && !authorizeRequest(request)) {
+                    return {
+                        kind: 'error',
+                        payload: { code: 'denied', diagnostics: ['caller_capability_not_admitted'] },
+                    };
+                }
+                try {
+                    const payload = await handleRequest(request, input.options);
+                    const error = readPluginSurfaceHostApiErrorPayload(payload);
+                    return error
+                        ? { kind: 'error', payload: error }
+                        : { kind: 'result', payload };
+                } catch {
+                    return {
+                        kind: 'error',
+                        payload: { code: 'internal_error', diagnostics: ['host_api_handler_failed'] },
+                    };
+                }
+            },
+        }),
+    });
 }

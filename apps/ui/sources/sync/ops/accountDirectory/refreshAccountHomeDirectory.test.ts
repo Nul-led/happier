@@ -1,251 +1,132 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { createDirectoryHttpFixture } from './accountDirectoryTestFixtures';
+import { refreshAccountHomeDirectory } from './refreshAccountHomeDirectory';
+import { adoptHomeProfile, getActiveServerSnapshot, resolveServerProfileForPortableIdentity } from '@/sync/domains/server/serverProfiles';
 
-const adoptHomeProfileMock = vi.hoisted(() => vi.fn(async (params: unknown) => params));
-const getActiveServerSnapshotMock = vi.hoisted(() => vi.fn(() => ({ serverId: 'focused', serverUrl: 'https://focused.test', generation: 1 })));
-
-vi.mock('@/sync/domains/server/serverProfiles', () => ({ adoptHomeProfile: adoptHomeProfileMock }));
-vi.mock('@/sync/domains/server/serverRuntime', () => ({ getActiveServerSnapshot: getActiveServerSnapshotMock }));
-
-const DIRECTORY_CAPABILITY = {
-    version: 1 as const,
-    homeDirectory: true as const,
-    homeEnrollment: true as const,
-    homeLoginAssertion: {
-        keyId: 'a'.repeat(64),
-        publicKeyBase64Url: 'A'.repeat(43),
-    },
-};
+const request = vi.hoisted(() => vi.fn());
+vi.mock('@/sync/http/client', () => ({ createServerFetchAtEndpoint: () => request }));
 
 describe('refreshAccountHomeDirectory', () => {
-    beforeEach(() => {
-        adoptHomeProfileMock.mockReset();
-        adoptHomeProfileMock.mockImplementation(async (params: unknown) => params);
-        getActiveServerSnapshotMock.mockClear();
+    const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+    let fixture: ReturnType<typeof createDirectoryHttpFixture>;
+    let session: AccountDirectorySession;
+    beforeEach(async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `directory_refresh_${Date.now()}_${Math.random()}`;
+        fixture = createDirectoryHttpFixture();
+        fixture = { ...fixture, home: { ...fixture.home, homeServerIdentityId: 'srv_refresh_home',
+            connectionDescriptor: { ...fixture.home.connectionDescriptor, homeServerIdentityId: 'srv_refresh_home' } } };
+        fixture.state.homes = [fixture.home];
+        fixture.state.preferredHomeServerIdentityId = fixture.home.homeServerIdentityId;
+        request.mockReset();
+        request.mockImplementation((path: string, init?: RequestInit) => fixture.request(fixture.service.endpointUrl, path, init));
+        const target = { endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId };
+        await TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'directory-token' });
+        session = new AccountDirectorySession(target, { capability: fixture.service.capability });
+    });
+    afterEach(() => {
+        if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+        else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
     });
 
-    it('adopts directory homes without reading or changing focused Home state', async () => {
-        const { refreshAccountHomeDirectory } = await import('./refreshAccountHomeDirectory');
-        let refreshed: Record<string, unknown> | null = null;
-        const session = {
-            refresh: vi.fn(async () => (refreshed = {
-                endpoint: 'https://directory.test', status: 'ready', preferredHomeServerIdentityId: 'home-1', refreshedAtMs: 1, error: null,
-                reconciliation: { kind: 'not_run' },
-                homes: [{
-                    homeServerIdentityId: 'home-1', canonicalServerUrl: 'https://home.test', label: 'Home', createdAt: 1, updatedAt: 1,
-                    connectionDescriptor: { v: 1, homeServerIdentityId: 'home-1', canonicalServerUrl: 'https://home.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.test' }] },
-                }],
-            })),
-            recordReconciliation: vi.fn((reconciliation: unknown) => ({ ...refreshed, reconciliation })),
-        };
-
-        await refreshAccountHomeDirectory(session as never);
-        expect(adoptHomeProfileMock).toHaveBeenCalledWith(expect.objectContaining({
-            source: 'account-directory',
-            preserveUserLabel: true,
-        }));
-        expect(getActiveServerSnapshotMock).not.toHaveBeenCalled();
-    });
-
-    it('does not adopt a late directory result after the owning Account Service attempt is cancelled', async () => {
-        const { refreshAccountHomeDirectory } = await import('./refreshAccountHomeDirectory');
-        let cancelled = false;
-        let refreshed: Record<string, unknown> | null = null;
-        const session = {
-            refresh: vi.fn(async () => {
-                cancelled = true;
-                return (refreshed = {
-                    endpoint: 'https://directory.test', status: 'ready', preferredHomeServerIdentityId: 'home-1', refreshedAtMs: 1, error: null,
-                    reconciliation: { kind: 'not_run' },
-                    homes: [{
-                        homeServerIdentityId: 'home-1', canonicalServerUrl: 'https://home.test', label: 'Home', createdAt: 1, updatedAt: 1,
-                        connectionDescriptor: { v: 1, homeServerIdentityId: 'home-1', canonicalServerUrl: 'https://home.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.test' }] },
-                    }],
-                });
-            }),
-            recordReconciliation: vi.fn((reconciliation: unknown) => ({ ...refreshed, reconciliation })),
-        };
-
-        await refreshAccountHomeDirectory(session as never, { shouldCancel: () => cancelled });
-
-        expect(session.refresh).toHaveBeenCalledWith();
-        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
-        expect(session.recordReconciliation).toHaveBeenCalledWith({
-            kind: 'cancelled',
-            adopted: [],
-            failures: [],
-        });
-    });
-
-    it.each([
-        ['first Home fails and the second succeeds', 'home-a', ['home-b']],
-        ['first Home succeeds and the second fails', 'home-b', ['home-a']],
-    ])('isolates adoption when the %s', async (_label, failingId, adoptedIds) => {
-        const { refreshAccountHomeDirectory } = await import('./refreshAccountHomeDirectory');
-        const homes = ['home-a', 'home-b'].map((homeServerIdentityId) => ({
-            v: 1 as const,
-            homeServerIdentityId,
-            canonicalServerUrl: `https://${homeServerIdentityId}.test`,
-            label: homeServerIdentityId === 'home-a' ? 'Home A' : 'Home B',
-            preferred: homeServerIdentityId === 'home-a',
-            connectionDescriptor: {
-                v: 1 as const,
-                homeServerIdentityId,
-                canonicalServerUrl: `https://${homeServerIdentityId}.test`,
-                revision: 1,
-                endpoints: [{ kind: 'https' as const, url: `https://${homeServerIdentityId}.test` }],
-            },
-            createdAtMs: 1,
-            updatedAtMs: 1,
-        }));
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: { listHomes: vi.fn(async () => ({ homes, preferredHomeServerIdentityId: 'home-a' })) } as never,
-            capability: DIRECTORY_CAPABILITY,
-        });
-        adoptHomeProfileMock.mockImplementation(async (params: unknown) => {
-            const candidate = params as { descriptor: { homeServerIdentityId: string } };
-            if (candidate.descriptor.homeServerIdentityId === failingId) throw new Error('identity conflict');
-            return params;
-        });
-
+    it('does not adopt cached Directory Homes after its credential has been replaced', async () => {
+        fixture = { ...fixture, home: { ...fixture.home, homeServerIdentityId: 'srv_superseded_cached_home',
+            connectionDescriptor: { ...fixture.home.connectionDescriptor, homeServerIdentityId: 'srv_superseded_cached_home' } } };
+        fixture.state.homes = [fixture.home];
+        fixture.state.preferredHomeServerIdentityId = fixture.home.homeServerIdentityId;
+        expect((await session.refresh()).status).toBe('ready');
+        await TokenStorage.accountDirectoryAuthCredentials.set(
+            { endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId },
+            { token: 'replacement-token' },
+        );
         const result = await refreshAccountHomeDirectory(session);
-
-        expect(adoptHomeProfileMock).toHaveBeenCalledTimes(2);
-        expect(result.reconciliation).toMatchObject({
-            kind: 'completed',
-            adopted: adoptedIds.map((homeServerIdentityId) => ({
-                homeServerIdentityId,
-                label: homeServerIdentityId === 'home-a' ? 'Home A' : 'Home B',
-            })),
-            failures: [{
-                homeServerIdentityId: failingId,
-                label: failingId === 'home-a' ? 'Home A' : 'Home B',
-            }],
-        });
-        expect(getActiveServerSnapshotMock).not.toHaveBeenCalled();
+        expect(result.reconciliation).toMatchObject({ kind: 'cancelled', adopted: [] });
+        expect(resolveServerProfileForPortableIdentity(fixture.home.homeServerIdentityId).kind).toBe('missing');
+        expect(request).toHaveBeenCalledTimes(1);
     });
 
-    it('stops later entries on cancellation without undoing an earlier success', async () => {
-        const { refreshAccountHomeDirectory } = await import('./refreshAccountHomeDirectory');
-        let cancelled = false;
-        const homes = ['home-a', 'home-b'].map((homeServerIdentityId) => ({
-            v: 1 as const,
-            homeServerIdentityId,
-            canonicalServerUrl: `https://${homeServerIdentityId}.test`,
-            label: homeServerIdentityId,
-            preferred: false,
-            connectionDescriptor: {
-                v: 1 as const,
-                homeServerIdentityId,
-                canonicalServerUrl: `https://${homeServerIdentityId}.test`,
-                revision: 1,
-                endpoints: [{ kind: 'https' as const, url: `https://${homeServerIdentityId}.test` }],
-            },
-            createdAtMs: 1,
-            updatedAtMs: 1,
-        }));
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: { listHomes: vi.fn(async () => ({ homes, preferredHomeServerIdentityId: null })) } as never,
-            capability: DIRECTORY_CAPABILITY,
-        });
-        adoptHomeProfileMock.mockImplementationOnce(async (params: unknown) => {
-            cancelled = true;
-            return params;
-        });
-
-        const result = await refreshAccountHomeDirectory(session, { shouldCancel: () => cancelled });
-
-        expect(adoptHomeProfileMock).toHaveBeenCalledTimes(1);
-        expect(result.reconciliation).toEqual({
-            kind: 'cancelled',
-            adopted: [{ homeServerIdentityId: 'home-a', label: 'home-a' }],
-            failures: [],
-        });
-    });
-
-    it('performs no adoption when snapshot refresh fails and retains the typed snapshot failure', async () => {
-        const { refreshAccountHomeDirectory } = await import('./refreshAccountHomeDirectory');
-        const refreshError = new Error('directory unavailable');
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: { listHomes: vi.fn(async () => { throw refreshError; }) } as never,
-            capability: DIRECTORY_CAPABILITY,
-        });
-
+    it('adopts advisory metadata without changing focus or requesting enrollment', async () => {
+        const focus = getActiveServerSnapshot();
         const result = await refreshAccountHomeDirectory(session);
+        expect(result.reconciliation).toMatchObject({ kind: 'completed', adopted: [{ homeServerIdentityId: fixture.home.homeServerIdentityId }] });
+        const resolved = resolveServerProfileForPortableIdentity(fixture.home.homeServerIdentityId);
+        expect(resolved.kind).toBe('resolved');
+        if (resolved.kind === 'resolved') expect(resolved.profile.descriptorProvenance).toBe('advisory-only');
+        expect(getActiveServerSnapshot()).toMatchObject({ serverId: focus.serverId, serverUrl: focus.serverUrl, isSelectionExplicit: focus.isSelectionExplicit });
+        expect(request.mock.calls.map(([path]) => path)).toEqual(['/v1/account-directory/homes']);
+    });
 
-        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
-        expect(result).toMatchObject({
-            status: 'error',
-            reconciliation: { kind: 'snapshot_unavailable', snapshotStatus: 'error', error: refreshError },
+    it('does not adopt a held response after cancellation', async () => {
+        let release!: (response: Response) => void;
+        let cancelled = false;
+        request.mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve; }));
+        const result = refreshAccountHomeDirectory(session, { shouldCancel: () => cancelled });
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+        cancelled = true;
+        release(await fixture.request(fixture.service.endpointUrl, '/v1/account-directory/homes'));
+        expect((await result).reconciliation).toEqual({ kind: 'cancelled', adopted: [], failures: [] });
+    });
+
+    it('does not publish stale reconciliation after logout wins a held refresh', async () => {
+        let release!: (response: Response) => void;
+        request.mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve; }));
+        const refresh = refreshAccountHomeDirectory(session);
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+        await session.logout();
+        release(await fixture.request(fixture.service.endpointUrl, '/v1/account-directory/homes'));
+
+        expect(await refresh).toMatchObject({
+            status: 'idle',
+            homes: [],
+            reconciliation: { kind: 'not_run' },
+        });
+        expect(session.snapshot).toMatchObject({
+            status: 'idle',
+            homes: [],
+            reconciliation: { kind: 'not_run' },
+        });
+        expect(resolveServerProfileForPortableIdentity(fixture.home.homeServerIdentityId).kind).toBe('missing');
+    });
+
+    it('reports unavailable snapshots without adoption', async () => {
+        request.mockRejectedValueOnce(new Error('directory unavailable'));
+        expect((await refreshAccountHomeDirectory(session)).reconciliation).toMatchObject({
+            kind: 'snapshot_unavailable', snapshotStatus: 'error',
         });
     });
 
-    it('does not let one cancelled orchestration caller suppress a concurrent valid session refresh', async () => {
-        const { refreshAccountHomeDirectory } = await import('./refreshAccountHomeDirectory');
-        let resolveHomes: ((value: {
-            homes: Array<{
-                v: 1;
-                homeServerIdentityId: string;
-                canonicalServerUrl: string;
-                label: string;
-                connectionDescriptor: {
-                    v: 1;
-                    homeServerIdentityId: string;
-                    canonicalServerUrl: string;
-                    revision: number;
-                    endpoints: Array<{ kind: 'https'; url: string }>;
-                };
-                createdAtMs: number;
-                updatedAtMs: number;
-                preferred: boolean;
-            }>;
-            preferredHomeServerIdentityId: string;
-        }) => void) | null = null;
-        const client = {
-            getMe: vi.fn(async () => ({ v: 1 as const, accountId: 'account-1', displayName: null, avatarUrl: null, linkedMethods: [] })),
-            listHomes: vi.fn(() => new Promise((resolve) => { resolveHomes = resolve; })),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
-            client: client as never,
-            capability: {
-                version: 1,
-                homeDirectory: true,
-                homeEnrollment: true,
-                homeLoginAssertion: {
-                    keyId: 'a'.repeat(64),
-                    publicKeyBase64Url: 'A'.repeat(43),
-                },
-            },
-        });
-        let firstCancelled = false;
-
-        const cancelledCaller = refreshAccountHomeDirectory(session, { shouldCancel: () => firstCancelled });
-        const validCaller = refreshAccountHomeDirectory(session);
-        firstCancelled = true;
-        resolveHomes!({
-            homes: [{
-                v: 1,
-                homeServerIdentityId: 'home-1',
-                canonicalServerUrl: 'https://home.test',
-                label: 'Home',
-                connectionDescriptor: {
-                    v: 1,
-                    homeServerIdentityId: 'home-1',
-                    canonicalServerUrl: 'https://home.test',
-                    revision: 1,
-                    endpoints: [{ kind: 'https', url: 'https://home.test' }],
-                },
-                createdAtMs: 1,
-                updatedAtMs: 1,
-                preferred: true,
-            }],
-            preferredHomeServerIdentityId: 'home-1',
-        });
-
-        await Promise.all([cancelledCaller, validCaller]);
-
+    it('does not let one cancelled caller suppress a concurrent valid refresh', async () => {
+        let release!: (response: Response) => void;
+        let cancelled = false;
+        request.mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve; }));
+        const cancelledResult = refreshAccountHomeDirectory(session, { shouldCancel: () => cancelled });
+        const validResult = refreshAccountHomeDirectory(session);
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+        cancelled = true;
+        release(await fixture.request(fixture.service.endpointUrl, '/v1/account-directory/homes'));
+        await cancelledResult;
+        expect((await validResult).reconciliation).toMatchObject({ kind: 'completed', adopted: [{ homeServerIdentityId: fixture.home.homeServerIdentityId }] });
         expect(session.snapshot.status).toBe('ready');
-        expect(session.snapshot.preferredHomeServerIdentityId).toBe('home-1');
-        expect(adoptHomeProfileMock).toHaveBeenCalledTimes(1);
+        expect(request).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([0, 1])('continues independent entries after a real identity conflict at index %s', async (failedIndex) => {
+        const homes = [0, 1].map((index) => {
+            const identity = 'srv_refresh_partial_' + failedIndex + '_' + index;
+            const url = 'https://refresh-' + failedIndex + '-' + index + '.test';
+            return { ...fixture.home, homeServerIdentityId: identity, canonicalServerUrl: url, preferred: false,
+                connectionDescriptor: { ...fixture.home.connectionDescriptor, homeServerIdentityId: identity, canonicalServerUrl: url, endpoints: [{ kind: 'https' as const, url }] } };
+        });
+        const conflicting = homes[failedIndex]!;
+        await adoptHomeProfile({ source: 'qr', descriptor: { ...conflicting.connectionDescriptor, homeServerIdentityId: conflicting.homeServerIdentityId + '_actual' } });
+        fixture.state.homes = homes;
+        fixture.state.preferredHomeServerIdentityId = null;
+        const result = await refreshAccountHomeDirectory(session);
+        expect(result.reconciliation).toMatchObject({
+            kind: 'partial',
+            adopted: [{ homeServerIdentityId: homes[1 - failedIndex]!.homeServerIdentityId }],
+            failures: [{ homeServerIdentityId: conflicting.homeServerIdentityId }],
+        });
     });
 });

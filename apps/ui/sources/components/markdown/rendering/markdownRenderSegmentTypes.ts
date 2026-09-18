@@ -14,6 +14,8 @@ type MarkdownRenderSegmentBase = Readonly<{
 
 export type EnrichedMarkdownRenderSegment = MarkdownRenderSegmentBase & Readonly<{
     type: 'enriched-markdown';
+    /** Rendering includes document-wide definitions; source identity stays local. */
+    renderMarkdown?: string;
 }>;
 
 export type SpecialMarkdownRenderSegment = MarkdownRenderSegmentBase & Readonly<{

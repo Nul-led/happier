@@ -177,6 +177,18 @@ export const sessionListStyles = StyleSheet.create((theme) => ({
         gap: 8,
         minHeight: 28,
     },
+    searchChromeScopeRow: {
+        minHeight: 24,
+        flexDirection: 'row' as const,
+        alignItems: 'center' as const,
+        gap: 6,
+    },
+    searchChromeScopeText: {
+        flex: 1,
+        minWidth: 0,
+        color: theme.colors.text.tertiary,
+        ...Typography.default(),
+    },
     searchChromeStatusText: {
         flex: 1,
         minWidth: 0,

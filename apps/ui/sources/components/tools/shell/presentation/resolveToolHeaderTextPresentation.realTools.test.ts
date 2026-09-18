@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ToolCall } from '@/sync/domains/messages/messageTypes';
 
+import { knownTools } from '@/components/tools/catalog';
 import { resolveToolHeaderTextPresentation } from './resolveToolHeaderTextPresentation';
 import { installToolShellPresentationCommonModuleMocks } from './toolShellPresentationTestHelpers';
 
@@ -59,11 +60,90 @@ describe('resolveToolHeaderTextPresentation (real known tools)', () => {
         expect(model.subtitle).toBe('how to test X');
     });
 
-    it('renders Task with Sub-agent title and description subtitle', () => {
+    it('labels a provider-native Task with the session model and reported subagent type', () => {
+        const tool = makeToolCall({
+            name: 'Task',
+            input: { description: 'Summarize third run', subagent_type: 'explore' },
+        });
+        const model = resolveToolHeaderTextPresentation({
+            tool,
+            metadata: {
+                flavor: 'opencode',
+                sessionModelsV1: {
+                    v: 1,
+                    agentId: 'opencode',
+                    updatedAt: 1,
+                    currentModelId: 'muse-spark-1.3',
+                    availableModels: [{ id: 'muse-spark-1.3', name: 'Muse Spark 1.3' }],
+                },
+            } as any,
+        });
+        expect(model.title).toBe('Muse Spark 1.3 Explore Agent');
+        expect(model.subtitle).toBe('Summarize third run');
+    });
+
+    it('prefers the last provider-accepted model over the current provider selection', () => {
+        const model = resolveToolHeaderTextPresentation({
+            tool: makeToolCall({ name: 'Task', input: { subagent_type: 'explore' } }),
+            metadata: {
+                flavor: 'opencode',
+                sessionAppliedModelV1: {
+                    v: 1,
+                    provider: 'opencode',
+                    updatedAt: 2,
+                    modelId: 'accepted-model',
+                },
+                sessionModelsV1: {
+                    v: 1,
+                    agentId: 'opencode',
+                    updatedAt: 3,
+                    currentModelId: 'selected-model',
+                    availableModels: [
+                        { id: 'accepted-model', name: 'Accepted Model' },
+                        { id: 'selected-model', name: 'Selected Model' },
+                    ],
+                },
+            } as any,
+        });
+
+        expect(model.title).toBe('Accepted Model Explore Agent');
+    });
+
+    it('keeps the generic Subagent fallback when no model, agent, or subagent type is known', () => {
         const tool = makeToolCall({ name: 'Task', input: { description: 'Summarize third run' } });
         const model = resolveToolHeaderTextPresentation({ tool, metadata: null });
         expect(model.title).toBe('Subagent');
-        expect(model.subtitle).toBe('Summarize third run');
+    });
+
+    it('labels a Codex native subagent from its role and latest applied prompt model', () => {
+        const tool = makeToolCall({
+            name: 'SubAgent',
+            input: { prompt: 'Inspect the consent seam', role: 'explorer', nickname: 'Kepler' },
+        });
+        const model = resolveToolHeaderTextPresentation({
+            tool,
+            metadata: {
+                flavor: 'codex',
+                sessionAppliedModelV1: {
+                    v: 1,
+                    provider: 'codex',
+                    updatedAt: 2,
+                    modelId: 'gpt-5.6-sol',
+                },
+                sessionModelsV1: {
+                    v: 1,
+                    agentId: 'codex',
+                    updatedAt: 1,
+                    currentModelId: 'gpt-5.6-luna',
+                    availableModels: [
+                        { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol' },
+                        { id: 'gpt-5.6-luna', name: 'GPT-5.6-Luna' },
+                    ],
+                },
+            } as any,
+        });
+
+        expect(model.title).toBe('GPT-5.6-Sol Explorer Agent');
     });
 
     it('renders SubAgentRun with Sub-agent title and compacted subtitle', () => {
@@ -77,17 +157,47 @@ describe('resolveToolHeaderTextPresentation (real known tools)', () => {
         expect(model.subtitle).toBe('Timed out after 120000ms');
     });
 
-    it('renders SubAgentRun with intent/backend context while running before transcript content arrives', () => {
+    it('labels a managed execution run with its requested model and intent', () => {
         const tool = makeToolCall({
             name: 'SubAgentRun',
             state: 'running',
-            input: { intent: 'review', backendId: 'codex' },
+            input: {
+                intent: 'review',
+                backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                requestedConfiguration: { modelId: 'gpt-5.6-sol' },
+            },
             description: null,
             result: null,
         });
-        const model = resolveToolHeaderTextPresentation({ tool, metadata: null });
-        expect(model.title).toBe('Subagent');
-        expect(model.subtitle).toBe('review · codex');
+        const model = resolveToolHeaderTextPresentation({
+            tool,
+            metadata: {
+                flavor: 'codex',
+                sessionModelsV1: {
+                    v: 1,
+                    agentId: 'codex',
+                    updatedAt: 1,
+                    currentModelId: 'gpt-5.6-sol',
+                    availableModels: [{ id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol' }],
+                },
+            } as any,
+        });
+        expect(model.title).toBe('GPT-5.6-Sol Review Agent');
+        expect(model.subtitle).toBe('review');
+    });
+
+    it('uses the managed execution run agent logo instead of the generic subagent glyph', () => {
+        const tool = makeToolCall({
+            name: 'SubAgentRun',
+            state: 'running',
+            input: {
+                intent: 'review',
+                backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+            },
+        });
+        const icon = knownTools.SubAgentRun.icon(18, '#111', { tool, metadata: null });
+
+        expect(icon).toMatchObject({ props: { agentId: 'codex', size: 18 } });
     });
 
     it('normalizes TaskCreate to SubAgent for rendering', () => {

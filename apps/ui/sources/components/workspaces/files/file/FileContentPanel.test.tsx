@@ -51,12 +51,6 @@ vi.mock('@/components/ui/code/diff/useInlineDiffVirtualizationThresholds', () =>
     useInlineDiffVirtualizationThresholds: () => thresholds,
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
-
 const diffViewerPropsState: { current: any | null } = { current: null };
 const codeLinesViewPropsState: { current: any | null } = { current: null };
 const markdownViewPropsState: { current: any | null } = { current: null };

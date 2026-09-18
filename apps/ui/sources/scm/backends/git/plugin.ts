@@ -1,20 +1,16 @@
 import type { ScmUiBackendPlugin } from '@/scm/registry/scmUiBackendPlugin';
-import { resolveChangeSetModel, resolveSupportedDiffAreas } from '@/scm/registry/scmUiBackendPlugin';
+import {
+    resolveScmCommitSelectionPolicy,
+    resolveScmUiPolicy,
+    resolveSupportedDiffAreas,
+} from '@/scm/registry/scmUiBackendPlugin';
 import { inferScmRemoteTarget } from '@happier-dev/protocol';
 
 export const gitScmUiPlugin: ScmUiBackendPlugin = {
     id: 'git',
     displayName: 'Git',
     mapCapabilitiesToUiPolicy(snapshot) {
-        const capabilities = snapshot?.capabilities;
-        const changeSetModel = resolveChangeSetModel(capabilities);
-        const supportsIncludeExclude = capabilities?.writeInclude === true && capabilities?.writeExclude === true;
-        return {
-            supportsIncludeExclude,
-            supportsLineSelection: capabilities?.writeCommitLineSelection === true || supportsIncludeExclude,
-            changeSetModel,
-            supportedDiffAreas: resolveSupportedDiffAreas(capabilities),
-        };
+        return resolveScmUiPolicy(snapshot?.capabilities);
     },
     diffModeConfig(snapshot) {
         let availableModes: Array<'included' | 'pending' | 'both'> = snapshot?.capabilities
@@ -49,8 +45,7 @@ export const gitScmUiPlugin: ScmUiBackendPlugin = {
     commitActionConfig(snapshot) {
         return {
             label: snapshot?.capabilities?.operationLabels?.commit ?? 'Commit staged',
-            supportsPathScopedCommit: snapshot?.capabilities?.writeCommitPathSelection === true,
-            supportsLineSelection: snapshot?.capabilities?.writeCommitLineSelection === true,
+            ...resolveScmCommitSelectionPolicy(snapshot?.capabilities),
         };
     },
     remoteActionConfig(snapshot) {

@@ -844,21 +844,39 @@ describe('useVoiceAttemptControl idle targeting', () => {
         expect(hook.getCurrent().canStart).toBe(true);
         hook.getCurrent().onToggle();
 
-        // The empty session id is the canonical global/hidden-owner start.
-        expect(routing.toggle).toHaveBeenCalledWith('');
+        expect(routing.toggle).toHaveBeenCalledWith(null);
 
         await hook.unmount();
     });
 
     it('starts the exact session the caller states', async () => {
         const routing = await spyOnLifecycleRouting();
-        const hook = await renderControl({ kind: 'session', sessionId: 'session-42' });
+        const hook = await renderControl({
+            kind: 'session',
+            sessionAddress: { serverId: 'server-b', sessionId: 'session-42' },
+        });
 
         expect(hook.getCurrent().canStart).toBe(true);
         hook.getCurrent().onToggle();
 
-        expect(routing.toggle).toHaveBeenCalledWith('session-42');
+        expect(routing.toggle).toHaveBeenCalledWith({ serverId: 'server-b', sessionId: 'session-42' });
 
+        await hook.unmount();
+    });
+
+    it('freezes the normalized idle target for the mounted attempt instead of observing later mutation', async () => {
+        const routing = await spyOnLifecycleRouting();
+        const suppliedAddress = { serverId: ' server-b ', sessionId: ' shared-session ' };
+        const hook = await renderControl({ kind: 'session', sessionAddress: suppliedAddress });
+
+        suppliedAddress.serverId = 'server-a';
+        suppliedAddress.sessionId = 'different-session';
+        hook.getCurrent().onToggle();
+
+        expect(routing.toggle).toHaveBeenCalledWith({
+            serverId: 'server-b',
+            sessionId: 'shared-session',
+        });
         await hook.unmount();
     });
 
@@ -874,7 +892,10 @@ describe('useVoiceAttemptControl idle targeting', () => {
         const routing = await spyOnLifecycleRouting();
         // A session-bound surface whose own session is *not* the running attempt's: the attempt is
         // immutable, so the surface controls that one rather than retargeting it.
-        const hook = await renderControl({ kind: 'session', sessionId: 'session-42' });
+        const hook = await renderControl({
+            kind: 'session',
+            sessionAddress: { serverId: 'server-b', sessionId: 'session-42' },
+        });
 
         expect(hook.getCurrent().canStop).toBe(true);
         hook.getCurrent().onToggle();
@@ -893,9 +914,10 @@ describe('useVoiceAttemptControl idle targeting', () => {
             adapterId: 'local_conversation',
             controlSessionId: 'active-control-session',
             conversationSessionId: 'active-conversation-session',
+            conversationSessionAddress: { serverId: recoveryRuntime.serverId, sessionId: 'active-conversation-session' },
             lifetime: 'runtime_attempt',
             transcriptMode: 'native_session',
-            targetSessionId: 'active-conversation-session',
+            targetSessionAddress: { serverId: recoveryRuntime.serverId, sessionId: 'active-conversation-session' },
             updatedAt: 42,
         });
         setVoiceSessionSnapshot({
@@ -908,7 +930,10 @@ describe('useVoiceAttemptControl idle targeting', () => {
 
         // The surface's idle target deliberately names a different session. Once an attempt is
         // active, opening the Orb must follow its immutable canonical binding instead.
-        const hook = await renderControl({ kind: 'session', sessionId: 'idle-target-session' });
+        const hook = await renderControl({
+            kind: 'session',
+            sessionAddress: { serverId: recoveryRuntime.serverId, sessionId: 'idle-target-session' },
+        });
 
         expect(hook.getCurrent().openConversationSessionId).toBe('active-conversation-session');
         hook.getCurrent().onOpenConversation();
@@ -1064,7 +1089,10 @@ describe('useVoiceAttemptControl terminal connection failures', () => {
         });
 
         await vi.waitFor(() => {
-            expect(retry).toHaveBeenCalledWith({ sessionId: VOICE_AGENT_GLOBAL_SESSION_ID });
+            expect(retry).toHaveBeenCalledWith({
+                sessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
+                requestedTargetSessionAddress: null,
+            });
         });
         expect(start).not.toHaveBeenCalled();
         await hook.unmount();

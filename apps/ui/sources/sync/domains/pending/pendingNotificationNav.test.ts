@@ -33,8 +33,12 @@ describe('pendingNotificationNav', () => {
         clearPendingNotificationNav();
         expect(getPendingNotificationNav()).toBeNull();
 
-        setPendingNotificationNav({ serverUrl: 'https://stack.example.test/', route: '/session/s_1' });
-        expect(getPendingNotificationNav()).toEqual({ serverUrl: 'https://stack.example.test', route: '/session/s_1' });
+        setPendingNotificationNav({ serverUrl: 'https://stack.example.test/', serverId: 'server-profile', route: '/session/s_1?serverId=server-profile' });
+        expect(getPendingNotificationNav()).toEqual({
+            serverUrl: 'https://stack.example.test',
+            serverId: 'server-profile',
+            route: '/session/s_1?serverId=server-profile',
+        });
 
         clearPendingNotificationNav();
         expect(getPendingNotificationNav()).toBeNull();
@@ -91,7 +95,7 @@ describe('pendingNotificationNav', () => {
         mod.clearPendingNotificationNav();
         mod.setPendingNotificationNav({ serverUrl: 'https://notify-nav.example.test', route: '/session/s_legacy' });
 
-        setServerProfileIdentityForUrl('https://notify-nav.example.test', 'srv_notify_nav_identity');
+        await setServerProfileIdentityForUrl('https://notify-nav.example.test', 'srv_notify_nav_identity');
         const identityScope = createServerAccountScope('srv_notify_nav_identity', 'account-a');
         expect(identityScope).not.toBeNull();
         if (!identityScope) return;

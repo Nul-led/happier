@@ -132,6 +132,19 @@ function selection(input: Readonly<{
 }
 
 describe('PluginMachineExecutionOriginSelector', () => {
+    it('preserves the typed rejection and exact friendly target without selecting a replacement', async () => {
+        const machine = candidate({ machineId: 'machine-a', materializationId: 'mat-a', version: '1.0.0' });
+        const rejected = { ...machine, validation: { kind: 'rejected' as const, reason: 'disabled' as const } };
+        const origin: PluginMachineExecutionOriginV1 = { serverIdentityId: 'srv_one', materializationRef: { machineId: 'machine-a', materializationId: 'mat-a', pluginId: 'acme.plugin' } };
+        const fixture = selection({ candidates: [rejected], selectedOrigin: origin, state: { kind: 'unavailable', storedOrigin: origin, candidates: [rejected], reasons: ['disabled'] } });
+        const { resolvePluginMachineExecutionOriginPresentation } = await import('./PluginMachineExecutionOriginSelector');
+        const presentation = resolvePluginMachineExecutionOriginPresentation(fixture.value, [{ target: { serverIdentityId: 'srv_one', machineId: 'machine-a' }, displayName: 'Studio', serverLabel: 'Work', availability: 'online', observation: 'live', observedAt: 100 }]);
+        expect(presentation.title).toBe('Studio');
+        expect(presentation.subtitle).toContain('Work');
+        expect(presentation.detail).toContain('settingsPlugins.machineMatrix.state.disabled');
+        expect(presentation.selected).toBe(true);
+        expect(fixture.selectOrigin).not.toHaveBeenCalled();
+    });
     it('shows the sole structurally selected origin while its Account preference is being initialized', async () => {
         const machineA = candidate({ machineId: 'machine-a', materializationId: 'mat-a', version: '1.0.0' });
         const origin: PluginMachineExecutionOriginV1 = {
@@ -163,10 +176,12 @@ describe('PluginMachineExecutionOriginSelector', () => {
         expect(capturedItemProps).toContainEqual(expect.objectContaining({
             testID: 'plugin.origin.current',
             title: 'machine-a',
-            subtitle: 'srv_one',
-            detail: 'common.version 1.0.0',
+            subtitle: 'srv_one\ncommon.version 1.0.0',
+            detail: 'common.change',
             selected: true,
         }));
+        expect(capturedPickerProps).toHaveLength(0);
+        await act(async () => { capturedItemProps.find((item) => item.testID === 'plugin.origin.current')?.onPress?.(); });
         expect(capturedPickerProps[0]?.isMachineSelected?.(capturedPickerProps[0]!.groups[0]!.machines[0]!)).toBe(true);
     });
 
@@ -189,9 +204,11 @@ describe('PluginMachineExecutionOriginSelector', () => {
         expect(capturedItemProps).toContainEqual(expect.objectContaining({
             testID: 'plugin.origin.current',
             title: 'common.warning',
-            detail: 'common.unavailable',
+            subtitle: 'settingsPlugins.targetSelection.differentVersions',
+            detail: 'common.change',
             selected: false,
         }));
+        await act(async () => { capturedItemProps.find((item) => item.testID === 'plugin.origin.current')?.onPress?.(); });
         const picker = capturedPickerProps[0]!;
         expect(picker.groups.flatMap((group) => group.machines)).toHaveLength(2);
         expect(picker.selectedMachineId).toBeNull();
@@ -228,6 +245,7 @@ describe('PluginMachineExecutionOriginSelector', () => {
             selection: fixture.value,
             testIDPrefix: 'plugin.origin',
         }));
+        await act(async () => { capturedItemProps.find((item) => item.testID === 'plugin.origin.current')?.onPress?.(); });
         const presented = capturedPickerProps[0]!.groups[0]!.machines[0]!;
         await act(async () => {
             capturedPickerProps[0]!.onSelect(presented);
@@ -267,9 +285,11 @@ describe('PluginMachineExecutionOriginSelector', () => {
         expect(capturedItemProps).toContainEqual(expect.objectContaining({
             testID: 'plugin.origin.current',
             title: 'common.warning',
-            detail: 'settingsPlugins.executionOriginReleaseContentConflict',
+            subtitle: 'settingsPlugins.executionOriginReleaseContentConflict',
+            detail: 'common.change',
             selected: false,
         }));
+        await act(async () => { capturedItemProps.find((item) => item.testID === 'plugin.origin.current')?.onPress?.(); });
         const picker = capturedPickerProps[0]!;
         const presented = picker.groups[0]!.machines[0]!;
         expect(picker.resolveMachineAvailability?.(presented)).toEqual({
@@ -309,13 +329,12 @@ describe('PluginMachineExecutionOriginSelector', () => {
         expect(capturedItemProps).toContainEqual(expect.objectContaining({
             testID: 'plugin.origin.current',
             title: 'machine-old',
-            subtitle: 'srv_old',
-            detail: 'common.unavailable',
+            subtitle: 'srv_old\nsettingsPlugins.targetSelection.missing',
             selected: true,
         }));
         const clear = capturedItemProps.find((item) => item.testID === 'plugin.origin.clear');
-        expect(clear?.accessibilityLabel).toBe('common.remove: settingsPlugins.executionOriginTitle');
-        clear?.onPress?.();
+        expect(clear?.accessibilityLabel).toBe('settingsPlugins.targetSelection.clear: settingsPlugins.executionOriginTitle');
+        await act(async () => { clear?.onPress?.(); });
         expect(fixture.clearOrigin).toHaveBeenCalledOnce();
         expect(capturedPickerProps).toHaveLength(0);
     });

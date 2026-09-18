@@ -1,5 +1,5 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
-import { deriveSessionRuntimePresentationState } from '@/sync/domains/session/attention/runtimePresentation';
+import { projectUiSessionRuntimeAwareness } from '@/sync/domains/session/attention/runtimePresentation';
 import {
     syncReliabilityTelemetry,
     type SyncReliabilityTelemetry,
@@ -31,7 +31,7 @@ export function recordSessionMessageDeliveryDecision(params: Readonly<{
 }>): void {
     const telemetry = params.telemetry ?? syncReliabilityTelemetry;
     const session = params.session;
-    const runtimeStatus = deriveSessionRuntimePresentationState({
+    const runtimeStatus = projectUiSessionRuntimeAwareness({
         active: session?.active,
         activeAt: session?.activeAt,
         presence: session?.presence,

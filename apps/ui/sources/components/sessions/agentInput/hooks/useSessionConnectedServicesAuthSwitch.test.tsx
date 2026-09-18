@@ -334,13 +334,25 @@ type PopoverConnectedBinding = {
     profileId?: string;
     groupId?: string;
 };
-type PopoverBinding = PopoverConnectedBinding | { source: 'native' };
+type PopoverTeamResourceBinding = {
+    source: 'team_resource';
+    resourceId: string;
+    disclosedMember: {
+        service: { pluginId: string; localId: string };
+        accountId: string;
+    };
+};
+type PopoverBinding = PopoverConnectedBinding | PopoverTeamResourceBinding | { source: 'native' };
 type PopoverContentProps = {
+    /** Exactly the services the current Agent declaration lets the picker offer. */
+    supportedServiceIds: ReadonlyArray<string>;
     resolveOptionAvailability: (params: {
         serviceId: string;
         binding: PopoverConnectedBinding;
     }) => { disabled?: boolean };
     setBindingForService: (serviceId: string, binding: PopoverBinding) => void;
+    teamCredentialResources?: readonly unknown[];
+    teamNameById?: Readonly<Record<string, string>>;
 };
 
 type AuthSwitchHookLike = {
@@ -475,7 +487,7 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
             machineId: 'machine-1',
             serverId: 'server-1',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     [GEMINI_SERVICE_KEY]: {
                         source: 'connected',
@@ -546,7 +558,7 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
             machineId: 'machine-1',
         }));
         expect(rpcParams.bindings).toEqual({
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 [NOVEL_SERVICE_KEY]: {
                     source: 'connected',
@@ -662,7 +674,7 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
         });
         expect(setSessionConnectedServiceAuthBindingMock).toHaveBeenCalledWith(expect.objectContaining({
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     [CLAUDE_SERVICE_KEY]: { source: 'native' },
                     [CLAUDE_SUBSCRIPTION_SERVICE_KEY]: { source: 'native' },
@@ -679,17 +691,29 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
         expect(writtenKeys).not.toContain('anthropic');
     });
 
-    it('fails closed for an undeclared service and writes only declared services', async () => {
+    /**
+     * The current Agent declaration governs what the picker may OFFER; it is not
+     * a licence to delete an unrelated authored choice. A qualified binding that
+     * was valid when authored survives an edit to a visible service unchanged,
+     * so switching Codex auth cannot silently drop the novel service's stored
+     * account. Malformed and bare keys are a separate contract, asserted below.
+     */
+    it('offers declared services only while preserving a valid authored undeclared binding', async () => {
         const { useSessionConnectedServicesAuthSwitch } = await import('./useSessionConnectedServicesAuthSwitch');
         seedCodexProfile();
 
+        const preservedNovelBinding = {
+            source: 'connected' as const,
+            selection: 'profile' as const,
+            profileId: 'reviewer',
+        };
         const hook = await renderHook(() =>
             useSessionConnectedServicesAuthSwitch({
                 sessionId: 'session-1',
                 agentId: 'codex',
                 machineId: 'machine-1',
                 serverId: 'server-1',
-                // The Agent declares ONLY the Codex service.
+                // The Agent declares ONLY the Codex services.
                 connectedAccounts: CODEX_CONNECTED_ACCOUNTS,
                 // Metadata carries a binding for an undeclared novel service.
                 sessionMetadata: {
@@ -697,7 +721,7 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
                         v: 1,
                         bindingsByServiceId: {
                             [CODEX_SERVICE_KEY]: { source: 'native' },
-                            [NOVEL_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'reviewer' },
+                            [NOVEL_SERVICE_KEY]: preservedNovelBinding,
                         },
                     },
                 },
@@ -710,6 +734,66 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
         );
 
         // The undeclared connected binding never surfaces as connected auth.
+        expect(hook.getCurrent().connectedServicesAuthChip?.collapsedContentPopover?.label).toBe('Native');
+
+        const props = renderChipPopover(hook);
+        // The picker offers exactly the declared services — never the stored one.
+        expect(props.supportedServiceIds).toEqual([CODEX_SERVICE_KEY, OPENAI_SERVICE_KEY]);
+
+        await act(async () => {
+            props.setBindingForService(CODEX_SERVICE_KEY, {
+                source: 'connected',
+                selection: 'profile',
+                profileId: 'happier',
+            });
+            await Promise.resolve();
+        });
+
+        const rpcParams = setSessionConnectedServiceAuthBindingMock.mock.calls[0]?.[0];
+        expect(rpcParams.bindings.bindingsByServiceId).toEqual({
+            [OPENAI_SERVICE_KEY]: { source: 'native' },
+            [CODEX_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'happier' },
+            [NOVEL_SERVICE_KEY]: preservedNovelBinding,
+        });
+    });
+
+    /**
+     * Preservation is for VALID qualified authored bindings only. A bare
+     * unqualified key with no bundled legacy mapping, and a qualified key whose
+     * stored selection is not a valid V2 binding, both fail closed: they never
+     * surface in the picker and never reach the switch payload.
+     */
+    it('fails closed for bare and malformed persisted service bindings', async () => {
+        const { useSessionConnectedServicesAuthSwitch } = await import('./useSessionConnectedServicesAuthSwitch');
+        seedCodexProfile();
+
+        const hook = await renderHook(() =>
+            useSessionConnectedServicesAuthSwitch({
+                sessionId: 'session-1',
+                agentId: 'codex',
+                machineId: 'machine-1',
+                serverId: 'server-1',
+                connectedAccounts: CODEX_CONNECTED_ACCOUNTS,
+                sessionMetadata: {
+                    connectedServices: {
+                        v: 1,
+                        bindingsByServiceId: {
+                            // Bare local id of an external plugin service: no
+                            // qualified identity, no bundled legacy mapping.
+                            'reviewer-service': { source: 'connected', selection: 'profile', profileId: 'reviewer' },
+                            // Qualified key, but the selection is incomplete.
+                            [NOVEL_SERVICE_KEY]: { source: 'connected', selection: 'profile' },
+                        },
+                    },
+                },
+                settings: {
+                    connectedServicesProfileLabelByKey: {},
+                    connectedServicesDefaultProfileByServiceId: {},
+                },
+                switchingDisabledReason: null,
+            }),
+        );
+
         expect(hook.getCurrent().connectedServicesAuthChip?.collapsedContentPopover?.label).toBe('Native');
 
         const props = renderChipPopover(hook);
@@ -727,7 +811,7 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
             [OPENAI_SERVICE_KEY]: { source: 'native' },
             [CODEX_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'happier' },
         });
-        expect(rpcParams.bindings.bindingsByServiceId[NOVEL_SERVICE_KEY]).toBeUndefined();
+        expect(Object.keys(rpcParams.bindings.bindingsByServiceId)).not.toContain('reviewer-service');
     });
 
     it('fails closed with neutral actions when the daemon rejects an unsupported service', async () => {
@@ -837,7 +921,7 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
             machineId: 'machine-1',
             serverId: 'server-1',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     [OPENAI_SERVICE_KEY]: { source: 'native' },
                     [CODEX_SERVICE_KEY]: {
@@ -2040,6 +2124,123 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
         });
     });
 
+    it('passes current Team Connected Service witnesses through the existing-session picker and V2 switch payload', async () => {
+        const selection = {
+            source: 'team_resource' as const,
+            resourceId: 'resource-1',
+            deliveryMode: 'direct' as const,
+            disclosedMember: {
+                service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
+                accountId: 'shared-account',
+            },
+        };
+        const resource = {
+            id: 'resource-1',
+            teamId: 'team-1',
+            displayName: 'Shared Claude',
+            resourceRevision: 4,
+            readiness: { kind: 'available' as const },
+            recoveryAction: null,
+            mayBroker: false,
+            mayReceiveDirect: true,
+            directMaterialState: 'current' as const,
+            sessionUsePolicy: 'personal_allowed' as const,
+            usageCapabilities: {
+                inferenceRequests: 'available' as const,
+                totalTokens: 'unavailable' as const,
+                costUsd: 'unavailable' as const,
+            },
+            providerModels: [],
+            connectedServiceSelections: [selection],
+            sourcePresentation: {
+                kind: 'connected_service' as const,
+                service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
+            },
+        };
+        const { useSessionConnectedServicesAuthSwitch } = await import('./useSessionConnectedServicesAuthSwitch');
+        const hook = await renderHook(() => useSessionConnectedServicesAuthSwitch({
+            sessionId: 'session-1',
+            agentId: 'claude',
+            // A bundled Agent keeps its unqualified released routing id, so its
+            // durable identity cannot be parsed back out of `agentId`. The
+            // session surface supplies it from the Agent catalog entry, exactly
+            // as the sibling quota-profile reader does; without it a Team
+            // credential slot has no consumer and the switch fails closed.
+            agentIdentity: { pluginId: 'happier.agent.claude', localId: 'claude' },
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            connectedAccounts: CLAUDE_CONNECTED_ACCOUNTS,
+            teamCredentialResources: [resource],
+            teamNameById: { 'team-1': 'Acme' },
+            sessionMetadata: {
+                connectedServices: {
+                    v: 2,
+                    bindingsByServiceId: { [CLAUDE_SERVICE_KEY]: { source: 'native' } },
+                },
+            },
+            settings: {
+                connectedServicesProfileLabelByKey: {},
+                connectedServicesDefaultProfileByServiceId: {},
+            },
+            switchingDisabledReason: null,
+            sessionActive: false,
+        }));
+
+        const props = renderChipPopover(hook);
+        expect(props.teamCredentialResources).toEqual([resource]);
+        expect(props.teamNameById).toEqual({ 'team-1': 'Acme' });
+        await act(async () => {
+            props.setBindingForService(CLAUDE_SERVICE_KEY, selection);
+            await Promise.resolve();
+        });
+        expect(modalConfirmMock).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(setSessionConnectedServiceAuthBindingMock).toHaveBeenCalledOnce());
+        // The canonical writer emits the full declared service set: the Team
+        // selection under its qualified key, and native for the declared
+        // service this edit did not touch.
+        expect(setSessionConnectedServiceAuthBindingMock).toHaveBeenCalledWith(expect.objectContaining({
+            bindings: {
+                v: 2,
+                bindingsByServiceId: {
+                    [CLAUDE_SERVICE_KEY]: selection,
+                    [CLAUDE_SUBSCRIPTION_SERVICE_KEY]: { source: 'native' },
+                },
+            },
+            // The Team witness rides the same mutation: one intent per declared
+            // purpose for this service, under the explicitly supplied Agent
+            // catalog identity (never parsed back out of the unqualified routing
+            // id), binding resource-1 at its observed revision 4 for the direct
+            // route the picker authored.
+            teamCredentialBindings: [{
+                v: 1,
+                slot: {
+                    kind: 'connected_service_purpose',
+                    purpose: {
+                        consumer: { pluginId: 'happier.agent.claude', localId: 'claude' },
+                        purpose: 'primary',
+                    },
+                },
+                resourceId: 'resource-1',
+                expectedResourceRevision: 4,
+                deliveryMode: 'direct',
+            }],
+            // The previous slot held no Team resource (it was native), so the
+            // previous-slot witness is the explicit clear: same slot identity,
+            // null resource.
+            previousTeamCredentialBindings: [{
+                v: 1,
+                slot: {
+                    kind: 'connected_service_purpose',
+                    purpose: {
+                        consumer: { pluginId: 'happier.agent.claude', localId: 'claude' },
+                        purpose: 'primary',
+                    },
+                },
+                resourceId: null,
+            }],
+        }));
+    });
+
     it('closes the auth popover before starting an existing-session auth switch', async () => {
         const switchOrder: string[] = [];
         modalConfirmMock.mockImplementationOnce(async () => {
@@ -2316,7 +2517,7 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
         expect(setSessionConnectedServiceAuthBindingMock).toHaveBeenCalledWith(expect.objectContaining({
             expectedGroupGenerationByServiceId: { [CLAUDE_SERVICE_KEY]: 3 },
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     [CLAUDE_SERVICE_KEY]: {
                         source: 'connected',

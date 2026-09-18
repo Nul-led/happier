@@ -210,6 +210,7 @@ async function resumeInactiveSessionWithInitialGoal(
         machineId,
         serverId,
         accountLifetime,
+        accountSettings: state.settings,
     });
     if (accountLifetime && !accountLifetime.isCurrent()) {
         return { ok: false, error: t('session.workState.goal.errorCannotResume') };

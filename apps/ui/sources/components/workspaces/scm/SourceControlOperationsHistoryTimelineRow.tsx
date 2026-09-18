@@ -18,6 +18,7 @@ type SourceControlOperationsHistoryTimelineRowProps = Readonly<{
     isHead: boolean;
     showTrailingLine: boolean;
     onOpenCommit: (sha: string) => void;
+    onCommitLayout?: (sha: string, y: number, height: number) => void;
 }>;
 
 export const SourceControlOperationsHistoryTimelineRow = React.memo((props: SourceControlOperationsHistoryTimelineRowProps) => {
@@ -44,6 +45,10 @@ export const SourceControlOperationsHistoryTimelineRow = React.memo((props: Sour
             accessibilityRole="button"
             accessibilityLabel={accessibilityLabel || undefined}
             onPress={() => props.onOpenCommit(props.entry.sha)}
+            onLayout={props.onCommitLayout ? (event) => {
+                const { y, height } = event.nativeEvent.layout;
+                props.onCommitLayout?.(props.entry.sha, y, height);
+            } : undefined}
             style={(state) => ({
                 flexDirection: 'row',
                 minHeight: 56,

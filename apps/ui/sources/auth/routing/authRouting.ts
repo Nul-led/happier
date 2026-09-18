@@ -28,8 +28,25 @@ export function isPublicRouteForUnauthenticated(segments: string[]): boolean {
     // OAuth return routes must be reachable before authentication so the callback can finalize.
     if (first === 'oauth') return true;
 
-    // Public share links must work unauthenticated.
-    if (first === 'share') return true;
+    // Team invitations and the Team-scoped authentication entry must remain
+    // reachable before a Home Account exists. Keep ordinary Team surfaces
+    // private: only the exact entry leaf is an unauthenticated destination.
+    if (first === 'join' && normalized.length === 2) return true;
+    if (first === 'teams' && normalized.length === 3 && normalized[2] === 'sign-in') return true;
+
+    // Native verification and password-reset links carry their one-time bearer
+    // in the final path segment. Only these exact landing families are public;
+    // Account Security and every other /auth surface still require a session.
+    if (first === 'auth' && normalized.length === 4) {
+        if (normalized[1] === 'email' && normalized[2] === 'verify') return true;
+        if (normalized[1] === 'password' && normalized[2] === 'reset') return true;
+    }
+    if (first === 'auth' && normalized.length === 3
+        && normalized[1] === 'password' && normalized[2] === 'recover') return true;
+
+    // Only the exact public-share bearer landing is unauthenticated. Publication
+    // does not make sibling or future nested application routes public.
+    if (first === 'share' && normalized.length === 2) return true;
 
     // Desktop activity overlay must stay reachable so the separate Tauri overlay window
     // can bootstrap its own public utility surface before auth state settles.

@@ -25,6 +25,7 @@ import { collectChangedPaths } from './sync/snapshotDiff';
 import { resolveProjectMachineScopeId } from '@/sync/runtime/orchestration/projectManager';
 import { readSessionWorkspaceContext } from '@/sync/domains/session/readSessionWorkspaceContext';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { resolveWorkspaceTargetForSessionFromState } from '@/sync/domains/session/resolveWorkspaceTargetForSessionFromState';
 
 type InvalidationSource = 'unknown' | 'mutation';
 
@@ -102,6 +103,73 @@ export class ScmStatusSync {
         this.projectLastAutoRefreshAt.set(projectKey, Date.now());
     }
 
+    private async refreshExactSession(
+        sessionId: string,
+        serverId: string,
+        source: InvalidationSource,
+    ): Promise<void> {
+        const state = storage.getState();
+        const scope = resolveWorkspaceTargetForSessionFromState(state, { sessionId, serverId });
+        if (!scope) return;
+        // Exact refreshes must not populate the legacy active-Home project cache. Two Homes can
+        // legitimately expose the same machine/root tuple while carrying different repositories.
+        const projectKey = `${serverId}:${scope.machineId}:${scope.rootPath}`;
+        if (source === 'unknown' && this.projectAutoRefreshSuspended.has(projectKey)) return;
+        try {
+            const previousSnapshot = state.getWorkspaceScmSnapshot(scope);
+            const snapshot = await scmRepositoryService.fetchSnapshotForMachinePath({
+                serverId,
+                machineId: scope.machineId,
+                path: scope.rootPath,
+            });
+            if (!snapshot) {
+                state.updateWorkspaceScmStatus(scope, null);
+                state.updateWorkspaceScmSnapshot(scope, null);
+                state.pruneWorkspaceScmCommitSelectionPaths(scope, new Set());
+                return;
+            }
+            state.publishSessionProjectScmSnapshots([{
+                sessionId,
+                serverId,
+                snapshot,
+                status: snapshot.repo.isRepo ? snapshotToScmStatus(snapshot) : null,
+            }]);
+            const signature = buildSnapshotSignature(snapshot);
+            const signatureChanged = signature !== this.projectSnapshotSignature.get(projectKey);
+            this.projectLastSnapshot.set(projectKey, snapshot);
+            this.projectSnapshotSignature.set(projectKey, signature);
+            if (signatureChanged) {
+                await clearSearchCacheForProject(this.sessionToProjectKey, projectKey);
+            }
+            if (source === 'mutation') {
+                const changedPaths = collectChangedPaths(previousSnapshot, snapshot);
+                if (changedPaths.length > 0) {
+                    state.markWorkspaceScmTouchedPathsForSession(sessionId, changedPaths, serverId);
+                }
+            }
+        } catch (error) {
+            const scmErrorCode =
+                typeof error === 'object' && error !== null && 'scmErrorCode' in error && typeof (error as { scmErrorCode?: unknown }).scmErrorCode === 'string'
+                    ? (error as { scmErrorCode: string }).scmErrorCode
+                    : undefined;
+            state.updateSessionProjectScmSnapshotError(sessionId, {
+                message: scmErrorCode && error instanceof Error ? error.message : RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE,
+                at: Date.now(),
+                errorCode: scmErrorCode ?? SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
+            }, serverId);
+            if (scmErrorCode === SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED) {
+                this.projectAutoRefreshSuspended.add(projectKey);
+            }
+            reportScmStatusSyncError({ projectKey, error });
+        } finally {
+            if (source === 'mutation') {
+                this.projectLastInvalidatedBySession.delete(projectKey);
+                this.projectLastInvalidationSource.delete(projectKey);
+                this.projectLastInvalidatedBySessionAt.delete(projectKey);
+            }
+        }
+    }
+
     private getCachedSnapshotForSessionProject(
         sessionId: string,
         projectKey: string,
@@ -124,13 +192,16 @@ export class ScmStatusSync {
         if (!sessionPath || !scopeId || scopeId === 'unknown') {
             return null;
         }
+        const session = state.sessions[sessionId];
+        const homeDir = (session ? readSessionOwnerMetadataView(session)?.homeDir : undefined)
+            ?? state.machines?.[scopeId]?.metadata?.homeDir;
 
         for (const [candidateProjectKey, candidateSnapshot] of this.projectLastSnapshot.entries()) {
             if (!candidateSnapshot?.repo.isRepo) continue;
             const repoRoot = candidateSnapshot.repo.rootPath;
             if (!repoRoot) continue;
             if (!candidateProjectKey.startsWith(`${scopeId}:`)) continue;
-            if (!isSessionPathWithinRepoRoot(sessionPath, repoRoot)) continue;
+            if (!isSessionPathWithinRepoRoot(sessionPath, repoRoot, homeDir)) continue;
             return { projectKey: candidateProjectKey, snapshot: candidateSnapshot };
         }
 
@@ -175,12 +246,26 @@ export class ScmStatusSync {
     /**
      * Get project key string for a session
      */
-    private getProjectKeyForSession(sessionId: string): string | null {
-        const mapped = this.sessionToProjectKey.get(sessionId);
+    private getSessionSyncKey(sessionId: string, serverId?: string | null): string {
+        const exactServerId = serverId?.trim();
+        return exactServerId ? `${exactServerId}\u0000${sessionId}` : sessionId;
+    }
+
+    private getProjectKeyForSession(sessionId: string, serverId?: string | null): string | null {
+        const sessionSyncKey = this.getSessionSyncKey(sessionId, serverId);
+        const mapped = this.sessionToProjectKey.get(sessionSyncKey);
         if (mapped) {
             return mapped;
         }
         const state = storage.getState();
+        const exactServerId = serverId?.trim();
+        if (exactServerId) {
+            const scope = resolveWorkspaceTargetForSessionFromState(state, {
+                sessionId,
+                serverId: exactServerId,
+            });
+            return scope ? `${exactServerId}:${scope.machineId}:${scope.rootPath}` : null;
+        }
         const session = state.sessions[sessionId];
         if (!session) {
             return null;
@@ -197,20 +282,24 @@ export class ScmStatusSync {
     /**
      * Get or create source-control status sync for a session (creates project-based sync)
      */
-    getSync(sessionId: string): InvalidateSync {
-        let projectKey = this.getProjectKeyForSession(sessionId);
+    getSync(sessionId: string, serverId?: string | null): InvalidateSync {
+        const exactServerId = serverId?.trim();
+        const sessionSyncKey = this.getSessionSyncKey(sessionId, exactServerId);
+        let projectKey = this.getProjectKeyForSession(sessionId, exactServerId);
         if (!projectKey) {
             // Return a no-op sync if no valid project
             return new InvalidateSync(async () => {});
         }
 
-        const cachedProjectSnapshot = this.getCachedSnapshotForSessionProject(sessionId, projectKey);
+        const cachedProjectSnapshot = exactServerId
+            ? null
+            : this.getCachedSnapshotForSessionProject(sessionId, projectKey);
         if (cachedProjectSnapshot) {
             projectKey = cachedProjectSnapshot.projectKey;
         }
 
         // Map session to project key
-        this.sessionToProjectKey.set(sessionId, projectKey);
+        this.sessionToProjectKey.set(sessionSyncKey, projectKey);
         if (cachedProjectSnapshot) {
             this.hydrateSessionFromCachedProjectSnapshot(sessionId, cachedProjectSnapshot.snapshot);
         }
@@ -219,6 +308,13 @@ export class ScmStatusSync {
         if (!sync) {
             let createdSync!: InvalidateSync;
             createdSync = new InvalidateSync(() => {
+                if (exactServerId) {
+                    return this.refreshExactSession(
+                        sessionId,
+                        exactServerId,
+                        this.projectLastInvalidationSource.get(projectKey) ?? 'unknown',
+                    );
+                }
                 const currentProjectKey = this.getProjectKeyForSync(createdSync) ?? projectKey;
                 return this.fetchScmStatusForProject(currentProjectKey);
             });
@@ -236,7 +332,16 @@ export class ScmStatusSync {
         this.invalidateFromAutoRefresh(sessionId);
     }
 
-    invalidateFromAutoRefresh(sessionId: string): void {
+    invalidateFromAutoRefresh(sessionId: string, serverId?: string | null): void {
+        const exactServerId = serverId?.trim();
+        if (exactServerId) {
+            const projectKey = this.getProjectKeyForSession(sessionId, exactServerId);
+            if (!projectKey || this.projectAutoRefreshSuspended.has(projectKey)) return;
+            if (this.shouldSkipAutoRefreshForProject(projectKey)) return;
+            this.markAutoRefreshForProject(projectKey);
+            this.getSync(sessionId, exactServerId).invalidate();
+            return;
+        }
         const projectKey = this.getProjectKeyForSession(sessionId);
         if (!projectKey) return;
         if (this.projectAutoRefreshSuspended.has(projectKey)) {
@@ -249,7 +354,15 @@ export class ScmStatusSync {
         this.invalidateWithSource(sessionId, 'unknown');
     }
 
-    async invalidateFromAutoRefreshAndAwait(sessionId: string): Promise<void> {
+    async invalidateFromAutoRefreshAndAwait(sessionId: string, serverId?: string | null): Promise<void> {
+        const exactServerId = serverId?.trim();
+        if (exactServerId) {
+            const projectKey = this.getProjectKeyForSession(sessionId, exactServerId);
+            if (!projectKey || this.projectAutoRefreshSuspended.has(projectKey)) return;
+            if (this.shouldSkipAutoRefreshForProject(projectKey)) return;
+            this.markAutoRefreshForProject(projectKey);
+            return await this.getSync(sessionId, exactServerId).invalidateAndAwait();
+        }
         const projectKey = this.getProjectKeyForSession(sessionId);
         if (!projectKey) return;
         if (this.projectAutoRefreshSuspended.has(projectKey)) {
@@ -263,14 +376,29 @@ export class ScmStatusSync {
         await sync.invalidateAndAwait();
     }
 
-    invalidateFromUser(sessionId: string): void {
+    invalidateFromUser(sessionId: string, serverId?: string | null): void {
+        const exactServerId = serverId?.trim();
+        if (exactServerId) {
+            const projectKey = this.getProjectKeyForSession(sessionId, exactServerId);
+            if (!projectKey) return;
+            this.projectAutoRefreshSuspended.delete(projectKey);
+            this.getSync(sessionId, exactServerId).invalidate();
+            return;
+        }
         const projectKey = this.getProjectKeyForSession(sessionId);
         if (!projectKey) return;
         this.projectAutoRefreshSuspended.delete(projectKey);
         this.invalidateWithSource(sessionId, 'unknown');
     }
 
-    async invalidateFromUserAndAwait(sessionId: string): Promise<void> {
+    async invalidateFromUserAndAwait(sessionId: string, serverId?: string | null): Promise<void> {
+        const exactServerId = serverId?.trim();
+        if (exactServerId) {
+            const projectKey = this.getProjectKeyForSession(sessionId, exactServerId);
+            if (!projectKey) return;
+            this.projectAutoRefreshSuspended.delete(projectKey);
+            return await this.getSync(sessionId, exactServerId).invalidateAndAwait();
+        }
         const projectKey = this.getProjectKeyForSession(sessionId);
         if (!projectKey) return;
         this.projectAutoRefreshSuspended.delete(projectKey);
@@ -278,7 +406,17 @@ export class ScmStatusSync {
         await sync.invalidateAndAwait();
     }
 
-    invalidateFromMutation(sessionId: string): void {
+    invalidateFromMutation(sessionId: string, serverId?: string | null): void {
+        const exactServerId = serverId?.trim();
+        if (exactServerId) {
+            const projectKey = this.getProjectKeyForSession(sessionId, exactServerId);
+            if (!projectKey || this.projectAutoRefreshSuspended.has(projectKey)) return;
+            this.projectLastInvalidatedBySession.set(projectKey, sessionId);
+            this.projectLastInvalidationSource.set(projectKey, 'mutation');
+            this.projectLastInvalidatedBySessionAt.set(projectKey, Date.now());
+            this.getSync(sessionId, exactServerId).invalidate();
+            return;
+        }
         const projectKey = this.getProjectKeyForSession(sessionId);
         if (!projectKey) return;
         if (this.projectAutoRefreshSuspended.has(projectKey)) {
@@ -287,7 +425,16 @@ export class ScmStatusSync {
         this.invalidateWithSource(sessionId, 'mutation');
     }
 
-    async invalidateFromMutationAndAwait(sessionId: string): Promise<void> {
+    async invalidateFromMutationAndAwait(sessionId: string, serverId?: string | null): Promise<void> {
+        const exactServerId = serverId?.trim();
+        if (exactServerId) {
+            const projectKey = this.getProjectKeyForSession(sessionId, exactServerId);
+            if (!projectKey || this.projectAutoRefreshSuspended.has(projectKey)) return;
+            this.projectLastInvalidatedBySession.set(projectKey, sessionId);
+            this.projectLastInvalidationSource.set(projectKey, 'mutation');
+            this.projectLastInvalidatedBySessionAt.set(projectKey, Date.now());
+            return await this.getSync(sessionId, exactServerId).invalidateAndAwait();
+        }
         const projectKey = this.getProjectKeyForSession(sessionId);
         if (!projectKey) return;
         if (this.projectAutoRefreshSuspended.has(projectKey)) {
@@ -305,11 +452,12 @@ export class ScmStatusSync {
     /**
      * Stop source-control status sync for a session
      */
-    stop(sessionId: string): void {
-        const projectKey = this.sessionToProjectKey.get(sessionId);
+    stop(sessionId: string, serverId?: string | null): void {
+        const sessionSyncKey = this.getSessionSyncKey(sessionId, serverId);
+        const projectKey = this.sessionToProjectKey.get(sessionSyncKey);
         if (!projectKey) return;
 
-        this.sessionToProjectKey.delete(sessionId);
+        this.sessionToProjectKey.delete(sessionSyncKey);
 
         // Only stop the project sync if no other sessions are using it.
         const hasOtherSessions = Array.from(this.sessionToProjectKey.values()).includes(projectKey);
@@ -463,7 +611,7 @@ export class ScmStatusSync {
                 now,
                 freshnessWindowMs: ATTRIBUTION_INVALIDATION_WINDOW_MS,
             }) && actorSessionId) {
-                state.markSessionProjectScmTouchedPaths(actorSessionId, changedPaths);
+                state.markWorkspaceScmTouchedPathsForSession(actorSessionId, changedPaths);
                 this.projectLastInvalidatedBySession.delete(activeProjectKey);
                 this.projectLastInvalidationSource.delete(activeProjectKey);
                 this.projectLastInvalidatedBySessionAt.delete(activeProjectKey);

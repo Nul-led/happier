@@ -58,6 +58,14 @@ function createScmChangeRowTheme() {
 }
 
 describe('ScmChangeRow', () => {
+  it('does not present incomplete statistics as exact zeros', async () => {
+    const { ScmChangeRow } = await import('./ScmChangeRow');
+    const screen = await renderScreen(<ScmChangeRow theme={createScmChangeRowTheme()} onPress={() => {}} file={{ fileName: 'large.txt', filePath: '', fullPath: 'large.txt', status: 'untracked', isIncluded: false, linesAdded: 0, linesRemoved: 0, isComplete: false }} />);
+    const text = JSON.stringify(screen.tree.toJSON());
+    expect(text).not.toContain('+0');
+    expect(text).not.toContain('-0');
+    expect(text).toContain('common.unavailable');
+  });
   it('renders change stats and calls onPress', async () => {
     const onPress = vi.fn();
     const { ScmChangeRow } = await import('./ScmChangeRow');
@@ -88,11 +96,29 @@ describe('ScmChangeRow', () => {
     expect(textContent.join(' ')).toContain('+3');
     expect(textContent.join(' ')).toContain('-1');
 
-    const clickable = tree.findAllByType('View' as any).find((node) => node.props.accessibilityLabel === 'files.changeRow.viewDiffA11y')!;
+    const clickable = tree.findAllByType('View' as any).find((node) => node.props.accessibilityRole === 'button')!;
     act(() => {
       clickable.props.onClick({ preventDefault: vi.fn(), stopPropagation: vi.fn(), shiftKey: false });
     });
     expect(onPress).toHaveBeenCalled();
+  });
+
+  it('includes the change kind and canonical attribution qualification in the row accessibility label', async () => {
+    const { ScmChangeRow } = await import('./ScmChangeRow');
+    const screen = await renderScreen(<ScmChangeRow
+      theme={createScmChangeRowTheme()}
+      file={{
+        fileName: 'a.ts', filePath: 'src', fullPath: 'src/a.ts', status: 'modified',
+        isIncluded: false, linesAdded: 3, linesRemoved: 1,
+      } as any}
+      accessibilityQualification="Likely changed by this Session"
+      onPress={() => {}}
+    />);
+
+    const row = screen.tree.findAllByType('View' as any).find((node) => node.props.accessibilityRole === 'button');
+    expect(row?.props.accessibilityLabel).toContain('files.changeRow.status.modified');
+    expect(row?.props.accessibilityLabel).toContain('files.changeRow.viewDiffA11y');
+    expect(row?.props.accessibilityLabel).toContain('Likely changed by this Session');
   });
 
   it('renders untracked files as added (A) for consistency with file tree badges', async () => {
@@ -261,7 +287,7 @@ describe('ScmChangeRow', () => {
           onToggleSelection={onToggleSelection}
         />)).tree;
 
-    const clickable = tree.findAllByType('View' as any).find((node) => node.props.accessibilityLabel === 'files.changeRow.viewDiffA11y')!;
+    const clickable = tree.findAllByType('View' as any).find((node) => node.props.accessibilityRole === 'button')!;
     act(() => {
       clickable.props.onKeyDown({ key: 'Enter', preventDefault: vi.fn(), stopPropagation: vi.fn() });
     });

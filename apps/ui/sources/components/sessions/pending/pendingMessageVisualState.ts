@@ -3,6 +3,7 @@ import type { TranslationKeyNoParams } from '@/text';
 import {
     isPendingDeliveryProviderEffectPossibleV1,
     type PendingDeliveryStatusV1,
+    type SessionInputAdmissionRejectionCodeV1,
 } from '@happier-dev/protocol';
 
 export type PendingMessageVisualStateKind =
@@ -82,9 +83,11 @@ const blockedReasonLabelKeys = {
     capture_style_unavailable: 'session.pendingMessages.deliveryBlockedReasons.captureStyleUnavailable',
     provider_unavailable_before_acceptance: 'session.pendingMessages.deliveryBlockedReasons.providerUnavailableBeforeAcceptance',
     ambiguous_terminal_delivery: 'session.pendingMessages.deliveryBlockedReasons.ambiguousTerminalDelivery',
-    delivery_outcome_uncertain: 'session.pendingMessages.deliveryBlockedReasons.unknown',
+    // An effect may already have started: this row must not read like the "nothing was sent" case.
+    delivery_outcome_uncertain: 'session.pendingMessages.deliveryBlockedReasons.deliveryOutcomeUncertain',
     terminal_host_unreachable: 'session.pendingMessages.deliveryBlockedReasons.terminalHostUnreachable',
     runtime_disposed_before_delivery: 'session.pendingMessages.deliveryBlockedReasons.runtimeDisposedBeforeDelivery',
+    session_input_target_unavailable: 'session.pendingMessages.deliveryBlockedReasons.targetUnavailable',
     runtime_config_blocked: 'session.pendingMessages.deliveryBlockedReasons.runtimeConfigBlocked',
     invalid_prompt_text: 'session.pendingMessages.deliveryBlockedReasons.invalidPromptText',
     manual_user_handled: 'session.pendingMessages.deliveryBlockedReasons.manualUserHandled',
@@ -96,6 +99,48 @@ const blockedReasonLabelKeys = {
     payload_too_large: 'session.pendingMessages.deliveryBlockedReasons.payloadTooLarge',
     unknown: 'session.pendingMessages.deliveryBlockedReasons.unknown',
 } satisfies Record<NonNullable<PendingMessage['pendingDeliveryBlockedReason']>, TranslationKeyNoParams>;
+
+/** Run-launch outcomes raised by the interactive draft before any Session input is admitted. */
+export type ExecutionRunLaunchFailureCode =
+    | 'execution_run_target_changed'
+    | 'execution_run_secret_reference_overlay_update_required';
+
+export type SessionInputFailureCode = SessionInputAdmissionRejectionCodeV1 | ExecutionRunLaunchFailureCode;
+
+/**
+ * The single code → copy owner for target-admission and Run-launch failures. Producers throw errors
+ * carrying `code` (`sync/engine/pending/pendingQueueV2.ts`, the Run draft) and the presentation
+ * boundary resolves copy here; a raw snake_case code is never user-facing text.
+ */
+const sessionInputFailureLabelKeys = {
+    session_input_invalid: 'session.pendingMessages.admissionRejected.invalid',
+    session_input_archived: 'session.pendingMessages.admissionRejected.archived',
+    session_input_unauthorized: 'session.pendingMessages.admissionRejected.unauthorized',
+    session_input_target_unavailable: 'session.pendingMessages.admissionRejected.targetUnavailable',
+    session_input_target_update_required: 'session.pendingMessages.admissionRejected.targetUpdateRequired',
+    session_input_cancelled: 'session.pendingMessages.admissionRejected.cancelled',
+    session_input_untrusted_assertion: 'session.pendingMessages.admissionRejected.untrustedAssertion',
+    session_input_idempotency_conflict: 'session.pendingMessages.admissionRejected.idempotencyConflict',
+    session_input_source_authority_mismatch: 'session.pendingMessages.admissionRejected.sourceAuthorityMismatch',
+    session_input_permission_ceiling_rejected: 'session.pendingMessages.admissionRejected.permissionCeilingRejected',
+    session_input_encryption_mode_mismatch: 'session.pendingMessages.admissionRejected.encryptionModeMismatch',
+    execution_run_target_changed: 'sessionDrafts.executionRunStart.targetChanged',
+    execution_run_secret_reference_overlay_update_required: 'sessionDrafts.executionRunStart.secretReferenceOverlayUpdateRequired',
+} satisfies Record<SessionInputFailureCode, TranslationKeyNoParams>;
+
+function isSessionInputFailureCode(value: unknown): value is SessionInputFailureCode {
+    return typeof value === 'string' && Object.prototype.hasOwnProperty.call(sessionInputFailureLabelKeys, value);
+}
+
+export function createSessionInputFailureError(code: SessionInputFailureCode): Error & { code: SessionInputFailureCode } {
+    return Object.assign(new Error(code), { code });
+}
+
+/** The copy key for a coded failure, or `null` when the error carries no known code. */
+export function getSessionInputFailureLabelKey(error: unknown): TranslationKeyNoParams | null {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    return isSessionInputFailureCode(code) ? sessionInputFailureLabelKeys[code] : null;
+}
 
 function getDeliveryMutationPolicy(
     status: PendingDeliveryStatusV1,

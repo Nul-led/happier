@@ -30,6 +30,8 @@ import { Text } from '@/components/ui/text/Text';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { Icon } from '@/components/ui/icons/Icon';
+import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 const styles = StyleSheet.create((theme) => ({
     container: {
@@ -116,6 +118,7 @@ function HeaderRightTablet() {
 
 export const FriendsView = React.memo(({}: FriendsViewProps) => {
     const router = useRouter();
+    const navigateToSession = useNavigateToSession();
     const friends = useAcceptedFriends();
     const friendRequests = useFriendRequests();
     const requestedFriends = useRequestedFriends();
@@ -252,10 +255,10 @@ export const FriendsView = React.memo(({}: FriendsViewProps) => {
                             const subtitle = session.ownerProfile?.username ? `@${session.ownerProfile.username}` : undefined;
                             return (
                                 <Item
-                                    key={session.id}
+                                    key={sessionAddressKey({ serverId: session.serverId, sessionId: session.id })}
                                     title={title}
                                     subtitle={subtitle}
-                                    onPress={() => router.push(`/session/${session.id}`)}
+                                    onPress={() => void navigateToSession(session.id, { serverId: session.serverId })}
                                 />
                             );
                         })}

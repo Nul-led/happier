@@ -86,9 +86,9 @@ export interface SelectorConfig<T> {
  */
 export interface SearchableListSelectorProps<T> {
     config: SelectorConfig<T>;
-    items: T[];
-    recentItems?: T[];
-    favoriteItems?: T[];
+    items: ReadonlyArray<T>;
+    recentItems?: ReadonlyArray<T>;
+    favoriteItems?: ReadonlyArray<T>;
     selectedItem: T | null;
     onSelect: (item: T) => void;
     onToggleFavorite?: (item: T) => void;

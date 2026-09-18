@@ -13,6 +13,8 @@ import {
 } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { registerSessionTranscriptRetentionConsumer } from '@/sync/runtime/sessionRealtimeTranscriptConsumers';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export type UseSessionSurfaceActivationInput = Readonly<{
     sessionId: string;
@@ -65,16 +67,21 @@ export function useSessionSurfaceActivation(
     React.useLayoutEffect(() => {
         if (!normalizedSessionId) return;
         if (!input.surfaceVisible || !input.surfaceFocused) {
-            clearFocusedSessionId(normalizedSessionId);
+            clearFocusedSessionId(normalizedSessionId, input.serverId);
             return;
         }
-        setFocusedSessionId(normalizedSessionId);
-        useVoiceTargetStore.getState().setLastFocusedSessionId(normalizedSessionId);
+        setFocusedSessionId(normalizedSessionId, input.serverId);
+        const address = normalizeSessionAddress(
+            input.serverId ?? getActiveServerSnapshot().serverId,
+            normalizedSessionId,
+        );
+        if (address) useVoiceTargetStore.getState().setLastFocusedSessionAddress(address);
         return () => {
-            clearFocusedSessionId(normalizedSessionId);
+            clearFocusedSessionId(normalizedSessionId, input.serverId);
         };
     }, [
         input.surfaceFocused,
+        input.serverId,
         input.surfaceVisible,
         normalizedSessionId,
         visibilityResetVersion,

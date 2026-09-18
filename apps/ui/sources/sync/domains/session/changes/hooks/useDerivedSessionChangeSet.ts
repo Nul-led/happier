@@ -3,6 +3,12 @@ import * as React from 'react';
 import type { ChangeEvidenceSource, SessionChangeSet, TurnChangeSet } from '@happier-dev/protocol';
 
 import { useSession, useSessionMessages } from '@/sync/domains/state/storage';
+import { readStoredSessionMessagesForAddress } from '@/sync/domains/messages/readStoredSessionMessagesForAddress';
+import {
+    areSessionAddressesEqual,
+    normalizeSessionAddress,
+    type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
 
 import { deriveLatestTurnScopedChangeSet } from '../derivation/deriveLatestTurnScopedChangeSet';
 import { deriveSessionChangeSet } from '../derivation/deriveSessionChangeSet';
@@ -55,9 +61,30 @@ function buildTurnDiffByPath(
     return entries.length > 0 ? new Map(entries) : null;
 }
 
-export function useDerivedSessionChangeSet(sessionId: string): UseDerivedSessionChangeSetResult {
+export function useDerivedSessionChangeSet(address: SessionAddress | null): UseDerivedSessionChangeSetResult {
+    const requestedAddress = React.useMemo(
+        () => normalizeSessionAddress(address?.serverId, address?.sessionId),
+        [address?.serverId, address?.sessionId],
+    );
+    const sessionId = requestedAddress?.sessionId ?? '';
     const session = useSession(sessionId);
-    const { messages } = useSessionMessages(sessionId);
+    const { messages: storedMessages } = useSessionMessages(sessionId, {
+        enabled: requestedAddress !== null,
+    });
+
+    const messages = React.useMemo(() => readStoredSessionMessagesForAddress(
+        {
+            sessions: sessionId ? { [sessionId]: session } : {},
+            sessionMessages: sessionId ? { [sessionId]: { messages: storedMessages } } : {},
+        },
+        requestedAddress,
+    ), [requestedAddress, session, sessionId, storedMessages]);
+
+    const exactSession = React.useMemo(() => {
+        if (!requestedAddress || !session) return null;
+        const storedAddress = normalizeSessionAddress(session.serverId, sessionId);
+        return areSessionAddressesEqual(storedAddress, requestedAddress) ? session : null;
+    }, [requestedAddress, session, sessionId]);
 
     const turnChangeSets = React.useMemo(() => {
         return deriveTurnChangeSetsFromMessages(messages);
@@ -71,13 +98,13 @@ export function useDerivedSessionChangeSet(sessionId: string): UseDerivedSession
     const sessionChangeSet = React.useMemo(() => {
         return deriveSessionChangeSet({
             sessionId,
-            metadata: session ? readSessionOwnerMetadataView(session) : null,
+            metadata: exactSession ? readSessionOwnerMetadataView(exactSession) : null,
             turnChangeSets,
         });
     }, [
-        session?.metadata,
-        session?.metadataLayoutVersion,
-        session?.ownerMetadataView,
+        exactSession?.metadata,
+        exactSession?.metadataLayoutVersion,
+        exactSession?.ownerMetadataView,
         sessionId,
         turnChangeSets,
     ]);

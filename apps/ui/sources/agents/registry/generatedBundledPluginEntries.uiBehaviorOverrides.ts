@@ -28,6 +28,11 @@ export const BUNDLED_CANONICAL_AGENT_UI_BEHAVIOR_DESCRIPTORS: Readonly<
         descriptor: Object.freeze({
   "components": {
     "slots": []
+  },
+  "newSession": {
+    "relevantInstallableDepKeys": [
+      "dep.antigravity.agy-acp-server"
+    ]
   }
 } as const),
     }),
@@ -499,6 +504,30 @@ export const BUNDLED_CANONICAL_AGENT_UI_BEHAVIOR_DESCRIPTORS: Readonly<
     }),
     cursor: Object.freeze({
         agentId: 'cursor' as CanonicalAgentId,
+        descriptor: Object.freeze({
+  "components": {
+    "slots": []
+  }
+} as const),
+    }),
+    devin: Object.freeze({
+        agentId: 'devin' as CanonicalAgentId,
+        descriptor: Object.freeze({
+  "components": {
+    "slots": []
+  }
+} as const),
+    }),
+    droid: Object.freeze({
+        agentId: 'droid' as CanonicalAgentId,
+        descriptor: Object.freeze({
+  "components": {
+    "slots": []
+  }
+} as const),
+    }),
+    fx: Object.freeze({
+        agentId: 'fx' as CanonicalAgentId,
         descriptor: Object.freeze({
   "components": {
     "slots": []

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionDraftDocumentV1, StrictJsonValue } from '@happier-dev/protocol';
+import {
+    NewSessionDraftDocumentV2Schema,
+    SessionDraftStoredContentEnvelopeV1Schema,
+    restoreSupportedPredecessorNewSessionDraftPayloadV2,
+} from '@happier-dev/protocol';
 
 import { createSessionDraftCipher } from './sessionDraftEncryption';
 import { SessionDraftContextUnavailableError } from '@/sync/ops/sessionDrafts/sessionDraftCipherError';
@@ -31,6 +36,105 @@ function document(kind: 'session' | 'newSession'): SessionDraftDocumentV1 {
 }
 
 describe('sessionDraftEncryption', () => {
+    it.each(['plain', 'e2ee'] as const)('seals and restores the lossless supported-predecessor newSession projection (%s)', async (accountMode) => {
+        const cipher = createSessionDraftCipher({
+            accountMode,
+            accountCryptoMaterial: accountMode === 'plain' ? null : { type: 'dataKey', machineKey: new Uint8Array(32).fill(42) },
+            getSessionContext: () => null,
+            randomBytes: (length) => new Uint8Array(length),
+        });
+        const successor = NewSessionDraftDocumentV2Schema.parse({
+            ...document('newSession'),
+            v: 2,
+            target: {
+                kind: 'newSession',
+                authoring: {
+                    executionTarget: { mutationId: '00000000-0000-4000-8000-000000000020', value: {
+                        kind: 'machine',
+                        target: { serverId: 'home-a', machineId: 'machine-a' },
+                        selectionOrigin: { kind: 'machine_pool', poolId: '11111111-1111-4111-8111-111111111111' },
+                    } },
+                    runtimeDescriptorV1: { mutationId: '00000000-0000-4000-8000-000000000021', value: null },
+                },
+            },
+            extensions: {
+                example: { retained: { mutationId: '00000000-0000-4000-8000-000000000022', value: { future: true } } },
+            },
+        });
+
+        const predecessor = await cipher.sealForSupportedPredecessorV1?.(newAddress, successor);
+        expect(predecessor).not.toBeNull();
+        expect(predecessor).not.toHaveProperty('v', 2);
+        const readableContent = predecessor!.t === 'plain'
+            ? { t: 'plain' as const, v: restoreSupportedPredecessorNewSessionDraftPayloadV2(predecessor!.v)! }
+            : predecessor!;
+        await expect(cipher.open(newAddress, readableContent)).resolves.toEqual(successor);
+    });
+
+    it('does not produce predecessor bytes for non-representable newSession content', async () => {
+        const cipher = createSessionDraftCipher({
+            accountMode: 'plain', accountCryptoMaterial: null, getSessionContext: () => null,
+            randomBytes: (length) => new Uint8Array(length),
+        });
+        const successor = NewSessionDraftDocumentV2Schema.parse({
+            ...document('newSession'),
+            v: 2,
+            target: {
+                kind: 'newSession',
+                authoring: {
+                    temporaryComputerActivationRef: { mutationId: '00000000-0000-4000-8000-000000000021', value: null },
+                },
+            },
+        });
+        await expect(cipher.sealForSupportedPredecessorV1?.(newAddress, successor)).resolves.toBeNull();
+    });
+
+    it.each(['plain', 'e2ee'] as const)('round-trips Temporary computer and its public reference through the Account cipher (%s)', async (accountMode) => {
+        const cipher = createSessionDraftCipher({
+            accountMode,
+            accountCryptoMaterial: accountMode === 'plain' ? null : { type: 'dataKey', machineKey: new Uint8Array(32).fill(42) },
+            getSessionContext: () => { throw new Error('A Temporary computer draft has no Session cipher'); },
+            randomBytes: (length) => new Uint8Array(length),
+        });
+        const successor = NewSessionDraftDocumentV2Schema.parse({
+            ...document('newSession'),
+            v: 2,
+            target: {
+                kind: 'newSession',
+                authoring: {
+                    executionTarget: { mutationId: '00000000-0000-4000-8000-000000000020', value: {
+                        kind: 'temporary_computer', serverId: 'home-a', artifactTarget: 'linux-x64', workspace: { kind: 'endpoint_home' },
+                    } },
+                    temporaryComputerActivationRef: { mutationId: '00000000-0000-4000-8000-000000000021', value: {
+                        v: 1, activationId: '00000000-0000-4000-8000-000000000022', createdOnDeviceLabel: 'My laptop',
+                    } },
+                },
+            },
+        });
+        const sealed = await cipher.seal(newAddress, successor);
+        expect(SessionDraftStoredContentEnvelopeV1Schema.safeParse(sealed).success).toBe(false);
+        await expect(cipher.open(newAddress, sealed)).resolves.toEqual(successor);
+        await expect(cipher.open({ ...newAddress, draftId: '00000000-0000-4000-8000-000000000002' }, sealed)).resolves.toBeNull();
+        if (sealed.t === 'encrypted') {
+            expect(sealed.v).toBe(2);
+            await expect(cipher.open(newAddress, { t: 'encrypted', c: sealed.c })).resolves.toBeNull();
+        }
+    });
+
+    it('rejects the never-released hybrid execution-target field instead of widening V1', async () => {
+        const cipher = createSessionDraftCipher({
+            accountMode: 'plain', accountCryptoMaterial: null,
+            getSessionContext: () => null, randomBytes: (length) => new Uint8Array(length),
+        });
+        const legacy = document('newSession');
+        if (legacy.target.kind !== 'newSession') throw new Error('Expected newSession fixture');
+        legacy.target.authoring.executionTarget = {
+            mutationId: '00000000-0000-4000-8000-000000000020', value: { serverId: 'home-a', machineId: 'machine-a' },
+        };
+        const envelope = { t: 'plain' as const, v: { v: 1 as const, address: newAddress, document: legacy } };
+        await expect(cipher.open(newAddress, envelope)).resolves.toBeNull();
+    });
+
     it('uses plain envelopes for plain targets and validates the single private address binding', async () => {
         const cipher = createSessionDraftCipher({
             accountMode: 'plain',

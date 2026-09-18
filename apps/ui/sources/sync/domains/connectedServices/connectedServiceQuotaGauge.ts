@@ -4,7 +4,12 @@ import type {
     ConnectedServiceQuotaSnapshotV1,
     SessionRuntimeIssueV1,
 } from '@happier-dev/protocol';
-import { readConnectedServiceLimitCategoryV1 } from '@happier-dev/protocol';
+import {
+    parseQualifiedPluginContributionKey,
+    readBuiltInLegacyConnectedAccountServiceKeyIngress,
+    readBuiltInLegacyConnectedServiceIdForQualifiedService,
+    readConnectedServiceLimitCategoryV1,
+} from '@happier-dev/protocol';
 
 import { getAgentCore, resolveAgentIdFromFlavor } from '@/agents/registry/registryCore';
 import { clampQuotaPct, deriveQuotaUtilizationPct } from './deriveQuotaUtilizationPct';
@@ -382,11 +387,32 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
     };
 }
 
+/**
+ * The released scalar quota identity behind a runtime-issue service reference.
+ *
+ * Runtime issues carry canonical qualified Connected Account service keys (the
+ * ingress upgrades released bare ids), while `ConnectedServiceQuotaSnapshotV1`
+ * is a released scalar union. Translate through the provenance-named Protocol
+ * mapping and return `null` for a novel external service that has no released
+ * scalar member — never emit a qualified key as a scalar snapshot identity.
+ */
+function readReleasedQuotaServiceId(
+    serviceId: string | undefined,
+): ConnectedServiceQuotaSnapshotV1['serviceId'] | null {
+    if (!serviceId) return null;
+    const qualifiedKey = readBuiltInLegacyConnectedAccountServiceKeyIngress(serviceId);
+    const service = qualifiedKey ? parseQualifiedPluginContributionKey(qualifiedKey) : null;
+    return service ? readBuiltInLegacyConnectedServiceIdForQualifiedService(service) : null;
+}
+
 function resolveRuntimeIssueQuotaServiceId(issue: SessionRuntimeIssueV1): ConnectedServiceQuotaSnapshotV1['serviceId'] | null {
+    // A present reference names the exact service. Without a released scalar
+    // identity this corridor cannot represent it, and substituting the Agent's
+    // default service would credit the wrong account (fail closed).
     const refServiceId = issue.usageLimit?.quotaSnapshotRef?.serviceId;
-    if (refServiceId) return refServiceId;
+    if (refServiceId) return readReleasedQuotaServiceId(refServiceId);
     const connectedServiceId = issue.usageLimit?.connectedService?.serviceId;
-    if (connectedServiceId) return connectedServiceId;
+    if (connectedServiceId) return readReleasedQuotaServiceId(connectedServiceId);
 
     const agentId = resolveAgentIdFromFlavor(issue.agentId);
     if (!agentId) return null;

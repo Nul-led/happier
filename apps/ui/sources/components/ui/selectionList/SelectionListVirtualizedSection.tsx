@@ -46,7 +46,7 @@ export type SelectionListVirtualizedSectionProps = Readonly<{
     stepId: string;
     /** Root testID prefix forwarded from the SelectionList orchestrator. */
     rootTestID?: string;
-    selectedOptionId: string | null;
+    selectedOptionIds: ReadonlySet<string>;
     /**
      * F4 — Currently focused option id (keyboard navigation). Mirrors the
      * non-virtualized path's focused-row visual state and triggers
@@ -170,7 +170,7 @@ export function SelectionListVirtualizedSection(
                 option={option}
                 rootTestID={props.rootTestID}
                 stepId={props.stepId}
-                isSelected={props.selectedOptionId === option.id}
+                isSelected={props.selectedOptionIds.has(option.id)}
                 // F4 — focus parity: keep keyboard focus visual state separate
                 // from the row's selected accessibility state, matching the
                 // plain mapped path.

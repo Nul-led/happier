@@ -1,26 +1,34 @@
 import type {
-    PluginHostedWebBridgeEnvelopeV1,
-    PluginHostedWebBridgeResponseEnvelopeV1,
+    PluginHostedWebBridgeBootstrapConfigV1,
     PluginHostedWebSecurityPolicyV1,
 } from '@happier-dev/protocol';
+import type { UiSurfaceNetworkOriginV1 } from '@happier-dev/protocol/plugins/ui';
 import * as React from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import type {
     BrowserDiagnosticsEngineBridgeConfig,
     BrowserFrameNavigationCommand,
+    BrowserFrameHostMessageAttachment,
 } from '@/components/browser/frame/types';
 import { HostedPluginTarget } from '@/components/browser/adapters/HostedPluginTarget.native';
 import { BrowserFrameLoading } from '@/components/browser/frame/BrowserFrameLoading';
 
 import type { PluginHostedWebSandboxPolicy } from './sandbox';
-import { HostedArtifactFrame } from './HostedArtifactFrame.native';
-import { createPluginHostedWebNativeMessageBridge } from './nativeMessageBridge';
+import {
+    HostedArtifactFrame,
+    HostedInlineDocumentFrame,
+} from './HostedArtifactFrame.native';
+import type { HostedInlineDocumentFrameUnavailableCode } from './hostedInlineDocumentFrameTypes';
+import { createPluginHostedWebNativeMessageBridge, type PluginHostedWebNativeBridgeConfig } from './nativeMessageBridge';
 
 export function PluginHostedWebFrame(props: Readonly<{
     title: string;
     /** Present only for the legacy daemon/session endpoint frame path. */
     url?: string;
+    html?: string;
+    networkOrigins?: readonly UiSurfaceNetworkOriginV1[];
+    bootstrapConfig?: PluginHostedWebBridgeBootstrapConfigV1;
     sandbox: PluginHostedWebSandboxPolicy;
     security: PluginHostedWebSecurityPolicyV1;
     testID: string;
@@ -31,19 +39,11 @@ export function PluginHostedWebFrame(props: Readonly<{
     opaqueArtifactFrame?: boolean;
     /** Browser-only opaque-frame retirement hook; intentionally inert on native. */
     onUnexpectedNavigation?: () => void;
-    bridge?: Readonly<{
-        expectedOrigin: string;
-        expectedPluginId: string;
-        expectedContributionId: string;
-        expectedSurfaceId: string;
-        expectedNonce: string;
-        expectedSessionId?: string | null;
-        allowedMessageKinds: ReadonlySet<string>;
-        attachHostMessages?: (send: (message: unknown) => void) => () => void;
-        onMessage: (
-            envelope: PluginHostedWebBridgeEnvelopeV1,
-        ) => void | PluginHostedWebBridgeResponseEnvelopeV1 | Promise<PluginHostedWebBridgeResponseEnvelopeV1 | void>;
-    }> | null;
+    onLoadStart?: () => void;
+    onLoad?: () => void;
+    onError?: () => void;
+    externalHttpLinks?: boolean;
+    bridge?: (PluginHostedWebNativeBridgeConfig & Partial<BrowserFrameHostMessageAttachment>) | null;
     /**
      * A selected Artifact has already been registered by the native registrar.
      * This branch receives only its opaque token and host-built correlation
@@ -59,6 +59,7 @@ export function PluginHostedWebFrame(props: Readonly<{
         initialPathAndQuery: string;
     }> | null;
     onNativeArtifactUnavailable?: () => void;
+    onNativeHostedHtmlUnavailable?: (code: HostedInlineDocumentFrameUnavailableCode) => void;
     /** Pane-owned presentation state; native only forwards real view events. */
     nativeArtifactLoadState?: 'loading' | 'ready';
     onNativeArtifactLoadStart?: (event: unknown) => void;
@@ -96,14 +97,18 @@ export function PluginHostedWebFrame(props: Readonly<{
                         {...(props.onNativeArtifactUnavailable
                             ? { onUnavailable: () => props.onNativeArtifactUnavailable?.() }
                             : {})}
-                        onLoadStart={props.onNativeArtifactLoadStart}
-                        onLoadEnd={props.onNativeArtifactLoadEnd}
-                        onLoadError={props.onNativeArtifactLoadError}
-                        onHistoryStateChange={props.onNativeArtifactHistoryStateChange}
+                        {...(props.onNativeArtifactLoadStart ? { onLoadStart: props.onNativeArtifactLoadStart } : {})}
+                        {...(props.onNativeArtifactLoadEnd ? { onLoadEnd: props.onNativeArtifactLoadEnd } : {})}
+                        {...(props.onNativeArtifactLoadError ? { onLoadError: props.onNativeArtifactLoadError } : {})}
+                        {...(props.onNativeArtifactHistoryStateChange
+                            ? { onHistoryStateChange: props.onNativeArtifactHistoryStateChange }
+                            : {})}
                         {...(artifactNavigationCommand
                             ? { navigationCommand: artifactNavigationCommand }
                             : {})}
-                        onGoBackResult={props.onNativeArtifactGoBackResult}
+                        {...(props.onNativeArtifactGoBackResult
+                            ? { onGoBackResult: props.onNativeArtifactGoBackResult }
+                            : {})}
                         testID={props.testID}
                     />
                 </View>
@@ -115,11 +120,33 @@ export function PluginHostedWebFrame(props: Readonly<{
             </View>
         );
     }
+    if (props.html !== undefined) {
+        return (
+            <HostedInlineDocumentFrame
+                title={props.title}
+                html={props.html}
+                networkOrigins={props.networkOrigins}
+                bootstrapConfig={props.bootstrapConfig}
+                allowedNavigationOrigins={props.security.allowedNavigationOrigins}
+                {...(props.bridge ? { bridge: props.bridge } : {})}
+                {...(props.onNativeHostedHtmlUnavailable
+                    ? { onUnavailable: props.onNativeHostedHtmlUnavailable }
+                    : {})}
+                onLoadStart={props.onLoadStart}
+                onLoadEnd={props.onLoad}
+                onLoadError={props.onError}
+                onBlockedNavigation={props.onUnexpectedNavigation}
+                externalHttpLinks={props.externalHttpLinks}
+                testID={props.testID}
+            />
+        );
+    }
     if (!props.url) return <></>;
     return (
         <HostedPluginTarget
             title={props.title}
             url={props.url}
+            onUnexpectedNavigation={props.onUnexpectedNavigation}
             sandbox={props.sandbox}
             security={props.security}
             testID={props.testID}

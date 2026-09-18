@@ -139,6 +139,7 @@ vi.mock('@/sync/domains/server/serverConfig', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
+    getActiveServerHomeCarrier: () => null,
     getActiveServerId: () => 'srv-1',
     getDeviceDefaultServerId: () => 'srv-1',
     loadHomeViewState: () => null,
@@ -178,12 +179,20 @@ vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ isAuthenticated: true, refreshFromActiveServer: vi.fn(async () => {}) }),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: { getCredentialsForServerUrl: vi.fn(async () => ({ token: 't', secret: 's' })) },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return await createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: vi.fn(async () => ({ token: 't', secret: 's' })),
+        },
+    });
+});
 
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
     switchConnectionToActiveServer: vi.fn(async () => {}),
+    getAppliedActiveServerId: () => 'srv-1',
+    subscribeAppliedActiveServer: () => () => undefined,
 }));
 
 vi.mock('@/sync/sync', () => ({
@@ -211,6 +220,7 @@ vi.mock('@/components/navigation/connection/ConnectionTargetList', () => ({
 }));
 
 vi.mock('@/components/navigation/connectionStatus/useConnectionHealth', () => ({
+    useActiveHomeConnectionHealth: () => connectionHealthMock.current,
     useConnectionHealth: () => connectionHealthMock.current,
 }));
 
@@ -224,8 +234,10 @@ describe('ConnectionStatusControl (label)', () => {
         expect(joined).not.toContain('status.connected');
 
         const trigger = screen.findByProps({ accessibilityRole: 'button' });
-        expect(trigger.props.accessibilityLabel).toBe('Happier Cloud, status.actionRequired');
-        expect(trigger.props.accessibilityState).toEqual({ expanded: false });
+        expect(trigger.props.accessibilityLabel).toBe('Happier Cloud, connectionStatus.summary.connected');
+        // Header activation navigates to the existing full-screen Homes surface;
+        // only the desktop/sidebar trigger owns an expandable popover state.
+        expect(trigger.props.accessibilityState).toBeUndefined();
         expect(trigger.props.style.minHeight).toBeGreaterThanOrEqual(44);
     });
 

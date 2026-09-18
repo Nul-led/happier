@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import * as React from 'react';
 import { act } from 'react-test-renderer';
@@ -6,6 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const kvStore = vi.hoisted(() => new Map<string, string>());
+const participantAccountBindings = vi.hoisted(() => new Map([['server-1', {
+    serverId: 'server-1',
+    accountId: 'account-1',
+    scope: { serverId: 'server-1', accountId: 'account-1' },
+    revision: 1,
+    isCurrent: () => true,
+    onRetire: () => ({ dispose: () => {} }),
+}]]));
 vi.mock('react-native-mmkv', () => {
     class MMKV {
         getString(key: string) {
@@ -16,6 +25,9 @@ vi.mock('react-native-mmkv', () => {
         }
         delete(key: string) {
             kvStore.delete(key);
+        }
+        getAllKeys() {
+            return [...kvStore.keys()];
         }
         clearAll() {
             kvStore.clear();
@@ -70,6 +82,30 @@ vi.mock('@/components/autocomplete/suggestions', () => ({
     getSuggestions: vi.fn(async () => []),
 }));
 
+// This integration test owns the real authenticated Session-input boundary;
+// transfer availability is separate, while the exact Home/Account binding is
+// required by the canonical pending enqueue path even for a text-only send.
+vi.mock('@/hooks/server/useFeatureEnabled', () => ({ useFeatureEnabled: () => false }));
+vi.mock('@/components/sessions/files/useSessionFileUploadAvailability', () => ({
+    useSessionFileUploadAvailability: () => false,
+}));
+vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
+    useServerCredentialAccountScopeBindings: () => participantAccountBindings,
+}));
+vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverRuntime')>(),
+    getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'http://server-1.test' }),
+}));
+vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/scope/activeServerAccountScope')>(),
+    captureActiveServerAccountScopeLifetime: () => ({
+        scope: { serverId: 'server-1', accountId: 'account-1' },
+        isCurrent: () => true,
+        onRetire: () => ({ dispose: () => {} }),
+    }),
+    getActiveServerAccountScope: () => ({ serverId: 'server-1', accountId: 'account-1' }),
+}));
+
 vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
     sessionExecutionRunSend: vi.fn(async () => ({ ok: true })),
     isExecutionRunNotRunningSendError: vi.fn(() => false),
@@ -114,13 +150,20 @@ function createActiveSession(sessionId: string): Session {
         updatedAt: now,
         active: true,
         activeAt: now,
-        metadata: null,
+        metadata: {
+            machineId: 'machine-1',
+            flavor: 'codex',
+            version: '0.0.0',
+            path: '/tmp',
+            homeDir: '/tmp',
+        },
         metadataVersion: 0,
         agentState: null,
         agentStateVersion: 1,
         thinking: false,
         thinkingAt: 0,
         presence: 'online',
+        pendingVersion: 1,
         optimisticThinkingAt: null,
     };
 }
@@ -152,7 +195,7 @@ describe('SessionParticipantComposer auth send surface', () => {
         vi.restoreAllMocks();
     });
 
-    it('surfaces not_authenticated from the real pending send path instead of silently enqueueing', async () => {
+    it('surfaces not_authenticated from the real Session send path instead of silently enqueueing', async () => {
         const sessionId = 's_auth_surface';
         storage.getState().applySessions([createActiveSession(sessionId)]);
         storage.getState().applySettingsLocal({ sessionMessageSendMode: 'agent_queue' });
@@ -180,6 +223,7 @@ describe('SessionParticipantComposer auth send surface', () => {
 
         await renderScreen(<SessionParticipantComposer
             sessionId={sessionId}
+            serverId="server-1"
             canSendMessages
             recipient={null}
         />);

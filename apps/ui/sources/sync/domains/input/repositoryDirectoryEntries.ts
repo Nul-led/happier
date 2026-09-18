@@ -2,13 +2,14 @@ import { sortDirectoryEntries } from './sortDirectoryEntries';
 
 export type RepositoryDirectoryEntry = {
     name: string;
+    gitIgnored?: boolean;
     type: 'file' | 'directory';
     sizeBytes?: number;
     modifiedMs?: number;
 };
 
 export type ListRepositoryDirectoryEntriesResult =
-    | { ok: true; entries: RepositoryDirectoryEntry[] }
+    | { ok: true; entries: RepositoryDirectoryEntry[]; gitIgnoreAvailable?: boolean }
     | { ok: false; error: string };
 
 export function sortRepositoryDirectoryEntries(entries: RepositoryDirectoryEntry[]): RepositoryDirectoryEntry[] {

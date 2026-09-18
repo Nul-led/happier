@@ -5,7 +5,10 @@ use std::path::PathBuf;
 #[path = "build_support.rs"]
 mod build_support;
 
-use build_support::{resolve_sidecar_update_action, SidecarSnapshot, SidecarUpdateAction};
+use build_support::{
+    resolve_sidecar_update_action, tauri_config_without_iroh_release_evidence, SidecarSnapshot,
+    SidecarUpdateAction,
+};
 use flate2;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -79,8 +82,9 @@ const APP_TAURI_COMMANDS: &[&str] = &[
     "iroh_get_tunnel_status",
     "iroh_get_availability",
     "iroh_get_application_endpoint",
+    "iroh_start_machine_tunnel",
     "iroh_start_machine_http_tunnel",
-    "iroh_stop_machine_http_tunnel",
+    "iroh_stop_machine_tunnel",
 ];
 
 fn is_truthy_env(name: &str) -> bool {
@@ -108,6 +112,16 @@ fn main() {
         println!(
             "cargo:warning=Skipping hsetup sidecar bundling (HAPPIER_SKIP_HSETUP_SIDECAR_BUILD=1)."
         );
+
+        // This flag already marks a source-only Cargo invocation that cannot
+        // produce a distributable app because its required sidecar is a stub.
+        // Keep release-owned Iroh notices/SBOM out of that same source-test
+        // build instead of generating or hand-writing certification bytes.
+        let tauri_config =
+            tauri_config_without_iroh_release_evidence(env::var("TAURI_CONFIG").ok().as_deref())
+                .expect("failed to derive source-test Tauri config");
+        env::set_var("TAURI_CONFIG", &tauri_config);
+        println!("cargo:rustc-env=TAURI_CONFIG={tauri_config}");
     } else {
         build_hsetup_sidecar().expect("failed to build bundled hsetup sidecar");
     }

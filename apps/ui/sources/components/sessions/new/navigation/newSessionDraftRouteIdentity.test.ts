@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { resolveNewSessionDraftRouteIdentity } from './newSessionDraftRouteIdentity';
+import { resolveNewSessionDraftRouteIdentity, resolveNewSessionDraftRouteScope } from './newSessionDraftRouteIdentity';
 import {
     resolveNewSessionOrdinaryEntryRoute,
     shouldForceFreshNewSessionEntry,
@@ -30,6 +30,47 @@ describe('resolveNewSessionDraftRouteIdentity', () => {
             });
         },
     );
+});
+
+describe('resolveNewSessionDraftRouteScope', () => {
+    const activeScope = { serverId: 'home-a', accountId: 'account-a' } as const;
+    const inactiveScope = { serverId: 'home-b', accountId: 'account-b' } as const;
+
+    it('uses the route-qualified Home only when its exact Account is still bound', () => {
+        expect(resolveNewSessionDraftRouteScope({
+            activeScope,
+            draftServerId: 'home-b',
+            draftAccountId: 'account-b',
+            requestedScopeResolution: { kind: 'bound', scope: inactiveScope },
+        })).toEqual(inactiveScope);
+        expect(resolveNewSessionDraftRouteScope({
+            activeScope,
+            draftServerId: 'home-b',
+            draftAccountId: 'stale-account',
+            requestedScopeResolution: { kind: 'bound', scope: inactiveScope },
+        })).toBeNull();
+        expect(resolveNewSessionDraftRouteScope({
+            activeScope,
+            draftServerId: 'home-c',
+            draftAccountId: 'account-b',
+            requestedScopeResolution: { kind: 'bound', scope: inactiveScope },
+        })).toBeNull();
+    });
+
+    it('keeps ordinary entry on the active Home and fails closed for an unavailable qualified Home', () => {
+        expect(resolveNewSessionDraftRouteScope({
+            activeScope,
+            draftServerId: undefined,
+            draftAccountId: undefined,
+            requestedScopeResolution: { kind: 'unknown_home' },
+        })).toEqual(activeScope);
+        expect(resolveNewSessionDraftRouteScope({
+            activeScope,
+            draftServerId: 'home-b',
+            draftAccountId: 'account-b',
+            requestedScopeResolution: { kind: 'signed_out' },
+        })).toBeNull();
+    });
 });
 
 describe('resolveNewSessionOrdinaryEntryRoute', () => {

@@ -7,12 +7,12 @@ import {
     type SessionHandoffActionResultV1,
     type SessionHandoffStatus,
     type SessionHandoffStorageMode,
-    type SessionHandoffTransportStrategy,
     type HandoffWorkspaceActionV1,
     type HandoffTargetReplacementApprovalV1,
-    type HandoffTargetReplacementPreflightResultV1,
+    type ActionExecutorDeps,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { isRpcMethodNotAvailableError, isRpcMethodNotFoundError } from '@happier-dev/protocol/rpcErrors';
 
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 import { readMachineControlTargetForSession } from './sessionMachineTarget';
@@ -20,13 +20,19 @@ import { readMachineControlTargetForSession } from './sessionMachineTarget';
 /** UI-side request/status adapter. The daemon owns all handoff phases, retries and recovery. */
 type HandoffErrorResult = Readonly<{ ok: false; errorCode: string; errorMessage: string; handoffId?: string; status?: SessionHandoffStatus; recovery?: unknown }>;
 
+/**
+ * Source transcript storage is deliberately absent: the source daemon derives it
+ * from the owner metadata it loads, before it stops or exports anything, so the
+ * client neither proves nor stamps that authority on the request.
+ */
 export type StartSessionHandoffOptions = Readonly<{
     sessionId: string; sourceMachineId?: string | null; targetMachineId: string; targetPath?: string; serverId?: string | null;
-    sessionStorageMode: SessionHandoffStorageMode; targetSessionStorageMode?: SessionHandoffStorageMode;
-    preferredTransportStrategies?: readonly SessionHandoffTransportStrategy[]; negotiatedTransportStrategy?: SessionHandoffTransportStrategy;
+    targetSessionStorageMode?: SessionHandoffStorageMode;
     workspaceAction?: HandoffWorkspaceActionV1;
     actionRequestId?: string | null;
     handoffTargetReplacementApproval?: HandoffTargetReplacementApprovalV1 | null;
+    handoffTargetReplacementApprovalReceiptId?: string | null;
+    handoffTargetReplacementApprovalActionInput?: unknown;
     signal?: AbortSignal;
 }>;
 export type StartSessionHandoffResult = Readonly<{ ok: true; result: SessionHandoffActionResultV1 }> | HandoffErrorResult;
@@ -39,6 +45,10 @@ export type PreflightSessionHandoffTargetReplacementOptions = Readonly<{
     workspaceAction: HandoffWorkspaceActionV1;
     signal?: AbortSignal;
 }>;
+
+type SessionHandoffTargetReplacementApprovalPreflightResult = Awaited<ReturnType<NonNullable<
+    ActionExecutorDeps['sessionHandoffTargetReplacementApprovalPreflight']
+>>>;
 
 function normalizeId(value: unknown): string { return typeof value === 'string' ? value.trim() : String(value ?? '').trim(); }
 
@@ -81,12 +91,24 @@ async function requestCoordinator(options: StartSessionHandoffOptions): Promise<
                 ...(options.handoffTargetReplacementApproval
                     ? { handoffTargetReplacementApproval: options.handoffTargetReplacementApproval }
                     : {}),
+                ...(normalizeId(options.handoffTargetReplacementApprovalReceiptId) ? {
+                    handoffTargetReplacementApprovalReceiptId: normalizeId(options.handoffTargetReplacementApprovalReceiptId),
+                    handoffTargetReplacementApprovalActionInput: options.handoffTargetReplacementApprovalActionInput,
+                } : {}),
                 ...(normalizeId(options.serverId) ? { accountServerId: normalizeId(options.serverId) } : {}),
             },
             serverId: normalizeId(options.serverId) || null,
             ...(options.signal ? { signal: options.signal } : {}),
         });
     } catch (error) {
+        if (options.workspaceAction && options.workspaceAction.kind !== 'none'
+            && (isRpcMethodNotAvailableError(error) || isRpcMethodNotFoundError(error))) {
+            return {
+                ok: false,
+                errorCode: 'workspace_sync_update_required',
+                error: 'Workspace sync requires a newer daemon',
+            };
+        }
         return { ok: false, errorCode: 'UNEXPECTED', error: error instanceof Error ? error.message : 'Failed to start session handoff' };
     }
 }
@@ -97,7 +119,7 @@ export function normalizePrepareTargetResponseCandidate(raw: unknown): Record<st
 /** Target-daemon inspection used by the Action approval corridor before the handoff starts. */
 export async function preflightSessionHandoffTargetReplacement(
     options: PreflightSessionHandoffTargetReplacementOptions,
-): Promise<HandoffTargetReplacementPreflightResultV1> {
+): Promise<SessionHandoffTargetReplacementApprovalPreflightResult> {
     if (options.workspaceAction.kind !== 'copy_once' && options.workspaceAction.kind !== 'create_relationship') {
         return { type: 'not_required' };
     }
@@ -150,11 +172,19 @@ export async function startSessionHandoff(options: StartSessionHandoffOptions): 
     // genuinely valid predecessor response from malformed daemon output.
     const legacyStart = SessionHandoffStartResponseSchema.safeParse(raw);
     if (legacyStart.success) {
+        if (options.workspaceAction && options.workspaceAction.kind !== 'none') {
+            return {
+                ok: false,
+                errorCode: 'workspace_sync_update_required',
+                errorMessage: 'Workspace sync requires a newer daemon',
+            };
+        }
         return {
             ok: true,
             result: {
                 handoffId: legacyStart.data.handoffId,
                 status: legacyStart.data.status,
+                workspace: { kind: 'none' },
             },
         };
     }

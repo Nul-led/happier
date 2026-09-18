@@ -15,6 +15,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 
 export const TranscriptRollbackActionButton = React.memo((props: {
     sessionId: string;
+    serverId?: string | null;
     target?: SessionRollbackTarget;
     restoredDraftText?: string | null;
     testID?: string;
@@ -26,7 +27,10 @@ export const TranscriptRollbackActionButton = React.memo((props: {
     currentAgentCapabilities?: CurrentProjectedAgentCapabilities | null;
 }) => {
     const { theme } = useUnistyles();
-    const sessionServerId = usePreferredServerIdForSession(props.sessionId);
+    const sessionServerId = usePreferredServerIdForSession({
+        serverId: props.serverId,
+        sessionId: props.sessionId,
+    });
     const [isRollingBack, setIsRollingBack] = React.useState(false);
     const executor = React.useMemo(
         () => createDefaultActionExecutor({

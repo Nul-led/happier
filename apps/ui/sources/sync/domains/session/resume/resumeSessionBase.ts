@@ -1,8 +1,11 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { ResumeSessionOptions } from '@/sync/ops';
 import type { ResumeCapabilityOptions } from '@/agents/runtime/resumeCapabilities';
-import { canResumeOrContinueSessionWithOptions, getAgentVendorResumeId } from '@/agents/runtime/resumeCapabilities';
-import { deriveAcpBackendIdFromFlavor } from '@/agents/runtime/acpFlavor';
+import {
+    canResumeOrContinueSessionWithOptions,
+    getAgentVendorResumeId,
+    resolveConfiguredAcpBackendId,
+} from '@/agents/runtime/resumeCapabilities';
 import { readRuntimeDescriptorV1FromMetadata } from '@happier-dev/protocol';
 import type { PermissionModeOverrideForSpawn } from '@/sync/domains/permissions/permissionModeOverride';
 import type { ModelOverrideForSpawn } from '@/sync/domains/models/modelOverride';
@@ -40,18 +43,11 @@ export function buildResumeSessionBaseOptionsFromSession(opts: {
         ?? normalizeNonEmptyString(reachableTarget?.machineId);
     const directory = normalizeNonEmptyString(resumeTargetOverride?.directory)
         ?? normalizeNonEmptyString(reachableTarget?.basePath);
-    const flavor = metadata?.flavor;
     if (!machineId || !directory) return null;
 
-    const configuredAcpBackendIdFromMetadata =
-        typeof metadata?.acpConfiguredBackendV1?.backendId === 'string'
-            ? metadata.acpConfiguredBackendV1.backendId.trim()
-            : '';
-    const configuredAcpBackendIdFromFlavor = deriveAcpBackendIdFromFlavor(flavor);
-    const configuredAcpBackendId =
-        configuredAcpBackendIdFromFlavor !== null
-            ? (configuredAcpBackendIdFromMetadata.length > 0 ? configuredAcpBackendIdFromMetadata : configuredAcpBackendIdFromFlavor)
-            : null;
+    // One owner decides which configured ACP backend a Session names, so this
+    // request can never target a different backend than the resume gate allowed.
+    const configuredAcpBackendId = resolveConfiguredAcpBackendId({ metadata });
     const connectedServices = normalizeSessionAuthoringConnectedServices(metadata?.connectedServices);
     const connectedServicesUpdatedAt = normalizeOptionalNumber(metadata?.connectedServicesUpdatedAt);
 

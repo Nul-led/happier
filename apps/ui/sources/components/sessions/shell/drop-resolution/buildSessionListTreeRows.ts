@@ -1,9 +1,11 @@
 import type { TreeContainerDropZone, TreeRow, WindowBounds } from '@/components/ui/treeDragDrop';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import {
     buildSessionFolderGroupKey,
     resolveDurableWorkspaceRefForSessionListHeader,
 } from '@/sync/domains/session/folders';
+import { buildSessionListFolderOrderItemKey } from '@/sync/domains/session/listing/sessionListOrderingStateV1';
 import {
     buildSessionWorkspaceOrderItemKey,
     buildSessionWorkspaceOrderScopeKey,
@@ -60,10 +62,9 @@ function readHeaderRootGroupKey(item: Extract<SessionListIndexItem, { type: 'hea
 }
 
 function readWorkspaceOrderContainerId(item: Extract<SessionListIndexItem, { type: 'header' }>): string {
-    const serverId = String(item.serverId ?? '').trim() || '__unknown_server__';
+    const serverId = String(item.serverId ?? '').trim() || null;
     const section = String(item.headerKind ?? 'default').trim() || 'default';
-    const groupKey = String(item.groupKey ?? '').trim();
-    return `workspace-order:${serverId}:${section}:${groupKey}`;
+    return JSON.stringify(['workspace-order-container', serverId, section]);
 }
 
 function readDirectSessionGroupKey(item: Extract<SessionListIndexItem, { type: 'header' }>): string {
@@ -73,11 +74,7 @@ function readDirectSessionGroupKey(item: Extract<SessionListIndexItem, { type: '
 function buildSessionOrderKey(item: Extract<SessionListIndexItem, { type: 'session' }>): string | null {
     const serverId = String(item.serverId ?? '').trim();
     const sessionId = String(item.sessionId ?? '').trim();
-    return serverId && sessionId ? `${serverId}:${sessionId}` : null;
-}
-
-function buildFolderOrderKey(folderId: string | null): string | null {
-    return folderId ? `folder:${folderId}` : null;
+    return serverId && sessionId ? sessionAddressKey({ serverId, sessionId }) : null;
 }
 
 function registerContainer(
@@ -257,7 +254,8 @@ export function buildSessionListTreeRows(params: BuildSessionListTreeRowsParams)
             const groupKey = readHeaderRootGroupKey(item);
             const rowId = resolveWorkspaceRootTreeRowId(item);
             if (!activeWorkspaceOrderContainer) {
-                const containerId = `workspace-order:${String(item.serverId ?? '').trim() || '__unknown_server__'}:default`;
+                const serverId = String(item.serverId ?? '').trim() || null;
+                const containerId = JSON.stringify(['workspace-order-container', serverId, 'default']);
                 activeWorkspaceOrderContainer = {
                     containerId,
                     kind: 'workspace-order',
@@ -316,7 +314,9 @@ export function buildSessionListTreeRows(params: BuildSessionListTreeRowsParams)
             const parent = depth > 0 ? folderStack[depth - 1] ?? null : null;
             const containerId = parent?.rowId ?? activeRoot.containerId;
             const containerGroupKey = parent?.childGroupKey ?? activeRoot.groupKey;
-            const rowId = treeRowId.folder(item.folderId);
+            const serverId = String(item.serverId ?? item.workspace?.serverId ?? '').trim();
+            if (!serverId) return;
+            const rowId = treeRowId.folder(serverId, item.folderId);
             const groupKey = String(item.groupKey ?? '').trim();
 
             const metadata: SessionListTreeRowMetadata = {
@@ -328,8 +328,11 @@ export function buildSessionListTreeRows(params: BuildSessionListTreeRowsParams)
                 containerId,
                 containerGroupKey,
                 parentRowId: parent?.rowId ?? null,
-                orderKey: buildFolderOrderKey(item.folderId),
-                serverId: typeof item.serverId === 'string' ? item.serverId : null,
+                orderKey: buildSessionListFolderOrderItemKey({
+                    serverId: item.serverId ?? item.workspace?.serverId ?? null,
+                    folderId: item.folderId,
+                }),
+                serverId,
                 sessionId: null,
                 folderId: item.folderId,
                 folderDepth: depth,
@@ -363,13 +366,17 @@ export function buildSessionListTreeRows(params: BuildSessionListTreeRowsParams)
 
         if (item.type === 'session') {
             const folderId = typeof item.folderId === 'string' && item.folderId.trim() ? item.folderId.trim() : null;
-            const parentRowId = folderId ? treeRowId.folder(folderId) : null;
+            const serverId = typeof item.serverId === 'string'
+                ? item.serverId.trim()
+                : item.workspace?.serverId?.trim() ?? '';
+            const parentRowId = folderId && serverId ? treeRowId.folder(serverId, folderId) : null;
             const containerId = parentRowId ?? activeRoot.containerId;
             const container = containerMetadataById.get(containerId) ?? activeRoot;
-            const serverId = typeof item.serverId === 'string' ? item.serverId.trim() : '';
             const sessionId = String(item.sessionId ?? '').trim();
             if (!sessionId) return;
-            const rowId = serverId ? treeRowId.session(serverId, sessionId) : `session:${sessionId}`;
+            const rowId = serverId
+                ? treeRowId.session(serverId, sessionId)
+                : JSON.stringify(['session', null, sessionId]);
             const metadata: SessionListTreeRowMetadata = {
                 rowId,
                 item,

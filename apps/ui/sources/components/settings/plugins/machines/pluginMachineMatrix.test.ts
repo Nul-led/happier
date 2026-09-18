@@ -134,6 +134,7 @@ describe('buildPluginMachineMatrix', () => {
     it('includes desired Account release and artifact truth even before any machine materializes the plugin', () => {
         const response = {
             availabilityCursor: 42,
+            packageAssets: [],
             hostingCapability: { enabled: true, maxArtifactBytes: 1024, maxAccountBytes: 2048 },
             intent: {
                 pluginId: 'acme.desired',

@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: (text: string) => [{ text, revealed: true }],
+}));
+
 import { createServerProfilesModuleMock } from '@/dev/testkit';
+import type { SessionListFetchResult } from '@/sync/engine/sessions/sessionSnapshot';
 
 const ioSpy = vi.fn();
 const getCredentialsForServerUrlSpy = vi.fn();
@@ -67,6 +72,38 @@ function onlineState() {
         lastConnectedAt: Date.now(),
         lastDisconnectedAt: null,
         lastErrorMessage: null,
+    };
+}
+
+// One complete storage-boundary mock for the token storage seam: the canonical
+// testkit factory merges the real module (preserving `accountDirectoryAuthCredentials`
+// and every other export consumed by the cache's import graph) and overrides only the
+// genuine boundary members. Credential classification stays on the real implementation.
+function mockTokenStorageBoundary(): void {
+    vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => {
+        const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+        return createTokenStorageModuleMock({
+            importOriginal,
+            tokenStorage: {
+                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
+            },
+            subscribeHomeCredentialMutations: () => () => {},
+        });
+    });
+}
+
+// Contract-complete fetch result for `fetchAndApplySessions` doubles: the cache
+// reads `result.current` and advances the ordinary-session-list frontier from the
+// pagination facts, so doubles must return the real SessionListFetchResult shape.
+function completeSessionListFetchResult(sessionIds: readonly string[] = []): SessionListFetchResult {
+    return {
+        sessionIds: [...sessionIds],
+        nextCursor: null,
+        hasNext: false,
+        attentionNextCursor: null,
+        attentionHasNext: false,
+        current: true,
+        source: 'v2',
     };
 }
 
@@ -196,15 +233,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) => Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -240,6 +269,7 @@ describe('concurrent session cache socket routing', () => {
                 sessionDataKeys.set('session-b', new Uint8Array([sessionDataKeysArgs.length]));
                 sessionDataKeyEnvelopes?.set('session-b', `envelope-${sessionDataKeysArgs.length}`);
                 applySessions([]);
+                return completeSessionListFetchResult();
             },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
@@ -312,15 +342,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) => Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -337,6 +359,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('@/sync/engine/sessions/sessionSnapshot', () => ({
             fetchAndApplySessions: async ({ applySessions }: { applySessions: (sessions: unknown[]) => void }) => {
                 applySessions([]);
+                return completeSessionListFetchResult();
             },
         }));
         const fetchAndApplyMachinesSpy = vi.fn(async ({ applyMachines }: { applyMachines: (machines: unknown[]) => void }) => {
@@ -458,15 +481,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) => Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -484,6 +499,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('@/sync/engine/sessions/sessionSnapshot', () => ({
             fetchAndApplySessions: async ({ applySessions }: { applySessions: (sessions: unknown[]) => void }) => {
                 applySessions([]);
+                return completeSessionListFetchResult();
             },
         }));
 
@@ -572,7 +588,7 @@ describe('concurrent session cache socket routing', () => {
         stopConcurrentSessionCacheSync();
     });
 
-    it('keeps the cached session list reference stable when an identical periodic refresh arrives', async () => {
+    it('keeps canonical rows stable without copying them into the concurrent server cache', async () => {
         process.env.EXPO_PUBLIC_HAPPY_MULTI_SERVER_CONCURRENT = '1';
         mockReachabilityOnline();
 
@@ -599,15 +615,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) => Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -624,24 +632,40 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('@/sync/engine/sessions/sessionSnapshot', () => ({
             fetchAndApplySessions: async ({
                 credentials,
-                applySessions,
+                applySessionListRenderables,
+                applySessionListRenderablePatches,
+                includeActiveSessionRows,
+                includeSessionListAttentionRows,
             }: {
                 credentials: { token: string };
-                applySessions: (sessions: unknown[]) => void;
+                applySessionListRenderables: (sessions: unknown[]) => void;
+                applySessionListRenderablePatches: (patches: unknown[]) => void;
+                includeActiveSessionRows?: boolean;
+                includeSessionListAttentionRows?: boolean;
             }) => {
+                expect(includeActiveSessionRows).toBe(true);
+                expect(includeSessionListAttentionRows).toBe(true);
                 sessionRefreshCount += 1;
                 if (credentials.token !== 'token-b') {
-                    applySessions([]);
-                    return;
+                    applySessionListRenderables([]);
+                    return completeSessionListFetchResult();
                 }
-                applySessions([{
+                const hydratedMetadata = {
+                    name: 'Hydrated session',
+                    machineId: 'machine-b',
+                    path: '/workspace/b',
+                    host: 'b-host',
+                };
+                applySessionListRenderables([{
                     id: 'session-b',
                     seq: 1,
                     createdAt: 1000,
                     updatedAt: 2000,
                     active: true,
                     activeAt: 2000,
-                    metadata: { machineId: 'machine-b', path: '/workspace/b', host: 'b-host' },
+                    metadata: sessionRefreshCount > 1
+                        ? hydratedMetadata
+                        : { machineId: 'machine-b', path: '/workspace/b', host: 'b-host' },
                     metadataVersion: 1,
                     agentState: null,
                     agentStateVersion: 0,
@@ -649,6 +673,16 @@ describe('concurrent session cache socket routing', () => {
                     thinkingAt: 0,
                     presence: 'online',
                 }]);
+                if (sessionRefreshCount === 1) {
+                    // Production hydration can publish before the independent machine
+                    // request finishes. The scoped base row must already exist so this
+                    // current patch is not dropped.
+                    applySessionListRenderablePatches([{
+                        sessionId: 'session-b',
+                        patch: { metadata: hydratedMetadata },
+                    }]);
+                }
+                return completeSessionListFetchResult();
             },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
@@ -704,8 +738,11 @@ describe('concurrent session cache socket routing', () => {
 
         const beforeState = storage.getState();
         const before = storage.getState().concurrentSessionListCacheByServerId['server-b'];
-        expect(before?.sessions?.['session-b']).toBeDefined();
-        expect(storage.getState().sessionListRowStateByServerId?.['server-b']).toBe(before?.sessions);
+        // A successful refresh also publishes listObservation metadata on the entry;
+        // this test owns serverName stability, not the observation shape.
+        expect(before).toMatchObject({ serverName: 'Server B' });
+        expect(storage.getState().sessionListRowsByServerId?.['server-b']?.['session-b']?.metadata?.name)
+            .toBe('Hydrated session');
         expect(Array.isArray(storage.getState().sessionListIndexByServerId?.['server-b'])).toBe(true);
         expect(storage.getState().sessionListIndexByServerId?.['server-b']).toEqual(
             expect.arrayContaining([
@@ -724,9 +761,17 @@ describe('concurrent session cache socket routing', () => {
 
         await flushConcurrentCachePeriodicRefresh();
 
-        expect(storage.getState()).toBe(beforeState);
+        // The periodic refresh ran again against unchanged data. Canonical rows are
+        // value-deduplicated and stay referentially untouched (no copying into the
+        // cache path), while the Home's own list observation may truthfully pass
+        // through `refreshing` → `ready` and rewrite only its cache entry.
+        expect(sessionRefreshCount).toBeGreaterThanOrEqual(2);
+        expect(storage.getState().sessionListRowsByServerId).toBe(beforeState.sessionListRowsByServerId);
         const after = storage.getState().concurrentSessionListCacheByServerId['server-b'];
-        expect(after).toBe(before);
+        expect(after).toMatchObject({
+            serverName: 'Server B',
+            listObservation: { phase: 'ready' },
+        });
 
         stopConcurrentSessionCacheSync();
     });
@@ -758,15 +803,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) => Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -792,7 +829,7 @@ describe('concurrent session cache socket routing', () => {
                 sessionRefreshCount += 1;
                 if (credentials.token !== 'token-b') {
                     applySessions([]);
-                    return;
+                    return completeSessionListFetchResult();
                 }
                 const updatedAt = sessionRefreshCount === 1 ? 2000 : 3000;
                 applySessions([{
@@ -810,6 +847,7 @@ describe('concurrent session cache socket routing', () => {
                     thinkingAt: 0,
                     presence: 'online',
                 }]);
+                return completeSessionListFetchResult();
             },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
@@ -864,17 +902,17 @@ describe('concurrent session cache socket routing', () => {
         await flushConcurrentCacheStartup();
 
         const beforeIndex = storage.getState().sessionListIndexByServerId?.['server-b'] ?? null;
-        const beforeRows = storage.getState().sessionListRowStateByServerId?.['server-b'] ?? null;
+        const beforeRows = storage.getState().sessionListRowsByServerId?.['server-b'] ?? null;
         expect(Array.isArray(beforeIndex)).toBe(true);
         expect(beforeRows && typeof beforeRows === 'object').toBe(true);
 
         await flushConcurrentCachePeriodicRefresh();
 
         const afterIndex = storage.getState().sessionListIndexByServerId?.['server-b'] ?? null;
-        const afterRows = storage.getState().sessionListRowStateByServerId?.['server-b'] ?? null;
+        const afterRows = storage.getState().sessionListRowsByServerId?.['server-b'] ?? null;
         expect(afterIndex).toBe(beforeIndex);
         expect(afterRows).not.toBe(beforeRows);
-        expect(storage.getState().sessionListRowStateByServerId?.['server-b']?.['session-b']?.updatedAt).toBe(3000);
+        expect(storage.getState().sessionListRowsByServerId?.['server-b']?.['session-b']?.updatedAt).toBe(3000);
         expect(sessionRefreshCount).toBeGreaterThanOrEqual(2);
 
         stopConcurrentSessionCacheSync();
@@ -906,15 +944,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) => Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -934,6 +964,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('@/sync/engine/sessions/sessionSnapshot', () => ({
             fetchAndApplySessions: async ({ applySessions }: { applySessions: (sessions: unknown[]) => void }) => {
                 applySessions([]);
+                return completeSessionListFetchResult();
             },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
@@ -1026,15 +1057,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) => Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -1072,7 +1095,7 @@ describe('concurrent session cache socket routing', () => {
                         thinkingAt: 0,
                         presence: 'online',
                     }]);
-                    return;
+                    return completeSessionListFetchResult();
                 }
                 applySessions([{
                     id: 'session-c',
@@ -1089,6 +1112,7 @@ describe('concurrent session cache socket routing', () => {
                     thinkingAt: 0,
                     presence: 'online',
                 }]);
+                return completeSessionListFetchResult();
             },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
@@ -1153,9 +1177,10 @@ describe('concurrent session cache socket routing', () => {
         startConcurrentSessionCacheSync();
         await waitForConcurrentServerCacheMaterialization(storage, 'server-c');
 
-        const cacheByServer = storage.getState().concurrentSessionListCacheByServerId;
-        const serverBSessionIds = Object.keys(cacheByServer['server-b']?.sessions ?? {});
-        const serverCSessionIds = Object.keys(cacheByServer['server-c']?.sessions ?? {});
+        const state = storage.getState();
+        const cacheByServer = state.concurrentSessionListCacheByServerId;
+        const serverBSessionIds = Object.keys(state.sessionListRowsByServerId['server-b'] ?? {});
+        const serverCSessionIds = Object.keys(state.sessionListRowsByServerId['server-c'] ?? {});
 
         expect(serverBSessionIds).toContain('session-b');
         expect(serverBSessionIds).not.toContain('session-c');
@@ -1225,15 +1250,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) => Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -1271,7 +1288,7 @@ describe('concurrent session cache socket routing', () => {
                         thinkingAt: 0,
                         presence: 'online',
                     }]);
-                    return;
+                    return completeSessionListFetchResult();
                 }
                 applySessions([{
                     id: 'session-c',
@@ -1288,6 +1305,7 @@ describe('concurrent session cache socket routing', () => {
                     thinkingAt: 0,
                     presence: 'online',
                 }]);
+                return completeSessionListFetchResult();
             },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
@@ -1355,9 +1373,10 @@ describe('concurrent session cache socket routing', () => {
         expect(getCredentialsForServerUrlSpy).toHaveBeenCalledWith(sharedServerUrl, { serverId: 'srv-b' });
         expect(getCredentialsForServerUrlSpy).toHaveBeenCalledWith(sharedServerUrl, { serverId: 'server-c' });
 
-        const cacheByServer = storage.getState().concurrentSessionListCacheByServerId;
-        const serverBSessionIds = Object.keys(cacheByServer['srv-b']?.sessions ?? {});
-        const serverCSessionIds = Object.keys(cacheByServer['server-c']?.sessions ?? {});
+        const state = storage.getState();
+        const cacheByServer = state.concurrentSessionListCacheByServerId;
+        const serverBSessionIds = Object.keys(state.sessionListRowsByServerId['srv-b'] ?? {});
+        const serverCSessionIds = Object.keys(state.sessionListRowsByServerId['server-c'] ?? {});
 
         expect(serverBSessionIds).toContain('session-b');
         expect(serverBSessionIds).not.toContain('session-c');
@@ -1406,16 +1425,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) =>
-                Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -1432,6 +1442,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('@/sync/engine/sessions/sessionSnapshot', () => ({
             fetchAndApplySessions: async ({ applySessions }: { applySessions: (sessions: unknown[]) => void }) => {
                 applySessions([]);
+                return completeSessionListFetchResult();
             },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
@@ -1521,16 +1532,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) =>
-                Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -1547,6 +1549,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('@/sync/engine/sessions/sessionSnapshot', () => ({
             fetchAndApplySessions: async ({ applySessions }: { applySessions: (sessions: unknown[]) => void }) => {
                 applySessions([]);
+                return completeSessionListFetchResult();
             },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
@@ -1622,16 +1625,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) =>
-                Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -1648,6 +1642,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('@/sync/engine/sessions/sessionSnapshot', () => ({
             fetchAndApplySessions: async ({ applySessions }: { applySessions: (sessions: unknown[]) => void }) => {
                 applySessions([]);
+                return completeSessionListFetchResult();
             },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
@@ -1723,16 +1718,7 @@ describe('concurrent session cache socket routing', () => {
         });
 
         vi.doMock('socket.io-client', () => ({ io: (...args: unknown[]) => ioSpy(...args) }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) =>
-                Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -1741,7 +1727,10 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('@/sync/encryption/encryption', () => ({ Encryption: { create: async () => ({}) as unknown } }));
         vi.doMock('@/encryption/base64', () => ({ decodeBase64: () => new Uint8Array(32) }));
         vi.doMock('@/sync/engine/sessions/sessionSnapshot', () => ({
-            fetchAndApplySessions: async ({ applySessions }: { applySessions: (sessions: unknown[]) => void }) => applySessions([]),
+            fetchAndApplySessions: async ({ applySessions }: { applySessions: (sessions: unknown[]) => void }) => {
+                applySessions([]);
+                return completeSessionListFetchResult();
+            },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
             fetchAndApplyMachines: async ({ applyMachines }: { applyMachines: (machines: unknown[]) => void }) => applyMachines([]),
@@ -1822,16 +1811,7 @@ describe('concurrent session cache socket routing', () => {
         vi.doMock('socket.io-client', () => ({
             io: (...args: unknown[]) => ioSpy(...args),
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
-                getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
-            },
-            subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: (credentials: any) =>
-                Boolean(credentials && typeof credentials === 'object' && typeof credentials.secret === 'string'),
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
-        }));
+        mockTokenStorageBoundary();
         mockServerProfiles();
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
@@ -1862,10 +1842,11 @@ describe('concurrent session cache socket routing', () => {
             }) => {
                 if (credentials.token !== 'token-b') {
                     applySessions([]);
-                    return;
+                    return completeSessionListFetchResult();
                 }
                 const sessions = await sessionsForBReleased;
                 applySessions(sessions);
+                return completeSessionListFetchResult();
             },
         }));
         vi.doMock('@/sync/engine/machines/syncMachines', () => ({
@@ -1943,7 +1924,7 @@ describe('concurrent session cache socket routing', () => {
 
         expect(storage.getState().concurrentSessionListCacheByServerId['server-b']).toBeUndefined();
         expect((storage.getState() as any).machineListByServerId?.['server-b']).toBeUndefined();
-        expect((storage.getState() as any).sessionListRowStateByServerId?.['server-b']).toBeUndefined();
+        expect((storage.getState() as any).sessionListRowsByServerId?.['server-b']).toBeUndefined();
 
         stopConcurrentSessionCacheSync();
     });

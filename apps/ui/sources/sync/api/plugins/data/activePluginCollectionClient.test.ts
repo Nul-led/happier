@@ -13,6 +13,8 @@ import {
     sealPluginCollectionPrivatePayloadV1,
 } from '@happier-dev/protocol';
 
+import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit';
+
 const contract = normalizePluginAccountCollectionContractV1({
     pluginId: 'example.channels',
     contribution: {
@@ -80,13 +82,10 @@ const quotaContract = normalizePluginAccountCollectionContractV1({
     },
 });
 
-const plainCurrentness = {
-    mode: 'plain' as const,
+const plainCurrentness = createPlainAccountEncryptionCurrentnessFixture({
     version: 7,
-    signingKeyFingerprint: null,
-    contentKeyFingerprint: null,
     updatedAt: 11,
-};
+});
 
 const e2eeSecret = new Uint8Array(32).fill(7);
 const e2eeCredentials = {
@@ -106,6 +105,7 @@ const e2eeCurrentness = {
             }).contentPublicKeyFingerprint,
         ),
     updatedAt: 12,
+    recipientEnvelopeReadiness: { status: 'available' as const },
 };
 
 type ClientHarnessOptions = Readonly<{
@@ -186,8 +186,8 @@ async function loadClient(options: ClientHarnessOptions = {}) {
         }),
     }));
     vi.doMock('@/sync/api/session/apiSocket', () => ({ apiSocket: { request: activeRequest } }));
-    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-        captureSessionRequestAuthorityForServerAccountScope: captureAuthority,
+    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+        captureServerRequestAuthorityForServerAccountScope: captureAuthority,
     }));
 
     const client = await import('./activePluginCollectionClient');
@@ -285,8 +285,8 @@ async function loadCrossAccountLifetimeHarness() {
         }),
     }));
     vi.doMock('@/sync/api/session/apiSocket', () => ({ apiSocket: { request: vi.fn() } }));
-    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-        captureSessionRequestAuthorityForServerAccountScope: async (input: Readonly<{
+    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+        captureServerRequestAuthorityForServerAccountScope: async (input: Readonly<{
             scope: { accountId: string };
         }>) => ({
             scope: input.scope,
@@ -1012,6 +1012,52 @@ describe('active Account Collection direct client', () => {
             reason: 'account-scope-changed',
         });
     });
+
+    it.each(['plain', 'e2ee'] as const)('preserves exact issued mutation settlement after retirement on %s Accounts', async (mode) => {
+        const harness = await loadClient({
+            ...(mode === 'e2ee' ? { credentials: e2eeCredentials, currentness: e2eeCurrentness } : {}),
+            retireDuringDataRequest: true,
+        });
+        await expect(harness.createActivePluginCollectionClient({ contract }).mutate([{
+            kind: 'put',
+            expectedRevision: 1,
+            value: { id: 'channel-1', status: 'enabled', title: 'Changed title' },
+        }])).resolves.toEqual({
+            status: 'updated',
+            results: [{ rowId: 'channel-1', revision: 2, deleted: false }],
+            changeCursor: 19,
+        });
+    });
+
+    it('does not issue a prepared mutation after caller cancellation', async () => {
+        const harness = await loadClient();
+        const cancellation = new AbortController();
+        const options = { signal: cancellation.signal };
+        const prepared = await harness.prepareCollectionOperation(options);
+        if (prepared.status !== 'ready') throw new Error('Expected an admitted Account operation');
+        try {
+            cancellation.abort();
+            await expect(harness.requestCollectionOperation({
+                operation: prepared.operation, path: '/v1/plugins/data/mutate', kind: 'mutation', body: {}, options,
+            })).resolves.toEqual({ status: 'unavailable', reason: 'operation-cancelled' });
+            expect(harness.transport.mock.calls.some(([path]) => path === '/v1/plugins/data/mutate')).toBe(false);
+        } finally {
+            await prepared.operation.release();
+        }
+    });
+
+    it.each(['lost', 'malformed', 'http-error'] as const)('reports an issued mutation with %s acknowledgement as outcome unknown', async (settlement) => {
+        const harness = await loadClient({
+            responseForDataPath: () => {
+                if (settlement === 'lost') throw new Error('Response lost after commit');
+                return new Response(JSON.stringify({}), { status: settlement === 'http-error' ? 500 : 200 });
+            },
+        });
+        await expect(harness.createActivePluginCollectionClient({ contract }).mutate([{
+            kind: 'delete', rowId: 'channel-1', expectedRevision: 1,
+        }])).resolves.toEqual({ status: 'unavailable', reason: 'mutation-outcome-unknown' });
+    });
+
 
     it('does not materialize a response after the active server generation advances', async () => {
         const harness = await loadClient({

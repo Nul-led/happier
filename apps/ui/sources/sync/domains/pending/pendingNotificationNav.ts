@@ -11,6 +11,7 @@ import {
 
 export type PendingNotificationNav = Readonly<{
     serverUrl: string;
+    serverId?: string;
     route: string;
 }>;
 
@@ -45,9 +46,10 @@ function readScopedPendingNotificationNav(key: string): PendingNotificationNav |
     try {
         const parsed = JSON.parse(raw) as Partial<PendingNotificationNav>;
         const serverUrl = normalizeUrl(parsed.serverUrl ?? '');
+        const serverId = String(parsed.serverId ?? '').trim();
         const route = String(parsed.route ?? '').trim();
         if (serverUrl && route) {
-            return { serverUrl, route };
+            return { serverUrl, ...(serverId ? { serverId } : {}), route };
         }
     } catch {
         // ignore corrupt scoped payload
@@ -63,10 +65,15 @@ function resolveActiveServerScopedKey(): string | null {
 
 export function setPendingNotificationNav(value: PendingNotificationNav): void {
     const serverUrl = normalizeUrl(value?.serverUrl ?? '');
+    const serverId = String(value?.serverId ?? '').trim();
     const route = String(value?.route ?? '').trim();
     const activeScope = getActiveServerAccountScope();
     if (!serverUrl || !route) return;
-    const record = JSON.stringify({ serverUrl, route } satisfies PendingNotificationNav);
+    const record = JSON.stringify({
+        serverUrl,
+        ...(serverId ? { serverId } : {}),
+        route,
+    } satisfies PendingNotificationNav);
     if (activeScope && isPendingServerUrlActive(serverUrl)) {
         storage.set(serverAccountScopedStorageKey(KEY_RECORD_PREFIX, activeScope), record);
         const serverScopedKey = resolveActiveServerScopedKey();

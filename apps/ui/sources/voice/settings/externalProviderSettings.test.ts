@@ -55,7 +55,7 @@ describe('externalProviderSettings', () => {
       fields: [{
         id: 'requiredMode',
         title: 'Required mode',
-        schema: { type: 'string', enum: ['strict'] },
+        schema: { type: 'string', maxLength: 32 },
         default: 'strict',
         presentation: { control: 'text' },
       }],

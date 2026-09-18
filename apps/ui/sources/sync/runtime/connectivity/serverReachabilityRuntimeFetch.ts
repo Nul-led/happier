@@ -13,7 +13,6 @@ import {
     reportServerUnreachable,
     waitForServerReachable,
 } from './serverReachabilitySupervisorPool';
-import { isAuthenticationResponseStatus } from './authErrors';
 import { readServerReachabilityWaitTimeoutMs } from './serverReachabilityTuning';
 
 function tryParseUrl(raw: string, base?: string): URL | null {
@@ -51,6 +50,8 @@ export async function runtimeFetchWithServerReachability(params: Readonly<{
     signal?: AbortSignal;
     /** Verified request origin; reachability and auth audience remain keyed by serverUrl. */
     runtimeOrigin?: string;
+    /** Called after reachability/origin guards pass and immediately before dispatch. */
+    onIssued?: () => void;
 }>): Promise<Response> {
     const targetUrl = tryParseUrl(params.url, params.serverUrl);
     const requestedCompatibilityDeclaration =
@@ -129,11 +130,16 @@ export async function runtimeFetchWithServerReachability(params: Readonly<{
             acceptAuthFailed: true,
         });
         const probeReportScope = peekServerReachabilityScope(params.serverUrl, effectiveToken);
+        params.onIssued?.();
         const response = await runtimeFetch(params.url, {
             ...params.init,
             headers,
         });
-        if (hasAuth && isAuthenticationResponseStatus(response.status)) {
+        // A normal authenticated domain endpoint uses 403 for authorization
+        // denials. Only 401 proves that this request's credential was rejected;
+        // the dedicated authenticated readiness probe separately owns its
+        // deliberate 401/403 credential check.
+        if (hasAuth && response.status === 401) {
             if (probeReportScope) {
                 reportServerAuthFailed(params.serverUrl, response.status, probeReportScope, effectiveToken);
             }

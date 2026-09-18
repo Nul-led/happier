@@ -1,4 +1,6 @@
+import { buildActivityOverviewFromCandidates } from '@/activity/attention/buildActivityOverviewSnapshot';
 import { buildSessionActivityAttention } from '@/activity/attention/buildSessionActivityAttention';
+import { isSessionAdmittedToPersonalActivity } from '@/activity/attention/isSessionAdmittedToPersonalActivity';
 import type {
     ActivityOverviewSnapshot,
     ActivitySurfaceTimingBySurface,
@@ -6,14 +8,15 @@ import type {
     SessionActivityAttention,
 } from '@/activity/attention/activityAttentionTypes';
 import type { SessionAttentionOptions } from '@/sync/domains/session/attention/sessionAttention';
+import type { Message } from '@/sync/domains/messages/messageTypes';
 import { readStoredSessionMessagesFromStateLike } from '@/sync/domains/messages/readStoredSessionMessages';
 import {
-    listSessionListLookupActiveSessionIds,
     listSessionListLookupServerSessions,
     findSessionListLookupSession,
     resolveSessionListLookupSessionServerScopeFromState,
     type SessionServerLookupStateLike,
 } from '@/sync/domains/session/listing/sessionListLookupState';
+import { isSessionListQueryHomeCoverageComplete } from '@/sync/domains/session/listing/sessionListHomeObservation';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { isUserFacingSession } from '@/sync/domains/session/listing/isUserFacingSession';
 import {
@@ -26,6 +29,17 @@ import {
 } from '@/activity/actions/activitySurfaceTargets';
 import { isVoiceConversationCustodySessionMetadata } from '@/voice/persistence/voiceConversationSystemSessionLookup';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import {
+    activityInstanceKey,
+    normalizeSessionAddress,
+    sessionAddressKey,
+    type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
+import {
+    buildSessionContextFacts,
+    projectSessionContextPresentation,
+} from '@/sync/domains/session/presentation/sessionContextPresentation';
+import { resolveSessionWorkspaceDisplayPresentation } from '@/sync/domains/session/listing/sessionWorkspaceDisplayPresentation';
 
 import type { ActivityAttentionSource } from './activityAttentionSourceTypes';
 
@@ -45,6 +59,7 @@ export const DEFAULT_ACTIVITY_SURFACE_TIMING: ActivitySurfaceTimingBySurface = {
 };
 
 function isHydratedSessionInActivityCustody(session: Session): boolean {
+    if (session.viewer?.attention.presentation === 'status_only' && session.viewer.attention.needsAttention) return true;
     const ownerMetadata = readSessionOwnerMetadataView(session);
     if (session.metadataLayoutVersion === 1 && ownerMetadata == null) {
         return false;
@@ -58,6 +73,7 @@ function isHydratedSessionInActivityCustody(session: Session): boolean {
 }
 
 function isHydratedSessionUserFacing(session: Session): boolean {
+    if (session.viewer?.attention.presentation === 'status_only' && session.viewer.attention.needsAttention) return true;
     const ownerMetadata = readSessionOwnerMetadataView(session);
     if (session.metadataLayoutVersion === 1 && ownerMetadata == null) {
         return false;
@@ -88,69 +104,68 @@ function resolveActivitySurfaceTiming(input?: ActivitySurfaceTimingInput): Activ
     };
 }
 
-function sortCandidates(left: SessionActivityAttention, right: SessionActivityAttention): number {
-    if (left.priority !== right.priority) {
-        return right.priority - left.priority;
-    }
-    if (left.session.updatedAt !== right.session.updatedAt) {
-        return right.session.updatedAt - left.session.updatedAt;
-    }
-    return left.sessionId.localeCompare(right.sessionId);
-}
-
 function buildLookupState(source: ActivityAttentionSource): SessionServerLookupStateLike {
     return {
         sessions: source.sessionsById,
-        sessionListRenderables: source.sessionListRenderablesById,
+        sessionListRowsByServerId: source.sessionListRowsByServerId,
+        ordinarySessionListMembershipByServerId: source.ordinarySessionListMembershipByServerId,
         sessionListIndexByServerId: source.sessionListIndexByServerId,
         concurrentSessionListCacheByServerId: source.concurrentSessionListCacheByServerId,
     };
 }
 
-function collectLookupSessionIds(
+function collectLookupSessionAddresses(
     source: ActivityAttentionSource,
     includeWarmSourceWhenNotReady: boolean,
-): readonly string[] {
+): readonly SessionAddress[] {
     if (!source.isDataReady && !includeWarmSourceWhenNotReady) {
         return [];
     }
 
     const lookupState = buildLookupState(source);
-    const sessionIds: string[] = [];
-    const seenSessionIds = new Set<string>();
-
-    for (const sessionId of listSessionListLookupActiveSessionIds(lookupState)) {
-        if (!sessionId || seenSessionIds.has(sessionId)) {
+    const addresses: SessionAddress[] = [];
+    const seenAddresses = new Set<string>();
+    // Ordinary membership is intentionally last-known-good and may outlive a
+    // viewer's Follow/relevance row. Only a fully drained strict query can
+    // subtract from that retained corpus, and its authority is exact-Home: an
+    // offline or partial sibling must keep rendering its truthful stale rows.
+    const authoritativePersonalMembershipByServerId = new Map<string, ReadonlySet<string>>();
+    for (const [serverId, membership] of Object.entries(
+        source.personalSessionListMembershipByServerId ?? {},
+    )) {
+        const state = source.personalSessionListQueryStatesByServerId?.[serverId];
+        if (!state || !isSessionListQueryHomeCoverageComplete({
+            state,
+            requestedQueryKey: state.requestedQueryKey,
+        })) {
             continue;
         }
-        seenSessionIds.add(sessionId);
-        sessionIds.push(sessionId);
+        authoritativePersonalMembershipByServerId.set(serverId, new Set(membership ?? []));
     }
 
-    for (const items of Object.values(source.sessionListIndexByServerId)) {
-        if (!Array.isArray(items)) {
-            continue;
-        }
-        for (const item of items) {
-            if (item.type !== 'session') {
-                continue;
-            }
-            const sessionId = item.sessionId.trim();
-            if (!sessionId || seenSessionIds.has(sessionId)) {
-                continue;
-            }
-            seenSessionIds.add(sessionId);
-            sessionIds.push(sessionId);
-        }
-    }
+    const addAddress = (serverId: unknown, sessionId: unknown) => {
+        const address = normalizeSessionAddress(serverId, sessionId);
+        if (!address) return;
+        const key = sessionAddressKey(address);
+        if (seenAddresses.has(key)) return;
+        seenAddresses.add(key);
+        addresses.push(address);
+    };
 
     for (const entry of listSessionListLookupServerSessions(lookupState)) {
-        const sessionId = entry.session.id.trim();
-        if (!sessionId || seenSessionIds.has(sessionId)) {
+        const authoritativeMembership = authoritativePersonalMembershipByServerId.get(entry.serverId);
+        if (authoritativeMembership && !authoritativeMembership.has(entry.session.id)) {
             continue;
         }
-        seenSessionIds.add(sessionId);
-        sessionIds.push(sessionId);
+        addAddress(entry.serverId, entry.session.id);
+    }
+
+    for (const [serverId, sessionIds] of Object.entries(
+        source.personalSessionListMembershipByServerId ?? {},
+    )) {
+        for (const sessionId of sessionIds ?? []) {
+            addAddress(serverId, sessionId);
+        }
     }
 
     // User-facing indexes intentionally omit hidden system sessions, so the
@@ -165,54 +180,99 @@ function collectLookupSessionIds(
         const sessionId = session?.id?.trim() ?? '';
         if (
             !sessionId
-            || seenSessionIds.has(sessionId)
-            || !isHydratedSessionInActivityCustody(session)
+            || !isVoiceConversationCustodySessionMetadata(readSessionOwnerMetadataView(session))
         ) {
             continue;
         }
-        seenSessionIds.add(sessionId);
-        sessionIds.push(sessionId);
+        addAddress(session.serverId ?? (source.activeServer?.serverId ?? source.activeServerId), sessionId);
     }
 
-    return sessionIds;
+    return addresses;
+}
+
+type ActivitySourceSessionEntry = Readonly<{
+    address: SessionAddress;
+    session: Session;
+    hasHydratedMessages: boolean;
+}>;
+
+/**
+ * The hydrated Session this address resolves to, or `null` when the source only
+ * has a list renderable for it.
+ *
+ * Stored messages exist for the hydrated form alone, so this is also the rule
+ * that decides whether attention was decided with them. One owner, because a
+ * consumer that re-spells it can end up asking a question about a verdict the
+ * projection reached from different inputs.
+ */
+function readHydratedSourceSession(
+    source: ActivityAttentionSource,
+    address: SessionAddress,
+): Session | null {
+    const directSession = source.sessionsById[address.sessionId];
+    if (!directSession) return null;
+    const directServerId = normalizeServerId(directSession.serverId)
+        ?? normalizeServerId((source.activeServer?.serverId ?? source.activeServerId));
+    return directServerId === address.serverId ? directSession : null;
+}
+
+/**
+ * The exact stored messages this overview decided a candidate's attention with.
+ *
+ * Message-backed pending requests move `user_action_required`, so a consumer
+ * asking when that verdict expires must ask with the same input the verdict
+ * used. Asking without them reads a session as having no pending request at
+ * all, returns no expiration, and strands a retired row with nothing scheduled
+ * to clear it.
+ */
+export function readActivitySourceAttentionMessages(
+    source: ActivityAttentionSource,
+    address: SessionAddress | null | undefined,
+): readonly Message[] | undefined {
+    if (!address) return undefined;
+    if (!readHydratedSourceSession(source, address)) return undefined;
+    return readSourceSessionMessages(source, address.sessionId);
 }
 
 function collectSourceSessions(
     source: ActivityAttentionSource,
     includeWarmSourceWhenNotReady: boolean,
-): readonly Session[] {
-    const sessions: Session[] = [];
+): readonly ActivitySourceSessionEntry[] {
+    const sessions: ActivitySourceSessionEntry[] = [];
     const lookupState = buildLookupState(source);
 
-    for (const sessionId of collectLookupSessionIds(source, includeWarmSourceWhenNotReady)) {
-        const session = source.sessionsById[sessionId];
-        const lookupEntry = findSessionListLookupSession(lookupState, sessionId);
-        const renderable = lookupEntry?.session ?? source.sessionListRenderablesById[sessionId];
+    for (const address of collectLookupSessionAddresses(source, includeWarmSourceWhenNotReady)) {
+        const session = readHydratedSourceSession(source, address);
+        const lookupEntry = findSessionListLookupSession(lookupState, address);
+        const renderable = lookupEntry?.session ?? null;
         if (session) {
             const projectedSession = renderable
                 && renderable.metadataUnavailable !== true
                 && isSessionListRenderableNewerThanSession(renderable, session)
                 ? buildSessionFromListRenderable(renderable, {
                     baseSession: session,
-                    serverId: lookupEntry?.serverId ?? session.serverId ?? null,
+                    serverId: address.serverId,
                 })
                 : session;
             if (isHydratedSessionInActivityCustody(projectedSession)) {
-                sessions.push(projectedSession);
+                sessions.push({ address, session: projectedSession, hasHydratedMessages: true });
             }
             continue;
         }
         if (
             renderable
-            && renderable.metadataUnavailable !== true
+            && (renderable.metadataUnavailable !== true || renderable.viewer?.attention.presentation === 'status_only')
             && (
                 isUserFacingSession(renderable)
+                || (renderable.viewer?.attention.presentation === 'status_only' && renderable.viewer.attention.needsAttention)
                 || isVoiceConversationCustodySessionMetadata(renderable.metadata)
             )
         ) {
-            sessions.push(buildSessionFromListRenderable(renderable, {
-                serverId: lookupEntry?.serverId ?? null,
-            }));
+            sessions.push({
+                address,
+                session: buildSessionFromListRenderable(renderable, { serverId: address.serverId }),
+                hasHydratedMessages: false,
+            });
         }
     }
 
@@ -244,30 +304,35 @@ function buildActivityInstanceKey(params: Readonly<{
     sessionId: string;
 }>): string | null {
     if (!params.activityName) return null;
-    return `${params.serverId ?? 'local'}:${params.activityName}:${params.sessionId}`;
+    return activityInstanceKey(
+        { serverId: params.serverId, sessionId: params.sessionId },
+        params.activityName,
+    );
 }
 
 function enrichCandidateWithSourceFacts(params: Readonly<{
     source: ActivityAttentionSource;
     lookupState: SessionServerLookupStateLike;
     candidate: SessionActivityAttention;
+    address: SessionAddress;
     activityName: string | null;
     directActionsEnabled: boolean;
     surfaceTiming: ActivitySurfaceTimingBySurface;
+    nowMs: number;
 }>): SessionActivityAttention {
-    const sessionId = params.candidate.sessionId;
-    const scope = resolveSessionListLookupSessionServerScopeFromState(params.lookupState, sessionId);
-    const serverId = normalizeServerId(scope?.serverId) ?? normalizeServerId(params.candidate.session.serverId);
+    const sessionId = params.address.sessionId;
+    const scope = resolveSessionListLookupSessionServerScopeFromState(params.lookupState, params.address);
+    const serverId = params.address.serverId;
     const profile = resolveServerProfile(params.source, serverId);
     const serverUrl = profile?.serverUrl ?? (
-        serverId && params.source.activeServer?.serverId === serverId ? params.source.activeServer.serverUrl : null
+        serverId && (params.source.activeServer?.serverId ?? params.source.activeServerId) === serverId ? params.source.activeServer?.serverUrl ?? null : null
     );
     const serverName = scope?.serverName ?? profile?.name ?? null;
     const route = createActivitySurfaceSessionRoute(sessionId, serverId);
     const target = createActivitySurfaceSessionTarget(sessionId, serverId);
     const isKnown = Boolean(serverId);
     const isSaved = Boolean(profile);
-    const isActiveLocal = Boolean(serverId && params.source.activeServer?.serverId === serverId);
+    const isActiveLocal = Boolean(serverId && (params.source.activeServer?.serverId ?? params.source.activeServerId) === serverId);
     const canExecute = params.directActionsEnabled && isKnown && isSaved && isActiveLocal;
     const disabledReason = !params.directActionsEnabled
         ? 'disabled'
@@ -278,9 +343,40 @@ function enrichCandidateWithSourceFacts(params: Readonly<{
                 : !isActiveLocal
                     ? 'server_not_active'
                     : 'allowed';
+    const ownerMetadata = readSessionOwnerMetadataView(params.candidate.session);
+    const workspaceLabel = ownerMetadata && params.candidate.awareness.workspace
+        ? resolveSessionWorkspaceDisplayPresentation({
+            serverId,
+            metadata: ownerMetadata,
+            workspaceRefs: params.source.workspaceRefsV1 ?? [],
+            workspacePathDisplayModeV1: params.source.workspacePathDisplayModeV1,
+        }).displayTitle
+        : null;
 
     return {
         ...params.candidate,
+        address: params.address,
+        context: projectSessionContextPresentation(buildSessionContextFacts({
+            address: params.address,
+            serverProfile: profile,
+            homeName: serverName,
+            // The candidate's awareness projection is built once by the attention owner; rebuilding
+            // it here would let the context line disagree with the row it annotates.
+            awareness: params.candidate.awareness,
+            viewer: params.candidate.session.viewer,
+            audienceContext: params.candidate.session.access?.audienceContext,
+            audienceScope: params.source.audienceScopes?.get(serverId),
+            // Consume the same workspace-display owner and Account facts as Session rows rather
+            // than introducing an Activity-local path or label formatter.
+            workspaceLabel,
+            homeDir: ownerMetadata?.homeDir ?? null,
+            // The same exact-Home currentness Session rows show. A retained offline Home must read
+            // identically in Activity, so this is the list owner's observation, not a local clock.
+            homeObservation: serverId
+                ? params.source.sessionListHomeObservationByServerId?.[serverId] ?? null
+                : null,
+            nowMs: params.nowMs,
+        })),
         serverId,
         serverUrl,
         serverName,
@@ -305,6 +401,18 @@ export function buildActivityOverviewFromSource(params: Readonly<{
     source: ActivityAttentionSource;
     nowMs: number;
     sessionOptions?: SessionAttentionOptions;
+    /**
+     * Presentation policy for a corpus that spans Homes, resolved from each candidate's own exact
+     * Home. `null` excludes that Home's candidates entirely, because a Home whose Account policy
+     * this device cannot name must not borrow another Home's — switching the active Home would
+     * otherwise change what a sibling Home is allowed to contribute.
+     *
+     * When supplied it replaces `sessionOptions` per candidate. The toggles stay here rather than
+     * becoming a post-projection filter: the overview builder is the single owner that applies them
+     * while preserving every other canonical attention reason, so a mixed candidate (unread *and*
+     * failing) keeps the reason its Home still allows.
+     */
+    resolveSessionOptionsForServerId?: (serverId: string) => SessionAttentionOptions | null;
     activityName?: string | null;
     directActionsEnabled?: boolean;
     surfaceTiming?: ActivitySurfaceTimingInput;
@@ -312,81 +420,45 @@ export function buildActivityOverviewFromSource(params: Readonly<{
 }>): ActivityOverviewSnapshot {
     const lookupState = buildLookupState(params.source);
     const surfaceTiming = resolveActivitySurfaceTiming(params.surfaceTiming);
+    const resolveSessionOptions = params.resolveSessionOptionsForServerId;
     const candidates = collectSourceSessions(params.source, params.includeWarmSourceWhenNotReady === true)
-        .map((session) => buildSessionActivityAttention({
-            session,
-            sessionMessages: readSourceSessionMessages(params.source, session.id),
-            sessionOptions: params.sessionOptions,
-            nowMs: params.nowMs,
-        }))
-        .filter((candidate) => (
+        .filter((entry) => isSessionAdmittedToPersonalActivity(entry.session))
+        .flatMap((entry) => {
+            const sessionOptions = resolveSessionOptions
+                ? resolveSessionOptions(entry.address.serverId)
+                : params.sessionOptions;
+            if (sessionOptions === null) return [];
+            return [{
+                entry,
+                candidate: buildSessionActivityAttention({
+                    session: entry.session,
+                    sessionMessages: entry.hasHydratedMessages
+                        ? readSourceSessionMessages(params.source, entry.address.sessionId)
+                        : undefined,
+                    sessionOptions,
+                    nowMs: params.nowMs,
+                }),
+            }];
+        })
+        .filter(({ candidate }) => (
             isHydratedSessionUserFacing(candidate.session)
             || (
                 isVoiceConversationCustodySessionMetadata(readSessionOwnerMetadataView(candidate.session))
                 && candidate.hasAttention
             )
         ))
-        .map((candidate) => enrichCandidateWithSourceFacts({
+        .map(({ candidate, entry }) => enrichCandidateWithSourceFacts({
             source: params.source,
             lookupState,
             candidate,
+            address: entry.address,
             activityName: typeof params.activityName === 'string' && params.activityName.trim()
                 ? params.activityName.trim()
                 : null,
             directActionsEnabled: params.directActionsEnabled === true,
             surfaceTiming,
-        }))
-        .sort(sortCandidates);
+            nowMs: params.nowMs,
+        }));
 
-    let unread = 0;
-    let permissionRequired = 0;
-    let actionRequired = 0;
-    let queuedInput = 0;
-    let thinking = 0;
-    let totalAttention = 0;
-
-    for (const candidate of candidates) {
-        if (candidate.reasons.hasUnread) unread += 1;
-        if (candidate.reasons.hasPendingPermissionRequests) permissionRequired += 1;
-        if (candidate.reasons.hasPendingUserActionRequests || candidate.reasons.hasBlockedPendingDelivery) actionRequired += 1;
-        if (candidate.reasons.isThinking) thinking += 1;
-        if (candidate.hasAttention) totalAttention += 1;
-    }
-
-    const overview: ActivityOverviewSnapshot = {
-        counts: {
-            unread,
-            permissionRequired,
-            actionRequired,
-            queuedInput,
-            thinking,
-            totalAttention,
-        },
-        candidates,
-    };
-    return {
-        ...overview,
-        fingerprint: buildStableActivityOverviewFingerprint(overview),
-    };
-}
-
-export function buildStableActivityOverviewFingerprint(overview: ActivityOverviewSnapshot): string {
-    return JSON.stringify({
-        counts: overview.counts,
-        candidates: overview.candidates.map((candidate) => ({
-            sessionId: candidate.sessionId,
-            serverId: candidate.serverId ?? null,
-            route: candidate.route ?? null,
-            target: candidate.target ?? null,
-            activityName: candidate.activityName ?? null,
-            activityInstanceKey: candidate.activityInstanceKey ?? null,
-            canExecuteDirectAction: candidate.directActionCapability?.canExecute ?? false,
-            surfaceTiming: candidate.surfaceTiming ?? null,
-            attentionState: candidate.attentionState,
-            priority: candidate.priority,
-            updatedAt: candidate.session.updatedAt,
-            lastTurnCompletedAt: candidate.lastTurnCompletedAt,
-            reasons: candidate.reasons,
-        })),
-    });
+    return buildActivityOverviewFromCandidates(candidates);
 }

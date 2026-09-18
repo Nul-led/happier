@@ -1,12 +1,21 @@
+import { isSessionAwarenessContentReadableV1 } from '@happier-dev/protocol';
+import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import {
-    deriveSessionRuntimePresentationState,
-    isLiveSessionRuntime,
+    projectUiSessionRuntimeAwareness,
     SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS,
-    type SessionRuntimePresentationState,
 } from '@/sync/domains/session/attention/runtimePresentation';
 import { deriveLatestPendingRequestObservedAtFromSession } from '@/sync/domains/session/pending/listPendingSessionRequests';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { t } from '@/text';
+import { isSessionAdmittedToPersonalActivity } from '@/activity/attention/isSessionAdmittedToPersonalActivity';
+import { resolveSessionPersonalAttentionForViewer } from '@/sync/domains/session/readState/sessionViewerAttention';
+import {
+    areSessionAddressesEqual,
+    normalizeSessionAddress,
+    sessionAddressKey,
+    type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
 
 import {
     PET_COMPANION_ACTIVITY_EXPIRY_MS,
@@ -21,6 +30,7 @@ import type {
 } from './petCompanionActivityTypes';
 
 type SessionActivityCandidate = Readonly<{
+    address: SessionAddress;
     session: Session;
     status: Exclude<PetCompanionActivityStatus, 'idle'>;
     activityAtMs: number | null;
@@ -48,24 +58,6 @@ function latestTimestamp(values: readonly unknown[]): number | null {
         latest = latest === null ? value : Math.max(latest, value);
     }
     return latest;
-}
-
-function hasWaitingActivity(
-    session: Session,
-    signals: PetCompanionSessionSignals | undefined,
-    runtimePresentation: SessionRuntimePresentationState,
-): boolean {
-    const hasPendingPermissionRequests =
-        (session.pendingPermissionRequestCount ?? 0) > 0
-        || signals?.hasPendingPermissionRequests === true;
-    const hasPendingUserActionRequests =
-        (session.pendingUserActionRequestCount ?? 0) > 0
-        || signals?.hasPendingUserActionRequests === true;
-
-    return (
-        (hasPendingPermissionRequests && runtimePresentation.freshPermissionRequired)
-        || (hasPendingUserActionRequests && runtimePresentation.freshActionRequired)
-    );
 }
 
 function latestConversationActivityTimestamp(
@@ -108,12 +100,15 @@ function resolveRunningExpiresAtMs(runtimeSignalAtMs: number | null): number | n
 }
 
 function resolveCandidate(
+    address: SessionAddress,
     session: Session,
     signals: PetCompanionSessionSignals | undefined,
     nowMs: number | undefined,
 ): SessionActivityCandidate | null {
+    if (!isSessionAdmittedToPersonalActivity(session)) return null;
     const runtimeNowMs = isFiniteTimestamp(nowMs) ? nowMs : Date.now();
-    const runtimePresentation = deriveSessionRuntimePresentationState({
+    const personal = resolveSessionPersonalAttentionForViewer(session, runtimeNowMs);
+    const runtimePresentation = projectUiSessionRuntimeAwareness({
         active: session.active,
         activeAt: session.activeAt,
         archivedAt: session.archivedAt ?? null,
@@ -135,11 +130,12 @@ function resolveCandidate(
         pendingRequestObservedAt: deriveLatestPendingRequestObservedAtFromSession(session),
         nowMs: runtimeNowMs,
     });
-    if (runtimePresentation.attention === 'failed') {
+    if (session.viewer ? personal.reasons.includes('failed') : runtimePresentation.operational.primary === 'failed') {
         const activityAtMs =
             latestProjectedFailureTimestamp(session)
             ?? latestConversationActivityTimestamp(session, signals);
         return {
+            address,
             session,
             status: 'failed',
             activityAtMs,
@@ -147,9 +143,10 @@ function resolveCandidate(
         };
     }
 
-    if (hasWaitingActivity(session, signals, runtimePresentation)) {
+    if (session.viewer ? personal.reasons.some((reason) => reason === 'permission_required' || reason === 'user_action_required' || reason === 'pending_blocked') : runtimePresentation.operational.primary === 'permission_required' || runtimePresentation.operational.primary === 'action_required') {
         const activityAtMs = latestConversationActivityTimestamp(session, signals);
         return {
+            address,
             session,
             status: 'waiting',
             activityAtMs,
@@ -157,9 +154,10 @@ function resolveCandidate(
         };
     }
 
-    if (signals?.hasUnreadMessages) {
+    if (session.viewer ? personal.reasons.some((reason) => reason === 'unread' || reason === 'unread_discussion' || reason === 'mentioned') : signals?.hasUnreadMessages) {
         const activityAtMs = latestConversationActivityTimestamp(session, signals);
         return {
+            address,
             session,
             status: 'waiting',
             activityAtMs,
@@ -167,7 +165,7 @@ function resolveCandidate(
         };
     }
 
-    const hasRunningActivity = isLiveSessionRuntime(session) && runtimePresentation.working;
+    const hasRunningActivity = runtimePresentation.runtime === 'working' && runtimePresentation.freshness === 'live';
 
     if (hasRunningActivity) {
         const runtimeSignalAtMs = latestRunningRuntimeSignalTimestamp(session, signals);
@@ -176,6 +174,7 @@ function resolveCandidate(
             session.createdAt,
         ]);
         return {
+            address,
             session,
             status: 'running',
             activityAtMs,
@@ -195,36 +194,58 @@ function isExpired(candidate: SessionActivityCandidate, nowMs: number | undefine
 
 function createDismissKey(candidate: SessionActivityCandidate): string {
     if (candidate.status === 'running' || candidate.expiresAtMs === null) {
-        return [
+        return JSON.stringify([
             candidate.status,
-            candidate.session.id,
+            candidate.address.serverId,
+            candidate.address.sessionId,
             'live',
-        ].join(':');
+        ]);
     }
 
-    return [
+    return JSON.stringify([
         candidate.status,
-        candidate.session.id,
+        candidate.address.serverId,
+        candidate.address.sessionId,
         candidate.activityAtMs === null ? 'live' : String(candidate.activityAtMs),
-    ].join(':');
+    ]);
+}
+
+function createTrayItemId(candidate: SessionActivityCandidate): string {
+    return JSON.stringify([
+        candidate.status,
+        candidate.address.serverId,
+        candidate.address.sessionId,
+    ]);
 }
 
 function createTrayItem(
     candidate: SessionActivityCandidate,
     signals: PetCompanionSessionSignals | undefined,
+    contextLine: string | null,
+    nowMs: number,
 ): PetCompanionTrayItem {
+    const isStatusOnly = candidate.session.viewer?.attention.presentation === 'status_only';
+    const mayShowPrivateContent = !isStatusOnly
+        && isSessionAwarenessContentReadableV1(projectUiSessionAwareness(candidate.session, nowMs).encryption);
     const dismissKey = createDismissKey(candidate);
     const isLiveActivity = candidate.status === 'running' || candidate.expiresAtMs === null;
     return {
-        id: dismissKey,
+        id: createTrayItemId(candidate),
         dismissKey,
+        address: candidate.address,
         sessionId: candidate.session.id,
+        contextLine,
         status: candidate.status,
         priority: PET_COMPANION_ACTIVITY_PRIORITY[candidate.status],
-        title: getSessionName(candidate.session),
-        subtitle: isLiveActivity && candidate.status === 'running'
+        title: mayShowPrivateContent ? getSessionName(candidate.session) : t('sessionBoard.item.locked.title'),
+        // The shared context line is authorized structural context and survives a locked envelope;
+        // only the message-derived fallback waits for content readiness (L07-R42). Lane 09's
+        // status-only presentation still withholds everything but runtime state.
+        subtitle: isStatusOnly
             ? null
-            : signals?.lastMessageSubtitle ?? null,
+            : contextLine ?? (!mayShowPrivateContent || (isLiveActivity && candidate.status === 'running')
+                ? null
+                : signals?.lastMessageSubtitle ?? null),
         activityAtMs: isLiveActivity ? null : candidate.activityAtMs,
         expiresAtMs: candidate.expiresAtMs,
         actions: {
@@ -236,64 +257,94 @@ function createTrayItem(
 }
 
 function compareTrayItems(
-    selectedSessionId: string,
+    selectedAddress: SessionAddress | null,
     a: PetCompanionTrayItem,
     b: PetCompanionTrayItem,
 ): number {
     if (a.priority !== b.priority) return a.priority - b.priority;
-    if (a.sessionId === selectedSessionId && b.sessionId !== selectedSessionId) return -1;
-    if (b.sessionId === selectedSessionId && a.sessionId !== selectedSessionId) return 1;
+    if (areSessionAddressesEqual(a.address, selectedAddress) && !areSessionAddressesEqual(b.address, selectedAddress)) return -1;
+    if (areSessionAddressesEqual(b.address, selectedAddress) && !areSessionAddressesEqual(a.address, selectedAddress)) return 1;
     const aActivity = a.activityAtMs ?? Number.NEGATIVE_INFINITY;
     const bActivity = b.activityAtMs ?? Number.NEGATIVE_INFINITY;
     if (aActivity !== bActivity) return bActivity - aActivity;
-    return a.sessionId.localeCompare(b.sessionId);
+    return sessionAddressKey(a.address).localeCompare(sessionAddressKey(b.address));
 }
 
-function selectFallbackSession(input: BuildPetCompanionActivityModelInput): Session | null {
-    const selectedId = typeof input.selectedSessionId === 'string' ? input.selectedSessionId : '';
-    if (selectedId) {
-        const selected = input.sessions.find((session) => session.id === selectedId);
-        if (selected) return selected;
+function resolveSessionAddress(session: Session): SessionAddress | null {
+    return normalizeSessionAddress(session.serverId, session.id);
+}
+
+function resolveSelectedAddress(input: BuildPetCompanionActivityModelInput): SessionAddress | null {
+    if (input.selectedAddress) return input.selectedAddress;
+    const selectedId = typeof input.selectedSessionId === 'string' ? input.selectedSessionId.trim() : '';
+    if (!selectedId) return null;
+    const matches = input.sessions
+        .filter((session) => session.id === selectedId)
+        .map(resolveSessionAddress)
+        .filter((address): address is SessionAddress => address !== null);
+    return matches.length === 1 ? matches[0] : null;
+}
+
+function selectFallbackAddress(input: BuildPetCompanionActivityModelInput): SessionAddress | null {
+    const selectedAddress = resolveSelectedAddress(input);
+    if (selectedAddress) {
+        const selected = input.sessions.find((session) => areSessionAddressesEqual(
+            resolveSessionAddress(session),
+            selectedAddress,
+        ));
+        if (selected) return selectedAddress;
     }
-    return input.sessions.find((session) => session.active) ?? input.sessions[0] ?? null;
+    const fallback = input.sessions.find((session) => session.active) ?? input.sessions[0] ?? null;
+    return fallback ? resolveSessionAddress(fallback) : null;
 }
 
 export function buildPetCompanionActivityModel(
     input: BuildPetCompanionActivityModelInput,
 ): PetCompanionActivityModel {
-    const selectedSessionId = typeof input.selectedSessionId === 'string' ? input.selectedSessionId : '';
+    const selectedAddress = resolveSelectedAddress(input);
     const nowMs = isFiniteTimestamp(input.nowMs) ? input.nowMs : Date.now();
     const dismissedKeys = normalizeDismissedKeys(input);
     const trayItems = input.sessions
         .map((session) => {
-            const signals = input.signalsBySessionId?.[session.id];
-            const candidate = resolveCandidate(session, signals, nowMs);
-            return candidate ? { candidate, signals } : null;
+            const address = resolveSessionAddress(session);
+            if (!address) return null;
+            const addressKey = sessionAddressKey(address);
+            const signals = input.signalsByAddressKey?.[addressKey]
+                ?? input.signalsBySessionId?.[session.id];
+            const candidate = resolveCandidate(address, session, signals, nowMs);
+            return candidate ? {
+                candidate,
+                signals,
+                contextLine: input.contextsByAddressKey?.[addressKey]?.contextLine ?? null,
+            } : null;
         })
         .filter((entry): entry is Readonly<{
             candidate: SessionActivityCandidate;
             signals: PetCompanionSessionSignals | undefined;
+            contextLine: string | null;
         }> => entry !== null)
         .filter(({ candidate }) => !isExpired(candidate, nowMs))
-        .map(({ candidate, signals }) => createTrayItem(candidate, signals))
+        .map(({ candidate, signals, contextLine }) => createTrayItem(candidate, signals, contextLine, nowMs))
         .filter((item) => !dismissedKeys.has(item.dismissKey))
-        .sort((a, b) => compareTrayItems(selectedSessionId, a, b));
+        .sort((a, b) => compareTrayItems(selectedAddress, a, b));
     const primary = trayItems[0] ?? null;
 
     if (primary) {
         return {
             state: primary.status,
             reason: primary.status,
+            address: primary.address,
             sessionId: primary.sessionId,
             trayItems,
         };
     }
 
-    const fallbackSession = selectFallbackSession(input);
+    const fallbackAddress = selectFallbackAddress(input);
     return {
         state: 'idle',
         reason: 'idle',
-        sessionId: fallbackSession?.id ?? null,
+        address: fallbackAddress,
+        sessionId: fallbackAddress?.sessionId ?? null,
         trayItems,
     };
 }

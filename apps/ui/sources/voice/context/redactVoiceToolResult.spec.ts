@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getActionSpec } from '@happier-dev/protocol';
+import { getActionSpec, projectSessionActivityCompatibilityV1 } from '@happier-dev/protocol';
 
 import {
   redactVoiceToolResultForProvider,
@@ -9,6 +9,27 @@ import {
 const SHARE_ALL = { shareFilePaths: true, shareSessionSummary: true, sharePermissionRequests: true } as const;
 
 describe('redactVoiceToolResultValue', () => {
+  it('withholds awareness request state and private work without changing the canonical result', () => {
+    const awareness = {
+      v: 1, sessionId: 's1', runtime: 'waiting', freshness: 'live', lifecycle: 'active',
+      operational: {
+        primary: 'action_required',
+        // The same preference gates permission prompts and user-action questions, so neither
+        // pending agent request may survive as a reason or as the compact primary state.
+        reasons: ['action_required', 'permission_required', 'working'],
+      },
+      currentWork: { title: 'PRIVATE WORK' },
+      title: 'PRIVATE TITLE', encryption: 'ready', availability: 'complete',
+    };
+    const redacted = redactVoiceToolResultValue(awareness, {
+      ...SHARE_ALL, shareSessionSummary: false, sharePermissionRequests: false,
+    });
+    expect(JSON.stringify(redacted)).not.toContain('permission_required');
+    expect(JSON.stringify(redacted)).not.toContain('action_required');
+    expect(JSON.stringify(redacted)).not.toContain('PRIVATE WORK');
+    expect(redacted).toMatchObject({ operational: { primary: 'working', reasons: ['working'] } });
+    expect(awareness.operational.primary).toBe('action_required');
+  });
   it.each([
     undefined,
     null,
@@ -120,6 +141,71 @@ describe('redactVoiceToolResultValue', () => {
     expect(result.requestId).toBeUndefined();
     expect(result.requestIds).toBeUndefined();
     expect(result.sessionId).toBe('s1');
+  });
+
+  it('withholds released digest request state, not only identities, when sharing is disabled', () => {
+    // The released digest is the other representation of the same Action as awareness above, so
+    // it must not disclose the pending request that awareness hides (`ui-web-v0.2.11` behavior).
+    const digest = projectSessionActivityCompatibilityV1({
+      awareness: {
+        v: 1, sessionId: 's1', lifecycle: 'active', runtime: 'waiting', freshness: 'live',
+        operational: {
+          primary: 'action_required',
+          reasons: ['action_required', 'permission_required', 'working'],
+        },
+        encryption: 'plain', availability: 'complete',
+      },
+      facts: {
+        presence: 'online', active: true, thinking: false, updatedAt: 123,
+        permissionRequestIds: ['req_1'],
+      },
+    });
+    expect(digest).toMatchObject({ permissionRequired: true, actionRequired: true, blocked: true });
+
+    const result = redactVoiceToolResultValue(
+      digest,
+      { ...SHARE_ALL, sharePermissionRequests: false },
+    ) as Record<string, unknown>;
+
+    expect(result.permissionRequestIds).toBeUndefined();
+    expect(result).toMatchObject({
+      ok: true, sessionId: 's1', presence: 'online', active: true, updatedAt: 123,
+      // Working is an operational fact of its own and survives the pending-request gate.
+      working: true, permissionRequired: false, actionRequired: false, blocked: false,
+    });
+  });
+
+  it('withholds released digest pending-request counts when sharing is disabled', () => {
+    const result = redactVoiceToolResultValue(
+      {
+        ok: true, sessionId: 's1', active: true, updatedAt: 123,
+        pendingCount: 2, pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 1,
+      },
+      { ...SHARE_ALL, sharePermissionRequests: false },
+    ) as Record<string, unknown>;
+
+    expect(result.pendingPermissionRequestCount).toBeUndefined();
+    expect(result.pendingUserActionRequestCount).toBeUndefined();
+    // `pendingCount` is queued user input, not a pending agent request, so it is not gated here.
+    expect(result).toMatchObject({ ok: true, sessionId: 's1', active: true, updatedAt: 123, pendingCount: 2 });
+  });
+
+  it('keeps released digest request state when sharePermissionRequests is true', () => {
+    const digest = projectSessionActivityCompatibilityV1({
+      awareness: {
+        v: 1, sessionId: 's1', lifecycle: 'active', runtime: 'waiting', freshness: 'live',
+        operational: { primary: 'permission_required', reasons: ['permission_required'] },
+        encryption: 'plain', availability: 'complete',
+      },
+      facts: {
+        presence: 'online', active: true, thinking: false, updatedAt: 123,
+        permissionRequestIds: ['req_1'],
+      },
+    });
+
+    expect(redactVoiceToolResultValue(digest, SHARE_ALL)).toMatchObject({
+      permissionRequired: true, blocked: true, permissionRequestIds: ['req_1'],
+    });
   });
 
   it('keeps permission-request identifiers when sharePermissionRequests is true', () => {

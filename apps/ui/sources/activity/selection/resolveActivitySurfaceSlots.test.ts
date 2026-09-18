@@ -90,6 +90,7 @@ describe('resolveActivitySurfaceSlots', () => {
                 }),
                 createSessionFixture({
                     id: 'action',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingUserActionRequestCount: 1,
@@ -132,6 +133,7 @@ describe('resolveActivitySurfaceSlots', () => {
                 }),
                 createSessionFixture({
                     id: 'action',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingUserActionRequestCount: 1,
@@ -143,7 +145,7 @@ describe('resolveActivitySurfaceSlots', () => {
         });
         const params = {
             overview,
-            previousPrimarySessionId: 'action',
+            previousPrimaryAddress: { serverId: 'server-a', sessionId: 'action' },
             previousPrimaryChangedAtMs: 2_000,
             nowMs: 2_500,
             selection: {
@@ -176,6 +178,7 @@ describe('resolveActivitySurfaceSlots', () => {
                 }),
                 createSessionFixture({
                     id: 'action',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingUserActionRequestCount: 1,
@@ -187,7 +190,7 @@ describe('resolveActivitySurfaceSlots', () => {
         });
         const params = {
             overview,
-            previousPrimarySessionId: 'action',
+            previousPrimaryAddress: { serverId: 'server-a', sessionId: 'action' },
             previousPrimaryChangedAtMs: 2_000,
             nowMs: 3_500,
             selection: {
@@ -219,6 +222,7 @@ describe('resolveActivitySurfaceSlots', () => {
                 }),
                 createSessionFixture({
                     id: 'action',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingUserActionRequestCount: 1,
@@ -230,7 +234,7 @@ describe('resolveActivitySurfaceSlots', () => {
         });
         const params = {
             overview,
-            previousPrimarySessionId: 'action',
+            previousPrimaryAddress: { serverId: 'server-a', sessionId: 'action' },
             previousPrimaryChangedAtMs: 2_000,
             nowMs: 2_600,
             selection: {
@@ -267,6 +271,7 @@ describe('resolveActivitySurfaceSlots', () => {
                 }),
                 createSessionFixture({
                     id: 'action',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingUserActionRequestCount: 1,
@@ -284,7 +289,7 @@ describe('resolveActivitySurfaceSlots', () => {
 
         const slots = resolveActivitySurfaceSlots({
             overview,
-            preferredPrimarySessionId: 'action',
+            preferredPrimaryAddress: { serverId: 'server-a', sessionId: 'action' },
             selection: createLiveActivitySelectionSpec(resolveActivitySurfacePolicy({
                 liveActivitiesMode: 'focused',
                 liveActivitiesMaxConcurrent: 2,

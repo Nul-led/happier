@@ -28,9 +28,8 @@ import { registerSessionTranscriptDerivedCacheClear } from '@/sync/runtime/sessi
 function createHarness() {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
         sessionListIndexByServerId: {},
-        sessionListRowStateByServerId: {},
+        sessionListRowsByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
         sessionLastViewed: {},
@@ -38,12 +37,12 @@ function createHarness() {
         workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey: {},
         reviewCommentsDraftsBySessionId: {},
         reviewCommentsDraftsByWorkspaceCacheKey: {},
-        actionDraftsBySessionId: {},
+        sessionActionDraftsByAddressKey: {},
         isDataReady: false,
         machines: {},
         machineDisplayById: {},
         sessionMessages: {},
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
     };
 
     const get = () => state;

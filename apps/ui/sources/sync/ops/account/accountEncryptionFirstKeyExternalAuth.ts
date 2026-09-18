@@ -1,13 +1,20 @@
 import { Linking, Platform } from 'react-native';
+import * as WebBrowser from 'expo-web-browser';
 
 import {
     AccountEncryptionMigrateExternalAuthProofSchema,
+    AccountExternalAuthProofV1Schema,
     AccountEncryptionMigrateRequestSchema,
     computeAccountEncryptionMigrateKeyFingerprintV1,
     createAccountEncryptionMigrateRequestBindingDigestV1,
+    createPasswordCredentialMutationDigestV1,
+    createPasswordCredentialTargetDigestV1,
+    PasswordCredentialMutationV1Schema,
+    PlainAccountPasswordCredentialV1Schema,
     type AccountEncryptionMigrateExternalAuthProof,
     type AccountEncryptionMigrateRequest,
-    type FeaturesResponse,
+    type AccountExternalAuthProofV1,
+    type PlainAccountPasswordCredentialV1,
 } from '@happier-dev/protocol';
 import {
     ACCOUNT_ENCRYPTION_FIRST_KEY_PENDING_TTL_MS,
@@ -45,11 +52,22 @@ import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
 import {
     getActiveServerId,
     getActiveServerUrl,
+    getServerProfileById,
     listServerProfiles,
 } from '@/sync/domains/server/serverProfiles';
-import { authGetToken } from '@/auth/flows/getToken';
+import { authGetTokenAtEndpoint } from '@/auth/flows/getToken';
+import { acquireAccountServiceAuthTransport } from '@/auth/accountDirectory/accountDirectoryAuthClient';
+import { fetchHomeAuthEntry } from '@/auth/entry/authEntryClient';
+import {
+    projectAuthEntryMethodCapabilities,
+    projectAuthenticationMethodCapabilities,
+    type AuthenticationMethodCapabilities,
+} from '@/auth/capabilities/authMethodCapabilities';
+import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { preparePlainAccountPasswordEnroll } from '@/sync/api/auth/accountSecurity';
 
 const FIRST_KEY_PURPOSE = 'account_encryption_first_key';
+const PASSWORD_ENROLLMENT_PURPOSE = 'account_password_enrollment';
 
 type FirstKeyMigrationInput = Readonly<{
     accountId: string;
@@ -66,6 +84,10 @@ type FirstKeyStartResult =
     }>
     | Readonly<{
         kind: 'mtls';
+        externalAuthProof: AccountEncryptionMigrateExternalAuthProof;
+    }>
+    | Readonly<{
+        kind: 'email_password';
         externalAuthProof: AccountEncryptionMigrateExternalAuthProof;
     }>;
 
@@ -142,13 +164,22 @@ function normalizeFirstKeyHomeTarget(
     return { serverUrl, serverId };
 }
 
-function createFirstKeyTargetRequest(
+async function acquireFirstKeyTargetRequest(
     target: FirstKeyHomeTarget,
-): ServerFetch {
-    return createServerFetchAtEndpoint({
+    credentials?: AuthCredentials,
+    signal?: AbortSignal,
+) {
+    const serverIdentityId = getServerProfileById(target.serverId)?.serverIdentityId?.trim() ?? target.serverId;
+    const acquired = await acquireAccountServiceAuthTransport({ serverIdentityId, canonicalServerUrl: target.serverUrl });
+    const request = createServerFetchAtEndpoint({
         endpointUrl: target.serverUrl,
         serverId: target.serverId,
+        ...acquired.transport,
+        runtimeOrigin: acquired.transport.runtimeOrigin ?? undefined,
+        ...(credentials ? { credentials } : {}),
+        ...(signal ? { signal } : {}),
     });
+    return { ...acquired, request };
 }
 
 export function isAccountEncryptionFirstKeyCredentialPersistenceAuthorized(
@@ -394,72 +425,80 @@ export async function recoverAccountEncryptionFirstKeyRejectedCredential(
         if (seed.length !== 32) {
             return { kind: 'recovery_failed' };
         }
-        const token = await authGetToken(
-            seed,
-            {
-                expectedAccountId:
-                    continuation.accountId,
-            },
-        );
-        if (
-            parseToken(token)
-            !== continuation.accountId
-        ) {
-            return { kind: 'recovery_failed' };
-        }
-        const credentials = {
-            token,
-            secret: state.secret,
-        } as const;
         const target = normalizeFirstKeyHomeTarget({
             serverId: recovery.serverId ?? state.serverId,
             serverUrl: recovery.serverUrl ?? state.serverUrl,
         });
-        const requestAtTarget = createFirstKeyTargetRequest(target);
-        await assertCommittedFirstKeyCredentialsMatchCustody({
-            state,
-            credentials,
-            request: requestAtTarget,
-        });
-
-        const persistence =
-            await params.persistCredentials(
+        if (params.target && (params.target.serverId !== target.serverId || params.target.serverUrl !== target.serverUrl)) {
+            return { kind: 'recovery_failed' };
+        }
+        const serverIdentityId = getServerProfileById(target.serverId)?.serverIdentityId?.trim();
+        const acquired = await acquireFirstKeyTargetRequest(target);
+        try {
+            const { token } = await authGetTokenAtEndpoint({
+                endpointUrl: target.serverUrl, canonicalServerUrl: target.serverUrl, serverId: target.serverId,
+                ...(serverIdentityId ? { serverIdentityId } : {}),
+                ...acquired.transport, runtimeOrigin: acquired.transport.runtimeOrigin ?? undefined,
+                secret: seed, expectedAccountId: continuation.accountId, requireKeyChallengeV2: true,
+            });
+            if (
+                parseToken(token)
+                !== continuation.accountId
+            ) {
+                return { kind: 'recovery_failed' };
+            }
+            const credentials = {
+                token,
+                secret: state.secret,
+            } as const;
+            await assertCommittedFirstKeyCredentialsMatchCustody({
+                state,
                 credentials,
-                {
-                    firstKeyRecoveryAuthorization: {
-                        [firstKeyCredentialPersistenceBrand]:
-                            true,
-                        token,
+                request: acquired.request,
+            });
+
+            const persistence =
+                await params.persistCredentials(
+                    credentials,
+                    {
+                        firstKeyRecoveryAuthorization: {
+                            [firstKeyCredentialPersistenceBrand]:
+                                true,
+                            token,
+                        },
+                        target,
                     },
-                    target,
-                },
-            );
-        if (persistence.kind !== 'completed') {
-            return { kind: 'recovery_failed' };
+                );
+            if (persistence.kind !== 'completed') {
+                return { kind: 'recovery_failed' };
+            }
+            if (
+                !await TokenStorage
+                    .clearPendingExternalAuth({
+                        removeFirstKeyMigrationAttempted:
+                            state,
+                        serverUrl:
+                            recovery.serverUrl,
+                        ...(recovery.serverId
+                            ? {
+                                serverId:
+                                    recovery.serverId,
+                            }
+                            : {}),
+                    })
+            ) {
+                return { kind: 'recovery_failed' };
+            }
+            return {
+                kind: 'completed',
+                returnTo:
+                    resolveFirstKeyReturnTo(state),
+                mode: 'e2ee',
+            };
+        } finally {
+            seed.fill(0);
+            await acquired.close();
         }
-        if (
-            !await TokenStorage
-                .clearPendingExternalAuth({
-                    removeFirstKeyMigrationAttempted:
-                        state,
-                    serverUrl:
-                        recovery.serverUrl,
-                    ...(recovery.serverId
-                        ? {
-                            serverId:
-                                recovery.serverId,
-                        }
-                        : {}),
-                })
-        ) {
-            return { kind: 'recovery_failed' };
-        }
-        return {
-            kind: 'completed',
-            returnTo:
-                resolveFirstKeyReturnTo(state),
-            mode: 'e2ee',
-        };
     } catch {
         return { kind: 'recovery_failed' };
     }
@@ -695,45 +734,27 @@ async function assertCommittedFirstKeyCredentialsMatchCustody(
     }
 }
 
-function resolveConfiguredProvider(
+function resolveLinkedPurposeBoundProviderFromCapabilities(
     linkedProviderIds: readonly string[],
-    features: FeaturesResponse,
-): string {
-    const authCapabilities =
-        features.capabilities.auth;
-    const oauthProviders =
-        features.capabilities.oauth.providers;
+    capabilities: AuthenticationMethodCapabilities,
+): string | null {
+    const availableProviderIds = [
+        ...capabilities.configuredKeylessProviderIds,
+        ...(capabilities.keylessLoginMethodIds.includes('mtls') ? ['mtls'] : []),
+    ];
+    return resolveLinkedPurposeBoundProvider(linkedProviderIds, availableProviderIds);
+}
+
+function resolveLinkedPurposeBoundProvider(
+    linkedProviderIds: readonly string[],
+    availableProviderIds: readonly string[],
+): string | null {
+    const available = new Set(availableProviderIds.map(normalizeProviderId).filter(Boolean));
     for (const rawProviderId of linkedProviderIds) {
         const providerId = normalizeProviderId(rawProviderId);
-        if (!providerId) continue;
-        if (providerId === 'mtls') {
-            const mtlsGateEnabled =
-                features.features.auth.mtls.enabled === true;
-            const mtlsLoginEnabled =
-                Array.isArray(authCapabilities.login.methods)
-                && authCapabilities.login.methods.some(
-                    (method) =>
-                        normalizeProviderId(method.id) === 'mtls'
-                        && method.enabled === true,
-                );
-            if (mtlsGateEnabled && mtlsLoginEnabled) {
-                return providerId;
-            }
-            continue;
-        }
-        const authProvider =
-            authCapabilities?.providers?.[providerId];
-        const oauthProvider = oauthProviders?.[providerId];
-        if (
-            authProvider?.enabled === true
-            && authProvider?.configured === true
-            && oauthProvider?.enabled === true
-            && oauthProvider?.configured === true
-        ) {
-            return providerId;
-        }
+        if (providerId && available.has(providerId)) return providerId;
     }
-    return unavailableExternalAuth();
+    return null;
 }
 
 async function createProof(): Promise<Readonly<{
@@ -756,6 +777,7 @@ async function createProof(): Promise<Readonly<{
 export async function startAccountEncryptionFirstKeyExternalAuth(
     params: FirstKeyMigrationInput & Readonly<{
         linkedProviderIds: readonly string[];
+        nativePassword?: string;
         returnTo: string;
         target?: FirstKeyHomeTarget;
     }>,
@@ -768,30 +790,14 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
             serverUrl: getActiveServerUrl(),
         },
     );
-    const requestAtTarget = createFirstKeyTargetRequest(target);
-    await TokenStorage.clearPendingExternalAuth();
+    const acquired = await acquireFirstKeyTargetRequest(target);
+    const requestAtTarget = acquired.request;
     try {
+        await TokenStorage.clearPendingExternalAuth();
         const request = assertFirstKeyMigrationInput(params);
         await assertProposedCredentialsMatchRequest(
             params.proposedCredentials,
             request,
-        );
-        const snapshot = params.target
-            ? await probeServerFeaturesAtUrl({
-                endpointUrl: target.serverUrl,
-                serverId: target.serverId,
-                force: true,
-            })
-            : await getServerFeaturesSnapshot({
-                force: true,
-                serverId: target.serverId,
-            });
-        if (snapshot.status !== 'ready') {
-            return unavailableExternalAuth();
-        }
-        const provider = resolveConfiguredProvider(
-            params.linkedProviderIds,
-            snapshot.features,
         );
         const requestDigest =
             createAccountEncryptionMigrateRequestBindingDigestV1({
@@ -799,24 +805,85 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
                 accountId: params.accountId,
                 sourceMode: 'plain',
             });
-        const { proof, proofHash } = await createProof();
         const createdAt = Date.now();
         const serverContext = {
             serverId: target.serverId,
             serverUrl: target.serverUrl,
         };
-        const createPendingContinuation = (
-            pending?: string,
-        ) => ({
+        const createPendingContinuation = (pending?: string) => ({
             accountId: params.accountId,
             requestDigest,
             requestJson: JSON.stringify(params.request),
             createdAt,
-            expiresAt:
-                createdAt
-                + ACCOUNT_ENCRYPTION_FIRST_KEY_PENDING_TTL_MS,
+            expiresAt: createdAt + ACCOUNT_ENCRYPTION_FIRST_KEY_PENDING_TTL_MS,
             ...(pending ? { pending } : {}),
         });
+        if (params.nativePassword !== undefined) {
+            const response = await requestAtTarget('/v1/auth/email/step-up', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${params.currentCredentials.token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    v: 1,
+                    password: params.nativePassword,
+                    purpose: FIRST_KEY_PURPOSE,
+                    requestDigest,
+                }),
+            }, { includeAuth: false, retry: 'none' });
+            const payload: unknown = await response.json().catch(() => null);
+            const parsed = response.ok && payload && typeof payload === 'object' && 'externalAuthProof' in payload
+                ? AccountEncryptionMigrateExternalAuthProofSchema.safeParse(payload.externalAuthProof)
+                : null;
+            if (!parsed?.success || parsed.data.provider !== 'email_password') return invalidExternalAuth();
+            const stored = await TokenStorage.setPendingExternalAuth({
+                provider: parsed.data.provider,
+                proof: parsed.data.proof,
+                secret: params.proposedCredentials.secret,
+                returnTo: params.returnTo,
+                ...serverContext,
+                accountEncryptionFirstKey: createPendingContinuation(parsed.data.pending),
+            }, target);
+            if (!stored) return unavailableExternalAuth();
+            return { kind: 'email_password', externalAuthProof: parsed.data };
+        }
+        const accountScope = createServerAccountScope(target.serverId, params.accountId);
+        if (!accountScope) return invalidExternalAuth();
+        const authEntry = await fetchHomeAuthEntry({
+            accountScope,
+            endpointUrl: target.serverUrl,
+            serverId: target.serverId,
+        });
+        let capabilities: AuthenticationMethodCapabilities;
+        if (authEntry.kind === 'ready' && authEntry.projection.state === 'ready') {
+            capabilities = projectAuthEntryMethodCapabilities(authEntry.projection);
+        } else if (authEntry.kind === 'unsupported') {
+            // Only a server that genuinely lacks the contextual endpoint may use
+            // the canonical released-feature adapter. Incompatible or unavailable
+            // current responses must not silently downgrade to legacy decisions.
+            const snapshot = params.target
+                ? await probeServerFeaturesAtUrl({
+                    endpointUrl: target.serverUrl,
+                    serverId: target.serverId,
+                    ...acquired.transport,
+                    runtimeOrigin: acquired.transport.runtimeOrigin ?? undefined,
+                    force: true,
+                })
+                : await getServerFeaturesSnapshot({
+                    force: true,
+                    serverId: target.serverId,
+                });
+            if (snapshot.status !== 'ready') return unavailableExternalAuth();
+            capabilities = projectAuthenticationMethodCapabilities(snapshot.features);
+        } else {
+            return unavailableExternalAuth();
+        }
+        const provider = resolveLinkedPurposeBoundProviderFromCapabilities(
+            params.linkedProviderIds,
+            capabilities,
+        ) ?? unavailableExternalAuth();
+        const { proof, proofHash } = await createProof();
 
         if (provider === 'mtls') {
             const response = await requestAtTarget(
@@ -923,13 +990,16 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
     } catch (error) {
         await TokenStorage.clearPendingExternalAuth();
         throw error;
+    } finally {
+        await acquired.close();
     }
 }
 
-export async function openAccountEncryptionFirstKeyExternalAuthUrl(
+export async function openPurposeBoundAccountExternalAuthUrl(
     url: string,
 ): Promise<void> {
     if (!isSafeExternalAuthUrl(url)) {
+        retireAccountPasswordEnrollmentExternalAuthCustody();
         await TokenStorage.clearPendingExternalAuth();
         return invalidExternalAuth();
     }
@@ -955,9 +1025,570 @@ export async function openAccountEncryptionFirstKeyExternalAuthUrl(
         }
         await Linking.openURL(url);
     } catch (error) {
+        retireAccountPasswordEnrollmentExternalAuthCustody();
         await TokenStorage.clearPendingExternalAuth();
         throw error;
     }
+}
+
+export const openAccountEncryptionFirstKeyExternalAuthUrl =
+    openPurposeBoundAccountExternalAuthUrl;
+
+type AccountPasswordEnrollmentHomeTarget = FirstKeyHomeTarget;
+
+const ACCOUNT_PASSWORD_ENROLLMENT_PENDING_TTL_MS =
+    ACCOUNT_ENCRYPTION_FIRST_KEY_PENDING_TTL_MS;
+
+type AccountPasswordEnrollmentExternalAuthCustody = Readonly<{
+    ceremonyId: number;
+    provider: string;
+    proof: string;
+    accountId: string;
+    normalizedNativeEmail: string;
+    targetCredential: PlainAccountPasswordCredentialV1;
+    requestDigest: string;
+    createdAt: number;
+    expiresAt: number;
+    returnTo: string;
+    target: AccountPasswordEnrollmentHomeTarget;
+    callbackClaimed: boolean;
+    pending?: string;
+}>;
+
+let accountPasswordEnrollmentCeremonySequence = 0;
+let accountPasswordEnrollmentExternalAuthCustody:
+    | AccountPasswordEnrollmentExternalAuthCustody
+    | null = null;
+let accountPasswordEnrollmentExpiryTimer:
+    | ReturnType<typeof setTimeout>
+    | null = null;
+
+function retireAccountPasswordEnrollmentExternalAuthCustody(
+    ceremonyId?: number,
+): void {
+    if (
+        ceremonyId !== undefined
+        && accountPasswordEnrollmentExternalAuthCustody?.ceremonyId
+            !== ceremonyId
+    ) return;
+    if (accountPasswordEnrollmentExpiryTimer !== null) {
+        clearTimeout(accountPasswordEnrollmentExpiryTimer);
+        accountPasswordEnrollmentExpiryTimer = null;
+    }
+    accountPasswordEnrollmentExternalAuthCustody = null;
+}
+
+function installAccountPasswordEnrollmentExternalAuthCustody(
+    custody: Omit<AccountPasswordEnrollmentExternalAuthCustody, 'ceremonyId'>,
+): AccountPasswordEnrollmentExternalAuthCustody {
+    retireAccountPasswordEnrollmentExternalAuthCustody();
+    const installed = {
+        ...custody,
+        ceremonyId: ++accountPasswordEnrollmentCeremonySequence,
+    };
+    accountPasswordEnrollmentExternalAuthCustody = installed;
+    accountPasswordEnrollmentExpiryTimer = setTimeout(() => {
+        retireAccountPasswordEnrollmentExternalAuthCustody(
+            installed.ceremonyId,
+        );
+    }, Math.max(0, installed.expiresAt - Date.now()));
+    const unref = (
+        accountPasswordEnrollmentExpiryTimer as unknown as {
+            unref?: () => void;
+        }
+    ).unref;
+    unref?.call(accountPasswordEnrollmentExpiryTimer);
+    return installed;
+}
+
+function readAccountPasswordEnrollmentExternalAuthCustody(
+): AccountPasswordEnrollmentExternalAuthCustody | null {
+    const custody = accountPasswordEnrollmentExternalAuthCustody;
+    if (!custody) return null;
+    if (Date.now() >= custody.expiresAt) {
+        retireAccountPasswordEnrollmentExternalAuthCustody(
+            custody.ceremonyId,
+        );
+        return null;
+    }
+    return custody;
+}
+
+export function clearAccountPasswordEnrollmentExternalAuthCustody(
+    expected?: Readonly<{
+        accountId: string;
+        target: AccountPasswordEnrollmentHomeTarget;
+        includingClaimed?: true;
+    }>,
+): void {
+    const custody = readAccountPasswordEnrollmentExternalAuthCustody();
+    if (!custody) return;
+    if (
+        expected
+        && custody.callbackClaimed
+        && expected.includingClaimed !== true
+    ) return;
+    if (
+        expected
+        && (
+            custody.accountId !== expected.accountId
+            || custody.target.serverId !== expected.target.serverId
+            || custody.target.serverUrl.replace(/\/+$/, '')
+                !== expected.target.serverUrl.replace(/\/+$/, '')
+        )
+    ) return;
+    retireAccountPasswordEnrollmentExternalAuthCustody(
+        custody.ceremonyId,
+    );
+}
+
+export function readAccountPasswordEnrollmentExternalAuthCallbackContext(
+    provider: string,
+): Readonly<{
+    target: AccountPasswordEnrollmentHomeTarget;
+}> | null {
+    const custody = readAccountPasswordEnrollmentExternalAuthCustody();
+    if (!custody) return null;
+    if (
+        normalizeProviderId(custody.provider)
+        !== normalizeProviderId(provider)
+    ) {
+        retireAccountPasswordEnrollmentExternalAuthCustody(
+            custody.ceremonyId,
+        );
+        return null;
+    }
+    // This read is the callback route's claim, not a reusable lookup. Keep the
+    // claimed bytes for the already-running callback -> Settings handoff, but
+    // never expose them to a replayed/remounted callback route.
+    if (custody.callbackClaimed) return null;
+    accountPasswordEnrollmentExternalAuthCustody = {
+        ...custody,
+        callbackClaimed: true,
+    };
+    return { target: custody.target };
+}
+
+type AccountPasswordEnrollmentStartResult =
+    | Readonly<{ kind: 'oauth'; provider: string; url: string }>
+    | Readonly<{
+        kind: 'mtls';
+        normalizedNativeEmail: string;
+        targetCredential: PlainAccountPasswordCredentialV1;
+        externalAuthProof: AccountExternalAuthProofV1;
+    }>;
+
+function invalidPasswordEnrollmentExternalAuth(): never {
+    throw new HappyError('password-enrollment-external-auth-invalid', false, {
+        status: 400,
+        kind: 'auth',
+        code: 'password-enrollment-external-auth-invalid',
+    });
+}
+
+function unavailablePasswordEnrollmentExternalAuth(): never {
+    throw new HappyError('password-enrollment-external-auth-unavailable', false, {
+        status: 400,
+        kind: 'auth',
+        code: 'password-enrollment-external-auth-unavailable',
+    });
+}
+
+function assertPasswordEnrollmentIdentity(
+    credentials: AuthCredentials,
+    accountId: string,
+): void {
+    try {
+        if (parseToken(credentials.token) !== accountId) invalidPasswordEnrollmentExternalAuth();
+    } catch {
+        invalidPasswordEnrollmentExternalAuth();
+    }
+}
+
+function selectPasswordEnrollmentExternalAuthProvider(
+    linkedProviderIds: readonly string[],
+    projection: Parameters<typeof projectAuthEntryMethodCapabilities>[0],
+): string {
+    return resolveLinkedPurposeBoundProviderFromCapabilities(
+        linkedProviderIds,
+        projectAuthEntryMethodCapabilities(projection),
+    )
+        ?? unavailablePasswordEnrollmentExternalAuth();
+}
+
+function passwordEnrollmentContinuationMatches(
+    state: AccountPasswordEnrollmentExternalAuthCustody | null,
+    params: Readonly<{
+        accountId: string;
+        target: AccountPasswordEnrollmentHomeTarget;
+        provider?: string;
+    }>,
+): state is AccountPasswordEnrollmentExternalAuthCustody {
+    if (!state) return false;
+    const targetCredential = PlainAccountPasswordCredentialV1Schema.safeParse(
+        state.targetCredential,
+    );
+    if (!targetCredential.success) return false;
+    const mutation = PasswordCredentialMutationV1Schema.safeParse({
+        v: 1,
+        action: 'connect',
+        accountId: state.accountId,
+        expectedCredentialRevision: null,
+        normalizedNativeEmail: state.normalizedNativeEmail,
+        newCredentialDigest: createPasswordCredentialTargetDigestV1(
+            targetCredential.data,
+        ),
+    });
+    return Boolean(
+        mutation.success
+        && createPasswordCredentialMutationDigestV1(mutation.data)
+            === state.requestDigest
+        && state.accountId === params.accountId
+        && state.target.serverId === params.target.serverId
+        && state.target.serverUrl.replace(/\/+$/, '') === params.target.serverUrl.replace(/\/+$/, '')
+        && (!params.provider || normalizeProviderId(state.provider) === normalizeProviderId(params.provider))
+        && Date.now() < state.expiresAt,
+    );
+}
+
+export async function startAccountPasswordEnrollmentExternalAuth(params: Readonly<{
+    accountId: string;
+    currentCredentials: AuthCredentials;
+    linkedProviderIds: readonly string[];
+    normalizedNativeEmail: string;
+    newPassword: string;
+    signal?: AbortSignal;
+    returnTo: string;
+    target: AccountPasswordEnrollmentHomeTarget;
+}>): Promise<AccountPasswordEnrollmentStartResult> {
+    const target = normalizeFirstKeyHomeTarget(params.target);
+    assertPasswordEnrollmentIdentity(params.currentCredentials, params.accountId);
+    const returnTo = normalizeInternalReturnPath(params.returnTo);
+    const accountScope = createServerAccountScope(target.serverId, params.accountId);
+    if (!returnTo || !accountScope) return invalidPasswordEnrollmentExternalAuth();
+    retireAccountPasswordEnrollmentExternalAuthCustody();
+    const acquired = await acquireFirstKeyTargetRequest(
+        target,
+        params.currentCredentials,
+        params.signal,
+    );
+    try {
+        const entry = await fetchHomeAuthEntry({
+            accountScope,
+            endpointUrl: target.serverUrl,
+            serverId: target.serverId,
+        });
+        if (entry.kind !== 'ready' || entry.projection.state !== 'ready') {
+            return unavailablePasswordEnrollmentExternalAuth();
+        }
+        const provider = selectPasswordEnrollmentExternalAuthProvider(
+            params.linkedProviderIds,
+            entry.projection,
+        );
+        const targetCredential = await preparePlainAccountPasswordEnroll(
+            acquired.request,
+            {
+                normalizedNativeEmail: params.normalizedNativeEmail,
+                newPassword: params.newPassword,
+                ...(params.signal ? { signal: params.signal } : {}),
+            },
+        );
+        const mutation = PasswordCredentialMutationV1Schema.parse({
+            v: 1,
+            action: 'connect',
+            accountId: params.accountId,
+            expectedCredentialRevision: null,
+            normalizedNativeEmail: params.normalizedNativeEmail,
+            newCredentialDigest:
+                createPasswordCredentialTargetDigestV1(targetCredential),
+        });
+        const requestDigest =
+            createPasswordCredentialMutationDigestV1(mutation);
+        const normalizedNativeEmail = mutation.normalizedNativeEmail;
+        if (!normalizedNativeEmail) return invalidPasswordEnrollmentExternalAuth();
+        const { proof, proofHash } = await createProof();
+        const createdAt = Date.now();
+        const custody = {
+            accountId: params.accountId,
+            provider,
+            proof,
+            normalizedNativeEmail,
+            targetCredential,
+            requestDigest,
+            createdAt,
+            expiresAt: createdAt + ACCOUNT_PASSWORD_ENROLLMENT_PENDING_TTL_MS,
+            returnTo,
+            target,
+            callbackClaimed: false,
+        };
+        if (provider === 'mtls') {
+            const response = await acquired.request('/v1/auth/mtls', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${params.currentCredentials.token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    purpose: PASSWORD_ENROLLMENT_PURPOSE,
+                    proofHash,
+                    requestDigest,
+                }),
+            }, { includeAuth: false, retry: 'none' });
+            const payload: unknown = await response.json().catch(() => null);
+            if (!response.ok || !isRecord(payload) || payload.success !== true || typeof payload.pending !== 'string') {
+                retireAccountPasswordEnrollmentExternalAuthCustody();
+                return invalidPasswordEnrollmentExternalAuth();
+            }
+            const externalAuthProof = AccountExternalAuthProofV1Schema.parse({
+                provider,
+                pending: payload.pending,
+                proof,
+            });
+            return {
+                kind: 'mtls',
+                normalizedNativeEmail,
+                targetCredential,
+                externalAuthProof,
+            };
+        }
+        installAccountPasswordEnrollmentExternalAuthCustody(custody);
+        const query = new URLSearchParams({
+            mode: 'keyless',
+            purpose: PASSWORD_ENROLLMENT_PURPOSE,
+            proofHash,
+            requestDigest,
+        });
+        const response = await acquired.request(
+            `/v1/auth/external/${encodeURIComponent(provider)}/params?${query.toString()}`,
+            {
+                method: 'GET',
+                headers: { Authorization: `Bearer ${params.currentCredentials.token}` },
+            },
+            { includeAuth: false, retry: 'none' },
+        );
+        const payload: unknown = await response.json().catch(() => null);
+        if (!response.ok || !isRecord(payload) || typeof payload.url !== 'string') {
+            retireAccountPasswordEnrollmentExternalAuthCustody();
+            return unavailablePasswordEnrollmentExternalAuth();
+        }
+        return { kind: 'oauth', provider, url: payload.url };
+    } catch (error) {
+        retireAccountPasswordEnrollmentExternalAuthCustody();
+        throw error;
+    } finally {
+        await acquired.close();
+    }
+}
+
+export async function resumeAccountPasswordEnrollmentExternalAuth(params: Readonly<{
+    provider: string;
+    pending: string | null;
+    currentCredentials: AuthCredentials;
+    target: AccountPasswordEnrollmentHomeTarget;
+}>): Promise<Readonly<{ returnTo: string }>> {
+    const target = normalizeFirstKeyHomeTarget(params.target);
+    const accountId = parseToken(params.currentCredentials.token);
+    const custody = readAccountPasswordEnrollmentExternalAuthCustody();
+    if (
+        !params.pending
+        || !passwordEnrollmentContinuationMatches(custody, { accountId, target, provider: params.provider })
+    ) {
+        retireAccountPasswordEnrollmentExternalAuthCustody();
+        return invalidPasswordEnrollmentExternalAuth();
+    }
+    // The callback pending is the one settlement point for this ceremony.
+    // A duplicate callback route (including React strict-mode remounts) must
+    // fail without erasing the already-settled same-process handoff that the
+    // Account Security route still needs to consume.
+    if (custody.pending !== undefined) {
+        return invalidPasswordEnrollmentExternalAuth();
+    }
+    AccountExternalAuthProofV1Schema.parse({
+        provider: custody.provider,
+        pending: params.pending,
+        proof: custody.proof,
+    });
+    installAccountPasswordEnrollmentExternalAuthCustody({
+        ...custody,
+        pending: params.pending,
+    });
+    return { returnTo: normalizeInternalReturnPath(custody.returnTo) ?? '/settings/account/security' };
+}
+
+export async function cancelAccountPasswordEnrollmentExternalAuth(params: Readonly<{
+    provider: string;
+    currentCredentials: AuthCredentials | null;
+    target: AccountPasswordEnrollmentHomeTarget;
+}>): Promise<Readonly<{ returnTo: string }>> {
+    const target = normalizeFirstKeyHomeTarget(params.target);
+    const custody = readAccountPasswordEnrollmentExternalAuthCustody();
+    let returnTo = '/settings/account/security';
+    if (custody && params.currentCredentials) {
+        let accountId: string | null = null;
+        try {
+            accountId = parseToken(params.currentCredentials.token);
+        } catch {
+            accountId = null;
+        }
+        if (accountId && passwordEnrollmentContinuationMatches(custody, {
+            accountId,
+            target,
+            provider: params.provider,
+        })) {
+            const candidate = normalizeInternalReturnPath(custody.returnTo);
+            if (
+                candidate === '/settings/account/security'
+                || candidate?.startsWith('/settings/account/security?')
+            ) {
+                returnTo = candidate;
+            }
+        }
+    }
+    retireAccountPasswordEnrollmentExternalAuthCustody();
+    return { returnTo };
+}
+
+export type AccountPasswordEnrollmentExternalAuthSessionResult =
+    | Readonly<{ kind: 'opened' }>
+    | Readonly<{ kind: 'completed' }>
+    | Readonly<{ kind: 'cancelled' }>;
+
+/**
+ * Keeps the prepared Plain credential and its proof in the originating process.
+ * Native callbacks already return to that process through Linking; web must use
+ * the existing Expo auth-session popup so a full-page navigation cannot destroy
+ * the only (intentionally non-persisted) custody of the password mutation.
+ */
+export async function openAccountPasswordEnrollmentExternalAuthSession(
+    params: Readonly<{
+        kind: 'oauth';
+        provider: string;
+        url: string;
+        currentCredentials: AuthCredentials;
+        target: AccountPasswordEnrollmentHomeTarget;
+    }>,
+): Promise<AccountPasswordEnrollmentExternalAuthSessionResult> {
+    if (!isSafeExternalAuthUrl(params.url)) {
+        retireAccountPasswordEnrollmentExternalAuthCustody();
+        return invalidPasswordEnrollmentExternalAuth();
+    }
+    if (Platform.OS !== 'web') {
+        await openPurposeBoundAccountExternalAuthUrl(params.url);
+        return { kind: 'opened' };
+    }
+
+    const browserGlobal = globalThis as typeof globalThis & {
+        window?: { location?: { origin?: string } };
+    };
+    const origin = browserGlobal.window?.location?.origin;
+    let callbackUrl: URL;
+    try {
+        callbackUrl = new URL(
+            `/oauth/${encodeURIComponent(params.provider)}`,
+            origin,
+        );
+    } catch {
+        retireAccountPasswordEnrollmentExternalAuthCustody();
+        return invalidPasswordEnrollmentExternalAuth();
+    }
+
+    try {
+        const result = await WebBrowser.openAuthSessionAsync(
+            params.url,
+            callbackUrl.toString(),
+        );
+        if (result.type !== 'success') {
+            await cancelAccountPasswordEnrollmentExternalAuth({
+                provider: params.provider,
+                currentCredentials: params.currentCredentials,
+                target: params.target,
+            });
+            return { kind: 'cancelled' };
+        }
+
+        let returned: URL;
+        try {
+            returned = new URL(result.url);
+        } catch {
+            retireAccountPasswordEnrollmentExternalAuthCustody();
+            return invalidPasswordEnrollmentExternalAuth();
+        }
+        if (
+            returned.origin !== callbackUrl.origin
+            || returned.pathname !== callbackUrl.pathname
+            || returned.searchParams.get('flow') !== 'auth'
+            || returned.searchParams.get('purpose')
+                !== PASSWORD_ENROLLMENT_PURPOSE
+        ) {
+            retireAccountPasswordEnrollmentExternalAuthCustody();
+            return invalidPasswordEnrollmentExternalAuth();
+        }
+        if (returned.searchParams.has('error')) {
+            await cancelAccountPasswordEnrollmentExternalAuth({
+                provider: params.provider,
+                currentCredentials: params.currentCredentials,
+                target: params.target,
+            });
+            return { kind: 'cancelled' };
+        }
+
+        const pending = returned.searchParams.get('pending');
+        if (!pending) {
+            retireAccountPasswordEnrollmentExternalAuthCustody();
+            return invalidPasswordEnrollmentExternalAuth();
+        }
+        await resumeAccountPasswordEnrollmentExternalAuth({
+            provider: params.provider,
+            pending,
+            currentCredentials: params.currentCredentials,
+            target: params.target,
+        });
+        return { kind: 'completed' };
+    } catch (error) {
+        retireAccountPasswordEnrollmentExternalAuthCustody();
+        throw error;
+    }
+}
+
+export async function readAccountPasswordEnrollmentExternalAuthProof(params: Readonly<{
+    accountId: string;
+    currentCredentials: AuthCredentials;
+    target: AccountPasswordEnrollmentHomeTarget;
+}>): Promise<Readonly<{
+    normalizedNativeEmail: string;
+    targetCredential: PlainAccountPasswordCredentialV1;
+    externalAuthProof: AccountExternalAuthProofV1;
+}> | null> {
+    const target = normalizeFirstKeyHomeTarget(params.target);
+    assertPasswordEnrollmentIdentity(params.currentCredentials, params.accountId);
+    const custody = readAccountPasswordEnrollmentExternalAuthCustody();
+    if (!passwordEnrollmentContinuationMatches(custody, {
+        accountId: params.accountId,
+        target,
+    })) {
+        retireAccountPasswordEnrollmentExternalAuthCustody();
+        return null;
+    }
+    const pending = custody.pending;
+    if (!pending || !custody.proof) return null;
+    const externalAuthProof = AccountExternalAuthProofV1Schema.safeParse({
+        provider: custody.provider,
+        pending,
+        proof: custody.proof,
+    });
+    if (!externalAuthProof.success) {
+        retireAccountPasswordEnrollmentExternalAuthCustody();
+        return null;
+    }
+    const result = {
+        normalizedNativeEmail: custody.normalizedNativeEmail,
+        targetCredential: custody.targetCredential,
+        externalAuthProof: externalAuthProof.data,
+    };
+    retireAccountPasswordEnrollmentExternalAuthCustody(
+        custody.ceremonyId,
+    );
+    return result;
 }
 
 async function submitAccountEncryptionFirstKeyMigration(
@@ -1044,6 +1675,7 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
         provider: string;
         pending: string;
         currentCredentials: AuthCredentials;
+        target?: FirstKeyHomeTarget;
         persistCredentials: (
             credentials: LegacyAuthCredentials,
             options:
@@ -1057,6 +1689,7 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
     >;
 }>> {
     let shouldClearPending = true;
+    let closeTransport = async () => {};
     let removeFirstKeyMigrationAttempted:
         PendingExternalAuth | undefined;
     try {
@@ -1105,7 +1738,9 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
         ) {
             return invalidExternalAuth();
         }
-        const requestAtTarget = createFirstKeyTargetRequest(target);
+        const acquired = await acquireFirstKeyTargetRequest(target);
+        closeTransport = acquired.close;
+        const requestAtTarget = acquired.request;
 
         let rawRequest: unknown;
         try {
@@ -1237,10 +1872,12 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
             migration,
         };
     } finally {
-        if (shouldClearPending) {
-            await clearPendingExternalAuthRequired(
-                removeFirstKeyMigrationAttempted,
-            );
+        try {
+            if (shouldClearPending) {
+                await clearPendingExternalAuthRequired(removeFirstKeyMigrationAttempted);
+            }
+        } finally {
+            await closeTransport();
         }
     }
 }
@@ -1248,6 +1885,7 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
 export async function retryPendingAccountEncryptionFirstKeyExternalAuth(
     params: Readonly<{
         currentCredentials: AuthCredentials;
+        target?: FirstKeyHomeTarget;
         persistCredentials: (
             credentials: LegacyAuthCredentials,
             options:
@@ -1258,8 +1896,9 @@ export async function retryPendingAccountEncryptionFirstKeyExternalAuth(
     returnTo: string;
     mode: 'e2ee';
 }> | null> {
-    const pendingState =
-        await TokenStorage.readPendingExternalAuthContinuationState();
+    const pendingState = params.target
+        ? await TokenStorage.readPendingExternalAuthStateForServerUrl(params.target.serverUrl, { serverId: params.target.serverId })
+        : await TokenStorage.readPendingExternalAuthContinuationState();
     const state = pendingState.value;
     const provider = normalizeProviderId(state?.provider);
     const pending =
@@ -1276,19 +1915,24 @@ export async function retryPendingAccountEncryptionFirstKeyExternalAuth(
     if (isLegacyAuthCredentials(
         params.currentCredentials,
     )) {
+        let closeTransport = async () => {};
         try {
             const target = normalizeFirstKeyHomeTarget({
                 serverId: state.serverId,
                 serverUrl: state.serverUrl,
             });
+            const acquired = await acquireFirstKeyTargetRequest(target);
+            closeTransport = acquired.close;
             await assertCommittedFirstKeyCredentialsMatchCustody({
                 state,
                 credentials:
                     params.currentCredentials,
-                request: createFirstKeyTargetRequest(target),
+                request: acquired.request,
             });
         } catch {
             return null;
+        } finally {
+            await closeTransport();
         }
         await clearPendingExternalAuthRequired(state);
         return {

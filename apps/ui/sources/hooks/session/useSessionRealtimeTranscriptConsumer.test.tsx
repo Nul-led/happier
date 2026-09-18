@@ -61,4 +61,20 @@ describe('useSessionRealtimeTranscriptConsumer', () => {
 
         expect(readMountedSessionRealtimeTranscriptConsumerSessionIds('server-b')).toEqual([]);
     });
+
+    it('keeps a qualified consumer on its explicit Home when an ambient same-id Session exists', async () => {
+        const sessionId = 'shared-session';
+        storage.getState().applySessions([buildSession(sessionId, 'server-b')]);
+
+        const hook = await renderHook(() => useSessionRealtimeTranscriptConsumer(sessionId, 'server-a'));
+
+        try {
+            expect(readMountedSessionRealtimeTranscriptConsumerSessionIds('server-a')).toEqual([sessionId]);
+            expect(readMountedSessionRealtimeTranscriptConsumerSessionIds('server-b')).toEqual([]);
+        } finally {
+            await hook.unmount();
+        }
+
+        expect(readMountedSessionRealtimeTranscriptConsumerSessionIds('server-a')).toEqual([]);
+    });
 });

@@ -26,6 +26,43 @@ function anchored(itemOffsetPx: number, capturedAtMs: number): TranscriptExitEnt
 }
 
 describe('transcriptSameSessionHandoff', () => {
+    it('preserves one exact Session surface but discards address-local state when the Home changes', async () => {
+        const mountedTokens: object[] = [];
+
+        function StatefulSurface() {
+            const [token] = React.useState(() => ({}));
+            mountedTokens.push(token);
+            return null;
+        }
+
+        function Route(props: Readonly<{ sessionAddressKey: string }>) {
+            return (
+                <TranscriptSameSessionHandoffProvider
+                    desiredExperience="classic"
+                    sessionAddressKey={props.sessionAddressKey}
+                >
+                    {() => <StatefulSurface />}
+                </TranscriptSameSessionHandoffProvider>
+            );
+        }
+
+        let tree!: renderer.ReactTestRenderer;
+        await act(async () => {
+            tree = renderer.create(<Route sessionAddressKey='["server-a","same"]' />);
+        });
+        const serverAToken = mountedTokens.at(-1);
+
+        await act(async () => {
+            tree.update(<Route sessionAddressKey='["server-a","same"]' />);
+        });
+        expect(mountedTokens.at(-1)).toBe(serverAToken);
+
+        await act(async () => {
+            tree.update(<Route sessionAddressKey='["server-b","same"]' />);
+        });
+        expect(mountedTokens.at(-1)).not.toBe(serverAToken);
+    });
+
     it('stages a desired-experience change, refreshes at deletion, and claims once', async () => {
         const routeRef: { current: TranscriptSameSessionHandoffRoute | null } = { current: null };
         const outgoingToken = {};
@@ -56,13 +93,13 @@ describe('transcriptSameSessionHandoff', () => {
                     captureForHandoff: capture,
                     experience: 'classic',
                     mountToken: outgoingToken,
-                    sessionId: 'session-a',
+                    sessionKey: '["server-a","session-a"]',
                 });
                 return () => {
                     route.refreshForDeletion({
                         producerMountToken: outgoingToken,
                         selection: capture(),
-                        sessionId: 'session-a',
+                        sessionKey: '["server-a","session-a"]',
                     });
                     unregister();
                 };
@@ -74,14 +111,14 @@ describe('transcriptSameSessionHandoff', () => {
             const route = useTranscriptSameSessionHandoffRoute();
             const peeked = route.peekForRender({
                 incomingMountToken: incomingToken,
-                sessionId: 'session-a',
+                sessionKey: '["server-a","session-a"]',
                 toExperience: 'cockpit',
             });
             if (peeked) rendered.push(peeked.viewport);
             React.useInsertionEffect(() => {
                 const handoff = route.claimAfterCommit({
                     incomingMountToken: incomingToken,
-                    sessionId: 'session-a',
+                    sessionKey: '["server-a","session-a"]',
                     toExperience: 'cockpit',
                 });
                 if (handoff) claimed.push(handoff.viewport);
@@ -93,7 +130,7 @@ describe('transcriptSameSessionHandoff', () => {
             return (
                 <TranscriptSameSessionHandoffProvider
                     desiredExperience={props.experience}
-                    sessionId="session-a"
+                    sessionAddressKey='["server-a","session-a"]'
                 >
                     {(experience) => (
                         <>
@@ -117,7 +154,7 @@ describe('transcriptSameSessionHandoff', () => {
         expect(claimed).toEqual([anchored(55, 20)]);
         expect(routeRef.current?.claimAfterCommit({
             incomingMountToken: incomingToken,
-            sessionId: 'session-a',
+            sessionKey: '["server-a","session-a"]',
             toExperience: 'cockpit',
         })).toBeNull();
     });

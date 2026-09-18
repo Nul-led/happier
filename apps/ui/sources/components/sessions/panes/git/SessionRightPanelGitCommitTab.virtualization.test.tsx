@@ -1,10 +1,13 @@
 import * as React from 'react';
 import renderer from 'react-test-renderer';
+import { VirtualizedList } from '@/components/ui/lists/virtualized/VirtualizedList';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import { installSessionGitPaneCommonModuleMocks } from './sessionGitPaneTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as any).requestAnimationFrame ??= vi.fn(() => 0);
+(globalThis as any).cancelAnimationFrame ??= vi.fn();
 
 installSessionGitPaneCommonModuleMocks();
 vi.mock('@/components/workspaces/scm/SourceControlBranchSummary', () => ({
@@ -12,6 +15,9 @@ vi.mock('@/components/workspaces/scm/SourceControlBranchSummary', () => ({
 }));
 vi.mock('@/components/sessions/sourceControl/commitSelection/ScmChangesSelectionHeaderRow', () => ({
     ScmChangesSelectionHeaderRow: (props: any) => React.createElement('ScmChangesSelectionHeaderRow', props),
+}));
+vi.mock('@/components/sessions/sourceControl/branches/SourceControlBranchMenu', () => ({
+    SourceControlBranchMenu: (props: any) => React.createElement('SourceControlBranchMenu', props),
 }));
 vi.mock('@/components/workspaces/scm/commitComposer/ScmCommitComposerCard', () => ({
     ScmCommitComposerCard: (props: any) => React.createElement('ScmCommitComposerCard', props),
@@ -26,6 +32,9 @@ vi.mock('@/components/workspaces/scm/changes/ScmChangeRow', () => ({
         }, 0);
         return Math.max(38, maxLabelLength * 7 + 4);
     },
+}));
+vi.mock('@/components/ui/popover/Popover', () => ({
+    Popover: () => null,
 }));
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', async () => {
     const React = await import('react');
@@ -99,7 +108,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[{
                         fullPath: 'src/file-0.ts',
                         path: 'src/file-0.ts',
@@ -108,7 +117,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     }] as any}
                     sessionAttributedFiles={[] as any}
                     repositoryOnlyFiles={[] as any}
-                    suppressedInferredCount={0}
+
                     showTurnViewToggle={false}
                     showSessionViewToggle={false}
                     repositorySelectedCount={0}
@@ -130,7 +139,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     showCommitComposer={false}
                 />);
 
-        const flatList = screen.tree.findByType('FlatList' as any);
+        const flatList = screen.tree.findByType(VirtualizedList);
         const headerScreen = await renderScreen(flatList.props.ListHeaderComponent);
         const textContent = headerScreen.getTextContent();
         expect(textContent).not.toContain('files.toolbar.repositoryView');
@@ -162,7 +171,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[{
                         fullPath: 'src/file-0.ts',
                         path: 'src/file-0.ts',
@@ -173,7 +182,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     turnRepositoryOnlyFiles={[] as any}
                     sessionAttributedFiles={[] as any}
                     repositoryOnlyFiles={[] as any}
-                    suppressedInferredCount={0}
+
                     showTurnViewToggle={true}
                     showSessionViewToggle={true}
                     onChangedFilesViewMode={onChangedFilesViewMode}
@@ -197,7 +206,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     onOpenReviewAllChanges={() => {}}
                 />);
 
-        const flatList = screen.tree.findByType('FlatList' as any);
+        const flatList = screen.tree.findByType(VirtualizedList);
         const headerScreen = await renderScreen(flatList.props.ListHeaderComponent);
         const menu = headerScreen.tree.findByType('DropdownMenu' as any);
         expect(menu.props.selectedId).toBe('repository');
@@ -245,11 +254,11 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={files as any}
                     sessionAttributedFiles={[] as any}
                     repositoryOnlyFiles={[] as any}
-                    suppressedInferredCount={0}
+
                     repositorySelectedCount={0}
                     onSelectAll={() => {}}
                     onSelectNone={() => {}}
@@ -269,11 +278,11 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     showCommitComposer={false}
                 />)).tree;
 
-        expect(() => tree.findByType('FlatList' as any)).not.toThrow();
+        expect(() => tree.findByType(VirtualizedList)).not.toThrow();
 
-        const flatList = tree.findByType('FlatList' as any);
-        expect(flatList.props.initialNumToRender).toBeLessThanOrEqual(12);
-        expect(flatList.props.maxToRenderPerBatch).toBeLessThanOrEqual(12);
+        const flatList = tree.findByType(VirtualizedList);
+        expect(tree.findByType(VirtualizedList).props.initialNumToRender).toBeLessThanOrEqual(12);
+        expect(tree.findByType(VirtualizedList).props.maxToRenderPerBatch).toBeLessThanOrEqual(12);
     });
 
     it('renders session-scoped changed files through the bounded FlatList path', async () => {
@@ -304,12 +313,14 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="session"
-                    attributionReliability="high"
+                    sessionAttribution={{ confidence: 'session_possible', reason: 'checkpoint_overlap_observed' }}
+                    sessionCheckpointOverlap="observed"
+
                     allRepositoryChangedFiles={files as any}
                     turnAttributedFiles={[] as any}
-                    sessionAttributedFiles={files.map((file) => ({ file, confidence: 'high' })) as any}
+                    sessionAttributedFiles={files.map((file) => ({ file, content: { source: 'scm_checkpoint', confidence: 'exact' }, attribution: { confidence: 'session_possible', reason: 'checkpoint_overlap_observed' }, checkpointOverlap: 'observed', evidence: [] })) as any}
                     repositoryOnlyFiles={[] as any}
-                    suppressedInferredCount={0}
+
                     showSessionViewToggle={true}
                     repositorySelectedCount={0}
                     onSelectAll={() => {}}
@@ -330,10 +341,19 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     showCommitComposer={false}
                 />);
 
-        const flatList = screen.tree.findByType('FlatList' as any);
+        const flatList = screen.tree.findByType(VirtualizedList);
+        expect(flatList.props.data[0]).toMatchObject({
+            file: files[0],
+            attribution: { confidence: 'session_possible', reason: 'checkpoint_overlap_observed' },
+        });
+        const row = await renderScreen(flatList.props.renderItem({ item: flatList.props.data[0], index: 0 }));
+        expect(row.findByTestId('changed-file-evidence-trigger')).not.toBeNull();
+        expect(row.tree.findByType('ScmChangeRow' as any).props.accessibilityQualification).toContain(
+            'changedFileEvidence.attribution.session_possible',
+        );
         expect(flatList.props.data).toHaveLength(200);
-        expect(flatList.props.initialNumToRender).toBeLessThanOrEqual(12);
-        expect(flatList.props.maxToRenderPerBatch).toBeLessThanOrEqual(12);
+        expect(screen.tree.findByType(VirtualizedList).props.initialNumToRender).toBeLessThanOrEqual(12);
+        expect(screen.tree.findByType(VirtualizedList).props.maxToRenderPerBatch).toBeLessThanOrEqual(12);
         expect(screen.tree.findAllByType('ScrollView' as any)).toHaveLength(0);
     });
 
@@ -375,11 +395,11 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={files as any}
                     sessionAttributedFiles={[] as any}
                     repositoryOnlyFiles={[] as any}
-                    suppressedInferredCount={0}
+
                     repositorySelectedCount={0}
                     onSelectAll={() => {}}
                     onSelectNone={() => {}}
@@ -399,7 +419,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     showCommitComposer={false}
                 />);
 
-        const flatList = screen.tree.findByType('FlatList' as any);
+        const flatList = screen.tree.findByType(VirtualizedList);
         const firstRow = flatList.props.renderItem({ item: files[0], index: 0 });
         const secondRow = flatList.props.renderItem({ item: files[1], index: 1 });
 
@@ -433,11 +453,13 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="session"
-                    attributionReliability="high"
+                    sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+                    sessionCheckpointOverlap="unknown"
+
                     allRepositoryChangedFiles={files as any}
                     sessionAttributedFiles={[] as any}
                     repositoryOnlyFiles={[] as any}
-                    suppressedInferredCount={0}
+
                     repositorySelectedCount={2}
                     onSelectAll={() => {}}
                     onSelectNone={() => {}}
@@ -494,11 +516,11 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={files as any}
                     sessionAttributedFiles={[] as any}
                     repositoryOnlyFiles={[] as any}
-                    suppressedInferredCount={0}
+
                     repositorySelectedCount={0}
                     onSelectAll={() => {}}
                     onSelectNone={() => {}}
@@ -518,7 +540,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     showCommitComposer={false}
                 />)).tree;
 
-        const flatList = tree.findByType('FlatList' as any);
+        const flatList = tree.findByType(VirtualizedList);
         expect(Array.isArray(flatList.props.data)).toBe(true);
         expect(flatList.props.data).toHaveLength(1);
         expect(flatList.props.data[0].fullPath).toBe('src/file-0.ts');
@@ -549,11 +571,12 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
             commitAllowed: false,
             commitBlockedMessage: null,
             changedFilesViewMode: 'repository',
-            attributionReliability: 'high',
+            sessionAttribution: { confidence: 'unknown', reason: 'unavailable' },
+        sessionCheckpointOverlap: 'unknown',
             allRepositoryChangedFiles: files as any,
             sessionAttributedFiles: [] as any,
             repositoryOnlyFiles: [] as any,
-            suppressedInferredCount: 0,
+
             repositorySelectedCount: 0,
             onSelectAll: () => {},
             onSelectNone: () => {},
@@ -577,17 +600,16 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
         await renderer.act(async () => {
             tree = renderer.create(<SessionRightPanelGitCommitTab {...props} />);
         });
-        const before = tree.root.findByType('FlatList' as any).props;
+        const before = tree.root.findByType(VirtualizedList).props;
 
         await renderer.act(async () => {
             tree.update(<SessionRightPanelGitCommitTab {...props} theme={makeGitTheme()} />);
         });
-        const after = tree.root.findByType('FlatList' as any).props;
+        const after = tree.root.findByType(VirtualizedList).props;
 
         expect(after.keyExtractor).toBe(before.keyExtractor);
         expect(after.renderItem).toBe(before.renderItem);
         expect(after.contentContainerStyle).toBe(before.contentContainerStyle);
-        expect(after.getItemLayout).toBe(before.getItemLayout);
         expect(after.extraData).toBe(before.extraData);
         expect(after.ListHeaderComponent).toBe(before.ListHeaderComponent);
     });
@@ -632,11 +654,11 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                         commitAllowed={false}
                         commitBlockedMessage={null}
                         changedFilesViewMode="repository"
-                        attributionReliability="high"
+
                         allRepositoryChangedFiles={files as any}
                         sessionAttributedFiles={[] as any}
                         repositoryOnlyFiles={[] as any}
-                        suppressedInferredCount={0}
+
                         repositorySelectedCount={0}
                         onSelectAll={() => {}}
                         onSelectNone={() => {}}
@@ -664,14 +686,14 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
         }
 
         const screen = await renderScreen(<Wrapper />);
-        const firstFlatListProps = screen.tree.findByType('FlatList' as any).props;
+        const firstFlatListProps = screen.tree.findByType(VirtualizedList).props;
         expect(firstFlatListProps.extraData.renderFileActions).toBe(actionsA);
 
         await renderer.act(async () => {
             screen.pressByTestId('toggle-actions');
         });
 
-        const nextFlatListProps = screen.tree.findByType('FlatList' as any).props;
+        const nextFlatListProps = screen.tree.findByType(VirtualizedList).props;
         // `renderItem` MUST stay stable (perf), and `extraData` MUST change to a
         // new object carrying the new renderer — that is the documented FlatList
         // re-render signal that surfaces the "+" on already-rendered rows.

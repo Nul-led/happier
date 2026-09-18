@@ -6,8 +6,16 @@ import { Text, TextInput } from '@/components/ui/text/Text';
 import { t } from '@/text';
 
 import {
+    createDesktopActivityOverlayFocusRingStyle,
     createDesktopActivityOverlayInteriorSurfaceStyle,
 } from '../DesktopActivityOverlayChrome';
+import {
+    isDesktopActivityOverlayDismissKey,
+    readDesktopActivityOverlayEventKey,
+    type DesktopActivityOverlayKeyEvent,
+} from '../desktopActivityOverlayKeyboard';
+import type { DesktopActivityOverlayPressableInteractionState } from '../DesktopActivityOverlayPressableInteractionState';
+import type { DesktopActivityOverlayFocusTargetRef } from '../resolveDesktopActivityOverlayInitialFocusTarget';
 import type { DesktopActivityOverlayVisualMode } from '../DesktopActivityOverlayVisualMode';
 import { Icon } from '@/components/ui/icons/Icon';
 
@@ -26,17 +34,17 @@ export function DesktopActivityOverlayQuickReplyComposer(props: Readonly<{
     phrases: readonly string[];
     draft?: string;
     targetAvailable?: boolean;
+    inputRef?: DesktopActivityOverlayFocusTargetRef;
     onSend: (message: string) => boolean | Promise<boolean>;
     onDraftChange?: (draft: string) => void;
     onInputLockChange?: (locked: boolean) => void;
-    onCleanEscape?: () => void;
+    onDismissKey?: () => void;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
-    const { onCleanEscape, onDraftChange, onInputLockChange, onSend } = props;
+    const { onDismissKey, onDraftChange, onInputLockChange, onSend } = props;
     const [localDraft, setLocalDraft] = React.useState('');
     const controlledDraft = props.draft;
     const draft = controlledDraft ?? localDraft;
-    const draftRef = React.useRef(draft);
     const [focused, setFocused] = React.useState(false);
     const [sendFailed, setSendFailed] = React.useState(false);
     const trimmedDraft = draft.trim();
@@ -71,7 +79,6 @@ export function DesktopActivityOverlayQuickReplyComposer(props: Readonly<{
             setSendFailed(true);
             return;
         }
-        draftRef.current = '';
         if (controlledDraft === undefined) {
             setLocalDraft('');
         }
@@ -80,7 +87,6 @@ export function DesktopActivityOverlayQuickReplyComposer(props: Readonly<{
     }, [controlledDraft, focused, onDraftChange, onSend, sendFailed, setInputLocked, targetUnavailable]);
 
     const handleChangeText = React.useCallback((nextDraft: string) => {
-        draftRef.current = nextDraft;
         if (controlledDraft === undefined) {
             setLocalDraft(nextDraft);
         }
@@ -98,15 +104,14 @@ export function DesktopActivityOverlayQuickReplyComposer(props: Readonly<{
         setInputLocked(draft.length > 0);
     }, [draft.length, setInputLocked]);
 
-    const handleKeyPress = React.useCallback((key: string | undefined) => {
-        if ((key === 'Escape' || key === 'Esc') && draftRef.current.length === 0) {
-            onCleanEscape?.();
+    // `react-native-web`'s `TextInput` stops key propagation, so the dismiss key cannot bubble to the
+    // island shell from here. Forward it to the route, which owns the dirty-draft dismissal lock.
+    const handleKeyPress = React.useCallback((event: DesktopActivityOverlayKeyEvent) => {
+        if (!isDesktopActivityOverlayDismissKey(readDesktopActivityOverlayEventKey(event))) {
+            return;
         }
-    }, [onCleanEscape]);
-
-    React.useEffect(() => {
-        draftRef.current = draft;
-    }, [draft]);
+        onDismissKey?.();
+    }, [onDismissKey]);
 
     React.useEffect(() => () => {
         setInputLocked(false);
@@ -135,13 +140,16 @@ export function DesktopActivityOverlayQuickReplyComposer(props: Readonly<{
                             onPress={() => {
                                 void sendMessage(phrase);
                             }}
-                            style={[
+                            style={(state) => [
                                 styles.phraseChip,
                                 createDesktopActivityOverlayInteriorSurfaceStyle(theme, {
                                     visualMode: props.visualMode,
                                     kind: 'action',
                                 }),
                                 targetUnavailable ? styles.disabledAction : null,
+                                (state as DesktopActivityOverlayPressableInteractionState).focused === true
+                                    ? createDesktopActivityOverlayFocusRingStyle(theme)
+                                    : null,
                             ]}
                         >
                             <Text
@@ -154,16 +162,17 @@ export function DesktopActivityOverlayQuickReplyComposer(props: Readonly<{
                     ))}
                 </View>
             ) : null}
-            <Pressable
+            {/* The shell only stops event propagation around the input. A `Pressable` would make it
+                a react-native-web focus stop with no action, so it stays a plain view. */}
+            <View
                 {...webStopPropagationProps}
                 testID="desktop-activity-overlay-quick-reply-input-shell"
-                onPress={stopEventPropagation}
-                onPressIn={stopEventPropagation}
                 onStartShouldSetResponder={() => true}
                 style={styles.inputShell}
             >
                 <TextInput
                     {...webStopPropagationProps}
+                    ref={props.inputRef}
                     testID="desktop-activity-overlay-quick-reply-input"
                     accessibilityLabel={t('common.message')}
                     placeholder={t('common.message')}
@@ -174,7 +183,7 @@ export function DesktopActivityOverlayQuickReplyComposer(props: Readonly<{
                     onBlur={handleBlur}
                     onPress={stopEventPropagation}
                     onPressIn={stopEventPropagation}
-                    onKeyPress={(event) => handleKeyPress(event.nativeEvent.key)}
+                    onKeyPress={handleKeyPress}
                     onSubmitEditing={(event) => {
                         stopEventPropagation(event);
                         void sendMessage(trimmedDraft);
@@ -199,7 +208,7 @@ export function DesktopActivityOverlayQuickReplyComposer(props: Readonly<{
                         event?.stopPropagation?.();
                         void sendMessage(trimmedDraft);
                     }}
-                    style={[
+                    style={(state) => [
                         createDesktopActivityOverlayInteriorSurfaceStyle(theme, {
                             visualMode: props.visualMode,
                             kind: 'action',
@@ -207,11 +216,14 @@ export function DesktopActivityOverlayQuickReplyComposer(props: Readonly<{
                         styles.sendButton,
                         I18nManager.isRTL ? styles.sendButtonRtl : null,
                         !canSendDraft ? styles.disabledAction : null,
+                        (state as DesktopActivityOverlayPressableInteractionState).focused === true
+                            ? createDesktopActivityOverlayFocusRingStyle(theme)
+                            : null,
                     ]}
                 >
                     <Icon name="arrow-up" size={14} color={theme.colors.overlay.foreground} />
                 </Pressable>
-            </Pressable>
+            </View>
             {targetUnavailable ? (
                 <Text
                     testID="desktop-activity-overlay-quick-reply-no-target"

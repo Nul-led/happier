@@ -3,6 +3,32 @@ import { describe, expect, it } from 'vitest';
 import { resolveConnectedServicesAuthLabel } from './resolveConnectedServicesAuthLabel';
 
 describe('resolveConnectedServicesAuthLabel', () => {
+    it('retains an exact Team resource as the effective source instead of relabelling it native', () => {
+        const result = resolveConnectedServicesAuthLabel({
+            supportedServiceIds: ['service.plugin/mail'],
+            bindingsByServiceId: {
+                'service.plugin/mail': {
+                    source: 'team_resource', resourceId: 'resource-1', deliveryMode: 'brokered',
+                },
+            },
+            profileOptionsByServiceId: {},
+            resolveServiceTitle: () => 'Mail',
+            nativeLabel: 'Native',
+            formatConnectedCountLabel: (count) => `${count} connected`,
+        });
+
+        expect(result).toMatchObject({
+            label: 'Mail',
+            connectedCount: 1,
+            serviceStatesById: {
+                'service.plugin/mail': {
+                    requestedSource: 'team_resource',
+                    effectiveSource: 'team_resource',
+                },
+            },
+        });
+    });
+
     it('uses the native label when every supported service is using local auth', () => {
         expect(resolveConnectedServicesAuthLabel({
             supportedServiceIds: ['anthropic'],

@@ -42,7 +42,7 @@ const addListener = vi.fn((eventName: string, cb: (event: any) => void) => {
 const start = vi.fn();
 const stop = vi.fn();
 const abortRecognition = vi.fn();
-const requestPermissionsAsync = vi.fn(async () => ({ granted: true }));
+const requestPermissionsAsync = vi.fn(async () => ({ granted: true, canAskAgain: true }));
 const isRecognitionAvailable = vi.fn(() => true);
 const listeners: Record<string, (event: any) => void> = {};
 

@@ -10,6 +10,7 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Switch } from '@/components/ui/forms/Switch';
 import { navigateWithBlurOnWeb } from '@/utils/platform/deferOnWeb';
+import { createAdmittedWorkflowRunRoute } from '@/sync/domains/workflows/workflowRunRoute';
 import { t } from '@/text';
 import {
     formatAutomationNextRun,
@@ -70,10 +71,15 @@ export const AutomationListGroup = React.memo((props: Props) => {
 
     const handleRunNow = React.useCallback(async (automationId: string) => {
         if (!mutationsEnabled) return;
-        await runNowController.runNow(automationId, {
+        const admitted = await runNowController.runNow(automationId, {
             isInvocationCurrent: props.isInvocationCurrent,
         });
-    }, [mutationsEnabled, props.isInvocationCurrent, runNowController]);
+        // Only the server's declared correspondence opens a managed Run. A
+        // legacy receipt keeps the incumbent acknowledgement-in-place behaviour.
+        const route = createAdmittedWorkflowRunRoute(admitted?.workflowRun);
+        if (route === null || !props.isInvocationCurrent()) return;
+        navigateWithBlurOnWeb(() => router.push(route as never));
+    }, [mutationsEnabled, props.isInvocationCurrent, router, runNowController]);
 
     const handleSetEnabled = React.useCallback(async (automationId: string, nextEnabled: boolean) => {
         if (

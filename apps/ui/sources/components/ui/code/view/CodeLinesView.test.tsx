@@ -527,7 +527,7 @@ describe('CodeLinesView', () => {
                 );
                 await waitForCodeLinesViewScrollFallback();
 
-                expect(getElementById).toHaveBeenCalledWith('b');
+                expect(getElementById).toHaveBeenCalledWith(expect.stringMatching(/-b$/));
                 expect(scrollIntoView).toHaveBeenCalled();
                 await screen.unmount();
             } finally {
@@ -554,8 +554,8 @@ describe('CodeLinesView', () => {
             };
 
             const getElementById = vi.fn((id: string) => {
-                if (id === 'b') return null; // target line not mounted yet
-                if (id === 'a') return anchorElement; // first rendered row
+                if (id.endsWith('-b')) return null; // target line not mounted yet
+                if (id.endsWith('-a')) return anchorElement; // first rendered row
                 return null;
             });
 

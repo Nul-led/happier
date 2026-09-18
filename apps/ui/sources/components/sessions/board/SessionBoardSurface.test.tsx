@@ -1,0 +1,687 @@
+import * as React from 'react';
+import { act } from 'react-test-renderer';
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+    createSessionSurfaceNoteDocumentV1,
+    type SessionBoardLayoutV1,
+    type SessionBoardMutationV1,
+    type SessionSurfaceItemV1,
+} from '@happier-dev/protocol/sessions/board';
+
+import { renderScreen } from '@/dev/testkit';
+import { t } from '@/text';
+import {
+    projectSessionBoard,
+    type SessionBoardActionOutcome,
+    type SessionBoardActionsPort,
+    type SessionBoardMutationResult,
+    type SessionBoardSnapshot,
+} from '@/sync/domains/session/board';
+
+import { SessionBoardSurface } from './SessionBoardSurface';
+import { useSessionBoardController } from './useSessionBoardController';
+
+/**
+ * The shared Board surface, rendered.
+ *
+ * These are the failures a person meets rather than a type checker: an Add button
+ * that only exists while the Board is empty, a selected view that shows nothing and
+ * says nothing, an item stranded off every view with no way back, and controls for
+ * sources this build cannot actually create.
+ */
+
+function note(title: string): SessionSurfaceItemV1 {
+    return {
+        v: 1,
+        title,
+        frame: 'card',
+        height: { mode: 'auto', fallback: 'regular' },
+        source: { kind: 'declarative', document: createSessionSurfaceNoteDocumentV1(`${title} body`) },
+    } as SessionSurfaceItemV1;
+}
+
+const OK_ACTIONS: SessionBoardActionsPort = {
+    upsertItem: async () => ({ status: 'unavailable', reason: 'board_actions_unavailable' }),
+    removeItem: async () => ({ status: 'unavailable', reason: 'board_actions_unavailable' }),
+    updateLayout: async () => ({ status: 'unavailable', reason: 'board_actions_unavailable' }),
+};
+
+function snapshot(input: Readonly<{
+    layout?: SessionBoardLayoutV1 | null;
+    items?: ReadonlyArray<Readonly<{ itemId: string; item: SessionSurfaceItemV1 }>>;
+    canEdit?: boolean;
+    incomplete?: boolean;
+}>): SessionBoardSnapshot {
+    return projectSessionBoard({
+        layout: input.layout
+            ? { revision: 'rev-layout', outcome: { status: 'ready', value: input.layout } }
+            : undefined,
+        items: new Map((input.items ?? []).map(({ itemId, item }) => [itemId, {
+            revision: `rev-${itemId}`,
+            outcome: { status: 'ready' as const, value: item },
+        }] as const)),
+        capabilities: { readTranscript: true, editSessionRecords: input.canEdit ?? true },
+        freshness: 'fresh',
+        reachability: 'reachable',
+        loading: 'idle',
+        incomplete: input.incomplete ?? false,
+    });
+}
+
+function Harness(props: Readonly<{
+    snapshot: SessionBoardSnapshot;
+    actions?: SessionBoardActionsPort | null;
+    companionItemIds?: ReadonlySet<string>;
+    onAddToCompanion?: (itemId: string) => void;
+    onRemoveFromCompanion?: (itemId: string) => void;
+    onPrepareEncryption?: () => void;
+    refresh?: () => void | Promise<void>;
+    host?: 'details' | 'mobileCockpit';
+}>): React.ReactElement {
+    const controller = useSessionBoardController({
+        sessionId: 'session-1',
+        serverId: 'home-1',
+        binding: { status: 'ready', snapshot: props.snapshot, refresh: props.refresh ?? (() => {}) },
+        actions: props.actions === undefined ? OK_ACTIONS : props.actions,
+        ...(props.onPrepareEncryption ? { onPrepareEncryption: props.onPrepareEncryption } : {}),
+    });
+    return (
+        <SessionBoardSurface
+            sessionId="session-1"
+            controller={controller}
+            host={props.host ?? 'details'}
+            resolvePrimaryHost={() => props.host ?? 'details'}
+            density="full"
+            layout={props.host === 'mobileCockpit' ? 'single' : 'grid'}
+            {...(props.companionItemIds ? { companionItemIds: props.companionItemIds } : {})}
+            {...(props.onAddToCompanion ? { onAddToCompanion: props.onAddToCompanion } : {})}
+            {...(props.onRemoveFromCompanion ? { onRemoveFromCompanion: props.onRemoveFromCompanion } : {})}
+        />
+    );
+}
+
+/**
+ * The operation set one card publishes. The overflow is a person's only route to
+ * these, so its contents are the card's contract rather than an internal detail.
+ */
+function publishedActionIds(
+    screen: Awaited<ReturnType<typeof renderScreen>>,
+    overflowTriggerTestID: string,
+): readonly string[] {
+    const owner = screen.tree.root.findAll(
+        (node) => Array.isArray((node.props as { actions?: unknown }).actions)
+            && (node.props as { overflowTriggerTestID?: string }).overflowTriggerTestID === overflowTriggerTestID,
+        { deep: true },
+    );
+    const actions = (owner.at(-1)?.props as { actions?: ReadonlyArray<{ id: string }> } | undefined)?.actions ?? [];
+    return actions.map((action) => action.id);
+}
+
+const POPULATED: SessionBoardLayoutV1 = {
+    v: 1,
+    tabs: [{ id: 'overview', title: 'Overview', items: [{ itemId: 'note-1', width: 'medium' }] }],
+} as SessionBoardLayoutV1;
+
+const MOVABLE: SessionBoardLayoutV1 = {
+    v: 1,
+    tabs: [{
+        id: 'overview',
+        title: 'Overview',
+        items: [
+            { itemId: 'note-1', width: 'medium' },
+            { itemId: 'note-2', width: 'medium' },
+        ],
+    }],
+} as SessionBoardLayoutV1;
+
+function mutableLayout(layout: SessionBoardLayoutV1) {
+    return {
+        v: 1 as const,
+        tabs: layout.tabs.map((tab) => ({
+            id: tab.id,
+            title: tab.title,
+            items: tab.items.map((item) => ({ ...item })),
+        })),
+    };
+}
+
+describe('SessionBoardSurface', () => {
+    it('keeps an ambiguous mutation visible and blocked until refresh enables a deliberate retry', async () => {
+        const mutationRequest: SessionBoardMutationV1 = {
+            operation: 'update_layout',
+            expectedLayoutRevision: 'rev-layout',
+            layoutContent: { t: 'plain', v: mutableLayout(POPULATED) },
+        };
+        let attempts = 0;
+        const actions: SessionBoardActionsPort = {
+            upsertItem: OK_ACTIONS.upsertItem,
+            removeItem: OK_ACTIONS.removeItem,
+            updateLayout: async (
+                input,
+            ): Promise<SessionBoardActionOutcome<SessionBoardMutationResult>> => {
+                attempts += 1;
+                if (attempts === 1) {
+                    return {
+                        status: 'outcome_unknown',
+                        recovery: {
+                            v: 1,
+                            actionId: 'session.board.layout.update',
+                            serverId: 'home-1',
+                            sessionId: 'session-1',
+                            requestBody: JSON.stringify(mutationRequest),
+                            mutationRequest,
+                            intent: input,
+                        },
+                    };
+                }
+                return {
+                    status: 'ok',
+                    value: {
+                        v: 1,
+                        serverId: 'home-1',
+                        sessionId: 'session-1',
+                        result: { operation: 'update_layout', outcome: 'updated', layoutRevision: 'rev-layout-2' },
+                        destination: null,
+                    },
+                };
+            },
+        };
+        const refresh = vi.fn();
+        const initial = snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] });
+        const screen = await renderScreen(
+            <Harness snapshot={initial} actions={actions} refresh={refresh} />,
+        );
+        const menu = screen.tree.root.findAll(
+            (node) => (node.props as { overflowTriggerTestID?: string }).overflowTriggerTestID
+                === 'session-board-item-note-1-actions',
+            { deep: true },
+        ).at(-1)?.props as { actions?: ReadonlyArray<{ id: string; onPress: () => void }> } | undefined;
+
+        await act(async () => {
+            await menu?.actions?.find((action) => action.id === 'resize-full')?.onPress();
+        });
+        expect(refresh).toHaveBeenCalledOnce();
+        expect(screen.findByTestId('session-board-mutation-recovery')).not.toBeNull();
+        expect(screen.findByTestId('session-board-mutation-recovery-retry')).toBeNull();
+
+        // A completed repository refresh with unchanged canonical state cannot
+        // prove whether the first request ran. It may expose retry, but must not
+        // replay the mutation itself.
+        await screen.update(
+            <Harness
+                snapshot={{ ...initial, freshness: 'stale', loading: 'refreshing' }}
+                actions={actions}
+                refresh={refresh}
+            />,
+        );
+        await screen.update(
+            <Harness
+                snapshot={snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] })}
+                actions={actions}
+                refresh={refresh}
+            />,
+        );
+        expect(attempts).toBe(1);
+        const retry = screen.findByTestId('session-board-mutation-recovery-retry');
+        expect(retry).not.toBeNull();
+
+        await act(async () => { await retry?.props.onPress?.(); });
+        expect(attempts).toBe(2);
+        expect(screen.findByTestId('session-board-mutation-recovery')).toBeNull();
+    });
+
+    it.each(['details', 'mobileCockpit'] as const)(
+        'moves focus to the mounted nearest Board view after the selected view is removed in the %s layout',
+        async (host) => {
+            const initial = snapshot({
+                layout: {
+                    v: 1,
+                    tabs: [
+                        { id: 'planning', title: 'Planning', items: [] },
+                        { id: 'research', title: 'Research', items: [] },
+                        { id: 'decisions', title: 'Decisions', items: [] },
+                    ],
+                } as SessionBoardLayoutV1,
+            });
+            const afterRemoval = snapshot({
+                layout: {
+                    v: 1,
+                    tabs: [
+                        { id: 'planning', title: 'Planning', items: [] },
+                        { id: 'decisions', title: 'Decisions', items: [] },
+                    ],
+                } as SessionBoardLayoutV1,
+            });
+            const focusByTestId = new Map<string, ReturnType<typeof vi.fn>>();
+            const screen = await renderScreen(<Harness host={host} snapshot={initial} />, {
+                createNodeMock: (element) => {
+                    const testID = (element.props as { testID?: string }).testID;
+                    if (typeof testID !== 'string' || !testID.startsWith('session-board-views-view-')) return {};
+                    let focus = focusByTestId.get(testID);
+                    if (!focus) {
+                        focus = vi.fn();
+                        focusByTestId.set(testID, focus);
+                    }
+                    return { focus };
+                },
+            });
+
+            await act(async () => {
+                screen.findByTestId('session-board-views-view-research')?.props.onPress?.();
+            });
+            screen.findByTestId('session-board-views-view-research')?.props.onFocus?.();
+            await screen.update(<Harness host={host} snapshot={afterRemoval} />);
+
+            expect(focusByTestId.get('session-board-views-view-decisions')).toHaveBeenCalledOnce();
+            expect(screen.findByTestId('session-board-views-view-decisions')?.props.accessibilityState).toEqual({
+                selected: true,
+            });
+            expect(screen.findHostByTestId('session-board-scroll')?.props.accessibilityLabelledBy).toBe(
+                screen.findByTestId('session-board-views-view-decisions')?.props.nativeID,
+            );
+        },
+    );
+
+    it('keeps placed and recovered items reachable in one filtered mobile Board', async () => {
+        const screen = await renderScreen(
+            <Harness
+                host="mobileCockpit"
+                snapshot={snapshot({
+                    layout: POPULATED,
+                    items: [
+                        { itemId: 'note-1', item: note('Release plan') },
+                        { itemId: 'recovered-1', item: note('Meeting notes') },
+                    ],
+                })}
+            />,
+        );
+
+        expect(screen.getTextContent()).toContain('Release plan');
+        expect(screen.getTextContent()).toContain('Meeting notes');
+        await act(async () => {
+            screen.findByTestId('session-board-search:input')?.props.onChangeText?.('meeting');
+        });
+        expect(screen.getTextContent()).not.toContain('Release plan');
+        expect(screen.getTextContent()).toContain('Meeting notes');
+        expect(screen.root.findAllByProps({ testID: 'session-board-scroll' })).toHaveLength(1);
+    });
+
+    it('offers the mounted encryption recovery action when the shared layout is locked', async () => {
+        const onPrepareEncryption = vi.fn();
+        const locked = projectSessionBoard({
+            layout: { revision: 'rev-layout', outcome: { status: 'locked' } },
+            items: new Map(),
+            capabilities: { readTranscript: true, editSessionRecords: true },
+            freshness: 'fresh',
+            reachability: 'reachable',
+            loading: 'idle',
+            incomplete: false,
+        });
+        const screen = await renderScreen(
+            <Harness snapshot={locked} onPrepareEncryption={onPrepareEncryption} />,
+        );
+
+        const action = screen.findByTestId('session-board-state-action');
+        expect(action?.props.accessibilityLabel).toBeTruthy();
+        // The press is a real interaction: the recovery control renders its own
+        // pressed feedback, so committing it outside `act` left that state update
+        // unobserved and reported as a warning rather than being asserted on.
+        await act(async () => { await action?.props.onPress?.(); });
+        expect(onPrepareEncryption).toHaveBeenCalledTimes(1);
+    });
+
+    it('routes an existing Board widget through the viewer-local Companion action', async () => {
+        const add = vi.fn();
+        const remove = vi.fn();
+        const populated = snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] });
+
+        const addScreen = await renderScreen(
+            <Harness snapshot={populated} onAddToCompanion={add} onRemoveFromCompanion={remove} />,
+        );
+        const addActions = (addScreen.tree.root.findAll(
+            (node) => (node.props as { overflowTriggerTestID?: string }).overflowTriggerTestID === 'session-board-item-note-1-actions',
+            { deep: true },
+        ).at(-1)?.props as { actions?: ReadonlyArray<{ id: string; onPress: () => void }> } | undefined)?.actions ?? [];
+        addActions.find((action) => action.id === 'add-to-companion')?.onPress();
+        expect(add).toHaveBeenCalledWith('note-1');
+
+        const removeScreen = await renderScreen(
+            <Harness
+                snapshot={populated}
+                companionItemIds={new Set(['note-1'])}
+                onAddToCompanion={add}
+                onRemoveFromCompanion={remove}
+            />,
+        );
+        const removeActions = (removeScreen.tree.root.findAll(
+            (node) => (node.props as { overflowTriggerTestID?: string }).overflowTriggerTestID === 'session-board-item-note-1-actions',
+            { deep: true },
+        ).at(-1)?.props as { actions?: ReadonlyArray<{ id: string; onPress: () => void }> } | undefined)?.actions ?? [];
+        removeActions.find((action) => action.id === 'remove-from-companion')?.onPress();
+        expect(remove).toHaveBeenCalledWith('note-1');
+    });
+
+    it('keeps Add reachable after the Board has content', async () => {
+        const screen = await renderScreen(
+            <Harness snapshot={snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] })} />,
+        );
+
+        expect(screen.findHostByTestId('session-board-add-note')).not.toBeNull();
+        expect(screen.findHostByTestId('session-board-empty')).toBeNull();
+    });
+
+    it('starts direct manipulation only from a visible move handle', async () => {
+        const screen = await renderScreen(
+            <Harness snapshot={snapshot({
+                layout: MOVABLE,
+                items: [
+                    { itemId: 'note-1', item: note('Plan') },
+                    { itemId: 'note-2', item: note('Review') },
+                ],
+            })} />,
+        );
+
+        const firstHandle = screen.findHostByTestId('session-board-item-note-1-move-handle');
+        const secondHandle = screen.findHostByTestId('session-board-item-note-2-move-handle');
+        expect(firstHandle).not.toBeNull();
+        expect(secondHandle).not.toBeNull();
+        expect(firstHandle?.props.accessibilityLabel).toContain('Plan');
+        // The value is an authored phrase, not "1 / 2": a screen reader reads a
+        // slash aloud, and no locale ever saw that shape.
+        expect(firstHandle?.props.accessibilityValue).toEqual({
+            text: t('sessionBoard.item.movePosition', { position: 1, total: 2 }),
+        });
+        expect(secondHandle?.props.accessibilityValue).toEqual({
+            text: t('sessionBoard.item.movePosition', { position: 2, total: 2 }),
+        });
+        expect(screen.findHostByTestId('session-board-item-note-1-body')?.props.gesture).toBeUndefined();
+    });
+
+    it('renders no Add control for a source this build cannot create', async () => {
+        const screen = await renderScreen(<Harness snapshot={snapshot({})} />);
+
+        // The empty state still invites the person in…
+        expect(screen.findHostByTestId('session-board-add-note')).not.toBeNull();
+        // …but never with a control whose producer does not exist.
+        expect(screen.findHostByTestId('session-board-add-interactiveView')).toBeNull();
+        expect(screen.findHostByTestId('session-board-add-fromPlugins')).toBeNull();
+    });
+
+    it('offers no editing chrome at all to a viewer who cannot edit', async () => {
+        const screen = await renderScreen(
+            <Harness snapshot={snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }], canEdit: false })} />,
+        );
+
+        expect(screen.findHostByTestId('session-board-add-note')).toBeNull();
+        // Not one editing control, and no menu to hide them in either.
+        expect(screen.findHostByTestId('session-board-item-note-1-actions')).toBeNull();
+        expect(screen.findHostByTestId('session-board-item-note-1-move-handle')).toBeNull();
+        // The content itself stays fully readable.
+        expect(screen.getTextContent()).toContain('Plan');
+    });
+
+    it('offers a view move only toward a neighbour that can anchor it', async () => {
+        // The layout Action silently returns when there is nothing to anchor
+        // against, so an "earlier" entry on the first view is a control the
+        // person can press with no observable result.
+        const screen = await renderScreen(
+            <Harness
+                snapshot={snapshot({
+                    layout: {
+                        v: 1,
+                        tabs: [
+                            { id: 'overview', title: 'Overview', items: [] },
+                            { id: 'research', title: 'Research', items: [] },
+                        ],
+                    } as SessionBoardLayoutV1,
+                    items: [],
+                })}
+            />,
+        );
+
+        const owner = screen.tree.root.findAll(
+            (node) => Array.isArray((node.props as { actions?: unknown }).actions)
+                && (node.props as { overflowTriggerTestID?: string }).overflowTriggerTestID === 'session-board-view-actions',
+            { deep: true },
+        ).at(-1);
+        const ids = ((owner?.props as { actions: { id: string }[] } | undefined)?.actions ?? [])
+            .map((action) => action.id);
+
+        expect(ids).toContain('view-move-after');
+        expect(ids).not.toContain('view-move-before');
+    });
+
+    it('explains a selected view that has no placements', async () => {
+        const screen = await renderScreen(
+            <Harness
+                snapshot={snapshot({
+                    layout: {
+                        v: 1,
+                        tabs: [
+                            { id: 'overview', title: 'Overview', items: [] },
+                            { id: 'research', title: 'Research', items: [{ itemId: 'note-1', width: 'medium' }] },
+                        ],
+                    } as SessionBoardLayoutV1,
+                    items: [{ itemId: 'note-1', item: note('Plan') }],
+                })}
+            />,
+        );
+
+        expect(screen.findHostByTestId('session-board-empty-view')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('Nothing in this view');
+    });
+
+    it('labels the active tabpanel with the selected Board view', async () => {
+        const screen = await renderScreen(
+            <Harness
+                snapshot={snapshot({
+                    layout: {
+                        v: 1,
+                        tabs: [
+                            { id: 'overview', title: 'Overview', items: [] },
+                            { id: 'research notes', title: 'Research', items: [] },
+                        ],
+                    } as SessionBoardLayoutV1,
+                    items: [],
+                })}
+            />,
+        );
+
+        const selectedTab = screen.findByTestId('session-board-views-view-overview');
+        const panel = screen.findHostByTestId('session-board-scroll');
+        // `tabpanel` is an ARIA role, carried by `role`; React Native's
+        // `accessibilityRole` union has no such member.
+        expect(panel?.props.role).toBe('tabpanel');
+        expect(panel?.props.nativeID).toBeTruthy();
+        expect(panel?.props['aria-labelledby']).toBe(selectedTab?.props.nativeID);
+        expect(panel?.props.accessibilityLabelledBy).toBe(selectedTab?.props.nativeID);
+    });
+
+    it('surfaces an item the shared layout places nowhere, with a way back onto the Board', async () => {
+        const screen = await renderScreen(
+            <Harness
+                snapshot={snapshot({
+                    layout: POPULATED,
+                    items: [
+                        { itemId: 'note-1', item: note('Plan') },
+                        { itemId: 'orphan-1', item: note('Stranded') },
+                    ],
+                })}
+            />,
+        );
+
+        expect(screen.findHostByTestId('session-board-recovered')).not.toBeNull();
+        expect(screen.findByTestId('session-board-recovered-pin-orphan-1')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('Stranded');
+    });
+
+    // Resize, reorder, Move to view and Remove from this view all address a
+    // placement. A recovered item has none, so every one of them would be
+    // answered `session_board_item_not_found` by the layout owner.
+    it('publishes no placement-scoped operations on a recovered item', async () => {
+        const screen = await renderScreen(
+            <Harness
+                snapshot={snapshot({
+                    layout: {
+                        v: 1,
+                        tabs: [
+                            { id: 'overview', title: 'Overview', items: [{ itemId: 'note-1', width: 'medium' }] },
+                            { id: 'research', title: 'Research', items: [] },
+                        ],
+                    } as SessionBoardLayoutV1,
+                    items: [
+                        { itemId: 'note-1', item: note('Plan') },
+                        { itemId: 'orphan-1', item: note('Stranded') },
+                    ],
+                })}
+            />,
+        );
+
+        const placedIds = publishedActionIds(screen, 'session-board-item-note-1-actions');
+        const recoveredIds = publishedActionIds(screen, 'session-board-item-orphan-1-actions');
+
+        // The placed card is the control: it keeps the full geometry/movement set.
+        expect(placedIds).toContain('resize-medium');
+        expect(placedIds).toContain('move-view-research');
+
+        expect(recoveredIds.filter((id) => id.startsWith('resize-'))).toEqual([]);
+        expect(recoveredIds.filter((id) => id.startsWith('move-'))).toEqual([]);
+        expect(recoveredIds).not.toContain('unpin');
+        // Pin back onto the Board and delete the shared record both still work.
+        expect(screen.findByTestId('session-board-recovered-pin-orphan-1')).not.toBeNull();
+        expect(recoveredIds).toContain('remove');
+    });
+
+    it('renders one item full-content on its expanded route instead of the grid', async () => {
+        function FocusedHarness(): React.ReactElement {
+            const controller = useSessionBoardController({
+                sessionId: 'session-1',
+                serverId: 'home-1',
+                binding: {
+                    status: 'ready',
+                    snapshot: snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] }),
+                },
+                actions: OK_ACTIONS,
+            });
+            return (
+                <SessionBoardSurface
+                    sessionId="session-1"
+                    controller={controller}
+                    host="details"
+                    resolvePrimaryHost={() => 'details'}
+                    density="full"
+                    layout="grid"
+                    focusedItemId="note-1"
+                    onLeaveFocusedItem={() => undefined}
+                />
+            );
+        }
+
+        const screen = await renderScreen(<FocusedHarness />);
+        expect(screen.findHostByTestId('session-board-focused')).not.toBeNull();
+        expect(screen.findByTestId('session-board-focused-back')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('Plan');
+    });
+
+    it('keeps an exact removed item route in its focused shell instead of falling back to the Board', async () => {
+        function RemovedFocusedHarness(): React.ReactElement {
+            const controller = useSessionBoardController({
+                sessionId: 'session-1',
+                serverId: 'home-1',
+                binding: { status: 'ready', snapshot: snapshot({ layout: POPULATED, items: [] }) },
+                actions: OK_ACTIONS,
+            });
+            return (
+                <SessionBoardSurface
+                    sessionId="session-1"
+                    controller={controller}
+                    host="details"
+                    resolvePrimaryHost={() => 'details'}
+                    density="full"
+                    layout="grid"
+                    focusedItemId="removed-note"
+                    onLeaveFocusedItem={() => undefined}
+                />
+            );
+        }
+
+        const screen = await renderScreen(<RemovedFocusedHarness />);
+        expect(screen.findHostByTestId('session-board-focused')).not.toBeNull();
+        expect(screen.findByTestId('session-board-focused-back')).not.toBeNull();
+        expect(screen.findHostByTestId('session-board-item-removed-note-state')).not.toBeNull();
+        expect(screen.findHostByTestId('session-board-scroll')).toBeNull();
+    });
+
+    it('keeps an unresolved exact item route loading while the Board inventory is incomplete', async () => {
+        function LoadingFocusedHarness(): React.ReactElement {
+            const controller = useSessionBoardController({
+                sessionId: 'session-1',
+                serverId: 'home-1',
+                binding: {
+                    status: 'ready',
+                    snapshot: snapshot({ layout: POPULATED, items: [], incomplete: true }),
+                },
+                actions: OK_ACTIONS,
+            });
+            return (
+                <SessionBoardSurface
+                    sessionId="session-1"
+                    controller={controller}
+                    host="details"
+                    resolvePrimaryHost={() => 'details'}
+                    density="full"
+                    layout="grid"
+                    focusedItemId="pending-note"
+                    onLeaveFocusedItem={() => undefined}
+                />
+            );
+        }
+
+        const screen = await renderScreen(<LoadingFocusedHarness />);
+        expect(screen.findHostByTestId('session-board-focused')).not.toBeNull();
+        expect(screen.findHostByTestId('session-board-item-pending-note-state-loading-spinner')).not.toBeNull();
+        expect(screen.findHostByTestId('session-board-scroll')).toBeNull();
+    });
+
+    it('keeps the note editor visible inside the expanded Details composition', async () => {
+        function FocusedEditorHarness(): React.ReactElement {
+            const controller = useSessionBoardController({
+                sessionId: 'session-1',
+                serverId: 'home-1',
+                binding: {
+                    status: 'ready',
+                    snapshot: snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] }),
+                },
+                actions: OK_ACTIONS,
+            });
+            return (
+                <SessionBoardSurface
+                    sessionId="session-1"
+                    controller={controller}
+                    host="details"
+                    resolvePrimaryHost={() => 'details'}
+                    density="full"
+                    layout="grid"
+                    focusedItemId="note-1"
+                    editor={<React.Fragment><React.Fragment key="editor" /></React.Fragment>}
+                />
+            );
+        }
+
+        const screen = await renderScreen(<FocusedEditorHarness />);
+        expect(screen.findHostByTestId('session-board-focused-editor')).not.toBeNull();
+    });
+
+    it('draws no write affordance while no Board Action producer is bound', async () => {
+        const screen = await renderScreen(
+            <Harness
+                snapshot={snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] })}
+                actions={null}
+            />,
+        );
+
+        expect(screen.findHostByTestId('session-board-add-note')).toBeNull();
+        expect(screen.findHostByTestId('session-board-item-note-1-actions')).toBeNull();
+    });
+});

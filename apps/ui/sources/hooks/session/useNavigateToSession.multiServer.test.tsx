@@ -10,6 +10,7 @@ import { installSessionHooksCommonModuleMocks } from './sessionHooksTestHelpers'
 const routerNavigateSpy = vi.fn();
 const setActiveServerAndSwitchSpy = vi.fn(async () => false);
 const refreshFromActiveServerSpy = vi.fn(async () => {});
+const markSessionOpenRequestedSpy = vi.fn();
 const resolveSessionTargetServerIdSpy = vi.fn<(sessionId: string, fallbackServerId?: string | null) => string | null>();
 const preferredServerIdState = vi.hoisted(() => ({
     current: 'preferred-server' as string | null,
@@ -41,6 +42,10 @@ vi.mock('@/components/sessions/model/resolveSessionTargetServerId', () => ({
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId', () => ({
     resolvePreferredServerIdForSessionId: () => preferredServerIdState.current,
+}));
+
+vi.mock('@/sync/runtime/performance/sessionUiTelemetry', () => ({
+    markSessionOpenRequestedForSessionUiTelemetry: markSessionOpenRequestedSpy,
 }));
 
 describe('useNavigateToSession (multi-server)', () => {
@@ -86,6 +91,41 @@ describe('useNavigateToSession (multi-server)', () => {
         await act(async () => {
             await navigationPromise;
         });
+    });
+
+    it('keeps the exact target route when the parallel active-Home switch fails', async () => {
+        routerNavigateSpy.mockClear();
+        setActiveServerAndSwitchSpy.mockClear();
+        let rejectSwitch: ((error: Error) => void) | undefined;
+        setActiveServerAndSwitchSpy.mockImplementation(() => new Promise<boolean>((_resolve, reject) => {
+            rejectSwitch = reject;
+        }));
+
+        const { useNavigateToSession } = await import('./useNavigateToSession');
+        let navigateToSession: ReturnType<typeof useNavigateToSession> | null = null;
+        function Probe() {
+            navigateToSession = useNavigateToSession();
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        await act(async () => {
+            await navigateToSession!('same-session', { serverId: 'home-b' });
+        });
+        expect(routerNavigateSpy).toHaveBeenCalledWith(
+            '/session/same-session?serverId=home-b',
+            expect.any(Object),
+        );
+
+        await act(async () => {
+            rejectSwitch?.(new Error('switch failed'));
+            await Promise.resolve();
+        });
+        expect(routerNavigateSpy).toHaveBeenCalledTimes(1);
+        expect(routerNavigateSpy).toHaveBeenLastCalledWith(
+            '/session/same-session?serverId=home-b',
+            expect.any(Object),
+        );
     });
 
     it('requests switch orchestration when serverId is provided', async () => {
@@ -220,5 +260,38 @@ describe('useNavigateToSession (multi-server)', () => {
 
         expect(resolveSessionTargetServerIdSpy).not.toHaveBeenCalled();
         expect(routerNavigateSpy).toHaveBeenCalledWith('/session/sess_whitespace?serverId=preferred-server', expect.any(Object));
+    });
+
+    it('hands an unresolved bare Session id to the unqualified route instead of guessing a Home', async () => {
+        routerNavigateSpy.mockClear();
+        setActiveServerAndSwitchSpy.mockClear();
+        markSessionOpenRequestedSpy.mockClear();
+        preferredServerIdState.current = null;
+
+        const { useNavigateToSession } = await import('./useNavigateToSession');
+
+        let navigateToSession: ReturnType<typeof useNavigateToSession> | null = null;
+        function Probe() {
+            navigateToSession = useNavigateToSession();
+            return null;
+        }
+
+        await renderScreen(React.createElement(Probe));
+
+        await act(async () => {
+            await navigateToSession!('shared-session', { query: { jumpSeq: 7 } });
+        });
+
+        // Ambiguity and absence belong to the route's own chooser/hydration owner:
+        // no Home switch may pick a Session on the caller's behalf, but the tap
+        // must still open something.
+        expect(setActiveServerAndSwitchSpy).not.toHaveBeenCalled();
+        expect(markSessionOpenRequestedSpy).toHaveBeenCalledWith({
+            sessionId: 'shared-session',
+            source: 'navigate-hook',
+        });
+        expect(routerNavigateSpy).toHaveBeenCalledTimes(1);
+        expect(routerNavigateSpy).toHaveBeenCalledWith('/session/shared-session?jumpSeq=7', expect.any(Object));
+        expect(routerNavigateSpy.mock.calls[0]?.[1]?.dangerouslySingular?.()).toBe('session');
     });
 });

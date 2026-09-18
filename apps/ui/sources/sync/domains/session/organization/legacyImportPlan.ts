@@ -274,6 +274,9 @@ function readLegacyGroupOrder(params: {
             serverId: params.serverId,
             scopeKey: normalizedScopeKey,
             itemKeys,
+            // Released legacy settings hold `${serverId}:${sessionId}` item keys, which only
+            // this importer produces; live surfaces pass exact published addresses instead.
+            legacyServerScopedItemKeys: true,
         });
         if (!request || request.entries.length === 0) continue;
         orderEntries.push(
@@ -322,6 +325,9 @@ function readLegacyWorkspaceOrder(params: {
             serverId: params.serverId,
             scopeKey,
             itemKeys: readStringArray(rawItemKeys),
+            // Released legacy settings hold `server:<serverId>:workspaces` scope keys, already
+            // narrowed to this Home above; live surfaces pass the canonical scope key instead.
+            legacyServerScopedScopeKey: true,
         });
         if (!request || request.entries.length === 0) continue;
         orderEntries.push(

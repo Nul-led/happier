@@ -97,12 +97,13 @@ export function ReviewCommentsDraftsModal(props: CustomModalInjectedProps & Read
         onClose();
         const href = buildSessionFileDeepLink({
             sessionId,
+            serverId: props.reviewScope?.serverId,
             filePath: draft.filePath,
             source: draft.source,
             anchor: draft.anchor,
         });
         router.push(href as any);
-    }, [onClose, router, sessionId]);
+    }, [onClose, props.reviewScope?.serverId, router, sessionId]);
 
     const includedCount = drafts.filter(isReviewCommentDraftIncludedInPrompt).length;
 

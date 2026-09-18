@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { SessionAgentActivityHeadlineV1 } from '@happier-dev/protocol';
 
 import { deriveAgentActivityEntries } from './deriveAgentActivityEntries';
-import type { AgentActivityLocalEntry } from './types';
+import { NO_SESSION_AGENT_ACTIVITY_ATTENTION, type AgentActivityLocalEntry } from './types';
 
 function headline(
     entries: Readonly<{
@@ -34,6 +34,7 @@ function local(overrides: Partial<AgentActivityLocalEntry> = {}): AgentActivityL
         runId: null,
         sidechainId: 'toolu_1',
         subagentId: 'subagent:local-1',
+        attentionKinds: NO_SESSION_AGENT_ACTIVITY_ATTENTION,
         ...overrides,
     };
 }
@@ -255,5 +256,82 @@ describe('deriveAgentActivityEntries', () => {
         });
 
         expect(merged.evidenceAtMsById.get('workflow_agent:wf_1:toolu_1')).toBe(12_000);
+    });
+
+    it('keeps a locally observed question distinguishable from a locally observed approval', () => {
+        const merged = deriveAgentActivityEntries({
+            headline: null,
+            local: [
+                local({ id: 'a', handle: 'toolu_a', status: 'waiting', attentionKinds: ['user_action'] }),
+                local({ id: 'b', handle: 'toolu_b', status: 'waiting', attentionKinds: ['permission'] }),
+                local({
+                    id: 'c',
+                    handle: 'toolu_c',
+                    status: 'waiting',
+                    attentionKinds: ['permission', 'user_action'],
+                }),
+            ],
+        });
+
+        expect(merged.entries.map((entry) => entry.attentionKinds)).toEqual([
+            ['user_action'],
+            ['permission'],
+            ['permission', 'user_action'],
+        ]);
+        expect(merged.entries.every((entry) => entry.status === 'waiting')).toBe(true);
+    });
+
+    it('gives a headline-only entry no attention, because no local evidence was observed for it', () => {
+        const merged = deriveAgentActivityEntries({
+            headline: headline({
+                active: [{
+                    entryId: 'workflow_agent:wf_1:toolu_unloaded',
+                    kind: 'workflow_agent',
+                    title: 'Published title',
+                    status: 'running',
+                    updatedAt: 4_000,
+                }],
+            }),
+            local: [],
+        });
+
+        expect(merged.entries[0]?.detailState).toBe('unloaded');
+        expect(merged.entries[0]?.attentionKinds).toEqual([]);
+    });
+
+    it('drops attention once the headline reports the work terminal, so no one is sent to a dead prompt', () => {
+        const merged = deriveAgentActivityEntries({
+            headline: headline({
+                active: [{
+                    entryId: 'workflow_agent:wf_1:toolu_1',
+                    kind: 'workflow_agent',
+                    title: 'Published title',
+                    status: 'succeeded',
+                    updatedAt: 4_000,
+                }],
+            }),
+            local: [local({ status: 'waiting', attentionKinds: ['permission'] })],
+        });
+
+        expect(merged.entries[0]?.status).toBe('succeeded');
+        expect(merged.entries[0]?.attentionKinds).toEqual([]);
+    });
+
+    it('keeps attention when the headline is non-terminal and the local source escalated to waiting', () => {
+        const merged = deriveAgentActivityEntries({
+            headline: headline({
+                active: [{
+                    entryId: 'workflow_agent:wf_1:toolu_1',
+                    kind: 'workflow_agent',
+                    title: 'Published title',
+                    status: 'running',
+                    updatedAt: 4_000,
+                }],
+            }),
+            local: [local({ status: 'waiting', attentionKinds: ['user_action'] })],
+        });
+
+        expect(merged.entries[0]?.status).toBe('waiting');
+        expect(merged.entries[0]?.attentionKinds).toEqual(['user_action']);
     });
 });

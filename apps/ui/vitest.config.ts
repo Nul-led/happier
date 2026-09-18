@@ -67,6 +67,14 @@ const workspacePackages: readonly WorkspacePackageSpec[] = [
         packageSourceRoot: resolve('../../packages/connection-supervisor/src'),
     },
     {
+        packageName: '@happier-dev/iroh-native',
+        packageSourceRoot: resolve('../../packages/iroh-native/src'),
+    },
+    {
+        packageName: '@happier-dev/release-runtime',
+        packageSourceRoot: resolve('../../packages/release-runtime/src'),
+    },
+    {
         // The shared presentation layer (§3.10). Core adapters consume it from
         // source so a component change is caught here rather than only after a
         // package rebuild.
@@ -128,7 +136,14 @@ export default defineConfig({
                 // `@react-navigation/elements` (reached from `native-stack`, which the plugin
                 // Module Federation host share scope provides) additionally imports a `.png`
                 // Node's ESM loader cannot open; inlining lets Vite resolve it as an asset.
-                inline: [/@react-navigation\/native/, /@react-navigation\/elements/],
+                // `@legendapp/list/section-list` imports `react-native` directly.
+                // Externalized, Node resolves that to React Native's Flow
+                // entrypoint (`import typeof`) and the canonical
+                // `@/components/ui/lists/virtualized` barrel cannot be imported
+                // at all — which forced surfaces to mock the whole list owner
+                // instead of only the third-party recycler underneath it.
+                // Inlining lets Vite apply the node-safe React Native alias.
+                inline: [/@react-navigation\/native/, /@react-navigation\/elements/, /@legendapp\/list/],
             },
         },
         env: {
@@ -249,6 +264,22 @@ export default defineConfig({
             { find: '@/platform/hmacSha512', replacement: resolve('./sources/platform/hmacSha512.node.ts') },
             { find: '@/platform/randomUUID', replacement: resolve('./sources/platform/randomUUID.node.ts') },
             { find: '@/platform/digest', replacement: resolve('./sources/platform/digest.node.ts') },
+            // `CodeEditor.tsx` picks its platform surface with a runtime `Platform.OS`
+            // `require('./CodeEditor.native')`. Vite-node injects `createRequire`, so that
+            // call is Node's CJS loader: it cannot resolve a `.tsx` file, and even when it
+            // can it loads the target outside the Vitest module graph — which is exactly what
+            // `sources/dev/vitestRnShim.ts` refuses. Every consumer graph that merely reaches
+            // the editor therefore failed to collect, and surfaces worked around it with a
+            // local `vi.mock` of an internal owner. Resolve the real web surface for the base
+            // specifier instead: the unsupported require never runs, and the implementation
+            // loads through the module graph with this run's aliases and stubs applied.
+            // `MonacoEditorSurface.web.tsx` guards on `window`/`document`, so it is node-safe.
+            // The concrete surfaces keep their own coverage in
+            // `sources/components/ui/code/editor/surfaces/*.test.tsx`, which import them directly.
+            {
+                find: /^@\/components\/ui\/code\/editor\/CodeEditor$/,
+                replacement: resolve('./sources/components/ui/code/editor/CodeEditor.web.tsx'),
+            },
             { find: '@', replacement: resolve('./sources') },
         ],
     },

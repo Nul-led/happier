@@ -161,6 +161,7 @@ const featureEnabledState = vi.hoisted(() => ({
   'files.reviewComments': false,
   'sessions.usageLimitRecovery': false,
   'connectedServices.quotas': false,
+  'connectedServices.poolQuotaLimitSelection': false,
 }));
 const controlMachineTargetState = vi.hoisted(() => ({
   current: {
@@ -190,6 +191,10 @@ const reviewCommentDraftsState = vi.hoisted(() => ({ current: [] as any[] }));
 const sessionMessagesState = vi.hoisted(() => ({ current: [] as any[] }));
 const draftHookState = vi.hoisted(() => ({
   valuesBySessionId: new Map<string, string>(),
+}));
+const exactAccountBindingState = vi.hoisted(() => ({
+  requestedServerIds: [] as readonly string[],
+  current: null as any,
 }));
 const quotaSnapshotsState = vi.hoisted(() => ({
   current: {} as Record<string, any>,
@@ -243,7 +248,8 @@ const storageState = vi.hoisted(() => ({
   // with these objects; per-test mutations apply in place via Object.assign/
   // delete rather than reassignment.
   machines: {} as Record<string, any>,
-  sessionListRenderables: {} as Record<string, any>,
+  sessionListRowsByServerId: {} as Record<string, Record<string, any>>,
+  ordinarySessionListMembershipByServerId: {} as Record<string, readonly string[]>,
   sessionPending: {} as Record<string, any>,
   sessionMessages: {} as Record<string, any>,
 }));
@@ -252,8 +258,8 @@ const recipientStateState = vi.hoisted(() => ({
 	    recipient: null as any,
 	    setManualRecipient: vi.fn(),
 	    clearPersistedManualRecipient: vi.fn(),
-	    executionRunDelivery: 'steer_if_supported',
-	    setExecutionRunDelivery: vi.fn(),
+	    executionRunRequestedAction: { v: 1, kind: 'steer_if_active' },
+	    setExecutionRunRequestedAction: vi.fn(),
   },
 }));
 
@@ -411,10 +417,11 @@ installSessionShellCommonModuleMocks({
         }),
         useAutomations: () => [],
         useArtifacts: () => Object.values(storageState.artifacts),
-        useOpenApprovalArtifactsForSession: (sessionId: string | null | undefined) => listOpenApprovalArtifactsForSession(
-          Object.values(storageState.artifacts),
-          String(sessionId ?? ''),
-        ),
+        useOpenApprovalArtifactsForSession: (target: { serverId: string; sessionId: string } | string | null | undefined) => target
+          ? listOpenApprovalArtifactsForSession(Object.values(storageState.artifacts), target, {
+              knownSessionAddresses: typeof target === 'string' ? [] : [target],
+            })
+          : [],
         useMachine: () => null,
       },
     });
@@ -430,15 +437,23 @@ vi.mock('@/auth/context/AuthContext', () => ({
   useAuth: () => ({ credentials: { token: 't', secret: 's' } }),
 }));
 
-vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshots', () => ({
-  useConnectedServiceQuotaSnapshots: (profiles: ReadonlyArray<Readonly<{ serviceId: string; profileId: string }>>) => {
-    quotaSnapshotsState.requestedProfiles = profiles;
-    return {
-      snapshotsByKey: quotaSnapshotsState.current,
-      loadingByKey: {},
-    };
-  },
-}));
+vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshots', async () => {
+  // The polling transport is the boundary; the normalized `profiles`
+  // projection stays real because the shell reads its canonical keys.
+  const { normalizeConnectedServiceQuotaProfileRefs } = await import(
+    '@/sync/domains/connectedServices/connectedServiceQuotaProfileRefs'
+  );
+  return {
+    useConnectedServiceQuotaSnapshots: (profiles: ReadonlyArray<Readonly<{ serviceId: string; profileId: string }>>) => {
+      quotaSnapshotsState.requestedProfiles = profiles;
+      return {
+        profiles: normalizeConnectedServiceQuotaProfileRefs(profiles as any),
+        snapshotsByKey: quotaSnapshotsState.current,
+        loadingByKey: {},
+      };
+    },
+  };
+});
 
 vi.mock('@/hooks/server/connectedServices/useProviderAccountUsageSnapshots', () => ({
   useProviderAccountUsageSnapshots: (recordIds: readonly string[]) => {
@@ -579,6 +594,28 @@ vi.mock('@/hooks/session/useDraft', () => ({
       }
     },
   };
+  },
+}));
+vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/sync/domains/scope/useServerCredentialAccountScopes')>()),
+  useServerCredentialAccountScopeResolution: (serverId: string | null | undefined) => {
+    const binding = exactAccountBindingState.current;
+    return binding && serverId === binding.serverId
+      ? { kind: 'bound', scope: binding.scope }
+      : { kind: 'resolving' };
+  },
+  useServerCredentialAccountScopeResolutions: (serverIds: readonly string[]) => new Map(serverIds.map((serverId) => {
+    const binding = exactAccountBindingState.current;
+    return [serverId, binding && serverId === binding.serverId
+      ? { kind: 'bound', scope: binding.scope }
+      : { kind: 'resolving' }] as const;
+  })),
+  useServerCredentialAccountScopeBindings: (serverIds: readonly string[]) => {
+    exactAccountBindingState.requestedServerIds = serverIds;
+    const binding = exactAccountBindingState.current;
+    return binding && serverIds.includes(binding.serverId)
+      ? new Map([[binding.serverId, binding]])
+      : new Map();
   },
 }));
 vi.mock('@/components/sessions/model/inactiveSessionUi', () => ({
@@ -1156,6 +1193,16 @@ describe('SessionView (direct sessions)', () => {
   }
 
   beforeEach(() => {
+    const scope = Object.freeze({ serverId: 'server-route-1', accountId: 'account-route-1' });
+    exactAccountBindingState.current = Object.freeze({
+      serverId: scope.serverId,
+      accountId: scope.accountId,
+      revision: 1,
+      scope,
+      isCurrent: () => true,
+      onRetire: () => Object.freeze({ dispose(): void {} }),
+    });
+    exactAccountBindingState.requestedServerIds = [];
     chatListPropsSpy.mockReset();
     chatHeaderPropsSpy.mockReset();
     voiceSurfacePropsSpy.mockReset();
@@ -1167,6 +1214,7 @@ describe('SessionView (direct sessions)', () => {
     featureEnabledState['files.reviewComments'] = false;
     featureEnabledState['sessions.usageLimitRecovery'] = false;
     featureEnabledState['connectedServices.quotas'] = false;
+    featureEnabledState['connectedServices.poolQuotaLimitSelection'] = false;
     controlMachineTargetState.current = {
       machineId: 'machine-1',
       basePath: '/tmp',
@@ -1284,8 +1332,11 @@ describe('SessionView (direct sessions)', () => {
     }
     // Clear the stable container references in place (see hoisted storageState
     // notes) so per-test mutations remain visible through the storage snapshot.
-    for (const key of Object.keys(storageState.sessionListRenderables)) {
-      delete storageState.sessionListRenderables[key];
+    for (const key of Object.keys(storageState.sessionListRowsByServerId)) {
+      delete storageState.sessionListRowsByServerId[key];
+    }
+    for (const key of Object.keys(storageState.ordinarySessionListMembershipByServerId)) {
+      delete storageState.ordinarySessionListMembershipByServerId[key];
     }
     for (const key of Object.keys(storageState.machines)) {
       delete storageState.machines[key];
@@ -1299,8 +1350,8 @@ describe('SessionView (direct sessions)', () => {
 	      recipient: null,
 	      setManualRecipient: vi.fn(),
 	      clearPersistedManualRecipient: vi.fn(),
-	      executionRunDelivery: 'steer_if_supported',
-	      setExecutionRunDelivery: vi.fn(),
+	      executionRunRequestedAction: { v: 1, kind: 'steer_if_active' },
+	      setExecutionRunRequestedAction: vi.fn(),
     };
     showDirectSessionTakeoverDialogSpy.mockResolvedValue({ action: null });
     machineDirectSessionStatusGetSpy.mockResolvedValue({
@@ -2574,6 +2625,94 @@ describe('SessionView (direct sessions)', () => {
     }));
   });
 
+  it('uses only the pool-selected allowance families in the session usage badge', async () => {
+    featureEnabledState['connectedServices.quotas'] = true;
+    featureEnabledState['connectedServices.poolQuotaLimitSelection'] = true;
+    storageState.profile = {
+      connectedServicesV2: [{
+        serviceId: 'openai-codex',
+        profiles: [{ profileId: 'active-profile', status: 'connected', kind: 'oauth' }],
+        groups: [{
+          groupId: 'happier',
+          activeProfileId: 'active-profile',
+          memberProfileIds: ['active-profile'],
+        }],
+      }],
+      connectedAccountGroupsV4: [{
+        v: 1,
+        ref: {
+          service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+          groupId: 'happier',
+        },
+        incarnation: 'happier:1',
+        displayName: 'Happier pool',
+        policy: {
+          v: 1,
+          strategy: 'least_limited',
+          autoSwitch: true,
+          quotaLimitSelection: { mode: 'selected', providerLimitIds: ['standard'] },
+          switchOn: {
+            usageLimit: true,
+            authExpired: true,
+            accountChanged: false,
+            refreshFailure: true,
+          },
+        },
+        activeConnectedAccountId: 'active-profile',
+        generation: 7,
+        runtimeStateRevision: 1,
+        state: { status: 'ready' },
+        createdAt: 0,
+        updatedAt: 0,
+        members: [{
+          v: 1,
+          connectedAccountId: 'active-profile',
+          priority: 100,
+          enabled: true,
+          state: {},
+          createdAt: 0,
+          updatedAt: 0,
+        }],
+      }],
+    };
+    storageState.sessions.s1 = {
+      ...storageState.sessions.s1,
+      metadata: {
+        ...storageState.sessions.s1.metadata,
+        connectedServices: {
+          bindingsByServiceId: {
+            'openai-codex': {
+              source: 'connected',
+              selection: 'group',
+              groupId: 'happier',
+            },
+          },
+        },
+      },
+    };
+    quotaSnapshotsState.current = {
+      'openai-codex/active-profile': {
+        v: 1,
+        serviceId: 'openai-codex',
+        profileId: 'active-profile',
+        fetchedAt: Date.now(),
+        staleAfterMs: 60_000,
+        planLabel: null,
+        accountLabel: 'Active Codex account',
+        meters: [
+          { meterId: 'standard:primary', providerLimitId: 'standard', label: 'Session', used: 20, limit: 100, unit: 'count', utilizationPct: null, resetsAt: null, status: 'ok', details: {} },
+          { meterId: 'spark:primary', providerLimitId: 'spark', label: 'Spark', used: 95, limit: 100, unit: 'count', utilizationPct: null, resetsAt: null, status: 'ok', details: {} },
+        ],
+      },
+    };
+
+    const screen = await renderSessionViewAndSettle();
+
+    expect(findProviderUsageGauge(screen)).toEqual(expect.objectContaining({
+      ringValueLabel: '80',
+    }));
+  });
+
   it('removes stale session-metadata recovery credits when consume returns a fresh connected-service snapshot', async () => {
     featureEnabledState['connectedServices.quotas'] = true;
     featureEnabledState['sessions.usageLimitRecovery'] = true;
@@ -3184,11 +3323,18 @@ describe('SessionView (direct sessions)', () => {
       toolViewDetailLevelDefault: 'title',
     };
 
-    await renderSessionViewAndSettle({ routeServerId: 'server-a' });
+    const screen = await renderSessionViewAndSettle({ routeServerId: 'server-b' });
 
     expect(voiceSurfacePropsSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ variant: 'session', sessionId: 's1' }),
+      expect.objectContaining({
+        variant: 'session',
+        sessionAddress: { serverId: 'server-b', sessionId: 's1' },
+      }),
     );
+    expect(screen.findByTestId('session-agent-input')?.props.sessionAddress).toEqual({
+        serverId: 'server-b',
+        sessionId: 's1',
+    });
   });
 
   it('passes session-scoped open approval artifacts to AgentInput', async () => {
@@ -3447,6 +3593,188 @@ describe('SessionView (direct sessions)', () => {
       },
     );
     expect(publishSessionModelOverrideToMetadataSpy).not.toHaveBeenCalled();
+  });
+
+  it('routes an exact existing-session Team resource selection through session.model.set', async () => {
+    const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
+    const modelContentOverride = findAgentInput(screen).props.modelContentOverride;
+    const teamCredentialModel = {
+      kind: 'team_credential_provider_model' as const,
+      teamId: 'team-1',
+      resourceId: 'resource-1',
+      expectedResourceRevision: 7,
+      deliveryMode: 'brokered' as const,
+      agentTargetKey: 'backend:codex',
+      modelId: 'team-model',
+    };
+
+    await act(async () => {
+      modelContentOverride.props.onSelectTeamCredentialModel(teamCredentialModel);
+      await Promise.resolve();
+    });
+
+    expect(actionExecuteSpy).toHaveBeenCalledWith(
+      'session.model.set',
+      { sessionId: 's1', teamCredentialModel },
+      { surface: 'ui', defaultSessionId: 's1', serverId: 'server-route-1' },
+    );
+    expect(publishSessionModelOverrideToMetadataSpy).not.toHaveBeenCalled();
+  });
+
+  it('offers the explicit restart for a Team resource selection the Home committed', async () => {
+    const teamCredentialModel = {
+      kind: 'team_credential_provider_model' as const,
+      teamId: 'team-1',
+      resourceId: 'resource-1',
+      expectedResourceRevision: 7,
+      deliveryMode: 'brokered' as const,
+      agentTargetKey: 'backend:codex',
+      modelId: 'team-model',
+    };
+    actionExecuteSpy.mockResolvedValue({
+      ok: false,
+      errorCode: 'restart_required',
+      error: 'restart_required',
+      details: {
+        status: 'restart_required',
+        reason: 'team_resource_binding_changed',
+        requestedTeamSelection: teamCredentialModel,
+      },
+    });
+
+    const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
+    const modelContentOverride = findAgentInput(screen).props.modelContentOverride;
+    await act(async () => {
+      modelContentOverride.props.onSelectTeamCredentialModel(teamCredentialModel);
+      await Promise.resolve();
+    });
+    await settleDirectSessionView();
+
+    // The Home accepted this selection; only the process already running has
+    // not adopted it. Restarting stays the person's explicit choice, and the
+    // committed selection is never reported as an unavailable connection.
+    expect(screen.findByTestId('session.providerBinding.banner')).toBeTruthy();
+    expect(restartConfigurationSessionRunnerSpy).not.toHaveBeenCalled();
+    expect(modalAlertSpy).not.toHaveBeenCalled();
+  });
+
+  it('reports a Team resource selection the Home never committed as its own refusal', async () => {
+    const teamCredentialModel = {
+      kind: 'team_credential_provider_model' as const,
+      teamId: 'team-1',
+      resourceId: 'resource-1',
+      expectedResourceRevision: 7,
+      deliveryMode: 'brokered' as const,
+      agentTargetKey: 'backend:codex',
+      modelId: 'team-model',
+    };
+    actionExecuteSpy.mockResolvedValue({
+      ok: false,
+      errorCode: 'team_resource_active_transition_unsupported',
+      error: 'team_resource_active_transition_unsupported',
+      details: {
+        status: 'team_resource_active_transition_unsupported',
+        reason: 'session_activated_before_team_resource_commit',
+      },
+    });
+
+    const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
+    const modelContentOverride = findAgentInput(screen).props.modelContentOverride;
+    await act(async () => {
+      modelContentOverride.props.onSelectTeamCredentialModel(teamCredentialModel);
+      await Promise.resolve();
+    });
+    await settleDirectSessionView();
+
+    // Nothing was saved, so there is nothing to restart into.
+    expect(screen.findByTestId('session.providerBinding.banner')).toBeNull();
+    expect(modalAlertSpy).toHaveBeenCalledWith(
+      'common.error',
+      'teams.credentials.selection.activeTransitionUnsupported',
+    );
+  });
+
+  it.each(['brokered', 'direct'] as const)(
+    'preserves the exact %s route when restoring an existing-session Team model proposal',
+    async (deliveryMode) => {
+      const state = (await import('@/sync/domains/state/storage')).storage.getState();
+      const session = state.sessions.s1 as any;
+      storageState.sessions.s1 = {
+        ...session,
+        metadata: {
+          ...session.metadata,
+          modelSelectionIntentV2: {
+            v: 2,
+            updatedAt: 11,
+            ref: {
+              source: 'team_resource',
+              teamId: 'team-1',
+              resourceId: 'resource-1',
+              expectedResourceRevision: 7,
+              deliveryMode,
+              agentTargetKey: 'backend:codex',
+              modelId: 'team-model',
+            },
+          },
+        },
+      };
+
+      const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
+
+      expect(findAgentInput(screen).props.modelContentOverride.props.selectedTeamCredentialModel).toEqual({
+        kind: 'team_credential_provider_model',
+        teamId: 'team-1',
+        resourceId: 'resource-1',
+        expectedResourceRevision: 7,
+        deliveryMode,
+        agentTargetKey: 'backend:codex',
+        modelId: 'team-model',
+      });
+    },
+  );
+
+  it('restores restart-to-apply UX after remount from the durable V2 Team model intent', async () => {
+    const state = (await import('@/sync/domains/state/storage')).storage.getState();
+    const session = state.sessions.s1;
+    if (!session) throw new Error('expected session fixture');
+    storageState.sessions.s1 = {
+      ...session,
+      active: true,
+      metadata: {
+        ...session.metadata,
+        modelSelectionIntentV2: {
+          v: 2,
+          updatedAt: 11,
+          ref: {
+            source: 'team_resource',
+            teamId: 'team-1',
+            resourceId: 'resource-1',
+            expectedResourceRevision: 7,
+            deliveryMode: 'brokered',
+            agentTargetKey: 'backend:codex',
+            modelId: 'team-model',
+          },
+        },
+      },
+    };
+
+    const firstScreen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
+    expect(firstScreen.findByTestId('session.providerBinding.banner')).toBeTruthy();
+    await firstScreen.unmount();
+
+    const remountedScreen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
+    expect(remountedScreen.findByTestId('session.providerBinding.banner')).toBeTruthy();
+    expect(
+      findAgentInput(remountedScreen).props.modelContentOverride.props.selectedTeamCredentialModel,
+    ).toEqual({
+      kind: 'team_credential_provider_model',
+      teamId: 'team-1',
+      resourceId: 'resource-1',
+      expectedResourceRevision: 7,
+      deliveryMode: 'brokered',
+      agentTargetKey: 'backend:codex',
+      modelId: 'team-model',
+    });
   });
 
   it('leaves active and proposed model facts unchanged when the transition owner is unavailable', async () => {
@@ -4807,7 +5135,7 @@ describe('SessionView (direct sessions)', () => {
     draftValues.resetSessionDraftValueCachesForTests();
     draftValues.clearSessionDraftValuesForSession(null, 's1', { reason: 'sessionDelete' });
     draftValues.writeSessionDraftValue(null, 's1', 'routing.recipient', oldRecipient);
-    draftValues.writeSessionDraftValue(null, 's1', 'routing.executionRunDelivery', 'interrupt');
+    draftValues.writeSessionDraftValue(null, 's1', 'routing.executionRunRequestedAction', { v: 1, kind: 'send_now' });
 
     try {
       syncSubmitMessageSpy.mockImplementationOnce(async (...args: unknown[]) => {
@@ -4832,10 +5160,10 @@ describe('SessionView (direct sessions)', () => {
       await flushHookEffects({ cycles: 1, turns: 1 });
 
       expect(draftValues.readSessionDraftValue(null, 's1', 'routing.recipient')).toBeUndefined();
-      expect(draftValues.readSessionDraftValue(null, 's1', 'routing.executionRunDelivery')).toBeUndefined();
+      expect(draftValues.readSessionDraftValue(null, 's1', 'routing.executionRunRequestedAction')).toBeUndefined();
 
       draftValues.writeSessionDraftValue(null, 's1', 'routing.recipient', newRecipient);
-      draftValues.writeSessionDraftValue(null, 's1', 'routing.executionRunDelivery', 'prompt');
+      draftValues.writeSessionDraftValue(null, 's1', 'routing.executionRunRequestedAction', { v: 1, kind: 'enqueue' });
 
       await act(async () => {
         rejectSubmit(new Error('direct send rejected'));
@@ -4846,7 +5174,7 @@ describe('SessionView (direct sessions)', () => {
       agentInput = findAgentInput(screen);
       expect(agentInput.props.value).toBe('send to old target');
       expect(draftValues.readSessionDraftValue(null, 's1', 'routing.recipient')).toEqual(newRecipient);
-      expect(draftValues.readSessionDraftValue(null, 's1', 'routing.executionRunDelivery')).toBe('prompt');
+      expect(draftValues.readSessionDraftValue(null, 's1', 'routing.executionRunRequestedAction')).toEqual({ v: 1, kind: 'enqueue' });
       expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'direct send rejected');
     } finally {
       draftValues.clearSessionDraftValuesForSession(null, 's1', { reason: 'sessionDelete' });
@@ -4897,8 +5225,8 @@ describe('SessionView (direct sessions)', () => {
 	      recipient: { kind: 'execution_run', runId: 'run-1' },
 	      setManualRecipient: vi.fn(),
 	      clearPersistedManualRecipient: vi.fn(),
-	      executionRunDelivery: 'interrupt',
-	      setExecutionRunDelivery: vi.fn(),
+	      executionRunRequestedAction: { v: 1, kind: 'send_now' },
+	      setExecutionRunRequestedAction: vi.fn(),
 	    };
 
     const screen = await renderSessionViewAndSettle();
@@ -4933,7 +5261,7 @@ describe('SessionView (direct sessions)', () => {
     ]);
     expect(recipientChip?.collapsedOptionsPopover?.selectedOptionId).toBe('run-1');
     expect(typeof recipientChip?.collapsedOptionsPopover?.onSelect).toBe('function');
-    expect((agentInput.props.extraActionChips ?? []).map((chip: { key: string }) => chip.key)).toContain('execution-run-delivery');
+    expect((agentInput.props.extraActionChips ?? []).map((chip: { key: string }) => chip.key)).toContain('execution-run-requested-action');
   });
 
   it('promotes review comment drafts into canonical extra control metadata', async () => {
@@ -4986,13 +5314,16 @@ describe('SessionView (direct sessions)', () => {
         createdAt: 2,
       },
     ];
-    storageState.sessionListRenderables.s1 = {
-      id: 's1',
-      metadata: {
-        machineId: 'machine-1',
-        path: '/tmp',
+    storageState.sessionListRowsByServerId['server-1'] = {
+      s1: {
+        id: 's1',
+        metadata: {
+          machineId: 'machine-1',
+          path: '/tmp',
+        },
       },
     };
+    storageState.ordinarySessionListMembershipByServerId['server-1'] = ['s1'];
     storageState.machines['machine-1'] = {
       id: 'machine-1',
       active: true,
@@ -5046,15 +5377,15 @@ describe('SessionView (direct sessions)', () => {
 	      recipient: { kind: 'execution_run', runId: 'run-1' },
 	      setManualRecipient: vi.fn(),
 	      clearPersistedManualRecipient: vi.fn(),
-	      executionRunDelivery: 'interrupt',
-	      setExecutionRunDelivery: vi.fn(),
+	      executionRunRequestedAction: { v: 1, kind: 'send_now' },
+	      setExecutionRunRequestedAction: vi.fn(),
 	    };
 
     const screen = await renderSessionViewAndSettle();
 
     const agentInput = findAgentInput(screen);
     expect((agentInput.props.extraActionChips ?? []).map((chip: { key: string }) => chip.key)).not.toContain('participants-recipient');
-    expect((agentInput.props.extraActionChips ?? []).map((chip: { key: string }) => chip.key)).not.toContain('execution-run-delivery');
+    expect((agentInput.props.extraActionChips ?? []).map((chip: { key: string }) => chip.key)).not.toContain('execution-run-requested-action');
   });
 
   it('surfaces delivery controls when live participant routing data resolves to an execution run', async () => {
@@ -5069,8 +5400,8 @@ describe('SessionView (direct sessions)', () => {
 	      recipient: { kind: 'execution_run', runId: 'run-1' },
 	      setManualRecipient: vi.fn(),
 	      clearPersistedManualRecipient: vi.fn(),
-	      executionRunDelivery: 'interrupt',
-	      setExecutionRunDelivery: vi.fn(),
+	      executionRunRequestedAction: { v: 1, kind: 'send_now' },
+	      setExecutionRunRequestedAction: vi.fn(),
 	    };
 
     const screen = await renderSessionViewAndSettle();
@@ -5088,10 +5419,10 @@ describe('SessionView (direct sessions)', () => {
         selectedOptionId?: string | null;
         onSelect?: (id: string) => void;
       };
-    }) => chip.key === 'execution-run-delivery');
+    }) => chip.key === 'execution-run-requested-action');
 
     expect(deliveryChip).toEqual(expect.objectContaining({
-      key: 'execution-run-delivery',
+      key: 'execution-run-requested-action',
       controlId: 'delivery',
     }));
     expect(deliveryChip?.collapsedOptionsPopover?.label).toBe('runs.delivery.cardDelivery');
@@ -5101,11 +5432,11 @@ describe('SessionView (direct sessions)', () => {
       ? deliveryFirstSection.options ?? []
       : []);
     expect(deliveryOptions.map((option: { id: string }) => option.id)).toEqual([
-      'prompt',
-      'steer_if_supported',
-      'interrupt',
+      'enqueue',
+      'steer_if_active',
+      'send_now',
     ]);
-    expect(deliveryChip?.collapsedOptionsPopover?.selectedOptionId).toBe('interrupt');
+    expect(deliveryChip?.collapsedOptionsPopover?.selectedOptionId).toBe('send_now');
     expect(typeof deliveryChip?.collapsedOptionsPopover?.onSelect).toBe('function');
   });
 
@@ -5487,7 +5818,7 @@ describe('SessionView (direct sessions)', () => {
     expect(voiceSurfacePropsSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         variant: 'session',
-        sessionId: 's1',
+        sessionAddress: { serverId: 'server-1', sessionId: 's1' },
       }),
     );
 

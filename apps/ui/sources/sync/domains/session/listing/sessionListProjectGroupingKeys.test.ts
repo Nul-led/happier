@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 describe('sessionListProjectGroupingKeys', () => {
     it('normalizes windows separators and expands ~ using homeDir without grouping by host', async () => {
@@ -81,8 +81,13 @@ describe('sessionListProjectGroupingKeys', () => {
         expect(parts.machineGroupId).toBe('id:m1');
     });
 
-    it('reuses canonical grouping key parts for repeated equal inputs', async () => {
-        const { resolveSessionProjectGroupingKeyParts, resolveSessionProjectGroupingKeyPartsWithMachineMetadata } = await import(
+    it('builds one stable exact Home, Machine, and path identity', async () => {
+        const {
+            buildSessionProjectGroupingIdentity,
+            sessionProjectGroupingIdentityKey,
+            resolveSessionProjectGroupingKeyParts,
+            resolveSessionProjectGroupingKeyPartsWithMachineMetadata,
+        } = await import(
             './sessionListProjectGroupingKeys'
         );
         const first = resolveSessionProjectGroupingKeyParts({
@@ -124,83 +129,41 @@ describe('sessionListProjectGroupingKeys', () => {
             '~/repo',
         );
 
-        expect(first).toBe(second);
-        expect(firstWithMachine).toBe(secondWithMachine);
+        expect(first).toEqual(second);
+        expect(firstWithMachine).toEqual(secondWithMachine);
+
+        const firstIdentity = buildSessionProjectGroupingIdentity(' home-a ', firstWithMachine);
+        const secondIdentity = buildSessionProjectGroupingIdentity('home-a', secondWithMachine);
+        expect(firstIdentity).toEqual(['home-a', 'm1', '/home/machine/repo']);
+        expect(secondIdentity).toEqual(firstIdentity);
+        expect(sessionProjectGroupingIdentityKey(secondIdentity)).toBe(
+            sessionProjectGroupingIdentityKey(firstIdentity),
+        );
     });
 
-    it('bounds canonical grouping key part caches via LRU eviction', async () => {
-        vi.stubEnv('EXPO_PUBLIC_HAPPIER_SESSION_LIST_PROJECT_GROUPING_CACHE_MAX', '1');
-        vi.resetModules();
+    it('keeps delimiter and NUL-bearing tuple parts distinct', async () => {
+        const {
+            buildSessionProjectGroupingIdentity,
+            sessionProjectGroupingIdentityKey,
+        } = await import('./sessionListProjectGroupingKeys');
 
-        try {
-            const {
-                resolveSessionProjectGroupingKeyParts,
-                resolveSessionProjectGroupingKeyPartsWithMachineMetadata,
-            } = await import('./sessionListProjectGroupingKeys');
+        const key = (serverId: string, machineId: string, pathKey: string) =>
+            sessionProjectGroupingIdentityKey(buildSessionProjectGroupingIdentity(serverId, {
+                machineId,
+                pathKey,
+            }));
 
-            const first = resolveSessionProjectGroupingKeyParts({
-                host: 'host-a',
-                machineId: 'm1',
-                homeDir: '/home/a',
-                path: '~/repo',
-            });
-            resolveSessionProjectGroupingKeyParts({
-                host: 'host-b',
-                machineId: 'm2',
-                homeDir: '/home/b',
-                path: '~/repo',
-            });
-
-            expect(resolveSessionProjectGroupingKeyParts({
-                host: 'host-a',
-                machineId: 'm1',
-                homeDir: '/home/a',
-                path: '~/repo',
-            })).not.toBe(first);
-
-            const firstWithMachine = resolveSessionProjectGroupingKeyPartsWithMachineMetadata(
-                {
-                    host: 'session-host-a',
-                    machineId: 'm1',
-                    homeDir: '/home/session',
-                    path: '~/repo',
-                },
-                {
-                    host: 'machine-host-a',
-                    homeDir: '/home/machine',
-                },
-                '~/repo',
-            );
-            resolveSessionProjectGroupingKeyPartsWithMachineMetadata(
-                {
-                    host: 'session-host-b',
-                    machineId: 'm2',
-                    homeDir: '/home/session',
-                    path: '~/repo',
-                },
-                {
-                    host: 'machine-host-b',
-                    homeDir: '/home/machine',
-                },
-                '~/repo',
-            );
-
-            expect(resolveSessionProjectGroupingKeyPartsWithMachineMetadata(
-                {
-                    host: 'session-host-a',
-                    machineId: 'm1',
-                    homeDir: '/home/session',
-                    path: '~/repo',
-                },
-                {
-                    host: 'machine-host-a',
-                    homeDir: '/home/machine',
-                },
-                '~/repo',
-            )).not.toBe(firstWithMachine);
-        } finally {
-            vi.unstubAllEnvs();
-            vi.resetModules();
-        }
+        expect(key('home', 'machine', '/repo:part')).not.toBe(
+            key('home', 'machine:/repo', 'part'),
+        );
+        expect(key('home\u0000part', 'machine', '/repo')).not.toBe(
+            key('home', 'part\u0000machine', '/repo'),
+        );
+        expect(key('home', 'machine\u0000part', '/repo')).not.toBe(
+            key('home', 'machine', 'part\u0000/repo'),
+        );
+        expect(key('', 'machine', '/repo')).not.toBe(
+            key('__unknown_server__', 'machine', '/repo'),
+        );
     });
 });

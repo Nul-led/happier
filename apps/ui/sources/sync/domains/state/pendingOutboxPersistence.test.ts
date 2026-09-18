@@ -34,41 +34,79 @@ function plainRequest(localId: string): { v: 1; body: string } {
 describe('pending outbox persistence', () => {
     beforeEach(() => store.clear());
 
-    it('enumerates only the session ids with durable custody in the requested server-account scope', () => {
+    it('quarantines a malformed persisted target instead of replaying it as main', async () => {
+        await savePendingOutboxMessage({
+            sessionId: 's1', localId: 'target', createdAt: 1, text: 'private run input',
+            rawRecord: { role: 'user' }, request: plainRequest('target'),
+        }, scope);
+        const [key, serialized] = [...store.entries()][0]!;
+        const persisted = JSON.parse(serialized);
+        persisted.s1[0].request.recipient = { kind: 'execution_run', runId: '' };
+        store.set(key, JSON.stringify(persisted));
+        expect(await loadPendingOutboxForSession('s1', scope)).toEqual([
+            expect.objectContaining({ operation: 'quarantined', quarantineReason: 'invalid_persisted_envelope' }),
+        ]);
+    });
+
+    it('preserves the strict target operation through cancellation and rejects a different target for the same identity', async () => {
+        const message = {
+            sessionId: 's1', localId: 'run-input', createdAt: 1, text: 'run input', rawRecord: { role: 'user' },
+            request: {
+                v: 1 as const,
+                recipient: { kind: 'execution_run' as const, runId: 'run-a' },
+                body: JSON.stringify({
+                    v: 1, localId: 'run-input', targetMachineId: 'machine-a',
+                    content: { t: 'plain', v: { role: 'user' } }, messageRole: 'user',
+                    requestedAction: { v: 1, kind: 'enqueue' },
+                }),
+            },
+        };
+        await savePendingOutboxMessage(message, scope);
+        await markPendingOutboxMessageCancelRequested('s1', 'run-input', scope);
+        expect(await loadPendingOutboxForSession('s1', scope)).toEqual([
+            expect.objectContaining({ operation: 'cancel', request: message.request }),
+        ]);
+        await expect(savePendingOutboxMessage({
+            ...message,
+            request: { ...message.request, recipient: { kind: 'execution_run', runId: 'run-b' } },
+        }, scope)).rejects.toMatchObject({ code: 'session_input_idempotency_conflict' });
+    });
+
+    it('enumerates only the session ids with durable custody in the requested server-account scope', async () => {
         const otherScope = { serverId: scope.serverId, accountId: 'account-b' } as const;
-        const save = (sessionId: string, localId: string, outboxScope: ServerAccountScope) => {
-            savePendingOutboxMessage({
+        const save = async (sessionId: string, localId: string, outboxScope: ServerAccountScope) => {
+            (await savePendingOutboxMessage({
                 sessionId,
                 localId,
                 createdAt: 100,
                 text: localId,
                 rawRecord: { role: 'user' },
                 request: plainRequest(localId),
-            }, outboxScope);
+            }, outboxScope));
         };
-        save('session-b', 'local-b', scope);
-        save('session-a', 'local-a', scope);
-        save('other-account-session', 'other-local', otherScope);
+        (await save('session-b', 'local-b', scope));
+        (await save('session-a', 'local-a', scope));
+        (await save('other-account-session', 'other-local', otherScope));
 
-        expect(listPendingOutboxSessionIds(scope)).toEqual(['session-a', 'session-b']);
-        expect(listPendingOutboxSessionIds(otherScope)).toEqual(['other-account-session']);
+        expect((await listPendingOutboxSessionIds(scope))).toEqual(['session-a', 'session-b']);
+        expect((await listPendingOutboxSessionIds(otherScope))).toEqual(['other-account-session']);
     });
 
-    it('durably changes an ambiguous enqueue into a cancellation without replacing its request envelope', () => {
-        const original = savePendingOutboxMessage({
+    it('durably changes an ambiguous enqueue into a cancellation without replacing its request envelope', async () => {
+        const original = (await savePendingOutboxMessage({
             sessionId: 's1',
             localId: 'cancel-me',
             createdAt: 100,
             text: 'hello',
             rawRecord: { role: 'user', content: { type: 'text', text: 'hello' } },
             request: plainRequest('cancel-me'),
-        }, scope);
+        }, scope));
 
-        expect(markPendingOutboxMessageCancelRequested('s1', 'cancel-me', scope)).toEqual({
+        expect((await markPendingOutboxMessageCancelRequested('s1', 'cancel-me', scope))).toEqual({
             ...original,
             operation: 'cancel',
         });
-        expect(loadPendingOutboxForSession('s1', scope)).toEqual([
+        expect((await loadPendingOutboxForSession('s1', scope))).toEqual([
             expect.objectContaining({
                 localId: 'cancel-me',
                 operation: 'cancel',
@@ -77,23 +115,23 @@ describe('pending outbox persistence', () => {
         ]);
     });
 
-    it('accepts an absent legacy operation as enqueue and quarantines an explicit unknown operation across later writes', () => {
-        savePendingOutboxMessage({
+    it('accepts an absent legacy operation as enqueue and quarantines an explicit unknown operation across later writes', async () => {
+        (await savePendingOutboxMessage({
             sessionId: 's1', localId: 'legacy', createdAt: 1, text: 'legacy',
             rawRecord: { role: 'user', content: { type: 'text', text: 'legacy' } },
             request: plainRequest('legacy'),
-        }, scope);
+        }, scope));
         const [key, serialized] = [...store.entries()][0]!;
         const persisted = JSON.parse(serialized) as Record<string, Array<Record<string, unknown>>>;
         delete persisted.s1![0]!.operation;
         store.set(key, JSON.stringify(persisted));
-        expect(loadPendingOutboxForSession('s1', scope)).toEqual([
+        expect((await loadPendingOutboxForSession('s1', scope))).toEqual([
             expect.objectContaining({ localId: 'legacy', operation: 'enqueue' }),
         ]);
 
         persisted.s1![0]!.operation = 'future-operation';
         store.set(key, JSON.stringify(persisted));
-        expect(loadPendingOutboxForSession('s1', scope)).toEqual([
+        expect((await loadPendingOutboxForSession('s1', scope))).toEqual([
             expect.objectContaining({
                 localId: 'legacy',
                 operation: 'quarantined',
@@ -101,12 +139,12 @@ describe('pending outbox persistence', () => {
             }),
         ]);
 
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId: 's1', localId: 'later-valid', createdAt: 2, text: 'later',
             rawRecord: { role: 'user', content: { type: 'text', text: 'later' } },
             request: plainRequest('later-valid'),
-        }, scope);
-        expect(loadPendingOutboxForSession('s1', scope)).toEqual([
+        }, scope));
+        expect((await loadPendingOutboxForSession('s1', scope))).toEqual([
             expect.objectContaining({
                 localId: 'legacy',
                 operation: 'quarantined',
@@ -116,25 +154,25 @@ describe('pending outbox persistence', () => {
         ]);
     });
 
-    it.each(['.', '..'])('rejects new dot-segment local IDs but quarantines persisted custody across later writes (%s)', (localId) => {
-        expect(() => savePendingOutboxMessage({
+    it.each(['.', '..'])('rejects new dot-segment local IDs but quarantines persisted custody across later writes (%s)', async (localId) => {
+        await expect(async () => (await savePendingOutboxMessage({
             sessionId: 's1', localId, createdAt: 1, text: 'invalid',
             rawRecord: { role: 'user', content: { type: 'text', text: 'invalid' } },
             request: plainRequest(localId),
-        }, scope)).toThrow('Pending message ID is invalid');
+        }, scope))).rejects.toThrow('Pending message ID is invalid');
 
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId: 's1', localId: 'valid', createdAt: 1, text: 'valid',
             rawRecord: { role: 'user', content: { type: 'text', text: 'valid' } },
             request: plainRequest('valid'),
-        }, scope);
+        }, scope));
         const [key, serialized] = [...store.entries()][0]!;
         const persisted = JSON.parse(serialized) as Record<string, Array<Record<string, unknown>>>;
         persisted.s1![0]!.localId = localId;
         persisted.s1![0]!.request = plainRequest(localId);
         store.set(key, JSON.stringify(persisted));
 
-        expect(loadPendingOutboxForSession('s1', scope)).toEqual([
+        expect((await loadPendingOutboxForSession('s1', scope))).toEqual([
             expect.objectContaining({
                 localId,
                 operation: 'quarantined',
@@ -142,12 +180,12 @@ describe('pending outbox persistence', () => {
             }),
         ]);
 
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId: 's1', localId: 'later-valid', createdAt: 2, text: 'later',
             rawRecord: { role: 'user', content: { type: 'text', text: 'later' } },
             request: plainRequest('later-valid'),
-        }, scope);
-        expect(loadPendingOutboxForSession('s1', scope)).toEqual([
+        }, scope));
+        expect((await loadPendingOutboxForSession('s1', scope))).toEqual([
             expect.objectContaining({ localId, quarantineReason: 'invalid_persisted_local_id' }),
             expect.objectContaining({ localId: 'later-valid', operation: 'enqueue' }),
         ]);

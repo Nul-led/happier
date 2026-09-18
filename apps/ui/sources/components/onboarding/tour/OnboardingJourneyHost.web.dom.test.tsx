@@ -140,7 +140,11 @@ vi.mock('@/sync/domains/pending/pendingSetupIntent', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => null,
+    getActiveServerSnapshot: () => ({
+        serverId: 'relay-profile',
+        serverUrl: 'https://relay.example.test',
+        generation: 1,
+    }),
 }));
 
 import { OnboardingJourneyHost } from './OnboardingJourneyHost';
@@ -178,6 +182,11 @@ function createWizardSurfaceProps(): OnboardingWizardSurfaceProps {
         layout: 'landscape',
         isDesktopShell: true,
         authEntryOptions: {
+            authenticationCatalog: { provenance: 'legacy', methods: [] },
+            authenticationActions: [],
+            keyChallengeV2Available: false,
+            homeTarget: { kind: 'saved_profile', profileRef: 'relay-profile' },
+            homeLabel: 'Relay Home',
             serverAvailability: 'ready',
             serverUrlForCopy: 'https://relay.example.test',
             showAuthActions: true,
@@ -204,10 +213,8 @@ function createWizardSurfaceProps(): OnboardingWizardSurfaceProps {
             },
             retryServerCheck: () => undefined,
         },
-        onCreateAccount: vi.fn(),
-        onCreateAccountViaProvider: vi.fn(),
-        onLoginWithKeylessProvider: vi.fn(),
-        onLoginWithMtls: vi.fn(),
+        accountContinuationIntent: { kind: 'enter', target: { kind: 'automatic' } },
+        onAccountDirectoryKeyResult: vi.fn(),
     };
 }
 

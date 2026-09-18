@@ -1,8 +1,10 @@
 import * as React from 'react';
 
 import {
+    DEFAULT_PENDING_REQUESTED_ACTION_V1,
     SessionDraftRecipientValueV1Schema,
     StrictJsonValueSchema,
+    type PendingRequestedActionV1,
     type ParticipantRecipientV1,
 } from '@happier-dev/protocol';
 
@@ -12,17 +14,14 @@ import {
     participantRecipientsMatch,
 } from '@/sync/domains/input/participants/resolveParticipantRoutedSend';
 import {
-    areServerAccountScopesEqual,
-    type ServerAccountScope,
+    type ServerAccountScopeLifetime,
 } from '@/sync/domains/scope/serverAccountScope';
-import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import {
     getSessionDraftSnapshot,
     subscribeSessionDraft,
     writeExistingSessionDraft,
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
-
-export type ExecutionRunDeliveryMode = 'prompt' | 'steer_if_supported' | 'interrupt';
+import { readExecutionRunRequestedAction } from '@/sync/domains/input/participants/executionRunRequestedAction';
 
 export type SessionRecipientDraftPersistence = Readonly<{
     sessionId: string | null | undefined;
@@ -32,31 +31,37 @@ export type SessionRecipientDraftPersistence = Readonly<{
 export function useSessionRecipientState(params: Readonly<{
     targets: readonly SessionParticipantTarget[];
     autoRecipient: ParticipantRecipientV1 | null;
+    accountLifetime?: ServerAccountScopeLifetime | null;
     draftPersistence?: SessionRecipientDraftPersistence;
 }>): Readonly<{
     recipient: ParticipantRecipientV1 | null;
     didManualOverride: boolean;
     setManualRecipient: (next: ParticipantRecipientV1 | null) => void;
     clearPersistedManualRecipient: () => void;
-    executionRunDelivery: ExecutionRunDeliveryMode;
-    setExecutionRunDelivery: (next: ExecutionRunDeliveryMode) => void;
+    executionRunRequestedAction: PendingRequestedActionV1;
+    setExecutionRunRequestedAction: (next: PendingRequestedActionV1) => void;
 }> {
-    const scope = useStableServerAccountScope(useActiveServerAccountScope());
+    const scope = params.accountLifetime?.isCurrent() === true
+        ? params.accountLifetime.scope
+        : null;
+    const scopeIsCurrent = React.useCallback(() => (
+        params.accountLifetime?.isCurrent() === true
+    ), [params.accountLifetime]);
     const persistedSessionId = normalizeSessionId(params.draftPersistence?.sessionId);
     const persistenceEnabled = params.draftPersistence?.surface === 'mainComposer' && persistedSessionId !== null;
     const subscribeToRouting = React.useCallback((listener: () => void) => {
-        if (!scope || !persistenceEnabled || !persistedSessionId) return () => undefined;
+        if (!scope || !scopeIsCurrent() || !persistenceEnabled || !persistedSessionId) return () => undefined;
         return subscribeSessionDraft(scope, { kind: 'session', sessionId: persistedSessionId }, listener);
-    }, [persistedSessionId, persistenceEnabled, scope]);
+    }, [persistedSessionId, persistenceEnabled, scope, scopeIsCurrent]);
     const readRoutingSignature = React.useCallback(() => {
-        if (!scope || !persistenceEnabled || !persistedSessionId) return 'disabled';
+        if (!scope || !scopeIsCurrent() || !persistenceEnabled || !persistedSessionId) return 'disabled';
         const snapshot = getSessionDraftSnapshot(scope, { kind: 'session', sessionId: persistedSessionId });
         const routing = snapshot?.document.target.kind === 'session' ? snapshot.document.target.routing : null;
         return JSON.stringify([
             routing?.recipient.value ?? null,
             routing?.executionRunDelivery.value ?? null,
         ]);
-    }, [persistedSessionId, persistenceEnabled, scope]);
+    }, [persistedSessionId, persistenceEnabled, scope, scopeIsCurrent]);
     const routingSignature = React.useSyncExternalStore(
         subscribeToRouting,
         readRoutingSignature,
@@ -64,7 +69,9 @@ export function useSessionRecipientState(params: Readonly<{
     );
     const [manualRecipient, setManualRecipientState] = React.useState<ParticipantRecipientV1 | null>(null);
     const [didManualOverride, setDidManualOverride] = React.useState(false);
-    const [executionRunDelivery, setExecutionRunDelivery] = React.useState<ExecutionRunDeliveryMode>('steer_if_supported');
+    const [executionRunRequestedAction, setExecutionRunRequestedAction] = React.useState<PendingRequestedActionV1>(
+        DEFAULT_PENDING_REQUESTED_ACTION_V1,
+    );
     const applyHydratedRecipient = React.useCallback((
         next: ParticipantRecipientV1 | null,
         nextDidManualOverride: boolean,
@@ -79,19 +86,16 @@ export function useSessionRecipientState(params: Readonly<{
     }, []);
 
     React.useEffect(() => {
-        if (!persistenceEnabled || !persistedSessionId || !scope) return;
+        if (!persistenceEnabled || !persistedSessionId || !scope || !scopeIsCurrent()) return;
 
         const snapshot = getSessionDraftSnapshot(scope, { kind: 'session', sessionId: persistedSessionId });
         const routing = snapshot?.document.target.kind === 'session' ? snapshot.document.target.routing : null;
         const parsedRecipient = SessionDraftRecipientValueV1Schema.safeParse(routing?.recipient.value);
         const persistedRecipient = parsedRecipient.success ? parsedRecipient.data : null;
-        const persistedDelivery = routing?.executionRunDelivery.value;
-        const nextDelivery = persistedDelivery === 'prompt'
-            || persistedDelivery === 'interrupt'
-            || persistedDelivery === 'steer_if_supported'
-                ? persistedDelivery
-                : 'steer_if_supported';
-        setExecutionRunDelivery((current) => current === nextDelivery ? current : nextDelivery);
+        const nextRequestedAction = readExecutionRunRequestedAction(routing?.executionRunDelivery.value);
+        setExecutionRunRequestedAction((current) => (
+            current.kind === nextRequestedAction.kind ? current : nextRequestedAction
+        ));
 
         if (persistedRecipient === null) {
             applyHydratedRecipient(null, false);
@@ -109,7 +113,7 @@ export function useSessionRecipientState(params: Readonly<{
         }
 
         applyHydratedRecipient(recipient, true);
-    }, [applyHydratedRecipient, params.targets, persistedSessionId, persistenceEnabled, routingSignature, scope]);
+    }, [applyHydratedRecipient, params.targets, persistedSessionId, persistenceEnabled, routingSignature, scope, scopeIsCurrent]);
 
     // If the manually selected recipient disappears (run completes/team removed), clear it and
     // allow auto-recipient to apply again.
@@ -132,7 +136,7 @@ export function useSessionRecipientState(params: Readonly<{
     const setManualRecipient = React.useCallback((next: ParticipantRecipientV1 | null) => {
         setDidManualOverride(true);
         setManualRecipientState(next);
-        if (persistenceEnabled && persistedSessionId && scope) {
+        if (persistenceEnabled && persistedSessionId && scope && scopeIsCurrent()) {
             writeExistingSessionDraft({
                 scope,
                 sessionId: persistedSessionId,
@@ -143,38 +147,38 @@ export function useSessionRecipientState(params: Readonly<{
                 },
             });
         }
-    }, [persistedSessionId, persistenceEnabled, scope]);
+    }, [persistedSessionId, persistenceEnabled, scope, scopeIsCurrent]);
 
     const clearPersistedManualRecipient = React.useCallback(() => {
         setDidManualOverride(false);
         setManualRecipientState(null);
-        if (persistenceEnabled && persistedSessionId && scope) {
+        if (persistenceEnabled && persistedSessionId && scope && scopeIsCurrent()) {
             writeExistingSessionDraft({
                 scope,
                 sessionId: persistedSessionId,
                 patch: { routing: { recipient: null } },
             });
         }
-    }, [persistedSessionId, persistenceEnabled, scope]);
+    }, [persistedSessionId, persistenceEnabled, scope, scopeIsCurrent]);
 
-    const setPersistedExecutionRunDelivery = React.useCallback((next: ExecutionRunDeliveryMode) => {
-        setExecutionRunDelivery(next);
-        if (persistenceEnabled && persistedSessionId && scope) {
+    const setPersistedExecutionRunRequestedAction = React.useCallback((next: PendingRequestedActionV1) => {
+        setExecutionRunRequestedAction(next);
+        if (persistenceEnabled && persistedSessionId && scope && scopeIsCurrent()) {
             writeExistingSessionDraft({
                 scope,
                 sessionId: persistedSessionId,
-                patch: { routing: { executionRunDelivery: next } },
+                patch: { routing: { executionRunRequestedAction: StrictJsonValueSchema.parse(next) } },
             });
         }
-    }, [persistedSessionId, persistenceEnabled, scope]);
+    }, [persistedSessionId, persistenceEnabled, scope, scopeIsCurrent]);
 
     return {
         recipient: effectiveRecipient,
         didManualOverride,
         setManualRecipient,
         clearPersistedManualRecipient,
-        executionRunDelivery,
-        setExecutionRunDelivery: setPersistedExecutionRunDelivery,
+        executionRunRequestedAction,
+        setExecutionRunRequestedAction: setPersistedExecutionRunRequestedAction,
     };
 }
 
@@ -182,20 +186,4 @@ function normalizeSessionId(sessionId: string | null | undefined): string | null
     if (typeof sessionId !== 'string') return null;
     const trimmed = sessionId.trim();
     return trimmed.length > 0 ? trimmed : null;
-}
-
-function areNullableScopesEqual(
-    left: ServerAccountScope | null,
-    right: ServerAccountScope | null,
-): boolean {
-    if (!left || !right) return left === right;
-    return areServerAccountScopesEqual(left, right);
-}
-
-function useStableServerAccountScope(scope: ServerAccountScope | null): ServerAccountScope | null {
-    const stableScopeRef = React.useRef<ServerAccountScope | null>(scope);
-    if (!areNullableScopesEqual(stableScopeRef.current, scope)) {
-        stableScopeRef.current = scope;
-    }
-    return stableScopeRef.current;
 }

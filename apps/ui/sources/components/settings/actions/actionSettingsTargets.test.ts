@@ -153,14 +153,14 @@ describe('actionSettingsTargets', () => {
         });
     });
 
-    it.each(['api', 'plugin'] as const)('offers off, ask-first, and allowed states for contributed %s', (targetId) => {
+    it.each(['api', 'plugin'] as const)('offers off, default, ask-first, and allowed states for contributed %s', (targetId) => {
         const actionId = 'com.acme.review/actions/review/start';
         const initial = resolveActionSettingsTargetControlState({
             settings: DEFAULT_ACTIONS_SETTINGS_V1,
             actionId,
             targetId,
         });
-        expect(initial).toMatchObject({ kind: 'approval', value: 'allowed' });
+        expect(initial).toMatchObject({ kind: 'approval', value: 'default' });
 
         const off = applyActionSettingsTargetControlState({
             settings: DEFAULT_ACTIONS_SETTINGS_V1,

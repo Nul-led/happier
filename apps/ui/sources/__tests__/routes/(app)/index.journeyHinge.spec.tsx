@@ -2,7 +2,7 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createExpoRouterMock, flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
+import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import { clearDemoWorld } from '@/demoMode/seed/seedDemoWorld';
 import { takeStoreSnapshot } from '@/demoMode/seed/storeSnapshot';
 import { getDemoFirewallDenyLog, resetDemoFirewallForTests, uninstallDemoFirewall } from '@/demoMode/guards/demoFirewall';
@@ -93,6 +93,11 @@ vi.mock('@/components/onboarding/preAuth/PreAuthOnboardingWizardEntry', async ()
             layout: 'landscape',
             isDesktopShell: true,
             authEntryOptions: {
+                authenticationCatalog: { provenance: 'legacy', methods: [] },
+                authenticationActions: [],
+                keyChallengeV2Available: false,
+                homeTarget: { kind: 'saved_profile', profileRef: 'relay-profile' },
+                homeLabel: 'Relay Home',
                 serverAvailability: 'ready',
                 serverUrlForCopy: 'https://relay.example.test',
                 showAuthActions: true,
@@ -119,10 +124,8 @@ vi.mock('@/components/onboarding/preAuth/PreAuthOnboardingWizardEntry', async ()
                 },
                 retryServerCheck: () => undefined,
             },
-            onCreateAccount: vi.fn(),
-            onCreateAccountViaProvider: vi.fn(),
-            onLoginWithKeylessProvider: vi.fn(),
-            onLoginWithMtls: vi.fn(),
+            accountContinuationIntent: { kind: 'enter', target: { kind: 'automatic' } },
+            onAccountDirectoryKeyResult: vi.fn(),
         };
     }
 
@@ -224,13 +227,18 @@ vi.mock('react-native-svg', () => ({
     SvgXml: 'SvgXml',
 }));
 
-const expoRouterMock = createExpoRouterMock({
-    router: { push: vi.fn(), replace: vi.fn() },
+const expoRouterSpies = vi.hoisted(() => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+}));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: expoRouterSpies }).module;
 });
-vi.mock('expo-router', () => expoRouterMock.module);
 
 const tauriDesktopState = vi.hoisted(() => ({ value: true }));
-vi.mock('@/utils/platform/desktopHost', () => ({
+vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/desktopHost')>(),
     isDesktopHost: () => tauriDesktopState.value,
 }));
 
@@ -256,11 +264,15 @@ vi.mock('@/auth/context/AuthContext', () => ({
     }),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentials: vi.fn(async () => null),
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentials: vi.fn(async () => null),
+        },
+    });
+});
 
 vi.mock('@/components/navigation/shell/MainView', () => ({
     MainView: (props: Record<string, unknown>) => React.createElement('MainView', props),
@@ -433,8 +445,8 @@ describe('/ (welcome) journey hinge', () => {
             needsAuth: true,
             machineId: null,
         };
-        expoRouterMock.spies.replace.mockReset();
-        expoRouterMock.spies.push.mockReset();
+        expoRouterSpies.replace.mockReset();
+        expoRouterSpies.push.mockReset();
         setupControllerState.lastProps = null;
         setupControllerState.current.stepId = 'setup_this_computer';
         setupControllerState.current.contentTransitionKey = 'setup_this_computer';
@@ -848,7 +860,7 @@ describe('/ (welcome) journey hinge', () => {
         expect(syncSingletonState.applySettings).toHaveBeenCalledWith({
             sessionListAttentionPromotionModeV1: 'global',
             sessionListWorkingPlacementModeV1: 'global',
-        }, { source: 'ui' });
+        }, { expectedSettingsScope: null, source: 'ui' });
         expect(setPendingSetupIntentMock).toHaveBeenCalledWith({
             branch: 'thisComputer',
             phase: 'dismissed',
@@ -886,7 +898,7 @@ describe('/ (welcome) journey hinge', () => {
         expect(syncSingletonState.applySettings).toHaveBeenCalledWith({
             sessionListAttentionPromotionModeV1: 'global',
             sessionListWorkingPlacementModeV1: 'global',
-        }, { source: 'ui' });
+        }, { expectedSettingsScope: null, source: 'ui' });
     });
 
     it('hands over auth on a setup-entry journey without any demo activity or legacy setup modal', async () => {

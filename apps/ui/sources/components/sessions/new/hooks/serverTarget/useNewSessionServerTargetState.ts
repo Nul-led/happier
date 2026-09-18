@@ -159,22 +159,48 @@ export function useNewSessionServerTargetState(params: Readonly<{
     const persistedRequestedServerId = typeof params.request.persistedTargetServerId === 'string'
         ? params.request.persistedTargetServerId.trim() || null
         : null;
+    const capturedAuthoringServerIdRef = React.useRef<string | null>(null);
     const requestedServerId = routeRequestedServerId
         ?? persistedRequestedServerId
+        ?? capturedAuthoringServerIdRef.current
         ?? (explicitSettingsServerRejected ? explicitSettingsServerId : null);
+    const normalizableRequestedServerId = routeRequestedServerId
+        ?? (persistedRequestedServerId === null ? capturedAuthoringServerIdRef.current : null);
     const newSessionServerTarget = React.useMemo(() => {
-        return resolveNewSessionServerTarget({
+        const requested = resolveNewSessionServerTarget({
             requestedServerId,
             activeServerId,
             allowedServerIds: allowedTargetServerIds,
         });
+        if (requested.targetServerId !== null || requested.rejectedRequestedServerId === null) return requested;
+        // Route Homes and an unpersisted implicit fallback are navigation/authoring context, not a
+        // committed execution target. If the allowed Home set moves away from either, normalize
+        // through the same allowed-active-then-first owner. A persisted/committed Home still fails
+        // closed so a restored exact target is never silently moved. The rejection remains visible
+        // to hosts, and an empty allowed set still has no canonical Home to fall back to.
+        if (requested.rejectedRequestedServerId !== normalizableRequestedServerId) return requested;
+        const normalized = resolveNewSessionServerTarget({
+            requestedServerId: null,
+            activeServerId,
+            allowedServerIds: allowedTargetServerIds,
+        });
+        return {
+            targetServerId: normalized.targetServerId,
+            rejectedRequestedServerId: requested.rejectedRequestedServerId,
+        };
     }, [
         activeServerId,
         allowedTargetServerIds,
+        normalizableRequestedServerId,
         requestedServerId,
     ]);
 
     const targetServerId = newSessionServerTarget.targetServerId;
+    React.useEffect(() => {
+        if (targetServerId !== null) {
+            capturedAuthoringServerIdRef.current = targetServerId;
+        }
+    }, [targetServerId]);
     const targetServerProfile = React.useMemo(() => {
         return serverProfiles.find((profile) => resolveServerProfileScopeId(profile) === targetServerId || profile.id === targetServerId) ?? null;
     }, [serverProfiles, targetServerId]);

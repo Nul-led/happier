@@ -7,6 +7,7 @@ import {
     requireCurrentAccountStoredContentServerCompatibility,
 } from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import {
+    type ArtifactApiOptions,
     createArtifact as createArtifactApi,
     fetchArtifact as fetchArtifactApi,
     fetchArtifacts as fetchArtifactsApi,
@@ -429,12 +430,29 @@ export async function fetchAndApplyArtifactsList(params: {
 
         for (const artifact of artifacts) {
             if (!shouldContinue()) return;
-            const decrypted = await buildDecryptedArtifactListItem({
+            let decrypted = await buildDecryptedArtifactListItem({
                 artifact,
                 encryption,
                 dataKey: dataKeysByArtifactId.get(artifact.id) ?? null,
             });
             if (!shouldContinue()) return;
+            const header = decrypted?.header;
+            const isApprovalIndex = header?.kind === 'approval_request.v1'
+                || header?.kind === 'target_action_approval.v1'
+                || header?.kind === 'execution_run_host_action_approval.v1';
+            const isActionableApprovalStatus = header?.approvalStatus === 'open'
+                || header?.approvalStatus === 'approved'
+                || header?.approvalStatus === 'executing';
+            if (decrypted?.isDecrypted && isApprovalIndex && isActionableApprovalStatus) {
+                const hydrated = await fetchArtifactWithBodyFromApi({
+                    credentials,
+                    artifactId: artifact.id,
+                    encryption,
+                    artifactDataKeys,
+                });
+                if (!shouldContinue()) return;
+                if (hydrated) decrypted = hydrated;
+            }
             if (decrypted) {
                 decryptedArtifacts.push(decrypted);
             }
@@ -453,6 +471,7 @@ export async function fetchAndApplyArtifactsList(params: {
 
 export async function fetchArtifactWithBodyFromApi(params: {
     credentials: AuthCredentials;
+    request?: ArtifactApiOptions['request'];
     artifactId: string;
     encryption: Encryption | null;
     artifactDataKeys: ArtifactDataKeyCache;
@@ -460,7 +479,7 @@ export async function fetchArtifactWithBodyFromApi(params: {
     const { credentials, artifactId, encryption, artifactDataKeys } = params;
 
     try {
-        const artifact = await fetchArtifactApi(credentials, artifactId);
+        const artifact = await fetchArtifactApi(credentials, artifactId, { request: params.request });
         return await decryptArtifactWithBody({
             artifact,
             encryption,
@@ -474,6 +493,8 @@ export async function fetchArtifactWithBodyFromApi(params: {
 
 export async function createArtifactViaApi(params: {
     credentials: AuthCredentials;
+    request?: ArtifactApiOptions['request'];
+    serverId?: string;
     title: string | null;
     body: string | null;
     sessions?: string[];
@@ -486,7 +507,13 @@ export async function createArtifactViaApi(params: {
 
     return await createArtifactWithHeaderViaApi({
         credentials,
-        header: { title, sessions, draft },
+        request: params.request,
+        serverId: params.serverId,
+        header: {
+            title,
+            ...(sessions ? { sessions } : {}),
+            ...(typeof draft === 'boolean' ? { draft } : {}),
+        },
         body,
         encryption,
         artifactDataKeys,
@@ -496,6 +523,8 @@ export async function createArtifactViaApi(params: {
 
 export async function createArtifactWithHeaderViaApi(params: {
     credentials: AuthCredentials;
+    request?: ArtifactApiOptions['request'];
+    serverId?: string;
     header: ArtifactHeader;
     body: string | null;
     encryption: Encryption | null;
@@ -507,14 +536,14 @@ export async function createArtifactWithHeaderViaApi(params: {
     try {
         // Generate unique artifact ID
         const artifactId = randomUUID();
-        const accountMode = (await fetchAccountEncryptionMode(credentials)).mode;
+        const accountMode = (await fetchAccountEncryptionMode(credentials, { request: params.request })).mode;
 
         let storedDataEncryptionKey: string;
         let storedHeader: string;
         let storedBody: string;
 
         if (accountMode === 'plain') {
-            await requireCurrentAccountStoredContentServerCompatibility();
+            await requireCurrentAccountStoredContentServerCompatibility({ serverId: params.serverId });
             storedDataEncryptionKey = ARTIFACT_PLAIN_DATA_KEY_MARKER;
             storedHeader = encodePlainArtifactStoredContent(header);
             storedBody = encodePlainArtifactStoredContent({ body });
@@ -551,7 +580,7 @@ export async function createArtifactWithHeaderViaApi(params: {
         };
 
         // Send to server
-        const artifact = await createArtifactApi(credentials, request);
+        const artifact = await createArtifactApi(credentials, request, { request: params.request });
 
         // Add to local storage
         const normalizedHeader = normalizeArtifactHeaderForDecryptedArtifact(header);
@@ -582,6 +611,8 @@ export async function createArtifactWithHeaderViaApi(params: {
 
 export async function updateArtifactViaApi(params: {
     credentials: AuthCredentials;
+    request?: ArtifactApiOptions['request'];
+    serverId?: string;
     artifactId: string;
     title: string | null;
     body: string | null;
@@ -611,6 +642,8 @@ export async function updateArtifactViaApi(params: {
 
         await updateArtifactWithHeaderViaApi({
             credentials,
+            request: params.request,
+            serverId: params.serverId,
             artifactId,
             header,
             body,
@@ -649,6 +682,8 @@ function stableStringifyJsonValue(value: unknown): string {
 
 export async function updateArtifactWithHeaderViaApi(params: {
     credentials: AuthCredentials;
+    request?: ArtifactApiOptions['request'];
+    serverId?: string;
     artifactId: string;
     header: ArtifactHeader;
     body: string | null;
@@ -682,7 +717,7 @@ export async function updateArtifactWithHeaderViaApi(params: {
         || storageMode === undefined
         || (storageMode === 'e2ee' && !dataEncryptionKey)
     ) {
-        const fullArtifact = await fetchArtifactApi(credentials, artifactId);
+        const fullArtifact = await fetchArtifactApi(credentials, artifactId, { request: params.request });
         headerVersion = fullArtifact.headerVersion;
         bodyVersion = fullArtifact.bodyVersion;
         storageMode = isPlainArtifactDataKeyMarker(fullArtifact.dataEncryptionKey) ? 'plain' : 'e2ee';
@@ -742,11 +777,11 @@ export async function updateArtifactWithHeaderViaApi(params: {
     }
 
     if (storageMode === 'plain') {
-        await requireCurrentAccountStoredContentServerCompatibility();
+        await requireCurrentAccountStoredContentServerCompatibility({ serverId: params.serverId });
     }
 
     // Send update to server
-    const response = await updateArtifactApi(credentials, artifactId, updateRequest);
+    const response = await updateArtifactApi(credentials, artifactId, updateRequest, { request: params.request });
 
     if (!response.success) {
         // Handle version mismatch

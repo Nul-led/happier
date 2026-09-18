@@ -11,7 +11,7 @@ afterEach(() => {
 function mockSessionsDomainBoundaries() {
     vi.doMock('../../domains/state/persistence', () => ({
         loadSettings: vi.fn(() => ({
-            settings: { groupInactiveSessionsByProject: false },
+            settings: {},
             version: null,
         })),
         loadLocalSettings: vi.fn(() => ({})),
@@ -86,13 +86,15 @@ function mockSessionsDomainBoundaries() {
 function createHarness(createSessionsDomain: any, createReducer: any, initialStateOverrides: Record<string, unknown> = {}) {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
         sessionLastViewed: {},
         sessionRepositoryTreeExpandedPathsBySessionId: {},
         reviewCommentsDraftsBySessionId: {},
-        actionDraftsBySessionId: {},
+        sessionActionDraftsByAddressKey: {},
         isDataReady: false,
         machines: {},
         machineDisplayById: {},
@@ -105,7 +107,7 @@ function createHarness(createSessionsDomain: any, createReducer: any, initialSta
             },
         },
         profile: { id: 'account_a' },
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
         ...initialStateOverrides,
     };
 
@@ -144,7 +146,7 @@ describe('sessions domain: thinking grace', () => {
         const { createReducer } = await import('../../reducer/reducer');
         const { createSessionsDomain } = await import('./sessions');
         const { get, domain } = createHarness(createSessionsDomain, createReducer, {
-            sessionListRowStateByServerId: { server_1: {} },
+            sessionListRowsByServerId: { server_1: {} },
             sessionListIndexByServerId: {},
         });
         const baseSession = (overrides: Partial<Session>): Session => ({
@@ -172,8 +174,8 @@ describe('sessions domain: thinking grace', () => {
         domain.markSessionResuming('s1');
 
         expect(get().sessions.s1?.resumingAt).toBe(nowMs);
-        expect(get().sessionListRenderables.s1?.resumingAt).toBe(nowMs);
-        expect(get().sessionListRowStateByServerId.server_1?.s1?.resumingAt).toBe(nowMs);
+        expect((get().sessionListRowsByServerId['server_1'] ?? {}).s1?.resumingAt).toBe(nowMs);
+        expect(get().sessionListRowsByServerId.server_1?.s1?.resumingAt).toBe(nowMs);
         expect([...scheduledTimeouts.values()].filter((timeout) => timeout.delay === 30_000)).toHaveLength(0);
 
         domain.armSessionResumingFallback('s1');
@@ -201,8 +203,8 @@ describe('sessions domain: thinking grace', () => {
             latestTurnStatusObservedAt: nowMs,
         })]);
         expect(get().sessions.s1?.resumingAt ?? null).toBeNull();
-        expect(get().sessionListRenderables.s1?.resumingAt ?? null).toBeNull();
-        expect(get().sessionListRowStateByServerId.server_1?.s1?.resumingAt ?? null).toBeNull();
+        expect((get().sessionListRowsByServerId['server_1'] ?? {}).s1?.resumingAt ?? null).toBeNull();
+        expect(get().sessionListRowsByServerId.server_1?.s1?.resumingAt ?? null).toBeNull();
 
         nowMs += 500;
         domain.applySessions([baseSession({
@@ -450,8 +452,8 @@ describe('sessions domain: thinking grace', () => {
         expect(get().sessions.s1?.thinking).toBe(false);
         expect(get().sessions.s1?.thinkingAt).toBe(nowMs - 10);
         expect(get().sessions.s1?.thinkingGraceUntil ?? null).toBeNull();
-        expect(get().sessionListRenderables.s1?.thinking).toBe(false);
-        expect(get().sessionListRenderables.s1?.thinkingGraceUntil ?? null).toBeNull();
+        expect((get().sessionListRowsByServerId['server_1'] ?? {}).s1?.thinking).toBe(false);
+        expect((get().sessionListRowsByServerId['server_1'] ?? {}).s1?.thinkingGraceUntil ?? null).toBeNull();
         expect(vi.mocked(globalThis.setTimeout).mock.calls.some(([, delay]) => delay === 3_000)).toBe(false);
     });
 });

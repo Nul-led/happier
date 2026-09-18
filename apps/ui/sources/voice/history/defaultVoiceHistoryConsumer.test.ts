@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type {
-  ServerAccountSessionRequestAuthority,
-} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+  ServerAccountRequestAuthority,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { VoiceProviderRegistry } from '@/voice/registry/providerRegistry';
 import {
@@ -79,7 +79,7 @@ describe('resolveVoiceHistoryProviderTitleKey', () => {
 describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
   it('exposes only safe canonical initial-load stage facts while preserving existing typed and code-compatible failures', async () => {
     const scope = { serverId: 'server-1', accountId: 'account-a' } as const;
-    const authority = { scope } as unknown as ServerAccountSessionRequestAuthority;
+    const authority = { scope } as unknown as ServerAccountRequestAuthority;
     const registry = {
       list: () => [],
       get: () => null,
@@ -301,10 +301,10 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
         encryption: {},
       },
       request: async () => new Response(null, { status: 200 }),
-    } as unknown as ServerAccountSessionRequestAuthority;
+    } as unknown as ServerAccountRequestAuthority;
     const calls: Array<Readonly<{
       operation: 'lookup' | 'hydrate' | 'refresh' | 'page' | 'delete';
-      authority: ServerAccountSessionRequestAuthority;
+      authority: ServerAccountRequestAuthority;
     }>> = [];
     const runtime: DefaultVoiceHistoryRuntime = {
       readActiveScope: () => scopeA,
@@ -386,8 +386,8 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
         encryption: {},
       },
       request: async () => new Response(null, { status: 200 }),
-    } as unknown as ServerAccountSessionRequestAuthority;
-    const seenAuthorities: ServerAccountSessionRequestAuthority[] = [];
+    } as unknown as ServerAccountRequestAuthority;
+    const seenAuthorities: ServerAccountRequestAuthority[] = [];
     const runtime: DefaultVoiceHistoryRuntime = {
       readActiveScope: () => activeScope,
       captureAuthority: async () => authorityA,

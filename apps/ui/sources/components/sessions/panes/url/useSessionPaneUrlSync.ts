@@ -15,6 +15,7 @@ import {
     reconcileSessionPaneScopeFromUrlState,
     serializeSessionPaneUrlState,
 } from './sessionPaneUrlState';
+import { parseSessionPaneScopeId } from '../sessionPaneScopeId';
 
 export type UseSessionPaneUrlSyncInput = Readonly<{
     enabled: boolean;
@@ -41,14 +42,17 @@ export type UseSessionPaneUrlSyncInput = Readonly<{
 }>;
 
 function signatureFromSerialized(
-    params: Readonly<{ right?: unknown; bottom?: unknown; details?: unknown; path?: unknown; sha?: unknown; terminalInstanceId?: unknown }>,
+    params: Readonly<{ right?: unknown; bottom?: unknown; details?: unknown; path?: unknown; sha?: unknown; terminalInstanceId?: unknown; discussionId?: unknown }>,
 ): string {
-    return `${String(params.right ?? '')}|${String(params.bottom ?? '')}|${String(params.details ?? '')}|${String(params.path ?? '')}|${String(params.sha ?? '')}|${String(params.terminalInstanceId ?? '')}`;
+    const base = `${String(params.right ?? '')}|${String(params.bottom ?? '')}|${String(params.details ?? '')}|${String(params.path ?? '')}|${String(params.sha ?? '')}|${String(params.terminalInstanceId ?? '')}`;
+    return params.discussionId == null || params.discussionId === ''
+        ? base
+        : `${base}|${String(params.discussionId)}`;
 }
 
 function serializeToParamShape(
     state: SessionPaneUrlState | null,
-): Readonly<{ right?: string; bottom?: string; details?: string; path?: string; sha?: string; terminalInstanceId?: string }> {
+): Readonly<{ right?: string; bottom?: string; details?: string; path?: string; sha?: string; terminalInstanceId?: string; discussionId?: string }> {
     const serialized = state ? serializeSessionPaneUrlState(state) : {};
     return {
         right: serialized.right,
@@ -57,13 +61,12 @@ function serializeToParamShape(
         path: serialized.path,
         sha: serialized.sha,
         terminalInstanceId: serialized.terminalInstanceId,
+        discussionId: serialized.discussionId,
     };
 }
 
 function readSessionIdFromScopeKey(scopeKey: string): string | null {
-    if (!scopeKey.startsWith('session:')) return null;
-    const sessionId = scopeKey.slice('session:'.length).trim();
-    return sessionId.length > 0 ? sessionId : null;
+    return parseSessionPaneScopeId(scopeKey)?.sessionId ?? null;
 }
 
 function canWriteSessionPaneParamsForCurrentBrowserUrl(scopeKey: string): boolean {
@@ -79,7 +82,9 @@ function canWriteSessionPaneParamsForCurrentBrowserUrl(scopeKey: string): boolea
         const url = new URL(href);
         const match = /^\/session\/([^/]+)\/?$/.exec(url.pathname);
         if (!match) return false;
-        return decodeURIComponent(match[1] ?? '') === expectedSessionId;
+        if (decodeURIComponent(match[1] ?? '') !== expectedSessionId) return false;
+        const expectedAddress = parseSessionPaneScopeId(scopeKey)?.address ?? null;
+        return !expectedAddress || url.searchParams.get('serverId')?.trim() === expectedAddress.serverId;
     } catch {
         return false;
     }
@@ -104,6 +109,7 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
     const derivedSig = React.useMemo(() => signatureFromSerialized(derivedParams), [derivedParams]);
     const urlSig = React.useMemo(() => signatureFromSerialized(urlParams), [urlParams]);
     const scopeKey = input.scopeKey ?? 'default';
+    const scopeAddress = React.useMemo(() => parseSessionPaneScopeId(scopeKey)?.address ?? null, [scopeKey]);
     const currentHistoryPaneState = React.useMemo(() => readCurrentSessionPaneHistoryState(scopeKey), [scopeKey, urlSig]);
     const storedState = React.useMemo(() => {
         if (routeParamSyncEnabled && input.urlState) return null;
@@ -128,8 +134,8 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
         }
 
         pendingStoredStateWriteSigRef.current = signatureFromSerialized(serializeToParamShape(storedState));
-        applySessionPaneUrlState(input.pane, storedState);
-    }, [currentHistoryPaneState?.urlSig, input.enabled, input.pane, input.urlState, routeParamSyncEnabled, scopeKey, storedState, urlSig]);
+        applySessionPaneUrlState(input.pane, storedState, scopeAddress);
+    }, [currentHistoryPaneState?.urlSig, input.enabled, input.pane, input.urlState, routeParamSyncEnabled, scopeAddress, scopeKey, storedState, urlSig]);
 
     React.useEffect(() => {
         if (!input.enabled) return;
@@ -198,14 +204,14 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
         // Important: initial state application should be additive (open requested panes),
         // not subtractive (closing panes the URL cannot represent, e.g. `scmReview`).
         if (routeParamSyncEnabled && isFirstRun && input.urlState) {
-            applySessionPaneUrlState(input.pane, input.urlState);
+            applySessionPaneUrlState(input.pane, input.urlState, scopeAddress);
             pendingPaneReconcileRef.current = { targetUrlSig: urlSig };
             return;
         }
 
         // Browser back/forward: URL changed without us writing it.
         if (routeParamSyncEnabled && prevUrlSig !== null && urlSig !== prevUrlSig) {
-            reconcileSessionPaneScopeFromUrlState(input.pane, input.urlState);
+            reconcileSessionPaneScopeFromUrlState(input.pane, input.urlState, scopeAddress);
             pendingPaneReconcileRef.current = { targetUrlSig: urlSig };
             return;
         }
@@ -227,6 +233,7 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
                 path: derivedParams.path,
                 sha: derivedParams.sha,
                 terminalInstanceId: derivedParams.terminalInstanceId,
+                discussionId: derivedParams.discussionId,
             });
         }
         pendingUrlWriteRef.current = { fromSig: urlSig, toSig: derivedSig };
@@ -237,6 +244,7 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
             path: derivedParams.path,
             sha: derivedParams.sha,
             terminalInstanceId: derivedParams.terminalInstanceId,
+            discussionId: derivedParams.discussionId,
         });
         scheduleCurrentSessionPaneHistoryState({ scopeKey, urlSig: derivedSig });
     }, [
@@ -246,6 +254,7 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
         derivedParams.right,
         derivedParams.sha,
         derivedParams.terminalInstanceId,
+        derivedParams.discussionId,
         derivedSig,
         input.enabled,
         scopeKey,
@@ -254,5 +263,6 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
         routeParamSyncEnabled,
         input.setParams,
         input.urlState,
+        scopeAddress,
     ]);
 }

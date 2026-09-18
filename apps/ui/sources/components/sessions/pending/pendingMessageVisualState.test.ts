@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest';
 import type { PendingMessage } from '@/sync/domains/state/storageTypes';
 
 import {
+    createSessionInputFailureError,
     getPendingMessageVisualState,
+    getSessionInputFailureLabelKey,
     resolvePendingMessageHeightBearingChrome,
     type PendingMessageVisualStateKind,
 } from './pendingMessageVisualState';
@@ -216,6 +218,19 @@ describe('getPendingMessageVisualState', () => {
 
         expect(getPendingMessageVisualState(pendingMessage({
             pendingDeliveryStatus: 'blocked',
+            pendingDeliveryBlockedReason: 'session_input_target_unavailable',
+        }))).toEqual({
+            kind: 'blocked',
+            showSpinner: false,
+            iconName: 'warning-circle',
+            deliveryBlockedPresentation: {
+                labelKey: 'session.pendingMessages.deliveryBlockedReasons.targetUnavailable',
+                isUnknown: false,
+            },
+        });
+
+        expect(getPendingMessageVisualState(pendingMessage({
+            pendingDeliveryStatus: 'blocked',
             pendingDeliveryBlockedReason: 'conditional_steer_unavailable',
         }))).toEqual({
             kind: 'blocked',
@@ -349,5 +364,30 @@ describe('resolvePendingMessageHeightBearingChrome', () => {
             iconName: 'clock',
             deliveryBlockedPresentation: { labelKey: 'session.pendingMessages.deliveryBlockedReasons.unknown', isUnknown: true },
         })).toBe('blocked-notice');
+    });
+});
+
+describe('session input failure copy owner', () => {
+    it('gives delivery_outcome_uncertain its own copy instead of the generic needs-review label', () => {
+        expect(getPendingMessageVisualState(pendingMessage({
+            pendingDeliveryStatus: 'blocked',
+            pendingDeliveryBlockedReason: 'delivery_outcome_uncertain',
+        })).deliveryBlockedPresentation).toEqual({
+            labelKey: 'session.pendingMessages.deliveryBlockedReasons.deliveryOutcomeUncertain',
+            isUnknown: false,
+        });
+    });
+
+    it('resolves a coded admission or Run-launch failure to a translation key and never to the raw code', () => {
+        expect(getSessionInputFailureLabelKey(
+            Object.assign(new Error('session_input_target_unavailable'), { code: 'session_input_target_unavailable' }),
+        )).toBe('session.pendingMessages.admissionRejected.targetUnavailable');
+        expect(getSessionInputFailureLabelKey(
+            Object.assign(new Error('session_input_target_update_required'), { code: 'session_input_target_update_required' }),
+        )).toBe('session.pendingMessages.admissionRejected.targetUpdateRequired');
+        expect(getSessionInputFailureLabelKey(createSessionInputFailureError('execution_run_target_changed')))
+            .toBe('sessionDrafts.executionRunStart.targetChanged');
+        expect(getSessionInputFailureLabelKey(new Error('participant send rejected'))).toBeNull();
+        expect(getSessionInputFailureLabelKey(Object.assign(new Error('x'), { code: 'not_a_known_code' }))).toBeNull();
     });
 });

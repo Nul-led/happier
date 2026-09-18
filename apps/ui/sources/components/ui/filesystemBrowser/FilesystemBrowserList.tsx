@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { Platform, Pressable, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
@@ -74,7 +74,7 @@ export const FilesystemBrowserList = React.memo(function FilesystemBrowserList(p
 
     // The virtualized abstraction owns the platform/backend choice; `auto`
     // resolves to the canonical Legend backend on every platform.
-    return (
+    const list = (
         <VirtualizedList<FilesystemBrowserListNode>
             data={props.nodes}
             keyExtractor={keyExtractor}
@@ -97,4 +97,7 @@ export const FilesystemBrowserList = React.memo(function FilesystemBrowserList(p
             ref={props.listRef}
         />
     );
+    return props.treeRole ? (
+        <View style={{ flex: 1, minHeight: 0 }} {...(Platform.OS === 'web' ? { role: 'tree' as const } : {})}>{list}</View>
+    ) : list;
 });

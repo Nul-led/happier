@@ -3,7 +3,11 @@ import { Platform, View } from 'react-native';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 import type { Message } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type {
+    DiscardedPendingMessage,
+    Metadata,
+    PendingMessage,
+} from '@/sync/domains/state/storageTypes';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 
 import {
@@ -13,6 +17,7 @@ import {
     type ChatListItemsBuildCache,
 } from '@/components/sessions/chatListItems';
 import { MessageViewWithSessionCommon } from '@/components/sessions/transcript/MessageView';
+import { PendingMessagesTranscriptBlock } from '@/components/sessions/pending/PendingMessagesTranscriptBlock';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { useSetting } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
@@ -78,6 +83,8 @@ type ChainTranscriptCommittedProjection = Readonly<{
 
 type ChainTranscriptListProps = Readonly<{
     sessionId: string;
+    /** Exact Home for pending/discarded authorship; raw Session ids repeat across Homes. */
+    serverId?: string | null;
     datasetKey: string;
     messages: Message[];
     metadata: Metadata | null;
@@ -93,7 +100,20 @@ type ChainTranscriptListProps = Readonly<{
     // the load resolves empty so a legitimately loaded-but-empty list does not spin forever. When
     // omitted, the spinner is shown on an empty list (legacy behavior for the main transcript).
     isInitialLoadInFlight?: boolean;
+    // Exact-target pending/discarded rows for this sidechain, already filtered by the canonical
+    // pending owner. They participate in the shared transcript projection — including the
+    // pending-to-committed crossover — rather than being appended as an arbitrary footer.
+    pendingMessages?: readonly PendingMessage[] | null;
+    discardedMessages?: readonly DiscardedPendingMessage[] | null;
+    // The exact destination those rows belong to. Omitted means the main Session. The
+    // pending block re-derives its own filter and every list-scoped mutation (reorder)
+    // from this value, so a sidechain that paints a run's queue without it would both
+    // show nothing and address the main queue.
+    pendingRecipient?: PendingMessage['recipient'];
 }>;
+
+const EMPTY_PENDING_MESSAGES: readonly PendingMessage[] = Object.freeze([]);
+const EMPTY_DISCARDED_PENDING_MESSAGES: readonly DiscardedPendingMessage[] = Object.freeze([]);
 
 function buildMessagesById(messages: readonly Message[]): Record<string, Message> {
     const result: Record<string, Message> = {};
@@ -136,7 +156,7 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
     const transcriptGroupingMode = useSetting('transcriptGroupingMode');
     const transcriptGroupToolCalls = useSetting('transcriptGroupToolCalls');
     const transcriptTurnToolCallsGroupStrategy = useSetting('transcriptTurnToolCallsGroupStrategy');
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId);
+    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId, props.serverId);
     const transcriptMessageSelection = useOptionalTranscriptSelectionState();
     const toolViewTimelineChromeMode = transcriptSessionCommon.toolChrome.toolViewTimelineChromeMode;
     const sessionThinkingDisplayMode = transcriptSessionCommon.messageDisplay.sessionThinkingDisplayMode;
@@ -154,6 +174,11 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
     const toolCallsGroupStrategy =
         transcriptTurnToolCallsGroupStrategy === 'all_tools_in_turn' ? 'all_tools_in_turn' : 'consecutive_tools';
 
+    // Preserve referential stability so an unchanged empty target queue cannot
+    // invalidate the transcript projection caches on every render.
+    const targetPendingMessages = props.pendingMessages ?? EMPTY_PENDING_MESSAGES;
+    const targetDiscardedMessages = props.discardedMessages ?? EMPTY_DISCARDED_PENDING_MESSAGES;
+
     const linearItemsCacheRef = React.useRef<ChatListItemsBuildCache | null>(null);
     const turnsCacheRef = React.useRef<TranscriptTurnsBuildCache | null>(null);
     const turnsCache = React.useMemo(() => {
@@ -162,10 +187,12 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
             cache: turnsCacheRef.current,
             messageIdsOldestFirst,
             messagesById,
+            pendingMessages: targetPendingMessages,
+            discardedMessages: targetDiscardedMessages,
             groupToolCalls,
             toolCallsGroupStrategy,
         });
-    }, [groupToolCalls, groupingMode, messageIdsOldestFirst, messagesById, toolCallsGroupStrategy]);
+    }, [groupToolCalls, groupingMode, messageIdsOldestFirst, messagesById, targetDiscardedMessages, targetPendingMessages, toolCallsGroupStrategy]);
 
     React.useEffect(() => {
         turnsCacheRef.current = turnsCache;
@@ -177,12 +204,12 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
             cache: linearItemsCacheRef.current,
             messageIdsOldestFirst,
             messagesById,
-            pendingMessages: [],
-            discardedMessages: [],
+            pendingMessages: targetPendingMessages,
+            discardedMessages: targetDiscardedMessages,
             actionDrafts: [],
             groupConsecutiveToolCalls: groupToolCalls,
         });
-    }, [groupToolCalls, groupingMode, messageIdsOldestFirst, messagesById]);
+    }, [groupToolCalls, groupingMode, messageIdsOldestFirst, messagesById, targetDiscardedMessages, targetPendingMessages]);
 
     React.useEffect(() => {
         if (groupingMode === 'turns') {
@@ -215,22 +242,36 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
             // N2c stable virtualization units: turns decompose into per-unit rows so
             // intra-row tool-group growth becomes between-row insertion.
             const turns = turnsCache?.turns ?? [];
-            return buildTranscriptTurnUnits({
+            const turnUnits = buildTranscriptTurnUnits({
                 items: turns.map((turn) => ({ kind: 'turn', id: turn.id, turn })),
                 getMessageById: (messageId) => messagesById[messageId] ?? null,
                 isGroupExpanded: (toolMessageIds) => toolMessageIds.some((id) => expandedToolCallsAnchorMessageIds.has(id)),
                 collapsedPreviewCount: resolveTranscriptToolCallsCollapsedPreviewCount(transcriptToolCallsCollapsedPreviewCountSetting),
             });
+            // Pending/discarded input is a synthetic transcript row owned by
+            // buildChatListItems in linear mode too. Reuse that owner so turn
+            // grouping changes only committed-message layout and cannot make
+            // the target-scoped Pending queue disappear (including an otherwise
+            // empty Run transcript).
+            const pendingUnits = buildChatListItems({
+                messageIdsOldestFirst,
+                messagesById,
+                pendingMessages: targetPendingMessages,
+                discardedMessages: targetDiscardedMessages,
+                actionDrafts: [],
+                includeCommittedMessages: false,
+            });
+            return [...turnUnits, ...pendingUnits];
         }
         return linearCache?.items ?? buildChatListItems({
             messageIdsOldestFirst,
             messagesById,
-            pendingMessages: [],
-            discardedMessages: [],
+            pendingMessages: targetPendingMessages,
+            discardedMessages: targetDiscardedMessages,
             actionDrafts: [],
             groupConsecutiveToolCalls: groupToolCalls,
         });
-    }, [expandedToolCallsAnchorMessageIds, groupToolCalls, groupingMode, linearCache, messageIdsOldestFirst, messagesById, transcriptToolCallsCollapsedPreviewCountSetting, turnsCache]);
+    }, [expandedToolCallsAnchorMessageIds, groupToolCalls, groupingMode, linearCache, messageIdsOldestFirst, messagesById, targetDiscardedMessages, targetPendingMessages, transcriptToolCallsCollapsedPreviewCountSetting, turnsCache]);
     const renderedItems = React.useMemo<ChainTranscriptListItem[]>(() => {
         if (shellFrame.dataOrder === 'newest-first') {
             return [...items].reverse();
@@ -571,6 +612,21 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
             );
         }
 
+        if (item.kind === 'pending-queue') {
+            // The queue is a transcript row, not a footer: it sits at the tail of this exact
+            // sidechain and carries its target so edit/reorder/retry/send-now/remove operate
+            // on this run's rows only.
+            return (
+                <PendingMessagesTranscriptBlock
+                    sessionId={props.sessionId}
+                    serverId={props.serverId ?? null}
+                    recipient={props.pendingRecipient}
+                    pendingMessages={item.pendingMessages}
+                    discardedMessages={item.discardedMessages}
+                />
+            );
+        }
+
         if (item.kind !== 'message') {
             return null;
         }
@@ -604,6 +660,8 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
         props.forcePermissionPromptsInTranscript,
         props.interaction,
         props.metadata,
+        props.pendingRecipient,
+        props.serverId,
         props.sessionId,
         resolveThinkingExpanded,
         setThinkingExpanded,

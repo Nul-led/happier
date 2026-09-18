@@ -34,6 +34,31 @@ afterEach(() => {
 });
 
 describe('buildActivityBadgeState', () => {
+    it('keeps canonical failure attention when unread presentation is disabled', () => {
+        const state = buildActivityBadgeState({
+            sessions: [{
+                id: 's-mixed',
+                seq: 5,
+                active: true,
+                lastViewedSessionSeq: 1,
+                latestTurnStatus: 'failed',
+                lastRuntimeIssue: JSON.stringify({
+                    v: 1,
+                    scope: 'primary_session',
+                    status: 'failed',
+                    code: 'agent_status_error',
+                    occurredAt: 1,
+                }),
+                metadata: { path: '', host: '' },
+            } as any],
+            numericInboxCount: 0,
+            hasNonNumericInboxAttention: false,
+            sessionOptions: { showUnread: false },
+        });
+
+        expect(state.count).toBe(1);
+    });
+
     it('counts a session once even when multiple attention reasons are active', () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date(1_000));
@@ -265,6 +290,36 @@ describe('buildActivityBadgeState', () => {
             count: 0,
             showNonNumericDot: true,
         });
+    });
+
+    it('counts canonical due-reminder attention without reclassifying it as unread', () => {
+        const state = buildActivityBadgeState({
+            sessions: [
+                {
+                    id: 'reminder-due',
+                    serverId: 'server-a',
+                    seq: 20,
+                    active: true,
+                    metadata: { path: '', host: '' },
+                    viewer: {
+                        readState: { state: 'not_started' },
+                        relevance: { relevant: true, reasons: ['explicit_attention'] },
+                        follow: { follows: false, notificationLevel: null },
+                        notification: { level: 'none', source: 'none' },
+                        attention: {
+                            needsAttention: true,
+                            reasons: ['reminder_due'],
+                            primary: 'reminder_due',
+                            presentation: 'full',
+                        },
+                    },
+                } as any,
+            ],
+            numericInboxCount: 0,
+            hasNonNumericInboxAttention: false,
+        });
+
+        expect(state).toEqual({ count: 1, showNonNumericDot: false });
     });
 
     it('respects badge filters and does not count queued input when that badge reason is disabled', () => {

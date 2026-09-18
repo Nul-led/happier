@@ -18,9 +18,9 @@ function makeEntries(count: number) {
     })) as any[];
 }
 
-function getCommitRows(screen: { findAllByTestId: (testID: string) => unknown[] }, count: number) {
+function getCommitRows(screen: { findAllHostsByTestId: (testID: string) => unknown[] }, count: number) {
     return Array.from({ length: count }, (_, index) => `scm-commit-entry-sha-${index + 1}`)
-        .flatMap((testID) => screen.findAllByTestId(testID));
+        .flatMap((testID) => screen.findAllHostsByTestId(testID));
 }
 
 describe('SourceControlOperationsHistorySection', () => {
@@ -54,6 +54,7 @@ describe('SourceControlOperationsHistorySection', () => {
 
         const screen = await renderScreen(<SourceControlOperationsHistorySection
                     theme={theme}
+                    historyIdentity="repo-a"
                     historyLoading={false}
                     historyEntries={makeEntries(20)}
                     historyHasMore={true}
@@ -64,10 +65,10 @@ describe('SourceControlOperationsHistorySection', () => {
         const commitRowsBefore = getCommitRows(screen, 12);
         expect(commitRowsBefore).toHaveLength(12);
 
-        const headBadges = screen.findAllByTestId('scm-commit-entry-head-badge');
+        const headBadges = screen.findAllHostsByTestId('scm-commit-entry-head-badge');
         expect(headBadges).toHaveLength(1);
 
-        const loadMore = screen.findAllByTestId('scm-commit-load-more');
+        const loadMore = screen.findAllHostsByTestId('scm-commit-load-more');
         expect(loadMore).toHaveLength(1);
 
         await act(async () => {
@@ -86,6 +87,7 @@ describe('SourceControlOperationsHistorySection', () => {
 
         const screen = await renderScreen(<SourceControlOperationsHistorySection
                     theme={theme}
+                    historyIdentity="repo-a"
                     historyLoading={false}
                     historyEntries={makeEntries(10)}
                     historyHasMore={false}
@@ -96,7 +98,7 @@ describe('SourceControlOperationsHistorySection', () => {
         const commitRows = getCommitRows(screen, 10);
         expect(commitRows).toHaveLength(10);
 
-        const loadMore = screen.findAllByTestId('scm-commit-load-more');
+        const loadMore = screen.findAllHostsByTestId('scm-commit-load-more');
         expect(loadMore).toHaveLength(0);
     });
 
@@ -106,6 +108,7 @@ describe('SourceControlOperationsHistorySection', () => {
         const onLoadMoreHistory = vi.fn();
         const screen = await renderScreen(<SourceControlOperationsHistorySection
                     theme={theme}
+                    historyIdentity="repo-a"
                     historyLoading={false}
                     historyEntries={makeEntries(40)}
                     historyHasMore={true}
@@ -113,7 +116,7 @@ describe('SourceControlOperationsHistorySection', () => {
                     onOpenCommit={vi.fn()}
                 />);
 
-        const loadMore = screen.findAllByTestId('scm-commit-load-more');
+        const loadMore = screen.findAllHostsByTestId('scm-commit-load-more');
         expect(loadMore).toHaveLength(1);
 
         await act(async () => {
@@ -130,6 +133,7 @@ describe('SourceControlOperationsHistorySection', () => {
         const onOpenCommit = vi.fn();
         const screen = await renderScreen(<SourceControlOperationsHistorySection
                     theme={theme}
+                    historyIdentity="repo-a"
                     historyLoading={false}
                     historyEntries={makeEntries(3)}
                     historyHasMore={false}
@@ -137,7 +141,7 @@ describe('SourceControlOperationsHistorySection', () => {
                     onOpenCommit={onOpenCommit}
                 />);
 
-        const firstCommit = screen.findAllByTestId('scm-commit-entry-sha-1');
+        const firstCommit = screen.findAllHostsByTestId('scm-commit-entry-sha-1');
         expect(firstCommit).toHaveLength(1);
 
         await act(async () => {
@@ -145,5 +149,49 @@ describe('SourceControlOperationsHistorySection', () => {
         });
 
         expect(onOpenCommit).toHaveBeenCalledWith('sha-1');
+    });    it('retains expanded commits across a prepended head and resets for another history identity', async () => {
+        const { SourceControlOperationsHistorySection } = await import('@/components/workspaces/scm/SourceControlOperationsHistorySection');
+        const entries = makeEntries(50);
+        const props = { theme, historyIdentity: 'repo-a', historyLoading: false, historyEntries: entries,
+            historyHasMore: false, onLoadMoreHistory: vi.fn(), onOpenCommit: vi.fn() };
+        const screen = await renderScreen(<SourceControlOperationsHistorySection {...props} />);
+        await screen.pressByTestIdAsync('scm-commit-load-more');
+        expect(screen.findByTestId('scm-commit-entry-sha-37')).not.toBeNull();
+        await screen.update(<SourceControlOperationsHistorySection {...props}
+            historyEntries={[{ ...entries[0], sha: 'new-head' }, ...entries]} />);
+        expect(screen.findByTestId('scm-commit-entry-sha-37')).not.toBeNull();
+        expect(screen.findByTestId('scm-commit-entry-sha-38')).toBeNull();
+        await screen.update(<SourceControlOperationsHistorySection {...props} historyIdentity="repo-b" />);
+        expect(screen.findByTestId('scm-commit-entry-sha-12')).not.toBeNull();
+        expect(screen.findByTestId('scm-commit-entry-sha-13')).toBeNull();
     });
+
+    it('keeps the viewed commit at the same viewport offset after a head is prepended', async () => {
+        const { WorkspaceScmHistoryTab } = await import('@/components/workspaces/scm/WorkspaceScmHistoryTab');
+        const entries = makeEntries(50);
+        const scrollTo = vi.fn();
+        const props = { theme, historyIdentity: 'repo-a', historyLoading: false, historyEntries: entries,
+            historyHasMore: false, onLoadMoreHistory: vi.fn(), onOpenCommit: vi.fn() };
+        const screen = await renderScreen(<WorkspaceScmHistoryTab {...props} />, {
+            createNodeMock: (element) => element.type === 'ScrollView' ? { scrollTo } : null,
+        });
+        await screen.pressByTestIdAsync('scm-commit-load-more');
+        const layout = (sha: string, y: number) => screen.findByTestId(`scm-commit-entry-${sha}`)?.props.onLayout?.({
+            nativeEvent: { layout: { x: 0, y, width: 300, height: 60 } },
+        });
+        await act(async () => {
+            entries.slice(0, 25).forEach((entry, index) => layout(entry.sha, 30 + index * 60));
+            screen.findByType('ScrollView').props.onScroll({ nativeEvent: {
+                contentOffset: { x: 0, y: 615 }, layoutMeasurement: { width: 300, height: 400 },
+                contentSize: { width: 300, height: 1600 },
+            } });
+        });
+        await screen.update(<WorkspaceScmHistoryTab {...props}
+            historyEntries={[{ ...entries[0], sha: 'new-head' }, ...entries]} />);
+        await act(async () => { layout('sha-10', 630); });
+        expect(scrollTo).toHaveBeenLastCalledWith({ y: 675, animated: false });
+        await screen.update(<WorkspaceScmHistoryTab {...props} historyIdentity="repo-b" />);
+        expect(scrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false });
+    });
+
 });

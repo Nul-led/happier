@@ -241,8 +241,11 @@ describe('socket update handling: new-machine', () => {
 
     it('initializes machine encryption when a data encryption key is present', async () => {
         const invalidateMachines = vi.fn();
-        const decryptEncryptionKey = vi.fn(async () => new Uint8Array([1, 2, 3]));
-        const initializeMachines = vi.fn(async (_machineKeysMap: Map<string, Uint8Array | null>) => {});
+        const decryptEncryptionKey = vi.fn(async () => new Uint8Array(32).fill(3));
+        const initializeMachines = vi.fn(async (
+            _machineKeysMap: Map<string, Uint8Array | null>,
+            _unavailableMachineIds?: ReadonlySet<string>,
+        ) => {});
         const params = buildBaseParams({
             invalidateMachines,
             encryption: {
@@ -281,12 +284,15 @@ describe('socket update handling: new-machine', () => {
         expect(invalidateMachines).toHaveBeenCalledTimes(1);
     });
 
-    it('falls back to the legacy machine encryption path when decrypting the data encryption key fails', async () => {
+    it('fails a present unreadable envelope closed instead of using legacy Machine encryption', async () => {
         const invalidateMachines = vi.fn();
         const decryptEncryptionKey = vi.fn(async () => {
             throw new Error('bad envelope');
         });
-        const initializeMachines = vi.fn(async (_machineKeysMap: Map<string, Uint8Array | null>) => {});
+        const initializeMachines = vi.fn(async (
+            _machineKeysMap: Map<string, Uint8Array | null>,
+            _unavailableMachineIds?: ReadonlySet<string>,
+        ) => {});
         const params = buildBaseParams({
             invalidateMachines,
             encryption: {
@@ -322,7 +328,8 @@ describe('socket update handling: new-machine', () => {
 
         expect(decryptEncryptionKey).toHaveBeenCalledTimes(1);
         expect(initializeMachines).toHaveBeenCalledTimes(1);
-        expect(initializeMachines.mock.calls[0]?.[0]).toEqual(new Map([['m3', null]]));
+        expect(initializeMachines.mock.calls[0]?.[0]).toEqual(new Map());
+        expect(initializeMachines.mock.calls[0]?.[1]).toEqual(new Set(['m3']));
         expect(invalidateMachines).toHaveBeenCalledTimes(1);
 
         const machine = storage.getState().machines['m3'] as Machine | undefined;
@@ -331,6 +338,39 @@ describe('socket update handling: new-machine', () => {
         expect(machine?.activeAt).toBe(122);
         expect(machine?.metadata).toBeNull();
         expect(machine?.daemonState).toBeNull();
+    });
+
+    it('does not accept a Runner envelope from the socket hint without its creator proof', async () => {
+        const invalidateMachines = vi.fn();
+        const initializeMachines = vi.fn(async (
+            _machineKeysMap: Map<string, Uint8Array | null>,
+            _unavailableMachineIds?: ReadonlySet<string>,
+        ) => {});
+        const params = buildBaseParams({
+            invalidateMachines,
+            encryption: {
+                getSessionEncryption: () => null,
+                getMachineEncryption: () => null,
+                removeSessionEncryption: () => {},
+                decryptEncryptionKey: vi.fn(async () => new Uint8Array(32).fill(8)),
+                initializeMachines,
+            } as unknown as Parameters<typeof handleUpdateContainer>[0]['encryption'],
+        });
+        const updateData = {
+            id: 'u_runner_machine', seq: 45, createdAt: 126,
+            body: {
+                t: 'new-machine', kind: 'ephemeral_session_runner', machineId: 'runner-1', seq: 10,
+                metadata: 'AA==', metadataVersion: 1, daemonState: null, daemonStateVersion: 0,
+                dataEncryptionKey: 'runner-envelope', installationId: 'runner-installation',
+                active: true, activeAt: 123, createdAt: 103, updatedAt: 113,
+            },
+        } as ApiUpdateContainer;
+
+        await handleUpdateContainer({ ...params, updateData });
+
+        expect(initializeMachines.mock.calls[0]?.[0]).toEqual(new Map());
+        expect(initializeMachines.mock.calls[0]?.[1]).toEqual(new Set(['runner-1']));
+        expect(invalidateMachines).toHaveBeenCalledOnce();
     });
 });
 
@@ -407,14 +447,37 @@ describe('socket update handling: Action operation snapshot ephemerals', () => {
             ciphertext: 'sealed-snapshot',
         });
     });
+
+    it('normalizes the released 0.2.11 relay before the single observation ingress', async () => {
+        const updateActionOperationSnapshot = vi.fn();
+
+        await handleEphemeralSocketUpdate(buildEphemeralParams({
+            update: {
+                type: 'action-operation-updated',
+                machineId: 'machine-1',
+                content: { t: 'encrypted', c: 'sealed-snapshot' },
+            },
+            updateActionOperationSnapshot,
+        }));
+
+        expect(updateActionOperationSnapshot).toHaveBeenCalledWith({
+            type: 'action-operation-snapshot',
+            machineId: 'machine-1',
+            ciphertext: 'sealed-snapshot',
+        });
+    });
 });
 
 describe('socket update handling: execution-run-updated ephemerals', () => {
     it('notifies execution run activity so polling can recheck quickly', () => {
         const listener = vi.fn();
-        const unsubscribe = executionRunActivityBus.subscribeExecutionRunActivity('s1', listener);
+        const unsubscribe = executionRunActivityBus.subscribeExecutionRunActivity({
+            serverId: 'server-a',
+            sessionId: 's1',
+        }, listener);
 
         handleEphemeralSocketUpdate(buildEphemeralParams({
+            sourceServerId: 'server-a',
             update: {
                 type: 'execution-run-updated',
                 sessionId: 's1',

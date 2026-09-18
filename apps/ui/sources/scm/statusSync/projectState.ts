@@ -6,6 +6,9 @@ import { readSessionWorkspaceContext } from '@/sync/domains/session/readSessionW
 import { clearSuggestionFileSearchCache } from '@/sync/domains/input/suggestionFileCacheInvalidation';
 import { clearCachedRepositoryDirectoryEntries } from '@/sync/domains/input/repositoryDirectory';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { resolveWorkspaceTargetForSessionFromState } from '@/sync/domains/session/resolveWorkspaceTargetForSessionFromState';
+import { readSessionListRowsForServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
+import { clearCachedWorkspaceRepositoryDirectoryEntries } from '@/sync/domains/workspaces/files/workspaceRepositoryDirectory';
 
 import { isSessionPathWithinRepoRoot } from '../sync/paths';
 
@@ -71,38 +74,63 @@ export function buildSnapshotSignature(snapshot: ScmWorkingSnapshot): string {
 
 export async function clearSearchCacheForProject(
     sessionToProjectKey: Map<string, string>,
-    projectKey: string
+    projectKey: string,
+    serverId?: string | null,
 ): Promise<void> {
     for (const [sessionId, key] of sessionToProjectKey.entries()) {
-        if (key === projectKey) {
+        if (key !== projectKey) continue;
+        if (serverId) {
+            const target = resolveWorkspaceTargetForSessionFromState(storage.getState(), { sessionId, serverId });
+            if (target) clearCachedWorkspaceRepositoryDirectoryEntries({ workspaceCacheKey: target.workspaceCacheKey });
+        } else {
             clearSuggestionFileSearchCache(sessionId);
             clearCachedRepositoryDirectoryEntries({ sessionId });
         }
     }
 }
 
-export function getRepoScopeSessionIds(referenceSessionId: string, repoRoot: string): string[] {
+export function readScmSessionContext(sessionId: string, serverId?: string | null) {
     const state = storage.getState();
-    const reference = state.sessions[referenceSessionId];
-    const referenceWorkspaceContext = readSessionWorkspaceContext(state, referenceSessionId);
-    const scopeId =
-        referenceWorkspaceContext.projectMachineId
-        ?? resolveProjectMachineScopeId(reference ? readSessionOwnerMetadataView(reference) ?? {} : {});
-    if (!scopeId || scopeId === 'unknown') return [referenceSessionId];
-
-    const inScope = new Set<string>();
-    for (const session of Object.values(state.sessions)) {
-        const sessionWorkspaceContext = readSessionWorkspaceContext(state, session.id);
-        const sessionPath = sessionWorkspaceContext.workspacePath;
-        if (!sessionPath) continue;
-        const sessionScopeId =
-            sessionWorkspaceContext.projectMachineId
-            ?? resolveProjectMachineScopeId(readSessionOwnerMetadataView(session) ?? {});
-        if (sessionScopeId !== scopeId) continue;
-        if (!isSessionPathWithinRepoRoot(sessionPath, repoRoot)) continue;
-        inScope.add(session.id);
+    if (serverId) {
+        const target = resolveWorkspaceTargetForSessionFromState(state, { sessionId, serverId });
+        const row = readSessionListRowsForServerId(state.sessionListRowsByServerId, serverId)?.[sessionId];
+        const directSession = state.sessions[sessionId];
+        const metadata = row?.metadata ?? (directSession?.serverId === serverId ? readSessionOwnerMetadataView(directSession) : null);
+        const machine = state.machineListByServerId?.[serverId]?.find((candidate) => candidate.id === target?.machineId);
+        return {
+            workspacePath: target?.rootPath ?? null,
+            machineId: target?.machineId ?? null,
+            homeDir: metadata?.homeDir ?? machine?.metadata?.homeDir,
+        };
     }
+    const context = readSessionWorkspaceContext(state, sessionId);
+    const session = state.sessions[sessionId];
+    const metadata = session ? readSessionOwnerMetadataView(session) : null;
+    const machineId = context.projectMachineId ?? resolveProjectMachineScopeId(metadata ?? {});
+    return {
+        workspacePath: context.workspacePath,
+        machineId,
+        homeDir: metadata?.homeDir ?? state.machines?.[machineId]?.metadata?.homeDir,
+    };
+}
 
+export function getRepoScopeSessionIds(referenceSessionId: string, repoRoot: string, serverId?: string | null): string[] {
+    const state = storage.getState();
+    const reference = readScmSessionContext(referenceSessionId, serverId);
+    if (!reference.machineId || reference.machineId === 'unknown') return [referenceSessionId];
+    const sessionIds = serverId
+        ? new Set([
+            ...Object.keys(readSessionListRowsForServerId(state.sessionListRowsByServerId, serverId) ?? {}),
+            ...Object.values(state.sessions).filter((session) => session.serverId === serverId).map((session) => session.id),
+        ])
+        : new Set(Object.keys(state.sessions));
+    const inScope = new Set<string>();
+    for (const sessionId of sessionIds) {
+        const context = readScmSessionContext(sessionId, serverId);
+        if (!context.workspacePath || context.machineId !== reference.machineId) continue;
+        if (!isSessionPathWithinRepoRoot(context.workspacePath, repoRoot, context.homeDir)) continue;
+        inScope.add(sessionId);
+    }
     inScope.add(referenceSessionId);
     return Array.from(inScope);
 }

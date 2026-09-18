@@ -15,6 +15,7 @@ export type SessionListRowStoreSubscriptionScope = Readonly<{
 
 export type SessionListRowStorePriorityOptions = Readonly<{
     selectedSessionId?: string | null;
+    selectedSessionServerId?: string | null;
 }>;
 
 const UNKNOWN_VIEWABILITY_EAGER_SUBSCRIPTION_MAX_ROWS = 50;
@@ -59,7 +60,15 @@ export function isSessionListRowStorePriorityItem(
         || item.groupKind === 'working'
         || item.attentionPlacementReason != null
         || item.groupKind === 'attention'
-        || (typeof options.selectedSessionId === 'string' && options.selectedSessionId.trim() === item.sessionId);
+        || (
+            typeof options.selectedSessionId === 'string'
+            && options.selectedSessionId.trim() === item.sessionId
+            && (
+                typeof options.selectedSessionServerId !== 'string'
+                || !options.selectedSessionServerId.trim()
+                || options.selectedSessionServerId.trim() === item.serverId
+            )
+        );
 }
 
 export function buildSessionListRowStorePriorityKeys(
@@ -67,9 +76,17 @@ export function buildSessionListRowStorePriorityKeys(
     options: SessionListRowStorePriorityOptions = {},
 ): ReadonlySet<string> {
     if (!items || items.length === 0) return new Set();
+    const selectedSessionId = String(options.selectedSessionId ?? '').trim();
+    const selectedSessionServerId = String(options.selectedSessionServerId ?? '').trim();
+    const selectedSessionMatches = selectedSessionId
+        ? items.filter((item) => item.type === 'session' && item.sessionId === selectedSessionId)
+        : [];
+    const exactOptions = selectedSessionServerId || selectedSessionMatches.length === 1
+        ? options
+        : { ...options, selectedSessionId: null };
     const keys = new Set<string>();
     for (const item of items) {
-        if (!isSessionListRowStorePriorityItem(item, options)) continue;
+        if (!isSessionListRowStorePriorityItem(item, exactOptions)) continue;
         keys.add(resolveSessionListRowStoreScopeKey({
             sessionId: item.sessionId,
             serverId: item.serverId ?? null,

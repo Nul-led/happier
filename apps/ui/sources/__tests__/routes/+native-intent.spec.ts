@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { redirectSystemPath } from '@/app/+native-intent';
-import { buildHomeQrInviteDeepLink } from '@/auth/pairing/pairingUrl';
+import { buildHomeQrInviteDeepLink, consumeHomeQrInviteRestoreHandoff } from '@/auth/pairing/pairingUrl';
 import { encodeBase64 } from '@/encryption/base64';
 
 describe('native system URL routing', () => {
@@ -60,8 +60,10 @@ describe('native system URL routing', () => {
             },
         });
 
-        expect(redirectSystemPath({ path, initial: true })).toBe(
-            `/restore?pairingLink=${encodeURIComponent(path)}&entryIntent=enter_home`,
-        );
+        const route = redirectSystemPath({ path, initial: true });
+        expect(route).toMatch(/^\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=enter_home$/u);
+        expect(route).not.toContain(encodeURIComponent(path));
+        const handle = new URL(route, 'https://app.example.test').searchParams.get('pairingHandoff');
+        expect(consumeHomeQrInviteRestoreHandoff(handle!)).toBe(path);
     });
 });

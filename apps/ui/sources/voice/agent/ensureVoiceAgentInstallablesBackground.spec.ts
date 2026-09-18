@@ -39,13 +39,16 @@ describe('ensureVoiceAgentInstallablesBackground', () => {
           metadata: { machineId: 'machine-raw' },
         },
       },
-      sessionListRenderables: {
-        s1: {
-          id: 's1',
-          updatedAt: 1,
-          metadata: { machineId: 'machine-cached', path: '/tmp/cached' },
+      sessionListRowsByServerId: {
+        'server-a': {
+          s1: {
+            id: 's1',
+            updatedAt: 1,
+            metadata: { machineId: 'machine-cached', path: '/tmp/cached' },
+          },
         },
       },
+      ordinarySessionListMembershipByServerId: { 'server-a': ['s1'] },
       sessionListIndexByServerId: {
         'server-a': [
           { type: 'session', sessionId: 's1', serverId: 'server-a', serverName: 'Server A' },
@@ -98,13 +101,16 @@ describe('ensureVoiceAgentInstallablesBackground', () => {
         sessionId === 's1'
           ? { key: { machineId: 'machine-target', rootPath: '/tmp/target' } }
           : null,
-      sessionListRenderables: {
-        s1: {
-          id: 's1',
-          updatedAt: 1,
-          metadata: { machineId: 'machine-cached', path: '/tmp/cached' },
+      sessionListRowsByServerId: {
+        'server-a': {
+          s1: {
+            id: 's1',
+            updatedAt: 1,
+            metadata: { machineId: 'machine-cached', path: '/tmp/cached' },
+          },
         },
       },
+      ordinarySessionListMembershipByServerId: { 'server-a': ['s1'] },
       sessionListIndexByServerId: {
         'server-a': [
           { type: 'session', sessionId: 's1', serverId: 'server-a', serverName: 'Server A' },
@@ -137,7 +143,8 @@ describe('ensureVoiceAgentInstallablesBackground', () => {
           metadata: { machineId: 'machine-raw' },
         },
       },
-      sessionListRenderables: {},
+      sessionListRowsByServerId: {},
+      ordinarySessionListMembershipByServerId: {},
       sessionListIndexByServerId: {},
       concurrentSessionListCacheByServerId: {},
     });

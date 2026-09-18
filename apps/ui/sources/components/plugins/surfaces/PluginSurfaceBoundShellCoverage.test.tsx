@@ -17,6 +17,7 @@ import {
 } from '@/sync/domains/plugins/ui/projection';
 import { LocalServicesSurfaceHost } from '@/components/sessions/localServices/LocalServicesSurfaceHost';
 import { PluginDetailsPaneOverlay } from '@/components/appShell/panes/details/surfaces/PluginDetailsPaneOverlay';
+import { createPluginDeclarativeModelFixture } from '@/dev/testkit/fixtures/pluginDeclarativeModelFixture';
 
 // React Native and responsive layout are platform boundaries. Keep their
 // observed environment deterministic while the real Services stack, Details
@@ -76,27 +77,11 @@ function placement(input: Readonly<{
         renderer: Object.freeze({
             kind: 'declarative',
             contributionId: input.rendererId,
-            model: Object.freeze({
-                visible: true,
-                identity: Object.freeze({
-                    pluginId: 'com.example.bound-shell',
-                    localId: input.rendererId,
-                    qualifiedId: `com.example.bound-shell/${input.rendererId}`,
-                    generation: 'bound-shell-generation-1',
-                }),
-                declarativeInventory: Object.freeze({
-                    actions: Object.freeze([]),
-                    destinations: Object.freeze([]),
-                    settings: Object.freeze([]),
-                    uiQueries: Object.freeze([]),
-                }),
-                nodes: Object.freeze([]),
-                root: Object.freeze({
-                    kind: 'text',
-                    path: 'root',
-                    order: 0,
-                    text: input.label,
-                }),
+            model: createPluginDeclarativeModelFixture({
+                pluginId: 'com.example.bound-shell',
+                localId: input.rendererId,
+                generation: 'bound-shell-generation-1',
+                document: { version: 1, root: { kind: 'text', text: input.label } },
             }),
         }),
         display: Object.freeze({ developerFallback: input.label }),

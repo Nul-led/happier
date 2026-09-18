@@ -27,9 +27,9 @@ export type ConnectedServicesAuthWarningTranslationKey =
     | 'connectedServices.defaultAuth.warning.connected_service_unsupported';
 
 export type ConnectedServicesAuthServiceState = Readonly<{
-    requestedSource: 'native' | 'connected';
+    requestedSource: 'native' | 'connected' | 'team_resource';
     requestedSelection?: 'profile' | 'group';
-    effectiveSource: 'native' | 'connected';
+    effectiveSource: 'native' | 'connected' | 'team_resource';
     effectiveSelection?: 'profile' | 'group';
     profileId?: string;
     groupId?: string;
@@ -93,6 +93,12 @@ function resolveConnectedBindingState(
     supported: boolean,
 ): ConnectedServicesAuthServiceState {
     const binding = params.bindingsByServiceId[serviceId];
+    if (binding?.source === 'team_resource') {
+        return {
+            requestedSource: 'team_resource',
+            effectiveSource: 'team_resource',
+        };
+    }
     if (binding?.source !== 'connected') {
         return {
             requestedSource: 'native',
@@ -209,6 +215,9 @@ function resolveConnectedBindingLabel(
     serviceId: string,
     state: ConnectedServicesAuthServiceState,
 ): string | null {
+    if (state.effectiveSource === 'team_resource') {
+        return params.resolveServiceTitle(serviceId);
+    }
     if (state.effectiveSource !== 'connected') return null;
 
     if (state.effectiveSelection === 'group' && state.groupId) {

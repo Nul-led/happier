@@ -60,6 +60,7 @@ function fixture(input: Readonly<{
     const archiveDigestSha256 = PluginUiArtifactDigestV1Schema.parse(`sha256:${'a'.repeat(64)}`);
     const response: PluginAccountAvailabilityIntentReadResponseV1 = {
         availabilityCursor: 1,
+        packageAssets: [],
         hostingCapability: { enabled: true, maxArtifactBytes: 1024, maxAccountBytes: 2048 },
         intent: {
             pluginId: slot.pluginId,
@@ -237,6 +238,7 @@ function createPersistentStore(...initialRecords: readonly PluginUiPersistentArt
     ));
     const write = vi.fn(async (record: PluginUiPersistentArtifactRecord) => {
         records.set(persistentRecordKey(record.persistentIdentity), record);
+        return 'persisted' as const;
     });
     const remove = vi.fn(async (identity: PluginUiPersistentArtifactRecord['persistentIdentity']) => {
         records.delete(persistentRecordKey(identity));

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import type { Message } from '@/sync/domains/messages/messageTypes';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { StorageState } from '@/sync/store/types';
+import { createReducer } from '@/sync/reducer/reducer';
 
 import {
     buildCanonicalSessionListSearchText,
@@ -31,8 +33,9 @@ function createRenderable(
 function createState(overrides: Partial<StorageState>): StorageState {
     return {
         sessions: {},
-        sessionListRenderables: {},
-        sessionListRowStateByServerId: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionMessages: {},
         sessionPending: {},
         ...overrides,
@@ -97,7 +100,7 @@ describe('createSessionListSearchTextSelector', () => {
             }],
         });
         const result = selector(createState({
-            sessionListRowStateByServerId: {
+            sessionListRowsByServerId: {
                 server1: {
                     session1: createRenderable({
                         id: 'session1',
@@ -125,7 +128,7 @@ describe('createSessionListSearchTextSelector', () => {
         } as Session;
         const result = selector(createState({
             sessions: { 'same-session': otherHomeSession },
-            sessionListRowStateByServerId: {
+            sessionListRowsByServerId: {
                 'home-a': {
                     'same-session': createRenderable({
                         id: 'same-session',
@@ -150,7 +153,7 @@ describe('createSessionListSearchTextSelector', () => {
                 return { name: 'Build lane', path: '/repo' };
             },
         });
-        const sessionListRowStateByServerId = { server1: { session1: renderable } };
+        const sessionListRowsByServerId = { server1: { session1: renderable } };
         const selector = createSessionListSearchTextSelector([
             { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
         ], true);
@@ -162,7 +165,7 @@ describe('createSessionListSearchTextSelector', () => {
                 removedSessionIds: [],
                 rebuiltSessionListIndex: true,
             },
-            sessionListRowStateByServerId,
+            sessionListRowsByServerId,
         }));
         const readsAfterFirstSelection = metadataReads;
 
@@ -173,12 +176,33 @@ describe('createSessionListSearchTextSelector', () => {
                 removedSessionIds: [],
                 rebuiltSessionListIndex: false,
             },
-            sessionListRowStateByServerId,
+            sessionListRowsByServerId,
         }));
 
         expect(second).toBe(first);
         expect(second['server1:session1']).toContain('Build lane');
         expect(metadataReads).toBe(readsAfterFirstSelection);
+    });
+
+    it('returns the same result when the store asks for the same snapshot again', () => {
+        const selector = createSessionListSearchTextSelector([
+            { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
+        ], true);
+        const state = createState({
+            sessionListRowsByServerId: {
+                server1: {
+                    session1: createRenderable({
+                        id: 'session1',
+                        metadata: { name: 'Build lane', path: '/repo' },
+                    }),
+                },
+            },
+        });
+
+        const first = selector(state);
+        const second = selector(state);
+
+        expect(second).toBe(first);
     });
 
     it('the canonical builder indexes private layout-v1 workspace fields from the owner view, not shared metadata', () => {
@@ -218,11 +242,37 @@ describe('createSessionListSearchTextSelector', () => {
     });
 
     it('does not index hydrated transcript or tool-call text into the immediate local haystack', () => {
+        const messages: Message[] = [
+            {
+                id: 'message-1',
+                kind: 'user-text',
+                localId: null,
+                createdAt: 1,
+                text: 'hydrated-transcript-only-term',
+            },
+            {
+                id: 'message-2',
+                kind: 'tool-call',
+                localId: null,
+                createdAt: 2,
+                children: [],
+                tool: {
+                    name: 'shell',
+                    state: 'running',
+                    input: {},
+                    createdAt: 2,
+                    startedAt: 2,
+                    completedAt: null,
+                    description: 'tool-description-only-term',
+                },
+            },
+        ];
+        const messagesById = Object.fromEntries(messages.map((message) => [message.id, message]));
         const selector = createSessionListSearchTextSelector([
             { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
         ], true);
         const result = selector(createState({
-            sessionListRowStateByServerId: {
+            sessionListRowsByServerId: {
                 server1: { session1: createRenderable({
                     id: 'session1',
                     metadata: { name: 'Canonical metadata title', path: '/workspace/project' },
@@ -230,14 +280,14 @@ describe('createSessionListSearchTextSelector', () => {
             },
             sessionMessages: {
                 session1: {
-                    messages: [
-                        { id: 'message-1', kind: 'user-text', text: 'hydrated-transcript-only-term' },
-                        {
-                            id: 'message-2',
-                            kind: 'tool-call',
-                            tool: { name: 'shell', description: 'tool-description-only-term' },
-                        },
-                    ],
+                    messageIdsOldestFirst: messages.map((message) => message.id),
+                    messagesById,
+                    messagesMap: messagesById,
+                    reducerState: createReducer(),
+                    latestThinkingMessageId: null,
+                    latestThinkingMessageActivityAtMs: null,
+                    messagesVersion: 1,
+                    isLoaded: true,
                 },
             },
         }));
@@ -252,13 +302,30 @@ describe('createSessionListSearchTextSelector', () => {
             { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
         ], true);
         const result = selector(createState({
-            sessionListRowStateByServerId: {
-                server1: { session1: createRenderable({ id: 'session1', metadata: { name: 'Metadata only' } }) },
+            sessionListRowsByServerId: {
+                server1: { session1: createRenderable({ id: 'session1', metadata: { name: 'Metadata only', path: '' } }) },
             },
             sessionPending: {
                 session1: {
-                    messages: [{ id: 'pending-1', text: 'pending-only-term' }],
-                    discarded: [{ id: 'discarded-1', text: 'discarded-only-term' }],
+                    isLoaded: true,
+                    messages: [{
+                        id: 'pending-1',
+                        localId: null,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        text: 'pending-only-term',
+                        rawRecord: {},
+                    }],
+                    discarded: [{
+                        id: 'discarded-1',
+                        localId: null,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        text: 'discarded-only-term',
+                        rawRecord: {},
+                        discardedAt: 2,
+                        discardedReason: 'manual',
+                    }],
                 },
             },
         }));

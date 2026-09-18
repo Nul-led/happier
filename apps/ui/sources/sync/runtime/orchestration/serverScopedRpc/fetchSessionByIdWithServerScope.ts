@@ -10,6 +10,8 @@ import {
 import type {
     SessionMetadataOwnerMigrationCurrentnessV1,
 } from '@happier-dev/cli-common/sessionMetadata';
+import type { DecryptOptions } from '@/sync/encryption/encryptor';
+import type { EncryptionScopeInput } from '@/sync/encryption/encryption';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { isDataKeyAuthCredentials } from '@/auth/storage/tokenStorage';
@@ -19,12 +21,15 @@ import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domain
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { fetchAndApplySessionById, type SessionByIdEncryption } from '@/sync/engine/sessions/sessionById';
 import { fetchAccountEncryptionCurrentness } from '@/sync/api/account/apiAccountEncryptionMode';
+import { readSessionDetailAccessProjectionVersion } from '@/sync/api/session/sessionDetailAccessProjection';
 
 import {
-    createSessionRequestForExplicitServerScope,
-    type ServerAccountSessionRequestAuthority,
-} from './createSessionRequestWithServerScope';
-import { resolveServerScopedSessionContext } from './resolveServerScopedSessionContext';
+    createServerRequestForExplicitServerScope,
+    type ServerAccountRequestAuthority,
+} from './createServerRequestWithServerScope';
+import { resolveServerAccountRequestContext } from './resolveServerAccountRequestContext';
+import { storage } from '@/sync/domains/state/storage';
+import { resolveUiClientEncryptionRequirement } from '@/sync/domains/settings/clientEncryptionRequirement';
 
 type AppliedSession = Omit<Session, 'presence'> & { presence?: 'online' | number };
 
@@ -121,11 +126,11 @@ function resolveCurrentAccountOwnerMetadataMaterialSnapshot(params: Readonly<{
 
 function getScopedSessionByIdEncryption(context: Readonly<{
     decryptEncryptionKey: (value: string) => Promise<Uint8Array | null>;
-    initializeSessions: (
-        keys: Map<string, Uint8Array | null>,
-        options?: Readonly<{ shouldContinue?: () => boolean }>,
-    ) => Promise<void>;
+    initializeSessions: SessionByIdEncryption['initializeSessions'];
     getSessionEncryption: (sessionId: string) => unknown;
+    removeSessionEncryption?: (sessionId: string) => void;
+    getCurrentEncryptionGenerationScope?: SessionByIdEncryption['getCurrentEncryptionGenerationScope'];
+    isCurrentEncryptionGenerationScope?: SessionByIdEncryption['isCurrentEncryptionGenerationScope'];
 }> | null): SessionByIdEncryption {
     if (!context) {
         return {
@@ -137,6 +142,15 @@ function getScopedSessionByIdEncryption(context: Readonly<{
     return {
         decryptEncryptionKey: (value) => context.decryptEncryptionKey(value),
         initializeSessions: (keys, options) => context.initializeSessions(keys, options),
+        removeSessionEncryption: (sessionId) => context.removeSessionEncryption?.(sessionId),
+        ...(context.getCurrentEncryptionGenerationScope ? {
+            getCurrentEncryptionGenerationScope: (scope?: EncryptionScopeInput) =>
+                context.getCurrentEncryptionGenerationScope!(scope),
+        } : {}),
+        ...(context.isCurrentEncryptionGenerationScope ? {
+            isCurrentEncryptionGenerationScope: (scope) =>
+                context.isCurrentEncryptionGenerationScope!(scope),
+        } : {}),
         getSessionEncryption: (sessionId) => {
             const candidate = context.getSessionEncryption(sessionId);
             if (!candidate || typeof candidate !== 'object') {
@@ -146,8 +160,8 @@ function getScopedSessionByIdEncryption(context: Readonly<{
             const maybeEncryption = candidate as Partial<{
                 encryptRaw: (payload: unknown) => Promise<string>;
                 decryptAgentState: (version: number, value: string | null) => Promise<unknown>;
-                decryptMetadata: (version: number, value: string) => Promise<unknown>;
-                decryptMetadataPayload: (version: number, value: string) => Promise<unknown | null>;
+                decryptMetadata: (version: number, value: string, options?: DecryptOptions) => Promise<unknown>;
+                decryptMetadataPayload: (version: number, value: string, options?: DecryptOptions) => Promise<unknown | null>;
             }>;
             if (typeof maybeEncryption.decryptAgentState !== 'function' || typeof maybeEncryption.decryptMetadata !== 'function') {
                 return null;
@@ -162,12 +176,12 @@ function getScopedSessionByIdEncryption(context: Readonly<{
                     : {}),
                 decryptAgentState: (version, value) =>
                     maybeEncryption.decryptAgentState!(version, value),
-                decryptMetadata: (version, value) =>
-                    maybeEncryption.decryptMetadata!(version, value),
+                decryptMetadata: (version, value, options) =>
+                    maybeEncryption.decryptMetadata!(version, value, options),
                 ...(typeof maybeEncryption.decryptMetadataPayload === 'function'
                     ? {
-                        decryptMetadataPayload: (version: number, value: string) =>
-                            maybeEncryption.decryptMetadataPayload!(version, value),
+                        decryptMetadataPayload: (version: number, value: string, options?: DecryptOptions) =>
+                            maybeEncryption.decryptMetadataPayload!(version, value, options),
                     }
                     : {}),
             };
@@ -274,7 +288,7 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
     timeoutMs?: number;
     includeTurnsProjection?: boolean;
     includeMetadataTupleMutationSnapshot?: boolean;
-    authority?: ServerAccountSessionRequestAuthority;
+    authority?: ServerAccountRequestAuthority;
     accountCurrentness?: AccountEncryptionCurrentnessResponse;
     isCurrent?: () => boolean;
 }>): Promise<
@@ -283,7 +297,12 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
         metadataTupleWriterContext?: SessionMetadataTupleWriterContext;
     }>
 > {
-    const context = params.authority?.context ?? await resolveServerScopedSessionContext({
+    const currentSettings = storage.getState().settings;
+    const clientEncryptionRequirement = resolveUiClientEncryptionRequirement({
+        syncedSettings: currentSettings,
+        localSettings: currentSettings,
+    });
+    const context = params.authority?.context ?? await resolveServerAccountRequestContext({
         serverId: params.serverId ?? null,
         timeoutMs: params.timeoutMs,
     });
@@ -318,6 +337,8 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
             includeMetadataTupleMutationSnapshot:
                 params.includeMetadataTupleMutationSnapshot,
             isCurrent: params.isCurrent,
+            accessProjectionVersion: readSessionDetailAccessProjectionVersion(params.serverId),
+            clientEncryptionRequirement,
         });
         if (
             params.includeMetadataTupleMutationSnapshot === true
@@ -346,7 +367,7 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
         );
     }
     const request = params.authority?.request
-        ?? createSessionRequestForExplicitServerScope({
+        ?? createServerRequestForExplicitServerScope({
             serverUrl: context.targetServerUrl,
             ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
             token: context.token,
@@ -376,6 +397,8 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
         includeMetadataTupleMutationSnapshot:
             params.includeMetadataTupleMutationSnapshot,
         isCurrent: params.isCurrent,
+        accessProjectionVersion: readSessionDetailAccessProjectionVersion(context.targetServerId),
+        clientEncryptionRequirement,
     });
     if (
         params.includeMetadataTupleMutationSnapshot === true

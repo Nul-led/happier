@@ -1,11 +1,12 @@
 import type { VoiceSessionSnapshot } from './types';
 import { getVoiceSessionSnapshot } from './voiceSessionStore';
 import type { VoiceSessionLifecycleController } from './voiceSessionLifecycleController';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export type VoiceSessionManager = Readonly<{
   bargeIn: (sessionId: string) => Promise<void>;
   retry: (sessionId: string) => Promise<void>;
-  toggle: (sessionId: string) => Promise<void>;
+  toggle: (targetSessionAddress: SessionAddress | null) => Promise<void>;
   stop: (sessionId: string) => Promise<void>;
   interrupt: (sessionId: string) => Promise<void>;
   setMuted: (sessionId: string, muted: boolean) => Promise<void>;
@@ -18,10 +19,10 @@ export function createVoiceSessionManager(deps: Readonly<{
 }>): VoiceSessionManager {
   const resolveLifecycleController = (): VoiceSessionLifecycleController | null => deps.getLifecycleController?.() ?? null;
 
-  const toggle = async (sessionId: string) => {
+  const toggle = async (targetSessionAddress: SessionAddress | null) => {
     const lifecycleController = resolveLifecycleController();
     if (!lifecycleController) return;
-    await lifecycleController.toggle(sessionId);
+    await lifecycleController.toggle(targetSessionAddress);
   };
 
   const bargeIn = async (sessionId: string) => {

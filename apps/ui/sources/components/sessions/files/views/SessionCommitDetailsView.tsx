@@ -48,6 +48,7 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 export type SessionCommitDetailsViewProps = Readonly<{
     sessionId: string;
+    serverId?: string | null;
     sha: string;
     onBack?: () => void;
     presentation?: 'screen' | 'panel';
@@ -64,10 +65,10 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
     const constrainWidth = presentation === 'screen';
 
     const scmWriteEnabled = useFeatureEnabled('scm.writeOperations');
-    const reviewScope = useWorkspaceScopeForSession(sessionId);
+    const reviewScope = useWorkspaceScopeForSession(sessionId, props.serverId);
     const reviewCommentsEnabled = useFeatureEnabled('files.reviewComments') === true && Boolean(reviewScope);
-    const scmSnapshot = useSessionProjectScmSnapshot(sessionId);
-    const inFlightScmOperation = useSessionProjectScmInFlightOperation(sessionId);
+    const scmSnapshot = useSessionProjectScmSnapshot(sessionId, props.serverId);
+    const inFlightScmOperation = useSessionProjectScmInFlightOperation(sessionId, props.serverId);
     const canRevert = canRevertFromSnapshot(scmSnapshot);
 
     const [isLoading, setIsLoading] = React.useState(true);
@@ -115,8 +116,8 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
 
     const sessions = useSessions();
     const isStorageReady = sessions !== null;
-    const { sessionExists } = useSessionRpcAvailabilityState(sessionId);
-    const sessionPath = useSessionWorkspacePath(sessionId);
+    const { sessionExists } = useSessionRpcAvailabilityState(sessionId, props.serverId);
+    const sessionPath = useSessionWorkspacePath(sessionId, props.serverId);
 
     const reviewCommentDrafts = useWorkspaceReviewCommentsDrafts(reviewScope);
     const reviewDraftHandlers = useWorkspaceReviewCommentDraftHandlers(reviewScope);
@@ -170,7 +171,7 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
         try {
             const response = await sessionScmDiffCommit(sessionId, {
                 commit: sha,
-            });
+            }, props.serverId);
 
             if (!response.success) {
                 setError(response.error || t('files.commitDetails.failedToLoadDiff'));
@@ -189,7 +190,7 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
         } finally {
             setIsLoading(false);
         }
-    }, [isStorageReady, sessionExists, sessionId, sha]);
+    }, [isStorageReady, props.serverId, sessionExists, sessionId, sha]);
 
     React.useEffect(() => {
         loadCommit();
@@ -230,20 +231,21 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
         const lockResult = await withSessionProjectScmOperationLock({
             state: storage.getState(),
             sessionId,
+            ...(props.serverId ? { serverId: props.serverId } : {}),
             operation: 'revert',
             run: async () => {
                 setIsReverting(true);
                 try {
                     const runBackout = async () => await sessionScmCommitBackout(sessionId, {
                         commit: sha,
-                    });
+                    }, props.serverId);
                     let response = await runBackout();
 
                     if (!response.success) {
                         response = await runScmOperationWithGitIndexLockRecovery({
                             cwd,
                             failedResponse: response,
-                            removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request),
+                            removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request, props.serverId),
                             retryOriginalOperation: runBackout,
                         });
                     }
@@ -257,6 +259,7 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
                         reportSessionScmOperation({
                             state: storage.getState(),
                             sessionId,
+                            ...(props.serverId ? { serverId: props.serverId } : {}),
                             operation: 'revert',
                             status: 'failed',
                             detail: errorMessage,
@@ -271,19 +274,21 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
                     reportSessionScmOperation({
                         state: storage.getState(),
                         sessionId,
+                        ...(props.serverId ? { serverId: props.serverId } : {}),
                         operation: 'revert',
                         status: 'success',
                         detail: sha,
                         surface: 'commit',
                         tracking,
                     });
-                    await scmStatusSync.invalidateFromMutationAndAwait(sessionId);
+                    await scmStatusSync.invalidateFromMutationAndAwait(sessionId, props.serverId);
                     Modal.alert(t('common.success'), t('files.commitDetails.revert.success'));
                 } catch (err) {
                     const errorMessage = err instanceof Error ? err.message : t('files.commitDetails.revert.failed');
                     reportSessionScmOperation({
                         state: storage.getState(),
                         sessionId,
+                        ...(props.serverId ? { serverId: props.serverId } : {}),
                         operation: 'revert',
                         status: 'failed',
                         detail: errorMessage,
@@ -306,7 +311,7 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
             });
             Modal.alert(t('common.error'), lockResult.message);
         }
-    }, [scmSnapshot, scmWriteEnabled, sessionId, sessionPath, sha]);
+    }, [props.serverId, scmSnapshot, scmWriteEnabled, sessionId, sessionPath, sha]);
 
     if (isLoading) {
         return (

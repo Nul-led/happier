@@ -148,7 +148,7 @@ vi.mock('@/text', async () => {
 });
 
 // The composed contract here is Menu -> host-installed provider binding ->
-// Popover -> BaseModal. The binding's unrelated markdown/code/icon renderers are static
+// Popover -> BaseModal. The binding's unrelated markdown/code renderers are static
 // siblings, so keep their heavyweight render trees out of this focused test.
 vi.mock('@/components/markdown/MarkdownView', () => ({
     MarkdownView: () => null,
@@ -158,9 +158,6 @@ vi.mock('@/components/ui/code/blocks/CodeBlockView', () => ({
     CodeBlockView: () => null,
 }));
 
-vi.mock('@/components/ui/icons/Icon', () => ({
-    Icon: () => null,
-}));
 
 vi.mock('@/utils/web/radixCjs', () => ({
     requireRadixDismissableLayer: () => ({
@@ -423,7 +420,7 @@ describe('plugin private presentation carrier in BaseModal', () => {
         expect(content).toHaveBeenCalledExactlyOnceWith({ requestClose, maxHeight: 96 });
     });
 
-    it('mounts the real Inspector menu, context menu, and popover through the incumbent carrier', async () => {
+    it('mounts the real Inspector menus and inline self-check Action through the incumbent carrier', async () => {
         const { boundEntry, executeActionSpy } = createInspectorSurfaceHarness();
         const outsideTarget = document.createElement('button');
         outsideTarget.type = 'button';
@@ -439,10 +436,8 @@ describe('plugin private presentation carrier in BaseModal', () => {
             });
 
             const menuTrigger = document.querySelector<HTMLButtonElement>('[data-testid="inspector-quick-actions-menu"]');
-            const popoverTrigger = document.querySelector<HTMLButtonElement>('[data-testid="inspector-self-check-popover"]');
             const contextMenuTrigger = document.querySelector<HTMLButtonElement>('[data-testid="inspector-quick-actions-context-menu"]');
             expect(menuTrigger).not.toBeNull();
-            expect(popoverTrigger).not.toBeNull();
             expect(contextMenuTrigger).not.toBeNull();
 
             const listedBeforeMenuSelection = countActionCalls(executeActionSpy, 'plugins.list');
@@ -476,12 +471,7 @@ describe('plugin private presentation carrier in BaseModal', () => {
             });
             expect(document.activeElement).toBe(outsideTarget);
 
-            await act(async () => {
-                popoverTrigger?.click();
-            });
-            const selfCheckDialog = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Run Inspector self-check"]');
             const selfCheckAction = document.querySelector<HTMLButtonElement>('[data-testid="inspector-self-check-action"]');
-            expect(selfCheckDialog).not.toBeNull();
             expect(selfCheckAction).not.toBeNull();
             await act(async () => {
                 selfCheckAction?.click();

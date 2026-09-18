@@ -128,6 +128,7 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
 });
 
 vi.mock('@/sync/runtime/irohHomeTransportDiagnostics', () => ({
+    retireIrohHomeTransportDiagnostics: vi.fn(),
     readIrohHomeTransportDiagnostics: () => homeTransportDiagnostics,
     readIrohHomeTransportDiagnosticsRevision: () => 0,
     subscribeIrohHomeTransportDiagnostics: () => () => {},

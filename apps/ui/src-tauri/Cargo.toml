@@ -20,6 +20,7 @@ devtools = ["wry/devtools"]
 [build-dependencies]
 tauri-build = { version = "2.5", features = [] }
 flate2 = "1.1"
+serde_json = "1.0"
 
 [dependencies]
 serde_json = "1.0"
@@ -39,6 +40,8 @@ wry = "0.55.1"
 base64 = "0.22"
 percent-encoding = "2.3"
 sha2 = "0.10"
+png = "0.17.16"
+tempfile = "3.20"
 
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
 keyring = "4.2.0"
@@ -53,7 +56,6 @@ objc2-app-kit = { version = "0.3.1", features = ["NSBitmapImageRep", "NSEvent", 
 objc2-core-graphics = "0.3.1"
 objc2-foundation = { version = "0.3.1", features = ["NSData", "NSDate", "NSDictionary", "NSError", "NSKeyValueObserving", "NSObject", "NSRunLoop", "NSString"] }
 objc2-web-kit = { version = "0.3.1", features = ["WKSnapshotConfiguration", "WKWebView", "block2", "objc2-app-kit"] }
-png = "0.17.16"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
 
 [target."cfg(target_os = \"windows\")".dependencies]
@@ -62,9 +64,6 @@ webview2-com = "0.38"
 [target."cfg(target_os = \"linux\")".dependencies]
 gtk = "0.18"
 webkit2gtk = "=2.0.2"
-
-[dev-dependencies]
-tempfile = "3.20"
 
 [patch.crates-io]
 tauri-plugin-mcp-bridge = { path = "vendor/tauri-plugin-mcp-bridge" }

@@ -40,9 +40,11 @@ function hasAuthoritativeHydratedSessionForRoute(sessionId: string, serverId?: s
         return true;
     }
     try {
-        return Boolean(sync.encryption?.getSessionEncryption?.(sessionId));
+        return hasAuthoritativeSessionRouteData(session, {
+            hasSessionEncryption: Boolean(sync.encryption?.getSessionEncryption?.(sessionId)),
+        });
     } catch {
-        return false;
+        return hasAuthoritativeSessionRouteData(session, { hasSessionEncryption: false });
     }
 }
 
@@ -95,7 +97,9 @@ function createMissingState(
 
 function readHydratedRouteServerId(sessionId: string, serverId?: string): string | undefined | null {
     if (hasAuthoritativeHydratedSessionForRoute(sessionId, serverId ?? null)) {
-        return serverId;
+        if (serverId) return serverId;
+        const hydratedServerId = normalizeRouteId(storage.getState().sessions[sessionId]?.serverId);
+        return hydratedServerId || undefined;
     }
 
     if (!serverId) return null;

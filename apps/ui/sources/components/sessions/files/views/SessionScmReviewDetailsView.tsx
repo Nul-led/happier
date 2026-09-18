@@ -4,11 +4,13 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { Text } from '@/components/ui/text/Text';
+import { ReviewDraftSummary } from '@/components/sessions/reviews/comments/ReviewDraftSummary';
+import { useReviewComposerHandoff } from '@/components/sessions/reviews/comments/useReviewComposerHandoff';
 import { ReviewCommentsSessionSurface } from '@/components/reviews/ReviewCommentsSessionSurface';
 import { ChangedFilesReview } from '@/components/workspaces/scm/review/ChangedFilesReview';
 import { ChangedFilesViewModeMenu } from '@/components/sessions/files/ChangedFilesViewModeMenu';
 import { useChangedFilesData } from '@/hooks/session/files/useChangedFilesData';
-import { useProjectForSession, useProjectSessions, useSessionMessages, useSessionProjectScmCommitSelectionPatches, useSessionProjectScmCommitSelectionPaths, useSessionProjectScmOperationLog, useSessionProjectScmSnapshot, useSessionProjectScmSnapshotError, useSessionProjectScmTouchedPaths, useSessionRealtimeScmTranscriptConsumer, useSessionWorkspacePath, useSetting, useWorkspaceReviewCommentsDrafts } from '@/sync/domains/state/storage';
+import { useProjectForSession, useSessionMessages, useSessionProjectScmCommitSelectionPatches, useSessionProjectScmCommitSelectionPaths, useSessionProjectScmSnapshot, useSessionProjectScmSnapshotError, useWorkspaceScmTouchedPathsForSession, useSessionRealtimeScmTranscriptConsumer, useSessionWorkspacePath, useSetting, useWorkspaceReviewCommentsDrafts } from '@/sync/domains/state/storage';
 import { scmStatusSync } from '@/scm/scmStatusSync';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { ScmChangeDiscardButton } from '@/components/sessions/sourceControl/changes/ScmChangeDiscardButton';
@@ -25,6 +27,7 @@ import { NotSourceControlRepositoryState, SourceControlStaleSnapshotNotice, Sour
 import { t } from '@/text';
 import { useLastNonNullValue } from '@/hooks/ui/useLastNonNullValue';
 import { useDerivedSessionChangeSet } from '@/sync/domains/session/changes/hooks/useDerivedSessionChangeSet';
+import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import { useWorkspaceReviewCommentDraftHandlers } from '@/components/workspaces/files/details/workspaceFileDetails/useWorkspaceReviewCommentDraftHandlers';
 import { useWorkspaceScopeForSession } from '@/sync/domains/session/resolveWorkspaceScopeForSession';
 import {
@@ -52,6 +55,7 @@ import { isDirectoryLikeScmFileStatus } from '@/scm/isDirectoryLikeScmFileStatus
 
 export type SessionScmReviewDetailsViewProps = Readonly<{
     sessionId: string;
+    serverId?: string | null;
     scopeId: string;
 }>;
 
@@ -105,6 +109,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
     const { theme } = useUnistyles();
     const pane = useAppPaneScope(props.scopeId);
     const openDetailsTab = pane.openDetailsTab;
+    const goToComposer = useReviewComposerHandoff(props.scopeId);
     const setDetailsTabState = pane.setDetailsTabState;
     const reviewTabKey = 'scmReview:working';
     const persistedReviewTabState = pane.scopeState?.details?.tabState?.[reviewTabKey] as any as
@@ -120,6 +125,10 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
     }, [persistedReviewTabState?.scrollTop]);
     const mountedInitialReviewState = useMountedReviewInitialState(props.sessionId, persistedScrollTop, persistedCollapsedPaths);
+    const sessionAddress = React.useMemo(
+        () => normalizeSessionAddress(props.serverId, props.sessionId),
+        [props.serverId, props.sessionId],
+    );
     const persistedReviewTabStateRef = React.useRef<Record<string, unknown>>({});
     React.useEffect(() => {
         persistedReviewTabStateRef.current =
@@ -170,18 +179,19 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         );
     }, [flushPendingScrollTop]);
     React.useEffect(() => flushPendingScrollTop, [flushPendingScrollTop]);
-    const project = useProjectForSession(props.sessionId);
-    const sessionPath = useSessionWorkspacePath(props.sessionId);
-    const snapshot = useSessionProjectScmSnapshot(props.sessionId);
-    const lastGoodSnapshot = useLastNonNullValue(snapshot, { resetKey: props.sessionId });
+    // Every working-tree read and commit target below is qualified by the Home this screen was
+    // opened for. Reading by bare id resolves through same-id discovery, which cannot separate two
+    // Homes hosting one Session id and would review — and commit — the wrong working tree.
+    const project = useProjectForSession(props.sessionId, props.serverId);
+    const sessionPath = useSessionWorkspacePath(props.sessionId, props.serverId);
+    const snapshot = useSessionProjectScmSnapshot(props.sessionId, props.serverId);
+    const lastGoodSnapshot = useLastNonNullValue(snapshot, { resetKey: sessionAddress ? sessionAddressKey(sessionAddress) : props.sessionId });
     const effectiveSnapshot = snapshot ?? lastGoodSnapshot;
     useSessionRealtimeScmTranscriptConsumer(props.sessionId, effectiveSnapshot);
-    const snapshotError = useSessionProjectScmSnapshotError(props.sessionId);
-    const touchedPaths = useSessionProjectScmTouchedPaths(props.sessionId);
-    const operationLog = useSessionProjectScmOperationLog(props.sessionId);
-    const commitSelectionPaths = useSessionProjectScmCommitSelectionPaths(props.sessionId);
-    const commitSelectionPatches = useSessionProjectScmCommitSelectionPatches(props.sessionId);
-    const projectSessionIds = useProjectSessions(project?.id ?? null);
+    const snapshotError = useSessionProjectScmSnapshotError(props.sessionId, props.serverId);
+    const touchedPaths = useWorkspaceScmTouchedPathsForSession(props.sessionId, props.serverId);
+    const commitSelectionPaths = useSessionProjectScmCommitSelectionPaths(props.sessionId, props.serverId);
+    const commitSelectionPatches = useSessionProjectScmCommitSelectionPatches(props.sessionId, props.serverId);
     const scmReviewMaxFiles = useSetting('scmReviewMaxFiles');
     const scmReviewMaxChangedLines = useSetting('scmReviewMaxChangedLines');
     const scmCommitStrategySetting = useSetting('scmCommitStrategy');
@@ -192,7 +202,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
             : 'atomic';
     }, [scmCommitStrategySetting]);
     const scmWriteEnabled = useFeatureEnabled('scm.writeOperations');
-    const reviewScope = useWorkspaceScopeForSession(props.sessionId);
+    const reviewScope = useWorkspaceScopeForSession(props.sessionId, props.serverId);
     const reviewCommentsEnabled = useFeatureEnabled('files.reviewComments') === true && Boolean(reviewScope);
     const reviewCommentDrafts = useWorkspaceReviewCommentsDrafts(reviewScope);
     const reviewDraftHandlers = useWorkspaceReviewCommentDraftHandlers(reviewScope);
@@ -260,7 +270,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         latestTurnCheckpointDiffByPath,
         sessionChangeSet,
         providerDiffByPath,
-    } = useDerivedSessionChangeSet(props.sessionId);
+    } = useDerivedSessionChangeSet(sessionAddress);
     const [requestedChangedFilesViewMode, setRequestedChangedFilesViewMode] = React.useState<ChangedFilesViewMode | null>(null);
 
     useScmAdaptivePolling({
@@ -271,7 +281,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         activityToken: diffRefreshToken,
         getSignature: getSnapshotSignature,
         invalidateAndAwait: React.useCallback(async () => {
-            await scmStatusSync.invalidateFromAutoRefreshAndAwait(props.sessionId);
+            await scmStatusSync.invalidateFromAutoRefreshAndAwait(props.sessionId, props.serverId);
         }, [props.sessionId]),
     });
 
@@ -284,9 +294,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
     const changed = useChangedFilesData({
         sessionId: props.sessionId,
         scmSnapshot: effectiveSnapshot ?? null,
-        touchedPaths,
-        operationLog,
-        projectSessionIds,
+        workspaceTouchedPaths: touchedPaths,
         searchQuery: '',
         showAllRepositoryFiles: true,
         latestTurnChangeSet: latestTurnScopedChangeSet,
@@ -362,13 +370,13 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
     // Ensure the SCM snapshot is warm so large reviews can load diffs even if the user
     // opened the review tab before visiting Source control.
     React.useEffect(() => {
-        scmStatusSync.invalidateFromAutoRefresh(props.sessionId);
-    }, [props.sessionId]);
+        scmStatusSync.invalidateFromAutoRefresh(props.sessionId, props.serverId);
+    }, [props.serverId, props.sessionId]);
 
     const refreshAfterMutation = React.useCallback(async () => {
-        await scmStatusSync.invalidateFromMutationAndAwait(props.sessionId);
+        await scmStatusSync.invalidateFromMutationAndAwait(props.sessionId, props.serverId);
         setDiffRefreshToken((t) => t + 1);
-    }, [props.sessionId]);
+    }, [props.serverId, props.sessionId]);
 
     const atomicSelectionPathSet = React.useMemo(() => new Set(buildCommitSelectionPathHints({
         commitSelectionPaths,
@@ -394,6 +402,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
             return (
                 <ScmCommitSelectionToggleButton
                     sessionId={props.sessionId}
+                    serverId={props.serverId}
                     sessionPath={sessionPath}
                     snapshot={effectiveSnapshot ?? null}
                     scmWriteEnabled={scmWriteEnabled}
@@ -407,6 +416,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
     }, [
         atomicSelectionPathSet,
         effectiveSnapshot,
+        props.serverId,
         props.sessionId,
         scmCommitStrategy,
         scmWriteEnabled,
@@ -418,6 +428,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         return (file: ScmFileStatus) => (
             <ScmChangeDiscardButton
                 sessionId={props.sessionId}
+                serverId={props.serverId}
                 sessionPath={sessionPath}
                 snapshot={effectiveSnapshot ?? null}
                 scmWriteEnabled={scmWriteEnabled}
@@ -429,12 +440,29 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         );
     }, [
         effectiveSnapshot,
+        props.serverId,
         props.sessionId,
         refreshAfterMutation,
         scmCommitStrategy,
         scmWriteEnabled,
         sessionPath,
     ]);
+
+    const reviewViewMenu = React.useMemo(() => (
+        changed.showTurnViewToggle || changed.showTurnAgentReportedViewToggle
+        || changed.showTurnCheckpointViewToggle || changed.showSessionViewToggle
+    ) ? (
+        <ChangedFilesViewModeMenu
+            testID="scm-review-view-menu"
+            theme={theme}
+            changedFilesViewMode={changedFilesViewMode}
+            showTurnViewToggle={changed.showTurnViewToggle}
+            showTurnAgentReportedViewToggle={changed.showTurnAgentReportedViewToggle}
+            showTurnCheckpointViewToggle={changed.showTurnCheckpointViewToggle}
+            showSessionViewToggle={changed.showSessionViewToggle}
+            onChangedFilesViewMode={setRequestedChangedFilesViewMode}
+        />
+    ) : null, [changed.showTurnViewToggle, changed.showTurnAgentReportedViewToggle, changed.showTurnCheckpointViewToggle, changed.showSessionViewToggle, changedFilesViewMode, theme]);
 
     if (!effectiveSnapshot && !snapshotError) {
         return (
@@ -459,7 +487,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         <SourceControlStaleSnapshotNotice
             testID="session-scm-review-stale"
             error={snapshotError}
-            onRetry={() => void scmStatusSync.invalidateFromUser(props.sessionId)}
+            onRetry={() => void scmStatusSync.invalidateFromUser(props.sessionId, props.serverId)}
         />
     );
 
@@ -476,7 +504,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         return (
             <SourceControlUnavailableState
                 details={snapshotError.message}
-                onRetry={() => void scmStatusSync.invalidateFromUser(props.sessionId)}
+                onRetry={() => void scmStatusSync.invalidateFromUser(props.sessionId, props.serverId)}
             />
         );
     }
@@ -484,35 +512,6 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
     return (
         <View style={{ flex: 1, minHeight: 0, position: 'relative' }}>
             {staleSnapshotNotice}
-            {changed.showTurnViewToggle
-            || changed.showTurnAgentReportedViewToggle
-            || changed.showTurnCheckpointViewToggle
-            || changed.showSessionViewToggle ? (
-                <View
-                    style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 8,
-                        flexWrap: 'wrap',
-                        paddingHorizontal: 12,
-                        paddingTop: 10,
-                        paddingBottom: 8,
-                        borderBottomWidth: 1,
-                        borderBottomColor: theme.colors.border.default,
-                        backgroundColor: theme.colors.surface.inset,
-                    }}
-                >
-                    <ChangedFilesViewModeMenu
-                        theme={theme}
-                        changedFilesViewMode={changedFilesViewMode}
-                        showTurnViewToggle={changed.showTurnViewToggle}
-                        showTurnAgentReportedViewToggle={changed.showTurnAgentReportedViewToggle}
-                        showTurnCheckpointViewToggle={changed.showTurnCheckpointViewToggle}
-                        showSessionViewToggle={changed.showSessionViewToggle}
-                        onChangedFilesViewMode={setRequestedChangedFilesViewMode}
-                    />
-                </View>
-            ) : null}
             {reviewCommentsEnabled && project?.id ? (
                 <ReviewCommentsSessionSurface
                     projectId={project.id}
@@ -530,12 +529,17 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
                     testID="review-comments-session"
                 />
             ) : null}
+            <ReviewDraftSummary
+                enabled={reviewCommentsEnabled}
+                drafts={reviewCommentDrafts}
+                onGoToComposer={goToComposer}
+            />
             <ChangedFilesReview
+                toolbarLeading={reviewViewMenu}
                 theme={theme}
                 sessionId={props.sessionId}
                 snapshot={effectiveSnapshot ?? null}
                 changedFilesViewMode={changedFilesViewMode}
-                attributionReliability={changed.attributionReliability}
                 allRepositoryChangedFiles={changed.allRepositoryChangedFiles}
                 turnAttributedFiles={changed.turnAttributedFiles}
                 turnAgentReportedFiles={changed.turnAgentReportedFiles}
@@ -544,7 +548,6 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
                 turnRepositoryOnlyFiles={changed.turnRepositoryOnlyFiles}
                 sessionAttributedFiles={changed.sessionAttributedFiles}
                 repositoryOnlyFiles={changed.repositoryOnlyFiles}
-                suppressedInferredCount={changed.suppressedInferredCount}
                 maxFiles={maxFiles}
                 maxChangedLines={maxChangedLines}
                 onFilePress={openFileDefault}

@@ -73,7 +73,25 @@ describe('action operation inbox presentation', () => {
                 sessionId: 'spawned-session',
                 executionTarget: { serverId: 'server-b', machineId: 'machine-1' },
             },
-        }))).toBe('server-b');
+        }), 'server-a')).toBe('server-a');
+        expect(readActionOperationDestinationServerId(operation({
+            actionId: 'session.fork',
+            state: 'succeeded',
+            settledAt: 2_000,
+            result: { childSessionId: 'child-session' },
+        }), 'server-a')).toBe('server-a');
+        expect(readActionOperationDestinationServerId(operation({
+            actionId: 'session.handoff',
+            state: 'succeeded',
+            settledAt: 2_000,
+            scope: { accountId: 'account-1', machineId: 'machine-1', sessionId: 'same-session' },
+        }), 'server-a')).toBe('server-a');
+        expect(readActionOperationDestinationServerId(operation({
+            actionId: 'session.fork',
+            state: 'succeeded',
+            settledAt: 2_000,
+            result: { childSessionId: 'child-session' },
+        }), null)).toBeNull();
         expect(readActionOperationDestinationSessionId(operation({
             actionId: 'session.handoff',
             state: 'succeeded',

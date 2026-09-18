@@ -1,30 +1,41 @@
-import type {
-    PrimaryTurnStatusV1,
-    SessionRuntimeActivityState,
-    SessionRuntimeIssueV1,
+import {
+    SESSION_AWARENESS_OPTIMISTIC_PENDING_INPUT_MS,
+    SESSION_AWARENESS_RUNTIME_STALE_SIGNAL_MS,
+    hasProjectedActiveTurnV1,
+    hasTerminalPrimaryTurnStatusV1,
+    isFreshAwarenessTimestampV1,
+    isLiveSessionRuntimeV1,
+    normalizeAwarenessTimestampV1,
+    projectSessionAwarenessRuntimeV1,
+    projectSessionAwarenessOperationalV1,
+    type PrimaryTurnStatusV1,
+    type SessionRuntimeActivityState,
+    type SessionRuntimeIssueV1,
 } from '@happier-dev/protocol';
 
-export const SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS = 120_000;
-export const SESSION_OPTIMISTIC_PENDING_THINKING_MS = 15_000;
+/**
+ * The UI adapter over the canonical Session-awareness runtime owner.
+ *
+ * Every semantic decision below — live/stale/gone, working versus background activity, terminal
+ * turns defeating stale thinking, pending-request freshness — now lives once in Protocol
+ * (`sessions/awareness/runtime.ts`) so the server projection, the CLI mapper, Voice and this UI
+ * cannot drift. What stays here is genuinely UI-shaped: this package's presentation vocabulary,
+ * its device-local presence/optimistic-input inputs, and the timer scheduling that decides when
+ * a visible row must recompute.
+ */
+export const SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS = SESSION_AWARENESS_RUNTIME_STALE_SIGNAL_MS;
+export const SESSION_OPTIMISTIC_PENDING_THINKING_MS = SESSION_AWARENESS_OPTIMISTIC_PENDING_INPUT_MS;
 /**
  * Safety-net lifetime after the daemon accepts a resume request. The store keeps the explicit
  * marker for the entire in-flight RPC and normally clears it on authoritative post-attach state.
  */
 export const SESSION_RESUMING_PRESENTATION_TIMEOUT_MS = 30_000;
 
-export type SessionRuntimeAttentionState =
-    | 'idle'
-    | 'working'
-    | 'failed'
-    | 'permission_required'
-    | 'action_required';
-
-export type SessionRuntimeActivityPresentationState =
-    | 'idle'
-    | 'working'
-    | 'backgroundActive';
-
 export type SessionRuntimePresentationInput = Readonly<{
+    resumingAt?: number | null;
+    controlServiceability?: 'servable' | 'recoverable_unservable' | null;
+    pendingBlockedCount?: number | null;
+    latestReadyEventSeq?: number | null;
     active?: boolean | null;
     activeAt?: number | null;
     archivedAt?: number | null;
@@ -47,19 +58,8 @@ export type SessionRuntimePresentationInput = Readonly<{
     nowMs?: number;
 }>;
 
-export type SessionRuntimePresentationState = Readonly<{
-    attention: SessionRuntimeAttentionState;
-    activityState: SessionRuntimeActivityPresentationState;
-    working: boolean;
-    backgroundActive: boolean;
-    freshThinking: boolean;
-    projectedTurnInProgress: boolean;
-    freshProviderRuntimeActivity: boolean;
-    freshOptimisticPendingUserMessage: boolean;
-    freshPermissionRequired: boolean;
-    freshActionRequired: boolean;
-    terminalStatus: PrimaryTurnStatusV1 | null;
-    hasTerminalPrimaryTurnProjection: boolean;
+export type SessionRuntimePresentationState = import('@happier-dev/protocol').SessionAwarenessRuntimeFactsV1 & Readonly<{
+    operational: import('@happier-dev/protocol').SessionAwarenessProjectionV1['operational'];
 }>;
 
 export type SessionRuntimePresenceFields = Readonly<{
@@ -78,28 +78,19 @@ export function isFreshTimestamp(
     nowMs: number,
     budgetMs: number,
 ): boolean {
-    return typeof timestamp === 'number'
-        && Number.isFinite(timestamp)
-        && timestamp > 0
-        && timestamp + budgetMs > nowMs;
+    return isFreshAwarenessTimestampV1(timestamp, nowMs, budgetMs);
 }
 
 export function normalizeRuntimeStatusTimestamp(value: number | null | undefined): number | null {
-    return typeof value === 'number' && Number.isFinite(value) && value > 0
-        ? Math.trunc(value)
-        : null;
+    return normalizeAwarenessTimestampV1(value);
 }
 
 export function hasTerminalPrimaryTurnStatus(status: PrimaryTurnStatusV1 | null | undefined): boolean {
-    return status === 'completed' || status === 'cancelled' || status === 'failed';
+    return hasTerminalPrimaryTurnStatusV1(status);
 }
 
 export function hasProjectedActiveTurn(status: PrimaryTurnStatusV1 | null | undefined): boolean {
-    return status === 'in_progress';
-}
-
-function isLegacyThinkingBlockedByTurnProjection(latestTurnStatus: PrimaryTurnStatusV1 | null): boolean {
-    return hasTerminalPrimaryTurnStatus(latestTurnStatus);
+    return hasProjectedActiveTurnV1(status);
 }
 
 /**
@@ -113,8 +104,51 @@ function isLegacyThinkingBlockedByTurnProjection(latestTurnStatus: PrimaryTurnSt
 export function isLiveSessionRuntime(
     input: Pick<SessionRuntimePresentationInput, 'active' | 'presence' | 'archivedAt'>,
 ): boolean {
-    const isArchived = typeof input.archivedAt === 'number' && Number.isFinite(input.archivedAt);
-    return !isArchived && input.active === true && input.presence === 'online';
+    return isLiveSessionRuntimeV1(
+        { presence: readAwarenessPresence(input.presence), active: input.active },
+        normalizeAwarenessTimestampV1(input.archivedAt) !== null,
+    );
+}
+
+/**
+ * Presence as the canonical owner models it. A UI row that has no presence evidence at all is
+ * `unknown`, not offline — the awareness contract keeps those distinct so a surface never reports
+ * "last seen" for a session it simply has not heard about yet.
+ */
+export function readAwarenessPresence(presence: unknown): 'online' | 'offline' | 'unknown' {
+    if (presence === 'online') return 'online';
+    return presence === undefined || presence === null ? 'unknown' : 'offline';
+}
+
+export function toAwarenessRuntimeInput(input: SessionRuntimePresentationInput) {
+    return {
+        lifecycle: {
+            archivedAtMs: input.archivedAt,
+            latestReadyEventSeq: input.latestReadyEventSeq,
+            latestTurnStatus: input.latestTurnStatus,
+            latestTurnStatusObservedAtMs: input.latestTurnStatusObservedAt,
+            meaningfulActivityAtMs: input.meaningfulActivityAt,
+        },
+        runtime: {
+            presence: readAwarenessPresence(input.presence),
+            resumingAtMs: input.resumingAt,
+            controlServiceability: input.controlServiceability,
+            active: input.active,
+            lastObservedAtMs: input.activeAt,
+            thinking: input.thinking,
+            thinkingAtMs: input.thinkingAt,
+            optimisticThinkingAtMs: input.optimisticThinkingAt,
+            activityState: input.runtimeActivityState,
+            activityActiveCount: input.runtimeActivityActiveCount,
+        },
+        pending: {
+            hasPendingPermissionRequests: input.hasPendingPermissionRequests,
+            hasPendingUserActionRequests: input.hasPendingUserActionRequests,
+            pendingRequestObservedAtMs: input.pendingRequestObservedAt,
+            queuedInputCount: input.hasPendingUserMessages === true ? 1 : 0,
+            blockedInputCount: input.pendingBlockedCount,
+        },
+    } as const;
 }
 
 /**
@@ -135,91 +169,25 @@ export function readSessionRuntimeLostSinceMs(
     input: Pick<SessionRuntimePresentationInput, 'active' | 'presence' | 'archivedAt' | 'activeAt'>,
     nowMs: number,
 ): number | null {
-    if (isLiveSessionRuntime(input)) return null;
-    const lastObservedAtMs = normalizeRuntimeStatusTimestamp(input.activeAt);
-    if (lastObservedAtMs === null) return null;
-    return nowMs - lastObservedAtMs > SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS ? lastObservedAtMs : null;
+    return projectSessionAwarenessRuntimeV1({
+        ...toAwarenessRuntimeInput(input),
+        nowMs,
+    }).lostSinceMs;
 }
 
-export function deriveSessionRuntimePresentationState(
+export function projectUiSessionRuntimeAwareness(
     input: SessionRuntimePresentationInput,
 ): SessionRuntimePresentationState {
     const nowMs = typeof input.nowMs === 'number' && Number.isFinite(input.nowMs)
         ? input.nowMs
         : Date.now();
-    const latestTurnStatus = input.latestTurnStatus ?? null;
-    const isArchived = typeof input.archivedAt === 'number' && Number.isFinite(input.archivedAt);
-    const hasTerminalPrimaryTurnProjection = hasTerminalPrimaryTurnStatus(latestTurnStatus);
-    const terminalStatus = hasTerminalPrimaryTurnProjection ? latestTurnStatus : null;
-    const thinkingAt = normalizeRuntimeStatusTimestamp(input.thinkingAt);
-    const optimisticThinkingAt = normalizeRuntimeStatusTimestamp(input.optimisticThinkingAt);
-    const isLiveRuntime = isLiveSessionRuntime(input);
-
-    // The lifecycle projection is the canonical active-turn fact. It is cleared by
-    // complete/fail/cancel (including daemon exit settlement), not elapsed wall time.
-    const projectedTurnInProgress = !isArchived && hasProjectedActiveTurn(latestTurnStatus);
-    const freshProviderRuntimeActivity = !isArchived && hasProviderRuntimeActivity(input);
-
-    const freshThinking =
-        input.thinking === true
-        && isLiveRuntime
-        && thinkingAt !== null
-        && isFreshTimestamp(thinkingAt, nowMs, SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS)
-        && !isLegacyThinkingBlockedByTurnProjection(latestTurnStatus);
-
-    const freshOptimisticPendingUserMessage =
-        input.hasPendingUserMessages === true
-        && isLiveRuntime
-        && optimisticThinkingAt !== null
-        && isFreshTimestamp(optimisticThinkingAt, nowMs, SESSION_OPTIMISTIC_PENDING_THINKING_MS)
-        && !hasTerminalPrimaryTurnProjection;
-
-    const working =
-        projectedTurnInProgress
-        || freshThinking
-        || freshOptimisticPendingUserMessage;
-    const backgroundActive = !working && freshProviderRuntimeActivity;
-    const activityState: SessionRuntimeActivityPresentationState = working
-        ? 'working'
-        : backgroundActive
-            ? 'backgroundActive'
-            : 'idle';
-    const pendingRequestObservedAt = normalizeRuntimeStatusTimestamp(input.pendingRequestObservedAt);
-    const hasFreshPendingRequest =
-        pendingRequestObservedAt !== null
-        && isFreshTimestamp(pendingRequestObservedAt, nowMs, SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS);
-    const freshActionRequired =
-        input.hasPendingUserActionRequests === true
-        && isLiveRuntime
-        && (working || hasFreshPendingRequest);
-    const freshPermissionRequired =
-        input.hasPendingPermissionRequests === true
-        && isLiveRuntime;
-
-    const attention: SessionRuntimeAttentionState =
-        latestTurnStatus === 'failed'
-            ? 'failed'
-            : freshActionRequired
-            ? 'action_required'
-            : freshPermissionRequired
-                ? 'permission_required'
-                : working
-                    ? 'working'
-                    : 'idle';
-
+    const normalized = toAwarenessRuntimeInput(input);
+    const facts = projectSessionAwarenessRuntimeV1({ ...normalized, nowMs });
+    const operational = projectSessionAwarenessOperationalV1({ runtime: facts, lifecycle: normalized.lifecycle });
     return {
-        attention,
-        activityState,
-        working,
-        backgroundActive,
-        freshThinking,
-        projectedTurnInProgress,
-        freshProviderRuntimeActivity,
-        freshOptimisticPendingUserMessage,
-        freshPermissionRequired,
-        freshActionRequired,
-        terminalStatus,
-        hasTerminalPrimaryTurnProjection,
+        ...facts,
+        operational,
+
     };
 }
 
@@ -241,7 +209,7 @@ export function readSessionRuntimePresentationFreshnessSignals(
     input: SessionRuntimePresentationInput,
     nowMs: number,
 ): readonly SessionRuntimeFreshnessSignal[] {
-    const runtimePresentation = deriveSessionRuntimePresentationState({ ...input, nowMs });
+    const runtimePresentation = projectUiSessionRuntimeAwareness({ ...input, nowMs });
     const signals: SessionRuntimeFreshnessSignal[] = [];
     const addFreshnessSignal = (timestamp: number | null | undefined, budgetMs: number) => {
         const normalizedTimestamp = normalizeRuntimeStatusTimestamp(timestamp);
@@ -257,10 +225,10 @@ export function readSessionRuntimePresentationFreshnessSignals(
     if (runtimePresentation.freshThinking) {
         addFreshnessSignal(input.thinkingAt, SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS);
     }
-    if (runtimePresentation.freshOptimisticPendingUserMessage) {
+    if (runtimePresentation.freshOptimisticPendingInput) {
         addFreshnessSignal(input.optimisticThinkingAt, SESSION_OPTIMISTIC_PENDING_THINKING_MS);
     }
-    if (runtimePresentation.freshActionRequired) {
+    if (runtimePresentation.freshPermissionRequired || runtimePresentation.freshActionRequired) {
         addFreshnessSignal(input.pendingRequestObservedAt, SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS);
     }
     return signals;
@@ -281,11 +249,4 @@ export function resolveSessionRuntimePresenceFields(
         thinking: input.thinking === true,
         thinkingAt,
     };
-}
-
-function hasProviderRuntimeActivity(input: SessionRuntimePresentationInput): boolean {
-    return input.runtimeActivityState === 'active'
-        && typeof input.runtimeActivityActiveCount === 'number'
-        && Number.isFinite(input.runtimeActivityActiveCount)
-        && input.runtimeActivityActiveCount > 0;
 }

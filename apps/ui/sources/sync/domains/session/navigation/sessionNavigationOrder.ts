@@ -13,6 +13,8 @@
  * layer or re-derive the order. `keyboard/sessions` keeps only shortcut-availability policy.
  */
 
+import { normalizeSessionAddress, sessionAddressKey } from '../sessionAddress';
+
 export type SessionNavigationDirection = 'previous' | 'next';
 
 export type VisibleSessionNavigationEntry = Readonly<{
@@ -40,36 +42,33 @@ function normalizeSessionKeyPart(value: unknown): string {
     return typeof value === 'string' ? value.trim() : '';
 }
 
-function parseServerScopedSessionKey(sessionKey: string): Pick<VisibleSessionNavigationEntry, 'sessionId' | 'sessionKey' | 'serverId'> {
-    const normalizedKey = normalizeSessionKeyPart(sessionKey);
-    const separatorIndex = normalizedKey.indexOf(':');
-    if (separatorIndex <= 0) {
-        return {
-            sessionId: normalizedKey,
-            sessionKey: normalizedKey,
-        };
-    }
-
-    const serverId = normalizedKey.slice(0, separatorIndex).trim();
-    const sessionId = normalizedKey.slice(separatorIndex + 1).trim();
-    if (!serverId || !sessionId) {
-        return {
-            sessionId: normalizedKey,
-            sessionKey: normalizedKey,
-        };
-    }
-
-    return {
-        sessionId,
-        sessionKey: normalizedKey,
-        serverId,
-    };
-}
-
 export function buildServerScopedSessionKey(sessionId: string, serverId?: string | null): string {
     const normalizedSessionId = normalizeSessionKeyPart(sessionId);
     const normalizedServerId = normalizeSessionKeyPart(serverId);
-    return normalizedServerId ? `${normalizedServerId}:${normalizedSessionId}` : normalizedSessionId;
+    const address = normalizeSessionAddress(normalizedServerId, normalizedSessionId);
+    return address ? sessionAddressKey(address) : normalizedSessionId;
+}
+
+/**
+ * Compatibility reader for the persisted pre-07.1 MRU key. It is compared by
+ * construction against known structured entries and is never parsed. New writes
+ * always use `sessionAddressKey`; remove this adapter with support for legacy local
+ * `sessionMruOrderV1` values.
+ */
+function buildLegacySessionMruKey(entry: VisibleSessionNavigationEntry): string {
+    return entry.serverId ? `${entry.serverId}:${entry.sessionId}` : entry.sessionId;
+}
+
+function resolveKnownMruEntry(
+    rawKey: unknown,
+    knownSessionEntries: readonly VisibleSessionNavigationEntry[],
+): VisibleSessionNavigationEntry | null {
+    const key = normalizeSessionKeyPart(rawKey);
+    if (!key) return null;
+    const currentEntry = knownSessionEntries.find((entry) => entry.sessionKey === key);
+    if (currentEntry) return currentEntry;
+    const legacyMatches = knownSessionEntries.filter((entry) => buildLegacySessionMruKey(entry) === key);
+    return legacyMatches.length === 1 ? legacyMatches[0] : null;
 }
 
 export function buildVisibleSessionNavigationEntries(
@@ -110,9 +109,10 @@ export function findVisibleSessionNavigationEntryByScope(
         const scoped = entries.find((entry) =>
             entry.sessionId === normalizedSessionId && entry.serverId === normalizedServerId
         );
-        if (scoped) return scoped;
+        return scoped ?? null;
     }
-    return entries.find((entry) => entry.sessionId === normalizedSessionId) ?? null;
+    const matches = entries.filter((entry) => entry.sessionId === normalizedSessionId);
+    return matches.length === 1 ? matches[0] : null;
 }
 
 export function resolveVisibleSessionNavigation(params: Readonly<{
@@ -154,22 +154,22 @@ export function resolveVisibleSessionEdgeNavigation(params: Readonly<{
 export function moveSessionMruEntryToFront(params: Readonly<{
     order: readonly string[] | null | undefined;
     activeSessionKey: string | null;
-    knownSessionKeys: readonly string[];
+    knownSessionEntries: readonly VisibleSessionNavigationEntry[];
     maxEntries?: number;
 }>): string[] {
-    const known = new Set(params.knownSessionKeys.map(normalizeSessionKeyPart).filter(Boolean));
     const activeSessionKey = normalizeSessionKeyPart(params.activeSessionKey);
     const maxEntries = Math.max(0, params.maxEntries ?? DEFAULT_SESSION_MRU_MAX_ENTRIES);
     const next: string[] = [];
 
-    if (activeSessionKey && known.has(activeSessionKey)) {
-        next.push(activeSessionKey);
+    const activeEntry = resolveKnownMruEntry(activeSessionKey, params.knownSessionEntries);
+    if (activeEntry) {
+        next.push(activeEntry.sessionKey);
     }
 
     for (const rawKey of params.order ?? []) {
-        const key = normalizeSessionKeyPart(rawKey);
-        if (!key || !known.has(key) || next.includes(key)) continue;
-        next.push(key);
+        const entry = resolveKnownMruEntry(rawKey, params.knownSessionEntries);
+        if (!entry || next.includes(entry.sessionKey)) continue;
+        next.push(entry.sessionKey);
         if (next.length >= maxEntries) break;
     }
 
@@ -178,23 +178,24 @@ export function moveSessionMruEntryToFront(params: Readonly<{
 
 export function resolveSessionMruNavigation(params: Readonly<{
     order: readonly string[];
+    knownSessionEntries: readonly VisibleSessionNavigationEntry[];
     activeSessionKey: string | null;
     cursorSessionKey: string | null;
     direction: SessionNavigationDirection;
 }>): VisibleSessionNavigationEntry | null {
-    const order = params.order.map(normalizeSessionKeyPart).filter(Boolean);
+    const order = params.order
+        .map((key) => resolveKnownMruEntry(key, params.knownSessionEntries))
+        .filter((entry): entry is VisibleSessionNavigationEntry => entry !== null);
     if (order.length === 0) return null;
 
     const anchorKey = normalizeSessionKeyPart(params.cursorSessionKey) || normalizeSessionKeyPart(params.activeSessionKey);
-    const anchorIndex = anchorKey ? order.indexOf(anchorKey) : -1;
+    const anchorIndex = anchorKey ? order.findIndex((entry) => entry.sessionKey === anchorKey) : -1;
     if (anchorIndex < 0) {
         const fallbackIndex = params.direction === 'previous' ? 0 : order.length - 1;
-        const sessionKey = order[fallbackIndex];
-        return sessionKey ? { index: fallbackIndex, ...parseServerScopedSessionKey(sessionKey) } : null;
+        return order[fallbackIndex] ?? null;
     }
 
     const delta = params.direction === 'previous' ? 1 : -1;
     const targetIndex = (anchorIndex + delta + order.length) % order.length;
-    const sessionKey = order[targetIndex];
-    return sessionKey ? { index: targetIndex, ...parseServerScopedSessionKey(sessionKey) } : null;
+    return order[targetIndex] ?? null;
 }

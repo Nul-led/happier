@@ -4,6 +4,7 @@ import {
     buildSessionListReachabilitySummary,
     createSessionListReachabilitySummaryCache,
 } from './buildSessionListReachabilitySummary';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 const getStateSpy = vi.fn();
 
@@ -69,6 +70,7 @@ describe('buildSessionListReachabilitySummary', () => {
             },
         } as any;
         const input = {
+            cache: createSessionListReachabilitySummaryCache(),
             listItems: [
                 {
                     type: 'session',
@@ -143,7 +145,9 @@ describe('buildSessionListReachabilitySummary', () => {
             workspaceRefs,
             resolveSessionRenderable: (item: any) => renderablesById[item.sessionId] ?? null,
         });
-        const unchangedDisplay = first.displayByKey.get('server-a:sess-unchanged');
+        const unchangedKey = sessionAddressKey({ serverId: 'server-a', sessionId: 'sess-unchanged' });
+        const refreshedKey = sessionAddressKey({ serverId: 'server-a', sessionId: 'sess-refreshed' });
+        const unchangedDisplay = first.displayByKey.get(unchangedKey);
         const second = buildSessionListReachabilitySummary({
             cache,
             listItems,
@@ -155,11 +159,35 @@ describe('buildSessionListReachabilitySummary', () => {
         });
 
         expect(second).not.toBe(first);
-        expect(second.displayByKey.get('server-a:sess-unchanged')).toBe(unchangedDisplay);
-        expect(second.displayByKey.get('server-a:sess-refreshed')).toMatchObject({
+        expect(second.displayByKey.get(unchangedKey)).toBe(unchangedDisplay);
+        expect(second.displayByKey.get(refreshedKey)).toMatchObject({
             machineId: 'machine-a',
             workspaceSubtitle: 'repo-refreshed',
         });
+    });
+
+    it('keeps delimiter-bearing qualified Session addresses distinct in cache and display maps', () => {
+        const addresses = [
+            { serverId: 'https://home.example/a', sessionId: 'b:c' },
+            { serverId: 'https://home.example/a:b', sessionId: 'c' },
+        ] as const;
+        const renderables = new Map(addresses.map((address, index) => [
+            sessionAddressKey(address),
+            { metadata: { host: `machine-${index}.local`, path: `/repo-${index}` } },
+        ]));
+        const summary = buildSessionListReachabilitySummary({
+            listItems: addresses.map((address) => ({ type: 'session' as const, ...address })),
+            machinesById: new Map(),
+            workspaceRefs: [],
+            resolveSessionRenderable: (item) => renderables.get(sessionAddressKey({
+                serverId: item.serverId!,
+                sessionId: item.sessionId,
+            })) as any,
+        });
+
+        expect(summary.displayByKey.size).toBe(2);
+        expect(summary.displayByKey.get(sessionAddressKey(addresses[0]))?.workspaceSubtitle).toBe('repo-0');
+        expect(summary.displayByKey.get(sessionAddressKey(addresses[1]))?.workspaceSubtitle).toBe('repo-1');
     });
 
     it('preserves path subtitles even when no machine metadata is available', () => {

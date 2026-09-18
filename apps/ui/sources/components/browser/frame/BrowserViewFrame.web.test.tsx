@@ -6,6 +6,26 @@ import { renderScreen } from '@/dev/testkit';
 import { BrowserViewFrame } from './BrowserViewFrame.web';
 
 describe('BrowserViewFrame web', () => {
+    it('loads an inline document in the shared opaque frame without a URL', async () => {
+        const html = '<!doctype html><html><body><button>Local document</button></body></html>';
+        const screen = await renderScreen(
+            <BrowserViewFrame
+                engine={{
+                    kind: 'webIframe',
+                    title: 'Inline surface',
+                    html,
+                    sandbox: 'allow-scripts',
+                    testID: 'inline-frame',
+                }}
+            />,
+        );
+
+        const iframe = screen.findByType('iframe');
+        expect(iframe.props.srcDoc).toBe(html);
+        expect(iframe.props.src).toBeUndefined();
+        expect(iframe.props.sandbox).toBe('allow-scripts');
+    });
+
     it('renders a shared iframe engine with the supplied sandbox policy', async () => {
         const screen = await renderScreen(
             <BrowserViewFrame

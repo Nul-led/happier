@@ -10,8 +10,9 @@ describe('resolveSessionListShellFlags', () => {
             selectionPresentation: 'flat-with-badge' as const,
             isTablet: true,
             sessionListOrderingModeV1: 'custom' as const,
-            folderActionsEnabled: false,
-            folderViewMode: 'off' as const,
+            sessionListLayoutChoice: 'projects' as const,
+            usesProjectGrouping: true,
+            usesFolderTreePresentation: false,
             hasAnySessionFolderInAccount: false,
         };
 
@@ -22,6 +23,7 @@ describe('resolveSessionListShellFlags', () => {
         expect(first).toEqual({
             selectable: true,
             canReorderSessions: true,
+            canMoveSessionRowsBetweenFolders: false,
             canDragSessionRows: true,
             showPinnedServerBadge: true,
             showServerBadge: true,
@@ -35,12 +37,14 @@ describe('resolveSessionListShellFlags', () => {
             selectionPresentation: 'flat-with-badge',
             isTablet: true,
             sessionListOrderingModeV1: 'custom',
-            folderActionsEnabled: false,
-            folderViewMode: 'off',
+            sessionListLayoutChoice: 'projects',
+            usesProjectGrouping: true,
+            usesFolderTreePresentation: false,
             hasAnySessionFolderInAccount: false,
         })).toEqual({
             selectable: true,
             canReorderSessions: true,
+            canMoveSessionRowsBetweenFolders: false,
             canDragSessionRows: true,
             showPinnedServerBadge: true,
             showServerBadge: true,
@@ -54,12 +58,77 @@ describe('resolveSessionListShellFlags', () => {
             selectionPresentation: 'grouped',
             isTablet: false,
             sessionListOrderingModeV1: 'updated',
-            folderActionsEnabled: false,
-            folderViewMode: 'off',
+            sessionListLayoutChoice: 'projects',
+            usesProjectGrouping: true,
+            usesFolderTreePresentation: false,
             hasAnySessionFolderInAccount: false,
         })).toEqual({
             selectable: false,
             canReorderSessions: false,
+            canMoveSessionRowsBetweenFolders: false,
+            canDragSessionRows: false,
+            showPinnedServerBadge: false,
+            showServerBadge: false,
+        });
+    });
+
+    it('carries Home identity onto rows in Recent activity even when the saved presentation is grouped', () => {
+        const recentActivity = resolveSessionListShellFlags({
+            selectedServerCount: 2,
+            selectionEnabled: true,
+            selectionPresentation: 'grouped',
+            isTablet: false,
+            sessionListOrderingModeV1: 'updated',
+            sessionListLayoutChoice: 'recent_activity',
+            usesProjectGrouping: false,
+            usesFolderTreePresentation: false,
+            hasAnySessionFolderInAccount: false,
+        });
+        expect(recentActivity.showServerBadge).toBe(true);
+        expect(recentActivity.showPinnedServerBadge).toBe(true);
+
+        // Projects keeps its server headers, so the saved grouped presentation still decides.
+        expect(resolveSessionListShellFlags({
+            selectedServerCount: 2,
+            selectionEnabled: true,
+            selectionPresentation: 'grouped',
+            isTablet: false,
+            sessionListOrderingModeV1: 'updated',
+            sessionListLayoutChoice: 'projects',
+            usesProjectGrouping: true,
+            usesFolderTreePresentation: false,
+            hasAnySessionFolderInAccount: false,
+        }).showServerBadge).toBe(false);
+
+        // A single selected Home never needs a badge, whatever the layout.
+        expect(resolveSessionListShellFlags({
+            selectedServerCount: 1,
+            selectionEnabled: true,
+            selectionPresentation: 'grouped',
+            isTablet: false,
+            sessionListOrderingModeV1: 'updated',
+            sessionListLayoutChoice: 'recent_activity',
+            usesProjectGrouping: false,
+            usesFolderTreePresentation: false,
+            hasAnySessionFolderInAccount: false,
+        }).showServerBadge).toBe(false);
+    });
+
+    it('disables row drag in Recent activity while preserving the saved custom project order', () => {
+        expect(resolveSessionListShellFlags({
+            selectedServerCount: 1,
+            selectionEnabled: false,
+            selectionPresentation: 'grouped',
+            isTablet: false,
+            sessionListOrderingModeV1: 'custom',
+            sessionListLayoutChoice: 'projects',
+            usesProjectGrouping: false,
+            usesFolderTreePresentation: false,
+            hasAnySessionFolderInAccount: true,
+        })).toEqual({
+            selectable: false,
+            canReorderSessions: false,
+            canMoveSessionRowsBetweenFolders: false,
             canDragSessionRows: false,
             showPinnedServerBadge: false,
             showServerBadge: false,
@@ -73,12 +142,14 @@ describe('resolveSessionListShellFlags', () => {
             selectionPresentation: 'grouped',
             isTablet: false,
             sessionListOrderingModeV1: 'updated',
-            folderActionsEnabled: true,
-            folderViewMode: 'tree',
+            sessionListLayoutChoice: 'projects',
+            usesProjectGrouping: true,
+            usesFolderTreePresentation: true,
             hasAnySessionFolderInAccount: true,
         })).toEqual({
             selectable: false,
             canReorderSessions: false,
+            canMoveSessionRowsBetweenFolders: true,
             canDragSessionRows: true,
             showPinnedServerBadge: false,
             showServerBadge: false,
@@ -90,8 +161,9 @@ describe('resolveSessionListShellFlags', () => {
             selectionPresentation: 'grouped',
             isTablet: false,
             sessionListOrderingModeV1: 'updated',
-            folderActionsEnabled: true,
-            folderViewMode: 'tree',
+            sessionListLayoutChoice: 'projects',
+            usesProjectGrouping: true,
+            usesFolderTreePresentation: true,
             hasAnySessionFolderInAccount: false,
         }).canDragSessionRows).toBe(false);
 
@@ -101,8 +173,9 @@ describe('resolveSessionListShellFlags', () => {
             selectionPresentation: 'grouped',
             isTablet: false,
             sessionListOrderingModeV1: 'updated',
-            folderActionsEnabled: true,
-            folderViewMode: 'off',
+            sessionListLayoutChoice: 'projects',
+            usesProjectGrouping: true,
+            usesFolderTreePresentation: false,
             hasAnySessionFolderInAccount: true,
         }).canDragSessionRows).toBe(false);
     });

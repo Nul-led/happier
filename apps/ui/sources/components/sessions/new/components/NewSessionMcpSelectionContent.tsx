@@ -41,6 +41,8 @@ export type NewSessionMcpSelectionContentProps = Readonly<{
     machineId?: string | null;
     machineName?: string | null;
     directory: string;
+    /** Temporary computers can select only portable bindings before an endpoint exists. */
+    portableOnly?: boolean;
     agentType: string;
     hasContext: boolean;
     preview: PreviewSuccess | null;
@@ -202,17 +204,17 @@ export function NewSessionMcpSelectionContent(props: NewSessionMcpSelectionConte
     }, [props.onSelectionChange, props.selection]);
 
     const managedResolution = React.useMemo(() => {
-        if (!props.machineId || !props.directory.trim()) return null;
+        if (!props.portableOnly && (!props.machineId || !props.directory.trim())) return null;
         try {
             return resolveManagedSessionMcpSelectionV1(mcpServersSettings, {
-                machineId: props.machineId,
-                directory: props.directory.trim(),
+                machineId: props.portableOnly ? 'ephemeral-runner-unmaterialized' : props.machineId!,
+                directory: props.portableOnly ? '/' : props.directory.trim(),
                 selection: props.selection,
             });
         } catch {
             return null;
         }
-    }, [mcpServersSettings, props.directory, props.machineId, props.selection]);
+    }, [mcpServersSettings, props.directory, props.machineId, props.portableOnly, props.selection]);
 
     const renderManagedServerRow = React.useCallback((server: McpServerCatalogEntryV1) => {
         const item = managedResolution?.itemsByName[server.name] ?? null;

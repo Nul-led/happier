@@ -1,31 +1,53 @@
 import { describe, expect, it, vi } from 'vitest';
+import tweetnacl from 'tweetnacl';
+import {
+    deriveBoxPublicKeyFromSeed,
+    verifyAccountContentKeyBindingV1,
+} from '@happier-dev/protocol';
 
+const CONTENT_KEY_SEED = new Uint8Array(32).fill(3);
+
+// Only the Account encryption boundary is faked; the binding bytes and the
+// signature under test stay real.
 vi.mock('@/sync/encryption/encryption', () => ({
     Encryption: {
         create: async () => ({
-            contentDataKey: new Uint8Array([1, 2, 3, 4]),
+            contentDataKey: deriveBoxPublicKeyFromSeed(CONTENT_KEY_SEED),
         }),
-    },
-}));
-
-vi.mock('@/encryption/libsodium.lib', () => ({
-    default: {
-        crypto_sign_seed_keypair: () => ({
-            publicKey: new Uint8Array(32).fill(5),
-            privateKey: new Uint8Array(64).fill(6),
-        }),
-        crypto_sign_detached: () => new Uint8Array(64).fill(7),
     },
 }));
 
 describe('buildContentKeyBinding', () => {
-    it('returns encoded content key and signature', async () => {
+    it('emits a binding the canonical protocol verifier accepts for this Account key', async () => {
         const { buildContentKeyBinding } = await import('./contentKeyBinding');
+        const { decodeBase64 } = await import('@/encryption/base64');
+        const accountSecret = new Uint8Array(32).fill(9);
+
+        const result = await buildContentKeyBinding(accountSecret);
+
+        const verified = verifyAccountContentKeyBindingV1({
+            accountSigningPublicKey: tweetnacl.sign.keyPair.fromSeed(accountSecret).publicKey,
+            contentPublicKey: decodeBase64(result.contentPublicKey),
+            signature: decodeBase64(result.contentPublicKeySig),
+        });
+
+        expect(verified).not.toBeNull();
+        expect(Array.from(verified!.contentPublicKey))
+            .toEqual(Array.from(deriveBoxPublicKeyFromSeed(CONTENT_KEY_SEED)));
+    });
+
+    it('does not produce a binding another Account signing key can claim', async () => {
+        const { buildContentKeyBinding } = await import('./contentKeyBinding');
+        const { decodeBase64 } = await import('@/encryption/base64');
+
         const result = await buildContentKeyBinding(new Uint8Array(32).fill(9));
 
-        expect(typeof result.contentPublicKey).toBe('string');
-        expect(typeof result.contentPublicKeySig).toBe('string');
-        expect(result.contentPublicKey.length).toBeGreaterThan(0);
-        expect(result.contentPublicKeySig.length).toBeGreaterThan(0);
+        expect(verifyAccountContentKeyBindingV1({
+            accountSigningPublicKey: tweetnacl.sign.keyPair.fromSeed(
+                new Uint8Array(32).fill(10),
+            ).publicKey,
+            contentPublicKey: decodeBase64(result.contentPublicKey),
+            signature: decodeBase64(result.contentPublicKeySig),
+        })).toBeNull();
     });
 });

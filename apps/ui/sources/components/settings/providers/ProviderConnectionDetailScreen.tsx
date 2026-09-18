@@ -54,6 +54,9 @@ import { useProfile, useSettings } from '@/sync/store/hooks';
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
 import { useActiveUnsavedChangesGuard } from '@/utils/navigation/useActiveUnsavedChangesGuard';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { teamsDirectoryShareCredentialPath } from '@/components/settings/teams/teamsRoutes';
+import { SharedWithTeamsForSource } from '@/components/settings/teams/credentials/SharedWithTeamsSourceAdministration';
 import { useUnsavedChangesBeforeRemoveGuard } from '@/utils/navigation/useUnsavedChangesBeforeRemoveGuard';
 import { promptUnsavedChangesAlert } from '@/utils/ui/promptUnsavedChangesAlert';
 import {
@@ -115,6 +118,10 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
         selectedTargetServerMatchesActiveAccount,
         serverId,
     } = providerTarget;
+    const teamCredentialResourcesEnabled = useFeatureEnabled('teams.credentialResources', {
+        scopeKind: 'spawn',
+        serverId,
+    });
     // Only machines the canonical presence owner classifies online can return
     // daemon facts; a read to any other candidate cannot be serviced.
     const readableMachineRows = React.useMemo(
@@ -133,13 +140,16 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
         connectionId: props.connectionId,
         targets: readableMachineRows,
     });
-    const refreshConnectionDetail = React.useCallback(async () => {
+    const refreshConnectionQuery = React.useCallback(async (): Promise<void> => {
         await query.refresh();
+    }, [query.refresh]);
+    const refreshConnectionDetail = React.useCallback(async () => {
+        await refreshConnectionQuery();
         // The selected connection is authoritative for mutation completion.
         // Peer rows are supporting presentation and must not hold the write's
         // critical path or replace a successful selected-machine refresh.
         void machineViews.refresh().catch(() => undefined);
-    }, [machineViews.refresh, query.refresh]);
+    }, [machineViews.refresh, refreshConnectionQuery]);
     const mutation = useProviderConnectionMutation({
         resolveTarget: resolveCurrentTarget,
         refresh: refreshConnectionDetail,
@@ -570,12 +580,12 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
         ? {
             error: mutation.error,
             retry: mutation.retry,
-            reviewCurrentState: query.refresh,
+            reviewCurrentState: refreshConnectionQuery,
         }
         : query.error
-            ? { error: query.error, retry: query.refresh }
+            ? { error: query.error, retry: refreshConnectionQuery }
             : connection?.authorizationError
-                ? { error: connection.authorizationError, retry: query.refresh }
+                ? { error: connection.authorizationError, retry: refreshConnectionQuery }
                 : null;
     const displayError = displayFailure?.error ?? null;
     if (!connection && displayError) {
@@ -607,6 +617,7 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
     }
 
     const presentation = presentProviderConnection(connection);
+    const teamCredentialSourceOffer = connection.teamCredentialSourceOffer;
     const probeErrorPresentation = presentProviderError(probeError);
     const accountGrantValid = connection.grants.accountState === 'valid';
     const managedTargetMachineName = managedDeployment
@@ -927,7 +938,29 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
                     {connection.sourceStatus === 'available' && connection.credential.keyUrl ? (
                         <ProviderExternalLinkItem kind="getApiKey" url={connection.credential.keyUrl} />
                     ) : null}
+                    {teamCredentialResourcesEnabled && selectedTargetServerMatchesActiveAccount && serverId && teamCredentialSourceOffer ? (
+                        <Item
+                            testID="provider-connection-share-with-team"
+                            title={t('teams.credentials.create.action')}
+                            icon={<Icon name="users" size={29} color={theme.colors.text.secondary} />}
+                            onPress={() => router.push(teamsDirectoryShareCredentialPath({
+                                kind: 'provider_connection',
+                                serverId,
+                                machineId,
+                                connectionId: teamCredentialSourceOffer.connectionId,
+                                credentialSlotId: teamCredentialSourceOffer.credentialSlotId,
+                                connectionSecurityFingerprint: teamCredentialSourceOffer.connectionSecurityFingerprint,
+                            }) as never)}
+                        />
+                    ) : null}
                 </ItemGroup>
+            ) : null}
+
+            {teamCredentialResourcesEnabled && selectedTargetServerMatchesActiveAccount && serverId ? (
+                <SharedWithTeamsForSource
+                    serverId={serverId}
+                    source={{ v: 1, kind: 'provider_connection', connectionId: connection.connectionId }}
+                />
             ) : null}
 
             <ItemGroup title={t('settingsProviders.detail.modelsTitle')}>

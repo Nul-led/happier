@@ -1,4 +1,5 @@
 import type { PendingDeliveryBlockedReason } from '@happier-dev/protocol';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import type {
   VoiceOutputFocusApplication,
   VoiceOutputFocusState,
@@ -51,9 +52,9 @@ export type VoiceAdapterRuntimeActionResult =
   | Readonly<{ status: 'failed'; code: string }>;
 
 export type VoiceAdapterConversationBinding = Readonly<{
-  conversationSessionId: string;
+  conversationSessionAddress: SessionAddress;
   transcriptMode: VoiceAdapterTranscriptMode;
-  targetSessionId: string | null;
+  targetSessionAddress: SessionAddress | null;
 }>;
 
 export type VoiceSessionSnapshot = Readonly<{
@@ -83,11 +84,19 @@ export type VoiceAdapterController = Readonly<{
    * when the visible target changes. Omission preserves legacy route targeting.
    */
   conversationTargeting?: VoiceConversationTargeting;
-  start(input: Readonly<{ sessionId: string; initialContext?: string; textOnly?: boolean }>): Promise<void>;
+  start(input: Readonly<{
+    sessionId: string;
+    requestedTargetSessionAddress: SessionAddress | null;
+    initialContext?: string;
+    textOnly?: boolean;
+  }>): Promise<void>;
   stop(input: Readonly<{ sessionId: string }>): Promise<void>;
   toggle(input: Readonly<{ sessionId: string }>): Promise<void>;
   /** Routes a recovery through the exact active attempt without replacing it. */
-  retry?(input: Readonly<{ sessionId: string }>): Promise<void>;
+  retry?(input: Readonly<{
+    sessionId: string;
+    requestedTargetSessionAddress: SessionAddress | null;
+  }>): Promise<void>;
   interrupt(input: Readonly<{ sessionId: string }>): Promise<void>;
   bargeIn?(input: Readonly<{ sessionId: string }>): Promise<void>;
   /**
@@ -113,7 +122,7 @@ export type VoiceAdapterController = Readonly<{
   subscribe?(listener: () => void): () => void;
   resolveConversationBinding?(input: Readonly<{
     controlSessionId: string;
-    requestedTargetSessionId: string | null;
+    requestedTargetSessionAddress: SessionAddress | null;
     settings: unknown;
   }>): Promise<VoiceAdapterConversationBinding | null>;
   resolveBindingTranscriptMode?(settings: unknown): VoiceAdapterTranscriptMode | null;

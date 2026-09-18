@@ -9,12 +9,15 @@ import {
 const registration = {
     token: 'hpat_test_token',
     storagePartitionId: `hpa_${'a'.repeat(64)}`,
-    storageLocator: {
-        namespace: 'happier-plugin-ui-artifacts-v1',
-        accountKeyHash: 'b'.repeat(64),
-        artifactKeyHash: 'c'.repeat(64),
+    storage: {
+        kind: 'persistent' as const,
+        locator: {
+            namespace: 'happier-plugin-ui-artifacts-v1' as const,
+            accountKeyHash: 'b'.repeat(64),
+            artifactKeyHash: 'c'.repeat(64),
+        },
+        resources: [],
     },
-    resources: [],
     policyTable: { version: 1, routes: [] },
 } satisfies Parameters<PluginNativeArtifactResourceRegistrar['register']>[0];
 
@@ -79,6 +82,49 @@ describe('Tauri desktop Artifact registrar', () => {
         });
 
         await expect(registrar.unregister(registration.token)).resolves.toBe(false);
+    });
+
+    it('encodes current-load bytes only at the exact Tauri command boundary', async () => {
+        const calls: Array<readonly [string, Record<string, unknown> | undefined]> = [];
+        const registrar = createTauriPluginNativeArtifactResourceRegistrar({
+            invoke: async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+                calls.push([command, args]);
+                return { kind: 'registered' } as unknown as T;
+            },
+        });
+        const bytes = new Uint8Array([0, 1, 2, 255]);
+
+        await expect(registrar.register({
+            token: registration.token,
+            storagePartitionId: registration.storagePartitionId,
+            storage: {
+                kind: 'currentLoad',
+                resources: [{
+                    resourceId: 'r0',
+                    digest: `sha256:${'d'.repeat(64)}`,
+                    byteSize: bytes.byteLength,
+                    bytes,
+                }],
+            },
+            policyTable: registration.policyTable,
+        })).resolves.toEqual({ kind: 'registered' });
+
+        expect(calls[0]).toEqual(['desktop_hosted_artifact_register', {
+            input: {
+                token: registration.token,
+                storagePartitionId: registration.storagePartitionId,
+                storage: {
+                    kind: 'currentLoad',
+                    resources: [{
+                        resourceId: 'r0',
+                        digest: `sha256:${'d'.repeat(64)}`,
+                        byteSize: 4,
+                        bytesBase64: 'AAEC/w==',
+                    }],
+                },
+                policyTable: registration.policyTable,
+            },
+        }]);
     });
 
     it('fails closed when the native registrar does not return its strict result shape', async () => {

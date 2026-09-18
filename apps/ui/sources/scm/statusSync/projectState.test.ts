@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { buildScmDiffSnapshotSignature } from '../diffCache/scmDiffCacheKey';
+
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import { buildSnapshotSignature, clearSearchCacheForProject, getRepoScopeSessionIds } from './projectState';
 
@@ -59,6 +61,13 @@ function makeSnapshot(
 }
 
 describe('buildSnapshotSignature', () => {
+  it('keeps diff acquisition fresh when status shape is unchanged', () => {
+    const base = makeSnapshot({ repo: { isRepo: true, rootPath: '/repo', backendId: 'git', mode: '.git', worktrees: [], remotes: [] } });
+    expect(buildScmDiffSnapshotSignature({ ...base, fetchedAt: 1 })).not.toBe(
+      buildScmDiffSnapshotSignature({ ...base, fetchedAt: 2 }),
+    );
+  });
+
   it('changes when the repository default branch is detected later', () => {
     const base = makeSnapshot({
       repo: {

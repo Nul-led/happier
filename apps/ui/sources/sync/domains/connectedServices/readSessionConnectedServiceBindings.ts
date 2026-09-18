@@ -3,8 +3,8 @@ import {
 } from '@happier-dev/agents';
 import {
     BuiltInLegacyConnectedServiceBindingsV1IngressSchema,
-    ConnectedServiceBindingsV1Schema,
-    type ConnectedServiceBindingsV1,
+    ConnectedServiceBindingsV2IngressSchema,
+    type ConnectedServiceBindingsV2,
 } from '@happier-dev/protocol';
 
 import { resolveQualifiedConnectedAccountServiceKey } from './connectedServiceRegistry';
@@ -19,7 +19,7 @@ function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
  * Canonical UI reader for the Connected Services binding that a session
  * actually runs with. Resolution order:
  *
- * 1. current qualified writer shape (`ConnectedServiceBindingsV1Schema`);
+ * 1. current qualified V2 writer shape plus released qualified V1 ingress;
  * 2. the Protocol-named `BuiltInLegacyConnectedServiceBindingsV1Ingress`
  *    — released bundled Sessions persisted scalar service ids survive only
  *    through that provenance-named compatibility adapter, and are surfaced
@@ -35,9 +35,9 @@ function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
 export function readSessionConnectedServiceBindings(params: Readonly<{
     metadata: unknown;
     agentId: string;
-}>): ConnectedServiceBindingsV1 | null {
+}>): ConnectedServiceBindingsV2 | null {
     const metadata = readRecord(params.metadata);
-    const explicit = ConnectedServiceBindingsV1Schema.safeParse(
+    const explicit = ConnectedServiceBindingsV2IngressSchema.safeParse(
         metadata?.connectedServices,
     );
     if (explicit.success) return explicit.data;
@@ -45,7 +45,9 @@ export function readSessionConnectedServiceBindings(params: Readonly<{
     const legacyIngress = BuiltInLegacyConnectedServiceBindingsV1IngressSchema.safeParse(
         metadata?.connectedServices,
     );
-    if (legacyIngress.success) return legacyIngress.data;
+    if (legacyIngress.success) {
+        return ConnectedServiceBindingsV2IngressSchema.parse(legacyIngress.data);
+    }
 
     const agentId = params.agentId.trim();
     if (!agentId) return null;
@@ -54,14 +56,14 @@ export function readSessionConnectedServiceBindings(params: Readonly<{
         agentId,
     );
     if (Object.keys(descriptorBindings).length === 0) return null;
-    const normalizedBindingsByServiceId: Record<string, ConnectedServiceBindingsV1['bindingsByServiceId'][string]> = {};
+    const normalizedBindingsByServiceId: Record<string, ConnectedServiceBindingsV2['bindingsByServiceId'][string]> = {};
     for (const [serviceId, binding] of Object.entries(descriptorBindings)) {
         const qualifiedServiceKey = resolveQualifiedConnectedAccountServiceKey(serviceId);
         if (!qualifiedServiceKey) continue;
         normalizedBindingsByServiceId[qualifiedServiceKey] = binding;
     }
     if (Object.keys(normalizedBindingsByServiceId).length === 0) return null;
-    const descriptor = ConnectedServiceBindingsV1Schema.safeParse({
+    const descriptor = ConnectedServiceBindingsV2IngressSchema.safeParse({
         v: 1,
         bindingsByServiceId: normalizedBindingsByServiceId,
     });

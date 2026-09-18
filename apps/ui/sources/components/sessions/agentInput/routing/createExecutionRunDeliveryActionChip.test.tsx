@@ -14,17 +14,17 @@ vi.mock('@/text', () => ({
     },
 }));
 
-describe('createExecutionRunDeliveryActionChip', () => {
+describe('createExecutionRunRequestedActionChip', () => {
     it("publishes a 'list' presentation collapsedOptionsPopover with a rootStep section (no flat options)", async () => {
-        const { createExecutionRunDeliveryActionChip } = await import('./createExecutionRunDeliveryActionChip');
+        const { createExecutionRunRequestedActionChip } = await import('./createExecutionRunRequestedActionChip');
 
-        const chip = createExecutionRunDeliveryActionChip({
+        const chip = createExecutionRunRequestedActionChip({
             recipient: {
                 kind: 'execution_run',
                 runId: 'A1',
             },
-            delivery: 'interrupt',
-            onDeliveryChange: () => {},
+            requestedAction: { v: 1, kind: 'send_now' },
+            onRequestedActionChange: () => {},
         });
 
         const popover = chip.collapsedOptionsPopover;
@@ -38,51 +38,51 @@ describe('createExecutionRunDeliveryActionChip', () => {
         expect(section.kind).toBe('static');
         if (section.kind !== 'static') return;
         expect(section.options.map((option) => option.id)).toEqual([
-            'prompt',
-            'steer_if_supported',
-            'interrupt',
+            'enqueue',
+            'steer_if_active',
+            'send_now',
         ]);
-        expect(popover!.selectedOptionId).toBe('interrupt');
+        expect(popover!.selectedOptionId).toBe('send_now');
     });
 
-    it('exposes per-option onSelect callbacks that dispatch onDeliveryChange so the overlay route fires the mutation', async () => {
-        const { createExecutionRunDeliveryActionChip } = await import('./createExecutionRunDeliveryActionChip');
+    it('exposes per-option onSelect callbacks that dispatch onRequestedActionChange so the overlay route fires the mutation', async () => {
+        const { createExecutionRunRequestedActionChip } = await import('./createExecutionRunRequestedActionChip');
 
-        const onDeliveryChange = vi.fn();
-        const chip = createExecutionRunDeliveryActionChip({
+        const onRequestedActionChange = vi.fn();
+        const chip = createExecutionRunRequestedActionChip({
             recipient: {
                 kind: 'execution_run',
                 runId: 'A1',
             },
-            delivery: 'prompt',
-            onDeliveryChange,
+            requestedAction: { v: 1, kind: 'enqueue' },
+            onRequestedActionChange,
         });
 
         const section = chip.collapsedOptionsPopover!.rootStep!.sections[0];
         if (section.kind !== 'static') throw new Error('expected static section');
 
-        const steerOption = section.options.find((option) => option.id === 'steer_if_supported');
+        const steerOption = section.options.find((option) => option.id === 'steer_if_active');
         expect(typeof steerOption?.onSelect).toBe('function');
 
         steerOption!.onSelect!();
-        expect(onDeliveryChange).toHaveBeenCalledWith('steer_if_supported');
+        expect(onRequestedActionChange).toHaveBeenCalledWith({ v: 1, kind: 'steer_if_active' });
     });
 
     it('descriptor-level onSelect is a documented close-only no-op (does NOT mutate delivery state)', async () => {
-        const { createExecutionRunDeliveryActionChip } = await import('./createExecutionRunDeliveryActionChip');
+        const { createExecutionRunRequestedActionChip } = await import('./createExecutionRunRequestedActionChip');
 
-        const onDeliveryChange = vi.fn();
-        const chip = createExecutionRunDeliveryActionChip({
+        const onRequestedActionChange = vi.fn();
+        const chip = createExecutionRunRequestedActionChip({
             recipient: {
                 kind: 'execution_run',
                 runId: 'A1',
             },
-            delivery: 'prompt',
-            onDeliveryChange,
+            requestedAction: { v: 1, kind: 'enqueue' },
+            onRequestedActionChange,
         });
 
-        chip.collapsedOptionsPopover!.onSelect('steer_if_supported');
-        chip.collapsedOptionsPopover!.onSelect('interrupt');
-        expect(onDeliveryChange).not.toHaveBeenCalled();
+        chip.collapsedOptionsPopover!.onSelect('steer_if_active');
+        chip.collapsedOptionsPopover!.onSelect('send_now');
+        expect(onRequestedActionChange).not.toHaveBeenCalled();
     });
 });

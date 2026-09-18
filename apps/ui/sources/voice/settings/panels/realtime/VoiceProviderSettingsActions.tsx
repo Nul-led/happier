@@ -27,6 +27,11 @@ import {
   type ExternalVoiceProviderRegistration,
 } from '@/voice/registry/externalVoiceProviderRegistrations';
 import { resolveVoiceProviderIdForSettingsAction } from '@/voice/settings/resolveVoiceProviderId';
+import {
+  areAccountSettingsScopesEqual,
+  type AccountSettingsScope,
+} from '@/sync/domains/settings/scope/accountSettingsScope';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 
 export type VoiceProviderSettingsActionOwner = Readonly<{
   defaultConfig: Readonly<Record<string, unknown>>;
@@ -38,6 +43,7 @@ type ActionContext = Readonly<{
   providerId: string;
   owner: VoiceProviderSettingsActionOwner;
   registration: ExternalVoiceProviderRegistration;
+  settingsScope: AccountSettingsScope | null;
 }>;
 
 const SAFE_SETTINGS_ACTION_ERROR_CODES = new Set([
@@ -222,6 +228,7 @@ function isPressedProviderSelected(context: ActionContext): boolean {
 
 function isContextCurrent(context: ActionContext): boolean {
   return getExternalVoiceProviderRegistration(context.providerId) === context.registration
+    && areAccountSettingsScopesEqual(storage.getState().settingsScope, context.settingsScope)
     && isPressedProviderSelected(context);
 }
 
@@ -307,6 +314,7 @@ const settingsActionInvoker = createHostPluginSettingsActionInvoker<ActionContex
       throw actionError('voice_provider_settings_version_unavailable');
     }
     const mutateAtVersion = async (version: number) => await getSyncSingleton().mutateAccountSettingsOnce({
+      expectedSettingsScope: context.settingsScope,
       expectedSettingsVersion: version,
       mutate(raw) {
         if (!isContextCurrent(context) || signal.aborted) {
@@ -367,6 +375,7 @@ export function VoiceProviderSettingsActions(props: Readonly<{
   placement: Readonly<{ kind: 'afterField'; fieldId: string }> | Readonly<{ kind: 'contributionFooter' }>;
 }>) {
   const registration = getExternalVoiceProviderRegistration(props.providerId);
+  const settingsScope = useAccountSettingsScope();
   const [busyActionIds, setBusyActionIds] = React.useState<ReadonlySet<string>>(() => new Set());
   const lifecycleRef = React.useRef(new AbortController());
   // Whether this panel is still on screen. `signal.aborted` cannot answer that:
@@ -414,6 +423,7 @@ export function VoiceProviderSettingsActions(props: Readonly<{
               providerId: props.providerId,
               owner: props.owner,
               registration,
+              settingsScope,
             });
             setBusyActionIds((current) => new Set(current).add(action.id));
             fireAndForget((async () => {

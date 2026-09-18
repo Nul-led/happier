@@ -21,11 +21,16 @@ import { usageSignatureAccent } from './usageAccent';
 import { useEntrancesEnabled } from './sections/EntranceView';
 import { ScrubLens } from './sections/ScrubLens';
 
+export type UsageVolumeMetric = UsageMetric | 'requests';
+export type UsageVolumePoint = UsageTrendPoint & Readonly<{ requests?: number }>;
+
 type UsageVolumeBarChartProps = Readonly<{
-    points: readonly UsageTrendPoint[];
-    metric: UsageMetric;
+    points: readonly UsageVolumePoint[];
+    metric: UsageVolumeMetric;
     currency?: string;
     testID?: string;
+    /** Required by the only request-count composition; account usage has no request metric. */
+    requestLabels?: Readonly<{ metric: string; total: string }>;
 }>;
 
 const MAX_POINTS = 30;
@@ -216,7 +221,7 @@ const styles = StyleSheet.create((theme) => ({
     },
 }));
 
-function formatMetricValue(value: number, metric: UsageMetric, currency: string): string {
+function formatMetricValue(value: number, metric: UsageVolumeMetric, currency: string): string {
     if (metric === 'cost') {
         return formatUsageCost(value, currency);
     }
@@ -231,12 +236,14 @@ function formatBucketLabel(timestampSeconds: number, pointCount: number): string
     return formatWithCachedDateTimeFormatter(date, undefined, { month: 'short' });
 }
 
-function getPointValue(point: UsageTrendPoint, metric: UsageMetric): number {
-    return metric === 'cost' ? point.cost : point.tokens;
+function getPointValue(point: UsageVolumePoint, metric: UsageVolumeMetric): number {
+    if (metric === 'cost') return point.cost;
+    if (metric === 'requests') return point.requests ?? 0;
+    return point.tokens;
 }
 
 export function UsageVolumeBarChart(props: UsageVolumeBarChartProps): React.ReactElement {
-    const { points, metric, currency = 'USD', testID } = props;
+    const { points, metric, currency = 'USD', testID, requestLabels } = props;
     const { theme } = useUnistyles();
     const motion = useMotionPreferences();
     // Single guard source (R-L6 F1): no grow-in replay on a revisit remount.
@@ -253,12 +260,23 @@ export function UsageVolumeBarChart(props: UsageVolumeBarChartProps): React.Reac
         return {
             title: formatBucketLabel(point.timestamp, displayPoints.length),
             rows: [
+                ...(point.requests === undefined ? [] : [{
+                    label: requestLabels?.metric ?? t('usage.events'),
+                    value: formatTokenCountLong(point.requests),
+                }]),
                 { label: t('usage.tokens'), value: formatTokenCountLong(point.tokens) },
                 { label: t('usage.cost'), value: formatUsageCost(point.cost, currency) },
                 { label: t('usage.events'), value: point.reportCount.toLocaleString() },
             ],
         };
-    }, [currency, displayPoints]);
+    }, [currency, displayPoints, requestLabels?.metric]);
+
+    const metricName = metric === 'requests'
+        ? requestLabels?.metric ?? t('usage.events')
+        : metric === 'cost' ? t('usage.cost') : t('usage.tokens');
+    const totalMetricName = metric === 'requests'
+        ? requestLabels?.total ?? metricName
+        : metric === 'cost' ? t('usage.totalCost') : t('usage.totalTokens');
 
     if (points.length === 0) {
         return (
@@ -328,7 +346,7 @@ export function UsageVolumeBarChart(props: UsageVolumeBarChartProps): React.Reac
                                                 <ChartTooltip
                                                     triggerTestID="usage-volume-point-trigger"
                                                     title={formatBucketLabel(point.timestamp, displayPoints.length)}
-                                                    subtitle={metric === 'cost' ? t('usage.cost') : t('usage.tokens')}
+                                                    subtitle={metricName}
                                                     value={formatMetricValue(value, metric, currency)}
                                                     accentColor={accentColor}
                                                 >
@@ -371,7 +389,7 @@ export function UsageVolumeBarChart(props: UsageVolumeBarChartProps): React.Reac
 
             <View style={styles.footer}>
                 <Text style={styles.footerMetric}>
-                    {metric === 'cost' ? t('usage.totalCost') : t('usage.totalTokens')}: <Text style={styles.footerValue}>{formatMetricValue(total, metric, currency)}</Text>
+                    {totalMetricName}: <Text style={styles.footerValue}>{formatMetricValue(total, metric, currency)}</Text>
                 </Text>
                 {topPoint ? (
                     <Text style={styles.footerMetric}>

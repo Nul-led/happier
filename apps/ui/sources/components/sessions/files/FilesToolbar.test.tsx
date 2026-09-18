@@ -109,6 +109,5 @@ describe('FilesToolbar', () => {
         expect(textContent).not.toContain('files.toolbar.turnView');
         expect(textContent).not.toContain('files.toolbar.sessionView');
         expect(screen.tree.findAllByType('DropdownMenu' as any)).toHaveLength(0);
-        expect(textContent).toContain('files.attributionReliabilityLimited');
     });
 });

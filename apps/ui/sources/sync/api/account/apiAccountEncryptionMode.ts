@@ -10,6 +10,8 @@ import { HappyError } from '@/utils/errors/errors';
 import {
     AccountEncryptionModeResponseSchema,
     AccountEncryptionCurrentnessResponseSchema,
+    AccountEncryptionCurrentnessErrorResponseSchema,
+    type AccountEncryptionCurrentnessErrorResponse,
     type AccountEncryptionCurrentnessResponse,
     type AccountEncryptionModeResponse,
 } from '@happier-dev/protocol';
@@ -18,6 +20,21 @@ type AccountEncryptionMode = AccountEncryptionModeResponse['mode'];
 type AccountEncryptionModeResult = Readonly<{ mode: AccountEncryptionMode; updatedAt: number }>;
 
 const ACCOUNT_ENCRYPTION_MODE_CACHE_TTL_MS = 5_000;
+
+/** Readiness on a rejected currentness read is not authority to migrate Account data. */
+export class AccountEncryptionCurrentnessReadinessError extends HappyError {
+    readonly recipientEnvelopeReadiness: AccountEncryptionCurrentnessErrorResponse['recipientEnvelopeReadiness'];
+
+    constructor(readiness: AccountEncryptionCurrentnessErrorResponse['recipientEnvelopeReadiness']) {
+        super('Account encryption currentness requires recovery', false, {
+            status: 400,
+            kind: 'config',
+            code: 'account-encryption-currentness-unavailable',
+        });
+        Object.setPrototypeOf(this, AccountEncryptionCurrentnessReadinessError.prototype);
+        this.recipientEnvelopeReadiness = readiness;
+    }
+}
 
 type AccountEncryptionModeCacheEntry = Readonly<{
     expiresAt?: number;
@@ -117,6 +134,14 @@ export async function fetchAccountEncryptionCurrentness(
         },
     );
     if (!response.ok) {
+        if (response.status === 400) {
+            const recovery = AccountEncryptionCurrentnessErrorResponseSchema.safeParse(
+                await response.json().catch(() => null),
+            );
+            if (recovery.success) {
+                throw new AccountEncryptionCurrentnessReadinessError(recovery.data.recipientEnvelopeReadiness);
+            }
+        }
         throw new HappyError(
             'This server must be upgraded before changing account encryption',
             false,
@@ -169,7 +194,6 @@ export async function fetchAccountEncryptionMode(
                 },
             },
         );
-
         // Back-compat: older servers may not implement this endpoint. Fail closed to E2EE.
         if (response.status === 404) {
             return { mode: 'e2ee', updatedAt: 0 };
@@ -220,7 +244,9 @@ export async function fetchAccountEncryptionMode(
         return cached.value;
     }
 
-    const promise = backoff(run);
+    const promise = backoff(async () => {
+        return await run();
+    });
     accountEncryptionModeCache.set(cacheKey, { promise });
     try {
         const value = await promise;

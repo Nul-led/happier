@@ -16,6 +16,8 @@ export function DesktopActivityOverlayCompletionStateCard(props: Readonly<{
     card: CompletionStateCard;
     visualMode: DesktopActivityOverlayVisualMode;
     testID: string;
+    initialFocusActionId?: string | null;
+    initialFocusRef?: React.Ref<View>;
     onAction?: (action: DesktopActivityOverlayActionDescriptor) => void;
 }>): React.ReactElement {
     const actions = resolveDesktopActivityOverlayCompletionStateActions(props.card);
@@ -42,6 +44,8 @@ export function DesktopActivityOverlayCompletionStateCard(props: Readonly<{
                     cardId={props.card.sessionId}
                     visualMode={props.visualMode}
                     actions={actions}
+                    initialFocusActionId={props.initialFocusActionId}
+                    initialFocusRef={props.initialFocusRef}
                     onAction={props.onAction}
                 />
             </DesktopActivityOverlayCardFrame>

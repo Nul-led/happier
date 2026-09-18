@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { resolveActivitySurfacePolicy } from '@/activity/attention/resolveActivitySurfacePolicy';
+import { buildSessionActivityAttention } from '@/activity/attention/buildSessionActivityAttention';
 
 import { resolveIosActivitySurfacePolicies } from '../runtime/resolveIosActivitySurfacePolicies';
 import {
@@ -9,6 +10,17 @@ import {
     buildStableLiveActivitySnapshotFingerprint,
     resolveLiveActivitySnapshotFreshness,
 } from './buildLiveActivitySnapshots';
+
+import {
+    buildHappierFocusLiveActivityIdentity,
+    buildLiveActivityInstanceKey,
+} from './liveActivityIdentity';
+
+/** The production Activity identity encoder, so fixtures cannot drift from real keys. */
+function liveActivityKey(serverId: string, sessionId: string): string {
+    return buildLiveActivityInstanceKey(buildHappierFocusLiveActivityIdentity({ serverId, sessionId }));
+}
+
 
 function pendingAgentState(kind: 'permission' | 'user_action', createdAt = 950) {
     return {
@@ -25,10 +37,56 @@ function pendingAgentState(kind: 'permission' | 'user_action', createdAt = 950) 
 }
 
 describe('buildLiveActivitySnapshots', () => {
+    it('carries the shared safe structural context independently of locked private content', () => {
+        const session = createSessionFixture({
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: 'encrypted_access_pending',
+            id: 'locked-context',
+            serverId: 'home-b',
+            active: true,
+            presence: 'online',
+            pendingPermissionRequestCount: 1,
+            agentState: pendingAgentState('permission'),
+            metadata: {
+                path: '/private/PRIVATE-WORKSPACE-SENTINEL',
+                host: 'PRIVATE-HOST-SENTINEL',
+                summary: { text: 'PRIVATE-TITLE-SENTINEL', updatedAt: 3 },
+            },
+        });
+        const contextLine = 'Home B · Offline · Last updated 18m ago · Developers · Assigned to you · Encrypted access pending';
+        const candidate = {
+            ...buildSessionActivityAttention({ session, nowMs: 1_000 }),
+            context: {
+                address: { serverId: 'home-b', sessionId: session.id },
+                segments: contextLine.split(' · ').map((label, index) => ({
+                    kind: (['home', 'freshness', 'freshness', 'audience', 'responsibility', 'content_availability'] as const)[index]!,
+                    label,
+                })),
+                contextLine,
+                accessibilityContext: contextLine,
+                workspace: null,
+                mayShowDecryptedContent: false,
+            },
+        };
+
+        const snapshot = buildLiveActivitySnapshots({
+            sessions: [session],
+            overview: {
+                candidates: [candidate],
+                counts: { unread: 0, permissionRequired: 1, actionRequired: 0, thinking: 0, totalAttention: 1 },
+            },
+            policy: resolveActivitySurfacePolicy({ activitySurfacePrivacyMode: 'status_only' }),
+            nowMs: 1_000,
+        })[0]!;
+
+        expect(snapshot.subtitle).toBe(contextLine);
+        expect(JSON.stringify(snapshot)).not.toContain('PRIVATE-');
+    });
     it('does not promote ready unread sessions into focused live activities when includeReady is disabled', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'unread',
                     seq: 5,
                     lastViewedSessionSeq: 2,
@@ -40,6 +98,7 @@ describe('buildLiveActivitySnapshots', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'thinking',
                     active: true,
                     presence: 'online',
@@ -68,7 +127,9 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingPermissionRequestCount: 1,
@@ -81,7 +142,9 @@ describe('buildLiveActivitySnapshots', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'action',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingUserActionRequestCount: 1,
@@ -94,6 +157,7 @@ describe('buildLiveActivitySnapshots', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'thinking',
                     active: true,
                     presence: 'online',
@@ -135,7 +199,9 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingPermissionRequestCount: 1,
@@ -163,7 +229,9 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingPermissionRequestCount: 1,
@@ -176,7 +244,9 @@ describe('buildLiveActivitySnapshots', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'action',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingUserActionRequestCount: 1,
@@ -194,7 +264,7 @@ describe('buildLiveActivitySnapshots', () => {
                 liveActivitiesMaxConcurrent: 2,
                 liveActivitiesStrategy: 'pinned_primary',
             }),
-            preferredPrimarySessionId: 'action',
+            preferredPrimaryAddress: { serverId: 'server-a', sessionId: 'action' },
             nowMs: 1_000,
         });
 
@@ -206,6 +276,7 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'thinking',
                     active: true,
                     presence: 'online',
@@ -233,7 +304,9 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingPermissionRequestCount: 1,
@@ -261,7 +334,9 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingPermissionRequestCount: 1,
@@ -285,7 +360,9 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingPermissionRequestCount: 1,
@@ -313,7 +390,9 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingPermissionRequestCount: 1,
@@ -346,6 +425,8 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'e2ee',
+                    encryptedContentAvailability: 'ready',
                     id: 'private-session',
                     active: true,
                     presence: 'online',
@@ -372,7 +453,9 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshot = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingPermissionRequestCount: 1,
@@ -397,7 +480,9 @@ describe('buildLiveActivitySnapshots', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
+                    serverId: 'server-a',
                     active: true,
                     presence: 'online',
                     pendingPermissionRequestCount: 1,
@@ -410,6 +495,7 @@ describe('buildLiveActivitySnapshots', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'thinking',
                     active: true,
                     presence: 'online',
@@ -442,21 +528,73 @@ describe('buildLiveActivitySnapshots', () => {
                 sessionId: 'permission',
                 presentationTemplate: 'urgentAttention',
                 apnsPriority: 10,
-                relevanceScore: 100,
+                relevanceScore: 89,
             },
             {
                 sessionId: 'thinking',
                 presentationTemplate: 'quietFocus',
                 apnsPriority: 5,
-                relevanceScore: 50,
+                relevanceScore: 67,
             },
         ]);
+    });
+
+    it('surfaces a failed session above one that is merely waiting on a permission', () => {
+        const snapshots = buildLiveActivitySnapshots({
+            sessions: [
+                createSessionFixture({
+                    encryptionMode: 'plain',
+                    id: 'permission',
+                    serverId: 'server-a',
+                    active: true,
+                    presence: 'online',
+                    pendingPermissionRequestCount: 1,
+                    agentState: pendingAgentState('permission'),
+                    metadata: {
+                        path: '/Users/tester/project/permission',
+                        host: 'tester.local',
+                        homeDir: '/Users/tester',
+                        summary: { text: 'Permission work', updatedAt: 3 },
+                    },
+                }),
+                createSessionFixture({
+                    encryptionMode: 'plain',
+                    id: 'failed',
+                    serverId: 'server-a',
+                    active: true,
+                    presence: 'online',
+                    latestTurnStatus: 'failed',
+                    latestTurnStatusObservedAt: 900,
+                    metadata: {
+                        path: '/Users/tester/project/failed',
+                        host: 'tester.local',
+                        homeDir: '/Users/tester',
+                        summary: { text: 'Failed work', updatedAt: 4 },
+                    },
+                }),
+            ],
+            policy: resolveActivitySurfacePolicy({
+                liveActivitiesMode: 'running',
+                liveActivitiesStrategy: 'session_specific',
+                liveActivitiesMaxConcurrent: 2,
+                liveActivitiesIncludeThinking: true,
+            }),
+            nowMs: 1_000,
+        });
+
+        const failed = snapshots.find((snapshot) => snapshot.sessionId === 'failed');
+        const permission = snapshots.find((snapshot) => snapshot.sessionId === 'permission');
+
+        expect(failed?.relevanceScore).toBeGreaterThan(permission?.relevanceScore ?? 0);
+        expect(failed?.presentationTemplate).toBe('urgentAttention');
+        expect(failed?.apnsPriority).toBe(10);
     });
 
     it('includes a server-scoped live activity identity key', () => {
         const snapshots = buildLiveActivitySnapshots({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
                     serverId: 'server-a',
                     active: true,
@@ -478,7 +616,7 @@ describe('buildLiveActivitySnapshots', () => {
         expect(snapshots[0]).toMatchObject({
             serverId: 'server-a',
             activityName: 'HappierFocusLiveActivity',
-            activityInstanceKey: 'server-a:HappierFocusLiveActivity:permission',
+            activityInstanceKey: liveActivityKey('server-a', 'permission'),
             defaultTarget: 'open-session:permission?serverId=server-a',
             sessionTarget: 'open-session:permission?serverId=server-a',
         });
@@ -486,7 +624,10 @@ describe('buildLiveActivitySnapshots', () => {
 
     it('builds a stable fingerprint that ignores generated time', () => {
         const session = createSessionFixture({
+     encryptionMode: 'plain',
             id: 'permission',
+
+            serverId: 'server-a',
         active: true,
         presence: 'online',
         pendingPermissionRequestCount: 1,

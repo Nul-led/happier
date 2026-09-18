@@ -45,14 +45,15 @@ export function getSessionSubagentLaunchCards(params: Readonly<{
     session: Session | null;
     subagents: readonly SessionSubagent[];
 }>): readonly React.ReactNode[] {
-    if (!params.session) return [];
-    const behavior = resolveAgentUiBehaviorFromSession(params.session);
+    const session = params.session;
+    if (!session) return [];
+    const behavior = resolveAgentUiBehaviorFromSession(session);
     const renderLaunchCards = behavior?.sessionSubagents?.renderLaunchCards;
     if (!renderLaunchCards) return [];
     return renderLaunchCards({
         sessionId: params.sessionId,
         scopeId: params.scopeId,
-        session: params.session,
+        session,
         subagents: params.subagents,
         renderInlineSurface: (surface) => (
             <AgentInlineSurface
@@ -60,6 +61,7 @@ export function getSessionSubagentLaunchCards(params: Readonly<{
                 pluginId={surface.pluginId}
                 surfaceId={surface.surfaceId}
                 sessionId={surface.sessionId}
+                serverId={session.serverId}
                 agentId={surface.agentId}
                 inlineMount={{ role: 'sessionSubagentLaunch', presentation: 'content' }}
                 launchInput={surface.launchInput}

@@ -21,6 +21,7 @@ function isRecoveryKeyReminderEnabled(features: ReturnType<typeof getCachedReady
 export const RecoveryKeyReminderBanner = React.memo(() => {
     const { theme } = useUnistyles();
     const auth = useAuth();
+    const triggerRef = React.useRef<React.ComponentRef<typeof Pressable> | null>(null);
 
     const [dismissed, setDismissed] = React.useState<boolean | null>(() => TokenStorage.getCachedRecoveryKeyReminderDismissed());
     const [enabled, setEnabled] = React.useState<boolean | null>(() => isRecoveryKeyReminderEnabled(getCachedReadyServerFeatures()));
@@ -30,7 +31,7 @@ export const RecoveryKeyReminderBanner = React.memo(() => {
         fireAndForget((async () => {
             const [isDismissed, features] = await Promise.all([
                 TokenStorage.getRecoveryKeyReminderDismissed().catch(() => true),
-                getReadyServerFeatures({ timeoutMs: 800 }).catch(() => null),
+                getReadyServerFeatures().catch(() => null),
             ]);
 
             const featureEnabled = isRecoveryKeyReminderEnabled(features);
@@ -53,18 +54,28 @@ export const RecoveryKeyReminderBanner = React.memo(() => {
     return (
         <ItemGroup>
             <Item
+                testID="recovery-key-reminder"
+                pressableRef={triggerRef}
                 title={t('settingsAccount.secretKey')}
                 subtitle={t('settingsAccount.backupDescription')}
                 icon={<Icon name="key" color={theme.colors.text.secondary} />}
                 onPress={() => {
                     Modal.show({
                         component: SecretKeyBackupModal,
-                        props: { secret },
+                        props: {
+                            secret,
+                            onSaved: async () => {
+                                await TokenStorage.setRecoveryKeyReminderDismissed(true);
+                                setDismissed(true);
+                            },
+                        },
+                        focusReturnRef: triggerRef,
                     });
                 }}
                 showChevron={false}
                 rightElement={
                     <Pressable
+                        testID="recovery-key-reminder-dismiss"
                         onPress={async (event: GestureResponderEvent) => {
                             event.stopPropagation();
                             try {
@@ -79,6 +90,7 @@ export const RecoveryKeyReminderBanner = React.memo(() => {
                         <Icon name="x" size={20} color={theme.colors.text.secondary} />
                     </Pressable>
                 }
+                rightElementOutsidePressable={true}
             />
         </ItemGroup>
     );

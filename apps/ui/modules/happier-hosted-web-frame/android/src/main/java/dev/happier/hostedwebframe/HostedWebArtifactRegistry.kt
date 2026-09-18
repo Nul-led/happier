@@ -10,12 +10,15 @@ import java.security.MessageDigest
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
  * The native owner of registered opaque Artifact tokens. It receives only
- * Artifact's cache locator, stored-file names, opaque resource ids, and a
+ * either Artifact's cache locator or already-verified current-load bytes after
+ * persistent adoption is declined, plus opaque resource ids and a
  * Protocol-produced response table. It never receives Artifact-relative
- * paths, byte arrays, or MIME/fallback policy inputs.
+ * paths, local paths, or MIME/fallback policy inputs.
  *
  * `unregister` is deliberately synchronous. Once it returns true, a lookup
  * which starts afterwards cannot resolve the token. A lookup which already
@@ -34,7 +37,7 @@ internal class HostedWebArtifactRegistry(
     val registration = Registration.parse(input, canonicalCacheDirectory) ?: return false
     return lock.write {
       if (registrations.containsKey(registration.token)) return@write false
-      if (!registration.resources.values.all { resource -> registration.resolveResourceFile(resource) != null }) {
+      if (!registration.resources.values.all { resource -> registration.readResourceBytes(resource) != null }) {
         return@write false
       }
       registrations[registration.token] = registration
@@ -122,32 +125,32 @@ internal class HostedWebArtifactRegistry(
   private data class Registration(
     val token: String,
     val origin: String,
-    val baseDirectory: File,
+    val storage: Storage,
     val resources: Map<String, Resource>,
     val table: PolicyTable
   ) {
-    fun resolveResourceFile(resource: Resource): File? {
-      return try {
-        val candidate = File(baseDirectory, resource.storedFileName).canonicalFile
-        if (candidate.parentFile != baseDirectory || !candidate.isFile || candidate.length() != resource.byteSize) {
-          null
-        } else {
-          candidate
-        }
-      } catch (_: Exception) {
-        null
-      }
-    }
-
     /**
      * The response must carry the exact bytes we verified. Returning a file
      * after hashing it would permit a later same-size replacement before the
      * WebView opens its stream.
      */
     fun readResourceBytes(resource: Resource): ByteArray? {
-      val file = resolveResourceFile(resource) ?: return null
       return try {
-        val bytes = file.readBytes()
+        val bytes = when {
+          storage is Storage.Persistent && resource.source is ResourceSource.Persistent -> {
+            val candidate = File(storage.baseDirectory, resource.source.storedFileName).canonicalFile
+            if (
+              candidate.parentFile != storage.baseDirectory
+              || !candidate.isFile
+              || candidate.length() != resource.byteSize
+            ) return null
+            candidate.readBytes()
+          }
+          storage is Storage.CurrentLoad && resource.source is ResourceSource.CurrentLoad -> {
+            resource.source.bytes
+          }
+          else -> return null
+        }
         if (
           bytes.size.toLong() != resource.byteSize
           || sha256Digest(bytes) != resource.digest
@@ -163,21 +166,19 @@ internal class HostedWebArtifactRegistry(
 
     companion object {
       fun parse(input: Map<String, Any?>, canonicalCacheDirectory: File): Registration? {
-        if (!hasExactKeys(input, setOf("token", "storagePartitionId", "storageLocator", "resources", "policyTable"))) {
+        if (!hasExactKeys(input, setOf("token", "storagePartitionId", "storage", "policyTable"))) {
           return null
         }
         val token = input.string("token") ?: return null
         val partition = input.string("storagePartitionId") ?: return null
         if (!isOpaqueId(token) || !PARTITION_PATTERN.matches(partition)) return null
-        val locator = StorageLocator.parse(input["storageLocator"]) ?: return null
-        val baseDirectory = locator.resolveBaseDirectory(canonicalCacheDirectory) ?: return null
-        val resources = parseResources(input["resources"]) ?: return null
+        val (storage, resources) = parseStorage(input["storage"], canonicalCacheDirectory) ?: return null
         val table = PolicyTable.parse(input["policyTable"], resources.keys) ?: return null
         if (resources.keys != table.referencedResourceIds) return null
         return Registration(
           token = token,
           origin = "https://$partition.$HOSTED_WEB_DOMAIN",
-          baseDirectory = baseDirectory,
+          storage = storage,
           resources = resources,
           table = table
         )
@@ -224,10 +225,20 @@ internal class HostedWebArtifactRegistry(
 
   private data class Resource(
     val resourceId: String,
-    val storedFileName: String,
     val digest: String,
-    val byteSize: Long
+    val byteSize: Long,
+    val source: ResourceSource
   )
+
+  private sealed interface Storage {
+    data class Persistent(val baseDirectory: File) : Storage
+    data object CurrentLoad : Storage
+  }
+
+  private sealed interface ResourceSource {
+    data class Persistent(val storedFileName: String) : ResourceSource
+    data class CurrentLoad(val bytes: ByteArray) : ResourceSource
+  }
 
   private sealed interface PolicyOutcome {
     data class Content(
@@ -317,7 +328,29 @@ internal class HostedWebArtifactRegistry(
       "X-Content-Type-Options"
     )
 
-    private fun parseResources(value: Any?): Map<String, Resource>? {
+    private fun parseStorage(
+      value: Any?,
+      canonicalCacheDirectory: File
+    ): Pair<Storage, Map<String, Resource>>? {
+      val map = value.asStringMap() ?: return null
+      return when (map.string("kind")) {
+        "persistent" -> {
+          if (!hasExactKeys(map, setOf("kind", "locator", "resources"))) return null
+          val locator = StorageLocator.parse(map["locator"]) ?: return null
+          val baseDirectory = locator.resolveBaseDirectory(canonicalCacheDirectory) ?: return null
+          val resources = parsePersistentResources(map["resources"]) ?: return null
+          Storage.Persistent(baseDirectory) to resources
+        }
+        "currentLoad" -> {
+          if (!hasExactKeys(map, setOf("kind", "resources"))) return null
+          val resources = parseCurrentLoadResources(map["resources"]) ?: return null
+          Storage.CurrentLoad to resources
+        }
+        else -> null
+      }
+    }
+
+    private fun parsePersistentResources(value: Any?): Map<String, Resource>? {
       val list = value as? List<*> ?: return null
       val resources = linkedMapOf<String, Resource>()
       for (item in list) {
@@ -336,7 +369,49 @@ internal class HostedWebArtifactRegistry(
         ) {
           return null
         }
-        resources[resourceId] = Resource(resourceId, storedFileName, digest, byteSize)
+        resources[resourceId] = Resource(
+          resourceId,
+          digest,
+          byteSize,
+          ResourceSource.Persistent(storedFileName)
+        )
+      }
+      return resources
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    private fun parseCurrentLoadResources(value: Any?): Map<String, Resource>? {
+      val list = value as? List<*> ?: return null
+      val resources = linkedMapOf<String, Resource>()
+      for (item in list) {
+        val map = item.asStringMap() ?: return null
+        if (!hasExactKeys(map, setOf("resourceId", "digest", "byteSize", "bytesBase64"))) return null
+        val resourceId = map.string("resourceId") ?: return null
+        val digest = map.string("digest") ?: return null
+        val byteSize = map.number("byteSize") ?: return null
+        val encoded = map.string("bytesBase64") ?: return null
+        val bytes = try {
+          Base64.Default.decode(encoded)
+        } catch (_: IllegalArgumentException) {
+          return null
+        }
+        if (
+          !RESOURCE_ID_PATTERN.matches(resourceId)
+          || resources.containsKey(resourceId)
+          || !SHA256_DIGEST_PATTERN.matches(digest)
+          || byteSize < 0L
+          || bytes.size.toLong() != byteSize
+          || Base64.Default.encode(bytes) != encoded
+          || sha256Digest(bytes) != digest
+        ) {
+          return null
+        }
+        resources[resourceId] = Resource(
+          resourceId,
+          digest,
+          byteSize,
+          ResourceSource.CurrentLoad(bytes)
+        )
       }
       return resources
     }

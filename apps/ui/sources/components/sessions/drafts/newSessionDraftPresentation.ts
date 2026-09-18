@@ -1,6 +1,16 @@
+import {
+    AgentExecutionTargetV1Schema,
+    SessionAuthoringExecutionTargetV2Schema,
+    buildQualifiedPluginContributionKey,
+} from '@happier-dev/protocol';
+
 import type { NewSessionDraftProjection } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
-import { resolveAgentIdFromFlavor } from '@/agents/catalog/catalog';
+import {
+    resolveAgentIdFromFlavor,
+    resolveBundledAgentIdFromContributionIdentity,
+} from '@/agents/catalog/catalog';
 import { t, type TranslationKey } from '@/text';
+import { resolveSessionDraftStatusKey } from './sessionDraftStatusPresentation';
 
 export type NewSessionDraftRowPresentation = Readonly<{
     title: string;
@@ -52,20 +62,52 @@ function readAutomationName(draft: NewSessionDraftProjection): string | null {
  * Agent resolves to none: the row shows no mark rather than the default Agent's.
  */
 export function resolveNewSessionDraftAgentId(draft: NewSessionDraftProjection): string {
+    if (draft.document.v === 2 && draft.document.target.kind === 'newSession') {
+        const agentTarget = AgentExecutionTargetV1Schema.nullable().safeParse(
+            draft.document.target.authoring.agentTarget?.value ?? null,
+        );
+        if (agentTarget.success && agentTarget.data) {
+            return resolveBundledAgentIdFromContributionIdentity(agentTarget.data.identity)
+                ?? buildQualifiedPluginContributionKey(agentTarget.data.identity);
+        }
+        return '';
+    }
     const authoredAgentId = readNonblankString(readAuthoringValue(draft, 'agentId'));
     return resolveAgentIdFromFlavor(authoredAgentId) ?? authoredAgentId ?? '';
+}
+
+/**
+ * The exact Machine the draft targets, or none. The released document keeps the
+ * flat `machineId` selection while the current document carries the catalogued
+ * `executionTarget`; a Temporary computer names no Machine at all, so it stays
+ * out of Machine availability and never reports an offline Machine.
+ */
+export function resolveNewSessionDraftMachineId(draft: NewSessionDraftProjection): string | null {
+    const document = draft.document;
+    if (document.v === 1) {
+        return document.target.kind === 'newSession'
+            ? readNonblankString(document.target.authoring.machineId?.value)
+            : null;
+    }
+    if (document.target.kind !== 'newSession') return null;
+    const executionTarget = SessionAuthoringExecutionTargetV2Schema.nullable()
+        .safeParse(document.target.authoring.executionTarget?.value ?? null);
+    return executionTarget.success && executionTarget.data?.kind === 'machine'
+        ? readNonblankString(executionTarget.data.target.machineId)
+        : null;
 }
 
 function resolveStatusKey(
     draft: NewSessionDraftProjection,
     availability?: NewSessionDraftAvailabilitySummary,
 ): TranslationKey | null {
-    if (draft.status === 'conflict') return 'sessionDrafts.status.conflict';
-    if (draft.status === 'offline') return 'sessionDrafts.status.offline';
+    if (draft.status === 'conflict' || draft.status === 'offline' || draft.status === 'error') {
+        return resolveSessionDraftStatusKey(draft.status);
+    }
     if (availability?.machineUnavailable) return 'sessionDrafts.availability.machineUnavailable';
     if (availability?.pluginUnavailable) return 'sessionDrafts.availability.pluginUnavailable';
     if (availability?.attachmentNeedsAttention) return 'sessionDrafts.availability.attachmentNeedsAttention';
-    if (draft.status === 'pending') return 'sessionDrafts.status.syncing';
+    if (draft.status === 'pending') return resolveSessionDraftStatusKey(draft.status);
     return null;
 }
 

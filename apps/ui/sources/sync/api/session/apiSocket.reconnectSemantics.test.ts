@@ -212,6 +212,39 @@ describe('apiSocket reconnect semantics', () => {
         vi.useRealTimers();
     });
 
+    it('publishes rendered Session presence on the existing focused Home socket', async () => {
+        const controller = createTransportController();
+        const emissions: Array<[string, unknown]> = [];
+        const emitWithAck = async (event: string, payload: unknown) => {
+            emissions.push([event, payload]);
+            return {v:1, ok:true, admittedSessionIds:['presence-session']};
+        };
+        transportFactory.createSyncSocketTransportSpy.mockReturnValue({
+            socket: {...createSocketStub(emitWithAck), connected:true, emit:vi.fn(), off:vi.fn()},
+            transport: controller.transport,
+        });
+        const { apiSocket } = await import('./apiSocket');
+        const {markSessionSurfaceVisible, markSessionSurfaceHidden} = await import('@/sync/domains/session/sessionSurfaceVisibility');
+        markSessionSurfaceVisible('presence-session', 'presence-home');
+        const endpoint = 'https://presence.example.test';
+        // Real JWT-shaped authenticated subject at the external transport boundary.
+        const token = `e30.${Buffer.from(JSON.stringify({sub:'self'})).toString('base64')}.signature`;
+        apiSocket.initialize({endpoint, token, serverId:'presence-home', generation:1}, createSessionEncryptionStub());
+        try {
+            emitReachability(endpoint, {
+                phase:'online', reason:null, attempt:0, nextRetryAt:null,
+                lastConnectedAt:Date.now(), lastDisconnectedAt:null, lastErrorMessage:null,
+            });
+            await settleAsyncWork();
+            await vi.waitFor(() => expect(emissions).toContainEqual(
+                ['session-human-presence:visible-replace', {v:1,sessionIds:['presence-session']}],
+            ), {timeout:15_000});
+        } finally {
+            apiSocket.disconnect();
+            markSessionSurfaceHidden('presence-session', 'presence-home');
+        }
+    });
+
     it('fires onReconnected only after a transport outage cycle', async () => {
         const controller = createTransportController();
         transportFactory.lastController = controller;
@@ -340,7 +373,7 @@ describe('apiSocket reconnect semantics', () => {
         expect(reachability.restartSpy).toHaveBeenCalledWith(endpoint, 7_000);
     });
 
-    it('feeds active-server ephemerals to status-demand recovery without bypassing message handlers', async () => {
+    it('feeds ephemerals to handlers with the immutable Home captured by the concrete socket', async () => {
         const controller = createTransportController();
         const socketListeners: {
             onAny: ((event: string, payload: unknown) => void) | null;
@@ -380,8 +413,9 @@ describe('apiSocket reconnect semantics', () => {
         }]);
 
         const endpoint = 'https://server.example.test';
+        const socketConfig = { endpoint, token: 'token-1', serverId };
         apiSocket.initialize(
-            { endpoint, token: 'token-1' },
+            socketConfig,
             { getSessionEncryption: vi.fn(), getMachineEncryption: vi.fn() } as never,
         );
         emitReachability(endpoint, {
@@ -396,6 +430,7 @@ describe('apiSocket reconnect semantics', () => {
         await settleAsyncWork();
 
         expect(socketListeners.onAny).toBeTypeOf('function');
+        socketConfig.serverId = 'later-focused-home';
         emit.mockClear();
         socketListeners.onAny?.('ephemeral', {
             type: 'machine-activity',
@@ -410,12 +445,15 @@ describe('apiSocket reconnect semantics', () => {
         expect(demandPayloads).toEqual([
             expect.objectContaining({ revision: 3 }),
         ]);
-        expect(ephemeralHandler).toHaveBeenCalledWith({
-            type: 'machine-activity',
-            id: 'machine-1',
-            active: true,
-            activeAt: 1_000,
-        });
+        expect(ephemeralHandler).toHaveBeenCalledWith(
+            {
+                type: 'machine-activity',
+                id: 'machine-1',
+                active: true,
+                activeAt: 1_000,
+            },
+            { serverId },
+        );
 
         apiSocket.disconnect();
         resetExternalSessionStatusDemandCoordinatorForTests();

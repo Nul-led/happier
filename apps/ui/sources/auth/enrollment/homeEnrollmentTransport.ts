@@ -1,5 +1,6 @@
 import {
     HomeApplicationOriginV1Schema,
+    HomeConnectionDescriptorV1Schema,
     type HomeConnectionDescriptorV1,
     type HomeCredentialDestinationSelectionV1,
 } from '@happier-dev/protocol';
@@ -41,6 +42,38 @@ export type HomeEnrollmentTransportResolution =
         homeServerIdentityId: string;
         reason: HomeEnrollmentTransportFailureReason;
     }>;
+
+/**
+ * Transport-only descriptor for a Home this device has already established by URL and
+ * pinned identity, used when the Home itself publishes no outer connection descriptor.
+ *
+ * A Home reachable only over loopback HTTP publishes none: the server emits an application
+ * endpoint only for an explicitly configured HTTPS ingress
+ * (`apps/server/sources/app/features/homeConnectionDescriptorPublication.ts`), while the CLI
+ * still issues identity-bearing URL-only pairing links for exactly those Homes. Without this,
+ * such a link can never be approved even by the browser that is signed into that Home.
+ *
+ * These are this device's own connection facts, never a shareable claim — the result is used
+ * for one request and must never be persisted onto a profile or advertised to another device,
+ * which is why the profile owner still refuses to synthesize a descriptor of its own. The
+ * revision is the local floor rather than a published one, and an origin the Home application
+ * policy does not approve yields null instead of a forged endpoint.
+ */
+export function buildEstablishedHomeTransportDescriptor(params: Readonly<{
+    canonicalServerUrl: string;
+    homeServerIdentityId: string;
+}>): HomeConnectionDescriptorV1 | null {
+    const canonicalServerUrl = String(params.canonicalServerUrl ?? '').trim().replace(/\/+$/, '');
+    if (!canonicalServerUrl) return null;
+    const parsed = HomeConnectionDescriptorV1Schema.safeParse({
+        v: 1,
+        homeServerIdentityId: params.homeServerIdentityId,
+        canonicalServerUrl,
+        revision: 1,
+        endpoints: [{ kind: 'https', url: canonicalServerUrl }],
+    });
+    return parsed.success ? parsed.data : null;
+}
 
 function approvedApplicationOrigin(rawUrl: string): string | null {
     const parsed = HomeApplicationOriginV1Schema.safeParse(rawUrl);
@@ -84,6 +117,8 @@ export async function resolveHomeEnrollmentTransport(
         }
     } else if (canonicalEndpointUrl) {
         const acquired = await acquireEligibleHomeCarrier({
+            mode: 'initial_selection',
+            applicationCarrierEligibility: 'automatic',
             descriptor,
             verification: options.verification ?? { kind: 'enrollment' },
         });

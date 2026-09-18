@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useState } from 'react';
-import { View, Switch, Platform, Linking, ScrollView } from 'react-native';
+import { View, Platform, Linking, ScrollView } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Typography } from '@/constants/Typography';
@@ -9,7 +9,7 @@ import type { CustomModalInjectedProps } from '@/modal';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import { PublicSessionShare } from '@/sync/domains/social/sharingTypes';
+import type { SessionPublicLinkPublication } from '@/sync/domains/social/sessionPublicLinkPublication';
 import { HappyError } from '@/utils/errors/errors';
 import { QRCode } from '@/components/qr';
 import { Text } from '@/components/ui/text/Text';
@@ -18,20 +18,24 @@ import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { Icon } from '@/components/ui/icons/Icon';
+import { Switch } from '@/components/ui/forms/Switch';
+import { buildPublicShareApplicationUrl } from '../publicShareApplicationUrl';
 
 
 export interface PublicLinkDialogProps {
-    publicShare: PublicSessionShare | null;
+    publicShare: SessionPublicLinkPublication | null;
+    serverUrl?: string | null;
     onCreate: (options: {
         expiresInDays?: number;
         maxUses?: number;
         isConsentRequired: boolean;
-    }) => Promise<PublicSessionShare | void> | PublicSessionShare | void;
+    }) => Promise<SessionPublicLinkPublication | void> | SessionPublicLinkPublication | void;
     onDelete: () => Promise<void> | void;
 }
 
 export const PublicLinkDialog = memo(function PublicLinkDialog({
     publicShare,
+    serverUrl,
     onCreate,
     onDelete,
     onClose: _onClose,
@@ -49,21 +53,40 @@ export const PublicLinkDialog = memo(function PublicLinkDialog({
     const scrollRef = React.useRef<ScrollView>(null);
     const wheelScrollHandlers = useScrollViewWheelScrollTo(scrollRef);
 
-    const buildPublicShareUrl = React.useCallback((token: string): string => {
-        const path = `/share/${token}`;
+    /**
+     * Revocation's own request lifecycle.
+     *
+     * Creating a link runs through the shared pressable pending owner, which
+     * refuses a second press while the first request is in flight. The
+     * destructive row has no such owner, so the same guarantee lives here: the
+     * ref refuses a same-tick second activation before React has committed the
+     * disabled row, and the presented-link identity decides whether a settled
+     * outcome still belongs to the surface the user is looking at. A second
+     * DELETE would otherwise surface its 404 after the first one closed.
+     */
+    const revokeInFlight = React.useRef(false);
+    const [isRevoking, setIsRevoking] = useState(false);
+    const presentedLinkId = React.useRef<string | null>(null);
+    presentedLinkId.current = publicShare?.id ?? null;
+    const isMounted = React.useRef(true);
+    useEffect(() => {
+        isMounted.current = true;
+        return () => { isMounted.current = false; };
+    }, []);
 
+    const buildPublicShareUrl = React.useCallback((token: string): string => {
+        let applicationBaseUrl: string;
         if (Platform.OS === 'web') {
-            const origin =
+            applicationBaseUrl =
                 typeof window !== 'undefined' && window.location?.origin
                     ? window.location.origin
                     : '';
-            return `${origin}${path}`;
+        } else {
+            const configuredWebAppUrl = (process.env.EXPO_PUBLIC_HAPPY_WEBAPP_URL || '').trim();
+            applicationBaseUrl = configuredWebAppUrl || 'https://app.happier.dev';
         }
-
-        const configuredWebAppUrl = (process.env.EXPO_PUBLIC_HAPPY_WEBAPP_URL || '').trim();
-        const webAppUrl = configuredWebAppUrl || 'https://app.happier.dev';
-        return `${webAppUrl}${path}`;
-    }, []);
+        return buildPublicShareApplicationUrl({ applicationBaseUrl, token, serverUrl });
+    }, [serverUrl]);
 
     useEffect(() => {
         if (!publicShare?.token) {
@@ -103,15 +126,28 @@ export const PublicLinkDialog = memo(function PublicLinkDialog({
     };
 
     const handleDelete = async () => {
+        if (revokeInFlight.current) return;
+        const revokedLinkId = presentedLinkId.current;
+        revokeInFlight.current = true;
+        setIsRevoking(true);
+        // A settled outcome may only speak for the link that is still presented
+        // on a still-mounted dialog; anything else closes or alerts over a
+        // surface the user has already moved past.
+        const settlesThisSurface = () => isMounted.current && presentedLinkId.current === revokedLinkId;
         try {
             await Promise.resolve(onDelete());
-            _onClose();
+            if (settlesThisSurface()) _onClose();
         } catch (e) {
-            const message =
-                e instanceof HappyError ? e.message :
-                e instanceof Error ? e.message :
-                t('errors.unknownError');
-            Modal.alert(t('common.error'), message);
+            if (settlesThisSurface()) {
+                const message =
+                    e instanceof HappyError ? e.message :
+                    e instanceof Error ? e.message :
+                    t('errors.unknownError');
+                Modal.alert(t('common.error'), message);
+            }
+        } finally {
+            revokeInFlight.current = false;
+            if (isMounted.current) setIsRevoking(false);
         }
     };
 
@@ -169,50 +205,82 @@ export const PublicLinkDialog = memo(function PublicLinkDialog({
                                     </Text>
                                 </View>
 
-                                <ItemGroup title={t('session.sharing.expiresIn')}>
+                                <ItemGroup
+                                    title={t('session.sharing.expiresIn')}
+                                    accessibilityRole="radiogroup"
+                                    accessibilityLabel={t('session.sharing.expiresIn')}
+                                >
                                     <Item
+                                        testID="public-link-expiry-7"
                                         title={t('session.sharing.days7')}
                                         leftElement={<Radio selected={expiresInDays === 7} />}
                                         selected={expiresInDays === 7}
+                                        accessibilityRole="radio"
+                                        webRole="radio"
+                                        accessibilityChecked={expiresInDays === 7}
                                         onPress={() => setExpiresInDays(7)}
                                         showChevron={false}
                                     />
                                     <Item
+                                        testID="public-link-expiry-30"
                                         title={t('session.sharing.days30')}
                                         leftElement={<Radio selected={expiresInDays === 30} />}
                                         selected={expiresInDays === 30}
+                                        accessibilityRole="radio"
+                                        webRole="radio"
+                                        accessibilityChecked={expiresInDays === 30}
                                         onPress={() => setExpiresInDays(30)}
                                         showChevron={false}
                                     />
                                     <Item
+                                        testID="public-link-expiry-never"
                                         title={t('session.sharing.never')}
                                         leftElement={<Radio selected={expiresInDays === undefined} />}
                                         selected={expiresInDays === undefined}
+                                        accessibilityRole="radio"
+                                        webRole="radio"
+                                        accessibilityChecked={expiresInDays === undefined}
                                         onPress={() => setExpiresInDays(undefined)}
                                         showChevron={false}
                                         showDivider={false}
                                     />
                                 </ItemGroup>
 
-                                <ItemGroup title={t('session.sharing.maxUsesLabel')}>
+                                <ItemGroup
+                                    title={t('session.sharing.maxUsesLabel')}
+                                    accessibilityRole="radiogroup"
+                                    accessibilityLabel={t('session.sharing.maxUsesLabel')}
+                                >
                                     <Item
+                                        testID="public-link-max-uses-unlimited"
                                         title={t('session.sharing.unlimited')}
                                         leftElement={<Radio selected={maxUses === undefined} />}
                                         selected={maxUses === undefined}
+                                        accessibilityRole="radio"
+                                        webRole="radio"
+                                        accessibilityChecked={maxUses === undefined}
                                         onPress={() => setMaxUses(undefined)}
                                         showChevron={false}
                                     />
                                     <Item
+                                        testID="public-link-max-uses-10"
                                         title={t('session.sharing.uses10')}
                                         leftElement={<Radio selected={maxUses === 10} />}
                                         selected={maxUses === 10}
+                                        accessibilityRole="radio"
+                                        webRole="radio"
+                                        accessibilityChecked={maxUses === 10}
                                         onPress={() => setMaxUses(10)}
                                         showChevron={false}
                                     />
                                     <Item
+                                        testID="public-link-max-uses-50"
                                         title={t('session.sharing.uses50')}
                                         leftElement={<Radio selected={maxUses === 50} />}
                                         selected={maxUses === 50}
+                                        accessibilityRole="radio"
+                                        webRole="radio"
+                                        accessibilityChecked={maxUses === 50}
                                         onPress={() => setMaxUses(50)}
                                         showChevron={false}
                                         showDivider={false}
@@ -224,7 +292,11 @@ export const PublicLinkDialog = memo(function PublicLinkDialog({
                                     title={t('session.sharing.requireConsent')}
                                     subtitle={t('session.sharing.requireConsentDescription')}
                                     rightElement={
-                                        <Switch value={isConsentRequired} onValueChange={setIsConsentRequired} />
+                                        <Switch
+                                            accessibilityLabel={t('session.sharing.requireConsent')}
+                                            value={isConsentRequired}
+                                            onValueChange={setIsConsentRequired}
+                                        />
                                     }
                                     showChevron={false}
                                 />
@@ -232,8 +304,13 @@ export const PublicLinkDialog = memo(function PublicLinkDialog({
 
                             <View style={styles.section}>
                                 <RoundButton
+                                    testID="public-link-create"
                                     title={publicShare ? t('session.sharing.regeneratePublicLink') : t('session.sharing.createPublicLink')}
-                                    onPress={handleCreate}
+                                    // `action`, not `onPress`: minting a publication token is an
+                                    // outward request, and the shared pending lifecycle is what
+                                    // refuses the second press that would create a second link
+                                    // and orphan the first.
+                                    action={handleCreate}
                                     size="large"
                                     style={{ width: '100%', maxWidth: 420, alignSelf: 'center' }}
                                 />
@@ -243,7 +320,12 @@ export const PublicLinkDialog = memo(function PublicLinkDialog({
                         <>
                             <ItemGroup>
                                 <Item
+                                    testID="public-link-regenerate"
                                     title={t('session.sharing.regeneratePublicLink')}
+                                    // One outward action at a time for the presented link: leaving
+                                    // this live would swap the body out from under a revoke that is
+                                    // about to close the dialog.
+                                    disabled={isRevoking}
                                     onPress={() => {
                                         setIsConfiguring(true);
                                         requestAnimationFrame(() => scrollRef.current?.scrollTo({ y: 0, animated: false }));
@@ -261,6 +343,7 @@ export const PublicLinkDialog = memo(function PublicLinkDialog({
                             {shareUrl ? (
                                 <ItemGroup>
                                     <Item
+                                        testID="public-link-url"
                                         title={t('session.sharing.publicLink')}
                                         subtitle={<Text selectable>{shareUrl}</Text>}
                                         subtitleLines={0}
@@ -325,8 +408,13 @@ export const PublicLinkDialog = memo(function PublicLinkDialog({
 
                             <ItemGroup>
                                 <Item
+                                    testID="public-link-delete"
                                     title={t('session.sharing.deletePublicLink')}
                                     onPress={handleDelete}
+                                    // The shared row pending presentation: the control says it is
+                                    // working instead of silently swallowing a second press.
+                                    disabled={isRevoking}
+                                    loading={isRevoking}
                                     destructive
                                     showDivider={false}
                                 />

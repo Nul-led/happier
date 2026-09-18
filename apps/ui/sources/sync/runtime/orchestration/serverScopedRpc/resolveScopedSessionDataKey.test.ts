@@ -37,6 +37,53 @@ describe('resolveScopedSessionDataKey', () => {
     }
   });
 
+  it.each(['absent', 'empty', 'malformed', 'wrong_recipient'] as const)(
+    'keeps %s envelopes unavailable and opens a later valid envelope through the canonical reader',
+    async (initialEnvelope) => {
+      const { Encryption } = await import('@/sync/encryption/encryption');
+      const { encodeBase64 } = await import('@/encryption/base64');
+      const { sealEncryptedDataKeyEnvelopeV1 } = await import('@happier-dev/protocol');
+      const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+      const otherRecipient = await Encryption.create(new Uint8Array(32).fill(8));
+      const sessionKey = new Uint8Array(32).fill(9);
+      const sealTo = (recipientPublicKey: Uint8Array) => encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+        dataKey: sessionKey,
+        recipientPublicKey,
+        randomBytes: (length) => new Uint8Array(length).fill(3),
+      }), 'base64');
+      let dataEncryptionKey: string | null = initialEnvelope === 'absent'
+        ? null
+        : initialEnvelope === 'empty'
+          ? ''
+          : initialEnvelope === 'malformed'
+            ? 'not-an-envelope'
+            : sealTo(otherRecipient.contentDataKey);
+      runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
+          return { ok: true, status: 200, json: async () => ({}) };
+        }
+        return {
+          ok: true, status: 200,
+          json: async () => ({ session: { ...validSessionById, encryptionMode: 'e2ee', dataEncryptionKey } }),
+        };
+      });
+      const params = {
+        serverId: 's-id', serverUrl: 'https://server.example.test',
+        token: 'token', sessionId: 'session-1',
+        decryptEncryptionKey: (value: string) => encryption.decryptEncryptionKey(value),
+      };
+
+      await expect(resolveScopedSessionDataKey(params)).resolves.toBeNull();
+      expect(encryption.getSessionEncryption('session-1')).toBeNull();
+
+      dataEncryptionKey = sealTo(encryption.contentDataKey);
+      await expect(resolveScopedSessionDataKey(params)).resolves.toEqual(sessionKey);
+      // Standalone key resolution never installs an Account-scoped Session reader.
+      expect(encryption.getSessionEncryption('session-1')).toBeNull();
+    },
+  );
+
   it('loads and decrypts the session data encryption key from a valid by-id response', async () => {
     runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : String(input);
@@ -45,7 +92,8 @@ describe('resolveScopedSessionDataKey', () => {
       }
       return { ok: true, status: 200, json: async () => ({ session: validSessionById }) };
     });
-    const decrypt = vi.fn(async () => new Uint8Array([9, 9]));
+    const expectedKey = new Uint8Array(32).fill(9);
+    const decrypt = vi.fn(async () => expectedKey);
 
     const key = await resolveScopedSessionDataKey({
       serverId: 's-id',
@@ -57,7 +105,7 @@ describe('resolveScopedSessionDataKey', () => {
 
     expect(runtimeFetchMock.mock.calls.some(([input]) => String(input).includes('/v2/sessions/session-1'))).toBe(true);
     expect(decrypt).toHaveBeenCalledWith('k1');
-    expect(key).toEqual(new Uint8Array([9, 9]));
+    expect(key).toEqual(expectedKey);
   });
 
   it('uses the verified runtime origin for an Iroh-only session key lookup', async () => {
@@ -71,7 +119,8 @@ describe('resolveScopedSessionDataKey', () => {
       }
       throw new Error(`unexpected session lookup: ${url}`);
     });
-    const decrypt = vi.fn(async () => new Uint8Array([7, 7]));
+    const expectedKey = new Uint8Array(32).fill(7);
+    const decrypt = vi.fn(async () => expectedKey);
 
     await expect(resolveScopedSessionDataKey({
       serverId: 's-id',
@@ -80,7 +129,7 @@ describe('resolveScopedSessionDataKey', () => {
       token: 'token',
       sessionId: 'session-1',
       decryptEncryptionKey: decrypt,
-    })).resolves.toEqual(new Uint8Array([7, 7]));
+    })).resolves.toEqual(expectedKey);
 
     expect(runtimeFetchMock.mock.calls.some(([input]) =>
       String(input) === 'http://127.0.0.1:43111/v2/sessions/session-1',

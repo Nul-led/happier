@@ -1,6 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+    CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+    decodePlainArtifactStoredContent,
+} from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import type { ArtifactCreateRequest } from '@/sync/domains/artifacts/artifactTypes';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { createAccountTokenForTests } from '@/dev/testkit/harness/homeGovernanceHarness';
+import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
+import { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
+import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
+import { getStorage } from '@/sync/domains/state/storage';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 
 const machineRpcWithServerScope = vi.hoisted(() => vi.fn());
 
@@ -9,7 +21,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
 }));
 
 import {
-    deleteWorkspaceSyncConflictLoser,
+    resolveWorkspaceSyncConflict,
     getWorkspaceSyncStatus,
     listWorkspaceSyncConflicts,
     listWorkspaceSyncStatuses,
@@ -32,9 +44,91 @@ const status = {
     lastSuccessfulSyncAtMs: 42,
 };
 
+const initialStorageState = getStorage().getState();
+const accountToken = createAccountTokenForTests('workspace-sync-account');
+const features = {
+    features: {},
+    capabilities: {
+        accountStoredContentCompatibility: {
+            v: 1,
+            minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+            currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+            declarationTransport: 'http-header-and-socket-auth-v1',
+        },
+    },
+};
+
 describe('workspace sync UI operations', () => {
-    beforeEach(() => {
+    let actionServerId: string;
+    const artifacts = new Map<string, ArtifactCreateRequest & {
+        headerVersion: number;
+        bodyVersion: number;
+        seq: number;
+        createdAt: number;
+        updatedAt: number;
+    }>();
+
+    beforeEach(async () => {
+        getStorage().setState(initialStorageState, true);
+        resetServerFeaturesClientForTests();
+        invalidateAccountEncryptionModeCache();
+        actionServerId = upsertAndActivateServer({ serverUrl: 'https://workspace-sync-action.test', name: 'Home' }).id;
+        getStorage().getState().activateProfileScope({ serverId: actionServerId, accountId: 'workspace-sync-account' });
+        getStorage().setState({ settingsScope: { serverId: actionServerId, accountId: 'workspace-sync-account' } });
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({ token: accountToken });
+        vi.stubGlobal('fetch', vi.fn(async () => Response.json(features)));
+        await getServerFeaturesSnapshot({ serverId: actionServerId, force: true });
+        artifacts.clear();
+        setRuntimeFetch(async (url, init) => {
+            const pathname = new URL(String(url)).pathname;
+            if (pathname === '/v1/features') return Response.json(features);
+            if (pathname === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 0 });
+            if (pathname === '/v1/artifacts' && init?.method === 'POST') {
+                const request = JSON.parse(String(init.body)) as ArtifactCreateRequest;
+                const artifact = {
+                    ...request,
+                    headerVersion: 1,
+                    bodyVersion: 1,
+                    seq: 1,
+                    createdAt: 1,
+                    updatedAt: 1,
+                };
+                artifacts.set(request.id, artifact);
+                return Response.json(artifact);
+            }
+            if (pathname.startsWith('/v1/artifacts/')) {
+                const artifact = artifacts.get(pathname.split('/').at(-1)!);
+                if (!artifact) return Response.json({}, { status: 404 });
+                if (init?.method === 'POST') {
+                    const update = JSON.parse(String(init.body)) as Partial<ArtifactCreateRequest>;
+                    if (update.header !== undefined) {
+                        artifact.header = update.header;
+                        artifact.headerVersion += 1;
+                    }
+                    if (update.body !== undefined) {
+                        artifact.body = update.body;
+                        artifact.bodyVersion += 1;
+                    }
+                    return Response.json({
+                        success: true,
+                        headerVersion: artifact.headerVersion,
+                        bodyVersion: artifact.bodyVersion,
+                    });
+                }
+                return Response.json(artifact);
+            }
+            throw new Error(`Unexpected workspace sync Action request: ${pathname}`);
+        });
         machineRpcWithServerScope.mockReset();
+    });
+
+    afterEach(() => {
+        resetRuntimeFetch();
+        resetServerFeaturesClientForTests();
+        invalidateAccountEncryptionModeCache();
+        getStorage().setState(initialStorageState, true);
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
     });
 
     it('reinspects legacy state without publishing a cleanup mutation', async () => {
@@ -88,37 +182,104 @@ describe('workspace sync UI operations', () => {
         const paused = { ...status, state: 'paused' as const };
         machineRpcWithServerScope
             .mockResolvedValueOnce({
+                status: 'page',
                 relationshipId: 'relationship-1',
                 totalCount: 1,
-                shownCount: 1,
-                truncatedCount: 0,
+                nextCursor: null,
                 conflicts: [{
                     relationshipId: 'relationship-1',
                     path: 'README.md',
-                    alpha: { kind: 'file', digest: 'a'.repeat(64) },
-                    beta: { kind: 'file', digest: 'b'.repeat(64) },
+                    alpha: { kind: 'file', digest: 'a'.repeat(40) },
+                    beta: { kind: 'file', digest: 'b'.repeat(40) },
                 }],
             })
-            .mockResolvedValueOnce({ status: paused });
+            .mockResolvedValueOnce(paused);
 
         await expect(listWorkspaceSyncConflicts({
             controllerMachineId: 'machine-controller',
             serverId: 'server-1',
             relationshipId: 'relationship-1',
-        })).resolves.toMatchObject({ totalCount: 1, shownCount: 1 });
-        await expect(deleteWorkspaceSyncConflictLoser({
+        })).resolves.toMatchObject({ status: 'page', totalCount: 1, nextCursor: null });
+        await expect(resolveWorkspaceSyncConflict({
             controllerMachineId: 'machine-controller',
-            serverId: 'server-1',
+            serverId: actionServerId,
             request: {
                 relationshipId: 'relationship-1',
                 path: 'README.md',
                 keep: 'alpha',
-                expectedDigest: 'b'.repeat(64),
+                expectedDigest: 'b'.repeat(40),
                 expectedKind: 'file',
             },
         })).resolves.toEqual(paused);
         expect(machineRpcWithServerScope.mock.calls.map(([input]) => input.method)).toEqual([
             RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST,
+            RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE,
+        ]);
+        expect(machineRpcWithServerScope.mock.calls[0]?.[0]).toMatchObject({
+            payload: { relationshipId: 'relationship-1', limit: 100 },
+        });
+        const conflictRpc = machineRpcWithServerScope.mock.calls[1]?.[0];
+        expect(conflictRpc).toMatchObject({
+            machineId: 'machine-controller',
+            serverId: actionServerId,
+            method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE,
+            payload: {
+                actionReceiptId: expect.any(String),
+                actionInput: {
+                    controllerMachineId: 'machine-controller',
+                    request: {
+                        relationshipId: 'relationship-1',
+                        path: 'README.md',
+                        keep: 'alpha',
+                        expectedDigest: 'b'.repeat(40),
+                        expectedKind: 'file',
+                    },
+                },
+            },
+        });
+        const persistedApproval = artifacts.get(conflictRpc.payload.actionReceiptId);
+        expect(persistedApproval).toBeDefined();
+        const persistedBodyEnvelope = decodePlainArtifactStoredContent(persistedApproval!.body);
+        expect(persistedBodyEnvelope).toMatchObject({ body: expect.any(String) });
+        if (
+            !persistedBodyEnvelope
+            || typeof persistedBodyEnvelope !== 'object'
+            || !('body' in persistedBodyEnvelope)
+            || typeof persistedBodyEnvelope.body !== 'string'
+        ) {
+            throw new Error('Workspace conflict approval was not persisted through the canonical plain Artifact envelope');
+        }
+        expect(JSON.parse(persistedBodyEnvelope.body)).toMatchObject({
+            actionId: 'workspace.sync.conflict.resolve',
+            status: 'executed',
+            decision: { kind: 'approve' },
+        });
+    });
+
+    it('propagates a failed approved conflict execution instead of masking it with a later status read', async () => {
+        const conflictChanged = Object.assign(new Error('conflict_changed'), {
+            rpcErrorCode: 'conflict_changed',
+        });
+        machineRpcWithServerScope
+            .mockRejectedValueOnce(conflictChanged)
+            .mockResolvedValueOnce({ status });
+
+        await expect(resolveWorkspaceSyncConflict({
+            controllerMachineId: 'machine-controller',
+            serverId: actionServerId,
+            request: {
+                relationshipId: 'relationship-1',
+                path: 'README.md',
+                keep: 'alpha',
+                expectedDigest: 'b'.repeat(40),
+                expectedKind: 'file',
+            },
+        })).rejects.toMatchObject({
+            message: 'conflict_changed',
+            code: 'conflict_changed',
+        });
+
+        expect(machineRpcWithServerScope.mock.calls.map(([input]) => input.method)).toEqual([
             RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE,
         ]);
     });
@@ -127,7 +288,7 @@ describe('workspace sync UI operations', () => {
         machineRpcWithServerScope
             .mockResolvedValueOnce({
                 status: 'text',
-                digest: 'c'.repeat(64),
+                digest: 'c'.repeat(40),
                 size: 5,
                 text: 'hello',
             })

@@ -144,6 +144,7 @@ describe('DesktopActivityOverlayCollapsed', () => {
         expect(screen.getTextContent()).toContain('Needs attention');
         expect(screen.getTextContent()).toContain('3');
         expect(screen.findByTestId('desktop-activity-overlay-collapsed-brand-mark')).toBeTruthy();
+        expect(screen.findByTestId('desktop-activity-overlay-collapsed')?.props.accessibilityRole).toBe('button');
 
         screen.pressByTestId('desktop-activity-overlay-collapsed');
 
@@ -353,6 +354,46 @@ describe('DesktopActivityOverlayCollapsed', () => {
         });
 
         expect(screen.findByTestId('desktop-activity-overlay-collapsed-ellipsis')?.props.children).toBe('..');
+    });
+
+    it('restarts the slide transition when delimiter-bearing slide fields form a distinct tuple', async () => {
+        const { act } = await import('react-test-renderer');
+        const { DesktopActivityOverlayCollapsed } = await import('./DesktopActivityOverlayCollapsed');
+        const renderModel = (title: string, subtitle: string) => createCollapsedModel({
+            collapsed: {
+                ...createCollapsedModel().collapsed,
+                slides: [{
+                    id: 'status',
+                    title,
+                    subtitle,
+                    animatedEllipsis: false,
+                    priority: 'running',
+                }],
+            },
+        });
+
+        const screen = await renderScreen(
+            <DesktopActivityOverlayCollapsed
+                model={renderModel('a:b', 'c')}
+                visualMode="floating_overlay"
+                dragHandlers={{}}
+                onPress={() => {}}
+            />,
+        );
+        reanimatedSpies.withTiming.mockClear();
+
+        await act(async () => {
+            screen.tree?.update(
+                <DesktopActivityOverlayCollapsed
+                    model={renderModel('a', 'b:c')}
+                    visualMode="floating_overlay"
+                    dragHandlers={{}}
+                    onPress={() => {}}
+                />,
+            );
+        });
+
+        expect(reanimatedSpies.withTiming).toHaveBeenCalledWith(1, { duration: 300 });
     });
 
     it('renders bounce-on-ready and standby fade primitives from collapsed state', async () => {

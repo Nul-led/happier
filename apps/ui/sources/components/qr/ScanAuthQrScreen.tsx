@@ -3,7 +3,7 @@ import { View } from 'react-native';
 import { useNavigation, useRouter } from 'expo-router';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import { Modal } from '@/modal';
+import { PairingLinkEntryForm } from '@/components/account/restore/PairingLinkEntryForm';
 import { t } from '@/text';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 
@@ -16,10 +16,10 @@ type ScanAuthQrScreenBaseProps = Readonly<{
     title: string;
     subtitle: string;
     permissionRequiredMessage: string;
-    manualEntryPromptTitle: string;
-    manualEntryPromptDescription?: string;
+    manualEntryTitle: string;
+    manualEntryDescription?: string;
     manualEntryPlaceholder?: string;
-    manualEntryConfirmText: string;
+    manualEntrySubmitText: string;
     testIDPrefix: string;
 }>;
 
@@ -51,6 +51,25 @@ export function ScanAuthQrScreen(props: ScanAuthQrScreenProps) {
             onSuccess: handleBack,
         } as const;
     const { processAuthUrl } = useScannedAuthUrlProcessor(processorOptions);
+    const [view, setView] = React.useState<'scanner' | 'paste'>('scanner');
+    const showScanner = React.useCallback(() => setView('scanner'), []);
+
+    // Camera and paste share one processor: the restore flow's link form is the
+    // canonical manual-entry surface, so this screen switches views instead of
+    // owning a second entry presentation.
+    if (view === 'paste') {
+        return (
+            <PairingLinkEntryForm
+                onBack={showScanner}
+                onSubmit={processAuthUrl}
+                title={props.manualEntryTitle}
+                description={props.manualEntryDescription}
+                placeholder={props.manualEntryPlaceholder}
+                submitLabel={props.manualEntrySubmitText}
+                backLabel={t('connect.scanNewQr')}
+            />
+        );
+    }
 
     return (
         <QrCodeScannerView
@@ -71,20 +90,7 @@ export function ScanAuthQrScreen(props: ScanAuthQrScreenProps) {
                         testID={`${props.testIDPrefix}-enter-url`}
                         size="normal"
                         title={t('connect.enterUrlManually')}
-                        action={async () => {
-                            const url = await Modal.prompt(
-                                props.manualEntryPromptTitle,
-                                props.manualEntryPromptDescription,
-                                {
-                                    ...(props.manualEntryPlaceholder ? { placeholder: props.manualEntryPlaceholder } : {}),
-                                    confirmText: props.manualEntryConfirmText,
-                                    cancelText: t('common.cancel'),
-                                },
-                            );
-                            if (typeof url === 'string' && url.trim()) {
-                                await processAuthUrl(url.trim());
-                            }
-                        }}
+                        onPress={() => setView('paste')}
                     />
                 </View>
             }

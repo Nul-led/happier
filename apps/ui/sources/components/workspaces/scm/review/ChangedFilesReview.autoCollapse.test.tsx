@@ -42,12 +42,6 @@ vi.mock('@expo/vector-icons', () => ({
     Octicons: 'Octicons',
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/text/Text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -160,18 +154,13 @@ vi.mock('@/scm/registry/scmUiBackendRegistry', () => ({
     },
 }));
 
-vi.mock('@/components/workspaces/scm/review/useChangedFilesReviewPrefetch', () => ({
-    useChangedFilesReviewPrefetch: () => ({
-        onViewableItemsChanged: undefined,
-        prefetchEnabled: false,
-        requestedPaths: undefined,
-    }),
-}));
+
+const loadedReviewDiffState = { status: 'loaded', diff: 'diff --git a/x b/x\n', error: null } as const;
 
 vi.mock('@/components/workspaces/scm/review/useChangedFilesReviewDiffLoading', () => ({
     useChangedFilesReviewDiffLoading: () => ({
         diffStateSource: {
-            getDiffState: (_path: string) => ({ status: 'loaded', diff: 'diff --git a/x b/x\n', error: null }),
+            getDiffState: (_path: string) => loadedReviewDiffState,
             subscribe: () => () => {},
             reset: () => {},
             prune: () => {},
@@ -189,9 +178,6 @@ vi.mock('@/components/workspaces/scm/review/useScmDiffExpandedKeys', () => ({
     }),
 }));
 
-vi.mock('@/components/workspaces/scm/review/useChangedFilesReviewFocusPath', () => ({
-    useChangedFilesReviewFocusPath: () => null,
-}));
 
 vi.mock('@/components/workspaces/scm/review/useInitialScrollRestore', () => ({
     useInitialScrollRestore: () => undefined,
@@ -299,11 +285,11 @@ async function renderChangedFilesReview() {
             sessionId="session-1"
             snapshot={snapshot}
             changedFilesViewMode="repository"
-            attributionReliability="high"
+
             allRepositoryChangedFiles={[fileA, fileB, fileC]}
             sessionAttributedFiles={[]}
             repositoryOnlyFiles={[]}
-            suppressedInferredCount={0}
+
             maxFiles={1}
             maxChangedLines={2000}
             onFilePress={vi.fn()}

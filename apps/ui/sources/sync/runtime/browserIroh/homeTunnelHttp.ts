@@ -246,7 +246,7 @@ export function createBrowserIrohHttpConnectionRequester(options: Readonly<{
         };
 
         try {
-            const body = request.body;
+            const body = await resolveRequestBody(request);
             await untilAborted(stream.write(buildRequestHead(request, url, body !== null, 'keep-alive')));
             if (body !== null) {
                 await writeChunkedBody(body, async (bytes) => await untilAborted(stream.write(bytes)), untilAborted);
@@ -261,12 +261,23 @@ export function createBrowserIrohHttpConnectionRequester(options: Readonly<{
                     'Browser Iroh HTTP response is close-delimited and cannot share the transfer stream',
                 ));
             }
+            const finishReusableResponse = async (): Promise<void> => {
+                if (reader.hasBufferedBytes()) {
+                    const error = new BrowserIrohHttpError(
+                        'connection_not_reusable',
+                        'Browser Iroh HTTP response completed with surplus buffered bytes',
+                    );
+                    await failResponse(error);
+                    throw error;
+                }
+                await finishResponse();
+            };
             const onComplete = peerWillClose
                 ? async () => await failResponse(new BrowserIrohHttpError(
                     'connection_not_reusable',
                     'Browser Iroh HTTP peer closed a caller-owned persistent connection',
                 ))
-                : finishResponse;
+                : finishReusableResponse;
             if (framing.kind === 'empty') {
                 await onComplete();
                 return new Response(null, { status: head.status, statusText: head.statusText, headers: head.headers });
@@ -420,15 +431,19 @@ async function carryRequest(
         await Promise.race([operation, aborted]);
 
     try {
-        const body = request.body;
+        const body = await resolveRequestBody(request);
         await untilAborted(stream.write(buildRequestHead(request, url, body !== null, 'close')));
         if (body !== null) {
             await writeChunkedBody(body, async (bytes) => {
                 await untilAborted(stream.write(bytes));
             }, untilAborted);
         }
-        // Half-close: the Home side sees a complete request and no more.
-        await untilAborted(stream.finishWrite());
+
+        // The HTTP head terminator (and, when present, the terminating chunk)
+        // already delimits the complete request. Do not half-close the Iroh
+        // stream here: ordinary Home HTTP servers may treat the resulting TCP
+        // FIN as connection teardown before an asynchronous handler writes its
+        // response. Response completion/cancellation below owns final closure.
 
         const reader = new ResponseByteReader(
             async (maxBytes) => await untilAborted(stream.read(maxBytes)),
@@ -505,6 +520,28 @@ function buildRequestHead(
     return head;
 }
 
+/**
+ * Some browser Fetch implementations expose `Request.body` as `undefined`,
+ * including for a request that still owns encoded body bytes. Preserve the
+ * platform's encoding by reading that same Request rather than re-encoding the
+ * caller's `BodyInit`. Compliant implementations keep their streaming path;
+ * only the implementation that withholds the stream takes this buffered
+ * compatibility path.
+ */
+async function resolveRequestBody(request: Request): Promise<ReadableStream<Uint8Array> | null> {
+    const body = request.body;
+    if (body !== undefined) return body;
+
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.byteLength === 0) return null;
+    return new ReadableStream<Uint8Array>({
+        start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+        },
+    });
+}
+
 async function writeChunkedBody(
     body: ReadableStream<Uint8Array>,
     write: (bytes: Uint8Array) => Promise<void>,
@@ -550,6 +587,11 @@ class ResponseByteReader {
     private ended = false;
 
     constructor(private readonly read: (maxBytes: number) => Promise<Readonly<{ bytes: Uint8Array; done: boolean }>>) {}
+
+    /** Bounded inspection of bytes already admitted by the one parser read. */
+    hasBufferedBytes(): boolean {
+        return this.buffered.byteLength > 0;
+    }
 
     private async fill(): Promise<void> {
         if (this.ended) return;

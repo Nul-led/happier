@@ -45,19 +45,32 @@ type PickerProps = Readonly<{
 
 function VoiceGlobalConnectedServicesPicker(props: PickerProps) {
   const [bindingsByServiceId, setBindingsByServiceId] = React.useState(props.initialBindingsByServiceId);
+  // Persisting the Voice setting is an external effect, so it cannot live inside a
+  // functional state updater: React may evaluate or replay an updater more than once
+  // and a single selection would then be written more than once. This ref mirrors the
+  // rendered selection so the event callback derives the next value exactly once —
+  // including for two selections batched before the next render — while the state
+  // update itself stays a pure value assignment.
+  const bindingsRef = React.useRef(bindingsByServiceId);
+  bindingsRef.current = bindingsByServiceId;
   const setBindingForService = React.useCallback((serviceId: string, binding: ConnectedServicesServiceBinding) => {
-    setBindingsByServiceId((current) => {
-      const next = { ...current, [serviceId]: binding };
-      props.onBindingChange(buildConnectedServicesBindingsPayload({
-        supportedConnectedServiceIds: props.supportedServiceIds,
-        connectedServiceProfileOptionsByServiceId: props.profileOptionsByServiceId,
-        connectedServiceAccountGroupOptionsByServiceId: props.groupOptionsByServiceId,
-        connectedServicesBindingsByServiceId: next,
-        defaultProfileByServiceId: { ...props.defaultProfileIdByServiceId },
-        accountGroupsFeatureEnabled: props.accountGroupsEnabled,
-      }));
-      return next;
+    const next = { ...bindingsRef.current, [serviceId]: binding };
+    bindingsRef.current = next;
+    setBindingsByServiceId(next);
+    const sessionBindings = buildConnectedServicesBindingsPayload({
+      supportedConnectedServiceIds: props.supportedServiceIds,
+      connectedServiceProfileOptionsByServiceId: props.profileOptionsByServiceId,
+      connectedServiceAccountGroupOptionsByServiceId: props.groupOptionsByServiceId,
+      connectedServicesBindingsByServiceId: next,
+      defaultProfileByServiceId: { ...props.defaultProfileIdByServiceId },
+      accountGroupsFeatureEnabled: props.accountGroupsEnabled,
     });
+    props.onBindingChange(sessionBindings === null
+      ? null
+      : ConnectedServiceBindingsV1Schema.parse({
+        v: 1,
+        bindingsByServiceId: sessionBindings.bindingsByServiceId,
+      }));
   }, [props]);
 
   return <NewSessionConnectedServicesSelectionContent

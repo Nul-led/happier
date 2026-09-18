@@ -22,11 +22,11 @@ export function createVoiceRunRecovery(args: Readonly<{
     createHandle: (sessionId: string) => Promise<VoiceAgentHandle>;
     voiceAgentBySessionId: Map<string, VoiceAgentHandle>;
     voiceAgentInitBySessionId: Map<string, Promise<VoiceAgentHandle>>;
-    voiceAgentPendingSessionContextBySessionId: Map<string, string[]>;
+    voiceAttemptExplicitContextBySessionId: Map<string, string[]>;
     deferredTargetSessionContextBySessionId: Map<string, string | null>;
     latestAutomaticUiContextBySessionId: Map<string, string>;
 }>): Readonly<{
-    appendContextUpdate: (sessionId: string, update: string) => void;
+    appendAttemptContextUpdate: (sessionId: string, update: string) => void;
     appendAutomaticUiContextUpdate: (sessionId: string, update: string) => void;
     commit: (sessionId: string) => Promise<string>;
     ensureRunning: (sessionId: string) => Promise<void>;
@@ -120,7 +120,7 @@ export function createVoiceRunRecovery(args: Readonly<{
                 : null;
 
         args.voiceAgentBySessionId.delete(sessionId);
-        args.voiceAgentPendingSessionContextBySessionId.delete(sessionId);
+        args.voiceAttemptExplicitContextBySessionId.delete(sessionId);
         args.deferredTargetSessionContextBySessionId.delete(sessionId);
         args.latestAutomaticUiContextBySessionId.delete(sessionId);
 
@@ -167,13 +167,12 @@ export function createVoiceRunRecovery(args: Readonly<{
         await clearVoiceAgentRunMetadata(metadataSessionId).catch(() => {});
     };
 
-    const appendContextUpdate = (sessionId: string, update: string): void => {
+    const appendAttemptContextUpdate = (sessionId: string, update: string): void => {
         const text = update.trim();
         if (!text) return;
 
-        const existing = args.voiceAgentPendingSessionContextBySessionId.get(sessionId) ?? [];
-        existing.push(text);
-        args.voiceAgentPendingSessionContextBySessionId.set(sessionId, existing.slice(Math.max(0, existing.length - 8)));
+        const existing = args.voiceAttemptExplicitContextBySessionId.get(sessionId) ?? [];
+        args.voiceAttemptExplicitContextBySessionId.set(sessionId, [...existing, text]);
     };
 
     const appendAutomaticUiContextUpdate = (sessionId: string, update: string): void => {
@@ -183,7 +182,7 @@ export function createVoiceRunRecovery(args: Readonly<{
     };
 
     return {
-        appendContextUpdate,
+        appendAttemptContextUpdate,
         appendAutomaticUiContextUpdate,
         commit,
         ensureRunning: async (sessionId: string) => {

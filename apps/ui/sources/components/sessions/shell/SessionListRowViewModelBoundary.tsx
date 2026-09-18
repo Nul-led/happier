@@ -1,3 +1,5 @@
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { SessionListHomeObservation } from '@/sync/domains/session/listing/sessionListHomeObservation';
 import * as React from 'react';
 import type { View } from 'react-native';
 
@@ -42,6 +44,10 @@ import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 
 const EMPTY_ROW_RENDERABLES = new Map<string, SessionListRenderableSession>() as ReadonlyMap<string, SessionListRenderableSession>;
 export type SessionListRowViewModelBoundaryProps = Readonly<{
+    audienceScope?: ServerAccountScope;
+    audienceLabel?: string | null;
+    /** This row's exact-Home list currentness, from the canonical per-Home observation owner. */
+    homeObservation?: SessionListHomeObservation | null;
     activeColorMode?: 'activityAndAttention' | 'attentionOnly' | 'allActive' | null;
     allKnownTags: string[];
     attentionStandingEnabled: boolean;
@@ -84,6 +90,7 @@ export type SessionListRowViewModelBoundaryProps = Readonly<{
     rowAttentionAnimationEnabled: boolean;
     rowHeight: number;
     selectedSessionId: string | null;
+    selectedSessionServerId?: string | null;
     sessionTags: Record<string, string[]>;
     showPinnedServerBadge: boolean;
     showServerBadge: boolean;
@@ -129,6 +136,10 @@ export const SessionListRowViewModelBoundary = React.memo(function SessionListRo
         serverId: props.item.serverId ?? null,
     });
     const rowViewModel = React.useMemo<SessionListRowViewModel>(() => buildSessionListRowViewModel({
+        audienceScopes: props.audienceScope ? new Map([[props.audienceScope.serverId, props.audienceScope]]) : undefined,
+        homeObservations: props.item.serverId && props.homeObservation
+            ? { [props.item.serverId]: props.homeObservation }
+            : undefined,
         item: props.item,
         index: props.dataIndex,
         listItems: props.items,
@@ -148,12 +159,16 @@ export const SessionListRowViewModelBoundary = React.memo(function SessionListRo
         pinnedSessionKeys: props.pinnedSessionKeys,
         sessionTags: props.sessionTags,
         selectedSessionId: props.selectedSessionId,
+        selectedSessionServerId: props.selectedSessionServerId,
         showServerBadge: props.showServerBadge,
         showPinnedServerBadge: props.showPinnedServerBadge,
         attentionStandingEnabled: props.attentionStandingEnabled,
         attentionStandingPolicy: props.attentionStandingPolicy,
         existingDraft: props.draft,
     }), [
+        props.audienceScope,
+        props.audienceLabel,
+        props.homeObservation,
         props.activeColorMode,
         props.attentionStandingEnabled,
         props.attentionStandingPolicy,
@@ -168,6 +183,7 @@ export const SessionListRowViewModelBoundary = React.memo(function SessionListRo
         props.reachableSessionDisplayById,
         props.reachableSessionDisplayByKey,
         props.selectedSessionId,
+        props.selectedSessionServerId,
         props.sessionTags,
         props.showPinnedServerBadge,
         props.showServerBadge,

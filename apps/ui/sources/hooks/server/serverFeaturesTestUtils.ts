@@ -3,6 +3,7 @@ import { vi } from 'vitest';
 import { DEFAULT_AUTH_KEY_CHALLENGE_CAPABILITIES } from '@/dev/testkit/fixtures/featureFixtures';
 
 import {
+    FeatureGatesSchema,
     DEFAULT_BROWSER_CAPABILITIES,
     DEFAULT_DEVICE_CAPABILITIES,
     DEFAULT_LOCAL_SERVICE_CAPABILITIES,
@@ -65,6 +66,7 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
 
     return {
         features: {
+            teams: FeatureGatesSchema.shape.teams.parse(undefined),
             bugReports: { enabled: true },
             providers: {
                 enabled: false,
@@ -92,6 +94,12 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
             automations: {
                 enabled: overrides.automationsEnabled ?? true,
             },
+            workflows: {
+                enabled: overrides.automationsEnabled ?? true,
+            },
+            search: {
+                enabled: false,
+            },
             connectedServices: {
                 enabled: true,
                 accountGroups: {
@@ -100,6 +108,10 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
                 accountFallback: {
                     enabled: false,
                 },
+                autoQuotaReset: { enabled: false },
+                autoDisablePlanInvalid: { enabled: false },
+                subscription: { enabled: false },
+                poolQuotaLimitSelection: { enabled: false },
                 quotas: {
                     enabled: overrides.connectedServicesQuotasEnabled ?? false,
                 },
@@ -116,52 +128,8 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
                 pendingQueueV2: { enabled: false },
                 pendingDeliveryState: { enabled: false },
             },
-            sessions: {
-                enabled: false,
-                drafts: { enabled: false },
-                folders: {
-                    enabled: false,
-                },
-                handoff: {
-                    enabled: false,
-                },
-                agentSwitching: {
-                    enabled: false,
-                },
-                usageLimitRecovery: {
-                    enabled: false,
-                },
-            },
-            machines: {
-                enabled: false,
-                peerMediation: {
-                    enabled: false,
-                    observability: { enabled: false },
-                },
-                transfer: {
-                    enabled: false,
-                    directPeer: {
-                        enabled: false,
-                    },
-                    serverRouted: {
-                        enabled: false,
-                    },
-                },
-                tunnel: {
-                    enabled: false,
-                    directPeer: { enabled: false },
-                    serverRouted: { enabled: false },
-                },
-                liveStream: {
-                    enabled: false,
-                    directPeer: { enabled: false },
-                    serverRouted: { enabled: false },
-                },
-                rpc: {
-                    enabled: false,
-                    directPeer: { enabled: false },
-                },
-            },
+            sessions: FeatureGatesSchema.shape.sessions.parse(undefined),
+            machines: FeatureGatesSchema.shape.machines.parse(undefined),
             localServices: {
                 enabled: false,
                 inventory: { enabled: false },
@@ -342,8 +310,8 @@ export async function stubServerFeaturesFetch(overrides: FixtureOverrides = {}):
     const profiles = await import('@/sync/domains/server/serverProfiles');
     const active = profiles.getActiveServerSnapshot();
     if (!String(active?.serverId ?? '').trim()) {
-        const profile = profiles.upsertServerProfile({ serverUrl: 'https://features.test', name: 'Features Test' });
-        profiles.setActiveServerId(profile.id, { scope: 'device' });
+        const profile = await profiles.upsertServerProfile({ serverUrl: 'https://features.test', name: 'Features Test' });
+        await profiles.setActiveServerId(profile.id, { scope: 'device' });
     }
 
     const response = buildServerFeaturesResponse(overrides);
@@ -363,8 +331,8 @@ export async function stubServerFeaturesFetchFailure(): Promise<void> {
     const profiles = await import('@/sync/domains/server/serverProfiles');
     const active = profiles.getActiveServerSnapshot();
     if (!String(active?.serverId ?? '').trim()) {
-        const profile = profiles.upsertServerProfile({ serverUrl: 'https://features.test', name: 'Features Test' });
-        profiles.setActiveServerId(profile.id, { scope: 'device' });
+        const profile = await profiles.upsertServerProfile({ serverUrl: 'https://features.test', name: 'Features Test' });
+        await profiles.setActiveServerId(profile.id, { scope: 'device' });
     }
 
     vi.stubGlobal(

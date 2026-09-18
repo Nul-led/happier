@@ -9,6 +9,8 @@ import {
 import { readPreferredVoiceConversationBindingMetadata } from './voiceConversationBindingMetadata';
 import type { VoiceSessionBinding } from './voiceConversationBindingTypes';
 import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoiceSessionOwnerMetadata';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 type VoiceConversationBindingStoreLike = typeof voiceSessionBindingStore;
 
@@ -22,7 +24,9 @@ function isBindingAvailableInState(
 ): binding is VoiceSessionBinding {
     if (!binding) return false;
     if (binding.lifetime === 'runtime_attempt') return true;
-    return Boolean(state.sessions?.[binding.conversationSessionId]);
+    const session = state.sessions?.[binding.conversationSessionId];
+    return normalizeSessionAddress(session?.serverId, binding.conversationSessionId)?.serverId
+        === binding.conversationSessionAddress.serverId;
 }
 
 export function createVoiceConversationBindingResolver(params?: Readonly<{
@@ -41,7 +45,12 @@ export function createVoiceConversationBindingResolver(params?: Readonly<{
         const state = getState();
         const storeBinding = store.getState().getByConversationSessionId(conversationSessionId);
         const canonicalSession = state.sessions?.[conversationSessionId] ?? null;
-        const ownerMetadata = readVoiceSessionOwnerMetadataFromState(state as any, conversationSessionId);
+        const sourceServerId = normalizeNonEmptyString(canonicalSession?.serverId)
+            ?? normalizeNonEmptyString(getActiveServerSnapshot().serverId);
+        const conversationAddress = normalizeSessionAddress(sourceServerId, conversationSessionId);
+        const ownerMetadata = conversationAddress
+            ? readVoiceSessionOwnerMetadataFromState(state as any, conversationAddress)
+            : null;
         // Single guarded read path: caller-supplied `sessionMetadata` is funneled
         // through the same `isVoiceConversationSystemSessionMetadata` guard as every
         // other persisted read (audit F2) instead of an unguarded fallback.
@@ -49,6 +58,7 @@ export function createVoiceConversationBindingResolver(params?: Readonly<{
             conversationSessionId,
             preferredMetadata: ownerMetadata,
             directMetadata: canonicalSession ? null : input.sessionMetadata ?? null,
+            sourceServerId,
         });
         return pickNewerVoiceBinding(
             isBindingAvailableInState(storeBinding, state) ? storeBinding : null,

@@ -6,6 +6,7 @@ export * from './fetchSessionOrganizationSnapshot';
 export * from './importLegacySessionOrganization';
 export * from './moveSessionFolderAssignments';
 export * from './reorderSessionOrganization';
+export * from './requireSessionOrganizationMutationScope';
 export * from './setSessionAttentionStanding';
 export * from './setSessionFolderAssignment';
 export * from './setSessionPin';

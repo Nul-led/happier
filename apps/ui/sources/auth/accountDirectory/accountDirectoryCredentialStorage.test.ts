@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { installWebLockManagerMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 
 const storage = new Map<string, string>();
 let readFailure: Error | null = null;
@@ -12,10 +13,16 @@ vi.mock('@/auth/storage/deviceLocalStorage', () => ({
 }));
 
 describe('account directory credential storage', () => {
+    const webLocks = installWebLockManagerMock();
+
     afterEach(() => {
         storage.clear();
         readFailure = null;
         delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+    });
+
+    afterAll(() => {
+        webLocks.restore();
     });
 
     it('isolates credentials by endpoint and supports independent removal', async () => {
@@ -29,6 +36,20 @@ describe('account directory credential storage', () => {
         await accountDirectoryCredentialStorage.remove({ endpoint: 'https://directory-a.test', serverIdentityId: 'directory-a' });
         await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory-a.test', serverIdentityId: 'directory-a' })).resolves.toBeNull();
         await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory-b.test', serverIdentityId: 'directory-b' })).resolves.toEqual({ token: 'b' });
+    });
+
+    it('serializes disjoint native Account Service writes through the process-local tail', async () => {
+        const { accountDirectoryCredentialStorage } = await import('./accountDirectoryCredentialStorage');
+        const first = { endpoint: 'https://directory-a.test', serverIdentityId: 'directory-a' };
+        const second = { endpoint: 'https://directory-b.test', serverIdentityId: 'directory-b' };
+
+        await Promise.all([
+            accountDirectoryCredentialStorage.set(first, { token: 'a' }),
+            accountDirectoryCredentialStorage.set(second, { token: 'b' }),
+        ]);
+
+        await expect(accountDirectoryCredentialStorage.get(first)).resolves.toEqual({ token: 'a' });
+        await expect(accountDirectoryCredentialStorage.get(second)).resolves.toEqual({ token: 'b' });
     });
 
     it('distinguishes absent, valid, corrupt, and unavailable custody', async () => {
@@ -89,7 +110,7 @@ describe('account directory credential storage', () => {
         await TokenStorage.setPendingAccountDirectoryAuth({
             ...target,
             credentialTarget: 'account_directory',
-            entryIntent: 'connect_service',
+            entryIntent: { kind: 'enter', target: { kind: 'automatic' } },
             canonicalServerUrl: target.endpoint,
             provider: 'github',
             purpose: 'account_directory',

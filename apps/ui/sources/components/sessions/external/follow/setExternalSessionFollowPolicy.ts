@@ -1,4 +1,4 @@
-import type { ExternalSessionFollowPolicy } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier, type ExternalSessionFollowPolicy } from '@happier-dev/protocol';
 
 import { updateMetadataWithExternalSessionFollowPolicy } from '@/sync/domains/session/external/externalSessionFollowMetadata';
 import { readExternalSessionLink, type ExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
@@ -47,11 +47,14 @@ function resolveLinkMutationIdentity(
     if (!link) return null;
     const agentId = typeof link.agentId === 'string' ? link.agentId.trim() : '';
     const machineId = typeof link.machineId === 'string' ? link.machineId.trim() : '';
-    const remoteSessionId = typeof link.remoteSessionId === 'string' ? link.remoteSessionId.trim() : '';
+    // The Agent minted `remoteSessionId` and the daemon hands it straight back
+    // to that Agent, so presence is the only judgement the UI makes on it;
+    // `agentId`/`machineId` stay trimmed because Happier mints those.
+    const remoteSessionId = readNonBlankOpaqueIdentifier(link.remoteSessionId);
     const linkedAtMs = typeof link.linkedAtMs === 'number' && Number.isFinite(link.linkedAtMs)
         ? Math.trunc(link.linkedAtMs)
         : undefined;
-    if (!agentId || !machineId || !remoteSessionId) return null;
+    if (!agentId || !machineId || remoteSessionId === null) return null;
     return { agentId, machineId, remoteSessionId, linkedAtMs, source: link.source };
 }
 

@@ -1,10 +1,25 @@
+import { sessionCollaborationTranslations } from './sessionCollaborationTranslations';
+import { sessionMessageAccountActorTranslations } from './sessionMessageAccountActorTranslations';
+import { sessionAccessTranslations } from './sessionAccessTranslations';
+import { nativePasswordTranslations } from './nativePasswordTranslations';
+import { sessionFollowTranslations } from './sessionFollowTranslations';
+import { sessionHomeFreshnessTranslations } from './sessionHomeFreshnessTranslations';
+import { sessionReminderTranslations } from './sessionReminderTranslations';
 import { settingsProvidersTranslations } from './settingsProvidersTranslations';
 import { providerSessionTranslations } from './providerSessionTranslations';
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
+import { machinePoolTranslations } from './machinePoolTranslations';
+import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
+import { sessionResponsibilityTranslations } from './sessionResponsibilityTranslations';
+import { sessionListFilterTranslations } from './sessionListFilterTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
+import { sessionBoardTranslations } from './sessionBoardTranslations';
 import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscoverTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
+import { sessionAgentActivityTranslations } from './sessionAgentActivityTranslations';
+import { changedFileEvidenceTranslations } from './changedFileEvidenceTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
 import { voiceProviderPrivacyTranslations } from './voiceProviderPrivacyTranslations';
@@ -20,9 +35,14 @@ import { pluginInvocationLogTranslations } from './pluginInvocationLogTranslatio
 import { eventAutomationComposerTranslations } from './eventAutomationComposerTranslations';
 import { automationTriggerSetTranslations } from './automationTriggerSetTranslations';
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
+import { actionConfirmationTranslations } from './actionConfirmationTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeGovernanceTranslations } from './homeGovernanceTranslations';
+import { workflowTranslations } from './workflowTranslations';
+import { teamsTranslations } from './teamsTranslations';
+import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
 import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
 
@@ -165,6 +185,8 @@ const newSessionMcpTranslationExtension = {
   mcpReasonBindingDisabled: 'サーバーバインディングにより無効',
   mcpReasonAvailablePortable: 'このセッションで利用可能',
   mcpReasonNotPortable: 'このセッションでは利用不可',
+  profileReasonNotPortable: 'このセッションでは利用不可',
+  connectedServicesReasonNotPortable: 'このセッションでは利用不可',
 } as const;
 
 const settingsAppearanceTranslationExtension = {
@@ -622,6 +644,7 @@ const settingsSessionHandoffTranslationExtensions = {
 } as const;
 
 export const ja = {
+    actionConfirmations: actionConfirmationTranslations.ja,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ja, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ja.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
@@ -634,6 +657,9 @@ export const ja = {
     },
     voice: voiceReadinessTranslations.ja,
     pluginPermissions: pluginPermissionTranslations.ja,
+    sessionBoard: sessionBoardTranslations.ja,
+    ...sessionAgentActivityTranslations,
+    ...changedFileEvidenceTranslations.ja,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.ja,
     pluginSurfaces: {
         state: {
@@ -720,6 +746,8 @@ export const ja = {
             transcriptScrollPageDown: 'トランスクリプトを1ページ下へ',
             transcriptScrollPageUp: 'トランスクリプトを1ページ上へ',
             transcriptScrollTop: 'トランスクリプトの先頭へ移動',
+            workflowSave: 'ワークフローを保存',
+            workflowRun: 'ワークフローを実行',
 
             permissionCycle: "サイクル許可モード",
             splitCanvasCloseLeaf: "スプリットを閉じる",
@@ -740,6 +768,7 @@ export const ja = {
     inbox: "受信箱",
     friends: "友達",
     sessions: "セッション",
+    sessionsNeedsAttention: "セッション、対応が必要です",
     settings: "設定",
 
     projects: "プロジェクト",},
@@ -835,12 +864,16 @@ export const ja = {
   inbox: {
         ...actionOperationInboxTranslations,
     openSession: ({ session }: { session: string }) => `セッションを開く: ${session}`,
+    readySessionAccessibilityLabel: ({ session }: { session: string }) => `確認の準備完了: ${session}`,
     // Inbox screen
     emptyTitle: "すべて完了です",
     emptyDescription: "現在、保留中のリクエストや更新はありません。",
     approvals: "承認",
     permissions: "権限",
-    unreadSessions: "未読のセッション",
+    readySessions: "確認の準備完了",
+    errors: "エラー",
+    markAllRead: "すべて既読にする",
+    openInbox: "受信トレイを開く",
     updates: "アクティビティ",
   },
 
@@ -867,6 +900,7 @@ export const ja = {
     status: {
       open: "保留中",
       approved: "承認済み",
+      executing: "実行中",
       rejected: "拒否済み",
       executed: "実行済み",
       failed: "失敗",
@@ -1000,6 +1034,7 @@ export const ja = {
       toggleFinished: "完了した実行の表示を切り替え",
       refresh: "実行を更新",
     },
+    openRun: "実行を開く",
     openSession: "セッションを開く",
     sessionTitle: ({ sessionId }: { sessionId: string }) => `セッション ${sessionId}`,
     runLabel: ({ runId }: { runId: string }) => `実行 ${runId}`,
@@ -1098,7 +1133,6 @@ export const ja = {
       title: "オートメーションを編集",
       saveAutomationLabel: "オートメーションを保存",
       messageLabel: "メッセージ",
-      messagePlaceholder: "送信するメッセージ",
       messageHelpText:
         "このメッセージは、保留中のユーザーメッセージとしてセッションにキューされます。",
       updateFailed: "オートメーションの更新に失敗しました。",
@@ -1371,7 +1405,6 @@ export const ja = {
       },
     },
     create: {
-      defaultName: "スケジュール済みメッセージ",
       createFailed: "オートメーションの作成に失敗しました。",
       unavailableGroupTitle: "利用できません",
       cannotCreateForSession: "このセッションではオートメーションを作成できません",
@@ -1905,6 +1938,12 @@ export const ja = {
   },
 
   status: {
+    encryptedUnavailable: "暗号化された詳細を表示できません",
+    encryptedPreparing: "暗号化アクセスを準備中",
+    encryptedRepairNeeded: "暗号化アクセスの修復が必要です",
+    awaitingUpdates: "更新を待機中",
+    queuedInput: "入力待ち",
+    unread: "未読",
     connected: "接続済み",
     connecting: "接続中",
     disconnected: "切断済み",
@@ -1964,6 +2003,8 @@ export const ja = {
 	      pathRelay: "セキュアリレー",
 	      publicIngressAbsent: "未設定",
 	      relayDisabled: "無効",
+	      relayNone: "なし",
+	      relayDisabledWithDirect: ({ direct }: { direct: number }) => `無効 · 直接アドレス ${direct} 件`,
 	      relayAutomatic: ({ relays, direct }: { relays: string; direct: number }) =>
 	          `自動 · ${relays} · 直接アドレス ${direct} 件`,
 	    },
@@ -1996,16 +2037,16 @@ export const ja = {
 
   connect: {
     restoreAccount: "アカウントを復元",
-    enterSecretKey: "シークレットキーを入力してください",
+    enterSecretKey: "復旧キーを入力してください",
     invalidSecretKey:
-      "シークレットキーが無効です。確認して再試行してください。",
+      "復旧キーが無効です。確認して再試行してください。",
     enterUrlManually: "URLを手動で入力",
     scanComputerQrUnavailableTitle: "PCのQRスキャンは利用できません",
     scanComputerQrUnavailableBody:
       "このサーバーではこのサインイン方法が無効になっています。下の別の方法でアカウントを復元してください。",
     scanComputerQrInstructions: "パソコンの Happier（設定 → スマホを追加）に表示されたQRコードをスキャンします。",
     scanComputerQrButton: "QRをスキャンしてサインイン",
-    scanExistingHomeQrTitle: "既存のHomeのQRコードをスキャン",
+    scanExistingHomeQrTitle: "QRコードをスキャンするかHomeリンクを貼り付ける",
     waitingForApproval: "承認待ち…",
     securingCredentials: "認証情報を保護しています…",
     showQrInstead: "代わりにQRコードを表示",
@@ -2056,14 +2097,14 @@ export const ja = {
     externalAuthVerifiedTitle: ({ provider }: { provider: string }) =>
       `${provider} の認証が完了しました`,
     externalAuthVerifiedBody: ({ provider }: { provider: string }) =>
-      `${provider} に紐づく既存の Happier アカウントが見つかりました。この端末でサインインを完了するには、QRコードまたはシークレットキーでアカウントキーを復元してください。`,
-    restoreWithSecretKeyInstead: "秘密鍵で復元する",
+      `${provider} に紐づく既存の Happier アカウントが見つかりました。この端末でサインインを完了するには、QRコードまたは復旧キーでアカウントキーを復元してください。`,
+    restoreWithSecretKeyInstead: "復旧キーで復元する",
     restoreWithSecretKeyDescription:
-      "アカウントへのアクセスを復元するには秘密鍵を入力してください。",
+      "アカウントへのアクセスを復元するには復旧キーを入力してください。",
     lostAccessLink: "アクセスを失いましたか？",
     lostAccessTitle: "アカウントへのアクセスを失いましたか？",
     lostAccessBody:
-      "このアカウントに紐づいた端末がなく、シークレットキーを失った場合は、本人確認プロバイダーでアカウントをリセットできます。新しい Happier アカウントが作成されます。以前の暗号化された履歴は復元できません。",
+      "このアカウントに紐づいた端末がなく、復旧キーを失った場合は、本人確認プロバイダーでアカウントをリセットできます。新しい Happier アカウントが作成されます。以前の暗号化された履歴は復元できません。",
     lostAccessContinue: ({ provider }: { provider: string }) =>
       `${provider} で続行`,
     lostAccessConfirmTitle: "アカウントをリセットしますか？",
@@ -2071,7 +2112,7 @@ export const ja = {
       "新しいアカウントを作成し、プロバイダーのIDを再リンクします。以前の暗号化された履歴は復元できません。",
     lostAccessConfirmButton: "リセットして続行",
     secretKeyPlaceholder: "XXXXX-XXXXX-XXXXX...",
-    secretKeyInputLabel: "シークレットキー",
+    secretKeyInputLabel: "復旧キー",
     linkNewDeviceTitle: "新しいデバイスをリンク",
     linkNewDeviceSubtitle: "新しいデバイスに表示されているQRコードをスキャンしてこのアカウントにリンクしてください",
     linkNewDeviceQrInstructions: "新しいデバイスでHappierを開いてQRコードを表示してください",
@@ -2512,6 +2553,7 @@ export const ja = {
         title: "Happier 実行の指示",
         subtitle: "オフにすると、ネイティブ優先ルーティングと Happier 実行の仕組みがコーディングエージェントのシステムプロンプトから削除されます。",
       },
+      notifyParentOnCompletion: { title: '実行完了時に親へ通知', subtitle: '親エージェントに構造化された完了イベントを送信します。' },
       characterBudget: {
         title: "カスタムルールの文字数上限",
         subtitle: ({ value }: { value: string }) => `${value} 文字`,
@@ -2736,10 +2778,10 @@ localTailscale: {
     actionsSubtitle: "各アクションをアプリ、音声、統合のどこに表示するかを選択します。",
     prompts: "プロンプトとスキル",
     promptsSubtitle: "プロンプトライブラリ、テンプレート、スタック",
-    servers: "Relay",
-    serversSubtitle: "保存済み Relay、グループ、既定値",
+    servers: "Homes",
+    serversSubtitle: "保存済み Home、グループ、既定値",
 			    systemStatus: "システム状態",
-			    systemStatusSubtitle: "Relay、アカウント、マシン、デーモン",
+			    systemStatusSubtitle: "Home、アカウント、マシン、デーモン",
 		    mcpServers: "MCP サーバー",
 		    mcpServersSubtitle: "MCP サーバーとバインディングを管理します",
 		    mcpServersComingSoon: "MCP サーバー設定は近日対応予定です。",
@@ -3159,10 +3201,10 @@ localTailscale: {
 	      application: "アプリケーション",
 	      updates: "アップデート",
 	      appHealth: "アプリ + 同期の状態",
-	      currentServer: "現在の Relay",
+	      currentServer: "現在の Home",
       identity: "サインイン情報",
-      configuredServers: "設定済み Relay",
-      machinesActiveServer: "マシン（アクティブ Relay）",
+      configuredServers: "設定済み Home",
+      machinesActiveServer: "マシン（アクティブ Home）",
       machinesOtherServer: ({ server }: { server: string }) => `マシン（${server}）`,
       actions: "アクション",
     },
@@ -3207,13 +3249,18 @@ localTailscale: {
     },
     server: {
       activeServer: "アクティブ Home",
+      activeHomeHealth: "アクティブ Home の状態",
+    },
+    transport: {
+      irohCurrent: "Iroh トランスポート",
+      irohHistory: "Iroh トランスポート履歴",
     },
     identity: {
       accountId: "アカウントID",
       username: "ユーザー名",
     },
     servers: {
-      noneConfigured: "Relayが設定されていません",
+      noneConfigured: "Home が設定されていません",
       active: "アクティブ",
     },
     machines: {
@@ -3243,9 +3290,9 @@ localTailscale: {
     },
     actions: {
       runDiagnosis: "診断を実行",
-      runDiagnosisSubtitle: "Relay/アカウント/デーモンの不一致を検出",
+      runDiagnosisSubtitle: "Home/アカウント/デーモンの不一致を検出",
       refreshMachineAttribution: "マシンのデーモン情報を更新",
-      refreshMachineAttributionSubtitle: "オンラインのマシンからデーモンのRelay/アカウントを取得",
+      refreshMachineAttributionSubtitle: "オンラインのマシンからデーモンのHome/アカウントを取得",
       copyJson: "System Status JSON をコピー",
       copyJsonSubtitle: "サポート向けに安全なスナップショットを共有",
     },
@@ -3870,6 +3917,7 @@ localTailscale: {
         memberActive: "アクティブメンバー",
         memberEnabled: "有効",
         memberDisabled: "無効",
+        memberAutoDisabledModelNotEntitled: "自動的に無効化：選択したモデルは利用できません",
         memberPriority: ({ priority }: { priority: number }) => `優先度 ${priority}`,
         memberExhaustedUntil: ({ time }: { time: string }) => `${time} まで枯渇`,
         memberQuotaExhaustedUntil: ({ time }: { time: string }) => `${time} まで使用制限`,
@@ -3928,8 +3976,25 @@ localTailscale: {
         membersSubtitle: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} 有効`,
         optionsTitle: "オプション",
         autoSwitchTitle: "自動フォールバック",
+        autoQuotaResetTitle: "クォータリセットを自動的に使用",
+        autoDisablePlanInvalidTitle: "選択したモデルを利用できないアカウントを無効化",
+        autoDisablePlanInvalidSubtitle: "プランで選択したモデルを利用できない場合、そのプールアカウントを自動的に無効化します。手動で再び有効にできます。初期設定はオフです。",
+        autoQuotaResetSubtitle: "プール内に利用可能なアカウントがなく、使い切ったクォータをリセットできる場合にのみ、保存されたリセットを消費します。初期設定はオフです。",
         autoSwitchEnabledSubtitle: "アクティブなアカウントに回復が必要なとき、別のメンバーへ切り替えます。",
         autoSwitchDisabledSubtitle: "手動で切り替えるまでアクティブなメンバーを使い続けます。",
+        quotaLimitsTitle: "使用量制限",
+        quotaLimitsAllTitle: "報告されたすべての制限",
+        quotaLimitsAllSubtitle: "このプロバイダーが報告するすべての割り当てを切り替え判断に使用します。",
+        quotaLimitsAllLoadingSubtitle: ({ count }: { count: number }) => `${count}個のアカウントを読み込んでいるため、制限の一覧がまだ不完全な場合があります。`,
+        quotaLimitsSelectedSubtitle: ({ count }: { count: number }) => `${count}個の制限を選択中`,
+        quotaLimitUnavailableSubtitle: "現在は報告されていません · このプールポリシーには保持されます",
+        quotaLimitProviderAllowanceTitle: "プロバイダーの割り当て",
+        quotaLimitTechnicalIdSubtitle: ({ providerLimitId }: { providerLimitId: string }) => `制限ID: ${providerLimitId}`,
+        quotaLimitModelSubtitle: ({ modelId }: { modelId: string }) => `モデル: ${modelId}`,
+        quotaLimitModelsSubtitle: ({ count }: { count: number }) => `${count}個のモデル範囲`,
+        quotaLimitWindowsSubtitle: ({ count }: { count: number }) => `${count}個の時間枠`,
+        quotaLimitReportingSubtitle: ({ reporting, total }: { reporting: number; total: number }) => `${total}個の有効なアカウントのうち${reporting}個が報告`,
+        quotaLimitsSearchPlaceholder: "使用量制限を検索",
         strategyTitle: "選択戦略",
         strategyPriorityTitle: "優先順",
         strategyPrioritySubtitle: "優先度の小さい番号から先に試します。",
@@ -4487,6 +4552,25 @@ localTailscale: {
   },
 
   settingsNotifications: {
+        remoteAlerts: {
+            title: "アプリ終了中のセッション通知",
+            accountTitle: "リモートセッション通知を許可",
+            disclosure: "アプリを閉じている間も許可された通知を送信できるよう、このHomeに通知カテゴリ、通知を控える時間帯とタイムゾーン、プレビューの制限、サウンド設定の読み取りを許可します。セッションの内容や暗号化キーは共有されません。",
+            footer: "同意しない場合も、既存の所有者向け通知とアプリ使用中の更新は利用できます。リモートへの変更反映には接続が必要です。送信済みの通知は取り消せません。",
+            deviceTitle: "このデバイスで受信",
+            deviceSubtitle: "このデバイスのリモートセッション通知のみに適用されます。",
+            statusTitle: "Homeのポリシー",
+            current: "最終確認時点で最新",
+            disabled: "Homeでは未有効化",
+            stale: "ポリシーの同期が必要",
+            unavailable: "リモート通知を利用できません",
+            pending: "ローカルの変更は同期待ちです",
+            statusHelp: "Homeの状態は最後に確認されたポリシーを示します。未同期のローカル変更は反映されません。",
+            deviceUnavailable: "このアプリのビルドではデバイスを登録できません。",
+            deviceEnrolled: "デバイス登録を確認済み",
+            deviceNotEnrolled: "デバイス登録は未確認です",
+            supportedEvents: "現在、このデバイスはセッション準備完了の通知に対応しています。配信にはOSの通知許可も必要です。",
+        },
     badges: {
       title: "このデバイスのバッジ",
       footer: "このデバイスのアプリアイコンバッジにどのアクティビティを反映するかを選択します。",
@@ -4513,6 +4597,8 @@ localTailscale: {
       readySubtitle: "ターンが終了したときにローカル通知を表示します",
       readyPreviewTitle: "準備完了メッセージのプレビュー",
       readyPreviewSubtitle: "このデバイスの準備完了通知に最新のアシスタントメッセージを含めます",
+      requestPreviewTitle: "リクエストのプレビュー",
+      requestPreviewSubtitle: "許可が必要なコマンド、質問、回答の選択肢を含めます。ロック画面に表示される場合があります。",
       permissionRequestsTitle: "権限リクエスト",
       permissionRequestsSubtitle: "セッションが承認を必要とするときにローカル通知を表示します",
       userActionsTitle: "操作リクエスト",
@@ -4644,6 +4730,8 @@ localTailscale: {
       readySubtitle: "ターンが終了し、エージェントがコマンドを待っているときに送信します",
       readyPreviewTitle: "準備完了メッセージのプレビュー",
       readyPreviewSubtitle: "この webhook の準備完了通知に最新のアシスタントメッセージを含めます",
+      requestPreviewTitle: "リクエストのプレビュー",
+      requestPreviewSubtitle: "この Webhook のデータに、許可が必要なコマンド、質問、回答の選択肢を含めます。",
       permissionRequestsTitle: "権限リクエスト",
       permissionRequestsSubtitle: "セッションが承認待ちでブロックされているときに送信します",
       userActionsTitle: "操作リクエスト",
@@ -4674,6 +4762,10 @@ localTailscale: {
       readyPreview: {
         title: "準備完了メッセージのプレビュー",
         subtitle: "準備完了ターンのプッシュ通知に最新のアシスタントメッセージ本文を含めます",
+      },
+      requestPreview: {
+          title: "リクエストのプレビュー",
+          subtitle: "許可が必要なコマンド、質問、回答の選択肢を含めます。ロック画面に表示される場合があります。",
       },
       permissionRequests: {
         title: "権限リクエスト",
@@ -4819,6 +4911,15 @@ localTailscale: {
       readyFallbackBody: "ターンが終了しました。続行するにはセッションを開いてください。",
       permissionFallbackBody: "承認が必要です。",
       userActionFallbackBody: "このセッションには入力が必要です。",
+      requestLabels: {
+          command: "コマンド",
+          file: "ファイル",
+          selectOne: "1 つ選択",
+          selectMultiple: "複数選択",
+          customAnswer: "自由回答が可能",
+          localMessages: "ローカルメッセージ",
+          remoteMessages: "リモートメッセージ",
+      },
     },
     channels: {
       default: "デフォルト",
@@ -5215,31 +5316,6 @@ localTailscale: {
             },
             kilo: {
                 title: "Kilo"
-            },
-            kimi: {
-                title: "Kimi",
-                sections: {
-                    compatibility: {
-                        title: '互換性',
-                        footer: 'Kimi ACP の起動が停止する Linux/コンテナ環境でのみ互換モードを使用してください。'
-                    }
-                },
-                fields: {
-                    kimiAcpPythonSelector: {
-                        title: 'Python stdio セレクター',
-                        subtitle: 'Happier が Kimi ACP の Python stdio ループを起動する方法を選択します。',
-                        options: {
-                            auto: {
-                                title: '自動',
-                                subtitle: 'Kimi のデフォルト Python セレクターを使用します。'
-                            },
-                            poll: {
-                                title: '互換モード',
-                                subtitle: 'Kimi ACP stdio に epoll() ではなく poll() を使用します。'
-                            }
-                        }
-                    }
-                }
             },
             kiro: {
                 title: "Kiro"
@@ -5650,6 +5726,14 @@ localTailscale: {
       invalidFormat: "フォーマットが無効です",
       operationFailed: "操作に失敗しました",
       signupDisabled: "このサーバーでは新規アカウントの作成が無効になっています。既存のアカウントでサインインするか、サーバー管理者に登録の有効化を依頼してください。",
+      accountDisabled: ({ home }: { home: string }) => `このアカウントは ${home} で無効になっています。Home の管理者にお問い合わせください。`,
+      homeIdentityMismatch: ({ home }: { home: string }) =>
+          `${home} は、ここに保存されている Home とは別の Home として応答しました。サインインは行われていません。アドレスを確認するか、その Home を新しく追加してください。`,
+      homeAddressMismatchTitle: 'これは正しい Home ですか？',
+      homeAddressMismatchBody: ({ claimed, reached }: { claimed: string; reached: string }) =>
+          `この Home には ${reached} で接続しましたが、Home は自分のアドレスを ${claimed} だと伝えています。両方のアドレスが同じ Home だと分かる場合のみ続行してください。`,
+      homeAddressNotConfirmed: ({ home }: { home: string }) =>
+          `${home} のサインインは、アドレスが確認されなかったため中止されました。`,
       failedToForkSession: "セッションの分岐に失敗しました",
       daemonUnavailableTitle: "デーモンを利用できません",
       daemonUnavailableBody:
@@ -5899,6 +5983,94 @@ localTailscale: {
     },
     noMachineSelected: "セッションを開始するマシンを選択してください",
     noPathSelected: "セッションを開始するディレクトリを選択してください",
+    temporaryComputer: {
+        title: '一時的なコンピュータ',
+        subtitle: '別のコンピュータ向けに、検証済みの Runner パッケージを準備します。',
+        cancelConnectedTitle: 'この一時的なコンピュータをキャンセルしますか？',
+        cancelConnectedBody: '相手のコンピュータはすでに接続されています。キャンセルすると双方でこのリクエストが終了しますが、ここにある現在の下書きはそのまま残ります。',
+        choosePlatform: 'コンピュータのプラットフォームを選択',
+        platformSubtitle: '検証済みの Happier Runner パッケージ',
+        platform: {
+            'windows-x64': 'Windows · x64',
+            'darwin-arm64': 'macOS · Apple シリコン',
+            'darwin-x64': 'macOS · Intel',
+            'linux-x64': 'Linux · x64',
+            'linux-arm64': 'Linux · ARM64',
+            unknown: '認識できないプラットフォーム',
+        },
+        destination: {
+            windows: '一時的な Windows コンピュータ',
+            darwin: '一時的な Mac コンピュータ',
+            linux: '一時的な Linux コンピュータ',
+        },
+        exportPackage: 'パッケージを保存または共有',
+        exportClaimed: 'このパッケージはすでにコンピューターが受け取っているため、再送できません。',
+        target: {
+            home: ({ home }: { home: string }) => `ホーム: ${home}`,
+            account: ({ account }: { account: string }) => `アカウント: ${account}`,
+            workspaceChoose: 'フォルダーは相手が選びます',
+            workspaceHome: '相手のホームフォルダー',
+        },
+        endpointFacts: {
+            unreadable: 'このデバイスではそのコンピューターが送った情報を読み取れません。',
+        },
+        createNewPackage: '新しいパッケージを作成',
+        returnToEditing: '編集に戻る',
+        unavailable: {
+            loading: '利用できるパッケージを確認しています…',
+            notAvailable: 'このホームでは一時的なコンピューターを利用できません。',
+            notPublished: 'このホーム向けに検証済みの Happier Runner パッケージはまだ公開されていません。',
+            unreachable: 'Happier Runner パッケージを確認できませんでした。接続を確認してもう一度お試しください。',
+            automation: '一時的なコンピューターは誰かの承認が必要なため、オートメーションからは利用できません。',
+            platformRetired: 'このプラットフォームは公開されなくなりました。別のプラットフォームを選んでください。',
+        },
+        blocked: {
+            agentUnsupported: 'このエージェントは一時的なコンピューターに自分でインストールできません。別のエージェントを選んでください。',
+            modelUnselected: '送信する前に、このエージェント用のチームモデルを選んでください。',
+            modelUnavailable: '選択したチームモデルはこのエージェントでは利用できません。別のモデルを選んでください。',
+            brokerUnavailable: 'この一時的なコンピューター向けの AI アクセスを準備できませんでした。もう一度お試しください。',
+        },
+        expiry: {
+            title: 'パッケージの有効期限',
+            never: 'なし',
+            neverDetail: '既定 · 接続するかキャンセルするまでパッケージは待機します',
+            inOneDay: '24 時間後',
+            inOneWeek: '7 日後',
+            custom: '日時を選択…',
+            dateLabel: '日付',
+            timeLabel: '時刻',
+            pastInstant: '未来の時刻を選んでください。',
+            noExpiry: '有効期限なし',
+            expiresAt: ({ date }: { date: string }) => `有効期限 ${date}`,
+        },
+        closed: {
+            canceled: 'この一時的なコンピュータのリクエストはキャンセルされました。',
+            declined: '相手のコンピュータがこのリクエストを拒否しました。何も作成されませんでした。',
+            expired: 'このリクエストは、一時的なコンピュータが接続する前に有効期限が切れました。',
+            revoked: 'アクセスが変更されたため、このパッケージは使用できなくなりました。',
+            failed: '一時的なコンピュータのセットアップを完了できませんでした。何も作成されませんでした。',
+        },
+        status: {
+            idle: '準備完了',
+            reconciling: 'このリクエストを確認しています…',
+            preparing: 'パッケージを準備しています…',
+            waiting_for_computer: 'コンピュータを待っています',
+            review_unavailable: '選択した AI アクセスは、この一時的なコンピュータ用にまだ準備できません。このリクエストをキャンセルし、Happier を更新してからもう一度お試しください。',
+            materialization_unavailable: 'この一時的なコンピュータではまだセッションを作成できません。このリクエストをキャンセルし、Happier を更新してからもう一度お試しください。',
+            waiting_for_approval: '承認を待っています',
+            connected: 'コンピューターに接続しました',
+            installing_agent: '選択したエージェントをインストールしています…',
+            checking_ai_access: 'AI アクセスを確認しています…',
+            preparing_encryption: '暗号化セッションを準備しています…',
+            creating_session: 'セッションを作成しています…',
+            canceling: 'キャンセルしています…',
+            profile_changed: '選択したプロファイルが変更または削除されたため、このリクエストは送信されませんでした。このセッションの設定を確認してください。',
+            profile_environment_unavailable: 'このプロファイルに必要なシークレットがこのアカウントでは利用できないため、このリクエストは送信されませんでした。このセッションの設定を確認してください。',
+            cancel_failed: 'オフラインのためキャンセルできませんでした。このリクエストは表示されたままです。',
+            failed: '一時的なコンピュータの設定に対応が必要です。',
+            succeeded: 'セッションの準備ができました。',
+        },
+    },
     machinePicker: {
       searchPlaceholder: "マシンを検索...",
       recentTitle: "最近",
@@ -6105,6 +6277,9 @@ localTailscale: {
   sessionHandoff: sessionHandoffTranslationExtensions.ja,
 
   session: {
+        access: sessionAccessTranslations['ja'],
+        follow: sessionFollowTranslations['ja'],
+        homeFreshness: sessionHomeFreshnessTranslations['ja'],
     providerBinding: providerSessionTranslations.ja,
     transcriptNavigation: {
       title: "ナビゲート",
@@ -6191,6 +6366,8 @@ localTailscale: {
         statusPaused: "一時停止中",
         statusComplete: "完了",
         statusBudgetLimited: "予算制限中",
+        budgetReachedBody: "このゴールはトークン予算に達しました。続行するには予算を削除してください。",
+        removeBudgetAndResume: "予算を削除して続行",
         statusInterrupted: "中断",
         setTitle: "目標を設定",
         setSubtitle: "セッションに焦点を定めて、エージェントが軌道を外れないようにします。",
@@ -6212,6 +6389,16 @@ localTailscale: {
       },
     },
     usageLimitRecovery: {
+        overloadTitle: "モデルが過負荷です",
+        overloadWaiting: "再試行を待機中。",
+        overloadDispatching: "再試行中。",
+        overloadAwaiting: "モデルの応答を待っています。",
+        overloadStopped: "自動再試行を停止しました。準備ができたら再試行できます。",
+        overloadExhausted: "自動再試行の上限に達しました。手動で再試行できます。",
+        overloadOffline: "再試行の状態を確認するにはセッションのマシンに再接続してください。",
+        stopRetrying: "再試行を停止",
+        overloadCountdown: ({ seconds, attempt }: { seconds: number; attempt: number }) => `モデルが過負荷です — ${seconds}秒後に再試行 · ${attempt}回目`,
+        overloadAttempt: ({ attempt }: { attempt: number }) => `${attempt}回目`,
       banner: {
         title: "使用上限に達しました",
         body: "Happier は上限のリセットを待って、このセッションを自動的に再開できます。",
@@ -6460,6 +6647,8 @@ localTailscale: {
 	    resuming: "再開中...",
 	    resumeFailed: "セッションの再開に失敗しました",
 	    invalidLinkTitle: "無効なセッションリンク",
+        whichHomeTitle: "どの Home を開きますか？",
+        whichHomeDescription: "このセッションは複数の Home にあります。開く Home を選んでください。",
 	    invalidLinkDescription: "セッションリンクが見つからないか無効です。URL を確認してもう一度お試しください。",
 	    resumeSupportNoteChecking:
 	      "注: Happier はこのマシンでプロバイダーのセッションを再開できるか確認中です。",
@@ -6525,6 +6714,7 @@ localTailscale: {
             groupCount: ({ count }: { count: number }) => `${count} エージェント`,
             launchExecutionRunsTitle: "実行ランを開始",
             launchExecutionRunsSubtitle: "レビュー・計画・委任のプリセットで実行ランチャーを開きます。",
+            newAgentConversation: "新しいエージェント会話",
             launchExecutionRunsAdvanced: "詳細…",
             launchClaudeTeamsTitle: "Claude チームを起動",
             launchClaudeTeamsSubtitle: "構造化された Claude チームコマンドでチームを作成するか、チームメイトを起動します。",
@@ -6566,7 +6756,7 @@ localTailscale: {
         actionMenu: {
           openA11y: "セッションの操作を開く",
 
-          backgroundFollow: "バックグラウンドで追跡",},
+          backgroundFollow: "バックグラウンド同期",},
       detailsPanel: {
         emptyHint: "右側パネルからファイルまたは差分を開いてください。",
         unsupportedTab: "未対応の詳細タブです。",
@@ -6668,13 +6858,28 @@ localTailscale: {
           ambiguousTerminalDelivery: '配信状態が不明確です',
           terminalHostUnreachable: 'ターミナルホストに到達できません',
           runtimeDisposedBeforeDelivery: '配信前にランタイムが閉じました',
+          targetUnavailable: '選択したエージェント会話は利用できなくなりました。何も送信されていません。',
           runtimeConfigBlocked: 'ランタイム設定が配信をブロックしています',
           invalidPromptText: 'メッセージ本文を配信できません',
           manualUserHandled: '処理済みとしてマーク',
           attemptExpiredBeforeWrite: '書き込み前に配信試行が期限切れになりました',
           providerRejectedBeforeAcceptance: 'プロバイダーがメッセージを拒否しました',
           payloadTooLarge: 'メッセージが大きすぎます',
+          deliveryOutcomeUncertain: 'このメッセージはすでにエージェントに届いている可能性があります。再送する前に確認してください',
           unknown: '配信状態の確認が必要です',
+        },
+        admissionRejected: {
+          invalid: 'このままではメッセージを受け付けられませんでした。',
+          archived: 'このセッションはアーカイブ済みで、入力を受け付けません。',
+          unauthorized: 'このセッションに送信する権限がありません。',
+          targetUnavailable: '選択したエージェント会話は利用できなくなりました。何も送信されていません。',
+          targetUpdateRequired: 'エージェント会話への送信には、更新された Home とコンピューターが必要です。何も送信されていません。',
+          cancelled: '送信は受け付けられる前にキャンセルされました。',
+          untrustedAssertion: 'メッセージの出所を確認できませんでした。',
+          idempotencyConflict: 'このメッセージはすでに別の宛先向けにキューに入っています。',
+          sourceAuthorityMismatch: 'このメッセージは別のソースに属しており、ここからは送信できません。',
+          permissionCeilingRejected: '要求された権限はこのセッションで許可される範囲を超えています。',
+          encryptionModeMismatch: 'このメッセージはセッションの暗号化モードと一致しません。',
         },
 	        empty: "保留中のメッセージはありません。",
 	        decryptFailed: "この保留メッセージを復号できませんでした。",
@@ -6765,6 +6970,8 @@ localTailscale: {
           olderLoadFailedBody: 'この会話の続きはまだ残っています。以前のメッセージをもう一度読み込んでみてください。',
       },
 
+      ...sessionResponsibilityTranslations.ja,
+        collaboration: sessionCollaborationTranslations.ja,
       sharing: {
         title: "共有",
         directSharing: "直接共有",
@@ -7089,7 +7296,7 @@ localTailscale: {
 
   server: {
     // Used by Server Configuration screen (app/(app)/server.tsx)
-    serverConfiguration: "Relay 設定",
+    serverConfiguration: "Home 設定",
     enterServerUrl: "Relay URLを入力してください",
     notValidHappyServer: "有効なHappier Relayではありません",
     changeServer: "Homeを変更",
@@ -7106,7 +7313,7 @@ localTailscale: {
       "これは高度な機能です。何をしているか理解している場合のみRelayを変更してください。Relay変更後は再度ログインが必要です。",
     useThisServer: "このRelayを使用",
     autoConfigHint:
-      "セルフホストの場合: まずRelayを設定し、サインイン（またはアカウント作成）してから、ターミナルを接続してください。",
+      "セルフホストの場合: まずHomeを設定し、サインイン（またはアカウント作成）してから、ターミナルを接続してください。",
     renameServer: "Relay名を変更",
     renameServerPrompt: "このRelayの新しい名前を入力してください。",
     renameServerGroup: "Relayグループ名を変更",
@@ -7154,22 +7361,22 @@ localTailscale: {
     serverGroupMustHaveServer:
       "Relayグループには少なくとも1つのRelayが必要です。",
     relayDrift: {
-        bannerDifferentRelayTitle: 'バックグラウンドサービスが別の Relay に接続されています',
+        bannerDifferentRelayTitle: 'バックグラウンドサービスが別の Home に接続されています',
         bannerDifferentRelayDescription: ({ activeRelayUrl, daemonRelayUrl }: { activeRelayUrl: string; daemonRelayUrl: string }) => `アプリ: ${activeRelayUrl} · バックグラウンドサービス: ${daemonRelayUrl}`,
-        bannerNeedsAuthTitle: 'バックグラウンドサービスがこの Relay にサインインする必要があります',
+        bannerNeedsAuthTitle: 'バックグラウンドサービスがこの Home にサインインする必要があります',
         bannerNeedsAuthDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) => `アプリは ${activeRelayUrl} を使用していますが、バックグラウンドサービスにはまだ承認またはサインインが必要です。`,
-        bannerNotConfiguredTitle: 'バックグラウンドサービスはまだこの Relay に接続されていません',
+        bannerNotConfiguredTitle: 'バックグラウンドサービスはまだこの Home に接続されていません',
         bannerNotConfiguredDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) => `アプリは ${activeRelayUrl} を使用していますが、このコンピューターではまだバックグラウンドサービスの接続が完了していません。`,
-        bannerNotInstalledTitle: 'この Relay 用のバックグラウンドサービスがインストールされていません',
+        bannerNotInstalledTitle: 'この Home 用のバックグラウンドサービスがインストールされていません',
         bannerNotInstalledDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
             `アプリは ${activeRelayUrl} を使用していますが、このコンピューターにはまだバックグラウンドサービスのインストールが必要です。`,
         bannerNotRunningTitle: 'バックグラウンドサービスはインストール済みですが実行されていません',
         bannerNotRunningDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
             `アプリは ${activeRelayUrl} を使用していますが、バックグラウンドサービスは停止しており、再起動が必要です。`,
-        repairAction: 'バックグラウンドサービスをこの Relay に接続',
-        progressTitle: 'バックグラウンドサービスをこのRelayに接続しています',
+        repairAction: 'バックグラウンドサービスをこの Home に接続',
+        progressTitle: 'バックグラウンドサービスをこのHomeに接続しています',
         progressStepPrepare: 'バックグラウンドサービスを準備',
-        progressStepConfigureRelay: 'Relay 接続を更新',
+        progressStepConfigureRelay: 'Home 接続を更新',
         progressStepAuthenticate: 'サインインと承認を完了',
         progressStepFinish: '修復を完了',
         statusUnknown: '不明',
@@ -7181,12 +7388,12 @@ localTailscale: {
       automaticDeletionEnabled: "自動削除が有効です",
       detailsUnavailable: "自動削除は有効ですが、このクライアントでは有効なポリシーをすべて表示できません",
       singlePolicySummary: ({ domain, policy }: { domain: string; policy: string }) => `${domain}: ${policy}`,
-      relayCleanupSummary: ({ policies }: { policies: string }) => `このリレーは${policies}をクリーンアップします。`,
+      relayCleanupSummary: ({ policies }: { policies: string }) => `この Home は${policies}をクリーンアップします。`,
       relayCleanupAfterDays: ({ domain, count }: { domain: string; count: number }) => `${domain}（${count}日後）`,
       relayCleanupInactiveSessionsAfterDays: ({ count }: { count: number }) => `非アクティブなセッション（${count}日後）`,
       deleteInactiveSessionsDays: ({ count }: { count: number }) => `${count}日後に非アクティブなセッションを削除します。`,
       deleteOlderThanDays: ({ count }: { count: number }) => `${count}日後にデータを削除します。`,
-      sessionNotice: ({ count }: { count: number }) => `このサーバーは、${count}日間非アクティブなセッションを削除します。`,
+      sessionNotice: ({ count }: { count: number }) => `この Home は、${count}日間非アクティブなセッションを削除します。`,
       sessions: "セッション",
       sidechainMessages: "サブエージェントの記録",
       usageEvents: "使用状況イベント",
@@ -7204,22 +7411,22 @@ localTailscale: {
       automationRunEvents: "自動化実行イベント",
     },
     multiServerView: {
-      title: "複数Relay同時表示",
-      footer: "複数のRelayを 1 つのセッション一覧にまとめるか選択します。",
+      title: "複数Home同時表示",
+      footer: "複数のHomeを 1 つのセッション一覧にまとめるか選択します。",
       presentationTitle: "表示モード",
       presentation: {
-        flatWithBadges: "Relayバッジ付きのフラット一覧",
-        groupedByServer: "Relayごとにグループ化",
+        flatWithBadges: "Homeバッジ付きのフラット一覧",
+        groupedByServer: "Homeごとにグループ化",
       },
     },
 
     reachabilityRemediation: {
       failedToOpenInstallLink: "Tailscale のインストールページを開けませんでした。",
       tailscale: {
-        title: "この Relay は Tailscale を使っています",
-        desktopBody: "このコンピューターは Tailscale 経由で Relay に接続できませんでした。このコンピューターで Tailscale が未インストール、未サインイン、または正しい tailnet に接続されていない可能性があります。",
-        webBody: "このブラウザーは Tailscale 経由で Relay に接続できませんでした。この端末で Tailscale を開き、正しい tailnet に接続されていることを確認してから再試行してください。",
-        nativeBody: "この端末は Tailscale 経由で Relay に接続できませんでした。Tailscale を開き、正しい tailnet に接続されていることを確認してから再試行してください。",
+        title: "この Home は Tailscale を使っています",
+        desktopBody: "このコンピューターは Tailscale 経由で Home に接続できませんでした。このコンピューターで Tailscale が未インストール、未サインイン、または正しい tailnet に接続されていない可能性があります。",
+        webBody: "このブラウザーは Tailscale 経由で Home に接続できませんでした。この端末で Tailscale を開き、正しい tailnet に接続されていることを確認してから再試行してください。",
+        nativeBody: "この端末は Tailscale 経由で Home に接続できませんでした。Tailscale を開き、正しい tailnet に接続されていることを確認してから再試行してください。",
         installAction: "Tailscale をインストール",
         desktopPrepareAction: "Tailscale を準備",
       },
@@ -7235,7 +7442,9 @@ localTailscale: {
     newTagConfirm: "追加",
   },
 
-  sessionsList: {
+    sessionsList: {
+        reminders: sessionReminderTranslations['ja'],
+    ...sessionListFilterTranslations.ja,
     serverHeader: ({ server }: { server: string }) => `サーバー: ${server}`,
     storagePersistedTab: "Happier",
     storageAllFilter: "すべて",
@@ -7307,6 +7516,7 @@ localTailscale: {
     showInactiveSessions: '非アクティブなセッションを表示',
     attentionSectionTitle: '確認が必要',
     workingSectionTitle: '処理中',
+    loadingSectionTitle: "読み込み中",
         backgroundWorkingSectionTitle: 'バックグラウンドで実行中',
     selectionSelectedCount: ({ count }: { count: number }) => count === 1 ? '1 session selected' : `${count} sessions selected`,
     selectionA11ySelectedCount: ({ count }: { count: number }) => count === 1 ? '1 session selected' : `${count} sessions selected`,
@@ -7372,6 +7582,10 @@ localTailscale: {
     browseLoadMore: "さらにセッションを読み込む",
     browseFailedToLoad: "外部セッションの読み込みに失敗しました。",
     browseLinkFailed: "選択した外部セッションのリンクに失敗しました。",
+    browseCandidateActionsAccessibilityLabel: ({ title }: { title: string }) => `${title} のその他の操作`,
+    browseDeleteCandidateConfirmTitle: 'プロバイダーのセッションを削除しますか？',
+    browseDeleteCandidateConfirmMessage: ({ title, agent }: { title: string; agent: string }) => `${agent} から「${title}」を削除しますか？エージェント側のセッションのみ削除され、Happier のセッション履歴は残ります。`,
+    browseDeleteCandidateFailed: 'エージェントのセッションを削除できませんでした。',
   },
 
     workspacePresentation: {
@@ -7673,6 +7887,8 @@ localTailscale: {
       badgePlanMode: "プランモード",
     },
     agent: {
+      sectionTitle: "エージェント",
+      unselected: "エージェントを選択",
       claude: "Claude",
       codex: "Codex",
       cursor: "Cursor",
@@ -8015,6 +8231,7 @@ localTailscale: {
       replaceAll: "すべて置換",
       summaryEdits: ({ count }: { count: number }) => `${count}件の編集`,
     },
+    subAgentTitle: ({ label }: { label: string }) => `${label}エージェント`,
     names: {
       task: "タスク",
       subAgent: "サブエージェント",
@@ -8077,6 +8294,8 @@ localTailscale: {
   },
 
   files: {
+            revealInFiles: "ファイルで表示",
+            openChanges: "変更を開く",
     searchPlaceholder: "ファイルを検索...",
     clearSearchA11y: "検索をクリア",
     createFileA11y: "ファイルを作成",
@@ -8311,15 +8530,6 @@ localTailscale: {
       'チェックポイントの帰属を判定できませんでした。',
     otherRepositoryChanges: ({ count }: { count: number }) =>
       `その他のリポジトリ変更 (${count})`,
-    attributionReliabilityHigh:
-      "ベストエフォートの帰属です。リポジトリビューが最終的な正です。",
-    attributionReliabilityLimited:
-      "信頼性は限定的です: このリポジトリで複数のセッションがアクティブです。直接の帰属のみ表示します。",
-    attributionLegendFull:
-      "direct = このセッションの操作由来, inferred = スナップショット推定",
-    attributionLegendDirectOnly: "direct = このセッションの操作由来",
-    inferredSuppressed: ({ count }: { count: number }) =>
-      `${count}件の推定ファイルを「リポジトリのみの変更」に残しました。`,
     noSessionAttributedChanges:
       "現在、セッションに紐づく変更は検出されていません。",
     noLatestTurnChanges:
@@ -8344,6 +8554,10 @@ localTailscale: {
       noFilesInProject: "プロジェクトにファイルがありません",
       repositoryFolderLoadFailed: "フォルダを読み込めません",
       repositoryCollapseAll: "すべて折りたたむ",
+    commitCreated: "コミットを作成しました",
+    commitRefreshFailed: ({ sha }: { sha: string }) => `コミット ${sha} は作成されましたが、リポジトリの更新に失敗しました。ソース管理の状態を更新するため、再試行してください。`,
+    refreshingRepository: "リポジトリの状態を更新中…",
+    retryRefresh: "更新を再試行",
     sourceControlOperationsLog: {
       title: "最近のソース管理操作",
       allSessions: "すべてのセッション",
@@ -8359,8 +8573,11 @@ localTailscale: {
       reviewNoMatches: "一致するものがありません",
       reviewLargeDiffOneAtATime: "大きな差分を検出しました。スクロールに応じて差分を読み込みます。",
       reviewDiffRequestFailed: "差分を読み込めません",
+      reviewPreviousHunk: "前の変更箇所",
+      reviewNextHunk: "次の変更箇所",
       reviewUnableToLoadDiff: "差分を読み込めません",
       tryDifferentTerm: "別の検索語を試してください",
+      previousSearchResults: "前の検索結果",
       searchResults: ({ count }: { count: number }) => `検索結果 (${count})`,
       projectRoot: "プロジェクトルート",
     stagedChanges: ({ count }: { count: number }) =>
@@ -8382,7 +8599,9 @@ localTailscale: {
         "編集中にこのファイルがディスク上で変更されました。下書きは変更していません。保存する前に最新のファイルを確認してください。",
       selectionFailed: "選択を更新できませんでした",
       openReviewCommentsFailed: "レビューコメントを開けませんでした",
-        reviewComments: {
+        reviewPreviousFile: "前のファイル",
+                  reviewNextFile: "次のファイル",
+                  reviewComments: {
           title: ({ count }: { count: number }) => `レビューコメント (${count})`,
           placeholder: "レビューコメントを追加…",
           jump: "ジャンプ",
@@ -8392,6 +8611,7 @@ localTailscale: {
           modalSubtitle: "次のメッセージで送信するコメントを確認します。",
           modalSummary: ({ included, count }: { included: number; count: number }) =>
             `${count} 件中 ${included} 件を次のプロンプトに選択中`,
+          goToComposer: 'メッセージ入力へ',
           detachOrDiscardTitle: "レビューコメントを外しますか？",
           detachOrDiscardBody:
             "切り離すとコメントは保存したまま次のプロンプトから除外されます。破棄すると削除されます。",
@@ -8520,6 +8740,7 @@ localTailscale: {
       combined: "統合",
     },
     fileActions: {
+      selectLines: '行を選択',
       selectForCommit: "コミット対象に選択",
       selectFilesToCommit: "コミットするファイルを選択",
       stageFile: "ファイルをステージ",
@@ -8539,6 +8760,9 @@ localTailscale: {
       selectEntireFileForCommit: "コミットするファイル全体を選択してください",},
 	    toolbar: {
 	      changedFiles: "変更されたファイル",
+	      projectFiles: "プロジェクト",
+	      allFiles: "すべてのファイル",
+	      projectFilesUnavailable: "ここではプロジェクトの絞り込みを利用できません。すべてのファイルを表示しています。",
 	      hiddenFiles: "隠しファイルを表示",
 	      details: "詳細",
 	      upload: "アップロード",
@@ -8835,8 +9059,6 @@ localTailscale: {
       confirm: "lock を削除して再試行",
       failed: ({ error }: { error: string }) => `index lock の復旧に失敗しました: ${error}`,
     },
-    checkpointAttributionExclusive:
-      'チェックポイントの内容はこのターン区間に対して正確で、この worktree はこのセッション専用でした。',
     noAgentReportedTurnChanges:
       "このターンについてエージェント報告の変更は検出されていません。",
     noCheckpointTurnChanges:
@@ -9580,6 +9802,9 @@ localTailscale: {
       },
     },
     details: {
+      launchOrigin: {
+        discussion: ({ discussionId }: { discussionId: string }) => `会話 ${discussionId} から開始`,
+      },
       titles: {
         executionRun: "実行",
         executionRunWithIntent: ({ intent }: { intent: string }) => `${intent} · 実行`,
@@ -9871,14 +10096,18 @@ settingsSession: {
 	        activeColorAttentionOnlySubtitle: '注意が必要なセッションにのみアクティブ色を使います。',
 	        activeColorAllActiveTitle: 'すべてのアクティブセッション',
 	        activeColorAllActiveSubtitle: 'アクティブで接続中のすべてのセッションにアクティブ色を使います。',
-	        sectionModeTitle: 'セッションセクション',
-	        sectionModeSubtitle: 'セッションをアクティビティ別に分けるかどうかを選びます。',
-	        sectionModeActivitySelectedSubtitle: 'アクティブと非アクティブのセッションを分ける',
-	        sectionModeSingleSelectedSubtitle: 'ワークスペース別にまとめた 1 つのセッションセクションを表示',
-	        sectionModeActivityTitle: 'アクティブと非アクティブ',
-	        sectionModeActivitySubtitle: 'ワークスペースでグループ化する前に、アクティビティ別にセッションを分けます。',
-	        sectionModeSingleTitle: 'すべてのセッションをまとめる',
-	        sectionModeSingleSubtitle: '1 つのセッションセクションを使い、各セッションをワークスペース別にグループ化します。',
+	        layoutTitle: 'レイアウト',
+	        layoutSubtitle: '1つのセッション一覧をプロジェクト・最近の活動・アクティビティで並べ替えます。',
+	        layoutProjectsTitle: 'プロジェクト',
+	        layoutRecentActivityTitle: '最近のアクティビティ',
+	        layoutActiveInactiveTitle: 'アクティブと非アクティブ',
+	        attentionPlacementTitle: '要対応セッションの配置',
+	        sectionsTitle: 'セクション',
+	        placementInPlaceTitle: '現在の位置',
+	        placementAtTopTitle: '上部',
+	        placementWithinGroupsTitle: 'グループ内',
+	        sortWithinProjectsTitle: 'プロジェクト内の並び順',
+	        folderDisplayOffTitle: 'フォルダーなし',
 	        menuSections: {
 	          sortBy: '並び替え',
 	          show: '表示',
@@ -11620,6 +11849,7 @@ settingsSession: {
   },
 
   settingsAccount: {
+        security: "アカウントのセキュリティ",
     history: {
       title: "設定履歴",
       footer: "保存済みのスナップショットからアカウントの設定を復元します。アプリデータ・シークレット・資格情報は現在の値のままです。",
@@ -11660,8 +11890,10 @@ settingsSession: {
       `プロフィールに${provider}を表示`,
     tapToDisconnect: "タップして切断",
       accountServiceOAuth: accountServiceOAuthTranslations.ja,
+        nativePassword: nativePasswordTranslations['ja'],
       accountHomeDiscoveryTitle: 'アカウントと Home の検出',
       accountServiceSignInService: 'サインインサービス',
+      accountServiceSignedInTo: ({ accountService }: { accountService: string }) => `${accountService} にサインイン中`,
       accountServiceIdentity: 'サービス ID',
       accountServiceHomeDirectoryCapability: 'Home 検出機能',
       accountServiceHomeEnrollmentCapability: 'Home サインイン機能',
@@ -11671,42 +11903,47 @@ settingsSession: {
       accountServiceDiagnosticUnsupported: '未対応',
       accountServiceDiagnosticUnavailable: '利用不可',
     accountServiceHomes: 'アカウントサービスの Homes',
+    accountServiceFindHomes: 'Home を探す',
+        accountServiceFindHomesDescription: 'リンク済みの Home を探し、選択済みまたは優先の Home を開きます。',
         accountServiceCheckingConnection: 'Checking connection…',
-        accountServiceReconnectRequired: 'Reconnect Account Service',
-        accountServiceReconnectDescription: 'Your Account Service sign-in has expired. Sign in again to refresh or connect Homes.',
+        accountServiceReconnectRequired: ({ accountService }: { accountService?: string }) => accountService ? `${accountService} にもう一度サインイン` : 'アカウントにもう一度サインイン',
+        accountServiceReconnectDescription: 'アカウントのサインイン期限が切れました。Home を更新または接続するには、もう一度サインインしてください。',
         accountServiceDiscoveryDescription: 'Discovers and connects linked Homes automatically. Your existing Homes and current focus stay unchanged.',
         accountServiceDiscoveringHomes: 'Discovering linked Homes…',
         accountServiceDiscoveryUnsupported: 'Home discovery is not available',
-        accountServiceDiscoveryUnsupportedDescription: 'Choose another Account Service to discover linked Homes.',
+        accountServiceDiscoveryUnsupportedDescription: 'リンク済みの Home を探すには、別のアカウントを使用してください。',
         accountServiceDiscoveryUnavailable: 'Homes could not be refreshed',
         accountServiceDiscoveryUnavailableDescription: 'Your existing Homes and current focus are unchanged. Try again.',
         accountServiceHomesEmpty: 'No linked Homes yet',
-        accountServiceHomesEmptyDescription: 'Link a Home to this Account Service, then refresh.',
+        accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `${accountService} にリンクされた Home はまだありません。Home をリンクしてから更新してください。` : 'このアカウントにリンクされた Home はまだありません。Home をリンクしてから更新してください。',
         accountServiceConnectHome: 'Connect Home',
         accountServiceLinkThisHome: 'Link this Home',
-        accountServiceLinkThisHomeDescription: 'Let {accountService} help your other devices find this Home and request access.',
+        accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `${accountService} を使って、他のデバイスからこの Home を見つけ、アクセスをリクエストできるようにします。` : 'アカウントを使って、他のデバイスからこの Home を見つけ、アクセスをリクエストできるようにします。',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
         accountServiceHomeApprovalRequired: 'Approval needed',
         accountServiceHomeConnectionFailed: 'Connection failed',
     accountServicePreferredHome: '優先',
     accountServiceSetPreferredHome: '優先に設定',
-    accountServiceRemoveHome: 'アカウントサービスから削除',
-    accountServiceRemoveHomeConfirmTitle: 'この Home を削除しますか？',
-    accountServiceRemoveHomeConfirmBody: ({ label }: { label: string }) => `${label} はアカウントサービスのディレクトリからのみ削除されます。ローカルプロファイル、認証情報、データ、現在の接続は変更されません。`,
-    accountServiceRelinkConfirmTitle: 'このアカウントサービスを再接続しますか？',
-    accountServiceRelinkConfirmBody: 'アカウントサービスのアカウントまたは署名キーが変更されました。この変更を予期している場合のみ続行してください。Happier はこの Home に固定された信頼情報を置き換えます。',
+    accountServiceRemoveHome: ({ accountService }: { accountService?: string }) => accountService ? `自分の ${accountService} の Home から削除` : '自分の Home から削除',
+    accountServiceRemoveHomeConfirmTitle: ({ label, accountService }: { label: string; accountService?: string }) => accountService ? `${label} を ${accountService} から削除しますか？` : `${label} をリンク済みの Home から削除しますか？`,
+    accountServiceRemoveHomeConfirmBody: ({ label, accountService }: { label: string; accountService?: string }) => `${label} は${accountService ? `自分の ${accountService} の Home` : 'リンク済みの Home'}からのみ削除されます。ローカルプロファイル、認証情報、データ、現在の接続は変更されません。`,
+    accountServiceUnlinkHome: ({ accountService }: { accountService?: string }) => accountService ? `${accountService} からこの Home へのサインインを停止` : 'この Home への委任サインインを停止',
+    accountServiceUnlinkHomeConfirmTitle: ({ label, accountService }: { label: string; accountService?: string }) => accountService ? `${accountService} から ${label} へのサインインを停止しますか？` : `${label} への委任サインインを停止しますか？`,
+    accountServiceUnlinkHomeConfirmBody: ({ label, accountService }: { label: string; accountService?: string }) => `${label} は今後 ${accountService ?? 'このアカウント'} からの新しいサインインを拒否します。すでに ${label} にサインインしているデバイスは、そこでサインアウトするまでアクセスを保持し、${label} は${accountService ? `自分の ${accountService} の Home` : 'リンク済みの Home'}に残ります。`,
+    accountServiceUnlinkHomeConfirmAction: 'サインインを停止',
+    accountServiceRelinkConfirmTitle: ({ accountService }: { accountService?: string }) => accountService ? `${accountService} に再接続しますか？` : 'アカウントに再接続しますか？',
+    accountServiceRelinkConfirmBody: ({ accountService }: { accountService?: string }) => `${accountService ? `${accountService} の` : ''}アカウントまたは署名キーが変更されました。この変更を予期している場合のみ続行してください。Happier はこの Home に保存された信頼済みのサインイン情報を置き換えます。`,
     server: "サーバー",
     backup: "バックアップ",
-    backupDescription:
-      "シークレットキーはアカウントを復元する唯一の方法です。パスワードマネージャーなどの安全な場所に保存してください。",
-    secretKey: "シークレットキー",
+    backupDescription: "復旧キーでこの暗号化されたアカウントへのアクセスを復元できます。パスワードマネージャーなど、安全な場所に保存してください。",
+    secretKey: "復旧キー",
     tapToReveal: "タップして表示",
     tapToHide: "タップして非表示",
-    secretKeyLabel: "シークレットキー (タップでコピー)",
+    secretKeyLabel: "復旧キー (タップでコピー)",
     secretKeyCopied:
-      "シークレットキーがクリップボードにコピーされました。安全な場所に保管してください！",
-    secretKeyCopyFailed: "シークレットキーのコピーに失敗しました",
+      "復旧キーがクリップボードにコピーされました。安全な場所に保管してください！",
+    secretKeyCopyFailed: "復旧キーのコピーに失敗しました",
     privacy: "プライバシー",
     privacyDescription:
       "匿名の使用データを共有してアプリの改善にご協力ください。個人情報は収集されません。",
@@ -11720,7 +11957,7 @@ settingsSession: {
     logout: "ログアウト",
     logoutSubtitle: "この端末上のこのホームからサインアウト",
     logoutConfirm:
-      "ログアウトしてもよろしいですか？シークレットキーのバックアップを取っていることを確認してください！",
+      "ログアウトしてもよろしいですか？復旧キーのバックアップを取っていることを確認してください！",
     currentHome: "現在のホーム",
     logoutHome: ({ home }: { home: string }) => `${home} からサインアウト`,
     logoutHomeSubtitle: ({ home }: { home: string }) => `この端末上の ${home} からサインアウトします。他の保存済みホームとアカウントサービスはサインインしたままです。`,
@@ -11739,10 +11976,14 @@ settingsSession: {
     deleteAccountCleanupFailedTitle: "アカウントを削除しました",
     deleteAccountCleanupFailed: "サーバーは削除を確認しましたが、この端末のローカルデータを完全に消去できませんでした。Happier を開き直し、アカウントが残っている場合はログアウトしてください。",
     encryptionUpdateFailed: "暗号化設定の更新に失敗しました",
-    secretKeyMissing: "秘密鍵を利用できません。先にアカウントを復元してください。",
+    requireE2ee: "エンドツーエンド暗号化を必須にする",
+    requireE2eeDescription: "このデバイスと同期済みデーモンで、平文のアカウント設定とセッションを拒否します。",
+    requireE2eeNeedsEncryptionTitle: "先に暗号化を有効にしてください",
+    requireE2eeNeedsEncryptionDescription: "必須にする前に、このアカウントのエンドツーエンド暗号化を有効にしてください。",
+    secretKeyMissing: "復旧キーを利用できません。先にアカウントを復元してください。",
     restoreRequiredTitle: "復元が必要です",
     restoreRequiredBody:
-      "このアカウントには暗号化された履歴があります。このデバイスで暗号化を再度有効にするには、秘密鍵を復元してください。鍵を紛失した場合は、アカウントをリセットして新しく開始できます（以前の暗号化履歴は復元できません）。",
+      "このアカウントには暗号化された履歴があります。このデバイスで暗号化を再度有効にするには、復旧キーを復元してください。鍵を紛失した場合は、アカウントをリセットして新しく開始できます（以前の暗号化履歴は復元できません）。",
   },
 
   settingsLanguage: {
@@ -12020,8 +12261,8 @@ settingsSession: {
     clientSideProcessing: "クライアントサイド処理",
     linkProcessedLocally: "リンクはブラウザ内でローカルに処理されました",
     linkProcessedOnDevice: "リンクはデバイス上でローカルに処理されました",
-    switchServerToConnectTerminal: ({ serverUrl }: { serverUrl: string }) =>
-      `This connection is for ${serverUrl}. Switch servers and continue?`,
+    switchServerToConnectTerminal: ({ serverUrl, signedInServerUrl }: { serverUrl: string; signedInServerUrl: string }) =>
+      `This connection is for ${serverUrl}. You’re signed in to ${signedInServerUrl}. Switch Homes and continue?`,
   },
 
   terminalEmbedded: {
@@ -12117,7 +12358,7 @@ settingsSession: {
     // Navigation titles and screen headers
     connectTerminal: "ターミナルを接続",
     linkNewDevice: "新しいデバイスをリンク",
-    restoreWithSecretKey: "シークレットキーで復元",
+    restoreWithSecretKey: "復旧キーで復元",
     whatsNew: "新機能",
     friends: "友達",
     automations: "自動化",
@@ -12169,22 +12410,28 @@ settingsSession: {
     // Unified onboarding redesign — welcome decision (right pane)
     welcomeQuestionTitle: "ようこそ。",
     welcomeQuestionSubtitle: "初めてですか?",
-    welcomeQuestionBody: "Happier は AI コーディングエージェントのコントロールルームです。メールアドレスは不要。アカウントはこのデバイスで生成される秘密鍵です。",
+    welcomeQuestionBody: "Happier は AI コーディングエージェントのコントロールルームです。メールアドレスは不要。アカウントはこのデバイスで生成される復旧キーです。",
 
-    welcomePrimaryButton: "初めてですか — はじめましょう",
+    welcomePrimaryButton: "初めてですか？",
     welcomePrimarySubtitle: "ワンタップ。フォーム不要。鍵はこの端末に保管されます。",
+    newHereHomeSubtitle: ({ home }: { home: string }) => `${home} にプライベートアカウントを作成します。`,
+    newHereServiceSubtitle: ({ service }: { service: string }) => `${service} でアカウントを作成し、Home を検索または追加します。`,
 
     welcomeSecondaryButton: "ログイン — すでに Happier を使っています",
-    continueWithKey: "シークレットキーを使う",
+    continueWithKey: "復旧キーを使う",
     chooseSignInService: "サインインサービスを選択",
+    accountKeyDescription: ({ service }: { service: string }) => `${service} のセキュアキーを入力してください。`,
+    accountKeySubmit: "安全に続行",
     signInServiceUrlPrompt: "詳細: サインインと Home の検索に使用するサービスのアドレスを入力してください。",
     signInServiceInvalidAddress: "有効な http または https アドレスを入力してください。",
     signInServiceUnavailableTitle: "サインインサービスに接続できません",
     signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `${serverUrl} に接続できません。再試行するか、別のサインインサービスを選択してください。`,
     signInServiceUnsupportedTitle: "サインインサービスはサポートされていません",
+    signInServiceMethodlessTitle: "ここではサインイン方法を利用できません",
+    signInOptionsPartialTitle: "一部のサインイン方法を読み込めませんでした",
     signInServiceUnsupportedBody: "このアドレスは Home であるか、アカウントサインインを提供していません。別のサービスを選択してください。",
     useDifferentHome: "別のHomeを使う",
-    welcomeSecondarySubtitle: "QRコードをスキャンするか、シークレットキーを入力してください",
+    welcomeSecondarySubtitle: "QRコードをスキャンするか、復旧キーを入力してください",
 
     // Unified onboarding redesign — returning-user copy variants.
     // Shown when localSettings.hasCompletedAuthOnce === true, i.e. the
@@ -12401,8 +12648,8 @@ settingsSession: {
           authRestoreSubtitle: 'QRコードかリンクを使ってこのデバイスを接続します',
           addHomeTitle: '別のホームを追加',
           addHomeSubtitle: '現在のホームを離れずにQRコードをスキャンしてホームを追加します',
-          authSecretKeyTitle: '秘密鍵でログイン',
-          authSecretKeySubtitle: '秘密鍵を入力してHappierにサインインします',
+          authSecretKeyTitle: '復旧キーでログイン',
+          authSecretKeySubtitle: '復旧キーを入力してHappierにサインインします',
           authLostAccessTitle: 'アクセスを失いましたか？',
           authLostAccessSubtitle: 'IDプロバイダでアカウントをリセットします',
           webDesktopOnlyTitle: 'デスクトップアプリが必要です',
@@ -12685,6 +12932,8 @@ settingsSession: {
     },
     repairBackgroundServiceAction: "バックグラウンドサービスを修復",
     repairBackgroundServiceProgressTitle: "バックグラウンドサービスを修復中",
+    cliPath: cliPathExposureTranslations.ja,
+    cliTrust: cliTrustPromptTranslations.ja,
     runtimeInventory: 'Happier ランタイム一覧',
     runtimeInventoryOverview: '概要',
     runtimeInventoryInstallations: 'インストール',
@@ -12722,6 +12971,8 @@ settingsSession: {
     },},
 
   message: {
+
+      ...sessionMessageAccountActorTranslations['ja'],
       sessionReferenceUnavailable: "利用できないセッション",
       sessionReferenceOpen: ({ name }: { name: string }) => `セッション ${name} を開く`,
     switchedToMode: ({ mode }: { mode: string }) =>
@@ -13147,6 +13398,44 @@ settingsSession: {
     },},
 
   secrets: {
+    catalog: {
+      unavailableName: "共有シークレット",
+      operationFailed: "この共有シークレットは変更されたか、一時的に利用できません。更新してもう一度お試しください。",
+      outcomeUnknown: "このシークレットを共有できたかどうか、Happier は確認できませんでした。再試行する前にリストを更新してください。",
+      shareDisclosureTitle: "このシークレットを共有しますか？",
+      shareDisclosureBody: "共有した相手は、Happier が保存済みシークレットを受け付けるすべての場所でこれを使えます。アプリやローカルのツールにも値が渡ることがあります。",
+      shareDisclosureTargetCount: ({ count }: { count: number }) => `${count} 人`,
+      shareDisclosureConfirm: ({ target }: { target: string }) => `${target}に共有`,
+      approvalPending: "承認待ちです。決定されるまで変更は保持されます。",
+      approvalDeclined: "このリクエストは承認されなかったため、何も変更されていません。",
+      createSharedTitle: "新しい共有シークレット",
+      createSharedSubtitle: "人・チーム・グループと共有するシークレットを作成します。個人のシークレットには追加されません。",
+      createSharedAction: "共有シークレットを追加",
+      kindTitle: "シークレットの種類",
+      kinds: {
+        apiKey: "API キー",
+        token: "トークン",
+        password: "パスワード",
+        other: "その他",
+      },
+      actions: {
+        manageAccess: "アクセスを管理",
+      },
+      relationship: {
+        owner: "自分のもの",
+        recipient: "共有されたもの",
+      },
+      status: {
+        ready: "利用可能",
+        preparing_encrypted_access: "暗号化アクセスを準備中",
+        recipient_mode_unsupported: "このアカウントの暗号化モードでは利用できません",
+        temporarily_unavailable: "一時的に利用できません · この Home が再接続したらお試しください",
+        access_removed: "アクセスが解除されました · 別のシークレットを選んでください",
+        deleted: "削除されました · 別のシークレットを選んでください",
+        update_required: "この共有シークレットを使うには Happier を更新してください",
+        resource_corrupt: "シークレットデータの修復が必要です",
+      },
+    },
     addTitle: "新しいシークレット",
     savedTitle: "保存済みシークレット",
     badgeReady: "シークレット",
@@ -13272,9 +13561,24 @@ settingsSession: {
     appPanelsTitle: "プラグインパネル",
     appPanelsSubtitle: "インストール済みプラグインが追加したアプリパネルを開きます。",
     executionOriginReleaseContentConflict: "リリース内容が一致しません。新しいバージョンを公開してください。",
-    administrationMachineTitle: "管理マシン",
-    executionOriginTitle: "実行元",
+    administrationMachineTitle: "管理先",
+    executionOriginTitle: "実行先",
+    targetSelection: {
+      clear: "選択を解除",
+      locked: "マシンの詳細がロックされています。別のマシンを選んでください。",
+      missing: "見つかりません。別のマシンを選んでください。",
+      replaced: "置き換えられました。置き換え先を明示的に選んでください。",
+      revoked: "アクセスが取り消されました。別のマシンを選んでください。",
+      selectionRequired: "このプラグインの実行先を選んでください。",
+      differentVersions: "バージョンが異なります。実行するバージョンを選んでください。",
+      pluginMismatch: "この選択は別のプラグインに属しています。解除して選び直してください。",
+      noMaterialization: "利用できるプラグインのインストールがありません。",
+      unknown: "利用可能か確認できませんでした。",
+    },
     readOnlyProjectionUnavailable: "キャッシュされたプラグインの詳細は読み取り専用です。この端末には接続できますが、プラグインレジストリを読み込めませんでした。プラグインを管理するには再試行してください。",
+      installedEmpty: "このマシンにインストールされたプラグインはありません",
+      installationReadUnavailable: "このマシンのインストール済みプラグインを読み取れませんでした。再試行して現在の状態を確認してください。",
+      readOnlyRefreshing: "プラグインの情報を更新中です。以前の情報は表示されますが、操作は現在の状態を確認するまで待機します。",
     readOnlyAccountRecovery: "プラグインのアカウント詳細は利用できますが、互換性のあるプラグインのインストールが利用可能になるまで、この端末固有の詳細は利用できません。",
     readOnlySnapshot: "この端末が切断されている間、キャッシュされたプラグインの詳細は読み取り専用です。プラグインを管理するには再接続してください。",
     viewSelectorLabel: "プラグイン管理ビュー",
@@ -13481,6 +13785,7 @@ settingsSession: {
   cacheTitle: 'サマリーキャッシュ',
   cacheSubtitle: 'チェックポイントのサマリーは受領 ID で再利用され、working tree のサマリーは一時的に扱われます。',
   },
+    machinePools: machinePoolTranslations.ja,
     externalSessions: {
         ...externalSessionOperationTranslations.ja,
         ...externalSessionSettingsTranslations.ja,
@@ -13488,29 +13793,29 @@ settingsSession: {
         settingsEntrySubtitle: 'アプリの外で開始されたセッションを Happier がどう扱うか確認します。',
         settingsSafetyGroupTitle: '仕組み',
         settingsPassiveTitle: 'デフォルトでは読み取り専用',
-        settingsPassiveSubtitle: 'このページを開く操作は受動的です。Agent の開始や再開、設定変更、フックのインストール、セッションのフォロー開始は行いません。',
-        settingsFollowGroupTitle: 'パッシブフォロー',
-        settingsRestoreTitle: '再起動後もパッシブフォローを維持',
-        settingsRestoreEnabledSubtitle: 'デーモンの再起動時に、明示的にフォローしているセッションへ再接続します。',
-        settingsRestoreDisabledSubtitle: 'デーモンの再起動後はフォロー中のセッションへ再接続しません。',
+        settingsPassiveSubtitle: "このページを開く操作は受動的です。Agent の開始や再開、設定変更、フックのインストール、セッションの同期開始は行いません。",
+        settingsFollowGroupTitle: "外部セッションの同期を維持",
+        settingsRestoreTitle: "再起動後もバックグラウンド同期を維持",
+        settingsRestoreEnabledSubtitle: "デーモンの再起動時に、明示的に同期しているセッションへ再接続します。",
+        settingsRestoreDisabledSubtitle: "デーモンの再起動後は同期中のセッションへ再接続しません。",
         settingsRestoreFooter: '復元は既存の Agent ソースを監視するだけです。Agent を開始または再開することはありません。',
         settingsNotificationsTitle: '通知',
         settingsNotificationsActiveSubtitle: '準備完了通知は、パッシブフォローが有効なセッションにのみ適用されます。',
         settingsNotificationsInactiveSubtitle: 'セッションのパッシブフォローを有効にすると、その通知を受け取れます。',
-        settingsActiveFollowsGroupTitle: 'セッションのフォロー',
+        settingsActiveFollowsGroupTitle: "外部セッションの同期",
         settingsActiveFollowsFooter: '各選択はそのセッションだけに適用されます。他のセッションが自動的に有効になることはありません。',
         settingsActiveFollowsEmptyTitle: '外部セッションはまだありません',
-        settingsActiveFollowsEmptySubtitle: 'リンクされた外部セッションと現在のフォロー状態がここに表示されます。',
-        settingsFollowToggleHint: 'このセッションのバックグラウンドでのパッシブフォローを開始または停止します。',
-        followStatusDisabled: 'フォローしていません',
-        followStatusPaused: 'フォローは一時停止中',
-        followStatusReacquiring: 'フォローを再接続中…',
-        followStatusActive: 'フォロー中',
-        followStatusError: 'フォローに対応が必要です',
-        followStatusUnknown: 'フォロー状態を確認できません',
-        followStatusMachineOffline: 'マシンはオフラインです。再接続するとパッシブフォローが再開します',
-        followStatusUnsupported: 'この Agent はパッシブフォローに対応していません',
-        followUpdateFailed: 'このセッションのパッシブフォローを更新できませんでした。もう一度お試しください。',
+        settingsActiveFollowsEmptySubtitle: "リンクされた外部セッションと現在の同期状態がここに表示されます。",
+        settingsFollowToggleHint: "このセッションのバックグラウンド同期を開始または停止します。",
+        followStatusDisabled: "同期していません",
+        followStatusPaused: "同期は一時停止中",
+        followStatusReacquiring: "同期を再接続中…",
+        followStatusActive: "同期中",
+        followStatusError: "同期に対応が必要です",
+        followStatusUnknown: "同期状態を確認できません",
+        followStatusMachineOffline: "マシンはオフラインです。再接続するとバックグラウンド同期が再開します",
+        followStatusUnsupported: "このエージェントはバックグラウンド同期に対応していません",
+        followUpdateFailed: "このセッションのバックグラウンド同期を更新できませんでした。もう一度お試しください。",
     browseTitle: "外部セッションを参照",
     browseOpenExisting: "外部セッションを参照",
     browseActionSubtitle: "ここで開くマシン、エージェント、セッションを選択します。",
@@ -13540,6 +13845,10 @@ settingsSession: {
     browseLoadMore: "さらにセッションを読み込む",
     browseFailedToLoad: "外部セッションの読み込みに失敗しました。",
     browseLinkFailed: "選択した外部セッションのリンクに失敗しました。",
+    browseCandidateActionsAccessibilityLabel: ({ title }: { title: string }) => `${title} のその他の操作`,
+    browseDeleteCandidateConfirmTitle: 'プロバイダーのセッションを削除しますか？',
+    browseDeleteCandidateConfirmMessage: ({ title, agent }: { title: string; agent: string }) => `${agent} から「${title}」を削除しますか？エージェント側のセッションのみ削除され、Happier のセッション履歴は残ります。`,
+    browseDeleteCandidateFailed: 'エージェントのセッションを削除できませんでした。',
   },
     pluginReactNative: {
     unavailable: "プラグインの React Native UI を利用できません",
@@ -13578,6 +13887,10 @@ settingsSession: {
         hostedWebEndpointPolicyDenied: 'このビューのアドレスはセキュリティポリシーによってブロックされています。プラグイン設定を確認するか、対応しているホストを使用してください。',
         missingRequirement: 'このデバイスでは、このプラグインビューに必要な要件が満たされていません。',
     },
+    workflows: workflowTranslations.ja,
+    homeGovernance: homeGovernanceTranslations.ja,
+    teams: teamsTranslations.ja.teams,
+    identityAdministration: identityAdministrationTranslations.ja.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.ja,
         bootstrap: {

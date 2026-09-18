@@ -20,10 +20,12 @@ describe('secretKeyBackup robustness', () => {
         expect(parseBackupSecretKey(confused)).toBe(sequentialSecretBase64);
     });
 
-    it('accepts separator and wrapper variants from copy/paste', () => {
+    it('rejects undocumented separators and wrappers instead of deleting arbitrary characters', () => {
         const formatted = formatSecretKeyForBackup(sequentialSecretBase64);
         const withMixedSeparators = `[${formatted.replace(/-/g, '._/')}]`;
-        expect(parseBackupSecretKey(withMixedSeparators)).toBe(sequentialSecretBase64);
+        expect(() => parseBackupSecretKey(withMixedSeparators)).toThrow();
+        expect(parseBackupSecretKey(formatted.replace(/-/g, ' '))).toBe(sequentialSecretBase64);
+        expect(parseBackupSecretKey(formatted.replace('-', '\n'))).toBe(sequentialSecretBase64);
     });
 
     it('handles all-255 byte keys without data loss', () => {

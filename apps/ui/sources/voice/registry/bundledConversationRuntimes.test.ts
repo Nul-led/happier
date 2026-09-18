@@ -288,7 +288,7 @@ describe('createBundledConversationRuntimes', () => {
       provider: { pluginId: 'happier.agent.codex', localId: 'realtime-codex' },
       agent: { pluginId: 'happier.agent.codex', localId: 'codex' },
       controlSessionId: hostLease.host.globalVoiceSessionId,
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: null,
       settings: {},
     })).rejects.toMatchObject({
       code: 'authentication_required',

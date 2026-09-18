@@ -10,7 +10,7 @@ import {
     renderPromptPlanV1,
     type AgentSessionStartupInstructionsV1,
     type AgentSessionStartupInstructionsMarkerV1,
-    type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingsV2,
     type BackendTargetRefV2,
     type PluginContributionIdentityV1,
 } from '@happier-dev/protocol';
@@ -31,6 +31,8 @@ import { resolveVoiceConfiguredAgentTarget } from '@/voice/agent/resolveVoiceCon
 import { canAttemptMachineSpawn } from '@/sync/domains/machines/identity/resolveMachineSpawnReadiness';
 import { resolveMachineAbsolutePath } from '@/sync/domains/fileSystem/resolveMachineAbsolutePath';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { storage } from '@/sync/domains/state/storage';
 import type { Metadata } from '@/sync/domains/state/storageTypes';
 import {
@@ -144,7 +146,7 @@ function attachVoiceConversationRetirementFailure(
 }
 
 type VoiceHomeConversationSessionRequirementFields = Readonly<{
-    connectedServices?: ConnectedServiceBindingsV1;
+    connectedServices?: ConnectedServiceBindingsV2;
     permissionIntent: PermissionIntent;
     /**
      * Exact resolved-runtime/version proof that startup instructions remain
@@ -510,7 +512,7 @@ async function spawnVoiceConversationSession(params: Readonly<{
     backendTarget: BackendTargetRefV2;
     permissionMode: PermissionIntent;
     creationKey: ReturnType<typeof buildVoiceSpawnUserAttemptId>;
-    connectedServices?: ConnectedServiceBindingsV1;
+    connectedServices?: ConnectedServiceBindingsV2;
     startupInstructions?: AgentSessionStartupInstructionsV1;
 }>): Promise<string> {
     const agentTarget = await resolveVoiceConversationAgentTarget(
@@ -586,9 +588,13 @@ async function waitForSessionMetadata(sessionId: string, timeoutMs: number): Pro
     );
 }
 
-async function resolveSessionRootTarget(sessionId: string): Promise<Readonly<{ machineId: string; directory: string }> | null> {
+async function resolveSessionRootTarget(
+    rootAddress: SessionAddress,
+): Promise<Readonly<{ machineId: string; directory: string }> | null> {
+    // Callers reach here only for a Home this runtime has mounted, so the Home-local id
+    // addresses exactly one Session in the machine-target owner's state.
     const readTarget = () => {
-        const resolvedTarget = readMachineTargetForSession(sessionId);
+        const resolvedTarget = readMachineTargetForSession(rootAddress.sessionId);
         const machineId = normalizeNonEmptyString(resolvedTarget?.machineId);
         const directory = normalizeNonEmptyString(resolvedTarget?.basePath);
         return machineId && directory ? { machineId, directory } : null;
@@ -597,7 +603,9 @@ async function resolveSessionRootTarget(sessionId: string): Promise<Readonly<{ m
     const existingTarget = readTarget();
     if (existingTarget) return existingTarget;
 
-    await Promise.resolve(sync.ensureSessionVisibleForMessageRoute(sessionId)).catch(() => {});
+    await Promise.resolve(sync.ensureSessionVisibleForMessageRoute(rootAddress.sessionId, {
+        serverId: rootAddress.serverId,
+    })).catch(() => {});
     return readTarget();
 }
 
@@ -885,9 +893,12 @@ async function ensureVoiceConversationSessionForVoiceHomeUnguarded(
         throw Object.assign(new Error('voice_conversation_spawn_target_missing'), { code: 'VOICE_CONVERSATION_TARGET_MISSING' });
     }
 
+    // Bind persistence to the Account that selected this exact target before
+    // any retirement, requirement resolution, recovery, or spawn await.
+    const state: any = storage.getState();
+    const expectedSettingsScope = state.settingsScope ?? null;
     assertTargetMachineStructurallyReadyForSpawn(target.machineId);
     await retireLegacyVoiceConversationSessions(target).catch(() => {});
-    const state: any = storage.getState();
     const resolvedRequirements = requirements
         ? await resolveVoiceHomeConversationSessionRequirements(requirements, target.machineId)
         : null;
@@ -916,7 +927,7 @@ async function ensureVoiceConversationSessionForVoiceHomeUnguarded(
             serverId: getActiveServerSnapshot().serverId,
             failureMessage: 'Voice home session custody could not be completed',
         });
-        persistVoiceAutoTargetMachineId(target.machineId);
+        persistVoiceAutoTargetMachineId(target.machineId, expectedSettingsScope);
         await touchVoiceConversationSessionWithScope(
             bestExisting.sessionId,
             { kind: 'voice_home' },
@@ -955,7 +966,7 @@ async function ensureVoiceConversationSessionForVoiceHomeUnguarded(
         ...(startupInstructions ? { startupInstructions } : {}),
     });
 
-    persistVoiceAutoTargetMachineId(target.machineId);
+    persistVoiceAutoTargetMachineId(target.machineId, expectedSettingsScope);
     await finalizeSpawnedVoiceConversationSession({
         sessionId: spawnedSessionId,
         scope: { kind: 'voice_home' },
@@ -1024,11 +1035,23 @@ function findSessionRootVoiceConversationSessionId(params: Readonly<{
     )?.sessionId ?? null;
 }
 
-export async function ensureVoiceConversationSessionForSessionRoot(params: Readonly<{ sessionId: string }>): Promise<string> {
-    const sessionId = normalizeNonEmptyString(params.sessionId);
-    if (!sessionId) throw new Error('voice_conversation_session_target_missing');
+export async function ensureVoiceConversationSessionForSessionRoot(params: Readonly<{
+    sessionRootAddress: SessionAddress;
+}>): Promise<string> {
+    const rootAddress = normalizeSessionAddress(
+        params.sessionRootAddress?.serverId,
+        params.sessionRootAddress?.sessionId,
+    );
+    if (!rootAddress) throw new Error('voice_conversation_session_target_missing');
+    // Spawn, retirement, custody and hidden-session lookup all run against the Home this runtime
+    // has mounted. Two Homes can hold the same Session id, so an unmounted Home would silently
+    // attach the conversation to a different Session instead of the requested root.
+    if (!areServerProfileIdentifiersEquivalent(rootAddress.serverId, getActiveServerSnapshot().serverId)) {
+        throw new Error('voice_conversation_session_home_not_mounted');
+    }
+    const sessionId = rootAddress.sessionId;
 
-    const target = await resolveSessionRootTarget(sessionId);
+    const target = await resolveSessionRootTarget(rootAddress);
     const machineId = target?.machineId ?? null;
     const directory = target?.directory ?? null;
     if (!machineId || !directory) throw new Error('voice_conversation_session_target_missing');
@@ -1044,8 +1067,13 @@ export async function ensureVoiceConversationSessionForSessionRoot(params: Reado
     });
     if (!existingSessionId) {
         const refreshed = await sync.refreshSessions({ awaitSessionListHydration: true });
+        // The root Home was resolved and validated before these awaits. Focus can move while the
+        // authoritative list loads, and two Homes can hold the same Session id, so both the row
+        // read and the hydration request stay bound to that captured Home rather than re-reading
+        // focus after the await.
         const refreshedHydrationCandidateSessionIds = (refreshed?.sessionIds ?? []).filter((candidateSessionId) => {
-            const renderable = storage.getState().sessionListRenderables?.[candidateSessionId];
+            const state = storage.getState();
+            const renderable = state.sessionListRowsByServerId?.[rootAddress.serverId]?.[candidateSessionId];
             // Encrypted rows can be listed before their metadata hydration finishes. They
             // are possible hidden Voice sessions until exact hydration proves otherwise.
             return !renderable
@@ -1054,7 +1082,9 @@ export async function ensureVoiceConversationSessionForSessionRoot(params: Reado
                 || renderable.metadataUnavailable === true;
         });
         await Promise.all(refreshedHydrationCandidateSessionIds.map((candidateSessionId) => (
-            sync.ensureSessionVisibleForMessageRoute(candidateSessionId).catch(() => undefined)
+            sync.ensureSessionVisibleForMessageRoute(candidateSessionId, {
+                serverId: rootAddress.serverId,
+            }).catch(() => undefined)
         )));
         state = storage.getState();
         existingSessionId = findSessionRootVoiceConversationSessionId({
@@ -1068,7 +1098,7 @@ export async function ensureVoiceConversationSessionForSessionRoot(params: Reado
     if (existingSessionId) {
         await recoverPendingVoiceConversationCustody({
             sessionId: existingSessionId,
-            serverId: getActiveServerSnapshot().serverId,
+            serverId: rootAddress.serverId,
             failureMessage: 'Voice conversation custody could not be completed',
         });
         await touchVoiceConversationSessionWithScope(existingSessionId, { kind: 'session_root', sessionRootId: sessionId });
@@ -1077,7 +1107,7 @@ export async function ensureVoiceConversationSessionForSessionRoot(params: Reado
     }
 
     const backendTarget = await resolveVoiceConversationBackendTarget(state, machineId);
-    const serverId = getActiveServerSnapshot().serverId;
+    const serverId = rootAddress.serverId;
     const creationKey = buildVoiceSpawnUserAttemptId({
             surface: 'voice_session_root',
             serverId,

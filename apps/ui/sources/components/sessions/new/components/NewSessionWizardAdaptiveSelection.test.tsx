@@ -53,4 +53,26 @@ describe('NewSessionWizardAdaptiveSelection', () => {
             itemProps: { testID: 'trigger' },
         });
     });
+
+    it('retires pending work when the mounted wizard popover closes', async () => {
+        const { AgentInputContentPopover } = await import('@/components/sessions/agentInput/components/AgentInputContentPopover');
+        const { NewSessionWizardPopoverItem } = await import('./NewSessionWizardAdaptiveSelection');
+        const retirePendingWork = vi.fn();
+        const screen = await renderScreen(<NewSessionWizardPopoverItem
+            testID="trigger"
+            title="Run on"
+            icon={null}
+            boundaryRef={{ current: null } as any}
+            popover={{
+                renderContent: () => null,
+                onRequestClose: retirePendingWork,
+            }}
+        />);
+
+        await screen.pressByTestIdAsync('trigger');
+        const popover = screen.findByType(AgentInputContentPopover);
+        popover.props.onRequestClose();
+
+        expect(retirePendingWork).toHaveBeenCalledOnce();
+    });
 });

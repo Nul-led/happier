@@ -1,9 +1,27 @@
 export type PresentationNoticeSeverity = 'info' | 'warning' | 'error';
 
+/**
+ * A caller-owned safe local inverse offered beside the notice.
+ *
+ * The host renders the control and nothing else: it performs no Board, domain or
+ * wire mutation, and it never accepts an executable wire/plugin callback. The
+ * publisher binds `run` to its own exact Account/Home/Session and mounted
+ * controller, compares only the presentation fields it applied, and restores
+ * only those fields while they are unchanged — so a newer manual change is never
+ * overwritten. A replaced notice simply stops offering its inverse; there is no
+ * undo stack, history or separate lifetime.
+ */
+export type PresentationNoticeUndo = Readonly<{
+    /** Already-localized action label, e.g. "Undo". */
+    label: string;
+    run: () => void;
+}>;
+
 export type PresentationNotice = Readonly<{
     key: string;
     message: string;
     severity: PresentationNoticeSeverity;
+    undo?: PresentationNoticeUndo;
 }>;
 
 /**

@@ -99,4 +99,17 @@ describe('SelectionListSectionHeader — R13 lightening', () => {
         expect(text).toContain('3');
     });
 
+    it('keeps a section-owned action at the right edge of the shared header', async () => {
+        const { SelectionListSectionHeader } = await import('../SelectionListSectionHeader');
+        const screen = await renderScreen(
+            <SelectionListSectionHeader
+                testID="hdr"
+                title="Ready for review"
+                rightAccessory={React.createElement('SectionAction', { testID: 'section-action' })}
+            />,
+        );
+
+        expect(screen.findByTestId('section-action')).not.toBeNull();
+    });
+
 });

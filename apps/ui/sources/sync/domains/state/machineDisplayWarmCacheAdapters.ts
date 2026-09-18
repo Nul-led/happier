@@ -1,4 +1,5 @@
 import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
+import { MachineKindFromLegacyProjectionSchema } from '@happier-dev/protocol';
 
 import type { MachineDisplayCacheEntryV1 } from './warmCachePersistence';
 
@@ -7,6 +8,7 @@ const EMPTY_MACHINE_DISPLAY_CACHE_ENTRIES: Record<string, never> = {};
 export function buildMachineDisplayRenderableFromCacheEntry(entry: MachineDisplayCacheEntryV1): MachineDisplayRenderable {
     return {
         id: entry.machineId,
+        kind: MachineKindFromLegacyProjectionSchema.parse(entry.kind),
         updatedAt: entry.updatedAt,
         active: entry.active,
         activeAt: entry.activeAt,
@@ -42,6 +44,7 @@ export function buildMachineDisplayCacheEntryFromRenderable(
     const preserveMetadata = shouldPreserveMachineDisplayMetadataFromPreviousEntry(machine, previousEntry);
     const nextEntry: MachineDisplayCacheEntryV1 = {
         machineId: machine.id,
+        kind: MachineKindFromLegacyProjectionSchema.parse(machine.kind),
         metadataVersion: preserveMetadata ? previousEntry.metadataVersion : machine.metadataVersion,
         updatedAt: machine.updatedAt,
         active: machine.active,
@@ -71,6 +74,7 @@ function areMachineDisplayCacheEntriesEqual(
         && nextEntry.active === previousEntry.active
         && nextEntry.activeAt === previousEntry.activeAt
         && nextEntry.revokedAt === previousEntry.revokedAt
+        && nextEntry.kind === previousEntry.kind
         && nextEntry.replacedByMachineId === previousEntry.replacedByMachineId
         && nextEntry.replacedAt === previousEntry.replacedAt
         && nextEntry.replacementReason === previousEntry.replacementReason

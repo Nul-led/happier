@@ -17,18 +17,18 @@ const RELAY_B = 'https://relay-b.happier.test';
 
 /** The page-lifecycle boundary a tab client listens on, without a DOM. */
 function createPageLifecycleStub() {
-    const listeners = new Set<() => void>();
+    const listeners = new Set<(event: Readonly<{ persisted: boolean }>) => void>();
     return {
         lifecycle: {
-            addEventListener: (_type: 'pagehide', listener: () => void) => {
+            addEventListener: (_type: 'pagehide', listener: (event: Readonly<{ persisted: boolean }>) => void) => {
                 listeners.add(listener);
             },
-            removeEventListener: (_type: 'pagehide', listener: () => void) => {
+            removeEventListener: (_type: 'pagehide', listener: (event: Readonly<{ persisted: boolean }>) => void) => {
                 listeners.delete(listener);
             },
         } satisfies BrowserIrohPageLifecycle,
-        fire: () => {
-            for (const listener of [...listeners]) listener();
+        fire: (persisted = false) => {
+            for (const listener of [...listeners]) listener({ persisted });
         },
         listenerCount: () => listeners.size,
     };
@@ -69,6 +69,7 @@ function createHarness(options: Readonly<{
         relayUrls: readonly string[];
         signal?: AbortSignal;
     }>) => Promise<BrowserIrohEndpointStreamHandle>;
+    onConnectionClose?: (input: Readonly<{ streamKind: 'home' | 'machine'; endpointId: string }>) => void;
 }> = {}) {
     let binds = 0;
     const closes: string[] = [];
@@ -107,7 +108,9 @@ function createHarness(options: Readonly<{
                     streamCalls.push('close');
                 },
             })),
-            closeConnection: async () => {},
+            closeConnection: async (connection) => {
+                options.onConnectionClose?.(connection);
+            },
             close: async () => {
                 closes.push(endpointId);
             },
@@ -207,6 +210,107 @@ describe('sync/runtime/browserIroh/workerConnection', () => {
             write: async () => {}, finishWrite: async () => {}, cancel: () => {}, close,
         });
         await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    });
+
+    it('cancels and joins a pending cold dial before acknowledging that lease release', async () => {
+        // A release that acknowledges while a dial is still in flight tells the
+        // caller the carrier is gone while the endpoint may still be about to
+        // hold a live connection to the peer. The pending open this port already
+        // tracks is what makes the acknowledgement truthful.
+        let settleOpen!: (value: BrowserIrohEndpointStreamHandle) => void;
+        const pendingOpen = new Promise<BrowserIrohEndpointStreamHandle>((resolve) => {
+            settleOpen = resolve;
+        });
+        let dialSignal: AbortSignal | undefined;
+        const events: string[] = [];
+        const harness = createHarness({
+            openStream: async ({ endpointId, signal }) => {
+                if (endpointId === 'cold-target') {
+                    dialSignal = signal;
+                    return await pendingOpen;
+                }
+                return {
+                    remoteEndpointId: endpointId, observedPath: 'relay',
+                    read: async () => ({ bytes: new Uint8Array(), done: true }),
+                    write: async () => {}, finishWrite: async () => {}, cancel: () => {}, close: async () => {},
+                };
+            },
+            onConnectionClose: ({ streamKind, endpointId }) => {
+                events.push(`connection:${streamKind}:${endpointId}`);
+            },
+        });
+        const tab = harness.connectTab();
+        const dialing = await tab.acquireLease([RELAY_A]);
+        const sibling = await tab.acquireLease([RELAY_A]);
+        const opening = dialing.openStream({
+            streamKind: 'machine', endpointId: 'cold-target', relayUrls: [RELAY_A],
+        });
+        await vi.waitFor(() => expect(dialSignal).toBeDefined());
+
+        // Another lease on the same port is a different operation entirely.
+        await sibling.release();
+        expect(dialSignal?.aborted).toBe(false);
+
+        const releasing = dialing.release().then(() => {
+            events.push('released');
+        });
+        await vi.waitFor(() => expect(dialSignal?.aborted).toBe(true));
+        // The dial wins the cancellation race and produces a real handle.
+        settleOpen({
+            remoteEndpointId: 'cold-target', observedPath: 'relay',
+            read: async () => ({ bytes: new Uint8Array(), done: true }),
+            write: async () => {}, finishWrite: async () => {}, cancel: () => {},
+            close: async () => {
+                events.push('stream');
+            },
+        });
+
+        await expect(opening).rejects.toMatchObject({ code: 'cancelled' });
+        await releasing;
+        expect(events).toEqual(['stream', 'connection:machine:cold-target', 'released']);
+        await expect(tab.status()).resolves.toMatchObject({ leaseCount: 0 });
+    });
+
+    it('joins this port’s pending dial on releaseAll and leaves a sibling tab’s dial alone', async () => {
+        const dials = new Map<string, {
+            signal: AbortSignal | undefined;
+            settle: (value: BrowserIrohEndpointStreamHandle) => void;
+        }>();
+        const events: string[] = [];
+        const harness = createHarness({
+            openStream: async ({ endpointId, signal }) => await new Promise<BrowserIrohEndpointStreamHandle>((resolve) => {
+                dials.set(endpointId, { signal, settle: resolve });
+            }),
+            onConnectionClose: ({ endpointId }) => {
+                events.push(`connection:${endpointId}`);
+            },
+        });
+        const tabA = harness.connectTab();
+        const tabB = harness.connectTab();
+        const leaseA = await tabA.acquireLease([RELAY_A]);
+        const leaseB = await tabB.acquireLease([RELAY_A]);
+        const openingA = leaseA.openStream({ streamKind: 'machine', endpointId: 'target-a', relayUrls: [RELAY_A] });
+        void leaseB.openStream({ streamKind: 'machine', endpointId: 'target-b', relayUrls: [RELAY_A] });
+        await vi.waitFor(() => expect(dials.size).toBe(2));
+
+        const releasing = tabA.releaseAll().then(() => {
+            events.push('releasedAll');
+        });
+        await vi.waitFor(() => expect(dials.get('target-a')?.signal?.aborted).toBe(true));
+        expect(dials.get('target-b')?.signal?.aborted).toBe(false);
+        dials.get('target-a')!.settle({
+            remoteEndpointId: 'target-a', observedPath: 'relay',
+            read: async () => ({ bytes: new Uint8Array(), done: true }),
+            write: async () => {}, finishWrite: async () => {}, cancel: () => {},
+            close: async () => {
+                events.push('stream:target-a');
+            },
+        });
+
+        await expect(openingA).rejects.toMatchObject({ code: 'cancelled' });
+        await releasing;
+        expect(events).toEqual(['stream:target-a', 'connection:target-a', 'releasedAll']);
+        await expect(tabB.status()).resolves.toMatchObject({ leaseCount: 1 });
     });
 
     it('keeps incremental stream handles opaque and scoped to the acquiring tab', async () => {
@@ -314,6 +418,22 @@ describe('sync/runtime/browserIroh/workerConnection', () => {
             });
         });
         // Client release is not endpoint teardown while the worker remains live.
+        expect(harness.closes).toEqual([]);
+    });
+
+    it('keeps this tab’s lease when pagehide enters the back-forward cache', async () => {
+        const harness = createHarness();
+        const pagehide = createPageLifecycleStub();
+        const tab = harness.connectTab(pagehide.lifecycle);
+        const lease = await tab.acquireLease([RELAY_A]);
+
+        pagehide.fire(true);
+
+        await expect(tab.status()).resolves.toMatchObject({
+            state: 'ready',
+            endpointId: lease.endpointId,
+            leaseCount: 1,
+        });
         expect(harness.closes).toEqual([]);
     });
 

@@ -59,6 +59,17 @@ describe('ActivityUpdateAccumulator Smart Debounce', () => {
         vi.restoreAllMocks();
     });
 
+    it('keeps delimiter-bearing exact Session addresses distinct', () => {
+        accumulator.addUpdate({
+            type: 'activity', id: 'b\u0000c', active: true, activeAt: 1,
+        }, { sourceServerId: 'a' });
+        accumulator.addUpdate({
+            type: 'activity', id: 'c', active: true, activeAt: 1,
+        }, { sourceServerId: 'a\u0000b' });
+
+        expect(mockFlushHandler).toHaveBeenCalledTimes(2);
+    });
+
     describe('immediate emission for significant state changes', () => {
         it('should emit immediately when thinking state changes from false to true', () => {
             const update1: ApiEphemeralActivityUpdate = {

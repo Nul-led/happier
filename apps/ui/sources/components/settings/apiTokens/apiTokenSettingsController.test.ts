@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActionExecuteResult } from '@happier-dev/protocol';
+
+// Randomness is a genuine system boundary; the request-owned selector below is
+// the exact value the controller must send, bind and reconcile against.
+const uuid = vi.hoisted(() => ({ next: '11111111-1111-4111-8111-111111111111' }));
+vi.mock('@/platform/randomUUID', () => ({ randomUUID: () => uuid.next }));
 
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
@@ -18,6 +23,8 @@ const TOKEN_A = {
     createdAt: '2026-08-20T12:00:00.000Z',
     lastUsedAt: null,
     expiresAt: null,
+    hasEncryptionAccess: false,
+    hasUnattendedTeamAccess: false,
 } as const;
 
 const TOKEN_B = {
@@ -27,6 +34,8 @@ const TOKEN_B = {
     createdAt: '2026-08-21T12:00:00.000Z',
     lastUsedAt: '2026-08-22T11:00:00.000Z',
     expiresAt: '2026-08-29T12:00:00.000Z',
+    hasEncryptionAccess: true,
+    hasUnattendedTeamAccess: false,
 } as const;
 
 type TestLifetime = ActiveServerAccountScopeLifetime & Readonly<{ retire(): void }>;
@@ -71,6 +80,8 @@ function createHarness(results: readonly (ActionExecuteResult | Promise<ActionEx
 }
 
 describe('createApiTokenSettingsController', () => {
+    beforeEach(() => { uuid.next = TOKEN_A.tokenId; });
+
     it('loads summaries through the UI Action front door and preserves them during refresh', async () => {
         let finishRefresh!: (value: ActionExecuteResult) => void;
         const deferred = new Promise<ActionExecuteResult>((resolve) => { finishRefresh = resolve; });
@@ -179,6 +190,91 @@ describe('createApiTokenSettingsController', () => {
         });
     });
 
+    it('sends the request-owned selector for an ordinary create and keeps it while the row is still listed', async () => {
+        const harness = createHarness([
+            { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' },
+            ok({ tokens: [TOKEN_A] }),
+        ]);
+        harness.controller.setCreateDraft({ label: TOKEN_A.label, expiryPreset: '90d' });
+
+        await harness.controller.createToken();
+
+        expect(harness.execute).toHaveBeenNthCalledWith(
+            1,
+            'account.apiTokens.create',
+            { tokenId: TOKEN_A.tokenId, label: TOKEN_A.label, expiresAt: '2026-11-20T12:00:00.000Z' },
+            expect.objectContaining({ surface: 'ui' }),
+        );
+        expect(harness.controller.getState()).toMatchObject({
+            createError: 'outcome_unknown',
+            recoveryTokenId: TOKEN_A.tokenId,
+            tokens: [TOKEN_A],
+            reveal: null,
+        });
+    });
+
+    it('discloses nothing when an ordinary create returns a selector this attempt did not request', async () => {
+        const harness = createHarness([
+            ok({
+                token: `hap_v1_${TOKEN_B.tokenId}_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`,
+                apiToken: TOKEN_B,
+            }),
+            ok({ tokens: [TOKEN_A] }),
+        ]);
+        harness.controller.setCreateDraft({ label: TOKEN_A.label, expiryPreset: '90d' });
+
+        await harness.controller.createToken();
+
+        expect(harness.controller.getState()).toMatchObject({
+            createError: 'invalid_response',
+            recoveryTokenId: TOKEN_A.tokenId,
+            tokens: [TOKEN_A],
+            reveal: null,
+        });
+        // The returned row is never adopted, retried or revoked on this attempt.
+        expect(harness.execute.mock.calls.map(([id]) => id)).toEqual([
+            'account.apiTokens.create',
+            'account.apiTokens.list',
+        ]);
+    });
+
+    it('reconciles a lost create against the authoritative list before permitting a replacement', async () => {
+        const harness = createHarness([
+            { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' },
+            ok({ tokens: [TOKEN_A] }),
+            ok({ tokens: [] }),
+            ok({
+                token: `hap_v1_${TOKEN_B.tokenId}_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`,
+                apiToken: TOKEN_B,
+            }),
+        ]);
+        harness.controller.setCreateDraft({ label: TOKEN_A.label, expiryPreset: '90d' });
+
+        await harness.controller.createToken();
+        expect(harness.controller.getState().recoveryTokenId).toBe(TOKEN_A.tokenId);
+
+        // No replacement may be minted while the request-owned row may still exist.
+        await harness.controller.createToken();
+        expect(harness.execute).toHaveBeenCalledTimes(2);
+
+        // Another client revoked that exact row; the authoritative list proves absence.
+        await harness.controller.refresh();
+        expect(harness.controller.getState()).toMatchObject({ recoveryTokenId: null, tokens: [] });
+
+        uuid.next = TOKEN_B.tokenId;
+        await harness.controller.createToken();
+        expect(harness.execute).toHaveBeenLastCalledWith(
+            'account.apiTokens.create',
+            expect.objectContaining({ tokenId: TOKEN_B.tokenId }),
+            expect.objectContaining({ surface: 'ui' }),
+        );
+        expect(harness.controller.getState()).toMatchObject({
+            reveal: { apiToken: TOKEN_B, acknowledged: false },
+            recoveryTokenId: null,
+            createError: null,
+        });
+    });
+
     it('retains the create draft after a typed failure and reveals a successful secret only in controller memory', async () => {
         const harness = createHarness([
             { ok: false, errorCode: 'present_user_required', error: 'present_user_required' },
@@ -187,11 +283,15 @@ describe('createApiTokenSettingsController', () => {
                 apiToken: TOKEN_A,
             }),
         ]);
-        harness.controller.setCreateDraft({ label: TOKEN_A.label, expiryPreset: '90d' });
+        harness.controller.setCreateDraft({
+            label: TOKEN_A.label,
+            expiryPreset: '90d',
+            authorizeUnattendedTeamAccess: true,
+        });
 
         await harness.controller.createToken();
         expect(harness.controller.getState()).toMatchObject({
-            createDraft: { label: TOKEN_A.label, expiryPreset: '90d' },
+            createDraft: { label: TOKEN_A.label, expiryPreset: '90d', authorizeUnattendedTeamAccess: true },
             createError: 'present_user_required',
             reveal: null,
         });
@@ -207,24 +307,93 @@ describe('createApiTokenSettingsController', () => {
         });
         expect(harness.execute).toHaveBeenLastCalledWith(
             'account.apiTokens.create',
-            { label: TOKEN_A.label, expiresAt: '2026-11-20T12:00:00.000Z' },
+            {
+                tokenId: TOKEN_A.tokenId,
+                label: TOKEN_A.label,
+                expiresAt: '2026-11-20T12:00:00.000Z',
+                authorizeUnattendedTeamAccess: true,
+            },
             expect.objectContaining({ surface: 'ui', actionCaller: { kind: 'host' } }),
         );
     });
 
-    it('keeps the create flow open while minting so a one-time secret cannot be lost', async () => {
+    it.each([
+        'unsupported_action',
+        'approvals_not_supported',
+        'approval_rejected',
+        'approval_canceled',
+        'action_disabled',
+        'account-disabled',
+        'invalid_request',
+        'invalid_parameters',
+        'api_token_encryption_not_ready',
+        'api_token_encryption_stale',
+        'credential_authentication_evidence_limit',
+        'api_token_id_conflict',
+    ])('keeps known pre-effect failure %s typed with no recovery row', async (errorCode) => {
+        const harness = createHarness([{ ok: false, errorCode, error: errorCode }]);
+        harness.controller.setCreateDraft({ label: TOKEN_A.label, expiryPreset: '90d' });
+
+        await harness.controller.createToken();
+
+        expect(harness.controller.getState()).toMatchObject({
+            createError: errorCode === 'unsupported_action' ? 'unsupported'
+                : errorCode === 'invalid_parameters' ? 'invalid_request'
+                    : errorCode,
+            recoveryTokenId: null,
+            reveal: null,
+        });
+    });
+
+    it('does not infer outcome_unknown from a generic create transport failure', async () => {
+        const harness = createHarness([
+            { ok: false, errorCode: 'network_error', error: 'network_error' },
+        ]);
+        harness.controller.setCreateDraft({ label: TOKEN_A.label, expiryPreset: '90d' });
+        await harness.controller.createToken();
+        expect(harness.controller.getState()).toMatchObject({ createError: 'network_error', recoveryTokenId: null });
+    });
+
+    it('keeps list state intact when revoke or revoke-all loses an issued response', async () => {
+        const harness = createHarness([
+            ok({ tokens: [TOKEN_A, TOKEN_B] }),
+            { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' },
+            { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' },
+        ]);
+        await harness.controller.refresh();
+
+        await expect(harness.controller.revokeToken(TOKEN_A.tokenId)).resolves.toBe(false);
+        expect(harness.controller.getState()).toMatchObject({
+            tokens: [TOKEN_A, TOKEN_B],
+            operation: null,
+            operationTokenId: null,
+            operationError: 'outcome_unknown',
+            recoveryTokenId: null,
+        });
+
+        harness.controller.clearOperationFeedback();
+        await expect(harness.controller.revokeAllTokens()).resolves.toBeNull();
+        expect(harness.controller.getState()).toMatchObject({
+            tokens: [TOKEN_A, TOKEN_B],
+            operation: null,
+            operationError: 'outcome_unknown',
+            recoveryTokenId: null,
+        });
+    });
+
+    it('suppresses a late create secret after dismissal and retains its exact recovery selector', async () => {
         let finishCreate!: (value: ActionExecuteResult) => void;
         const pendingCreate = new Promise<ActionExecuteResult>((resolve) => { finishCreate = resolve; });
-        const harness = createHarness([pendingCreate]);
+        const harness = createHarness([pendingCreate, ok({ tokens: [TOKEN_A] })]);
         const confirmDismiss = vi.fn(async () => true);
         harness.controller.setCreateDraft({ label: TOKEN_A.label, expiryPreset: '90d' });
 
         const create = harness.controller.createToken();
         expect(harness.controller.getState()).toMatchObject({ createPending: true, reveal: null });
 
-        await expect(harness.controller.requestRevealDismiss(confirmDismiss, 'shared')).resolves.toBe(false);
+        await expect(harness.controller.requestRevealDismiss(confirmDismiss, 'shared')).resolves.toBe(true);
         expect(confirmDismiss).not.toHaveBeenCalled();
-        expect(harness.controller.getState()).toMatchObject({ createPending: true, reveal: null });
+        expect(harness.controller.getState()).toMatchObject({ createPending: false, reveal: null });
 
         finishCreate(ok({
             token: `hap_v1_${TOKEN_A.tokenId}_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`,
@@ -234,8 +403,15 @@ describe('createApiTokenSettingsController', () => {
 
         expect(harness.controller.getState()).toMatchObject({
             createPending: false,
-            reveal: { token: expect.stringContaining('hap_v1_') },
+            createError: 'outcome_unknown',
+            recoveryTokenId: TOKEN_A.tokenId,
+            tokens: [TOKEN_A],
+            reveal: null,
         });
+        expect(harness.execute.mock.calls.map(([actionId]) => actionId)).toEqual([
+            'account.apiTokens.create',
+            'account.apiTokens.list',
+        ]);
     });
 
     it('warns once for every unacknowledged dismissal path, never traps, and clears the secret on permitted exit', async () => {

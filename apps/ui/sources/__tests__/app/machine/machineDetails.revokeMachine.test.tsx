@@ -20,6 +20,9 @@ const {
     clearReplacementSpy,
     coordinatorSpy,
     alertSpy,
+    promptSpy,
+    machineUpdateMetadataSpy,
+    stackOptionsState,
     mutateAccountSettingsSpy,
     replaceSpy,
     refreshMachinesThrottledSpy,
@@ -41,6 +44,9 @@ const {
         return { ok: true as const, machineAlreadyRevoked: false, providerCleanup: 'complete' as const };
     }),
     alertSpy: vi.fn(),
+    promptSpy: vi.fn<(..._args: any[]) => Promise<string | null>>(async () => null),
+    machineUpdateMetadataSpy: vi.fn(async () => ({})),
+    stackOptionsState: { current: null as Record<string, unknown> | null },
     mutateAccountSettingsSpy: vi.fn(async (mutate: (raw: Record<string, unknown>) => Record<string, unknown>) => {
         mutate({ providerSettingsV1: undefined });
     }),
@@ -57,6 +63,16 @@ installMachineDetailsCommonModuleMocks({
         return createExpoRouterMock({
             router: { ...routerMock, back: routerBackSpy },
             params: { id: 'machine-1' },
+            stackOptionsCapture: {
+                record: (options) => {
+                    stackOptionsState.current = typeof options === 'function' ? options() : options;
+                },
+                reset: () => {
+                    stackOptionsState.current = null;
+                },
+                getRaw: () => stackOptionsState.current,
+                getResolved: () => stackOptionsState.current,
+            },
         }).module;
     },
     modal: async () => {
@@ -65,7 +81,7 @@ installMachineDetailsCommonModuleMocks({
             spies: {
                 alert: alertSpy,
                 confirm: confirmSpy,
-                prompt: vi.fn(),
+                prompt: promptSpy,
                 show: showSpy,
             },
         }).module;
@@ -122,7 +138,7 @@ vi.mock('@/sync/ops', () => ({
     machineSpawnNewSession: vi.fn(async () => ({ type: 'error', errorCode: 'unexpected', errorMessage: 'noop' })),
     machineStopDaemon: vi.fn(async () => ({ message: 'noop' })),
     machineStopSession: vi.fn(async () => ({ ok: true })),
-    machineUpdateMetadata: vi.fn(async () => ({})),
+    machineUpdateMetadata: machineUpdateMetadataSpy,
     machineExecutionRunsList: vi.fn(async () => ({ ok: true, runs: [] })),
     machineClearReplacementFromAccount: clearReplacementSpy,
     machineReplaceInAccount: replaceSpy,
@@ -139,10 +155,19 @@ vi.mock('@/hooks/ui/useMountedShouldContinue', () => ({
     useMountedShouldContinue: () => () => true,
 }));
 vi.mock('@/hooks/server/useMachineCapabilitiesCache', () => ({ useMachineCapabilitiesCache: () => ({ state: { status: 'idle' }, refresh: vi.fn() }) }));
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
-    getActiveServerId: () => 'server-a',
-}));
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+    return {
+        ...actual,
+        areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
+        getActiveServerId: () => 'server-a',
+        getActiveServerSnapshot: () => ({
+            serverId: 'server-a',
+            serverUrl: 'https://server-a.example.test',
+            generation: 1,
+        }),
+    };
+});
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({ setActiveServerAndSwitch: vi.fn(async () => true) }));
 vi.mock('@/sync/sync', () => ({ sync: {
     mutateAccountSettings: mutateAccountSettingsSpy,
@@ -192,6 +217,11 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
             return { ok: true as const, machineAlreadyRevoked: false, providerCleanup: 'complete' as const };
         });
         alertSpy.mockReset();
+        promptSpy.mockReset();
+        promptSpy.mockResolvedValue(null);
+        machineUpdateMetadataSpy.mockReset();
+        machineUpdateMetadataSpy.mockResolvedValue({});
+        stackOptionsState.current = null;
         mutateAccountSettingsSpy.mockReset();
         mutateAccountSettingsSpy.mockImplementation(async (mutate: (raw: Record<string, unknown>) => Record<string, unknown>) => {
             mutate({ providerSettingsV1: undefined });
@@ -233,6 +263,28 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
             ],
         };
         machineState.settings = { providerSettingsV1: undefined };
+    });
+
+    it('updates the visible machine name without interrupting success with an alert', async () => {
+        promptSpy.mockResolvedValueOnce('theo-devbox');
+        const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
+
+        await renderScreen(React.createElement(MachineDetailScreen));
+
+        const headerRight = stackOptionsState.current?.headerRight;
+        expect(headerRight).toBeTypeOf('function');
+        const renameButton = (headerRight as () => React.ReactElement)();
+
+        await act(async () => {
+            await renameButton.props.onPress();
+        });
+
+        expect(machineUpdateMetadataSpy).toHaveBeenCalledWith(
+            'machine-1',
+            expect.objectContaining({ displayName: 'theo-devbox' }),
+            1,
+        );
+        expect(alertSpy).not.toHaveBeenCalled();
     });
 
     it('confirms and revokes the machine', async () => {

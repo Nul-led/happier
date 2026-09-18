@@ -7,6 +7,7 @@ import {
     type TreeDropOverlaySharedValues,
 } from '@/components/ui/treeDragDrop/ui/treeDropOverlayTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionStatus } from '@/utils/sessions/sessionUtils';
 import { lightTheme } from '@/theme';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
@@ -48,12 +49,6 @@ vi.mock('react-native-gesture-handler', () => ({
 vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
     Octicons: 'Octicons',
-}));
-
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
 }));
 
 vi.mock('@/components/ui/text/Text', () => ({
@@ -121,11 +116,6 @@ vi.mock('@/components/sessions/presentation/SessionAgentCatalogIdentityIcon', ()
         React.createElement('SessionAgentCatalogIdentityIcon', props),
 }));
 
-vi.mock('@/agents/catalog/catalog', () => ({
-    DEFAULT_AGENT_ID: 'codex',
-    resolveAgentIdFromFlavor: (flavor: string | null | undefined) => flavor === 'claude' ? 'claude' : null,
-}));
-
 vi.mock('@/components/ui/status/StatusDot', () => ({
     StatusDot: 'StatusDot',
 }));
@@ -169,38 +159,39 @@ vi.mock('./sessionTagIcons', () => ({
     TagIcon: (props: Record<string, unknown>) => React.createElement('TagIcon', props),
 }));
 
-vi.mock('@/utils/sessions/sessionUtils', () => ({
-    getSessionName: () => 'Session',
-    getSessionSubtitle: () => 'Subtitle',
-    getSessionAvatarId: () => 'avatar',
-    getSessionStatus: (session: { hasPendingPermissionRequests?: boolean; thinking?: boolean }) =>
-        session.thinking === true
-            ? {
-                  state: 'thinking',
-                  isConnected: true,
-                  statusText: 'Working on it',
-                  shouldShowStatus: true,
-                  statusColor: '#07f',
-                  statusDotColor: '#0f0',
-                  isPulsing: true,
-              }
-            : session.hasPendingPermissionRequests === true
-            ? {
-                  state: 'permission_required',
-                  isConnected: true,
-                  statusText: 'status.permissionRequired',
-                  shouldShowStatus: true,
-                  statusColor: '#f90',
-                  statusDotColor: '#f90',
-                  isPulsing: true,
-              }
-            : mockSessionStatus,
-    useSessionStatus: () => mockSessionStatus,
-}));
+vi.mock('@/utils/sessions/sessionUtils', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/utils/sessions/sessionUtils')>();
+    return {
+        ...actual,
+        getSessionName: (session: { metadata?: { name?: string } | null }) => session.metadata?.name ?? 'Session',
+        getSessionSubtitle: () => 'Subtitle',
+        getSessionAvatarId: () => 'avatar',
+    };
+});
 
 type MockSessionStatus = SessionStatus;
+let projectStatus: typeof import('@/utils/sessions/sessionUtils').getSessionStatus;
 
-const defaultSessionStatus: MockSessionStatus = {
+function createStatusFixture(display: Omit<SessionStatus, 'awareness'>): SessionStatus {
+    const nowMs = Date.now();
+    const session = createSessionFixture({
+        id: 'status-fixture',
+        encryptionMode: 'plain',
+        active: display.isConnected,
+        activeAt: nowMs,
+        presence: display.isConnected ? 'online' : 0,
+        thinking: display.state === 'thinking',
+        thinkingAt: nowMs,
+        agentState: display.state === 'permission_required' ? {
+            controlledByUser: null,
+            requests: { permission: { tool: 'Bash', kind: 'permission', arguments: {}, createdAt: nowMs } },
+        } : null,
+    });
+    return { ...display, awareness: projectStatus(session, nowMs).awareness };
+}
+
+
+const defaultSessionStatus: Omit<SessionStatus, 'awareness'> = {
     state: 'thinking',
     isConnected: true,
     statusText: 'Working on it',
@@ -210,9 +201,7 @@ const defaultSessionStatus: MockSessionStatus = {
     isPulsing: false,
 };
 
-let mockSessionStatus: MockSessionStatus = {
-    ...defaultSessionStatus,
-};
+let mockSessionStatus: MockSessionStatus;
 
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (Array.isArray(style)) {
@@ -234,7 +223,8 @@ function createSession(
     return createSessionFixture({
         id,
         active: true,
-        activeAt: 1,
+        activeAt: Date.now(),
+        encryptionMode: 'plain',
         createdAt: 1,
         updatedAt: 1,
         metadata,
@@ -272,8 +262,10 @@ function createTreeDropOverlaySharedValues(): TreeDropOverlaySharedValues {
 async function importSessionItem() {
     const { SessionItem } = await import('./SessionItem');
     return createModelBackedSessionItemTestComponent(SessionItem, {
-        resolveRowViewModelOverrides: () => ({
-            sessionStatus: mockSessionStatus,
+        resolveRowViewModelOverrides: (props) => ({
+            sessionStatus: props.session.latestTurnStatus != null || ('hasPendingPermissionRequests' in props.session && props.session.hasPendingPermissionRequests === true)
+                ? projectStatus(props.session, Date.now())
+                : mockSessionStatus,
             hasUnreadMessages: hasUnreadMessagesValue,
             activityTimeLabel: '1m',
             workingIndicatorMode: workingIndicatorStyle,
@@ -288,15 +280,16 @@ function styleEntries(style: unknown): unknown[] {
 }
 
 describe('SessionItem activity time', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
+        projectStatus = (await import('@/utils/sessions/sessionUtils')).getSessionStatus;
         hasUnreadMessagesValue = false;
         workingIndicatorStyle = 'spinner';
         sessionListIdentityDisplay = 'avatar';
         sessionListActiveColorMode = 'activityAndAttention';
         platformOs = 'web';
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             ...defaultSessionStatus,
-        };
+        });
         formatShortRelativeTimeSpy.mockReset();
         formatShortRelativeTimeSpy.mockImplementation(() => '1m');
         useProfileSpy.mockClear();
@@ -389,13 +382,13 @@ describe('SessionItem activity time', () => {
 
     it('renders a stable minimal unread attention indicator instead of an avatar badge', async () => {
         hasUnreadMessagesValue = true;
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             ...defaultSessionStatus,
             state: 'waiting',
             statusText: 'online',
             shouldShowStatus: false,
             isPulsing: false,
-        };
+        });
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
@@ -419,13 +412,13 @@ describe('SessionItem activity time', () => {
 
     it('shows ready-for-review status text for non-minimal completed unread turns', async () => {
         hasUnreadMessagesValue = true;
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             ...defaultSessionStatus,
             state: 'waiting',
             statusText: 'online',
             shouldShowStatus: false,
             isPulsing: false,
-        };
+        });
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
@@ -492,16 +485,16 @@ describe('SessionItem activity time', () => {
         ['web', 'waiting', 'status.needsInputExternally', 'action_required'],
         ['web', 'idle', 'status.ready', 'ready'],
         ['web', 'unknown', 'status.externalStatusUnknown', 'none'],
-    ] as const)('renders pushed external %s %s status while hosted control stays offline', async (platform, state, labelKey, indicator) => {
+    ] as const)('keeps canonical status for external %s %s facts', async (platform, state, labelKey, indicator) => {
         platformOs = platform;
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             ...defaultSessionStatus,
             state: 'disconnected',
             isConnected: false,
             statusText: 'status.offline',
             shouldShowStatus: true,
             isPulsing: false,
-        };
+        });
         const SessionItem = await importSessionItem();
         const session = createSession('sess_external_status', {
             host: 'MacBook Pro',
@@ -559,31 +552,98 @@ describe('SessionItem activity time', () => {
             />,
         );
 
-        expect(screen.getTextContent()).toContain(labelKey);
+        expect(screen.getTextContent()).toContain('status.offline');
         expect(screen.getTextContent()).toContain(
-            `${labelKey} · sessionsList.storageExternalFilter · agentInput.agent.codex · MacBook Pro`,
+            'status.offline · sessionsList.storageExternalFilter · agentInput.agent.codex · MacBook Pro',
         );
-        expect(screen.getTextContent()).not.toContain(
-            'agentInput.agent.codex · sessionsList.storageExternalFilter · agentInput.agent.codex',
-        );
-        if (indicator === 'none') {
-            expect(screen.findByTestId('session-list-attention-indicator-sess_external_status-secondary-none')).toBeNull();
-        } else {
-            expect(screen.findByTestId(
-                `session-list-attention-indicator-sess_external_status-secondary-${indicator}`,
-            )).toBeTruthy();
-            expect(screen.findByTestId(
-                'session-row-attention-indicator-sess_external_status-secondary',
-            )?.props.accessibilityLabel).toBe(labelKey);
-        }
+        expect(screen.getTextContent()).not.toContain(labelKey);
+        expect(screen.findByTestId(
+            `session-list-attention-indicator-sess_external_status-secondary-${indicator}`,
+        )).toBeNull();
         expect(screen.findByType('Avatar' as any)?.props.monochrome).toBe(true);
     });
 
+    it('keeps retained working placement from replacing a quiet canonical status', async () => {
+        const session = createSession('sess_retained_quiet');
+        const SessionItem = await importSessionItem();
+        const screen = await renderScreen(
+            <SessionItem
+                session={session}
+                rowViewModel={createSessionItemRowViewModel({
+                    session,
+                    overrides: {
+                        sessionStatus: projectStatus(session, Date.now()),
+                        secondaryLineMode: 'status',
+                        workingPlacementRetained: true,
+                    },
+                })}
+                serverId="server_a"
+                pinned={false}
+                selected={false}
+                isFirst
+                isLast
+                isSingle
+                variant="default"
+                secondaryLineMode="status"
+                compact={false}
+            />,
+        );
+
+        expect(screen.findByTestId(
+            'session-list-attention-indicator-sess_retained_quiet-secondary-working',
+        )).toBeNull();
+        expect(screen.getTextContent()).not.toContain('status.workingRetained');
+    });
+
+    it('keeps canonical failed status authoritative over external-session presentation', async () => {
+        const now = Date.now();
+        const session = {
+            ...createSession('sess_external_failed'),
+            latestTurnStatus: 'failed' as const,
+            latestTurnStatusObservedAt: now,
+        };
+        const SessionItem = await importSessionItem();
+        const screen = await renderScreen(
+            <SessionItem
+                session={session}
+                rowViewModelOverrides={{
+                    externalSessionRuntime: {
+                        controlConnectivity: 'online',
+                        detachedActivity: 'active',
+                        externalAgent: {
+                            state: 'working',
+                            labelKey: 'status.workingExternally',
+                            tone: 'live',
+                            indicator: 'working',
+                            nextExpiryAtMs: null,
+                        },
+                    } as any,
+                }}
+                serverId="server_a"
+                pinned={false}
+                selected={false}
+                isFirst
+                isLast
+                isSingle
+                variant="default"
+                secondaryLineMode="status"
+                compact={false}
+            />,
+        );
+
+        expect(screen.findByTestId(
+            'session-list-attention-indicator-sess_external_failed-secondary-failed',
+        )).toBeTruthy();
+        expect(screen.findByTestId(
+            'session-list-attention-indicator-sess_external_failed-secondary-working',
+        )).toBeNull();
+    });
+
     it('renders inactive sessions with a monochrome avatar even when the daemon still reports connected', async () => {
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             ...defaultSessionStatus,
             isConnected: true,
-        };
+        });
 
         const SessionItem = await importSessionItem();
 
@@ -764,7 +824,7 @@ describe('SessionItem activity time', () => {
 
     it('passes the resolved title color to agent logos for active rows without attention', async () => {
         sessionListIdentityDisplay = 'agentLogo';
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'waiting',
             isConnected: true,
             statusText: 'online',
@@ -772,7 +832,7 @@ describe('SessionItem activity time', () => {
             statusColor: '#34C759',
             statusDotColor: '#34C759',
             isPulsing: false,
-        };
+        });
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
@@ -801,7 +861,7 @@ describe('SessionItem activity time', () => {
     it('can use the active title color for all active connected session rows', async () => {
         sessionListIdentityDisplay = 'agentLogo';
         sessionListActiveColorMode = 'allActive';
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'waiting',
             isConnected: true,
             statusText: 'online',
@@ -809,7 +869,7 @@ describe('SessionItem activity time', () => {
             statusColor: '#34C759',
             statusDotColor: '#34C759',
             isPulsing: false,
-        };
+        });
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
@@ -835,7 +895,7 @@ describe('SessionItem activity time', () => {
     it('can keep working rows secondary when only attention rows use active color', async () => {
         sessionListIdentityDisplay = 'agentLogo';
         sessionListActiveColorMode = 'attentionOnly';
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'thinking',
             isConnected: true,
             statusText: 'Working on it',
@@ -843,7 +903,7 @@ describe('SessionItem activity time', () => {
             statusColor: '#07f',
             statusDotColor: '#0f0',
             isPulsing: true,
-        };
+        });
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
@@ -910,7 +970,7 @@ describe('SessionItem activity time', () => {
     });
 
     it('replaces trailing time with a spinner in very compact mode when the session is working', async () => {
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'thinking',
             isConnected: true,
             statusText: 'Working on it',
@@ -918,13 +978,13 @@ describe('SessionItem activity time', () => {
             statusColor: '#07f',
             statusDotColor: '#0f0',
             isPulsing: true,
-        };
+        });
 
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
             <SessionItem
-                session={createSession('sess_compact_active')}
+                session={{ ...createSession('sess_compact_active'), thinking: true, thinkingAt: Date.now() }}
                 serverId="server_a"
                 pinned={false}
                 selected={false}
@@ -941,10 +1001,7 @@ describe('SessionItem activity time', () => {
         const spinner = screen.findByTestId('session-row-attention-indicator-spinner-sess_compact_active-trailing');
         expect(spinner).toBeTruthy();
         const spinnerStyle = flattenStyle(spinner?.props.style);
-        expect(spinnerStyle).toMatchObject({
-            width: 12,
-            height: 12,
-        });
+        expect(spinnerStyle).toMatchObject({ width: 12, height: 12 });
         expect(spinnerStyle.animationName).toBeUndefined();
         expect(screen.findAllByType('StatusDot')).toHaveLength(0);
         expect(screen.getTextContent()).not.toContain('Working on it');
@@ -952,7 +1009,7 @@ describe('SessionItem activity time', () => {
     });
 
     it('renders session status with the configured spinner and text', async () => {
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'thinking',
             isConnected: true,
             statusText: 'Working on it',
@@ -960,13 +1017,13 @@ describe('SessionItem activity time', () => {
             statusColor: '#07f',
             statusDotColor: '#0f0',
             isPulsing: true,
-        };
+        });
 
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
             <SessionItem
-                session={createSession('sess_status_plain')}
+                session={{ ...createSession('sess_status_plain'), thinking: true, thinkingAt: Date.now() }}
                 serverId="server_a"
                 pinned={false}
                 selected={false}
@@ -981,10 +1038,7 @@ describe('SessionItem activity time', () => {
         expect(screen.findByTestId('session-list-status-pill-sess_status_plain')).toBeNull();
         const spinner = screen.findByTestId('session-row-attention-indicator-spinner-sess_status_plain-secondary');
         expect(spinner).toBeTruthy();
-        expect(flattenStyle(spinner?.props.style)).toMatchObject({
-            width: 12,
-            height: 12,
-        });
+        expect(flattenStyle(spinner?.props.style)).toMatchObject({ width: 12, height: 12 });
         expect(screen.findAllByType('StatusDot')).toHaveLength(0);
         const statusText = screen.findAllByType('Text').find((node) => node.props.children === 'Working on it');
         const flat = flattenStyle(statusText?.props.style);
@@ -994,7 +1048,7 @@ describe('SessionItem activity time', () => {
 
     it('renders session status with the configured pulsing dot and text', async () => {
         workingIndicatorStyle = 'pulse';
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'thinking',
             isConnected: true,
             statusText: 'Working on it',
@@ -1002,13 +1056,13 @@ describe('SessionItem activity time', () => {
             statusColor: '#07f',
             statusDotColor: '#0f0',
             isPulsing: true,
-        };
+        });
 
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
             <SessionItem
-                session={createSession('sess_status_plain_dot')}
+                session={{ ...createSession('sess_status_plain_dot'), thinking: true, thinkingAt: Date.now() }}
                 serverId="server_a"
                 pinned={false}
                 selected={false}
@@ -1030,8 +1084,61 @@ describe('SessionItem activity time', () => {
         expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
     });
 
+    it.each([
+        ['thinking', { thinking: true }, true],
+        ['permission_required', { pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0 }, false],
+        ['action_required', { pendingPermissionRequestCount: 0, pendingUserActionRequestCount: 1 }, false],
+        ['error', { latestTurnStatus: 'failed' as const }, false],
+    ] as const)('exposes the %s state on the single actionable row in minimal path mode', async (state, sourceFacts, busy) => {
+        const now = Date.now();
+        const sessionId = `sess_accessible_${state}`;
+        const session = createSessionFixture({
+            ...createSession(sessionId, { name: `Accessible ${state}`, path: '/workspace/example' }),
+            ...sourceFacts,
+            thinkingAt: state === 'thinking' ? now : 0,
+            pendingRequestObservedAt: state === 'permission_required' || state === 'action_required' ? now : null,
+            latestTurnStatusObservedAt: state === 'error' ? now : undefined,
+        });
+        mockSessionStatus = projectStatus(session, now, { workingTextMode: 'static' });
+        const SessionItem = await importSessionItem();
+        const screen = await renderScreen(
+            <SessionItem
+                session={session}
+                serverId="server_a"
+                pinned={false}
+                selected={false}
+                isFirst
+                isLast
+                isSingle
+                variant="default"
+                compact
+                compactMinimal
+                secondaryLineMode="path"
+                rowAttentionAnimationEnabled={false}
+            />,
+        );
+
+        const row = screen.findByTestId(`session-list-item-${sessionId}`);
+        expect(row?.props.accessibilityRole).toBe('button');
+        expect(row?.props.accessibilityLabel).toContain(`Accessible ${state}`);
+        expect(row?.props.accessibilityLabel).toContain(mockSessionStatus.statusText);
+        expect(row?.props.accessibilityState).toMatchObject({ selected: false, busy });
+        expect(screen.tree.root.findAll((node) => (
+            node.type === 'Pressable'
+            && node.props?.testID === `session-list-item-${sessionId}`
+        ))).toHaveLength(1);
+        const indicator = screen.findByTestId(`session-row-attention-indicator-${sessionId}-trailing`)
+            ?? screen.findByTestId(`session-row-attention-indicator-${sessionId}-secondary`);
+        expect(indicator?.props).toMatchObject({
+            accessible: false,
+            accessibilityElementsHidden: true,
+            importantForAccessibility: 'no-hide-descendants',
+        });
+        await screen.unmount();
+    });
+
     it('does not render a subtitle in very compact mode for quiet online sessions', async () => {
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'waiting',
             isConnected: true,
             statusText: 'online',
@@ -1039,7 +1146,7 @@ describe('SessionItem activity time', () => {
             statusColor: '#34C759',
             statusDotColor: '#34C759',
             isPulsing: false,
-        };
+        });
 
         const SessionItem = await importSessionItem();
 
@@ -1064,7 +1171,7 @@ describe('SessionItem activity time', () => {
     });
 
     it('keeps the selected row background when a session is selected', async () => {
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'waiting',
             isConnected: true,
             statusText: 'online',
@@ -1072,7 +1179,7 @@ describe('SessionItem activity time', () => {
             statusColor: '#34C759',
             statusDotColor: '#34C759',
             isPulsing: false,
-        };
+        });
 
         const SessionItem = await importSessionItem();
 
@@ -1130,6 +1237,7 @@ describe('SessionItem activity time', () => {
                     sessionKey: 'server_a:sess_model_backed',
                     session: rowSession,
                     sessionStatus: {
+                        awareness: projectStatus(rowSession, Date.now()).awareness,
                         state: 'waiting',
                         isConnected: true,
                         statusText: 'online',
@@ -1191,7 +1299,7 @@ describe('SessionItem activity time', () => {
             hasPendingPermissionRequests: false,
             hasPendingUserActionRequests: false,
         });
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'permission_required',
             isConnected: true,
             statusText: 'status.permissionRequired',
@@ -1199,7 +1307,7 @@ describe('SessionItem activity time', () => {
             statusColor: '#f90',
             statusDotColor: '#f90',
             isPulsing: true,
-        };
+        });
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
@@ -1208,6 +1316,7 @@ describe('SessionItem activity time', () => {
                     ...createSession('sess_overlay_permission'),
                     hasPendingPermissionRequests: true,
                     hasPendingUserActionRequests: false,
+                    pendingRequestObservedAt: Date.now(),
                 }}
                 serverId="server_a"
                 pinned={false}
@@ -1233,8 +1342,9 @@ describe('SessionItem activity time', () => {
         const overlaidSession = {
             ...staleSession,
             hasPendingPermissionRequests: true,
+            pendingRequestObservedAt: Date.now(),
         };
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'waiting',
             isConnected: true,
             statusText: 'Online',
@@ -1242,7 +1352,7 @@ describe('SessionItem activity time', () => {
             statusColor: '#34C759',
             statusDotColor: '#34C759',
             isPulsing: false,
-        };
+        });
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
@@ -1275,6 +1385,129 @@ describe('SessionItem activity time', () => {
         )).toBeTruthy();
     });
 
+    it.each(['failed', 'stale', 'offline', 'locked'] as const)('projects richer %s facts before rendering attention and motion', async (scenario) => {
+        const now = Date.now();
+        const rowSession = {
+            ...createSession('sess_projection'),
+            encryptionMode: 'plain' as const,
+            activeAt: now,
+            thinking: true,
+            thinkingAt: now,
+            latestTurnStatus: 'in_progress' as const,
+            latestTurnStatusObservedAt: now - 1,
+        };
+        const providedSession = {
+            ...rowSession,
+            updatedAt: now,
+            hasPendingPermissionRequests: true,
+            pendingRequestObservedAt: now,
+            ...(scenario === 'failed' ? {
+                latestTurnStatus: 'failed' as const,
+                latestTurnStatusObservedAt: now,
+            } : scenario === 'stale' ? { activeAt: 1 }
+                : scenario === 'locked' ? {
+                    encryptionMode: 'e2ee' as const,
+                    encryptedContentAvailability: 'encrypted_access_pending' as const,
+                    metadata: null,
+                }
+                    : { presence: now - 200_000 }),
+        };
+        const { getSessionStatus } = await import('@/utils/sessions/sessionUtils');
+        const SessionItem = await importSessionItem();
+        const screen = await renderScreen(<SessionItem
+            session={providedSession}
+            rowViewModel={createSessionItemRowViewModel({
+                session: rowSession,
+                overrides: { sessionStatus: getSessionStatus(rowSession, now), secondaryLineMode: 'status' },
+            })}
+            serverId="server_a" pinned={false} selected={false} isFirst isLast isSingle
+            variant="default" secondaryLineMode="path" subtitleOverride="~/private-path" compact={false}
+        />);
+        if (scenario !== 'failed') {
+            expect(screen.getTextContent()).toContain(getSessionStatus(providedSession, now).statusText);
+        }
+        if (scenario === 'failed') {
+            expect(screen.findByTestId('session-list-attention-indicator-sess_projection-secondary-failed')).toBeTruthy();
+            expect(screen.findByTestId('session-list-attention-indicator-sess_projection-secondary-permission_required')).toBeNull();
+        }
+        expect(screen.findAllByType('StatusDot').every((dot) => dot.props.animationEnabled === false)).toBe(true);
+        const spinner = screen.findByTestId('session-row-attention-indicator-spinner-sess_projection-secondary');
+        if (spinner) expect(flattenStyle(spinner.props.style).animationName).toBeUndefined();
+    });
+
+    it.each([undefined, 'encrypted_access_pending'] as const)('hides retained private name and path with content availability %s', async (encryptedContentAvailability) => {
+        const session = { ...createSession('sess_private'), encryptionMode: 'e2ee' as const,
+            encryptedContentAvailability,
+            metadata: { name: 'Private retained title', path: '/private/retained/path' } };
+        const { getSessionStatus } = await import('@/utils/sessions/sessionUtils');
+        const SessionItem = await importSessionItem();
+        const screen = await renderScreen(<SessionItem session={session}
+            rowViewModel={createSessionItemRowViewModel({ session, overrides: {
+                sessionStatus: getSessionStatus(session, Date.now()), subtitleOverride: '/private/retained/path', secondaryLineMode: 'path',
+            } })}
+            serverId="server_a" pinned={false} selected={false} isFirst isLast isSingle variant="default" compact={false}
+        />);
+        expect(screen.getTextContent()).not.toContain('Private retained title');
+        expect(screen.getTextContent()).not.toContain('/private/retained/path');
+    });
+
+    it.each([
+        ['encrypted_access_pending', 'session.access.pending'],
+        ['recipient_encryption_setup_required', 'session.access.setup'],
+        ['encrypted_content_unavailable', 'session.access.unavailable'],
+    ] as const)('explains %s instead of reporting an outcome the viewer cannot read', async (
+        encryptedContentAvailability,
+        expectedStatusKey,
+    ) => {
+        const now = Date.now();
+        const session = {
+            ...createSession('sess_access_state'),
+            encryptionMode: 'e2ee' as const,
+            encryptedContentAvailability,
+            metadata: null,
+            latestTurnStatus: 'completed' as const,
+            latestTurnStatusObservedAt: now,
+            latestReadyEventSeq: 4,
+            activeAt: now,
+        };
+        const { getSessionStatus } = await import('@/utils/sessions/sessionUtils');
+        const SessionItem = await importSessionItem();
+        const screen = await renderScreen(<SessionItem session={session}
+            rowViewModel={createSessionItemRowViewModel({ session, overrides: {
+                sessionStatus: getSessionStatus(session, now), secondaryLineMode: 'path',
+            } })}
+            serverId="server_a" pinned={false} selected={false} isFirst isLast isSingle
+            variant="default" secondaryLineMode="path" compact={false}
+        />);
+        expect(screen.getTextContent()).toContain(expectedStatusKey);
+        expect(screen.getTextContent()).not.toContain('status.readyForReview');
+    });
+
+    it('composes the canonical paused work headline into the status line', async () => {
+        const now = Date.now();
+        const session: Session = {
+            ...createSession('sess_paused_headline'),
+            encryptionMode: 'plain' as const,
+            activeAt: now,
+            metadata: { path: "/project", host: "test-host", sessionWorkStateV1: {
+                v: 1, backendId: 'codex', updatedAt: now,
+                items: [{ id: 'paused', kind: 'task', origin: 'vendor', status: 'paused', title: 'Review migration', updatedAt: now }],
+            } },
+        };
+        const { getSessionStatus } = await import('@/utils/sessions/sessionUtils');
+        const SessionItem = await importSessionItem();
+        const screen = await renderScreen(<SessionItem
+            session={session}
+            rowViewModel={createSessionItemRowViewModel({
+                session,
+                overrides: { sessionStatus: getSessionStatus(session, now), secondaryLineMode: 'status' },
+            })}
+            serverId="server_a" pinned={false} selected={false} isFirst isLast isSingle
+            variant="default" secondaryLineMode="status" compact={false}
+        />);
+        expect(screen.getTextContent()).toContain('Review migration');
+    });
+
     it('uses row-model blocked pending count when the provided session omits it', async () => {
         const rowSession = {
             ...createSession('sess_row_model_overlay_blocked_pending'),
@@ -1285,7 +1518,7 @@ describe('SessionItem activity time', () => {
             ...createSession('sess_row_model_overlay_blocked_pending'),
             pendingCount: 1,
         };
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'waiting',
             isConnected: true,
             statusText: 'Online',
@@ -1293,7 +1526,9 @@ describe('SessionItem activity time', () => {
             statusColor: '#34C759',
             statusDotColor: '#34C759',
             isPulsing: false,
-        };
+        });
+        const { getSessionStatus } = await import('@/utils/sessions/sessionUtils');
+        mockSessionStatus = getSessionStatus(rowSession, Date.now());
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
@@ -1337,7 +1572,7 @@ describe('SessionItem activity time', () => {
             pendingCount: 0,
             pendingBlockedCount: 0,
         };
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'waiting',
             isConnected: true,
             statusText: 'Online',
@@ -1345,7 +1580,7 @@ describe('SessionItem activity time', () => {
             statusColor: '#34C759',
             statusDotColor: '#34C759',
             isPulsing: false,
-        };
+        });
         const SessionItem = await importSessionItem();
 
         const screen = await renderScreen(
@@ -1377,14 +1612,16 @@ describe('SessionItem activity time', () => {
         )).toHaveLength(0);
     });
 
-    it('uses list placement action flags when the row view model session is stale', async () => {
+    it('does not reconstruct pending requests from a stale list placement reason', async () => {
         const { SessionListSessionItem } = await import('./sessionListSessionItem');
+        const { agentState: _agentState, ...listSession } = createSession('sess_action_overlay');
         const staleSession = {
-            ...createSession('sess_action_overlay'),
+            ...listSession,
+            pendingRequestObservedAt: Date.now(),
             hasPendingPermissionRequests: false,
             hasPendingUserActionRequests: false,
         };
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             state: 'waiting',
             isConnected: true,
             statusText: 'Online',
@@ -1392,7 +1629,7 @@ describe('SessionItem activity time', () => {
             statusColor: '#34C759',
             statusDotColor: '#34C759',
             isPulsing: false,
-        };
+        });
 
         const screen = await renderScreen(
             <SessionListSessionItem
@@ -1442,20 +1679,20 @@ describe('SessionItem activity time', () => {
             />,
         );
 
-        expect(screen.getTextContent()).toContain('status.actionRequired');
+        expect(screen.getTextContent()).not.toContain('status.actionRequired');
         expect(screen.findByTestId(
             'session-list-attention-indicator-sess_action_overlay-secondary-action_required',
-        )).toBeTruthy();
+        )).toBeNull();
     });
 
     it('uses start-side overflow ellipsis for path subtitles on web without reordering the path', async () => {
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             ...defaultSessionStatus,
             state: 'waiting',
             statusText: 'Online',
             shouldShowStatus: false,
             isPulsing: false,
-        };
+        });
         platformOs = 'web';
         const SessionItem = await importSessionItem();
         const sessionPath = '~/Documents/Development/happier/dev';
@@ -1501,13 +1738,13 @@ describe('SessionItem activity time', () => {
     });
 
     it('uses native head ellipsis for path subtitles outside web', async () => {
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             ...defaultSessionStatus,
             state: 'waiting',
             statusText: 'Online',
             shouldShowStatus: false,
             isPulsing: false,
-        };
+        });
         platformOs = 'ios';
         const SessionItem = await importSessionItem();
         const sessionPath = '~/Documents/Development/happier/dev';
@@ -1539,9 +1776,9 @@ describe('SessionItem activity time', () => {
 
     it('shows the working indicator instead of only path and time in date-grouped rows', async () => {
         workingIndicatorStyle = 'spinner';
-        mockSessionStatus = {
+        mockSessionStatus = createStatusFixture({
             ...defaultSessionStatus,
-        };
+        });
         const SessionItem = await importSessionItem();
         const sessionPath = '~/Documents/Development/happier/dev';
 
@@ -1550,7 +1787,7 @@ describe('SessionItem activity time', () => {
                 session={{
                     ...createSession('sess_date_working'),
                     thinking: true,
-                    thinkingAt: 2,
+                    thinkingAt: Date.now(),
                 }}
                 subtitleOverride={sessionPath}
                 secondaryLineMode="path"

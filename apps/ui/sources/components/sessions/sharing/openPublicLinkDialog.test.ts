@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { PublicSessionShare } from '@/sync/domains/social/sharingTypes';
+import type { SessionPublicLinkPublication } from '@/sync/domains/social/sessionPublicLinkPublication';
 
 const modalModuleState = vi.hoisted(() => ({
     show: vi.fn(),
@@ -28,16 +28,14 @@ vi.mock('./components/PublicLinkDialog', () => ({
     PublicLinkDialog: () => null,
 }));
 
-function createPublicShare(overrides: Partial<PublicSessionShare> = {}): PublicSessionShare {
+function createPublicShare(overrides: Partial<SessionPublicLinkPublication> = {}): SessionPublicLinkPublication {
     return {
         id: 'public-share-1',
-        sessionId: 'session-1',
         token: 'share-token-1',
         expiresAt: null,
         maxUses: null,
         useCount: 0,
         isConsentRequired: true,
-        createdAt: 1,
         updatedAt: 1,
         ...overrides,
     };
@@ -61,12 +59,14 @@ describe('openPublicLinkDialog', () => {
 
         await openPublicLinkDialog({
             publicShare: null,
+            serverUrl: 'https://home.example.test',
             onCreate,
             onDelete: vi.fn(),
         });
 
         const dialogConfig = modalModuleState.show.mock.calls[0]?.[0];
         expect(dialogConfig?.props?.publicShare).toBeNull();
+        expect(dialogConfig?.props?.serverUrl).toBe('https://home.example.test');
 
         await dialogConfig.props.onCreate({
             expiresInDays: 7,
@@ -82,5 +82,22 @@ describe('openPublicLinkDialog', () => {
         expect(modalModuleState.update).toHaveBeenCalledWith('modal-1', {
             publicShare: createdShare,
         });
+    });
+
+    it('hands the invoking control to the shared modal focus-return owner', async () => {
+        const { openPublicLinkDialog } = await import('./openPublicLinkDialog');
+        const focusReturnRef = { current: { focus: () => {}, isConnected: true } };
+
+        await openPublicLinkDialog({
+            publicShare: null,
+            serverUrl: 'https://home.example.test',
+            onCreate: vi.fn(),
+            onDelete: vi.fn(),
+            focusReturnRef,
+        });
+
+        // The modal host restores focus only from an explicit ref; without it a
+        // compact/native dismissal strands focus outside the invoking row.
+        expect(modalModuleState.show.mock.calls[0]?.[0]?.focusReturnRef).toBe(focusReturnRef);
     });
 });

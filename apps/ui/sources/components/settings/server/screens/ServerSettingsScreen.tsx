@@ -25,9 +25,13 @@ import {
 import {
     createPersonalHomeRelocationPromptResponder,
     createPersonalHomeRelocationPromptResponderWithPublication,
+    createPersonalHomeRelocationProfilePublication,
 } from '@/components/settings/server/localControl/personalHomeRelocationPromptResponder';
 import { isEligiblePersonalHomeRelocationHost } from '@/components/settings/server/localControl/personalHomeRelocationEligibility';
-import { runRelayRuntimeUninstallTask } from '@/components/settings/server/localControl/useLocalRelayRuntimeControl';
+import {
+    runRelayRuntimeUninstallTask,
+    useLocalRelayRuntimeControl,
+} from '@/components/settings/server/localControl/useLocalRelayRuntimeControl';
 import { getDefaultSystemTaskRunner } from '@/components/systemTasks';
 import { buildRemoteSshManageHostSystemTaskSpec } from '@/components/systemTasks/specs/remoteSsh/buildRemoteSshManageHostSystemTaskSpec';
 import { LocalRelayAccessControlSection } from '@/components/settings/server/localControl/LocalRelayAccessControlSection';
@@ -54,11 +58,8 @@ import { accountDirectoryCredentialStorage } from '@/auth/accountDirectory/accou
 import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
 import { rebuildHomeSearchIndex } from '@/sync/domains/memory/searchHomeMemory';
 import {
-    adoptHomeProfile,
-    buildHomeConnectionDescriptorForProfile,
     getAccountServiceEndpointSnapshot,
     findPersonalHomeBootstrapCompletedProfile,
-    getServerProfileById,
     resolveServerProfileScopeId,
     subscribeAccountServiceEndpoint,
     type AccountServiceEndpointV1,
@@ -89,6 +90,39 @@ type RelocationDirectoryPublication = Readonly<{
     serverIdentityId: string;
     capability: AccountDirectoryCapabilities;
 }>;
+
+type ServerLocalRuntimeControlSectionProps = Readonly<{
+    controller?: ReturnType<typeof useLocalRelayRuntimeControl>;
+    operations?: PersonalHomeRuntimeControlOperations;
+    homeLabel?: string;
+    onStatusChange?: (status: ReturnType<typeof useLocalRelayRuntimeControl>['status']) => void;
+}>;
+
+function OwnedServerLocalRuntimeControlSection(props: ServerLocalRuntimeControlSectionProps) {
+    const controller = useLocalRelayRuntimeControl();
+    return <ServerLocalRuntimeControlSection {...props} controller={controller} />;
+}
+
+export const ServerLocalRuntimeControlSection = React.memo(function ServerLocalRuntimeControlSection(
+    props: ServerLocalRuntimeControlSectionProps,
+) {
+    if (!props.controller) {
+        return <OwnedServerLocalRuntimeControlSection {...props} />;
+    }
+    return props.controller.status?.purpose?.kind === 'personal-home' ? (
+        <PersonalHomeRuntimeControlSection
+            controller={props.controller}
+            {...(props.onStatusChange ? { onStatusChange: props.onStatusChange } : {})}
+            {...(props.operations ? { operations: props.operations } : {})}
+            {...(props.homeLabel !== undefined ? { homeLabel: props.homeLabel } : {})}
+        />
+    ) : (
+        <LocalRelayRuntimeControlSection
+            controller={props.controller}
+            {...(props.onStatusChange ? { onStatusChange: props.onStatusChange } : {})}
+        />
+    );
+});
 
 async function resolveRelocationDirectoryPublication(
     endpoint: AccountServiceEndpointV1 | null,
@@ -194,7 +228,7 @@ export function ServerSettingsScreen() {
         const channel = resolvePreferredPublicReleaseRingLabelForCurrentApp();
         const operationId = recovery?.operationId ?? `relocation-${randomUUID()}`;
         const sourceDescriptorRevision = recovery?.sourceDescriptorRevision
-            ?? personalHomeProfile.connectionDescriptorRevision
+            ?? personalHomeProfile.homeConnectionDescriptor?.revision
             ?? 1;
         // Resolve again at the commit boundary so a configured Directory wins
         // even when the screen's capability probe has not settled yet.
@@ -214,37 +248,7 @@ export function ServerSettingsScreen() {
                 operationId,
                 homeServerIdentityId: personalHomeProfile.serverIdentityId,
                 homeLabel: personalHomeProfile.name,
-                publication: {
-                    // Without Account Directory, relocation updates only this initiating
-                    // client's canonical profile. Other clients explicitly re-pair.
-                    publish: async (input) => {
-                        const adopted = await adoptHomeProfile({
-                            descriptor: {
-                                v: 1,
-                                homeServerIdentityId: input.homeServerIdentityId,
-                                canonicalServerUrl: input.canonicalServerUrl,
-                                revision: input.minimumOuterRevisionExclusive + 1,
-                                endpoints: [...input.endpoints],
-                            },
-                            source: personalHomeProfile.source ?? 'manual',
-                            preserveUserLabel: true,
-                            preserveProfileSource: true,
-                            descriptorAuthority: 'current_connection_observation',
-                        });
-                        const descriptor = buildHomeConnectionDescriptorForProfile(
-                            getServerProfileById(adopted.id) ?? adopted,
-                        );
-                        if (!descriptor) throw new Error(t('errors.operationFailed'));
-                        return descriptor;
-                    },
-                    read: async (homeServerIdentityId) => {
-                        if (homeServerIdentityId !== personalHomeProfile.serverIdentityId) {
-                            throw new Error(t('errors.operationFailed'));
-                        }
-                        const current = getServerProfileById(personalHomeProfile.id);
-                        return current ? buildHomeConnectionDescriptorForProfile(current) : null;
-                    },
-                },
+                publication: createPersonalHomeRelocationProfilePublication(personalHomeProfile),
             });
         return {
             spec: buildRemoteSshManageHostSystemTaskSpec({
@@ -273,20 +277,26 @@ export function ServerSettingsScreen() {
     const prepareRelocationRecovery = React.useCallback(async (recovery: PersonalHomeRelocationRecovery) => {
         return await prepareRelocation(recovery.destinationMachineId, recovery);
     }, [prepareRelocation]);
-    const personalHomeOperations = React.useMemo<PersonalHomeRuntimeControlOperations | undefined>(() => {
-        if (!personalHomeProfile) return undefined;
+    // Runtime-scoped Personal Home operations follow the authoritative managed runtime, not a saved
+    // profile receipt: removing the profile from this app must not disarm backup, restore, verify,
+    // diagnostics, or safe runtime uninstall for the Home still running on this computer. Only
+    // genuinely profile-scoped actions are withheld when no completed profile remains, because they
+    // have no target rather than because the Home is gone.
+    const personalHomeOperations = React.useMemo<PersonalHomeRuntimeControlOperations>(() => {
         const openPath = async (path: string) => {
             const normalizedPath = path.trim();
             if (!normalizedPath) throw new Error(t('settings.systemTaskOpenLogsFailed'));
             await invokeDesktopHost('system_tasks_open_log_path', { path: normalizedPath });
         };
         return {
-            repairSearch: async () => {
-                await rebuildHomeSearchIndex({ serverId: resolveServerProfileScopeId(personalHomeProfile) });
-            },
-            removeProfile: async () => {
-                await controller.onRemoveServer(personalHomeProfile);
-            },
+            ...(personalHomeProfile ? {
+                repairSearch: async () => {
+                    await rebuildHomeSearchIndex({ serverId: resolveServerProfileScopeId(personalHomeProfile) });
+                },
+                removeProfile: async () => {
+                    await controller.onRemoveServer(personalHomeProfile);
+                },
+            } : {}),
             uninstallRuntime: async () => {
                 await runRelayRuntimeUninstallTask(getDefaultSystemTaskRunner());
             },
@@ -303,7 +313,9 @@ export function ServerSettingsScreen() {
             selectBackupExportDestination: async () => await invokeDesktopHost<string | null>(
                 'desktop_save_personal_home_backup_archive',
             ),
-            ...(relocationDestinations.length > 0
+            // Relocation needs the adopted profile's stable Home identity and descriptor revision,
+            // so it stays profile-scoped alongside search repair and profile removal.
+            ...(personalHomeProfile && relocationDestinations.length > 0
                 ? {
                     relocation: {
                         destinations: relocationDestinations,
@@ -377,15 +389,11 @@ export function ServerSettingsScreen() {
 
                     {isDesktop && setupPolicy.relay.allowLocalRelayHost ? (
                         <>
-                            {personalHomeProfile ? (
-                                <PersonalHomeRuntimeControlSection
-                                    onStatusChange={handleLocalRelayStatusChange}
-                                    operations={personalHomeOperations}
-                                    homeLabel={personalHomeProfile.name}
-                                />
-                            ) : (
-                                <LocalRelayRuntimeControlSection onStatusChange={handleLocalRelayStatusChange} />
-                            )}
+                            <ServerLocalRuntimeControlSection
+                                onStatusChange={handleLocalRelayStatusChange}
+                                operations={personalHomeOperations}
+                                {...(personalHomeProfile ? { homeLabel: personalHomeProfile.name } : {})}
+                            />
                             <LocalRelayAccessControlSection upstreamUrl={localRelayUrl ?? knownLocalRelayUrl} />
                         </>
                     ) : isWeb ? null : (
@@ -411,6 +419,7 @@ export function ServerSettingsScreen() {
                             reachabilityRemediationTaskSnapshot={controller.reachabilityRemediationTaskSnapshot}
                             prefillHint={controller.addServerPrefillHint}
                             defaultExpanded={controller.addServerDefaultExpanded}
+                            initialGroupServerIds={controller.initialGroupServerIds}
                             onChangeUrl={controller.onChangeUrl}
                             onChangeName={controller.onChangeName}
                             onResetServer={controller.onResetServer}

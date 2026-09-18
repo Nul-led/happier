@@ -232,7 +232,7 @@ describe('ChatList target-window active live-tail gating', () => {
         });
         const { ChatList } = await import('./ChatList');
         const screen = await renderChatList(
-            <ChatList session={chatListHarnessState.sessionState} />,
+            <ChatList session={chatListHarnessState.sessionState} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />,
         );
         await primeAtBottom(screen);
 
@@ -252,7 +252,7 @@ describe('ChatList target-window active live-tail gating', () => {
     it('exits target-window mode through live-tail intent at the newest edge when no newer pages remain', async () => {
         const { ChatList } = await import('./ChatList');
         const screen = await renderChatList(
-            <ChatList session={chatListHarnessState.sessionState} />,
+            <ChatList session={chatListHarnessState.sessionState} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />,
         );
         await primeAtBottom(screen);
 

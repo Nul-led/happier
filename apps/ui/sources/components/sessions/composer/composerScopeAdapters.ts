@@ -125,8 +125,14 @@ export function summarizeComposerAttachmentDraftAvailability(input: Readonly<{
 }
 
 /** Drops only computed display availability while preserving canonical staged content. */
+/**
+ * One attachment as it was submitted. Live availability is a scope fact that a
+ * retained submission never keeps, so it is not part of this projection input.
+ */
+export type ComposerSubmittedAttachmentV1 = Omit<ComposerAttachmentViewV1, 'availability'>;
+
 export function composerAttachmentViewToDraft(
-    view: ComposerAttachmentViewV1,
+    view: ComposerSubmittedAttachmentV1,
 ): ComposerAttachmentDraftV1 {
     return {
         v: view.v,
@@ -137,6 +143,34 @@ export function composerAttachmentViewToDraft(
         presentation: view.presentation,
         ...(view.content === undefined ? {} : { content: view.content }),
     };
+}
+
+/**
+ * Projects one immutable Composer submission through the incumbent Message
+ * structured-input owner. Callers may merge additional transport metadata, but
+ * must not reinterpret reference or plugin-attachment identity themselves.
+ *
+ * Only the submitted content is read, so a retained submission that no longer
+ * carries live scope facts — such as frozen creator launch custody — projects
+ * through this same owner instead of reconstructing a synthetic snapshot.
+ */
+export function buildComposerSnapshotStructuredInputMetaOverrides(
+    snapshot: Readonly<{
+        text: ComposerSnapshotV1['text'];
+        references: ComposerSnapshotV1['references'];
+        attachments: readonly ComposerSubmittedAttachmentV1[];
+    }>,
+): Record<string, unknown> {
+    return buildStructuredInputMetaOverrides({
+        mentions: composerStructuredMentionsFromReferences({
+            references: snapshot.references,
+            existing: [],
+        }),
+        text: snapshot.text,
+        ...(snapshot.attachments.length > 0
+            ? { composerAttachments: snapshot.attachments.map(composerAttachmentViewToDraft) }
+            : {}),
+    });
 }
 
 function referenceIdentityKey(reference: Pick<MentionRefV1, 'kind' | 'ref' | 'token'>): string {

@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HappyError } from '@/utils/errors/errors';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
+import { resetEndpointSupervisorPoolForTests } from '@/sync/runtime/connectivity/endpointSupervisorPool';
+import { resetServerReachabilitySupervisors } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
 import { createExternalOAuthProvider } from './externalOAuthProvider';
 import type { ExternalOAuthEndpointRequest } from './types';
 
@@ -31,12 +34,13 @@ function stubFetch(
 ) {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input, init) => {
         const url = String(input);
-        if (url.endsWith('/health')) {
+        if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
             return jsonResponse({ ok: true, status: 200, body: { ok: true } }) as Response;
         }
         const result = await handler(url, init);
         return jsonResponse(result) as Response;
     });
+    setRuntimeFetch(fetchMock);
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
 }
@@ -48,7 +52,10 @@ function createProvider() {
     });
 }
 
-afterEach(() => {
+afterEach(async () => {
+    await resetEndpointSupervisorPoolForTests();
+    await resetServerReachabilitySupervisors();
+    resetRuntimeFetch();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
 });
@@ -223,6 +230,81 @@ describe('createExternalOAuthProvider', () => {
         expect(capturedUrl).toContain('proofHash=abc123');
     });
 
+    it('keeps the invitation bearer out of the URL and accepts only the server-minted Team admission reference', async () => {
+        let capturedUrl: string | null = null;
+        let capturedInit: RequestInit | undefined;
+        stubFetch(async (url, init) => {
+            capturedUrl = url;
+            capturedInit = init;
+            return {
+                ok: true,
+                status: 200,
+                body: {
+                    url: 'https://oauth.example.test/team',
+                    purpose: 'team_admission',
+                    teamId: 'team-1',
+                    admissionReference: 'oauth-attempt-1',
+                },
+            };
+        });
+
+        const provider = createProvider();
+        const requestAtEndpoint = vi.fn<ExternalOAuthEndpointRequest>(async (path, init) =>
+            await fetch(path, init),
+        );
+        await expect(provider.getExternalAuthUrl(
+            { mode: 'keyless', proofHash: 'abc123' },
+            {
+                request: requestAtEndpoint,
+                purpose: 'team_admission',
+                teamId: 'team-1',
+                origin: 'team',
+                invitationToken: 'invitation-secret',
+                target: { serverId: 'server-1', serverUrl: 'https://api.example.test' },
+            },
+        )).resolves.toEqual({
+            url: 'https://oauth.example.test/team',
+            purpose: 'team_admission',
+            teamId: 'team-1',
+            admissionReference: 'oauth-attempt-1',
+        });
+        expect(capturedUrl).toContain('purpose=team_admission');
+        expect(capturedUrl).toContain('teamId=team-1');
+        expect(capturedUrl).not.toContain('admission=');
+        expect(capturedUrl).not.toContain('invitation-secret');
+        expect(capturedInit?.headers).toEqual({
+            'x-happier-team-invitation': 'invitation-secret',
+        });
+    });
+
+    it('rejects a Team OAuth response whose exact Team binding changed', async () => {
+        stubFetch(async () => ({
+            ok: true,
+            status: 200,
+            body: {
+                url: 'https://oauth.example.test/team',
+                purpose: 'team_admission',
+                teamId: 'team-other',
+                admissionReference: 'oauth-attempt-1',
+            },
+        }));
+
+        const provider = createProvider();
+        const requestAtEndpoint = vi.fn<ExternalOAuthEndpointRequest>(async (path, init) =>
+            await fetch(path, init),
+        );
+        await expect(provider.getExternalAuthUrl(
+            { mode: 'keyless', proofHash: 'abc123' },
+            {
+                request: requestAtEndpoint,
+                purpose: 'team_admission',
+                teamId: 'team-1',
+                origin: 'team',
+                target: { serverId: 'server-1', serverUrl: 'https://api.example.test' },
+            },
+        )).rejects.toThrow('external-auth-unavailable');
+    });
+
     it('includes the publicKey query param when building keyed params requests', async () => {
         let capturedUrl: string | null = null;
         stubFetch(async (url) => {
@@ -292,6 +374,22 @@ describe('createExternalOAuthProvider', () => {
         );
     });
 
+    it('requests authenticated credential adoption for connect callbacks', async () => {
+        const fetchMock = stubFetch(async () => ({
+            ok: true,
+            status: 200,
+            body: { url: 'https://oauth.example.test/connect' },
+        }));
+
+        await expect(createProvider().getConnectUrl({ token: 't', secret: 's' })).resolves.toBe(
+            'https://oauth.example.test/connect',
+        );
+        expect(fetchMock).toHaveBeenCalledWith(
+            expect.stringContaining('connectFinalization=credential_adoption_v1'),
+            expect.anything(),
+        );
+    });
+
     it('maps connect params 400 failures into config HappyError payloads', async () => {
         stubFetch(async () => ({
             ok: false,
@@ -354,6 +452,18 @@ describe('createExternalOAuthProvider', () => {
             );
         },
     );
+
+    it.each([
+        { label: 'empty replacement token', body: { success: true, token: '' } },
+        { label: 'blank replacement token', body: { success: true, token: '   ' } },
+    ])('rejects successful finalize responses with incomplete credential material ($label)', async ({ body }) => {
+        stubFetch(async () => ({ ok: true, status: 200, body }));
+
+        const provider = createProvider();
+        await expect(
+            provider.finalizeConnect({ token: 't', secret: 's' }, { pending: 'pending-1', username: 'octocat' }),
+        ).rejects.toThrow('Failed to finalize');
+    });
 
     it.each([
         { status: 404, error: 'not-connected', kind: 'config' as const },

@@ -9,14 +9,24 @@ import {
     type ActivityInteractionTargetContext,
 } from '@/activity/actions/resolveActivityInteractionCommand';
 import { resolveActivitySurfacePolicy } from '@/activity/attention/resolveActivitySurfacePolicy';
+import type { SessionActivityAttention } from '@/activity/attention/activityAttentionTypes';
+import {
+    resolveActivitySurfaceDeliveryAdmission,
+} from '@/activity/delivery/resolveActivitySurfaceDeliveryAdmission';
+import { resolveStricterActivitySurfacePrivacyMode } from '@/activity/delivery/resolveActivityAttentionDeliveryPlan';
+import { useExactHomeAccountSettings } from '@/activity/delivery/useExactHomeAccountSettings';
 import { buildDesktopActivityOverlayModel } from '@/activity/adapters/desktop/presentation/buildDesktopActivityOverlayModel';
 import {
     buildDesktopActivityOverlaySnapshot,
     type DesktopActivityOverlaySnapshot,
 } from '@/activity/adapters/desktop/presentation/buildDesktopActivityOverlaySnapshot';
-import { buildStableActivityOverviewFingerprint } from '@/activity/source/buildActivityOverviewFromSource';
+import {
+    buildActivityOverviewFromCandidates,
+    buildStableActivityOverviewFingerprint,
+} from '@/activity/attention/buildActivityOverviewSnapshot';
 import { isUnsafeNotificationServerUrl } from '@/activity/notifications/notificationRouting';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
+import { resolveServerIdForSessionIdFromLocalState } from '@/sync/domains/session/resolveSessionAddressFromLocalState';
 import type { ActionId } from '@happier-dev/protocol';
 import { useLocalSettings } from '@/sync/domains/state/storage';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
@@ -186,20 +196,9 @@ function collectKnownServerIdsForSession(
     return serverIds;
 }
 
-function resolveKnownServerIdForSession(
-    snapshot: DesktopActivityOverlaySnapshot,
-    sessionId: string,
-): string | null {
-    const serverIds = [...collectKnownServerIdsForSession(snapshot, sessionId)];
-    return serverIds.length === 1 ? serverIds[0]! : null;
-}
-
 function resolveActionContextServerId(serverId: string | null | undefined): string | null {
     const normalized = typeof serverId === 'string' ? serverId.trim() : '';
-    if (!normalized || normalized === 'local') {
-        return null;
-    }
-    return normalized;
+    return normalized || null;
 }
 
 function collectKnownInteractionIdentities(
@@ -230,19 +229,6 @@ function hasVerifiedDirectActionScope(
         return false;
     }
     return collectKnownServerIdsForSession(snapshot, sessionId).has(serverId);
-}
-
-function resolveDirectActionFallbackRoute(
-    payload: InteractionPayload,
-    snapshot: DesktopActivityOverlaySnapshot,
-    fallbackSessionId: string | null,
-): string {
-    const sessionId = readSessionIdFromInteraction(payload) ?? fallbackSessionId;
-    if (!sessionId) {
-        return '/inbox';
-    }
-    const serverId = readServerIdFromInteraction(payload) ?? resolveKnownServerIdForSession(snapshot, sessionId);
-    return createActivitySurfaceSessionRoute(sessionId, serverId);
 }
 
 function buildDirectActionTargetContext(payload: InteractionPayload): ActivityInteractionTargetContext {
@@ -334,15 +320,18 @@ function isRouteCommand(command: ActivityInteractionCommand): command is Extract
 
 export function DesktopActivityOverlayRuntimeShared(): React.ReactElement | null {
     const source = useDesktopActivityOverlaySource();
+    const resolveAccountSettings = useExactHomeAccountSettings(source.audienceScopes);
     const localSettings = useLocalSettings();
     const [isExpanded, setIsExpanded] = React.useState(false);
     const [inputLocked, setInputLocked] = React.useState(false);
     const [surfaceEngaged, setSurfaceEngaged] = React.useState(false);
     const actionExecutor = React.useMemo(() => createDefaultActionExecutor(), []);
     const previousPrimaryRef = React.useRef<{
+        serverId: string | null;
         sessionId: string | null;
         changedAtMs: number | null;
     }>({
+        serverId: null,
         sessionId: null,
         changedAtMs: null,
     });
@@ -358,12 +347,37 @@ export function DesktopActivityOverlayRuntimeShared(): React.ReactElement | null
         () => resolveActivitySurfacePolicy((localSettings ?? {}) as Record<string, unknown>),
         [localSettings],
     );
-    const sourceOverview = React.useMemo(
+    const unfilteredOverview = React.useMemo(
         () => buildDesktopActivityOverlayOverviewFromSource({
             source,
             nowMs: Date.now(),
         }),
         [source],
+    );
+    // The overlay is an Account-policy delivery channel like any other: each exact
+    // Home decides whether its Sessions appear here and how much they may say. The
+    // device visibility preference below remains an additional device-global gate.
+    const deliveryAdmission = React.useMemo(() => resolveActivitySurfaceDeliveryAdmission({
+        candidates: unfilteredOverview.candidates,
+        surface: 'desktop_overlay',
+        resolveAccountSettings,
+        localSettings: (localSettings ?? {}) as Record<string, unknown>,
+        now: new Date(),
+    }), [localSettings, resolveAccountSettings, unfilteredOverview]);
+    const sourceOverview = React.useMemo(
+        () => buildActivityOverviewFromCandidates(deliveryAdmission.candidates),
+        [deliveryAdmission],
+    );
+    // The device-global overlay privacy preference and the exact Home's plan are two
+    // gates; the overlay shows only what both allow.
+    const resolveCandidatePrivacyMode = React.useCallback(
+        (candidate: SessionActivityAttention) => {
+            const homePrivacyMode = deliveryAdmission.privacyModeFor(candidate);
+            return homePrivacyMode
+                ? resolveStricterActivitySurfacePrivacyMode(homePrivacyMode, activityPolicy.privacyMode)
+                : null;
+        },
+        [activityPolicy.privacyMode, deliveryAdmission],
     );
     const sourceOverviewFingerprint = React.useMemo(
         () => buildStableActivityOverviewFingerprint(sourceOverview),
@@ -375,20 +389,33 @@ export function DesktopActivityOverlayRuntimeShared(): React.ReactElement | null
             sourceOverview,
             activityPolicy,
             desktopPolicy,
-            previousPrimarySessionId: previousPrimaryRef.current.sessionId,
+            resolveCandidatePrivacyMode,
+            previousPrimaryAddress: previousPrimaryRef.current.serverId && previousPrimaryRef.current.sessionId
+                ? {
+                    serverId: previousPrimaryRef.current.serverId,
+                    sessionId: previousPrimaryRef.current.sessionId,
+                }
+                : null,
             previousPrimaryChangedAtMs: previousPrimaryRef.current.changedAtMs,
         }),
-        [activityPolicy, desktopPolicy, source, sourceOverview],
+        [activityPolicy, desktopPolicy, resolveCandidatePrivacyMode, source, sourceOverview],
     );
     const snapshotPrimarySessionId = snapshot.primary?.sessionId ?? null;
-    if (snapshotPrimarySessionId !== previousPrimaryRef.current.sessionId) {
+    const snapshotPrimaryServerId = snapshot.primary?.serverId ?? null;
+    if (
+        snapshotPrimarySessionId !== previousPrimaryRef.current.sessionId
+        || snapshotPrimaryServerId !== previousPrimaryRef.current.serverId
+    ) {
         previousPrimaryRef.current = {
+            serverId: snapshotPrimaryServerId,
             sessionId: snapshotPrimarySessionId,
             changedAtMs: snapshotPrimarySessionId ? snapshot.generatedAt : null,
         };
     }
     const snapshotRef = React.useRef(snapshot);
     snapshotRef.current = snapshot;
+    const sourceRef = React.useRef(source);
+    sourceRef.current = source;
     const model = React.useMemo(
         () => buildDesktopActivityOverlayModel({
             snapshot,
@@ -543,15 +570,27 @@ export function DesktopActivityOverlayRuntimeShared(): React.ReactElement | null
                     error: 'unsafe_server_scope',
                 });
                 const fallbackSessionId = readSessionIdFromInteraction(payload) ?? currentSnapshot.primary?.sessionId ?? '';
-                command = {
-                    kind: 'openSession',
-                    sessionId: fallbackSessionId,
-                    serverId: resolveKnownServerIdForSession(currentSnapshot, fallbackSessionId),
-                    serverUrl,
-                    route: resolveDirectActionFallbackRoute(payload, currentSnapshot, currentSnapshot.primary?.sessionId ?? null),
-                    identity: null,
-                    fallbackReason: 'unsafe_target',
-                };
+                const currentSource = sourceRef.current;
+                const fallbackServerId = resolveServerIdForSessionIdFromLocalState({
+                    sessions: currentSource.sessionsById,
+                    sessionListRowsByServerId: currentSource.sessionListRowsByServerId,
+                    ordinarySessionListMembershipByServerId: currentSource.ordinarySessionListMembershipByServerId,
+                    sessionListIndexByServerId: currentSource.sessionListIndexByServerId,
+                }, fallbackSessionId);
+                command = fallbackSessionId && fallbackServerId
+                    ? {
+                        kind: 'openSession',
+                        sessionId: fallbackSessionId,
+                        serverId: fallbackServerId,
+                        serverUrl,
+                        route: createActivitySurfaceSessionRoute(
+                            fallbackSessionId,
+                            fallbackServerId,
+                        ),
+                        identity: null,
+                        fallbackReason: 'unsafe_target',
+                    }
+                    : sharedCommand;
             }
             if (command.kind === 'executeAction') {
                 const requestId = readRequestIdFromInteraction(payload);

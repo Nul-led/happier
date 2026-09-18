@@ -21,6 +21,7 @@ import type { AccessEndpointRemediationAction } from '@/sync/domains/accessEndpo
 import { resolveSetupSurfacePolicy } from '@/sync/domains/server/setup/setupSurfacePolicy';
 import { setActiveShareableServerUrl, setServerProfileShareableUrl } from '@/sync/domains/server/serverRuntime';
 import { t } from '@/text';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 import { openExternalUrl } from '@/utils/url/openExternalUrl';
 
 import {
@@ -211,14 +212,14 @@ export const RelayAccessControlSection = React.memo(function RelayAccessControlS
             return;
         }
         if (props.serverProfileId) {
-            setServerProfileShareableUrl(props.serverProfileId, resolvedShareUrl, {
+            fireAndForget(setServerProfileShareableUrl(props.serverProfileId, resolvedShareUrl, {
                 validatedAgainstServerUrl: normalizedUpstreamUrl,
-            });
+            }), { tag: 'RelayAccessControlSection.persistShareableUrl' });
             return;
         }
-        setActiveShareableServerUrl(resolvedShareUrl, {
+        fireAndForget(setActiveShareableServerUrl(resolvedShareUrl, {
             validatedAgainstServerUrl: normalizedUpstreamUrl,
-        });
+        }), { tag: 'RelayAccessControlSection.persistActiveShareableUrl' });
     }, [normalizedUpstreamUrl, props.serverProfileId, resolvedShareUrl, snapshot]);
 
     const save = React.useCallback(async (): Promise<boolean> => {

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { resolvePreferredBackendTargetFromProjection } from './resolvePreferredBackendTargetFromProjection';
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 
-const CLAUDE_TARGET = { kind: 'agent' as const, identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES.claude };
-const ANTIGRAVITY_TARGET = { kind: 'agent' as const, identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES.antigravity };
+const CLAUDE_TARGET = { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude };
+const ANTIGRAVITY_TARGET = { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.antigravity };
 
 describe('resolvePreferredBackendTargetFromProjection', () => {
     it('routes an Antigravity provider default selection to the canonical provider backend', () => {

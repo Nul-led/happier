@@ -21,6 +21,8 @@ import { SidebarCollapseIcon } from '../SidebarIcons';
 import type { AppUpdateStatusTagProps } from '@/components/ui/feedback/AppUpdateStatusTag';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ActionOperationActivityButton } from '@/components/inbox/actionOperations/ActionOperationActivityButton';
+import { InboxPopoverButton } from '@/components/inbox/InboxPopoverButton';
+import type { InboxModel } from '@/hooks/inbox/useInboxModel';
 
 type DesktopSidebarChromeProps = Readonly<{
     sidebarWidthPx?: number | null;
@@ -38,6 +40,8 @@ type DesktopSidebarChromeProps = Readonly<{
     popoverBoundaryRef: React.RefObject<any>;
     desktopWindowControls?: React.ReactNode;
     desktopUpdateIndicator?: React.ReactNode;
+    inboxModel?: InboxModel | null;
+    inboxEnabled?: boolean;
 }>;
 
 function renderUpdateIndicatorWithFallback(
@@ -112,6 +116,10 @@ export const DesktopSidebarChrome = React.memo((props: DesktopSidebarChromeProps
                 hitSlop={8}
                 accessibilityRole="button"
                 accessibilityLabel={action.title}
+                accessibilityState={{
+                    ...(action.disabled || !action.onPress ? { disabled: true } : null),
+                    ...(action.expanded !== undefined ? { expanded: action.expanded } : null),
+                }}
                 style={isSettingsAction ? styles.topSettingsIconButton : styles.topIconButton}
             >
                 {icon}
@@ -129,11 +137,21 @@ export const DesktopSidebarChrome = React.memo((props: DesktopSidebarChromeProps
                 compactActionIds={compactContentActionIds}
                 pinnedActionIds={compactContentActionIds}
                 leadingPinnedContent={(
-                    <ActionOperationActivityButton
-                        testID="desktop-sidebar-action-operations"
-                        buttonSize={DESKTOP_SIDEBAR_CHROME_ACTION_CONTROL_SIZE_PX}
-                        iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
-                    />
+                    <View style={styles.inlineUtilityRow}>
+                        {props.inboxEnabled && props.inboxModel ? (
+                            <InboxPopoverButton
+                                model={props.inboxModel}
+                                testID="sidebar-inbox-button"
+                                buttonSize={DESKTOP_SIDEBAR_CHROME_ACTION_CONTROL_SIZE_PX}
+                                iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
+                            />
+                        ) : null}
+                        <ActionOperationActivityButton
+                            testID="desktop-sidebar-action-operations"
+                            buttonSize={DESKTOP_SIDEBAR_CHROME_ACTION_CONTROL_SIZE_PX}
+                            iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
+                        />
+                    </View>
                 )}
                 overflowPosition="beforePinned"
                 overflowPlacement="bottom"
@@ -213,18 +231,20 @@ export const DesktopSidebarChrome = React.memo((props: DesktopSidebarChromeProps
                                 />
                             </Pressable>
                         ) : null}
-                        {topUtilityActions.map((action) => (
-                            <React.Fragment key={action.id}>
-                                {action.id === 'settings' ? (
-                                    <ActionOperationActivityButton
-                                        testID="desktop-sidebar-action-operations"
-                                        buttonSize={DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX}
-                                        iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
-                                    />
-                                ) : null}
-                                {renderTopUtilityAction(action)}
-                            </React.Fragment>
-                        ))}
+                        {props.inboxEnabled && props.inboxModel ? (
+                            <InboxPopoverButton
+                                model={props.inboxModel}
+                                testID="sidebar-inbox-button"
+                                buttonSize={DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX}
+                                iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
+                            />
+                        ) : null}
+                        <ActionOperationActivityButton
+                            testID="desktop-sidebar-action-operations"
+                            buttonSize={DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX}
+                            iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
+                        />
+                        {topUtilityActions.map(renderTopUtilityAction)}
                         {props.onPressCollapse ? (
                             <Pressable
                                 testID="sidebar-collapse-button"

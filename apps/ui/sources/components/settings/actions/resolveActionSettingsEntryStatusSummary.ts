@@ -56,7 +56,7 @@ export function resolveActionSettingsEntryStatusSummary(params: Readonly<{
         if (controlState.kind === 'approval') {
             if (controlState.value === 'ask_first') {
                 summary.askFirstCount += 1;
-            } else if (controlState.value === 'allowed') {
+            } else if (controlState.value === 'allowed' || controlState.value === 'default') {
                 summary.allowedCount += 1;
             } else {
                 summary.offCount += 1;

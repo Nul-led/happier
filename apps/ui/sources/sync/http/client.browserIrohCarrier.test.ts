@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createTokenStorageModuleMock } from '@/dev/testkit';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 
 const CANONICAL_URL = 'https://home.example.test';
@@ -50,9 +51,11 @@ async function loadClientWithActiveCarrier(carrier: HomeCarrier | null) {
         }),
         getActiveServerHomeCarrier: () => carrier,
     }));
-    vi.doMock('@/auth/storage/tokenStorage', () => ({
-        TokenStorage: {
+    vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => await createTokenStorageModuleMock({
+        importOriginal: async () => await importOriginal<typeof import('@/auth/storage/tokenStorage')>(),
+        tokenStorage: {
             getCredentials: vi.fn(async () => ({ token: 'home-token' })),
+            getCredentialsForServerUrl: vi.fn(async () => ({ token: 'home-token' })),
             invalidateCredentialsTokenForServerUrl: vi.fn(async () => false),
             classifyPendingExternalAuthFirstKeyRejectedCredential: vi.fn(async () => ({ kind: 'allowed' })),
         },

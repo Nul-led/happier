@@ -26,6 +26,7 @@ describe('resolvePendingActivationBanner', () => {
     it('presents reachable waiting, failed terminal, and queue-only states without initiating work', () => {
         expect(resolvePendingActivationBanner({ authorization: waiting, activeAt: 100, active: false, machineReachable: true, canWrite: true, pendingMessages: rows })).toMatchObject({ kind: 'waiting', row: { localId: 'p2' } });
         expect(resolvePendingActivationBanner({ authorization: failed, activeAt: 100, active: false, machineReachable: true, canWrite: true, pendingMessages: rows })).toMatchObject({ kind: 'failed', row: { localId: 'p2' }, primaryAction: 'retry' });
+        expect(resolvePendingActivationBanner({ authorization: failed, activeAt: 100, active: false, machineReachable: false, canWrite: true, pendingMessages: rows })).toMatchObject({ kind: 'failed', row: { localId: 'p2' }, primaryAction: 'process_when_online' });
         expect(resolvePendingActivationBanner({ authorization: null, activeAt: 100, active: false, machineReachable: true, canWrite: true, pendingMessages: [...rows].reverse() })).toMatchObject({ kind: 'queued', row: { localId: 'p1' }, primaryAction: 'resume' });
     });
 

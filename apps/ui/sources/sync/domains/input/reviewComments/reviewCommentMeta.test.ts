@@ -46,4 +46,12 @@ describe('reviewCommentMeta', () => {
             }],
         })).toBeNull();
     });
+
+    it('rejects unknown fields through the canonical strict Protocol schema', () => {
+        expect(parseReviewCommentsV1({
+            sessionId: 's1',
+            comments: [],
+            unexpected: true,
+        })).toBeNull();
+    });
 });

@@ -56,6 +56,38 @@ const temporaryThrottleIssue = {
 } as const;
 
 describe('sessionUsageLimitRecoveryPresentation', () => {
+    it('projects overload retry timing and controls without quota actions, including while awaiting the provider', () => {
+        const recoveryState = readSessionUsageLimitRecoveryFromMetadata({ sessionUsageLimitRecoveryV1: {
+            v: 1, status: 'waiting', issueFingerprint: 'temporary-throttle:s1:1', armedAtMs: temporaryThrottleIssue.occurredAt,
+            nextCheckAtMs: temporaryThrottleIssue.occurredAt + 12_000, attemptCount: 2, maxAttempts: 5,
+            resetAtMs: null, lastProbeError: null, selectedAuth: { kind: 'native' },
+        } });
+        expect(recoveryState).not.toBeNull();
+        const input = {
+            featureEnabled: true, lastRuntimeIssue: temporaryThrottleIssue, recoveryState,
+            checkNowSupported: true, settings: { v: 1, mode: 'auto_wait' },
+            translate: translateUsageLimitRecoveryKeyForTest,
+        } as const;
+        const scheduled = buildSessionUsageLimitRecoveryPresentation(input);
+        expect(buildSessionUsageLimitRecoveryPresentation({ ...input, operationStatus: 'checking' })?.banner.temporaryThrottle?.nextCheckAtMs)
+            .toBe(temporaryThrottleIssue.occurredAt + 12_000);
+        expect(scheduled?.banner.mode).toBe('cancel');
+        expect(scheduled?.banner.secondaryActions.map((action) => action.kind)).toEqual(['retry_temporary_throttle']);
+        expect(scheduled?.banner.temporaryThrottle).toEqual({ nextCheckAtMs: temporaryThrottleIssue.occurredAt + 12_000, attemptCount: 2 });
+        const awaiting = buildSessionUsageLimitRecoveryPresentation({ ...input, latestTurnStatus: 'in_progress',
+            recoveryState: recoveryState ? { ...recoveryState, status: 'waiting', nextCheckAtMs: null } : null });
+        expect(awaiting?.banner.temporaryThrottle?.nextCheckAtMs).toBeNull();
+        expect(awaiting?.banner.secondaryActions).toEqual([]);
+        expect(awaiting?.banner.mode).toBe('cancel');
+        expect(buildSessionUsageLimitRecoveryPresentation({ ...input, hasActivityAfterRuntimeIssue: true,
+            recoveryState: recoveryState ? { ...recoveryState, status: 'cancelled', nextCheckAtMs: null } : null,
+        })?.banner.mode).toBe('retry_temporary_throttle');
+        const offline = buildSessionUsageLimitRecoveryPresentation({ ...input, machineReachable: false });
+        expect(offline?.banner.temporaryThrottle?.nextCheckAtMs).toBeNull();
+        expect(offline?.banner.actionsDisabled).toBe(true);
+        expect(buildSessionUsageLimitRecoveryPresentation({ ...input, latestTurnStatus: 'completed' })).toBeNull();
+    });
+
     it.each(['armed', 'waiting', 'checking', 'paused', 'exhausted', 'cancelled'] as const)(
         'reads protocol recovery intent status %s from metadata',
         (status) => {
@@ -531,13 +563,8 @@ describe('sessionUsageLimitRecoveryPresentation', () => {
             actionLabel: 'session.usageLimitRecovery.actions.retryTemporaryThrottle',
             mode: 'retry_temporary_throttle',
         }));
-        expect(presentation?.statusBadge.label).toBe('session.usageLimitRecovery.status.temporaryThrottle');
-        expect(presentation?.banner.secondaryActions).toEqual([
-            expect.objectContaining({
-                kind: 'remember',
-                testID: 'session-usageLimit-recovery-remember',
-            }),
-        ]);
+        expect(presentation?.statusBadge.label).toBe('session.usageLimitRecovery.overloadTitle');
+        expect(presentation?.banner.secondaryActions).toEqual([]);
     });
 
     it('classifies typed recovery actions as check-now operations for shell reconciliation', () => {

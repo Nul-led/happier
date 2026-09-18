@@ -4,6 +4,8 @@ import { router } from 'expo-router';
 
 import {
     BrowserViewTargetV1Schema,
+    PluginHostedHtmlSourceV1Schema,
+    type PluginHostedHtmlSourceV1,
     DaemonPluginReactNativeCrashStateV1Schema,
     deriveDaemonPluginReactNativeCrashMountKeyV1,
     isSameDaemonPluginReactNativeCrashBindingTokenV1,
@@ -24,11 +26,13 @@ import {
     isPluginUiSurfaceBindingAdmittedAtRuntimeV1,
     PluginUiFallbackRefV1Schema,
     resolvePluginUiInlineSurfaceSlotV1,
+    resolvePluginUiHostedHtmlCapabilityRequestV1,
     type PluginUiChannelV1,
     type PluginUiDestinationRuntimeFormFactorV1,
     type PluginUiFallbackRefV1,
     type PluginUiHostApiRequestEnvelopeV1,
     type PluginUiInstanceKeyV1,
+    type PluginUiInlineSurfaceMountV1,
     type PluginUiInlineSurfaceRoleV1,
     type PluginUiSurfaceBindingV1,
     type PluginUiJsonValueV1,
@@ -51,6 +55,7 @@ import type { PluginUiDataClient } from '@happier-dev/plugin-ui/data';
 
 import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
 import { resolveNegotiatedPluginSurfaceHostApiMethods } from '@/components/plugins/hostApi/negotiatedMethods';
+import { useUiSurfaceRendererMount } from '@/components/plugins/hostApi/useUiSurfaceRendererMount';
 import { PluginHostedWebPane } from '@/components/plugins/hostedWeb/PluginHostedWebPane';
 import {
     readPluginHostedWebUnavailableDiagnosticCode,
@@ -73,6 +78,10 @@ import {
 import type { CurrentUiContextMountPublication } from '@/components/appShell/currentUiContext/CurrentUiContextProvider';
 import type { CurrentUiContextMountedEnrichment } from '@/components/appShell/currentUiContext/currentUiContextModel';
 import type { SurfaceStateAction } from '@/components/ui/surfaces/SurfaceStateCard';
+import {
+    isUiSurfaceRendererKind,
+    UiSurfaceRendererHost,
+} from '@/components/ui/surfaces/UiSurfaceRendererHost';
 import type { PluginReactNativeBundleCacheIdentity } from '@/components/plugins/reactNative/bundleCache';
 import {
     PluginReactNativeSurface,
@@ -1342,6 +1351,11 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
             props.mountInstanceKey ?? '',
     ].join('\u001f');
     const canonicalAccountLifetime = canonicalIdentity.accountLifetime;
+    const rendererMount = useUiSurfaceRendererMount({
+        lifetime: props.mountLifetime,
+        interactionEnabled: props.interactionEnabled,
+        focusEligible: props.focusEligible,
+    });
     const canonicalHostApiAdapter = React.useMemo(() => {
         const surface = canonicalSurfaceRef.current;
         return createCanonicalPluginReactNativeHostApiAdapter({
@@ -1389,20 +1403,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
     // The bound controller already owns every semantic mount replacement and
     // retirement fact. Response-local context objects may refresh while it
     // remains current, so they must never create a second author lifetime.
-    const abortController = React.useMemo(() => new AbortController(), [props.mountLifetime]);
-    const presentationFocusEligibleRef = React.useRef(props.focusEligible);
-    presentationFocusEligibleRef.current = props.focusEligible;
-    const interactionEnabledRef = React.useRef(props.interactionEnabled);
-    interactionEnabledRef.current = props.interactionEnabled;
-    // The outer layout owns presentation eligibility. Keep it in a ref so an
-    // opaque target obtained before A→B/tab/route changes is checked against
-    // the latest fact without recreating this physical surface host.
-    const isFocusEligible = React.useCallback(() => (
-        props.mountLifetime.isCurrent()
-        && !abortController.signal.aborted
-        && interactionEnabledRef.current
-        && presentationFocusEligibleRef.current
-    ), [abortController.signal, props.mountLifetime]);
+    const { signal, isFocusEligible } = rendererMount;
     const canonicalPrivateResourceMountScope = React.useMemo(
         () => createPluginUiPrivateResourceMountScope({
             pluginId: canonicalIdentity.pluginId,
@@ -1453,7 +1454,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
                             machineId: brandTargetPresentation.machineId,
                             serverId: brandTargetPresentation.serverId,
                             expectedGeneration: canonicalRenderIdentity.generation,
-                            signal: abortController.signal,
+                            signal,
                             accountLifetime: canonicalAccountLifetime,
                             isCurrent: isBrandTargetPresentationCurrent,
                         },
@@ -1469,7 +1470,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
             },
         ),
         [
-            abortController.signal,
+            signal,
             canonicalAccountLifetime,
             canonicalRenderIdentity.brand,
             canonicalRenderIdentity.generation,
@@ -1520,7 +1521,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
             plugin: Object.freeze({ id: identity.pluginId, version: identity.pluginVersion }),
             surface: identity.surface,
             hostApi: canonicalHostApiAdapter.api,
-            signal: abortController.signal,
+            signal,
             activity: Object.freeze({ active: isFocusEligible() }),
             // EU-5a: absent launch input stays absent. Spreading a `{ launchInput:
             // undefined }` key would make "opened without input" indistinguishable
@@ -1532,7 +1533,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
         } satisfies RenderContext;
         return Object.freeze(context);
     }, [
-        abortController.signal,
+        signal,
         canonicalHostApiAdapter,
         canonicalRenderIdentity,
         isFocusEligible,
@@ -1545,15 +1546,6 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
     React.useLayoutEffect(() => () => {
         canonicalHostApiAdapter.dispose();
     }, [canonicalHostApiAdapter]);
-    React.useLayoutEffect(() => {
-        const retirement = props.mountLifetime.onRetire(() => {
-            abortController.abort();
-        });
-        return () => retirement.dispose();
-    }, [abortController, props.mountLifetime]);
-    React.useLayoutEffect(() => () => {
-        abortController.abort();
-    }, [abortController]);
 
     return (
         <PluginReactNativeSurface
@@ -2028,6 +2020,8 @@ export function PluginSurfaceHost(props: Readonly<(
     launchInput?: PluginUiLaunchInputV1;
     /** Resolver-stamped ephemeral instance identity; absent for legacy singleton mounts. */
     mountInstanceKey?: PluginUiInstanceKeyV1;
+    /** Validated current framed-renderer height; the outer placement owns sizing. */
+    onIntrinsicHeightChange?: (height: number) => void;
     /** Route-owned recovery for generic destination unavailability; targeted mounts keep their caller fallback. */
     unavailableAction?: SurfaceStateAction;
     /**
@@ -2218,6 +2212,9 @@ export function PluginSurfaceHost(props: Readonly<(
     const daemonInteraction = usePluginSurfaceDaemonInteraction({
         machineId,
         projectionInteractionEnabled,
+    });
+    const daemonSettingsInteraction = usePluginSurfaceDaemonInteraction({
+        machineId: props.daemonSettingsTarget?.machineId ?? machineId,
     });
     // Capture the incumbent Account lifetime once for this mount. It remains an
     // opaque cancellation/currentness input: neither the surface host nor the
@@ -2515,7 +2512,7 @@ export function PluginSurfaceHost(props: Readonly<(
     // not accidentally inherit an unrelated presentation/action decision.
     const daemonSettingsInteractionEnabled = accountLocalInteractionEnabled
         && originInteractionCurrent
-        && daemonInteraction.daemonReachable;
+        && daemonSettingsInteraction.daemonReachable;
     // Account data/settings own their own currentness through this same
     // lifetime, while daemon settings/actions must also observe daemon
     // reachability. Do the intersection here at the one mounted host rather
@@ -2754,7 +2751,7 @@ export function PluginSurfaceHost(props: Readonly<(
     }, []);
     const mountedComposerPublisherCapable = props.binding?.openableContent === undefined
         && mountedComposerOwner !== null
-        && (renderer.kind === 'reactNative' || renderer.kind === 'hostedWeb');
+        && (renderer.kind === 'reactNative' || renderer.kind === 'hostedWeb' || renderer.kind === 'hostedHtml');
     const createMountedComposerHostApiHandlers = React.useCallback((input: Readonly<{
         isCurrent: () => boolean;
     }>) => {
@@ -2830,6 +2827,7 @@ export function PluginSurfaceHost(props: Readonly<(
         let hasRetainedEnrichment = false;
         let retainedEnrichment: CurrentUiContextMountedEnrichment | null = null;
         const canPublish = (): boolean => input.isCurrent() && activated && eligible;
+        const suspendCurrentUiContext = (): void => mountPublication?.clear();
         const currentUiContext = currentUiContextMountPublisher
             ? Object.freeze({
                 publish: (enrichment: CurrentUiContextMountedEnrichment | null): boolean => {
@@ -2842,7 +2840,11 @@ export function PluginSurfaceHost(props: Readonly<(
                     // expose it once that incumbent presentation fact arrives.
                     return !canPublish() || getMountPublication()?.publish(enrichment) === true;
                 },
-                clear: (): void => mountPublication?.clear(),
+                clear: (): void => {
+                    hasRetainedEnrichment = false;
+                    retainedEnrichment = null;
+                    suspendCurrentUiContext();
+                },
                 restore: (): boolean => {
                     if (!canPublish() || !hasRetainedEnrichment) return false;
                     return getMountPublication()?.publish(retainedEnrichment) === true;
@@ -2871,7 +2873,7 @@ export function PluginSurfaceHost(props: Readonly<(
                 if (eligible) {
                     currentUiContext?.restore();
                 } else {
-                    currentUiContext?.clear();
+                    suspendCurrentUiContext();
                 }
             }
             : undefined;
@@ -3265,7 +3267,8 @@ export function PluginSurfaceHost(props: Readonly<(
             : ephemeralBinding
                 ? mountedInstanceKey
             : props.mountInstanceKey;
-    if (renderer.kind === 'declarative') {
+    const renderDeclarative = (): React.ReactNode => {
+        if (renderer.kind !== 'declarative') return null;
         const admittedModel = admitDeclarativeStaticModel({
             model: renderer.model,
             expectedPluginId: mountedPluginId,
@@ -3304,7 +3307,7 @@ export function PluginSurfaceHost(props: Readonly<(
                 // scope DID bind the canonical navigation owner, so an enabled
                 // control resolved after doing nothing.
                 openSurfaceAvailable={controller.installedMethods.includes('openSurface')}
-                authorityGeneration={daemonInteraction.daemonStateVersion}
+                authorityGeneration={daemonSettingsInteraction.daemonStateVersion}
                 accountLifetime={accountLifetime}
                 dataClient={mountedPluginUiDataClient}
                 renderTargetedSurface={hasEmbeddedMount ? undefined : renderTargetedSurface}
@@ -3355,7 +3358,7 @@ export function PluginSurfaceHost(props: Readonly<(
                     focusEligible={presentationFocusEligible}
                     daemonInteractionEnabled={daemonOwnedInteractionEnabled}
                     controller={controller}
-                    authorityGeneration={daemonInteraction.daemonStateVersion}
+                    authorityGeneration={daemonSettingsInteraction.daemonStateVersion}
                     pluginUiProjection={mountedPluginUiProjection}
                     policyContext={hasEmbeddedRendererMount ? undefined : policyContext}
                     renderTargetedSurface={hasEmbeddedMount ? undefined : renderTargetedSurface}
@@ -3368,16 +3371,17 @@ export function PluginSurfaceHost(props: Readonly<(
             );
         }
         return renderWithTargetedSurfaceBoundary(renderStaticModel());
-    }
-
-    if (!accountEncryptionMode) {
-        return renderUnavailable('account_encryption_mode_unavailable');
-    }
+    };
 
     const renderHostedWebPane = (
         contributionId: string,
         contribution: Readonly<Record<string, unknown>> | null,
+        inlineDocument?: PluginHostedHtmlSourceV1,
+        inlineDocumentNetworkOrigins?: readonly string[],
     ) => {
+        if (!accountEncryptionMode) {
+            return renderUnavailable('account_encryption_mode_unavailable');
+        }
         const explicitBrowserTarget = hasEmbeddedRendererMount
             ? null
             : readSurfaceBrowserTarget({
@@ -3387,7 +3391,7 @@ export function PluginSurfaceHost(props: Readonly<(
         // Generated V2 hosted web has an Artifact-owned byte source, not an
         // author/mount supplied URL or Session preview. Legacy projections keep
         // their established explicit-target/preview behavior below.
-        const browserTarget = contribution?.generatedV2 === true
+        const browserTarget = inlineDocument || contribution?.generatedV2 === true
             ? null
             : explicitBrowserTarget ?? resolveHostedWebStaticAssetBrowserTarget({
                 contribution,
@@ -3402,13 +3406,16 @@ export function PluginSurfaceHost(props: Readonly<(
         // while renderer eligibility comes from the shared structural admission
         // owner below. A transient daemon outage therefore stays a typed runtime
         // unavailability instead of de-admitting only hosted web.
-        const requiredHostMethods = readRequiredPluginSurfaceHostMethods(contribution?.requiredHostMethods);
+        const requiredHostMethods = readRequiredPluginSurfaceHostMethods(
+            inlineDocument ? renderer.requiredHostMethods : contribution?.requiredHostMethods,
+        );
         const hostedWebInteractionEnabled = controller.interactive && rendererInteractionEnabled;
-        const hostedWebTechnicalAdmission = contribution?.generatedV2 === true
-            ? resolvePluginUiRendererTechnicalAdmission({
+        const canonicalHostedSource = inlineDocument !== undefined || contribution?.generatedV2 === true;
+        const hostedWebTechnicalAdmission = canonicalHostedSource
+            ? resolvePluginUiRendererTechnicalAdmission<PluginHostedHtmlSourceV1 | PluginUiHostedWebArtifactTechnicalAdmission>({
                 requiredHostMethods,
                 structuralHostMethods: structuralTransportHostMethods,
-                resolveArtifactAdmission: () => resolvePluginUiHostedWebArtifactTechnicalAdmission({
+                resolveSourceAdmission: () => inlineDocument ?? resolvePluginUiHostedWebArtifactTechnicalAdmission({
                     contribution,
                     pluginId: mountedPluginId,
                     projectionGeneration: artifactProjectionGeneration,
@@ -3419,21 +3426,19 @@ export function PluginSurfaceHost(props: Readonly<(
         // Hosted SDK clients negotiate the sole Host API version. A generated mount
         // therefore cannot lend the bridge a context until the exact daemon
         // target snapshot has arrived; an old cached target never qualifies.
-        if (contribution?.generatedV2 === true && !targetedContributions) {
+        if (canonicalHostedSource && !targetedContributions) {
             return renderUnavailable('targeted_contributions_unavailable');
         }
-        const canonicalHostApi = contribution?.generatedV2 === true
-            && projectionGeneration !== null
-            && projectionGeneration !== undefined
+        const canonicalHostApi = canonicalHostedSource
+            && (inlineDocument !== undefined || (projectionGeneration !== null && projectionGeneration !== undefined))
             && hostedWebTechnicalAdmission?.kind === 'available'
             && targetedContributions !== null
             ? {
-                identity: {
-                    pluginId: mountedPluginId,
-                    pluginVersion: readOptionalString(contribution.pluginVersion) ?? '0.0.0',
-                    viewId: mountedContributionId,
-                    generation: String(projectionGeneration),
-                    ...(props.sessionId ? { sessionId: props.sessionId } : {}),
+                authorPlugin: {
+                    id: mountedPluginId,
+                    version: readOptionalString(contribution?.pluginVersion ?? descriptor?.pluginVersion)
+                        ?? readOptionalString(installedPackagesById?.[mountedPluginId]?.version)
+                        ?? '0.0.0',
                 },
                 mount: surfaceMount,
                 // The hosted guest NEGOTIATES ONCE and freezes the advertised
@@ -3455,20 +3460,28 @@ export function PluginSurfaceHost(props: Readonly<(
                 targetedContributions,
             }
             : undefined;
-        if (contribution?.generatedV2 === true && hostedWebTechnicalAdmission?.kind !== 'available') {
+        if (canonicalHostedSource && hostedWebTechnicalAdmission?.kind !== 'available') {
             return renderUnavailable(hostedWebTechnicalAdmission?.kind === 'unavailable'
                 ? hostedWebTechnicalAdmission.code
                 : 'artifact_technical_admission_unavailable');
         }
 
         const hostedArtifactAdmission = hostedWebTechnicalAdmission?.kind === 'available'
-            ? hostedWebTechnicalAdmission.artifactAdmission
+            && 'artifactGraph' in hostedWebTechnicalAdmission.sourceAdmission
+            ? hostedWebTechnicalAdmission.sourceAdmission
             : null;
 
         const paneProps: React.ComponentProps<typeof PluginHostedWebPane> = {
             contributionId,
             surfaceContext: controller.surfaceContext,
-            ...(hasEmbeddedRendererMount
+            ...(inlineDocument
+                ? {
+                    inlineDocument,
+                    inlineDocumentNetworkOrigins,
+                    projectedContribution: null,
+                    pluginUiProjection: mountedPluginUiProjection,
+                }
+                : hasEmbeddedRendererMount
                 ? {
                     // An explicit selected artifact means unavailable when it
                     // is absent; embedded mounts never fall back to a broad
@@ -3491,7 +3504,11 @@ export function PluginSurfaceHost(props: Readonly<(
             interactionEnabled: hostedWebInteractionEnabled,
             focusEligible: presentationFocusEligible,
             mountInstanceKey,
+            ...(props.onIntrinsicHeightChange
+                ? { onIntrinsicHeightChange: props.onIntrinsicHeightChange }
+                : {}),
             isCurrent: controller.isCurrent,
+            mountLifetime: controller,
             accountLifetime,
             subscribeResourceInvalidations: controller.subscribeResourceInvalidations,
             policyContext,
@@ -3535,7 +3552,25 @@ export function PluginSurfaceHost(props: Readonly<(
         );
     };
 
-    if (renderer.kind === 'hostedWeb') {
+    const renderHostedHtml = (): React.ReactNode => {
+        if (renderer.kind !== 'hostedHtml') return null;
+        const source = PluginHostedHtmlSourceV1Schema.safeParse(renderer.source);
+        if (!source.success) return renderUnavailable('hosted_html_source_invalid');
+        // Installed plugins retain their full public ABI. This canonical
+        // normalization supplies CSP egress only; the caller-authored Session
+        // capability ceiling is deliberately not applied on this path.
+        const capabilities = resolvePluginUiHostedHtmlCapabilityRequestV1(renderer);
+        if (!capabilities) return renderUnavailable('hosted_html_source_invalid');
+        return renderWithTargetedSurfaceBoundary(renderHostedWebPane(
+            mountedContributionId,
+            null,
+            source.data,
+            capabilities.networkOrigins,
+        ));
+    };
+
+    const renderHostedWeb = (): React.ReactNode => {
+        if (renderer.kind !== 'hostedWeb') return null;
         if (hasEmbeddedRendererMount) {
             if (!mountedRendererArtifact) {
                 return renderUnavailable(composerBinding
@@ -3559,9 +3594,13 @@ export function PluginSurfaceHost(props: Readonly<(
             hostedWebMount?.contributionId ?? '',
             hostedWebMount?.contribution ?? null,
         );
-    }
+    };
 
-    if (renderer.kind === 'reactNative') {
+    const renderReactNative = (): React.ReactNode => {
+        if (renderer.kind !== 'reactNative') return null;
+        if (!accountEncryptionMode) {
+            return renderUnavailable('account_encryption_mode_unavailable');
+        }
         if (hasEmbeddedRendererMount && !mountedRendererArtifact) {
             return renderUnavailable(composerBinding
                 ? 'composer_renderer_artifact_unavailable'
@@ -3657,7 +3696,7 @@ export function PluginSurfaceHost(props: Readonly<(
             ? resolvePluginUiRendererTechnicalAdmission({
                 requiredHostMethods: reactNativeRequiredHostMethods,
                 structuralHostMethods: structuralTransportHostMethods,
-                resolveArtifactAdmission: () => isPluginUiReactNativeArtifactTechnicallyAdmitted({
+                resolveSourceAdmission: () => isPluginUiReactNativeArtifactTechnicallyAdmitted({
                     artifactGraph,
                     cacheIdentity,
                     projectionGeneration: artifactProjectionGeneration,
@@ -3903,9 +3942,23 @@ export function PluginSurfaceHost(props: Readonly<(
                 {...(resetReactNativeCrashState ? { resetCrashState: resetReactNativeCrashState } : {})}
             />
         );
-    }
+    };
 
-    return null;
+    // The daemon registry remains the renderer-admission owner. This adapter
+    // only narrows its deliberately opaque projection carrier before handing
+    // the already-admitted arm to the shared physical renderer dispatcher.
+    if (!isUiSurfaceRendererKind(renderer.kind)) return null;
+    return (
+        <UiSurfaceRendererHost
+            kind={renderer.kind}
+            renderers={{
+                declarative: renderDeclarative,
+                hostedHtml: renderHostedHtml,
+                hostedWeb: renderHostedWeb,
+                reactNative: renderReactNative,
+            }}
+        />
+    );
 }
 
 export function PluginSurfacePlacementHost(props: Readonly<{
@@ -3927,6 +3980,8 @@ export function PluginSurfacePlacementHost(props: Readonly<{
     launchInput?: PluginUiLaunchInputV1;
     /** Resolver-stamped ephemeral instance identity; absent for legacy singleton mounts. */
     mountInstanceKey?: PluginUiInstanceKeyV1;
+    /** Validated current framed-renderer height; the outer placement owns sizing. */
+    onIntrinsicHeightChange?: (height: number) => void;
     /** Recovery owned by the enclosing destination route. */
     unavailableAction?: SurfaceStateAction;
     /** EU-5b: the plugin-local location, for a full-page (`app.page`) mount. */
@@ -3958,6 +4013,9 @@ export function PluginSurfacePlacementHost(props: Readonly<{
             binding={props.binding}
             launchInput={props.launchInput}
             mountInstanceKey={props.mountInstanceKey}
+            {...(props.onIntrinsicHeightChange
+                ? { onIntrinsicHeightChange: props.onIntrinsicHeightChange }
+                : {})}
             unavailableAction={props.unavailableAction}
             subPath={props.subPath}
             projectionInteractionEnabled={props.projectionInteractionEnabled}
@@ -3968,17 +4026,14 @@ export function PluginSurfacePlacementHost(props: Readonly<{
     );
 }
 
-export type PluginInlineSurfaceMountV1 =
-    | Readonly<{ role: 'sessionSubagentLaunch'; presentation: 'content' }>
-    | Readonly<{ role: 'sessionSubagentDetails'; presentation: 'content' | 'fill' }>
-    | Readonly<{ role: 'sessionInfoSection'; presentation: 'content' }>;
-
 export type PluginInlineSurfaceHostProps = Omit<
     React.ComponentProps<typeof PluginSurfacePlacementHost>,
     'inlineMount' | 'placement'
 > & Readonly<{
     placement: PluginUiInlineSurfacePlacementProjection;
-    inlineMount: PluginInlineSurfaceMountV1;
+    // The admitted role/presentation pairs are Registry-derived in Protocol.
+    // This host does not keep a second hand-maintained union of them.
+    inlineMount: PluginUiInlineSurfaceMountV1;
 }>;
 
 /** Thin physical adapter over the one Surface Registry and PluginSurfaceHost. */

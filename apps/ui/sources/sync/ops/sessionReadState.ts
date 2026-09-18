@@ -1,30 +1,30 @@
-import { apiSocket } from '@/sync/api/session/apiSocket';
+import { sync } from '@/sync/sync';
 import {
     updateMetadataWithUnreadExternalSessionProgress,
     updateMetadataWithViewedExternalSessionProgress,
 } from '@/sync/domains/session/external/externalSessionAttentionMetadata';
 import { getFocusedSessionId } from '@/sync/domains/session/sessionSurfaceVisibility';
+import { hasUnreadActivityForSessionViewer, isSessionPersonallyTrackedForViewer } from '@/sync/domains/session/readState/sessionViewer';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import {
     clearManualUnreadHold,
     getCurrentSessionViewingActivationId,
     holdManualUnreadForActivation,
 } from '@/sync/domains/session/readState/sessionManualUnreadHold';
-import { computeManualUnreadReadStateV1 } from '@/sync/domains/state/readStateV1';
+import {
+    SessionReadStateSetResultV1Schema,
+    SessionViewerProjectionV1Schema,
+    type SessionViewerProjectionV1,
+} from '@happier-dev/protocol';
 import { storage } from '@/sync/domains/state/storage';
 import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
-import {
-    buildMachineDisplaysByIdFromMachineList,
-    buildSessionListIndexWithServerScope,
-} from '@/sync/store/sessionListIndex/buildSessionListIndexWithServerScope';
-import { createSessionRequestForResolvedServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
-import { resolveServerScopedSessionContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedSessionContext';
 import { nowServerMs } from '@/sync/runtime/time';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
+import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 
 export type SessionManualReadState = 'read' | 'unread';
 
@@ -36,218 +36,97 @@ export type SessionSetManualReadStateResponse = Readonly<{
     message?: string;
 }>;
 
-type ReadStateRouteResponse = Readonly<{
-    success?: unknown;
-    state?: unknown;
-    lastViewedSessionSeq?: unknown;
-    didChange?: unknown;
-}>;
-
-async function requestSessionReadState(params: Readonly<{
+async function executeManualReadStateAction(params: Readonly<{
     sessionId: string;
     readState: SessionManualReadState;
-    serverId?: string | null;
-}>): Promise<Readonly<{ response: Response; targetServerId: string; release: () => Promise<void> }>> {
-    const context = await resolveServerScopedSessionContext({
-        serverId: params.serverId ?? resolvePreferredServerIdForSessionId(params.sessionId) ?? null,
+    serverId: string;
+    signal?: AbortSignal;
+}>): Promise<Readonly<{
+    ok: true;
+    value: ReturnType<typeof SessionReadStateSetResultV1Schema.parse>;
+}> | Readonly<{ ok: false; error: string; viewer?: SessionViewerProjectionV1 }>> {
+    const outcome = await createDefaultActionExecutor().execute('session.read_state.set', {
+        sessionId: params.sessionId,
+        state: params.readState,
+    }, {
+        surface: 'ui',
+        authority: 'present_user',
+        actionCaller: { kind: 'host' },
+        serverId: params.serverId,
+        ...(params.signal === undefined ? {} : { signal: params.signal }),
     });
-    const path = `/v2/sessions/${params.sessionId}/read-state`;
-    const body = JSON.stringify({ state: params.readState });
-    const headers = { 'Content-Type': 'application/json' };
-
-    try {
-        const response = await createSessionRequestForResolvedServerScope({
-            context,
-            activeRequest: (requestPath, init) => apiSocket.request(requestPath, init),
-        })(path, { method: 'POST', headers, body });
+    if (!outcome.ok) {
+        const viewer = SessionViewerProjectionV1Schema.safeParse(
+            outcome.details && typeof outcome.details === 'object' && 'viewer' in outcome.details
+                ? (outcome.details as Record<string, unknown>).viewer
+                : undefined,
+        );
         return {
-            response,
-            targetServerId: context.scope === 'scoped' ? context.targetServerId : getActiveServerSnapshot().serverId,
-            release: context.scope === 'scoped' ? (context.release ?? (async () => undefined)) : async () => undefined,
+            ok: false,
+            error: String(outcome.errorCode ?? outcome.error),
+            ...(viewer.success ? { viewer: viewer.data } : {}),
         };
-    } catch (error) {
-        if (context.scope === 'scoped') await context.release?.();
-        throw error;
     }
-}
-
-function parseReadStateRouteResponse(json: unknown, fallbackReadState: SessionManualReadState): {
-    readState: SessionManualReadState;
-    lastViewedSessionSeq: number | null;
-    didChange: boolean;
-} {
-    const value = (json ?? {}) as ReadStateRouteResponse;
-    const readState = value.state === 'read' || value.state === 'unread'
-        ? value.state
-        : fallbackReadState;
-    const lastViewedSessionSeq =
-        typeof value.lastViewedSessionSeq === 'number' && Number.isFinite(value.lastViewedSessionSeq)
-            ? Math.max(0, Math.trunc(value.lastViewedSessionSeq))
-            : null;
-    const didChange = value.didChange === true;
-    return { readState, lastViewedSessionSeq, didChange };
+    return { ok: true, value: SessionReadStateSetResultV1Schema.parse(outcome.result) };
 }
 
 function applyManualReadStateToMetadata(params: Readonly<{
     metadata: Metadata | null;
     readState: SessionManualReadState;
-    sessionSeq: number;
-    lastViewedSessionSeq: number | null;
-    updatedAt: number;
 }>): Metadata | null {
-    let metadata = params.metadata;
+    const metadata = params.metadata;
     if (!metadata) return metadata;
 
-    metadata = params.readState === 'read'
+    return params.readState === 'read'
         ? updateMetadataWithViewedExternalSessionProgress(metadata)
         : updateMetadataWithUnreadExternalSessionProgress(metadata);
-
-    if (params.readState === 'unread' && metadata.readStateV1) {
-        const legacyResult = computeManualUnreadReadStateV1({
-            prev: metadata.readStateV1,
-            sessionSeq: params.sessionSeq,
-            lastViewedSessionSeq: params.lastViewedSessionSeq,
-            now: params.updatedAt,
-        });
-        if (legacyResult.next) {
-            metadata = {
-                ...metadata,
-                readStateV1: legacyResult.next,
-            };
-        }
-    }
-
-    return metadata;
 }
 
-function applyManualReadStateToRenderableMetadata(params: Readonly<{
-    metadata: SessionListRenderableSession['metadata'];
-    readState: SessionManualReadState;
-    sessionSeq: number;
+function buildReadStateRenderablePatch(params: Readonly<{
+    readState?: SessionManualReadState;
     lastViewedSessionSeq: number | null;
-    updatedAt: number;
-}>): SessionListRenderableSession['metadata'] {
-    const metadata = params.metadata;
-    if (!metadata || params.readState !== 'unread' || !metadata.readStateV1) {
-        return metadata;
-    }
-
-    const legacyResult = computeManualUnreadReadStateV1({
-        prev: metadata.readStateV1,
-        sessionSeq: params.sessionSeq,
-        lastViewedSessionSeq: params.lastViewedSessionSeq,
-        now: params.updatedAt,
-    });
-    if (!legacyResult.next) {
-        return metadata;
-    }
-
-    return {
-        ...metadata,
-        readStateV1: legacyResult.next,
-    };
-}
-
-function buildManualReadStateRenderablePatch(params: Readonly<{
-    renderable: SessionListRenderableSession;
-    readState: SessionManualReadState;
-    lastViewedSessionSeq: number | null;
-    updatedAt: number;
+    viewer?: SessionViewerProjectionV1;
 }>): Partial<SessionListRenderableSession> {
-    const metadataLayoutVersion =
-        readSessionMetadataLayoutVersion(params.renderable.metadataLayoutVersion);
-    const metadata = metadataLayoutVersion !== 0
-        ? params.renderable.metadata
-        : applyManualReadStateToRenderableMetadata({
-            metadata: params.renderable.metadata,
-            readState: params.readState,
-            sessionSeq: params.renderable.seq,
-            lastViewedSessionSeq: params.lastViewedSessionSeq,
-            updatedAt: params.updatedAt,
-        });
-
     return {
-        hasUnreadMessages: params.readState === 'unread',
+        hasUnreadMessages: params.viewer
+            ? hasUnreadActivityForSessionViewer(params.viewer)
+            : params.readState === 'unread',
         lastViewedSessionSeq: params.lastViewedSessionSeq,
-        ...(metadata !== params.renderable.metadata ? { metadata } : {}),
+        ...(params.viewer ? { viewer: params.viewer } : {}),
     };
 }
 
-function applyManualReadStateToLocalState(params: Readonly<{
+function applyReadStateToLocalState(params: Readonly<{
     sessionId: string;
-    readState: SessionManualReadState;
+    readState?: SessionManualReadState;
     lastViewedSessionSeq: number | null;
     ownerServerId: string;
+    viewer?: SessionViewerProjectionV1;
 }>): void {
     const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
     if (params.ownerServerId && activeServerId && !areServerProfileIdentifiersEquivalent(params.ownerServerId, activeServerId)) {
-        storage.setState((state) => {
-            const previousEntry = state.concurrentSessionListCacheByServerId?.[params.ownerServerId];
-            const previousRows = previousEntry?.sessions;
-            const previousRow = previousRows?.[params.sessionId];
-            if (!previousEntry || !previousRows || !previousRow) {
-                return state;
-            }
-
-            const updatedAt = nowServerMs();
-            const renderablePatch = buildManualReadStateRenderablePatch({
-                renderable: previousRow,
-                readState: params.readState,
-                lastViewedSessionSeq: params.lastViewedSessionSeq,
-                updatedAt,
-            });
-            if (
-                previousRow.hasUnreadMessages === renderablePatch.hasUnreadMessages
-                && (previousRow.lastViewedSessionSeq ?? null) === renderablePatch.lastViewedSessionSeq
-                && (renderablePatch.metadata === undefined || renderablePatch.metadata === previousRow.metadata)
-            ) {
-                return state;
-            }
-
-            const nextRow: SessionListRenderableSession = {
-                ...previousRow,
-                ...renderablePatch,
-                updatedAt: Math.max(previousRow.updatedAt ?? 0, updatedAt),
-            };
-            const nextRows: Record<string, SessionListRenderableSession> = {
-                ...previousRows,
-                [params.sessionId]: nextRow,
-            };
-            const nextEntry = {
-                ...previousEntry,
-                sessions: nextRows,
-            };
-            const previousIndexByServerId = state.sessionListIndexByServerId ?? {};
-            const nextIndex = buildSessionListIndexWithServerScope({
-                sessions: nextRows,
-                machines: buildMachineDisplaysByIdFromMachineList(state.machineListByServerId?.[params.ownerServerId]),
-                groupInactiveSessionsByProject: state.settings.groupInactiveSessionsByProject === true,
-                activeGroupingV1: state.settings.sessionListActiveGroupingV1,
-                inactiveGroupingV1: state.settings.sessionListInactiveGroupingV1,
-                sectionModeV1: state.settings.sessionListSectionModeV1,
-                serverScope: {
-                    serverId: params.ownerServerId,
-                    serverName: previousEntry.serverName ?? undefined,
-                },
-                previousIndex: previousIndexByServerId[params.ownerServerId] ?? null,
-            });
-
-            return {
-                ...state,
-                concurrentSessionListCacheByServerId: {
-                    ...state.concurrentSessionListCacheByServerId,
-                    [params.ownerServerId]: nextEntry,
-                },
-                sessionListRowStateByServerId: {
-                    ...(state.sessionListRowStateByServerId ?? {}),
-                    [params.ownerServerId]: nextRows,
-                },
-                sessionListIndexByServerId: {
-                    ...previousIndexByServerId,
-                    [params.ownerServerId]: nextIndex,
-                },
-            };
+        const state = storage.getState();
+        const previousRow = state.sessionListRowsByServerId?.[params.ownerServerId]?.[params.sessionId];
+        if (!previousRow) return;
+        const renderablePatch = buildReadStateRenderablePatch({
+            viewer: params.viewer,
+            readState: params.readState,
+            lastViewedSessionSeq: params.lastViewedSessionSeq,
         });
+        if (
+            previousRow.hasUnreadMessages === renderablePatch.hasUnreadMessages
+            && (previousRow.lastViewedSessionSeq ?? null) === renderablePatch.lastViewedSessionSeq
+            && renderablePatch.viewer === undefined
+        ) {
+            return;
+        }
+        state.applyServerScopedSessionListRowPatches(params.ownerServerId, [{
+            sessionId: params.sessionId,
+            patch: {
+                ...renderablePatch,
+                updatedAt: Math.max(previousRow.updatedAt ?? 0, nowServerMs()),
+            },
+        }]);
         return;
     }
 
@@ -255,15 +134,13 @@ function applyManualReadStateToLocalState(params: Readonly<{
     const session = state.sessions[params.sessionId];
     if (session) {
         const updatedAt = nowServerMs();
-        const ownerMetadataView = applyManualReadStateToMetadata({
-            metadata: readSessionOwnerMetadataView(session),
-            readState: params.readState,
-            sessionSeq: session.seq,
-            lastViewedSessionSeq: params.lastViewedSessionSeq,
-            updatedAt,
-        });
+        const metadata = readSessionOwnerMetadataView(session);
+        const ownerMetadataView = params.readState
+            ? applyManualReadStateToMetadata({ metadata, readState: params.readState })
+            : metadata;
         const nextSession: Session = {
             ...session,
+            ...(params.viewer ? { viewer: params.viewer } : {}),
             lastViewedSessionSeq: params.lastViewedSessionSeq,
             ...(readSessionMetadataLayoutVersion(
                 session.metadataLayoutVersion,
@@ -281,17 +158,15 @@ function applyManualReadStateToLocalState(params: Readonly<{
         return;
     }
 
-    const renderable = state.sessionListRenderables[params.sessionId];
+    const renderable = state.sessionListRowsByServerId[params.ownerServerId]?.[params.sessionId];
     if (renderable) {
-        const updatedAt = nowServerMs();
-        state.applySessionListRenderablePatches([
+        state.applyServerScopedSessionListRowPatches(params.ownerServerId, [
             {
                 sessionId: params.sessionId,
-                patch: buildManualReadStateRenderablePatch({
-                    renderable,
+                patch: buildReadStateRenderablePatch({
+                    viewer: params.viewer,
                     readState: params.readState,
                     lastViewedSessionSeq: params.lastViewedSessionSeq,
-                    updatedAt,
                 }),
             },
         ]);
@@ -303,47 +178,80 @@ export async function sessionSetManualReadStateWithServerScope(
     readState: SessionManualReadState,
     opts?: Readonly<{ serverId?: string | null }>,
 ): Promise<SessionSetManualReadStateResponse> {
+    const activeServerId = getActiveServerSnapshot().serverId;
+    const targetServerId = opts?.serverId ?? resolvePreferredServerIdForSessionId(sessionId) ?? activeServerId;
+    const state = storage.getState();
+    const sourceAccountId = state.profileScope?.accountId ?? null;
+    const isCurrentAccount = () => (
+        !areServerProfileIdentifiersEquivalent(targetServerId, activeServerId)
+        || !areServerProfileIdentifiersEquivalent(targetServerId, getActiveServerSnapshot().serverId)
+        || (storage.getState().profileScope?.accountId ?? null) === sourceAccountId
+    );
+    const readCachedSession = () => {
+        const current = storage.getState();
+        return areServerProfileIdentifiersEquivalent(targetServerId, getActiveServerSnapshot().serverId)
+            ? current.sessions[sessionId] ?? current.sessionListRowsByServerId?.[targetServerId]?.[sessionId]
+            : current.sessionListRowsByServerId?.[targetServerId]?.[sessionId];
+    };
+    const cachedSession = readCachedSession();
+    if (cachedSession && !isSessionPersonallyTrackedForViewer(cachedSession)) {
+        return { success: false, message: 'session_not_tracked' };
+    }
     try {
-        const request = await requestSessionReadState({
+        if (!isCurrentAccount()) return { success: false, message: 'session_account_changed' };
+        const outcome = await executeManualReadStateAction({
             sessionId,
             readState,
-            serverId: opts?.serverId ?? null,
+            serverId: targetServerId,
         });
-        try {
-        const { response, targetServerId } = request;
-        if (!response.ok) {
-            const message = await response.text().catch(() => '');
-            return { success: false, message: message || 'Failed to update session read state' };
+        if (!isCurrentAccount()) return { success: false, message: 'session_account_changed' };
+        if (!outcome.ok) {
+            if (outcome.error === 'session_not_tracked') {
+                sync.invalidateSessionListSnapshot(targetServerId);
+                if (outcome.viewer) {
+                    applyReadStateToLocalState({
+                        sessionId,
+                        ownerServerId: targetServerId,
+                        viewer: outcome.viewer,
+                        lastViewedSessionSeq: outcome.viewer.readState.state === 'tracking'
+                            ? outcome.viewer.readState.lastViewedSessionSeq
+                            : cachedSession?.seq ?? null,
+                    });
+                }
+            }
+            return { success: false, message: outcome.error };
         }
-
-        const json = await response.json().catch(() => ({}));
-        const parsed = parseReadStateRouteResponse(json, readState);
-        applyManualReadStateToLocalState({
+        const parsed = outcome.value;
+        const currentSession = readCachedSession();
+        if (currentSession && !isSessionPersonallyTrackedForViewer(currentSession)) {
+            return { success: false, message: 'session_not_tracked' };
+        }
+        sync.invalidateSessionListSnapshot(targetServerId);
+        applyReadStateToLocalState({
             sessionId,
-            readState: parsed.readState,
+            readState: parsed.state === 'empty' ? undefined : parsed.state,
             lastViewedSessionSeq: parsed.lastViewedSessionSeq,
             ownerServerId: targetServerId,
+            viewer: parsed.viewer,
         });
 
-        if (parsed.readState === 'unread' && getFocusedSessionId() === sessionId) {
+        const isActiveHome = areServerProfileIdentifiersEquivalent(targetServerId, getActiveServerSnapshot().serverId);
+        if (isActiveHome && parsed.state === 'unread' && getFocusedSessionId() === sessionId) {
             holdManualUnreadForActivation({
                 sessionId,
                 sessionSeq: storage.getState().sessions[sessionId]?.seq ?? 0,
                 activationId: getCurrentSessionViewingActivationId(sessionId),
             });
-        } else if (parsed.readState === 'read') {
+        } else if (isActiveHome && parsed.state === 'read') {
             clearManualUnreadHold({ sessionId });
         }
 
         return {
             success: true,
-            readState: parsed.readState,
+            ...(parsed.state === 'empty' ? {} : { readState: parsed.state }),
             lastViewedSessionSeq: parsed.lastViewedSessionSeq,
             didChange: parsed.didChange,
         };
-        } finally {
-            await request.release();
-        }
     } catch (error) {
         return { success: false, message: error instanceof Error ? error.message : 'Unknown error' };
     }

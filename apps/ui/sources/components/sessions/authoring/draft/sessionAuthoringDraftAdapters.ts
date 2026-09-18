@@ -1,11 +1,14 @@
 import {
     AcpConfigOptionOverridesV1Schema,
     AgentExecutionTargetV1Schema,
+    SessionAuthoringValueV1Schema,
     SessionCreationKeyV1Schema,
     SessionServerStartSpawnDraftV1Schema,
     SessionSpawnNewInputV2Schema,
+    type SecretReferenceOverlayV1,
     SessionModelSelectionV1Schema,
     buildBackendTargetKeyV2,
+    readNonBlankOpaqueIdentifier,
     readBackendTargetRefV2,
     readRuntimeDescriptorV1,
     type AgentExecutionTargetV1,
@@ -15,8 +18,15 @@ import {
     type SessionServerStartSpawnDraftV1,
     type SessionSpawnNewInputV2,
     type SessionSpawnSourceContextV1,
+    type SessionExecutionTargetV1,
+    type MachinePoolSelectionOriginV1,
 } from '@happier-dev/protocol';
 import type { PluginUiSessionPlacementCandidateV1 } from '@happier-dev/protocol/plugins/ui';
+import {
+    ConnectedServiceBindingsV2IngressSchema,
+    type ConnectedServiceBindingsV2,
+} from '@happier-dev/protocol/connect/connected-service-bindings';
+import type { WorkflowSessionAuthoringSelection } from '@happier-dev/protocol/workflows/workflowV1';
 
 import {
     DEFAULT_AGENT_ID,
@@ -50,7 +60,6 @@ import {
 import { parseCheckoutCreationDraft } from '@/sync/domains/state/newSessionCheckoutDraft';
 import type { NewSessionDraft } from '@/sync/domains/state/persistence';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import type { SpawnSessionOptions } from '@/sync/domains/session/spawn/spawnSessionPayload';
 
 import type { SessionAuthoringDraft } from './sessionAuthoringDraft';
 
@@ -72,6 +81,45 @@ export type { ExistingSessionAuthoringSnapshotSession };
 type StrictSessionSpawnNewInputV2 = SessionSpawnNewInputV2 & Readonly<{
     creationKey: SessionCreationKeyV1;
 }>;
+
+// Execution APIs retain exact-Machine shapes; authoring and reentry retain
+// the canonical field-catalog union without flattening it.
+function fromExactMachineTarget(
+    target: (SessionExecutionTargetV1 & { selectionOrigin?: MachinePoolSelectionOriginV1 }) | null | undefined,
+): SessionAuthoringDraft['executionTarget'] {
+    if (!target) return null;
+    return {
+        kind: 'machine',
+        target: { serverId: target.serverId, machineId: target.machineId },
+        ...(target.selectionOrigin ? { selectionOrigin: target.selectionOrigin } : {}),
+    };
+}
+
+class InteractiveSessionConsentRequiredError extends Error {
+    readonly code = 'interactive_consent_required' as const;
+
+    constructor() {
+        super('Temporary computer requires interactive endpoint consent');
+        this.name = 'InteractiveSessionConsentRequiredError';
+    }
+}
+
+function requireMachineAuthoringTarget(
+    target: NonNullable<SessionAuthoringDraft['executionTarget']>,
+): Extract<SessionAuthoringDraft['executionTarget'], { kind: 'machine' }> {
+    if (target.kind === 'temporary_computer') throw new InteractiveSessionConsentRequiredError();
+    return target;
+}
+
+function toExactMachineTarget(
+    authoringTarget: NonNullable<SessionAuthoringDraft['executionTarget']>,
+): SessionExecutionTargetV1 & { selectionOrigin?: MachinePoolSelectionOriginV1 } {
+    const target = requireMachineAuthoringTarget(authoringTarget);
+    return {
+        ...target.target,
+        ...(target.selectionOrigin ? { selectionOrigin: target.selectionOrigin } : {}),
+    };
+}
 
 function normalizeSessionConfigOptionOverrides(value: unknown): SessionAuthoringDraft['sessionConfigOptionOverrides'] {
     const parsed = AcpConfigOptionOverridesV1Schema.safeParse(value);
@@ -208,41 +256,6 @@ function mergeExistingSessionAuthoringDraftEditableFields(params: Readonly<{
     };
 }
 
-export function mergeExistingSessionAutomationTemplateDraft(params: Readonly<{
-    hydratedTemplateDraft: SessionAuthoringDraft;
-    targetSession: ExistingSessionAuthoringSnapshotSession | null;
-    currentDraft: SessionAuthoringDraft | null;
-    sessionDekBase64?: string | null;
-    seededAutomationDraft: SessionAuthoringDraft['automation'];
-}>): SessionAuthoringDraft {
-    const fallbackDraft = buildExistingSessionAutomationFallbackDraft({
-        targetSession: params.targetSession,
-        message: params.hydratedTemplateDraft.prompt || params.hydratedTemplateDraft.displayText,
-        sessionDekBase64: params.sessionDekBase64,
-    });
-
-    const baseDraft = fallbackDraft
-        ? mergeExistingSessionAuthoringDraftInheritedFields({
-            ...fallbackDraft,
-            prompt: params.hydratedTemplateDraft.prompt,
-            displayText: params.hydratedTemplateDraft.displayText,
-            permissionMode: params.hydratedTemplateDraft.permissionMode ?? fallbackDraft.permissionMode,
-            permissionModeUpdatedAt: params.hydratedTemplateDraft.permissionModeUpdatedAt ?? fallbackDraft.permissionModeUpdatedAt,
-            modelSelection: params.hydratedTemplateDraft.modelSelection !== undefined
-                ? params.hydratedTemplateDraft.modelSelection
-                : fallbackDraft.modelSelection,
-            automation: params.currentDraft?.automation ?? params.seededAutomationDraft,
-        }, fallbackDraft)
-        : params.hydratedTemplateDraft;
-
-    return mergeExistingSessionAuthoringDraftEditableFields({
-        baseDraft,
-        currentDraft: params.currentDraft,
-        sessionId: baseDraft.existingSessionId ?? params.targetSession?.id ?? '',
-        fallbackAutomationDraft: fallbackDraft ? params.seededAutomationDraft : undefined,
-    });
-}
-
 function stripBackendTargetSourceKind(target: BackendTargetRefV2): BackendTargetRefV2 {
     // `sourceKind` is legacy split-brain vocabulary (built-in vs plugin vs configured) and should
     // not leak into session authoring or automation templates. `configuredBackendId` is the only
@@ -315,11 +328,6 @@ export function rekeyCompatibilityModelSelection(
     });
 }
 
-function resolveDraftSpawnBackendTarget(draft: Pick<SessionAuthoringDraft, 'agentTarget'>): SpawnSessionOptions['backendTarget'] | null {
-    const backendTarget = resolveDraftBackendTarget(draft);
-    return backendTarget ? readBackendTargetRefV2(backendTarget) : null;
-}
-
 function resolveConnectedServicesFromAgentOptionState(params: Readonly<{
     target: BackendTargetRefV2 | AgentExecutionTargetV1 | null;
     backendNewSessionOptionStateByTargetKey?: Record<string, Record<string, unknown>> | null;
@@ -362,22 +370,24 @@ export function buildNewSessionAuthoringDraft(params: NewSessionAuthoringDraftPa
 
     return {
         targetType: 'new_session',
-        executionTarget: params.executionTarget
-            ? {
-                serverId: params.executionTarget.serverId.trim(),
-                machineId: params.executionTarget.machineId.trim(),
-            }
-            : null,
+        executionTarget: SessionAuthoringValueV1Schema.shape.executionTarget.parse(params.executionTarget ?? null),
+        ...(params.temporaryComputerActivationRef !== undefined
+            ? { temporaryComputerActivationRef: params.temporaryComputerActivationRef }
+            : {}),
         directory: normalizeRequiredString(params.directory),
         checkoutCreationDraft: params.checkoutCreationDraft,
         organizationPlacement: normalizeOrganizationPlacement(params.organizationPlacement),
+        ...(params.access !== undefined ? { access: params.access } : {}),
+        ...(params.primaryTeamId !== undefined ? { primaryTeamId: params.primaryTeamId } : {}),
+        ...(params.teamCredentialBindings !== undefined ? { teamCredentialBindings: params.teamCredentialBindings } : {}),
         prompt: params.prompt.trim(),
         displayText: params.displayText.trim(),
         agentTarget: params.agentTarget ? AgentExecutionTargetV1Schema.parse(params.agentTarget) : null,
         transcriptStorage: params.transcriptStorage ?? null,
         profileId: params.profileId === '' ? '' : normalizeOptionalString(params.profileId),
         environmentVariables: params.environmentVariables ?? null,
-        resumeSessionId: normalizeOptionalString(params.resumeSessionId),
+        // Agent-issued and opaque: presence only, bytes preserved.
+        resumeSessionId: readNonBlankOpaqueIdentifier(params.resumeSessionId),
         permissionMode: normalizeOptionalString(params.permissionMode),
         permissionModeUpdatedAt: normalizeOptionalNumber(params.permissionModeUpdatedAt),
         ...(hasModelSelectionInput ? { modelSelection: normalizedModelSelection } : {}),
@@ -400,9 +410,13 @@ export function buildNewSessionAuthoringDraft(params: NewSessionAuthoringDraftPa
 
 type ResolvedNewSessionAuthoringDraftInputs = Readonly<{
     executionTarget?: SessionAuthoringDraft['executionTarget'];
+    temporaryComputerActivationRef?: SessionAuthoringDraft['temporaryComputerActivationRef'];
     directory: string;
     checkoutCreationDraft?: SessionAuthoringDraft['checkoutCreationDraft'];
     organizationPlacement?: SessionAuthoringDraft['organizationPlacement'];
+    access?: SessionAuthoringDraft['access'];
+    primaryTeamId?: SessionAuthoringDraft['primaryTeamId'];
+    teamCredentialBindings?: SessionAuthoringDraft['teamCredentialBindings'];
     prompt: string;
     displayText?: string | null;
     agentTarget?: SessionAuthoringDraft['agentTarget'];
@@ -432,9 +446,13 @@ export function buildNewSessionAuthoringDraftFromResolvedInputs(
 ): SessionAuthoringDraft {
     return buildNewSessionAuthoringDraft({
         executionTarget: params.executionTarget ?? null,
+        temporaryComputerActivationRef: params.temporaryComputerActivationRef,
         directory: params.directory,
         checkoutCreationDraft: params.checkoutCreationDraft ?? null,
         organizationPlacement: params.organizationPlacement ?? { folderId: null, tagIds: [] },
+        ...(params.access !== undefined ? { access: params.access } : {}),
+        ...(params.primaryTeamId !== undefined ? { primaryTeamId: params.primaryTeamId } : {}),
+        ...(params.teamCredentialBindings !== undefined ? { teamCredentialBindings: params.teamCredentialBindings } : {}),
         prompt: params.prompt,
         displayText: params.displayText ?? params.prompt,
         agentTarget: params.agentTarget ?? null,
@@ -502,16 +520,24 @@ function buildNewSessionAuthoringDraftFromSource(source: NewSessionAuthoringDraf
     const backendNewSessionOptionStateByTargetKey = readBackendNewSessionOptionStateByTargetKey(source.source);
 
     return buildNewSessionAuthoringDraft({
-        executionTarget: source.source.executionTarget ?? (
+        executionTarget: source.source.executionTarget !== undefined ? source.source.executionTarget : fromExactMachineTarget(
             source.kind === 'persistedDraft'
             && source.source.targetServerId
             && source.source.selectedMachineId
                 ? { serverId: source.source.targetServerId, machineId: source.source.selectedMachineId }
                 : null
         ),
+        temporaryComputerActivationRef: source.source.temporaryComputerActivationRef,
         directory: resolveNewSessionSourceDirectory(source) ?? '/',
         checkoutCreationDraft: source.source.checkoutCreationDraft ?? null,
         organizationPlacement: source.source.organizationPlacement ?? { folderId: null, tagIds: [] },
+        ...(source.source.access !== undefined ? { access: source.source.access } : {}),
+        ...(source.source.primaryTeamId !== undefined ? { primaryTeamId: source.source.primaryTeamId } : {}),
+        // Only the persisted draft carries device-local Team credential slot
+        // intents; the temp-data handoff has no such field to project.
+        ...(source.kind === 'persistedDraft' && source.source.teamCredentialBindings !== undefined
+            ? { teamCredentialBindings: source.source.teamCredentialBindings }
+            : {}),
         prompt: resolveNewSessionSourcePrompt(source) ?? '',
         displayText: resolveNewSessionSourcePrompt(source) ?? '',
         agentTarget,
@@ -586,41 +612,6 @@ export function buildExistingSessionAuthoringSnapshot(params: Readonly<{
     });
 }
 
-export function buildExistingSessionAutomationFallbackDraft(params: Readonly<{
-    targetSession: ExistingSessionAuthoringSnapshotSession | null;
-    message: string;
-    sessionDekBase64?: string | null;
-}>): SessionAuthoringDraft | null {
-    if (!params.targetSession) {
-        return null;
-    }
-    return buildExistingSessionAuthoringDraftFromSessionSnapshot({
-        session: params.targetSession,
-        message: params.message,
-        sessionDekBase64: params.sessionDekBase64,
-    });
-}
-
-export function refreshExistingSessionAuthoringDraftFromSessionSnapshot(params: Readonly<{
-    session: ExistingSessionAuthoringSnapshotSession;
-    currentDraft: SessionAuthoringDraft | null;
-    sessionDekBase64?: string | null;
-    fallbackAutomationDraft?: SessionAuthoringDraft['automation'];
-}>): SessionAuthoringDraft {
-    const baseDraft = buildExistingSessionAuthoringDraftFromSessionSnapshot({
-        session: params.session,
-        message: params.currentDraft?.prompt ?? '',
-        sessionDekBase64: params.sessionDekBase64,
-    });
-
-    return mergeExistingSessionAuthoringDraftEditableFields({
-        baseDraft,
-        currentDraft: params.currentDraft,
-        sessionId: params.session.id,
-        fallbackAutomationDraft: params.fallbackAutomationDraft,
-    });
-}
-
 export function hydrateSessionAuthoringDraftFromAutomationTemplate(params: Readonly<{
     targetType: SessionAuthoringDraft['targetType'];
     template: AutomationTemplate;
@@ -649,7 +640,7 @@ export function hydrateSessionAuthoringDraftFromAutomationTemplate(params: Reado
 
     return {
         targetType: params.targetType,
-        executionTarget: params.template.executionTarget ?? null,
+        executionTarget: fromExactMachineTarget(params.template.executionTarget),
         directory: normalizeRequiredString(params.template.directory),
         checkoutCreationDraft: parseCheckoutCreationDraft(params.template.checkoutCreationDraft),
         organizationPlacement: normalizeOrganizationPlacement(params.template.organizationPlacement),
@@ -659,7 +650,7 @@ export function hydrateSessionAuthoringDraftFromAutomationTemplate(params: Reado
         transcriptStorage: params.template.transcriptStorage ?? null,
         profileId: normalizeOptionalString(params.template.profileId),
         environmentVariables: params.template.environmentVariables ?? null,
-        resumeSessionId: normalizeOptionalString(params.template.resume),
+        resumeSessionId: readNonBlankOpaqueIdentifier(params.template.resume),
         permissionMode: normalizeOptionalString(params.template.permissionMode),
         permissionModeUpdatedAt: normalizeOptionalNumber(params.template.permissionModeUpdatedAt),
         ...(hasModelSelectionInput ? { modelSelection } : {}),
@@ -690,7 +681,7 @@ export function hydrateSessionAuthoringDraftFromAutomationTemplate(params: Reado
 
 export function buildAutomationTemplateFromSessionAuthoringDraft(draft: SessionAuthoringDraft): AutomationTemplate {
     return {
-        ...(draft.executionTarget ? { executionTarget: draft.executionTarget } : {}),
+        ...(draft.executionTarget ? { executionTarget: toExactMachineTarget(draft.executionTarget) } : {}),
         directory: normalizeRequiredString(draft.directory),
         ...(draft.checkoutCreationDraft
             ? {
@@ -711,7 +702,9 @@ export function buildAutomationTemplateFromSessionAuthoringDraft(draft: SessionA
         ...(draft.transcriptStorage ? { transcriptStorage: draft.transcriptStorage } : {}),
         ...(normalizeOptionalString(draft.profileId) ? { profileId: draft.profileId!.trim() } : {}),
         ...(draft.environmentVariables ? { environmentVariables: draft.environmentVariables } : {}),
-        ...(normalizeOptionalString(draft.resumeSessionId) ? { resume: draft.resumeSessionId!.trim() } : {}),
+        ...(readNonBlankOpaqueIdentifier(draft.resumeSessionId)
+            ? { resume: readNonBlankOpaqueIdentifier(draft.resumeSessionId)! }
+            : {}),
         ...(normalizeOptionalString(draft.permissionMode) ? { permissionMode: draft.permissionMode!.trim() } : {}),
         ...(typeof draft.permissionModeUpdatedAt === 'number' ? { permissionModeUpdatedAt: draft.permissionModeUpdatedAt } : {}),
         ...(draft.modelSelection ? { modelSelection: draft.modelSelection } : {}),
@@ -748,7 +741,7 @@ function resolveSharedSessionAuthoringSpawnFields(draft: SessionAuthoringDraft) 
     return {
         directory: normalizeRequiredString(draft.directory),
         profileId: typeof draft.profileId === 'string' ? draft.profileId.trim() : '',
-        resumeSessionId: normalizeOptionalString(draft.resumeSessionId),
+        resumeSessionId: readNonBlankOpaqueIdentifier(draft.resumeSessionId),
         agentModeId: normalizeOptionalString(draft.acpSessionModeId),
         modelSelection: draft.modelSelection ?? null,
         sessionConfigOptionOverrides: draft.sessionConfigOptionOverrides ?? null,
@@ -969,7 +962,10 @@ export function buildSessionAuthoringDraftFromServerStartSpawnDraftV1(params: Re
         return {
             kind: 'available',
             draft: buildNewSessionAuthoringDraft({
-                executionTarget: spawn.executionTarget,
+                executionTarget: fromExactMachineTarget({
+                    ...spawn.executionTarget,
+                    ...(spawn.placementOrigin ? { selectionOrigin: spawn.placementOrigin } : {}),
+                }),
                 directory: spawn.directory,
                 checkoutCreationDraft: spawn.checkoutCreationDraft ?? null,
                 organizationPlacement: spawn.organizationPlacement ?? { folderId: null, tagIds: [] },
@@ -1023,8 +1019,9 @@ export function buildSessionServerStartSpawnDraftV1FromAuthoringDraft(
     if (!params.draft.executionTarget || !params.draft.agentTarget) {
         throw new Error('New Session authoring draft requires executionTarget and agentTarget');
     }
+    const executionTarget = requireMachineAuthoringTarget(params.draft.executionTarget);
     return SessionServerStartSpawnDraftV1Schema.parse({
-        executionTarget: params.draft.executionTarget,
+        executionTarget: executionTarget.target,
         directory: fields.directory,
         organizationPlacement: normalizeOrganizationPlacement(params.draft.organizationPlacement),
         agentTarget: params.draft.agentTarget,
@@ -1052,9 +1049,167 @@ export function buildSessionServerStartSpawnDraftV1FromAuthoringDraft(
         ...(fields.connectedServices != null ? { connectedServices: fields.connectedServices } : {}),
         ...(fields.mcpSelection ? { mcpSelection: fields.mcpSelection } : {}),
         ...(fields.transcriptStorage ? { transcriptStorage: fields.transcriptStorage } : {}),
+        ...(executionTarget.selectionOrigin
+            ? { placementOrigin: executionTarget.selectionOrigin }
+            : {}),
         ...(terminal ? { terminal } : {}),
         checkoutCreationDraft: params.draft.checkoutCreationDraft,
     });
+}
+
+/**
+ * The workflow-definition selection an incumbent one-shot spawn already
+ * expresses.
+ *
+ * The shared Workflow editor shows a saved Automation's settings through the
+ * same chips ordinary Session authoring uses, so the seam needs one projection
+ * rather than a second settings vocabulary. Fields the spawn does not carry are
+ * omitted, which the workflow contract reads as "inherited" — it never invents
+ * an explicit value the author did not choose.
+ */
+/**
+ * The Connected Service bindings a workflow definition carries.
+ *
+ * The definition consumes the same canonical V2 ingress the one-shot spawn
+ * accepts, so a persisted V1 map, the built-in legacy map and a current V2 map
+ * all normalize to one V2 selection with every binding — native, profile,
+ * group and Team resource — intact. Narrowing to V1 here silently dropped the
+ * Team resource selections a V1 map cannot express; only a map the canonical
+ * ingress rejects leaves the selection unstated.
+ */
+function portableConnectedServiceBindings(
+    value: unknown,
+): ConnectedServiceBindingsV2 | null {
+    if (value === null || value === undefined) return null;
+    const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+}
+
+export function buildWorkflowSelectionFromServerStartSpawnDraftV1(
+    spawn: SessionServerStartSpawnDraftV1,
+): WorkflowSessionAuthoringSelection {
+    const windows = spawn.terminal?.windows;
+    const connectedServices = portableConnectedServiceBindings(spawn.connectedServices ?? null);
+    return {
+        agentTarget: spawn.agentTarget,
+        ...(spawn.modelSelection === undefined ? {} : { modelSelection: spawn.modelSelection }),
+        ...(spawn.profileId === undefined ? {} : { profileId: spawn.profileId }),
+        ...(spawn.permissionMode === undefined ? {} : { permissionMode: spawn.permissionMode }),
+        ...(spawn.agentModeId === undefined ? {} : { acpSessionModeId: spawn.agentModeId }),
+        ...(spawn.configuration === undefined
+            ? {}
+            : (() => {
+                const overrides = buildSessionConfigOptionOverridesFromServerStart(spawn.configuration);
+                return overrides === null ? {} : { sessionConfigOptionOverrides: overrides };
+            })()),
+        ...(spawn.mcpSelection === undefined ? {} : { mcpSelection: spawn.mcpSelection }),
+        ...(connectedServices === null ? {} : { connectedServices }),
+        ...(spawn.transcriptStorage === undefined ? {} : { transcriptStorage: spawn.transcriptStorage }),
+        ...(spawn.terminal === undefined ? {} : { terminal: spawn.terminal }),
+        ...(windows?.launchMode === undefined ? {} : { windowsRemoteSessionLaunchMode: windows.launchMode }),
+        ...(windows?.console === undefined ? {} : { windowsRemoteSessionConsole: windows.console }),
+        ...(windows?.windowName === undefined ? {} : { windowsTerminalWindowName: windows.windowName }),
+    } as WorkflowSessionAuthoringSelection;
+}
+
+export type WorkflowSelectionSpawnWriteBackUnavailableReason =
+    | 'agent_target_required'
+    | 'permission_mode_required'
+    | 'runtime_descriptor_unsupported'
+    | 'spawn_unrepresentable';
+
+export type WorkflowSelectionSpawnWriteBackResult =
+    | Readonly<{ kind: 'available'; spawn: SessionServerStartSpawnDraftV1 }>
+    | Readonly<{ kind: 'unavailable'; reason: WorkflowSelectionSpawnWriteBackUnavailableReason }>;
+
+/**
+ * Writes an edited workflow selection back onto the retained one-shot spawn.
+ *
+ * A saved one-step Automation keeps its released one-shot recipe when the
+ * author only edits what that recipe can express, so this reuses the canonical
+ * spawn writer above instead of hand-assembling a second spawn — including its
+ * duplicated configuration snapshot, which would otherwise disagree with the
+ * edited permission/mode/model facts. A selection the spawn cannot express
+ * fails closed so the caller can require an explicit workflow conversion rather
+ * than silently dropping the author's choice.
+ */
+export function applyWorkflowSelectionToServerStartSpawnDraftV1(params: Readonly<{
+    spawn: SessionServerStartSpawnDraftV1;
+    selection: WorkflowSessionAuthoringSelection;
+    directory?: string | null;
+    configurationUpdatedAtMs: number;
+}>): WorkflowSelectionSpawnWriteBackResult {
+    const selection = params.selection;
+    const agentTarget = selection.agentTarget ?? params.spawn.agentTarget;
+    if (!agentTarget) return { kind: 'unavailable', reason: 'agent_target_required' };
+    if (selection.runtimeDescriptorV1 != null) {
+        // A one-shot spawn has no runtime-descriptor field, so persisting the
+        // selection here would silently drop it at dispatch.
+        return { kind: 'unavailable', reason: 'runtime_descriptor_unsupported' };
+    }
+    const permissionMode = normalizeOptionalString(
+        selection.permissionMode ?? params.spawn.permissionMode ?? null,
+    );
+    if (!permissionMode) return { kind: 'unavailable', reason: 'permission_mode_required' };
+
+    const spawnWindows = params.spawn.terminal?.windows;
+    const draft = buildNewSessionAuthoringDraftFromResolvedInputs({
+        executionTarget: fromExactMachineTarget({
+            ...params.spawn.executionTarget,
+            ...(params.spawn.placementOrigin ? { selectionOrigin: params.spawn.placementOrigin } : {}),
+        }),
+        directory: normalizeOptionalString(params.directory) ?? params.spawn.directory,
+        checkoutCreationDraft: params.spawn.checkoutCreationDraft ?? null,
+        organizationPlacement: params.spawn.organizationPlacement ?? { folderId: null, tagIds: [] },
+        prompt: '',
+        displayText: '',
+        agentTarget,
+        transcriptStorage: selection.transcriptStorage ?? params.spawn.transcriptStorage ?? null,
+        profileId: selection.profileId ?? params.spawn.profileId ?? null,
+        environmentVariables: null,
+        resumeSessionId: params.spawn.configuration?.providerSessionResume?.providerSessionId ?? null,
+        permissionMode,
+        permissionModeUpdatedAt: params.configurationUpdatedAtMs,
+        modelSelection: selection.modelSelection === undefined
+            ? params.spawn.modelSelection ?? null
+            : selection.modelSelection,
+        mcpSelection: selection.mcpSelection ?? params.spawn.mcpSelection ?? null,
+        connectedServices: normalizeSessionAuthoringConnectedServices(
+            selection.connectedServices === undefined
+                ? params.spawn.connectedServices ?? null
+                : selection.connectedServices,
+        ),
+        terminal: normalizeSessionAuthoringTerminal(selection.terminal ?? params.spawn.terminal ?? null),
+        windowsRemoteSessionLaunchMode: selection.windowsRemoteSessionLaunchMode
+            ?? spawnWindows?.launchMode
+            ?? null,
+        windowsRemoteSessionConsole: selection.windowsRemoteSessionConsole
+            ?? spawnWindows?.console
+            ?? null,
+        windowsTerminalWindowName: selection.windowsTerminalWindowName
+            ?? spawnWindows?.windowName
+            ?? null,
+        runtimeDescriptorV1: null,
+        acpSessionModeId: selection.acpSessionModeId ?? params.spawn.agentModeId ?? null,
+        sessionConfigOptionOverrides: selection.sessionConfigOptionOverrides
+            ?? (params.spawn.configuration
+                ? buildSessionConfigOptionOverridesFromServerStart(params.spawn.configuration)
+                : null),
+        automation: null,
+    });
+
+    try {
+        return {
+            kind: 'available',
+            spawn: buildSessionServerStartSpawnDraftV1FromAuthoringDraft({
+                draft,
+                permissionMode,
+                configurationUpdatedAtMs: params.configurationUpdatedAtMs,
+            }),
+        };
+    } catch {
+        return { kind: 'unavailable', reason: 'spawn_unrepresentable' };
+    }
 }
 
 /**
@@ -1073,6 +1228,7 @@ export function buildSessionSpawnNewInputV2FromAuthoringDraft(params: Readonly<
          * whole request rather than silently creating an unseeded Session.
          */
         sourceContext?: SessionSpawnSourceContextV1 | null;
+        secretReferenceOverlay?: SecretReferenceOverlayV1;
     }
 >): StrictSessionSpawnNewInputV2 {
     const creationKey = SessionCreationKeyV1Schema.parse(params.creationKey);
@@ -1085,66 +1241,12 @@ export function buildSessionSpawnNewInputV2FromAuthoringDraft(params: Readonly<
             creationKey,
             ...(normalizedInitialMessage ? { initialInput: { text: normalizedInitialMessage } } : {}),
             ...(params.sourceContext ? { sourceContext: params.sourceContext } : {}),
+            ...(params.secretReferenceOverlay ? { secretReferenceOverlay: params.secretReferenceOverlay } : {}),
+            ...(params.draft.access?.grants.length ? { initialAccess: params.draft.access } : {}),
+            ...(params.draft.primaryTeamId ? { primaryTeamId: params.draft.primaryTeamId } : {}),
+            ...(params.draft.teamCredentialBindings !== undefined ? { teamCredentialBindings: params.draft.teamCredentialBindings } : {}),
         }),
         creationKey,
-    };
-}
-
-export function buildSpawnSessionOptionsFromAuthoringDraft(params: Readonly<{
-    draft: SessionAuthoringDraft;
-    machineId: string;
-    serverId?: string | null;
-    approvedNewDirectoryCreation?: boolean;
-    agentModeUpdatedAt?: number | null;
-    spawnBackendTarget?: SpawnSessionOptions['backendTarget'];
-}>): SpawnSessionOptions {
-    const backendTarget = params.spawnBackendTarget ?? resolveDraftSpawnBackendTarget(params.draft);
-    const fields = resolveSharedSessionAuthoringSpawnFields(params.draft);
-    if (!backendTarget) {
-        throw new Error('Session authoring draft requires backendTarget to spawn a session');
-    }
-
-    return {
-        machineId: params.machineId,
-        ...(typeof params.serverId === 'string' || params.serverId === null ? { serverId: params.serverId } : {}),
-        directory: fields.directory,
-        ...(fields.transcriptStorage ? { transcriptStorage: fields.transcriptStorage } : {}),
-        ...(typeof params.approvedNewDirectoryCreation === 'boolean'
-            ? { approvedNewDirectoryCreation: params.approvedNewDirectoryCreation }
-            : {}),
-        backendTarget,
-        ...(fields.profileId.length > 0 ? { profileId: fields.profileId } : {}),
-        ...(params.draft.environmentVariables ? { environmentVariables: params.draft.environmentVariables } : {}),
-        ...(fields.resumeSessionId ? { resume: fields.resumeSessionId } : {}),
-        ...(normalizeOptionalString(params.draft.permissionMode) ? { permissionMode: params.draft.permissionMode!.trim() as SpawnSessionOptions['permissionMode'] } : {}),
-        ...(typeof params.draft.permissionModeUpdatedAt === 'number'
-            ? { permissionModeUpdatedAt: params.draft.permissionModeUpdatedAt }
-            : {}),
-        ...(fields.agentModeId
-            ? {
-                agentModeId: fields.agentModeId,
-                ...(typeof params.agentModeUpdatedAt === 'number' && Number.isFinite(params.agentModeUpdatedAt)
-                    ? { agentModeUpdatedAt: params.agentModeUpdatedAt }
-                    : {}),
-            }
-            : {}),
-        ...(fields.modelSelection ? { modelSelection: fields.modelSelection } : {}),
-        ...(fields.sessionConfigOptionOverrides ? { sessionConfigOptionOverrides: fields.sessionConfigOptionOverrides } : {}),
-        ...(params.draft.runtimeDescriptorV1 ? { runtimeDescriptorV1: params.draft.runtimeDescriptorV1 } : {}),
-        ...(params.draft.terminal ? { terminal: params.draft.terminal as SpawnSessionOptions['terminal'] } : {}),
-        ...(params.draft.windowsRemoteSessionLaunchMode
-            ? { windowsRemoteSessionLaunchMode: params.draft.windowsRemoteSessionLaunchMode }
-            : {}),
-        ...(params.draft.windowsRemoteSessionConsole
-            ? { windowsRemoteSessionConsole: params.draft.windowsRemoteSessionConsole }
-            : {}),
-        ...(normalizeOptionalString(params.draft.windowsTerminalWindowName)
-            ? { windowsTerminalWindowName: params.draft.windowsTerminalWindowName!.trim() }
-            : {}),
-        ...(fields.connectedServices !== undefined && fields.connectedServices !== null
-            ? { connectedServices: fields.connectedServices }
-            : {}),
-        ...(fields.mcpSelection ? { mcpSelection: fields.mcpSelection } : {}),
     };
 }
 
@@ -1179,10 +1281,18 @@ export function buildNewSessionTempDataFromAuthoringDraft(params: Readonly<{
 
     return {
         prompt: params.draft.displayText || params.draft.prompt,
-        ...(params.machineId ? { machineId: params.machineId } : {}),
-        ...(params.draft.executionTarget ? { executionTarget: params.draft.executionTarget } : {}),
+        ...(params.draft.executionTarget?.kind === 'machine'
+            ? { machineId: params.draft.executionTarget.target.machineId }
+            : !params.draft.executionTarget && params.machineId ? { machineId: params.machineId } : {}),
+        executionTarget: params.draft.executionTarget,
+        ...(params.draft.temporaryComputerActivationRef !== undefined
+            ? { temporaryComputerActivationRef: params.draft.temporaryComputerActivationRef }
+            : {}),
         directory: params.draft.directory,
         organizationPlacement: params.draft.organizationPlacement,
+        ...(params.draft.access !== undefined ? { access: params.draft.access } : {}),
+        ...(params.draft.primaryTeamId !== undefined ? { primaryTeamId: params.draft.primaryTeamId } : {}),
+        ...(params.draft.teamCredentialBindings !== undefined ? { teamCredentialBindings: params.draft.teamCredentialBindings } : {}),
         checkoutCreationDraft: params.draft.checkoutCreationDraft,
         ...(canonicalAgentId ? { agentType: canonicalAgentId } : {}),
         ...(persistedAgentTarget ? { agentTarget: persistedAgentTarget } : {}),
@@ -1235,7 +1345,9 @@ export function buildPersistedNewSessionDraftFromAuthoringDraft(params: Readonly
     const normalizedBackendNewSessionOptionStateByTargetKey = normalizeBackendNewSessionOptionStateByTargetKey(
         params.backendNewSessionOptionStateByTargetKey,
     );
-    const targetServerId = normalizeOptionalString(params.targetServerId);
+    const targetServerId = params.draft.executionTarget?.kind === 'machine'
+        ? params.draft.executionTarget.target.serverId
+        : params.draft.executionTarget?.serverId ?? normalizeOptionalString(params.targetServerId);
     const windowsOverrideMachineId = normalizeOptionalString(params.windowsRemoteSessionLaunchModeOverride?.machineId);
     const windowsRemoteSessionLaunchModeOverride = windowsOverrideMachineId && params.windowsRemoteSessionLaunchModeOverride?.mode
         ? {
@@ -1252,10 +1364,16 @@ export function buildPersistedNewSessionDraftFromAuthoringDraft(params: Readonly
         ...(params.placementCandidates !== undefined
             ? { placementCandidates: params.placementCandidates }
             : {}),
-        selectedMachineId: params.machineId,
+        selectedMachineId: params.draft.executionTarget?.kind === 'machine'
+            ? params.draft.executionTarget.target.machineId
+            : params.draft.executionTarget ? null : params.machineId,
         executionTarget: params.draft.executionTarget,
+        ...(params.draft.temporaryComputerActivationRef !== undefined
+            ? { temporaryComputerActivationRef: params.draft.temporaryComputerActivationRef }
+            : {}),
         selectedPath: params.draft.directory,
         organizationPlacement: params.draft.organizationPlacement,
+        ...(params.draft.access !== undefined ? { access: params.draft.access } : {}),
         ...(targetServerId ? { targetServerId } : {}),
         ...(windowsRemoteSessionLaunchModeOverride ? { windowsRemoteSessionLaunchModeOverride } : {}),
         ...(params.entryIntent ? { entryIntent: params.entryIntent } : {}),
@@ -1277,7 +1395,9 @@ export function buildPersistedNewSessionDraftFromAuthoringDraft(params: Readonly
         ...(params.draft.sessionConfigOptionOverrides ? { sessionConfigOptionOverrides: params.draft.sessionConfigOptionOverrides } : {}),
         ...(params.draft.runtimeDescriptorV1 ? { runtimeDescriptorV1: params.draft.runtimeDescriptorV1 } : {}),
         ...(params.draft.mcpSelection ? { mcpSelection: params.draft.mcpSelection } : {}),
-        ...(normalizeOptionalString(params.draft.resumeSessionId) ? { resumeSessionId: normalizeOptionalString(params.draft.resumeSessionId)! } : {}),
+        ...(readNonBlankOpaqueIdentifier(params.draft.resumeSessionId)
+            ? { resumeSessionId: readNonBlankOpaqueIdentifier(params.draft.resumeSessionId)! }
+            : {}),
         ...(normalizedBackendNewSessionOptionStateByTargetKey ? {
             backendNewSessionOptionStateByTargetKey: normalizedBackendNewSessionOptionStateByTargetKey,
         } : {}),

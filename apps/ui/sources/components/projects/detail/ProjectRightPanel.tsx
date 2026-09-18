@@ -313,6 +313,7 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
                     <RetainedPanelSurface isActive={activeTab === 'git'} testID="project-rightpanel-surface-git">
                         <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
                             <ProjectGitSurface
+                        scopeId={props.scopeId}
                                 serverId={props.workspaceRef.serverId}
                                 machineId={props.workspaceRef.machineId}
                                 rootPath={props.activeRootPath}
@@ -330,6 +331,7 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
                     <RetainedPanelSurface isActive={activeTab === 'files'} testID="project-rightpanel-surface-files">
                         <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
                             <ProjectBrowseFilesSurface
+                        scopeId={props.scopeId}
                                 scope={workspaceScope}
                                 onOpenFile={openFileInDetails}
                                 onOpenFilePinned={openFileInDetailsPinned}

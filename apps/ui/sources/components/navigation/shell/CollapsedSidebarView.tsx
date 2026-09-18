@@ -19,6 +19,9 @@ import { useResolvedDesktopWindowControls } from './desktopChrome/useResolvedDes
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import type { AppUpdateStatusTagProps } from '@/components/ui/feedback/AppUpdateStatusTag';
+import { InboxPopoverButton } from '@/components/inbox/InboxPopoverButton';
+import { useInboxAvailable } from '@/hooks/inbox/useInboxAvailable';
+import { useInboxModel } from '@/hooks/inbox/useInboxModel';
 
 const styles = StyleSheet.create((theme) => ({
     container: {
@@ -96,6 +99,8 @@ export const CollapsedSidebarView = React.memo((props: CollapsedSidebarViewProps
     const safeArea = useChromeSafeAreaInsets();
     const headerHeight = useHeaderHeight();
     const { theme } = useUnistyles();
+    const inboxEnabled = useInboxAvailable();
+    const inboxModel = useInboxModel();
     const resolvedDesktopWindowControls = useResolvedDesktopWindowControls({
         variant: 'collapsed',
         desktopWindowControls: props.desktopWindowControls,
@@ -139,7 +144,19 @@ export const CollapsedSidebarView = React.memo((props: CollapsedSidebarViewProps
                     {resolvedDesktopWindowControls}
                 </DesktopShellWindowControlsHost>
                 {renderUpdateIndicatorWithFallback(props.desktopUpdateIndicator, logoButton)}
-                <ActionOperationActivityButton testID="collapsed-sidebar-action-operations" />
+                {inboxEnabled ? (
+                    <InboxPopoverButton
+                        model={inboxModel}
+                        buttonSize={32}
+                        iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
+                        testID="collapsed-sidebar-inbox-button"
+                    />
+                ) : null}
+                <ActionOperationActivityButton
+                    testID="collapsed-sidebar-action-operations"
+                    buttonSize={32}
+                    iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
+                />
                 {Platform.OS === 'web' ? (
                     <Pressable
                         testID="sidebar-expand-button"

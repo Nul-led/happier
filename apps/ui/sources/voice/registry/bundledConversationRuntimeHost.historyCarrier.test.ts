@@ -110,12 +110,12 @@ describe('voice history carrier single ownership', () => {
       const xai = await lease.host.acquireDirectMediaConversation({
         adapterId: XAI_ADAPTER_ID,
         controlSessionId: lease.host.globalVoiceSessionId,
-        requestedTargetSessionId: null,
+        requestedTargetSessionAddress: null,
       });
       const openai = await lease.host.acquireDirectMediaConversation({
         adapterId: OPENAI_ADAPTER_ID,
         controlSessionId: lease.host.globalVoiceSessionId,
-        requestedTargetSessionId: null,
+        requestedTargetSessionAddress: null,
       });
 
       expect(openai.conversationSessionId).toBe(xai.conversationSessionId);

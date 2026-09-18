@@ -19,7 +19,7 @@ import {
     type ActiveServerAccountScopeLifetime,
 } from '@/sync/domains/scope/activeServerAccountScope';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
-import { useAllMachines, useAutomationRuns } from '@/sync/domains/state/storage';
+import { useAllMachines, useAutomationRunById } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -446,9 +446,11 @@ export function AutomationRunDetailScreen(): React.ReactElement {
     const params = useLocalSearchParams<{ id?: string | string[]; runId?: string | string[] }>();
     const automationId = normalizeParam(params.id);
     const runId = normalizeParam(params.runId);
-    const runs = useAutomationRuns(automationId ?? '');
     const machines = useAllMachines();
-    const cachedRun = runs.find((candidate) => candidate.id === runId) ?? null;
+    // Resolved from the one Account-scoped Run row owner by exact `runId`. The
+    // Automation is route provenance here, not the key: a Run reached by deep
+    // link or notification resolves the same body with no list loaded.
+    const cachedRun = useAutomationRunById(runId);
     const accountLifetime = captureActiveServerAccountScopeLifetime();
     const routeCurrentRef = React.useRef({
         automationId,

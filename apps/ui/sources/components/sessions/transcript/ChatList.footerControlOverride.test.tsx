@@ -125,6 +125,7 @@ describe('ChatList footer control override', () => {
         let tree: renderer.ReactTestRenderer | undefined;
         tree = (await renderScreen(<ChatList
                     session={session}
+                    sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])}
                     controlledByUserOverride={false}
                     onRequestSwitchToRemote={undefined}
                     externalControlFooter={null}

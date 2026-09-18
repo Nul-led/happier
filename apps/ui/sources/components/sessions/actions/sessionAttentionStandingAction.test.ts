@@ -1,3 +1,4 @@
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { describe, expect, it, vi } from 'vitest';
 
 import { HappyError } from '@/utils/errors/errors';
@@ -27,7 +28,7 @@ function createSession(overrides: Partial<SessionListRenderableSession> = {}): S
         active: false,
         archivedAt: null,
         owner: 'user_1',
-        accessLevel: undefined,
+        access: createSessionAccessFixture(),
         seq: 4,
         lastViewedSessionSeq: 4,
         latestTurnStatus: 'completed',
@@ -99,7 +100,7 @@ describe('session attention standing action availability', () => {
             attentionStanding: false,
         });
         const viewOnly = createTarget({
-            session: { accessLevel: 'view' },
+            session: { access: createSessionAccessFixture('view') },
             attentionStandingEnabled: true,
             attentionStanding: false,
         });
@@ -163,7 +164,7 @@ function bulkTarget(input: Partial<SessionBulkActionTarget> & Pick<SessionBulkAc
         serverId: 'server-a',
         active: false,
         archived: false,
-        hasAdminAccess: true,
+        canUnarchive: true,
         canStop: true,
         canArchive: true,
         pinned: false,

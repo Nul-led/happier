@@ -8,7 +8,7 @@ import {
 } from '@/components/sessions/guidance/SessionGettingStartedGuidance';
 import { ExternalSessionsEmptyState } from '@/components/sessions/shell/ExternalSessionsEmptyState';
 import { HiddenInactiveSessionsEmptyState } from '@/components/sessions/shell/HiddenInactiveSessionsEmptyState';
-import { SessionsListView } from '@/components/sessions/shell/SessionsList';
+import { SessionsListViewWithFilterController } from '@/components/sessions/shell/SessionsList';
 import { SessionsListEmptyState } from '@/components/sessions/shell/SessionsListEmptyState';
 import { useSessionGettingStartedGuidanceBaseModel } from '@/components/sessions/guidance/useSessionGettingStartedGuidanceBaseModel';
 import { useVisibleSessionListPaneState, type VisibleSessionListPaneState } from '@/hooks/session/useVisibleSessionListPaneState';
@@ -21,11 +21,16 @@ import {
 import {
     readRetainedSessionListPaneState,
     retainSessionListPaneState,
+    setRetainedSessionListPaneQueryMembershipActive,
+    setRetainedSessionListPaneReferenceCorpusActive,
     type RetainedSessionListPaneState,
     updateRetainedSessionListPaneSurfaceRoutePathname,
-    useSessionListPaneSourceScopeKey,
 } from './sessionListPaneRetention';
 import type { SessionListStorageFilter } from '@/sync/domains/session/sessionStorageKind';
+import {
+    useSessionListViewFilterController,
+    type SessionListViewFilterController,
+} from './search/useSessionListViewFilterController';
 
 type SessionsListPaneContentProps = Readonly<{
     storageKind: SessionListStorageFilter;
@@ -71,6 +76,7 @@ const EMPTY_SESSIONS_LIST_PANE_STATE: VisibleSessionListPaneState = {
     visibleSessionListIndex: null,
     hasHiddenInactiveSessions: false,
     folderFocus: null,
+    folderFeatureEnabledServerIds: [],
     showLoading: true,
     showEmptyState: false,
 };
@@ -78,6 +84,7 @@ const EMPTY_SESSIONS_LIST_PANE_STATE: VisibleSessionListPaneState = {
 type SessionsListPaneContentViewProps = SessionsListPaneContentProps & Readonly<{
     sessionListPaneState: VisibleSessionListPaneState;
     surfaceOwnership: SessionListSurfaceOwnership;
+    filterController: SessionListViewFilterController;
 }>;
 
 function getRetainablePaneStateSnapshot(
@@ -102,6 +109,7 @@ function ActiveSessionsListPaneStateSubscriber(props: SessionsListPaneContentPro
     retainedPathname?: string | null;
     retainedVisibleSessionListIndex?: VisibleSessionListPaneState['visibleSessionListIndex'];
     surfaceOwnership: SessionListSurfaceOwnership;
+    filterController: SessionListViewFilterController;
     onPaneState: (paneState: VisibleSessionListPaneState) => void;
 }>) {
     const sessionListPaneState = useVisibleSessionListPaneState(props.storageKind, {
@@ -109,6 +117,8 @@ function ActiveSessionsListPaneStateSubscriber(props: SessionsListPaneContentPro
         retainedPathname: props.retainedPathname,
         retainedVisibleSessionListIndex: props.retainedVisibleSessionListIndex,
         sessionListSurfaceDataActive: true,
+        queryHomes: props.filterController.pagingHomes,
+        emptyQuerySelectionComplete: props.filterController.emptyQuerySelectionComplete,
     });
 
     const onPaneState = props.onPaneState;
@@ -185,8 +195,10 @@ function SessionsListPaneContentView(props: SessionsListPaneContentViewProps) {
     }
 
     return (
-        <SessionsListView
+        <SessionsListViewWithFilterController
             storageKind={props.storageKind}
+            corpusStorage="active"
+            filterController={props.filterController}
             paneState={props.sessionListPaneState}
             pathname={props.pathname}
             surfaceOwnership={props.surfaceOwnership}
@@ -195,26 +207,42 @@ function SessionsListPaneContentView(props: SessionsListPaneContentViewProps) {
 }
 
 export const SessionsListPaneContent = React.memo((props: SessionsListPaneContentProps) => {
+    const filterController = useSessionListViewFilterController('active');
+    const storageKind = filterController.sourceAvailable ? filterController.filters.source : 'persisted';
     const surfaceOwnership = normalizeSessionListSurfaceOwnership(props.surfaceOwnership);
     const sessionListSurfaceDataActive = props.sessionListSurfaceDataActive ?? surfaceOwnership.dataActive;
-    const sourceScopeKey = useSessionListPaneSourceScopeKey();
+    const sourceScopeKey = filterController.retentionScopeKey;
     const retentionIdentity = React.useMemo(() => ({
-        storageKind: props.storageKind,
+        storageKind,
         pathname: props.pathname,
         sourceScopeKey,
-    }), [props.pathname, props.storageKind, sourceScopeKey]);
+    }), [props.pathname, sourceScopeKey, storageKind]);
     const retainedPaneStateRef = React.useRef<RetainedSessionListPaneState | null>(
         readRetainedSessionListPaneState(retentionIdentity),
     );
     const handlePaneState = React.useCallback((paneState: VisibleSessionListPaneState) => {
         retainedPaneStateRef.current = retainSessionListPaneState({
-            storageKind: props.storageKind,
+            storageKind,
             pathname: props.pathname,
             sourceScopeKey,
             surfaceRoutePathname: props.surfaceRoutePathname,
             paneState,
+            queryMembershipActive: true,
+            referenceCorpusActive: surfaceOwnership.interactive && sessionListSurfaceDataActive,
+            selectedServerIds: filterController.queryHomes.map((home) => home.serverId),
         }) ?? retainedPaneStateRef.current;
-    }, [props.pathname, props.storageKind, props.surfaceRoutePathname, sourceScopeKey]);
+    }, [filterController.queryHomes, props.pathname, props.surfaceRoutePathname, sessionListSurfaceDataActive, sourceScopeKey, storageKind, surfaceOwnership.interactive]);
+
+    React.useEffect(() => {
+        setRetainedSessionListPaneQueryMembershipActive(retentionIdentity, sessionListSurfaceDataActive);
+        return () => setRetainedSessionListPaneQueryMembershipActive(retentionIdentity, false);
+    }, [retentionIdentity, sessionListSurfaceDataActive]);
+
+    React.useEffect(() => {
+        const active = surfaceOwnership.interactive && sessionListSurfaceDataActive;
+        setRetainedSessionListPaneReferenceCorpusActive(retentionIdentity, active);
+        return () => setRetainedSessionListPaneReferenceCorpusActive(retentionIdentity, false);
+    }, [retentionIdentity, sessionListSurfaceDataActive, surfaceOwnership.interactive]);
 
     React.useEffect(() => {
         if (sessionListSurfaceDataActive) return;
@@ -241,9 +269,11 @@ export const SessionsListPaneContent = React.memo((props: SessionsListPaneConten
         return (
             <ActiveSessionsListPaneStateSubscriber
                 {...props}
+                storageKind={storageKind}
                 retainedPathname={retainedPaneState?.surfaceRoutePathname ?? null}
                 retainedVisibleSessionListIndex={retainedPaneState?.paneState.visibleSessionListIndex ?? null}
                 surfaceOwnership={surfaceOwnership}
+                filterController={filterController}
                 onPaneState={handlePaneState}
             />
         );
@@ -252,11 +282,13 @@ export const SessionsListPaneContent = React.memo((props: SessionsListPaneConten
     return (
         <SessionsListPaneContentView
             {...props}
+            storageKind={storageKind}
             sessionListPaneState={getRetainablePaneState(
                 readRetainedSessionListPaneState(retentionIdentity) ?? retainedPaneStateRef.current,
                 retentionIdentity,
             )}
             surfaceOwnership={surfaceOwnership}
+            filterController={filterController}
         />
     );
 });

@@ -15,6 +15,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 
 export type ScmChangeDiscardButtonProps = Readonly<{
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     snapshot: ScmWorkingSnapshot | null;
     scmWriteEnabled: boolean;
@@ -51,6 +52,7 @@ export const ScmChangeDiscardButton = React.memo((props: ScmChangeDiscardButtonP
                     try {
                         await applyFileDiscardAction({
                             sessionId: props.sessionId,
+                            serverId: props.serverId,
                             sessionPath: props.sessionPath,
                             file: props.file,
                             snapshot: props.snapshot,

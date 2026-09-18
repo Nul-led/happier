@@ -43,11 +43,15 @@ function areRunningExecutionRunsEqual(
 
 export function useSessionRunningExecutionRuns(params: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     enabled: boolean;
     refreshKey?: unknown;
 }>): readonly ExecutionRunPublicState[] {
     const [runningRuns, setRunningRuns] = React.useState<readonly ExecutionRunPublicState[]>(EMPTY_RUNNING_EXECUTION_RUNS);
     const normalizedSessionId = React.useMemo(() => normalizeSessionId(params.sessionId), [params.sessionId]);
+    const normalizedServerId = typeof params.serverId === 'string' && params.serverId.trim().length > 0
+        ? params.serverId.trim()
+        : null;
     const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const generationRef = React.useRef(0);
     const inFlightRef = React.useRef(false);
@@ -84,9 +88,10 @@ export function useSessionRunningExecutionRuns(params: Readonly<{
 
         inFlightRef.current = true;
         try {
-            let response: SessionExecutionRunListResult = await sessionExecutionRunList(normalizedSessionId, {});
+            const rpcOptions = normalizedServerId ? { serverId: normalizedServerId } : undefined;
+            let response: SessionExecutionRunListResult = await sessionExecutionRunList(normalizedSessionId, {}, rpcOptions);
             if ((response as any)?.ok === false && isRpcMethodNotAvailableError(response)) {
-                response = await sessionExecutionRunList(normalizedSessionId, {});
+                response = await sessionExecutionRunList(normalizedSessionId, {}, rpcOptions);
             }
 
             if (generationRef.current !== gen) return;
@@ -137,7 +142,7 @@ export function useSessionRunningExecutionRuns(params: Readonly<{
                 void pollOnce(gen);
             }
         }
-    }, [clearRunningRuns, clearTimer, normalizedSessionId, params.enabled]);
+    }, [clearRunningRuns, clearTimer, normalizedServerId, normalizedSessionId, params.enabled]);
 
     React.useEffect(() => {
         generationRef.current += 1;
@@ -162,11 +167,14 @@ export function useSessionRunningExecutionRuns(params: Readonly<{
             clearTimer();
             pendingRepollRef.current = false;
         };
-    }, [clearRunningRuns, clearTimer, normalizedSessionId, params.enabled, pollOnce]);
+    }, [clearRunningRuns, clearTimer, normalizedServerId, normalizedSessionId, params.enabled, pollOnce]);
 
     React.useEffect(() => {
-        if (!normalizedSessionId) return;
-        return subscribeExecutionRunActivity(normalizedSessionId, () => {
+        if (!normalizedSessionId || !normalizedServerId) return;
+        return subscribeExecutionRunActivity({
+            serverId: normalizedServerId,
+            sessionId: normalizedSessionId,
+        }, () => {
             if (!params.enabled) return;
             clearTimer();
             pendingEmptyConfirmRef.current = false;
@@ -176,7 +184,7 @@ export function useSessionRunningExecutionRuns(params: Readonly<{
             }
             void pollOnce(generationRef.current);
         });
-    }, [clearTimer, normalizedSessionId, params.enabled, pollOnce]);
+    }, [clearTimer, normalizedServerId, normalizedSessionId, params.enabled, pollOnce]);
 
     React.useEffect(() => {
         if (!params.enabled || !normalizedSessionId) return;

@@ -1,6 +1,7 @@
 import type { AttachmentsUploadFileSource } from '@/sync/domains/attachments/attachmentsUploadFileSource';
 import { openLocalUploadSourceReader, resolveLocalUploadSourceSizeBytes } from '@/sync/runtime/files/localUploadSourceReader';
 import { uploadDaemonSessionAttachmentFromReader } from '@/sync/domains/transfers/runtime/transferRuntime';
+import type { ExactSessionMachineTargetIdentity } from '@/sync/ops/sessionMachineTarget';
 import { readRpcErrorCode } from '@/sync/runtime/rpcErrors';
 import {
     isTransferFinalizeRecoveryFailure,
@@ -101,6 +102,7 @@ async function resolveSizeBytesWithTimeout(source: AttachmentsUploadFileSource):
 
 export async function sessionAttachmentsUploadFile(args: Readonly<{
     sessionId: string;
+    sessionTarget?: ExactSessionMachineTargetIdentity;
     file: AttachmentsUploadFileSource;
     messageLocalId: string;
     config: AttachmentsUploadConfig;
@@ -136,7 +138,7 @@ export async function sessionAttachmentsUploadFile(args: Readonly<{
         };
         try {
             const bulkUpload = await uploadDaemonSessionAttachmentFromReader({
-                sessionId: args.sessionId,
+                session: args.sessionTarget ?? args.sessionId,
                 fileReader: {
                     sizeBytes: described.sizeBytes,
                     readBytes: async (offset, length) => await reader.readBytes(offset, length),

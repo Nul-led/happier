@@ -53,11 +53,13 @@ vi.mock('@/sync/domains/state/storage', async () => {
         sessions: {
           s1: {
             id: 's1',
+            serverId: 'server-a',
             active: true,
             metadata: { machineId: 'machine-1', path: '/workspace/s1' },
           },
           'carrier-s1': {
             id: 'carrier-s1',
+            serverId: 'server-a',
             active: true,
             updatedAt: 1,
             metadata: {
@@ -87,6 +89,11 @@ vi.mock('@/sync/sync', () => ({
     patchSessionMetadataWithRetry: vi.fn(async () => {}),
     encryption: { getSessionEncryption: vi.fn(() => ({})) },
   },
+}));
+
+vi.mock('@/sync/domains/server/serverRuntime', () => ({
+  getActiveServerSnapshot: () => ({ serverId: 'server-a' }),
+  subscribeActiveServer: () => () => {},
 }));
 
 vi.mock('@/voice/output/speakAssistantText', () => ({
@@ -268,9 +275,11 @@ async function establishProductionBinding() {
     adapterId: 'local_conversation',
     controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
     conversationSessionId: 'carrier-s1',
+    conversationSessionAddress: { serverId: expect.any(String), sessionId: 'carrier-s1' },
     transcriptMode: 'native_session',
-    targetSessionId: 's1',
+    targetSessionAddress: { serverId: expect.any(String), sessionId: 's1' },
   });
+  expect(binding?.conversationSessionAddress.serverId).toBe(binding?.targetSessionAddress?.serverId);
 }
 
 describe('sendVoiceTextTurn streaming playback convergence', () => {

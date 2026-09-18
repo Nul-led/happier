@@ -1,13 +1,16 @@
 import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PluginProjectionV2Schema } from '@happier-dev/protocol';
 
 import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import {
     createNavigationMock,
+    createProjectionDescribeMock,
     createRouterMock,
     enableReactActEnvironment,
     installPickerCommonModuleMocks,
+    type MachineContributionRegistryProjectionDescribeResult,
 } from './testHarness';
 
 enableReactActEnvironment();
@@ -22,9 +25,7 @@ const routeParamsState = vi.hoisted(() => ({
         spawnServerId: 'server-cold',
     } as Record<string, string>,
 }));
-const machineContributionRegistryProjectionDescribeMock = vi.hoisted(() =>
-    vi.fn<(...args: unknown[]) => Promise<any>>(),
-);
+const machineContributionRegistryProjectionDescribeMock = createProjectionDescribeMock();
 const browseScreenPropsRef = { current: null as Record<string, unknown> | null };
 
 installPickerCommonModuleMocks({
@@ -59,6 +60,13 @@ installPickerCommonModuleMocks({
         (await import('@/dev/testkit/mocks/storage')).createStorageModuleStub({
             useSettings: () => ({} as any),
         }),
+    projectionSeam: {
+        describe: machineContributionRegistryProjectionDescribeMock,
+        serverProfiles: [{ id: 'server-cold', serverUrl: 'https://server-cold.example.test' }],
+    },
+    tempDataStore: {
+        peekTempData: () => ({ machineId: 'machine-cold', backendTarget: null, backendNewSessionOptionStateByTargetKey: {} }),
+    },
 });
 
 vi.mock('@/components/sessions/external/browse/ExternalSessionsBrowseScreen', () => ({
@@ -77,19 +85,6 @@ vi.mock('@/sync/store/hooks', () => ({
     useLocalSetting: () => undefined,
 }));
 
-vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
-    machineContributionRegistryProjectionDescribe: (...args: any[]) => machineContributionRegistryProjectionDescribeMock(...args),
-    getMachineContributionRegistryProjectionRevision: () => 0,
-    subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
-    machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-}));
-
-vi.mock('@/utils/sessions/tempDataStore', () => ({
-    peekTempData: () => ({ machineId: 'machine-cold', backendTarget: null, backendNewSessionOptionStateByTargetKey: {} }),
-}));
-
 /**
  * These run against the REAL `canBrowseExternalSessions`, which answers from the daemon
  * projection: no projection means no browse capability, for a BUNDLED Agent exactly as
@@ -97,6 +92,7 @@ vi.mock('@/utils/sessions/tempDataStore', () => ({
  * a dismissal, and it is invisible to a suite that stubs the capability resolver.
  */
 describe('ResumeBrowsePickerScreen cold projection', () => {
+
     beforeEach(() => {
         routeParamsState.value = {
             agentType: 'claude',
@@ -141,7 +137,7 @@ describe('ResumeBrowsePickerScreen cold projection', () => {
     });
 
     it('dismisses once the projection authoritatively answers that browse is unavailable', async () => {
-        let resolveProjection: ((value: unknown) => void) | undefined;
+        let resolveProjection: ((value: MachineContributionRegistryProjectionDescribeResult) => void) | undefined;
         machineContributionRegistryProjectionDescribeMock.mockImplementation(() => new Promise((resolve) => {
             resolveProjection = resolve;
         }));
@@ -159,6 +155,83 @@ describe('ResumeBrowsePickerScreen cold projection', () => {
         await flushHookEffects({ cycles: 2, turns: 2 });
 
         expect(browseScreenPropsRef.current).toBeNull();
-        expect(routerMock.replace).toHaveBeenCalledWith('/new');
+        // The dismissal preserves the new-session context under the canonical
+        // V2 target vocabulary instead of a bare '/new' href.
+        expect(routerMock.replace).toHaveBeenCalledWith({
+            pathname: '/new',
+            params: expect.objectContaining({
+                agentType: 'claude',
+                dataId: 'draft-1',
+                machineId: 'machine-cold',
+                spawnServerId: 'server-cold',
+            }),
+        });
+    });
+
+    /**
+     * Shares this file's harness because it needs the same thing: the REAL
+     * `canBrowseExternalSessions`/`resolveExternalSessionBrowseLockedSource`
+     * answering from a real daemon projection. A suite that stubs those
+     * resolvers cannot see which interaction this route requests.
+     */
+    it('mounts the picker for an ACP-list resume-only source instead of dismissing itself', async () => {
+        machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
+            supported: true,
+            projection: PluginProjectionV2Schema.parse({
+                v: 2,
+                generation: 3,
+                installedPackagesById: {
+                    'happier.agent.claude': {
+                        id: 'happier.agent.claude',
+                        displayName: 'Claude',
+                        enabled: true,
+                        source: { kind: 'bundled', locator: 'happier.agent.claude' },
+                    },
+                },
+                agentsById: {
+                    claude: {
+                        id: 'claude',
+                        title: 'Claude',
+                        catalogAgentId: 'claude',
+                        iconAgentId: 'claude',
+                        identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
+                        externalSessions: {
+                            agent: { pluginId: 'happier.agent.claude', localId: 'claude' },
+                            generation: 3,
+                            operations: {
+                                listCandidates: true,
+                                resolveLinkIdentity: false,
+                                pageTranscript: false,
+                                readAfterTranscript: false,
+                            },
+                            sources: [{
+                                sourceKind: 'claudeAcpSessionList',
+                                resumeOnly: true,
+                                schema: {
+                                    fields: [{ name: 'kind', kind: 'literal', value: 'claudeAcpSessionList' }],
+                                },
+                                key: { segments: [{ kind: 'literal', value: 'claudeAcpSessionList' }] },
+                                instances: [{ kind: 'default', constants: {} }],
+                            }],
+                        },
+                    },
+                },
+            }),
+        });
+
+        const ResumeBrowsePickerScreen = (await import('@/app/(app)/new/pick/resume-browse')).default;
+        await renderScreen(React.createElement(ResumeBrowsePickerScreen));
+        await flushHookEffects({ cycles: 4, turns: 2 });
+
+        expect(browseScreenPropsRef.current).toEqual(expect.objectContaining({
+            interaction: 'pickRemoteSessionId',
+            lockScope: expect.objectContaining({
+                machineId: 'machine-cold',
+                providerId: 'claude',
+                source: expect.objectContaining({ kind: 'claudeAcpSessionList' }),
+            }),
+        }));
+        expect(routerMock.replace).not.toHaveBeenCalled();
+        expect(routerMock.back).not.toHaveBeenCalled();
     });
 });

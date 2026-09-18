@@ -51,6 +51,7 @@ import type { DesktopWebViewNativeAvailability } from '@/sync/domains/browser/ad
 import { openDesktopBrowserDevtools } from '@/sync/domains/browser/adapters/desktopWebViewBridge';
 import type { SimulatorPreviewSurfaceRuntime } from '@/sync/domains/devices/simulator/useSimulatorPreviewRuntime';
 import type { BrowserControlCommandEffect } from '@/sync/domains/browser/control';
+import type { BrowserSurfaceLifecycleState } from './surfaces/browserSurfaceLifecycle';
 
 import { BrowserUrlField, type BrowserUrlFieldHandle } from './BrowserUrlField';
 import { useBrowserKeyboardShortcuts } from './useBrowserKeyboardShortcuts';
@@ -211,6 +212,7 @@ export function BrowserShell(props: Readonly<{
      * state owner (`BrowserSurfaceHost`) supplies it; when absent, engines simply report nothing.
      */
     onViewLifecycle?: (target: BrowserViewLifecycleTarget, signal: BrowserViewLifecycleSignal) => void;
+    lifecycleState?: BrowserSurfaceLifecycleState;
     launchpadRows?: readonly BrowserLaunchpadRow[];
     launchpadRefreshStatus?: 'idle' | 'refreshing' | 'error';
     launchpadRefreshError?: string | null;
@@ -506,6 +508,7 @@ export function BrowserShell(props: Readonly<{
                         testID={`${testID}-view`}
                         view={activeView}
                         onViewLifecycle={props.onViewLifecycle}
+                        lifecycleState={props.lifecycleState}
                         localServicePreviewState={localServicePreviewState}
                         pluginUiProjection={props.pluginUiProjection}
                         projectionInteractionEnabled={props.pluginUiInteractionEnabled}

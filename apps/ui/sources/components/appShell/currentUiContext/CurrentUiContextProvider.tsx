@@ -115,6 +115,8 @@ export type CurrentUiContextResolvedCommand = Readonly<{
  */
 export type CurrentUiContextReader = Readonly<{
     readCurrentUiContext: () => CurrentUiContextSnapshotV1 | null;
+    /** Host-private Action scope authority; never serialized into the safe snapshot. */
+    readCurrentSessionId?: () => string | null;
     resolveCurrentUiCommand: (commandId: string) => CurrentUiContextResolvedCommand | null;
     subscribe: (listener: () => void) => () => void;
 }>;
@@ -242,7 +244,10 @@ export function CurrentUiContextProvider(props: Readonly<{ children: React.React
 
     const [mountRecord, dispatchMountRecord] = React.useReducer(reduceCurrentUiContextMount, null);
     const currentMountRecordRef = React.useRef<CurrentUiContextMountRecord | null>(null);
-    const committedSnapshotRef = React.useRef<CurrentUiContextSnapshotV1 | null>(null);
+    const committedSnapshotRef = React.useRef<Readonly<{
+        snapshot: CurrentUiContextSnapshotV1;
+        sessionId: string | null;
+    }> | null>(null);
     const readerListenersRef = React.useRef(new Set<() => void>());
     const providerCurrentRef = React.useRef(true);
     const nextCommandIdRef = React.useRef(0);
@@ -261,6 +266,7 @@ export function CurrentUiContextProvider(props: Readonly<{ children: React.React
             retireCurrentUiContextMountRecord(currentMountRecordRef.current);
             currentMountRecordRef.current = null;
             committedSnapshotRef.current = null;
+            notifyReaderListeners();
             readerListenersRef.current.clear();
         };
     }, []);
@@ -276,7 +282,7 @@ export function CurrentUiContextProvider(props: Readonly<{ children: React.React
 
     const readCurrentUiContext = React.useCallback((): CurrentUiContextSnapshotV1 | null => {
         if (!readHostActivelyViewed()) return null;
-        const committedSnapshot = committedSnapshotRef.current;
+        const committedSnapshot = committedSnapshotRef.current?.snapshot ?? null;
         if (committedSnapshot === null) return null;
         // A bounded fallback intentionally omits every optional surface
         // projection. Reconstructing it from the navigation shell below would
@@ -296,6 +302,9 @@ export function CurrentUiContextProvider(props: Readonly<{ children: React.React
 
     const reader = React.useMemo<CurrentUiContextReader>(() => Object.freeze({
         readCurrentUiContext,
+        readCurrentSessionId: () => readHostActivelyViewed()
+            ? committedSnapshotRef.current?.sessionId ?? null
+            : null,
         resolveCurrentUiCommand: (rawCommandId: string) => {
             if (!readHostActivelyViewed()) return null;
             const commandId = rawCommandId.trim();
@@ -418,9 +427,9 @@ export function CurrentUiContextProvider(props: Readonly<{ children: React.React
     ]);
 
     React.useLayoutEffect(() => {
-        committedSnapshotRef.current = snapshot;
+        committedSnapshotRef.current = { snapshot, sessionId: sessionActive ? sessionRouteId : null };
         notifyReaderListeners();
-    }, [hostActivelyViewed, notifyReaderListeners, snapshot]);
+    }, [hostActivelyViewed, notifyReaderListeners, sessionActive, sessionRouteId, snapshot]);
 
     return (
         <CurrentUiContextMountPublisherContext.Provider value={mountPublisher}>

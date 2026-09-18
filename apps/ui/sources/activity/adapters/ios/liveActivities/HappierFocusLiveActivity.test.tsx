@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import * as React from 'react';
 
 import type { LiveActivitySnapshot } from './buildLiveActivitySnapshots';
+import { buildHappierFocusLiveActivityIdentity, buildLiveActivityInstanceKey } from './liveActivityIdentity';
 
 vi.mock('expo-widgets', () => ({
     createLiveActivity: (_name: string, component: unknown) => component,
@@ -49,7 +50,10 @@ function createLiveActivitySnapshot(overrides: Partial<LiveActivitySnapshot> = {
         serverId: 'local',
         sessionId: 'permission',
         activityName: 'HappierFocusLiveActivity',
-        activityInstanceKey: 'local:HappierFocusLiveActivity:permission',
+        activityInstanceKey: buildLiveActivityInstanceKey(buildHappierFocusLiveActivityIdentity({
+            serverId: 'local',
+            sessionId: 'permission',
+        })),
         title: 'Permission work',
         subtitle: null,
         previewText: null,

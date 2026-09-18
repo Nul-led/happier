@@ -68,6 +68,7 @@ function fixture(
     };
     const intentRead = PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
         availabilityCursor,
+        packageAssets: [],
         hostingCapability: {
             enabled: true,
             maxArtifactBytes: 1024,
@@ -176,7 +177,7 @@ function persistentCustody(record: ReturnType<typeof fixture>) {
         scope,
         store: Object.freeze({
             read,
-            write: async () => {},
+            write: async () => 'persisted' as const,
             remove: removePersistentArtifact,
             removeAccount: async () => {},
         }),
@@ -426,6 +427,7 @@ describe('Artifact selected handle lease', () => {
                 write: async (record: PluginUiPersistentArtifactRecord) => {
                     written.push(record);
                     store.clear();
+                    return 'persisted' as const;
                 },
                 remove: removePersistentArtifact,
                 removeAccount: async () => {},

@@ -1,7 +1,7 @@
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import { SessionRuntimeIssueV1Schema } from '@happier-dev/protocol';
 import {
-    deriveSessionRuntimePresentationState,
+    projectUiSessionRuntimeAwareness,
     readSessionRuntimePresentationFreshnessExpirations,
     type SessionRuntimePresentationInput,
 } from '@/sync/domains/session/attention/runtimePresentation';
@@ -43,7 +43,7 @@ function buildSessionListRuntimePriorityPresentationInput(
         active: row.active,
         activeAt: row.activeAt,
         archivedAt: row.archivedAt,
-        presence: row.presence ?? (row.active === true ? 'online' : undefined),
+        presence: row.presence,
         thinking: row.thinking,
         thinkingAt: row.thinkingAt,
         latestTurnStatus: row.latestTurnStatus === 'in_progress'
@@ -83,15 +83,15 @@ export function isSessionListRuntimePriorityRow(
     nowMs: number = Date.now(),
 ): boolean {
     if (!row) return false;
-    const runtimePresentation = deriveSessionRuntimePresentationState(
+    const runtimePresentation = projectUiSessionRuntimeAwareness(
         buildSessionListRuntimePriorityPresentationInput(row, nowMs),
     );
     return row.active === true
         || runtimePresentation.working
-        || (row.presence === 'online' && runtimePresentation.backgroundActive)
+        || runtimePresentation.runtime === 'background_active'
         || runtimePresentation.freshPermissionRequired
         || runtimePresentation.freshActionRequired
-        || runtimePresentation.attention === 'failed'
+        || runtimePresentation.operational.primary === 'failed'
         || row?.hasPendingPermissionRequests === true
         || row?.hasPendingUserActionRequests === true
         || row?.lastRuntimeIssue != null;

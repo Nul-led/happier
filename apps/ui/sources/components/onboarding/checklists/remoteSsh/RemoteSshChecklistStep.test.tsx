@@ -221,7 +221,7 @@ function flattenStyle(style: unknown): Record<string, unknown> {
 async function resetProfileRegistry(): Promise<void> {
     const profiles = await import('@/sync/domains/server/serverProfiles');
     profiles.clearTabActiveServerId();
-    for (const profile of profiles.listServerProfiles()) profiles.removeServerProfile(profile.id);
+    for (const profile of profiles.listServerProfiles()) await profiles.removeServerProfile(profile.id);
 }
 
 describe('RemoteSshChecklistStep', () => {
@@ -247,13 +247,13 @@ describe('RemoteSshChecklistStep', () => {
 
     it('adopts a discovered relay through the Home owner without changing focus or groups, then links the saved host', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const focusedHome = profiles.upsertServerProfile({
+        const focusedHome = await profiles.upsertServerProfile({
             serverUrl: 'https://focused-home.example',
             name: 'Focused Home',
             source: 'manual',
         });
-        profiles.setActiveServerId(focusedHome.id);
-        profiles.saveHomeViewState({
+        await profiles.setActiveServerId(focusedHome.id);
+        await profiles.saveHomeViewState({
             version: 1,
             groups: [{ id: 'visible-homes', name: 'Visible Homes', serverIds: [focusedHome.id] }],
             activeTargetKind: 'server',

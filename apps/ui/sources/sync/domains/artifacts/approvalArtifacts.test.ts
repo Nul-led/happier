@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { ApprovalRequestV2Schema, buildApprovalRequestArtifactHeaderV1 } from '@happier-dev/protocol';
 
 import type { DecryptedArtifact } from './artifactTypes';
-import { collectOpenApprovalSessionIds, listOpenApprovalArtifactsForSession } from './approvalArtifacts';
+import {
+    collectOpenApprovalSessionReferences,
+    listOpenApprovalArtifactsForSession,
+    resolveOpenApprovalSessionKeys,
+} from './approvalArtifacts';
+import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
 
 function artifact(
     id: string,
@@ -38,8 +44,37 @@ function approvalBody(sessionId: string, actionId = 'session.list') {
     };
 }
 
+function durableApprovalBody(sessionId: string) {
+    return {
+        v: 2,
+        status: 'open',
+        createdAtMs: 1,
+        updatedAtMs: 1,
+        createdBy: { surface: 'system', sessionId },
+        requestedSurface: 'api',
+        executionOriginV1: {
+            v: 1,
+            authority: 'account_automation',
+            surface: 'api',
+            caller: { kind: 'host' },
+            serverId: 'server-a',
+            accountId: 'account-1',
+            principalId: 'principal-1',
+            credentialId: 'credential-1',
+            sessionId,
+            machineId: 'machine-1',
+            target: { kind: 'session', sessionId },
+            actionId: 'session.title.set',
+            requestId: 'request-1',
+        },
+        actionId: 'session.title.set',
+        actionArgs: { sessionId, title: 'Current title' },
+        summary: 'Set session title',
+    };
+}
+
 describe('listOpenApprovalArtifactsForSession', () => {
-    it('includes bodyless open approval headers scoped to the session', () => {
+    it('rejects bodyless approval indexes until the authoritative body is hydrated', () => {
         const approvals = listOpenApprovalArtifactsForSession([
             artifact('matching-session-id', {
                 v: 1,
@@ -73,14 +108,11 @@ describe('listOpenApprovalArtifactsForSession', () => {
                 approvalStatus: 'open',
                 sessionId: 's2',
             }),
-        ], 's1');
+        ], { serverId: 'home-a', sessionId: 's1' }, {
+            knownSessionAddresses: [{ serverId: 'home-a', sessionId: 's1' }],
+        });
 
-        expect(approvals.map((approval) => approval.artifact.id)).toEqual([
-            'matching-session-id',
-            'matching-sessions-array',
-        ]);
-        expect(approvals[0]?.approval.actionId).toBe('session.list');
-        expect(approvals[1]?.approval.summary).toBe('Read status');
+        expect(approvals).toEqual([]);
     });
 
     it('parses available approval bodies and drops malformed bodies', () => {
@@ -88,45 +120,91 @@ describe('listOpenApprovalArtifactsForSession', () => {
             artifact('body', {
                 v: 1,
                 kind: 'approval_request.v1',
-                title: 'Approve',
+                title: 'List sessions',
                 approvalStatus: 'open',
                 sessionId: 's1',
+                sessions: ['s1'],
+                actionId: 'session.history.get',
             }, approvalBody('s1', 'session.history.get')),
             {
                 ...artifact('malformed', {
                     v: 1,
                     kind: 'approval_request.v1',
-                    title: 'Approve',
+                    title: 'List sessions',
                     approvalStatus: 'open',
                     sessionId: 's1',
+                    sessions: ['s1'],
+                    actionId: 'session.history.get',
                 }),
                 body: '{',
             },
-        ], 's1');
+        ], { serverId: 'home-a', sessionId: 's1' }, {
+            knownSessionAddresses: [{ serverId: 'home-a', sessionId: 's1' }],
+        });
 
         expect(approvals).toHaveLength(1);
         expect(approvals[0]?.artifact.id).toBe('body');
         expect(approvals[0]?.approval.actionId).toBe('session.history.get');
     });
+
+    it('projects current V2 durable approvals into the Session approval surface', () => {
+        const request = ApprovalRequestV2Schema.parse(durableApprovalBody('s1'));
+        const approvals = listOpenApprovalArtifactsForSession([
+            artifact('durable', buildApprovalRequestArtifactHeaderV1(request), request),
+        ], buildSessionListServerScopedRowKey('server-a', 's1')!);
+
+        expect(approvals).toHaveLength(1);
+        expect(approvals[0]?.approval).toMatchObject({ v: 2, actionId: 'session.title.set' });
+    });
+
+    it('admits a legacy unscoped approval only when canonical membership resolves one exact Home', () => {
+        const legacy = artifact('legacy', {
+            v: 1,
+            kind: 'approval_request.v1',
+            title: 'List sessions',
+            approvalStatus: 'open',
+            sessionId: 'same',
+            sessions: ['same'],
+            actionId: 'session.list',
+        }, approvalBody('same'));
+
+        expect(collectOpenApprovalSessionReferences([legacy])).toEqual([
+            { kind: 'legacy_unscoped', sessionId: 'same' },
+        ]);
+
+        expect(listOpenApprovalArtifactsForSession([legacy], { serverId: 'home-a', sessionId: 'same' }, {
+            knownSessionAddresses: [{ serverId: 'home-a', sessionId: 'same' }],
+        })).toHaveLength(1);
+        expect(listOpenApprovalArtifactsForSession([legacy], { serverId: 'home-a', sessionId: 'same' }, {
+            knownSessionAddresses: [
+                { serverId: 'home-a', sessionId: 'same' },
+                { serverId: 'home-b', sessionId: 'same' },
+            ],
+        })).toEqual([]);
+    });
 });
 
-describe('collectOpenApprovalSessionIds', () => {
+describe('collectOpenApprovalSessionReferences', () => {
     it('collects only sessions linked to currently open approval artifacts', () => {
-        const ids = collectOpenApprovalSessionIds([
+        const references = collectOpenApprovalSessionReferences([
             artifact('header-session', {
                 v: 1,
                 kind: 'approval_request.v1',
-                title: 'Approve',
+                title: 'List sessions',
                 approvalStatus: 'open',
                 sessionId: 's1',
+                sessions: ['s1'],
                 actionId: 'session.list',
                 approvalSummary: 'List sessions',
-            }),
+            }, approvalBody('s1')),
             artifact('body-session', {
                 v: 1,
                 kind: 'approval_request.v1',
-                title: 'Approve',
+                title: 'List sessions',
                 approvalStatus: 'open',
+                sessionId: 's2',
+                sessions: ['s2'],
+                actionId: 'session.list',
             }, approvalBody('s2')),
             artifact('closed', {
                 v: 1,
@@ -139,23 +217,41 @@ describe('collectOpenApprovalSessionIds', () => {
             }),
         ]);
 
-        expect([...ids].sort()).toEqual(['s1', 's2']);
+        expect(references).toEqual([
+            { kind: 'legacy_unscoped', sessionId: 's1' },
+            { kind: 'legacy_unscoped', sessionId: 's2' },
+        ]);
     });
 
     it('uses server-scoped identities when approval artifacts carry a server id', () => {
-        const ids = collectOpenApprovalSessionIds([
+        const references = collectOpenApprovalSessionReferences([
             artifact('header-session', {
                 v: 1,
                 kind: 'approval_request.v1',
-                title: 'Approve',
+                title: 'List sessions',
                 approvalStatus: 'open',
                 sessionId: 's1',
+                sessions: ['s1'],
                 serverId: 'server-a',
                 actionId: 'session.list',
                 approvalSummary: 'List sessions',
-            }),
+            }, approvalBody('s1')),
         ]);
 
-        expect([...ids]).toEqual(['server-a:s1']);
+        expect(references).toEqual([{
+            kind: 'exact',
+            address: { serverId: 'server-a', sessionId: 's1' },
+        }]);
+    });
+
+    it('resolves legacy references once and never broadcasts them across duplicate Homes', () => {
+        const references = [{ kind: 'legacy_unscoped', sessionId: 'same' }] as const;
+        expect([...resolveOpenApprovalSessionKeys(references, [
+            { serverId: 'home-a', sessionId: 'same' },
+        ])]).toEqual([buildSessionListServerScopedRowKey('home-a', 'same')]);
+        expect([...resolveOpenApprovalSessionKeys(references, [
+            { serverId: 'home-a', sessionId: 'same' },
+            { serverId: 'home-b', sessionId: 'same' },
+        ])]).toEqual([]);
     });
 });

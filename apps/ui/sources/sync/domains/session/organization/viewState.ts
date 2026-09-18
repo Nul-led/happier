@@ -1,18 +1,31 @@
-import type {
-    SessionFolderList,
-    SessionFolderWorkspaceRefV1,
-} from '@/sync/domains/session/folders';
-import { PINNED_GROUP_KEY_V1 } from '@/sync/domains/session/listing/sessionListOrderingStateV1';
+// Imported from the folder type owner rather than the domain barrel: this projection is loaded by
+// list, search and mutation paths that must not pull the whole folder/tree runtime with them.
 import {
+    areSessionFolderDefinitionsEqual,
+    type SessionFolderList,
+    type SessionFolderV1,
+    type SessionFolderWorkspaceRefV1,
+    type SessionFoldersV1,
+} from '@/sync/domains/session/folders/types';
+import {
+    buildSessionListFolderOrderItemKey,
+    PINNED_GROUP_KEY_V1,
+} from '@/sync/domains/session/listing/sessionListOrderingStateV1';
+import {
+    buildSessionWorkspaceOrderItemKey,
     buildSessionWorkspaceOrderScopeKey,
+    readSessionWorkspaceOrderScopeServerId,
     type SessionWorkspaceOrderV1,
 } from '@/sync/domains/session/listing/sessionWorkspaceOrderStateV1';
 import type { ReorderSessionOrganizationRequest } from '@happier-dev/protocol';
+import type { SessionAttentionStanding } from '@happier-dev/protocol';
+import { sessionAddressKey } from '../sessionAddress';
 
 import type {
     SessionOrganizationDisplayState,
     SessionOrganizationProjection,
 } from './types';
+import { sessionFolderAddressKey } from '../folders/assignmentKeys';
 import { buildSessionOrganizationTagLabelById } from './tagLabels';
 
 type HumanDisplayState =
@@ -24,6 +37,16 @@ export type SessionOrganizationListTag = Readonly<{
     display: HumanDisplayState;
 }>;
 
+/**
+ * Exact owning Home and Home-local identity behind one list order item key. List keys are
+ * opaque composites, so every write resolves them through this projection instead of
+ * parsing them: two Homes can hold the same Home-local Session or folder id, and a key
+ * this projection never minted belongs to no Home at all.
+ */
+export type SessionOrganizationOrderItemAddress =
+    | Readonly<{ itemKind: 'session'; serverId: string; sessionId: string }>
+    | Readonly<{ itemKind: 'folder'; serverId: string; folderId: string }>;
+
 export type SessionOrganizationListViewState = Readonly<{
     pinnedSessionKeysV1: readonly string[];
     sessionFoldersV1: SessionFolderList;
@@ -34,11 +57,11 @@ export type SessionOrganizationListViewState = Readonly<{
      * surface can join them with the account default without a second projection subscription.
      * A `false` entry is a real "removed from Needs attention", never an absent key.
      */
-    attentionStandingOverridesBySessionKey: Record<string, boolean>;
+    attentionStandingOverridesBySessionKey: Record<string, SessionAttentionStanding>;
     sessionListGroupOrderV1: Record<string, readonly string[]>;
     sessionWorkspaceOrderV1: SessionWorkspaceOrderV1;
     workspaceLabelsV1: Record<string, HumanDisplayState>;
-    folderDisplayStatesById: Record<string, HumanDisplayState>;
+    folderDisplayStatesByFolderKey: Record<string, HumanDisplayState>;
     labelDisplayStatesByKey: Record<string, HumanDisplayState>;
     sessionTagDisplayStatesBySessionKey: Record<
         string,
@@ -47,11 +70,16 @@ export type SessionOrganizationListViewState = Readonly<{
             display: HumanDisplayState;
         }>[]
     >;
+    /**
+     * Exact owner for every order item key this projection mints, whether or not the current
+     * viewport renders it. The reorder write path resolves keys here so a per-Home writer can
+     * never receive another Home's Session or folder id.
+     */
+    orderItemAddressByItemKey: Record<string, SessionOrganizationOrderItemAddress>;
 }>;
 
 function buildServerSessionKey(serverId: string, sessionId: string): string {
-    const trimmedSessionId = String(sessionId ?? '').trim();
-    return trimmedSessionId.includes(':') ? trimmedSessionId : `${serverId}:${trimmedSessionId}`;
+    return sessionAddressKey({ serverId: serverId.trim(), sessionId: String(sessionId ?? '').trim() });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -116,14 +144,12 @@ function compareBySortKey(a: { sortKey?: string | null }, b: { sortKey?: string 
 }
 
 function normalizeWorkspaceItemKey(itemKey: string): string | null {
-    const trimmed = itemKey.trim();
-    if (!trimmed) return null;
-    return trimmed.startsWith('workspace:') ? trimmed : `workspace:${trimmed}`;
+    return buildSessionWorkspaceOrderItemKey(itemKey);
 }
 
 function normalizeWorkspaceScopeKey(serverId: string, scopeKey: string): string {
     const trimmed = scopeKey.trim();
-    return trimmed.startsWith('server:') ? trimmed : buildSessionWorkspaceOrderScopeKey(trimmed || serverId);
+    return buildSessionWorkspaceOrderScopeKey(trimmed || serverId);
 }
 
 function appendOrderedValue(map: Record<string, string[]>, scopeKey: string, itemKey: string): void {
@@ -163,32 +189,80 @@ function stripWorkspaceItemKey(itemKeyRaw: string): string | null {
     return itemKey.startsWith('workspace:') ? itemKey.slice('workspace:'.length).trim() || null : itemKey;
 }
 
+type ResolvedOrderItem = Readonly<{ itemKind: 'session' | 'folder'; itemKey: string }>;
+
+function buildAllowedServerIdSet(
+    serverId: string,
+    serverIdAliases?: readonly string[] | null,
+): ReadonlySet<string> {
+    return new Set([serverId, ...(serverIdAliases ?? [])]
+        .map((id) => id.trim())
+        .filter(Boolean));
+}
+
+function resolveCanonicalOrderItem(
+    address: SessionOrganizationOrderItemAddress | undefined,
+    allowedServerIds: ReadonlySet<string>,
+): ResolvedOrderItem | null {
+    if (!address || !allowedServerIds.has(address.serverId.trim())) return null;
+    const itemKey = address.itemKind === 'session'
+        ? address.sessionId.trim()
+        : address.folderId.trim();
+    return itemKey ? { itemKind: address.itemKind, itemKey } : null;
+}
+
+function resolveLegacyServerScopedOrderItem(
+    serverId: string,
+    serverIdAliases: readonly string[] | undefined,
+    itemKey: string,
+): ResolvedOrderItem | null {
+    if (itemKey.startsWith('folder:')) {
+        const folderId = stripFolderItemKey(itemKey);
+        return folderId ? { itemKind: 'folder', itemKey: folderId } : null;
+    }
+    const sessionId = stripServerSessionKey(serverId, itemKey, serverIdAliases);
+    return sessionId ? { itemKind: 'session', itemKey: sessionId } : null;
+}
+
 export function buildSessionOrganizationReorderRequestFromGroupOrder(params: Readonly<{
     serverId: string;
     serverIdAliases?: readonly string[];
     scopeKey: string;
     itemKeys: readonly string[];
+    /**
+     * Exact owner and identity for every canonical list item key. Live surfaces always pass
+     * it, and an item key it does not resolve — another Home's row, or a key this projection
+     * never minted — is dropped instead of being sent to this Home as an opaque id.
+     */
+    orderItemAddressByItemKey?: Readonly<Record<string, SessionOrganizationOrderItemAddress>>;
+    /**
+     * Released legacy import only: item keys are `${serverId}:${sessionId}` or `folder:<id>`
+     * strings already scoped to one Home by the importer.
+     */
+    legacyServerScopedItemKeys?: boolean;
 }>): ReorderSessionOrganizationRequest | null {
     const serverId = params.serverId.trim();
     const legacyScopeKey = params.scopeKey.trim();
     if (!serverId || !legacyScopeKey) return null;
     const scopeKind = legacyScopeKey === PINNED_GROUP_KEY_V1 ? 'pinned' : 'group';
     const scopeKey = scopeKind === 'pinned' ? 'pins' : legacyScopeKey;
+    const allowedServerIds = buildAllowedServerIdSet(serverId, params.serverIdAliases);
     const entries: ReorderSessionOrganizationRequest['entries'] = [];
     const seen = new Set<string>();
-    for (const [index, rawItemKey] of params.itemKeys.entries()) {
+    for (const rawItemKey of params.itemKeys) {
         const trimmed = typeof rawItemKey === 'string' ? rawItemKey.trim() : '';
         if (!trimmed) continue;
-        const isFolder = trimmed.startsWith('folder:');
-        const itemKey = isFolder ? stripFolderItemKey(trimmed) : stripServerSessionKey(serverId, trimmed, params.serverIdAliases);
-        if (!itemKey) continue;
-        const dedupeKey = `${isFolder ? 'folder' : 'session'}:${itemKey}`;
+        const resolved = params.legacyServerScopedItemKeys === true
+            ? resolveLegacyServerScopedOrderItem(serverId, params.serverIdAliases, trimmed)
+            : resolveCanonicalOrderItem(params.orderItemAddressByItemKey?.[trimmed], allowedServerIds);
+        if (!resolved) continue;
+        const dedupeKey = JSON.stringify([resolved.itemKind, resolved.itemKey]);
         if (seen.has(dedupeKey)) continue;
         seen.add(dedupeKey);
         entries.push({
-            itemKind: isFolder ? 'folder' : 'session',
-            itemKey,
-            sortKey: buildSortKey(index),
+            itemKind: resolved.itemKind,
+            itemKey: resolved.itemKey,
+            sortKey: buildSortKey(entries.length),
         });
     }
     return { scopeKind, scopeKey, entries };
@@ -196,27 +270,202 @@ export function buildSessionOrganizationReorderRequestFromGroupOrder(params: Rea
 
 export function buildSessionOrganizationReorderRequestFromWorkspaceOrder(params: Readonly<{
     serverId: string;
+    serverIdAliases?: readonly string[];
     scopeKey: string;
     itemKeys: readonly string[];
+    /**
+     * Released legacy import only: the scope key is the `server:<serverId>:workspaces` shape
+     * persisted in legacy Account settings, already narrowed to this Home by the importer.
+     */
+    legacyServerScopedScopeKey?: boolean;
 }>): ReorderSessionOrganizationRequest | null {
     const serverId = params.serverId.trim();
     const legacyScopeKey = params.scopeKey.trim();
     if (!serverId || !legacyScopeKey) return null;
-    const expectedScopeKey = buildSessionWorkspaceOrderScopeKey(serverId);
-    const scopeKey = legacyScopeKey === expectedScopeKey ? serverId : legacyScopeKey;
+    const allowedServerIds = buildAllowedServerIdSet(serverId, params.serverIdAliases);
+    // A canonical workspace order scope names its own Home. Another Home's scope is never
+    // this Home's to rewrite, so it is refused rather than persisted under a foreign key.
+    const scopeServerId = readSessionWorkspaceOrderScopeServerId(legacyScopeKey);
+    if (scopeServerId && !allowedServerIds.has(scopeServerId)) return null;
+    const scopeKey = scopeServerId || params.legacyServerScopedScopeKey === true
+        ? serverId
+        : legacyScopeKey;
     const entries: ReorderSessionOrganizationRequest['entries'] = [];
     const seen = new Set<string>();
-    for (const [index, rawItemKey] of params.itemKeys.entries()) {
-        const itemKey = stripWorkspaceItemKey(typeof rawItemKey === 'string' ? rawItemKey : '');
+    for (const rawItemKey of params.itemKeys) {
+        const raw = typeof rawItemKey === 'string' ? rawItemKey : '';
+        const itemKey = params.legacyServerScopedScopeKey === true
+            ? stripWorkspaceItemKey(raw)
+            : buildSessionWorkspaceOrderItemKey(raw);
         if (!itemKey || seen.has(itemKey)) continue;
         seen.add(itemKey);
         entries.push({
             itemKind: 'workspace',
             itemKey,
-            sortKey: buildSortKey(index),
+            sortKey: buildSortKey(entries.length),
         });
     }
     return { scopeKind: 'workspace', scopeKey, entries };
+}
+
+/**
+ * Splits a merged multi-Home group order into one request map per exact owning Home. An item
+ * key with no published address belongs to no mounted Home and is dropped, so no Home is
+ * asked to persist another Home's Session or folder id.
+ */
+export function partitionSessionOrganizationGroupOrderByServerId(params: Readonly<{
+    next: Readonly<Record<string, readonly string[] | undefined>>;
+    orderItemAddressByItemKey: Readonly<Record<string, SessionOrganizationOrderItemAddress>>;
+}>): Record<string, Record<string, string[]>> {
+    const byServerId: Record<string, Record<string, string[]>> = {};
+    for (const [rawScopeKey, itemKeys] of Object.entries(params.next)) {
+        const scopeKey = rawScopeKey.trim();
+        if (!scopeKey) continue;
+        for (const rawItemKey of itemKeys ?? []) {
+            const itemKey = typeof rawItemKey === 'string' ? rawItemKey.trim() : '';
+            if (!itemKey) continue;
+            const serverId = params.orderItemAddressByItemKey[itemKey]?.serverId.trim();
+            if (!serverId) continue;
+            const scopes = byServerId[serverId] ?? (byServerId[serverId] = {});
+            (scopes[scopeKey] ?? (scopes[scopeKey] = [])).push(itemKey);
+        }
+    }
+    return byServerId;
+}
+
+/**
+ * Splits a merged multi-Home workspace order by the Home each scope key names. A released
+ * legacy scope key names no Home of its own and stays with `fallbackServerId`, preserving
+ * the incumbent single-Home behavior for imported orders.
+ */
+export function partitionSessionWorkspaceOrderByServerId(params: Readonly<{
+    next: Readonly<Record<string, readonly string[] | undefined>>;
+    fallbackServerId?: string;
+}>): Record<string, Record<string, string[]>> {
+    const byServerId: Record<string, Record<string, string[]>> = {};
+    for (const [rawScopeKey, itemKeys] of Object.entries(params.next)) {
+        const scopeKey = rawScopeKey.trim();
+        if (!scopeKey) continue;
+        const serverId = readSessionWorkspaceOrderScopeServerId(scopeKey)
+            ?? (params.fallbackServerId ?? '').trim();
+        if (!serverId) continue;
+        const keys = (itemKeys ?? [])
+            .map((itemKey) => (typeof itemKey === 'string' ? itemKey.trim() : ''))
+            .filter(Boolean);
+        if (keys.length === 0) continue;
+        const scopes = byServerId[serverId] ?? (byServerId[serverId] = {});
+        scopes[scopeKey] = [...(scopes[scopeKey] ?? []), ...keys];
+    }
+    return byServerId;
+}
+
+/**
+ * Completes the published order-item addresses with the Homes' canonical corpus membership.
+ *
+ * The organization projection can only address Sessions that already own an organization record.
+ * A Session that was never pinned, tagged, foldered or manually ordered is still a member of its
+ * Home's corpus and can still be dragged, so its exact owner is published here rather than being
+ * recovered by parsing an opaque key. Returns the same projection when it already addresses every
+ * member, so an unchanged corpus keeps the callback identities that depend on it.
+ */
+export function completeSessionOrganizationOrderItemAddresses(params: Readonly<{
+    orderItemAddressByItemKey: Readonly<Record<string, SessionOrganizationOrderItemAddress>>;
+    memberHomes: readonly Readonly<{ serverId: string; sessionIds: readonly string[] }>[];
+}>): Readonly<Record<string, SessionOrganizationOrderItemAddress>> {
+    let completed: Record<string, SessionOrganizationOrderItemAddress> | null = null;
+    for (const home of params.memberHomes) {
+        const serverId = home.serverId.trim();
+        if (!serverId) continue;
+        for (const rawSessionId of home.sessionIds) {
+            const sessionId = typeof rawSessionId === 'string' ? rawSessionId.trim() : '';
+            if (!sessionId) continue;
+            const itemKey = sessionAddressKey({ serverId, sessionId });
+            if (params.orderItemAddressByItemKey[itemKey] || completed?.[itemKey]) continue;
+            completed = completed ?? { ...params.orderItemAddressByItemKey };
+            completed[itemKey] = { itemKind: 'session', serverId, sessionId };
+        }
+    }
+    return completed ?? params.orderItemAddressByItemKey;
+}
+
+/**
+ * Splits one merged multi-Home folder tree into the exact per-Home writes it represents.
+ *
+ * The tree a person edits contains every selected Home's folders at once. Sending that merged
+ * tree to the focused Home would recreate another Home's folder there, delete a same-id folder
+ * that Home happens to own, and leave the folder actually edited untouched. Each folder's own
+ * workspace names its Home; the published folder addresses confirm that Home really stores it,
+ * and only a folder that names no Home at all falls back to the Home the surface is acting on.
+ */
+export function partitionSessionFolderWritesByServerId(params: Readonly<{
+    current: SessionFoldersV1;
+    next: SessionFoldersV1;
+    orderItemAddressByItemKey: Readonly<Record<string, SessionOrganizationOrderItemAddress>>;
+    fallbackServerId: string;
+}>): Record<string, Readonly<{ current: SessionFoldersV1; next: SessionFoldersV1 }>> {
+    const fallbackServerId = params.fallbackServerId.trim();
+    // Two Homes may publish the same Home-local folder id, so a folder id alone never identifies
+    // an owner: only the exact qualified key does.
+    const publishedServerIdsByFolderId = new Map<string, Set<string>>();
+    for (const address of Object.values(params.orderItemAddressByItemKey)) {
+        if (address.itemKind !== 'folder') continue;
+        const serverIds = publishedServerIdsByFolderId.get(address.folderId) ?? new Set<string>();
+        serverIds.add(address.serverId);
+        publishedServerIdsByFolderId.set(address.folderId, serverIds);
+    }
+    const ownerForFolder = (folder: SessionFolderV1): string => {
+        const workspaceServerId = (folder.workspace.serverId ?? '').trim();
+        if (workspaceServerId) return workspaceServerId;
+        const publishedServerIds = publishedServerIdsByFolderId.get(folder.id);
+        const onlyPublishedServerId = publishedServerIds?.size === 1
+            ? [...publishedServerIds][0]
+            : null;
+        return onlyPublishedServerId ?? fallbackServerId;
+    };
+
+    const currentByServerId = new Map<string, SessionFolderV1[]>();
+    const nextByServerId = new Map<string, SessionFolderV1[]>();
+    const collect = (
+        target: Map<string, SessionFolderV1[]>,
+        folders: readonly SessionFolderV1[],
+    ): void => {
+        for (const folder of folders) {
+            const serverId = ownerForFolder(folder);
+            if (!serverId) continue;
+            const bucket = target.get(serverId) ?? [];
+            bucket.push(folder);
+            target.set(serverId, bucket);
+        }
+    };
+    collect(currentByServerId, params.current.folders);
+    collect(nextByServerId, params.next.folders);
+
+    const writes: Record<string, Readonly<{ current: SessionFoldersV1; next: SessionFoldersV1 }>> = {};
+    for (const serverId of new Set([...currentByServerId.keys(), ...nextByServerId.keys()])) {
+        const current = currentByServerId.get(serverId) ?? [];
+        const next = nextByServerId.get(serverId) ?? [];
+        if (!hasSessionFolderWrite(current, next)) continue;
+        writes[serverId] = {
+            current: { v: 1, folders: current },
+            next: { v: 1, folders: next },
+        };
+    }
+    return writes;
+}
+
+function hasSessionFolderWrite(
+    current: readonly SessionFolderV1[],
+    next: readonly SessionFolderV1[],
+): boolean {
+    const currentById = new Map(current.map((folder) => [folder.id, folder]));
+    if (next.some((folder) => {
+        const previous = currentById.get(folder.id);
+        return !previous || !areSessionFolderDefinitionsEqual(previous, folder);
+    })) {
+        return true;
+    }
+    const nextIds = new Set(next.map((folder) => folder.id));
+    return current.some((folder) => !nextIds.has(folder.id));
 }
 
 export function buildSessionOrganizationListViewState(params: Readonly<{
@@ -235,13 +484,31 @@ export function buildSessionOrganizationListViewState(params: Readonly<{
             sessionListGroupOrderV1: {},
             sessionWorkspaceOrderV1: {},
             workspaceLabelsV1: {},
-            folderDisplayStatesById: {},
+            folderDisplayStatesByFolderKey: {},
             labelDisplayStatesByKey: {},
             sessionTagDisplayStatesBySessionKey: {},
+            orderItemAddressByItemKey: {},
         };
     }
 
-    const pinnedSessionKeysV1 = projection.pinnedSessionIds.map((sessionId) => buildServerSessionKey(serverId, sessionId));
+    const orderItemAddressByItemKey: Record<string, SessionOrganizationOrderItemAddress> = {};
+    const mintSessionItemKey = (sessionIdRaw: string): string => {
+        const itemKey = buildServerSessionKey(serverId, sessionIdRaw);
+        const sessionId = String(sessionIdRaw ?? '').trim();
+        if (sessionId) {
+            orderItemAddressByItemKey[itemKey] = { itemKind: 'session', serverId, sessionId };
+        }
+        return itemKey;
+    };
+    const mintFolderItemKey = (folderIdRaw: string): string | null => {
+        const folderId = folderIdRaw.trim();
+        const itemKey = buildSessionListFolderOrderItemKey({ serverId, folderId });
+        if (!itemKey) return null;
+        orderItemAddressByItemKey[itemKey] = { itemKind: 'folder', serverId, folderId };
+        return itemKey;
+    };
+
+    const pinnedSessionKeysV1 = projection.pinnedSessionIds.map((sessionId) => mintSessionItemKey(sessionId));
     const tagLabelsById = buildSessionOrganizationTagLabelById(projection.tagsById);
     const lockedUnreadable = {
         status: 'locked',
@@ -249,7 +516,7 @@ export function buildSessionOrganizationListViewState(params: Readonly<{
     } as const;
     const sessionTagDisplayStatesBySessionKey = Object.fromEntries(
         Object.entries(projection.tagAssignmentsBySessionId).map(([sessionId, tagIds]) => [
-            buildServerSessionKey(serverId, sessionId),
+            mintSessionItemKey(sessionId),
             tagIds.map((tagId) => {
                 const tag = projection.tagsById[tagId];
                 const label = tagLabelsById[tagId];
@@ -267,37 +534,40 @@ export function buildSessionOrganizationListViewState(params: Readonly<{
     const sessionTagsV1 = sessionTagDisplayStatesBySessionKey;
     const attentionStandingOverridesBySessionKey = Object.fromEntries(
         Object.entries(projection.attentionStandingsBySessionId).map(([sessionId, standing]) => [
-            buildServerSessionKey(serverId, sessionId),
-            standing.standing,
+            mintSessionItemKey(sessionId),
+            standing,
         ]),
     );
     const sessionFolderAssignmentsBySessionKey = Object.fromEntries(
         Object.entries(projection.folderAssignmentsBySessionId).map(([sessionId, folderId]) => [
-            buildServerSessionKey(serverId, sessionId),
+            mintSessionItemKey(sessionId),
             folderId,
         ]),
     );
 
-    const folderDisplayStatesById: Record<string, HumanDisplayState> = {};
+    const folderDisplayStatesByFolderKey: Record<string, HumanDisplayState> = {};
     const folders = Object.values(projection.foldersById)
         .filter((folder) => folder.archivedAt == null)
         .map((folder) => {
             const name = readFolderName(folder.displayState, folder.display);
             const workspace = readWorkspaceRef(folder.displayState, folder.display);
-            folderDisplayStatesById[folder.folderId] = name
+            mintFolderItemKey(folder.folderId);
+            const folderKey = sessionFolderAddressKey({ serverId, folderId: folder.folderId });
+            folderDisplayStatesByFolderKey[folderKey] = name
                 ? { status: 'available', value: name }
                 : folder.displayState.status === 'locked'
                     ? folder.displayState
                     : lockedUnreadable;
             return {
                 id: folder.folderId,
+                serverId,
                 workspace: workspace ?? null,
                 parentId: folder.parentFolderId,
                 name: name ?? '',
                 createdAt: folder.createdAt,
                 updatedAt: folder.updatedAt,
                 ...(folder.sortKey ? { sortKey: folder.sortKey } : {}),
-                displayState: folderDisplayStatesById[folder.folderId]!,
+                displayState: folderDisplayStatesByFolderKey[folderKey]!,
             };
         })
         .filter((folder): folder is NonNullable<typeof folder> => folder != null)
@@ -320,9 +590,9 @@ export function buildSessionOrganizationListViewState(params: Readonly<{
             }
             const scopeKey = entry.scopeKind === 'pinned' ? PINNED_GROUP_KEY_V1 : entry.scopeKey.trim();
             const itemKey = entry.itemKind === 'session'
-                ? buildServerSessionKey(serverId, entry.itemKey)
+                ? mintSessionItemKey(entry.itemKey)
                 : entry.itemKind === 'folder'
-                    ? `folder:${entry.itemKey.trim().replace(/^folder:/, '')}`
+                    ? mintFolderItemKey(entry.itemKey)
                     : entry.itemKey.trim();
             if (scopeKey && itemKey) {
                 appendOrderedValue(sessionListGroupOrderV1, scopeKey, itemKey);
@@ -353,8 +623,68 @@ export function buildSessionOrganizationListViewState(params: Readonly<{
         sessionListGroupOrderV1,
         sessionWorkspaceOrderV1,
         workspaceLabelsV1,
-        folderDisplayStatesById,
+        folderDisplayStatesByFolderKey,
         labelDisplayStatesByKey,
         sessionTagDisplayStatesBySessionKey,
+        orderItemAddressByItemKey,
+    };
+}
+
+/**
+ * Composes the canonical Home-local organization snapshots for one selected
+ * multi-Home corpus. Session-owned facts are already qualified by
+ * `buildSessionOrganizationListViewState`, so equal Home-local Session ids stay
+ * distinct without introducing another store or merge cache.
+ */
+export function buildSessionOrganizationListViewStateForServers(params: Readonly<{
+    serverIds: readonly string[];
+    projectionsByServerId: Readonly<Record<string, SessionOrganizationProjection | null | undefined>>;
+}>): SessionOrganizationListViewState {
+    const states = [...new Set(params.serverIds.map((serverId) => serverId.trim()).filter(Boolean))]
+        .map((serverId) => buildSessionOrganizationListViewState({
+            serverId,
+            projection: params.projectionsByServerId[serverId] ?? null,
+        }));
+    const mergeOrderedRecords = <T,>(
+        records: readonly Readonly<Record<string, readonly T[] | undefined>>[],
+    ): Record<string, readonly T[]> => {
+        const result: Record<string, T[]> = {};
+        for (const record of records) {
+            for (const [key, values] of Object.entries(record)) {
+                if (!values) continue;
+                result[key] = [...(result[key] ?? []), ...values];
+            }
+        }
+        return result;
+    };
+
+    return {
+        pinnedSessionKeysV1: states.flatMap((state) => state.pinnedSessionKeysV1),
+        sessionFoldersV1: {
+            v: 1,
+            folders: states.flatMap((state) => state.sessionFoldersV1.folders),
+        },
+        sessionFolderAssignmentsBySessionKey: Object.assign(
+            {},
+            ...states.map((state) => state.sessionFolderAssignmentsBySessionKey),
+        ),
+        sessionTagsV1: Object.assign({}, ...states.map((state) => state.sessionTagsV1)),
+        attentionStandingOverridesBySessionKey: Object.assign(
+            {},
+            ...states.map((state) => state.attentionStandingOverridesBySessionKey),
+        ),
+        sessionListGroupOrderV1: mergeOrderedRecords(states.map((state) => state.sessionListGroupOrderV1)),
+        sessionWorkspaceOrderV1: mergeOrderedRecords(states.map((state) => state.sessionWorkspaceOrderV1)),
+        workspaceLabelsV1: Object.assign({}, ...states.map((state) => state.workspaceLabelsV1)),
+        folderDisplayStatesByFolderKey: Object.assign({}, ...states.map((state) => state.folderDisplayStatesByFolderKey)),
+        labelDisplayStatesByKey: Object.assign({}, ...states.map((state) => state.labelDisplayStatesByKey)),
+        sessionTagDisplayStatesBySessionKey: Object.assign(
+            {},
+            ...states.map((state) => state.sessionTagDisplayStatesBySessionKey),
+        ),
+        orderItemAddressByItemKey: Object.assign(
+            {},
+            ...states.map((state) => state.orderItemAddressByItemKey),
+        ),
     };
 }

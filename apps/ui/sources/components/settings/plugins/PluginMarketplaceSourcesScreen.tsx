@@ -4,6 +4,8 @@ import { useUnistyles } from 'react-native-unistyles';
 import type { MarketplaceSourceV1 } from '@happier-dev/protocol/marketplace';
 
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
+import { createActionInputForm } from '@/components/plugins/actions/actionInputForm';
+import { presentActionInputForm } from '@/components/plugins/actions/presentActionInputForm';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
@@ -38,43 +40,20 @@ async function presentSourceMutationSettlement(
     }
 }
 
-async function readSourceDraft(existing: MarketplaceSourceV1 | null): Promise<Readonly<{
+async function readSourceDraft(): Promise<Readonly<{
     sourceUrl: string;
-    title?: string;
-    description?: string | null;
 }> | null> {
     const sourceUrl = (await Modal.prompt(
         t('settingsPlugins.sourceAdministration.sourceUrl'),
         t('settingsPlugins.sourceAdministration.subtitle'),
         {
-            defaultValue: existing?.sourceUrl,
             placeholder: 'https://plugins.example.com/index.json',
-            confirmText: t(existing ? 'common.next' : 'common.save'),
+            confirmText: t('common.save'),
             cancelText: t('common.cancel'),
         },
     ))?.trim();
     if (!sourceUrl) return null;
-    // Adding a source needs only the address. The Protocol owner derives a
-    // useful hostname title, while Edit remains available for optional
-    // presentation metadata. Requiring three prompts before the source exists
-    // adds ceremony without establishing another trust fact.
-    if (!existing) return { sourceUrl };
-    const title = (await Modal.prompt(
-        t('settingsPlugins.sourceAdministration.displayName'),
-        sourceUrl,
-        { defaultValue: existing?.title, confirmText: t('common.next'), cancelText: t('common.cancel') },
-    ))?.trim();
-    if (!title) return null;
-    // The description is optional, so an empty submitted string is a real
-    // answer meaning "no description". Cancelling is not: it abandons the whole
-    // draft rather than silently saving the source without one.
-    const description = await Modal.prompt(
-        t('settingsPlugins.sourceAdministration.description'),
-        title,
-        { defaultValue: existing?.description ?? '', confirmText: t('common.save'), cancelText: t('common.cancel') },
-    );
-    if (description === null) return null;
-    return { sourceUrl, title, description: description.trim() || null };
+    return { sourceUrl };
 }
 
 export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketplaceSourcesScreen() {
@@ -88,7 +67,7 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
         || state.marketplaceSourceRegistryMutationInFlight;
 
     const add = React.useCallback(async () => {
-        const draft = await readSourceDraft(null);
+        const draft = await readSourceDraft();
         if (!draft) return;
         setBusySourceId('new');
         try {
@@ -100,26 +79,52 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
         }
     }, [state]);
 
-    const edit = React.useCallback(async (source: MarketplaceSourceV1) => {
+    const edit = React.useCallback((source: MarketplaceSourceV1) => {
         if (source.origin !== 'user') return;
-        const draft = await readSourceDraft(source);
-        if (!draft) return;
-        setBusySourceId(source.id);
-        try {
-            await presentSourceMutationSettlement(await state.upsertMarketplaceSource({
-                ...draft,
-                // Target the edited source by its existing identity so changing
-                // sourceUrl replaces it in place instead of adding a second source.
-                sourceId: source.id,
-                origin: 'user',
-                enabled: source.enabled,
-                registryProfileId: source.registryProfileId,
-            }));
-        } catch {
-            await alertSourceOperationFailed();
-        } finally {
-            setBusySourceId(null);
-        }
+        // One incumbent form keeps all safe fields editable together and
+        // retains them after rejection. Registry validation and writes remain
+        // with the exact-target administration owner.
+        const form = createActionInputForm({
+            presentation: {
+                title: t('settingsPlugins.sourceAdministration.edit'),
+                description: t('settingsPlugins.sourceAdministration.subtitle'),
+                inputHints: {
+                    submitLabel: t('common.save'),
+                    fields: [
+                        { path: 'sourceUrl', title: t('settingsPlugins.sourceAdministration.sourceUrl'), widget: 'url', required: true },
+                        { path: 'title', title: t('settingsPlugins.sourceAdministration.displayName'), widget: 'text', required: true },
+                        { path: 'description', title: t('settingsPlugins.sourceAdministration.description'), widget: 'textarea' },
+                    ],
+                },
+            },
+            submit: async (candidate) => {
+                const sourceUrl = typeof candidate.sourceUrl === 'string' ? candidate.sourceUrl.trim() : '';
+                const title = typeof candidate.title === 'string' ? candidate.title.trim() : '';
+                if (!sourceUrl || !title) return { ok: false };
+                const description = typeof candidate.description === 'string' ? candidate.description.trim() || null : null;
+                setBusySourceId(source.id);
+                try {
+                    const settlement = await state.upsertMarketplaceSource({
+                        sourceUrl, title, description,
+                        sourceId: source.id,
+                        origin: 'user',
+                        enabled: source.enabled,
+                        registryProfileId: source.registryProfileId,
+                    });
+                    await presentSourceMutationSettlement(settlement);
+                    // Never offer an immediate repeat of an uncertain write.
+                    // The registry owner and refresh remain its recovery path.
+                    return { ok: settlement.status !== 'unavailable' };
+                } catch {
+                    await alertSourceOperationFailed();
+                    return { ok: false };
+                } finally {
+                    setBusySourceId(null);
+                }
+            },
+        });
+        form.replaceInput({ sourceUrl: source.sourceUrl, title: source.title, description: source.description ?? '' });
+        presentActionInputForm({ form });
     }, [state]);
 
     const remove = React.useCallback(async (source: MarketplaceSourceV1) => {
@@ -203,7 +208,21 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
                         showChevron={false}
                     />
                 ) : null}
-                {configuredSources.length === 0 && !state.marketplaceSourceRegistryLoading && !state.marketplaceSourceRegistryLoadError ? (
+                {state.marketplaceSourceRegistry === null && !state.marketplaceSourceRegistryLoading && !state.marketplaceSourceRegistryLoadError ? (
+                    <Item
+                        testID="settings.plugins.sources.unavailable"
+                        title={t('common.unavailable')}
+                        subtitle={state.administrationTargetLabel
+                            ? `${state.administrationTargetLabel.machine} · ${state.administrationTargetLabel.server}`
+                            : t('newSession.noMachineSelected')}
+                        subtitleLines={0}
+                        detail={state.daemonAdministrationAvailable ? t('common.retry') : undefined}
+                        onPress={state.daemonAdministrationAvailable ? state.refreshMarketplaceSourceRegistry : undefined}
+                        mode={state.daemonAdministrationAvailable ? 'interactive' : 'info'}
+                        showChevron={false}
+                    />
+                ) : null}
+                {state.marketplaceSourceRegistry !== null && configuredSources.length === 0 && !state.marketplaceSourceRegistryLoading && !state.marketplaceSourceRegistryLoadError ? (
                     <Item
                         testID="settings.plugins.sources.empty"
                         title={t('settingsPlugins.sourceAdministration.configuredEmpty')}

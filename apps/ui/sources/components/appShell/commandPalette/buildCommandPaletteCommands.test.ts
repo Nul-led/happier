@@ -29,7 +29,7 @@ vi.mock('@/sync/domains/state/storage', async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleStub({
     storage: {
-    getState: () => mockedState,
+    getState: () => ({ profileScope: { serverId: 'server-a', accountId: 'account-a' }, ...mockedState }),
   },
 });
 });
@@ -170,7 +170,7 @@ describe('buildCommandPaletteCommands', () => {
   it('marks a small intentional launch set for empty Search', () => {
     mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };
     const commands = buildCommandPaletteCommands({
-      sessionsById: {},
+      sessionsById: { 'session-1': { id: 'session-1', serverId: 'server-a', metadata: {} } },
       isDev: false,
       activeSessionId: null,
       features: { executionRunsEnabled: false, voiceEnabled: false },
@@ -188,7 +188,7 @@ describe('buildCommandPaletteCommands', () => {
     mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };
 
     const commands = buildCommandPaletteCommands({
-      sessionsById: {},
+      sessionsById: { 'session-1': { id: 'session-1', serverId: 'server-a', metadata: {} } },
       isDev: false,
       activeSessionId: null,
       features: { executionRunsEnabled: false, voiceEnabled: false },
@@ -536,12 +536,19 @@ describe('buildCommandPaletteCommands', () => {
   it('includes ActionSpec-derived commands when enabled (execution runs + voice)', async () => {
     const pushes: string[] = [];
     const executorCalls: Array<{ actionId: string }> = [];
-    mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: buildSettingsWithExecutionRunsEnabled() };
+    mockedState = {
+      profileScope: { serverId: 'home-b', accountId: 'account-b' },
+      createSessionActionDraft: createSessionActionDraftSpy,
+      settings: buildSettingsWithExecutionRunsEnabled(),
+    };
 
     const cmds = buildCommandPaletteCommands({
-      sessionsById: {},
+      sessionsById: {
+        'session-1': { id: 'session-1', serverId: 'home-b', metadata: { flavor: 'claude' } },
+      },
       isDev: false,
       activeSessionId: 'session-1',
+      activeSessionServerId: 'home-b',
       features: { executionRunsEnabled: true, voiceEnabled: true },
       nav: {
         push: (path) => pushes.push(path),
@@ -571,6 +578,11 @@ describe('buildCommandPaletteCommands', () => {
     expect(reset).toBeTruthy();
     await reset!.action();
     expect(executorCalls).toEqual([{ actionId: 'ui.voice_global.reset' }]);
+
+    const openRuns = cmds.find((c) => c.title === 'Open session runs');
+    expect(openRuns).toBeTruthy();
+    await openRuns!.action();
+    expect(pushes).toContain('/session/session-1/runs?serverId=home-b');
 
     const startReview = cmds.find((c) => c.title === 'Start review run');
     expect(startReview).toBeTruthy();
@@ -614,7 +626,7 @@ describe('buildCommandPaletteCommands', () => {
 
     const cmds = buildCommandPaletteCommands({
       sessionsById: {
-        'session-1': { id: 'session-1', metadata: { agent: 'coderabbit', name: 'x' } },
+        'session-1': { id: 'session-1', serverId: 'server-a', metadata: { agent: 'coderabbit', name: 'x' } },
       },
       isDev: false,
       activeSessionId: 'session-1',
@@ -635,7 +647,11 @@ describe('buildCommandPaletteCommands', () => {
     expect(createSessionActionDraftSpy).toHaveBeenCalledTimes(1);
 
     const call = createSessionActionDraftSpy.mock.calls[0] ?? [];
-    const created = call[1] as any;
+    expect(call.slice(0, 2)).toEqual([
+      { serverId: 'server-a', accountId: 'account-a' },
+      { serverId: 'server-a', sessionId: 'session-1' },
+    ]);
+    const created = call[2] as any;
     expect(created?.actionId).toBe('review.start');
     expect(created?.input?.engineIds).toBeUndefined();
     expect(created?.input?.engines).toBeUndefined();
@@ -647,7 +663,7 @@ describe('buildCommandPaletteCommands', () => {
 
     const cmds = buildCommandPaletteCommands({
       sessionsById: {
-        'session-1': { id: 'session-1', metadata: { agent: 'codex', name: 'x' } },
+        'session-1': { id: 'session-1', serverId: 'server-a', metadata: { agent: 'codex', name: 'x' } },
       },
       isDev: false,
       activeSessionId: 'session-1',
@@ -662,9 +678,9 @@ describe('buildCommandPaletteCommands', () => {
     });
 
     const expectations: Array<Readonly<{ title: string; actionId: string; permissionMode: string }>> = [
-      { title: 'Start review run', actionId: 'review.start', permissionMode: 'read-only' },
-      { title: 'Start plan run', actionId: 'subagents.plan.start', permissionMode: 'read-only' },
-      { title: 'Start delegation run', actionId: 'subagents.delegate.start', permissionMode: 'safe-yolo' },
+      { title: 'Start review run', actionId: 'review.start', permissionMode: 'read_only' },
+      { title: 'Start plan run', actionId: 'subagents.plan.start', permissionMode: 'read_only' },
+      { title: 'Start delegation run', actionId: 'subagents.delegate.start', permissionMode: 'workspace_write' },
     ];
 
     for (const expected of expectations) {
@@ -675,7 +691,7 @@ describe('buildCommandPaletteCommands', () => {
 
       expect(createSessionActionDraftSpy).toHaveBeenCalledTimes(1);
       const call = createSessionActionDraftSpy.mock.calls[0] ?? [];
-      const created = call[1] as any;
+      const created = call[2] as any;
       expect(created?.actionId).toBe(expected.actionId);
       expect(created?.input?.permissionMode).toBe(expected.permissionMode);
     }
@@ -697,6 +713,7 @@ describe('buildCommandPaletteCommands', () => {
       sessionsById: {
         'session-1': {
           id: 'session-1',
+          serverId: 'server-a',
           metadata: {
             flavor: 'customAcp',
             acpConfiguredBackendV1: {
@@ -725,9 +742,9 @@ describe('buildCommandPaletteCommands', () => {
 
     await startPlan!.action();
     const call = createSessionActionDraftSpy.mock.calls[0] ?? [];
-    const created = call[1] as any;
+    const created = call[2] as any;
     expect(created?.actionId).toBe('subagents.plan.start');
-    expect(created?.input?.backendTargetKeys).toEqual(['acpBackend:review-bot']);
+    expect(created?.input?.backendTargetKeys).toEqual(['backend:review-bot:configured:review-bot']);
   });
 
   it('omits command_palette actions when disabled for that placement', async () => {

@@ -612,7 +612,7 @@ describe('fetchAndApplyMachines request override', () => {
         }
     });
 
-    it('does not drop machines when dataEncryptionKey cannot be decrypted (fallback to legacy machine encryption)', async () => {
+    it('keeps a locked machine row when dataEncryptionKey cannot be decrypted', async () => {
         const fetchAndApplyMachines = await loadFetchAndApplyMachines();
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
         const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});

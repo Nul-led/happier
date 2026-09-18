@@ -2,8 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     buildSessionListRenderableFromSession,
+    areSessionListRenderablesEqual,
+    deriveSessionListRenderableHasUnreadMessagesFromSession,
     derivePendingRequestFlagsFromAgentState,
     didSessionListRenderableReachabilityPeerFieldsChange,
+    isSessionListRenderableWarmCacheProgressOnlyChange,
     preserveSessionListRenderableStaleFields,
     preserveSessionListRenderableTransientState,
 } from './sessionListRenderable';
@@ -11,6 +14,7 @@ import { resolveSessionReadStateAction } from '../readState/sessionReadState';
 import { buildSessionListRenderableMetadataComparison } from './sessionListRenderableMetadataComparison';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from './sessionListRenderable';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 const canonicalExternalSessionLink = {
     v: 1 as const,
@@ -107,6 +111,25 @@ describe('derivePendingRequestFlagsFromAgentState', () => {
 });
 
 describe('preserveSessionListRenderableStaleFields', () => {
+    it('does not reuse a renderable when only the responsible Account summary changes', () => {
+        const previous = buildRenderable({
+            id: 's_responsible_summary',
+            responsibleAccountId: 'account-alice',
+            responsibleAccount: {
+                kind: 'account', accountId: 'account-alice', firstName: 'Alice', lastName: null, username: 'alice', avatarUrl: null,
+            },
+        });
+        const next = buildRenderable({
+            ...previous,
+            responsibleAccount: {
+                kind: 'account', accountId: 'account-alice', firstName: 'Alicia', lastName: null, username: 'alice', avatarUrl: null,
+            },
+        });
+
+        expect(areSessionListRenderablesEqual(previous, next)).toBe(false);
+        expect(preserveSessionListRenderableStaleFields(previous, next)).toBe(next);
+    });
+
     it('reuses the previous renderable when the rebuilt one is field-identical', () => {
         // A projection pass re-derives every renderable, so an unchanged session still arrives as a
         // fresh object. Handing that on defeats identity all the way up the session list: the row is
@@ -150,6 +173,26 @@ describe('preserveSessionListRenderableStaleFields', () => {
         const result = preserveSessionListRenderableStaleFields(previous, changed);
 
         expect(result.metadata?.flavor).toBe('claude');
+    });
+
+    it('retains the incoming metadata layout when no stale owner metadata is being preserved', () => {
+        const previous = buildRenderable({
+            id: 's_layout',
+            metadataLayoutVersion: 0,
+            metadata: { path: '/repo', flavor: 'codex' },
+        });
+        const next = buildRenderable({
+            id: 's_layout',
+            metadataLayoutVersion: 1,
+            metadata: { v: 1, summary: { text: 'Shared', updatedAt: 2 } } as Session['metadata'],
+            access: {
+                role: 'recipient',
+                level: 'view',
+                capabilities: createSessionAccessFixture('view').capabilities,
+            },
+        });
+
+        expect(preserveSessionListRenderableStaleFields(previous, next).metadataLayoutVersion).toBe(1);
     });
 
     it('keeps metadata-unavailable settled state across placeholder replacements', () => {
@@ -256,6 +299,115 @@ describe('preserveSessionListRenderableStaleFields', () => {
 });
 
 describe('buildSessionListRenderableFromSession', () => {
+    // Immutable server-v0.2.11 (98ea8fb) projected the Session-scoped cursor
+    // and owner metadata for both owners and `share` recipients. These vectors
+    // pin the UI's bounded pre-viewer compatibility decision.
+    it('keeps a released shared-recipient row quiet despite owner legacy read facts', () => {
+        expect(deriveSessionListRenderableHasUnreadMessagesFromSession({
+            seq: 8,
+            lastViewedSessionSeq: 2,
+            accessLevel: 'view',
+            metadata: {
+                path: '/repo',
+                host: 'host',
+                readStateV1: { v: 1, sessionSeq: 2, pendingActivityAt: 0, updatedAt: 1 },
+            },
+            latestReadyEventSeq: 8,
+        })).toBe(false);
+    });
+
+    it('retains released unread behavior for a proven pre-viewer owner row', () => {
+        expect(deriveSessionListRenderableHasUnreadMessagesFromSession({
+            seq: 8,
+            lastViewedSessionSeq: 2,
+            metadata: {
+                path: '/repo',
+                host: 'host',
+                readStateV1: { v: 1, sessionSeq: 2, pendingActivityAt: 0, updatedAt: 1 },
+            },
+            latestReadyEventSeq: 8,
+        })).toBe(true);
+    });
+
+    it('keeps a valid current viewer projection authoritative over legacy scalars', () => {
+        expect(deriveSessionListRenderableHasUnreadMessagesFromSession({
+            seq: 8,
+            lastViewedSessionSeq: 2,
+            metadata: null,
+            latestReadyEventSeq: 8,
+            viewer: {
+                readState: { state: 'not_started' },
+                relevance: { relevant: false, reasons: [] },
+                attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+                follow: { follows: false, notificationLevel: null },
+                notification: { level: 'none', source: 'none' },
+            },
+        })).toBe(false);
+    });
+
+    it('fails a malformed current viewer projection closed instead of reviving owner legacy facts', () => {
+        expect(deriveSessionListRenderableHasUnreadMessagesFromSession({
+            seq: 8,
+            lastViewedSessionSeq: 2,
+            metadata: null,
+            latestReadyEventSeq: 8,
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: '2', unreadSince: null },
+            } as never,
+        })).toBe(false);
+    });
+
+    it('keeps the owner-readable Agent headline on the Home-qualified list row', () => {
+        const headline = {
+            v: 1 as const,
+            backendId: 'claude',
+            updatedAt: 100,
+            activeEntries: [{
+                entryId: 'workflow_agent:wf_1:toolu_1',
+                kind: 'workflow_agent' as const,
+                title: 'Home A review',
+                status: 'running' as const,
+                updatedAt: 100,
+            }],
+        };
+        const renderable = buildSessionListRenderableFromSession({
+            id: 'same-id',
+            seq: 1,
+            createdAt: 1,
+            updatedAt: 1,
+            active: true,
+            activeAt: 1,
+            metadata: { sessionAgentActivityHeadlineV1: headline } as Session['metadata'],
+            metadataVersion: 1,
+            agentState: null,
+            agentStateVersion: 0,
+            thinking: false,
+            thinkingAt: 0,
+            presence: 'online',
+        } as Session);
+
+        expect(renderable.agentActivityHeadline).toEqual(headline);
+    });
+
+    it('does not suppress an Agent-headline-only concurrent row update as heartbeat progress', () => {
+        const previous = buildSessionListRenderableFromSession({
+            id: 'same-id', seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+            metadata: { sessionAgentActivityHeadlineV1: { v: 1, backendId: 'claude', updatedAt: 1, activeEntries: [] } } as Session['metadata'],
+            metadataVersion: 1, agentState: null, agentStateVersion: 0, thinking: false, thinkingAt: 0, presence: 'online',
+        } as Session);
+        const next = buildSessionListRenderableFromSession({
+            id: 'same-id', seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+            metadata: { sessionAgentActivityHeadlineV1: {
+                v: 1, backendId: 'claude', updatedAt: 2,
+                activeEntries: [{ entryId: 'workflow_agent:wf_1:toolu_1', kind: 'workflow_agent', title: 'Fresh', status: 'running', updatedAt: 2 }],
+            } } as Session['metadata'],
+            metadataVersion: 1, agentState: null, agentStateVersion: 0, thinking: false, thinkingAt: 0, presence: 'online',
+        } as Session);
+
+        expect(areSessionListRenderablesEqual(previous, next)).toBe(false);
+        expect(isSessionListRenderableWarmCacheProgressOnlyChange(previous, next)).toBe(false);
+    });
+
     it('projects layout-v1 owner-private list facts from the canonical owner view', () => {
         const renderable = buildSessionListRenderableFromSession({
             id: 'layout1-owner',

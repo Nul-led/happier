@@ -38,6 +38,16 @@ function createMachine(input: Readonly<{
 }
 
 describe('resolveMachinesForActiveServerFromState', () => {
+    it('excludes temporary computers from selection while preserving exact lookup', async () => {
+        const selectors = await import('./resolveMachinesForActiveServerFromState');
+        const persistent = createMachine({ id: 'persistent' });
+        const temporary = { ...createMachine({ id: 'temporary' }), kind: 'ephemeral_session_runner' as const };
+        const state = { machineListByServerId: { 'server-a': [persistent, temporary] } };
+
+        expect(selectors.resolveVisibleMachinesForActiveServerFromState(state)).toEqual([persistent]);
+        expect(selectors.resolveMachineForActiveServerFromState(state, temporary.id)).toBe(temporary);
+    });
+
     beforeEach(() => {
         getActiveServerSnapshotMock.mockReturnValue({ serverId: 'server-a' });
         areServerProfileIdentifiersEquivalentMock.mockImplementation((left, right) => left === right);

@@ -9,7 +9,10 @@ import type {
 } from '@/components/sessions/external/browse/ExternalSessionsBrowseScreen';
 import {
     createNavigationMock,
+    createProjectionDescribeMock,
+    createReviewBotPluginProjectionContributions,
     createRouterMock,
+    createSupportedClaudeProjection,
     enableReactActEnvironment,
     installPickerCommonModuleMocks,
 } from './testHarness';
@@ -29,16 +32,11 @@ const routeParamsState = vi.hoisted(() => ({
 const settingsState = vi.hoisted(() => ({
     value: {} as Record<string, unknown>,
 }));
-const externalSessionBrowseSupportState = vi.hoisted(() => ({
-    supportedByProviderId: {} as Record<string, boolean>,
-}));
 const featureDecisionState = vi.hoisted(() => ({
     state: 'enabled' as 'enabled' | 'disabled' | 'unknown' | null,
 }));
 const featureDecisionSpy = vi.hoisted(() => vi.fn());
-const machineContributionRegistryProjectionDescribeMock = vi.hoisted(() =>
-    vi.fn<(...args: unknown[]) => Promise<any>>(async () => ({ supported: false, reason: 'not-supported' })),
-);
+const machineContributionRegistryProjectionDescribeMock = createProjectionDescribeMock();
 type ExternalSessionsBrowseScreenProps = Readonly<{
     interaction?: ExternalSessionsBrowseInteraction;
     lockScope?: ExternalSessionsBrowseScopeLock | null;
@@ -79,6 +77,10 @@ installPickerCommonModuleMocks({
         (await import('@/dev/testkit/mocks/storage')).createStorageModuleStub({
             useSettings: () => settingsState.value as any,
         }),
+    projectionSeam: { describe: machineContributionRegistryProjectionDescribeMock },
+    tempDataStore: {
+        peekTempData: () => ({ machineId: 'machine-2', backendTarget: null, backendNewSessionOptionStateByTargetKey: {} }),
+    },
 });
 
 vi.mock('@/components/sessions/external/browse/ExternalSessionsBrowseScreen', () => ({
@@ -86,22 +88,6 @@ vi.mock('@/components/sessions/external/browse/ExternalSessionsBrowseScreen', ()
         browseScreenPropsRef.current = props;
         return null;
     },
-}));
-
-vi.mock('@/components/sessions/external/browse/resolveExternalSessionBrowseLockedSourceOption', () => ({
-    // Production calls `canBrowseExternalSessions` with an OBJECT, not a bare provider id:
-    // a mock taking `(providerId: string)` indexed by `undefined` and answered true for
-    // the wrong reason. This suite drives carrier RESOLUTION, so capability stays
-    // permissive here; the projection-phase contract is covered by
-    // `resume-browse.coldProjection.test.tsx` against the real resolver.
-    canBrowseExternalSessions: (params: { agentId: string }) => (
-        externalSessionBrowseSupportState.supportedByProviderId[params.agentId] ?? true
-    ),
-    resolveExternalSessionBrowseLockedSource: (params: { providerId: string }) => (
-        (externalSessionBrowseSupportState.supportedByProviderId[params.providerId] ?? true)
-            ? { kind: 'test' }
-            : null
-    ),
 }));
 
 vi.mock('@/hooks/server/useFeatureDecision', () => ({
@@ -118,18 +104,6 @@ vi.mock('@/sync/store/hooks', () => ({
     useLocalSetting: () => undefined,
 }));
 
-vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
-    machineContributionRegistryProjectionDescribe: (...args: any[]) => machineContributionRegistryProjectionDescribeMock(...args),
-    getMachineContributionRegistryProjectionRevision: () => 0,
-    subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
-    machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-}));
-
-vi.mock('@/utils/sessions/tempDataStore', () => ({
-    peekTempData: () => ({ machineId: 'machine-2', backendTarget: null, backendNewSessionOptionStateByTargetKey: {} }),
-}));
 
 describe('ResumeBrowsePickerScreen replace fallback', () => {
     beforeEach(() => {
@@ -140,7 +114,6 @@ describe('ResumeBrowsePickerScreen replace fallback', () => {
             spawnServerId: 'server-2',
         };
         settingsState.value = {};
-        externalSessionBrowseSupportState.supportedByProviderId = {};
         featureDecisionState.state = 'enabled';
         featureDecisionSpy.mockReset();
         browseScreenPropsRef.current = null;
@@ -191,11 +164,25 @@ describe('ResumeBrowsePickerScreen replace fallback', () => {
     });
 
     it('preserves the new-session context when the browse picker has to replace back to /new', async () => {
+        // The bundled claude carrier only browses once the daemon projection
+        // declares its External Sessions source; without it there is no lock
+        // scope and the route closes instead of mounting Browse.
+        machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
+            supported: true,
+            projection: createSupportedClaudeProjection(),
+        });
         const ResumeBrowsePickerScreen = (await import('@/app/(app)/new/pick/resume-browse')).default;
 
         await renderScreen(React.createElement(ResumeBrowsePickerScreen));
+        await flushHookEffects({ cycles: 40 });
 
         const props = browseScreenPropsRef.current;
+        expect(props?.lockScope).toEqual(expect.objectContaining({
+            machineId: 'machine-2',
+            serverId: 'server-2',
+            providerId: 'claude',
+            source: expect.objectContaining({ kind: 'claudeConfig' }),
+        }));
         expect(typeof props?.onPickRemoteSessionId).toBe('function');
 
         await props?.onPickRemoteSessionId?.('session-picked');
@@ -204,8 +191,14 @@ describe('ResumeBrowsePickerScreen replace fallback', () => {
             pathname: '/new',
             params: {
                 agentType: 'claude',
-                backendTarget: JSON.stringify({ kind: 'backend', backendId: 'claude' }),
-                backendTargetKey: 'backend:claude',
+                // The bundled Agent serializes under its canonical qualified
+                // contribution identity (`formatBackendTargetKeyV2` rekeys the
+                // retired `backend:<bundledId>` spelling onto it).
+                backendTarget: JSON.stringify({
+                    kind: 'agent',
+                    identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
+                }),
+                backendTargetKey: 'agent:happier.agent.claude/claude',
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 spawnServerId: 'server-2',
@@ -255,7 +248,18 @@ describe('ResumeBrowsePickerScreen replace fallback', () => {
         await Promise.resolve();
 
         expect(browseScreenPropsRef.current).toBeNull();
-        expect(routerMock.replace).toHaveBeenCalledWith('/new');
+        // Closing the picker keeps the new-session context it was opened with
+        // (`buildNewSessionPickerFallbackHref`), including the configured target.
+        expect(routerMock.replace).toHaveBeenCalledWith({
+            pathname: '/new',
+            params: {
+                backendTarget: JSON.stringify({ kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' }),
+                backendTargetKey: 'backend:review-bot:configured:review-bot',
+                dataId: 'draft-1',
+                machineId: 'machine-2',
+                spawnServerId: 'server-2',
+            },
+        });
     });
 
     it('does not treat the last built-in selection as an external-session carrier for an unprojected configured backend', async () => {
@@ -296,72 +300,55 @@ describe('ResumeBrowsePickerScreen replace fallback', () => {
 
         await renderScreen(React.createElement(ResumeBrowsePickerScreen));
         expect(browseScreenPropsRef.current).toBeNull();
-        expect(routerMock.replace).toHaveBeenCalledWith('/new');
+        expect(routerMock.replace).toHaveBeenCalledWith({
+            pathname: '/new',
+            params: {
+                dataId: 'draft-1',
+                machineId: 'machine-2',
+                spawnServerId: 'server-2',
+            },
+        });
     });
 
     it('uses the projected runtime carrier when browsing direct sessions for a plugin backend', async () => {
         routeParamsState.value = {
-            backendTargetKey: 'backend:plugin-review-bot',
+            backendTargetKey: 'agent:acme.review-bot/review-bot',
             dataId: 'draft-1',
             machineId: 'machine-plugin-2',
             spawnServerId: 'server-2',
         };
-        settingsState.value = {
-            backendEnabledByTargetKey: {
-                'backend:plugin-review-bot': true,
-            },
-        };
+        // The daemon projection is the only authority that can prove which
+        // qualified Agent contribution owns the settings-backed plugin backend:
+        // the V2 projection carries the contribution identity, so the real
+        // carrier resolution maps the backend onto `plugin:review-bot` instead
+        // of falling back to the bundled claude carrier.
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: true,
-            projection: {
-                v: 1,
-                agentsById: {
-                    'plugin:review-bot': {
-                        id: 'plugin:review-bot',
-                        title: 'Review Bot Plugin',
-                        subtitle: 'plugin agent',
-                        channel: 'plugin',
-                        isBuiltIn: false,
-                        catalogAgentId: 'claude',
-                        iconAgentId: 'claude',
-                    },
-                },
-                backendsById: {
-                    'plugin-review-bot': {
-                        id: 'plugin-review-bot',
-                        agentId: 'plugin:review-bot',
-                        title: 'Review Bot (plugin)',
-                        subtitle: 'plugin backend',
-                        catalogAgentId: 'claude',
-                        iconAgentId: 'claude',
-                    },
-                },
-            },
+            projection: createSupportedClaudeProjection(createReviewBotPluginProjectionContributions()),
         });
 
         const ResumeBrowsePickerScreen = (await import('@/app/(app)/new/pick/resume-browse')).default;
         await renderScreen(React.createElement(ResumeBrowsePickerScreen));
+        // The route candidate only becomes available once the merged projection
+        // is ready (account-scope binding → describe → catalog adaptation), so
+        // wait for the full async chain to settle before capturing props.
+        await flushHookEffects({ cycles: 40 });
 
-        expect(browseScreenPropsRef.current?.lockScope?.providerId).toBe('plugin:review-bot');
+        expect(browseScreenPropsRef.current?.lockScope).toEqual(expect.objectContaining({
+            machineId: 'machine-plugin-2',
+            serverId: 'server-2',
+            providerId: 'plugin:review-bot',
+            source: expect.objectContaining({ kind: 'reviewBotConfig' }),
+        }));
     });
 
     it('waits for plugin carrier projection on cold load instead of navigating away through the customAcp fallback', async () => {
         routeParamsState.value = {
-            backendTargetKey: 'backend:plugin-review-bot',
+            backendTargetKey: 'agent:acme.review-bot/review-bot',
             dataId: 'draft-1',
             machineId: 'machine-plugin-2',
             spawnServerId: 'server-2',
         };
-        settingsState.value = {
-            backendEnabledByTargetKey: {
-                'backend:plugin-review-bot': true,
-            },
-        };
-        externalSessionBrowseSupportState.supportedByProviderId = {
-            customAcp: false,
-            claude: true,
-        };
-
         let resolveProjection: ((value: unknown) => void) | undefined;
         machineContributionRegistryProjectionDescribeMock.mockImplementationOnce(() => new Promise((resolve) => {
             resolveProjection = resolve;
@@ -369,44 +356,23 @@ describe('ResumeBrowsePickerScreen replace fallback', () => {
 
         const ResumeBrowsePickerScreen = (await import('@/app/(app)/new/pick/resume-browse')).default;
         await renderScreen(React.createElement(ResumeBrowsePickerScreen));
-        await Promise.resolve();
+        // Settle the account-scope binding that precedes the describe call so
+        // the pending projection is the only thing the route is waiting on.
+        await flushHookEffects({ cycles: 10 });
 
         expect(routerMock.back).not.toHaveBeenCalled();
         expect(routerMock.replace).not.toHaveBeenCalled();
+        expect(browseScreenPropsRef.current).toBeNull();
 
         const projectionResolver = resolveProjection;
-        if (typeof projectionResolver === 'function') {
-            await act(async () => {
-                projectionResolver({
-                    supported: true,
-                    projection: {
-                        v: 1,
-                        agentsById: {
-                            'plugin:review-bot': {
-                                id: 'plugin:review-bot',
-                                title: 'Review Bot Plugin',
-                                subtitle: 'plugin agent',
-                                channel: 'plugin',
-                                isBuiltIn: false,
-                                catalogAgentId: 'claude',
-                                iconAgentId: 'claude',
-                            },
-                        },
-                        backendsById: {
-                            'plugin-review-bot': {
-                                id: 'plugin-review-bot',
-                                agentId: 'plugin:review-bot',
-                                title: 'Review Bot (plugin)',
-                                subtitle: 'plugin backend',
-                                catalogAgentId: 'claude',
-                                iconAgentId: 'claude',
-                            },
-                        },
-                    },
-                });
+        expect(typeof projectionResolver).toBe('function');
+        await act(async () => {
+            projectionResolver?.({
+                supported: true,
+                projection: createSupportedClaudeProjection(createReviewBotPluginProjectionContributions()),
             });
-        }
-        await flushHookEffects({ cycles: 1, turns: 2 });
+        });
+        await flushHookEffects({ cycles: 40 });
 
         expect(routerMock.back).not.toHaveBeenCalled();
         expect(routerMock.replace).not.toHaveBeenCalled();

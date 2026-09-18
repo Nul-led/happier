@@ -1,5 +1,3 @@
-import { SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP } from '@/sync/domains/session/listing/sessionListOrderingStateV1';
-
 import type { SessionListTreeModel } from '../drop-resolution/sessionListTreeTypes';
 import { buildOrderMapAfterMove } from './orderMapUpdate';
 
@@ -66,7 +64,6 @@ export function buildSessionListGroupOrderAfterTreeDrop(params: Readonly<{
         directKeys: directChildKeys,
         beforeKey,
         afterKey,
-        maxKeys: SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP,
     });
     return {
         ...nextMap,

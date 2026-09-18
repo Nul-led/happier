@@ -143,20 +143,23 @@ describe('sessionMachineTarget', () => {
                     },
                 },
             },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    updatedAt: 10,
-                    metadata: {
-                        path: '/workspace/direct-repo',
-                        machineId: null,
-                        externalSessionV1: {
-                            v: 1,
-                            agentId: 'codex',
+            sessionListRowsByServerId: {
+                'server-a': {
+                    s1: {
+                        id: 's1',
+                        updatedAt: 10,
+                        metadata: {
+                            path: '/workspace/direct-repo',
+                            machineId: null,
+                            externalSessionV1: {
+                                v: 1,
+                                agentId: 'codex',
+                            },
                         },
                     },
                 },
             },
+            ordinarySessionListMembershipByServerId: { 'server-a': ['s1'] },
             sessionListIndexByServerId: {
                 'server-a': [
                     {
@@ -406,17 +409,20 @@ describe('sessionMachineTarget', () => {
         const { readMachineTargetForSession } = await import('./sessionMachineTarget');
         getStateSpy.mockReturnValue({
             sessions: {},
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    updatedAt: 42,
-                    metadata: {
-                        machineId: 'm-lookup',
-                        path: '/workspace/rebound',
-                        host: 'lookup.local',
+            sessionListRowsByServerId: {
+                'server-a': {
+                    s1: {
+                        id: 's1',
+                        updatedAt: 42,
+                        metadata: {
+                            machineId: 'm-lookup',
+                            path: '/workspace/rebound',
+                            host: 'lookup.local',
+                        },
                     },
                 },
             },
+            ordinarySessionListMembershipByServerId: { 'server-a': ['s1'] },
             sessionListIndexByServerId: {
                 'server-a': [
                     {
@@ -528,6 +534,7 @@ describe('sessionMachineTarget', () => {
             sessions: {
                 s1: {
                     active: false,
+                    serverId: 'server-a',
                     metadata: {
                         machineId: 'm-stale',
                         path: '/workspace/repo',
@@ -568,6 +575,7 @@ describe('sessionMachineTarget', () => {
             sessions: {
                 s1: {
                     active: false,
+                    serverId: 'server-a',
                     metadata: {
                         machineId: 'm-old',
                         path: '/workspace/repo',
@@ -610,6 +618,7 @@ describe('sessionMachineTarget', () => {
             sessions: {
                 s1: {
                     active: false,
+                    serverId: 'server-a',
                     metadata: {
                         machineId: 'm-session',
                         path: '',
@@ -740,16 +749,19 @@ describe('sessionMachineTarget', () => {
                     },
                 },
             },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    updatedAt: 1,
-                    metadata: {
-                        machineId: 'm-cached',
-                        path: '/Users/test/workspace/cached',
+            sessionListRowsByServerId: {
+                'server-a': {
+                    s1: {
+                        id: 's1',
+                        updatedAt: 1,
+                        metadata: {
+                            machineId: 'm-cached',
+                            path: '/Users/test/workspace/cached',
+                        },
                     },
                 },
             },
+            ordinarySessionListMembershipByServerId: { 'server-a': ['s1'] },
             sessionListIndexByServerId: {
                 'server-a': [
                     {

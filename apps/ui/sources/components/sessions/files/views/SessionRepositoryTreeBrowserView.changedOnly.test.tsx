@@ -10,6 +10,7 @@ import { installSessionFilesViewCommonModuleMocks } from './sessionFilesViewsTes
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const setExpandedPathsSpy = vi.fn();
+const changedFilesPaneProps: any[] = [];
 
 installSessionFilesViewCommonModuleMocks({
     reactNative: async () => {
@@ -27,8 +28,10 @@ installSessionFilesViewCommonModuleMocks({
             useAllMachines: () => [{ id: 'm1', active: true, activeAt: 1, metadata: { host: 'mbp', platform: 'darwin', happyCliVersion: '0', happyHomeDir: '/tmp/.h', homeDir: '/tmp' } }] as any,
             useMachine: () => ({ id: 'm1' }) as any,
             useSessionRepositoryTreeExpandedPaths: () => ['src'],
-            useSessionProjectScmSnapshot: () => ({
-                projectKey: 'p',
+            // Keyed by Home: two Homes can host one Session id, and an unqualified read lands on
+            // whichever the shared cache holds (modelled here as `home-a`).
+            useSessionProjectScmSnapshot: (_sessionId: string, serverId?: string | null) => ({
+                projectKey: `p:${String(serverId ?? 'home-a')}`,
                 fetchedAt: 1,
                 repo: { isRepo: true, rootPath: '/repo', backendId: 'git', mode: '.git' },
                 capabilities: {} as any,
@@ -82,11 +85,11 @@ vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
 }));
 
 vi.mock('@/hooks/session/useSessionWorkspaceTarget', () => ({
-    useSessionWorkspaceTarget: () => ({
-        workspaceCacheKey: 'server:m1:/repo',
+    useSessionWorkspaceTarget: (_sessionId: string, serverId?: string | null) => ({
+        workspaceCacheKey: `${String(serverId ?? 'server')}:m1:/repo`,
         machineId: 'm1',
         rootPath: '/repo',
-        serverId: 'server',
+        serverId: String(serverId ?? 'server'),
     }),
 }));
 
@@ -112,7 +115,10 @@ vi.mock('@/components/workspaces/files/repositoryTree/ChangedFilesTreeList', () 
 }));
 
 vi.mock('@/components/sessions/files/views/repositoryTreeBrowser/RepositoryTreeChangedFilesPane', () => ({
-    RepositoryTreeChangedFilesPane: () => React.createElement('View', { testID: 'repository-tree-changed-files-pane' }),
+    RepositoryTreeChangedFilesPane: (props: any) => {
+        changedFilesPaneProps.push(props);
+        return React.createElement('View', { testID: 'repository-tree-changed-files-pane' });
+    },
 }));
 
 vi.mock('@/components/workspaces/files/repositoryTree/SearchResultsList', () => ({
@@ -167,6 +173,22 @@ describe('SessionRepositoryTreeBrowserView (changed-only toggle)', () => {
         expect(screen.findAllByTestId('workspace-repository-tree-list')).toHaveLength(0);
         expect(screen.findAllByTestId('changed-files-tree-list')).toHaveLength(0);
         expect(screen.findAllByTestId('repository-tree-changed-files-pane')).toHaveLength(1);
+    });
+
+    it('hands the changed-files pane the working tree of the Home named by the route', async () => {
+        changedFilesPaneProps.length = 0;
+        const { SessionRepositoryTreeBrowserView } = await import('./SessionRepositoryTreeBrowserView');
+        const screen = await renderScreen(
+            <SessionRepositoryTreeBrowserView sessionId="s1" serverId="home-b" onOpenFile={vi.fn()} />,
+        );
+
+        await act(async () => {
+            screen.pressByTestId('repository-tree-filter-changed');
+        });
+
+        const paneProps = changedFilesPaneProps.at(-1);
+        expect(paneProps?.serverId).toBe('home-b');
+        expect(paneProps?.scmSnapshot?.projectKey).toBe('p:home-b');
     });
 
     it('renders a collapse-all button when folders are expanded', async () => {

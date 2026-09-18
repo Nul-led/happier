@@ -20,18 +20,23 @@ export async function openDesktopPetOverlayTrayItem(params: Readonly<{
     executor: DesktopPetOverlayActionExecutor;
     showMainWindow: (payload: Readonly<{
         reason: 'tray-action';
+        targetServerId: string;
         targetSessionId: string;
     }>) => void | Promise<void>;
 }>): Promise<ActionExecuteResult> {
-    const context: ActionExecutorContext = { defaultSessionId: params.item.sessionId };
+    const context: ActionExecutorContext = {
+        defaultSessionId: params.item.address.sessionId,
+        serverId: params.item.address.serverId,
+    };
     const result = await params.executor.execute(
         'session.open',
-        { sessionId: params.item.sessionId },
+        { sessionId: params.item.address.sessionId },
         context,
     );
     if (result.ok) {
         await params.showMainWindow({
             reason: 'tray-action',
+            targetServerId: params.item.address.serverId,
             targetSessionId: params.item.sessionId,
         });
     }
@@ -47,8 +52,11 @@ export async function sendDesktopPetOverlayQuickReply(params: Readonly<{
     if (!message) return null;
     return params.executor.execute(
         'session.message.send',
-        { sessionId: params.item.sessionId, message },
-        { defaultSessionId: params.item.sessionId },
+        { sessionId: params.item.address.sessionId, message },
+        {
+            defaultSessionId: params.item.address.sessionId,
+            serverId: params.item.address.serverId,
+        },
     );
 }
 

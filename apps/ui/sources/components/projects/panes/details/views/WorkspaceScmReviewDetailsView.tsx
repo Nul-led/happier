@@ -209,13 +209,13 @@ export const WorkspaceScmReviewDetailsView = React.memo((props: WorkspaceScmRevi
                 sessionId={props.scopeId}
                 snapshot={snapshot ?? null}
                 changedFilesViewMode="repository"
-                attributionReliability="high"
+
                 allRepositoryChangedFiles={changedFiles.allRepositoryChangedFiles}
                 turnAttributedFiles={[]}
                 turnRepositoryOnlyFiles={[]}
                 sessionAttributedFiles={[]}
                 repositoryOnlyFiles={changedFiles.allRepositoryChangedFiles}
-                suppressedInferredCount={0}
+
                 maxFiles={maxFiles}
                 maxChangedLines={maxChangedLines}
                 onFilePress={(file) => props.onOpenFile?.(file.fullPath)}

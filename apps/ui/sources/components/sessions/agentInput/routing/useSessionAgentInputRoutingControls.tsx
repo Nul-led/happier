@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import type { ParticipantRecipientV1 } from '@happier-dev/protocol';
+import type { ParticipantRecipientV1, PendingRequestedActionV1 } from '@happier-dev/protocol';
 
 import type { AgentInputExtraActionChip } from '@/components/sessions/agentInput/agentInputContracts';
 import { createRecipientActionChip } from '@/components/sessions/agentInput/definitions/createRecipientActionChip';
@@ -10,14 +10,13 @@ import {
     type ParticipantRoutingDescriptor,
 } from '@/sync/domains/input/participants/resolveParticipantRoutedSend';
 
-import { createExecutionRunDeliveryActionChip } from './createExecutionRunDeliveryActionChip';
-import type { ExecutionRunDeliveryMode } from './useSessionRecipientState';
+import { createExecutionRunRequestedActionChip } from './createExecutionRunRequestedActionChip';
 
 type SessionRecipientStateLike = Readonly<{
     recipient: ParticipantRecipientV1 | null;
     setManualRecipient: (next: ParticipantRecipientV1 | null) => void;
-    executionRunDelivery: ExecutionRunDeliveryMode;
-    setExecutionRunDelivery: (next: ExecutionRunDeliveryMode) => void;
+    executionRunRequestedAction: PendingRequestedActionV1;
+    setExecutionRunRequestedAction: (next: PendingRequestedActionV1) => void;
 }>;
 
 export type SessionAgentInputRoutingControls = Readonly<{
@@ -53,18 +52,21 @@ export function useSessionAgentInputRoutingControls(params: Readonly<{
 
     const deliveryChip = React.useMemo<AgentInputExtraActionChip | undefined>(() => {
         if (params.isReadOnly) return undefined;
-        if (participantRoutingDescriptor?.type !== 'execution_run_send') return undefined;
-        return createExecutionRunDeliveryActionChip({
+        // Targeted Run input now travels through the canonical Session Pending
+        // message descriptor. The recipient—not a retired direct-send transport
+        // discriminator—decides whether delivery-mode controls are applicable.
+        if (params.recipientState.recipient?.kind !== 'execution_run') return undefined;
+        return createExecutionRunRequestedActionChip({
             recipient: params.recipientState.recipient,
-            delivery: params.recipientState.executionRunDelivery,
-            onDeliveryChange: params.recipientState.setExecutionRunDelivery,
+            requestedAction: params.recipientState.executionRunRequestedAction,
+            onRequestedActionChange: params.recipientState.setExecutionRunRequestedAction,
         });
     }, [
         params.isReadOnly,
         participantRoutingDescriptor,
-        params.recipientState.executionRunDelivery,
+        params.recipientState.executionRunRequestedAction,
         params.recipientState.recipient,
-        params.recipientState.setExecutionRunDelivery,
+        params.recipientState.setExecutionRunRequestedAction,
     ]);
 
     const extraActionChips = React.useMemo<ReadonlyArray<AgentInputExtraActionChip> | undefined>(() => {

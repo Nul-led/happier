@@ -16,6 +16,59 @@ afterEach(() => {
 });
 
 describe('repositoryComposerDocumentOwner', () => {
+    it('retires every mounted mutation path when its exact credential lifetime is replaced', async () => {
+        const sessionId = 'session-retired-owner';
+        writeExistingSessionDraft({ scope, sessionId, patch: { text: 'owned by the old credential' } });
+        let current = true;
+        const owner = createRepositoryComposerDocumentOwner({
+            scope,
+            ref: { kind: 'session', sessionId },
+            isCurrent: () => current,
+        });
+        const captured = owner.captureCurrentness();
+        current = false;
+
+        expect(owner.read().document.text).toBe('');
+        expect(owner.apply(owner.read().revision, {
+            text: 'stale edit',
+            references: [],
+            attachments: [],
+        })).toEqual({ status: 'composerUnavailable' });
+        expect(owner.clearAccepted(captured).changed).toBe(false);
+        expect(owner.replaceDocument({
+            text: 'stale replacement',
+            structuredInputMentions: [],
+            composerAttachments: [],
+        })).toBe(owner.read().revision);
+        owner.clear('discarded');
+        await Promise.resolve();
+
+        expect(getSessionDraftSnapshot(scope, { kind: 'session', sessionId })
+            ?.document.composer.text.value).toBe('owned by the old credential');
+    });
+
+    it('keeps participant presentation identity while persisting an exact Run draft', () => {
+        const sessionId = 'session-run-draft';
+        const runId = 'run-a';
+        const ref = { kind: 'participantMessage', sessionId, instanceId: 'composer-a' } as const;
+        const address = { kind: 'run', sessionId, runId } as const;
+        const owner = createRepositoryComposerDocumentOwner({ scope, ref, address });
+
+        expect(owner.ref).toEqual(ref);
+        expect(owner.apply(0, {
+            text: 'run-only draft',
+            references: [],
+            attachments: [],
+        })).toMatchObject({ status: 'applied' });
+        expect(getSessionDraftSnapshot(scope, address)?.document.composer.text.value).toBe('run-only draft');
+        expect(getSessionDraftSnapshot(scope, { kind: 'session', sessionId })).toBeNull();
+
+        const currentness = owner.captureCurrentness();
+        writeExistingSessionDraft({ scope, sessionId, runId, patch: { text: 'newer run edit' } });
+        expect(owner.clearAccepted(currentness).changed).toBe(false);
+        expect(getSessionDraftSnapshot(scope, address)?.document.composer.text.value).toBe('newer run edit');
+    });
+
     it('keeps an absent empty composer stable when authoring first creates the repository draft', () => {
         const ref = { kind: 'newSession', instanceId: 'draft-a' } as const;
         const owner = createRepositoryComposerDocumentOwner({ scope, ref });
@@ -26,7 +79,7 @@ describe('repositoryComposerDocumentOwner', () => {
         writeNewSessionDraft({
             scope,
             draftId: ref.instanceId,
-            patch: { authoring: { machineId: 'machine-a' } },
+            patch: { authoring: { profileId: 'profile-a' } },
             materializationIntent: 'userEdit',
         });
 
@@ -155,13 +208,17 @@ describe('repositoryComposerDocumentOwner Session revision', () => {
         });
         const owner = createRepositoryComposerDocumentOwner({ scope, ref });
         const currentness = owner.captureCurrentness();
-        const attachment = {
+        const attachmentDraft = {
             v: 1 as const,
             instanceId: 'attachment-42',
             attachment: { pluginId: 'acme.issues', localId: 'issue' },
             key: '42',
             value: { issueId: 42 },
             presentation: { label: 'Issue #42', typeLabel: 'Issue' },
+        };
+        const attachment = {
+            ...attachmentDraft,
+            availability: { status: 'ready' as const },
         };
         expect(owner.apply(owner.read().revision, {
             text: owner.read().document.text,
@@ -180,7 +237,86 @@ describe('repositoryComposerDocumentOwner Session revision', () => {
         expect(owner.read().document).toEqual({
             text: '',
             structuredInputMentions: [],
-            composerAttachments: [attachment],
+            composerAttachments: [attachmentDraft],
+        });
+    });
+
+    it('rebases a Run reference that remains in newer text and preserves it after the older submission succeeds', () => {
+        const sessionId = 'session-run-reference-rebase';
+        const runId = 'run-reference-rebase';
+        const address = { kind: 'run', sessionId, runId } as const;
+        const owner = createRepositoryComposerDocumentOwner({
+            scope,
+            ref: { kind: 'participantMessage', sessionId, instanceId: runId },
+            address,
+        });
+        owner.replaceDocument({
+            text: '@issue accepted',
+            structuredInputMentions: [{
+                kind: 'mention',
+                ref: 'vendor:issue-42',
+                tokenText: '@issue',
+                start: 0,
+                end: 6,
+            }],
+            composerAttachments: [],
+        });
+        const accepted = owner.captureCurrentness();
+
+        owner.replaceDocument({
+            text: 'prefix @issue accepted',
+            structuredInputMentions: owner.read().document.structuredInputMentions,
+            composerAttachments: [],
+        });
+
+        expect(owner.clearAccepted(accepted).changed).toBe(false);
+        expect(owner.read().document).toMatchObject({
+            text: 'prefix @issue accepted',
+            structuredInputMentions: [{
+                ref: 'vendor:issue-42',
+                tokenText: '@issue',
+                start: 7,
+                end: 13,
+            }],
+        });
+    });
+
+    it('clears a newer Run reference-only edit with unchanged accepted text', () => {
+        const sessionId = 'session-run-reference-clear';
+        const runId = 'run-reference-clear';
+        const address = { kind: 'run', sessionId, runId } as const;
+        const owner = createRepositoryComposerDocumentOwner({
+            scope,
+            ref: { kind: 'participantMessage', sessionId, instanceId: runId },
+            address,
+        });
+        owner.replaceDocument({
+            text: '@issue accepted',
+            structuredInputMentions: [],
+            composerAttachments: [],
+        });
+        const accepted = owner.captureCurrentness();
+
+        owner.replaceDocument({
+            text: '@issue accepted',
+            structuredInputMentions: [{
+                kind: 'mention',
+                ref: 'vendor:issue-42',
+                tokenText: '@issue',
+                start: 0,
+                end: 6,
+            }],
+            composerAttachments: [],
+        });
+
+        expect(owner.clearAccepted(accepted)).toMatchObject({
+            changed: true,
+            changes: { text: true, structuredInputMentions: true },
+        });
+        expect(owner.read().document).toEqual({
+            text: '',
+            structuredInputMentions: [],
+            composerAttachments: [],
         });
     });
 

@@ -435,15 +435,15 @@ describe('AgentInput (action menu popover props)', () => {
         capturedSelectionListPopover.last = null;
         capturedSelectionListPopover.all = [];
         const { AgentInput } = await import('./AgentInput');
-        const { createExecutionRunDeliveryActionChip } = await import(
-            './routing/createExecutionRunDeliveryActionChip'
+        const { createExecutionRunRequestedActionChip } = await import(
+            './routing/createExecutionRunRequestedActionChip'
         );
 
-        const onDeliveryChange = vi.fn();
-        const deliveryChip = createExecutionRunDeliveryActionChip({
+        const onRequestedActionChange = vi.fn();
+        const deliveryChip = createExecutionRunRequestedActionChip({
             recipient: { kind: 'execution_run', runId: 'A1' },
-            delivery: 'interrupt',
-            onDeliveryChange,
+            requestedAction: { v: 1, kind: 'send_now' },
+            onRequestedActionChange,
         });
 
         const screen = await renderScreen(<AgentInput
@@ -490,7 +490,7 @@ describe('AgentInput (action menu popover props)', () => {
 
         act(() => steerOption?.onSelect?.());
 
-        expect(onDeliveryChange).toHaveBeenCalledWith('steer_if_supported');
+        expect(onRequestedActionChange).toHaveBeenCalledWith('steer_if_supported');
     });
 
     it("routes the migrated recipient factory through the SelectionList popover and per-option onSelect dispatches the mutation", async () => {

@@ -33,6 +33,8 @@ export type ExternalSessionRuntimeStatus = Extract<ExternalSessionStatusGetRespo
 type UseExternalSessionRuntimeParams = Readonly<{
     sessionId: string;
     metadata: Metadata | null | undefined;
+    /** Exact Home owning the Session when the caller already has a qualified address. */
+    serverId?: string | null;
     enabled?: boolean;
 }>;
 
@@ -158,11 +160,14 @@ export function useExternalSessionRuntime(params: UseExternalSessionRuntimeParam
     const previousServerIdRef = React.useRef<string | null | undefined>(undefined);
     const previousRuntimeScopeRef = React.useRef<string | null>(null);
     const runtimeActive = useRuntimeActive(runtimeEnabled);
-    const sessionServerId = usePreferredServerIdForSession(
-        normalizedSessionId,
-        undefined,
+    const explicitServerId = typeof params.serverId === 'string' && params.serverId.trim().length > 0
+        ? params.serverId.trim()
+        : null;
+    const preferredSessionServerId = usePreferredServerIdForSession(
+        { serverId: explicitServerId, sessionId: normalizedSessionId },
         runtimeEnabled,
     );
+    const sessionServerId = preferredSessionServerId;
     const statusDemandViewportId = React.useId();
     const statusDemandEntry = React.useMemo(() => {
         const linkGeneration = externalSessionLink?.linkedAtMs;

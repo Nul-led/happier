@@ -1,5 +1,6 @@
 import type { VoiceSessionBinding } from './voiceConversationBindingTypes';
 import { isVoiceConversationSystemSessionMetadata } from '@/voice/persistence/voiceConversationSystemSessionLookup';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 type PersistedVoiceConversationBindingV1 = Readonly<{
     v: 1;
@@ -7,6 +8,7 @@ type PersistedVoiceConversationBindingV1 = Readonly<{
     controlSessionId: string;
     transcriptMode: VoiceSessionBinding['transcriptMode'];
     targetSessionId: string | null;
+    targetServerId?: string | null;
     updatedAt: number;
 }>;
 
@@ -30,6 +32,7 @@ function requireNormalizedId(value: unknown, fieldName: string): string {
 export function readVoiceConversationBindingMetadata(
     conversationSessionId: string,
     metadata: unknown,
+    options?: Readonly<{ sourceServerId?: string | null }>,
 ): VoiceSessionBinding | null {
     const resolvedConversationSessionId = normalizeId(conversationSessionId);
     if (!resolvedConversationSessionId || !metadata || typeof metadata !== 'object') return null;
@@ -46,14 +49,23 @@ export function readVoiceConversationBindingMetadata(
               ? 'synthetic'
               : null;
     if (!adapterId || !controlSessionId || !transcriptMode) return null;
+    const conversationSessionAddress = normalizeSessionAddress(
+        normalizeId(options?.sourceServerId),
+        resolvedConversationSessionId,
+    );
+    if (!conversationSessionAddress) return null;
 
     const updatedAt = normalizeUpdatedAt(raw.updatedAt);
     return {
         adapterId,
         controlSessionId,
         conversationSessionId: resolvedConversationSessionId,
+        conversationSessionAddress,
         transcriptMode,
-        targetSessionId: normalizeId(raw.targetSessionId),
+        targetSessionAddress: normalizeSessionAddress(
+            normalizeId(raw.targetServerId) ?? normalizeId(options?.sourceServerId),
+            normalizeId(raw.targetSessionId),
+        ),
         updatedAt,
     };
 }
@@ -62,11 +74,14 @@ export function readPreferredVoiceConversationBindingMetadata(params: Readonly<{
     conversationSessionId: string;
     preferredMetadata?: unknown;
     directMetadata?: unknown;
+    sourceServerId?: string | null;
 }>): VoiceSessionBinding | null {
     const metadataCandidates = [params.preferredMetadata, params.directMetadata];
     for (const metadata of metadataCandidates) {
         if (!isVoiceConversationSystemSessionMetadata(metadata)) continue;
-        const binding = readVoiceConversationBindingMetadata(params.conversationSessionId, metadata);
+        const binding = readVoiceConversationBindingMetadata(params.conversationSessionId, metadata, {
+            sourceServerId: params.sourceServerId,
+        });
         if (binding) {
             return binding;
         }
@@ -93,7 +108,9 @@ export function writeVoiceConversationBindingMetadata(
     const base = metadata && typeof metadata === 'object' ? { ...(metadata as Record<string, unknown>) } : {};
     const adapterId = requireNormalizedId(binding.adapterId, 'voice conversation adapter id');
     const controlSessionId = requireNormalizedId(binding.controlSessionId, 'voice conversation control session id');
-    const targetSessionId = normalizeId(binding.targetSessionId);
+    const targetSessionAddress = binding.targetSessionAddress
+        ? normalizeSessionAddress(binding.targetSessionAddress.serverId, binding.targetSessionAddress.sessionId)
+        : null;
     return {
         ...base,
         voiceConversationBindingV1: {
@@ -101,7 +118,8 @@ export function writeVoiceConversationBindingMetadata(
             adapterId,
             controlSessionId,
             transcriptMode: binding.transcriptMode,
-            targetSessionId,
+            targetSessionId: targetSessionAddress?.sessionId ?? null,
+            targetServerId: targetSessionAddress?.serverId ?? null,
             updatedAt: Number.isFinite(binding.updatedAt) ? Number(binding.updatedAt) : 0,
         } satisfies PersistedVoiceConversationBindingV1,
     };

@@ -4,7 +4,10 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { SessionSubagentLaunchCardShell } from '@/components/sessions/agents/launch/SessionSubagentLaunchCardShell';
-import { createExecutionRunLauncherDetailsTab } from '@/components/sessions/runs/launcher/executionRunLauncherModel';
+import {
+    createExecutionRunLauncherDetailsTab,
+    createInteractiveExecutionRunDraftDetailsTab,
+} from '@/components/sessions/runs/launcher/executionRunLauncherModel';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 
@@ -52,12 +55,25 @@ export const ExecutionRunLaunchCard = React.memo((props: Readonly<{ sessionId: s
         pane.openDetailsTab(createExecutionRunLauncherDetailsTab(intent), { intent: 'preview' });
     }, [pane]);
 
+    const openNewAgentConversation = React.useCallback(() => {
+        pane.openDetailsTab(createInteractiveExecutionRunDraftDetailsTab(), { intent: 'preview' });
+    }, [pane]);
+
     return (
         <SessionSubagentLaunchCardShell
             testID="session-subagent-launch-execution-run"
             title={t('session.subagents.panel.launchExecutionRunsTitle')}
             subtitle={t('session.subagents.panel.launchExecutionRunsSubtitle')}
         >
+            <Pressable
+                testID="session-subagent-launch-execution-run:conversation"
+                accessibilityRole="button"
+                accessibilityLabel={t('session.subagents.panel.newAgentConversation')}
+                onPress={openNewAgentConversation}
+                style={({ pressed }) => [styles.button, { alignSelf: 'flex-start', opacity: pressed ? 0.7 : 1 }]}
+            >
+                <Text style={styles.buttonText}>{t('session.subagents.panel.newAgentConversation')}</Text>
+            </Pressable>
             <View style={styles.row}>
                 {EXECUTION_RUN_INTENTS.map((intent) => (
                     <Pressable

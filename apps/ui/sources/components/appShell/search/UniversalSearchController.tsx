@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/selectionList';
 import {
     useAllSessions,
-    useSessionListRowStateByServerId,
+    useSessionListRowsByServerId,
     useSessionOrganizationProjection,
 } from '@/sync/store/hooks';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
@@ -67,6 +67,7 @@ import {
     buildCanonicalSessionListSearchText,
 } from '@/components/sessions/shell/useSessionListSearchTextByKey';
 import { buildSessionOrganizationListViewState } from '@/sync/domains/session/organization/viewState';
+import { sessionTagKey } from '@/components/sessions/shell/sessionTagUtils';
 
 import { activateUniversalSearchResult } from './activateUniversalSearchResult';
 import {
@@ -250,7 +251,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
     const openProject = useOpenProject();
     const settingsCatalog = useResolvedSettingsPageCatalog();
     const sessions = useAllSessions();
-    const sessionListRowsByServerId = useSessionListRowStateByServerId();
+    const sessionListRowsByServerId = useSessionListRowsByServerId();
     const workspaceRefs = useSetting('workspaceRefsV1');
     const canonicalScopeServerId = scope.serverId
         ? resolveServerProfileScopeIdForIdentifier(scope.serverId)
@@ -323,7 +324,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
                 searchText: buildCanonicalSessionListSearchText({
                     sessionId: session.id,
                     renderable: session,
-                    tags: (sessionOrganizationListViewState.sessionTagsV1[`${canonicalServerId}:${session.id}`] ?? [])
+                    tags: (sessionOrganizationListViewState.sessionTagsV1[sessionTagKey(canonicalServerId, session.id)] ?? [])
                         .flatMap((tag) => tag.display.status === 'available' ? [tag.display.value] : []),
                     workspaceDisplayLabel: workspace?.label ?? null,
                 }),
@@ -445,7 +446,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
                             accountLifetime.accountId,
                             (() => {
                                 const freshRow = readSessionListRowsForServerId(
-                                    storage.getState().sessionListRowStateByServerId,
+                                    storage.getState().sessionListRowsByServerId,
                                     serverId,
                                 )?.[hit.sessionId];
                                 const freshTitle = freshRow ? getSessionName(freshRow).trim() : '';

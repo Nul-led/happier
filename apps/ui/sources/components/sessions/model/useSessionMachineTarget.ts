@@ -6,30 +6,33 @@ import {
     resolveMachineTargetForSessionFromState,
     type SessionMachineControlTarget,
     type SessionMachineTargetState,
+    type SessionMachineTargetIdentity,
 } from '@/sync/domains/session/resolveMachineTargetForSessionFromState';
 import { getStorage } from '@/sync/domains/state/storage';
 
-export function useSessionMachineTarget(sessionId: string): { machineId: string; basePath: string } | null {
-    const resolvedSessionId = normalizeSessionId(sessionId);
+export function useSessionMachineTarget(target: SessionMachineTargetIdentity | null, serverId?: string | null): { machineId: string; basePath: string } | null {
+    const resolvedTarget = typeof target === 'string'
+        ? serverId?.trim() ? { serverId: serverId.trim(), sessionId: normalizeSessionId(target) } : normalizeSessionId(target)
+        : target;
 
     return getStorage()(
         useShallow((state) =>
-            resolveMachineTargetForSessionFromState(
+            resolvedTarget === null ? null : resolveMachineTargetForSessionFromState(
                 state as SessionMachineTargetState,
-                resolvedSessionId,
+                resolvedTarget,
             ),
         ),
     );
 }
 
-export function useSessionMachineControlTarget(sessionId: string): SessionMachineControlTarget | null {
+export function useSessionMachineControlTarget(sessionId: string, serverId?: string | null): SessionMachineControlTarget | null {
     const resolvedSessionId = normalizeSessionId(sessionId);
 
     return getStorage()(
         useShallow((state) =>
             resolveMachineControlTargetForSessionFromState(
                 state as SessionMachineTargetState,
-                resolvedSessionId,
+                serverId?.trim() ? { serverId: serverId.trim(), sessionId: resolvedSessionId } : resolvedSessionId,
             ),
         ),
     );

@@ -4,8 +4,24 @@ import type { AgentSessionRealtimeHandle } from '@happier-dev/plugin-sdk/agents/
 
 import {
   cleanupBoundAgentSessionRealtimeService,
-  createAgentSessionRealtimeService,
+  createAgentSessionRealtimeService as createAgentSessionRealtimeServiceForAddress,
 } from './createAgentSessionRealtimeService';
+
+type CreateAgentSessionRealtimeServiceInput = Parameters<
+  typeof createAgentSessionRealtimeServiceForAddress
+>[0];
+
+function createAgentSessionRealtimeService(
+  input: Omit<CreateAgentSessionRealtimeServiceInput, 'conversationSessionAddress'> & Readonly<{
+    conversationSessionId: string;
+  }>,
+) {
+  const { conversationSessionId, ...rest } = input;
+  return createAgentSessionRealtimeServiceForAddress({
+    ...rest,
+    conversationSessionAddress: { serverId: 'server-a', sessionId: conversationSessionId },
+  });
+}
 
 const provider = { pluginId: 'happier.agent.codex', localId: 'realtime-codex' } as const;
 const sentinels = {
@@ -441,7 +457,7 @@ describe('bound Agent-session realtime service', () => {
       return { ok: true, status: 'stopped' };
     });
     const sessionRpc = vi.fn(async (request: Readonly<{
-      sessionId: string;
+      sessionAddress: Readonly<{ serverId: string; sessionId: string }>;
       method: string;
       payload: unknown;
       signal: AbortSignal;
@@ -492,9 +508,9 @@ describe('bound Agent-session realtime service', () => {
     const stopRequests = sessionRpc.mock.calls
       .map(([request]) => request)
       .filter((request) => request.method.endsWith('.stop'))
-      .map(({ sessionId, method, payload }) => ({ sessionId, method, payload }));
+      .map(({ sessionAddress, method, payload }) => ({ sessionAddress, method, payload }));
     const expectedStopRequest = {
-      sessionId: 'session-late-start-dual-ambiguous',
+      sessionAddress: { serverId: 'server-a', sessionId: 'session-late-start-dual-ambiguous' },
       method: 'session.agentRealtime.stop',
       payload: {
         v: 1,
@@ -690,7 +706,7 @@ describe('bound Agent-session realtime service', () => {
       .mockRejectedValueOnce(new Error('stop_transport_closed'))
       .mockResolvedValueOnce({ ok: true, status: 'stopped' });
     const sessionRpc = vi.fn(async (request: Readonly<{
-      sessionId: string;
+      sessionAddress: Readonly<{ serverId: string; sessionId: string }>;
       method: string;
       payload: unknown;
       signal: AbortSignal;
@@ -728,9 +744,9 @@ describe('bound Agent-session realtime service', () => {
     const stopRequests = sessionRpc.mock.calls
       .map(([request]) => request)
       .filter((request) => request.method.endsWith('.stop'))
-      .map(({ sessionId, method, payload }) => ({ sessionId, method, payload }));
+      .map(({ sessionAddress, method, payload }) => ({ sessionAddress, method, payload }));
     const expectedStopRequest = {
-      sessionId: 'session-stop-transport-retry',
+      sessionAddress: { serverId: 'server-a', sessionId: 'session-stop-transport-retry' },
       method: 'session.agentRealtime.stop',
       payload: {
         v: 1,
@@ -754,7 +770,7 @@ describe('bound Agent-session realtime service', () => {
       .mockResolvedValueOnce({ malformed: true })
       .mockResolvedValueOnce({ ok: true, status: 'already_stopped' });
     const sessionRpc = vi.fn(async (request: Readonly<{
-      sessionId: string;
+      sessionAddress: Readonly<{ serverId: string; sessionId: string }>;
       method: string;
       payload: unknown;
       signal: AbortSignal;
@@ -794,9 +810,9 @@ describe('bound Agent-session realtime service', () => {
     const stopRequests = sessionRpc.mock.calls
       .map(([request]) => request)
       .filter((request) => request.method.endsWith('.stop'))
-      .map(({ sessionId, method, payload }) => ({ sessionId, method, payload }));
+      .map(({ sessionAddress, method, payload }) => ({ sessionAddress, method, payload }));
     const expectedStopRequest = {
-      sessionId: 'session-stop-malformed-retry',
+      sessionAddress: { serverId: 'server-a', sessionId: 'session-stop-malformed-retry' },
       method: 'session.agentRealtime.stop',
       payload: {
         v: 1,

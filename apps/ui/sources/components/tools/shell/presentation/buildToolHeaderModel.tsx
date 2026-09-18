@@ -67,6 +67,7 @@ export function buildToolHeaderModel(input: {
 
     const icon = resolveToolHeaderIcon({
         tool: toolForRendering,
+        metadata: input.metadata,
         knownTool,
         iconSize: input.iconSize,
         iconColorPrimary: input.iconColorPrimary,
@@ -92,6 +93,7 @@ export function buildToolHeaderModel(input: {
 
 function resolveToolHeaderIcon(params: {
     tool: ToolCall;
+    metadata: Metadata | null;
     knownTool: any;
     iconSize: number;
     iconColorPrimary: string;
@@ -118,7 +120,10 @@ function resolveToolHeaderIcon(params: {
     }
 
     if (params.knownTool && typeof params.knownTool.icon === 'function') {
-        return params.knownTool.icon(params.iconSize, params.iconColorPrimary);
+        return params.knownTool.icon(params.iconSize, params.iconColorPrimary, {
+            tool: params.tool,
+            metadata: params.metadata,
+        });
     }
 
     return <Icon name="wrench" size={params.iconSize} color={params.iconColorSecondary} />;

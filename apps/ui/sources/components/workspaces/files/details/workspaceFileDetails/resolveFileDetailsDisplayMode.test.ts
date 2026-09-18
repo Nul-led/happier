@@ -23,23 +23,37 @@ describe('resolveFileDetailsDisplayMode', () => {
         })).toBe('diff');
     });
 
-    it('keeps explicit file deep links in source mode', () => {
+    it.each([false, true])('keeps explicit file deep links in source mode while content availability is %s', (hasFileContent) => {
         expect(resolveFileDetailsDisplayMode({
             persistedEditing: false,
             deepLinkSource: 'file',
             hasRenderableDiff: true,
-            hasFileContent: true,
+            hasFileContent,
             markdownPreviewAvailable: true,
         })).toBe('file');
     });
 
-    it('keeps editing drafts in source mode', () => {
+    it.each([false, true])('keeps editing drafts in source mode while content availability is %s', (hasFileContent) => {
         expect(resolveFileDetailsDisplayMode({
             persistedEditing: true,
             deepLinkSource: null,
             hasRenderableDiff: true,
-            hasFileContent: true,
+            hasFileContent,
             markdownPreviewAvailable: true,
         })).toBe('file');
     });
+});
+
+it('preserves an explicit file request as deferred content arrives', () => {
+    for (const hasFileContent of [false, true]) {
+        expect(resolveFileDetailsDisplayMode({ requestedMode: 'file', persistedEditing: false, deepLinkSource: null,
+            hasRenderableDiff: true, hasFileContent, markdownPreviewAvailable: false })).toBe('file');
+    }
+});
+
+it('honors the user selection ahead of restored or linked file intent', () => {
+    expect(resolveFileDetailsDisplayMode({
+        requestedMode: 'diff', persistedEditing: true, deepLinkSource: 'file',
+        hasRenderableDiff: true, hasFileContent: false, markdownPreviewAvailable: false,
+    })).toBe('diff');
 });

@@ -155,6 +155,7 @@ function fixture() {
             pluginId: materialization.pluginId,
             response: PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
                 availabilityCursor: 7,
+                packageAssets: [],
                 hostingCapability: { enabled: false },
                 intent: {
                     pluginId: materialization.pluginId,

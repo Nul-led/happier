@@ -17,9 +17,9 @@ const scrollOwner = vi.hoisted(() => ({
     offset: 0,
 }));
 
-const feedStore = vi.hoisted(() => {
+const friendRequestStore = vi.hoisted(() => {
     const listeners = new Set<() => void>();
-    const state = { items: [] as { id: string }[] };
+    const state = { items: [] as { id: string; username: string; status: string }[] };
     return {
         state,
         subscribe: (listener: () => void) => {
@@ -34,7 +34,16 @@ const feedStore = vi.hoisted(() => {
     };
 });
 
-const emptyStorageState = vi.hoisted(() => ({ sessionMessages: {} }));
+const emptyStorageState = vi.hoisted(() => ({
+    settings: { workspacePathDisplayModeV1: 'name', workspaceRefsV1: [] },
+    sessions: {},
+    sessionMessages: {},
+    sessionListRowsByServerId: {},
+    ordinarySessionListMembershipByServerId: {},
+    sessionListIndexByServerId: {},
+    concurrentSessionListCacheByServerId: {},
+    isDataReady: true,
+}));
 
 installNavigationShellCommonModuleMocks({
     reactNative: async () => {
@@ -67,12 +76,12 @@ installNavigationShellCommonModuleMocks({
         );
         return createStorageModuleStub({
             useArtifacts: () => [],
-            useFriendRequests: () => [],
-            useRequestedFriends: () => [],
-            useFeedItems: () => ReactModule.useSyncExternalStore(
-                feedStore.subscribe,
-                () => feedStore.state.items,
+            useFriendRequests: () => ReactModule.useSyncExternalStore(
+                friendRequestStore.subscribe,
+                () => friendRequestStore.state.items,
             ),
+            useRequestedFriends: () => [],
+            useFeedItems: () => [],
             useFeedLoaded: () => true,
             useFriendsLoaded: () => true,
             useAllSessions: () => [],
@@ -97,7 +106,6 @@ vi.mock('@/components/account/RecoveryKeyReminderBanner', () => ({
     RecoveryKeyReminderBanner: 'RecoveryKeyReminderBanner',
 }));
 vi.mock('@/components/navigation/Header', () => ({ Header: 'Header' }));
-vi.mock('@/components/inbox/cards/FeedItemCard', () => ({ FeedItemCard: 'FeedItemCard' }));
 vi.mock('@/components/inbox/cards/ApprovalInboxCard', () => ({ ApprovalInboxCard: 'ApprovalInboxCard' }));
 vi.mock('@/hooks/server/useFriendsIdentityReadiness', () => ({
     useFriendsIdentityReadiness: () => ({ isReady: true }),
@@ -110,10 +118,10 @@ vi.mock('@/components/ui/layout/layout', () => ({
     useLayoutMaxWidth: () => 960,
 }));
 
-async function setFeedItems(items: { id: string }[]): Promise<void> {
+async function setFriendRequests(items: { id: string; username: string; status: string }[]): Promise<void> {
     await act(async () => {
-        feedStore.state.items = items;
-        feedStore.emit();
+        friendRequestStore.state.items = items;
+        friendRequestStore.emit();
     });
 }
 
@@ -126,10 +134,10 @@ describe('InboxView scroll owner stability', () => {
         scrollOwner.mounts = 0;
         scrollOwner.unmounts = 0;
         scrollOwner.offset = 0;
-        feedStore.state.items = [{ id: 'feed-1' }];
+        friendRequestStore.state.items = [{ id: 'friend-1', username: 'friend', status: 'pending' }];
     });
 
-    it('keeps one scroll container across a populated -> empty -> populated cycle', async () => {
+    it('keeps one scroll container across a populated -> caught-up -> populated cycle', async () => {
         const { InboxView } = await import('./InboxView');
 
         const tree = (await renderScreen(<InboxView />)).tree;
@@ -139,22 +147,20 @@ describe('InboxView scroll owner stability', () => {
         // The user scrolled; that position lives on the scroll container instance.
         scrollOwner.offset = 240;
 
-        await setFeedItems([]);
-        expect(tree.root.findAll((node) => String(node.type) === 'FeedItemCard')).toHaveLength(0);
+        await setFriendRequests([]);
         expect(countScrollViews(tree)).toBe(1);
 
-        await setFeedItems([{ id: 'feed-1' }, { id: 'feed-2' }]);
-        expect(tree.root.findAll((node) => String(node.type) === 'FeedItemCard')).toHaveLength(2);
+        await setFriendRequests([{ id: 'friend-1', username: 'friend', status: 'pending' }]);
 
         expect(scrollOwner.mounts).toBe(1);
         expect(scrollOwner.unmounts).toBe(0);
         expect(scrollOwner.offset).toBe(240);
     });
 
-    it('renders the empty state as content inside the scroll container', async () => {
+    it('renders the caught-up state as content inside the scroll container', async () => {
         const { InboxView } = await import('./InboxView');
 
-        feedStore.state.items = [];
+        friendRequestStore.state.items = [];
         const rendered = await renderScreen(<InboxView />);
         const tree = rendered.tree;
 

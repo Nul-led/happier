@@ -20,6 +20,7 @@ export type WizardStepId =
     | 'auth'
     | 'auth_restore'
     | 'auth_secret_key'
+    | 'auth_service_select'
     | 'auth_lost_access'
     | 'setup_chooser'
     | 'setup_this_computer'

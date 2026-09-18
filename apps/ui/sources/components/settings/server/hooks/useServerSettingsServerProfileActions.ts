@@ -50,7 +50,7 @@ export function useServerSettingsServerProfileActions(params: Readonly<{
         );
         if (!next) return;
         try {
-            renameServerProfile(profile.id, next);
+            await renameServerProfile(profile.id, next);
             params.setRevision((r) => r + 1);
         } catch (err) {
             Modal.alert(t('common.error'), String((err as any)?.message ?? err));

@@ -18,7 +18,7 @@ import {
 } from '@/sync/runtime/sessionRealtimeTranscriptConsumers';
 import { createSessionTranscriptRetentionController } from '@/sync/engine/sessions/sessionTranscriptRetention';
 
-const setLastFocusedSessionId = vi.fn();
+const setLastFocusedSessionAddress = vi.fn();
 
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     const original = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
@@ -37,7 +37,7 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
 vi.mock('@/voice/runtime/voiceTargetStore', () => ({
     useVoiceTargetStore: {
         getState: () => ({
-            setLastFocusedSessionId,
+            setLastFocusedSessionAddress,
         }),
     },
 }));
@@ -48,7 +48,7 @@ describe('useSessionSurfaceActivation', () => {
     beforeEach(() => {
         resetSessionSurfaceVisibilityForTests();
         clearMountedSessionRealtimeTranscriptConsumers();
-        setLastFocusedSessionId.mockClear();
+        setLastFocusedSessionAddress.mockClear();
     });
 
     afterEach(() => {
@@ -60,17 +60,20 @@ describe('useSessionSurfaceActivation', () => {
         const { useSessionSurfaceActivation } = await import('./useSessionSurfaceActivation');
         const hook = await renderHook((props: {
             sessionId: string;
+            serverId: string;
             surfaceFocused: boolean;
             surfaceVisible: boolean;
             routeAnchor: boolean;
         }) => useSessionSurfaceActivation({
             sessionId: props.sessionId,
+            serverId: props.serverId,
             surfaceFocused: props.surfaceFocused,
             surfaceVisible: props.surfaceVisible,
             routeAnchor: props.routeAnchor,
         }), {
             initialProps: {
                 sessionId: 'session-1',
+                serverId: 'server-default',
                 surfaceFocused: true,
                 surfaceVisible: true,
                 routeAnchor: true,
@@ -82,11 +85,15 @@ describe('useSessionSurfaceActivation', () => {
             routeAnchorSessionId: 'session-1',
             visibleSessionIds: ['session-1'],
         });
-        expect(setLastFocusedSessionId).toHaveBeenCalledWith('session-1');
+        expect(setLastFocusedSessionAddress).toHaveBeenCalledWith({
+            serverId: 'server-default',
+            sessionId: 'session-1',
+        });
         expect(hook.getCurrent().isSurfaceFocused).toBe(true);
 
         await hook.rerender({
             sessionId: 'session-1',
+            serverId: 'server-default',
             surfaceFocused: false,
             surfaceVisible: true,
             routeAnchor: false,

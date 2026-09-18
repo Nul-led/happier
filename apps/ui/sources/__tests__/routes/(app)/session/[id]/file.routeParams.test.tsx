@@ -24,7 +24,7 @@ const paneScopeMock = vi.hoisted(() => ({
 }));
 
 const routerMock = createExpoRouterMock({
-    params: { id: ['s1', 's2'], path: 'src/a.txt' },
+    params: { id: ['s1', 's2'], path: 'src/a.txt', serverId: 'home-b' },
     router: {
         push: vi.fn(),
         back: vi.fn(),
@@ -104,7 +104,7 @@ describe('session file route', () => {
             }),
             expect.objectContaining({ intent: 'preview' }),
         );
-        expect(capturedScopeIdRef.current).toBe('session:s1');
+        expect(capturedScopeIdRef.current).toBe('session:address:home-b:s1');
         expect(paneScopeMock.openRight).not.toHaveBeenCalled();
         expect(paneScopeMock.setRightTab).not.toHaveBeenCalled();
         expect(routerReplaceSpy).toHaveBeenCalledWith({

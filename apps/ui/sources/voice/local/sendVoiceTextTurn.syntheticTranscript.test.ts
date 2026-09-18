@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 import { attachVoiceAgentActionEffectId } from '@/voice/agent/types';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
+import { voiceConversationRuntimeMachine } from '@/voice/runtime/machine/VoiceConversationRuntimeMachine';
 
 const appendUser = vi.fn();
 const appendAssistant = vi.fn();
@@ -11,6 +12,7 @@ const sendMessage = vi.fn();
 const submitMessage = vi.fn();
 const enqueuePendingMessage = vi.fn();
 const markPendingDeliveryHandled = vi.fn();
+const sendSessionMessageWithServerScope = vi.fn();
 
 type AcceptedTurnOptions = Readonly<{
   onUserTranscriptAccepted?: () => void | Promise<void>;
@@ -39,14 +41,17 @@ vi.mock('@/sync/domains/state/storage', async () => {
     storage: {
       getState: () => ({
         settings: buildAccountSettings(),
+        settingsScope: { serverId: 'server-a', accountId: 'account-a' },
         sessions: {
           s1: {
             id: 's1',
+            serverId: 'server-a',
             active: true,
             metadata: { machineId: 'machine-1', path: '/workspace/s1' },
           },
           'carrier-s1': {
             id: 'carrier-s1',
+            serverId: 'server-a',
             active: true,
             updatedAt: 1,
             metadata: {
@@ -79,9 +84,43 @@ vi.mock('@/sync/sync', () => ({
   },
 }));
 
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionSendMessage', () => ({
+  sendSessionMessageWithServerScope: (args: any) => sendSessionMessageWithServerScope(args),
+}));
+
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
   getActiveServerSnapshot: () => ({ serverId: 'server-a' }),
   subscribeActiveServer: () => () => {},
+}));
+
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+  const { createPartialServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
+  return await createPartialServerProfilesModuleMock(importOriginal, {
+    profiles: [
+      { id: 'server-a', name: 'Home A', serverUrl: 'https://server-a.test' },
+      { id: 'server-b', name: 'Home B', serverUrl: 'https://server-b.test' },
+    ],
+  });
+});
+
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+  return {
+    ...actual,
+    TokenStorage: {
+      ...actual.TokenStorage,
+      getCredentialsForServerUrl: vi.fn(async (_url: string, options?: { serverId?: string }) =>
+        options?.serverId === 'server-a'
+          ? { token: 'e30.eyJzdWIiOiJhY2NvdW50LWEifQ.signature', secret: 'secret-a' }
+          : null),
+    },
+    subscribeHomeCredentialMutations: () => () => {},
+  };
+});
+
+vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/sync/api/account/apiAccountEncryptionMode')>(),
+  fetchAccountEncryptionMode: vi.fn(async () => ({ mode: 'plain' as const })),
 }));
 
 function buildAccountSettings() {
@@ -140,14 +179,13 @@ async function loadSendVoiceTextTurnWithProductionBinding() {
     controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
     conversationSessionId: 'carrier-s1',
     transcriptMode: 'native_session',
-    targetSessionId: 's1',
+    targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
   });
   return localVoiceTextTurn;
 }
 
 describe('sendVoiceTextTurn native-session transcript ownership', () => {
-  beforeEach(async () => {
-    const { voiceConversationRuntimeMachine } = await import('@/voice/runtime/machine/VoiceConversationRuntimeMachine');
+  beforeEach(() => {
     voiceConversationRuntimeMachine.reset();
     appendUser.mockReset();
     appendAssistant.mockReset();
@@ -165,6 +203,8 @@ describe('sendVoiceTextTurn native-session transcript ownership', () => {
     }));
     markPendingDeliveryHandled.mockReset();
     markPendingDeliveryHandled.mockResolvedValue(undefined);
+    sendSessionMessageWithServerScope.mockReset();
+    sendSessionMessageWithServerScope.mockResolvedValue({ ok: true });
   });
 
   it('submits direct coding-session voice turns through durable immediate delivery', async () => {
@@ -346,9 +386,11 @@ describe('sendVoiceTextTurn native-session transcript ownership', () => {
       },
     });
 
-    expect(submitMessage).toHaveBeenCalledWith('s1', 'hello', undefined, undefined, {
-      callerSurface: 'voice_turn',
-      forceImmediate: true,
+    expect(sendSessionMessageWithServerScope).toHaveBeenCalledWith({
+      sessionId: 's1',
+      serverId: 'server-a',
+      message: 'hello',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
       hostAdmissionOrigin: 'voice',
     });
     expect(appendAssistant).not.toHaveBeenCalled();
@@ -384,14 +426,9 @@ describe('sendVoiceTextTurn native-session transcript ownership', () => {
     });
 
     expect(sendTurn).toHaveBeenCalledTimes(4);
-    expect(submitMessage).toHaveBeenCalledTimes(3);
-    expect(submitMessage).not.toHaveBeenCalledWith(
-      's1',
-      'hello-4',
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(sendSessionMessageWithServerScope).toHaveBeenCalledTimes(3);
+    expect(sendSessionMessageWithServerScope.mock.calls)
+      .not.toContainEqual([expect.objectContaining({ message: 'hello-4' })]);
     expect(appendAssistant).not.toHaveBeenCalled();
     expect(voiceOutputStatusStore.readForSession(VOICE_AGENT_GLOBAL_SESSION_ID)).toMatchObject({
       statusId: 'tool_round_limit_reached',
@@ -438,11 +475,54 @@ describe('sendVoiceTextTurn native-session transcript ownership', () => {
       },
     });
 
-    expect(submitMessage).toHaveBeenCalledWith('s1', 'hello', undefined, undefined, {
-      callerSurface: 'voice_turn',
-      forceImmediate: true,
+    expect(sendSessionMessageWithServerScope).toHaveBeenCalledWith({
+      sessionId: 's1',
+      serverId: 'server-a',
+      message: 'hello',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
       hostAdmissionOrigin: 'voice',
     });
+  });
+
+  it('does not send an implicit tool action to the active Home when the bound target is on another Home', async () => {
+    const { sendVoiceTextTurn } = await loadSendVoiceTextTurnWithProductionBinding();
+    const { voiceSessionBindingManager } = await import('@/voice/binding/voiceConversationBindingRuntime');
+    await voiceSessionBindingManager.syncTargetSession({
+      controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
+      targetSessionAddress: { serverId: 'server-b', sessionId: 's1' },
+    });
+
+    const sendTurn = vi
+      .fn()
+      .mockImplementationOnce(async (_sessionId, _userText, opts?: AcceptedTurnOptions) => {
+        await opts?.onUserTranscriptAccepted?.();
+        return {
+          assistantText: 'I will send that now.',
+          actions: [attachVoiceAgentActionEffectId(
+            { t: 'sendSessionMessage', args: { message: 'hello on Home B' } },
+            'cross-home-turn:client:1:0',
+          )],
+        };
+      })
+      .mockImplementationOnce(async (_sessionId, _userText, opts?: AcceptedTurnOptions) => {
+        await opts?.onUserTranscriptAccepted?.();
+        return { assistantText: 'Done.', actions: [] };
+      });
+
+    await sendVoiceTextTurn({
+      sessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
+      settings: buildAccountSettings(),
+      userText: 'send hello on the bound target',
+      playbackController: {
+        registerStopper: () => () => {},
+        interrupt: () => {},
+        captureEpoch: () => 1,
+        isEpochCurrent: () => true,
+      },
+      voiceAgentSessions: { sendTurn },
+    });
+
+    expect(sendSessionMessageWithServerScope).not.toHaveBeenCalled();
   });
 
   it('rethrows agent-mode send failures after recording the error state', async () => {

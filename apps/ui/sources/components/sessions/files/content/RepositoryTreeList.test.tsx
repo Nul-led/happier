@@ -7,6 +7,8 @@ import {
     standardCleanup,
 } from '@/dev/testkit';
 import { clearCachedRepositoryDirectoryEntries } from '@/sync/domains/input/repositoryDirectory';
+import { lightTheme as theme } from '@/theme';
+import { VirtualizedList } from '@/components/ui/lists/virtualized/VirtualizedList';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 import { installFilesContentCommonModuleMocks } from '@/components/workspaces/scm/review/filesContentTestHelpers';
 
@@ -22,78 +24,25 @@ const sessionListDirectorySpy = vi.fn<(_sessionId: string, _path: string) => Pro
         entries: [],
     }),
 );
-const flatListRenderPropsLog: Array<Readonly<{
-    contentContainerStyle: unknown;
-    extraData: unknown;
-    getItemLayout: unknown;
-    keyExtractor: unknown;
-    renderItem: unknown;
-    style: unknown;
-}>> = [];
-
-const theme = vi.hoisted(() => ({
-    colors: {
-        surface: '#111',
-        surfaceHigh: '#222',
-        surfaceHighest: '#2a2a2a',
-        surfacePressed: '#1b1b1b',
-        surfacePressedOverlay: 'rgba(255, 255, 255, 0.08)',
-        surfaceSelected: '#191919',
-        divider: '#333',
-        text: '#eee',
-        textSecondary: '#aaa',
-        textLink: '#08f',
-        accent: {
-            blue: '#08f',
-        },
-        warning: '#f80',
-        success: '#0f0',
-        textDestructive: '#f00',
-        deleteAction: '#f44',
-        button: {
-            secondary: {
-                tint: '#08f',
-            },
-        },
-        modal: {
-            border: '#444',
-        },
-        shadow: {
-            color: '#000',
-            opacity: 0.2,
-        },
-    },
-    dark: false,
-} as const));
+vi.mock('@legendapp/list/react-native', async () => {
+    const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
+    return createCapturingLegendListMock().module;
+});
 
 installFilesContentCommonModuleMocks({
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
             TurboModuleRegistry: { get: () => ({}) },
-            FlatList: ({ data, renderItem, keyExtractor, ListHeaderComponent, style, contentContainerStyle, getItemLayout, extraData }: any) => {
-                flatListRenderPropsLog.push({
-                    contentContainerStyle,
-                    extraData,
-                    getItemLayout,
-                    keyExtractor,
-                    renderItem,
-                    style,
-                });
-                const header = ListHeaderComponent
-                    ? (React.isValidElement(ListHeaderComponent) ? ListHeaderComponent : React.createElement(ListHeaderComponent))
-                    : null;
-                const items = (data ?? []).map((item: any, index: number) => {
-                    const key = keyExtractor ? keyExtractor(item, index) : String(item?.path ?? index);
-                    return React.createElement(React.Fragment, { key }, renderItem({ item, index }));
-                });
-                return React.createElement('FlatList', null, header, ...items);
-            },
         });
+    },
+    storage: async () => {
+        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleStub({});
     },
     unistyles: async () => {
         const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
-        return createUnistylesMock({ theme });
+        return createUnistylesMock();
     },
 });
 
@@ -125,13 +74,6 @@ vi.mock('@/components/ui/lists/Item', () => ({
 
 vi.mock('@/components/workspaces/files/repositoryTree/WebDropTargetView', () => ({
     WebDropTargetView: (props: any) => React.createElement('WebDropTargetView', props, props.children),
-}));
-
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
 }));
 
 vi.mock('@/sync/domains/session/resolveWorkspaceTargetForSession', () => ({
@@ -169,6 +111,7 @@ vi.mock('@/sync/domains/input/repositoryDirectory', () => {
     }
 
     return {
+        getCachedRepositoryGitIgnoreAvailable: () => undefined,
         getCachedRepositoryDirectoryEntries: () => null,
         setCachedRepositoryDirectoryEntries: () => {},
         clearCachedRepositoryDirectoryEntries: () => {},
@@ -180,7 +123,7 @@ vi.mock('@/sync/domains/input/repositoryDirectory', () => {
 
 vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
-    return createUnistylesMock({ theme });
+    return createUnistylesMock();
 });
 
 vi.mock('@/components/ui/buttons/RoundButton', () => ({
@@ -270,7 +213,6 @@ describe('RepositoryTreeList', () => {
             success: true,
             entries: [],
         });
-        flatListRenderPropsLog.length = 0;
         clearCachedRepositoryDirectoryEntries({ sessionId: 'session-1' });
     });
 
@@ -352,7 +294,7 @@ describe('RepositoryTreeList', () => {
         ).toHaveLength(1);
     });
 
-    it('pins a file when double-pressed', async () => {
+    it('pins a file with the keyboard shortcut and double-press', async () => {
         sessionListDirectorySpy.mockResolvedValue({
             success: true,
             entries: [{ name: 'README.md', type: 'file' }],
@@ -369,6 +311,11 @@ describe('RepositoryTreeList', () => {
             readme?.props.onDoublePress();
         });
 
+        await act(async () => {
+            readme?.props.onKeyDown({ key: 'p', preventDefault: vi.fn() });
+        });
+
+        expect(onOpenFilePinned).toHaveBeenCalledTimes(2);
         expect(onOpenFilePinned).toHaveBeenCalledWith('README.md');
         expect(onOpenFile).not.toHaveBeenCalled();
     });
@@ -552,13 +499,13 @@ describe('RepositoryTreeList', () => {
 
         const screen = await renderScreen(<Wrapper />);
         await settleRepositoryTree();
-        const before = flatListRenderPropsLog.at(-1);
+        const before = screen.tree.root.findByType(VirtualizedList).props;
 
         await act(async () => {
             screen.pressByTestId('rerender-parent');
         });
         await settleRepositoryTree();
-        const after = flatListRenderPropsLog.at(-1);
+        const after = screen.tree.root.findByType(VirtualizedList).props;
 
         expect(after?.renderItem).toBe(before?.renderItem);
         expect(after?.keyExtractor).toBe(before?.keyExtractor);
@@ -603,13 +550,13 @@ describe('RepositoryTreeList', () => {
 
         const screen = await renderScreen(<Wrapper />);
         await settleRepositoryTree();
-        const before = flatListRenderPropsLog.at(-1);
+        const before = screen.tree.root.findByType(VirtualizedList).props;
 
         await act(async () => {
             screen.pressByTestId('rerender-parent');
         });
         await settleRepositoryTree();
-        const after = flatListRenderPropsLog.at(-1);
+        const after = screen.tree.root.findByType(VirtualizedList).props;
 
         expect(after?.renderItem).toBe(before?.renderItem);
         expect(after?.keyExtractor).toBe(before?.keyExtractor);

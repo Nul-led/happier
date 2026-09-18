@@ -7,6 +7,7 @@ import { normalizePluginUiDestinationBindingV1 } from '@happier-dev/protocol/plu
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
+import { createSessionBoardDetailsTab } from '@/components/sessions/panes/details/sessionDetailsTabBuilders';
 import { SessionCockpitSurfaceNavigationProvider } from './SessionCockpitSurfaceNavigation';
 import {
     SessionCockpitChromeRegistryProvider,
@@ -25,6 +26,9 @@ const safeAreaInsetsMock = vi.hoisted(() => ({
 const pluginProjectionState = vi.hoisted<{
     value: {
         pluginUiProjection: unknown;
+        pluginBrowserProjection: null;
+        phase: 'current' | 'unavailable';
+        interactionEnabled: boolean;
         machineId: string | null;
         serverId: string | null;
         platform: 'web';
@@ -32,6 +36,9 @@ const pluginProjectionState = vi.hoisted<{
 }>(() => ({
     value: {
         pluginUiProjection: null,
+        pluginBrowserProjection: null,
+        phase: 'unavailable',
+        interactionEnabled: false,
         machineId: 'machine-1',
         serverId: 'server-1',
         platform: 'web',
@@ -48,6 +55,7 @@ vi.mock('@/sync/domains/state/storage', async () => {
                 localSettingsMock[key] = value;
             },
         ],
+        useSessionCompanionPreferenceSlot: () => ({ storageKey: null, stored: undefined }),
     });
 });
 
@@ -66,6 +74,13 @@ vi.mock('@/components/sessions/shell/SessionView', () => ({
         props,
         props.contentOverride ?? null,
     ),
+}));
+
+// This screen-composition suite keeps the Board leaf at its public component
+// seam; primary-host selection itself remains real through the mounted shell
+// hook and is asserted from the props passed to that leaf.
+vi.mock('@/components/sessions/board/SessionBoardPane', () => ({
+    SessionBoardPane: (props: Record<string, unknown>) => React.createElement('SessionBoardPane', props),
 }));
 
 vi.mock('@/components/sessions/panes/SessionDetailsPanel', () => ({
@@ -108,8 +123,11 @@ vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
     useAppShellPluginUiProjection: () => pluginProjectionState.value,
 }));
 
-vi.mock('@/components/plugins/projection/useScopedPluginUiProjection', () => ({
-    useScopedPluginUiProjection: () => pluginProjectionState.value,
+vi.mock('@/components/sessions/plugins/useSessionPluginRuntime', () => ({
+    useSessionPluginRuntime: (input: Readonly<{ address: { serverId: string } | null }>) => ({
+        ...pluginProjectionState.value,
+        serverId: input.address?.serverId ?? null,
+    }),
 }));
 
 vi.mock('@/components/plugins/surfaces', () => ({
@@ -160,6 +178,7 @@ function PaneScopeProbe(props: Readonly<{ scopeId: string }>) {
 
     return React.createElement('PaneScopeProbe', {
         scopeState: pane.scopeState,
+        closeDetailsTab: pane.closeDetailsTab,
     });
 }
 
@@ -179,9 +198,22 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     return {};
 }
 
+/** Publishes this Home's `sessions.board` answer through the canonical owner. */
+async function primeSessionBoardFeature(serverId: string, enabled: boolean): Promise<void> {
+    const { primeServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
+    const { createRootLayoutFeaturesResponse } = await import('@/dev/testkit/fixtures/featureFixtures');
+    const { tryWriteServerEnabledBitInPlace } = await import('@happier-dev/protocol');
+    const features = createRootLayoutFeaturesResponse();
+    if (!tryWriteServerEnabledBitInPlace(features, 'sessions.board', enabled)) {
+        throw new Error('The sessions.board bit could not be written by its own writer');
+    }
+    primeServerFeaturesSnapshot({ serverId, snapshot: { status: 'ready', features } });
+}
+
 describe('SessionCockpitSurfaceScreen', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         standardCleanup();
+        await primeSessionBoardFeature('server-b', true);
         localSettingsMock = {};
         safeAreaInsetsMock.top = 0;
         safeAreaInsetsMock.bottom = 0;
@@ -189,6 +221,9 @@ describe('SessionCockpitSurfaceScreen', () => {
         safeAreaInsetsMock.right = 0;
         pluginProjectionState.value = {
             pluginUiProjection: null,
+            pluginBrowserProjection: null,
+            phase: 'unavailable',
+            interactionEnabled: false,
             machineId: 'machine-1',
             serverId: 'server-1',
             platform: 'web',
@@ -253,13 +288,49 @@ describe('SessionCockpitSurfaceScreen', () => {
         expect(sessionView.props.chatBottomSpacing).toBe('none');
     });
 
+    it('makes the mounted mobile Board primary over retained desktop Board panes', async () => {
+        const retainedBoardTab = createSessionBoardDetailsTab();
+        localSettingsMock = {
+            appPaneScopesV1: {
+                'session:s_1': {
+                    right: { isOpen: true, activeTabId: 'board', tabState: {} },
+                    details: {
+                        isOpen: true,
+                        tabs: [retainedBoardTab],
+                        activeTabKey: retainedBoardTab.key,
+                        tabState: {},
+                    },
+                    bottom: { isOpen: false, activeTabId: null, tabState: {} },
+                },
+            },
+            sessionLastMobileSurfaceBySessionId: null,
+        };
+
+        const { SessionCockpitSurfaceScreen } = await import('./SessionCockpitSurfaceScreen');
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <SessionCockpitSurfaceScreen
+                    sessionId="s_1"
+                    scopeId="session:s_1"
+                    surface="board"
+                    routeServerId="server-b"
+                    terminalTabAvailable
+                />
+            </AppPaneProvider>,
+        );
+
+        const board = screen.tree.findByType('SessionBoardPane' as never);
+        expect(board.props.serverId).toBe('server-b');
+        expect(board.props.resolvePrimaryHost('widget-a')).toBe('mobileCockpit');
+    });
+
     it('publishes the focused surface as the cockpit navigation owner', async () => {
         const switchSurface = vi.fn();
         const { SessionCockpitSurfaceScreen } = await import('./SessionCockpitSurfaceScreen');
         const screen = await renderScreen(
             <AppPaneProvider>
                 <SessionCockpitChromeRegistryProvider>
-                    <SessionCockpitSurfaceNavigationProvider value={{ switchSurface }}>
+                    <SessionCockpitSurfaceNavigationProvider value={{ switchSurface, returnToPreviousSurface: () => switchSurface('chat') }}>
                         <SessionCockpitSurfaceScreen
                             sessionId="s_1"
                             scopeId="session:s_1"
@@ -564,7 +635,7 @@ describe('SessionCockpitSurfaceScreen', () => {
         const { SessionCockpitSurfaceScreen } = await import('./SessionCockpitSurfaceScreen');
         const screen = await renderScreen(
             <AppPaneProvider>
-                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface }}>
+                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface, returnToPreviousSurface: () => switchSurface('chat') }}>
                     <SessionCockpitSurfaceScreen
                         sessionId="s_1"
                         scopeId="session:s_1"
@@ -595,6 +666,35 @@ describe('SessionCockpitSurfaceScreen', () => {
         ]);
     });
 
+    it.each(['git', 'browse'] as const)('returns to %s when the final details tab closes', async (surface) => {
+        const { SessionCockpitSurfaceScreen } = await import('./SessionCockpitSurfaceScreen');
+        function Harness() {
+            const [activeSurface, setActiveSurface] = React.useState<import('./sessionCockpitState').SessionMobileSurface>(surface);
+            return (
+                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface: setActiveSurface, returnToPreviousSurface: () => setActiveSurface(surface) }}>
+                    <SessionCockpitSurfaceScreen sessionId="s_1" scopeId="session:s_1" surface={activeSurface} terminalTabAvailable />
+                </SessionCockpitSurfaceNavigationProvider>
+            );
+        }
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <Harness />
+                <PaneScopeProbe scopeId="session:s_1" />
+            </AppPaneProvider>,
+        );
+        const sourceType = surface === 'git' ? 'SessionGitSurface' : 'SessionBrowseFilesSurface';
+        await act(async () => {
+            screen.tree.findByType(sourceType as never).props.onOpenFile('src/example.ts');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        expect(screen.tree.findAllByType('SessionDetailsPanel' as never)).toHaveLength(1);
+        await act(async () => {
+            screen.tree.findByType('PaneScopeProbe' as never).props.closeDetailsTab('file:src/example.ts');
+        });
+        expect(screen.tree.findAllByType(sourceType as never)).toHaveLength(1);
+        expect(screen.tree.findAllByType('SessionDetailsPanel' as never)).toHaveLength(0);
+    });
+
     it('opens commit details on the internal details tab without pushing a sibling stack route', async () => {
         const switchSurface = vi.fn();
         localSettingsMock = {
@@ -616,7 +716,7 @@ describe('SessionCockpitSurfaceScreen', () => {
         const { SessionCockpitSurfaceScreen } = await import('./SessionCockpitSurfaceScreen');
         const screen = await renderScreen(
             <AppPaneProvider>
-                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface }}>
+                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface, returnToPreviousSurface: () => switchSurface('chat') }}>
                     <SessionCockpitSurfaceScreen
                         sessionId="s_1"
                         scopeId="session:s_1"
@@ -667,7 +767,7 @@ describe('SessionCockpitSurfaceScreen', () => {
         const { SessionCockpitSurfaceScreen } = await import('./SessionCockpitSurfaceScreen');
         const screen = await renderScreen(
             <AppPaneProvider>
-                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface }}>
+                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface, returnToPreviousSurface: () => switchSurface('chat') }}>
                     <SessionCockpitSurfaceScreen
                         sessionId="s_1"
                         scopeId="session:s_1"
@@ -718,7 +818,7 @@ describe('SessionCockpitSurfaceScreen', () => {
         const { SessionCockpitSurfaceScreen } = await import('./SessionCockpitSurfaceScreen');
         const screen = await renderScreen(
             <AppPaneProvider>
-                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface }}>
+                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface, returnToPreviousSurface: () => switchSurface('chat') }}>
                     <SessionCockpitSurfaceScreen
                         sessionId="s_1"
                         scopeId="session:s_1"
@@ -769,7 +869,7 @@ describe('SessionCockpitSurfaceScreen', () => {
         const { SessionCockpitSurfaceScreen } = await import('./SessionCockpitSurfaceScreen');
         const screen = await renderScreen(
             <AppPaneProvider>
-                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface }}>
+                <SessionCockpitSurfaceNavigationProvider value={{ switchSurface, returnToPreviousSurface: () => switchSurface('chat') }}>
                     <SessionCockpitSurfaceScreen
                         sessionId="s_1"
                         scopeId="session:s_1"
@@ -802,6 +902,9 @@ describe('SessionCockpitSurfaceScreen', () => {
     it('renders a validated plugin mobile surface through the right-sidebar placement host', async () => {
         pluginProjectionState.value = {
             pluginUiProjection: createPluginProjection(),
+            pluginBrowserProjection: null,
+            phase: 'current',
+            interactionEnabled: true,
             machineId: 'machine-1',
             serverId: 'server-1',
             platform: 'web',
@@ -839,7 +942,7 @@ describe('SessionCockpitSurfaceScreen', () => {
         const host = screen.tree.findByType('PluginSurfacePlacementHostStub' as never);
         expect(host.props.placement.descriptorId).toBe('review-panel');
         expect(host.props.machineId).toBe('machine-1');
-        expect(host.props.serverId).toBe('server-1');
+        expect(host.props.serverId).toBe('server-b');
         expect(screen.tree.findByType('PaneScopeProbe' as never).props.scopeState?.right).toEqual(expect.objectContaining({
             isOpen: true,
             selectedDestination: {
@@ -852,6 +955,9 @@ describe('SessionCockpitSurfaceScreen', () => {
     it('retains an unavailable plugin mobile surface as a tombstone instead of opening a built-in pane', async () => {
         pluginProjectionState.value = {
             pluginUiProjection: createPluginProjection(),
+            pluginBrowserProjection: null,
+            phase: 'current',
+            interactionEnabled: true,
             machineId: 'machine-1',
             serverId: 'server-1',
             platform: 'web',

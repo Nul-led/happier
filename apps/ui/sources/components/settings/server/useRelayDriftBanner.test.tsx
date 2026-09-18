@@ -81,8 +81,23 @@ const administrationTargetState = vi.hoisted(() => ({
         machine: { id: string; metadata: { displayName: string; host: string } };
     } | null,
 }));
+// The real shape of `useLocalDaemonControl().status` (`LocalDaemonStatusData`): the desktop's
+// live read of the local daemon. The old stub returned only `{ machineId }`, so it could not
+// express the reachable case where the desktop knows the daemon's relay and the doctor cache is
+// empty — which is exactly where the R10 rule has to decide.
+type LocalDaemonStatusStub = {
+    serviceInstalled: boolean;
+    daemonRunning: boolean;
+    needsAuth: boolean;
+    machineId: string | null;
+    daemonServerUrl?: string | null;
+    daemonComparableKey?: string | null;
+    daemonAccountId?: string | null;
+    daemonMachineRegistered?: boolean | null;
+};
+
 const localDaemonControlState = vi.hoisted(() => ({
-    machineId: 'machine-1' as string | null,
+    status: null as LocalDaemonStatusStub | null,
     isUnavailable: false,
 }));
 
@@ -107,9 +122,7 @@ vi.mock('@/components/machines/doctorSnapshot/machineDoctorSnapshotCache', () =>
 
 vi.mock('@/components/settings/machines/localControl/useLocalDaemonControl', () => ({
     useLocalDaemonControl: () => ({
-        status: localDaemonControlState.machineId === null
-            ? null
-            : { machineId: localDaemonControlState.machineId },
+        status: localDaemonControlState.status,
         isUnavailable: localDaemonControlState.isUnavailable,
     }),
 }));
@@ -144,6 +157,31 @@ const refreshFromActiveServerSpy = vi.hoisted(() => vi.fn(async (..._args: any[]
 vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ refreshFromActiveServer: (...args: unknown[]) => refreshFromActiveServerSpy(...args) }),
 }));
+
+const approvalMocks = vi.hoisted(() => ({
+    readCredentials: vi.fn(async (..._args: unknown[]) => ({ token: 'relay-a-bearer' }) as { token: string } | null),
+    endpointFetch: vi.fn(async (..._args: unknown[]) => new Response('{}', { status: 200 })),
+    createServerFetchAtEndpoint: vi.fn((..._args: unknown[]) => approvalMocks.endpointFetch),
+}));
+
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+    return {
+        ...actual,
+        TokenStorage: {
+            ...actual.TokenStorage,
+            getCredentialsForServerUrl: (...args: unknown[]) => approvalMocks.readCredentials(...args),
+        },
+    };
+});
+
+vi.mock('@/sync/http/client', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/http/client')>();
+    return {
+        ...actual,
+        createServerFetchAtEndpoint: (...args: unknown[]) => approvalMocks.createServerFetchAtEndpoint(...args),
+    };
+});
 
 vi.mock('@/components/systemTasks', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/components/systemTasks')>();
@@ -190,12 +228,17 @@ describe('useRelayDriftBanner', () => {
                 metadata: { displayName: 'Machine 1', host: 'machine-1.local' },
             },
         };
-        localDaemonControlState.machineId = 'machine-1';
+        localDaemonControlState.status = {
+            serviceInstalled: false,
+            daemonRunning: false,
+            needsAuth: false,
+            machineId: 'machine-1',
+        };
         localDaemonControlState.isUnavailable = false;
     });
 
     it('disables local repair when the selected machine is not the system-task bridge machine', async () => {
-        localDaemonControlState.machineId = 'machine-local';
+        localDaemonControlState.status = { serviceInstalled: false, daemonRunning: false, needsAuth: false, machineId: 'machine-local' };
         state.cachedDoctorSnapshot = {
             cachedAt: 1,
             snapshot: {
@@ -260,6 +303,101 @@ describe('useRelayDriftBanner', () => {
         await renderScreen(React.createElement(Probe));
 
         expect(banner).toBeNull();
+    });
+
+    // R10: a first-run machine has nothing installed yet, so there is nothing that could have
+    // drifted. With no doctor snapshot and no local daemon status the classifier sees a null
+    // daemon relay and reports `daemon_not_configured`, which would otherwise render as a warning
+    // nagging about an ordinary pre-setup state. Acquiring the first daemon belongs to setup.
+    it('shows no banner for a machine the app has no daemon facts about', async () => {
+        const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
+        state.cachedDoctorSnapshot = null;
+        localDaemonControlState.status = null;
+
+        let banner: RelayDriftBanner | null = null;
+        function Probe() {
+            banner = useRelayDriftBanner();
+            return null;
+        }
+
+        await renderScreen(React.createElement(Probe));
+
+        expect(banner).toBeNull();
+    });
+
+    // R10 through the facts the desktop actually has. The doctor cache is written only when
+    // someone opens Diagnosis, while `useLocalDaemonControl` refreshes the local status on mount,
+    // so "no doctor snapshot + a resolved local status" is the ordinary state of every desktop.
+    it('shows no banner when the local daemon status reports no background service on this machine', async () => {
+        const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
+        state.cachedDoctorSnapshot = null;
+        localDaemonControlState.status = {
+            serviceInstalled: false,
+            daemonRunning: false,
+            needsAuth: true,
+            machineId: null,
+        };
+
+        let banner: RelayDriftBanner | null = null;
+        function Probe() {
+            banner = useRelayDriftBanner();
+            return null;
+        }
+
+        await renderScreen(React.createElement(Probe));
+
+        expect(banner).toBeNull();
+    });
+
+    it('shows no banner when the local daemon status proves the daemon is already on the active relay', async () => {
+        const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
+        state.cachedDoctorSnapshot = null;
+        localDaemonControlState.status = {
+            serviceInstalled: true,
+            daemonRunning: true,
+            needsAuth: false,
+            machineId: 'machine-1',
+            daemonServerUrl: 'https://relay.example.test',
+            daemonAccountId: 'acct_1',
+        };
+
+        let banner: RelayDriftBanner | null = null;
+        function Probe() {
+            banner = useRelayDriftBanner();
+            return null;
+        }
+
+        await renderScreen(React.createElement(Probe));
+
+        expect(banner).toBeNull();
+    });
+
+    // …and the local facts are genuinely classified, not merely used to suppress the banner: a
+    // daemon pointed somewhere else is real drift and must still be reported by name.
+    it('classifies drift from the local daemon status when the daemon is on another relay', async () => {
+        const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
+        state.cachedDoctorSnapshot = null;
+        localDaemonControlState.status = {
+            serviceInstalled: true,
+            daemonRunning: true,
+            needsAuth: false,
+            machineId: 'machine-1',
+            daemonServerUrl: 'https://daemon-relay.example.test',
+            daemonAccountId: 'acct_1',
+        };
+
+        let banner: RelayDriftBanner | null = null;
+        function Probe() {
+            banner = useRelayDriftBanner();
+            return null;
+        }
+
+        await renderScreen(React.createElement(Probe));
+
+        expect(banner).toMatchObject({
+            kind: 'warning',
+            title: 'server.relayDrift.bannerDifferentRelayTitle',
+        });
     });
 
     it('does not fall back to the active machine when the Administration target is unavailable', async () => {
@@ -410,14 +548,14 @@ describe('useRelayDriftBanner', () => {
                 taskId: 'task_1',
                 tsMs: 100,
                 type: 'progress',
-                stepId: 'relay.connectBackgroundService.configureRelay',
+                stepId: 'setup.repairThisComputer.configureRelay',
                 message: 'executor message',
             });
         });
 
         const bannerAfterEvent = banner as RelayDriftBanner | null;
         expect(bannerAfterEvent?.repairTaskSnapshot).toEqual(expect.objectContaining({
-            currentStepId: 'relay.connectBackgroundService.configureRelay',
+            currentStepId: 'setup.repairThisComputer.configureRelay',
             latestMessage: 'executor message',
         }));
         expect(typeof bannerAfterEvent?.onCancelRepair).toBe('function');
@@ -427,6 +565,165 @@ describe('useRelayDriftBanner', () => {
         });
 
         expect(cancelMock).toHaveBeenCalledWith('task_1');
+    });
+
+    it('answers the repair task\'s token-only pairing prompt through the explicit-target approval owner', async () => {
+        approvalMocks.readCredentials.mockClear();
+        approvalMocks.endpointFetch.mockClear();
+        approvalMocks.endpointFetch
+            .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'pending', supportsV2: true }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+        const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
+        const { createSystemTaskRunner } = await import('@/components/systemTasks/createSystemTaskRunner');
+        const respondMock = vi.fn(async (_taskId: string, _answer: unknown) => {});
+        const listeners = new Map<string, {
+            onEvent: (payload: unknown) => void;
+            onResult: (payload: unknown) => void;
+        }>();
+        state.runner = createSystemTaskRunner({
+            mode: 'dev',
+            bridge: {
+                async start() {
+                    return 'task_repair_approval';
+                },
+                async subscribe(taskId, listenerSet) {
+                    listeners.set(taskId, listenerSet);
+                    return () => {
+                        listeners.delete(taskId);
+                    };
+                },
+                async cancel() {},
+                respond: respondMock,
+            },
+        });
+        state.cachedDoctorSnapshot = {
+            cachedAt: 1,
+            snapshot: {
+                capturedAt: '2026-03-29T00:00:00.000Z',
+                server: { activeServerId: 'server-a', serverUrl: '', publicServerUrl: '', webappUrl: '' },
+                accountId: null,
+                settings: { activeServerId: 'server-a', servers: [], knownAccountIds: [] },
+            },
+        };
+
+        let banner: RelayDriftBanner | null = null;
+        function Probe() {
+            banner = useRelayDriftBanner();
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        const resolvedBanner = banner as RelayDriftBanner | null;
+        if (!resolvedBanner) throw new Error('Expected a relay drift banner');
+        await renderer.act(async () => {
+            await resolvedBanner.onPress();
+        });
+
+        await renderer.act(async () => {
+            listeners.get('task_repair_approval')?.onEvent({
+                protocolVersion: 1,
+                taskId: 'task_repair_approval',
+                tsMs: 120,
+                type: 'prompt',
+                stepId: 'setup.repairThisComputer.authRequest',
+                message: 'Approve pairing request',
+                data: {
+                    kind: 'authRequest',
+                    publicKey: 'pub-key-b64',
+                    response: 'opaque-token-only-response-b64',
+                    responseKind: 'tokenOnly',
+                    relayUrl: 'https://relay.example.test',
+                    webappUrl: 'https://relay.example.test',
+                    cliProvenance: 'managed',
+                },
+            });
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        // Repair is answered by the one approval owner: the Home-scoped credential for the
+        // explicit target is read, the opaque response is posted, and the task resumes.
+        expect(approvalMocks.readCredentials).toHaveBeenCalledWith(
+            'https://relay.example.test',
+            { serverId: 'server-a' },
+        );
+        expect(respondMock).toHaveBeenCalledWith('task_repair_approval', { approved: true });
+    });
+
+    it('declines a repair pairing prompt whose target identity does not match the active relay', async () => {
+        approvalMocks.readCredentials.mockClear();
+        approvalMocks.createServerFetchAtEndpoint.mockClear();
+
+        const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
+        const { createSystemTaskRunner } = await import('@/components/systemTasks/createSystemTaskRunner');
+        const respondMock = vi.fn(async (_taskId: string, _answer: unknown) => {});
+        const listeners = new Map<string, {
+            onEvent: (payload: unknown) => void;
+            onResult: (payload: unknown) => void;
+        }>();
+        state.runner = createSystemTaskRunner({
+            mode: 'dev',
+            bridge: {
+                async start() {
+                    return 'task_repair_mismatch';
+                },
+                async subscribe(taskId, listenerSet) {
+                    listeners.set(taskId, listenerSet);
+                    return () => {
+                        listeners.delete(taskId);
+                    };
+                },
+                async cancel() {},
+                respond: respondMock,
+            },
+        });
+        state.cachedDoctorSnapshot = {
+            cachedAt: 1,
+            snapshot: {
+                capturedAt: '2026-03-29T00:00:00.000Z',
+                server: { activeServerId: 'server-a', serverUrl: '', publicServerUrl: '', webappUrl: '' },
+                accountId: null,
+                settings: { activeServerId: 'server-a', servers: [], knownAccountIds: [] },
+            },
+        };
+
+        let banner: RelayDriftBanner | null = null;
+        function Probe() {
+            banner = useRelayDriftBanner();
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+        const resolvedBanner = banner as RelayDriftBanner | null;
+        if (!resolvedBanner) throw new Error('Expected a relay drift banner');
+        await renderer.act(async () => {
+            await resolvedBanner.onPress();
+        });
+
+        await renderer.act(async () => {
+            listeners.get('task_repair_mismatch')?.onEvent({
+                protocolVersion: 1,
+                taskId: 'task_repair_mismatch',
+                tsMs: 120,
+                type: 'prompt',
+                stepId: 'setup.repairThisComputer.authRequest',
+                message: 'Approve pairing request',
+                data: {
+                    kind: 'authRequest',
+                    publicKey: 'pub-key-b64',
+                    response: 'opaque-token-only-response-b64',
+                    responseKind: 'tokenOnly',
+                    relayUrl: 'https://other-relay.example.test',
+                    webappUrl: 'https://other-relay.example.test',
+                },
+            });
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(approvalMocks.readCredentials).not.toHaveBeenCalled();
+        expect(approvalMocks.createServerFetchAtEndpoint).not.toHaveBeenCalled();
+        expect(respondMock).toHaveBeenCalledWith('task_repair_mismatch', { approved: false, reason: 'relay_mismatch' });
     });
 
     it('infers the active webapp url when repairing Happier Cloud relay drift', async () => {

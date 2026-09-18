@@ -8,6 +8,7 @@ import type { PluginUiSurfacePlacementProjection } from '@/sync/domains/plugins/
 
 export type SessionCockpitChromeRegistration = Readonly<{
     sessionId: string;
+    serverId?: string | null;
     activeSurface: SessionMobileSurface;
     terminalTabAvailable: boolean;
     openDetailsTabCount: number;

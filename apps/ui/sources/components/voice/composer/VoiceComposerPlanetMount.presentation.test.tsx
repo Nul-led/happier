@@ -47,21 +47,21 @@ describe('VoiceComposerPlanetMount retained presentation', () => {
     it('unmounts energy and attempt subscriptions across presented → hidden → presented', () => {
         let tree: renderer.ReactTestRenderer;
         act(() => {
-            tree = renderer.create(<VoiceComposerPlanetMount sessionId="session-1" isPresented />);
+            tree = renderer.create(<VoiceComposerPlanetMount target={{ kind: 'session', sessionAddress: { serverId: 'server-1', sessionId: 'session-1' } }} isPresented />);
         });
 
         expect(hookCalls).toEqual({ energy: 1, control: 1 });
         expect(tree!.root.findByType('VoiceComposerPlanet')).toBeTruthy();
 
         act(() => {
-            tree!.update(<VoiceComposerPlanetMount sessionId="session-1" isPresented={false} />);
+            tree!.update(<VoiceComposerPlanetMount target={{ kind: 'session', sessionAddress: { serverId: 'server-1', sessionId: 'session-1' } }} isPresented={false} />);
         });
 
         expect(hookCalls).toEqual({ energy: 1, control: 1 });
         expect(tree!.toJSON()).toBeNull();
 
         act(() => {
-            tree!.update(<VoiceComposerPlanetMount sessionId="session-1" isPresented />);
+            tree!.update(<VoiceComposerPlanetMount target={{ kind: 'session', sessionAddress: { serverId: 'server-1', sessionId: 'session-1' } }} isPresented />);
         });
 
         expect(hookCalls).toEqual({ energy: 2, control: 2 });

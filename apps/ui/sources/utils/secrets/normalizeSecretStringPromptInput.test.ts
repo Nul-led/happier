@@ -7,14 +7,17 @@ describe('normalizeSecretStringPromptInput', () => {
         expect(normalizeSecretStringPromptInput(null)).toBeNull();
     });
 
-    it('returns null for whitespace-only input', () => {
-        expect(normalizeSecretStringPromptInput('   ')).toBeNull();
+    it('preserves whitespace-only input as a sealed secret value', () => {
+        expect(normalizeSecretStringPromptInput('   ')).toEqual({
+            _isSecretValue: true,
+            value: '   ',
+        });
     });
 
-    it('wraps trimmed non-empty input as a sealed secret value', () => {
+    it('wraps the exact non-empty input as a sealed secret value', () => {
         expect(normalizeSecretStringPromptInput('  sk-123  ')).toEqual({
             _isSecretValue: true,
-            value: 'sk-123',
+            value: '  sk-123  ',
         });
     });
 });

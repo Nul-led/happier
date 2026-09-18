@@ -12,6 +12,7 @@ const hydrateSessionSpy = vi.hoisted(() => vi.fn((sessionId: string, reason: str
     sessionId,
 })));
 const useSessionSpy = vi.hoisted(() => vi.fn<(sessionId: string) => unknown>());
+const useSessionViewShellSessionSpy = vi.hoisted(() => vi.fn<(sessionId: string, serverId?: string | null) => unknown>());
 const runListSpy = vi.hoisted(() => vi.fn<(sessionId: string, request: unknown, options?: unknown) => Promise<{ ok: true; runs: never[] }>>(async () => ({ ok: true, runs: [] })));
 let routeParams: Record<string, string | string[] | undefined> = { id: ['s1', 's2'] };
 
@@ -74,6 +75,11 @@ vi.mock('@/hooks/session/useSessionExecutionRunLaunchability', () => ({
     }),
 }));
 
+vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
+    useSessionViewShellSession: (sessionId: string, serverId?: string | null) =>
+        useSessionViewShellSessionSpy(sessionId, serverId),
+}));
+
 const storageMock = createStorageModuleStub({
     useSession: (sessionId: string) => useSessionSpy(sessionId),
 });
@@ -88,6 +94,8 @@ describe('session runs route', () => {
             id: 's1',
             metadata: null,
         });
+        useSessionViewShellSessionSpy.mockReset();
+        useSessionViewShellSessionSpy.mockReturnValue({ id: 's1', metadata: null });
         runListSpy.mockClear();
         routeParams = { id: ['s1', 's2'] };
     });
@@ -102,7 +110,7 @@ describe('session runs route', () => {
         await renderScreen(<RunsRoute />);
 
         expect(hydrateSessionSpy).toHaveBeenCalledWith('s1', 'SessionRunsScreen.hydrate', undefined);
-        expect(useSessionSpy).toHaveBeenCalledWith('s1');
+        expect(useSessionViewShellSessionSpy).toHaveBeenCalledWith('s1', null);
     });
 
     it('passes route server scope through hydration and run-list RPCs', async () => {
@@ -113,5 +121,6 @@ describe('session runs route', () => {
 
         expect(hydrateSessionSpy).toHaveBeenCalledWith('s1', 'SessionRunsScreen.hydrate', { serverId: 'server-route' });
         expect(runListSpy).toHaveBeenCalledWith('s1', {}, { serverId: 'server-route' });
+        expect(useSessionViewShellSessionSpy).toHaveBeenCalledWith('s1', 'server-route');
     });
 });

@@ -1,0 +1,608 @@
+import {
+    computeContentPublicKeyFingerprint,
+    formatSavedSecretCatalogReferenceV1,
+    listAccountSettingsSavedSecretReferences,
+    openSavedSecretResourceStoredContentV1,
+    promotePersonalSavedSecretReference,
+    sealSavedSecretResourceStoredContentV1,
+    SharedSavedSecretDeleteOutputV1Schema,
+    SharedSavedSecretMutationOutputV1Schema,
+    SavedSecretResourceEnvelopeCensusResponseV1Schema,
+    SavedSecretResourceEnvelopeRepairOutputV1Schema,
+    SharedSavedSecretPromoteOutputV1Schema,
+    type SavedSecret,
+    type SavedSecretResourceMaterialV1,
+} from '@happier-dev/protocol';
+
+import { readSavedSecretCatalog } from '@/sync/api/account/apiSavedSecretCatalog';
+import { requestHomeDomain } from '@/sync/api/home/homeServerActionTransport';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { encryptDataKeyForRecipientV0 } from '@/sync/encryption/directShareEncryption';
+import { encodeBase64 } from '@/encryption/base64';
+import { getRandomBytes } from '@/platform/cryptoRandom';
+import { randomUUID } from '@/platform/randomUUID';
+import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
+import { isTeamActionApprovalPendingError, runTeamAction } from '@/sync/ops/teams/teamActionClient';
+
+type SavedSecretMutationOutput = Readonly<{ resourceId: string; revision: number }>;
+type SavedSecretDeleteOutput = Readonly<{ resourceId: string }>;
+type SavedSecretApprovalHandlers<T> = Readonly<{
+    onApprovalSucceeded?: (value: T) => void | Promise<void>;
+    onApprovalFailed?: (code: string) => void;
+}>;
+
+type HealthySavedSecretResourceMaterialV1 = Extract<
+    SavedSecretResourceMaterialV1,
+    Readonly<{ resourceId: string }>
+>;
+
+function isHealthySavedSecretResourceMaterialV1(
+    resource: SavedSecretResourceMaterialV1,
+): resource is HealthySavedSecretResourceMaterialV1 {
+    return 'resourceId' in resource;
+}
+
+export type SavedSecretResourceOperationResult =
+    | Readonly<{ ok: true }>
+    | Readonly<{ ok: false; reason: 'changed' | 'unavailable' | 'failed' | 'outcome_unknown' }>;
+
+export type SavedSecretPromotionResult =
+    | Readonly<{ ok: true; resourceRef: string }>
+    | Exclude<SavedSecretResourceOperationResult, Readonly<{ ok: true }>>
+    | Readonly<{ ok: false; reason: 'update_required' }>;
+
+export type SavedSecretCreationResult =
+    | Readonly<{ ok: true; resourceRef: string; revision: number }>
+    | Exclude<SavedSecretResourceOperationResult, Readonly<{ ok: true }>>;
+
+function operationFailureReason(kind: 'conflict' | 'outcome_unknown' | string): Exclude<SavedSecretResourceOperationResult, Readonly<{ ok: true }>>['reason'] {
+    if (kind === 'conflict') return 'changed';
+    if (kind === 'outcome_unknown') return 'outcome_unknown';
+    return 'failed';
+}
+
+class SavedSecretProfileActivationHeldError extends Error {
+    constructor() {
+        super('Shared Saved Secret Profile activation requires a compatible predecessor');
+        this.name = 'SavedSecretProfileActivationHeldError';
+    }
+}
+
+async function repairSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
+    scope: ServerAccountScope;
+    resourceId: string;
+    expectedRevision: number;
+    resourceDataKey: Uint8Array;
+}>): Promise<void> {
+    const keyEnvelopes: Array<{
+        recipientAccountId: string;
+        encryptedDataKey: string;
+        recipientContentPublicKeyFingerprint: string;
+    }> = [];
+    let cursor: string | undefined;
+    do {
+        const census = await requestHomeDomain({
+            scope: params.scope,
+            path: '/v1/account/saved-secrets/resources/envelope-census',
+            method: 'GET',
+            effect: 'read',
+            input: { resourceId: params.resourceId, ...(cursor ? { cursor } : {}), limit: 100 },
+            schema: SavedSecretResourceEnvelopeCensusResponseV1Schema,
+        });
+        if (!census.ok || census.value.revision !== params.expectedRevision) return;
+        for (const recipient of census.value.recipients) {
+            if (recipient.readiness.status !== 'available' || recipient.envelopeStatus === 'prepared') continue;
+            keyEnvelopes.push({
+                recipientAccountId: recipient.account.accountId,
+                encryptedDataKey: encryptDataKeyForRecipientV0(
+                    params.resourceDataKey,
+                    recipient.readiness.contentPublicKey,
+                ),
+                recipientContentPublicKeyFingerprint: recipient.readiness.contentPublicKeyFingerprint,
+            });
+        }
+        cursor = census.value.nextCursor ?? undefined;
+    } while (cursor);
+    if (keyEnvelopes.length === 0) return;
+    await requestHomeDomain({
+        scope: params.scope,
+        path: '/v1/account/saved-secrets/resources/envelopes/repair',
+        method: 'POST',
+        effect: 'write',
+        input: {
+            resourceId: params.resourceId,
+            expectedRevision: params.expectedRevision,
+            keyEnvelopes,
+        },
+        schema: SavedSecretResourceEnvelopeRepairOutputV1Schema,
+    });
+}
+
+async function repairApprovedSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
+    scope: ServerAccountScope;
+    resourceId: string;
+    expectedRevision: number;
+    decryptDataKeyEnvelope: (encryptedDataKey: string) => Promise<Uint8Array | null>;
+}>): Promise<void> {
+    const catalog = await readSavedSecretCatalog(params.scope);
+    if (!catalog.ok) return;
+    const resource = catalog.resources.find((candidate): candidate is HealthySavedSecretResourceMaterialV1 => (
+        isHealthySavedSecretResourceMaterialV1(candidate)
+        && candidate.resourceId === params.resourceId
+    ));
+    if (!resource?.recipientEnvelope || resource.entry.revision !== params.expectedRevision) return;
+    const resourceDataKey = await params.decryptDataKeyEnvelope(resource.recipientEnvelope.encryptedDataKey);
+    if (!resourceDataKey) return;
+    try {
+        await repairSavedSecretResourceEnvelopesBestEffort({
+            scope: params.scope,
+            resourceId: params.resourceId,
+            expectedRevision: params.expectedRevision,
+            resourceDataKey,
+        });
+    } finally {
+        resourceDataKey.fill(0);
+    }
+}
+
+/**
+ * Creates a standalone Shared Saved Secret. The active Account sync lifetime
+ * already owns whether Account content is Plain or E2EE; this operation only
+ * projects that mode through the resource codec and canonical Action.
+ */
+export async function createSavedSecretResource(params: Readonly<{
+    scope: ServerAccountScope;
+    name: string;
+    kind: SavedSecret['kind'];
+    value: string;
+    accountGrants: readonly string[];
+    teamGrants: readonly string[];
+    groupGrants: readonly string[];
+    onApprovalSucceeded?: (result: Extract<SavedSecretCreationResult, Readonly<{ ok: true }>>) => void | Promise<void>;
+    onApprovalFailed?: (code: string) => void;
+}>): Promise<SavedSecretCreationResult> {
+    const sync = getSyncSingleton();
+    const encryption = sync.encryption;
+    const resourceId = randomUUID();
+    const resourceRef = formatSavedSecretCatalogReferenceV1({ kind: 'shared_resource', id: resourceId });
+    const resourceDataKey = encryption ? getRandomBytes(32) : null;
+    try {
+        const content = { v: 1 as const, name: params.name, kind: params.kind, value: params.value };
+        const storedContent = resourceDataKey
+            ? sealSavedSecretResourceStoredContentV1({
+                resourceId,
+                mode: 'e2ee',
+                resourceDataKey,
+                content,
+                randomBytes: getRandomBytes,
+            })
+            : sealSavedSecretResourceStoredContentV1({ resourceId, mode: 'plain', content });
+        const keyEnvelopes = encryption && resourceDataKey
+            ? [{
+                recipientAccountId: params.scope.accountId,
+                encryptedDataKey: encryptDataKeyForRecipientV0(
+                    resourceDataKey,
+                    encodeBase64(encryption.contentDataKey, 'base64'),
+                ),
+                recipientContentPublicKeyFingerprint: computeContentPublicKeyFingerprint(
+                    encryption.contentDataKey,
+                ),
+            }]
+            : [];
+        const finishApproved = async (value: { resourceId: string; revision: number }) => {
+            if (encryption) {
+                await repairApprovedSavedSecretResourceEnvelopesBestEffort({
+                    scope: params.scope,
+                    resourceId,
+                    expectedRevision: value.revision,
+                    decryptDataKeyEnvelope: (encryptedDataKey) => encryption.decryptEncryptionKey(
+                        encryptedDataKey,
+                        params.scope,
+                    ),
+                }).catch(() => undefined);
+            }
+            const result = { ok: true as const, resourceRef, revision: value.revision };
+            await params.onApprovalSucceeded?.(result);
+        };
+        const outcome = await runTeamAction({
+            scope: params.scope,
+            actionId: 'secrets.shared.create',
+            input: {
+                resourceId,
+                displayName: params.name,
+                kind: params.kind,
+                encryptionMode: encryption ? 'e2ee' : 'plain',
+                storedContent,
+                accountGrants: [...params.accountGrants],
+                teamGrants: [...params.teamGrants],
+                groupGrants: [...params.groupGrants],
+                ...(keyEnvelopes.length > 0 ? { keyEnvelopes } : {}),
+            },
+            parse: (value) => SharedSavedSecretMutationOutputV1Schema.parse(value),
+            onApprovalSucceeded: finishApproved,
+            ...(params.onApprovalFailed ? { onApprovalFailed: params.onApprovalFailed } : {}),
+        });
+        if (outcome.kind !== 'succeeded') {
+            if (outcome.failure.kind === 'outcome_unknown') {
+                const catalog = await readSavedSecretCatalog(params.scope);
+                const created = catalog.ok
+                    ? catalog.resources.find((resource): resource is HealthySavedSecretResourceMaterialV1 => (
+                        isHealthySavedSecretResourceMaterialV1(resource)
+                        && resource.resourceId === resourceId
+                    ))
+                    : null;
+                if (created?.entry.revision !== null && created?.entry.revision !== undefined) {
+                    if (resourceDataKey) {
+                        await repairSavedSecretResourceEnvelopesBestEffort({
+                            scope: params.scope,
+                            resourceId,
+                            expectedRevision: created.entry.revision,
+                            resourceDataKey,
+                        }).catch(() => undefined);
+                    }
+                    return { ok: true, resourceRef, revision: created.entry.revision };
+                }
+            }
+            return { ok: false, reason: operationFailureReason(outcome.failure.kind) };
+        }
+        if (resourceDataKey) {
+            await repairSavedSecretResourceEnvelopesBestEffort({
+                scope: params.scope,
+                resourceId,
+                expectedRevision: outcome.value.revision,
+                resourceDataKey,
+            }).catch(() => undefined);
+        }
+        return { ok: true, resourceRef, revision: outcome.value.revision };
+    } catch (error) {
+        // Approval-pending carries the exact result-bearing continuation and
+        // must reach the mounted presenter unchanged. Ordinary preparation or
+        // transport failures remain retryable from the preserved draft.
+        if (isTeamActionApprovalPendingError(error)) throw error;
+        return { ok: false, reason: 'failed' };
+    } finally {
+        resourceDataKey?.fill(0);
+    }
+}
+
+/**
+ * Promotes one personal value into the shared resource owner. The canonical
+ * Settings one-shot owner prepares the complete envelope, while the Home's
+ * promotion route commits that envelope and resource creation atomically.
+ */
+export async function promotePersonalSavedSecretResource(params: Readonly<{
+    scope: ServerAccountScope;
+    expectedSettingsVersion: number;
+    secret: SavedSecret;
+    accountGrants: readonly string[];
+    teamGrants: readonly string[];
+    groupGrants: readonly string[];
+    onApprovalSucceeded?: (result: Readonly<{ ok: true; resourceRef: string }>) => void | Promise<void>;
+    onApprovalFailed?: (code: string) => void;
+}>): Promise<SavedSecretPromotionResult> {
+    const sync = getSyncSingleton();
+    const value = sync.decryptSecretValue(params.secret.encryptedValue);
+    if (value === null) return { ok: false, reason: 'unavailable' };
+    const resourceId = randomUUID();
+    const resourceRef = formatSavedSecretCatalogReferenceV1({ kind: 'shared_resource', id: resourceId });
+    // Written by the commit callback below; held in a box so the compiler
+    // cannot narrow it back to its initial null at the zeroizing `finally`.
+    const promotionDataKey: { value: Uint8Array | null } = { value: null };
+
+    try {
+        const mutation = await sync.mutateAccountSettingsOnce({
+            expectedSettingsScope: params.scope,
+            expectedSettingsVersion: params.expectedSettingsVersion,
+            mutate: (raw) => {
+                if (listAccountSettingsSavedSecretReferences(raw, params.secret.id)
+                    .some((reference) => reference.owner === 'profile')) {
+                    throw new SavedSecretProfileActivationHeldError();
+                }
+                return {
+                    settings: { ...promotePersonalSavedSecretReference(raw, {
+                        secretId: params.secret.id,
+                        expectedUpdatedAt: params.secret.updatedAt,
+                        sharedSecretRef: resourceRef,
+                    }).settings },
+                    value: { resourceId, resourceRef },
+                };
+            },
+            commitPrepared: async (prepared) => {
+                const encryption = sync.encryption;
+                if (prepared.accountMode === 'e2ee' && !encryption) {
+                    return { status: 'rejected', error: new Error('saved_secret_encryption_unavailable') };
+                }
+                const preparedResourceDataKey = prepared.accountMode === 'e2ee'
+                    ? getRandomBytes(32)
+                    : null;
+                promotionDataKey.value = preparedResourceDataKey;
+                const storedContent = prepared.accountMode === 'plain'
+                    ? sealSavedSecretResourceStoredContentV1({
+                        resourceId,
+                        mode: 'plain',
+                        content: {
+                            v: 1,
+                            name: params.secret.name,
+                            kind: params.secret.kind,
+                            value,
+                        },
+                    })
+                    : preparedResourceDataKey
+                        ? sealSavedSecretResourceStoredContentV1({
+                            resourceId,
+                            mode: 'e2ee',
+                            resourceDataKey: preparedResourceDataKey,
+                            content: {
+                                v: 1,
+                                name: params.secret.name,
+                                kind: params.secret.kind,
+                                value,
+                            },
+                            randomBytes: getRandomBytes,
+                        })
+                        : null;
+                if (!storedContent) {
+                    return { status: 'rejected', error: new Error('saved_secret_encryption_unavailable') };
+                }
+                const keyEnvelopes = prepared.accountMode === 'e2ee' && encryption && preparedResourceDataKey
+                    ? [{
+                        recipientAccountId: params.scope.accountId,
+                        encryptedDataKey: encryptDataKeyForRecipientV0(
+                            preparedResourceDataKey,
+                            encodeBase64(encryption.contentDataKey, 'base64'),
+                        ),
+                        recipientContentPublicKeyFingerprint: computeContentPublicKeyFingerprint(
+                            encryption.contentDataKey,
+                        ),
+                    }]
+                    : [];
+                const outcome = await runTeamAction({
+                    scope: params.scope,
+                    actionId: 'secrets.shared.promote',
+                    input: {
+                        resourceId,
+                        displayName: params.secret.name,
+                        kind: params.secret.kind,
+                        encryptionMode: prepared.accountMode,
+                        storedContent,
+                        accountGrants: [...params.accountGrants],
+                        teamGrants: [...params.teamGrants],
+                        groupGrants: [...params.groupGrants],
+                        ...(keyEnvelopes.length > 0 ? { keyEnvelopes } : {}),
+                        expectedSettingsVersion: prepared.expectedSettingsVersion,
+                        nextSettings: prepared.content,
+                    },
+                    parse: (value) => SharedSavedSecretPromoteOutputV1Schema.parse(value),
+                    onApprovalSucceeded: async (approved) => {
+                        const currentEncryption = getSyncSingleton().encryption;
+                        if (currentEncryption) {
+                            await repairApprovedSavedSecretResourceEnvelopesBestEffort({
+                                scope: params.scope,
+                                resourceId,
+                                expectedRevision: 1,
+                                decryptDataKeyEnvelope: (encryptedDataKey) => currentEncryption.decryptEncryptionKey(
+                                    encryptedDataKey,
+                                    params.scope,
+                                ),
+                            }).catch(() => undefined);
+                        }
+                        await params.onApprovalSucceeded?.({ ok: true, resourceRef });
+                    },
+                    ...(params.onApprovalFailed ? { onApprovalFailed: params.onApprovalFailed } : {}),
+                });
+                if (outcome.kind === 'succeeded') {
+                    return { status: 'applied', settingsVersion: outcome.value.settingsVersion };
+                }
+                if (outcome.failure.kind === 'conflict') return { status: 'conflict' };
+                if (outcome.failure.kind === 'outcome_unknown') return { status: 'outcomeUnknown' };
+                return { status: 'rejected', error: new Error(`saved_secret_promotion_${outcome.failure.kind}`) };
+            },
+        });
+        if (mutation.status === 'applied') {
+            if (promotionDataKey.value) {
+                await repairSavedSecretResourceEnvelopesBestEffort({
+                    scope: params.scope,
+                    resourceId,
+                    expectedRevision: 1,
+                    resourceDataKey: promotionDataKey.value,
+                }).catch(() => undefined);
+            }
+            return { ok: true, resourceRef };
+        }
+        if (mutation.status === 'conflict') return { ok: false, reason: 'changed' };
+
+        // The Home transaction is atomic. If readback lost the response but
+        // the catalog sees this resource, its paired Settings rewrite committed.
+        const catalog = await readSavedSecretCatalog(params.scope);
+        if (catalog.ok && catalog.resources.some((resource) => (
+            isHealthySavedSecretResourceMaterialV1(resource)
+            && resource.resourceId === resourceId
+        ))) {
+            if (promotionDataKey.value) {
+                await repairSavedSecretResourceEnvelopesBestEffort({
+                    scope: params.scope,
+                    resourceId,
+                    expectedRevision: 1,
+                    resourceDataKey: promotionDataKey.value,
+                }).catch(() => undefined);
+            }
+            return { ok: true, resourceRef };
+        }
+        return { ok: false, reason: 'outcome_unknown' };
+    } catch (error) {
+        if (error instanceof SavedSecretProfileActivationHeldError) {
+            return { ok: false, reason: 'update_required' };
+        }
+        if (isTeamActionApprovalPendingError(error)) throw error;
+        return { ok: false, reason: 'failed' };
+    } finally {
+        promotionDataKey.value?.fill(0);
+    }
+}
+
+export async function updateSavedSecretResource(params: Readonly<{
+    scope: ServerAccountScope;
+    resourceId: string;
+    expectedRevision: number;
+    nextName?: string;
+    nextValue?: string;
+    decryptDataKeyEnvelope: (encryptedDataKey: string) => Promise<Uint8Array | null>;
+}> & SavedSecretApprovalHandlers<SavedSecretMutationOutput>): Promise<SavedSecretResourceOperationResult> {
+    const catalog = await readSavedSecretCatalog(params.scope);
+    if (!catalog.ok) return { ok: false, reason: 'unavailable' };
+    const resource = catalog.resources.find((candidate): candidate is HealthySavedSecretResourceMaterialV1 => (
+        isHealthySavedSecretResourceMaterialV1(candidate)
+        && candidate.resourceId === params.resourceId
+    ));
+    if (!resource || resource.entry.relationship !== 'owner' || resource.entry.materialStatus !== 'ready') {
+        return { ok: false, reason: 'unavailable' };
+    }
+    if (resource.entry.revision !== params.expectedRevision) return { ok: false, reason: 'changed' };
+    if (!resource.storedContent) return { ok: false, reason: 'unavailable' };
+
+    let resourceDataKey: Uint8Array | null = null;
+    try {
+        if (resource.encryptionMode === 'e2ee') {
+            if (!resource.recipientEnvelope) return { ok: false, reason: 'unavailable' };
+            resourceDataKey = await params.decryptDataKeyEnvelope(resource.recipientEnvelope.encryptedDataKey);
+            if (!resourceDataKey) return { ok: false, reason: 'unavailable' };
+        }
+        const current = resource.encryptionMode === 'plain'
+            ? openSavedSecretResourceStoredContentV1({
+                resourceId: resource.resourceId, mode: 'plain', storedContent: resource.storedContent,
+            })
+            : openSavedSecretResourceStoredContentV1({
+                resourceId: resource.resourceId, mode: 'e2ee', storedContent: resource.storedContent,
+                resourceDataKey: resourceDataKey!,
+            });
+        if (!current) return { ok: false, reason: 'unavailable' };
+        const content = {
+            ...current,
+            ...(params.nextName === undefined ? {} : { name: params.nextName }),
+            ...(params.nextValue === undefined ? {} : { value: params.nextValue }),
+        };
+        const storedContent = resource.encryptionMode === 'plain'
+            ? sealSavedSecretResourceStoredContentV1({ resourceId: resource.resourceId, mode: 'plain', content })
+            : sealSavedSecretResourceStoredContentV1({
+                resourceId: resource.resourceId,
+                mode: 'e2ee',
+                resourceDataKey: resourceDataKey!,
+                content,
+                randomBytes: getRandomBytes,
+            });
+        const outcome = await runTeamAction({
+            scope: params.scope,
+            actionId: 'secrets.shared.update',
+            input: {
+                resourceId: resource.resourceId,
+                expectedRevision: params.expectedRevision,
+                displayName: content.name,
+                kind: content.kind,
+                storedContent,
+            },
+            parse: (value) => SharedSavedSecretMutationOutputV1Schema.parse(value),
+            ...(params.onApprovalSucceeded ? { onApprovalSucceeded: params.onApprovalSucceeded } : {}),
+            ...(params.onApprovalFailed ? { onApprovalFailed: params.onApprovalFailed } : {}),
+        });
+        return outcome.kind === 'succeeded'
+            ? { ok: true }
+            : { ok: false, reason: operationFailureReason(outcome.failure.kind) };
+    } catch (error) {
+        if (isTeamActionApprovalPendingError(error)) throw error;
+        return { ok: false, reason: 'failed' };
+    } finally {
+        resourceDataKey?.fill(0);
+    }
+}
+
+export async function deleteSavedSecretResource(params: Readonly<{
+    scope: ServerAccountScope;
+    resourceId: string;
+    expectedRevision: number;
+    confirmedByPresentUser?: true;
+}> & SavedSecretApprovalHandlers<SavedSecretDeleteOutput>): Promise<SavedSecretResourceOperationResult> {
+    const outcome = await runTeamAction({
+        scope: params.scope,
+        actionId: 'secrets.shared.delete',
+        input: { resourceId: params.resourceId, expectedRevision: params.expectedRevision },
+        parse: (value) => SharedSavedSecretDeleteOutputV1Schema.parse(value),
+        ...(params.confirmedByPresentUser ? { approval: 'surface_confirmed' } : {}),
+        ...(params.onApprovalSucceeded ? { onApprovalSucceeded: params.onApprovalSucceeded } : {}),
+        ...(params.onApprovalFailed ? { onApprovalFailed: params.onApprovalFailed } : {}),
+    });
+    return outcome.kind === 'succeeded'
+        ? { ok: true }
+        : { ok: false, reason: operationFailureReason(outcome.failure.kind) };
+}
+
+export async function setSavedSecretResourceGrants(params: Readonly<{
+    scope: ServerAccountScope;
+    resourceId: string;
+    expectedRevision: number;
+    encryptionMode: 'plain' | 'e2ee';
+    accountGrants: readonly string[];
+    teamGrants: readonly string[];
+    groupGrants: readonly string[];
+    decryptDataKeyEnvelope: (encryptedDataKey: string) => Promise<Uint8Array | null>;
+}> & SavedSecretApprovalHandlers<SavedSecretMutationOutput>): Promise<SavedSecretResourceOperationResult> {
+    let resourceDataKey: Uint8Array | null = null;
+    try {
+        if (params.encryptionMode === 'e2ee') {
+            const catalog = await readSavedSecretCatalog(params.scope);
+            if (!catalog.ok) return { ok: false, reason: 'unavailable' };
+            const resource = catalog.resources.find((candidate): candidate is HealthySavedSecretResourceMaterialV1 => (
+                isHealthySavedSecretResourceMaterialV1(candidate)
+                && candidate.resourceId === params.resourceId
+            ));
+            if (!resource?.recipientEnvelope || resource.entry.revision !== params.expectedRevision) {
+                return { ok: false, reason: resource ? 'changed' : 'unavailable' };
+            }
+            resourceDataKey = await params.decryptDataKeyEnvelope(resource.recipientEnvelope.encryptedDataKey);
+            if (!resourceDataKey) return { ok: false, reason: 'unavailable' };
+
+        }
+
+        const finishApproved = async (value: SavedSecretMutationOutput) => {
+            if (params.encryptionMode === 'e2ee') {
+                await repairApprovedSavedSecretResourceEnvelopesBestEffort({
+                    scope: params.scope,
+                    resourceId: params.resourceId,
+                    expectedRevision: value.revision,
+                    decryptDataKeyEnvelope: params.decryptDataKeyEnvelope,
+                }).catch(() => undefined);
+            }
+            await params.onApprovalSucceeded?.(value);
+        };
+        const outcome = await runTeamAction({
+            scope: params.scope,
+            actionId: 'secrets.shared.grants.set',
+            input: {
+                resourceId: params.resourceId,
+                expectedRevision: params.expectedRevision,
+                accountGrants: [...params.accountGrants],
+                teamGrants: [...params.teamGrants],
+                groupGrants: [...params.groupGrants],
+            },
+            parse: (value) => SharedSavedSecretMutationOutputV1Schema.parse(value),
+            onApprovalSucceeded: finishApproved,
+            ...(params.onApprovalFailed ? { onApprovalFailed: params.onApprovalFailed } : {}),
+        });
+        if (outcome.kind !== 'succeeded') {
+            return { ok: false, reason: operationFailureReason(outcome.failure.kind) };
+        }
+        if (params.encryptionMode === 'e2ee' && resourceDataKey) {
+            await repairSavedSecretResourceEnvelopesBestEffort({
+                scope: params.scope,
+                resourceId: params.resourceId,
+                expectedRevision: outcome.value.revision,
+                resourceDataKey,
+            }).catch(() => undefined);
+        }
+        return { ok: true };
+    } catch (error) {
+        if (isTeamActionApprovalPendingError(error)) throw error;
+        return { ok: false, reason: 'failed' };
+    } finally {
+        resourceDataKey?.fill(0);
+    }
+}

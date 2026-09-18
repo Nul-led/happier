@@ -1,7 +1,6 @@
 import type { AuthCredentials } from "@/auth/storage/tokenStorage";
 import { listAccountPets } from "@/sync/api/pets/apiAccountPets";
-import { getServerFeaturesSnapshot } from "@/sync/api/capabilities/serverFeaturesClient";
-import { readServerEnabledBit } from "@happier-dev/protocol";
+import { resolveRuntimeFeatureDecisionOrThrow } from "@/sync/domains/features/featureDecisionInputs";
 
 import type {
     AccountPetMetadata,
@@ -46,8 +45,11 @@ function buildDecisionParams(params: FetchAndApplyAccountPetsParams): AccountPet
 }
 
 async function resolveDefaultPetsSyncEnabled(params: AccountPetsSyncDecisionParams): Promise<boolean> {
-    const snapshot = await getServerFeaturesSnapshot(params);
-    return snapshot.status === "ready" && readServerEnabledBit(snapshot.features, "pets.sync") === true;
+    const decision = await resolveRuntimeFeatureDecisionOrThrow({
+        featureId: "pets.sync",
+        ...params,
+    });
+    return decision.state === "enabled";
 }
 
 export async function fetchAndApplyAccountPets(

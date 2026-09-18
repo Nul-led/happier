@@ -1,7 +1,12 @@
 import React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { PluginContributesV2Schema } from '@happier-dev/protocol';
+import {
+  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2Schema,
+  PluginContributesV2Schema,
+  readBuiltInLegacyConnectedAccountServiceKeyIngress,
+} from '@happier-dev/protocol';
 
 import { renderScreen } from '@/dev/testkit';
 
@@ -149,9 +154,16 @@ describe('VoiceGlobalConnectedServicesBindingField', () => {
     } | undefined;
     expect(modalConfig).toBeDefined();
     if (!modalConfig) throw new Error('expected Connected Services picker modal');
+    // StrictMode replays functional state updaters, which is the cheapest real
+    // reproduction of React evaluating one more than once. Persistence is an
+    // external side effect, so a single selection must still write exactly once.
     const pickerScreen = await renderScreen(React.createElement(
-      modalConfig.component,
-      { ...modalConfig.props, onClose: vi.fn() },
+      React.StrictMode,
+      null,
+      React.createElement(
+        modalConfig.component,
+        { ...modalConfig.props, onClose: vi.fn() },
+      ),
     ));
     const picker = pickerScreen.tree.findByType('ConnectedServicesPicker' as any);
 
@@ -169,16 +181,22 @@ describe('VoiceGlobalConnectedServicesBindingField', () => {
       selection: 'profile',
       profileId,
     }));
-    expect(onChange).toHaveBeenCalledWith({
+    const qualifiedServiceId = readBuiltInLegacyConnectedAccountServiceKeyIngress(serviceId);
+    expect(qualifiedServiceId).not.toBeNull();
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const emittedBinding = onChange.mock.calls[0]?.[0];
+    expect(emittedBinding).toEqual({
       v: 1,
       bindingsByServiceId: {
-        [serviceId]: {
+        [qualifiedServiceId!]: {
           source: 'connected',
           selection: 'profile',
           profileId,
         },
       },
     });
+    expect(ConnectedServiceBindingsV1Schema.safeParse(emittedBinding).success).toBe(true);
+    expect(ConnectedServiceBindingsV2Schema.safeParse(emittedBinding).success).toBe(false);
   });
 
   it('uses a schema-valid installed qualified Agent without falling back through its colliding bundled local id', async () => {

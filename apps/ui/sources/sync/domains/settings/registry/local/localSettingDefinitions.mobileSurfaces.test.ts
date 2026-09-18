@@ -8,7 +8,7 @@ import { LOCAL_SETTING_DEFINITIONS } from './localSettingDefinitions';
  * Surfaces that exist without a right-sidebar tab behind them, so the registry projection
  * cannot produce them.
  */
-const NON_TAB_SESSION_SURFACES = ['chat', 'tabs'] as const;
+const NON_TAB_SESSION_SURFACES = ['chat', 'tabs', 'companion'] as const;
 
 function declaredSessionMobileSurfaces(): readonly string[] {
     return resolveRightSidebarMobileProjection({
@@ -27,6 +27,7 @@ describe('LOCAL_SETTING_DEFINITIONS mobile surfaces', () => {
         const surfaces = [...NON_TAB_SESSION_SURFACES, ...declaredSessionMobileSurfaces()];
 
         expect(surfaces).toContain('navigation');
+        expect(surfaces).toContain('companion');
         for (const surface of surfaces) {
             expect(
                 { surface, accepted: schema.safeParse({ 'session-1': surface }).success },

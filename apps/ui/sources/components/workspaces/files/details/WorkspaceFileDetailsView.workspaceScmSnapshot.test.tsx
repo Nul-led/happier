@@ -700,6 +700,11 @@ describe('WorkspaceFileDetailsView (workspace SCM snapshot)', () => {
         await act(async () => {});
 
         expect(screen.findAllByType('FileContentPanel')[0]?.props.diffContent).toBe('diff-1');
+        expect(screen.root.findAllByType('View').some((view) => (
+            view.props.style?.position === 'relative'
+            && view.props.style?.flex === 1
+            && view.props.style?.minHeight === 0
+        ))).toBe(true);
 
         workspaceSnapshot = {
             ...workspaceSnapshot,

@@ -1,29 +1,37 @@
-import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
+import type { SessionAgentActivityRow } from '@/components/sessions/agents/presentation/sessionAgentActivityRows';
 
 export type SessionSubagentGroupModel = Readonly<{
     key: string;
     label: string | null;
-    items: readonly SessionSubagent[];
+    items: readonly SessionAgentActivityRow[];
 }>;
 
-export function groupSessionSubagents(subagents: readonly SessionSubagent[]): readonly SessionSubagentGroupModel[] {
+/**
+ * Rows grouped by the team/group they belong to, in first-seen order.
+ *
+ * Grouping reads the locally derived row because the group key is an operational fact (which team
+ * spawned this agent) that the published headline does not carry.
+ */
+export function groupSessionSubagents(
+    rows: readonly SessionAgentActivityRow[],
+): readonly SessionSubagentGroupModel[] {
     const orderedKeys: string[] = [];
-    const groups = new Map<string, SessionSubagent[]>();
+    const groups = new Map<string, SessionAgentActivityRow[]>();
 
-    for (const subagent of subagents) {
-        const key = subagent.display.groupKey?.trim() || '__ungrouped__';
+    for (const row of rows) {
+        const key = row.subagent.display.groupKey?.trim() || '__ungrouped__';
         if (!groups.has(key)) {
             groups.set(key, []);
             orderedKeys.push(key);
         }
-        groups.get(key)!.push(subagent);
+        groups.get(key)!.push(row);
     }
 
     return orderedKeys.map((key) => {
         const items = groups.get(key) ?? [];
         return {
             key,
-            label: key === '__ungrouped__' ? null : (items[0]?.display.groupLabel?.trim() || key),
+            label: key === '__ungrouped__' ? null : (items[0]?.subagent.display.groupLabel?.trim() || key),
             items,
         };
     });

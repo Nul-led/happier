@@ -1,13 +1,16 @@
 import type { FeaturesResponse as ServerFeatures } from '@happier-dev/protocol';
 import type { PeerRouteViabilityRecord as TransferRouteViabilityRecord } from '@happier-dev/peer-mediation';
 
-import type { TransferRouteDecision, ResolveTransferRouteDecisionInput } from '../routing/resolveTransferRouteDecision';
+import type { TransferRouteDecision } from '../routing/resolveTransferRouteDecision';
 import { resolveTransferRouteDecision } from '../routing/resolveTransferRouteDecision';
 import {
+    isMachineFiniteTransferRpcDeclared,
     resolveMachineCarrierPreselection,
     type MachineCarrierHostEligibility,
 } from '../routing/resolveMachineCarrierPreselection';
 import {
+    isMachineDaemonLegacyTransferRpcEligible,
+    isMachineDaemonFiniteTransferApplicationSupported,
     resolveMachineDaemonTransferDirectPeerDiagnostics,
     type MachineDaemonTransferDirectPeerDiagnostics,
 } from './machineDaemonTransferState';
@@ -17,10 +20,14 @@ export type ResolveSessionFileTransferAvailabilityInput = Readonly<{
     machineTargetAvailable: boolean;
     serverFeatures: ServerFeatures | null;
     machineDaemonState?: unknown | null;
+    /** Strict Machine declaration; the only reachability source a Runner has. */
+    machineOperationProtocolCapabilities?: unknown | null;
+    machineOperationProtocolCapabilitiesRevision?: unknown;
+    machineKind?: 'persistent' | 'ephemeral_session_runner' | null;
+    machineActive?: boolean | null;
+    machineRevokedAt?: unknown;
     machineCarrierHost?: MachineCarrierHostEligibility;
-    directPeerRoute?: TransferRouteViabilityRecord | null;
     machineRpcDirectRoute?: TransferRouteViabilityRecord | null;
-    preferredRouteKinds?: ResolveTransferRouteDecisionInput['preferredRouteKinds'];
 }>;
 
 export type ResolveSessionFileTransferAvailabilityResult = Readonly<{
@@ -28,21 +35,6 @@ export type ResolveSessionFileTransferAvailabilityResult = Readonly<{
     decision: TransferRouteDecision | null;
     daemonDirectPeerDiagnostics: MachineDaemonTransferDirectPeerDiagnostics;
 }>;
-
-function resolveSessionDirectPeerRoute(
-    daemonRoute: TransferRouteViabilityRecord,
-    directPeerRoute?: TransferRouteViabilityRecord | null,
-): TransferRouteViabilityRecord {
-    if (daemonRoute.status !== 'viable') {
-        return daemonRoute;
-    }
-
-    if (directPeerRoute?.status === 'viable' || directPeerRoute?.status === 'unavailable') {
-        return directPeerRoute;
-    }
-
-    return daemonRoute;
-}
 
 export function resolveSessionFileTransferAvailability(
     input: ResolveSessionFileTransferAvailabilityInput,
@@ -59,30 +51,45 @@ export function resolveSessionFileTransferAvailability(
         };
     }
 
-    const daemonTransferRoute = daemonDirectPeerDiagnostics.route;
-    const machineCarrierPreselection = input.machineCarrierHost && resolveMachineCarrierPreselection({
+    const runnerFiniteTransferRpcDeclared = input.machineKind === 'ephemeral_session_runner' && isMachineFiniteTransferRpcDeclared({
+        capabilities: input.machineOperationProtocolCapabilities,
+        revision: input.machineOperationProtocolCapabilitiesRevision,
+        active: input.machineActive,
+        revokedAt: input.machineRevokedAt,
+    });
+    const finiteTransferApplicationSupported = input.machineKind === 'ephemeral_session_runner'
+        ? runnerFiniteTransferRpcDeclared
+        : isMachineDaemonFiniteTransferApplicationSupported(input.machineDaemonState);
+
+    const machineCarrierPreselection = input.machineCarrierHost ? resolveMachineCarrierPreselection({
+        serverFeatures: input.serverFeatures,
         host: input.machineCarrierHost,
         targetEndpoint:
             (input.machineDaemonState as { peerMediation?: { iroh?: { endpoint?: unknown } } } | null | undefined)
                 ?.peerMediation?.iroh?.endpoint,
-    });
-    const machineCarrierEligible = machineCarrierPreselection?.kind === 'eligible';
-    const directPeerRoute = machineCarrierEligible
-        ? { status: 'viable' as const, checkedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER }
-        : resolveSessionDirectPeerRoute(daemonTransferRoute, input.directPeerRoute);
-
-    const decision = resolveTransferRouteDecision({
-        serverFeatures: input.serverFeatures,
-        directPeerRoute: directPeerRoute ?? { status: 'unknown' },
-        directPeerRouteKinds: machineCarrierEligible
-            ? ['iroh_peer', ...daemonDirectPeerDiagnostics.activeRouteKinds.filter((kind) => kind !== 'iroh_peer')]
-            : daemonDirectPeerDiagnostics.activeRouteKinds,
+        legacyTransferSupported: isMachineDaemonLegacyTransferRpcEligible(input.machineDaemonState),
+        finiteTransferApplicationSupported,
+        runnerFiniteTransferRpcDeclared,
         machineRpcDirectRoute: input.machineRpcDirectRoute ?? { status: 'unknown' },
-        preferredRouteKinds: input.preferredRouteKinds,
-    });
+    }) : { kind: 'unavailable' as const };
+    const selectedNow = { status: 'viable' as const, checkedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER };
+
+    const decision = machineCarrierPreselection.kind === 'unavailable'
+        ? null
+        : resolveTransferRouteDecision({
+            serverFeatures: input.serverFeatures,
+            directPeerRoute: machineCarrierPreselection.kind === 'iroh_peer'
+                ? selectedNow
+                : { status: 'unavailable', checkedAt: 0, expiresAt: 0, failureReason: 'finite_transfer_route_unavailable' },
+            directPeerRouteKinds: machineCarrierPreselection.kind === 'iroh_peer' ? ['iroh_peer'] : [],
+            machineRpcDirectRoute: machineCarrierPreselection.kind === 'legacy_machine_rpc'
+                ? selectedNow
+                : { status: 'unavailable', checkedAt: 0, expiresAt: 0, failureReason: 'finite_transfer_route_unavailable' },
+            preferredRouteKinds: machineCarrierPreselection.kind === 'iroh_peer' ? ['iroh_peer'] : ['machine_rpc_direct'],
+        });
 
     return {
-        available: decision.kind === 'selected',
+        available: decision?.kind === 'selected',
         decision,
         daemonDirectPeerDiagnostics,
     };

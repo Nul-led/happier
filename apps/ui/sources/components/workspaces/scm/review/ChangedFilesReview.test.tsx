@@ -456,37 +456,6 @@ vi.mock('@/components/workspaces/scm/review/useChangedFilesReviewDiffLoading', (
     },
 }));
 
-vi.mock('@/components/workspaces/scm/review/useChangedFilesReviewFocusPath', () => ({
-    useChangedFilesReviewFocusPath: (input: any) => {
-        const [highlightedPath, setHighlightedPath] = React.useState<string | null>(null);
-        const appliedFocusPathRef = React.useRef<string | null>(null);
-        const expandPathRef = React.useRef(input.expandPath);
-        const scrollToPathRef = React.useRef(input.scrollToPath);
-        expandPathRef.current = input.expandPath;
-        scrollToPathRef.current = input.scrollToPath;
-
-        React.useEffect(() => {
-            const resolved = typeof input.focusPath === 'string' ? input.focusPath : null;
-            if (!resolved) {
-                appliedFocusPathRef.current = null;
-                return;
-            }
-            if (appliedFocusPathRef.current === resolved) return;
-            if (!Array.isArray(input.reviewFiles) || !input.reviewFiles.some((f: any) => f.fullPath === resolved)) return;
-            appliedFocusPathRef.current = resolved;
-            setHighlightedPath(resolved);
-            expandPathRef.current(resolved);
-            const scrollTimer = setTimeout(() => scrollToPathRef.current(resolved), 50);
-            const clearTimer = setTimeout(() => setHighlightedPath(null), 8000);
-            return () => {
-                clearTimeout(scrollTimer);
-                clearTimeout(clearTimer);
-            };
-        }, [input.focusPath, input.reviewFiles]);
-
-        return highlightedPath;
-    },
-}));
 
 vi.mock('@/components/workspaces/scm/review/useScmDiffExpandedKeys', () => ({
     useScmDiffExpandedKeys: (input: any) => {
@@ -878,12 +847,6 @@ vi.mock('@/components/workspaces/scm/changes/ScmChangeRow', () => ({
     ScmChangeRow: (props: any) => React.createElement('ScmChangeRow', props),
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/sync/ops', () => ({
     sessionScmDiffFile: (sessionId: string, req: any) => sessionScmDiffFileSpy(sessionId, req),
@@ -1032,11 +995,11 @@ describe('ChangedFilesReview', () => {
             sessionId: 's1',
             snapshot: null,
             changedFilesViewMode: 'repository',
-            attributionReliability: 'high',
+
             allRepositoryChangedFiles: [],
             sessionAttributedFiles: [],
             repositoryOnlyFiles: [],
-            suppressedInferredCount: 0,
+
             maxFiles: 25,
             maxChangedLines: 1_000,
             onFilePress: () => {},
@@ -1066,13 +1029,13 @@ describe('ChangedFilesReview', () => {
                 sessionId="session-1"
                 snapshot={snapshot}
                 changedFilesViewMode="repository"
-                attributionReliability="high"
+
                 allRepositoryChangedFiles={[fileA]}
                 turnAttributedFiles={[]}
                 turnRepositoryOnlyFiles={[]}
                 sessionAttributedFiles={[]}
                 repositoryOnlyFiles={[]}
-                suppressedInferredCount={0}
+
                 maxFiles={25}
                 maxChangedLines={2000}
                 onFilePress={vi.fn()}
@@ -1104,7 +1067,7 @@ describe('ChangedFilesReview', () => {
 
         diffFilesListViewSpy.mockClear();
 
-        await renderChangedFilesReview({
+        const screen = await renderChangedFilesReview({
             allRepositoryChangedFiles: files,
             maxFiles: 1,
         });
@@ -1198,10 +1161,10 @@ describe('ChangedFilesReview', () => {
 
     it('keeps turn review scoped to latest-turn files', async () => {
         diffFilesListViewSpy.mockClear();
-        await renderChangedFilesReview({
+        const screen = await renderChangedFilesReview({
             changedFilesViewMode: 'turn',
             allRepositoryChangedFiles: [fileA, fileB],
-            turnAttributedFiles: [{ file: fileA, confidence: 'high' }],
+            turnAttributedFiles: [{ file: fileA, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
             turnRepositoryOnlyFiles: [fileB],
         });
 
@@ -1213,6 +1176,7 @@ describe('ChangedFilesReview', () => {
                 filePath: 'src/a.ts',
             }),
         ]);
+        expect(screen.findByTestId('changed-file-evidence-trigger')).not.toBeNull();
     });
 
     it('keeps reconciled turn review mixed evidence visible and renders checkpoint attribution ambiguity', async () => {
@@ -1220,9 +1184,9 @@ describe('ChangedFilesReview', () => {
         const screen = await renderChangedFilesReview({
             changedFilesViewMode: 'turn',
             allRepositoryChangedFiles: [fileA, fileB, fileC],
-            turnAttributedFiles: [{ file: fileA, confidence: 'high' }, { file: fileB, confidence: 'high' }],
-            turnAgentReportedFiles: [{ file: fileA, confidence: 'high' }],
-            turnCheckpointFiles: [{ file: fileB, confidence: 'high' }],
+            turnAttributedFiles: [{ file: fileA, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }, { file: fileB, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
+            turnAgentReportedFiles: [{ file: fileA, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
+            turnCheckpointFiles: [{ file: fileB, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
             turnRepositoryOnlyFiles: [fileC],
             turnCheckpointMetadata: {
                 version: 1,
@@ -1246,7 +1210,7 @@ describe('ChangedFilesReview', () => {
                 filePath: 'src/b.ts',
             }),
         ]);
-        expect(screen.getTextContent()).toContain('files.checkpointAttributionShared');
+        expect(screen.getTextContent()).toContain('changedFileEvidence.overlap.observed');
     });
 
     it('keeps agent-reported turn review scoped away from checkpoint-only files', async () => {
@@ -1254,9 +1218,9 @@ describe('ChangedFilesReview', () => {
         await renderChangedFilesReview({
             changedFilesViewMode: 'turn_agent_reported',
             allRepositoryChangedFiles: [fileA, fileB],
-            turnAttributedFiles: [{ file: fileA, confidence: 'high' }, { file: fileB, confidence: 'high' }],
-            turnAgentReportedFiles: [{ file: fileA, confidence: 'high' }],
-            turnCheckpointFiles: [{ file: fileB, confidence: 'high' }],
+            turnAttributedFiles: [{ file: fileA, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }, { file: fileB, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
+            turnAgentReportedFiles: [{ file: fileA, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
+            turnCheckpointFiles: [{ file: fileB, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
         });
 
         const lastProps = diffFilesListViewSpy.mock.calls.at(-1)?.[0];
@@ -1274,9 +1238,9 @@ describe('ChangedFilesReview', () => {
         const screen = await renderChangedFilesReview({
             changedFilesViewMode: 'turn_checkpoint',
             allRepositoryChangedFiles: [fileA, fileB],
-            turnAttributedFiles: [{ file: fileA, confidence: 'high' }, { file: fileB, confidence: 'high' }],
-            turnAgentReportedFiles: [{ file: fileA, confidence: 'high' }],
-            turnCheckpointFiles: [{ file: fileB, confidence: 'high' }],
+            turnAttributedFiles: [{ file: fileA, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }, { file: fileB, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
+            turnAgentReportedFiles: [{ file: fileA, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
+            turnCheckpointFiles: [{ file: fileB, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
             turnCheckpointMetadata: {
                 version: 1,
                 scopeId: 's1:/repo',
@@ -1295,7 +1259,7 @@ describe('ChangedFilesReview', () => {
                 filePath: 'src/b.ts',
             }),
         ]);
-        expect(screen.getTextContent()).toContain('files.checkpointAttributionShared');
+        expect(screen.getTextContent()).toContain('changedFileEvidence.overlap.observed');
     });
 
     it('keeps unmatched checkpoint evidence visible when the review area is included', async () => {
@@ -1319,7 +1283,7 @@ describe('ChangedFilesReview', () => {
             snapshot: includedOnlySnapshot,
             changedFilesViewMode: 'turn_checkpoint',
             allRepositoryChangedFiles: [],
-            turnCheckpointFiles: [{ file: fileC, confidence: 'high' }],
+            turnCheckpointFiles: [{ file: fileC, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
         });
 
         const lastProps = diffFilesListViewSpy.mock.calls.at(-1)?.[0];
@@ -1336,8 +1300,8 @@ describe('ChangedFilesReview', () => {
         const screen = await renderChangedFilesReview({
             changedFilesViewMode: 'turn_checkpoint',
             allRepositoryChangedFiles: [fileA],
-            turnAttributedFiles: [{ file: fileA, confidence: 'high' }],
-            turnAgentReportedFiles: [{ file: fileA, confidence: 'high' }],
+            turnAttributedFiles: [{ file: fileA, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
+            turnAgentReportedFiles: [{ file: fileA, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
             turnCheckpointFiles: [],
             turnCheckpointMetadata: {
                 version: 1,
@@ -1361,7 +1325,7 @@ describe('ChangedFilesReview', () => {
         await renderChangedFilesReview({
             changedFilesViewMode: 'session',
             allRepositoryChangedFiles: [fileA, fileB],
-            sessionAttributedFiles: [{ file: fileA, confidence: 'high' }],
+            sessionAttributedFiles: [{ file: fileA, content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }],
             repositoryOnlyFiles: [fileB],
         });
 

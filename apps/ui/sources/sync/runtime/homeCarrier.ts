@@ -25,6 +25,13 @@ export type HomeCarrierWebSocketFactory = (
     options?: Record<string, unknown>,
 ) => unknown;
 
+export class ServerScopedTransportUnavailableError extends Error {
+    constructor() {
+        super('No verified transport is available for the target Home');
+        this.name = 'ServerScopedTransportUnavailableError';
+    }
+}
+
 export type HomeCarrier = Readonly<{
     /**
      * The EndpointId the carrier's transport cryptographically proves for every

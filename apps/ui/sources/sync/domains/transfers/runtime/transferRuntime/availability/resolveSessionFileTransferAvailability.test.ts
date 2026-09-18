@@ -2,30 +2,102 @@ import { describe, expect, it } from 'vitest';
 
 import { FeaturesResponseSchema } from '@happier-dev/protocol';
 
-describe('resolveSessionFileTransferAvailability', () => {
-    it('keeps browser file controls enabled when a relay-reachable Iroh endpoint is usable without the native lifecycle', async () => {
-        const { resolveSessionFileTransferAvailability } = await import('./resolveSessionFileTransferAvailability');
-        const serverFeatures = FeaturesResponseSchema.parse({
-            features: {
-                machines: {
-                    enabled: true,
-                    transfer: {
-                        enabled: true,
-                        directPeer: { enabled: true },
-                        serverRouted: { enabled: false },
-                    },
-                },
-            },
-            capabilities: {},
-        });
+import { resolveSessionFileTransferAvailability } from './resolveSessionFileTransferAvailability';
 
+const features = FeaturesResponseSchema.parse({
+    features: { machines: { enabled: true, transfer: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: false } } } },
+    capabilities: {},
+});
+const predecessorState = {
+    // 0.2 21977798f704992bc2db3a48cc98c43aeae220c5, api/types.ts and
+    // daemon/startDaemon.ts: the RPC registrar exposes bulk transfers without
+    // publishing a transfer capability in daemon state.
+    status: 'running',
+    startedWithCliVersion: '0.2.11',
+} as const;
+const declaredTransferState = {
+    transfer: {
+        supported: { import: true, export: true },
+        listenerClasses: {
+            loopback_http: { enabled: false, configured: false, active: false },
+            tailscale_serve_https: { enabled: false, configured: false, active: false },
+        },
+        lifecycle: { mode: 'lazy_idle_shutdown', version: 1 },
+    },
+} as const;
+
+describe('resolveSessionFileTransferAvailability', () => {
+    it('uses the same Iroh-first preselection as execution', () => {
         const result = resolveSessionFileTransferAvailability({
             sessionAvailable: true,
             machineTargetAvailable: true,
-            serverFeatures,
+            serverFeatures: features,
             machineCarrierHost: { kind: 'browser' },
-            machineRpcDirectRoute: { status: 'unknown' },
+            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
             machineDaemonState: {
+                ...declaredTransferState,
+                peerMediation: { iroh: { endpoint: { endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test'] } } },
+            },
+        });
+
+        expect(result.available).toBe(true);
+        expect(result.decision).toMatchObject({ kind: 'selected', preferredRouteKind: 'iroh_peer' });
+    });
+
+    it('keeps a moving 0.2 daemon available through its retained finite-transfer RPC route', () => {
+        const result = resolveSessionFileTransferAvailability({
+            sessionAvailable: true,
+            machineTargetAvailable: true,
+            serverFeatures: features,
+            machineCarrierHost: { kind: 'native', lifecycleAvailable: false },
+            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
+            machineDaemonState: predecessorState,
+        });
+
+        expect(result.available).toBe(true);
+        expect(result.decision).toMatchObject({ kind: 'selected', preferredRouteKind: 'machine_rpc_direct' });
+    });
+
+    it('makes a current Runner attachment route available from its strict Machine capability without daemon state', () => {
+        const result = resolveSessionFileTransferAvailability({
+            sessionAvailable: true,
+            machineTargetAvailable: true,
+            serverFeatures: features,
+            machineCarrierHost: { kind: 'native', lifecycleAvailable: false },
+            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
+            machineDaemonState: null,
+            machineKind: 'ephemeral_session_runner',
+            machineOperationProtocolCapabilities: {
+                finiteTransferRpc: { protocolVersions: [1] },
+            },
+            machineOperationProtocolCapabilitiesRevision: 1,
+            machineActive: true,
+            machineRevokedAt: null,
+        });
+
+        expect(result.available).toBe(true);
+        expect(result.decision).toMatchObject({ kind: 'selected', preferredRouteKind: 'machine_rpc_direct' });
+    });
+
+    it('does not let an endpoint or operation projection override an unsupported daemon transfer declaration', () => {
+        const result = resolveSessionFileTransferAvailability({
+            sessionAvailable: true,
+            machineTargetAvailable: true,
+            serverFeatures: features,
+            machineCarrierHost: { kind: 'browser' },
+            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
+            machineKind: 'persistent',
+            machineOperationProtocolCapabilities: {
+                finiteTransferRpc: { protocolVersions: [1] },
+            },
+            machineOperationProtocolCapabilitiesRevision: 1,
+            machineActive: true,
+            machineRevokedAt: null,
+            machineDaemonState: {
+                transfer: {
+                    ...declaredTransferState.transfer,
+                    supported: { import: false, export: false },
+                },
                 peerMediation: {
                     iroh: {
                         endpoint: {
@@ -37,453 +109,40 @@ describe('resolveSessionFileTransferAvailability', () => {
             },
         });
 
-        expect(result.available).toBe(true);
-        expect(result.decision).toMatchObject({
-            kind: 'selected',
-            preferredRouteKind: 'iroh_peer',
-        });
+        expect(result.available).toBe(false);
+        expect(result.decision).toBeNull();
     });
 
-    it('routes predecessor lan_http-only state to relay without selecting direct peer', async () => {
-        const { resolveSessionFileTransferAvailability } = await import('./resolveSessionFileTransferAvailability');
-        const serverFeatures = FeaturesResponseSchema.parse({
-            features: {
-                machines: {
-                    enabled: true,
-                    transfer: {
-                        enabled: true,
-                        directPeer: { enabled: true },
-                        serverRouted: { enabled: true },
-                    },
-                },
-            },
-            capabilities: {},
-        });
-
+    it('fails closed when route viability is not established', () => {
         const result = resolveSessionFileTransferAvailability({
             sessionAvailable: true,
             machineTargetAvailable: true,
-            serverFeatures,
-            directPeerRoute: { status: 'viable', checkedAt: 10, expiresAt: 20 },
-            machineRpcDirectRoute: {
-                status: 'unavailable',
-                checkedAt: 10,
-                expiresAt: 20,
-                failureReason: 'machine_rpc_direct_unavailable',
-            },
-            machineDaemonState: {
-                transfer: {
-                    supported: { import: true, export: true },
-                    listenerClasses: {
-                        loopback_http: { enabled: false, configured: false, active: false },
-                        lan_http: { enabled: true, configured: true, active: true },
-                        tailscale_serve_https: { enabled: false, configured: false, active: false, available: false },
-                    },
-                    lifecycle: { mode: 'lazy_idle_shutdown', version: 1 },
-                },
-            },
-        });
-
-        expect(result.daemonDirectPeerDiagnostics.activeRouteKinds).toEqual([]);
-        expect(result.daemonDirectPeerDiagnostics.route.status).toBe('unavailable');
-        expect(result.decision).toEqual(expect.objectContaining({
-            kind: 'selected',
-            preferredRouteKind: 'server_relay_stream',
-        }));
-    });
-
-    it('does not prefer direct peer when the daemon transfer state does not advertise a configured transfer listener', async () => {
-        const { resolveSessionFileTransferAvailability } = await import('./resolveSessionFileTransferAvailability');
-
-        const serverFeatures = FeaturesResponseSchema.parse({
-            features: {
-                machines: {
-                    enabled: true,
-                    transfer: {
-                        enabled: true,
-                        directPeer: {
-                            enabled: true,
-                        },
-                        serverRouted: {
-                            enabled: false,
-                        },
-                    },
-                },
-            },
-            capabilities: {},
-        });
-
-        const result = resolveSessionFileTransferAvailability({
-            sessionAvailable: true,
-            machineTargetAvailable: true,
-            serverFeatures,
-            directPeerRoute: { status: 'viable', checkedAt: 10, expiresAt: 20 },
-            machineRpcDirectRoute: { status: 'viable', checkedAt: 11, expiresAt: 21 },
-            machineDaemonState: {
-                transfer: {
-                    supported: {
-                        import: false,
-                        export: true,
-                    },
-                    listenerClasses: {
-                        loopback_http: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                        },
-                        lan_http: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                        },
-                        tailscale_serve_https: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                            available: false,
-                        },
-                    },
-                    lifecycle: {
-                        mode: 'lazy_idle_shutdown',
-                        version: 1,
-                    },
-                },
-            } as any,
-        } as any);
-
-        expect(result.available).toBe(true);
-        expect(result.daemonDirectPeerDiagnostics).toEqual({
-            route: {
-                status: 'unavailable',
-                checkedAt: 0,
-                expiresAt: 0,
-                failureReason: 'daemon_transfer_listener_unconfigured',
-            },
-            state: 'unconfigured',
-            configuredListenerClasses: [],
-            activeListenerClasses: [],
-            activeRouteKinds: [],
-            inactiveListenerClasses: [],
-            unavailableListenerClasses: [],
-        });
-        expect(result.decision?.kind).toBe('selected');
-        if (result.decision?.kind !== 'selected') {
-            throw new Error('expected selected transfer route decision');
-        }
-        expect(result.decision.preferredRouteKind).toBe('machine_rpc_direct');
-    });
-
-    it('prefers direct peer when the daemon transfer listener is active and direct peer is enabled', async () => {
-        const { resolveSessionFileTransferAvailability } = await import('./resolveSessionFileTransferAvailability');
-
-        const serverFeatures = FeaturesResponseSchema.parse({
-            features: {
-                machines: {
-                    enabled: true,
-                    transfer: {
-                        enabled: true,
-                        directPeer: {
-                            enabled: true,
-                        },
-                        serverRouted: {
-                            enabled: false,
-                        },
-                    },
-                },
-            },
-            capabilities: {},
-        });
-
-        const result = resolveSessionFileTransferAvailability({
-            sessionAvailable: true,
-            machineTargetAvailable: true,
-            serverFeatures,
+            serverFeatures: features,
+            machineCarrierHost: { kind: 'browser' },
             machineRpcDirectRoute: { status: 'unknown' },
-            machineDaemonState: {
-                transfer: {
-                    supported: {
-                        import: true,
-                        export: true,
-                    },
-                    listenerClasses: {
-                        loopback_http: {
-                            enabled: true,
-                            configured: true,
-                            active: true,
-                        },
-                        lan_http: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                        },
-                        tailscale_serve_https: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                            available: false,
-                        },
-                    },
-                    lifecycle: {
-                        mode: 'lazy_idle_shutdown',
-                        version: 1,
-                    },
-                },
-            } as any,
-        } as any);
-
-        expect(result.available).toBe(true);
-        expect(result.daemonDirectPeerDiagnostics).toEqual({
-            route: {
-                status: 'viable',
-                checkedAt: 0,
-                expiresAt: Number.MAX_SAFE_INTEGER,
-            },
-            state: 'active',
-            configuredListenerClasses: ['loopback_http'],
-            activeListenerClasses: ['loopback_http'],
-            activeRouteKinds: ['loopback_direct'],
-            inactiveListenerClasses: [],
-            unavailableListenerClasses: [],
+            machineDaemonState: predecessorState,
         });
-        expect(result.decision?.kind).toBe('selected');
-        if (result.decision?.kind !== 'selected') {
-            throw new Error('expected selected transfer route decision');
-        }
-        expect(result.decision.preferredRouteKind).toBe('direct_peer');
-        expect(result.decision.availability.directPeerRouteKinds).toEqual(['loopback_direct']);
+
+        expect(result.available).toBe(false);
+        expect(result.decision?.kind).not.toBe('selected');
     });
 
-    it('does not prefer a cached direct peer route when the daemon transfer listener is configured but inactive', async () => {
-        const { resolveSessionFileTransferAvailability } = await import('./resolveSessionFileTransferAvailability');
-
-        const serverFeatures = FeaturesResponseSchema.parse({
-            features: {
-                machines: {
-                    enabled: true,
-                    transfer: {
-                        enabled: true,
-                        directPeer: {
-                            enabled: true,
-                        },
-                        serverRouted: {
-                            enabled: false,
-                        },
-                    },
-                },
-            },
-            capabilities: {},
-        });
-
+    it.each([
+        null,
+        {},
+        { ...predecessorState, transfer: null },
+        { ...predecessorState, transfer: {} },
+        { ...predecessorState, transfer: { ...declaredTransferState.transfer, supported: { import: false, export: false } } },
+    ])('does not reinterpret missing state or an invalid/unsupported declaration as a predecessor (%j)', (machineDaemonState) => {
         const result = resolveSessionFileTransferAvailability({
             sessionAvailable: true,
             machineTargetAvailable: true,
-            serverFeatures,
-            directPeerRoute: { status: 'viable', checkedAt: 12, expiresAt: 22 },
-            machineRpcDirectRoute: { status: 'viable', checkedAt: 13, expiresAt: 23 },
-            machineDaemonState: {
-                transfer: {
-                    supported: {
-                        import: true,
-                        export: true,
-                    },
-                    listenerClasses: {
-                        loopback_http: {
-                            enabled: true,
-                            configured: true,
-                            active: false,
-                        },
-                        lan_http: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                        },
-                        tailscale_serve_https: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                            available: false,
-                        },
-                    },
-                    lifecycle: {
-                        mode: 'lazy_idle_shutdown',
-                        version: 1,
-                    },
-                },
-            } as any,
-        } as any);
-
-        expect(result.available).toBe(true);
-        expect(result.daemonDirectPeerDiagnostics).toEqual({
-            route: { status: 'unknown' },
-            state: 'configured_inactive',
-            configuredListenerClasses: ['loopback_http'],
-            activeListenerClasses: [],
-            activeRouteKinds: [],
-            inactiveListenerClasses: ['loopback_http'],
-            unavailableListenerClasses: [],
-        });
-        expect(result.decision?.kind).toBe('selected');
-        if (result.decision?.kind !== 'selected') {
-            throw new Error('expected selected transfer route decision');
-        }
-        expect(result.decision.preferredRouteKind).toBe('machine_rpc_direct');
-    });
-
-    it('falls back to the machine-rpc route when the configured daemon listener reports available false', async () => {
-        const { resolveSessionFileTransferAvailability } = await import('./resolveSessionFileTransferAvailability');
-
-        const serverFeatures = FeaturesResponseSchema.parse({
-            features: {
-                machines: {
-                    enabled: true,
-                    transfer: {
-                        enabled: true,
-                        directPeer: {
-                            enabled: true,
-                        },
-                        serverRouted: {
-                            enabled: false,
-                        },
-                    },
-                },
-            },
-            capabilities: {},
+            serverFeatures: features,
+            machineCarrierHost: { kind: 'browser' },
+            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
+            machineDaemonState,
         });
 
-        const result = resolveSessionFileTransferAvailability({
-            sessionAvailable: true,
-            machineTargetAvailable: true,
-            serverFeatures,
-            directPeerRoute: { status: 'viable', checkedAt: 12, expiresAt: 22 },
-            machineRpcDirectRoute: { status: 'viable', checkedAt: 13, expiresAt: 23 },
-            machineDaemonState: {
-                transfer: {
-                    supported: {
-                        import: true,
-                        export: true,
-                    },
-                    listenerClasses: {
-                        loopback_http: {
-                            enabled: true,
-                            configured: true,
-                            active: true,
-                            available: false,
-                        },
-                        lan_http: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                        },
-                        tailscale_serve_https: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                            available: false,
-                        },
-                    },
-                    lifecycle: {
-                        mode: 'lazy_idle_shutdown',
-                        version: 1,
-                    },
-                },
-            } as any,
-        } as any);
-
-        expect(result.available).toBe(true);
-        expect(result.daemonDirectPeerDiagnostics).toEqual({
-            route: { status: 'unknown' },
-            state: 'configured_inactive',
-            configuredListenerClasses: ['loopback_http'],
-            activeListenerClasses: [],
-            activeRouteKinds: [],
-            inactiveListenerClasses: [],
-            unavailableListenerClasses: ['loopback_http'],
-        });
-        expect(result.decision?.kind).toBe('selected');
-        if (result.decision?.kind !== 'selected') {
-            throw new Error('expected selected transfer route decision');
-        }
-        expect(result.decision.preferredRouteKind).toBe('machine_rpc_direct');
-    });
-
-    it('fails closed to the machine-rpc route when daemon transfer support is disabled', async () => {
-        const { resolveSessionFileTransferAvailability } = await import('./resolveSessionFileTransferAvailability');
-
-        const serverFeatures = FeaturesResponseSchema.parse({
-            features: {
-                machines: {
-                    enabled: true,
-                    transfer: {
-                        enabled: true,
-                        directPeer: {
-                            enabled: true,
-                        },
-                        serverRouted: {
-                            enabled: false,
-                        },
-                    },
-                },
-            },
-            capabilities: {},
-        });
-
-        const result = resolveSessionFileTransferAvailability({
-            sessionAvailable: true,
-            machineTargetAvailable: true,
-            serverFeatures,
-            directPeerRoute: { status: 'viable', checkedAt: 12, expiresAt: 22 },
-            machineRpcDirectRoute: { status: 'viable', checkedAt: 13, expiresAt: 23 },
-            machineDaemonState: {
-                transfer: {
-                    supported: {
-                        import: false,
-                        export: false,
-                    },
-                    listenerClasses: {
-                        loopback_http: {
-                            enabled: true,
-                            configured: true,
-                            active: true,
-                        },
-                        lan_http: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                        },
-                        tailscale_serve_https: {
-                            enabled: false,
-                            configured: false,
-                            active: false,
-                            available: false,
-                        },
-                    },
-                    lifecycle: {
-                        mode: 'lazy_idle_shutdown',
-                        version: 1,
-                    },
-                },
-            } as any,
-        } as any);
-
-        expect(result.available).toBe(true);
-        expect(result.daemonDirectPeerDiagnostics).toEqual({
-            route: {
-                status: 'unavailable',
-                checkedAt: 0,
-                expiresAt: 0,
-                failureReason: 'daemon_transfer_listener_unconfigured',
-            },
-            state: 'unconfigured',
-            configuredListenerClasses: [],
-            activeListenerClasses: [],
-            activeRouteKinds: [],
-            inactiveListenerClasses: [],
-            unavailableListenerClasses: [],
-        });
-        expect(result.decision?.kind).toBe('selected');
-        if (result.decision?.kind !== 'selected') {
-            throw new Error('expected selected transfer route decision');
-        }
-        expect(result.decision.preferredRouteKind).toBe('machine_rpc_direct');
+        expect(result.available).toBe(false);
     });
 });

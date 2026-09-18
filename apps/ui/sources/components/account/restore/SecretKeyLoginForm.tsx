@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { useRouter } from 'expo-router';
 
@@ -8,20 +8,19 @@ import {
     useAuth,
     type AuthCredentialLifecycleResult,
 } from '@/auth/context/AuthContext';
-import { authGetToken } from '@/auth/flows/getToken';
-import { normalizeSecretKey } from '@/auth/recovery/secretKeyBackup';
-import { decodeBase64 } from '@/encryption/base64';
-import { Modal } from '@/modal';
+import { authGetToken, authGetTokenAtEndpoint, type AuthGetTokenAtEndpointParams } from '@/auth/flows/getToken';
+import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
+import { createServerFetchAtEndpoint } from '@/sync/http/client';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import {
     activateStackRuntimeServer,
     readStackRuntimeServerUrl,
 } from '@/sync/domains/server/stackRuntimeServer';
 import { t } from '@/text';
-import { Typography } from '@/constants/Typography';
-import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import { Text, TextInput } from '@/components/ui/text/Text';
 import { trackAccountRestored } from '@/track';
-import { Icon } from '@/components/ui/icons/Icon';
+import { SecretKeyEntryForm, type SecretKeyEntrySubmitResult } from './SecretKeyEntryForm';
 import {
     presentFirstKeyCredentialLifecycle,
 } from '@/components/account/presentFirstKeyCredentialLifecycle';
@@ -45,65 +44,35 @@ async function guardStackAuthIngress(
         : target;
 }
 
+export type SecretKeyLoginTarget = Readonly<Pick<AuthGetTokenAtEndpointParams,
+    'endpointUrl' | 'serverId' | 'runtimeOrigin' | 'homeCarrier' | 'signal' | 'requireKeyChallengeV2' | 'expectedAccountId' | 'admission'
+> & { canonicalServerUrl: string; serverIdentityId: string }>;
+
 export type SecretKeyLoginFormProps = Readonly<{
     embedded?: boolean;
     onSuccess?: () => void;
     submitTitle?: string;
-}>;
+} & (
+    | { target: SecretKeyLoginTarget; onAuthenticated: (credentials: AuthCredentials) => void | Promise<void> }
+    | { target?: undefined; onAuthenticated?: undefined }
+)>;
 
-const stylesheet = StyleSheet.create((theme) => ({
-    noticeCard: {
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        borderRadius: 14,
-        paddingHorizontal: 16,
-        paddingVertical: 14,
-        backgroundColor: theme.colors.surface.base,
-        marginBottom: 16,
-    },
-    noticeText: {
-        fontSize: 16,
-        color: theme.colors.text.secondary,
-        lineHeight: 24,
-        ...Typography.default(),
-    },
-    textInput: {
-        backgroundColor: theme.colors.input.background,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        padding: 16,
-        paddingRight: 52,
-        borderRadius: 14,
-        ...Typography.mono(),
-        fontSize: 14,
-        lineHeight: 20,
-        minHeight: 54,
-        color: theme.colors.input.text,
-    },
-    textInputWrapper: {
+const stylesheet = StyleSheet.create(() => ({
+    container: {
         width: '100%',
-        position: 'relative',
-        marginBottom: 24,
-    },
-    revealButton: {
-        position: 'absolute',
-        right: 10,
-        top: 0,
-        bottom: 0,
-        justifyContent: 'center',
-        alignItems: 'center',
-        paddingHorizontal: 8,
+        backgroundColor: 'transparent',
     },
 }));
 
 export const SecretKeyLoginForm = React.memo(function SecretKeyLoginForm(props: SecretKeyLoginFormProps) {
-    const { theme } = useUnistyles();
     const styles = stylesheet;
     const auth = useAuth();
     const router = useRouter();
-
-    const [secretKey, setSecretKey] = React.useState('');
-    const [revealed, setRevealed] = React.useState(false);
+    const mountedRef = React.useRef(true);
+    React.useEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
 
     const handleSuccess = React.useCallback(() => {
         if (props.onSuccess) {
@@ -113,14 +82,51 @@ export const SecretKeyLoginForm = React.memo(function SecretKeyLoginForm(props: 
         router.dismissTo('/');
     }, [props.onSuccess, router]);
 
-    const handleLogin = React.useCallback(async () => {
-        const trimmedKey = secretKey.trim();
-        if (!trimmedKey) {
-            Modal.alert(t('common.error'), t('connect.enterSecretKey'));
-            return;
-        }
-
+    const handleLogin = React.useCallback(async (input: Readonly<{
+        normalizedKey: string;
+        secret: Uint8Array;
+    }>): Promise<SecretKeyEntrySubmitResult> => {
+        let home = props.target?.canonicalServerUrl;
         try {
+            const target = props.target;
+            if (target) {
+                const onAuthenticated = props.onAuthenticated;
+                if (!onAuthenticated) return { kind: 'failed' };
+                const isCurrent = () => mountedRef.current && !target.signal?.aborted;
+                if (!isCurrent()) return { kind: 'cancelled' };
+                const persistenceTarget = { serverUrl: target.canonicalServerUrl, serverId: target.serverId ?? target.serverIdentityId };
+                let allowed = false;
+                await presentFirstKeyCredentialLifecycle({
+                    run: async () => {
+                        const guard = await guardAccountEncryptionFirstKeyCredentialMutation(persistenceTarget);
+                        return guard.kind === 'allowed' ? { kind: 'completed' } : guard;
+                    },
+                    onCompleted: () => { allowed = true; },
+                });
+                if (!allowed || !isCurrent()) return { kind: 'cancelled' };
+                const authenticated = await authGetTokenAtEndpoint({ ...target, secret: input.secret });
+                if (!isCurrent()) return { kind: 'cancelled' };
+                const request = createServerFetchAtEndpoint({ ...target, credentials: authenticated });
+                const { mode } = await fetchAccountEncryptionMode(authenticated, {
+                    request: (path, init) => request(path, { ...init, signal: target.signal }, { includeAuth: false, retry: 'none' }),
+                });
+                const credentials: AuthCredentials = mode === 'plain'
+                    ? { token: authenticated.token }
+                    : { token: authenticated.token, secret: input.normalizedKey };
+                if (mode === 'e2ee') await createEncryptionFromAuthCredentials(credentials);
+                if (!isCurrent()) return { kind: 'cancelled' };
+                let completed = false;
+                await presentFirstKeyCredentialLifecycle({
+                    run: async () => isCurrent()
+                        ? await auth.loginWithCredentials(credentials, { target: persistenceTarget })
+                        : { kind: 'recovery_failed' },
+                    onCompleted: () => { completed = true; },
+                });
+                if (!completed || !isCurrent()) return { kind: 'cancelled' };
+                trackAccountRestored();
+                await onAuthenticated(credentials);
+                return { kind: 'completed' };
+            }
             let mayActivateStack = false;
             await presentFirstKeyCredentialLifecycle({
                 run: guardStackAuthIngress,
@@ -128,76 +134,41 @@ export const SecretKeyLoginForm = React.memo(function SecretKeyLoginForm(props: 
                     mayActivateStack = true;
                 },
             });
-            if (!mayActivateStack) return;
+            if (!mayActivateStack) return { kind: 'cancelled' };
 
-            const normalizedKey = normalizeSecretKey(trimmedKey);
-            const secretBytes = decodeBase64(normalizedKey, 'base64url');
-            if (secretBytes.length !== 32) {
-                throw new Error('Invalid secret key length');
-            }
+            await activateStackRuntimeServer({ scope: 'device' });
+            home = getActiveServerSnapshot().serverUrl;
 
-            activateStackRuntimeServer({ scope: 'device' });
-
-            const token = await authGetToken(secretBytes);
+            const token = await authGetToken(input.secret);
             if (!token) {
-                throw new Error('Failed to authenticate with provided key');
+                return { kind: 'invalid_key' };
             }
 
+            let completed = false;
             await presentFirstKeyCredentialLifecycle({
                 run: async () =>
-                    await auth.login(token, normalizedKey),
+                    await auth.login(token, input.normalizedKey),
                 onCompleted: () => {
-                    trackAccountRestored();
-                    handleSuccess();
+                    completed = true;
                 },
             });
-        } catch {
-            Modal.alert(t('common.error'), t('connect.invalidSecretKey'));
+            if (!completed) return { kind: 'cancelled' };
+            trackAccountRestored();
+            handleSuccess();
+            return { kind: 'completed' };
+        } catch (error) {
+            if (!mountedRef.current || props.target?.signal?.aborted) return { kind: 'cancelled' };
+            return { kind: 'failed', error, home };
         }
-    }, [auth, handleSuccess, secretKey]);
+    }, [auth, handleSuccess, props]);
 
     return (
-        <>
-            <View style={styles.noticeCard}>
-                <Text style={styles.noticeText}>{t('connect.restoreWithSecretKeyDescription')}</Text>
-            </View>
-
-            <View style={styles.textInputWrapper}>
-                <TextInput
-                    testID="restore-manual-secret-input"
-                    accessibilityLabel={t('connect.secretKeyInputLabel')}
-                    style={styles.textInput}
-                    placeholder={t('connect.secretKeyPlaceholder')}
-                    placeholderTextColor={theme.colors.input.placeholder}
-                    value={secretKey}
-                    onChangeText={setSecretKey}
-                    secureTextEntry={!revealed}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    multiline={false}
-                />
-
-                <Pressable
-                    testID="restore-manual-secret-reveal"
-                    accessibilityRole="button"
-                    accessibilityLabel={revealed ? t('settingsAccount.tapToHide') : t('settingsAccount.tapToReveal')}
-                    onPress={() => setRevealed((v) => !v)}
-                    style={styles.revealButton}
-                    hitSlop={10}
-                >
-                    <Icon
-                        name={revealed ? 'eye-slash' : 'eye'}
-                        size={20}
-                        color={theme.colors.text.secondary}
-                    />
-                </Pressable>
-            </View>
-
-            <RoundButton
-                testID="restore-manual-submit"
-                title={props.submitTitle ?? t('connect.restoreAccount')}
-                action={handleLogin}
+        <View style={styles.container}>
+            <SecretKeyEntryForm
+                description={t('connect.restoreWithSecretKeyDescription')}
+                submitTitle={props.submitTitle ?? t('connect.restoreAccount')}
+                onSubmit={handleLogin}
             />
-        </>
+        </View>
     );
 });

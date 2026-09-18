@@ -120,4 +120,30 @@ describe('ActionListSection', () => {
             accessibilityLabel: 'Accessible action name',
         }));
     });
+
+    it('exposes applied menu choices as pressed buttons on web and native accessibility trees', async () => {
+        const { ActionListSection } = await import('./ActionListSection');
+
+        const screen = await renderScreen(
+            <ActionListSection
+                title="Width"
+                actions={[
+                    { id: 'compact', testID: 'choice-compact', label: 'Compact', selected: true, onPress: () => {} },
+                    { id: 'wide', testID: 'choice-wide', label: 'Wide', selected: false, onPress: () => {} },
+                    { id: 'rename', testID: 'plain-action', label: 'Rename', onPress: () => {} },
+                ]}
+            />,
+        );
+
+        const compact = screen.findByTestId('choice-compact');
+        const wide = screen.findByTestId('choice-wide');
+        const plain = screen.findByTestId('plain-action');
+        expect(compact?.props.role).toBe('button');
+        expect(compact?.props['aria-pressed']).toBe(true);
+        expect(compact?.props.accessibilityState).toMatchObject({ selected: true });
+        expect(wide?.props['aria-pressed']).toBe(false);
+        expect(wide?.props.accessibilityState).toMatchObject({ selected: false });
+        expect(plain?.props).not.toHaveProperty('aria-pressed');
+        expect(plain?.props.accessibilityState).toBeUndefined();
+    });
 });

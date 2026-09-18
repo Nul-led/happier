@@ -80,6 +80,31 @@ vi.mock('@/components/ui/text/Text', () => ({
     TextInput: (props: Record<string, unknown>) => React.createElement('TextInput', props),
 }));
 
+const approvalMocks = vi.hoisted(() => ({
+    readCredentials: vi.fn(async (..._args: unknown[]) => ({ token: 'relay-a-bearer' }) as { token: string } | null),
+    endpointFetch: vi.fn(async (..._args: unknown[]) => new Response('{}', { status: 200 })),
+    createServerFetchAtEndpoint: vi.fn((..._args: unknown[]) => approvalMocks.endpointFetch),
+}));
+
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+    return {
+        ...actual,
+        TokenStorage: {
+            ...actual.TokenStorage,
+            getCredentialsForServerUrl: (...args: unknown[]) => approvalMocks.readCredentials(...args),
+        },
+    };
+});
+
+vi.mock('@/sync/http/client', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/http/client')>();
+    return {
+        ...actual,
+        createServerFetchAtEndpoint: (...args: unknown[]) => approvalMocks.createServerFetchAtEndpoint(...args),
+    };
+});
+
 vi.mock('@/sync/domains/server/serverProfiles', async () => {
     const actual = await vi.importActual<typeof import('@/sync/domains/server/serverProfiles')>('@/sync/domains/server/serverProfiles');
     return {
@@ -312,6 +337,71 @@ describe('LocalDaemonControlSection', () => {
                 surface: 'desktop.ui',
             }),
         }));
+    });
+
+    it('answers the repair task\'s token-only pairing prompt through the explicit-target approval owner', async () => {
+        approvalMocks.readCredentials.mockClear();
+        approvalMocks.endpointFetch.mockClear();
+        approvalMocks.endpointFetch
+            .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'pending', supportsV2: true }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+        const { createSystemTaskRunner } = await import('@/components/systemTasks/createSystemTaskRunner');
+        let nextTaskId = 1;
+        const respondMock = vi.fn(async (_taskId: string, _answer: unknown) => {});
+        const listeners = new Map<string, {
+            onEvent: (payload: unknown) => void;
+            onResult: (payload: unknown) => void;
+        }>();
+        const runner = createSystemTaskRunner({
+            bridge: {
+                async start(spec) {
+                    return `task_${nextTaskId++}:${(spec as { kind: string }).kind}`;
+                },
+                async subscribe(taskId, listenerSet) {
+                    listeners.set(taskId, listenerSet);
+                    return () => {
+                        listeners.delete(taskId);
+                    };
+                },
+                async cancel() {},
+                respond: respondMock,
+            },
+        });
+
+        const { LocalDaemonControlSection } = await import('./LocalDaemonControlSection');
+        const screen = await renderScreen(React.createElement(LocalDaemonControlSection, { runner }));
+        await screen.pressByTestIdAsync('settings.localDaemonControl.repair');
+
+        const repairTaskId = [...listeners.keys()].find((taskId) => taskId.endsWith('setup.repairThisComputer.v1'));
+        expect(repairTaskId).toBeTruthy();
+        await renderer.act(async () => {
+            listeners.get(repairTaskId!)?.onEvent({
+                protocolVersion: 1,
+                taskId: repairTaskId,
+                tsMs: 120,
+                type: 'prompt',
+                stepId: 'setup.repairThisComputer.authRequest',
+                message: 'Approve pairing request',
+                data: {
+                    kind: 'authRequest',
+                    publicKey: 'pub-key-b64',
+                    response: 'opaque-token-only-response-b64',
+                    responseKind: 'tokenOnly',
+                    relayUrl: 'https://relay.example.test',
+                    webappUrl: 'https://relay.example.test',
+                    cliProvenance: 'managed',
+                },
+            });
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(approvalMocks.readCredentials).toHaveBeenCalledWith(
+            'https://relay.example.test',
+            { serverId: 'relay-example' },
+        );
+        expect(respondMock).toHaveBeenCalledWith(repairTaskId, { approved: true });
     });
 
     it('surfaces a recoverable status error without disabling daemon repair', async () => {

@@ -7,12 +7,16 @@ const fixture = vi.hoisted(() => ({
     lifetime: null as unknown,
 }));
 
-vi.mock('@/components/plugins/reactNative/bundleCache', () => ({
-    getInstalledPluginReactNativeBundleCache: () => {
-        if (!fixture.cache) throw new Error('Expected an Availability cache fixture.');
-        return fixture.cache;
-    },
-}));
+vi.mock('@/components/plugins/reactNative/bundleCache', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/components/plugins/reactNative/bundleCache')>();
+    return {
+        ...actual,
+        getInstalledPluginNativeArtifactResources: () => null,
+        getInstalledPluginReactNativeBundleCache: () => (
+            fixture.cache ?? actual.getInstalledPluginReactNativeBundleCache()
+        ),
+    };
+});
 
 vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/domains/scope/activeServerAccountScope')>();

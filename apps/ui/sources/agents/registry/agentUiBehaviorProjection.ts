@@ -1,8 +1,13 @@
 import type { AgentUiBehavior } from './registryUiBehavior';
 import { createAgentUiBehaviorFromDescriptor } from './agentUiBehaviorDescriptors';
 import { isRecord, type UiProjectionDiagnostic } from './uiDescriptorDiagnostics';
-import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
-import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
+import {
+    captureActiveServerAccountScopeCurrentness,
+    getActiveServerAccountScope,
+    type ActiveServerAccountScopeLifetime,
+} from '@/sync/domains/scope/activeServerAccountScope';
+import { serverAccountScopeKeySuffix, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import {
     resolvePluginUiTranslationText,
 } from '@/sync/domains/plugins/ui/i18n';
@@ -23,11 +28,10 @@ import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projecti
  * A descriptor is a fact of one MACHINE inside one ACCOUNT, and this store
  * keys it that way:
  *
- * - **Account.** The set is stamped with the active server/account scope from
- *   the canonical scope owner. A read outside that scope sees nothing, and the
- *   next publish evicts the retired scope's sets. Without that fence a module
- *   global would carry one Account's descriptors into the next Account signed
- *   in on the same device.
+ * - **Account.** The producer carries the source Home's authenticated Account
+ *   scope. Explicitly routed Homes may coexist while another Home is active;
+ *   their descriptors must not be stamped with that active Home's identity.
+ *   Request lifetime retirement prevents late responses from republishing.
  * - **Machine.** Two machines can hold different versions of the same Agent
  *   and therefore different descriptors. A caller that knows which machine
  *   owns the render reads that machine's descriptor and nothing else, so a
@@ -52,6 +56,7 @@ type PublishedDescriptor = {
 
 type PublishedMachineSet = Readonly<{
     accountScopeKey: string;
+    currentness: Pick<ActiveServerAccountScopeLifetime, 'isCurrent'>;
     machineId: string;
     descriptorsByAgentId: ReadonlyMap<string, PublishedDescriptor>;
 }>;
@@ -65,9 +70,13 @@ const NO_ACCOUNT_SCOPE_KEY = '\0no-account-scope';
 
 const PUBLISHED_BY_SCOPE = new Map<string, PublishedMachineSet>();
 
-function currentAccountScopeKey(): string {
-    const scope = getActiveServerAccountScope();
-    return scope ? serverAccountScopeKeySuffix(scope) : NO_ACCOUNT_SCOPE_KEY;
+function accountScopeKey(scope: ServerAccountScope | null | undefined): string | null {
+    if (scope === null) return null;
+    const resolved = scope ?? getActiveServerAccountScope();
+    return resolved ? serverAccountScopeKeySuffix({
+        ...resolved,
+        serverId: resolveServerProfileScopeIdForIdentifier(resolved.serverId),
+    }) : NO_ACCOUNT_SCOPE_KEY;
 }
 
 function publishedSetKey(accountScopeKey: string, machineId: string): string {
@@ -83,21 +92,25 @@ function normalizeId(value: unknown): string {
  * A machine that publishes no descriptor drops its previous set, so a plugin
  * uninstalled on that machine stops projecting behavior for it.
  *
- * Publishing is also this store's reclamation point: every set stamped with a
- * scope other than the one active now belongs to a retired Account and is
- * dropped here.
+ * Publishing reclaims retired request lifetimes, not other routed Homes that
+ * remain usable alongside the active Home.
  */
 export function publishProjectedAgentUiBehaviorDescriptors(params: Readonly<{
     machineId: string;
+    accountScope?: ServerAccountScope | null;
+    accountLifetime?: Pick<ActiveServerAccountScopeLifetime, 'isCurrent'> | null;
     descriptorsByAgentId: Readonly<Record<string, unknown>>;
     pluginUiProjection?: PluginUiProjectionModel | null;
     locale?: string | null;
 }>): void {
     const machineId = normalizeId(params.machineId);
     if (!machineId) return;
-    const accountScopeKey = currentAccountScopeKey();
+    if (params.accountLifetime && !params.accountLifetime.isCurrent()) return;
+    const scopeKey = accountScopeKey(params.accountScope);
+    if (scopeKey === null) return;
+    const currentness = params.accountLifetime ?? captureActiveServerAccountScopeCurrentness();
     for (const [key, set] of [...PUBLISHED_BY_SCOPE]) {
-        if (set.accountScopeKey !== accountScopeKey) PUBLISHED_BY_SCOPE.delete(key);
+        if (!set.currentness.isCurrent()) PUBLISHED_BY_SCOPE.delete(key);
     }
 
     const published = new Map<string, PublishedDescriptor>();
@@ -112,13 +125,14 @@ export function publishProjectedAgentUiBehaviorDescriptors(params: Readonly<{
         });
     }
 
-    const key = publishedSetKey(accountScopeKey, machineId);
+    const key = publishedSetKey(scopeKey, machineId);
     if (published.size === 0) {
         PUBLISHED_BY_SCOPE.delete(key);
         return;
     }
     PUBLISHED_BY_SCOPE.set(key, Object.freeze({
-        accountScopeKey,
+        accountScopeKey: scopeKey,
+        currentness,
         machineId,
         descriptorsByAgentId: published,
     }));
@@ -128,23 +142,24 @@ export function clearProjectedAgentUiBehaviorDescriptors(): void {
     PUBLISHED_BY_SCOPE.clear();
 }
 
-/** Every set published under the Account scope active right now. */
-function readCurrentScopeSets(): readonly PublishedMachineSet[] {
-    const accountScopeKey = currentAccountScopeKey();
-    return [...PUBLISHED_BY_SCOPE.values()].filter((set) => set.accountScopeKey === accountScopeKey);
+function readScopeSets(scopeKey: string): readonly PublishedMachineSet[] {
+    return [...PUBLISHED_BY_SCOPE.values()].filter((set) => (
+        set.accountScopeKey === scopeKey && set.currentness.isCurrent()
+    ));
 }
 
 function readPublishedDescriptor(
     agentId: string,
     machineId: string | null,
+    scopeKey: string,
 ): PublishedDescriptor | null {
     if (machineId) {
         // A caller that knows the owning machine gets that machine's answer or
         // none. Falling back to another machine's declaration is exactly the
         // cross-device defect this scoping exists to remove; the neutral
         // unknown floor is the correct answer until this machine describes.
-        const set = PUBLISHED_BY_SCOPE.get(publishedSetKey(currentAccountScopeKey(), machineId));
-        return set?.descriptorsByAgentId.get(agentId) ?? null;
+        const set = PUBLISHED_BY_SCOPE.get(publishedSetKey(scopeKey, machineId));
+        return set?.currentness.isCurrent() ? set.descriptorsByAgentId.get(agentId) ?? null : null;
     }
     // The machine-blind floor. It is reached only by callers with no machine in
     // hand (agent settings, cross-agent ordering), where every machine's
@@ -152,7 +167,7 @@ function readPublishedDescriptor(
     // so a render never flips on fetch order.
     let owningMachineId: string | null = null;
     let published: PublishedDescriptor | null = null;
-    for (const set of readCurrentScopeSets()) {
+    for (const set of readScopeSets(scopeKey)) {
         const candidate = set.descriptorsByAgentId.get(agentId);
         if (!candidate) continue;
         if (owningMachineId === null || set.machineId < owningMachineId) {
@@ -192,10 +207,13 @@ function interpret(agentId: string, published: PublishedDescriptor): ProjectedAg
 export function resolveProjectedAgentUiBehaviorEntry(
     agentId: string | null | undefined,
     machineId?: string | null,
+    accountScope?: ServerAccountScope | null,
 ): ProjectedAgentUiBehaviorEntry | null {
     const normalizedAgentId = normalizeId(agentId);
     if (!normalizedAgentId) return null;
-    const published = readPublishedDescriptor(normalizedAgentId, normalizeId(machineId) || null);
+    const scopeKey = accountScopeKey(accountScope);
+    if (scopeKey === null) return null;
+    const published = readPublishedDescriptor(normalizedAgentId, normalizeId(machineId) || null, scopeKey);
     return published ? interpret(normalizedAgentId, published) : null;
 }
 
@@ -222,11 +240,14 @@ export type ProjectedAgentUiBehaviorDiagnostic = UiProjectionDiagnostic & Readon
  */
 export function readProjectedAgentUiBehaviorDiagnostics(
     machineId: string | null | undefined,
+    accountScope?: ServerAccountScope | null,
 ): readonly ProjectedAgentUiBehaviorDiagnostic[] {
     const normalizedMachineId = normalizeId(machineId);
     if (!normalizedMachineId) return [];
-    const set = PUBLISHED_BY_SCOPE.get(publishedSetKey(currentAccountScopeKey(), normalizedMachineId));
-    if (!set) return [];
+    const scopeKey = accountScopeKey(accountScope);
+    if (scopeKey === null) return [];
+    const set = PUBLISHED_BY_SCOPE.get(publishedSetKey(scopeKey, normalizedMachineId));
+    if (!set?.currentness.isCurrent()) return [];
     const diagnostics: ProjectedAgentUiBehaviorDiagnostic[] = [];
     for (const [agentId, published] of [...set.descriptorsByAgentId].sort(([a], [b]) => a.localeCompare(b))) {
         // The publisher stamps the authoring plugin onto every descriptor it

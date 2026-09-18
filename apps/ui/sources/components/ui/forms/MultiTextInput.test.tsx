@@ -64,11 +64,13 @@ describe('MultiTextInput', () => {
         let tree!: renderer.ReactTestRenderer;
         tree = (await renderScreen(<MultiTextInput
                     testID="composer-input"
+                    accessibilityLabel="Message"
                     value=""
                     onChangeText={() => {}}
                 />)).tree;
         const input = tree.findByType('TextInput' as any);
         expect(input.props.testID).toBe('composer-input');
+        expect(input.props.accessibilityLabel).toBe('Message');
     });
 
     it('forwards combobox role and expanded state to the native TextInput owner', async () => {
@@ -454,11 +456,13 @@ describe('MultiTextInput', () => {
         let tree!: renderer.ReactTestRenderer;
         tree = (await renderScreen(React.createElement(MultiTextInput as unknown as React.ComponentType<Record<string, unknown>>, {
                     testID: 'composer-input',
+                    accessibilityLabel: 'Message',
                     value: '',
                     onChangeText: () => {},
                 }))).tree;
         const input = tree.findByType('textarea' as any);
         expect(input.props['data-testid']).toBe('composer-input');
+        expect(input.props['aria-label']).toBe('Message');
     });
 
     it('uses the caller textStyle font size as the scaled web textarea base', async () => {

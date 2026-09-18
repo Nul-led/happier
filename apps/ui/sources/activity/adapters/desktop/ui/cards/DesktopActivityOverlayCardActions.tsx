@@ -4,8 +4,16 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text, TextInput } from '@/components/ui/text/Text';
 
-import { createDesktopActivityOverlayInteriorSurfaceStyle } from '../DesktopActivityOverlayChrome';
-import type { DesktopActivityOverlayHoverablePressableState } from '../DesktopActivityOverlayHoverablePressableState';
+import {
+    createDesktopActivityOverlayFocusRingStyle,
+    createDesktopActivityOverlayInteriorSurfaceStyle,
+} from '../DesktopActivityOverlayChrome';
+import {
+    isDesktopActivityOverlayDismissKey,
+    readDesktopActivityOverlayEventKey,
+    type DesktopActivityOverlayKeyEvent,
+} from '../desktopActivityOverlayKeyboard';
+import type { DesktopActivityOverlayPressableInteractionState } from '../DesktopActivityOverlayPressableInteractionState';
 import type { DesktopActivityOverlayVisualMode } from '../DesktopActivityOverlayVisualMode';
 import type { DesktopActivityOverlayActionDescriptor } from '../shared/desktopActivityOverlayUiModel';
 import {
@@ -45,7 +53,10 @@ export function DesktopActivityOverlayCardActions(props: Readonly<{
     cardId: string;
     actions: readonly DesktopActivityOverlayActionDescriptor[];
     inlineQuestionText?: string | null;
+    initialFocusActionId?: string | null;
+    initialFocusRef?: React.Ref<View>;
     onAction?: (action: DesktopActivityOverlayActionDescriptor) => void;
+    onDismissKey?: () => void;
 }>): React.ReactElement | null {
     const { theme } = useUnistyles();
     const [inlineTextByActionId, setInlineTextByActionId] = React.useState<Record<string, string>>({});
@@ -84,12 +95,15 @@ export function DesktopActivityOverlayCardActions(props: Readonly<{
                         style={styles.actionItem}
                     >
                         <Pressable
+                            ref={action.id === props.initialFocusActionId ? props.initialFocusRef : undefined}
+                            accessibilityRole="button"
                             accessibilityLabel={action.accessibilityLabel ?? action.label}
                             testID={resolveDesktopActivityOverlayCardActionInstanceTestID(props.cardId, action.id)}
                             disabled={inlineTextActionDisabled}
                             onPress={() => props.onAction?.(resolveAction())}
                             style={(state) => {
-                                const hovered = (state as DesktopActivityOverlayHoverablePressableState).hovered === true;
+                                const interaction = state as DesktopActivityOverlayPressableInteractionState;
+                                const hovered = interaction.hovered === true;
 
                                 return [
                                     styles.button,
@@ -101,6 +115,7 @@ export function DesktopActivityOverlayCardActions(props: Readonly<{
                                     hovered ? { opacity: 0.98 } : null,
                                     state.pressed ? { opacity: 0.9 } : null,
                                     inlineTextActionDisabled ? styles.disabledAction : null,
+                                    interaction.focused === true ? createDesktopActivityOverlayFocusRingStyle(theme) : null,
                                 ];
                             }}
                         >
@@ -122,6 +137,21 @@ export function DesktopActivityOverlayCardActions(props: Readonly<{
                                         ...previous,
                                         [action.id]: value,
                                     }));
+                                }}
+                                // react-native-web's TextInput owns key propagation,
+                                // so Escape cannot reach the expanded shell. Forward
+                                // an empty inline answer to the route's existing
+                                // dismissal owner; preserve a nonempty answer in place.
+                                onKeyPress={(event: DesktopActivityOverlayKeyEvent) => {
+                                    if (!isDesktopActivityOverlayDismissKey(
+                                        readDesktopActivityOverlayEventKey(event),
+                                    )) {
+                                        return;
+                                    }
+                                    if ((inlineTextByActionIdRef.current[action.id] ?? '').trim()) {
+                                        return;
+                                    }
+                                    props.onDismissKey?.();
                                 }}
                                 style={[
                                     styles.inlineInput,

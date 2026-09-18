@@ -93,6 +93,7 @@ function PluginDetailCurrentContent(props: Readonly<{
             />
             <PluginMachineExecutionOriginSelectorView
                 selection={selection}
+                machineCandidates={props.state.administrationTargetSelection.candidates}
                 groupTitle={t('settingsPlugins.executionOriginTitle')}
                 testIDPrefix="settings.plugins.detail.executionOrigin"
             />

@@ -39,6 +39,7 @@ import { useCurrentUiContextVoiceToolPort } from '@/components/appShell/currentU
 import { useForegroundVoiceTextTurnQaBridge } from '@/dev/testkit/harness/useForegroundVoiceTextTurnQaBridge';
 import { resolveAccountVoiceCredentialSourceSelection } from '@/voice/credentials/accountVoiceCredential';
 import { useVoiceExecutionMachinePresentation } from '@/voice/credentials/useExecutionMachinePresentation';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 
 const voiceProviderRegistry = createDefaultVoiceProviderRegistry();
 
@@ -47,7 +48,8 @@ export function VoiceSessionRuntime(): React.ReactElement | null {
   useForegroundVoiceTextTurnQaBridge();
   const voice = useSetting('voice') as any;
   const canonicalVoice = useSetting('voiceSettingsV1');
-  const secrets = useSetting('secrets');
+  const savedSecretCatalog = useSavedSecretCatalog();
+  const secrets = [...savedSecretCatalog.usableSecrets];
   const connectedAccountPurposeBindingsV1 = useSetting('connectedAccountPurposeBindingsV1');
   const profile = useProfile();
   const executionMachine = useVoiceExecutionMachinePresentation();
@@ -86,7 +88,7 @@ export function VoiceSessionRuntime(): React.ReactElement | null {
       ? selectedProviderEntry.declaration
       : null;
     const credentials = declaration?.credentials;
-    if (!declaration || !credentials) return 'unbound';
+    if (!selectedProviderEntry || !declaration || !credentials) return 'unbound';
     const contribution = {
       pluginId: selectedProviderEntry.pluginId,
       localId: declaration.id,

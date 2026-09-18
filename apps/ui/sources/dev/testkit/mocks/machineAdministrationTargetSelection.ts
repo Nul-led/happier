@@ -62,6 +62,7 @@ export type MachineAdministrationTargetSelectionMockController = Readonly<{
 
 type MachineAdministrationTargetSelectionMockModule = Readonly<{
     useMachineAdministrationTargetSelection: (selectionKey: string) => MachineAdministrationTargetSelectionV1;
+    useMachineAdministrationTargetPickerRows: () => MachineAdministrationTargetSelectionV1['pickerRows'];
     resolveFreshMachineAdministrationExecutionTarget: (
         target: MachineAdministrationTargetV1 | null,
     ) => ReturnType<MachineAdministrationTargetSelectionV1['resolveExecutionTarget']>;
@@ -252,6 +253,15 @@ export function createMachineAdministrationTargetSelectionMock(
     };
 
     const module: MachineAdministrationTargetSelectionMockModule = {
+        useMachineAdministrationTargetPickerRows: () => {
+            const [, rerender] = React.useReducer((value: number) => value + 1, 0);
+            React.useEffect(() => {
+                const listener = () => rerender();
+                listeners.add(listener);
+                return () => { listeners.delete(listener); };
+            }, []);
+            return currentRows();
+        },
         useMachineAdministrationTargetSelection: () => {
             const [, rerender] = React.useReducer((value: number) => value + 1, 0);
             React.useEffect(() => {

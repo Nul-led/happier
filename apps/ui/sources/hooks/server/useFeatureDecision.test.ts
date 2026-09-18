@@ -23,9 +23,9 @@ afterEach(() => {
 
 describe('useFeatureDecision', () => {
     it('fails closed for main selection when servers disagree (mixed scope support)', async () => {
-        const serverA = upsertServerProfile({ serverUrl: 'https://a.example', name: 'A', source: 'manual' });
-        const serverB = upsertServerProfile({ serverUrl: 'https://b.example', name: 'B', source: 'manual' });
-        setActiveServerId(serverA.id, { scope: 'device' });
+        const serverA = await upsertServerProfile({ serverUrl: 'https://a.example', name: 'A', source: 'manual' });
+        const serverB = await upsertServerProfile({ serverUrl: 'https://b.example', name: 'B', source: 'manual' });
+        await setActiveServerId(serverA.id, { scope: 'device' });
 
         getStorage().getState().applySettingsLocal({
             experiments: true,

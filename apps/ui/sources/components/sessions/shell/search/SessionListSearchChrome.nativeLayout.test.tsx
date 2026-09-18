@@ -4,6 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { installSessionShellCommonModuleMocks } from '../sessionShellTestHelpers';
 
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: () => [],
+}));
+
 vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
     useReducedMotionPreference: () => true,
 }));
@@ -36,10 +40,11 @@ describe('SessionListSearchChrome native layout', () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const screen = await renderScreen(
             <SessionListSearchChrome
-                allKnownTags={['alpha']}
-                selectedTags={[]}
+                filterControl={React.createElement('FilterControl', { testID: 'session-list-filter-control' })}
+                tagOptions={[{ id: 'tag:a', label: 'alpha' }]}
+                selectedTagOptionIds={[]}
                 searchQuery="responsive"
-                onSelectedTagsChange={vi.fn()}
+                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
             />,
         );
@@ -52,10 +57,12 @@ describe('SessionListSearchChrome native layout', () => {
         const searchRow = screen.root.findByProps({ testID: 'session-list-search-primary-controls' });
         const auxiliaryRow = screen.root.findByProps({ testID: 'session-list-search-auxiliary-controls' });
         expect(searchRow.findByProps({ testID: 'session-list-search-input' })).toBeTruthy();
+        expect(searchRow.findAllByProps({ testID: 'session-list-filter-control' })).toHaveLength(0);
         expect(searchRow.findAllByProps({ testID: 'session-list-tag-filter-trigger' })).toHaveLength(0);
-        expect(searchRow.findAllByProps({ testID: 'session-list-ordering-menu-trigger' })).toHaveLength(0);
+        expect(searchRow.findAllByProps({ testID: 'session-list-view-options-trigger' })).toHaveLength(0);
+        expect(auxiliaryRow.findByProps({ testID: 'session-list-filter-control' })).toBeTruthy();
         expect(auxiliaryRow.findByProps({ testID: 'session-list-tag-filter-trigger' })).toBeTruthy();
-        expect(auxiliaryRow.findByProps({ testID: 'session-list-ordering-menu-trigger' })).toBeTruthy();
+        expect(auxiliaryRow.findByProps({ testID: 'session-list-view-options-trigger' })).toBeTruthy();
 
         const shellStyle = flatten(screen.root.findByProps({ testID: 'session-list-search-trigger' }).props.style);
         expect(shellStyle.maxWidth).toBe('100%');

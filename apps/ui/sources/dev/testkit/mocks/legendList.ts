@@ -17,7 +17,7 @@ export type LegendListMockState = {
 };
 
 type LegendListMockRefHandle = Readonly<{
-    cancelInitialScrollPreservation: ReturnType<typeof vi.fn>;
+    cancelScroll: ReturnType<typeof vi.fn>;
     clearCaches: ReturnType<typeof vi.fn>;
     getNativeScrollRef: ReturnType<typeof vi.fn>;
     getScrollableNode: ReturnType<typeof vi.fn>;
@@ -34,6 +34,14 @@ export type CapturingLegendListMockState = Readonly<{
 }>;
 
 type CapturingLegendListMockOptions = Readonly<{
+    /**
+     * The real module, from `importOriginal`, when the surface under test also
+     * reaches `@legendapp/list/section-list`. That entry imports `internal` from
+     * this same module, so a whole-module replacement makes the canonical
+     * `@/components/ui/lists/virtualized` barrel unimportable. Passing the
+     * original keeps every export except the recycler this mock is replacing.
+     */
+    original?: Readonly<Record<string, unknown>>;
     refHandle?: Partial<LegendListMockRefHandle>;
     renderItems?: boolean;
     /** Render only the first N virtual rows while retaining the complete captured data set. */
@@ -51,7 +59,7 @@ export function createCapturingLegendListMock(
     let props: any | null = null;
     const scrollableNode = { kind: 'legend-scrollable-node' };
     const refHandle: LegendListMockRefHandle = {
-        cancelInitialScrollPreservation: vi.fn(),
+        cancelScroll: vi.fn(),
         clearCaches: vi.fn(),
         getNativeScrollRef: vi.fn(() => scrollableNode),
         getScrollableNode: vi.fn(() => scrollableNode),
@@ -108,5 +116,5 @@ export function createCapturingLegendListMock(
         );
     });
 
-    return { module: { LegendList }, state };
+    return { module: { ...(options.original ?? {}), LegendList }, state };
 }

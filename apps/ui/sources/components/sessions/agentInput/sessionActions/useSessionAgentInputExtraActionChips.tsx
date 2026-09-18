@@ -1,3 +1,4 @@
+import { createSessionAccessActionChip } from '@/components/sessions/agentInput/definitions/createSessionAccessActionChip';
 import * as React from 'react';
 import type { BackendTargetRefV2Input } from '@happier-dev/protocol';
 
@@ -16,9 +17,15 @@ import { createBrowserContextActionChip } from '../definitions/createBrowserCont
 import { createReviewCommentsActionChip } from '../definitions/createReviewCommentsActionChip';
 import { buildSessionAgentInputActionChips } from './buildSessionAgentInputActionChips';
 import { createAttachmentActionChip } from './createAttachmentActionChip';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export function useSessionAgentInputExtraActionChips(params: Readonly<{
+    sessionAccess?: Parameters<typeof createSessionAccessActionChip>[0] | null;
     sessionId: string;
+    sessionAddress: SessionAddress | null;
+    accountScope: ServerAccountScope | null;
+    accountScopeIsCurrent?: (() => boolean) | null;
     attachmentsUploadsEnabled: boolean;
     isReadOnly: boolean;
     isUploadingAttachments: boolean;
@@ -48,6 +55,7 @@ export function useSessionAgentInputExtraActionChips(params: Readonly<{
 
     return React.useMemo(() => {
         const chips: AgentInputExtraActionChip[] = [];
+        if (params.sessionAccess) chips.push(createSessionAccessActionChip(params.sessionAccess));
         const attachmentRowItems: AgentInputAttachmentsRowItem[] = [];
 
         if (params.attachmentsUploadsEnabled && !params.isReadOnly) {
@@ -62,6 +70,7 @@ export function useSessionAgentInputExtraActionChips(params: Readonly<{
         if (!params.isReadOnly) {
             chips.push(createLinkedFilesActionChip({
                 sessionId: params.sessionId,
+                serverId: params.sessionAddress?.serverId,
                 disabled: params.isUploadingAttachments,
                 onPickPath: params.onAppendLinkedPath,
             }));
@@ -119,7 +128,9 @@ export function useSessionAgentInputExtraActionChips(params: Readonly<{
         }
 
         chips.push(...buildSessionAgentInputActionChips({
-            sessionId: params.sessionId,
+            address: params.sessionAddress ?? { serverId: '', sessionId: params.sessionId },
+            accountScope: params.accountScope,
+            accountScopeIsCurrent: params.accountScopeIsCurrent,
             defaultBackendTarget: params.defaultBackendTarget ?? null,
             defaultBackendId: params.defaultBackendId,
             instructionsText: params.instructionsText,
@@ -127,6 +138,7 @@ export function useSessionAgentInputExtraActionChips(params: Readonly<{
 
         return { actionChips: chips, attachmentRowItems };
     }, [
+        params.sessionAccess,
         params.attachmentsUploadsEnabled,
         params.defaultBackendId,
         params.defaultBackendTarget,
@@ -141,6 +153,9 @@ export function useSessionAgentInputExtraActionChips(params: Readonly<{
         params.reviewCommentsEnabled,
         params.reviewScope,
         params.sessionId,
+        params.sessionAddress,
+        params.accountScope,
+        params.accountScopeIsCurrent,
         params.browserContext,
         reviewWorkspaceCacheKey,
     ]);

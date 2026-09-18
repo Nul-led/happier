@@ -170,21 +170,22 @@ function buildTransitionCueKey(
     snapshot: DesktopActivityOverlaySnapshot,
     phase: DesktopActivityOverlayCollapsedSlidePriority,
 ): string {
-    const sessionId = normalizeText(snapshot.primary?.sessionId)
-        ?? normalizeText(snapshot.sessions[0]?.sessionId)
-        ?? 'none';
+    const primary = snapshot.primary ?? snapshot.sessions[0] ?? null;
+    const serverId = normalizeText(primary?.serverId);
+    const sessionId = normalizeText(primary?.sessionId) ?? 'none';
     const updatedAt = typeof snapshot.primary?.updatedAt === 'number' && Number.isFinite(snapshot.primary.updatedAt)
         ? snapshot.primary.updatedAt
         : snapshot.generatedAt;
-    return [
+    return JSON.stringify([
         phase,
+        serverId,
         sessionId,
         updatedAt,
         snapshot.counts.permissionRequired,
         snapshot.counts.actionRequired,
         snapshot.completionStates.length,
         snapshot.counts.thinking,
-    ].join(':');
+    ]);
 }
 
 function buildCollapsedTransitionCue(snapshot: DesktopActivityOverlaySnapshot): DesktopActivityOverlayCollapsedTransitionCue | null {

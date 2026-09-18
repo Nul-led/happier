@@ -3,12 +3,15 @@
  *
  * A SharedWorker may remain alive while sibling browsing contexts still use it,
  * but its lifetime is user-agent controlled and it is not durable after the
- * final context disappears. A tab that reloads, navigates away, or closes
+ * final context disappears. A tab that reloads, navigates away without being
+ * preserved, or closes
  * without saying anything can leave its leases held by a client id no port
- * answers for while the worker remains live. `pagehide` is the ordinary end of
- * a page in every browser this carrier runs in, and posting the existing
- * `releaseClient` command there is the entire mechanism: no heartbeat, no timer,
- * no expiry, and no second owner of what a client holds.
+ * answers for while the worker remains live. A non-persisted `pagehide` is the
+ * ordinary end of such a page, and posting the existing `releaseClient`
+ * command there is the entire mechanism. A persisted event instead means the
+ * page entered the browser's back-forward cache and will resume with the same
+ * client state, so its leases remain held. There is no heartbeat, timer,
+ * expiry, reacquisition supervisor, or second owner of what a client holds.
  *
  * It is best-effort by construction. The page may already be unloading, so
  * nothing is awaited and no reply is correlated; a lost message is exactly the
@@ -22,8 +25,14 @@ import type { BrowserIrohClientCommand } from './protocol';
 
 /** The page-lifecycle boundary, narrowed to what this seam uses. */
 export type BrowserIrohPageLifecycle = Readonly<{
-    addEventListener: (type: 'pagehide', listener: () => void) => void;
-    removeEventListener: (type: 'pagehide', listener: () => void) => void;
+    addEventListener: (
+        type: 'pagehide',
+        listener: (event: Readonly<{ persisted: boolean }>) => void,
+    ) => void;
+    removeEventListener: (
+        type: 'pagehide',
+        listener: (event: Readonly<{ persisted: boolean }>) => void,
+    ) => void;
 }>;
 
 /**
@@ -54,7 +63,11 @@ export function attachBrowserIrohPageLifecycleRelease(
     const lifecycle = input.lifecycle === undefined ? readBrowserIrohPageLifecycle() : input.lifecycle;
     if (lifecycle === null) return () => {};
 
-    const release = (): void => {
+    const release = (event: Readonly<{ persisted: boolean }>): void => {
+        // A persisted page is suspended in the back-forward cache, not gone.
+        // Its live JS state resumes with the same worker client and leases, so
+        // releasing here would invalidate those resources underneath it.
+        if (event.persisted) return;
         input.postMessage({
             v: 1,
             kind: 'releaseClient',

@@ -3,7 +3,9 @@ import * as React from 'react';
 import { AgentInputContentPopover } from '@/components/sessions/agentInput/components/AgentInputContentPopover';
 import type { SessionWorkStateSnapshot } from '@/sync/domains/session/workState/sessionWorkStateTypes';
 
+import { SessionManagedWorkflowSection } from './SessionManagedWorkflowSection';
 import { SessionWorkflowActivitySection } from './SessionWorkflowActivitySection';
+import type { SessionManagedWorkflowRunsState } from './useSessionManagedWorkflowRuns';
 import type { GoalActionCapabilities } from './goalActionVisibility';
 import type { SessionWorkflowActivityState } from './useSessionWorkflowActivity';
 import {
@@ -26,6 +28,13 @@ export function SessionWorkStatePopover(props: Readonly<{
     // UIW3: live workflow activity (headline + loaded run detail). The popover renders the Active
     // Workflows section from this; omit for goal-only surfaces (e.g. the AgentInput goal chip).
     workflowActivity?: SessionWorkflowActivityState;
+    /**
+     * Managed Workflow Runs this Session started. They are a different contract
+     * from observed native activity above, so they render as their own section
+     * rather than being merged into it.
+     */
+    managedWorkflowRuns?: SessionManagedWorkflowRunsState;
+    onOpenManagedWorkflowRun?: (runId: string) => void;
     editableGoal?: boolean;
     // Provider goal-action profile for the "Set goal" form (no goal item yet) so the Codex-only
     // budget editor stays hidden on providers that don't support it (e.g. Claude). QA-CHIP-2.
@@ -34,9 +43,23 @@ export function SessionWorkStatePopover(props: Readonly<{
     onSetGoal?: (request: SessionWorkStateGoalSetRequest) => Promise<SessionWorkStateGoalOperationResult>;
     onClearGoal?: () => Promise<SessionWorkStateGoalOperationResult>;
 }>) {
-    const workflowSection = props.workflowActivity
-        ? <SessionWorkflowActivitySection activity={props.workflowActivity} />
+    const managedWorkflowSection = props.managedWorkflowRuns !== undefined
+        && props.onOpenManagedWorkflowRun !== undefined
+        ? (
+            <SessionManagedWorkflowSection
+                state={props.managedWorkflowRuns}
+                onOpenRun={props.onOpenManagedWorkflowRun}
+            />
+        )
         : null;
+    const workflowSection = props.workflowActivity || managedWorkflowSection ? (
+        <>
+            {props.workflowActivity
+                ? <SessionWorkflowActivitySection activity={props.workflowActivity} />
+                : null}
+            {managedWorkflowSection}
+        </>
+    ) : null;
     const { content, guardedRequestClose } = useSessionWorkStateGoalController({
         open: props.open,
         snapshot: props.snapshot,

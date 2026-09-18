@@ -1,3 +1,4 @@
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import {
   createVoiceToolHandlers,
   resolveVoiceToolEffectClass,
@@ -512,6 +513,7 @@ export async function runVoiceAgentTurnWithTools(params: Readonly<{
   userText: string;
   durableLocalId: string;
   currentToolSessionId?: string | null;
+  currentToolSessionAddress?: SessionAddress | null;
   currentUiContext?: VoiceCurrentUiToolPort;
   voiceAgentSessions: VoiceAgentSessionsLike;
   signal?: AbortSignal;
@@ -544,10 +546,12 @@ export async function runVoiceAgentTurnWithTools(params: Readonly<{
   throwIfAborted(params.signal);
 
   const tools = createVoiceToolHandlers({
+    currentSessionAddress: params.currentToolSessionAddress ?? null,
     resolveSessionId: (explicitSessionId) =>
       resolveToolSessionId({
         explicitSessionId,
-        currentSessionId: params.currentToolSessionId ?? null,
+        currentSessionId: params.currentToolSessionAddress?.sessionId ?? params.currentToolSessionId ?? null,
+        currentServerId: params.currentToolSessionAddress?.serverId ?? null,
       }),
     ...(params.currentUiContext ? { currentUiContext: params.currentUiContext } : {}),
   });
@@ -761,8 +765,10 @@ export async function runVoiceAgentTurnWithTools(params: Readonly<{
         ...(turnIndex === 0
           ? { onUserTranscriptAccepted: noteUserTranscriptAccepted }
           : {}),
-        userTranscript: turnIndex === 0 && !outerTranscriptCommitted
-          ? { mode: 'persist' as const, localId: params.durableLocalId }
+        userTranscript: turnIndex === 0
+          ? (outerTranscriptCommitted
+              ? { mode: 'suppress' as const, localId: params.durableLocalId }
+              : { mode: 'persist' as const, localId: params.durableLocalId })
           : { mode: 'suppress' as const },
       },
     );

@@ -43,8 +43,10 @@ export type BoundVoiceMachineOperation = Readonly<{
 
 export function createSelectedVoiceMachineClient(deps?: Partial<SelectedVoiceMachineClientDeps>) {
   const resolved: SelectedVoiceMachineClientDeps = {
-    resolveMachineId: resolveVoiceExecutionMachineId,
-    machineRpc: machineRpcWithServerScope,
+    // Shared speech clients are constructed while the sync/Voice import graph
+    // is still initializing. Read defaults only when an operation needs them.
+    resolveMachineId: (override) => resolveVoiceExecutionMachineId(override),
+    machineRpc: (request) => machineRpcWithServerScope(request),
     ...deps,
   };
 

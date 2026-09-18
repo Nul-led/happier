@@ -10,12 +10,18 @@ import {
 
 import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
 import {
+    createPluginUiPersistentArtifactAccessClock,
+    createPluginUiPersistentArtifactOperationQueue,
     derivePluginUiPersistentArtifactAccountKey,
     derivePluginUiPersistentArtifactKey,
+    planPluginUiPersistentArtifactRetention,
+    readPluginUiPersistentArtifactAccessStamp,
+    PLUGIN_UI_PERSISTENT_ARTIFACT_NATIVE_BYTE_BUDGET,
     type PluginUiPersistentArtifactFile,
     type PluginUiPersistentArtifactIdentity,
     type PluginUiPersistentArtifactNativeStoredResource,
     type PluginUiPersistentArtifactNativeResourceStore,
+    type PluginUiPersistentArtifactRetainedRecord,
 } from '@/sync/domains/plugins/ui/artifactByteCache';
 
 const INSTALLED_ARTIFACT_DIRECTORY = 'happier-rn-installed-artifacts-v1';
@@ -144,6 +150,8 @@ type PersistentArtifactManifestV1 = Readonly<{
     v: 1;
     identityKey: string;
     entryRelativePath: string;
+    /** Byte-LRU ordering only; it is never compared against the current time. */
+    lastAccessedAt: number;
     files: readonly Readonly<{
         relativePath: string;
         digest: PluginUiArtifactDigestV1;
@@ -234,6 +242,8 @@ function decodePersistentManifest(bytes: Uint8Array): PersistentArtifactManifest
                 || !Number.isSafeInteger(file.byteSize)
                 || file.byteSize < 0
                 || typeof file.storedName !== 'string'
+                || !PERSISTENT_STORED_FILE_NAME_PATTERN.test(file.storedName)
+                || file.storedName !== persistentStoredFileName(file.relativePath)
             ) return null;
             const digest = PluginUiArtifactDigestV1Schema.safeParse(file.digest);
             if (!digest.success) return null;
@@ -248,6 +258,7 @@ function decodePersistentManifest(bytes: Uint8Array): PersistentArtifactManifest
             v: 1,
             identityKey: value.identityKey,
             entryRelativePath: value.entryRelativePath,
+            lastAccessedAt: readPluginUiPersistentArtifactAccessStamp(value.lastAccessedAt),
             files: Object.freeze(files),
         });
     } catch {
@@ -255,9 +266,85 @@ function decodePersistentManifest(bytes: Uint8Array): PersistentArtifactManifest
     }
 }
 
+function encodePersistentManifest(manifest: PersistentArtifactManifestV1): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify(manifest));
+}
+
+/**
+ * Enumerate every committed record across every Account and reclaim anything
+ * that is not one. This is the only place the native owner learns its total, so
+ * partial-record cleanup and budget accounting stay one pass, not two.
+ */
+async function scanRetainedPersistentRecords(input: Readonly<{
+    FileSystem: ExpoFileSystemModule;
+    cacheDirectory: ExpoFileSystemDirectory;
+    onCleanupDiagnostic?: (code: string) => void;
+}>): Promise<readonly Readonly<{
+    record: PluginUiPersistentArtifactRetainedRecord;
+    directory: ExpoFileSystemDirectory;
+    identityKey: string;
+}>[]> {
+    const root = new input.FileSystem.Directory(input.cacheDirectory, PERSISTENT_ARTIFACT_DIRECTORY);
+    // Listing is how this owner sees its own total; without it there is nothing
+    // to account for and nothing to reclaim.
+    if (root.exists === false || !root.list) return [];
+    const retained: Array<Readonly<{
+        record: PluginUiPersistentArtifactRetainedRecord;
+        directory: ExpoFileSystemDirectory;
+        identityKey: string;
+    }>> = [];
+    const reclaim = (directory: ExpoFileSystemDirectory) => {
+        try {
+            deletePersistentArtifactDirectory(directory);
+        } catch {
+            input.onCleanupDiagnostic?.('plugin_ui_artifact_cache_delete_failed');
+        }
+    };
+    for (const accountDirectory of root.list()) {
+        if (!accountDirectory.list) continue;
+        for (const artifactDirectory of accountDirectory.list()) {
+            const manifestFile = new input.FileSystem.File(artifactDirectory, PERSISTENT_ARTIFACT_MANIFEST);
+            if (!manifestFile.exists) {
+                reclaim(artifactDirectory);
+                continue;
+            }
+            const manifestBytes = await manifestFile.bytes().catch(() => null);
+            const manifest = manifestBytes ? decodePersistentManifest(manifestBytes) : null;
+            if (!manifest || !manifestBytes) {
+                reclaim(artifactDirectory);
+                continue;
+            }
+            retained.push(Object.freeze({
+                directory: artifactDirectory,
+                identityKey: manifest.identityKey,
+                record: Object.freeze({
+                    locationKey: persistentRecordLocationKey(artifactDirectory),
+                    chargedBytes: manifest.files.reduce((total, file) => total + file.byteSize, 0)
+                        + manifestBytes.byteLength,
+                    lastAccessedAt: manifest.lastAccessedAt,
+                }),
+            }));
+        }
+    }
+    return Object.freeze(retained);
+}
+
+/** Trailing separators differ between listed and constructed directories. */
+function persistentRecordLocationKey(directory: ExpoFileSystemDirectory): string {
+    return directory.uri.replace(/\/+$/u, '');
+}
+
 export type ReactNativePersistentArtifactStoreOptions = ReactNativeInstalledArtifactFileMaterializerOptions
     & Readonly<{
         onCleanupDiagnostic?: (code: string) => void;
+        /**
+         * The Artifact-owned budget this physical owner enforces. It exists so
+         * the owner tests can prove the exact/+1 boundary without allocating
+         * 640 MiB; the shipped value is always the canonical constant.
+         */
+        budgetBytes?: number;
+        /** Existing native token state projected into the physical LRU owner. */
+        isPersistentArtifactIdentityInUse?: (identityKey: string) => boolean;
     }>;
 
 /**
@@ -269,17 +356,36 @@ export type ReactNativePersistentArtifactStoreOptions = ReactNativeInstalledArti
 export function createReactNativePersistentArtifactStore(
     options: ReactNativePersistentArtifactStoreOptions = {},
 ): PluginUiPersistentArtifactNativeResourceStore {
+    const budgetBytes = options.budgetBytes ?? PLUGIN_UI_PERSISTENT_ARTIFACT_NATIVE_BYTE_BUDGET;
+    const nextAccessStamp = createPluginUiPersistentArtifactAccessClock();
     const resolveDirectories = async (identity: PluginUiPersistentArtifactIdentity) => {
         const FileSystem = await resolveExpoFileSystem(options);
         const cacheDirectory = resolveCacheDirectory(FileSystem);
         return {
             FileSystem,
+            cacheDirectory,
             accountDirectory: createPersistentAccountDirectory(FileSystem, cacheDirectory, identity.accountScope),
             artifactDirectory: createPersistentArtifactDirectory(FileSystem, cacheDirectory, identity),
         };
     };
+    const refreshAccessOrder = (
+        FileSystem: ExpoFileSystemModule,
+        artifactDirectory: ExpoFileSystemDirectory,
+        manifest: PersistentArtifactManifestV1,
+    ): void => {
+        // Ordering only: a failed refresh leaves the committed record intact and
+        // costs at most one suboptimal eviction choice.
+        try {
+            new FileSystem.File(artifactDirectory, PERSISTENT_ARTIFACT_MANIFEST).write(
+                encodePersistentManifest(Object.freeze({ ...manifest, lastAccessedAt: nextAccessStamp() })),
+                { append: false },
+            );
+        } catch {
+            options.onCleanupDiagnostic?.('plugin_ui_artifact_cache_access_refresh_failed');
+        }
+    };
 
-    return Object.freeze({
+    const store: PluginUiPersistentArtifactNativeResourceStore = Object.freeze({
         read: async (identity) => {
             const { FileSystem, artifactDirectory } = await resolveDirectories(identity);
             const discardIncompleteRecord = (): null => {
@@ -304,7 +410,10 @@ export function createReactNativePersistentArtifactStore(
                     const file = new FileSystem.File(artifactDirectory, declared.storedName);
                     if (!file.exists || file.size !== declared.byteSize) return discardIncompleteRecord();
                     const bytes = await file.bytes();
-                    if (bytes.byteLength !== declared.byteSize) return discardIncompleteRecord();
+                    if (
+                        bytes.byteLength !== declared.byteSize
+                        || computePluginUiArtifactSha256DigestV1(bytes) !== declared.digest
+                    ) return discardIncompleteRecord();
                     files.push(Object.freeze({
                         relativePath: declared.relativePath,
                         digest: declared.digest,
@@ -314,6 +423,7 @@ export function createReactNativePersistentArtifactStore(
                 }
                 const entry = files.find((file) => file.relativePath === manifest.entryRelativePath);
                 if (!entry) return discardIncompleteRecord();
+                refreshAccessOrder(FileSystem, artifactDirectory, manifest);
                 return Object.freeze({
                     persistentIdentity: identity,
                     bytes: entry.bytes,
@@ -325,9 +435,73 @@ export function createReactNativePersistentArtifactStore(
             }
         },
         write: async (record) => {
-            const { FileSystem, accountDirectory, artifactDirectory } = await resolveDirectories(
+            const { FileSystem, cacheDirectory, accountDirectory, artifactDirectory } = await resolveDirectories(
                 record.persistentIdentity,
             );
+            const files = record.files;
+            const manifestFiles: PersistentArtifactManifestV1['files'][number][] = files.map((file) => Object.freeze({
+                relativePath: file.relativePath,
+                digest: file.digest,
+                byteSize: file.byteSize,
+                storedName: persistentStoredFileName(file.relativePath),
+            }));
+            const manifest: PersistentArtifactManifestV1 = Object.freeze({
+                v: 1,
+                identityKey: derivePluginUiPersistentArtifactKey(record.persistentIdentity),
+                entryRelativePath: record.entryRelativePath,
+                lastAccessedAt: nextAccessStamp(),
+                files: Object.freeze(manifestFiles),
+            });
+            const manifestBytes = encodePersistentManifest(manifest);
+            const retained = await scanRetainedPersistentRecords({
+                FileSystem,
+                cacheDirectory,
+                ...(options.onCleanupDiagnostic ? { onCleanupDiagnostic: options.onCleanupDiagnostic } : {}),
+            });
+            const incomingLocationKey = persistentRecordLocationKey(artifactDirectory);
+            const protectedLocationKeys = new Set(retained.flatMap((entry) => {
+                if (!options.isPersistentArtifactIdentityInUse) return [];
+                try {
+                    return options.isPersistentArtifactIdentityInUse(entry.identityKey)
+                        ? [entry.record.locationKey]
+                        : [];
+                } catch {
+                    // An unavailable token projection must fail closed for the
+                    // mounted bytes it might represent.
+                    return [entry.record.locationKey];
+                }
+            }));
+            const plan = planPluginUiPersistentArtifactRetention({
+                budgetBytes,
+                incomingLocationKey,
+                incomingChargedBytes: files.reduce((total, file) => total + file.byteSize, 0)
+                    + manifestBytes.byteLength,
+                retained: retained.map((entry) => entry.record),
+                protectedLocationKeys,
+            });
+            const directoriesByLocationKey = new Map(retained.map(
+                (entry) => [entry.record.locationKey, entry.directory] as const,
+            ));
+            for (const locationKey of plan.evictLocationKeys) {
+                const directory = directoriesByLocationKey.get(locationKey);
+                if (!directory) continue;
+                try {
+                    // Lookup authority is the manifest: retire it before the
+                    // physical reclamation, exactly as `remove` does.
+                    retirePersistentArtifactCommitMarker(FileSystem, directory);
+                    deletePersistentArtifactDirectory(directory);
+                } catch {
+                    options.onCleanupDiagnostic?.('plugin_ui_artifact_cache_delete_failed');
+                    // Do not commit more bytes after a required eviction failed:
+                    // capacity fallback is not an I/O-error fallback.
+                    throw new Error('plugin_ui_artifact_cache_delete_failed');
+                }
+            }
+            // A verified artifact larger than the whole budget still served the
+            // current load; it is simply never adopted into persistent storage.
+            if (!plan.persist) {
+                return plan.reason === 'oversize' ? 'notPersistedOversize' : 'notPersistedCapacity';
+            }
             accountDirectory.create({ intermediates: true, idempotent: true });
             artifactDirectory.create({ intermediates: true, idempotent: true });
             const manifestFile = new FileSystem.File(artifactDirectory, PERSISTENT_ARTIFACT_MANIFEST);
@@ -335,26 +509,12 @@ export function createReactNativePersistentArtifactStore(
                 if (!manifestFile.delete) throw new Error('plugin_ui_artifact_cache_commit_marker_delete_unavailable');
                 manifestFile.delete();
             }
-            const files = record.files;
-            const manifestFiles: PersistentArtifactManifestV1['files'][number][] = [];
             for (const file of files) {
-                const storedName = persistentStoredFileName(file.relativePath);
-                const stored = new FileSystem.File(artifactDirectory, storedName);
-                stored.write(file.bytes, { append: false });
-                manifestFiles.push(Object.freeze({
-                    relativePath: file.relativePath,
-                    digest: file.digest,
-                    byteSize: file.byteSize,
-                    storedName,
-                }));
+                new FileSystem.File(artifactDirectory, persistentStoredFileName(file.relativePath))
+                    .write(file.bytes, { append: false });
             }
-            const manifest: PersistentArtifactManifestV1 = Object.freeze({
-                v: 1,
-                identityKey: derivePluginUiPersistentArtifactKey(record.persistentIdentity),
-                entryRelativePath: record.entryRelativePath,
-                files: Object.freeze(manifestFiles),
-            });
-            manifestFile.write(new TextEncoder().encode(JSON.stringify(manifest)), { append: false });
+            manifestFile.write(manifestBytes, { append: false });
+            return 'persisted';
         },
         describeNativeResource: async ({ identity, files }) => {
             try {
@@ -396,6 +556,9 @@ export function createReactNativePersistentArtifactStore(
                         byteSize: declared.byteSize,
                     }));
                 }
+                // Native serving is a successful access of these exact bytes, so
+                // it refreshes byte-LRU ordering just like a direct read.
+                refreshAccessOrder(FileSystem, artifactDirectory, manifest);
                 return Object.freeze({
                     locator: Object.freeze({
                         namespace: PERSISTENT_ARTIFACT_DIRECTORY,
@@ -440,6 +603,14 @@ export function createReactNativePersistentArtifactStore(
                 throw new Error('plugin_ui_artifact_account_cache_delete_failed');
             }
         },
+    });
+    const runExclusive = createPluginUiPersistentArtifactOperationQueue();
+    return Object.freeze({
+        read: (identity) => runExclusive(() => store.read(identity)),
+        write: (record) => runExclusive(() => store.write(record)),
+        remove: (identity) => runExclusive(() => store.remove(identity)),
+        removeAccount: (scope) => runExclusive(() => store.removeAccount(scope)),
+        describeNativeResource: (input) => runExclusive(() => store.describeNativeResource(input)),
     });
 }
 

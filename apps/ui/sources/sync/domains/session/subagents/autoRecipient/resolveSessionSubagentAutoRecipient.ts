@@ -10,6 +10,7 @@ import { resolveExecutionRunAutoRecipient } from './core/resolveExecutionRunAuto
 import { resolveProviderSessionSubagentAutoRecipient } from '@/sync/domains/session/providers/sessionProviderBehaviorRegistry';
 
 export function resolveSessionSubagentAutoRecipient(params: Readonly<{
+    accountScope?: import('@/sync/domains/scope/serverAccountScope').ServerAccountScope | null;
     session: Session;
     tool: ToolCall;
     messages: readonly Message[];
@@ -18,6 +19,7 @@ export function resolveSessionSubagentAutoRecipient(params: Readonly<{
     canControlExecutionRuns?: boolean;
 }>): ParticipantRecipientV1 | null {
     const subagents = applyExecutionRunControlCapabilities(deriveSessionSubagents({
+        accountScope: params.accountScope,
         session: params.session,
         messages: params.messages,
         activeExecutionRuns: params.activeExecutionRuns,

@@ -11,9 +11,11 @@ import {
   type ConnectedServicesProfileOptionsByServiceId,
 } from '@happier-dev/agents';
 import {
-  ConnectedServiceBindingsV1Schema,
-  type ConnectedServiceBindingSelectionV1,
-  type ConnectedServiceBindingsV1,
+  ConnectedAccountServiceKeySchema,
+  ConnectedServiceBindingSelectionV2Schema,
+  ConnectedServiceBindingsV2Schema,
+  type ConnectedServiceBindingSelectionV2,
+  type ConnectedServiceBindingsV2,
 } from '@happier-dev/protocol';
 
 import type { ConnectedServicesServiceBinding } from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
@@ -41,10 +43,11 @@ export function buildConnectedServicesBindingsPayload(params: Readonly<{
   connectedServicesBindingsByServiceId: Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>;
   defaultProfileByServiceId: Record<string, string | undefined>;
   accountGroupsFeatureEnabled?: boolean;
-}>): ConnectedServiceBindingsV1 | null {
-  if (params.supportedConnectedServiceIds.length === 0) return null;
-
-  const bindingsByServiceId: Record<string, ConnectedServiceBindingSelectionV1> = {};
+  /** Existing-session switches must publish native-only payloads to disconnect. */
+  emitWhenAllNative?: boolean;
+}>): ConnectedServiceBindingsV2 | null {
+  const bindingsByServiceId: Record<string, ConnectedServiceBindingSelectionV2> = {};
+  const handledServiceIds = new Set<string>();
   let connectedCount = 0;
 
   for (const requestedServiceId of params.supportedConnectedServiceIds) {
@@ -52,12 +55,18 @@ export function buildConnectedServicesBindingsPayload(params: Readonly<{
     // declared service through the provenance-named legacy ingress and drop
     // anything unknown — never emit a bare local id.
     const serviceId = resolveQualifiedConnectedAccountServiceKey(requestedServiceId);
-    if (!serviceId) continue;
+    if (!serviceId || handledServiceIds.has(serviceId)) continue;
+    handledServiceIds.add(serviceId);
     const options = params.connectedServiceProfileOptionsByServiceId[serviceId]
       ?? params.connectedServiceProfileOptionsByServiceId[requestedServiceId]
       ?? [];
     const binding = params.connectedServicesBindingsByServiceId[serviceId]
       ?? params.connectedServicesBindingsByServiceId[requestedServiceId];
+    if (binding?.source === 'team_resource') {
+      bindingsByServiceId[serviceId] = binding;
+      connectedCount += 1;
+      continue;
+    }
     const resolution = resolveConnectedServiceSessionSelection({
       serviceId,
       binding: binding ?? { source: 'native' },
@@ -84,5 +93,20 @@ export function buildConnectedServicesBindingsPayload(params: Readonly<{
     bindingsByServiceId[serviceId] = { source: 'native' };
   }
 
-  return connectedCount > 0 ? ConnectedServiceBindingsV1Schema.parse({ v: 1, bindingsByServiceId }) : null;
+  // A current Agent declaration governs what the picker may offer, not whether
+  // a previously authored canonical binding still belongs to the controlled
+  // value. Preserve valid qualified entries that are no longer declared so an
+  // edit to one visible service cannot erase an unrelated stored choice.
+  for (const [serviceId, binding] of Object.entries(params.connectedServicesBindingsByServiceId)) {
+    if (handledServiceIds.has(serviceId)) continue;
+    if (!ConnectedAccountServiceKeySchema.safeParse(serviceId).success) continue;
+    const parsedBinding = ConnectedServiceBindingSelectionV2Schema.safeParse(binding);
+    if (!parsedBinding.success) continue;
+    bindingsByServiceId[serviceId] = parsedBinding.data;
+    if (parsedBinding.data.source !== 'native') connectedCount += 1;
+  }
+
+  return connectedCount > 0 || params.emitWhenAllNative === true
+    ? ConnectedServiceBindingsV2Schema.parse({ v: 2, bindingsByServiceId })
+    : null;
 }

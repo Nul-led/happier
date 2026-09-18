@@ -1,22 +1,17 @@
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
+import { buildBackendTargetKeyV2 } from '@happier-dev/protocol';
+import { TeamCredentialProviderModelSelectionV1Schema, type TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol/teams';
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { Platform, Pressable, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import {
-    buildBackendTargetKeyV2,
-    type EffectiveActionInputField,
-    type PersistedBackendTargetRefV2,
-    getActionSpec,
-    resolveEffectiveActionInputFields,
-} from '@happier-dev/protocol';
 
-import { buildResumeSessionExtrasFromUiState } from '@/agents/catalog/catalog';
-import { useEnabledAgentIds } from '@/agents/hooks/useEnabledAgentIds';
+import { getEnabledAgentIds } from '@/agents/catalog/enabled';
 import { useResumeCapabilityOptions } from '@/agents/hooks/useResumeCapabilityOptions';
 import { useSessionMachineTarget } from '@/components/sessions/model/useSessionMachineTarget';
 import { useSessionMachineReachability } from '@/components/sessions/model/useSessionMachineReachability';
 import { useMachineCapabilitiesCache } from '@/hooks/server/useMachineCapabilitiesCache';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useSessionExecutionRunLaunchability } from '@/hooks/session/useSessionExecutionRunLaunchability';
 import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForRoute';
 import {
@@ -25,40 +20,33 @@ import {
     type SessionRouteHydrationState,
 } from '@/sync/domains/session/sessionRouteHydrationState';
 import { Text } from '@/components/ui/text/Text';
-import { getModelOverrideForSpawn } from '@/sync/domains/models/modelOverride';
-import { getPermissionModeOverrideForSpawn } from '@/sync/domains/permissions/permissionModeOverride';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
-import { buildResumeSessionBaseOptionsFromSession } from '@/sync/domains/session/resume/resumeSessionBase';
-import { useSession, useSettings } from '@/sync/domains/state/storage';
+import { useSettings } from '@/sync/domains/state/storage';
+import { loadAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
+import { settingsDefaults, settingsParse } from '@/sync/domains/settings/settings';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
+import { areAccountSettingsScopesEqual } from '@/sync/domains/settings/scope/accountSettingsScope';
+import { useServerCredentialAccountScopeBindings } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { buildExecutionRunsGuidanceBlock, coerceExecutionRunsGuidanceEntries } from '@/sync/domains/settings/executionRunsGuidance';
-import { getPermissionModeOptionsForAgentType } from '@/sync/domains/permissions/permissionModeOptions';
 import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
 import { resolveActionExecutionFailureMessage } from '@/sync/ops/actions/resolveActionExecutionFailureMessage';
-import { resumeSession } from '@/sync/ops/sessions';
+import { ensureExecutionRunHostSessionActive } from './ensureExecutionRunHostSessionActive';
 import { t } from '@/text';
 import { resolveActionInputValidationError } from '@/sync/domains/actions/resolveActionInputValidationError';
 import { resolveExecutionRunLauncherContainerStyle } from './resolveExecutionRunLauncherContainerStyle';
-import {
-    resolveExecutionRunLauncherBackendChoices,
-    type ExecutionRunLauncherBackendChoice,
-} from './resolveExecutionRunLauncherBackendChoices';
-import { extractExecutionRunProfilesFromMachineCapabilitiesState } from '@/sync/domains/executionRuns/extractExecutionRunsBackendsFromMachineCapabilities';
-import {
-    doesExecutionRunProfileMatchSelectedBackends,
-    resolveExecutionRunLauncherProfileChoices,
-} from './resolveExecutionRunLauncherProfileChoices';
-import { ExecutionRunProfilePicker } from './ExecutionRunProfilePicker';
 import { buildExecutionRunActionDraftInputForUi } from '@/sync/domains/actions/buildExecutionRunActionDraftInputForUi';
-import { toExecutionRunActionPermissionMode } from '@/sync/domains/actions/executionRunActionPermissionMode';
-import { normalizeActionInputPatch } from '@/sync/domains/actions/normalizeActionInputPatch';
-import { resolveExecutionRunActionDefaultPermissionMode } from '@/sync/domains/actions/resolveExecutionRunActionDefaultPermissionMode';
-import { resolveExecutionRunActionAllowedPermissionModes } from '@/sync/domains/actions/resolveExecutionRunActionAllowedPermissionModes';
 import {
     resolveSessionActionDefaultBackend,
     resolveSessionActionDefaultTarget,
 } from '@/sync/domains/session/resolveSessionActionDefaultBackend';
-import { ActionInputFields, getValueAtPath, setValueAtTopLevelPatch, type ActionFieldOption } from '@/components/sessions/actions/ActionInputFields';
+import { getValueAtPath } from '@/components/sessions/actions/ActionInputFields';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
+import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
+import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+import { randomUUID } from '@/platform/randomUUID';
+import { createUiExecutionRunActionDeps } from '@/sync/ops/actions/executionRunActionDeps';
 
 import {
     EXECUTION_RUN_LAUNCH_INTENTS,
@@ -66,19 +54,20 @@ import {
     type ExecutionRunIntent,
 } from './executionRunLauncherModel';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { resolveExecutionRunPermissionAgentId } from './resolveExecutionRunPermissionAgentId';
+import { useExecutionRunLauncherOptionsModel } from './useExecutionRunLauncherOptionsModel';
+import { ExecutionRunLauncherOptions } from './ExecutionRunLauncherOptions';
+import { useHomeTeamCredentialModelCatalog } from '@/hooks/teams/useHomeTeamCredentialModelCatalog';
+import { SessionModelPicker } from '@/components/sessions/modelPicker/SessionModelPicker';
+import { useTeamCredentialSelectionCoordinator } from '@/components/sessions/teamCredentials/useTeamCredentialSelectionCoordinator';
+import { resourceHasAvailableTeamCredentialProviderModel } from '@/components/sessions/teamCredentials/teamCredentialProviderModelCurrentness';
+import { Modal } from '@/modal';
+import {
+    ExecutionRunSecretReferenceOverlayField,
+    resolveExecutionRunSessionLaunchProfile,
+    type ExecutionRunSecretReferenceOverlayState,
+} from './ExecutionRunSecretReferenceOverlayField';
 
-export function resolveInitialExecutionRunBackendTargetKey(
-    initialTarget: PersistedBackendTargetRefV2 | null,
-    choices: readonly ExecutionRunLauncherBackendChoice[],
-): string | null {
-    if (!initialTarget) return null;
-    const canonicalTargetKey = buildBackendTargetKeyV2(initialTarget);
-    return choices.find((choice) => (
-        choice.disabled !== true
-        && buildBackendTargetKeyV2(choice.backendTarget) === canonicalTargetKey
-    ))?.targetKey ?? null;
-}
+export { resolveInitialExecutionRunBackendTargetKey } from './resolveExecutionRunLauncherBackendChoices';
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
@@ -97,6 +86,8 @@ const stylesheet = StyleSheet.create((theme) => ({
         gap: 12,
     },
     actionButton: {
+        alignItems: 'center',
+        justifyContent: 'center',
         paddingVertical: 10,
         paddingHorizontal: 14,
         borderRadius: 10,
@@ -129,6 +120,8 @@ const stylesheet = StyleSheet.create((theme) => ({
 
 type SessionExecutionRunLauncherViewProps = Readonly<{
     sessionId: string;
+    /** Exact Home owning this Session when mounted from a qualified route/pane. */
+    serverId?: string | null;
     scopeId?: string;
     initialIntent?: ExecutionRunIntent;
     presentation?: 'screen' | 'panel';
@@ -144,15 +137,51 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
     const styles = stylesheet;
     const { theme } = useUnistyles();
     const router = useRouter();
+    const interactiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
+    const interactiveTargetStyle = React.useMemo(() => ({
+        minWidth: interactiveTargetSize,
+        minHeight: interactiveTargetSize,
+    }), [interactiveTargetSize]);
     const hydrateReady = isSessionRouteHydrationAvailable(props.routeHydrationState);
     const hydrateMissing = isSessionRouteHydrationMissing(props.routeHydrationState);
-    const session = useSession(props.sessionId);
-    const settings = useSettings();
-    const enabledAgentIds = useEnabledAgentIds();
+    const explicitServerId = typeof props.serverId === 'string' && props.serverId.trim().length > 0
+        ? props.serverId.trim()
+        : null;
+    const preferredServerId = usePreferredServerIdForSession({
+        serverId: explicitServerId,
+        sessionId: props.sessionId,
+    });
+    const expectedServerId = preferredServerId;
+    const session = useSessionViewShellSession(props.sessionId, expectedServerId);
     const { canLaunchExecutionRuns, canShowExecutionRunLauncher, executionRunsBackends, sessionServerId } =
-        useSessionExecutionRunLaunchability(props.sessionId, session);
-    const { machineReachable } = useSessionMachineReachability(props.sessionId);
-    const machineTarget = useSessionMachineTarget(props.sessionId);
+        useSessionExecutionRunLaunchability(props.sessionId, session, expectedServerId);
+    const activeSettings = useSettings();
+    const activeSettingsScope = useAccountSettingsScope();
+    const requestedServerIds = React.useMemo(() => [sessionServerId], [sessionServerId]);
+    const accountBindings = useServerCredentialAccountScopeBindings(requestedServerIds);
+    const accountBinding = React.useMemo(() => [...accountBindings.values()][0] ?? null, [accountBindings]);
+    const exactSettings = React.useMemo(() => {
+        if (!accountBinding?.isCurrent()) return null;
+        if (activeSettingsScope && areAccountSettingsScopesEqual(activeSettingsScope, accountBinding.scope)) {
+            return activeSettings;
+        }
+        const persisted = loadAccountSettings(accountBinding.scope);
+        return persisted.version === null ? null : settingsParse(persisted.settings);
+    }, [accountBinding, activeSettings, activeSettingsScope]);
+    const settings = exactSettings ?? settingsDefaults;
+    const credentialResourcesEnabled = useFeatureEnabled('teams.credentialResources', {
+        scopeKind: 'spawn',
+        serverId: sessionServerId,
+    });
+    const sharedSavedSecretsEnabled = useFeatureEnabled('teams', {
+        scopeKind: 'spawn',
+        serverId: sessionServerId,
+    });
+    const enabledAgentIds = React.useMemo(() => getEnabledAgentIds({
+        backendEnabledByTargetKey: settings.backendEnabledByTargetKey,
+    }), [settings.backendEnabledByTargetKey]);
+    const { machineReachable } = useSessionMachineReachability(props.sessionId, sessionServerId);
+    const machineTarget = useSessionMachineTarget(props.sessionId, sessionServerId);
     const machineId = React.useMemo(
         () => machineTarget?.machineId ?? resolveSessionMachineId((session as any)?.metadata),
         [machineTarget?.machineId, (session as any)?.metadata],
@@ -171,6 +200,7 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
     const { resumeCapabilityOptions } = useResumeCapabilityOptions({
         agentId,
         machineId,
+        serverId: sessionServerId,
         settings,
         enabled: session?.active === false,
     });
@@ -198,6 +228,13 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
     const initialDefaultBackendId = sessionActionDefaultBackend?.defaultBackendId ?? null;
     const [isStarting, setIsStarting] = React.useState(false);
     const [startError, setStartError] = React.useState<string | null>(null);
+    const [secretOverlayState, setSecretOverlayState] = React.useState<ExecutionRunSecretReferenceOverlayState>({
+        readiness: { ok: true },
+    });
+    const sessionLaunchProfile = React.useMemo(
+        () => resolveExecutionRunSessionLaunchProfile(settings, (session as any)?.metadata),
+        [session, settings],
+    );
 
     const daemonMergedProjection = useDaemonMergedProjectionInputs({
         machineId,
@@ -205,42 +242,6 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
         enabled: Boolean(machineId),
         staleMs: 60_000,
     });
-
-    const backendChoices = React.useMemo(() => {
-        if (!executionRunsBackends || Object.keys(executionRunsBackends).length === 0) return [];
-        return resolveExecutionRunLauncherBackendChoices({
-            enabledAgentIds,
-            executionRunsBackends,
-            acpCatalogSettingsV1: settings.acpCatalogSettingsV1,
-            intent,
-            mergedBackendProjectionById: daemonMergedProjection.inputs?.mergedBackendProjectionById ?? null,
-            mergedProviderProjectionById: daemonMergedProjection.inputs?.mergedProviderProjectionById ?? null,
-        });
-    }, [
-        daemonMergedProjection.inputs?.mergedBackendProjectionById,
-        daemonMergedProjection.inputs?.mergedProviderProjectionById,
-        enabledAgentIds,
-        executionRunsBackends,
-        intent,
-        settings,
-    ]);
-
-    const executionRunProfiles = React.useMemo(
-        () => extractExecutionRunProfilesFromMachineCapabilitiesState(machineCapabilitiesState),
-        [machineCapabilitiesState],
-    );
-    const profileChoices = React.useMemo(
-        () => resolveExecutionRunLauncherProfileChoices({
-            intent,
-            profiles: executionRunProfiles,
-            backendChoices,
-        }),
-        [backendChoices, executionRunProfiles, intent],
-    );
-
-    const initialBackendTargetKey = React.useMemo(() => {
-        return resolveInitialExecutionRunBackendTargetKey(initialBackendTarget, backendChoices);
-    }, [backendChoices, initialBackendTarget]);
 
     const buildSeedInput = React.useCallback((nextIntent: ExecutionRunIntent, previousInput?: Record<string, unknown> | null) => {
         const actionId = resolveExecutionRunLauncherActionId(nextIntent);
@@ -257,158 +258,153 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
     }, [initialBackendTarget, initialDefaultBackendId, props.sessionId]);
 
     const [actionInput, setActionInput] = React.useState<Record<string, unknown>>(() => buildSeedInput(initialIntent));
-    const selectedProfileId = typeof actionInput.profileId === 'string' ? actionInput.profileId : '';
-    const selectedProfileGenerationId = typeof actionInput.profileGenerationId === 'string'
-        ? actionInput.profileGenerationId
-        : '';
-    const selectedProfileChoice = profileChoices.find((choice) => (
-        choice.id === selectedProfileId && choice.generationId === selectedProfileGenerationId
-    )) ?? null;
-    const actionId = resolveExecutionRunLauncherActionId(intent);
-    const actionSpec = React.useMemo(() => getActionSpec(actionId as any), [actionId]);
-    const fields = React.useMemo(
-        () => resolveEffectiveActionInputFields(actionSpec as any, { sessionId: props.sessionId, ...actionInput }),
-        [actionInput, actionSpec, props.sessionId],
-    );
-
-    const reviewEngineOptions = React.useMemo<readonly ActionFieldOption[]>(() => {
-        if (intent !== 'review') {
-            return [];
-        }
-        return backendChoices.map((choice) => ({
-            value: choice.backendId,
-            label: choice.title,
-            ...(choice.disabled ? { disabled: true as const } : {}),
-        }));
-    }, [backendChoices, intent]);
-
-    const executionBackendOptions = React.useMemo<readonly ActionFieldOption[]>(() => {
-        return backendChoices.map((choice) => ({
-            value: choice.targetKey,
-            label: choice.title,
-            ...(choice.disabled ? { disabled: true as const } : {}),
-        }));
-    }, [backendChoices]);
-
-    const resolveFieldOptions = React.useCallback((field: EffectiveActionInputField): readonly ActionFieldOption[] => {
-        const sourceId = typeof field?.optionsSourceId === 'string' ? field.optionsSourceId : '';
-        if (sourceId === 'review.engines.available') return reviewEngineOptions;
-        if (sourceId === 'execution.backends.enabled') return executionBackendOptions;
-        return field.options ?? [];
-    }, [executionBackendOptions, reviewEngineOptions]);
-
-    const selectedBackendChoices = React.useMemo(() => {
-        const fieldPath = intent === 'review' ? 'engineIds' : 'backendTargetKeys';
-        const selectedValues = Array.isArray(getValueAtPath(actionInput, fieldPath))
-            ? (getValueAtPath(actionInput, fieldPath) as unknown[]).map(String)
-            : [];
-        return backendChoices.filter((choice) => selectedValues.includes(choice.targetKey) || selectedValues.includes(choice.backendId));
-    }, [actionInput, backendChoices, intent]);
-    const selectedProfileMatchesSelectedBackend = !selectedProfileChoice || doesExecutionRunProfileMatchSelectedBackends(
+    const launcherOptions = useExecutionRunLauncherOptionsModel({
+        sessionId: props.sessionId,
+        intent,
+        actionInput,
+        setActionInput,
+        singleTarget: intent !== 'review',
+        enabledAgentIds,
+        executionRunsBackends,
+        acpCatalogSettingsV1: settings.acpCatalogSettingsV1,
+        initialBackendTarget,
+        fallbackAgentId: sessionActionDefaultBackend?.defaultAgentId ?? agentId,
+        machineCapabilitiesState,
+        mergedBackendProjectionById: daemonMergedProjection.inputs?.mergedBackendProjectionById ?? null,
+        mergedProviderProjectionById: daemonMergedProjection.inputs?.mergedProviderProjectionById ?? null,
+    });
+    const {
+        actionId,
+        actionSpec,
+        fields,
+        profileChoices,
+        selectedProfileId,
         selectedProfileChoice,
-        selectedBackendChoices.map((choice) => choice.backendId),
-    );
-
-    const permissionModeOptions = React.useMemo(() => {
-        const rawAgentType = resolveExecutionRunPermissionAgentId({
-            selectedBackendChoices,
-            // Released Session/default metadata remains a compatibility read
-            // only when no concrete backend choice is selected.
-            fallbackAgentId: sessionActionDefaultBackend?.defaultAgentId
-            ?? (session as any)?.metadata?.agent
-            ?? null,
-        });
-        if (!rawAgentType) {
-            return [];
-        }
-        return getPermissionModeOptionsForAgentType(rawAgentType as any).map((option) => ({
-            ...option,
-            value: toExecutionRunActionPermissionMode(option.value),
-        }));
-    }, [selectedBackendChoices, session, sessionActionDefaultBackend]);
-    const selectedPermissionMode = React.useMemo(() => {
-        const value = getValueAtPath(actionInput, 'permissionMode');
-        return typeof value === 'string' ? value : '';
-    }, [actionInput]);
-    const allowedPermissionModes = React.useMemo(
-        () => resolveExecutionRunActionAllowedPermissionModes(actionId as any),
-        [actionId],
-    );
-    const visiblePermissionModeOptions = React.useMemo(() => {
-        if (!allowedPermissionModes || allowedPermissionModes.length === 0) {
-            return permissionModeOptions;
-        }
-        return permissionModeOptions.filter((option) => allowedPermissionModes.includes(option.value));
-    }, [allowedPermissionModes, permissionModeOptions]);
-    const showPermissionModeSection = visiblePermissionModeOptions.length > 1;
-
-    React.useEffect(() => {
-        const primaryField = fields.find((field: any) => field.widget === 'multiselect' && typeof field?.optionsSourceId === 'string');
-        if (!primaryField?.path) return;
-
-        const selectableValues = resolveFieldOptions(primaryField).filter((option) => option.disabled !== true).map((option) => option.value);
-        const current = Array.isArray(getValueAtPath(actionInput, primaryField.path))
-            ? (getValueAtPath(actionInput, primaryField.path) as unknown[]).map(String)
-            : [];
-
-        const preserved = current.filter((value) => selectableValues.includes(value));
-        const preferredValue = initialBackendTargetKey && selectableValues.includes(initialBackendTargetKey) ? initialBackendTargetKey : selectableValues[0];
-        const next = selectableValues.length === 0
-            ? []
-            : preserved.length > 0
-                ? preserved
-                : primaryField.requireExplicitSelection === true
-                    ? []
-                : preferredValue
-                    ? [preferredValue]
-                    : [];
-
-        if (current.length === next.length && current.every((value, index) => value === next[index])) {
-            return;
-        }
-
-        setActionInput((previous) => ({
-            ...previous,
-            ...setValueAtTopLevelPatch(previous, primaryField.path, next),
-        }));
-    }, [actionInput, fields, initialBackendTargetKey, resolveFieldOptions]);
+        selectedProfileMatchesSelectedBackend,
+    } = launcherOptions;
+    const selectedTeamCredentialModel = React.useMemo(() => {
+        const parsed = TeamCredentialProviderModelSelectionV1Schema.safeParse(actionInput.teamCredentialModel);
+        return parsed.success ? parsed.data : null;
+    }, [actionInput.teamCredentialModel]);
+    const selectedAgentTargetKey = launcherOptions.selectedBackendChoice
+        ? buildBackendTargetKeyV2(launcherOptions.selectedBackendChoice.backendTarget)
+        : null;
+    const teamCredentialCatalog = useHomeTeamCredentialModelCatalog({
+        serverId: sessionServerId,
+        enabled: credentialResourcesEnabled && Boolean(sessionServerId && selectedAgentTargetKey),
+    });
+    const teamCredentialCatalogRef = React.useRef(teamCredentialCatalog);
+    teamCredentialCatalogRef.current = teamCredentialCatalog;
+    const coordinateTeamCredentialSelection = useTeamCredentialSelectionCoordinator(sessionServerId);
+    const selectedTeamCredentialModelAvailable = React.useMemo(() => {
+        if (!selectedTeamCredentialModel) return true;
+        if (!teamCredentialCatalog.current) return false;
+        if (!teamCredentialCatalog.currentResourceKeys.has(
+            `${selectedTeamCredentialModel.teamId}:${selectedTeamCredentialModel.resourceId}`,
+        )) return false;
+        const resource = teamCredentialCatalog.resources.find((candidate) => (
+            candidate.id === selectedTeamCredentialModel.resourceId
+            && candidate.teamId === selectedTeamCredentialModel.teamId
+        ));
+        return resource
+            ? resourceHasAvailableTeamCredentialProviderModel(resource, selectedTeamCredentialModel)
+            : false;
+    }, [selectedTeamCredentialModel, teamCredentialCatalog.current, teamCredentialCatalog.currentResourceKeys, teamCredentialCatalog.resources]);
+    const visibleFields = React.useMemo(() => fields.filter((field) => (
+        field.path !== 'teamCredentialModel'
+        && field.path !== 'teamCredentialSessionBindingConsent'
+        && field.path !== 'secretReferenceOverlay'
+        && (!selectedTeamCredentialModel || field.path !== 'modelId')
+    )), [fields, selectedTeamCredentialModel]);
 
     React.useEffect(() => {
-        if (!selectedProfileId) return;
-        if (
-            selectedProfileChoice
-            && selectedProfileChoice.disabled !== true
-            && selectedProfileMatchesSelectedBackend
-        ) return;
+        if (!selectedTeamCredentialModel || launcherOptions.backendChoices.length === 0) return;
+        if (selectedAgentTargetKey === selectedTeamCredentialModel.agentTargetKey) return;
         setActionInput((previous) => {
             const next = { ...previous };
-            delete next.profileId;
-            delete next.profileGenerationId;
+            delete next.teamCredentialModel;
+            delete next.teamCredentialSessionBindingConsent;
+            if (next.modelId === selectedTeamCredentialModel.modelId) delete next.modelId;
             return next;
         });
-    }, [selectedProfileChoice, selectedProfileId, selectedProfileMatchesSelectedBackend]);
+    }, [launcherOptions.backendChoices.length, selectedAgentTargetKey, selectedTeamCredentialModel]);
 
-    React.useEffect(() => {
-        if (!allowedPermissionModes || allowedPermissionModes.length === 0) {
-            return;
+    const onSelectTeamCredentialModel = React.useCallback(async (selection: TeamCredentialProviderModelSelectionV1) => {
+        const resourceKey = `${selection.teamId}:${selection.resourceId}`;
+        const selectedResource = teamCredentialCatalog.resources.find((resource) => (
+            resource.teamId === selection.teamId
+            && resource.id === selection.resourceId
+            && resource.resourceRevision === selection.expectedResourceRevision
+        ));
+        if (!selectedResource
+            || !teamCredentialCatalog.current
+            || !teamCredentialCatalog.currentResourceKeys.has(resourceKey)
+            || !resourceHasAvailableTeamCredentialProviderModel(selectedResource, selection)) return;
+        const outcome = await coordinateTeamCredentialSelection({
+            resource: selectedResource,
+            deliveryMode: selection.deliveryMode,
+            selection,
+            isCurrent: () => teamCredentialCatalogRef.current.current
+                && teamCredentialCatalogRef.current.currentResourceKeys.has(resourceKey)
+                && teamCredentialCatalogRef.current.resources.some((resource) => (
+                    resource.teamId === selection.teamId
+                    && resource.id === selection.resourceId
+                    && resourceHasAvailableTeamCredentialProviderModel(resource, selection)
+                )),
+        });
+        if (outcome.kind !== 'continue') return;
+        if (outcome.consequence.visibilityRequirement === 'team_visibility_required') {
+            const confirmed = await Modal.confirm(
+                t('teams.credentials.usePolicy.label'),
+                t('teams.credentials.usePolicy.visibilityNote'),
+                { confirmText: t('common.continue'), cancelText: t('common.cancel') },
+            );
+            if (!confirmed) return;
         }
-        if (allowedPermissionModes.includes(selectedPermissionMode as any)) {
-            return;
-        }
-
-        const defaultMode = resolveExecutionRunActionDefaultPermissionMode(actionId as any);
-        const nextMode = defaultMode && allowedPermissionModes.includes(defaultMode as any)
-            ? defaultMode
-            : allowedPermissionModes[0];
-        if (!nextMode) {
-            return;
-        }
-
-        setActionInput((previous) => ({
-            ...previous,
-            ...setValueAtTopLevelPatch(previous, 'permissionMode', nextMode),
-        }));
-    }, [actionId, allowedPermissionModes, selectedPermissionMode]);
+        const stillCurrent = teamCredentialCatalogRef.current.current
+            && teamCredentialCatalogRef.current.currentResourceKeys.has(resourceKey)
+            && teamCredentialCatalogRef.current.resources.some((resource) => (
+                resource.teamId === selection.teamId
+                && resource.id === selection.resourceId
+                && resourceHasAvailableTeamCredentialProviderModel(resource, selection)
+            ));
+        if (!stillCurrent) return;
+        setStartError(null);
+        setActionInput((previous) => {
+            const next: Record<string, unknown> = {
+                ...previous,
+                teamCredentialModel: outcome.selection,
+                modelId: outcome.selection.modelId,
+                ...(outcome.consequence.visibilityRequirement === 'team_visibility_required'
+                    ? {
+                        teamCredentialSessionBindingConsent: {
+                            v: 1,
+                            sessionId: props.sessionId,
+                            teamId: outcome.selection.teamId,
+                            resourceId: outcome.selection.resourceId,
+                            expectedResourceRevision: outcome.selection.expectedResourceRevision,
+                        },
+                    }
+                    : {}),
+            };
+            if (outcome.consequence.visibilityRequirement !== 'team_visibility_required') {
+                delete next.teamCredentialSessionBindingConsent;
+            }
+            delete next.modelSelection;
+            return next;
+        });
+    }, [coordinateTeamCredentialSelection, props.sessionId, teamCredentialCatalog.current, teamCredentialCatalog.currentResourceKeys, teamCredentialCatalog.resources]);
+    const onSelectNonTeamModel = React.useCallback((selection: unknown) => {
+        if (selection !== null) return;
+        setStartError(null);
+        setActionInput((previous) => {
+            const next = { ...previous };
+            delete next.teamCredentialModel;
+            delete next.teamCredentialSessionBindingConsent;
+            delete next.modelId;
+            return next;
+        });
+    }, []);
 
     const guidancePreview = React.useMemo(() => {
         if ((settings as any).executionRunsGuidanceEnabled !== true) return '';
@@ -424,6 +420,8 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
         }),
         [sessionServerId],
     );
+    const executionRunActionDeps = React.useMemo(() => createUiExecutionRunActionDeps(), []);
+    const [launchSubmissionIdentity] = React.useState(() => randomUUID());
     const waitingForExecutionRunCapabilities = React.useMemo(() => {
         if (canShowExecutionRunLauncher !== true) return false;
         if (canLaunchExecutionRuns === true) return false;
@@ -444,31 +442,19 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
         }),
         [actionInput, actionSpec, fields, props.sessionId],
     );
-    const canStart = validationError === null
+    const canStart = exactSettings !== null
+        && validationError === null
+        && selectedTeamCredentialModelAvailable
+        && secretOverlayState.readiness.ok
         && !isStarting
         && (!selectedProfileId || (
             selectedProfileChoice?.disabled === false && selectedProfileMatchesSelectedBackend
         ));
 
     const onSelectProfile = React.useCallback((choice: (typeof profileChoices)[number]) => {
-        if (!choice.compatibleAgentId) return;
-        const backendChoice = backendChoices.find((backend) => backend.backendId === choice.compatibleAgentId);
-        if (!backendChoice || backendChoice.disabled) return;
-        const backendField = intent === 'review' ? 'engineIds' : 'backendTargetKeys';
-        const backendValue = intent === 'review' ? backendChoice.backendId : backendChoice.targetKey;
         setStartError(null);
-        setActionInput((previous) => ({
-            ...previous,
-            profileId: choice.id,
-            profileGenerationId: choice.generationId,
-            ...setValueAtTopLevelPatch(previous, backendField, [backendValue]),
-        }));
-    }, [backendChoices, intent]);
-
-    const resolveProfileAccessibilityLabel = React.useCallback(
-        (title: string) => t('executionRuns.newRun.a11y.selectProfile', { profile: title }),
-        [],
-    );
+        launcherOptions.onSelectProfile(choice);
+    }, [launcherOptions]);
 
     const onSelectIntent = React.useCallback((nextIntent: ExecutionRunIntent) => {
         setStartError(null);
@@ -488,44 +474,58 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
         setStartError(null);
         setIsStarting(true);
         try {
-            if (session?.active === false) {
-                if (!machineReachable) {
-                    setStartError(t('session.machineOfflineCannotResume'));
+            const requiresSecretOverlay = secretOverlayState.overlay !== undefined;
+            const requiresTeamCredentialModel = selectedTeamCredentialModel !== null;
+            let admittedMachineId: string | undefined;
+            if (requiresSecretOverlay || requiresTeamCredentialModel) {
+                const capability = await executionRunActionDeps.executionRunCheckProtocolV2?.(
+                    props.sessionId,
+                    {
+                        detachedScope: false,
+                        startAndWait: false,
+                        exactInputResults: false,
+                        runScopedAgentBindings: requiresTeamCredentialModel,
+                        secretReferenceOverlay: requiresSecretOverlay,
+                    },
+                    {
+                        ...(sessionServerId ? { serverId: sessionServerId } : {}),
+                        ...(machineId ? { targetMachineId: machineId } : {}),
+                    },
+                );
+                if (!capability) {
+                    setStartError('execution_run_target_unavailable');
                     return;
                 }
-
-                const permissionOverride = getPermissionModeOverrideForSpawn(session);
-                const sessionActionDefaultTarget = resolveSessionActionDefaultTarget(sessionActionDefaultBackend);
-                const modelOverride = sessionActionDefaultBackend
-                    && sessionActionDefaultTarget
-                    ? getModelOverrideForSpawn(
-                        session,
-                        buildBackendTargetKeyV2(sessionActionDefaultTarget),
-                    )
-                    : null;
-                const base = buildResumeSessionBaseOptionsFromSession({
+                if (capability.ok === false) {
+                    setStartError(requiresSecretOverlay
+                        && capability.errorCode === 'execution_run_protocol_unsupported'
+                        ? 'execution_run_secret_reference_overlay_update_required'
+                        : capability.error);
+                    return;
+                }
+                if (capability.exactMachineId !== machineId) {
+                    setStartError('execution_run_target_unavailable');
+                    return;
+                }
+                admittedMachineId = capability.exactMachineId;
+            }
+            if (session?.active === false) {
+                const resumeResult = await ensureExecutionRunHostSessionActive({
                     sessionId: props.sessionId,
                     session,
+                    machineReachable,
                     resumeCapabilityOptions,
-                    permissionOverride,
-                    modelOverride,
+                    sessionActionDefaultBackend,
+                    agentId,
+                    settings,
+                    serverId: sessionServerId,
+                    readinessOperationId: launchSubmissionIdentity,
+                    ...(admittedMachineId ? { expectedMachineId: admittedMachineId } : {}),
                 });
-                if (!base || !agentId) {
-                    setStartError(t('session.resumeFailed'));
-                    return;
-                }
-
-                const resumeResult = await resumeSession({
-                    ...base,
-                    ...(sessionServerId ? { serverId: sessionServerId } : {}),
-                    ...buildResumeSessionExtrasFromUiState({
-                        agentId,
-                        settings,
-                        session,
-                    }),
-                });
-                if (resumeResult.type === 'error') {
-                    setStartError(resumeResult.errorMessage);
+                if (!resumeResult.ok) {
+                    setStartError(resumeResult.reason === 'machine_offline'
+                        ? t('session.machineOfflineCannotResume')
+                        : resumeResult.error ?? t('session.resumeFailed'));
                     return;
                 }
             }
@@ -535,8 +535,14 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
                 {
                     sessionId: props.sessionId,
                     ...actionInput,
+                    ...(secretOverlayState.overlay
+                        ? { secretReferenceOverlay: secretOverlayState.overlay }
+                        : {}),
                 },
-                { defaultSessionId: props.sessionId },
+                {
+                    defaultSessionId: props.sessionId,
+                    ...(sessionServerId ? { serverId: sessionServerId } : {}),
+                },
             );
 
             const errorMessage = resolveActionExecutionFailureMessage(result, t('common.requestFailed'));
@@ -550,7 +556,11 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
                 return;
             }
 
-            router.push(`/session/${props.sessionId}/runs` as any);
+            router.push(buildScopedSessionRouteHref({
+                sessionId: props.sessionId,
+                serverId: sessionServerId,
+                suffix: '/runs',
+            }) as any);
         } catch (error) {
             setStartError(error instanceof Error && error.message.trim().length > 0 ? error.message : t('common.requestFailed'));
         } finally {
@@ -563,16 +573,20 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
         closeSurface,
         intent,
         machineReachable,
+        machineId,
+        launchSubmissionIdentity,
         sessionServerId,
         props.presentation,
         props.sessionId,
         resumeCapabilityOptions,
         router,
         actionId,
-        actionExecutor,
         actionInput,
         session,
         settings,
+        secretOverlayState.overlay,
+        selectedTeamCredentialModel,
+        executionRunActionDeps.executionRunCheckProtocolV2,
         validationError,
     ]);
 
@@ -606,8 +620,13 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
                                 testID={`execution-run-launcher-intent:${nextIntent}`}
                                 accessibilityRole="button"
                                 accessibilityLabel={t('executionRuns.newRun.a11y.selectIntent', { intent: intentLabel })}
+                                accessibilityState={{ selected, disabled: isStarting }}
+                                disabled={isStarting}
                                 onPress={() => onSelectIntent(nextIntent)}
                                 style={({ pressed }) => ({
+                                    ...interactiveTargetStyle,
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
                                     paddingVertical: 8,
                                     paddingHorizontal: 10,
                                     borderRadius: 10,
@@ -626,82 +645,80 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
                 </View>
             </View>
 
-            <ExecutionRunProfilePicker
-                choices={profileChoices}
-                selectedId={selectedProfileId}
-                selectedGenerationId={selectedProfileGenerationId}
-                sectionLabel={t('executionRuns.newRun.sections.profiles')}
-                resolveAccessibilityLabel={resolveProfileAccessibilityLabel}
-                onSelect={onSelectProfile}
-            />
-
-            {showPermissionModeSection ? (
-                <View style={styles.section}>
-                    <Text style={styles.label}>{t('executionRuns.newRun.sections.permissions')}</Text>
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-                        {visiblePermissionModeOptions.map((option) => {
-                            const selected = selectedPermissionMode === option.value;
-                            return (
-                                <Pressable
-                                    key={option.value}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('executionRuns.newRun.a11y.selectPermissionMode', { mode: option.label })}
-                                    onPress={() => {
-                                        setStartError(null);
-                                        setActionInput((previous) => ({
-                                            ...previous,
-                                            ...setValueAtTopLevelPatch(previous, 'permissionMode', option.value),
-                                        }));
-                                    }}
-                                    style={({ pressed }) => ({
-                                        paddingVertical: 8,
-                                        paddingHorizontal: 10,
-                                        borderRadius: 10,
-                                        borderWidth: 1,
-                                        borderColor: theme.colors.border.default,
-                                        backgroundColor: theme.colors.surface.inset,
-                                        opacity: pressed ? 0.7 : 1,
-                                    })}
-                                >
-                                    <Text style={{ color: selected ? theme.colors.text.primary : theme.colors.text.secondary, fontSize: 12, fontWeight: '600' }}>
-                                        {option.label}
-                                    </Text>
-                                </Pressable>
-                            );
-                        })}
-                    </View>
-                </View>
-            ) : null}
-
             <View style={styles.section}>
-                <ActionInputFields
-                    fields={fields}
+                <ExecutionRunLauncherOptions
+                    backendChoices={launcherOptions.backendChoices}
+                    selectedBackendTargetKeys={launcherOptions.selectedBackendTargetKeys}
+                    profileChoices={launcherOptions.profileChoices}
+                    selectedProfileId={launcherOptions.selectedProfileId}
+                    selectedProfileGenerationId={launcherOptions.selectedProfileGenerationId}
+                    selectedPermissionMode={launcherOptions.selectedPermissionMode}
+                    permissionModeOptions={launcherOptions.visiblePermissionModeOptions}
+                    fields={visibleFields}
                     input={actionInput}
                     editable={!isStarting}
-                    resolveFieldOptions={resolveFieldOptions}
-                    resolveFieldTestID={(field) => (field.path === 'instructions' ? 'execution-run-new-instructions-input' : undefined)}
-                    getChipAccessibilityLabel={({ field, option }) => {
-                        if (field.path === 'engineIds' || field.path === 'backendTargetKeys') {
-                            return t('executionRuns.newRun.a11y.toggleBackend', { backendId: option.label });
-                        }
-                        return undefined;
+                    resolveFieldOptions={launcherOptions.resolveFieldOptions}
+                    includeInstructions
+                    onSelectBackend={(targetKey) => {
+                        setStartError(null);
+                        launcherOptions.onSelectBackend(targetKey);
                     }}
+                    onSelectProfile={onSelectProfile}
                     onPatch={(patch) => {
                         setStartError(null);
-                        const normalizedPatch = normalizeActionInputPatch({ actionId, patch });
-                        setActionInput((previous) => ({ ...previous, ...normalizedPatch }));
+                        launcherOptions.onPatch(patch);
                     }}
                 />
+                <ExecutionRunSecretReferenceOverlayField
+                    profile={sessionLaunchProfile}
+                    machineId={machineId}
+                    serverId={sessionServerId}
+                    accountScope={accountBinding?.scope ?? null}
+                    defaultBindings={sessionLaunchProfile
+                        ? settings.currentSecretBindingsByProfileId[sessionLaunchProfile.id] ?? null
+                        : null}
+                    personalSecrets={settings.secrets}
+                    sharedEnabled={sharedSavedSecretsEnabled}
+                    editable={!isStarting}
+                    onChange={setSecretOverlayState}
+                />
             </View>
+
+            {selectedAgentTargetKey && (
+                teamCredentialCatalog.resources.length > 0 || selectedTeamCredentialModel
+            ) ? (
+                <View style={styles.section}>
+                    <SessionModelPicker
+                        agentTargetKey={selectedAgentTargetKey}
+                        nativeModels={[{
+                            value: 'default',
+                            label: t('settingsAgents.defaultModelTitle'),
+                        }]}
+                        providerGroups={[]}
+                        teamCredentialResources={teamCredentialCatalog.resources}
+                        teamNameById={teamCredentialCatalog.teamNameById}
+                        homeNameByTeamId={teamCredentialCatalog.homeNameByTeamId}
+                        currentTeamCredentialResourceKeys={teamCredentialCatalog.currentResourceKeys}
+                        selectedTeamCredentialModel={selectedTeamCredentialModel}
+                        providerProjectionAuthoritative
+                        selected={null}
+                        effectiveLabel=""
+                        showTitle={false}
+                        onSelect={onSelectNonTeamModel}
+                        onSelectTeamCredentialModel={onSelectTeamCredentialModel}
+                    />
+                </View>
+            ) : null}
 
             <View style={styles.actionRow}>
                 <Pressable
                     testID="execution-run-new-start-button"
                     accessibilityRole="button"
                     accessibilityLabel={t('executionRuns.newRun.a11y.startRun')}
+                    accessibilityState={{ disabled: !canStart, busy: isStarting }}
                     onPress={() => void onStart()}
                     disabled={!canStart}
-                    style={({ pressed }) => [styles.actionButton, { opacity: !canStart ? 0.5 : pressed ? 0.7 : 1 }]}
+                    style={({ pressed }) => [styles.actionButton, interactiveTargetStyle, { opacity: !canStart ? 0.5 : pressed ? 0.7 : 1 }]}
                 >
                     <Text style={styles.primaryActionText}>
                         {isStarting ? `${t('executionRuns.newRun.actions.start')}…` : t('executionRuns.newRun.actions.start')}
@@ -711,8 +728,9 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
                     testID="execution-run-new-cancel-button"
                     accessibilityRole="button"
                     accessibilityLabel={t('executionRuns.newRun.a11y.cancel')}
+                    accessibilityState={{ disabled: false, busy: false }}
                     onPress={closeSurface}
-                    style={({ pressed }) => [styles.actionButton, { opacity: pressed ? 0.7 : 1 }]}
+                    style={({ pressed }) => [styles.actionButton, interactiveTargetStyle, { opacity: pressed ? 0.7 : 1 }]}
                 >
                     <Text style={styles.secondaryActionText}>
                         {props.presentation === 'panel' ? t('common.close') : t('common.cancel')}
@@ -733,7 +751,11 @@ const SessionExecutionRunLauncherContent = React.memo((props: SessionExecutionRu
 });
 
 const SessionExecutionRunLauncherOwnHydration = React.memo((props: Omit<SessionExecutionRunLauncherViewProps, 'routeHydrationState'>) => {
-    const routeHydrationState = useHydrateSessionForRoute(props.sessionId, 'SessionExecutionRunLauncherView.hydrate');
+    const routeHydrationState = useHydrateSessionForRoute(
+        props.sessionId,
+        'SessionExecutionRunLauncherView.hydrate',
+        props.serverId ? { serverId: props.serverId } : undefined,
+    );
     return <SessionExecutionRunLauncherContent {...props} routeHydrationState={routeHydrationState} />;
 });
 

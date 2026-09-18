@@ -197,3 +197,10 @@ export function installNewSessionScreenModelCommonModuleMocks(
         return createStorageModuleStub({});
     });
 }
+
+/** Use the real snapshot/subscription owner; MMKV is supplied by the UI platform harness. */
+export async function selectNewSessionTestHome(serverId = 'server-a'): Promise<void> {
+    const profiles = await import('@/sync/domains/server/serverProfiles');
+    const profile = await profiles.upsertServerProfile({ serverUrl: `https://${serverId}`, source: 'manual' });
+    await profiles.setActiveServerId(profile.id);
+}

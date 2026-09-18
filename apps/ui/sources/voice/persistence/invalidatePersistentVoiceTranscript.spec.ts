@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { state } = vi.hoisted(() => {
+const { state, applySettings } = vi.hoisted(() => {
   const voice = {
     providers: {
       local_conversation: {
@@ -15,15 +15,16 @@ const { state } = vi.hoisted(() => {
     },
   };
   const state: any = {
+    settingsScope: { serverId: 'server-a', accountId: 'account-a' },
     settings: {
       voiceSettingsV1: voice,
       voice,
     },
-    applySettingsLocal: vi.fn((patch: any) => {
-      state.settings = { ...state.settings, ...patch };
-    }),
   };
-  return { state };
+  const applySettings = vi.fn((patch: any) => {
+      state.settings = { ...state.settings, ...patch };
+  });
+  return { state, applySettings };
 });
 
 vi.mock('@/sync/domains/state/storage', async () => {
@@ -34,6 +35,10 @@ vi.mock('@/sync/domains/state/storage', async () => {
     },
   });
 });
+
+vi.mock('@/sync/runtime/getSyncSingleton', () => ({
+  getSyncSingleton: () => ({ applySettings }),
+}));
 
 describe('invalidatePersistentVoiceTranscript', () => {
   beforeEach(() => {
@@ -50,8 +55,8 @@ describe('invalidatePersistentVoiceTranscript', () => {
       voiceSettingsV1: voice,
       voice,
     };
-    state.applySettingsLocal.mockReset();
-    state.applySettingsLocal.mockImplementation((patch: any) => {
+    applySettings.mockReset();
+    applySettings.mockImplementation((patch: any) => {
       state.settings = { ...state.settings, ...patch };
     });
   });
@@ -59,8 +64,11 @@ describe('invalidatePersistentVoiceTranscript', () => {
   it('increments the transcript epoch through both canonical and runtime Voice projections', async () => {
     const { invalidatePersistentVoiceTranscript } = await import('./invalidatePersistentVoiceTranscript');
 
-    expect(invalidatePersistentVoiceTranscript()).toBe(3);
-    expect(state.applySettingsLocal).toHaveBeenCalled();
+    expect(invalidatePersistentVoiceTranscript(state.settingsScope)).toBe(3);
+    expect(applySettings).toHaveBeenCalledWith(expect.any(Object), {
+      expectedSettingsScope: state.settingsScope,
+      source: 'ui',
+    });
     expect(state.settings.voice.providers.local_conversation.config.agent.transcript.epoch).toBe(3);
     expect(state.settings.voiceSettingsV1.providers.local_conversation.config.agent.transcript.epoch).toBe(3);
   });

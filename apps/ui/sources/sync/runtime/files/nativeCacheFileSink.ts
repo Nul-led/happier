@@ -15,6 +15,7 @@ type ExpoFileSystemDirectory = Readonly<{
 
 type ExpoFileSystemFile = Readonly<{
     uri: string;
+    exists?: boolean;
     delete: () => void;
     create: () => void;
     open: () => ExpoFileSystemFileHandle;
@@ -32,6 +33,21 @@ export type NativeCacheFileSink = Readonly<{
     close: () => Promise<void>;
     cleanup: () => Promise<void>;
 }>;
+
+/** Removes one exact cache file after its creating component/process-local closure is gone. */
+export async function removeNativeCacheFileCustody(fileUri: string): Promise<void> {
+    const FileSystem = await import('expo-file-system') as ExpoFileSystemModule;
+    const file = new FileSystem.File(fileUri);
+    try {
+        file.delete();
+    } catch (error) {
+        // Expo's modern File API reports absence through `exists`. Absence is
+        // the idempotent success case; every other failure must remain visible
+        // so the caller retains the only persisted custody locator for retry.
+        if (file.exists === false) return;
+        throw error;
+    }
+}
 
 export async function createNativeCacheFileSink(input: Readonly<{
     directoryName: string;

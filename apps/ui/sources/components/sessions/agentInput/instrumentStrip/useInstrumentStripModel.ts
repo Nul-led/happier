@@ -56,7 +56,9 @@ type SessionUsageLike = Readonly<{
  * re-render only the strip, never the memoized 3k-line composer.
  */
 export function useInstrumentStripModel(params: Readonly<{
+    accountScope?: import('@/sync/domains/scope/serverAccountScope').ServerAccountScope | null;
     sessionId: string | null | undefined;
+    serverId?: string | null;
     agentId: string | null | undefined;
     agentTargetKey?: string | null;
     metadata: Metadata | null | undefined;
@@ -65,6 +67,7 @@ export function useInstrumentStripModel(params: Readonly<{
 }>): InstrumentStripModel {
     const {
         sessionId,
+        serverId,
         agentId,
         agentTargetKey,
         metadata,
@@ -72,7 +75,9 @@ export function useInstrumentStripModel(params: Readonly<{
         currentRunnerProcessIdentity,
     } = params;
     const usage = useSessionUsage(sessionId ?? '') as SessionUsageLike;
-    const scmSnapshot = useSessionProjectScmSnapshot(sessionId ?? null);
+    // The git instrument counts this Session's changed files, so it reads the Home the strip was
+    // mounted for rather than whichever Home a bare id happens to resolve to.
+    const scmSnapshot = useSessionProjectScmSnapshot(sessionId ?? null, serverId ?? null);
 
     const snapshot = usage?.contextSnapshot ?? null;
     const contextSnapshotStale = usage?.contextSnapshotStale === true;
@@ -87,6 +92,7 @@ export function useInstrumentStripModel(params: Readonly<{
     const resolvedWindowTokens = React.useMemo(() => {
         if (!agentId) return null;
         return resolveContextWindowTokens({
+            accountScope: params.accountScope,
             agentId,
             agentTargetKey,
             metadata: metadata ?? null,
@@ -101,6 +107,7 @@ export function useInstrumentStripModel(params: Readonly<{
             },
         });
     }, [
+        params.accountScope,
         agentId,
         agentTargetKey,
         metadata,

@@ -25,6 +25,9 @@ export function useThisComputerSetupPreflight(): ThisComputerSetupPreflight {
         activeLocalRelayUrl: typeof activeServerSnapshot.activeLocalRelayUrl === 'string' && activeServerSnapshot.activeLocalRelayUrl.trim().length > 0
             ? activeServerSnapshot.activeLocalRelayUrl.trim()
             : null,
+        activeServerId: typeof activeServerSnapshot.serverId === 'string' && activeServerSnapshot.serverId.trim().length > 0
+            ? activeServerSnapshot.serverId.trim()
+            : null,
         localCliReady: daemon.status != null,
         serviceInstalled: daemon.status?.serviceInstalled === true,
         daemonRunning: daemon.status?.daemonRunning === true,
@@ -66,6 +69,7 @@ export function useThisComputerSetupPreflight(): ThisComputerSetupPreflight {
         relayDriftBanner,
     }), [
         activeServerSnapshot.serverUrl,
+        activeServerSnapshot.serverId,
         activeServerSnapshot.activeLocalRelayUrl,
         daemon.status,
         daemon.status?.daemonRunning,

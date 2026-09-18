@@ -1,7 +1,11 @@
 import React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
+import { installLocalStorageMock, installWebLockManagerMock } from '@/auth/storage/tokenStorage.web.testHelpers';
+import type { AccountDirectoryAuthMethodDiscovery } from '@/auth/accountDirectory/accountDirectoryAuthClient';
+import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
 import { installConnectionStatusControlCommonModuleMocks } from './connectionStatusControlTestHelpers';
 
 
@@ -46,6 +50,12 @@ type DropdownMenuCaptureProps = {
     onSelect?: (itemId: string) => void;
 };
 
+type AccountServiceEntryOptionsFixture = Omit<AccountServiceEntryOptions, 'retry'> & {
+    retry: ReturnType<typeof vi.fn>;
+};
+
+let restoreWebLocksMock: (() => void) | null = null;
+
 const capture = vi.hoisted(() => ({
     popoverProps: null as PopoverCaptureProps | null,
     actionSections: [] as ActionListSectionProps[],
@@ -80,6 +90,11 @@ const tokenStorageMock = vi.hoisted(() => ({
     readPendingExternalAuthStateForServerUrl: vi.fn(async () => ({ value: null, serverMismatch: false })),
 }));
 
+const accountDirectoryCredentialState = vi.hoisted(() => ({
+    credentials: null as { token: string } | null,
+    revision: 0,
+}));
+
 const routerMocks = vi.hoisted(() => ({
     push: vi.fn(),
     replace: vi.fn(),
@@ -99,6 +114,90 @@ const clipboardMock = vi.hoisted(() => ({
     setClipboardStringSafe: vi.fn(async (_value: string) => true),
 }));
 
+const accountDirectoryHttpBoundary = vi.hoisted(() => ({
+    request: vi.fn(),
+}));
+
+const accountEntryState: {
+    targetContexts: unknown[];
+    useOptions: ReturnType<typeof vi.fn>;
+    options: AccountServiceEntryOptionsFixture;
+} = vi.hoisted(() => {
+    const options = {
+        effectiveSignInService: { kind: 'not_offered' as const },
+        endpoint: { url: 'https://accounts.example.test', source: 'default' as const },
+        status: 'not_offered' as const,
+        discovery: null,
+        transport: {},
+        retry: vi.fn(),
+    } satisfies AccountServiceEntryOptionsFixture;
+    return {
+        targetContexts: Array<unknown>(),
+        useOptions: vi.fn(),
+        options,
+    };
+});
+
+function createAccountServiceDiscoveryFixture(): AccountDirectoryAuthMethodDiscovery {
+    const capability = {
+        version: 1 as const,
+        homeDirectory: true,
+        homeEnrollment: true,
+        homeLoginAssertion: {
+            keyId: 'a'.repeat(64),
+            publicKeyBase64Url: 'A'.repeat(43),
+        },
+    };
+    const features = createRootLayoutFeaturesResponse({
+        capabilities: {
+            serverIdentity: { serverIdentityId: 'srv_accounts' },
+            server: { canonicalServerUrl: 'https://accounts.example.test' },
+            accountDirectory: capability,
+            auth: { keyChallenge: { v2: true } },
+        },
+    });
+    return {
+        endpointUrl: 'https://accounts.example.test',
+        serverIdentityId: 'srv_accounts',
+        canonicalServerUrl: 'https://accounts.example.test',
+        capability,
+        keyLoginAvailable: true,
+        oauthProviderIds: [],
+        preferredProvisionProviderId: null,
+        authenticationCatalog: {
+            provenance: 'structured',
+            methods: [{
+                id: 'key_challenge',
+                enabledActions: [{ id: 'login', mode: 'keyed' }],
+            }],
+        },
+        authenticationActions: [{
+            method: {
+                id: 'key_challenge',
+                enabledActions: [{ id: 'login', mode: 'keyed' }],
+            },
+            action: { id: 'login', mode: 'keyed' },
+            execution: { kind: 'key_entry' },
+        }],
+        accountServiceDisplayName: 'Acme',
+        snapshot: { status: 'ready', features },
+    };
+}
+
+const serverFeaturesState = vi.hoisted(() => ({
+    snapshot: {
+        status: 'ready' as const,
+        features: {
+            signInService: {
+                v: 1 as const,
+                mode: 'external' as const,
+                endpoint: 'https://accounts.example.test',
+                expectedServerIdentityId: 'srv_accounts',
+            },
+        },
+    },
+}));
+
 const settingsState = vi.hoisted(() => ({
     serverSelectionGroups: [] as Array<{ id: string; name: string; serverIds: string[]; presentation: 'grouped' | 'flat-with-badge' }>,
     serverSelectionActiveTargetKind: null as 'server' | 'group' | null,
@@ -113,9 +212,12 @@ const connectionState = vi.hoisted(() => ({
 
 const machineListStatusState = vi.hoisted(() => ({
     byServerId: {} as Record<string, 'idle' | 'loading' | 'signedOut' | 'error'>,
+    subscriptionCalls: 0,
 }));
 
 const connectionHealthState = vi.hoisted(() => ({
+    activeCalls: 0,
+    selectionCalls: 0,
     kind: 'no_machine' as
         | 'healthy'
         | 'connecting'
@@ -186,7 +288,10 @@ installConnectionStatusControlCommonModuleMocks({
             useSocketStatus: () => ({ status: connectionState.socketStatus }),
             useSyncError: () => connectionState.syncError,
             useLastSyncAt: () => connectionState.lastSyncAt,
-            useMachineListStatusByServerId: () => machineListStatusState.byServerId,
+            useMachineListStatusByServerId: () => {
+                machineListStatusState.subscriptionCalls += 1;
+                return machineListStatusState.byServerId;
+            },
             useSettings: () => settingsState,
             useSetting: (key: keyof typeof settingsState) => settingsState[key],
             useSettingMutable: (key: keyof typeof settingsState) => [
@@ -217,15 +322,7 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    FontWeights: {
-        regular: '400',
-    },
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
+vi.mock('@/constants/Typography', async (importOriginal) => await importOriginal());
 
 vi.mock('@/components/ui/status/StatusDot', () => ({
     StatusDot: 'StatusDot',
@@ -274,13 +371,75 @@ vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ isAuthenticated: true, refreshFromActiveServer: authMocks.refreshFromActiveServer }),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: tokenStorageMock,
-    subscribeHomeCredentialMutations: () => () => {},
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+    const accountDirectoryAuthCredentials = {
+        read: vi.fn(async () => accountDirectoryCredentialState.credentials
+            ? { kind: 'valid' as const, value: accountDirectoryCredentialState.credentials }
+            : { kind: 'absent' as const }),
+        get: vi.fn(async () => accountDirectoryCredentialState.credentials),
+        set: vi.fn(async (_target: unknown, credentials: { token: string }) => {
+            accountDirectoryCredentialState.credentials = credentials;
+            accountDirectoryCredentialState.revision += 1;
+            return true;
+        }),
+        remove: vi.fn(async () => {
+            const removed = accountDirectoryCredentialState.credentials !== null;
+            accountDirectoryCredentialState.credentials = null;
+            accountDirectoryCredentialState.revision += 1;
+            return removed;
+        }),
+        clear: vi.fn(async () => {
+            const removed = accountDirectoryCredentialState.credentials !== null;
+            accountDirectoryCredentialState.credentials = null;
+            accountDirectoryCredentialState.revision += 1;
+            return removed;
+        }),
+        logout: vi.fn(async () => {
+            const removed = accountDirectoryCredentialState.credentials !== null;
+            accountDirectoryCredentialState.credentials = null;
+            accountDirectoryCredentialState.revision += 1;
+            return removed;
+        }),
+    };
+    return {
+        ...actual,
+        TokenStorage: tokenStorageMock,
+        accountDirectoryAuthCredentials,
+        captureAccountDirectoryCredentialCustody: () => {
+            const capturedRevision = accountDirectoryCredentialState.revision;
+            const isCurrent = () => capturedRevision === accountDirectoryCredentialState.revision;
+            return {
+                isCurrent,
+                checkCurrent: async () => isCurrent(),
+                read: async () => {
+                    if (!isCurrent()) throw new Error('Account Service credential custody superseded');
+                    return accountDirectoryCredentialState.credentials;
+                },
+                issue: async <T>(request: () => Promise<T>) => {
+                    if (!isCurrent()) throw new Error('Account Service credential custody superseded');
+                    return await request();
+                },
+                logout: async () => {
+                    if (!isCurrent()) return false;
+                    return await accountDirectoryAuthCredentials.logout();
+                },
+            };
+        },
+        normalizeAccountDirectoryEndpoint: actual.normalizeAccountDirectoryEndpoint,
+        parseAccountContinuationIntent: actual.parseAccountContinuationIntent,
+        subscribeHomeCredentialMutations: () => () => {},
+    };
+});
 
 vi.mock('@/sync/sync', () => ({
     sync: { retryNow: syncMocks.retryNow },
+}));
+
+vi.mock('@/sync/http/client', () => ({
+    createServerFetchAtEndpoint: (options: { endpointUrl: string }) =>
+        (path: string, init?: RequestInit) => accountDirectoryHttpBoundary.request(options.endpointUrl, path, init),
+    serverFetch: (path: string, init?: RequestInit) => accountDirectoryHttpBoundary.request('ambient', path, init),
 }));
 
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
@@ -294,6 +453,7 @@ vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
 }));
 
 vi.mock('@/sync/runtime/irohHomeTransportDiagnostics', () => ({
+    retireIrohHomeTransportDiagnostics: vi.fn(),
     readIrohHomeTransportDiagnostics: () => irohDiagnosticsState.values,
     readIrohHomeTransportDiagnosticsRevision: () => irohDiagnosticsState.revision,
     subscribeIrohHomeTransportDiagnostics: (listener: () => void) => {
@@ -306,12 +466,33 @@ vi.mock('@/utils/ui/clipboard', () => ({
     setClipboardStringSafe: clipboardMock.setClipboardStringSafe,
 }));
 
-vi.mock('@/utils/platform/desktopHost', () => ({
+vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/utils/platform/desktopHost')>()),
+    desktopHostKind: () => null,
     isDesktopHost: () => false,
 }));
 
 vi.mock('@/components/navigation/connectionStatus/useConnectionHealth', () => ({
-    useConnectionHealth: () => connectionHealthState,
+    useActiveHomeConnectionHealth: () => {
+        connectionHealthState.activeCalls += 1;
+        return connectionHealthState;
+    },
+    useConnectionHealth: () => {
+        connectionHealthState.selectionCalls += 1;
+        return connectionHealthState;
+    },
+}));
+
+vi.mock('@/components/account/auth/useAccountServiceEntryOptions', () => ({
+    useAccountServiceEntryOptions: (targetContext: unknown) => {
+        accountEntryState.useOptions(targetContext);
+        accountEntryState.targetContexts.push(targetContext);
+        return accountEntryState.options;
+    },
+}));
+
+vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({
+    useServerFeaturesSnapshotForServerId: () => serverFeaturesState.snapshot,
 }));
 
 function getActionLabels(): string[] {
@@ -341,7 +522,13 @@ async function importConnectionStatusControl() {
     return module.ConnectionStatusControl;
 }
 
+beforeEach(() => {
+    restoreWebLocksMock = installWebLockManagerMock().restore;
+});
+
 afterEach(() => {
+    restoreWebLocksMock?.();
+    restoreWebLocksMock = null;
     capture.reset();
     authMocks.refreshFromActiveServer.mockClear();
     connectionMocks.switchConnectionToActiveServer.mockReset();
@@ -366,7 +553,11 @@ afterEach(() => {
     irohDiagnosticsState.revision = 0;
     irohDiagnosticsState.listeners.clear();
     clipboardMock.setClipboardStringSafe.mockClear();
+    accountDirectoryHttpBoundary.request.mockReset();
+    accountDirectoryCredentialState.credentials = null;
+    accountDirectoryCredentialState.revision += 1;
     machineListStatusState.byServerId = {};
+    machineListStatusState.subscriptionCalls = 0;
     connectionHealthState.kind = 'no_machine';
     connectionHealthState.color = '#ff9900';
     connectionHealthState.isPulsing = false;
@@ -377,15 +568,214 @@ afterEach(() => {
     connectionHealthState.onlineCount = 0;
     connectionHealthState.hasUnknownMachines = false;
     connectionHealthState.primaryMachineLabel = null;
+    connectionHealthState.activeCalls = 0;
+    connectionHealthState.selectionCalls = 0;
+    accountEntryState.targetContexts = [];
+    accountEntryState.useOptions.mockReset();
+    accountEntryState.options = {
+        effectiveSignInService: { kind: 'not_offered' },
+        endpoint: { url: 'https://accounts.example.test', source: 'default' },
+        status: 'not_offered',
+        discovery: null,
+        transport: {},
+        retry: accountEntryState.options.retry,
+    };
+    accountEntryState.options.retry.mockReset();
 });
 
 describe('ConnectionStatusControl (native popover config)', () => {
+    it('projects the verified signed-in service and linked Homes, then signs out only that service', async () => {
+        const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        const localStorage = installLocalStorageMock();
+
+        try {
+            vi.resetModules();
+            const tokenStorage = await vi.importActual<typeof import('@/auth/storage/tokenStorage')>('@/auth/storage/tokenStorage');
+            const profiles = await import('@/sync/domains/server/serverProfiles');
+            const home = await profiles.upsertServerProfile({ serverUrl: 'https://home-l2.example.test', name: 'Personal Home L2' });
+            await profiles.setServerProfileIdentityForUrl(home.serverUrl, 'srv_home_l2');
+            await profiles.setActiveServerId(home.id, { scope: 'device' });
+            connectionMocks.appliedServerId = 'srv_home_l2';
+            await tokenStorage.TokenStorage.setCredentialsForServerUrl(
+                home.serverUrl,
+                { serverId: 'srv_home_l2' },
+                { token: 'home-token', secret: 'home-secret' },
+            );
+            accountDirectoryCredentialState.credentials = { token: 'account-service-token' };
+            accountDirectoryCredentialState.revision += 1;
+            accountDirectoryHttpBoundary.request.mockImplementation(async (_endpoint: string, path: string) => {
+                if (path === '/v1/account-directory/homes') {
+                    return new Response(JSON.stringify({
+                        v: 1,
+                        homes: [{
+                            v: 1,
+                            homeServerIdentityId: 'srv_home_l1',
+                            canonicalServerUrl: 'https://home-l1.example.test',
+                            label: 'Team Home L1',
+                            preferred: true,
+                            createdAtMs: 1,
+                            updatedAtMs: 1,
+                            connectionDescriptor: {
+                                v: 1,
+                                homeServerIdentityId: 'srv_home_l1',
+                                canonicalServerUrl: 'https://home-l1.example.test',
+                                revision: 1,
+                                endpoints: [{ kind: 'https', url: 'https://home-l1.example.test' }],
+                            },
+                        }],
+                        preferredHomeServerIdentityId: 'srv_home_l1',
+                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                }
+                throw new Error(`Unexpected Account Directory request: ${path}`);
+            });
+            accountEntryState.options = {
+                effectiveSignInService: {
+                    kind: 'external',
+                    endpoint: 'https://accounts.example.test',
+                    expectedServerIdentityId: 'srv_accounts',
+                },
+                endpoint: {
+                    url: 'https://accounts.example.test',
+                    serverIdentityId: 'srv_accounts',
+                    source: 'default',
+                },
+                status: 'ready',
+                discovery: createAccountServiceDiscoveryFixture(),
+                transport: {},
+                retry: accountEntryState.options.retry,
+            };
+
+            const ConnectionStatusControl = await importConnectionStatusControl();
+            const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+            await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+
+            await vi.waitFor(() => expect(findAction('account-service-status')).toMatchObject({
+                label: 'Acme',
+                subtitle: 'settingsAccount.accountServiceSignedInTo(accountService=Acme)',
+            }));
+            expect(findAction('account-service-status')?.subtitle).not.toContain('srv_accounts');
+            expect(findAction('account-directory-home-srv_home_l1')).toMatchObject({ label: 'Team Home L1' });
+
+            await act(async () => {
+                await findAction('account-service-sign-out')?.onPress?.();
+            });
+
+            expect(accountDirectoryCredentialState.credentials).toBeNull();
+            expect(await tokenStorage.TokenStorage.getCredentialsForServerUrl(
+                home.serverUrl,
+                { serverId: 'srv_home_l2' },
+            )).toEqual({ token: 'home-token', secret: 'home-secret' });
+        } finally {
+            localStorage.restore();
+            if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+            else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
+        }
+    });
+
+    it('launches Find without L2 and Link with the exact authenticated L2 identity', async () => {
+        const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+        try {
+            vi.resetModules();
+            const profiles = await import('@/sync/domains/server/serverProfiles');
+            const home = await profiles.upsertServerProfile({ serverUrl: 'https://home-l2.example.test', name: 'Personal Home L2' });
+            await profiles.setServerProfileIdentityForUrl(home.serverUrl, 'srv_home_l2');
+            await profiles.setActiveServerId(home.id, { scope: 'device' });
+            await profiles.setAccountServiceEndpoint({
+                url: 'https://device-default.example.test',
+                serverIdentityId: 'srv_device_default',
+                source: 'user',
+            });
+            connectionMocks.appliedServerId = 'srv_home_l2';
+            accountEntryState.options = {
+                effectiveSignInService: {
+                    kind: 'external',
+                    endpoint: 'https://accounts.example.test',
+                    expectedServerIdentityId: 'srv_accounts',
+                },
+                endpoint: {
+                    url: 'https://accounts.example.test',
+                    serverIdentityId: 'srv_accounts',
+                    source: 'default',
+                },
+                status: 'ready',
+                discovery: createAccountServiceDiscoveryFixture(),
+                transport: {},
+                retry: accountEntryState.options.retry,
+            };
+
+            const ConnectionStatusControl = await importConnectionStatusControl();
+            const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+            await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+
+            expect(accountEntryState.useOptions).toHaveBeenCalled();
+            expect(accountEntryState.targetContexts.at(-1)).toMatchObject({
+                kind: 'home',
+                target: { kind: 'saved_profile', profileRef: home.id },
+                policy: {
+                    mode: 'external',
+                    endpoint: 'https://accounts.example.test',
+                    expectedServerIdentityId: 'srv_accounts',
+                },
+            });
+
+            const findHomes = findAction('account-find-homes');
+            await act(async () => {
+                findHomes?.onPress?.();
+                findHomes?.onPress?.();
+            });
+            expect(routerMocks.push).toHaveBeenCalledTimes(1);
+            expect(routerMocks.push).toHaveBeenLastCalledWith({
+                pathname: '/setup/wizard',
+                params: {
+                    mode: 'account-entry',
+                    accountServiceEndpoint: 'https://accounts.example.test',
+                    accountServiceIdentity: 'srv_accounts',
+                    accountIntent: JSON.stringify({ kind: 'enter', target: { kind: 'automatic' } }),
+                    accountEntryReturnTo: '/',
+                },
+            });
+
+            await act(async () => screen.findByProps({ accessibilityRole: 'button' }).props.onPress());
+            const linkHome = findAction('account-link-current-home');
+            await act(async () => {
+                linkHome?.onPress?.();
+                linkHome?.onPress?.();
+            });
+            expect(routerMocks.push).toHaveBeenCalledTimes(2);
+            expect(routerMocks.push).toHaveBeenLastCalledWith({
+                pathname: '/setup/wizard',
+                params: {
+                    mode: 'account-entry',
+                    accountServiceEndpoint: 'https://accounts.example.test',
+                    accountServiceIdentity: 'srv_accounts',
+                    accountIntent: JSON.stringify({ kind: 'link', homeServerIdentityId: 'srv_home_l2' }),
+                    accountEntryReturnTo: '/',
+                },
+            });
+            expect(profiles.resolveSelectedAccountServiceEndpoint()).toMatchObject({
+                url: 'https://device-default.example.test',
+                serverIdentityId: 'srv_device_default',
+                source: 'user',
+            });
+        } finally {
+            if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+            else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
+        }
+    });
+
     it('does not mount the closed popover shell until the trigger opens it', async () => {
         const ConnectionStatusControl = await importConnectionStatusControl();
         const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
 
         expect(capture.popoverProps).toBeNull();
         expect(tokenStorageMock.getCredentialsForServerUrl).not.toHaveBeenCalled();
+        expect(accountEntryState.useOptions).not.toHaveBeenCalled();
+        expect(connectionHealthState.activeCalls).toBeGreaterThan(0);
+        expect(connectionHealthState.selectionCalls).toBe(0);
+        expect(machineListStatusState.subscriptionCalls).toBe(0);
 
         const trigger = screen.findByProps({ accessibilityRole: 'button' });
         await act(async () => {
@@ -396,6 +786,18 @@ describe('ConnectionStatusControl (native popover config)', () => {
         await vi.waitFor(() => {
             expect(tokenStorageMock.getCredentialsForServerUrl).toHaveBeenCalled();
         });
+        expect(accountEntryState.useOptions).toHaveBeenCalled();
+        expect(machineListStatusState.subscriptionCalls).toBeGreaterThan(0);
+    });
+
+    it('does not publish account-entry actions before exact service discovery is ready', async () => {
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+
+        expect(findAction('account-find-homes')).toBeUndefined();
+        expect(findAction('account-link-current-home')).toBeUndefined();
     });
 
     it('uses the shared popover autofocus and trigger focus-return contract', async () => {
@@ -525,7 +927,8 @@ describe('ConnectionStatusControl (native popover config)', () => {
         });
 
         expect(screen.findByTestId('connection-details-disclosure')?.props.accessibilityState).toEqual({ expanded: true });
-        expect(tree!.root.findAllByProps({ testID: 'connection-popover-relay' }).length).toBeGreaterThan(0);
+        expect(screen.getTextContent()).toContain('systemStatus.transport.irohCurrent');
+        expect(screen.getTextContent()).not.toContain('systemStatus.server.activeServer');
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-realtime' }).length).toBeGreaterThan(0);
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-machines' }).length).toBeGreaterThan(0);
         expect(screen.getTextContent()).toContain('iroh-endpoint-123');
@@ -579,9 +982,9 @@ describe('ConnectionStatusControl (native popover config)', () => {
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            const local = profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
-            const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
-            profiles.setActiveServerId(local.id, { scope: 'device' });
+            const local = await profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
+            const company = await profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            await profiles.setActiveServerId(local.id, { scope: 'device' });
             connectionMocks.appliedServerId = local.id;
             settingsState.serverSelectionGroups = [
                 {
@@ -637,9 +1040,9 @@ describe('ConnectionStatusControl (native popover config)', () => {
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            const local = profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
-            const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
-            profiles.setActiveServerId(local.id, { scope: 'device' });
+            const local = await profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
+            const company = await profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            await profiles.setActiveServerId(local.id, { scope: 'device' });
             connectionMocks.appliedServerId = local.id;
             settingsState.serverSelectionGroups = [{
                 id: 'grp-dev',
@@ -664,7 +1067,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
             await act(async () => {
                 // Model the reachable production boundary directly: selection is
                 // staged to Company while full Sync remains applied to Local.
-                profiles.setActiveServerId(company.id, { scope: 'device' });
+                await profiles.setActiveServerId(company.id, { scope: 'device' });
                 await vi.waitFor(() => {
                     expect(profiles.areServerProfileIdentifiersEquivalent(
                         profiles.getActiveServerSnapshot().serverId,
@@ -701,6 +1104,8 @@ describe('ConnectionStatusControl (native popover config)', () => {
         const settingsButton = screen.findByProps({ testID: 'connection-popover-relay-settings' });
         expect(settingsButton).toBeTruthy();
         expect(settingsButton?.props.style).toMatchObject({ minWidth: 44, minHeight: 44 });
+        expect(settingsButton?.props.accessibilityLabel).toBe('server.serverConfiguration');
+        expect(settingsButton?.props.accessibilityLabel).not.toBe('server.changeServer');
 
         await act(async () => {
             await pressTestInstanceAsync(settingsButton);
@@ -721,8 +1126,8 @@ describe('ConnectionStatusControl (native popover config)', () => {
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            const local = profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
-            profiles.setActiveServerId(local.id, { scope: 'device' });
+            const local = await profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
+            await profiles.setActiveServerId(local.id, { scope: 'device' });
 
             const ConnectionStatusControl = await importConnectionStatusControl();
 
@@ -776,9 +1181,9 @@ describe('ConnectionStatusControl (native popover config)', () => {
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            const local = profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
-            const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
-            profiles.setActiveServerId(local.id, { scope: 'device' });
+            const local = await profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
+            const company = await profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            await profiles.setActiveServerId(local.id, { scope: 'device' });
             const previousDeviceDefault = profiles.getDeviceDefaultServerId();
             const ConnectionStatusControl = await importConnectionStatusControl();
 
@@ -832,8 +1237,8 @@ describe('ConnectionStatusControl (native popover config)', () => {
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            const first = profiles.upsertServerProfile({ serverUrl: 'https://first.example.test', name: 'Personal Home' });
-            const second = profiles.upsertServerProfile({ serverUrl: 'https://second.example.test', name: 'Personal Home' });
+            const first = await profiles.upsertServerProfile({ serverUrl: 'https://first.example.test', name: 'Personal Home' });
+            const second = await profiles.upsertServerProfile({ serverUrl: 'https://second.example.test', name: 'Personal Home' });
             machineListStatusState.byServerId = { [first.id]: 'idle', [second.id]: 'idle' };
 
             const ConnectionStatusControl = await importConnectionStatusControl();
@@ -868,9 +1273,9 @@ describe('ConnectionStatusControl (native popover config)', () => {
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            const company = await profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
             const local = profiles.listServerProfiles().find((profile) => profile.id !== company.id)!;
-            profiles.setActiveServerId(local.id, { scope: 'device' });
+            await profiles.setActiveServerId(local.id, { scope: 'device' });
             machineListStatusState.byServerId = { [company.id]: 'error' };
             tokenStorageMock.getCredentialsForServerUrl.mockImplementation(async (...args: unknown[]) => {
                 const url = String(args[0] ?? '');
@@ -914,8 +1319,8 @@ describe('ConnectionStatusControl (native popover config)', () => {
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
-            profiles.setServerProfileIdentityForUrl(company.serverUrl, 'srv_identity_company');
+            const company = await profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            await profiles.setServerProfileIdentityForUrl(company.serverUrl, 'srv_identity_company');
             const ConnectionStatusControl = await importConnectionStatusControl();
 
             let tree: renderer.ReactTestRenderer | undefined;
@@ -957,10 +1362,10 @@ describe('ConnectionStatusControl (native popover config)', () => {
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            const company = await profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
             const defaultServer = profiles.listServerProfiles().find((profile) => profile.id !== company.id);
             expect(defaultServer).toBeTruthy();
-            profiles.setActiveServerId(company.id, { scope: 'device' });
+            await profiles.setActiveServerId(company.id, { scope: 'device' });
             settingsState.serverSelectionActiveTargetKind = 'server';
             settingsState.serverSelectionActiveTargetId = defaultServer!.id;
 
@@ -998,7 +1403,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            const company = await profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
             tokenStorageMock.getCredentialsForServerUrl.mockImplementation(async (...args: unknown[]) => {
                 const url = String(args[0] ?? '');
                 if (url.includes('company.example.test')) return null;
@@ -1065,10 +1470,10 @@ describe('ConnectionStatusControl (native popover config)', () => {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
             const selection = await import('@/sync/domains/server/selection/homeViewSelectionState');
-            const local = profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
-            const signedOut = profiles.upsertServerProfile({ serverUrl: 'https://signed-out.example.test', name: 'Signed out' });
-            const credentialed = profiles.upsertServerProfile({ serverUrl: 'https://credentialed.example.test', name: 'Credentialed' });
-            profiles.setActiveServerId(local.id, { scope: 'device' });
+            const local = await profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
+            const signedOut = await profiles.upsertServerProfile({ serverUrl: 'https://signed-out.example.test', name: 'Signed out' });
+            const credentialed = await profiles.upsertServerProfile({ serverUrl: 'https://credentialed.example.test', name: 'Credentialed' });
+            await profiles.setActiveServerId(local.id, { scope: 'device' });
 
             settingsState.serverSelectionActiveTargetKind = 'server';
             settingsState.serverSelectionActiveTargetId = local.id;
@@ -1080,7 +1485,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
                     presentation: 'grouped',
                 },
             ];
-            profiles.updateHomeViewState(() => ({
+            await profiles.updateHomeViewState(() => ({
                 version: 1,
                 groups: settingsState.serverSelectionGroups,
                 activeTargetKind: 'server',
@@ -1153,7 +1558,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
             const previousPlatform = Platform.OS;
             (Platform as any).OS = 'web';
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            await profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
             const ConnectionStatusControl = await importConnectionStatusControl();
 
             let tree: renderer.ReactTestRenderer | undefined;
@@ -1321,6 +1726,32 @@ describe('ConnectionStatusControl (native popover config)', () => {
         await act(async () => screen.tree?.unmount());
     });
 
+    it('opens the full-screen Home surface from the phone/narrow header without mounting a popover', async () => {
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'header' }));
+
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+
+        expect(routerMocks.push).toHaveBeenCalledWith('/server');
+        expect(capture.popoverProps).toBeNull();
+        expect(screen.findByTestId('connection-popover-content')).toBeNull();
+
+        await act(async () => screen.tree?.unmount());
+    });
+
+    it('retains the anchored popover on the desktop/sidebar surface', async () => {
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+
+        expect(routerMocks.push).not.toHaveBeenCalledWith('/server');
+        expect(capture.popoverProps?.open).toBe(true);
+        expect(screen.findByTestId('connection-popover-content')).toBeTruthy();
+
+        await act(async () => screen.tree?.unmount());
+    });
+
     it('presents browser Iroh as secure relay and refreshes open Details from the diagnostics owner', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const activeProfile = profiles.listServerProfiles().find((profile) => profile.name === 'Happier Cloud');
@@ -1401,12 +1832,19 @@ describe('ConnectionStatusControl (native popover config)', () => {
             remoteEndpointId: 'iroh-endpoint-123',
             state: 'connected',
             current: { carrier: 'iroh', observedPath: 'direct' },
+            lastKnown: { carrier: 'iroh', observedPath: 'direct' },
             effectiveConfiguration: {
                 policy: 'automatic',
-                relayUrls: ['https://relay.example.test'],
+                relayUrls: ['https://relay.example.test', 'https://alice:relay-password@relay-2.example.test/path?token=query-secret'],
+                relayUrlCount: 4,
+                relayUrlsTruncated: true,
                 directAddressCount: 2,
             },
-            diagnosticError: { code: 'transport_stalled', message: 'no usable path', atMs: 1_700_000_000_000 },
+            diagnosticError: {
+                code: 'transport_stalled',
+                message: 'no usable path\nAuthorization: Bearer bearer-secret\npassword:\nmultiline-secret',
+                atMs: 1_700_000_000_000,
+            },
         }];
 
         const ConnectionStatusControl = await importConnectionStatusControl();
@@ -1422,13 +1860,17 @@ describe('ConnectionStatusControl (native popover config)', () => {
         expect(joined).toContain('connectionStatus.labels.endpointId');
         expect(joined).toContain('iroh-endpoint-123');
         expect(joined).toContain('connectionStatus.labels.currentPath');
+        expect(joined).not.toContain('connectionStatus.labels.lastKnownPath');
         expect(joined).toContain('connectionStatus.values.pathDirect');
-        expect(joined).toContain('connectionStatus.labels.lastKnownPath');
         expect(joined).toContain('connectionStatus.labels.relayConfiguration');
         expect(joined).toContain('relay.example.test');
+        expect(joined).toContain('2/4');
         expect(joined).toContain('connectionStatus.labels.transportError');
         expect(joined).toContain('transport_stalled: no usable path');
         expect(joined).toContain('connectionStatus.labels.lastSync');
+        for (const secret of ['alice', 'relay-password', 'query-secret', 'bearer-secret', 'multiline-secret']) {
+            expect(joined).not.toContain(secret);
+        }
 
         const copyButton = screen.findByTestId('connection-copy-diagnostics');
         if (!copyButton) throw new Error('expected diagnostics copy action');
@@ -1439,9 +1881,11 @@ describe('ConnectionStatusControl (native popover config)', () => {
         const copied = String(clipboardMock.setClipboardStringSafe.mock.calls.at(-1)?.[0] ?? '');
         expect(copied).toContain('iroh-endpoint-123');
         expect(copied).toContain('relay.example.test');
+        expect(copied).toContain('no usable path');
+        for (const secret of ['alice', 'relay-password', 'query-secret', 'bearer-secret', 'multiline-secret']) {
+            expect(copied).not.toContain(secret);
+        }
         expect(screen.getTextContent()).toContain('connectionStatus.diagnosticsCopied');
-        expect(screen.findByTestId('connection-copy-diagnostics-feedback')?.props.accessibilityLiveRegion)
-            .toBe('polite');
         const copiedButton = screen.findByTestId('connection-copy-diagnostics');
         if (!copiedButton) throw new Error('expected diagnostics copied action');
         expect(copiedButton.props.accessibilityLabel)
@@ -1483,7 +1927,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         await act(async () => screen.tree?.unmount());
     });
 
-    it('does not show relay unknown when endpoint connectivity is idle but the connection is otherwise healthy', async () => {
+    it('omits Iroh transport history for a healthy HTTPS Home without Iroh diagnostics', async () => {
         connectionHealthState.kind = 'healthy';
         connectionHealthState.color = '#00ff00';
         connectionHealthState.statusLabelKey = 'status.connected';
@@ -1510,7 +1954,8 @@ describe('ConnectionStatusControl (native popover config)', () => {
 
         const joined = screen.getTextContent();
         expect(joined).not.toContain('status.unknown');
-        expect(joined.match(/status\.connected/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+        expect(joined.match(/status\.connected/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
+        expect(tree!.root.findAllByProps({ testID: 'connection-popover-relay' })).toHaveLength(0);
 
         await act(async () => {
             tree?.unmount();

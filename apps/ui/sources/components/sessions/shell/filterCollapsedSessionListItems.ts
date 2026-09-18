@@ -1,6 +1,6 @@
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 
-const sectionKinds = new Set(['active', 'inactive', 'pinned']);
+import { isSessionListPrimaryHeaderKind } from './sessionListPrimaryHeader';
 
 export function filterCollapsedSessionListItems(
     items: ReadonlyArray<SessionListIndexItem>,
@@ -28,7 +28,12 @@ export function filterCollapsedSessionListItems(
         const item = items[index];
         if (item.type === 'header') {
             const kind = item.headerKind ?? '';
-            const isSection = sectionKinds.has(kind);
+            // A collapsed section owns everything down to the next primary section
+            // header. That set is the canonical one — Needs attention, Working,
+            // Pinned, Active, Inactive and the one-section Sessions header — because
+            // Projects and Recent activity never emit Active/Inactive, so a narrower
+            // set would let a collapsed Pinned group swallow the whole corpus.
+            const isSection = isSessionListPrimaryHeaderKind(kind);
 
             if (isSection) {
                 skipUntilNextSection = false;

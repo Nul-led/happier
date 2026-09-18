@@ -67,6 +67,9 @@ installPickerCommonModuleMocks({
         }),
     text: async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock(),
     unistyles: async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock(),
+    tempDataStore: {
+        peekTempData: () => null,
+    },
 });
 
 vi.mock('@/components/sessions/external/browse/ExternalSessionsBrowseScreen', () => ({
@@ -83,10 +86,6 @@ vi.mock('@/components/sessions/external/browse/resolveExternalSessionBrowseLocke
 
 vi.mock('@/sync/store/hooks', () => ({
     useProfile: () => ({ id: 'account-1' }),
-}));
-
-vi.mock('@/utils/sessions/tempDataStore', () => ({
-    peekTempData: () => null,
 }));
 
 describe('ResumeBrowsePickerScreen legacy param compatibility', () => {

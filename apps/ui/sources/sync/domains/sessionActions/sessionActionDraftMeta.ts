@@ -10,7 +10,11 @@ export const SessionActionDraftStatusSchema = z.enum([
 
 export const SessionActionDraftSchema = z.object({
     id: z.string().min(1),
-    sessionId: z.string().min(1),
+    address: z.object({
+        serverId: z.string().min(1),
+        sessionId: z.string().min(1),
+    }).strict(),
+    accountId: z.string().min(1),
     actionId: z.string().min(1),
     createdAt: z.number().finite(),
     status: SessionActionDraftStatusSchema,

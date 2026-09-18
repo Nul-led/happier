@@ -21,6 +21,11 @@ const sessionListPaneState = vi.hoisted(() => ({
         sessionCount: 1,
     },
     hasHiddenInactiveSessions: false,
+    query: undefined as undefined | {
+        active: true;
+        statesByServerId: Record<string, unknown>;
+        coverageComplete: boolean;
+    },
 }));
 
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
@@ -50,6 +55,7 @@ vi.mock('./useVisibleSessionListViewState', () => ({
         visibleSessionListIndex: sessionListPaneState.visibleIndex,
         hasHiddenInactiveSessions: sessionListPaneState.hasHiddenInactiveSessions,
         folderFocus: sessionListPaneState.folderFocus,
+        query: sessionListPaneState.query,
         };
     },
 }));
@@ -75,6 +81,7 @@ describe('useVisibleSessionListPaneState', () => {
             sessionCount: 1,
         };
         sessionListPaneState.hasHiddenInactiveSessions = false;
+        sessionListPaneState.query = undefined;
     });
 
     it('returns combined loading and empty-state flags from the canonical summary', async () => {
@@ -97,6 +104,8 @@ describe('useVisibleSessionListPaneState', () => {
             folderFocus: null,
             showLoading: false,
             showEmptyState: false,
+            query: undefined,
+            queryPresentation: undefined,
         });
     });
 
@@ -140,5 +149,69 @@ describe('useVisibleSessionListPaneState', () => {
         expect(hook.getCurrent().showLoading).toBe(false);
         expect(hook.getCurrent().showEmptyState).toBe(true);
         expect(hook.getCurrent().hasHiddenInactiveSessions).toBe(true);
+    });
+
+    it('keeps a partial zero query in the canonical list surface instead of showing onboarding', async () => {
+        sessionListPaneState.visibleIndex = [];
+        sessionListPaneState.query = {
+            active: true,
+            statesByServerId: {
+                'home-a': {
+                    requestedQueryKey: 'query', appliedQueryKey: 'query', addresses: [],
+                    nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
+                    phase: 'ready', freshnessAt: 1, failureReason: null, failureCode: null,
+                },
+                'home-b': {
+                    requestedQueryKey: 'query', appliedQueryKey: null, addresses: [],
+                    nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
+                    phase: 'offline', freshnessAt: null, failureReason: null, failureCode: null,
+                },
+            },
+            coverageComplete: false,
+        };
+
+        const { useVisibleSessionListPaneState } = await import('./useVisibleSessionListPaneState');
+        const hook = await renderHook(() => useVisibleSessionListPaneState('all', {
+            queryHomes: [
+                { serverId: 'home-a', queryKey: 'query', query: {} as never },
+                { serverId: 'home-b', queryKey: 'query', query: {} as never },
+            ],
+        }));
+        await flushHookEffects();
+
+        expect(hook.getCurrent().queryPresentation).toEqual({
+            kind: 'partial',
+            unavailableHomes: [{ serverId: 'home-b', reason: 'offline' }],
+        });
+        expect(hook.getCurrent().showLoading).toBe(false);
+        expect(hook.getCurrent().showEmptyState).toBe(false);
+    });
+
+    it('keeps initial query loading inside the mounted canonical list surface', async () => {
+        sessionListPaneState.visibleIndex = [];
+        sessionListPaneState.query = {
+            active: true,
+            statesByServerId: {
+                'home-a': {
+                    requestedQueryKey: 'query', appliedQueryKey: null, addresses: [],
+                    nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
+                    phase: 'loading', freshnessAt: null, failureReason: null, failureCode: null,
+                },
+            },
+            coverageComplete: false,
+        };
+
+        const { useVisibleSessionListPaneState } = await import('./useVisibleSessionListPaneState');
+        const hook = await renderHook(() => useVisibleSessionListPaneState('all', {
+            queryHomes: [
+                { serverId: 'home-a', queryKey: 'query', query: {} as never },
+            ],
+        }));
+        await flushHookEffects();
+
+        expect(hook.getCurrent().queryPresentation).toEqual({ kind: 'initial_loading' });
+        expect(hook.getCurrent().summary).toEqual({ sessionsReady: false, sessionCount: 0 });
+        expect(hook.getCurrent().showLoading).toBe(false);
+        expect(hook.getCurrent().showEmptyState).toBe(false);
     });
 });

@@ -66,6 +66,21 @@ function createBaseMockSettings(): Record<string, unknown> {
             keepPassivelyFollowingAfterRestart: false,
             autoLinkSourcePolicies: [],
         },
+        codingPromptBehaviorV1: {
+            v: 1,
+            sessionTitleUpdates: 'ongoing',
+            responseOptions: 'agent',
+        },
+        connectedServicesDefaultAuthByAgentIdV1: {
+            v: 1,
+            bindingsByAgentId: {},
+        },
+        connectedServicesProviderStateSharingSettingsV1: {
+            v: 1,
+            defaults: { configMode: 'linked', stateMode: 'shared' },
+            byAgentId: {},
+            acknowledgedRisksByAgentId: {},
+        },
         sessionHandoffDefaultsV1: {
             v: 1,
             workspaceSyncMode: 'keep_synced',
@@ -79,6 +94,14 @@ function createBaseMockSettings(): Record<string, unknown> {
 
 const mocks = vi.hoisted(() => {
     const callSequence: string[] = [];
+    const serverFetch = vi.fn();
+    const activeServerSnapshot = {
+        serverId: 'server-a',
+        serverUrl: 'https://home-a.example.test',
+        runtimeOrigin: 'http://127.0.0.1:4101',
+        generation: 1,
+    };
+    const activeHomeCarrier = { request: vi.fn() };
     const settingsParse = vi.fn((value: unknown) => {
         const record =
             value && typeof value === 'object' && !Array.isArray(value)
@@ -91,7 +114,9 @@ const mocks = vi.hoisted(() => {
     });
 
     return {
-        serverFetch: vi.fn(),
+        serverFetch,
+        activeServerSnapshot,
+        activeHomeCarrier,
         loadPendingSettings: vi.fn(() => ({})),
         loadPendingAccountSettings: vi.fn(() => ({})),
         loadAccountSettings: vi.fn(() => ({ settings: createBaseMockSettings(), version: 1 })),
@@ -128,9 +153,7 @@ const mocks = vi.hoisted(() => {
                 accountId: string;
             } | null,
             applySettings: vi.fn(),
-            replaceSettings: vi.fn(),
             applySettingsForScope: vi.fn(),
-            replaceSettingsForScope: vi.fn(),
             applySettingsLocal: vi.fn(),
         },
     };
@@ -151,6 +174,7 @@ vi.mock('@/utils/errors/errors', () => ({
 
 vi.mock('@/sync/domains/settings/settings', () => ({
     applySettings: mocks.applySettingsFn,
+    projectRuntimeAccountSettings: <T,>(settings: T): T => settings,
     settingsDefaults: createBaseMockSettings(),
     settingsParse: mocks.settingsParse,
 }));
@@ -163,8 +187,26 @@ vi.mock('@/sync/domains/settings/debugSettings', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({ serverUrl: 'http://127.0.0.1:3009' }),
+    getActiveServerSnapshot: () => ({ ...mocks.activeServerSnapshot }),
+    getActiveServerHomeCarrier: () => mocks.activeHomeCarrier,
 }));
+
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+    return {
+        ...actual,
+        getServerProfileById: (serverId: string) => ({
+            id: serverId,
+            serverIdentityId: serverId,
+            serverUrl: `https://home-${serverId.replace(/^server-/, '')}.example.test`,
+            canonicalServerUrl: `https://home-${serverId.replace(/^server-/, '')}.example.test`,
+        }),
+        getServerProfileLegacyServerIds: () => [],
+        resolveServerProfileScopeId: (profile: Readonly<{ serverIdentityId?: string; id: string }>) => (
+            profile.serverIdentityId ?? profile.id
+        ),
+    };
+});
 
 vi.mock('@/sync/domains/state/storage', async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
@@ -194,6 +236,7 @@ vi.mock('@/sync/domains/state/persistence', () => ({
     loadSessionMaterializedMaxSeqById: () => ({}),
     loadChangesCursor: () => null,
     loadLastChangesCursorByAccountId: () => ({}),
+    pruneStaleInstanceChangesCursors: vi.fn(),
     loadDeviceAnalyticsId: () => null,
     saveSettings: vi.fn(),
     saveLocalSettings: vi.fn(),
@@ -233,6 +276,7 @@ vi.mock('@/sync/domains/state/persistenceStorage', () => ({
 vi.mock('@/sync/domains/state/accountSettingsPersistence', () => ({
     loadPendingAccountSettings: mocks.loadPendingAccountSettings,
     loadAccountSettings: mocks.loadAccountSettings,
+    subscribeAccountSettingsPersistenceMutations: () => () => {},
 }));
 
 vi.mock('@/sync/encryption/secretSettings', async (importOriginal) => {
@@ -244,8 +288,16 @@ vi.mock('@/sync/encryption/secretSettings', async (importOriginal) => {
     };
 });
 
-vi.mock('@/sync/http/client', () => ({
-    serverFetch: mocks.serverFetch,
+vi.mock('@/sync/http/client', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/http/client')>();
+    return { ...actual, serverFetch: mocks.serverFetch };
+});
+
+vi.mock('@/utils/system/runtimeFetch', () => ({
+    runtimeFetch: async (url: string, init?: RequestInit) => {
+        const parsed = new URL(url);
+        return await mocks.serverFetch(`${parsed.pathname}${parsed.search}`, init);
+    },
 }));
 
 import { applySettingsLocalDelta, syncSettings } from './syncSettings';
@@ -268,6 +320,20 @@ describe('syncSettings local-only server-selection settings', () => {
     beforeEach(() => {
         invalidateAccountEncryptionModeCache();
         mocks.serverFetch.mockReset();
+        mocks.activeHomeCarrier.request.mockReset();
+        mocks.activeHomeCarrier.request.mockImplementation(async (url: string, init?: RequestInit) => {
+            const path = new URL(url).pathname + new URL(url).search;
+            if (path === '/v1/push-tokens?projectionVersion=2') {
+                return new Response(null, { status: 404 });
+            }
+            return await mocks.serverFetch(path, init);
+        });
+        Object.assign(mocks.activeServerSnapshot, {
+            serverId: 'server-a',
+            serverUrl: 'https://home-a.example.test',
+            runtimeOrigin: 'http://127.0.0.1:4101',
+            generation: 1,
+        });
         mocks.loadPendingSettings.mockReset();
         mocks.loadPendingSettings.mockReturnValue({});
         mocks.loadPendingAccountSettings.mockReset();
@@ -293,9 +359,7 @@ describe('syncSettings local-only server-selection settings', () => {
         mocks.storageState.settingsVersion = 9;
         mocks.storageState.settingsScope = { serverId: 'server-a', accountId: 'account-a' };
         mocks.storageState.applySettings.mockReset();
-        mocks.storageState.replaceSettings.mockReset();
         mocks.storageState.applySettingsForScope.mockReset();
-        mocks.storageState.replaceSettingsForScope.mockReset();
         mocks.storageState.applySettingsLocal.mockReset();
         (encryptionStub.decryptRaw as unknown as ReturnType<typeof vi.fn>).mockReset();
         (encryptionStub.encryptRaw as unknown as ReturnType<typeof vi.fn>).mockReset();
@@ -329,7 +393,72 @@ describe('syncSettings local-only server-selection settings', () => {
         expect(mocks.serverFetch).toHaveBeenCalledTimes(2);
         expect(encryptionStub.encryptRaw).not.toHaveBeenCalled();
         expect(mocks.storageState.applySettings).not.toHaveBeenCalled();
-        expect(mocks.storageState.replaceSettings).not.toHaveBeenCalled();
+    });
+
+    it('keeps every request in one captured settings attempt on its original Home after focus changes', async () => {
+        const requestTargets: string[] = [];
+        let postCount = 0;
+        mocks.activeHomeCarrier.request.mockImplementationOnce(async (url: string, init?: RequestInit) => {
+            requestTargets.push(new URL(url).origin);
+            Object.assign(mocks.activeServerSnapshot, {
+                serverId: 'server-b',
+                serverUrl: 'https://home-b.example.test',
+                runtimeOrigin: 'http://127.0.0.1:4102',
+                generation: 2,
+            });
+            return new Response(JSON.stringify({ mode: 'plain', updatedAt: 1 }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }).mockImplementation(async (url: string, init?: RequestInit) => {
+            requestTargets.push(new URL(url).origin);
+            const path = new URL(url).pathname;
+            if (path === '/v1/push-tokens') return new Response(null, { status: 404 });
+            if (path === '/v2/account/settings' && init?.method === 'POST') {
+                postCount += 1;
+                return new Response(JSON.stringify(postCount === 1 ? {
+                    success: false,
+                    error: 'version-mismatch',
+                    currentVersion: 2,
+                    currentContent: { t: 'plain', v: createBaseMockSettings() },
+                } : { success: true, version: 3 }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            if (path === '/v2/account/settings') {
+                return new Response(JSON.stringify({
+                    content: { t: 'plain', v: createBaseMockSettings() },
+                    version: 1,
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            throw new Error(`Unexpected request: ${init?.method ?? 'GET'} ${url}`);
+        });
+
+        await syncSettings({
+            credentials,
+            encryption: null,
+            settingsScope: { serverId: 'server-a', accountId: 'account-a' },
+            pendingSettings: { analyticsOptOut: true },
+            clearPendingSettings: () => {},
+        });
+
+        expect(requestTargets.length).toBeGreaterThan(0);
+        expect(new Set(requestTargets)).toEqual(new Set(['http://127.0.0.1:4101']));
+        expect(postCount).toBe(2);
+        const firstRequest = mocks.activeHomeCarrier.request.mock.calls[0];
+        expect(firstRequest?.[0]).toContain('http://127.0.0.1:4101/');
+        expect(new Headers(firstRequest?.[1]?.headers).get('Authorization')).toBe('Bearer token');
+        expect(mocks.storageState.applySettingsForScope).toHaveBeenLastCalledWith(
+            { serverId: 'server-a', accountId: 'account-a' },
+            expect.objectContaining({ analyticsOptOut: true }),
+            3,
+        );
+        expect(mocks.storageState.applySettings).not.toHaveBeenCalled();
+        expect(mocks.serverFetch).not.toHaveBeenCalled();
     });
 
     it('does not rewrite when GET ciphertext is decryptable', async () => {
@@ -366,9 +495,9 @@ describe('syncSettings local-only server-selection settings', () => {
             expect.objectContaining({
                 analyticsOptOut: true,
                 claudeLocalPermissionBridgeEnabled: false,
-                serverSelectionGroups: undefined,
-                serverSelectionActiveTargetKind: undefined,
-                serverSelectionActiveTargetId: undefined,
+                serverSelectionGroups: [],
+                serverSelectionActiveTargetKind: null,
+                serverSelectionActiveTargetId: null,
                 terminalConnectLegacySecretExportEnabled: false,
             }),
             4,
@@ -843,6 +972,7 @@ describe('applySettingsLocalDelta server-selection local-only keys', () => {
         const schedulePendingSettingsFlush = vi.fn();
 
         applySettingsLocalDelta({
+            expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
             delta: {
                 serverSelectionGroups: [
                     { id: 'grp-dev', name: 'Dev', serverIds: ['server-a', 'server-b'], presentation: 'grouped' },
@@ -861,11 +991,36 @@ describe('applySettingsLocalDelta server-selection local-only keys', () => {
         expect(schedulePendingSettingsFlush).not.toHaveBeenCalled();
     });
 
+    it('rejects a retained writer after the active Account settings scope changes', () => {
+        vi.spyOn(settingsAnalytics, 'emitAccountSettingChangedEvents').mockImplementation(() => {});
+        const setPendingSettings = vi.fn();
+        const schedulePendingSettingsFlush = vi.fn();
+        mocks.storageState.settingsScope = { serverId: 'server-b', accountId: 'account-b' };
+
+        applySettingsLocalDelta({
+            expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
+            delta: { analyticsOptOut: true },
+            settingsSecretsKey: null,
+            getPendingSettings: () => ({}),
+            setPendingSettings,
+            schedulePendingSettingsFlush,
+            source: 'ui',
+        });
+
+        expect(mocks.storageState.applySettingsLocal).not.toHaveBeenCalled();
+        expect(setPendingSettings).not.toHaveBeenCalled();
+        expect(schedulePendingSettingsFlush).not.toHaveBeenCalled();
+        expect(settingsAnalytics.emitAccountSettingChangedEvents).not.toHaveBeenCalled();
+        expect(mocks.tracking.capture).not.toHaveBeenCalled();
+        expect(mocks.tracking.optOut).not.toHaveBeenCalled();
+    });
+
     it('applies local terminal-connect compatibility delta without adding pending sync keys', () => {
         const setPendingSettings = vi.fn();
         const schedulePendingSettingsFlush = vi.fn();
 
         applySettingsLocalDelta({
+            expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
             delta: {
                 terminalConnectLegacySecretExportEnabled: true,
             },
@@ -885,6 +1040,7 @@ describe('applySettingsLocalDelta server-selection local-only keys', () => {
         const schedulePendingSettingsFlush = vi.fn();
 
         applySettingsLocalDelta({
+            expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
             delta: JSON.parse(JSON.stringify({
                 currentSecretBindingsByProfileId: {
                     'current-profile': { OPENAI_API_KEY: 'secret-current' },
@@ -913,6 +1069,7 @@ describe('applySettingsLocalDelta server-selection local-only keys', () => {
         const schedulePendingSettingsFlush = vi.fn();
 
         applySettingsLocalDelta({
+            expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
             delta: {
                 voice: voiceSettingsParse({ providerId: 'happier.voice.xai/realtime-grok' }),
             },
@@ -934,6 +1091,7 @@ describe('applySettingsLocalDelta server-selection local-only keys', () => {
         const schedulePendingSettingsFlush = vi.fn();
 
         applySettingsLocalDelta({
+            expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
             delta: { terminalConnectLegacySecretExportEnabled: true },
             settingsSecretsKey: null,
             getPendingSettings: () => ({}),
@@ -955,6 +1113,7 @@ describe('applySettingsLocalDelta server-selection local-only keys', () => {
         const schedulePendingSettingsFlush = vi.fn();
 
         applySettingsLocalDelta({
+            expectedSettingsScope: null,
             delta: { analyticsOptOut: true },
             settingsSecretsKey: null,
             getPendingSettings: () => ({}),
@@ -972,6 +1131,7 @@ describe('applySettingsLocalDelta server-selection local-only keys', () => {
         const schedulePendingSettingsFlush = vi.fn();
 
         applySettingsLocalDelta({
+            expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
             delta: {
                 analyticsOptOut: true,
                 sessionListDensity: 'narrow',
@@ -1025,6 +1185,7 @@ describe('applySettingsLocalDelta server-selection local-only keys', () => {
         const schedulePendingSettingsFlush = vi.fn();
 
         applySettingsLocalDelta({
+            expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
             delta: {
                 voice: { providerId: 'off' },
             } as any,

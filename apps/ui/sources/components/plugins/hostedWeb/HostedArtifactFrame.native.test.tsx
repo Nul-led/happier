@@ -3,12 +3,14 @@ import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type NativeViewTestProps = Readonly<{
-    artifactHandleToken: string;
+    artifactHandleToken?: string;
+    inlineDocumentHandleToken?: string;
     initialPathAndQuery: string;
     allowedNavigationOrigins: readonly string[];
     onMessage?: (event: unknown) => unknown;
     onLoadError?: (event: unknown) => unknown;
     onExternalNavigation?: (event: unknown) => unknown;
+    onBlockedNavigation?: (event: unknown) => unknown;
     onHistoryStateChange?: (event: unknown) => unknown;
     testID: string;
 }>;
@@ -16,11 +18,21 @@ type NativeViewTestProps = Readonly<{
 const nativeModuleMock = vi.hoisted(() => ({
     goBack: vi.fn(),
     postHostMessage: vi.fn(),
+    registerInlineDocument: vi.fn(),
+    unregisterInlineDocument: vi.fn(),
 }));
 const nativeViewMock = vi.hoisted(() => vi.fn((_props: NativeViewTestProps) => null));
 const requireNativeModuleMock = vi.hoisted(() => vi.fn());
 const requireNativeViewManagerMock = vi.hoisted(() => vi.fn());
 const openExternalUrlMock = vi.hoisted(() => vi.fn());
+const randomIds = vi.hoisted(() => ({
+    values: [
+        '11111111-1111-4111-8111-111111111111',
+        '22222222-2222-4222-8222-222222222222',
+        '33333333-3333-4333-8333-333333333333',
+        '44444444-4444-4444-8444-444444444444',
+    ],
+}));
 
 vi.mock('expo-modules-core', () => ({
     requireNativeModule: requireNativeModuleMock,
@@ -28,6 +40,14 @@ vi.mock('expo-modules-core', () => ({
 }));
 vi.mock('react-native', () => ({
     Linking: { openURL: openExternalUrlMock },
+    Platform: { OS: 'ios' },
+}));
+vi.mock('@/platform/randomUUID', () => ({
+    randomUUID: () => {
+        const next = randomIds.values.shift();
+        if (!next) throw new Error('No test UUID remains.');
+        return next;
+    },
 }));
 
 describe('HostedArtifactFrame native adapter', () => {
@@ -36,6 +56,16 @@ describe('HostedArtifactFrame native adapter', () => {
         nativeModuleMock.goBack.mockResolvedValue(true);
         nativeModuleMock.postHostMessage.mockReset();
         nativeModuleMock.postHostMessage.mockResolvedValue(true);
+        nativeModuleMock.registerInlineDocument.mockReset();
+        nativeModuleMock.registerInlineDocument.mockResolvedValue({ kind: 'registered' });
+        nativeModuleMock.unregisterInlineDocument.mockReset();
+        nativeModuleMock.unregisterInlineDocument.mockReturnValue(true);
+        randomIds.values = [
+            '11111111-1111-4111-8111-111111111111',
+            '22222222-2222-4222-8222-222222222222',
+            '33333333-3333-4333-8333-333333333333',
+            '44444444-4444-4444-8444-444444444444',
+        ];
         openExternalUrlMock.mockReset();
         openExternalUrlMock.mockResolvedValue(true);
         nativeViewMock.mockClear();
@@ -109,9 +139,12 @@ describe('HostedArtifactFrame native adapter', () => {
         );
 
         nativeProps.onMessage?.({ nativeEvent: { data: '{"kind":"ready"}', url: 'https://opaque.plugins.happier.dev' } });
-        expect(onMessage).toHaveBeenCalledWith({
-            nativeEvent: { data: '{"kind":"ready"}', url: 'https://opaque.plugins.happier.dev' },
-        });
+        expect(onMessage).toHaveBeenCalledWith(
+            {
+                nativeEvent: { data: '{"kind":"ready"}', url: 'https://opaque.plugins.happier.dev' },
+            },
+            expect.objectContaining({ consumeTransientActivation: expect.any(Function) }),
+        );
 
         // Native cancels the WebView navigation. The host, not the guest
         // WebView, owns the one permitted external handoff.
@@ -132,10 +165,7 @@ describe('HostedArtifactFrame native adapter', () => {
     it('returns a valid asynchronous bridge response to the incumbent native Artifact frame', async () => {
         const response = {
             version: 1,
-            pluginId: 'acme.preview',
-            contributionId: 'preview-web',
-            surfaceId: 'preview-surface',
-            nonce: 'nonce-1',
+            identity: { instanceId: 'preview-instance', mountNonce: 'nonce-1' },
             sequence: 2,
             requestSequence: 1,
             kind: 'ack' as const,
@@ -179,7 +209,10 @@ describe('HostedArtifactFrame native adapter', () => {
             await Promise.resolve();
         });
 
-        expect(onMessage).toHaveBeenCalledExactlyOnceWith(event);
+        expect(onMessage).toHaveBeenCalledExactlyOnceWith(
+            event,
+            expect.objectContaining({ consumeTransientActivation: expect.any(Function) }),
+        );
         expect(nativeModuleMock.postHostMessage).toHaveBeenCalledWith(
             expect.anything(),
             JSON.stringify(response),
@@ -344,14 +377,260 @@ describe('HostedArtifactFrame native adapter', () => {
     });
 
     it('reports the compiled native adapter only when its existing resolver finds both bridge halves', async () => {
-        const { isHostedArtifactFrameNativeAdapterAvailable } = await import('./HostedArtifactFrame.native');
+        const {
+            isHostedArtifactFrameNativeAdapterAvailable,
+            isHostedInlineDocumentFrameNativeAdapterAvailable,
+        } = await import('./HostedArtifactFrame.native');
 
         expect(isHostedArtifactFrameNativeAdapterAvailable()).toBe(true);
+        expect(isHostedInlineDocumentFrameNativeAdapterAvailable()).toBe(true);
+
+        requireNativeModuleMock.mockReturnValue({
+            goBack: nativeModuleMock.goBack,
+            postHostMessage: nativeModuleMock.postHostMessage,
+            unregisterInlineDocument: nativeModuleMock.unregisterInlineDocument,
+        });
+        expect(isHostedArtifactFrameNativeAdapterAvailable()).toBe(true);
+        expect(isHostedInlineDocumentFrameNativeAdapterAvailable()).toBe(false);
 
         requireNativeViewManagerMock.mockImplementation(() => {
             throw new Error('native view absent');
         });
         expect(isHostedArtifactFrameNativeAdapterAvailable()).toBe(false);
+        expect(isHostedInlineDocumentFrameNativeAdapterAvailable()).toBe(false);
+    });
+
+    it('registers the exact built inline document and renders only its opaque current token', async () => {
+        const onMessage = vi.fn();
+        const { HostedInlineDocumentFrame } = await import('./HostedArtifactFrame.native');
+        await act(async () => {
+            renderer.create(
+                <HostedInlineDocumentFrame
+                    title="Caller view"
+                    html="<main>private</main>"
+                    networkOrigins={['https://api.example.test']}
+                    bootstrapConfig={{
+                        identity: { instanceId: 'inline-1', mountNonce: 'nonce-1' },
+                        frameOrigin: 'null',
+                        hostOrigin: 'https://app.happier.dev',
+                    }}
+                    allowedNavigationOrigins={[]}
+                    bridge={{
+                        expectedOrigin: 'null',
+                        identity: { instanceId: 'inline-1', mountNonce: 'nonce-1' },
+                        allowedMessageKinds: new Set(['ready']),
+                        onMessage,
+                    }}
+                    testID="hosted-inline-document-frame"
+                />,
+            );
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        const token = `hpa_${'11111111111141118111111111111111'}${'22222222222242228222222222222222'}`;
+        expect(nativeModuleMock.registerInlineDocument).toHaveBeenCalledExactlyOnceWith({
+            token,
+            html: expect.stringContaining('<main>private</main>'),
+        });
+        const registeredDocument = nativeModuleMock.registerInlineDocument.mock.calls[0]?.[0]?.html as string;
+        expect(registeredDocument).toContain("connect-src https://api.example.test");
+        expect(registeredDocument).toContain('"frameOrigin":"null"');
+        const nativeProps = nativeViewMock.mock.calls.at(-1)?.[0];
+        expect(nativeProps).toMatchObject({
+            inlineDocumentHandleToken: token,
+            initialPathAndQuery: '/',
+            testID: 'hosted-inline-document-frame',
+        });
+        expect(nativeProps).not.toHaveProperty('artifactHandleToken');
+        expect(nativeProps).not.toHaveProperty('html');
+        expect(nativeProps).not.toHaveProperty('url');
+
+        nativeProps?.onMessage?.({
+            nativeEvent: {
+                url: `happier-hosted-artifact://${token}/`,
+                data: JSON.stringify({
+                    version: 1,
+                    identity: { instanceId: 'inline-1', mountNonce: 'nonce-1' },
+                    sequence: 1,
+                    kind: 'ready',
+                    payload: null,
+                }),
+            },
+        });
+        expect(onMessage).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ kind: 'ready' }),
+            expect.objectContaining({ consumeTransientActivation: expect.any(Function) }),
+        );
+        const receipt = onMessage.mock.calls[0]?.[1];
+        expect(receipt?.consumeTransientActivation()).toBe(false);
+    });
+
+    it('fails closed with the registrar capability result and retires the denied token', async () => {
+        nativeModuleMock.registerInlineDocument.mockResolvedValueOnce({
+            kind: 'unavailable',
+            code: 'hosted_web_profile_isolation_unavailable',
+            capability: 'MULTI_PROFILE',
+        });
+        const onUnavailable = vi.fn();
+        const { HostedInlineDocumentFrame } = await import('./HostedArtifactFrame.native');
+
+        await act(async () => {
+            renderer.create(
+                <HostedInlineDocumentFrame
+                    title="Caller view"
+                    html="<main>private</main>"
+                    allowedNavigationOrigins={[]}
+                    onUnavailable={onUnavailable}
+                    testID="hosted-inline-document-frame"
+                />,
+            );
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        const token = nativeModuleMock.registerInlineDocument.mock.calls[0]?.[0]?.token;
+        expect(onUnavailable).toHaveBeenCalledExactlyOnceWith('hosted_web_profile_isolation_unavailable');
+        expect(nativeModuleMock.unregisterInlineDocument).toHaveBeenCalledExactlyOnceWith(token);
+        expect(nativeViewMock).not.toHaveBeenCalled();
+    });
+
+    it('synchronously retires the old inline token on replacement and the current token on unmount', async () => {
+        const { HostedInlineDocumentFrame } = await import('./HostedArtifactFrame.native');
+        let root: renderer.ReactTestRenderer | null = null;
+        const renderInline = (html: string) => (
+            <HostedInlineDocumentFrame
+                title="Caller view"
+                html={html}
+                allowedNavigationOrigins={[]}
+                testID="hosted-inline-document-frame"
+            />
+        );
+        await act(async () => {
+            root = renderer.create(renderInline('<main>G</main>'));
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        const tokenG = nativeViewMock.mock.calls.at(-1)?.[0]?.inlineDocumentHandleToken;
+        expect(tokenG).toBeTruthy();
+
+        await act(async () => {
+            root?.update(renderInline('<main>H</main>'));
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(nativeModuleMock.unregisterInlineDocument).toHaveBeenCalledWith(tokenG);
+        const tokenH = nativeViewMock.mock.calls.at(-1)?.[0]?.inlineDocumentHandleToken;
+        expect(tokenH).toBeTruthy();
+        expect(tokenH).not.toBe(tokenG);
+
+        await act(() => {
+            root?.unmount();
+        });
+        expect(nativeModuleMock.unregisterInlineDocument).toHaveBeenCalledWith(tokenH);
+    });
+
+    it('retires the current inline token when its native frame reports a terminal error', async () => {
+        const onUnavailable = vi.fn();
+        const onLoadError = vi.fn();
+        const { HostedInlineDocumentFrame } = await import('./HostedArtifactFrame.native');
+
+        await act(async () => {
+            renderer.create(
+                <HostedInlineDocumentFrame
+                    title="Caller view"
+                    html="<main>private</main>"
+                    allowedNavigationOrigins={[]}
+                    onLoadError={onLoadError}
+                    onUnavailable={onUnavailable}
+                    testID="hosted-inline-document-frame"
+                />,
+            );
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        const nativeProps = nativeViewMock.mock.calls.at(-1)?.[0];
+        const token = nativeProps?.inlineDocumentHandleToken;
+        expect(token).toMatch(/^hpa_[0-9a-f]{64}$/);
+        const error = { nativeEvent: { code: 'hosted_web_renderer_crashed' } };
+
+        await act(async () => {
+            nativeProps?.onLoadError?.(error);
+        });
+
+        expect(onLoadError).toHaveBeenCalledExactlyOnceWith(error);
+        expect(nativeModuleMock.unregisterInlineDocument).toHaveBeenCalledExactlyOnceWith(token);
+        expect(onUnavailable).toHaveBeenCalledExactlyOnceWith('native_inline_document_load_failed');
+    });
+
+    it('retires the current inline token when native blocks an unexpected main-frame navigation', async () => {
+        const onUnavailable = vi.fn();
+        const onBlockedNavigation = vi.fn();
+        const { HostedInlineDocumentFrame } = await import('./HostedArtifactFrame.native');
+
+        await act(async () => {
+            renderer.create(
+                <HostedInlineDocumentFrame
+                    title="Caller view"
+                    html="<main>private</main>"
+                    allowedNavigationOrigins={[]}
+                    onBlockedNavigation={onBlockedNavigation}
+                    onUnavailable={onUnavailable}
+                    testID="hosted-inline-document-frame"
+                />,
+            );
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        const nativeProps = nativeViewMock.mock.calls.at(-1)?.[0];
+        const token = nativeProps?.inlineDocumentHandleToken;
+        expect(token).toMatch(/^hpa_[0-9a-f]{64}$/);
+        const blocked = { nativeEvent: { url: 'https://undeclared.example.test/' } };
+
+        await act(async () => {
+            nativeProps?.onBlockedNavigation?.(blocked);
+        });
+
+        expect(onBlockedNavigation).toHaveBeenCalledExactlyOnceWith(blocked);
+        expect(nativeModuleMock.unregisterInlineDocument).toHaveBeenCalledExactlyOnceWith(token);
+        expect(onUnavailable).toHaveBeenCalledExactlyOnceWith('native_inline_document_load_failed');
+    });
+
+    it('never mounts a stale inline registration that resolves after its generation was replaced', async () => {
+        let resolveG: ((value: unknown) => void) | undefined;
+        nativeModuleMock.registerInlineDocument
+            .mockImplementationOnce(() => new Promise((resolve) => { resolveG = resolve; }))
+            .mockResolvedValueOnce({ kind: 'registered' });
+        const { HostedInlineDocumentFrame } = await import('./HostedArtifactFrame.native');
+        let root: renderer.ReactTestRenderer | null = null;
+        const renderInline = (html: string) => (
+            <HostedInlineDocumentFrame title="Caller view" html={html} allowedNavigationOrigins={[]} testID="inline" />
+        );
+        await act(async () => {
+            root = renderer.create(renderInline('<main>G</main>'));
+        });
+        const tokenG = nativeModuleMock.registerInlineDocument.mock.calls[0]?.[0]?.token as string;
+        expect(tokenG).toMatch(/^hpa_[0-9a-f]{64}$/);
+        await act(async () => {
+            root?.update(renderInline('<main>H</main>'));
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        const tokenH = nativeViewMock.mock.calls.at(-1)?.[0]?.inlineDocumentHandleToken;
+        expect(tokenH).not.toBe(tokenG);
+
+        await act(async () => {
+            resolveG?.({ kind: 'registered' });
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(nativeModuleMock.unregisterInlineDocument).toHaveBeenCalledWith(tokenG);
+        expect(nativeViewMock.mock.calls.some(([props]) => (
+            typeof props.inlineDocumentHandleToken === 'string'
+            && props.inlineDocumentHandleToken === tokenG
+        ))).toBe(false);
     });
 
     it('observes current native history and dispatches a go-back command through the Artifact module', async () => {

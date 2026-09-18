@@ -30,10 +30,9 @@ export function SecretAddModal(props: SecretAddModalProps) {
 
     const submit = React.useCallback(() => {
         const trimmedName = name.trim();
-        const trimmedValue = value.trim();
         if (!trimmedName) return;
-        if (!trimmedValue) return;
-        props.onSubmit({ name: trimmedName, value: trimmedValue });
+        if (value.length === 0) return;
+        props.onSubmit({ name: trimmedName, value });
         props.onClose();
     }, [name, props, value]);
 
@@ -109,13 +108,13 @@ export function SecretAddModal(props: SecretAddModalProps) {
                     <View style={{ flex: 1 }}>
                         <Pressable
                             onPress={submit}
-                            disabled={!name.trim() || !value.trim()}
+                            disabled={!name.trim() || value.length === 0}
                             style={({ pressed }) => ({
                                 backgroundColor: theme.colors.button.primary.background,
                                 borderRadius: 10,
                                 paddingVertical: 12,
                                 alignItems: 'center',
-                                opacity: (!name.trim() || !value.trim()) ? 0.5 : (pressed ? 0.85 : 1),
+                                opacity: (!name.trim() || value.length === 0) ? 0.5 : (pressed ? 0.85 : 1),
                             })}
                         >
                             <Text style={{ color: theme.colors.button.primary.tint, ...Typography.default('semiBold') }}>

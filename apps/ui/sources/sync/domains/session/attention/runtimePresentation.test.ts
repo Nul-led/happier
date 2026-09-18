@@ -1,15 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
-    deriveSessionRuntimePresentationState,
+    projectUiSessionRuntimeAwareness,
     readSessionRuntimePresentationFreshnessExpirations,
     SESSION_OPTIMISTIC_PENDING_THINKING_MS,
     SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS,
 } from './runtimePresentation';
 
-describe('deriveSessionRuntimePresentationState', () => {
+describe('projectUiSessionRuntimeAwareness', () => {
+    it('preserves unknown runtime evidence independently of operational activity', () => {
+        const result = projectUiSessionRuntimeAwareness({ nowMs: 1_000_000 });
+        expect(result).toMatchObject({ runtime: 'unknown', freshness: 'unknown' });
+    });
+
     it('treats a fresh in-progress turn projection as working without legacy presence evidence', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: false,
             activeAt: 0,
@@ -23,12 +28,12 @@ describe('deriveSessionRuntimePresentationState', () => {
         expect(runtimeState.projectedTurnInProgress).toBe(true);
         expect(runtimeState.freshThinking).toBe(false);
         expect(runtimeState.working).toBe(true);
-        expect(runtimeState.attention).toBe('working');
+        expect(runtimeState.operational.primary).toBe('working');
     });
 
     it('falls back to fresh legacy thinking when no turn projection is available', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -42,12 +47,12 @@ describe('deriveSessionRuntimePresentationState', () => {
         expect(runtimeState.freshThinking).toBe(true);
         expect(runtimeState.projectedTurnInProgress).toBe(false);
         expect(runtimeState.working).toBe(true);
-        expect(runtimeState.attention).toBe('working');
+        expect(runtimeState.operational.primary).toBe('working');
     });
 
     it('treats a fresh pending outbound user turn as working while optimistic thinking is fresh', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -59,7 +64,7 @@ describe('deriveSessionRuntimePresentationState', () => {
         });
 
         expect(runtimeState.working).toBe(true);
-        expect(runtimeState.attention).toBe('working');
+        expect(runtimeState.operational.primary).toBe('working');
     });
 
     it('reports optimistic pending user turns with the optimistic freshness expiration', () => {
@@ -81,7 +86,7 @@ describe('deriveSessionRuntimePresentationState', () => {
 
     it('keeps a canonical in-progress turn in the foreground over background activity', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -99,13 +104,12 @@ describe('deriveSessionRuntimePresentationState', () => {
         expect(runtimeState.projectedTurnInProgress).toBe(true);
         expect(runtimeState.working).toBe(true);
         expect(runtimeState.backgroundActive).toBe(false);
-        expect(runtimeState.activityState).toBe('working');
-        expect(runtimeState.attention).toBe('working');
+        expect(runtimeState.operational.primary).toBe('working');
     });
 
     it('keeps a canonical in-progress turn working until an explicit terminal projection arrives', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS - 1_000,
@@ -118,12 +122,12 @@ describe('deriveSessionRuntimePresentationState', () => {
 
         expect(runtimeState.projectedTurnInProgress).toBe(true);
         expect(runtimeState.working).toBe(true);
-        expect(runtimeState.attention).toBe('working');
+        expect(runtimeState.operational.primary).toBe('working');
     });
 
     it('does not require newer meaningful activity to keep a projected turn working', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: 0,
@@ -137,12 +141,12 @@ describe('deriveSessionRuntimePresentationState', () => {
 
         expect(runtimeState.projectedTurnInProgress).toBe(true);
         expect(runtimeState.working).toBe(true);
-        expect(runtimeState.attention).toBe('working');
+        expect(runtimeState.operational.primary).toBe('working');
     });
 
     it('treats provider runtime activity as background active without foreground turn progress', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 20_000,
@@ -159,16 +163,14 @@ describe('deriveSessionRuntimePresentationState', () => {
 
         expect(runtimeState.projectedTurnInProgress).toBe(false);
         expect(runtimeState.freshThinking).toBe(false);
-        expect(runtimeState.freshProviderRuntimeActivity).toBe(true);
         expect(runtimeState.backgroundActive).toBe(true);
-        expect(runtimeState.activityState).toBe('backgroundActive');
         expect(runtimeState.working).toBe(false);
-        expect(runtimeState.attention).toBe('idle');
+        expect(runtimeState.operational.primary).toBe('ready');
     });
 
     it('keeps foreground working precedence over provider runtime activity', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 20_000,
@@ -184,16 +186,14 @@ describe('deriveSessionRuntimePresentationState', () => {
         });
 
         expect(runtimeState.projectedTurnInProgress).toBe(true);
-        expect(runtimeState.freshProviderRuntimeActivity).toBe(true);
         expect(runtimeState.working).toBe(true);
         expect(runtimeState.backgroundActive).toBe(false);
-        expect(runtimeState.activityState).toBe('working');
-        expect(runtimeState.attention).toBe('working');
+        expect(runtimeState.operational.primary).toBe('working');
     });
 
     it('uses canonical active state without owner-liveness or clock freshness', () => {
         const nowMs = 1_000_000;
-        expect(deriveSessionRuntimePresentationState({
+        expect(projectUiSessionRuntimeAwareness({
             nowMs,
             active: false,
             presence: 0,
@@ -201,12 +201,12 @@ describe('deriveSessionRuntimePresentationState', () => {
             runtimeActivityActiveCount: 1,
             runtimeActivityObservedAt: nowMs - 120_000,
             runtimeActivityRevision: 9,
-        }).freshProviderRuntimeActivity).toBe(true);
+        }).backgroundActive).toBe(true);
     });
 
     it('treats canonical unknown runtime activity as inactive even while owner presence is fresh', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -217,16 +217,14 @@ describe('deriveSessionRuntimePresentationState', () => {
             runtimeActivityRevision: 10,
         });
 
-        expect(runtimeState.freshProviderRuntimeActivity).toBe(false);
         expect(runtimeState.backgroundActive).toBe(false);
-        expect(runtimeState.activityState).toBe('idle');
         expect(runtimeState.working).toBe(false);
-        expect(runtimeState.attention).toBe('idle');
+        expect(runtimeState.operational.primary).toBe('none');
     });
 
     it('does not let fresh owner presence alone create provider runtime activity', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -237,9 +235,8 @@ describe('deriveSessionRuntimePresentationState', () => {
             runtimeActivityRevision: 11,
         });
 
-        expect(runtimeState.freshProviderRuntimeActivity).toBe(false);
         expect(runtimeState.working).toBe(false);
-        expect(runtimeState.attention).toBe('idle');
+        expect(runtimeState.operational.primary).toBe('none');
     });
 
     it('does not schedule a clock wake-up for canonical runtime activity', () => {
@@ -273,7 +270,7 @@ describe('deriveSessionRuntimePresentationState', () => {
 
     it('keeps canonical active runtime activity with a nullable observed timestamp', () => {
         const nowMs = 1_000_000;
-        expect(deriveSessionRuntimePresentationState({
+        expect(projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             presence: 'online',
@@ -281,7 +278,7 @@ describe('deriveSessionRuntimePresentationState', () => {
             runtimeActivityActiveCount: 1,
             runtimeActivityObservedAt: null,
             runtimeActivityRevision: 13,
-        }).freshProviderRuntimeActivity).toBe(true);
+        }).backgroundActive).toBe(true);
     });
 
     it('does not read sourceClass or let it classify provider activity as foreground work', () => {
@@ -296,19 +293,17 @@ describe('deriveSessionRuntimePresentationState', () => {
             runtimeActivityRevision: 14,
         };
 
-        expect(deriveSessionRuntimePresentationState(input)).toMatchObject({
-            freshProviderRuntimeActivity: true,
+        expect(projectUiSessionRuntimeAwareness(input)).toMatchObject({
             working: false,
             backgroundActive: true,
-            activityState: 'backgroundActive',
-            attention: 'idle',
+            operational: { primary: 'none' },
         });
     });
 
     it('suppresses foreground and background runtime presentation for archived sessions', () => {
         const nowMs = 1_000_000;
 
-        expect(deriveSessionRuntimePresentationState({
+        expect(projectUiSessionRuntimeAwareness({
             nowMs,
             archivedAt: nowMs - 1,
             active: true,
@@ -319,17 +314,15 @@ describe('deriveSessionRuntimePresentationState', () => {
             runtimeActivityActiveCount: 1,
         })).toMatchObject({
             projectedTurnInProgress: false,
-            freshProviderRuntimeActivity: false,
             working: false,
             backgroundActive: false,
-            activityState: 'idle',
-            attention: 'idle',
+            operational: { primary: 'none' },
         });
     });
 
     it('does not require transcript freshness to keep a projected turn working', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS - 1_000,
@@ -343,12 +336,12 @@ describe('deriveSessionRuntimePresentationState', () => {
 
         expect(runtimeState.projectedTurnInProgress).toBe(true);
         expect(runtimeState.working).toBe(true);
-        expect(runtimeState.attention).toBe('working');
+        expect(runtimeState.operational.primary).toBe('working');
     });
 
     it('does not let older legacy thinking override a newer terminal projection', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -362,12 +355,12 @@ describe('deriveSessionRuntimePresentationState', () => {
         expect(runtimeState.hasTerminalPrimaryTurnProjection).toBe(true);
         expect(runtimeState.freshThinking).toBe(false);
         expect(runtimeState.working).toBe(false);
-        expect(runtimeState.attention).toBe('idle');
+        expect(runtimeState.operational.primary).toBe('ready');
     });
 
     it('treats a completed turn projection as authoritative over newer legacy thinking', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -381,12 +374,12 @@ describe('deriveSessionRuntimePresentationState', () => {
         expect(runtimeState.hasTerminalPrimaryTurnProjection).toBe(true);
         expect(runtimeState.freshThinking).toBe(false);
         expect(runtimeState.working).toBe(false);
-        expect(runtimeState.attention).toBe('idle');
+        expect(runtimeState.operational.primary).toBe('ready');
     });
 
     it('treats a failed turn projection as failed attention over newer legacy thinking', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -400,12 +393,12 @@ describe('deriveSessionRuntimePresentationState', () => {
         expect(runtimeState.hasTerminalPrimaryTurnProjection).toBe(true);
         expect(runtimeState.freshThinking).toBe(false);
         expect(runtimeState.working).toBe(false);
-        expect(runtimeState.attention).toBe('failed');
+        expect(runtimeState.operational.primary).toBe('failed');
     });
 
     it('keeps pending permission attention while the pending request is fresh', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -415,12 +408,20 @@ describe('deriveSessionRuntimePresentationState', () => {
         });
 
         expect(runtimeState.freshPermissionRequired).toBe(true);
-        expect(runtimeState.attention).toBe('permission_required');
+        expect(runtimeState.operational.primary).toBe('permission_required');
+        expect(readSessionRuntimePresentationFreshnessExpirations({
+            nowMs,
+            active: true,
+            activeAt: nowMs - 1_000,
+            presence: 'online',
+            hasPendingPermissionRequests: true,
+            pendingRequestObservedAt: nowMs - 1_000,
+        }, nowMs)).toEqual([nowMs - 1_000 + SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS]);
     });
 
-    it('keeps unresolved canonical permission attention after transient freshness expires', () => {
+    it('expires stale permission attention at the canonical freshness boundary', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -429,8 +430,8 @@ describe('deriveSessionRuntimePresentationState', () => {
             pendingRequestObservedAt: nowMs - SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS - 1_000,
         });
 
-        expect(runtimeState.freshPermissionRequired).toBe(true);
-        expect(runtimeState.attention).toBe('permission_required');
+        expect(runtimeState.freshPermissionRequired).toBe(false);
+        expect(runtimeState.operational.primary).toBe('none');
         expect(readSessionRuntimePresentationFreshnessExpirations({
             nowMs,
             active: true,
@@ -443,7 +444,7 @@ describe('deriveSessionRuntimePresentationState', () => {
 
     it('still expires stale non-permission user-action attention without active work', () => {
         const nowMs = 1_000_000;
-        const runtimeState = deriveSessionRuntimePresentationState({
+        const runtimeState = projectUiSessionRuntimeAwareness({
             nowMs,
             active: true,
             activeAt: nowMs - 1_000,
@@ -453,6 +454,6 @@ describe('deriveSessionRuntimePresentationState', () => {
         });
 
         expect(runtimeState.freshActionRequired).toBe(false);
-        expect(runtimeState.attention).toBe('idle');
+        expect(runtimeState.operational.primary).toBe('none');
     });
 });

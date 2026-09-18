@@ -8,6 +8,7 @@ const basePreflight = {
     activeRelayUrl: 'https://relay.example.test',
     activeWebappUrl: 'https://relay.example.test',
     activeLocalRelayUrl: null,
+    activeServerId: 'srv_relay_example',
     localCliReady: false,
     serviceInstalled: false,
     daemonRunning: false,

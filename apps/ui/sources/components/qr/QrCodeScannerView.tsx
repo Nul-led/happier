@@ -191,6 +191,21 @@ export const QrCodeScannerView = React.memo(function QrCodeScannerView(props: Qr
             <View style={styles.permissionsCard}>
                 <ActivitySpinner size="small" color={theme.colors.text.primary} />
                 <Text style={styles.permissionsBody}>{t('common.loading')}</Text>
+                {/*
+                 * The platform has not answered yet, and an unanswered request stays here.
+                 * Pasting the pairing link and leaving must stay reachable exactly as they
+                 * are once the answer is "denied"; a spinner is not an exit.
+                 */}
+                {props.footer ? <View style={styles.footer}>{props.footer}</View> : null}
+                <View style={styles.footerButton}>
+                    <RoundButton
+                        testID={`${props.testIDPrefix}-cancel`}
+                        size="small"
+                        title={t('common.cancel')}
+                        display="inverted"
+                        action={async () => props.onCancel()}
+                    />
+                </View>
             </View>
         );
     }

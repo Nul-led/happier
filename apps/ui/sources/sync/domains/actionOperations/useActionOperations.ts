@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import { actionOperationSelectors } from './actionOperationSelectors';
 import { actionOperationStore } from './actionOperationStore';
+import type { ActionOperationAddress, ActionOperationSessionAddress } from './qualifiedActionOperation';
 
 function useActionOperationSelector<T>(selector: () => T): T {
     return React.useSyncExternalStore(
@@ -20,14 +21,23 @@ export function useAllActionOperations() {
     return useActionOperationSelector(readAllActionOperations);
 }
 
-export function useActionOperation(operationId: string) {
+export function readInboxActionOperations() {
+    return actionOperationSelectors.selectInbox(actionOperationStore.getSnapshot());
+}
+
+export function useInboxActionOperations() {
+    return useActionOperationSelector(readInboxActionOperations);
+}
+
+export function useActionOperation(address: ActionOperationAddress) {
     return useActionOperationSelector(() => (
-        actionOperationSelectors.selectById(actionOperationStore.getSnapshot(), operationId)
+        actionOperationSelectors.selectById(actionOperationStore.getSnapshot(), address)
     ));
 }
 
 export function useActionOperationByRequestId(
     requestId: string | null,
+    serverId: string | null,
     accountId?: string | null,
 ) {
     return useActionOperationSelector(() => (
@@ -35,6 +45,7 @@ export function useActionOperationByRequestId(
             ? actionOperationSelectors.selectSnapshotByRequestId(
                 actionOperationStore.getSnapshot(),
                 requestId,
+                serverId,
                 accountId,
             )
             : null
@@ -45,9 +56,9 @@ export function useActiveActionOperations() {
     return useActionOperationSelector(() => actionOperationSelectors.selectActive(actionOperationStore.getSnapshot()));
 }
 
-export function useSessionActionOperations(sessionId: string) {
+export function useSessionActionOperations(address: ActionOperationSessionAddress) {
     return useActionOperationSelector(() => (
-        actionOperationSelectors.selectForSession(actionOperationStore.getSnapshot(), sessionId)
+        actionOperationSelectors.selectForSession(actionOperationStore.getSnapshot(), address)
     ));
 }
 

@@ -51,6 +51,28 @@ describe('useNavigationFocusReturn', () => {
         expect(navigate).toHaveBeenCalledOnce();
     });
 
+    it('restores a registered native host when normal navigation returns', async () => {
+        vi.stubGlobal('document', undefined);
+        const focus = vi.fn();
+        const navigate = vi.fn();
+        const { useNavigationFocusReturn } = await import('./useNavigationFocusReturn');
+        const hook = await renderHook(() => useNavigationFocusReturn());
+
+        React.act(() => {
+            hook.getCurrent().targetRef('native-return-target')({ focus });
+            hook.getCurrent().navigateFrom('native-return-target', navigate);
+        });
+
+        expect(navigate).toHaveBeenCalledOnce();
+        expect(focus).not.toHaveBeenCalled();
+
+        React.act(() => {
+            navigationState.focusEffect?.();
+        });
+
+        expect(focus).toHaveBeenCalledOnce();
+    });
+
     it('restores the exact initiating element only after the source screen regains focus', async () => {
         const focus = vi.fn();
         const target = {

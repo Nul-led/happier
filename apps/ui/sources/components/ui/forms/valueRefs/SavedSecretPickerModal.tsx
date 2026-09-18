@@ -3,7 +3,7 @@ import * as React from 'react';
 import type { CustomModalInjectedProps } from '@/modal';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { SecretsList } from '@/components/secrets/SecretsList';
-import { useSavedSecretsMutable } from '@/components/secrets/useSavedSecretsMutable';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 import { t } from '@/text';
 
 export type SavedSecretPickerModalProps = CustomModalInjectedProps & Readonly<{
@@ -30,15 +30,25 @@ export type SavedSecretPickerModalProps = CustomModalInjectedProps & Readonly<{
 }>;
 
 export function SavedSecretPickerModal(props: SavedSecretPickerModalProps) {
-    const [liveSecrets, setLiveSecrets] = useSavedSecretsMutable();
+    const catalog = useSavedSecretCatalog();
     const includeNoneRow = props.includeNoneRow !== false;
+    const retrySharedCatalog = React.useCallback(() => {
+        void catalog.reload().catch(() => {});
+    }, [catalog.reload]);
 
     return (
         <ItemList keyboardShouldPersistTaps="handled">
             <SecretsList
                 wrapInItemList={false}
-                secrets={liveSecrets}
-                onChangeSecrets={setLiveSecrets}
+                secrets={catalog.personalSecrets}
+                sharedEntries={catalog.sharedEntries}
+                resolveSharedReference={catalog.resolveReference}
+                sharedCatalogStale={catalog.status === 'error' || (catalog.status === 'ready' && catalog.stale)}
+                onRetrySharedCatalog={retrySharedCatalog}
+                onCreatePersonal={catalog.personalMutations.create}
+                onRenamePersonal={catalog.personalMutations.rename}
+                onRotatePersonal={catalog.personalMutations.rotate}
+                onDeletePersonal={catalog.personalMutations.delete}
                 selectedId={props.selectedId ?? ''}
                 onSelectId={(id) => {
                     props.onSelectId(id ? id : null);

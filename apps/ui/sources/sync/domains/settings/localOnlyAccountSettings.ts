@@ -67,6 +67,7 @@ export function stripLocalOnlyAccountSettings(settings: Partial<Settings>): Part
         serverSelectionActiveTargetKind: _serverSelectionActiveTargetKind,
         serverSelectionActiveTargetId: _serverSelectionActiveTargetId,
         terminalConnectLegacySecretExportEnabled: _terminalConnectLegacySecretExportEnabled,
+        clientEncryptionRequirementLocalV1: _clientEncryptionRequirementLocalV1,
         ...rest
     } = stripDerivedAccountSettingsProjections(settings);
     return rest;

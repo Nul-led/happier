@@ -19,8 +19,8 @@ describe('useServerRetentionPolicies', () => {
 
         resetServerFeaturesClientForTests();
 
-        const serverA = upsertServerProfile({ serverUrl: 'https://retention-a.example', name: 'Retention A', source: 'manual' });
-        const serverB = upsertServerProfile({ serverUrl: 'https://retention-b.example', name: 'Retention B', source: 'manual' });
+        const serverA = await upsertServerProfile({ serverUrl: 'https://retention-a.example', name: 'Retention A', source: 'manual' });
+        const serverB = await upsertServerProfile({ serverUrl: 'https://retention-b.example', name: 'Retention B', source: 'manual' });
 
         const payloadByUrl = new Map<string, ReturnType<typeof buildServerFeaturesResponse>>([
             [
@@ -136,7 +136,7 @@ describe('useServerRetentionPolicies', () => {
 
         resetServerFeaturesClientForTests();
 
-        const server = upsertServerProfile({ serverUrl: 'https://retention-inline.example', name: 'Retention Inline', source: 'manual' });
+        const server = await upsertServerProfile({ serverUrl: 'https://retention-inline.example', name: 'Retention Inline', source: 'manual' });
         const payload = Object.assign(buildServerFeaturesResponse(), {
             capabilities: {
                 server: {

@@ -1,13 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createServerProfilesModuleMock, type ServerProfileMockProfile } from '@/dev/testkit/mocks/serverProfiles';
-import { resolveMachineSessionListIndexImpact } from './machines';
+import { createPartialServerProfilesModuleMock, type ServerProfileMockProfile } from '@/dev/testkit/mocks/serverProfiles';
 import { resolveMachineSessionListIndexImpact as resolveMachineSessionIndexImpactFromHelper } from './machineSessionListIndexImpact';
 import type { MachineMetadata } from '../../domains/state/storageTypes';
 
-const { mmkvStore, invalidateCachedTransferRoutesForMachineSpy, saveMachineDisplayWarmCacheEntriesSpy } = vi.hoisted(() => ({
+const {
+    mmkvStore,
+    invalidateCachedTransferRoutesForMachineSpy,
+    machineDisplayWarmCacheSaveState,
+    saveMachineDisplayWarmCacheEntriesSpy,
+} = vi.hoisted(() => ({
     mmkvStore: new Map<string, string>(),
     invalidateCachedTransferRoutesForMachineSpy: vi.fn(),
+    machineDisplayWarmCacheSaveState: {
+        timer: null as ReturnType<typeof setTimeout> | null,
+        args: null as unknown[] | null,
+    },
     saveMachineDisplayWarmCacheEntriesSpy: vi.fn(),
 }));
 
@@ -35,6 +43,9 @@ afterEach(() => {
     mmkvStore.clear();
     invalidateCachedTransferRoutesForMachineSpy.mockReset();
     saveMachineDisplayWarmCacheEntriesSpy.mockReset();
+    if (machineDisplayWarmCacheSaveState.timer) clearTimeout(machineDisplayWarmCacheSaveState.timer);
+    machineDisplayWarmCacheSaveState.timer = null;
+    machineDisplayWarmCacheSaveState.args = null;
 });
 
 const ONLINE = 'online' as const;
@@ -76,28 +87,45 @@ function mockMachineDomainBoundaries(profiles: readonly ServerProfileMockProfile
     vi.doMock('../../domains/server/serverRuntime', () => ({
         getActiveServerSnapshot: () => ({ serverId: 'server_a', serverUrl: 'http://server.local', generation: 0 }),
     }));
-    vi.doMock('../../domains/server/serverProfiles', () => createServerProfilesModuleMock({
-        profiles,
-        listServerProfiles: () => profiles,
-    }));
+    vi.doMock('../../domains/server/serverProfiles', async (importOriginal) => createPartialServerProfilesModuleMock(
+        importOriginal,
+        {
+            profiles,
+            listServerProfiles: () => profiles,
+        },
+    ));
     vi.doMock('../../domains/transfers/runtime/transferRouteCache', () => ({
         invalidateCachedTransferRoutesForMachine: (...args: unknown[]) => invalidateCachedTransferRoutesForMachineSpy(...args),
     }));
-    vi.doMock('../../domains/state/warmCachePersistence', () => ({
+    vi.doMock('../../domains/state/warmCachePersistence', async (importOriginal) => ({
+        ...await importOriginal<typeof import('../../domains/state/warmCachePersistence')>(),
         resolveWarmCacheAccountScope: vi.fn((fallback: string | null | undefined) => fallback ?? null),
         peekMachineDisplayWarmCacheEntries: vi.fn(() => null),
         saveMachineDisplayWarmCacheEntries: saveMachineDisplayWarmCacheEntriesSpy,
+        scheduleMachineDisplayWarmCacheEntriesSave: (...args: unknown[]) => {
+            machineDisplayWarmCacheSaveState.args = args;
+            if (machineDisplayWarmCacheSaveState.timer) return;
+            machineDisplayWarmCacheSaveState.timer = setTimeout(() => {
+                machineDisplayWarmCacheSaveState.timer = null;
+                const pendingArgs = machineDisplayWarmCacheSaveState.args;
+                machineDisplayWarmCacheSaveState.args = null;
+                if (pendingArgs) saveMachineDisplayWarmCacheEntriesSpy(...pendingArgs);
+            }, 0);
+        },
     }));
 }
 
 async function seedActiveServerSessionListIndex(initialState: any) {
     const { buildActiveServerSessionListIndex } = await import('../sessionListIndex/buildSessionListIndexWithServerScope');
+    const serverRows = initialState.sessionListRowsByServerId.server_a ?? {};
     const seededIndex = buildActiveServerSessionListIndex({
-        sessions: initialState.sessionListRenderables,
+        sessions: Object.fromEntries((initialState.ordinarySessionListMembershipByServerId.server_a ?? []).flatMap((sessionId: string) => {
+            const row = serverRows[sessionId];
+            return row ? [[sessionId, row] as const] : [];
+        })),
         sessionRecords: initialState.sessions,
         machines: initialState.machineDisplayById,
         machineRecords: initialState.machines,
-        groupInactiveSessionsByProject: initialState.settings.groupInactiveSessionsByProject === true,
         activeGroupingV1: initialState.settings.sessionListActiveGroupingV1,
         inactiveGroupingV1: initialState.settings.sessionListInactiveGroupingV1,
         getProjectForSession: initialState.getProjectForSession,
@@ -111,7 +139,8 @@ async function seedActiveServerSessionListIndex(initialState: any) {
 }
 
 describe('machines domain: sessionListIndex rebuild gating', () => {
-    it('exports the machine session list index impact resolver from the domain entrypoint', () => {
+    it('exports the machine session list index impact resolver from the domain entrypoint', async () => {
+        const { resolveMachineSessionListIndexImpact } = await import('./machines');
         expect(resolveMachineSessionListIndexImpact).toBe(resolveMachineSessionIndexImpactFromHelper);
     });
 
@@ -188,13 +217,12 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const initialState = {
             sessions: {},
             settings: {
-                groupInactiveSessionsByProject: false,
                 sessionListActiveGroupingV1: 'date' as const,
                 sessionListInactiveGroupingV1: 'date' as const,
             },
-            sessionListRenderables: {},
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {
                 m1: {
@@ -270,13 +298,12 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const initialState = {
             sessions: {},
             settings: {
-                groupInactiveSessionsByProject: false,
                 sessionListActiveGroupingV1: 'date' as const,
                 sessionListInactiveGroupingV1: 'date' as const,
             },
-            sessionListRenderables: {},
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: { m1: previousMachine },
             machineDisplayById: {},
@@ -321,13 +348,12 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const initialState = {
             sessions: {},
             settings: {
-                groupInactiveSessionsByProject: false,
                 sessionListActiveGroupingV1: 'date' as const,
                 sessionListInactiveGroupingV1: 'date' as const,
             },
-            sessionListRenderables: {},
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {
                 'm-remote': {
@@ -398,19 +424,24 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         vi.doMock('../../domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => ({ serverId: 'server_b', serverUrl: 'http://server-b.local', generation: 0 }),
         }));
-        vi.doMock('../../domains/server/serverProfiles', () => createServerProfilesModuleMock({
-            profiles: [
-                { id: 'server_a', name: 'server_a', serverUrl: 'http://server_a.local' },
-                { id: 'server_b', name: 'server_b', serverUrl: 'http://server_b.local' },
-            ],
-        }));
+        vi.doMock('../../domains/server/serverProfiles', async (importOriginal) => createPartialServerProfilesModuleMock(
+            importOriginal,
+            {
+                profiles: [
+                    { id: 'server_a', name: 'server_a', serverUrl: 'http://server_a.local' },
+                    { id: 'server_b', name: 'server_b', serverUrl: 'http://server_b.local' },
+                ],
+            },
+        ));
         vi.doMock('../../domains/transfers/runtime/transferRouteCache', () => ({
             invalidateCachedTransferRoutesForMachine: (...args: unknown[]) => invalidateCachedTransferRoutesForMachineSpy(...args),
         }));
-        vi.doMock('../../domains/state/warmCachePersistence', () => ({
+        vi.doMock('../../domains/state/warmCachePersistence', async (importOriginal) => ({
+            ...await importOriginal<typeof import('../../domains/state/warmCachePersistence')>(),
             resolveWarmCacheAccountScope: vi.fn((fallback: string | null | undefined) => fallback ?? null),
             peekMachineDisplayWarmCacheEntries: vi.fn(() => null),
             saveMachineDisplayWarmCacheEntries: vi.fn(),
+            scheduleMachineDisplayWarmCacheEntriesSave: vi.fn(),
         }));
 
         const { createMachinesDomain } = await import('./machines');
@@ -444,13 +475,12 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const initialState = {
             sessions: {},
             settings: {
-                groupInactiveSessionsByProject: false,
                 sessionListActiveGroupingV1: 'date' as const,
                 sessionListInactiveGroupingV1: 'date' as const,
             },
-            sessionListRenderables: {},
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: { 'm-b': activeMachine },
             machineDisplayById: {
@@ -509,29 +539,30 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
                 },
             },
             settings: {
-                groupInactiveSessionsByProject: true,
                 sessionListActiveGroupingV1: 'project' as const,
                 sessionListInactiveGroupingV1: 'project' as const,
             },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    active: true,
-                    activeAt: 1,
-                    archivedAt: null,
-                    metadataVersion: 1,
-                    agentStateVersion: 0,
-                    metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u', host: 'host-1' },
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 'online' as const,
+            sessionListRowsByServerId: {
+                server_a: {
+                    s1: {
+                        id: 's1',
+                        seq: 1,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        active: true,
+                        activeAt: 1,
+                        archivedAt: null,
+                        metadataVersion: 1,
+                        agentStateVersion: 0,
+                        metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u', host: 'host-1' },
+                        thinking: false,
+                        thinkingAt: 0,
+                        presence: 'online' as const,
+                    },
                 },
             },
+            ordinarySessionListMembershipByServerId: { server_a: ['s1'] },
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {
                 m1: {
@@ -601,27 +632,29 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const initialState = {
             sessions: {},
             settings: {
-                groupInactiveSessionsByProject: false,
                 sessionListActiveGroupingV1: 'project' as const,
                 sessionListInactiveGroupingV1: 'date' as const,
             },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    active: true,
-                    activeAt: 1,
-                    archivedAt: null,
-                    metadataVersion: 1,
-                    agentStateVersion: 0,
-                    metadata: null,
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 'online' as const,
+            sessionListRowsByServerId: {
+                server_a: {
+                    s1: {
+                        id: 's1',
+                        seq: 1,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        active: true,
+                        activeAt: 1,
+                        archivedAt: null,
+                        metadataVersion: 1,
+                        agentStateVersion: 0,
+                        metadata: null,
+                        thinking: false,
+                        thinkingAt: 0,
+                        presence: 'online' as const,
+                    },
                 },
             },
+            ordinarySessionListMembershipByServerId: { server_a: ['s1'] },
             sessionListIndexByServerId: {},
             machines: {},
             machineDisplayById: {},
@@ -674,29 +707,30 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const initialState = {
             sessions: {},
             settings: {
-                groupInactiveSessionsByProject: false,
                 sessionListActiveGroupingV1: 'project' as const,
                 sessionListInactiveGroupingV1: 'date' as const,
             },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    active: true,
-                    activeAt: 1,
-                    archivedAt: null,
-                    metadataVersion: 1,
-                    agentStateVersion: 0,
-                    metadata: null,
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 'online' as const,
+            sessionListRowsByServerId: {
+                server_a: {
+                    s1: {
+                        id: 's1',
+                        seq: 1,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        active: true,
+                        activeAt: 1,
+                        archivedAt: null,
+                        metadataVersion: 1,
+                        agentStateVersion: 0,
+                        metadata: null,
+                        thinking: false,
+                        thinkingAt: 0,
+                        presence: 'online' as const,
+                    },
                 },
             },
+            ordinarySessionListMembershipByServerId: { server_a: ['s1'] },
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {},
             machineDisplayById: {},
@@ -753,29 +787,30 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
                 },
             },
             settings: {
-                groupInactiveSessionsByProject: true,
                 sessionListActiveGroupingV1: 'project' as const,
                 sessionListInactiveGroupingV1: 'project' as const,
             },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    active: true,
-                    activeAt: 1,
-                    archivedAt: null,
-                    metadataVersion: 1,
-                    agentStateVersion: 0,
-                    metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u', host: 'host-1' },
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 'online' as const,
+            sessionListRowsByServerId: {
+                server_a: {
+                    s1: {
+                        id: 's1',
+                        seq: 1,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        active: true,
+                        activeAt: 1,
+                        archivedAt: null,
+                        metadataVersion: 1,
+                        agentStateVersion: 0,
+                        metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u', host: 'host-1' },
+                        thinking: false,
+                        thinkingAt: 0,
+                        presence: 'online' as const,
+                    },
                 },
             },
+            ordinarySessionListMembershipByServerId: { server_a: ['s1'] },
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {
                 m1: {
@@ -845,29 +880,30 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const initialState = {
             sessions: {},
             settings: {
-                groupInactiveSessionsByProject: true,
                 sessionListActiveGroupingV1: 'project' as const,
                 sessionListInactiveGroupingV1: 'project' as const,
             },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    active: true,
-                    activeAt: 1,
-                    archivedAt: null,
-                    metadataVersion: 1,
-                    agentStateVersion: 0,
-                    metadata: { machineId: 'm1', host: 'host.local', path: '/home/u/repo', homeDir: '/home/u' },
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 'online' as const,
+            sessionListRowsByServerId: {
+                server_a: {
+                    s1: {
+                        id: 's1',
+                        seq: 1,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        active: true,
+                        activeAt: 1,
+                        archivedAt: null,
+                        metadataVersion: 1,
+                        agentStateVersion: 0,
+                        metadata: { machineId: 'm1', host: 'host.local', path: '/home/u/repo', homeDir: '/home/u' },
+                        thinking: false,
+                        thinkingAt: 0,
+                        presence: 'online' as const,
+                    },
                 },
             },
+            ordinarySessionListMembershipByServerId: { server_a: ['s1'] },
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {
                 m1: {
@@ -930,29 +966,30 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const initialState = {
             sessions: {},
             settings: {
-                groupInactiveSessionsByProject: true,
                 sessionListActiveGroupingV1: 'project' as const,
                 sessionListInactiveGroupingV1: 'project' as const,
             },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    active: true,
-                    activeAt: 1,
-                    archivedAt: null,
-                    metadataVersion: 1,
-                    agentStateVersion: 0,
-                    metadata: { machineId: 'm1', host: 'host.local', path: '/home/u/repo', homeDir: '/home/u' },
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 'online' as const,
+            sessionListRowsByServerId: {
+                server_a: {
+                    s1: {
+                        id: 's1',
+                        seq: 1,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        active: true,
+                        activeAt: 1,
+                        archivedAt: null,
+                        metadataVersion: 1,
+                        agentStateVersion: 0,
+                        metadata: { machineId: 'm1', host: 'host.local', path: '/home/u/repo', homeDir: '/home/u' },
+                        thinking: false,
+                        thinkingAt: 0,
+                        presence: 'online' as const,
+                    },
                 },
             },
+            ordinarySessionListMembershipByServerId: { server_a: ['s1'] },
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {
                 m1: {
@@ -1053,29 +1090,30 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
                 },
             },
             settings: {
-                groupInactiveSessionsByProject: true,
                 sessionListActiveGroupingV1: 'project' as const,
                 sessionListInactiveGroupingV1: 'project' as const,
             },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    active: true,
-                    activeAt: 1,
-                    archivedAt: null,
-                    metadataVersion: 1,
-                    agentStateVersion: 0,
-                    metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u', host: 'mbp' },
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 'online' as const,
+            sessionListRowsByServerId: {
+                server_a: {
+                    s1: {
+                        id: 's1',
+                        seq: 1,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        active: true,
+                        activeAt: 1,
+                        archivedAt: null,
+                        metadataVersion: 1,
+                        agentStateVersion: 0,
+                        metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u', host: 'mbp' },
+                        thinking: false,
+                        thinkingAt: 0,
+                        presence: 'online' as const,
+                    },
                 },
             },
+            ordinarySessionListMembershipByServerId: { server_a: ['s1'] },
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {
                 m1: {
@@ -1184,13 +1222,12 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const initialState = {
             sessions: {},
             settings: {
-                groupInactiveSessionsByProject: false,
                 sessionListActiveGroupingV1: 'date' as const,
                 sessionListInactiveGroupingV1: 'date' as const,
             },
-            sessionListRenderables: {},
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {
                 [activeMachine.id]: activeMachine,
@@ -1274,13 +1311,12 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const initialState = {
             sessions: {},
             settings: {
-                groupInactiveSessionsByProject: false,
                 sessionListActiveGroupingV1: 'date' as const,
                 sessionListInactiveGroupingV1: 'date' as const,
             },
-            sessionListRenderables: {},
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: { [machine.id]: machine },
             machineDisplayById: { [machine.id]: display },
@@ -1324,13 +1360,12 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
             const initialState = {
                 sessions: {},
                 settings: {
-                    groupInactiveSessionsByProject: false,
                     sessionListActiveGroupingV1: 'date' as const,
                     sessionListInactiveGroupingV1: 'date' as const,
                 },
-                sessionListRenderables: {},
                 sessionListIndexByServerId: {},
-                sessionListRowStateByServerId: {},
+                sessionListRowsByServerId: {},
+                ordinarySessionListMembershipByServerId: {},
                 concurrentSessionListCacheByServerId: {},
                 machines: {},
                 machineDisplayById: {},

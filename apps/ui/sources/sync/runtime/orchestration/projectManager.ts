@@ -121,7 +121,7 @@ export interface Project {
     /** Last error encountered while refreshing source-control snapshot for this project */
     scmSnapshotError?: ProjectScmSnapshotError | null;
     /** Paths touched in this project/workspace (path -> timestamp) */
-    scmTouchedPaths?: Record<string, number>;
+    workspaceScmTouchedPaths?: Record<string, number>;
     /** Virtual commit selection paths for this project/workspace (path -> timestamp) */
     scmCommitSelection?: Record<string, number>;
     /** Virtual commit selection patches for this project/workspace (path -> { path, patch, selectedAt }) */
@@ -415,7 +415,7 @@ class ProjectManager {
         project.updatedAt = Date.now();
     }
 
-    private getProjectForWorkspace(scope: WorkspaceScopeBase): Project | null {
+    getProjectForWorkspace(scope: WorkspaceScopeBase): Project | null {
         const keyString = tryBuildWorkspaceCacheKey(scope);
         if (!keyString) return null;
         const projectId = this.projectKeyToId.get(keyString);
@@ -746,18 +746,18 @@ class ProjectManager {
     }
 
     /**
-     * Mark file paths as touched by a session in its current project.
+     * Mark workspace-wide touched paths, resolving the workspace through a Session.
      */
-    markSessionProjectScmTouchedPaths(sessionId: string, paths: string[], touchedAt: number = Date.now()): void {
+    markWorkspaceScmTouchedPathsForSession(sessionId: string, paths: string[], touchedAt: number = Date.now()): void {
         const project = this.getProjectForSession(sessionId);
         if (!project) return;
         markWorkspaceScmTouchedPaths(project, paths, touchedAt);
     }
 
     /**
-     * Return touched paths for a session in its current project.
+     * Return workspace-wide touched paths; these do not establish Session authorship.
      */
-    getSessionProjectScmTouchedPaths(sessionId: string): string[] {
+    getWorkspaceScmTouchedPathsForSession(sessionId: string): string[] {
         const project = this.getProjectForSession(sessionId);
         return getWorkspaceScmTouchedPaths(project);
     }
@@ -765,7 +765,7 @@ class ProjectManager {
     /**
      * Remove touched paths that are no longer active in the current source-control snapshot.
      */
-    pruneSessionProjectScmTouchedPaths(sessionId: string, activePaths: Set<string>): void {
+    pruneWorkspaceScmTouchedPathsForSession(sessionId: string, activePaths: Set<string>): void {
         const project = this.getProjectForSession(sessionId);
         if (!project) return;
         pruneWorkspaceScmTouchedPaths(project, activePaths);

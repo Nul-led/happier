@@ -14,15 +14,15 @@ describe('applyVoiceSessionTargetSelection', () => {
 
         await applyVoiceSessionTargetSelection({
             controlSessionId: '  voice-global  ',
-            targetSessionId: '  s1  ',
+            targetSessionAddress: { serverId: ' server-a ', sessionId: '  s1  ' },
             updateLastFocused: true,
         });
 
-        expect(useVoiceTargetStore.getState().primaryActionSessionId).toBe('s1');
-        expect(useVoiceTargetStore.getState().lastFocusedSessionId).toBe('s1');
+        expect(useVoiceTargetStore.getState().primaryActionSessionAddress).toEqual({ serverId: 'server-a', sessionId: 's1' });
+        expect(useVoiceTargetStore.getState().lastFocusedSessionAddress).toEqual({ serverId: 'server-a', sessionId: 's1' });
         expect(syncTargetSessionSpy).toHaveBeenCalledWith({
             controlSessionId: 'voice-global',
-            targetSessionId: 's1',
+            targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
         });
     });
 

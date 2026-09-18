@@ -3,13 +3,17 @@ import { useRouter } from 'expo-router';
 
 import type {
     ConnectedAccountServiceKey,
-    ConnectedServiceBindingSelectionV1,
-    ConnectedServiceBindingsV1,
     ConnectedServiceUxDiagnosticV1,
     PluginProjectedAgentConnectedAccountPurposeV2,
+    PluginContributionIdentityV1,
 } from '@happier-dev/protocol';
+import type {
+    SessionTeamCredentialBindingIntentListV1,
+    TeamCredentialResourceCatalogEntryV1,
+} from '@happier-dev/protocol/teams';
 import {
     ConnectedAccountServiceKeySchema,
+    buildQualifiedPluginContributionKey,
     parseQualifiedPluginContributionKey,
 } from '@happier-dev/protocol';
 
@@ -26,11 +30,17 @@ import {
 } from '@/sync/domains/connectedServices/resolveConnectedServiceProfileActionRoute';
 import { useProjectedConnectedServicesRegistry } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { NewSessionConnectedServicesSelectionContent } from '@/components/sessions/new/components/NewSessionConnectedServicesSelectionContent';
+import { useTeamCredentialSelectionCoordinator } from '@/components/sessions/teamCredentials/useTeamCredentialSelectionCoordinator';
+import { buildConnectedServicesBindingsPayload } from '@/components/sessions/new/modules/connectedServicesNewSessionBindings';
 import { resolveQualifiedConnectedServiceRegistryDisplayName } from '@/components/settings/connectedServices/model/resolveConnectedServiceDisplayName';
 import { resolveConnectedServicesAuthLabel } from '@/components/settings/connectedServices/model/resolveConnectedServicesAuthLabel';
+import { teamCredentialDetailPath } from '@/components/settings/teams/teamsRoutes';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { Modal } from '@/modal';
-import type { ConnectedServicesServiceBinding } from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
+import {
+    teamResourceConnectedServiceSelectionKey,
+    type ConnectedServicesServiceBinding,
+} from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
 import { readSessionConnectedServiceBindings } from '@/sync/domains/connectedServices/readSessionConnectedServiceBindings';
 import {
     applyProjectedCredentialKindRestrictions,
@@ -281,14 +291,57 @@ type SessionConnectedServicesAuthSwitchRetryState = Readonly<{
 
 const RESTART_TIMEOUT_RECONCILIATION_BUDGET_MS = 30_000;
 
+export function buildExistingSessionConnectedServiceCredentialBindingIntents(input: Readonly<{
+    agentIdentity: PluginContributionIdentityV1;
+    connectedAccounts: readonly PluginProjectedAgentConnectedAccountPurposeV2[];
+    serviceId: string;
+    binding: ConnectedServicesServiceBinding | undefined;
+    resources: readonly TeamCredentialResourceCatalogEntryV1[];
+}>): SessionTeamCredentialBindingIntentListV1 | undefined {
+    const declarations = input.connectedAccounts.filter((declaration) => (
+        buildQualifiedPluginContributionKey(declaration.service) === input.serviceId
+    ));
+    if (declarations.length === 0) return undefined;
+    const requestedTeamBinding = input.binding?.source === 'team_resource' ? input.binding : null;
+    const resource = requestedTeamBinding
+        ? input.resources.find((candidate) => (
+            candidate.id === requestedTeamBinding.resourceId
+            && candidate.connectedServiceSelections.some((selection) => (
+                selection.resourceId === requestedTeamBinding.resourceId
+                && teamResourceConnectedServiceSelectionKey(selection) === teamResourceConnectedServiceSelectionKey(requestedTeamBinding)
+            ))
+        ))
+        : undefined;
+    if (requestedTeamBinding && !resource) return undefined;
+    return declarations.map((declaration) => ({
+        v: 1,
+        slot: {
+            kind: 'connected_service_purpose',
+            purpose: { consumer: input.agentIdentity, purpose: declaration.purpose },
+        },
+        ...(resource
+            ? {
+                resourceId: resource.id,
+                expectedResourceRevision: resource.resourceRevision,
+                deliveryMode: requestedTeamBinding!.deliveryMode,
+            }
+            : { resourceId: null }),
+    }));
+}
+
 function areServiceBindingsEqual(
     left: ConnectedServicesServiceBinding | undefined,
     right: ConnectedServicesServiceBinding | undefined,
 ): boolean {
-    const leftSource = left?.source ?? 'native';
-    const rightSource = right?.source ?? 'native';
-    if (leftSource !== rightSource) return false;
-    if (leftSource === 'native') return true;
+    if ((left?.source ?? 'native') !== (right?.source ?? 'native')) return false;
+    if ((left?.source ?? 'native') === 'native') return true;
+    if (left?.source === 'team_resource' || right?.source === 'team_resource') {
+        return left?.source === 'team_resource'
+            && right?.source === 'team_resource'
+            && left.resourceId === right.resourceId
+            && teamResourceConnectedServiceSelectionKey(left) === teamResourceConnectedServiceSelectionKey(right);
+    }
+    if (left?.source !== 'connected' || right?.source !== 'connected') return false;
     if (left?.selection !== right?.selection) return false;
     if (left?.selection === 'group' && right?.selection === 'group') {
         return Boolean(left.groupId) && left.groupId === right.groupId;
@@ -344,34 +397,6 @@ function isNonTerminalRestartTimeoutError(value: unknown): boolean {
     return readErrorTokens(value).some((token) => token.toLowerCase().includes('timeout'));
 }
 
-function buildSessionSwitchPayload(params: Readonly<{
-    supportedServiceIds: ReadonlyArray<ConnectedAccountServiceKey>;
-    bindingsByServiceId: Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>;
-}>): ConnectedServiceBindingsV1 {
-    const bindingsByServiceId: Record<string, ConnectedServiceBindingSelectionV1> = {};
-    for (const serviceId of params.supportedServiceIds) {
-        const binding = params.bindingsByServiceId[serviceId] ?? { source: 'native' };
-        if (binding.source === 'connected' && binding.selection === 'group' && binding.groupId) {
-            bindingsByServiceId[serviceId] = {
-                source: 'connected',
-                selection: 'group',
-                groupId: binding.groupId,
-            };
-            continue;
-        }
-        if (binding.source === 'connected' && binding.profileId) {
-            bindingsByServiceId[serviceId] = {
-                source: 'connected',
-                selection: 'profile',
-                profileId: binding.profileId,
-            };
-            continue;
-        }
-        bindingsByServiceId[serviceId] = { source: 'native' };
-    }
-    return { v: 1, bindingsByServiceId };
-}
-
 function buildExpectedGroupGenerationByServiceId(params: Readonly<{
     bindingsByServiceId: Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>;
     groupOptionsByServiceId: Readonly<Record<string, ReadonlyArray<{ groupId: string; generation?: number }>>>;
@@ -393,6 +418,9 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
     machineId: string | null | undefined;
     serverId?: string | null;
     connectedAccounts: readonly PluginProjectedAgentConnectedAccountPurposeV2[];
+    agentIdentity?: PluginContributionIdentityV1 | null;
+    teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+    teamNameById?: Readonly<Record<string, string>>;
     sessionMetadata: unknown;
     settings: {
         connectedServicesProfileLabelByKey: Record<string, string | undefined>;
@@ -408,6 +436,15 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
     const accountProfile = useProfile();
     const router = useRouter();
     const connectedServicesRegistry = useProjectedConnectedServicesRegistry();
+    const coordinateTeamCredentialSelection = useTeamCredentialSelectionCoordinator(params.serverId);
+    const teamCredentialContextRef = React.useRef({
+        serverId: params.serverId ?? null,
+        resources: params.teamCredentialResources ?? [],
+    });
+    teamCredentialContextRef.current = {
+        serverId: params.serverId ?? null,
+        resources: params.teamCredentialResources ?? [],
+    };
     const accountGroupsFeatureEnabled = useFeatureEnabled('connectedServices.accountGroups', {
         scopeKind: 'spawn',
         serverId: params.serverId ?? null,
@@ -509,6 +546,48 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
         if (!machineId || !agentId) return;
         if (!forceReapply && !rematerializeServiceId && areServiceBindingsEqual(optimisticBindingsByServiceId[serviceId], binding)) return;
         void (async () => {
+            let teamVisibilityGrantConsent: Readonly<{ teamId: string }> | undefined;
+            if (!options?.skipConfirm && binding.source === 'team_resource') {
+                const requestedTeamBinding = binding;
+                const startedServerId = teamCredentialContextRef.current.serverId;
+                const selectedResource = teamCredentialContextRef.current.resources.find((resource) => (
+                    resource.id === requestedTeamBinding.resourceId
+                    && resource.connectedServiceSelections.some((selection) => (
+                        selection.resourceId === requestedTeamBinding.resourceId
+                        && teamResourceConnectedServiceSelectionKey(selection) === teamResourceConnectedServiceSelectionKey(requestedTeamBinding)
+                    ))
+                ));
+                if (!selectedResource) return;
+                const outcome = await coordinateTeamCredentialSelection({
+                    resource: selectedResource,
+                    deliveryMode: requestedTeamBinding.deliveryMode,
+                    selection: requestedTeamBinding,
+                    isCurrent: () => teamCredentialContextRef.current.serverId === startedServerId
+                        && teamCredentialContextRef.current.resources.some((resource) => (
+                            resource.id === requestedTeamBinding.resourceId
+                            && resource.readiness.kind === 'available'
+                            && resource.connectedServiceSelections.some((selection) => (
+                                selection.resourceId === requestedTeamBinding.resourceId
+                                && teamResourceConnectedServiceSelectionKey(selection) === teamResourceConnectedServiceSelectionKey(requestedTeamBinding)
+                            ))
+                        )),
+                });
+                if (outcome.kind !== 'continue') return;
+                binding = outcome.selection;
+                if (selectedResource.sessionUsePolicy === 'team_visibility_required') {
+                    const confirmed = await Modal.confirm(
+                        t('teams.credentials.usePolicy.title'),
+                        t('teams.credentials.usePolicy.visibilityNote'),
+                        { confirmText: t('common.continue'), cancelText: t('common.cancel') },
+                    );
+                    if (!confirmed || !teamCredentialContextRef.current.resources.some((resource) => (
+                        resource.id === selectedResource.id
+                        && resource.resourceRevision === selectedResource.resourceRevision
+                        && resource.readiness.kind === 'available'
+                    ))) return;
+                    teamVisibilityGrantConsent = { teamId: selectedResource.teamId };
+                }
+            }
             if (!options?.skipConfirm && params.sessionActive !== false) {
                 const confirmed = await Modal.confirm(
                     t('connectedServices.authSwitch.confirmTitle'),
@@ -522,6 +601,16 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
             ...optimisticBindingsByServiceId,
             [serviceId]: binding,
         };
+        const bindings = buildConnectedServicesBindingsPayload({
+            supportedConnectedServiceIds,
+            connectedServiceProfileOptionsByServiceId: profileOptionsByServiceId,
+            connectedServiceAccountGroupOptionsByServiceId: groupOptionsByServiceId,
+            connectedServicesBindingsByServiceId: nextBindings,
+            defaultProfileByServiceId: params.settings.connectedServicesDefaultProfileByServiceId,
+            accountGroupsFeatureEnabled,
+            emitWhenAllNative: true,
+        });
+        if (!bindings) return;
         const attemptId = switchAttemptIdRef.current + 1;
         switchAttemptIdRef.current = attemptId;
         const pendingRestartForAttempt = {
@@ -539,14 +628,33 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
         setProviderSessionDiagnosticActionState(null);
         setOptimisticBindingsByServiceId(nextBindings);
 
-        const bindings = buildSessionSwitchPayload({
-            supportedServiceIds: supportedConnectedServiceIds,
-            bindingsByServiceId: nextBindings,
-        });
         const expectedGroupGenerationByServiceId = buildExpectedGroupGenerationByServiceId({
             bindingsByServiceId: nextBindings,
             groupOptionsByServiceId,
         });
+        const agentIdentity = params.agentIdentity ?? parseQualifiedPluginContributionKey(agentId);
+        const teamCredentialBindings = agentIdentity
+            ? buildExistingSessionConnectedServiceCredentialBindingIntents({
+                agentIdentity,
+                connectedAccounts: params.connectedAccounts,
+                serviceId,
+                binding,
+                resources: teamCredentialContextRef.current.resources,
+            })
+            : undefined;
+        const previousTeamCredentialBindings = agentIdentity
+            ? buildExistingSessionConnectedServiceCredentialBindingIntents({
+                agentIdentity,
+                connectedAccounts: params.connectedAccounts,
+                serviceId,
+                binding: previousBindings[serviceId],
+                resources: teamCredentialContextRef.current.resources,
+            })
+            : undefined;
+        if (binding.source === 'team_resource' && !teamCredentialBindings) {
+            setOptimisticBindingsByServiceId(previousBindings);
+            return;
+        }
         void setSessionConnectedServiceAuthBinding({
             sessionId: params.sessionId,
             agentId,
@@ -555,6 +663,9 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
             bindings,
             ...(rematerializeServiceId ? { rematerializeServiceId } : {}),
             ...(expectedGroupGenerationByServiceId ? { expectedGroupGenerationByServiceId } : {}),
+            ...(teamCredentialBindings ? { teamCredentialBindings } : {}),
+            ...(previousTeamCredentialBindings ? { previousTeamCredentialBindings } : {}),
+            ...(teamVisibilityGrantConsent ? { teamVisibilityGrantConsent } : {}),
         }).then((result) => {
             if (result.ok) {
                 if (switchAttemptIdRef.current === attemptId) {
@@ -708,6 +819,8 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
         });
         })();
     }, [
+        coordinateTeamCredentialSelection,
+        accountGroupsFeatureEnabled,
         groupOptionsByServiceId,
         optimisticBindingsByServiceId,
         params.agentId,
@@ -715,6 +828,8 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
         params.serverId,
         params.sessionId,
         params.sessionActive,
+        params.settings.connectedServicesDefaultProfileByServiceId,
+        profileOptionsByServiceId,
         resolveProfileActionRoute,
         router,
         supportedConnectedServiceIds,
@@ -773,6 +888,13 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
             profileOptionsByServiceId={profileOptionsByServiceId}
             groupOptionsByServiceId={groupOptionsByServiceId}
             bindingsByServiceId={optimisticBindingsByServiceId}
+            teamCredentialResources={params.teamCredentialResources}
+            teamNameById={params.teamNameById}
+            onRecoverTeamCredentialResource={(resource) => {
+                requestClose();
+                if (!params.serverId) return;
+                router.push(teamCredentialDetailPath({ serverId: params.serverId, teamId: resource.teamId }, resource.id));
+            }}
             setBindingForService={(serviceId, binding) => {
                 requestClose();
                 setBindingForService(serviceId, binding);
@@ -789,6 +911,9 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
         groupOptionsByServiceId,
         optimisticBindingsByServiceId,
         params.settings.connectedServicesDefaultProfileByServiceId,
+        params.teamCredentialResources,
+        params.teamNameById,
+        params.serverId,
         profileOptionsByServiceId,
         resolveOptionAvailability,
         resolveProfileActionRoute,

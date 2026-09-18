@@ -33,6 +33,7 @@ import { encodeBase64 } from '@/encryption/base64';
 import { apiSocket } from '@/sync/api/session/apiSocket';
 import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
 import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { settingsDefaults, settingsParse } from '@/sync/domains/settings/settings';
 import { storage } from '@/sync/domains/state/storage';
@@ -40,8 +41,8 @@ import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
 import { Encryption } from '@/sync/encryption/encryption';
 import { resetServerReachabilitySupervisors } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
 import type {
-  ServerAccountSessionRequestAuthority,
-} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+  ServerAccountRequestAuthority,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { sync } from '@/sync/sync';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
@@ -236,6 +237,7 @@ function installOpenAiSettings(): void {
     sessions: {
       [OPENAI_HISTORY_SESSION_ID]: createSessionFixture({
         id: OPENAI_HISTORY_SESSION_ID,
+        serverId: getActiveServerSnapshot().serverId,
         active: false,
         encryptionMode: 'plain',
         metadata: {
@@ -571,9 +573,13 @@ function createSourceComposedOpenAiRuntime(
     adapterId: providerId,
     controlSessionId,
     conversationSessionId: initialConversationSessionId,
+    conversationSessionAddress: {
+      serverId: getActiveServerSnapshot().serverId,
+      sessionId: initialConversationSessionId,
+    },
     lifetime: 'runtime_attempt',
     transcriptMode: 'synthetic',
-    targetSessionId: null,
+    targetSessionAddress: null,
     updatedAt: 1,
   });
   const requestAccountOperation = vi.fn();
@@ -775,11 +781,11 @@ describe('realtime_openai source-composed WebRTC gate', () => {
 
   beforeEach(async (context) => {
     await resetServerReachabilitySupervisors();
-    const server = upsertServerProfile({
+    const server = await upsertServerProfile({
       serverUrl: 'https://openai-composed.example.test',
       name: 'OpenAI composed test',
     });
-    setActiveServerId(server.id, { scope: 'device' });
+    await setActiveServerId(server.id, { scope: 'device' });
     storage.getState().activateProfileScope({
       serverId: server.id,
       accountId: 'openai-composed-account',
@@ -907,14 +913,18 @@ describe('realtime_openai source-composed WebRTC gate', () => {
         adapterId: openAiEntry().providerId,
         controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
         conversationSessionId: OPENAI_HISTORY_SESSION_ID,
+        conversationSessionAddress: {
+          serverId: getActiveServerSnapshot().serverId,
+          sessionId: OPENAI_HISTORY_SESSION_ID,
+        },
         lifetime: 'runtime_attempt',
         transcriptMode: 'synthetic',
-        targetSessionId: null,
+        targetSessionAddress: null,
         updatedAt: 1,
       });
       const controller = getVoiceSessionLifecycleController();
       if (!controller) throw new Error('Expected the real Voice lifecycle controller.');
-      const starting = controller.toggle(VOICE_AGENT_GLOBAL_SESSION_ID);
+      const starting = controller.toggle(null);
       await vi.waitFor(() => expect(browser.peer.createDataChannel).toHaveBeenCalledWith('oai-events'));
       browser.peer.channel.open();
       await starting;
@@ -971,11 +981,11 @@ describe('realtime_openai source-composed WebRTC gate', () => {
         expect(controller.getSnapshot().status).toBe('disconnected');
       });
 
-      const serverB = upsertServerProfile({
+      const serverB = await upsertServerProfile({
         serverUrl: 'https://openai-composed-account-b.example.test',
         name: 'OpenAI composed Account B',
       });
-      setActiveServerId(serverB.id, { scope: 'device' });
+      await setActiveServerId(serverB.id, { scope: 'device' });
       storage.getState().activateProfileScope({
         serverId: serverB.id,
         accountId: 'openai-composed-account-b',
@@ -1034,7 +1044,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
       await expect(composed.hostLease.host.acquireDirectMediaConversation({
         adapterId: 'happier.voice.openai/realtime-openai',
         controlSessionId: composed.controlSessionId,
-        requestedTargetSessionId: null,
+        requestedTargetSessionAddress: null,
       })).resolves.toEqual({
         conversationSessionId: OPENAI_HISTORY_SESSION_ID,
       });
@@ -1056,6 +1066,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -1075,7 +1086,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
         adapterId: 'happier.voice.openai/realtime-openai',
         controlSessionId: composed.controlSessionId,
         lifetime: 'runtime_attempt',
-        targetSessionId: null,
+        targetSessionAddress: null,
         transcriptMode: 'synthetic',
       });
       expect(binding?.conversationSessionId).toBe(OPENAI_HISTORY_SESSION_ID);
@@ -1140,6 +1151,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       await composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
 
@@ -1183,6 +1195,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       await composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
 
@@ -1254,6 +1267,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
       try {
         const firstStart = composed.runtime.adapter.start({
           sessionId: '',
+          requestedTargetSessionAddress: null,
           initialContext: '',
         });
         await watchReady.promise;
@@ -1279,6 +1293,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
         binding = 'account-b';
         const secondStart = composed.runtime.adapter.start({
           sessionId: '',
+          requestedTargetSessionAddress: null,
           initialContext: '',
         });
         await vi.waitFor(() => expect(
@@ -1359,6 +1374,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
       try {
         const firstStart = composed.runtime.adapter.start({
           sessionId: '',
+          requestedTargetSessionAddress: null,
           initialContext: '',
         });
         await firstResourcePreparationEntered.promise;
@@ -1389,6 +1405,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
         });
         const secondStart = composed.runtime.adapter.start({
           sessionId: '',
+          requestedTargetSessionAddress: null,
           initialContext: '',
         });
         if (nextBinding === null) {
@@ -1478,6 +1495,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
       try {
         const firstStart = composed.runtime.adapter.start({
           sessionId: '',
+          requestedTargetSessionAddress: null,
           initialContext: '',
         });
         await vi.waitFor(() => expect(
@@ -1510,6 +1528,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
         });
         const nextStart = composed.runtime.adapter.start({
           sessionId: '',
+          requestedTargetSessionAddress: null,
           initialContext: '',
         }).then(
           () => null,
@@ -1595,6 +1614,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const firstStart = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(browser.peer.createOffer).toHaveBeenCalledTimes(1));
@@ -1616,6 +1636,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
 
       const nextStart = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       }).then(
         () => null,
@@ -1645,6 +1666,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -1700,6 +1722,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -1764,6 +1787,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -1824,6 +1848,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -1936,6 +1961,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -2052,6 +2078,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -2169,6 +2196,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -2213,7 +2241,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     } as const satisfies ServerAccountScope;
     const authority = {
       scope,
-    } as unknown as ServerAccountSessionRequestAuthority;
+    } as unknown as ServerAccountRequestAuthority;
     const ensureHistorySession = vi.spyOn(sync, 'ensureHostedSystemSession')
       .mockImplementation(async () => {
         const sessionId = deleteFinished
@@ -2289,7 +2317,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
       const acquiring = composed.hostLease.host.acquireDirectMediaConversation({
         adapterId: 'happier.voice.openai/realtime-openai',
         controlSessionId: composed.controlSessionId,
-        requestedTargetSessionId: null,
+        requestedTargetSessionAddress: null,
       });
 
       expect(ensureHistorySession).not.toHaveBeenCalled();
@@ -2362,6 +2390,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -2567,6 +2596,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -2670,7 +2700,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     let typedTurn: Promise<void> | null = null;
 
     try {
-      const starting = composed.runtime.adapter.start({ sessionId: '', initialContext: '' });
+      const starting = composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
       await vi.waitFor(() => expect(
         browser.peer.createDataChannel,
       ).toHaveBeenCalledWith('oai-events'));
@@ -2817,6 +2847,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -2870,6 +2901,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
 
       const replacementStarting = replacementAdapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -3069,6 +3101,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -3143,6 +3176,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
 
       const replacementStarting = replacementAdapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -3326,6 +3360,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     try {
       const starting = composed.runtime.adapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       await vi.waitFor(() => expect(
@@ -3388,6 +3423,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
 
       const replacementStarting = replacementAdapter.start({
         sessionId: '',
+        requestedTargetSessionAddress: null,
         initialContext: '',
       });
       expect(replacementPeer.createDataChannel).not.toHaveBeenCalled();
@@ -3524,7 +3560,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     const composed = createSourceComposedOpenAiRuntime(browser);
 
     try {
-      const starting = composed.runtime.adapter.start({ sessionId: '', initialContext: '' });
+      const starting = composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
       await vi.waitFor(() => expect(
         browser.peer.createDataChannel,
       ).toHaveBeenCalledWith('oai-events'));
@@ -3571,7 +3607,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     }) ?? (() => {});
 
     try {
-      const starting = composed.runtime.adapter.start({ sessionId: '', initialContext: '' });
+      const starting = composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
       await vi.waitFor(() => expect(browser.peer.createDataChannel).toHaveBeenCalledTimes(1));
       browser.peer.channel.open();
 
@@ -3597,7 +3633,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     }) ?? (() => {});
 
     try {
-      const starting = composed.runtime.adapter.start({ sessionId: '', initialContext: '' });
+      const starting = composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
       await vi.waitFor(() => expect(browser.peer.createDataChannel).toHaveBeenCalledTimes(1));
       browser.peer.channel.open();
       await vi.waitFor(() => expect(

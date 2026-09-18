@@ -54,6 +54,7 @@ import type {
 import {
     createComposerPresentationTransactionApplier,
     readComposerPresentationSnapshot,
+    readSessionComposerPresentationTargetAtAddress,
 } from '@/components/sessions/presentation/sessionComposerPresentationTargets';
 import {
     ComposerPluginSurface,
@@ -226,12 +227,35 @@ export function useComposerScopePluginPresentation(
 ): ComposerScopePluginPresentation {
     const clientExecutableRegistrationRevision = usePluginUiClientExecutableRegistrationRevision();
     const currentUiContextReader = useOptionalCurrentUiContextReader();
+    const destinationNavigation = usePluginSurfaceDestinationNavigationBinding();
+    const openDestinationSurface = destinationNavigation?.openSurface;
     const isScopeCurrentRef = React.useRef(params.isScopeCurrent);
     isScopeCurrentRef.current = params.isScopeCurrent;
     const physicalTargetRef = React.useRef(params.physicalTarget);
     physicalTargetRef.current = params.physicalTarget;
     const resourceContextRef = React.useRef(params.resourceContext);
     resourceContextRef.current = params.resourceContext;
+    const exactSessionAddress = React.useMemo(() => (
+        params.physicalTarget.kind === 'session'
+        && params.composer.kind === 'session'
+        && params.composer.sessionId === params.physicalTarget.sessionId
+        && params.serverId
+            ? { serverId: params.serverId, sessionId: params.physicalTarget.sessionId }
+            : null
+    ), [params.composer, params.physicalTarget, params.serverId]);
+    const readCurrentComposerSnapshot = React.useCallback((): ComposerSnapshotV1 | null => {
+        if (params.composer.kind !== 'session') {
+            return readComposerPresentationSnapshot(params.composer);
+        }
+        if (
+            !exactSessionAddress
+            || params.composer.kind !== 'session'
+            || params.composer.sessionId !== exactSessionAddress.sessionId
+        ) {
+            return null;
+        }
+        return readSessionComposerPresentationTargetAtAddress(exactSessionAddress)?.readSnapshot?.() ?? null;
+    }, [exactSessionAddress, params.composer]);
     const scopeKey = React.useMemo(() => composerRefV1Key(params.composer), [params.composer]);
     const physicalTargetKey = React.useMemo(() => (
         params.physicalTarget.kind === 'session'
@@ -286,6 +310,7 @@ export function useComposerScopePluginPresentation(
                     : {}),
                 signal: scopeAbort.signal,
                 accountLifetime: params.accountLifetime,
+                ...(openDestinationSurface ? { openSurface: openDestinationSurface } : {}),
                 ...(currentUiContextReader
                     ? { readCurrentUiContext: currentUiContextReader.readCurrentUiContext }
                     : {}),
@@ -297,7 +322,7 @@ export function useComposerScopePluginPresentation(
                 ),
                 currentComposerIntent: () => {
                     if (actionSnapshotRef.current !== snapshot) return null;
-                    const composer = readComposerPresentationSnapshot(params.composer);
+                    const composer = readCurrentComposerSnapshot();
                     return composer
                         ? { composer: composer.ref, revision: composer.revision }
                         : null;
@@ -308,6 +333,7 @@ export function useComposerScopePluginPresentation(
     }, [
         params.accountLifetime,
         currentUiContextReader,
+        openDestinationSurface,
         scopeKey,
         params.machineId,
         params.projectionInputs,
@@ -315,6 +341,7 @@ export function useComposerScopePluginPresentation(
         params.serverId,
         params.isScopeCurrent,
         physicalTargetKey,
+        readCurrentComposerSnapshot,
         scopeAbort,
     ]);
     actionSnapshotRef.current = actionSnapshot;
@@ -368,7 +395,15 @@ export function useComposerScopePluginPresentation(
     const transactionApplier = React.useMemo(() => createComposerPresentationTransactionApplier({
         composerAttachmentsById: pluginProjection.composerAttachmentsById,
         localize: localizePluginText,
-    }), [localizePluginText, pluginProjection.composerAttachmentsById]);
+        ...(params.composer.kind === 'session'
+            ? { sessionAddress: exactSessionAddress }
+            : {}),
+    }), [
+        exactSessionAddress,
+        localizePluginText,
+        params.composer.kind,
+        pluginProjection.composerAttachmentsById,
+    ]);
     const surfaceLifetime = React.useMemo<BoundPluginSurfaceMountLifetime | null>(() => {
         const snapshot = actionSnapshot;
         if (!snapshot) return null;
@@ -409,8 +444,6 @@ export function useComposerScopePluginPresentation(
     // enclosing destination owner supplies nothing, so the mounted controller
     // installs no `openSurface` and the method refuses as factually
     // unsupported instead of resolving after doing nothing.
-    const destinationNavigation = usePluginSurfaceDestinationNavigationBinding();
-    const openDestinationSurface = destinationNavigation?.openSurface;
     const renderComposerSurface = React.useCallback((request: ComposerPluginSurfaceMountRequest & Readonly<{
         fallback?: React.ReactNode;
     }>): React.ReactNode => {
@@ -467,7 +500,7 @@ export function useComposerScopePluginPresentation(
         instanceKey: string,
     ): React.ReactNode => {
         if (!params.attachmentsEnabled) return null;
-        const snapshot = readComposerPresentationSnapshot(params.composer);
+        const snapshot = readCurrentComposerSnapshot();
         if (!snapshot) return null;
         return renderComposerSurface({
             contribution: identity,
@@ -485,7 +518,7 @@ export function useComposerScopePluginPresentation(
             },
             instanceKey,
         });
-    }, [params.attachmentsEnabled, params.composer, renderComposerSurface]);
+    }, [params.attachmentsEnabled, params.composer, readCurrentComposerSnapshot, renderComposerSurface]);
     const renderControlSurface = React.useCallback((presentation: PluginComposerControlSurfacePresentation): React.ReactNode => {
         if (presentation.kind === 'control') {
             const role: ComposerSurfaceRoleV1 = presentation.role === 'compact'
@@ -747,11 +780,11 @@ export function useComposerScopePluginPresentation(
         // `notEditable`, so a mutating choice must present as disabled.
         canMutateComposer: () => (
             surfaceLifetime?.isCurrent() === true
-            && readComposerPresentationSnapshot(params.composer)?.state.editable === true
+            && readCurrentComposerSnapshot()?.state.editable === true
         ),
         applyComposer: ({ control, operations }) => {
             if (surfaceLifetime?.isCurrent() !== true) return { status: 'composerUnavailable' };
-            const snapshot = readComposerPresentationSnapshot(params.composer);
+            const snapshot = readCurrentComposerSnapshot();
             if (!snapshot) return { status: 'composerUnavailable' };
             // The canonical result is returned, not discarded: a conflict or a
             // non-editable draft must not present to the user as an applied
@@ -802,6 +835,7 @@ export function useComposerScopePluginPresentation(
         openSurfaceDialog,
         params.composer,
         params.onOpenControlAction,
+        readCurrentComposerSnapshot,
         resourceContextKey,
         renderControlSurface,
         scopeAbort,

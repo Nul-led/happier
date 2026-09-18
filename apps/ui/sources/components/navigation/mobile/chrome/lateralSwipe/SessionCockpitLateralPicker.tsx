@@ -9,6 +9,7 @@ import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentat
 import { useSessionLateralSwipe } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
 import { Typography } from '@/constants/Typography';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
+import { buildServerScopedSessionKey } from '@/sync/domains/session/navigation/sessionNavigationOrder';
 
 import {
     SESSION_LATERAL_PICKER_ROW_PITCH_PX,
@@ -139,7 +140,7 @@ export const SessionCockpitLateralPicker = React.memo(function SessionCockpitLat
             <View style={styles.column}>
                 {rows.map((target, offset) => (
                     <SessionCockpitLateralPickerRow
-                        key={target.sessionId}
+                        key={buildServerScopedSessionKey(target.sessionId, target.serverId)}
                         target={target}
                         entryIndex={offset + 2}
                         reducedMotion={reducedMotion}

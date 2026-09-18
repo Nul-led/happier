@@ -21,6 +21,17 @@ function stubWebRuntime(origin: string) {
     })();
     vi.stubGlobal('window', { location: { origin, hostname } });
     vi.stubGlobal('document', {});
+    const lockTails = new Map<string, Promise<void>>();
+    vi.stubGlobal('navigator', {
+        locks: {
+            request: <T>(name: string, callback: () => T | PromiseLike<T>): Promise<T> => {
+                const previous = lockTails.get(name) ?? Promise.resolve();
+                const result = previous.then(callback);
+                lockTails.set(name, result.then(() => undefined, () => undefined));
+                return result;
+            },
+        },
+    });
 }
 
 async function importFresh() {
@@ -61,12 +72,12 @@ describe('serverRuntime', () => {
 
         const runtime = await importFresh();
 
-        const active = runtime.upsertAndActivateServer({
+        const active = await runtime.upsertAndActivateServer({
             serverUrl: 'https://active.example.test',
             name: 'Active',
         });
 
-        const candidate = runtime.upsertServerProfileOnly({
+        const candidate = await runtime.upsertServerProfileOnly({
             serverUrl: 'https://candidate.example.test',
             name: 'Candidate',
         });

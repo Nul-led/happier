@@ -199,7 +199,8 @@ const storageState = vi.hoisted(() => ({
   },
   sessionMessages: {} as Record<string, unknown>,
   sessionPending: {} as Record<string, unknown>,
-  sessionListRenderables: {} as Record<string, unknown>,
+  sessionListRowsByServerId: {} as Record<string, Record<string, unknown>>,
+  ordinarySessionListMembershipByServerId: {} as Record<string, readonly string[]>,
   sessionTailContiguousFloorSeq: {} as Record<string, unknown>,
   sessionTranscriptLoadIssues: {} as Record<string, unknown>,
   artifacts: {} as Record<string, any>,
@@ -218,8 +219,8 @@ const recipientStateState = vi.hoisted(() => ({
     recipient: null as any,
     setManualRecipient: vi.fn(),
     clearPersistedManualRecipient: vi.fn(),
-    executionRunDelivery: 'steer_if_supported',
-    setExecutionRunDelivery: vi.fn(),
+    executionRunRequestedAction: { v: 1, kind: 'steer_if_active' },
+    setExecutionRunRequestedAction: vi.fn(),
   },
 }));
 
@@ -349,8 +350,11 @@ installSessionShellCommonModuleMocks({
         useSessionTranscriptIds: () => sessionTranscriptRenderState.current,
         useSessionPendingMessages: () => ({ messages: [], discarded: [], isLoaded: true }),
         useArtifacts: () => Object.values(storageState.artifacts),
-        useOpenApprovalArtifactsForSession: (sessionId: string | null | undefined) =>
-          listOpenApprovalArtifactsForSession(Object.values(storageState.artifacts), String(sessionId ?? '')),
+        useOpenApprovalArtifactsForSession: (target: { serverId: string; sessionId: string } | string | null | undefined) => target
+          ? listOpenApprovalArtifactsForSession(Object.values(storageState.artifacts), target, {
+              knownSessionAddresses: typeof target === 'string' ? [] : [target],
+            })
+          : [],
         useWorkspaceReviewCommentsDrafts: () => reviewCommentDraftsState.current,
         useSessionReviewCommentsDrafts: () => reviewCommentDraftsState.current,
         useProfile: () => storageState.profile,
@@ -456,15 +460,23 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 vi.mock('@/hooks/server/useSessionExecutionRunsSupported', () => ({
   useSessionExecutionRunsSupported: () => sessionExecutionRunsSupportedState.current,
 }));
-vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshots', () => ({
-  useConnectedServiceQuotaSnapshots: (profiles: unknown) => {
-    useConnectedServiceQuotaSnapshotsSpy(profiles);
-    return {
-      snapshotsByKey: connectedServiceQuotaSnapshotsState.current,
-      loadingByKey: {},
-    };
-  },
-}));
+vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshots', async () => {
+  // The polling transport is the boundary; the normalized `profiles`
+  // projection stays real because the shell reads its canonical keys.
+  const { normalizeConnectedServiceQuotaProfileRefs } = await import(
+    '@/sync/domains/connectedServices/connectedServiceQuotaProfileRefs'
+  );
+  return {
+    useConnectedServiceQuotaSnapshots: (profiles: unknown) => {
+      useConnectedServiceQuotaSnapshotsSpy(profiles);
+      return {
+        profiles: normalizeConnectedServiceQuotaProfileRefs((profiles ?? []) as any),
+        snapshotsByKey: connectedServiceQuotaSnapshotsState.current,
+        loadingByKey: {},
+      };
+    },
+  };
+});
 vi.mock('@/hooks/server/connectedServices/useProviderAccountUsageSnapshots', () => ({
   useProviderAccountUsageSnapshots: (recordIds: unknown) => {
     useProviderAccountUsageSnapshotsSpy(recordIds);
@@ -633,7 +645,6 @@ function syncShellStorageStore() {
     ...shellStorageStore.getState(),
     ...storageState,
     machines: {},
-    sessionListRenderables: {},
   } as unknown as StorageState, true);
 }
 
@@ -649,7 +660,7 @@ describe('SessionView (direct sessions)', () => {
 
   function writeCanonicalSessionDraft(input: Readonly<{
     recipient?: unknown;
-    executionRunDelivery?: unknown;
+    executionRunRequestedAction?: unknown;
     mentions?: readonly unknown[];
   }>) {
     writeExistingSessionDraft({
@@ -663,9 +674,9 @@ describe('SessionView (direct sessions)', () => {
           ...(input.recipient === undefined
             ? {}
             : { recipient: StrictJsonValueSchema.parse({ mode: 'manual', recipient: input.recipient }) }),
-          ...(input.executionRunDelivery === undefined
+          ...(input.executionRunRequestedAction === undefined
             ? {}
-            : { executionRunDelivery: StrictJsonValueSchema.parse(input.executionRunDelivery) }),
+            : { executionRunRequestedAction: StrictJsonValueSchema.parse(input.executionRunRequestedAction) }),
         },
       },
     });
@@ -685,7 +696,7 @@ describe('SessionView (direct sessions)', () => {
     return candidate.mode === 'manual' ? candidate.recipient : undefined;
   }
 
-  function readCanonicalDraftDelivery(): unknown {
+  function readCanonicalDraftRequestedAction(): unknown {
     const document = readCanonicalSessionDraft();
     return document?.target.kind === 'session'
       ? document.target.routing.executionRunDelivery.value
@@ -856,7 +867,8 @@ describe('SessionView (direct sessions)', () => {
       connectedServiceCredentialRevisionsV1: [],
     };
     storageState.concurrentSessionListCacheByServerId = {};
-    delete (storageState as any).sessionListRenderables;
+    storageState.sessionListRowsByServerId = {};
+    storageState.ordinarySessionListMembershipByServerId = {};
     delete (storageState as any).machines;
     (storageState as any).deleteWorkspaceReviewCommentDraft = deleteWorkspaceReviewCommentDraftSpy;
     (storageState as any).clearWorkspaceReviewCommentDrafts = clearWorkspaceReviewCommentDraftsSpy;
@@ -866,8 +878,8 @@ describe('SessionView (direct sessions)', () => {
       recipient: null,
       setManualRecipient: vi.fn(),
       clearPersistedManualRecipient: vi.fn(),
-      executionRunDelivery: 'steer_if_supported',
-      setExecutionRunDelivery: vi.fn(),
+      executionRunRequestedAction: { v: 1, kind: 'steer_if_active' },
+      setExecutionRunRequestedAction: vi.fn(),
     };
     resetSessionDraftRepositoryForTests();
     showExternalSessionTakeoverDialogSpy.mockResolvedValue({ action: null });
@@ -2346,8 +2358,8 @@ describe('SessionView (direct sessions)', () => {
       recipient: { kind: 'execution_run', runId: 'run-1' },
       setManualRecipient: vi.fn(),
       clearPersistedManualRecipient: vi.fn(),
-      executionRunDelivery: 'interrupt',
-      setExecutionRunDelivery: vi.fn(),
+      executionRunRequestedAction: { v: 1, kind: 'send_now' },
+      setExecutionRunRequestedAction: vi.fn(),
     };
 
     const screen = await renderSessionViewAndSettle();
@@ -2380,7 +2392,7 @@ describe('SessionView (direct sessions)', () => {
     ]);
     expect(recipientChip?.collapsedOptionsPopover?.selectedOptionId).toBe('run-1');
     expect(typeof recipientChip?.collapsedOptionsPopover?.onSelect).toBe('function');
-    expect((agentInput.props.extraActionChips ?? []).map((chip: { key: string }) => chip.key)).toContain('execution-run-delivery');
+    expect((agentInput.props.extraActionChips ?? []).map((chip: { key: string }) => chip.key)).toContain('execution-run-requested-action');
   });
 
   it('promotes review comment drafts into canonical extra control metadata', async () => {
@@ -2434,14 +2446,19 @@ describe('SessionView (direct sessions)', () => {
         createdAt: 2,
       },
     ];
-    (storageState as any).sessionListRenderables = {
-      s1: {
-        id: 's1',
-        metadata: {
-          machineId: 'machine-1',
-          path: '/tmp',
+    storageState.sessionListRowsByServerId = {
+      'server-canonical': {
+        s1: {
+          id: 's1',
+          metadata: {
+            machineId: 'machine-1',
+            path: '/tmp',
+          },
         },
       },
+    };
+    storageState.ordinarySessionListMembershipByServerId = {
+      'server-canonical': ['s1'],
     };
     (storageState as any).machines = {
       'machine-1': {
@@ -2509,15 +2526,15 @@ describe('SessionView (direct sessions)', () => {
       recipient: { kind: 'execution_run', runId: 'run-1' },
       setManualRecipient: vi.fn(),
       clearPersistedManualRecipient: vi.fn(),
-      executionRunDelivery: 'interrupt',
-      setExecutionRunDelivery: vi.fn(),
+      executionRunRequestedAction: { v: 1, kind: 'send_now' },
+      setExecutionRunRequestedAction: vi.fn(),
     };
 
     const screen = await renderSessionViewAndSettle();
 
     const agentInput = findAgentInput(screen);
     expect((agentInput.props.extraActionChips ?? []).map((chip: { key: string }) => chip.key)).not.toContain('participants-recipient');
-    expect((agentInput.props.extraActionChips ?? []).map((chip: { key: string }) => chip.key)).not.toContain('execution-run-delivery');
+    expect((agentInput.props.extraActionChips ?? []).map((chip: { key: string }) => chip.key)).not.toContain('execution-run-requested-action');
   });
 
   it('surfaces delivery controls when live participant routing data resolves to an execution run', async () => {
@@ -2532,8 +2549,8 @@ describe('SessionView (direct sessions)', () => {
       recipient: { kind: 'execution_run', runId: 'run-1' },
       setManualRecipient: vi.fn(),
       clearPersistedManualRecipient: vi.fn(),
-      executionRunDelivery: 'interrupt',
-      setExecutionRunDelivery: vi.fn(),
+      executionRunRequestedAction: { v: 1, kind: 'send_now' },
+      setExecutionRunRequestedAction: vi.fn(),
     };
 
     const screen = await renderSessionViewAndSettle();
@@ -2549,10 +2566,10 @@ describe('SessionView (direct sessions)', () => {
         selectedOptionId?: string | null;
         onSelect?: (id: string) => void;
       };
-    }) => chip.key === 'execution-run-delivery');
+    }) => chip.key === 'execution-run-requested-action');
 
     expect(deliveryChip).toEqual(expect.objectContaining({
-      key: 'execution-run-delivery',
+      key: 'execution-run-requested-action',
       controlId: 'delivery',
     }));
     expect(deliveryChip?.collapsedOptionsPopover?.label).toBe('runs.delivery.cardDelivery');
@@ -2562,11 +2579,11 @@ describe('SessionView (direct sessions)', () => {
       ? deliveryFirstSection.options ?? []
       : [];
     expect(deliveryOptions.map((option: { id: string }) => option.id)).toEqual([
-      'prompt',
-      'steer_if_supported',
-      'interrupt',
+      'enqueue',
+      'steer_if_active',
+      'send_now',
     ]);
-    expect(deliveryChip?.collapsedOptionsPopover?.selectedOptionId).toBe('interrupt');
+    expect(deliveryChip?.collapsedOptionsPopover?.selectedOptionId).toBe('send_now');
     expect(typeof deliveryChip?.collapsedOptionsPopover?.onSelect).toBe('function');
   });
 
@@ -2749,7 +2766,7 @@ describe('SessionView (direct sessions)', () => {
     useCanonicalDraftScope();
     writeCanonicalSessionDraft({
       recipient: { kind: 'execution_run', runId: 'run-1' },
-      executionRunDelivery: 'interrupt',
+      executionRunRequestedAction: { v: 1, kind: 'send_now' },
     });
     const screen = await renderSessionView();
     expect(machineExternalSessionStatusGetSpy).not.toHaveBeenCalled();
@@ -2807,7 +2824,7 @@ describe('SessionView (direct sessions)', () => {
     expect(syncSubmitMessageSpy).not.toHaveBeenCalled();
     expect(findAgentInput(screen).props.value).toBe('continue this session');
     expect(readCanonicalDraftRecipient()).toEqual({ kind: 'execution_run', runId: 'run-1' });
-    expect(readCanonicalDraftDelivery()).toBe('interrupt');
+    expect(readCanonicalDraftRequestedAction()).toEqual({ v: 1, kind: 'send_now' });
     expect(readCanonicalDraftMentions()).toEqual([{
       kind: 'skill',
       tokenText: 'continue',
@@ -2923,8 +2940,8 @@ describe('SessionView (direct sessions)', () => {
       recipient: { kind: 'execution_run', runId: 'run-1' },
       setManualRecipient: vi.fn(),
       clearPersistedManualRecipient: vi.fn(),
-      executionRunDelivery: 'interrupt',
-      setExecutionRunDelivery: vi.fn(),
+      executionRunRequestedAction: { v: 1, kind: 'send_now' },
+      setExecutionRunRequestedAction: vi.fn(),
     };
     const screen = await renderSessionView();
 
@@ -2959,7 +2976,7 @@ describe('SessionView (direct sessions)', () => {
     useCanonicalDraftScope();
     writeCanonicalSessionDraft({
       recipient: { kind: 'execution_run', runId: 'run-1' },
-      executionRunDelivery: 'interrupt',
+      executionRunRequestedAction: { v: 1, kind: 'send_now' },
     });
     const screen = await renderSessionView();
 
@@ -2986,7 +3003,7 @@ describe('SessionView (direct sessions)', () => {
     agentInput = findAgentInput(screen);
     expect(agentInput.props.value).toBe('draft stays here');
     expect(readCanonicalDraftRecipient()).toEqual({ kind: 'execution_run', runId: 'run-1' });
-    expect(readCanonicalDraftDelivery()).toBe('interrupt');
+    expect(readCanonicalDraftRequestedAction()).toEqual({ v: 1, kind: 'send_now' });
     expect(readCanonicalDraftMentions()).toEqual([{
       kind: 'skill',
       tokenText: 'draft',
@@ -3015,7 +3032,7 @@ describe('SessionView (direct sessions)', () => {
     writeCanonicalSessionDraft({
       text: 'restore this prompt $restored',
       recipient,
-      executionRunDelivery: 'interrupt',
+      executionRunRequestedAction: { v: 1, kind: 'send_now' },
       mentions: [mention],
     });
 
@@ -3052,7 +3069,7 @@ describe('SessionView (direct sessions)', () => {
       await flushHookEffects({ cycles: 1, turns: 1 });
 
       expect(readCanonicalDraftRecipient()).toBeUndefined();
-      expect(readCanonicalDraftDelivery()).toBeUndefined();
+      expect(readCanonicalDraftRequestedAction()).toBeUndefined();
       expect(readCanonicalDraftMentions()).toBeUndefined();
 
       await act(async () => {
@@ -3064,7 +3081,7 @@ describe('SessionView (direct sessions)', () => {
       agentInput = findAgentInput(screen);
       expect(agentInput.props.value).toBe('restore this prompt $restored');
       expect(readCanonicalDraftRecipient()).toEqual(recipient);
-      expect(readCanonicalDraftDelivery()).toBe('interrupt');
+      expect(readCanonicalDraftRequestedAction()).toEqual({ v: 1, kind: 'send_now' });
       expect(readCanonicalDraftMentions()).toEqual([mention]);
       expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'direct send rejected');
     } finally {
@@ -3099,7 +3116,7 @@ describe('SessionView (direct sessions)', () => {
     writeCanonicalSessionDraft({
       text: 'send to $old target',
       recipient: oldRecipient,
-      executionRunDelivery: 'interrupt',
+      executionRunRequestedAction: { v: 1, kind: 'send_now' },
       mentions: [oldMention],
     });
 
@@ -3136,7 +3153,7 @@ describe('SessionView (direct sessions)', () => {
       await flushHookEffects({ cycles: 1, turns: 1 });
 
       expect(readCanonicalDraftRecipient()).toBeUndefined();
-      expect(readCanonicalDraftDelivery()).toBeUndefined();
+      expect(readCanonicalDraftRequestedAction()).toBeUndefined();
       expect(readCanonicalDraftMentions()).toBeUndefined();
 
       agentInput = findAgentInput(screen);
@@ -3148,7 +3165,7 @@ describe('SessionView (direct sessions)', () => {
         agentInput.props.onChangeText('send to $new target');
         writeCanonicalSessionDraft({
           recipient: newRecipient,
-          executionRunDelivery: 'prompt',
+          executionRunRequestedAction: { v: 1, kind: 'enqueue' },
         });
         onStructuredInputMentionsChange([newMention]);
       });
@@ -3162,7 +3179,7 @@ describe('SessionView (direct sessions)', () => {
       agentInput = findAgentInput(screen);
       expect(agentInput.props.value).toBe('send to $new target');
       expect(readCanonicalDraftRecipient()).toEqual(newRecipient);
-      expect(readCanonicalDraftDelivery()).toBe('prompt');
+      expect(readCanonicalDraftRequestedAction()).toEqual({ v: 1, kind: 'enqueue' });
       expect(readCanonicalDraftMentions()).toEqual([newMention]);
       expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'direct send rejected');
     } finally {

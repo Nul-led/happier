@@ -200,6 +200,7 @@ describe('executeSessionComposerResolution', () => {
     const handled = await executeSessionComposerResolution({
       resolved: { kind: 'action', actionId: 'review.start', rest: '   ' },
       sessionId: 's1',
+      accountScope: { serverId: 'home-a', accountId: 'account-a' },
       agentId: 'claude',
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       permissionMode: 'default',
@@ -218,7 +219,11 @@ describe('executeSessionComposerResolution', () => {
     expect(setMessage).toHaveBeenCalledWith('');
     expect(clearDraft).toHaveBeenCalled();
     expect(clearTransientInputState).toHaveBeenCalledTimes(1);
-    const draftArgs = createSessionActionDraft.mock.calls[0]?.[1] as any;
+    expect(createSessionActionDraft.mock.calls[0]?.slice(0, 2)).toEqual([
+      { serverId: 'home-a', accountId: 'account-a' },
+      { serverId: 'home-a', sessionId: 's1' },
+    ]);
+    const draftArgs = createSessionActionDraft.mock.calls[0]?.[2] as any;
     expect(draftArgs?.input?.permissionMode).toBe('read_only');
   });
 
@@ -231,6 +236,7 @@ describe('executeSessionComposerResolution', () => {
     const handled = await executeSessionComposerResolution({
       resolved: { kind: 'action', actionId: 'review.start', rest: '   ' },
       sessionId: 's1',
+      accountScope: { serverId: 'home-a', accountId: 'account-a' },
       agentId: 'coderabbit',
       backendTarget: { kind: 'builtInAgent', agentId: 'coderabbit' },
       permissionMode: 'read_only',
@@ -244,7 +250,8 @@ describe('executeSessionComposerResolution', () => {
 
     expect(handled).toBe(true);
     expect(createSessionActionDraft).toHaveBeenCalledWith(
-      's1',
+      { serverId: 'home-a', accountId: 'account-a' },
+      { serverId: 'home-a', sessionId: 's1' },
       expect.objectContaining({
         actionId: 'review.start',
         input: expect.objectContaining({
@@ -253,7 +260,7 @@ describe('executeSessionComposerResolution', () => {
         }),
       }),
     );
-    const draftArgs = createSessionActionDraft.mock.calls[0]?.[1] as any;
+    const draftArgs = createSessionActionDraft.mock.calls[0]?.[2] as any;
     expect(draftArgs?.input?.engines).toBeUndefined();
   });
 
@@ -440,6 +447,7 @@ describe('executeSessionComposerResolution', () => {
     const handled = await executeSessionComposerResolution({
       resolved: { kind: 'action', actionId: 'subagents.delegate.start', rest: '   ' },
       sessionId: 's1',
+      accountScope: { serverId: 'home-a', accountId: 'account-a' },
       agentId: 'claude',
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       permissionMode: null,
@@ -454,12 +462,13 @@ describe('executeSessionComposerResolution', () => {
     expect(handled).toBe(true);
     expect(actionExecutor.execute).not.toHaveBeenCalled();
     expect(createSessionActionDraft).toHaveBeenCalledWith(
-      's1',
+      { serverId: 'home-a', accountId: 'account-a' },
+      { serverId: 'home-a', sessionId: 's1' },
       expect.objectContaining({
         actionId: 'subagents.delegate.start',
       }),
     );
-    const draftArgs = createSessionActionDraft.mock.calls[0]?.[1] as any;
+    const draftArgs = createSessionActionDraft.mock.calls[0]?.[2] as any;
     expect(draftArgs?.input?.permissionMode).toBe('workspace_write');
   });
 
@@ -470,6 +479,7 @@ describe('executeSessionComposerResolution', () => {
     const handledDraft = await executeSessionComposerResolution({
       resolved: { kind: 'action', actionId: 'subagents.plan.start', rest: '   ' },
       sessionId: 's1',
+      accountScope: { serverId: 'home-a', accountId: 'account-a' },
       agentId: 'customAcp',
       backendTarget: { kind: 'configuredAcpBackend', backendId: 'review-bot' },
       permissionMode: 'safe-yolo',
@@ -482,7 +492,7 @@ describe('executeSessionComposerResolution', () => {
     });
 
     expect(handledDraft).toBe(true);
-    const draftArgs = createSessionActionDraft.mock.calls[0]?.[1] as any;
+    const draftArgs = createSessionActionDraft.mock.calls[0]?.[2] as any;
     expect(draftArgs?.input?.backendTargetKeys).toEqual(['acpBackend:review-bot']);
     expect(draftArgs?.input?.permissionMode).toBe('read_only');
 

@@ -13,6 +13,17 @@ function ready(payload: unknown) {
 }
 
 describe('Pending-input server wire contract', () => {
+    it('selects target-aware V3 without treating the main-only V2 epoch as target-capable', () => {
+        expect(resolvePendingInputServerWireMode(ready({
+            features: {},
+            capabilities: { session: { pendingInput: { protocolVersion: 3 } } },
+        }))).toBe('pending_input_v3');
+        expect(resolvePendingInputServerWireMode(ready({
+            features: {},
+            capabilities: { session: { pendingInput: { protocolVersion: 2 } } },
+        }))).toBe('pending_input_v1');
+    });
+
     it('selects current only from the independent Pending Input v1 capability', () => {
         expect(resolvePendingInputServerWireMode(ready({
             features: {},

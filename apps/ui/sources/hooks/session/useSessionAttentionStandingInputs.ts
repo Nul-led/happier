@@ -7,6 +7,7 @@ import {
 } from '@/sync/domains/session/listing/sessionListAttentionPlacementTypes';
 import {
     resolveSessionAttentionStandingPolicy,
+    type SessionAttentionIntentRecord,
     type SessionAttentionStandingPolicy,
 } from '@/sync/domains/session/organization/attentionStanding';
 
@@ -27,7 +28,7 @@ export type SessionAttentionStandingInputs = Readonly<{
  * session organization view state so this adds no extra projection subscription.
  */
 export function useSessionAttentionStandingInputs(
-    overridesBySessionKey: Readonly<Record<string, boolean>>,
+    overridesBySessionKey: Readonly<Record<string, boolean | SessionAttentionIntentRecord>>,
 ): SessionAttentionStandingInputs {
     const placementMode = normalizeSessionListAttentionPlacementMode(useSetting('sessionListAttentionPromotionModeV1'));
     const defaultStanding = useSetting('sessionListAttentionStandingDefaultV1') === true;

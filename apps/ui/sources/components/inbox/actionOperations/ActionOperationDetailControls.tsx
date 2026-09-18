@@ -1,16 +1,16 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
-import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
+import type { ActionOperationProjection } from '@/sync/domains/actionOperations/actionOperationSelectors';
 
 import { useActionOperationStopControl } from './useActionOperationStopControl';
 
 export function ActionOperationDetailControls(props: Readonly<{
-    operation?: ActionOperationSnapshotV1;
+    operation?: ActionOperationProjection;
     terminal: boolean;
     canCancel: boolean;
     onClose: () => void;

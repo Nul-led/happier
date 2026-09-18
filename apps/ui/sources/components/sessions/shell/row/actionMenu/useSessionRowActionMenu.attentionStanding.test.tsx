@@ -15,14 +15,17 @@ import {
 } from '@/components/sessions/actions/sessionActionIds';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { renderHook, standardCleanup } from '@/dev/testkit';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 import { useSessionRowActionMenu } from './useSessionRowActionMenu';
 
 const setAttentionStandingWrite = vi.fn(async () => ({ success: true as const }));
+const clearAttentionReminderWrite = vi.fn(async () => ({ success: true as const }));
 
 vi.mock('@/sync/ops/sessionOrganization', async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
     sessionSetAttentionStandingWithServerScope: (...args: readonly unknown[]) => setAttentionStandingWrite(...(args as [])),
+    sessionClearAttentionReminderWithServerScope: (...args: readonly unknown[]) => clearAttentionReminderWrite(...(args as [])),
 }));
 
 function makeSession(): SessionListRenderableSession {
@@ -31,6 +34,7 @@ function makeSession(): SessionListRenderableSession {
         active: false,
         archivedAt: null,
         owner: 'user_1',
+        access: createSessionAccessFixture(),
         accessLevel: undefined,
         seq: 4,
         lastViewedSessionSeq: 4,
@@ -47,7 +51,11 @@ function makeSession(): SessionListRenderableSession {
     };
 }
 
-function renderRowMenu(params: Readonly<{ attentionStandingEnabled: boolean; attentionStanding: boolean }>) {
+function renderRowMenu(params: Readonly<{
+    attentionStandingEnabled: boolean;
+    attentionStanding: boolean;
+    reminder?: Readonly<{ state: 'scheduled' | 'due'; remindAt: number }>;
+}>) {
     const target = createSessionActionTarget({
         session: makeSession(),
         serverId: 'server_1',
@@ -67,13 +75,14 @@ function renderRowMenu(params: Readonly<{ attentionStandingEnabled: boolean; att
         isNativeMobile: false,
         setContextMenuOpen: () => undefined,
         openTagsMenuFromContext: () => undefined,
-        deferredContextActionDelayMs: 0,
+        reminder: params.reminder,
     }));
 }
 
 afterEach(() => {
     standardCleanup();
     setAttentionStandingWrite.mockClear();
+    clearAttentionReminderWrite.mockClear();
 });
 
 describe('session row action menu attention standing', () => {
@@ -105,5 +114,19 @@ describe('session row action menu attention standing', () => {
 
         expect(ids).not.toContain(SESSION_ACTION_SET_ATTENTION_STANDING_ID);
         expect(ids).not.toContain(SESSION_ACTION_CLEAR_ATTENTION_STANDING_ID);
+    });
+
+    it('clears the current reminder through the canonical standing mutation', async () => {
+        const menu = await renderRowMenu({
+            attentionStandingEnabled: true,
+            attentionStanding: false,
+            reminder: { state: 'scheduled', remindAt: Date.now() + 60_000 },
+        });
+        const reminderItem = menu.getCurrent().moreMenuItems.find((item) => item.id === 'attention-reminder');
+        expect(reminderItem?.submenu?.items.at(-1)?.id).toBe('attention-reminder:remove');
+
+        await menu.getCurrent().handleMoreMenuSelect('attention-reminder:remove');
+
+        expect(clearAttentionReminderWrite).toHaveBeenCalledWith('session_1', { serverId: 'server_1' });
     });
 });

@@ -265,6 +265,53 @@ describe('installTauriMcpWebviewDriverScripts', () => {
         expect(legacyEnsureSessionVisibleForMessageRouteMock).not.toHaveBeenCalled();
     });
 
+    it('exposes checked-in Personal Home QA boundaries backed by the native document-start observer', async () => {
+        const navigated: string[] = [];
+        const daemonActions: string[] = [];
+        const windowObj = {
+            __MCP__: {},
+            __happierPersonalHomeQaForbiddenSurface: {
+                state: { documentStart: true, seen: false },
+            },
+            location: { pathname: '/' },
+            history: { pushState: (_state: unknown, _title: string, path: string) => navigated.push(path) },
+            dispatchEvent: () => true,
+            PopStateEvent: class { constructor(public readonly type: string) {} },
+        } as unknown as typeof globalThis;
+        const documentObj = {
+            readyState: 'loading',
+            documentElement: {},
+            querySelector: () => null,
+            querySelectorAll: () => [],
+            evaluate: () => ({ singleNodeValue: null, snapshotLength: 0, snapshotItem: () => null }),
+        } as unknown as Document;
+
+        installTauriMcpWebviewDriverScripts({
+            windowObj,
+            documentObj,
+            runPersonalHomeDaemonQaTask: async (action) => {
+                daemonActions.push(action);
+                return { ok: true, data: { daemonRunning: action === 'status' } };
+            },
+        });
+
+        const mcp = (windowObj as unknown as { __MCP__?: Record<string, (...args: unknown[]) => unknown> }).__MCP__;
+        expect(mcp?.readPersonalHomeBootstrapQaObservation()).toEqual({
+            installedAtDocumentStart: true,
+            seenForbiddenOnboarding: false,
+        });
+        (windowObj as unknown as { __happierPersonalHomeQaForbiddenSurface: { state: { seen: boolean } } })
+            .__happierPersonalHomeQaForbiddenSurface.state.seen = true;
+        expect(mcp?.readPersonalHomeBootstrapQaObservation()).toEqual({
+            installedAtDocumentStart: true,
+            seenForbiddenOnboarding: true,
+        });
+        expect(mcp?.navigateHappierQaPath('/settings/server')).toEqual({ ok: true, pathname: '/settings/server' });
+        expect(navigated).toEqual(['/settings/server']);
+        await expect(mcp?.readPersonalHomeDaemonQaStatus()).resolves.toEqual({ ok: true, data: { daemonRunning: true } });
+        expect(daemonActions).toEqual(['status']);
+    });
+
     it('installs a deterministic desktop-overlay QA seed helper for canonical proof states', async () => {
         const seededModes: string[] = [];
         const windowObj = {
@@ -486,5 +533,152 @@ describe('installTauriMcpWebviewDriverScripts', () => {
 
         maybeInstallTauriMcpBridge({ isDesktopShell: true, windowObj, documentObj });
         expect(typeof (windowObj as unknown as { __MCP__?: { resolveRef?: unknown } }).__MCP__?.resolveRef).toBe('function');
+    });
+
+    it('installs no QA driver surface in a production desktop build', () => {
+        const element = { tagName: 'BUTTON' } as unknown as Element;
+        const windowObj = {
+            __MCP__: { reverseRefs: new Map<string, Element>([['e1', element]]) },
+        } as unknown as typeof globalThis;
+        const documentObj = {
+            querySelector: () => element,
+            querySelectorAll: () => [element],
+            evaluate: () => ({ singleNodeValue: element, snapshotLength: 1, snapshotItem: () => element }),
+        } as unknown as Document;
+
+        maybeInstallTauriMcpBridge({ isDesktopShell: true, isDevBuild: false, windowObj, documentObj });
+
+        // Every command this bridge publishes drives real machine state — a five-minute hold on a
+        // durable Personal Home bootstrap mutation, stopping the daemon, uninstalling the runtime.
+        // None of them may exist in a shipped desktop build.
+        const mcp = (windowObj as unknown as {
+            __MCP__?: Record<string, unknown>;
+        }).__MCP__ ?? {};
+        for (const command of [
+            'resolveRef',
+            'applyHappierLocalSettings',
+            'controlPersonalHomeBootstrapQaPause',
+            'uninstallPersonalHomeRuntimeForQa',
+            'stopPersonalHomeDaemonForQa',
+            'readPersonalHomeDaemonQaStatus',
+            'seedDesktopActivityOverlayQaState',
+        ]) {
+            expect(mcp[command]).toBeUndefined();
+        }
+    });
+
+    it('exposes the checked-in bootstrap mutation pause and the canonical uninstall operation for loaded QA', async () => {
+        const { controlPersonalHomeBootstrapQaMutationPause } = await import(
+            '@/components/personalHome/bootstrap/personalHomeBootstrapQaMutationPause'
+        );
+        const windowObj = { __MCP__: {} } as unknown as typeof globalThis;
+        const documentObj = {
+            querySelector: () => null,
+            querySelectorAll: () => [],
+            evaluate: () => ({ singleNodeValue: null, snapshotLength: 0, snapshotItem: () => null }),
+        } as unknown as Document;
+        let uninstallCalls = 0;
+
+        installTauriMcpWebviewDriverScripts({
+            windowObj,
+            documentObj,
+            uninstallPersonalHomeRuntimeQaTask: async () => {
+                uninstallCalls += 1;
+                return true;
+            },
+        });
+
+        const mcp = (windowObj as unknown as {
+            __MCP__?: {
+                controlPersonalHomeBootstrapQaPause?: (request: unknown) => Record<string, unknown>;
+                uninstallPersonalHomeRuntimeForQa?: () => Promise<Record<string, unknown>>;
+            };
+        }).__MCP__;
+
+        // The hook drives the canonical pause owner rather than keeping its own QA state.
+        expect(mcp?.controlPersonalHomeBootstrapQaPause?.({
+            action: 'arm',
+            kind: 'relay.runtime.installOrUpdate.v1',
+            ordinal: 2,
+            ttlMs: 5_000,
+        })).toMatchObject({ ok: true, armed: { kind: 'relay.runtime.installOrUpdate.v1', ordinal: 2 } });
+        expect(controlPersonalHomeBootstrapQaMutationPause({ action: 'read' })).toMatchObject({
+            armed: { kind: 'relay.runtime.installOrUpdate.v1', ordinal: 2 },
+        });
+        expect(mcp?.controlPersonalHomeBootstrapQaPause?.({ action: 'nope' }))
+            .toMatchObject({ ok: false, reason: 'invalid-action' });
+
+        // The uninstall boundary exists for the paused destructive-arbitration journey, so it runs
+        // while that arm is live and reaches the canonical operation exactly once.
+        await expect(mcp?.uninstallPersonalHomeRuntimeForQa?.()).resolves.toEqual({ ok: true });
+        expect(uninstallCalls).toBe(1);
+
+        expect(mcp?.controlPersonalHomeBootstrapQaPause?.({ action: 'release' }))
+            .toMatchObject({ ok: true, armed: null, held: null });
+    });
+
+    it('keeps the canonical uninstall boundary inert until the checked-in pause is armed', async () => {
+        const windowObj = { __MCP__: {} } as unknown as typeof globalThis;
+        const documentObj = {
+            querySelector: () => null,
+            querySelectorAll: () => [],
+            evaluate: () => ({ singleNodeValue: null, snapshotLength: 0, snapshotItem: () => null }),
+        } as unknown as Document;
+        let uninstallCalls = 0;
+
+        installTauriMcpWebviewDriverScripts({
+            windowObj,
+            documentObj,
+            uninstallPersonalHomeRuntimeQaTask: async () => {
+                uninstallCalls += 1;
+                return true;
+            },
+        });
+
+        const mcp = (windowObj as unknown as {
+            __MCP__?: { uninstallPersonalHomeRuntimeForQa?: () => Promise<Record<string, unknown>> };
+        }).__MCP__;
+        // An ordinary desktop shell installs this bridge, so an unarmed call must never reach the
+        // real runtime uninstall; Settings stays the only product owner of that operation.
+        await expect(mcp?.uninstallPersonalHomeRuntimeForQa?.()).resolves.toEqual({
+            ok: false,
+            reason: 'qa-pause-not-armed',
+        });
+        expect(uninstallCalls).toBe(0);
+    });
+
+    it('reports a failed canonical uninstall instead of self-attesting success', async () => {
+        const { controlPersonalHomeBootstrapQaMutationPause } = await import(
+            '@/components/personalHome/bootstrap/personalHomeBootstrapQaMutationPause'
+        );
+        const windowObj = { __MCP__: {} } as unknown as typeof globalThis;
+        const documentObj = {
+            querySelector: () => null,
+            querySelectorAll: () => [],
+            evaluate: () => ({ singleNodeValue: null, snapshotLength: 0, snapshotItem: () => null }),
+        } as unknown as Document;
+
+        installTauriMcpWebviewDriverScripts({
+            windowObj,
+            documentObj,
+            uninstallPersonalHomeRuntimeQaTask: async () => {
+                throw new Error('Runtime uninstall did not confirm completion.');
+            },
+        });
+
+        const mcp = (windowObj as unknown as {
+            __MCP__?: { uninstallPersonalHomeRuntimeForQa?: () => Promise<Record<string, unknown>> };
+        }).__MCP__;
+        controlPersonalHomeBootstrapQaMutationPause({
+            action: 'arm',
+            kind: 'relay.runtime.installOrUpdate.v1',
+            ordinal: 1,
+            ttlMs: 5_000,
+        });
+        await expect(mcp?.uninstallPersonalHomeRuntimeForQa?.()).resolves.toEqual({
+            ok: false,
+            reason: 'Runtime uninstall did not confirm completion.',
+        });
+        controlPersonalHomeBootstrapQaMutationPause({ action: 'release' });
     });
 });

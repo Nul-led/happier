@@ -1,10 +1,26 @@
 export const sessionDraftTranslations = {
     sessionDrafts: {
         sectionTitle: 'Drafts',
+        sectionTitleForHome: ({ home }: { home: string }) => `Drafts on ${home}`,
+        // A waiting Temporary-computer request is not an ordinary draft: its
+        // package is already on someone else's computer. This title says exactly
+        // which Home owns the live request, so switching Homes never makes one
+        // silently disappear.
+        waitingSectionTitleForHome: ({ home }: { home: string }) => `Waiting for a computer on ${home}`,
         badge: 'Draft',
         untitled: 'Untitled draft',
         continueEditing: 'Continue editing',
         startAnother: 'Start another',
+        // Run-start outcome states for the interactive Agent-conversation draft. An unknown outcome
+        // is never presented as a failure: it may already have started, so a second Start is a
+        // deliberate, informed choice.
+        executionRunStart: {
+            starting: 'Starting the agent conversation…',
+            reconciling: 'Checking whether this agent conversation started…',
+            unresolved: 'We couldn’t confirm whether this agent conversation started. Starting another may create a second conversation.',
+            targetChanged: 'The computer for this session changed before the conversation could start. Nothing was started.',
+            secretReferenceOverlayUpdateRequired: 'Using shared secrets in an agent conversation needs an updated computer. Nothing was started.',
+        },
         status: {
             offline: 'Offline — saved on this device',
             syncing: 'Syncing…',
@@ -38,7 +54,7 @@ export const sessionDraftTranslations = {
                 attachments: 'Attachments',
                 recipient: 'Recipient',
                 agentContinuation: 'Agent continuation',
-                executionRunDelivery: 'Run delivery',
+                executionRunRequestedAction: 'Run delivery',
             },
         },
     },

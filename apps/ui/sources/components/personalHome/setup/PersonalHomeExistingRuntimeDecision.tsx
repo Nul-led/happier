@@ -7,8 +7,8 @@ import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 
 const styles = StyleSheet.create((theme) => ({
-    root: { gap: 14, marginTop: 20 },
-    body: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 14, lineHeight: 21, flexShrink: 1 },
+    root: { gap: 14, alignSelf: 'stretch' },
+    body: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 14, lineHeight: 21, flexShrink: 1, textAlign: 'center' },
     actions: { gap: 10 },
     button: { minHeight: 52, borderRadius: 12, paddingHorizontal: 16, justifyContent: 'center', borderWidth: 1, borderColor: theme.colors.border.default },
     title: { ...Typography.default('semiBold'), color: theme.colors.text.primary },

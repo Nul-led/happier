@@ -27,7 +27,8 @@ describe('useVoiceSurfaceStoreState', () => {
             adapterId: 'local_conversation',
             controlSessionId: 'voice-control-1',
             conversationSessionId: 'voice-conversation-1',
-            targetSessionId: 'target-session-1',
+            conversationSessionAddress: { serverId: 'server-active', sessionId: 'voice-conversation-1' },
+            targetSessionAddress: { serverId: 'server-active', sessionId: 'target-session-1' },
             transcriptMode: 'native_session',
             updatedAt: 10,
         });
@@ -141,7 +142,8 @@ describe('useVoiceSurfaceStoreState', () => {
             adapterId: 'local_conversation',
             controlSessionId: 'account-a-control',
             conversationSessionId: 'account-a-voice-conversation',
-            targetSessionId: 'account-a-target',
+            conversationSessionAddress: { serverId: 'server-active', sessionId: 'account-a-voice-conversation' },
+            targetSessionAddress: { serverId: 'server-active', sessionId: 'account-a-target' },
             transcriptMode: 'native_session',
             updatedAt: 500,
         });

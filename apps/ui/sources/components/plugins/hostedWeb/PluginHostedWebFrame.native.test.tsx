@@ -5,6 +5,23 @@ import { renderScreen } from '@/dev/testkit';
 
 const genericFrameProps: Array<Record<string, unknown>> = [];
 const artifactFrameProps: Array<Record<string, unknown>> = [];
+const inlineDocumentFrameProps: Array<Record<string, unknown>> = [];
+
+// The remote source mirror intentionally omits build-generated app artifact bytes.
+vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
+    createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
+        kind: 'appExact' as const,
+        readFile: vi.fn(async () => null),
+    }),
+}));
+vi.mock('@/sync/domains/plugins/availability/reader', () => ({
+    createPluginAccountAvailabilityReader: vi.fn(() => null),
+    createPluginAccountAvailabilityReaderStore: vi.fn(() => ({
+        get: vi.fn(() => null),
+        subscribe: vi.fn(() => () => {}),
+    })),
+    projectPluginAccountAvailabilityMaterializationIdentity: vi.fn(() => null),
+}));
 
 vi.mock('@/components/browser/adapters/HostedPluginTarget.native', () => ({
     HostedPluginTarget: (props: Record<string, unknown>) => {
@@ -17,6 +34,10 @@ vi.mock('./HostedArtifactFrame.native', () => ({
         artifactFrameProps.push(props);
         return React.createElement('HostedArtifactFrameMock', props);
     },
+    HostedInlineDocumentFrame: (props: Record<string, unknown>) => {
+        inlineDocumentFrameProps.push(props);
+        return React.createElement('HostedInlineDocumentFrameMock', props);
+    },
 }));
 
 const frameOrigin = 'happier-hosted-artifact://hpa_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -25,6 +46,7 @@ describe('PluginHostedWebFrame native Artifact adoption', () => {
     it('uses the opaque Artifact frame and its canonical custom-scheme bridge instead of a generic URL frame', async () => {
         genericFrameProps.length = 0;
         artifactFrameProps.length = 0;
+        inlineDocumentFrameProps.length = 0;
         const onMessage = vi.fn();
         const { PluginHostedWebFrame } = await import('./PluginHostedWebFrame.native');
 
@@ -51,10 +73,7 @@ describe('PluginHostedWebFrame native Artifact adoption', () => {
                     },
                     bridge: {
                         expectedOrigin: frameOrigin,
-                        expectedPluginId: 'acme.preview',
-                        expectedContributionId: 'preview-web',
-                        expectedSurfaceId: 'preview-surface',
-                        expectedNonce: 'nonce-1',
+                        identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
                         allowedMessageKinds: new Set(['ready']),
                         onMessage,
                     },
@@ -63,6 +82,7 @@ describe('PluginHostedWebFrame native Artifact adoption', () => {
         );
 
         expect(genericFrameProps).toEqual([]);
+        expect(inlineDocumentFrameProps).toEqual([]);
         expect(artifactFrameProps.at(-1)).toMatchObject({
             title: 'Preview',
             artifactHandleToken: 'hpat_frame_token',
@@ -74,17 +94,62 @@ describe('PluginHostedWebFrame native Artifact adoption', () => {
 
         const rawMessage = JSON.stringify({
             version: 1,
-            pluginId: 'acme.preview',
-            contributionId: 'preview-web',
-            surfaceId: 'preview-surface',
-            nonce: 'nonce-1',
+            identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
             sequence: 1,
             kind: 'ready',
             payload: null,
         });
         const receive = artifactFrameProps.at(-1)?.onMessage as ((event: unknown) => void) | undefined;
         receive?.({ nativeEvent: { url: `${frameOrigin}/index.html`, data: rawMessage } });
-        expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'ready' }));
+        expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'ready' }), undefined);
+    });
+
+    it('registers by-value HTML with the incumbent isolated native frame instead of passing it to the generic WebView', async () => {
+        genericFrameProps.length = 0;
+        artifactFrameProps.length = 0;
+        inlineDocumentFrameProps.length = 0;
+        const onMessage = vi.fn();
+        const { PluginHostedWebFrame } = await import('./PluginHostedWebFrame.native');
+
+        await renderScreen(
+            <PluginHostedWebFrame
+                title="Caller view"
+                html="<!doctype html><p>isolated</p>"
+                security={{
+                    allowedNavigationOrigins: [],
+                    allowedCallbackOrigins: [],
+                    allowedConnectOrigins: [],
+                    sourceMaps: 'disabled',
+                    mixedContent: 'deny',
+                    csp: {
+                        connectSrc: 'none', allowDataUrls: true, allowBlobUrls: false,
+                        allowInlineStyles: true, allowEval: false,
+                    },
+                }}
+                sandbox={{ scripts: true, sameOrigin: false, popups: false, topNavigation: false, mixedContent: false }}
+                testID="caller-html-frame"
+                bridge={{
+                    expectedOrigin: 'null',
+                    identity: { instanceId: 'caller-1', mountNonce: 'nonce-1' },
+                    allowedMessageKinds: new Set(['ready']),
+                    onMessage,
+                }}
+            />,
+        );
+
+        expect(artifactFrameProps).toEqual([]);
+        expect(genericFrameProps).toEqual([]);
+        expect(inlineDocumentFrameProps).toHaveLength(1);
+        expect(inlineDocumentFrameProps[0]).toMatchObject({
+            title: 'Caller view',
+            html: '<!doctype html><p>isolated</p>',
+            testID: 'caller-html-frame',
+            networkOrigins: undefined,
+            bootstrapConfig: undefined,
+        });
+        expect(inlineDocumentFrameProps[0]?.bridge).toEqual(expect.objectContaining({
+            identity: { instanceId: 'caller-1', mountNonce: 'nonce-1' },
+        }));
     });
 
     it('keeps the native Artifact mounted behind the shared accessible loading presentation and forwards its lifecycle callbacks', async () => {

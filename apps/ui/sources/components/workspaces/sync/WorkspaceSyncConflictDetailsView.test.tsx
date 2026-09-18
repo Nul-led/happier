@@ -13,10 +13,11 @@ const shared = vi.hoisted(() => ({
     deleteLoser: vi.fn(),
     readFile: vi.fn(),
     refreshConflicts: vi.fn(),
+    loadMoreConflicts: vi.fn(),
     refreshStatus: vi.fn(),
     setStatus: vi.fn(),
     conflictSnapshot: {
-        phase: 'ready' as const,
+        phase: 'ready' as 'ready' | 'invalidated' | 'loading_more',
         list: {
             relationshipId: 'relationship-1',
             totalCount: 1,
@@ -29,6 +30,9 @@ const shared = vi.hoisted(() => ({
                 beta: { kind: 'file' as const, digest: 'b'.repeat(40), size: 13 },
             }] as WorkspaceSyncConflictV1[],
         },
+        nextCursor: null as string | null,
+        hasMore: false,
+        invalidated: false,
         error: null,
     },
     statusSnapshot: {
@@ -103,12 +107,13 @@ vi.mock('@/components/ui/text/Text', () => ({
     Text: (props: React.PropsWithChildren) => React.createElement('Text', props, props.children),
 }));
 vi.mock('@/sync/ops/workspaceSync', () => ({
-    deleteWorkspaceSyncConflictLoser: shared.deleteLoser,
+    resolveWorkspaceSyncConflict: shared.deleteLoser,
     readWorkspaceSyncFile: shared.readFile,
 }));
 vi.mock('@/sync/domains/sessionHandoff/workspaceSyncConflictStore', () => ({
     getWorkspaceSyncConflictSnapshot: () => shared.conflictSnapshot,
     refreshWorkspaceSyncConflicts: shared.refreshConflicts,
+    loadMoreWorkspaceSyncConflicts: shared.loadMoreConflicts,
     subscribeWorkspaceSyncConflicts: () => () => {},
 }));
 vi.mock('@/sync/domains/sessionHandoff/workspaceSyncStatusStore', () => ({
@@ -139,6 +144,7 @@ describe('WorkspaceSyncConflictDetailsView', () => {
             size: input.request.side === 'alpha' ? 12 : 13,
         }));
         shared.refreshConflicts.mockReset().mockResolvedValue(shared.conflictSnapshot.list);
+        shared.loadMoreConflicts.mockReset().mockResolvedValue(shared.conflictSnapshot.list);
         shared.refreshStatus.mockReset().mockResolvedValue(null);
         shared.setStatus.mockReset();
         shared.conflictSnapshot.list.conflicts = [{
@@ -147,6 +153,10 @@ describe('WorkspaceSyncConflictDetailsView', () => {
             alpha: { kind: 'file', digest: 'a'.repeat(40), size: 12 },
             beta: { kind: 'file', digest: 'b'.repeat(40), size: 13 },
         }];
+        shared.conflictSnapshot.nextCursor = null;
+        shared.conflictSnapshot.hasMore = false;
+        shared.conflictSnapshot.invalidated = false;
+        shared.conflictSnapshot.phase = 'ready';
     });
 
     it('leads with the relationship summary, then conflicts and refresh, and keeps diagnostics closed behind one disclosure', async () => {
@@ -199,6 +209,48 @@ describe('WorkspaceSyncConflictDetailsView', () => {
         );
     });
 
+    it('loads the next public conflict page from the existing review pane', async () => {
+        shared.conflictSnapshot.nextCursor = 'opaque-page-2';
+        shared.conflictSnapshot.hasMore = true;
+        shared.conflictSnapshot.list.totalCount = 2;
+        shared.conflictSnapshot.list.truncatedCount = 1;
+        const { WorkspaceSyncConflictDetailsView } = await import('./WorkspaceSyncConflictDetailsView');
+        const screen = await renderScreen(<WorkspaceSyncConflictDetailsView resource={resource} />);
+
+        const loadMore = screen.findAllByType('Item').find(
+            (node) => String(node.props.title).startsWith('workspaceSync.truncated'),
+        );
+        expect(loadMore?.props.disabled).toBe(false);
+        await act(async () => { await loadMore?.props.onPress(); });
+
+        expect(shared.loadMoreConflicts).toHaveBeenCalledWith(expect.objectContaining({
+            relationshipId: 'relationship-1',
+            controllerMachineId: 'machine-alpha',
+        }));
+    });
+
+    it('keeps loaded rows and offers canonical refresh when the cursor is invalidated', async () => {
+        shared.conflictSnapshot.phase = 'invalidated';
+        shared.conflictSnapshot.invalidated = true;
+        shared.conflictSnapshot.nextCursor = null;
+        shared.conflictSnapshot.hasMore = false;
+        shared.conflictSnapshot.list.totalCount = 2;
+        shared.conflictSnapshot.list.truncatedCount = 1;
+        const { WorkspaceSyncConflictDetailsView } = await import('./WorkspaceSyncConflictDetailsView');
+        const screen = await renderScreen(<WorkspaceSyncConflictDetailsView resource={resource} />);
+
+        const items = screen.findAllByType('Item');
+        expect(items.some((node) => node.props.title === 'src/index.ts')).toBe(true);
+        expect(items.some((node) => node.props.title === 'workspaceSync.error.conflictNeedsAttention')).toBe(true);
+        const refresh = items.find(
+            (node) => node.props.title === 'workspaceSync.actions.refresh',
+        );
+        await act(async () => { await refresh?.props.onPress(); });
+        expect(shared.refreshConflicts).toHaveBeenCalledWith(expect.objectContaining({
+            relationshipId: 'relationship-1',
+        }));
+    });
+
     it('exposes selectable, copyable identifiers, live roots and engine state once diagnostics are opened', async () => {
         const { WorkspaceSyncConflictDetailsView } = await import('./WorkspaceSyncConflictDetailsView');
         const screen = await renderScreen(<WorkspaceSyncConflictDetailsView resource={resource} />);
@@ -240,7 +292,7 @@ describe('WorkspaceSyncConflictDetailsView', () => {
         expect(screen.getTextContent()).toContain('workspaceSync.fileState.binary');
     });
 
-    it('treats a single-file version choice as the decision and refreshes a stale conflict inline', async () => {
+    it('delegates a single-file version choice to the confirmed Action and refreshes a stale conflict inline', async () => {
         const changed = Object.assign(new Error('changed'), { code: 'conflict_changed' });
         shared.deleteLoser.mockRejectedValueOnce(changed);
         const { Modal } = await import('@/modal');
@@ -265,7 +317,7 @@ describe('WorkspaceSyncConflictDetailsView', () => {
         expect(screen.getTextContent()).toContain('src/index.ts');
     });
 
-    it('keeps one consequence-specific confirmation for recursive directory removal', async () => {
+    it('delegates recursive directory removal to the confirmed Action without a second generic confirmation', async () => {
         shared.conflictSnapshot.list.conflicts = [{
             relationshipId: 'relationship-1',
             path: 'generated',
@@ -273,7 +325,6 @@ describe('WorkspaceSyncConflictDetailsView', () => {
             beta: { kind: 'directory' },
         }];
         const { Modal } = await import('@/modal');
-        vi.mocked(Modal.confirm).mockResolvedValueOnce(false);
         const { WorkspaceSyncConflictDetailsView } = await import('./WorkspaceSyncConflictDetailsView');
         const screen = await renderScreen(<WorkspaceSyncConflictDetailsView resource={resource} />);
         await act(async () => {
@@ -286,8 +337,8 @@ describe('WorkspaceSyncConflictDetailsView', () => {
             )?.props.onPress();
         });
 
-        expect(Modal.confirm).toHaveBeenCalledOnce();
-        expect(shared.deleteLoser).not.toHaveBeenCalled();
+        expect(Modal.confirm).not.toHaveBeenCalled();
+        expect(shared.deleteLoser).toHaveBeenCalledOnce();
     });
 
     it('does not offer a resolution that the protocol rejects for a digest-less file loser', async () => {
@@ -308,5 +359,24 @@ describe('WorkspaceSyncConflictDetailsView', () => {
         expect(actions.find((node) => node.props.title === 'workspaceSync.actions.keepRemote')).toBeUndefined();
         expect(actions.find((node) => node.props.title === 'workspaceSync.actions.keepLocal')).toBeTruthy();
         expect(screen.getTextContent()).toContain('workspaceSync.resolve.unverifiedFile');
+    });
+
+    it('shows unsupported engine entries without offering a destructive resolution', async () => {
+        shared.conflictSnapshot.list.conflicts = [{
+            relationshipId: 'relationship-1',
+            path: 'ignored.sock',
+            alpha: { kind: 'unsupported', sourceKind: 'untracked' },
+            beta: { kind: 'file', digest: 'b'.repeat(40) },
+        }];
+        const { WorkspaceSyncConflictDetailsView } = await import('./WorkspaceSyncConflictDetailsView');
+        const screen = await renderScreen(<WorkspaceSyncConflictDetailsView resource={resource} />);
+
+        const conflictItem = screen.findAllByType('Item').find((node) => node.props.title === 'ignored.sock');
+        expect(conflictItem?.props.subtitle).toContain('workspaceSync.conflictKind.unsupported (untracked)');
+        await act(async () => { await conflictItem?.props.onPress(); });
+
+        expect(screen.findAllByType('RoundButton')).toHaveLength(0);
+        expect(shared.deleteLoser).not.toHaveBeenCalled();
+        expect(screen.getTextContent()).toContain('workspaceSync.resolve.unsupported');
     });
 });

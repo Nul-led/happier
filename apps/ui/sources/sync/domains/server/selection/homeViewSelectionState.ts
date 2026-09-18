@@ -131,31 +131,32 @@ export function loadEffectiveHomeViewState(): HomeViewStateV1 | null {
 export function updateEffectiveHomeViewState(
     update: (current: HomeViewStateV1) => HomeViewStateV1,
     options: Readonly<{ scope: 'tab' | 'device' }>,
-): HomeViewStateV1 {
+): Promise<HomeViewStateV1> {
+    if (options.scope !== 'tab' || !isWebRuntime()) {
+        // The canonical persisted owner invokes this updater only after acquiring
+        // the browser-wide state lock and re-reading the latest device state.
+        return updateHomeViewState(update);
+    }
+
     const deviceState = loadHomeViewState() ?? {
         version: 1,
         groups: [],
         activeTargetKind: null,
         activeTargetId: null,
     };
-    const current = options.scope === 'tab' && isWebRuntime()
-        ? loadEffectiveHomeViewState() ?? deviceState
-        : deviceState;
+    const current = loadEffectiveHomeViewState() ?? deviceState;
     const requested = update(current);
 
-    if (options.scope !== 'tab' || !isWebRuntime()) {
-        return updateHomeViewState(() => requested);
-    }
-
-    const savedDeviceState = updateHomeViewState((latest) => ({
-        ...latest,
-        groups: requested.groups,
-    }));
+    // A routine web selection owns only this tab's target. `requested` was derived
+    // from a snapshot captured before the updater ran, so publishing its groups
+    // here could overwrite a newer device-global group edit from another surface.
+    // Group mutation remains exclusively owned by the device-scoped path.
+    const savedDeviceState = loadHomeViewState() ?? deviceState;
     writeTabTarget(targetFromState(
         { ...requested, groups: savedDeviceState.groups },
         listServerProfiles(),
     ));
-    return loadEffectiveHomeViewState() ?? savedDeviceState;
+    return Promise.resolve(loadEffectiveHomeViewState() ?? savedDeviceState);
 }
 
 export function subscribeEffectiveHomeViewState(listener: () => void): () => void {

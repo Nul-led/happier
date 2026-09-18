@@ -5,6 +5,7 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES } from '@happier-dev/protocol/rpc';
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
 const sessionRpcMock = vi.hoisted(() => vi.fn());
 const machineRpcMock = vi.hoisted(() => vi.fn());
@@ -82,6 +83,38 @@ function createSessionScmState(params: Readonly<{
 }
 
 describe('sessionScm', () => {
+    it('keeps reads and mutations on the explicitly selected Home with duplicate session and machine ids', async () => {
+        const session = (serverId: string, path: string) => createSessionFixture({
+            id: 'same-session', serverId, active: true,
+            metadata: { ...baseSessionMetadata, machineId: 'same-machine', path },
+        });
+        getStateMock.mockReturnValue({
+            ...createSessionScmState({ session: session('home-a', '/repo/a'), machines: [createMachineFixture({ id: 'same-machine', active: true })] }),
+            sessionListRowsByServerId: {
+                'home-b': { 'same-session': buildSessionListRenderableFromSession(session('home-b', '/repo/b')) },
+            },
+            machineListByServerId: { 'home-b': [createMachineFixture({ id: 'same-machine', active: true })] },
+        });
+        machineRpcMock.mockResolvedValue({ success: true });
+        const { sessionScmStatusSnapshot, sessionScmChangeDiscard } = await import('./sessionScm');
+        await sessionScmStatusSnapshot('same-session', {}, 'home-b');
+        await sessionScmChangeDiscard('same-session', { entries: [] }, 'home-b');
+        expect(machineRpcMock.mock.calls.map((call) => ({ cwd: call[2].cwd, serverId: call[3].serverId })))
+            .toEqual([{ cwd: '/repo/b', serverId: 'home-b' }, { cwd: '/repo/b', serverId: 'home-b' }]);
+        expect(resolvePreferredServerIdForSessionIdMock).not.toHaveBeenCalled();
+    });
+
+    it('never substitutes the active Home when the qualified session is unavailable', async () => {
+        getStateMock.mockReturnValue(createSessionScmState({
+            session: createSessionFixture({ id: 'same-session', serverId: 'home-a', metadata: baseSessionMetadata }),
+            machines: [createMachineFixture({ id: 'machine-1', active: true })],
+        }));
+        const { sessionScmStatusSnapshot } = await import('./sessionScm');
+        expect(await sessionScmStatusSnapshot('same-session', {}, 'home-b'))
+            .toMatchObject({ success: false, errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE });
+        expect(machineRpcMock).not.toHaveBeenCalled();
+    });
+
     afterEach(() => {
         sessionRpcMock.mockReset();
         machineRpcMock.mockReset();

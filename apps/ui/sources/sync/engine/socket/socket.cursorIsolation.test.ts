@@ -5,6 +5,7 @@ import { buildSessionListRenderableFromSession } from '@/sync/domains/session/li
 import type { Session } from '@/sync/domains/state/storageTypes';
 import * as persistence from '@/sync/domains/state/persistence';
 import { storage } from '@/sync/domains/state/storage';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { flushActivityUpdates, handleUpdateContainer } from './socket';
 
 const initialStorageState = storage.getInitialState();
@@ -65,6 +66,66 @@ describe('socket update handling cursor isolation', () => {
 
     afterEach(() => {
         vi.useRealTimers();
+    });
+
+    it('targets an absent envelope and clears pending availability when a valid socket envelope arrives', async () => {
+        const { Encryption } = await import('@/sync/encryption/encryption');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { sealEncryptedDataKeyEnvelopeV1 } = await import('@happier-dev/protocol');
+        const sessionId = 'socket_pending_recipient';
+        const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+        const writer = await Encryption.create(new Uint8Array(32).fill(7));
+        const sessionKey = new Uint8Array(32).fill(8);
+        await writer.initializeSessions(new Map([[sessionId, sessionKey]]));
+        const metadata = { path: '/shared', host: 'shared-host', name: 'Shared session' };
+        const ciphertext = await writer.getSessionEncryption(sessionId)!.encryptRaw(metadata);
+        const envelope = sealEncryptedDataKeyEnvelopeV1({
+            dataKey: sessionKey,
+            recipientPublicKey: encryption.contentDataKey,
+            randomBytes: (length) => new Uint8Array(length).fill(3),
+        });
+        storage.getState().applySessions([{
+            ...buildSession(sessionId),
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: 'encrypted_access_pending',
+        }]);
+        const hydrateSessionById = vi.fn();
+        const params = buildBaseParams({
+            encryption,
+            hydrateSessionById,
+            applySessions: (sessions) => storage.getState().applySessions(sessions),
+        });
+        const updateData = {
+            id: 'socket_pending_update', seq: 2, createdAt: 2,
+            body: {
+                t: 'new-session', id: sessionId, seq: 2,
+                metadata: ciphertext, metadataVersion: 2,
+                agentState: null, agentStateVersion: 0,
+                encryptionMode: 'e2ee', dataEncryptionKey: null,
+                active: true, activeAt: 2, createdAt: 1, updatedAt: 2,
+            },
+        } satisfies ApiUpdateContainer;
+
+        await handleUpdateContainer({ ...params, updateData });
+
+        expect(hydrateSessionById).toHaveBeenCalledWith(sessionId, 'socket-update-missing-session');
+        expect(encryption.getSessionEncryption(sessionId)).toBeNull();
+        expect(storage.getState().sessions[sessionId]?.encryptedContentAvailability).toBe('encrypted_access_pending');
+
+        await handleUpdateContainer({
+            ...params,
+            updateData: {
+                ...updateData,
+                body: { ...updateData.body, dataEncryptionKey: encodeBase64(envelope, 'base64') },
+            },
+        });
+
+        expect(storage.getState().sessions[sessionId]).toMatchObject({
+            metadata,
+            encryptedContentAvailability: 'ready',
+        });
+        await expect(encryption.getSessionEncryption(sessionId)!.decryptRaw(ciphertext)).resolves.toEqual(metadata);
+        expect(params.invalidateSessions).not.toHaveBeenCalled();
     });
 
     it('applies self-sufficient new-session socket updates without full list invalidation', async () => {
@@ -377,19 +438,21 @@ describe('socket update handling cursor isolation', () => {
     it('patches list-only session rows from activity updates', async () => {
         vi.useFakeTimers();
         const sessionId = 's_renderable_only';
+        const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
+        expect(serverId).toBeTruthy();
+        const row = buildSessionListRenderableFromSession({
+            ...buildSession(sessionId),
+            active: true,
+            activeAt: 100,
+            thinking: false,
+            thinkingAt: 0,
+        });
         storage.setState({
             sessions: {},
             sessionMessages: {},
             sessionPending: {},
-            sessionListRenderables: {
-                [sessionId]: buildSessionListRenderableFromSession({
-                    ...buildSession(sessionId),
-                    active: true,
-                    activeAt: 100,
-                    thinking: false,
-                    thinkingAt: 0,
-                }),
-            },
+            sessionListRowsByServerId: { [serverId]: { [sessionId]: row } },
+            ordinarySessionListMembershipByServerId: { [serverId]: [sessionId] },
             isDataReady: true,
         } as never);
 
@@ -401,7 +464,7 @@ describe('socket update handling cursor isolation', () => {
         flushActivityUpdates({ updates, applySessions });
 
         expect(applySessions).not.toHaveBeenCalled();
-        expect(storage.getState().sessionListRenderables[sessionId]).toMatchObject({
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[sessionId]).find(Boolean)).toMatchObject({
             active: true,
             activeAt: 100,
             thinking: false,
@@ -411,7 +474,7 @@ describe('socket update handling cursor isolation', () => {
 
         await vi.advanceTimersByTimeAsync(16);
 
-        expect(storage.getState().sessionListRenderables[sessionId]).toMatchObject({
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[sessionId]).find(Boolean)).toMatchObject({
             active: true,
             activeAt: 200,
             thinking: true,

@@ -161,6 +161,38 @@ describe('createEndpointSupervisedRequest', () => {
         expect(supervisor.invalidate).not.toHaveBeenCalled();
     });
 
+    it('does not reinterpret an authenticated domain 403 as failed Home authentication', async () => {
+        getCredentialsForServerUrlMock.mockResolvedValue(null);
+        runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'session_access_forbidden' }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+
+        const supervisor: ManagedEndpointSupervisor = {
+            start: vi.fn(async () => {}),
+            stop: vi.fn(async () => {}),
+            invalidate: vi.fn(),
+            reportFailure: vi.fn(),
+            reportProbeResult: vi.fn(),
+            waitUntilOnline: vi.fn(async () => {}),
+            getState: () => onlineState(),
+            subscribe: () => () => {},
+        };
+        const { createEndpointSupervisedRequest } = await import('./createEndpointSupervisedRequest');
+        const request = createEndpointSupervisedRequest({
+            serverId: 'server-a',
+            serverUrl: 'https://a.example.test',
+            token: 'token-1',
+            endpointSupervisor: supervisor,
+        });
+
+        const response = await request('/v1/sessions/session-1/public-share', { method: 'GET', headers: {} });
+
+        expect(response.status).toBe(403);
+        expect(supervisor.reportProbeResult).not.toHaveBeenCalled();
+        expect(supervisor.invalidate).not.toHaveBeenCalled();
+    });
+
     it('reports proxy maintenance 503 responses as planned server restarts', async () => {
         getCredentialsForServerUrlMock.mockResolvedValue(null);
         runtimeFetchMock.mockResolvedValue(new Response('Server reload in progress', {

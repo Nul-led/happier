@@ -15,6 +15,7 @@ import { Modal } from '@/modal';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 import { t } from '@/text';
 import { useUnistyles } from 'react-native-unistyles';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 const REMOTE_PERMISSION_GRANTS_PAGE_SIZE = 50;
 
@@ -55,7 +56,9 @@ export function SessionRemotePermissionGrantsView(props: Readonly<{
     serverId: string | null;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
-    const routeKey = `${props.sessionId}\u0000${props.serverId ?? ''}`;
+    const routeKey = props.serverId
+        ? sessionAddressKey({ serverId: props.serverId, sessionId: props.sessionId })
+        : JSON.stringify(['legacy_unscoped_session', props.sessionId]);
     const routeKeyRef = React.useRef(routeKey);
     routeKeyRef.current = routeKey;
     const listGenerationRef = React.useRef(0);
@@ -200,6 +203,7 @@ export function SessionRemotePermissionGrantsView(props: Readonly<{
                 'session.permission.remote.grants.revoke',
                 {
                     sessionId: props.sessionId,
+                    turnId: grant.turnId,
                     requestId: grant.requestId,
                     grantId: grant.grantId,
                 },

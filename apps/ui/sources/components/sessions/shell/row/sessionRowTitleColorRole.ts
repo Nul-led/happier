@@ -1,7 +1,5 @@
 import type { SessionListAttentionState } from '../../../../sync/domains/session/listing/deriveSessionListActivity';
-import type { SessionStatus } from '@/utils/sessions/sessionUtils';
 import {
-    resolveLegacySessionRowAttentionState,
     type SessionRowAttentionState,
 } from './resolveSessionRowPresentation';
 
@@ -18,14 +16,6 @@ export function normalizeSessionListActiveColorMode(value: unknown): SessionList
     return value === 'attentionOnly' || value === 'allActive'
         ? value
         : 'activityAndAttention';
-}
-
-export function deriveSessionRowTitleAttentionState(input: Readonly<{
-    hasUnreadMessages: boolean;
-    pendingCount: number;
-    sessionStatus: SessionStatus;
-}>): SessionRowAttentionState {
-    return resolveLegacySessionRowAttentionState(input);
 }
 
 export function resolveSessionRowTitleColorRole(input: Readonly<{
@@ -51,7 +41,8 @@ export function resolveSessionRowTitleColorRole(input: Readonly<{
 }
 
 function isUserAttentionState(attentionState: SessionRowTitleAttentionState): boolean {
-    return attentionState === 'unread'
+    return attentionState === 'attention'
+        || attentionState === 'unread'
         || attentionState === 'pending'
         || attentionState === 'ready'
         || attentionState === 'failed'

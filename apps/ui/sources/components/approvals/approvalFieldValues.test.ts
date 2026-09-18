@@ -119,4 +119,128 @@ describe('describeApprovalActionFields', () => {
             value: 'New title from MCP',
         }));
     });
+
+    it('shows the exact Team and member targets for deferred governance approvals', () => {
+        expect(describeApprovalActionFields({
+            actionId: 'teams.members.remove',
+            actionArgs: { v: 1, teamId: 'team-acme', membershipId: 'membership-alice' },
+        })).toEqual({
+            rows: [
+                { kind: 'value', path: 'teamId', title: 'Team ID', value: 'team-acme' },
+                { kind: 'value', path: 'membershipId', title: 'Membership ID', value: 'membership-alice' },
+            ],
+            unrepresentable: null,
+        });
+
+        expect(describeApprovalActionFields({
+            actionId: 'teams.archive',
+            actionArgs: { v: 1, teamId: 'team-acme' },
+        })).toEqual({
+            rows: [
+                { kind: 'value', path: 'teamId', title: 'Team ID', value: 'team-acme' },
+            ],
+            unrepresentable: null,
+        });
+    });
+
+    it('presents canonical invitation context without exposing the bearer or continuation reference', () => {
+        const bearer = 'a'.repeat(43);
+        const bearerPresentation = describeApprovalActionFields({
+            actionId: 'teams.invitations.accept',
+            actionArgs: { v: 1, token: bearer },
+            preview: {
+                actionId: 'teams.invitations.accept',
+                actionArgs: {
+                    homeServerId: 'srv-home-acme',
+                    continuation: { teamId: 'team-acme' },
+                    teamName: 'Acme Platform',
+                    role: 'member',
+                    historyAccess: 'from_membership',
+                    state: 'active',
+                    expiresAt: 1234,
+                    recipientEmailMask: 'a•••@example.com',
+                },
+            },
+        });
+        expect(bearerPresentation).toEqual({
+            rows: [
+                { kind: 'value', path: 'homeServerId', title: 'Home ID', value: 'srv-home-acme' },
+                { kind: 'value', path: 'continuation.teamId', title: 'Team ID', value: 'team-acme' },
+                { kind: 'value', path: 'teamName', title: 'Team name', value: 'Acme Platform' },
+                { kind: 'value', path: 'role', title: 'Team role', value: 'member' },
+                { kind: 'value', path: 'historyAccess', title: 'History access', value: 'from_membership' },
+                { kind: 'value', path: 'state', title: 'Invitation state', value: 'active' },
+                { kind: 'value', path: 'expiresAt', title: 'Expires at', value: '1234' },
+                { kind: 'value', path: 'recipientEmailMask', title: 'Recipient', value: 'a•••@example.com' },
+            ],
+            unrepresentable: null,
+        });
+        expect(JSON.stringify(bearerPresentation)).not.toContain(bearer);
+
+        const continuationPresentation = describeApprovalActionFields({
+            actionId: 'teams.invitations.accept',
+            actionArgs: {
+                v: 1,
+                continuation: {
+                    v: 1,
+                    kind: 'post_auth_invitation',
+                    reference: 'opaque-continuation-reference',
+                    teamId: 'team-acme',
+                },
+            },
+            preview: {
+                actionId: 'teams.invitations.accept',
+                actionArgs: { continuation: { teamId: 'team-acme' } },
+            },
+        });
+        expect(continuationPresentation).toEqual({
+            rows: [
+                { kind: 'value', path: 'continuation.teamId', title: 'Team ID', value: 'team-acme' },
+            ],
+            unrepresentable: null,
+        });
+        expect(JSON.stringify(continuationPresentation)).not.toContain('opaque-continuation-reference');
+    });
+
+    it('shows safe invitation intent without exposing request or result bearers', () => {
+        const createPresentation = describeApprovalActionFields({
+            actionId: 'teams.invitations.create',
+            actionArgs: {
+                v: 1,
+                teamId: 'team-acme',
+                recipientEmail: 'alice@example.com',
+                role: 'member',
+                historyAccess: 'from_membership',
+                requestKey: 'private-retry-key',
+            },
+        });
+        expect(createPresentation).toEqual({
+            rows: [
+                { kind: 'value', path: 'teamId', title: 'Team ID', value: 'team-acme' },
+                { kind: 'value', path: 'recipientEmail', title: 'Recipient email', value: 'alice@example.com' },
+                { kind: 'value', path: 'role', title: 'Team role', value: 'member' },
+                { kind: 'value', path: 'historyAccess', title: 'History access', value: 'from_membership' },
+            ],
+            unrepresentable: null,
+        });
+        expect(JSON.stringify(createPresentation)).not.toContain('private-retry-key');
+
+        const reissuePresentation = describeApprovalActionFields({
+            actionId: 'teams.invitations.reissue',
+            actionArgs: {
+                v: 1,
+                teamId: 'team-acme',
+                invitationId: 'invitation-alice',
+                recipientEmail: 'replacement@example.com',
+                requestKey: 'another-private-retry-key',
+            },
+        });
+        expect(reissuePresentation.rows).toEqual([
+            { kind: 'value', path: 'teamId', title: 'Team ID', value: 'team-acme' },
+            { kind: 'value', path: 'invitationId', title: 'Invitation ID', value: 'invitation-alice' },
+            { kind: 'value', path: 'recipientEmail', title: 'Recipient email', value: 'replacement@example.com' },
+        ]);
+        expect(JSON.stringify(reissuePresentation)).not.toContain('another-private-retry-key');
+        expect(JSON.stringify(reissuePresentation)).not.toContain('joinUrl');
+    });
 });

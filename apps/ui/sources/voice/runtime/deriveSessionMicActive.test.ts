@@ -11,9 +11,9 @@ describe('deriveSessionMicActive', () => {
       deriveSessionMicActive({
         voiceStatus: 'disconnected',
         scope: 'global',
-        sessionId: 's1',
-        primaryActionSessionId: 's1',
-        lastFocusedSessionId: 's1',
+        sessionAddress: { serverId: 'server-a', sessionId: 's1' },
+        primaryActionSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+        lastFocusedSessionAddress: { serverId: 'server-a', sessionId: 's1' },
       }),
     ).toBe(false);
   });
@@ -23,9 +23,9 @@ describe('deriveSessionMicActive', () => {
       deriveSessionMicActive({
         voiceStatus: 'connected' satisfies VoiceSessionStatus,
         scope: 'session' satisfies VoiceAssistantScope,
-        sessionId: 's1',
-        primaryActionSessionId: null,
-        lastFocusedSessionId: null,
+        sessionAddress: { serverId: 'server-a', sessionId: 's1' },
+        primaryActionSessionAddress: null,
+        lastFocusedSessionAddress: null,
       }),
     ).toBe(true);
   });
@@ -35,9 +35,9 @@ describe('deriveSessionMicActive', () => {
       deriveSessionMicActive({
         voiceStatus: 'connected' satisfies VoiceSessionStatus,
         scope: 'global' satisfies VoiceAssistantScope,
-        sessionId: 's1',
-        primaryActionSessionId: 's1',
-        lastFocusedSessionId: 's2',
+        sessionAddress: { serverId: 'server-a', sessionId: 's1' },
+        primaryActionSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+        lastFocusedSessionAddress: { serverId: 'server-a', sessionId: 's2' },
       }),
     ).toBe(true);
   });
@@ -47,9 +47,9 @@ describe('deriveSessionMicActive', () => {
       deriveSessionMicActive({
         voiceStatus: 'connected' satisfies VoiceSessionStatus,
         scope: 'global' satisfies VoiceAssistantScope,
-        sessionId: 's1',
-        primaryActionSessionId: null,
-        lastFocusedSessionId: 's1',
+        sessionAddress: { serverId: 'server-a', sessionId: 's1' },
+        primaryActionSessionAddress: null,
+        lastFocusedSessionAddress: { serverId: 'server-a', sessionId: 's1' },
       }),
     ).toBe(true);
   });
@@ -59,11 +59,10 @@ describe('deriveSessionMicActive', () => {
       deriveSessionMicActive({
         voiceStatus: 'connected' satisfies VoiceSessionStatus,
         scope: 'global' satisfies VoiceAssistantScope,
-        sessionId: 's1',
-        primaryActionSessionId: 's2',
-        lastFocusedSessionId: 's1',
+        sessionAddress: { serverId: 'server-a', sessionId: 's1' },
+        primaryActionSessionAddress: { serverId: 'server-a', sessionId: 's2' },
+        lastFocusedSessionAddress: { serverId: 'server-a', sessionId: 's1' },
       }),
     ).toBe(false);
   });
 });
-

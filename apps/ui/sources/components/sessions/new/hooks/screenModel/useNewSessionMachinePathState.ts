@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { MachinePoolSelectionOriginV1, SessionAuthoringExecutionTargetV2 } from '@happier-dev/protocol';
 
 import { resolvePreferredMachineId } from '@/components/settings/pickers/resolvePreferredMachineId';
 import { normalizeOptionalParam } from '@/profileRouteParams';
@@ -23,6 +24,11 @@ function normalizePathParam(raw: unknown): string {
 }
 
 export function useNewSessionMachinePathState(params: Readonly<{
+    serverId: string | null;
+    persistedExecutionTarget?: SessionAuthoringExecutionTargetV2 | null;
+    /** Fresh one-shot handoff identity for an explicit rich picker target. */
+    executionTargetRequestKey?: string | null;
+    routeSelectionOrigin?: MachinePoolSelectionOriginV1;
     machines: ReadonlyArray<Machine>;
     recentMachinePaths: unknown;
     sessions?: ReadonlyArray<Session | string> | null | undefined;
@@ -32,8 +38,21 @@ export function useNewSessionMachinePathState(params: Readonly<{
     persistedPath?: unknown;
     cacheScopeKey?: string | null;
 }>): Readonly<{
+    executionTarget: SessionAuthoringExecutionTargetV2 | null;
     selectedMachineId: string | null;
     setSelectedMachineId: React.Dispatch<React.SetStateAction<string | null>>;
+    setSelectedMachineTarget: (target: Readonly<{
+        machineId: string | null;
+        selectionOrigin?: MachinePoolSelectionOriginV1 | null;
+        path?: string;
+    }>) => void;
+    setTemporaryComputerTarget: (target: Readonly<{
+        serverId: string;
+        artifactTarget: Extract<SessionAuthoringExecutionTargetV2, { kind: 'temporary_computer' }>['artifactTarget'];
+        workspace: Extract<SessionAuthoringExecutionTargetV2, { kind: 'temporary_computer' }>['workspace'];
+        /** Absolute instant; omitted means the default, Never. */
+        packageExpiresAt?: number;
+    }>) => void;
     selectedPath: string;
     setSelectedPath: React.Dispatch<React.SetStateAction<string>>;
     setDraftSelectedPath: (path: string) => void;
@@ -74,59 +93,147 @@ export function useNewSessionMachinePathState(params: Readonly<{
 
     const getPersistedPathForMachine = React.useCallback((machineId: string | null): string => {
         if (!machineId) return '';
-        const persistedMachineId = normalizeMachineIdParam(params.persistedMachineId);
+        const persistedMachineId = params.persistedExecutionTarget?.kind === 'machine'
+            ? params.persistedExecutionTarget.target.machineId
+            : normalizeMachineIdParam(params.persistedMachineId);
         if (!persistedMachineId || persistedMachineId !== machineId) {
             return '';
         }
         return normalizePathParam(params.persistedPath);
-    }, [params.persistedMachineId, params.persistedPath]);
+    }, [params.persistedExecutionTarget, params.persistedMachineId, params.persistedPath]);
 
     const resolvePersistedMachineId = React.useCallback((): string | null => {
-        const persistedMachineId = normalizeMachineIdParam(params.persistedMachineId);
+        const persistedMachineId = params.persistedExecutionTarget?.kind === 'machine'
+            ? params.persistedExecutionTarget.target.machineId
+            : normalizeMachineIdParam(params.persistedMachineId);
         if (!persistedMachineId) return null;
-        return resolveMachineId(persistedMachineId);
-    }, [params.persistedMachineId, resolveMachineId]);
+        return persistedMachineId;
+    }, [params.persistedExecutionTarget, params.persistedMachineId]);
 
-    const [selectedMachineId, setSelectedMachineIdState] = React.useState<string | null>(() => {
+    const machineTarget = React.useCallback((
+        machineId: string | null,
+        selectionOriginOverride?: MachinePoolSelectionOriginV1 | null,
+    ): SessionAuthoringExecutionTargetV2 | null => {
+        if (!machineId || !params.serverId) return null;
+        if (selectionOriginOverride !== undefined) {
+            return {
+                kind: 'machine',
+                target: { serverId: params.serverId, machineId },
+                ...(selectionOriginOverride ? { selectionOrigin: selectionOriginOverride } : {}),
+            };
+        }
+        if (params.routeSelectionOrigin && normalizeMachineIdParam(params.machineIdParam) === machineId) {
+            return {
+                kind: 'machine',
+                target: { serverId: params.serverId, machineId },
+                selectionOrigin: params.routeSelectionOrigin,
+            };
+        }
+        const persisted = params.persistedExecutionTarget;
+        return persisted?.kind === 'machine'
+            && persisted.target.serverId === params.serverId
+            && persisted.target.machineId === machineId
+            ? persisted
+            : { kind: 'machine', target: { serverId: params.serverId, machineId } };
+    }, [params.machineIdParam, params.persistedExecutionTarget, params.routeSelectionOrigin, params.serverId]);
+    const [executionTarget, setExecutionTarget] = React.useState<SessionAuthoringExecutionTargetV2 | null>(() => {
         const requestedMachineId = normalizeMachineIdParam(params.machineIdParam);
         // A route/seeded machine is an exact target. Do not pair its directory
         // with a persisted or preferred machine while that target hydrates.
         if (requestedMachineId) {
-            return params.machines.some((machine) => machine.id === requestedMachineId)
-                ? requestedMachineId
-                : null;
+            return machineTarget(requestedMachineId);
         }
-        return resolvePersistedMachineId() ?? resolveMachineId(null);
+        if (params.persistedExecutionTarget !== undefined) return params.persistedExecutionTarget;
+        return machineTarget(resolvePersistedMachineId() ?? resolveMachineId(null));
     });
+    const selectedMachineId = executionTarget?.kind === 'machine' ? executionTarget.target.machineId : null;
+    const executionTargetRef = React.useRef(executionTarget);
+    executionTargetRef.current = executionTarget;
+    const setSelectedMachineIdState = React.useCallback((machineId: string | null) => {
+        setExecutionTarget((current) => {
+            const next = machineTarget(machineId);
+            return current?.kind === 'machine'
+                && next?.kind === 'machine'
+                && current.target.serverId === next.target.serverId
+                && current.target.machineId === next.target.machineId
+                && current.selectionOrigin?.poolId === next.selectionOrigin?.poolId
+                ? current
+                : next;
+        });
+    }, [machineTarget, params.serverId]);
     const selectedMachineIdRef = React.useRef<string | null>(selectedMachineId);
     selectedMachineIdRef.current = selectedMachineId;
     const hasUserSelectedMachineRef = React.useRef(false);
+    const hasCommittedExactTargetRef = React.useRef(
+        normalizeMachineIdParam(params.machineIdParam).length > 0
+        || normalizeMachineIdParam(params.persistedMachineId).length > 0
+        || params.persistedExecutionTarget != null,
+    );
     const selectedMachineOnlineSeenByIdRef = React.useRef<Map<string, boolean>>(new Map());
     const lastAppliedPersistedMachineIdRef = React.useRef<string>('');
-
-    const setSelectedMachineId = React.useCallback<React.Dispatch<React.SetStateAction<string | null>>>((next) => {
-        hasUserSelectedMachineRef.current = true;
-        setSelectedMachineIdState((current) => typeof next === 'function' ? next(current) : next);
-    }, []);
+    const lastAppliedExecutionTargetRequestKeyRef = React.useRef<string | null>(
+        params.executionTargetRequestKey ?? null,
+    );
+    const lastAppliedRouteOriginPoolIdRef = React.useRef<string | null>(null);
 
     const [selectedPath, setSelectedPathState] = React.useState<string>(() => {
         const trimmedPath = normalizePathParam(params.pathParam);
         if (trimmedPath) return trimmedPath;
+        if (executionTarget?.kind === 'temporary_computer') return normalizePathParam(params.persistedPath);
         const persistedPath = getPersistedPathForMachine(selectedMachineId);
         if (persistedPath) return persistedPath;
         return getBestPathForMachine(selectedMachineId);
     });
     const selectedPathDraftRef = React.useRef<string>(selectedPath);
     const hasUserEditedPathRef = React.useRef(false);
-    const lastAppliedMachineParamRef = React.useRef<string>('');
+    const lastAppliedMachineParamRef = React.useRef<Readonly<{ machineId: string; scopeKey: string | null }> | null>(null);
     const lastAppliedPathParamRef = React.useRef<string>('');
     const applyCommittedSelectedPath = React.useCallback((nextPath: string) => {
         selectedPathDraftRef.current = nextPath;
         setSelectedPathState(nextPath);
     }, []);
 
+    const setSelectedMachineTarget = React.useCallback((target: Readonly<{
+        machineId: string | null;
+        selectionOrigin?: MachinePoolSelectionOriginV1 | null;
+        path?: string;
+    }>) => {
+        hasUserSelectedMachineRef.current = true;
+        if (target.path !== undefined) {
+            hasUserEditedPathRef.current = false;
+            applyCommittedSelectedPath(target.path);
+        }
+        setExecutionTarget(() => {
+            hasCommittedExactTargetRef.current = target.machineId !== null;
+            return machineTarget(target.machineId, target.selectionOrigin ?? null);
+        });
+    }, [applyCommittedSelectedPath, machineTarget]);
+
+    const setSelectedMachineId = React.useCallback<React.Dispatch<React.SetStateAction<string | null>>>((next) => {
+        const machineId = typeof next === 'function'
+            ? next(selectedMachineIdRef.current)
+            : next;
+        setSelectedMachineTarget({
+            machineId,
+            selectionOrigin: null,
+            path: getBestPathForMachine(machineId),
+        });
+    }, [getBestPathForMachine, setSelectedMachineTarget]);
+
+    const setTemporaryComputerTarget = React.useCallback((target: Readonly<{
+        serverId: string;
+        artifactTarget: Extract<SessionAuthoringExecutionTargetV2, { kind: 'temporary_computer' }>['artifactTarget'];
+        workspace: Extract<SessionAuthoringExecutionTargetV2, { kind: 'temporary_computer' }>['workspace'];
+        packageExpiresAt?: number;
+    }>) => {
+        hasUserSelectedMachineRef.current = true;
+        hasCommittedExactTargetRef.current = true;
+        setExecutionTarget({ kind: 'temporary_computer', ...target });
+    }, []);
+
     const setSelectedPath = React.useCallback<React.Dispatch<React.SetStateAction<string>>>((next) => {
         hasUserEditedPathRef.current = true;
+        hasCommittedExactTargetRef.current = executionTargetRef.current !== null;
         setSelectedPathState((current) => {
             const resolved = typeof next === 'function' ? next(current) : next;
             selectedPathDraftRef.current = resolved;
@@ -136,6 +243,7 @@ export function useNewSessionMachinePathState(params: Readonly<{
 
     const setDraftSelectedPath = React.useCallback((path: string) => {
         hasUserEditedPathRef.current = true;
+        hasCommittedExactTargetRef.current = executionTargetRef.current !== null;
         selectedPathDraftRef.current = path;
     }, []);
 
@@ -151,35 +259,70 @@ export function useNewSessionMachinePathState(params: Readonly<{
     // Handle machine route param from picker screens (main's navigation pattern)
     React.useEffect(() => {
         const machineId = normalizeMachineIdParam(params.machineIdParam);
+        const scopeKey = params.cacheScopeKey ?? null;
+        const routeOriginPoolId = params.routeSelectionOrigin?.poolId ?? null;
         if (!machineId) {
-            lastAppliedMachineParamRef.current = '';
+            lastAppliedMachineParamRef.current = null;
+            lastAppliedRouteOriginPoolIdRef.current = null;
             return;
         }
-        // Only mark the param "applied" once we've actually applied it. This prevents the initial
-        // render from consuming the param before machine snapshots hydrate.
-        if (machineId === lastAppliedMachineParamRef.current) {
+        // Applying an exact ID does not require a hydrated Machine row. Consume
+        // the route value once so reconnect cannot undo a later user selection.
+        const previousRouteTarget = lastAppliedMachineParamRef.current;
+        if (
+            machineId === previousRouteTarget?.machineId
+            && scopeKey === previousRouteTarget.scopeKey
+            && routeOriginPoolId === lastAppliedRouteOriginPoolIdRef.current
+        ) {
             return;
         }
         if (!hasMachine(machineId)) {
-            // The requested machine and path are one atomic target. Keeping a
-            // previous selection here would launch with machine A + path B.
-            // Once the reader explicitly chooses another machine, the stale
-            // route parameter is no longer authoritative for this mount.
-            if (!hasUserSelectedMachineRef.current && selectedMachineId !== null) {
-                hasUserSelectedMachineRef.current = false;
-                setSelectedMachineIdState(null);
-            }
+            // A fresh route target is authoritative before its row hydrates;
+            // the consumed qualified route above prevents stale reconnects.
+            hasUserEditedPathRef.current = false;
+            applyCommittedSelectedPath(
+                normalizePathParam(params.pathParam)
+                || getPersistedPathForMachine(machineId)
+                || getBestPathForMachine(machineId),
+            );
+            lastAppliedMachineParamRef.current = { machineId, scopeKey };
+            lastAppliedRouteOriginPoolIdRef.current = routeOriginPoolId;
+            hasCommittedExactTargetRef.current = true;
+            setSelectedMachineIdState(machineId);
             return;
         }
 
-        lastAppliedMachineParamRef.current = machineId;
-        if (machineId === selectedMachineId) return;
+        lastAppliedMachineParamRef.current = { machineId, scopeKey };
+        lastAppliedRouteOriginPoolIdRef.current = routeOriginPoolId;
+        if (
+            machineId === selectedMachineId
+            && (!previousRouteTarget || previousRouteTarget.scopeKey === scopeKey)
+            && executionTarget?.kind === 'machine'
+            && (executionTarget.selectionOrigin?.poolId ?? null) === routeOriginPoolId
+        ) return;
         hasUserSelectedMachineRef.current = true;
+        hasCommittedExactTargetRef.current = true;
         setSelectedMachineIdState(machineId);
         hasUserEditedPathRef.current = false;
         const trimmedPath = normalizePathParam(params.pathParam);
         applyCommittedSelectedPath(trimmedPath || getPersistedPathForMachine(machineId) || getBestPathForMachine(machineId));
-    }, [applyCommittedSelectedPath, getBestPathForMachine, getPersistedPathForMachine, hasMachine, params.machineIdParam, params.pathParam, selectedMachineId]);
+    }, [applyCommittedSelectedPath, executionTarget, getBestPathForMachine, getPersistedPathForMachine, hasMachine, params.cacheScopeKey, params.machineIdParam, params.pathParam, params.routeSelectionOrigin, selectedMachineId]);
+
+    React.useEffect(() => {
+        const requestKey = params.executionTargetRequestKey ?? null;
+        if (requestKey === null || requestKey === lastAppliedExecutionTargetRequestKeyRef.current) {
+            return;
+        }
+        lastAppliedExecutionTargetRequestKeyRef.current = requestKey;
+        if (params.persistedExecutionTarget === undefined) return;
+
+        hasUserSelectedMachineRef.current = true;
+        hasCommittedExactTargetRef.current = params.persistedExecutionTarget !== null;
+        setExecutionTarget(params.persistedExecutionTarget);
+        if (params.persistedExecutionTarget?.kind === 'temporary_computer' && !hasUserEditedPathRef.current) {
+            applyCommittedSelectedPath(normalizePathParam(params.persistedPath));
+        }
+    }, [applyCommittedSelectedPath, params.executionTargetRequestKey, params.persistedExecutionTarget, params.persistedPath]);
 
     React.useEffect(() => {
         const routeMachineId = normalizeMachineIdParam(params.machineIdParam);
@@ -188,6 +331,15 @@ export function useNewSessionMachinePathState(params: Readonly<{
             return;
         }
         if (hasUserSelectedMachineRef.current) {
+            return;
+        }
+
+        if (params.persistedExecutionTarget?.kind === 'temporary_computer') {
+            hasCommittedExactTargetRef.current = true;
+            setExecutionTarget(params.persistedExecutionTarget);
+            if (!hasUserEditedPathRef.current) {
+                applyCommittedSelectedPath(normalizePathParam(params.persistedPath));
+            }
             return;
         }
 
@@ -201,6 +353,7 @@ export function useNewSessionMachinePathState(params: Readonly<{
         }
 
         lastAppliedPersistedMachineIdRef.current = reconciledPersistedMachineId;
+        hasCommittedExactTargetRef.current = true;
         if (reconciledPersistedMachineId === selectedMachineIdRef.current) {
             return;
         }
@@ -215,36 +368,43 @@ export function useNewSessionMachinePathState(params: Readonly<{
         getBestPathForMachine,
         getPersistedPathForMachine,
         params.machineIdParam,
+        params.persistedExecutionTarget,
+        params.persistedPath,
         resolvePersistedMachineId,
+        setSelectedMachineIdState,
     ]);
 
     // Ensure a machine is pre-selected once machines have loaded (wizard expects this).
     React.useEffect(() => {
-        if (selectedMachineId !== null) return;
+        if (executionTarget !== null) return;
         if (params.machines.length === 0) return;
         if (normalizeMachineIdParam(params.machineIdParam)) return;
         // Let persisted reconciliation own hydration when its preferred machine is available.
         // Otherwise this fallback can enqueue a competing selection in the same effect flush,
         // causing the persisted effect to run again against a stale selectedMachineId.
         if (resolvePersistedMachineId() !== null) return;
+        if (params.persistedExecutionTarget !== undefined) return;
         const machineIdToUse = resolveMachineId(null);
         const trimmedPath = normalizePathParam(params.pathParam);
 
         hasUserSelectedMachineRef.current = false;
+        hasCommittedExactTargetRef.current = false;
         setSelectedMachineIdState(machineIdToUse);
         hasUserEditedPathRef.current = false;
         applyCommittedSelectedPath(trimmedPath || getPersistedPathForMachine(machineIdToUse) || getBestPathForMachine(machineIdToUse));
-    }, [applyCommittedSelectedPath, getBestPathForMachine, getPersistedPathForMachine, params.machines, params.pathParam, resolveMachineId, selectedMachineId]);
+    }, [applyCommittedSelectedPath, executionTarget, getBestPathForMachine, getPersistedPathForMachine, params.machines, params.pathParam, params.persistedExecutionTarget, resolveMachineId, setSelectedMachineIdState]);
 
     // Keep selection valid when machine snapshots change (server/account switch, revoke, reconnect).
     React.useEffect(() => {
         if (selectedMachineId === null) return;
         if (hasMachine(selectedMachineId)) return;
+        if (hasCommittedExactTargetRef.current) return;
 
         const machineIdToUse = resolveMachineId(null);
         if (machineIdToUse === selectedMachineId) return;
 
         hasUserSelectedMachineRef.current = false;
+        hasCommittedExactTargetRef.current = false;
         setSelectedMachineIdState(machineIdToUse);
         hasUserEditedPathRef.current = false;
         applyCommittedSelectedPath(getPersistedPathForMachine(machineIdToUse) || getBestPathForMachine(machineIdToUse));
@@ -262,6 +422,7 @@ export function useNewSessionMachinePathState(params: Readonly<{
     // once machine snapshots hydrate. Keep explicit user/route choices stable.
     React.useEffect(() => {
         if (selectedMachineId === null) return;
+        if (hasCommittedExactTargetRef.current) return;
         if (hasUserSelectedMachineRef.current) return;
         if (normalizeMachineIdParam(params.machineIdParam)) return;
         if (selectedMachineOnlineSeenByIdRef.current.get(selectedMachineId) === true) return;
@@ -270,6 +431,7 @@ export function useNewSessionMachinePathState(params: Readonly<{
         if (!machineIdToUse || machineIdToUse === selectedMachineId) return;
 
         hasUserSelectedMachineRef.current = false;
+        hasCommittedExactTargetRef.current = false;
         setSelectedMachineIdState(machineIdToUse);
 
         if (hasUserEditedPathRef.current) return;
@@ -304,7 +466,7 @@ export function useNewSessionMachinePathState(params: Readonly<{
             return;
         }
 
-        const persistedPath = getPersistedPathForMachine(selectedMachineId);
+        const persistedPath = hasUserSelectedMachineRef.current ? '' : getPersistedPathForMachine(selectedMachineId);
         if (persistedPath) {
             if (selectedPath !== persistedPath) {
                 applyCommittedSelectedPath(persistedPath);
@@ -325,8 +487,11 @@ export function useNewSessionMachinePathState(params: Readonly<{
     }, [applyCommittedSelectedPath, getBestPathForMachine, getPersistedPathForMachine, params.pathParam, selectedMachineId, selectedPath]);
 
     return {
+        executionTarget,
         selectedMachineId,
         setSelectedMachineId,
+        setSelectedMachineTarget,
+        setTemporaryComputerTarget,
         selectedPath,
         setSelectedPath,
         setDraftSelectedPath,

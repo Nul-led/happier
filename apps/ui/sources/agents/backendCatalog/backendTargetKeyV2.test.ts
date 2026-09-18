@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 
 import {
     backendTargetKeysMatch,
@@ -11,7 +11,7 @@ describe('resolveBackendTargetKeyV2', () => {
     it('derives one canonical qualified key for a bundled Agent regardless of input vocabulary', () => {
         const fromAgentIdentity = resolveBackendTargetKeyV2({
             kind: 'agent',
-            identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES.claude,
+            identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude,
         });
         const fromBackendRef = resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'claude' });
         const fromPersistedRef = resolveBackendTargetKeyV2({

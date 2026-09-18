@@ -1,4 +1,10 @@
 import {
+    SessionCollaborationHeaderEntry,
+} from '@/components/sessions/collaboration/SessionCollaborationHeaderEntry';
+import { useOpenSessionCollaboration } from '@/components/sessions/collaboration/useOpenSessionCollaboration';
+import { useSessionCollaborationDestinationAdmitted } from '@/hooks/session/useSessionCollaborationAvailability';
+import { normalizeSessionAddress, sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import {
     AgentInput,
     type AgentInputSendOptions,
 } from '@/components/sessions/agentInput';
@@ -28,6 +34,7 @@ import {
 } from '@/components/sessions/attachments/attachmentFilePickerActions';
 import { useSessionFileUploadAvailability } from '@/components/sessions/files/useSessionFileUploadAvailability';
 import { useSessionAgentInputExtraActionChips } from '@/components/sessions/agentInput/sessionActions/useSessionAgentInputExtraActionChips';
+import { useSessionAccessComposerChip } from '@/components/sessions/access/useSessionAccessComposerChip';
 import {
     openPluginContributedAction,
     openPluginContributedActionSessionReference,
@@ -61,9 +68,12 @@ import { useComposerScopePluginPresentation } from '@/components/sessions/presen
 import { useComposerPresentationInputEffects } from '@/components/sessions/presentation/useComposerPresentationInputEffects';
 import {
     applyComposerPresentationTransaction,
+    flushPendingRegisteredSessionComposerFocus,
     notifyComposerPresentationTargetChanged,
     readComposerPresentationSnapshot,
+    readSessionComposerPresentationTargetAtAddress,
     registerComposerPresentationTarget,
+    registerSessionComposerPresentationTarget,
     subscribeComposerPresentationTarget,
     useStableComposerPresentationTarget,
     type ComposerPresentationDocumentMutation,
@@ -125,6 +135,7 @@ import {
     SessionDraftConflictResolution,
     useSessionDraftConflictComposerBanner,
 } from '@/components/sessions/drafts/SessionDraftConflictResolution';
+import { buildSessionDraftSyncStatusBadge } from '@/components/sessions/drafts/sessionDraftStatusPresentation';
 import {
     captureComposerTransientInputStateForOutboundHandoff,
     clearComposerAfterOutboundHandoff,
@@ -133,11 +144,22 @@ import {
 import { useSessionAgentInputComposerPersistence } from '@/hooks/session/useSessionAgentInputComposerPersistence';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { useHomeTeamCredentialModelCatalog } from '@/hooks/teams/useHomeTeamCredentialModelCatalog';
+import { teamCredentialDetailPath } from '@/components/settings/teams/teamsRoutes';
+import type { TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol/teams';
+import { SESSION_BOARD_HEADER_MENU_ACTION_ID } from '@/components/sessions/board/sessionBoardDestination';
+import { useSessionBoardFeatureEnabled } from '@/components/sessions/board/useSessionBoardFeatureEnabled';
+import { createSessionBoardDetailsTab } from '@/components/sessions/panes/details/sessionDetailsTabBuilders';
+import { isSessionBoardVisibleInDetails } from '@/components/sessions/board/sessionBoardDetailsVisibility';
+import { usePaneFocusMode } from '@/components/appShell/panes/focusMode/usePaneFocusMode';
 import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
 import { useSessionExecutionRunsSupported } from '@/hooks/server/useSessionExecutionRunsSupported';
+import { useMaterializedTemporaryComputerSessionRecovery } from '@/components/sessions/shell/useMaterializedTemporaryComputerSessionRecovery';
 import { useCLIDetection } from '@/hooks/auth/useCLIDetection';
 import { useEventCallback } from '@/hooks/ui/useEventCallback';
 import { Modal } from '@/modal';
+import { useTeamCredentialSelectionCoordinator } from '@/components/sessions/teamCredentials/useTeamCredentialSelectionCoordinator';
+import { resourceHasAvailableTeamCredentialProviderModel } from '@/components/sessions/teamCredentials/teamCredentialProviderModelCurrentness';
 import { useScmSessionAutoRefresh } from '@/scm/refresh/useScmSessionAutoRefresh';
 import {
     sessionAbort,
@@ -145,7 +167,6 @@ import {
 } from '@/sync/ops';
 import {
     storage,
-    useActiveServerAccountScope,
     useEnabledAutomationsCountForSession,
     useEndpointConnectivity,
     useIsDataReady,
@@ -164,7 +185,10 @@ import {
     useSyncError,
     useWorkspaceReviewCommentsDrafts,
 } from '@/sync/domains/state/storage';
-import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
+import {
+    serverAccountScopeKeySuffix,
+    type ServerAccountScopeLifetime,
+} from '@/sync/domains/scope/serverAccountScope';
 import { readMessageDisplayText } from '@/sync/domains/messages/messageDisplayText';
 import { isRecoveredHistoryTranscriptObservation } from '@/sync/domains/messages/transcriptObservationProvenance';
 import { useWorkspaceScopeForSession } from '@/sync/domains/session/resolveWorkspaceScopeForSession';
@@ -225,11 +249,13 @@ import type {
     SessionDraftValueFieldId,
 } from '@/sync/domains/input/draftValues/sessionDraftValueTypes';
 import { SESSION_DRAFT_VALUE_SCHEMAS } from '@/sync/domains/input/draftValues/sessionDraftValueTypes';
+import { readExecutionRunRequestedAction } from '@/sync/domains/input/participants/executionRunRequestedAction';
 import {
     captureSessionDraftCurrentness,
     clearSessionDraftCurrentnessLocal,
     flushSessionDraft,
     getSessionDraftSnapshot,
+    readSessionDiscussionSelectionSourceFromDraft,
     subscribeSessionDraft,
     writeExistingSessionDraft,
     type SessionDraftCurrentness,
@@ -254,10 +280,7 @@ import {
 } from '@/sync/domains/input/participants/resolveParticipantRoutedSend';
 import { useSessionAgentInputRoutingControls } from '@/components/sessions/agentInput/routing/useSessionAgentInputRoutingControls';
 import type { BrowserContextState } from '@/sync/domains/browser/context';
-import {
-    hasBrowserContextComposerAttachments,
-    mergeBrowserContextMessageMetaOverrides,
-} from '@/sync/domains/session/input/browserContext';
+import { mergeBrowserContextMessageMetaOverrides } from '@/sync/domains/session/input/browserContext';
 import {
     SessionBrowserContextRuntimeProvider,
     type SessionBrowserContextRuntime,
@@ -265,7 +288,6 @@ import {
 } from '@/components/sessions/browser/sessionBrowserContextRuntime';
 import { useSessionAgentActivity } from '@/hooks/session/useSessionAgentActivity';
 import { hasSessionSubagentLaunchCards } from '@/agents/registry/sessionSubagentUiBehavior';
-import { isExecutionRunNotRunningSendError, sessionExecutionRunSend } from '@/sync/ops/sessionExecutionRuns';
 import { tryBuildWorkspaceCacheKey } from '@/sync/domains/workspaces/workspaceScope';
 import { nowServerMs } from '@/sync/runtime/time';
 import { readSessionUiTelemetryNowMs } from '@/sync/runtime/performance/sessionUiTelemetry';
@@ -318,8 +340,9 @@ import {
     computeAcpConfigOptionControlsFromOverride,
     resolveSessionConfigOptionOverridesFromMetadata,
 } from '@/sync/domains/sessionControl/configOptionsControl';
-import { usePathname, useRouter } from 'expo-router';
+import { useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import * as React from 'react';
+import { useSessionFilePaneNavigation } from '@/components/sessions/panes/useSessionFileDetailsOpener';
 import { Keyboard, Platform, Pressable, View, useWindowDimensions } from 'react-native';
 import { layout } from '@/components/ui/layout/layout';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
@@ -348,7 +371,9 @@ import {
 import {
     resolveSessionActivityStatusBadgePresentation,
     shouldRetainSessionActivityStatusBadge,
+    summarizeSessionManagedWorkflowRuns,
 } from '@/components/sessions/workState/sessionActivityPresentation';
+import { useSessionManagedWorkflowRuns } from '@/components/sessions/workState/useSessionManagedWorkflowRuns';
 import { useSessionWorkflowActivity } from '@/components/sessions/workState/useSessionWorkflowActivity';
 import {
     STALE_SESSION_RUNNER_STATUS_BADGE_KEY,
@@ -373,7 +398,6 @@ import {
 } from '@/sync/ops/sessionRunnerRestart';
 import {
     readSessionWorkStateFromMetadata,
-    resolvePrimarySessionWorkStateItem,
 } from '@/sync/domains/session/workState/readSessionWorkState';
 import { SessionWorkStatePopover } from '@/components/sessions/workState/SessionWorkStatePopover';
 import { isSessionGoalEditingAvailable } from '@/components/sessions/workState/sessionGoalEditingAvailability';
@@ -386,11 +410,13 @@ import { resolveSessionActionDefaultBackendTitle } from '@/sync/domains/session/
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 import { resolveServerIdForSessionIdFromLocalCache } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { useAttachmentsUploadConfig } from '@/components/sessions/attachments/useAttachmentsUploadConfig';
 import { useAttachmentDraftManager } from '@/components/sessions/attachments/useAttachmentDraftManager';
 import {
     clearSessionAttachmentDrafts,
     readSessionAttachmentDrafts,
+    type SessionAttachmentDraftScope,
     writeSessionAttachmentDrafts,
 } from '@/components/sessions/attachments/sessionAttachmentDraftStore';
 import { buildAttachmentMessageMeta, formatAttachmentsBlock, uploadAttachmentDraftsToSession } from '@/components/sessions/attachments/uploadAttachmentDraftsToSession';
@@ -398,6 +424,18 @@ import { Text } from '@/components/ui/text/Text';
 import { sessionGoalClear, sessionGoalSet } from '@/sync/ops/sessionGoals';
 import { AppPaneScopeHost } from '@/components/appShell/panes/AppPaneScopeHost';
 import { useRegisterSessionPaneDriver } from '@/components/sessions/panes/useRegisterSessionPaneDriver';
+import {
+    useSessionAddressForSessionId,
+    useSessionPluginRuntime,
+    type SessionPluginRuntimeState,
+} from '@/components/sessions/plugins/useSessionPluginRuntime';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { useSessionBoardPrimaryMountResolver } from '@/components/sessions/board/useSessionBoardPrimaryMountHost';
+import type { SessionBoardPrimaryMountResolver } from '@/sync/domains/session/board';
+import {
+    SessionBoardControllerProvider,
+    useMountedSessionBoardController,
+} from '@/components/sessions/board/SessionBoardControllerProvider';
 import { SessionScreenTestIdsProvider } from './sessionScreenTestIds';
 import { useSessionScreenIsFocused } from './useSessionScreenIsFocused';
 import { resolvePaneLayout } from '@/components/ui/panels/paneBreakpoints';
@@ -421,8 +459,10 @@ import { resolvePendingActivationBanner } from '@/components/sessions/pending/re
 import type { ComposerStructuredInputMention } from '@/sync/domains/input/draftValues/sessionDraftValueTypes';
 import type { StorageState } from '@/sync/store/types';
 import {
+    readSessionWorkStatePrimaryItemV1,
     ConnectedServiceIdSchema,
     buildQualifiedPluginContributionKey,
+    parseQualifiedPluginContributionKey,
     type ConnectedAccountServiceKey,
     RawIngressStructuredInputV1Schema,
     type ComposerAttachmentDraftV1,
@@ -454,7 +494,11 @@ import {
     hiddenModelVisibilityKeys,
     type SessionModelProjectionGroup,
 } from '@/components/sessions/modelPicker/buildSessionModelPickerSections';
-import { sessionModelSelectionKey } from '@/components/sessions/modelPicker/sessionModelSelectionKey';
+import {
+    isTeamCredentialProviderModelPickerValue,
+    sessionModelSelectionKey,
+    type SessionModelPickerOptionValue,
+} from '@/components/sessions/modelPicker/sessionModelSelectionKey';
 import { hapticsLight } from '@/components/ui/theme/haptics';
 import { useSessionViewBootstrap } from './view/useSessionViewBootstrap';
 import { useSessionViewedLifecycle } from './view/useSessionViewedLifecycle';
@@ -463,6 +507,18 @@ import {
 } from '@/components/workspaceCockpit/mobileWorkspaceExperience';
 import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit/useMobileWorkspaceExperienceState';
 import { SessionViewLayout, type SessionViewLayoutProps } from './view/SessionViewLayout';
+import { SessionCompanionHost } from '@/components/sessions/companion/SessionCompanionHost';
+import { SessionCompanionRevealOwner } from '@/components/sessions/companion/presentation/SessionCompanionRevealPort';
+import { useSessionCompanionPreference } from '@/components/sessions/companion/state/useSessionCompanionPreference';
+import { useResolveSessionCompanionPlacementForDensity } from '@/components/sessions/companion/layout/useSessionCompanionPlacement';
+import type { SessionCompanionEdge } from '@/components/sessions/companion/state/sessionCompanionPreference';
+import type { SessionSummaryDestinationHandlers } from '@/components/sessions/companion/summary/SessionSummaryCard';
+import {
+    SessionCompanionPresentationBridge,
+    type SessionPresentationIntentApplier,
+} from '@/components/sessions/companion/presentation/SessionCompanionPresentationBridge';
+import type { SessionPresentationMutationOutcome } from '@/components/sessions/companion/presentation/sessionCompanionPresentationAdapter';
+import { resolveSessionRoutePathForSurface } from '@/components/workspaceCockpit/session/sessionCockpitState';
 import { ComposerAuxiliaryFrame } from './view/ComposerAuxiliaryFrame';
 import { COMPOSER_CONTENT_HORIZONTAL_INSET } from '@/components/sessions/agentInput/composerContentInset';
 import { WarningActionBanner } from './view/WarningActionBanner';
@@ -479,7 +535,7 @@ import {
 import { formatShortRelativeTimeAt } from '@/utils/time/formatShortRelativeTime';
 import { combineSessionViewExtraActionChips } from './view/combineSessionViewExtraActionChips';
 import { resolveSessionViewModeOptionIds } from './view/resolveSessionViewModeOptionIds';
-import { resolveSessionViewHeaderProps } from './view/resolveSessionViewHeaderProps';
+import { resolveSessionViewHeaderProps, shouldFoldSessionHeaderIconActions } from './view/resolveSessionViewHeaderProps';
 import { useWorkspaceSyncRelationshipSummaries } from '@/sync/domains/sessionHandoff/useWorkspaceSyncRelationshipSummaries';
 import { resolveWorkspaceSyncConflictCountForWorkspaceRef } from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
 import { createWorkspaceSyncConflictDetailsTab } from '@/components/workspaces/sync/workspaceSyncConflictDetailsTab';
@@ -507,7 +563,10 @@ import type {
     PluginSurfaceOpenHandler,
     PluginSurfaceOpenOutcome,
 } from '@/components/plugins/surfaces/openPluginSurface';
-import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import {
+    useServerCredentialAccountScopeBindings,
+    type ServerCredentialAccountScopeBinding,
+} from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { resolveSessionViewExternalControlFooter } from './view/resolveSessionViewExternalControlFooter';
 import { presentExternalSessionOperationShell } from '../external/progress/externalSessionOperationShellPresentation';
 import {
@@ -528,7 +587,18 @@ import {
     resolveSessionAuthSurfaceState,
     type SessionAuthSurfaceState,
 } from './sessionAuthSurfaceState';
-import { useSessionViewShellSession, useSessionViewShellSessionSeq } from './sessionViewStableSession';
+import {
+    resolveSessionBlockedSurfaceState,
+    type SessionBlockedSurfaceActionIntent,
+} from './sessionBlockedSurfaceState';
+import { SessionBlockedSurfaceCard } from './SessionBlockedSurfaceCard';
+import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
+import { openRouteWithEstablishedHome } from '@/sync/domains/server/selection/openRouteWithEstablishedHome';
+import {
+    selectSessionViewShellSessionForRouteState,
+    useSessionViewShellSession,
+    useSessionViewShellSessionSeq,
+} from './sessionViewStableSession';
 import { useSessionRuntimeStatusSource } from './useSessionRuntimeStatusSource';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import {
@@ -545,6 +615,7 @@ import {
     type UsageLimitRecoverySettings,
 } from '@/components/sessions/usageLimitRecovery/sessionUsageLimitRecoveryPresentation';
 import { hasMeaningfulActivityAfterRuntimeIssue } from '@/components/sessions/usageLimitRecovery/sessionUsageLimitActivityStaleness';
+import { SessionUsageLimitRecoveryBanner } from '@/components/sessions/usageLimitRecovery/SessionUsageLimitRecoveryBanner';
 import { formatUsageLimitRecoveryOperationError } from '@/components/sessions/usageLimitRecovery/formatUsageLimitRecoveryOperationError';
 import {
     buildSessionUsageLimitRecoveryOperationFailureAlert,
@@ -570,6 +641,7 @@ import {
     type ConnectedServiceQuotaGaugeWindowMode,
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 import { resolveConnectedServiceQuotaRecoveryCreditReceiptNoticeKey } from '@/sync/domains/connectedServices/connectedServiceQuotaRecoveryCreditReceiptPresentation';
+import { projectConnectedServiceQuotaSnapshotForLimitSelection } from '@/sync/domains/connectedServices/projectConnectedServiceQuotaSnapshotForLimitSelection';
 import { useConnectedServiceQuotaSnapshots } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshots';
 import { useProviderAccountUsageSnapshots } from '@/hooks/server/connectedServices/useProviderAccountUsageSnapshots';
 import {
@@ -883,6 +955,12 @@ type SessionViewProps = Readonly<{
     headerSafeAreaTopMode?: 'internal' | 'external';
     chatBottomSpacing?: 'default' | 'none';
     browserContextStateForComposer?: BrowserContextState | null;
+    /** One-shot request from an incumbent Session host to reveal the existing work-state details. */
+    openWorkStateRequestKey?: number | null;
+    /** Cockpit supplies its one composition-wide executable Board mount decision. */
+    resolveBoardPrimaryHost?: SessionBoardPrimaryMountResolver;
+    /** Cockpit supplies the same exact-Home plugin runtime every nested host consumes. */
+    sessionPluginRuntime?: SessionPluginRuntimeState;
 }>;
 
 function SessionAuthRecoveryFallback({ message }: Readonly<{ message: string }>) {
@@ -944,15 +1022,17 @@ function useComposerKeyboardHeight(): number {
 }
 
 const SessionContentOverrideViewedLifecycle = React.memo(function SessionContentOverrideViewedLifecycle({
+    serverId,
     sessionId,
     surfaceFocused,
 }: Readonly<{
+    serverId: string;
     sessionId: string;
     surfaceFocused: boolean;
 }>) {
     const sessionSeq = useSessionViewShellSessionSeq(sessionId);
     useSessionViewedLifecycle({
-        sessionId,
+        address: { serverId, sessionId },
         surfaceFocused,
         visibleReadSeq: sessionSeq,
     });
@@ -979,10 +1059,12 @@ const SessionPendingMessagesRefresh = React.memo(function SessionPendingMessages
 });
 
 const SessionTranscriptViewedLifecycle = React.memo(function SessionTranscriptViewedLifecycle({
+    serverId,
     sessionId,
     latestTurnStatus,
     surfaceFocused,
 }: Readonly<{
+    serverId: string;
     sessionId: string;
     latestTurnStatus: Session['latestTurnStatus'];
     surfaceFocused: boolean;
@@ -993,7 +1075,7 @@ const SessionTranscriptViewedLifecycle = React.memo(function SessionTranscriptVi
         latestTurnStatus,
     });
     useSessionViewedLifecycle({
-        sessionId,
+        address: { serverId, sessionId },
         surfaceFocused,
         visibleReadSeq,
     });
@@ -1072,6 +1154,7 @@ const SessionTranscriptViewLayout = React.memo(function SessionTranscriptViewLay
 
 type SessionTranscriptContentProps = Readonly<{
     sessionId: string;
+    sessionSurfaceKey: string;
     session: Session;
     isEncryptedSessionLocked: boolean;
     isForkedSessionV1: boolean;
@@ -1093,6 +1176,7 @@ type SessionTranscriptContentProps = Readonly<{
 
 const SessionTranscriptContent = React.memo(function SessionTranscriptContent({
     sessionId,
+    sessionSurfaceKey,
     session,
     isEncryptedSessionLocked,
     isForkedSessionV1,
@@ -1191,6 +1275,7 @@ const SessionTranscriptContent = React.memo(function SessionTranscriptContent({
             {shouldRenderChatTimeline && shouldRenderChatTimelineImmediately ? (
                 <ChatList
                     session={session}
+                    sessionSurfaceKey={sessionSurfaceKey}
                     bottomNotice={bottomNotice}
                     controlledByUserOverride={controlledByUserOverride}
                     controlSwitchTo={controlSwitchTo}
@@ -1402,6 +1487,15 @@ const SessionTranscriptPlaceholder = React.memo(function SessionTranscriptPlaceh
 
 export const SessionView = React.memo((props: SessionViewProps) => {
     const sessionId = normalizeSessionId(props.id);
+    const explicitRouteAddress = normalizeSessionAddress(
+        props.routeHydrationState?.serverId ?? props.routeServerId,
+        sessionId,
+    );
+    const routeAddress = explicitRouteAddress ?? normalizeSessionAddress(
+        resolveServerIdForSessionIdFromLocalCache(sessionId),
+        sessionId,
+    );
+    const sessionSurfaceKey = routeAddress ? sessionAddressKey(routeAddress) : null;
     const routeFocused = useSessionScreenIsFocused();
     const pathname = usePathname();
     const isFocused = typeof props.surfaceFocusedOverride === 'boolean'
@@ -1415,11 +1509,17 @@ export const SessionView = React.memo((props: SessionViewProps) => {
         ? props.routeAnchorOverride
         : isSessionRoutePathActive(anchorPathname, sessionId);
 
+    if (routeAddress === null || sessionSurfaceKey === null) {
+        return <View style={{ flex: 1 }} />;
+    }
+
     return (
         <SessionViewRetainedSurface
-            key={sessionId}
+            key={sessionSurfaceKey}
             {...props}
+            routeServerId={routeAddress.serverId}
             sessionId={sessionId}
+            sessionSurfaceKey={sessionSurfaceKey}
             isFocused={isFocused}
             isSurfaceVisible={isSurfaceVisible}
             isRouteAnchor={isRouteAnchor}
@@ -1429,6 +1529,7 @@ export const SessionView = React.memo((props: SessionViewProps) => {
 
 const SessionViewRetainedSurface = React.memo((props: SessionViewProps & {
     sessionId: string;
+    sessionSurfaceKey: string;
     isFocused: boolean;
     isSurfaceVisible: boolean;
     isRouteAnchor: boolean;
@@ -1477,17 +1578,78 @@ const SessionViewRetainedSurface = React.memo((props: SessionViewProps & {
     );
 });
 
-const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
+type SessionViewFocusedSurfaceProps = SessionViewProps & {
     sessionId: string;
+    sessionSurfaceKey: string;
     isFocused: boolean;
     isSurfaceVisible: boolean;
     isPresented: boolean;
+};
+
+const SessionViewFocusedSurface = React.memo((props: SessionViewFocusedSurfaceProps) => (
+    props.resolveBoardPrimaryHost && props.sessionPluginRuntime
+        ? <SessionBoardControllerProvider
+            key={`session-board-controller:${props.sessionSurfaceKey}`}
+            sessionId={props.sessionId}
+            serverId={props.routeHydrationState?.serverId ?? props.routeServerId ?? null}
+            pluginRuntime={props.sessionPluginRuntime}
+            // The same derived placement the Board, sidebar, Companion and mobile
+            // hosts receive as a prop, published for hosts too deep in this shell
+            // to be prop-drilled — the inline transcript reference.
+            resolvePrimaryHost={props.resolveBoardPrimaryHost}
+        >
+            <SessionViewFocusedSurfaceContent
+                {...props}
+                resolveBoardPrimaryHost={props.resolveBoardPrimaryHost}
+                sessionPluginRuntime={props.sessionPluginRuntime}
+            />
+        </SessionBoardControllerProvider>
+        : <SessionViewFocusedSurfaceBoardOwner {...props} />
+));
+
+const SessionViewFocusedSurfaceBoardOwner = React.memo((props: SessionViewFocusedSurfaceProps) => {
+    const serverId = props.routeHydrationState?.serverId ?? props.routeServerId ?? null;
+    const address = useSessionAddressForSessionId(props.sessionId, serverId);
+    const sessionPluginRuntime = useSessionPluginRuntime({ address });
+    const paneScopeId = React.useMemo(
+        () => createSessionPaneScopeId(props.sessionId, props.routeServerId),
+        [props.routeServerId, props.sessionId],
+    );
+    const resolveBoardPrimaryHost = useSessionBoardPrimaryMountResolver({
+        address,
+        paneScopeId,
+        presented: props.isPresented,
+    });
+    return (
+        <SessionBoardControllerProvider
+            key={`session-board-controller:${props.sessionSurfaceKey}`}
+            sessionId={props.sessionId}
+            serverId={address?.serverId ?? serverId}
+            pluginRuntime={sessionPluginRuntime}
+            resolvePrimaryHost={resolveBoardPrimaryHost}
+        >
+            <SessionViewFocusedSurfaceContent
+                {...props}
+                resolveBoardPrimaryHost={resolveBoardPrimaryHost}
+                sessionPluginRuntime={sessionPluginRuntime}
+            />
+        </SessionBoardControllerProvider>
+    );
+});
+
+const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSurfaceProps & {
+    resolveBoardPrimaryHost: SessionBoardPrimaryMountResolver;
+    sessionPluginRuntime: SessionPluginRuntimeState;
 }) => {
     const sessionId = props.sessionId;
     const isFocused = props.isFocused;
     const isSurfaceVisible = props.isSurfaceVisible;
     const router = useRouter();
     const pathname = usePathname();
+    const routeParams = useLocalSearchParams<{ mobileSurface?: string | string[] }>();
+    const routeMobileSurface = Array.isArray(routeParams.mobileSurface)
+        ? routeParams.mobileSurface[0]
+        : routeParams.mobileSurface;
     const debugRouterEnabled = process.env.EXPO_PUBLIC_DEBUG === '1';
     const auth = useAuth();
     const routeHydrationState = props.routeHydrationState ?? null;
@@ -1500,7 +1662,10 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
     const { theme } = useUnistyles();
     const automationsSupport = useAutomationsSupport();
     const showAutomations = automationsSupport?.enabled !== false;
-    const executionRunsEnabled = useFeatureEnabled('execution.runs');
+    const executionRunServerId = expectedRouteServerId ?? session?.serverId ?? null;
+    const executionRunsEnabled = useFeatureEnabled('execution.runs', executionRunServerId
+        ? { scopeKind: 'spawn', serverId: executionRunServerId }
+        : undefined);
     const browserContextFeatureEnabled = useFeatureEnabled('browser.context');
     const handleBackPress = React.useCallback(() => {
         safeRouterBack({
@@ -1511,9 +1676,13 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
     const acceptedSessionId = session ? sessionId : '';
     const sessionExecutionRunsSupported = useSessionExecutionRunsSupported(
         acceptedSessionId,
-        session?.serverId ?? null,
+        executionRunServerId,
     );
-    const approvalRequests = useOpenApprovalArtifactsForSession(sessionId);
+    const approvalSessionAddress = normalizeSessionAddress(
+        expectedRouteServerId ?? session?.serverId,
+        sessionId,
+    );
+    const approvalRequests = useOpenApprovalArtifactsForSession(approvalSessionAddress);
     const safeArea = useChromeSafeAreaInsets();
     const safeAreaTopInset = props.safeAreaTopMode === 'external' ? 0 : safeArea.top;
     const headerSafeAreaTopMode = props.headerSafeAreaTopMode ?? props.safeAreaTopMode ?? 'internal';
@@ -1543,6 +1712,17 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         explicitRouteServerId
         || resolveServerIdForSessionIdFromLocalCache(sessionId)
         || getActiveServerSnapshot().serverId;
+    const routeAccountBindingServerIds = React.useMemo(
+        () => currentSessionRouteServerId ? [currentSessionRouteServerId] : [],
+        [currentSessionRouteServerId],
+    );
+    const routeAccountBindings = useServerCredentialAccountScopeBindings(routeAccountBindingServerIds);
+    const routeAccountBinding = routeAccountBindings.values().next().value as
+        | ServerCredentialAccountScopeBinding
+        | undefined;
+    const sessionAccountBinding = routeAccountBinding?.isCurrent() === true
+        ? routeAccountBinding
+        : null;
     const scopedSyncError = React.useMemo(() => {
         return selectSyncErrorForServer(syncError, currentSessionRouteServerId);
     }, [currentSessionRouteServerId, syncError]);
@@ -1550,8 +1730,19 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         return resolveSessionAuthSurfaceState({
             endpointStatus: endpointConnectivity.status,
             syncError: scopedSyncError,
+            routeHydrationState,
         });
-    }, [endpointConnectivity.status, scopedSyncError]);
+    }, [endpointConnectivity.status, routeHydrationState, scopedSyncError]);
+    const sessionContentAvailability = session?.encryptedContentAvailability ?? null;
+    const blockedSurfaceState = React.useMemo(() => resolveSessionBlockedSurfaceState({
+        authSurfaceState,
+        routeHydrationState,
+        sessionPresent: session !== null,
+        contentAvailability: sessionContentAvailability,
+    }), [authSurfaceState, routeHydrationState, session, sessionContentAvailability]);
+    const headerBlockedSurface = blockedSurfaceState && blockedSurfaceState.kind !== 'account_recovery'
+        ? blockedSurfaceState.kind
+        : null;
     const buildCurrentSessionHref = React.useCallback((suffix = '') => {
         return buildScopedSessionRouteHref({
             sessionId,
@@ -1600,7 +1791,13 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
             ? JSON.stringify(ownerMetadata.sessionModelsV1.activeSelectionV1.runner)
             : null,
     });
-    const paneScopeId = useRegisterSessionPaneDriver(sessionId);
+    const paneScopeId = useRegisterSessionPaneDriver(
+        sessionId,
+        props.routeServerId,
+        props.resolveBoardPrimaryHost,
+        props.sessionPluginRuntime,
+    );
+    const paneFocusMode = usePaneFocusMode(paneScopeId);
     const sessionsRightPaneDefaultOpen = useLocalSetting('sessionsRightPaneDefaultOpen');
     const {
         mobileWorkspaceExperience,
@@ -1679,6 +1876,7 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
     // the pane it opens cannot report different amounts of work.
     const { counts: subagentCounts, participantTargets } = useSessionAgentActivity({
         sessionId: acceptedSessionId,
+        serverId: expectedRouteServerId ?? undefined,
         session,
         externalSessionRuntime,
     });
@@ -1702,7 +1900,11 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
     ) => {
         setAppPaneNavigationBinding(binding);
     }, []);
-    const attachedSessionTerminal = useOpenAttachedSessionTerminal(session ? sessionId : null);
+    const attachedSessionTerminal = useOpenAttachedSessionTerminal(
+        session ? sessionId : null,
+        props.routeServerId,
+        session,
+    );
     const routerRef = React.useRef(router);
     routerRef.current = router;
     const toggleWorkspaceExperienceRef = React.useRef(toggleWorkspaceExperience);
@@ -1712,9 +1914,40 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         && Platform.OS === 'web'
         && ((pane.scopeState?.right.isOpen ?? false) || (pane.scopeState?.details.isOpen ?? false)));
 
+    const collaborationTarget = React.useMemo(
+        () => normalizeSessionAddress(currentSessionRouteServerId, sessionId),
+        [currentSessionRouteServerId, sessionId],
+    );
+    const collaborationAdmitted = useSessionCollaborationDestinationAdmitted(currentSessionRouteServerId ?? '');
+    const collaborationAvailable = session !== null && collaborationTarget !== null && collaborationAdmitted;
+    const foldCollaborationHeaderEntry = shouldFoldSessionHeaderIconActions(windowWidth);
+    const collaborationHeader = React.useMemo(() => collaborationAvailable && collaborationTarget
+        ? { target: collaborationTarget, compact: foldCollaborationHeaderEntry }
+        : undefined, [collaborationAvailable, collaborationTarget, foldCollaborationHeaderEntry]);
+    const openSessionCollaboration = useOpenSessionCollaboration({ target: collaborationTarget, pane });
+    const openSessionAccess = useOpenSessionCollaboration({ target: collaborationTarget, pane, focusTarget: 'access' });
+    const mountedBoardForHeader = useMountedSessionBoardController(collaborationTarget);
+    const boardIsOpen = isSessionBoardVisibleInDetails(pane.scopeState?.details);
+    const boardHasContent = mountedBoardForHeader?.binding.status === 'ready'
+        && mountedBoardForHeader.binding.snapshot.itemsById.size > 0;
+    const openSessionBoard = React.useCallback(() => {
+        paneRef.current.openDetailsTab(createSessionBoardDetailsTab(), { intent: 'pinned' });
+    }, []);
+
+    // The same exact-Home `sessions.board` decision the sidebar tab, the Details
+    // destination, the Companion surfaces and the mobile Cockpit apply.
+    const boardDestinationAvailable = useSessionBoardFeatureEnabled(currentSessionRouteServerId);
     const handleHeaderExtraItemSelect = React.useCallback((actionId: string) => {
+        if (actionId === 'header.openCollaboration') {
+            openSessionCollaboration();
+            return true;
+        }
         if (actionId === 'header.openAttachedSessionTerminal') {
             attachedSessionTerminal.open();
+            return true;
+        }
+        if (actionId === SESSION_BOARD_HEADER_MENU_ACTION_ID) {
+            openSessionBoard();
             return true;
         }
         if (actionId === 'header.openSubagents') {
@@ -1755,6 +1988,8 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         }
         return false;
     }, [
+        openSessionCollaboration,
+        openSessionBoard,
         attachedSessionTerminal,
         buildCurrentSessionHref,
         mobileWorkspaceExperience,
@@ -1835,7 +2070,7 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         serverId: currentSessionRouteServerId,
     });
     const clientExecutableRegistrationRevision = usePluginUiClientExecutableRegistrationRevision();
-    const headerAccountLifetime = captureActiveServerAccountScopeLifetime();
+    const headerAccountLifetime = sessionAccountBinding;
     const headerScopedLaunchFacts = React.useMemo(() => Object.freeze({
         serverId: headerPluginProjection.serverId ?? null,
         machineId: headerPluginProjection.machineId ?? null,
@@ -1893,10 +2128,28 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         return await appPaneNavigationBinding.openSurface(request);
     }, [appPaneNavigationBinding]);
 
+    const companionPreference = useSessionCompanionPreference({
+        sessionId,
+        serverId: currentSessionRouteServerId,
+    });
+    const resolveCompanionHeaderPlacement = useResolveSessionCompanionPlacementForDensity(
+        {
+            sessionId,
+            serverId: currentSessionRouteServerId,
+            paneScopeId,
+        },
+        companionPreference.preference.density,
+    );
+    const companionHeaderPlacement = React.useMemo(
+        () => resolveCompanionHeaderPlacement(companionPreference.preference),
+        [companionPreference.preference, resolveCompanionHeaderPlacement],
+    );
+
     // Compute header props based on session state
     const headerProps = React.useMemo(() => resolveSessionViewHeaderProps({
         isDataReady,
         routeHydrationState,
+        blockedSurface: headerBlockedSurface,
         session: stableSessionForHeader,
         currentMachineId: currentSessionMachineId,
         sessionId,
@@ -1913,6 +2166,7 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         navigateWithBlurOnWeb,
         handleHeaderExtraItemSelect,
         headerMenuExtraItems,
+        collaborationHeader,
         router: routerRef.current,
         actionIconColor: theme.colors.text.secondary,
         headerTintColor: theme.colors.chrome.header.foreground,
@@ -1923,9 +2177,26 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         pluginUiProjection: headerPluginProjection.pluginUiProjection,
         pluginUiScopedLaunchFacts: headerScopedLaunchFacts,
         pluginUiScopeIsCurrent: headerPluginScopeIsCurrent,
+        actionAccountLifetime: sessionAccountBinding,
         onOpenPluginSurface: handleOpenSessionPluginSurface,
         workspaceSyncConflictCount: headerWorkspaceSyncConflictCount,
         onOpenWorkspaceSyncConflicts: openHeaderWorkspaceSyncConflicts,
+        boardHeaderAction: boardDestinationAvailable
+            ? {
+                onPress: openSessionBoard,
+                preferDirect: boardHasContent || boardIsOpen,
+            }
+            : undefined,
+        // Companion presents Board content and has no feature of its own, so it
+        // is admitted by the same exact-Home decision as the Board destination.
+        companionHeaderAction: boardDestinationAvailable ? {
+            availability: companionPreference.availability,
+            preferenceExists: companionPreference.preferenceExists,
+            visible: companionPreference.preference.visible,
+            itemCount: companionPreference.preference.items.length,
+            placement: companionHeaderPlacement,
+            isPhone: deviceType === 'phone',
+        } : undefined,
     }), [
         buildCurrentSessionHref,
         clientExecutableRegistrationRevision,
@@ -1933,14 +2204,28 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         handleHeaderExtraItemSelect,
         handleOpenSessionPluginSurface,
         headerPluginScopeIsCurrent,
+        sessionAccountBinding,
         headerScopedLaunchFacts,
         headerPluginProjection.pluginUiProjection,
         headerWorkspaceDisplay.displayTitle,
         headerWorkspaceDisplay.subtitleEllipsizeMode,
         headerWorkspaceSyncConflictCount,
         openHeaderWorkspaceSyncConflicts,
+        openSessionBoard,
+        boardDestinationAvailable,
+        boardHasContent,
+        boardIsOpen,
+        companionPreference.availability,
+        companionPreference.preference.items.length,
+        companionPreference.preference.visible,
+        companionPreference.preferenceExists,
+        companionHeaderPlacement,
+        resolveCompanionHeaderPlacement,
+        deviceType,
         externalSessionRuntimePresentation,
+        headerBlockedSurface,
         headerMenuExtraItems,
+        collaborationHeader,
         isDataReady,
         paneScopeId,
         routeHydrationState,
@@ -1956,6 +2241,58 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         theme.colors.text.secondary,
         windowWidth,
     ]);
+
+    // At compact widths the empty people state uses the canonical header overflow, while a live
+    // facepile stays direct. Both presentations carry the same attention label and command.
+    const headerRightElement = React.useMemo(() => (
+        collaborationAvailable && collaborationTarget
+            ? (
+                <>
+                    {headerProps.rightElement}
+                    <SessionCollaborationHeaderEntry
+                        target={collaborationTarget}
+                        compact={foldCollaborationHeaderEntry}
+                        onPress={openSessionCollaboration}
+                    />
+                </>
+            )
+            : headerProps.rightElement
+    ), [collaborationAvailable, collaborationTarget, foldCollaborationHeaderEntry, headerProps.rightElement, openSessionCollaboration]);
+
+    const handleBlockedSurfaceAction = React.useCallback(async (
+        intent: SessionBlockedSurfaceActionIntent,
+    ) => {
+        if (intent === 'open_session_access') {
+            openSessionAccess();
+            return;
+        }
+        if (intent === 'retry_session_hydration') {
+            // One exact retry through the canonical route hydration owner. A failure leaves the
+            // settled card in place rather than claiming recovery.
+            try {
+                await sync.ensureSessionVisibleForMessageRoute(sessionId, {
+                    serverId: currentSessionRouteServerId,
+                    forceRefresh: true,
+                });
+            } catch {
+                // The surface already states the condition; no second failure vocabulary here.
+            }
+            return;
+        }
+        // Account encryption setup edits the Account of whichever Home is active, so establish this
+        // Session's Home first and open the existing security screen only if that actually happened.
+        try {
+            await openRouteWithEstablishedHome({
+                serverId: currentSessionRouteServerId,
+                refreshAuth: auth.refreshFromActiveServer ?? null,
+                navigate: () => {
+                    routerRef.current.push(SETTINGS_ROUTES.accountSecurity as any);
+                },
+            });
+        } catch {
+            // A blocked switch keeps the person here with the same actionable state.
+        }
+    }, [auth, currentSessionRouteServerId, openSessionAccess, sessionId]);
 
     const browserContextStateForComposer = props.browserContextStateForComposer
         ?? sessionBrowserContextRuntime?.state
@@ -1977,11 +2314,13 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
             {session ? (
                 props.contentOverride != null ? (
                     <SessionContentOverrideViewedLifecycle
+                        serverId={currentSessionRouteServerId}
                         sessionId={sessionId}
                         surfaceFocused={isSurfaceVisible && isFocused}
                     />
                 ) : (
                     <SessionTranscriptViewedLifecycle
+                        serverId={currentSessionRouteServerId}
                         sessionId={sessionId}
                         latestTurnStatus={session.latestTurnStatus}
                         surfaceFocused={isSurfaceVisible && isFocused}
@@ -2021,6 +2360,7 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
                 }} {...pane.overlayFocusReturnCaptureProps}>
                     <ChatHeaderView
                         {...headerProps}
+                        rightElement={headerRightElement}
                         agentIdentity={headerProps.agentId ? (
                             <SessionAgentCatalogIdentityIcon
                                 agentId={headerProps.agentId}
@@ -2043,8 +2383,14 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
                 style={{ flex: 1, paddingTop: showTopHeader ? safeAreaTopInset + headerHeight : 0 }}
                 {...pane.overlayFocusReturnCaptureProps}
             >
-                {!session && authSurfaceState ? (
-                    <SessionAuthRecoveryFallback message={authSurfaceState.message} />
+                {blockedSurfaceState?.kind === 'account_recovery' ? (
+                    <SessionAuthRecoveryFallback message={blockedSurfaceState.auth.message} />
+                ) : blockedSurfaceState ? (
+                    <SessionBlockedSurfaceCard
+                        state={blockedSurfaceState}
+                        collaborationAvailable={collaborationAvailable}
+                        onAction={handleBlockedSurfaceAction}
+                    />
                 ) : routeHydrationRetrying ? (
                     <View testID="session-route-retrying" style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 }}>
                         <ActivitySpinner size="small" color={theme.colors.text.secondary} />
@@ -2072,12 +2418,15 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
                       null
                   ) : (
                       // Normal session view
-                       <ComposerBannerCollapseProvider key={sessionId}>
+                       <ComposerBannerCollapseProvider>
                        <MemoizedSessionViewLoaded
                            authSurfaceState={authSurfaceState}
-                           key={sessionId}
+                           key={props.sessionSurfaceKey}
                            sessionId={sessionId}
+                           sessionSurfaceKey={props.sessionSurfaceKey}
                            routeServerId={currentSessionRouteServerId}
+                           accountBinding={sessionAccountBinding}
+                           routeMobileSurface={routeMobileSurface}
                            session={stableSessionForLoadedView ?? session}
                            pane={pane}
                            isMachineReachable={isMachineReachable}
@@ -2095,6 +2444,8 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
                            browserContextStateForComposer={browserContextStateForComposer}
                            browserContextComposerContext={browserContextComposerContext}
                            paneScopeId={paneScopeId}
+                           resolveBoardPrimaryHost={props.resolveBoardPrimaryHost}
+                           sessionPluginRuntime={props.sessionPluginRuntime}
                            pendingMessages={pendingMessages}
                            externalSessionRuntime={externalSessionRuntime}
                            externalSessionRuntimePresentation={externalSessionRuntimePresentation}
@@ -2105,6 +2456,14 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
                            sessionRunnerRuntimeStatusMachineId={sessionRunnerRuntimeStatusRetention.machineId}
                            onSessionRunnerRuntimeStatusInvalidated={sessionRunnerRuntimeStatusRetention.invalidateAndRefresh}
                            onAppPanePluginSurfaceNavigationBindingChange={handleAppPanePluginSurfaceNavigationBindingChange}
+                           collaborationTarget={collaborationTarget}
+                           collaborationAvailable={collaborationAvailable}
+                           foldCollaborationHeaderEntry={foldCollaborationHeaderEntry}
+                           openSessionCollaboration={openSessionCollaboration}
+                           openSessionAccess={openSessionAccess}
+                           companionEdge={companionPreference.preference.edge}
+                           boardDestinationAvailable={boardDestinationAvailable}
+                           openWorkStateRequestKey={props.openWorkStateRequestKey ?? null}
                        />
                        </ComposerBannerCollapseProvider>
                   )}
@@ -2115,14 +2474,17 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
     );
 });
 
-function hasSessionWriteAccess(accessLevel: Session['accessLevel']): boolean {
-    return !accessLevel || accessLevel === 'edit' || accessLevel === 'admin';
+function hasSessionWriteAccess(access: Session['access']): boolean {
+    return access?.capabilities.submitAgentInput === true;
 }
 
 function SessionViewLoaded({
     authSurfaceState,
     sessionId,
+    sessionSurfaceKey,
     routeServerId,
+    accountBinding,
+    routeMobileSurface,
     session,
     pane,
     isMachineReachable,
@@ -2140,6 +2502,8 @@ function SessionViewLoaded({
     browserContextStateForComposer,
     browserContextComposerContext,
     paneScopeId,
+    resolveBoardPrimaryHost,
+    sessionPluginRuntime,
     pendingMessages,
     externalSessionRuntime,
     externalSessionRuntimePresentation,
@@ -2150,10 +2514,21 @@ function SessionViewLoaded({
     sessionRunnerRuntimeStatusMachineId,
     onSessionRunnerRuntimeStatusInvalidated,
     onAppPanePluginSurfaceNavigationBindingChange,
+    collaborationTarget,
+    collaborationAvailable,
+    foldCollaborationHeaderEntry,
+    openSessionCollaboration,
+    openSessionAccess,
+    companionEdge,
+    boardDestinationAvailable,
+    openWorkStateRequestKey,
 }: {
     authSurfaceState: SessionAuthSurfaceState | null;
     sessionId: string;
+    sessionSurfaceKey: string;
     routeServerId?: string | null;
+    accountBinding: ServerCredentialAccountScopeBinding | null;
+    routeMobileSurface?: string;
     session: Session;
     pane: ReturnType<typeof useSessionViewBootstrap>['pane'];
     isMachineReachable: boolean;
@@ -2171,6 +2546,8 @@ function SessionViewLoaded({
     browserContextStateForComposer: BrowserContextState | null;
     browserContextComposerContext: SessionBrowserContextRuntime['composerContext'] | null;
     paneScopeId: string;
+    resolveBoardPrimaryHost: SessionBoardPrimaryMountResolver;
+    sessionPluginRuntime: SessionPluginRuntimeState;
     pendingMessages: readonly PendingMessage[];
     externalSessionRuntime: ReturnType<typeof useExternalSessionRuntime>;
     externalSessionRuntimePresentation: ReturnType<
@@ -2187,7 +2564,35 @@ function SessionViewLoaded({
     onAppPanePluginSurfaceNavigationBindingChange: (
         binding: PluginSurfaceDestinationNavigationBinding | undefined,
     ) => void;
+    // The focused surface owns the one collaboration availability/target derivation; the loaded
+    // view consumes it so the composer access chip cannot resolve a second answer.
+    collaborationTarget: SessionAddress | null;
+    collaborationAvailable: boolean;
+    foldCollaborationHeaderEntry: boolean;
+    openSessionCollaboration: () => void;
+    openSessionAccess: () => void;
+    companionEdge: SessionCompanionEdge;
+    /**
+     * The focused surface owns the one exact-Home `sessions.board` decision.
+     * Companion presents Board content and has no feature of its own, so this
+     * single answer admits the Companion rail, host, presentation bridge and
+     * reveal port exactly as it admits the Board destination.
+     */
+    boardDestinationAvailable: boolean;
+    openWorkStateRequestKey: number | null;
 }) {
+    const sessionAccountLifetime = accountBinding?.isCurrent() === true
+        ? accountBinding
+        : null;
+    const sessionAccountScope = sessionAccountLifetime?.scope ?? null;
+    const sessionAccountScopeKey = sessionAccountScope
+        ? serverAccountScopeKeySuffix(sessionAccountScope)
+        : 'local';
+    const companionAddress = React.useMemo(
+        () => normalizeSessionAddress(routeServerId ?? null, sessionId),
+        [routeServerId, sessionId],
+    );
+    const mountedBoard = useMountedSessionBoardController(companionAddress);
     const [pendingMessageEdit, setPendingMessageEdit] = React.useState<PendingMessageComposerEditState | null>(null);
     const pendingMessageEditRef = React.useRef(pendingMessageEdit);
     pendingMessageEditRef.current = pendingMessageEdit;
@@ -2200,12 +2605,23 @@ function SessionViewLoaded({
     const composerInputFocusedRef = React.useRef(false);
     const composerActionBarLayoutRef = React.useRef<ComposerSnapshotV1['layout']>('wrap');
     const composerFocusRequestRef = React.useRef<(() => void) | null>(null);
-    const composerPresentationAccountLifetime = captureActiveServerAccountScopeLifetime();
+    const composerPresentationAccountLifetime = sessionAccountLifetime;
+    const presentationPaneRef = React.useRef(pane);
+    presentationPaneRef.current = pane;
+    const presentationPaneFocusMode = usePaneFocusMode(paneScopeId);
+    const presentationPaneFocusModeRef = React.useRef(presentationPaneFocusMode);
+    presentationPaneFocusModeRef.current = presentationPaneFocusMode;
+    const boardPresentationUndoCurrentRef = React.useRef(false);
+    boardPresentationUndoCurrentRef.current = composerPresentationMountedRef.current
+        && surfaceFocused
+        && composerPresentationAccountLifetime !== null
+        && composerPresentationAccountLifetime.isCurrent();
     const isActiveComposerPresentationCurrent = React.useCallback(() => (
         composerPresentationMountedRef.current
         && composerRefV1Key(activeComposerRefRef.current)
             === composerRefV1Key(activeComposerRef)
-        && (composerPresentationAccountLifetime === null || composerPresentationAccountLifetime.isCurrent())
+        && composerPresentationAccountLifetime !== null
+        && composerPresentationAccountLifetime.isCurrent()
     ), [activeComposerRef, composerPresentationAccountLifetime]);
     const composerInputEffects = useComposerPresentationInputEffects({
         ref: activeComposerRef,
@@ -2228,9 +2644,6 @@ function SessionViewLoaded({
         composerInputFocusedRef.current = focused;
         notifyComposerPresentationTargetChanged(activeComposerRef);
     }, [activeComposerRef]);
-    const onComposerFocusRequestChange = React.useCallback((request: (() => void) | null) => {
-        composerFocusRequestRef.current = request;
-    }, []);
     const onComposerActionBarLayoutChange = React.useCallback((layout: ComposerSnapshotV1['layout']) => {
         if (!composerPresentationMountedRef.current) return;
         if (composerActionBarLayoutRef.current === layout) return;
@@ -2325,6 +2738,7 @@ function SessionViewLoaded({
     const uiFontScale = typeof rawUiFontScale === 'number' ? rawUiFontScale : undefined;
     const inputComposerPersistence = useSessionAgentInputComposerPersistence({
         sessionId,
+        accountLifetime: sessionAccountLifetime,
         text: message,
         textLength: message.length,
         fontScale: uiFontScale,
@@ -2427,7 +2841,32 @@ function SessionViewLoaded({
     const sessionRouteServerId = (routeServerId ?? '').trim()
         || resolveServerIdForSessionIdFromLocalCache(sessionId)
         || activeServerId;
+    const sessionComposerAddress = React.useMemo(() => ({
+        serverId: sessionRouteServerId,
+        sessionId,
+    }), [sessionId, sessionRouteServerId]);
+    const onComposerFocusRequestChange = React.useCallback((request: (() => void) | null) => {
+        composerFocusRequestRef.current = request;
+        if (request) flushPendingRegisteredSessionComposerFocus(sessionComposerAddress);
+    }, [sessionComposerAddress]);
     const providersFeatureEnabled = useFeatureEnabled('providers', { scopeKind: 'spawn', serverId: capabilityServerId });
+    const teamCredentialResourcesEnabled = useFeatureEnabled('teams.credentialResources', {
+        scopeKind: 'spawn',
+        serverId: sessionRouteServerId,
+    });
+    const teamCredentialCatalog = useHomeTeamCredentialModelCatalog({
+        serverId: sessionRouteServerId,
+        enabled: teamCredentialResourcesEnabled,
+    });
+    const coordinateTeamCredentialSelection = useTeamCredentialSelectionCoordinator(sessionRouteServerId);
+    const teamCredentialSelectionCatalogRef = React.useRef(teamCredentialCatalog);
+    teamCredentialSelectionCatalogRef.current = teamCredentialCatalog;
+    const currentTeamCredentialConnectedServiceResources = React.useMemo(() => (
+        teamCredentialCatalog.resources.filter((resource) => (
+            teamCredentialCatalog.currentResourceKeys.has(`${resource.teamId}:${resource.id}`)
+            && resource.connectedServiceSelections.length > 0
+        ))
+    ), [teamCredentialCatalog.currentResourceKeys, teamCredentialCatalog.resources]);
     const providerLaunchBinding = React.useMemo(
         () => readSessionProviderBindingMetadataV1(ownerMetadata),
         [ownerMetadata],
@@ -2513,9 +2952,18 @@ function SessionViewLoaded({
             });
     }, [providerLaunchBinding]);
     const [sessionModelPickerRequestKey, setSessionModelPickerRequestKey] = React.useState<string | null>(null);
+    /**
+     * The one place a selection the Home accepted but the running runner has not
+     * adopted is remembered, for personal Provider selections and Team
+     * credential selections alike. Both reach the same explicit restart
+     * affordance: a committed selection is never silently applied by restarting
+     * somebody's running session behind their back, and a runner that cannot be
+     * restarted right now is still reported as "restart to use it" rather than
+     * as a failed selection.
+     */
     const [modelTransitionActionRequired, setModelTransitionActionRequired] = React.useState<Readonly<{
         status: 'restart_required' | 'reconciliation_required';
-        requestedSelection: ProviderBoundModelRef;
+        requestedSelection: NonNullable<SessionModelPickerOptionValue>;
         intentBaselineUpdatedAt: number;
     }> | null>(null);
     const currentSessionRunnerRuntimeStatus = React.useMemo(() => {
@@ -2552,10 +3000,27 @@ function SessionViewLoaded({
         providerAgentTargetKey,
         session.active,
     ]);
+    const selectedTeamCredentialModel = React.useMemo<TeamCredentialProviderModelSelectionV1 | null>(() => {
+        const selection = modelSelectionDisposition?.proposedSelectionV2;
+        if (selection?.ref.source !== 'team_resource') return null;
+        return {
+            kind: 'team_credential_provider_model',
+            resourceId: selection.ref.resourceId,
+            teamId: selection.ref.teamId,
+            expectedResourceRevision: selection.ref.expectedResourceRevision,
+            deliveryMode: selection.ref.deliveryMode,
+            agentTargetKey: selection.ref.agentTargetKey,
+            modelId: selection.ref.modelId,
+        };
+    }, [modelSelectionDisposition?.proposedSelectionV2]);
     const persistedModelTransitionActionRequired = React.useMemo(() => {
-        const requestedSelection = providerModelSelectionIntent?.selection ?? null;
+        const requestedSelection = selectedTeamCredentialModel
+            ?? providerModelSelectionIntent?.selection
+            ?? null;
         if (session.active !== true || !requestedSelection) return null;
         if (
+            !isTeamCredentialProviderModelPickerValue(requestedSelection)
+            &&
             requestedSelection.providerConnectionId !== null
             && !providersFeatureEnabled
         ) {
@@ -2570,11 +3035,18 @@ function SessionViewLoaded({
         modelSelectionDisposition,
         providerModelSelectionIntent?.selection,
         providersFeatureEnabled,
+        selectedTeamCredentialModel,
         session.active,
     ]);
+    // A Team credential selection carries no Provider connection of its own, so
+    // the Providers feature never decides whether its pending restart is shown.
+    const pendingTransitionSelection = modelTransitionActionRequired?.requestedSelection ?? null;
+    const pendingTransitionNeedsProvidersFeature = pendingTransitionSelection === null
+        || isTeamCredentialProviderModelPickerValue(pendingTransitionSelection)
+        ? false
+        : pendingTransitionSelection.providerConnectionId !== null;
     const visibleLocalModelTransitionActionRequired =
-        modelTransitionActionRequired?.requestedSelection.providerConnectionId !== null
-        && !providersFeatureEnabled
+        pendingTransitionNeedsProvidersFeature && !providersFeatureEnabled
             ? null
             : modelTransitionActionRequired;
     const effectiveModelTransitionActionRequired =
@@ -2650,7 +3122,7 @@ function SessionViewLoaded({
     ]);
     // Reference search has no Account data, but it is still daemon work scoped to
     // the active Account. Borrow the incumbent lifetime as a currentness fence.
-    const composerReferenceAccountLifetime = captureActiveServerAccountScopeLifetime();
+    const composerReferenceAccountLifetime = sessionAccountLifetime;
     // The picker consumes raw lifecycle records only while this mounted composer
     // owns a ready projection. Its query AbortSignal cancels daemon work; this
     // identity fence rejects a result that arrives between projection/focus change
@@ -2777,7 +3249,8 @@ function SessionViewLoaded({
     const attachmentsUploadsFeatureEnabled = useFeatureEnabled('attachments.uploads');
     const usageLimitRecoveryFeatureEnabled = useFeatureEnabled('sessions.usageLimitRecovery', { scopeKind: 'spawn', serverId: capabilityServerId });
     const connectedServiceQuotasEnabled = useFeatureEnabled('connectedServices.quotas');
-    const attachmentsUploadsTransferAvailable = useSessionFileUploadAvailability(sessionId);
+    const poolQuotaLimitSelectionEnabled = useFeatureEnabled('connectedServices.poolQuotaLimitSelection');
+    const attachmentsUploadsTransferAvailable = useSessionFileUploadAvailability(sessionId, capabilityServerId);
     const attachmentsUploadsEnabled = attachmentsUploadsFeatureEnabled && attachmentsUploadsTransferAvailable;
     // Generalized goal umbrella gate (provider-agnostic). The provider-specific discriminator is the
     // capability gate `supportsEditableSessionGoals` (Codex: app-server mode; Claude: live runner
@@ -2788,10 +3261,19 @@ function SessionViewLoaded({
         [ownerMetadata],
     );
     const primaryWorkStateItem = React.useMemo(
-        () => resolvePrimarySessionWorkStateItem(sessionWorkStateSnapshot),
+        () => readSessionWorkStatePrimaryItemV1(sessionWorkStateSnapshot?.items ?? [], sessionWorkStateSnapshot?.primaryItemId),
         [sessionWorkStateSnapshot],
     );
     const [activeStatusBadgeKey, setActiveStatusBadgeKey] = React.useState<string | null>(null);
+    const appliedWorkStateRequestKeyRef = React.useRef<number | null>(null);
+    React.useEffect(() => {
+        if (
+            openWorkStateRequestKey === null
+            || appliedWorkStateRequestKeyRef.current === openWorkStateRequestKey
+        ) return;
+        appliedWorkStateRequestKeyRef.current = openWorkStateRequestKey;
+        setActiveStatusBadgeKey(SESSION_WORK_STATE_STATUS_BADGE_KEY);
+    }, [openWorkStateRequestKey]);
     // Composer banner collapse is owned by ComposerBannerCollapseProvider (mounted above this
     // component) so a banner and the badge that toggles it agree even across subtrees, and so the
     // account-level "remember" preference decides between session-scoped and device-persisted state.
@@ -2845,17 +3327,17 @@ function SessionViewLoaded({
         fingerprint: string;
         status: Exclude<McpSelectionRestartOperationStatus, null>;
     }> | null>(null);
-    const hasWriteAccess = hasSessionWriteAccess(session.accessLevel);
+    const hasWriteAccess = hasSessionWriteAccess(session.access);
     const sessionMachineRecord = useMachine(typeof machineId === 'string' ? machineId : '');
     const pendingActivationPresentation = React.useMemo(() => resolvePendingActivationBanner({
         authorization: session.pendingActivationAuthorization,
         activeAt: session.activeAt,
         active: session.active,
-        machineReachable: Boolean(sessionMachineRecord && isMachineOnline(sessionMachineRecord)),
+        machineReachable: isMachineReachable,
         canWrite: hasWriteAccess,
         resumingAt: sessionRuntimeStatusSource.resumingAt,
         pendingMessages,
-    }), [hasWriteAccess, pendingMessages, session.active, session.activeAt, session.pendingActivationAuthorization, sessionMachineRecord, sessionRuntimeStatusSource.resumingAt]);
+    }), [hasWriteAccess, isMachineReachable, pendingMessages, session.active, session.activeAt, session.pendingActivationAuthorization, sessionRuntimeStatusSource.resumingAt]);
     const [pendingActivationActionBusy, setPendingActivationActionBusy] = React.useState(false);
     const goalControlMachineId = controlMachineTarget?.machineId ?? machineId;
     const goalControlMachineRecord = useMachine(typeof goalControlMachineId === 'string' ? goalControlMachineId : '');
@@ -2863,6 +3345,12 @@ function SessionViewLoaded({
     // Each successful connect stamps a new value, which is exactly the lifetime a
     // continuation inspection may be trusted for.
     const socketConnectionGeneration = useSocketStatus().lastConnectedAt;
+    const temporaryComputerRecovery = useMaterializedTemporaryComputerSessionRecovery({
+        sessionId,
+        serverId: sessionRouteServerId,
+        sessionPresent: true,
+        retrySignal: socketConnectionGeneration,
+    });
     const agentContinuationSource = React.useMemo(() => ({
         currentBackendTargetKey: providerAgentTargetKey,
         // Whether THIS Session's transcript is Happier's or its Agent's own, from
@@ -2923,13 +3411,11 @@ function SessionViewLoaded({
     // Read here rather than beside the composer's other draft work because the
     // armed Agent is a Session draft value like the rest, and the picker below is
     // the one owner that writes it.
-    const activeServerAccountScope = useActiveServerAccountScope();
-    const activeServerAccountScopeKey = activeServerAccountScope
-        ? serverAccountScopeKeySuffix(activeServerAccountScope)
-        : 'local';
     const inSessionAgentPicker = useInSessionAgentPickerControls({
         sessionId,
-        accountScope: activeServerAccountScope,
+        accountScope: sessionAccountScope,
+        accountScopeRevision: sessionAccountLifetime?.revision ?? null,
+        accountScopeIsCurrent: sessionAccountLifetime?.isCurrent ?? null,
         currentAgentId: agentInputAgentType,
         currentAgentLabel,
         currentAgentSessionActive: session.active,
@@ -2956,24 +3442,24 @@ function SessionViewLoaded({
         // the RPC path records before this composer can accept input, so the
         // existing disposition/reconciliation owner holds sends until canonical
         // custody has been read.
-        const key = `${activeServerAccountScopeKey}\u0000${sessionId}\u0000${submission.localId}`;
+        const key = `${sessionAccountScopeKey}\u0000${sessionId}\u0000${submission.localId}`;
         const outcome = armedContinuationOutcome;
         const outcomeIsCurrent = outcome !== null
-            && outcome.scopeKey === activeServerAccountScopeKey
+            && outcome.scopeKey === sessionAccountScopeKey
             && (outcome.kind === 'refusal' || outcome.sessionId === sessionId);
         if (outcomeIsCurrent || restoredArmedContinuationOutcomeKeyRef.current === key) return;
         restoredArmedContinuationOutcomeKeyRef.current = key;
         setArmedContinuationOutcome({
             kind: 'outcome',
             sessionId,
-            scopeKey: activeServerAccountScopeKey,
+            scopeKey: sessionAccountScopeKey,
             result: { type: 'outcome_unknown', localId: submission.localId },
             intent,
             localId: submission.localId,
             reconciled: false,
         });
     }, [
-        activeServerAccountScopeKey,
+        sessionAccountScopeKey,
         armedContinuationOutcome,
         inSessionAgentPicker.armedContinuation,
         inSessionAgentPicker.armedContinuationLocalId,
@@ -3027,18 +3513,52 @@ function SessionViewLoaded({
         [agentId, daemonGoalControlsSupported, session],
     );
     const setSessionGoalForView = React.useCallback(
-        (request: Parameters<typeof sessionGoalSet>[1]) => sessionGoalSet(sessionId, request),
-        [sessionId],
+        (request: Parameters<typeof sessionGoalSet>[1]) => {
+            if (!sessionAccountScope || !sessionAccountLifetime?.isCurrent()) {
+                return Promise.resolve({
+                    ok: false as const,
+                    error: 'Session Account authority is unavailable',
+                    errorCode: 'session_account_scope_retired',
+                });
+            }
+            return sessionGoalSet(sessionId, request, { serverId: sessionAccountScope.serverId });
+        },
+        [sessionAccountLifetime, sessionAccountScope, sessionId],
     );
     const clearSessionGoalForView = React.useCallback(
-        () => sessionGoalClear(sessionId),
-        [sessionId],
+        () => {
+            if (!sessionAccountScope || !sessionAccountLifetime?.isCurrent()) {
+                return Promise.resolve({
+                    ok: false as const,
+                    error: 'Session Account authority is unavailable',
+                    errorCode: 'session_account_scope_retired',
+                });
+            }
+            return sessionGoalClear(sessionId, { serverId: sessionAccountScope.serverId });
+        },
+        [sessionAccountLifetime, sessionAccountScope, sessionId],
     );
     // UIW1: live workflow activity reader (headline from metadata + durable record detail).
     const sessionWorkflowActivity = useSessionWorkflowActivity({
         sessionId,
+        serverId: session?.serverId,
         metadata: ownerMetadata,
     });
+    // Managed Workflow Runs whose provenance is this Session. `originSessionId`
+    // is the canonical Run-list filter; the Session does not own these Runs and
+    // they stay inspectable in Workflows after it ends.
+    const sessionManagedWorkflowRuns = useSessionManagedWorkflowRuns({ sessionId });
+    // The badge's managed half. Observed activity has a headline and managed
+    // Runs do not, so a managed-only Session had no badge — and therefore no
+    // reachable popover — until this signal existed. The two lifecycles stay
+    // two counts; neither owner interprets the other's.
+    const sessionManagedWorkflowSignal = React.useMemo(
+        () => summarizeSessionManagedWorkflowRuns(sessionManagedWorkflowRuns),
+        [sessionManagedWorkflowRuns],
+    );
+    const openManagedWorkflowRun = React.useCallback((runId: string) => {
+        router.push({ pathname: '/workflows/runs/[runId]', params: { runId } } as never);
+    }, [router]);
     // UIW2: the SINGLE compact above-AgentInput badge seam. Goal/task/todo priority is delegated to
     // the protocol resolver inside `resolveSessionActivityStatusBadgePresentation`; workflow headline
     // composition is layered on top. There is no second badge path that recomputes priority.
@@ -3047,6 +3567,7 @@ function SessionViewLoaded({
             workStateSnapshot: sessionWorkStateSnapshot,
             workflowHeadline: sessionWorkflowActivity.headline,
             loadedWorkflowRunsById: sessionWorkflowActivity.loadedRunsById,
+            managedWorkflowRuns: sessionManagedWorkflowSignal,
             activeStatusBadgeKey,
             editableGoal: canEditSessionGoals,
             translateWorkState: t,
@@ -3059,6 +3580,9 @@ function SessionViewLoaded({
                 workflowsPlural: (params) => t('session.workState.workflow.plural', params),
                 workflowsPluralWithAgents: (params) => t('session.workState.workflow.pluralWithAgents', params),
                 join: (params) => t('session.workState.workflow.join', params),
+                // The canonical Workflow attention word, reused verbatim rather
+                // than a second phrasing for the same fact.
+                managedNeedsYou: () => t('workflows.run.needsYou'),
             },
         });
         if (!presentation) return [];
@@ -3083,6 +3607,8 @@ function SessionViewLoaded({
                     anchorRef={anchorRef}
                     snapshot={sessionWorkStateSnapshot}
                     workflowActivity={sessionWorkflowActivity}
+                    managedWorkflowRuns={sessionManagedWorkflowRuns}
+                    onOpenManagedWorkflowRun={openManagedWorkflowRun}
                     editableGoal={canEditSessionGoals}
                     goalActionCapabilityProfile={sessionGoalActionCapabilityProfile}
                     onRequestClose={onRequestClose}
@@ -3091,7 +3617,7 @@ function SessionViewLoaded({
                 />
             ),
         }];
-    }, [activeStatusBadgeKey, canEditSessionGoals, clearSessionGoalForView, sessionGoalActionCapabilityProfile, sessionWorkStateSnapshot, sessionWorkflowActivity, setSessionGoalForView]);
+    }, [activeStatusBadgeKey, canEditSessionGoals, clearSessionGoalForView, openManagedWorkflowRun, sessionGoalActionCapabilityProfile, sessionManagedWorkflowRuns, sessionManagedWorkflowSignal, sessionWorkStateSnapshot, sessionWorkflowActivity, setSessionGoalForView]);
     const usageLimitRecoverySettings: UsageLimitRecoverySettings = React.useMemo(() => {
         const raw = (settings as { usageLimitRecoverySettingsV1?: UsageLimitRecoverySettings }).usageLimitRecoverySettingsV1;
         return normalizeUsageLimitRecoverySettings(raw);
@@ -3204,11 +3730,11 @@ function SessionViewLoaded({
     const connectedServiceQuotaProfileRef = React.useMemo(() => (
         resolveConnectedServiceQuotaProfileRefForSession({
             metadata: ownerMetadata,
-            agentId: liveComposerState.agentId ?? '',
+            agentId: agentId ?? '',
             accountProfileConnectedServicesV2: accountProfile?.connectedServicesV2 ?? [],
             connectedAccounts: currentSessionAgentCatalogEntry?.connectedAccounts ?? [],
         })
-    ), [accountProfile?.connectedServicesV2, currentSessionAgentCatalogEntry?.connectedAccounts, liveComposerState.agentId, ownerMetadata]);
+    ), [accountProfile?.connectedServicesV2, agentId, currentSessionAgentCatalogEntry?.connectedAccounts, ownerMetadata]);
     const connectedServiceQuotaSnapshots = useConnectedServiceQuotaSnapshots(
         connectedServiceQuotaProfileRef
             ? [{
@@ -3244,6 +3770,28 @@ function SessionViewLoaded({
         && (!connectedServiceQuotaPolledSnapshot || connectedServiceQuotaSnapshotOverride.snapshot.fetchedAt >= connectedServiceQuotaPolledSnapshot.fetchedAt)
         ? connectedServiceQuotaSnapshotOverride.snapshot
         : connectedServiceQuotaPolledSnapshot;
+    const connectedServiceQuotaLimitSelection = React.useMemo(() => {
+        if (!poolQuotaLimitSelectionEnabled || !connectedServiceQuotaProfileRef?.groupId) return undefined;
+        const service = parseQualifiedPluginContributionKey(connectedServiceQuotaProfileRef.serviceKey);
+        if (!service) return undefined;
+        return accountProfile?.connectedAccountGroupsV4.find((group) => (
+            group.ref.groupId === connectedServiceQuotaProfileRef.groupId
+            && group.ref.service.pluginId === service.pluginId
+            && group.ref.service.localId === service.localId
+        ))?.policy.quotaLimitSelection;
+    }, [
+        accountProfile?.connectedAccountGroupsV4,
+        connectedServiceQuotaProfileRef?.groupId,
+        connectedServiceQuotaProfileRef?.serviceKey,
+        poolQuotaLimitSelectionEnabled,
+    ]);
+    const connectedServiceQuotaDisplaySnapshot = React.useMemo(
+        () => projectConnectedServiceQuotaSnapshotForLimitSelection(
+            connectedServiceQuotaSnapshot,
+            connectedServiceQuotaLimitSelection,
+        ),
+        [connectedServiceQuotaLimitSelection, connectedServiceQuotaSnapshot],
+    );
     React.useEffect(() => {
         if (!connectedServiceQuotaSnapshotOverride) return;
         if (connectedServiceQuotaSnapshotOverride.profileKey !== connectedServiceQuotaProfileKey) {
@@ -3268,11 +3816,11 @@ function SessionViewLoaded({
         metadataRecordIds: providerAccountUsageRecordIds,
         accountUsageSnapshotsByRecordId: providerAccountUsageSnapshots.snapshotsByRecordId,
         connectedServiceProfileRef: connectedServiceQuotaProfileIdentity,
-        connectedServiceQuotaView: connectedServiceQuotaSnapshot,
+        connectedServiceQuotaView: connectedServiceQuotaDisplaySnapshot,
     }), [
         agentId,
         connectedServiceQuotaProfileIdentity,
-        connectedServiceQuotaSnapshot,
+        connectedServiceQuotaDisplaySnapshot,
         providerAccountUsageRecordIds,
         providerAccountUsageSnapshots.snapshotsByRecordId,
     ]);
@@ -3286,6 +3834,7 @@ function SessionViewLoaded({
             ?? usageLimitRecoveryState?.recoveryCredits
             ?? null;
     const baseUsageLimitRecoveryPresentation = React.useMemo(() => buildSessionUsageLimitRecoveryPresentation({
+        machineReachable: isMachineReachable,
         featureEnabled: usageLimitRecoveryFeatureEnabled,
         lastRuntimeIssue: session.lastRuntimeIssue ?? null,
         latestTurnStatus: session.latestTurnStatus ?? null,
@@ -3300,6 +3849,7 @@ function SessionViewLoaded({
         settings: usageLimitRecoverySettings,
         translate: translateUsageLimitRecoveryPresentationKey,
     }), [
+        isMachineReachable,
         session.lastRuntimeIssue,
         session.latestTurnStatus,
         session.latestTurnStatusObservedAt,
@@ -3327,6 +3877,7 @@ function SessionViewLoaded({
         ? usageLimitRecoveryOperationStatus.status
         : null;
     const usageLimitRecoveryPresentation = React.useMemo(() => buildSessionUsageLimitRecoveryPresentation({
+        machineReachable: isMachineReachable,
         featureEnabled: usageLimitRecoveryFeatureEnabled && !usageLimitRecoveryIssueResolved,
         lastRuntimeIssue: session.lastRuntimeIssue ?? null,
         latestTurnStatus: session.latestTurnStatus ?? null,
@@ -3341,6 +3892,7 @@ function SessionViewLoaded({
         settings: usageLimitRecoverySettings,
         translate: translateUsageLimitRecoveryPresentationKey,
     }), [
+        isMachineReachable,
         activeUsageLimitRecoveryOperationStatus,
         session.lastRuntimeIssue,
         session.latestTurnStatus,
@@ -3561,6 +4113,10 @@ function SessionViewLoaded({
             hasPrimaryWorkStateItem: Boolean(primaryWorkStateItem),
             canShowEmptyGoalControls: canEditSessionGoals,
             hasActiveWorkflowRuns: sessionWorkflowActivity.activeRuns.length > 0,
+            // Without this the popover the person just opened on a managed-only
+            // Session closed under them on the next render.
+            hasManagedWorkflowRuns: sessionManagedWorkflowSignal.activeCount > 0
+                || sessionManagedWorkflowSignal.attentionCount > 0,
         })) return;
         if (usageLimitRecoveryPresentation && activeStatusBadgeKey === SESSION_USAGE_LIMIT_RECOVERY_BADGE_KEY) return;
         if (staleSessionRunnerPresentation && activeStatusBadgeKey === STALE_SESSION_RUNNER_STATUS_BADGE_KEY) return;
@@ -3571,6 +4127,7 @@ function SessionViewLoaded({
         canEditSessionGoals,
         mcpSelectionRestartPresentation,
         primaryWorkStateItem,
+        sessionManagedWorkflowSignal,
         sessionWorkflowActivity.activeRuns.length,
         staleSessionRunnerPresentation,
         usageLimitRecoveryPresentation,
@@ -3657,9 +4214,10 @@ function SessionViewLoaded({
         });
     }, [usageLimitRecoveryPresentation]);
     const usageLimitRecoveryOperationOptions = React.useMemo(() => ({
+        machineOnly: Boolean(usageLimitRecoveryPresentation?.banner.temporaryThrottle),
         serverId: sessionRouteServerId,
         refreshMachineTargets: () => sync.refreshMachinesThrottled({ staleMs: 0, force: true }),
-    }), [sessionRouteServerId]);
+    }), [sessionRouteServerId, usageLimitRecoveryPresentation?.banner.temporaryThrottle]);
     const consumeConnectedServiceRecoveryCreditForProfile = React.useCallback(async (params: Readonly<{
         profileRef: Readonly<{ serviceId: string; profileId: string }>;
         profileKey: string;
@@ -3845,7 +4403,7 @@ function SessionViewLoaded({
                 return;
             }
 
-            if (kind === 'consume_reset_credit' && connectedServiceQuotaProfileRef && connectedServiceQuotaProfileKey) {
+            if (kind === 'consume_reset_credit' && connectedServiceQuotaProfileIdentity && connectedServiceQuotaProfileKey) {
                 const recoveryCreditSummary = summarizeConnectedServiceQuotaRecoveryCredits(
                     usageLimitRecoveryCredits,
                     nowServerMs(),
@@ -3894,6 +4452,11 @@ function SessionViewLoaded({
             if (!result.ok) {
                 setUsageLimitRecoveryOperationStatus(null);
                 await showUsageLimitRecoveryOperationFailure(result);
+                return;
+            }
+            if (usageLimitRecoveryPresentation.banner.temporaryThrottle) {
+                // Dispatch/cancellation acknowledgements do not prove provider recovery.
+                setUsageLimitRecoveryOperationStatus(null);
                 return;
             }
             if ((isSessionUsageLimitRecoveryCheckNowAction(kind) || isUsageLimitRecoverySwitchAction(kind)) && result.status) {
@@ -4024,7 +4587,7 @@ function SessionViewLoaded({
             }
             : null
     ), [providerUsageGauge, providerUsageRecoveryCreditAction, providerUsageRecoveryCreditActionPending]);
-    const reviewScope = useWorkspaceScopeForSession(sessionId);
+    const reviewScope = useWorkspaceScopeForSession(sessionId, sessionRouteServerId);
     const reviewCommentDrafts = useWorkspaceReviewCommentsDrafts(reviewScope);
     const includedReviewCommentDrafts = React.useMemo(
         () => filterReviewCommentDraftsIncludedInPrompt(reviewCommentDrafts),
@@ -4046,12 +4609,41 @@ function SessionViewLoaded({
     }, [includedReviewCommentDrafts, reviewWorkspaceCacheKey, sessionId]);
 
     const attachmentsUploadConfig = useAttachmentsUploadConfig();
+    const mainAttachmentDraftAccountId = sessionAccountScope
+        && areServerProfileIdentifiersEquivalent(sessionAccountScope.serverId, sessionRouteServerId)
+        ? sessionAccountScope.accountId
+        : null;
+    const mainAttachmentDraftScope = React.useMemo<SessionAttachmentDraftScope | null>(() => (
+        mainAttachmentDraftAccountId
+            ? {
+                serverId: sessionRouteServerId,
+                accountId: mainAttachmentDraftAccountId,
+                sessionId,
+                occurrenceId: composerRefV1Key({ kind: 'session', sessionId }),
+            }
+            : null
+    ), [mainAttachmentDraftAccountId, sessionId, sessionRouteServerId]);
+    const readMainAttachmentDrafts = React.useCallback(() => (
+        mainAttachmentDraftScope && sessionAccountLifetime?.isCurrent()
+            ? readSessionAttachmentDrafts(mainAttachmentDraftScope)
+            : []
+    ), [mainAttachmentDraftScope, sessionAccountLifetime]);
+    const writeMainAttachmentDrafts = React.useCallback((drafts: readonly AttachmentDraft[]) => {
+        if (mainAttachmentDraftScope && sessionAccountLifetime?.isCurrent()) {
+            writeSessionAttachmentDrafts(mainAttachmentDraftScope, drafts);
+        }
+    }, [mainAttachmentDraftScope, sessionAccountLifetime]);
+    const clearMainAttachmentDrafts = React.useCallback(() => {
+        if (mainAttachmentDraftScope && sessionAccountLifetime?.isCurrent()) {
+            clearSessionAttachmentDrafts(mainAttachmentDraftScope);
+        }
+    }, [mainAttachmentDraftScope, sessionAccountLifetime]);
     const initialSessionAttachmentDrafts = React.useMemo(() => {
         if (initialAttachmentDrafts && initialAttachmentDrafts.length > 0) {
             return initialAttachmentDrafts;
         }
-        return readSessionAttachmentDrafts(sessionId);
-    }, [initialAttachmentDrafts, sessionId]);
+        return readMainAttachmentDrafts();
+    }, [initialAttachmentDrafts, readMainAttachmentDrafts]);
 
     const attachmentDraftManager = useAttachmentDraftManager({
         enabled: attachmentsUploadsEnabled,
@@ -4060,7 +4652,7 @@ function SessionViewLoaded({
     });
     const filePickerRef = attachmentDraftManager.filePickerRef;
     const attachmentDrafts = attachmentDraftManager.drafts;
-    const attachmentDraftsSnapshotRef = React.useRef<readonly AttachmentDraft[]>(initialSessionAttachmentDrafts);
+    const getAttachmentDraftsSnapshot = attachmentDraftManager.getDraftsSnapshot;
     const agentInputAttachments = attachmentDraftManager.agentInputAttachments;
     const getAttachmentDraftRevisionSnapshot = attachmentDraftManager.getDraftRevisionSnapshot;
     const addAttachments = attachmentDraftManager.addWebFiles;
@@ -4069,25 +4661,29 @@ function SessionViewLoaded({
     // Stable callback: feeds the transcript onEditPendingMessage chain, whose identity
     // gates ChatList/view-holder re-renders.
     const replaceAttachmentManagerDrafts = attachmentDraftManager.replaceDrafts;
+    const activeAttachmentDraftScopeRef = React.useRef(mainAttachmentDraftScope);
 
     React.useEffect(() => {
-        attachmentDraftsSnapshotRef.current = attachmentDrafts;
         if (!attachmentsUploadsEnabled) return;
-        writeSessionAttachmentDrafts(sessionId, attachmentDrafts);
-    }, [attachmentsUploadsEnabled, attachmentDrafts, sessionId]);
+        // A SessionView can be retained while its qualified route changes. Do
+        // not project the previous Home's still-rendered drafts into the new
+        // scope during that transition; the following effect hydrates the
+        // manager from the new owner first.
+        if (activeAttachmentDraftScopeRef.current !== mainAttachmentDraftScope) return;
+        writeMainAttachmentDrafts(attachmentDrafts);
+    }, [attachmentsUploadsEnabled, attachmentDrafts, mainAttachmentDraftScope, writeMainAttachmentDrafts]);
+    React.useEffect(() => {
+        if (activeAttachmentDraftScopeRef.current === mainAttachmentDraftScope) return;
+        activeAttachmentDraftScopeRef.current = mainAttachmentDraftScope;
+        replaceAttachmentManagerDrafts(readMainAttachmentDrafts());
+    }, [mainAttachmentDraftScope, readMainAttachmentDrafts, replaceAttachmentManagerDrafts]);
     const applyAttachmentDraftPatch = React.useCallback((
         draftId: string,
         patch: Partial<Omit<AttachmentDraft, 'id' | 'source'>>,
     ) => {
         patchAttachmentDraft(draftId, patch);
-        const nextDrafts = attachmentDraftsSnapshotRef.current.map((draft) => (
-            draft.id === draftId
-                ? ({ ...draft, ...patch } as AttachmentDraft)
-                : draft
-        ));
-        attachmentDraftsSnapshotRef.current = nextDrafts;
-        writeSessionAttachmentDrafts(sessionId, nextDrafts);
-    }, [patchAttachmentDraft, sessionId]);
+        writeMainAttachmentDrafts(getAttachmentDraftsSnapshot());
+    }, [getAttachmentDraftsSnapshot, patchAttachmentDraft, writeMainAttachmentDrafts]);
     const pasteAttachmentImage = React.useCallback(() => {
         fireAndForget((async () => {
             const picked = await nativeReadClipboardImageAttachment();
@@ -4106,21 +4702,30 @@ function SessionViewLoaded({
     const recipientState = useSessionRecipientState({
         targets: participantTargets,
         autoRecipient: null,
+        accountLifetime: sessionAccountLifetime,
         draftPersistence: {
             sessionId,
             surface: 'mainComposer',
         },
     });
 
-    useScmSessionAutoRefresh({ sessionId, intervalMs: scmSessionAutoRefreshIntervalMs });
+    useScmSessionAutoRefresh({ sessionId, serverId: sessionRouteServerId, intervalMs: scmSessionAutoRefreshIntervalMs });
 
+    // This view already holds its own Session's exact Home-qualified identity.
+    // Only a different, genuinely unqualified target consults the fail-closed
+    // bare resolver, which stays ambiguity-safe by returning null.
+    const resolveNavigationServerIdForSessionId = React.useCallback((sid: string) => (
+        sid === sessionId
+            ? sessionRouteServerId
+            : resolveServerIdForSessionIdFromLocalCache(sid) ?? sessionRouteServerId
+    ), [sessionId, sessionRouteServerId]);
     const buildSessionHref = React.useCallback((sid: string, suffix = '') => {
         return buildScopedSessionRouteHref({
             sessionId: sid,
-            serverId: resolveServerIdForSessionIdFromLocalCache(sid) ?? sessionRouteServerId,
+            serverId: resolveNavigationServerIdForSessionId(sid),
             suffix,
         });
-    }, [sessionRouteServerId]);
+    }, [resolveNavigationServerIdForSessionId]);
     const buildCurrentSessionHref = React.useCallback((suffix = '') => {
         return buildSessionHref(sessionId, suffix);
     }, [buildSessionHref, sessionId]);
@@ -4130,9 +4735,7 @@ function SessionViewLoaded({
         openSession: (sid, options) => {
             router.push(buildScopedSessionRouteHref({
                 sessionId: sid,
-                serverId: options?.serverId
-                    ?? resolveServerIdForSessionIdFromLocalCache(sid)
-                    ?? sessionRouteServerId,
+                serverId: options?.serverId ?? resolveNavigationServerIdForSessionId(sid),
             }) as any);
         },
     });
@@ -4163,7 +4766,7 @@ function SessionViewLoaded({
     // Account/server scope as the arm that produced them. Gate reads during an
     // Account switch so neither a notice nor its custody key can leak across
     // the scope boundary before the cleanup effect below runs.
-    const activeArmedContinuationOutcome = armedContinuationOutcome?.scopeKey === activeServerAccountScopeKey
+    const activeArmedContinuationOutcome = armedContinuationOutcome?.scopeKey === sessionAccountScopeKey
         ? armedContinuationOutcome
         : null;
     const armedContinuationOutcomeTargetAgentId = activeArmedContinuationOutcome?.kind === 'outcome'
@@ -4183,10 +4786,10 @@ function SessionViewLoaded({
     // instead of projecting it onto the next composer.
     React.useEffect(() => {
         setArmedContinuationOutcome((current) => {
-            if (current === null || current.scopeKey !== activeServerAccountScopeKey) return null;
+            if (current === null || current.scopeKey !== sessionAccountScopeKey) return null;
             return current.kind === 'outcome' && current.sessionId !== sessionId ? null : current;
         });
-    }, [activeServerAccountScopeKey, sessionId]);
+    }, [sessionAccountScopeKey, sessionId]);
     const armedContinuationAwaitingReconcile = activeArmedContinuationOutcome?.kind === 'outcome'
         && activeArmedContinuationOutcome.result.type === 'outcome_unknown'
         && !activeArmedContinuationOutcome.reconciled;
@@ -4206,7 +4809,7 @@ function SessionViewLoaded({
             if (cancelled) return;
             setArmedContinuationOutcome((current) => (
                 current?.kind === 'outcome'
-                    && current.scopeKey === activeServerAccountScopeKey
+                    && current.scopeKey === sessionAccountScopeKey
                     && current.sessionId === sessionId
                     && !current.reconciled
                     ? { ...current, reconciled: true }
@@ -4214,7 +4817,7 @@ function SessionViewLoaded({
             ));
         });
         return () => { cancelled = true; };
-    }, [activeServerAccountScopeKey, armedContinuationAwaitingReconcile, sessionId, sessionRouteServerId]);
+    }, [sessionAccountScopeKey, armedContinuationAwaitingReconcile, sessionId, sessionRouteServerId]);
 
     // Canonical facts are read at the moment reconciliation reports them settled,
     // which is exactly when they can have changed. Reading canonical admission
@@ -4309,8 +4912,13 @@ function SessionViewLoaded({
     const isResuming = sessionStatus.state === 'resuming';
     const sessionSubmitPort = React.useMemo(() => createSyncBackedSubmitPort(sync), []);
     const readLatestSessionForSubmit = React.useCallback(() => {
-        return storage.getState().sessions[sessionId] ?? session;
-    }, [session, sessionId]);
+        const state = storage.getState();
+        return selectSessionViewShellSessionForRouteState({
+            sessions: state.sessions,
+            sessionListIndexByServerId: state.sessionListIndexByServerId,
+            sessionListRowsByServerId: state.sessionListRowsByServerId,
+        }, sessionId, routeServerId) ?? session;
+    }, [routeServerId, session, sessionId]);
     const persistedVoiceComposerRouting = resolveVoiceSessionComposerRouting({
         conversationSessionId: sessionId,
         sessionMetadata: ownerMetadata,
@@ -4327,21 +4935,25 @@ function SessionViewLoaded({
         setDraftValue,
         restoreDraft,
         restoreComposerSnapshot,
-    } = useDraft(sessionId, message, setMessage, { active: surfacePresented });
+    } = useDraft(sessionId, message, setMessage, {
+        accountLifetime: sessionAccountLifetime,
+        session,
+        active: surfacePresented,
+    });
     const sessionDraftAddress = React.useMemo(() => ({
         kind: 'session' as const,
         sessionId,
     }), [sessionId]);
     const subscribeCurrentSessionDraft = React.useCallback((listener: () => void) => (
-        activeServerAccountScope
-            ? subscribeSessionDraft(activeServerAccountScope, sessionDraftAddress, listener)
+        sessionAccountScope && sessionAccountLifetime?.isCurrent()
+            ? subscribeSessionDraft(sessionAccountScope, sessionDraftAddress, listener)
             : () => undefined
-    ), [activeServerAccountScope, sessionDraftAddress]);
+    ), [sessionAccountLifetime, sessionAccountScope, sessionDraftAddress]);
     const getCurrentSessionDraftSnapshot = React.useCallback(() => (
-        activeServerAccountScope
-            ? getSessionDraftSnapshot(activeServerAccountScope, sessionDraftAddress)
+        sessionAccountScope && sessionAccountLifetime?.isCurrent()
+            ? getSessionDraftSnapshot(sessionAccountScope, sessionDraftAddress)
             : null
-    ), [activeServerAccountScope, sessionDraftAddress]);
+    ), [sessionAccountLifetime, sessionAccountScope, sessionDraftAddress]);
     const currentSessionDraftSnapshot = React.useSyncExternalStore(
         subscribeCurrentSessionDraft,
         getCurrentSessionDraftSnapshot,
@@ -4350,14 +4962,19 @@ function SessionViewLoaded({
     const draftConflictBanner = useSessionDraftConflictComposerBanner(
         currentSessionDraftSnapshot?.conflict ?? null,
     );
+    const draftSyncStatusBadge = React.useMemo(
+        () => buildSessionDraftSyncStatusBadge(currentSessionDraftSnapshot?.status ?? 'clean'),
+        [currentSessionDraftSnapshot?.status],
+    );
     const sessionComposerRef = React.useMemo<Extract<ComposerRefV1, { kind: 'session' }>>(
         () => ({ kind: 'session', sessionId }),
         [sessionId],
     );
-    const existingSessionComposerOwner = React.useMemo(() => activeServerAccountScope
+    const existingSessionComposerOwner = React.useMemo(() => sessionAccountScope && sessionAccountLifetime
         ? createExistingSessionComposerDocumentOwner({
-            scope: activeServerAccountScope,
+            scope: sessionAccountScope,
             ref: sessionComposerRef,
+            isCurrent: sessionAccountLifetime.isCurrent,
         })
         : createEphemeralComposerDocumentOwner({
             ref: sessionComposerRef,
@@ -4367,7 +4984,7 @@ function SessionViewLoaded({
                 structuredInputMentions: [],
                 composerAttachments: [],
             },
-        }), [activeServerAccountScope, sessionComposerRef]);
+        }), [sessionAccountLifetime, sessionAccountScope, sessionComposerRef]);
     const readActiveComposerPresentationRevision = React.useCallback(() => {
         const ref = activeComposerRefRef.current;
         const pendingEdit = pendingMessageEditRef.current;
@@ -4386,7 +5003,7 @@ function SessionViewLoaded({
             const nextValue = typeof nextValueOrUpdater === 'function'
                 ? (nextValueOrUpdater as (value: string) => string)(currentValue)
                 : nextValueOrUpdater;
-            if (!activeServerAccountScope) {
+            if (!sessionAccountScope || !sessionAccountLifetime?.isCurrent()) {
                 const snapshot = existingSessionComposerOwner.read();
                 existingSessionComposerOwner.apply(snapshot.revision, {
                     text: nextValue,
@@ -4405,7 +5022,8 @@ function SessionViewLoaded({
             return nextValue;
         });
     }, [
-        activeServerAccountScope,
+        sessionAccountLifetime,
+        sessionAccountScope,
         composerAttachmentAvailabilityEntriesById,
         existingSessionComposerOwner,
         setDraftValue,
@@ -4463,10 +5081,18 @@ function SessionViewLoaded({
     const patchPendingMessageEditHoldMetadata = React.useCallback((
         updater: (metadata: Metadata) => Metadata,
         tag: string,
+        accountLifetime: ServerAccountScopeLifetime | null,
     ) => {
+        if (accountLifetime && !accountLifetime.isCurrent()) return;
         const run = pendingMessageEditHoldPatchRef.current
             .catch(() => undefined)
-            .then(() => sync.patchSessionMetadataWithRetry(sessionId, updater, { serverId: routeServerId }));
+            .then(() => {
+                if (accountLifetime && !accountLifetime.isCurrent()) return;
+                return sync.patchSessionMetadataWithRetry(sessionId, updater, {
+                    serverId: routeServerId,
+                    ...(accountLifetime ? { accountLifetime } : {}),
+                });
+            });
         pendingMessageEditHoldPatchRef.current = run;
         fireAndForget(run, { tag });
     }, [routeServerId, sessionId]);
@@ -4480,13 +5106,15 @@ function SessionViewLoaded({
                 expiresAtMs: nowMs + PENDING_MESSAGE_EDIT_DRAIN_HOLD_TTL_MS,
             }) as Metadata,
             'SessionView.pendingMessageEdit.hold.publish',
+            edit.accountLifetime,
         );
     }, [patchPendingMessageEditHoldMetadata]);
-    const clearPendingMessageEditDrainHold = React.useCallback((holdId: string) => {
-        if (holdId.trim().length === 0) return;
+    const clearPendingMessageEditDrainHold = React.useCallback((edit: PendingMessageComposerEditState) => {
+        if (edit.holdId.trim().length === 0) return;
         patchPendingMessageEditHoldMetadata(
-            (metadata) => removeSessionPendingQueueHoldV1FromMetadata(metadata, holdId) as Metadata,
+            (metadata) => removeSessionPendingQueueHoldV1FromMetadata(metadata, edit.holdId) as Metadata,
             'SessionView.pendingMessageEdit.hold.clear',
+            edit.accountLifetime,
         );
     }, [patchPendingMessageEditHoldMetadata]);
     const captureComposerSemanticDraftSnapshot = React.useCallback((): ComposerSemanticDraftSnapshot => {
@@ -4496,9 +5124,9 @@ function SessionViewLoaded({
         const document = existingSessionComposerOwner.read().document;
         snapshot['structuredInput.mentions'] = document.structuredInputMentions;
         snapshot['structuredInput.composerAttachments'] = document.composerAttachments;
-        if (activeServerAccountScope) {
+        if (sessionAccountScope && sessionAccountLifetime?.isCurrent()) {
             const stored = getSessionDraftSnapshot(
-                activeServerAccountScope,
+                sessionAccountScope,
                 { kind: 'session', sessionId },
             );
             if (stored?.document.target.kind === 'session') {
@@ -4512,38 +5140,47 @@ function SessionViewLoaded({
                 const continuation = SESSION_DRAFT_VALUE_SCHEMAS['routing.agentContinuation']
                     .safeParse(routing.agentContinuation.value);
                 if (continuation.success) snapshot['routing.agentContinuation'] = continuation.data;
-                const delivery = SESSION_DRAFT_VALUE_SCHEMAS['routing.executionRunDelivery']
-                    .safeParse(routing.executionRunDelivery.value);
-                if (delivery.success) snapshot['routing.executionRunDelivery'] = delivery.data;
+                snapshot['routing.executionRunRequestedAction'] = readExecutionRunRequestedAction(
+                    routing.executionRunDelivery.value,
+                );
+                const selectionSource = readSessionDiscussionSelectionSourceFromDraft(stored.document);
+                if (selectionSource?.sessionId === sessionId) {
+                    snapshot['structuredInput.sessionDiscussionSelectionSourceV1'] = selectionSource;
+                }
             }
         }
         return snapshot;
-    }, [activeServerAccountScope, existingSessionComposerOwner, sessionId]);
+    }, [existingSessionComposerOwner, sessionAccountLifetime, sessionAccountScope, sessionId]);
     const captureComposerSemanticDraftCurrentnessSnapshot = React.useCallback((): ComposerSemanticDraftCurrentnessSnapshot => ({
         values: captureComposerSemanticDraftSnapshot(),
-        repositoryCurrentness: activeServerAccountScope
+        repositoryCurrentness: sessionAccountScope && sessionAccountLifetime?.isCurrent()
             ? captureSessionDraftCurrentness({
-                scope: activeServerAccountScope,
+                scope: sessionAccountScope,
                 address: { kind: 'session', sessionId },
             })
             : { address: { kind: 'session', sessionId }, mutationIds: {} },
         composerCurrentness: existingSessionComposerOwner.captureCurrentness(),
-    }), [activeServerAccountScope, captureComposerSemanticDraftSnapshot, existingSessionComposerOwner, sessionId]);
+    }), [captureComposerSemanticDraftSnapshot, existingSessionComposerOwner, sessionAccountLifetime, sessionAccountScope, sessionId]);
     const clearSemanticDraftValuesAfterOutboundHandoff = React.useCallback((
         snapshot: ComposerSemanticDraftCurrentnessSnapshot,
     ): ComposerSemanticDraftClearResult => {
         const composerClear = existingSessionComposerOwner.clearAccepted(snapshot.composerCurrentness);
-        const changed = activeServerAccountScope
+        const changed = sessionAccountScope && sessionAccountLifetime?.isCurrent()
             ? clearSessionDraftCurrentnessLocal({
-                scope: activeServerAccountScope,
+                scope: sessionAccountScope,
                 address: { kind: 'session', sessionId },
                 currentness: snapshot.repositoryCurrentness,
-                fieldIds: ['target.routing.recipient', 'target.routing.agentContinuation', 'target.routing.executionRunDelivery'],
+                fieldIds: [
+                    'target.routing.recipient',
+                    'target.routing.agentContinuation',
+                    'target.routing.executionRunDelivery',
+                    'extensions.happier.sessionDiscussionSelectionSourceV1',
+                ],
             })
             : false;
-        if (changed && activeServerAccountScope) {
+        if (changed && sessionAccountScope && sessionAccountLifetime?.isCurrent()) {
             void flushSessionDraft({
-                scope: activeServerAccountScope,
+                scope: sessionAccountScope,
                 address: { kind: 'session', sessionId },
             });
         }
@@ -4555,7 +5192,8 @@ function SessionViewLoaded({
             for (const fieldId of [
                 'routing.recipient',
                 'routing.agentContinuation',
-                'routing.executionRunDelivery',
+                'routing.executionRunRequestedAction',
+                'structuredInput.sessionDiscussionSelectionSourceV1',
             ] as const) {
                 if (!sameStrictJsonValue(
                     snapshot.values[fieldId] ?? null,
@@ -4569,7 +5207,7 @@ function SessionViewLoaded({
             setComposerDocumentRenderEpoch((current) => current + 1);
         }
         return { clearedFieldIds: cleared, textCleared: composerClear.changes.text };
-    }, [activeServerAccountScope, captureComposerSemanticDraftSnapshot, existingSessionComposerOwner, sessionId]);
+    }, [captureComposerSemanticDraftSnapshot, existingSessionComposerOwner, sessionAccountLifetime, sessionAccountScope, sessionId]);
     const restoreSemanticDraftValuesFromSnapshot = React.useCallback((input: Readonly<{
         snapshot: ComposerSemanticDraftCurrentnessSnapshot;
         clearedSnapshot: ComposerSemanticDraftCurrentnessSnapshot;
@@ -4581,9 +5219,9 @@ function SessionViewLoaded({
             input.clearedFieldIds,
             input.clearedSnapshot.values,
         );
-        if (!activeServerAccountScope) return [];
+        if (!sessionAccountScope || !sessionAccountLifetime?.isCurrent()) return [];
         const currentness = captureSessionDraftCurrentness({
-            scope: activeServerAccountScope,
+            scope: sessionAccountScope,
             address: { kind: 'session', sessionId },
         });
         const pathByField: Readonly<Record<SessionDraftValueFieldId, string>> = {
@@ -4591,7 +5229,8 @@ function SessionViewLoaded({
             'structuredInput.composerAttachments': 'composer.attachments',
             'routing.recipient': 'target.routing.recipient',
             'routing.agentContinuation': 'target.routing.agentContinuation',
-            'routing.executionRunDelivery': 'target.routing.executionRunDelivery',
+            'routing.executionRunRequestedAction': 'target.routing.executionRunDelivery',
+            'structuredInput.sessionDiscussionSelectionSourceV1': 'extensions.happier.sessionDiscussionSelectionSourceV1',
         };
         const fieldsToRestore = candidateFields.filter((fieldId) => {
             const path = pathByField[fieldId];
@@ -4622,9 +5261,15 @@ function SessionViewLoaded({
             });
         }
         writeExistingSessionDraft({
-            scope: activeServerAccountScope,
+            scope: sessionAccountScope,
             sessionId,
             patch: {
+                ...(fieldsToRestore.includes('structuredInput.sessionDiscussionSelectionSourceV1')
+                    ? {
+                        sessionDiscussionSelectionSourceV1:
+                            values['structuredInput.sessionDiscussionSelectionSourceV1'] ?? null,
+                    }
+                    : {}),
                 routing: {
                     ...(fieldsToRestore.includes('routing.recipient')
                         ? {
@@ -4641,8 +5286,12 @@ function SessionViewLoaded({
                             ),
                         }
                         : {}),
-                    ...(fieldsToRestore.includes('routing.executionRunDelivery')
-                        ? { executionRunDelivery: values['routing.executionRunDelivery'] ?? null }
+                    ...(fieldsToRestore.includes('routing.executionRunRequestedAction')
+                        ? {
+                            executionRunRequestedAction: StrictJsonValueSchema.parse(
+                                values['routing.executionRunRequestedAction'] ?? null,
+                            ),
+                        }
                         : {}),
                 },
             },
@@ -4652,7 +5301,8 @@ function SessionViewLoaded({
         }
         return fieldsToRestore;
     }, [
-        activeServerAccountScope,
+        sessionAccountLifetime,
+        sessionAccountScope,
         captureComposerSemanticDraftSnapshot,
         sessionId,
     ]);
@@ -4684,6 +5334,7 @@ function SessionViewLoaded({
     const clearArmedContinuationSubmissionIfCurrent = React.useCallback((
         submission: SessionArmedAgentContinuationSubmission,
     ): boolean => {
+        if (!sessionAccountLifetime?.isCurrent()) return false;
         const currentness = submission.currentness;
         let clearedComposerAttachments = false;
         const didClearComposer = clearComposerAfterOutboundHandoff({
@@ -4735,16 +5386,15 @@ function SessionViewLoaded({
         let didClearAttachmentDrafts = false;
         if (currentness && currentness.attachmentDraftIds.length > 0) {
             const submittedAttachmentDraftIds = new Set(currentness.attachmentDraftIds);
-            const currentAttachmentDrafts = attachmentDraftsSnapshotRef.current;
+            const currentAttachmentDrafts = getAttachmentDraftsSnapshot();
             const nextAttachmentDrafts = currentAttachmentDrafts.filter((draft) => (
                 !submittedAttachmentDraftIds.has(draft.id)
             ));
             if (nextAttachmentDrafts.length !== currentAttachmentDrafts.length) {
-                attachmentDraftsSnapshotRef.current = nextAttachmentDrafts;
                 if (nextAttachmentDrafts.length === 0) {
-                    clearSessionAttachmentDrafts(sessionId);
+                    clearMainAttachmentDrafts();
                 } else {
-                    writeSessionAttachmentDrafts(sessionId, nextAttachmentDrafts);
+                    writeMainAttachmentDrafts(nextAttachmentDrafts);
                 }
                 replaceAttachmentManagerDrafts(nextAttachmentDrafts);
                 didClearAttachmentDrafts = true;
@@ -4769,22 +5419,26 @@ function SessionViewLoaded({
 
         return didClearComposer || didClearAttachmentDrafts || didClearReviewComments;
     }, [
-        activeServerAccountScope,
+        sessionAccountLifetime,
+        sessionAccountScope,
         composerAttachmentAvailabilityEntriesById,
         existingSessionComposerOwner,
         clearDraftForSessionIfCurrentValueMatches,
+        clearMainAttachmentDrafts,
         clearSentReviewCommentDrafts,
         clearTransientInputState,
+        getAttachmentDraftsSnapshot,
         includedReviewCommentDrafts,
         replaceAttachmentManagerDrafts,
         sessionId,
+        writeMainAttachmentDrafts,
     ]);
     const appliedArmedContinuationDraftClearRef = React.useRef<string | null>(null);
     React.useEffect(() => {
         const outcome = activeArmedContinuationOutcome;
         if (outcome === null || outcome.kind !== 'outcome' || outcome.sessionId !== sessionId) return;
         if (armedContinuationDisposition?.draft !== 'clear') return;
-        const clearKey = `${activeServerAccountScopeKey}\u0000${outcome.localId}`;
+        const clearKey = `${sessionAccountScopeKey}\u0000${outcome.localId}`;
         if (appliedArmedContinuationDraftClearRef.current === clearKey) return;
         const submission = liveArmedContinuationSubmission;
         if (submission?.localId !== outcome.localId) return;
@@ -4806,7 +5460,7 @@ function SessionViewLoaded({
         }
     }, [
         activeArmedContinuationOutcome,
-        activeServerAccountScopeKey,
+        sessionAccountScopeKey,
         armedContinuationDisposition,
         clearArmedContinuation,
         clearPersistedArmedContinuationSubmissionIfCurrent,
@@ -4823,7 +5477,7 @@ function SessionViewLoaded({
         if (activeArmedContinuationOutcome?.kind === 'outcome') return;
         const submission = liveArmedContinuationSubmission;
         if (!submission || armedContinuationInputCustody === 'absent') return;
-        const clearKey = `${activeServerAccountScopeKey}\u0000${submission.localId}`;
+        const clearKey = `${sessionAccountScopeKey}\u0000${submission.localId}`;
         if (appliedArmedContinuationDraftClearRef.current === clearKey) return;
         appliedArmedContinuationDraftClearRef.current = clearKey;
         clearArmedContinuationSubmissionIfCurrent(submission);
@@ -4836,7 +5490,7 @@ function SessionViewLoaded({
         }
     }, [
         activeArmedContinuationOutcome,
-        activeServerAccountScopeKey,
+        sessionAccountScopeKey,
         armedContinuationInputCustody,
         clearArmedContinuation,
         clearPersistedArmedContinuationSubmissionIfCurrent,
@@ -4847,8 +5501,8 @@ function SessionViewLoaded({
     ]);
     const isPendingMessageEditAccountCurrent = React.useCallback((edit: PendingMessageComposerEditState): boolean => {
         if (edit.accountLifetime) return edit.accountLifetime.isCurrent();
-        return edit.accountScope === null && activeServerAccountScope === null;
-    }, [activeServerAccountScope]);
+        return edit.accountScope === null && sessionAccountScope === null;
+    }, [sessionAccountScope]);
     const readSessionComposerSnapshot = React.useCallback((): ComposerSnapshotV1 => {
         return projectComposerDocumentSnapshot({
             owner: existingSessionComposerOwner,
@@ -4977,7 +5631,7 @@ function SessionViewLoaded({
         pendingMessageEditRef.current = null;
         pendingComposerDocumentOwnerRef.current = null;
         setPendingMessageEdit(null);
-        clearPendingMessageEditDrainHold(edit.holdId);
+        clearPendingMessageEditDrainHold(edit);
     }, [clearPendingMessageEditDrainHold]);
     const handleEditPendingMessage = React.useCallback((request: PendingMessageEditRequest) => {
         if (externalSessionOperationShell.blocksNewOperation) return;
@@ -4999,14 +5653,14 @@ function SessionViewLoaded({
             return;
         }
 
-        const accountLifetime = captureActiveServerAccountScopeLifetime();
+        const accountLifetime = sessionAccountLifetime;
         const hydratedComposerMentions = composerStructuredMentionsFromReferences({
             references: attachmentHydration.mentions ?? [],
             existing: [],
         });
         const previousEdit = pendingMessageEditRef.current;
         if (previousEdit && previousEdit.pendingId !== request.id) {
-            clearPendingMessageEditDrainHold(previousEdit.holdId);
+            clearPendingMessageEditDrainHold(previousEdit);
         }
         if (previousEdit?.pendingId !== request.id) {
             // A successor identity belongs to the row that exposed it.
@@ -5051,7 +5705,7 @@ function SessionViewLoaded({
             localId: nextEdit.localId,
         });
     }, [
-        captureActiveServerAccountScopeLifetime,
+        sessionAccountLifetime,
         clearPendingMessageEditDrainHold,
         externalSessionOperationShell.blocksNewOperation,
         sessionId,
@@ -5068,7 +5722,7 @@ function SessionViewLoaded({
         pendingComposerDocumentOwnerRef.current = null;
         pendingComposerEditExposedSuccessorRef.current = null;
         setPendingMessageEdit(null);
-        clearPendingMessageEditDrainHold(edit.holdId);
+        clearPendingMessageEditDrainHold(edit);
     }, [clearPendingMessageEditDrainHold, pendingMessages]);
     React.useEffect(() => {
         if (!pendingMessageEdit) return;
@@ -5082,7 +5736,7 @@ function SessionViewLoaded({
     React.useEffect(() => () => {
         const edit = pendingMessageEditRef.current;
         if (!edit) return;
-        clearPendingMessageEditDrainHold(edit.holdId);
+        clearPendingMessageEditDrainHold(edit);
     }, [clearPendingMessageEditDrainHold]);
     const preparePendingComposerAdmissionCandidate = React.useCallback((
         edit: PendingMessageComposerEditState,
@@ -5234,6 +5888,96 @@ function SessionViewLoaded({
         ownerMetadata,
         sessionRouteServerId,
     ]);
+    const publishTeamCredentialModelSelection = React.useCallback(async (
+        teamCredentialModel: TeamCredentialProviderModelSelectionV1,
+    ) => {
+        const resourceKey = `${teamCredentialModel.teamId}:${teamCredentialModel.resourceId}`;
+        const selectedResource = teamCredentialCatalog.resources.find((resource) => (
+            resource.id === teamCredentialModel.resourceId
+            && resource.teamId === teamCredentialModel.teamId
+            && resource.resourceRevision === teamCredentialModel.expectedResourceRevision
+        ));
+        if (teamCredentialResourcesEnabled && (!selectedResource
+            || !teamCredentialCatalog.currentResourceKeys.has(resourceKey)
+            || !resourceHasAvailableTeamCredentialProviderModel(selectedResource, teamCredentialModel))) {
+            Modal.alert(t('common.error'), t('settingsProviders.models.connectionUnavailable'));
+            return;
+        }
+        const selectionOutcome = selectedResource
+            ? await coordinateTeamCredentialSelection({
+                resource: selectedResource,
+                deliveryMode: teamCredentialModel.deliveryMode,
+                selection: teamCredentialModel,
+                isCurrent: () => !teamCredentialResourcesEnabled || (teamCredentialSelectionCatalogRef.current.currentResourceKeys.has(resourceKey)
+                    && teamCredentialSelectionCatalogRef.current.resources.some((resource) => (
+                        resource.id === teamCredentialModel.resourceId
+                        && resource.teamId === teamCredentialModel.teamId
+                        && resourceHasAvailableTeamCredentialProviderModel(resource, teamCredentialModel)
+                    ))),
+            })
+            : { kind: 'continue' as const, selection: teamCredentialModel };
+        if (selectionOutcome.kind !== 'continue') return;
+        if (selectedResource?.sessionUsePolicy === 'team_visibility_required') {
+            const confirmed = await Modal.confirm(
+                t('teams.credentials.usePolicy.label'),
+                t('teams.credentials.usePolicy.visibilityNote'),
+                { confirmText: t('common.continue'), cancelText: t('common.cancel') },
+            );
+            if (!confirmed) return;
+        }
+        const stillCurrent = !teamCredentialResourcesEnabled || (teamCredentialSelectionCatalogRef.current.currentResourceKeys.has(resourceKey)
+            && teamCredentialSelectionCatalogRef.current.resources.some((resource) => (
+                resource.id === teamCredentialModel.resourceId
+                && resource.teamId === teamCredentialModel.teamId
+                && resourceHasAvailableTeamCredentialProviderModel(resource, teamCredentialModel)
+            )));
+        if (!stillCurrent) return;
+        try {
+            const result = await actionExecutor.execute('session.model.set', {
+                sessionId,
+                teamCredentialModel: selectionOutcome.selection,
+                ...(selectedResource?.sessionUsePolicy === 'team_visibility_required'
+                    ? { teamVisibilityGrantConsent: { teamId: teamCredentialModel.teamId } }
+                    : {}),
+            }, {
+                surface: 'ui',
+                defaultSessionId: sessionId,
+                serverId: sessionRouteServerId,
+            });
+            if (result.ok) {
+                setModelTransitionActionRequired(null);
+                return;
+            }
+            const details = result.details && typeof result.details === 'object'
+                ? result.details as Record<string, unknown>
+                : null;
+            if (details?.status === 'restart_required') {
+                // The Home committed this Team selection; only the process that
+                // is already running has not adopted it. That is the same fact
+                // a personal Provider transition reports, so it reaches the same
+                // explicit restart affordance instead of silently restarting
+                // somebody's running session or being reported as a failure.
+                setModelTransitionActionRequired({
+                    status: 'restart_required',
+                    requestedSelection: selectionOutcome.selection,
+                    intentBaselineUpdatedAt: providerModelSelectionIntent?.updatedAt ?? 0,
+                });
+                return;
+            }
+            setModelTransitionActionRequired(null);
+            if (details?.status === 'team_resource_active_transition_unsupported') {
+                // Nothing was saved: the session started running between the
+                // read and the write. Saying the connection is unavailable would
+                // describe a different, unrecoverable problem.
+                Modal.alert(t('common.error'), t('teams.credentials.selection.activeTransitionUnsupported'));
+                return;
+            }
+            Modal.alert(t('common.error'), t('settingsProviders.models.connectionUnavailable'));
+        } catch {
+            setModelTransitionActionRequired(null);
+            Modal.alert(t('common.error'), t('settingsProviders.models.connectionUnavailable'));
+        }
+    }, [actionExecutor, coordinateTeamCredentialSelection, providerModelSelectionIntent?.updatedAt, sessionId, sessionRouteServerId, teamCredentialCatalog, teamCredentialResourcesEnabled]);
 
     // Function to update a native model mode (only for agents that expose model selection in the UI).
     const updateModelMode = React.useCallback((mode: ModelMode) => {
@@ -5319,6 +6063,10 @@ function SessionViewLoaded({
                 agentTargetKey={providerAgentTargetKey}
                 nativeModels={existingSessionNativeModels}
                 providerGroups={providerGroups}
+                teamCredentialResources={teamCredentialCatalog.resources}
+                teamNameById={teamCredentialCatalog.teamNameById}
+                homeNameByTeamId={teamCredentialCatalog.homeNameByTeamId}
+                currentTeamCredentialResourceKeys={teamCredentialCatalog.currentResourceKeys}
                 providerProjectionAuthoritative={providerModelProjection.status === 'success'}
                 projectionError={providersFeatureEnabled ? providerModelProjection.error : null}
                 projectionFailures={providersFeatureEnabled ? providerModelProjection.refreshFailures : []}
@@ -5328,6 +6076,7 @@ function SessionViewLoaded({
                     : null}
                 hiddenNativeModelKeys={existingSessionHiddenNativeModelKeys}
                 selected={selectedRef}
+                selectedTeamCredentialModel={selectedTeamCredentialModel}
                 effectiveLabel={selectedProviderRow?.descriptor.name ?? nativeLabel}
                 reportedModel={existingSessionReportedModel}
                 canEnterCustomNativeValue={supportsFreeformModelSelectionForSession(agentId, ownerMetadata)}
@@ -5344,6 +6093,16 @@ function SessionViewLoaded({
                     const canonicalRef = resolveCanonicalNativeModelSelectionRef(existingSessionNativeModels, ref);
                     void publishModelSelection(canonicalRef);
                 }}
+                onSelectTeamCredentialModel={(selection) => {
+                    hapticsLight();
+                    void publishTeamCredentialModelSelection(selection);
+                }}
+                onRecoverTeamCredentialResource={(resource) => {
+                    router.push(teamCredentialDetailPath({
+                        serverId: sessionRouteServerId,
+                        teamId: resource.teamId,
+                    }, resource.id));
+                }}
             />
         );
     }, [
@@ -5354,6 +6113,7 @@ function SessionViewLoaded({
         existingSessionReportedModel,
         existingSessionSelectedModelRef,
         existingSessionSelectedModelOptionControls,
+        selectedTeamCredentialModel,
         modelMode,
         providerAgentTargetKey,
         providerModelProjection.data,
@@ -5363,7 +6123,14 @@ function SessionViewLoaded({
         providerModelProjection.status,
         providerModelSelection?.ref,
         providersFeatureEnabled,
+        router,
+        sessionRouteServerId,
+        publishTeamCredentialModelSelection,
         publishModelSelection,
+        teamCredentialCatalog.currentResourceKeys,
+        teamCredentialCatalog.homeNameByTeamId,
+        teamCredentialCatalog.resources,
+        teamCredentialCatalog.teamNameById,
         updateAcpConfigOptionOverride,
         ownerMetadata,
     ]);
@@ -5506,9 +6273,9 @@ function SessionViewLoaded({
         const resumed = await handleResumeSession({ silent: false });
         if (!resumed) return;
         setArmedContinuationOutcome((current) => (
-            current?.scopeKey === activeServerAccountScopeKey ? null : current
+            current?.scopeKey === sessionAccountScopeKey ? null : current
         ));
-    }, [activeServerAccountScopeKey, handleResumeSession]);
+    }, [sessionAccountScopeKey, handleResumeSession]);
 
     useSessionResumeRequestListener(
         sessionId,
@@ -5538,7 +6305,7 @@ function SessionViewLoaded({
     const inactiveUi = runtimeDisplayState.inactiveUi;
     const bottomNotice = runtimeDisplayState.bottomNotice;
 
-    const isReadOnly = session.accessLevel === 'view';
+    const isReadOnly = session.access?.capabilities.submitAgentInput !== true;
     /**
      * The one Composer mutability rule for this Session screen. Both public
      * snapshots and the host attachment row's mutation affordances read it, so
@@ -5552,6 +6319,15 @@ function SessionViewLoaded({
             && inputLock?.mode !== 'editAndSubmit'
         ),
         [externalSessionOperationShell.blocksNewOperation, isReadOnly],
+    );
+    // PEP owns the current-UI command transport; Lane 08 only publishes this
+    // mounted Session's local Board/Companion port through the incumbent target.
+    const sessionPresentationApplierRef = React.useRef<SessionPresentationIntentApplier | null>(null);
+    const applySessionPresentationIntentFromCommand = React.useCallback(
+        (intent: Parameters<SessionPresentationIntentApplier>[0]) => (
+            sessionPresentationApplierRef.current?.(intent) ?? { status: 'unavailable' as const }
+        ),
+        [],
     );
     const activeComposerPresentationTarget = useStableComposerPresentationTarget(activeComposerRef, {
         readRevision: readActiveComposerPresentationRevision,
@@ -5582,6 +6358,7 @@ function SessionViewLoaded({
             };
         },
         commitDocument: (input) => commitSessionComposerDocument(input, activeComposerRef),
+        applySessionPresentationIntent: applySessionPresentationIntentFromCommand,
         commitDocumentEmitsChange: true,
         createAttachmentInstanceId: randomUUID,
         setComposerDecorations: composerInputEffects.setComposerDecorations,
@@ -5637,13 +6414,15 @@ function SessionViewLoaded({
             };
         },
         commitDocument: (input) => commitSessionComposerDocument(input, sessionComposerRef),
+        applySessionPresentationIntent: applySessionPresentationIntentFromCommand,
         commitDocumentEmitsChange: true,
         createAttachmentInstanceId: randomUUID,
         setComposerDecorations: composerInputEffects.setComposerDecorations,
         acquireComposerInputLock: composerInputEffects.acquireComposerInputLock,
         isCurrent: () => (
             composerPresentationMountedRef.current
-            && composerPresentationAccountLifetime?.isCurrent() !== false
+            && composerPresentationAccountLifetime !== null
+            && composerPresentationAccountLifetime.isCurrent()
         ),
         focusComposer: () => {
             if (!surfaceFocused || activeComposerRefRef.current.kind !== 'session') return false;
@@ -5653,14 +6432,17 @@ function SessionViewLoaded({
             return true;
         },
     });
-    React.useEffect(
-        () => registerComposerPresentationTarget(activeComposerRef, activeComposerPresentationTarget),
-        [activeComposerPresentationTarget, activeComposerRef],
-    );
+    React.useEffect(() => activeComposerRef.kind === 'session'
+        ? registerSessionComposerPresentationTarget(sessionComposerAddress, activeComposerPresentationTarget)
+        : registerComposerPresentationTarget(activeComposerRef, activeComposerPresentationTarget), [
+        activeComposerPresentationTarget,
+        activeComposerRef,
+        sessionComposerAddress,
+    ]);
     React.useEffect(() => {
         if (activeComposerRef.kind === 'session') return;
-        return registerComposerPresentationTarget(sessionComposerRef, sessionComposerPresentationTarget);
-    }, [activeComposerRef.kind, sessionComposerPresentationTarget, sessionComposerRef]);
+        return registerSessionComposerPresentationTarget(sessionComposerAddress, sessionComposerPresentationTarget);
+    }, [activeComposerRef.kind, sessionComposerAddress, sessionComposerPresentationTarget]);
     // Catalog replacement and surface-focus transitions change the derived
     // view without changing the persisted document revision. Notify
     // presentation readers so an external composer transaction cannot observe
@@ -5671,7 +6453,8 @@ function SessionViewLoaded({
         if (activeComposerRef.kind === 'pendingMessage') {
             notifyComposerPresentationTargetChanged(sessionComposerRef);
         }
-    }, [activeComposerRef, composerAttachmentAvailabilityEntriesById, sessionComposerRef, surfaceFocused]);
+        if (surfaceFocused) flushPendingRegisteredSessionComposerFocus(sessionComposerAddress);
+    }, [activeComposerRef, composerAttachmentAvailabilityEntriesById, sessionComposerAddress, sessionComposerRef, surfaceFocused]);
     const transcriptInteraction = runtimeDisplayState.transcriptInteraction;
 
     const isLocallyAttached = !isHiddenSystemSessionSession && isSessionLocallyAttached(session);
@@ -5718,13 +6501,22 @@ function SessionViewLoaded({
             Modal.alert(t('common.error'), t('session.sharing.noEditPermission'));
             return;
         }
+        const accountLifetime = sessionAccountLifetime;
+        if (!accountLifetime?.isCurrent()) return;
         const attemptId = controlSwitchAttemptIdRef.current + 1;
         const requestedControlMode = 'remote' as const;
         controlSwitchAttemptIdRef.current = attemptId;
         setControlSwitchTo(requestedControlMode);
         fireAndForget((async () => {
             try {
-                const ok = await sessionSwitch(sessionId, requestedControlMode);
+                const ok = await sessionSwitch(sessionId, requestedControlMode, {
+                    serverId: sessionRouteServerId,
+                    accountLifetime,
+                });
+                if (!accountLifetime.isCurrent()) {
+                    finishControlSwitchAttempt(attemptId);
+                    return;
+                }
                 if (ok !== true) {
                     if (!finishControlSwitchAttempt(attemptId)) return;
                     Modal.alert(t('common.error'), t('errors.failedToSwitchControl'));
@@ -5736,7 +6528,7 @@ function SessionViewLoaded({
                 Modal.alert(t('common.error'), t('errors.failedToSwitchControl'));
             }
         })(), { tag: 'SessionView.requestSwitchToRemote' });
-    }, [finishControlSwitchAttempt, hasWriteAccess, sessionId]);
+    }, [finishControlSwitchAttempt, hasWriteAccess, sessionAccountLifetime, sessionId, sessionRouteServerId]);
     const targetMachineHomeDir = typeof ownerMetadata?.homeDir === 'string'
         ? ownerMetadata.homeDir
         : null;
@@ -5885,13 +6677,13 @@ function SessionViewLoaded({
                     { serverId });
                 },
                 openNewSession: async ({ promptText, sourceServerId, placement }) => {
-                    const accountLifetime = captureActiveServerAccountScopeLifetime();
-                    if (!activeServerAccountScope || !accountLifetime) return false;
+                    const accountLifetime = sessionAccountLifetime;
+                    if (!sessionAccountScope || !accountLifetime?.isCurrent()) return false;
                     // A cross-server source must carry its exact machine too.
                     // Falling back to the active Account's target while keeping
                     // only the source server would recreate the split placement
                     // contract this seed deliberately rejects.
-                    if (placement === undefined && activeServerAccountScope.serverId !== sourceServerId) {
+                    if (placement === undefined && sessionAccountScope.serverId !== sourceServerId) {
                         return false;
                     }
                     const outcome = seedAndOpenNewSession({
@@ -5904,7 +6696,7 @@ function SessionViewLoaded({
                         // identity for the same public boundary used by the
                         // Host API.
                         pluginId: 'happier.transcript.selection',
-                        scope: activeServerAccountScope,
+                        scope: sessionAccountScope,
                         isCurrent: () => accountLifetime.isCurrent(),
                         navigateToNewSession: ({
                             dataId,
@@ -5937,7 +6729,8 @@ function SessionViewLoaded({
             Modal.alert(t('common.error'), t('transcript.selection.sendTo.sendFailed'));
         }
     }, [
-        activeServerAccountScope,
+        sessionAccountLifetime,
+        sessionAccountScope,
         machineId,
         navigateToSession,
         router,
@@ -5958,6 +6751,7 @@ function SessionViewLoaded({
               ) : null}
               <SessionTranscriptContent
                   sessionId={sessionId}
+                  sessionSurfaceKey={sessionSurfaceKey}
                   session={session}
                   isEncryptedSessionLocked={isEncryptedSessionLocked}
                   isForkedSessionV1={isForkedSessionV1}
@@ -6001,8 +6795,27 @@ function SessionViewLoaded({
       const shouldShowInput = inactiveUi.shouldShowInput && !isEncryptedSessionLocked;
         const pendingComposerDocument = pendingMessageEdit?.document ?? null;
         const visibleComposerText = pendingComposerDocument?.text ?? message;
+        const sessionAccessChip = useSessionAccessComposerChip({
+            target: collaborationTarget,
+            // Compact summary input only; the roster is loaded by the mounted editor.
+            access: session.access ?? null,
+            // Anchoring the compact editor to the chip needs pointer geometry the
+            // narrow and native hosts do not have, so those hand off to the
+            // Collaboration surface instead. A Home whose Collaboration destination
+            // is not admitted keeps the anchored editor, which explains why.
+            onOpen: collaborationAvailable && (Platform.OS !== 'web' || foldCollaborationHeaderEntry)
+                ? openSessionAccess
+                : null,
+            // The anchored compact editor keeps its own way out to the full
+            // Collaboration surface with Access focused.
+            onOpenFullSurface: collaborationAvailable ? openSessionAccess : null,
+        });
         const sessionExtraActionPresentation = useSessionAgentInputExtraActionChips({
             sessionId,
+            sessionAddress: sessionRouteServerId ? { serverId: sessionRouteServerId, sessionId } : null,
+            accountScope: sessionAccountScope,
+            accountScopeIsCurrent: sessionAccountLifetime?.isCurrent ?? null,
+            sessionAccess: sessionAccessChip,
             attachmentsUploadsEnabled,
             isReadOnly,
             isUploadingAttachments,
@@ -6030,16 +6843,32 @@ function SessionViewLoaded({
         });
         const removeComposerAttachment = React.useCallback((instanceId: string) => {
             const ref = activeComposerRef;
-            const snapshot = readComposerPresentationSnapshot(ref);
+            if (ref.kind !== 'session') {
+                const snapshot = readComposerPresentationSnapshot(ref);
+                if (!snapshot) return;
+                applyComposerPresentationTransaction({
+                    ref,
+                    transaction: {
+                        expectedRevision: snapshot.revision,
+                        operations: [{ kind: 'attachment.remove', instanceId }],
+                    },
+                });
+                return;
+            }
+            const exactTarget = sessionRouteServerId
+                ? readSessionComposerPresentationTargetAtAddress({
+                    serverId: sessionRouteServerId,
+                    sessionId: ref.sessionId,
+                })
+                : null;
+            if (!exactTarget) return;
+            const snapshot = exactTarget?.readSnapshot?.();
             if (!snapshot) return;
-            applyComposerPresentationTransaction({
-                ref,
-                transaction: {
-                    expectedRevision: snapshot.revision,
-                    operations: [{ kind: 'attachment.remove', instanceId }],
-                },
+            exactTarget.applyTransaction({
+                expectedRevision: snapshot.revision,
+                operations: [{ kind: 'attachment.remove', instanceId }],
             });
-        }, [activeComposerRef]);
+        }, [activeComposerRef, sessionRouteServerId]);
         const composerAttachmentDrafts = React.useMemo(() => (
             pendingComposerDocument?.attachments
             ?? existingSessionComposerOwner.read().document.composerAttachments
@@ -6162,6 +6991,11 @@ function SessionViewLoaded({
             machineId: controlMachineTarget?.machineId ?? null,
             serverId: capabilityServerId,
             connectedAccounts: currentSessionAgentCatalogEntry?.connectedAccounts ?? [],
+            agentIdentity: currentSessionAgentCatalogEntry
+                ? parseQualifiedPluginContributionKey(currentSessionAgentCatalogEntry.qualifiedId)
+                : null,
+            teamCredentialResources: currentTeamCredentialConnectedServiceResources,
+            teamNameById: teamCredentialCatalog.teamNameById,
             sessionMetadata: ownerMetadata,
             settings: {
                 connectedServicesProfileLabelByKey: settings.connectedServicesProfileLabelByKey,
@@ -6202,23 +7036,45 @@ function SessionViewLoaded({
             setSessionModelPickerRequestKey((current) => String((Number.parseInt(current ?? '0', 10) || 0) + 1));
         }, []);
         const providerBindingBanner = React.useMemo(() => {
-            const requestedProviderGroup = effectiveModelTransitionActionRequired?.requestedSelection.providerConnectionId
+            const requestedTransitionSelection = effectiveModelTransitionActionRequired?.requestedSelection ?? null;
+            // A Team resource is named by the Team's own resource, never by the
+            // personal Provider connection this session happens to be launched
+            // with: naming that connection here would attribute the pending
+            // change to a credential nobody chose.
+            const requestedTeamSelection = requestedTransitionSelection !== null
+                && isTeamCredentialProviderModelPickerValue(requestedTransitionSelection)
+                ? requestedTransitionSelection
+                : null;
+            const requestedProviderSelection = requestedTransitionSelection !== null
+                && !isTeamCredentialProviderModelPickerValue(requestedTransitionSelection)
+                ? requestedTransitionSelection
+                : null;
+            const requestedProviderGroup = requestedProviderSelection?.providerConnectionId
                 ? providerModelProjection.data?.groups.find(
-                    (group) => group.connectionId
-                        === effectiveModelTransitionActionRequired.requestedSelection.providerConnectionId,
+                    (group) => group.connectionId === requestedProviderSelection.providerConnectionId,
                 ) ?? null
                 : null;
-            const transitionBanner = effectiveModelTransitionActionRequired
+            const requestedTeamResourceName = requestedTeamSelection
+                ? teamCredentialCatalog.resources.find((resource) => (
+                    resource.id === requestedTeamSelection.resourceId
+                    && resource.teamId === requestedTeamSelection.teamId
+                ))?.displayName ?? null
+                : null;
+            const transitionBanner = requestedTransitionSelection
                 ? {
                     kind: 'changed' as const,
                     action: 'restart' as const,
-                    providerName: requestedProviderGroup?.providerName
-                        ?? providerLaunchBinding?.displaySnapshot.providerName
-                        ?? agentId
-                        ?? effectiveModelTransitionActionRequired.requestedSelection.agentTargetKey,
-                    connectionName: requestedProviderGroup?.connectionName
-                        ?? providerLaunchBinding?.displaySnapshot.connectionName
-                        ?? effectiveModelTransitionActionRequired.requestedSelection.modelId,
+                    providerName: requestedTeamSelection
+                        ? requestedTeamResourceName ?? requestedTeamSelection.agentTargetKey
+                        : requestedProviderGroup?.providerName
+                            ?? providerLaunchBinding?.displaySnapshot.providerName
+                            ?? agentId
+                            ?? requestedTransitionSelection.agentTargetKey,
+                    connectionName: requestedTeamSelection
+                        ? requestedTeamSelection.modelId
+                        : requestedProviderGroup?.connectionName
+                            ?? providerLaunchBinding?.displaySnapshot.connectionName
+                            ?? requestedTransitionSelection.modelId,
                 }
                 : null;
             const banner = transitionBanner
@@ -6271,6 +7127,7 @@ function SessionViewLoaded({
             providerLaunchBinding?.displaySnapshot.connectionName,
             providerLaunchBinding?.displaySnapshot.providerName,
             providerModelProjection.data?.groups,
+            teamCredentialCatalog.resources,
         ]);
         const handleProviderBindingAction = React.useCallback(async () => {
             if (!providerBindingBanner) return;
@@ -6346,6 +7203,7 @@ function SessionViewLoaded({
         const agentInputStatusBadges = React.useMemo<ReadonlyArray<AgentInputStatusBadge>>(() => [
             ...sessionStatusBadges,
             ...sessionConnectedServicesAuthSwitch.statusBadges,
+            ...(draftSyncStatusBadge ? [draftSyncStatusBadge] : []),
             ...(draftConflictBanner.statusBadge ? [draftConflictBanner.statusBadge] : []),
             ...(providerLaunchBinding && providerBindingPresentation
                 ? [{
@@ -6465,6 +7323,7 @@ function SessionViewLoaded({
             authSurfaceState,
             cancelPendingMessageEdit,
             draftConflictBanner.statusBadge,
+            draftSyncStatusBadge,
             externalTranscriptAuthority?.kind,
             externalTranscriptSnapshotBanner.collapsed,
             externalTranscriptSnapshotBanner.toggle,
@@ -6539,27 +7398,11 @@ function SessionViewLoaded({
             ],
         );
 
-    const openFileViewer = React.useCallback(() => {
-        const layoutIfOpened = resolvePaneLayout({
-            containerWidthPx: windowWidth,
-            deviceType: multiPaneDeviceType,
-            multiPaneEnabled,
-            rightOpen: true,
-            detailsOpen: false,
-            mainMinPx: PANE_SIZING_DEFAULTS.mainMinPx,
-            rightMinPx: PANE_SIZING_DEFAULTS.right.minPx,
-            detailsMinPx: PANE_SIZING_DEFAULTS.details.minPx,
-        });
-
-        if (layoutIfOpened.kind === 'single') {
-            const href = buildCurrentSessionHref('/files');
-            router.push(href);
-            return;
-        }
-
-        pane.openRight({ tabId: 'files' });
-        pane.setRightTab('files');
-    }, [multiPaneDeviceType, multiPaneEnabled, pane, pathname, router, sessionId, windowWidth]);
+    const { openFiles: openFileViewer } = useSessionFilePaneNavigation({
+        scopeId: pane.scopeId,
+        sessionId,
+        serverId: sessionRouteServerId,
+    });
 
     const getAutocompleteSuggestions = React.useCallback(
         (query: string, signal: AbortSignal, onUpdate: AutocompleteSuggestionUpdate) => resolveSessionComposerSuggestions(sessionId, query, {
@@ -6597,11 +7440,29 @@ function SessionViewLoaded({
               * live attempt's transport the moment the user selected Off.
               */}
             {voiceEnabled && !isHiddenSystemSessionSession ? (
-                <VoiceSurface variant="session" sessionId={sessionId} isPresented={surfacePresented} />
+                <VoiceSurface
+                    variant="session"
+                    sessionAddress={companionAddress}
+                    isPresented={surfacePresented}
+                />
             ) : null}
             {authSurfaceState && !authRecoveryBanner.collapsed ? (
                 <ComposerAuxiliaryFrame>
                     <SessionAuthRecoveryBanner message={authSurfaceState.message} />
+                </ComposerAuxiliaryFrame>
+            ) : null}
+            {temporaryComputerRecovery.status === 'failed' ? (
+                <ComposerAuxiliaryFrame>
+                    <WarningActionBanner
+                        testID="session-temporaryComputer-initialAttachmentRecovery"
+                        tone="warning"
+                        title={t('newSession.temporaryComputer.status.failed')}
+                        body={t('inbox.actionOperations.followUpNeedsAttention')}
+                        actionTestID="session-temporaryComputer-initialAttachmentRecovery-retry"
+                        actionLabel={t('common.retry')}
+                        actionAccessibilityLabel={t('common.retry')}
+                        onActionPress={temporaryComputerRecovery.retry}
+                    />
                 </ComposerAuxiliaryFrame>
             ) : null}
             {pendingActivationPresentation && !pendingQueueResumeFailedBanner.collapsed ? (
@@ -6623,13 +7484,19 @@ function SessionViewLoaded({
                                     if (!row?.localId) return;
                                     setPendingActivationActionBusy(true);
                                     try {
-                                        await sync.sendPendingMessageNow(sessionId, {
-                                            localId: row.localId,
-                                            createdAt: row.createdAt,
-                                            rawRecord: row.rawRecord,
-                                            text: row.text,
-                                            displayText: row.displayText,
-                                        });
+                                        if (
+                                            pendingActivationPresentation.primaryAction === 'resume'
+                                            || pendingActivationPresentation.primaryAction === 'retry'
+                                        ) {
+                                            await handleResumeSession();
+                                            return;
+                                        }
+                                        await sync.updatePendingRequestedAction(
+                                            sessionId,
+                                            row.localId,
+                                            row.pendingRequestedAction ?? { v: 1, kind: 'enqueue' },
+                                            { resumeWhenAvailable: true },
+                                        );
                                     } catch (error) {
                                         Modal.alert(t('common.error'), error instanceof Error ? error.message : t('session.pendingMessages.errors.sendFailed'));
                                     } finally {
@@ -6651,7 +7518,15 @@ function SessionViewLoaded({
                                         if (!localId) return;
                                         setPendingActivationActionBusy(true);
                                         try {
-                                            await sync.updatePendingRequestedAction(sessionId, localId, { v: 1, kind: 'enqueue' });
+                                            const requestedAction = pendingActivationPresentation.row?.pendingRequestedAction;
+                                            await sync.updatePendingRequestedAction(
+                                                sessionId,
+                                                localId,
+                                                requestedAction?.kind === 'send_now'
+                                                    ? { v: 1, kind: 'enqueue' }
+                                                    : requestedAction ?? { v: 1, kind: 'enqueue' },
+                                                { resumeWhenAvailable: false },
+                                            );
                                         } catch (error) {
                                             Modal.alert(t('common.error'), error instanceof Error ? error.message : t('session.pendingMessages.errors.updateFailed'));
                                         } finally {
@@ -6709,21 +7584,23 @@ function SessionViewLoaded({
             ) : null}
             {visibleUsageLimitRecoveryPresentation ? (
                 <ComposerAuxiliaryFrame>
-                    <WarningActionBanner
+                    <SessionUsageLimitRecoveryBanner
+                        temporaryThrottle={visibleUsageLimitRecoveryPresentation.banner.temporaryThrottle}
+                        surfaceFocused={surfaceFocused}
                         testID={visibleUsageLimitRecoveryPresentation.banner.testID}
                         actionTestID={visibleUsageLimitRecoveryPresentation.banner.actionTestID}
                         title={visibleUsageLimitRecoveryPresentation.banner.title}
                         body={visibleUsageLimitRecoveryPresentation.banner.body}
                         actionLabel={visibleUsageLimitRecoveryPresentation.banner.actionLabel}
                         actionAccessibilityLabel={visibleUsageLimitRecoveryPresentation.banner.actionAccessibilityLabel}
-                        disabled={usageLimitRecoveryActionsDisabled}
+                        disabled={usageLimitRecoveryActionsDisabled || !hasWriteAccess || visibleUsageLimitRecoveryPresentation.banner.actionsDisabled}
                         onActionPress={() => handleUsageLimitRecoveryAction(visibleUsageLimitRecoveryPresentation.banner.mode)}
                         secondaryActions={visibleUsageLimitRecoveryPresentation.banner.secondaryActions.map((action) => ({
                             key: action.kind,
                             accessibilityLabel: action.accessibilityLabel,
                             label: action.label,
                             testID: action.testID,
-                            disabled: usageLimitRecoveryActionsDisabled,
+                            disabled: usageLimitRecoveryActionsDisabled || !hasWriteAccess || visibleUsageLimitRecoveryPresentation.banner.actionsDisabled,
                             onPress: () => handleUsageLimitRecoveryAction(action.kind),
                         }))}
                     />
@@ -6783,12 +7660,13 @@ function SessionViewLoaded({
                 composerRegions={composerPluginPresentation.composerRegions}
                 renderComposerRegion={composerPluginPresentation.renderComposerRegion}
             />
-            {activeServerAccountScope
+            {sessionAccountScope
+                && sessionAccountLifetime?.isCurrent()
                 && currentSessionDraftSnapshot?.conflict
                 && !draftConflictBanner.collapsed ? (
                 <ComposerAuxiliaryFrame>
                     <SessionDraftConflictResolution
-                        scope={activeServerAccountScope}
+                        scope={sessionAccountScope}
                         address={sessionDraftAddress}
                         conflict={currentSessionDraftSnapshot.conflict}
                     />
@@ -6808,7 +7686,12 @@ function SessionViewLoaded({
                 composerDecorations={composerInputEffects.composerDecorations}
                 composerInputLock={composerInputEffects.composerInputLock}
                 sessionId={sessionId}
+                sessionAddress={companionAddress}
                 surfacePresented={surfacePresented}
+                sessionTypingPresence={{
+                    serverId: sessionRouteServerId,
+                    canSubmitAgentInput: session.access?.capabilities.submitAgentInput === true,
+                }}
                 contentPaddingHorizontal={COMPOSER_CONTENT_HORIZONTAL_INSET}
                 agentType={agentInputAgentType ?? undefined}
                 agentLabel={agentInputAgentType ? resolveSessionActionDefaultBackendTitle({
@@ -6868,6 +7751,8 @@ function SessionViewLoaded({
                         Modal.alert(t('common.error'), t('session.sharing.noEditPermission'));
                         return;
                     }
+                    const outboundAccountLifetime = sessionAccountLifetime;
+                    if (!outboundAccountLifetime?.isCurrent()) return;
                     if (externalSessionOperationShell.blocksNewOperation) return;
 
                     fireAndForget(runWithSessionComposerAdmissionReservation(async () => {
@@ -6876,6 +7761,7 @@ function SessionViewLoaded({
                         ?? sendOptions?.inputTextOverride
                         ?? readLatestDraftValue();
                     if (activePendingEdit) {
+                        const pendingAccountLifetime = activePendingEdit.accountLifetime;
                         const pendingComposerSnapshot = readPendingMessageComposerSnapshot(activePendingEdit);
                         setIsComposerSending(true);
                         try {
@@ -6929,6 +7815,7 @@ function SessionViewLoaded({
                                             let preparedAbandoned = false;
                                             const abandonPrepared = async (): Promise<void> => {
                                                 if (preparedAbandoned || !preparedForAbandon?.sessionMediaCleanup) return;
+                                                if (pendingAccountLifetime && !pendingAccountLifetime.isCurrent()) return;
                                                 const abandonment: SessionPendingMessageComposerAdmissionAbandonedRequestV1 = {
                                                     sessionId,
                                                     localId: candidate.localId,
@@ -6938,6 +7825,7 @@ function SessionViewLoaded({
                                                 };
                                                 await abandonPendingMessageComposerAdmission(sessionId, abandonment, {
                                                     serverId: sessionRouteServerId,
+                                                    ...(pendingAccountLifetime ? { accountLifetime: pendingAccountLifetime } : {}),
                                                 });
                                                 preparedAbandoned = true;
                                             };
@@ -6949,6 +7837,7 @@ function SessionViewLoaded({
                                                 }, {
                                                     serverId: sessionRouteServerId,
                                                     signal: composerPluginActionScopeSignal,
+                                                    ...(pendingAccountLifetime ? { accountLifetime: pendingAccountLifetime } : {}),
                                                 });
                                                 if (prepared.ok) preparedForAbandon = prepared;
                                                 if (!prepared.ok || !isStructuredInputCurrent()) {
@@ -6970,6 +7859,11 @@ function SessionViewLoaded({
                                                                 ? { sessionMediaMetadata: prepared.sessionMediaMetadata }
                                                                 : {}),
                                                         },
+                                                        serverId: sessionRouteServerId,
+                                                        ...(pendingAccountLifetime ? {
+                                                            accountLifetime: pendingAccountLifetime,
+                                                            session,
+                                                        } : {}),
                                                     },
                                                 );
                                                 if (!acceptedComposerAdmission) {
@@ -6982,8 +7876,12 @@ function SessionViewLoaded({
                                                     : acceptedComposerAdmission.localId;
                                                 acceptedPreparedAttachments = acceptedComposerAdmission.structuredInput.composerAttachments ?? [];
                                                 try {
+                                                    if (pendingAccountLifetime && !pendingAccountLifetime.isCurrent()) {
+                                                        return { status: 'accepted' };
+                                                    }
                                                     await acceptPendingMessageComposerAdmission(sessionId, acceptedComposerAdmission, {
                                                         serverId: sessionRouteServerId,
+                                                        ...(pendingAccountLifetime ? { accountLifetime: pendingAccountLifetime } : {}),
                                                     });
                                                 } catch (error) {
                                                     // The Pending PATCH is already authoritative. Keep
@@ -7003,11 +7901,12 @@ function SessionViewLoaded({
                                     clearAcceptedSnapshot: (snapshot) => {
                                         const currentEdit = pendingMessageEditRef.current;
                                         if (!currentEdit || currentEdit.pendingId !== activePendingEdit.pendingId) return false;
+                                        if (pendingAccountLifetime && !pendingAccountLifetime.isCurrent()) return false;
                                         if (isPendingMessageComposerSubmissionSnapshotCurrent(currentEdit, snapshot)) {
                                             pendingMessageEditRef.current = null;
                                             pendingComposerDocumentOwnerRef.current = null;
                                             setPendingMessageEdit(null);
-                                            clearPendingMessageEditDrainHold(currentEdit.holdId);
+                                            clearPendingMessageEditDrainHold(currentEdit);
                                             return true;
                                         }
                                         if (acceptedReplacementLocalId && acceptedPreparedAttachments) {
@@ -7110,6 +8009,12 @@ function SessionViewLoaded({
                                 ...(snapshot.attachments.length > 0
                                     ? { composerAttachments: snapshot.attachments.map(composerAttachmentViewToDraft) }
                                     : {}),
+                                ...(semanticDraftSnapshot.values['structuredInput.sessionDiscussionSelectionSourceV1']
+                                    ? {
+                                        sessionDiscussionSelectionSourceV1:
+                                            semanticDraftSnapshot.values['structuredInput.sessionDiscussionSelectionSourceV1'],
+                                    }
+                                    : {}),
                             });
                             const {
                                 // The exact document snapshot owns generic references and attachments.
@@ -7153,6 +8058,7 @@ function SessionViewLoaded({
                             agentTargetKey: providerAgentTargetKey,
                             currentRunnerProcessIdentity,
                         });
+                        if (!outboundAccountLifetime.isCurrent()) return;
                         if (nonSteerablePlan.kind === 'cancelled') {
                             return;
                         }
@@ -7161,22 +8067,45 @@ function SessionViewLoaded({
                         const steerWithoutConfig = nonSteerablePlan.steerWithoutConfig === true;
                         const steerWithoutConfigMetaOverrides = nonSteerablePlan.steerWithoutConfigMetaOverrides ?? null;
                         const shouldSendReviewComments = hasIncludedReviewCommentDrafts;
-                        const hasAttachments = attachmentsUploadsEnabled && attachmentDrafts.length > 0;
+                        const submittedAttachmentDrafts = getAttachmentDraftsSnapshot();
+                        const hasAttachments = attachmentsUploadsEnabled && submittedAttachmentDrafts.length > 0;
                         const participantRecipient = recipientState.recipient;
 
-                        if (participantRecipient && (shouldSendReviewComments || hasAttachments)) {
-                            Modal.alert(t('common.error'), t('session.participants.unsupportedAttachmentsOrReviewComments'));
-                            return;
-                        }
+                        // A Session-owned Execution Run is an ordinary target of canonical Session
+                        // input admission, so files reach it through the parent Session's own
+                        // encrypted media path with the same upload, meta and settlement owners as
+                        // main input. The refusal below existed because the removed direct
+                        // `execution.run.send` route had no attachment or metadata channel of its
+                        // own. Agent-team recipients stay parent-runtime participant metadata rather
+                        // than independent runtime targets and keep their existing refusal.
+                        const participantAcceptsAttachments = participantRecipient?.kind === 'execution_run';
 
-                        if (hasAttachments && !isSessionActive && !isResumable) {
-                            Modal.alert(t('common.error'), t('session.inactiveNotResumableNoticeTitle'));
+                        if (
+                            participantRecipient
+                            && (shouldSendReviewComments || (hasAttachments && !participantAcceptsAttachments))
+                        ) {
+                            Modal.alert(t('common.error'), t('session.participants.unsupportedAttachmentsOrReviewComments'));
                             return;
                         }
 
                         const outboundBase = shouldSendReviewComments
                             ? { kind: 'review_comments' as const }
                             : { kind: 'plain' as const };
+                        // One destination fact for both the attachment and the plain send path.
+                        // Recomputing it per branch is how the attachment branch silently kept
+                        // addressing the parent Session's Agent.
+                        const executionRunRecipient =
+                            outboundBase.kind === 'plain' && participantRecipient?.kind === 'execution_run'
+                                ? participantRecipient
+                                : null;
+
+                        // A run target does not consume the parent Session's Agent, so parent
+                        // liveness is not a precondition for it. Only a main-Session attachment
+                        // send still needs a resumable or active Session.
+                        if (hasAttachments && !executionRunRecipient && !isSessionActive && !isResumable) {
+                            Modal.alert(t('common.error'), t('session.inactiveNotResumableNoticeTitle'));
+                            return;
+                        }
 
                         if (
                             outboundBase.kind === 'plain'
@@ -7224,6 +8153,7 @@ function SessionViewLoaded({
                             requestMountedTranscriptFollow();
                         };
                         const clearAfterOutboundHandoff = () => {
+                            if (!outboundAccountLifetime.isCurrent()) return false;
                             // Composer admission ends at the durable outbound handoff. Runtime
                             // wake and provider delivery continue through their canonical session/Pending
                             // projections and must not keep the submit button in a local sending state.
@@ -7292,9 +8222,8 @@ function SessionViewLoaded({
                             }
                         };
                         const restoreAttachmentDraftsFromSnapshot = (drafts: readonly AttachmentDraft[]) => {
-                            attachmentDraftsSnapshotRef.current = drafts;
-                            writeSessionAttachmentDrafts(sessionId, drafts);
                             attachmentDraftManager.replaceDrafts(drafts);
+                            writeMainAttachmentDrafts(drafts);
                         };
                         const restoreAfterFailedOutboundHandoff = (attachmentDraftsForRestore?: readonly AttachmentDraft[]) => {
                             const didRestore = restoreComposerAfterFailedOutboundHandoff({
@@ -7364,7 +8293,7 @@ function SessionViewLoaded({
                             if (refused.reason !== 'unreconciledTransitionOutcome') {
                                 setArmedContinuationOutcome({
                                     kind: 'refusal',
-                                    scopeKey: activeServerAccountScopeKey,
+                                    scopeKey: sessionAccountScopeKey,
                                     message: refused.reason === 'conflictingDestination'
                                         ? t('session.agentContinuation.transition.conflictingDestination', {
                                             agent: armedContinuationTargetLabel,
@@ -7400,6 +8329,7 @@ function SessionViewLoaded({
                             }>,
                             onAdmitted: () => void,
                         ): Promise<ComposerSubmissionAdmissionOutcome> => {
+                            if (!outboundAccountLifetime.isCurrent()) return { status: 'rejected' };
                             const transitionSubmission = {
                                 machineId: destination.machineId,
                                 serverId: sessionRouteServerId,
@@ -7435,7 +8365,7 @@ function SessionViewLoaded({
                                     mentions: semanticDraftSnapshot.values['structuredInput.mentions'] ?? [],
                                     composerAttachments: semanticDraftSnapshot.values['structuredInput.composerAttachments'] ?? [],
                                     attachmentDraftIds: hasAttachments
-                                        ? attachmentDrafts.map((draft) => draft.id)
+                                        ? submittedAttachmentDrafts.map((draft) => draft.id)
                                         : [],
                                 },
                             })) {
@@ -7454,7 +8384,9 @@ function SessionViewLoaded({
                                     },
                                 }
                                 : transitionSubmission;
+                            if (!outboundAccountLifetime.isCurrent()) return { status: 'rejected' };
                             const { disposition, result } = await continueSessionWithArmedAgent(submissionForDispatch);
+                            if (!outboundAccountLifetime.isCurrent()) return { status: 'rejected' };
                             // The armed row is dropped only once it stops being a
                             // truthful promise about the next message.
                             // Where canonical admission also clears the draft, keep
@@ -7469,7 +8401,7 @@ function SessionViewLoaded({
                             setArmedContinuationOutcome({
                                 kind: 'outcome',
                                 sessionId,
-                                scopeKey: activeServerAccountScopeKey,
+                                scopeKey: sessionAccountScopeKey,
                                 result,
                                 intent: destination.intent,
                                 localId: destination.localId,
@@ -7489,24 +8421,25 @@ function SessionViewLoaded({
                                 submittedSnapshot: ComposerSubmissionSnapshot,
                                 handoff: ComposerSubmissionAdmissionHandoff,
                             ): Promise<ComposerSubmissionAdmissionOutcome> => {
+                                if (!outboundAccountLifetime.isCurrent()) return { status: 'rejected' };
                                 setIsComposerSending(true);
                                 const admissionStructuredInputMetaOverrides = shouldUseComposerSubmissionCoordinator
                                     ? buildDetachedComposerSubmissionMetaOverrides(submittedSnapshot)
                                     : structuredInputMetaOverrides;
-                                const submittedAttachmentDraftIds = new Set(attachmentDrafts.map((draft) => draft.id));
+                                const submittedAttachmentDraftIds = new Set(submittedAttachmentDrafts.map((draft) => draft.id));
                                 const readSubmittedAttachmentDraftsFromCurrent = () => {
-                                    const currentDraftsById = new Map(attachmentDraftsSnapshotRef.current.map((draft) => [draft.id, draft]));
-                                    return attachmentDrafts.map((draft) => currentDraftsById.get(draft.id) ?? draft);
+                                    const currentDraftsById = new Map(getAttachmentDraftsSnapshot().map((draft) => [draft.id, draft]));
+                                    return submittedAttachmentDrafts.map((draft) => currentDraftsById.get(draft.id) ?? draft);
                                 };
                                 const canRestoreFailedAttachmentHandoffSnapshot = () => {
-                                    const currentDrafts = attachmentDraftsSnapshotRef.current;
+                                    const currentDrafts = getAttachmentDraftsSnapshot();
                                     return currentDrafts.length === 0
                                         || currentDrafts.every((draft) => submittedAttachmentDraftIds.has(draft.id));
                                 };
                                 let attachmentDraftsForRestore = readSubmittedAttachmentDraftsFromCurrent();
                                 try {
                                     const readyForSend = await externalSessionTakeover.ensureReadyForSend();
-                                    if (!readyForSend) {
+                                    if (!readyForSend || !outboundAccountLifetime.isCurrent()) {
                                         return { status: 'rejected' };
                                     }
                                     const sessionForSubmit = readLatestSessionForSubmit();
@@ -7521,24 +8454,27 @@ function SessionViewLoaded({
                                     // one decision owner is consulted first and the
                                     // resume is a consequence of it, not a step that
                                     // runs before it and has to be lived with.
-                                    const attachmentSendDestination = resolveSendDestination('sessionAgent');
+                                    const attachmentSendDestination = resolveSendDestination(
+                                        executionRunRecipient ? 'executionRun' : 'sessionAgent',
+                                    );
                                     if (attachmentSendDestination.kind === 'refused') {
                                         return presentRefusedArmedSend(attachmentSendDestination);
                                     }
                                     if (attachmentSendDestination.kind === 'sessionAgent'
                                         && !isSessionActive && isResumable) {
                                         const resumed = await handleResumeSession();
-                                        if (!resumed) {
+                                        if (!resumed || !outboundAccountLifetime.isCurrent()) {
                                             throw new Error(t('session.resumeFailed'));
                                         }
                                     }
 
                                     const { uploaded } = await uploadAttachmentDraftsToSession({
                                         sessionId,
-                                        drafts: attachmentDrafts,
+                                        drafts: submittedAttachmentDrafts,
                                         config: attachmentsUploadConfig,
                                         applyDraftPatch: applyAttachmentDraftPatch,
                                     });
+                                    if (!outboundAccountLifetime.isCurrent()) return { status: 'rejected' };
                                     const attachmentsBlock = formatAttachmentsBlock(uploaded);
                                     const attachmentsMetaOverrides = buildAttachmentMessageMeta(uploaded);
 
@@ -7560,6 +8496,12 @@ function SessionViewLoaded({
                                             displayText: trimmedText,
                                             metaOverrides: attachmentsMetaOverrides,
                                         };
+                                    // The run destination travels as the canonical `recipient` on
+                                    // Session input admission, not as authored `happier` metadata:
+                                    // this envelope already carries `attachments.v1`, and the
+                                    // recipient's own envelope occupies the same single slot. The
+                                    // durable target is the one routing fact, exactly as the
+                                    // settlement owner derives sidechain provenance from it.
                                     const outboundMetaOverrides = mergeMessageMetaOverrides(
                                         outbound.metaOverrides,
                                         admissionStructuredInputMetaOverrides,
@@ -7572,21 +8514,21 @@ function SessionViewLoaded({
                                     attachmentDraftsForRestore = readSubmittedAttachmentDraftsFromCurrent();
                                     let didClearForAttachmentHandoff = false;
                                     const removeSubmittedAttachmentDraftsFromCurrent = () => {
-                                        const currentDrafts = attachmentDraftsSnapshotRef.current;
+                                        const currentDrafts = getAttachmentDraftsSnapshot();
                                         const nextDrafts = currentDrafts.filter((draft) => !submittedAttachmentDraftIds.has(draft.id));
                                         if (nextDrafts.length === currentDrafts.length) {
                                             return;
                                         }
-                                        attachmentDraftsSnapshotRef.current = nextDrafts;
-                                        writeSessionAttachmentDrafts(sessionId, nextDrafts);
                                         attachmentDraftManager.replaceDrafts(nextDrafts);
+                                        writeMainAttachmentDrafts(nextDrafts);
                                     };
                                     const areSubmittedAttachmentDraftsStillCurrent = () => {
-                                        const currentDrafts = attachmentDraftsSnapshotRef.current;
+                                        const currentDrafts = getAttachmentDraftsSnapshot();
                                         if (currentDrafts.length !== submittedAttachmentDraftIds.size) return false;
                                         return currentDrafts.every((draft) => submittedAttachmentDraftIds.has(draft.id));
                                     };
                                     const clearAttachmentsAfterProjectionHandoff = () => {
+                                        if (!outboundAccountLifetime.isCurrent()) return;
                                         if (didClearForAttachmentHandoff) return;
                                         if (!areSubmittedAttachmentDraftsStillCurrent()) {
                                             removeSubmittedAttachmentDraftsFromCurrent();
@@ -7595,9 +8537,8 @@ function SessionViewLoaded({
                                         }
                                         didClearForAttachmentHandoff = handoff.accept();
                                         if (didClearForAttachmentHandoff) {
-                                            attachmentDraftsSnapshotRef.current = [];
-                                            clearSessionAttachmentDrafts(sessionId);
                                             attachmentDraftManager.clearDrafts();
+                                            clearMainAttachmentDrafts();
                                         } else {
                                             removeSubmittedAttachmentDraftsFromCurrent();
                                         }
@@ -7626,6 +8567,15 @@ function SessionViewLoaded({
                                     const result = await submitSessionUserMessage(sessionSubmitPort, {
                                         sessionId,
                                         session: sessionForSubmit,
+                                        // Omitting the recipient keeps the main Session's exact fast
+                                        // path; an attached run is the same canonical admission with
+                                        // one extra destination fact.
+                                        ...(executionRunRecipient
+                                            ? {
+                                                recipient: executionRunRecipient,
+                                                requestedAction: recipientState.executionRunRequestedAction,
+                                            }
+                                            : {}),
                                         text: outbound.text,
                                         displayText: outbound.displayText,
                                         metaOverrides: steerWithoutConfigMetaOverrides
@@ -7651,7 +8601,8 @@ function SessionViewLoaded({
                                             }
                                             : null,
                                         permissionOverride: getPermissionModeOverrideForSpawn(sessionForSubmit),
-                                        serverId: capabilityServerId,
+                                        serverId: sessionRouteServerId,
+                                        accountLifetime: outboundAccountLifetime,
                                         requestRemoteControlAfterPendingEnqueue: shouldRequestRemoteControlAfterPendingEnqueue(sessionForSubmit, cliAuthStatus?.state ?? null),
                                         callerSurface: shouldSendReviewComments
                                             ? 'session_attachment_review_comment_composer'
@@ -7699,6 +8650,7 @@ function SessionViewLoaded({
                             submittedSnapshot: ComposerSubmissionSnapshot,
                             admissionHandoff: ComposerSubmissionAdmissionHandoff,
                         ): Promise<ComposerSubmissionAdmissionOutcome> => {
+                            if (!outboundAccountLifetime.isCurrent()) return { status: 'rejected' };
                             setIsComposerSending(true);
                             const admissionStructuredInputMetaOverrides = shouldUseComposerSubmissionCoordinator
                                 ? buildDetachedComposerSubmissionMetaOverrides(submittedSnapshot)
@@ -7724,7 +8676,7 @@ function SessionViewLoaded({
                                 if (!outbound) return { status: 'rejected' };
 
                                 const readyForSend = await externalSessionTakeover.ensureReadyForSend();
-                                if (!readyForSend) {
+                                if (!readyForSend || !outboundAccountLifetime.isCurrent()) {
                                     return { status: 'rejected' };
                                 }
 
@@ -7751,6 +8703,7 @@ function SessionViewLoaded({
                                         sessionMetadata: ownerMetadata,
                                         getAdapter: (adapterId) => getVoiceAdapterRegistry().get(adapterId),
                                     });
+                                    if (!outboundAccountLifetime.isCurrent()) return { status: 'rejected' };
                                     if (!voiceSend.ok) {
                                         Modal.alert(
                                             t('common.error'),
@@ -7776,44 +8729,30 @@ function SessionViewLoaded({
                                     return { status: 'accepted' };
                                 }
 
-                                let executionRunSend:
-                                    | Readonly<{
-                                        runId: string;
-                                        message: string;
-                                        delivery: typeof recipientState.executionRunDelivery;
-                                    }>
-                                    | null = null;
-
+                                // A Session-owned Execution Run is an ordinary target of canonical
+                                // Session input admission. It carries the same text, attachments,
+                                // browser/source context, delivery selection and permissions as the
+                                // main Session; only the destination differs. `executionRunRecipient`
+                                // is resolved once for this send so the attachment and plain paths
+                                // cannot disagree about the destination.
                                 if (outboundBase.kind === 'plain' && participantRecipient) {
                                     const routed = resolveParticipantRoutedSend({
                                         text: outbound.text,
                                         recipient: participantRecipient,
-                                        executionRunDelivery: recipientState.executionRunDelivery,
+                                        ...(executionRunRecipient
+                                            ? {
+                                                requestedAction: recipientState.executionRunRequestedAction,
+                                            }
+                                            : {}),
                                     });
-                                    if (routed.type === 'execution_run_send') {
-                                        executionRunSend = {
-                                            runId: routed.runId,
-                                            message: routed.message,
-                                            delivery: routed.delivery,
-                                        };
-                                    } else {
-                                        outbound.text = routed.text;
-                                        outbound.displayText = routed.displayText;
-                                        outbound.metaOverrides = routed.metaOverrides;
-                                    }
+                                    outbound.text = routed.text;
+                                    outbound.displayText = routed.displayText;
+                                    outbound.metaOverrides = routed.metaOverrides;
                                 }
                                 outbound.metaOverrides = mergeMessageMetaOverrides(
                                     outbound.metaOverrides,
                                     admissionStructuredInputMetaOverrides,
                                 );
-                                if (executionRunSend && hasComposerAttachments) {
-                                    Modal.alert(t('common.error'), t('session.participants.unsupportedAttachmentsOrReviewComments'));
-                                    return { status: 'rejected' };
-                                }
-                                if (executionRunSend && hasBrowserContextComposerAttachments(browserContextStateForComposer)) {
-                                    Modal.alert(t('common.error'), t('browserContext.composer.contextUnavailable'));
-                                    return { status: 'rejected' };
-                                }
 
                                 const outboundMetaOverridesWithBrowserContext = mergeBrowserContextMetaForSend(outbound.metaOverrides);
                                 if (outboundMetaOverridesWithBrowserContext === null) {
@@ -7821,7 +8760,7 @@ function SessionViewLoaded({
                                 }
                                 outbound.metaOverrides = outboundMetaOverridesWithBrowserContext;
 
-                                if (executionRunSend) {
+                                if (executionRunRecipient) {
                                     // Same reasoning as the voice route above: an
                                     // execution run is not this Session's Agent, so an
                                     // armed switch cannot ride along unremarked.
@@ -7829,24 +8768,15 @@ function SessionViewLoaded({
                                     if (executionRunDestination.kind === 'refused') {
                                         return presentRefusedArmedSend(executionRunDestination);
                                     }
-                                    const result = await sessionExecutionRunSend(sessionId, executionRunSend);
-                                    if (!result.ok) {
-                                        if (isExecutionRunNotRunningSendError(result)) {
-                                            recipientState.clearPersistedManualRecipient();
-                                        }
-                                        Modal.alert(t('common.error'), result.error ?? t('runs.send.failedToSend'));
-                                        return { status: 'rejected' };
-                                    }
-                                    admissionHandoff.accept();
-                                    recordOutboundAccepted();
-                                    return { status: 'accepted' };
                                 }
 
-                                const sendDestination = resolveSendDestination('sessionAgent');
-                                if (sendDestination.kind === 'refused') {
+                                const sendDestination = executionRunRecipient
+                                    ? null
+                                    : resolveSendDestination('sessionAgent');
+                                if (sendDestination?.kind === 'refused') {
                                     return presentRefusedArmedSend(sendDestination);
                                 }
-                                if (sendDestination.kind === 'armedAgentContinuation') {
+                                if (sendDestination?.kind === 'armedAgentContinuation') {
                                     return await dispatchArmedContinuation(
                                         sendDestination,
                                         {
@@ -7871,6 +8801,14 @@ function SessionViewLoaded({
                                 const result = await submitSessionUserMessage(sessionSubmitPort, {
                                     sessionId,
                                     session: sessionForSubmit,
+                                    // Omitting the recipient keeps the main Session's exact fast
+                                    // path: no target object, target query, or capability check.
+                                    ...(executionRunRecipient
+                                        ? {
+                                            recipient: executionRunRecipient,
+                                            requestedAction: recipientState.executionRunRequestedAction,
+                                        }
+                                        : {}),
                                     text: outbound.text,
                                     displayText: outbound.displayText,
                                     metaOverrides: steerWithoutConfigMetaOverrides
@@ -7896,7 +8834,8 @@ function SessionViewLoaded({
                                         }
                                         : null,
                                     permissionOverride: getPermissionModeOverrideForSpawn(sessionForSubmit),
-                                    serverId: capabilityServerId,
+                                    serverId: sessionRouteServerId,
+                                    accountLifetime: outboundAccountLifetime,
                                     requestRemoteControlAfterPendingEnqueue: shouldRequestRemoteControlAfterPendingEnqueue(sessionForSubmit, cliAuthStatus?.state ?? null),
                                     callerSurface: shouldSendReviewComments
                                         ? 'session_review_comment_composer'
@@ -7988,6 +8927,8 @@ function SessionViewLoaded({
                         await executeSessionComposerResolution({
                             resolved,
                             sessionId,
+                            accountLifetime: sessionAccountLifetime,
+                            accountScope: sessionAccountScope,
                             agentId: agentId ?? '',
                             backendTarget: resolveSessionActionDefaultTarget(sessionActionDefaultBackend),
                             permissionMode,
@@ -8005,10 +8946,10 @@ function SessionViewLoaded({
                             navigateToPetSettings: () => router.push('/settings/pets' as any),
                             openGoalControls: () => setActiveStatusBadgeKey(SESSION_WORK_STATE_STATUS_BADGE_KEY),
                             setSessionGoal: canEditSessionGoals
-                                ? (targetSessionId, request) => sessionGoalSet(targetSessionId, request)
+                                ? (_targetSessionId, request) => setSessionGoalForView(request)
                                 : undefined,
                             clearSessionGoal: canEditSessionGoals
-                                ? (targetSessionId) => sessionGoalClear(targetSessionId)
+                                ? () => clearSessionGoalForView()
                                 : undefined,
                             modalAlert: (_title, msg) => Modal.alert(t('common.error'), msg),
                         });
@@ -8096,36 +9037,241 @@ function SessionViewLoaded({
         </View>
     ) : null;
 
-    const main = (
-        <TranscriptMessageSelectionProvider
-            sessionId={sessionId}
-            eligibleMessageIdsInOrder={transcriptSelectionEligibleMessageIds}
-            enabled={transcriptMessageSelectionEnabled === true && !isEncryptedSessionLocked}
-        >
-            <SessionTranscriptViewLayout
-                sessionId={sessionId}
-                session={session}
-                isEncryptedSessionLocked={isEncryptedSessionLocked}
-                isForkedSessionV1={isForkedSessionV1}
-                isLocallyAttached={isLocallyAttached}
-                pendingMessagesCount={pendingMessages.length}
-                content={content}
-                input={inputWithTranscriptSelection}
-                placeholder={placeholder}
-                shouldShowCliWarning={shouldShowCliWarning}
-                onDismissCliWarning={handleDismissCliWarning}
-                isLandscape={isLandscape}
-                deviceType={deviceType}
-                onBackPress={onBackPress}
-                chatBottomSpacing={chatBottomSpacing}
-            />
-        </TranscriptMessageSelectionProvider>
+    const openCompanionFullSurface = React.useCallback((): SessionPresentationMutationOutcome => {
+        if (routeMobileSurface === 'companion') return { status: 'unchanged' };
+        try {
+            router.push(resolveSessionRoutePathForSurface(sessionId, 'companion', {
+                serverId: routeServerId,
+            }));
+            return { status: 'applied' };
+        } catch {
+            return { status: 'unavailable' };
+        }
+    }, [routeMobileSurface, routeServerId, router, sessionId]);
+    // Board/Details navigation for an admitted presentation command. Readability
+    // and view selection are resolved by the bridge from the canonical Board
+    // repository; this shell contributes only the incumbent pane operations.
+    const applyCompanionBoardTabForPresentation = React.useCallback((
+        boardTab: ReturnType<typeof createSessionBoardDetailsTab>,
+        mode: 'beside_chat' | 'focus' | 'preserve_focus',
+    ): SessionPresentationMutationOutcome => {
+        const beforeDetails = presentationPaneRef.current.scopeState?.details ?? null;
+        const beforeFocusMode = presentationPaneFocusModeRef.current.active;
+        const beforeBoardTabPresent = beforeDetails?.groups?.some(
+            (group) => group.tabs.some((tab) => tab.key === boardTab.key),
+        ) ?? beforeDetails?.tabs.some((tab) => tab.key === boardTab.key) ?? false;
+        const paneAlreadyApplied = beforeDetails?.isOpen === true
+            && beforeDetails.activeTabKey === boardTab.key;
+        const focusAlreadyApplied = mode === 'preserve_focus'
+            || (mode === 'focus' ? beforeFocusMode : !beforeFocusMode);
+        if (paneAlreadyApplied && focusAlreadyApplied) return { status: 'unchanged' as const };
+
+        presentationPaneRef.current.openDetailsTab(boardTab, { intent: 'pinned' });
+        const focusChanged = mode === 'focus'
+            ? presentationPaneFocusModeRef.current.enter()
+            : mode === 'beside_chat'
+                ? presentationPaneFocusModeRef.current.exit()
+                : false;
+        const paneChanged = !paneAlreadyApplied;
+
+        return {
+            status: 'applied' as const,
+            undo: () => {
+                if (!boardPresentationUndoCurrentRef.current) return;
+                const currentPane = presentationPaneRef.current;
+                const currentDetails = currentPane.scopeState?.details ?? null;
+                // Restore only the fields this command applied. A later human
+                // pane/focus change wins and makes the inverse a no-op.
+                if (
+                    paneChanged
+                    && currentDetails?.isOpen === true
+                    && currentDetails.activeTabKey === boardTab.key
+                ) {
+                    if (beforeDetails?.isOpen === true) {
+                        if (beforeDetails.activeTabKey) {
+                            currentPane.setActiveDetailsTab(beforeDetails.activeTabKey);
+                        }
+                        if (beforeDetails.focusedGroupId) {
+                            currentPane.focusDetailsGroup?.(beforeDetails.focusedGroupId);
+                        }
+                    } else {
+                        currentPane.closeDetails();
+                    }
+                    if (!beforeBoardTabPresent) currentPane.closeDetailsTab(boardTab.key);
+                }
+                if (focusChanged) {
+                    const expectedFocusMode = mode === 'focus';
+                    if (presentationPaneFocusModeRef.current.active !== expectedFocusMode) return;
+                    if (beforeFocusMode) presentationPaneFocusModeRef.current.enter();
+                    else presentationPaneFocusModeRef.current.exit();
+                }
+            },
+        };
+    }, []);
+    const openCompanionBoardForPresentation = React.useCallback(
+        (mode: 'beside_chat' | 'focus') => applyCompanionBoardTabForPresentation(
+            createSessionBoardDetailsTab(),
+            mode,
+        ),
+        [applyCompanionBoardTabForPresentation],
     );
+    const revealCompanionBoardItem = React.useCallback(
+        (widgetId: string) => applyCompanionBoardTabForPresentation(
+            createSessionBoardDetailsTab({ kind: 'item', itemId: widgetId }),
+            'preserve_focus',
+        ),
+        [applyCompanionBoardTabForPresentation],
+    );
+    const revealCompanionBoardItemThroughPresentation = React.useCallback((widgetId: string) => {
+        // Use the same exact-Session dispatcher as an admitted Agent command.
+        // Its stable unavailable result also means a retained inline reference
+        // can never silently borrow or no-op against an unmounted bridge.
+        applySessionPresentationIntentFromCommand({ kind: 'board.item.reveal', widgetId });
+    }, [applySessionPresentationIntentFromCommand]);
+    const returnToCompanionChat = React.useCallback(() => {
+        // Returning to Chat only exits focus mode. Existing Details/right-pane
+        // state belongs to the person and remains exactly as it was.
+        if (!presentationPaneFocusModeRef.current.exit()) return { status: 'unchanged' as const };
+        return {
+            status: 'applied' as const,
+            undo: () => {
+                if (!boardPresentationUndoCurrentRef.current) return;
+                if (presentationPaneFocusModeRef.current.active) return;
+                presentationPaneFocusModeRef.current.enter();
+            },
+        };
+    }, []);
+    const openCompanionApproval = React.useCallback(() => {
+        const approvalId = approvalRequests[0]?.artifact.id;
+        if (!approvalId) return;
+        router.push(`/inbox/approvals/${encodeURIComponent(approvalId)}?serverId=${encodeURIComponent(sessionRouteServerId)}` as never);
+    }, [approvalRequests, router, sessionRouteServerId]);
+    const companionSummaryDestinations = React.useMemo<SessionSummaryDestinationHandlers>(() => ({
+        sessionInfo: () => router.push(buildCurrentSessionHref('/info') as never),
+        approvals: openCompanionApproval,
+        work: () => setActiveStatusBadgeKey(SESSION_WORK_STATE_STATUS_BADGE_KEY),
+        workflow: () => router.push(buildCurrentSessionHref('/runs') as never),
+        git: () => {
+            pane.openRight({ tabId: 'git' });
+            pane.setRightTab('git');
+        },
+        usage: () => router.push(buildCurrentSessionHref('/usage') as never),
+    }), [buildCurrentSessionHref, openCompanionApproval, pane, router]);
+    // The rail is a flex sibling of Chat, and only the row that holds both can
+    // seat it on the viewer's chosen side on every platform. This is the one
+    // Companion fact the shell reads: the edge, not the Companion's content.
+    const manageCompanionBoardItemPlugin = React.useCallback((itemId: string) => {
+        if (!mountedBoard?.controller.supports('item.managePlugin')) return;
+        void mountedBoard.controller.run({ kind: 'item.managePlugin', itemId });
+    }, [mountedBoard]);
+    const removeCompanionBoardItem = React.useCallback((itemId: string) => {
+        if (!mountedBoard?.controller.supports('item.remove')) return;
+        void mountedBoard.controller.run({ kind: 'item.remove', itemId });
+    }, [mountedBoard]);
+    // Companion is a placement for Board content, so the Board destination's
+    // exact-Home decision admits it. A Home that does not serve Board mounts no
+    // Companion host, no presentation bridge and no reveal port — while this
+    // device's saved Companion preference is left untouched for the day that
+    // Home serves Board again.
+    const companion = boardDestinationAvailable ? (
+        <>
+            <SessionCompanionPresentationBridge
+                sessionId={sessionId}
+                serverId={routeServerId}
+                applierRef={sessionPresentationApplierRef}
+                openBoard={openCompanionBoardForPresentation}
+                revealBoardItem={revealCompanionBoardItem}
+                returnToChat={returnToCompanionChat}
+                openFullSurface={openCompanionFullSurface}
+            />
+            {/*
+              * The Companion outlives the Board binding on purpose. Its built-in
+              * Session Summary is composed from Session facts that stay readable
+              * while the Board repository is still loading, offline or refused,
+              * and its own local references must render the recoverable pending
+              * state rather than vanishing — uncertainty is never a deletion.
+              * Mounting is inert until this viewer has a visible preference, and
+              * `board: null` discloses no shared item content, so the feature and
+              * access gates keep living at the entry points that own them.
+              */}
+            {companionAddress ? <SessionCompanionHost
+                session={session}
+                address={companionAddress}
+                boardBinding={mountedBoard?.binding ?? null}
+                {...(mountedBoard?.pluginRuntime ? { pluginRuntime: mountedBoard.pluginRuntime } : {})}
+                {...(mountedBoard
+                    ? { resolveSourceAvailability: mountedBoard.controller.resolveSourceAvailability }
+                    : {})}
+                {...(mountedBoard?.callerHostedHtmlRuntime
+                    ? { callerHostedHtmlRuntime: mountedBoard.callerHostedHtmlRuntime }
+                    : {})}
+                openFullSurface={openCompanionFullSurface}
+                onRevealBoardItem={revealCompanionBoardItemThroughPresentation}
+                {...(mountedBoard?.controller.supports('item.managePlugin') === true
+                    ? { onManageBoardItemPlugin: manageCompanionBoardItemPlugin }
+                    : {})}
+                {...(mountedBoard?.controller.supports('item.remove') === true
+                    ? { onRemoveBoardItem: removeCompanionBoardItem }
+                    : {})}
+                paneScopeId={paneScopeId}
+                resolvePrimaryHost={resolveBoardPrimaryHost}
+                summaryDestinations={companionSummaryDestinations}
+            /> : null}
+        </>
+    ) : null;
+
+    const main = (
+            <TranscriptMessageSelectionProvider
+                sessionId={sessionId}
+                eligibleMessageIdsInOrder={transcriptSelectionEligibleMessageIds}
+                enabled={transcriptMessageSelectionEnabled === true && !isEncryptedSessionLocked}
+            >
+                <SessionTranscriptViewLayout
+                    sessionId={sessionId}
+                    session={session}
+                    isEncryptedSessionLocked={isEncryptedSessionLocked}
+                    isForkedSessionV1={isForkedSessionV1}
+                    isLocallyAttached={isLocallyAttached}
+                    pendingMessagesCount={pendingMessages.length}
+                    content={content}
+                    input={inputWithTranscriptSelection}
+                    placeholder={placeholder}
+                    shouldShowCliWarning={shouldShowCliWarning}
+                    onDismissCliWarning={handleDismissCliWarning}
+                    isLandscape={isLandscape}
+                    deviceType={deviceType}
+                    onBackPress={onBackPress}
+                    chatBottomSpacing={chatBottomSpacing}
+                    companion={companion}
+                    companionEdge={companionEdge}
+                />
+            </TranscriptMessageSelectionProvider>
+    );
+    const wrapPaneScopeContent = React.useCallback((content: React.ReactElement) => (
+        <SessionCompanionRevealOwner
+            // A null address publishes no port, so Board item menus, inline
+            // transcript results and the header find no Companion to reveal
+            // while this Home does not serve the Board destination.
+            address={boardDestinationAvailable ? companionAddress : null}
+            paneScopeId={paneScopeId}
+            openFullSurface={openCompanionFullSurface}
+            revealBoardItem={revealCompanionBoardItemThroughPresentation}
+        >
+            {content}
+        </SessionCompanionRevealOwner>
+    ), [
+        boardDestinationAvailable,
+        companionAddress,
+        openCompanionFullSurface,
+        paneScopeId,
+        revealCompanionBoardItemThroughPresentation,
+    ]);
 
     return (
         <SessionResumeProvider onResumeSession={handleResumeSession}>
             <AppPaneScopeHost
                 scopeId={paneScopeId}
+                wrapScopeContent={wrapPaneScopeContent}
                 onPluginSurfaceNavigationBindingChange={onAppPanePluginSurfaceNavigationBindingChange}
                 // Keep the real session tree mounted; the pane host is responsible for hiding
                 // the main region in pane focus mode so focus toggles don't accidentally

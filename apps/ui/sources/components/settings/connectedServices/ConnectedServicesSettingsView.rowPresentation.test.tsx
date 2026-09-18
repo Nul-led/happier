@@ -37,6 +37,7 @@ vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({
 }));
 
 vi.mock('@/sync/store/hooks', () => ({
+    useActiveServerAccountScope: () => null,
     useProfile: () => ({
         connectedServicesV2: profileState.connectedServicesV2,
         connectedAccountsV4: profileState.connectedAccountsV4,
@@ -52,7 +53,14 @@ vi.mock('@/sync/store/hooks', () => ({
     useLocalSetting: () => 1,
 }));
 
+vi.mock('@/hooks/teams/useHomeTeamCredentialModelCatalog', () => ({
+    useHomeTeamCredentialModelCatalog: () => ({
+        resources: [], teamNameById: {}, homeNameByTeamId: {}, currentResourceKeys: new Set(), current: true,
+    }),
+}));
+
 vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
+    useAppShellPluginUiProjection: () => ({ machineId: null, serverId: null }),
     useProjectedConnectedServicesRegistry: () => ({
         scopeKey: 'server-1',
         status: registryState.status,

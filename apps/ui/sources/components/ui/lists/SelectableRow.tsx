@@ -56,6 +56,14 @@ export type SelectableRowProps = Readonly<{
     onKeyDown?: (event: unknown) => void;
     accessibilityLabel?: string;
     accessibilityRole?: 'radio';
+    /** Overrides the checked state without changing the visual keyboard highlight. */
+    accessibilityChecked?: boolean;
+    /**
+     * Exposes an applied choice while retaining button activation semantics.
+     * Native accessibility uses `selected`; web uses the valid toggle-button
+     * equivalent, `aria-pressed`, because `aria-selected` is invalid on a button.
+     */
+    accessibilityButtonSelected?: boolean;
     webRole?: React.AriaRole;
     tabIndex?: 0 | -1;
 
@@ -237,9 +245,14 @@ export const SelectableRow = React.forwardRef<React.ElementRef<typeof Pressable>
     );
     const accessibilityState = isRadio
         ? {
-            checked: selected,
+            checked: props.accessibilityChecked ?? selected,
             ...(disabled ? { disabled: true } : {}),
         }
+        : props.accessibilityButtonSelected !== undefined
+            ? {
+                selected: props.accessibilityButtonSelected,
+                ...(disabled ? { disabled: true } : {}),
+            }
         : (disabled ? ({ disabled: true } as const) : undefined);
     const splitRightAccessory = Boolean(props.rightElementOutsidePressable && rightAccessory);
     const rowStyle = (pressed: boolean) => ([
@@ -308,7 +321,10 @@ export const SelectableRow = React.forwardRef<React.ElementRef<typeof Pressable>
         accessibilityRole: Platform.OS === 'web' ? undefined : (props.accessibilityRole ?? (props.onPress ? 'button' : undefined)),
         accessibilityLabel,
         ...(webRole ? { role: webRole } : undefined),
-        ...(isRadio && Platform.OS === 'web' ? { 'aria-checked': selected } : undefined),
+        ...(isRadio && Platform.OS === 'web' ? { 'aria-checked': props.accessibilityChecked ?? selected } : undefined),
+        ...(Platform.OS === 'web' && props.accessibilityButtonSelected !== undefined
+            ? { 'aria-pressed': props.accessibilityButtonSelected }
+            : undefined),
         ...(Platform.OS === 'web' && props.tabIndex !== undefined ? { tabIndex: props.tabIndex } : undefined),
         pointerEvents: disabled && allowChildInteractionWhenDisabled ? 'box-none' : 'auto',
         ...pressableProps,

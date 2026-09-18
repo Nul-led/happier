@@ -15,17 +15,22 @@ import {
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import type { ActionOperationObservation } from './actionOperationStore';
 import { actionOperationStore, type ActionOperationStore } from './actionOperationStore';
+import {
+    actionOperationAddressKey,
+    normalizeActionOperationServerId,
+    type QualifiedActionOperation,
+} from './qualifiedActionOperation';
 import { actionOperationPresentationCoordinator } from '@/components/inbox/actionOperations/actionOperationPresentationRuntime';
 
 export type ActionOperationMachineRuntimeScope = Readonly<{
     accountId: string;
     machineId: string;
-    serverId?: string | null;
+    serverId: string;
 }>;
 
 type ListActionOperations = (params: Readonly<{
     machineId: string;
-    serverId?: string | null;
+    serverId: string;
     request?: ActionOperationListV1Request;
 }>) => Promise<ActionOperationListV1Response>;
 
@@ -34,10 +39,12 @@ function runtimeScopeKey(scope: ActionOperationMachineRuntimeScope): string {
 }
 
 function belongsToScope(
-    snapshot: ActionOperationSnapshotV1,
+    operation: QualifiedActionOperation,
     scope: ActionOperationMachineRuntimeScope,
 ): boolean {
-    return snapshot.scope.accountId === scope.accountId && snapshot.scope.machineId === scope.machineId;
+    return operation.serverId === scope.serverId
+        && operation.snapshot.scope.accountId === scope.accountId
+        && operation.snapshot.scope.machineId === scope.machineId;
 }
 
 export async function reconcileActionOperationsOnce(params: Readonly<{
@@ -49,10 +56,15 @@ export async function reconcileActionOperationsOnce(params: Readonly<{
     const store = params.store ?? actionOperationStore;
     const list = params.list ?? listActionOperations;
     const shouldContinue = params.shouldContinue ?? (() => true);
-    const knownOperationIds = new Set(
-        [...store.getSnapshot().operationsById.values()]
-            .filter((snapshot) => belongsToScope(snapshot, params.scope))
-            .map((snapshot) => snapshot.operationId),
+    const serverId = normalizeActionOperationServerId(params.scope.serverId);
+    if (!serverId) return;
+    const knownOperationKeys = new Set(
+        [...store.getSnapshot().operationsByKey.values()]
+            .filter((operation) => belongsToScope(operation, { ...params.scope, serverId }))
+            .map((operation) => actionOperationAddressKey({
+                serverId: operation.serverId,
+                operationId: operation.snapshot.operationId,
+            })),
     );
     const listedSnapshots: ActionOperationSnapshotV1[] = [];
     const seenCursors = new Set<string>();
@@ -61,12 +73,15 @@ export async function reconcileActionOperationsOnce(params: Readonly<{
     while (shouldContinue()) {
         const response = await list({
             machineId: params.scope.machineId,
-            serverId: params.scope.serverId,
+            serverId,
             request: cursor ? { cursor } : {},
         });
         if (!shouldContinue()) return;
 
-        const scopedSnapshots = response.items.filter((snapshot) => belongsToScope(snapshot, params.scope));
+        const scopedSnapshots = response.items.filter((snapshot) => (
+            snapshot.scope.accountId === params.scope.accountId
+            && snapshot.scope.machineId === params.scope.machineId
+        ));
         listedSnapshots.push(...scopedSnapshots);
 
         if (!response.nextCursor || seenCursors.has(response.nextCursor)) break;
@@ -76,10 +91,11 @@ export async function reconcileActionOperationsOnce(params: Readonly<{
 
     if (!shouldContinue()) return;
     store.reconcileMachineProjection({
+        serverId,
         accountId: params.scope.accountId,
         machineId: params.scope.machineId,
         snapshots: listedSnapshots,
-        knownOperationIds,
+        knownOperationKeys,
     });
 }
 
@@ -106,7 +122,10 @@ function createActionOperationMachineObserver(params: Readonly<{
             });
         } catch {
             if (stopped) return;
-            store.setMachineObservation(params.scope.machineId, 'reconnecting');
+            store.setMachineObservation(
+                { serverId: params.scope.serverId, machineId: params.scope.machineId },
+                'reconnecting',
+            );
         }
     };
 
@@ -183,7 +202,7 @@ export function ActionOperationRuntime(): null {
     const accountId = accountScope?.accountId;
     const serverId = accountScope?.serverId;
     const scopes = React.useMemo<readonly ActionOperationMachineRuntimeScope[]>(() => {
-        if (!accountId || socket.status !== 'connected') return [];
+        if (!accountId || !serverId || socket.status !== 'connected') return [];
         return onlineMachineIds.map((machineId) => ({ accountId, machineId, serverId }));
     }, [accountId, onlineMachineIdsKey, serverId, socket.status]);
 
@@ -208,19 +227,23 @@ export function ActionOperationRuntime(): null {
     }, [accountId, coordinator, scopes, serverId]);
 
     React.useEffect(() => {
-        if (!accountId) return;
-        actionOperationStore.retainAccountMachines(accountId, new Set(machines.map((machine) => machine.id)));
-    }, [accountId, machines]);
+        if (!accountId || !serverId) return;
+        actionOperationStore.retainAccountMachines({
+            accountId,
+            serverId,
+            machineIds: new Set(machines.map((machine) => machine.id)),
+        });
+    }, [accountId, machines, serverId]);
 
     React.useEffect(() => {
-        if (!accountId || socket.status === 'connected') return;
+        if (!accountId || !serverId || socket.status === 'connected') return;
         const observation: ActionOperationObservation = socket.status === 'error'
             ? 'unavailable'
             : 'reconnecting';
         for (const machineId of onlineMachineIds) {
-            actionOperationStore.setMachineObservation(machineId, observation);
+            actionOperationStore.setMachineObservation({ serverId, machineId }, observation);
         }
-    }, [accountId, onlineMachineIdsKey, socket.status]);
+    }, [accountId, onlineMachineIdsKey, serverId, socket.status]);
 
     React.useEffect(() => () => {
         coordinator.stopAll();
@@ -233,10 +256,16 @@ export function ActionOperationRuntime(): null {
 
 /** Observation ingress for non-polling callers; daemon state remains canonical. */
 export function publishActionOperationObservation(input: Readonly<{
+    serverId: string | null;
     machineId: string;
     observation: ActionOperationObservation;
     snapshots?: readonly ActionOperationSnapshotV1[];
 }>): void {
-    if (input.snapshots) actionOperationStore.mergeSnapshots(input.snapshots);
-    actionOperationStore.setMachineObservation(input.machineId, input.observation);
+    const serverId = normalizeActionOperationServerId(input.serverId);
+    if (!serverId) return;
+    if (input.snapshots) actionOperationStore.mergeSnapshots({ serverId, snapshots: input.snapshots });
+    actionOperationStore.setMachineObservation(
+        { serverId, machineId: input.machineId },
+        input.observation,
+    );
 }

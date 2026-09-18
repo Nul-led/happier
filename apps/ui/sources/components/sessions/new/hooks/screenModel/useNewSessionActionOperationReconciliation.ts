@@ -17,6 +17,7 @@ import {
     readCapturedNewSessionFirstTurnText,
 } from '@/components/sessions/new/modules/newSessionDraftLifecycle';
 import { useActionOperationByRequestId } from '@/sync/domains/actionOperations/useActionOperations';
+import { qualifyActionOperationSnapshot } from '@/sync/domains/actionOperations/qualifiedActionOperation';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { CREATED_SESSION_NOT_AVAILABLE_LOCALLY_ERROR } from '@/sync/runtime/sessionMessageDeliveryErrors';
 import { captureExceptionIfEnabled } from '@/utils/system/sentry';
@@ -37,6 +38,7 @@ export function useNewSessionActionOperationReconciliation(params: Readonly<{
 }>): Readonly<{ isCreatingFromOperation: boolean }> {
     const operation = useActionOperationByRequestId(
         params.draftScope ? params.requestId : null,
+        params.draftScope?.serverId ?? null,
         params.draftScope?.accountId ?? null,
     );
     const handledTerminalOperationIdRef = React.useRef<string | null>(null);
@@ -44,6 +46,8 @@ export function useNewSessionActionOperationReconciliation(params: Readonly<{
     React.useEffect(() => {
         if (!params.requestId || !params.draftScope) return;
         actionOperationPresentationCoordinator.register({
+            serverId: params.draftScope.serverId,
+            accountId: params.draftScope.accountId,
             requestId: params.requestId,
             onStart: 'current',
             origin: createNewSessionActionOperationOrigin(params.draftScope, params.draftId),
@@ -80,7 +84,8 @@ export function useNewSessionActionOperationReconciliation(params: Readonly<{
         if (!sessionId) return;
         const requestId = params.requestId;
         const draftScope = params.draftScope;
-        const destinationServerId = readActionOperationDestinationServerId(operation) ?? draftScope.serverId;
+        const destinationServerId = readActionOperationDestinationServerId(operation, draftScope.serverId)
+            ?? draftScope.serverId;
         const initialInput = readActionOperationSessionSpawnNewInitialInput(operation);
         const initialInputLocalId = initialInput?.status === 'accepted'
             || initialInput?.status === 'alreadyAccepted'
@@ -100,10 +105,11 @@ export function useNewSessionActionOperationReconciliation(params: Readonly<{
                 const presentation = await presentCreatedNewSession({
                     sessionId,
                     serverId: destinationServerId,
+                    accountId: draftScope.accountId,
                     requestId,
                     router: params.router,
                     isStillActive: () => !cancelled,
-                    operation,
+                    operation: qualifyActionOperationSnapshot(draftScope.serverId, operation),
                     prepareDestination: capturedFirstTurnText
                         ? () => {
                             if (initialInputLocalId) {

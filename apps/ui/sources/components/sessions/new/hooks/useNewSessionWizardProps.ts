@@ -109,6 +109,12 @@ export function useNewSessionWizardProps(params: Readonly<{
     modelSelection?: SessionModelSelectionV1 | null;
     setModelMode: (mode: ModelMode) => void;
     setModelSelection?: NewSessionWizardAgentProps['setModelSelection'];
+    teamCredentialResources?: NewSessionWizardAgentProps['teamCredentialResources'];
+    teamNameById?: NewSessionWizardAgentProps['teamNameById'];
+    homeNameByTeamId?: NewSessionWizardAgentProps['homeNameByTeamId'];
+    currentTeamCredentialResourceKeys?: NewSessionWizardAgentProps['currentTeamCredentialResourceKeys'];
+    selectedTeamCredentialModel?: NewSessionWizardAgentProps['selectedTeamCredentialModel'];
+    onSelectTeamCredentialModel?: NewSessionWizardAgentProps['onSelectTeamCredentialModel'];
     providerModelGroups?: NewSessionWizardAgentProps['providerModelGroups'];
     providerModelProjectionAuthoritative?: NewSessionWizardAgentProps['providerModelProjectionAuthoritative'];
     providerModelProjectionError?: NewSessionWizardAgentProps['providerModelProjectionError'];
@@ -124,6 +130,9 @@ export function useNewSessionWizardProps(params: Readonly<{
 
     // Machine section
     machines: ReadonlyArray<Machine>;
+    machineGroups?: NewSessionWizardMachineProps['machineGroups'];
+    machinePoolGroups?: NewSessionWizardMachineProps['machinePoolGroups'];
+    temporaryComputerProjection?: NewSessionWizardMachineProps['temporaryComputerProjection'];
     targetServerId?: string | null;
     selectedMachine: Machine | null;
     recentMachines: ReadonlyArray<Machine>;
@@ -150,6 +159,7 @@ export function useNewSessionWizardProps(params: Readonly<{
     canCreate: boolean;
     isCreating: boolean;
     pendingLaunchAttempt?: NewSessionWizardFooterProps['pendingLaunchAttempt'];
+    launchPendingPreviewVisible?: NewSessionWizardFooterProps['launchPendingPreviewVisible'];
     providerLaunchError?: NewSessionWizardFooterProps['providerLaunchError'];
     retryProviderLaunch?: NewSessionWizardFooterProps['retryProviderLaunch'];
     submitAccessibilityLabel?: NewSessionWizardFooterProps['submitAccessibilityLabel'];
@@ -384,6 +394,12 @@ export function useNewSessionWizardProps(params: Readonly<{
             modelSelection: params.modelSelection,
             setModelMode: params.setModelMode,
             setModelSelection: params.setModelSelection,
+            teamCredentialResources: params.teamCredentialResources,
+            teamNameById: params.teamNameById,
+            homeNameByTeamId: params.homeNameByTeamId,
+            currentTeamCredentialResourceKeys: params.currentTeamCredentialResourceKeys,
+            selectedTeamCredentialModel: params.selectedTeamCredentialModel,
+            onSelectTeamCredentialModel: params.onSelectTeamCredentialModel,
             providerModelGroups: params.providerModelGroups,
             providerModelProjectionAuthoritative: params.providerModelProjectionAuthoritative,
             providerModelProjectionError: params.providerModelProjectionError,
@@ -440,6 +456,12 @@ export function useNewSessionWizardProps(params: Readonly<{
         params.setAcpSessionModeId,
         params.setModelMode,
         params.setModelSelection,
+        params.teamCredentialResources,
+        params.teamNameById,
+        params.homeNameByTeamId,
+        params.currentTeamCredentialResourceKeys,
+        params.selectedTeamCredentialModel,
+        params.onSelectTeamCredentialModel,
         params.handlePermissionModeChange,
         params.tmuxRequested,
         installableDepInstallers,
@@ -448,6 +470,9 @@ export function useNewSessionWizardProps(params: Readonly<{
     const wizardMachineProps = React.useMemo((): NewSessionWizardMachineProps => {
         return {
             machines: params.machines,
+            machineGroups: params.machineGroups,
+            machinePoolGroups: params.machinePoolGroups,
+            temporaryComputerProjection: params.temporaryComputerProjection,
             serverId: params.targetServerId,
             selectedMachine: params.selectedMachine || null,
             recentMachines: params.recentMachines,
@@ -471,6 +496,8 @@ export function useNewSessionWizardProps(params: Readonly<{
         params.favoriteMachineItems,
         params.favoriteMachines,
         params.getBestPathForMachine,
+        params.machineGroups,
+        params.machinePoolGroups,
         params.machines,
         params.targetServerId,
         params.recentMachines,
@@ -483,6 +510,7 @@ export function useNewSessionWizardProps(params: Readonly<{
         params.setSelectedMachineId,
         params.setSelectedPath,
         params.setDraftSelectedPath,
+        params.temporaryComputerProjection,
         params.useMachinePickerSearch,
         params.usePathPickerSearch,
     ]);
@@ -496,6 +524,7 @@ export function useNewSessionWizardProps(params: Readonly<{
             canCreate: params.canCreate,
             isCreating: params.isCreating,
             pendingLaunchAttempt: params.pendingLaunchAttempt,
+            launchPendingPreviewVisible: params.launchPendingPreviewVisible,
             providerLaunchError: params.providerLaunchError,
             retryProviderLaunch: params.retryProviderLaunch,
             submitAccessibilityLabel: params.submitAccessibilityLabel,
@@ -533,6 +562,7 @@ export function useNewSessionWizardProps(params: Readonly<{
         params.isResumeSupportChecking,
         params.machinePopover,
         params.pendingLaunchAttempt,
+        params.launchPendingPreviewVisible,
         params.pathPopover,
         params.providerLaunchError,
         params.resumePopover,

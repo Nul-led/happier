@@ -4,7 +4,7 @@ import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useNewSessionServerTargetState } from '@/components/sessions/new/hooks/serverTarget/useNewSessionServerTargetState';
-import { renderScreen } from '@/dev/testkit';
+import { renderHook, renderScreen } from '@/dev/testkit';
 import { settingsDefaults, type Settings } from '@/sync/domains/settings/settings';
 
 
@@ -82,6 +82,18 @@ describe('useNewSessionServerTargetState', () => {
         ];
     });
 
+    it('keeps the initial authoring Home when focused Home changes before draft persistence', async () => {
+        const hook = await renderHook((activeServerId: string) => useNewSessionServerTargetState({
+            settings: buildSettings(),
+            activeServerId,
+            request: {},
+        }), { initialProps: 'server-b' });
+        expect(hook.getCurrent().targetServerId).toBe('server-b');
+        await hook.rerender('server-c');
+        expect(hook.getCurrent().targetServerId).toBe('server-b');
+        await hook.unmount();
+    });
+
     it('preserves listServerProfiles ordering (does not reorder by lastUsedAt)', async () => {
         const captured: Array<ReturnType<typeof useNewSessionServerTargetState>> = [];
 
@@ -141,7 +153,7 @@ describe('useNewSessionServerTargetState', () => {
         expect(latest.showServerPickerChip).toBe(true);
     });
 
-    it('rejects an explicit route target outside the current active target scope without falling back', async () => {
+    it('reports an explicit route target outside the active scope and normalizes to the allowed Home', async () => {
         const captured: Array<ReturnType<typeof useNewSessionServerTargetState>> = [];
 
         await renderScreen(<Probe
@@ -153,9 +165,9 @@ describe('useNewSessionServerTargetState', () => {
 
         const latest = captured.at(-1)!;
         expect(latest.allowedTargetServerIds).toEqual(['server-b', 'server-c']);
-        expect(latest.targetServerId).toBeNull();
+        expect(latest.targetServerId).toBe('server-b');
         expect(latest.rejectedRequestedServerId).toBe('server-a');
-        expect(latest.targetServerProfile).toBeNull();
+        expect(latest.targetServerProfile?.id).toBe('server-b');
         expect(latest.showServerPickerChip).toBe(true);
     });
 

@@ -8,6 +8,20 @@ import { resolveActivityAttentionDeliveryPlan } from './resolveActivityAttention
 import { ACTIVITY_SURFACE_SELECTION_IDS } from '../selection/activitySurfaceSelectionTypes';
 
 describe('resolveActivityAttentionDeliveryPlan', () => {
+    it.each(['permission_request', 'user_action_request'] as const)('keeps %s privacy independent from ready previews', (event) => {
+        const params = {
+            accountSettings: accountSettingsParse({}),
+            localSettings: localSettingsParse({ attentionDeviceOverridesV1: { localNotifications: {
+                previewBehavior: 'account', requestPreviewBehavior: 'status_only',
+            } } }),
+            channel: 'local_notification' as const,
+            now: new Date('2026-05-03T12:00:00.000Z'),
+        };
+        expect(resolveActivityAttentionDeliveryPlan({ ...params, event }).previewBehavior).toBe('status_only');
+        expect(resolveActivityAttentionDeliveryPlan({ ...params, event }).delivery).toBe('deliver');
+        expect(resolveActivityAttentionDeliveryPlan({ ...params, event: 'ready' }).previewBehavior).toBe('include_preview');
+    });
+
     it('uses the account delivery policy by default', () => {
         const plan = resolveActivityAttentionDeliveryPlan({
             accountSettings: accountSettingsParse({}),
@@ -317,6 +331,147 @@ describe('resolveActivityAttentionDeliveryPlan', () => {
             now: new Date('2026-05-03T12:00:00.000Z'),
         })).toMatchObject({ previewBehavior: 'status_only' });
     });
+
+    it.each([
+        ['live_activity', 'liveActivities'],
+        ['home_widget', 'widgets'],
+    ] as const)(
+        'treats Account and device privacy as independent ceilings for %s',
+        (channel, deviceOverrideKey) => {
+            const accountStatusOnly = accountSettingsParse({
+                attentionDeliveryPolicyV1: {
+                    v: 1,
+                    privacy: { surfaces: { [channel]: 'status_only' } },
+                },
+            });
+            const deviceIncludePreview = localSettingsParse({
+                attentionDeviceOverridesV1: {
+                    v: 1,
+                    [deviceOverrideKey]: { privacyMode: 'include_preview' },
+                },
+            });
+
+            const accountCeilingPlan = resolveActivityAttentionDeliveryPlan({
+                accountSettings: accountStatusOnly,
+                localSettings: deviceIncludePreview,
+                event: 'ready',
+                channel,
+                surface: channel,
+                now: new Date('2026-05-03T12:00:00.000Z'),
+            });
+
+            expect(accountCeilingPlan.previewBehavior).toBe('status_only');
+            expect(accountCeilingPlan.surfacePolicy.privacyMode).toBe('status_only');
+
+            const accountIncludePreview = accountSettingsParse({
+                attentionDeliveryPolicyV1: {
+                    v: 1,
+                    privacy: { surfaces: { [channel]: 'include_preview' } },
+                },
+            });
+            const deviceStatusOnly = localSettingsParse({
+                attentionDeviceOverridesV1: {
+                    v: 1,
+                    [deviceOverrideKey]: { privacyMode: 'status_only' },
+                },
+            });
+
+            const deviceCeilingPlan = resolveActivityAttentionDeliveryPlan({
+                accountSettings: accountIncludePreview,
+                localSettings: deviceStatusOnly,
+                event: 'ready',
+                channel,
+                surface: channel,
+                now: new Date('2026-05-03T12:00:00.000Z'),
+            });
+
+            expect(deviceCeilingPlan.previewBehavior).toBe('status_only');
+            expect(deviceCeilingPlan.surfacePolicy.privacyMode).toBe('status_only');
+        },
+    );
+
+    it.each(['live_activity', 'home_widget'] as const)(
+        'preserves the Account default privacy ceiling for %s when the device default is broader',
+        (channel) => {
+            const plan = resolveActivityAttentionDeliveryPlan({
+                accountSettings: accountSettingsParse({
+                    attentionDeliveryPolicyV1: {
+                        v: 1,
+                        privacy: { defaultPreviewBehavior: 'status_only' },
+                    },
+                }),
+                localSettings: localSettingsParse({
+                    attentionDeviceOverridesV1: {
+                        v: 1,
+                        privacy: { previewBehavior: 'include_preview' },
+                    },
+                }),
+                event: 'ready',
+                channel,
+                surface: channel,
+                now: new Date('2026-05-03T12:00:00.000Z'),
+            });
+
+            expect(plan.previewBehavior).toBe('status_only');
+            expect(plan.surfacePolicy.privacyMode).toBe('status_only');
+        },
+    );
+
+    it.each([
+        ['permission_request', 'live_activity', 'liveActivities'],
+        ['permission_request', 'home_widget', 'widgets'],
+        ['user_action_request', 'live_activity', 'liveActivities'],
+        ['user_action_request', 'home_widget', 'widgets'],
+    ] as const)(
+        'caps final %s preview precedence for %s with both Account and device surface ceilings',
+        (event, channel, deviceOverrideKey) => {
+            const deviceCeilingPlan = resolveActivityAttentionDeliveryPlan({
+                accountSettings: accountSettingsParse({
+                    attentionDeliveryPolicyV1: {
+                        v: 1,
+                        events: { [event]: { previewBehavior: 'include_preview' } },
+                        privacy: { surfaces: { [channel]: 'include_preview' } },
+                    },
+                }),
+                localSettings: localSettingsParse({
+                    attentionDeviceOverridesV1: {
+                        v: 1,
+                        [deviceOverrideKey]: { privacyMode: 'status_only' },
+                    },
+                }),
+                event,
+                channel,
+                surface: channel,
+                now: new Date('2026-05-03T12:00:00.000Z'),
+            });
+
+            expect(deviceCeilingPlan.previewBehavior).toBe('status_only');
+            expect(deviceCeilingPlan.surfacePolicy.privacyMode).toBe('status_only');
+
+            const accountCeilingPlan = resolveActivityAttentionDeliveryPlan({
+                accountSettings: accountSettingsParse({
+                    attentionDeliveryPolicyV1: {
+                        v: 1,
+                        events: { [event]: { previewBehavior: 'include_preview' } },
+                        privacy: { surfaces: { [channel]: 'status_only' } },
+                    },
+                }),
+                localSettings: localSettingsParse({
+                    attentionDeviceOverridesV1: {
+                        v: 1,
+                        [deviceOverrideKey]: { privacyMode: 'include_preview' },
+                    },
+                }),
+                event,
+                channel,
+                surface: channel,
+                now: new Date('2026-05-03T12:00:00.000Z'),
+            });
+
+            expect(accountCeilingPlan.previewBehavior).toBe('status_only');
+            expect(accountCeilingPlan.surfacePolicy.privacyMode).toBe('status_only');
+        },
+    );
 
     it('returns pure surface, privacy, stale, dwell, update-budget, and channel decisions', () => {
         const plan = resolveActivityAttentionDeliveryPlan({

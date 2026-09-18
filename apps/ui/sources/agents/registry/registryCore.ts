@@ -152,7 +152,7 @@ export type AgentCoreConfig = Readonly<{
      * Source of truth lives in `@happier-dev/agents` so CLI + UI don’t drift.
      * UI may still prefer dynamic ACP lists (`metadata.acpSessionModelsV1`) when present.
      */
-    model: AgentModelConfig;
+    model: AgentModelConfig | null;
     resume: Readonly<{
         /**
          * Field in session metadata containing the vendor resume id, if supported.

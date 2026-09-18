@@ -37,4 +37,21 @@ describe('buildActionDraftInput', () => {
       permissionMode: 'read_only',
     });
   });
+
+  it('carries a canonical external Agent target through the shared Action seed owner', () => {
+    const input = buildActionDraftInput({
+      actionId: 'subagents.plan.start' as any,
+      sessionId: 's1',
+      defaultBackendTarget: {
+        kind: 'agent',
+        identity: { pluginId: 'acme.review-plugin', localId: 'review-agent' },
+      },
+      instructions: 'Make a plan.',
+    });
+
+    expect(input).toMatchObject({
+      sessionId: 's1',
+      backendTargetKeys: ['agent:acme.review-plugin/review-agent'],
+    });
+  });
 });

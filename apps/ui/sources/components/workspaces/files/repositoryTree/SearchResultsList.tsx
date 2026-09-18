@@ -17,9 +17,11 @@ type SearchResultsListProps = {
     theme: any;
     isSearching: boolean;
     searchQuery: string;
+    searchResultsQuery?: string;
     searchResults: FileItem[];
     onFilePress: (file: FileItem) => void;
     onFilePressPinned?: (file: FileItem) => void;
+    onFolderPress?: (folder: FileItem) => void;
     onLayout?: ScrollViewProps['onLayout'];
     onContentSizeChange?: ScrollViewProps['onContentSizeChange'];
     onScroll?: ScrollViewProps['onScroll'];
@@ -35,7 +37,6 @@ const searchResultListStyle = { flex: 1, minHeight: 0 } as const;
 // `flexGrow` lets the loading/empty content fill the scroll viewport so it keeps
 // the centered composition it had when it was rendered as a standalone screen.
 const searchResultContentContainerStyle = { paddingBottom: 20, flexGrow: 1 } as const;
-const EMPTY_SEARCH_RESULTS: readonly FileItem[] = [];
 
 function renderFileIconForSearch(file: FileItem, theme: any) {
     if (file.fileType === 'folder') {
@@ -50,20 +51,20 @@ export const SearchResultsList = React.memo(({
     theme,
     isSearching,
     searchQuery,
+    searchResultsQuery,
     searchResults,
     onFilePress,
     onFilePressPinned,
+    onFolderPress,
     onLayout,
     onContentSizeChange,
     onScroll,
     scrollEventThrottle,
 }: SearchResultsListProps) => {
+    const showsPreviousResults = isSearching || (searchResultsQuery !== undefined && searchResultsQuery !== searchQuery.trim());
     const keyExtractor = React.useCallback((file: FileItem) => `file-${file.fullPath}`, []);
-    // A search cycle is a transient state, so it may only change what the list
-    // renders — never whether the list (the scroll owner) is mounted. While a
-    // search is in flight the previous rows are withheld exactly as before, and
-    // the spinner/empty copy render as list content.
-    const listData = isSearching ? EMPTY_SEARCH_RESULTS : searchResults;
+    // Retain both the scroll owner and the previous query's rows while updating.
+    const listData = searchResults;
     const hasResults = listData.length > 0;
     const listHeaderComponent = React.useMemo(() => (
         Boolean(searchQuery) && hasResults ? (
@@ -84,11 +85,14 @@ export const SearchResultsList = React.memo(({
                         ...Typography.default(),
                     }}
                 >
-                    {t('files.searchResults', { count: searchResults.length })}
+                    {showsPreviousResults ? t('files.previousSearchResults') : t('files.searchResults', { count: searchResults.length })}
+                    {isSearching ? ` · ${t('files.searching')}` : null}
                 </Text>
             </View>
         ) : null
     ), [
+        isSearching,
+        showsPreviousResults,
         hasResults,
         searchQuery,
         searchResults.length,
@@ -187,7 +191,7 @@ export const SearchResultsList = React.memo(({
             rightElement={null}
             icon={renderFileIconForSearch(file, theme)}
             density="compact"
-            onPress={file.fileType === 'file' ? () => onFilePress(file) : undefined}
+            onPress={file.fileType === 'file' ? () => onFilePress(file) : onFolderPress ? () => onFolderPress(file) : undefined}
             onDoublePress={
                 file.fileType === 'file' && onFilePressPinned
                     ? () => onFilePressPinned(file)
@@ -202,6 +206,7 @@ export const SearchResultsList = React.memo(({
     ), [
         onFilePress,
         onFilePressPinned,
+        onFolderPress,
         searchResults.length,
         theme,
     ]);

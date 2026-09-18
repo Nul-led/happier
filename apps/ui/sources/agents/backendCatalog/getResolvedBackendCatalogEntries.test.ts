@@ -8,7 +8,7 @@ vi.mock('@/text', async () => {
 });
 
 import { getResolvedBackendCatalogEntries, resolveCatalogAgentIdForBackendTarget } from './getResolvedBackendCatalogEntries';
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 import type { BundledAgentId } from '@/agents/catalog/catalog';
 
 type BackendCatalogParams = Parameters<typeof getResolvedBackendCatalogEntries>[0];
@@ -16,12 +16,12 @@ type BackendCatalogParams = Parameters<typeof getResolvedBackendCatalogEntries>[
 function bundledAgentTarget(agentId: BundledAgentId) {
     return {
         kind: 'agent' as const,
-        identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[agentId],
+        identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[agentId],
     };
 }
 
 function bundledAgentTargetKey(agentId: BundledAgentId): string {
-    const identity = BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[agentId];
+    const identity = BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[agentId];
     return `agent:${identity.pluginId}/${identity.localId}`;
 }
 

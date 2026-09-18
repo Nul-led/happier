@@ -205,6 +205,7 @@ export async function fetchAndApplyTargetWindowMessages(params: {
     }>): Promise<TargetWindowPageResult> => runSessionMessagesPagePipeline({
         sessionId: params.sessionId,
         purpose: 'target-window',
+        serverId: params.serverId,
         page: {
             direction: page.direction,
             requestPath: page.requestPath,
@@ -226,6 +227,7 @@ export async function fetchAndApplyTargetWindowMessages(params: {
         messageDecryptBatchSize: params.messageDecryptBatchSize,
         messageDecryptYieldDelayMs: params.messageDecryptYieldDelayMs,
         yieldToMessageDecryptBatch: params.yieldToMessageDecryptBatch,
+        onContentAuthenticationFailure: params.onContentAuthenticationFailure,
     });
 
     const result = await loadPage({

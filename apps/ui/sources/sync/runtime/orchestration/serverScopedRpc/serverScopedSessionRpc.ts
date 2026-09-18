@@ -2,15 +2,15 @@ import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import {
   RPC_ERROR_CODES,
   SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS,
-  resolveSocketRpcSessionWriteAuthorizationMethod,
+  resolveSocketRpcSessionAuthorization,
 } from '@happier-dev/protocol/rpc';
 
 import { createRpcCallError } from '@/sync/runtime/rpcErrors';
 import { apiSocket } from '@/sync/api/session/apiSocket';
 import { createEphemeralServerSocketClient } from '@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient';
 import { resolveScopedSessionCryptoContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveScopedSessionDataKey';
-import { resolveServerScopedSessionContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedSessionContext';
-import type { ResolvedServerSessionRpcContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedSessionContext';
+import { resolveServerAccountRequestContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext';
+import type { ResolvedServerAccountRequestContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 import {
   areServerAccountScopesEqual,
@@ -37,16 +37,31 @@ function shouldRetryWithScopedSessionContext(error: unknown): boolean {
   return /session encryption not found/i.test(message);
 }
 
+function requiresActivePersistentHomeSocket(method: string): boolean {
+  return resolveSocketRpcSessionAuthorization(method)?.serverMintedContext
+    === 'session.presentation.origin';
+}
+
+function createActiveHomeRequiredError(): Error {
+  return createRpcCallError({
+    error: 'Current-Session presentation requires the active persistent Home connection',
+    errorCode: 'current_session_presentation_active_home_required',
+  });
+}
+
 async function callScopedSessionRpc<R, A>(params: Readonly<{
   sessionId: string;
   method: string;
   payload: A;
-  context: Extract<ResolvedServerSessionRpcContext, { scope: 'scoped' }>;
+  context: Extract<ResolvedServerAccountRequestContext, { scope: 'scoped' }>;
   operationTimeoutMs: number | null;
   onIssued?: () => void;
   signal?: AbortSignal;
 }>): Promise<R> {
   if (params.signal?.aborted) throw createSocketRpcAbortError();
+  if (requiresActivePersistentHomeSocket(params.method)) {
+    throw createActiveHomeRequiredError();
+  }
   const cryptoContext = await resolveScopedSessionCryptoContext({
     serverId: params.context.targetServerId,
     serverUrl: params.context.targetServerUrl,
@@ -70,7 +85,7 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
     token: params.context.token,
     timeoutMs: params.context.timeoutMs,
   });
-  const authorization = resolveSocketRpcSessionWriteAuthorizationMethod(params.method)
+  const authorization = resolveSocketRpcSessionAuthorization(params.method)
     ? {
         kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE,
         sessionId: params.sessionId,
@@ -171,7 +186,7 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
 }>): Promise<R> {
   if (params.signal?.aborted) throw createSocketRpcAbortError();
   const sessionId = normalizeId(params.sessionId);
-  const context = await resolveServerScopedSessionContext({
+  const context = await resolveServerAccountRequestContext({
     serverId: params.serverId,
     ...(typeof params.timeoutMs === 'number' ? { timeoutMs: params.timeoutMs } : {}),
   });
@@ -194,8 +209,9 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
     } catch (error) {
       if (exactIssuanceAttempted) throw error;
       if (params.signal?.aborted) throw createSocketRpcAbortError();
+      if (requiresActivePersistentHomeSocket(params.method)) throw error;
       if (!shouldRetryWithScopedSessionContext(error)) throw error;
-      const retryContext = await resolveServerScopedSessionContext({
+      const retryContext = await resolveServerAccountRequestContext({
         serverId: params.serverId,
         ...(typeof params.timeoutMs === 'number' ? { timeoutMs: params.timeoutMs } : {}),
         preferScoped: true,
@@ -241,7 +257,7 @@ export async function sessionRpcWithServerAccountScope<R, A>(params: Readonly<{
   signal?: AbortSignal;
 }>): Promise<R> {
   if (params.signal?.aborted) throw createSocketRpcAbortError();
-  const context = await resolveServerScopedSessionContext({
+  const context = await resolveServerAccountRequestContext({
     serverId: params.scope.serverId,
     timeoutMs: params.timeoutMs,
     preferScoped: true,

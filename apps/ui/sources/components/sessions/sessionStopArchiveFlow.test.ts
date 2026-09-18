@@ -4,14 +4,22 @@ import { standardCleanup } from '@/dev/testkit';
 import { createModalModuleMock } from '@/dev/testkit/mocks/modal';
 import { createPartialStorageModuleMock } from '@/dev/testkit/mocks/storage';
 
-const applySessionListRenderablePatchesSpy = vi.fn();
+const applyServerScopedSessionListRowPatchesSpy = vi.fn();
 const modalConfirmSpy = vi.fn(async () => true);
+
+function address(sessionId: string, serverId = 'server-a') {
+    return { serverId, sessionId } as const;
+}
 
 vi.mock('@/sync/domains/state/storage', async (importOriginal) =>
     createPartialStorageModuleMock(importOriginal, {
         storage: {
             getState: () => ({
-                applySessionListRenderablePatches: applySessionListRenderablePatchesSpy,
+                applyServerScopedSessionListRowPatches: applyServerScopedSessionListRowPatchesSpy,
+                ordinarySessionListMembershipByServerId: {
+                    'server-a': ['same-session'],
+                    'server-b': ['same-session'],
+                },
             }),
         },
     }),
@@ -33,11 +41,43 @@ vi.mock('@/text', async () => {
 describe('stopSessionAndMaybeArchive', () => {
     afterEach(() => {
         standardCleanup();
-        applySessionListRenderablePatchesSpy.mockClear();
+        applyServerScopedSessionListRowPatchesSpy.mockClear();
         modalConfirmSpy.mockClear();
         delete process.env.EXPO_PUBLIC_HAPPIER_SESSION_ARCHIVE_AFTER_STOP_RETRY_MS;
         delete process.env.EXPO_PUBLIC_HAPPIER_SESSION_ARCHIVE_AFTER_STOP_MAX_RETRIES;
         delete process.env.EXPO_PUBLIC_HAPPIER_SESSION_ARCHIVE_AFTER_STOP_TIMEOUT_MS;
+    });
+
+    it('uses the exact Home for temporary retention and archive-success cleanup when two Homes share a Session id', async () => {
+        const stopSpy = vi.fn(async () => ({ success: true }));
+        const archiveSpy = vi.fn(async () => ({ success: true }));
+
+        const { stopSessionAndMaybeArchive } = await import('./sessionStopArchiveFlow');
+
+        await stopSessionAndMaybeArchive({
+            address: address('same-session', 'server-b'),
+            hideInactiveSessions: true,
+            isPinned: false,
+            archiveAfterStop: 'always',
+            stopSession: stopSpy,
+            archiveSession: archiveSpy,
+            stopErrorMessage: 'stop failed',
+            archiveErrorMessage: 'archive failed',
+        });
+
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(1, 'server-b', [
+            {
+                sessionId: 'same-session',
+                patch: { keepVisibleWhenInactive: true },
+            },
+        ]);
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(2, 'server-b', [
+            {
+                sessionId: 'same-session',
+                patch: { keepVisibleWhenInactive: false },
+            },
+        ]);
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenCalledTimes(2);
     });
 
     it('stops without archiving when stop-only behavior is requested', async () => {
@@ -47,7 +87,7 @@ describe('stopSessionAndMaybeArchive', () => {
         const { stopSessionAndMaybeArchive } = await import('./sessionStopArchiveFlow');
 
         await stopSessionAndMaybeArchive({
-            sessionId: 'session_1',
+            address: address('session_1'),
             hideInactiveSessions: true,
             isPinned: false,
             archiveAfterStop: 'never',
@@ -60,7 +100,7 @@ describe('stopSessionAndMaybeArchive', () => {
         expect(stopSpy).toHaveBeenCalledTimes(1);
         expect(modalConfirmSpy).not.toHaveBeenCalled();
         expect(archiveSpy).not.toHaveBeenCalled();
-        expect(applySessionListRenderablePatchesSpy).not.toHaveBeenCalled();
+        expect(applyServerScopedSessionListRowPatchesSpy).not.toHaveBeenCalled();
     });
 
     it('clears the visibility override when stopping fails', async () => {
@@ -71,7 +111,7 @@ describe('stopSessionAndMaybeArchive', () => {
 
         await expect(
             stopSessionAndMaybeArchive({
-                sessionId: 'session_2',
+                address: address('session_2'),
                 hideInactiveSessions: true,
                 isPinned: false,
                 archiveAfterStop: 'always',
@@ -82,13 +122,13 @@ describe('stopSessionAndMaybeArchive', () => {
             }),
         ).rejects.toMatchObject({ message: 'boom' });
 
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(1, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(1, 'server-a', [
             {
                 sessionId: 'session_2',
                 patch: { keepVisibleWhenInactive: true },
             },
         ]);
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(2, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(2, 'server-a', [
             {
                 sessionId: 'session_2',
                 patch: { keepVisibleWhenInactive: false },
@@ -110,7 +150,7 @@ describe('stopSessionAndMaybeArchive', () => {
         const { stopSessionAndMaybeArchive } = await import('./sessionStopArchiveFlow');
 
         await expect(stopSessionAndMaybeArchive({
-            sessionId: 'session_requested',
+            address: address('session_requested'),
             hideInactiveSessions: false,
             isPinned: false,
             archiveAfterStop: 'never',
@@ -135,7 +175,7 @@ describe('stopSessionAndMaybeArchive', () => {
 
         const { stopSessionAndMaybeArchive } = await import('./sessionStopArchiveFlow');
         await expect(stopSessionAndMaybeArchive({
-            sessionId: 'session_requested_archive',
+            address: address('session_requested_archive'),
             hideInactiveSessions: false,
             isPinned: false,
             archiveAfterStop: 'always',
@@ -158,7 +198,7 @@ describe('stopSessionAndMaybeArchive', () => {
         const { stopSessionAndMaybeArchive } = await import('./sessionStopArchiveFlow');
 
         await expect(stopSessionAndMaybeArchive({
-            sessionId: 'session_upgrade',
+            address: address('session_upgrade'),
             hideInactiveSessions: false,
             isPinned: false,
             archiveAfterStop: 'never',
@@ -178,7 +218,7 @@ describe('stopSessionAndMaybeArchive', () => {
         const { stopSessionAndMaybeArchive } = await import('./sessionStopArchiveFlow');
 
         await stopSessionAndMaybeArchive({
-            sessionId: 'session_3',
+            address: address('session_3'),
             hideInactiveSessions: true,
             isPinned: false,
             archiveAfterStop: 'never',
@@ -191,7 +231,7 @@ describe('stopSessionAndMaybeArchive', () => {
         expect(stopSpy).toHaveBeenCalledTimes(1);
         expect(modalConfirmSpy).not.toHaveBeenCalled();
         expect(archiveSpy).not.toHaveBeenCalled();
-        expect(applySessionListRenderablePatchesSpy).not.toHaveBeenCalled();
+        expect(applyServerScopedSessionListRowPatchesSpy).not.toHaveBeenCalled();
     });
 
     it('archives immediately after stopping when explicitly requested', async () => {
@@ -201,7 +241,7 @@ describe('stopSessionAndMaybeArchive', () => {
         const { stopSessionAndMaybeArchive } = await import('./sessionStopArchiveFlow');
 
         await stopSessionAndMaybeArchive({
-            sessionId: 'session_4',
+            address: address('session_4'),
             hideInactiveSessions: false,
             isPinned: false,
             archiveAfterStop: 'always',
@@ -214,13 +254,13 @@ describe('stopSessionAndMaybeArchive', () => {
         expect(stopSpy).toHaveBeenCalledTimes(1);
         expect(modalConfirmSpy).not.toHaveBeenCalled();
         expect(archiveSpy).toHaveBeenCalledTimes(1);
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(1, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(1, 'server-a', [
             {
                 sessionId: 'session_4',
                 patch: { keepVisibleWhenInactive: true },
             },
         ]);
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(2, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(2, 'server-a', [
             {
                 sessionId: 'session_4',
                 patch: { keepVisibleWhenInactive: false },
@@ -244,7 +284,7 @@ describe('stopSessionAndMaybeArchive', () => {
         const { stopSessionAndMaybeArchive } = await import('./sessionStopArchiveFlow');
 
         await stopSessionAndMaybeArchive({
-            sessionId: 'session_retry',
+            address: address('session_retry'),
             hideInactiveSessions: false,
             isPinned: false,
             archiveAfterStop: 'always',
@@ -256,13 +296,13 @@ describe('stopSessionAndMaybeArchive', () => {
 
         expect(stopSpy).toHaveBeenCalledTimes(1);
         expect(archiveSpy).toHaveBeenCalledTimes(2);
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(1, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(1, 'server-a', [
             {
                 sessionId: 'session_retry',
                 patch: { keepVisibleWhenInactive: true },
             },
         ]);
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(2, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(2, 'server-a', [
             {
                 sessionId: 'session_retry',
                 patch: { keepVisibleWhenInactive: false },
@@ -290,7 +330,7 @@ describe('stopSessionAndMaybeArchive', () => {
         const { stopSessionAndMaybeArchive } = await import('./sessionStopArchiveFlow');
 
         await stopSessionAndMaybeArchive({
-            sessionId: 'session_long_retry',
+            address: address('session_long_retry'),
             hideInactiveSessions: false,
             isPinned: false,
             archiveAfterStop: 'always',
@@ -302,13 +342,13 @@ describe('stopSessionAndMaybeArchive', () => {
 
         expect(stopSpy).toHaveBeenCalledTimes(1);
         expect(archiveSpy).toHaveBeenCalledTimes(5);
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(1, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(1, 'server-a', [
             {
                 sessionId: 'session_long_retry',
                 patch: { keepVisibleWhenInactive: true },
             },
         ]);
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(2, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(2, 'server-a', [
             {
                 sessionId: 'session_long_retry',
                 patch: { keepVisibleWhenInactive: false },
@@ -336,7 +376,7 @@ describe('stopSessionAndMaybeArchive', () => {
             const { stopSessionAndMaybeArchive } = await import('./sessionStopArchiveFlow');
 
             const promise = stopSessionAndMaybeArchive({
-                sessionId: 'session_delayed_exit',
+                address: address('session_delayed_exit'),
                 hideInactiveSessions: false,
                 isPinned: false,
                 archiveAfterStop: 'always',
@@ -373,7 +413,7 @@ describe('stopSessionAndMaybeArchive', () => {
 
         await expect(
             stopSessionAndMaybeArchive({
-                sessionId: 'session_timeout',
+                address: address('session_timeout'),
                 hideInactiveSessions: false,
                 isPinned: false,
                 archiveAfterStop: 'always',
@@ -385,7 +425,7 @@ describe('stopSessionAndMaybeArchive', () => {
         ).rejects.toMatchObject({ message: 'archive failed' });
 
         expect(archiveSpy).toHaveBeenCalledTimes(1);
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(2, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(2, 'server-a', [
             {
                 sessionId: 'session_timeout',
                 patch: { keepVisibleWhenInactive: false },
@@ -401,7 +441,7 @@ describe('stopSessionAndMaybeArchive', () => {
 
         await expect(
             stopSessionAndMaybeArchive({
-                sessionId: 'session_5',
+                address: address('session_5'),
                 hideInactiveSessions: false,
                 isPinned: false,
                 archiveAfterStop: 'always',
@@ -412,13 +452,13 @@ describe('stopSessionAndMaybeArchive', () => {
             }),
         ).rejects.toMatchObject({ message: 'archive boom' });
 
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(1, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(1, 'server-a', [
             {
                 sessionId: 'session_5',
                 patch: { keepVisibleWhenInactive: true },
             },
         ]);
-        expect(applySessionListRenderablePatchesSpy).toHaveBeenNthCalledWith(2, [
+        expect(applyServerScopedSessionListRowPatchesSpy).toHaveBeenNthCalledWith(2, 'server-a', [
             {
                 sessionId: 'session_5',
                 patch: { keepVisibleWhenInactive: false },

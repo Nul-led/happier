@@ -35,6 +35,8 @@ export {
     toLocalAgentActivityEntry,
 } from './sources/fromSessionSubagents';
 export {
+    NO_SESSION_AGENT_ACTIVITY_ATTENTION,
+    SESSION_AGENT_ACTIVITY_ATTENTION_KINDS,
     toAgentActivityEntryKind,
     type AgentActivityEntry,
     type AgentActivityEntryDetailState,
@@ -42,4 +44,5 @@ export {
     type AgentActivityEntryProvenance,
     type AgentActivityHeadlineEntry,
     type AgentActivityLocalEntry,
+    type SessionAgentActivityAttentionKind,
 } from './types';

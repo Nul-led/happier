@@ -23,6 +23,77 @@ const attachment: ComposerAttachmentDraftV1 = {
 };
 
 describe('ComposerDocumentOwner', () => {
+    it('rebases an unchanged text-bound reference when newer text keeps its exact token', () => {
+        const mention = {
+            kind: 'partner.reference',
+            ref: 'partner:issue-42',
+            tokenText: '@issue',
+            start: 21,
+            end: 27,
+            label: 'Issue #42',
+        } as const;
+        const owner = createEphemeralComposerDocumentOwner({
+            ref: participantRef,
+            capabilities: { text: true, references: true, attachments: true, submit: true },
+            initialDocument: {
+                text: 'Captured participant @issue',
+                structuredInputMentions: [mention],
+                composerAttachments: [],
+            },
+        });
+        const accepted = owner.captureCurrentness();
+
+        owner.replaceDocument({
+            text: 'Newer participant @issue',
+            structuredInputMentions: [mention],
+            composerAttachments: [],
+        });
+
+        expect(owner.clearAccepted(accepted).changed).toBe(false);
+        expect(owner.read().document).toEqual({
+            text: 'Newer participant @issue',
+            structuredInputMentions: [{ ...mention, start: 18, end: 24 }],
+            composerAttachments: [],
+        });
+    });
+
+    it('clears newer references atomically when their accepted text is still current', () => {
+        const acceptedMention = {
+            kind: 'partner.reference',
+            ref: 'partner:issue-42',
+            tokenText: '@issue',
+            start: 21,
+            end: 27,
+            label: 'Issue #42',
+        } as const;
+        const owner = createEphemeralComposerDocumentOwner({
+            ref: participantRef,
+            capabilities: { text: true, references: true, attachments: true, submit: true },
+            initialDocument: {
+                text: 'Captured participant @issue @new',
+                structuredInputMentions: [acceptedMention],
+                composerAttachments: [],
+            },
+        });
+        const accepted = owner.captureCurrentness();
+
+        expect(owner.apply(0, {
+            text: 'Captured participant @issue @new',
+            references: [
+                { kind: 'partner.reference', ref: 'partner:issue-42', token: '@issue', start: 21, end: 27 },
+                { kind: 'partner.reference', ref: 'partner:issue-99', token: '@new', start: 28, end: 32 },
+            ],
+            attachments: [],
+        })).toMatchObject({ status: 'applied' });
+
+        expect(owner.clearAccepted(accepted).changed).toBe(true);
+        expect(owner.read().document).toEqual({
+            text: '',
+            structuredInputMentions: [],
+            composerAttachments: [],
+        });
+    });
+
     it('advances one native revision for one atomic semantic transaction', () => {
         const listener = vi.fn();
         const owner = createEphemeralComposerDocumentOwner({

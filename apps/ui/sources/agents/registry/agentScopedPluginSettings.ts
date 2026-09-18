@@ -16,15 +16,24 @@ import { resolveAgentScopedPluginSettingsDeclarations } from './agentScopedPlugi
 
 /**
  * Reads inactive-session behavior Settings through the same scoped record
- * owner used by New Session. It has no legacy/global fallback and creates no
- * cache; projection, Account lifetime, and daemon target owners retain their
- * existing currentness responsibilities.
+ * owner used by New Session. It has no provider-specific fallback and
+ * creates no cache; released Account-root compatibility is delegated to
+ * the canonical reader `readReleasedFlatPluginSettingValue`. Projection,
+ * Account lifetime, and daemon target owners retain their existing
+ * currentness responsibilities.
  */
 export async function readAgentScopedPluginSettingsSnapshot(params: Readonly<{
     agentId: string | null | undefined;
     machineId: string | null | undefined;
     serverId: string | null | undefined;
     accountLifetime?: ActiveServerAccountScopeLifetime | null;
+    /**
+     * Account Settings document, so an Account upgraded from a released build
+     * keeps a value it persisted as a flat root instead of falling back to the
+     * declaration default. The released carrier is admitted only by
+     * `readReleasedFlatPluginSettingValue`.
+     */
+    accountSettings?: Readonly<Record<string, unknown>> | null;
 }>): Promise<AgentPluginSettingsSnapshot | null> {
     const machineId = String(params.machineId ?? '').trim();
     const serverId = String(params.serverId ?? '').trim();
@@ -67,6 +76,7 @@ export async function readAgentScopedPluginSettingsSnapshot(params: Readonly<{
                 values: read.snapshot.values,
                 field,
                 serverIdentityId,
+                releasedFlatSettings: scope === 'account' ? params.accountSettings ?? null : null,
             }),
         ])));
     }

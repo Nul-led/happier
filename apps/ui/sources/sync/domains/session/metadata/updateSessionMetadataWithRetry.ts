@@ -141,6 +141,7 @@ export async function updateSessionMetadataWithRetry<M, A = unknown>(
         updater: (base: M) => M;
         sessionExpectation?:
             SessionMetadataInactiveModelIntentExpectationV1;
+        mutationIntent?: 'rename_session';
         maxAttempts?: number;
     },
 ): Promise<void> {
@@ -344,7 +345,9 @@ export async function updateSessionMetadataWithRetry<M, A = unknown>(
                             mode: 'owner_inactive_model_intent',
                             sessionExpectation: params.sessionExpectation,
                         } satisfies SessionMetadataInactiveModelIntentOwnerPatchV1)
-                        : patch,
+                        : patch.mode === 'shared_editor' && params.mutationIntent
+                            ? { ...patch, mutationIntent: params.mutationIntent }
+                            : patch,
                 );
                 if (
                     result.result === 'success'

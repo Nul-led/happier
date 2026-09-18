@@ -8,6 +8,7 @@ export interface MachineDisplayMetadata {
 
 export interface MachineDisplayRenderable {
     id: string;
+    kind?: Machine['kind'];
     updatedAt: number;
     active: boolean;
     activeAt: number;
@@ -34,6 +35,7 @@ export function buildMachineDisplayMetadata(metadata: MachineMetadata | null | u
 export function buildMachineDisplayRenderableFromMachine(machine: Machine): MachineDisplayRenderable {
     return {
         id: machine.id,
+        kind: machine.kind,
         updatedAt: machine.updatedAt,
         active: machine.active,
         activeAt: machine.activeAt,
@@ -56,6 +58,7 @@ export function areMachineDisplayRenderablesEqual(
     if (previous === next) return true;
     if (!previous || !next) return previous === next;
     return previous.id === next.id
+        && previous.kind === next.kind
         && previous.updatedAt === next.updatedAt
         && previous.active === next.active
         && previous.activeAt === next.activeAt

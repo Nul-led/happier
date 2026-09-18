@@ -30,6 +30,13 @@ const state = vi.hoisted(() => ({
     },
     localDiscoveryEnabled: true,
     query: null as null | Record<string, unknown>,
+    teamCredentialCatalog: {
+        resources: [] as Array<Record<string, unknown>>,
+        teamNameById: {} as Record<string, string>,
+        homeNameByTeamId: {} as Record<string, string>,
+        currentResourceKeys: new Set<string>(),
+        current: true,
+    },
 }));
 const run = vi.hoisted(() => vi.fn());
 const routerPush = vi.hoisted(() => vi.fn());
@@ -87,6 +94,9 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => state.providerDecision,
 }));
+vi.mock('@/hooks/teams/useHomeTeamCredentialModelCatalog', () => ({
+    useHomeTeamCredentialModelCatalog: () => state.teamCredentialCatalog,
+}));
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({ useActiveServerSnapshot: () => ({ serverId: 'server-a' }) }));
 // Host-component doubles intentionally accept arbitrary props at this renderer boundary.
 vi.mock('@/components/ui/lists/Item', () => ({ Item: (props: any) => React.createElement('Item', props) }));
@@ -119,6 +129,9 @@ describe('ProviderConnectionsSettingsScreen', () => {
         run.mockReset();
         routerPush.mockReset();
         navigationState.focusEffects = [];
+        state.teamCredentialCatalog = {
+            resources: [], teamNameById: {}, homeNameByTeamId: {}, currentResourceKeys: new Set(), current: true,
+        };
         state.query = {
             loading: false, error: null, refresh: vi.fn(async () => undefined),
             data: createProviderConnectionsDescribeFixture({
@@ -156,6 +169,28 @@ describe('ProviderConnectionsSettingsScreen', () => {
             const observed = await run(payload, key);
             return observed ?? await next();
         });
+    });
+
+    it('opens a Team-provided Provider resource on its exact Home route', async () => {
+        state.teamCredentialCatalog = {
+            resources: [{
+                id: 'resource-1', teamId: 'team-1', displayName: 'Shared OpenRouter', resourceRevision: 3,
+                readiness: { kind: 'available' }, recoveryAction: null, deliveryMode: 'brokered',
+                mayBroker: true, mayReceiveDirect: false, directMaterialState: 'never_delivered',
+                sessionUsePolicy: 'personal_allowed', providerModels: [],
+                sourcePresentation: {
+                    kind: 'provider',
+                    provider: { identity: { pluginId: 'openrouter', localId: 'openrouter' }, definitionRevision: 1 },
+                },
+            }],
+            teamNameById: { 'team-1': 'Acme' }, homeNameByTeamId: { 'team-1': 'Home A' },
+            currentResourceKeys: new Set(['team-1:resource-1']), current: true,
+        };
+        const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
+        const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
+
+        await screen.pressByTestIdAsync('team-credential-catalog-resource:team-1:resource-1');
+        expect(routerPush).toHaveBeenCalledWith('/settings/teams/server-a/team-1/credentials/resource-1');
     });
 
     function refocusScreen(): void {

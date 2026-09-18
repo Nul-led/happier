@@ -8,6 +8,7 @@ import test from 'node:test';
 import {
   BROWSER_IROH_NOTICES_ASSET,
   BROWSER_IROH_PACKAGED_ASSETS,
+  BROWSER_IROH_SBOM_ASSET,
   BROWSER_IROH_STAGED_FILES,
   BROWSER_IROH_WASM_BINARY_ASSET,
   BROWSER_IROH_WASM_GLUE_ASSET,
@@ -29,11 +30,13 @@ function createProducedInputs(root, { glue = 'export default async () => {};\n',
   const workerBundlePath = join(root, BROWSER_IROH_WORKER_ASSET);
   writeFileSync(workerBundlePath, 'self.onconnect = () => {};\n');
 
-  // The locked-Cargo evidence owner produces one notices file for every carrier
-  // built from the workspace; the browser carrier stages the same bytes.
+  // The locked-Cargo evidence owner produces one evidence pair for every
+  // carrier built from the workspace; the browser carrier stages the same bytes.
   const noticesPath = join(root, BROWSER_IROH_NOTICES_ASSET);
   writeFileSync(noticesPath, 'Iroh native third-party notices\n\niroh 0.95.1\nLicense: MIT\n');
-  return { generatedDir, workerBundlePath, noticesPath };
+  const sbomPath = join(root, BROWSER_IROH_SBOM_ASSET);
+  writeFileSync(sbomPath, '{"bomFormat":"CycloneDX","specVersion":"1.5"}\n');
+  return { generatedDir, workerBundlePath, noticesPath, sbomPath };
 }
 
 /**
@@ -68,7 +71,7 @@ test('packages every declared asset into the web output root it was given', () =
   });
 });
 
-test('ships the locked-Cargo licence and NOTICE evidence beside the WASM it covers', () => {
+test('ships the locked-Cargo SBOM, licence, and NOTICE evidence beside the WASM it covers', () => {
   withTargets(({ root, outputRoot }) => {
     const inputs = createProducedInputs(root);
     const { assetDir } = materializeBrowserIrohAssets({ outputRoot, ...inputs });
@@ -79,10 +82,15 @@ test('ships the locked-Cargo licence and NOTICE evidence beside the WASM it cove
     assert.deepEqual(BROWSER_IROH_STAGED_FILES, [
       ...BROWSER_IROH_PACKAGED_ASSETS,
       BROWSER_IROH_NOTICES_ASSET,
+      BROWSER_IROH_SBOM_ASSET,
     ]);
     assert.match(
       readFileSync(join(assetDir, BROWSER_IROH_NOTICES_ASSET), 'utf8'),
       /Iroh native third-party notices/u,
+    );
+    assert.equal(
+      JSON.parse(readFileSync(join(assetDir, BROWSER_IROH_SBOM_ASSET), 'utf8')).bomFormat,
+      'CycloneDX',
     );
   });
 });
@@ -99,6 +107,18 @@ test('a web output whose licence evidence was stripped is not a shippable browse
   });
 });
 
+test('a web output whose Cargo SBOM was stripped is not a shippable browser carrier', () => {
+  withTargets(({ root, outputRoot }) => {
+    const inputs = createProducedInputs(root);
+    const { assetDir } = materializeBrowserIrohAssets({ outputRoot, ...inputs });
+    rmSync(join(assetDir, BROWSER_IROH_SBOM_ASSET));
+
+    const verification = verifyBrowserIrohAssets({ outputRoot });
+    assert.equal(verification.status, 'stale');
+    assert.ok(verification.problems.some((problem) => problem.includes(BROWSER_IROH_SBOM_ASSET)));
+  });
+});
+
 test('refuses to package a WASM carrier without its licence evidence', () => {
   withTargets(({ root, outputRoot }) => {
     const inputs = createProducedInputs(root);
@@ -106,6 +126,17 @@ test('refuses to package a WASM carrier without its licence evidence', () => {
     assert.throws(
       () => materializeBrowserIrohAssets({ outputRoot, ...inputs }),
       /missing produced inputs[\s\S]*THIRD-PARTY-NOTICES\.txt/u,
+    );
+  });
+});
+
+test('refuses to package a WASM carrier without its Cargo SBOM', () => {
+  withTargets(({ root, outputRoot }) => {
+    const inputs = createProducedInputs(root);
+    rmSync(inputs.sbomPath);
+    assert.throws(
+      () => materializeBrowserIrohAssets({ outputRoot, ...inputs }),
+      /missing produced inputs[\s\S]*sbom\.cdx\.json/u,
     );
   });
 });
@@ -129,6 +160,7 @@ test('stages runtime bytes only — generated declaration files stay build artif
         BROWSER_IROH_WASM_GLUE_ASSET,
         BROWSER_IROH_WASM_BINARY_ASSET,
         BROWSER_IROH_NOTICES_ASSET,
+        BROWSER_IROH_SBOM_ASSET,
       ],
     );
   });

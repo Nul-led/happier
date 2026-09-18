@@ -8,7 +8,11 @@ import { TranscriptSameSessionHandoffProvider } from '@/components/sessions/tran
 import type { AttachmentDraft } from '@/components/sessions/attachments/attachmentDraftModel';
 import { parseSessionPaneUrlState } from '@/components/sessions/panes/url/sessionPaneUrlState';
 import { SessionCockpitShell } from '@/components/workspaceCockpit/session/SessionCockpitShell';
-import { resolveSessionMobileSurfaceIntent } from '@/components/workspaceCockpit/session/sessionCockpitState';
+import { useSessionBoardFeatureEnabled } from '@/components/sessions/board/useSessionBoardFeatureEnabled';
+import {
+    resolveSessionMobileSurfaceIntent,
+    shouldUseSessionCockpitExperience,
+} from '@/components/workspaceCockpit/session/sessionCockpitState';
 import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit/useMobileWorkspaceExperienceState';
 import { getTempData } from '@/utils/sessions/tempDataStore';
 import { createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
@@ -16,6 +20,7 @@ import { resolveSessionRouteAuthRecoveryState } from '@/hooks/session/sessionRou
 import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForRoute';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
+import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import { isSessionRouteHydrationPending } from '@/sync/domains/session/sessionRouteHydrationState';
 import {
     useActiveServerAccountScope,
@@ -32,6 +37,7 @@ import {
     type ServerAccountScope,
 } from '@/sync/domains/scope/serverAccountScope';
 import { selectSessionViewShellSessionForRouteState } from '@/components/sessions/shell/sessionViewStableSession';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 
 type InitialMobileSurfaceHintCache = Readonly<{
     sessionId: string;
@@ -131,9 +137,17 @@ export default function SessionRouteIndex() {
         return Array.isArray(data?.attachmentDrafts) ? data.attachmentDrafts : null;
     }, [recoveryDataId]);
     const paneUrlState = React.useMemo(() => parseSessionPaneUrlState(params as any), [params]);
-    const scopeId = `session:${sessionId}`;
+    const scopeId = createSessionPaneScopeId(sessionId, routeScope.serverId);
     const pane = useAppPaneScope(scopeId);
     const { cockpitEnabled } = useMobileWorkspaceExperienceState();
+    // Companion is a Board placement, so the exact Home's Board decision also
+    // decides whether a Companion route hint may claim the Cockpit experience.
+    const companionDestinationAvailable = useSessionBoardFeatureEnabled(routeScope.serverId);
+    const useCockpitExperience = shouldUseSessionCockpitExperience({
+        cockpitEnabled,
+        explicitSurface: explicitMobileSurfaceHint,
+        companionDestinationAvailable,
+    });
     const activeServerAccountScope = useActiveServerAccountScope();
     const activeServerSnapshot = useActiveServerSnapshot();
     const persistedMobileSurface = useSessionLastMobileSurface(
@@ -148,7 +162,7 @@ export default function SessionRouteIndex() {
         activeServerAccountScope,
         persistedMobileSurface,
     );
-    const { sidebarTabAvailable: terminalTabAvailable } = useSessionTerminalAvailability();
+    const { sidebarTabAvailable: terminalTabAvailable } = useSessionTerminalAvailability(routeScope.serverId);
     const endpointConnectivity = useEndpointConnectivity();
     const syncError = useSyncError();
 
@@ -164,11 +178,16 @@ export default function SessionRouteIndex() {
         routeScope.hydrationOptions,
     );
     const expectedSessionServerId = routeHydrationState.serverId ?? routeScope.serverId;
+    const routeSessionAddress = normalizeSessionAddress(
+        expectedSessionServerId ?? activeServerSnapshot.serverId,
+        sessionId,
+    );
+    const sessionSurfaceKey = routeSessionAddress ? sessionAddressKey(routeSessionAddress) : null;
     const sessionCached = storage((state) => Boolean(selectSessionViewShellSessionForRouteState(
         {
             sessions: state.sessions,
             sessionListIndexByServerId: state.sessionListIndexByServerId,
-            concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId,
+            sessionListRowsByServerId: state.sessionListRowsByServerId,
         },
         sessionId,
         expectedSessionServerId,
@@ -187,6 +206,10 @@ export default function SessionRouteIndex() {
         return <SessionInvalidLinkFallback />;
     }
 
+    if (sessionSurfaceKey === null) {
+        return <SessionInvalidLinkFallback />;
+    }
+
     if (isSessionRouteHydrationPending(routeHydrationState) && !sessionCached && !authRecoveryActive) {
         return (
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -197,8 +220,8 @@ export default function SessionRouteIndex() {
 
     return (
         <TranscriptSameSessionHandoffProvider
-            desiredExperience={cockpitEnabled ? 'cockpit' : 'classic'}
-            sessionId={sessionId}
+            desiredExperience={useCockpitExperience ? 'cockpit' : 'classic'}
+            sessionAddressKey={sessionSurfaceKey}
         >
             {(experience) => experience === 'cockpit'
                 ? (

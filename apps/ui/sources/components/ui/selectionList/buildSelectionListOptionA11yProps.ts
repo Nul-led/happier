@@ -114,6 +114,7 @@ export type SelectionListContainerA11yProps = Readonly<{
     role: 'listbox' | 'grid';
     'aria-rowcount'?: number;
     'aria-colcount'?: number;
+    'aria-multiselectable'?: true;
     accessibilityLabel?: string;
     'aria-label'?: string;
 }>;
@@ -143,6 +144,7 @@ export function buildSelectionListContainerA11yProps(params: Readonly<{
      */
     columnCount?: number;
     accessibilityLabel?: string;
+    multiselectable?: boolean;
 }>): SelectionListContainerA11yProps {
     const accessibilityLabel = params.accessibilityLabel?.trim();
     const columnCount = Math.max(1, params.columnCount ?? 1);
@@ -152,6 +154,7 @@ export function buildSelectionListContainerA11yProps(params: Readonly<{
         ...(params.pattern === 'grid'
             ? { 'aria-rowcount': params.rowCount, 'aria-colcount': columnCount }
             : {}),
+        ...(params.multiselectable ? { 'aria-multiselectable': true as const } : {}),
         ...(accessibilityLabel
             ? {
                 accessibilityLabel,

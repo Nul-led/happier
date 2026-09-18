@@ -5,9 +5,13 @@ import {
     ComposerAttachmentDraftV1Schema,
     MAX_COMPOSER_ATTACHMENT_INSTANCES_V1,
     SessionAgentTransitionInputV1Schema,
+    SessionDiscussionSelectionSourceV1Schema,
+    type SessionDiscussionSelectionSourceV1,
     type ComposerAttachmentDraftV1,
     type ComposerReferenceMentionPayloadV1,
     ParticipantRecipientV1Schema,
+    PendingRequestedActionV1Schema,
+    type PendingRequestedActionV1,
     type ParticipantRecipientV1,
 } from '@happier-dev/protocol';
 
@@ -20,9 +24,6 @@ type DeepReadonly<T> = T extends string | number | boolean | bigint | symbol | n
             : T extends object
                 ? { readonly [TKey in keyof T]: DeepReadonly<T[TKey]> }
                 : T;
-
-export const ExecutionRunDeliveryModeSchema = z.enum(['prompt', 'steer_if_supported', 'interrupt']);
-export type ExecutionRunDeliveryMode = z.infer<typeof ExecutionRunDeliveryModeSchema>;
 
 /**
  * Canonical declaration of a composer structured-input mention (SB-4, D-19).
@@ -299,13 +300,15 @@ export type SessionDraftValueByFieldId = Readonly<{
     'routing.recipient': ParticipantRecipientV1 | null;
     /** The armed target Agent for the next message; see the schema above. */
     'routing.agentContinuation': SessionArmedAgentContinuation;
-    'routing.executionRunDelivery': ExecutionRunDeliveryMode;
+    'routing.executionRunRequestedAction': PendingRequestedActionV1;
     /**
      * Contentless plugin attachment drafts remain source data until the
      * canonical submission owner prepares them after stable Message identity.
      */
     'structuredInput.composerAttachments': readonly ComposerAttachmentDraftV1[];
     'structuredInput.mentions': readonly ComposerStructuredInputMention[];
+    /** Descriptive origin retained with selected Discussion text until accepted handoff. */
+    'structuredInput.sessionDiscussionSelectionSourceV1': Omit<SessionDiscussionSelectionSourceV1, 'draftCorrelationId'>;
 }>;
 
 export type SessionDraftValueFieldId = keyof SessionDraftValueByFieldId;
@@ -313,9 +316,10 @@ export type SessionDraftValueFieldId = keyof SessionDraftValueByFieldId;
 export const SESSION_DRAFT_VALUE_SCHEMAS = {
     'routing.recipient': ParticipantRecipientV1Schema.nullable(),
     'routing.agentContinuation': SessionArmedAgentContinuationSchema,
-    'routing.executionRunDelivery': ExecutionRunDeliveryModeSchema,
+    'routing.executionRunRequestedAction': PendingRequestedActionV1Schema,
     'structuredInput.composerAttachments': z.array(ComposerAttachmentDraftV1Schema).max(MAX_COMPOSER_ATTACHMENT_INSTANCES_V1),
     'structuredInput.mentions': ComposerStructuredInputMentionsSchema,
+    'structuredInput.sessionDiscussionSelectionSourceV1': SessionDiscussionSelectionSourceV1Schema.omit({ draftCorrelationId: true }),
 } satisfies Readonly<Record<SessionDraftValueFieldId, z.ZodType>>;
 
 export type SessionDraftValueEnvelope<FieldId extends SessionDraftValueFieldId = SessionDraftValueFieldId> = Readonly<{

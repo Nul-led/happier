@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Lane 06 amendment A7.2 — the real Chromium shared-endpoint proof.
+// Lane 06 amendment A7.2 — the real browser shared-endpoint proof.
 //
 // This proves the three A7.2 live-owner facts against the PACKAGED browser Iroh
 // assets — the same `vendor/iroh/` files the web release build stages into its
@@ -10,10 +10,10 @@
 //   2. a tab reload preserves the endpoint ID;
 //   3. releasing one client does not stop the sibling.
 //
-// Reuses the existing browser proof infrastructure — Playwright Chromium, the
-// same engine the A7.1 live gate (`packages/iroh-native/scripts/run-browser-
-// iroh-live.mjs`) uses — and the canonical asset producer
-// (`buildBrowserIrohAssets.mjs`). No second harness or framework.
+// Reuses the existing browser proof infrastructure and canonical asset producer
+// (`buildBrowserIrohAssets.mjs`). Chromium remains the required/default A7
+// engine; `HAPPIER_IROH_PROOF_BROWSER=firefox|webkit` replays this same journey
+// for cross-engine QA without creating another harness or product policy.
 //
 // The proof is about live-worker endpoint IDENTITY, not transport: the
 // default relay URL is grammar-valid but need not be reachable, because the
@@ -212,6 +212,16 @@ export function parseProofModes(argv) {
   };
 }
 
+const PROOF_BROWSER_ENGINES = new Set(['chromium', 'firefox', 'webkit']);
+
+export function resolveProofBrowserEngine(value) {
+  const engine = value ?? 'chromium';
+  if (!PROOF_BROWSER_ENGINES.has(engine)) {
+    throw new Error(`unsupported Playwright browser engine: ${engine}`);
+  }
+  return engine;
+}
+
 async function main() {
   const relayUrlIndex = process.argv.indexOf('--relay-url');
   const relayUrl = relayUrlIndex !== -1 ? String(process.argv[relayUrlIndex + 1]) : 'https://relay.happier.test';
@@ -276,15 +286,19 @@ async function main() {
     const port = await listen(server);
     const base = `http://127.0.0.1:${port}/`;
 
-    // 3. Real Chromium, reported by build identity like the live gate.
-    const { chromium } = await import('playwright');
-    const channel = process.env.PLAYWRIGHT_CHROMIUM_CHANNEL;
-    const browser = await chromium.launch(channel ? { channel } : {});
-    const chromiumBuild = { version: browser.version(), channel: channel ?? 'default' };
+    // 3. Real browser, reported by build identity like the live gate. Chromium
+    // remains the default and the only engine with a selectable channel.
+    const playwright = await import('playwright');
+    const browserEngine = resolveProofBrowserEngine(process.env.HAPPIER_IROH_PROOF_BROWSER);
+    const browserType = playwright[browserEngine];
+    const channel = browserEngine === 'chromium' ? process.env.PLAYWRIGHT_CHROMIUM_CHANNEL : undefined;
+    const launchOptions = channel ? { channel } : {};
+    const browser = await browserType.launch(launchOptions);
+    const browserBuild = { engine: browserEngine, version: browser.version(), channel: channel ?? 'default' };
 
     const failures = [];
     const pageErrors = [];
-    const report = { chromiumBuild, relayUrl, assetDir: packaged.assetDir };
+    const report = { browserBuild, relayUrl, assetDir: packaged.assetDir };
 
     try {
       const context = await browser.newContext();
@@ -355,7 +369,7 @@ async function main() {
       if (productionPageSeam) {
         // Its own browser process keeps the loaded production seam isolated
         // from the focused A7.2 worker-ownership assertions above.
-        const seamBrowser = await chromium.launch(channel ? { channel } : {});
+        const seamBrowser = await browserType.launch(launchOptions);
         const seamPageErrors = [];
         const seamPageUrl = `${base.replace(/\/$/u, '')}${PRODUCTION_CARRIER_SEAM_PAGE_PATH}`;
         try {
@@ -378,7 +392,7 @@ async function main() {
       if (realHomeVertical) {
         // Its own browser process keeps the loaded production journey isolated
         // from the focused A7.2 worker-ownership assertions above.
-        const journeyBrowser = await chromium.launch(channel ? { channel } : {});
+        const journeyBrowser = await browserType.launch(launchOptions);
         const journeyPageErrors = [];
         const journeyPageUrl = `${base.replace(/\/$/u, '')}${PRODUCTION_CARRIER_SEAM_PAGE_PATH}`;
         try {
@@ -394,7 +408,7 @@ async function main() {
           });
           journeyVerdict = outcome.verdict;
           report.realHomeVerticalJourney = {
-            chromiumBuild,
+            browserBuild,
             verdict: outcome.verdict,
             observations: outcome.observations,
             ...outcome.report,
@@ -414,7 +428,7 @@ async function main() {
       let machineVerdict = null;
       if (machineTransferVertical) {
         // Its own browser process for the same reason as the stages above.
-        const machineBrowser = await chromium.launch(channel ? { channel } : {});
+        const machineBrowser = await browserType.launch(launchOptions);
         const machinePageErrors = [];
         const machinePageUrl = `${base.replace(/\/$/u, '')}${PRODUCTION_CARRIER_SEAM_PAGE_PATH}`;
         try {
@@ -440,7 +454,7 @@ async function main() {
           });
           machineVerdict = outcome.verdict;
           report.browserMachineTransferJourney = {
-            chromiumBuild,
+            browserBuild,
             verdict: outcome.verdict,
             observations: outcome.observations,
             ...outcome.report,
@@ -466,7 +480,7 @@ async function main() {
           '\nbrowser Iroh production page seam (A7.3/A7.4): LOADED SEAM ONLY — NOT a completion gate.\n'
           + '  Established: the canonical Metro/Expo web owner bundles the production browser Iroh Home carrier, '
           + '`serverFetch`, the Socket.IO transport, and the browser machine carrier into one page; that page loads and '
-          + 'runs in real Chromium; and the production machine-carrier owner executes there and refuses without a grant.\n'
+          + `runs in real ${browserBuild.engine}; and the production machine-carrier owner executes there and refuses without a grant.\n`
           + '  NOT established: authenticated HTTP, a live Socket.IO update, reconnect, EndpointId enforcement, '
           + 'relay-only path, or cancellation against a real relay and a real Home acceptor — no relay, Home, grant, or '
           + 'admission was involved in this run. A7.3 and A7.4 remain open.\n',
@@ -477,7 +491,7 @@ async function main() {
         // FAIL verdict pushed its reasons into `failures` and bailed above.
         process.stdout.write(
           `\nbrowser Iroh A7.3 real Home vertical: ${journeyVerdict}\n`
-          + '  Observed through real Chromium, the stock local relay, and a real Home acceptor: the exact configured '
+          + `  Observed through real ${browserBuild.engine}, the stock local relay, and a real Home acceptor: the exact configured `
           + 'relay to an ingress-less Home; authenticated HTTP through the production carrier; a live Socket.IO update; '
           + 'reconnect after a carrier-acceptor restart with no duplicate event; no application byte to a Home addressed by another '
           + "EndpointId; a relay-only observed path; prompt cancellation of a request the Home was holding, with no late "
@@ -492,14 +506,16 @@ async function main() {
         // FAIL verdict pushed its reasons into `failures` and bailed above.
         process.stdout.write(
           `\nbrowser Iroh A7.4 browser Machine finite transfer: ${machineVerdict}\n`
-          + '  Observed through real Chromium, the stock local relay, a real happier/machine/1 acceptor, the canonical '
+          + `  Observed through real ${browserBuild.engine}, the stock local relay, a real happier/machine/1 acceptor, the canonical `
           + 'daemon admission owner, production direct-import/direct-export owners, and real signed V2 grants from the '
           + 'canonical server mint: relay-only dials to the real acceptor; grants binding the exact browser initiator '
-          + 'EndpointId, target machine id/EndpointId, operation, flow and max bytes; prepare, encrypted chunks, '
+          + 'EndpointId, target machine id/EndpointId, and finite-transfer carrier purpose; the prepared-transfer '
+          + 'lifecycle independently authorizing operation and byte semantics; prepare, encrypted chunks, '
           + 'manifest/receipt finalization and exact destination bytes for file import/export and session-attachment '
           + 'upload; attachment destination semantics and cancellation cleanup; '
-          + 'mis-bound role/endpoint/grant refusal before application bytes; terminal no-fallback results after Iroh '
-          + 'selection; a relay-only observed path; and release closing the owned Machine stream.\n',
+          + 'mis-bound role/endpoint/grant refusal and corrupted signed-grant rejection before application bytes; '
+          + 'terminal no-fallback results after Iroh selection; a relay-only observed path; release closing the owned '
+          + 'Machine stream; and terminal prepared-transfer-owner cleanup.\n',
         );
       }
     } finally {

@@ -21,7 +21,9 @@ export type DemoProfileKey = 'connectedServicesV2';
 
 export type StoreSnapshot = Readonly<{
     sessions: StorageState['sessions'];
-    sessionListRenderables: StorageState['sessionListRenderables'];
+    sessionListRowsByServerId: StorageState['sessionListRowsByServerId'];
+    ordinarySessionListMembershipByServerId: StorageState['ordinarySessionListMembershipByServerId'];
+    archivedSessionListMembershipByServerId: StorageState['archivedSessionListMembershipByServerId'];
     sessionListIndexByServerId: StorageState['sessionListIndexByServerId'];
     machines: StorageState['machines'];
     machineDisplayById: StorageState['machineDisplayById'];
@@ -41,7 +43,9 @@ function cloneData<T>(value: T): T {
 export function takeStoreSnapshot(state: StorageState): StoreSnapshot {
     return {
         sessions: cloneData(state.sessions),
-        sessionListRenderables: cloneData(state.sessionListRenderables),
+        sessionListRowsByServerId: cloneData(state.sessionListRowsByServerId),
+        ordinarySessionListMembershipByServerId: cloneData(state.ordinarySessionListMembershipByServerId),
+        archivedSessionListMembershipByServerId: cloneData(state.archivedSessionListMembershipByServerId),
         sessionListIndexByServerId: cloneData(state.sessionListIndexByServerId),
         machines: cloneData(state.machines),
         machineDisplayById: cloneData(state.machineDisplayById),
@@ -125,6 +129,38 @@ function restoreSessionListIndexes(
     return next;
 }
 
+function restoreSessionListRows(
+    current: StorageState['sessionListRowsByServerId'],
+    snapshot: StorageState['sessionListRowsByServerId'],
+    ownedSessionIds: ReadonlySet<string>,
+): StorageState['sessionListRowsByServerId'] {
+    const next: Record<string, Readonly<Record<string, StorageState['sessionListRowsByServerId'][string][string]>>> = {};
+    for (const [serverId, rows] of Object.entries(current)) {
+        next[serverId] = restoreRecordByOwnedIds(rows, snapshot[serverId] ?? {}, ownedSessionIds);
+    }
+    for (const [serverId, rows] of Object.entries(snapshot)) {
+        if (serverId in next) continue;
+        next[serverId] = rows;
+    }
+    return next;
+}
+
+function restoreSessionListMembership(
+    current: StorageState['ordinarySessionListMembershipByServerId'],
+    snapshot: StorageState['ordinarySessionListMembershipByServerId'],
+    ownedSessionIds: ReadonlySet<string>,
+): StorageState['ordinarySessionListMembershipByServerId'] {
+    const next: Record<string, readonly string[] | undefined> = {};
+    for (const serverId of new Set([...Object.keys(current), ...Object.keys(snapshot)])) {
+        const snapshotIds = snapshot[serverId] ?? [];
+        next[serverId] = [
+            ...(current[serverId] ?? []).filter((id) => !ownedSessionIds.has(id)),
+            ...snapshotIds.filter((id) => ownedSessionIds.has(id)),
+        ];
+    }
+    return next;
+}
+
 function restoreMachineListIndexes(
     current: StorageState['machineListByServerId'],
     snapshot: StorageState['machineListByServerId'],
@@ -155,9 +191,19 @@ export function buildStoreStateAfterDemoRestore(params: Readonly<{
 }>): Partial<StorageState> {
     return {
         sessions: restoreRecordByOwnedIds(params.current.sessions, params.snapshot.sessions, params.sessionIds),
-        sessionListRenderables: restoreRecordByOwnedIds(
-            params.current.sessionListRenderables,
-            params.snapshot.sessionListRenderables,
+        sessionListRowsByServerId: restoreSessionListRows(
+            params.current.sessionListRowsByServerId,
+            params.snapshot.sessionListRowsByServerId,
+            params.sessionIds,
+        ),
+        ordinarySessionListMembershipByServerId: restoreSessionListMembership(
+            params.current.ordinarySessionListMembershipByServerId,
+            params.snapshot.ordinarySessionListMembershipByServerId,
+            params.sessionIds,
+        ),
+        archivedSessionListMembershipByServerId: restoreSessionListMembership(
+            params.current.archivedSessionListMembershipByServerId,
+            params.snapshot.archivedSessionListMembershipByServerId,
             params.sessionIds,
         ),
         sessionListIndexByServerId: restoreSessionListIndexes(

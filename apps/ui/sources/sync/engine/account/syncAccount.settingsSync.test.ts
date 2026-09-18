@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { profileDefaults } from '@/sync/domains/profiles/profile';
 import { createAccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { sealAccountScopedBlobCiphertext } from '@happier-dev/protocol';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 
 const pushAccessMocks = vi.hoisted(() => ({
     readPushPermission: vi.fn(async () => ({
@@ -96,6 +97,156 @@ describe('handleUpdateAccountSocketUpdate settings merge', () => {
             });
 
             await vi.waitFor(() => expect(pushAccessMocks.readPushPermission).toHaveBeenCalledTimes(1));
+        } finally {
+            stopPushTokenReconciliation();
+        }
+    });
+
+    it('schedules the canonical device reconciliation when local remote-alert policy changes while idle', async () => {
+        const {
+            startPushTokenReconciliation,
+            stopPushTokenReconciliation,
+        } = await import('./syncAccount');
+        const { loadLocalSettings, saveLocalSettings } = await import('@/sync/domains/state/settingsPersistence');
+        const before = loadLocalSettings();
+
+        startPushTokenReconciliation();
+        try {
+            saveLocalSettings({
+                ...before,
+                deviceRemoteAlertsEnabled: !before.deviceRemoteAlertsEnabled,
+            });
+            await vi.waitFor(() => expect(pushAccessMocks.readPushPermission).toHaveBeenCalledTimes(1));
+        } finally {
+            stopPushTokenReconciliation();
+            saveLocalSettings(before);
+        }
+    });
+
+    it('coalesces local policy mutations during a failed in-flight pass into one fresh reconciliation', async () => {
+        const firstPermissionRead = createDeferred<Awaited<ReturnType<typeof pushAccessMocks.readPushPermission>>>();
+        pushAccessMocks.readPushPermission
+            .mockImplementationOnce(() => firstPermissionRead.promise)
+            .mockResolvedValue({
+                ok: true,
+                permission: { granted: false, status: 'denied', canAskAgain: true },
+            });
+        const {
+            startPushTokenReconciliation,
+            stopPushTokenReconciliation,
+        } = await import('./syncAccount');
+        const { loadLocalSettings, saveLocalSettings } = await import('@/sync/domains/state/settingsPersistence');
+        const before = loadLocalSettings();
+
+        startPushTokenReconciliation();
+        try {
+            saveLocalSettings({
+                ...before,
+                deviceRemoteAlertsEnabled: !before.deviceRemoteAlertsEnabled,
+            });
+            await vi.waitFor(() => expect(pushAccessMocks.readPushPermission).toHaveBeenCalledTimes(1));
+
+            saveLocalSettings({
+                ...before,
+                attentionDeviceOverridesV1: {
+                    ...before.attentionDeviceOverridesV1,
+                    privacy: { previewBehavior: 'status_only' },
+                },
+            });
+            saveLocalSettings({
+                ...before,
+                attentionDeviceOverridesV1: {
+                    ...before.attentionDeviceOverridesV1,
+                    privacy: { previewBehavior: 'title_only' },
+                },
+            });
+            firstPermissionRead.reject(new Error('transient permission boundary failure'));
+
+            await vi.waitFor(() => expect(pushAccessMocks.readPushPermission).toHaveBeenCalledTimes(2));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(pushAccessMocks.readPushPermission).toHaveBeenCalledTimes(2);
+        } finally {
+            stopPushTokenReconciliation();
+            saveLocalSettings(before);
+        }
+    });
+
+    it('schedules the canonical device reconciliation when persisted Account preview policy changes without changing push enablement', async () => {
+        const {
+            startPushTokenReconciliation,
+            stopPushTokenReconciliation,
+        } = await import('./syncAccount');
+        const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
+        const { settingsDefaults } = await import('@/sync/domains/settings/settings');
+        const scope = createAccountSettingsScope('server-a', 'account-a');
+        expect(scope).not.toBeNull();
+        if (!scope) return;
+
+        startPushTokenReconciliation();
+        try {
+            saveAccountSettings(scope, {
+                ...settingsDefaults,
+                attentionDeliveryPolicyV1: {
+                    ...settingsDefaults.attentionDeliveryPolicyV1,
+                    channels: {
+                        ...settingsDefaults.attentionDeliveryPolicyV1.channels,
+                        expo_push: {
+                            ...settingsDefaults.attentionDeliveryPolicyV1.channels.expo_push,
+                            enabled: true,
+                            previewBehavior: 'status_only',
+                        },
+                    },
+                },
+            }, 4);
+
+            await vi.waitFor(() => expect(pushAccessMocks.readPushPermission).toHaveBeenCalledTimes(1));
+        } finally {
+            stopPushTokenReconciliation();
+        }
+    });
+
+    it('coalesces persisted Account quiet-hours mutations during an in-flight pass into one fresh reconciliation', async () => {
+        const firstPermissionRead = createDeferred<Awaited<ReturnType<typeof pushAccessMocks.readPushPermission>>>();
+        pushAccessMocks.readPushPermission
+            .mockImplementationOnce(() => firstPermissionRead.promise)
+            .mockResolvedValue({
+                ok: true,
+                permission: { granted: false, status: 'denied', canAskAgain: true },
+            });
+        const {
+            startPushTokenReconciliation,
+            stopPushTokenReconciliation,
+        } = await import('./syncAccount');
+        const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
+        const { settingsDefaults } = await import('@/sync/domains/settings/settings');
+        const scope = createAccountSettingsScope('server-a', 'account-a');
+        expect(scope).not.toBeNull();
+        if (!scope) return;
+
+        startPushTokenReconciliation();
+        try {
+            saveAccountSettings(scope, settingsDefaults, 4);
+            await vi.waitFor(() => expect(pushAccessMocks.readPushPermission).toHaveBeenCalledTimes(1));
+
+            saveAccountSettings(scope, {
+                ...settingsDefaults,
+                attentionDeliveryPolicyV1: {
+                    ...settingsDefaults.attentionDeliveryPolicyV1,
+                    quietHours: {
+                        enabled: true,
+                        timezone: 'Europe/Zurich',
+                        windows: [{ startLocalTime: '22:00', endLocalTime: '07:00' }],
+                    },
+                },
+            }, 4);
+            firstPermissionRead.resolve({
+                ok: true,
+                permission: { granted: false, status: 'denied', canAskAgain: true },
+            });
+
+            await vi.waitFor(() => expect(pushAccessMocks.readPushPermission).toHaveBeenCalledTimes(2));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(pushAccessMocks.readPushPermission).toHaveBeenCalledTimes(2);
         } finally {
             stopPushTokenReconciliation();
         }

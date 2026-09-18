@@ -37,6 +37,7 @@ export type ConnectedServiceSessionQuotaProfileRef = Readonly<{
     serviceKey: string;
     legacyServiceId: ConnectedServiceId;
     profileId: string;
+    groupId?: string;
 }>;
 
 function readObjectRecord(value: unknown): Record<string, unknown> | null {
@@ -126,16 +127,24 @@ function resolveActiveGroupProfileId(params: Readonly<{
     return null;
 }
 
-function resolveBindingProfileId(params: Readonly<{
+function resolveBindingProfile(params: Readonly<{
     optionBinding: ConnectedServicesServiceBinding | undefined;
     payloadBinding: ConnectedServicesServiceBinding | undefined;
     accountProfileConnectedServicesV2: ReadonlyArray<AccountProfileConnectedService>;
     legacyServiceId: ConnectedServiceId | null;
-}>): string | null {
+}>): Readonly<{ profileId: string; groupId?: string }> | null {
     const explicitProfileId =
         readTrimmedString(params.optionBinding?.profileId)
         ?? readTrimmedString(params.payloadBinding?.profileId);
-    if (explicitProfileId) return explicitProfileId;
+    if (explicitProfileId) {
+        const selection = params.optionBinding?.selection ?? params.payloadBinding?.selection;
+        const groupId = readTrimmedString(params.optionBinding?.groupId)
+            ?? readTrimmedString(params.payloadBinding?.groupId);
+        return {
+            profileId: explicitProfileId,
+            ...(selection === 'group' && groupId ? { groupId } : {}),
+        };
+    }
 
     const selection = params.optionBinding?.selection ?? params.payloadBinding?.selection;
     if (selection !== 'group') return null;
@@ -148,11 +157,12 @@ function resolveBindingProfileId(params: Readonly<{
     // already-resolved qualified binding locally and typed. A service without
     // a released scalar projection has no V2 group facts — fail closed.
     if (!params.legacyServiceId) return null;
-    return resolveActiveGroupProfileId({
+    const profileId = resolveActiveGroupProfileId({
         services: params.accountProfileConnectedServicesV2,
         serviceId: params.legacyServiceId,
         groupId,
     });
+    return profileId ? { profileId, groupId } : null;
 }
 
 export function resolveConnectedServiceQuotaProfileRefForSession(params: Readonly<{
@@ -202,14 +212,19 @@ export function resolveConnectedServiceQuotaProfileRefForSession(params: Readonl
         // Without a released scalar quota identity the session quota/recovery
         // corridor cannot serve this binding (fail closed).
         if (!legacyServiceId) continue;
-        const profileId = resolveBindingProfileId({
+        const binding = resolveBindingProfile({
             optionBinding,
             payloadBinding,
             accountProfileConnectedServicesV2: params.accountProfileConnectedServicesV2,
             legacyServiceId,
         });
-        if (!profileId) continue;
-        return { serviceKey, legacyServiceId, profileId };
+        if (!binding) continue;
+        return {
+            serviceKey,
+            legacyServiceId,
+            profileId: binding.profileId,
+            ...(binding.groupId ? { groupId: binding.groupId } : {}),
+        };
     }
 
     return null;

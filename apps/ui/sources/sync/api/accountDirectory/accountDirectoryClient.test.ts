@@ -1,15 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHomeCredentialDestinationDigestV1 } from '@happier-dev/protocol';
 
 const endpointFetchMock = vi.hoisted(() => vi.fn());
 const createServerFetchAtEndpointMock = vi.hoisted(() => vi.fn(() => endpointFetchMock));
-const directoryCredentialGetMock = vi.hoisted(() => vi.fn(async () => ({ token: 'directory-token' })));
 vi.mock('@/sync/http/client', () => ({
     createServerFetchAtEndpoint: createServerFetchAtEndpointMock,
-}));
-vi.mock('@/auth/accountDirectory/accountDirectoryCredentialStorage', () => ({
-    normalizeAccountDirectoryEndpoint: (value: string) => value.replace(/\/$/, ''),
-    accountDirectoryCredentialStorage: { get: directoryCredentialGetMock },
 }));
 
 const activeSnapshotMock = vi.hoisted(() => vi.fn(() => ({ serverId: 'focused', serverUrl: 'https://focused.test', generation: 1 })));
@@ -20,12 +15,17 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe('account directory client', () => {
+    beforeEach(async () => {
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        for (const serverIdentityId of ['directory-new', 'srv_dir_1']) {
+            await TokenStorage.accountDirectoryAuthCredentials.set({ endpoint: 'https://directory.test', serverIdentityId }, { token: 'directory-token' });
+        }
+    });
     afterEach(() => {
         endpointFetchMock.mockReset();
         createServerFetchAtEndpointMock.mockReset();
         createServerFetchAtEndpointMock.mockImplementation(() => endpointFetchMock);
         activeSnapshotMock.mockClear();
-        directoryCredentialGetMock.mockClear();
         vi.resetModules();
     });
 
@@ -39,10 +39,6 @@ describe('account directory client', () => {
 
         await client.listHomes();
 
-        expect(directoryCredentialGetMock).toHaveBeenCalledWith({
-            endpoint: 'https://directory.test',
-            serverIdentityId: 'directory-new',
-        });
         expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith({
             endpointUrl: 'https://directory.test',
             serverId: 'directory-new',
@@ -67,6 +63,19 @@ describe('account directory client', () => {
         expect(activeSnapshotMock).not.toHaveBeenCalled();
     });
 
+    it('never borrows a replacement credential for a client created under earlier custody', async () => {
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { createAccountDirectoryClient } = await import('./accountDirectoryClient');
+        const target = { endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' };
+        const original = createAccountDirectoryClient(target);
+        await TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'replacement-token' });
+        await expect(original.listHomes()).rejects.toThrow();
+        expect(endpointFetchMock).not.toHaveBeenCalled();
+        endpointFetchMock.mockResolvedValueOnce(json({ v: 1, homes: [], preferredHomeServerIdentityId: null }));
+        expect(await createAccountDirectoryClient(target).listHomes()).toEqual({ v: 1, homes: [], preferredHomeServerIdentityId: null });
+        expect(createServerFetchAtEndpointMock).toHaveBeenLastCalledWith(expect.objectContaining({ credentials: { token: 'replacement-token' } }));
+    });
+
     it('sends the strict versioned body required by directory deletion', async () => {
         endpointFetchMock.mockResolvedValue(json({
             v: 1,
@@ -83,7 +92,7 @@ describe('account directory client', () => {
         expect(JSON.parse(String(init.body))).toEqual({ v: 1 });
     });
 
-    it('publishes a server-composed next descriptor revision and reads it back authoritatively', async () => {
+    it('publishes the exact destination descriptor with its durable frontier and mixed endpoints', async () => {
         const entry = {
             v: 1 as const,
             homeServerIdentityId: 'srv_home1',
@@ -93,8 +102,11 @@ describe('account directory client', () => {
                 v: 1 as const,
                 homeServerIdentityId: 'srv_home1',
                 canonicalServerUrl: 'https://destination.test',
-                revision: 8,
-                endpoints: [{ kind: 'https' as const, url: 'https://destination.test' }],
+                revision: 27,
+                endpoints: [
+                    { kind: 'https' as const, url: 'https://destination.test' },
+                    { kind: 'iroh' as const, endpointId: 'ab'.repeat(32), relayUrls: ['https://relay.test'] },
+                ],
             },
             createdAtMs: 1,
             updatedAtMs: 2,
@@ -109,24 +121,20 @@ describe('account directory client', () => {
         await expect(client.publishHomeDescriptor({
             homeServerIdentityId: 'srv_home1',
             label: 'Moved Home',
-            minimumOuterRevisionExclusive: 7,
-            canonicalServerUrl: 'https://destination.test',
-            endpoints: [{ kind: 'https', url: 'https://destination.test' }],
+            connectionDescriptor: entry.connectionDescriptor,
         })).resolves.toEqual({ kind: 'published', entry });
         await expect(client.readHomeDescriptor('srv_home1')).resolves.toEqual(entry);
 
         expect(endpointFetchMock.mock.calls[0]?.[0]).toBe('/v1/account-directory/homes/srv_home1');
         expect(JSON.parse(String((endpointFetchMock.mock.calls[0]?.[1] as RequestInit).body))).toEqual({
-            v: 2,
+            v: 1,
             label: 'Moved Home',
-            minimumOuterRevisionExclusive: 7,
-            canonicalServerUrl: 'https://destination.test',
-            endpoints: [{ kind: 'https', url: 'https://destination.test' }],
+            connectionDescriptor: entry.connectionDescriptor,
         });
         expect(endpointFetchMock.mock.calls[1]?.[0]).toBe('/v1/account-directory/homes');
     });
 
-    it('fails closed when an older Account Service rejects descriptor publication V2', async () => {
+    it('preserves a publication refusal without retrying a different write shape', async () => {
         endpointFetchMock.mockResolvedValue(json({ error: 'invalid_request' }, 400));
         const { createAccountDirectoryClient } = await import('./accountDirectoryClient');
         const client = createAccountDirectoryClient({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' });
@@ -134,9 +142,8 @@ describe('account directory client', () => {
         await expect(client.publishHomeDescriptor({
             homeServerIdentityId: 'srv_home1',
             label: 'Moved Home',
-            minimumOuterRevisionExclusive: 7,
-            canonicalServerUrl: 'https://destination.test',
-            endpoints: [{ kind: 'https', url: 'https://destination.test' }],
+            connectionDescriptor: { v: 1, homeServerIdentityId: 'srv_home1', canonicalServerUrl: 'https://destination.test',
+                revision: 8, endpoints: [{ kind: 'https', url: 'https://destination.test' }] },
         })).rejects.toMatchObject({ status: 400, code: 'invalid_request' });
         expect(endpointFetchMock).toHaveBeenCalledTimes(1);
     });
@@ -164,9 +171,8 @@ describe('account directory client', () => {
         await expect(createAccountDirectoryClient({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }).publishHomeDescriptor({
             homeServerIdentityId: 'srv_home1',
             label: 'Moved Home',
-            minimumOuterRevisionExclusive: 7,
-            canonicalServerUrl: 'https://destination.test',
-            endpoints: [{ kind: 'https', url: 'https://destination.test' }],
+            connectionDescriptor: { v: 1, homeServerIdentityId: 'srv_home1', canonicalServerUrl: 'https://destination.test',
+                revision: 8, endpoints: [{ kind: 'https', url: 'https://destination.test' }] },
         })).resolves.toEqual({ kind: 'current', entry: currentEntry });
     });
 
@@ -177,9 +183,8 @@ describe('account directory client', () => {
         await expect(createAccountDirectoryClient({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }).publishHomeDescriptor({
             homeServerIdentityId: 'srv_home1',
             label: 'Moved Home',
-            minimumOuterRevisionExclusive: 7,
-            canonicalServerUrl: 'https://destination.test',
-            endpoints: [{ kind: 'https', url: 'https://destination.test' }],
+            connectionDescriptor: { v: 1, homeServerIdentityId: 'srv_home1', canonicalServerUrl: 'https://destination.test',
+                revision: 8, endpoints: [{ kind: 'https', url: 'https://destination.test' }] },
         })).rejects.toMatchObject({ status: 409, code: 'descriptor_revision_conflict' });
     });
 
@@ -319,6 +324,35 @@ describe('account directory client', () => {
 
         const init = endpointFetchMock.mock.calls[0]?.[1] as RequestInit;
         expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({ relink: true }));
+    });
+
+    it('deletes the Home directory link through the Home transport with full Home credentials', async () => {
+        endpointFetchMock.mockResolvedValue(json({ v: 1, deleted: true, issuerServerIdentityId: 'srv_dir1' }));
+        const { deleteHomeDirectoryLink } = await import('./accountDirectoryClient');
+        const { resolveHomeEnrollmentTransport } = await import('@/auth/enrollment/homeEnrollmentTransport');
+        const resolved = await resolveHomeEnrollmentTransport({
+            v: 1,
+            canonicalServerUrl: 'https://home.internal.test',
+            homeServerIdentityId: 'srv_home1',
+            revision: 1,
+            endpoints: [{ kind: 'https', url: 'https://home.internal.test' }],
+        });
+        if (!resolved.ok) throw new Error('Expected Home transport');
+
+        await expect(deleteHomeDirectoryLink(resolved.transport, 'srv_dir1', { credentials: { token: 'home-token' } }))
+            .resolves.toEqual({ v: 1, deleted: true, issuerServerIdentityId: 'srv_dir1' });
+
+        expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith({
+            endpointUrl: 'https://home.internal.test',
+            runtimeOrigin: 'https://home.internal.test',
+            serverId: 'srv_home1',
+            credentials: { token: 'home-token' },
+        });
+        expect(endpointFetchMock.mock.calls[0]?.[0]).toBe('/v1/account/directory-links/srv_dir1');
+        const init = endpointFetchMock.mock.calls[0]?.[1] as RequestInit;
+        expect(init.method).toBe('DELETE');
+        expect(JSON.parse(String(init.body))).toEqual({ v: 1 });
+        expect(endpointFetchMock.mock.calls[0]?.[2]).toEqual({ includeAuth: true, retry: 'none' });
     });
 
     it('classifies only the exact Home link conflict as requiring explicit relink', async () => {

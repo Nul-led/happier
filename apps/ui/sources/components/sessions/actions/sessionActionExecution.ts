@@ -9,6 +9,7 @@ import {
     sessionUnarchiveWithServerScope,
 } from '@/sync/ops';
 import { sessionSetAttentionStandingWithServerScope } from '@/sync/ops/sessionOrganization';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import {
     clearSessionVisibleWhenInactive,
     isSessionActiveArchiveResult,
@@ -108,6 +109,7 @@ function throwUnsupportedSingleTargetAction(): never {
 
 async function runStopArchiveFlow(params: Readonly<{
     target: SessionActionTarget;
+    address: SessionAddress;
     context?: SessionActionExecutionContext;
     archiveAfterStop: 'always' | 'never';
 }>): Promise<void> {
@@ -115,34 +117,38 @@ async function runStopArchiveFlow(params: Readonly<{
     const stopSession = resolveStopSession(params.context);
     const archiveSession = resolveArchiveSession(params.context);
     await stopArchiveFlow({
-        sessionId: params.target.sessionId,
+        address: params.address,
         hideInactiveSessions: params.context?.hideInactiveSessions === true,
         isPinned: params.target.isPinned,
         archiveAfterStop: params.archiveAfterStop,
-        stopSession: async () => await stopSession(params.target.sessionId, { serverId: params.target.serverId }),
-        archiveSession: async () => await archiveSession(params.target.sessionId, { serverId: params.target.serverId }),
+        stopSession: async () => await stopSession(params.address.sessionId, { serverId: params.address.serverId }),
+        archiveSession: async () => await archiveSession(params.address.sessionId, { serverId: params.address.serverId }),
         stopErrorMessage: t('sessionInfo.failedToStopSession'),
         archiveErrorMessage: t('sessionInfo.failedToArchiveSession'),
     });
 }
 
-async function executeArchiveAction(target: SessionActionTarget, context?: SessionActionExecutionContext): Promise<void> {
+async function executeArchiveAction(
+    target: SessionActionTarget,
+    address: SessionAddress,
+    context?: SessionActionExecutionContext,
+): Promise<void> {
     const archiveSession = resolveArchiveSession(context);
 
     if (target.isActive || target.hasRecoverableTerminalHost) {
-        await runStopArchiveFlow({ target, context, archiveAfterStop: 'always' });
+        await runStopArchiveFlow({ target, address, context, archiveAfterStop: 'always' });
         return;
     }
 
-    const result = await archiveSession(target.sessionId, { serverId: target.serverId });
+    const result = await archiveSession(address.sessionId, { serverId: address.serverId });
     if (!result.success) {
         if (isSessionActiveArchiveResult(result)) {
-            await runStopArchiveFlow({ target, context, archiveAfterStop: 'always' });
+            await runStopArchiveFlow({ target, address, context, archiveAfterStop: 'always' });
             return;
         }
         throw new HappyError(result.message || t('sessionInfo.failedToArchiveSession'), false);
     }
-    resolveClearSessionVisibleWhenInactive(context)(target.sessionId);
+    resolveClearSessionVisibleWhenInactive(context)(address);
 }
 
 export async function executeSessionAction(params: Readonly<{
@@ -151,7 +157,18 @@ export async function executeSessionAction(params: Readonly<{
     input?: SessionActionExecutionInput;
     context?: SessionActionExecutionContext;
 }>): Promise<void> {
+    const targetAddress = normalizeSessionAddress(params.target.serverId, params.target.sessionId);
     switch (params.actionId) {
+        case 'ui.session.follow': {
+            if (params.target.followEnabled !== true || !params.target.serverId?.trim()) return;
+            const openEditor = params.context?.operations?.openFollowEditor;
+            if (!openEditor) throwUnsupportedSingleTargetAction();
+            openEditor({
+                address: { serverId: params.target.serverId, sessionId: params.target.sessionId },
+                archived: params.target.isArchived,
+            });
+            return;
+        }
         case SESSION_ACTION_MARK_READ_ID:
             throwIfFailed(
                 await resolveSetManualReadState(params.context)(params.target.sessionId, 'read', { serverId: params.target.serverId }),
@@ -180,10 +197,17 @@ export async function executeSessionAction(params: Readonly<{
             return;
         }
         case SESSION_ACTION_STOP_ID:
-            await runStopArchiveFlow({ target: params.target, context: params.context, archiveAfterStop: 'never' });
+            if (!targetAddress) throwUnsupportedSingleTargetAction();
+            await runStopArchiveFlow({
+                target: params.target,
+                address: targetAddress,
+                context: params.context,
+                archiveAfterStop: 'never',
+            });
             return;
         case SESSION_ACTION_ARCHIVE_ID:
-            await executeArchiveAction(params.target, params.context);
+            if (!targetAddress) throwUnsupportedSingleTargetAction();
+            await executeArchiveAction(params.target, targetAddress, params.context);
             return;
         case SESSION_ACTION_UNARCHIVE_ID:
             throwIfFailed(

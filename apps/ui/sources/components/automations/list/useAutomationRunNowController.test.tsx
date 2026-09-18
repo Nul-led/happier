@@ -2,6 +2,20 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createDeferred, renderHook } from '@/dev/testkit';
+import type {
+    AutomationDefinitionRun,
+    AutomationRunNowAdmission,
+} from '@/sync/domains/automations/automationTypes';
+
+function admission(
+    run: Readonly<{ id: string; state: string }>,
+    workflowRun?: AutomationRunNowAdmission['workflowRun'],
+): AutomationRunNowAdmission {
+    return {
+        run: run as unknown as AutomationDefinitionRun,
+        ...(workflowRun === undefined ? {} : { workflowRun }),
+    };
+}
 
 const runAutomationNowMock = vi.hoisted(() => vi.fn());
 
@@ -45,20 +59,20 @@ describe('useAutomationRunNowController', () => {
     it('uses command-state vocabulary and never presents its acknowledgement as a canonical Run state', async () => {
         vi.useFakeTimers();
         activeAccountLifetime.value = accountLifetime({ serverId: 'server-a', accountId: 'account-a' });
-        const request = createDeferred<unknown>();
+        const request = createDeferred<AutomationRunNowAdmission>();
         runAutomationNowMock.mockReturnValueOnce(request.promise);
         const { useAutomationRunNowController } = await import('./useAutomationRunNowController');
         const hook = await renderHook(() => useAutomationRunNowController());
 
-        let invocation!: Promise<void>;
+        let invocation!: Promise<AutomationRunNowAdmission | null>;
         await act(async () => {
             invocation = hook.getCurrent().runNow('automation-1');
         });
         expect(hook.getCurrent().stateFor('automation-1')).toBe('submitting');
 
         await act(async () => {
-            request.resolve({ id: 'run-1', state: 'running' });
-            await invocation;
+            request.resolve(admission({ id: 'run-1', state: 'running' }));
+            await expect(invocation).resolves.toMatchObject({ run: { id: 'run-1', state: 'running' } });
         });
         expect(hook.getCurrent().stateFor('automation-1')).toBe('acknowledged');
 
@@ -72,12 +86,12 @@ describe('useAutomationRunNowController', () => {
         const scopeA = { serverId: 'server-a', accountId: 'account-a' };
         const scopeB = { serverId: 'server-b', accountId: 'account-b' };
         activeAccountLifetime.value = accountLifetime(scopeA);
-        const heldA = createDeferred<unknown>();
+        const heldA = createDeferred<AutomationRunNowAdmission>();
         runAutomationNowMock.mockReturnValueOnce(heldA.promise);
         const { useAutomationRunNowController } = await import('./useAutomationRunNowController');
         const hook = await renderHook(() => useAutomationRunNowController());
 
-        let invocationA!: Promise<void>;
+        let invocationA!: Promise<AutomationRunNowAdmission | null>;
         await act(async () => {
             invocationA = hook.getCurrent().runNow('automation-1');
         });
@@ -91,9 +105,9 @@ describe('useAutomationRunNowController', () => {
         });
         expect(hook.getCurrent().stateFor('automation-1')).toBe('idle');
 
-        const heldB = createDeferred<unknown>();
+        const heldB = createDeferred<AutomationRunNowAdmission>();
         runAutomationNowMock.mockReturnValueOnce(heldB.promise);
-        let invocationB!: Promise<void>;
+        let invocationB!: Promise<AutomationRunNowAdmission | null>;
         await act(async () => {
             invocationB = hook.getCurrent().runNow('automation-1');
         });
@@ -104,8 +118,8 @@ describe('useAutomationRunNowController', () => {
         // to A must not resurface an acknowledged presentation; B's own run is
         // still submitting under B's key.
         await act(async () => {
-            heldA.resolve({ id: 'run-a', state: 'running' });
-            await invocationA;
+            heldA.resolve(admission({ id: 'run-a', state: 'running' }));
+            await expect(invocationA).resolves.toBeNull();
         });
         expect(hook.getCurrent().stateFor('automation-1')).toBe('submitting');
 
@@ -115,7 +129,7 @@ describe('useAutomationRunNowController', () => {
         });
         expect(hook.getCurrent().stateFor('automation-1')).toBe('idle');
         await act(async () => {
-            heldB.resolve({ id: 'run-b', state: 'queued' });
+            heldB.resolve(admission({ id: 'run-b', state: 'queued' }));
             await invocationB;
         });
     });
@@ -125,12 +139,61 @@ describe('useAutomationRunNowController', () => {
         const { useAutomationRunNowController } = await import('./useAutomationRunNowController');
         const hook = await renderHook(() => useAutomationRunNowController());
 
+        let result: AutomationRunNowAdmission | null | undefined;
         await act(async () => {
-            await hook.getCurrent().runNow('automation-1');
+            result = await hook.getCurrent().runNow('automation-1');
         });
 
+        expect(result).toBeNull();
         expect(runAutomationNowMock).not.toHaveBeenCalled();
         expect(hook.getCurrent().stateFor('automation-1')).toBe('idle');
+    });
+
+    it('returns null for a duplicate activation while preserving the first exact admitted handle', async () => {
+        activeAccountLifetime.value = accountLifetime({ serverId: 'server-a', accountId: 'account-a' });
+        const request = createDeferred<AutomationRunNowAdmission>();
+        runAutomationNowMock.mockReturnValueOnce(request.promise);
+        const { useAutomationRunNowController } = await import('./useAutomationRunNowController');
+        const hook = await renderHook(() => useAutomationRunNowController());
+
+        let first!: Promise<AutomationRunNowAdmission | null>;
+        let duplicate!: Promise<AutomationRunNowAdmission | null>;
+        await act(async () => {
+            first = hook.getCurrent().runNow('automation-1');
+            duplicate = hook.getCurrent().runNow('automation-1');
+        });
+
+        await expect(duplicate).resolves.toBeNull();
+        expect(runAutomationNowMock).toHaveBeenCalledTimes(1);
+
+        const admitted = admission({ id: 'run-exact', state: 'queued' });
+        await act(async () => {
+            request.resolve(admitted);
+            await expect(first).resolves.toBe(admitted);
+        });
+    });
+
+    it('does not return a late handle to a retired route invocation', async () => {
+        activeAccountLifetime.value = accountLifetime({ serverId: 'server-a', accountId: 'account-a' });
+        const request = createDeferred<AutomationRunNowAdmission>();
+        runAutomationNowMock.mockReturnValueOnce(request.promise);
+        const { useAutomationRunNowController } = await import('./useAutomationRunNowController');
+        const hook = await renderHook(() => useAutomationRunNowController());
+        let invocationCurrent = true;
+
+        let invocation!: Promise<AutomationRunNowAdmission | null>;
+        await act(async () => {
+            invocation = hook.getCurrent().runNow('automation-1', {
+                isInvocationCurrent: () => invocationCurrent,
+            });
+        });
+
+        invocationCurrent = false;
+        await act(async () => {
+            request.resolve(admission({ id: 'run-late', state: 'queued' }));
+            await expect(invocation).resolves.toBeNull();
+        });
+        expect(hook.getCurrent().stateFor('automation-1')).toBe('acknowledged');
     });
 
     it('publishes idle without an error surface when the Account authority retires mid-request', async () => {
@@ -141,7 +204,7 @@ describe('useAutomationRunNowController', () => {
         const { useAutomationRunNowController } = await import('./useAutomationRunNowController');
         const hook = await renderHook(() => useAutomationRunNowController());
 
-        let invocation!: Promise<void>;
+        let invocation!: Promise<AutomationRunNowAdmission | null>;
         await act(async () => {
             invocation = hook.getCurrent().runNow('automation-1');
         });
@@ -160,5 +223,32 @@ describe('useAutomationRunNowController', () => {
         });
         expect(hook.getCurrent().stateFor('automation-1')).toBe('idle');
         expect(modalAlertSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns the exact workflow correspondence the receipt declared, and none when it did not', async () => {
+        activeAccountLifetime.value = accountLifetime({ serverId: 'server-a', accountId: 'account-a' });
+        const { useAutomationRunNowController } = await import('./useAutomationRunNowController');
+        const hook = await renderHook(() => useAutomationRunNowController());
+
+        runAutomationNowMock.mockResolvedValueOnce(admission(
+            { id: 'run-managed', state: 'running' },
+            { recipeKind: 'workflow-v2', workflowRunId: 'run-managed' },
+        ));
+        let managed: AutomationRunNowAdmission | null | undefined;
+        await act(async () => {
+            managed = await hook.getCurrent().runNow('automation-managed');
+        });
+        expect(managed).not.toBeNull();
+        expect(managed?.workflowRun).toEqual({ recipeKind: 'workflow-v2', workflowRunId: 'run-managed' });
+
+        runAutomationNowMock.mockResolvedValueOnce(admission({ id: 'run-legacy', state: 'running' }));
+        let legacy: AutomationRunNowAdmission | null | undefined;
+        await act(async () => {
+            legacy = await hook.getCurrent().runNow('automation-legacy');
+        });
+        expect(legacy).not.toBeNull();
+        // A legacy receipt keeps the incumbent contract: no correspondence is
+        // manufactured for it, so no consumer can open a managed Run from it.
+        expect(legacy?.workflowRun).toBeUndefined();
     });
 });

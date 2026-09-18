@@ -18,6 +18,11 @@ import type {
 export function buildNewSessionScreenVariantModel(params: Readonly<{
     useEnhancedSessionWizard: boolean;
     popoverBoundaryRef: React.RefObject<View>;
+    launchOverlay: React.ReactNode | null;
+    launchOnRequestClose?: () => void;
+    overlayPresentation?: 'card' | 'screen';
+    overlayFocusReturnRef?: React.RefObject<View | null>;
+    overlayAccessibilityLabel?: string;
     simplePanelProps: NewSessionSimplePanelProps;
     checkoutCreationDraft: NewSessionCheckoutCreationDraft | null;
     setCheckoutCreationDraft: React.Dispatch<React.SetStateAction<NewSessionCheckoutCreationDraft | null>>;
@@ -39,6 +44,11 @@ export function buildNewSessionScreenVariantModel(params: Readonly<{
         return {
             variant: 'simple',
             popoverBoundaryRef: params.popoverBoundaryRef,
+            launchOverlay: params.launchOverlay,
+            launchOnRequestClose: params.launchOnRequestClose ?? (() => undefined),
+            overlayPresentation: params.overlayPresentation,
+            overlayFocusReturnRef: params.overlayFocusReturnRef,
+            overlayAccessibilityLabel: params.overlayAccessibilityLabel,
             simpleProps,
         };
     }
@@ -46,6 +56,11 @@ export function buildNewSessionScreenVariantModel(params: Readonly<{
     return {
         variant: 'wizard',
         popoverBoundaryRef: params.popoverBoundaryRef,
+        launchOverlay: params.launchOverlay,
+        launchOnRequestClose: params.launchOnRequestClose ?? (() => undefined),
+        overlayPresentation: params.overlayPresentation,
+        overlayFocusReturnRef: params.overlayFocusReturnRef,
+        overlayAccessibilityLabel: params.overlayAccessibilityLabel,
         wizardProps: {
             layout: params.wizardLayoutProps,
             sectionPresentation: params.wizardSectionPresentation,

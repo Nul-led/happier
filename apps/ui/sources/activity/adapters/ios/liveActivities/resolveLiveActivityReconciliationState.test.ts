@@ -5,6 +5,17 @@ import { resolveActivitySurfacePolicy } from '@/activity/attention/resolveActivi
 
 import { resolveLiveActivityReconciliationState } from './resolveLiveActivityReconciliationState';
 
+import {
+    buildHappierFocusLiveActivityIdentity,
+    buildLiveActivityInstanceKey,
+} from './liveActivityIdentity';
+
+/** The production Activity identity encoder, so fixtures cannot drift from real keys. */
+function liveActivityKey(serverId: string, sessionId: string): string {
+    return buildLiveActivityInstanceKey(buildHappierFocusLiveActivityIdentity({ serverId, sessionId }));
+}
+
+
 describe('resolveLiveActivityReconciliationState', () => {
     it('keeps the current dynamic primary within the dwell window while it remains eligible', () => {
         const policy = resolveActivitySurfacePolicy({
@@ -50,7 +61,7 @@ describe('resolveLiveActivityReconciliationState', () => {
         });
 
         expect(firstPass.snapshots.map((snapshot) => snapshot.sessionId)).toEqual(['permission']);
-        expect(firstPass.preferredPrimaryActivityInstanceKey).toBe('server-a:HappierFocusLiveActivity:permission');
+        expect(firstPass.preferredPrimaryActivityInstanceKey).toBe(liveActivityKey('server-a', 'permission'));
 
         const withinDwell = resolveLiveActivityReconciliationState({
             sessions: [
@@ -134,7 +145,7 @@ describe('resolveLiveActivityReconciliationState', () => {
         });
 
         expect(afterDwell.snapshots.map((snapshot) => snapshot.sessionId)).toEqual(['action']);
-        expect(afterDwell.preferredPrimaryActivityInstanceKey).toBe('server-a:HappierFocusLiveActivity:action');
+        expect(afterDwell.preferredPrimaryActivityInstanceKey).toBe(liveActivityKey('server-a', 'action'));
         expect(afterDwell.preferredPrimaryChangedAtMs).toBe(122_000);
     });
 
@@ -149,6 +160,7 @@ describe('resolveLiveActivityReconciliationState', () => {
             sessions: [
                 createSessionFixture({
                     id: 'permission',
+                    serverId: 'server-a',
                     updatedAt: 20,
                     active: true,
                     presence: 'online',
@@ -163,6 +175,7 @@ describe('resolveLiveActivityReconciliationState', () => {
                 }),
                 createSessionFixture({
                     id: 'action',
+                    serverId: 'server-a',
                     updatedAt: 10,
                     active: true,
                     presence: 'online',
@@ -181,12 +194,13 @@ describe('resolveLiveActivityReconciliationState', () => {
         });
 
         expect(firstPass.snapshots.map((snapshot) => snapshot.sessionId)).toEqual(['permission']);
-        expect(firstPass.preferredPrimarySessionId).toBe('permission');
+        expect(firstPass.preferredPrimaryAddress).toEqual({ serverId: 'server-a', sessionId: 'permission' });
 
         const secondPass = resolveLiveActivityReconciliationState({
             sessions: [
                 createSessionFixture({
                     id: 'permission',
+                    serverId: 'server-a',
                     updatedAt: 25,
                     active: true,
                     presence: 'online',
@@ -201,6 +215,7 @@ describe('resolveLiveActivityReconciliationState', () => {
                 }),
                 createSessionFixture({
                     id: 'action',
+                    serverId: 'server-a',
                     updatedAt: 50,
                     active: true,
                     presence: 'online',
@@ -215,12 +230,112 @@ describe('resolveLiveActivityReconciliationState', () => {
                 }),
             ],
             policy,
-            currentPreferredPrimarySessionId: firstPass.preferredPrimarySessionId,
+            currentPreferredPrimaryAddress: firstPass.preferredPrimaryAddress,
             nowMs: 1_000,
         });
 
         expect(secondPass.snapshots.map((snapshot) => snapshot.sessionId)).toEqual(['permission']);
-        expect(secondPass.preferredPrimarySessionId).toBe('permission');
+        expect(secondPass.preferredPrimaryAddress).toEqual({ serverId: 'server-a', sessionId: 'permission' });
+    });
+
+    it('keeps the pinned primary qualified when two Homes share the same Session id', () => {
+        const policy = resolveActivitySurfacePolicy({
+            liveActivitiesMode: 'attention',
+            liveActivitiesStrategy: 'pinned_primary',
+        });
+
+        const firstPass = resolveLiveActivityReconciliationState({
+            sessions: [
+                createSessionFixture({
+                    id: 'same-session',
+                    serverId: 'server-a',
+                    updatedAt: 20,
+                    active: true,
+                    presence: 'online',
+                    pendingUserActionRequestCount: 1,
+                    pendingRequestObservedAt: 950,
+                }),
+                createSessionFixture({
+                    id: 'same-session',
+                    serverId: 'server-b',
+                    updatedAt: 10,
+                    active: true,
+                    presence: 'online',
+                    pendingUserActionRequestCount: 1,
+                    pendingRequestObservedAt: 950,
+                }),
+            ],
+            policy,
+            nowMs: 1_000,
+        });
+
+        expect(firstPass.snapshots.map((snapshot) => snapshot.serverId)).toEqual(['server-a']);
+        expect(firstPass.preferredPrimaryAddress).toEqual({
+            serverId: 'server-a',
+            sessionId: 'same-session',
+        });
+
+        const secondPass = resolveLiveActivityReconciliationState({
+            sessions: [
+                createSessionFixture({
+                    id: 'same-session',
+                    serverId: 'server-b',
+                    updatedAt: 50,
+                    active: true,
+                    presence: 'online',
+                    pendingUserActionRequestCount: 1,
+                    pendingRequestObservedAt: 950,
+                }),
+                createSessionFixture({
+                    id: 'same-session',
+                    serverId: 'server-a',
+                    updatedAt: 25,
+                    active: true,
+                    presence: 'online',
+                    pendingUserActionRequestCount: 1,
+                    pendingRequestObservedAt: 950,
+                }),
+            ],
+            policy,
+            currentPreferredPrimaryAddress: firstPass.preferredPrimaryAddress,
+            nowMs: 1_000,
+        });
+
+        expect(secondPass.snapshots.map((snapshot) => snapshot.serverId)).toEqual(['server-a']);
+        expect(secondPass.preferredPrimaryAddress).toEqual({
+            serverId: 'server-a',
+            sessionId: 'same-session',
+        });
+    });
+
+    it('does not publish an unbound Activity instance as a routable preferred Session address', () => {
+        const policy = resolveActivitySurfacePolicy({
+            liveActivitiesMode: 'attention',
+            liveActivitiesStrategy: 'pinned_primary',
+        });
+
+        const result = resolveLiveActivityReconciliationState({
+            sessions: [
+                createSessionFixture({
+                    id: 'unbound-session',
+                    serverId: null,
+                    updatedAt: 20,
+                    active: true,
+                    presence: 'online',
+                    pendingPermissionRequestCount: 1,
+                    pendingRequestObservedAt: 950,
+                }),
+            ],
+            policy,
+            nowMs: 1_000,
+        });
+
+        expect(result.snapshots).toHaveLength(1);
+        expect(result.snapshots[0]).toMatchObject({
+            serverId: null,
+            sessionId: 'unbound-session',
+        });
+        expect(result.preferredPrimaryAddress).toBeNull();
     });
 
     it('uses the shared live activity dwell window when deciding whether to hold the dynamic primary', () => {

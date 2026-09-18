@@ -1,7 +1,6 @@
 import { Platform } from 'react-native';
 
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
-import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { TreeDropOverlaySharedValues } from '@/components/ui/treeDragDrop';
 
 import type { SessionListRowViewModel } from './sessionListRowViewModels';
@@ -57,28 +56,6 @@ type SessionListSessionItemProps = Readonly<{
     measurementTarget?: SessionListRowProps['measurementTarget'];
 }>;
 
-function applySessionListItemAttentionFlags(
-    session: SessionListRenderableSession,
-    item: Extract<SessionListIndexItem, { type: 'session' }>,
-): SessionListRenderableSession {
-    switch (item.attentionPlacementReason) {
-        case 'action_required':
-            if (session.hasPendingUserActionRequests === true) return session;
-            return {
-                ...session,
-                hasPendingUserActionRequests: true,
-            };
-        case 'permission_required':
-            if (session.hasPendingPermissionRequests === true) return session;
-            return {
-                ...session,
-                hasPendingPermissionRequests: true,
-            };
-        default:
-            return session;
-    }
-}
-
 export function SessionListSessionItem(props: SessionListSessionItemProps) {
     const { rowViewModel } = props;
     if (!rowViewModel) {
@@ -89,7 +66,7 @@ export function SessionListSessionItem(props: SessionListSessionItemProps) {
     if (!rowSession) {
         return null;
     }
-    const session = applySessionListItemAttentionFlags(rowSession, props.item);
+    const session = rowSession;
 
     const sessionKey = rowViewModel.sessionKey;
     const isIos = Platform.OS === 'ios';

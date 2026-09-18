@@ -12,7 +12,6 @@ import { PopoverBoundaryProvider } from '@/components/ui/popover';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import type { DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { MachineSelector } from '@/components/sessions/new/components/MachineSelector';
 import { PathSelectionList } from '@/components/sessions/new/components/PathSelectionList';
 import { WizardSectionHeaderRow } from '@/components/sessions/new/components/WizardSectionHeaderRow';
 import { NewSessionModelSelectionContent } from '@/components/sessions/new/components/NewSessionModelSelectionContent';
@@ -63,6 +62,12 @@ import {
     NewSessionWizardPopoverItem,
     resolveWizardAdaptivePresentation,
 } from './NewSessionWizardAdaptiveSelection';
+import {
+    buildMachineDestinationModel,
+    type BuildMachineDestinationModelParams,
+} from './machineSelection/buildMachineDestinationModel';
+import type { ServerScopedMachinePoolGroup } from './machineSelection/useMachineSelectionListModel';
+import type { ServerScopedMachineGroup } from '@/components/sessions/new/hooks/machines/useServerScopedMachineOptions';
 import type {
     NewSessionWizardSectionPresentation,
     NewSessionWizardSelectionSectionId,
@@ -72,7 +77,6 @@ import type { SessionModelProjectionGroup } from '@/components/sessions/modelPic
 import type { SessionModelPickerExperimentalConfirmationController } from '@/components/sessions/modelPicker/SessionModelPicker';
 import {
     NewSessionLaunchPendingPreview,
-    shouldRenderNewSessionLaunchPendingPreview,
 } from '@/components/sessions/new/components/NewSessionLaunchPendingPreview';
 import type { NewSessionLaunchAttempt } from '@/components/sessions/new/modules/newSessionLaunchAttempt';
 import { NewSessionProviderLaunchError } from '@/components/sessions/new/components/NewSessionProviderLaunchError';
@@ -155,6 +159,13 @@ export interface NewSessionWizardAgentProps {
     setModelMode: (mode: ModelMode) => void;
     setModelSelection?: (selection: SessionModelSelectionV1 | null) => void;
     providerModelGroups?: readonly SessionModelProjectionGroup[];
+    teamCredentialResources?: React.ComponentProps<typeof NewSessionModelSelectionContent>['teamCredentialResources'];
+    teamNameById?: React.ComponentProps<typeof NewSessionModelSelectionContent>['teamNameById'];
+    homeNameByTeamId?: React.ComponentProps<typeof NewSessionModelSelectionContent>['homeNameByTeamId'];
+    currentTeamCredentialResourceKeys?: React.ComponentProps<typeof NewSessionModelSelectionContent>['currentTeamCredentialResourceKeys'];
+    teamCredentialServerId?: React.ComponentProps<typeof NewSessionModelSelectionContent>['teamCredentialServerId'];
+    selectedTeamCredentialModel?: React.ComponentProps<typeof NewSessionModelSelectionContent>['selectedTeamCredentialModel'];
+    onSelectTeamCredentialModel?: React.ComponentProps<typeof NewSessionModelSelectionContent>['onSelectTeamCredentialModel'];
     providerModelProjectionAuthoritative?: boolean;
     providerModelProjectionError?: ProviderErrorV1 | null;
     providerModelProjectionFailures?: React.ComponentProps<typeof NewSessionModelSelectionContent>['providerProjectionFailures'];
@@ -171,6 +182,14 @@ export interface NewSessionWizardAgentProps {
 
 export interface NewSessionWizardMachineProps {
     machines: ReadonlyArray<Machine>;
+    /**
+     * The same resolved Home groups and Pool projections the picker renders. Adaptive presentation
+     * derives its visible-destination count from them through the canonical destination owner, so
+     * the wizard can never disagree with the list a user actually opens.
+     */
+    machineGroups?: ReadonlyArray<ServerScopedMachineGroup>;
+    machinePoolGroups?: ReadonlyArray<ServerScopedMachinePoolGroup>;
+    temporaryComputerProjection?: BuildMachineDestinationModelParams['temporaryComputerProjection'];
     serverId?: string | null;
     selectedMachine: Machine | null;
     recentMachines: ReadonlyArray<Machine>;
@@ -191,6 +210,7 @@ export interface NewSessionWizardMachineProps {
 }
 
 export interface NewSessionWizardFooterProps {
+    machineName?: string;
     promptStore: NewSessionPromptStore;
     composerDocument?: NewSessionComposerDocument;
     setSessionPrompt: (v: string) => void;
@@ -198,6 +218,8 @@ export interface NewSessionWizardFooterProps {
     canCreate: boolean;
     isCreating: boolean;
     pendingLaunchAttempt?: NewSessionLaunchAttempt | null;
+    /** Resolved once by `resolveNewSessionLaunchPresentation`; the Wizard only places the card. */
+    launchPendingPreviewVisible?: boolean;
     providerLaunchError?: ProviderErrorV1 | null;
     retryProviderLaunch?: () => void;
     submitAccessibilityLabel?: React.ComponentProps<typeof AgentInput>['submitAccessibilityLabel'];
@@ -241,25 +263,6 @@ function resolveBuiltInAgentIdFromBackendPickerOptionId(optionId: string): Agent
     const match = /^backend:([^:]+)(?::configured:.+)?$/.exec(optionId);
     const backendId = match?.[1];
     return backendId && isBundledAgentId(backendId) ? backendId : null;
-}
-
-function countVisibleWizardMachineRows(params: Readonly<{
-    machines: ReadonlyArray<Machine>;
-    recentMachines: ReadonlyArray<Machine>;
-    favoriteMachines: ReadonlyArray<Machine>;
-}>): number {
-    const visibleMachines = params.machines.filter((machine) => !machine.revokedAt);
-    const visibleRecentMachines = params.recentMachines.filter((machine) => !machine.revokedAt);
-    const visibleFavoriteMachines = params.favoriteMachines.filter((machine) => !machine.revokedAt);
-    const favoriteIds = new Set(visibleFavoriteMachines.map((machine) => machine.id));
-    const recentMachinesWithoutFavorites = visibleRecentMachines.filter((machine) => !favoriteIds.has(machine.id));
-    const pinnedIds = new Set<string>([
-        ...visibleFavoriteMachines.map((machine) => machine.id),
-        ...recentMachinesWithoutFavorites.map((machine) => machine.id),
-    ]);
-    const allMachinesWithoutPinned = visibleMachines.filter((machine) => !pinnedIds.has(machine.id));
-
-    return visibleFavoriteMachines.length + recentMachinesWithoutFavorites.length + allMachinesWithoutPinned.length;
 }
 
 function countVisibleWizardSavedPathRows(params: Readonly<{
@@ -425,6 +428,13 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
         setModelMode,
         setModelSelection,
         providerModelGroups,
+        teamCredentialResources,
+        teamNameById,
+        homeNameByTeamId,
+        currentTeamCredentialResourceKeys,
+        teamCredentialServerId,
+        selectedTeamCredentialModel,
+        onSelectTeamCredentialModel,
         providerModelProjectionAuthoritative,
         providerModelProjectionError,
         providerModelProjectionFailures,
@@ -444,17 +454,16 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
 
     const {
         machines,
+        machineGroups,
+        machinePoolGroups,
+        temporaryComputerProjection,
         serverId,
         selectedMachine,
         recentMachines,
         favoriteMachineItems,
         useMachinePickerSearch,
-        setSelectedMachineId,
-        getBestPathForMachine,
         setSelectedPath,
         setDraftSelectedPath,
-        favoriteMachines,
-        setFavoriteMachines,
         selectedPath,
         recentPaths,
         favoriteDirectories,
@@ -484,7 +493,7 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
         inputMaxHeight,
     } = props.footer;
 
-    const machineDisplayName = selectedMachine?.metadata?.displayName || selectedMachine?.metadata?.host;
+    const machineDisplayName = selectedMachine?.metadata?.displayName || selectedMachine?.metadata?.host || props.profiles.selectedMachineId || undefined;
     const { sharedProfilesListProps, profilePopover } = React.useMemo(() => {
         return buildNewSessionProfileSelectionPopover({
             useProfiles,
@@ -518,18 +527,36 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
             ? 'compact'
             : 'expanded',
     );
-    const machineVisibleRowCount = React.useMemo(() => countVisibleWizardMachineRows({
-        machines,
-        recentMachines,
-        favoriteMachines: favoriteMachineItems,
-    }), [favoriteMachineItems, machines, recentMachines]);
     const pathVisibleRowCount = React.useMemo(() => countVisibleWizardSavedPathRows({
         favoriteDirectories,
         recentPaths,
     }), [favoriteDirectories, recentPaths]);
+    // One canonical destination projection decides how many Machine, Pool and Temporary-computer
+    // rows the picker shows. Callers that have not resolved Home groups yet still describe the
+    // single-Home list they render, so adaptive presentation never counts a different set.
+    const destinationRowCount = React.useMemo(() => buildMachineDestinationModel({
+        groups: machineGroups ?? [{
+            serverId: serverId ?? '',
+            machines,
+            loading: false,
+            signedOut: false,
+        }],
+        poolGroups: machinePoolGroups,
+        temporaryComputerProjection,
+        recentMachines,
+        favoriteMachines: favoriteMachineItems,
+    }).destinationRowCount, [
+        favoriteMachineItems,
+        machineGroups,
+        machinePoolGroups,
+        machines,
+        recentMachines,
+        serverId,
+        temporaryComputerProjection,
+    ]);
     const machinePresentation = resolveWizardAdaptivePresentation(
         sectionPresentation.machines,
-        machineVisibleRowCount >= WIZARD_AUTO_DROPDOWN_MIN_VISIBLE_ROWS ? 'compact' : 'expanded',
+        destinationRowCount >= WIZARD_AUTO_DROPDOWN_MIN_VISIBLE_ROWS ? 'compact' : 'expanded',
     );
     const pathPresentation = resolveWizardAdaptivePresentation(
         sectionPresentation.paths,
@@ -557,19 +584,6 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
     const canvasBackgroundColor = theme.colors.background?.canvas
         ?? theme.colors.groupped?.background
         ?? theme.colors.input?.background;
-    const handleSelectMachine = React.useCallback((machine: Machine) => {
-        setSelectedMachineId(machine.id);
-        const bestPath = getBestPathForMachine(machine.id);
-        setSelectedPath(bestPath);
-    }, [getBestPathForMachine, setSelectedMachineId, setSelectedPath]);
-    const handleToggleFavoriteMachine = React.useCallback((machine: Machine) => {
-        const isInFavorites = favoriteMachines.includes(machine.id);
-        if (isInFavorites) {
-            setFavoriteMachines(favoriteMachines.filter(id => id !== machine.id));
-        } else {
-            setFavoriteMachines([...favoriteMachines, machine.id]);
-        }
-    }, [favoriteMachines, setFavoriteMachines]);
 
     const shellStyle = [
         styles.container,
@@ -647,7 +661,15 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
                                         error={props.footer.providerLaunchError}
                                         retry={props.footer.retryProviderLaunch}
                                     />
-                                    {isCreating && shouldRenderNewSessionLaunchPendingPreview(props.footer.pendingLaunchAttempt) ? (
+                                    {/*
+                                      * Resolved upstream by
+                                      * `resolveNewSessionLaunchPresentation`. The Wizard
+                                      * places the compact card and never re-decides, so a
+                                      * Temporary-computer request cannot grow a second
+                                      * pending presentation behind its frozen overlay.
+                                      */}
+                                    {props.footer.launchPendingPreviewVisible === true
+                                        && props.footer.pendingLaunchAttempt != null ? (
                                         <View style={{ paddingBottom: 8 }}>
                                             <NewSessionLaunchPendingPreview launchAttempt={props.footer.pendingLaunchAttempt} />
                                         </View>
@@ -710,7 +732,7 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
                                         statusBadges={props.footer.statusBadges}
                                         statusTrailingActions={props.footer.statusTrailingActions}
                                         showStatusPermissionMode={false}
-                                        machineName={selectedMachine?.metadata?.displayName || selectedMachine?.metadata?.host}
+                                        machineName={props.footer.machineName ?? machineDisplayName}
                                         machinePopover={props.footer.machinePopover}
                                         onMachineClick={props.footer.machinePopover ? undefined : handleAgentInputMachineClick}
                                         currentPath={selectedPath}
@@ -1057,6 +1079,13 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
                                             favoriteModelSelections={favoriteModelSelections}
                                             onFavoriteModelSelectionsChange={setFavoriteModelSelections}
                                             providerGroups={providerModelGroups}
+                                            teamCredentialResources={teamCredentialResources}
+                                            teamNameById={teamNameById}
+                                            homeNameByTeamId={homeNameByTeamId}
+                                            currentTeamCredentialResourceKeys={currentTeamCredentialResourceKeys}
+                                            teamCredentialServerId={teamCredentialServerId}
+                                            selectedTeamCredentialModel={selectedTeamCredentialModel}
+                                            onSelectTeamCredentialModel={onSelectTeamCredentialModel}
                                             providerProjectionAuthoritative={providerModelProjectionAuthoritative === true}
                                             providerProjectionError={providerModelProjectionError}
                                             providerProjectionFailures={providerModelProjectionFailures}
@@ -1104,45 +1133,20 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
                                         <View style={{ marginBottom: 24 }}>
                                             <AdaptiveSelectionSection
                                                 presentation={machinePresentation}
-                                                expandedContent={(
-                                                    <MachineSelector
-                                                        machines={machines}
-                                                        serverId={serverId}
-                                                        selectedMachine={selectedMachine || null}
-                                                        recentMachines={recentMachines}
-                                                        favoriteMachines={favoriteMachineItems}
-                                                        testIdPrefix="new-session-machine"
-                                                        showCliGlyphs={true}
-                                                        autoDetectCliGlyphs={false}
-                                                        showFavorites={true}
-                                                        showSearch={useMachinePickerSearch}
-                                                        searchPlacement="all"
-                                                        favoriteGroupPlacement="beforeRecent"
-                                                        onSelect={handleSelectMachine}
-                                                        onToggleFavorite={handleToggleFavoriteMachine}
-                                                    />
-                                                )}
+                                                expandedContent={typeof props.footer.machinePopover?.renderContent === 'function'
+                                                    ? props.footer.machinePopover.renderContent({
+                                                        maxHeight: props.footer.machinePopover.maxHeightCap ?? 560,
+                                                        requestClose: () => {},
+                                                    })
+                                                    : props.footer.machinePopover?.renderContent}
                                                 compactContent={(
-                                                    <MachineSelector
-                                                        presentation="dropdown"
-                                                        machines={machines}
-                                                        serverId={serverId}
-                                                        selectedMachine={selectedMachine || null}
-                                                        recentMachines={recentMachines}
-                                                        favoriteMachines={favoriteMachineItems}
-                                                        testIdPrefix="new-session-machine"
-                                                        showCliGlyphs={false}
-                                                        autoDetectCliGlyphs={false}
-                                                        showFavorites={true}
-                                                        showSearch={useMachinePickerSearch}
-                                                        searchPlacement="all"
-                                                        favoriteGroupPlacement="beforeRecent"
-                                                        dropdownTitle={t('newSession.selectMachineTitle')}
-                                                        dropdownSubtitle={machineDisplayName ?? t('newSession.selectMachineDescription')}
-                                                        dropdownTestID="new-session-machine-dropdown-trigger"
-                                                        popoverBoundaryRef={props.popoverBoundaryRef}
-                                                        onSelect={handleSelectMachine}
-                                                        onToggleFavorite={handleToggleFavoriteMachine}
+                                                    <NewSessionWizardPopoverItem
+                                                        testID="new-session-machine-dropdown-trigger"
+                                                        title={t('newSession.selectMachineTitle')}
+                                                        subtitle={machineDisplayName ?? t('newSession.selectMachineDescription')}
+                                                        icon={<Icon name="desktop" size={24} color={theme.colors.text.primary} />}
+                                                        popover={props.footer.machinePopover}
+                                                        boundaryRef={props.popoverBoundaryRef}
                                                     />
                                                 )}
                                             />

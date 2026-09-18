@@ -2,7 +2,6 @@ import type {
     PluginResourceContextV1,
 } from '@happier-dev/protocol';
 import type {
-    PluginUiHostApiRequestEnvelopeV1,
     PluginUiJsonValueV1,
 } from '@happier-dev/protocol/plugins/ui';
 import type { PluginUiResourceClient } from '@happier-dev/plugin-ui/advanced';
@@ -35,6 +34,13 @@ import {
  */
 
 export type PluginSurfaceResourceReadTransport = typeof machinePluginUiResourceRead;
+
+/** Minimal request shape consumed by the Resource adapter, independent of surface provenance. */
+export type PluginResourceHostRequest = Readonly<{
+    requestId: string;
+    method: string;
+    payload?: PluginUiJsonValueV1;
+}>;
 
 export type PluginSurfaceResourceBinding = Readonly<{
     machineId: string;
@@ -194,7 +200,7 @@ export function createPluginSurfaceResourceReadHandler(input: Readonly<{
 }>) {
     const read = input.resource.read ?? machinePluginUiResourceRead;
     return async (
-        request: PluginUiHostApiRequestEnvelopeV1,
+        request: PluginResourceHostRequest,
         options?: PluginSurfaceHostApiRequestOptions,
     ): Promise<PluginUiJsonValueV1> => {
         const payload = readJsonRecord(request.payload);

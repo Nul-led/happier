@@ -110,6 +110,10 @@ describe('app native SSH tunnel runtime', () => {
         const unsubscribe = vi.fn();
         const supervisor = createSupervisor();
         const runtime = loaded!.createNativeSshTunnelRuntime({ supervisor });
+        const companionRuntime = {
+            markSuspended: vi.fn(),
+            markForeground: vi.fn(async () => undefined),
+        };
         await runtime.ensureTunnel(createRequest());
 
         const lifecycle = loaded!.bindNativeTunnelRuntimeActivity({
@@ -119,6 +123,7 @@ describe('app native SSH tunnel runtime', () => {
                 return unsubscribe;
             },
             runtime,
+            additionalRuntimes: [companionRuntime],
         });
         const emitActivityChange = async (nextActive: boolean) => {
             active = nextActive;
@@ -132,13 +137,53 @@ describe('app native SSH tunnel runtime', () => {
         await emitActivityChange(false);
         expect(runtime.listTunnels().leases[0]?.status).toBe('degraded');
         expect(runtime.listTunnels().platformLimitations.map((limitation) => limitation.reason)).toContain('platform-suspended');
+        expect(companionRuntime.markSuspended).toHaveBeenCalledTimes(1);
 
         await emitActivityChange(true);
         expect(runtime.listTunnels().leases[0]?.status).toBe('ready');
         expect(supervisor.markForeground).toHaveBeenCalledTimes(1);
+        expect(companionRuntime.markForeground).toHaveBeenCalledTimes(1);
 
         lifecycle.remove();
         expect(unsubscribe).toHaveBeenCalledTimes(1);
+    });
+
+    it('attempts foreground recovery for every native tunnel runtime when one runtime fails', async () => {
+        const loaded = await import('./runtime').catch(() => null);
+        expect(loaded).not.toBeNull();
+
+        let active = false;
+        let listener: (() => void | Promise<void>) | null = null;
+        const supervisor: NativeSshTunnelSupervisor = {
+            ...createSupervisor(),
+            markForeground: vi.fn(async () => {
+                throw new Error('ssh foreground recovery failed');
+            }),
+        };
+        const runtime = loaded!.createNativeSshTunnelRuntime({ supervisor });
+        const companionRuntime = {
+            markSuspended: vi.fn(),
+            markForeground: vi.fn(async () => undefined),
+        };
+        const lifecycle = loaded!.bindNativeTunnelRuntimeActivity({
+            isActive: () => active,
+            subscribe: (nextListener) => {
+                listener = nextListener;
+                return () => undefined;
+            },
+            runtime,
+            additionalRuntimes: [companionRuntime],
+        });
+        const currentListener = listener;
+        if (!currentListener) throw new Error('Runtime-activity listener was not registered');
+
+        active = true;
+        await expect(currentListener()).resolves.toBeUndefined();
+        expect(supervisor.markForeground).toHaveBeenCalledTimes(1);
+        expect(companionRuntime.markForeground).toHaveBeenCalledTimes(1);
+
+        lifecycle.remove();
+        await loaded!.disposeNativeSshTunnelRuntime();
     });
 
     it('rejects new tunnel starts while the native app is suspended', async () => {

@@ -38,6 +38,7 @@ describe('notificationChannels helpers', () => {
                 signingSecret: null,
                 topics: enabledLegacyNotificationTopics,
                 readyIncludeMessageText: false,
+                requestIncludeMessageText: true,
             },
         ]);
     });
@@ -52,6 +53,7 @@ describe('notificationChannels helpers', () => {
                     enabled: true,
                     topics: enabledLegacyNotificationTopics,
                     readyIncludeMessageText: true,
+                    requestIncludeMessageText: false,
                 },
                 {
                     v: 1,
@@ -62,6 +64,7 @@ describe('notificationChannels helpers', () => {
                     signingSecret: null,
                     topics: enabledLegacyNotificationTopics,
                     readyIncludeMessageText: false,
+                    requestIncludeMessageText: false,
                 },
             ],
             channelId: 'webhook-primary',
@@ -86,6 +89,7 @@ describe('notificationChannels helpers', () => {
                 enabled: true,
                 topics: enabledLegacyNotificationTopics,
                 readyIncludeMessageText: true,
+                requestIncludeMessageText: false,
             },
             {
                 v: 1,
@@ -103,6 +107,7 @@ describe('notificationChannels helpers', () => {
                     connectedServiceQuotaRecovered: true,
                 },
                 readyIncludeMessageText: false,
+                requestIncludeMessageText: false,
             },
         ]);
     });
@@ -119,6 +124,7 @@ describe('notificationChannels helpers', () => {
                     signingSecret: null,
                     topics: enabledLegacyNotificationTopics,
                     readyIncludeMessageText: false,
+                    requestIncludeMessageText: false,
                 },
             ],
             channelId: 'webhook-primary',
@@ -158,6 +164,7 @@ describe('notificationChannels helpers', () => {
                     connectedServiceQuotaRecovered: true,
                 },
                     readyIncludeMessageText: false,
+                    requestIncludeMessageText: false,
                 },
             ],
         });
@@ -171,6 +178,7 @@ describe('notificationChannels helpers', () => {
                     enabled: true,
                     topics: enabledLegacyNotificationTopics,
                     readyIncludeMessageText: false,
+                    requestIncludeMessageText: true,
                 },
                 {
                     v: 1,
@@ -188,6 +196,7 @@ describe('notificationChannels helpers', () => {
                     connectedServiceQuotaRecovered: true,
                 },
                     readyIncludeMessageText: false,
+                    requestIncludeMessageText: false,
                 },
             ],
             attentionDeliveryPolicyV1: {
@@ -246,6 +255,7 @@ describe('notificationChannels helpers', () => {
                     signingSecret: null,
                     topics: enabledLegacyNotificationTopics,
                     readyIncludeMessageText: false,
+                    requestIncludeMessageText: false,
                 },
             ],
         });

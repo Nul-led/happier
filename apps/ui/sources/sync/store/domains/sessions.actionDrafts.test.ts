@@ -21,12 +21,18 @@ vi.mock('react-native-mmkv', () => {
 
 import { createSessionsDomain } from './sessions';
 import { clearPersistence } from '@/sync/domains/state/persistence';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
+
+const scopeA = { serverId: 'home-a', accountId: 'account-a' } as const;
+const scopeB = { serverId: 'home-b', accountId: 'account-b' } as const;
+const addressA = { serverId: 'home-a', sessionId: 'shared-session' } as const;
+const addressB = { serverId: 'home-b', sessionId: 'shared-session' } as const;
 
 function createHarness() {
     let state: any = {
         sessions: {},
         sessionListIndexByServerId: {},
-        sessionListRowStateByServerId: {},
+        sessionListRowsByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
         sessionLastViewed: {},
@@ -34,12 +40,12 @@ function createHarness() {
         workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey: {},
         reviewCommentsDraftsBySessionId: {},
         reviewCommentsDraftsByWorkspaceCacheKey: {},
-        actionDraftsBySessionId: {},
+        sessionActionDraftsByAddressKey: {},
         isDataReady: false,
         machines: {},
         machineDisplayById: {},
         sessionMessages: {},
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
     };
 
     const get = () => state;
@@ -59,45 +65,60 @@ describe('sessions domain: action drafts', () => {
         clearPersistence();
     });
 
-    it('creates, updates, and deletes action drafts per session', () => {
+    it('creates, updates, and deletes action drafts for one exact Session address', () => {
         const { get, domain } = createHarness();
 
-        const created = domain.createSessionActionDraft('s1', {
+        const created = domain.createSessionActionDraft(scopeA, addressA, {
             actionId: 'review.start',
             input: { changeType: 'committed', base: { kind: 'none' } },
         });
 
-        expect(created.sessionId).toBe('s1');
+        expect(created.address).toEqual(addressA);
         expect(created.actionId).toBe('review.start');
-        expect((get().actionDraftsBySessionId.s1 ?? []).length).toBe(1);
+        expect((get().sessionActionDraftsByAddressKey[sessionAddressKey(addressA)] ?? []).length).toBe(1);
 
-        domain.updateSessionActionDraftInput('s1', created.id, { instructions: 'Review this.' });
-        const afterUpdate = (get().actionDraftsBySessionId.s1 ?? [])[0];
+        domain.updateSessionActionDraftInput(scopeA, addressA, created.id, { instructions: 'Review this.' });
+        const afterUpdate = (get().sessionActionDraftsByAddressKey[sessionAddressKey(addressA)] ?? [])[0];
         expect(afterUpdate?.input?.instructions).toBe('Review this.');
 
-        domain.setSessionActionDraftStatus('s1', created.id, 'running');
-        const afterStatus = (get().actionDraftsBySessionId.s1 ?? [])[0];
+        domain.setSessionActionDraftStatus(scopeA, addressA, created.id, 'running');
+        const afterStatus = (get().sessionActionDraftsByAddressKey[sessionAddressKey(addressA)] ?? [])[0];
         expect(afterStatus?.status).toBe('running');
 
-        domain.deleteSessionActionDraft('s1', created.id);
-        expect((get().actionDraftsBySessionId.s1 ?? []).length).toBe(0);
+        domain.deleteSessionActionDraft(scopeA, addressA, created.id);
+        expect((get().sessionActionDraftsByAddressKey[sessionAddressKey(addressA)] ?? []).length).toBe(0);
     });
 
-    it('persists action drafts locally and reloads them on a fresh domain instance', () => {
+    it('keeps same-ID drafts on two Homes independent across focus and reload', () => {
         const { domain } = createHarness();
 
-        const created = domain.createSessionActionDraft('s1', {
+        const createdA = domain.createSessionActionDraft(scopeA, addressA, {
             actionId: 'review.start',
-            input: { instructions: 'Review this.', engineIds: ['codex'], changeType: 'committed', base: { kind: 'none' } },
+            input: { instructions: 'A' },
+        });
+        domain.clearSessionLocalStateScope();
+        domain.activateSessionLocalStateScope(scopeB);
+        domain.createSessionActionDraft(scopeB, addressB, {
+            actionId: 'review.start',
+            input: { instructions: 'B' },
         });
 
-        const { get: get2 } = createHarness();
-        expect((get2().actionDraftsBySessionId.s1 ?? []).some((d: any) => d.id === created.id)).toBe(true);
+        domain.updateSessionActionDraftInput(scopeB, addressA, createdA.id, { instructions: 'wrong Home' });
+
+        // A handler captured before focus moved to B must still mutate A only.
+        domain.updateSessionActionDraftInput(scopeA, addressA, createdA.id, { instructions: 'A updated' });
+
+        const { get: get2, domain: domain2 } = createHarness();
+        domain2.activateSessionLocalStateScope(scopeA);
+        domain2.activateSessionLocalStateScope(scopeB);
+        expect(get2().sessionActionDraftsByAddressKey[sessionAddressKey(addressA)]?.[0]?.input.instructions).toBe('A updated');
+        expect(get2().sessionActionDraftsByAddressKey[sessionAddressKey(addressB)]?.[0]?.input.instructions).toBe('B');
     });
 
     it('removes persisted action drafts when deleting a session', () => {
         const { domain } = createHarness();
-        domain.createSessionActionDraft('s1', {
+        const address = { serverId: scopeA.serverId, sessionId: 's1' } as const;
+        domain.createSessionActionDraft(scopeA, address, {
             actionId: 'review.start',
             input: { instructions: 'Review this.', engineIds: ['codex'], changeType: 'committed', base: { kind: 'none' } },
         });
@@ -105,6 +126,7 @@ describe('sessions domain: action drafts', () => {
         domain.deleteSession('s1');
 
         const { get: get2 } = createHarness();
-        expect(get2().actionDraftsBySessionId.s1 ?? []).toEqual([]);
+        domain.activateSessionLocalStateScope(scopeA);
+        expect(get2().sessionActionDraftsByAddressKey[sessionAddressKey(address)] ?? []).toEqual([]);
     });
 });

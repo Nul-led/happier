@@ -67,10 +67,9 @@ export function createSpawnAttemptKeyForSessionSpawnNewInput(
     input: SessionSpawnNewInputV2,
     machineHomeDir: string,
 ): string {
+    // `SessionSpawnNewInputV2Schema` is `.strict()`, so any raw environment
+    // variables in the authored input are rejected by this parse itself.
     const parsed = SessionSpawnNewInputV2Schema.parse(input);
-    if (parsed.environmentVariables !== undefined) {
-        throw new Error('Deterministic Session custody cannot include raw environment variables');
-    }
     const authoredImmutableIntent = {
         executionTarget: parsed.executionTarget,
         directory: resolveSpawnAttemptDirectoryIdentity(parsed.directory, machineHomeDir),

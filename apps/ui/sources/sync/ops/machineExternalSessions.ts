@@ -24,6 +24,8 @@ import {
     ExternalSessionLinkEnsureResponseSchema,
     ExternalSessionStatusGetRequestSchema,
     ExternalSessionStatusGetResponseSchema,
+    ExternalSessionCandidateDeleteRequestSchema,
+    ExternalSessionCandidateDeleteResponseSchema,
     ExternalSessionsCandidatesListRequestSchema,
     ExternalSessionsCandidatesListResponseSchema,
     ExternalSessionTranscriptPageRequestSchema,
@@ -43,6 +45,8 @@ import {
     type ExternalSessionLinkEnsureResponse,
     type ExternalSessionStatusGetRequest,
     type ExternalSessionStatusGetResponse,
+    type ExternalSessionCandidateDeleteRequest,
+    type ExternalSessionCandidateDeleteResponse,
     type ExternalSessionsCandidatesListRequest,
     type ExternalSessionsCandidatesListResponse,
     type ExternalSessionTranscriptPageRequest,
@@ -287,6 +291,37 @@ export async function machineExternalSessionsCandidatesList(
             input: mapCanonicalAgentIdentityToReleasedProviderIdentity(input),
             beforeCall: () => assertReleasedDaemonAcceptsCandidateCursor(input),
             fallbackOnRelayMethodUnavailable: true,
+        },
+        opts,
+    });
+}
+
+/**
+ * Delete one Agent-owned session a resume-only listing surfaced. cli-v0.2.1 and
+ * its preview expose the same deletion as
+ * `daemon.directSessions.candidate.delete` with the released `providerId`
+ * identity, so that alias is the fallback — but only after METHOD_NOT_FOUND,
+ * which proves the canonical handler never ran. This is a destructive
+ * operation, so it deliberately does not opt into the released relay's
+ * METHOD_NOT_AVAILABLE signal the way the read-only methods do: an ambiguous
+ * relay answer, a timeout, or any transport failure could each already have
+ * deleted the Agent's session.
+ */
+export async function machineExternalSessionCandidateDelete(
+    input: ExternalSessionCandidateDeleteRequest,
+    opts?: MachineExternalSessionsOpts,
+): Promise<ExternalSessionCandidateDeleteResponse> {
+    return callExternalSessionMachineRpc({
+        machineId: input.machineId,
+        method: RPC_METHODS.DAEMON_EXTERNAL_SESSION_CANDIDATE_DELETE,
+        input,
+        requestSchema: ExternalSessionCandidateDeleteRequestSchema,
+        responseSchema: ExternalSessionCandidateDeleteResponseSchema,
+        legacy: {
+            method: RPC_METHODS.DAEMON_DIRECT_SESSION_CANDIDATE_DELETE_LEGACY,
+            // Identity only: `remoteSessionId` is the Agent's own opaque
+            // handle and crosses the released hop byte-exact.
+            input: mapCanonicalAgentIdentityToReleasedProviderIdentity(input),
         },
         opts,
     });

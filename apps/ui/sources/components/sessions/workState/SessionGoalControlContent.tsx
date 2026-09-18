@@ -9,7 +9,7 @@ import type { SessionWorkStateItem } from '@/sync/domains/session/workState/sess
 import { GoalBudgetDisclosure } from './GoalBudgetDisclosure';
 import { SessionGoalActionsMenu, type SessionGoalMenuAction } from './SessionGoalActionsMenu';
 import { GoalUsageMetadata } from './GoalUsageMetadata';
-import { canPauseOrResumeGoal, resolveGoalActionCapabilities, resolveGoalStatusLabelKey, type GoalActionCapabilities } from './goalActionVisibility';
+import { resolveGoalActionCapabilities, resolveGoalPauseResumeAction, resolveGoalStatusLabelKey, type GoalActionCapabilities } from './goalActionVisibility';
 import { ICON_SIZE, Icon } from '@/components/ui/icons/Icon';
 
 type GoalSaveBudgetDraft = Readonly<{
@@ -35,13 +35,15 @@ export function SessionGoalControlContent(props: Readonly<{
     goalActionCapabilityProfile?: GoalActionCapabilities | null;
 }>) {
     const { theme } = useUnistyles();
-    const isPaused = props.goal?.status === 'paused';
     // Capability-driven action visibility (provider-agnostic). Goal-item capabilities win; otherwise
     // the provider fallback profile applies (Claude `{ canEdit, canClear }`); absent both = full
     // Codex-style control.
     const capabilities = resolveGoalActionCapabilities(props.goal, props.goalActionCapabilityProfile);
     const canComplete = Boolean(props.goal && props.goal.status !== 'complete' && props.goal.statusReason !== 'budgetLimited');
-    const showPauseResume = capabilities.canStop && canPauseOrResumeGoal(props.goal);
+    const pauseResumeAction = resolveGoalPauseResumeAction(props.goal);
+    const showPauseResume = capabilities.canStop
+        && pauseResumeAction !== null
+        && (props.goal?.statusReason !== 'budgetLimited' || capabilities.canConfigureBudget);
     const showComplete = capabilities.canStop && canComplete;
     const [editing, setEditing] = React.useState(!props.goal);
     const [budgetEnabled, setBudgetEnabled] = React.useState(typeof props.goal?.tokenBudget === 'number');
@@ -192,9 +194,9 @@ export function SessionGoalControlContent(props: Readonly<{
                                             ? [{
                                                 id: 'session-goal-pause-resume',
                                                 testID: 'session-goal-pause-resume-button',
-                                                label: isPaused ? t('session.workState.goal.resume') : t('session.workState.goal.pause'),
-                                                icon: (isPaused ? 'play' : 'pause') as SessionGoalMenuAction['icon'],
-                                                onPress: isPaused ? props.onResume : props.onPause,
+                                                label: pauseResumeAction === 'resume' ? t('session.workState.goal.resume') : t('session.workState.goal.pause'),
+                                                icon: (pauseResumeAction === 'resume' ? 'play' : 'pause') as SessionGoalMenuAction['icon'],
+                                                onPress: pauseResumeAction === 'resume' ? props.onResume : props.onPause,
                                             }]
                                             : []),
                                         ...(showComplete

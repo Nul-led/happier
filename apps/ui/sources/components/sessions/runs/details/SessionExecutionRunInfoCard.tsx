@@ -109,6 +109,9 @@ function resolveTitle(run: ExecutionRunPublicState): string {
 function resolveLaunchOriginLabel(run: ExecutionRunPublicState, hostSessionId: string | null): string | null {
     const origin = run.launchOrigin;
     if (!origin) return null;
+    if (origin.kind === 'session_discussion') {
+        return t('executionRuns.details.launchOrigin.discussion', { discussionId: origin.discussionId });
+    }
     if (origin.kind === 'session') {
         if (origin.sessionId === hostSessionId) return null;
         return t('executionRuns.details.launchOrigin.crossSession', { sessionId: origin.sessionId });

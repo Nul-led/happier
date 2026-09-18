@@ -36,6 +36,8 @@ export function installApprovalCommonModuleMocks(
         unistyles: options.unistyles,
     };
 
+    vi.mock('@react-navigation/native', () => ({ useIsFocused: () => true }));
+
     vi.mock('react-native', async () => {
         const activeOptions = approvalModuleState.options;
         if (activeOptions.reactNative) {
@@ -92,7 +94,7 @@ export function installApprovalCommonModuleMocks(
             return await activeOptions.storage(importOriginal);
         }
 
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleStub({});
+        // Keep the complete store real unless an incumbent test supplies its legacy fixture.
+        return await importOriginal();
     });
 }

@@ -61,9 +61,10 @@ const cliDetectionState = {
 };
 let previousWindow: unknown;
 
-vi.mock('react-native-reanimated', () => ({
-    makeMutable: (value: unknown) => ({ value }),
-}));
+vi.mock('react-native-reanimated', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock();
+});
 
 vi.mock('@expo/vector-icons', async () => {
     const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
@@ -128,66 +129,64 @@ vi.mock('@/auth/context/AuthContext', () => ({
     }),
 }));
 
-vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
-    const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-    return createStorageModuleMock({
-        importOriginal,
-        overrides: {
-            useSettings: (() => settingsState) as any,
-            useAllMachines: (() => machinesState) as any,
-            useMachineListByServerId: (() => machineListByServerIdState) as any,
-            useMachine: (() => null) as any,
-            useSetting: ((key: string) => {
-                if (key === 'serverSelectionGroups') return {};
-                if (key === 'serverSelectionActiveTargetKind') return 'server';
-                if (key === 'serverSelectionActiveTargetId') return 'server1';
-                if (key === 'contextSelectionsV1') return settingsState.contextSelectionsV1;
-                if (key === 'externalSessionsSettingsV1') {
-                    return settingsState.externalSessionsSettingsV1;
-                }
-                return undefined;
-            }) as any,
-            useSettingMutable: ((key: string) => [
-                settingsState[key],
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({
+        useSettings: (() => settingsState) as any,
+        useAllMachines: (() => machinesState) as any,
+        useMachineListByServerId: (() => machineListByServerIdState) as any,
+        useMachine: (() => null) as any,
+        useSetting: ((key: string) => {
+            if (key === 'serverSelectionGroups') return {};
+            if (key === 'serverSelectionActiveTargetKind') return 'server';
+            if (key === 'serverSelectionActiveTargetId') return 'server1';
+            if (key === 'contextSelectionsV1') return settingsState.contextSelectionsV1;
+            if (key === 'externalSessionsSettingsV1') {
+                return settingsState.externalSessionsSettingsV1;
+            }
+            return undefined;
+        }) as any,
+        useSettingMutable: ((key: string) => [
+            settingsState[key],
+            (next: unknown) => {
+                settingsState[key] = next;
+            },
+        ]) as any,
+        useLocalSetting: ((key: string) => {
+            if (key === 'uiMultiPanePanelsEnabled') return true;
+            if (key === 'sidebarCollapsed') return false;
+            if (key === 'sidebarWidthPx') return 320;
+            if (key === 'sidebarWidthBasisPx') return 1440;
+            if (key === 'rightPaneWidthPx') return 360;
+            if (key === 'rightPaneWidthBasisPx') return 1200;
+            if (key === 'detailsPaneWidthPx') return 420;
+            if (key === 'detailsPaneWidthBasisPx') return 1200;
+            if (key === 'bottomPaneHeightPx') return 320;
+            if (key === 'bottomPaneHeightBasisPx') return 900;
+            if (key === 'appPaneScopesV1') return localSettingsState.appPaneScopesV1;
+            return localSettingsState[key];
+        }) as any,
+        useLocalSettingMutable: ((key: string) => {
+            const currentValue =
+                key === 'sidebarCollapsed'
+                    ? false
+                    : key === 'sidebarWidthPx'
+                        ? 320
+                        : key === 'sidebarWidthBasisPx'
+                            ? 1440
+                            : localSettingsState[key];
+            return [
+                currentValue,
                 (next: unknown) => {
-                    settingsState[key] = next;
+                    localSettingsState[key] = next;
                 },
-            ]) as any,
-            useLocalSetting: ((key: string) => {
-                if (key === 'uiMultiPanePanelsEnabled') return true;
-                if (key === 'sidebarCollapsed') return false;
-                if (key === 'sidebarWidthPx') return 320;
-                if (key === 'sidebarWidthBasisPx') return 1440;
-                if (key === 'rightPaneWidthPx') return 360;
-                if (key === 'rightPaneWidthBasisPx') return 1200;
-                if (key === 'detailsPaneWidthPx') return 420;
-                if (key === 'detailsPaneWidthBasisPx') return 1200;
-                if (key === 'bottomPaneHeightPx') return 320;
-                if (key === 'bottomPaneHeightBasisPx') return 900;
-                if (key === 'appPaneScopesV1') return localSettingsState.appPaneScopesV1;
-                return localSettingsState[key];
-            }) as any,
-            useLocalSettingMutable: ((key: string) => {
-                const currentValue =
-                    key === 'sidebarCollapsed'
-                        ? false
-                        : key === 'sidebarWidthPx'
-                            ? 320
-                            : key === 'sidebarWidthBasisPx'
-                                ? 1440
-                                : localSettingsState[key];
-                return [
-                    currentValue,
-                    (next: unknown) => {
-                        localSettingsState[key] = next;
-                    },
-                ] as const;
-            }) as any,
-        },
+            ] as const;
+        }) as any,
     });
 });
 
 vi.mock('@/sync/store/settingsWriters', () => ({
+    useAccountSettingsScope: () => ({ serverId: 'server1', accountId: 'account-1' }),
     useApplySettings: () => applySettingsMock,
     useApplyLocalSettings: () => vi.fn(),
 }));
@@ -200,9 +199,48 @@ vi.mock('@/hooks/machine/useCapabilityInstallability', () => ({
     useCapabilityInstallability: () => ({ kind: 'installable' }),
 }));
 
+vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
+    useDaemonMergedProjectionInputs: () => ({
+        phase: 'ready',
+        inputs: {
+            mergedProviderProjectionById: {
+                codex: {
+                    agentId: 'codex',
+                    qualifiedId: 'codex',
+                    identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+                    title: 'Codex',
+                    subtitle: 'Codex',
+                    channel: 'stable',
+                    isBuiltIn: true,
+                    settingsBackendId: 'codex',
+                    catalogAgentId: 'codex',
+                    iconAgentId: 'codex',
+                    cli: {
+                        executable: { binaryName: 'codex', sourcePreference: 'system-first' },
+                        install: { manual: { kind: 'none' } },
+                        auth: { support: 'none', loginLaunches: [] },
+                    },
+                },
+            },
+            mergedBackendProjectionById: {
+                codex: {
+                    backendId: 'codex',
+                    agentId: 'codex',
+                    catalogAgentId: 'codex',
+                    iconAgentId: 'codex',
+                    capabilities: { session: { supported: true } },
+                },
+            },
+            pluginProjectionById: {},
+            pluginProjectionV2: null,
+        },
+    }),
+}));
+
 vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
     useMachineAdministrationTargetSelection: () => ({
         selectedTarget: administrationTargetState.selectedTarget,
+        selectedTargetServerMatchesActiveAccount: true,
         resolveExecutionTarget: () => administrationTargetState.executionTarget,
         candidates: [],
         selectTarget: vi.fn(),
@@ -214,6 +252,18 @@ vi.mock('@/components/settings/machines/MachineAdministrationTargetSelector', ()
     MachineAdministrationTargetSelector: (props: Record<string, unknown>) => (
         React.createElement('MachineAdministrationTargetSelector', props)
     ),
+}));
+
+vi.mock('@/components/settings/plugins/detail/PluginDetailGenericSettingsSection', () => ({
+    PluginDetailGenericSettingsSection: () => null,
+}));
+
+vi.mock('@/components/settings/externalSessions/AgentDetailExternalSessionsSection', () => ({
+    AgentDetailExternalSessionsSection: () => null,
+}));
+
+vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
+    DropdownMenu: (props: Record<string, unknown>) => React.createElement('DropdownMenu', props),
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
@@ -267,11 +317,23 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    getServerProfilesGeneration: () => 0,
+    subscribeServerProfiles: () => () => undefined,
+    getActiveServerSnapshot: () => activeServerSnapshot,
+    loadHomeViewState: () => null,
+    subscribeHomeViewState: () => () => undefined,
+    listServerProfiles: () => [{
+        id: 'server1',
+        serverUrl: 'http://localhost:3000',
+        webappUrl: 'http://localhost:8081',
+        name: 'server1',
+    }],
     getServerProfileById: (serverId: string) => (
         serverId === 'server1'
             ? { id: 'server1', serverIdentityId: 'server1' }
             : null
     ),
+    resolveServerProfileScopeIdForIdentifier: (serverId: string) => serverId,
     areServerProfileIdentifiersEquivalent: (left: string | null | undefined, right: string | null | undefined) => left === right,
 }));
 
@@ -410,7 +472,7 @@ describe('PluginAgentSettingsScreen desktop render', () => {
 
         expect(applySettingsMock).toHaveBeenCalledWith({
             sessionDefaultPermissionModeByTargetKey: {
-                'backend:codex': 'read-only',
+                'agent:happier.agent.codex/codex': 'read-only',
             },
         });
     });

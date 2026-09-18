@@ -2,7 +2,6 @@ import type { ManagedEndpointSupervisor, ManagedEndpointSupervisorState } from '
 
 import { HappyError } from '@/utils/errors/errors';
 
-import { isAuthenticationResponseStatus } from './authErrors';
 import { buildRetryLaterProbeResultFromResponse } from './retryLaterProbeResult';
 
 export function shouldReportEndpointFailure(params: { init?: RequestInit; error: unknown }): boolean {
@@ -77,7 +76,10 @@ export function reportEndpointResponseToSupervisor(
     hadAuth: boolean,
     scope?: ReturnType<NonNullable<ManagedEndpointSupervisor['captureProbeReportScope']>>,
 ): void {
-    if (hadAuth && isAuthenticationResponseStatus(response.status)) {
+    // 403 is a normal authorization outcome for domain routes. The explicit
+    // authenticated readiness probe may classify its own 403 as credential
+    // rejection; a generic operation response may only establish that on 401.
+    if (hadAuth && response.status === 401) {
         if (supervisor.reportProbeResult) {
             supervisor.reportProbeResult({
                 status: 'auth_failed',

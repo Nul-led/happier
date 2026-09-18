@@ -10,6 +10,14 @@ import type {
 } from '@happier-dev/protocol';
 
 export type SessionOrganizationFolderAssignmentValue = string | null;
+export type SessionOrganizationFolderAssignmentEntry = Readonly<{
+    sessionId: string;
+    folderId: SessionOrganizationFolderAssignmentValue;
+}>;
+export type SessionOrganizationTagAssignmentEntry = Readonly<{
+    sessionId: string;
+    tagIds: readonly string[];
+}>;
 
 export type SessionOrganizationDisplayState =
     | Readonly<{
@@ -51,9 +59,9 @@ export type NormalizedSessionOrganizationState = Readonly<{
     snapshotVersionByServerId: Readonly<Record<string, number>>;
     pinsBySessionKey: Readonly<Record<string, SessionOrganizationPin>>;
     foldersByFolderKey: Readonly<Record<string, UiSessionOrganizationFolder>>;
-    folderAssignmentsBySessionKey: Readonly<Record<string, SessionOrganizationFolderAssignmentValue>>;
+    folderAssignmentsBySessionKey: Readonly<Record<string, SessionOrganizationFolderAssignmentEntry>>;
     tagsByTagKey: Readonly<Record<string, UiSessionOrganizationTag>>;
-    tagAssignmentsBySessionKey: Readonly<Record<string, readonly string[]>>;
+    tagAssignmentsBySessionKey: Readonly<Record<string, SessionOrganizationTagAssignmentEntry>>;
     attentionStandingsBySessionKey: Readonly<Record<string, SessionAttentionStanding>>;
     orderEntriesByScopeKey: Readonly<Record<string, readonly SessionOrganizationOrderEntry[]>>;
     labelsByLabelKey: Readonly<Record<string, UiSessionOrganizationLabel>>;

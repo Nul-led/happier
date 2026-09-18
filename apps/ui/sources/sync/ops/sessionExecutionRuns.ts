@@ -1,12 +1,13 @@
 import type {
     ExecutionRunActionRequest,
     ExecutionRunActionResponse,
+    ExecutionRunCancelTurnRequest,
+    ExecutionRunCancelTurnResponse,
+    ExecutionRunEnsureResponse,
     ExecutionRunGetRequest,
     ExecutionRunGetResponse,
     ExecutionRunListRequest,
     ExecutionRunListResponse,
-    ExecutionRunSendRequest,
-    ExecutionRunSendResponse,
     ExecutionRunStartRequest,
     ExecutionRunStartResponse,
     ExecutionRunStopRequest,
@@ -15,15 +16,20 @@ import type {
 import {
     ExecutionRunGetResponseSchema,
     ExecutionRunListResponseSchema,
+    withExecutionRunStartFailureDetails,
 } from '@happier-dev/protocol';
 import { RPC_ERROR_CODES, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 
 import { sessionRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc';
-import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
 import { notifyExecutionRunActivity } from '@/sync/runtime/executionRuns/executionRunActivityBus';
-import { INACTIVE_SESSION_RPC_UNAVAILABLE_ERROR, canUseSessionRpc } from '@/sync/ops/sessionMachineTarget';
+import {
+    INACTIVE_SESSION_RPC_UNAVAILABLE_ERROR,
+    canUseSessionRpc,
+    readMachineControlTargetForSession,
+} from '@/sync/ops/sessionMachineTarget';
 import { storage } from '@/sync/domains/state/storage';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import {
     canSendUserMessageToSession,
     SESSION_MESSAGE_SEND_NOT_RESUMABLE_ERROR_CODE,
@@ -35,14 +41,18 @@ export type SessionExecutionRunActionResult =
 
 export type SessionExecutionRunStartResult =
     | ExecutionRunStartResponse
-    | { ok: false; error: string; errorCode?: string };
-
-export type SessionExecutionRunSendResult =
-    | ExecutionRunSendResponse
-    | { ok: false; error: string; errorCode?: string };
+    | { ok: false; error: string; errorCode?: string; details?: unknown };
 
 export type SessionExecutionRunStopResult =
     | ExecutionRunStopResponse
+    | { ok: false; error: string; errorCode?: string };
+
+export type SessionExecutionRunCancelTurnResult =
+    | ExecutionRunCancelTurnResponse
+    | { ok: false; error: string; errorCode?: string };
+
+export type SessionExecutionRunResumeResult =
+    | ExecutionRunEnsureResponse
     | { ok: false; error: string; errorCode?: string };
 
 export type SessionExecutionRunListResult =
@@ -53,13 +63,14 @@ export type SessionExecutionRunGetResult =
     | ExecutionRunGetResponse
     | { ok: false; error: string; errorCode?: string };
 
-function readErrorResponseShape(response: unknown): { ok: false; error: string; errorCode?: string } | null {
+function readErrorResponseShape(response: unknown): { ok: false; error: string; errorCode?: string; details?: unknown } | null {
     if (!response || typeof response !== 'object') return null;
     if (typeof (response as any).error !== 'string') return null;
     return {
         ok: false,
         error: String((response as any).error),
         ...(typeof (response as any).errorCode === 'string' ? { errorCode: String((response as any).errorCode) } : {}),
+        ...('details' in response ? { details: (response as { details?: unknown }).details } : {}),
     };
 }
 
@@ -74,13 +85,35 @@ export function isExecutionRunNotRunningMutationError(result: unknown): boolean 
     return error.includes('not running') || error.includes('already finished');
 }
 
-export const isExecutionRunNotRunningSendError = isExecutionRunNotRunningMutationError;
-
 function createInactiveSessionRpcUnavailableResult(): { ok: false; error: string; errorCode: string } {
     return {
         ok: false,
         error: INACTIVE_SESSION_RPC_UNAVAILABLE_ERROR,
         errorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE,
+    };
+}
+
+function resolveExecutionRunSessionServerId(
+    sessionId: string,
+    requestedServerId?: string | null,
+): string | null {
+    const explicitServerId = typeof requestedServerId === 'string' ? requestedServerId.trim() : '';
+    const session = storage.getState().sessions[sessionId] ?? null;
+    const storedServerId = typeof session?.serverId === 'string' ? session.serverId.trim() : '';
+    if (explicitServerId) {
+        if (storedServerId && !areServerProfileIdentifiersEquivalent(storedServerId, explicitServerId)) {
+            return null;
+        }
+        return explicitServerId;
+    }
+    return storedServerId || null;
+}
+
+function createExecutionRunHomeUnavailableResult(): { ok: false; error: string; errorCode: string } {
+    return {
+        ok: false,
+        error: 'Execution Run Home is unavailable',
+        errorCode: 'execution_run_home_unavailable',
     };
 }
 
@@ -101,32 +134,43 @@ function ensureExecutionRunUserMessageAllowed(sessionId: string): { ok: false; e
     const state = storage.getState();
     const session = state.sessions[sessionId] ?? null;
     if (!session) return null;
-    if (canSendUserMessageToSession(session, {
+    return canSendUserMessageToSession(session, {
         resumeCapabilityOptions: { accountSettings: state.settings },
-    })) {
-        return null;
-    }
-    return createSessionMessageNotResumableResult();
+    }) ? null : createSessionMessageNotResumableResult();
 }
 
 function notifyExecutionRunMutationSuccess(
     sessionId: string,
-    response: ExecutionRunSendResponse | ExecutionRunStopResponse | ExecutionRunActionResponse,
+    serverId: string,
+    response: ExecutionRunStopResponse | ExecutionRunActionResponse,
 ): void {
     if (response && typeof response === 'object' && (response as any).ok === true) {
-        notifyExecutionRunActivity(sessionId);
+        notifyExecutionRunActivity({ serverId, sessionId });
     }
 }
 
 export async function sessionExecutionRunStart(
     sessionId: string,
     request: ExecutionRunStartRequest,
-    opts?: Readonly<{ serverId?: string | null }>,
+    opts?: Readonly<{ serverId?: string | null; expectedMachineId?: string | null }>,
 ): Promise<SessionExecutionRunStartResult> {
     try {
+        const serverId = resolveExecutionRunSessionServerId(sessionId, opts?.serverId);
+        if (!serverId) return createExecutionRunHomeUnavailableResult();
+        const expectedMachineId = opts?.expectedMachineId?.trim() || null;
+        if (expectedMachineId) {
+            const currentTarget = readMachineControlTargetForSession({ serverId, sessionId });
+            if (currentTarget?.machineId !== expectedMachineId) {
+                return {
+                    ok: false,
+                    error: 'execution_run_target_changed',
+                    errorCode: 'execution_run_target_changed',
+                    details: withExecutionRunStartFailureDetails(undefined, 'noRunCreated'),
+                };
+            }
+        }
         const inactiveSessionResult = ensureExecutionRunMutationAllowed(sessionId);
         if (inactiveSessionResult) return inactiveSessionResult;
-        const serverId = opts?.serverId ?? resolvePreferredServerIdForSessionId(sessionId);
         const response = await sessionRpcWithServerScope<ExecutionRunStartResponse, ExecutionRunStartRequest>({
             sessionId,
             serverId,
@@ -144,42 +188,7 @@ export async function sessionExecutionRunStart(
         ) {
             return { ok: false, error: 'Unsupported response from session RPC' };
         }
-        notifyExecutionRunActivity(sessionId);
-        return response;
-    } catch (error) {
-        return {
-            ok: false,
-            error: error instanceof Error ? error.message : 'Unknown error',
-            errorCode: readRpcErrorCode(error),
-        };
-    }
-}
-
-export async function sessionExecutionRunSend(
-    sessionId: string,
-    request: ExecutionRunSendRequest,
-    opts?: Readonly<{ serverId?: string | null }>,
-): Promise<SessionExecutionRunSendResult> {
-    try {
-        const sessionMessageResult = ensureExecutionRunUserMessageAllowed(sessionId);
-        if (sessionMessageResult) return sessionMessageResult;
-        const serverId = opts?.serverId ?? resolvePreferredServerIdForSessionId(sessionId);
-        const payload: ExecutionRunSendRequest =
-            request.delivery === undefined
-                ? { ...request, delivery: 'steer_if_supported' }
-                : request;
-        const response = await sessionRpcWithServerScope<ExecutionRunSendResponse, ExecutionRunSendRequest>({
-            sessionId,
-            serverId,
-            method: SESSION_RPC_METHODS.EXECUTION_RUN_SEND,
-            payload,
-        });
-        const errorResponse = readErrorResponseShape(response);
-        if (errorResponse) return errorResponse;
-        if (!response || typeof response !== 'object' || (response as any).ok !== true) {
-            return { ok: false, error: 'Unsupported response from session RPC' };
-        }
-        notifyExecutionRunMutationSuccess(sessionId, response);
+        notifyExecutionRunActivity({ serverId, sessionId });
         return response;
     } catch (error) {
         return {
@@ -196,7 +205,8 @@ export async function sessionExecutionRunStop(
     opts?: Readonly<{ serverId?: string | null }>,
 ): Promise<SessionExecutionRunStopResult> {
     try {
-        const serverId = opts?.serverId ?? resolvePreferredServerIdForSessionId(sessionId);
+        const serverId = resolveExecutionRunSessionServerId(sessionId, opts?.serverId);
+        if (!serverId) return createExecutionRunHomeUnavailableResult();
         const response = await sessionRpcWithServerScope<ExecutionRunStopResponse, ExecutionRunStopRequest>({
             sessionId,
             serverId,
@@ -208,7 +218,68 @@ export async function sessionExecutionRunStop(
         if (!response || typeof response !== 'object' || (response as any).ok !== true) {
             return { ok: false, error: 'Unsupported response from session RPC' };
         }
-        notifyExecutionRunMutationSuccess(sessionId, response);
+        notifyExecutionRunMutationSuccess(sessionId, serverId, response);
+        return response;
+    } catch (error) {
+        return {
+            ok: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            errorCode: readRpcErrorCode(error),
+        };
+    }
+}
+
+export async function sessionExecutionRunCancelTurn(
+    sessionId: string,
+    request: ExecutionRunCancelTurnRequest,
+    opts?: Readonly<{ serverId?: string | null }>,
+): Promise<SessionExecutionRunCancelTurnResult> {
+    try {
+        const serverId = resolveExecutionRunSessionServerId(sessionId, opts?.serverId);
+        if (!serverId) return createExecutionRunHomeUnavailableResult();
+        const response = await sessionRpcWithServerScope<ExecutionRunCancelTurnResponse, ExecutionRunCancelTurnRequest>({
+            sessionId,
+            serverId,
+            method: SESSION_RPC_METHODS.EXECUTION_RUN_CANCEL_TURN_V1,
+            payload: request,
+        });
+        const errorResponse = readErrorResponseShape(response);
+        if (errorResponse) return errorResponse;
+        if (!response || typeof response !== 'object' || (response as { ok?: unknown }).ok !== true) {
+            return { ok: false, error: 'Unsupported response from session RPC' };
+        }
+        notifyExecutionRunActivity({ serverId, sessionId });
+        return response;
+    } catch (error) {
+        return {
+            ok: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            errorCode: readRpcErrorCode(error),
+        };
+    }
+}
+
+/** Explicit UI resume over the canonical Run ensure/resume owner. */
+export async function sessionExecutionRunResume(
+    sessionId: string,
+    request: Readonly<{ runId: string }>,
+    opts?: Readonly<{ serverId?: string | null }>,
+): Promise<SessionExecutionRunResumeResult> {
+    try {
+        const serverId = resolveExecutionRunSessionServerId(sessionId, opts?.serverId);
+        if (!serverId) return createExecutionRunHomeUnavailableResult();
+        const response = await sessionRpcWithServerScope<ExecutionRunEnsureResponse, Readonly<{ runId: string; resume: true }>>({
+            sessionId,
+            serverId,
+            method: SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE,
+            payload: { runId: request.runId, resume: true },
+        });
+        const errorResponse = readErrorResponseShape(response);
+        if (errorResponse) return errorResponse;
+        if (!response || typeof response !== 'object' || (response as { ok?: unknown }).ok !== true) {
+            return { ok: false, error: 'Unsupported response from session RPC' };
+        }
+        notifyExecutionRunActivity({ serverId, sessionId });
         return response;
     } catch (error) {
         return {
@@ -225,7 +296,8 @@ export async function sessionExecutionRunList(
     opts?: Readonly<{ serverId?: string | null }>,
 ): Promise<SessionExecutionRunListResult> {
     try {
-        const serverId = opts?.serverId ?? resolvePreferredServerIdForSessionId(sessionId);
+        const serverId = resolveExecutionRunSessionServerId(sessionId, opts?.serverId);
+        if (!serverId) return createExecutionRunHomeUnavailableResult();
         const response = await sessionRpcWithServerScope<unknown, ExecutionRunListRequest>({
             sessionId,
             serverId,
@@ -254,7 +326,8 @@ export async function sessionExecutionRunGet(
     opts?: Readonly<{ serverId?: string | null }>,
 ): Promise<SessionExecutionRunGetResult> {
     try {
-        const serverId = opts?.serverId ?? resolvePreferredServerIdForSessionId(sessionId);
+        const serverId = resolveExecutionRunSessionServerId(sessionId, opts?.serverId);
+        if (!serverId) return createExecutionRunHomeUnavailableResult();
         const response = await sessionRpcWithServerScope<unknown, ExecutionRunGetRequest>({
             sessionId,
             serverId,
@@ -283,9 +356,10 @@ export async function sessionExecutionRunAction(
     opts?: Readonly<{ serverId?: string | null }>,
 ): Promise<SessionExecutionRunActionResult> {
     try {
+        const serverId = resolveExecutionRunSessionServerId(sessionId, opts?.serverId);
+        if (!serverId) return createExecutionRunHomeUnavailableResult();
         const sessionMessageResult = ensureExecutionRunUserMessageAllowed(sessionId);
         if (sessionMessageResult) return sessionMessageResult;
-        const serverId = opts?.serverId ?? resolvePreferredServerIdForSessionId(sessionId);
         const response = await sessionRpcWithServerScope<ExecutionRunActionResponse, ExecutionRunActionRequest>({
             sessionId,
             serverId,
@@ -297,7 +371,7 @@ export async function sessionExecutionRunAction(
         if (!response || typeof response !== 'object' || typeof (response as any).ok !== 'boolean') {
             return { ok: false, error: 'Unsupported response from session RPC' };
         }
-        notifyExecutionRunMutationSuccess(sessionId, response);
+        notifyExecutionRunMutationSuccess(sessionId, serverId, response);
         return response;
     } catch (error) {
         return {

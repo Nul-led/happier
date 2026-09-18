@@ -1,20 +1,25 @@
 import { HAPPIER_FOCUS_LIVE_ACTIVITY_NAME } from '@happier-dev/protocol';
 
-export const LOCAL_LIVE_ACTIVITY_SERVER_ID = 'local';
+import { activityInstanceKey } from '@/sync/domains/session/sessionAddress';
 
+/**
+ * `serverId` stays `null` for a Session with no Home binding. It is never substituted with a
+ * placeholder id: a Home whose profile id is literally `local` is a real, addressable Home and
+ * must not share an identity with an unbound Session (Lane 07.1 §4).
+ */
 export type LiveActivityIdentity = Readonly<{
-    serverId: string;
+    serverId: string | null;
     sessionId: string;
     activityName: typeof HAPPIER_FOCUS_LIVE_ACTIVITY_NAME;
 }>;
 
-export function normalizeLiveActivityServerId(serverId: string | null | undefined): string {
+export function normalizeLiveActivityServerId(serverId: string | null | undefined): string | null {
     const trimmed = typeof serverId === 'string' ? serverId.trim() : '';
-    return trimmed.length > 0 ? trimmed : LOCAL_LIVE_ACTIVITY_SERVER_ID;
+    return trimmed.length > 0 ? trimmed : null;
 }
 
 export function buildLiveActivityInstanceKey(identity: LiveActivityIdentity): string {
-    return `${identity.serverId}:${identity.activityName}:${identity.sessionId}`;
+    return activityInstanceKey(identity, identity.activityName);
 }
 
 export function buildHappierFocusLiveActivityIdentity(params: Readonly<{

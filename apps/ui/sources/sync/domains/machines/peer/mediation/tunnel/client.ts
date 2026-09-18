@@ -1,7 +1,7 @@
 import {
     PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES,
     PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES,
-    PEER_TCP_TUNNEL_ENCODING_V1,
+    PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
     PEER_TCP_TUNNEL_STREAM_PATH,
     type FeatureDecision,
@@ -179,7 +179,7 @@ export async function openPeerTcpTunnel(input: Readonly<{
                 v: 1,
                 tunnelId: selectedOpen.tunnelId,
                 streamPath: PEER_TCP_TUNNEL_STREAM_PATH,
-                encoding: selectedOpen.selectedEncoding ?? PEER_TCP_TUNNEL_ENCODING_V1,
+                encoding: selectedOpen.selectedEncoding ?? PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                 initialWindowBytes: PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES,
                 maxFrameBytes: selectedOpen.relayAuthorization?.payload.maxFrameBytes
                     ?? PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES,

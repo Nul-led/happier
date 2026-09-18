@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SessionWorkStateItem } from '@/sync/domains/session/workState/sessionWorkStateTypes';
 
-import { canPauseOrResumeGoal, resolveGoalActionCapabilities, resolveGoalStatusLabelKey } from './goalActionVisibility';
+import { resolveGoalActionCapabilities, resolveGoalPauseResumeAction, resolveGoalStatusLabelKey } from './goalActionVisibility';
 
 function goal(overrides: Partial<SessionWorkStateItem> = {}): SessionWorkStateItem {
     return {
@@ -80,12 +80,13 @@ describe('resolveGoalActionCapabilities', () => {
     });
 });
 
-describe('canPauseOrResumeGoal', () => {
-    it('is true only for active or paused goals', () => {
-        expect(canPauseOrResumeGoal(goal({ status: 'active' }))).toBe(true);
-        expect(canPauseOrResumeGoal(goal({ status: 'paused' }))).toBe(true);
-        expect(canPauseOrResumeGoal(goal({ status: 'complete' }))).toBe(false);
-        expect(canPauseOrResumeGoal(null)).toBe(false);
+describe('resolveGoalPauseResumeAction', () => {
+    it('pauses active goals and resumes paused or blocked goals', () => {
+        expect(resolveGoalPauseResumeAction(goal({ status: 'active' }))).toBe('pause');
+        expect(resolveGoalPauseResumeAction(goal({ status: 'paused' }))).toBe('resume');
+        expect(resolveGoalPauseResumeAction(goal({ status: 'blocked' }))).toBe('resume');
+        expect(resolveGoalPauseResumeAction(goal({ status: 'complete' }))).toBeNull();
+        expect(resolveGoalPauseResumeAction(null)).toBeNull();
     });
 });
 

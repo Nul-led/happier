@@ -25,8 +25,21 @@ import {
 } from '@/activity/adapters/desktop/runtime/desktopActivityOverlayQaSyncOverride';
 import { isDesktopActivityOverlayWindowContext } from '@/activity/adapters/desktop/runtime/isDesktopActivityOverlayWindowContext';
 import { resolveDesktopOverlayPolicy } from '@/activity/adapters/desktop/runtime/resolveDesktopOverlayPolicy';
+import { getDefaultSystemTaskRunner, waitForSystemTaskResult } from '@/components/systemTasks';
+import { buildLocalDaemonServiceSystemTaskSpec } from '@/components/systemTasks/specs/localControl/buildLocalDaemonServiceSystemTaskSpec';
+import { runRelayRuntimeUninstallTask } from '@/components/settings/server/localControl/useLocalRelayRuntimeControl';
+import {
+    controlPersonalHomeBootstrapQaMutationPause,
+    type PersonalHomeBootstrapQaPauseRequest,
+} from '@/components/personalHome/bootstrap/personalHomeBootstrapQaMutationPause';
 
 type McpWindowLike = typeof globalThis & {
+    __happierPersonalHomeQaForbiddenSurface?: {
+        state?: {
+            documentStart?: unknown;
+            seen?: unknown;
+        };
+    };
     __MCP__?: {
         resolveRef?: unknown;
         resolveAll?: unknown;
@@ -36,6 +49,12 @@ type McpWindowLike = typeof globalThis & {
         ensureHappierSessionVisible?: unknown;
         seedDesktopActivityOverlayQaState?: unknown;
         clearDesktopActivityOverlayQaState?: unknown;
+        readPersonalHomeBootstrapQaObservation?: unknown;
+        navigateHappierQaPath?: unknown;
+        readPersonalHomeDaemonQaStatus?: unknown;
+        stopPersonalHomeDaemonForQa?: unknown;
+        controlPersonalHomeBootstrapQaPause?: unknown;
+        uninstallPersonalHomeRuntimeForQa?: unknown;
     };
 };
 
@@ -215,6 +234,8 @@ export function installTauriMcpWebviewDriverScripts(options?: Readonly<{
     syncDesktopOverlayPayload?: (payload: DesktopActivityOverlaySyncPayload) => Promise<void>;
     readDesktopOverlayWindowState?: () => Promise<DesktopActivityOverlayWindowStatePayload | null>;
     seedDesktopOverlayQaState?: (mode: string) => Promise<Record<string, unknown>>;
+    runPersonalHomeDaemonQaTask?: (action: 'status' | 'stop') => Promise<unknown>;
+    uninstallPersonalHomeRuntimeQaTask?: () => Promise<boolean>;
 }>) {
     const windowObj = options?.windowObj ?? (typeof window !== 'undefined' ? (window as unknown as McpWindowLike) : null);
     const documentObj = options?.documentObj ?? (typeof document !== 'undefined' ? document : null);
@@ -225,6 +246,16 @@ export function installTauriMcpWebviewDriverScripts(options?: Readonly<{
         ?? (async (sessionId: string, helperOptions?: Readonly<{ forceRefresh?: boolean }>) => {
             return getSyncSingleton().ensureSessionVisibleForMessageRoute(sessionId, helperOptions);
         });
+    const runPersonalHomeDaemonQaTask = options?.runPersonalHomeDaemonQaTask ?? (async (action: 'status' | 'stop') => {
+        const runner = getDefaultSystemTaskRunner();
+        const kind = action === 'status' ? 'daemon.service.status.v1' : 'daemon.service.stop.v1';
+        const taskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec(kind));
+        return await waitForSystemTaskResult(runner, taskId);
+    });
+    // The canonical Settings uninstall helper, invoked verbatim. Loaded QA needs it while the
+    // bootstrap gate owns the window, where the Settings surface is unreachable by design.
+    const uninstallPersonalHomeRuntimeQaTask = options?.uninstallPersonalHomeRuntimeQaTask
+        ?? (async () => await runRelayRuntimeUninstallTask(getDefaultSystemTaskRunner()));
     const flushDesktopOverlaySync = options?.flushDesktopOverlaySync ?? (async () => {
         // This bridge runs in both the main and overlay windows. Only the main window is allowed to
         // call `desktop_activity_overlay_sync` (the Rust command validates the caller label).
@@ -241,7 +272,8 @@ export function installTauriMcpWebviewDriverScripts(options?: Readonly<{
             source: {
                 isDataReady: storageState.isDataReady,
                 sessionsById: storageState.sessions ?? {},
-                sessionListRenderablesById: storageState.sessionListRenderables ?? {},
+                sessionListRowsByServerId: storageState.sessionListRowsByServerId ?? {},
+                ordinarySessionListMembershipByServerId: storageState.ordinarySessionListMembershipByServerId ?? {},
                 sessionListIndexByServerId: storageState.sessionListIndexByServerId ?? {},
                 concurrentSessionListCacheByServerId: storageState.concurrentSessionListCacheByServerId ?? {},
                 quotaSummaries: [],
@@ -337,6 +369,53 @@ export function installTauriMcpWebviewDriverScripts(options?: Readonly<{
     if (!documentObj) {
         return;
     }
+
+    mcp.readPersonalHomeBootstrapQaObservation = (() => {
+        const state = windowObj.__happierPersonalHomeQaForbiddenSurface?.state;
+        return {
+            installedAtDocumentStart: state?.documentStart === true,
+            seenForbiddenOnboarding: state?.seen === true,
+        };
+    }) as unknown;
+    mcp.navigateHappierQaPath = ((path: unknown) => {
+        const normalizedPath = String(path ?? '').trim();
+        if (!normalizedPath.startsWith('/') || normalizedPath.startsWith('//')) {
+            return { ok: false, reason: 'invalid-path' };
+        }
+        windowObj.history.pushState({}, '', normalizedPath);
+        windowObj.dispatchEvent(new windowObj.PopStateEvent('popstate'));
+        return { ok: true, pathname: normalizedPath };
+    }) as unknown;
+    mcp.readPersonalHomeDaemonQaStatus = (async () => await runPersonalHomeDaemonQaTask('status')) as unknown;
+    mcp.stopPersonalHomeDaemonForQa = (async () => await runPersonalHomeDaemonQaTask('stop')) as unknown;
+    mcp.controlPersonalHomeBootstrapQaPause = ((request: unknown) => {
+        const action = isRecord(request) ? readString(request.action) : null;
+        if (action !== 'arm' && action !== 'read' && action !== 'release') {
+            return { ok: false, reason: 'invalid-action' };
+        }
+        const record = isRecord(request) ? request : {};
+        return controlPersonalHomeBootstrapQaMutationPause({
+            action,
+            ...(readString(record.kind) ? { kind: readString(record.kind)! } : {}),
+            ...(typeof record.ordinal === 'number' ? { ordinal: record.ordinal } : {}),
+            ...(typeof record.ttlMs === 'number' ? { ttlMs: record.ttlMs } : {}),
+        } satisfies PersonalHomeBootstrapQaPauseRequest);
+    }) as unknown;
+    mcp.uninstallPersonalHomeRuntimeForQa = (async () => {
+        // This bridge installs in every desktop shell, so the destructive-arbitration boundary
+        // stays inert until the checked-in bootstrap pause is armed. The QA journey always holds
+        // that pause when it competes with bootstrap; Settings remains the product owner.
+        const pause = controlPersonalHomeBootstrapQaMutationPause({ action: 'read' });
+        if (!pause.armed && !pause.held) return { ok: false, reason: 'qa-pause-not-armed' };
+        try {
+            return { ok: await uninstallPersonalHomeRuntimeQaTask() === true };
+        } catch (error) {
+            return {
+                ok: false,
+                reason: error instanceof Error ? error.message : String(error),
+            };
+        }
+    }) as unknown;
 
     if (typeof mcp.resolveRef !== 'function') {
         mcp.resolveRef = ((selectorOrRef: string, strategy?: string) => {

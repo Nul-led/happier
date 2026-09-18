@@ -8,6 +8,7 @@ const syncDesktopPetOverlayState = vi.hoisted(() => vi.fn(async () => {}));
 const idleActivity = {
     state: 'idle',
     reason: 'idle',
+    address: null,
     sessionId: null,
     trayItems: [],
 } as const;

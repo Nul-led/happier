@@ -19,6 +19,7 @@ import { decryptBox, encryptBox } from "@/encryption/libsodium";
 import { randomUUID } from '@/platform/randomUUID';
 import { getRandomBytes } from '@/platform/cryptoRandom';
 import {
+    ENCRYPTED_DATA_KEY_V1_BYTES,
     openAccountScopedBlobCiphertext,
     openEncryptedDataKeyEnvelopeV1,
     sealAccountScopedBlobCiphertext,
@@ -70,6 +71,47 @@ export type EncryptionGenerationScope = Readonly<{
     serverId: string | null;
     generation: number;
 }>;
+
+/**
+ * The generation half of the Account encryption owner, named once so consumers depend on the pair
+ * rather than redeclaring it.
+ *
+ * `Encryption` implements it. Any consumer that needs to know whether the key material it captured
+ * is still the current material takes this, so nobody has to probe for the methods at runtime.
+ */
+export type EncryptionGenerationScopeAuthority = Readonly<{
+    getCurrentEncryptionGenerationScope: (scope?: EncryptionScopeInput) => EncryptionGenerationScope;
+    isCurrentEncryptionGenerationScope: (scope: EncryptionGenerationScope) => boolean;
+}>;
+
+/**
+ * Capture one Account-encryption generation and keep its currentness decision at
+ * the Account-encryption owner. Callers use the returned scope to bind async
+ * work and the predicate at every effect boundary; they must not recreate the
+ * account/server/generation comparison themselves.
+ */
+export function captureEncryptionGenerationCurrentness(
+    authority: EncryptionGenerationScopeAuthority | null | undefined,
+    scope: EncryptionScopeInput = {},
+): Readonly<{
+    capturedScope: EncryptionGenerationScope | null;
+    isCurrent: () => boolean;
+}> {
+    const capturedScope = authority?.getCurrentEncryptionGenerationScope(scope) ?? null;
+    return {
+        capturedScope,
+        isCurrent: () => capturedScope === null
+            || authority?.isCurrentEncryptionGenerationScope(capturedScope) === true,
+    };
+}
+
+export function isCapturedEncryptionGenerationScopeCurrent(
+    authority: EncryptionGenerationScopeAuthority | null | undefined,
+    capturedScope: EncryptionGenerationScope | null | undefined,
+): boolean {
+    return capturedScope == null
+        || authority?.isCurrentEncryptionGenerationScope(capturedScope) === true;
+}
 
 type ResolvedEncryptionScope = Readonly<{
     accountId: string;
@@ -341,14 +383,23 @@ export class Encryption {
      * Initialize sessions with their encryption keys
      * This should be called once when sessions are loaded
      */
-    async initializeSessions(sessions: Map<string, Uint8Array | null>, scopeInput: EncryptionScopeInput = {}): Promise<void> {
+    async initializeSessions(
+        sessions: Map<string, Uint8Array | null>,
+        scopeInput: EncryptionScopeInput = {},
+    ): Promise<EncryptionGenerationScope | null> {
         const scope = this.resolveEncryptionScope(scopeInput);
         const shouldContinue = () => (
             scopeInput.signal?.aborted !== true
             && scopeInput.shouldContinue?.() !== false
         );
+        const pending: Array<Readonly<{
+            sessionId: string;
+            dataKey: Uint8Array | null;
+            fingerprint: string;
+            encryptor: Encryptor & Decryptor;
+        }>> = [];
         for (const [sessionId, dataKey] of sessions) {
-            if (!shouldContinue()) return;
+            if (!shouldContinue()) return null;
             const fingerprint = getDataKeyFingerprint(dataKey);
             const existing = this.sessionEncryptions.get(sessionId);
             const existingFingerprint = this.sessionKeyFingerprints.get(sessionId);
@@ -361,39 +412,66 @@ export class Encryption {
                 continue;
             }
 
-            if (scopeChanged && previousScope) {
-                this.bumpGenerationForScope(previousScope);
+            // Create appropriate encryptor based on data key
+            const encryptor = await this.openEncryption(dataKey, scope);
+            if (!shouldContinue()) return null;
+
+            pending.push({
+                sessionId,
+                dataKey,
+                fingerprint,
+                encryptor,
+            });
+        }
+
+        // Opening may yield, so currentness is checked above before any mutation. Apply the
+        // prepared replacements synchronously after that check: a key change intentionally
+        // advances the owning generation, but must not cancel the same guarded replacement that
+        // caused the advance. The returned post-commit scope lets callers keep guarding later
+        // cache publication without mistaking this owner-authored advance for an Account switch.
+        for (const entry of pending) {
+            // Another initializer may have committed while this entry's encryptor was opening.
+            // Re-read the owner and key at the synchronous commit boundary so displacing that
+            // initializer invalidates the scope it actually installed, not only the pre-await view.
+            const currentExisting = this.sessionEncryptions.get(entry.sessionId);
+            const currentFingerprint = this.sessionKeyFingerprints.get(entry.sessionId);
+            const currentScope = this.sessionEncryptionScopes.get(entry.sessionId);
+            const currentScopeChanged = currentScope
+                ? currentScope.accountId !== scope.accountId || currentScope.serverId !== scope.serverId
+                : false;
+            if (currentScopeChanged && currentScope) {
+                this.bumpGenerationForScope(currentScope);
             }
 
-            if (existing && existingFingerprint !== fingerprint) {
+            if (
+                currentExisting
+                && currentFingerprint !== entry.fingerprint
+            ) {
                 this.bumpGenerationForScope(scope);
             }
 
-            // Create appropriate encryptor based on data key
-            const encryptor = await this.openEncryption(dataKey, scope);
-            if (!shouldContinue()) return;
-
             // Create and cache session encryption
             const sessionEnc = new SessionEncryption(
-                sessionId,
-                encryptor,
+                entry.sessionId,
+                entry.encryptor,
                 this.cache,
                 // Whichever secret actually seals this Session: its own data key,
                 // or the account secret behind the fallback encryptor.
-                dataKey ?? this.masterSecret,
+                entry.dataKey ?? this.masterSecret,
             );
-            this.sessionEncryptions.set(sessionId, sessionEnc);
-            this.sessionKeyFingerprints.set(sessionId, fingerprint);
-            this.sessionEncryptionScopes.set(sessionId, scope);
+            this.sessionEncryptions.set(entry.sessionId, sessionEnc);
+            this.sessionKeyFingerprints.set(entry.sessionId, entry.fingerprint);
+            this.sessionEncryptionScopes.set(entry.sessionId, scope);
 
             // If the session key changed (often due to decryptEncryptionKey becoming available later),
             // clear cached decrypted session data so future reads use the updated encryptor.
             // Note: message cache is keyed only by messageId; encrypted messages that previously
             // failed to decrypt must not be permanently cached (handled in SessionEncryption).
-            if (existing) {
-                this.cache.clearSessionCache(sessionId);
+            if (currentExisting) {
+                this.cache.clearSessionCache(entry.sessionId);
             }
         }
+        return this.getCurrentEncryptionGenerationScope(scope);
     }
 
     /**
@@ -428,8 +506,19 @@ export class Encryption {
      * Initialize machines with their encryption keys
      * This should be called once when machines are loaded
      */
-    async initializeMachines(machines: Map<string, Uint8Array | null>): Promise<void> {
+    async initializeMachines(
+        machines: Map<string, Uint8Array | null>,
+        unavailableMachineIds?: ReadonlySet<string>,
+    ): Promise<void> {
+        // Failed present envelopes are unavailable, never the null legacy-key
+        // compatibility input. Retire their previous ciphers before any await.
+        for (const machineId of unavailableMachineIds ?? []) {
+            this.machineEncryptions.delete(machineId);
+            this.machineKeyFingerprints.delete(machineId);
+            this.cache.clearMachineCache(machineId);
+        }
         for (const [machineId, dataKey] of machines) {
+            if (unavailableMachineIds?.has(machineId)) continue;
             const fingerprint = dataKey ? encodeBase64(dataKey, 'base64') : '__no_key__';
             const existing = this.machineEncryptions.get(machineId);
             const existingFingerprint = this.machineKeyFingerprints.get(machineId);
@@ -665,7 +754,11 @@ export class Encryption {
                 }
                 return result.items.map((value) => {
                     if (!value) return null;
-                    return cryptoWorkerBase64ToBytes(value);
+                    const opened = cryptoWorkerBase64ToBytes(value);
+                    // A native worker is trusted for speed, not for the fixed
+                    // data-key contract: anything that is not exactly one data
+                    // key never reaches the Session ciphers.
+                    return opened?.length === ENCRYPTED_DATA_KEY_V1_BYTES ? opened : null;
                 });
             },
         );

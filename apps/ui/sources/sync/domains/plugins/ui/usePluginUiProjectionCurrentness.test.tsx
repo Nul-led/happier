@@ -33,19 +33,24 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => activeServerSnapshot,
 }));
 
-vi.mock('@/sync/domains/state/storageStateReaderBridge', () => ({
+vi.mock('@/sync/domains/state/storageStateReaderBridge', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/state/storageStateReaderBridge')>()),
     readRegisteredStorageState: () => storageState,
 }));
 
-vi.mock('@/sync/domains/state/storage', () => ({
-    useEndpointStatus: () => projectionConnectionState.endpointStatus,
-    useMachineCliDetectionTarget: () => ({
-        daemonStateVersion: projectionConnectionState.daemonStateVersion,
-        isOnline: projectionConnectionState.isOnline,
-    }),
-}));
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({
+        useEndpointStatus: () => projectionConnectionState.endpointStatus,
+        useMachineCliDetectionTarget: () => ({
+            daemonStateVersion: projectionConnectionState.daemonStateVersion,
+            isOnline: projectionConnectionState.isOnline,
+        }),
+    });
+});
 
-vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
+vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/ops/machineContributionRegistryProjection')>()),
     machineContributionRegistryProjectionDescribe: (machineId: string, options?: unknown) => (
         projectionRuntime.describe(machineId, options)
     ),

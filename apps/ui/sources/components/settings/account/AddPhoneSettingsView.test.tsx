@@ -77,6 +77,17 @@ vi.mock('@/platform/digest', () => ({
 
 let activeServerUrl = 'https://stack.example.test';
 let descriptorOverride: import('@happier-dev/protocol').HomeConnectionDescriptorV1 | null = null;
+function currentDescriptor(): import('@happier-dev/protocol').HomeConnectionDescriptorV1 | null {
+    if (descriptorOverride) return descriptorOverride;
+    if (!activeServerUrl.startsWith('https://')) return null;
+    return {
+        v: 1,
+        homeServerIdentityId: 'srv_test',
+        canonicalServerUrl: activeServerUrl,
+        revision: 1,
+        endpoints: [{ kind: 'https', url: activeServerUrl }],
+    };
+}
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getActiveServerUrl: () => activeServerUrl,
     getServerProfileById: () => ({
@@ -102,6 +113,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
             endpoints: [{ kind: 'https', url: canonicalServerUrl }],
         };
     },
+    reconcileServerProfileHomeConnectionDescriptor: vi.fn(async () => ({ kind: 'applied', profile: { id: 'profile-test' } })),
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -132,6 +144,20 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
             capabilities: { server: { canonicalServerUrl: activeServerUrl } },
         },
     }),
+    observeAuthenticatedServerFeaturesFresh: async () => {
+        const descriptor = currentDescriptor();
+        return descriptor
+            ? {
+                status: 'ready',
+                serverIdentityId: descriptor.homeServerIdentityId,
+                features: {
+                    features: { auth: { pairing: { boundQrV2: { enabled: true } } } },
+                    capabilities: { server: { canonicalServerUrl: descriptor.canonicalServerUrl } },
+                    homeConnectionDescriptor: descriptor,
+                },
+            }
+            : { status: 'error', reason: 'network' };
+    },
 }));
 
 let pairingExpiresAt = new Date(Date.now() + 60_000).toISOString();
@@ -160,7 +186,7 @@ const serverFetchSpy = vi.fn(async (path: string, _init?: any, _options?: any) =
 let pairingStatusResponse: any = {
     ok: true,
     status: 200,
-    json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: '2030-02-23T00:00:00.000Z' }),
+    json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
 } as any;
 
 vi.mock('@/sync/http/client', () => ({
@@ -192,11 +218,12 @@ describe('AddPhoneSettingsView', () => {
         pairingStatusResponse = {
             ok: true,
             status: 200,
-            json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: '2030-02-23T00:00:00.000Z' }),
+            json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
         const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
+        await flushHookEffects({ cycles: 4 });
         const qrContainer = screen.findByTestId('add-phone-qr');
         if (!qrContainer) throw new Error('Expected QR container');
         const qr = qrContainer.findByType('QRCode');
@@ -241,7 +268,7 @@ describe('AddPhoneSettingsView', () => {
         pairingStatusResponse = {
             ok: true,
             status: 200,
-            json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: '2030-02-23T00:00:00.000Z' }),
+            json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
         const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
@@ -258,7 +285,7 @@ describe('AddPhoneSettingsView', () => {
         pairingStatusResponse = {
             ok: true,
             status: 200,
-            json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: '2030-02-23T00:00:00.000Z' }),
+            json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
         const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
@@ -276,11 +303,12 @@ describe('AddPhoneSettingsView', () => {
         pairingStatusResponse = {
             ok: true,
             status: 200,
-            json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: '2030-02-23T00:00:00.000Z' }),
+            json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
         const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
+        await flushHookEffects({ cycles: 4 });
         expect(screen.findAllByTestId('add-phone-pairing-link')).toHaveLength(0);
         const showLinkButton = screen.findByTestId('add-phone-pairing-link-details');
         expect(showLinkButton).toBeTruthy();

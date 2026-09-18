@@ -1,7 +1,6 @@
 import { authProviderModules } from '@/auth/providers/providerModules';
 import type { AuthProvider } from '@/auth/providers/types';
 import { createExternalOAuthProvider } from '@/auth/providers/externalOAuthProvider';
-import { getCachedReadyServerFeatures } from '@/sync/api/capabilities/getReadyServerFeatures';
 import type { AuthProviderId } from '@happier-dev/protocol';
 
 export type { AuthProvider } from '@/auth/providers/types';
@@ -9,8 +8,6 @@ export type { AuthProvider } from '@/auth/providers/types';
 export const authProviderRegistry: readonly AuthProvider[] = Object.freeze([
     ...authProviderModules,
 ]);
-
-const fallbackProviders = new Map<string, AuthProvider>();
 
 function defaultDisplayNameFromId(id: string): string {
     const normalized = id.trim();
@@ -24,27 +21,26 @@ export function normalizeProviderId(id: unknown): string | null {
     return normalized.length > 0 ? normalized : null;
 }
 
-export function getAuthProvider(id: string): AuthProvider | null {
+export function getAuthProvider(
+    id: string,
+    presentation?: Readonly<{
+        displayName: string;
+        badgeIconName?: string;
+        connectButtonColor?: string;
+        supportsProfileBadge?: boolean;
+    }>,
+): AuthProvider | null {
     const normalized = normalizeProviderId(id);
     if (!normalized) return null;
     for (const provider of authProviderRegistry) {
         if (normalizeProviderId(provider.id) === normalized) return provider;
     }
 
-    const existing = fallbackProviders.get(normalized);
-    if (existing) return existing;
-
-    const features = getCachedReadyServerFeatures();
-    const ui = features?.capabilities?.auth?.providers?.[normalized]?.ui;
-    const displayName = ui?.displayName ? String(ui.displayName) : defaultDisplayNameFromId(normalized);
-
-    const fallback = createExternalOAuthProvider({
+    return createExternalOAuthProvider({
         id: normalized as AuthProviderId,
-        displayName,
-        badgeIconName: ui?.badgeIconName ? String(ui.badgeIconName) : undefined,
-        supportsProfileBadge: ui?.supportsProfileBadge === true,
-        connectButtonColor: ui?.connectButtonColor ? String(ui.connectButtonColor) : undefined,
+        displayName: presentation?.displayName ?? defaultDisplayNameFromId(normalized),
+        ...(presentation?.badgeIconName ? { badgeIconName: presentation.badgeIconName } : {}),
+        ...(presentation?.connectButtonColor ? { connectButtonColor: presentation.connectButtonColor } : {}),
+        supportsProfileBadge: presentation?.supportsProfileBadge === true,
     });
-    fallbackProviders.set(normalized, fallback);
-    return fallback;
 }

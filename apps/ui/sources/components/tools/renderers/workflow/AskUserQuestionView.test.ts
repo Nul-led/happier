@@ -2,7 +2,7 @@ import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import type { ToolCall } from '@/sync/domains/messages/messageTypes';
-import { makeToolCall, makeToolViewProps } from '@/dev/testkit';
+import { createSessionFixture, makeToolCall, makeToolViewProps } from '@/dev/testkit';
 import {
     changeTextTestInstance,
     createDeferred,
@@ -207,12 +207,17 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdFo
     resolvePreferredServerIdForSessionId: () => resolvePreferredServerIdForSessionId(),
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getServerProfileById: (serverId: string) => getServerProfileById(serverId),
 }));
 
-vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
+vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/scope/activeServerAccountScope')>()),
+    // A mounted Account answers both capture entry points with the same
+    // lifetime, exactly as the real owner does while that Account is current.
     captureActiveServerAccountScopeLifetime: () => activeAccountLifetime,
+    captureActiveServerAccountScopeCurrentness: () => activeAccountLifetime,
     getActiveServerAccountScope: () => null,
 }));
 
@@ -283,7 +288,7 @@ describe('AskUserQuestionView', () => {
         });
     }
 
-    function publishReviewAskUserQuestionDescriptor(allowedValues: readonly string[]) {
+    function publishReviewAskUserQuestionDescriptor(allowedValues: readonly string[], scope: 'account' | 'daemon' = 'account') {
         publishProjectedAgentUiBehaviorDescriptors({
             machineId: 'machine-1',
             descriptorsByAgentId: {
@@ -298,7 +303,7 @@ describe('AskUserQuestionView', () => {
                             dialogs: [{
                                 dialogId: 'review_scope',
                                 settingMutation: {
-                                    settingId: 'reviewScopePreference',
+                                    settingId: { scope, localId: 'reviewScopePreference' },
                                     allowedValues: [...allowedValues],
                                 },
                             }],
@@ -479,6 +484,19 @@ describe('AskUserQuestionView', () => {
         expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Pick one': ['A'] });
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
+    });
+
+    it('answers the qualified Home B request when the same-ID active Home A has no request', async () => {
+        activeAskUserQuestionRequest = null;
+        const session = createSessionFixture({
+            id: 's1', serverId: 'server-b',
+            agentState: { requests: { toolu_1: {
+                tool: 'AskUserQuestion', kind: 'user_action', arguments: {}, createdAt: 1,
+            } } },
+        });
+        const screen = await renderView(makeTool(), { serverId: 'server-b', session });
+        await chooseOptionAndSubmit(screen, 'A');
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Pick one': ['A'] }, { serverId: 'server-b' });
     });
 
     it('exposes question choices and submit progress with their current accessible state', async () => {
@@ -1002,7 +1020,7 @@ describe('AskUserQuestionView', () => {
     });
 
     it('uses the external Agent setting catalog scope instead of forcing an Account write', async () => {
-        publishReviewAskUserQuestionDescriptor(['always_include']);
+        publishReviewAskUserQuestionDescriptor(['always_include'], 'daemon');
         daemonMergedProjectionState.current.inputs.pluginProjectionById['acme.review']!
             .editableSettingsGroups[0]!.scope.kind = 'daemon';
         askUserQuestionSessionState.current = {
@@ -1352,7 +1370,7 @@ describe('AskUserQuestionView', () => {
         expect(scopedPluginSettingsWrite).not.toHaveBeenCalled();
     });
 
-    it('keeps an accepted answer settled when only the remembered preference fails to persist', async () => {
+    it.each(['unavailable', 'applied'] as const)('keeps an accepted answer settled when its remembered preference returns %s', async (settlement) => {
         activeAskUserQuestionRequest = {
             tool: 'AskUserQuestion',
             kind: 'user_action',
@@ -1379,7 +1397,9 @@ describe('AskUserQuestionView', () => {
             },
         };
         sessionAllowWithAnswers.mockResolvedValueOnce(undefined);
-        scopedPluginSettingsWrite.mockResolvedValue({ status: 'unavailable', reason: 'transport' });
+        scopedPluginSettingsWrite.mockResolvedValue(settlement === 'applied'
+            ? { status: 'applied', revision: { kind: 'account', value: 1 } }
+            : { status: 'unavailable', reason: 'transport' });
         const screen = await renderView(makeTool({
             input: {
                 happierDialog: { kind: 'recognized', dialogId: 'trust_folder', secondaryAction: 'open_terminal' },
@@ -1407,10 +1427,14 @@ describe('AskUserQuestionView', () => {
         // submit affordance that would answer the same request twice.
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
         expect(findPressableByLabel(screen, 'tools.askUserQuestion.submit')).toBeFalsy();
-        expect(modalAlert).toHaveBeenCalledWith(
-            'common.error',
-            'Unable to persist the selected setting.',
-        );
+        if (settlement === 'applied') {
+            expect(modalAlert).not.toHaveBeenCalled();
+        } else {
+            expect(modalAlert).toHaveBeenCalledWith(
+                'common.error',
+                'Unable to persist the selected setting.',
+            );
+        }
     });
 
     it('exposes stable testIDs for native E2E (Maestro)', async () => {

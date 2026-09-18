@@ -36,9 +36,9 @@ vi.mock('@/sync/api/session/apiPush', () => ({
     deletePushToken: mocks.deletePushToken,
 }));
 
-// The canonical registration path reads each Home's notification settings through an
-// explicit Home-targeted request. Resolve it as an offline Home (no settings payload)
-// so per-Home consent falls back to the last-known/product-default semantics.
+// Transport remains a genuine system boundary in this suite. Registration cases
+// provide exact-Home consent explicitly below; an unreadable live response with no
+// scoped cached projection must remain fail-closed.
 vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
     runtimeFetchWithServerReachability: vi.fn(async () => Response.json({ success: true })),
 }));
@@ -55,11 +55,14 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 }));
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
+    subscribeHomeCredentialMutations: () => () => undefined,
     TokenStorage: {
         getCredentialsForServerUrl: mocks.getCredentialsForServerUrl,
     },
     isLegacyAuthCredentials: (credentials: unknown) => Boolean(credentials),
 }));
+
+const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
 const secretPushToken = 'ExponentPushToken[secret-token]';
 
@@ -82,6 +85,10 @@ function profileCredentials(serverUrl: string): AuthCredentials {
     };
 }
 
+async function allowExactHomePush(): Promise<Record<string, never>> {
+    return {};
+}
+
 async function arrangeNotifications(): Promise<void> {
     const notifications = await import('expo-notifications');
     vi.mocked(notifications.getPermissionsAsync).mockResolvedValue({ status: 'granted' } as never);
@@ -90,7 +97,13 @@ async function arrangeNotifications(): Promise<void> {
 }
 
 beforeEach(() => {
+    mocks.registerPushToken.mockReset();
+    mocks.deletePushToken.mockReset();
+    mocks.listServerProfiles.mockReset();
+    mocks.getActiveServerSnapshot.mockReset();
+    mocks.getCredentialsForServerUrl.mockReset();
     mocks.registerPushToken.mockResolvedValue({ ok: true });
+    mocks.deletePushToken.mockResolvedValue(undefined);
     mocks.listServerProfiles.mockReturnValue([]);
     mocks.getActiveServerSnapshot.mockReturnValue({
         serverId: 'active',
@@ -112,11 +125,11 @@ describe('registerPushTokenIfAvailable logging', () => {
         await arrangeNotifications();
         mocks.listServerProfiles.mockReturnValue([{ id: 'active', serverUrl: 'https://active.example.test' }]);
         const { messages, log } = collectLogs();
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({
             credentials: { token: 'active-token', secret: 'active-secret' },
             log,
+            getHomeAccountSettings: allowExactHomePush,
         });
 
         expect(messages.join('\n')).not.toContain(secretPushToken);
@@ -139,14 +152,21 @@ describe('registerPushTokenIfAvailable logging', () => {
             .mockRejectedValueOnce(new Error('first server down'))
             .mockResolvedValueOnce({ ok: true });
         const { messages, log } = collectLogs();
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({
             credentials: { token: 'fallback-token', secret: 'fallback-secret' },
             log,
+            getHomeAccountSettings: allowExactHomePush,
         });
 
-        expect(mocks.getCredentialsForServerUrl).toHaveBeenCalledTimes(2);
+        expect(mocks.getCredentialsForServerUrl).toHaveBeenCalledWith(
+            'https://s1.example.test',
+            { serverId: 's1' },
+        );
+        expect(mocks.getCredentialsForServerUrl).toHaveBeenCalledWith(
+            'https://s2.example.test',
+            { serverId: 's2' },
+        );
         expect(mocks.registerPushToken).toHaveBeenCalledTimes(2);
         expect(mocks.registerPushToken.mock.calls[0]?.[2]).toMatchObject({
             apiEndpoint: 'https://s1.example.test',
@@ -176,11 +196,11 @@ describe('registerPushTokenIfAvailable logging', () => {
             .mockResolvedValueOnce({ ok: true })
             .mockRejectedValueOnce(new Error('active profile failed'));
         const { messages, log } = collectLogs();
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({
             credentials: { token: 'active-server-token', secret: 'active-server-secret' },
             log,
+            getHomeAccountSettings: allowExactHomePush,
         });
 
         expect(mocks.registerPushToken).toHaveBeenCalledTimes(2);
@@ -196,7 +216,7 @@ describe('registerPushTokenIfAvailable logging', () => {
         expect(messages.join('\n')).not.toContain(secretPushToken);
     });
 
-    it('registers active-server credentials when active server is missing from profiles', async () => {
+    it('does not act on an active server missing from the canonical profile snapshot', async () => {
         await arrangeNotifications();
         mocks.listServerProfiles.mockReturnValue([{ id: 'profile', serverUrl: 'https://profile.example.test' }]);
         mocks.getActiveServerSnapshot.mockReturnValue({
@@ -211,35 +231,62 @@ describe('registerPushTokenIfAvailable logging', () => {
         mocks.deletePushToken.mockResolvedValue(undefined);
         saveLastRegisteredExpoPushToken('ExponentPushToken[old-token]');
         const { messages, log } = collectLogs();
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({
             credentials: { token: 'active-server-token', secret: 'active-server-secret' },
             log,
+            getHomeAccountSettings: allowExactHomePush,
         });
 
-        // Credential resolution is one decision per enumerated Home; rotation
-        // reuses that exact decision instead of reading a second possibly changed value.
-        expect(mocks.getCredentialsForServerUrl).toHaveBeenCalledTimes(1);
-        expect(mocks.registerPushToken).toHaveBeenCalledTimes(2);
+        // Freshness checks may reread this exact Home credential around awaits;
+        // no read may drift to the absent focused Home's credential namespace.
+        expect(mocks.getCredentialsForServerUrl).toHaveBeenCalled();
+        expect(mocks.getCredentialsForServerUrl.mock.calls.every(([serverUrl, options]) => (
+            serverUrl === 'https://profile.example.test'
+            && (options as { serverId?: string } | undefined)?.serverId === 'profile'
+        ))).toBe(true);
+        expect(mocks.registerPushToken).toHaveBeenCalledTimes(1);
         expect(mocks.registerPushToken.mock.calls[0]?.[2]).toMatchObject({
             apiEndpoint: 'https://profile.example.test',
             clientServerUrl: 'https://profile.example.test',
         });
-        expect(mocks.registerPushToken.mock.calls[1]?.[0]).toEqual({
-            token: 'active-server-token',
-            secret: 'active-server-secret',
-        });
-        expect(mocks.deletePushToken).toHaveBeenCalledWith(
-            { token: 'active-server-token', secret: 'active-server-secret' },
-            'ExponentPushToken[old-token]',
-            { apiEndpoint: 'https://active.example.test', runtimeOrigin: 'https://active.example.test' },
-        );
+        expect(mocks.deletePushToken.mock.calls.some(([credential]) => (
+            (credential as AuthCredentials).token === 'active-server-token'
+        ))).toBe(false);
         expect(messages.join('\n')).toContain('Push token registered successfully');
         expect(messages.join('\n')).not.toContain(secretPushToken);
     });
 
-    it('logs an overall failure when all profile attempts and fallback fail', async () => {
+    it('does not substitute captured caller credentials after focus changes during credential lookup', async () => {
+        await arrangeNotifications();
+        mocks.listServerProfiles.mockReturnValue([{ id: 'home-a', serverUrl: 'https://home-a.example.test' }]);
+        let activeServerId = 'home-a';
+        mocks.getActiveServerSnapshot.mockImplementation(() => ({
+            serverId: activeServerId,
+            serverUrl: `https://${activeServerId}.example.test`,
+            kind: 'custom',
+            generation: 1,
+        }));
+        let finishCredentialRead!: () => void;
+        mocks.getCredentialsForServerUrl.mockImplementation(async () => {
+            await new Promise<void>((resolve) => { finishCredentialRead = resolve; });
+            return null;
+        });
+
+        const run = registerPushTokenIfAvailable({
+            credentials: { token: 'home-a-caller-token', secret: 'home-a-caller-secret' },
+            log: { log: vi.fn() },
+        });
+        await vi.waitFor(() => expect(finishCredentialRead).toBeTypeOf('function'));
+        activeServerId = 'home-b';
+        finishCredentialRead();
+        await run;
+
+        expect(mocks.registerPushToken).not.toHaveBeenCalled();
+        expect(mocks.deletePushToken).not.toHaveBeenCalled();
+    });
+
+    it('logs an overall failure when all profile attempts fail', async () => {
         await arrangeNotifications();
         mocks.listServerProfiles.mockReturnValue([
             { id: 's1', serverUrl: 'https://s1.example.test' },
@@ -253,14 +300,13 @@ describe('registerPushTokenIfAvailable logging', () => {
         });
         mocks.registerPushToken
             .mockRejectedValueOnce(new Error('s1 down'))
-            .mockRejectedValueOnce(new Error('s2 down'))
-            .mockRejectedValueOnce(new Error('fallback down'));
+            .mockRejectedValueOnce(new Error('s2 down'));
         const { messages, log } = collectLogs();
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({
             credentials: { token: 'fallback-token', secret: 'fallback-secret' },
             log,
+            getHomeAccountSettings: allowExactHomePush,
         });
 
         expect(mocks.registerPushToken).toHaveBeenCalledTimes(2);

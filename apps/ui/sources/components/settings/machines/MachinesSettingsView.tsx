@@ -12,6 +12,7 @@ import { t } from '@/text';
 
 import { MachineSetupActionsSection } from './sections/MachineSetupActionsSection';
 import { MachinesListSection } from './sections/MachinesListSection';
+import { MachinePoolsSection } from './sections/MachinePoolsSection';
 import { useMachinesSettingsViewModel } from './machinesSettingsViewModel';
 import { buildMachineSetupWizardHref, buildSetupWizardHref } from '@/utils/routes/setupWizardHref';
 
@@ -62,6 +63,7 @@ export const MachinesSettingsView = React.memo(function MachinesSettingsView() {
                     router.push(`/(app)/machine/${machineId}${query}`);
                 }}
             />
+            <MachinePoolsSection groups={viewModel.visibleMachineGroups} />
             {isDesktop ? (
                 <MachineSetupActionsSection />
             ) : isBrowserWeb ? (

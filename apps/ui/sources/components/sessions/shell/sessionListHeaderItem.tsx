@@ -86,7 +86,10 @@ export const SessionListHeaderItem = React.memo((props: SessionListHeaderItemPro
 
     if (props.item.headerKind === 'folder') {
         const collapseKey = props.item.groupKey ?? `folder:${props.item.folderId ?? props.item.title}`;
-        const rowId = props.item.folderId ? treeRowId.folder(props.item.folderId) : null;
+        const folderServerId = props.item.serverId ?? props.item.workspace?.serverId ?? null;
+        const rowId = props.item.folderId && folderServerId
+            ? treeRowId.folder(folderServerId, props.item.folderId)
+            : null;
         const folderHeader = (
             <FolderGroupHeader
                 title={props.item.title}
@@ -120,7 +123,7 @@ export const SessionListHeaderItem = React.memo((props: SessionListHeaderItemPro
         }
         return (
             <DraggableFolderHeaderFrame
-                sessionKey={`folder:${props.item.folderId}`}
+                sessionKey={rowId}
                 groupKey={props.item.groupKey ?? `folder:${props.item.folderId}`}
                 dataIndex={props.dataIndex ?? 0}
                 overlayShared={props.overlayShared}

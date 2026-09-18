@@ -138,6 +138,7 @@ function buildExpectedSharedStateRiskAcknowledgements(): Partial<Record<AgentId,
 }
 
 vi.mock('@/sync/store/hooks', () => ({
+  useActiveServerAccountScope: () => null,
   useAllMachines: () => [{ id: 'machine-a', active: true }],
   useProfile: () => useProfileSpy(),
   useSettings: () => useSettingsSpy(),
@@ -150,7 +151,14 @@ vi.mock('@/sync/store/hooks', () => ({
   ],
 }));
 
+vi.mock('@/hooks/teams/useHomeTeamCredentialModelCatalog', () => ({
+  useHomeTeamCredentialModelCatalog: () => ({
+    resources: [], teamNameById: {}, homeNameByTeamId: {}, currentResourceKeys: new Set(), current: true,
+  }),
+}));
+
 vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
+  useAppShellPluginUiProjection: () => ({ machineId: null, serverId: null }),
   useProjectedConnectedServicesRegistry: () => ({
     scopeKey: 'server-a', status: 'ready', errorReason: null,
     entries: connectedServicesRegistryState.entries,

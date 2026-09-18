@@ -56,6 +56,12 @@ export type AppPaneScopeHostProps = Readonly<{
     scopeId: string;
     main: React.ReactNode;
     /**
+     * Installs one scope-local context boundary around main and every pane after
+     * measured layout is available. It owns no pane state and must return the
+     * supplied host exactly once.
+     */
+    wrapScopeContent?: (content: React.ReactElement) => React.ReactNode;
+    /**
      * Shares this host's exact, current pane destination owner with an
      * incumbent Session/Project semantic launcher. The launcher receives no
      * pane state or private handoff store and cannot become another owner.
@@ -649,6 +655,14 @@ const AppPaneScopeHostContent = React.memo((props: AppPaneScopeHostProps) => {
     });
 
     const effectiveBottomDockHeightPx = bottomDragHeightPx ?? storedEffectiveBottomDockHeightPx;
+    const mainRegionHeightPx = Math.max(
+        0,
+        containerHeightPx - (
+            bottomOpen && Boolean(bottomPane) && resolvedBottomLayout.presentation === 'docked'
+                ? effectiveBottomDockHeightPx
+                : 0
+        ),
+    );
     const bottomResizeMaxHeightPx =
         bottomDragHeightPx != null
             ? resolvedBottomLayout.overlayMaxHeightPx
@@ -894,6 +908,39 @@ const AppPaneScopeHostContent = React.memo((props: AppPaneScopeHostProps) => {
         setBottomPaneHeightBasisPx(containerHeightPx);
     }, [containerHeightPx, setBottomPaneHeightBasisPx, setBottomPaneHeightPx]);
 
+    const paneContent = (
+        <MultiPaneHostWithBottom
+            main={props.main}
+            hideMain={paneFocusModeActive && (rightOpen || effectiveDetailsOpen)}
+            rightPane={rightPane}
+            detailsPane={detailsPane}
+            layout={resolvedLayout}
+            rightDockWidthPx={focusAwareDockSizing.rightWidthPx}
+            detailsDockWidthPx={focusAwareDockSizing.detailsWidthPx}
+            rightDockMinWidthPx={focusAwareDockSizing.rightMinWidthPx}
+            detailsDockMinWidthPx={focusAwareDockSizing.detailsMinWidthPx}
+            rightDockMaxWidthPx={focusAwareDockSizing.rightMaxWidthPx}
+            detailsDockMaxWidthPx={focusAwareDockSizing.detailsMaxWidthPx}
+            onCloseRight={onCloseRight}
+            onCloseDetails={onCloseDetails}
+            onCommitRightDockWidthPx={onCommitRightDockWidthPx}
+            onCommitDetailsDockWidthPx={onCommitDetailsDockWidthPx}
+            onDragRightDockWidthPx={setRightDragWidthPx}
+            onDragDetailsDockWidthPx={setDetailsDragWidthPx}
+            bottomPane={bottomPane}
+            bottomPresentation={resolvedBottomLayout.presentation}
+            bottomDockHeightPx={effectiveBottomDockHeightPx}
+            bottomDockMinHeightPx={PANE_SIZING_DEFAULTS.bottom.minPx}
+            bottomDockMaxHeightPx={bottomResizeMaxHeightPx}
+            onCloseBottom={onCloseBottom}
+            onCommitBottomDockHeightPx={onCommitBottomDockHeightPx}
+            onDragBottomDockHeightPx={setBottomDragHeightPx}
+            rightOverlayFocusReturnRef={pane.rightOverlayFocusReturnRef}
+            detailsOverlayFocusReturnRef={pane.detailsOverlayFocusReturnRef}
+            bottomOverlayFocusReturnRef={pane.bottomOverlayFocusReturnRef}
+        />
+    );
+
     return (
         <View
             style={{ flex: 1, minHeight: 0, minWidth: 0 }}
@@ -915,41 +962,14 @@ const AppPaneScopeHostContent = React.memo((props: AppPaneScopeHostProps) => {
                         containerWidthPx,
                         containerHeightPx,
                         mainRegionWidthPx,
+                        mainRegionHeightPx,
                         multiPaneEnabled,
                         deviceType: multiPaneDeviceType,
                         layout: resolvedLayout,
+                        bottomPresentation: resolvedBottomLayout.presentation,
                     }}
                 >
-                    <MultiPaneHostWithBottom
-                    main={props.main}
-                    hideMain={paneFocusModeActive && (rightOpen || effectiveDetailsOpen)}
-                    rightPane={rightPane}
-                    detailsPane={detailsPane}
-                    layout={resolvedLayout}
-                    rightDockWidthPx={focusAwareDockSizing.rightWidthPx}
-                    detailsDockWidthPx={focusAwareDockSizing.detailsWidthPx}
-                    rightDockMinWidthPx={focusAwareDockSizing.rightMinWidthPx}
-                    detailsDockMinWidthPx={focusAwareDockSizing.detailsMinWidthPx}
-                    rightDockMaxWidthPx={focusAwareDockSizing.rightMaxWidthPx}
-                    detailsDockMaxWidthPx={focusAwareDockSizing.detailsMaxWidthPx}
-                    onCloseRight={onCloseRight}
-                    onCloseDetails={onCloseDetails}
-                    onCommitRightDockWidthPx={onCommitRightDockWidthPx}
-                    onCommitDetailsDockWidthPx={onCommitDetailsDockWidthPx}
-                    onDragRightDockWidthPx={setRightDragWidthPx}
-                    onDragDetailsDockWidthPx={setDetailsDragWidthPx}
-                    bottomPane={bottomPane}
-                    bottomPresentation={resolvedBottomLayout.presentation}
-                    bottomDockHeightPx={effectiveBottomDockHeightPx}
-                    bottomDockMinHeightPx={PANE_SIZING_DEFAULTS.bottom.minPx}
-                    bottomDockMaxHeightPx={bottomResizeMaxHeightPx}
-                    onCloseBottom={onCloseBottom}
-                    onCommitBottomDockHeightPx={onCommitBottomDockHeightPx}
-                    onDragBottomDockHeightPx={setBottomDragHeightPx}
-                    rightOverlayFocusReturnRef={pane.rightOverlayFocusReturnRef}
-                    detailsOverlayFocusReturnRef={pane.detailsOverlayFocusReturnRef}
-                    bottomOverlayFocusReturnRef={pane.bottomOverlayFocusReturnRef}
-                />
+                    {props.wrapScopeContent ? props.wrapScopeContent(paneContent) : paneContent}
                 </AppPaneScopeLayoutProvider>
             </PluginSurfaceDestinationNavigationBindingProvider>
         </View>

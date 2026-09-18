@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Image, Platform, Pressable, ScrollView, View } from 'react-native';
+import { I18nManager, Image, Platform, Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
@@ -13,6 +13,7 @@ import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 import type { AppPaneScopeApi } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import type { DetailsTabState, DetailsWorkspaceGroupView } from './detailsWorkspaceTypes';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { resolveHappierTabKeySelection } from '@happier-dev/plugin-ui/presentation';
 
 type ScrollPropagationEvent = Readonly<{ stopPropagation?: () => void }>;
 
@@ -43,6 +44,14 @@ export type DetailsTabStripProps = Readonly<{
     resolveTabPresentation?: ((tab: DetailsTabState) => DetailsTabPresentation | null | undefined) | null;
     testIds?: DetailsTabStripTestIds;
 }>;
+
+export function detailsTabNativeId(groupId: string, tabKey: string): string {
+    return `details-${toTestIdSafeValue(groupId)}-tab-${toTestIdSafeValue(tabKey)}`;
+}
+
+export function detailsTabPanelNativeId(groupId: string, tabKey: string): string {
+    return `details-${toTestIdSafeValue(groupId)}-panel-${toTestIdSafeValue(tabKey)}`;
+}
 
 const stylesheet = StyleSheet.create((theme) => ({
     tabsScroll: {
@@ -117,6 +126,24 @@ export const DetailsTabStrip = React.memo((props: DetailsTabStripProps) => {
         minWidth: interactiveTargetSize,
         minHeight: interactiveTargetSize,
     }), [interactiveTargetSize]);
+    const tabFocusTargetsRef = React.useRef(new Map<string, { focus?: () => void }>());
+    const handleKeyDown = React.useCallback((event: unknown, currentIndex: number) => {
+        const keyboardEvent = event as { nativeEvent?: { key?: unknown }; key?: unknown; preventDefault?: () => void } | null;
+        const key = keyboardEvent?.nativeEvent?.key ?? keyboardEvent?.key;
+        if (typeof key !== 'string') return;
+        const nextIndex = resolveHappierTabKeySelection({
+            tabs: props.group.tabs,
+            key,
+            currentIndex,
+            rtl: I18nManager.isRTL,
+        });
+        if (nextIndex === null) return;
+        keyboardEvent?.preventDefault?.();
+        const nextTab = props.group.tabs[nextIndex];
+        if (!nextTab) return;
+        props.pane.setActiveDetailsTab(nextTab.key);
+        if (nextIndex !== currentIndex) tabFocusTargetsRef.current.get(nextTab.key)?.focus?.();
+    }, [props.group.tabs, props.pane]);
 
     return (
         <ScrollView
@@ -124,8 +151,9 @@ export const DetailsTabStrip = React.memo((props: DetailsTabStripProps) => {
             style={styles.tabsScroll}
             showsHorizontalScrollIndicator={false}
             accessibilityRole="tablist"
+            accessibilityLabel={t('common.details')}
         >
-            {props.group.tabs.map((tab) => {
+            {props.group.tabs.map((tab, tabIndex) => {
                 const isActive = props.group.activeTabKey ? tab.key === props.group.activeTabKey : false;
                 const safeTabKey = toTestIdSafeValue(tab.key);
                 const presentation = props.resolveTabPresentation?.(tab) ?? null;
@@ -153,7 +181,12 @@ export const DetailsTabStrip = React.memo((props: DetailsTabStripProps) => {
                         style={[styles.tab, isActive ? styles.tabActive : null]}
                     >
                         <Pressable
+                            ref={(target) => {
+                                if (target) tabFocusTargetsRef.current.set(tab.key, target);
+                                else tabFocusTargetsRef.current.delete(tab.key);
+                            }}
                             onPress={() => props.pane.setActiveDetailsTab(tab.key)}
+                            onKeyDown={(event) => handleKeyDown(event, tabIndex)}
                             testID={props.testIds?.tab?.(safeTabKey) ?? undefined}
                             style={[
                                 styles.tabContent,
@@ -163,6 +196,9 @@ export const DetailsTabStrip = React.memo((props: DetailsTabStripProps) => {
                             accessibilityLabel={t('session.detailsPanel.openTabA11y', { title: tab.title })}
                             accessibilityState={{ selected: isActive }}
                             aria-selected={isActive}
+                            nativeID={detailsTabNativeId(props.group.id, tab.key)}
+                            aria-controls={detailsTabPanelNativeId(props.group.id, tab.key)}
+                            tabIndex={isActive ? 0 : -1}
                         >
                             {presentation?.isLoading ? (
                                 <ActivitySpinner

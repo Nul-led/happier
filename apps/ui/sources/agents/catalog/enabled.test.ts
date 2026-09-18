@@ -3,7 +3,17 @@ import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTarget
 
 import { getEnabledAgentIds, isAgentEnabled } from './enabled';
 
+/** Canonical catalog order, minus Agents the catalog marks unselectable. */
+const SELECTABLE_AGENT_IDS_IN_DISPLAY_ORDER = [
+    'claude', 'codex', 'opencode', 'antigravity', 'gemini', 'grok', 'auggie', 'qwen', 'kimi',
+    'kilo', 'kiro', 'devin', 'fx', 'droid', 'cursor', 'ohMyPi', 'pi', 'copilot',
+] as const;
+
 describe('agents/enabled', () => {
+    it('keeps a live-negotiated agent enabled without static model facts', () => {
+        expect(getEnabledAgentIds({ backendEnabledByTargetKey: {} })).toContain('antigravity');
+    });
+
     it('enables all agents by default when no explicit backend map is provided', () => {
         const allAgents = ['claude', 'codex', 'opencode', 'antigravity', 'gemini', 'auggie', 'qwen', 'kimi', 'kilo', 'kiro', 'pi', 'ohMyPi', 'copilot'] as const;
         for (const agentId of allAgents) {
@@ -46,6 +56,12 @@ describe('agents/enabled', () => {
         }
     });
 
+    // Antigravity's released concrete backend ids are declared by
+    // `packages/plugins/antigravity/src/agent/definition.ts`
+    // (`enablementCompatibilityBackendIds`) and reach this reader through the
+    // generated bundled Agent definitions. Until that projection is
+    // regenerated, this expectation and the `antigravity`-disabled case below
+    // pin the source truth rather than the stale generated artifact.
     it('uses a provider settings backend target key for providers that collapse onto a non-provider backend id', () => {
         expect(isAgentEnabled({
             agentId: 'antigravity',
@@ -82,17 +98,19 @@ describe('agents/enabled', () => {
     });
 
     it('returns enabled agent ids in display order', () => {
-        expect(getEnabledAgentIds({ backendEnabledByTargetKey: {} })).toEqual(['claude', 'codex', 'opencode', 'antigravity', 'gemini', 'auggie', 'qwen', 'kimi', 'kilo', 'kiro', 'cursor', 'ohMyPi', 'pi', 'copilot']);
+        expect(getEnabledAgentIds({ backendEnabledByTargetKey: {} })).toEqual(SELECTABLE_AGENT_IDS_IN_DISPLAY_ORDER);
         expect(getEnabledAgentIds({
             backendEnabledByTargetKey: {
                 [resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'gemini' })]: false,
                 [resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'auggie' })]: false,
                 [resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'antigravity-localharness' })]: false,
             },
-        })).toEqual(['claude', 'codex', 'opencode', 'qwen', 'kimi', 'kilo', 'kiro', 'cursor', 'ohMyPi', 'pi', 'copilot']);
+        })).toEqual(SELECTABLE_AGENT_IDS_IN_DISPLAY_ORDER.filter(
+            (agentId) => agentId !== 'gemini' && agentId !== 'auggie' && agentId !== 'antigravity',
+        ));
     });
 
     it('ignores unknown backend ids in the toggle map', () => {
-        expect(getEnabledAgentIds({ backendEnabledByTargetKey: { unknownAgent: false } })).toEqual(['claude', 'codex', 'opencode', 'antigravity', 'gemini', 'auggie', 'qwen', 'kimi', 'kilo', 'kiro', 'cursor', 'ohMyPi', 'pi', 'copilot']);
+        expect(getEnabledAgentIds({ backendEnabledByTargetKey: { unknownAgent: false } })).toEqual(SELECTABLE_AGENT_IDS_IN_DISPLAY_ORDER);
     });
 });

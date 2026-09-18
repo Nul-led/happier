@@ -20,6 +20,7 @@ import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { SessionFullscreenPaneSafeAreaView } from '@/components/sessions/panes/SessionFullscreenPaneSafeAreaView';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 
 export default function FilesScreenRoute() {
     const router = useRouter();
@@ -36,7 +37,7 @@ export default function FilesScreenRoute() {
     );
     const sessionHydrated = isSessionRouteHydrationAvailable(routeHydrationState);
     const { cockpitEnabled } = useMobileWorkspaceExperienceState();
-    const scopeId = `session:${sessionId}`;
+    const scopeId = createSessionPaneScopeId(sessionId, routeScope.serverId);
     const pane = useAppPaneScope(scopeId);
     const openRight = pane.openRight;
     const closeRight = pane.closeRight;

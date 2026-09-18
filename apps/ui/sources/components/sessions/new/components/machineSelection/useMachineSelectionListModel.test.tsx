@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
 
 import { renderHook } from '@/dev/testkit';
 import type { Machine } from '@/sync/domains/state/storageTypes';
@@ -12,10 +13,21 @@ import type {
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// The modal host is the one genuine boundary the custom-expiry flow crosses; the
+// real `showTemporaryComputerExpiryModal`, the real editor contract and the real
+// commit path all run beneath it.
+const modalHost = vi.hoisted(() => ({
+    show: vi.fn((_config: unknown) => 'modal-id'),
+}));
+
 installNewSessionComponentsCommonModuleMocks({
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({ translate: (key) => key });
+    },
+    modal: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        return createModalModuleMock({ spies: { show: modalHost.show as never } }).module;
     },
 });
 
@@ -154,6 +166,736 @@ function firstStaticOption(model: ReturnType<typeof UseMachineSelectionListModel
 }
 
 describe('useMachineSelectionListModel', () => {
+    it('shows the resolved Temporary computer target even when no machine is available', async () => {
+        const onSelectTemporaryComputer = vi.fn();
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            groups: [],
+            selectedMachine: null,
+            selectedServerId: 'server-a',
+            recentMachines: [],
+            favoriteMachines: [],
+            onSelectMachine: vi.fn(),
+            onSelectScopedMachine: vi.fn(),
+            temporaryComputers: [{
+                serverId: 'server-a',
+                artifactTarget: 'linux-x64',
+                selected: true,
+                workspace: { kind: 'endpoint_home' },
+                onSelect: onSelectTemporaryComputer,
+            }],
+            showFavorites: true,
+            showRecent: true,
+            showSearch: true,
+            showCliGlyphs: true,
+            autoDetectCliGlyphs: true,
+            testIdPrefix: 'new-session-machine',
+        }));
+
+        const section = rendered.getCurrent().rootStep.sections[0];
+        expect(section?.kind).toBe('static');
+        if (section?.kind !== 'static') throw new Error('expected the Temporary computer section');
+        expect(section.options).toHaveLength(1);
+        expect(section.options[0]).toMatchObject({
+            id: 'temporary-computer:server-a:linux-x64',
+            testID: 'new-session-machine-temporary-computer:server-a:linux-x64',
+            label: 'newSession.temporaryComputer.title',
+        });
+        expect(rendered.getCurrent().selectedOptionId).toBe('temporary-computer-workspace:server-a:linux-x64:endpoint_home');
+
+        const workspaceStep = section.options[0]!.openStep;
+        expect(workspaceStep).toMatchObject({
+            id: 'temporary-computer-workspace:server-a:linux-x64',
+            title: 'newSession.selectWorkingDirectoryTitle',
+        });
+        // Expiry is offered beside the folder, defaulting to Never, and the
+        // folder choice is what commits the target.
+        const expirySection = workspaceStep?.sections[0];
+        if (expirySection?.kind !== 'static') throw new Error('expected the expiry section');
+        expect(expirySection.options.map((option) => option.id)).toEqual([
+            'temporary-computer-expiry:server-a:linux-x64:never',
+            'temporary-computer-expiry:server-a:linux-x64:inOneDay',
+            'temporary-computer-expiry:server-a:linux-x64:inOneWeek',
+            'temporary-computer-expiry:server-a:linux-x64:custom',
+        ]);
+        // Never is the default, and the section says so in the one place the
+        // list actually renders a current answer.
+        expect(expirySection.resultHint).toBe('newSession.temporaryComputer.expiry.never');
+
+        const workspaceSection = workspaceStep?.sections[1];
+        if (workspaceSection?.kind !== 'static') throw new Error('expected the workspace section');
+        expect(workspaceSection.options.map((option) => option.id)).toEqual([
+            'temporary-computer-workspace:server-a:linux-x64:choose_on_endpoint',
+            'temporary-computer-workspace:server-a:linux-x64:endpoint_home',
+        ]);
+        workspaceSection.options[0]!.onSelect?.();
+        workspaceSection.options[1]!.onSelect?.();
+        expect(onSelectTemporaryComputer).toHaveBeenNthCalledWith(1, { kind: 'choose_on_endpoint' }, undefined);
+        expect(onSelectTemporaryComputer).toHaveBeenNthCalledWith(2, { kind: 'endpoint_home' }, undefined);
+        await rendered.unmount();
+    });
+
+    it('commits an explicitly chosen package expiry as an absolute instant with the folder', async () => {
+        const onSelectTemporaryComputer = vi.fn();
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            groups: [],
+            selectedMachine: null,
+            selectedServerId: 'server-a',
+            recentMachines: [],
+            favoriteMachines: [],
+            onSelectMachine: vi.fn(),
+            onSelectScopedMachine: vi.fn(),
+            temporaryComputers: [{
+                serverId: 'server-a',
+                artifactTarget: 'linux-x64',
+                selected: false,
+                workspace: null,
+                onSelect: onSelectTemporaryComputer,
+            }],
+            showFavorites: true,
+            showRecent: true,
+            showSearch: true,
+            showCliGlyphs: true,
+            autoDetectCliGlyphs: true,
+        }));
+
+        const readWorkspaceStep = () => {
+            const section = rendered.getCurrent().rootStep.sections[0];
+            if (section?.kind !== 'static') throw new Error('expected the Temporary computer section');
+            return section.options[0]?.openStep;
+        };
+        const readExpirySection = () => {
+            const expiry = readWorkspaceStep()?.sections[0];
+            if (expiry?.kind !== 'static') throw new Error('expected the expiry section');
+            return expiry;
+        };
+        const expiryOptions = () => readExpirySection().options;
+
+        const before = Date.now();
+        await act(async () => { expiryOptions()[1]!.onSelect?.(); });
+        const after = Date.now();
+        // This suite's `t` returns keys, so the exact instant is proven by the
+        // commit below; here the section must stop reporting Never.
+        expect(readExpirySection().resultHint).toBe('newSession.temporaryComputer.expiry.expiresAt');
+
+        const workspace = readWorkspaceStep()?.sections[1];
+        if (workspace?.kind !== 'static') throw new Error('expected the workspace section');
+        await act(async () => { workspace.options[1]!.onSelect?.(); });
+
+        expect(onSelectTemporaryComputer).toHaveBeenCalledTimes(1);
+        const [committedWorkspace, committedExpiry] = onSelectTemporaryComputer.mock.calls[0]!;
+        expect(committedWorkspace).toEqual({ kind: 'endpoint_home' });
+        // Absolute, resolved once at selection time — not a duration anything
+        // downstream has to count down.
+        expect(committedExpiry).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000);
+        expect(committedExpiry).toBeLessThanOrEqual(after + 24 * 60 * 60 * 1000);
+        await rendered.unmount();
+    });
+
+    it('commits an arbitrary future instant chosen through the shared date and time editor', async () => {
+        const onSelectTemporaryComputer = vi.fn();
+        // A moment no offered shortcut can produce: the contract is an optional
+        // absolute expiry the author states exactly, not a menu of durations.
+        const chosen = new Date(2031, 4, 17, 6, 42).getTime();
+        modalHost.show.mockClear();
+        modalHost.show.mockImplementation((config: unknown) => {
+            const resolve = (config as { props: { onResolve: (value: number | null) => void } }).props.onResolve;
+            queueMicrotask(() => resolve(chosen));
+            return 'modal-id';
+        });
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            groups: [],
+            selectedMachine: null,
+            selectedServerId: 'server-a',
+            recentMachines: [],
+            favoriteMachines: [],
+            onSelectMachine: vi.fn(),
+            onSelectScopedMachine: vi.fn(),
+            temporaryComputers: [{
+                serverId: 'server-a',
+                artifactTarget: 'linux-x64',
+                selected: false,
+                workspace: null,
+                onSelect: onSelectTemporaryComputer,
+            }],
+            showFavorites: true,
+            showRecent: true,
+            showSearch: true,
+            showCliGlyphs: true,
+            autoDetectCliGlyphs: true,
+        }));
+
+        const readWorkspaceStep = () => {
+            const section = rendered.getCurrent().rootStep.sections[0];
+            if (section?.kind !== 'static') throw new Error('expected the Temporary computer section');
+            return section.options[0]?.openStep;
+        };
+        const readExpirySection = () => {
+            const expiry = readWorkspaceStep()?.sections[0];
+            if (expiry?.kind !== 'static') throw new Error('expected the expiry section');
+            return expiry;
+        };
+
+        await act(async () => { readExpirySection().options[3]!.onSelect?.(); });
+        await act(async () => { await Promise.resolve(); });
+
+        expect(modalHost.show).toHaveBeenCalledOnce();
+        expect(readExpirySection().resultHint).toBe('newSession.temporaryComputer.expiry.expiresAt');
+
+        const workspace = readWorkspaceStep()?.sections[1];
+        if (workspace?.kind !== 'static') throw new Error('expected the workspace section');
+        await act(async () => { workspace.options[0]!.onSelect?.(); });
+
+        expect(onSelectTemporaryComputer).toHaveBeenCalledWith({ kind: 'choose_on_endpoint' }, chosen);
+        modalHost.show.mockReset();
+        modalHost.show.mockImplementation(() => 'modal-id');
+        await rendered.unmount();
+    });
+
+    it('keeps the committed expiry when the author backs out of the date and time editor', async () => {
+        const onSelectTemporaryComputer = vi.fn();
+        const committed = new Date(2030, 0, 2, 3, 4).getTime();
+        modalHost.show.mockClear();
+        modalHost.show.mockImplementation((config: unknown) => {
+            const resolve = (config as { props: { onResolve: (value: number | null) => void } }).props.onResolve;
+            queueMicrotask(() => resolve(null));
+            return 'modal-id';
+        });
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            groups: [],
+            selectedMachine: null,
+            selectedServerId: 'server-a',
+            recentMachines: [],
+            favoriteMachines: [],
+            onSelectMachine: vi.fn(),
+            onSelectScopedMachine: vi.fn(),
+            temporaryComputers: [{
+                serverId: 'server-a',
+                artifactTarget: 'linux-x64',
+                selected: true,
+                workspace: { kind: 'endpoint_home' },
+                packageExpiresAt: committed,
+                onSelect: onSelectTemporaryComputer,
+            }],
+            showFavorites: true,
+            showRecent: true,
+            showSearch: true,
+            showCliGlyphs: true,
+            autoDetectCliGlyphs: true,
+        }));
+
+        const readWorkspaceStep = () => {
+            const section = rendered.getCurrent().rootStep.sections[0];
+            if (section?.kind !== 'static') throw new Error('expected the Temporary computer section');
+            return section.options[0]?.openStep;
+        };
+        const expiry = readWorkspaceStep()?.sections[0];
+        if (expiry?.kind !== 'static') throw new Error('expected the expiry section');
+        await act(async () => { expiry.options[3]!.onSelect?.(); });
+        await act(async () => { await Promise.resolve(); });
+
+        const workspace = readWorkspaceStep()?.sections[1];
+        if (workspace?.kind !== 'static') throw new Error('expected the workspace section');
+        await act(async () => { workspace.options[1]!.onSelect?.(); });
+
+        expect(onSelectTemporaryComputer).toHaveBeenCalledWith({ kind: 'endpoint_home' }, committed);
+        modalHost.show.mockReset();
+        modalHost.show.mockImplementation(() => 'modal-id');
+        await rendered.unmount();
+    });
+
+    it('names each published platform row for a person rather than by artifact id', async () => {
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            groups: [],
+            selectedMachine: null,
+            selectedServerId: 'server-a',
+            recentMachines: [],
+            favoriteMachines: [],
+            onSelectMachine: vi.fn(),
+            onSelectScopedMachine: vi.fn(),
+            temporaryComputers: [{
+                serverId: 'server-a',
+                artifactTarget: 'darwin-arm64',
+                selected: false,
+                workspace: null,
+                onSelect: vi.fn(),
+            }, {
+                serverId: 'server-a',
+                artifactTarget: 'windows-x64',
+                selected: false,
+                workspace: null,
+                onSelect: vi.fn(),
+            }],
+            showFavorites: true,
+            showRecent: true,
+            showSearch: true,
+            showCliGlyphs: true,
+            autoDetectCliGlyphs: true,
+        }));
+
+        const section = rendered.getCurrent().rootStep.sections[0];
+        if (section?.kind !== 'static') throw new Error('expected the Temporary computer section');
+        const platformSection = section.options[0]?.openStep?.sections[0];
+        if (platformSection?.kind !== 'static') throw new Error('expected the platform section');
+        for (const option of platformSection.options) {
+            expect(option.label).not.toMatch(/^(darwin|windows|linux)-/);
+            // The accessible name says the same thing the row shows, so a screen
+            // reader never hears an identifier the screen does not display.
+            expect(option.accessibilityLabel).toContain(option.label as string);
+        }
+        expect(platformSection.options[0]?.label).toBe('newSession.temporaryComputer.platform.darwin-arm64');
+        expect(platformSection.options[1]?.label).toBe('newSession.temporaryComputer.platform.windows-x64');
+        await rendered.unmount();
+    });
+
+    it('keeps platform and workspace as nested picker steps when several artifacts are available', async () => {
+        const selectLinux = vi.fn();
+        const selectWindows = vi.fn();
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            groups: [],
+            selectedMachine: null,
+            selectedServerId: 'server-a',
+            recentMachines: [],
+            favoriteMachines: [],
+            onSelectMachine: vi.fn(),
+            onSelectScopedMachine: vi.fn(),
+            temporaryComputers: [{
+                serverId: 'server-a',
+                artifactTarget: 'linux-x64',
+                selected: false,
+                workspace: null,
+                onSelect: selectLinux,
+            }, {
+                serverId: 'server-a',
+                artifactTarget: 'windows-x64',
+                selected: false,
+                workspace: null,
+                onSelect: selectWindows,
+            }],
+            showFavorites: true,
+            showRecent: true,
+            showSearch: true,
+            showCliGlyphs: true,
+            autoDetectCliGlyphs: true,
+        }));
+
+        const section = rendered.getCurrent().rootStep.sections[0];
+        if (section?.kind !== 'static') throw new Error('expected the Temporary computer section');
+        const platformStep = section.options[0]?.openStep;
+        const platformSection = platformStep?.sections[0];
+        if (platformSection?.kind !== 'static') throw new Error('expected the platform section');
+        expect(platformSection.options).toHaveLength(2);
+        expect(platformSection.options[0]?.openStep?.id).toBe('temporary-computer-workspace:server-a:linux-x64');
+        expect(platformSection.options[1]?.openStep?.id).toBe('temporary-computer-workspace:server-a:windows-x64');
+        expect(selectLinux).not.toHaveBeenCalled();
+        expect(selectWindows).not.toHaveBeenCalled();
+        await rendered.unmount();
+    });
+
+    it('keeps an unavailable restored Temporary computer visible and routes retry to its projection owner', async () => {
+        const retry = vi.fn();
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            groups: [],
+            selectedMachine: null,
+            selectedServerId: 'server-a',
+            recentMachines: [],
+            favoriteMachines: [],
+            onSelectMachine: vi.fn(),
+            onSelectScopedMachine: vi.fn(),
+            temporaryComputers: [{
+                serverId: 'server-a',
+                artifactTarget: 'linux-x64',
+                selected: true,
+                workspace: { kind: 'choose_on_endpoint' },
+                disabled: true,
+                unavailableText: 'newSession.temporaryComputer.status.failed',
+                onRetry: retry,
+                onSelect: vi.fn(),
+            }],
+            showFavorites: true,
+            showRecent: true,
+            showSearch: true,
+            showCliGlyphs: true,
+            autoDetectCliGlyphs: true,
+            testIdPrefix: 'new-session-machine',
+        }));
+
+        const section = rendered.getCurrent().rootStep.sections[0];
+        if (section?.kind !== 'static') throw new Error('expected the Temporary computer section');
+        expect(section.options[0]).toMatchObject({
+            id: 'temporary-computer:server-a:linux-x64',
+            disabled: true,
+            subtitle: 'newSession.temporaryComputer.status.failed',
+        });
+        expect(section.options[0]?.openStep).toBeUndefined();
+        expect(section.options[1]).toMatchObject({
+            id: 'temporary-computer-retry:server-a',
+            label: 'common.retry',
+        });
+        section.options[1]?.onSelect?.();
+        expect(retry).toHaveBeenCalledOnce();
+        expect(rendered.getCurrent().selectedOptionId).toBe('temporary-computer:server-a:linux-x64');
+        await rendered.unmount();
+    });
+
+    it('shows pending and retryable unavailable feedback on the selected Pool row', async () => {
+        const fixture = createFixture();
+        const poolId = '3a948f0c-bc30-491c-b764-37f0e6744d1f';
+        const base = {
+            ...buildParams(fixture, makeHandlers()),
+            poolGroups: [{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                pools: [{
+                    pool: {
+                        id: poolId,
+                        name: 'Development',
+                        description: null,
+                        revision: 1,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        members: [],
+                    },
+                    availability: { state: 'known' as const, connectedCount: 1, enabledCount: 1 },
+                }],
+            }],
+            onSelectPool: vi.fn(),
+        };
+        const rendered = await renderHook(
+            (props: BuildMachineSelectionListModelParams) => useMachineSelectionListModel(props),
+            {
+                initialProps: {
+                    ...base,
+                    poolSelectionStatus: { kind: 'resolving', serverId: 'server-a', accountId: 'account-a', poolId },
+                },
+            },
+        );
+
+        let poolOption = firstStaticOption(rendered.getCurrent());
+        expect(poolOption.subtitle).toBe('machinePools.resolvingTarget');
+        expect(poolOption.disabled).toBe(true);
+
+        await rendered.rerender({
+            ...base,
+            poolSelectionStatus: {
+                kind: 'unavailable',
+                serverId: 'server-a',
+                accountId: 'account-a',
+                poolId,
+                reason: 'no_available_machine',
+            },
+        });
+        poolOption = firstStaticOption(rendered.getCurrent());
+        expect(poolOption.subtitle).toBe('machinePools.resolveNoAvailable');
+        expect(poolOption.disabled).toBe(false);
+        await rendered.unmount();
+    });
+
+    it('keeps a retained Pool row readable without advertising its cached connection count as current', async () => {
+        const fixture = createFixture();
+        const poolId = '3a948f0c-bc30-491c-b764-37f0e6744d1f';
+        const onSelectPool = vi.fn();
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            ...buildParams(fixture, makeHandlers()),
+            poolGroups: [{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                status: 'error',
+                projectionReady: true,
+                pools: [{
+                    pool: {
+                        id: poolId, name: 'Development', description: null,
+                        revision: 1, createdAt: 1, updatedAt: 1, members: [],
+                    },
+                    availability: { state: 'known' as const, connectedCount: 2, enabledCount: 2 },
+                }],
+            }],
+            onSelectPool,
+            onRefreshPools: vi.fn(),
+        }));
+
+        const poolOption = firstStaticOption(rendered.getCurrent());
+        expect(poolOption.disabled).toBe(true);
+        expect(poolOption.subtitle).toContain('machinePools.refreshFailed');
+        expect(poolOption.subtitle).not.toContain('machinePools.availabilityKnown');
+        poolOption.onSelect?.();
+        expect(onSelectPool).not.toHaveBeenCalled();
+        await rendered.unmount();
+    });
+
+    it('does not resolve a retained Pool row while its Home Machine list is failed', async () => {
+        const fixture = createFixture();
+        const onSelectPool = vi.fn();
+        const failedGroups = fixture.groups.map((group) => ({ ...group, error: true }));
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            ...buildParams({ ...fixture, groups: failedGroups }, makeHandlers()),
+            poolGroups: [{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                status: 'idle',
+                projectionReady: true,
+                pools: [{
+                    pool: {
+                        id: 'pool-a', name: 'Development', description: null,
+                        revision: 1, createdAt: 1, updatedAt: 1, members: [],
+                    },
+                    availability: { state: 'known' as const, connectedCount: 1, enabledCount: 1 },
+                }],
+            }],
+            onSelectPool,
+        }));
+
+        const poolOption = firstStaticOption(rendered.getCurrent());
+        expect(poolOption.disabled).toBe(true);
+        expect(poolOption.subtitle).toContain('common.error');
+        expect(poolOption.subtitle).not.toContain('machinePools.availabilityKnown');
+        poolOption.onSelect?.();
+        expect(onSelectPool).not.toHaveBeenCalled();
+        await rendered.unmount();
+    });
+
+    it('uses the shared Pool-member identity label when decrypted Machine metadata is unavailable', async () => {
+        const fixture = createFixture();
+        const machineId = 'machine-without-readable-metadata';
+        const unidentifiedMachine = createMachine(machineId);
+        unidentifiedMachine.metadata = {
+            ...unidentifiedMachine.metadata,
+            displayName: '',
+            host: '',
+        };
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            ...buildParams({
+                ...fixture,
+                groups: [{
+                    ...fixture.groups[0]!,
+                    machines: [createScopedMachine(unidentifiedMachine)],
+                }],
+            }, makeHandlers()),
+            poolGroups: [{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                status: 'idle',
+                projectionReady: true,
+                pools: [{
+                    pool: {
+                        id: 'pool-a',
+                        name: 'Development',
+                        description: null,
+                        revision: 1,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        members: [{
+                            machineId,
+                            enabled: true,
+                            priorityTier: 0,
+                            state: 'connected',
+                        }],
+                    },
+                    availability: { state: 'known', connectedCount: 1, enabledCount: 1 },
+                }],
+            }],
+            onSelectPool: vi.fn(),
+        }));
+
+        const poolOption = firstStaticOption(rendered.getCurrent());
+        expect(poolOption.subtitle).toContain(machineId.slice(0, 8));
+        expect(poolOption.subtitle).not.toContain(machineId);
+        await rendered.unmount();
+    });
+
+    it('uses only enabled members in the visible and accessible Pool preview', async () => {
+        const fixture = createFixture();
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            ...buildParams(fixture, makeHandlers()),
+            poolGroups: [{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                status: 'idle',
+                projectionReady: true,
+                pools: [{
+                    pool: {
+                        id: 'pool-a', name: 'Development', description: null,
+                        revision: 1, createdAt: 1, updatedAt: 1,
+                        members: [
+                            { machineId: 'm-1', enabled: false, priorityTier: 0, state: 'connected' },
+                            { machineId: 'm-2', enabled: true, priorityTier: 1, state: 'connected' },
+                            { machineId: 'm-3', enabled: true, priorityTier: 1, state: 'connected' },
+                        ],
+                    },
+                    availability: { state: 'known', connectedCount: 2, enabledCount: 2 },
+                }],
+            }],
+            onSelectPool: vi.fn(),
+        }));
+
+        const poolOption = firstStaticOption(rendered.getCurrent());
+        expect(poolOption.subtitle).toContain('m-2, m-3');
+        expect(poolOption.subtitle).not.toContain('m-1');
+        expect(poolOption.accessibilityLabel).toContain('m-2, m-3');
+        expect(poolOption.accessibilityLabel).not.toContain('m-1');
+        await rendered.unmount();
+    });
+
+    it('includes the exact Home in accessible Pool labels when several Homes are shown', async () => {
+        const machineA = createScopedMachine(createMachine('machine-a'));
+        const machineB = {
+            ...createScopedMachine(createMachine('machine-a')),
+            serverId: 'server-b',
+            serverName: 'Server B',
+        };
+        const pool = (id: string) => ({
+            pool: {
+                id,
+                name: 'Development',
+                description: null,
+                revision: 1,
+                createdAt: 1,
+                updatedAt: 1,
+                members: [{ machineId: 'machine-a', priorityTier: 0, enabled: true, state: 'connected' as const }],
+            },
+            availability: { state: 'known' as const, connectedCount: 1, enabledCount: 1 },
+        });
+        const groups = [
+            { serverId: 'server-a', serverName: 'Server A', loading: false, signedOut: false, machines: [machineA] },
+            { serverId: 'server-b', serverName: 'Server B', loading: false, signedOut: false, machines: [machineB] },
+        ];
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            groups,
+            poolGroups: [
+                { serverId: 'server-a', accountId: 'account-a', serverName: 'Server A', status: 'idle', projectionReady: true, pools: [pool('pool-a')] },
+                { serverId: 'server-b', accountId: 'account-b', serverName: 'Server B', status: 'idle', projectionReady: true, pools: [pool('pool-b')] },
+            ],
+            selectedMachine: null,
+            selectedServerId: null,
+            recentMachines: [],
+            favoriteMachines: [],
+            onSelectMachine: vi.fn(),
+            onSelectScopedMachine: vi.fn(),
+            onSelectPool: vi.fn(),
+            showFavorites: false,
+            showRecent: false,
+            showSearch: true,
+            showCliGlyphs: false,
+            autoDetectCliGlyphs: false,
+        }));
+
+        const poolSections = rendered.getCurrent().rootStep.sections.filter((section) => (
+            section.kind === 'static' && section.id.endsWith(':machine-pools')
+        ));
+        expect(poolSections).toHaveLength(2);
+        expect(poolSections[0]?.kind === 'static' ? poolSections[0].options[0]?.accessibilityLabel : '').toContain('Server A');
+        expect(poolSections[1]?.kind === 'static' ? poolSections[1].options[0]?.accessibilityLabel : '').toContain('Server B');
+        await rendered.unmount();
+    });
+
+    it('offers a failed Home an explicit retry into the canonical Machine refresh owner', async () => {
+        const fixture = createFixture();
+        const failedGroups = fixture.groups.map((group) => ({ ...group, error: true }));
+        const onRefreshMachines = vi.fn();
+        const onRefreshPools = vi.fn();
+        const rendered = await renderHook(() => useMachineSelectionListModel({
+            ...buildParams({ ...fixture, groups: failedGroups }, makeHandlers()),
+            poolGroups: [{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                status: 'idle',
+                projectionReady: true,
+                pools: [{
+                    pool: {
+                        id: 'pool-a', name: 'Development', description: null,
+                        revision: 1, createdAt: 1, updatedAt: 1, members: [],
+                    },
+                    availability: { state: 'unknown' as const },
+                }],
+            }],
+            onSelectPool: vi.fn(),
+            onRefreshMachines,
+            onRefreshPools,
+        }));
+
+        const section = rendered.getCurrent().rootStep.sections[0];
+        if (section?.kind !== 'static') throw new Error('expected the Pool section');
+        const retry = section.options.find((option) => option.id === 'pool-refresh:server-a');
+        expect(retry?.label).toBe('common.retry');
+        retry?.onSelect?.();
+        expect(onRefreshMachines).toHaveBeenCalledOnce();
+        expect(onRefreshPools).not.toHaveBeenCalled();
+        await rendered.unmount();
+    });
+
+    it('routes each unavailable resolve outcome to its own existing recovery owner', async () => {
+        const fixture = createFixture();
+        const poolId = '3a948f0c-bc30-491c-b764-37f0e6744d1f';
+        const onOpenPoolSettings = vi.fn();
+        const onRefreshPools = vi.fn();
+        const onDismissPoolSelection = vi.fn();
+        const base = {
+            ...buildParams(fixture, makeHandlers()),
+            poolGroups: [{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                status: 'idle' as const,
+                projectionReady: true,
+                pools: [{
+                    pool: {
+                        id: poolId, name: 'Development', description: null,
+                        revision: 1, createdAt: 1, updatedAt: 1, members: [],
+                    },
+                    availability: { state: 'known' as const, connectedCount: 0, enabledCount: 0 },
+                }],
+            }],
+            onSelectPool: vi.fn(),
+            onOpenPoolSettings,
+            onRefreshPools,
+            onDismissPoolSelection,
+        };
+        const rendered = await renderHook(
+            (props: BuildMachineSelectionListModelParams) => useMachineSelectionListModel(props),
+            {
+                initialProps: {
+                    ...base,
+                    poolSelectionStatus: { kind: 'unavailable', serverId: 'server-a', accountId: 'account-a', poolId, reason: 'empty' },
+                },
+            },
+        );
+
+        const optionIdsOf = () => {
+            const section = rendered.getCurrent().rootStep.sections[0];
+            if (section?.kind !== 'static') throw new Error('expected the Pool section');
+            return section.options;
+        };
+        const settings = optionIdsOf().find((option) => option.id === 'pool-settings:server-a');
+        expect(settings?.label).toBe('machinePools.openSettings');
+        settings?.onSelect?.();
+        expect(onOpenPoolSettings).toHaveBeenCalledWith({ serverId: 'server-a', poolId });
+        expect(optionIdsOf().some((option) => option.id === 'pool-pick-machine:server-a')).toBe(false);
+
+        await rendered.rerender({
+            ...base,
+            poolSelectionStatus: {
+                kind: 'unavailable', serverId: 'server-a', accountId: 'account-a', poolId, reason: 'no_available_machine',
+            },
+        });
+        expect(optionIdsOf().some((option) => option.id === 'pool-settings:server-a')).toBe(false);
+        optionIdsOf().find((option) => option.id === 'pool-refresh:server-a')?.onSelect?.();
+        expect(onRefreshPools).toHaveBeenCalledWith('server-a');
+        const pickSpecific = optionIdsOf().find((option) => option.id === 'pool-pick-machine:server-a');
+        expect(pickSpecific?.label).toBe('machinePools.pickSpecificMachine');
+        pickSpecific?.onSelect?.();
+        expect(onDismissPoolSelection).toHaveBeenCalledOnce();
+
+        // A current Home with a cached zero-connected summary still reaches the authoritative
+        // resolve; only the Home's own currentness may deny activation.
+        expect(optionIdsOf().find((option) => option.id === `pool:server-a:${poolId}`)?.disabled).toBe(false);
+        await rendered.unmount();
+    });
+
     it('reuses the derived model when only the caller handler identities change', async () => {
         const rendered = await renderModel(createFixture(), makeHandlers());
         const first = rendered.getCurrent();

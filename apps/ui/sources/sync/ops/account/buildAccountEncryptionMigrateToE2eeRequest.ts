@@ -17,6 +17,7 @@ import {
   type QualifiedConnectedAccountCredentialSnapshotV4,
   type QualifiedConnectedAccountProfileV4,
   type QualifiedConnectedAccountRef,
+  type AccountEncryptionMigrateTransitionPasswordCredential,
 } from '@happier-dev/protocol';
 
 import { getRandomBytes } from '@/platform/cryptoRandom';
@@ -70,6 +71,7 @@ export async function buildAccountEncryptionMigrateToE2eeRequest(params: Readonl
   automations: ReadonlyArray<Readonly<{ id: string; templateVersion: number; templateCiphertext: string }>>;
   sessionDrafts?: readonly AccountEncryptionSessionDraftMigrationCandidate[];
   storageDirectives: AccountEncryptionMigrationStorageDirectives;
+  passwordCredential?: AccountEncryptionMigrateTransitionPasswordCredential;
   fetchConnectedServiceCredentialPlain: (args: Readonly<{ serviceId: ConnectedServiceId; profileId: string }>) => Promise<Readonly<{
     content: Readonly<{ t: 'plain'; v: unknown }>;
     metadata?: ConnectedServiceCredentialMetadataInput;
@@ -264,6 +266,7 @@ export async function buildAccountEncryptionMigrateToE2eeRequest(params: Readonl
         contentPublicKeySig: params.keyProof.contentPublicKeySig,
       },
       ...params.storageDirectives,
+      ...(params.passwordCredential ? { passwordCredential: params.passwordCredential } : {}),
       ...(sessionDrafts ? { sessionDrafts } : {}),
     });
   const signature = params.keyProof.sign(

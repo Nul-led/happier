@@ -66,6 +66,17 @@ function stubWebRuntime(origin: string) {
     });
     vi.stubGlobal('window', { location: { origin } });
     vi.stubGlobal('document', {});
+    const lockTails = new Map<string, Promise<void>>();
+    vi.stubGlobal('navigator', {
+        locks: {
+            request: <T>(name: string, callback: () => T | PromiseLike<T>): Promise<T> => {
+                const previous = lockTails.get(name) ?? Promise.resolve();
+                const result = previous.then(callback);
+                lockTails.set(name, result.then(() => undefined, () => undefined));
+                return result;
+            },
+        },
+    });
 }
 
 async function importFreshServerModules() {
@@ -95,16 +106,16 @@ describe('activeServerSwitch device scope', () => {
         stubWebRuntime('https://origin.example.test');
 
         const { profiles, switches } = await importFreshServerModules();
-        const deviceProfile = profiles.upsertServerProfile({
+        const deviceProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://device.example.test',
             name: 'Device',
         });
-        const tabProfile = profiles.upsertServerProfile({
+        const tabProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://tab.example.test',
             name: 'Tab',
         });
-        profiles.setActiveServerId(deviceProfile.id, { scope: 'device' });
-        profiles.setActiveServerId(tabProfile.id, { scope: 'tab' });
+        await profiles.setActiveServerId(deviceProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(tabProfile.id, { scope: 'tab' });
 
         const switched = await switches.setActiveServerAndSwitch({
             serverId: tabProfile.id,
@@ -132,8 +143,8 @@ describe('activeServerSwitch device scope', () => {
                 endpoints: [{ kind: 'https', url: 'https://active.example.test' }],
             },
         });
-        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
-        profiles.saveHomeViewState({
+        await profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+        await profiles.saveHomeViewState({
             version: 1,
             groups: [{
                 id: 'saved-homes',
@@ -178,16 +189,16 @@ describe('activeServerSwitch device scope', () => {
         stubWebRuntime('https://origin.example.test');
 
         const { profiles, switches } = await importFreshServerModules();
-        const deviceProfile = profiles.upsertServerProfile({
+        const deviceProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://device.example.test',
             name: 'Device',
         });
-        const tabProfile = profiles.upsertServerProfile({
+        const tabProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://tab.example.test',
             name: 'Tab',
         });
-        profiles.setActiveServerId(deviceProfile.id, { scope: 'device' });
-        profiles.setActiveServerId(tabProfile.id, { scope: 'tab' });
+        await profiles.setActiveServerId(deviceProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(tabProfile.id, { scope: 'tab' });
 
         const switched = await switches.upsertActivateAndSwitchServer({
             serverUrl: tabProfile.serverUrl,
@@ -206,12 +217,12 @@ describe('activeServerSwitch device scope', () => {
         stubWebRuntime('https://origin.example.test');
 
         const { profiles, switches } = await importFreshServerModules();
-        const profile = profiles.upsertServerProfile({
+        const profile = await profiles.upsertServerProfile({
             serverUrl: 'https://relay.example.test',
             name: 'Relay',
         });
-        profiles.setActiveServerId(profile.id, { scope: 'device' });
-        profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_identity_123');
+        await profiles.setActiveServerId(profile.id, { scope: 'device' });
+        await profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_identity_123');
 
         const switched = await switches.setActiveServerAndSwitch({
             serverId: profile.id,
@@ -221,6 +232,32 @@ describe('activeServerSwitch device scope', () => {
         expect(switched).toBe('already_active');
         expect(profiles.getActiveServerId()).toBe('srv_identity_123');
         expect(profiles.getDeviceDefaultServerId()).toBe(profile.id);
+    });
+
+    it('reasserts an exact saved profile when its Home identity is already active', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebRuntime('https://origin.example.test');
+
+        const { profiles, switches } = await importFreshServerModules();
+        const profile = await profiles.upsertServerProfile({
+            serverUrl: 'https://relay.example.test',
+            name: 'Relay',
+        });
+        await profiles.setActiveServerId(profile.id, { scope: 'device' });
+        await profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_identity_123');
+        const refreshAuth = vi.fn(async () => {});
+
+        const switched = await switches.setActiveServerAndSwitch({
+            serverId: profile.id,
+            scope: 'device',
+            refreshAuth,
+            requireExactProfile: true,
+        });
+
+        expect(switched).toBe('switched');
+        expect(profiles.getDeviceDefaultServerId()).toBe(profile.id);
+        expect(switchConnectionToActiveServerSpy).toHaveBeenCalledOnce();
+        expect(refreshAuth).toHaveBeenCalledOnce();
     });
 
     it('keeps active-server, connection, and auth refresh state unchanged until marked custody is adjudicated', async () => {
@@ -233,15 +270,15 @@ describe('activeServerSwitch device scope', () => {
             recovery,
         });
         const { profiles, switches } = await importFreshServerModules();
-        const activeProfile = profiles.upsertServerProfile({
+        const activeProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://active.example.test',
             name: 'Active',
         });
-        const targetProfile = profiles.upsertServerProfile({
+        const targetProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://target.example.test',
             name: 'Target',
         });
-        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
         const refreshAuth = vi.fn(async () => {});
 
         const switched = await switches.setActiveServerAndSwitch({
@@ -268,20 +305,20 @@ describe('activeServerSwitch device scope', () => {
             .mockRejectedValueOnce(targetFailure)
             .mockResolvedValueOnce(null);
         const { profiles, switches } = await importFreshServerModules();
-        const deviceProfile = profiles.upsertServerProfile({
+        const deviceProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://device.example.test',
             name: 'Device',
         });
-        const tabProfile = profiles.upsertServerProfile({
+        const tabProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://tab.example.test',
             name: 'Tab',
         });
-        const targetProfile = profiles.upsertServerProfile({
+        const targetProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://target.example.test',
             name: 'Target',
         });
-        profiles.setActiveServerId(deviceProfile.id, { scope: 'device' });
-        profiles.setActiveServerId(tabProfile.id, { scope: 'tab' });
+        await profiles.setActiveServerId(deviceProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(tabProfile.id, { scope: 'tab' });
         const priorActive = profiles.getActiveServerSnapshot();
         const refreshAuth = vi.fn(async () => {});
 
@@ -307,20 +344,20 @@ describe('activeServerSwitch device scope', () => {
 
         const refreshFailure = new Error('active server auth refresh failed');
         const { profiles, switches } = await importFreshServerModules();
-        const deviceProfile = profiles.upsertServerProfile({
+        const deviceProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://device.example.test',
             name: 'Device',
         });
-        const tabProfile = profiles.upsertServerProfile({
+        const tabProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://tab.example.test',
             name: 'Tab',
         });
-        const targetProfile = profiles.upsertServerProfile({
+        const targetProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://target.example.test',
             name: 'Target',
         });
-        profiles.setActiveServerId(deviceProfile.id, { scope: 'device' });
-        profiles.setActiveServerId(tabProfile.id, { scope: 'tab' });
+        await profiles.setActiveServerId(deviceProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(tabProfile.id, { scope: 'tab' });
         const priorActive = profiles.getActiveServerSnapshot();
         const refreshAuth = vi.fn(async () => {
             throw refreshFailure;
@@ -352,15 +389,15 @@ describe('activeServerSwitch device scope', () => {
             .mockRejectedValueOnce(targetFailure)
             .mockRejectedValueOnce(rollbackFailure);
         const { profiles, switches } = await importFreshServerModules();
-        const activeProfile = profiles.upsertServerProfile({
+        const activeProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://active.example.test',
             name: 'Active',
         });
-        const targetProfile = profiles.upsertServerProfile({
+        const targetProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://target.example.test',
             name: 'Target',
         });
-        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
 
         const switchPromise = switches.setActiveServerAndSwitch({
             serverId: targetProfile.id,
@@ -388,15 +425,15 @@ describe('activeServerSwitch device scope', () => {
                 recovery,
             });
         const { profiles, switches } = await importFreshServerModules();
-        const activeProfile = profiles.upsertServerProfile({
+        const activeProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://active.example.test',
             name: 'Active',
         });
-        const targetProfile = profiles.upsertServerProfile({
+        const targetProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://retained.example.test',
             name: 'Retained',
         });
-        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
 
         const switched = await switches.setActiveServerAndSwitch({
             serverId: targetProfile.id,
@@ -424,19 +461,19 @@ describe('activeServerSwitch device scope', () => {
             .mockImplementationOnce(async () => await firstSwitchPending)
             .mockResolvedValueOnce(null);
         const { profiles, switches } = await importFreshServerModules();
-        const activeProfile = profiles.upsertServerProfile({
+        const activeProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://active.example.test',
             name: 'Active',
         });
-        const middleProfile = profiles.upsertServerProfile({
+        const middleProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://middle.example.test',
             name: 'Middle',
         });
-        const finalProfile = profiles.upsertServerProfile({
+        const finalProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://final.example.test',
             name: 'Final',
         });
-        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
 
         const first = switches.setActiveServerAndSwitch({
             serverId: middleProfile.id,
@@ -475,19 +512,19 @@ describe('activeServerSwitch device scope', () => {
             .mockImplementationOnce(async () => await rollbackPending)
             .mockResolvedValueOnce(null);
         const { profiles, switches } = await importFreshServerModules();
-        const activeProfile = profiles.upsertServerProfile({
+        const activeProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://active.example.test',
             name: 'Active',
         });
-        const middleProfile = profiles.upsertServerProfile({
+        const middleProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://middle.example.test',
             name: 'Middle',
         });
-        const finalProfile = profiles.upsertServerProfile({
+        const finalProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://final.example.test',
             name: 'Final',
         });
-        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
 
         const first = switches.setActiveServerAndSwitch({
             serverId: middleProfile.id,
@@ -519,11 +556,11 @@ describe('activeServerSwitch device scope', () => {
         stubWebRuntime('https://origin.example.test');
 
         const { profiles, switches } = await importFreshServerModules();
-        const activeProfile = profiles.upsertServerProfile({
+        const activeProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://active.example.test',
             name: 'Active',
         });
-        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
 
         await expect(switches.setActiveServerAndSwitch({
             serverId: 'missing-home',

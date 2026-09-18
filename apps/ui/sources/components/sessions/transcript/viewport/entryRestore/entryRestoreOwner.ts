@@ -107,6 +107,8 @@ export type EntryRestoreOwnerEffect =
     }>;
 
 export type EntryRestoreOwnerAttemptInput<TItem> = Readonly<{
+    /** Loaded anchor excluded by the projection and not mounted by its host. */
+    anchorOutsideProjectionSeq?: number | null;
     canMaterializeOlder: boolean;
     contentHeight: number;
     currentSessionId: string;
@@ -209,6 +211,10 @@ export function createEntryRestoreOwner(): EntryRestoreOwner {
 
         const rememberedDistanceFromBottom = normalizeDistance(entryViewport.offsetY);
         const distanceFromBottom = rememberedDistanceFromBottom ?? 0;
+        const anchorOutsideProjectionSeq = normalizeMaterializationTargetSeq(params.anchorOutsideProjectionSeq ?? null);
+        if (anchorOutsideProjectionSeq != null && params.canMaterializeOlder) {
+            return materializeEffects('missing-anchor', 'restore-anchor', distanceFromBottom, anchorOutsideProjectionSeq, params);
+        }
         const target = resolveEntryRestoreTarget({
             snapshot: {
                 anchor: toResolverAnchor(entryViewport.anchor),
@@ -228,20 +234,6 @@ export function createEntryRestoreOwner(): EntryRestoreOwner {
         });
 
         if (target.kind === 'none' && isWaitNoneReason(target.reason)) return [];
-        // On web, the entry restore layout effect may fire before any items are
-        // available (direct URL cold load: the React mount precedes the initial fill
-        // loop). Treating `empty-transcript` as FINAL at this point sets
-        // lastClosedSessionId and permanently blocks all subsequent retries.
-        // Treat it as a wait verdict until the fill settles so the owner retries
-        // once content arrives.
-        if (
-            params.platform === 'web' &&
-            target.kind === 'none' &&
-            target.reason === 'empty-transcript' &&
-            !params.fillSettled
-        ) {
-            return [];
-        }
         if (target.kind === 'materialize-then-anchor') {
             return materializeEffects(
                 'missing-anchor',

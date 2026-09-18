@@ -17,7 +17,14 @@ type FailureMessageKeyResolver = (result: Readonly<{
 
 type ResultFailureMessageKeyResolver = (
     result: Exclude<SessionSpawnNewResultV1, Readonly<{ type: 'success' }>>,
-) => 'newSession.launchStillPendingBody' | 'newSession.daemonRpcUnavailableBody' | 'newSession.failedToStart';
+) =>
+    | 'newSession.launchStillPendingBody'
+    | 'newSession.daemonRpcUnavailableBody'
+    | 'newSession.failedToStart'
+    | 'session.access.repairBody'
+    | 'session.access.preparationKeyUnavailable'
+    | 'teams.policy.externalSharingDisabled'
+    | 'teams.policy.externalSharingAdmins';
 
 describe('session.spawn_new Action failure presentation', () => {
     it('reserves update guidance for an unavailable Action method', () => {
@@ -82,5 +89,30 @@ describe('session.spawn_new Action failure presentation', () => {
             code: 'organization_invalid',
             retryable: false,
         })).toBe('newSession.failedToStart');
+        expect(resolveResultFailureMessageKey?.({
+            type: 'error',
+            code: 'recipient_key_unavailable',
+            retryable: false,
+        })).toBe('session.access.repairBody');
+        expect(resolveResultFailureMessageKey?.({
+            type: 'error',
+            code: 'session_access_invalid_recipient_envelope',
+            retryable: false,
+        })).toBe('session.access.repairBody');
+        expect(resolveResultFailureMessageKey?.({
+            type: 'error',
+            code: 'session_data_key_unavailable',
+            retryable: false,
+        })).toBe('session.access.preparationKeyUnavailable');
+        expect(resolveResultFailureMessageKey?.({
+            type: 'error',
+            code: 'session_access_external_sharing_disabled',
+            retryable: false,
+        })).toBe('teams.policy.externalSharingDisabled');
+        expect(resolveResultFailureMessageKey?.({
+            type: 'error',
+            code: 'session_access_external_sharing_requires_team_admin',
+            retryable: false,
+        })).toBe('teams.policy.externalSharingAdmins');
     });
 });

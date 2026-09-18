@@ -25,7 +25,7 @@ const desktopRuntimeProps = vi.hoisted(() => ({
     calls: [] as Record<string, unknown>[],
 }));
 const listenDesktopPetOverlayShowMainWindowRequestedMock = vi.hoisted(() =>
-    vi.fn(async (_handler: (payload: { targetSessionId?: string }) => void | Promise<void>) => () => {}),
+    vi.fn(async (_handler: (payload: { targetServerId?: string; targetSessionId?: string }) => void | Promise<void>) => () => {}),
 );
 const executePetOverlayMainWindowActionMock = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
 const createDefaultActionExecutorMock = vi.hoisted(() =>
@@ -44,12 +44,15 @@ const activityState = vi.hoisted((): { current: PetCompanionActivityState } => (
     current: {
         state: 'running',
         reason: 'running',
+        address: { serverId: 'server-a', sessionId: 'session-running' },
         sessionId: 'session-running',
         trayItems: [
             {
                 id: 'running:session-running:live',
                 dismissKey: 'running:session-running:live',
+                address: { serverId: 'server-a', sessionId: 'session-running' },
                 sessionId: 'session-running',
+                contextLine: 'Home A',
                 status: 'running',
                 priority: 0,
                 title: 'Running session',
@@ -163,12 +166,15 @@ describe('DesktopPetOverlayRuntimeMount', () => {
         activityState.current = {
             state: 'running',
             reason: 'running',
+            address: { serverId: 'server-a', sessionId: 'session-running' },
             sessionId: 'session-running',
             trayItems: [
                 {
                     id: 'running:session-running:live',
                     dismissKey: 'running:session-running:live',
+                    address: { serverId: 'server-a', sessionId: 'session-running' },
                     sessionId: 'session-running',
+                    contextLine: 'Home A',
                     status: 'running',
                     priority: 0,
                     title: 'Running session',
@@ -198,12 +204,15 @@ describe('DesktopPetOverlayRuntimeMount', () => {
         activityState.current = {
             state: 'running',
             reason: 'running',
+            address: { serverId: 'server-a', sessionId: 'session-running' },
             sessionId: 'session-running',
             trayItems: [
                 {
                     id: 'running:session-running:live',
                     dismissKey: 'running:session-running:live',
+                    address: { serverId: 'server-a', sessionId: 'session-running' },
                     sessionId: 'session-running',
+                    contextLine: 'Home A',
                     status: 'running',
                     priority: 0,
                     title: 'Running session',
@@ -262,7 +271,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
     });
 
     it('opens tray target sessions from native main-window requests in the main app runtime', async () => {
-        let requestHandler: ((payload: { targetSessionId?: string }) => void | Promise<void>) | null = null;
+        let requestHandler: ((payload: { targetServerId?: string; targetSessionId?: string }) => void | Promise<void>) | null = null;
         listenDesktopPetOverlayShowMainWindowRequestedMock.mockImplementation(async (handler) => {
             requestHandler = handler;
             return () => {};
@@ -279,13 +288,19 @@ describe('DesktopPetOverlayRuntimeMount', () => {
         expect(requestHandler).not.toBeNull();
 
         await act(async () => {
-            await requestHandler?.({ targetSessionId: 'session-from-tray' });
+            await requestHandler?.({
+                targetServerId: 'server-pets',
+                targetSessionId: 'session-from-tray',
+            });
         });
 
         expect(executePetOverlayMainWindowActionMock).toHaveBeenCalledWith(
             'session.open',
             { sessionId: 'session-from-tray' },
-            { defaultSessionId: 'session-from-tray' },
+            {
+                defaultSessionId: 'session-from-tray',
+                serverId: 'server-pets',
+            },
         );
     });
 
@@ -293,6 +308,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
         activityState.current = {
             state: 'idle',
             reason: 'idle',
+            address: null,
             sessionId: null,
             trayItems: [],
         };
@@ -317,6 +333,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
         activityState.current = {
             state: 'idle',
             reason: 'idle',
+            address: null,
             sessionId: null,
             trayItems: [],
         };
@@ -338,6 +355,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
         activityState.current = {
             state: 'idle',
             reason: 'idle',
+            address: { serverId: 'server-a', sessionId: 'session-active-idle' },
             sessionId: 'session-active-idle',
             trayItems: [],
         };
@@ -364,6 +382,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
         activityState.current = {
             state: 'idle',
             reason: 'idle',
+            address: null,
             sessionId: null,
             trayItems: [],
         };

@@ -71,6 +71,9 @@ async function authApproveWithRequest(
             publicKey: publicKeyBase64,
             response: params.responseBase64,
             responseKind: params.responseKind,
+            // Approving this terminal is the explicit unattended-use decision;
+            // ordinary device pairing/recovery use their separate endpoints.
+            authorizeUnattendedTeamAccess: true,
         }),
     }, { includeAuth: false });
     if (!response.ok) {

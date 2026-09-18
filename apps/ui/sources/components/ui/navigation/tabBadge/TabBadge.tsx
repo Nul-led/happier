@@ -101,13 +101,24 @@ type TabBadgeProps =
  */
 export function TabBadge(props: TabBadgeProps): React.ReactElement {
     if (props.variant === 'dot') {
-        return <View testID={props.testID} style={props.style ? [styles.dot, props.style] : styles.dot} />;
+        return (
+            <View
+                testID={props.testID}
+                accessible={false}
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+                style={props.style ? [styles.dot, props.style] : styles.dot}
+            />
+        );
     }
 
     if (props.variant === 'count') {
         return (
             <View
                 testID={props.testID}
+                accessible={false}
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
                 style={[
                     styles.countBadge,
                     props.tone === 'neutral' ? styles.countBadgeNeutral : null,
@@ -122,7 +133,13 @@ export function TabBadge(props: TabBadgeProps): React.ReactElement {
     const max = props.max ?? 999;
     const showLines = props.added > 0 || props.removed > 0;
     return (
-        <View testID={props.testID} style={props.style ? [styles.diffChip, props.style] : styles.diffChip}>
+        <View
+            testID={props.testID}
+            accessible={false}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={props.style ? [styles.diffChip, props.style] : styles.diffChip}
+        >
             {showLines ? (
                 <>
                     {props.added > 0 ? (

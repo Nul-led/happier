@@ -7,10 +7,13 @@ import {
     pairingStatus,
 } from './apiPairingAuth';
 import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
+import { encodeBase64 } from '@happier-dev/protocol';
 
 const endpointFetchMock = vi.hoisted(() => vi.fn());
 const createServerFetchAtEndpointMock = vi.hoisted(() => vi.fn<(input: unknown) => typeof endpointFetchMock>(() => endpointFetchMock));
 const serverFetchMock = vi.hoisted(() => vi.fn());
+const requestedPublicKey = encodeBase64(new Uint8Array(32).fill(8));
+const bindingProof = encodeBase64(new Uint8Array(32).fill(9), 'base64url');
 
 vi.mock('@/sync/http/client', () => ({
     createServerFetchAtEndpoint: (input: unknown) => createServerFetchAtEndpointMock(input),
@@ -84,30 +87,35 @@ describe('pairing auth client explicit target', () => {
     });
 
     it('targets the trusted-device pairing start request and its Home-authenticated reads at the explicit endpoint', async () => {
+        const controller = new AbortController();
         endpointFetchMock
             .mockResolvedValueOnce(json(200, { pairId: 'pair-9', expiresAt: '2026-01-01T00:00:00.000Z' }))
             .mockResolvedValueOnce(json(200, {
                 state: 'requested',
                 pairId: 'pair-9',
                 expiresAt: '2026-01-01T00:00:00.000Z',
-                requestedPublicKey: 'pk',
+                requestedPublicKey,
                 requestedDeviceLabel: 'Phone',
                 homeServerIdentityId: 'srv_home_a',
-                bindingProof: 'proof',
+                bindingProof,
             }))
             .mockResolvedValueOnce(json(200, { success: true }));
 
-        await expect(pairingStart({ direction: 'trusted_home_displays', secretHash: 'hash' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({ ok: true, data: { pairId: 'pair-9', expiresAt: '2026-01-01T00:00:00.000Z' } });
+        await expect(pairingStart(
+            { direction: 'trusted_home_displays', secretHash: 'hash' },
+            await target('https://home-a.test', 'profile-a'),
+            { signal: controller.signal },
+        )).resolves.toEqual({ ok: true, data: { pairId: 'pair-9', expiresAt: '2026-01-01T00:00:00.000Z' } });
         await expect(pairingStatus({ pairId: 'pair-9' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({
             ok: true,
             data: {
                 state: 'requested',
                 pairId: 'pair-9',
                 expiresAt: '2026-01-01T00:00:00.000Z',
-                requestedPublicKey: 'pk',
+                requestedPublicKey,
                 requestedDeviceLabel: 'Phone',
                 homeServerIdentityId: 'srv_home_a',
-                bindingProof: 'proof',
+                bindingProof,
             },
         });
         await expect(pairingConsume({ pairId: 'pair-9' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({ ok: true });
@@ -122,6 +130,7 @@ describe('pairing auth client explicit target', () => {
             direction: 'trusted_home_displays',
             secretHash: 'hash',
         });
+        expect((endpointFetchMock.mock.calls[0]?.[1] as RequestInit).signal).toBe(controller.signal);
         expect(createServerFetchAtEndpointMock).not.toHaveBeenCalledWith(expect.objectContaining({
             credentials: null,
         }));

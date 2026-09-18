@@ -1,5 +1,5 @@
 import { requireNativeModule } from 'expo-modules-core';
-import { parseSerializedJsonValue } from '@happier-dev/protocol';
+import { decodeBase64, encodeBase64, parseSerializedJsonValue } from '@happier-dev/protocol';
 
 import {
     NATIVE_CRYPTO_WORKER_OPERATION,
@@ -23,6 +23,7 @@ type NativeCapabilitiesResult = Readonly<{
 }>;
 
 type HappierCryptoWorkerNativeModule = Readonly<{
+    derivePasswordEnvelopeKey?: (request: NativePasswordEnvelopeKeyRequest) => Promise<string>;
     getCapabilities?: () => Promise<NativeCapabilitiesResult>;
     echoBatchForDiagnostics?: (values: readonly string[]) => Promise<readonly string[]>;
     decryptDataKeyEnvelopeV1Batch?: (
@@ -188,4 +189,43 @@ export function createNativeCryptoWorker(): NativeCryptoWorker {
             };
         },
     };
+}
+
+/** The input bytes have already passed the shared exact UTF-8 password policy. */
+export type NativePasswordEnvelopeKeyRequest = Readonly<{
+    passwordBase64: string;
+    saltBase64: string;
+    opsLimit: number;
+    memLimitBytes: number;
+    outputBytes: 32;
+}>;
+
+/** Password KDF never uses the batch worker's reference fallback or routing thresholds. */
+export async function derivePasswordEnvelopeKey(
+    request: NativePasswordEnvelopeKeyRequest,
+    signal?: AbortSignal,
+): Promise<Uint8Array> {
+    const throwIfAborted = () => {
+        if (signal?.aborted) {
+            const error = new Error('Password derivation cancelled');
+            error.name = 'AbortError';
+            throw error;
+        }
+    };
+    throwIfAborted();
+    const module = getNativeModule();
+    if (!module?.derivePasswordEnvelopeKey) {
+        throw new NativeCryptoWorkerUnavailableError(NATIVE_CRYPTO_WORKER_PROBE_FAILURE_REASON.missing);
+    }
+    const encoded = await module.derivePasswordEnvelopeKey(request);
+    throwIfAborted();
+    if (typeof encoded !== 'string' || encoded.length !== 44) {
+        throw new Error('Invalid native password key');
+    }
+    const key = decodeBase64(encoded);
+    if (key.length !== 32 || encodeBase64(key) !== encoded) {
+        key.fill(0);
+        throw new Error('Invalid native password key');
+    }
+    return key;
 }

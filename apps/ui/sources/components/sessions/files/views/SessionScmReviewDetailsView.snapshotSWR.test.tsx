@@ -48,7 +48,7 @@ installSessionFilesViewCommonModuleMocks({
             useSessionProjectScmSnapshot: () => mockSnapshot,
             useSessionProjectScmSnapshotError: () => null,
             useSessionRealtimeScmTranscriptConsumer: useSessionRealtimeScmTranscriptConsumerMock,
-            useSessionProjectScmTouchedPaths: () => [],
+            useWorkspaceScmTouchedPathsForSession: () => [],
             useSessionProjectScmOperationLog: () => [],
             useSessionProjectScmCommitSelectionPaths: () => [],
             useSessionProjectScmCommitSelectionPatches: () => [],
@@ -124,13 +124,14 @@ vi.mock('@/components/workspaces/files/details/workspaceFileDetails/useWorkspace
 
 vi.mock('@/hooks/session/files/useChangedFilesData', () => ({
     useChangedFilesData: () => ({
-        attributionReliability: 'high',
+        sessionAttribution: { confidence: 'unknown', reason: 'unavailable' },
+        sessionCheckpointOverlap: 'unknown',
         allRepositoryChangedFiles: [],
         turnAttributedFiles: [],
         turnRepositoryOnlyFiles: [],
         sessionAttributedFiles: [],
         repositoryOnlyFiles: [],
-        suppressedInferredCount: 0,
+
         showTurnViewToggle: false,
         showSessionViewToggle: false,
     }),

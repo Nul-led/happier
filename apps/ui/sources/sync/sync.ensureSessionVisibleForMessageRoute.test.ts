@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as React from 'react';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { act } from 'react-test-renderer';
+import { projectLegacySessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
 
 // Sync imports persistence, which instantiates MMKV. Mock it for deterministic tests.
 const kvStore = vi.hoisted(() => new Map<string, string>());
@@ -101,14 +103,16 @@ vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', () => ({
 }));
 
 import { storage } from './domains/state/storage';
-import { renderHook } from '@/dev/testkit';
+import { renderHook, renderScreen } from '@/dev/testkit';
 import { setActiveServerId, upsertServerProfile } from './domains/server/serverProfiles';
 import { loadSessionMaterializedMaxSeqById } from './domains/state/persistence';
 import type { AccountSettingsScope } from './domains/settings/scope/accountSettingsScope';
 import type { Session } from './domains/state/storageTypes';
+import { createReducer } from './reducer/reducer';
+import type { Message } from './domains/messages/messageTypes';
 import type {
-    ServerAccountSessionRequestAuthority,
-} from './runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+    ServerAccountRequestAuthority,
+} from './runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import {
     markSessionSurfaceHidden,
     markSessionSurfaceVisible,
@@ -169,6 +173,734 @@ function expectRuntimeFetchWithBearer(url: string, token: string): void {
 }
 
 describe('sync.ensureSessionVisibleForMessageRoute', () => {
+    it.each([
+        ['retired', 'applied'], ['retired', 'conflict'], ['retired', 'outcomeUnknown'],
+        ['advanced', 'applied'], ['erase-retired', 'applied'], ['erase-retired', 'outcomeUnknown'],
+        ['data-retired', 'applied'], ['data-retired', 'outcomeUnknown'],
+        ['cancel-before-settings', 'applied'],
+        ['cancel-before-post', 'applied'],
+        ['advanced-ui', 'applied'],
+        ['advanced-projection', 'applied'],
+    ] as const)('retains plugin secret settlement after %s Account presentation (%s)', async (presentation, outcome) => {
+        const { createDeferred } = await import('@/dev/testkit');
+        const isCancellation = presentation === 'cancel-before-settings' || presentation === 'cancel-before-post';
+        const { settingsParse } = await import('@/sync/domains/settings/settings');
+        const { scopedPluginAccountSecretSettingsAdapter } = await import('@/sync/domains/plugins/settings/scopedPluginSettingsRuntime');
+        const { executeAccountPluginDataEraseAction } = await import('@/sync/domains/plugins/settings/accountPluginDataEraseAction');
+        const { applyAccountSettingsSavedSecretMutation, PLUGIN_ACCOUNT_DATA_ERASE_HTTP_PATH_V1 } = await import('@happier-dev/protocol');
+        const { adoptHomeProfile } = await import('@/sync/domains/server/serverProfiles');
+        const { retireActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
+        const { loadAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
+        const { sync } = await import('./sync');
+        const originalSecretKey = Reflect.get(sync, 'settingsSecretsKey');
+        const originalSecretReadKeys = Reflect.get(sync, 'settingsSecretsReadKeys');
+        onTestFinished(() => {
+            Reflect.set(sync, 'settingsSecretsKey', originalSecretKey);
+            Reflect.set(sync, 'settingsSecretsReadKeys', originalSecretReadKeys);
+        });
+        const serverIdentityId = 'srv_secret_settlement';
+        const profile = await adoptHomeProfile({ source: 'manual', descriptor: {
+            serverUrl: 'https://secret-settlement.example.test', homeServerIdentityId: serverIdentityId,
+        } });
+        await setActiveServerId(profile.id, { scope: 'device' });
+        const scope = { serverId: serverIdentityId, accountId: 'account-a' };
+        const credentials = { token: tokenForSub(scope.accountId) };
+        Reflect.set(sync, 'credentials', credentials);
+        Reflect.set(sync, 'encryption', null);
+        // Plain Accounts have no Account E2EE material, but local Settings
+        // persistence still seals SavedSecret values with a device-local key.
+        const localSecretKey = new Uint8Array(32).fill(17);
+        Reflect.set(sync, 'settingsSecretsKey', localSecretKey);
+        Reflect.set(sync, 'settingsSecretsReadKeys', [localSecretKey]);
+        Reflect.set(sync, 'pendingSettingsScope', scope);
+        Reflect.set(sync, 'pendingSettings', {});
+        const baseline = presentation === 'data-retired' ? {} : applyAccountSettingsSavedSecretMutation({}, {
+            kind: 'replacePluginSecret', target: { pluginId: 'acme.settings', localId: 'apiToken' },
+            expectedSecretId: null, expectedSecretUpdatedAt: null,
+            secret: { id: 'existing-plugin-secret', name: 'Existing token', kind: 'other',
+                encryptedValue: { _isSecretValue: true, value: 'old-secret-not-for-renderer' }, createdAt: 1, updatedAt: 1 },
+        }).settings;
+        getCredentialsForServerUrlMock.mockResolvedValue(credentials);
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue(null);
+        const { recordAccountStoredContentServerRequirements } = await import('@/sync/http/accountStoredContentCompatibility');
+        recordAccountStoredContentServerRequirements({ serverUrl: profile.serverUrl, requirements: {
+            v: 1, minimumProtocolVersion: 2, currentProtocolVersion: 3,
+            declarationTransport: 'http-header-and-socket-auth-v1',
+        } });
+        storage.setState({ profileScope: scope, settingsScope: scope, settings: settingsParse(baseline), settingsVersion: 5 });
+        const issued = createDeferred<void>();
+        const response = createDeferred<Response>();
+        const postPaths: string[] = [];
+        const cancellation = new AbortController();
+        runtimeFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+            const path = new URL(url).pathname;
+            if (init?.method === 'POST') postPaths.push(path);
+            if (path === '/v1/auth/ping') return Response.json({ success: true });
+            if (path === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 0 });
+            if (path === PLUGIN_ACCOUNT_DATA_ERASE_HTTP_PATH_V1) {
+                expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${credentials.token}`);
+                issued.resolve();
+                return response.promise;
+            }
+            if (path === '/v2/account/settings' && init?.method === 'POST') {
+                expect(new Headers(init.headers).get('Authorization')).toBe(`Bearer ${credentials.token}`);
+                if (isCancellation) return Response.json({ success: true, version: 6 });
+                issued.resolve();
+                return response.promise;
+            }
+            if (path === '/v2/account/settings' && presentation === 'cancel-before-settings') {
+                issued.resolve();
+                return response.promise.then((readResponse) => readResponse.clone());
+            }
+            if (path === '/v2/account/settings') return Response.json({ content: { t: 'plain', v: baseline }, version: 5 });
+            if (path.includes('push-tokens')) {
+                if (presentation === 'cancel-before-post') {
+                    issued.resolve();
+                    return response.promise.then((readResponse) => readResponse.clone());
+                }
+                return new Response(null, { status: 404 });
+            }
+            throw new Error(`Unexpected Settings request: ${path}`);
+        });
+        let screen: Awaited<ReturnType<typeof renderScreen>> | null = null;
+        let secretProjection: import('./domains/plugins/settings/scopedPluginSettingsProjection').ScopedPluginSettingsProjection | null = null;
+        const inputId = 'settings.plugins.detail.acme.settings.settings.secrets.apiToken.input';
+        const saveId = 'settings.plugins.detail.acme.settings.settings.secrets.apiToken.save';
+        if (presentation === 'advanced-ui') {
+            const { PluginDetailGenericSettingsSection } = await import('@/components/settings/plugins/detail/PluginDetailGenericSettingsSection');
+            screen = await renderScreen(React.createElement(PluginDetailGenericSettingsSection, {
+                pluginId: 'acme.settings', machineId: null, serverId: profile.id,
+                accountServerIdentityId: serverIdentityId, daemonOperationsAvailable: false,
+                projection: {
+                    pluginId: 'acme.settings', immutableGenerationId: 'secret-ui-generation',
+                    title: 'Settings', description: null, version: '1.0.0', enabled: true,
+                    generation: 1, generationLabel: '1', status: null, provenance: null,
+                    diagnostics: [], actions: [], resources: [],
+                    editableSettingsGroups: [{
+                        id: 'secrets', pluginId: 'acme.settings', version: 1, title: 'Secrets',
+                        scope: { kind: 'account' }, target: { kind: 'plugin' },
+                        presentation: { sections: [], subagentSections: [] },
+                        fields: [{ key: 'apiToken', title: 'API token', control: 'password',
+                            valueType: 'string', valueSchema: { type: 'string' },
+                            secretCustody: 'account', redaction: 'secret', clearWhenEmpty: 'omit' }],
+                    }],
+                },
+            }));
+            await waitForAssertion(() => expect(screen!.findByTestId(inputId)).not.toBeNull());
+            await act(async () => { screen!.changeTextByTestId(inputId, 'secret-not-for-renderer'); });
+        }
+        if (presentation === 'advanced-projection') {
+            const { captureActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
+            const { useScopedPluginSettingsProjection } = await import('./domains/plugins/settings/scopedPluginSettingsProjection');
+            const params = {
+                pluginId: 'acme.settings', scope: { kind: 'account' as const },
+                target: { kind: 'account' as const, serverIdentityId },
+                accountLifetime: captureActiveServerAccountScopeLifetime(),
+                fields: [{ key: 'apiToken', redacted: true }],
+                perActiveServerIdentityId: null, enabled: true, adapter: scopedPluginAccountSecretSettingsAdapter,
+            };
+            await renderHook(() => { secretProjection = useScopedPluginSettingsProjection(params); });
+            await waitForAssertion(() => expect(secretProjection?.state.ready).toBe(true));
+            await act(async () => { secretProjection!.setDraft('apiToken', 'secret-not-for-renderer'); });
+        }
+        const write = presentation === 'advanced-ui'
+            ? (async () => { await act(async () => { screen!.pressByTestId(saveId); }); return await issued.promise; })()
+            : presentation === 'advanced-projection'
+            ? secretProjection!.commit({ fieldId: 'apiToken', mutation: { kind: 'set', value: 'secret-not-for-renderer' } })
+            : presentation === 'erase-retired' || presentation === 'data-retired' || isCancellation
+            ? executeAccountPluginDataEraseAction({ pluginId: 'acme.settings' }, { signal: cancellation.signal })
+            : scopedPluginAccountSecretSettingsAdapter.write({
+            pluginId: 'acme.settings', scope: { kind: 'account' }, target: { kind: 'account', serverIdentityId },
+            fields: [{ key: 'apiToken', redacted: true }], fieldId: 'apiToken',
+            mutation: { kind: 'set', value: 'secret-not-for-renderer' },
+            expectedRevision: { kind: 'account-secret', value: 5 },
+        });
+        await Promise.race([
+            issued.promise,
+            write.then((result) => { throw new Error(`Secret mutation settled before issuing a POST: ${JSON.stringify(result)}; HTTP: ${JSON.stringify(runtimeFetchMock.mock.calls.map(([url]) => url))}`); }),
+        ]);
+        if (isCancellation) {
+            cancellation.abort();
+            response.resolve(presentation === 'cancel-before-settings'
+                ? Response.json({ content: { t: 'plain', v: baseline }, version: 5 })
+                : new Response(null, { status: 404 }));
+            const cancelled = await write;
+            expect(postPaths).toEqual([]);
+            expect(cancelled).toEqual({ status: 'partial',
+                settings: { status: 'pending', reason: 'unavailable' },
+                data: { status: 'pending', reason: 'unavailable' },
+            });
+            return;
+        }
+        const isAdvanced = presentation === 'advanced' || presentation === 'advanced-ui' || presentation === 'advanced-projection';
+        const nextScope = !isAdvanced ? { ...scope, accountId: 'account-b' } : scope;
+        const nextSettings = settingsParse({ analyticsOptOut: true });
+        const publishNewerSettings = () => storage.setState({
+            profileScope: nextScope, settingsScope: nextScope, settings: nextSettings, settingsVersion: 20,
+        });
+        const stopAdvancement = isAdvanced
+            ? storage.subscribe((state) => { if (state.settingsVersion === 6) publishNewerSettings(); })
+            : () => {};
+        onTestFinished(stopAdvancement);
+        if (!isAdvanced) {
+            storage.setState({ profileScope: nextScope, settingsScope: nextScope });
+            storage.getState().applySettingsForScope(nextScope, nextSettings, 20);
+            Reflect.set(sync, 'credentials', { token: tokenForSub('account-b') });
+            Reflect.set(sync, 'pendingSettingsScope', nextScope);
+            retireActiveServerAccountScopeLifetime();
+        }
+        const persistedAccountB = !isAdvanced ? loadAccountSettings(nextScope) : null;
+        if (persistedAccountB) {
+            expect(persistedAccountB).toMatchObject({ version: 20, settings: { analyticsOptOut: true } });
+        }
+        if (outcome === 'outcomeUnknown') response.reject(new Error('acknowledgement lost'));
+        else response.resolve(Response.json(presentation === 'data-retired'
+            ? { status: 'erased', changed: true }
+            : outcome === 'applied'
+            ? { success: true, version: 6 }
+            : { success: false, error: 'version-mismatch', currentVersion: 6, currentContent: { t: 'plain', v: {} } }));
+        const result = await write;
+        if (presentation === 'advanced-projection') {
+            await waitForAssertion(() => {
+                expect(secretProjection!.state.revision).toEqual({ kind: 'account-secret', value: 20 });
+                expect(secretProjection!.state.drafts.apiToken).not.toBe('secret-not-for-renderer');
+                expect(secretProjection!.state.error).toBeNull();
+            });
+        }
+        if (presentation === 'advanced-ui') {
+            await waitForAssertion(() => {
+                expect(screen!.findByTestId(inputId)?.props.value).toBe('');
+                expect(screen!.findByTestId(saveId)?.props.disabled).toBe(true);
+            });
+            stopAdvancement();
+            expect(postPaths).toEqual(['/v2/account/settings']);
+            return;
+        }
+        stopAdvancement();
+        expect(result).toEqual(presentation === 'data-retired'
+            ? { status: outcome === 'applied' ? 'completed' : 'partial', settings: { status: 'completed', changed: false },
+                data: outcome === 'applied' ? { status: 'completed', changed: true } : { status: 'pending', reason: 'outcome-unknown' } }
+            : presentation === 'erase-retired'
+            ? { status: 'partial', settings: outcome === 'applied'
+                ? { status: 'completed', changed: true } : { status: 'pending', reason: 'outcome-unknown' },
+                data: { status: 'pending', reason: 'unavailable' } }
+            : outcome === 'applied'
+            ? { status: 'applied', revision: { kind: 'account-secret', value: 6 } }
+            : { status: outcome });
+        expect(postPaths).toEqual([presentation === 'data-retired' ? PLUGIN_ACCOUNT_DATA_ERASE_HTTP_PATH_V1 : '/v2/account/settings']);
+        expect(storage.getState().settingsScope).toEqual(nextScope);
+        expect(storage.getState().settingsVersion).toBe(20);
+        expect(storage.getState().settings).toEqual(nextSettings);
+        if (persistedAccountB) expect(loadAccountSettings(nextScope)).toEqual(persistedAccountB);
+    });
+
+    it('drops a held hydration response when the captured encryption instance is replaced', async () => {
+        const { Encryption } = await import('@/sync/encryption/encryption');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { sealEncryptedDataKeyEnvelopeV1 } = await import('@happier-dev/protocol');
+        const { createDeferred } = await import('@/dev/testkit');
+        const home = await upsertServerProfile({ serverUrl: 'https://hydration-instance.example.test', name: 'Hydration instance' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const sessionId = 'hydration-instance';
+        const secret = new Uint8Array(32).fill(7);
+        const encryption = await Encryption.create(secret);
+        const replacement = await Encryption.create(secret);
+        const writer = await Encryption.create(secret);
+        const sessionKey = new Uint8Array(32).fill(8);
+        await writer.initializeSessions(new Map([[sessionId, sessionKey]]));
+        const metadata = await writer.getSessionEncryption(sessionId)!.encryptRaw({ path: '/repo', host: 'host' });
+        const envelope = sealEncryptedDataKeyEnvelopeV1({
+            dataKey: sessionKey, recipientPublicKey: encryption.contentDataKey,
+            randomBytes: (length) => new Uint8Array(length).fill(3),
+        });
+        const requested = createDeferred<void>();
+        const response = createDeferred<Response>();
+        requestMock.mockImplementation(async () => { requested.resolve(); return response.promise; });
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: tokenForSub('reader'), secret: encodeBase64(secret, 'base64') });
+        Reflect.set(sync, 'encryption', encryption);
+        const hydration = sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false });
+        await requested.promise;
+        Reflect.set(sync, 'encryption', replacement);
+        response.resolve(Response.json({ session: {
+            id: sessionId, seq: 1, createdAt: 1, updatedAt: 1, active: false, activeAt: 1,
+            encryptionMode: 'e2ee', dataEncryptionKey: encodeBase64(envelope, 'base64'),
+            metadata, metadataVersion: 1, agentState: null, agentStateVersion: 0, share: null,
+        } }));
+        const result = await hydration;
+        expect(result.kind).not.toBe('available');
+        expect(replacement.getSessionEncryption(sessionId)).toBeNull();
+        expect(storage.getState().sessions[sessionId]).toBeUndefined();
+    });
+
+    it.each(['current', 'account_changed', 'home_changed', 'generation_changed', 'cipher_replaced'] as const)(
+        'applies transcript authentication failure only to its current Account and Session cipher (%s)',
+        async (change) => {
+            const { Encryption } = await import('@/sync/encryption/encryption');
+            const { encodeBase64 } = await import('@/encryption/base64');
+            const { createDeferred } = await import('@/dev/testkit');
+            const home = await upsertServerProfile({ serverUrl: 'https://content-failure.example.test', name: 'Content failure' });
+            await setActiveServerId(home.id, { scope: 'device' });
+            const scope = { serverId: home.id, accountId: 'reader' };
+            storage.setState({ profileScope: scope });
+            const sessionId = 'content-failure';
+            const secret = new Uint8Array(32).fill(7);
+            const encryption = await Encryption.create(secret);
+            const wrongWriter = await Encryption.create(secret);
+            await encryption.initializeSessions(new Map([[sessionId, new Uint8Array(32).fill(8)]]));
+            await wrongWriter.initializeSessions(new Map([[sessionId, new Uint8Array(32).fill(9)]]));
+            const ciphertext = await wrongWriter.getSessionEncryption(sessionId)!.encryptRaw({
+                role: 'user', content: { type: 'text', text: 'unreadable' },
+            });
+            const validCiphertext = await encryption.getSessionEncryption(sessionId)!.encryptRaw({
+                role: 'user', content: { type: 'text', text: 'valid row' },
+            });
+            const credentials = { token: tokenForSub('reader'), secret: encodeBase64(secret, 'base64') };
+            const response = createDeferred<Response>();
+            const requested = createDeferred<void>();
+            const authority: ServerAccountRequestAuthority = {
+                scope,
+                context: {
+                    scope: 'scoped', timeoutMs: 30_000,
+                    targetServerId: home.id, targetServerUrl: home.serverUrl, targetAccountId: 'reader',
+                    token: credentials.token, credentials, encryption,
+                },
+                request: async () => { requested.resolve(); return response.promise; },
+                release: async () => {},
+            };
+            const { sync } = await import('./sync');
+            Reflect.set(sync, 'credentials', credentials);
+            Reflect.set(sync, 'encryption', encryption);
+            storage.getState().applySessions([{
+                ...createSession({ sessionId }), serverId: home.id,
+                encryptedContentAvailability: 'ready',
+            }]);
+
+            const refresh = sync.refreshSessionMessages(sessionId, { authority });
+            await requested.promise;
+            if (change === 'account_changed') {
+                storage.setState({ profileScope: { ...scope, accountId: 'replacement' } });
+            } else if (change === 'home_changed') {
+                const replacement = await upsertServerProfile({ serverUrl: 'https://replacement.example.test', name: 'Replacement' });
+                await setActiveServerId(replacement.id, { scope: 'device' });
+            } else if (change === 'generation_changed') {
+                Reflect.set(sync, 'serverScopeGeneration', Number(Reflect.get(sync, 'serverScopeGeneration')) + 1);
+            } else if (change === 'cipher_replaced') {
+                await encryption.initializeSessions(new Map([[sessionId, new Uint8Array(32).fill(10)]]));
+            }
+            response.resolve(Response.json({ messages: [{
+                id: 'unreadable-row', seq: 1, localId: null, createdAt: 1, updatedAt: 1,
+                content: { t: 'encrypted', c: ciphertext },
+            }, {
+                id: 'valid-row', seq: 2, localId: null, createdAt: 2, updatedAt: 2,
+                content: { t: 'encrypted', c: validCiphertext },
+            }] }));
+            await refresh;
+
+            expect(storage.getState().sessions[sessionId]?.encryptedContentAvailability).toBe(
+                change === 'current' ? 'encrypted_content_unavailable' : 'ready',
+            );
+            expect(Object.values(storage.getState().sessionMessages[sessionId]?.messagesById ?? {})).toHaveLength(change === 'current' ? 1 : 0);
+        },
+    );
+
+    it('returns marked awareness from the canonical Home page without transcript acquisition', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://awareness.example.test', name: 'Awareness' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const otherHomeId = 'other-awareness-home';
+        storage.setState((state) => ({
+            ...state,
+            sessionListRowsByServerId: {
+                [otherHomeId]: {
+                    'page-awareness': {
+                        id: 'page-awareness', updatedAt: 1, active: true, presence: null,
+                        metadata: { summaryText: 'Same Session id on another Home' },
+                    },
+                },
+            },
+            ordinarySessionListMembershipByServerId: {
+                [home.id]: ['ordinary-member'],
+                [otherHomeId]: ['page-awareness'],
+            },
+            archivedSessionListMembershipByServerId: {
+                [home.id]: ['archived-member'],
+                [otherHomeId]: [],
+            },
+            sessionListIndexByServerId: {
+                [home.id]: [{ type: 'session', sessionId: 'ordinary-member', serverId: home.id, serverName: 'Awareness' }],
+                [otherHomeId]: [{ type: 'session', sessionId: 'page-awareness', serverId: otherHomeId, serverName: 'Other Awareness' }],
+            },
+        }) as never);
+        const membershipBefore = {
+            ordinary: storage.getState().ordinarySessionListMembershipByServerId,
+            archived: storage.getState().archivedSessionListMembershipByServerId,
+            index: storage.getState().sessionListIndexByServerId,
+        };
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
+        requestMock.mockImplementation(async (_path, init) => {
+            const requestBody = JSON.parse(String(init?.body ?? '{}')) as { cursor?: string };
+            return new Response(JSON.stringify({
+                sessions: [{
+                id: 'page-awareness', createdAt: 1, updatedAt: 2, seq: 3,
+                active: false, activeAt: 2, encryptionMode: 'plain', dataEncryptionKey: null,
+                metadataVersion: 0, metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+                agentStateVersion: 0, agentState: null, share: null,
+                latestTurnStatus: 'failed', latestTurnStatusObservedAt: 2,
+                effectiveAccess: {
+                    v: 1, level: 'owner', sources: [{ kind: 'owner' }],
+                    capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner' }),
+                },
+                viewer: {
+                    readState: { state: 'not_started' },
+                    relevance: { relevant: true, reasons: ['owned_by_me'] },
+                    attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+                    follow: { follows: false, notificationLevel: null },
+                    notification: { level: 'none', source: 'none' },
+                },
+                responsibleAccountId: null, responsibleAccount: null,
+                }],
+                nextCursor: requestBody.cursor ? null : 'cursor-next',
+                hasNext: !requestBody.cursor,
+                attentionNextCursor: 'cursor-attention-next', attentionHasNext: true,
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        });
+        const { listSessionsForVoiceTool } = await import('@/voice/tools/actionImpl/sessionList');
+        const query = {
+            v: 1 as const,
+            storage: 'active' as const,
+            includeInactive: false,
+            scope: 'my_work' as const,
+            attention: 'needs_my_attention' as const,
+            includeAttention: true,
+            audiences: [],
+            tagIds: [],
+            limit: 7,
+        };
+        const result = await listSessionsForVoiceTool({ view: 'awareness', serverId: home.id, query });
+        const continuedResult = await listSessionsForVoiceTool({
+            view: 'awareness', serverId: home.id, query, cursor: 'cursor-next',
+        });
+        expect(storage.getState().sessionListRowsByServerId).toEqual(expect.objectContaining({
+            [home.id]: expect.objectContaining({ 'page-awareness': expect.anything() }),
+            [otherHomeId]: expect.objectContaining({
+                'page-awareness': expect.objectContaining({
+                    metadata: { summaryText: 'Same Session id on another Home' },
+                }),
+            }),
+        }));
+        expect({
+            ordinary: storage.getState().ordinarySessionListMembershipByServerId,
+            archived: storage.getState().archivedSessionListMembershipByServerId,
+            index: storage.getState().sessionListIndexByServerId,
+        }).toEqual(membershipBefore);
+        expect(result).toMatchObject({
+            view: 'awareness', projectionVersion: 1, nextCursor: 'cursor-next', hasNext: true,
+            sessions: [{ sessionId: 'page-awareness', lifecycle: 'failed' }],
+        });
+        expect(continuedResult).toMatchObject({
+            view: 'awareness', projectionVersion: 1, nextCursor: null, hasNext: false,
+            sessions: [{ sessionId: 'page-awareness', lifecycle: 'failed' }],
+        });
+        expect(Object.keys(result).sort()).toEqual([
+            'attentionHasNext', 'attentionNextCursor', 'hasNext', 'nextCursor', 'projectionVersion', 'sessions', 'view',
+        ]);
+        expect(requestMock.mock.calls.every(([path]) => !String(path).includes('/messages') && !String(path).includes('/turns'))).toBe(true);
+        expect(requestMock).toHaveBeenCalledWith('/v2/sessions/query', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify(query),
+        }));
+    });
+
+    it('Voice semantic discovery requests marked awareness through its Action handler', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://voice-awareness.example.test', name: 'Voice Awareness' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        storage.setState((state) => ({ settings: { ...state.settings, experiments: true, featureToggles: { ...state.settings.featureToggles, voice: true } } }));
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
+        // Voice dispatches through the shared Action executor, which captures a real Home/Account
+        // authority first. Supply that authority rather than relaxing it.
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('awareness-account'), secret: 'active-secret' });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue(null);
+        runtimeFetchMock.mockImplementation(async (url: string) => {
+            const path = new URL(url).pathname;
+            if (path === '/v1/auth/ping') return Response.json({ success: true });
+            if (path === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 0 });
+            if (path === '/v2/account/settings') return Response.json({ content: { t: 'plain', v: {} }, version: 1 });
+            throw new Error(`unexpected request: ${url}`);
+        });
+        requestMock.mockImplementation(async () => new Response(JSON.stringify({
+            sessions: [{
+                id: 'voice-awareness', createdAt: 1, updatedAt: 2, seq: 3,
+                active: false, activeAt: 2, encryptionMode: 'plain', dataEncryptionKey: null,
+                metadataVersion: 0, metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+                agentStateVersion: 0, agentState: null, share: null,
+                latestTurnStatus: 'failed', latestTurnStatusObservedAt: 2,
+            }], nextCursor: null, hasNext: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        const { createVoiceToolHandlers } = await import('@/voice/tools/handlers');
+        const handlers = createVoiceToolHandlers({ resolveSessionId: () => null });
+        const result = JSON.parse(await handlers.listSessions({ limit: 7 }));
+        expect(result).toMatchObject({ view: 'awareness', projectionVersion: 1, sessions: [{ sessionId: 'voice-awareness', lifecycle: 'failed' }] });
+    });
+
+    it('preserves permitted retained previews for a summary query', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://summary-query.example.test', name: 'Summary Query' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
+        storage.setState((state) => ({
+            settings: { ...state.settings, voice: { ...state.settings.voice, privacy: { ...state.settings.voice.privacy, shareRecentMessages: true } } },
+            sessionMessages: { ...state.sessionMessages, 'query-summary': { messages: [{ id: 'm1', kind: 'user-text', text: 'Retained preview', createdAt: 10 }] } },
+        }) as never);
+        requestMock.mockImplementation(async () => new Response(JSON.stringify({
+            sessions: [{
+                id: 'query-summary', createdAt: 1, updatedAt: 2, seq: 3,
+                active: false, activeAt: 2, encryptionMode: 'plain', dataEncryptionKey: null,
+                metadataVersion: 0, metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+                agentStateVersion: 0, agentState: null, share: null,
+                effectiveAccess: {
+                    v: 1, level: 'owner', sources: [{ kind: 'owner' }],
+                    capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner' }),
+                },
+                viewer: {
+                    readState: { state: 'not_started' },
+                    relevance: { relevant: true, reasons: ['owned_by_me'] },
+                    attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+                    follow: { follows: false, notificationLevel: null },
+                    notification: { level: 'none', source: 'none' },
+                },
+                responsibleAccountId: null, responsibleAccount: null,
+            }], nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        const { listSessionsForVoiceTool } = await import('@/voice/tools/actionImpl/sessionList');
+        const result = await listSessionsForVoiceTool({
+            view: 'summary', serverId: home.id, includeLastMessagePreview: true,
+            query: { v: 1, storage: 'active', includeInactive: false, scope: 'all_accessible', attention: 'any', audiences: [], tagIds: [] },
+        });
+        expect(result).toMatchObject({
+            ok: true,
+            queryVersion: 1,
+            sessions: [{ id: 'query-summary', lastMessagePreview: { text: 'Retained preview' } }],
+        });
+    });
+
+    it('serves uncached activity through exact Home acquisition without reading turns', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://awareness.example.test', name: 'Awareness' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
+        // Both reads acquire for themselves, so each needs its own response body: one shared
+        // `Response` instance is consumed by the first read and fails the second as malformed.
+        requestMock.mockImplementation(async () => new Response(JSON.stringify({ session: {
+            id: 'uncached-awareness', createdAt: 1, updatedAt: 2, seq: 3,
+            active: false, activeAt: 2, encryptionMode: 'plain', dataEncryptionKey: null,
+            metadataVersion: 0, metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+            agentStateVersion: 0, agentState: null, share: null,
+            latestTurnStatus: 'failed', latestTurnStatusObservedAt: 2,
+        } }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        const { getSessionActivityForVoiceTool } = await import('@/voice/tools/actionImpl/sessionActivity');
+        const result = await getSessionActivityForVoiceTool({ sessionId: 'uncached-awareness', serverId: home.id });
+        const explicitSummary = await getSessionActivityForVoiceTool({
+            sessionId: 'uncached-awareness', serverId: home.id, view: 'summary',
+        });
+        expect(result).toMatchObject({ ok: true, sessionId: 'uncached-awareness', working: false });
+        expect(explicitSummary).toEqual(result);
+        expect(requestMock.mock.calls.map(([path]) => path)).toEqual([
+            '/v2/sessions/uncached-awareness',
+            '/v2/sessions/uncached-awareness',
+        ]);
+        expect(result).not.toHaveProperty('messageCounts');
+    });
+
+    it('returns the canonical marked awareness projection when activity explicitly requests it', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://activity-awareness-view.example.test', name: 'Activity Awareness View' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
+        // The shared Action executor captures a real Home/Account authority before it dispatches.
+        // Supply that authority instead of relaxing it, so this exercises the production path.
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('awareness-account'), secret: 'active-secret' });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue(null);
+        runtimeFetchMock.mockImplementation(async (url: string) => {
+            const path = new URL(url).pathname;
+            if (path === '/v1/auth/ping') return Response.json({ success: true });
+            if (path === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 0 });
+            if (path === '/v2/account/settings') return Response.json({ content: { t: 'plain', v: {} }, version: 1 });
+            throw new Error(`unexpected request: ${url}`);
+        });
+        requestMock.mockResolvedValue(new Response(JSON.stringify({ session: {
+            id: 'activity-awareness-view', createdAt: 1, updatedAt: 2, seq: 3,
+            active: false, activeAt: 2, encryptionMode: 'plain', dataEncryptionKey: null,
+            metadataVersion: 0, metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+            agentStateVersion: 0, agentState: null, share: null,
+            latestTurnStatus: 'failed', latestTurnStatusObservedAt: 2,
+        } }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
+
+        const execution = await createDefaultActionExecutor().execute('session.activity.get', {
+            sessionId: 'activity-awareness-view', view: 'awareness',
+        }, { surface: 'ui', serverId: home.id });
+
+        expect(execution).toMatchObject({
+            ok: true,
+            result: {
+                v: 1,
+                sessionId: 'activity-awareness-view',
+                lifecycle: 'failed',
+            },
+        });
+        expect(execution.ok && execution.result).not.toHaveProperty('ok');
+        expect(execution.ok && execution.result).not.toHaveProperty('messageCounts');
+        expect(requestMock.mock.calls.map(([path]) => path)).toEqual(['/v2/sessions/activity-awareness-view']);
+    });
+
+    it('refuses an unqualified activity read when the session id exists on more than one known Home', async () => {
+        const homeA = await upsertServerProfile({ serverUrl: 'https://activity-home-a.example.test', name: 'Activity Home A' });
+        const homeB = await upsertServerProfile({ serverUrl: 'https://activity-home-b.example.test', name: 'Activity Home B' });
+        await setActiveServerId(homeA.id, { scope: 'device' });
+        storage.setState(() => ({
+            ordinarySessionListMembershipByServerId: {
+                [homeA.id]: ['shared-activity'],
+                [homeB.id]: ['shared-activity'],
+            },
+        }) as never);
+        const { getSessionActivityForVoiceTool } = await import('@/voice/tools/actionImpl/sessionActivity');
+
+        // Ambiguity is settled before acquisition: the focused Home is never substituted for the
+        // Home the caller failed to qualify, and nothing is read from either Home.
+        await expect(getSessionActivityForVoiceTool({ sessionId: 'shared-activity' })).resolves.toEqual({
+            ok: false, errorCode: 'session_ambiguous', errorMessage: 'session_ambiguous', sessionId: 'shared-activity',
+        });
+        expect(requestMock).not.toHaveBeenCalled();
+    });
+
+    it('omits permission identities when exact-Home activity observes only pending counts', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://awareness-counts.example.test', name: 'Awareness Counts' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
+        storage.setState((state) => ({
+            settings: { ...state.settings, voice: { ...state.settings.voice, privacy: {
+                ...state.settings.voice.privacy, sharePermissionRequests: true,
+            } } },
+        }) as never);
+        const now = Date.now();
+        requestMock.mockResolvedValue(new Response(JSON.stringify({ session: {
+            id: 'counts-only-awareness', createdAt: 1, updatedAt: now, seq: 3,
+            active: true, activeAt: now, encryptionMode: 'plain', dataEncryptionKey: null,
+            metadataVersion: 0, metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+            agentStateVersion: 0, agentState: null, share: null,
+            pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0,
+            pendingRequestObservedAt: now,
+        } }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+        const { getSessionActivityForVoiceTool } = await import('@/voice/tools/actionImpl/sessionActivity');
+        const result = await getSessionActivityForVoiceTool({ sessionId: 'counts-only-awareness', serverId: home.id });
+
+        expect(result).toMatchObject({ ok: true, permissionRequired: true, blocked: true });
+        expect(result).not.toHaveProperty('permissionRequestIds');
+    });
+
+    it('keeps retained-window counts ancillary to acquired activity', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://retained-awareness.example.test', name: 'Retained Awareness' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
+        requestMock.mockImplementation(async () => new Response(JSON.stringify({ session: {
+            id: 'retained-awareness', createdAt: 1, updatedAt: 2, seq: 3,
+            active: false, activeAt: 2, encryptionMode: 'plain', dataEncryptionKey: null,
+            metadataVersion: 0, metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+            agentStateVersion: 0, agentState: null, share: null,
+            latestTurnStatus: 'failed', latestTurnStatusObservedAt: 2,
+        } }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        const { getSessionActivityForVoiceTool } = await import('@/voice/tools/actionImpl/sessionActivity');
+        const before = await getSessionActivityForVoiceTool({ sessionId: 'retained-awareness', serverId: home.id });
+        expect(before.ok).toBe(true);
+        const messages: Message[] = [
+            { id: 'm1', kind: 'user-text', text: 'Hi', localId: null, createdAt: 1 },
+            { id: 'm2', kind: 'agent-text', text: 'Hello', localId: null, createdAt: 2 },
+        ];
+        const messagesById = Object.fromEntries(messages.map((message) => [message.id, message]));
+        storage.setState((state) => ({ sessionMessages: { ...state.sessionMessages, 'retained-awareness': {
+            messageIdsOldestFirst: messages.map((message) => message.id), messagesById, messagesMap: messagesById,
+            reducerState: createReducer(), latestThinkingMessageId: null, latestThinkingMessageActivityAtMs: null,
+            messagesVersion: 0, isLoaded: true,
+        } } }));
+        const retained = await getSessionActivityForVoiceTool({ sessionId: 'retained-awareness', serverId: home.id });
+        expect(retained).toMatchObject({ ...before, messageCounts: { total: 2, user: 1, assistant: 1 } });
+    });
+
+    it('bounds the retained-window counts by the requested activity window', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://windowed-awareness.example.test', name: 'Windowed Awareness' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
+        requestMock.mockImplementation(async () => new Response(JSON.stringify({ session: {
+            id: 'windowed-awareness', createdAt: 1, updatedAt: 2, seq: 3,
+            active: false, activeAt: 2, encryptionMode: 'plain', dataEncryptionKey: null,
+            metadataVersion: 0, metadata: JSON.stringify({ path: '/repo', host: 'host' }),
+            agentStateVersion: 0, agentState: null, share: null,
+        } }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        const now = Date.now();
+        const messages: Message[] = [
+            { id: 'm1', kind: 'user-text', text: 'An hour ago', localId: null, createdAt: now - 3_600_000 },
+            { id: 'm2', kind: 'agent-text', text: 'Just now', localId: null, createdAt: now },
+        ];
+        const messagesById = Object.fromEntries(messages.map((message) => [message.id, message]));
+        storage.setState((state) => ({ sessionMessages: { ...state.sessionMessages, 'windowed-awareness': {
+            messageIdsOldestFirst: messages.map((message) => message.id), messagesById, messagesMap: messagesById,
+            reducerState: createReducer(), latestThinkingMessageId: null, latestThinkingMessageActivityAtMs: null,
+            messagesVersion: 0, isLoaded: true,
+        } } }));
+        const { getSessionActivityForVoiceTool } = await import('@/voice/tools/actionImpl/sessionActivity');
+
+        // The released field counts what this host retains. `windowSeconds` narrows that same
+        // retained window rather than being accepted and ignored, and never fetches history.
+        const windowed = await getSessionActivityForVoiceTool({
+            sessionId: 'windowed-awareness', serverId: home.id, windowSeconds: 60,
+        });
+        expect(windowed).toMatchObject({ messageCounts: { total: 1, user: 0, assistant: 1 } });
+
+        const unbounded = await getSessionActivityForVoiceTool({ sessionId: 'windowed-awareness', serverId: home.id });
+        expect(unbounded).toMatchObject({ messageCounts: { total: 2, user: 1, assistant: 1 } });
+    });
+
+    it('preserves malformed acquisition errors in the activity Action', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://awareness.example.test', name: 'Awareness' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
+        requestMock.mockImplementation(async () => new Response('{}', {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+        }));
+        const { getSessionActivityForVoiceTool } = await import('@/voice/tools/actionImpl/sessionActivity');
+        await expect(getSessionActivityForVoiceTool({ sessionId: 'malformed-awareness', serverId: home.id }))
+            .resolves.toMatchObject({ ok: false, errorCode: 'invalid_response' });
+    });
+
+    it('settles caller cancellation while shared activity hydration remains pending', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://cancel-awareness.example.test', name: 'Cancel Awareness' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
+        let finishRequest!: (response: Response) => void;
+        requestMock.mockImplementation(() => new Promise<Response>((resolve) => { finishRequest = resolve; }));
+        const { getSessionActivityForVoiceTool } = await import('@/voice/tools/actionImpl/sessionActivity');
+        const controller = new AbortController();
+        const result = getSessionActivityForVoiceTool({ sessionId: 'cancel-awareness', serverId: home.id, signal: controller.signal });
+        await waitForAssertion(() => expect(requestMock).toHaveBeenCalled());
+        controller.abort();
+        try {
+            const settlement = await Promise.race([result, new Promise((resolve) => setTimeout(() => resolve('still_pending'), 50))]);
+            expect(settlement).toMatchObject({ ok: false, errorCode: 'tool_cancelled' });
+        } finally {
+            requestMock.mockImplementation(async () => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
+            finishRequest(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
+            await result;
+        }
+    });
+
     beforeEach(async () => {
         storage.setState(initialStorageState, true);
         kvStore.clear();
@@ -189,14 +921,19 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
         expect(activeServerId).toBeTruthy();
 
-        storage.getState().applySessions([createSession({ sessionId: 's_cached_1' })]);
-        expect(storage.getState().sessionListRowStateByServerId?.[activeServerId]).toBeDefined();
+        const cachedSession = createSession({ sessionId: 's_cached_1' });
+        storage.getState().applySessions([{ ...cachedSession, serverId: activeServerId }]);
+        const { buildSessionListRenderableFromSession } = await import('@/sync/domains/session/listing/sessionListRenderable');
+        storage.getState().applyServerScopedSessionListRows(activeServerId, [
+            buildSessionListRenderableFromSession({ ...cachedSession, serverId: activeServerId }),
+        ], { source: 'ordinary', mode: 'append' });
+        expect(storage.getState().sessionListRowsByServerId?.[activeServerId]).toBeDefined();
         expect(storage.getState().sessionListIndexByServerId?.[activeServerId]).toBeDefined();
 
         const { sync } = await import('./sync');
         sync.disconnectServer();
 
-        expect(storage.getState().sessionListRowStateByServerId?.[activeServerId]).toBeUndefined();
+        expect(storage.getState().sessionListRowsByServerId?.[activeServerId]).toBeUndefined();
         expect(storage.getState().sessionListIndexByServerId?.[activeServerId]).toBeUndefined();
     });
 
@@ -421,7 +1158,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         syncInternals.sessionMaterializedMaxSeqDirty = false;
 
         syncInternals.markSessionMaterializedMaxSeq('session-a', 11);
-        syncInternals.activateAccountSettingsScope('account-b');
+        await syncInternals.activateAccountSettingsScope('account-b');
 
         expect(loadSessionMaterializedMaxSeqById(oldScope)).toEqual({ 'session-a': 11 });
         expect(syncInternals.pendingSettingsScope).toEqual({ serverId, accountId: 'account-b' });
@@ -445,7 +1182,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
             nextRetryAt: 456,
         });
 
-        syncInternals.activateAccountSettingsScope('account-b');
+        await syncInternals.activateAccountSettingsScope('account-b');
 
         expect(storage.getState().accountSettingsSyncStatus).toEqual({ state: 'idle', lastSyncedAt: null });
     });
@@ -468,7 +1205,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         try {
             const operation = sync.applyAccountSettingsMutation({
                 operations: [{ op: 'set', key: 'analyticsOptOut', value: true }],
-            });
+            }, { serverId: 'server-a', accountId: 'account-a' });
             syncInternals.pendingSettingsScope = { serverId: 'server-b', accountId: 'account-b' };
             syncInternals.serverScopeGeneration = 11;
             syncInternals.credentials = { token: 'account-b' };
@@ -481,6 +1218,29 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
             syncInternals.encryption = originalEncryption;
             syncInternals.pendingSettingsScope = originalScope;
             syncInternals.serverScopeGeneration = originalGeneration;
+        }
+    });
+
+    it('refuses a retained one-shot mutation before preflush when its rendered Account scope retired', async () => {
+        const { sync } = await import('./sync');
+        const syncInternals = sync as any;
+        const originalSyncSettings = syncInternals.syncSettings;
+        const originalCredentials = syncInternals.credentials;
+        const originalScope = syncInternals.pendingSettingsScope;
+        syncInternals.credentials = { token: 'account-b' };
+        syncInternals.pendingSettingsScope = { serverId: 'server-b', accountId: 'account-b' };
+        syncInternals.syncSettings = vi.fn();
+        try {
+            await expect(sync.mutateAccountSettingsOnce({
+                expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
+                expectedSettingsVersion: 7,
+                mutate: (raw) => ({ settings: { ...raw, analyticsOptOut: true }, value: undefined }),
+            })).rejects.toThrow('Account settings scope changed before mutating settings');
+            expect(syncInternals.syncSettings).not.toHaveBeenCalled();
+        } finally {
+            syncInternals.syncSettings = originalSyncSettings;
+            syncInternals.credentials = originalCredentials;
+            syncInternals.pendingSettingsScope = originalScope;
         }
     });
 
@@ -541,6 +1301,71 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         );
         expect(sessionByIdCalls).toHaveLength(1);
         expect((sync as any).activeServerSessionIds.has(sessionId)).toBe(true);
+    });
+
+    it('keeps a recipient with a missing envelope locked after exact-route hydration', async () => {
+        const sessionId = 'recipient_missing_envelope_route';
+        const { Encryption } = await import('@/sync/encryption/encryption');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { sync } = await import('./sync');
+        const secret = new Uint8Array(32).fill(7);
+        const encryption = await Encryption.create(secret);
+        await encryption.initializeSessions(new Map([[sessionId, new Uint8Array(32).fill(9)]]));
+        Reflect.set(sync, 'credentials', { token: 't', secret: encodeBase64(secret, 'base64url') });
+        Reflect.set(sync, 'encryption', encryption);
+        Reflect.set(sync, 'activeServerSessionIds', new Set<string>());
+        requestMock.mockImplementation(async (path: string) => new Response(JSON.stringify(
+            path === '/v1/account/encryption/currentness'
+                ? {
+                    mode: 'e2ee', version: 1, updatedAt: 1,
+                    signingKeyFingerprint: 'signing-current', contentKeyFingerprint: 'content-current',
+                    recipientEnvelopeReadiness: { status: 'available' },
+                }
+                : {
+                    session: {
+                        id: sessionId, createdAt: 1, updatedAt: 2, seq: 3,
+                        active: true, activeAt: 2, encryptionMode: 'e2ee', dataEncryptionKey: null,
+                        metadataLayoutVersion: 0, metadataVersion: 1, metadata: 'encrypted-metadata',
+                        agentStateVersion: 1, agentState: null,
+                        share: { accessLevel: 'view', canApprovePermissions: false },
+                    },
+                },
+        ), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId)).resolves.toMatchObject({
+            kind: 'available', sessionId,
+        });
+        expect(storage.getState().sessions[sessionId]).toMatchObject({
+            encryptedContentAvailability: 'encrypted_access_pending', metadata: null,
+        });
+        expect(encryption.getSessionEncryption(sessionId)).toBeNull();
+    });
+
+    it('settles a known locked recipient route and hook without a content cipher', async () => {
+        const sessionId = 'settled_locked_recipient_route';
+        const { Encryption } = await import('@/sync/encryption/encryption');
+        const { sync } = await import('./sync');
+        const { useHydrateSessionForRoute } = await import('@/hooks/session/useHydrateSessionForRoute');
+        Reflect.set(sync, 'encryption', await Encryption.create(new Uint8Array(32).fill(7)));
+        Reflect.set(sync, 'credentials', { token: 't' });
+        Reflect.set(sync, 'activeServerSessionIds', new Set([sessionId]));
+        storage.getState().applySessions([{
+            ...createSession({ sessionId }),
+            metadataLayoutVersion: 0,
+            accessLevel: 'view',
+            encryptedContentAvailability: 'encrypted_access_pending',
+        }]);
+
+        const hook = await renderHook(() => useHydrateSessionForRoute(sessionId, 'locked-route'));
+        try {
+            expect(hook.getCurrent()).toMatchObject({ kind: 'available', sessionId });
+            await expect(sync.ensureSessionVisibleForMessageRoute(sessionId)).resolves.toMatchObject({
+                kind: 'available', sessionId,
+            });
+            expect(requestMock).not.toHaveBeenCalled();
+        } finally {
+            await hook.unmount();
+        }
     });
 
     it('returns a retryable result when credentials are not yet available', async () => {
@@ -642,6 +1467,12 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
                 serverId: activeServerId,
             } as Session & { serverId: string },
         ]);
+        const { buildSessionListRenderableFromSession } = await import('@/sync/domains/session/listing/sessionListRenderable');
+        const indexedSession = storage.getState().sessions[sessionId];
+        if (!indexedSession) throw new Error('Expected indexed session fixture.');
+        storage.getState().applyServerScopedSessionListRows(activeServerId, [
+            buildSessionListRenderableFromSession(indexedSession),
+        ], { source: 'ordinary', mode: 'append' });
         expect(
             storage.getState().sessionListIndexByServerId?.[activeServerId]?.some((item) => (
                 item.type === 'session' && item.sessionId === sessionId
@@ -724,9 +1555,12 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         const syncInternals = sync as any;
         const originalFetchSessions = syncInternals.fetchSessions;
         const fetchSessionsSpy = vi.fn(async () => {
-            const olderRenderable = storage.getState().sessionListRenderables[olderSessionId];
-            expect(olderRenderable).toBeDefined();
-            storage.getState().replaceSessionListRenderables([olderRenderable]);
+            const olderRenderable = Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[olderSessionId]).find(Boolean);
+            if (!olderRenderable) throw new Error('Expected older session row fixture.');
+            storage.getState().applyServerScopedSessionListRows(activeServerId, [olderRenderable], {
+                source: 'ordinary',
+                mode: 'replace',
+            });
         });
 
         syncInternals.credentials = { token: 'active-token', secret: 'active-secret' };
@@ -776,7 +1610,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
                 prioritizeSessionIds: [sessionId],
                 requiredHydrationSessionIds: [sessionId],
             }));
-            expect(storage.getState().sessionListRenderables[sessionId]?.metadata?.path).toBe('/tmp/exact-socket-row');
+            expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[sessionId]).find(Boolean)?.metadata?.path).toBe('/tmp/exact-socket-row');
             expect(
                 storage.getState().sessionListIndexByServerId?.[activeServerId]?.some((item) => (
                     item.type === 'session' && item.sessionId === sessionId
@@ -794,7 +1628,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
         expect(activeServerId).toBeTruthy();
 
-        storage.getState().replaceSessionListRenderables([
+        storage.getState().applyServerScopedSessionListRows(activeServerId, [
             {
                 id: sessionId,
                 seq: 1,
@@ -811,7 +1645,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
                 presence: 'online',
                 hasUnreadMessages: false,
             },
-        ]);
+        ], { source: 'ordinary', mode: 'replace' });
         markSessionSurfaceVisible(sessionId, activeServerId);
 
         const { sync } = await import('./sync');
@@ -931,9 +1765,9 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
     it('does not refresh the active session-list snapshot after hydrating a non-active source-server socket update', async () => {
         const sessionId = 'socket_foreign_server_targeted_hydration';
         const scopedToken = tokenForSub('scoped-account');
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://scoped.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://scoped.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
 
         const { sync } = await import('./sync');
         const syncInternals = sync as any;
@@ -957,7 +1791,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
             initializeSessions: vi.fn(async () => {}),
             getSessionEncryption: vi.fn(() => null),
         });
-        runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({
+        runtimeFetchMock.mockImplementation(async () => new Response(JSON.stringify({
             session: {
                 id: sessionId,
                 seq: 2,
@@ -1258,7 +2092,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         },
     );
 
-    it('initializes session encryption on the current encryption instance when it changes mid-hydration', async () => {
+    it('requires fresh hydration when encryption changes during metadata decryption', async () => {
         const sessionId = 'deep_link_session_swap';
         storage.getState().applySessions([createSession({ sessionId })]);
         storage.getState().resetSessionMessages(sessionId);
@@ -1325,12 +2159,12 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         );
 
         await expect(sync.ensureSessionVisibleForMessageRoute(sessionId)).resolves.toMatchObject({
-            kind: 'available',
+            kind: 'retryable_failure',
             sessionId,
         });
 
         expect((sync as any).encryption).toBe(encryption2);
-        expect(encryption2.getSessionEncryption(sessionId)).not.toBeNull();
+        expect(encryption2.getSessionEncryption(sessionId)).toBeNull();
     });
 
     it('re-fetches a known session when forceRefresh is requested', async () => {
@@ -1527,9 +2361,9 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
     it('hydrates through the preferred owner server when local cache maps the session to a non-active server', async () => {
         const sessionId = 'deep_link_scoped_owner';
         const scopedToken = tokenForSub('scoped-account');
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://scoped.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://scoped.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
 
         storage.getState().applySessions([
             {
@@ -1540,18 +2374,10 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         storage.getState().resetSessionMessages(sessionId);
         const { buildSessionListRenderableFromSession } = await import('@/sync/domains/session/listing/sessionListRenderable');
         const renderable = buildSessionListRenderableFromSession(storage.getState().sessions[sessionId] as Session);
-        storage.setState((state) => ({
-            ...state,
-            concurrentSessionListCacheByServerId: {
-                ...state.concurrentSessionListCacheByServerId,
-                [ownerServer.id]: {
-                    serverName: String(ownerServer.name ?? ownerServer.id).trim() || ownerServer.id,
-                    sessions: {
-                        [sessionId]: renderable,
-                    },
-                },
-            },
-        }));
+        storage.getState().applyServerScopedSessionListRows(ownerServer.id, [renderable], {
+            source: 'query',
+            mode: 'append',
+        });
 
         const { sync } = await import('./sync');
 
@@ -1607,18 +2433,14 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
             scopedToken,
         );
         expect(storage.getState().sessions[sessionId]?.serverId).toBe(ownerServer.id);
-        expect(storage.getState().sessionListRowStateByServerId?.[activeServer.id]?.[sessionId]).toBeUndefined();
+        expect(storage.getState().sessionListRowsByServerId?.[activeServer.id]?.[sessionId]).toBeUndefined();
         expect(
             storage.getState().sessionListIndexByServerId?.[activeServer.id]?.some(
                 (item) => item.type === 'session' && item.sessionId === sessionId,
             ) ?? false,
         ).toBe(false);
-        expect(storage.getState().sessionListRowStateByServerId?.[ownerServer.id]?.[sessionId]).toBeDefined();
-        expect(
-            storage.getState().sessionListIndexByServerId?.[ownerServer.id]?.some(
-                (item) => item.type === 'session' && item.sessionId === sessionId,
-            ) ?? false,
-        ).toBe(true);
+        expect(storage.getState().sessionListRowsByServerId?.[ownerServer.id]?.[sessionId]).toBeDefined();
+        expect(storage.getState().ordinarySessionListMembershipByServerId?.[ownerServer.id] ?? []).not.toContain(sessionId);
         expect((sync as any).activeServerSessionIds.has(sessionId)).toBe(false);
         expect(initializeSessions).not.toHaveBeenCalled();
     });
@@ -1626,9 +2448,9 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
     it('hydrates through an explicit serverId override even when the active server differs', async () => {
         const sessionId = 'deep_link_explicit_server';
         const scopedToken = tokenForSub('scoped-account');
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://scoped.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://scoped.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
 
         storage.getState().applySessions([
             {
@@ -1692,29 +2514,263 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
             scopedToken,
         );
         expect(storage.getState().sessions[sessionId]?.serverId).toBe(ownerServer.id);
-        expect(storage.getState().sessionListRowStateByServerId?.[activeServer.id]?.[sessionId]).toBeUndefined();
+        expect(storage.getState().sessionListRowsByServerId?.[activeServer.id]?.[sessionId]).toBeUndefined();
         expect(
             storage.getState().sessionListIndexByServerId?.[activeServer.id]?.some(
                 (item) => item.type === 'session' && item.sessionId === sessionId,
             ) ?? false,
         ).toBe(false);
-        expect(storage.getState().sessionListRowStateByServerId?.[ownerServer.id]?.[sessionId]).toBeDefined();
-        expect(
-            storage.getState().sessionListIndexByServerId?.[ownerServer.id]?.some(
-                (item) => item.type === 'session' && item.sessionId === sessionId,
-            ) ?? false,
-        ).toBe(true);
+        expect(storage.getState().sessionListRowsByServerId?.[ownerServer.id]?.[sessionId]).toBeDefined();
+        expect(storage.getState().ordinarySessionListMembershipByServerId?.[ownerServer.id] ?? []).not.toContain(sessionId);
         expect((sync as any).activeServerSessionIds.has(sessionId)).toBe(false);
         expect(initializeSessions).not.toHaveBeenCalled();
     });
 
+    it('keeps exact-Home System Record runtime authority independent from focus and reuses its hydrated Session', async () => {
+        const sessionId = 'system_record_scoped_owner';
+        const scopedToken = tokenForSub('scoped-account');
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active-system-record.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://scoped-system-record.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
+        storage.setState({ profileScope: { serverId: activeServer.id, accountId: 'active-account' } });
+
+        const { sync } = await import('./sync');
+        (sync as any).credentials = { token: tokenForSub('active-account'), secret: 'active-secret' };
+        (sync as any).activeServerSessionIds = new Set<string>();
+        (sync as any).hasFetchedSessionsSnapshotForActiveServer = false;
+        (sync as any).encryption = null;
+
+        requestMock.mockRejectedValue(new Error('active request should not be used'));
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: scopedToken });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue(null);
+        runtimeFetchMock.mockImplementation(async (url: string) => {
+            if (new URL(url).pathname === '/v1/auth/ping') {
+                return Response.json({ success: true });
+            }
+            if (url !== `https://scoped-system-record.example/v2/sessions/${sessionId}`) {
+                throw new Error(`unexpected request: ${url}`);
+            }
+            return new Response(JSON.stringify({
+                session: {
+                    id: sessionId,
+                    createdAt: 1,
+                    updatedAt: 2,
+                    seq: 3,
+                    active: true,
+                    activeAt: 2,
+                    encryptionMode: 'plain',
+                    dataEncryptionKey: null,
+                    metadataVersion: 0,
+                    metadata: 'null',
+                    agentStateVersion: 1,
+                    agentState: null,
+                    share: null,
+                },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        });
+
+        const address = { serverId: ownerServer.id, sessionId };
+        await expect(sync.withSessionSystemRecordRuntime(address, async (runtime) => ({
+            accountId: runtime.scope.accountId,
+            serverId: runtime.session.serverId,
+            contentContext: runtime.readContentContext(),
+        }))).resolves.toEqual({
+            status: 'ok',
+            value: {
+                accountId: 'scoped-account',
+                serverId: ownerServer.id,
+                contentContext: { mode: 'plain' },
+            },
+        });
+        await expect(sync.withSessionSystemRecordRuntime(address, async (runtime) => runtime.session.id)).resolves.toEqual({
+            status: 'ok',
+            value: sessionId,
+        });
+
+        expect(requestMock).not.toHaveBeenCalled();
+        expect(runtimeFetchMock.mock.calls.filter(([url]) => url === `https://scoped-system-record.example/v2/sessions/${sessionId}`)).toHaveLength(1);
+
+        const { createDeferred } = await import('@/dev/testkit');
+        const refresh = createDeferred<Response>();
+        runtimeFetchMock.mockImplementation(async (url: string) => {
+            if (new URL(url).pathname === '/v1/auth/ping') {
+                return Response.json({ success: true });
+            }
+            if (url !== `https://scoped-system-record.example/v2/sessions/${sessionId}`) {
+                throw new Error(`unexpected request: ${url}`);
+            }
+            return await refresh.promise.then((response) => response.clone());
+        });
+
+        const firstRefresh = sync.withSessionSystemRecordRuntime(
+            address,
+            async (runtime) => runtime.session.id,
+            { forceSessionRefresh: true },
+        );
+        const secondRefresh = sync.withSessionSystemRecordRuntime(
+            address,
+            async (runtime) => runtime.session.id,
+            { forceSessionRefresh: true },
+        );
+        await waitForAssertion(() => expect(runtimeFetchMock.mock.calls.filter(
+            ([url]) => url === `https://scoped-system-record.example/v2/sessions/${sessionId}`,
+        )).toHaveLength(2));
+        refresh.resolve(new Response(JSON.stringify({
+            session: {
+                id: sessionId,
+                createdAt: 1,
+                updatedAt: 4,
+                seq: 4,
+                active: true,
+                activeAt: 4,
+                encryptionMode: 'plain',
+                dataEncryptionKey: null,
+                metadataVersion: 0,
+                metadata: 'null',
+                agentStateVersion: 1,
+                agentState: null,
+                share: null,
+            },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+        await expect(Promise.all([firstRefresh, secondRefresh])).resolves.toEqual([
+            { status: 'ok', value: sessionId },
+            { status: 'ok', value: sessionId },
+        ]);
+        expect(runtimeFetchMock.mock.calls.filter(
+            ([url]) => url === `https://scoped-system-record.example/v2/sessions/${sessionId}`,
+        )).toHaveLength(2);
+    });
+
+    it('keeps an in-flight non-active Home System Record acquisition current when focus switches to that Home', async () => {
+        const { createDeferred } = await import('@/dev/testkit');
+        const sessionId = 'system_record_scoped_during_active_reset';
+        const scopedToken = tokenForSub('scoped-account');
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active-reset.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://scoped-reset.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
+        storage.setState({ profileScope: { serverId: activeServer.id, accountId: 'active-account' } });
+
+        const { sync } = await import('./sync');
+        (sync as any).credentials = { token: tokenForSub('active-account'), secret: 'active-secret' };
+        (sync as any).activeServerSessionIds = new Set<string>();
+        (sync as any).hasFetchedSessionsSnapshotForActiveServer = false;
+        (sync as any).encryption = null;
+
+        requestMock.mockRejectedValue(new Error('active request should not be used'));
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: scopedToken });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue(null);
+        const response = createDeferred<Response>();
+        runtimeFetchMock.mockImplementation(async (url: string) => {
+            if (new URL(url).pathname === '/v1/auth/ping') {
+                return Response.json({ success: true });
+            }
+            if (url === `https://scoped-reset.example/v2/sessions/${sessionId}`) return await response.promise;
+            throw new Error(`unexpected request: ${url}`);
+        });
+
+        const address = { serverId: ownerServer.id, sessionId };
+        const acquisition = sync.withSessionSystemRecordRuntime(address, async (runtime) => runtime.scope.accountId);
+        await waitForAssertion(() => expect(runtimeFetchMock.mock.calls.some(
+            ([url]) => url === `https://scoped-reset.example/v2/sessions/${sessionId}`,
+        )).toBe(true));
+
+        // Switching focus is presentation. The already captured exact-Home
+        // credential remains the operation authority while Sync replaces the
+        // focused Account runtime around it.
+        await setActiveServerId(ownerServer.id, { scope: 'device' });
+        (sync as any).resetServerScopedRuntimeState();
+        response.resolve(new Response(JSON.stringify({
+            session: {
+                id: sessionId,
+                createdAt: 1,
+                updatedAt: 2,
+                seq: 3,
+                active: true,
+                activeAt: 2,
+                encryptionMode: 'plain',
+                dataEncryptionKey: null,
+                metadataVersion: 0,
+                metadata: 'null',
+                agentStateVersion: 1,
+                agentState: null,
+                share: null,
+            },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+        await expect(acquisition).resolves.toEqual({ status: 'ok', value: 'scoped-account' });
+        expect(requestMock).not.toHaveBeenCalled();
+    });
+
+    it('retains an observed exact-Home System Record repository across an active-Home switch', async () => {
+        const sessionId = 'system_record_repository_across_active_reset';
+        const scopedToken = tokenForSub('scoped-account');
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active-repository-reset.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://scoped-repository-reset.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
+        storage.setState({ profileScope: { serverId: activeServer.id, accountId: 'active-account' } });
+
+        const { sync } = await import('./sync');
+        (sync as any).credentials = { token: tokenForSub('active-account'), secret: 'active-secret' };
+        (sync as any).activeServerSessionIds = new Set<string>();
+        (sync as any).hasFetchedSessionsSnapshotForActiveServer = false;
+        (sync as any).encryption = null;
+
+        requestMock.mockRejectedValue(new Error('active request should not be used'));
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: scopedToken });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue(null);
+        runtimeFetchMock.mockImplementation(async (url: string) => {
+            if (new URL(url).pathname === '/v1/auth/ping') {
+                return Response.json({ success: true });
+            }
+            if (url !== `https://scoped-repository-reset.example/v2/sessions/${sessionId}`) {
+                throw new Error(`unexpected request: ${url}`);
+            }
+            return new Response(JSON.stringify({
+                session: {
+                    id: sessionId,
+                    createdAt: 1,
+                    updatedAt: 2,
+                    seq: 3,
+                    active: true,
+                    activeAt: 2,
+                    encryptionMode: 'plain',
+                    dataEncryptionKey: null,
+                    metadataVersion: 0,
+                    metadata: 'null',
+                    agentStateVersion: 1,
+                    agentState: null,
+                    share: null,
+                },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        });
+
+        const address = { serverId: ownerServer.id, sessionId };
+        let firstRepository: unknown;
+        let firstCurrentness: (() => boolean) | undefined;
+        await expect(sync.withSessionSystemRecordRuntime(address, async (runtime) => {
+            firstRepository = runtime.repository;
+            firstCurrentness = runtime.isCurrent;
+            return runtime.scope.accountId;
+        })).resolves.toEqual({ status: 'ok', value: 'scoped-account' });
+
+        await setActiveServerId(ownerServer.id, { scope: 'device' });
+        (sync as any).resetServerScopedRuntimeState();
+
+        expect(firstCurrentness?.()).toBe(true);
+        await expect(sync.withSessionSystemRecordRuntime(address, async (runtime) => runtime.repository === firstRepository)).resolves.toEqual({
+            status: 'ok',
+            value: true,
+        });
+    });
+
     it('does not recreate active message synchronization after captured-authority hydration completes following a reset', async () => {
         const sessionId = 'captured_authority_after_reset';
-        const activeServer = upsertServerProfile({
+        const activeServer = await upsertServerProfile({
             serverUrl: 'https://same-server.example',
             name: 'Same server',
         });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         const scope = {
             serverId: activeServer.id,
             accountId: 'account-a',
@@ -1746,7 +2802,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
                 },
             },
             request: authorityRequest,
-        } as unknown as ServerAccountSessionRequestAuthority;
+        } as unknown as ServerAccountRequestAuthority;
 
         const { sync } = await import('./sync');
         (sync as any).credentials = authority.context.credentials;
@@ -1838,9 +2894,9 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
     it('initializes encrypted explicit-server route hydration with the owner server scope', async () => {
         const sessionId = 'deep_link_explicit_server_encrypted';
         const scopedToken = tokenForSub('scoped-account');
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://scoped.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://scoped.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         storage.getState().resetSessionMessages(sessionId);
 
         const { sync } = await import('./sync');
@@ -1900,17 +2956,13 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
 
         expect(requestMock).not.toHaveBeenCalled();
         expect(scopedInitializeSessions).toHaveBeenCalled();
-        expect(initializeSessions).toHaveBeenCalledTimes(1);
-        expect(initializeSessions.mock.calls[0]?.[0].get(sessionId)).toEqual(new Uint8Array([1, 2, 3]));
-        expect(initializeSessions.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
-            serverId: ownerServer.id,
-        }));
+        expect(initializeSessions).not.toHaveBeenCalled();
     });
 
     it('falls back to the active server when a route carries a stale unknown server id', async () => {
         const sessionId = 'deep_link_stale_route_server_id';
-        const activeServer = upsertServerProfile({ serverUrl: 'http://localhost:52753', name: 'Active' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'http://localhost:52753', name: 'Active' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         storage.getState().resetSessionMessages(sessionId);
 
         const { sync } = await import('./sync');

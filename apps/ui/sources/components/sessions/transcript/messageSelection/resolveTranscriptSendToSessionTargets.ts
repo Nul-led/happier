@@ -1,3 +1,4 @@
+import type { Session } from '@/sync/domains/state/storageTypes';
 import { isUserFacingSession } from '@/sync/domains/session/listing/isUserFacingSession';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import {
@@ -9,7 +10,7 @@ import {
 export type TranscriptSendToSessionTargetCandidate = Readonly<{
     id: string;
     serverId?: string | null;
-    accessLevel?: 'view' | 'edit' | 'admin' | null;
+    access?: Session['access'];
     metadata?: unknown;
     metadataUnavailable?: boolean;
     meaningfulActivityAt?: number | null;
@@ -34,24 +35,29 @@ function buildDestinationOrderingKey(candidate: TranscriptSendToSessionTargetCan
 }
 
 function isWritableSession(candidate: TranscriptSendToSessionTargetCandidate): boolean {
-    return candidate.accessLevel !== 'view';
+    return candidate.access?.capabilities.submitAgentInput === true;
 }
 
-export function resolveTranscriptSendToSessionTargets(params: Readonly<{
-    sourceSessionId: string;
-    sourceServerId: string | null | undefined;
+function isReadableSession(candidate: TranscriptSendToSessionTargetCandidate): boolean {
+    return candidate.access?.capabilities.readTranscript === true;
+}
+
+function resolveQualifiedSessionTargets(params: Readonly<{
+    excludedSessionId: string;
+    serverId: string | null | undefined;
     sessions: ReadonlyArray<TranscriptSendToSessionTargetCandidate>;
+    accepts(candidate: TranscriptSendToSessionTargetCandidate): boolean;
 }>): ReadonlyArray<TranscriptSendToSessionTargetCandidate> {
-    const sourceSessionId = normalizeId(params.sourceSessionId);
-    const sourceServerId = normalizeId(params.sourceServerId);
-    if (!sourceSessionId || !sourceServerId) return [];
+    const excludedSessionId = normalizeId(params.excludedSessionId);
+    const serverId = normalizeId(params.serverId);
+    if (!excludedSessionId || !serverId) return [];
 
     return params.sessions
         .filter((session) => {
             const sessionId = normalizeId(session.id);
-            if (!sessionId || sessionId === sourceSessionId) return false;
-            if (!areServerProfileIdentifiersEquivalent(normalizeId(session.serverId), sourceServerId)) return false;
-            if (!isWritableSession(session)) return false;
+            if (!sessionId || sessionId === excludedSessionId) return false;
+            if (!areServerProfileIdentifiersEquivalent(normalizeId(session.serverId), serverId)) return false;
+            if (!params.accepts(session)) return false;
             return isUserFacingSession(session);
         })
         .sort((left, right) => compareSessionListSessionOrderingKeys(
@@ -59,4 +65,28 @@ export function resolveTranscriptSendToSessionTargets(params: Readonly<{
             buildDestinationOrderingKey(right),
             'updated',
         ));
+}
+
+export function resolveTranscriptSendToSessionTargets(params: Readonly<{
+    sourceSessionId: string;
+    sourceServerId: string | null | undefined;
+    sessions: ReadonlyArray<TranscriptSendToSessionTargetCandidate>;
+}>): ReadonlyArray<TranscriptSendToSessionTargetCandidate> {
+    return resolveQualifiedSessionTargets({
+        excludedSessionId: params.sourceSessionId,
+        serverId: params.sourceServerId,
+        sessions: params.sessions,
+        accepts: isWritableSession,
+    });
+}
+
+export function resolveTranscriptReadableSessionTargets(params: Readonly<{
+    excludedSessionId: string;
+    serverId: string | null | undefined;
+    sessions: ReadonlyArray<TranscriptSendToSessionTargetCandidate>;
+}>): ReadonlyArray<TranscriptSendToSessionTargetCandidate> {
+    return resolveQualifiedSessionTargets({
+        ...params,
+        accepts: isReadableSession,
+    });
 }

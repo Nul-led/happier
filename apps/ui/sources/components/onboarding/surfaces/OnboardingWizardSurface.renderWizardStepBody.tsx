@@ -3,7 +3,6 @@ import { View } from 'react-native';
 
 import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
 import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
-import { AuthEntryView } from '@/components/account/auth/AuthEntryView';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { t } from '@/text';
@@ -29,6 +28,16 @@ import { RestoreIndexEmbedded } from '@/components/onboarding/restore/RestoreInd
 import { LostAccessEmbedded } from '@/components/onboarding/restore/LostAccessEmbedded';
 import { SecretKeyLoginEmbedded } from '@/components/onboarding/restore/SecretKeyLoginEmbedded';
 import { WelcomeDecisionPanel } from '../preAuth/WelcomeDecisionPanel';
+import { SecretKeyLoginForm } from '@/components/account/restore/SecretKeyLoginForm';
+import { resolveHomeAuthenticationTarget } from '@/auth/flows/resolveHomeAuthenticationTarget';
+import { AccountServiceSelectionForm, type AccountServiceSelectionFormProps } from '@/components/account/auth/AccountServiceSelectionForm';
+import { AccountDirectoryKeyLoginForm, type AccountDirectoryKeyLoginOutcome } from '@/components/account/auth/AccountDirectoryKeyLoginForm';
+import { AccountServiceHomeAuthenticationAdapter } from '@/components/account/auth/AccountServiceHomeAuthenticationAdapter';
+import { AccountServiceContinuation } from '@/components/account/auth/AccountServiceContinuation';
+import type { AccountPostAuthInput, AccountPostAuthResult } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
+import { AUTHENTICATED_ACCOUNT_ENTRY_ROUTE } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
+import type { AccountContinuationIntent } from '@happier-dev/cli-common/accountService';
+import type { WelcomeAuthenticationMethod } from '../preAuth/composeWelcomeEntryModel';
 
 import type { RelayHostLocalChecklistRuntimeStatus } from '../checklists/relayHostLocal/types';
 import { RelayHostLocalChecklistStep } from '../checklists/relayHostLocal/RelayHostLocalChecklistStep';
@@ -68,11 +77,21 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
     isDesktopShell: boolean;
     authEntryOptions: AuthEntryOptions;
     accountServiceEntry?: AccountServiceEntryOptions;
+    accountContinuationIntent: AccountContinuationIntent;
+    accountEntryReturnTo?: string;
+    accountDirectoryKeyRequest: WelcomeAuthenticationMethod | null;
+    accountDirectoryHomeRecovery: Readonly<{
+        kind: 'home_auth' | 'continuation';
+        input: AccountPostAuthInput;
+        previous: AccountPostAuthResult;
+        homeServerIdentityId: string;
+    }> | null;
 
     canScanQr: boolean;
     welcomeHasKnownRelay: boolean;
     welcomeHasAuthActions: boolean;
     allowRelaySelection: boolean;
+    canCreatePersonalHome: boolean;
 
     relaySelectBody: React.ReactNode;
 
@@ -103,21 +122,26 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
     onRelayAccessProviderIdChange: (next: RelayAccessProviderId | null) => void;
     onRelayAccessProviderDetailsRequested: (providerId: RelayAccessProviderId) => void;
 
-    onContinueWithAccountServiceProvider?: (providerId: string) => Promise<void> | void;
-    onContinueWithAccountServiceKey?: () => Promise<void> | void;
+    onContinueWithAccountServiceProvider?: (request: WelcomeAuthenticationMethod) => Promise<void> | void;
+    onContinueWithAccountServiceKey?: (request: WelcomeAuthenticationMethod) => Promise<void> | void;
+    onAccountDirectoryKeyResult: (result: AccountDirectoryKeyLoginOutcome) => Promise<void> | void;
+    onAccountServiceReauthenticate: (input: AccountPostAuthInput) => Promise<void> | void;
     onChooseAccountService?: () => Promise<void> | void;
-    onCreateAccount: () => Promise<void> | void;
-    onCreateAccountViaProvider: (providerId: string) => Promise<void> | void;
-    onLoginWithKeylessProvider: (providerId: string) => Promise<void> | void;
-    onLoginWithMtls: () => Promise<void> | void;
+    onContinueWithHomeAuthentication?: (request: WelcomeAuthenticationMethod) => Promise<void> | void;
+    onSelectAccountService: AccountServiceSelectionFormProps['onSelect'];
+    onAccountServiceSelectionBack: () => void;
+    onAccountDirectoryKeyBack: () => void;
+    onOpenAccountDirectoryHomeAuthentication: (input: AccountPostAuthInput, homeServerIdentityId: string, previous: AccountPostAuthResult) => void;
+    onAccountDirectoryHomeAuthenticationResult: (result: AccountPostAuthResult, input?: AccountPostAuthInput) => Promise<void> | void;
+    onAccountDirectoryHomeAuthenticationBack: () => void;
 
-    onStartScan: () => void;
     onCancelScan: () => void;
     onScan: (payload: string) => void;
 
     onOpenRelaySelectionFromWelcome: () => void;
     onOpenRelaySelectionFromAuth: () => void;
     onOpenSetup: () => void;
+    onCreatePersonalHome: () => void;
 
     onOpenRestore: () => void;
     onOpenLostAccess: () => void;
@@ -147,14 +171,14 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
                 onContinueWithAccountServiceProvider={params.onContinueWithAccountServiceProvider}
                 onContinueWithAccountServiceKey={params.onContinueWithAccountServiceKey}
                 onChooseAccountService={params.onChooseAccountService}
-                onCreateAccount={params.onCreateAccount}
-                onCreateAccountViaProvider={params.onCreateAccountViaProvider}
-                onLoginWithKeylessProvider={params.onLoginWithKeylessProvider}
-                onLoginWithMtls={params.onLoginWithMtls}
+                onContinueWithHomeAuthentication={params.onContinueWithHomeAuthentication}
                 onOpenRestore={params.onOpenRestore}
+                onOpenSecretKeyLogin={params.onOpenSecretKeyLogin}
                 onChangeRelay={params.allowRelaySelection ? params.onOpenRelaySelectionFromWelcome : () => {}}
+                canChangeHome={params.allowRelaySelection}
                 canScanQr={params.canScanQr}
-                onStartScan={params.onStartScan}
+                canCreatePersonalHome={params.canCreatePersonalHome}
+                onCreatePersonalHome={params.canCreatePersonalHome ? params.onCreatePersonalHome : undefined}
             />
         );
     }
@@ -168,6 +192,16 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
                 embedded
                 onCancel={params.onCancelScan}
                 onScan={params.onScan}
+            />
+        );
+    }
+
+    if (params.stepId === 'auth_service_select') {
+        return (
+            <AccountServiceSelectionForm
+                currentEndpoint={params.accountServiceEntry?.endpoint ?? null}
+                onBack={params.onAccountServiceSelectionBack}
+                onSelect={params.onSelectAccountService}
             />
         );
     }
@@ -342,18 +376,20 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
         return (
             <>
                 <View style={params.styles.authEntryWrapper}>
-                    <AuthEntryView
-                        layout={params.layout}
-                        isDesktopShell={params.isDesktopShell}
-                        showOpenSetupAction={false}
-                        options={params.authEntryOptions}
-                        onOpenSetup={params.onOpenSetup}
+                    <WelcomeDecisionPanel
+                        authEntryOptions={params.authEntryOptions}
+                        accountServiceEntry={params.accountServiceEntry}
+                        onContinueWithAccountServiceProvider={params.onContinueWithAccountServiceProvider}
+                        onContinueWithAccountServiceKey={params.onContinueWithAccountServiceKey}
+                        onChooseAccountService={params.onChooseAccountService}
+                        onContinueWithHomeAuthentication={params.onContinueWithHomeAuthentication}
+                        onOpenRestore={params.onOpenRestore}
+                        onOpenSecretKeyLogin={params.onOpenSecretKeyLogin}
                         onChangeRelay={params.onOpenRelaySelectionFromAuth}
-                        onRestore={params.onOpenRestore}
-                        onCreateAccount={params.onCreateAccount}
-                        onCreateAccountViaProvider={params.onCreateAccountViaProvider}
-                        onLoginWithKeylessProvider={params.onLoginWithKeylessProvider}
-                        onLoginWithMtls={params.onLoginWithMtls}
+                        canChangeHome={params.allowRelaySelection}
+                        canScanQr={params.canScanQr}
+                        canCreatePersonalHome={params.canCreatePersonalHome}
+                        onCreatePersonalHome={params.canCreatePersonalHome ? params.onCreatePersonalHome : undefined}
                     />
                 </View>
                 <View style={params.styles.scanCtaBlock}>
@@ -388,6 +424,73 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
     }
 
     if (params.stepId === 'auth_secret_key') {
+        const homeRecovery = params.accountDirectoryHomeRecovery;
+        if (homeRecovery?.kind === 'home_auth') {
+            return <AccountServiceHomeAuthenticationAdapter
+                input={homeRecovery.input}
+                previous={homeRecovery.previous}
+                homeServerIdentityId={homeRecovery.homeServerIdentityId}
+                returnTo={AUTHENTICATED_ACCOUNT_ENTRY_ROUTE}
+                accountEntryReturnTo={params.accountEntryReturnTo}
+                onResult={params.onAccountDirectoryHomeAuthenticationResult}
+                onBack={params.onAccountDirectoryHomeAuthenticationBack}
+            />;
+        }
+        if (homeRecovery?.kind === 'continuation') {
+            return <AccountServiceContinuation
+                input={homeRecovery.input}
+                result={homeRecovery.previous}
+                onResult={params.onAccountDirectoryHomeAuthenticationResult}
+                onReauthenticate={params.onAccountServiceReauthenticate}
+                onOpenHomeAuthentication={params.onOpenAccountDirectoryHomeAuthentication}
+                onBack={params.onAccountDirectoryHomeAuthenticationBack}
+            />;
+        }
+        const request = params.accountDirectoryKeyRequest;
+        if (request?.authority.purpose === 'account_service') {
+            const service = request.authority.service;
+            const accountServiceEntry = params.accountServiceEntry;
+            const discovery = accountServiceEntry?.status === 'ready'
+                ? accountServiceEntry.discovery
+                : null;
+            const serviceName = discovery?.accountServiceDisplayName
+                ?? accountServiceEntry?.endpoint.displayName
+                ?? accountServiceEntry?.endpoint.url
+                ?? service.endpointUrl;
+            return (
+                <AccountDirectoryKeyLoginForm
+                    service={service}
+                    serviceName={serviceName}
+                    intent={params.accountContinuationIntent}
+                    mode={request.execution.kind === 'generated_key' ? 'provision' : 'login'}
+                    transport={accountServiceEntry?.transport}
+                    onResult={params.onAccountDirectoryKeyResult}
+                    onBack={params.onAccountDirectoryKeyBack}
+                    onReauthenticate={params.onAccountServiceReauthenticate}
+                    onOpenHomeAuthentication={params.onOpenAccountDirectoryHomeAuthentication}
+                    isCurrent={() => (
+                        discovery != null
+                        && discovery.endpointUrl === service.endpointUrl
+                        && discovery.serverIdentityId === service.serverIdentityId
+                    )}
+                />
+            );
+        }
+        if (request?.authority.purpose === 'home' && request.execution.kind === 'key_entry') {
+            const target = resolveHomeAuthenticationTarget(request.authority.target);
+            if (target) {
+                return <SecretKeyLoginForm embedded target={{
+                    ...target,
+                    ...(params.authEntryOptions.homeTransport?.runtimeOrigin
+                        ? { runtimeOrigin: params.authEntryOptions.homeTransport.runtimeOrigin }
+                        : {}),
+                    ...(params.authEntryOptions.homeTransport?.homeCarrier
+                        ? { homeCarrier: params.authEntryOptions.homeTransport.homeCarrier }
+                        : {}),
+                    requireKeyChallengeV2: params.authEntryOptions.keyChallengeV2Available === true,
+                }} onAuthenticated={() => {}} />;
+            }
+        }
         return <SecretKeyLoginEmbedded />;
     }
 

@@ -21,6 +21,7 @@ import {
     getSessionDraftSnapshot,
     writeNewSessionDraft,
     writeSessionDraftLocalSupplement,
+    type SessionDraftConflict,
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { buildNewSessionDraftLocalState } from '@/sync/ops/sessionDrafts/newSessionDraftLocalState';
 import { sanitizeNewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
@@ -30,10 +31,35 @@ function strictJson(value: unknown): StrictJsonValue {
     return StrictJsonValueSchema.parse(value);
 }
 
-export function readNewSessionDraftFromRepository(input: Readonly<{
+export type NewSessionDraftRepositoryProjection = Readonly<{
+    draft: NewSessionDraft;
+    /** Canonical repository document revision, never a wall-clock surrogate. */
+    revision: number;
+    /**
+     * Live repository conflict for explicit Use-synced/Keep-device resolution.
+     * The New Session access owner consumes only the access/context field
+     * presence below; it never invents a second conflict store.
+     */
+    conflict: SessionDraftConflict | null;
+}>;
+
+/** Repository field id for the synchronized initial-access authoring value. */
+export const NEW_SESSION_DRAFT_ACCESS_CONFLICT_FIELD_ID = 'target.authoring.access';
+/** Repository field id for the synchronized Team-context authoring value. */
+export const NEW_SESSION_DRAFT_PRIMARY_TEAM_CONFLICT_FIELD_ID = 'target.authoring.primaryTeamId';
+
+export function hasNewSessionDraftAccessConflict(conflict: SessionDraftConflict | null | undefined): boolean {
+    return conflict?.fields.some((field) => field.fieldId === NEW_SESSION_DRAFT_ACCESS_CONFLICT_FIELD_ID) === true;
+}
+
+export function hasNewSessionDraftPrimaryTeamConflict(conflict: SessionDraftConflict | null | undefined): boolean {
+    return conflict?.fields.some((field) => field.fieldId === NEW_SESSION_DRAFT_PRIMARY_TEAM_CONFLICT_FIELD_ID) === true;
+};
+
+export function readNewSessionDraftProjectionFromRepository(input: Readonly<{
     scope: ServerAccountScope;
     draftId: string;
-}>): NewSessionDraft | null {
+}>): NewSessionDraftRepositoryProjection | null {
     const snapshot = getSessionDraftSnapshot(input.scope, { kind: 'newSession', draftId: input.draftId });
     if (!snapshot || snapshot.document.target.kind !== 'newSession') return null;
     const fields = Object.fromEntries(Object.entries(snapshot.document.target.authoring).map(([fieldId, field]) => (
@@ -49,9 +75,10 @@ export function readNewSessionDraftFromRepository(input: Readonly<{
         : [];
     const hasCanonicalExecutionTarget = Object.prototype.hasOwnProperty.call(authoring, 'executionTarget');
     const hasCanonicalAgentTarget = Object.prototype.hasOwnProperty.call(authoring, 'agentTarget');
-    const executionTarget = hasCanonicalExecutionTarget
-        ? authoring.executionTarget ?? null
-        : predecessorAuthoring.executionTarget ?? null;
+    const canonicalExecutionTarget = hasCanonicalExecutionTarget
+        ? authoring.executionTarget
+        : predecessorAuthoring.executionTarget;
+    const executionTarget = canonicalExecutionTarget ?? null;
     const agentTarget = hasCanonicalAgentTarget
         ? authoring.agentTarget ?? null
         : predecessorAuthoring.agentTarget ?? null;
@@ -62,7 +89,7 @@ export function readNewSessionDraftFromRepository(input: Readonly<{
             : predecessorAuthoring.modelSelection;
     const backendTarget = resolveDraftBackendTarget({ agentTarget }) ?? undefined;
     const localState = snapshot.localSupplement.newSessionLocalState;
-    return {
+    const draft: NewSessionDraft = {
         input: typeof snapshot.document.composer.text.value === 'string'
             ? snapshot.document.composer.text.value
             : '',
@@ -73,10 +100,13 @@ export function readNewSessionDraftFromRepository(input: Readonly<{
         ...(snapshot.localSupplement.launchUserAttemptId
             ? { launchUserAttemptId: snapshot.localSupplement.launchUserAttemptId }
             : {}),
-        selectedMachineId: executionTarget?.machineId ?? null,
+        selectedMachineId: executionTarget?.kind === 'machine' ? executionTarget.target.machineId : null,
         selectedPath: authoring.directory ?? null,
-        targetServerId: executionTarget?.serverId ?? null,
+        targetServerId: executionTarget?.kind === 'machine' ? executionTarget.target.serverId : executionTarget?.serverId ?? null,
         executionTarget,
+        ...(authoring.temporaryComputerActivationRef !== undefined
+            ? { temporaryComputerActivationRef: authoring.temporaryComputerActivationRef }
+            : {}),
         ...(Array.isArray(localState?.placementCandidates) && localState.placementCandidates.length > 0
             ? { placementCandidates: localState.placementCandidates }
             : {}),
@@ -88,6 +118,11 @@ export function readNewSessionDraftFromRepository(input: Readonly<{
         }),
         ...(backendTarget !== undefined
             ? { backendTarget }
+            : {}),
+        ...(authoring.access !== undefined ? { access: authoring.access } : {}),
+        ...(authoring.primaryTeamId !== undefined ? { primaryTeamId: authoring.primaryTeamId } : {}),
+        ...(localState?.teamCredentialBindings !== undefined
+            ? { teamCredentialBindings: localState.teamCredentialBindings }
             : {}),
         ...(authoring.checkoutCreationDraft ? { checkoutCreationDraft: authoring.checkoutCreationDraft } : {}),
         ...(localState?.windowsRemoteSessionLaunchModeOverride
@@ -114,6 +149,14 @@ export function readNewSessionDraftFromRepository(input: Readonly<{
             : {}),
         updatedAt: snapshot.updatedAt,
     };
+    return { draft, revision: snapshot.revision, conflict: snapshot.conflict };
+}
+
+export function readNewSessionDraftFromRepository(input: Readonly<{
+    scope: ServerAccountScope;
+    draftId: string;
+}>): NewSessionDraft | null {
+    return readNewSessionDraftProjectionFromRepository(input)?.draft ?? null;
 }
 
 function projectNewSessionDraftAuthoring(draft: NewSessionDraft, scopeServerId: string) {
@@ -168,6 +211,32 @@ export function writeNewSessionAuthoringDraftToRepository(input: Readonly<{
         scope: input.scope,
         address: { kind: 'newSession', draftId: input.draftId },
         patch: { newSessionLocalState: buildNewSessionDraftLocalState(draft) },
+    });
+    fireAndForget(
+        flushSessionDraft({ scope: input.scope, address: { kind: 'newSession', draftId: input.draftId } }),
+        { tag: 'newSessionDraftRepository.flush' },
+    );
+}
+
+/**
+ * Narrow Temporary-computer activation-reference writer. It patches only the
+ * synchronized `temporaryComputerActivationRef` field so an explicit set/clear
+ * never overwrites concurrent authoring (prompt, target, agent, access, ...).
+ * `null` is the explicit synchronized clear for this nullable field; the
+ * repository treats an absent key as "no write". Flush is fire-and-forget
+ * like the other New Session writers; offline failure keeps the local waiting
+ * item visible through the repository status owner.
+ */
+export function writeTemporaryComputerActivationRefToRepository(input: Readonly<{
+    scope: ServerAccountScope;
+    draftId: string;
+    activationRef: NonNullable<NewSessionDraft['temporaryComputerActivationRef']> | null;
+}>): void {
+    writeNewSessionDraft({
+        scope: input.scope,
+        draftId: input.draftId,
+        patch: { authoring: { temporaryComputerActivationRef: input.activationRef } },
+        materializationIntent: 'userEdit',
     });
     fireAndForget(
         flushSessionDraft({ scope: input.scope, address: { kind: 'newSession', draftId: input.draftId } }),

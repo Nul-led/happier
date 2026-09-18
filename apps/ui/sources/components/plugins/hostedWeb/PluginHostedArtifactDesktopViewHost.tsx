@@ -1,7 +1,6 @@
 import {
     PluginHostedWebBridgeHostMessageEnvelopeV1Schema,
     PluginHostedWebBridgeResponseEnvelopeV1Schema,
-    type PluginHostedWebBridgeEnvelopeV1,
     type PluginHostedWebBridgeHostMessageEnvelopeV1,
     type PluginHostedWebBridgeResponseEnvelopeV1,
 } from '@happier-dev/protocol/plugins/ui';
@@ -9,9 +8,13 @@ import * as React from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import type { BrowserFrameNavigationCommand } from '@/components/browser/frame/types';
+import type { HostedPluginBridgeConfig } from '@/components/browser/adapters/HostedPluginTarget.web';
 import { invokeDesktopHost, listenDesktopHostEvent } from '@/utils/platform/desktopHost';
 
-import { createPluginHostedWebNativeMessageBridge } from './nativeMessageBridge';
+import {
+    createPluginHostedWebNativeMessageBridge,
+    PLUGIN_HOSTED_WEB_NO_TRANSIENT_ACTIVATION_RECEIPT,
+} from './nativeMessageBridge';
 
 const HOST_EVENT = 'desktop-hosted-artifact-event';
 const OPEN_VIEW_COMMAND = 'desktop_hosted_artifact_open_view';
@@ -21,29 +24,16 @@ const GO_BACK_COMMAND = 'desktop_hosted_artifact_go_back';
 const CLOSE_VIEW_COMMAND = 'desktop_hosted_artifact_close_view';
 const DESKTOP_ARTIFACT_VIEW_UNAVAILABLE = 'desktop_hosted_artifact_view_unavailable';
 
-type DesktopArtifactBridge = Readonly<{
-    expectedOrigin: string;
-    expectedPluginId: string;
-    expectedContributionId: string;
-    expectedSurfaceId: string;
-    expectedNonce: string;
-    expectedSessionId?: string | null;
-    allowedMessageKinds: ReadonlySet<string>;
-    attachHostMessages?: (send: (message: unknown) => void) => () => void;
-    onMessage: (
-        envelope: PluginHostedWebBridgeEnvelopeV1,
-    ) => void | PluginHostedWebBridgeResponseEnvelopeV1 | Promise<PluginHostedWebBridgeResponseEnvelopeV1 | void>;
-}>;
-
 type DesktopArtifactViewProps = Readonly<{
     title: string;
     artifact: Readonly<{
         artifactHandleToken: string;
         initialPathAndQuery: string;
     }>;
-    bridge?: DesktopArtifactBridge | null;
+    bridge?: HostedPluginBridgeConfig | null;
     testID: string;
     nativeArtifactLoadState?: 'loading' | 'ready';
+    presentationEligible?: boolean;
     onNativeArtifactUnavailable?: () => void;
     onNativeArtifactLoadStart?: (event: unknown) => void;
     onNativeArtifactLoadEnd?: (event: unknown) => void;
@@ -270,7 +260,7 @@ function PluginHostedArtifactDesktopViewLifetime(props: DesktopArtifactViewProps
         if (!verifiedSenderUrl) return;
         const response = nativeMessageBridgeRef.current?.({
             nativeEvent: { data: event.message, url: verifiedSenderUrl },
-        });
+        }, PLUGIN_HOSTED_WEB_NO_TRANSIENT_ACTIVATION_RECEIPT);
         if (response === undefined) return;
         void Promise.resolve(response).then((value) => {
             const parsed = PluginHostedWebBridgeResponseEnvelopeV1Schema.safeParse(value);
@@ -291,7 +281,10 @@ function PluginHostedArtifactDesktopViewLifetime(props: DesktopArtifactViewProps
         if (!viewId || !openedRef.current || !mountedRef.current) return;
         // Wry paints above the React tree. Keep its child hidden until the
         // trusted load event lets the pane retire its existing loading view.
-        const visible = loadStateRef.current === 'ready' && bounds.width > 0 && bounds.height > 0;
+        const visible = loadStateRef.current === 'ready'
+            && callbacksRef.current.presentationEligible !== false
+            && bounds.width > 0
+            && bounds.height > 0;
         if (boundsEqual(lastBoundsRef.current, bounds) && lastVisibleRef.current === visible) return;
         lastBoundsRef.current = bounds;
         lastVisibleRef.current = visible;
@@ -302,8 +295,13 @@ function PluginHostedArtifactDesktopViewLifetime(props: DesktopArtifactViewProps
                 bounds,
                 visible,
             },
-        }).catch(() => undefined);
-    }, [props.artifact.artifactHandleToken, viewId]);
+        }).then((result) => {
+            const failureCode = readViewCommandFailureCode(result);
+            if (failureCode) retireFailedNativeArtifact(failureCode);
+        }, () => {
+            retireFailedNativeArtifact(DESKTOP_ARTIFACT_VIEW_UNAVAILABLE);
+        });
+    }, [props.artifact.artifactHandleToken, retireFailedNativeArtifact, viewId]);
 
     const measureAndPublishBounds = React.useCallback(() => {
         const node = containerRef.current as unknown as NativeViewNode | null;
@@ -436,7 +434,7 @@ function PluginHostedArtifactDesktopViewLifetime(props: DesktopArtifactViewProps
 
     React.useEffect(() => {
         scheduleBoundsSync();
-    }, [props.nativeArtifactLoadState, scheduleBoundsSync]);
+    }, [props.nativeArtifactLoadState, props.presentationEligible, scheduleBoundsSync]);
 
     React.useEffect(() => {
         const globalEvents = globalThis as typeof globalThis & {

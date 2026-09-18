@@ -1,12 +1,14 @@
 import { isHiddenSystemSession } from '@happier-dev/protocol';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
+import { isSessionAccessRecipient, isSessionAccessOwner, type NormalizedSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 
 type UserFacingSessionCandidate = Readonly<{
     metadata?: unknown;
     metadataLayoutVersion?: number;
     ownerMetadataView?: unknown;
     accessLevel?: unknown;
+    access?: NormalizedSessionAccessProjection | null;
     metadataUnavailable?: boolean;
 }>;
 
@@ -25,9 +27,51 @@ function hasRawHiddenSystemFlag(metadata: unknown): boolean {
     return systemSession?.hidden === true;
 }
 
+/** The three shapes a hidden system row can take, asked once. */
+function isHiddenSystemCandidate(metadata: unknown): boolean {
+    return hasProjectedHiddenSystemFlag(metadata)
+        || hasRawHiddenSystemFlag(metadata)
+        || isHiddenSystemSession({ metadata });
+}
+
+/**
+ * An authorized recipient whose Session content is still locked.
+ *
+ * Hidden-system facts (`systemSessionV1`, `hiddenSystemSession`) are layout-1
+ * owner-private keys, so they are never projected into a recipient's shared
+ * view. A recipient row therefore has no hidden-system fact that unreadable
+ * metadata could be concealing, and Lane 04's access projection is itself a safe
+ * server-owned fact: hiding the row would make an authorized encrypted Session
+ * silently disappear until a manager prepared its key.
+ *
+ * An owner is deliberately not covered. When the owner view is unavailable the
+ * hidden-system answer is genuinely unknown for that viewer, so failing closed
+ * is what keeps Voice carriers and other hidden system Sessions out of the list
+ * during Account recovery.
+ *
+ * The explicit projection is required: legacy `accessLevel` inference reads an
+ * absent field as ownership, which would let call sites that pass only metadata
+ * fall into the visible branch.
+ */
+function isAuthorizedLockedRecipient(session: UserFacingSessionCandidate): boolean {
+    return session.access != null && session.access.role === 'recipient';
+}
+
 export function isUserFacingSession(session: UserFacingSessionCandidate): boolean {
     if (session.metadataUnavailable === true) {
-        return false;
+        if (isSessionAccessOwner(session.access, session.accessLevel)) {
+            // Layout-one owner metadata is Account-encrypted independently of the Session DEK.
+            // When that exact owner envelope opened, its system marker is sufficient to keep an
+            // ordinary locked Session visible without exposing owner facts to the Home or a
+            // recipient. If it did not open, the hidden-system answer remains unknown and fails
+            // closed as before.
+            return session.ownerMetadataView != null
+                && !isHiddenSystemCandidate(session.ownerMetadataView);
+        }
+        if (!isAuthorizedLockedRecipient(session)) return false;
+        // Whatever safe metadata survived the unavailable contraction still decides
+        // hidden-system visibility; absence of metadata is not proof of a system row.
+        return !isHiddenSystemCandidate(session.metadata);
     }
     const metadataLayoutVersion = readSessionMetadataLayoutVersion(session.metadataLayoutVersion);
     if (metadataLayoutVersion < 0) return false;
@@ -36,12 +80,10 @@ export function isUserFacingSession(session: UserFacingSessionCandidate): boolea
         metadata: session.metadata ?? null,
         ownerMetadataView: session.ownerMetadataView,
     });
-    const isSharedParticipant = session.accessLevel === 'view'
-        || session.accessLevel === 'edit'
-        || session.accessLevel === 'admin';
+    const isSharedParticipant = isSessionAccessRecipient(session.access, session.accessLevel);
     const hasProjectedOwnerMetadata =
         session.metadataLayoutVersion === 1
-        && session.accessLevel == null
+        && isSessionAccessOwner(session.access, session.accessLevel)
         && session.metadataUnavailable === false;
     if (
         metadataLayoutVersion === 1
@@ -53,9 +95,5 @@ export function isUserFacingSession(session: UserFacingSessionCandidate): boolea
     }
     const visibilityMetadata = metadata
         ?? (isSharedParticipant || hasProjectedOwnerMetadata ? session.metadata : null);
-    return !(
-        hasProjectedHiddenSystemFlag(visibilityMetadata)
-        || hasRawHiddenSystemFlag(visibilityMetadata)
-        || isHiddenSystemSession({ metadata: visibilityMetadata })
-    );
+    return !isHiddenSystemCandidate(visibilityMetadata);
 }

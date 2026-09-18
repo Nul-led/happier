@@ -1,6 +1,7 @@
 import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
@@ -10,9 +11,11 @@ import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers'
 const dropdownMenuSpy = vi.fn();
 const resolveWorkspaceFaviconMock = vi.hoisted(() => vi.fn());
 const setSessionFolderViewMode = vi.fn();
+const applySettings = vi.hoisted(() => vi.fn());
 let platformOs: 'ios' | 'web' = 'ios';
 let sessionFolderViewMode: 'off' | 'tree' = 'off';
 let sessionFoldersFeatureEnabled = true;
+const featureDecisionScopes = vi.hoisted(() => [] as unknown[]);
 type DropdownTriggerParams = {
     open: boolean;
     toggle: ReturnType<typeof vi.fn>;
@@ -51,10 +54,15 @@ vi.mock('@/sync/ops/workspaceFavicon', () => ({
     resolveWorkspaceFavicon: resolveWorkspaceFaviconMock,
 }));
 
+vi.mock('@/sync/store/settingsWriters', () => ({
+    useApplySettings: () => applySettings,
+}));
+
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: (featureId: string) => featureId === 'sessions.folders'
-        ? sessionFoldersFeatureEnabled
-        : true,
+    useFeatureEnabled: (featureId: string, scope?: unknown) => {
+        if (featureId === 'sessions.folders') featureDecisionScopes.push(scope);
+        return featureId === 'sessions.folders' ? sessionFoldersFeatureEnabled : true;
+    },
 }));
 
 installSessionShellCommonModuleMocks({
@@ -147,9 +155,11 @@ describe('ProjectGroupHeader menu items', () => {
         standardCleanup();
         dropdownMenuSpy.mockClear();
         setSessionFolderViewMode.mockClear();
+        applySettings.mockClear();
         platformOs = 'ios';
         sessionFolderViewMode = 'off';
         sessionFoldersFeatureEnabled = true;
+        featureDecisionScopes.length = 0;
     });
 
     it('reuses the same menu item array when rerendered with identical scope values', async () => {
@@ -308,21 +318,33 @@ describe('ProjectGroupHeader menu items', () => {
         expect(latestMenuProps?.triggerParams?.toggle).toHaveBeenCalledTimes(1);
     });
 
-    it('anchors the ordering menu below the trigger', async () => {
-        const { CollapsibleSectionHeader } = await import('./sessionListChrome');
+    it('anchors View options below the trigger', async () => {
+        const { SessionListViewOptionsButton } = await import('./sessionListChrome');
 
-        await renderScreen(
-            <CollapsibleSectionHeader
-                title="Today"
-                collapsed={false}
-                onPress={vi.fn()}
-                isPrimaryHeader={true}
-            />,
+        const screen = await renderScreen(
+            <SessionListViewOptionsButton />,
         );
 
-        const latestMenuProps = dropdownMenuSpy.mock.calls.at(-1)?.[0] as any;
+        let latestMenuProps = dropdownMenuSpy.mock.calls.at(-1)?.[0] as any;
         expect(latestMenuProps?.placement).toBe('bottom');
         expect(latestMenuProps?.popoverAnchorAlign).toBe('end');
+        expect(latestMenuProps?.items).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'layout:projects', checked: false }),
+            expect.objectContaining({ id: 'layout:recent_activity', checked: false }),
+            expect.objectContaining({ id: 'layout:active_inactive', checked: true }),
+        ]));
+
+        expect(screen.findByProps({ accessibilityLabel: 'sessionsList.viewOptions' }).props.accessibilityState).toEqual({
+            expanded: false,
+        });
+        await act(async () => {
+            latestMenuProps.onOpenChange(true);
+        });
+        latestMenuProps = dropdownMenuSpy.mock.calls.at(-1)?.[0] as any;
+        expect(latestMenuProps.open).toBe(true);
+        expect(screen.findByProps({ accessibilityLabel: 'sessionsList.viewOptions' }).props.accessibilityState).toEqual({
+            expanded: true,
+        });
     });
 
     it('keeps the real collapsible header root mounted when measurement activates', async () => {
@@ -362,25 +384,27 @@ describe('ProjectGroupHeader menu items', () => {
         expect(screen.findByType('Pressable')).toBe(rootBeforeActivation);
     });
 
-    it('adds the folder tree toggle to the existing ordering menu', async () => {
-        const { CollapsibleSectionHeader } = await import('./sessionListChrome');
+    it('applies folder display from the shared View options owner', async () => {
+        const { SessionListViewOptionsButton } = await import('./sessionListChrome');
 
         await renderScreen(
-            <CollapsibleSectionHeader
-                title="Active"
-                collapsed={false}
-                onPress={vi.fn()}
-                isPrimaryHeader={true}
-            />,
+            <SessionListViewOptionsButton />,
         );
 
         const latestMenuProps = dropdownMenuSpy.mock.calls.at(-1)?.[0] as any;
         expect(latestMenuProps?.items).toEqual(expect.arrayContaining([
-            expect.objectContaining({ id: 'sessionFolderViewModeTree', testID: 'session-folder-view-toggle' }),
+            expect.objectContaining({
+                id: 'folderDisplay',
+                submenu: expect.objectContaining({
+                    items: expect.arrayContaining([
+                        expect.objectContaining({ id: 'folderDisplay:tree' }),
+                    ]),
+                }),
+            }),
         ]));
 
-        latestMenuProps?.onSelect?.('sessionFolderViewModeTree');
-        expect(setSessionFolderViewMode).toHaveBeenCalledWith('tree');
+        latestMenuProps?.onSelect?.('folderDisplay:tree');
+        expect(applySettings).toHaveBeenCalledWith({ sessionFolderViewModeV1: 'tree' });
     });
 
     it('routes folder row press, collapse, and menu actions separately', async () => {
@@ -690,25 +714,71 @@ describe('ProjectGroupHeader menu items', () => {
 
         expect(onClear).toHaveBeenCalledTimes(2);
         expect(onSelectFolder).toHaveBeenCalledWith('child');
+        const targets = [
+            screen.findByProps({ testID: 'session-folder-breadcrumb-root' }),
+            screen.findByProps({ testID: 'session-folder-breadcrumb-folder-root' }),
+            screen.findByProps({ testID: 'session-folder-breadcrumb-folder-child' }),
+        ];
+        expect(targets.map((target) => target.props.accessibilityLabel)).toEqual([
+            'sessionsList.workspaceRoot',
+            'Root',
+            'Child',
+        ]);
+        expect(targets.every((target) => target.props.accessibilityRole === 'button')).toBe(true);
+        const navigation = screen.findByProps({ testID: 'session-folder-breadcrumb-targets' });
+        expect(navigation.props.role).toBe('navigation');
+        expect(flattenStyle(navigation.props.style).flexWrap).toBe('wrap');
+        const sharedTargets = screen.findAllByType(HappierPressable).filter((target) => (
+            String(target.props.testID ?? '').startsWith('session-folder-breadcrumb-')
+        ));
+        expect(sharedTargets).toHaveLength(3);
+        for (const target of sharedTargets) {
+            const resolvedStyle = typeof target.props.style === 'function'
+                ? target.props.style({ focused: false, hovered: false, pressed: false })
+                : target.props.style;
+            expect(flattenStyle(resolvedStyle)).toEqual(expect.objectContaining({ minWidth: 44, minHeight: 44 }));
+        }
+    });
+
+    it('decides project folder actions for the project Home rather than the focused Home', async () => {
+        const { ProjectGroupHeader } = await import('./sessionListChrome');
+        await renderScreen(
+            <ProjectGroupHeader
+                item={{
+                    type: 'header',
+                    title: '/repo-b',
+                    headerKind: 'project',
+                    workspaceScopeHint: { serverId: 'server_b', machineId: 'machine_b', rootPath: '/repo-b' },
+                } as any}
+                hasMultipleMachines={true}
+                displayTitle="Repo B"
+                hasCustomLabel={false}
+                canOpenProject={true}
+                onOpenProject={vi.fn()}
+                onCreateSession={vi.fn()}
+                onAddFolder={vi.fn()}
+                onRename={vi.fn()}
+                onReset={vi.fn()}
+                collapsed={false}
+                onToggleCollapse={vi.fn()}
+            />,
+        );
+
+        expect(featureDecisionScopes).toContainEqual({ scopeKind: 'spawn', serverId: 'server_b' });
     });
 
     it('hides folder actions while the sessions.folders gate is disabled', async () => {
         sessionFoldersFeatureEnabled = false;
-        const { CollapsibleSectionHeader, ProjectGroupHeader } = await import('./sessionListChrome');
+        const { ProjectGroupHeader, SessionListViewOptionsButton } = await import('./sessionListChrome');
 
         await renderScreen(
-            <CollapsibleSectionHeader
-                title="Active"
-                collapsed={false}
-                onPress={vi.fn()}
-                isPrimaryHeader={true}
-            />,
+            <SessionListViewOptionsButton />,
         );
 
-        const orderingMenuProps = dropdownMenuSpy.mock.calls.at(-1)?.[0] as any;
-        expect(orderingMenuProps?.items).not.toEqual(expect.arrayContaining([
-            expect.objectContaining({ id: 'sessionFolderViewModeTree' }),
-        ]));
+        const viewOptionsMenuProps = dropdownMenuSpy.mock.calls.at(-1)?.[0] as any;
+        expect(viewOptionsMenuProps?.items?.some((item: { id?: string }) => (
+            item.id === 'folderDisplay' || item.id === 'folderSort'
+        ))).toBe(false);
 
         await renderScreen(
             <ProjectGroupHeader
@@ -812,7 +882,7 @@ describe('ProjectGroupHeader menu items', () => {
             rowPressable.props.onHoverOut?.();
         });
 
-        expect(screen.root.findAllByProps({ testID: 'session-workspace-reorder-handle:project:repo' })).toHaveLength(1);
+        expect(screen.findByProps({ testID: 'session-workspace-reorder-handle:project:repo' })).toBeTruthy();
 
         await act(async () => {
             menuTrigger.props.onHoverIn?.();

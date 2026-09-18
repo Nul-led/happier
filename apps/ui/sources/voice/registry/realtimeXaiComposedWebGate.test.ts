@@ -12,6 +12,7 @@ import { encodeBase64 } from '@/encryption/base64';
 import { apiSocket } from '@/sync/api/session/apiSocket';
 import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
 import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { settingsDefaults, settingsParse } from '@/sync/domains/settings/settings';
 import { storage } from '@/sync/domains/state/storage';
 import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
@@ -206,6 +207,7 @@ function installXaiSettings(resumptionEnabled: boolean): void {
     sessions: {
       [XAI_HISTORY_SESSION_ID]: createSessionFixture({
         id: XAI_HISTORY_SESSION_ID,
+        serverId: getActiveServerSnapshot().serverId,
         active: false,
         encryptionMode: 'plain',
         metadata: {
@@ -293,9 +295,13 @@ function createSourceComposedXaiRuntime() {
     adapterId: providerId,
     controlSessionId,
     conversationSessionId: XAI_HISTORY_SESSION_ID,
+    conversationSessionAddress: {
+      serverId: getActiveServerSnapshot().serverId,
+      sessionId: XAI_HISTORY_SESSION_ID,
+    },
     lifetime: 'runtime_attempt',
     transcriptMode: 'synthetic',
-    targetSessionId: null,
+    targetSessionAddress: null,
     updatedAt: 1,
   });
   const requestAccountOperation = vi.fn();
@@ -372,11 +378,11 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
 
   beforeEach(async () => {
     await resetServerReachabilitySupervisors();
-    const server = upsertServerProfile({
+    const server = await upsertServerProfile({
       serverUrl: 'https://xai-composed.example.test',
       name: 'xAI composed test',
     });
-    setActiveServerId(server.id, { scope: 'device' });
+    await setActiveServerId(server.id, { scope: 'device' });
     storage.getState().activateProfileScope({
       serverId: server.id,
       accountId: 'xai-composed-account',
@@ -505,7 +511,7 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
     const composed = createSourceComposedXaiRuntime();
 
     try {
-      await composed.runtime.adapter.start({ sessionId: '', initialContext: '' });
+      await composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
 
       expect(composed.requestAccountOperation).toHaveBeenCalledTimes(1);
       expect(composed.ensureMicActive).toHaveBeenCalledTimes(1);
@@ -524,7 +530,7 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
       expect(binding).toMatchObject({
         adapterId: 'happier.voice.xai/realtime-grok',
         lifetime: 'runtime_attempt',
-        targetSessionId: null,
+        targetSessionAddress: null,
       });
       expect(binding?.conversationSessionId).toBe(XAI_HISTORY_SESSION_ID);
       expect(storage.getState().sessions[binding!.conversationSessionId]).toMatchObject({
@@ -595,7 +601,7 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
     const composed = createSourceComposedXaiRuntime();
 
     try {
-      await composed.runtime.adapter.start({ sessionId: '', initialContext: '' });
+      await composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
 
       expect(composed.requestAccountOperation).toHaveBeenCalledTimes(1);
       expect(FakeWebSocket.instances).toHaveLength(1);
@@ -613,12 +619,16 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
         adapterId: 'happier.voice.xai/realtime-grok',
         controlSessionId: composed.controlSessionId,
         conversationSessionId: XAI_HISTORY_SESSION_ID,
+        conversationSessionAddress: {
+          serverId: getActiveServerSnapshot().serverId,
+          sessionId: XAI_HISTORY_SESSION_ID,
+        },
         lifetime: 'runtime_attempt',
         transcriptMode: 'synthetic',
-        targetSessionId: null,
+        targetSessionAddress: null,
         updatedAt: 2,
       });
-      await composed.runtime.adapter.start({ sessionId: '', initialContext: '' });
+      await composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
 
       expect(composed.requestAccountOperation).toHaveBeenCalledTimes(2);
       expect(FakeWebSocket.instances).toHaveLength(2);
@@ -664,7 +674,7 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
     const composed = createSourceComposedXaiRuntime();
 
     try {
-      await composed.runtime.adapter.start({ sessionId: '', initialContext: '' });
+      await composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
       const socket = FakeWebSocket.instances[0]!;
       socket.emitConversationId('conv-forget-local-only');
       await vi.waitFor(() => expect(readVoiceProviderConversationMetadata(
@@ -711,6 +721,7 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
         ...current.sessions,
         [directTargetSessionId]: createSessionFixture({
           id: directTargetSessionId,
+          serverId: getActiveServerSnapshot().serverId,
           active: true,
           encryptionMode: 'plain',
           metadata: writeVoiceProviderConversationMetadata({
@@ -728,7 +739,7 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
     const composed = createSourceComposedXaiRuntime();
 
     try {
-      await composed.runtime.adapter.start({ sessionId: '', initialContext: '' });
+      await composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
       const historySocket = FakeWebSocket.instances[0]!;
       historySocket.emitConversationId('conv-history-current');
       await vi.waitFor(() => expect(readVoiceProviderConversationMetadata(
@@ -741,13 +752,24 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
         adapterId: 'happier.voice.xai/realtime-grok',
         controlSessionId: directTargetSessionId,
         conversationSessionId: directTargetSessionId,
+        conversationSessionAddress: {
+          serverId: getActiveServerSnapshot().serverId,
+          sessionId: directTargetSessionId,
+        },
         lifetime: 'runtime_attempt',
         transcriptMode: 'synthetic',
-        targetSessionId: directTargetSessionId,
+        targetSessionAddress: {
+          serverId: getActiveServerSnapshot().serverId,
+          sessionId: directTargetSessionId,
+        },
         updatedAt: 2,
       });
       await composed.runtime.adapter.start({
         sessionId: directTargetSessionId,
+        requestedTargetSessionAddress: {
+          serverId: getActiveServerSnapshot().serverId,
+          sessionId: directTargetSessionId,
+        },
         initialContext: '',
       });
       const directSocket = FakeWebSocket.instances[1]!;
@@ -845,7 +867,7 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
     const composed = createSourceComposedXaiRuntime();
 
     try {
-      await composed.runtime.adapter.start({ sessionId: '', initialContext: '' });
+      await composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
       const socket = FakeWebSocket.instances[0]!;
       socket.emitConversationId('conv-before-end');
       await vi.waitFor(() => expect(readVoiceProviderConversationMetadata(

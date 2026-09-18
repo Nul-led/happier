@@ -1295,6 +1295,22 @@ test('EAS build install scopes include active first-party native Expo modules', 
     }
 });
 
+test('EAS native installs include build tooling and skip the server-only Redis binary', async () => {
+    const easJsonPath = join(appRoot, 'eas.json');
+    const easJson = await readJson(easJsonPath);
+
+    for (const profileId of Object.keys(easJson?.build ?? {})) {
+        const env = resolveEasBuildProfileEnv({ easJsonPath, profileId });
+        assert.equal(
+            env.REDISMS_DISABLE_POSTINSTALL,
+            '1',
+            `Expected EAS profile ${profileId} to avoid installing the server-only Redis test binary`,
+        );
+        assert.equal(env.YARN_PRODUCTION, 'false', `Expected EAS profile ${profileId} to install workspace build tooling`);
+        assert.equal(env.npm_config_production, 'false', `Expected EAS profile ${profileId} to install workspace build tooling`);
+    }
+});
+
 test('iroh-native is composed into the UI and every EAS native install scope', async () => {
     const uiPackageJson = await readJson(join(appRoot, 'package.json'));
     assert.equal(uiPackageJson.dependencies?.['@happier-dev/iroh-native'], '0.0.0');
@@ -1323,6 +1339,26 @@ test('Expo autolinking discovers iroh-native on iOS and Android', async () => {
             android: { modules: ['dev.happier.iroh.HappierIrohNativeModule'] },
         });
     }
+});
+
+test('activity notifications compiles against the SDK 55 expo-notifications publication', async () => {
+    const notificationsConfig = await readJson(
+        join(appRoot, 'node_modules', 'expo-notifications', 'expo-module.config.json'),
+    );
+    const publication = notificationsConfig?.android?.publication;
+    assert.deepEqual(publication, {
+        groupId: 'host.exp.exponent',
+        artifactId: 'expo.modules.notifications',
+        version: '55.0.16',
+        repository: 'local-maven-repo',
+    });
+
+    const gradle = await readText(
+        join(appRoot, 'modules', 'happier-activity-notifications', 'android', 'build.gradle'),
+    );
+    const coordinate = `${publication.groupId}:${publication.artifactId}:${publication.version}`;
+    assert.match(gradle, new RegExp(`compileOnly ['\"]${coordinate.replaceAll('.', '\\.')}['\"]`));
+    assert.doesNotMatch(gradle, /project\(['\"]:expo-notifications['\"]\)/);
 });
 
 test('iroh-native mobile hosts own installation-scoped secure endpoint identity', async () => {

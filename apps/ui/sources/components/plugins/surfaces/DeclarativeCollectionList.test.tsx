@@ -79,6 +79,7 @@ const presentationTheme = Object.freeze({
 const node = Object.freeze({
     kind: 'collectionList',
     path: 'root',
+    order: 0,
     source: Object.freeze({
         collectionId: 'tasks',
         uiQueryId: 'open',
@@ -648,7 +649,6 @@ describe('DeclarativeCollectionList', () => {
                         settings: [],
                         uiQueries: [node.query],
                     },
-                    nodes: [],
                     root: collectionNode,
                 }}
                 interactionEnabled={true}

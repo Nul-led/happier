@@ -82,8 +82,16 @@ export type BrowserFrameHostMessageAttachment = Readonly<{
     attachHostMessages: (send: (message: unknown) => void) => () => void;
 }>;
 
+/** Host-owned evidence attached to one physical frame message receipt. */
+export type BrowserFrameMessageReceipt = Readonly<{
+    /** Spend this exact receipt's transient activation at most once. */
+    consumeTransientActivation(): boolean;
+}>;
+
 export type BrowserWebFrameMessageBridgeConfig = Readonly<{
-    onMessage: (event: MessageEvent) => unknown | Promise<unknown>;
+    onMessage: (event: MessageEvent, receipt: BrowserFrameMessageReceipt) => unknown | Promise<unknown>;
+    /** Bind authority to the exact admitted Document through a transferred port. */
+    exactDocumentChannel?: boolean;
     /**
      * The exact origin every host->frame post is addressed to. Never `'*'`: a
      * wildcard would hand the message to whatever document happens to occupy
@@ -104,7 +112,7 @@ export type BrowserNativeFrameMessageBridgeConfig = Readonly<{
             data?: string;
             url?: string;
         }>;
-    }>) => unknown | Promise<unknown>;
+    }>, receipt: BrowserFrameMessageReceipt) => unknown | Promise<unknown>;
 }> & Partial<BrowserFrameHostMessageAttachment>;
 
 export type BrowserFrameNavigationCommand = Readonly<{
@@ -126,10 +134,14 @@ export type BrowserFrameNavigationState = Readonly<{
     canGoForward: boolean;
 }>;
 
+/** Inline documents and navigable URLs are distinct frame sources. */
+export type WebIframeSource =
+    | Readonly<{ url: string; html?: never }>
+    | Readonly<{ html: string; url?: never }>;
+
 export type WebIframeEngineConfig = Readonly<{
     kind: 'webIframe';
     title: string;
-    url: string;
     sandbox: string;
     testID: string;
     navigationKey?: string;
@@ -154,12 +166,15 @@ export type WebIframeEngineConfig = Readonly<{
     diagnostics?: BrowserDiagnosticsEngineBridgeConfig;
     automation?: BrowserAutomationEngineBridgeConfig;
     webMessageBridge?: BrowserWebFrameMessageBridgeConfig;
-}>;
+}> & WebIframeSource;
+
+export type NativeWebViewSource =
+    | Readonly<{ url: string; html?: never }>
+    | Readonly<{ html: string; url?: never }>;
 
 export type NativeWebViewEngineConfig = Readonly<{
     kind: 'nativeWebView';
     title: string;
-    url: string;
     testID: string;
     navigationCommand?: BrowserFrameNavigationCommand;
     originWhitelist: readonly string[];
@@ -170,10 +185,11 @@ export type NativeWebViewEngineConfig = Readonly<{
     onError?: () => void;
     onNavigationStateChange?: (navigationState: BrowserFrameNavigationState) => void;
     onBlockedNavigation?: (url: string) => void;
+    onUnexpectedNavigation?: () => void;
     diagnostics?: BrowserDiagnosticsEngineBridgeConfig;
     automation?: BrowserAutomationEngineBridgeConfig;
     nativeMessageBridge?: BrowserNativeFrameMessageBridgeConfig;
-}>;
+}> & NativeWebViewSource;
 
 export type BrowserUnavailableEngineConfig = Readonly<{
     kind: 'unavailable';

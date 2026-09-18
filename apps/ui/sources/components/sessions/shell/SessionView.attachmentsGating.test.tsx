@@ -12,6 +12,18 @@ import { createUnistylesMock } from '@/dev/testkit/mocks/unistyles';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 
+vi.mock('@/components/ui/code/editor/CodeEditor', () => ({ CodeEditor: () => null }));
+vi.mock('@/components/sessions/companion/presentation/SessionCompanionPresentationBridge', () => ({
+  SessionCompanionPresentationBridge: () => null,
+}));
+vi.mock('@/components/sessions/companion/SessionCompanionHost', () => ({
+  SessionCompanionHost: () => null,
+}));
+vi.mock('@/components/sessions/board/SessionBoardControllerProvider', () => ({
+  SessionBoardControllerProvider: ({ children }: React.PropsWithChildren) => children,
+  useMountedSessionBoardController: () => null,
+}));
+
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).__DEV__ = false;
@@ -19,8 +31,15 @@ let authCredentials: any = { token: 't', secret: 's' };
 const sessionState = vi.hoisted(() => ({
   session: {
     id: 's1',
-    metadata: null,
+    metadata: {
+      machineId: 'm1',
+      flavor: 'codex',
+      version: '0.0.0',
+      path: '/tmp',
+      homeDir: '/tmp',
+    },
     accessLevel: 'edit',
+    access: { level: 'edit', capabilities: { readTranscript: true, submitAgentInput: true } },
     canApprovePermissions: true,
     agentState: { controlledByUser: true },
   } as any,
@@ -33,6 +52,14 @@ const modalAlertSpy = vi.hoisted(() => vi.fn());
 const resolveSessionComposerSendMock = vi.hoisted(() => vi.fn(() => ({ kind: 'noop' })));
 const supportsEditableSessionGoalsMock = vi.hoisted(() => vi.fn(() => false));
 const sessionAbortMock = vi.hoisted(() => vi.fn());
+const companionPreferenceSlot = vi.hoisted(() => ({ storageKey: null, stored: undefined }));
+const machineDisplayNamesById = vi.hoisted(() => ({}));
+const mutateCompanionPreference = vi.hoisted(() => vi.fn());
+const settingWriter = vi.hoisted(() => vi.fn());
+const localSettingWriter = vi.hoisted(() => vi.fn());
+const settingsSnapshot = vi.hoisted(() => ({ experiments: true, featureToggles: {} }));
+const realtimeStatus = vi.hoisted(() => ({ status: 'connected' }));
+const emptyPendingMessages = vi.hoisted(() => ({ messages: [] as unknown[] }));
 
 installSessionShellCommonModuleMocks({
   reactNative: async () =>
@@ -119,7 +146,7 @@ installSessionShellCommonModuleMocks({
       useSession: () => sessionState.session,
       useSessionMachineId: () => sessionState.session.metadata?.machineId ?? null,
       useIsDataReady: () => true,
-      useRealtimeStatus: () => ({ status: 'connected' }),
+      useRealtimeStatus: () => realtimeStatus,
       useSessionMessages: () => ({ messages: [], isLoaded: true }),
       useSessionSubagentSourceMessages: () => [],
       useSessionTranscriptIds: () => ({ ids: [], isLoaded: true }),
@@ -130,15 +157,18 @@ installSessionShellCommonModuleMocks({
         if (key === 'acknowledgedCliVersions') return [];
         return null;
       },
-      useSessionPendingMessages: () => ({ messages: [] }),
+      useSessionPendingMessages: () => emptyPendingMessages,
+      useSessionCompanionPreferenceSlot: () => companionPreferenceSlot,
+      useMutateSessionCompanionPreference: () => mutateCompanionPreference,
       useSessionReviewCommentsDrafts: () => [],
       useSessionUsage: () => null,
-      useSetting: () => null,
-      useSettings: () => ({ experiments: true, featureToggles: {} }),
+      useSetting: (key: keyof typeof settingsDefaults) => settingsDefaults[key],
+      useMachineDisplayNamesById: () => machineDisplayNamesById,
+      useSettings: () => settingsSnapshot,
       useAutomations: () => [],
       useMachine: () => null,
-      useLocalSettingMutable: () => [false, vi.fn()],
-      useSettingMutable: () => [null, vi.fn()],
+      useLocalSettingMutable: () => [false, localSettingWriter],
+      useSettingMutable: () => [null, settingWriter],
     }),
 });
 
@@ -305,11 +335,24 @@ vi.mock('@/agents/catalog/catalog', () => ({
   DEFAULT_AGENT_ID: 'codex',
   buildResumeSessionExtrasFromUiState: () => null,
   getAgentCore: () => ({
-    cli: { detectKey: 'codex' },
+    id: 'codex',
+    displayNameKey: 'agentInput.agent.codex',
+    subtitleKey: 'profiles.aiBackend.codexSubtitle',
+    permissionModeI18nPrefix: 'agentInput.codexPermissionMode',
+    availability: { experimental: false },
+    connectedServices: [],
     uiConnectedService: { serviceId: null, labelKey: 'agentInput.agent.codex', connectRoute: null },
-    model: { defaultMode: 'default' },
-    resume: { vendorResumeIdField: null },
+    flavorAliases: ['codex'],
+    cli: { detectKey: 'codex' },
+    permissions: { modeGroup: 'codexLike', promptProtocol: 'codexDecision' },
     sessionModes: { kind: 'none' },
+    model: { defaultMode: 'default', supportsSelection: false, supportsFreeform: false, allowedModes: [] },
+    resume: { vendorResumeIdField: null },
+    localControl: { supported: false },
+    toolRendering: { hideUnknownToolsByDefault: false },
+    tools: {},
+    sessionStorage: { direct: false },
+    ui: { agentPickerIconName: 'terminal-outline' },
   }),
   getAgentResumeExperimentsFromSettings: () => null,
   getNewSessionRelevantInstallableDepKeys: () => [],
@@ -383,8 +426,15 @@ describe('SessionView attachments gating', () => {
   beforeEach(() => {
     sessionState.session = {
       id: 's1',
-      metadata: null,
+      metadata: {
+        machineId: 'm1',
+        flavor: 'codex',
+        version: '0.0.0',
+        path: '/tmp',
+        homeDir: '/tmp',
+      },
       accessLevel: 'edit',
+      access: { level: 'edit', capabilities: { readTranscript: true, submitAgentInput: true } },
       canApprovePermissions: true,
       agentState: { controlledByUser: true },
     } as any;

@@ -98,8 +98,8 @@ describe('resolveDaemonVoiceAgentModelIds', () => {
         });
 
         expect(result).toEqual({
-            chatModelId: getAgentCore('codex').model.defaultMode,
-            commitModelId: getAgentCore('codex').model.defaultMode,
+            chatModelId: getAgentCore('codex').model?.defaultMode,
+            commitModelId: getAgentCore('codex').model?.defaultMode,
         });
     });
 
@@ -119,8 +119,8 @@ describe('resolveDaemonVoiceAgentModelIds', () => {
         });
 
         expect(result).toEqual({
-            chatModelId: getAgentCore('codex').model.defaultMode,
-            commitModelId: getAgentCore('codex').model.defaultMode,
+            chatModelId: getAgentCore('codex').model?.defaultMode,
+            commitModelId: getAgentCore('codex').model?.defaultMode,
         });
     });
 
@@ -145,8 +145,8 @@ describe('resolveDaemonVoiceAgentModelIds', () => {
         });
 
         expect(result).toEqual({
-            chatModelId: getAgentCore('gemini').model.defaultMode,
-            commitModelId: getAgentCore('gemini').model.defaultMode,
+            chatModelId: getAgentCore('gemini').model?.defaultMode,
+            commitModelId: getAgentCore('gemini').model?.defaultMode,
         });
     });
 

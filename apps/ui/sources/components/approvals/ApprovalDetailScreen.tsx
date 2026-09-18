@@ -1,12 +1,14 @@
 import * as React from 'react';
 import { View, ScrollView } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 
 import {
-  ApprovalRequestV1Schema,
+  approvalArtifactBodyMatchesHeaderV1,
   ExecutionRunHostActionApprovalRequestV1Schema,
   TargetActionApprovalRequestV1Schema,
+  buildExecutionRunHostActionApprovalArtifactHeaderV1,
+  buildTargetActionApprovalArtifactHeaderV1,
   getActionSpec,
   type ActionId,
   type ExecutionRunHostActionApprovalRequestV1,
@@ -18,14 +20,14 @@ import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { sync } from '@/sync/sync';
+import { useApprovalArtifact } from './useApprovalArtifact';
+import { captureActionAccountContext } from '@/sync/ops/actions/actionAccountContext';
 import {
   storage,
-  useArtifact,
   useServerScopedMachine,
   useSessionListRenderableWithServerScope,
 } from '@/sync/domains/state/storage';
 import {
-  createDefaultActionExecutor,
   replayApprovalRequestAtExactDaemon,
 } from '@/sync/ops/actions/defaultActionExecutor';
 import { readDisplayMachineIdForSession } from '@/sync/ops/sessionMachineTarget';
@@ -33,12 +35,26 @@ import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestrati
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { ApprovalSessionContextCard } from './ApprovalSessionContextCard';
 import { ActionApprovalFieldsCard } from './ActionApprovalFieldsCard';
-import { describeApprovalActionFields } from './approvalFieldValues';
+import { resolveApprovalRequestApproveAdmission } from './approvalFieldValues';
 import { ApprovalPreviewCard } from './ApprovalPreviewCard';
 import { HandoffTargetConsequencesCard, describeHandoffTargetApproval } from './HandoffTargetConsequencesCard';
 import { readApprovalSessionEndpointLabels, readApprovalTargetEndpointLabels } from './approvalEndpointLabels';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import {
+  isApprovalReplayRouteUnavailable,
+  resolveApprovalReplayRoute,
+  useApprovalDecisionHandler,
+} from '@/components/tools/shell/approvals/useApprovalDecisionHandler';
+import { useRetargetNavigationFocusReturnIntent } from '@/keyboard/focusReturn';
+import { useSessionListHomeObservations } from '@/sync/store/hooks';
+import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
+import {
+  buildSessionContextFacts,
+  projectSessionContextPresentation,
+} from '@/sync/domains/session/presentation/sessionContextPresentation';
 
 const styles = StyleSheet.create((theme) => ({
   container: {
@@ -56,6 +72,13 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
+  },
+  recoveryActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 12,
+    marginTop: 12,
   },
   title: {
     fontSize: 22,
@@ -112,6 +135,8 @@ function formatApprovalStatusLabel(status: string): string {
       return t('approvals.status.open');
     case 'approved':
       return t('approvals.status.approved');
+    case 'executing':
+      return t('approvals.status.executing');
     case 'rejected':
       return t('approvals.status.rejected');
     case 'executed':
@@ -125,7 +150,13 @@ function formatApprovalStatusLabel(status: string): string {
   }
 }
 
-export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: string }>) => {
+export const ApprovalDetailScreen = React.memo((props: Readonly<{
+  artifactId: string;
+  serverId?: string;
+  completionHref?: Href;
+  completionFocusFrom?: string;
+  completionFocusTo?: string;
+}>) => {
   // Composed at render time: the module-scope stylesheet evaluates once, so a
   // baked-in `layout.maxWidth` would freeze the user's content-width preference.
   const contentMaxWidthStyle = useLayoutMaxWidthStyle();
@@ -134,93 +165,46 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
     [contentMaxWidthStyle],
   );
   const router = useRouter();
+  const retargetNavigationFocusReturn = useRetargetNavigationFocusReturnIntent();
   const { theme } = useUnistyles();
-  const artifact = useArtifact(props.artifactId);
-  const [isLoading, setIsLoading] = React.useState(
-    artifact?.isDecrypted !== false && artifact?.body == null,
-  );
-  const [error, setError] = React.useState<string | null>(null);
+  // A route-carried Home is authoritative for background Homes. Without one,
+  // retain the incumbent singleton artifact reader; an unrelated active Home
+  // is not evidence that this artifact belongs there.
+  const [requestedServerId] = React.useState(() => props.serverId?.trim() || null);
+  const {
+    artifact,
+    isLoading,
+    homeUnavailable,
+    error: loadError,
+    refresh: refreshArtifact,
+  } = useApprovalArtifact({
+    artifactId: props.artifactId, serverId: requestedServerId,
+  });
+  const error = loadError
+    ? homeUnavailable
+      ? t('actionConfirmations.homeUnavailable')
+      : t('approvals.loadError')
+    : null;
   const [isDeciding, setIsDeciding] = React.useState(false);
   const decisionInFlightRef = React.useRef(false);
 
-  const executor = React.useMemo(
-    () => createDefaultActionExecutor({
-      resolveServerIdForSessionId: (sessionId) => resolvePreferredServerIdForSessionId(sessionId) ?? null,
-    }),
-    [],
-  );
-
-  React.useEffect(() => {
-    if (artifact?.isDecrypted === false || artifact?.body != null) return;
-
-    let cancelled = false;
-
-    (async () => {
-      try {
-        setIsLoading(true);
-        setError(null);
-
-        const credentials = sync.getCredentials();
-        if (!credentials) throw new Error('Not authenticated');
-
-        const full = await sync.fetchArtifactWithBody(props.artifactId);
-        if (!cancelled && full) {
-          storage.getState().updateArtifact(full);
-        } else if (!cancelled) {
-          setError(t('approvals.loadError'));
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(t('approvals.loadError'));
-        }
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [artifact, props.artifactId]);
-
   const parsed = React.useMemo(() => {
     if (!artifact || typeof artifact.body !== 'string') return null;
-    try {
-      const json = JSON.parse(artifact.body);
-      if (artifact.header?.kind === 'execution_run_host_action_approval.v1') {
-        const hostAction = ExecutionRunHostActionApprovalRequestV1Schema.safeParse(json);
-        if (!hostAction.success) return null;
-        const request = hostAction.data;
-        if (artifact.header.approvalStatus !== request.status
-          || artifact.header.actionId !== request.actionId
-          || artifact.header.sessionId !== request.sessionId
-          || artifact.header.runId !== request.runId
-          || artifact.header.serverId !== request.serverId
-          || artifact.header.subjectFingerprint !== request.subjectFingerprint
-          || artifact.header.title !== request.summary) return null;
-        return { kind: 'host_action' as const, request };
-      }
-      if (artifact.header?.kind === 'target_action_approval.v1') {
-        const targetAction = TargetActionApprovalRequestV1Schema.safeParse(json);
-        if (!targetAction.success) return null;
-        const request = targetAction.data;
-        if (artifact.header.approvalStatus !== request.status
-          || artifact.header.qualifiedActionId !== request.qualifiedActionId
-          || artifact.header.subjectFingerprint !== request.subjectFingerprint
-          || artifact.header.title !== request.summary) {
-          return null;
-        }
-        return { kind: 'target' as const, request };
-      }
-      if (artifact.header?.kind === 'approval_request.v1') {
-        const builtIn = ApprovalRequestV1Schema.safeParse(json);
-        return builtIn.success ? { kind: 'built_in' as const, request: builtIn.data } : null;
-      }
-      return null;
-    } catch {
-      return null;
-    }
+    const matched = approvalArtifactBodyMatchesHeaderV1(artifact.header ?? {}, artifact.body);
+    if (matched?.family === 'execution_run_host_action') return { kind: 'host_action' as const, request: matched.request };
+    if (matched?.family === 'target_action') return { kind: 'target' as const, request: matched.request };
+    if (matched?.family === 'built_in') return { kind: 'built_in' as const, request: matched.request };
+    return null;
   }, [artifact]);
+  const completionHandledRef = React.useRef(false);
+  React.useEffect(() => {
+    if (completionHandledRef.current || parsed?.request.status !== 'executed' || !props.completionHref) return;
+    completionHandledRef.current = true;
+    if (props.completionFocusFrom && props.completionFocusTo) {
+      retargetNavigationFocusReturn(props.completionFocusFrom, props.completionFocusTo);
+    }
+    router.dismissTo(props.completionHref);
+  }, [parsed?.request.status, props.completionFocusFrom, props.completionFocusTo, props.completionHref, retargetNavigationFocusReturn, router]);
 
   const actionTitle = React.useMemo(() => {
     const actionId = parsed?.kind === 'built_in' || parsed?.kind === 'host_action'
@@ -238,28 +222,72 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
   // One reading of the arguments decides both what the card shows and whether the
   // decision may be taken, so an invisible field can never sit behind a live
   // Approve button.
-  const actionFields = React.useMemo(() => (
+  const builtInApproveAdmission = React.useMemo(() => (
     parsed?.kind === 'built_in'
-      ? describeApprovalActionFields({
-        actionId: String(parsed.request.actionId),
-        actionArgs: parsed.request.actionArgs,
-      })
+      ? resolveApprovalRequestApproveAdmission(parsed.request)
       : null
   ), [parsed]);
-  const approvalWithheld = actionFields?.unrepresentable != null;
+  const actionFields = builtInApproveAdmission?.presentation ?? null;
+  const approvalWithheld = builtInApproveAdmission?.status === 'unavailable';
 
   const request = parsed?.request ?? null;
-  const sessionId = request?.createdBy.sessionId ?? (typeof artifact?.header?.sessionId === 'string' ? artifact.header.sessionId : '');
+  const requesterSurface = parsed?.kind === 'built_in'
+    ? parsed.request.v === 2
+      ? parsed.request.executionOriginV1.surface
+      : parsed.request.requestedSurface ?? ''
+    : parsed?.request.createdBy.surface ?? '';
+  const sessionId = parsed?.kind === 'built_in'
+    ? parsed.request.v === 2
+      ? parsed.request.executionOriginV1.sessionId ?? parsed.request.createdBy.sessionId ?? ''
+      : parsed.request.createdBy.sessionId ?? ''
+    : parsed?.kind === 'target'
+      ? parsed.request.executionOriginV1?.sessionId
+        ?? parsed.request.replayPlacement?.defaultSessionId
+        ?? parsed.request.createdBy.sessionId
+        ?? ''
+      : parsed?.kind === 'host_action'
+        ? parsed.request.sessionId
+        : '';
+  const builtInReplayRoute = React.useMemo(
+    () => resolveApprovalReplayRoute(parsed?.kind === 'built_in' ? parsed.request : null),
+    [parsed],
+  );
   const approvalServerId = React.useMemo(() => {
     if (!parsed) return null;
-    const requestServerId = parsed.kind === 'built_in' && typeof (parsed.request as { serverId?: unknown }).serverId === 'string'
-      ? String((parsed.request as { serverId?: string }).serverId).trim()
+    if (parsed.kind === 'built_in' && parsed.request.v === 2) {
+      return (builtInReplayRoute?.serverId
+        ?? requestedServerId
+        ?? parsed.request.executionOriginV1.serverId.trim()) || null;
+    }
+    if (parsed.kind === 'target') {
+      return parsed.request.executionOriginV1?.serverId
+        ?? parsed.request.replayPlacement?.serverId
+        ?? requestedServerId;
+    }
+    if (parsed.kind === 'host_action') return parsed.request.serverId;
+    const requestServerId = parsed.kind === 'built_in'
+      ? typeof (parsed.request as { serverId?: unknown }).serverId === 'string'
+          ? String((parsed.request as { serverId?: string }).serverId).trim()
+          : ''
       : '';
     if (requestServerId.length > 0) return requestServerId;
-    const headerServerId = typeof artifact?.header?.serverId === 'string' ? String(artifact.header.serverId).trim() : '';
-    if (headerServerId.length > 0) return headerServerId;
-    return sessionId ? resolvePreferredServerIdForSessionId(sessionId) : null;
-  }, [artifact?.header?.serverId, parsed, sessionId]);
+    if (requestedServerId) return requestedServerId;
+    return sessionId ? resolvePreferredServerIdForSessionId(sessionId) ?? null : null;
+  }, [builtInReplayRoute?.serverId, parsed, requestedServerId, sessionId]);
+  const approvalOriginHomeId = parsed?.kind === 'built_in' && parsed.request.v === 2
+    ? [
+        parsed.request.executionOriginV1.serverIdentityId?.trim(),
+        parsed.request.executionOriginV1.serverId.trim(),
+      ].filter((value): value is string => Boolean(value)).join(' · ')
+    : approvalServerId;
+  const approvalRouteUnavailable = parsed?.kind === 'built_in'
+    && isApprovalReplayRouteUnavailable(parsed.request);
+  const decideBuiltInApproval = useApprovalDecisionHandler(
+    { id: artifact?.id ?? props.artifactId, header: artifact?.header ?? null },
+    parsed?.kind === 'built_in' ? parsed.request : null,
+    sessionId,
+    approvalServerId,
+  );
   const session = useSessionListRenderableWithServerScope(
     approvalServerId,
     approvalServerId ? sessionId : '',
@@ -270,6 +298,22 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
     metadata: ownerMetadata,
   });
   const machine = useServerScopedMachine(approvalServerId, approvalServerId ? machineId : '');
+  const approvalScopeResolution = useServerCredentialAccountScopeResolution(approvalServerId);
+  const homeObservations = useSessionListHomeObservations();
+  const contextNowMs = Date.now();
+  const sessionContext = approvalServerId && session
+    ? projectSessionContextPresentation(buildSessionContextFacts({
+        address: { serverId: approvalServerId, sessionId },
+        serverProfile: getServerProfileById(approvalServerId),
+        awareness: projectUiSessionAwareness(session, contextNowMs),
+        viewer: session.viewer,
+        audienceContext: session.access?.audienceContext,
+        audienceScope: approvalScopeResolution.kind === 'bound' ? approvalScopeResolution.scope : null,
+        homeDir: ownerMetadata?.homeDir ?? null,
+        homeObservation: homeObservations[approvalServerId] ?? null,
+        nowMs: contextNowMs,
+      }))
+    : null;
   const handoffTargetApproval = parsed?.kind === 'built_in'
     ? parsed.request.handoffTargetReplacementApproval ?? null
     : null;
@@ -284,7 +328,12 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
       ? describeHandoffTargetApproval({
         approval: handoffTargetApproval,
         actionArgs: handoffTargetActionArgs,
-        source: readApprovalSessionEndpointLabels({ session, machine, machineId }),
+        source: sessionContext
+          ? {
+              machineLabel: readApprovalSessionEndpointLabels({ session, machine, machineId }).machineLabel,
+              pathLabel: sessionContext.workspace?.label ?? null,
+            }
+          : readApprovalSessionEndpointLabels({ session, machine, machineId }),
         destination: readApprovalTargetEndpointLabels({
           machineId: handoffTargetApproval.machineId,
           machine: handoffTargetMachine,
@@ -292,7 +341,7 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
         }),
       })
       : null
-  ), [handoffTargetApproval, handoffTargetActionArgs, handoffTargetMachine, machine, machineId, session]);
+  ), [handoffTargetApproval, handoffTargetActionArgs, handoffTargetMachine, machine, machineId, session, sessionContext]);
   const decide = React.useCallback(
     async (decision: 'approve' | 'reject' | 'cancel') => {
       if (!parsed || decisionInFlightRef.current || parsed.request.status !== 'open') return;
@@ -330,15 +379,12 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
               decision: { kind: decision, decidedAtMs: now },
             };
           const validated = TargetActionApprovalRequestV1Schema.parse(nextRequest);
-          await sync.updateArtifactWithHeader(props.artifactId, {
-            v: 1,
-            kind: 'target_action_approval.v1',
-            title: validated.summary,
-            approvalStatus: validated.status,
-            qualifiedActionId: validated.qualifiedActionId,
-            subjectFingerprint: validated.subjectFingerprint,
-            ...(sessionId ? { sessions: [sessionId], sessionId } : {}),
-          }, JSON.stringify(validated));
+          const header = buildTargetActionApprovalArtifactHeaderV1(validated);
+          if (requestedServerId) {
+            const context = await captureActionAccountContext(requestedServerId);
+            try { await context.updateArtifact(props.artifactId, header, JSON.stringify(validated)); }
+            finally { context.dispose(); }
+          } else { await sync.updateArtifactWithHeader(props.artifactId, header, JSON.stringify(validated)); }
         } else if (parsed.kind === 'host_action') {
           const now = Date.now();
           const nextRequest: ExecutionRunHostActionApprovalRequestV1 = decision === 'cancel'
@@ -350,33 +396,22 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
               decision: { kind: decision, decidedAtMs: now },
             };
           const validated = ExecutionRunHostActionApprovalRequestV1Schema.parse(nextRequest);
-          await sync.updateArtifactWithHeader(props.artifactId, {
-            v: 1,
-            kind: 'execution_run_host_action_approval.v1',
-            title: validated.summary,
-            approvalStatus: validated.status,
-            actionId: validated.actionId,
-            sessionId: validated.sessionId,
-            sessions: [validated.sessionId],
-            runId: validated.runId,
-            subjectFingerprint: validated.subjectFingerprint,
-            serverId: validated.serverId,
-          }, JSON.stringify(validated));
+          const header = buildExecutionRunHostActionApprovalArtifactHeaderV1(validated);
+          if (requestedServerId) {
+            const context = await captureActionAccountContext(requestedServerId);
+            try { await context.updateArtifact(props.artifactId, header, JSON.stringify(validated)); }
+            finally { context.dispose(); }
+          } else { await sync.updateArtifactWithHeader(props.artifactId, header, JSON.stringify(validated)); }
         } else {
           if (decision === 'cancel') return;
-          const res = await executor.execute(
-            'approval.request.decide' as ActionId,
-            { artifactId: props.artifactId, decision },
-            { surface: 'ui', ...(approvalServerId ? { serverId: approvalServerId } : {}) },
-          );
-          if (!res.ok) throw new Error(res.errorCode);
+          if (!await decideBuiltInApproval(decision)) throw new Error('approval_decision_failed');
         }
+        await refreshArtifact();
       } catch (err) {
         const isVersionConflict = err instanceof Error && err.message.includes('modified by another client');
         if (isVersionConflict) {
           try {
-            const current = await sync.fetchArtifactWithBody(props.artifactId);
-            if (current) storage.getState().updateArtifact(current);
+            await refreshArtifact();
           } catch {
             // The original conflict remains authoritative and is still shown below.
           }
@@ -388,7 +423,7 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
         setIsDeciding(false);
       }
     },
-    [approvalServerId, approvalWithheld, executor, parsed, props.artifactId, sessionId],
+    [approvalWithheld, decideBuiltInApproval, parsed, props.artifactId, refreshArtifact, requestedServerId, sessionId],
   );
 
   if (isLoading) {
@@ -426,12 +461,23 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
       <View style={styles.container}>
         <View style={styles.loading}>
           <Text style={{ color: theme.colors.text.secondary }}>{error || t('approvals.loadError')}</Text>
-          <View style={{ height: 12 }} />
-          <RoundButton
-            size="normal"
-            title={t('common.back')}
-            onPress={() => router.back()}
-          />
+          <View style={styles.recoveryActions}>
+            {error ? (
+              <RoundButton
+                testID="approvals.retry"
+                size="normal"
+                title={t('common.retry')}
+                accessibilityLabel={t('common.retry')}
+                onPress={() => void refreshArtifact()}
+              />
+            ) : null}
+            <RoundButton
+              size="normal"
+              title={t('common.back')}
+              accessibilityLabel={t('common.back')}
+              onPress={() => router.back()}
+            />
+          </View>
         </View>
       </View>
     );
@@ -449,7 +495,10 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={scrollContentStyle}>
+      <ScrollView
+        contentContainerStyle={scrollContentStyle}
+        contentInsetAdjustmentBehavior="automatic"
+      >
         <Text style={styles.title}>{parsed.request.summary || t('approvals.untitled')}</Text>
         {parsed.kind === 'target' && parsed.request.detail ? (
           <Text testID="approvals.target-action-detail" style={styles.subtitle}>{parsed.request.detail}</Text>
@@ -467,8 +516,10 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
             session={session}
             machine={machine}
             serverId={approvalServerId}
+            context={sessionContext}
+            homeDisplayId={approvalOriginHomeId}
             requesterAgentId={parsed.request.createdBy.agentId ?? null}
-            requesterSurface={parsed.request.createdBy.surface}
+            requesterSurface={requesterSurface}
           />
 
           <View style={styles.statusCard}>
@@ -476,6 +527,11 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
             <Text style={styles.statusValue}>{statusLabel}</Text>
             {executionFailure ? (
               <Text testID="approvals.execution-failure" style={styles.statusMeta}>{executionFailure}</Text>
+            ) : null}
+            {approvalRouteUnavailable ? (
+              <Text testID="approvals.home-unavailable" style={styles.statusMeta}>
+                {t('actionConfirmations.homeUnavailable')}
+              </Text>
             ) : null}
             <Text style={styles.statusLabel}>{t('approvals.fieldAction')}</Text>
             <Text style={styles.statusValue}>{actionTitle ?? (parsed.kind === 'target' ? parsed.request.qualifiedActionId : String(parsed.request.actionId))}</Text>
@@ -514,8 +570,10 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
               title={handoffTargetPresentation?.decisionLabel ?? t('approvals.approve')}
               accessibilityLabel={handoffTargetPresentation?.decisionLabel ?? t('approvals.approve')}
               titleNumberOfLines={handoffTargetPresentation ? 'complete' : 1}
-              disabled={isDeciding || approvalWithheld}
-              accessibilityHint={approvalWithheld ? t('approvals.approveUnavailableHint') : undefined}
+              disabled={isDeciding || approvalWithheld || approvalRouteUnavailable}
+              accessibilityHint={approvalRouteUnavailable
+                ? t('actionConfirmations.homeUnavailable')
+                : approvalWithheld ? t('approvals.approveUnavailableHint') : undefined}
               style={handoffTargetPresentation ? styles.actionFullWidth : undefined}
               onPress={() => decide('approve')}
             />
@@ -525,7 +583,8 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
               title={t('approvals.reject')}
               accessibilityLabel={t('approvals.reject')}
               titleNumberOfLines={handoffTargetPresentation ? 'complete' : 1}
-              disabled={isDeciding}
+              disabled={isDeciding || approvalRouteUnavailable}
+              accessibilityHint={approvalRouteUnavailable ? t('actionConfirmations.homeUnavailable') : undefined}
               style={[
                 handoffTargetPresentation ? styles.actionFullWidth : null,
                 { backgroundColor: theme.colors.state.danger.foreground },

@@ -168,7 +168,7 @@ function resolveVoiceRoleReadinessInternal(
     return result(input.role, input.providerId, 'incompatible', 'role_unsupported', 'switch_provider');
   }
   if (input.platform === 'unknown'
-    || (entry.supportedPlatforms && !entry.supportedPlatforms.includes(input.platform))) {
+    || !entry.supportedPlatforms.includes(input.platform)) {
     return result(input.role, input.providerId, 'incompatible', 'platform_unsupported', 'switch_provider');
   }
   if (input.facts.settings !== 'ready') {

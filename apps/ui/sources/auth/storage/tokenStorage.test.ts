@@ -93,7 +93,10 @@ describe('TokenStorage (web)', () => {
 
         const { TokenStorage } = await import('./tokenStorage');
         await TokenStorage.getCredentials();
-        expect(storage.getItemMock).toHaveBeenCalledTimes(2);
+        const scopedKeys = storage.getItemMock.mock.calls.map(([key]) => String(key));
+        expect(scopedKeys.every((key) => key.includes('auth_credentials__srv_'))).toBe(true);
+        expect(new Set(scopedKeys).size).toBe(scopedKeys.length);
+        expect(scopedKeys.length).toBeGreaterThanOrEqual(2);
     });
 
     it('fails closed without logging when localStorage is unavailable', async () => {

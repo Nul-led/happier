@@ -14,11 +14,15 @@ export function readServerReachabilityProbeTimeoutMs(): number {
     return Math.max(0, Math.min(30_000, parsed));
 }
 
+/**
+ * Upper bound for durable pending-outbox writes. Only that owner has the
+ * idempotency key and retry lifecycle needed to recover an ambiguous timeout.
+ */
 export function readServerFetchWriteTimeoutMs(): number {
     const raw = String(process.env.EXPO_PUBLIC_HAPPIER_SERVER_WRITE_TIMEOUT_MS ?? '').trim();
-    if (!raw) return 15_000;
+    if (!raw) return 120_000;
     const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed)) return 15_000;
+    if (!Number.isFinite(parsed)) return 120_000;
     return Math.max(0, Math.min(10 * 60_000, parsed));
 }
 

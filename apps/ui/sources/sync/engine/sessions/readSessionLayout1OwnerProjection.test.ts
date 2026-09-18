@@ -2,10 +2,13 @@ import {
     SessionOwnerMetadataV1Schema,
     createPlainSessionOwnerMetadataEnvelopeV1,
     sealSessionOwnerMetadataEnvelopeV1,
+    projectLegacySessionAccessCapabilitiesV1,
 } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { encodeBase64 } from '@/encryption/base64';
+
+import { normalizeSessionAccessProjection } from './normalizeSessionAccessProjection';
 
 import { readSessionLayout1OwnerMetadata } from './readSessionLayout1OwnerProjection';
 
@@ -20,9 +23,41 @@ const credentials = {
 };
 
 describe('readSessionLayout1OwnerMetadata', () => {
+    it.each(['plain', 'e2ee'] as const)('keeps Team-only recipients away from owner metadata in %s mode', (accountMode) => {
+        const access = normalizeSessionAccessProjection({ effectiveAccess: {
+            v: 1, level: 'edit',
+            sources: [{ kind: 'team', teamId: 'team-1', requiredByTeamPolicy: false }],
+            capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'edit' }),
+        } });
+        expect(readSessionLayout1OwnerMetadata({
+            access,
+            accountMode,
+            ownerMetadataEnvelope: accountMode === 'plain'
+                ? createPlainSessionOwnerMetadataEnvelopeV1(ownerMetadata)
+                : sealSessionOwnerMetadataEnvelopeV1({
+                    material: { type: 'legacy', secret }, ownerMetadata,
+                    randomBytes: (length) => new Uint8Array(length).fill(1),
+                }),
+            credentials,
+        })).toEqual({ kind: 'recipient' });
+    });
+    it.each(['plain', 'e2ee'] as const)('does not open owner metadata without explicit access authority in %s mode', (accountMode) => {
+        expect(readSessionLayout1OwnerMetadata({
+            access: null,
+            accountMode,
+            ownerMetadataEnvelope: accountMode === 'plain'
+                ? createPlainSessionOwnerMetadataEnvelopeV1(ownerMetadata)
+                : sealSessionOwnerMetadataEnvelopeV1({
+                    material: { type: 'legacy', secret },
+                    ownerMetadata,
+                    randomBytes: (length) => new Uint8Array(length).fill(1),
+                }),
+            credentials,
+        })).toMatchObject({ kind: 'unavailable', reason: 'access_unavailable' });
+    });
     it('opens owner metadata using persisted Account mode independently from Session mode', () => {
         expect(readSessionLayout1OwnerMetadata({
-            share: null,
+            access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
             accountMode: 'plain',
             ownerMetadataEnvelope:
                 createPlainSessionOwnerMetadataEnvelopeV1(ownerMetadata),
@@ -33,7 +68,7 @@ describe('readSessionLayout1OwnerMetadata', () => {
         });
 
         expect(readSessionLayout1OwnerMetadata({
-            share: null,
+            access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
             accountMode: 'e2ee',
             ownerMetadataEnvelope: sealSessionOwnerMetadataEnvelopeV1({
                 material: { type: 'legacy', secret },
@@ -66,7 +101,7 @@ describe('readSessionLayout1OwnerMetadata', () => {
         'fails closed before disclosure when $accountMode Account mode disagrees with the envelope',
         ({ accountMode, ownerMetadataEnvelope }) => {
             expect(readSessionLayout1OwnerMetadata({
-                share: null,
+                access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
                 accountMode,
                 ownerMetadataEnvelope,
                 credentials,
@@ -86,7 +121,7 @@ describe('readSessionLayout1OwnerMetadata', () => {
             },
         } as const;
         expect(readSessionLayout1OwnerMetadata({
-            share: null,
+            access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
             accountMode: 'e2ee',
             ownerMetadataEnvelope: sealSessionOwnerMetadataEnvelopeV1({
                 material: {
@@ -105,10 +140,7 @@ describe('readSessionLayout1OwnerMetadata', () => {
 
     it('treats share presence as recipient authority before an overprojected owner envelope', () => {
         expect(readSessionLayout1OwnerMetadata({
-            share: {
-                accessLevel: 'view',
-                canApprovePermissions: false,
-            },
+            access: normalizeSessionAccessProjection({ share: { accessLevel: 'view', canApprovePermissions: false } }, { allowLegacy: true }),
             accountMode: 'e2ee',
             ownerMetadataEnvelope: sealSessionOwnerMetadataEnvelopeV1({
                 material: { type: 'legacy', secret },

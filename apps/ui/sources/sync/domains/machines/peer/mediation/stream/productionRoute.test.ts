@@ -54,9 +54,9 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
     getAppliedActiveServerId: () => String((getActiveServerSnapshotSpy() as { serverId?: unknown })?.serverId ?? ''),
 }));
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-    captureSessionRequestAuthorityForServerAccountScope: (...args: unknown[]) => captureAuthoritySpy(...args),
-    createSessionRequestWithServerScope: ({ activeRequest }: { activeRequest: (path: string, init?: RequestInit) => Promise<Response> }) => activeRequest,
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+    captureServerRequestAuthorityForServerAccountScope: (...args: unknown[]) => captureAuthoritySpy(...args),
+    createServerRequestWithServerScope: ({ activeRequest }: { activeRequest: (path: string, init?: RequestInit) => Promise<Response> }) => activeRequest,
 }));
 
 function normalizeServerProfileTestId(raw: unknown): string {

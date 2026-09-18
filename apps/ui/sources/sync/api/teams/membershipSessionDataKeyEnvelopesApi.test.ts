@@ -1,0 +1,460 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import tweetnacl from 'tweetnacl';
+
+import { membershipHistoryPreparationScopeKey } from './membershipSessionDataKeyEnvelopesApi';
+
+afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+});
+
+/**
+ * The manager Account's real content key pair. Persisted data-key credentials carry the content
+ * private key as `machineKey`, which is what the canonical Account encryption owner opens the
+ * caller's own historical Session envelopes with — so the composed test never fabricates a key.
+ */
+const MANAGER_CONTENT_KEYS = tweetnacl.box.keyPair();
+
+const TEAM_ID = 'acme/1';
+const ENCODED_TEAM = 'acme%2F1';
+
+async function setup(options?: Readonly<{ accountEncryption?: 'plain' | 'e2ee' }>) {
+    vi.stubEnv('EXPO_PUBLIC_HAPPY_STORAGE_SCOPE', `membership-envelope-${crypto.randomUUID()}`);
+    const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
+    const { upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
+    const active = await upsertAndActivateServer({ serverUrl: 'https://active.example', name: 'Active' });
+    const target = await upsertServerProfile({ serverUrl: 'https://target.example', name: 'Target' });
+    const { storage } = await import('@/sync/domains/state/storageStore');
+    storage.getState().activateProfileScope({ serverId: active.id, accountId: 'active-account' });
+    const token = (sub: string) => `e30.${Buffer.from(JSON.stringify({ sub })).toString('base64url')}.signature`;
+    const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+    const { encodeBase64 } = await import('@/encryption/base64');
+    // Persistent credentials and HTTP are the replaced system boundaries; everything below them —
+    // scope resolution, the Account encryption owner, the preparation pass — is the real path.
+    vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockImplementation(async url => ({
+        token: token(url === 'https://target.example' ? 'target-account' : 'active-account'),
+        ...(options?.accountEncryption === 'e2ee' ? {
+            encryption: {
+                publicKey: encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
+                machineKey: encodeBase64(MANAGER_CONTENT_KEYS.secretKey, 'base64'),
+            },
+        } : {}),
+    }));
+    const request = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => new Response('{}'));
+    const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
+    setRuntimeFetch(async (url, init) => {
+        if (new URL(String(url)).pathname === '/v1/auth/ping') return new Response('{}');
+        return request(String(url), init);
+    });
+    return { target, request, token, TokenStorage };
+}
+
+/** One recipient Account with a real, correctly signed content-key binding. */
+async function createRecipient() {
+    const { encodeBase64 } = await import('@/encryption/base64');
+    const { encodeHex } = await import('@/encryption/hex');
+    const { signAccountContentKeyBindingV1 } = await import('@happier-dev/protocol');
+    const content = tweetnacl.box.keyPair();
+    const signing = tweetnacl.sign.keyPair();
+    return {
+        content,
+        contentKey: {
+            status: 'available' as const,
+            accountSigningPublicKey: encodeHex(signing.publicKey),
+            contentPublicKey: encodeBase64(content.publicKey, 'base64'),
+            contentPublicKeySignature: encodeBase64(signAccountContentKeyBindingV1({
+                accountSigningSecretKey: signing.secretKey,
+                contentPublicKey: content.publicKey,
+            }), 'base64'),
+        },
+    };
+}
+
+const E2EE_ACCOUNT_ENCRYPTION = JSON.stringify({
+    mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing-current',
+    contentKeyFingerprint: 'content-current', updatedAt: 1,
+    recipientEnvelopeReadiness: { status: 'available' },
+});
+
+const TEAM_TARGET = { kind: 'team' as const, teamMembershipId: 'mem/9' };
+const GROUP_TARGET = { kind: 'group' as const, teamGroupId: 'grp/7', accountId: 'recipient-1' };
+
+describe('membership history envelope exact-Account transport', () => {
+    it('uses one canonical identity that distinguishes every Team and Group target', () => {
+        const args = {
+            scope: { serverId: 'server-1', accountId: 'manager-1' },
+            address: { serverId: 'server-1', teamId: TEAM_ID },
+            recipientAccountId: 'recipient-1',
+        };
+
+        expect(membershipHistoryPreparationScopeKey({ ...args, target: TEAM_TARGET }))
+            .not.toBe(membershipHistoryPreparationScopeKey({ ...args, target: GROUP_TARGET }));
+        expect(membershipHistoryPreparationScopeKey({ ...args, target: GROUP_TARGET }))
+            .not.toBe(membershipHistoryPreparationScopeKey({
+                ...args,
+                target: { ...GROUP_TARGET, teamGroupId: 'grp/8' },
+            }));
+    });
+
+    it('addresses the Team and Group resources with target credentials and rejects an Account mismatch before discovery', async () => {
+        const env = await setup();
+        const { createMembershipSessionDataKeyEnvelopeClient } = await import('./membershipSessionDataKeyEnvelopesApi');
+        const args = {
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            address: { serverId: env.target.id, teamId: TEAM_ID },
+            recipientAccountId: 'recipient-1',
+            availability: 'full_collaboration' as const,
+            isCurrent: () => true,
+        };
+        env.request.mockImplementation(async () => new Response(JSON.stringify({
+            status: 'recipient_unavailable',
+            recipientAccountId: 'recipient-1',
+            contentKey: { status: 'unavailable', reason: 'encryption_setup_required' },
+        })));
+
+        await createMembershipSessionDataKeyEnvelopeClient({ ...args, target: TEAM_TARGET }).fetchPage(null);
+        expect(env.request.mock.calls[0]?.[0]).toBe(
+            `https://target.example/v2/teams/${ENCODED_TEAM}/members/mem%2F9/sessions/data-key/envelopes?state=action_required`,
+        );
+        expect(new Headers(env.request.mock.calls[0]?.[1]?.headers).get('Authorization'))
+            .toBe(`Bearer ${env.token('target-account')}`);
+
+        env.request.mockClear();
+        const { encodeMembershipSessionDataKeyEnvelopeCursorV1 } = await import('@happier-dev/protocol');
+        const cursor = encodeMembershipSessionDataKeyEnvelopeCursorV1('session-3');
+        await createMembershipSessionDataKeyEnvelopeClient({ ...args, target: GROUP_TARGET })
+            .fetchPage(cursor);
+        expect(env.request.mock.calls[0]?.[0]).toBe(
+            `https://target.example/v2/teams/${ENCODED_TEAM}/groups/grp%2F7/members/recipient-1`
+            + `/sessions/data-key/envelopes?state=action_required&cursor=${cursor}`,
+        );
+
+        // A Home/Account pair the caller does not actually hold never reaches the network at all.
+        env.request.mockClear();
+        await expect(createMembershipSessionDataKeyEnvelopeClient({
+            ...args, target: TEAM_TARGET, scope: { ...args.scope, accountId: 'wrong' },
+        }).fetchPage(null)).rejects.toThrow();
+        expect(env.request).not.toHaveBeenCalled();
+    });
+
+    it('fails unsupported collection access without probing and preserves typed server errors', async () => {
+        const env = await setup();
+        const { createMembershipSessionDataKeyEnvelopeClient } = await import('./membershipSessionDataKeyEnvelopesApi');
+        const args = {
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            address: { serverId: env.target.id, teamId: TEAM_ID },
+            target: TEAM_TARGET,
+            recipientAccountId: 'recipient-1',
+            isCurrent: () => true,
+        };
+        await expect(createMembershipSessionDataKeyEnvelopeClient({ ...args, availability: 'direct_only' })
+            .fetchPage(null)).rejects.toMatchObject({ code: 'unsupported_action' });
+        expect(env.request).not.toHaveBeenCalled();
+
+        env.request.mockImplementation(async () => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
+        await expect(createMembershipSessionDataKeyEnvelopeClient({ ...args, availability: 'full_collaboration' })
+            .fetchPage(null)).rejects.toMatchObject({ code: 'forbidden', status: 403 });
+        expect(env.request.mock.calls).toHaveLength(1);
+
+        env.request.mockImplementation(async () => new Response(
+            JSON.stringify({ error: 'membership_not_found' }),
+            { status: 404 },
+        ));
+        await expect(createMembershipSessionDataKeyEnvelopeClient({ ...args, availability: 'full_collaboration' })
+            .fetchPage(null)).rejects.toMatchObject({ code: 'membership_not_found', status: 404 });
+    });
+});
+
+describe('membership history preparation host', () => {
+    it('deduplicates one detached membership pass and does not bind its lifetime to a sheet callback', async () => {
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { prepareMembershipHistoryEnvelopesDetached } = await import('./membershipSessionDataKeyEnvelopesApi');
+        let releasePage!: () => void;
+        const pageReleased = new Promise<void>((resolve) => { releasePage = resolve; });
+        let collectionReads = 0;
+        env.request.mockImplementation(async (url) => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) return new Response(E2EE_ACCOUNT_ENCRYPTION);
+            collectionReads += 1;
+            await pageReleased;
+            return new Response(JSON.stringify({
+                status: 'recipient_unavailable',
+                recipientAccountId: 'recipient-1',
+                contentKey: { status: 'unavailable', reason: 'encryption_setup_required' },
+            }));
+        });
+        const options = {
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            address: { serverId: env.target.id, teamId: TEAM_ID },
+            target: TEAM_TARGET,
+            recipientAccountId: 'recipient-1',
+            availability: 'full_collaboration' as const,
+        };
+
+        const first = prepareMembershipHistoryEnvelopesDetached(options);
+        const second = prepareMembershipHistoryEnvelopesDetached(options);
+        expect(second).toBe(first);
+        releasePage();
+        await expect(first).resolves.toMatchObject({
+            status: 'recipient_unavailable',
+            recipientUnavailableReason: 'encryption_setup_required',
+        });
+        expect(collectionReads).toBe(1);
+    });
+
+    it('prepares real historical envelopes so the recipient opens each exact Session DEK', async () => {
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { encodeBase64, decodeBase64 } = await import('@/encryption/base64');
+        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
+        const { openEncryptedDataKeyEnvelopeV1 } = await import('@happier-dev/protocol');
+        const { prepareMembershipHistoryEnvelopesForScope } = await import('./membershipSessionDataKeyEnvelopesApi');
+        const recipient = await createRecipient();
+
+        // Two historical Sessions, each with its own DEK already sealed to the manager.
+        const sessionDataKeys = new Map([
+            ['session-1', new Uint8Array(32).fill(11)],
+            ['session-2', new Uint8Array(32).fill(22)],
+        ]);
+        const items = [...sessionDataKeys].map(([sessionId, dataKey]) => ({
+            sessionId,
+            callerDataKeyEnvelope: encryptDataKeyForRecipientV0(
+                dataKey,
+                encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
+            ),
+        }));
+
+        const events: string[] = [];
+        const patched: Array<{ recipientAccountId: string; entries: Array<{ sessionId: string; encryptedDataKey: string }> }> = [];
+        let pages = 0;
+        env.request.mockImplementation(async (url, init) => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) return new Response(E2EE_ACCOUNT_ENCRYPTION);
+            if (path.endsWith('/data-key/envelopes') && init?.method === 'PATCH') {
+                events.push('patch');
+                patched.push(JSON.parse(String(init.body)));
+                return new Response(JSON.stringify({ appliedCount: 2 }));
+            }
+            if (path.endsWith('/data-key/envelopes')) {
+                pages += 1;
+                events.push(`get:${pages}`);
+                return new Response(JSON.stringify({
+                    status: 'ready',
+                    recipientAccountId: 'recipient-1',
+                    contentKey: recipient.contentKey,
+                    items: pages === 1 ? items : [],
+                    exceptions: {
+                        callerVisibleNonTransferableSessionCount: pages === 1 ? 3 : 3,
+                        callerEnvelopeRepairRequiredCount: 1,
+                    },
+                    nextCursor: null,
+                }));
+            }
+            throw new Error(`Unexpected request ${path}`);
+        });
+
+        const onProgress = vi.fn(() => { events.push('progress'); });
+        const outcome = await prepareMembershipHistoryEnvelopesForScope({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            address: { serverId: env.target.id, teamId: TEAM_ID },
+            target: TEAM_TARGET,
+            recipientAccountId: 'recipient-1',
+            availability: 'full_collaboration',
+            isCurrent: () => true,
+            onProgress,
+        });
+
+        expect(outcome.status).toBe('complete');
+        expect(outcome.preparedCount).toBe(2);
+        expect(outcome.repairRequiredSessions).toEqual([]);
+        // The exceptions the row explains are the server's own last-page counts, not a local tally.
+        expect(outcome.exceptions).toEqual({
+            callerVisibleNonTransferableSessionCount: 3,
+            callerEnvelopeRepairRequiredCount: 1,
+        });
+        // Discovery, one bounded commit, progress only after the commit, then the single recheck.
+        expect(events).toEqual(['get:1', 'patch', 'progress', 'get:2']);
+
+        // Every recipient envelope opens to the exact same 32 bytes the manager opened — no
+        // re-keying, and never the manager's own Account material.
+        expect(patched).toHaveLength(1);
+        expect(patched[0]!.recipientAccountId).toBe('recipient-1');
+        for (const entry of patched[0]!.entries) {
+            const opened = openEncryptedDataKeyEnvelopeV1({
+                envelope: decodeBase64(entry.encryptedDataKey, 'base64'),
+                recipientSecretKeyOrSeed: recipient.content.secretKey,
+            });
+            expect(opened).toEqual(sessionDataKeys.get(entry.sessionId));
+            expect(openEncryptedDataKeyEnvelopeV1({
+                envelope: decodeBase64(entry.encryptedDataKey, 'base64'),
+                recipientSecretKeyOrSeed: MANAGER_CONTENT_KEYS.secretKey,
+            })).toBeNull();
+        }
+    });
+
+    it('stops without committing when the membership resolves to a replacement Account', async () => {
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { prepareMembershipHistoryEnvelopesForScope } = await import('./membershipSessionDataKeyEnvelopesApi');
+        const recipient = await createRecipient();
+        env.request.mockImplementation(async (url, init) => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) return new Response(E2EE_ACCOUNT_ENCRYPTION);
+            if (init?.method === 'PATCH') throw new Error('must not commit to a replacement Account');
+            // A provider reset kept the Team membership id and replaced its Account.
+            return new Response(JSON.stringify({
+                status: 'ready',
+                recipientAccountId: 'replacement-account',
+                contentKey: recipient.contentKey,
+                items: [],
+                exceptions: { callerVisibleNonTransferableSessionCount: 0, callerEnvelopeRepairRequiredCount: 0 },
+                nextCursor: null,
+            }));
+        });
+        await expect(prepareMembershipHistoryEnvelopesForScope({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            address: { serverId: env.target.id, teamId: TEAM_ID },
+            target: TEAM_TARGET,
+            recipientAccountId: 'recipient-1',
+            availability: 'full_collaboration',
+            isCurrent: () => true,
+        })).resolves.toMatchObject({ status: 'recipient_changed', preparedCount: 0 });
+    });
+
+    it('turns a PATCH-time recipient replacement into the refreshable recipient_changed outcome', async () => {
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
+        const { prepareMembershipHistoryEnvelopesForScope } = await import('./membershipSessionDataKeyEnvelopesApi');
+        const recipient = await createRecipient();
+        let pages = 0;
+        env.request.mockImplementation(async (url, init) => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) return new Response(E2EE_ACCOUNT_ENCRYPTION);
+            if (init?.method === 'PATCH') {
+                return new Response(JSON.stringify({ error: 'recipient_changed' }), { status: 409 });
+            }
+            pages += 1;
+            return new Response(JSON.stringify({
+                status: 'ready',
+                recipientAccountId: 'recipient-1',
+                contentKey: recipient.contentKey,
+                items: pages === 1 ? [{
+                    sessionId: 'session-1',
+                    callerDataKeyEnvelope: encryptDataKeyForRecipientV0(
+                        new Uint8Array(32).fill(31),
+                        encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
+                    ),
+                }] : [],
+                exceptions: {
+                    callerVisibleNonTransferableSessionCount: 0,
+                    callerEnvelopeRepairRequiredCount: 0,
+                },
+                nextCursor: null,
+            }));
+        });
+
+        await expect(prepareMembershipHistoryEnvelopesForScope({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            address: { serverId: env.target.id, teamId: TEAM_ID },
+            target: TEAM_TARGET,
+            recipientAccountId: 'recipient-1',
+            availability: 'full_collaboration',
+            isCurrent: () => true,
+        })).resolves.toMatchObject({ status: 'recipient_changed', preparedCount: 0 });
+    });
+
+    it('preserves membership disappearance during PATCH as a refreshnaewele stereable outcome', async () => {
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
+        const { prepareMembershipHistoryEnvelopesForScope } = await import('./membershipSessionDataKeyEnvelopesApi');
+        const recipient = await createRecipient();
+        env.request.mockImplementation(async (url, init) => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) return new Response(E2EE_ACCOUNT_ENCRYPTION);
+            if (init?.method === 'PATCH') {
+                return new Response(JSON.stringify({ error: 'membership_not_found' }), { status: 404 });
+            }
+            return new Response(JSON.stringify({
+                status: 'ready',
+                recipientAccountId: 'recipient-1',
+                contentKey: recipient.contentKey,
+                items: [{
+                    sessionId: 'session-1',
+                    callerDataKeyEnvelope: encryptDataKeyForRecipientV0(
+                        new Uint8Array(32).fill(41),
+                        encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
+                    ),
+                }],
+                exceptions: {
+                    callerVisibleNonTransferableSessionCount: 0,
+                    callerEnvelopeRepairRequiredCount: 0,
+                },
+                nextCursor: null,
+            }));
+        });
+
+        await expect(prepareMembershipHistoryEnvelopesForScope({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            address: { serverId: env.target.id, teamId: TEAM_ID },
+            target: GROUP_TARGET,
+            recipientAccountId: 'recipient-1',
+            availability: 'full_collaboration',
+            isCurrent: () => true,
+        })).resolves.toMatchObject({ status: 'membership_changed', preparedCount: 0 });
+    });
+
+    it('suppresses the commit and progress once the host scope stops being current', async () => {
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
+        const { prepareMembershipHistoryEnvelopesForScope } = await import('./membershipSessionDataKeyEnvelopesApi');
+        const recipient = await createRecipient();
+        let current = true;
+        env.request.mockImplementation(async (url, init) => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) return new Response(E2EE_ACCOUNT_ENCRYPTION);
+            if (init?.method === 'PATCH') throw new Error('must not commit after the scope changed');
+            // The person navigated Home/Account away while this page was in flight.
+            current = false;
+            return new Response(JSON.stringify({
+                status: 'ready',
+                recipientAccountId: 'recipient-1',
+                contentKey: recipient.contentKey,
+                items: [{
+                    sessionId: 'session-1',
+                    callerDataKeyEnvelope: encryptDataKeyForRecipientV0(
+                        new Uint8Array(32).fill(11),
+                        encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
+                    ),
+                }],
+                exceptions: { callerVisibleNonTransferableSessionCount: 0, callerEnvelopeRepairRequiredCount: 0 },
+                nextCursor: null,
+            }));
+        });
+        const onProgress = vi.fn();
+        await expect(prepareMembershipHistoryEnvelopesForScope({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            address: { serverId: env.target.id, teamId: TEAM_ID },
+            target: GROUP_TARGET,
+            recipientAccountId: 'recipient-1',
+            availability: 'full_collaboration',
+            isCurrent: () => current,
+            onProgress,
+        })).resolves.toMatchObject({ status: 'scope_changed', preparedCount: 0 });
+        expect(onProgress).not.toHaveBeenCalled();
+    });
+
+    it('reports a plain manager Account as unable to open its own history rather than as empty work', async () => {
+        const env = await setup();
+        const { prepareMembershipHistoryEnvelopesForScope } = await import('./membershipSessionDataKeyEnvelopesApi');
+        await expect(prepareMembershipHistoryEnvelopesForScope({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            address: { serverId: env.target.id, teamId: TEAM_ID },
+            target: TEAM_TARGET,
+            recipientAccountId: 'recipient-1',
+            availability: 'full_collaboration',
+            isCurrent: () => true,
+        })).rejects.toMatchObject({ code: 'session_data_key_unavailable' });
+        expect(env.request.mock.calls.every(([url]) => !url.includes('/data-key/envelopes'))).toBe(true);
+    });
+});

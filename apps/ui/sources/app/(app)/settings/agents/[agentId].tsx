@@ -1062,28 +1062,6 @@ export default React.memo(function AgentSettingsScreen() {
         && !daemonMergedProjectionInputs
         && executionTarget !== null;
 
-    if (waitingForLegacyCompatProjection) {
-        return (
-            <AgentSettingsProjectionStatus
-                phase="loading"
-                targetSelection={administrationTargetSelection}
-            />
-        );
-    }
-    if (!hasQualifiedAgentRoute && isLegacyCompatAgentType(normalizedAgentId)) {
-        if (legacyCompatAgentRedirectId) {
-            return (
-                <Redirect
-                    href={{
-                        pathname: '/(app)/settings/agents/[agentId]',
-                        params: { agentId: legacyCompatAgentRedirectId },
-                    } as any}
-                />
-            );
-        }
-        return <Redirect href={'/(app)/settings/agents' as any} />;
-    }
-
     const agentProjectionParams = React.useMemo(() => ({
         enabledAgentIds: [],
         backendEnabledByTargetKey: settings.backendEnabledByTargetKey,
@@ -1192,6 +1170,29 @@ export default React.memo(function AgentSettingsScreen() {
         ? `${externalSessionsBinding.generation}:${executionTarget?.serverId ?? ''}:${executionTarget?.machine.id ?? ''}`
         : null;
     const accountSettingsAvailable = administrationTargetSelection.selectedTargetServerMatchesActiveAccount;
+    // Keep the hook graph stable while the daemon projection advances from its
+    // loading state to a resolved compatibility redirect.
+    if (waitingForLegacyCompatProjection) {
+        return (
+            <AgentSettingsProjectionStatus
+                phase="loading"
+                targetSelection={administrationTargetSelection}
+            />
+        );
+    }
+    if (!hasQualifiedAgentRoute && isLegacyCompatAgentType(normalizedAgentId)) {
+        if (legacyCompatAgentRedirectId) {
+            return (
+                <Redirect
+                    href={{
+                        pathname: '/(app)/settings/agents/[agentId]',
+                        params: { agentId: legacyCompatAgentRedirectId },
+                    } as any}
+                />
+            );
+        }
+        return <Redirect href={'/(app)/settings/agents' as any} />;
+    }
     if (!normalizedAgentId) {
         return <AgentSettingsNotFound theme={theme} targetSelection={administrationTargetSelection} />;
     }

@@ -61,16 +61,29 @@ HAPPIER_STACK_TAURI_IDENTIFIER=com.happier.stack.lane03-personal-home-qa \
 yarn --cwd apps/ui test:native-e2e:personal-home
 ```
 
-The runner verifies empty prelaunch runtime facts, observes from document start that the retired
-Welcome surface never appears, reaches the production shell, creates a real marked session, then
-terminates and relaunches the owned Tauri app with the same disposable OS home. After relaunch it
-requires the canonical Personal Home profile, authenticated Home access, and the same persisted
-session marker before continuing with runtime restart/update, daemon recovery, safe uninstall, and
-reinstall checks.
+The launcher refuses to start unless the disposable OS home has no retained Personal Home runtime
+facts. The runner then observes, from the document-start script the Tauri host already installs,
+that the retired Welcome surface never appears, reaches the production shell, creates a real marked
+session, and terminates and relaunches the owned Tauri app with the same disposable OS home. After
+relaunch it requires the canonical Personal Home profile, authenticated Home access, and the same
+persisted session marker before continuing with runtime restart/update, daemon recovery, safe
+uninstall, and reinstall checks.
 
-Complete verification also requires the checked-in scoped daemon-failure and between-bootstrap-
-mutations probes named by the runner plan. Keep their executable source in the environment only;
-the retained summary records normalized outcomes and never probe source or credential material.
+Every runtime claim is read from real artifacts: the loopback origin recorded in `server.env` and
+`self-host-state.json`, the server-written `startup-receipt.json` (its authenticated readiness
+receipt, its live process and its startup nonce), the Home identity persisted in SQLite, and a live
+`/health` response. A plain restart must show a new live process; an install/update must also show a
+re-rendered startup nonce.
+
+The journey ends with the destructive-arbitration gate. It uses the real Settings operations —
+"Remove Home from Happier" and "Delete Personal Home data permanently", including their real
+confirmation modals — and one checked-in, test-only pause exposed through this bridge as
+`__MCP__.controlPersonalHomeBootstrapQaPause`. Arming it holds the real bootstrap between two
+durable managed-runtime mutations so the competing canonical uninstall can be observed winning;
+the pause is inert unless armed, expires on its own, and gates
+`__MCP__.uninstallPersonalHomeRuntimeForQa` so an unarmed shell cannot reach that operation. The
+runner accepts no environment-supplied probe script and has no caller-attested completion mode: it
+either proves each gate from the loaded app or fails.
 
 ## Avoid TUI for QA
 

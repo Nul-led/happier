@@ -6,6 +6,7 @@ import {
     createConnectedServiceOptionId,
     createNativeServiceOptionId,
     createReauthServiceOptionId,
+    createTeamResourceServiceOptionId,
     type NewSessionConnectedServicesSelectionListModel,
 } from './buildNewSessionConnectedServicesSelectionListModel';
 
@@ -42,6 +43,202 @@ function buildModel(overrides: Partial<Parameters<typeof buildNewSessionConnecte
 }
 
 describe('buildNewSessionConnectedServicesSelectionListModel', () => {
+    it('offers each brokered Connected Account and Pool resource exactly once', () => {
+        const setBindingForService = vi.fn();
+        const service = { pluginId: 'service.plugin', localId: 'mail' } as const;
+        const resources = [
+            { id: 'account-resource', displayName: 'Brokered account' },
+            { id: 'pool-resource', displayName: 'Brokered pool' },
+        ].map(({ id, displayName }) => ({
+            id,
+            teamId: 'team-1',
+            displayName,
+            resourceRevision: 7,
+            readiness: { kind: 'available' as const },
+            recoveryAction: null,
+            deliveryMode: 'brokered' as const,
+            mayBroker: true,
+            mayReceiveDirect: false,
+            directMaterialState: 'never_delivered' as const,
+            sessionUsePolicy: 'personal_allowed' as const,
+            providerModels: [],
+            sourcePresentation: { kind: 'connected_service' as const, service },
+            connectedServiceSelections: [{
+                source: 'team_resource' as const,
+                resourceId: id,
+                deliveryMode: 'brokered' as const,
+            }],
+        }));
+        const model = buildModel({
+            supportedServiceIds: ['service.plugin/mail'],
+            profileOptionsByServiceId: {},
+            bindingsByServiceId: {},
+            includeNativeAuthOption: false,
+            setBindingForService,
+            teamCredentialResources: resources,
+            teamNameById: { 'team-1': 'Acme' },
+        });
+
+        const options = firstStaticSection(model).options;
+        expect(options.filter((option) => option.label === 'Brokered account')).toHaveLength(1);
+        expect(options.filter((option) => option.label === 'Brokered pool')).toHaveLength(1);
+        options.find((option) => option.label === 'Brokered pool')?.onSelect?.();
+        expect(setBindingForService).toHaveBeenCalledWith('service.plugin/mail', {
+            source: 'team_resource',
+            resourceId: 'pool-resource',
+            deliveryMode: 'brokered',
+        });
+    });
+
+    it('writes the exact recipient-safe Team resource witness selected in New Session', () => {
+        const setBindingForService = vi.fn();
+        const selection = {
+            source: 'team_resource' as const,
+            resourceId: 'resource-1',
+            deliveryMode: 'direct' as const,
+            disclosedMember: {
+                service: { pluginId: 'service.plugin', localId: 'mail' },
+                accountId: 'shared-account',
+            },
+        };
+        const model = buildModel({
+            supportedServiceIds: ['service.plugin/mail'],
+            profileOptionsByServiceId: {},
+            bindingsByServiceId: {},
+            includeNativeAuthOption: false,
+            setBindingForService,
+            teamCredentialResources: [{
+                id: 'resource-1', teamId: 'team-1', displayName: 'Shared mail',
+                resourceRevision: 7, readiness: { kind: 'available' }, recoveryAction: null,
+                mayBroker: false, mayReceiveDirect: true,
+                directMaterialState: 'current', sessionUsePolicy: 'personal_allowed',
+                providerModels: [],
+                sourcePresentation: {
+                    kind: 'connected_service',
+                    service: selection.disclosedMember.service,
+                },
+                connectedServiceSelections: [selection],
+            }],
+            teamNameById: { 'team-1': 'Acme' },
+        });
+
+        const option = firstStaticSection(model).options.find((candidate) => (
+            candidate.id === createTeamResourceServiceOptionId(selection)
+        ));
+        expect(option).toMatchObject({ label: 'Shared mail' });
+        option?.onSelect?.();
+        expect(setBindingForService).toHaveBeenCalledWith('service.plugin/mail', selection);
+    });
+
+    it('keeps an unavailable Team resource keyboard-action and routes its recovery without changing the binding', () => {
+        const recover = vi.fn();
+        const setBindingForService = vi.fn();
+        const selection = {
+            source: 'team_resource' as const,
+            resourceId: 'resource-1',
+            deliveryMode: 'direct' as const,
+            disclosedMember: {
+                service: { pluginId: 'service.plugin', localId: 'mail' },
+                accountId: 'shared-account',
+            },
+        };
+        const resource = {
+            id: 'resource-1', teamId: 'team-1', displayName: 'Shared mail', resourceRevision: 7,
+            readiness: { kind: 'source_unavailable' as const }, recoveryAction: 'source_owner_action' as const,
+            deliveryMode: 'direct' as const, mayBroker: false, mayReceiveDirect: true,
+            directMaterialState: 'stale' as const, sessionUsePolicy: 'personal_allowed' as const,
+            providerModels: [],
+            sourcePresentation: { kind: 'connected_service' as const, service: selection.disclosedMember.service },
+            connectedServiceSelections: [selection],
+        };
+        const model = buildModel({
+            supportedServiceIds: ['service.plugin/mail'], profileOptionsByServiceId: {},
+            bindingsByServiceId: {}, includeNativeAuthOption: false,
+            setBindingForService, teamCredentialResources: [resource],
+            onRecoverTeamCredentialResource: recover,
+        });
+
+        const option = firstStaticSection(model).options.find((candidate) => (
+            candidate.id === createTeamResourceServiceOptionId(selection)
+        ));
+        expect(option).toMatchObject({ disabled: false });
+        option?.onSelect?.();
+        expect(recover).toHaveBeenCalledWith(resource);
+        expect(setBindingForService).not.toHaveBeenCalled();
+    });
+
+    it('keeps a missing retained Team resource selected and unavailable instead of selecting native', () => {
+        const binding = {
+            source: 'team_resource' as const,
+            resourceId: 'revoked-resource',
+            deliveryMode: 'brokered' as const,
+        };
+        const model = buildModel({
+            supportedServiceIds: ['service.plugin/mail'],
+            profileOptionsByServiceId: {},
+            bindingsByServiceId: { 'service.plugin/mail': binding },
+            includeNativeAuthOption: true,
+            teamCredentialResources: [],
+        });
+
+        expect(model.selectedOptionId).toBe(createTeamResourceServiceOptionId(binding));
+        expect(firstStaticSection(model).options.find((option) => (
+            option.id === createTeamResourceServiceOptionId(binding)
+        ))).toMatchObject({ disabled: true, subtitle: 'common.unavailable' });
+        expect(model.selectedOptionId).not.toBe(createNativeServiceOptionId('service.plugin/mail'));
+    });
+
+    it('keeps the Home presentation and recovery action for a retained unavailable Team resource', () => {
+        const recover = vi.fn();
+        const binding = {
+            source: 'team_resource' as const,
+            resourceId: 'unavailable-resource',
+            deliveryMode: 'brokered' as const,
+        };
+        const resource = {
+            id: binding.resourceId,
+            teamId: 'team-1',
+            displayName: 'Shared build account',
+            resourceRevision: 8,
+            readiness: { kind: 'source_unavailable' as const },
+            recoveryAction: 'source_owner_action' as const,
+            mayBroker: true,
+            mayReceiveDirect: false,
+            directMaterialState: 'never_delivered' as const,
+            sessionUsePolicy: 'personal_allowed' as const,
+            providerModels: [],
+            sourcePresentation: {
+                kind: 'connected_service' as const,
+                service: { pluginId: 'service.plugin', localId: 'mail' },
+            },
+            // The resource is retained for presentation/recovery, but the Home
+            // correctly publishes no currently selectable binding.
+            connectedServiceSelections: [],
+        };
+        const model = buildModel({
+            supportedServiceIds: ['service.plugin/mail'],
+            profileOptionsByServiceId: {},
+            bindingsByServiceId: { 'service.plugin/mail': binding },
+            includeNativeAuthOption: true,
+            teamCredentialResources: [resource],
+            teamNameById: { 'team-1': 'Acme' },
+            onRecoverTeamCredentialResource: recover,
+        });
+
+        const option = firstStaticSection(model).options.find((candidate) => (
+            candidate.id === createTeamResourceServiceOptionId(binding)
+        ));
+        expect(option).toMatchObject({
+            label: 'Shared build account',
+            subtitle: 'Acme · teams.credentials.delivery.brokered · teams.credentials.recovery.ownerHandoff',
+            disabled: false,
+        });
+        option?.onSelect?.();
+        expect(recover).toHaveBeenCalledWith(resource);
+        expect(model.selectedOptionId).toBe(createTeamResourceServiceOptionId(binding));
+        expect(model.selectedOptionId).not.toBe(createNativeServiceOptionId('service.plugin/mail'));
+    });
+
     it('leaves connected-account-only selection empty instead of presenting native auth as persisted', () => {
         const model = buildModel({
             bindingsByServiceId: {},

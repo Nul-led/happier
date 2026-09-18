@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import { createSessionDataKeyFixture } from '@/dev/testkit';
 import { encodeBase64 } from '@/encryption/base64';
 import {
     buildSessionListRenderableFromSession,
@@ -16,6 +17,7 @@ import { HappyError } from '@/utils/errors/errors';
 import {
     createPlainSessionOwnerMetadataEnvelopeV1,
     encodeV2SessionListCursorV1,
+    projectLegacySessionAccessCapabilitiesV1,
     projectSessionSharedMetadataV1,
     SessionOwnerMetadataV1Schema,
     type AccountEncryptionCurrentnessResponse,
@@ -33,6 +35,10 @@ const PLAIN_ACCOUNT_CURRENTNESS = {
     signingKeyFingerprint: null,
     contentKeyFingerprint: null,
     updatedAt: 1,
+    recipientEnvelopeReadiness: {
+        status: 'unavailable',
+        reason: 'plain_account',
+    },
 } satisfies AccountEncryptionCurrentnessResponse;
 
 const E2EE_ACCOUNT_CURRENTNESS = {
@@ -41,6 +47,7 @@ const E2EE_ACCOUNT_CURRENTNESS = {
     signingKeyFingerprint: 'signing-current',
     contentKeyFingerprint: 'content-current',
     updatedAt: 2,
+    recipientEnvelopeReadiness: { status: 'available' },
 } satisfies AccountEncryptionCurrentnessResponse;
 
 function fetchAndApplySessions(
@@ -75,6 +82,7 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
         kind: 'custom',
         generation: 1,
     }),
+    getActiveServerHomeCarrier: () => null,
 }));
 
 type SessionRow = V2SessionRecord;
@@ -166,7 +174,7 @@ function createEncryptionHarness(): {
     decryptAgentState: ReturnType<typeof vi.fn>;
 } {
     const decryptEncryptionKeys = vi.fn(async (values: readonly string[], _scope?: { signal?: AbortSignal }) =>
-        values.map((value) => new Uint8Array([value.length])),
+        values.map((value) => createSessionDataKeyFixture(value.length)),
     );
     const decryptEncryptionKey = vi.fn(async (value: string) => {
         const [decrypted] = await decryptEncryptionKeys([value]);
@@ -341,7 +349,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 hasNext: false,
             })),
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -355,6 +362,33 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 }),
             }),
         ]);
+    });
+
+    it('preserves omitted lifecycle facts as unobserved while hydrating a session row', async () => {
+        const row = buildSessionRow({
+            id: 's_unobserved_lifecycle',
+            encryptionMode: 'plain',
+            metadata: JSON.stringify({ path: '/plain/project', host: 'plain-host' }),
+            agentState: JSON.stringify({}),
+        });
+        const applySessions = vi.fn();
+
+        await fetchAndApplySessions({
+            credentials: { token: 'token-only' },
+            encryption: null,
+            sessionDataKeys: new Map(),
+            request: vi.fn(async () => jsonResponse({
+                sessions: [row],
+                nextCursor: null,
+                hasNext: false,
+            })),
+            applySessions,
+            log: { log: () => {} },
+        });
+
+        const hydrated = applySessions.mock.calls[0]?.[0]?.[0];
+        expect(hydrated).not.toHaveProperty('latestTurnStatus');
+        expect(hydrated).not.toHaveProperty('latestTurnStatusObservedAt');
     });
 
     it('hydrates plaintext layout-v1 owner metadata and authoritative Agent state without account material', async () => {
@@ -399,7 +433,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions,
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: [row.id],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -449,7 +482,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions: vi.fn(),
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: [ownerRow.id],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -476,7 +508,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: legacyRequest,
             applySessions: vi.fn(),
             awaitSessionListHydration: true,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
         expect(legacyRequest).not.toHaveBeenCalledWith(
@@ -585,7 +616,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             cachedSessionListEntries,
             getExistingSession: () => existingSession,
             awaitSessionListHydration: true,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -652,7 +682,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions,
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: [row.id],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -786,7 +815,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessionListRenderables,
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: [id],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -851,7 +879,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -891,7 +918,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log,
         });
 
@@ -928,7 +954,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionListPinnedSessionIds: ['s_pinned_outside_first_page'],
             includeSessionListAttentionRows: true,
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         } satisfies FetchAndApplySessionsParams & { sessionListPinnedSessionIds: readonly string[] };
 
@@ -1012,7 +1037,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             includeSessionListAttentionRows: true,
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1073,7 +1097,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             includeSessionListAttentionRows: true,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1111,7 +1134,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             includeSessionListAttentionRows: true,
             sessionListAttentionMaxPages: 2,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1163,7 +1185,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             includeSessionListAttentionRows: true,
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         } satisfies FetchAndApplySessionsParams;
 
@@ -1222,7 +1243,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             getCurrentSessionListRenderable: () => buildSessionListRenderableFromSession(existingSession),
             requiredHydrationSessionIds: ['runtime-transition'],
             awaitSessionListHydration: true,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1271,7 +1291,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             includeActiveSessionRows: true,
             includeSessionListAttentionRows: true,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1307,7 +1326,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         } satisfies FetchAndApplySessionsParams;
 
@@ -1375,7 +1393,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1437,7 +1454,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1516,7 +1532,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions: () => {},
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1558,7 +1573,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions: (sessions) => {
                 appliedSessions.push(...(sessions as unknown as Array<Record<string, unknown>>));
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1605,7 +1619,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions: (sessions) => {
                 appliedSessions.push(...(sessions as unknown as Array<Record<string, unknown>>));
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1683,7 +1696,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                     hasPendingUserActionRequests: false,
                 },
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1742,7 +1754,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         })).rejects.toThrow(/Invalid \/v[12]\/sessions response/);
 
@@ -1778,6 +1789,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         const { encryption } = createEncryptionHarness();
 
         await fetchAndApplySessions({
+            serverId: 'test',
             credentials: { token: 't', secret: 's' },
             encryption,
             sessionDataKeys: new Map<string, Uint8Array>(),
@@ -1790,12 +1802,11 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                     completedRequests: {},
                 },
             }),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
         expect(onAgentRequest).toHaveBeenCalledWith(
-            's1',
+            { serverId: 'test', sessionId: 's1' },
             'req_1',
             'user_action',
             'AskUserQuestion',
@@ -1840,6 +1851,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         const { encryption } = createEncryptionHarness();
 
         await fetchAndApplySessions({
+            serverId: 'test',
             credentials: { token: 't', secret: 's' },
             encryption,
             sessionDataKeys: new Map<string, Uint8Array>(),
@@ -1853,12 +1865,11 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 });
             },
             getExistingSession: () => storedSession,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
         expect(onAgentRequest).toHaveBeenCalledWith(
-            's1',
+            { serverId: 'test', sessionId: 's1' },
             'req_1',
             'user_action',
             'AskUserQuestion',
@@ -1899,7 +1910,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions: (sessions) => {
                 appliedSessions.push(...(sessions as unknown as Array<Record<string, unknown>>));
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -1952,7 +1962,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions: (sessions) => {
                 appliedSessions.push(...(sessions as unknown as Array<Record<string, unknown>>));
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2001,7 +2010,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             applySessions: () => {},
             applySessionListRenderables,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2048,7 +2056,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             applySessions: () => {},
             applySessionListRenderables,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2109,7 +2116,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                     hasUnreadMessages: true,
                 },
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2173,7 +2179,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                     hasUnreadMessages: true,
                 } as any
                 : null,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2234,7 +2239,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessionListRenderables,
             requiredHydrationSessionIds: ['s_row_projection'],
             awaitSessionListHydration: true,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2318,7 +2322,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             getCurrentSessionListRenderable: (sessionId) => currentRenderables[sessionId] ?? null,
             sessionListBackgroundHydrationYield: async () => {},
             sessionListBackgroundHydrationApplyFlushDelayMs: 0,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2422,6 +2425,14 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             thinking: false,
             thinkingAt: 0,
             presence: 'online',
+            encryptionMode: 'plain',
+            encryptedContentAvailability: 'ready',
+            access: {
+                role: 'owner',
+                level: 'owner',
+                capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner' }),
+            },
+            canApprovePermissions: true,
             runtimeActivityState: 'active',
             runtimeActivityActiveCount: 2,
             runtimeActivityObservedAt: 2_700,
@@ -2456,7 +2467,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             },
             sessionListBackgroundHydrationYield: vi.fn(async () => {}),
             awaitSessionListHydration: true,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2497,7 +2507,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             applySessions,
             onSnapshotFetched,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
             cachedSessionListEntries: {
                 s_cached: {
@@ -2646,7 +2655,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                     hasPendingUserActionRequests: false,
                 },
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2728,7 +2736,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             cachedSessionListEntries: {},
             sessionListBackgroundHydrationYield,
             awaitSessionListHydration: true,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2803,7 +2810,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                     hasPendingUserActionRequests: false,
                 },
             } satisfies NonNullable<FetchAndApplySessionsParams['cachedSessionListEntries']>,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2879,7 +2885,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             },
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: ['s_zero_metadata'],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2890,7 +2895,11 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 metadata: expect.objectContaining({ path: '/cached-zero' }),
             }),
         ], { replace: true });
-        expect(decryptMetadata).toHaveBeenCalledWith(0, 'encrypted-zero-meta');
+        expect(decryptMetadata).toHaveBeenCalledWith(
+            0,
+            'encrypted-zero-meta',
+            expect.objectContaining({ onAuthenticationFailure: expect.any(Function) }),
+        );
         expect(applySessions).toHaveBeenCalledWith([
             expect.objectContaining({
                 id: 's_zero_metadata',
@@ -2955,7 +2964,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             cachedSessionListEntries: {},
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: ['s_existing'],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -2975,7 +2983,11 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 }),
             }),
         ], { replace: true });
-        expect(decryptMetadata).toHaveBeenCalledWith(7, 'encrypted-meta');
+        expect(decryptMetadata).toHaveBeenCalledWith(
+            7,
+            'encrypted-meta',
+            expect.objectContaining({ onAuthenticationFailure: expect.any(Function) }),
+        );
         expect(decryptAgentState).toHaveBeenCalledWith(9, 'encrypted-state');
         expect(applySessions).toHaveBeenCalledWith([
             expect.objectContaining({
@@ -3036,11 +3048,14 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             cachedSessionListEntries: {},
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: ['s_unavailable_metadata'],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
-        expect(decryptMetadata).toHaveBeenCalledWith(3, 'encrypted-unavailable-meta');
+        expect(decryptMetadata).toHaveBeenCalledWith(
+            3,
+            'encrypted-unavailable-meta',
+            expect.objectContaining({ onAuthenticationFailure: expect.any(Function) }),
+        );
         expect(applySessions).toHaveBeenCalledWith([
             expect.objectContaining({
                 id: 's_unavailable_metadata',
@@ -3055,13 +3070,16 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         ]);
     });
 
-    it('does not enqueue encrypted rows that are missing data keys for warm hydration', async () => {
+    // A non-owner row is the case with genuinely no reader: owner-only absent-envelope
+    // compatibility material must never be reached through a grant.
+    it('does not open a Session cipher for shared encrypted rows that are missing data keys', async () => {
         const requestSpy = vi.fn(async () =>
             jsonResponse({
                 sessions: [
                     buildSessionRow({
                         id: 's_missing_data_key',
                         dataEncryptionKey: null,
+                        share: { accessLevel: 'view', canApprovePermissions: false },
                         metadata: 'encrypted-missing-key-meta',
                         metadataVersion: 3,
                         agentState: null,
@@ -3089,7 +3107,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: ['s_missing_data_key'],
             cachedSessionListEntries: {},
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -3099,9 +3116,15 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 metadata: null,
             }),
         ], { replace: true });
-        expect(getSessionEncryption).toHaveBeenCalledWith('s_missing_data_key');
+        expect(getSessionEncryption).not.toHaveBeenCalled();
         expect(decryptMetadata).not.toHaveBeenCalled();
-        expect(applySessions).not.toHaveBeenCalled();
+        expect(applySessions).toHaveBeenCalledWith([
+            expect.objectContaining({
+                id: 's_missing_data_key',
+                metadata: null,
+                encryptedContentAvailability: 'recipient_encryption_setup_required',
+            }),
+        ]);
         expect(consoleError).not.toHaveBeenCalled();
     });
 
@@ -3170,11 +3193,14 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             cachedSessionListEntries: {},
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: ['s_stale_metadata'],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
-        expect(decryptMetadata).toHaveBeenCalledWith(5, 'encrypted-stale-meta');
+        expect(decryptMetadata).toHaveBeenCalledWith(
+            5,
+            'encrypted-stale-meta',
+            expect.objectContaining({ onAuthenticationFailure: expect.any(Function) }),
+        );
         expect(applySessionListRenderablePatches).toHaveBeenCalledWith([
             expect.objectContaining({
                 sessionId: 's_stale_metadata',
@@ -3209,7 +3235,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
             prioritizeSessionIds: ['s_priority'],
             sessionListEagerHydrationCount: 1,
@@ -3289,7 +3314,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
             prioritizeSessionIds: ['s_current'],
             requiredHydrationSessionIds: ['s_required'],
@@ -3353,7 +3377,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
             prioritizeSessionIds: ['s_route'],
             activeSessionIds: ['s_active_surface'],
@@ -3437,7 +3460,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions,
             applySessionListRenderables,
             cachedSessionListEntries: {},
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -3460,7 +3482,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         expect(applySessions).not.toHaveBeenCalled();
 
         await expect.poll(() => typeof resolveDataKeys).toBe('function');
-        resolveDataKeys([new Uint8Array([6])]);
+        resolveDataKeys([createSessionDataKeyFixture(6)]);
         await fetchPromise;
     });
 
@@ -3518,7 +3540,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionListBackgroundHydrationApplyBatchSize: 2,
             sessionListBackgroundHydrationApplyFlushDelayMs: 1_000,
             sessionListBackgroundHydrationYield,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -3675,7 +3696,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionListBackgroundHydrationApplyFlushDelayMs: 1,
             sessionListBackgroundHydrationYieldEveryRows: 2,
             sessionListBackgroundHydrationYield,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         } satisfies FetchAndApplySessionsParams & { sessionListBackgroundHydrationYieldEveryRows: number };
 
@@ -3759,7 +3779,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionListBackgroundHydrationApplyBatchSize: 2,
             sessionListBackgroundHydrationApplyFlushDelayMs: 1_000,
             sessionListBackgroundHydrationYield,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -3823,7 +3842,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionListBackgroundHydrationApplyBatchSize: 2,
             sessionListBackgroundHydrationApplyFlushDelayMs: 1_000,
             sessionListBackgroundHydrationYield,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -3912,7 +3930,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionListBackgroundHydrationApplyBatchSize: 2,
             sessionListBackgroundHydrationApplyFlushDelayMs: 1_000,
             sessionListBackgroundHydrationYield,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4002,7 +4019,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionListBackgroundHydrationYield,
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: ['s_stale'],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4018,7 +4034,11 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         requiredMetadata.resolve({ decrypted: 'meta-stale' });
         await fetchPromise;
 
-        expect(decryptMetadata).toHaveBeenCalledWith(2, 'meta-stale');
+        expect(decryptMetadata).toHaveBeenCalledWith(
+            2,
+            'meta-stale',
+            expect.objectContaining({ onAuthenticationFailure: expect.any(Function) }),
+        );
         expect(applySessions).toHaveBeenCalledWith([
             expect.objectContaining({
                 id: 's_stale',
@@ -4080,7 +4100,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionListBackgroundHydrationYield,
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: ['s_required'],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4161,7 +4180,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             cachedSessionListEntries: {},
             awaitSessionListHydration: true,
             requiredHydrationSessionIds: ['s_superseded_required'],
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4176,7 +4194,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions,
             applySessionListRenderables,
             cachedSessionListEntries: {},
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4222,7 +4239,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionListBackgroundHydrationConcurrencyLimit: 1,
             sessionListBackgroundHydrationApplyFlushDelayMs: 1,
             sessionListBackgroundHydrationYield,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4296,7 +4312,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                     hasPendingUserActionRequests: false,
                 },
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4389,7 +4404,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                     hasPendingUserActionRequests: false,
                 },
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4483,7 +4497,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                     hasPendingUserActionRequests: false,
                 },
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4541,7 +4554,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             shouldContinue: () => active,
             sessionListBackgroundHydrationConcurrencyLimit: 1,
             sessionListBackgroundHydrationYield,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4586,7 +4598,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessionListRenderables,
             cachedSessionListEntries: {},
             shouldContinue: () => false,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4635,7 +4646,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionListBackgroundHydrationYield: async () => {},
             sessionListBackgroundHydrationApplyBatchSize: 10,
             sessionListBackgroundHydrationApplyFlushDelayMs: 60_000,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         }).then((result) => {
             resolved = true;
@@ -4704,7 +4714,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             applySessions,
             shouldContinue: () => shouldContinue,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -4737,15 +4746,14 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys,
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
         expect(decryptEncryptionKey).not.toHaveBeenCalled();
         expectDecryptEncryptionKeysCall(decryptEncryptionKeys, ['batch-envelope-a', 'batch-envelope-b'], { serverId: 'server-batch' });
         expectInitializeSessionsCall(initializeSessions, [
-            ['s_batch_a', new Uint8Array(['batch-envelope-a'.length])],
-            ['s_batch_b', new Uint8Array(['batch-envelope-b'.length])],
+            ['s_batch_a', createSessionDataKeyFixture('batch-envelope-a'.length)],
+            ['s_batch_b', createSessionDataKeyFixture('batch-envelope-b'.length)],
         ], { serverId: 'server-batch' });
     });
 
@@ -4767,7 +4775,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys: new Map<string, Uint8Array>(),
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         })).rejects.toThrow(/decryptEncryptionKeys/);
 
@@ -4787,7 +4794,8 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             }),
         );
         const { encryption, decryptEncryptionKeys, initializeSessions, removeSessionEncryption } = createEncryptionHarness();
-        decryptEncryptionKeys.mockResolvedValueOnce([new Uint8Array([9, 9]), null]);
+        const validKey = createSessionDataKeyFixture(9);
+        decryptEncryptionKeys.mockResolvedValueOnce([validKey, null]);
         const staleKey = new Uint8Array([1, 1]);
         const sessionDataKeys = new Map<string, Uint8Array>([
             ['s_invalid_key', staleKey],
@@ -4803,17 +4811,16 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeyEnvelopes,
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
         expect(decryptEncryptionKeys).toHaveBeenCalledTimes(1);
-        expect(sessionDataKeys.get('s_valid_key')).toEqual(new Uint8Array([9, 9]));
+        expect(sessionDataKeys.get('s_valid_key')).toEqual(validKey);
         expect(sessionDataKeyEnvelopes.get('s_valid_key')).toBe('valid-envelope');
         expect(sessionDataKeys.has('s_invalid_key')).toBe(false);
         expect(sessionDataKeyEnvelopes.has('s_invalid_key')).toBe(false);
         expectInitializeSessionsCall(initializeSessions, [
-            ['s_valid_key', new Uint8Array([9, 9])],
+            ['s_valid_key', validKey],
         ]);
         expect(removeSessionEncryption).toHaveBeenCalledTimes(1);
         expect(removeSessionEncryption).toHaveBeenCalledWith('s_invalid_key');
@@ -4866,7 +4873,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 getCurrentSessionListRenderable: (sessionId) => currentRenderables[sessionId],
                 cachedSessionListEntries: {},
                 sessionListBackgroundHydrationYield: async () => {},
-                repairInvalidReadStateV1: async () => {},
                 log: { log: () => {} },
             });
 
@@ -4949,7 +4955,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                     },
                 } satisfies NonNullable<FetchAndApplySessionsParams['cachedSessionListEntries']>,
                 sessionListBackgroundHydrationYield: async () => {},
-                repairInvalidReadStateV1: async () => {},
                 log: { log: () => {} },
             });
 
@@ -4968,7 +4973,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         expect(currentRenderables.s_empty_cached_identity?.metadataUnavailable).toBe(true);
     });
 
-    it('clears runtime session encryption when an encrypted session no longer has a data-key envelope', async () => {
+    it('replaces stale runtime session encryption with the owner account reader when an encrypted session no longer has a data-key envelope', async () => {
         const requestSpy = vi.fn(async () =>
             jsonResponse({
                 sessions: [
@@ -4994,19 +4999,20 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeyEnvelopes,
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
         expect(decryptEncryptionKeys).not.toHaveBeenCalled();
+        // The stale per-Session key must go even though the owner keeps a reader.
         expect(sessionDataKeys.has('s_missing_envelope')).toBe(false);
         expect(sessionDataKeyEnvelopes.has('s_missing_envelope')).toBe(false);
-        expect(initializeSessions).not.toHaveBeenCalled();
-        expect(removeSessionEncryption).toHaveBeenCalledTimes(1);
-        expect(removeSessionEncryption).toHaveBeenCalledWith('s_missing_envelope');
+        expect(initializeSessions).toHaveBeenCalledTimes(1);
+        expect([...(initializeSessions.mock.calls[0]?.[0] as Map<string, Uint8Array | null>).entries()])
+            .toEqual([['s_missing_envelope', null]]);
+        expect(removeSessionEncryption).not.toHaveBeenCalled();
     });
 
-    it('clears the concrete encryption cache when an encrypted session no longer has a data-key envelope', async () => {
+    it('drops the stale concrete session key when an encrypted session no longer has a data-key envelope', async () => {
         const sessionId = 's_missing_envelope_real';
         const requestSpy = vi.fn(async () =>
             jsonResponse({
@@ -5020,7 +5026,8 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         const encryption = await Encryption.create(new Uint8Array(32).fill(1));
         const staleKey = new Uint8Array(32).fill(4);
         await encryption.initializeSessions(new Map([[sessionId, staleKey]]));
-        expect(encryption.getSessionEncryption(sessionId)).not.toBeNull();
+        const staleSessionEncryption = encryption.getSessionEncryption(sessionId);
+        expect(staleSessionEncryption).not.toBeNull();
 
         const sessionDataKeys = new Map<string, Uint8Array>([
             [sessionId, staleKey],
@@ -5038,7 +5045,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 sessionDataKeyEnvelopes,
                 request: requestSpy,
                 applySessions: vi.fn(),
-                repairInvalidReadStateV1: async () => {},
                 log: { log: () => {} },
             });
         } finally {
@@ -5047,7 +5053,10 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
 
         expect(sessionDataKeys.has(sessionId)).toBe(false);
         expect(sessionDataKeyEnvelopes.has(sessionId)).toBe(false);
-        expect(encryption.getSessionEncryption(sessionId)).toBeNull();
+        // The owner keeps a reader, but never the superseded per-Session key.
+        const currentSessionEncryption = encryption.getSessionEncryption(sessionId);
+        expect(currentSessionEncryption).not.toBeNull();
+        expect(currentSessionEncryption).not.toBe(staleSessionEncryption);
     });
 
     it('does not update data-key caches when an account switch cancels the snapshot batch', async () => {
@@ -5080,7 +5089,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             applySessions: vi.fn(),
             shouldContinue: () => active,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5121,7 +5129,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             if (values[0] === 'old-envelope') {
                 return await firstDecrypt.promise;
             }
-            return [new Uint8Array([2, 2])];
+            return [createSessionDataKeyFixture(2)];
         });
         const sessionDataKeys = new Map<string, Uint8Array>();
 
@@ -5132,7 +5140,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys,
             request: firstRequest,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5147,7 +5154,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeys,
             request: secondRequest,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5157,10 +5163,10 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         await firstFetch;
 
         expect(sessionDataKeys.has('s_superseded_old')).toBe(false);
-        expect(sessionDataKeys.get('s_superseded_new')).toEqual(new Uint8Array([2, 2]));
+        expect(sessionDataKeys.get('s_superseded_new')).toEqual(createSessionDataKeyFixture(2));
         expect(initializeSessions).toHaveBeenCalledTimes(1);
         expectInitializeSessionsCall(initializeSessions, [
-            ['s_superseded_new', new Uint8Array([2, 2])],
+            ['s_superseded_new', createSessionDataKeyFixture(2)],
         ], { serverId: 'server-superseded' });
     });
 
@@ -5237,7 +5243,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             applySessions: vi.fn(),
             shouldContinue: () => active,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5285,7 +5290,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeyEnvelopes,
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5329,7 +5333,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeyEnvelopes,
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5373,7 +5376,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeyEnvelopes,
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5417,7 +5419,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeyEnvelopes,
             request: requestSpy,
             applySessions: vi.fn(),
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5434,6 +5435,9 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
     it('pages through /v2/sessions and applies decrypted sessions with share and key cache mapping', async () => {
         onAgentRequest.mockReset();
         const requestSpy = vi.fn(async (path: string) => {
+            if (path === '/v1/account/encryption/currentness') {
+                return jsonResponse(E2EE_ACCOUNT_CURRENTNESS);
+            }
             const parsed = new URL(path, 'https://example.test');
             expect(parsed.pathname).toBe('/v2/sessions');
 
@@ -5479,30 +5483,31 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions: (sessions) => {
                 appliedSessions.push(...(sessions as unknown as Array<Record<string, unknown>>));
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
-        expect(requestSpy).toHaveBeenCalledTimes(2);
+        expect(requestSpy.mock.calls.filter(([path]) =>
+            new URL(path, 'https://example.test').pathname === '/v2/sessions'
+        )).toHaveLength(2);
         expect(decryptEncryptionKey).not.toHaveBeenCalled();
         expectDecryptEncryptionKeysCall(decryptEncryptionKeys, ['k2', 'k0']);
         expect(initializeSessions).toHaveBeenCalledTimes(1);
-        expect(decryptMetadata).toHaveBeenCalledTimes(3);
-        expect(decryptAgentState).toHaveBeenCalledTimes(3);
+        expect(decryptMetadata).toHaveBeenCalledTimes(2);
+        expect(decryptAgentState).toHaveBeenCalledTimes(2);
 
         expect(appliedSessions).toHaveLength(3);
         expect(appliedSessions.map((session) => session.id)).toEqual(['s2', 's1', 's0']);
 
         const sharedSession = appliedSessions.find((session) => session.id === 's1');
         expect(sharedSession?.accessLevel).toBe('view');
-        expect(sharedSession?.canApprovePermissions).toBe(true);
+        expect(sharedSession?.canApprovePermissions).toBe(false);
 
         expect(sessionDataKeys.has('s2')).toBe(true);
         expect(sessionDataKeys.has('s0')).toBe(true);
         expect(sessionDataKeys.has('s1')).toBe(false);
     });
 
-    it('does not repair read state for a stale hydrated session skipped before apply', async () => {
+    it('does not apply a stale hydrated session with legacy read state', async () => {
         const requestSpy = vi.fn(async () =>
             jsonResponse({
                 sessions: [
@@ -5520,7 +5525,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         const { encryption, decryptMetadata } = createEncryptionHarness();
         decryptMetadata.mockResolvedValue({ readStateV1: { sessionSeq: 5 } });
         const applySessions = vi.fn();
-        const repairInvalidReadStateV1 = vi.fn(async () => {});
 
         await fetchAndApplySessions({
             credentials: { token: 't', secret: 's' },
@@ -5529,12 +5533,10 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             getCurrentSessionListRenderable: () => null,
             applySessions,
-            repairInvalidReadStateV1,
             log: { log: () => {} },
         });
 
         expect(applySessions).not.toHaveBeenCalled();
-        expect(repairInvalidReadStateV1).not.toHaveBeenCalled();
     });
 
     it('reuses cached session data keys only when the encrypted envelope is unchanged', async () => {
@@ -5556,8 +5558,8 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         );
 
         const { encryption, decryptEncryptionKey, decryptEncryptionKeys, initializeSessions } = createEncryptionHarness();
-        const cachedKey = new Uint8Array([9, 9, 9]);
-        const rotatedCachedKey = new Uint8Array([1, 1, 1]);
+        const cachedKey = createSessionDataKeyFixture(9);
+        const rotatedCachedKey = createSessionDataKeyFixture(1);
         const sessionDataKeys = new Map<string, Uint8Array>([
             ['s_cached', cachedKey],
             ['s_rotated', rotatedCachedKey],
@@ -5581,7 +5583,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             sessionDataKeyEnvelopes,
             request: requestSpy,
             applySessions: () => {},
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5589,10 +5590,10 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         expectDecryptEncryptionKeysCall(decryptEncryptionKeys, ['new-envelope']);
         expectInitializeSessionsCall(initializeSessions, [
             ['s_cached', cachedKey],
-            ['s_rotated', new Uint8Array(['new-envelope'.length])],
+            ['s_rotated', createSessionDataKeyFixture('new-envelope'.length)],
         ]);
         expect(sessionDataKeys.get('s_cached')).toBe(cachedKey);
-        expect(sessionDataKeys.get('s_rotated')).toEqual(new Uint8Array(['new-envelope'.length]));
+        expect(sessionDataKeys.get('s_rotated')).toEqual(createSessionDataKeyFixture('new-envelope'.length));
         expect(sessionDataKeyEnvelopes.get('s_cached')).toBe('cached-envelope');
         expect(sessionDataKeyEnvelopes.get('s_rotated')).toBe('new-envelope');
 
@@ -5645,7 +5646,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             request: requestSpy,
             shouldContinue: () => false,
             applySessions,
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5669,7 +5669,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 sessionDataKeys: new Map<string, Uint8Array>(),
                 request: requestSpy,
                 applySessions: () => {},
-                repairInvalidReadStateV1: async () => {},
                 log: { log: () => {} },
             }),
         ).rejects.toMatchObject({
@@ -5692,7 +5691,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 sessionDataKeys: new Map<string, Uint8Array>(),
                 request: requestSpy,
                 applySessions: () => {},
-                repairInvalidReadStateV1: async () => {},
                 log: { log: () => {} },
             }),
         ).rejects.toBeInstanceOf(HappyError);
@@ -5725,7 +5723,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions: (sessions) => {
                 appliedSessions.push(...(sessions as unknown as Array<Record<string, unknown>>));
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 
@@ -5753,7 +5750,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 encryption,
                 sessionDataKeys: new Map<string, Uint8Array>(),
                 applySessions: () => {},
-                repairInvalidReadStateV1: async () => {},
                 log: { log: () => {} },
             }),
         ).rejects.toThrow('Invalid /v1/sessions response');
@@ -5783,7 +5779,6 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             applySessions: (sessions) => {
                 appliedSessions.push(...(sessions as unknown as Array<Record<string, unknown>>));
             },
-            repairInvalidReadStateV1: async () => {},
             log: { log: () => {} },
         });
 

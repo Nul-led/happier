@@ -7,7 +7,7 @@ import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const automationsScreenSpy = vi.hoisted(() => vi.fn());
-const createScreenSpy = vi.hoisted(() => vi.fn());
+const workflowEditorScreenSpy = vi.hoisted(() => vi.fn());
 
 const routerMock = createExpoRouterMock({
     params: { id: ['s1', 's2'] },
@@ -29,14 +29,14 @@ vi.mock('@/components/automations/screens/SessionAutomationsScreen', () => ({
     SessionAutomationsScreen: (props: { sessionId: string }) => automationsScreenSpy(props),
 }));
 
-vi.mock('@/components/automations/screens/SessionAutomationCreateScreen', () => ({
-    SessionAutomationCreateScreen: (props: { sessionId: string }) => createScreenSpy(props),
+vi.mock('@/components/workflows/screens/SessionWorkflowEditorScreen', () => ({
+    SessionWorkflowEditorScreen: (props: { sessionId: string }) => workflowEditorScreenSpy(props),
 }));
 
 describe('session automations routes', () => {
     beforeEach(() => {
         automationsScreenSpy.mockClear();
-        createScreenSpy.mockClear();
+        workflowEditorScreenSpy.mockClear();
     });
 
     afterEach(() => {
@@ -51,11 +51,12 @@ describe('session automations routes', () => {
         expect(automationsScreenSpy).toHaveBeenCalledWith({ sessionId: 's1' });
     });
 
-    it('normalizes array session ids before rendering the create screen', async () => {
+    it('normalizes array session ids before rendering the canonical Workflow editor', async () => {
         const { default: CreateRoute } = await import('@/app/(app)/session/[id]/automations/new');
 
         await renderScreen(<CreateRoute />);
 
-        expect(createScreenSpy).toHaveBeenCalledWith({ sessionId: 's1' });
+        expect(workflowEditorScreenSpy).toHaveBeenCalledTimes(1);
+        expect(workflowEditorScreenSpy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1' }));
     });
 });

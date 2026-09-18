@@ -1,0 +1,264 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import {
+    projectLegacySessionAccessCapabilitiesV1,
+    type AccountEncryptionCurrentnessResponse,
+    type SessionListQueryV1,
+    type V2SessionRecord,
+} from '@happier-dev/protocol';
+
+import { fetchAndApplySessions } from './sessionSnapshot';
+import { createSessionListQueryHomeController } from '@/sync/domains/session/listing/sessionListQueryController';
+
+const PLAIN_ACCOUNT_CURRENTNESS = {
+    mode: 'plain',
+    version: 1,
+    signingKeyFingerprint: null,
+    contentKeyFingerprint: null,
+    updatedAt: 1,
+} satisfies AccountEncryptionCurrentnessResponse;
+
+function buildSessionRow(id: string): V2SessionRecord {
+    return {
+        id,
+        seq: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        active: true,
+        activeAt: 1,
+        archivedAt: null,
+        metadata: JSON.stringify({ path: `/${id}`, host: 'test' }),
+        metadataVersion: 1,
+        agentState: JSON.stringify({}),
+        agentStateVersion: 1,
+        dataEncryptionKey: null,
+        encryptionMode: 'plain',
+        share: null,
+        effectiveAccess: {
+            v: 1,
+            level: 'owner',
+            sources: [{ kind: 'owner' }],
+            capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner' }),
+        },
+        viewer: {
+            readState: { state: 'not_started' },
+            relevance: { relevant: false, reasons: [] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+            follow: { follows: false, notificationLevel: 'none' },
+            notification: { level: 'none', source: 'preference' },
+        },
+        responsibleAccountId: null,
+        responsibleAccount: null,
+    };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+    });
+}
+
+function buildQuery(): SessionListQueryV1 {
+    return {
+        v: 1,
+        storage: 'active',
+        includeInactive: false,
+        scope: 'all_accessible',
+        attention: 'any',
+        audiences: [{ kind: 'team', teamId: 'team-a' }],
+        tagIds: ['tag-a'],
+        includeAttention: true,
+    };
+}
+
+describe('fetchAndApplySessions query source', () => {
+    it('preserves released responsibility omission without creating own-property undefined', async () => {
+        const applySessionListRenderables = vi.fn();
+        const legacy = buildSessionRow('legacy-omission') as Record<string, unknown>;
+        delete legacy.viewer;
+        delete legacy.responsibleAccountId;
+        delete legacy.responsibleAccount;
+
+        await fetchAndApplySessions({
+            serverId: 'home-a',
+            source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: true },
+            credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
+            accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+            encryption: null,
+            sessionDataKeys: new Map(),
+            request: async () => jsonResponse({ sessions: [legacy], nextCursor: null, hasNext: false }),
+            applySessions: vi.fn(),
+            applySessionListRenderables,
+            log: { log: () => {} },
+        });
+
+        const rendered = applySessionListRenderables.mock.calls[0]?.[0]?.[0] as Record<string, unknown>;
+        expect(Object.prototype.hasOwnProperty.call(rendered, 'responsibleAccountId')).toBe(false);
+        expect(Object.prototype.hasOwnProperty.call(rendered, 'responsibleAccount')).toBe(false);
+    });
+    it('uses the query route for both row families and returns an unfinished attention frontier', async () => {
+        const request = vi.fn(async (path: string, init: RequestInit) => {
+            expect(path).toBe('/v2/sessions/query');
+            expect(init.method).toBe('POST');
+            const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+            if (body.attentionCursor === undefined) {
+                expect(body).toEqual({ ...buildQuery(), limit: 50 });
+                return jsonResponse({
+                    sessions: [buildSessionRow('ordinary')],
+                    nextCursor: null,
+                    hasNext: false,
+                    attentionNextCursor: 'attention-1',
+                    attentionHasNext: true,
+                });
+            }
+            expect(body).toEqual({ ...buildQuery(), attentionCursor: 'attention-1', limit: 50 });
+            return jsonResponse({
+                sessions: [buildSessionRow('attention')],
+                nextCursor: null,
+                hasNext: false,
+                attentionNextCursor: 'attention-2',
+                attentionHasNext: true,
+            });
+        });
+        const applySessions = vi.fn();
+        const applySessionListRenderables = vi.fn();
+
+        const result = await fetchAndApplySessions({
+            serverId: 'home-a',
+            source: { kind: 'query', body: buildQuery(), allowV1Fallback: false },
+            sessionListAttentionMaxPages: 1,
+            credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
+            accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+            encryption: null,
+            sessionDataKeys: new Map(),
+            request,
+            applySessions,
+            applySessionListRenderables,
+            log: { log: () => {} },
+        });
+
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(result).toMatchObject({
+            sessionIds: ['ordinary', 'attention'],
+            nextCursor: null,
+            hasNext: false,
+            attentionNextCursor: 'attention-2',
+            attentionHasNext: true,
+            current: true,
+        });
+        expect(applySessionListRenderables).toHaveBeenCalledTimes(1);
+        expect(applySessionListRenderables.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'ordinary', viewer: buildSessionRow('ordinary').viewer, hasUnreadMessages: false }),
+        ]));
+        expect(applySessions).not.toHaveBeenCalled();
+    });
+
+    it('reports a superseded request as non-current so callers cannot publish its membership or cursors', async () => {
+        let current = true;
+        const applySessionListRenderables = vi.fn(() => {
+            current = false;
+        });
+
+        const result = await fetchAndApplySessions({
+            serverId: 'home-a',
+            source: { kind: 'query', body: { ...buildQuery(), includeAttention: false }, allowV1Fallback: false },
+            credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
+            accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+            encryption: null,
+            sessionDataKeys: new Map(),
+            request: async () => jsonResponse({
+                sessions: [buildSessionRow('late')],
+                nextCursor: 'next-late',
+                hasNext: true,
+                attentionNextCursor: null,
+                attentionHasNext: false,
+            }),
+            shouldContinue: () => current,
+            applySessions: vi.fn(),
+            applySessionListRenderables,
+            log: { log: () => {} },
+        });
+
+        expect(result.current).toBe(false);
+    });
+
+    it('uses the attention page budget when resuming an already-open attention frontier', async () => {
+        const request = vi.fn(async (_path: string, init: RequestInit) => {
+            const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+            const cursor = String(body.attentionCursor);
+            const page = Number(cursor.split('-')[1]);
+            return jsonResponse({
+                sessions: [buildSessionRow(`attention-${page}`)],
+                nextCursor: null,
+                hasNext: false,
+                attentionNextCursor: page === 2 ? null : `attention-${page + 1}`,
+                attentionHasNext: page !== 2,
+            });
+        });
+
+        const result = await fetchAndApplySessions({
+            serverId: 'home-a',
+            source: { kind: 'query', body: buildQuery(), allowV1Fallback: false },
+            sessionListAttentionCursor: 'attention-1',
+            sessionListAttentionMaxPages: 2,
+            credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
+            accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+            encryption: null,
+            sessionDataKeys: new Map(),
+            request,
+            applySessions: vi.fn(),
+            applySessionListRenderables: vi.fn(),
+            log: { log: () => {} },
+        });
+
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(result).toMatchObject({
+            sessionIds: ['attention-1', 'attention-2'],
+            attentionNextCursor: null,
+            attentionHasNext: false,
+        });
+    });
+    it('revokes controller admission during HTTP and prevents real query ingestion or a later refresh', async () => {
+        let finish!: (response: Response) => void;
+        const request = vi.fn< (path: string, init: RequestInit) => Promise<Response> >(
+            () => new Promise((resolve) => { finish = resolve; }),
+        );
+        const publishedIds: string[] = [];
+        const controller = createSessionListQueryHomeController({
+            serverId: 'home-a',
+            fetchPage: (page) => fetchAndApplySessions({
+                serverId: 'home-a',
+                source: page.source,
+                credentials: { token: 'token-a', encryption: { publicKey: 'public', machineKey: 'machine' } },
+                accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+                encryption: null,
+                sessionDataKeys: new Map(),
+                request,
+                shouldContinue: () => !page.signal.aborted,
+                applySessions: (rows) => { publishedIds.push(...rows.map((row) => row.id)); },
+                applySessionListRenderables: (rows) => { publishedIds.push(...rows.map((row) => row.id)); },
+                log: { log: () => {} },
+            }),
+        });
+        const input = { queryKey: 'a', query: buildQuery(), selected: true, online: true };
+        const pending = controller.update({ ...input, supported: true });
+        await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+        const refresh = controller.refresh();
+        await controller.update({ ...input, supported: false });
+        finish(jsonResponse({
+            sessions: [buildSessionRow('revoked')], nextCursor: null, hasNext: false,
+            attentionNextCursor: null, attentionHasNext: false,
+        }));
+        await Promise.all([pending, refresh]);
+        await controller.refresh();
+        void controller.invalidate();
+        await controller.loadNext();
+        expect(publishedIds).toEqual([]);
+        expect(controller.getSnapshot()).toMatchObject({ addresses: [], failureReason: 'unsupported' });
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(request.mock.calls[0]?.[0]).toBe('/v2/sessions/query');
+    });
+
+});

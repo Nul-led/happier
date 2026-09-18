@@ -1,5 +1,7 @@
 import {
     applyAccountSettingsSavedSecretMutation,
+    formatSharedSavedSecretRefV1,
+    resolveAccountSettingsPluginSecretBinding,
     resolveAccountSettingsPluginSecret,
 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
@@ -48,6 +50,59 @@ function existingSavedSecretSettings(): Record<string, unknown> {
 }
 
 describe('Account plugin SavedSecret Settings adapter', () => {
+    it('binds, reports, and unbinds a shared ref without requiring a personal row', async () => {
+        const sharedRef = formatSharedSavedSecretRefV1('resource-plugin');
+        let snapshot: AccountPluginSecretSettingsSnapshot = {
+            revision: 5,
+            settings: {},
+        };
+        const adapter = createAccountPluginSecretSettingsAdapter({
+            readSnapshot: () => snapshot,
+            async writeOnce(input) {
+                snapshot = {
+                    revision: snapshot.revision + 1,
+                    settings: input.mutate(snapshot.settings),
+                };
+                return { status: 'applied', revision: snapshot.revision, snapshot };
+            },
+        }, {
+            createId: () => 'personal-created-by-plugin',
+            now: () => 10,
+        });
+
+        await expect(adapter.write({
+            pluginId: PLUGIN_ID,
+            scope: { kind: 'account' },
+            target: TARGET,
+            fields: FIELDS,
+            fieldId: FIELD_ID,
+            mutation: { kind: 'bind', savedSecretId: sharedRef },
+            expectedRevision: { kind: 'account-secret', value: 5 },
+        })).resolves.toMatchObject({
+            status: 'ready',
+            snapshot: { secretStates: { [FIELD_ID]: 'configured' } },
+        });
+        expect(resolveAccountSettingsPluginSecretBinding(snapshot.settings, {
+            pluginId: PLUGIN_ID,
+            localId: FIELD_ID,
+        })?.savedSecretId).toBe(sharedRef);
+        expect(snapshot.settings.secrets ?? []).toEqual([]);
+
+        await expect(adapter.write({
+            pluginId: PLUGIN_ID,
+            scope: { kind: 'account' },
+            target: TARGET,
+            fields: FIELDS,
+            fieldId: FIELD_ID,
+            mutation: { kind: 'unbind' },
+            expectedRevision: { kind: 'account-secret', value: 6 },
+        })).resolves.toMatchObject({
+            status: 'ready',
+            snapshot: { secretStates: { [FIELD_ID]: 'missing' } },
+        });
+        expect(snapshot.settings.secrets ?? []).toEqual([]);
+    });
+
     it('binds and explicitly unbinds an existing SavedSecret without projecting its value or identity', async () => {
         let snapshot: AccountPluginSecretSettingsSnapshot = {
             revision: 5,
@@ -60,7 +115,7 @@ describe('Account plugin SavedSecret Settings adapter', () => {
                 revision: snapshot.revision + 1,
                 settings: input.mutate(snapshot.settings),
             };
-            return { status: 'applied', snapshot };
+            return { status: 'applied', revision: snapshot.revision, snapshot };
         });
         const adapter = createAccountPluginSecretSettingsAdapter({
             readSnapshot: () => snapshot,
@@ -147,7 +202,7 @@ describe('Account plugin SavedSecret Settings adapter', () => {
                 revision: snapshot.revision + 1,
                 settings: input.mutate(snapshot.settings),
             };
-            return { status: 'applied', snapshot };
+            return { status: 'applied', revision: snapshot.revision, snapshot };
         });
         const boundary: AccountPluginSecretSettingsBoundary = {
             readSnapshot: ({ target }) => target.serverIdentityId === TARGET.serverIdentityId ? snapshot : null,
@@ -339,7 +394,7 @@ describe('Account plugin SavedSecret Settings adapter', () => {
                 revision: snapshot.revision + 1,
                 settings: input.mutate(snapshot.settings),
             };
-            return { status: 'applied', snapshot };
+            return { status: 'applied', revision: snapshot.revision, snapshot };
         });
         const boundary: AccountPluginSecretSettingsBoundary = {
             readSnapshot: () => snapshot,

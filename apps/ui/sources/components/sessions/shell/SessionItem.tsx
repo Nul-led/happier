@@ -1,4 +1,5 @@
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
+import { isSessionAwarenessContentReadableV1 } from '@happier-dev/protocol';
 import React from 'react';
 import {
     Animated,
@@ -27,7 +28,6 @@ import {
     WEB_START_ELLIPSIS_CONTAINER_TEXT_STYLE,
     WEB_START_ELLIPSIS_CONTENT_TEXT_STYLE,
 } from '@/components/ui/text/webStartEllipsisTextStyles';
-import { Avatar } from '@/components/ui/avatar/Avatar';
 import {
     getAgentCore,
     } from '@/agents/catalog/catalog';
@@ -37,12 +37,12 @@ import { formatPendingCountBadge } from '@/components/sessions/pendingBadge';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
 import { t } from '@/text';
 import {
-    deriveSessionListAttentionState,
+    resolveSessionListAttentionState,
     type SessionListSecondaryLineMode,
 } from '@/sync/domains/session/listing/deriveSessionListActivity';
 import { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
-import { getSessionAvatarId, getSessionName, getSessionSubtitle, type SessionStatus } from '@/utils/sessions/sessionUtils';
+import { getSessionName, getSessionSubtitle, getSessionStatus, resolveLockedSessionTitle, type SessionStatus } from '@/utils/sessions/sessionUtils';
 import { PinIcon, PinSlashIcon } from './sessionPinIcons';
 import { TagIcon } from './sessionTagIcons';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
@@ -52,7 +52,6 @@ import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyF
 import {
     resolveSessionRowAttentionState,
     resolveSessionRowPresentation,
-    type SessionRowAttentionState,
 } from './row/resolveSessionRowPresentation';
 import {
     normalizeSessionListActiveColorMode,
@@ -83,6 +82,7 @@ import type { SessionFolderMoveTarget } from '@/sync/domains/session/folders';
 import { useIsTablet } from '@/utils/platform/responsive';
 import type { SessionListRowViewModel } from './sessionListRowViewModels';
 import { createSessionActionTarget } from '@/components/sessions/actions/sessionActionContext';
+import { useAccountSessionFollowEditorHost } from '@/components/sessions/follow/useAccountSessionFollowEditorHost';
 import { executeSessionAction } from '@/components/sessions/actions/sessionActionExecution';
 import {
     SESSION_ACTION_ARCHIVE_ID,
@@ -94,6 +94,7 @@ import { SessionListSelectionCheckbox } from './selection/SessionListSelectionCh
 import { useOptionalSessionListSelectionRow } from './selection/SessionListSelectionContext';
 import { resolveSessionListSelectionPointerAction } from './selection/sessionListSelectionPointer';
 import { useSessionRowActionMenu } from './row/actionMenu/useSessionRowActionMenu';
+import { formatSessionAttentionReminderDateTime } from './row/actionMenu/sessionAttentionReminderAction';
 import {
     SESSION_ROW_ACTION_OPEN_SPLIT_DOWN_ID,
     SESSION_ROW_ACTION_OPEN_SPLIT_RIGHT_ID,
@@ -114,21 +115,23 @@ import {
     useLocalSetting,
 } from '@/sync/domains/state/storage';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
-import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
-import type { ExternalSessionRuntimePresentation } from '../presentation/externalSessionRuntimePresentation';
+import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import type { ExternalSessionIdentityPresentation } from '../presentation/externalSessionIdentityPresentation';
-import { SessionAgentCatalogIdentityIcon } from '../presentation/SessionAgentCatalogIdentityIcon';
+import {
+    normalizeSessionListIdentityDisplay,
+    SessionListIdentity,
+    type SessionListIdentityDisplay,
+} from './SessionListIdentity';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Modal } from '@/modal';
 import { canForkConversation } from '@/sync/domains/sessionFork/forkUiSupport';
-import { deferOnWeb } from '@/utils/platform/deferOnWeb';
 import { resolveMachineTargetForSessionFromState } from '@/sync/ops/sessionMachineTarget';
+import { selectSessionViewShellSessionForRouteState } from './sessionViewStableSession';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import type { SessionForkReplaySettingsSource } from '@/sync/domains/sessionFork/resolveSessionForkReplayOptions';
 
 const SESSION_LIST_MINIMAL_IDENTITY_GAP = 8;
-const CONTEXT_MENU_DEFERRED_ACTION_DELAY_MS = 0;
 const CONTEXT_MENU_PRESS_IN_OPEN_DELAY_MS = 350;
 const CONTEXT_MENU_PRESS_SUPPRESSION_TIMEOUT_MS = 600;
 const SESSION_IDENTITY_SKELETON_ANIMATION_MS = 900;
@@ -138,8 +141,37 @@ const SESSION_FOLDER_MOVE_MENU_INDENT_BASE = 16;
 const SESSION_FOLDER_MOVE_MENU_INDENT_STEP = 12;
 const SESSION_DELETE_DRAFT_MENU_ITEM_ID = 'session-draft.delete';
 
+let sessionForkStrategyFlowModulePromise:
+    Promise<typeof import('@/components/sessions/fork/openSessionForkStrategyFlow')> | null = null;
+
+function loadSessionForkStrategyFlowModule() {
+    if (!sessionForkStrategyFlowModulePromise) {
+        sessionForkStrategyFlowModulePromise = import(
+            '@/components/sessions/fork/openSessionForkStrategyFlow'
+        ).catch((error: unknown) => {
+            sessionForkStrategyFlowModulePromise = null;
+            throw error;
+        });
+    }
+    return sessionForkStrategyFlowModulePromise;
+}
+
+function preloadSessionForkStrategyFlowModule(): void {
+    void loadSessionForkStrategyFlowModule().catch(() => undefined);
+}
+
+/**
+ * `storage.sessions` is the hydrated entity owner for the focused Home only. A
+ * row addressed to another Home shares its Session ID space, so it must not
+ * borrow the focused Home's same-ID entity for Fork or debug metadata. The
+ * canonical route-state selector already fails closed on that mismatch; an
+ * unqualified row keeps its current unscoped behavior.
+ */
+function readHydratedSessionForRow(sessionId: string, serverId: string | null | undefined): Session | null {
+    return selectSessionViewShellSessionForRouteState(storage.getState(), sessionId, serverId ?? null);
+}
+
 type SessionItemWorkingIndicatorMode = 'spinner' | 'pulse';
-type SessionItemIdentityDisplay = 'avatar' | 'agentLogo' | 'none';
 type SessionItemActiveColorMode = 'activityAndAttention' | 'attentionOnly' | 'allActive';
 
 export type SessionItemBaseProps = Readonly<{
@@ -196,7 +228,6 @@ export type SessionItemProps = SessionItemBaseProps & Readonly<{
 
 type SessionItemContentProps = Omit<SessionItemBaseProps, 'subtitleOverride'> & Readonly<{
     sessionStatus: SessionStatus;
-    externalSessionRuntime: ExternalSessionRuntimePresentation | null;
     externalSessionIdentity: ExternalSessionIdentityPresentation | null;
     sessionNameResolved: string;
     sessionSubtitle: string;
@@ -204,7 +235,6 @@ type SessionItemContentProps = Omit<SessionItemBaseProps, 'subtitleOverride'> & 
     activityTimeLabel: string;
     hasUnreadMessages: boolean;
     workingIndicatorMode: SessionItemWorkingIndicatorMode;
-    workingIndicatorPaused?: boolean;
     /**
      * The row is in Needs attention only because the user asked for it. It says
      * why the row is still there and must not colour the title or the badge the
@@ -221,15 +251,12 @@ type SessionItemContentProps = Omit<SessionItemBaseProps, 'subtitleOverride'> & 
     /** Whether the Keep / Remove action means anything at all (attention band on). */
     attentionStandingEnabled?: boolean;
     rowAttentionAnimationEnabled: boolean;
-    sessionListIdentityDisplay: SessionItemIdentityDisplay;
+    sessionListIdentityDisplay: SessionListIdentityDisplay;
     sessionListActiveColorMode: SessionItemActiveColorMode;
     hideInactiveSessions: boolean;
     draft: SessionListRowViewModel['draft'];
+    reminder: SessionListRowViewModel['reminder'];
 }>;
-
-function normalizeSessionItemIdentityDisplay(value: unknown): SessionItemIdentityDisplay {
-    return value === 'agentLogo' || value === 'none' ? value : 'avatar';
-}
 
 function normalizeSessionItemActiveColorMode(value: unknown): SessionItemActiveColorMode {
     return value === 'attentionOnly' || value === 'allActive' ? value : 'activityAndAttention';
@@ -241,58 +268,6 @@ function hasPendingUserActionRequests(session: Session | SessionListRenderableSe
 
 function hasPendingPermissionRequests(session: Session | SessionListRenderableSession): boolean {
     return 'hasPendingPermissionRequests' in session && session.hasPendingPermissionRequests === true;
-}
-
-function hasPendingBlockedRequests(session: Session | SessionListRenderableSession): boolean {
-    return (normalizeFiniteCount(session.pendingBlockedCount) ?? 0) > 0;
-}
-
-function resolveSessionItemEffectiveStatus(input: Readonly<{
-    rowSession: SessionListRenderableSession;
-    renderedSession: Session | SessionListRenderableSession;
-    rowStatus: SessionStatus;
-}>): SessionStatus {
-    if (hasPendingBlockedRequests(input.renderedSession) && input.rowStatus.state !== 'action_required') {
-        return {
-            ...input.rowStatus,
-            state: 'action_required',
-            statusText: t('status.actionRequired'),
-            shouldShowStatus: true,
-            isPulsing: true,
-        };
-    }
-
-    if (input.renderedSession === input.rowSession) {
-        return input.rowStatus;
-    }
-
-    if (
-        hasPendingUserActionRequests(input.renderedSession)
-        && !hasPendingUserActionRequests(input.rowSession)
-    ) {
-        return {
-            ...input.rowStatus,
-            state: 'action_required',
-            statusText: t('status.actionRequired'),
-            shouldShowStatus: true,
-            isPulsing: true,
-        };
-    }
-
-    if (
-        hasPendingPermissionRequests(input.renderedSession)
-        && !hasPendingPermissionRequests(input.rowSession)
-    ) {
-        return {
-            ...input.rowStatus,
-            state: 'permission_required',
-            statusText: t('status.permissionRequired'),
-            shouldShowStatus: true,
-            isPulsing: true,
-        };
-    }
-
-    return input.rowStatus;
 }
 
 function normalizeFiniteCount(value: unknown): number | null {
@@ -496,6 +471,19 @@ const stylesheet = StyleSheet.create((theme) => ({
         height: 16,
         bottom: -1,
         right: -1,
+    },
+    reminderIndicator: {
+        width: 20,
+        height: 20,
+        borderRadius: 10,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: theme.colors.surface.inset,
+    },
+    reminderIndicatorCompact: {
+        width: 18,
+        height: 18,
+        borderRadius: 9,
     },
     sessionContent: {
         flex: 1,
@@ -798,7 +786,6 @@ const SessionItemContent = React.memo(
         agentSwitchingEnabled = false,
         forkActionContext,
         sessionStatus,
-        externalSessionRuntime,
         externalSessionIdentity,
         sessionNameResolved,
         sessionSubtitle,
@@ -806,7 +793,6 @@ const SessionItemContent = React.memo(
         activityTimeLabel,
         hasUnreadMessages,
         workingIndicatorMode,
-        workingIndicatorPaused,
         attentionStanding,
         isAttentionStanding,
         attentionStandingEnabled,
@@ -815,6 +801,7 @@ const SessionItemContent = React.memo(
         sessionListActiveColorMode,
         hideInactiveSessions,
         draft,
+        reminder,
     }: SessionItemContentProps) => {
         const styles = stylesheet;
         const { theme } = useUnistyles();
@@ -877,6 +864,12 @@ const SessionItemContent = React.memo(
             scope: splitCanvasScope,
         });
         const swipeableRef = React.useRef<Swipeable | null>(null);
+        const contextMenuAnchorRef = React.useRef<View>(null);
+        const followEditor = useAccountSessionFollowEditorHost({
+            serverId: serverId ?? null,
+            sessionId: resolvedSession.id,
+            anchorRef: contextMenuAnchorRef,
+        });
         const sessionActionTarget = React.useMemo(() => createSessionActionTarget({
             session: resolvedSession,
             serverId: serverId ?? null,
@@ -884,9 +877,11 @@ const SessionItemContent = React.memo(
             isConnected: sessionStatus.isConnected,
             isPinned: Boolean(pinned),
             attentionStandingEnabled: attentionStandingEnabled === true,
+            followEnabled: followEditor.enabled,
             attentionStanding: isAttentionStanding === true,
         }), [
             attentionStandingEnabled,
+            followEditor.enabled,
             currentUserId,
             isAttentionStanding,
             pinned,
@@ -912,7 +907,7 @@ const SessionItemContent = React.memo(
         const showRowActions = isWeb && (isRowHovered || isActionsHovered || tagMenuOpen || moreMenuOpen || isBeingDragged === true);
         const rowActionIconColor = theme.colors.text.secondary;
         const resolveSessionDebugInformation = React.useCallback(() => {
-            const fullSession = storage.getState().sessions[resolvedSession.id];
+            const fullSession = readHydratedSessionForRow(resolvedSession.id, serverId);
             const debugSession = fullSession ?? resolvedSession;
             const debugMetadata = fullSession
                 ? readSessionOwnerMetadataView(fullSession)
@@ -932,7 +927,7 @@ const SessionItemContent = React.memo(
                     : formatAgentLikeIdForDisplay(debugAgentId),
                 providerSessionId,
             });
-        }, [resolvedSession]);
+        }, [resolvedSession, serverId]);
         const supportsPin = typeof onTogglePinned === 'function';
         const supportsTag = tagsEnabled === true && typeof onSetTags === 'function';
         const handleTogglePinnedAction = React.useCallback(() => {
@@ -955,7 +950,6 @@ const SessionItemContent = React.memo(
             tags,
             allKnownTags,
         }), [allKnownTags, tags]);
-        const contextMenuAnchorRef = React.useRef<View>(null);
         const [uncontrolledContextMenuOpen, setUncontrolledContextMenuOpen] = React.useState(false);
         const contextMenuOpen = nativeContextMenuOpen ?? uncontrolledContextMenuOpen;
         const setContextMenuOpen = onNativeContextMenuOpenChange ?? setUncontrolledContextMenuOpen;
@@ -994,9 +988,17 @@ const SessionItemContent = React.memo(
                 suppressNextPressForPointerGesture();
             }
         }, [isBeingDragged, reorderHandleGesture, suppressNextPressForPointerGesture]);
+        const showForkAction = forkActionContext != null && canForkConversation({
+            session: resolvedSession,
+            replayEnabled: forkActionContext.replayEnabled,
+            agentSwitchingEnabled,
+        });
         const handleRowPointerEnter = React.useCallback(() => {
+            if (showForkAction) {
+                preloadSessionForkStrategyFlowModule();
+            }
             setIsRowHovered(true);
-        }, []);
+        }, [showForkAction]);
 
         const handleRowPointerLeave = React.useCallback(() => {
             setIsRowHovered(false);
@@ -1095,50 +1097,43 @@ const SessionItemContent = React.memo(
                 icon: <Icon name="trash" size={16} color={rowActionIconColor} />,
             }];
         }, [draft, onDeleteDraft, resolvedSession.id, rowActionIconColor]);
-        const showForkAction = forkActionContext != null && canForkConversation({
-            session: resolvedSession,
-            replayEnabled: forkActionContext.replayEnabled,
-            agentSwitchingEnabled,
-        });
         const openForkFlow = React.useCallback(() => {
-            deferOnWeb(() => {
-                fireAndForget((async () => {
-                    const [
-                        { openSessionForkStrategyFlow },
-                        { router },
-                    ] = await Promise.all([
-                        import('@/components/sessions/fork/openSessionForkStrategyFlow'),
-                        import('expo-router'),
-                    ]);
-                    const currentSession = storage.getState().sessions[resolvedSession.id] ?? resolvedSession;
-                    const currentMetadata = 'ownerMetadataView' in currentSession
-                        ? readSessionOwnerMetadataView(currentSession)
-                        : currentSession.metadata;
-                    const reachableMachineTarget = resolveMachineTargetForSessionFromState(
-                        storage.getState(),
-                        resolvedSession.id,
-                    );
-                    openSessionForkStrategyFlow({
-                        sessionId: resolvedSession.id,
-                        forkSupportSource: currentSession,
-                        serverId: serverId ?? null,
-                        machineId: reachableMachineTarget?.machineId ?? currentMetadata?.machineId ?? null,
-                        forkPoint: { type: 'latest' },
-                        settings: forkActionContext?.settings ?? null,
-                        replayEnabled: forkActionContext?.replayEnabled === true,
-                        executionRunsEnabled: forkActionContext?.executionRunsEnabled === true,
-                        agentSwitchingEnabled,
-                        navigateToSession: (childSessionId, options) => {
-                            void navigateToSession(childSessionId, {
-                                serverId: options?.serverId ?? serverId ?? undefined,
-                            });
-                        },
-                        navigateToNewSession: (route) => {
-                            router.push(route as never);
-                        },
-                    });
-                })(), { tag: 'SessionItem.openSessionForkStrategyFlow' });
-            });
+            fireAndForget((async () => {
+                const [
+                    { openSessionForkStrategyFlow },
+                    { router },
+                ] = await Promise.all([
+                    loadSessionForkStrategyFlowModule(),
+                    import('expo-router'),
+                ]);
+                const currentSession = readHydratedSessionForRow(resolvedSession.id, serverId) ?? resolvedSession;
+                const currentMetadata = 'ownerMetadataView' in currentSession
+                    ? readSessionOwnerMetadataView(currentSession)
+                    : currentSession.metadata;
+                const reachableMachineTarget = resolveMachineTargetForSessionFromState(
+                    storage.getState(),
+                    serverId ? { serverId, sessionId: resolvedSession.id } : resolvedSession.id,
+                );
+                openSessionForkStrategyFlow({
+                    sessionId: resolvedSession.id,
+                    forkSupportSource: currentSession,
+                    serverId: serverId ?? null,
+                    machineId: reachableMachineTarget?.machineId ?? currentMetadata?.machineId ?? null,
+                    forkPoint: { type: 'latest' },
+                    settings: forkActionContext?.settings ?? null,
+                    replayEnabled: forkActionContext?.replayEnabled === true,
+                    executionRunsEnabled: forkActionContext?.executionRunsEnabled === true,
+                    agentSwitchingEnabled,
+                    navigateToSession: (childSessionId, options) => {
+                        void navigateToSession(childSessionId, {
+                            serverId: options?.serverId ?? serverId ?? undefined,
+                        });
+                    },
+                    navigateToNewSession: (route) => {
+                        router.push(route as never);
+                    },
+                });
+            })(), { tag: 'SessionItem.openSessionForkStrategyFlow' });
         }, [
             agentSwitchingEnabled,
             forkActionContext,
@@ -1279,6 +1274,7 @@ const SessionItemContent = React.memo(
             mutatingSession,
         } = useSessionRowActionMenu({
             target: sessionActionTarget,
+            onOpenFollowEditor: followEditor.openEditor,
             sessionName: sessionNameResolved,
             hideInactiveSessions: Boolean(hideInactiveSessions),
             iconColor: rowActionIconColor,
@@ -1301,7 +1297,7 @@ const SessionItemContent = React.memo(
                 setTagMenuEverOpened(true);
                 setTagMenuOpen(true);
             },
-            deferredContextActionDelayMs: CONTEXT_MENU_DEFERRED_ACTION_DELAY_MS,
+            reminder,
         });
 
         const handleSwipeAction = React.useCallback(async () => {
@@ -1410,7 +1406,6 @@ const SessionItemContent = React.memo(
             setContextMenuOpen(true);
         }, [clearContextMenuPressInTimer, enableLongPressContextMenu, setContextMenuOpen]);
 
-        const avatarId = getSessionAvatarId(resolvedSession);
         const pendingCount = resolvedSession.pendingCount ?? 0;
         const pendingBlockedCount = resolvedSession.pendingBlockedCount ?? 0;
         const pendingBadge = formatPendingCountBadge(pendingCount);
@@ -1422,79 +1417,51 @@ const SessionItemContent = React.memo(
         const fallbackSecondaryLineMode: SessionListSecondaryLineMode = variant === 'no-path' ? 'status' : 'path';
         const requestedSecondaryLineMode = secondaryLineMode ?? fallbackSecondaryLineMode;
         const rowDensity = isMinimal ? 'minimal' : compact ? 'compact' : 'default';
-        const derivedRowAttentionState = resolveSessionRowAttentionState(deriveSessionListAttentionState({
+        const derivedRowAttentionState = resolveSessionRowAttentionState(resolveSessionListAttentionState({
+            operational: sessionStatus.awareness.operational.primary,
             hasUnreadMessages,
-            pendingCount,
-            pendingBlockedCount,
-            sessionState: sessionStatus.state,
-            latestTurnStatus: resolvedSession.latestTurnStatus ?? null,
-            lastRuntimeIssue: resolvedSession.lastRuntimeIssue ?? null,
-            active: resolvedSession.active,
-            activeAt: resolvedSession.activeAt,
-            archivedAt: resolvedSession.archivedAt,
-            presence: resolvedSession.presence,
-            thinking: resolvedSession.thinking,
-            thinkingAt: resolvedSession.thinkingAt,
-            optimisticThinkingAt: resolvedSession.optimisticThinkingAt ?? null,
-            seq: resolvedSession.seq,
-            meaningfulActivityAt: resolvedSession.meaningfulActivityAt ?? null,
-            latestTurnStatusObservedAt: resolvedSession.latestTurnStatusObservedAt ?? null,
-            runtimeActivityState: resolvedSession.runtimeActivityState ?? 'unknown',
-            runtimeActivityActiveCount: resolvedSession.runtimeActivityActiveCount ?? null,
-            runtimeActivityObservedAt: resolvedSession.runtimeActivityObservedAt ?? null,
-            runtimeActivityRevision: resolvedSession.runtimeActivityRevision ?? null,
-            latestReadyEventSeq: resolvedSession.latestReadyEventSeq ?? null,
-            lastViewedSessionSeq: resolvedSession.lastViewedSessionSeq ?? null,
-            pendingRequestObservedAt: resolvedSession.pendingRequestObservedAt ?? null,
         }));
-        // Retained working placement holds the session in the working group
-        // while its live signals are stale. Present it as a PAUSED working
-        // row (working indicator without animation, dedicated status text)
-        // unless a more alerting state applies — otherwise the user sees a
-        // session in the working group with no indicator at all.
-        const presentsRetainedWorking = workingIndicatorPaused === true
-            && (
-                derivedRowAttentionState === 'quiet'
-                || derivedRowAttentionState === 'unread'
-                || derivedRowAttentionState === 'pending'
-            );
-        const rowAttentionState = presentsRetainedWorking ? 'working' : derivedRowAttentionState;
-        const attentionIndicatorAnimationEnabled = rowAttentionAnimationEnabled && !presentsRetainedWorking;
+        // Retention controls placement only. It cannot turn quiet, unread, or pending facts into
+        // semantic work after the canonical awareness owner stopped reporting work.
+        const rowAttentionState = derivedRowAttentionState;
+        const attentionIndicatorAnimationEnabled = rowAttentionAnimationEnabled
+            && sessionStatus.isPulsing === true;
+        const rowContextSubtitle = externalSessionIdentity?.rowMetadataLabel || sessionSubtitle;
         const rowPresentation = resolveSessionRowPresentation({
             attentionState: rowAttentionState,
             density: rowDensity,
             requestedSecondaryLineMode,
-            hasPathSubtitle: Boolean(sessionSubtitle),
-            workingRetained: presentsRetainedWorking,
+            hasPathSubtitle: Boolean(rowContextSubtitle),
             standing: attentionStanding === true,
             backgroundActive: sessionStatus.state === 'background_active',
         });
-        const externalAttentionState: SessionRowAttentionState | null = externalSessionRuntime
-            ? externalSessionRuntime.externalAgent.indicator === 'working'
-                ? 'working'
-                : externalSessionRuntime.externalAgent.indicator === 'action'
-                    ? 'action_required'
-                    : externalSessionRuntime.externalAgent.indicator === 'ready'
-                        ? 'ready'
-                        : 'quiet'
-            : null;
-        const statusAttentionState = externalAttentionState ?? rowAttentionState;
-        const statusAttentionIndicator = externalSessionRuntime?.externalAgent.indicator
-            ?? rowPresentation.attentionIndicator;
-        const effectiveSecondaryLineMode: SessionListSecondaryLineMode = externalSessionRuntime
+        const statusAttentionState = rowAttentionState;
+        const statusAttentionIndicator = rowPresentation.attentionIndicator;
+        // Content this viewer cannot read always explains itself, even behind a ready/external
+        // label: a row that reports an outcome nobody can open is a lie the person cannot check.
+        const statusAvailabilityNeedsExplanation = (sessionStatus.awareness !== undefined
+            && !isSessionAwarenessContentReadableV1(sessionStatus.awareness.encryption))
+            || (sessionStatus.state === 'unknown'
+                || sessionStatus.state === 'stale'
+                || sessionStatus.state === 'disconnected');
+        const effectiveSecondaryLineMode: SessionListSecondaryLineMode = statusAvailabilityNeedsExplanation
             ? 'status'
             : rowPresentation.secondaryLine === 'path'
                 ? 'path'
                 : 'status';
-        const externalAgentStatusText = externalSessionRuntime
-            ? t(externalSessionRuntime.externalAgent.labelKey)
-            : null;
-        const externalIdentityText = externalSessionIdentity?.rowMetadataLabel ?? '';
-        const statusLineText = externalAgentStatusText
-            ? [externalAgentStatusText, externalIdentityText].filter(Boolean).join(' · ')
+        const canonicalStatusSummaryText = statusAvailabilityNeedsExplanation
+            ? sessionStatus.statusText
             : rowPresentation.statusTextKey
-                ? t(rowPresentation.statusTextKey)
-                : sessionStatus.statusText;
+                    ? t(rowPresentation.statusTextKey)
+                    : sessionStatus.statusText;
+        const externalIdentityText = externalSessionIdentity?.rowMetadataLabel ?? '';
+        const statusSummaryText = [canonicalStatusSummaryText, externalIdentityText]
+            .filter(Boolean)
+            .join(' · ');
+        const currentWorkTitle = sessionStatus.awareness?.currentWork?.title;
+        const statusLineText = currentWorkTitle && sessionStatus.awareness?.availability !== 'locked'
+            ? `${statusSummaryText} · ${currentWorkTitle}`
+            : statusSummaryText;
         const baseRowStatusColor = (() => {
             switch (rowAttentionState) {
                 case 'working':
@@ -1503,6 +1470,8 @@ const SessionItemContent = React.memo(
                     return theme.colors.state.success.foreground;
                 case 'failed':
                     return theme.colors.state.danger.foreground;
+                case 'attention':
+                    return theme.colors.text.link;
                 case 'permission_required':
                 case 'action_required':
                     return theme.colors.state.warning.foreground;
@@ -1514,20 +1483,15 @@ const SessionItemContent = React.memo(
                     return theme.colors.text.secondary;
             }
         })();
-        const rowStatusColor = externalSessionRuntime
-            ? externalSessionRuntime.externalAgent.tone === 'live'
-                ? theme.colors.state.info.foreground
-                : externalSessionRuntime.externalAgent.tone === 'ready'
-                    ? theme.colors.state.success.foreground
-                    : externalSessionRuntime.externalAgent.tone === 'attention'
-                        || externalSessionRuntime.externalAgent.tone === 'warning'
-                        ? theme.colors.state.warning.foreground
-                        : theme.colors.text.secondary
-            : rowPresentation.statusTextKey === 'status.backgroundActive'
+        const rowStatusColor = rowPresentation.statusTextKey === 'status.backgroundActive'
                 ? theme.colors.text.secondary
                 : baseRowStatusColor;
-        const rowAttentionAccessibilityLabel = externalAgentStatusText
-            ? externalAgentStatusText
+        // One accessible element says everything the row shows. The decorative marker is hidden
+        // from accessibility, so whenever the row draws a state without writing a sentence for it
+        // — every minimal row, and unread/queued-input rows in any density — the canonical row
+        // presentation owner supplies the words instead of this component inferring them.
+        const rowAttentionAccessibilityLabel = statusAvailabilityNeedsExplanation
+            ? statusLineText
             : rowAttentionState === 'failed'
                 ? t('status.error')
                 : rowPresentation.attentionIndicator === 'working'
@@ -1536,10 +1500,15 @@ const SessionItemContent = React.memo(
                     ? statusLineText
                     : rowPresentation.statusTextKey && rowPresentation.statusTextKey !== 'status.backgroundActive'
                         ? statusLineText
-                        : undefined;
+                        : rowPresentation.accessibilityStatusTextKey
+                            ? t(rowPresentation.accessibilityStatusTextKey)
+                            : undefined;
+        const rowAccessibilityLabel = [sessionNameResolved, rowAttentionAccessibilityLabel]
+            .filter((value): value is string => Boolean(value?.trim()))
+            .join('. ');
         const effectiveSubtitleEllipsizeMode = subtitleEllipsizeMode ?? 'head';
         const shouldShowStatusSecondaryLine = effectiveSecondaryLineMode === 'status' && statusLineText.trim().length > 0;
-        const shouldShowPathSecondaryLine = effectiveSecondaryLineMode === 'path' && Boolean(sessionSubtitle);
+        const shouldShowPathSecondaryLine = effectiveSecondaryLineMode === 'path' && Boolean(rowContextSubtitle);
         const shouldUsePathSubtitleStartEllipsis = shouldShowPathSecondaryLine && effectiveSubtitleEllipsizeMode === 'head';
         const shouldUseWebPathSubtitleStartEllipsis = shouldUsePathSubtitleStartEllipsis && isWeb;
         const shouldShowIdentitySubtitleSkeleton = !isMinimal && isSessionIdentityLoading && requestedSecondaryLineMode === 'path';
@@ -1582,8 +1551,6 @@ const SessionItemContent = React.memo(
         });
         const avatarSize = identityMetrics.slotSize;
         const agentLogoSize = identityMetrics.agentLogoSize;
-        const agentLogoId = agentId ?? '';
-
         const normalizedFolderDepth = Math.min(Math.max(Math.trunc(folderDepth ?? 0), 0), 3);
         const identityTitleLoadingStyle = isMinimal
             ? styles.sessionTitleLoadingMinimal
@@ -1647,8 +1614,14 @@ const SessionItemContent = React.memo(
         );
         const itemContent = (
             <Pressable
+                ref={followEditor.triggerRef}
                 testID={`session-list-item-${resolvedSession.id}`}
-                accessibilityState={{ selected: Boolean(selected || rowSelection.isSelected) }}
+                accessibilityRole="button"
+                accessibilityLabel={rowAccessibilityLabel}
+                accessibilityState={{
+                    selected: Boolean(selected || rowSelection.isSelected),
+                    busy: statusAttentionState === 'working',
+                }}
                 accessibilityActions={rowAccessibilityActions}
                 onAccessibilityAction={rowAccessibilityActions.length > 0 ? handleRowAccessibilityAction : undefined}
                 android_ripple={Platform.OS === 'android' ? {
@@ -1713,21 +1686,15 @@ const SessionItemContent = React.memo(
                                     { opacity: identitySkeletonOpacity },
                                 ]}
                             />
-                        ) : shouldRenderSessionListAvatar ? (
-                            <Avatar
-                                id={avatarId}
-                                size={avatarSize}
-                                monochrome={resolvedSession.active !== true || !sessionStatus.isConnected}
-                                flavor={agentId}
-                                hasUnreadMessages={false}
-                            />
                         ) : (
-                            <SessionAgentCatalogIdentityIcon
-                                agentId={agentLogoId}
-                                machineId={resolvedSessionMetadata?.machineId ?? null}
+                            <SessionListIdentity
+                                session={resolvedSession}
+                                display={resolvedSessionListIdentityDisplay}
                                 serverId={serverId ?? null}
                                 color={sessionTitleColor}
-                                size={agentLogoSize}
+                                avatarSize={avatarSize}
+                                agentLogoSize={agentLogoSize}
+                                connected={sessionStatus.isConnected}
                                 testID={`session-list-agent-logo-${resolvedSession.id}`}
                             />
                         )}
@@ -1788,6 +1755,20 @@ const SessionItemContent = React.memo(
                                 </Text>
                             </View>
                         ) : null}
+                        {reminder ? (
+                            <View
+                                testID={`session-list-reminder-indicator:${resolvedSession.id}`}
+                                accessibilityRole="text"
+                                accessibilityLabel={`${t(reminder.state === 'due' ? 'sessionsList.reminders.due' : 'sessionsList.reminders.title')}, ${formatSessionAttentionReminderDateTime(reminder.remindAt, Date.now())}`}
+                                style={[styles.reminderIndicator, compact ? styles.reminderIndicatorCompact : null]}
+                            >
+                                <Icon
+                                    name="clock"
+                                    size={compact ? 11 : 12}
+                                    color={reminder.state === 'due' ? theme.colors.accent.orange : theme.colors.text.secondary}
+                                />
+                            </View>
+                        ) : null}
                     </View>
 
                     {draft && !compact && draft.preview ? (
@@ -1823,7 +1804,6 @@ const SessionItemContent = React.memo(
                                             indicator={statusAttentionIndicator}
                                             sessionId={`${resolvedSession.id}-secondary`}
                                             attentionState={statusAttentionState}
-                                            accessibilityLabel={rowAttentionAccessibilityLabel}
                                             workingMode={workingIndicatorMode}
                                             animationEnabled={attentionIndicatorAnimationEnabled}
                                         />
@@ -1853,9 +1833,9 @@ const SessionItemContent = React.memo(
                             >
                                 {shouldUseWebPathSubtitleStartEllipsis ? (
                                     <Text style={styles.sessionPathSubtitleTextWeb}>
-                                        {sessionSubtitle}
+                                        {rowContextSubtitle}
                                     </Text>
-                                ) : sessionSubtitle}
+                                ) : rowContextSubtitle}
                             </Text>
                         )
                     ) : null}
@@ -2022,7 +2002,6 @@ const SessionItemContent = React.memo(
                                     indicator={trailingAttentionIndicator}
                                     sessionId={`${resolvedSession.id}-trailing`}
                                     attentionState={statusAttentionState}
-                                    accessibilityLabel={rowAttentionAccessibilityLabel}
                                     workingMode={workingIndicatorMode}
                                     workingSpinnerTone="neutral"
                                     animationEnabled={attentionIndicatorAnimationEnabled}
@@ -2123,6 +2102,7 @@ const SessionItemContent = React.memo(
                 >
                     {itemContent}
                     {menuNodes}
+                    {followEditor.editor}
                 </View>
             );
         }
@@ -2153,12 +2133,14 @@ const SessionItemContent = React.memo(
                     {itemContent}
                 </Swipeable>
                 {menuNodes}
+                {followEditor.editor}
             </View>
         );
     },
 );
 
 function SessionItemFromRowViewModel(props: SessionItemProps) {
+    const { theme } = useUnistyles();
     const { rowViewModel, ...itemProps } = props;
     const rowSession = rowViewModel.session;
     const rowStatus = rowViewModel.sessionStatus;
@@ -2169,12 +2151,15 @@ function SessionItemFromRowViewModel(props: SessionItemProps) {
         rowSession,
         providedSession: itemProps.session,
     });
-    const sessionStatus = resolveSessionItemEffectiveStatus({
-        rowSession,
-        renderedSession: session,
-        rowStatus,
+    const sessionStatus = session === rowSession ? rowStatus : getSessionStatus(session, Date.now(), {
+        workingTextMode: 'static',
+        statusColors: theme.colors.status,
     });
-    const sessionNameResolved = getSessionName(session);
+    const contentUnavailable = sessionStatus.awareness === undefined
+        || !isSessionAwarenessContentReadableV1(sessionStatus.awareness.encryption);
+    const sessionNameResolved = contentUnavailable
+        ? resolveLockedSessionTitle('')
+        : getSessionName(session);
 
     return (
         <SessionItemContent
@@ -2194,22 +2179,21 @@ function SessionItemFromRowViewModel(props: SessionItemProps) {
             secondaryLineMode={itemProps.secondaryLineMode ?? rowViewModel.secondaryLineMode}
             activityTimeLabel={rowViewModel.activityTimeLabel}
             sessionStatus={sessionStatus}
-            externalSessionRuntime={rowViewModel.externalSessionRuntime}
             externalSessionIdentity={rowViewModel.externalSessionIdentity}
             sessionNameResolved={sessionNameResolved}
-            sessionSubtitle={itemProps.subtitleOverride ?? rowViewModel.subtitleOverride ?? getSessionSubtitle(session)}
+            sessionSubtitle={contentUnavailable ? '' : itemProps.subtitleOverride ?? rowViewModel.subtitleOverride ?? getSessionSubtitle(session)}
             isSessionIdentityLoading={rowViewModel.isIdentityLoading}
             hasUnreadMessages={rowViewModel.hasUnreadMessages}
             workingIndicatorMode={rowViewModel.workingIndicatorMode}
-            workingIndicatorPaused={rowViewModel.workingPlacementRetained}
             attentionStanding={rowViewModel.attentionStanding}
             isAttentionStanding={rowViewModel.isAttentionStanding}
             attentionStandingEnabled={rowViewModel.attentionStandingEnabled}
             rowAttentionAnimationEnabled={itemProps.rowAttentionAnimationEnabled !== false}
-            sessionListIdentityDisplay={normalizeSessionItemIdentityDisplay(rowViewModel.identityDisplay)}
+            sessionListIdentityDisplay={normalizeSessionListIdentityDisplay(rowViewModel.identityDisplay)}
             sessionListActiveColorMode={normalizeSessionItemActiveColorMode(rowViewModel.activeColorMode)}
             hideInactiveSessions={itemProps.hideInactiveSessions ?? rowViewModel.hideInactiveSessions}
             draft={rowViewModel.draft}
+            reminder={rowViewModel.reminder}
         />
     );
 }

@@ -60,6 +60,10 @@ import { useNewSessionActionOperationReconciliation } from './useNewSessionActio
 
 const draftScope = { serverId: 'server-a', accountId: 'account-a' } as const;
 
+function mergeOperations(snapshots: readonly ActionOperationSnapshotV1[]): void {
+    actionOperationStore.mergeSnapshots({ serverId: draftScope.serverId, snapshots });
+}
+
 function operation(
     state: ActionOperationSnapshotV1['state'],
     overrides: Partial<ActionOperationSnapshotV1> = {},
@@ -123,7 +127,7 @@ describe('useNewSessionActionOperationReconciliation', () => {
     it.each(['accepted', 'running'] as const)(
         'reattaches persisted request identity and reports creating for %s without executing again',
         async (state) => {
-            actionOperationStore.mergeSnapshots([operation(state)]);
+            mergeOperations([operation(state)]);
             const resetLaunchRequestId = vi.fn();
             const router = { replace: vi.fn() };
 
@@ -151,7 +155,7 @@ describe('useNewSessionActionOperationReconciliation', () => {
     it.each(['failed', 'cancelled'] as const)(
         'preserves the persisted form and rotates identity after %s so retry is a fresh execution',
         async (state) => {
-            actionOperationStore.mergeSnapshots([operation(state)]);
+            mergeOperations([operation(state)]);
             const resetLaunchRequestId = vi.fn();
             const disableDraftPersistence = vi.fn();
             const router = { replace: vi.fn() };
@@ -181,7 +185,7 @@ describe('useNewSessionActionOperationReconciliation', () => {
         upsertPendingMessageMock.mockImplementationOnce(() => {
             presentationOrder.push('project');
         });
-        actionOperationStore.mergeSnapshots([operation('succeeded', {
+        mergeOperations([operation('succeeded', {
             result: {
                 type: 'success',
                 disposition: 'created',
@@ -226,7 +230,10 @@ describe('useNewSessionActionOperationReconciliation', () => {
         );
         expect(presentationAcknowledgeRequestMock).toHaveBeenCalledWith(
             'request-1',
-            expect.objectContaining({ operationId: 'operation-1' }),
+            expect.objectContaining({
+                serverId: 'server-a',
+                snapshot: expect.objectContaining({ operationId: 'operation-1' }),
+            }),
         );
         expect(markSessionOptimisticThinkingMock).toHaveBeenCalledWith('session-created');
         expect(upsertPendingMessageMock).toHaveBeenCalledWith(
@@ -240,7 +247,7 @@ describe('useNewSessionActionOperationReconciliation', () => {
         expect(presentationOrder).toEqual(['project', 'route', 'clear']);
         expect(resetLaunchRequestId).not.toHaveBeenCalled();
 
-        act(() => actionOperationStore.mergeSnapshots([operation('succeeded', { revision: 3 })]));
+        act(() => mergeOperations([operation('succeeded', { revision: 3 })]));
         expect(router.replace).toHaveBeenCalledTimes(1);
     });
 
@@ -249,7 +256,7 @@ describe('useNewSessionActionOperationReconciliation', () => {
         try {
             storageState.sessions = {};
             ensureSessionVisibleForMessageRouteMock.mockResolvedValue({ kind: 'missing' });
-            actionOperationStore.mergeSnapshots([operation('succeeded')]);
+            mergeOperations([operation('succeeded')]);
             const disableDraftPersistence = vi.fn();
             const router = { replace: vi.fn() };
 
@@ -281,7 +288,7 @@ describe('useNewSessionActionOperationReconciliation', () => {
                 resolveVisibility = resolve;
             })
         ));
-        actionOperationStore.mergeSnapshots([operation('succeeded')]);
+        mergeOperations([operation('succeeded')]);
         const disableDraftPersistence = vi.fn();
         const router = { replace: vi.fn() };
 
@@ -310,7 +317,7 @@ describe('useNewSessionActionOperationReconciliation', () => {
     });
 
     it('preserves an outcome-unknown first turn instead of projecting it as accepted', async () => {
-        actionOperationStore.mergeSnapshots([operation('succeeded', {
+        mergeOperations([operation('succeeded', {
             result: {
                 type: 'success',
                 disposition: 'created',
@@ -346,7 +353,7 @@ describe('useNewSessionActionOperationReconciliation', () => {
     });
 
     it('ignores a colliding request from another account', async () => {
-        actionOperationStore.mergeSnapshots([operation('running', {
+        mergeOperations([operation('running', {
             scope: { accountId: 'account-b', machineId: 'machine-a' },
         })]);
 
@@ -364,7 +371,7 @@ describe('useNewSessionActionOperationReconciliation', () => {
     });
 
     it('fails closed when duplicate operations claim the same account request identity', async () => {
-        actionOperationStore.mergeSnapshots([
+        mergeOperations([
             operation('running'),
             operation('running', { operationId: 'operation-2' }),
         ]);
@@ -383,7 +390,7 @@ describe('useNewSessionActionOperationReconciliation', () => {
     });
 
     it('does not correlate request identity without the persisted account scope', async () => {
-        actionOperationStore.mergeSnapshots([operation('running')]);
+        mergeOperations([operation('running')]);
 
         const hook = await renderHook(() => useNewSessionActionOperationReconciliation({
             draftId: 'draft-a',

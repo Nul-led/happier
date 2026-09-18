@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { PierreDiffScrollAnchor } from './PierreDiffScrollAnchor.web';
 import { useUnistyles } from 'react-native-unistyles';
 import { createTwoFilesPatch } from 'diff';
 
@@ -48,13 +49,20 @@ const PIERRE_REVIEW_COMMENT_HOVER_SLOT_UNSAFE_CSS = `
 `;
 
 class PierreDiffErrorBoundary extends React.Component<
-    Readonly<{ children: React.ReactNode; fallback: React.ReactNode }>,
+    Readonly<{ children: React.ReactNode; fallback: React.ReactNode; resetKey: unknown }>,
     Readonly<{ hasError: boolean }>
 > {
     override state = { hasError: false };
 
     static getDerivedStateFromError(): { hasError: boolean } {
         return { hasError: true };
+    }
+
+    override componentDidUpdate(previous: Readonly<{ resetKey: unknown }>) {
+        // Recover from a failed patch without remounting healthy scroll/virtualizer state.
+        if (this.state.hasError && previous.resetKey !== this.props.resetKey) {
+            this.setState({ hasError: false });
+        }
     }
 
     override componentDidCatch() {
@@ -397,6 +405,7 @@ export const PierreDiffViewer = React.memo<DiffViewerProps>((props) => {
     const isDark = theme.dark === true;
     const sharedVirtualizer = useVirtualizer();
     const containerRef = React.useRef<HTMLDivElement | null>(null);
+    const lastScrolledLineIdRef = React.useRef<{ lineId: string; filePath: string | null | undefined } | null>(null);
     const typographyStyle = React.useMemo(() => resolvePierreTypographyStyle(), []);
     const selectionStyle = React.useMemo(() => resolvePierreSelectionStyle(theme), [theme]);
 
@@ -788,7 +797,11 @@ export const PierreDiffViewer = React.memo<DiffViewerProps>((props) => {
 
     React.useEffect(() => {
         const scrollId = props.scrollToLineId ?? null;
-        if (!scrollId) return;
+        if (!scrollId) {
+            lastScrolledLineIdRef.current = null;
+            return;
+        }
+        if (lastScrolledLineIdRef.current?.lineId === scrollId && lastScrolledLineIdRef.current.filePath === props.filePath) return;
         if (!codeLines) return;
 
         const target = codeLines.find((l) => l.id === scrollId) ?? null;
@@ -814,10 +827,11 @@ export const PierreDiffViewer = React.memo<DiffViewerProps>((props) => {
         if (!el || typeof el.scrollIntoView !== 'function') return;
         try {
             el.scrollIntoView({ block: 'center' });
+            lastScrolledLineIdRef.current = { lineId: scrollId, filePath: props.filePath };
         } catch {
             // ignore
         }
-    }, [codeLines, props.scrollToLineId]);
+    }, [codeLines, props.filePath, props.scrollToLineId]);
 
     if (!parsedPatch) {
         const raw = typeof patch === 'string' ? patch.trim() : '';
@@ -866,9 +880,10 @@ export const PierreDiffViewer = React.memo<DiffViewerProps>((props) => {
 
     const body = props.virtualized && !sharedVirtualizer ? (
         <Virtualizer
-            style={{ maxHeight: 'inherit', overflowY: 'auto' }}
+            style={{ flex: 1, minHeight: 0, maxHeight: 'inherit', overflowY: 'auto' }}
         >
             <FileDiff
+                key={fileDiff.cacheKey}
                 fileDiff={fileDiff}
                 options={(interactiveOptions ?? options) as any}
                 lineAnnotations={lineAnnotations as any}
@@ -879,6 +894,7 @@ export const PierreDiffViewer = React.memo<DiffViewerProps>((props) => {
         </Virtualizer>
     ) : (
         <FileDiff
+            key={fileDiff.cacheKey}
             fileDiff={fileDiff}
             options={(interactiveOptions ?? options) as any}
             lineAnnotations={lineAnnotations as any}
@@ -889,7 +905,15 @@ export const PierreDiffViewer = React.memo<DiffViewerProps>((props) => {
     );
 
     const wrapperStyle = props.virtualized
-        ? ({ ...typographyStyle, ...selectionStyle, maxHeight: 'inherit' } as React.CSSProperties)
+        ? ({
+            ...typographyStyle,
+            ...selectionStyle,
+            flex: 1,
+            minHeight: 0,
+            maxHeight: 'inherit',
+            overflow: 'hidden',
+            ...(!sharedVirtualizer ? { position: 'absolute', inset: 0 } : null),
+        } as React.CSSProperties)
         : ({ ...typographyStyle, ...selectionStyle } as React.CSSProperties);
 
     if (initialPresentationForceFallback) {
@@ -914,8 +938,10 @@ export const PierreDiffViewer = React.memo<DiffViewerProps>((props) => {
             style={wrapperStyle}
         >
             <WorkerPoolContext.Provider value={pool ?? undefined}>
-                <PierreDiffErrorBoundary key={typeof sanitizedPatch === 'string' ? sanitizedPatch : String(sanitizedPatch)} fallback={fallbackNode}>
-                    {body}
+                <PierreDiffErrorBoundary resetKey={sanitizedPatch} fallback={fallbackNode}>
+                    <PierreDiffScrollAnchor patch={sanitizedPatch} filePath={props.filePath} scrollToLineId={props.scrollToLineId} containerRef={containerRef}>
+                        {body}
+                    </PierreDiffScrollAnchor>
                 </PierreDiffErrorBoundary>
             </WorkerPoolContext.Provider>
         </div>

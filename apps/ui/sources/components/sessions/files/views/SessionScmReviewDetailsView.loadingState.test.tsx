@@ -1,7 +1,7 @@
 import * as React from 'react';
 import renderer from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
-import { createPartialStorageModuleMock, renderScreen } from '@/dev/testkit';
+import { createPartialStorageModuleMock, createStorageStoreMock, renderScreen } from '@/dev/testkit';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { installSessionFilesViewCommonModuleMocks } from './sessionFilesViewsTestHelpers';
 
@@ -24,11 +24,12 @@ const mockSession = {
 installSessionFilesViewCommonModuleMocks({
     storage: async (importOriginal) =>
         createPartialStorageModuleMock(importOriginal, {
+            storage: createStorageStoreMock({}),
             useSession: (_id: string) => mockSession,
             useSessionMessages: () => ({ messages: [], isLoaded: true }),
             useSessionProjectScmSnapshot: () => null,
             useSessionProjectScmSnapshotError: () => null,
-            useSessionProjectScmTouchedPaths: () => [],
+            useWorkspaceScmTouchedPathsForSession: () => [],
             useSessionProjectScmOperationLog: () => [],
             useProjectForSession: () => null,
             useProjectSessions: () => [],
@@ -52,13 +53,14 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 
 vi.mock('@/hooks/session/files/useChangedFilesData', () => ({
     useChangedFilesData: () => ({
-        attributionReliability: 'high',
+        sessionAttribution: { confidence: 'unknown', reason: 'unavailable' },
+        sessionCheckpointOverlap: 'unknown',
         allRepositoryChangedFiles: [],
         turnAttributedFiles: [],
         turnRepositoryOnlyFiles: [],
         sessionAttributedFiles: [],
         repositoryOnlyFiles: [],
-        suppressedInferredCount: 0,
+
         showTurnViewToggle: false,
         showSessionViewToggle: false,
     }),

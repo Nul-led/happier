@@ -3,7 +3,7 @@ import { Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useRouter } from 'expo-router';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
 import type { PermissionToolCallMessageLocation } from '@/utils/sessions/permissions/permissionToolCallLocationTypes';
 import { buildPermissionToolCallRoute, canOpenPermissionToolCallRoute } from '@/utils/sessions/permissions/buildPermissionToolCallRoute';
@@ -13,16 +13,24 @@ import { ToolInlineBody } from '@/components/tools/shell/views/ToolInlineBody';
 import { buildPermissionPromptModel } from '@/components/tools/shell/permissions/presentation/buildPermissionPromptModel';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import {
+    isSessionActionConfirmationRequest,
+    SessionActionConfirmationPromptCard,
+} from './SessionActionConfirmationPromptCard';
 
-export const UserActionPromptCard = React.memo(function UserActionPromptCard(props: {
+type UserActionPromptCardProps = Readonly<{
     request: PendingPermissionRequest;
     location: PermissionToolCallMessageLocation | null;
     sessionId: string;
+    serverId?: string;
+    session?: Session;
     metadata: Metadata | null;
     canApprovePermissions: boolean;
     disabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
     chrome?: 'card' | 'inline';
-}) {
+}>;
+
+const GenericUserActionPromptCard = React.memo(function GenericUserActionPromptCard(props: UserActionPromptCardProps) {
     const { theme } = useUnistyles();
     const router = useRouter();
     const chrome = props.chrome ?? 'card';
@@ -38,8 +46,8 @@ export const UserActionPromptCard = React.memo(function UserActionPromptCard(pro
     }
 
     const onViewTool = React.useCallback(() => {
-        router.push(buildPermissionToolCallRoute({ sessionId: props.sessionId, location: props.location }));
-    }, [props.location, props.sessionId, router]);
+        router.push(buildPermissionToolCallRoute({ sessionId: props.sessionId, serverId: props.serverId, location: props.location }));
+    }, [props.location, props.sessionId, props.serverId, router]);
     const canOpenToolRoute = canOpenPermissionToolCallRoute(props.location);
 
     return (
@@ -80,6 +88,8 @@ export const UserActionPromptCard = React.memo(function UserActionPromptCard(pro
                     metadata={props.metadata}
                     messages={[]}
                     sessionId={props.sessionId}
+                    serverId={props.serverId}
+                    session={props.session}
                     interaction={{
                         canSendMessages: false,
                         canApprovePermissions: props.canApprovePermissions,
@@ -91,6 +101,22 @@ export const UserActionPromptCard = React.memo(function UserActionPromptCard(pro
             </View>
         </View>
     );
+});
+
+export const UserActionPromptCard = React.memo(function UserActionPromptCard(props: UserActionPromptCardProps) {
+    if (isSessionActionConfirmationRequest(props.request)) {
+        return (
+            <SessionActionConfirmationPromptCard
+                request={props.request}
+                sessionId={props.sessionId}
+                serverId={props.serverId}
+                canApprovePermissions={props.canApprovePermissions}
+                disabledReason={props.disabledReason}
+                chrome={props.chrome}
+            />
+        );
+    }
+    return <GenericUserActionPromptCard {...props} />;
 });
 
 const styles = StyleSheet.create((theme) => ({

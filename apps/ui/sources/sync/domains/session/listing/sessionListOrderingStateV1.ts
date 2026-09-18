@@ -15,7 +15,41 @@ export type { SessionListOrderingModeV1 } from './sessionListOrderingRules';
 
 export const PINNED_GROUP_KEY_V1 = 'pinned-v1';
 
-export const SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP = 100;
+const SESSION_LIST_FOLDER_ORDER_ITEM_KIND = 'folder';
+
+/**
+ * The one order-item key for a folder, qualified by the exact Home that stores it.
+ *
+ * Session order items already use the opaque {@link normalizeSessionListKeyParts} key; folders now
+ * use the same shape for the same reason: two Homes routinely hold the same Home-local folder id,
+ * and one merged order map, index lookup, drag key or reorder write must never conflate them.
+ * Like every key in this corridor it is opaque — build it here and compare it, never parse it.
+ */
+export function buildSessionListFolderOrderItemKey(params: Readonly<{
+    serverId: string | null | undefined;
+    folderId: string | null | undefined;
+}>): string | null {
+    const folderId = normalizeTrimmedString(params.folderId);
+    if (!folderId) return null;
+    return JSON.stringify([
+        SESSION_LIST_FOLDER_ORDER_ITEM_KIND,
+        normalizeTrimmedString(params.serverId) || null,
+        folderId,
+    ]);
+}
+
+/** Whether an opaque order-item key names a folder rather than a Session. */
+export function isSessionListFolderOrderItemKey(key: unknown): boolean {
+    if (typeof key !== 'string' || !key.startsWith(`["${SESSION_LIST_FOLDER_ORDER_ITEM_KIND}",`)) return false;
+    try {
+        const parsed: unknown = JSON.parse(key);
+        return Array.isArray(parsed)
+            && parsed.length === 3
+            && parsed[0] === SESSION_LIST_FOLDER_ORDER_ITEM_KIND;
+    } catch {
+        return false;
+    }
+}
 
 const EMPTY_SESSION_LIST_GROUP_ORDER_V1: Record<string, string[]> = {};
 const SORTED_SESSION_LIST_VIEW_ITEMS_BY_SOURCE = new WeakMap<
@@ -190,9 +224,15 @@ function addKey(map: Map<string, Set<string>>, groupKey: string, key: string): v
     }
 }
 
-function buildFolderKey(folderIdRaw: unknown): string | null {
-    const folderId = normalizeTrimmedString(folderIdRaw);
-    return folderId ? `folder:${folderId}` : null;
+function buildFolderKey(item: Readonly<{
+    serverId?: string | null;
+    folderId?: string | null;
+    workspace?: Readonly<{ serverId?: string | null }> | null;
+}>): string | null {
+    return buildSessionListFolderOrderItemKey({
+        serverId: item.serverId ?? item.workspace?.serverId ?? null,
+        folderId: item.folderId,
+    });
 }
 
 function readFolderDepth(value: unknown): number {
@@ -271,7 +311,7 @@ function buildChildKeySetByGroupKey(source: ReadonlyArray<SessionListViewItem>):
         }
         if (item.headerKind !== 'folder') continue;
         const groupKey = resolveFolderParentGroupKeyFromViewSource({ source, itemIndex: index, folder: item });
-        const folderKey = buildFolderKey(item.folderId);
+        const folderKey = buildFolderKey(item);
         if (groupKey && folderKey) addKey(map, groupKey, folderKey);
     }
     return map;
@@ -290,7 +330,7 @@ function buildChildKeySetByGroupKeyFromIndex(source: ReadonlyArray<SessionListIn
         }
         if (item.headerKind !== 'folder') continue;
         const groupKey = resolveFolderParentGroupKeyFromIndexSource({ source, itemIndex: index, folder: item });
-        const folderKey = buildFolderKey(item.folderId);
+        const folderKey = buildFolderKey(item);
         if (groupKey && folderKey) addKey(map, groupKey, folderKey);
     }
     return map;
@@ -378,14 +418,8 @@ function isSessionListGroupOrderV1AlreadyNormalizedForSource(params: Readonly<{
             if (normalizedKeys[i] !== keysRaw[i]) return false;
         }
 
-        const capped =
-            normalizedKeys.length <= SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP
-                ? normalizedKeys as string[]
-                : normalizedKeys.slice(0, SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP);
-        if (capped.length !== normalizedKeys.length) return false;
-
         if (groupKey === PINNED_GROUP_KEY_V1) {
-            for (const key of capped) {
+            for (const key of normalizedKeys) {
                 if (!pinnedSet.has(key)) return false;
             }
             continue;
@@ -394,7 +428,7 @@ function isSessionListGroupOrderV1AlreadyNormalizedForSource(params: Readonly<{
         const allowedKeys = sourceSessionKeys.get(groupKey);
         if (!allowedKeys) continue;
 
-        for (const key of capped) {
+        for (const key of normalizedKeys) {
             if (!allowedKeys.has(key)) return false;
         }
     }
@@ -422,14 +456,8 @@ function isSessionListGroupOrderV1AlreadyNormalizedForIndexSource(params: Readon
             if (normalizedKeys[i] !== keysRaw[i]) return false;
         }
 
-        const capped =
-            normalizedKeys.length <= SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP
-                ? normalizedKeys as string[]
-                : normalizedKeys.slice(0, SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP);
-        if (capped.length !== normalizedKeys.length) return false;
-
         if (groupKey === PINNED_GROUP_KEY_V1) {
-            for (const key of capped) {
+            for (const key of normalizedKeys) {
                 if (!pinnedSet.has(key)) return false;
             }
             continue;
@@ -438,7 +466,7 @@ function isSessionListGroupOrderV1AlreadyNormalizedForIndexSource(params: Readon
         const allowedKeys = sourceSessionKeys.get(groupKey);
         if (!allowedKeys) continue;
 
-        for (const key of capped) {
+        for (const key of normalizedKeys) {
             if (!allowedKeys.has(key)) return false;
         }
     }
@@ -483,29 +511,24 @@ export function normalizeSessionListGroupOrderV1ForSource(params: Readonly<{
 
         const normalizedKeys = normalizeTrimmedStringArrayWithSharedEmpty(keysRaw);
 
-        const capped =
-            normalizedKeys.length <= SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP
-                ? normalizedKeys as string[]
-                : normalizedKeys.slice(0, SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP);
-
         if (groupKey === PINNED_GROUP_KEY_V1) {
-            const filtered = capped.filter((k) => pinnedSet.has(k));
+            const filtered = normalizedKeys.filter((k) => pinnedSet.has(k));
             if (filtered.length > 0) {
-                out[groupKey] = filtered.length === capped.length ? capped : filtered;
+                out[groupKey] = filtered.length === normalizedKeys.length ? normalizedKeys as string[] : filtered;
             }
             continue;
         }
 
         const allowedKeys = sourceSessionKeys.get(groupKey);
         if (!allowedKeys) {
-            if (capped.length > 0) {
-                out[groupKey] = capped;
+            if (normalizedKeys.length > 0) {
+                out[groupKey] = normalizedKeys as string[];
             }
             continue;
         }
 
-        const filtered = capped.filter((k) => allowedKeys.has(k));
-        const finalKeys = filtered.length === capped.length ? capped : filtered;
+        const filtered = normalizedKeys.filter((k) => allowedKeys.has(k));
+        const finalKeys = filtered.length === normalizedKeys.length ? normalizedKeys as string[] : filtered;
 
         if (finalKeys.length > 0) {
             out[groupKey] = finalKeys;
@@ -546,13 +569,8 @@ export function normalizeSessionListGroupOrderV1ForIndexSource(params: Readonly<
         if (!Array.isArray(keysRaw)) continue;
 
         const normalizedKeys = normalizeTrimmedStringArrayWithSharedEmpty(keysRaw);
-        const capped =
-            normalizedKeys.length <= SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP
-                ? normalizedKeys as string[]
-                : normalizedKeys.slice(0, SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP);
-
         if (groupKey === PINNED_GROUP_KEY_V1) {
-            const filtered = capped.filter((key) => pinnedSet.has(key));
+            const filtered = normalizedKeys.filter((key) => pinnedSet.has(key));
             if (filtered.length > 0) {
                 normalized[groupKey] = filtered;
             }
@@ -561,7 +579,7 @@ export function normalizeSessionListGroupOrderV1ForIndexSource(params: Readonly<
 
         const allowedKeys = sessionsByGroupKey.get(groupKey);
         if (!allowedKeys) continue;
-        const filtered = capped.filter((key) => allowedKeys.has(key));
+        const filtered = normalizedKeys.filter((key) => allowedKeys.has(key));
         if (filtered.length > 0) {
             normalized[groupKey] = filtered;
         }

@@ -11,6 +11,15 @@ import { isTransferFinalizeRecoveryFailure } from '@/sync/domains/transfers/runt
 import type { SessionAttachmentsUploadFinalizeResponse } from '@/sync/domains/transfers/runtime/transferRuntime/families/sessionAttachmentTransfers';
 
 import type { AttachmentDraft } from './attachmentDraftModel';
+import type { ExactSessionMachineTargetIdentity } from '@/sync/ops/sessionMachineTarget';
+
+export type AttachmentUploadedDraftCheckpoint = Readonly<{
+    id: string;
+    uploadedPath: string;
+    uploadedSizeBytes: number;
+    uploadedMimeType?: string;
+    sha256?: string;
+}>;
 
 type StructuredInputImageInput = Readonly<{
     type: 'localImage';
@@ -50,6 +59,19 @@ function buildStructuredInputForUploadedAttachment(args: UploadedAttachmentBase)
         ...(args.mimeType ? { mimeType: args.mimeType } : {}),
         sizeBytes: args.sizeBytes,
         ...(args.sha256 ? { sha256: args.sha256 } : {}),
+    };
+}
+
+/**
+ * Canonical projection from an admitted Session attachment to Message metadata.
+ * Runner handoff verifies different source bytes, but must publish the same
+ * attachment/message shape as every other Session upload.
+ */
+export function buildUploadedAttachment(args: UploadedAttachmentBase): UploadedAttachment {
+    const structuredInput = buildStructuredInputForUploadedAttachment(args);
+    return {
+        ...args,
+        ...(structuredInput ? { structuredInput } : {}),
     };
 }
 
@@ -132,10 +154,19 @@ function createAttachmentUploadFailureError(input: Readonly<{
 
 export async function uploadAttachmentDraftsToSession(args: Readonly<{
     sessionId: string;
+    /** Exact qualified Session target when the created Session is outside the active Account. */
+    sessionTarget?: ExactSessionMachineTargetIdentity;
     drafts: readonly AttachmentDraft[];
     config: AttachmentsUploadConfig;
     applyDraftPatch: (id: string, patch: Partial<Omit<AttachmentDraft, 'id' | 'source'>>) => void;
+    /**
+     * Optional owner-level durability checkpoint. It is awaited before the next
+     * file starts so a partial batch retry can reuse the verified remote path.
+     */
+    onUploadedDraftCheckpoint?: (draft: AttachmentUploadedDraftCheckpoint) => Promise<void> | void;
     messageLocalId?: string;
+    /** Genuine transfer boundary override for owner-level tests. */
+    uploadFile?: typeof sessionAttachmentsUploadFile;
 }>): Promise<Readonly<{
     messageLocalId: string;
     uploaded: readonly UploadedAttachment[];
@@ -158,11 +189,7 @@ export async function uploadAttachmentDraftsToSession(args: Readonly<{
                     : {}),
                 ...(stillPresent.sha256 ? { sha256: stillPresent.sha256 } : {}),
             };
-            const structuredInput = buildStructuredInputForUploadedAttachment(uploadedAttachment);
-            uploaded.push({
-                ...uploadedAttachment,
-                ...(structuredInput ? { structuredInput } : {}),
-            });
+            uploaded.push(buildUploadedAttachment(uploadedAttachment));
             continue;
         }
 
@@ -171,8 +198,9 @@ export async function uploadAttachmentDraftsToSession(args: Readonly<{
                 ? { uploadedBytes: 0, totalBytes: described.sizeBytes }
                 : undefined;
         args.applyDraftPatch(stillPresent.id, { status: 'uploading', error: undefined, uploadProgress: initialProgress });
-        let uploadRes = await sessionAttachmentsUploadFile({
+        let uploadRes = await (args.uploadFile ?? sessionAttachmentsUploadFile)({
             sessionId: args.sessionId,
+            ...(args.sessionTarget ? { sessionTarget: args.sessionTarget } : {}),
             file: stillPresent.source,
             messageLocalId,
             config: args.config,
@@ -204,7 +232,7 @@ export async function uploadAttachmentDraftsToSession(args: Readonly<{
             throw createAttachmentUploadFailureError(uploadRes);
         }
 
-        args.applyDraftPatch(stillPresent.id, {
+        const uploadedPatch = {
             status: 'uploaded',
             uploadedPath: uploadRes.path,
             uploadedSizeBytes: uploadRes.sizeBytes,
@@ -212,6 +240,14 @@ export async function uploadAttachmentDraftsToSession(args: Readonly<{
             sha256: uploadRes.sha256,
             error: undefined,
             uploadProgress: { uploadedBytes: uploadRes.sizeBytes, totalBytes: uploadRes.sizeBytes },
+        } satisfies Partial<Omit<AttachmentDraft, 'id' | 'source'>>;
+        args.applyDraftPatch(stillPresent.id, uploadedPatch);
+        await args.onUploadedDraftCheckpoint?.({
+            id: stillPresent.id,
+            uploadedPath: uploadRes.path,
+            uploadedSizeBytes: uploadRes.sizeBytes,
+            ...(described.mimeType ? { uploadedMimeType: described.mimeType } : {}),
+            ...(uploadRes.sha256 ? { sha256: uploadRes.sha256 } : {}),
         });
 
         const uploadedAttachment: UploadedAttachmentBase = {
@@ -221,17 +257,14 @@ export async function uploadAttachmentDraftsToSession(args: Readonly<{
             ...(described.mimeType ? { mimeType: described.mimeType } : {}),
             ...(uploadRes.sha256 ? { sha256: uploadRes.sha256 } : {}),
         };
-        const structuredInput = buildStructuredInputForUploadedAttachment(uploadedAttachment);
-        uploaded.push({
-            ...uploadedAttachment,
-            ...(structuredInput ? { structuredInput } : {}),
-        });
+        uploaded.push(buildUploadedAttachment(uploadedAttachment));
     }
 
     return { messageLocalId, uploaded };
 }
 
 export function formatAttachmentsBlock(uploaded: readonly UploadedAttachment[]): string {
+    if (uploaded.length === 0) return '';
     const lines: string[] = [
         'Attachments: open and analyze these files before answering.',
         '[attachments]',

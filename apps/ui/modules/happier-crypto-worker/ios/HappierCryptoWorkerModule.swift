@@ -11,6 +11,10 @@ public final class HappierCryptoWorkerModule: Module {
   public func definition() -> ModuleDefinition {
     Name("HappierCryptoWorker")
 
+    AsyncFunction("derivePasswordEnvelopeKey") { (request: PasswordEnvelopeKeyRequest) in
+      try HappierCryptoWorkerPassword.derivePasswordEnvelopeKey(request)
+    }.runOnQueue(Self.workerQueue)
+
     AsyncFunction("getCapabilities") {
       HappierCryptoWorker.capabilities()
     }.runOnQueue(Self.workerQueue)

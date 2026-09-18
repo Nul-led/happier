@@ -31,18 +31,18 @@ function createRecordingPort(): BrowserIrohWorkerConnection & { sent: unknown[] 
 }
 
 function createPageLifecycleStub() {
-    const listeners = new Set<() => void>();
+    const listeners = new Set<(event: Readonly<{ persisted: boolean }>) => void>();
     return {
         lifecycle: {
-            addEventListener: (_type: 'pagehide', listener: () => void) => {
+            addEventListener: (_type: 'pagehide', listener: (event: Readonly<{ persisted: boolean }>) => void) => {
                 listeners.add(listener);
             },
-            removeEventListener: (_type: 'pagehide', listener: () => void) => {
+            removeEventListener: (_type: 'pagehide', listener: (event: Readonly<{ persisted: boolean }>) => void) => {
                 listeners.delete(listener);
             },
         } satisfies BrowserIrohPageLifecycle,
-        fire: () => {
-            for (const listener of [...listeners]) listener();
+        fire: (persisted = false) => {
+            for (const listener of [...listeners]) listener({ persisted });
         },
         listenerCount: () => listeners.size,
     };
@@ -242,6 +242,18 @@ describe('sync/runtime/browserIroh/endpointClient', () => {
         expect(connection.sent).toHaveLength(1);
         expect(connection.sent[0]).toMatchObject({ v: 1, kind: 'releaseClient' });
         expect((connection.sent[0] as { requestId: string }).requestId).toEqual(expect.any(String));
+    });
+
+    it('keeps this tab’s leases while the page is preserved in the back-forward cache', () => {
+        const pagehide = createPageLifecycleStub();
+        const connection = createRecordingPort();
+        const client = createBrowserIrohEndpointClient(() => connection, pagehide.lifecycle);
+        void client.status();
+        connection.sent.length = 0;
+
+        pagehide.fire(true);
+
+        expect(connection.sent).toEqual([]);
     });
 
     it('detaches the page-lifecycle listener when the client is closed', () => {

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { isModelMode, isPermissionMode, type ModelMode, type PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import { ReviewCommentDraftSchema } from '@/sync/domains/input/reviewComments/reviewCommentMeta';
 import { SessionActionDraftSchema } from '@/sync/domains/sessionActions/sessionActionDraftMeta';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { scopedSessionLocalStateKey } from './sessionLocalStateKeys';
 import { getPersistenceStorage } from './persistenceStorage';
@@ -147,9 +148,15 @@ export function saveWorkspaceReviewCommentsDrafts(
     mmkv.set(key, JSON.stringify(drafts));
 }
 
-export type SessionActionDraftsBySessionId = Record<string, z.infer<typeof SessionActionDraftSchema>[]>;
+export type SessionActionDraftsByAddressKey = Record<string, z.infer<typeof SessionActionDraftSchema>[]>;
 
-export function loadSessionActionDrafts(scope?: ServerAccountScope | null): SessionActionDraftsBySessionId {
+const LegacySessionActionDraftSchema = SessionActionDraftSchema.omit({ address: true, accountId: true }).extend({
+    sessionId: z.string().min(1),
+}).strict();
+
+export function loadSessionActionDrafts(scope?: ServerAccountScope | null): SessionActionDraftsByAddressKey {
+    // A bare legacy Session id cannot prove its Home. Only a scoped partition supplies that fact.
+    if (!scope) return {};
     const mmkv = getPersistenceStorage();
     const raw = mmkv.getString(sessionActionDraftsKey(scope));
     if (!raw) return {};
@@ -157,17 +164,33 @@ export function loadSessionActionDrafts(scope?: ServerAccountScope | null): Sess
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
 
-        const out: SessionActionDraftsBySessionId = {};
-        for (const [rawSessionId, rawDrafts] of Object.entries(parsed as Record<string, unknown>)) {
-            if (typeof rawSessionId !== 'string' || !rawSessionId.trim()) continue;
+        const out: SessionActionDraftsByAddressKey = {};
+        for (const [rawKey, rawDrafts] of Object.entries(parsed as Record<string, unknown>)) {
+            if (typeof rawKey !== 'string' || !rawKey.trim()) continue;
             if (!Array.isArray(rawDrafts)) continue;
 
             const drafts: z.infer<typeof SessionActionDraftSchema>[] = [];
             for (const entry of rawDrafts) {
                 const entryParsed = SessionActionDraftSchema.safeParse(entry);
-                if (entryParsed.success) drafts.push(entryParsed.data);
+                if (entryParsed.success) {
+                    if (entryParsed.data.address.serverId === scope.serverId && entryParsed.data.accountId === scope.accountId) {
+                        drafts.push(entryParsed.data);
+                    }
+                    continue;
+                }
+                const legacyParsed = LegacySessionActionDraftSchema.safeParse(entry);
+                if (!legacyParsed.success || legacyParsed.data.sessionId !== rawKey.trim()) continue;
+                const { sessionId, ...legacyDraft } = legacyParsed.data;
+                drafts.push({
+                    ...legacyDraft,
+                    address: { serverId: scope.serverId, sessionId },
+                    accountId: scope.accountId,
+                });
             }
-            if (drafts.length > 0) out[rawSessionId] = drafts;
+            for (const draft of drafts) {
+                const key = sessionAddressKey(draft.address);
+                out[key] = [...(out[key] ?? []), draft];
+            }
         }
         return out;
     } catch (e) {
@@ -177,16 +200,22 @@ export function loadSessionActionDrafts(scope?: ServerAccountScope | null): Sess
 }
 
 export function saveSessionActionDrafts(
-    drafts: SessionActionDraftsBySessionId,
-    scope?: ServerAccountScope | null,
+    drafts: SessionActionDraftsByAddressKey,
+    scope: ServerAccountScope,
 ): void {
     const mmkv = getPersistenceStorage();
     const key = sessionActionDraftsKey(scope);
-    if (!drafts || typeof drafts !== 'object' || Object.keys(drafts).length === 0) {
+    const scopedDrafts = Object.fromEntries(Object.entries(drafts).flatMap(([key, entries]) => {
+        const exactEntries = entries.filter((draft) => (
+            draft.address.serverId === scope.serverId && draft.accountId === scope.accountId
+        ));
+        return exactEntries.length > 0 ? [[key, exactEntries] as const] : [];
+    }));
+    if (Object.keys(scopedDrafts).length === 0) {
         mmkv.delete(key);
         return;
     }
-    mmkv.set(key, JSON.stringify(drafts));
+    mmkv.set(key, JSON.stringify(scopedDrafts));
 }
 
 export function loadSessionPermissionModes(scope?: ServerAccountScope | null): Record<string, PermissionMode> {
@@ -367,17 +396,12 @@ export function prepareSessionPersistenceScopeForActivation(scope: ServerAccount
         }
     }
 
-    if (typeof mmkv.getString(sessionActionDraftsKey(scope)) !== 'string') {
-        const legacyActionDrafts = loadSessionActionDrafts();
-        if (Object.keys(legacyActionDrafts).length > 0) {
-            saveSessionActionDrafts(legacyActionDrafts, scope);
-        }
-    }
+    // The released unscoped action-draft map has only bare Session ids. Preserve it in place:
+    // choosing the first activated Home would silently retarget recoverable user intent.
 
     mmkv.delete(sessionDraftsKey());
     mmkv.delete(sessionReviewCommentsDraftsKey());
     mmkv.delete(workspaceReviewCommentsDraftsKey());
-    mmkv.delete(sessionActionDraftsKey());
     mmkv.delete(sessionPermissionModesKey());
     mmkv.delete(sessionPermissionModeUpdatedAtsKey());
     mmkv.delete(sessionModelModesKey());

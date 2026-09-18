@@ -96,11 +96,11 @@ type MachineCapabilitiesState =
     }>
     | Readonly<{
         status: 'loading';
-        snapshot: MachineCapabilitiesSnapshot;
+        snapshot?: MachineCapabilitiesSnapshot;
     }>
     | Readonly<{
         status: 'error';
-        snapshot: MachineCapabilitiesSnapshot;
+        snapshot?: MachineCapabilitiesSnapshot;
     }>;
 type LoadedMachineCapabilitiesState = Extract<MachineCapabilitiesState, Readonly<{ status: 'loaded' }>>;
 
@@ -763,6 +763,9 @@ vi.mock('@/sync/domains/state/storageStore', () => ({
     storage: {
         getState: () => machineAdministrationFixture.storageState,
     },
+    // The Account-scope reader was added to the canonical Settings writer;
+    // expose that same safe state through this existing store boundary fixture.
+    getStorage: () => (selector: (state: Readonly<{ settingsScope: Readonly<{ serverId: string; accountId: string }> | null }>) => unknown) => selector({ settingsScope: activeAccountScopeState.current }),
 }));
 
 vi.mock('@/hooks/server/useMachineCapabilitiesCache', () => ({
@@ -1142,6 +1145,72 @@ beforeEach(() => {
 });
 
 describe('PluginSettingsHomeScreen', () => {
+    it.each(['create', 'createWithAgent'])('keeps the complete %s draft editable when creation confirmation is cancelled', async (action) => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({ state: createMachineCapabilitiesState([]), refresh: vi.fn() });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => { await flushAsync(); await flushAsync(); });
+        await selectPluginManagementView(screen, 'development');
+        await act(async () => { screen.pressByTestId(`settings.plugins.management.development.action.${action}`); });
+        const form = modalShowMock.mock.calls.at(-1)?.[0]?.props?.form as import('@/components/plugins/actions/actionInputForm').ActionInputForm | undefined;
+        expect(form).toBeDefined();
+        if (!form) throw new Error('Expected the canonical authoring form');
+        expect(form.getFields().map((field) => field.path)).toEqual(['targetDir', 'displayName', 'pluginId', 'ui']);
+        const draft = { targetDir: '/workspace/plugin', displayName: 'Working Plugin', pluginId: 'com.example.working', ui: 'hostedWeb' };
+        form.replaceInput(draft);
+        modalConfirmMock.mockResolvedValueOnce(false);
+        await act(async () => { await form.submit(); });
+        expect(form.isRetired()).toBe(false);
+        expect(form.getInput()).toEqual(draft);
+        expect(invokeWithAlertsMock).not.toHaveBeenCalled();
+        expect(modalPromptMock).not.toHaveBeenCalled();
+    });
+
+    it('does not claim an empty installation list before the first successful read', async () => {
+        let capabilityState: MachineCapabilitiesState = { status: 'loading' };
+        useMachineCapabilitiesCacheMock.mockImplementation(() => ({ state: capabilityState, refresh: vi.fn() }));
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const RerenderableHome = PluginSettingsHomeScreen as React.ComponentType<{ capabilityRevision?: number }>;
+        const screen = await renderSettingsView(React.createElement(RerenderableHome, { capabilityRevision: 1 }));
+        await act(async () => { await flushAsync(); });
+        expect(screen.findRow('settings.plugins.marketplace.installed.empty')).toBeFalsy();
+        expect(screen.findRow('settings.plugins.marketplace.installed.loading')).toBeTruthy();
+
+        capabilityState = createMachineCapabilitiesState([]);
+        await act(async () => {
+            screen.tree.update(React.createElement(RerenderableHome, { capabilityRevision: 2 }));
+            await flushAsync();
+        });
+        expect(screen.findRow('settings.plugins.marketplace.installed.loading')).toBeFalsy();
+        expect(screen.findRow('settings.plugins.marketplace.installed.empty')).toBeTruthy();
+        await act(async () => { screen.pressRow('settings.plugins.marketplace.installed.empty'); });
+        expect(screen.findByTestId('settings.plugins.management.view:discover')?.props.accessibilityState).toMatchObject({ selected: true });
+    });
+
+    it.each(['home', 'detail'] as const)('offers cold capability failure recovery on %s without claiming absence', async (route) => {
+        let capabilityState: MachineCapabilitiesState = { status: 'error' };
+        const refresh = vi.fn(() => { capabilityState = createMachineCapabilitiesState([]); });
+        useMachineCapabilitiesCacheMock.mockImplementation(() => ({ state: capabilityState, refresh }));
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
+        const element = route === 'home'
+            ? React.createElement(PluginSettingsHomeScreen)
+            : React.createElement(PluginDetailScreen, { pluginId: 'unread-plugin' });
+        const screen = await renderSettingsView(element);
+        await act(async () => { await flushAsync(); await flushAsync(); });
+        const prefix = route === 'home' ? 'settings.plugins.marketplace' : 'settings.plugins.detail';
+        expect(screen.findRow(`${prefix}.readOnlySnapshot-retry`)).toBeTruthy();
+        expect(screen.findRow('settings.plugins.marketplace.installed.empty')).toBeFalsy();
+        await act(async () => {
+            screen.pressRow(`${prefix}.readOnlySnapshot-retry`);
+            await flushAsync();
+        });
+        expect(refresh).toHaveBeenCalledWith({ bypassCache: true });
+    });
+
     it('routes plugin capabilities to the exact Administration target rather than active first-machine selection', async () => {
         setMachineAdministrationTargetFixture({
             serverIdentityId: 'srv_identity-b',
@@ -1278,6 +1347,13 @@ describe('PluginSettingsHomeScreen', () => {
         expect(diagnosticsSelector).toBeTruthy();
         expect(diagnosticsSelector?.props.accessibilityState).toMatchObject({ selected: false });
         expect(screen.findByTestId('settings.plugins.management.viewScroller')?.props.horizontal).toBe(true);
+        const taskOrder = screen.tree.root.findAll((node) => [
+            'settings.plugins.management.view:installed',
+            'settings.plugins.sources',
+            'settings.plugins.management.view:development',
+        ].includes(node.props.testID)).map((node) => node.props.testID);
+        expect(taskOrder.indexOf('settings.plugins.management.view:installed')).toBeLessThan(taskOrder.indexOf('settings.plugins.sources'));
+        expect(taskOrder.indexOf('settings.plugins.management.view:installed')).toBeLessThan(taskOrder.indexOf('settings.plugins.management.view:development'));
         expect(screen.findRow('settings.plugins.marketplace.installed.com.acme.installed-plugin')).toBeTruthy();
         expect(screen.findRow('settings.plugins.management.development.empty')).toBeFalsy();
         expect(screen.findRow('settings.plugins.registryDiagnostic.plugin_runtime_capability_missing.0')).toBeFalsy();
@@ -1572,10 +1648,6 @@ describe('PluginSettingsHomeScreen', () => {
         expect(screen.findRow('settings.plugins.management.development.development-plugin.action.test')?.props.disabled).toBeFalsy();
         expect(screen.findRow('settings.plugins.management.development.development-plugin.action.pack')?.props.disabled).toBeFalsy();
 
-        modalPromptMock
-            .mockResolvedValueOnce('/workspace/plugins/new-plugin')
-            .mockResolvedValueOnce('New Plugin')
-            .mockResolvedValueOnce('acme.new-plugin');
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.development.action.create');
             await flushAsync();
@@ -1583,6 +1655,10 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
             await flushAsync();
         });
+
+        const createForm = modalShowMock.mock.calls.at(-1)?.[0]?.props?.form as import('@/components/plugins/actions/actionInputForm').ActionInputForm;
+        createForm.replaceInput({ targetDir: '/workspace/plugins/new-plugin', displayName: 'New Plugin', pluginId: 'acme.new-plugin', ui: 'reactNative' });
+        await act(async () => { await createForm.submit(); await flushAsync(); });
 
         expect(modalConfirmMock).toHaveBeenCalled();
         expect(invokeWithAlertsMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -1603,28 +1679,9 @@ describe('PluginSettingsHomeScreen', () => {
         // The author is asked which UI surface the new plugin starts with, and
         // declining a surface must still create the plugin without one — the
         // mode is never inferred or silently defaulted.
-        expect(modalAlertAsyncMock).toHaveBeenCalledWith(
-            'settingsPlugins.developmentCreateSurfaceTitle',
-            'settingsPlugins.developmentCreateSurfaceBody',
-            expect.arrayContaining([
-                expect.objectContaining({ text: 'settingsPlugins.developmentCreateSurfaceReactNative' }),
-                expect.objectContaining({ text: 'settingsPlugins.developmentCreateSurfaceHostedWeb' }),
-                expect.objectContaining({ text: 'settingsPlugins.developmentCreateSurfaceNone' }),
-            ]),
-        );
+        expect(createForm.getFields().find((field) => field.path === 'ui')?.options?.map((option) => option.value)).toEqual(['reactNative', 'hostedWeb', 'none']);
 
         invokeWithAlertsMock.mockClear();
-        modalAlertAsyncMock.mockImplementationOnce(async (
-            _title: string,
-            _message?: string,
-            buttons?: readonly { text: string; onPress?: () => void }[],
-        ) => {
-            buttons?.[2]?.onPress?.();
-        });
-        modalPromptMock
-            .mockResolvedValueOnce('/workspace/plugins/plain-plugin')
-            .mockResolvedValueOnce('Plain Plugin')
-            .mockResolvedValueOnce('acme.plain-plugin');
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.development.action.create');
             await flushAsync();
@@ -1632,6 +1689,9 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
             await flushAsync();
         });
+        const plainForm = modalShowMock.mock.calls.at(-1)?.[0]?.props?.form as import('@/components/plugins/actions/actionInputForm').ActionInputForm;
+        plainForm.replaceInput({ targetDir: '/workspace/plugins/plain-plugin', displayName: 'Plain Plugin', pluginId: 'acme.plain-plugin', ui: 'none' });
+        await act(async () => { await plainForm.submit(); await flushAsync(); });
         expect(invokeWithAlertsMock).toHaveBeenCalledWith(expect.objectContaining({
             request: {
                 id: MARKETPLACE_CAPABILITY_ID,
@@ -1734,10 +1794,6 @@ describe('PluginSettingsHomeScreen', () => {
                 },
             },
         });
-        modalPromptMock
-            .mockResolvedValueOnce('/workspace/plugins/agent-plugin')
-            .mockResolvedValueOnce('Agent Plugin')
-            .mockResolvedValueOnce('acme.agent-plugin');
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
         const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
@@ -1752,6 +1808,9 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
             await flushAsync();
         });
+        const agentForm = modalShowMock.mock.calls.at(-1)?.[0]?.props?.form as import('@/components/plugins/actions/actionInputForm').ActionInputForm;
+        agentForm.replaceInput({ targetDir: '/workspace/plugins/agent-plugin', displayName: 'Agent Plugin', pluginId: 'acme.agent-plugin', ui: 'reactNative' });
+        await act(async () => { await agentForm.submit(); await flushAsync(); });
 
         expect(invokeWithAlertsMock).toHaveBeenCalledWith(expect.objectContaining({
             machineId: 'machine-1',
@@ -2710,7 +2769,7 @@ describe('PluginSettingsHomeScreen', () => {
         // something already installed gets NO lifecycle action row here.
         expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
         expect(screen.findRow(discoverListingTestID('installed-plugin'))).toBeTruthy();
-        expect(findDiscoverListingActions(screen, 'installed-plugin')).toHaveLength(0);
+        expect(findDiscoverListingActions(screen, 'installed-plugin').map((action) => action.id)).toEqual(['manage']);
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:installed');
         });
@@ -2831,7 +2890,7 @@ describe('PluginSettingsHomeScreen', () => {
             cursor: null,
             filters: { includeUnavailable: true },
         }), expect.any(Object));
-        expect(findDiscoverListingActions(screen, 'installed-plugin')).toHaveLength(0);
+        expect(findDiscoverListingActions(screen, 'installed-plugin').map((action) => action.id)).toEqual(['manage']);
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:installed');
         });
@@ -4410,7 +4469,7 @@ describe('PluginSettingsHomeScreen', () => {
         expect(screen.findRow(discoverListingTestID('new-plugin'))).toBeTruthy();
         // An installed listing shows its installed state instead of lifecycle
         // actions; an uninstalled one gets the full Install & Trust review.
-        expect(screen.getTextContent()).toContain('deps.ui.installedWithVersion(version=1.0.0)');
+        expect(findDiscoverListingActions(screen, 'installed-plugin').map((action) => action.id)).toEqual(['manage']);
         // Missing package copy stays missing. The pane-level explanation is
         // shown once as its footer; it is neither repeated nor replaced with a
         // synthetic per-plugin description.
@@ -4871,6 +4930,9 @@ describe('PluginSettingsHomeScreen', () => {
         // beneath it. The full disclosure stays in the install review.
         const communityRow = screen.findRow(discoverListingTestID('community-plugin', 'marketplace:community-npm'));
         expect(communityRow).toBeTruthy();
+        await act(async () => {
+            screen.pressRow(`${discoverListingTestID('community-plugin', 'marketplace:community-npm')}.details`);
+        });
         expect(screen.getTextContent()).toContain('settingsPlugins.discover.publisherLabel(displayName=Acme,id=acme)');
         expect(screen.getTextContent()).toContain('settingsPlugins.discover.categories(values=agents)');
         expect(screen.getTextContent()).toContain(
@@ -5219,7 +5281,7 @@ describe('PluginSettingsHomeScreen', () => {
         expect(screen.getTextContent()).toContain('settingsPlugins.discover.reviewStatus.withdrawn');
         // The warning never becomes authority over installed code: Discover
         // renders no install (or any lifecycle) action for the installed listing.
-        expect(findDiscoverListingActions(screen, 'withdrawn-plugin')).toHaveLength(0);
+        expect(findDiscoverListingActions(screen, 'withdrawn-plugin').map((action) => action.id)).toEqual(['manage']);
         expect(invokeWithAlertsMock).not.toHaveBeenCalled();
     });
 
@@ -5495,6 +5557,61 @@ describe('PluginSettingsHomeScreen', () => {
 });
 
 describe('PluginMarketplaceSourcesScreen', () => {
+    it('keeps unread Sources unavailable until the exact machine returns an authoritative registry', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({ state: createMachineCapabilitiesState([]), refresh: vi.fn() });
+        const machine = machineAdministrationFixture.activeMachines[0]!;
+        machine.active = false;
+        machine.activeAt = 0;
+        const registry: MarketplaceSourceRegistryV1 = {
+            t: 'happier_marketplace_source_registry_v1', schemaVersion: 1,
+            sources: [{ id: 'user-known', title: 'Known source', sourceUrl: 'https://plugins.example.test/index.json', origin: 'user', enabled: true, addedAtMs: 1, updatedAtMs: 1 }],
+        };
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue(registry);
+        const { PluginMarketplaceSourcesScreen } = await import('./PluginMarketplaceSourcesScreen');
+        const RerenderableSources = PluginMarketplaceSourcesScreen as React.ComponentType<{ revision: number }>;
+        const screen = await renderSettingsView(React.createElement(RerenderableSources, { revision: 1 }));
+        await act(async () => { await flushAsync(); });
+        expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
+        expect(screen.findRow('settings.plugins.sources.unavailable')).toBeTruthy();
+        expect(machineMarketplaceSourceRegistryGetMock).not.toHaveBeenCalled();
+
+        machine.active = true;
+        machine.activeAt = Date.now();
+        await act(async () => {
+            screen.tree.update(React.createElement(RerenderableSources, { revision: 2 }));
+            await flushAsync(); await flushAsync();
+        });
+        expect(screen.findRow('settings.plugins.sources.source.user-known')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.unavailable')).toBeNull();
+        machineMarketplaceSourceRegistryGetMock.mockRejectedValueOnce(new Error('read failed'));
+        screenFocusState.value = false;
+        await act(async () => { screen.tree.update(React.createElement(RerenderableSources, { revision: 3 })); });
+        screenFocusState.value = true;
+        await act(async () => {
+            screen.tree.update(React.createElement(RerenderableSources, { revision: 4 }));
+            await flushAsync(); await flushAsync();
+        });
+        expect(screen.findRow('settings.plugins.sources.source.user-known')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.retry')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValueOnce({ ...registry, sources: [] });
+        await act(async () => { screen.pressRow('settings.plugins.sources.retry'); await flushAsync(); });
+        expect(screen.findRow('settings.plugins.sources.empty')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.source.user-known')).toBeNull();
+
+        setMachineAdministrationTargetFixture({ serverIdentityId: 'srv_identity-b', serverId: 'server-b', machineId: 'machine-2' });
+        const replacement = machineAdministrationFixture.machineListByServerId['server-b']![0]!;
+        replacement.active = false;
+        replacement.activeAt = 0;
+        await act(async () => {
+            screen.tree.update(React.createElement(RerenderableSources, { revision: 5 }));
+            await flushAsync();
+        });
+        expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
+        expect(screen.findRow('settings.plugins.sources.unavailable')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.source.user-known')).toBeNull();
+    });
+
     it('keeps Community npm read-only and mutates only user sources through the canonical registry operations', async () => {
         const registry: MarketplaceSourceRegistryV1 = {
             t: 'happier_marketplace_source_registry_v1',

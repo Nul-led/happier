@@ -13,7 +13,7 @@ import {
 } from '@/sync/domains/scope/activeServerAccountScope';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import type { PluginAccountAvailabilitySnapshot } from '@/sync/domains/plugins/availability/reader';
 
 type ProjectionServerSnapshot = Readonly<{
@@ -88,7 +88,7 @@ function defaultDependencies(): ActivePluginAccountAvailabilityProjectionHydrato
             return { serverId: snapshot.serverId, generation: snapshot.generation };
         },
         captureRequestAuthority: async (scope) => {
-            const authority = await captureSessionRequestAuthorityForServerAccountScope({
+            const authority = await captureServerRequestAuthorityForServerAccountScope({
                 scope,
                 activeRequest: (path, init) => apiSocket.request(path, init),
             });

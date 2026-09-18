@@ -536,9 +536,9 @@ function PluginSettingAccountSecretField(props: Readonly<{
                 || operationIdRef.current !== operationId
                 || !accountScopeIsCurrent()
             ) return;
-            if (result?.status === 'conflict' && result.snapshot.revision.kind === 'account-secret') {
-                // A one-shot SavedSecret mutation was rejected. Its safe
-                // snapshot is new authority for retry, but the draft remains
+            if (result?.status === 'conflict') {
+                // A one-shot SavedSecret mutation was rejected. The owner
+                // adopts safe content only when available; the draft remains
                 // local until the user explicitly chooses to submit again.
                 setSaving(false);
                 setSaveFailed(true);
@@ -552,7 +552,10 @@ function PluginSettingAccountSecretField(props: Readonly<{
                 setSaveOutcomeUnknown(true);
                 return;
             }
-            if (result?.status !== 'ready' || result.snapshot.revision.kind !== 'account-secret') {
+            const acknowledgedRevision = result?.status === 'applied'
+                ? result.revision
+                : result?.status === 'ready' ? result.snapshot.revision : null;
+            if (acknowledgedRevision?.kind !== 'account-secret') {
                 setSaving(false);
                 setSaveFailed(result !== null);
                 return;

@@ -5,6 +5,7 @@ import { act } from 'react-test-renderer';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 import { setAccountServiceEndpoint } from '@/sync/domains/server/serverProfiles';
+import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
 
 /**
  * Unauthenticated Welcome sign-in against the selected Account Service (Lane 02 A7 / G02-1, G02-2).
@@ -15,30 +16,30 @@ import { setAccountServiceEndpoint } from '@/sync/domains/server/serverProfiles'
 
 const SELECTED_SERVICE_URL = 'https://api.happier.dev';
 const SELECTED_SERVICE_IDENTITY = 'srv_cloud_identity';
-const PREFERRED_HOME_IDENTITY = 'srv_home_preferred';
 const OTHER_SERVICE_URL = 'https://other.happier.dev';
 const OTHER_SERVICE_IDENTITY = 'srv_other_identity';
 const FOCUSED_HOME_URL = 'https://home-a.example.test';
+const accountDirectoryPending = {
+    endpoint: SELECTED_SERVICE_URL,
+    serverIdentityId: SELECTED_SERVICE_IDENTITY,
+    canonicalServerUrl: SELECTED_SERVICE_URL,
+    provider: 'github',
+    purpose: 'account_directory' as const,
+    credentialTarget: 'account_directory' as const,
+    entryIntent: { kind: 'enter' as const, target: { kind: 'automatic' as const } },
+    mode: 'keyless' as const,
+    proof: 'exact-proof',
+    createdAt: 1,
+    expiresAt: 2,
+    returnTo: '/account-entry',
+};
+const accountDirectoryStartResult = {
+    url: `${SELECTED_SERVICE_URL}/v1/auth/external/github/start?pending=abc`,
+    pending: accountDirectoryPending,
+} as const;
 
 const discoverAuthenticationMethodsMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
-const loginWithKeyMock = vi.hoisted(() => vi.fn<
-    (...args: unknown[]) => Promise<{ token: string }>
->(async () => ({ token: 'restricted-directory-token' })));
-const refreshOpMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({
-    endpoint: SELECTED_SERVICE_URL,
-    status: 'ready',
-    homes: [],
-    preferredHomeServerIdentityId: PREFERRED_HOME_IDENTITY,
-    refreshedAtMs: 1,
-    error: null,
-    reconciliation: { kind: 'not_run' },
-})));
-const enrollOpMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({
-    kind: 'enrolled',
-    homeServerIdentityId: PREFERRED_HOME_IDENTITY,
-})));
-const finalizeIntentMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<'completed'>>(async () => 'completed'));
 const modalPromptMock = vi.hoisted(() => vi.fn(async () => null as string | null));
 const modalAlertMock = vi.hoisted(() => vi.fn(() => {}));
 const modalAlertAsyncMock = vi.hoisted(() => vi.fn(async () => {}));
@@ -52,17 +53,12 @@ const clearPendingExternalAuthMock = vi.hoisted(() => vi.fn(async () => true));
 const clearPendingAccountDirectoryAuthMock = vi.hoisted(() => vi.fn(async () => true));
 const locationAssignMock = vi.hoisted(() => vi.fn());
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
-const pendingEnrollmentSnapshot = vi.hoisted(() => ({
-    kind: 'approval_required' as const,
-    homeServerIdentityId: 'srv_home_preferred',
-    approvalId: 'approval-welcome',
-    expiresAtMs: Date.now() + 60_000,
-    serviceKey: 'https://api.happier.dev\u0000srv_cloud_identity',
-    entryIntent: 'enter_preferred_home' as const,
-    resume: vi.fn(async () => ({ kind: 'cancelled' as const })),
-    cancel: vi.fn(async () => ({ kind: 'cancelled' as const })),
+const homeCarrier = vi.hoisted(() => ({
+    endpointId: 'focused-home-carrier',
+    readObservedPath: vi.fn(),
+    request: vi.fn(),
+    createWebSocket: vi.fn(),
 }));
-
 const wizardControllerMock = vi.hoisted(() => {
     const goToStep = vi.fn();
     return {
@@ -92,9 +88,10 @@ const wizardControllerMock = vi.hoisted(() => {
     };
 });
 
-const authEntryOptionsState = vi.hoisted(() => ({
+const authEntryOptionsState: { current: AuthEntryOptions } = vi.hoisted(() => ({
     current: {
         serverAvailability: 'ready',
+        authEntryUnavailable: false,
         serverUrlForCopy: 'https://home-a.example.test',
         showAuthActions: true,
         showProviderSignup: true,
@@ -122,6 +119,7 @@ const authEntryOptionsState = vi.hoisted(() => ({
         retryServerCheck: () => {},
     },
 }));
+const baseAuthEntryOptions = authEntryOptionsState.current;
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -193,21 +191,7 @@ vi.mock('@/auth/accountDirectory/accountDirectoryAuthClient', () => ({
     accountDirectoryAuthClient: {
         discoverAuthenticationMethods: (input: unknown) => discoverAuthenticationMethodsMock(input),
         startOAuth: (input: unknown) => startOAuthMock(input),
-        loginWithKey: (input: unknown) => loginWithKeyMock(input),
     },
-}));
-
-vi.mock('@/sync/ops/accountDirectory/enrollPreferredDirectoryHome', () => ({
-    enrollPreferredDirectoryHome: (...args: unknown[]) => enrollOpMock(...args),
-    finalizePreferredHomeEnrollmentEntryIntent: (...args: unknown[]) => finalizeIntentMock(...args),
-    cancelPendingPreferredHomeEnrollment: vi.fn(async () => {}),
-    resumePendingPreferredHomeEnrollment: vi.fn(async () => null),
-    getPendingPreferredHomeEnrollment: () => pendingEnrollmentSnapshot,
-    subscribePendingPreferredHomeEnrollment: () => () => {},
-}));
-
-vi.mock('@/sync/ops/accountDirectory/refreshAccountHomeDirectory', () => ({
-    refreshAccountHomeDirectory: (...args: unknown[]) => refreshOpMock(...args),
 }));
 
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
@@ -263,6 +247,17 @@ function supportedDiscovery() {
         keyLoginAvailable: false,
         oauthProviderIds: ['github'] as const,
         preferredProvisionProviderId: 'github',
+        authenticationCatalog: {
+            provenance: 'structured' as const,
+            methods: [{ id: 'github', enabledActions: [{ id: 'login' as const, mode: 'keyless' as const }] }],
+        },
+        authenticationActions: [{
+            method: { id: 'github', enabledActions: [{ id: 'login' as const, mode: 'keyless' as const }] },
+            action: { id: 'login' as const, mode: 'keyless' as const },
+            execution: { kind: 'oauth' as const, providerId: 'github', mode: 'keyless' as const },
+        }],
+        accountServiceDisplayName: 'Happier Cloud',
+        snapshot: { status: 'ready' as const, features: {}, serverIdentityId: SELECTED_SERVICE_IDENTITY },
     };
 }
 
@@ -284,6 +279,17 @@ function keyOnlyDiscovery() {
         keyLoginAvailable: true,
         oauthProviderIds: [] as const,
         preferredProvisionProviderId: null,
+        authenticationCatalog: {
+            provenance: 'structured' as const,
+            methods: [{ id: 'key_challenge', enabledActions: [{ id: 'login' as const, mode: 'keyed' as const }] }],
+        },
+        authenticationActions: [{
+            method: { id: 'key_challenge', enabledActions: [{ id: 'login' as const, mode: 'keyed' as const }] },
+            action: { id: 'login' as const, mode: 'keyed' as const },
+            execution: { kind: 'key_entry' as const },
+        }],
+        accountServiceDisplayName: 'Happier Cloud',
+        snapshot: { status: 'ready' as const, features: {}, serverIdentityId: SELECTED_SERVICE_IDENTITY },
     };
 }
 
@@ -303,21 +309,16 @@ function capturedAccountServiceEntry() {
 }
 
 describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         delete process.env.EXPO_PUBLIC_DEBUG;
-        setAccountServiceEndpoint({
+        await setAccountServiceEndpoint({
             url: SELECTED_SERVICE_URL,
             source: 'default',
         });
         discoverAuthenticationMethodsMock.mockReset();
         discoverAuthenticationMethodsMock.mockResolvedValue(supportedDiscovery());
         startOAuthMock.mockReset();
-        startOAuthMock.mockResolvedValue(`${SELECTED_SERVICE_URL}/v1/auth/external/github/start?pending=abc`);
-        loginWithKeyMock.mockReset();
-        loginWithKeyMock.mockResolvedValue({ token: 'restricted-directory-token' });
-        refreshOpMock.mockClear();
-        enrollOpMock.mockClear();
-        finalizeIntentMock.mockClear();
+        startOAuthMock.mockResolvedValue(accountDirectoryStartResult);
         modalPromptMock.mockReset();
         modalPromptMock.mockResolvedValue(null);
         modalAlertMock.mockClear();
@@ -330,7 +331,8 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
         runtimeFetchMock.mockReset();
         runtimeFetchMock.mockResolvedValue(new Response(null, { status: 401 }));
         authEntryOptionsState.current = {
-            ...authEntryOptionsState.current,
+            ...baseAuthEntryOptions,
+            homeTransport: { homeCarrier },
             showAnonymousSignup: true,
             showMtlsLogin: false,
             autoRedirect: {
@@ -361,11 +363,13 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
         await renderEntry();
 
         expect(discoverAuthenticationMethodsMock).toHaveBeenCalledTimes(1);
-        const [discoveryInput] = discoverAuthenticationMethodsMock.mock.calls[0] as [
-            Readonly<{ endpointUrl: string; expectedServerIdentityId?: string | null }>,
-        ];
-        expect(discoveryInput.endpointUrl).toBe(SELECTED_SERVICE_URL);
-        expect(discoveryInput.endpointUrl).not.toBe(FOCUSED_HOME_URL);
+        const discoveryInputs = discoverAuthenticationMethodsMock.mock.calls.map(([input]) => input) as Array<
+            Readonly<{ endpointUrl: string; expectedServerIdentityId?: string | null }>
+        >;
+        expect(discoveryInputs).toEqual([
+            { endpointUrl: SELECTED_SERVICE_URL, signal: expect.any(AbortSignal) },
+        ]);
+        expect(discoveryInputs.every((input) => input.endpointUrl !== FOCUSED_HOME_URL)).toBe(true);
 
         const entry = capturedAccountServiceEntry();
         expect(entry?.status).toBe('ready');
@@ -373,6 +377,31 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
         expect(entry?.discovery).toMatchObject({
             serverIdentityId: SELECTED_SERVICE_IDENTITY,
             oauthProviderIds: ['github'],
+        });
+    });
+
+    it('carries the exact Home carrier when policy selects the Home as its own sign-in service', async () => {
+        authEntryOptionsState.current = {
+            ...authEntryOptionsState.current,
+            requestedHomeTarget: { kind: 'saved_profile', profileRef: 'home-a' },
+            homeTarget: { kind: 'saved_profile', profileRef: 'home-a' },
+            observedHomeServerIdentityId: 'home-a-identity',
+            signInServicePolicy: { v: 1, mode: 'self' },
+        };
+        discoverAuthenticationMethodsMock.mockResolvedValue({
+            ...supportedDiscovery(),
+            endpointUrl: FOCUSED_HOME_URL,
+            canonicalServerUrl: FOCUSED_HOME_URL,
+            serverIdentityId: 'home-a-identity',
+        });
+
+        await renderEntry();
+
+        expect(discoverAuthenticationMethodsMock).toHaveBeenCalledWith({
+            endpointUrl: FOCUSED_HOME_URL,
+            expectedServerIdentityId: 'home-a-identity',
+            homeCarrier,
+            signal: expect.any(AbortSignal),
         });
     });
 
@@ -400,15 +429,34 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
         expect(runtimeFetchMock).not.toHaveBeenCalled();
     });
 
-    it('starts provider sign-in on the exact selected service with the preferred-Home entry intent', async () => {
+    it('starts provider sign-in with the exact observed authority and no-target automatic intent', async () => {
         await renderEntry();
         getActiveServerSnapshotMock.mockClear();
 
         const start = wizardControllerMock.lastProps
-            ?.onContinueWithAccountServiceProvider as (providerId: string) => Promise<void>;
+            ?.onContinueWithAccountServiceProvider as (
+                request: Record<string, unknown>,
+                context: { signal: AbortSignal },
+            ) => Promise<void>;
         expect(typeof start).toBe('function');
+        const discovery = supportedDiscovery();
         await act(async () => {
-            await start('github');
+            await start({
+                method: discovery.authenticationActions[0]!.method,
+                action: discovery.authenticationActions[0]!.action,
+                execution: discovery.authenticationActions[0]!.execution,
+                authority: {
+                    purpose: 'account_service',
+                    service: {
+                        endpointUrl: discovery.endpointUrl,
+                        serverIdentityId: discovery.serverIdentityId,
+                        canonicalServerUrl: discovery.canonicalServerUrl,
+                        capability: discovery.capability,
+                        snapshot: discovery.snapshot,
+                    },
+                },
+                intendedHome: null,
+            }, { signal: new AbortController().signal });
         });
 
         expect(startOAuthMock).toHaveBeenCalledTimes(1);
@@ -417,8 +465,9 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
             endpointServerIdentityId: SELECTED_SERVICE_IDENTITY,
             canonicalServerUrl: SELECTED_SERVICE_URL,
             providerId: 'github',
-            entryIntent: 'enter_preferred_home',
-            returnTo: '/',
+            entryIntent: { kind: 'enter', target: { kind: 'automatic' } },
+            returnTo: '/setup/wizard',
+            accountEntryReturnTo: '/',
         });
         expect(locationAssignMock).toHaveBeenCalledWith(
             `${SELECTED_SERVICE_URL}/v1/auth/external/github/start?pending=abc`,
@@ -428,13 +477,60 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
         expect(setPendingExternalAuthMock).not.toHaveBeenCalled();
         expect(getActiveServerSnapshotMock).not.toHaveBeenCalled();
 
-        // The observed service identity is bound through the existing endpoint owner so the
-        // OAuth callback's selected-service custody check can match this exact continuation.
+        // Authentication is bound by its own exact continuation custody. It must not rewrite the
+        // device's selected service merely because discovery observed a stable identity.
         const { getAccountServiceEndpointSnapshot } = await import('@/sync/domains/server/serverProfiles');
         expect(getAccountServiceEndpointSnapshot()).toMatchObject({
             url: SELECTED_SERVICE_URL,
-            serverIdentityId: SELECTED_SERVICE_IDENTITY,
         });
+        expect(getAccountServiceEndpointSnapshot()).not.toHaveProperty('serverIdentityId');
+    });
+
+    it('does not open a late Account Service OAuth URL after the journey cancels', async () => {
+        let resolveOAuth!: (result: typeof accountDirectoryStartResult) => void;
+        startOAuthMock.mockImplementation(() => new Promise<typeof accountDirectoryStartResult>((resolve) => {
+            resolveOAuth = resolve;
+        }));
+        await renderEntry();
+        const start = wizardControllerMock.lastProps
+            ?.onContinueWithAccountServiceProvider as (
+                request: Record<string, unknown>,
+                context: { signal: AbortSignal },
+            ) => Promise<void>;
+        const discovery = supportedDiscovery();
+        const controller = new AbortController();
+        const launch = start({
+            method: discovery.authenticationActions[0]!.method,
+            action: discovery.authenticationActions[0]!.action,
+            execution: discovery.authenticationActions[0]!.execution,
+            authority: {
+                purpose: 'account_service',
+                service: {
+                    endpointUrl: discovery.endpointUrl,
+                    serverIdentityId: discovery.serverIdentityId,
+                    canonicalServerUrl: discovery.canonicalServerUrl,
+                    capability: discovery.capability,
+                    snapshot: discovery.snapshot,
+                },
+            },
+            intendedHome: null,
+        }, { signal: controller.signal });
+
+        controller.abort();
+        resolveOAuth({
+            ...accountDirectoryStartResult,
+            url: `${SELECTED_SERVICE_URL}/v1/auth/external/github/start?pending=late`,
+        });
+        await launch;
+
+        expect(locationAssignMock).not.toHaveBeenCalled();
+        expect(clearPendingAccountDirectoryAuthMock).toHaveBeenCalledWith({
+            endpoint: SELECTED_SERVICE_URL,
+            serverIdentityId: SELECTED_SERVICE_IDENTITY,
+        }, {
+            expected: accountDirectoryPending,
+        });
+        expect(modalAlertMock).not.toHaveBeenCalled();
     });
 
     it('reports the selected service unavailable when it is an ordinary Home without Account Directory', async () => {
@@ -454,7 +550,6 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
 
     it('changes the selected sign-in service only after the entered endpoint proves Account Service support', async () => {
         await renderEntry();
-        modalPromptMock.mockResolvedValueOnce(OTHER_SERVICE_URL);
         discoverAuthenticationMethodsMock.mockResolvedValueOnce({
             ...supportedDiscovery(),
             endpointUrl: OTHER_SERVICE_URL,
@@ -463,15 +558,24 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
         });
 
         const choose = wizardControllerMock.lastProps
-            ?.onChooseAccountService as () => Promise<void>;
+            ?.onSelectAccountService as (
+                url: string,
+                options: Readonly<{ signal: AbortSignal }>,
+            ) => Promise<{ kind: string }>;
         expect(typeof choose).toBe('function');
+        const controller = new AbortController();
+        let result: { kind: string } | undefined;
         await act(async () => {
-            await choose();
+            result = await choose(OTHER_SERVICE_URL, {
+                signal: controller.signal,
+            });
         });
 
+        expect(result).toEqual({ kind: 'selected' });
+        expect(modalPromptMock).not.toHaveBeenCalled();
         expect(discoverAuthenticationMethodsMock).toHaveBeenCalledWith({
             endpointUrl: OTHER_SERVICE_URL,
-            expectedServerIdentityId: null,
+            signal: controller.signal,
         });
         const { getAccountServiceEndpointSnapshot } = await import('@/sync/domains/server/serverProfiles');
         expect(getAccountServiceEndpointSnapshot()).toMatchObject({
@@ -481,157 +585,26 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
         });
     });
 
-    it('presents and executes key sign-in for a key-only selected service without reading the active Home', async () => {
-        // Fresh device: the selected service advertises key login and no OAuth providers.
+    it('hands key-only service entry to the full-screen controller with exact automatic intent', async () => {
         discoverAuthenticationMethodsMock.mockReset();
         discoverAuthenticationMethodsMock.mockResolvedValue(keyOnlyDiscovery());
-        modalPromptMock.mockResolvedValueOnce('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
         await renderEntry();
 
-        // The key-only service still owns the welcome sign-in path: the entry exposes the key
-        // action instead of falling back to the ordinary active-Home actions.
-        const startKeySignIn = wizardControllerMock.lastProps
-            ?.onContinueWithAccountServiceKey as () => Promise<void>;
-        expect(typeof startKeySignIn).toBe('function');
-
-        getActiveServerSnapshotMock.mockClear();
-        await act(async () => {
-            await startKeySignIn();
+        expect(capturedAccountServiceEntry()).toMatchObject({
+            status: 'ready',
+            discovery: {
+                serverIdentityId: SELECTED_SERVICE_IDENTITY,
+                keyLoginAvailable: true,
+                oauthProviderIds: [],
+            },
         });
-
-        // Executes key sign-in against that exact Account Service, on its observed stable
-        // identity and advertised canonical audience.
-        expect(loginWithKeyMock).toHaveBeenCalledTimes(1);
-        expect(loginWithKeyMock.mock.calls[0]?.[0]).toMatchObject({
-            endpointUrl: SELECTED_SERVICE_URL,
-            endpointServerIdentityId: SELECTED_SERVICE_IDENTITY,
-            canonicalServerUrl: SELECTED_SERVICE_URL,
+        expect(wizardControllerMock.lastProps?.accountContinuationIntent).toEqual({
+            kind: 'enter',
+            target: { kind: 'automatic' },
         });
-        expect((loginWithKeyMock.mock.calls[0]?.[0] as { secret: Uint8Array }).secret).toHaveLength(32);
-
-        // Only the restricted Account Directory credential namespace is written: the ordinary
-        // Home OAuth custody and the focused-Home runtime are never consulted.
-        expect(setPendingExternalAuthMock).not.toHaveBeenCalled();
-        expect(startOAuthMock).not.toHaveBeenCalled();
-        expect(getActiveServerSnapshotMock).not.toHaveBeenCalled();
-
-        // Directory refresh and preferred-Home enrollment run under the explicit
-        // enter_preferred_home intent, and the exact enrolled Home is entered through the one
-        // post-enrollment intent finalizer.
-        expect(refreshOpMock).toHaveBeenCalledTimes(1);
-        expect(refreshOpMock.mock.calls[0]?.[1]).toMatchObject({ entryIntent: 'enter_preferred_home' });
-        expect(enrollOpMock).toHaveBeenCalledTimes(1);
-        expect(enrollOpMock.mock.calls[0]?.[1]).toMatchObject({ entryIntent: 'enter_preferred_home' });
-        expect(finalizeIntentMock).toHaveBeenCalledTimes(1);
-        expect(finalizeIntentMock).toHaveBeenCalledWith(
-            PREFERRED_HOME_IDENTITY,
-            'enter_preferred_home',
-            expect.any(String),
-            expect.any(Function),
-        );
-
-        // The observed stable service identity is bound through the existing endpoint owner so
-        // later continuations resolve to this exact service selection.
-        const { getAccountServiceEndpointSnapshot } = await import('@/sync/domains/server/serverProfiles');
-        expect(getAccountServiceEndpointSnapshot()).toMatchObject({
-            url: SELECTED_SERVICE_URL,
-            serverIdentityId: SELECTED_SERVICE_IDENTITY,
-        });
+        expect(wizardControllerMock.lastProps?.onAccountDirectoryKeyResult).toEqual(expect.any(Function));
+        expect(wizardControllerMock.lastProps?.onContinueWithAccountServiceKey).toBeUndefined();
+        expect(modalPromptMock).not.toHaveBeenCalled();
     });
 
-    it('keeps a key-sign-in approval on Welcome and presents the shared continuation surface', async () => {
-        discoverAuthenticationMethodsMock.mockReset();
-        discoverAuthenticationMethodsMock.mockResolvedValue(keyOnlyDiscovery());
-        modalPromptMock.mockResolvedValueOnce('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-        enrollOpMock.mockResolvedValueOnce({
-            kind: 'approval_required',
-            homeServerIdentityId: PREFERRED_HOME_IDENTITY,
-            approvalId: 'approval-welcome',
-            expiresAtMs: Date.now() + 60_000,
-            resume: vi.fn(async () => ({ kind: 'cancelled' as const })),
-            cancel: vi.fn(async () => ({ kind: 'cancelled' as const })),
-        });
-        const screen = await renderEntry();
-
-        const startKeySignIn = wizardControllerMock.lastProps
-            ?.onContinueWithAccountServiceKey as () => Promise<void>;
-        await act(async () => {
-            await startKeySignIn();
-        });
-
-        expect(screen.findByTestId('oauth-account-directory-approval-waiting')).toBeTruthy();
-        expect(screen.findByTestId('oauth-account-directory-approval-cancel')).toBeTruthy();
-        expect(modalAlertMock).not.toHaveBeenCalled();
-        expect(finalizeIntentMock).not.toHaveBeenCalled();
-    });
-
-    it('reports an invalid key without writing any credential for a key-only selected service', async () => {
-        discoverAuthenticationMethodsMock.mockReset();
-        discoverAuthenticationMethodsMock.mockResolvedValue(keyOnlyDiscovery());
-        modalPromptMock.mockResolvedValueOnce('not-a-valid-key');
-        await renderEntry();
-
-        const startKeySignIn = wizardControllerMock.lastProps
-            ?.onContinueWithAccountServiceKey as () => Promise<void>;
-        await act(async () => {
-            await startKeySignIn();
-        });
-
-        expect(loginWithKeyMock).not.toHaveBeenCalled();
-        expect(modalAlertMock).toHaveBeenCalled();
-        expect(enrollOpMock).not.toHaveBeenCalled();
-        expect(finalizeIntentMock).not.toHaveBeenCalled();
-    });
-
-    it('cancels a superseded key sign-in when the selected service changes while the secret prompt is open', async () => {
-        discoverAuthenticationMethodsMock.mockReset();
-        discoverAuthenticationMethodsMock.mockResolvedValue(keyOnlyDiscovery());
-        let resolvePrompt: ((value: string) => void) | null = null;
-        modalPromptMock.mockImplementationOnce(() => new Promise<string>((resolve) => {
-            resolvePrompt = resolve;
-        }));
-        await renderEntry();
-
-        const startKeySignIn = wizardControllerMock.lastProps
-            ?.onContinueWithAccountServiceKey as () => Promise<void>;
-        expect(typeof startKeySignIn).toBe('function');
-
-        let action: Promise<void> | null = null;
-        await act(async () => {
-            action = startKeySignIn();
-        });
-        expect(modalPromptMock).toHaveBeenCalledTimes(1);
-
-        // The user replaces the selected sign-in service through the canonical endpoint owner
-        // while the secret prompt is still open.
-        const { setAccountServiceEndpoint, getAccountServiceEndpointSnapshot } =
-            await import('@/sync/domains/server/serverProfiles');
-        act(() => {
-            setAccountServiceEndpoint({
-                url: OTHER_SERVICE_URL,
-                serverIdentityId: OTHER_SERVICE_IDENTITY,
-                source: 'user',
-            });
-        });
-
-        await act(async () => {
-            resolvePrompt?.('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-            await action;
-        });
-
-        // The superseded attempt is cancelled across the prompt boundary: no late restricted
-        // credential for the replaced service, no endpoint bind-back over the newer selection,
-        // and no refresh, enrollment, or Home entry for a service that is no longer selected.
-        expect(loginWithKeyMock).not.toHaveBeenCalled();
-        expect(getAccountServiceEndpointSnapshot()).toMatchObject({
-            url: OTHER_SERVICE_URL,
-            serverIdentityId: OTHER_SERVICE_IDENTITY,
-        });
-        expect(refreshOpMock).not.toHaveBeenCalled();
-        expect(enrollOpMock).not.toHaveBeenCalled();
-        expect(finalizeIntentMock).not.toHaveBeenCalled();
-        // Cancellation is silent, exactly like the Settings attempt path.
-        expect(modalAlertMock).not.toHaveBeenCalled();
-        expect(modalAlertAsyncMock).not.toHaveBeenCalled();
-    });
 });

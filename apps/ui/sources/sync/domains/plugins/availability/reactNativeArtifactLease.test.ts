@@ -152,6 +152,7 @@ function createPersistentStore() {
     ));
     const writes = vi.fn(async (record: PluginUiPersistentArtifactRecord) => {
         records.set(keyFor(record.persistentIdentity), record);
+        return 'persisted' as const;
     });
     const removes = vi.fn(async (identity: PluginUiPersistentArtifactRecord['persistentIdentity']) => {
         records.delete(keyFor(identity));
@@ -260,6 +261,7 @@ function fixture(input: Readonly<{
                 pluginId: materialization.pluginId,
                 response: PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
                     availabilityCursor: 7,
+                    packageAssets: [],
                     hostingCapability: accountHosted
                         ? { enabled: true, maxArtifactBytes: 1024, maxAccountBytes: 2048 }
                         : { enabled: false },

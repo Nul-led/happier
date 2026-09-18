@@ -81,8 +81,9 @@
     "allow-iroh-get-tunnel-status",
     "allow-iroh-get-availability",
     "allow-iroh-get-application-endpoint",
+    "allow-iroh-start-machine-tunnel",
     "allow-iroh-start-machine-http-tunnel",
-    "allow-iroh-stop-machine-http-tunnel",
+    "allow-iroh-stop-machine-tunnel",
     {
       "identifier": "http:default",
       "allow": [

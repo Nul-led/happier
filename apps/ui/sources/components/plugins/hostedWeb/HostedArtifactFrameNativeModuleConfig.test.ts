@@ -42,7 +42,8 @@ describe('hosted Artifact native-frame Expo module config', () => {
         const viewSource = readFileSync(view, 'utf8');
         const moduleSource = readFileSync(module, 'utf8');
 
-        expect(registrySource).toContain('storageLocator');
+        expect(registrySource).toContain('case "persistent"');
+        expect(registrySource).toContain('case "currentLoad"');
         expect(registrySource).toContain('policyTable');
         expect(registrySource).toContain('static let localScheme = "happier-hosted-artifact"');
         expect(registrySource).not.toContain('URLSession');
@@ -172,7 +173,7 @@ describe('hosted Artifact native-frame Expo module config', () => {
         );
         expect(loadIfReady).toContain('retryPendingProfileCleanup()');
         expect(loadIfReady.indexOf('retryPendingProfileCleanup()')).toBeLessThan(
-            loadIfReady.indexOf('val token = artifactHandleToken'),
+            loadIfReady.indexOf('val inlineDocument = inlineDocumentHandleToken != null'),
         );
         expect(retryPendingCleanup).toContain('pendingProfileNames.toList()');
         expect(retryPendingCleanup).toContain('.forEach(::deleteProfile)');
@@ -281,6 +282,47 @@ describe('hosted Artifact native-frame Expo module config', () => {
         expect(moduleSource).not.toContain('if (!HostedWebArtifactView.isProfileIsolationSupported()) return@AsyncFunction false');
     });
 
+    it('registers caller HTML as ephemeral bytes on the incumbent isolated native frame', () => {
+        const androidModuleSource = readFileSync(join(
+            moduleRoot,
+            'android/src/main/java/dev/happier/hostedwebframe/HappierHostedWebFrameModule.kt',
+        ), 'utf8');
+        const androidViewSource = readFileSync(join(
+            moduleRoot,
+            'android/src/main/java/dev/happier/hostedwebframe/HostedWebArtifactView.kt',
+        ), 'utf8');
+        const iosModuleSource = readFileSync(join(moduleRoot, 'ios/HappierHostedWebFrameModule.swift'), 'utf8');
+        const iosViewSource = readFileSync(join(moduleRoot, 'ios/HostedWebArtifactView.swift'), 'utf8');
+
+        expect(androidModuleSource).toContain('AsyncFunction("registerInlineDocument")');
+        expect(androidModuleSource).toContain('Function("unregisterInlineDocument")');
+        expect(androidModuleSource).toContain('Prop<String?>("inlineDocumentHandleToken")');
+        expect(androidViewSource).toContain('fun setInlineDocumentHandleToken(token: String?)');
+        expect(androidViewSource).toContain('HostedInlineDocumentRegistry.originFor(token)');
+        expect(androidViewSource).toContain('HostedInlineDocumentRegistry.withResolved(token, path');
+        expect(androidViewSource).toContain('WebViewCompat.setProfile(nextWebView, profileName)');
+        expect(androidViewSource).toContain('WebViewCompat.addWebMessageListener');
+        expect(androidViewSource).toContain('settings.allowContentAccess = false');
+        expect(androidViewSource).toContain('settings.domStorageEnabled = false');
+        expect(androidViewSource).toContain('settings.databaseEnabled = false');
+
+        expect(iosModuleSource).toContain('AsyncFunction("registerInlineDocument")');
+        expect(iosModuleSource).toContain('Function("unregisterInlineDocument")');
+        expect(iosModuleSource).toContain('Prop("inlineDocumentHandleToken")');
+        expect(iosViewSource).toContain('func setInlineDocumentHandleToken(_ token: String?)');
+        expect(iosViewSource).toContain('HostedInlineDocumentRegistry.shared.origin(for: token)');
+        expect(iosViewSource).toContain('HostedInlineDocumentRegistry.shared.readResponse(token: token, requestPath: requestPath)');
+        expect(iosViewSource).toContain('WKWebsiteDataStore.nonPersistent()');
+        expect(iosViewSource).toContain('message.frameInfo.isMainFrame');
+        expect(iosViewSource).toContain('navigationAction.shouldPerformDownload');
+        expect(iosViewSource).toContain('runOpenPanelWith');
+
+        for (const source of [androidModuleSource, androidViewSource, iosModuleSource, iosViewSource]) {
+            expect(source).not.toContain('.addJavascriptInterface(');
+            expect(source).not.toContain('javaScriptCanOpenWindowsAutomatically = true');
+        }
+    });
+
     it('binds the Android bridge to the exact active top-level origin instead of exposing a global JS interface', () => {
         const viewSource = readFileSync(join(
             moduleRoot,
@@ -384,9 +426,12 @@ describe('hosted Artifact native-frame Expo module config', () => {
         expect(committedFailure).not.toContain('isActiveArtifactPage()');
         expect(committedFailure).not.toContain('webView.url');
         expect(failureLifecycle).toContain('webView === self.webView,');
-        expect(failureLifecycle).toContain('let token = artifactHandleToken');
+        expect(failureLifecycle).toContain('let token = activeInlineDocument ? inlineDocumentHandleToken : artifactHandleToken');
         expect(failureLifecycle).toContain('let activeOrigin');
-        expect(failureLifecycle).toContain('HostedWebArtifactRegistryOwner.shared.origin(for: token) == activeOrigin');
+        expect(failureLifecycle).toContain('let currentOrigin = activeInlineDocument');
+        expect(failureLifecycle).toContain('HostedInlineDocumentRegistry.shared.origin(for: token)');
+        expect(failureLifecycle).toContain('HostedWebArtifactRegistryOwner.shared.origin(for: token)');
+        expect(failureLifecycle).toContain('guard currentOrigin == activeOrigin else');
         expect(failureLifecycle).toContain('activeSchemeHandler != nil');
         expect(failureLifecycle).toContain('loadedKey != nil');
         expect(failureLifecycle).not.toContain('webView.url');
@@ -469,7 +514,10 @@ describe('hosted Artifact native-frame Expo module config', () => {
         // the existing policy branch and must not manufacture a top-level
         // load-error path for an Artifact subresource.
         expect(failureLifecycle).toContain('webView === self.webView,');
-        expect(failureLifecycle).toContain('HostedWebArtifactRegistryOwner.shared.origin(for: token) == activeOrigin');
+        expect(failureLifecycle).toContain('let currentOrigin = activeInlineDocument');
+        expect(failureLifecycle).toContain('HostedInlineDocumentRegistry.shared.origin(for: token)');
+        expect(failureLifecycle).toContain('HostedWebArtifactRegistryOwner.shared.origin(for: token)');
+        expect(failureLifecycle).toContain('guard currentOrigin == activeOrigin else');
         expect(navigationPolicy).toContain('if let targetFrame = navigationAction.targetFrame, !targetFrame.isMainFrame {');
         expect(navigationPolicy).toContain('decisionHandler(.allow)');
         expect(navigationPolicy).not.toContain('onLoadError');

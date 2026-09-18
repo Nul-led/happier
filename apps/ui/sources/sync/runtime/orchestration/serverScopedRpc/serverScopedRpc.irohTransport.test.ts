@@ -197,8 +197,8 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
         });
         mockVerifiedLease();
 
-        const { resolveServerScopedSessionContext } = await import('./resolveServerScopedSessionContext');
-        const context = await resolveServerScopedSessionContext({ serverId: 'srv_home_b' });
+        const { resolveServerAccountRequestContext } = await import('./resolveServerAccountRequestContext');
+        const context = await resolveServerAccountRequestContext({ serverId: 'srv_home_b' });
 
         expect(context.scope).toBe('scoped');
         if (context.scope !== 'scoped') return;
@@ -225,8 +225,8 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
             Object.assign(new Error('identity mismatch'), { name: 'IrohError', code: 'identity_mismatch' }),
         );
 
-        const { resolveServerScopedSessionContext } = await import('./resolveServerScopedSessionContext');
-        await expect(resolveServerScopedSessionContext({ serverId: 'srv_home_b' }))
+        const { resolveServerAccountRequestContext } = await import('./resolveServerAccountRequestContext');
+        await expect(resolveServerAccountRequestContext({ serverId: 'srv_home_b' }))
             .rejects.toMatchObject({ name: 'IrohError', code: 'identity_mismatch' });
         expect(runtimeFetchSpy).not.toHaveBeenCalled();
     });
@@ -241,10 +241,10 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
             Object.assign(new Error('native unavailable'), { name: 'IrohError', code: 'unavailable' }),
         );
 
-        const { resolveServerScopedSessionContext, ServerScopedTransportUnavailableError } = await import(
-            './resolveServerScopedSessionContext'
+        const { resolveServerAccountRequestContext, ServerScopedTransportUnavailableError } = await import(
+            './resolveServerAccountRequestContext'
         );
-        await expect(resolveServerScopedSessionContext({ serverId: 'srv_home_b' }))
+        await expect(resolveServerAccountRequestContext({ serverId: 'srv_home_b' }))
             .rejects.toBeInstanceOf(ServerScopedTransportUnavailableError);
     });
 
@@ -270,8 +270,8 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
             Object.assign(new Error('native unavailable'), { name: 'IrohError', code: 'unavailable' }),
         );
 
-        const { resolveServerScopedSessionContext } = await import('./resolveServerScopedSessionContext');
-        const context = await resolveServerScopedSessionContext({ serverId: 'srv_home_b' });
+        const { resolveServerAccountRequestContext } = await import('./resolveServerAccountRequestContext');
+        const context = await resolveServerAccountRequestContext({ serverId: 'srv_home_b' });
         if (context.scope !== 'scoped') {
             throw new Error('expected scoped context');
         }
@@ -353,8 +353,8 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
         const readBodySpy = vi.spyOn(sourceResponse, 'arrayBuffer');
         runtimeFetchSpy.mockResolvedValue(sourceResponse);
 
-        const { createSessionRequestWithServerScope } = await import('./createSessionRequestWithServerScope');
-        const request = await createSessionRequestWithServerScope({
+        const { createServerRequestWithServerScope } = await import('./createServerRequestWithServerScope');
+        const request = await createServerRequestWithServerScope({
             serverId: 'srv_home_b',
             activeRequest: async () => new Response('{}', { status: 200 }),
         });
@@ -423,12 +423,12 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
         const { requestPeerRouteGrantV2 } = await import(
             '@/sync/domains/machines/peer/mediation/stream/productionRouteHttp'
         );
-        const { createSessionRequestWithServerScope } = await import(
-            './createSessionRequestWithServerScope'
+        const { createServerRequestWithServerScope } = await import(
+            './createServerRequestWithServerScope'
         );
         const result = await requestPeerRouteGrantV2({
             authority: {
-                request: createSessionRequestWithServerScope({
+                request: createServerRequestWithServerScope({
                     serverId: 'srv_home_b',
                     activeRequest: async () => {
                         throw new Error('non-focused grant must not use active request');

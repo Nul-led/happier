@@ -152,28 +152,41 @@ pub async fn iroh_start_machine_http_tunnel(
             .to_string(),
         );
         let started = envelope_result(&envelope)?;
-        let local_port = started
-            .get("localPort")
-            .and_then(Value::as_u64)
-            .filter(|port| *port > 0 && *port <= u16::MAX as u64)
-            .ok_or_else(|| {
-                native_error(
-                    "transport-unavailable",
-                    "malformed native machine HTTP lease",
-                )
-            })?;
-        Ok(json!({
-            "leaseId": response_string(&started, "machineTunnelId")?,
-            "localOrigin": format!("http://127.0.0.1:{local_port}"),
-            "localCapability": response_string(&started, "localCapability")?,
-        }))
+        renderer_machine_http_tunnel_lease(started)
     })
     .await
     .map_err(|error| native_error("transport-unavailable", error))?
 }
 
 #[tauri::command]
-pub async fn iroh_stop_machine_http_tunnel(lease_id: String) -> Result<Value, String> {
+pub async fn iroh_start_machine_tunnel(
+    app: AppHandle,
+    request: StartMachineHttpTunnelRequest,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let endpoint =
+            create_application_endpoint(&app, request.policy.as_deref(), &request.relay_urls)?;
+        let endpoint_handle = response_string(&endpoint, "endpointHandle")?;
+        let envelope = happier_iroh_native::start_machine_tunnel_json(
+            &json!({
+                "endpointHandle": endpoint_handle,
+                "endpointId": request.endpoint_id,
+                "directAddresses": request.direct_addresses,
+                "relayUrls": request.relay_urls,
+                "handshakeJson": request.handshake_json,
+                "capProfile": "machineBulk",
+            })
+            .to_string(),
+        );
+        let started = envelope_result(&envelope)?;
+        renderer_machine_tunnel_lease(started)
+    })
+    .await
+    .map_err(|error| native_error("transport-unavailable", error))?
+}
+
+#[tauri::command]
+pub async fn iroh_stop_machine_tunnel(lease_id: String) -> Result<Value, String> {
     let envelope = tauri::async_runtime::spawn_blocking(move || {
         happier_iroh_native::stop_machine_tunnel_json(
             &json!({ "machineTunnelId": lease_id }).to_string(),
@@ -238,6 +251,59 @@ fn response_string(value: &Value, field: &str) -> Result<String, String> {
                 format!("malformed native lease field {field}"),
             )
         })
+}
+
+fn renderer_machine_tunnel_lease(started: Value) -> Result<Value, String> {
+    let local_port = started
+        .get("localPort")
+        .and_then(Value::as_u64)
+        .filter(|port| *port > 0 && *port <= u16::MAX as u64)
+        .ok_or_else(|| native_error("transport-unavailable", "malformed native machine lease"))?;
+    let mut lease = json!({
+        "leaseId": response_string(&started, "machineTunnelId")?,
+        "localPort": local_port,
+    });
+    if let Some(local_capability) = started.get("localCapability") {
+        if local_capability.is_null() {
+            return Ok(lease);
+        }
+        let Some(local_capability) = local_capability.as_str().filter(|value| {
+            value.len() == 64
+                && value
+                    .as_bytes()
+                    .iter()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        }) else {
+            return Err(native_error(
+                "transport-unavailable",
+                "malformed native machine capability",
+            ));
+        };
+        lease["localCapability"] = Value::String(local_capability.to_owned());
+    }
+    Ok(lease)
+}
+
+fn renderer_machine_http_tunnel_lease(started: Value) -> Result<Value, String> {
+    let mut lease = renderer_machine_tunnel_lease(started)?;
+    let object = lease
+        .as_object_mut()
+        .ok_or_else(|| native_error("transport-unavailable", "malformed native machine lease"))?;
+    let local_port = object
+        .remove("localPort")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| native_error("transport-unavailable", "malformed native machine lease"))?;
+    if !object.contains_key("localCapability") {
+        return Err(native_error(
+            "transport-unavailable",
+            "malformed native machine HTTP capability",
+        ));
+    }
+    object.insert(
+        "localOrigin".to_owned(),
+        Value::String(format!("http://127.0.0.1:{local_port}")),
+    );
+    Ok(lease)
 }
 
 /// Projects the native start result onto the exact renderer lease facts.
@@ -423,8 +489,9 @@ mod tests {
         "iroh_get_tunnel_status",
         "iroh_get_availability",
         "iroh_get_application_endpoint",
+        "iroh_start_machine_tunnel",
         "iroh_start_machine_http_tunnel",
-        "iroh_stop_machine_http_tunnel",
+        "iroh_stop_machine_tunnel",
     ];
 
     #[test]
@@ -488,6 +555,43 @@ mod tests {
         assert_eq!(machine["relayPolicy"], "disabled");
         assert!(home.get("capProfile").is_none());
         assert!(machine.get("capProfile").is_none());
+    }
+
+    #[test]
+    fn raw_machine_lease_omits_absent_capability_but_preserves_protected_workspace_capability() {
+        let finite = renderer_machine_tunnel_lease(json!({
+            "machineTunnelId": "finite-lease",
+            "localPort": 46013,
+            "localCapability": null,
+        }))
+        .expect("finite lease");
+        assert_eq!(
+            finite,
+            json!({"leaseId": "finite-lease", "localPort": 46013})
+        );
+
+        let workspace = renderer_machine_tunnel_lease(json!({
+            "machineTunnelId": "workspace-lease",
+            "localPort": 46014,
+            "localCapability": "b".repeat(64),
+        }))
+        .expect("workspace lease");
+        assert_eq!(workspace["localCapability"], "b".repeat(64));
+
+        let http = renderer_machine_http_tunnel_lease(json!({
+            "machineTunnelId": "http-lease",
+            "localPort": 46015,
+            "localCapability": "c".repeat(64),
+        }))
+        .expect("HTTP lease");
+        assert_eq!(
+            http,
+            json!({
+                "leaseId": "http-lease",
+                "localOrigin": "http://127.0.0.1:46015",
+                "localCapability": "c".repeat(64),
+            })
+        );
     }
 
     #[test]
@@ -570,11 +674,11 @@ mod tests {
     fn native_failure_envelopes_reject_with_the_exact_code_preserved() {
         let failed = json!({
             "ok": false,
-            "error": { "code": "endpoint_key_unavailable", "message": "explicit re-pair is required" }
+            "error": { "code": "endpoint_key_unavailable", "message": "endpoint-identity recovery is required" }
         });
         assert_eq!(
             envelope_result(&failed).unwrap_err(),
-            "iroh_native_error:endpoint_key_unavailable:explicit re-pair is required"
+            "iroh_native_error:endpoint_key_unavailable:endpoint-identity recovery is required"
         );
         let malformed = json!({ "ok": false });
         assert_eq!(

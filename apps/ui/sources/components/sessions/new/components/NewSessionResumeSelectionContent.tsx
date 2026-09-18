@@ -7,7 +7,8 @@ import { InputBrowseButton } from '@/components/ui/buttons/InputBrowseButton';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t, tLoose } from '@/text';
-import { getClipboardStringTrimmedSafe } from '@/utils/ui/clipboard';
+import { getClipboardStringSafe } from '@/utils/ui/clipboard';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import { Icon } from '@/components/ui/icons/Icon';
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -130,15 +131,19 @@ export function NewSessionResumeSelectionContent(props: NewSessionResumeSelectio
     const agentLabel = props.agentLabel?.trim()
         || (agentType ? t(getAgentCore(agentType).displayNameKey) : tLoose('common.unknown'));
 
+    // A pasted or typed resume id is the Agent's own opaque session identity.
+    // Whitespace, newlines and base64 punctuation are part of those bytes, so
+    // this surface only decides present-vs-absent through Protocol's one
+    // opaque-identifier rule owner and never re-canonicalizes the value.
     const handlePaste = React.useCallback(async () => {
-        const text = await getClipboardStringTrimmedSafe();
-        if (text) {
+        const text = readNonBlankOpaqueIdentifier(await getClipboardStringSafe());
+        if (text !== null) {
             props.onChangeValue(text);
         }
     }, [props]);
 
     const handleSave = React.useCallback(() => {
-        props.onSave(props.value.trim());
+        props.onSave(readNonBlankOpaqueIdentifier(props.value) ?? '');
     }, [props]);
 
     const handleClear = React.useCallback(() => {
@@ -148,9 +153,11 @@ export function NewSessionResumeSelectionContent(props: NewSessionResumeSelectio
     const handleBrowse = React.useCallback(async () => {
         if (!props.resumeBrowse?.enabled) return;
         const selected = await props.resumeBrowse.onBrowse();
-        const trimmed = typeof selected === 'string' ? selected.trim() : '';
-        if (!trimmed) return;
-        props.onSave(trimmed);
+        // A browsed id is the Agent's own opaque session identity, so it is
+        // saved byte-for-byte. Only present-vs-absent is decided here; the
+        // canonical authoring-draft owner owns normalization.
+        if (typeof selected !== 'string' || selected.trim().length === 0) return;
+        props.onSave(selected);
     }, [props]);
 
     return (
@@ -187,6 +194,7 @@ export function NewSessionResumeSelectionContent(props: NewSessionResumeSelectio
                 <View style={styles.buttonRow}>
                     <View style={styles.buttonRowLeft}>
                         <Pressable
+                            testID="resume-id-paste-trigger"
                             onPress={() => {
                                 void handlePaste();
                             }}
@@ -204,6 +212,7 @@ export function NewSessionResumeSelectionContent(props: NewSessionResumeSelectio
                             </View>
                         </Pressable>
                         <Pressable
+                            testID="resume-id-save-trigger"
                             onPress={handleSave}
                             style={({ pressed }) => [
                                 styles.button,

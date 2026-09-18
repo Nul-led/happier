@@ -1,4 +1,8 @@
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { storage } from '@/sync/domains/state/storage';
+import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 import { sync } from '@/sync/sync';
 import { captureAssistantTextMessageBaseline, waitForNextAssistantTextMessage } from '@/voice/runtime/waitForNextAssistantTextMessage';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
@@ -19,6 +23,20 @@ import { ensureDefaultLocalVoiceQaBinding } from './ensureDefaultLocalVoiceQaBin
 import { useVoiceQaStore } from './voiceQaStore';
 import { stopVoiceQaMediaSession } from './stopVoiceQaMediaSession';
 import { waitForVoiceQaLifecycleController } from './waitForVoiceQaLifecycleController';
+
+/**
+ * The realtime adapter, the media lifecycle controller and the speech transport all address a
+ * Session by its Home-local id through the Home this client has mounted. This is the one place a
+ * qualified target may collapse to that id: a target in another Home shares nothing but its id
+ * with the Session those runtimes would actually attach to, so it is refused instead.
+ */
+function resolveMountedHomeRuntimeSessionId(target: SessionAddress | null): string {
+    if (!target) return VOICE_AGENT_GLOBAL_SESSION_ID;
+    if (!areServerProfileIdentifiersEquivalent(target.serverId, getActiveServerSnapshot().serverId)) {
+        throw new Error('voice_qa_target_home_not_mounted');
+    }
+    return target.sessionId;
+}
 
 export function createDefaultVoiceQaControllerDeps(): VoiceQaControllerDeps {
     let activeRealtimeAdapterId: string | null = null;
@@ -46,23 +64,34 @@ export function createDefaultVoiceQaControllerDeps(): VoiceQaControllerDeps {
         getLocalBinding: (controlSessionId) =>
             voiceConversationBindingResolver.resolveByControlSessionId({ controlSessionId, adapterId: 'local_conversation' }),
         ensureLocalRunningAndMaybeWelcome: (sessionId) => voiceAgentSessions.ensureRunningAndMaybeWelcome(sessionId),
-        ensureSessionVisibleForMessageRoute: (sessionId, options) =>
-            sync.ensureSessionVisibleForMessageRoute(sessionId, options),
-        refreshSessionMessages: (sessionId) => sync.refreshSessionMessages(sessionId),
+        ensureSessionVisibleForMessageRoute: (address, options) =>
+            sync.ensureSessionVisibleForMessageRoute(address.sessionId, { ...options, serverId: address.serverId }),
+        refreshSessionMessages: (address) => {
+            // This incumbent transcript refresh writes the active Home cache.
+            // Remote hydration above may supply session facts, but cannot admit that write.
+            if (address.serverId !== getActiveServerSnapshot().serverId) return;
+            return sync.refreshSessionMessages(address.sessionId);
+        },
         pendingPort: voiceTextTurnPendingPort,
         commitLocalUserTranscript: (sessionId, prompt, localId) =>
             voiceAgentSessions.commitUserTranscript(sessionId, prompt, localId),
         sendLocalTurn: (sessionId, prompt, options) =>
             voiceAgentSessions.sendTurn(sessionId, prompt, options),
         stopLocal: (sessionId) => voiceAgentSessions.stop(sessionId),
-        appendLocalContextUpdate: (sessionId, update) => voiceAgentSessions.appendContextUpdate(sessionId, update),
-        startRealtime: async (sessionId, initialContext, options) => {
+        appendLocalContextUpdate: (sessionId, update) => voiceAgentSessions.appendAttemptContextUpdate(sessionId, update),
+        startRealtime: async (target, initialContext, options) => {
+            const sessionId = resolveMountedHomeRuntimeSessionId(target);
             const adapter = resolveConfiguredRealtimeAdapter();
             if (!adapter) throw new Error('realtime_voice_session_not_registered');
             activeRealtimeAdapterId = adapter.id;
             activeRealtimeControlSessionId = sessionId;
             try {
-                await adapter.start({ sessionId, initialContext, textOnly: options?.textOnly === true });
+                await adapter.start({
+                    sessionId,
+                    requestedTargetSessionAddress: target,
+                    initialContext,
+                    textOnly: options?.textOnly === true,
+                });
             } catch (error) {
                 activeRealtimeAdapterId = null;
                 activeRealtimeControlSessionId = null;
@@ -133,8 +162,13 @@ export function createDefaultVoiceQaControllerDeps(): VoiceQaControllerDeps {
                 timeoutMs,
             );
         },
-        installMediaTransportRouteRequirement: installDaemonSpeechStreamQaRouteRequirement,
-        startMedia: async (sessionId) => {
+        installMediaTransportRouteRequirement: ({ target, routeKind }) =>
+            installDaemonSpeechStreamQaRouteRequirement({
+                sessionId: resolveMountedHomeRuntimeSessionId(target),
+                routeKind,
+            }),
+        startMedia: async (target) => {
+            resolveMountedHomeRuntimeSessionId(target);
             const settings = (storage.getState() as any).settings;
             const expectedProviderId = typeof settings?.voice?.providerId === 'string'
                 ? settings.voice.providerId.trim()
@@ -143,7 +177,7 @@ export function createDefaultVoiceQaControllerDeps(): VoiceQaControllerDeps {
                 getController: getVoiceSessionLifecycleController,
                 isReady: (controller) => controller.getConfiguredProviderId() === expectedProviderId,
             });
-            await lifecycleController.toggle(sessionId);
+            await lifecycleController.toggle(target);
         },
         stopMedia: async (sessionId, adapterId) => {
             await stopVoiceQaMediaSession({

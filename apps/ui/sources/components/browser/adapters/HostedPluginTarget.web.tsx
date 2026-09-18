@@ -2,8 +2,13 @@ import type {
     PluginHostedWebBridgeEnvelopeV1,
     PluginHostedWebBridgeResponseEnvelopeV1,
     PluginHostedWebSecurityPolicyV1,
-} from '@happier-dev/protocol';
-import { buildPluginHostedWebStaticAssetContentSecurityPolicyV1 } from '@happier-dev/protocol/plugins/ui';
+    PluginUiHostApiWireIdentityV1,
+    PluginHostedWebBridgeBootstrapConfigV1,
+} from '@happier-dev/protocol/plugins/ui';
+import {
+    buildPluginHostedWebStaticAssetContentSecurityPolicyV1,
+    type UiSurfaceNetworkOriginV1,
+} from '@happier-dev/protocol/plugins/ui';
 import * as React from 'react';
 
 import {
@@ -11,6 +16,7 @@ import {
     type PluginHostedWebSandboxPolicy,
 } from '@/components/plugins/hostedWeb/sandbox';
 import { validatePluginHostedWebBridgeMessage } from '@/components/plugins/hostedWeb/bridge';
+import { buildHostedHtmlDocument } from '@/components/plugins/hostedWeb/buildHostedHtmlDocument';
 
 import { BrowserViewFrame } from '../frame/BrowserViewFrame.web';
 import {
@@ -20,20 +26,19 @@ import {
 } from './HostedPluginTargetSecurity';
 import type {
     BrowserDiagnosticsEngineBridgeConfig,
+    BrowserFrameMessageReceipt,
     BrowserFrameNavigationCommand,
+    WebIframeSource,
 } from '../frame/types';
 
 export type HostedPluginBridgeConfig = Readonly<{
     expectedOrigin: string;
-    expectedPluginId: string;
-    expectedContributionId: string;
-    expectedSurfaceId: string;
-    expectedNonce: string;
-    expectedSessionId?: string | null;
+    identity: PluginUiHostApiWireIdentityV1;
     allowedMessageKinds: ReadonlySet<string>;
-    onMessage: (
-        envelope: PluginHostedWebBridgeEnvelopeV1,
-    ) => void | PluginHostedWebBridgeResponseEnvelopeV1 | Promise<PluginHostedWebBridgeResponseEnvelopeV1 | void>;
+        onMessage: (
+            envelope: PluginHostedWebBridgeEnvelopeV1,
+            receipt: BrowserFrameMessageReceipt,
+        ) => void | PluginHostedWebBridgeResponseEnvelopeV1 | Promise<PluginHostedWebBridgeResponseEnvelopeV1 | void>;
     /**
      * EU-8: lend the bridge owner this frame's host->frame delivery primitive
      * for as long as the frame is mounted. Absent means the surface has no push
@@ -61,7 +66,7 @@ const DEFAULT_HOSTED_PLUGIN_SANDBOX: PluginHostedWebSandboxPolicy = {
 
 export function HostedPluginTarget(props: Readonly<{
     title: string;
-    url: string;
+    bootstrapConfig?: PluginHostedWebBridgeBootstrapConfigV1;
     sandbox?: PluginHostedWebSandboxPolicy;
     security?: PluginHostedWebSecurityPolicyV1;
     testID: string;
@@ -74,15 +79,25 @@ export function HostedPluginTarget(props: Readonly<{
      */
     opaqueArtifactFrame?: boolean;
     onUnexpectedNavigation?: () => void;
+    onLoad?: () => void;
+    onError?: () => void;
     diagnostics?: BrowserDiagnosticsEngineBridgeConfig;
-}>): React.ReactElement {
+    networkOrigins?: readonly UiSurfaceNetworkOriginV1[];
+    externalHttpLinks?: boolean;
+}> & WebIframeSource): React.ReactElement {
     const sandbox = props.sandbox ?? DEFAULT_HOSTED_PLUGIN_SANDBOX;
     const security = props.security ?? DEFAULT_HOSTED_PLUGIN_SECURITY;
-    const opaqueArtifactFrame = props.opaqueArtifactFrame === true;
+    const opaqueArtifactFrame = props.opaqueArtifactFrame === true || props.html !== undefined;
+    const source = React.useMemo<WebIframeSource>(() => props.html === undefined
+        ? { url: props.url }
+        : { html: buildHostedHtmlDocument(props.html, props.bootstrapConfig, {
+            networkOrigins: props.networkOrigins,
+            externalHttpLinks: props.externalHttpLinks,
+        }) }, [props.url, props.html, props.bootstrapConfig, props.externalHttpLinks, props.networkOrigins]);
     const [artifactFrameRevoked, setArtifactFrameRevoked] = React.useState(false);
     React.useEffect(() => {
         setArtifactFrameRevoked(false);
-    }, [opaqueArtifactFrame, props.navigationKey, props.url]);
+    }, [opaqueArtifactFrame, props.navigationKey, props.url, props.html]);
     const webMessageBridge = React.useMemo(() => {
         const bridge = props.bridge;
         if (!bridge) return undefined;
@@ -92,21 +107,18 @@ export function HostedPluginTarget(props: Readonly<{
             // lifetime before `onMessage`; only then may delivery use `*`.
             targetOrigin: opaqueArtifactFrame ? '*' : bridge.expectedOrigin,
             ...(opaqueArtifactFrame ? { allowWildcardTargetOrigin: true } : {}),
+            ...(opaqueArtifactFrame ? { exactDocumentChannel: true } : {}),
             ...(bridge.attachHostMessages ? { attachHostMessages: bridge.attachHostMessages } : {}),
-            onMessage: (event: MessageEvent) => {
+            onMessage: (event: MessageEvent, receipt: BrowserFrameMessageReceipt) => {
             const result = validatePluginHostedWebBridgeMessage({
                 message: event.data,
                 origin: event.origin,
                 expectedOrigin: opaqueArtifactFrame ? 'null' : bridge.expectedOrigin,
-                expectedPluginId: bridge.expectedPluginId,
-                expectedContributionId: bridge.expectedContributionId,
-                expectedSurfaceId: bridge.expectedSurfaceId,
-                expectedNonce: bridge.expectedNonce,
-                expectedSessionId: bridge.expectedSessionId,
+                identity: bridge.identity,
                 allowedMessageKinds: bridge.allowedMessageKinds,
             });
             if (result.ok) {
-                return bridge.onMessage(result.envelope);
+                return bridge.onMessage(result.envelope, receipt);
             }
             return undefined;
             },
@@ -119,7 +131,7 @@ export function HostedPluginTarget(props: Readonly<{
         props.onUnexpectedNavigation?.();
     }, [opaqueArtifactFrame, props.onUnexpectedNavigation]);
 
-    if (artifactFrameRevoked || !canLoadHostedPluginTargetUrl({ security, url: props.url })) {
+    if (artifactFrameRevoked || (props.html === undefined && !canLoadHostedPluginTargetUrl({ security, url: props.url }))) {
         return (
             <BrowserViewFrame
                 engine={{
@@ -146,7 +158,7 @@ export function HostedPluginTarget(props: Readonly<{
         : buildPluginHostedWebStaticAssetContentSecurityPolicyV1(security, {
             frameAncestors: resolveHostDocumentOrigin(),
         });
-    const resolvedSandbox = resolveHostedPluginWebSandboxPolicy({
+    const resolvedSandbox = props.html !== undefined ? DEFAULT_HOSTED_PLUGIN_SANDBOX : resolveHostedPluginWebSandboxPolicy({
         sandbox,
         security,
         url: props.url,
@@ -157,7 +169,7 @@ export function HostedPluginTarget(props: Readonly<{
             engine={{
                 kind: 'webIframe',
                 title: props.title,
-                url: props.url,
+                ...source,
                 // The selected Artifact route is deliberately opaque even
                 // though its URL shares the host's app origin. This removes
                 // guest storage/cookie access and prevents a same-origin
@@ -181,6 +193,8 @@ export function HostedPluginTarget(props: Readonly<{
                         onUnexpectedNavigation: handleUnexpectedNavigation,
                     }
                     : {}),
+                onLoad: props.onLoad,
+                onError: props.onError,
                 diagnostics: props.diagnostics,
                 webMessageBridge,
             }}

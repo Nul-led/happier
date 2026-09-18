@@ -8,6 +8,7 @@ import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeFor
 import { t } from '@/text';
 import { TextInput } from '@/components/ui/text/Text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 
 
 export interface SearchHeaderProps {
@@ -25,6 +26,15 @@ export interface SearchHeaderProps {
 
 const INPUT_BORDER_RADIUS = 10;
 const SEARCH_HEADER_PADDING_BOTTOM = 12;
+
+/**
+ * The search field is a touch target, so it carries the platform minimum from
+ * the canonical owner rather than whatever its padding and line height happen to
+ * add up to. Padding alone left it at roughly 38pt on iOS and 40dp on Android,
+ * under the 44/48 the accessibility contract requires. This is a floor, not a
+ * fixed height: larger text still grows the field.
+ */
+const SEARCH_INPUT_MIN_HEIGHT = resolveMinimumInteractiveTargetSize(Platform.OS);
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
@@ -46,6 +56,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         borderRadius: INPUT_BORDER_RADIUS,
         paddingHorizontal: 12,
         paddingVertical: 8,
+        minHeight: SEARCH_INPUT_MIN_HEIGHT,
     },
     textInput: {
         flex: 1,

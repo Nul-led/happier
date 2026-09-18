@@ -145,6 +145,25 @@ describe('SettingsLayoutRoute stack registration', () => {
         expect(screenNames).toContain('plugins/[pluginId]');
         expect(screenNames).toContain('actions');
         expect(screenNames).toContain('actions/[actionId]');
+        for (const name of [
+            'home/[serverId]/policies',
+            'home/[serverId]/policies/identity/new',
+            'home/[serverId]/policies/identity/[providerId]/index',
+            'home/[serverId]/policies/identity/[providerId]/edit',
+            'home/[serverId]/policies/github-apps/new',
+            'home/[serverId]/policies/github-apps/[registrationId]/index',
+            'home/[serverId]/policies/github-apps/[registrationId]/edit',
+            'teams/[serverId]/[teamId]/authentication',
+            'teams/[serverId]/[teamId]/authentication/new',
+            'teams/[serverId]/[teamId]/authentication/[connectionId]',
+            'teams/[serverId]/[teamId]/authentication/[connectionId]/edit',
+            'teams/[serverId]/[teamId]/authentication/directory',
+            'teams/[serverId]/[teamId]/authentication/directory/[sourceId]',
+            'teams/[serverId]/[teamId]/authentication/github-apps/[registrationId]/index',
+            'teams/[serverId]/[teamId]/authentication/github-apps/[registrationId]/edit',
+        ]) {
+            expect(screenNames).toContain(name);
+        }
     });
 
     it('refreshes stack chrome translations when the language changes and the route rerenders', async () => {

@@ -1,6 +1,5 @@
 import {
   PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-  PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
 } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
 
@@ -8,6 +7,7 @@ import {
   createDaemonSpeechStreamCarrierAdapter,
   describeDaemonSpeechStreamRpcCompatibilityTransport,
 } from './DaemonSpeechStreamCarrier';
+import { MACHINE_RPC_JSON_BASE64_ENCODING } from '@/sync/domains/machines/peer/mediation/stream/carrier';
 
 const PCM_BYTES = new Uint8Array([0, 1, 2, 3]);
 
@@ -92,8 +92,8 @@ describe('DaemonSpeechStreamCarrier', () => {
     });
 
     expect(frame).toMatchObject({
-      kind: 'json_base64_v1_fallback',
-      frameEncoding: PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
+      kind: 'machine_rpc_json_base64',
+      frameEncoding: MACHINE_RPC_JSON_BASE64_ENCODING,
       fallbackReason: 'carrier_binary_unavailable',
       profile: {
         routeKind: 'server_relay',
@@ -105,7 +105,7 @@ describe('DaemonSpeechStreamCarrier', () => {
         pcm16Base64: 'AAECAw==',
       },
     });
-    if (frame.kind !== 'json_base64_v1_fallback') {
+    if (frame.kind !== 'machine_rpc_json_base64') {
       throw new Error('expected JSON/base64 fallback frame');
     }
     expect('payloadBytes' in frame).toBe(false);
@@ -114,7 +114,7 @@ describe('DaemonSpeechStreamCarrier', () => {
   it('describes the actual JSON/base64 compatibility transport without stale delivery milestones', () => {
     expect(describeDaemonSpeechStreamRpcCompatibilityTransport()).toEqual({
       kind: 'machine_rpc_json_base64_compatibility',
-      carrierFrameEncoding: PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
+      carrierFrameEncoding: MACHINE_RPC_JSON_BASE64_ENCODING,
       payloadShape: 'json_base64_envelope',
     });
   });

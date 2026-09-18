@@ -12,6 +12,7 @@ const installPromptRegistryItemMock = vi.hoisted(() => vi.fn(async () => ({
     routeKind: 'bundle' as const,
 })));
 const applySettingsLocalMock = vi.hoisted(() => vi.fn());
+const applySettingsMock = vi.hoisted(() => vi.fn());
 const updateArtifactWithHeaderMock = vi.hoisted(() => vi.fn(async () => {}));
 const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
 const sessionRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
@@ -85,6 +86,7 @@ vi.mock('@/voice/tools/actionImpl/agentCatalogList', () => ({
 }));
 vi.mock('@/sync/sync', () => ({
     sync: {
+        applySettings: applySettingsMock,
         createArtifactWithHeader: vi.fn(),
         fetchArtifactWithBody: vi.fn(),
         patchSessionMetadataWithRetry: patchSessionMetadataWithRetryMock,
@@ -116,6 +118,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
         writePromptLibraryArtifactToExternalAssetMock.mockClear();
         installPromptRegistryItemMock.mockClear();
         applySettingsLocalMock.mockClear();
+        applySettingsMock.mockClear();
         updateArtifactWithHeaderMock.mockClear();
         machineRpcWithServerScopeMock.mockReset();
         sessionRpcWithServerScopeMock.mockReset();
@@ -124,6 +127,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             settings: {
                 promptExternalLinksV1: { v: 1, links: [] },
             },
+            settingsScope: { serverId: 'home-a', accountId: 'account-a' },
             applySettingsLocal: applySettingsLocalMock,
             sessions: {},
         };
@@ -136,6 +140,13 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
     });
 
     it('passes serverId through prompt asset export operations', async () => {
+        writePromptLibraryArtifactToExternalAssetMock.mockImplementationOnce(async () => {
+            storageState.current.settingsScope = { serverId: 'home-b', accountId: 'account-b' };
+            return {
+                ok: true as const,
+                nextPromptExternalLinks: { v: 1 as const, links: [] },
+            };
+        });
         const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
         createDefaultActionExecutor();
 
@@ -156,6 +167,11 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             targetInput: 'review.md',
             serverId: 'server-1',
         }));
+        expect(applySettingsMock).toHaveBeenCalledWith({ promptExternalLinksV1: { v: 1, links: [] } }, {
+            expectedSettingsScope: { serverId: 'home-a', accountId: 'account-a' },
+            source: 'ui',
+        });
+        expect(applySettingsLocalMock).not.toHaveBeenCalled();
     });
 
     it('routes exact existing-session model selections to the session-host private transition owner', async () => {
@@ -701,6 +717,15 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
     });
 
     it('passes serverId through prompt registry install operations', async () => {
+        installPromptRegistryItemMock.mockImplementationOnce(async () => {
+            storageState.current.settingsScope = { serverId: 'home-b', accountId: 'account-b' };
+            return {
+                ok: true as const,
+                artifactId: 'bundle-1',
+                exported: true,
+                routeKind: 'bundle' as const,
+            };
+        });
         const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
         createDefaultActionExecutor();
 
@@ -718,6 +743,11 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             itemId: 'skills_sh:featured:item-1',
             serverId: 'server-1',
         }));
+        expect(applySettingsMock).toHaveBeenCalledWith({ promptExternalLinksV1: { v: 1, links: [] } }, {
+            expectedSettingsScope: { serverId: 'home-a', accountId: 'account-a' },
+            source: 'ui',
+        });
+        expect(applySettingsLocalMock).not.toHaveBeenCalled();
     });
 
     it('preserves serverId in approval headers when updating approval artifacts', async () => {
@@ -746,6 +776,49 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
                 kind: 'approval_request.v1',
                 approvalStatus: 'approved',
                 serverId: 'server-1',
+            }),
+            expect.any(String),
+        );
+    });
+
+    it('projects a V2 approval header from its immutable origin Home', async () => {
+        const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
+        createDefaultActionExecutor();
+
+        await capturedDeps.current.approvalsUpdate({
+            artifactId: 'approval-v2-1',
+            request: {
+                v: 2,
+                status: 'approved',
+                createdAtMs: 1,
+                updatedAtMs: 2,
+                createdBy: { surface: 'system', sessionId: 'session-1' },
+                requestedSurface: 'api',
+                executionOriginV1: {
+                    v: 1,
+                    authority: 'account_automation',
+                    surface: 'api',
+                    caller: { kind: 'host' },
+                    serverId: 'origin-home',
+                    serverIdentityId: 'stable-origin-home',
+                    accountId: 'account-1',
+                    principalId: 'principal-1',
+                    credentialId: 'credential-1',
+                    actionId: 'prompt_asset.export',
+                    requestId: 'request-1',
+                },
+                actionId: 'prompt_asset.export',
+                actionArgs: {},
+                summary: 'Export prompt',
+                decision: { kind: 'approve', decidedAtMs: 2 },
+            },
+        });
+
+        expect(updateArtifactWithHeaderMock).toHaveBeenCalledWith(
+            'approval-v2-1',
+            expect.objectContaining({
+                serverId: 'origin-home',
+                serverIdentityId: 'stable-origin-home',
             }),
             expect.any(String),
         );

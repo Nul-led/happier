@@ -191,11 +191,15 @@ vi.mock('@/auth/context/AuthContext', () => ({
     }),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentials: vi.fn(async () => null),
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentials: vi.fn(async () => null),
+        },
+    });
+});
 
 vi.mock('@/components/onboarding/state/usePendingSetupIntent', () => ({
     usePendingSetupIntent: () => setupIntentState.current,
@@ -283,6 +287,11 @@ function createWizardSurfaceProps(): OnboardingWizardSurfaceProps {
         layout: 'landscape',
         isDesktopShell: true,
         authEntryOptions: {
+            authenticationCatalog: { provenance: 'legacy', methods: [] },
+            authenticationActions: [],
+            keyChallengeV2Available: false,
+            homeTarget: { kind: 'saved_profile', profileRef: 'relay-profile' },
+            homeLabel: 'Relay Home',
             serverAvailability: 'ready',
             serverUrlForCopy: 'https://relay.example.test',
             showAuthActions: true,
@@ -309,10 +318,8 @@ function createWizardSurfaceProps(): OnboardingWizardSurfaceProps {
             },
             retryServerCheck: () => undefined,
         },
-        onCreateAccount: vi.fn(),
-        onCreateAccountViaProvider: vi.fn(),
-        onLoginWithKeylessProvider: vi.fn(),
-        onLoginWithMtls: vi.fn(),
+        accountContinuationIntent: { kind: 'enter', target: { kind: 'automatic' } },
+        onAccountDirectoryKeyResult: vi.fn(),
     };
 }
 
@@ -1153,7 +1160,7 @@ describe('OnboardingJourneyHost', () => {
         expect(syncSingletonState.applySettings).toHaveBeenCalledWith({
             sessionListAttentionPromotionModeV1: 'global',
             sessionListWorkingPlacementModeV1: 'global',
-        }, { source: 'ui' });
+        }, { expectedSettingsScope: null, source: 'ui' });
         expect(setPendingSetupIntentMock).toHaveBeenCalledWith({
             branch: 'thisComputer',
             phase: 'dismissed',

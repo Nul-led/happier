@@ -1,5 +1,11 @@
 import { redactVoicePathLikeData } from '@/voice/shared/redactVoicePathLikeData';
-import { getActionSpec } from '@happier-dev/protocol';
+import {
+  getActionSpec,
+  SESSION_AWARENESS_OPERATIONAL_PRIMARY_PRECEDENCE_V1,
+  SessionActivityCompatibilityResultV1Schema,
+  SessionAwarenessProjectionV1Schema,
+  type SessionOperationalReasonV1,
+} from '@happier-dev/protocol';
 import { PluginUiHostApiErrorCodeV1Schema } from '@happier-dev/protocol/plugins/ui';
 import {
   isInventoryPrivacyVoiceToolName,
@@ -29,7 +35,7 @@ export type VoiceToolResultRedactionPrefs = Readonly<{
  * tool result carrying a session under a `label`/`name` key would survive `shareSessionSummary=false`
  * on the raw `VOICE_TOOL_RESULTS_JSON` channel (X-L2).
  */
-const SESSION_SUMMARY_KEYS: ReadonlySet<string> = new Set(['title', 'label', 'name']);
+const SESSION_SUMMARY_KEYS: ReadonlySet<string> = new Set(['title', 'label', 'name', 'currentWork']);
 
 /**
  * Current-UI presentation is admitted and privacy-qualified by the current
@@ -78,6 +84,63 @@ const PERMISSION_REQUEST_KEYS: ReadonlySet<string> = new Set([
   'requestIds',
 ]);
 
+/**
+ * `sharePermissionRequests` gates every pending agent request, not only permission prompts: the
+ * push path ({@link file://./voiceHooks.ts} `onAgentRequest`) drops permission AND user-action
+ * announcements under the same preference, and the released `ui-web-v0.2.11` activity tool
+ * suppressed `permissionRequired`/`actionRequired`/`blocked` together. Both gated reasons are
+ * therefore withheld here so the pull path cannot disclose what the push path hides.
+ */
+const GATED_PENDING_REQUEST_REASONS: ReadonlySet<SessionOperationalReasonV1> = new Set([
+  'permission_required',
+  'action_required',
+]);
+
+/**
+ * Pending-request counts are the same disclosure as the booleans beside them, so the released
+ * digest's optional/CLI count fields are withheld rather than rewritten to a fabricated zero.
+ */
+const GATED_PENDING_REQUEST_COUNT_KEYS: readonly string[] = [
+  'pendingPermissionRequestCount',
+  'pendingUserActionRequestCount',
+];
+
+/**
+ * The canonical awareness object remains unchanged in application state. At the provider privacy
+ * boundary, hiding permission requests also has to hide the semantic fact that one exists; merely
+ * deleting request IDs would still tell the provider that the user is being asked for permission.
+ * Re-selecting from the remaining already-canonical reasons is a redaction projection, not a second
+ * awareness decision owner.
+ *
+ * `session.activity.get` answers with awareness or with its released compatibility digest, and the
+ * digest carries the same fact as derived booleans. Two representations of one Action must not
+ * disagree about privacy, so the digest is projected the same way.
+ */
+function redactPendingRequestState(value: unknown): unknown {
+  const awareness = SessionAwarenessProjectionV1Schema.safeParse(value);
+  if (awareness.success) {
+    const reasons = awareness.data.operational.reasons.filter(
+      (reason) => !GATED_PENDING_REQUEST_REASONS.has(reason),
+    );
+    const primary = SESSION_AWARENESS_OPERATIONAL_PRIMARY_PRECEDENCE_V1.find(
+      (candidate) => reasons.some((reason) => reason === candidate),
+    ) ?? 'none';
+    return { ...awareness.data, operational: { primary, reasons } };
+  }
+  if (!SessionActivityCompatibilityResultV1Schema.safeParse(value).success) return value;
+  const digest = value as Readonly<Record<string, unknown>>;
+  return {
+    ...Object.fromEntries(
+      Object.entries(digest).filter(([key]) => !GATED_PENDING_REQUEST_COUNT_KEYS.includes(key)),
+    ),
+    // `blocked` is exactly `permissionRequired || actionRequired` at the canonical adapter, so
+    // withholding both requirements settles it rather than inventing an unrelated fact.
+    ...(typeof digest.permissionRequired === 'boolean' ? { permissionRequired: false } : {}),
+    ...(typeof digest.actionRequired === 'boolean' ? { actionRequired: false } : {}),
+    ...(typeof digest.blocked === 'boolean' ? { blocked: false } : {}),
+  };
+}
+
 function shouldDropKey(
   key: string,
   prefs: VoiceToolResultRedactionPrefs,
@@ -103,8 +166,11 @@ function stripGatedKeys(
     return value.map((entry) => stripGatedKeys(entry, prefs, depth + 1, allowCurrentUiPresentationLabels));
   }
   if (!value || typeof value !== 'object') return value;
+  const privacyProjected = prefs.sharePermissionRequests
+    ? value
+    : redactPendingRequestState(value);
   const output: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+  for (const [key, entry] of Object.entries(privacyProjected as Record<string, unknown>)) {
     if (shouldDropKey(key, prefs, allowCurrentUiPresentationLabels)) continue;
     output[key] = stripGatedKeys(entry, prefs, depth + 1, allowCurrentUiPresentationLabels);
   }

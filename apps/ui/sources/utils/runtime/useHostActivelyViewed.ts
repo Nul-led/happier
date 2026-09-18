@@ -96,7 +96,7 @@ export function readHostActivelyViewed(): boolean {
     return hostActivelyViewed;
 }
 
-function subscribeToHostActivelyViewed(listener: () => void): () => void {
+export function subscribeToHostActivelyViewed(listener: () => void): () => void {
     startHostActivelyViewedWatch();
     listeners.add(listener);
     return () => {

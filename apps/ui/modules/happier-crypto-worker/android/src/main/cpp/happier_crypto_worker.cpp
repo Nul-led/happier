@@ -13,6 +13,8 @@ constexpr int kSecretKeyBytes = crypto_box_SECRETKEYBYTES;
 constexpr int kNonceBytes = crypto_box_NONCEBYTES;
 constexpr int kMacBytes = crypto_box_MACBYTES;
 constexpr int kSha512Bytes = crypto_hash_sha512_BYTES;
+constexpr int kDataKeyBytes = 32;
+constexpr int kEnvelopeBytes = kEnvelopeVersionBytes + kPublicKeyBytes + kNonceBytes + kMacBytes + kDataKeyBytes;
 constexpr int kSecretboxKeyBytes = crypto_secretbox_KEYBYTES;
 constexpr int kSecretboxNonceBytes = crypto_secretbox_NONCEBYTES;
 constexpr int kSecretboxMacBytes = crypto_secretbox_MACBYTES;
@@ -64,9 +66,11 @@ Java_dev_happier_cryptoworker_HappierCryptoWorkerNative_openDataKeyEnvelopeV1(
 
   const auto envelope = toVector(env, envelopeValue);
   const auto recipientSecretKeyOrSeed = toVector(env, recipientSecretKeyOrSeedValue);
+  // The envelope carries exactly one fixed-size data key, so a differently
+  // sized but cryptographically valid envelope is rejected before opening.
   if (
       recipientSecretKeyOrSeed.size() != kSecretKeyBytes ||
-      envelope.size() < static_cast<size_t>(kEnvelopeVersionBytes + kPublicKeyBytes + kNonceBytes + kMacBytes) ||
+      envelope.size() != static_cast<size_t>(kEnvelopeBytes) ||
       envelope[0] != kEnvelopeVersion) {
     return nullptr;
   }
@@ -79,14 +83,14 @@ Java_dev_happier_cryptoworker_HappierCryptoWorkerNative_openDataKeyEnvelopeV1(
 
   std::vector<unsigned char> opened;
   if (openBoxBundle(ephemeralPublicKey, nonce, boxed, boxedLength, recipientSecretKeyOrSeed.data(), opened)) {
-    return toJByteArray(env, opened);
+    return opened.size() == static_cast<size_t>(kDataKeyBytes) ? toJByteArray(env, opened) : nullptr;
   }
 
   unsigned char hash[kSha512Bytes] = {};
   crypto_hash_sha512(hash, recipientSecretKeyOrSeed.data(), recipientSecretKeyOrSeed.size());
   if (openBoxBundle(ephemeralPublicKey, nonce, boxed, boxedLength, hash, opened)) {
     sodium_memzero(hash, sizeof hash);
-    return toJByteArray(env, opened);
+    return opened.size() == static_cast<size_t>(kDataKeyBytes) ? toJByteArray(env, opened) : nullptr;
   }
 
   sodium_memzero(hash, sizeof hash);
@@ -128,4 +132,28 @@ Java_dev_happier_cryptoworker_HappierCryptoWorkerNative_openSecretboxJson(
   }
 
   return toJByteArray(env, opened);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_dev_happier_cryptoworker_HappierCryptoWorkerNative_derivePasswordEnvelopeKey(
+    JNIEnv *env, jclass, jbyteArray passwordValue, jbyteArray saltValue,
+    jlong opsLimit, jlong memLimitBytes, jint outputBytes) {
+  // Mirror PasswordEnvelopeKdfV1Schema before copying inputs or allocating Argon2 memory.
+  if (passwordValue == nullptr || saltValue == nullptr || outputBytes != 32 ||
+      opsLimit != 3 || memLimitBytes != 67108864 ||
+      env->GetArrayLength(passwordValue) < 15 || env->GetArrayLength(passwordValue) > 1024 ||
+      env->GetArrayLength(saltValue) != crypto_pwhash_SALTBYTES || sodium_init() < 0) {
+    return nullptr;
+  }
+  auto password = toVector(env, passwordValue);
+  const auto salt = toVector(env, saltValue);
+  std::vector<unsigned char> output(32, 0);
+  const int status = crypto_pwhash(
+      output.data(), output.size(), reinterpret_cast<const char *>(password.data()),
+      password.size(), salt.data(), static_cast<unsigned long long>(opsLimit),
+      static_cast<size_t>(memLimitBytes), crypto_pwhash_ALG_ARGON2ID13);
+  sodium_memzero(password.data(), password.size());
+  jbyteArray result = status == 0 ? toJByteArray(env, output) : nullptr;
+  sodium_memzero(output.data(), output.size());
+  return result;
 }

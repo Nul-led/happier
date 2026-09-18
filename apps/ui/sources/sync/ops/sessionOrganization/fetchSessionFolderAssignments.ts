@@ -1,6 +1,6 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { fetchSessionFolderAssignmentsForSessions } from '@/sync/api/session/sessionOrganizationApi';
-import { buildSessionOrganizationServerKey } from '@/sync/domains/session/organization';
+import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
 import { getStorage } from '@/sync/domains/state/storageStore';
 
 type SessionFolderAssignmentFetchPolicy = 'all' | 'missing';
@@ -8,7 +8,7 @@ type SessionFolderAssignmentFetchPolicy = 'all' | 'missing';
 const missingAssignmentFetchesBySessionKey = new Map<string, Promise<unknown>>();
 
 function getSessionAssignmentKey(serverId: string, sessionId: string): string {
-    return buildSessionOrganizationServerKey(serverId, sessionId);
+    return buildSessionOrganizationSessionKey(serverId, sessionId);
 }
 
 function filterInFlightAssignmentSessionIds(params: Readonly<{
@@ -44,14 +44,14 @@ function unregisterInFlightAssignmentFetch(params: Readonly<{
 }
 
 function filterMissingAssignmentSessionIds(params: Readonly<{
-    assignmentsBySessionKey: Record<string, string | null>;
+    assignmentsBySessionKey: Readonly<Record<string, unknown>>;
     serverId: string;
     sessionIds: readonly string[];
 }>): string[] {
     return params.sessionIds.filter((sessionId) => (
         !Object.prototype.hasOwnProperty.call(
             params.assignmentsBySessionKey,
-            buildSessionOrganizationServerKey(params.serverId, sessionId),
+            buildSessionOrganizationSessionKey(params.serverId, sessionId),
         )
     ));
 }

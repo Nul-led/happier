@@ -63,6 +63,9 @@ const transferHookState = vi.hoisted(() => ({
     uploadState: { status: 'idle' } as any,
     downloadState: { status: 'idle' } as any,
 }));
+const machineState = vi.hoisted(() => ({
+    current: { id: 'm1', active: true, activeAt: Date.now() } as any,
+}));
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -103,9 +106,20 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
             }),
         } as any,
         useWorkspaceRepositoryTreeExpandedPaths: () => ['src'],
-        useMachine: () => ({ id: 'm1', active: true, activeAt: Date.now() }) as any,
+        useMachine: () => machineState.current,
+        useServerScopedMachine: () => machineState.current,
     });
 });
+
+vi.mock('@/sync/domains/transfers/runtime/useMachineRpcDirectRouteAvailability', () => ({
+    useMachineRpcDirectRouteAvailability: () => 'viable',
+}));
+
+vi.mock('@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle', () => ({
+    isIrohMachineTransferLifecycleAvailable: () => false,
+    probeIrohMachineTransferLifecycleAvailability: async () => false,
+    subscribeIrohMachineTransferLifecycleAvailability: () => () => {},
+}));
 
 vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({
     useServerFeaturesSnapshotForServerId: () => ({
@@ -208,6 +222,7 @@ describe('WorkspaceRepositoryTreeBrowserView (toolbar actions)', () => {
         latestWorkspaceRepositoryTreeListProps.rootLoading = false;
         transferHookState.uploadState = { status: 'idle' } as any;
         transferHookState.downloadState = { status: 'idle' } as any;
+        machineState.current = { id: 'm1', active: true, activeAt: Date.now() } as any;
     });
 
     afterEach(() => {
@@ -423,6 +438,21 @@ describe('WorkspaceRepositoryTreeBrowserView (toolbar actions)', () => {
         });
         expect(clearWorkspaceRepositoryDirectoryEntriesSpy).toHaveBeenCalledWith({ workspaceCacheKey: 'server:m1:/repo' });
         expect(workspaceScmControllerState.refresh).toHaveBeenCalled();
+    });
+
+    it('keeps transfer actions available for a status-only 0.2 predecessor after the RPC probe succeeds', async () => {
+        machineState.current = {
+            id: 'm1',
+            active: true,
+            activeAt: Date.now(),
+            daemonState: { status: 'running' },
+        } as any;
+
+        const screen = await renderView();
+
+        const uploadAction = screen.findByTestId('workspace-repository-tree-upload');
+        expect(uploadAction).toBeTruthy();
+        expect(uploadAction?.props.disabled).toBe(false);
     });
 
     it('renders the shared transfer status bar when a workspace upload is in progress', async () => {

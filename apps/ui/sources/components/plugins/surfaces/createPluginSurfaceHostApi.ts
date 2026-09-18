@@ -33,6 +33,8 @@ import type { PluginErrorData } from '@happier-dev/plugin-sdk';
  */
 export type PluginSurfaceHostApiRequestOptions = Readonly<{
     signal?: AbortSignal;
+    /** Host-private one-use proof minted by the exact physical frame. */
+    consumeHostTransientActivation?: () => boolean;
     /**
      * Host-private admission handle retained only from an exact target-scoped
      * form selection. It is never decoded from a public action payload.
@@ -152,7 +154,7 @@ export function createPluginSurfaceHostApiPluginErrorData(
     };
 }
 
-function readPluginSurfaceHostApiError(
+export function readPluginSurfaceHostApiErrorPayload(
     value: PluginUiJsonValueV1,
 ): PluginUiHostApiErrorPayloadV1 | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -176,7 +178,7 @@ export async function settlePluginSurfaceHostApiRequest(
     };
     try {
         const payload = await invoke();
-        const error = readPluginSurfaceHostApiError(payload);
+        const error = readPluginSurfaceHostApiErrorPayload(payload);
         return PluginUiHostApiResponseEnvelopeV1Schema.parse(error
             ? { ...base, kind: 'error' as const, payload: error }
             : { ...base, kind: 'result' as const, payload });

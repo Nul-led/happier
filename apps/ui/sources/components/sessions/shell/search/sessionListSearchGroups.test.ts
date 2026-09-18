@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 
+import { sessionTagKey } from '../sessionTagUtils';
 import {
     SESSION_LIST_SEARCH_IN_THIS_VIEW_GROUP_KEY,
     SESSION_LIST_SEARCH_OTHER_MATCHES_GROUP_KEY,
@@ -17,6 +18,12 @@ const activeHeader: SessionListIndexItem = {
     groupKey: 'active',
     serverId: 'server-a',
 };
+
+// Session identity is the canonical qualified key, never a hand-built delimiter
+// string: `server-a:archived` collides with a Home literally named `server-a:archived`.
+function key(sessionId: string): string {
+    return sessionTagKey('server-a', sessionId);
+}
 
 function sessionItem(sessionId: string): SessionListIndexItem {
     return {
@@ -37,27 +44,27 @@ describe('resolveSessionListSearchOutsideMatches', () => {
             ],
             filters: {
                 searchQuery: 'Payments',
-                selectedTags: [],
-                sessionTags: {},
+                selectedTagIds: [],
+                sessionTagIdsBySessionKey: {},
                 searchableTextBySessionKey: {
-                    'server-a:current': 'current\nrelease Payments migration',
-                    'server-a:archived': 'archived\nPayments',
+                    [key('current')]: 'current\nrelease Payments migration',
+                    [key('archived')]: 'archived\nPayments',
                 },
                 primarySearchableTextBySessionKey: {
-                    'server-a:archived': 'archived\nPayments',
+                    [key('archived')]: 'archived\nPayments',
                 },
             },
         });
 
         expect(targets).toEqual([
             {
-                sessionKey: 'server-a:archived',
+                sessionKey: key('archived'),
                 serverId: 'server-a',
                 sessionId: 'archived',
                 reasons: ['archived'],
             },
             {
-                sessionKey: 'server-a:current',
+                sessionKey: key('current'),
                 serverId: 'server-a',
                 sessionId: 'current',
                 reasons: ['hidden-by-filters'],
@@ -67,17 +74,17 @@ describe('resolveSessionListSearchOutsideMatches', () => {
 
     it('keeps a valid hit whose session this list does not carry', () => {
         const outside = resolveSessionListSearchOutsideMatches({
-            candidateSessionKeys: new Set(['server-a:in-view']),
-            currentViewSessionKeys: new Set(['server-a:in-view']),
+            candidateSessionKeys: new Set([key('in-view')]),
+            currentViewSessionKeys: new Set([key('in-view')]),
             matchedSessionTargets: [
                 {
-                    sessionKey: 'server-a:in-view',
+                    sessionKey: key('in-view'),
                     serverId: 'server-a',
                     sessionId: 'in-view',
                     reasons: ['transcript'],
                 },
                 {
-                    sessionKey: 'server-a:archived',
+                    sessionKey: key('archived'),
                     serverId: 'server-a',
                     sessionId: 'archived',
                     reasons: ['transcript'],
@@ -87,7 +94,7 @@ describe('resolveSessionListSearchOutsideMatches', () => {
 
         expect(outside).toEqual([
             {
-                sessionKey: 'server-a:archived',
+                sessionKey: key('archived'),
                 serverId: 'server-a',
                 sessionId: 'archived',
                 reasons: ['transcript'],
@@ -97,16 +104,16 @@ describe('resolveSessionListSearchOutsideMatches', () => {
 
     it('retains a transcript hit hidden only by the current filters and records that reason', () => {
         expect(resolveSessionListSearchOutsideMatches({
-            candidateSessionKeys: new Set(['server-a:hidden']),
+            candidateSessionKeys: new Set([key('hidden')]),
             currentViewSessionKeys: new Set(),
             matchedSessionTargets: [{
-                sessionKey: 'server-a:hidden',
+                sessionKey: key('hidden'),
                 serverId: 'server-a',
                 sessionId: 'hidden',
                 reasons: ['transcript'],
             }],
         })).toEqual([{
-            sessionKey: 'server-a:hidden',
+            sessionKey: key('hidden'),
             serverId: 'server-a',
             sessionId: 'hidden',
             reasons: ['transcript', 'hidden-by-filters'],
@@ -115,11 +122,11 @@ describe('resolveSessionListSearchOutsideMatches', () => {
 
     it('returns nothing when every hit is already rendered', () => {
         expect(resolveSessionListSearchOutsideMatches({
-            candidateSessionKeys: new Set(['server-a:in-view']),
-            currentViewSessionKeys: new Set(['server-a:in-view']),
+            candidateSessionKeys: new Set([key('in-view')]),
+            currentViewSessionKeys: new Set([key('in-view')]),
             matchedSessionTargets: [
                 {
-                    sessionKey: 'server-a:in-view',
+                    sessionKey: key('in-view'),
                     serverId: 'server-a',
                     sessionId: 'in-view',
                     reasons: ['transcript'],
@@ -135,7 +142,7 @@ describe('appendSessionListSearchOtherMatches', () => {
             filteredItems: [activeHeader, sessionItem('in-view')],
             outsideMatches: [
                 {
-                    sessionKey: 'server-a:archived',
+                    sessionKey: key('archived'),
                     serverId: 'server-a',
                     sessionId: 'archived',
                     reasons: ['transcript', 'archived'],
@@ -165,7 +172,7 @@ describe('appendSessionListSearchOtherMatches', () => {
             filteredItems: [],
             outsideMatches: [
                 {
-                    sessionKey: 'server-a:archived',
+                    sessionKey: key('archived'),
                     serverId: 'server-a',
                     sessionId: 'archived',
                     reasons: ['transcript'],

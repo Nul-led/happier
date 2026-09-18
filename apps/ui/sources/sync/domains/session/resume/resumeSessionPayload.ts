@@ -46,6 +46,8 @@ export type ResumeHappySessionRpcParams = {
         requestId: string;
     }>;
     initialGoal?: SessionInitialGoalRequestV1;
+    /** Stable correlation for callers that must observe the resumed runtime before continuing. */
+    spawnNonce?: string;
 };
 
 type BuildResumeHappySessionRpcInput = Omit<ResumeHappySessionRpcParams, 'type' | 'agentTarget' | 'backendTarget'> & {
@@ -75,6 +77,7 @@ const ResumeHappySessionRpcParamsSchema = z.object({
     initialTranscriptAfterSeq: z.number().int().nonnegative().optional(),
     executionAuthorization: SpawnSessionExecutionAuthorizationSchema.optional(),
     initialGoal: SessionInitialGoalRequestV1Schema.optional(),
+    spawnNonce: z.string().min(1).optional(),
 }).superRefine((value, context) => {
     if (!value.agentTarget && !value.backendTarget) {
         context.addIssue({

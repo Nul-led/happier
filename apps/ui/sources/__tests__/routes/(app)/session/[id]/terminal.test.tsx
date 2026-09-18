@@ -6,6 +6,7 @@ import {
     renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 import { getStyleValue, installSessionRouteCommonModuleMocks } from './sessionRouteTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -196,7 +197,7 @@ describe('/session/[id]/terminal', () => {
         const cockpit = screen.findByType('SessionCockpitShell' as any);
         expect(cockpit.props.sessionId).toBe('session-1');
         expect(cockpit.props.routeServerId).toBe('server-b');
-        expect(cockpit.props.scopeId).toBe('session:session-1');
+        expect(cockpit.props.scopeId).toBe(createSessionPaneScopeId('session-1', 'server-b'));
         expect(cockpit.props.surface).toBe('terminal');
         expect(cockpit.props.safeAreaPadding).toBe(false);
         const root = screen.tree.root.findAll((node) => String(node.type) === 'View' && node.props.testID === 'session-cockpit-route-screen')[0];

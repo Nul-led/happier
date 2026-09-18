@@ -2,16 +2,15 @@ import {
     PUSH_NOTIFICATION_ANDROID_CHANNEL_IDS,
     PUSH_NOTIFICATION_CATEGORY_IDS,
     buildReadyNotificationContent,
-    extractFirstUserActionQuestion,
-    formatPermissionRequestSummary,
+    summarizeToolInputForNotification,
+    type AgentRequestKind,
+    type AttentionPreviewBehavior,
 } from '@happier-dev/protocol';
 import { buildActivityPreviewText } from '@/activity/attention/buildActivityPreviewText';
 import type { Message } from '@/sync/domains/messages/messageTypes';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { readSessionDisplayTitleField } from '@/sync/state/selectors';
 import { t } from '@/text';
-import type { AgentRequestKind } from '@/utils/sessions/permissions/permissionPromptPolicy';
-
 import type { ActivityLocalNotificationEvent } from './runtime/activityLocalNotificationBus';
 
 type ActivityLocalNotificationContent = Readonly<{
@@ -31,32 +30,44 @@ function resolveSessionNotificationTitle(session: Session | null | undefined): s
     return t('notifications.activity.defaultSessionTitle');
 }
 
-function summarizePermissionBody(toolName: string, toolArgs: unknown): string {
-    const summary = formatPermissionRequestSummary({
-        toolName,
-        toolInput: toolArgs,
-    }).replace(/^Permission required:\s*/i, '').trim();
-
-    return summary || t('notifications.activity.permissionFallbackBody');
-}
-
-function summarizeAgentRequestBody(requestKind: AgentRequestKind, toolName: string, toolArgs: unknown): string {
-    if (requestKind === 'permission') {
-        return summarizePermissionBody(toolName, toolArgs);
-    }
-
-    return extractFirstUserActionQuestion(toolName, toolArgs) || t('notifications.activity.userActionFallbackBody');
+function summarizeAgentRequestBody(requestKind: AgentRequestKind, toolName: string, toolArgs: unknown, includeMessageText: boolean): string {
+    const details = includeMessageText ? summarizeToolInputForNotification(toolName, toolArgs, {
+        command: t('notifications.activity.requestLabels.command'),
+        file: t('notifications.activity.requestLabels.file'),
+        selectOne: t('notifications.activity.requestLabels.selectOne'),
+        selectMultiple: t('notifications.activity.requestLabels.selectMultiple'),
+        customAnswer: t('notifications.activity.requestLabels.customAnswer'),
+        localMessages: t('notifications.activity.requestLabels.localMessages'),
+        remoteMessages: t('notifications.activity.requestLabels.remoteMessages'),
+    }) : null;
+    return details || t(requestKind === 'permission'
+        ? 'notifications.activity.permissionFallbackBody'
+        : 'notifications.activity.userActionFallbackBody');
 }
 
 export function buildActivityLocalNotificationContent(params: Readonly<{
     event: ActivityLocalNotificationEvent;
     session: Session | null | undefined;
     serverUrl: string;
+    contextLine?: string | null;
+    previewBehavior?: AttentionPreviewBehavior;
     includeReadyMessageText?: boolean;
+    includeRequestMessageText?: boolean;
 }>): ActivityLocalNotificationContent {
-    const title = resolveSessionNotificationTitle(params.session);
+    const previewBehavior = params.previewBehavior;
+    const includePrivateTitle = previewBehavior !== 'status_only';
+    const baseTitle = includePrivateTitle
+        ? resolveSessionNotificationTitle(params.session)
+        : t('notifications.activity.defaultSessionTitle');
+    const contextLine = typeof params.contextLine === 'string' ? params.contextLine.trim() : '';
+    // Privacy gates the Session title and the message preview, never the shared context line: the
+    // caller already resolved it through the canonical context projection, which reads only
+    // structural facts this device is authorized for. A locked or status-only alert therefore still
+    // names its exact Home, audience, freshness and content state (Lane 07.4 §8, L07-R42/L07-I37).
+    const title = contextLine ? `${baseTitle} · ${contextLine}` : baseTitle;
     const baseData = {
-        sessionId: params.event.sessionId,
+        serverId: params.event.address.serverId,
+        sessionId: params.event.address.sessionId,
         serverUrl: params.serverUrl,
     };
 
@@ -66,7 +77,11 @@ export function buildActivityLocalNotificationContent(params: Readonly<{
             defaultTitle: t('notifications.activity.defaultSessionTitle'),
             waitingForCommandLabel: title,
             fallbackBody: t('notifications.activity.readyFallbackBody'),
-            includeMessageText: params.includeReadyMessageText,
+            includeMessageText: previewBehavior === 'include_preview'
+                ? params.includeReadyMessageText !== false
+                : previewBehavior === undefined
+                    ? params.includeReadyMessageText
+                    : false,
             messageText: buildActivityPreviewText({ messages: params.event.messages }),
         });
 
@@ -82,7 +97,16 @@ export function buildActivityLocalNotificationContent(params: Readonly<{
 
     return {
         title,
-        body: summarizeAgentRequestBody(params.event.requestKind, params.event.toolName, params.event.toolArgs),
+        body: summarizeAgentRequestBody(
+            params.event.requestKind,
+            params.event.toolName,
+            params.event.toolArgs,
+            previewBehavior === 'include_preview'
+                ? params.includeRequestMessageText !== false
+                : previewBehavior === undefined
+                    ? params.includeRequestMessageText !== false
+                    : false,
+        ),
         data: {
             ...baseData,
             requestId: params.event.requestId,

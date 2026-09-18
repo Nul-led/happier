@@ -76,6 +76,7 @@ export const ChatListMessageRow = React.memo(function ChatListMessageRow(props: 
             messageRevision={messageRevision}
             metadata={props.metadata}
             sessionId={originSessionId}
+            serverId={props.toolChromeCommon?.serverId}
             activeThinkingMessageId={props.activeThinkingMessageId}
             thinkingExpanded={isThinking ? props.resolveThinkingExpanded(message.id) : undefined}
             onThinkingExpandedChange={isThinking ? (next) => props.setThinkingExpanded(message.id, next) : undefined}
@@ -98,6 +99,7 @@ export const ChatListMessageRow = React.memo(function ChatListMessageRow(props: 
             messageRevision={messageRevision}
             metadata={props.metadata}
             sessionId={originSessionId}
+            serverId={props.toolChromeCommon?.serverId}
             activeThinkingMessageId={props.activeThinkingMessageId}
             thinkingExpanded={isThinking ? props.resolveThinkingExpanded(message.id) : undefined}
             onThinkingExpandedChange={isThinking ? (next) => props.setThinkingExpanded(message.id, next) : undefined}

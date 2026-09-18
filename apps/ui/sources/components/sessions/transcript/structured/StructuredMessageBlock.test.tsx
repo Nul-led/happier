@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMessageStructuredPresentationV1 } from '@happier-dev/protocol';
 import { renderScreen } from '@/dev/testkit';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import {
     createPluginMessageActionHost,
     PluginMessageActionHostProvider,
@@ -50,6 +51,8 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
     machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsGet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
 }));
 
 vi.mock('@/sync/ops/sessionMachineTarget', () => ({
@@ -63,8 +66,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionI
 let StructuredMessageBlock: typeof import('./StructuredMessageBlock').StructuredMessageBlock;
 const editableInteraction = deriveTranscriptInteraction({
     kind: 'session',
-    accessLevel: null,
-    canApprovePermissions: true,
+    access: createSessionAccessFixture('owner'),
     isSessionActive: true,
 });
 
@@ -651,5 +653,46 @@ describe('StructuredMessageBlock', () => {
         const serialized = JSON.stringify(tree!.toJSON());
         expect(serialized).toContain('alpha');
         expect(serialized).toContain('Shut alpha down');
+    });
+
+    it('renders execution-run completion input as a structured card instead of raw fallback text', async () => {
+        const screen = await renderScreen(<StructuredMessageBlock
+            message={{
+                kind: 'user-text',
+                id: 'm_completion',
+                localId: null,
+                createdAt: 42,
+                text: [
+                    '<happier_execution_run_notification>',
+                    'This is an automated background-run notification from Happier, not a user message.',
+                    'Run ID: run_1',
+                    'Status: succeeded',
+                    '',
+                    'Final result:',
+                    'Done',
+                    '</happier_execution_run_notification>',
+                ].join('\n'),
+                meta: {
+                    happierStructuredInputV1: {
+                        v: 1,
+                        executionRunCompletion: {
+                            v: 1,
+                            runId: 'run_1',
+                            status: 'succeeded',
+                            finishedAtMs: 42,
+                            canInspect: true,
+                            summary: 'Done',
+                        },
+                    },
+                },
+            } as any}
+            sessionId="s1"
+            onJumpToAnchor={() => {}}
+        />);
+
+        expect(screen.findByTestId('execution-run-completion:run_1')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('run_1');
+        expect(screen.getTextContent()).toContain('Done');
+        expect(screen.getTextContent()).not.toContain('<happier_execution_run_notification>');
     });
 });

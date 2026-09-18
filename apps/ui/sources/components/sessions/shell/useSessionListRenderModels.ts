@@ -1,3 +1,5 @@
+import { useSessionAudienceContext } from '@/hooks/teams/useSessionAudienceContext';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import * as React from 'react';
 
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
@@ -17,6 +19,7 @@ import { buildSessionListProjectHeaderViewModels, type SessionListProjectHeaderV
 import {
     buildSessionListReachabilitySummary,
     createSessionListReachabilitySummaryCache,
+    retireSessionListReachabilitySummaryCacheServerScope,
 } from './buildSessionListReachabilitySummary';
 import { buildSessionListRowViewModels, type SessionListRowViewModel } from './sessionListRowViewModels';
 import type { SessionAttentionStandingPolicy } from '@/sync/domains/session/organization/attentionStanding';
@@ -53,6 +56,8 @@ import {
     type ExistingSessionDraftProjection,
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { sessionTagKey } from './sessionTagUtils';
+import type { ServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
 type SessionReachableDisplay = Readonly<{
     machineId: string | null;
@@ -134,10 +139,13 @@ function measureSessionListRenderDerivation<T>(
 function resolveCachedSessionListRowRenderablesForItems(input: Readonly<{
     items: ReadonlyArray<SessionListIndexItem>;
     subscribedRowRenderableByKey: ReadonlyMap<string, SessionListRenderableSession>;
-    cacheByKey: Map<string, SessionListRenderableSession>;
+    cacheByKey: SessionListRetainedRenderableCache<SessionListRenderableSession>;
+    credentialBindingsByServerId: ReadonlyMap<string, ServerCredentialAccountScopeBinding>;
 }>): ReadonlyMap<string, SessionListRenderableSession> {
+    const retentionByKey = buildSessionListRetentionByRowKey(input.items, input.credentialBindingsByServerId);
     for (const [key, renderable] of input.subscribedRowRenderableByKey) {
-        input.cacheByKey.set(key, renderable);
+        const retention = retentionByKey.get(key);
+        if (retention) input.cacheByKey.set(key, { ...retention, renderable });
     }
 
     if (input.items.length === 0) return EMPTY_SESSION_LIST_ROW_RENDERABLES_BY_KEY;
@@ -150,7 +158,11 @@ function resolveCachedSessionListRowRenderablesForItems(input: Readonly<{
             serverId: item.serverId ?? null,
         });
         if (!key) continue;
-        const renderable = input.subscribedRowRenderableByKey.get(key) ?? input.cacheByKey.get(key) ?? null;
+        const retention = retentionByKey.get(key);
+        const cached = input.cacheByKey.get(key);
+        if (cached && retention?.binding !== cached.binding) input.cacheByKey.delete(key);
+        const renderable = input.subscribedRowRenderableByKey.get(key)
+            ?? (retention?.binding === cached?.binding ? cached.renderable : null);
         if (!renderable) continue;
         next.set(key, renderable);
     }
@@ -164,10 +176,13 @@ const EMPTY_SESSION_LIST_REACHABILITY_RENDERABLES_BY_KEY =
 function resolveCachedSessionListReachabilityRenderablesForItems(input: Readonly<{
     items: ReadonlyArray<SessionListIndexItem>;
     subscribedReachabilityRenderableByKey: ReadonlyMap<string, SessionListReachabilityRenderable>;
-    cacheByKey: Map<string, SessionListReachabilityRenderable>;
+    cacheByKey: SessionListRetainedRenderableCache<SessionListReachabilityRenderable>;
+    credentialBindingsByServerId: ReadonlyMap<string, ServerCredentialAccountScopeBinding>;
 }>): ReadonlyMap<string, SessionListReachabilityRenderable> {
+    const retentionByKey = buildSessionListRetentionByReachabilityKey(input.items, input.credentialBindingsByServerId);
     for (const [key, renderable] of input.subscribedReachabilityRenderableByKey) {
-        input.cacheByKey.set(key, renderable);
+        const retention = retentionByKey.get(key);
+        if (retention) input.cacheByKey.set(key, { ...retention, renderable });
     }
 
     if (input.items.length === 0) return EMPTY_SESSION_LIST_REACHABILITY_RENDERABLES_BY_KEY;
@@ -177,12 +192,95 @@ function resolveCachedSessionListReachabilityRenderablesForItems(input: Readonly
         if (item.type !== 'session') continue;
         const key = buildSessionListReachabilityRenderableKey(item.serverId, item.sessionId);
         if (!key) continue;
-        const renderable = input.subscribedReachabilityRenderableByKey.get(key) ?? input.cacheByKey.get(key) ?? null;
+        const retention = retentionByKey.get(key);
+        const cached = input.cacheByKey.get(key);
+        if (cached && retention?.binding !== cached.binding) input.cacheByKey.delete(key);
+        const renderable = input.subscribedReachabilityRenderableByKey.get(key)
+            ?? (retention?.binding === cached?.binding ? cached.renderable : null);
         if (!renderable) continue;
         next.set(key, renderable);
     }
 
     return next.size === 0 ? EMPTY_SESSION_LIST_REACHABILITY_RENDERABLES_BY_KEY : next;
+}
+
+type SessionListRenderableRetention = Readonly<{
+    binding: ServerCredentialAccountScopeBinding | null;
+    serverId: string | null;
+}>;
+
+type SessionListRetainedRenderableCache<T> = Map<string, SessionListRenderableRetention & Readonly<{
+    renderable: T;
+}>>;
+
+function resolveCurrentCredentialBinding(
+    bindings: ReadonlyMap<string, ServerCredentialAccountScopeBinding>,
+    serverId: string | null | undefined,
+): ServerCredentialAccountScopeBinding | null {
+    if (!serverId) return null;
+    const direct = bindings.get(serverId);
+    if (direct?.isCurrent()) return direct;
+    for (const [candidateServerId, binding] of bindings) {
+        if (binding.isCurrent() && areServerProfileIdentifiersEquivalent(candidateServerId, serverId)) return binding;
+    }
+    return null;
+}
+
+function buildSessionListRetentionByRowKey(
+    items: ReadonlyArray<SessionListIndexItem>,
+    bindings: ReadonlyMap<string, ServerCredentialAccountScopeBinding>,
+): ReadonlyMap<string, SessionListRenderableRetention> {
+    const result = new Map<string, SessionListRenderableRetention>();
+    for (const item of items) {
+        if (item.type !== 'session') continue;
+        const key = resolveSessionListRowStoreScopeKey({ sessionId: item.sessionId, serverId: item.serverId ?? null });
+        if (!key) continue;
+        result.set(key, {
+            binding: resolveCurrentCredentialBinding(bindings, item.serverId),
+            serverId: item.serverId ?? null,
+        });
+    }
+    return result;
+}
+
+function buildSessionListRetentionByReachabilityKey(
+    items: ReadonlyArray<SessionListIndexItem>,
+    bindings: ReadonlyMap<string, ServerCredentialAccountScopeBinding>,
+): ReadonlyMap<string, SessionListRenderableRetention> {
+    const result = new Map<string, SessionListRenderableRetention>();
+    for (const item of items) {
+        if (item.type !== 'session') continue;
+        const key = buildSessionListReachabilityRenderableKey(item.serverId, item.sessionId);
+        if (!key) continue;
+        result.set(key, {
+            binding: resolveCurrentCredentialBinding(bindings, item.serverId),
+            serverId: item.serverId ?? null,
+        });
+    }
+    return result;
+}
+
+function retireSessionListRenderableCacheServerScope<T>(
+    cache: SessionListRetainedRenderableCache<T>,
+    serverId: string,
+): void {
+    for (const [key, entry] of cache) {
+        if (entry.serverId && areServerProfileIdentifiersEquivalent(entry.serverId, serverId)) {
+            cache.delete(key);
+        }
+    }
+}
+
+function hasSessionListRenderableForCurrentRetention<T>(
+    cache: SessionListRetainedRenderableCache<T>,
+    retentionByKey: ReadonlyMap<string, SessionListRenderableRetention>,
+    key: string,
+): boolean {
+    const cached = cache.get(key);
+    if (!cached) return false;
+    if (cached.binding === retentionByKey.get(key)?.binding) return true;
+    cache.delete(key);
+    return false;
 }
 
 export type SessionListSearchOtherMatches = Readonly<{
@@ -207,6 +305,7 @@ export function useSessionListRenderModels(input: Readonly<{
      */
     searchOtherMatches?: SessionListSearchOtherMatches | null;
     selectedSessionId: string | null;
+    selectedSessionServerId?: string | null;
     showServerBadge: boolean;
     showPinnedServerBadge: boolean;
     workingIndicatorMode?: 'spinner' | 'pulse' | null;
@@ -266,10 +365,7 @@ export function useSessionListRenderModels(input: Readonly<{
     }, [headerFiltersActive, input.collapsedGroupKeys, input.paneState.visibleSessionListIndex]);
     const filteredListItems = React.useMemo(() => {
         if (!visibleListItems || !input.headerFilters) return visibleListItems;
-        const filtered = filterSessionListItemsForHeaderControls(visibleListItems, {
-            ...input.headerFilters,
-            sessionTags: normalizedShellState.sessionTags,
-        });
+        const filtered = filterSessionListItemsForHeaderControls(visibleListItems, input.headerFilters);
         const otherMatches = input.searchOtherMatches;
         if (!otherMatches || otherMatches.matches.length === 0) return filtered;
         const outsideMatches = resolveSessionListSearchOutsideMatches({
@@ -284,7 +380,7 @@ export function useSessionListRenderModels(input: Readonly<{
             inThisViewTitle: otherMatches.inThisViewTitle,
             otherMatchesTitle: otherMatches.otherMatchesTitle,
         });
-    }, [input.headerFilters, input.searchOtherMatches, normalizedShellState.sessionTags, visibleListItems]);
+    }, [input.headerFilters, input.searchOtherMatches, visibleListItems]);
     const listItems = (filteredListItems ?? []) as Array<SessionListIndexItem>;
     const existingDraftBySessionKey = React.useMemo(() => {
         const drafts = new Map<string, ExistingSessionDraftProjection>();
@@ -300,26 +396,80 @@ export function useSessionListRenderModels(input: Readonly<{
         const items = input.paneState.visibleSessionListIndex;
         if (!items || items.length === 0) return [] as Array<SessionListIndexItem>;
         if (!input.headerFilters) return items as Array<SessionListIndexItem>;
-        return filterSessionListItemsForHeaderControls(items, {
-            ...input.headerFilters,
-            sessionTags: normalizedShellState.sessionTags,
-        });
-    }, [input.headerFilters, input.paneState.visibleSessionListIndex, normalizedShellState.sessionTags]);
-    const rowRenderableCacheByKeyRef = React.useRef(new Map<string, SessionListRenderableSession>());
+        return filterSessionListItemsForHeaderControls(items, input.headerFilters);
+    }, [input.headerFilters, input.paneState.visibleSessionListIndex]);
+    const audienceAddresses = React.useMemo(() => selectionScopeListItems.flatMap((item) => {
+        if (item.type !== 'session') return [];
+        const address = normalizeSessionAddress(item.serverId, item.sessionId);
+        return address ? [address] : [];
+    }), [selectionScopeListItems]);
+    const audience = useSessionAudienceContext(audienceAddresses);
+    const rowRenderableCacheByKeyRef = React.useRef<SessionListRetainedRenderableCache<SessionListRenderableSession>>(new Map());
+    const rowRetentionByKey = React.useMemo(() => (
+        buildSessionListRetentionByRowKey(listItems, audience.credentialBindingsByServerId)
+    ), [audience.credentialBindingsByServerId, listItems]);
     const rowSubscriptionItems = React.useMemo(() => (
         resolveSessionListRowStoreSubscriptionItemsWithUncachedRows(
             listItems,
             input.rowSubscriptionKeys ?? null,
-            (key) => rowRenderableCacheByKeyRef.current.has(key),
+            (key) => hasSessionListRenderableForCurrentRetention(
+                rowRenderableCacheByKeyRef.current,
+                rowRetentionByKey,
+                key,
+            ),
         )
-    ), [input.rowSubscriptionKeys, listItems]);
-    const reachabilityRenderableCacheByKeyRef = React.useRef(new Map<string, SessionListReachabilityRenderable>());
+    ), [input.rowSubscriptionKeys, listItems, rowRetentionByKey]);
+    const reachabilityRenderableCacheByKeyRef = React.useRef<SessionListRetainedRenderableCache<SessionListReachabilityRenderable>>(new Map());
+    const sessionReachabilitySummaryCacheRef = React.useRef(createSessionListReachabilitySummaryCache());
+    const credentialRetirementsByServerIdRef = React.useRef(new Map<string, Readonly<{
+        binding: ServerCredentialAccountScopeBinding;
+        dispose(): void;
+    }>>());
+    React.useLayoutEffect(() => {
+        for (const [serverId, retirement] of credentialRetirementsByServerIdRef.current) {
+            const binding = audience.credentialBindingsByServerId.get(serverId);
+            // Keep observing a lifetime after its last row leaves this render.
+            // The retained viewport fallback still belongs to that binding and
+            // must be evicted if the credential changes while the row is absent.
+            if (!binding || binding === retirement.binding) continue;
+            retirement.dispose();
+            credentialRetirementsByServerIdRef.current.delete(serverId);
+        }
+        for (const [serverId, binding] of audience.credentialBindingsByServerId) {
+            const current = credentialRetirementsByServerIdRef.current.get(serverId);
+            if (current?.binding === binding) continue;
+            const retirement = binding.onRetire(() => {
+                retireSessionListRenderableCacheServerScope(rowRenderableCacheByKeyRef.current, serverId);
+                retireSessionListRenderableCacheServerScope(reachabilityRenderableCacheByKeyRef.current, serverId);
+                retireSessionListReachabilitySummaryCacheServerScope(
+                    sessionReachabilitySummaryCacheRef.current,
+                    serverId,
+                );
+                if (credentialRetirementsByServerIdRef.current.get(serverId)?.binding === binding) {
+                    credentialRetirementsByServerIdRef.current.delete(serverId);
+                }
+            });
+            if (!binding.isCurrent()) {
+                retirement.dispose();
+                continue;
+            }
+            credentialRetirementsByServerIdRef.current.set(serverId, {
+                binding,
+                dispose: retirement.dispose,
+            });
+        }
+    }, [audience.credentialBindingsByServerId]);
+    React.useLayoutEffect(() => () => {
+        for (const retirement of credentialRetirementsByServerIdRef.current.values()) retirement.dispose();
+        credentialRetirementsByServerIdRef.current.clear();
+    }, []);
     const subscribedReachabilityRenderablesByKey = useSessionListReachabilityRenderablesForItems(rowSubscriptionItems);
     const reachabilityRenderablesByKey = React.useMemo(() => resolveCachedSessionListReachabilityRenderablesForItems({
         items: listItems,
         subscribedReachabilityRenderableByKey: subscribedReachabilityRenderablesByKey,
         cacheByKey: reachabilityRenderableCacheByKeyRef.current,
-    }), [listItems, subscribedReachabilityRenderablesByKey]);
+        credentialBindingsByServerId: audience.credentialBindingsByServerId,
+    }), [audience.credentialBindingsByServerId, listItems, subscribedReachabilityRenderablesByKey]);
     const subscribedRowRenderableByKey = useSessionListRowRenderablesForItems(
         deriveRowViewModels ? rowSubscriptionItems : null,
     );
@@ -327,12 +477,14 @@ export function useSessionListRenderModels(input: Readonly<{
         items: listItems,
         subscribedRowRenderableByKey,
         cacheByKey: rowRenderableCacheByKeyRef.current,
-    }), [listItems, subscribedRowRenderableByKey]);
+        credentialBindingsByServerId: audience.credentialBindingsByServerId,
+    }), [audience.credentialBindingsByServerId, listItems, subscribedRowRenderableByKey]);
     const selectionScopeRowRenderableByKey = React.useMemo(() => resolveCachedSessionListRowRenderablesForItems({
         items: selectionScopeListItems,
         subscribedRowRenderableByKey,
         cacheByKey: rowRenderableCacheByKeyRef.current,
-    }), [selectionScopeListItems, subscribedRowRenderableByKey]);
+        credentialBindingsByServerId: audience.credentialBindingsByServerId,
+    }), [audience.credentialBindingsByServerId, selectionScopeListItems, subscribedRowRenderableByKey]);
     const clocksActive = input.clocksActive !== false;
     const relativeNowMs = useSessionListRelativeNowMs(clocksActive);
     // Shared session-list runtime clock: rows must derive working freshness
@@ -342,7 +494,6 @@ export function useSessionListRenderModels(input: Readonly<{
     // freshly built row view models.
     const runtimeNowMs = useSessionListRuntimeNowMs(clocksActive);
 
-    const sessionReachabilitySummaryCacheRef = React.useRef(createSessionListReachabilitySummaryCache());
     const sessionReachabilitySummary = React.useMemo(() => {
         return measureSessionListRenderDerivation(
             'ui.sessionsList.render.reachabilityDisplayMap',
@@ -387,6 +538,7 @@ export function useSessionListRenderModels(input: Readonly<{
                 selectable: input.selectedSessionId ? 1 : 0,
             }),
             () => buildSessionListRowViewModels({
+                audienceScopes: audience.scopes,
                 listItems,
                 reachableSessionDisplayById: sessionReachabilitySummary.displayById,
                 reachableSessionDisplayByKey: sessionReachabilitySummary.displayByKey,
@@ -404,6 +556,7 @@ export function useSessionListRenderModels(input: Readonly<{
                 pinnedSessionKeys: pinnedKeySet,
                 sessionTags: normalizedShellState.sessionTags,
                 selectedSessionId: input.selectedSessionId,
+                selectedSessionServerId: input.selectedSessionServerId,
                 showServerBadge: input.showServerBadge,
                 showPinnedServerBadge: input.showPinnedServerBadge,
                 attentionStandingEnabled: input.attentionStandingEnabled === true,
@@ -416,6 +569,7 @@ export function useSessionListRenderModels(input: Readonly<{
         input.attentionStandingEnabled,
         input.attentionStandingPolicy,
         input.selectedSessionId,
+        input.selectedSessionServerId,
         input.showPinnedServerBadge,
         input.showServerBadge,
         input.activeColorMode,
@@ -424,6 +578,7 @@ export function useSessionListRenderModels(input: Readonly<{
         input.workingTextMode,
         input.workingIndicatorMode,
         deriveRowViewModels,
+        audience,
         existingDraftBySessionKey,
         listItems,
         normalizedShellState.sessionTags,
@@ -442,6 +597,7 @@ export function useSessionListRenderModels(input: Readonly<{
         }
         if (selectionScopeListItems.length === 0) return [] as ReadonlyArray<SessionListRowViewModel | null>;
         return buildSessionListRowViewModels({
+            audienceScopes: audience.scopes,
             listItems: selectionScopeListItems,
             reachableSessionDisplayById: sessionReachabilitySummary.displayById,
             reachableSessionDisplayByKey: sessionReachabilitySummary.displayByKey,
@@ -459,6 +615,7 @@ export function useSessionListRenderModels(input: Readonly<{
             pinnedSessionKeys: pinnedKeySet,
             sessionTags: normalizedShellState.sessionTags,
             selectedSessionId: input.selectedSessionId,
+            selectedSessionServerId: input.selectedSessionServerId,
             showServerBadge: input.showServerBadge,
             showPinnedServerBadge: input.showPinnedServerBadge,
             attentionStandingEnabled: input.attentionStandingEnabled === true,
@@ -472,11 +629,13 @@ export function useSessionListRenderModels(input: Readonly<{
         input.hideInactiveSessions,
         input.identityDisplay,
         input.selectedSessionId,
+        input.selectedSessionServerId,
         input.showPinnedServerBadge,
         input.showServerBadge,
         input.workingTextMode,
         input.workingIndicatorMode,
         deriveRowViewModels,
+        audience,
         existingDraftBySessionKey,
         normalizedShellState.sessionTags,
         pinnedKeySet,
@@ -503,10 +662,11 @@ export function useSessionListRenderModels(input: Readonly<{
 
     return React.useMemo(() => {
         if (listItems.length === 0 && selectionScopeListItems.length === 0) {
-            return EMPTY_SESSION_LIST_RENDER_MODELS;
+            return { ...EMPTY_SESSION_LIST_RENDER_MODELS, audience };
         }
 
         return {
+            audience,
             listItems,
             selectionScopeListItems,
             reachableSessionDisplayById: sessionReachabilitySummary.displayById,
@@ -519,6 +679,7 @@ export function useSessionListRenderModels(input: Readonly<{
             selectionScopeRowViewModels,
         };
     }, [
+        audience,
         listItems,
         projectHeaderViewModelState,
         rowViewModels,

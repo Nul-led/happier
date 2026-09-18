@@ -63,7 +63,7 @@ function assertString(value: unknown, name: string): asserts value is string {
 }
 
 describe('buildAccountEncryptionMigrateToE2eeRequest', () => {
-  it('includes Account-owned new-session drafts in the signed atomic e2ee migration request', async () => {
+  it.each([1, 2] as const)('includes Account-owned new-session drafts in the signed atomic e2ee migration request (epoch %s)', async (epoch) => {
     const credentials = createLegacyCredentials();
     const material = resolveAccountScopedCryptoMaterialFromCredentials(credentials);
     const sign = vi.fn(() => 'request-signature');
@@ -72,13 +72,17 @@ describe('buildAccountEncryptionMigrateToE2eeRequest', () => {
       draftId: '00000000-0000-4000-8000-000000000101',
     };
     const document = {
-      v: 1 as const,
+      v: epoch,
       composer: {
         text: { mutationId: '00000000-0000-4000-8000-000000000102', value: 'draft' },
         mentions: { mutationId: '00000000-0000-4000-8000-000000000103', value: [] },
         attachments: { mutationId: '00000000-0000-4000-8000-000000000104', value: [] },
       },
-      target: { kind: 'newSession' as const, authoring: {} },
+      target: { kind: 'newSession' as const, authoring: epoch === 1 ? {} : {
+        executionTarget: { mutationId: '00000000-0000-4000-8000-000000000105', value: {
+          kind: 'temporary_computer', serverId: 'server-a', artifactTarget: 'linux-x64', workspace: { kind: 'choose_on_endpoint' },
+        } },
+      } },
       extensions: {},
     };
 
@@ -98,14 +102,15 @@ describe('buildAccountEncryptionMigrateToE2eeRequest', () => {
     });
 
     expect(request.sessionDrafts?.items).toHaveLength(1);
+    expect(request.sessionDrafts).toEqual(expect.objectContaining(epoch === 2 ? { v: 2 } : {}));
     const item = request.sessionDrafts!.items[0];
-    expect(item).toMatchObject({ address, expectedRevision: 7, content: { t: 'encrypted' } });
+    expect(item).toMatchObject({ address, expectedRevision: 7, content: { t: 'encrypted', ...(epoch === 2 ? { v: 2 } : {}) } });
     if (item.content.t !== 'encrypted') throw new Error('expected encrypted draft');
     expect(openAccountScopedBlobCiphertext({
       kind: 'account_session_draft_private_payload',
       material,
       ciphertext: item.content.c,
-    })?.value).toEqual({ v: 1, address, document });
+    })?.value).toEqual({ v: epoch, address, document });
     expect(sign).toHaveBeenCalledWith(
       createAccountEncryptionMigrateProofSigningInputV1({
         request,

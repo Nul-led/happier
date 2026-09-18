@@ -1,4 +1,5 @@
 import type { Machine, Session } from '../../domains/state/storageTypes';
+import { isPersistentMachine } from '@happier-dev/protocol';
 import {
     areMachineDisplayRenderablesEqual,
     buildMachineDisplayRenderableFromMachine,
@@ -47,12 +48,24 @@ export type ApplyMachinesOptions = Readonly<{
 
 type MachinesDomainDependencies = Readonly<{
     sessions: Record<string, Session>;
-    sessionListRenderables: Record<string, SessionListRenderableSession>;
+    sessionListRowsByServerId: Readonly<Record<string, Readonly<Record<string, SessionListRenderableSession>>>>;
+    ordinarySessionListMembershipByServerId: Readonly<Record<string, readonly string[] | undefined>>;
     getProjectForSession?: (sessionId: string) => { key?: { machineId?: string | null; rootPath?: string | null } | null } | null;
     profile: { id: string };
     settings: Settings;
     sessionListIndexByServerId: Readonly<Record<string, SessionListIndexItem[] | null | undefined>>;
 }>;
+
+function readOrdinaryRowsForServer(
+    state: MachinesDomainDependencies,
+    serverId: string,
+): Record<string, SessionListRenderableSession> {
+    const rows = state.sessionListRowsByServerId[serverId] ?? {};
+    return Object.fromEntries((state.ordinarySessionListMembershipByServerId[serverId] ?? []).flatMap((sessionId) => {
+        const row = rows[sessionId];
+        return row ? [[sessionId, row] as const] : [];
+    }));
+}
 
 function scheduleActiveWarmMachineCacheSave(
     state: Pick<MachinesDomain & MachinesDomainDependencies, 'machineDisplayById' | 'profile'>,
@@ -165,7 +178,18 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
                 const currentScopedMachines = sourceServerId
                     ? state.machineListByServerId[sourceServerId]
                     : null;
-                const normalizedMachines = machines.map((machine) => preserveNewestMachinePresence(machine, [
+                // A full ordinary inventory omits Session-bound computers. It
+                // cannot invalidate exact rows already hydrated for a Session.
+                const currentMachineRecords = Array.isArray(currentScopedMachines)
+                    ? currentScopedMachines
+                    : shouldUpdateActiveProjection ? Object.values(state.machines) : [];
+                const incomingIds = new Set(machines.map((machine) => machine.id));
+                const incomingMachines = replace
+                    ? [...machines, ...currentMachineRecords.filter((machine) => (
+                        !isPersistentMachine(machine) && !incomingIds.has(machine.id)
+                    ))]
+                    : machines;
+                const normalizedMachines = incomingMachines.map((machine) => preserveNewestMachinePresence(machine, [
                     Array.isArray(currentScopedMachines)
                         ? currentScopedMachines.find((current) => current.id === machine.id)
                         : null,
@@ -270,16 +294,16 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
 
                 const previousIndexByServerId = state.sessionListIndexByServerId ?? {};
                 const previousActiveIndex = activeServerId ? (previousIndexByServerId[activeServerId] ?? null) : null;
+                const activeSessionListRows = activeServerId ? readOrdinaryRowsForServer(state, activeServerId) : {};
                 let needsSessionListIndexRebuild = Boolean(activeServerId) && previousActiveIndex == null;
                 let needsProjectManagerUpdate = false;
 
                 if (!needsSessionListIndexRebuild) {
                     const machineImpact = resolveMachineSessionListIndexImpact({
-                        sessions: Object.values(state.sessionListRenderables ?? {}),
+                        sessions: Object.values(activeSessionListRows),
                         previousMachineDisplays: state.machineDisplayById ?? {},
                         nextMachineDisplays: mergedMachineDisplays,
                         usesProjectGrouping: usesProjectGroupingInSessionList({
-                            groupInactiveSessionsByProject: state.settings.groupInactiveSessionsByProject === true,
                             activeGroupingV1: state.settings.sessionListActiveGroupingV1,
                             inactiveGroupingV1: state.settings.sessionListInactiveGroupingV1,
                             sectionModeV1: state.settings.sessionListSectionModeV1,
@@ -295,11 +319,10 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
 
                 const nextSessionListIndex = needsSessionListIndexRebuild && activeServerId
                     ? buildActiveServerSessionListIndex({
-                        sessions: state.sessionListRenderables,
+                        sessions: activeSessionListRows,
                         sessionRecords: state.sessions,
                         machines: mergedMachineDisplays,
                         machineRecords: mergedMachines,
-                        groupInactiveSessionsByProject: state.settings.groupInactiveSessionsByProject === true,
                         activeGroupingV1: state.settings.sessionListActiveGroupingV1,
                         inactiveGroupingV1: state.settings.sessionListInactiveGroupingV1,
                         sectionModeV1: state.settings.sessionListSectionModeV1,
@@ -364,7 +387,11 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
                     return state;
                 }
 
-                const nextMachineDisplays = Object.fromEntries(machines.map((machine) => [
+                const incomingDisplayIds = new Set(machines.map((machine) => machine.id));
+                const displays = [...machines, ...Object.values(state.machineDisplayById).filter((machine) => (
+                    !isPersistentMachine(machine) && !incomingDisplayIds.has(machine.id)
+                ))];
+                const nextMachineDisplays = Object.fromEntries(displays.map((machine) => [
                     machine.id,
                     preserveNewestMachinePresence(machine, [
                         state.machineDisplayById[machine.id],
@@ -373,13 +400,13 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
                 ]));
                 const previousIndexByServerId = state.sessionListIndexByServerId ?? {};
                 const previousActiveIndex = activeServerId ? (previousIndexByServerId[activeServerId] ?? null) : null;
+                const activeSessionListRows = activeServerId ? readOrdinaryRowsForServer(state, activeServerId) : {};
                 const nextSessionListIndex = activeServerId
                     ? buildActiveServerSessionListIndex({
-                        sessions: state.sessionListRenderables,
+                        sessions: activeSessionListRows,
                         sessionRecords: state.sessions,
                         machines: nextMachineDisplays,
                         machineRecords: state.machines,
-                        groupInactiveSessionsByProject: state.settings.groupInactiveSessionsByProject === true,
                         activeGroupingV1: state.settings.sessionListActiveGroupingV1,
                         inactiveGroupingV1: state.settings.sessionListInactiveGroupingV1,
                         sectionModeV1: state.settings.sessionListSectionModeV1,

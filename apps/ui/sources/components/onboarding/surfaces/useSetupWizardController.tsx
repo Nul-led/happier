@@ -417,7 +417,7 @@ export function useSetupWizardController(props: SetupWizardSurfaceProps): SetupW
         });
     }, []);
 
-    const setRelayRuntimeCandidate = React.useCallback((
+    const setRelayRuntimeCandidate = React.useCallback(async (
         relayUrl: string | null,
         machineId: string | null,
         nextRelayAccessTarget: RelayAccessTaskTarget | null,
@@ -427,7 +427,7 @@ export function useSetupWizardController(props: SetupWizardSurfaceProps): SetupW
             clearRelayRuntimeCandidate();
             return;
         }
-        const profile = upsertServerProfileOnly({
+        const profile = await upsertServerProfileOnly({
             serverUrl: normalized,
             source: 'url',
         });

@@ -6,14 +6,26 @@ import { SCM_HISTORY_PAGE_SIZE } from './historyPresentation';
 
 export function usePagedScmCommitHistory(input: Readonly<{
     enabled: boolean;
+    historyIdentity: string;
     loadPage: (request: Readonly<{ limit: number; skip: number }>) => Promise<Pick<ScmLogListResponse, 'success' | 'entries'>>;
 }>) {
-    const { enabled, loadPage } = input;
+    const { enabled, loadPage, historyIdentity } = input;
     const [historyEntries, setHistoryEntries] = React.useState<ScmLogEntry[]>([]);
     const [historyLoading, setHistoryLoading] = React.useState(false);
     const [historySkip, setHistorySkip] = React.useState(0);
     const [historyHasMore, setHistoryHasMore] = React.useState(false);
+    const [loadedIdentity, setLoadedIdentity] = React.useState(historyIdentity);
+    const currentIdentityRef = React.useRef(historyIdentity);
+    currentIdentityRef.current = historyIdentity;
     const legacySkipIgnoredRef = React.useRef(false);
+    if (loadedIdentity !== historyIdentity) {
+        setLoadedIdentity(historyIdentity);
+        setHistoryEntries([]);
+        setHistorySkip(0);
+        setHistoryHasMore(false);
+        setHistoryLoading(false);
+        legacySkipIgnoredRef.current = false;
+    }
 
     const historyEntriesRef = React.useRef(historyEntries);
     React.useEffect(() => {
@@ -37,15 +49,55 @@ export function usePagedScmCommitHistory(input: Readonly<{
             const pageSize = SCM_HISTORY_PAGE_SIZE;
             const legacyPagination = legacySkipIgnoredRef.current && !opts?.reset;
             const requestSkip = legacyPagination ? 0 : skip;
-            const requestLimit = legacyPagination ? (skip + pageSize) : pageSize;
+            const previousEntries = historyEntriesRef.current;
+            const refreshDepth = opts?.reset ? Math.max(pageSize, previousEntries.length) : pageSize;
+            let requestLimit = opts?.reset ? Math.min(500, refreshDepth) : legacyPagination ? (skip + pageSize) : pageSize;
 
-            const response = await loadPage({ limit: requestLimit, skip: requestSkip });
+            let response = await loadPage({ limit: requestLimit, skip: requestSkip });
+            if (currentIdentityRef.current !== historyIdentity) return;
             if (!response.success) {
                 setHistoryHasMore(false);
                 return;
             }
 
-            const incoming = response.entries ?? [];
+            let incoming = response.entries ?? [];
+            if (opts?.reset && previousEntries.length > 0) {
+                const previousHeadIndex = incoming.findIndex((entry) => entry.sha === previousEntries[0]?.sha);
+                const targetDepth = refreshDepth + Math.max(0, previousHeadIndex);
+                let hasMore = incoming.length >= requestLimit;
+                while (incoming.length < targetDepth && hasMore) {
+                    requestLimit = Math.min(500, Math.max(pageSize, targetDepth - incoming.length));
+                    response = await loadPage({ limit: requestLimit, skip: incoming.length });
+                    if (currentIdentityRef.current !== historyIdentity) return;
+                    if (!response.success) {
+                        setHistoryHasMore(false);
+                        return;
+                    }
+                    const page = response.entries ?? [];
+                    const existingShas = new Set(incoming.map((entry) => entry.sha));
+                    const additions = page.filter((entry) => !existingShas.has(entry.sha));
+                    if (page.length > 0 && additions.length === 0) {
+                        // Daemons that ignore skip use the existing limit-expansion contract.
+                        requestLimit = Math.min(500, targetDepth);
+                        response = await loadPage({ limit: requestLimit, skip: 0 });
+                        if (currentIdentityRef.current !== historyIdentity) return;
+                        if (!response.success || (response.entries?.length ?? 0) <= incoming.length) {
+                            setHistoryHasMore(false);
+                            return;
+                        }
+                        incoming = response.entries ?? [];
+                        hasMore = incoming.length >= requestLimit;
+                    } else {
+                        incoming = [...incoming, ...additions];
+                        hasMore = page.length >= requestLimit;
+                    }
+                }
+                legacySkipIgnoredRef.current = false;
+                setHistoryEntries(incoming);
+                setHistorySkip(incoming.length);
+                setHistoryHasMore(hasMore);
+                return;
+            }
             const previous = opts?.reset ? [] : historyEntriesRef.current;
             const previousShas = new Set(previous.map((entry) => entry.sha));
             const uniqueIncoming: ScmLogEntry[] = [];
@@ -74,6 +126,7 @@ export function usePagedScmCommitHistory(input: Readonly<{
                 legacySkipIgnoredRef.current = true;
                 const legacyLimit = skip + pageSize;
                 const legacyResponse = await loadPage({ limit: legacyLimit, skip: 0 });
+                if (currentIdentityRef.current !== historyIdentity) return;
                 if (!legacyResponse.success) {
                     setHistoryHasMore(false);
                     return;
@@ -98,11 +151,12 @@ export function usePagedScmCommitHistory(input: Readonly<{
 
             setHistoryHasMore(false);
         } finally {
-            setHistoryLoading(false);
+            if (currentIdentityRef.current === historyIdentity) setHistoryLoading(false);
         }
-    }, [enabled, historyHasMore, historyLoading, historySkip, loadPage]);
+    }, [historyIdentity, enabled, historyHasMore, historyLoading, historySkip, loadPage]);
 
     return {
+        historyIdentity,
         historyEntries,
         historyLoading,
         historyHasMore,

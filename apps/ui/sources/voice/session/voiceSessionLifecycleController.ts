@@ -17,6 +17,10 @@ import {
     recordVoiceRuntimeFailure,
 } from '@/voice/runtime/voiceRuntimeFailureCode';
 import { createVoiceMachineError } from '@/voice/runtime/machine/voiceMachineError';
+import {
+    areSessionAddressesEqual,
+    type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
 
 export type VoiceSessionLifecycleController = Readonly<{
     bargeIn: (sessionId: string) => Promise<void>;
@@ -42,12 +46,13 @@ export type VoiceSessionLifecycleController = Readonly<{
     ) => Promise<VoiceOutputFocusApplication>;
     stop: (sessionId: string) => Promise<void>;
     subscribe: (listener: () => void) => () => void;
-    toggle: (sessionId: string) => Promise<void>;
+    toggle: (targetSessionAddress: SessionAddress | null) => Promise<void>;
 }>;
 
 type PendingAdapterSwitch = Readonly<{
     sourceAdapterId: string;
     sessionId: string;
+    requestedTargetSessionAddress: SessionAddress | null;
     targetAdapterId: string | null;
     startRequested: boolean;
     sourceDisconnectObserved: boolean;
@@ -58,6 +63,7 @@ type PendingAdapterSwitch = Readonly<{
 type StartingAdapter = {
     adapter: VoiceAdapterController;
     sessionId: string;
+    requestedTargetSessionAddress: SessionAddress | null;
     expectedSnapshotSessionId: string;
     observedActiveTransition: boolean;
 };
@@ -65,6 +71,7 @@ type StartingAdapter = {
 type UnavailableConfiguredProvider = Readonly<{
     providerId: VoiceAdapterId;
     sessionId: string;
+    requestedTargetSessionAddress: SessionAddress | null;
 }>;
 
 type MuteAttemptOwner = {
@@ -169,6 +176,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
     let attemptConnectivityLease: Readonly<{
         adapter: VoiceAdapterController;
         sessionId: string;
+        requestedTargetSessionAddress: SessionAddress | null;
         release: () => void;
     }> | null = null;
     let retiredAttemptStopStarted = false;
@@ -210,6 +218,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
     const ensureAttemptConnectivityLease = (
         adapter: VoiceAdapterController,
         sessionId: string,
+        requestedTargetSessionAddress: SessionAddress | null,
     ): void => {
         const current = attemptConnectivityLease;
         if (current?.adapter === adapter && current.sessionId === sessionId) return;
@@ -217,6 +226,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
         attemptConnectivityLease = {
             adapter,
             sessionId,
+            requestedTargetSessionAddress,
             release: acquireConnectivityLease(),
         };
     };
@@ -246,35 +256,42 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
     const createStartingAdapter = (
         adapter: VoiceAdapterController,
         sessionId: string,
-    ): StartingAdapter => ({
-        adapter,
-        sessionId,
-        expectedSnapshotSessionId: sessionId.trim() || VOICE_AGENT_GLOBAL_SESSION_ID,
-        observedActiveTransition: false,
-    });
+        requestedTargetSessionAddress: SessionAddress | null,
+    ): StartingAdapter => {
+        const ownedSessionId = sessionId.trim() ? sessionId : VOICE_AGENT_GLOBAL_SESSION_ID;
+        return {
+            adapter,
+            sessionId: ownedSessionId,
+            requestedTargetSessionAddress,
+            expectedSnapshotSessionId: ownedSessionId,
+            observedActiveTransition: false,
+        };
+    };
 
     const startAdapter = async (
         adapter: VoiceAdapterController,
         sessionId: string,
-        startAttempt = createStartingAdapter(adapter, sessionId),
+        requestedTargetSessionAddress: SessionAddress | null,
+        startAttempt = createStartingAdapter(adapter, sessionId, requestedTargetSessionAddress),
     ): Promise<void> => {
+        const ownedSessionId = startAttempt.expectedSnapshotSessionId;
         if (adapter.engineKind !== 'realtime') {
-            ensureAttemptConnectivityLease(adapter, sessionId);
+            ensureAttemptConnectivityLease(adapter, ownedSessionId, requestedTargetSessionAddress);
             startingAdapter = startAttempt;
             try {
-                await adapter.start({ sessionId });
+                await adapter.start({ sessionId, requestedTargetSessionAddress });
                 if (getRegistry().get(adapter.id) !== adapter) {
                     // Registration withdrawal is a synchronous authority
                     // boundary. A provider that finishes setup afterwards
                     // must be terminalized again so late Start settlement
                     // cannot regain media or tool authority.
-                    await stopAdapter(adapter, sessionId);
+                    await stopAdapter(adapter, ownedSessionId);
                 }
                 if (adapter.getSnapshot().status === 'disconnected') {
-                    releaseAttemptConnectivityLease({ adapter, sessionId });
+                    releaseAttemptConnectivityLease({ adapter, sessionId: ownedSessionId });
                 }
             } catch (error) {
-                releaseAttemptConnectivityLease({ adapter, sessionId });
+                releaseAttemptConnectivityLease({ adapter, sessionId: ownedSessionId });
                 throw error;
             } finally {
                 if (startingAdapter === startAttempt) {
@@ -299,34 +316,34 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             recordVoiceRuntimeFailure(adapter.id, 'unstarted', 'capture_busy', busy.code);
             throw busy;
         }
-        ensureAttemptConnectivityLease(adapter, sessionId);
+        ensureAttemptConnectivityLease(adapter, ownedSessionId, requestedTargetSessionAddress);
         realtimeCaptureAdmission = {
             adapter,
             adapterId: adapter.id,
-            sessionId,
+            sessionId: ownedSessionId,
             lease: admission.lease,
         };
         retiredAttemptStopStarted = false;
         startingAdapter = startAttempt;
         try {
-            await adapter.start({ sessionId });
+            await adapter.start({ sessionId, requestedTargetSessionAddress });
             if (getRegistry().get(adapter.id) !== adapter) {
-                await stopAdapter(adapter, sessionId);
+                await stopAdapter(adapter, ownedSessionId);
                 return;
             }
             if (adapter.getSnapshot().status === 'disconnected') {
                 releaseRealtimeCaptureAdmission({
                     adapterId: adapter.id,
-                    sessionId,
+                    sessionId: ownedSessionId,
                 });
-                releaseAttemptConnectivityLease({ adapter, sessionId });
+                releaseAttemptConnectivityLease({ adapter, sessionId: ownedSessionId });
             }
         } catch (error) {
             releaseRealtimeCaptureAdmission({
                 adapterId: adapter.id,
-                sessionId,
+                sessionId: ownedSessionId,
             });
-            releaseAttemptConnectivityLease({ adapter, sessionId });
+            releaseAttemptConnectivityLease({ adapter, sessionId: ownedSessionId });
             throw error;
         } finally {
             if (startingAdapter === startAttempt) {
@@ -335,11 +352,15 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
         }
     };
 
+    const adapterStopKey = (adapterId: string, sessionId: string): string => (
+        `${adapterId}\u0000${sessionId}`
+    );
+
     const stopAdapter = async (
         adapter: VoiceAdapterController,
         sessionId: string,
     ): Promise<void> => {
-        const stopKey = `${adapter.id}\u0000${sessionId}`;
+        const stopKey = adapterStopKey(adapter.id, sessionId);
         const existingStop = adapterStopPromises.get(stopKey);
         if (existingStop) {
             await existingStop;
@@ -553,6 +574,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
                 pendingAdapterSwitch = {
                     sourceAdapterId: targetAdapter.id,
                     sessionId: pending.sessionId,
+                    requestedTargetSessionAddress: pending.requestedTargetSessionAddress,
                     targetAdapterId: targetAdapter.id,
                     startRequested: false,
                     sourceDisconnectObserved: false,
@@ -572,6 +594,14 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             }
 
             if (pending.startRequested) {
+                return;
+            }
+
+            // Adapters may publish `disconnected` before their Stop promise
+            // settles. Keep this existing serialized hand-off behind that
+            // exact Stop so capture/connectivity admission is released before
+            // the replacement attempt starts.
+            if (adapterStopPromises.has(adapterStopKey(pending.sourceAdapterId, pending.sessionId))) {
                 return;
             }
 
@@ -603,7 +633,11 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
                         : null,
             };
             pendingAdapterSwitch = startedSwitch;
-            void startAdapter(targetAdapter, pending.sessionId)
+            void startAdapter(
+                targetAdapter,
+                pending.sessionId,
+                pending.requestedTargetSessionAddress,
+            )
                 .catch(() => {
                     // A failed target start must not leave a dangling pending
                     // switch pinning the published snapshot to `disconnected`
@@ -644,6 +678,11 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
         pendingAdapterSwitch = {
             sourceAdapterId: publishedSnapshot.adapterId,
             sessionId: publishedSnapshot.sessionId,
+            requestedTargetSessionAddress:
+                attemptConnectivityLease?.adapter === sourceAdapter
+                && attemptConnectivityLease.sessionId === publishedSnapshot.sessionId
+                    ? attemptConnectivityLease.requestedTargetSessionAddress
+                    : null,
             targetAdapterId: null,
             startRequested: false,
             sourceDisconnectObserved: false,
@@ -773,8 +812,9 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
         return null;
     };
 
-    const toggle = async (sessionId: string): Promise<void> => {
+    const toggle = async (requestedTargetSessionAddress: SessionAddress | null): Promise<void> => {
         if (disposed) return;
+        const sessionId = requestedTargetSessionAddress?.sessionId ?? '';
         const cancelledRestartStart = cancelPendingCurrentUiContextToolSetRestart();
         const owned = resolveOwnedAdapter();
         if (owned) {
@@ -806,10 +846,19 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
                 const unavailable: UnavailableConfiguredProvider = {
                     providerId: configuredProviderId,
                     sessionId: sessionId.trim() || VOICE_AGENT_GLOBAL_SESSION_ID,
+                    requestedTargetSessionAddress,
                 };
                 if (
                     unavailableConfiguredProvider?.providerId === unavailable.providerId
                     && unavailableConfiguredProvider.sessionId === unavailable.sessionId
+                    && (
+                        unavailableConfiguredProvider.requestedTargetSessionAddress
+                            === unavailable.requestedTargetSessionAddress
+                        || areSessionAddressesEqual(
+                            unavailableConfiguredProvider.requestedTargetSessionAddress,
+                            unavailable.requestedTargetSessionAddress,
+                        )
+                    )
                 ) {
                     return;
                 }
@@ -830,9 +879,9 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
         if (suppressedProviderAuthFailureAdapterId === adapter.id) {
             suppressedProviderAuthFailureAdapterId = null;
         }
-        const startAttempt = createStartingAdapter(adapter, sessionId);
+        const startAttempt = createStartingAdapter(adapter, sessionId, requestedTargetSessionAddress);
         try {
-            await startAdapter(adapter, sessionId, startAttempt);
+            await startAdapter(adapter, sessionId, requestedTargetSessionAddress, startAttempt);
         } catch (error) {
             const settledSnapshot = publishedSnapshot;
             const isCurrentPublishedFailure = configuredProviderId === adapter.id
@@ -876,6 +925,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             unavailableConfiguredProvider = {
                 providerId: withdrawnStart.adapter.id,
                 sessionId: withdrawnStart.expectedSnapshotSessionId,
+                requestedTargetSessionAddress: withdrawnStart.requestedTargetSessionAddress,
             };
             // Stop immediately at withdrawal. The post-Start currentness check
             // above repeats Stop after a late successful settlement, which is
@@ -1093,6 +1143,11 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             pendingAdapterSwitch = {
                 sourceAdapterId: owned.adapter.id,
                 sessionId: owned.snapshot.sessionId,
+                requestedTargetSessionAddress:
+                    attemptConnectivityLease?.adapter === owned.adapter
+                    && attemptConnectivityLease.sessionId === owned.snapshot.sessionId
+                        ? attemptConnectivityLease.requestedTargetSessionAddress
+                        : null,
                 targetAdapterId: owned.adapter.id,
                 startRequested: false,
                 sourceDisconnectObserved: false,
@@ -1159,10 +1214,24 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             if (disposed) return;
             const owned = resolveOwnedAdapter();
             if (owned) {
-                await owned.adapter.retry?.({ sessionId: owned.snapshot.sessionId ?? sessionId });
+                const ownedSessionId = owned.snapshot.sessionId ?? sessionId;
+                const requestedTargetSessionAddress =
+                    attemptConnectivityLease?.adapter === owned.adapter
+                    && attemptConnectivityLease.sessionId === ownedSessionId
+                        ? attemptConnectivityLease.requestedTargetSessionAddress
+                        : null;
+                if (owned.adapter.retry) {
+                    await owned.adapter.retry({ sessionId: ownedSessionId, requestedTargetSessionAddress });
+                    return;
+                }
+                await toggle(requestedTargetSessionAddress);
                 return;
             }
-            await toggle(sessionId);
+            const unavailable = unavailableConfiguredProvider;
+            const requestedTargetSessionAddress = unavailable?.sessionId === sessionId
+                ? unavailable.requestedTargetSessionAddress
+                : null;
+            await toggle(requestedTargetSessionAddress);
         },
         setOutputFocusState: async (sessionId, state) => {
             if (disposed) return 'unsupported';

@@ -6,6 +6,8 @@ import { readRegisteredStorageState, subscribeRegisteredStorageState } from '@/s
 import { readPreferredVoiceConversationBindingMetadata } from './voiceConversationBindingMetadata';
 import type { VoiceSessionBinding } from './voiceConversationBindingTypes';
 import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoiceSessionOwnerMetadata';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 type BindingsByConversationSessionId = Record<string, VoiceSessionBinding>;
 
@@ -62,18 +64,35 @@ function normalizeBinding(binding: VoiceSessionBinding): VoiceSessionBinding | n
     const adapterId = normalizeId(binding.adapterId);
     const controlSessionId = normalizeId(binding.controlSessionId);
     const conversationSessionId = normalizeId(binding.conversationSessionId);
+    const conversationSessionAddress = normalizeSessionAddress(
+        binding.conversationSessionAddress?.serverId,
+        binding.conversationSessionAddress?.sessionId,
+    );
     const transcriptMode = binding.transcriptMode === 'native_session' || binding.transcriptMode === 'synthetic'
         ? binding.transcriptMode
         : null;
-    if (!adapterId || !controlSessionId || !conversationSessionId || !transcriptMode) return null;
+    if (
+        !adapterId
+        || !controlSessionId
+        || !conversationSessionId
+        || !conversationSessionAddress
+        || conversationSessionAddress.sessionId !== conversationSessionId
+        || !transcriptMode
+    ) return null;
 
     const normalized: VoiceSessionBinding = {
         adapterId,
         controlSessionId,
         conversationSessionId,
+        conversationSessionAddress,
         ...(binding.lifetime === 'runtime_attempt' ? { lifetime: 'runtime_attempt' as const } : {}),
         transcriptMode,
-        targetSessionId: normalizeId(binding.targetSessionId),
+        targetSessionAddress: binding.targetSessionAddress
+            ? normalizeSessionAddress(
+                binding.targetSessionAddress.serverId,
+                binding.targetSessionAddress.sessionId,
+            )
+            : null,
         updatedAt: Number.isFinite(binding.updatedAt) ? Number(binding.updatedAt) : 0,
     };
     const owner = readRuntimeAttemptBindingOwner(binding);
@@ -159,11 +178,15 @@ function listPersistedBindingsFromState(state: SessionServerLookupStateLike): Re
     }
     for (const [sessionId, session] of Object.entries(state.sessions ?? {})) {
         if (!session) continue;
-        const ownerMetadata = readVoiceSessionOwnerMetadataFromState(state, sessionId);
+        const sourceServerId = normalizeId(session.serverId) ?? normalizeId(getActiveServerSnapshot().serverId);
+        const address = normalizeSessionAddress(sourceServerId, sessionId);
+        if (!address) continue;
+        const ownerMetadata = readVoiceSessionOwnerMetadataFromState(state, address);
         const binding = readPreferredVoiceConversationBindingMetadata({
             conversationSessionId: sessionId,
             preferredMetadata: ownerMetadata,
             directMetadata: null,
+            sourceServerId: address.serverId,
         });
         if (binding) {
             bindings.push(binding);

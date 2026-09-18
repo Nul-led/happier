@@ -2,7 +2,7 @@ import * as React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
-import { installSessionSubagentCommonModuleMocks } from '@/components/sessions/agents/sessionSubagentTestHelpers';
+import { createSessionAgentActivityRowForTest, installSessionSubagentCommonModuleMocks } from '@/components/sessions/agents/sessionSubagentTestHelpers';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 
@@ -30,7 +30,7 @@ installSessionSubagentCommonModuleMocks({
 });
 
 vi.mock('@/components/sessions/agents/list/SessionSubagentRow', () => ({
-    SessionSubagentRow: (props: { subagent: SessionSubagent }) => React.createElement('SessionSubagentRow', { testID: `row:${props.subagent.id}` }),
+    SessionSubagentRow: (props: { row: { subagent: SessionSubagent } }) => React.createElement('SessionSubagentRow', { testID: `row:${props.row.subagent.id}` }),
 }));
 
 vi.mock('@/sync/sync', () => ({
@@ -73,9 +73,8 @@ describe('SessionSubagentGroup', () => {
         tree = (await renderScreen(<SessionSubagentGroup
                     sessionId="s1"
                     label="qa-team"
-                    subagents={subagents}
+                    rows={subagents.map((subagent) => createSessionAgentActivityRowForTest(subagent))}
                     activityPreviewById={new Map()}
-                    pendingPermissionById={new Map()}
                     onOpenPreview={vi.fn()}
                     onOpenFull={vi.fn()}
                     onOpenAdvanced={vi.fn()}
@@ -145,9 +144,8 @@ describe('SessionSubagentGroup', () => {
         tree = (await renderScreen(<SessionSubagentGroup
                     sessionId="s1"
                     label="qa-team"
-                    subagents={subagents}
+                    rows={subagents.map((subagent) => createSessionAgentActivityRowForTest(subagent))}
                     activityPreviewById={new Map()}
-                    pendingPermissionById={new Map()}
                     onOpenPreview={vi.fn()}
                     onOpenFull={vi.fn()}
                     onOpenAdvanced={vi.fn()}
@@ -182,9 +180,8 @@ describe('SessionSubagentGroup', () => {
         tree = (await renderScreen(<SessionSubagentGroup
                     sessionId="s1"
                     label="qa-team"
-                    subagents={subagents}
+                    rows={subagents.map((subagent) => createSessionAgentActivityRowForTest(subagent))}
                     activityPreviewById={new Map()}
-                    pendingPermissionById={new Map()}
                     onOpenPreview={vi.fn()}
                     onOpenFull={vi.fn()}
                     onOpenAdvanced={vi.fn()}

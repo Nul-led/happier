@@ -11,6 +11,30 @@ const approvalMocks = vi.hoisted(() => ({
     endpointFetch: vi.fn(),
 }));
 
+const modalSpies = vi.hoisted(() => ({
+    // Typed like `Modal.confirm` so the assertions below can read the body argument the
+    // consent presenter builds.
+    confirm: vi.fn(async (_title: string, _body?: string, _options?: unknown) => false),
+}));
+
+// Mock factories import the leaf testkit mock modules, never the full `@/dev/testkit` barrel:
+// awaiting the barrel inside a factory can deadlock module evaluation.
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: { confirm: modalSpies.confirm } }).module;
+});
+
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    // Interpolate the consent copy's one parameter so the assertions below can prove the resolved
+    // command actually reaches the question the person is shown, not just that a key was rendered.
+    return createTextModuleMock({
+        translate: (key: string, params?: Record<string, unknown>) => (
+            key === 'machine.cliTrust.body' ? `${key}:${String(params?.command)}` : key
+        ),
+    });
+});
+
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
     TokenStorage: {
@@ -24,6 +48,7 @@ vi.mock('@/sync/http/client', async (importOriginal) => ({
     createServerFetchAtEndpoint: (...args: unknown[]) => approvalMocks.createServerFetchAtEndpoint(...args),
 }));
 
+import { respondToTokenOnlyAuthRequestPrompt } from './approveSystemTaskAuthRequestPrompt';
 import { buildLocalMachineSetupSystemTaskSpec } from './buildLocalMachineSetupSystemTaskSpec';
 import { createSystemTaskRunner } from './createSystemTaskRunner';
 import { useThisComputerSetupTask } from './useThisComputerSetupTask';
@@ -90,6 +115,43 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
         expect(manual.bridge.start).toHaveBeenCalledTimes(1);
     });
 
+    // The setup kind raises its service-consent prompts before it mutates anything, and
+    // `ctx.prompt` is an unbounded promise: a starter with no responder leaves the run waiting
+    // forever with nothing to cancel. The responder therefore belongs to this one owner, so the
+    // Personal Home first-run path answers them without mounting anything of its own.
+    it.each([
+        ['releaseChannel.switchDefaultForSetup', { targetReleaseChannel: 'preview' }, { switchDefaultReleaseChannel: true }],
+        ['daemon.takeOverManualRelayRuntimeForSetup', {}, { takeOverManualRelayRuntime: true }],
+        ['daemon.replaceLocalBackgroundServices', {}, { replaceExistingServices: true }],
+    ])('answers the %s consent prompt from the one setup-task owner', async (kind, extraData, expectedAnswer) => {
+        modalSpies.confirm.mockReset();
+        modalSpies.confirm.mockResolvedValue(true);
+
+        const manual = createManualRunner();
+        const hook = await renderHook(() => useThisComputerSetupTask({ runner: manual.runner }));
+
+        let taskId: string | undefined;
+        await act(async () => {
+            taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
+                activeRelayUrl: 'http://127.0.0.1:43123',
+                activeWebappUrl: 'http://127.0.0.1:43123',
+            }));
+        });
+
+        await act(async () => {
+            manual.emitEvent(taskId!, {
+                type: 'prompt',
+                stepId: 'setup.thisComputer.preflight',
+                message: 'Consent needed before setup continues',
+                data: { kind, targetServerUrl: 'http://127.0.0.1:43123', ...extraData },
+            });
+        });
+        await flushHookEffects({ cycles: 3, turns: 2 });
+
+        expect(modalSpies.confirm).toHaveBeenCalledTimes(1);
+        expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, expectedAnswer);
+    });
+
     it('keeps daemon pairing failure scoped to the task instead of requesting Home auth follow-up', async () => {
         const manual = createManualRunner();
         const onNeedsAuth = vi.fn();
@@ -102,7 +164,10 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
 
         let taskId: string | undefined;
         await act(async () => {
-            taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec());
+            taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
+                activeRelayUrl: 'http://127.0.0.1:43123',
+                activeWebappUrl: 'http://127.0.0.1:43123',
+            }));
         });
         expect(taskId).toBeTruthy();
 
@@ -134,9 +199,18 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
             approvalMocks.endpointFetch.mockReset();
             approvalMocks.createServerFetchAtEndpoint.mockReset();
             approvalMocks.createServerFetchAtEndpoint.mockImplementation(() => approvalMocks.endpointFetch);
+            modalSpies.confirm.mockReset();
+            modalSpies.confirm.mockResolvedValue(false);
         });
 
-        function emitApprovalPrompt(manual: ReturnType<typeof createManualRunner>, taskId: string, relayUrl: string): void {
+        const RESOLVED_CLI_COMMAND = '/home/dev/repo/apps/cli/bin/happier.mjs';
+
+        function emitApprovalPrompt(
+            manual: ReturnType<typeof createManualRunner>,
+            taskId: string,
+            relayUrl: string,
+            cliProvenance: string | null = 'managed',
+        ): void {
             manual.emitEvent(taskId, {
                 type: 'prompt',
                 stepId: 'setup.thisComputer.auth.request',
@@ -148,6 +222,8 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
                     responseKind: 'tokenOnly',
                     relayUrl,
                     webappUrl: relayUrl,
+                    cliCommand: RESOLVED_CLI_COMMAND,
+                    ...(cliProvenance ? { cliProvenance } : {}),
                 },
             });
         }
@@ -169,7 +245,10 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
 
             let taskId: string | undefined;
             await act(async () => {
-                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec());
+                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
+                activeRelayUrl: 'http://127.0.0.1:43123',
+                activeWebappUrl: 'http://127.0.0.1:43123',
+            }));
             });
             emitApprovalPrompt(manual, taskId!, 'http://127.0.0.1:3005');
             await flushHookEffects({ cycles: 3, turns: 2 });
@@ -186,10 +265,16 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
             expect(postCall).toBeTruthy();
             const init = postCall![1] as RequestInit;
             expect((init.headers as Record<string, string>).Authorization).toBe('Bearer home-b-bearer');
+            // Exact body: the answer must carry no credential or claim material beyond what the
+            // approve owner's contract defines. `authorizeUnattendedTeamAccess` is that owner's
+            // decision for /v1/auth/response (`auth/flows/approve.ts`), asserted at
+            // `approve.explicitEndpoint.test.ts`; it is repeated here only so this exact-shape
+            // assertion stays a real leak check.
             expect(JSON.parse(String(init.body))).toEqual({
                 publicKey: 'pub-key-b64',
                 response: 'opaque-token-only-response-b64',
                 responseKind: 'tokenOnly',
+                authorizeUnattendedTeamAccess: true,
             });
 
             // The answer itself carries no credential or secret material.
@@ -208,14 +293,17 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
 
             let taskId: string | undefined;
             await act(async () => {
-                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec());
+                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
+                activeRelayUrl: 'http://127.0.0.1:43123',
+                activeWebappUrl: 'http://127.0.0.1:43123',
+            }));
             });
             emitApprovalPrompt(manual, taskId!, 'http://127.0.0.9:9999');
             await flushHookEffects({ cycles: 3, turns: 2 });
 
             expect(approvalMocks.readCredentials).not.toHaveBeenCalled();
             expect(approvalMocks.createServerFetchAtEndpoint).not.toHaveBeenCalled();
-            expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: false });
+            expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: false, reason: 'relay_mismatch' });
         });
 
         it('declines when no Home-scoped credential exists for the explicit target', async () => {
@@ -232,14 +320,160 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
 
             let taskId: string | undefined;
             await act(async () => {
-                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec());
+                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
+                activeRelayUrl: 'http://127.0.0.1:43123',
+                activeWebappUrl: 'http://127.0.0.1:43123',
+            }));
             });
             emitApprovalPrompt(manual, taskId!, 'http://127.0.0.1:3005');
             await flushHookEffects({ cycles: 3, turns: 2 });
 
             expect(approvalMocks.readCredentials).toHaveBeenCalledTimes(1);
             expect(approvalMocks.createServerFetchAtEndpoint).not.toHaveBeenCalled();
-            expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: false });
+            expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: false, reason: 'credentials_unavailable' });
+        });
+
+        it('approves a managed CLI silently, with nothing asked of the user', async () => {
+            approvalMocks.readCredentials.mockResolvedValue({ token: 'home-b-bearer' });
+            approvalMocks.endpointFetch
+                .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'pending', supportsV2: true }), { status: 200 }))
+                .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+            const manual = createManualRunner();
+            const hook = await renderHook(() => useThisComputerSetupTask({
+                runner: manual.runner,
+                authRequestApproval: {
+                    expectedRelayUrl: 'http://127.0.0.1:3005',
+                    serverId: 'srv_home_b',
+                },
+            }));
+
+            let taskId: string | undefined;
+            await act(async () => {
+                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
+                    activeRelayUrl: 'http://127.0.0.1:43123',
+                    activeWebappUrl: 'http://127.0.0.1:43123',
+                }));
+            });
+            emitApprovalPrompt(manual, taskId!, 'http://127.0.0.1:3005');
+            await flushHookEffects({ cycles: 3, turns: 2 });
+
+            // First-run onboarding stays zero-interaction for the case the install path owns.
+            expect(modalSpies.confirm).not.toHaveBeenCalled();
+            expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: true });
+        });
+
+        // R8/R13: install ownership selects the approval mode. A CLI the managed install path did
+        // not place — an env/repo override, or a prompt that names no acquisition path at all — is
+        // never approved unattended, but it is not a dead end either: the person at the keyboard
+        // is asked exactly once, naming the command that is actually asking.
+        it.each([
+            ['an override-resolved CLI', 'override' as string | null],
+            ['a prompt that states no acquisition path', null as string | null],
+        ])('raises exactly one attended confirmation naming the resolved command for %s', async (_label, cliProvenance) => {
+            approvalMocks.readCredentials.mockResolvedValue({ token: 'home-b-bearer' });
+            approvalMocks.endpointFetch
+                .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'pending', supportsV2: true }), { status: 200 }))
+                .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+            modalSpies.confirm.mockResolvedValue(true);
+
+            const manual = createManualRunner();
+            const hook = await renderHook(() => useThisComputerSetupTask({
+                runner: manual.runner,
+                authRequestApproval: {
+                    expectedRelayUrl: 'http://127.0.0.1:3005',
+                    serverId: 'srv_home_b',
+                },
+            }));
+
+            let taskId: string | undefined;
+            await act(async () => {
+                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
+                    activeRelayUrl: 'http://127.0.0.1:43123',
+                    activeWebappUrl: 'http://127.0.0.1:43123',
+                }));
+            });
+            emitApprovalPrompt(manual, taskId!, 'http://127.0.0.1:3005', cliProvenance);
+            await flushHookEffects({ cycles: 3, turns: 2 });
+
+            // Exactly one question, and it names the binary the person can actually judge.
+            expect(modalSpies.confirm).toHaveBeenCalledTimes(1);
+            expect(String(modalSpies.confirm.mock.calls[0]?.[1])).toContain(RESOLVED_CLI_COMMAND);
+            // Accepting approves: credentials are read only after the human said yes.
+            expect(approvalMocks.readCredentials).toHaveBeenCalledWith(
+                'http://127.0.0.1:3005',
+                { serverId: 'srv_home_b' },
+            );
+            expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: true });
+        });
+
+        it('declines by name when the confirmation is refused, without reading any credential', async () => {
+            approvalMocks.readCredentials.mockResolvedValue({ token: 'home-b-bearer' });
+            modalSpies.confirm.mockResolvedValue(false);
+
+            const manual = createManualRunner();
+            const hook = await renderHook(() => useThisComputerSetupTask({
+                runner: manual.runner,
+                authRequestApproval: {
+                    expectedRelayUrl: 'http://127.0.0.1:3005',
+                    serverId: 'srv_home_b',
+                },
+            }));
+
+            let taskId: string | undefined;
+            await act(async () => {
+                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
+                    activeRelayUrl: 'http://127.0.0.1:43123',
+                    activeWebappUrl: 'http://127.0.0.1:43123',
+                }));
+            });
+            emitApprovalPrompt(manual, taskId!, 'http://127.0.0.1:3005', 'override');
+            await flushHookEffects({ cycles: 3, turns: 2 });
+
+            expect(modalSpies.confirm).toHaveBeenCalledTimes(1);
+            expect(approvalMocks.readCredentials).not.toHaveBeenCalled();
+            expect(approvalMocks.createServerFetchAtEndpoint).not.toHaveBeenCalled();
+            // Always answered, and by name, so the executor reports a human decline as exactly
+            // that instead of waiting for a timeout.
+            expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: false, reason: 'cli_not_approved' });
+        });
+
+        // Every refusal travels back to the executor by name, so a run that stops says what
+        // actually happened. Only `cli_not_approved` is a human decline; a relay mismatch or an
+        // unreadable credential must not be reported as one.
+        it('answers every refusal with its own name so none reads as a human decline', async () => {
+            const prompt = {
+                publicKey: 'pub-key-b64',
+                response: 'opaque-token-only-response-b64',
+                relayUrl: 'http://127.0.0.1:3005',
+                cliProvenance: 'override',
+                cliCommand: RESOLVED_CLI_COMMAND,
+            } as const;
+            const approval = { expectedRelayUrl: 'http://127.0.0.1:3005', serverId: 'srv_home_b' } as const;
+
+            // Asked and declined: the one refusal a person actually made.
+            const declinedRespond = vi.fn(async () => undefined);
+            expect(await respondToTokenOnlyAuthRequestPrompt({
+                prompt,
+                approval,
+                confirmUnmanagedCli: async () => false,
+                respond: declinedRespond,
+            })).toEqual({ approved: false, reason: 'cli_not_approved' });
+            expect(declinedRespond).toHaveBeenCalledWith({ approved: false, reason: 'cli_not_approved' });
+
+            // A binding check: refused before anything is asked or read, under its own name.
+            const mismatchRespond = vi.fn(async () => undefined);
+            const confirmUnmanagedCli = vi.fn(async () => true);
+            expect(await respondToTokenOnlyAuthRequestPrompt({
+                prompt,
+                approval: { expectedRelayUrl: 'http://127.0.0.9:9999' },
+                confirmUnmanagedCli,
+                respond: mismatchRespond,
+            })).toEqual({ approved: false, reason: 'relay_mismatch' });
+            expect(mismatchRespond).toHaveBeenCalledWith({ approved: false, reason: 'relay_mismatch' });
+            expect(confirmUnmanagedCli).not.toHaveBeenCalled();
+
+            expect(approvalMocks.readCredentials).not.toHaveBeenCalled();
         });
     });
 });

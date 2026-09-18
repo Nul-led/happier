@@ -6,11 +6,12 @@ import {
 import { parsePermissionIntentAlias } from '@happier-dev/agents';
 import { z } from 'zod';
 
-import { getAgentCore } from '@/agents/registry/registryCore';
+import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import {
     buildAgentUniverseBackendTargetKey,
     listAgentUniverseIds,
 } from '@/agents/catalog/agentUniverse';
+import { getAgentCore } from '@/agents/registry/registryCore';
 import { CLAUDE_PERMISSION_MODES, CODEX_LIKE_PERMISSION_MODES, isPermissionMode, type PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 
 import { PredecessorVoiceCredentialBindingV1Schema } from '../voiceCredentialBindingCompatibility';
@@ -22,6 +23,27 @@ function ownRecord(value: unknown): Record<string, unknown> | null {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
         : null;
+}
+
+function canonicalizeBackendTargetKeyedSettings(value: unknown): Record<string, unknown> {
+    const source = ownRecord(value);
+    if (!source) return {};
+
+    const aliases: Array<readonly [string, unknown]> = [];
+    const canonical: Array<readonly [string, unknown]> = [];
+    for (const [key, entry] of Object.entries(source)) {
+        try {
+            const targetKey = resolveBackendTargetKeyV2(key);
+            (targetKey === key ? canonical : aliases).push([targetKey, entry]);
+        } catch {
+            // The Protocol parser owns validation; an unresolvable compatibility
+            // spelling cannot acquire a catalog identity here.
+        }
+    }
+
+    // Prefer an explicitly persisted canonical entry when both it and an older
+    // spelling address the same Agent.
+    return Object.fromEntries([...aliases, ...canonical]);
 }
 
 function readPath(root: unknown, path: readonly string[]): unknown {
@@ -177,6 +199,19 @@ export function applyAccountSettingsCompatibilityMigrations<TSettings extends Re
 }): TSettings {
     const { input, inputSchemaVersion, supportedSchemaVersion } = params;
     const next = { ...params.settings } as Record<string, unknown>;
+
+    next.backendEnabledByTargetKey = canonicalizeBackendTargetKeyedSettings(
+        next.backendEnabledByTargetKey,
+    );
+    next.backendCliSourcePreferenceByTargetKey = canonicalizeBackendTargetKeyedSettings(
+        next.backendCliSourcePreferenceByTargetKey,
+    );
+    next.sessionDefaultPermissionModeByTargetKey = canonicalizeBackendTargetKeyedSettings(
+        next.sessionDefaultPermissionModeByTargetKey,
+    );
+    next.newSessionDefaultPersistenceModeByTargetKeyV1 = canonicalizeBackendTargetKeyedSettings(
+        next.newSessionDefaultPersistenceModeByTargetKeyV1,
+    );
 
     migrateLegacyVoiceSavedSecrets(input, next);
 

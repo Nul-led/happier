@@ -32,6 +32,7 @@ import {
     type WebhookNotificationChannelV1,
 } from '@happier-dev/protocol';
 
+import { SessionAutoFollowPreferencesSection } from '@/components/sessions/follow/SessionAutoFollowPreferencesSection';
 import { ActivitySurfacesSettingsSection } from './ActivitySurfacesSettingsSection';
 import { NotificationBadgesSection } from './NotificationBadgesSection';
 import { NotificationForegroundBehaviorSection } from './NotificationForegroundBehaviorSection';
@@ -39,6 +40,8 @@ import { NotificationLiveActivityRemoteUpdatesSection } from './NotificationLive
 import { NotificationLocalDeviceSection } from './NotificationLocalDeviceSection';
 import { NotificationDesktopPermissionSection } from './NotificationDesktopPermissionSection';
 import { NotificationPushSection } from './NotificationPushSection';
+import { NotificationRemoteAlertsSection } from './NotificationRemoteAlertsSection';
+import { useRemoteAlertRegistrationStatus } from './useRemoteAlertRegistrationStatus';
 import { NotificationQuietHoursSection } from './NotificationQuietHoursSection';
 import { NotificationSoundsSection } from './NotificationSoundsSection';
 import { NotificationTypesSection, type NotificationTypeEventId } from './NotificationTypesSection';
@@ -47,6 +50,7 @@ import { buildWebhookNotificationSettingsDelta } from './notificationChannels';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 
 export const NotificationsSettingsView = React.memo(function NotificationsSettingsView() {
     const router = useRouter();
@@ -59,6 +63,10 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
     const activeHomeName = getServerProfileById(activeServer.serverId)?.name.trim()
         || activeServer.serverUrl.trim()
         || t('settingsNotifications.push.currentHome');
+    const followingEnabled = useFeatureEnabled('sessions.following', {
+        scopeKind: 'spawn',
+        serverId: activeServer.serverId,
+    });
 
     const attentionPolicy = React.useMemo(
         () => accountSettingsParse(settings).attentionDeliveryPolicyV1,
@@ -76,6 +84,14 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
     );
 
     const pushEnabled = attentionPolicy.channels.expo_push.enabled !== false;
+    const remoteAlerts = useRemoteAlertRegistrationStatus({
+        enabled: followingEnabled,
+        serverId: activeServer.serverId,
+        accountEnabled: settings.sessionRemoteAlertsEnabled,
+        policy: attentionPolicy,
+        deviceEnabled: localSettings.deviceRemoteAlertsEnabled,
+        deviceOverrides: localSettings.attentionDeviceOverridesV1,
+    });
     const previewSupported = Platform.OS !== 'web' && !isDesktopHost();
     const liveActivityRemoteUpdateDiagnostics =
         useFeatureDetails<LiveActivityRemoteUpdateCapabilityDiagnostics>({
@@ -164,6 +180,24 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 expo_push: {
                     ...expoPushChannel,
                     previewBehavior: enabled ? 'include_preview' : 'status_only',
+                },
+            },
+        });
+    }, [attentionPolicy.channels, setAttentionPolicy]);
+
+    const setExpoPushRequestPreviewEnabled = React.useCallback((enabled: boolean) => {
+        const expoPushChannel = attentionPolicy.channels.expo_push;
+        const previewBehavior = enabled ? 'include_preview' : 'status_only';
+        setAttentionPolicy({
+            channels: {
+                ...attentionPolicy.channels,
+                expo_push: {
+                    ...expoPushChannel,
+                    events: {
+                        ...expoPushChannel.events,
+                        permission_request: { ...expoPushChannel.events.permission_request, previewBehavior },
+                        user_action_request: { ...expoPushChannel.events.user_action_request, previewBehavior },
+                    },
                 },
             },
         });
@@ -297,12 +331,32 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 setDeviceSoundsEnabled={setDeviceSoundsEnabled}
                 previewSound={previewSound}
             />
+            <SessionAutoFollowPreferencesSection key={activeServer.serverId} serverId={activeServer.serverId} />
             <NotificationPushSection
                 homeName={activeHomeName}
                 pushEnabled={pushEnabled}
                 setPushEnabled={setPushEnabled}
                 openPushTroubleshooting={openPushTroubleshooting}
             />
+            {followingEnabled ? <NotificationRemoteAlertsSection
+                homeName={activeHomeName}
+                accountEnabled={settings.sessionRemoteAlertsEnabled}
+                deviceEnabled={localSettings.deviceRemoteAlertsEnabled}
+                nativeDevice={Platform.OS === 'ios' || Platform.OS === 'android'}
+                registration={remoteAlerts.registration}
+                setAccountEnabled={(enabled) => {
+                    applySettings({ sessionRemoteAlertsEnabled: enabled });
+                    schedulePushTokenReconciliation();
+                }}
+                setDeviceEnabled={(enabled) => {
+                    applyLocalSettings({ deviceRemoteAlertsEnabled: enabled });
+                    schedulePushTokenReconciliation();
+                }}
+                refresh={() => {
+                    schedulePushTokenReconciliation();
+                    remoteAlerts.refresh();
+                }}
+            /> : null}
             <NotificationWebhooksSection
                 webhookChannels={webhookChannels}
                 setWebhookChannels={setWebhookChannels}
@@ -312,6 +366,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 pushEnabled={pushEnabled}
                 setEventEnabled={setExpoPushEventEnabled}
                 setReadyPreviewEnabled={setExpoPushReadyPreviewEnabled}
+                setRequestPreviewEnabled={setExpoPushRequestPreviewEnabled}
             />
             <NotificationForegroundBehaviorSection
                 localSettings={localSettings}

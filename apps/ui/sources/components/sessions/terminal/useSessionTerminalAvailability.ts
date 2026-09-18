@@ -6,14 +6,14 @@ import { useDeviceType } from '@/utils/platform/responsive';
 
 import type { EmbeddedTerminalDockLocation } from './embeddedTerminalDocking';
 
-export function useSessionTerminalAvailability(): Readonly<{
+export function useSessionTerminalAvailability(serverId?: string | null): Readonly<{
     deviceType: string | null | undefined;
     terminalEnabled: boolean;
     dockLocation: EmbeddedTerminalDockLocation;
     sidebarTabAvailable: boolean;
 }> {
     const deviceType = useDeviceType();
-    const terminalEnabled = useFeatureEnabled('terminal.embeddedPty');
+    const terminalEnabled = useFeatureEnabled('terminal.embeddedPty', serverId ? { scopeKind: 'spawn', serverId } : undefined);
     const dockLocationRaw = useLocalSetting('embeddedTerminalDockLocation');
 
     return React.useMemo(() => {

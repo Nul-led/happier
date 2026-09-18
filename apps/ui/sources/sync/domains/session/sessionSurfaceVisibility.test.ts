@@ -21,7 +21,9 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
 import {
     clearFocusedSessionId,
     clearRouteAnchorSessionId,
+    getFocusedSessionAddress,
     getSessionSurfaceVisibilitySnapshot,
+    getVisibleSessionSurfaces,
     isSessionSurfaceVisible,
     markSessionSurfaceHidden,
     markSessionSurfaceVisible,
@@ -35,6 +37,23 @@ describe('sessionSurfaceVisibility', () => {
         resetSessionSurfaceVisibilityForTests();
     });
 
+    it('projects qualified, reference-counted surfaces without merging Homes', () => {
+        markSessionSurfaceVisible('same', 'home-a');
+        markSessionSurfaceVisible('same', 'home-b');
+        markSessionSurfaceVisible('same', 'home-a');
+        expect(getVisibleSessionSurfaces()).toEqual([
+            { serverId: 'home-a', sessionId: 'same' },
+            { serverId: 'home-b', sessionId: 'same' },
+        ]);
+        const first = getVisibleSessionSurfaces();
+        setFocusedSessionId('same');
+        expect(getVisibleSessionSurfaces()).toBe(first);
+        markSessionSurfaceHidden('same', 'home-a');
+        expect(getVisibleSessionSurfaces()).toBe(first);
+        markSessionSurfaceHidden('same', 'home-a');
+        expect(getVisibleSessionSurfaces()).toEqual([{ serverId: 'home-b', sessionId: 'same' }]);
+    });
+
     it('tracks visible, focused, and route-anchor session ids independently', () => {
         markSessionSurfaceVisible('session-1');
         markSessionSurfaceVisible('session-2');
@@ -46,6 +65,25 @@ describe('sessionSurfaceVisibility', () => {
             routeAnchorSessionId: 'session-1',
             visibleSessionIds: ['session-1', 'session-2'],
         });
+    });
+
+    it('retains the exact focused Home when duplicate session ids are visible', () => {
+        markSessionSurfaceVisible('same-session', 'home-a');
+        markSessionSurfaceVisible('same-session', 'home-b');
+
+        setFocusedSessionId('same-session', 'home-b');
+
+        expect(getFocusedSessionAddress()).toEqual({
+            serverId: 'home-b',
+            sessionId: 'same-session',
+        });
+        clearFocusedSessionId('same-session', 'home-a');
+        expect(getFocusedSessionAddress()).toEqual({
+            serverId: 'home-b',
+            sessionId: 'same-session',
+        });
+        clearFocusedSessionId('same-session', 'home-b');
+        expect(getFocusedSessionAddress()).toBeNull();
     });
 
     it('uses reference counting for visible sessions and only clears matching focus state', () => {

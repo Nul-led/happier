@@ -36,6 +36,28 @@ function createHostedPluginSecurityPolicy(
 }
 
 describe('HostedPluginTarget web', () => {
+    it('keeps inline HTML opaque and retires it after an unexpected document load', async () => {
+        const onUnexpectedNavigation = vi.fn();
+        const screen = await renderScreen(
+            <HostedPluginTarget
+                title="Inline plugin"
+                html="<!doctype html><button>Inline</button>"
+                testID="inline-plugin"
+                onUnexpectedNavigation={onUnexpectedNavigation}
+            />,
+        );
+
+        const iframe = screen.findByType('iframe');
+        expect(iframe.props.srcDoc).toContain('<button>Inline</button>');
+        expect(iframe.props.srcDoc.indexOf('Content-Security-Policy')).toBeLessThan(iframe.props.srcDoc.indexOf('<button>'));
+        expect(iframe.props.src).toBeUndefined();
+        expect(iframe.props.sandbox).toBe('allow-scripts');
+        await act(async () => iframe.props.onLoad());
+        expect(onUnexpectedNavigation).not.toHaveBeenCalled();
+        await act(async () => iframe.props.onLoad());
+        expect(screen.findByTestId('inline-plugin-unavailable')).toBeTruthy();
+    });
+
     it('renders through the shared iframe engine with hosted-plugin sandbox policy', async () => {
         const screen = await renderScreen(
             <HostedPluginTarget
@@ -231,11 +253,7 @@ describe('HostedPluginTarget web', () => {
                     testID="hosted-plugin"
                     bridge={{
                         expectedOrigin: 'https://preview.example.test',
-                        expectedPluginId: 'plugin.example',
-                        expectedContributionId: 'hosted-web',
-                        expectedSurfaceId: 'surface-1',
-                        expectedNonce: 'nonce-1',
-                        expectedSessionId: 'session-1',
+                        identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
                         allowedMessageKinds: new Set(['ready']),
                         onMessage,
                     }}
@@ -254,11 +272,7 @@ describe('HostedPluginTarget web', () => {
                     origin: 'https://evil.example.test',
                     data: {
                         version: 1,
-                        pluginId: 'plugin.example',
-                        contributionId: 'hosted-web',
-                        surfaceId: 'surface-1',
-                        sessionId: 'session-1',
-                        nonce: 'nonce-1',
+                        identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
                         sequence: 1,
                         kind: 'ready',
                         payload: { ready: true },
@@ -269,11 +283,7 @@ describe('HostedPluginTarget web', () => {
                     origin: 'https://preview.example.test',
                     data: {
                         version: 1,
-                        pluginId: 'plugin.example',
-                        contributionId: 'hosted-web',
-                        surfaceId: 'surface-1',
-                        sessionId: 'session-1',
-                        nonce: 'nonce-1',
+                        identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
                         sequence: 1,
                         kind: 'ready',
                         payload: { ready: true },
@@ -284,10 +294,7 @@ describe('HostedPluginTarget web', () => {
                     origin: 'https://preview.example.test',
                     data: {
                         version: 1,
-                        pluginId: 'plugin.example',
-                        contributionId: 'hosted-web',
-                        surfaceId: 'surface-1',
-                        nonce: 'nonce-1',
+                        identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
                         sequence: 1,
                         kind: 'ready',
                         payload: { ready: true },
@@ -297,9 +304,9 @@ describe('HostedPluginTarget web', () => {
             });
 
             expect(onMessage).toHaveBeenCalledTimes(1);
-            expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({
+            expect(onMessage.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
                 kind: 'ready',
-                nonce: 'nonce-1',
+                identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
             }));
         } finally {
             (globalThis as { window?: unknown }).window = previousWindow;
@@ -311,6 +318,12 @@ describe('HostedPluginTarget web', () => {
         const listeners = new Set<(event: MessageEvent) => void>();
         const mountedSource = { postMessage: vi.fn() } as unknown as WindowProxy;
         const copiedCapabilitySource = { postMessage: vi.fn() } as unknown as WindowProxy;
+        const documentPort = {
+            onmessage: null as ((event: Readonly<{ data: unknown }>) => void) | null,
+            postMessage: vi.fn(),
+            start: vi.fn(),
+            close: vi.fn(),
+        } as unknown as MessagePort;
         const previousWindow = (globalThis as { window?: unknown }).window;
         (globalThis as { window?: unknown }).window = {
             addEventListener: (event: string, listener: (event: MessageEvent) => void) => {
@@ -325,10 +338,7 @@ describe('HostedPluginTarget web', () => {
         };
         const ready = {
             version: 1,
-            pluginId: 'plugin.example',
-            contributionId: 'hosted-web',
-            surfaceId: 'surface-1',
-            nonce: 'nonce-1',
+            identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
             sequence: 1,
             kind: 'ready',
             payload: { ready: true },
@@ -344,10 +354,7 @@ describe('HostedPluginTarget web', () => {
                     opaqueArtifactFrame
                     bridge={{
                         expectedOrigin: 'https://artifacts.happier.test',
-                        expectedPluginId: 'plugin.example',
-                        expectedContributionId: 'hosted-web',
-                        expectedSurfaceId: 'surface-1',
-                        expectedNonce: 'nonce-1',
+                        identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
                         allowedMessageKinds: new Set(['ready']),
                         onMessage,
                     }}
@@ -371,12 +378,13 @@ describe('HostedPluginTarget web', () => {
                     origin: 'null',
                     data: ready,
                     source: mountedSource,
+                    ports: [documentPort],
                 } as MessageEvent);
             });
 
             expect(onMessage).toHaveBeenCalledTimes(1);
-            expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({
-                nonce: 'nonce-1',
+            expect(onMessage.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+                identity: { instanceId: 'instance-1', mountNonce: 'nonce-1' },
                 kind: 'ready',
             }));
         } finally {

@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import { usePathname, useRouter } from 'expo-router';
+import { Platform } from 'react-native';
 
 import { useSetting } from '@/sync/domains/state/storage';
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
@@ -35,7 +36,10 @@ import { voiceSurfaceHaptics } from './voiceSurfaceHaptics';
 import { voiceOutputStatusStore } from '@/voice/runtime/outputStatus/voiceOutputStatusStore';
 import { useNavigationFocusReturn } from '@/utils/navigation/useNavigationFocusReturn';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
-import { resolveVoiceStartAdmission } from './resolveVoiceStartAdmission';
+import {
+    resolveCurrentVoiceRuntimePlatform,
+    resolveVoiceStartAdmission,
+} from './resolveVoiceStartAdmission';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
 const voiceProviderRegistry = createDefaultVoiceProviderRegistry();
@@ -143,7 +147,7 @@ export function useVoiceSurfaceModel(props: VoiceSurfaceProps): VoiceSurfaceView
     } = useVoiceSurfaceStoreState({
         activeControlSessionId: snap.sessionId ?? null,
         providerId,
-        surfaceSessionId: props.sessionId ?? null,
+        surfaceSessionId: props.sessionAddress?.sessionId ?? props.sessionId ?? null,
         transcriptEnabled: activityFeedEnabled,
         voiceSettings: voice,
         voicePrivacy,
@@ -156,12 +160,15 @@ export function useVoiceSurfaceModel(props: VoiceSurfaceProps): VoiceSurfaceView
         daemonLocalVoiceUnavailable,
         locationAllowsVariant,
         routeSessionId,
+        startSessionAddress,
         startSessionId,
         targetLabel,
     } = useVoiceSurfaceTargetState({
         pathname,
         providerId,
-        sessionId: props.sessionId ?? null,
+        sessionAddress: props.sessionAddress,
+        sessionId: props.sessionAddress?.sessionId ?? props.sessionId ?? null,
+        serverId: props.sessionAddress?.serverId ?? props.serverId ?? null,
         variant: props.variant,
         voice,
         voicePrivacy,
@@ -169,8 +176,8 @@ export function useVoiceSurfaceModel(props: VoiceSurfaceProps): VoiceSurfaceView
     const idleTarget = React.useMemo<VoiceAttemptIdleTarget>(
         () => bindingScope === 'global'
             ? VOICE_ATTEMPT_IDLE_TARGET_GLOBAL
-            : { kind: 'session', sessionId: startSessionId ?? '' },
-        [bindingScope, startSessionId],
+            : { kind: 'session', sessionAddress: startSessionAddress },
+        [bindingScope, startSessionAddress],
     );
     const baseAttemptControl = useVoiceAttemptControl(idleTarget);
     const activityFeedExpansion = useVoiceActivityFeedExpansion();
@@ -202,6 +209,7 @@ export function useVoiceSurfaceModel(props: VoiceSurfaceProps): VoiceSurfaceView
         bindingScope,
         daemonLocalVoiceUnavailable,
         globalStartAuthorized,
+        platform: resolveCurrentVoiceRuntimePlatform(Platform.OS),
         providerId,
         providerSettings: providerEntry?.providerSettings ?? null,
         registry: voiceProviderRegistry,

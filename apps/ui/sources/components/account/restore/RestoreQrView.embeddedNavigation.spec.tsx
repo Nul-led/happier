@@ -145,8 +145,8 @@ describe('RestoreQrView known-target requester QR', () => {
         expect(screen.getTextContent()).toContain('This Home was added. Your focused Home is unchanged.');
     });
 
-    it('locks route removal and hides destructive navigation after the requester claim', async () => {
-        state.presentation = { phase: 'connecting', descriptor, expiresAtMs: Date.now() + 60_000 };
+    it('locks route removal only after trusted completion reaches credential adoption', async () => {
+        state.presentation = { phase: 'adding', descriptor, expiresAtMs: Date.now() + 60_000 };
         state.canCancel = false;
         const onBack = vi.fn();
         const onOpenScanQr = vi.fn();

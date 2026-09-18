@@ -15,6 +15,7 @@ import {
     resetSessionDraftRepositoryForTests,
     writeExistingSessionDraft,
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
+import { readExecutionRunRequestedAction } from '@/sync/domains/input/participants/executionRunRequestedAction';
 
 const LEGACY_TEST_SCOPE: ServerAccountScope = { serverId: 'legacy-test', accountId: 'legacy-test' };
 
@@ -34,7 +35,9 @@ function readField(scope: ServerAccountScope, sessionId: string, fieldId: Sessio
             : undefined;
     }
     if (fieldId === 'routing.agentContinuation') return document.target.routing.agentContinuation.value;
-    return document.target.routing.executionRunDelivery.value;
+    return StrictJsonValueSchema.parse(readExecutionRunRequestedAction(
+        document.target.routing.executionRunDelivery.value,
+    ));
 }
 
 export function readSessionDraftValue<FieldId extends SessionDraftValueFieldId>(
@@ -60,7 +63,7 @@ export function writeSessionDraftValue<FieldId extends SessionDraftValueFieldId>
                 ? { recipient: StrictJsonValueSchema.parse({ mode: 'manual', recipient: value }) }
                 : fieldId === 'routing.agentContinuation'
                     ? { agentContinuation: value as StrictJsonValue }
-                    : { executionRunDelivery: value as StrictJsonValue } };
+                    : { executionRunRequestedAction: value as StrictJsonValue } };
     writeExistingSessionDraft({ scope: scopeOrLegacy(scope), sessionId, patch });
 }
 
@@ -75,7 +78,7 @@ export function clearSessionDraftValuesForSession(
     return [
         'routing.recipient',
         'routing.agentContinuation',
-        'routing.executionRunDelivery',
+        'routing.executionRunRequestedAction',
         'structuredInput.composerAttachments',
         'structuredInput.mentions',
     ];

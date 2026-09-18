@@ -1,7 +1,8 @@
 import { getActionSpec } from '@happier-dev/protocol/actions';
 import {
     buildReviewCommentMutationEventEnvelopeV1,
-    validateReviewCommentPublicationClaimAgainstPlanV1,
+    buildReviewCommentPublicationTransportRequestV1,
+    openReviewCommentPublicationTransportResponseV1,
     type AccountScopedCryptoMaterial,
     type ReviewCommentActionIdV1,
     type ReviewCommentAttachEvidenceRequestV1,
@@ -293,15 +294,15 @@ export function createReviewCommentsHttpActionExecutor(
             }
             case 'reviews.comments.claimPublicationDispatch': {
                 const parsed = parseReviewCommentInput<ReviewCommentClaimPublicationDispatchRequestV1>(actionId, input);
+                const storage = await resolveEventStorageContext();
+                const context = { ...storage, material: storage.mode === 'plain' ? null : storage.material ?? null };
+                const transport = buildReviewCommentPublicationTransportRequestV1({ input: parsed, context, randomBytes });
                 const output = await requestReviewCommentJson(
                     actionRequest,
                     '/v1/reviews/comments/publication/claim',
-                    withJsonBody(parsed),
+                    withJsonBody(transport),
                 );
-                return validateReviewCommentPublicationClaimAgainstPlanV1(
-                    parsed,
-                    parseReviewCommentOutput(actionId, output),
-                );
+                return openReviewCommentPublicationTransportResponseV1({ plan: parsed, context, response: output });
             }
         }
     };

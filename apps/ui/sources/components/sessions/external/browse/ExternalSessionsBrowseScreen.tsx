@@ -31,11 +31,15 @@ import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machine
 import { machineAdministrationTargetsEqual } from '@/sync/domains/machines/administration/targetSelection';
 import { isMachineAdministrationExecutionTargetCurrent } from '@/sync/domains/machines/administration/operationCurrentness';
 import { useMachineAdministrationTargetSelection } from '@/sync/domains/machines/administration/useTargetSelection';
-import { machineExternalSessionLinkEnsure } from '@/sync/ops/machineExternalSessions';
+import {
+    machineExternalSessionCandidateDelete,
+    machineExternalSessionLinkEnsure,
+} from '@/sync/ops/machineExternalSessions';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useProfile, useSettingsVersion } from '@/sync/store/hooks';
 import { sync } from '@/sync/sync';
 import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 import type { Theme } from '@/theme';
 import { t } from '@/text';
 
@@ -113,6 +117,7 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
     const machines = useAllMachines();
     const profile = useProfile();
     const settingsVersion = useSettingsVersion();
+    const expectedSettingsScope = useAccountSettingsScope();
     const backendEnabledByTargetKey = useSetting('backendEnabledByTargetKey');
     const acpCatalogSettingsV1 = useSetting('acpCatalogSettingsV1');
     const connectedServicesProfileLabelByKey = useSetting('connectedServicesProfileLabelByKey');
@@ -159,15 +164,17 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
             return { machineId: lockScope.machineId, serverId: lockScope.serverId ?? null };
         }
         if (!administrationExecutionTarget) return null;
-        let resolvedTarget: ReturnType<typeof administrationTargetSelection.resolveExecutionTarget> = null;
+        // The callback below is invoked by the currency check, so the resolved
+        // target is held in a box the compiler cannot narrow to its initial null.
+        const resolved: { target: ReturnType<typeof administrationTargetSelection.resolveExecutionTarget> } = { target: null };
         if (!isMachineAdministrationExecutionTargetCurrent({
             expectedTarget: administrationExecutionTarget,
             resolveCurrentTarget: () => {
-                resolvedTarget = administrationTargetSelection.resolveExecutionTarget();
-                return resolvedTarget;
+                resolved.target = administrationTargetSelection.resolveExecutionTarget();
+                return resolved.target;
             },
-        }) || !resolvedTarget) return null;
-        return { machineId: resolvedTarget.machine.id, serverId: resolvedTarget.serverId };
+        }) || !resolved.target) return null;
+        return { machineId: resolved.target.machine.id, serverId: resolved.target.serverId };
     }, [administrationExecutionTarget, administrationTargetSelection, lockScope]);
     const daemonMergedProjection = useDaemonMergedProjectionInputs({
         machineId: effectiveSelectedMachineId,
@@ -182,8 +189,9 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
         () => listExternalSessionBrowseProviderIds({
             projection: daemonMergedProjectionInputs?.pluginProjectionV2,
             machineId: effectiveSelectedMachineId,
+            interaction,
         }),
-        [daemonMergedProjectionInputs?.pluginProjectionV2, effectiveSelectedMachineId],
+        [daemonMergedProjectionInputs?.pluginProjectionV2, effectiveSelectedMachineId, interaction],
     );
     const providers = React.useMemo<ReadonlyArray<Readonly<{
         id: ExternalSessionBrowseProviderId;
@@ -226,6 +234,7 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
                 projection: daemonMergedProjectionInputs?.pluginProjectionV2,
                 source: lockScope.source,
                 activeServerId: effectiveSelectedServerId ?? activeServerId,
+                interaction,
             });
             return [{
                 key: 'locked',
@@ -242,12 +251,14 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
             settings,
             projection: daemonMergedProjectionInputs?.pluginProjectionV2,
             activeServerId: effectiveSelectedServerId ?? activeServerId,
+            interaction,
         });
-    }, [activeServerId, daemonMergedProjectionInputs?.pluginProjectionV2, effectiveSelectedMachineId, effectiveSelectedServerId, lockScope, profile, selectedProviderId, settings]);
+    }, [activeServerId, daemonMergedProjectionInputs?.pluginProjectionV2, effectiveSelectedMachineId, effectiveSelectedServerId, interaction, lockScope, profile, selectedProviderId, settings]);
     const [selectedSourceKey, setSelectedSourceKey] = React.useState<string | null>(() => (
         lockScope ? 'locked' : sourceOptions[0]?.key ?? null
     ));
     const [linkingSessionId, setLinkingSessionId] = React.useState<string | null>(null);
+    const [deletingCandidateKey, setDeletingCandidateKey] = React.useState<string | null>(null);
     const [providerMenuOpen, setProviderMenuOpen] = React.useState(false);
     const [sourceMenuOpen, setSourceMenuOpen] = React.useState(false);
     const [searchQuery, setSearchQuery] = React.useState('');
@@ -381,9 +392,11 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
         cancelled,
         autoLinkPolicyScope,
         error,
+        candidateDeleteSupported,
         loadMore,
         cancelPreparation,
         reload,
+        removeCandidate,
     } = useExternalSessionBrowseCandidates({
         machineId: effectiveSelectedMachineId,
         serverId: effectiveSelectedServerId,
@@ -446,6 +459,8 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
     }
     const candidateActionAuthorityGeneration = candidateActionAuthorityRef.current.generation;
     const linkRequestTokenRef = React.useRef(0);
+    const deleteRequestTokenRef = React.useRef(0);
+    const deletingCandidateKeyRef = React.useRef<string | null>(null);
     const autoLinkPolicyEnabled = React.useMemo(() => {
         if (!effectiveSelectedMachineId || !autoLinkPolicyScope) return false;
         return externalSessionsSettings?.autoLinkSourcePolicies.some((policy) => (
@@ -476,6 +491,7 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
             const enabledAtMs = Date.now();
             requireOneShotAccountSettingsMutationApplied(
                 await sync.mutateAccountSettingsOnce({
+                    expectedSettingsScope,
                     expectedSettingsVersion: settingsVersion,
                     mutate: (raw) => ({
                         settings: {
@@ -512,7 +528,7 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
             autoLinkMutationPendingRef.current = false;
             setAutoLinkMutationPending(false);
         }
-    }, [accountSettingsTargetAvailable, autoLinkPolicyScope, resolveCurrentOperationTarget, settingsVersion]);
+    }, [accountSettingsTargetAvailable, autoLinkPolicyScope, expectedSettingsScope, resolveCurrentOperationTarget, settingsVersion]);
     const selectedMachineIsOffline = React.useMemo(() => {
         if (!effectiveSelectedMachineId) return false;
         return machines.find((machine) => machine.id === effectiveSelectedMachineId)?.active === false;
@@ -536,10 +552,20 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
         return machine?.metadata?.homeDir ?? null;
     }, [administrationExecutionTarget?.machine, effectiveSelectedMachineId, lockScope, machines]);
 
+    /**
+     * Pending candidate work belongs to the scope that started it. When the
+     * browse scope moves, both outstanding requests are disowned in one place:
+     * their tokens are retired so a late completion can neither act nor clear
+     * anything, and the listing that just arrived starts with no inherited
+     * pending row.
+     */
     React.useEffect(() => {
         linkRequestTokenRef.current += 1;
         linkingSessionIdRef.current = null;
         setLinkingSessionId(null);
+        deleteRequestTokenRef.current += 1;
+        deletingCandidateKeyRef.current = null;
+        setDeletingCandidateKey(null);
     }, [candidateActionAuthorityGeneration]);
 
     const handleOpenCandidate = React.useCallback(async (
@@ -648,6 +674,109 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
             }
         }
     }, [candidateActionsAllowed, effectiveSelectedMachineId, interaction, props, resolveCurrentOperationTarget, router, selectedMachineIsOffline, selectedProviderId, selectedSource]);
+
+    /**
+     * Delete one Agent-owned session behind the canonical destructive
+     * confirmation. Nothing is removed optimistically: the row keeps its place
+     * and its pending treatment until the Agent confirms the deletion, and a
+     * failure leaves it exactly where it was so the user can retry.
+     */
+    const handleDeleteCandidate = React.useCallback(async (
+        candidate: ExternalSessionBrowseCandidate,
+        selectionAuthorityGeneration: number,
+    ) => {
+        /**
+         * Admission is decided before the first await. Two presses dispatched
+         * from one commit both observe the pre-press rendered state, so only a
+         * ref written here can stop the second from opening its own
+         * confirmation and sending its own irreversible deletion.
+         */
+        if (deletingCandidateKeyRef.current !== null) return;
+        /**
+         * The press carries the generation of the listing that rendered the
+         * row. A confirmation opened on the previous scope's row must not be
+         * answered against the machine, Agent and source the user moved to.
+         */
+        if (candidateActionAuthorityRef.current.generation !== selectionAuthorityGeneration) return;
+        if (!selectedProviderId || !selectedSource) return;
+        const currentTarget = resolveCurrentOperationTarget();
+        if (!currentTarget) return;
+        const candidateKey = readExternalSessionBrowseCandidateKey(candidate);
+        const requestToken = deleteRequestTokenRef.current + 1;
+        deleteRequestTokenRef.current = requestToken;
+        deletingCandidateKeyRef.current = candidateKey;
+        // Deletion is Account-scoped exactly like linking: a response that
+        // resolves after an Account switch may neither alert nor mutate rows in
+        // the Account the user moved to.
+        const accountCurrentness = captureActiveServerAccountScopeCurrentness();
+        const requestIsCurrent = () => (
+            deleteRequestTokenRef.current === requestToken
+            && candidateActionAuthorityRef.current.generation === selectionAuthorityGeneration
+            && accountCurrentness.isCurrent()
+        );
+        try {
+            const candidateTitle = candidate.title?.trim()
+                || readExternalSessionBrowseCandidatePath(candidate.details)
+                || candidate.remoteSessionId;
+            const confirmed = await Modal.confirm(
+                t('externalSessions.browseDeleteCandidateConfirmTitle'),
+                t('externalSessions.browseDeleteCandidateConfirmMessage', {
+                    title: candidateTitle,
+                    agent: selectedAgentProjection?.title ?? selectedProviderId,
+                }),
+                {
+                    cancelText: t('common.cancel'),
+                    confirmText: t('common.delete'),
+                    destructive: true,
+                },
+            );
+            if (!confirmed) return;
+            // The scope can move while the confirmation is on screen, and the
+            // answer only authorizes the scope the user was looking at.
+            if (!requestIsCurrent()) return;
+            setDeletingCandidateKey(candidateKey);
+            const request = {
+                machineId: currentTarget.machineId,
+                agentId: selectedProviderId,
+                source: selectedSource,
+                // The listing handed out the Agent's opaque bytes; deletion
+                // addresses the same record without reinterpreting them.
+                remoteSessionId: candidate.remoteSessionId,
+            };
+            const result = currentTarget.serverId
+                ? await machineExternalSessionCandidateDelete(request, { serverId: currentTarget.serverId })
+                : await machineExternalSessionCandidateDelete(request);
+            if (!requestIsCurrent()) return;
+            if (!result.ok) {
+                Modal.alert(
+                    t('common.error'),
+                    resolveExternalSessionBrowseRpcErrorMessage(result.errorCode, 'delete'),
+                );
+                return;
+            }
+            // The Agent's key is unique only inside the scope that served it, so
+            // this removal is reachable only while that scope still owns the
+            // listing; a same-keyed row in a newer one is a different session.
+            removeCandidate(candidateKey);
+        } catch (deleteError) {
+            if (!requestIsCurrent()) return;
+            Modal.alert(
+                t('common.error'),
+                resolveExternalSessionBrowseThrownErrorMessage(deleteError, 'delete'),
+            );
+        } finally {
+            if (deleteRequestTokenRef.current === requestToken) {
+                deletingCandidateKeyRef.current = null;
+                setDeletingCandidateKey(null);
+            }
+        }
+    }, [
+        removeCandidate,
+        resolveCurrentOperationTarget,
+        selectedAgentProjection?.title,
+        selectedProviderId,
+        selectedSource,
+    ]);
 
     return (
         <PopoverScope boundaryRef={popoverBoundaryRef}>
@@ -779,6 +908,8 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
                     preparationStopped={preparationStopped}
                     cancelled={cancelled}
                     linkingSessionId={linkingSessionId}
+                    deletingCandidateKey={deletingCandidateKey}
+                    candidateDeleteSupported={candidateDeleteSupported}
                     candidateActionsDisabled={!candidateActionsAllowed}
                     interaction={interaction}
                     agentIdentity={selectedAgentIdentity}
@@ -796,6 +927,16 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
                     onSelectCandidate={(candidate, selectionAuthorityGeneration) => {
                         void handleOpenCandidate(candidate, selectionAuthorityGeneration);
                     }}
+                    {...(candidateDeleteSupported
+                        ? {
+                            onDeleteCandidate: (
+                                candidate: ExternalSessionBrowseCandidate,
+                                selectionAuthorityGeneration: number,
+                            ) => {
+                                void handleDeleteCandidate(candidate, selectionAuthorityGeneration);
+                            },
+                        }
+                        : {})}
                     onLoadMore={() => { void loadMore(); }}
                     onCancelPreparation={cancelPreparation}
                     onRetry={() => {

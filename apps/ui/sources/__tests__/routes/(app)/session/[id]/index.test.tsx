@@ -338,7 +338,7 @@ describe('session route index', () => {
 
         const cockpit = screen.findByType('SessionCockpitShell' as never);
         expect(cockpit.props.sessionId).toBe('session-1');
-        expect(cockpit.props.scopeId).toBe('session:session-1');
+        expect(cockpit.props.scopeId).toBe('session:address:server-b:session-1');
         expect(cockpit.props.surface).toBe('git');
         expect(cockpit.props.routeServerId).toBe('server-b');
         expect(screen.findAllByType('SessionView')).toHaveLength(0);
@@ -368,6 +368,6 @@ describe('session route index', () => {
         await renderScreen(React.createElement(Route.default));
 
         expect(terminalAvailabilityCalls.length).toBeGreaterThan(0);
-        expect(terminalAvailabilityCalls.at(-1)).toBeUndefined();
+        expect(terminalAvailabilityCalls.at(-1)).toBeNull();
     });
 });

@@ -26,6 +26,7 @@ const CODEX_SERVICE_KEY = 'happier.agent.codex/openai-codex';
 const NOVEL_SERVICE_KEY = 'acme.review/reviewer-service';
 
 const modalShowMock = vi.hoisted(() => vi.fn());
+const modalConfirmMock = vi.hoisted(() => vi.fn(async () => false));
 const useFeatureEnabledMock = vi.hoisted(() => vi.fn());
 const newSessionConnectedAccountProjection = {
     scopeKey: 'new-session-test',
@@ -171,6 +172,7 @@ installNewSessionModulesCommonModuleMocks({
         return createModalModuleMock({
             spies: {
                 show: (...args: any[]) => modalShowMock(...args),
+                confirm: (...args: any[]) => modalConfirmMock(...args),
             },
         }).module;
     },
@@ -232,6 +234,8 @@ describe('useNewSessionConnectedServices', () => {
     beforeEach(() => {
         installConnectedAccountDescriptorProjection(newSessionConnectedAccountProjection);
         modalShowMock.mockReset();
+        modalConfirmMock.mockReset();
+        modalConfirmMock.mockResolvedValue(false);
         useFeatureEnabledMock.mockReset();
         useFeatureEnabledMock.mockReturnValue(true);
         seedClaudeProfile();
@@ -476,13 +480,72 @@ describe('useNewSessionConnectedServices', () => {
         );
 
         expect(hook.getCurrent().connectedServicesBindingsPayload).toEqual({
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 [CLAUDE_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'work' },
             },
         });
         expect(requireCollapsedContentPopover(hook.getCurrent().connectedServicesAuthChip).label)
             .toBe('Anthropic API key: Work');
+
+        await hook.unmount();
+    });
+
+    it('applies an installed Agent default through its selected routing identity', async () => {
+        const { useNewSessionConnectedServices } = await import('./useNewSessionConnectedServices');
+        const installedAgentId = 'acme.review/reviewer';
+        profileState.current = {
+            connectedAccountsV4: [
+                v4Account({
+                    pluginId: 'acme.review',
+                    localId: 'reviewer-service',
+                    accountId: 'reviewer',
+                    email: 'reviewer@acme.test',
+                    kind: 'token',
+                    displayName: 'Reviewer',
+                }),
+            ],
+            connectedAccountGroupsV4: [],
+            connectedServiceCredentialRevisionsV1: [],
+        };
+
+        const hook = await renderHook(() =>
+            useNewSessionConnectedServices({
+                agentCore: null,
+                defaultAuthAgentId: installedAgentId,
+                connectedAccounts: NOVEL_CONNECTED_ACCOUNTS,
+                agentOptionState: null,
+                settings: {
+                    connectedServicesProfileLabelByKey: {},
+                    connectedServicesDefaultProfileByServiceId: {},
+                    connectedServicesDefaultAuthByAgentIdV1: {
+                        v: 1,
+                        bindingsByAgentId: {
+                            [installedAgentId]: {
+                                v: 1,
+                                bindingsByServiceId: {
+                                    [NOVEL_SERVICE_KEY]: {
+                                        source: 'connected',
+                                        selection: 'profile',
+                                        profileId: 'reviewer',
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                targetServerId: null,
+                router: { push: vi.fn() },
+                setAgentOptionStateForCurrentAgent: vi.fn(),
+            }),
+        );
+
+        expect(hook.getCurrent().connectedServicesBindingsPayload).toEqual({
+            v: 2,
+            bindingsByServiceId: {
+                [NOVEL_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'reviewer' },
+            },
+        });
 
         await hook.unmount();
     });
@@ -553,7 +616,7 @@ describe('useNewSessionConnectedServices', () => {
         );
 
         expect(hook.getCurrent().connectedServicesBindingsPayload).toEqual({
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 [CODEX_SERVICE_KEY]: {
                     source: 'connected',
@@ -619,7 +682,7 @@ describe('useNewSessionConnectedServices', () => {
         );
 
         expect(hook.getCurrent().connectedServicesBindingsPayload).toEqual({
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 [CODEX_SERVICE_KEY]: {
                     source: 'connected',
@@ -720,7 +783,7 @@ describe('useNewSessionConnectedServices', () => {
             { [NOVEL_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'reviewer' } },
         );
         expect(hook.getCurrent().connectedServicesBindingsPayload).toEqual({
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 [NOVEL_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'reviewer' },
             },
@@ -919,6 +982,118 @@ describe('useNewSessionConnectedServices', () => {
             },
         });
 
+        await hook.unmount();
+    });
+
+    it('preserves the new-Session Connected Service draft when direct disclosure is cancelled', async () => {
+        const { useNewSessionConnectedServices } = await import('./useNewSessionConnectedServices');
+        const setAgentOptionStateForCurrentAgent = vi.fn();
+        const selection = {
+            source: 'team_resource' as const,
+            teamId: 'team-1', resourceId: 'resource-1', expectedResourceRevision: 4,
+            sourceMemberKey: 'member-key', sourceVersion: 'source-version',
+            disclosedMember: {
+                service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
+                accountId: 'shared-account',
+            },
+        };
+        const resource = {
+            id: 'resource-1', teamId: 'team-1', displayName: 'Shared Claude', resourceRevision: 4,
+            readiness: { kind: 'available' as const }, recoveryAction: null,
+            deliveryMode: 'direct' as const, mayBroker: false, mayReceiveDirect: true,
+            directMaterialState: 'never_delivered' as const,
+            sessionUsePolicy: 'personal_allowed' as const,
+            providerModels: [], connectedServiceSelections: [selection],
+            sourcePresentation: {
+                kind: 'connected_service' as const,
+                service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
+            },
+        };
+        const hook = await renderHook(() => useNewSessionConnectedServices({
+            agentCore: null,
+            connectedAccounts: CLAUDE_CONNECTED_ACCOUNTS,
+            agentOptionState: null,
+            settings: {
+                connectedServicesProfileLabelByKey: {},
+                connectedServicesDefaultProfileByServiceId: {},
+            },
+            targetServerId: 'server-1',
+            teamCredentialResources: [resource],
+            teamNameById: { 'team-1': 'Acme' },
+            router: { push: vi.fn() },
+            setAgentOptionStateForCurrentAgent,
+        }));
+        const renderContent = requireCollapsedContentPopover(hook.getCurrent().connectedServicesAuthChip).renderContent;
+        if (typeof renderContent !== 'function') throw new Error('Expected connected services popover content renderer');
+        const popover = renderContent({ requestClose: vi.fn(), maxHeight: 420 }) as React.ReactElement<{
+            setBindingForService: (serviceId: string, binding: typeof selection) => Promise<void> | void;
+        }>;
+
+        await act(async () => {
+            await popover.props.setBindingForService(CLAUDE_SERVICE_KEY, selection);
+        });
+
+        expect(modalConfirmMock).toHaveBeenCalledOnce();
+        expect(setAgentOptionStateForCurrentAgent).not.toHaveBeenCalled();
+        expect(hook.getCurrent().connectedServicesBindingsPayload).toBeNull();
+        await hook.unmount();
+    });
+
+    it('commits the exact direct Connected Service selection once after disclosure continues', async () => {
+        modalConfirmMock.mockResolvedValue(true);
+        const { useNewSessionConnectedServices } = await import('./useNewSessionConnectedServices');
+        const setAgentOptionStateForCurrentAgent = vi.fn();
+        const selection = {
+            source: 'team_resource' as const,
+            teamId: 'team-1', resourceId: 'resource-1', expectedResourceRevision: 4,
+            sourceMemberKey: 'member-key', sourceVersion: 'source-version',
+            disclosedMember: {
+                service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
+                accountId: 'shared-account',
+            },
+        };
+        const resource = {
+            id: 'resource-1', teamId: 'team-1', displayName: 'Shared Claude', resourceRevision: 4,
+            readiness: { kind: 'available' as const }, recoveryAction: null,
+            deliveryMode: 'direct' as const, mayBroker: false, mayReceiveDirect: true,
+            directMaterialState: 'current' as const,
+            sessionUsePolicy: 'personal_allowed' as const,
+            providerModels: [], connectedServiceSelections: [selection],
+            sourcePresentation: {
+                kind: 'connected_service' as const,
+                service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
+            },
+        };
+        const hook = await renderHook(() => useNewSessionConnectedServices({
+            agentCore: null,
+            connectedAccounts: CLAUDE_CONNECTED_ACCOUNTS,
+            agentOptionState: null,
+            settings: {
+                connectedServicesProfileLabelByKey: {},
+                connectedServicesDefaultProfileByServiceId: {},
+            },
+            targetServerId: 'server-1',
+            teamCredentialResources: [resource],
+            teamNameById: { 'team-1': 'Acme' },
+            router: { push: vi.fn() },
+            setAgentOptionStateForCurrentAgent,
+        }));
+        const renderContent = requireCollapsedContentPopover(hook.getCurrent().connectedServicesAuthChip).renderContent;
+        if (typeof renderContent !== 'function') throw new Error('Expected connected services popover content renderer');
+        const popover = renderContent({ requestClose: vi.fn(), maxHeight: 420 }) as React.ReactElement<{
+            setBindingForService: (serviceId: string, binding: typeof selection) => Promise<void> | void;
+        }>;
+
+        await act(async () => {
+            await popover.props.setBindingForService(CLAUDE_SERVICE_KEY, selection);
+        });
+
+        expect(modalConfirmMock).toHaveBeenCalledOnce();
+        expect(setAgentOptionStateForCurrentAgent).toHaveBeenCalledOnce();
+        expect(setAgentOptionStateForCurrentAgent).toHaveBeenCalledWith(
+            'connectedServicesBindingsByServiceId',
+            { [CLAUDE_SERVICE_KEY]: selection },
+        );
         await hook.unmount();
     });
 

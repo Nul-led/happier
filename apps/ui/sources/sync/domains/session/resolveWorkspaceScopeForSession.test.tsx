@@ -70,7 +70,8 @@ describe('useWorkspaceScopeForSession', () => {
                         daemonStateVersion: 0,
                     },
                 },
-                sessionListRenderables: {},
+                sessionListRowsByServerId: {},
+                ordinarySessionListMembershipByServerId: {},
                 sessionListIndexByServerId: {},
                 getProjectForSession: () => null,
             }));

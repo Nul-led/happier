@@ -8,8 +8,37 @@ import {
     resetSessionSurfaceVisibilityForTests,
 } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { handleUpdateContainer } from './socket';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
 const initialStorageState = storage.getState();
+
+function withActiveSessionListRows(
+    state: ReturnType<typeof storage.getState>,
+    rows: Record<string, SessionListRenderableSession>,
+) {
+    const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
+    if (!serverId) throw new Error('Expected an active Home for the socket fixture.');
+    return {
+        sessionListRowsByServerId: {
+            ...state.sessionListRowsByServerId,
+            [serverId]: { ...(state.sessionListRowsByServerId[serverId] ?? {}), ...rows },
+        },
+        ordinarySessionListMembershipByServerId: {
+            ...state.ordinarySessionListMembershipByServerId,
+            [serverId]: [...new Set([
+                ...(state.ordinarySessionListMembershipByServerId[serverId] ?? []),
+                ...Object.keys(rows),
+            ])],
+        },
+    };
+}
+
+function replaceActiveSessionListRows(rows: SessionListRenderableSession[]): void {
+    const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
+    if (!serverId) throw new Error('Expected an active Home for the socket fixture.');
+    storage.getState().applyServerScopedSessionListRows(serverId, rows, { source: 'ordinary', mode: 'replace' });
+}
 
 function buildSession(sessionId: string): Session {
     return {
@@ -354,8 +383,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
         }));
         storage.setState((prev) => ({
             ...prev,
-            sessionListRenderables: {
-                ...prev.sessionListRenderables,
+            ...withActiveSessionListRows(prev, {
                 's-hidden-projection': {
                     id: 's-hidden-projection',
                     seq: 1,
@@ -375,7 +403,8 @@ describe('socket new-message + coalescer: materialized max seq', () => {
                     thinkingAt: 0,
                     presence: 1,
                 },
-            },
+
+            }),
         }));
 
         const applySessions = vi.fn();
@@ -429,7 +458,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
             seq: 2,
         }));
 
-        expect(storage.getState().sessionListRenderables['s-hidden-projection']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-hidden-projection']).find(Boolean)).toEqual(
             expect.objectContaining({ seq: 2, updatedAt: 1_002, hasUnreadMessages: true }),
         );
 
@@ -460,8 +489,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
         }));
         storage.setState((prev) => ({
             ...prev,
-            sessionListRenderables: {
-                ...prev.sessionListRenderables,
+            ...withActiveSessionListRows(prev, {
                 's-hidden-updated': {
                     id: 's-hidden-updated',
                     seq: 1,
@@ -481,7 +509,8 @@ describe('socket new-message + coalescer: materialized max seq', () => {
                     thinkingAt: 0,
                     presence: 1,
                 },
-            },
+
+            }),
         }));
 
         const applySessions = vi.fn();
@@ -536,7 +565,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
             messageId: 'm2',
         }));
 
-        expect(storage.getState().sessionListRenderables['s-hidden-updated']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-hidden-updated']).find(Boolean)).toEqual(
             expect.objectContaining({ seq: 2, updatedAt: 1_002, hasUnreadMessages: true }),
         );
 
@@ -549,8 +578,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
         storage.setState((prev) => ({
             ...prev,
             sessions: {},
-            sessionListRenderables: {
-                ...prev.sessionListRenderables,
+            ...withActiveSessionListRows(prev, {
                 's-offscreen': {
                     id: 's-offscreen',
                     seq: 1,
@@ -569,7 +597,8 @@ describe('socket new-message + coalescer: materialized max seq', () => {
                     latestTurnStatusObservedAt: 1,
                     hasUnreadMessages: false,
                 },
-            },
+
+            }),
             settings: {
                 ...prev.settings,
                 transcriptStreamingCoalesceEnabled: false,
@@ -619,15 +648,14 @@ describe('socket new-message + coalescer: materialized max seq', () => {
             }),
         });
 
-        expect(storage.getState().sessionListRenderables['s-offscreen']?.hasUnreadMessages).toBe(true);
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-offscreen']).find(Boolean)?.hasUnreadMessages).toBe(true);
     });
 
     it('does not mark cache-only renderables unread or meaningful when a hidden durable new-message is auth maintenance', async () => {
         storage.setState((prev) => ({
             ...prev,
             sessions: {},
-            sessionListRenderables: {
-                ...prev.sessionListRenderables,
+            ...withActiveSessionListRows(prev, {
                 's-cache-auth-maintenance': {
                     id: 's-cache-auth-maintenance',
                     seq: 10,
@@ -648,7 +676,8 @@ describe('socket new-message + coalescer: materialized max seq', () => {
                     thinkingAt: 0,
                     presence: 1,
                 },
-            },
+
+            }),
             settings: {
                 ...prev.settings,
                 transcriptStreamingCoalesceEnabled: true,
@@ -701,7 +730,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
 
         expect(fetchSessions).not.toHaveBeenCalled();
         expect(applyMessages).not.toHaveBeenCalled();
-        expect(storage.getState().sessionListRenderables['s-cache-auth-maintenance']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-auth-maintenance']).find(Boolean)).toEqual(
             expect.objectContaining({
                 seq: 10,
                 updatedAt: 900,
@@ -712,7 +741,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
 
         await vi.runAllTimersAsync();
 
-        expect(storage.getState().sessionListRenderables['s-cache-auth-maintenance']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-auth-maintenance']).find(Boolean)).toEqual(
             expect.objectContaining({
                 seq: 11,
                 updatedAt: 1_011,
@@ -726,8 +755,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
         storage.setState((prev) => ({
             ...prev,
             sessions: {},
-            sessionListRenderables: {
-                ...prev.sessionListRenderables,
+            ...withActiveSessionListRows(prev, {
                 's-cache-encrypted': {
                     id: 's-cache-encrypted',
                     seq: 10,
@@ -748,7 +776,8 @@ describe('socket new-message + coalescer: materialized max seq', () => {
                     thinkingAt: 0,
                     presence: 1,
                 },
-            },
+
+            }),
             settings: {
                 ...prev.settings,
                 transcriptStreamingCoalesceEnabled: true,
@@ -802,7 +831,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
 
         expect(fetchSessions).not.toHaveBeenCalled();
         expect(hydrateSessionById).toHaveBeenCalledWith('s-cache-encrypted', 'socket-update-attention-unknown');
-        expect(storage.getState().sessionListRenderables['s-cache-encrypted']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-encrypted']).find(Boolean)).toEqual(
             expect.objectContaining({
                 seq: 10,
                 updatedAt: 900,
@@ -813,7 +842,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
 
         await vi.runAllTimersAsync();
 
-        expect(storage.getState().sessionListRenderables['s-cache-encrypted']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-encrypted']).find(Boolean)).toEqual(
             expect.objectContaining({
                 seq: 10,
                 updatedAt: 900,
@@ -827,8 +856,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
         storage.setState((prev) => ({
             ...prev,
             sessions: {},
-            sessionListRenderables: {
-                ...prev.sessionListRenderables,
+            ...withActiveSessionListRows(prev, {
                 's-cache-encrypted-maintenance-trusted': {
                     id: 's-cache-encrypted-maintenance-trusted',
                     seq: 10,
@@ -849,7 +877,8 @@ describe('socket new-message + coalescer: materialized max seq', () => {
                     thinkingAt: 0,
                     presence: 1,
                 },
-            },
+
+            }),
             settings: {
                 ...prev.settings,
                 transcriptStreamingCoalesceEnabled: true,
@@ -909,7 +938,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
 
         await vi.runAllTimersAsync();
 
-        expect(storage.getState().sessionListRenderables['s-cache-encrypted-maintenance-trusted']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-encrypted-maintenance-trusted']).find(Boolean)).toEqual(
             expect.objectContaining({
                 seq: 11,
                 updatedAt: 1_011,
@@ -920,7 +949,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
     });
 
     it('coalesces trailing cache-only renderable projections without delaying the first unread projection', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's-cache-coalesced',
                 seq: 1,
@@ -983,7 +1012,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
             }),
         });
 
-        expect(storage.getState().sessionListRenderables['s-cache-coalesced']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-coalesced']).find(Boolean)).toEqual(
             expect.objectContaining({ seq: 2, hasUnreadMessages: true }),
         );
 
@@ -998,19 +1027,19 @@ describe('socket new-message + coalescer: materialized max seq', () => {
         });
 
         expect(fetchSessions).not.toHaveBeenCalled();
-        expect(storage.getState().sessionListRenderables['s-cache-coalesced']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-coalesced']).find(Boolean)).toEqual(
             expect.objectContaining({ seq: 2, updatedAt: 1_002 }),
         );
 
         await vi.runAllTimersAsync();
 
-        expect(storage.getState().sessionListRenderables['s-cache-coalesced']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-coalesced']).find(Boolean)).toEqual(
             expect.objectContaining({ seq: 3, updatedAt: 1_003, hasUnreadMessages: true }),
         );
     });
 
     it('defers cache-only renderable projections while the unread state is already visible', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's-cache-already-unread',
                 seq: 2,
@@ -1072,19 +1101,19 @@ describe('socket new-message + coalescer: materialized max seq', () => {
             }),
         });
 
-        expect(storage.getState().sessionListRenderables['s-cache-already-unread']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-already-unread']).find(Boolean)).toEqual(
             expect.objectContaining({ seq: 2, updatedAt: 1_002, hasUnreadMessages: true }),
         );
 
         await vi.runAllTimersAsync();
 
-        expect(storage.getState().sessionListRenderables['s-cache-already-unread']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-already-unread']).find(Boolean)).toEqual(
             expect.objectContaining({ seq: 3, updatedAt: 1_003, hasUnreadMessages: true }),
         );
     });
 
     it('keeps a same-timestamp higher-seq urgent cache-only projection after flushing a queued non-urgent patch', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's-cache-same-timestamp',
                 seq: 10,
@@ -1150,7 +1179,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
             }),
         });
 
-        expect(storage.getState().sessionListRenderables['s-cache-same-timestamp']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-same-timestamp']).find(Boolean)).toEqual(
             expect.objectContaining({ seq: 10, latestTurnStatus: null, hasPendingPermissionRequests: false }),
         );
 
@@ -1167,7 +1196,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
             }),
         });
 
-        expect(storage.getState().sessionListRenderables['s-cache-same-timestamp']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-same-timestamp']).find(Boolean)).toEqual(
             expect.objectContaining({
                 updatedAt: 2_000,
                 latestTurnStatus: 'in_progress',

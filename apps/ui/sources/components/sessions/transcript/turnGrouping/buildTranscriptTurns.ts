@@ -319,6 +319,21 @@ export function buildTranscriptTurnsCached(opts: {
         pendingMessages: opts.pendingMessages,
         discardedMessages: opts.discardedMessages,
     });
+    if (opts.forkBoundaryBeforeMessageIds?.size && visibleMessageIdsOldestFirst.length < opts.messageIdsOldestFirst.length) {
+        // A filtered first child event still separates its origin from the parent.
+        // Carry that existing boundary to the next visible row using the canonical
+        // filters' result before grouping.
+        const visibleIds = new Set(visibleMessageIdsOldestFirst);
+        const visibleBoundaries = new Set<string>();
+        let boundaryPending = false;
+        for (const id of opts.messageIdsOldestFirst) {
+            boundaryPending ||= opts.forkBoundaryBeforeMessageIds.has(id);
+            if (!visibleIds.has(id)) continue;
+            if (boundaryPending) visibleBoundaries.add(id);
+            boundaryPending = false;
+        }
+        opts = { ...opts, forkBoundaryBeforeMessageIds: visibleBoundaries };
+    }
     const nextMessageGroupingKeysOldestFirst = visibleMessageIdsOldestFirst.map((id) => getMessageGroupingKey(opts.messagesById[id]));
     const canReuse =
         opts.cache != null &&

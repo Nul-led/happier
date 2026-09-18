@@ -3,10 +3,11 @@ import CryptoKit
 import Foundation
 
 /**
- The iOS owner of registered opaque Artifact tokens. JavaScript provides only
- the Artifact cache locator, stored-file names, opaque resource ids, and the
- Protocol-produced response table. It never provides a local path, byte array,
- URL source, or request-path/MIME policy input.
+ The iOS owner of registered opaque Artifact tokens. JavaScript provides either
+ the Artifact cache locator or already-verified current-load bytes after the
+ persistent owner declines adoption, plus opaque resource ids and the
+ Protocol-produced response table. It never provides a local path, URL source,
+ or request-path/MIME policy input.
 
  `unregister` is synchronous: after it returns true, a later scheme request
  cannot resolve the token. A request already copying response bytes is
@@ -67,27 +68,11 @@ final class HostedWebArtifactRegistry {
    */
   func readResponse(token: String, requestPath: String) -> HostedWebArtifactLoadedResponse {
     withLock {
-      let response = resolveLocked(token: token, requestPath: requestPath)
-      guard response.status == 200,
-            let fileURL = response.fileURL,
-            let contentType = response.contentType,
-            let digest = response.digest else {
-        return HostedWebArtifactLoadedResponse.rejected(response.status)
-      }
-      guard let data = try? Data(contentsOf: fileURL),
-            data.count == response.byteSize,
-            Self.sha256Digest(data) == digest else {
-        return HostedWebArtifactLoadedResponse.rejected(404)
-      }
-      return HostedWebArtifactLoadedResponse.content(
-        contentType: contentType,
-        headers: response.headers,
-        bytes: data,
-      )
+      resolveLocked(token: token, requestPath: requestPath)
     }
   }
 
-  private func resolveLocked(token: String, requestPath: String) -> HostedWebArtifactStoredResponse {
+  private func resolveLocked(token: String, requestPath: String) -> HostedWebArtifactLoadedResponse {
     guard let registration = registrations[token] else {
       return .rejected(404)
     }
@@ -111,16 +96,14 @@ final class HostedWebArtifactRegistry {
     case .rejected(let status):
       return .rejected(status)
     case .content(let resourceId, let contentType, let headers):
-      guard let resource = registration.resources[resourceId], let fileURL = registration.resolveResourceFile(resource) else {
+      guard let resource = registration.resources[resourceId],
+            let bytes = registration.readResourceBytes(resource) else {
         return .rejected(404)
       }
       return .content(
         contentType: contentType,
         headers: headers,
-        fileURL: fileURL,
-        digest: resource.digest,
-        byteSize: resource.byteSize,
-        fallback: selection.fallback,
+        bytes: bytes,
       )
     }
   }
@@ -134,55 +117,93 @@ final class HostedWebArtifactRegistry {
   private struct Registration {
     let token: String
     let origin: HostedWebArtifactOrigin
-    let baseDirectory: URL
+    let storage: Storage
     let resources: [String: Resource]
     let table: PolicyTable
 
-    func resolveResourceFile(_ resource: Resource) -> URL? {
-      let candidate = baseDirectory.appendingPathComponent(resource.storedFileName, isDirectory: false)
-        .standardizedFileURL.resolvingSymlinksInPath()
-      guard candidate.deletingLastPathComponent() == baseDirectory else {
+    func readResourceBytes(_ resource: Resource) -> Data? {
+      let bytes: Data
+      switch (storage, resource.source) {
+      case (.persistent(let baseDirectory), .persistent(let storedFileName)):
+        let candidate = baseDirectory.appendingPathComponent(storedFileName, isDirectory: false)
+          .standardizedFileURL.resolvingSymlinksInPath()
+        guard candidate.deletingLastPathComponent() == baseDirectory else {
+          return nil
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let loaded = try? Data(contentsOf: candidate) else {
+          return nil
+        }
+        bytes = loaded
+      case (.currentLoad, .currentLoad(let currentBytes)):
+        bytes = currentBytes
+      default:
         return nil
       }
-      var isDirectory: ObjCBool = false
-      guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+      guard bytes.count == resource.byteSize,
+            HostedWebArtifactRegistry.sha256Digest(bytes) == resource.digest else {
         return nil
       }
-      guard let attributes = try? FileManager.default.attributesOfItem(atPath: candidate.path),
-            let size = (attributes[.size] as? NSNumber)?.int64Value,
-            size == resource.byteSize else {
-        return nil
-      }
-      return candidate
+      return bytes
     }
 
     static func parse(_ input: [String: Any], cacheDirectory: URL) -> Registration? {
-      guard Self.hasExactKeys(input, expected: ["token", "storagePartitionId", "storageLocator", "resources", "policyTable"]),
+      guard Self.hasExactKeys(input, expected: ["token", "storagePartitionId", "storage", "policyTable"]),
             let token = Self.requiredString(input, key: "token"),
             let partition = Self.requiredString(input, key: "storagePartitionId"),
             HostedWebArtifactRegistry.isOpaqueId(token),
             HostedWebArtifactRegistry.isPartitionId(partition),
-            let locator = StorageLocator.parse(input["storageLocator"]),
-            let baseDirectory = locator.resolveBaseDirectory(cacheDirectory),
-            let resources = parseResources(input["resources"]),
-            let table = PolicyTable.parse(input["policyTable"], resourceIds: Set(resources.keys)),
+            let parsedStorage = parseStorage(input["storage"], cacheDirectory: cacheDirectory) else {
+        return nil
+      }
+      let (storage, resources) = parsedStorage
+      guard let table = PolicyTable.parse(input["policyTable"], resourceIds: Set(resources.keys)),
             Set(resources.keys) == table.referencedResourceIds else {
         return nil
       }
       let registration = Registration(
         token: token,
         origin: HostedWebArtifactOrigin.artifact(partitionId: partition),
-        baseDirectory: baseDirectory,
+        storage: storage,
         resources: resources,
         table: table,
       )
-      guard resources.values.allSatisfy({ registration.resolveResourceFile($0) != nil }) else {
+      guard resources.values.allSatisfy({ registration.readResourceBytes($0) != nil }) else {
         return nil
       }
       return registration
     }
 
-    private static func parseResources(_ value: Any?) -> [String: Resource]? {
+    private static func parseStorage(
+      _ value: Any?,
+      cacheDirectory: URL
+    ) -> (Storage, [String: Resource])? {
+      guard let map = value as? [String: Any], let kind = requiredString(map, key: "kind") else {
+        return nil
+      }
+      switch kind {
+      case "persistent":
+        guard hasExactKeys(map, expected: ["kind", "locator", "resources"]),
+              let locator = StorageLocator.parse(map["locator"]),
+              let baseDirectory = locator.resolveBaseDirectory(cacheDirectory),
+              let resources = parsePersistentResources(map["resources"]) else {
+          return nil
+        }
+        return (.persistent(baseDirectory), resources)
+      case "currentLoad":
+        guard hasExactKeys(map, expected: ["kind", "resources"]),
+              let resources = parseCurrentLoadResources(map["resources"]) else {
+          return nil
+        }
+        return (.currentLoad, resources)
+      default:
+        return nil
+      }
+    }
+
+    private static func parsePersistentResources(_ value: Any?) -> [String: Resource]? {
       guard let values = value as? [Any] else {
         return nil
       }
@@ -202,8 +223,43 @@ final class HostedWebArtifactRegistry {
               !storedNames.contains(storedFileName) else {
           return nil
         }
-        resources[resourceId] = Resource(storedFileName: storedFileName, digest: digest, byteSize: byteSize)
+        resources[resourceId] = Resource(
+          digest: digest,
+          byteSize: byteSize,
+          source: .persistent(storedFileName),
+        )
         storedNames.insert(storedFileName)
+      }
+      return resources
+    }
+
+    private static func parseCurrentLoadResources(_ value: Any?) -> [String: Resource]? {
+      guard let values = value as? [Any] else {
+        return nil
+      }
+      var resources = [String: Resource]()
+      for value in values {
+        guard let map = value as? [String: Any],
+              hasExactKeys(map, expected: ["resourceId", "digest", "byteSize", "bytesBase64"]),
+              let resourceId = requiredString(map, key: "resourceId"),
+              let digest = requiredString(map, key: "digest"),
+              let byteSize = HostedWebArtifactRegistry.nonNegativeInteger(map["byteSize"]),
+              let encoded = requiredString(map, key: "bytesBase64"),
+              let bytes = Data(base64Encoded: encoded),
+              bytes.base64EncodedString() == encoded,
+              byteSize <= Int64(Int.max),
+              bytes.count == Int(byteSize),
+              HostedWebArtifactRegistry.sha256Digest(bytes) == digest,
+              isNativeResourceId(resourceId),
+              HostedWebArtifactRegistry.isSha256Digest(digest),
+              resources[resourceId] == nil else {
+          return nil
+        }
+        resources[resourceId] = Resource(
+          digest: digest,
+          byteSize: byteSize,
+          source: .currentLoad(bytes),
+        )
       }
       return resources
     }
@@ -226,9 +282,19 @@ final class HostedWebArtifactRegistry {
   }
 
   private struct Resource {
-    let storedFileName: String
     let digest: String
     let byteSize: Int64
+    let source: ResourceSource
+  }
+
+  private enum Storage {
+    case persistent(URL)
+    case currentLoad
+  }
+
+  private enum ResourceSource {
+    case persistent(String)
+    case currentLoad(Data)
   }
 
   private struct StorageLocator {
@@ -598,50 +664,6 @@ struct HostedWebArtifactLoadedResponse {
 
   static func content(contentType: String, headers: [String: String], bytes: Data) -> HostedWebArtifactLoadedResponse {
     HostedWebArtifactLoadedResponse(status: 200, contentType: contentType, headers: headers, bytes: bytes)
-  }
-}
-
-private struct HostedWebArtifactStoredResponse {
-  let status: Int
-  let contentType: String?
-  let headers: [String: String]
-  let fileURL: URL?
-  let digest: String?
-  let byteSize: Int
-  let fallback: Bool
-
-  static func rejected(_ status: Int) -> HostedWebArtifactStoredResponse {
-    HostedWebArtifactStoredResponse(
-      status: status,
-      contentType: nil,
-      headers: [:],
-      fileURL: nil,
-      digest: nil,
-      byteSize: 0,
-      fallback: false,
-    )
-  }
-
-  static func content(
-    contentType: String,
-    headers: [String: String],
-    fileURL: URL,
-    digest: String,
-    byteSize: Int64,
-    fallback: Bool,
-  ) -> HostedWebArtifactStoredResponse {
-    guard byteSize <= Int64(Int.max) else {
-      return .rejected(404)
-    }
-    return HostedWebArtifactStoredResponse(
-      status: 200,
-      contentType: contentType,
-      headers: headers,
-      fileURL: fileURL,
-      digest: digest,
-      byteSize: Int(byteSize),
-      fallback: fallback,
-    )
   }
 }
 

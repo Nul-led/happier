@@ -179,6 +179,38 @@ describe('unionPluginUiProjections', () => {
         expect(union.pluginUiProjection?.composerRegionsById).toEqual({});
     });
 
+    it('publishes one frozen empty Resource scope rather than unioning or origin-stamping Resources', () => {
+        const selected = selectedOrigin('acme.inspector', 'machine-a');
+        const source = member({
+            machineId: 'machine-a',
+            generation: 3,
+            entriesById: {
+                placement: placementEntry({ pluginId: 'acme.inspector', localId: 'panel' }),
+            },
+        });
+        if (!source.projection) throw new Error('fixture must produce a projection');
+
+        const union = unionPluginUiProjections([{
+            ...source,
+            projection: {
+                ...source.projection,
+                // A machine projection carries admitted Resources. App scope has
+                // no Resource consumer and no per-Resource producer stamp to
+                // select an origin from, so it must publish none rather than
+                // inventing one.
+                resourcesById: {
+                    'acme.inspector/report': { id: 'report', pluginId: 'acme.inspector' } as never,
+                },
+            },
+        }], selectedOrigins(selected));
+
+        // The model shape stays complete: consumers read an empty scope, never
+        // `undefined`.
+        expect(union.pluginUiProjection?.resourcesById).toEqual({});
+        expect(Object.isFrozen(union.pluginUiProjection?.resourcesById)).toBe(true);
+        expect(union.pluginUiProjection?.surfacePlacementsById).not.toEqual({});
+    });
+
     it('keeps a package brand fact from the Administration-selected materialization', () => {
         const selected = selectedOrigin('acme.inspector', 'machine-a');
         const entries = {

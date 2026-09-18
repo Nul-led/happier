@@ -148,6 +148,32 @@ describe('useNewSessionMcpSelection', () => {
         previewSpy.mockClear();
     });
 
+    it('offers portable managed MCP selection before a temporary endpoint Machine exists', async () => {
+        const { useNewSessionMcpSelection } = await import('./useNewSessionMcpSelection');
+        let chip: any = null;
+
+        function Probe() {
+            const [selection, setSelection] = React.useState(() => SessionMcpSelectionV1Schema.parse({}));
+            chip = useNewSessionMcpSelection({
+                selectedMachineId: null,
+                selectedPath: '',
+                portableOnly: true,
+                agentType: 'codex',
+                mcpSelection: selection,
+                setMcpSelection: setSelection,
+                onOpenSettings: vi.fn(),
+            }).mcpChip;
+            return null;
+        }
+
+        await renderScreen(React.createElement(Probe));
+        await flushHookEffects();
+
+        expect(previewSpy).not.toHaveBeenCalled();
+        const rendered = chip!.collapsedContentPopover.renderContent({ requestClose: () => {}, maxHeight: 420 });
+        expect(rendered.props).toMatchObject({ hasContext: true, portableOnly: true });
+    });
+
     it('renders an MCP chip with the effective selected count and routes visible-chip presses through the shared collapsed popover path', async () => {
         const { useNewSessionMcpSelection } = await import('./useNewSessionMcpSelection');
 

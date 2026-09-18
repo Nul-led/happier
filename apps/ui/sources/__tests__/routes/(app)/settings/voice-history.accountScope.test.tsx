@@ -68,8 +68,8 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
   subscribeActiveServer: () => () => {},
 }));
 
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-  captureSessionRequestAuthorityForServerAccountScope: async ({ scope }: { scope: ServerAccountScope }) => ({
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+  captureServerRequestAuthorityForServerAccountScope: async ({ scope }: { scope: ServerAccountScope }) => ({
     scope,
     context: {},
     request: async () => new Response(JSON.stringify({

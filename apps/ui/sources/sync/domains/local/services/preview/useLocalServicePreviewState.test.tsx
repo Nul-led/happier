@@ -13,7 +13,7 @@ import type { LocalServicePreviewSnapshotClient } from './useLocalServicePreview
 
 const testState = vi.hoisted(() => ({
     apiSocketRequest: vi.fn(),
-    createSessionRequestWithServerScope: vi.fn(),
+    createServerRequestWithServerScope: vi.fn(),
     machineRpcWithServerScope: vi.fn(),
     scopedRequest: vi.fn(),
 }));
@@ -24,9 +24,9 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
     },
 }));
 
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-    createSessionRequestWithServerScope: (...args: readonly unknown[]) =>
-        testState.createSessionRequestWithServerScope(...args),
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+    createServerRequestWithServerScope: (...args: readonly unknown[]) =>
+        testState.createServerRequestWithServerScope(...args),
 }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
@@ -65,7 +65,7 @@ describe('useLocalServicePreviewState', () => {
         vi.useRealTimers();
         resetLocalServicePreviewStoreForTests();
         testState.apiSocketRequest.mockReset();
-        testState.createSessionRequestWithServerScope.mockReset();
+        testState.createServerRequestWithServerScope.mockReset();
         testState.machineRpcWithServerScope.mockReset();
         testState.scopedRequest.mockReset();
         standardCleanup();
@@ -136,7 +136,7 @@ describe('useLocalServicePreviewState', () => {
             method: 'daemon.localServices.preview.snapshot',
             payload: { machineId: 'machine_1' },
         }));
-        expect(testState.createSessionRequestWithServerScope).not.toHaveBeenCalled();
+        expect(testState.createServerRequestWithServerScope).not.toHaveBeenCalled();
         expect(testState.scopedRequest).not.toHaveBeenCalled();
         expect(testState.apiSocketRequest).not.toHaveBeenCalled();
         expect(hook.getCurrent().refreshState).toBe('idle');

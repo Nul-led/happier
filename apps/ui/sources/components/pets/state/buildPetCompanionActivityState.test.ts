@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { createSessionFixture } from '@/dev/testkit';
+import { createSessionFixture as createBaseSessionFixture } from '@/dev/testkit';
+import type { Session } from '@/sync/domains/state/storageTypes';
 
 import { buildPetCompanionActivityState } from './buildPetCompanionActivityState';
+
+function createSessionFixture(overrides: Partial<Session> = {}): Session {
+    return createBaseSessionFixture({ serverId: 'server-a', ...overrides });
+}
 
 describe('buildPetCompanionActivityState', () => {
     it('prioritizes waiting above failed, review, and running activity', () => {

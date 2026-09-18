@@ -31,6 +31,7 @@ import type {
     PluginUiPersistentArtifactIdentity,
     PluginUiPersistentArtifactRecord,
     PluginUiPersistentArtifactStore,
+    PluginUiPersistentArtifactWriteDisposition,
 } from '@/sync/domains/plugins/ui/artifactByteCache';
 
 export type PluginArtifactSourceKind =
@@ -257,7 +258,9 @@ export type PluginArtifactPersistentAccountOperation = Readonly<{
     isCacheCurrent: () => boolean;
     isOpen: () => boolean;
     readPersistentArtifact: (identity: PluginUiPersistentArtifactIdentity) => Promise<PluginUiPersistentArtifactRecord | null>;
-    writePersistentArtifact: (record: PluginUiPersistentArtifactRecord) => Promise<boolean>;
+    writePersistentArtifact: (
+        record: PluginUiPersistentArtifactRecord,
+    ) => Promise<PluginUiPersistentArtifactWriteDisposition | null>;
     awaitPendingPersistentArtifactRemoval: (identity: PluginUiPersistentArtifactIdentity) => Promise<void>;
     removePersistentArtifact: (identity: PluginUiPersistentArtifactIdentity) => Promise<void>;
     removePersistentArtifactsForAccount: () => Promise<void>;
@@ -361,18 +364,18 @@ export function createPluginArtifactPersistentCustody(options: Readonly<{
                 return open && isCurrent() && record ? clonePersistentArtifactRecord(record) : null;
             },
             writePersistentArtifact: async (record) => {
-                if (!open || !isCurrent() || !areServerAccountScopesEqual(record.persistentIdentity.accountScope, input.scope)) return false;
+                if (!open || !isCurrent() || !areServerAccountScopesEqual(record.persistentIdentity.accountScope, input.scope)) return null;
                 const key = artifactKey(record.persistentIdentity);
                 await awaitRemoval(key);
-                if (!open || !isCurrent()) return false;
+                if (!open || !isCurrent()) return null;
                 try {
-                    await store.write(clonePersistentArtifactRecord(record));
+                    const disposition = await store.write(clonePersistentArtifactRecord(record));
                     quarantinedKeys.delete(key);
+                    return open && isCurrent() ? disposition : null;
                 } catch {
                     options.onDiagnostic?.('plugin_ui_artifact_cache_write_failed');
-                    return false;
+                    return null;
                 }
-                return open && isCurrent();
             },
             awaitPendingPersistentArtifactRemoval: async (identity) => {
                 if (areServerAccountScopesEqual(identity.accountScope, input.scope)) await awaitRemoval(artifactKey(identity));
@@ -462,7 +465,7 @@ export function createPluginArtifactPersistentCustody(options: Readonly<{
         writePersistentArtifact: async (record) => {
             const operation = capture({ scope: record.persistentIdentity.accountScope, isCurrent: () => true });
             if (!operation) return false;
-            try { return await operation.writePersistentArtifact(record); } finally { operation.release(); }
+            try { return (await operation.writePersistentArtifact(record)) !== null; } finally { operation.release(); }
         },
         removePersistentArtifact,
         removePersistentArtifactsForAccount: removeAccount,

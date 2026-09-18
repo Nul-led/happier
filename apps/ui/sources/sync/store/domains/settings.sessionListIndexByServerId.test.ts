@@ -49,7 +49,7 @@ function mockSettingsDomainPersistence(): void {
                 preferredLanguage: 'en',
                 groupInactiveSessionsByProject: true,
                 sessionListActiveGroupingV1: 'project',
-                sessionListInactiveGroupingV1: 'date',
+                sessionListInactiveGroupingV1: 'project',
             },
             version: 2,
         })),
@@ -83,8 +83,9 @@ describe('settings domain: sessionListIndexByServerId', () => {
             localSettings: any;
             purchases: any;
             sessions: Record<string, any>;
-            sessionListRenderables: Record<string, any>;
-            sessionListRowStateByServerId: Record<string, any>;
+            sessionListRowsByServerId: Record<string, any>;
+            ordinarySessionListMembershipByServerId: Record<string, readonly string[]>;
+            archivedSessionListMembershipByServerId: Record<string, readonly string[]>;
             sessionListIndexByServerId: Record<string, any>;
             concurrentSessionListCacheByServerId: Record<string, any>;
             machines: Record<string, any>;
@@ -94,7 +95,6 @@ describe('settings domain: sessionListIndexByServerId', () => {
         let state: any = {
             settings: {
                 preferredLanguage: 'en',
-                groupInactiveSessionsByProject: false,
                 sessionListActiveGroupingV1: 'project',
                 sessionListInactiveGroupingV1: 'date',
             },
@@ -102,8 +102,8 @@ describe('settings domain: sessionListIndexByServerId', () => {
             localSettings: {},
             purchases: {},
             sessions: {},
-            sessionListRenderables: {
-                s1: {
+            sessionListRowsByServerId: {
+                'server-active': { s1: {
                     id: 's1',
                     seq: 1,
                     createdAt: 1,
@@ -117,9 +117,10 @@ describe('settings domain: sessionListIndexByServerId', () => {
                     thinking: false,
                     thinkingAt: 0,
                     presence: 'online',
-                },
+                } },
             },
-            sessionListRowStateByServerId: {},
+            ordinarySessionListMembershipByServerId: { 'server-active': ['s1'] },
+            archivedSessionListMembershipByServerId: {},
             sessionListIndexByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {},
@@ -135,9 +136,13 @@ describe('settings domain: sessionListIndexByServerId', () => {
         const domain = createSettingsDomain<any>({ set, get });
         state = { ...state, ...domain };
 
-        state.applySettingsLocal({
-            groupInactiveSessionsByProject: true,
-        });
+        state.applySettingsLocal({ groupInactiveSessionsByProject: true });
+        // The predecessor Boolean is parsed and migrated by the Protocol but no
+        // longer drives the runtime layout: a legacy-only settings change must not
+        // rebuild the session-list index.
+        expect(state.sessionListIndexByServerId['server-active']).toBeUndefined();
+
+        state.applySettingsLocal({ sessionListInactiveGroupingV1: 'project' });
 
         expect(Array.isArray(state.sessionListIndexByServerId['server-active'])).toBe(true);
         expect(state.sessionListIndexByServerId['server-active']?.length ?? 0).toBeGreaterThan(0);
@@ -160,7 +165,6 @@ describe('settings domain: sessionListIndexByServerId', () => {
         let state: any = {
             settings: {
                 preferredLanguage: 'en',
-                groupInactiveSessionsByProject: false,
                 sessionListActiveGroupingV1: 'project',
                 sessionListInactiveGroupingV1: 'date',
             },
@@ -169,8 +173,8 @@ describe('settings domain: sessionListIndexByServerId', () => {
             localSettings: {},
             purchases: {},
             sessions: {},
-            sessionListRenderables: {
-                s1: {
+            sessionListRowsByServerId: {
+                'server-active': { s1: {
                     id: 's1',
                     seq: 1,
                     createdAt: 1,
@@ -184,9 +188,10 @@ describe('settings domain: sessionListIndexByServerId', () => {
                     thinking: false,
                     thinkingAt: 0,
                     presence: 'online',
-                },
+                } },
             },
-            sessionListRowStateByServerId: {},
+            ordinarySessionListMembershipByServerId: { 'server-active': ['s1'] },
+            archivedSessionListMembershipByServerId: {},
             sessionListIndexByServerId: {},
             concurrentSessionListCacheByServerId: {},
             machines: {},
@@ -202,7 +207,7 @@ describe('settings domain: sessionListIndexByServerId', () => {
         const domain = createSettingsDomain<any>({ set, get });
         state = { ...state, ...domain };
 
-        state.activateSettingsScope({ serverId: 'server-active', accountId: 'account-b' });
+        await state.activateSettingsScope({ serverId: 'server-active', accountId: 'account-b' });
 
         expect(Array.isArray(state.sessionListIndexByServerId['server-active'])).toBe(true);
         expect(state.sessionListIndexByServerId['server-active']?.length ?? 0).toBeGreaterThan(0);

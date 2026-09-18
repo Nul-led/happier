@@ -12,7 +12,6 @@ import {
     waitForServerReachable,
 } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
 import {
-    readServerFetchWriteTimeoutMs,
     readServerReachabilityWaitTimeoutMs,
 } from '@/sync/runtime/connectivity/serverReachabilityTuning';
 import { notifyAuthCredentialsInvalidated } from '@/sync/runtime/orchestration/authCredentialsInvalidation';
@@ -75,8 +74,10 @@ export type ServerFetchOptions = Readonly<{
      * orchestration/backoff and must not get stuck behind nested connectivity supervisors.
      */
     retry?: 'default' | 'none';
-    /** Override the request bound. Zero disables it for this request. */
+    /** Opt into a request bound. Requests are unbounded when omitted; zero also disables it. */
     timeoutMs?: number;
+    /** Called once after pre-dispatch guards pass and before bytes enter the transport. */
+    onIssued?: () => void;
 }>;
 
 /**
@@ -129,13 +130,11 @@ function assertActiveRequestContextCurrent(context: EndpointRequestContext): voi
     }
 }
 
-const MUTATING_HTTP_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-
-function resolveRequestTimeoutMs(method: string, optionTimeoutMs: number | undefined): number {
+function resolveRequestTimeoutMs(optionTimeoutMs: number | undefined): number {
     if (typeof optionTimeoutMs === 'number' && Number.isFinite(optionTimeoutMs)) {
         return Math.max(0, Math.trunc(optionTimeoutMs));
     }
-    return MUTATING_HTTP_METHODS.has(method) ? readServerFetchWriteTimeoutMs() : 0;
+    return 0;
 }
 
 const inFlightControllers = new Set<AbortController>();
@@ -485,7 +484,7 @@ async function requestAtEndpoint(
     }
 
     const method = String(init?.method ?? 'GET').toUpperCase();
-    const effectiveTimeoutMs = resolveRequestTimeoutMs(method, options.timeoutMs);
+    const effectiveTimeoutMs = resolveRequestTimeoutMs(options.timeoutMs);
     let didWriteTimeout = false;
     let writeTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
     if (effectiveTimeoutMs > 0) {
@@ -511,6 +510,12 @@ async function requestAtEndpoint(
     const homeCarrier = context.homeCarrier && !isCrossOrigin ? context.homeCarrier : null;
 
     let response: Response | null = null;
+    let issued = false;
+    const markIssued = () => {
+        if (issued) return;
+        issued = true;
+        options.onIssued?.();
+    };
     try {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
@@ -558,18 +563,21 @@ async function requestAtEndpoint(
                         endpointSupervisor,
                         ...(homeCarrier ? { homeCarrier } : {}),
                     });
+                    markIssued();
                     response = await supervisedFetch(requestUrl, {
                         ...init,
                         headers,
                         signal: requestController.signal,
                     });
                 } else if (homeCarrier) {
+                    markIssued();
                     response = await homeCarrier.request(requestUrl, {
                         ...init,
                         headers,
                         signal: requestController.signal,
                     });
                 } else {
+                    markIssued();
                     response = await runtimeFetch(requestUrl, {
                         ...init,
                         headers,

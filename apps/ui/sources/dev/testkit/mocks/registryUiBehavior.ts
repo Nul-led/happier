@@ -26,6 +26,7 @@ export function createRegistryUiBehaviorModuleMock(
         getAgentResumeExperimentsFromSettings: () => ({ enabled: true, switches: {} }),
         getNewSessionPreflightIssues: () => [],
         getNewSessionRelevantInstallableDepKeys: () => [],
+        resolveAgentPluginSettingsPreflightIssue: () => null,
         resolveAgentUiBehavior: () => ({}),
         resolveAgentUiBehaviorFromFlavor: () => ({}),
         resolveAgentUiBehaviorFromSessionMetadata: () => ({}),

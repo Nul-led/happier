@@ -21,6 +21,7 @@ export function useNewSessionMcpSelection(params: Readonly<{
     selectedMachineId: string | null;
     selectedPath: string;
     selectedMachineName?: string | null;
+    portableOnly?: boolean;
     agentType: string;
     targetServerId?: string | null;
     mcpSelection: SessionMcpSelectionV1;
@@ -179,8 +180,9 @@ export function useNewSessionMcpSelection(params: Readonly<{
         machineId: params.selectedMachineId,
         machineName: params.selectedMachineName,
         directory: params.selectedPath.trim(),
+        ...(params.portableOnly !== undefined ? { portableOnly: params.portableOnly } : {}),
         agentType: params.agentType,
-        hasContext: Boolean(params.selectedMachineId && params.selectedPath.trim().length > 0),
+        hasContext: params.portableOnly === true || Boolean(params.selectedMachineId && params.selectedPath.trim().length > 0),
         preview: mcpPreview,
         selection: params.mcpSelection,
         loading: mcpPreviewLoading,

@@ -12,7 +12,7 @@ type ApplyAutomations = Parameters<typeof fetchAndApplyAutomations>[0]['applyAut
 
 const listAutomationDefinitionsMock = vi.hoisted(() => vi.fn());
 const listAutomationDefinitionRunsMock = vi.hoisted(() => vi.fn());
-const isRuntimeFeatureEnabledMock = vi.hoisted(() => vi.fn());
+const resolveRuntimeFeatureDecisionOrThrowMock = vi.hoisted(() => vi.fn());
 const getActiveServerSnapshotMock = vi.hoisted(() => vi.fn(() => ({ serverId: 'server-1' })));
 
 vi.mock('@/sync/api/automations/apiAutomations', () => ({
@@ -24,7 +24,7 @@ vi.mock('@/sync/api/automations/apiAutomationRuns', () => ({
 }));
 
 vi.mock('@/sync/domains/features/featureDecisionInputs', () => ({
-    isRuntimeFeatureEnabled: isRuntimeFeatureEnabledMock,
+    resolveRuntimeFeatureDecisionOrThrow: resolveRuntimeFeatureDecisionOrThrowMock,
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -109,10 +109,10 @@ describe('fetchAndApplyAutomations', () => {
     beforeEach(() => {
         listAutomationDefinitionsMock.mockReset();
         listAutomationDefinitionRunsMock.mockReset();
-        isRuntimeFeatureEnabledMock.mockReset();
+        resolveRuntimeFeatureDecisionOrThrowMock.mockReset();
         getActiveServerSnapshotMock.mockClear();
 
-        isRuntimeFeatureEnabledMock.mockResolvedValue(true);
+        resolveRuntimeFeatureDecisionOrThrowMock.mockResolvedValue({ state: 'enabled' });
         listAutomationDefinitionsMock.mockResolvedValue({ automations: [eventSummary], nextCursor: null });
         listAutomationDefinitionRunsMock.mockResolvedValue({
             runs: [eventRun],
@@ -129,6 +129,11 @@ describe('fetchAndApplyAutomations', () => {
             applyAutomations,
             loadedAutomationRunIds: ['event-1'],
             refreshAutomationRunsWindow,
+        });
+
+        expect(resolveRuntimeFeatureDecisionOrThrowMock).toHaveBeenCalledWith({
+            featureId: 'automations',
+            serverId: 'server-1',
         });
 
         expect(applyAutomations).toHaveBeenCalledWith([expect.objectContaining({
@@ -278,7 +283,7 @@ describe('fetchAndApplyAutomationRuns', () => {
             runs: [eventRun],
             nextCursor: null,
         });
-        isRuntimeFeatureEnabledMock.mockResolvedValue(true);
+        resolveRuntimeFeatureDecisionOrThrowMock.mockResolvedValue({ state: 'enabled' });
         const setAutomationRuns = vi.fn(() => null);
         const appendAutomationRuns = vi.fn(() => true);
 

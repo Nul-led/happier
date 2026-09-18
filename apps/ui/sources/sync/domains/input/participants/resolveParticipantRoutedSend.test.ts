@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { resolveParticipantRoutingDescriptor, resolveParticipantRoutedSend } from './resolveParticipantRoutedSend';
 
 describe('resolveParticipantRoutedSend', () => {
-    it('returns null for routing descriptors when the live target set does not contain the recipient', () => {
+    it('preserves an exact selected target when the local roster has no evidence', () => {
         const descriptor = resolveParticipantRoutingDescriptor({
             recipient: { kind: 'execution_run', runId: 'run_1' },
             targets: [],
         });
 
-        expect(descriptor).toBeNull();
+        expect(descriptor).toEqual({ type: 'session_message', recipient: { kind: 'execution_run', runId: 'run_1' } });
     });
 
     it('resolves execution run routing descriptors from live participant targets', () => {
@@ -25,9 +25,8 @@ describe('resolveParticipantRoutedSend', () => {
         });
 
         expect(descriptor).toEqual({
-            type: 'execution_run_send',
+            type: 'session_message',
             recipient: { kind: 'execution_run', runId: 'run_1' },
-            runId: 'run_1',
         });
     });
 
@@ -42,24 +41,27 @@ describe('resolveParticipantRoutedSend', () => {
         expect((outbound as any).metaOverrides?.happier?.payload?.recipient?.kind).toBe('agent_team_member');
     });
 
-    it('routes execution runs to execution.run.send with delivery=steer_if_supported', () => {
+    it('routes execution runs through the same Session submission with a normalized recipient', () => {
         const outbound = resolveParticipantRoutedSend({
             text: 'steer',
+            recipient: { kind: 'execution_run', runId: 'run_1', label: 'Run one' },
+        });
+        expect(outbound).toMatchObject({
+            type: 'session_message', text: 'steer',
             recipient: { kind: 'execution_run', runId: 'run_1' },
         });
-        expect(outbound.type).toBe('execution_run_send');
-        expect((outbound as any).runId).toBe('run_1');
-        expect((outbound as any).delivery).toBe('steer_if_supported');
+        expect(outbound).not.toHaveProperty('delivery');
     });
 
-    it('allows overriding execution-run delivery mode', () => {
+    it('preserves the canonical requested action for a Run', () => {
         const outbound = resolveParticipantRoutedSend({
             text: 'interrupt',
             recipient: { kind: 'execution_run', runId: 'run_2' },
-            executionRunDelivery: 'interrupt',
+            requestedAction: { v: 1, kind: 'send_now' },
         });
-        expect(outbound.type).toBe('execution_run_send');
-        expect((outbound as any).runId).toBe('run_2');
-        expect((outbound as any).delivery).toBe('interrupt');
+        expect(outbound).toMatchObject({
+            type: 'session_message', recipient: { kind: 'execution_run', runId: 'run_2' },
+            requestedAction: { v: 1, kind: 'send_now' },
+        });
     });
 });

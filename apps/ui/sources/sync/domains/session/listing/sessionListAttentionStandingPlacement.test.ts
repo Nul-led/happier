@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionAttentionStandingPolicy } from '@/sync/domains/session/organization/attentionStanding';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
+import type { SessionViewerProjectionV1 } from '@happier-dev/protocol';
 
 import {
     applySessionListAttentionPlacementWithinGroups,
@@ -11,6 +13,21 @@ import {
 import type { SessionListRenderableSession } from './sessionListRenderable';
 
 const NOW_MS = 1_000_000;
+
+function sessionKey(sessionId: string): string {
+    return sessionAddressKey({ serverId: 'server-a', sessionId });
+}
+
+function viewer(overrides: Partial<SessionViewerProjectionV1> = {}): SessionViewerProjectionV1 {
+    return {
+        readState: { state: 'not_started' },
+        relevance: { relevant: false, reasons: [] },
+        attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+        follow: { follows: false, notificationLevel: null },
+        notification: { level: 'none', source: 'none' },
+        ...overrides,
+    };
+}
 
 function createRow(overrides: Partial<SessionListRenderableSession> = {}): SessionListRenderableSession {
     return {
@@ -62,10 +79,15 @@ describe('attention standing placement', () => {
             source: createSource(['kept']),
             options: {
                 mode: 'global',
-                standingPolicy: policy({ overridesBySessionKey: { 'server-a:kept': true } }),
+                standingPolicy: policy({ overridesBySessionKey: { [sessionKey('kept')]: true } }),
             },
             nowMs: NOW_MS,
-            resolveSessionRow: () => createRow({ id: 'kept' }),
+            resolveSessionRow: () => createRow({
+                id: 'kept',
+                viewer: viewer({
+                    relevance: { relevant: true, reasons: ['explicit_attention'] },
+                }),
+            }),
         });
 
         expect(result?.attentionItems[1]).toEqual(expect.objectContaining({
@@ -91,11 +113,16 @@ describe('attention standing placement', () => {
                 mode: 'global',
                 standingPolicy: policy({
                     defaultStanding: true,
-                    overridesBySessionKey: { 'server-a:removed': false },
+                    overridesBySessionKey: { [sessionKey('removed')]: false },
                 }),
             },
             nowMs: NOW_MS,
-            resolveSessionRow: () => createRow({ id: 'removed' }),
+            resolveSessionRow: () => createRow({
+                id: 'removed',
+                viewer: viewer({
+                    relevance: { relevant: true, reasons: ['shared_directly_with_me'] },
+                }),
+            }),
         })).toBeNull();
     });
 
@@ -157,21 +184,32 @@ describe('attention standing placement', () => {
             source: createSource(['kept', 'unread']),
             options: {
                 mode: 'global',
-                standingPolicy: policy({ overridesBySessionKey: { 'server-a:kept': true } }),
+                standingPolicy: policy({ overridesBySessionKey: { [sessionKey('kept')]: true } }),
             },
             nowMs: NOW_MS,
             resolveSessionRow: (_serverId, sessionId) => (sessionId === 'unread'
                 ? createRow({
                     id: 'unread',
-                    hasUnreadMessages: true,
                     seq: 12,
                     lastViewedSessionSeq: 12,
                     latestTurnStatus: undefined,
                     latestTurnStatusObservedAt: undefined,
                     lastTurnCompletedAt: undefined,
                     meaningfulActivityAt: NOW_MS - 900_000,
+                    viewer: viewer({
+                        readState: { state: 'tracking', lastViewedSessionSeq: 11, unreadSince: NOW_MS - 900_000 },
+                        relevance: { relevant: true, reasons: ['followed_by_me'] },
+                        attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'full' },
+                        follow: { follows: true, notificationLevel: 'none' },
+                        notification: { level: 'none', source: 'preference' },
+                    }),
                 })
-                : createRow({ id: 'kept' })),
+                : createRow({
+                    id: 'kept',
+                    viewer: viewer({
+                        relevance: { relevant: true, reasons: ['explicit_attention'] },
+                    }),
+                })),
         });
 
         expect(result?.attentionItems.map((item) => (item.type === 'session' ? item.sessionId : item.headerKind))).toEqual([
@@ -189,7 +227,7 @@ describe('attention standing placement', () => {
             resolveSessionRow: () => createRow({ id: 'kept' }),
         });
 
-        expect(build(policy({ overridesBySessionKey: { 'server-a:kept': true } }))?.attentionItems[1])
+        expect(build(policy({ overridesBySessionKey: { [sessionKey('kept')]: true } }))?.attentionItems[1])
             .toEqual(expect.objectContaining({ keepVisibleWhenInactive: true }));
         const defaultKept = build(policy({ defaultStanding: true }))?.attentionItems[1];
         expect(defaultKept).toEqual(expect.objectContaining({ attentionPlacementReason: 'standing' }));
@@ -210,5 +248,54 @@ describe('attention standing placement', () => {
 
         expect(item).toEqual(expect.objectContaining({ attentionPlacementReason: 'standing' }));
         expect(item && item.type === 'session' ? item.keepVisibleWhenInactive : null).not.toBe(true);
+    });
+
+    it('keeps a due reminder actionable for an untracked viewer despite an explicit standing removal', () => {
+        const result = buildSessionListAttentionPlacement({
+            source: createSource(['reminder']),
+            options: {
+                mode: 'global',
+                standingPolicy: policy({
+                    defaultStanding: true,
+                    overridesBySessionKey: { [sessionKey('reminder')]: false },
+                }),
+            },
+            nowMs: NOW_MS,
+            resolveSessionRow: () => createRow({
+                id: 'reminder',
+                viewer: viewer({
+                    attention: {
+                        needsAttention: true,
+                        reasons: ['reminder_due'],
+                        primary: 'reminder_due',
+                        presentation: 'full',
+                    },
+                }),
+            }),
+        });
+
+        expect(result?.attentionItems[1]).toEqual(expect.objectContaining({
+            sessionId: 'reminder',
+            attentionPlacementReason: 'standing',
+        }));
+    });
+
+    it('does not create attention for an untracked collective share from raw facts or the account default', () => {
+        expect(buildSessionListAttentionPlacement({
+            source: createSource(['collective-share']),
+            options: {
+                mode: 'global',
+                standingPolicy: policy({ defaultStanding: true }),
+            },
+            nowMs: NOW_MS,
+            resolveSessionRow: () => createRow({
+                id: 'collective-share',
+                seq: 12,
+                lastViewedSessionSeq: 0,
+                hasUnreadMessages: true,
+                pendingBlockedCount: 1,
+                viewer: viewer(),
+            }),
+        })).toBeNull();
     });
 });

@@ -7,10 +7,28 @@ import type { AgentInputLocalUiStateV1 } from '@/sync/domains/input/draftValues/
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 
 const mmkvStore = vi.hoisted(() => new Map<string, string>());
+const sessionDraftPersistenceStore = vi.hoisted(() => new Map<string, string>());
 const activeScopeState = vi.hoisted(() => ({
     value: { serverId: 'server-a', accountId: 'account-a' } as ServerAccountScope | null,
 }));
 const appStateListeners = vi.hoisted(() => new Set<(nextState: string) => void>());
+const accountLifetimesByScope = new Map<string, import('@/sync/domains/scope/serverAccountScope').ServerAccountScopeLifetime>();
+
+function getActiveAccountLifetime() {
+    const scope = activeScopeState.value;
+    if (!scope) return null;
+    const key = `${scope.serverId}\u0000${scope.accountId}`;
+    const existing = accountLifetimesByScope.get(key);
+    if (existing) return existing;
+    const lifetime = Object.freeze({
+        scope: Object.freeze({ ...scope }),
+        isCurrent: () => activeScopeState.value?.serverId === scope.serverId
+            && activeScopeState.value.accountId === scope.accountId,
+        onRetire: () => Object.freeze({ dispose: () => undefined }),
+    });
+    accountLifetimesByScope.set(key, lifetime);
+    return lifetime;
+}
 
 function installMockDocument(visibilityState: 'hidden' | 'visible' = 'visible') {
     const previousDocumentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
@@ -118,6 +136,16 @@ vi.mock('react-native-mmkv', () => {
     return { MMKV };
 });
 
+vi.mock('@/sync/ops/sessionDrafts/sessionDraftPersistenceStorage', () => ({
+    getSessionDraftPersistenceStorage: () => ({
+        getString: (key: string) => sessionDraftPersistenceStore.get(key),
+        set: (key: string, value: string) => sessionDraftPersistenceStore.set(key, value),
+        delete: (key: string) => sessionDraftPersistenceStore.delete(key),
+    }),
+    prepareSessionDraftPersistenceStorage: async () => undefined,
+    discardSessionDraftPersistenceWrites: async () => undefined,
+}));
+
 vi.mock('@react-navigation/native', () => ({
     useIsFocused: () => true,
 }));
@@ -147,7 +175,16 @@ vi.mock('@/sync/domains/state/storage', async () => {
 });
 
 async function importHook() {
-    return await import('./useSessionAgentInputComposerPersistence');
+    const module = await import('./useSessionAgentInputComposerPersistence');
+    return {
+        ...module,
+        useSessionAgentInputComposerPersistence: (
+            params: Parameters<typeof module.useSessionAgentInputComposerPersistence>[0],
+        ) => module.useSessionAgentInputComposerPersistence({
+            ...params,
+            accountLifetime: params.accountLifetime ?? getActiveAccountLifetime(),
+        }),
+    };
 }
 
 async function importLocalUiStateStore() {
@@ -173,6 +210,7 @@ async function importSessionDraftValuesPersistence() {
 describe('useSessionAgentInputComposerPersistence', () => {
     beforeEach(() => {
         mmkvStore.clear();
+        sessionDraftPersistenceStore.clear();
         appStateListeners.clear();
         activeScopeState.value = { serverId: 'server-a', accountId: 'account-a' };
         vi.resetModules();

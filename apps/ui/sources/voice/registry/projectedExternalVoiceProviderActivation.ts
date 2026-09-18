@@ -174,7 +174,6 @@ function reconcileProjectedExternalSpeechProviders(input: Readonly<{
       if (
         entry.generation !== projection.generation
         || declaration.kind !== 'speech'
-        || !declaration.platforms.includes(input.hostPlatform)
       ) {
         continue;
       }

@@ -1,24 +1,52 @@
-import type { SessionState } from '@/utils/sessions/sessionUtils';
-import { deriveSessionRuntimePresentationState } from '@/sync/domains/session/attention/runtimePresentation';
-import type { PrimaryTurnStatusV1, SessionRuntimeIssueV1 } from '@happier-dev/protocol';
-import { hasActivityClearlyAfterTerminalProjection } from './sessionListTerminalActivity';
+import {
+    SessionAwarenessOperationalPrimaryV1Schema,
+    type SessionAwarenessOperationalPrimaryV1,
+    type SessionPersonalAttentionReasonV1,
+} from '@happier-dev/protocol';
 
 export type SessionListSecondaryLineMode = 'status' | 'path';
 export type SessionListAttentionState =
     | 'quiet'
     | 'failed'
     | 'ready'
+    | 'attention'
     | 'unread'
     | 'pending'
     | 'thinking'
     | 'permission_required'
     | 'action_required';
 
+/** One shared translation from Protocol personal reasons into UI presentation vocabulary. */
+export function presentSessionPersonalAttentionReason(
+    reason: SessionPersonalAttentionReasonV1 | null,
+): SessionListAttentionState {
+    switch (reason) {
+        case 'failed': return 'failed';
+        case 'permission_required': return 'permission_required';
+        case 'user_action_required':
+        case 'pending_blocked': return 'action_required';
+        case 'ready_after_read': return 'ready';
+        case 'mentioned':
+        case 'unread':
+        case 'unread_discussion': return 'unread';
+        case 'manual':
+        case 'reminder_due': return 'attention';
+        case null: return 'quiet';
+    }
+}
+
+/**
+ * The list's one recency fact.
+ *
+ * Only committed transcript evidence, queued human input, the session-level
+ * meaningful-activity fact and creation count. Transient thinking is operational
+ * presentation, so it deliberately has no input here and cannot make a streaming row
+ * climb the timeline on every heartbeat.
+ */
 export function deriveSessionListMeaningfulActivityAt(params: Readonly<{
     sessionMeaningfulActivityAt?: number | null | undefined;
     sessionCreatedAt: number | null | undefined;
     latestCommittedMessageCreatedAt: number | null | undefined;
-    latestThinkingActivityAt: number | null | undefined;
     latestPendingMessageCreatedAt: number | null | undefined;
 }>): number | null {
     let latest: number | null = null;
@@ -40,104 +68,80 @@ export function deriveSessionListMeaningfulActivityAt(params: Readonly<{
     return latest;
 }
 
-export function deriveSessionListAttentionState(input: Readonly<{
+/** UI vocabulary only; operational precedence is decided in Protocol. */
+export function mapSessionAwarenessToListAttentionState(
+    primary: SessionAwarenessOperationalPrimaryV1,
+): SessionListAttentionState {
+    switch (primary) {
+        case 'none': return 'quiet';
+        case 'pending_input': return 'pending';
+        case 'working': return 'thinking';
+        default: return primary;
+    }
+}
+
+/**
+ * The one place 09A's operational state and 09B's viewer-unread fact are composed into the
+ * list's presentation vocabulary.
+ *
+ * Both owners decide their own facts first; this only chooses which of the two a single row of
+ * space shows. Unread is deliberately the weakest input — it surfaces a session nothing else has
+ * to say about, and never hides a session that is failing, blocked or working.
+ */
+export function resolveSessionListAttentionState(input: Readonly<{
+    operational: SessionAwarenessOperationalPrimaryV1;
     hasUnreadMessages: boolean;
-    pendingCount: number;
-    pendingBlockedCount?: number;
-    sessionState: SessionState;
-    latestTurnStatus?: PrimaryTurnStatusV1 | null;
-    lastRuntimeIssue?: SessionRuntimeIssueV1 | null;
-    active?: boolean | null;
-    activeAt?: number | null;
-    archivedAt?: number | null;
-    presence?: unknown;
-    thinking?: boolean | null;
-    thinkingAt?: number | null;
-    optimisticThinkingAt?: number | null;
-    seq?: number | null;
-    meaningfulActivityAt?: number | null;
-    latestTurnStatusObservedAt?: number | null;
-    runtimeActivityState?: 'active' | 'idle' | 'unknown' | null;
-    runtimeActivityActiveCount?: number | null;
-    runtimeActivityObservedAt?: number | null;
-    runtimeActivityRevision?: number | null;
-    latestReadyEventSeq?: number | null;
-    lastViewedSessionSeq?: number | null;
-    pendingRequestObservedAt?: number | null;
-    nowMs?: number;
 }>): SessionListAttentionState {
-    const hasTerminalPrimaryTurnProjection =
-        input.latestTurnStatus === 'completed'
-        || input.latestTurnStatus === 'cancelled'
-        || input.latestTurnStatus === 'failed';
-    const runtimePresentation = deriveSessionRuntimePresentationState({
-        active: input.active,
-        activeAt: input.activeAt,
-        archivedAt: input.archivedAt,
-        presence: input.presence,
-        thinking: input.thinking,
-        thinkingAt: input.thinkingAt,
-        optimisticThinkingAt: input.optimisticThinkingAt,
-        hasPendingUserMessages: input.pendingCount > 0,
-        latestTurnStatus: input.latestTurnStatus,
-        lastRuntimeIssue: input.lastRuntimeIssue,
-        latestTurnStatusObservedAt: input.latestTurnStatusObservedAt,
-        runtimeActivityState: input.runtimeActivityState,
-        runtimeActivityActiveCount: input.runtimeActivityActiveCount,
-        runtimeActivityObservedAt: input.runtimeActivityObservedAt,
-        runtimeActivityRevision: input.runtimeActivityRevision,
-        meaningfulActivityAt: input.meaningfulActivityAt,
-        hasPendingPermissionRequests: input.sessionState === 'permission_required',
-        hasPendingUserActionRequests: input.sessionState === 'action_required',
-        pendingRequestObservedAt: input.pendingRequestObservedAt,
-        nowMs: input.nowMs,
+    const operational = mapSessionAwarenessToListAttentionState(input.operational);
+    return operational === 'quiet' && input.hasUnreadMessages ? 'unread' : operational;
+}
+
+/**
+ * Sort rank for the states above, derived from the canonical operational ladder rather than
+ * restated.
+ *
+ * A hand-written switch here is how Activity ended up ranking permission above action while
+ * Protocol ranked them the other way: presentation may choose emphasis and wording, but it may
+ * not reorder semantic states (AWI-12). Deriving the table from the enum's declaration order
+ * makes that divergence unrepresentable.
+ */
+const SESSION_LIST_ATTENTION_RANK: Readonly<Record<SessionListAttentionState, number>> = (() => {
+    const ordered: SessionListAttentionState[] = SessionAwarenessOperationalPrimaryV1Schema.options
+        .map(mapSessionAwarenessToListAttentionState);
+    // 09B's personal states have no operational rank of their own. A generic reason such as a
+    // due reminder is stronger than unread, while both outrank a session with nothing to report.
+    ordered.splice(ordered.indexOf('quiet'), 0, 'attention', 'unread');
+    const rank = {} as Record<SessionListAttentionState, number>;
+    ordered.forEach((state, index) => {
+        rank[state] = ordered.length - index;
     });
-    if (runtimePresentation.attention === 'failed') return 'failed';
-    if (input.sessionState === 'action_required') return 'action_required';
-    if (input.sessionState === 'permission_required') return 'permission_required';
-    if ((input.pendingBlockedCount ?? 0) > 0) return 'action_required';
-    if (runtimePresentation.working) return 'thinking';
-    if (!hasTerminalPrimaryTurnProjection && input.sessionState === 'resuming') return 'thinking';
-    if (!hasTerminalPrimaryTurnProjection && input.sessionState === 'thinking') return 'thinking';
-    if (isReadyAfterReadCursor(input)) return 'ready';
-    if (input.pendingCount > 0) return 'pending';
-    if (input.hasUnreadMessages) return 'unread';
-    return 'quiet';
+    rank.quiet = 0;
+    return Object.freeze(rank);
+})();
+
+export function resolveSessionListAttentionRank(state: SessionListAttentionState): number {
+    return SESSION_LIST_ATTENTION_RANK[state];
 }
 
-function isReadyAfterReadCursor(input: Readonly<{
-    latestTurnStatus?: PrimaryTurnStatusV1 | null;
-    latestReadyEventSeq?: number | null;
-    meaningfulActivityAt?: number | null;
-    latestTurnStatusObservedAt?: number | null;
-    seq?: number | null;
-    lastViewedSessionSeq?: number | null;
-}>): boolean {
-    const lastViewedSessionSeq = normalizeSeq(input.lastViewedSessionSeq) ?? 0;
-    const latestReadyEventSeq = normalizeSeq(input.latestReadyEventSeq);
-    if (latestReadyEventSeq != null) {
-        return latestReadyEventSeq > lastViewedSessionSeq;
-    }
-    if (input.latestTurnStatus !== 'completed') {
-        return false;
-    }
-    const latestTurnStatusObservedAt = normalizeSeq(input.latestTurnStatusObservedAt);
-    const meaningfulActivityAt = normalizeSeq(input.meaningfulActivityAt);
-    if (hasActivityClearlyAfterTerminalProjection(meaningfulActivityAt, latestTurnStatusObservedAt)) {
-        return false;
-    }
-    const sessionSeq = normalizeSeq(input.seq);
-    return sessionSeq != null && sessionSeq > lastViewedSessionSeq;
-}
+/** The rank of the most alerting state, for consumers that need a normalized 0–1 scale. */
+export const MAX_SESSION_LIST_ATTENTION_RANK = SESSION_LIST_ATTENTION_RANK.failed;
 
-function normalizeSeq(value: number | null | undefined): number | null {
-    return typeof value === 'number' && Number.isFinite(value)
-        ? Math.max(0, Math.trunc(value))
-        : null;
+/**
+ * Whether a state deserves an interruptive surface (Live Activity urgent template, high-priority
+ * push). Failure is the highest operational state there is, so anything that ranks at or above
+ * "someone must act" qualifies — an explicit allow-list silently dropped `failed`.
+ */
+export function isUrgentSessionListAttentionState(state: SessionListAttentionState): boolean {
+    const actionableFloor = Math.min(
+        resolveSessionListAttentionRank('permission_required'),
+        resolveSessionListAttentionRank('action_required'),
+    );
+    return resolveSessionListAttentionRank(state)
+        >= actionableFloor;
 }
 
 export function resolveSessionListSecondaryLineMode(params: Readonly<{
-    groupKind?: 'active' | 'date' | 'project' | 'pinned' | 'shared' | 'folder' | 'attention' | 'working' | null;
+    groupKind?: 'active' | 'date' | 'project' | 'pinned' | 'loading' | 'folder' | 'attention' | 'working' | null;
 }>): SessionListSecondaryLineMode {
     if (params.groupKind === 'date') {
         return 'path';

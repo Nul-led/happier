@@ -29,7 +29,7 @@ describe('createEncryptionFromAuthCredentials', () => {
 
         const encryption = await createEncryptionFromAuthCredentials(credentials);
 
-        const dataKey = new Uint8Array([1, 2, 3, 4, 5, 6, 7]);
+        const dataKey = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
         const encrypted = await encryption.encryptEncryptionKey(dataKey);
         const decrypted = await encryption.decryptEncryptionKey(encodeBase64(encrypted, 'base64'));
 
@@ -53,7 +53,7 @@ describe('createEncryptionFromAuthCredentials', () => {
 
         const encryption = await createEncryptionFromAuthCredentials(credentials);
 
-        const dataKey = new Uint8Array([9, 8, 7, 6, 5, 4, 3]);
+        const dataKey = Uint8Array.from({ length: 32 }, (_, index) => 64 - index);
         const encrypted = await encryption.encryptEncryptionKey(dataKey);
         const decrypted = await encryption.decryptEncryptionKey(encodeBase64(encrypted, 'base64'));
 

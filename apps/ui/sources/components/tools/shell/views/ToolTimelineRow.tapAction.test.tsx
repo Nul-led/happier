@@ -224,6 +224,7 @@ describe('ToolTimelineRow (tap action)', () => {
                 id: 'call_read_1',
             },
             sessionId: 's1',
+            serverId: 'home-b',
             messageId: 'server:server-msg-1',
         });
 
@@ -233,7 +234,7 @@ describe('ToolTimelineRow (tap action)', () => {
 
         expect(navigateWithBlurOnWebSpy).toHaveBeenCalledTimes(1);
         expect(pushSpy).toHaveBeenCalledTimes(1);
-        expect(pushSpy).toHaveBeenCalledWith('/session/s1/message/server%3Aserver-msg-1');
+        expect(pushSpy).toHaveBeenCalledWith('/session/s1/message/server%3Aserver-msg-1?serverId=home-b');
         expect(screen.findAllByType('SpecificToolView' as any)).toHaveLength(0);
     });
 

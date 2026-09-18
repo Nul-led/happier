@@ -1,19 +1,16 @@
 import type { ScmUiBackendPlugin } from '@/scm/registry/scmUiBackendPlugin';
-import { resolveChangeSetModel, resolveSupportedDiffAreas } from '@/scm/registry/scmUiBackendPlugin';
+import {
+    resolveScmCommitSelectionPolicy,
+    resolveScmUiPolicy,
+    resolveSupportedDiffAreas,
+} from '@/scm/registry/scmUiBackendPlugin';
 import { inferScmRemoteTarget } from '@happier-dev/protocol';
 
 export const saplingScmUiPlugin: ScmUiBackendPlugin = {
     id: 'sapling',
     displayName: 'Sapling',
     mapCapabilitiesToUiPolicy(snapshot) {
-        const capabilities = snapshot?.capabilities;
-        const supportsIncludeExclude = capabilities?.writeInclude === true && capabilities?.writeExclude === true;
-        return {
-            supportsIncludeExclude,
-            supportsLineSelection: capabilities?.writeCommitLineSelection === true || supportsIncludeExclude,
-            changeSetModel: resolveChangeSetModel(capabilities),
-            supportedDiffAreas: resolveSupportedDiffAreas(capabilities),
-        };
+        return resolveScmUiPolicy(snapshot?.capabilities);
     },
     diffModeConfig(snapshot) {
         const availableModes = snapshot?.capabilities
@@ -32,8 +29,7 @@ export const saplingScmUiPlugin: ScmUiBackendPlugin = {
     commitActionConfig(snapshot) {
         return {
             label: snapshot?.capabilities?.operationLabels?.commit ?? 'Commit changes',
-            supportsPathScopedCommit: snapshot?.capabilities?.writeCommitPathSelection === true,
-            supportsLineSelection: snapshot?.capabilities?.writeCommitLineSelection === true,
+            ...resolveScmCommitSelectionPolicy(snapshot?.capabilities),
         };
     },
     remoteActionConfig(snapshot) {

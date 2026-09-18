@@ -8,7 +8,7 @@ import {
 import { DEFAULT_AGENT_ID, isBundledAgentId, type AgentId, type BundledAgentId } from '@/agents/catalog/catalog';
 import { isLegacyCompatAgentType } from './legacyCompatAgents';
 import { formatBackendTargetKeyV2 } from './backendTargetKeyV2';
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 
 export type BackendTargetPreferenceInput = Readonly<{
     candidateBackendTargets?: ReadonlyArray<unknown>;
@@ -100,7 +100,7 @@ export function resolvePreferredBackendTarget(params: BackendTargetPreferenceInp
     for (const preferredBuiltInAgentId of preferredBuiltInAgentIds) {
         const builtInTarget: PersistedBackendTargetRefV2 = {
             kind: 'agent',
-            identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[preferredBuiltInAgentId],
+            identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[preferredBuiltInAgentId],
         };
         if (isAvailableBackendTarget(builtInTarget, params.availableBackendTargets)) {
             return builtInTarget;
@@ -113,6 +113,6 @@ export function resolvePreferredBackendTarget(params: BackendTargetPreferenceInp
 
     return {
         kind: 'agent',
-        identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[defaultBuiltInAgentId],
+        identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[defaultBuiltInAgentId],
     };
 }

@@ -1,4 +1,9 @@
 import { buildServerScopedSessionKey, type VisibleSessionNavigationEntry } from '@/sync/domains/session/navigation/sessionNavigationOrder';
+import {
+    buildSessionListSelectionScopeSignature,
+    type SessionListSelectionScopeEligibility,
+    type SessionListViewFilters,
+} from '../search/sessionListViewFilters';
 
 export type SessionListSelectionKeyInput = Readonly<{
     sessionId: string;
@@ -6,27 +11,22 @@ export type SessionListSelectionKeyInput = Readonly<{
 }>;
 
 export type SessionListSelectionScopeKeyInput = Readonly<{
-    storageKind?: string | null;
-    activeServerId?: string | null;
+    filterSignature: string;
+    storageKind: string;
     focusedFolderId?: string | null;
-    searchQuery?: string | null;
-    selectedTags?: readonly string[] | null;
-    hideInactiveSessions?: boolean | null;
+    includeInactive: boolean;
+}>;
+
+export type SessionListSelectionScopeForViewInput = Readonly<{
+    filters: SessionListViewFilters;
+    eligibility: SessionListSelectionScopeEligibility;
+    storageKind: string;
+    focusedFolderId?: string | null;
+    includeInactive: boolean;
 }>;
 
 function normalizeScopePart(value: unknown): string {
     return typeof value === 'string' ? value.trim() : '';
-}
-
-function normalizeSearchQuery(value: unknown): string {
-    return normalizeScopePart(value).toLocaleLowerCase();
-}
-
-function normalizeSelectedTags(tags: readonly string[] | null | undefined): string[] {
-    return Array.from(new Set((tags ?? [])
-        .map((tag) => normalizeScopePart(tag))
-        .filter(Boolean)))
-        .sort((left, right) => left.localeCompare(right));
 }
 
 export function buildSessionListSelectionKey(input: SessionListSelectionKeyInput): string {
@@ -41,11 +41,20 @@ export function readSessionListSelectionKeysFromVisibleEntries(
 
 export function buildSessionListSelectionScopeKey(input: SessionListSelectionScopeKeyInput): string {
     return JSON.stringify({
-        storageKind: normalizeScopePart(input.storageKind) || 'all',
-        activeServerId: normalizeScopePart(input.activeServerId) || null,
+        filterSignature: input.filterSignature,
+        storageKind: normalizeScopePart(input.storageKind),
         focusedFolderId: normalizeScopePart(input.focusedFolderId) || null,
-        searchQuery: normalizeSearchQuery(input.searchQuery),
-        selectedTags: normalizeSelectedTags(input.selectedTags),
-        hideInactiveSessions: input.hideInactiveSessions === true,
+        includeInactive: input.includeInactive,
+    });
+}
+
+export function buildSessionListSelectionScopeKeyForView(
+    input: SessionListSelectionScopeForViewInput,
+): string {
+    return buildSessionListSelectionScopeKey({
+        filterSignature: buildSessionListSelectionScopeSignature(input.filters, input.eligibility),
+        storageKind: input.storageKind,
+        focusedFolderId: input.focusedFolderId,
+        includeInactive: input.includeInactive,
     });
 }

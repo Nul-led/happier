@@ -279,7 +279,7 @@ describe('socket pending -> committed ordering', () => {
         // which is the state a slow client is in for as long as that window lasts.
         const framesWithoutTheUtterance = armSession({ enabled: true, windowMs: 200 });
         const params = buildBaseParams();
-        const server = upsertServerProfile({ serverUrl: 'https://crossover.example.test', name: 'Crossover' });
+        const server = await upsertServerProfile({ serverUrl: 'https://crossover.example.test', name: 'Crossover' });
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         await handleUpdateContainer({
@@ -313,5 +313,74 @@ describe('socket pending -> committed ordering', () => {
         await handleUpdateContainer({ ...params, updateData: buildEmptyQueueUpdate(2) });
 
         expect(storage.getState().sessionPending[SESSION_ID]?.messages ?? []).toHaveLength(0);
+    });
+});
+
+describe('socket pending-changed receipt scope', () => {
+    let unregisterConsumer: (() => void) | null = null;
+
+    beforeEach(() => {
+        storage.setState(initialStorageState, true);
+        projectManager.clear();
+        unregisterConsumer = registerSessionRealtimeTranscriptConsumer(SESSION_ID);
+    });
+
+    afterEach(() => {
+        unregisterConsumer?.();
+        unregisterConsumer = null;
+        storage.setState(initialStorageState, true);
+        projectManager.clear();
+    });
+
+    it('keeps an exact Run-target row when a Run-scoped body reports the main queue empty', async () => {
+        storage.getState().applySessions([buildSession(SESSION_ID)]);
+        storage.getState().upsertPendingMessage(SESSION_ID, durableServerPendingRow());
+        storage.getState().upsertPendingMessage(SESSION_ID, {
+            ...durableServerPendingRow(),
+            id: 'run-row-1',
+            localId: 'run-row-1',
+            recipient: { kind: 'execution_run', runId: 'run_a' },
+        });
+        const params = buildBaseParams();
+
+        await handleUpdateContainer({
+            ...params,
+            updateData: {
+                ...buildEmptyQueueUpdate(2),
+                body: {
+                    ...(buildEmptyQueueUpdate(2) as { body: Record<string, unknown> }).body,
+                    recipient: { kind: 'execution_run', runId: 'run_a' },
+                },
+            } as ApiUpdateContainer,
+        });
+
+        expect((storage.getState().sessionPending[SESSION_ID]?.messages ?? []).map((message) => message.localId))
+            .toEqual(['run-row-1']);
+    });
+
+    it('refreshes the exact Run target on a recipient-bearing receipt and leaves a main-only receipt to the count', async () => {
+        storage.getState().applySessions([buildSession(SESSION_ID)]);
+        const refreshPendingForRecipient = vi.fn(async () => undefined);
+        const params = buildBaseParams({ refreshPendingForRecipient });
+
+        // The main count never speaks for a Run target; its receipt is the target's own snapshot.
+        await handleUpdateContainer({
+            ...params,
+            updateData: {
+                ...buildPendingChangedUpdate({ seq: 2, pendingCount: 0, pendingVersion: 5 }),
+                body: {
+                    ...(buildPendingChangedUpdate({ seq: 2, pendingCount: 0, pendingVersion: 5 }) as { body: Record<string, unknown> }).body,
+                    recipient: { kind: 'execution_run', runId: 'run_a' },
+                },
+            } as ApiUpdateContainer,
+        });
+        expect(refreshPendingForRecipient).toHaveBeenCalledTimes(1);
+        expect(refreshPendingForRecipient).toHaveBeenCalledWith(SESSION_ID, { kind: 'execution_run', runId: 'run_a' });
+
+        await handleUpdateContainer({
+            ...params,
+            updateData: buildPendingChangedUpdate({ seq: 3, pendingCount: 1, pendingVersion: 6 }),
+        });
+        expect(refreshPendingForRecipient).toHaveBeenCalledTimes(1);
     });
 });

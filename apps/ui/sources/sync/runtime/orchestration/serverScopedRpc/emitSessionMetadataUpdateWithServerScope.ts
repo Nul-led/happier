@@ -15,14 +15,19 @@ import { apiSocket } from '@/sync/api/session/apiSocket';
 import type { UpdateMetadataAck } from '@/sync/domains/session/metadata/updateSessionMetadataWithRetry';
 
 import { createEphemeralServerSocketClient } from './createEphemeralServerSocketClient';
-import { createSessionRequestForResolvedServerScope } from './createSessionRequestWithServerScope';
+import {
+    createServerRequestForResolvedServerScope,
+    type ServerAccountRequestAuthority,
+} from './createServerRequestWithServerScope';
 import { resolvePreferredServerIdForSessionId } from './resolvePreferredServerIdForSessionId';
-import { resolveServerScopedSessionContext } from './resolveServerScopedSessionContext';
+import { resolveServerAccountRequestContext } from './resolveServerAccountRequestContext';
 
 type SessionMetadataUpdateScope = Readonly<{
     sessionId: string;
     serverId?: string | null;
     timeoutMs?: number;
+    authority?: ServerAccountRequestAuthority;
+    isCurrent?: () => boolean;
 }>;
 
 type SessionMetadataUpdateParams =
@@ -86,17 +91,16 @@ async function emitSessionMetadataTuplePatch(params: Readonly<{
     patch:
         | SessionMetadataTuplePatchV1
         | SessionMetadataInactiveModelIntentOwnerPatchV1;
-    context: Awaited<ReturnType<typeof resolveServerScopedSessionContext>>;
+    context: Awaited<ReturnType<typeof resolveServerAccountRequestContext>>;
+    request: (path: string, init?: RequestInit) => Promise<Response>;
+    assertCurrent: () => void;
 }>): Promise<UpdateMetadataAck> {
     const patch = parseSessionMetadataTuplePatch(params.patch);
     if (!patch) {
         return INVALID_TUPLE_RESPONSE;
     }
-    const request = createSessionRequestForResolvedServerScope({
-        context: params.context,
-        activeRequest: (path, init) => apiSocket.request(path, init),
-    });
-    const response = await request(
+    params.assertCurrent();
+    const response = await params.request(
         `/v2/sessions/${encodeURIComponent(params.sessionId)}`,
         {
             method: 'PATCH',
@@ -104,7 +108,9 @@ async function emitSessionMetadataTuplePatch(params: Readonly<{
             body: JSON.stringify(patch),
         },
     );
+    params.assertCurrent();
     const body: unknown = await response.json().catch(() => null);
+    params.assertCurrent();
 
     if (patch.mode === 'owner_migration') {
         if (
@@ -189,7 +195,9 @@ async function emitInactiveModelIntentLegacyPatch(params: Readonly<{
     metadata: string;
     sessionExpectation:
         SessionMetadataInactiveModelIntentExpectationV1;
-    context: Awaited<ReturnType<typeof resolveServerScopedSessionContext>>;
+    context: Awaited<ReturnType<typeof resolveServerAccountRequestContext>>;
+    request: (path: string, init?: RequestInit) => Promise<Response>;
+    assertCurrent: () => void;
 }>): Promise<UpdateMetadataAck> {
     const parsed =
         SessionMetadataInactiveModelIntentPatchV1Schema.safeParse({
@@ -204,11 +212,8 @@ async function emitInactiveModelIntentLegacyPatch(params: Readonly<{
     if (!parsed.success) {
         return INVALID_TUPLE_RESPONSE;
     }
-    const request = createSessionRequestForResolvedServerScope({
-        context: params.context,
-        activeRequest: (path, init) => apiSocket.request(path, init),
-    });
-    const response = await request(
+    params.assertCurrent();
+    const response = await params.request(
         `/v2/sessions/${encodeURIComponent(params.sessionId)}`,
         {
             method: 'PATCH',
@@ -216,7 +221,9 @@ async function emitInactiveModelIntentLegacyPatch(params: Readonly<{
             body: JSON.stringify(parsed.data),
         },
     );
+    params.assertCurrent();
     const body: unknown = await response.json().catch(() => null);
+    params.assertCurrent();
 
     if (response.status === 200) {
         const success =
@@ -272,19 +279,23 @@ async function emitLegacySessionMetadataUpdate(params: Readonly<{
     sessionId: string;
     expectedVersion: number;
     metadata: string;
-    context: Awaited<ReturnType<typeof resolveServerScopedSessionContext>>;
+    context: Awaited<ReturnType<typeof resolveServerAccountRequestContext>>;
+    assertCurrent: () => void;
 }>): Promise<UpdateMetadataAck> {
     const payload = {
         sid: params.sessionId,
         expectedVersion: params.expectedVersion,
         metadata: params.metadata,
     };
+    params.assertCurrent();
     if (params.context.scope === 'active') {
-        return await apiSocket.emitWithAck<UpdateMetadataAck>(
+        const result = await apiSocket.emitWithAck<UpdateMetadataAck>(
             'update-metadata',
             payload,
             { timeoutMs: params.context.timeoutMs },
         );
+        params.assertCurrent();
+        return result;
     }
     const socket = await createEphemeralServerSocketClient({
         serverUrl: params.context.runtimeOrigin ?? params.context.targetServerUrl,
@@ -294,15 +305,17 @@ async function emitLegacySessionMetadataUpdate(params: Readonly<{
         timeoutMs: params.context.timeoutMs,
     });
     try {
-        return await socket
+        params.assertCurrent();
+        const result = await socket
             .timeout(params.context.timeoutMs)
             .emitWithAck(
                 'update-metadata',
                 payload,
             ) as UpdateMetadataAck;
+        params.assertCurrent();
+        return result;
     } finally {
         socket.disconnect();
-        await params.context.release?.();
     }
 }
 
@@ -317,7 +330,7 @@ async function emitLegacySessionMetadataUpdate(params: Readonly<{
 export async function emitSessionMetadataUpdateWithServerScope(
     params: SessionMetadataUpdateParams,
 ): Promise<UpdateMetadataAck> {
-    const context = await resolveServerScopedSessionContext({
+    const context = params.authority?.context ?? await resolveServerAccountRequestContext({
         serverId:
             typeof params.serverId === 'string'
             && params.serverId.trim().length > 0
@@ -325,13 +338,27 @@ export async function emitSessionMetadataUpdateWithServerScope(
                 : resolvePreferredServerIdForSessionId(params.sessionId),
         timeoutMs: params.timeoutMs,
     });
+    const ownsContext = !params.authority;
+    const assertCurrent = (): void => {
+        if (params.isCurrent?.() === false) {
+            throw Object.assign(new Error('Session Account authority retired during metadata update'), {
+                code: 'session_account_scope_retired',
+            });
+        }
+    };
+    const request = params.authority?.request ?? createServerRequestForResolvedServerScope({
+        context,
+        activeRequest: (path, init) => apiSocket.request(path, init),
+    });
     try {
-
+    assertCurrent();
     if ('patch' in params) {
         return await emitSessionMetadataTuplePatch({
             sessionId: params.sessionId,
             patch: params.patch,
             context,
+            request,
+            assertCurrent,
         });
     }
     if (params.sessionExpectation) {
@@ -341,6 +368,8 @@ export async function emitSessionMetadataUpdateWithServerScope(
             metadata: params.metadata,
             sessionExpectation: params.sessionExpectation,
             context,
+            request,
+            assertCurrent,
         });
     }
     return await emitLegacySessionMetadataUpdate({
@@ -348,8 +377,9 @@ export async function emitSessionMetadataUpdateWithServerScope(
         expectedVersion: params.expectedVersion,
         metadata: params.metadata,
         context,
+        assertCurrent,
     });
     } finally {
-        if (context.scope === 'scoped') await context.release?.();
+        if (ownsContext && context.scope === 'scoped') await context.release?.();
     }
 }

@@ -18,6 +18,7 @@ import type { DaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadD
 let sessionMock: any = { id: 'session-1', metadata: { agent: 'claude', permissionMode: 'default' } };
 let machineCapabilitiesStateMock: any = { status: 'idle' };
 let hydrateReady = true;
+let hydratedServerId: string | undefined;
 let enabledAgentIdsMock: string[] = ['claude', 'codex'];
 let localSearchParamsMock: any = { id: 'session-1', intent: 'review' };
 let sessionExecutionRunsSupportedMock = true;
@@ -140,6 +141,11 @@ const routerPushSpy = vi.fn();
 const routerReplaceSpy = vi.fn();
 const navigationCanGoBackSpy = vi.fn(() => true);
 const stackScreenSpy = vi.fn((_props: any) => null);
+const interactiveRunDraftViewSpy = vi.fn((_props: any) => null);
+const credentialScopeTestState = vi.hoisted(() => ({
+    bindingsByKey: new Map<string, ReadonlyMap<string, unknown>>(),
+    resolutionsByKey: new Map<string, ReadonlyMap<string, unknown>>(),
+}));
 let NewRunScreen: typeof import('@/app/(app)/session/[id]/runs/new').default;
 
 type RenderedNewRunScreen = Awaited<ReturnType<typeof renderScreen>>;
@@ -269,8 +275,8 @@ vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({
 
 vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({
     useHydrateSessionForRoute: (sessionId: string) => hydrateReady
-        ? { kind: 'available', sessionId }
-        : { kind: 'loading', sessionId, reason: 'store-miss' },
+        ? { kind: 'available', sessionId, ...(hydratedServerId ? { serverId: hydratedServerId } : {}) }
+        : { kind: 'loading', sessionId, reason: 'store-miss', ...(hydratedServerId ? { serverId: hydratedServerId } : {}) },
 }));
 
 vi.mock('@/sync/store/hooks', async (importOriginal) => {
@@ -289,6 +295,9 @@ vi.mock('@/sync/store/hooks', async (importOriginal) => {
 vi.mock('@/agents/hooks/useEnabledAgentIds', () => ({
     useEnabledAgentIds: () => enabledAgentIdsMock,
 }));
+vi.mock('@/agents/catalog/enabled', () => ({
+    getEnabledAgentIds: () => enabledAgentIdsMock,
+}));
 vi.mock('@/hooks/server/useExecutionRunsBackendsForSession', () => ({
     useExecutionRunsBackendsForSession: () => executionRunsBackendsMock,
 }));
@@ -300,6 +309,45 @@ vi.mock('@/hooks/server/useSessionExecutionRunsSupported', () => ({
 }));
 vi.mock('@/components/sessions/model/useSessionExternalSessionRuntime', () => ({
     useSessionExternalSessionRuntime: () => externalSessionRuntimeMock,
+}));
+vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
+    useSessionViewShellSession: () => sessionMock,
+}));
+vi.mock('@/sync/store/settingsWriters', () => ({
+    useAccountSettingsScope: () => ({
+        serverId: sessionServerIdStore.getSnapshot() ?? 'server-active',
+        accountId: 'account-1',
+    }),
+}));
+vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
+    useServerCredentialAccountScopeBindings: (serverIds: readonly (string | null | undefined)[]) => {
+        const key = JSON.stringify(serverIds);
+        const existing = credentialScopeTestState.bindingsByKey.get(key);
+        if (existing) return existing;
+        const bindings = new Map(serverIds.flatMap((serverId) => serverId ? [[serverId, {
+            serverId,
+            accountId: 'account-1',
+            scope: { serverId, accountId: 'account-1' },
+            isCurrent: () => true,
+        }] as const] : []));
+        credentialScopeTestState.bindingsByKey.set(key, bindings);
+        return bindings;
+    },
+    useServerCredentialAccountScopeResolutions: (serverIds: readonly (string | null | undefined)[]) => {
+        const key = JSON.stringify(serverIds);
+        const existing = credentialScopeTestState.resolutionsByKey.get(key);
+        if (existing) return existing;
+        const resolutions = new Map(serverIds.flatMap((serverId) => serverId ? [[serverId, {
+            kind: 'bound',
+            scope: { serverId, accountId: 'account-1' },
+        }] as const] : []));
+        credentialScopeTestState.resolutionsByKey.set(key, resolutions);
+        return resolutions;
+    },
+}));
+vi.mock('@/sync/domains/state/accountSettingsPersistence', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/state/accountSettingsPersistence')>(),
+    loadAccountSettings: () => ({ settings: settingsMock, version: 1 }),
 }));
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
     useSessionMachineReachability: () => sessionMachineReachabilityMock,
@@ -364,6 +412,12 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => activeServerSnapshotMock,
     subscribeActiveServer: () => () => {},
 }));
+vi.mock('@/components/sessions/runs/launcher/SessionInteractiveExecutionRunDraftView', () => ({
+    SessionInteractiveExecutionRunDraftView: (props: any) => {
+        interactiveRunDraftViewSpy(props);
+        return React.createElement('SessionInteractiveExecutionRunDraftView', props);
+    },
+}));
 
 vi.mock('@/hooks/server/useMachineCapabilitiesCache', () => ({
     useMachineCapabilitiesCache: (params: any) => {
@@ -389,6 +443,7 @@ describe('Session New Run Screen', () => {
         routerReplaceSpy.mockClear();
         navigationCanGoBackSpy.mockReturnValue(true);
         stackScreenSpy.mockClear();
+        interactiveRunDraftViewSpy.mockClear();
         executionRunsBackendsMock = {
             claude: { available: true, intents: ['review', 'plan', 'delegate', 'voice_agent'] },
             codex: { available: true, intents: ['review', 'plan', 'delegate', 'voice_agent'] },
@@ -399,6 +454,7 @@ describe('Session New Run Screen', () => {
         sessionMock = { id: 'session-1', metadata: { agent: 'claude', permissionMode: 'default' } };
         machineCapabilitiesStateMock = { status: 'idle' };
         hydrateReady = true;
+        hydratedServerId = undefined;
         localSearchParamsMock = { id: 'session-1', intent: 'review' };
         settingsMock = {
             executionRunsGuidanceEnabled: false,
@@ -415,7 +471,7 @@ describe('Session New Run Screen', () => {
         resumeCapabilityOptionsMock = {};
         resumeSessionSpy.mockClear();
         useMachineCapabilitiesCacheSpy.mockClear();
-        sessionServerIdStore.reset();
+        sessionServerIdStore.reset('server-active');
         activeServerSnapshotMock = { serverId: 'server-active', serverUrl: 'http://server-active.test' };
         actionExecutorExecuteResultMock = {
             ok: true,
@@ -426,6 +482,84 @@ describe('Session New Run Screen', () => {
             status: null,
             refreshNow: vi.fn(async () => null),
         };
+    });
+
+    it('opens an empty Agent conversation when no bounded intent is present and creates nothing on mount', async () => {
+        localSearchParamsMock = { id: 'session-1' };
+        await renderNewRunScreen();
+
+        expect(interactiveRunDraftViewSpy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }));
+        expect(startRunSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps the hydrated Home and retry identity qualified when the first interactive send opens its Run', async () => {
+        localSearchParamsMock = { id: 'session-1' };
+        hydratedServerId = 'server-hydrated';
+        await renderNewRunScreen();
+
+        const props = interactiveRunDraftViewSpy.mock.calls.at(-1)?.[0];
+        expect(props).toEqual(expect.objectContaining({
+            sessionId: 'session-1',
+            serverId: 'server-hydrated',
+        }));
+
+        await act(async () => {
+            props.onRunStarted('run/1', { retryInputLocalId: 'first-input-1' });
+        });
+
+        expect(routerReplaceSpy).toHaveBeenCalledWith(
+            '/session/session-1/runs/run%2F1?serverId=server-hydrated&retryInputLocalId=first-input-1',
+        );
+    });
+
+    it('consumes a qualified Discussion-selection navigation intent without routing selected text', async () => {
+        const { publishInteractiveExecutionRunDraftNavigationIntent } = await import('@/components/sessions/runs/launcher/interactiveExecutionRunDraftNavigationIntent');
+        const published = publishInteractiveExecutionRunDraftNavigationIntent({
+            address: { serverId: 'server-a', sessionId: 'session-1' },
+            source: {
+                kind: 'session_discussion',
+                sessionId: 'session-1',
+                discussionId: 'discussion-a',
+                messageIds: ['message-a'],
+                draftCorrelationId: 'correlation-a',
+            },
+            initialText: 'private selected text',
+        });
+        localSearchParamsMock = { id: 'session-1', serverId: 'server-a', draftCorrelationId: published.correlationId };
+        hydrateReady = false;
+
+        const screen = await renderNewRunScreen();
+
+        expect(interactiveRunDraftViewSpy).not.toHaveBeenCalled();
+        hydrateReady = true;
+        await act(async () => {
+            screen.tree.update(React.createElement(NewRunScreen));
+        });
+
+        expect(interactiveRunDraftViewSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 'session-1',
+            serverId: 'server-a',
+            initialText: 'private selected text',
+            launchOrigin: {
+                kind: 'session_discussion',
+                sessionId: 'session-1',
+                discussionId: 'discussion-a',
+                messageIds: ['message-a'],
+                draftCorrelationId: 'correlation-a',
+            },
+        }));
+        expect(published.href).not.toContain('private');
+    });
+
+    it('opens an ordinary empty interactive draft when a deep link has no process-local intent', async () => {
+        localSearchParamsMock = { id: 'session-1', serverId: 'server-a', draftCorrelationId: 'missing-correlation' };
+
+        await renderNewRunScreen();
+
+        const props = interactiveRunDraftViewSpy.mock.calls[0]?.[0];
+        expect(props).toEqual(expect.objectContaining({ sessionId: 'session-1', serverId: 'server-a' }));
+        expect(props.initialText).toBeUndefined();
+        expect(props.launchOrigin).toBeUndefined();
     });
 
     it('renders a loading state while session hydration is pending', async () => {
@@ -805,7 +939,7 @@ describe('Session New Run Screen', () => {
                 intent: 'review',
                 backendId: 'claude',
                 instructions: 'please review this',
-                permissionMode: 'read-only',
+                permissionMode: 'read_only',
                 changeType: 'uncommitted',
             }),
         );
@@ -973,7 +1107,7 @@ describe('Session New Run Screen', () => {
                 intent: 'delegate',
                 backendId: 'claude',
                 instructions: 'do the task',
-                permissionMode: 'safe-yolo',
+                permissionMode: 'workspace_write',
             }),
         );
     });

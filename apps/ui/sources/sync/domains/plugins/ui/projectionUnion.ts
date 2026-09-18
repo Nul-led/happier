@@ -596,6 +596,15 @@ export function unionPluginUiProjections(
         settingsPagesById: Object.freeze(settingsPagesById),
         actionsById: Object.freeze(actionsById),
         voiceProvidersById: Object.freeze(voiceProvidersById),
+        // Resources are read through an exact qualified reference by a
+        // session/project-scoped host that already holds its own machine's
+        // projection. App scope has no such consumer, and a Resource carries no
+        // per-contribution producer stamp for `originFor` to select a
+        // materialization from — unioning them would publish exactly the
+        // roaming, origin-less contribution this model exists to prevent. The
+        // canonical empty scope keeps the model shape complete and its identity
+        // stable across republished unions.
+        resourcesById: EMPTY_PLUGIN_UI_PROJECTION.resourcesById,
         // Openable viewers are scoped to a session/project details host. There is
         // no app-union consumer, so do not make app scope a second projection
         // owner for them.

@@ -12,13 +12,13 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
-import { useSetting } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { Typography } from '@/constants/Typography';
 import { Text, TextInput } from '@/components/ui/text/Text';
 
 import { SavedSecretPickerModal } from './SavedSecretPickerModal';
 import { Icon } from '@/components/ui/icons/Icon';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 
 type ValueRefKind = 'env' | 'header';
 type ValueRefSource = 'literal' | 'savedSecret';
@@ -79,7 +79,7 @@ export type ValueRefEditorModalProps = CustomModalInjectedProps & Readonly<{
 export function ValueRefEditorModal(props: ValueRefEditorModalProps) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
-    const liveSecrets = useSetting('secrets');
+    const catalog = useSavedSecretCatalog();
 
     const initialSource: ValueRefSource = props.initialValueRef.t === 'savedSecret' ? 'savedSecret' : 'literal';
 
@@ -94,9 +94,8 @@ export function ValueRefEditorModal(props: ValueRefEditorModalProps) {
 
     const secretName = React.useMemo(() => {
         if (!secretId) return null;
-        const found = liveSecrets.find((s) => s.id === secretId);
-        return found?.name ?? null;
-    }, [liveSecrets, secretId]);
+        return catalog.entries.find((entry) => entry.ref === secretId)?.name ?? null;
+    }, [catalog.entries, secretId]);
 
     const sourceItems = React.useMemo((): DropdownMenuItem[] => {
         return [

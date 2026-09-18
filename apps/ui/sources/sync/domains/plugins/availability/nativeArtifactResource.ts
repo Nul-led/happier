@@ -20,6 +20,7 @@ import {
     type PluginUiPersistentArtifactNativeResourceStore,
     type PluginUiPersistentArtifactNativeStorageLocator,
     type PluginUiPersistentArtifactRecord,
+    type PluginUiPersistentArtifactWriteDisposition,
 } from '@/sync/domains/plugins/ui/artifactByteCache';
 
 import type { PluginSelectedArtifactLease } from './artifactLease';
@@ -74,20 +75,34 @@ export type PluginNativeArtifactResponseTable = Readonly<{
 
 export type PluginNativeArtifactResourceRegistrar = Readonly<{
     /**
-     * This is the sole JS-to-native registration seam. It receives no raw path
-     * or bytes: the native module resolves its own app-private cache root from
-     * the opaque locator and only maps protocol resource IDs to stored files.
+     * This is the sole JS-to-native registration seam. Persistent resources
+     * expose only opaque cache coordinates. An oversized current load carries
+     * its already-verified bytes to the native token owner, never to the Wry
+     * child and never into restart-visible cache state.
      */
     register: (input: Readonly<{
         token: string;
         storagePartitionId: string;
-        storageLocator: PluginUiPersistentArtifactNativeStorageLocator;
-        resources: readonly Readonly<{
-            resourceId: string;
-            storedFileName: string;
-            digest: PluginUiArtifactDigestV1;
-            byteSize: number;
-        }>[];
+        storage:
+            | Readonly<{
+                kind: 'persistent';
+                locator: PluginUiPersistentArtifactNativeStorageLocator;
+                resources: readonly Readonly<{
+                    resourceId: string;
+                    storedFileName: string;
+                    digest: PluginUiArtifactDigestV1;
+                    byteSize: number;
+                }>[];
+            }>
+            | Readonly<{
+                kind: 'currentLoad';
+                resources: readonly Readonly<{
+                    resourceId: string;
+                    digest: PluginUiArtifactDigestV1;
+                    byteSize: number;
+                    bytes: Uint8Array;
+                }>[];
+            }>;
         policyTable: HostedWebAssetNativePolicyTableV1;
     }>) => Promise<PluginNativeArtifactResourceRegistrationResult>;
     /**
@@ -152,12 +167,16 @@ export type PluginNativeArtifactResourceRegistry = Readonly<{
     revokePersistentArtifact: (identity: PluginUiPersistentArtifactIdentity) => boolean;
     /** Called before one Account cache root is physically removed. */
     revokeAccount: (scope: ServerAccountScope) => boolean;
+    /** Existing token-index projection consumed only by physical LRU eviction. */
+    isPersistentArtifactIdentityInUse: (identityKey: string) => boolean;
 }>;
 
 type Registration = {
     token: string;
     scope: ServerAccountScope;
     persistentIdentity: PluginUiPersistentArtifactIdentity;
+    /** True only when native serves this token from the persistent byte owner. */
+    usesPersistentStorage: boolean;
     nativeRegistered: boolean;
     nativeRegistrationPending: boolean;
     nativeUnregisterPending: boolean;
@@ -366,31 +385,24 @@ function nativeDescriptorMatchesLease(input: Readonly<{
         });
 }
 
-function bindResponseTable(input: Readonly<{
+function bindResponseTableFiles(input: Readonly<{
     responseTable: PluginNativeArtifactResponseTable;
     files: readonly Readonly<{
         relativePath: string;
         digest: PluginUiArtifactDigestV1;
         byteSize: number;
+        bytes: Uint8Array;
     }>[];
-    descriptor: PluginUiPersistentArtifactNativeResourceDescriptor;
 }>): readonly Readonly<{
     resourceId: string;
-    storedFileName: string;
-    digest: PluginUiArtifactDigestV1;
-    byteSize: number;
+    fileIndex: number;
 }>[] | null {
-    const byRelativePath = new Map(input.files.map((file, index) => [file.relativePath, {
-        file,
-        resource: input.descriptor.resources[index]!,
-    }] as const));
+    const byRelativePath = new Map(input.files.map((file, index) => [file.relativePath, index] as const));
     const resourceIds = new Set<string>();
     const relativePaths = new Set<string>();
     const resources: Array<Readonly<{
         resourceId: string;
-        storedFileName: string;
-        digest: PluginUiArtifactDigestV1;
-        byteSize: number;
+        fileIndex: number;
     }>> = [];
     for (const binding of input.responseTable.resourceBindings) {
         if (
@@ -398,15 +410,13 @@ function bindResponseTable(input: Readonly<{
             || resourceIds.has(binding.resourceId)
             || relativePaths.has(binding.relativePath)
         ) return null;
-        const found = byRelativePath.get(binding.relativePath);
-        if (!found) return null;
+        const fileIndex = byRelativePath.get(binding.relativePath);
+        if (fileIndex === undefined) return null;
         resourceIds.add(binding.resourceId);
         relativePaths.add(binding.relativePath);
         resources.push(Object.freeze({
             resourceId: binding.resourceId,
-            storedFileName: found.resource.storedFileName,
-            digest: found.file.digest,
-            byteSize: found.file.byteSize,
+            fileIndex,
         }));
     }
     return Object.freeze(resources);
@@ -427,7 +437,7 @@ export function createPluginNativeArtifactResourcePersistentStore(input: Readonl
             if (!input.registry.revokePersistentArtifact(record.persistentIdentity)) {
                 throw new Error('native_artifact_revocation_pending');
             }
-            await input.store.write(record);
+            return await input.store.write(record);
         },
         remove: async (identity) => {
             if (!input.registry.revokePersistentArtifact(identity)) {
@@ -458,6 +468,7 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
 
     const removeRegistration = (registration: Registration) => {
         registrationsByToken.delete(registration.token);
+        if (!registration.usesPersistentStorage) return;
         const identityKey = derivePluginUiPersistentArtifactKey(registration.persistentIdentity);
         const tokens = tokensByPersistentIdentity.get(identityKey);
         if (!tokens) return;
@@ -547,11 +558,17 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
 
     const retryRevokedPersistentArtifact = (identity: PluginUiPersistentArtifactIdentity): boolean => {
         const key = derivePluginUiPersistentArtifactKey(identity);
-        const tokens = [...(tokensByPersistentIdentity.get(key) ?? [])];
         let clear = true;
-        for (const token of tokens) {
-            const registration = registrationsByToken.get(token);
-            if (registration?.revoked && !revokeRegistration(registration)) clear = false;
+        // Current-load registrations intentionally do not participate in the
+        // physical byte-LRU projection above, but a failed native tombstone is
+        // still the incumbent token for this exact Artifact identity. Scan the
+        // small process-local token owner so replacement cannot bypass it.
+        for (const registration of [...registrationsByToken.values()]) {
+            if (
+                registration.revoked
+                && derivePluginUiPersistentArtifactKey(registration.persistentIdentity) === key
+                && !revokeRegistration(registration)
+            ) clear = false;
         }
         return clear;
     };
@@ -559,6 +576,9 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
     return Object.freeze({
         revokePersistentArtifact,
         revokeAccount,
+        isPersistentArtifactIdentityInUse: (identityKey) => (
+            (tokensByPersistentIdentity.get(identityKey)?.size ?? 0) > 0
+        ),
         materialize: async (materialization) => {
             const current = () => leaseAndConsumerAreCurrent({
                 lease: materialization.lease,
@@ -581,6 +601,7 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
             if (!files || !current()) {
                 return Object.freeze({ kind: 'unavailable', code: 'artifact_lease_revoked' });
             }
+            let writeDisposition: PluginUiPersistentArtifactWriteDisposition = 'persisted';
             if (materialization.lease.sourceKind !== 'persistentCache') {
                 const record = recordFor({ identity, lease: materialization.lease, files });
                 if (!record) {
@@ -600,7 +621,7 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
                         return Object.freeze({ kind: 'unavailable', code: 'artifact_lease_revoked' });
                     }
                     try {
-                        await materialization.persistent.store.write(record);
+                        writeDisposition = await materialization.persistent.store.write(record);
                     } catch {
                         return Object.freeze({ kind: 'unavailable', code: 'native_artifact_store_unavailable' });
                     }
@@ -609,20 +630,22 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
                     return Object.freeze({ kind: 'unavailable', code: 'artifact_lease_revoked' });
                 }
             }
-            let descriptor: PluginUiPersistentArtifactNativeResourceDescriptor | null;
-            try {
-                descriptor = await materialization.persistent.store.describeNativeResource({
-                    identity,
-                    files: files.map(({ relativePath, digest, byteSize }) => ({ relativePath, digest, byteSize })),
-                });
-            } catch {
-                descriptor = null;
-            }
-            if (!descriptor || !nativeDescriptorMatchesLease({ descriptor, files }) || !current()) {
-                return Object.freeze({
-                    kind: 'unavailable',
-                    code: current() ? 'native_artifact_store_unavailable' : 'artifact_lease_revoked',
-                });
+            let descriptor: PluginUiPersistentArtifactNativeResourceDescriptor | null = null;
+            if (writeDisposition === 'persisted') {
+                try {
+                    descriptor = await materialization.persistent.store.describeNativeResource({
+                        identity,
+                        files: files.map(({ relativePath, digest, byteSize }) => ({ relativePath, digest, byteSize })),
+                    });
+                } catch {
+                    descriptor = null;
+                }
+                if (!descriptor || !nativeDescriptorMatchesLease({ descriptor, files }) || !current()) {
+                    return Object.freeze({
+                        kind: 'unavailable',
+                        code: current() ? 'native_artifact_store_unavailable' : 'artifact_lease_revoked',
+                    });
+                }
             }
             let responseTable: PluginNativeArtifactResponseTable;
             try {
@@ -637,8 +660,8 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
             } catch {
                 return Object.freeze({ kind: 'unavailable', code: 'native_artifact_response_table_invalid' });
             }
-            const resources = bindResponseTable({ responseTable, files, descriptor });
-            if (!resources || !current()) {
+            const bindings = bindResponseTableFiles({ responseTable, files });
+            if (!bindings || !current()) {
                 return Object.freeze({
                     kind: 'unavailable',
                     code: current() ? 'native_artifact_response_table_invalid' : 'artifact_lease_revoked',
@@ -652,6 +675,7 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
                 token,
                 scope: Object.freeze({ ...materialization.persistent.scope }),
                 persistentIdentity: identity,
+                usesPersistentStorage: descriptor !== null,
                 nativeRegistered: false,
                 nativeRegistrationPending: false,
                 nativeUnregisterPending: false,
@@ -662,10 +686,12 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
                 revoke: () => revokeRegistration(registration),
             };
             registrationsByToken.set(token, registration);
-            const identityKey = derivePluginUiPersistentArtifactKey(identity);
-            const tokens = tokensByPersistentIdentity.get(identityKey) ?? new Set<string>();
-            tokens.add(token);
-            tokensByPersistentIdentity.set(identityKey, tokens);
+            if (registration.usesPersistentStorage) {
+                const identityKey = derivePluginUiPersistentArtifactKey(identity);
+                const tokens = tokensByPersistentIdentity.get(identityKey) ?? new Set<string>();
+                tokens.add(token);
+                tokensByPersistentIdentity.set(identityKey, tokens);
+            }
             registration.subscriptions.push(materialization.lease.onRevoke(registration.revoke));
             registration.subscriptions.push(materialization.accountLifetime.onRetire(registration.revoke));
             if (!registration.isCurrent()) {
@@ -678,11 +704,37 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
             });
             registration.nativeRegistrationPending = true;
             try {
+                const storage = descriptor === null
+                    ? Object.freeze({
+                        kind: 'currentLoad' as const,
+                        resources: Object.freeze(bindings.map(({ resourceId, fileIndex }) => {
+                            const file = files[fileIndex]!;
+                            return Object.freeze({
+                                resourceId,
+                                digest: file.digest,
+                                byteSize: file.byteSize,
+                                bytes: file.bytes,
+                            });
+                        })),
+                    })
+                    : Object.freeze({
+                        kind: 'persistent' as const,
+                        locator: descriptor.locator,
+                        resources: Object.freeze(bindings.map(({ resourceId, fileIndex }) => {
+                            const file = files[fileIndex]!;
+                            const resource = descriptor.resources[fileIndex]!;
+                            return Object.freeze({
+                                resourceId,
+                                storedFileName: resource.storedFileName,
+                                digest: file.digest,
+                                byteSize: file.byteSize,
+                            });
+                        })),
+                    });
                 registrationResult = await input.registrar.register(Object.freeze({
                     token,
                     storagePartitionId: storagePartitionId(identity),
-                    storageLocator: descriptor.locator,
-                    resources,
+                    storage,
                     policyTable: responseTable.table,
                 }));
             } catch {

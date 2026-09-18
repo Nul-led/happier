@@ -1,4 +1,6 @@
 import type { SessionMessageRole } from '@happier-dev/protocol';
+import type { DecryptOptions } from '@/sync/encryption/encryptor';
+import { applyTranscriptAccountActorMetadata, qualifyTranscriptAccountActor } from '@/sync/domains/messages/transcriptAccountActor';
 
 import type { ApiMessage, ApiSessionMessagesResponse } from '@/sync/api/types/apiTypes';
 import { ApiSessionMessagesResponseSchema } from '@/sync/api/types/apiTypes';
@@ -26,7 +28,7 @@ import {
 } from './sessionMessageCurrentness';
 
 export type SessionMessagesEncryption = {
-    decryptMessages: (messages: ApiMessage[]) => Promise<Array<DecryptedSessionMessage | null>>;
+    decryptMessages: (messages: ApiMessage[], options?: DecryptOptions) => Promise<Array<DecryptedSessionMessage | null>>;
 };
 
 export type SessionMessagesEncryptionMode = 'e2ee' | 'plain';
@@ -48,7 +50,10 @@ export type MessageDecryptBatchOptions = {
 };
 
 export type SessionMessagesPageOptions = MessageDecryptBatchOptions & {
+    isCurrent?: () => boolean;
     sessionEncryptionMode?: SessionMessagesEncryptionMode;
+    onContentAuthenticationFailure?: (encryption: SessionMessagesEncryption) => void;
+    serverId?: string | null;
 };
 
 type MessagePageTelemetryKind = 'initial' | 'older' | 'newer';
@@ -216,7 +221,7 @@ async function decryptMessagesInBatchesWithTelemetry(
     direction: MessagePageDirection,
     encryption: SessionMessagesEncryption,
     messages: ApiMessage[],
-    options: MessageDecryptBatchOptions,
+    options: MessageDecryptBatchOptions & Pick<DecryptOptions, 'onAuthenticationFailure'>,
 ): Promise<Array<DecryptedSessionMessage | null>> {
     const batchSize = resolveMessageDecryptBatchSize(direction, options);
     return syncPerformanceTelemetry.measureAsync(
@@ -262,13 +267,13 @@ function measureMessageNormalization<T>(
 async function decryptMessagesInBatches(
     encryption: SessionMessagesEncryption,
     messages: ApiMessage[],
-    options: MessageDecryptBatchOptions,
+    options: MessageDecryptBatchOptions & Pick<DecryptOptions, 'onAuthenticationFailure'>,
     batchSize: number,
 ): Promise<Array<DecryptedSessionMessage | null>> {
     if (messages.length === 0) return [];
 
     if (batchSize >= messages.length) {
-        return encryption.decryptMessages(messages);
+        return encryption.decryptMessages(messages, { onAuthenticationFailure: options.onAuthenticationFailure });
     }
 
     const yieldDelayMs = normalizeNonNegativeInteger(options.messageDecryptYieldDelayMs, 0);
@@ -280,7 +285,9 @@ async function decryptMessagesInBatches(
             await yieldBetweenBatches(yieldDelayMs);
         }
         const batch = messages.slice(start, start + batchSize);
-        decryptedMessages.push(...await encryption.decryptMessages(batch));
+        decryptedMessages.push(...await encryption.decryptMessages(batch, {
+            onAuthenticationFailure: (index) => options.onAuthenticationFailure?.(start + index),
+        }));
     }
 
     return decryptedMessages;
@@ -363,6 +370,8 @@ export async function runSessionMessagesPagePipeline(params: {
     if (!encryption) {
         throw new Error(`Session encryption not ready for ${params.sessionId}`);
     }
+    const isCurrent = () => params.isCurrent?.() !== false && params.isSessionKnown?.(params.sessionId) !== false
+        && resolveSessionMessagesEncryption(params) === encryption;
 
     const data = await fetchSessionMessagesPageWithTelemetry({
         purpose: params.purpose,
@@ -375,7 +384,7 @@ export async function runSessionMessagesPagePipeline(params: {
     // allocate a currentness owner or spend decrypt work for a session that no
     // longer belongs to this Sync scope; the post-decrypt fence below covers a
     // second retirement race while decryption itself is in flight.
-    if (params.isSessionKnown?.(params.sessionId) === false) {
+    if (!isCurrent()) {
         writeSyncDebugLog(params.log, `💬 session message page: Session ${params.sessionId} disappeared before page decrypt; dropping response`);
         return skippedMissingSessionResult(params.page.direction);
     }
@@ -399,19 +408,23 @@ export async function runSessionMessagesPagePipeline(params: {
         if (isSessionMessageRowCurrent({
             existingUpdatedAt,
             incomingUpdatedAt: msgUpdatedAt,
-            isAuthoritativeUpdate,
+            isAuthoritativeUpdate: isAuthoritativeUpdate || msg.accountActor !== undefined,
         })) {
             messagesToDecrypt.push(msg);
         }
     }
     recordMessageDedupeTelemetry(params.purpose, data.messages.length, messagesToDecrypt.length);
 
+    const authenticationFailures: ApiMessage[] = [];
     const decryptedMessages = await decryptMessagesInBatchesWithTelemetry(
         params.purpose,
         params.page.direction,
         encryption,
         messagesToDecrypt,
-        params,
+        {
+            ...params,
+            onAuthenticationFailure: (index) => authenticationFailures.push(messagesToDecrypt[index]),
+        },
     );
     const replayableMessages = await Promise.all(decryptedMessages.map(async (decrypted) => {
         if (!decrypted) return null;
@@ -423,7 +436,7 @@ export async function runSessionMessagesPagePipeline(params: {
     // The request can outlive a delete/share-revocation. Recheck after the
     // asynchronous decrypt boundary and before any page or transcript state is
     // published so an old response cannot recreate a deleted session.
-    if (params.isSessionKnown?.(params.sessionId) === false) {
+    if (!isCurrent()) {
         writeSyncDebugLog(params.log, `💬 session message page: Session ${params.sessionId} disappeared before page apply; dropping response`);
         return skippedMissingSessionResult(params.page.direction);
     }
@@ -453,7 +466,7 @@ export async function runSessionMessagesPagePipeline(params: {
             if (!isSessionMessageRowCurrent({
                 existingUpdatedAt: currentUpdatedAt,
                 incomingUpdatedAt: inputUpdatedAt,
-                isAuthoritativeUpdate,
+                isAuthoritativeUpdate: isAuthoritativeUpdate || inputMessage?.accountActor !== undefined,
             })) {
                 continue;
             }
@@ -479,6 +492,9 @@ export async function runSessionMessagesPagePipeline(params: {
             }, normalizationState);
             if (normalized) {
                 applyTranscriptObservationMetadata(normalized, inputMessage);
+                applyTranscriptAccountActorMetadata(normalized, {
+                    accountActor: qualifyTranscriptAccountActor(inputMessage?.accountActor, params.serverId),
+                });
                 if (params.authoritativeUpdateMessageIds?.has(normalized.id)) {
                     normalized.isAuthoritativeUpdate = true;
                 }
@@ -516,6 +532,14 @@ export async function runSessionMessagesPagePipeline(params: {
             row.messageId,
             row.updatedAt,
         );
+    }
+
+    if (authenticationFailures.some((message) => isSessionMessageRowCurrent({
+        existingUpdatedAt: params.sessionReceivedMessages.get(params.sessionId)?.get(message.id),
+        incomingUpdatedAt: message.updatedAt ?? message.createdAt,
+        isAuthoritativeUpdate: params.authoritativeUpdateMessageIds?.has(message.id) === true,
+    }))) {
+        params.onContentAuthenticationFailure?.(encryption);
     }
 
     return {

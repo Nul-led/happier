@@ -63,10 +63,10 @@ export function useProviderConnections(input: Readonly<{
             currentAccountLifetimeRef.current === accountLifetime
             && (accountLifetime?.isCurrent() ?? true)
         );
-        if (!requestStillCurrent()) return;
+        if (!requestStillCurrent()) return null;
         if (!input.enabled || !input.machineId) {
             setState({ scopeKey, accountLifetime, data: null, error: null, loading: false });
-            return;
+            return null;
         }
         const machineId = input.machineId;
         const serverId = input.serverId;
@@ -83,6 +83,7 @@ export function useProviderConnections(input: Readonly<{
             if (requestGeneration !== generation.current || !requestStillCurrent()) return;
             if (result.status === 'success') {
                 setState({ scopeKey, accountLifetime, data: result, error: null, loading: true });
+                return result;
             } else {
                 setState((current) => ({
                     accountLifetime,
@@ -94,6 +95,7 @@ export function useProviderConnections(input: Readonly<{
                     loading: true,
                 }));
             }
+            return null;
         } catch (caught) {
             if (requestGeneration !== generation.current || !requestStillCurrent()) return;
             setState((current) => ({
@@ -108,6 +110,7 @@ export function useProviderConnections(input: Readonly<{
                 }),
                 loading: true,
             }));
+            return null;
         } finally {
             if (requestGeneration === generation.current && requestStillCurrent()) {
                 setState((current) => current.scopeKey === scopeKey

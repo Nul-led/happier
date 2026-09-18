@@ -43,6 +43,14 @@ const PRODUCTION_ENTRY_POINTS = [
         symbol: 'acquireBrowserMachineCarrierStreamLease',
         sourceFile: 'sources/sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierBrowserStream.ts',
     },
+    {
+        symbol: 'uploadBulkPayloadFromFileViaMachineCarrier',
+        sourceFile: 'sources/sync/domains/transfers/runtime/transferRuntime/plumbing/uploadBulkPayloadFromFileViaMachineCarrier.ts',
+    },
+    {
+        symbol: 'uploadSessionAttachmentFromReaderViaMachineCarrier',
+        sourceFile: 'sources/sync/domains/transfers/runtime/transferRuntime/families/uploadSessionAttachmentFromReaderViaMachineCarrier.ts',
+    },
 ];
 
 test('the seam builds with the app\'s own Metro config, not a proof-local resolver', async () => {

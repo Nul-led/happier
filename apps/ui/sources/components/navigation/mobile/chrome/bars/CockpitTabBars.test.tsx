@@ -91,7 +91,9 @@ installNavigationCommonModuleMocks({
             getPreferredLanguage: () => translationPrefix,
         });
     },
-    storage: async () => ({
+    // The canonical stub supplies the rest of the storage boundary — including
+    // `getStorage`, which the bar's exact-Home feature decisions read.
+    storage: async () => (await import('@/dev/testkit/mocks/storage')).createStorageModuleStub({
         useSessionMetadata: () => sessionMetadataState.metadata,
         useSession: () => ({
             id: 'sess_1',

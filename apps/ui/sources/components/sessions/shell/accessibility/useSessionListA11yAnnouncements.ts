@@ -21,6 +21,10 @@ export type UseSessionListA11yAnnouncementsResult = Readonly<{
     announcePickedUp: (subject: SessionListA11yAnnouncementSubject) => void;
     announceCancelled: (subject: SessionListA11yAnnouncementSubject) => void;
     announceDropResult: (announcement: SessionListA11yDropAnnouncement) => void;
+    announceDropResultAfterCommit: (
+        committed: Promise<boolean>,
+        announcement: SessionListA11yDropAnnouncement,
+    ) => Promise<void>;
     announceSelectionCount: (announcement: Readonly<{ count: number }>) => void;
 }>;
 
@@ -98,6 +102,14 @@ export function useSessionListA11yAnnouncements(): UseSessionListA11yAnnouncemen
         announceAccessibilityMessage(formatDropAnnouncement(drop));
     }, []);
 
+    const announceDropResultAfterCommit = React.useCallback(async (
+        committed: Promise<boolean>,
+        drop: SessionListA11yDropAnnouncement,
+    ) => {
+        if (!await committed) return;
+        announceAccessibilityMessage(formatDropAnnouncement(drop));
+    }, []);
+
     const announceSelectionCount = React.useCallback((selection: Readonly<{ count: number }>) => {
         announceAccessibilityMessage(t('sessionsList.selectionA11ySelectedCount', { count: selection.count }));
     }, []);
@@ -106,6 +118,7 @@ export function useSessionListA11yAnnouncements(): UseSessionListA11yAnnouncemen
         announcePickedUp,
         announceCancelled,
         announceDropResult,
+        announceDropResultAfterCommit,
         announceSelectionCount,
-    }), [announceCancelled, announceDropResult, announcePickedUp, announceSelectionCount]);
+    }), [announceCancelled, announceDropResult, announceDropResultAfterCommit, announcePickedUp, announceSelectionCount]);
 }

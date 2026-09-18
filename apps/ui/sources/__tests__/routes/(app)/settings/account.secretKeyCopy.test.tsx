@@ -2,12 +2,11 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { storage } from '@/sync/domains/state/storageStore';
 import { profileDefaults } from '@/sync/domains/profiles/profile';
-import { formatSecretKeyForBackup } from '@/auth/recovery/secretKeyBackup';
 import {
     renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
-import { createAccountFeaturesResponse, getRequestUrl, isFeaturesRequest } from './account.testHelpers';
+import { createAccountFeaturesResponse } from './account.testHelpers';
 import { installAccountSettingsRouteModuleMocks } from './accountSettingsRouteTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -59,64 +58,13 @@ describe('Settings → Account (secret key copy)', () => {
         standardCleanup();
     });
 
-    it('allows copying the secret key without revealing it', async () => {
+    it('keeps recovery disclosure out of the Account profile page', async () => {
         storage.getState().applyProfile({ ...profileDefaults, linkedProviders: [], username: null });
-
-        const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-            const url = getRequestUrl(input);
-            if (isFeaturesRequest(url)) {
-                return {
-                    ok: true,
-                    json: async () => createAccountFeaturesResponse(),
-                };
-            }
-            throw new Error(`Unexpected fetch: ${url}`);
-        });
-        vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
-
-        clipboardMocks.setStringAsync.mockClear();
-        modalMocks.alert.mockClear();
-
+        vi.stubGlobal('fetch', vi.fn(async () => Response.json(createAccountFeaturesResponse())));
         const { default: AccountScreen } = await import('@/app/(app)/settings/account');
         const screen = await renderScreen(<AccountScreen />);
-        const secretKeyItem = screen.findByTestId('settings-account-secret-key-item');
-        const copyButton = screen.findByTestId('settings-account-secret-key-copy');
-
-        expect(secretKeyItem).toBeTruthy();
-        expect(copyButton).toBeTruthy();
-
-        await screen.pressByTestIdAsync('settings-account-secret-key-copy');
-
-        const expected = formatSecretKeyForBackup('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-        expect(clipboardMocks.setStringAsync).toHaveBeenCalledWith(expected);
-        expect(modalMocks.alert).not.toHaveBeenCalled();
-        expect(screen.findByTestId('settings-account-secret-key-copy-feedback')).toBeTruthy();
-    });
-
-    it('reveals the formatted secret key when the backup item is pressed', async () => {
-        storage.getState().applyProfile({ ...profileDefaults, linkedProviders: [], username: null });
-
-        const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-            const url = getRequestUrl(input);
-            if (isFeaturesRequest(url)) {
-                return {
-                    ok: true,
-                    json: async () => createAccountFeaturesResponse(),
-                };
-            }
-            throw new Error(`Unexpected fetch: ${url}`);
-        });
-        vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
-
-        const { default: AccountScreen } = await import('@/app/(app)/settings/account');
-        const screen = await renderScreen(<AccountScreen />);
-
-        await screen.pressByTestIdAsync('settings-account-secret-key-item');
-
-        expect(screen.findByTestId('settings-account-secret-key-revealed')).toBeTruthy();
-        const secretKeyValue = screen.findByTestId('settings-account-secret-key-value');
-        expect(secretKeyValue).toBeTruthy();
-        expect(secretKeyValue!.props.children)
-            .toBe(formatSecretKeyForBackup('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'));
+        expect(screen.findByTestId('settings-account-secret-key-item')).toBeNull();
+        expect(screen.findByTestId('settings-account-secret-key-copy')).toBeNull();
+        expect(screen.findByTestId('settings-account-logout')).toBeTruthy();
     });
 });

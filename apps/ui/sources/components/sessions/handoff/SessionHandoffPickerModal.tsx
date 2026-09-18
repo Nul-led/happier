@@ -38,6 +38,11 @@ import {
 } from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
 import { resolveWorkspaceSyncModeTranslationKey } from '@/sync/domains/sessionHandoff/workspaceSyncPresentation';
 import { useWorkspaceSyncRelationshipSummaries } from '@/sync/domains/sessionHandoff/useWorkspaceSyncRelationshipSummaries';
+import { useWorkspaceSyncEngineReadiness } from '@/sync/domains/sessionHandoff/useWorkspaceSyncEngineReadiness';
+import {
+    resolveSessionHandoffStartBlockedTranslationKey,
+    resolveSessionHandoffStartReadiness,
+} from '@/sync/domains/sessionHandoff/resolveSessionHandoffStartReadiness';
 import {
     useAllSessionListRenderables,
     useMachineListByServerId,
@@ -81,6 +86,9 @@ const stylesheet = StyleSheet.create(() => ({
         alignItems: 'center',
         justifyContent: 'flex-end',
         gap: 10,
+    },
+    blockedReason: {
+        flex: 1,
     },
 }));
 
@@ -304,9 +312,40 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         return parsed.success ? parsed.data : null;
     }, [contentSelection, ignoredIncludeGlobs, includeIgnoredMode, selectedRelationshipSummary?.relationshipId, workspaceSyncMode]);
 
+    const workspaceEngineRequired = Boolean(selectedRelationshipSummary || workspaceSyncMode !== 'none');
+    const sourceEngineReadiness = useWorkspaceSyncEngineReadiness(
+        workspaceEngineRequired && resolvedSourceMachineId
+            ? { serverId, machineId: resolvedSourceMachineId }
+            : null,
+    );
+    const targetEngineReadiness = useWorkspaceSyncEngineReadiness(
+        workspaceEngineRequired && selectedMachineId
+            ? { serverId, machineId: selectedMachineId }
+            : null,
+    );
+    const startReadiness = resolveSessionHandoffStartReadiness({
+        targetMachineSelected: Boolean(selectedMachine),
+        targetMachineAttemptable: canAttemptSelectedMachine,
+        relationshipRequested: Boolean(selectedRelationshipId),
+        relationshipResolved: Boolean(selectedRelationshipSummary),
+        workspaceActionResolved: Boolean(parsedWorkspaceAction),
+        workspaceEngineRequired,
+        machineCarrierRequired: Boolean(
+            resolvedSourceMachineId
+            && selectedMachineId
+            && resolvedSourceMachineId !== selectedMachineId
+        ),
+        sourcePathAllowed: workspaceSourcePathSafety.allowed,
+        targetPathAllowed: workspaceTargetPathSafety.allowed,
+        sourceEngineReadiness,
+        targetEngineReadiness,
+    });
+    const blockedReasonKey = resolveSessionHandoffStartBlockedTranslationKey(startReadiness);
+
     const handleStart = React.useCallback(() => {
         const targetMachineId = normalizeId(selectedMachineId);
         const sourceRootPath = normalizeId(currentSessionMetadata?.path);
+        if (!startReadiness.canStart) return;
         if (!targetMachineId) return;
         if (!canAttemptSelectedMachine) return;
         if (selectedRelationshipId && !selectedRelationshipSummary) return;
@@ -323,28 +362,31 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                 : 'persisted',
             workspaceAction: parsedWorkspaceAction,
         });
-    }, [canAttemptSelectedMachine, currentSessionMetadata?.path, directTargetMode, isExternalSession, onResolve, parsedWorkspaceAction, resolvedTargetPath, selectedMachine?.metadata?.displayName, selectedMachineId, selectedRelationshipId, selectedRelationshipSummary, workspaceSourcePathSafety.allowed, workspaceSyncMode, workspaceTargetPathSafety.allowed]);
+    }, [canAttemptSelectedMachine, currentSessionMetadata?.path, directTargetMode, isExternalSession, onResolve, parsedWorkspaceAction, resolvedTargetPath, selectedMachine?.metadata?.displayName, selectedMachineId, selectedRelationshipId, selectedRelationshipSummary, startReadiness.canStart, workspaceSourcePathSafety.allowed, workspaceSyncMode, workspaceTargetPathSafety.allowed]);
 
-    const canStart = Boolean(selectedMachine && canAttemptSelectedMachine
-        && (!selectedRelationshipId || selectedRelationshipSummary)
-        && (
-        (!selectedRelationshipSummary && workspaceSyncMode === 'none')
-        || (workspaceSourcePathSafety.allowed && workspaceTargetPathSafety.allowed && (
-            parsedWorkspaceAction
-        ))
-    ));
+    const canStart = startReadiness.canStart;
 
     const footer = React.useMemo(() => (
         <View style={styles.footer}>
+            {blockedReasonKey ? (
+                <Text
+                    testID="session-handoff-start-blocked-reason"
+                    style={styles.blockedReason}
+                    accessibilityLiveRegion="polite"
+                >
+                    {t(blockedReasonKey)}
+                </Text>
+            ) : null}
             <RoundButton display="inverted" title={t('common.cancel')} onPress={handleCancel} />
             <RoundButton
                 testID="session-handoff-start"
                 title={actionSpec.title}
                 onPress={handleStart}
                 disabled={!canStart}
+                accessibilityHint={blockedReasonKey ? t(blockedReasonKey) : undefined}
             />
         </View>
-    ), [actionSpec.title, canStart, handleCancel, handleStart, styles.footer]);
+    ), [actionSpec.title, blockedReasonKey, canStart, handleCancel, handleStart, styles.blockedReason, styles.footer]);
 
     const chrome = React.useMemo(() => ({
         kind: 'card' as const,
@@ -359,7 +401,7 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
 
     return (
         <View style={styles.body}>
-                <ItemList style={{ paddingTop: 0 }}>
+                <ItemList keyboardAware style={{ paddingTop: 0 }}>
                     <MachineSelector
                         machines={machines as any}
                         selectedMachine={selectedMachine as any}

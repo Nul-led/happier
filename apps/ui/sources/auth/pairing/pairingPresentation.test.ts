@@ -28,7 +28,6 @@ describe('resolveHomeEnrollmentPresentation', () => {
     it.each([
         [{ phase: 'generating' }, 'generating', 'common.loading', 'none', 'none'],
         [{ phase: 'ready' }, 'ready', 'connect.showRequesterQrInstructions', 'target_and_expiry', 'none'],
-        [{ phase: 'connecting' }, 'verifying', 'common.loading', 'target_and_expiry', 'automatic_retry'],
         [{ phase: 'adding' }, 'adding', 'connect.securingCredentials', 'target_and_expiry', 'none'],
         [{ phase: 'retryable_error', partialCommit: false }, 'retryable_error', 'connect.homeEnrollmentRetryBody', 'target', 'retry'],
         [{ phase: 'retryable_error', partialCommit: true }, 'partial_commit', 'connect.homeEnrollmentPartialCommitBody', 'target', 'none'],

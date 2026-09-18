@@ -290,7 +290,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     const sameSessionHandoff = useTranscriptSameSessionHandoff({
         captureForHandoff: selectCurrentExitSnapshot,
         explicitJump: props.jumpToSeq != null,
-        sessionId: props.sessionId,
+        sessionKey: props.sessionSurfaceKey,
     });
     const exitCurrentSession = React.useCallback((options?: Readonly<{ deferEmit?: boolean }>) => {
         const selection = selectCurrentExitSnapshot(options);
@@ -534,7 +534,10 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     // or removes one of its option rows while the row is offscreen. This hook is deliberately the
     // narrow variant: it is inert until this session actually has a draft, and its result identity
     // moves only when a painted option row does, so it does not churn the transcript.
-    const resolveActionDraftFieldOptions = useSessionActionFieldOptionsForRowHeight(props.sessionId);
+    const resolveActionDraftFieldOptions = useSessionActionFieldOptionsForRowHeight(
+        props.sessionId,
+        props.sessionServerId,
+    );
     const [scrollPin, setScrollPin] = React.useState<TranscriptScrollPinState>(() => ({
         isPinned: resolveSessionEntryViewportState(readSessionViewportForEntry(props.sessionId)).shouldFollowBottom,
         newActivityCount: 0,
@@ -2062,7 +2065,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     );
     return (
         <SessionTranscriptAgentAttributionProvider value={agentAttributionIndex}>
-        <TranscriptMotionProvider sessionKey={props.sessionId} config={motionConfig}>
+        <TranscriptMotionProvider sessionKey={props.sessionSurfaceKey} config={motionConfig}>
             <InitialPresentationReadinessProvider value={initialRichContentPresentationController.boundary}>
               <View
                 ref={transcriptViewportFocusRef}
@@ -2075,9 +2078,9 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
                     onCommitLayoutEffect={observeTranscriptListCommittedLayout}
                     platformInteractionProps={scrollObservationHost.platformInteractionProps}
                     data={listData}
-                    dataKey={props.sessionId}
+                    dataKey={props.sessionSurfaceKey}
                     extraData={transcriptListExtraData}
-                    key={props.sessionId}
+                    key={props.sessionSurfaceKey}
                     keyExtractor={keyExtractor}
                     getItemType={getItemType}
                     getEstimatedItemSize={getEstimatedItemSize}

@@ -3,7 +3,7 @@ import type { ToolViewProps } from '../core/_registry';
 import { buildDiffBlocks, buildDiffFileEntries, type DiffFileEntry } from '@/components/ui/code/model/diff/diffViewModel';
 import { ToolFileDiffListView } from './ToolFileDiffListView';
 
-export const DiffView = React.memo<ToolViewProps>(({ tool, detailLevel, sessionId: sessionIdProp }) => {
+export const DiffView = React.memo<ToolViewProps>(({ tool, detailLevel, sessionId: sessionIdProp, serverId }) => {
     const { input } = tool;
 
     const blocks = React.useMemo(() => buildDiffBlocks(input), [input]);
@@ -13,5 +13,5 @@ export const DiffView = React.memo<ToolViewProps>(({ tool, detailLevel, sessionI
         return null;
     }
 
-    return <ToolFileDiffListView files={files} detailLevel={detailLevel} sessionId={sessionIdProp} />;
+    return <ToolFileDiffListView files={files} detailLevel={detailLevel} sessionId={sessionIdProp} serverId={serverId} />;
 });

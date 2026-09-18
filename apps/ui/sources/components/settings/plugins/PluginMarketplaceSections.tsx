@@ -5,6 +5,7 @@ import { useUnistyles } from 'react-native-unistyles';
 import type { PluginProjectionDiagnostic } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
 import { Text } from '@/components/ui/text/Text';
@@ -36,6 +37,9 @@ import {
 
 export function InstalledPluginsSection(props: Readonly<{
     installedPlugins: readonly InstalledPluginEntry[];
+    truthSettled: boolean;
+    unavailable: boolean;
+    onDiscover: () => void;
     canRunActions: boolean;
     isPluginActionInFlight: (pluginId: string) => boolean;
     onNavigateToPlugin: (pluginId: string) => void;
@@ -93,14 +97,21 @@ export function InstalledPluginsSection(props: Readonly<{
                         ) : null}
                     />
                 );
-            }) : (
+            }) : props.unavailable ? null : !props.truthSettled ? (
+                <Item
+                    testID="settings.plugins.marketplace.installed.loading"
+                    title={t('common.loading')}
+                    loading
+                    mode="info"
+                    showChevron={false}
+                />
+            ) : (
                 <Item
                     testID="settings.plugins.marketplace.installed.empty"
-                    title={t('deps.ui.notInstalled')}
-                    subtitle={t('settingsPlugins.emptySubtitle')}
+                    title={t('settingsPlugins.installedEmpty')}
+                    detail={t('settingsPlugins.views.discover')}
                     icon={<Icon name="archive" size={29} color={theme.colors.text.secondary} />}
-                    showChevron={false}
-                    mode="info"
+                    onPress={props.onDiscover}
                 />
             )}
         </ItemGroup>
@@ -505,19 +516,17 @@ export function DiscoverListingsSection(props: Readonly<{
     isPluginActionInFlight: (pluginId: string) => boolean;
     onAction: (request: PluginMarketplaceActionRequest) => void;
     onLoadMore: () => void;
+    onNavigateToPlugin: (pluginId: string) => void;
 }>) {
     const { theme } = useUnistyles();
+    const [expandedListings, setExpandedListings] = React.useState<ReadonlySet<string>>(() => new Set());
 
     return (
         <ItemGroup title={t('settingsPlugins.discoverTitle')}>
             {props.entries.map((entry) => {
                 const listingTestID = `settings.plugins.marketplace.entry.${entry.sourceId}.${entry.id}`;
                 const installed = props.installedPluginById.get(entry.id) ?? null;
-                // Enable/disable and update for something already installed
-                // belong to the installed record, which the Installed view and
-                // the detail screen own. Repeating them here would make the
-                // same plugin answerable from two places with different
-                // context, so an installed listing carries no action at all.
+                // Installed results navigate to their record; lifecycle actions stay there.
                 const canInstall = installed === null && entry.installable;
                 const executableRealms = entry.executableRealms.map((realm) => {
                     if (realm === 'daemon') return t('settingsPlugins.discover.executableRealm.daemon');
@@ -537,99 +546,132 @@ export function DiscoverListingsSection(props: Readonly<{
                     : entry.sourceKind === 'curated' && entry.reviewStatus === 'approved'
                         ? t('settingsPlugins.discover.reviewStatus.curated')
                         : t('settingsPlugins.discover.reviewStatus.unreviewed');
-                const leadingDescription = installed
-                    ? t('deps.ui.installedWithVersion', { version: installed.version })
-                    : entry.description;
-                return (
-                    <Item
-                        key={`${entry.sourceId}:${entry.id}`}
-                        testID={listingTestID}
-                        title={entry.title}
-                        subtitle={(
-                            <Text testID={`settings.plugins.marketplace.source.${entry.sourceId}.${entry.id}`}>
-                                {leadingDescription ? <>{leadingDescription}{'\n'}</> : null}
-                                {t('settingsPlugins.discover.publisherLabel', {
-                                    displayName: entry.publisher.displayName,
-                                    id: entry.publisher.id,
+                const metadata = (
+                    <Text testID={`settings.plugins.marketplace.source.${entry.sourceId}.${entry.id}`}>
+                        {t('settingsPlugins.discover.publisherLabel', {
+                            displayName: entry.publisher.displayName,
+                            id: entry.publisher.id,
+                        })}
+                        {entry.categories.length > 0 ? (
+                            <>
+                                {' · '}
+                                {t('settingsPlugins.discover.categories', {
+                                    values: entry.categories.join(', '),
                                 })}
-                                {entry.categories.length > 0 ? (
-                                    <>
-                                        {' · '}
-                                        {t('settingsPlugins.discover.categories', {
-                                            values: entry.categories.join(', '),
-                                        })}
-                                    </>
-                                ) : null}
-                                {'\n'}
-                                {(executableRealms.length > 0 || platforms.length > 0)
-                                    ? (
-                                        <>
-                                            {t('settingsPlugins.discover.runtimeSummary', {
-                                                realms: executableRealms.join(', ') || t('settingsPlugins.installReviewSections.none'),
-                                                platforms: platforms.join(', ') || t('settingsPlugins.installReviewSections.none'),
-                                            })}
-                                            {' · '}
-                                        </>
-                                    )
-                                    : null}
-                                {t('settingsPlugins.discoveredVia', { source: entry.sourceTitle })}
-                            </Text>
-                        )}
-                        subtitleLines={0}
-                        subtitleAccessory={(
-                            <StatusPill
-                                testID={`settings.plugins.marketplace.reviewStatus.${entry.sourceId}.${entry.id}`}
-                                chrome="plain"
-                                labelVariant="phrase"
-                                variant={entry.warning === undefined ? 'info' : 'warning'}
-                                label={reviewStatusLabel}
-                            />
-                        )}
-                        detail={formatCatalogEntryVersion(entry.version)}
-                        icon={entry.warning !== undefined
-                            ? (
-                                <Icon
-                                    name={entry.warning === 'withdrawn' ? 'warning' : 'shield'}
-                                    size={29}
-                                    color={theme.colors.state.warning.foreground}
-                                />
-                            )
-                            : <Icon name="stack" size={29} color={theme.colors.text.secondary} />}
-                        showChevron={false}
-                        mode="info"
-                        rightElementOutsidePressable={canInstall}
-                        rightElement={canInstall ? (
-                            <ItemRowActions
-                                title={entry.title}
-                                compactActionIds={['install']}
-                                overflowTriggerTestID={`${listingTestID}.actions.overflow`}
-                                actions={[{
-                                    id: 'install',
-                                    title: t('settingsPlugins.installAndTrust'),
-                                    // The control is an icon in a list of
-                                    // near-identical rows, so its accessible
-                                    // name names the listing it installs.
-                                    accessibilityLabel: buildActionRowAccessibilityLabel([
-                                        t('settingsPlugins.installAndTrust'),
-                                        entry.title,
-                                        entry.sourceTitle,
-                                    ]),
-                                    subtitle: t('settingsPlugins.discover.installSubtitle', { source: entry.sourceTitle }),
-                                    icon: 'download',
-                                    color: theme.colors.accent.blue,
-                                    inlineTestID: `settings.plugins.marketplace.action.install.${entry.sourceId}.${entry.id}`,
-                                    disabled: !props.canRunActions
-                                        || props.isPluginActionInFlight(entry.id)
-                                        || props.loading,
-                                    onPress: () => props.onAction({
-                                        method: 'install',
-                                        pluginId: entry.id,
-                                        sourceId: entry.sourceId,
-                                    }),
-                                }]}
-                            />
+                            </>
                         ) : null}
-                    />
+                        {'\n'}
+                        {(executableRealms.length > 0 || platforms.length > 0)
+                            ? (
+                                <>
+                                    {t('settingsPlugins.discover.runtimeSummary', {
+                                        realms: executableRealms.join(', ') || t('settingsPlugins.installReviewSections.none'),
+                                        platforms: platforms.join(', ') || t('settingsPlugins.installReviewSections.none'),
+                                    })}
+                                    {' · '}
+                                </>
+                            )
+                            : null}
+                        {t('settingsPlugins.discoveredVia', { source: entry.sourceTitle })}
+                    </Text>
+                );
+                return (
+                    <React.Fragment key={`${entry.sourceId}:${entry.id}`}>
+                        <Item
+                            testID={listingTestID}
+                            title={entry.title}
+                            subtitle={entry.description}
+                            subtitleLines={0}
+                            subtitleAccessory={(
+                                <StatusPill
+                                    testID={`settings.plugins.marketplace.reviewStatus.${entry.sourceId}.${entry.id}`}
+                                    chrome="plain"
+                                    labelVariant="phrase"
+                                    variant={entry.warning === undefined ? 'info' : 'warning'}
+                                    label={reviewStatusLabel}
+                                />
+                            )}
+                            detail={formatCatalogEntryVersion(entry.version)}
+                            icon={entry.warning !== undefined
+                                ? (
+                                    <Icon
+                                        name={entry.warning === 'withdrawn' ? 'warning' : 'shield'}
+                                        size={29}
+                                        color={theme.colors.state.warning.foreground}
+                                    />
+                                )
+                                : <Icon name="stack" size={29} color={theme.colors.text.secondary} />}
+                            showChevron={false}
+                            mode="info"
+                            rightElementOutsidePressable={canInstall || installed !== null}
+                            rightElement={installed ? (
+                                <ItemRowActions
+                                    title={entry.title}
+                                    compactActionIds={['manage']}
+                                    overflowTriggerTestID={`${listingTestID}.actions.overflow`}
+                                    actions={[{
+                                        id: 'manage',
+                                        title: t('settingsPlugins.managePlugin'),
+                                        accessibilityLabel: buildActionRowAccessibilityLabel([t('settingsPlugins.managePlugin'), entry.title]),
+                                        icon: 'gear',
+                                        inlineTestID: `settings.plugins.marketplace.action.manage.${entry.sourceId}.${entry.id}`,
+                                        onPress: () => props.onNavigateToPlugin(entry.id),
+                                    }]}
+                                />
+                            ) : canInstall ? (
+                                <ItemRowActions
+                                    title={entry.title}
+                                    compactActionIds={['install']}
+                                    overflowTriggerTestID={`${listingTestID}.actions.overflow`}
+                                    actions={[{
+                                        id: 'install',
+                                        title: t('settingsPlugins.installAndTrust'),
+                                        // The control is an icon in a list of
+                                        // near-identical rows, so its accessible
+                                        // name names the listing it installs.
+                                        accessibilityLabel: buildActionRowAccessibilityLabel([
+                                            t('settingsPlugins.installAndTrust'),
+                                            entry.title,
+                                            entry.sourceTitle,
+                                        ]),
+                                        subtitle: t('settingsPlugins.discover.installSubtitle', { source: entry.sourceTitle }),
+                                        icon: 'download',
+                                        color: theme.colors.accent.blue,
+                                        inlineTestID: `settings.plugins.marketplace.action.install.${entry.sourceId}.${entry.id}`,
+                                        disabled: !props.canRunActions
+                                            || props.isPluginActionInFlight(entry.id)
+                                            || props.loading,
+                                        onPress: () => props.onAction({
+                                            method: 'install',
+                                            pluginId: entry.id,
+                                            sourceId: entry.sourceId,
+                                        }),
+                                    }]}
+                                />
+                            ) : null}
+                        />
+                        <ExpandableItem
+                            expanded={expandedListings.has(listingTestID)}
+                            onExpandedChange={(expanded) => setExpandedListings((current) => {
+                                const next = new Set(current);
+                                if (expanded) next.add(listingTestID);
+                                else next.delete(listingTestID);
+                                return next;
+                            })}
+                            header={({ headerProps, expanded }) => (
+                                <Item
+                                    {...headerProps}
+                                    testID={`${listingTestID}.details`}
+                                    title={t('common.details')}
+                                    accessibilityLabel={buildActionRowAccessibilityLabel([t('common.details'), entry.title, entry.sourceTitle])}
+                                    showChevron={false}
+                                    rightElement={<Icon name={expanded ? 'caret-up' : 'caret-down'} size={20} color={theme.colors.text.secondary} />}
+                                />
+                            )}
+                        >
+                            <Item title={t('settingsPlugins.provenanceTitle')} subtitle={metadata} subtitleLines={0} mode="info" showChevron={false} />
+                        </ExpandableItem>
+                    </React.Fragment>
                 );
             })}
             {props.canLoadMore ? (

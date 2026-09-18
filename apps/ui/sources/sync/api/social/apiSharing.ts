@@ -1,15 +1,18 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { backoff } from '@/utils/timing/time';
 import { serverFetch } from '@/sync/http/client';
-import { createSessionSocialRequest } from '@/sync/api/social/createSessionSocialRequest';
+import { createSessionSocialRequest, type SessionSocialRequestOptions } from '@/sync/api/social/createSessionSocialRequest';
 import {
-    SessionShare,
-    SessionShareResponse,
-    SessionSharesResponse,
-    CreateSessionShareRequest,
-    PublicSessionShare,
-    PublicShareResponse,
-    CreatePublicShareRequest,
+    ReleasedDirectSessionShareCreateRequestV1Schema,
+    ReleasedDirectSessionShareDeleteResponseV1Schema,
+    ReleasedDirectSessionSharePatchRequestV1Schema,
+    ReleasedDirectSessionShareResponseV1Schema,
+    ReleasedDirectSessionSharesResponseV1Schema,
+    type ReleasedDirectSessionShareCreateRequestV1,
+    type ReleasedDirectSessionSharePatchRequestV1,
+    type ReleasedDirectSessionShareV1,
+} from '@happier-dev/protocol';
+import {
     AccessPublicShareResponse,
     PublicShareAccessLogsResponse,
     ShareNotFoundError,
@@ -17,6 +20,22 @@ import {
     ConsentRequiredError,
     SessionSharingError
 } from '@/sync/domains/social/sharingTypes';
+
+function terminalDirectShareError<T extends Error>(error: T): T & { readonly retryable: false } {
+    return Object.assign(error, { retryable: false as const });
+}
+
+async function readDirectShareErrorMessage(response: Response, fallback: string): Promise<string> {
+    try {
+        const body: unknown = await response.json();
+        if (body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string') {
+            return (body as { error: string }).error;
+        }
+    } catch {
+        // The status remains authoritative when an older server has no JSON body.
+    }
+    return fallback;
+}
 
 /**
  * Get all shares for a session
@@ -34,22 +53,25 @@ import {
  */
 export async function getSessionShares(
     credentials: AuthCredentials,
-    sessionId: string
-): Promise<SessionShare[]> {
-    return await backoff(async () => {
-        const request = createSessionSocialRequest(credentials, sessionId);
+    sessionId: string,
+    options?: SessionSocialRequestOptions
+): Promise<ReleasedDirectSessionShareV1[]> {
+    const response = await backoff(async () => {
+        const request = createSessionSocialRequest(credentials, sessionId, options);
         const response = await request(`/v1/sessions/${sessionId}/shares`, { method: 'GET' });
 
         if (!response.ok) {
             if (response.status === 403) {
-                throw new SessionSharingError('Forbidden');
+                throw terminalDirectShareError(new SessionSharingError('Forbidden'));
+            }
+            if (response.status === 400 || response.status === 404) {
+                throw terminalDirectShareError(new Error(`Failed to get session shares: ${response.status}`));
             }
             throw new Error(`Failed to get session shares: ${response.status}`);
         }
-
-        const data: SessionSharesResponse = await response.json();
-        return data.shares;
+        return response;
     });
+    return ReleasedDirectSessionSharesResponseV1Schema.parse(await response.json()).shares;
 }
 
 /**
@@ -73,33 +95,39 @@ export async function getSessionShares(
 export async function createSessionShare(
     credentials: AuthCredentials,
     sessionId: string,
-    request: CreateSessionShareRequest
-): Promise<SessionShare> {
-    return await backoff(async () => {
-        const scopedRequest = createSessionSocialRequest(credentials, sessionId);
+    request: ReleasedDirectSessionShareCreateRequestV1,
+    options?: SessionSocialRequestOptions
+): Promise<ReleasedDirectSessionShareV1> {
+    const body = ReleasedDirectSessionShareCreateRequestV1Schema.parse(request);
+    const response = await backoff(async () => {
+        const scopedRequest = createSessionSocialRequest(credentials, sessionId, options);
         const response = await scopedRequest(`/v1/sessions/${sessionId}/shares`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify(request)
+            body: JSON.stringify(body)
         });
 
         if (!response.ok) {
             if (response.status === 403) {
-                const error = await response.json();
-                throw new SessionSharingError(error.error || 'Forbidden');
+                throw terminalDirectShareError(new SessionSharingError(
+                    await readDirectShareErrorMessage(response, 'Forbidden'),
+                ));
             }
             if (response.status === 400) {
-                const error = await response.json();
-                throw new SessionSharingError(error.error || 'Bad request');
+                throw terminalDirectShareError(new SessionSharingError(
+                    await readDirectShareErrorMessage(response, 'Bad request'),
+                ));
+            }
+            if (response.status === 404) {
+                throw terminalDirectShareError(new Error('Failed to create session share: 404'));
             }
             throw new Error(`Failed to create session share: ${response.status}`);
         }
-
-        const data: SessionShareResponse = await response.json();
-        return data.share;
+        return response;
     });
+    return ReleasedDirectSessionShareResponseV1Schema.parse(await response.json()).share;
 }
 
 /**
@@ -121,31 +149,37 @@ export async function updateSessionShare(
     credentials: AuthCredentials,
     sessionId: string,
     shareId: string,
-    patch: { accessLevel?: 'view' | 'edit' | 'admin'; canApprovePermissions?: boolean }
-): Promise<SessionShare> {
-    return await backoff(async () => {
-        const request = createSessionSocialRequest(credentials, sessionId);
+    patch: ReleasedDirectSessionSharePatchRequestV1,
+    options?: SessionSocialRequestOptions
+): Promise<ReleasedDirectSessionShareV1> {
+    const body = ReleasedDirectSessionSharePatchRequestV1Schema.parse(patch);
+    const response = await backoff(async () => {
+        const request = createSessionSocialRequest(credentials, sessionId, options);
         const response = await request(`/v1/sessions/${sessionId}/shares/${shareId}`, {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify(patch)
+            body: JSON.stringify(body)
         });
 
         if (!response.ok) {
             if (response.status === 403) {
-                throw new SessionSharingError('Forbidden');
+                throw terminalDirectShareError(new SessionSharingError('Forbidden'));
             }
             if (response.status === 404) {
-                throw new ShareNotFoundError();
+                throw terminalDirectShareError(new ShareNotFoundError());
+            }
+            if (response.status === 400) {
+                throw terminalDirectShareError(new SessionSharingError(
+                    await readDirectShareErrorMessage(response, 'Bad request'),
+                ));
             }
             throw new Error(`Failed to update session share: ${response.status}`);
         }
-
-        const data: SessionShareResponse = await response.json();
-        return data.share;
+        return response;
     });
+    return ReleasedDirectSessionShareResponseV1Schema.parse(await response.json()).share;
 }
 
 /**
@@ -165,109 +199,30 @@ export async function updateSessionShare(
 export async function deleteSessionShare(
     credentials: AuthCredentials,
     sessionId: string,
-    shareId: string
+    shareId: string,
+    options?: SessionSocialRequestOptions
 ): Promise<void> {
-    return await backoff(async () => {
-        const request = createSessionSocialRequest(credentials, sessionId);
+    const response = await backoff(async () => {
+        const request = createSessionSocialRequest(credentials, sessionId, options);
         const response = await request(`/v1/sessions/${sessionId}/shares/${shareId}`, { method: 'DELETE' });
 
         if (!response.ok) {
             if (response.status === 403) {
-                throw new SessionSharingError('Forbidden');
+                throw terminalDirectShareError(new SessionSharingError('Forbidden'));
             }
             if (response.status === 404) {
-                throw new ShareNotFoundError();
+                throw terminalDirectShareError(new ShareNotFoundError());
+            }
+            if (response.status === 400) {
+                throw terminalDirectShareError(new SessionSharingError(
+                    await readDirectShareErrorMessage(response, 'Bad request'),
+                ));
             }
             throw new Error(`Failed to delete session share: ${response.status}`);
         }
+        return response;
     });
-}
-
-/**
- * Create or update a public share link for a session
- *
- * @param credentials - User authentication credentials
- * @param sessionId - ID of the session to share publicly
- * @param request - Public share configuration (expiration, limits, consent)
- * @returns The created or updated public share with its token
- * @throws {SessionSharingError} If the user doesn't have permission
- * @throws {Error} For other API errors
- *
- * @remarks
- * Only the session owner can create public shares. Public shares are always
- * read-only for security. If a public share already exists for the session,
- * it will be updated with the new settings.
- *
- * The returned `token` can be used to construct a public URL for sharing.
- */
-export async function createPublicShare(
-    credentials: AuthCredentials,
-    sessionId: string,
-    request: CreatePublicShareRequest & { token: string }
-): Promise<PublicSessionShare> {
-    return await backoff(async () => {
-        const scopedRequest = createSessionSocialRequest(credentials, sessionId);
-        const response = await scopedRequest(`/v1/sessions/${sessionId}/public-share`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(request)
-        });
-
-        if (!response.ok) {
-            if (response.status === 403) {
-                throw new SessionSharingError('Forbidden');
-            }
-            throw new Error(`Failed to create public share: ${response.status}`);
-        }
-
-        const data: PublicShareResponse = await response.json();
-        return data.publicShare;
-    });
-}
-
-/**
- * Get public share info for a session
- */
-export async function getPublicShare(
-    credentials: AuthCredentials,
-    sessionId: string
-): Promise<PublicSessionShare | null> {
-    return await backoff(async () => {
-        const request = createSessionSocialRequest(credentials, sessionId);
-        const response = await request(`/v1/sessions/${sessionId}/public-share`, { method: 'GET' });
-
-        if (!response.ok) {
-            if (response.status === 403) {
-                throw new SessionSharingError('Forbidden');
-            }
-            throw new Error(`Failed to get public share: ${response.status}`);
-        }
-
-        const data: PublicShareResponse = await response.json();
-        return data.publicShare;
-    });
-}
-
-/**
- * Delete public share (disable public link)
- */
-export async function deletePublicShare(
-    credentials: AuthCredentials,
-    sessionId: string
-): Promise<void> {
-    return await backoff(async () => {
-        const request = createSessionSocialRequest(credentials, sessionId);
-        const response = await request(`/v1/sessions/${sessionId}/public-share`, { method: 'DELETE' });
-
-        if (!response.ok) {
-            if (response.status === 403) {
-                throw new SessionSharingError('Forbidden');
-            }
-            throw new Error(`Failed to delete public share: ${response.status}`);
-        }
-    });
+    ReleasedDirectSessionShareDeleteResponseV1Schema.parse(await response.json());
 }
 
 /**
@@ -339,7 +294,8 @@ export async function accessPublicShare(
 export async function getPublicShareAccessLogs(
     credentials: AuthCredentials,
     sessionId: string,
-    limit?: number
+    limit?: number,
+    options?: SessionSocialRequestOptions
 ): Promise<PublicShareAccessLogsResponse> {
     return await backoff(async () => {
         const query = new URLSearchParams();
@@ -350,7 +306,7 @@ export async function getPublicShareAccessLogs(
             ? `/v1/sessions/${sessionId}/public-share/access-logs?${query.toString()}`
             : `/v1/sessions/${sessionId}/public-share/access-logs`;
 
-        const request = createSessionSocialRequest(credentials, sessionId);
+        const request = createSessionSocialRequest(credentials, sessionId, options);
         const response = await request(requestPath, { method: 'GET' });
 
         if (!response.ok) {

@@ -25,6 +25,7 @@ type SettingsRouteChromeDefinition = Readonly<{
 const SETTINGS_ROUTE_CHROME_DEFINITIONS: readonly SettingsRouteChromeDefinition[] = [
     { name: 'index', titleKey: 'settings.title', headerBackTitleKey: 'common.home' },
     { name: 'account', titleKey: 'settings.account' },
+    { name: 'account/security', titleKey: 'settingsAccount.security', headerBackTitleKey: 'settings.account' },
     { name: 'account/api-tokens', titleKey: 'settingsApiTokens.title' },
     { name: 'acp-backend', titleKey: 'settings.acpCatalogBackendEditorTitle' },
     { name: 'acp', titleKey: 'settings.acpCatalog' },
@@ -52,10 +53,24 @@ const SETTINGS_ROUTE_CHROME_DEFINITIONS: readonly SettingsRouteChromeDefinition[
     { name: 'diagnosis', titleKey: 'diagnosis.title' },
     { name: 'features', titleKey: 'settings.features' },
     { name: 'external-sessions', titleKey: 'externalSessions.settingsTitle' },
+    { name: 'home/index', titleKey: 'homeGovernance.title' },
+    { name: 'home/[serverId]/index', titleKey: 'homeGovernance.title' },
+    { name: 'home/[serverId]/people', titleKey: 'homeGovernance.people' },
+    { name: 'home/[serverId]/people/[accountId]', titleKey: 'homeGovernance.people' },
+    { name: 'home/[serverId]/policies', titleKey: 'homeGovernance.policies' },
+    { name: 'home/[serverId]/teams', titleKey: 'homeGovernance.teams' },
+    { name: 'home/[serverId]/policies/identity/new', titleKey: 'identityAdministration.createTitle' },
+    { name: 'home/[serverId]/policies/identity/[providerId]/index', titleKey: 'identityAdministration.title' },
+    { name: 'home/[serverId]/policies/identity/[providerId]/edit', titleKey: 'identityAdministration.editTitle' },
+    { name: 'home/[serverId]/policies/github-apps/new', titleKey: 'identityAdministration.githubAppCreateTitle' },
+    { name: 'home/[serverId]/policies/github-apps/[registrationId]/index', titleKey: 'identityAdministration.githubApps' },
+    { name: 'home/[serverId]/policies/github-apps/[registrationId]/edit', titleKey: 'identityAdministration.githubAppEditTitle' },
     { name: 'keyboard', titleKey: 'settingsKeyboard.title' },
     { name: 'language', titleKey: 'settingsLanguage.currentLanguage' },
     { name: 'machines', titleKey: 'settings.machines' },
     { name: 'machines/add', titleKey: 'settings.addMachine' },
+    { name: 'machines/pools/[poolId]', titleKey: 'machinePools.title' },
+    { name: 'machines/pools/new', titleKey: 'machinePools.add' },
     { name: 'machines/this-computer', titleKey: 'settings.machineSetupCurrentMachineTitle' },
     { name: 'mcp-server', titleKey: 'settings.mcpServersEditorTitle' },
     { name: 'mcp', titleKey: 'settings.mcpServers' },
@@ -120,6 +135,40 @@ const SETTINGS_ROUTE_CHROME_DEFINITIONS: readonly SettingsRouteChromeDefinition[
     { name: 'source-control', titleKey: 'navigation.sourceControl' },
     { name: 'sub-agent', titleKey: 'subAgentGuidance.settings.groupTitle' },
     { name: 'system-status', titleKey: 'settings.systemStatus' },
+    { name: 'teams/index', titleKey: 'teams.title' },
+    { name: 'teams/new', titleKey: 'teams.create.title' },
+    { name: 'teams/[serverId]/[teamId]/index', titleKey: 'teams.title' },
+    { name: 'teams/[serverId]/[teamId]/members/index', titleKey: 'teams.tabs.members' },
+    { name: 'teams/[serverId]/[teamId]/members/add', titleKey: 'teams.tabs.members' },
+    { name: 'teams/[serverId]/[teamId]/members/[membershipId]', titleKey: 'teams.tabs.members' },
+    { name: 'teams/[serverId]/[teamId]/groups/index', titleKey: 'teams.tabs.groups' },
+    { name: 'teams/[serverId]/[teamId]/groups/new', titleKey: 'teams.tabs.groups' },
+    { name: 'teams/[serverId]/[teamId]/groups/[groupId]', titleKey: 'teams.tabs.groups' },
+    { name: 'teams/[serverId]/[teamId]/invitations/index', titleKey: 'teams.tabs.invitations' },
+    { name: 'teams/[serverId]/[teamId]/invitations/new', titleKey: 'teams.tabs.invitations' },
+    { name: 'teams/[serverId]/[teamId]/settings', titleKey: 'teams.tabs.settings' },
+    { name: 'teams/[serverId]/[teamId]/authentication', titleKey: 'teams.tabs.authentication' },
+    { name: 'teams/[serverId]/[teamId]/authentication/new', titleKey: 'identityAdministration.add' },
+    { name: 'teams/[serverId]/[teamId]/authentication/github-apps/[registrationId]/index', titleKey: 'identityAdministration.githubApps' },
+    { name: 'teams/[serverId]/[teamId]/authentication/github-apps/[registrationId]/edit', titleKey: 'identityAdministration.githubAppEditTitle' },
+    { name: 'teams/[serverId]/[teamId]/authentication/directory', titleKey: 'teams.authentication.directory.title' },
+    { name: 'teams/[serverId]/[teamId]/authentication/directory/[sourceId]', titleKey: 'teams.authentication.directory.title' },
+    { name: 'teams/[serverId]/[teamId]/authentication/[connectionId]', titleKey: 'teams.tabs.authentication' },
+    { name: 'teams/[serverId]/[teamId]/authentication/[connectionId]/edit', titleKey: 'identityAdministration.editTitle' },
+    // Lane 10 shared credentials. Every destination the credential surfaces
+    // navigate to is registered here, so a route reached by ordinary navigation
+    // carries the same header, Back title and chrome as the rest of Settings
+    // instead of falling back to the raw Expo Router segment.
+    { name: 'teams/[serverId]/[teamId]/credentials/index', titleKey: 'teams.credentials.title' },
+    { name: 'teams/[serverId]/[teamId]/credentials/new', titleKey: 'teams.credentials.create.title' },
+    { name: 'teams/[serverId]/[teamId]/credentials/[resourceId]/index', titleKey: 'teams.credentials.title' },
+    { name: 'teams/[serverId]/[teamId]/credentials/[resourceId]/edit', titleKey: 'teams.credentials.edit.title' },
+    { name: 'teams/[serverId]/[teamId]/credentials/[resourceId]/access', titleKey: 'teams.credentials.audience.title' },
+    { name: 'teams/[serverId]/[teamId]/credentials/[resourceId]/request-policy', titleKey: 'teams.credentials.requestPolicy.title' },
+    { name: 'teams/[serverId]/[teamId]/credentials/[resourceId]/activity', titleKey: 'teams.credentials.activity.title' },
+    { name: 'teams/[serverId]/[teamId]/credentials/[resourceId]/limits', titleKey: 'teams.credentials.limits.title' },
+    { name: 'teams/[serverId]/[teamId]/credentials/[resourceId]/usage', titleKey: 'teams.credentials.usage.title' },
+    { name: 'teams/[serverId]/[teamId]/credentials/[resourceId]/external-api', titleKey: 'teams.credentials.externalApi.title' },
     { name: 'usage', titleKey: 'settings.usage' },
     { name: 'voice', titleKey: 'settings.voiceAssistant' },
     { name: 'voice/dictation', titleKey: 'settingsVoice.intents.dictation.title' },
@@ -134,6 +183,36 @@ export function resolveSettingsRouteParentPathname(pathname: string | null | und
     const normalizedPathname = pathname.trim().replace(/\/+$/, '') || '/';
     if (normalizedPathname === '/settings') return null;
     if (!normalizedPathname.startsWith('/settings/')) return null;
+
+    // `identity` and `github-apps` are organizational route segments, not
+    // mounted list screens. Their create/detail screens are reached from the
+    // Home Policies document, so parent navigation must return there instead
+    // of constructing a URL that Expo Router cannot render. Edit screens still
+    // use their mounted detail screen as the immediate parent.
+    const segments = normalizedPathname.split('/');
+    if (
+        segments.length === 7
+        && segments[1] === 'settings'
+        && segments[2] === 'home'
+        && segments[4] === 'policies'
+        && (segments[5] === 'identity' || segments[5] === 'github-apps')
+    ) {
+        return segments.slice(0, 5).join('/');
+    }
+
+    // Team GitHub App details are reached from the mounted Authentication
+    // screen; `github-apps` is only an organizational segment and has no index
+    // route of its own. An editor does have the detail screen as its parent and
+    // therefore continues through the generic one-segment fallback below.
+    if (
+        segments.length === 8
+        && segments[1] === 'settings'
+        && segments[2] === 'teams'
+        && segments[5] === 'authentication'
+        && segments[6] === 'github-apps'
+    ) {
+        return segments.slice(0, 6).join('/');
+    }
 
     const parentPathname = normalizedPathname.slice(0, normalizedPathname.lastIndexOf('/'));
     return parentPathname === '' ? '/settings' : parentPathname;

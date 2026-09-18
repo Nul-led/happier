@@ -103,7 +103,8 @@ const SESSION_WITH_MACHINE = {
 const MESSAGE_ITEM = { id: 'm1', kind: 'message' as const, messageId: 'm1', seq: 1, createdAt: 1 };
 const DRAFT = {
     id: 'd1',
-    sessionId: 's1',
+    address: { serverId: 'server-a', sessionId: 's1' },
+    accountId: 'account-a',
     actionId: 'review.start',
     createdAt: 1_000,
     status: 'editing' as const,
@@ -170,7 +171,7 @@ describe('transcript items pipeline — action-draft option key locality', () =>
         // earlier file in the same worker left in the store.
         await writeStore({
             settings: { backendEnabledByTargetKey: {}, transcriptScrollPinEnabled: true },
-            actionDraftsBySessionId: { s1: [DRAFT] },
+            sessionActionDraftsByAddressKey: { '["server-a","s1"]': [DRAFT] },
         });
 
         let pipelineRuns = 0;
@@ -237,7 +238,7 @@ describe('transcript items pipeline — action-draft option key locality', () =>
         expect(afterRemoval.messageKey).toBe(baseline.messageKey);
 
         await hook.unmount();
-        await writeStore({ settings: { backendEnabledByTargetKey: {}, transcriptScrollPinEnabled: true }, actionDraftsBySessionId: {} });
+        await writeStore({ settings: { backendEnabledByTargetKey: {}, transcriptScrollPinEnabled: true }, sessionActionDraftsByAddressKey: {} });
     });
 
     it('never enables the capabilities boundary for a session with no draft row', async () => {
@@ -247,7 +248,7 @@ describe('transcript items pipeline — action-draft option key locality', () =>
         // that exact false pass was observed while proving this test, 2026-08-11.
         await writeStore({
             settings: { backendEnabledByTargetKey: {} },
-            actionDraftsBySessionId: {},
+            sessionActionDraftsByAddressKey: {},
             sessions: { s1: { id: 's1', metadata: { machineId: 'machine-1' } } },
         });
 
@@ -258,11 +259,11 @@ describe('transcript items pipeline — action-draft option key locality', () =>
         // ...and the gate is a gate, not a constant: adding a draft to the SAME session turns the
         // same boundary on, so this is not passing merely because nothing was ever wired up.
         machineCapabilitiesCalls.length = 0;
-        await writeStore({ actionDraftsBySessionId: { s1: [DRAFT] } });
+        await writeStore({ sessionActionDraftsByAddressKey: { '["server-a","s1"]': [DRAFT] } });
         expect(machineCapabilitiesCalls.some((call) => call.enabled === true)).toBe(true);
 
         await hook.unmount();
-        await writeStore({ actionDraftsBySessionId: {}, sessions: {} });
+        await writeStore({ sessionActionDraftsByAddressKey: {}, sessions: {} });
     });
 
     it('re-keys the draft row when the CAPABILITIES SNAPSHOT adds or renames an option row', async () => {
@@ -274,7 +275,7 @@ describe('transcript items pipeline — action-draft option key locality', () =>
         expect(CANONICAL_AGENT_IDS as readonly string[]).not.toContain(REPORTED_ONLY_BACKEND_ID);
         await writeStore({
             settings: { backendEnabledByTargetKey: {}, transcriptScrollPinEnabled: true },
-            actionDraftsBySessionId: { s1: [DRAFT] },
+            sessionActionDraftsByAddressKey: { '["server-a","s1"]': [DRAFT] },
             sessions: SESSION_WITH_MACHINE,
         });
 
@@ -336,7 +337,7 @@ describe('transcript items pipeline — action-draft option key locality', () =>
         // signature that sorted the option pairs would therefore be an equivalent mutant here, not a
         // survivor; the add and rename channels above are the ones the machine can actually move.
         await hook.unmount();
-        await writeStore({ actionDraftsBySessionId: {}, sessions: {} });
+        await writeStore({ sessionActionDraftsByAddressKey: {}, sessions: {} });
     });
 
     it('holds the row-height resolver across a snapshot change that only flips availability', async () => {
@@ -347,7 +348,7 @@ describe('transcript items pipeline — action-draft option key locality', () =>
         // measurement instead of a tautology: it proves the snapshot really did change.
         await writeStore({
             settings: { backendEnabledByTargetKey: {}, transcriptScrollPinEnabled: true },
-            actionDraftsBySessionId: { s1: [DRAFT] },
+            sessionActionDraftsByAddressKey: { '["server-a","s1"]': [DRAFT] },
             sessions: SESSION_WITH_MACHINE,
         });
         reportedBackends.current = {
@@ -390,7 +391,7 @@ describe('transcript items pipeline — action-draft option key locality', () =>
         expect(afterAvailabilityFlip.draftKey).toBe(baseline.draftKey);
 
         await hook.unmount();
-        await writeStore({ actionDraftsBySessionId: {}, sessions: {} });
+        await writeStore({ sessionActionDraftsByAddressKey: {}, sessions: {} });
     });
 
     it('does not re-render for a session-record write that cannot change the option list', async () => {
@@ -400,7 +401,7 @@ describe('transcript items pipeline — action-draft option key locality', () =>
         // every unrelated session-field write re-ran the option hook: MEASURED at 1 render per write.
         await writeStore({
             settings: { backendEnabledByTargetKey: {}, transcriptScrollPinEnabled: true },
-            actionDraftsBySessionId: { s1: [DRAFT] },
+            sessionActionDraftsByAddressKey: { '["server-a","s1"]': [DRAFT] },
             sessions: { s1: { id: 's1', metadata: { machineId: 'machine-1' }, updatedAt: 1 } },
         });
 
@@ -428,6 +429,6 @@ describe('transcript items pipeline — action-draft option key locality', () =>
         expect(hookRuns - runsAtBaseline).toBe(1);
 
         await hook.unmount();
-        await writeStore({ actionDraftsBySessionId: {}, sessions: {} });
+        await writeStore({ sessionActionDraftsByAddressKey: {}, sessions: {} });
     });
 });

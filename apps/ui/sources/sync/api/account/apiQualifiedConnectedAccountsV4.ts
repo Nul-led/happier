@@ -28,6 +28,7 @@ import type { z } from 'zod';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import {
   serverFetch,
+  type ServerFetch,
   type ExpectedActiveServerFetchBasis,
 } from '@/sync/http/client';
 import { HappyError } from '@/utils/errors/errors';
@@ -46,9 +47,10 @@ async function readQualifiedSnapshot<T>(params: Readonly<{
   path: string;
   parse(value: unknown): T;
   expectedActiveServer?: ExpectedActiveServerFetchBasis;
+  request?: ServerFetch;
 }>): Promise<T> {
   return await backoff(async () => {
-    const response = await serverFetch(
+    const response = await (params.request ?? serverFetch)(
       params.path,
       {
         method: 'GET',
@@ -130,6 +132,7 @@ function structuredQuery<T>(
 export async function getQualifiedConnectedAccountCredentialV4(
   credentials: AuthCredentials,
   ref: QualifiedConnectedAccountRef,
+  opts?: Readonly<{ request?: ServerFetch }>,
 ): Promise<QualifiedConnectedAccountCredentialSnapshotV4> {
   const encoded = encodeURIComponent(
     encodeQualifiedConnectedAccountV4StructuredQueryValue(
@@ -142,6 +145,7 @@ export async function getQualifiedConnectedAccountCredentialV4(
     path: `/v4/connect/qualified/credential?ref=${encoded}`,
     parse: (value) =>
       QualifiedConnectedAccountCredentialSnapshotV4Schema.parse(value),
+    ...(opts?.request ? { request: opts.request } : {}),
   });
 }
 
@@ -166,6 +170,7 @@ export async function getQualifiedConnectedAccountGroupV4(
   params: Readonly<{
     group: QualifiedConnectedAccountGroupRef;
     expectedRuntimeStateRevision?: number;
+    request?: ServerFetch;
   }>,
 ): Promise<{ group: QualifiedConnectedAccountGroupV4 }> {
   const query = new URLSearchParams();
@@ -187,6 +192,7 @@ export async function getQualifiedConnectedAccountGroupV4(
     path: `/v4/connect/qualified/group?${query.toString()}`,
     parse: (value) =>
       QualifiedConnectedAccountGroupResponseV4Schema.parse(value),
+    ...(params.request ? { request: params.request } : {}),
   });
 }
 
@@ -398,6 +404,7 @@ export async function requestQualifiedConnectedAccountQuotaRefreshV4(
 export async function getQualifiedConnectedAccountConfigurationV4(
   credentials: AuthCredentials,
   ref: QualifiedConnectedAccountRef,
+  opts?: Readonly<{ request?: ServerFetch }>,
 ): Promise<QualifiedConnectedAccountConfigurationSnapshotV4> {
   const target = { kind: 'account' as const, ref };
   const encoded = encodeURIComponent(
@@ -413,5 +420,6 @@ export async function getQualifiedConnectedAccountConfigurationV4(
       QualifiedConnectedAccountConfigurationSnapshotV4Schema.parse(
         value,
       ),
+    ...(opts?.request ? { request: opts.request } : {}),
   });
 }

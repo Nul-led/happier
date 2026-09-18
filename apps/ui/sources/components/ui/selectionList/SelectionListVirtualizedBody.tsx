@@ -360,7 +360,7 @@ export function groupVirtualizedItemsIntoColumnRows(
 type FlatRowRenderContext = Readonly<{
     rootTestID: string | undefined;
     stepId: string;
-    selectedOptionId: string | null;
+    selectedOptionIds: ReadonlySet<string>;
     focusedOptionId: string | null;
     onSelect: (id: string, option: SelectionListOption) => void;
     onPushStep: (step: SelectionListStep) => void;
@@ -399,7 +399,7 @@ function renderVirtualizedOptionCell(
     rowIndex?: number,
 ): React.ReactElement {
     const dynStyles = selectionListDynamicRowStyles;
-    const isSelected = ctx.selectedOptionId === item.option.id;
+    const isSelected = ctx.selectedOptionIds.has(item.option.id);
     const isFocused = ctx.focusedOptionId !== null && ctx.focusedOptionId === item.option.id;
     const optionRow = (
         <PlanOptionRow
@@ -629,7 +629,7 @@ type SelectionListBodyVirtualizedProps = Readonly<{
     plan: ReadonlyArray<SectionRenderPlan>;
     virtualizedOptionSource?: SelectionListVirtualizedOptionSource;
     stepId: string;
-    selectedOptionId: string | null;
+    selectedOptionIds: ReadonlySet<string>;
     focusedOptionId: string | null;
     focusedOptionIndex?: number;
     onSelect: (id: string, option: SelectionListOption) => void;
@@ -733,7 +733,7 @@ function SelectionListBodyFlattenedVirtualized(props: SelectionListBodyVirtualiz
             renderVirtualizedListRow(item, {
                 rootTestID: props.rootTestID,
                 stepId: props.stepId,
-                selectedOptionId: props.selectedOptionId,
+                selectedOptionIds: props.selectedOptionIds,
                 focusedOptionId: props.focusedOptionId,
                 onSelect: props.onSelect,
                 onPushStep: props.onPushStep,
@@ -748,7 +748,7 @@ function SelectionListBodyFlattenedVirtualized(props: SelectionListBodyVirtualiz
         [
             props.rootTestID,
             props.stepId,
-            props.selectedOptionId,
+            props.selectedOptionIds,
             props.focusedOptionId,
             props.onSelect,
             props.onPushStep,
@@ -804,7 +804,7 @@ type DirectVirtualizedSourceRowContext = Readonly<{
     source: SelectionListVirtualizedOptionSource;
     rootTestID: string | undefined;
     stepId: string;
-    selectedOptionId: string | null;
+    selectedOptionIds: ReadonlySet<string>;
     focusedOptionId: string | null;
     onSelect: (id: string, option: SelectionListOption) => void;
     onPushStep: (step: SelectionListStep) => void;
@@ -846,7 +846,7 @@ function renderDirectVirtualizedSourceItem(
             option={option}
             rootTestID={ctx.rootTestID}
             stepId={ctx.stepId}
-            isSelected={ctx.selectedOptionId === option.id}
+            isSelected={ctx.selectedOptionIds.has(option.id)}
             isFocused={ctx.focusedOptionId !== null && ctx.focusedOptionId === option.id}
             onSelect={ctx.onSelect}
             onPushStep={ctx.onPushStep}
@@ -894,7 +894,7 @@ function SelectionListBodyDirectVirtualizedSource(props: SelectionListBodyVirtua
             source,
             rootTestID: props.rootTestID,
             stepId: props.stepId,
-            selectedOptionId: props.selectedOptionId,
+            selectedOptionIds: props.selectedOptionIds,
             focusedOptionId: props.focusedOptionId,
             onSelect: props.onSelect,
             onPushStep: props.onPushStep,
@@ -906,7 +906,7 @@ function SelectionListBodyDirectVirtualizedSource(props: SelectionListBodyVirtua
             sourceStateKey,
             props.rootTestID,
             props.stepId,
-            props.selectedOptionId,
+            props.selectedOptionIds,
             props.focusedOptionId,
             props.onSelect,
             props.onPushStep,

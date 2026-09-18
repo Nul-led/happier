@@ -35,6 +35,7 @@ import {
     shouldShowSidechainHydrationInlineStatus,
 } from './SidechainHydrationInlineStatus';
 import { buildToolCallMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { Typography } from '@/constants/Typography';
 import { isGenericSubAgentToolName, isSubAgentTranscriptToolName } from '@happier-dev/protocol/tools/v2';
 import { resolveInactiveSessionToolCallFailure } from '../permissions/resolveInactiveSessionToolCallFailure';
@@ -50,6 +51,8 @@ import {
     TranscriptRowSeqProvider,
     useHistoricalTranscriptAgentId,
 } from '@/components/sessions/transcript/attribution/SessionTranscriptAgentAttributionContext';
+import { SessionBoardActionResultReference } from '@/components/sessions/transcript/references/SessionBoardActionResultReference';
+import { WorkflowRunActionResultReference } from '@/components/sessions/transcript/references/WorkflowRunActionResultReference';
 
 const TOOL_VIEW_HIGHLIGHT_RADIUS = 12;
 
@@ -59,6 +62,7 @@ interface ToolViewProps {
     messages?: Message[];
     onPress?: () => void;
     sessionId?: string;
+    serverId?: string;
     messageId?: string;
     /** Row seq, so a seq-targeted transcript jump can land its highlight here. */
     jumpHighlightSeq?: number | null;
@@ -165,10 +169,14 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
             onPress();
         } else if (sessionId && routeMessageId) {
             navigateWithBlurOnWeb(() => {
-                router.push(`/session/${encodeURIComponent(sessionId)}/message/${encodeURIComponent(routeMessageId)}`);
+                router.push(buildScopedSessionRouteHref({
+                    sessionId,
+                    serverId: props.serverId,
+                    suffix: `/message/${encodeURIComponent(routeMessageId)}`,
+                }) as never);
             });
         }
-    }, [onPress, routeMessageId, router, sessionId]);
+    }, [onPress, props.serverId, routeMessageId, router, sessionId]);
 
     const canOpen = !!(onPress || (sessionId && routeMessageId));
 
@@ -470,6 +478,7 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
                         metadata={props.metadata}
                         messages={props.messages ?? []}
                         sessionId={sessionId}
+                        serverId={props.serverId}
                         messageId={messageId}
                         interaction={props.interaction}
                         detailLevel={renderBodyDetailLevel}
@@ -478,12 +487,34 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
                 </View>
             </TranscriptCollapsible>
 
+            {/*
+              * The Board item this call created, if it created one. It sits at row
+              * level beside the permission footer and approval cards rather than
+              * inside the collapsible, because it is the call's OUTCOME, not its
+              * diagnostic body: an MCP-named tool collapses to `title` by default,
+              * which would otherwise hide the widget the agent just made.
+              */}
+            <SessionBoardActionResultReference
+                tool={toolForRendering}
+                sessionId={sessionId}
+                serverId={props.serverId}
+            />
+            {/*
+              * The managed workflow Run this call admitted, if it admitted one:
+              * the same row-level OUTCOME placement, linking the exact Run.
+              */}
+            <WorkflowRunActionResultReference
+                tool={toolForRendering}
+                serverId={props.serverId}
+            />
+
             {/* Permission footer - rendered for most tools */}
             {/* AskUserQuestion and ExitPlanMode have custom action UIs */}
             {showPermissionPromptsInTranscript && isWaitingForPermission && toolForRendering.permission && sessionId && shouldShowGenericPermissionPromptForRequest({ toolName: toolForRendering.name, requestKind: toolForRendering.permission.kind }) && (
                 <PermissionFooter
                     permission={toolForRendering.permission}
                     sessionId={sessionId}
+                    serverId={props.serverId}
                     toolName={normalizedToolName}
                     toolInput={toolForRendering.input}
                     metadata={props.metadata}

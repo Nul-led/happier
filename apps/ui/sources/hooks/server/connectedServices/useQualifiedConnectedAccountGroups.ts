@@ -13,6 +13,10 @@ import {
     type QualifiedConnectedAccountUiSource,
 } from '@/sync/domains/connectedServices/qualifiedConnectedAccountUiSource';
 import {
+    invalidateConnectedServiceGroupsRefreshSignal,
+    useConnectedServiceGroupsRefreshSignal,
+} from '@/sync/domains/connectedServices/connectedServiceGroupsRefreshSignal';
+import {
     sameQualifiedConnectedAccountGroupRef,
     type ConnectedServiceAuthGroupPolicyV1,
     type PluginContributionIdentityV1,
@@ -155,6 +159,7 @@ export function useQualifiedConnectedAccountGroups(params: Readonly<{
     peer: QualifiedConnectedAccountPeerTransportState;
 }>): UseQualifiedConnectedAccountGroupsResult {
     const credentials = useAuth().credentials;
+    const refreshSignal = useConnectedServiceGroupsRefreshSignal();
     const [state, setState] = React.useState<State>(EMPTY_STATE);
     const [mutating, setMutating] = React.useState(false);
     const servicePluginId = params.service?.pluginId ?? '';
@@ -276,7 +281,7 @@ export function useQualifiedConnectedAccountGroups(params: Readonly<{
         void load(
             stateRef.current.basis === basis ? stateRef.current.groups : [],
         );
-    }, [basis, load, peerErrorMessage, params.peer.status]);
+    }, [basis, load, peerErrorMessage, params.peer.status, refreshSignal]);
 
     const visibleState: State = state.basis === basis
         ? state
@@ -343,6 +348,7 @@ export function useQualifiedConnectedAccountGroups(params: Readonly<{
                 groups: upsertGroup(previous.groups, group),
                 error: null,
             }));
+            invalidateConnectedServiceGroupsRefreshSignal();
             return group;
         } catch (error) {
             if (currentBasisRef.current !== operationBasis) return null;
@@ -401,6 +407,7 @@ export function useQualifiedConnectedAccountGroups(params: Readonly<{
                     )),
                     error: null,
                 }));
+                invalidateConnectedServiceGroupsRefreshSignal();
                 return true;
             } catch (error) {
                 if (currentBasisRef.current !== operationBasis) return false;
@@ -450,6 +457,7 @@ export function useQualifiedConnectedAccountGroups(params: Readonly<{
                     groups: upsertGroup(previous.groups, group),
                     error: null,
                 }));
+                invalidateConnectedServiceGroupsRefreshSignal();
                 return group;
             } catch (error) {
                 if (currentBasisRef.current !== operationBasis) return null;

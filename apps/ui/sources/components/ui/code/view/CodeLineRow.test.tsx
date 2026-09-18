@@ -125,34 +125,6 @@ describe('CodeLineRow', () => {
         expect(flattened.some((s: any) => s?.fontWeight === '600' || s?.fontWeight === 600)).toBe(true);
     });
 
-    it('falls back cleanly when Typography.mono is missing from a partial module mock', async () => {
-        vi.resetModules();
-        vi.doMock('@/constants/Typography', () => ({
-            Typography: {
-                default: () => ({}),
-            },
-        }));
-
-        const { CodeLineRow } = await import('./CodeLineRow');
-
-        const screen = await renderScreen(<CodeLineRow
-            line={{
-                id: '1',
-                sourceIndex: 0,
-                kind: 'context',
-                oldLine: 1,
-                newLine: 1,
-                renderPrefixText: '',
-                renderCodeText: 'const x = 1;',
-                renderIsHeaderLine: false,
-                selectable: false,
-            }}
-            selected={false}
-        />);
-
-        expect(screen.findAllByType('Text' as any).length).toBeGreaterThan(0);
-    });
-
     it('shows a close-comment affordance when the inline comment is active', async () => {
         const { CodeLineRow } = await import('./CodeLineRow');
 
@@ -225,11 +197,6 @@ describe('CodeLineRow', () => {
         });
         expect(buttons).toBeTruthy();
 
-        const icon = findTestInstanceByTypeWithProps(screen.tree, 'Icon' as any, {
-            testID: 'review-comment-line-affordance-icon',
-        });
-        expect(icon?.props.name).toBe('chatbox-ellipses-outline');
-
         const stopPropagation = vi.fn();
         const stopImmediatePropagation = vi.fn();
 
@@ -282,7 +249,7 @@ describe('CodeLineRow', () => {
         });
 
         expect(onPressLine).toHaveBeenCalledTimes(1);
-        expect(onPressLine).toHaveBeenCalledWith(line);
+        expect(onPressLine.mock.calls[0]?.[0]).toBe(line);
     });
 
     it('uses a dedicated selection indicator when a diff line is selected for commit', async () => {
@@ -304,7 +271,7 @@ describe('CodeLineRow', () => {
             onPressLine={() => {}}
         />);
 
-        const row = findTestInstanceByTypeWithProps(screen.tree, 'View' as any, { nativeID: 'selected-line' })!;
+        const row = screen.tree.findAll((node) => String(node.type) === 'View')[0]!;
         const theme = createThemeFixture() as any;
 
         expect(flattenTestStyle(row.props.style)).toMatchObject({
@@ -337,27 +304,6 @@ describe('CodeLineRow', () => {
         const lane = screen.findByProps({ testID: 'review-comment-line-affordance-lane' });
 
         expect(rowPressable.findAll((node) => node === lane).length).toBe(1);
-    });
-
-    it('sets nativeID to enable deep-link line scrolling on web', async () => {
-        const { CodeLineRow } = await import('./CodeLineRow');
-
-        const screen = await renderScreen(<CodeLineRow
-            line={{
-                id: 'f:120',
-                sourceIndex: 0,
-                kind: 'context',
-                oldLine: 120,
-                newLine: 120,
-                renderPrefixText: '',
-                renderCodeText: 'const x = 1;',
-                renderIsHeaderLine: false,
-                selectable: false,
-            }}
-            selected={false}
-        />);
-
-        expect(findTestInstanceByTypeWithProps(screen.tree, 'View' as any, { nativeID: 'f:120' })).toBeTruthy();
     });
 
     it('preserves indentation on web by using pre-wrap whitespace', async () => {

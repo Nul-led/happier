@@ -9,6 +9,7 @@ describe('sessionPaneUrlState', () => {
         });
 
         it('parses right tab id', () => {
+            expect(parseSessionPaneUrlState({ right: 'collaboration' })).toEqual({ rightTabId: 'collaboration' });
             expect(parseSessionPaneUrlState({ right: 'files' })).toEqual({ rightTabId: 'files' });
             expect(parseSessionPaneUrlState({ right: 'git' })).toEqual({ rightTabId: 'git' });
             expect(parseSessionPaneUrlState({ right: 'terminal' })).toEqual({ rightTabId: 'terminal' });
@@ -67,9 +68,55 @@ describe('sessionPaneUrlState', () => {
                 details: { kind: 'terminal', terminalInstanceId: 'term-7' },
             });
         });
+
+        it('parses exact discussion details targets without parsing the Session address from a compound key', () => {
+            expect(parseSessionPaneUrlState({
+                details: 'discussion',
+                discussionId: 'discussion:1',
+            })).toEqual({
+                details: { kind: 'discussion', discussionId: 'discussion:1' },
+            });
+            expect(parseSessionPaneUrlState({ details: 'discussion' })).toBeNull();
+        });
+
+        it('parses a Board item as a typed focus target without parsing a compound tab key', () => {
+            expect(parseSessionPaneUrlState({
+                details: 'board',
+                boardItemId: 'item:with:colons',
+            })).toEqual({
+                details: { kind: 'board', focusTarget: { kind: 'item', itemId: 'item:with:colons' } },
+            });
+            expect(parseSessionPaneUrlState({ details: 'board' })).toEqual({
+                details: { kind: 'board' },
+            });
+        });
     });
 
     describe('applySessionPaneUrlState', () => {
+        it('opens the exact Board item through the typed Details tab owner', () => {
+            const pane = {
+                openRight: vi.fn(),
+                setRightTab: vi.fn(),
+                openBottom: vi.fn(),
+                setBottomTab: vi.fn(),
+                openDetailsTab: vi.fn(),
+            };
+
+            applySessionPaneUrlState(pane as any, {
+                details: { kind: 'board', focusTarget: { kind: 'item', itemId: 'item:with:colons' } },
+            });
+
+            expect(pane.openDetailsTab).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    kind: 'board',
+                    resource: {
+                        kind: 'board',
+                        focusTarget: { kind: 'item', itemId: 'item:with:colons' },
+                    },
+                }),
+                { intent: 'pinned' },
+            );
+        });
         it('opens right + details panes from url state', () => {
             const pane = {
                 openRight: vi.fn(),
@@ -232,6 +279,32 @@ describe('sessionPaneUrlState', () => {
                 }),
                 { intent: 'pinned' },
             );
+        });
+
+        it('opens a discussion using the separately supplied exact Session address', () => {
+            const pane = {
+                openRight: vi.fn(),
+                setRightTab: vi.fn(),
+                openBottom: vi.fn(),
+                setBottomTab: vi.fn(),
+                openDetailsTab: vi.fn(),
+            };
+
+            applySessionPaneUrlState(pane as any, {
+                details: { kind: 'discussion', discussionId: 'discussion:1' },
+            }, { serverId: 'home:a', sessionId: 'session:1' });
+
+            expect(pane.openDetailsTab).toHaveBeenCalledWith(expect.objectContaining({
+                key: 'discussion:["home:a","session:1"]:discussion:1',
+                resource: {
+                    kind: 'discussion',
+                    target: {
+                        kind: 'discussion',
+                        address: { serverId: 'home:a', sessionId: 'session:1' },
+                        discussionId: 'discussion:1',
+                    },
+                },
+            }));
         });
 
         it('ignores unsafe file paths in url state', () => {

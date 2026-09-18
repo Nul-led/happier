@@ -13,6 +13,40 @@ import {
 } from '@/dev/testkit/fixtures/sessionAgentTransitionFixtures';
 
 describe('reducer', () => {
+    it('retains exact Home actor identity and reconciles actor-only authoritative updates', () => {
+        const state = createReducer();
+        const initial: NormalizedMessage = {
+            id: 'actor-row', localId: 'actor-local', createdAt: 1000, seq: 7,
+            role: 'user', content: { type: 'text', text: 'unchanged' }, isSidechain: false,
+            accountActor: { v: 1, accountId: 'alice', serverId: 'home-a', profile: null },
+        };
+        expect(reducer(state, [initial]).messages[0]).toMatchObject({ accountActor: initial.accountActor });
+        const { accountActor: _actor, ...omitted } = initial;
+        expect(reducer(state, [{ ...omitted, isAuthoritativeUpdate: true }]).messages).toEqual([]);
+        const updated = { ...initial, isAuthoritativeUpdate: true, accountActor: { ...initial.accountActor!, serverId: 'home-b' } };
+        expect(reducer(state, [updated]).messages[0]).toMatchObject({
+            accountActor: updated.accountActor, realID: initial.id, seq: 7, text: 'unchanged',
+        });
+        expect(reducer(state, [updated]).messages).toEqual([]);
+        expect(reducer(state, [{ ...omitted, isAuthoritativeUpdate: true, accountActor: null }]).messages[0])
+            .toMatchObject({ accountActor: null, realID: initial.id, seq: 7, text: 'unchanged' });
+
+        // A profile refresh is presentation evidence, not permission to rewrite
+        // durable text or to create a second row when the content is deduped.
+        const refreshed = {
+            ...initial,
+            content: { type: 'text' as const, text: 'unmarked replacement must not win' },
+            accountActor: {
+                ...initial.accountActor!,
+                profile: { firstName: 'Alice', lastName: null, username: null, avatarUrl: null },
+            },
+        };
+        expect(reducer(state, [refreshed]).messages).toEqual([
+            expect.objectContaining({ accountActor: refreshed.accountActor, realID: initial.id, seq: 7, text: 'unchanged' }),
+        ]);
+        expect(reducer(state, [refreshed]).messages).toEqual([]);
+    });
+
     // it('should process golden cases', () => {
     //     for (let i = 0; i <= 3; i++) {
 

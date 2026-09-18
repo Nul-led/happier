@@ -1,12 +1,10 @@
 import * as React from 'react';
 import { usePathname } from 'expo-router';
 
-import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import {
     useLocalSetting,
-    useOpenApprovalSessionIds,
-    useSessionListRowStateByServerId,
-    useSessionOrganizationProjection,
+    useSessionListRowsByServerId,
+    useSessionOrganizationProjections,
     useSetting,
 } from '@/sync/domains/state/storage';
 import { computeVisibleSessionListIndex } from '@/sync/domains/session/listing/computeVisibleSessionListIndex';
@@ -25,17 +23,29 @@ import { filterSessionListIndexByStorageKind } from '@/sync/domains/session/list
 import type { SessionListStorageFilter } from '@/sync/domains/session/sessionStorageKind';
 import { areSessionListIndexItemsEqual, type SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import {
-    applySessionFolderTreeToSessionListIndex,
+    resolveFolderAwareSessionListSourceForLayout,
+    resolveSessionFolderFocusScope,
+    selectAvailableSessionFolders,
     type SessionFolderFocusScope,
     type FolderAwareSessionListIndexResult,
     type SessionFolderList,
     type SessionListFocusedFolderV1,
 } from '@/sync/domains/session/folders';
-import type { SessionAttentionStandingPolicy } from '@/sync/domains/session/organization/attentionStanding';
-import { buildSessionOrganizationListViewState } from '@/sync/domains/session/organization/viewState';
+import {
+    resolveNextSessionAttentionReminderWakeAtMs,
+    type SessionAttentionStandingPolicy,
+} from '@/sync/domains/session/organization/attentionStanding';
+import { buildSessionOrganizationListViewStateForServers } from '@/sync/domains/session/organization/viewState';
+import { resolveSessionListOrganizationServerIds } from '@/sync/domains/session/organization/sessionListOrganizationServerIds';
 import { useSessionAttentionStandingInputs } from './useSessionAttentionStandingInputs';
-import { useFocusedSessionId } from '@/sync/domains/session/sessionSurfaceVisibility';
-import { useVisibleSessionListSourceState } from './useVisibleSessionListSourceState';
+import {
+    useFocusedSessionAddress,
+    useFocusedSessionId,
+} from '@/sync/domains/session/sessionSurfaceVisibility';
+import {
+    useVisibleSessionListSourceState,
+    type VisibleSessionListSourceStateOptions,
+} from './useVisibleSessionListSourceState';
 import { readSessionListRowForServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
 import { readSessionRuntimePresentationFreshnessExpirations } from '@/sync/domains/session/attention/runtimePresentation';
 import { useSessionListRuntimeNowMs, useSessionListRuntimeWake } from './sessionListRuntimeClock';
@@ -44,15 +54,22 @@ import {
     resolveExternalAgentPresentationState,
 } from '@/components/sessions/presentation/externalSessionRuntimePresentation';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
+import {
+    normalizeSessionListSectionModeV1,
+    type SessionListLayoutChoice,
+} from '@/sync/domains/session/listing/sessionListLayout';
+import { useSessionListLayoutChoice } from './sessionListLayoutIntent';
+import { useSessionListFeatureHomeSupportByServerId } from '@/sync/domains/session/listing/useSessionListQuerySourceState';
 
 type SessionListGroupOrderV1 = Readonly<Record<string, ReadonlyArray<string> | undefined>>;
 type PinnedSessionKeysV1 = ReadonlyArray<string>;
-const EMPTY_OPEN_APPROVAL_SESSION_ID_SET: ReadonlySet<string> = Object.freeze(new Set<string>());
 
 export type VisibleSessionListViewState = Readonly<{
     visibleSessionListIndex: ReadonlyArray<SessionListIndexItem> | null;
     hasHiddenInactiveSessions: boolean;
     folderFocus: SessionFolderFocusScope | null;
+    folderFeatureEnabledServerIds: ReadonlyArray<string>;
+    query?: ReturnType<typeof useVisibleSessionListSourceState>['query'];
 }>;
 
 export type VisibleSessionListViewStateOptions = Readonly<{
@@ -60,25 +77,26 @@ export type VisibleSessionListViewStateOptions = Readonly<{
     retainedPathname?: string | null;
     retainedVisibleSessionListIndex?: ReadonlyArray<SessionListIndexItem> | null;
     sessionListSurfaceDataActive?: boolean;
+    queryHomes?: VisibleSessionListSourceStateOptions['queryHomes'];
+    emptyQuerySelectionComplete?: boolean;
+    corpusStorage?: 'active' | 'archived';
 }>;
 
 function buildFolderAwareSessionListIndex(params: Readonly<{
     source: ReadonlyArray<SessionListIndexItem>;
     collapsedGroupKeysV1: Readonly<Record<string, boolean>>;
     sessionFoldersFeatureEnabled: boolean;
-    storageFilter: SessionListStorageFilter;
+    sessionListLayoutChoice: SessionListLayoutChoice;
     folderFocusInput: SessionListFocusedFolderV1;
     sessionFoldersV1: SessionFolderList;
     sessionFolderViewModeV1: unknown;
     sessionFolderAssignmentsBySessionKey: Readonly<Record<string, string | null>>;
 }>): FolderAwareSessionListIndexResult {
-    const folderTreeEnabled = params.sessionFoldersFeatureEnabled
-        && params.sessionFolderViewModeV1 === 'tree';
-    if (!folderTreeEnabled) {
-        return { items: params.source, folderFocus: null };
-    }
-    return applySessionFolderTreeToSessionListIndex({
+    return resolveFolderAwareSessionListSourceForLayout({
         source: params.source,
+        layoutChoice: params.sessionListLayoutChoice,
+        foldersFeatureEnabled: params.sessionFoldersFeatureEnabled,
+        folderViewModeV1: params.sessionFolderViewModeV1,
         folders: params.sessionFoldersV1,
         assignmentsBySessionKey: params.sessionFolderAssignmentsBySessionKey,
         collapsedGroupKeys: params.collapsedGroupKeysV1,
@@ -131,28 +149,16 @@ function resolvePreviousVisibleSessionListIndexForRetention(
 }
 
 function resolveSessionRowFromState(
-    sessionRowStateByServerId: ReturnType<typeof useSessionListRowStateByServerId>,
+    sessionRowStateByServerId: ReturnType<typeof useSessionListRowsByServerId>,
     serverId: string | null | undefined,
     sessionId: string,
-    sessionIdsWithOpenApprovals: ReadonlySet<string>,
 ) {
     const normalizedServerId = typeof serverId === 'string' ? serverId.trim() : '';
     const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
     if (!normalizedServerId || !normalizedSessionId) {
         return null;
     }
-    const row = readSessionListRowForServerId(sessionRowStateByServerId, normalizedServerId, normalizedSessionId);
-    const scopedSessionKey = normalizeSessionListKeyParts(normalizedServerId, normalizedSessionId).sessionKey;
-    const hasOpenApproval =
-        (scopedSessionKey ? sessionIdsWithOpenApprovals.has(scopedSessionKey) : false)
-        || sessionIdsWithOpenApprovals.has(normalizedSessionId);
-    if (!row || !hasOpenApproval || row.hasPendingPermissionRequests === true) {
-        return row;
-    }
-    return {
-        ...row,
-        hasPendingPermissionRequests: true,
-    };
+    return readSessionListRowForServerId(sessionRowStateByServerId, normalizedServerId, normalizedSessionId);
 }
 
 /**
@@ -164,12 +170,18 @@ function resolveSessionRowFromState(
 function resolveRetainedAttentionSessionKeys(params: Readonly<{
     previousVisibleIndex: ReadonlyArray<SessionListIndexItem> | null | undefined;
     activeSessionId: string | null;
+    activeSessionServerId: string | null;
 }>): ReadonlyArray<string> {
     const activeSessionId = String(params.activeSessionId ?? '').trim();
     if (!activeSessionId) return [];
     if (!params.previousVisibleIndex) return [];
-    for (const item of params.previousVisibleIndex) {
-        if (item.type !== 'session' || item.sessionId !== activeSessionId) continue;
+    const matchingItems = params.previousVisibleIndex.filter((item): item is Extract<SessionListIndexItem, { type: 'session' }> => (
+        item.type === 'session'
+        && item.sessionId === activeSessionId
+        && (!params.activeSessionServerId || item.serverId === params.activeSessionServerId)
+    ));
+    if (!params.activeSessionServerId && matchingItems.length !== 1) return [];
+    for (const item of matchingItems) {
         if (item.groupKind !== 'attention' && !item.attentionPlacementReason) continue;
         // Standing is the user's own instruction, so removing it must take effect
         // immediately. Retention exists to stop a row the user is READING from
@@ -201,11 +213,14 @@ function resolveRetainedWorkingSessionKeys(
 
 function buildVisibleSessionListIndex(params: Readonly<{
     source: ReadonlyArray<SessionListIndexItem>;
-    sessionRowStateByServerId: ReturnType<typeof useSessionListRowStateByServerId>;
+    sessionRowStateByServerId: ReturnType<typeof useSessionListRowsByServerId>;
     hideInactiveSessions: boolean;
+    serverFilteredInactiveServerIds: ReadonlySet<string> | null;
+    corpusStorage: 'active' | 'archived';
     pinnedSessionKeysV1: PinnedSessionKeysV1;
     sessionListOrderingModeV1: 'custom' | 'created' | 'updated';
     sessionListSectionModeV1: 'activity' | 'single';
+    sessionListLayoutChoice: SessionListLayoutChoice;
     sessionListAttentionPromotionModeV1: 'off' | 'global' | 'withinGroups';
     sessionAttentionStandingPolicy: SessionAttentionStandingPolicy;
     sessionListWorkingPlacementModeV1: 'off' | 'global' | 'withinGroups';
@@ -223,7 +238,6 @@ function buildVisibleSessionListIndex(params: Readonly<{
     sessionFoldersV1: SessionFolderList;
     sessionFolderViewModeV1: unknown;
     sessionFolderAssignmentsBySessionKey: Readonly<Record<string, string | null>>;
-    sessionIdsWithOpenApprovals: ReadonlySet<string>;
     retainAttentionSessionKeys: ReadonlyArray<string>;
     retainWorkingSessionKeys: ReadonlyArray<string>;
     nowMs: number;
@@ -236,12 +250,13 @@ function buildVisibleSessionListIndex(params: Readonly<{
         params.sessionRowStateByServerId,
         serverId,
         sessionId,
-        params.sessionIdsWithOpenApprovals,
     );
     const visible = computeVisibleSessionListIndex({
         source: folderAwareSource,
         resolveSessionRow,
         hideInactiveSessions: params.hideInactiveSessions,
+        serverFilteredInactiveServerIds: params.serverFilteredInactiveServerIds,
+        corpusStorage: params.corpusStorage,
         pinnedSessionKeysV1: params.pinnedSessionKeysV1,
         sessionListGroupOrderV1: params.sessionListOrderingModeV1 === 'custom'
             ? params.normalizedGroupOrder
@@ -251,6 +266,7 @@ function buildVisibleSessionListIndex(params: Readonly<{
             : params.sessionWorkspaceOrderV1,
         sessionListOrderingModeV1: params.sessionListOrderingModeV1,
         sessionListSectionModeV1: params.sessionListSectionModeV1,
+        sessionListLayoutChoice: params.sessionListLayoutChoice,
         sessionListFolderSortModeV1: params.sessionListFolderSortModeV1,
         attentionPlacement: {
             mode: params.sessionListAttentionPromotionModeV1,
@@ -280,18 +296,33 @@ export function useVisibleSessionListViewState(
     const pathname = usePathname();
     const effectivePathname = options.pathname ?? pathname;
     const focusedSessionId = useFocusedSessionId();
+    const focusedSessionAddress = useFocusedSessionAddress();
     const previousVisibleSessionListIndexRef = React.useRef<ReadonlyArray<SessionListIndexItem> | null>(null);
-    const { selection, source } = useVisibleSessionListSourceState();
-    const sessionRowStateByServerId = useSessionListRowStateByServerId();
-    const openApprovalSessionIdList = useOpenApprovalSessionIds();
+    const { selection, source, query } = useVisibleSessionListSourceState({
+        queryHomes: options.queryHomes,
+        emptyQuerySelectionComplete: options.emptyQuerySelectionComplete,
+    });
+    const sessionRowStateByServerId = useSessionListRowsByServerId();
     const hideInactiveSessions = useSetting('hideInactiveSessions') as boolean | null;
+    // Every Home whose membership was applied by the strict query already answered
+    // `includeInactive` server-side, so an inactive row it returned is one the
+    // server's attention predicate deliberately admitted. Homes still served by the
+    // released GET adapter are absent here and keep the incumbent client rule.
+    const queryStatesByServerId = query.statesByServerId;
+    const serverFilteredInactiveServerIds = React.useMemo(() => {
+        if (!query.active) return null;
+        const serverIds = new Set<string>();
+        for (const [serverId, state] of Object.entries(queryStatesByServerId)) {
+            if (state?.appliedSourceKind === 'query') serverIds.add(serverId);
+        }
+        return serverIds.size > 0 ? serverIds : null;
+    }, [query.active, queryStatesByServerId]);
     const sessionListOrderingModeV1 = useSetting('sessionListOrderingModeV1') as
         | 'custom'
         | 'created'
         | 'updated';
-    const sessionListSectionModeV1 = useSetting('sessionListSectionModeV1') === 'single'
-        ? 'single'
-        : 'activity';
+    const sessionListSectionModeV1 = normalizeSessionListSectionModeV1(useSetting('sessionListSectionModeV1'));
+    const sessionListLayoutChoice = useSessionListLayoutChoice();
     const sessionListFolderSortModeV1 = useSetting('sessionListFolderSortModeV1') === 'mixed'
         ? 'mixed'
         : 'foldersFirst';
@@ -299,17 +330,32 @@ export function useVisibleSessionListViewState(
         useSetting('sessionListWorkingPlacementModeV1'),
     );
     const sessionFolderViewModeV1 = useSetting('sessionFolderViewModeV1');
-    const sessionFoldersFeatureEnabled = useFeatureEnabled('sessions.folders');
     const collapsedGroupKeysV1 = (useLocalSetting('collapsedGroupKeysV1') ?? {}) as Readonly<Record<string, boolean>>;
     const folderFocusInput = useLocalSetting('sessionListFocusedFolderV1') as SessionListFocusedFolderV1;
-    const activeOrganizationServerId = typeof selection.activeServerId === 'string'
-        ? selection.activeServerId.trim()
-        : '';
-    const organizationProjection = useSessionOrganizationProjection(activeOrganizationServerId);
-    const organizationListViewState = React.useMemo(() => buildSessionOrganizationListViewState({
-        serverId: activeOrganizationServerId,
-        projection: organizationProjection,
-    }), [activeOrganizationServerId, organizationProjection]);
+    const organizationServerIds = React.useMemo(() => resolveSessionListOrganizationServerIds({
+        queryHomeServerIds: options.queryHomes?.map((home) => home.serverId),
+        allowedServerIds: selection.allowedServerIds,
+        activeServerId: selection.activeServerId,
+    }), [options.queryHomes, selection.activeServerId, selection.allowedServerIds]);
+    const organizationProjectionsByServerId = useSessionOrganizationProjections(organizationServerIds);
+    const folderFeatureSupportByServerId = useSessionListFeatureHomeSupportByServerId(
+        'sessions.folders',
+        organizationServerIds,
+        true,
+    );
+    const folderFeatureEnabledServerIds = React.useMemo(
+        () => organizationServerIds.filter((serverId) => folderFeatureSupportByServerId[serverId] === true),
+        [folderFeatureSupportByServerId, organizationServerIds],
+    );
+    const sessionFoldersFeatureEnabled = folderFeatureEnabledServerIds.length > 0;
+    const organizationListViewState = React.useMemo(() => buildSessionOrganizationListViewStateForServers({
+        serverIds: organizationServerIds,
+        projectionsByServerId: organizationProjectionsByServerId,
+    }), [organizationProjectionsByServerId, organizationServerIds]);
+    const folderOrganizationListViewState = React.useMemo(() => buildSessionOrganizationListViewStateForServers({
+        serverIds: folderFeatureEnabledServerIds,
+        projectionsByServerId: organizationProjectionsByServerId,
+    }), [folderFeatureEnabledServerIds, organizationProjectionsByServerId]);
     // One owner for both halves of the Keep in Needs attention inputs: the band
     // mode the action depends on, and the account default joined with the
     // per-session overrides this projection already holds.
@@ -321,13 +367,8 @@ export function useVisibleSessionListViewState(
     const pinnedSessionKeysV1 = organizationListViewState.pinnedSessionKeysV1 as PinnedSessionKeysV1;
     const sessionListGroupOrderV1 = organizationListViewState.sessionListGroupOrderV1;
     const sessionWorkspaceOrderV1 = organizationListViewState.sessionWorkspaceOrderV1;
-    const sessionFoldersV1 = organizationListViewState.sessionFoldersV1;
-    const sessionFolderAssignmentsBySessionKey = organizationListViewState.sessionFolderAssignmentsBySessionKey;
-    const sessionIdsWithOpenApprovals = React.useMemo(() => (
-        openApprovalSessionIdList.length === 0
-            ? EMPTY_OPEN_APPROVAL_SESSION_ID_SET
-            : new Set(openApprovalSessionIdList)
-    ), [openApprovalSessionIdList]);
+    const sessionFoldersV1 = folderOrganizationListViewState.sessionFoldersV1;
+    const sessionFolderAssignmentsBySessionKey = folderOrganizationListViewState.sessionFolderAssignmentsBySessionKey;
     const previousVisibleSessionListIndexForRetention = resolvePreviousVisibleSessionListIndexForRetention(
         previousVisibleSessionListIndexRef.current,
         options.retainedVisibleSessionListIndex,
@@ -342,6 +383,9 @@ export function useVisibleSessionListViewState(
         pathname: selectedSessionPathname,
         focusedSessionId,
     }), [selectedSessionPathname, focusedSessionId]);
+    const activeSessionServerId = focusedSessionAddress?.sessionId === activeSessionId
+        ? focusedSessionAddress.serverId
+        : null;
 
     const normalizedGroupOrder = React.useMemo(() => {
         if (!source) return sessionListGroupOrderV1;
@@ -350,7 +394,7 @@ export function useVisibleSessionListViewState(
             source,
             collapsedGroupKeysV1,
             sessionFoldersFeatureEnabled,
-            storageFilter,
+            sessionListLayoutChoice,
             folderFocusInput,
             sessionFoldersV1,
             sessionFolderViewModeV1,
@@ -371,6 +415,7 @@ export function useVisibleSessionListViewState(
         sessionFoldersV1,
         sessionListGroupOrderV1,
         sessionListOrderingModeV1,
+        sessionListLayoutChoice,
         source,
         storageFilter,
     ]);
@@ -398,15 +443,19 @@ export function useVisibleSessionListViewState(
         const retainAttentionSessionKeys = resolveRetainedAttentionSessionKeys({
             previousVisibleIndex: previousVisibleSessionListIndexForRetention,
             activeSessionId,
+            activeSessionServerId,
         });
         const retainWorkingSessionKeys = resolveRetainedWorkingSessionKeys(previousVisibleSessionListIndexForRetention);
         return reuseStableVisibleSessionListIndex(previousVisibleSessionListIndexForRetention, buildVisibleSessionListIndex({
             source,
             sessionRowStateByServerId,
             hideInactiveSessions: hideInactiveSessions === true,
+            serverFilteredInactiveServerIds,
+            corpusStorage: options.corpusStorage ?? 'active',
             pinnedSessionKeysV1,
             sessionListOrderingModeV1,
             sessionListSectionModeV1,
+            sessionListLayoutChoice,
             sessionListFolderSortModeV1,
             sessionListAttentionPromotionModeV1,
             sessionAttentionStandingPolicy,
@@ -424,7 +473,6 @@ export function useVisibleSessionListViewState(
             sessionFoldersV1,
             sessionFolderViewModeV1,
             sessionFolderAssignmentsBySessionKey,
-            sessionIdsWithOpenApprovals,
             retainAttentionSessionKeys,
             retainWorkingSessionKeys,
             nowMs: runtimeNowMs,
@@ -433,8 +481,11 @@ export function useVisibleSessionListViewState(
         runtimeNowMs,
         folderFocusInput,
         activeSessionId,
+        activeSessionServerId,
         collapsedGroupKeysV1,
         hideInactiveSessions,
+        serverFilteredInactiveServerIds,
+        options.corpusStorage,
         selection.allowedServerIds,
         selection.enabled,
         pinnedSessionKeysV1,
@@ -447,7 +498,6 @@ export function useVisibleSessionListViewState(
         sessionAttentionStandingPolicy,
         sessionListWorkingPlacementModeV1,
         sessionRowStateByServerId,
-        sessionIdsWithOpenApprovals,
         sessionFolderAssignmentsBySessionKey,
         sessionFoldersFeatureEnabled,
         sessionFolderViewModeV1,
@@ -457,6 +507,7 @@ export function useVisibleSessionListViewState(
         previousVisibleSessionListIndexForRetention,
         sessionListOrderingModeV1,
         sessionListSectionModeV1,
+        sessionListLayoutChoice,
         sessionListFolderSortModeV1,
     ]);
 
@@ -466,7 +517,7 @@ export function useVisibleSessionListViewState(
 
     const nextRuntimeFreshnessAtMs = React.useMemo(() => {
         if (!surfaceDataActive || !visibleSessionListIndex) return null;
-        let nextAtMs: number | null = null;
+        let nextAtMs = resolveNextSessionAttentionReminderWakeAtMs(sessionAttentionStandingPolicy, runtimeNowMs);
         for (const item of visibleSessionListIndex) {
             if (item.type !== 'session') continue;
             const row = readSessionListRowForServerId(sessionRowStateByServerId, item.serverId, item.sessionId);
@@ -487,7 +538,7 @@ export function useVisibleSessionListViewState(
             }
         }
         return nextAtMs;
-    }, [runtimeNowMs, sessionRowStateByServerId, surfaceDataActive, visibleSessionListIndex]);
+    }, [runtimeNowMs, sessionAttentionStandingPolicy, sessionRowStateByServerId, surfaceDataActive, visibleSessionListIndex]);
     useSessionListRuntimeWake(nextRuntimeFreshnessAtMs, surfaceDataActive);
 
     const hasHiddenInactiveSessions = React.useMemo(() => {
@@ -502,15 +553,19 @@ export function useVisibleSessionListViewState(
         const retainAttentionSessionKeys = resolveRetainedAttentionSessionKeys({
             previousVisibleIndex: previousVisibleSessionListIndexForRetention,
             activeSessionId,
+            activeSessionServerId,
         });
         const retainWorkingSessionKeys = resolveRetainedWorkingSessionKeys(previousVisibleSessionListIndexForRetention);
         const visibleWithoutInactiveFilter = buildVisibleSessionListIndex({
             source,
             sessionRowStateByServerId,
             hideInactiveSessions: false,
+            serverFilteredInactiveServerIds,
+            corpusStorage: options.corpusStorage ?? 'active',
             pinnedSessionKeysV1,
             sessionListOrderingModeV1,
             sessionListSectionModeV1,
+            sessionListLayoutChoice,
             sessionListFolderSortModeV1,
             sessionListAttentionPromotionModeV1,
             sessionAttentionStandingPolicy,
@@ -528,7 +583,6 @@ export function useVisibleSessionListViewState(
             sessionFoldersV1,
             sessionFolderViewModeV1,
             sessionFolderAssignmentsBySessionKey,
-            sessionIdsWithOpenApprovals,
             retainAttentionSessionKeys,
             retainWorkingSessionKeys,
             nowMs: runtimeNowMs,
@@ -539,8 +593,11 @@ export function useVisibleSessionListViewState(
         runtimeNowMs,
         folderFocusInput,
         activeSessionId,
+        activeSessionServerId,
         collapsedGroupKeysV1,
         hideInactiveSessions,
+        serverFilteredInactiveServerIds,
+        options.corpusStorage,
         normalizedGroupOrder,
         normalizedWorkspaceOrder,
         pinnedSessionKeysV1,
@@ -554,9 +611,9 @@ export function useVisibleSessionListViewState(
         sessionListWorkingPlacementModeV1,
         sessionListOrderingModeV1,
         sessionListSectionModeV1,
+        sessionListLayoutChoice,
         sessionListFolderSortModeV1,
         sessionRowStateByServerId,
-        sessionIdsWithOpenApprovals,
         sessionFolderAssignmentsBySessionKey,
         sessionFoldersFeatureEnabled,
         sessionFolderViewModeV1,
@@ -567,28 +624,27 @@ export function useVisibleSessionListViewState(
         visibleSessionListIndex,
     ]);
 
+    // The focus scope stays visible in every layout so the reader can always see and
+    // clear the narrowing that is hiding rows, including in Recent activity where the
+    // folder tree itself is suppressed.
     const folderFocus = React.useMemo(() => {
-        if (!sessionFoldersFeatureEnabled || sessionFolderViewModeV1 !== 'tree' || !source) return null;
-        return applySessionFolderTreeToSessionListIndex({
-            source,
-            folders: sessionFoldersV1,
-            assignmentsBySessionKey: sessionFolderAssignmentsBySessionKey,
-            collapsedGroupKeys: {},
-            focusedFolder: folderFocusInput,
-        }).folderFocus;
+        if (!sessionFoldersFeatureEnabled || sessionFolderViewModeV1 !== 'tree') return null;
+        return resolveSessionFolderFocusScope(
+            selectAvailableSessionFolders(sessionFoldersV1),
+            folderFocusInput,
+        );
     }, [
         folderFocusInput,
-        sessionFolderAssignmentsBySessionKey,
         sessionFoldersFeatureEnabled,
         sessionFolderViewModeV1,
         sessionFoldersV1,
-        source,
-        storageFilter,
     ]);
 
     return React.useMemo(() => ({
         visibleSessionListIndex,
         hasHiddenInactiveSessions,
         folderFocus,
-    }), [folderFocus, hasHiddenInactiveSessions, visibleSessionListIndex]);
+        folderFeatureEnabledServerIds,
+        query,
+    }), [folderFeatureEnabledServerIds, folderFocus, hasHiddenInactiveSessions, query, visibleSessionListIndex]);
 }

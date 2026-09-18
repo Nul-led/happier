@@ -67,10 +67,14 @@ export function getPendingQueueWakeResumeOptions(opts: {
         if (!inputReadiness.canWakePendingQueue) return null;
     }
 
-    const reachableTarget = readMachineControlTargetForSession(sessionId);
-    const machineId = normalizeNonEmptyString(resumeTargetOverride?.machineId)
+    const overrideMachineId = normalizeNonEmptyString(resumeTargetOverride?.machineId);
+    const overrideDirectory = normalizeNonEmptyString(resumeTargetOverride?.directory);
+    const reachableTarget = overrideMachineId && overrideDirectory
+        ? null
+        : readMachineControlTargetForSession(sessionId);
+    const machineId = overrideMachineId
         ?? normalizeNonEmptyString(reachableTarget?.machineId);
-    const directory = normalizeNonEmptyString(resumeTargetOverride?.directory)
+    const directory = overrideDirectory
         ?? normalizeNonEmptyString(reachableTarget?.basePath);
     if (!machineId || !directory) return null;
     if (canWakeMachineId && canWakeMachineId(machineId) === false) return null;

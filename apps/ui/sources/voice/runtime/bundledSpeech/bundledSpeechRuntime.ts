@@ -37,7 +37,9 @@ export function createBundledSpeechRuntime(input: Readonly<{
   fetchImpl?: typeof runtimeFetch;
   play?: typeof playAudioBytesWithStopper;
 }>) {
-  const client = input.client ?? bundledSpeechDaemonClient;
+  // A default transcription controller is constructed during sync bootstrap.
+  // Resolve its speech client when used, after the dependency graph is ready.
+  const getClient = () => input.client ?? bundledSpeechDaemonClient;
   const entries = input.registry.list().flatMap((entry) =>
     entry.kind === 'voice.speech-engine.v1' && entry.declaration?.kind === 'speech' ? [entry] : [],
   );
@@ -93,7 +95,7 @@ export function createBundledSpeechRuntime(input: Readonly<{
         mimeType = normalizeMimeType(guessAudioMimeType(params.uri));
         source = { kind: 'native', uri: params.uri };
       }
-      const text = await client.transcribe({
+      const text = await getClient().transcribe({
         entry: contribution,
         source,
         mimeType,
@@ -142,7 +144,7 @@ export function createBundledSpeechRuntime(input: Readonly<{
       try {
         clearStopper = params.registerPlaybackStopper(stop);
         if (abortController.signal.aborted) return;
-        const result = await client.synthesize({
+        const result = await getClient().synthesize({
           entry: contribution,
           input: params.text,
           signal: abortController.signal,

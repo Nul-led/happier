@@ -1,0 +1,802 @@
+import * as React from 'react';
+import { useRouter } from 'expo-router';
+import type { HomeTargetInput } from '@happier-dev/cli-common/homeTarget';
+import { ScrollView, View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+
+import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import { useAuth } from '@/auth/context/AuthContext';
+import { HomeAuthenticationFlow } from '@/components/account/auth/HomeAuthenticationFlow';
+import { resolveHomeAuthenticationTarget } from '@/auth/flows/resolveHomeAuthenticationTarget';
+import { fetchAuthEntry, fetchHomeAuthEntry } from '@/auth/entry/authEntryClient';
+import {
+    projectAuthEntryMethodCapabilities,
+    type HomeAuthenticationAction,
+} from '@/auth/capabilities/authMethodCapabilities';
+import { usePortableHomeLinkTarget } from '@/components/teams/join/teamJoinTarget';
+import { useExactHomeDestination } from '@/components/account/auth/useExactHomeDestination';
+import { ExactHomeDestinationNotice } from '@/components/account/auth/ExactHomeDestinationNotice';
+import { openAccountSecurityForHome } from '@/components/settings/account/openAccountSecurityForHome';
+import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
+import { changeAccountSignInEmail } from '@/sync/api/auth/accountSecurity';
+import {
+    previewNativeEmailVerification,
+    previewNativePasswordReset,
+    submitNativePasswordReset,
+    clearNativeInvitationEmailVerificationContinuation,
+    readNativeInvitationEmailVerificationContinuation,
+} from '@/sync/api/auth/nativeAuthEmail';
+import { createServerFetchAtEndpoint, type ServerFetch } from '@/sync/http/client';
+import { WelcomeActionCard } from '@/components/onboarding/preAuth/WelcomeActionCard';
+import { WelcomeActionList } from '@/components/onboarding/preAuth/WelcomeActionList';
+import { Text } from '@/components/ui/text/Text';
+import { layout } from '@/components/ui/layout/layout';
+import { t } from '@/text';
+import { teamDetailPath } from '@/components/settings/teams/teamsRoutes';
+
+import { PasswordField } from './PasswordField';
+import {
+    createEmailPasswordDraft,
+    describeEmailPasswordFailure,
+    resolveEmailPasswordProblemMessage,
+    validateEmailPasswordDraft,
+    type EmailPasswordDraft,
+    type EmailPasswordProblem,
+} from './emailPasswordFormModel';
+
+type LandingState<TPreview> =
+    | Readonly<{ kind: 'loading' }>
+    | Readonly<{ kind: 'unavailable' }>
+    | Readonly<{ kind: 'invalid' }>
+    | Readonly<{ kind: 'ready'; preview: TPreview }>
+    | Readonly<{ kind: 'done' }>;
+
+type NativeAuthLandingTargetState =
+    | Readonly<{ kind: 'loading' }>
+    | Readonly<{ kind: 'unavailable'; retry?: () => void }>
+    | Readonly<{
+        kind: 'ready';
+        target: HomeTargetInput;
+        endpointUrl: string;
+        serverId: string;
+        homeServerIdentityId: string;
+        homeLabel: string;
+        publicRequest: ServerFetch;
+        authenticatedRequest: ServerFetch;
+        createAuthenticatedRequest: (credentials: AuthCredentials) => ServerFetch;
+    }>;
+
+type NativeAuthLandingActions = Readonly<{
+    login: readonly HomeAuthenticationAction[];
+    provision: HomeAuthenticationAction | null;
+}>;
+
+const LANDING_TARGET_LOADING: NativeAuthLandingTargetState = Object.freeze({ kind: 'loading' as const });
+const LANDING_TARGET_UNAVAILABLE: NativeAuthLandingTargetState = Object.freeze({ kind: 'unavailable' as const });
+
+/**
+ * The exact Home named by a mail link, acquiring it first on a fresh device.
+ *
+ * Acquisition — observing the Home and proving its stable identity before this
+ * device records it — belongs to the portable Home link owner, so this landing
+ * has no second adoption path of its own. It never substitutes the focused Home.
+ */
+function useNativeAuthLandingTarget(carrier: string | null): NativeAuthLandingTargetState {
+    const resolution = usePortableHomeLinkTarget(carrier);
+
+    return React.useMemo<NativeAuthLandingTargetState>(() => {
+        if (resolution.kind === 'acquiring') return LANDING_TARGET_LOADING;
+        if (resolution.kind === 'acquisition_failed') {
+            return { kind: 'unavailable', retry: resolution.retry };
+        }
+        if (resolution.kind !== 'resolved') return LANDING_TARGET_UNAVAILABLE;
+        const target = resolveHomeAuthenticationTarget(resolution.target);
+        if (!target) return LANDING_TARGET_UNAVAILABLE;
+        return {
+            kind: 'ready',
+            target: resolution.target,
+            endpointUrl: target.endpointUrl,
+            serverId: target.serverId,
+            homeServerIdentityId: target.serverIdentityId,
+            homeLabel: target.canonicalServerUrl,
+            publicRequest: createServerFetchAtEndpoint({ ...target, credentials: null }),
+            authenticatedRequest: createServerFetchAtEndpoint(target),
+            createAuthenticatedRequest: (credentials) => createServerFetchAtEndpoint({ ...target, credentials }),
+        };
+    }, [resolution]);
+}
+
+function buildEmailVerificationReturnTo(token: string, homeTarget: string): string {
+    return `/auth/email/verify/${encodeURIComponent(token)}?target=${encodeURIComponent(homeTarget)}`;
+}
+
+/**
+ * A mail landing is opened once, on an unpredictable connection, and its
+ * actions consume one-time bearers. Reuse the canonical action-admission owner
+ * so a slow confirmation is visibly working and cannot be submitted twice.
+ */
+function LandingShell(props: Readonly<{ title: string; children: React.ReactNode; testID: string }>) {
+    const [pendingActionId, setPendingActionId] = React.useState<string | null>(null);
+    const activeActionRef = React.useRef<string | null>(null);
+    const mountedRef = React.useRef(true);
+    React.useEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
+    const admission = React.useMemo(() => ({
+        pendingActionId,
+        run: async (actionId: string, action: () => Promise<void> | void) => {
+            if (activeActionRef.current !== null) return;
+            activeActionRef.current = actionId;
+            setPendingActionId(actionId);
+            try {
+                await action();
+            } finally {
+                if (activeActionRef.current === actionId) {
+                    activeActionRef.current = null;
+                    if (mountedRef.current) setPendingActionId(null);
+                }
+            }
+        },
+    }), [pendingActionId]);
+    return (
+        <ScrollView contentContainerStyle={[styles.scroll, { maxWidth: layout.maxWidth, width: '100%', alignSelf: 'center' }]} testID={props.testID}>
+            <WelcomeActionList admission={admission}>
+                <View style={styles.card}>
+                    <Text style={styles.title}>{props.title}</Text>
+                    {props.children}
+                </View>
+            </WelcomeActionList>
+        </ScrollView>
+    );
+}
+
+/**
+ * Read-only landing for a native email verification bearer.
+ *
+ * The link is opened from a mail client, so this screen must work with no
+ * credentials and no referrer. Opening it never consumes the bearer: the
+ * preview is read-only and the consuming operation carries the bearer into its
+ * own transaction.
+ */
+export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVerifyScreen(
+    props: Readonly<{ token: string | null; homeTarget: string | null }>,
+) {
+    const auth = useAuth();
+    const router = useRouter();
+    const landingTarget = useNativeAuthLandingTarget(props.homeTarget);
+    const targetAccountScope = useServerCredentialAccountScopeResolution(
+        landingTarget.kind === 'ready' ? landingTarget.serverId : null,
+    );
+    const { theme } = useUnistyles();
+    const [state, setState] = React.useState<LandingState<{
+        maskedDestination: string | null;
+        continuation: 'account_admission' | 'password_enrollment' | 'sign_in_email_change' | 'none' | null;
+    }>>({ kind: 'loading' });
+    const [problem, setProblem] = React.useState<EmailPasswordProblem | null>(null);
+    const [admissionOpen, setAdmissionOpen] = React.useState(false);
+    const [authenticationOpen, setAuthenticationOpen] = React.useState(false);
+    const [authActions, setAuthActions] = React.useState<NativeAuthLandingActions | null | undefined>(undefined);
+    const destination = useExactHomeDestination({
+        refreshAuth: auth.refreshFromActiveServer,
+        onFocused: React.useCallback(() => router.replace('/'), [router]),
+    });
+    const readyPreview = state.kind === 'ready' ? state.preview : null;
+    const invitationContinuation = state.kind === 'ready'
+        && state.preview.continuation === 'account_admission'
+        && landingTarget.kind === 'ready'
+        ? readNativeInvitationEmailVerificationContinuation({
+            homeServerIdentityId: landingTarget.homeServerIdentityId,
+            maskedDestination: state.preview.maskedDestination,
+        })
+        : null;
+
+    React.useEffect(() => {
+        let active = true;
+        const token = props.token;
+        if (!token) {
+            setState({ kind: 'invalid' });
+            return;
+        }
+        if (landingTarget.kind === 'loading') return;
+        if (landingTarget.kind === 'unavailable') {
+            setState({ kind: 'unavailable' });
+            return;
+        }
+        setState({ kind: 'loading' });
+        void (async () => {
+            try {
+                const preview = await previewNativeEmailVerification(landingTarget.publicRequest, token);
+                if (!active) return;
+                setState(preview.valid
+                    ? { kind: 'ready', preview: { maskedDestination: preview.maskedDestination, continuation: preview.continuation } }
+                    : { kind: 'invalid' });
+            } catch (cause) {
+                if (!active) return;
+                setProblem(describeEmailPasswordFailure(cause, { homeLabel: landingTarget.homeLabel }));
+                setState({ kind: 'unavailable' });
+            }
+        })();
+        return () => { active = false; };
+    }, [landingTarget, props.token]);
+
+    React.useEffect(() => {
+        let active = true;
+        const abortController = new AbortController();
+        if (landingTarget.kind !== 'ready' || readyPreview === null) {
+            setAuthActions(undefined);
+            return () => {
+                active = false;
+                abortController.abort();
+            };
+        }
+        void (async () => {
+            const transport = {
+                endpointUrl: landingTarget.endpointUrl,
+                serverId: landingTarget.serverId,
+                signal: abortController.signal,
+            };
+            // A transferable-invitation verification operation is valid on an
+            // invitation-only Home even when ordinary public provisioning is
+            // closed. Ask the existing invitation entry owner for the exact
+            // admission actions instead of reinterpreting Home policy here.
+            const entry = invitationContinuation
+                ? await fetchAuthEntry({
+                    ...transport,
+                    scope: { kind: 'invitation', token: invitationContinuation.admission.token },
+                })
+                : readyPreview.continuation === 'account_admission' && props.token
+                ? await fetchAuthEntry({
+                    ...transport,
+                    scope: { kind: 'native_email_verification', token: props.token },
+                })
+                : await fetchHomeAuthEntry(transport);
+            if (!active) return;
+            if (entry.kind !== 'ready'
+                || (entry.projection.state !== 'ready' && entry.projection.state !== 'admission_required')) {
+                setAuthActions(null);
+                return;
+            }
+            const actions = projectAuthEntryMethodCapabilities(entry.projection).authenticationActions;
+            setAuthActions({
+                login: actions.filter((candidate) => candidate.action.id === 'login'),
+                provision: actions.find((candidate) => (
+                    candidate.method.id === 'email_password'
+                    && candidate.action.id === 'provision'
+                    && candidate.execution.kind === 'email_password'
+                )) ?? null,
+            });
+        })().catch(() => { if (active) setAuthActions(null); });
+        return () => {
+            active = false;
+            abortController.abort();
+        };
+    }, [invitationContinuation?.admission.token, landingTarget, props.token, readyPreview?.continuation]);
+
+    React.useEffect(() => {
+        setProblem(null);
+        setAdmissionOpen(false);
+        setAuthenticationOpen(false);
+    }, [props.homeTarget, props.token]);
+
+    const problemMessage = problem ? resolveEmailPasswordProblemMessage(problem) : null;
+    // Account Security is reached through its own canonical exact-Home opener,
+    // but a failed activation is the shared destination state below rather than
+    // a discarded boolean. Otherwise a change that already committed on Home B
+    // would leave its Confirm affordance mounted, and the only thing left to
+    // press would re-submit an already consumed one-time bearer.
+    const continueToExactHomeAccountSecurity = React.useCallback(async (verificationToken?: string) => {
+        if (landingTarget.kind !== 'ready') return;
+        const serverId = landingTarget.serverId;
+        await destination.continueThrough(async () => await openAccountSecurityForHome({
+            serverId,
+            router,
+            refreshAuth: auth.refreshFromActiveServer,
+            ...(verificationToken ? { verificationToken } : {}),
+        }));
+    }, [auth.refreshFromActiveServer, destination.continueThrough, landingTarget, router]);
+    if (state.kind === 'ready'
+        && state.preview.continuation === 'account_admission'
+        && admissionOpen
+        && props.token
+        && landingTarget.kind === 'ready'
+        && authActions?.provision) {
+        return (
+            <HomeAuthenticationFlow
+                target={landingTarget.target}
+                actions={[authActions.provision]}
+                returnTo="/"
+                nativeAdmission={invitationContinuation
+                    ? { ...invitationContinuation.admission, emailVerificationToken: props.token }
+                    : { kind: 'native_email_verification', token: props.token }}
+                homeLabel={landingTarget.homeLabel}
+                keyChallengeV2Available={false}
+                onAuthenticated={async ({ teamId }) => {
+                    if (invitationContinuation) {
+                        clearNativeInvitationEmailVerificationContinuation(invitationContinuation.admission);
+                    }
+                    // The Account was created on this exact Home while another
+                    // may be focused. Landing on the previous Home would read as
+                    // the creation having silently failed — and that is just as
+                    // true of the Team the same operation atomically admitted, so
+                    // both destinations wait for the one focus.
+                    setAdmissionOpen(false);
+                    await destination.continueToHome(
+                        landingTarget.serverId,
+                        teamId
+                            ? () => router.replace(teamDetailPath({
+                                serverId: resolveServerProfileScopeIdForIdentifier(landingTarget.serverId),
+                                teamId,
+                            }))
+                            : undefined,
+                    );
+                }}
+                onBack={() => setAdmissionOpen(false)}
+            />
+        );
+    }
+
+
+    if (state.kind === 'ready'
+        && (state.preview.continuation === 'sign_in_email_change'
+            || state.preview.continuation === 'password_enrollment')
+        && authenticationOpen
+        && props.token
+        && props.homeTarget
+        && landingTarget.kind === 'ready'
+        && authActions
+        && authActions.login.length > 0) {
+        return (
+            <HomeAuthenticationFlow
+                target={landingTarget.target}
+                actions={authActions.login}
+                returnTo={buildEmailVerificationReturnTo(props.token, props.homeTarget)}
+                homeLabel={landingTarget.homeLabel}
+                onAuthenticated={async ({ credentials }) => {
+                    try {
+                        if (state.preview.continuation === 'sign_in_email_change') {
+                            await changeAccountSignInEmail(
+                                landingTarget.createAuthenticatedRequest(credentials),
+                                { verificationToken: props.token! },
+                            );
+                        }
+                        // Whatever this bearer authorized has now committed, so the
+                        // authentication step is retired before the destination is
+                        // attempted. Leaving it mounted would hide a blocked exact-Home
+                        // activation behind a sign-in form that proves nothing further.
+                        setAuthenticationOpen(false);
+                        await continueToExactHomeAccountSecurity(
+                            state.preview.continuation === 'password_enrollment'
+                                ? props.token ?? undefined
+                                : undefined,
+                        );
+                    } catch (cause) {
+                        setProblem(describeEmailPasswordFailure(cause));
+                        setAuthenticationOpen(false);
+                    }
+                }}
+                onBack={() => setAuthenticationOpen(false)}
+            />
+        );
+    }
+
+    // The bearer has already been consumed by the operation that succeeded. What
+    // is left is reaching that Home, and a device that cannot get there stays
+    // here with a retry rather than being dropped onto the Home it came from.
+    if (destination.state.kind !== 'idle') {
+        const destinationState = destination.state;
+        return <LandingShell testID="native-auth-verify" title={t('settingsAccount.nativePassword.verifyTitle')}>
+            <ExactHomeDestinationNotice
+                testID="native-auth-verify-destination-home"
+                state={destinationState}
+            />
+            <WelcomeActionCard
+                testID="native-auth-verify-return"
+                title={t('settingsAccount.nativePassword.returnToSignIn')}
+                iconName="arrow-left"
+                escape
+                onPress={() => router.replace('/')}
+            />
+        </LandingShell>;
+    }
+
+    if (state.kind === 'loading') {
+        return <LandingShell testID="native-auth-verify" title={t('settingsAccount.nativePassword.verifyTitle')}>
+            <Text style={styles.body}>{t('settingsAccount.nativePassword.working')}</Text>
+        </LandingShell>;
+    }
+
+    if (state.kind === 'invalid' || state.kind === 'unavailable') {
+        return <LandingShell testID="native-auth-verify" title={t('settingsAccount.nativePassword.verifyTitle')}>
+            <Text testID="native-auth-verify-invalid" accessibilityRole="alert" style={[styles.body, { color: theme.colors.status.error }]}>
+                {state.kind === 'invalid' ? t('settingsAccount.nativePassword.linkExpired') : problemMessage ?? t('settingsAccount.nativePassword.serverUnavailable')}
+            </Text>
+            {landingTarget.kind === 'unavailable' && landingTarget.retry ? (
+                <WelcomeActionCard
+                    testID="native-auth-verify-retry-home"
+                    title={t('common.retry')}
+                    iconName="arrow-clockwise"
+                    primary
+                    onPress={landingTarget.retry}
+                />
+            ) : null}
+            <WelcomeActionCard
+                testID="native-auth-verify-return"
+                title={t('settingsAccount.nativePassword.returnToSignIn')}
+                iconName="arrow-left"
+                onPress={() => router.replace('/')}
+            />
+        </LandingShell>;
+    }
+
+    if (state.kind === 'done') {
+        return <LandingShell testID="native-auth-verify" title={t('settingsAccount.nativePassword.verifyTitle')}>
+            <Text testID="native-auth-verify-done" style={styles.body}>{t('settingsAccount.nativePassword.addressVerified')}</Text>
+            <WelcomeActionCard
+                testID="native-auth-verify-continue"
+                title={t('settingsAccount.nativePassword.continue')}
+                iconName="arrow-right"
+                onPress={() => router.replace('/')}
+            />
+        </LandingShell>;
+    }
+
+    const preview = state.preview;
+    return <LandingShell testID="native-auth-verify" title={t('settingsAccount.nativePassword.verifyTitle')}>
+        <Text testID="native-auth-verify-destination" style={styles.body}>
+            {preview.maskedDestination
+                ? t('settingsAccount.nativePassword.verifyDestination', { email: preview.maskedDestination })
+                : t('settingsAccount.nativePassword.verifyGeneric')}
+        </Text>
+        {problemMessage ? (
+            <Text accessibilityRole="alert" style={[styles.body, { color: theme.colors.status.error }]}>{problemMessage}</Text>
+        ) : null}
+        {preview.continuation === 'sign_in_email_change' ? (
+            targetAccountScope.kind === 'bound' ? (
+                <WelcomeActionCard
+                    testID="native-auth-verify-confirm-change"
+                    title={t('settingsAccount.nativePassword.confirmEmailChange')}
+                    iconName="check"
+                    primary
+                    onPress={async () => {
+                        setProblem(null);
+                        try {
+                            if (landingTarget.kind !== 'ready') return;
+                            await changeAccountSignInEmail(landingTarget.authenticatedRequest, { verificationToken: props.token! });
+                            await continueToExactHomeAccountSecurity();
+                        } catch (cause) {
+                            setProblem(describeEmailPasswordFailure(cause));
+                        }
+                    }}
+                />
+            ) : (
+                <>
+                    <Text testID="native-auth-verify-sign-in-required" style={styles.body}>
+                        {t('settingsAccount.nativePassword.signInToConfirm')}
+                    </Text>
+                    {targetAccountScope.kind === 'signed_out'
+                    && landingTarget.kind === 'ready'
+                    && authActions
+                    && authActions.login.length > 0 ? (
+                        <WelcomeActionCard
+                            testID="native-auth-verify-sign-in"
+                            title={t('settingsAccount.nativePassword.signInFirst')}
+                            iconName="sign-in"
+                            primary
+                            onPress={() => setAuthenticationOpen(true)}
+                        />
+                    ) : null}
+                </>
+            )
+        ) : preview.continuation === 'password_enrollment' ? (
+            targetAccountScope.kind === 'bound' ? (
+                <WelcomeActionCard
+                    testID="native-auth-verify-password-enrollment"
+                    title={t('settingsAccount.nativePassword.continue')}
+                    iconName="arrow-right"
+                    primary
+                    onPress={() => continueToExactHomeAccountSecurity(props.token ?? undefined)}
+                />
+            ) : (
+                <>
+                    <Text testID="native-auth-verify-sign-in-required" style={styles.body}>
+                        {t('settingsAccount.nativePassword.signInToConfirm')}
+                    </Text>
+                    {targetAccountScope.kind === 'signed_out'
+                    && landingTarget.kind === 'ready'
+                    && authActions
+                    && authActions.login.length > 0 ? (
+                        <WelcomeActionCard
+                            testID="native-auth-verify-sign-in"
+                            title={t('settingsAccount.nativePassword.signInFirst')}
+                            iconName="sign-in"
+                            primary
+                            onPress={() => setAuthenticationOpen(true)}
+                        />
+                    ) : null}
+                </>
+            )
+        ) : preview.continuation === 'account_admission' && landingTarget.kind === 'ready' && authActions?.provision ? (
+            <WelcomeActionCard
+                testID="native-auth-verify-create-account"
+                title={t('settingsAccount.nativePassword.continue')}
+                iconName="arrow-right"
+                primary
+                onPress={() => setAdmissionOpen(true)}
+            />
+        ) : (
+            // Account admission consumes this bearer inside its own creation
+            // transaction. If the Home no longer offers native provisioning,
+            // keep the bearer inert and report that the entry is unavailable.
+            <Text testID="native-auth-verify-admission" style={styles.body}>
+                {preview.continuation === 'account_admission' && authActions === undefined
+                    ? t('settingsAccount.nativePassword.working')
+                    : preview.continuation === 'account_admission'
+                    ? t('settingsAccount.nativePassword.serverUnavailable')
+                    : t('settingsAccount.nativePassword.verifyReturnToCreate')}
+            </Text>
+        )}
+        <WelcomeActionCard
+            testID="native-auth-verify-return"
+            title={t('settingsAccount.nativePassword.returnToSignIn')}
+            iconName="arrow-left"
+            escape
+            onPress={() => router.replace('/')}
+        />
+    </LandingShell>;
+});
+
+/** Read-only landing plus explicit new-password submission for a Plain reset. */
+export const NativeAuthPasswordResetScreen = React.memo(function NativeAuthPasswordResetScreen(
+    props: Readonly<{ token: string | null; homeTarget: string | null }>,
+) {
+    const auth = useAuth();
+    const router = useRouter();
+    const landingTarget = useNativeAuthLandingTarget(props.homeTarget);
+    const { theme } = useUnistyles();
+    const [state, setState] = React.useState<LandingState<null>>({ kind: 'loading' });
+    const [draft, setDraft] = React.useState<EmailPasswordDraft>(() => createEmailPasswordDraft());
+    const [problem, setProblem] = React.useState<EmailPasswordProblem | null>(null);
+    const [busy, setBusy] = React.useState(false);
+    const [authenticationOpen, setAuthenticationOpen] = React.useState(false);
+    const [loginActions, setLoginActions] = React.useState<readonly HomeAuthenticationAction[] | null | undefined>(undefined);
+    const destination = useExactHomeDestination({
+        refreshAuth: auth.refreshFromActiveServer,
+        onFocused: React.useCallback(() => router.replace('/'), [router]),
+    });
+    const passwordRef = React.useRef<{ focus: () => void } | null>(null);
+    const confirmRef = React.useRef<{ focus: () => void } | null>(null);
+    const routeKey = `${props.homeTarget ?? ''}\u0000${props.token ?? ''}`;
+    const currentRouteKeyRef = React.useRef(routeKey);
+    currentRouteKeyRef.current = routeKey;
+
+    React.useEffect(() => {
+        let active = true;
+        const token = props.token;
+        if (!token) {
+            setState({ kind: 'invalid' });
+            return;
+        }
+        if (landingTarget.kind === 'loading') return;
+        if (landingTarget.kind === 'unavailable') {
+            setState({ kind: 'unavailable' });
+            return;
+        }
+        setState({ kind: 'loading' });
+        void (async () => {
+            try {
+                const preview = await previewNativePasswordReset(landingTarget.publicRequest, token);
+                if (!active) return;
+                setState(preview.valid ? { kind: 'ready', preview: null } : { kind: 'invalid' });
+            } catch (cause) {
+                if (!active) return;
+                setProblem(describeEmailPasswordFailure(cause, { homeLabel: landingTarget.homeLabel }));
+                setState({ kind: 'unavailable' });
+            }
+        })();
+        return () => { active = false; };
+    }, [landingTarget, props.token]);
+
+    React.useEffect(() => {
+        let active = true;
+        const abortController = new AbortController();
+        if (landingTarget.kind !== 'ready') {
+            setLoginActions(undefined);
+            return () => {
+                active = false;
+                abortController.abort();
+            };
+        }
+        void fetchHomeAuthEntry({
+            endpointUrl: landingTarget.endpointUrl,
+            serverId: landingTarget.serverId,
+            signal: abortController.signal,
+        }).then((entry) => {
+            if (!active) return;
+            if (entry.kind !== 'ready' || entry.projection.state !== 'ready') {
+                setLoginActions(null);
+                return;
+            }
+            setLoginActions(projectAuthEntryMethodCapabilities(entry.projection).authenticationActions.filter(
+                (candidate) => candidate.action.id === 'login',
+            ));
+        }).catch(() => { if (active) setLoginActions(null); });
+        return () => {
+            active = false;
+            abortController.abort();
+        };
+    }, [landingTarget]);
+
+    React.useEffect(() => {
+        setDraft(createEmailPasswordDraft());
+        setProblem(null);
+        setBusy(false);
+        setAuthenticationOpen(false);
+    }, [routeKey]);
+
+    const problemMessage = problem ? resolveEmailPasswordProblemMessage(problem) : null;
+
+    const submit = React.useCallback(async () => {
+        if (busy || !props.token) return;
+        const submissionRouteKey = routeKey;
+        const validated = validateEmailPasswordDraft({ purpose: 'recover', draft });
+        if (!validated.ok) {
+            setProblem(validated.problem);
+            if (validated.problem.field === 'confirmPassword') confirmRef.current?.focus();
+            else passwordRef.current?.focus();
+            return;
+        }
+        setProblem(null);
+        setBusy(true);
+        try {
+            if (landingTarget.kind !== 'ready') return;
+            await submitNativePasswordReset(landingTarget.publicRequest, { token: props.token, password: validated.password });
+            if (currentRouteKeyRef.current !== submissionRouteKey) return;
+            setDraft(createEmailPasswordDraft());
+            setState({ kind: 'done' });
+        } catch (cause) {
+            if (currentRouteKeyRef.current !== submissionRouteKey) return;
+            setProblem(describeEmailPasswordFailure(
+                cause,
+                landingTarget.kind === 'ready' ? { homeLabel: landingTarget.homeLabel } : {},
+            ));
+        } finally {
+            if (currentRouteKeyRef.current === submissionRouteKey) setBusy(false);
+        }
+    }, [busy, draft, landingTarget, props.token, routeKey]);
+
+    if (state.kind === 'loading') {
+        return <LandingShell testID="native-auth-reset" title={t('settingsAccount.nativePassword.resetTitle')}>
+            <Text style={styles.body}>{t('settingsAccount.nativePassword.working')}</Text>
+        </LandingShell>;
+    }
+
+    if (state.kind === 'invalid' || state.kind === 'unavailable') {
+        return <LandingShell testID="native-auth-reset" title={t('settingsAccount.nativePassword.resetTitle')}>
+            <Text testID="native-auth-reset-invalid" accessibilityRole="alert" style={[styles.body, { color: theme.colors.status.error }]}>
+                {state.kind === 'invalid' ? t('settingsAccount.nativePassword.linkExpired') : problemMessage ?? t('settingsAccount.nativePassword.serverUnavailable')}
+            </Text>
+            {landingTarget.kind === 'unavailable' && landingTarget.retry ? (
+                <WelcomeActionCard
+                    testID="native-auth-reset-retry-home"
+                    title={t('common.retry')}
+                    iconName="arrow-clockwise"
+                    primary
+                    onPress={landingTarget.retry}
+                />
+            ) : null}
+            <WelcomeActionCard
+                testID="native-auth-reset-return"
+                title={t('settingsAccount.nativePassword.returnToSignIn')}
+                iconName="arrow-left"
+                onPress={() => router.replace('/')}
+            />
+        </LandingShell>;
+    }
+
+    if (state.kind === 'done') {
+        // The password is already changed. Only reaching that Home is left, so a
+        // device that cannot get there keeps the visible retry instead of being
+        // dropped onto whichever Home it came from.
+        if (destination.state.kind !== 'idle') {
+            const destinationState = destination.state;
+            return <LandingShell testID="native-auth-reset" title={t('settingsAccount.nativePassword.resetTitle')}>
+                <Text testID="native-auth-reset-done" style={styles.body}>{t('settingsAccount.nativePassword.resetComplete')}</Text>
+                <ExactHomeDestinationNotice
+                    testID="native-auth-reset-destination-home"
+                    state={destinationState}
+                />
+                <WelcomeActionCard
+                    testID="native-auth-reset-return"
+                    title={t('settingsAccount.nativePassword.returnToSignIn')}
+                    iconName="arrow-left"
+                    escape
+                    onPress={() => router.replace('/')}
+                />
+            </LandingShell>;
+        }
+        if (authenticationOpen && landingTarget.kind === 'ready' && loginActions && loginActions.length > 0) {
+            return <HomeAuthenticationFlow
+                target={landingTarget.target}
+                actions={loginActions}
+                returnTo="/"
+                homeLabel={landingTarget.homeLabel}
+                onAuthenticated={async () => {
+                    // The new password signs in to the Home the reset link named,
+                    // which need not be the focused one. Only move on once this
+                    // device is actually on it.
+                    setAuthenticationOpen(false);
+                    await destination.continueToHome(landingTarget.serverId);
+                }}
+                onBack={() => setAuthenticationOpen(false)}
+            />;
+        }
+        return <LandingShell testID="native-auth-reset" title={t('settingsAccount.nativePassword.resetTitle')}>
+            <Text testID="native-auth-reset-done" style={styles.body}>{t('settingsAccount.nativePassword.resetComplete')}</Text>
+            {landingTarget.kind === 'ready' && loginActions && loginActions.length > 0 ? (
+                <WelcomeActionCard
+                    testID="native-auth-reset-sign-in"
+                    title={t('settingsAccount.nativePassword.returnToSignIn')}
+                    iconName="sign-in"
+                    primary
+                    onPress={() => setAuthenticationOpen(true)}
+                />
+            ) : (
+                <Text accessibilityRole="alert" style={[styles.body, { color: theme.colors.status.error }]}>
+                    {loginActions === undefined
+                        ? t('settingsAccount.nativePassword.working')
+                        : t('settingsAccount.nativePassword.serverUnavailable')}
+                </Text>
+            )}
+        </LandingShell>;
+    }
+
+    return <LandingShell testID="native-auth-reset" title={t('settingsAccount.nativePassword.resetTitle')}>
+        <Text style={styles.body}>{t('settingsAccount.nativePassword.resetChooseNew')}</Text>
+        <PasswordField
+            testID="native-auth-reset-password"
+            inputRef={passwordRef}
+            label={t('settingsAccount.nativePassword.newPassword')}
+            value={draft.password}
+            onChangeText={(password) => setDraft((current) => ({ ...current, password }))}
+            autoComplete="new-password"
+            supportingText={t('settingsAccount.nativePassword.passwordRequirements')}
+            error={problem?.field === 'password' ? problemMessage : null}
+            editable={!busy}
+            returnKeyType="next"
+            onSubmitEditing={() => confirmRef.current?.focus()}
+        />
+        <PasswordField
+            testID="native-auth-reset-confirm"
+            inputRef={confirmRef}
+            label={t('settingsAccount.nativePassword.confirmPassword')}
+            value={draft.confirmPassword}
+            onChangeText={(confirmPassword) => setDraft((current) => ({ ...current, confirmPassword }))}
+            autoComplete="new-password"
+            error={problem?.field === 'confirmPassword' ? problemMessage : null}
+            editable={!busy}
+            returnKeyType="go"
+            onSubmitEditing={submit}
+        />
+        {problem?.field === 'form' && problemMessage ? (
+            <Text testID="native-auth-reset-error" accessibilityRole="alert" accessibilityLiveRegion="polite"
+                style={[styles.body, { color: theme.colors.status.error }]}>{problemMessage}</Text>
+        ) : null}
+        <Text style={styles.body}>{t('settingsAccount.nativePassword.resetSignsOutOtherDevices')}</Text>
+        <WelcomeActionCard
+            testID="native-auth-reset-submit"
+            title={t('settingsAccount.nativePassword.setNewPassword')}
+            iconName="check"
+            primary
+            onPress={submit}
+        />
+    </LandingShell>;
+});
+
+const styles = StyleSheet.create((theme) => ({
+    scroll: { paddingHorizontal: 20, paddingVertical: 32, gap: 16 },
+    card: { gap: 14, width: '100%' },
+    title: { fontSize: 22, fontWeight: '600', color: theme.colors.text.primary },
+    body: { fontSize: 14, color: theme.colors.text.secondary },
+}));

@@ -91,20 +91,24 @@ function assertString(value: unknown, name: string): asserts value is string {
 }
 
 describe('buildAccountEncryptionMigrateToPlainRequest', () => {
-  it('includes Account-owned new-session drafts in the atomic plain migration request', async () => {
+  it.each([1, 2] as const)('includes Account-owned new-session drafts in the atomic plain migration request (epoch %s)', async (epoch) => {
     const credentials = createLegacyCredentials();
     const address = {
       kind: 'newSession' as const,
       draftId: '00000000-0000-4000-8000-000000000111',
     };
     const document = {
-      v: 1 as const,
+      v: epoch,
       composer: {
         text: { mutationId: '00000000-0000-4000-8000-000000000112', value: 'draft' },
         mentions: { mutationId: '00000000-0000-4000-8000-000000000113', value: [] },
         attachments: { mutationId: '00000000-0000-4000-8000-000000000114', value: [] },
       },
-      target: { kind: 'newSession' as const, authoring: {} },
+      target: { kind: 'newSession' as const, authoring: epoch === 1 ? {} : {
+        executionTarget: { mutationId: '00000000-0000-4000-8000-000000000105', value: {
+          kind: 'temporary_computer', serverId: 'server-a', artifactTarget: 'linux-x64', workspace: { kind: 'choose_on_endpoint' },
+        } },
+      } },
       extensions: {},
     };
 
@@ -126,10 +130,11 @@ describe('buildAccountEncryptionMigrateToPlainRequest', () => {
     });
 
     expect(request.sessionDrafts).toEqual({
+      ...(epoch === 2 ? { v: 2 } : {}),
       items: [{
         address,
         expectedRevision: 8,
-        content: { t: 'plain', v: { v: 1, address, document } },
+        content: { t: 'plain', v: { v: epoch, address, document } },
       }],
     });
   });

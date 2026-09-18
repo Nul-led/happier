@@ -30,7 +30,7 @@ const fetchAndApplyPendingMessagesV2 = (
 
 describe('pendingQueueV2 decrypt mapping', () => {
     beforeEach(() => {
-        resetPendingQueueState();
+        await resetPendingQueueState();
     });
 
     it('retains decrypted rows that cannot be coerced to a RawRecord user-text message as explicit failures', async () => {
@@ -520,7 +520,7 @@ describe('pendingQueueV2 decrypt mapping', () => {
         const sessionId = 's_malformed_server_row_retires_custody';
         const localId = 'malformed-server-row';
         const rawRecord = { role: 'user' as const, content: { type: 'text' as const, text: 'local custody' }, meta: {} };
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId,
             localId,
             createdAt: 1,
@@ -530,7 +530,7 @@ describe('pendingQueueV2 decrypt mapping', () => {
                 v: 1,
                 body: JSON.stringify({ localId, content: { t: 'plain', v: rawRecord }, messageRole: 'user' }),
             },
-        }, outboxScope);
+        }, outboxScope));
         replayPersistedPendingOutboxForSession(sessionId, outboxScope);
 
         await fetchAndApplyPendingMessagesV2({
@@ -546,7 +546,7 @@ describe('pendingQueueV2 decrypt mapping', () => {
             }] }),
         });
 
-        expect(loadPendingOutboxForSession(sessionId, outboxScope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, outboxScope))).toEqual([]);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({
                 localId,

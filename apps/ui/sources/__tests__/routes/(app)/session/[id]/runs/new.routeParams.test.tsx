@@ -6,14 +6,14 @@ import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const hydrateSessionSpy = vi.hoisted(() => vi.fn((sessionId: string, reason: string) => ({
+const hydrateSessionSpy = vi.hoisted(() => vi.fn((sessionId: string, reason: string, options?: unknown) => ({
     kind: 'available' as const,
     sessionId,
 })));
 const launcherViewSpy = vi.hoisted(() => vi.fn<(props: any, ref?: any) => React.ReactElement>((props) => React.createElement('SessionExecutionRunLauncherView', props)));
 
 const routerMock = createExpoRouterMock({
-    params: { id: ['s1', 's2'], intent: 'review' },
+    params: { id: ['s1', 's2'], serverId: ['home-b', 'home-a'], intent: 'review' },
     router: {
         push: vi.fn(),
         back: vi.fn(),
@@ -44,7 +44,7 @@ vi.mock('@/text', async () => {
 });
 
 vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({
-    useHydrateSessionForRoute: (sessionId: string, reason: string) => hydrateSessionSpy(sessionId, reason),
+    useHydrateSessionForRoute: (sessionId: string, reason: string, options?: unknown) => hydrateSessionSpy(sessionId, reason, options),
 }));
 
 vi.mock('@/components/sessions/runs/launcher/SessionExecutionRunLauncherView', () => ({
@@ -66,10 +66,11 @@ describe('session new run route', () => {
 
         await renderScreen(<NewRunRoute />);
 
-        expect(hydrateSessionSpy).toHaveBeenCalledWith('s1', 'SessionNewRunScreen.hydrate');
+        expect(hydrateSessionSpy).toHaveBeenCalledWith('s1', 'SessionNewRunScreen.hydrate', { serverId: 'home-b' });
         expect(launcherViewSpy).toHaveBeenCalledWith(
             expect.objectContaining({
                 sessionId: 's1',
+                serverId: 'home-b',
                 initialIntent: 'review',
                 presentation: 'screen',
             }),

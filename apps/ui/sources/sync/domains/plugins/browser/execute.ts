@@ -147,6 +147,7 @@ export async function executePluginBrowserAction(params: Readonly<{
             ? {
                 clientAction: {
                     projectionGeneration: params.generation,
+                    ...(params.execute ? { execute: params.execute } : {}),
                     ...(params.sessionId ? { sessionId: params.sessionId } : {}),
                     ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
                     ...(params.readCurrentUiContext

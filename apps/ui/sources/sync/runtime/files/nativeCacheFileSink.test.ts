@@ -58,4 +58,32 @@ describe('createNativeCacheFileSink', () => {
         expect(deleteFile.mock.invocationCallOrder[0]).toBeLessThan(create.mock.invocationCallOrder[0] ?? 0);
         expect(create).toHaveBeenCalledTimes(1);
     });
+
+    it('surfaces exact cache-file removal failures and accepts a later confirmed absence', async () => {
+        const deleteFile = vi.fn()
+            .mockImplementationOnce(() => { throw new Error('file busy'); })
+            .mockImplementationOnce(() => { throw new Error('already absent'); });
+        let exists = true;
+        class File {
+            readonly uri: string;
+            constructor(uri: string) { this.uri = uri; }
+            get exists() { return exists; }
+            delete = deleteFile;
+        }
+        vi.doMock('expo-file-system', () => ({ File }));
+
+        const { removeNativeCacheFileCustody } = await import('./nativeCacheFileSink');
+        await expect(removeNativeCacheFileCustody('file:///cache/sensitive.zip')).rejects.toThrow('file busy');
+
+        exists = false;
+        await expect(removeNativeCacheFileCustody('file:///cache/sensitive.zip')).resolves.toBeUndefined();
+        expect(deleteFile).toHaveBeenCalledTimes(2);
+    });
+
+    it('surfaces native file-system import failures instead of claiming custody was removed', async () => {
+        vi.doMock('expo-file-system', () => { throw new Error('native file system unavailable'); });
+        const { removeNativeCacheFileCustody } = await import('./nativeCacheFileSink');
+        await expect(removeNativeCacheFileCustody('file:///cache/sensitive.zip'))
+            .rejects.toThrow();
+    });
 });

@@ -1,7 +1,6 @@
 import type { NormalizedMessage } from '@/sync/typesRaw';
 import { computeNextSessionSeqFromUpdate } from '@/sync/domains/session/sequence/realtimeSessionSeq';
 import type { AgentState, Metadata, Session } from '@/sync/domains/state/storageTypes';
-import { computeNextReadStateV1 } from '@/sync/domains/state/readStateV1';
 import { preserveSessionRuntimeLocalMetadata } from '@/sync/domains/session/preserveSessionRuntimeLocalMetadata';
 import {
     deriveSessionListRenderableHasUnreadMessagesFromMetadataPatch,
@@ -13,7 +12,17 @@ import { buildSessionListRenderableMetadataComparison } from '@/sync/domains/ses
 import type { ApiSessionMessagesResponse } from '@/sync/api/types/apiTypes';
 import { storage } from '@/sync/domains/state/storage';
 import { readRollbackEligibleTurnStarts } from '@/sync/domains/session/rollback/rollbackEligibleTurnStarts';
-import type { Encryption } from '@/sync/encryption/encryption';
+import {
+    captureEncryptionGenerationCurrentness,
+    isCapturedEncryptionGenerationScopeCurrent,
+    type Encryption,
+    type EncryptionGenerationScopeAuthority,
+} from '@/sync/encryption/encryption';
+import { deriveSessionContentAvailability } from '@/sync/domains/session/encryptedContentAvailability';
+import {
+    createSessionDataKeyHydrationPlan,
+    hydrateSessionDataKeys,
+} from '@/sync/encryption/sessionDataKeyHydration';
 import { writeSyncDebugLog } from '@/sync/runtime/syncDebugLogging';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { nowServerMs } from '@/sync/runtime/time';
@@ -39,7 +48,13 @@ import {
     resolveSessionRuntimeActivityProjectionFields,
     type SessionRuntimeActivityResyncHandler,
 } from './sessionRuntimeActivityProjection';
-import type { PrimaryTurnStatusV1 } from '@happier-dev/protocol';
+import {
+    parseSessionAgentActivityHeadlineV1,
+    SessionAccessAccountSummaryV1Schema,
+    type PrimaryTurnStatusV1,
+} from '@happier-dev/protocol';
+import { resolveSessionViewerProjectionUpdate } from '@/sync/domains/session/readState/sessionViewer';
+import { normalizeSessionAccessProjection } from './normalizeSessionAccessProjection';
 export { handleNewMessageSocketUpdate } from './sessionSocketUpdate';
 export { handleMessageUpdatedSocketUpdate } from './sessionSocketUpdate';
 export { fetchAndApplySessions } from './sessionSnapshot';
@@ -74,6 +89,32 @@ function isTerminalPrimaryTurnStatus(value: PrimaryTurnStatusV1 | null | undefin
     return value === 'completed' || value === 'cancelled' || value === 'failed';
 }
 
+type SessionResponsibilityResyncHandler = () => void;
+
+function resolveSessionResponsibilitySocketPatch(
+    updateBody: unknown,
+    onResyncRequired?: SessionResponsibilityResyncHandler,
+): Partial<Pick<Session, 'responsibleAccountId' | 'responsibleAccount'>> {
+    if (!updateBody || typeof updateBody !== 'object' || Array.isArray(updateBody)) return {};
+    const record = updateBody as Record<string, unknown>;
+    const hasId = Object.prototype.hasOwnProperty.call(record, 'responsibleAccountId');
+    const hasSummary = Object.prototype.hasOwnProperty.call(record, 'responsibleAccount');
+    if (!hasId && !hasSummary) return {};
+    if (hasId && hasSummary) {
+        if (record.responsibleAccountId === null && record.responsibleAccount === null) {
+            return { responsibleAccountId: null, responsibleAccount: null };
+        }
+        if (typeof record.responsibleAccountId === 'string' && record.responsibleAccountId.length > 0) {
+            const summary = SessionAccessAccountSummaryV1Schema.safeParse(record.responsibleAccount);
+            if (summary.success && summary.data.accountId === record.responsibleAccountId) {
+                return { responsibleAccountId: record.responsibleAccountId, responsibleAccount: summary.data };
+            }
+        }
+    }
+    onResyncRequired?.();
+    return {};
+}
+
 function readRenderablePatchReadableActivity(sessionId: string) {
     const sessionMessages = storage.getState().sessionMessages?.[sessionId];
     if (!sessionMessages) return undefined;
@@ -83,44 +124,31 @@ function readRenderablePatchReadableActivity(sessionId: string) {
     );
 }
 
-function applySidechainScopeMetadata(params: Readonly<{
-    normalizedMessage: NormalizedMessage;
-    inputSidechainId: unknown;
-    scope?: 'main' | 'sidechain' | 'all';
-    requestedSidechainId?: string | null;
-}>): void {
-    const inputSidechainId = typeof params.inputSidechainId === 'string' && params.inputSidechainId.trim().length > 0
-        ? params.inputSidechainId.trim()
-        : null;
-    const requestedSidechainId = typeof params.requestedSidechainId === 'string' && params.requestedSidechainId.trim().length > 0
-        ? params.requestedSidechainId.trim()
-        : null;
-    const resolvedSidechainId = inputSidechainId ?? (params.scope === 'sidechain' ? requestedSidechainId : null);
-    if (!resolvedSidechainId) return;
-    params.normalizedMessage.sidechainId = resolvedSidechainId;
-    params.normalizedMessage.isSidechain = true;
-}
-
 type SessionEncryption = {
     decryptAgentState: (version: number, value: string | null) => Promise<AgentState>;
-    decryptMetadata: (version: number, value: string) => Promise<Metadata | null>;
-    decryptMetadataPayload: (version: number, value: string) => Promise<unknown | null>;
+    decryptMetadata: (version: number, value: string, options?: import('@/sync/encryption/encryptor').DecryptOptions) => Promise<Metadata | null>;
+    decryptMetadataPayload: (version: number, value: string, options?: import('@/sync/encryption/encryptor').DecryptOptions) => Promise<unknown | null>;
     decryptSessionSnapshotState?: (
         metadataVersion: number,
         metadata: string,
         agentStateVersion: number,
         agentState: string | null | undefined,
+        options?: import('@/sync/encryption/encryptor').DecryptOptions,
     ) => Promise<{ metadata: Metadata | null; agentState: AgentState }>;
 };
 
 type NewSessionSocketEncryption = {
     decryptEncryptionKey: (value: string) => Promise<Uint8Array | null>;
-    initializeSessions: (sessionKeys: Map<string, Uint8Array | null>) => Promise<void>;
+    initializeSessions: Encryption['initializeSessions'];
     getSessionEncryption: (sessionId: string) => SessionEncryption | null;
+    removeSessionEncryption?: Encryption['removeSessionEncryption'];
+    getCurrentEncryptionGenerationScope?: Encryption['getCurrentEncryptionGenerationScope'];
+    isCurrentEncryptionGenerationScope?: Encryption['isCurrentEncryptionGenerationScope'];
 };
 
 type NewSessionSocketUpdateBody = Readonly<{
     t: 'new-session';
+    viewer?: unknown;
     id?: unknown;
     sid?: unknown;
     seq?: unknown;
@@ -160,6 +188,7 @@ export async function buildNewSessionFromSocketUpdate(params: {
     updateCreatedAt: number;
     sourceServerId?: string | null;
     encryption: NewSessionSocketEncryption | null;
+    shouldContinue?: () => boolean;
 }): Promise<Session | null> {
     const { updateBody, encryption } = params;
     const sessionId = readNewSessionId(updateBody);
@@ -183,22 +212,70 @@ export async function buildNewSessionFromSocketUpdate(params: {
             if (encryptionMode === 'plain') {
                 return {
                     metadata: parsePlainSessionMetadata(metadataPayload, metadataLayoutVersion),
-                    agentState: metadataLayoutVersion === 1
+                    agentState: metadataLayoutVersion === 1 || agentStatePayload === null
                         ? null
                         : parsePlainSessionAgentState(agentStatePayload),
                 };
             }
 
-            if (typeof updateBody.dataEncryptionKey !== 'string' || updateBody.dataEncryptionKey.length === 0) {
-                return { metadata: null, agentState: {} };
+            if (updateBody.dataEncryptionKey == null) {
+                return { metadata: null, agentState: null };
             }
             if (!encryption) {
-                return { metadata: null, agentState: {} };
+                return { metadata: null, agentState: null };
             }
-            const dataEncryptionKey: string = updateBody.dataEncryptionKey;
-
-            const dataKey = await encryption.decryptEncryptionKey(dataEncryptionKey);
-            await encryption.initializeSessions(new Map([[sessionId, dataKey]]));
+            const generationAuthority: EncryptionGenerationScopeAuthority | null =
+                encryption.getCurrentEncryptionGenerationScope
+                && encryption.isCurrentEncryptionGenerationScope
+                    ? {
+                        getCurrentEncryptionGenerationScope: (scope) => encryption.getCurrentEncryptionGenerationScope!(scope),
+                        isCurrentEncryptionGenerationScope: (scope) => encryption.isCurrentEncryptionGenerationScope!(scope),
+                    }
+                    : null;
+            let capturedEncryptionScope = captureEncryptionGenerationCurrentness(generationAuthority, {
+                serverId: params.sourceServerId ?? null,
+            }).capturedScope;
+            const shouldContinue = () => (
+                params.shouldContinue?.() !== false
+                && isCapturedEncryptionGenerationScopeCurrent(generationAuthority, capturedEncryptionScope)
+            );
+            // Socket bootstrap has no Account credential or owner authority. It can open a
+            // present Session envelope; absent envelopes are resolved by exact by-ID hydration.
+            const sessionDataKeys = new Map<string, Uint8Array>();
+            const hydration = await hydrateSessionDataKeys({
+                plan: createSessionDataKeyHydrationPlan({
+                    sessions: [{
+                        id: sessionId,
+                        encryptionMode,
+                        dataEncryptionKey: updateBody.dataEncryptionKey,
+                        viewerRole: 'recipient',
+                    }],
+                    credentialKind: 'keyless',
+                    sessionDataKeys,
+                }),
+                encryption: {
+                    decryptEncryptionKeys: (values) => Promise.all(values.map((value) => encryption.decryptEncryptionKey(value))),
+                    ...(encryption.getCurrentEncryptionGenerationScope ? {
+                        getCurrentEncryptionGenerationScope: (scope) => encryption.getCurrentEncryptionGenerationScope!(scope),
+                    } : {}),
+                    ...(encryption.isCurrentEncryptionGenerationScope ? {
+                        isCurrentEncryptionGenerationScope: (scope) => encryption.isCurrentEncryptionGenerationScope!(scope),
+                    } : {}),
+                },
+                sessionDataKeys,
+                scope: { serverId: params.sourceServerId ?? null },
+                shouldContinue,
+            });
+            if (hydration.stale) return null;
+            for (const id of hydration.sessionEncryptionClears) encryption.removeSessionEncryption?.(id);
+            if (hydration.states.get(sessionId) !== 'ready') return null;
+            const initializedScope = await encryption.initializeSessions(hydration.sessionKeys, {
+                serverId: params.sourceServerId ?? null,
+                shouldContinue,
+            });
+            if (initializedScope === null) return null;
+            if (initializedScope) capturedEncryptionScope = initializedScope;
+            if (!shouldContinue()) return null;
             const sessionEncryption = encryption.getSessionEncryption(sessionId);
             if (!sessionEncryption) {
                 return { metadata: null, agentState: {} };
@@ -253,11 +330,13 @@ export async function buildNewSessionFromSocketUpdate(params: {
 
     return {
         id: sessionId,
+        viewer: resolveSessionViewerProjectionUpdate(updateBody.viewer, undefined),
         ...(typeof params.sourceServerId === 'string' && params.sourceServerId.trim().length > 0
             ? { serverId: params.sourceServerId.trim() }
             : {}),
         seq: readTimestamp(updateBody.seq, params.updateSeq),
         encryptionMode,
+        encryptedContentAvailability: 'ready',
         createdAt: readTimestamp(updateBody.createdAt, params.updateCreatedAt),
         updatedAt: readTimestamp(updateBody.updatedAt, params.updateCreatedAt),
         meaningfulActivityAt: readTimestamp(updateBody.meaningfulActivityAt, params.updateCreatedAt),
@@ -271,7 +350,6 @@ export async function buildNewSessionFromSocketUpdate(params: {
         agentStateVersion,
         thinking: false,
         thinkingAt: 0,
-        presence: active ? 'online' : activeAt,
         pendingPermissionRequestCount: pendingFlags.hasPendingPermissionRequests ? 1 : 0,
         pendingUserActionRequestCount: pendingFlags.hasPendingUserActionRequests ? 1 : 0,
     };
@@ -352,8 +430,13 @@ export function buildUpdatedSessionProjectionFromSocketUpdate(params: {
     updateSeq: number;
     updateCreatedAt: number;
     onRuntimeActivityResyncRequired?: SessionRuntimeActivityResyncHandler;
+    onResponsibilityResyncRequired?: SessionResponsibilityResyncHandler;
 }): Session {
     const { session, updateBody, updateSeq, updateCreatedAt } = params;
+    const hasEffectiveAccessUpdate = updateBody.effectiveAccess !== undefined;
+    const accessProjection = !hasEffectiveAccessUpdate
+        ? undefined
+        : normalizeSessionAccessProjection({ effectiveAccess: updateBody.effectiveAccess });
     const encryptionMode: 'e2ee' | 'plain' = session.encryptionMode === 'plain' ? 'plain' : 'e2ee';
     const nextLatestTurnStatus = readLatestTurnStatus(updateBody.latestTurnStatus, session.latestTurnStatus);
     const rollbackEligibleTurnStarts = readRollbackEligibleTurnStarts(updateBody.rollbackEligibleTurnStarts);
@@ -382,6 +465,16 @@ export function buildUpdatedSessionProjectionFromSocketUpdate(params: {
 
     return {
         ...session,
+        ...(hasEffectiveAccessUpdate ? {
+            // A supplied current projection supersedes every previous access
+            // decision. Keep malformed current input unavailable rather than
+            // accidentally retaining the previous owner/recipient authority.
+            access: accessProjection ?? null,
+            ...(accessProjection?.role !== 'owner' && session.metadataLayoutVersion === 1
+                ? { ownerMetadataView: null }
+                : {}),
+        } : {}),
+        viewer: resolveSessionViewerProjectionUpdate(updateBody.viewer, session.viewer),
         encryptionMode,
         active: projectedActive,
         activeAt: projectedActiveAt,
@@ -435,6 +528,10 @@ export function buildUpdatedSessionProjectionFromSocketUpdate(params: {
             typeof updateBody.archivedAt === 'number' || updateBody.archivedAt === null
                 ? updateBody.archivedAt
                 : session.archivedAt,
+        // Only an explicit projection changes responsibility. An update that omits
+        // the field says nothing about it and must not turn a known assignee, or a
+        // server that does not project responsibility at all, into "No one".
+        ...resolveSessionResponsibilitySocketPatch(updateBody, params.onResponsibilityResyncRequired),
         updatedAt: updateCreatedAt,
         meaningfulActivityAt:
             typeof updateBody.meaningfulActivityAt === 'number'
@@ -460,6 +557,7 @@ export async function buildUpdatedSessionFromSocketUpdate(params: {
         metadata?: boolean;
     }>;
     onRuntimeActivityResyncRequired?: SessionRuntimeActivityResyncHandler;
+    onResponsibilityResyncRequired?: SessionResponsibilityResyncHandler;
 }): Promise<{ nextSession: Session; agentState: any }> {
     const { session, updateBody, updateSeq, updateCreatedAt, sessionEncryption } = params;
 
@@ -473,6 +571,7 @@ export async function buildUpdatedSessionFromSocketUpdate(params: {
         updateSeq,
         updateCreatedAt,
         onRuntimeActivityResyncRequired: params.onRuntimeActivityResyncRequired,
+        onResponsibilityResyncRequired: params.onResponsibilityResyncRequired,
     });
     const storedMetadataLayoutVersion = readSessionMetadataLayoutVersion(session.metadataLayoutVersion);
     const nextMetadataLayoutVersion = Math.max(
@@ -501,6 +600,8 @@ export async function buildUpdatedSessionFromSocketUpdate(params: {
         && nextMetadataLayoutVersion !== 1
         && sessionEncryption?.decryptSessionSnapshotState,
     );
+    let metadataAuthenticationFailed = false;
+    const metadataDecryptOptions = { onAuthenticationFailure: () => { metadataAuthenticationFailed = true; } };
     const resolveUpdatedState = async (): Promise<{
         agentState: AgentState | null;
         metadata: Metadata | null;
@@ -511,6 +612,7 @@ export async function buildUpdatedSessionFromSocketUpdate(params: {
                 updateBody.metadata.value,
                 updateBody.agentState.version,
                 updateBody.agentState.value,
+                metadataDecryptOptions,
             );
             return {
                 metadata: parseDecryptedSessionMetadata(
@@ -540,10 +642,12 @@ export async function buildUpdatedSessionFromSocketUpdate(params: {
                         ? sessionEncryption!.decryptMetadataPayload(
                             updateBody.metadata.version,
                             updateBody.metadata.value,
+                            metadataDecryptOptions,
                         )
                         : sessionEncryption!.decryptMetadata(
                             updateBody.metadata.version,
                             updateBody.metadata.value,
+                            metadataDecryptOptions,
                         )
                 )
                     .then((value) => parseDecryptedSessionMetadata(
@@ -574,6 +678,12 @@ export async function buildUpdatedSessionFromSocketUpdate(params: {
 
     const nextSession: Session = {
         ...projectionSession,
+        ...(hydrateMetadata ? {
+            encryptedContentAvailability: deriveSessionContentAvailability({
+                hydrationState: encryptionMode === 'plain' ? 'not_required' : 'ready',
+                contentAuthenticationFailed: metadataAuthenticationFailed,
+            }),
+        } : {}),
         metadataLayoutVersion: hydrateMetadata
             ? nextMetadataLayoutVersion
             : session.metadataLayoutVersion,
@@ -602,8 +712,13 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
         metadata?: boolean;
     };
     onRuntimeActivityResyncRequired?: SessionRuntimeActivityResyncHandler;
+    onResponsibilityResyncRequired?: SessionResponsibilityResyncHandler;
 }): Promise<Partial<SessionListRenderableSession>> {
     const { renderable, updateBody, updateSeq, updateCreatedAt, sessionEncryption } = params;
+    const hasEffectiveAccessUpdate = updateBody.effectiveAccess !== undefined;
+    const accessProjection = !hasEffectiveAccessUpdate
+        ? undefined
+        : normalizeSessionAccessProjection({ effectiveAccess: updateBody.effectiveAccess });
     const storedMetadataLayoutVersion = readSessionMetadataLayoutVersion(renderable.metadataLayoutVersion);
     const nextMetadataLayoutVersion = Math.max(
         storedMetadataLayoutVersion,
@@ -623,6 +738,8 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
         ? params.hydrateState?.agentState !== false
         : false;
 
+    let metadataAuthenticationFailed = false;
+    const metadataDecryptOptions = { onAuthenticationFailure: () => { metadataAuthenticationFailed = true; } };
     const parsedMetadata =
         !updateBody.metadata || !hydrateMetadata
             ? undefined
@@ -633,10 +750,12 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
                             ? sessionEncryption.decryptMetadataPayload(
                                 updateBody.metadata.version,
                                 updateBody.metadata.value,
+                                metadataDecryptOptions,
                             )
                             : sessionEncryption.decryptMetadata(
                                 updateBody.metadata.version,
                                 updateBody.metadata.value,
+                                metadataDecryptOptions,
                             )
                     ),
                     nextMetadataLayoutVersion,
@@ -685,6 +804,15 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
         : nextMetadataLayoutVersion === 1
             ? parsedRenderableMetadata
             : preserveSessionRuntimeLocalMetadata(renderable.metadata, parsedRenderableMetadata);
+    // The concurrent Home list is the only qualified source a background
+    // same-id Session can use. Project the canonical compact headline through
+    // this socket patch too, rather than leaving that Home stale until its next
+    // complete list refresh.
+    const agentActivityHeadline = hasEffectiveAccessUpdate && accessProjection?.role !== 'owner'
+        ? null
+        : parsedMetadata === undefined
+            ? renderable.agentActivityHeadline ?? null
+            : parseSessionAgentActivityHeadlineV1(parsedMetadata?.sessionAgentActivityHeadlineV1);
     const nextLatestTurnStatus = readLatestTurnStatus(updateBody.latestTurnStatus, renderable.latestTurnStatus);
     const nextLatestTurnId =
         typeof updateBody.latestTurnId === 'string' || updateBody.latestTurnId === null
@@ -732,6 +860,7 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
             ? nextActiveAt
             : renderable.thinkingAt,
     );
+    const viewer = resolveSessionViewerProjectionUpdate(updateBody.viewer, renderable.viewer);
     const shouldRecomputeUnread =
         typeof updateBody.lastViewedSessionSeq === 'number'
         || typeof updateBody.latestReadyEventSeq === 'number'
@@ -741,13 +870,24 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
         );
 
     return {
+        ...(hasEffectiveAccessUpdate ? { access: accessProjection ?? null } : {}),
+        viewer,
+        ...resolveSessionResponsibilitySocketPatch(updateBody, params.onResponsibilityResyncRequired),
+        ...(hydrateMetadata && (sessionEncryption || renderable.encryptionMode === 'plain') ? {
+            encryptedContentAvailability: deriveSessionContentAvailability({
+                hydrationState: renderable.encryptionMode === 'plain' ? 'not_required' : 'ready',
+                contentAuthenticationFailed: metadataAuthenticationFailed,
+            }),
+        } : {}),
         seq: nextSessionSeq,
         updatedAt: updateCreatedAt,
         active: nextActive,
         activeAt: nextActiveAt,
         thinking: nextThinking,
         thinkingAt: nextThinkingAt,
-        presence: nextActive ? 'online' : nextActiveAt,
+        // A durable update can invalidate a previous ephemeral observation, but `active` itself
+        // is not evidence that this device can currently reach the runtime.
+        ...(typeof updateBody.active === 'boolean' ? { presence: undefined } : {}),
         meaningfulActivityAt:
             typeof updateBody.meaningfulActivityAt === 'number'
                 ? updateBody.meaningfulActivityAt
@@ -758,6 +898,7 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
         metadataVersion: updateBody.metadata && hydrateMetadata ? updateBody.metadata.version : renderable.metadataVersion,
         agentStateVersion: updateBody.agentState && hydrateAgentState ? updateBody.agentState.version : renderable.agentStateVersion,
         metadata: mergedRenderableMetadata,
+        agentActivityHeadline,
         archivedAt:
             typeof updateBody.archivedAt === 'number' || updateBody.archivedAt === null
                 ? updateBody.archivedAt
@@ -787,6 +928,10 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
         hasPendingPermissionRequests: pendingFlags.hasPendingPermissionRequests,
         hasPendingUserActionRequests: pendingFlags.hasPendingUserActionRequests,
         hasUnreadMessages: deriveSessionListRenderableHasUnreadMessagesFromMetadataPatch({
+            viewer,
+            owner: renderable.owner,
+            access: renderable.access,
+            accessLevel: renderable.accessLevel,
             metadata: parsedMetadata,
             nextSessionSeq,
             nextLastViewedSessionSeq,
@@ -797,54 +942,6 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
             recomputeUnread: shouldRecomputeUnread,
         }),
     };
-}
-
-export async function repairInvalidReadStateV1(params: {
-    sessionId: string;
-    sessionSeqUpperBound: number;
-    attempted: Set<string>;
-    inFlight: Set<string>;
-    getSession: (sessionId: string) => {
-        metadata?: Metadata | null;
-        metadataLayoutVersion?: number;
-    } | undefined;
-    updateSessionMetadataWithRetry: (sessionId: string, updater: (metadata: Metadata) => Metadata) => Promise<void>;
-    now: () => number;
-}): Promise<void> {
-    const { sessionId, sessionSeqUpperBound, attempted, inFlight, getSession, updateSessionMetadataWithRetry, now } = params;
-
-    if (attempted.has(sessionId) || inFlight.has(sessionId)) {
-        return;
-    }
-
-    const session = getSession(sessionId);
-    if (readSessionMetadataLayoutVersion(session?.metadataLayoutVersion) !== 0) return;
-    const readState = session?.metadata?.readStateV1;
-    if (!readState) return;
-    if (readState.sessionSeq <= sessionSeqUpperBound) return;
-
-    attempted.add(sessionId);
-    inFlight.add(sessionId);
-    try {
-        await updateSessionMetadataWithRetry(sessionId, (metadata) => {
-            const prev = metadata.readStateV1;
-            if (!prev) return metadata;
-            if (prev.sessionSeq <= sessionSeqUpperBound) return metadata;
-
-            const result = computeNextReadStateV1({
-                prev,
-                sessionSeq: sessionSeqUpperBound,
-                pendingActivityAt: prev.pendingActivityAt,
-                now: now(),
-            });
-            if (!result.didChange) return metadata;
-            return { ...metadata, readStateV1: result.next };
-        });
-    } catch {
-        // ignore
-    } finally {
-        inFlight.delete(sessionId);
-    }
 }
 
 export async function fetchAndApplyMessages(params: {
@@ -878,6 +975,7 @@ export async function fetchAndApplyMessages(params: {
     const result = await runSessionMessagesPagePipeline({
         sessionId: params.sessionId,
         purpose: 'initial',
+        serverId: params.serverId,
         page: {
             direction: 'initial',
             requestPath: `/v1/sessions/${params.sessionId}/messages?${qs.toString()}`,
@@ -894,6 +992,8 @@ export async function fetchAndApplyMessages(params: {
         onMessagesPage: params.onMessagesPage,
         log: params.log,
         sessionEncryptionMode: params.sessionEncryptionMode,
+        onContentAuthenticationFailure: params.onContentAuthenticationFailure,
+        isCurrent: params.isCurrent,
         initialMessageDecryptBatchSize: params.initialMessageDecryptBatchSize,
         messageDecryptBatchSize: params.messageDecryptBatchSize,
         messageDecryptYieldDelayMs: params.messageDecryptYieldDelayMs,
@@ -940,6 +1040,7 @@ export async function fetchAndApplyOlderMessages(params: {
     const result = await runSessionMessagesPagePipeline({
         sessionId,
         purpose: 'older',
+        serverId: params.serverId,
         page: {
             direction: 'older',
             requestPath: `/v1/sessions/${sessionId}/messages?${qs.toString()}`,
@@ -958,6 +1059,8 @@ export async function fetchAndApplyOlderMessages(params: {
         onNormalizedMessages: params.onNormalizedMessages,
         log,
         sessionEncryptionMode: params.sessionEncryptionMode,
+        onContentAuthenticationFailure: params.onContentAuthenticationFailure,
+        isCurrent: params.isCurrent,
         initialMessageDecryptBatchSize: params.initialMessageDecryptBatchSize,
         messageDecryptBatchSize: params.messageDecryptBatchSize,
         messageDecryptYieldDelayMs: params.messageDecryptYieldDelayMs,
@@ -1000,6 +1103,7 @@ export async function fetchAndApplyNewerMessages(params: {
     const result = await runSessionMessagesPagePipeline({
         sessionId,
         purpose: 'newer',
+        serverId: params.serverId,
         page: {
             direction: 'newer',
             requestPath: `/v1/sessions/${sessionId}/messages?${qs.toString()}`,
@@ -1020,6 +1124,8 @@ export async function fetchAndApplyNewerMessages(params: {
         onNormalizedMessages: params.onNormalizedMessages,
         log,
         sessionEncryptionMode: params.sessionEncryptionMode,
+        onContentAuthenticationFailure: params.onContentAuthenticationFailure,
+        isCurrent: params.isCurrent,
         initialMessageDecryptBatchSize: params.initialMessageDecryptBatchSize,
         messageDecryptBatchSize: params.messageDecryptBatchSize,
         messageDecryptYieldDelayMs: params.messageDecryptYieldDelayMs,

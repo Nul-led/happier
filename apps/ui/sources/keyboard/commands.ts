@@ -301,6 +301,36 @@ export const defaultKeyboardCommands: readonly KeyboardCommand[] = [
         defaultBinding: { binding: 'Home' },
         when: (context) => !context.isEditableTarget,
     },
+    // Workflow authoring. Both commands fire while the caret is inside the workflow editor's own
+    // fields, so they are `allowInEditable`; save/run are exactly the actions an author reaches for
+    // mid-edit and there is no competing text-field meaning for either chord.
+    //
+    // Mod+S is Save Page on the `web` surface (which includes the Tauri desktop app, whose bundle is
+    // the web bundle), so save follows the same per-surface split as `browser.*` and `session.new`
+    // and binds Alt+S there instead.
+    {
+        id: 'workflow.save',
+        settingsTitleKey: 'settingsKeyboard.commands.workflowSave',
+        defaultBindings: [
+            { binding: 'Alt+S', allowInEditable: true, platforms: ['web'] },
+            { binding: 'Mod+S', allowInEditable: true, nativeConsumable: true, blockedSurfaces: ['web'] },
+        ],
+    },
+    // Mod+Enter is also `composer.sendImmediate`'s default. The two are never reachable together —
+    // the workflow authoring composer has no send action and the Session composer is not on the
+    // workflow page — so this sits in its own conflict scope. Scopes are namespaces in
+    // `buildDuplicateBindingConflicts`: a distinct scope keeps the settings duplicate report honest
+    // (compare `splitCanvas` vs `sessionNavigation`, which share Alt+ArrowUp/Down the same way).
+    {
+        id: 'workflow.run',
+        settingsTitleKey: 'settingsKeyboard.commands.workflowRun',
+        defaultBinding: {
+            binding: 'Mod+Enter',
+            allowInEditable: true,
+            nativeConsumable: true,
+            conflictScope: 'workflowEditor',
+        },
+    },
 ];
 
 export function getDefaultKeybinding(commandId: KeyboardCommandId): KeybindingRule | undefined {

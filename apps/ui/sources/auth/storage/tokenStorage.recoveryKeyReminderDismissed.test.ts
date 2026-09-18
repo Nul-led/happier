@@ -42,4 +42,18 @@ describe('TokenStorage recovery key reminder dismissed (web)', () => {
         await expect(TokenStorage.setRecoveryKeyReminderDismissed(false)).resolves.toBe(true);
         expect(TokenStorage.getCachedRecoveryKeyReminderDismissed()).toBe(false);
     });
+
+    it('updates the captured Home reminder without mutating the active Home scope', async () => {
+        const { TokenStorage } = await import('./tokenStorage');
+        const homeA = { serverUrl: 'https://home-a.example.test', serverId: 'home-a' };
+        const homeB = { serverUrl: 'https://home-b.example.test', serverId: 'home-b' };
+
+        await expect(TokenStorage.setRecoveryKeyReminderDismissed(true, homeA)).resolves.toBe(true);
+        await expect(TokenStorage.getRecoveryKeyReminderDismissed(homeA)).resolves.toBe(true);
+        await expect(TokenStorage.getRecoveryKeyReminderDismissed(homeB)).resolves.toBe(false);
+
+        await expect(TokenStorage.setRecoveryKeyReminderDismissed(true, homeB)).resolves.toBe(true);
+        await expect(TokenStorage.getRecoveryKeyReminderDismissed(homeA)).resolves.toBe(true);
+        await expect(TokenStorage.getRecoveryKeyReminderDismissed(homeB)).resolves.toBe(true);
+    });
 });

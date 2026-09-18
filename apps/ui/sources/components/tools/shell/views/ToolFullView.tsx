@@ -3,6 +3,7 @@ import { View, ScrollView, Platform, useWindowDimensions } from 'react-native';
 import { ToolCall, Message } from '@/sync/domains/messages/messageTypes';
 import { CodeView } from '@/components/ui/media/CodeView';
 import { Metadata } from '@/sync/domains/state/storageTypes';
+import type { DiscardedPendingMessage, PendingMessage } from '@/sync/domains/state/storageTypes';
 import { getToolViewComponent } from '@/components/tools/renderers/core/_registry';
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { useLocalSetting } from '@/sync/domains/state/storage';
@@ -34,20 +35,32 @@ import { resolveToolPermissionTerminalErrorMessage } from '../permissions/resolv
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import { Icon } from '@/components/ui/icons/Icon';
 import { useHistoricalTranscriptAgentId } from '@/components/sessions/transcript/attribution/SessionTranscriptAgentAttributionContext';
+import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 
 interface ToolFullViewProps {
     tool: ToolCall;
     owningMessageId: string;
     sessionId?: string;
+    /** Exact Home for the sidechain transcript and its pending-message authorship. */
+    serverId?: string | null;
     metadata?: Metadata | null;
     messages?: Message[];
     jumpChildId?: string | null;
     forcePermissionFooterInTranscript?: boolean;
     interaction?: TranscriptInteraction;
+    /**
+     * Exact-target pending/discarded rows for this sidechain, resolved by the
+     * canonical pending owner. They render inside the transcript projection with
+     * the ordinary pending-to-committed crossover, never as a footer.
+     */
+    pendingMessages?: readonly PendingMessage[] | null;
+    discardedMessages?: readonly DiscardedPendingMessage[] | null;
+    /** The exact destination those rows belong to; omitted means the main Session. */
+    pendingRecipient?: PendingMessage['recipient'];
 }
 
-export function ToolFullView({ tool, owningMessageId, sessionId, metadata, messages = [], jumpChildId, forcePermissionFooterInTranscript = false, interaction }: ToolFullViewProps) {
+export function ToolFullView({ tool, owningMessageId, sessionId, serverId, metadata, messages = [], jumpChildId, forcePermissionFooterInTranscript = false, interaction, pendingMessages, discardedMessages, pendingRecipient }: ToolFullViewProps) {
     const { theme } = useUnistyles();
     // This view opens one historical row on its own screen, so the row's own
     // Agent — published by the opener — outranks the Session's current one.
@@ -130,9 +143,13 @@ export function ToolFullView({ tool, owningMessageId, sessionId, metadata, messa
         throw new Error('ToolFullView requires a non-empty owningMessageId');
     }
     const transcriptDatasetIdentity = sidechainId ?? normalizedOwningMessageId;
+    const transcriptSessionAddress = normalizeSessionAddress(serverId, normalizedSessionId);
+    const transcriptDatasetScope = transcriptSessionAddress
+        ? sessionAddressKey(transcriptSessionAddress)
+        : normalizedSessionId;
     const sidechainDatasetKey = React.useMemo(
-        () => JSON.stringify([normalizedSessionId, transcriptDatasetIdentity]),
-        [normalizedSessionId, transcriptDatasetIdentity],
+        () => JSON.stringify([transcriptDatasetScope, transcriptDatasetIdentity]),
+        [transcriptDatasetIdentity, transcriptDatasetScope],
     );
     const canRenderTaskTranscript =
         normalizedSessionId !== null &&
@@ -248,11 +265,15 @@ export function ToolFullView({ tool, owningMessageId, sessionId, metadata, messa
                         <ChainTranscriptList
                             key={sidechainDatasetKey}
                             sessionId={normalizedSessionId}
+                            serverId={serverId ?? null}
                             datasetKey={sidechainDatasetKey}
                             messages={messages}
                             metadata={metadata || null}
                             interaction={transcriptInteraction}
                             forcePermissionPromptsInTranscript={forcePermissionFooterInTranscript}
+                            pendingMessages={pendingMessages}
+                            discardedMessages={discardedMessages}
+                            pendingRecipient={pendingRecipient}
                             isInitialLoadInFlight={showSidechainLoading}
                             loadOlder={sidechainId ? loadOlderSidechain : undefined}
                             jumpToMessageId={normalizedJumpChildId}

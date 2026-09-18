@@ -113,7 +113,7 @@ describe('connectedServiceQuotaRecoveryCredits ops', () => {
             serverId: 'server-1',
             method: RPC_METHODS.DAEMON_CONNECTED_SERVICE_QUOTA_RECOVERY_CREDIT_CONSUME,
             payload: {
-                serviceId: 'openai-codex',
+                serviceId: 'happier.agent.codex/openai-codex',
                 profileId: 'work',
                 idempotencyKey: 'connected-service-quota-recovery-credit:v1:openai-codex:work:credit:credit-1',
                 providerCreditId: 'credit-1',
@@ -175,6 +175,7 @@ describe('connectedServiceQuotaRecoveryCredits ops', () => {
         expect(firstRetry).toBe(first);
         expect(laterSnapshot).not.toBe(first);
         expect(first).toContain('aggregate:1000');
+        expect(buildConnectedServiceQuotaRecoveryCreditIdempotencyKey({ surface: 'session-view', serviceId: 'openai-codex', profileId: 'work' })).toBe('connected-service-quota-recovery-credit:v1:openai-codex:work:aggregate:unknown');
     });
 
     it('keeps provider-credit idempotency semantic across UI surfaces and sessions', async () => {

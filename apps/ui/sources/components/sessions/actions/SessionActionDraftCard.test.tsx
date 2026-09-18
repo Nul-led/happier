@@ -20,6 +20,8 @@ const useEnabledAgentIdsMock = vi.hoisted(() => vi.fn<() => readonly string[]>((
 const updateSessionActionDraftInput = vi.fn();
 const setSessionActionDraftStatus = vi.fn();
 const deleteSessionActionDraft = vi.fn();
+const draftScope = { serverId: 'server-explicit', accountId: 'account-a' } as const;
+const draftAddress = { serverId: 'server-explicit', sessionId: 's1' } as const;
 
 installSessionActionsCommonModuleMocks({
     reactNative: async () => {
@@ -170,7 +172,7 @@ describe('SessionActionDraftCard', () => {
       input: { engineIds: ['coderabbit'], instructions: 'Review this repository.', changeType: 'all', base: { kind: 'none' } },
     } as const;
 
-    await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
 
     expect(useExecutionRunsBackendsForSessionMock).toHaveBeenCalledWith('s1', 'server-explicit');
     expect(createDefaultActionExecutorMock).toHaveBeenCalledTimes(1);
@@ -196,12 +198,12 @@ describe('SessionActionDraftCard', () => {
       input: { engineIds: ['customAcp'], instructions: 'Review this repository.', changeType: 'all', base: { kind: 'none' } },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     const texts = screen.tree.findAllByType('Text');
     expect(texts.some((node: any) => node.props?.children === 'customAcp')).toBe(true);
   });
 
-  it('reacts to preferred session server changes for review backend lookup and execution routing', async () => {
+  it('keeps a captured draft on its exact Home when ambient preferred-server focus changes', async () => {
     const { SessionActionDraftCard } = await import('./SessionActionDraftCard');
 
     const draft = {
@@ -213,21 +215,21 @@ describe('SessionActionDraftCard', () => {
       input: { engineIds: ['coderabbit'], instructions: 'Review this repository.', changeType: 'all', base: { kind: 'none' } },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
 
     expect(useExecutionRunsBackendsForSessionMock).toHaveBeenCalledWith('s1', 'server-explicit');
     expect(createDefaultActionExecutorMock).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       useSessionServerIdMock.mockImplementation(() => 'server-reactive');
-      screen.tree.update(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+      screen.tree.update(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     });
 
-    expect(useExecutionRunsBackendsForSessionMock).toHaveBeenCalledWith('s1', 'server-reactive');
+    expect(useExecutionRunsBackendsForSessionMock).toHaveBeenLastCalledWith('s1', 'server-explicit');
     const executorConfig = createDefaultActionExecutorMock.mock.calls.at(-1)?.[0] as {
       resolveServerIdForSessionId: (sessionId: string) => string | null;
     };
-    expect(executorConfig.resolveServerIdForSessionId('s1')).toBe('server-reactive');
+    expect(executorConfig.resolveServerIdForSessionId('s1')).toBe('server-explicit');
   });
 
   it('submits a valid subagents.plan.start draft via the default action executor', async () => {
@@ -242,7 +244,7 @@ describe('SessionActionDraftCard', () => {
       input: { backendTargetKeys: ['agent:claude'], instructions: 'Plan this.' },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     const start = findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'common.start');
     expect(start).toBeTruthy();
 
@@ -255,9 +257,9 @@ describe('SessionActionDraftCard', () => {
     );
 
     // Should transition to running then succeeded.
-    expect(setSessionActionDraftStatus).toHaveBeenCalledWith('s1', 'd1', 'running', null);
-    expect(setSessionActionDraftStatus).toHaveBeenCalledWith('s1', 'd1', 'succeeded', null);
-    expect(deleteSessionActionDraft).toHaveBeenCalledWith('s1', 'd1');
+    expect(setSessionActionDraftStatus).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', 'running', null);
+    expect(setSessionActionDraftStatus).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', 'succeeded', null);
+    expect(deleteSessionActionDraft).toHaveBeenCalledWith(draftScope, draftAddress, 'd1');
   });
 
   it('normalizes stale multi-target single-select draft input before submitting', async () => {
@@ -275,7 +277,7 @@ describe('SessionActionDraftCard', () => {
       },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     const start = findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'common.start');
     expect(start).toBeTruthy();
 
@@ -302,14 +304,14 @@ describe('SessionActionDraftCard', () => {
       input: { backendTargetKeys: ['agent:claude'], instructions: 'Plan this.' },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     const opencode = findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'agent.opencode');
     expect(opencode).toBeTruthy();
 
     await pressTestInstanceAsync(opencode!, 'agent.opencode');
 
-    expect(updateSessionActionDraftInput).toHaveBeenCalledWith('s1', 'd1', { backendTargetKeys: ['agent:opencode'] });
-    expect(setSessionActionDraftStatus).toHaveBeenCalledWith('s1', 'd1', 'editing', null);
+    expect(updateSessionActionDraftInput).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', { backendTargetKeys: ['agent:opencode'] });
+    expect(setSessionActionDraftStatus).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', 'editing', null);
   });
 
   it('keeps the draft editable when the action execution fails', async () => {
@@ -326,14 +328,14 @@ describe('SessionActionDraftCard', () => {
       input: { backendTargetKeys: ['agent:claude'], instructions: 'Delegate this.' },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     const start = findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'common.start');
     expect(start).toBeTruthy();
 
     await pressTestInstanceAsync(start, 'common.start');
 
-    expect(setSessionActionDraftStatus).toHaveBeenCalledWith('s1', 'd1', 'running', null);
-    expect(setSessionActionDraftStatus).toHaveBeenCalledWith('s1', 'd1', 'editing', 'RPC method not available');
+    expect(setSessionActionDraftStatus).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', 'running', null);
+    expect(setSessionActionDraftStatus).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', 'editing', 'RPC method not available');
     expect(deleteSessionActionDraft).not.toHaveBeenCalled();
   });
 
@@ -362,7 +364,7 @@ describe('SessionActionDraftCard', () => {
       },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     const start = findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'common.start');
     expect(start).toBeTruthy();
 
@@ -377,8 +379,8 @@ describe('SessionActionDraftCard', () => {
       resolveExecute?.({ ok: true, result: {} });
     });
 
-    expect(setSessionActionDraftStatus).toHaveBeenCalledWith('s1', 'd1', 'running', null);
-    expect(setSessionActionDraftStatus).toHaveBeenCalledWith('s1', 'd1', 'succeeded', null);
+    expect(setSessionActionDraftStatus).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', 'running', null);
+    expect(setSessionActionDraftStatus).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', 'succeeded', null);
   });
 
   it('allows retrying a failed draft without recreating it', async () => {
@@ -394,7 +396,7 @@ describe('SessionActionDraftCard', () => {
       input: { backendTargetKeys: ['agent:claude'], instructions: 'Delegate this.' },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     const start = findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'common.start');
     expect(start).toBeTruthy();
     expect(start!.props.disabled).toBe(false);
@@ -415,7 +417,7 @@ describe('SessionActionDraftCard', () => {
       input: { backendTargetKeys: ['agent:claude'], instructions: '   ' },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     const start = findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'common.start');
     expect(start).toBeTruthy();
     expect(start!.props.disabled).toBe(true);
@@ -441,7 +443,7 @@ describe('SessionActionDraftCard', () => {
       input: { instructions: '', changeType: 'committed', base: { kind: 'none' } },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     const start = findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'common.start');
     expect(start).toBeTruthy();
     expect(start!.props.disabled).toBe(true);
@@ -469,14 +471,14 @@ describe('SessionActionDraftCard', () => {
       input: { engineIds: ['claude'], instructions: '', changeType: 'committed', base: { kind: 'none' } },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
     const input = screen.tree.findAllByType('TextInput')[0]!;
     await act(async () => {
       changeTextTestInstance(input, 'Review this.');
     });
 
-    expect(updateSessionActionDraftInput).toHaveBeenCalledWith('s1', 'd1', { instructions: 'Review this.' });
-    expect(setSessionActionDraftStatus).toHaveBeenCalledWith('s1', 'd1', 'editing', null);
+    expect(updateSessionActionDraftInput).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', { instructions: 'Review this.' });
+    expect(setSessionActionDraftStatus).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', 'editing', null);
   });
 
   it('hides conditional review base fields when base.kind is none', async () => {
@@ -501,7 +503,7 @@ describe('SessionActionDraftCard', () => {
       input: { engineIds: ['claude'], instructions: 'Review', changeType: 'committed', base: { kind: 'none' } },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
 
     // Only the instructions field should render a TextInput when base.kind=none.
     const inputs = screen.tree.findAllByType('TextInput');
@@ -524,7 +526,7 @@ describe('SessionActionDraftCard', () => {
       },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
 
     const inputs = screen.tree.findAllByType('TextInput');
     expect(inputs.length).toBe(1);
@@ -534,7 +536,7 @@ describe('SessionActionDraftCard', () => {
       changeTextTestInstance(listInput, 'a.yml, b.yml');
     });
 
-    expect(updateSessionActionDraftInput).toHaveBeenCalledWith('s1', 'd1', { sessionIds: ['a.yml', 'b.yml'] });
+    expect(updateSessionActionDraftInput).toHaveBeenCalledWith(draftScope, draftAddress, 'd1', { sessionIds: ['a.yml', 'b.yml'] });
   });
 
   /**
@@ -559,7 +561,7 @@ describe('SessionActionDraftCard', () => {
     };
     const draft = { id: 'd1', sessionId: 's1', actionId: 'review.start', createdAt: 1, status: 'editing', input } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
 
     const paint = resolveSessionActionDraftHeightBearingPaint({
       draft,
@@ -603,7 +605,7 @@ describe('SessionActionDraftCard', () => {
       input: { engineIds: ['claude'], instructions: 'Review', changeType: 'all', base: { kind: 'none' } },
     } as const;
 
-    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
 
     const paint = resolveSessionActionDraftHeightBearingPaint({
       draft,
@@ -672,7 +674,7 @@ describe('SessionActionDraftCard', () => {
         status,
         input: { backendTargetKeys: ['agent:claude'], instructions: 'Delegate this.' },
       };
-      const screen = await renderScreen(React.createElement(SessionActionDraftCard, { sessionId: 's1', draft: draft as any }));
+    const screen = await renderScreen(React.createElement(SessionActionDraftCard, { draft: { ...draft, address: { serverId: 'server-explicit', sessionId: 's1' }, accountId: 'account-a' } as any }));
       return JSON.stringify(heightBearingShape(screen.tree.toJSON()));
     };
 

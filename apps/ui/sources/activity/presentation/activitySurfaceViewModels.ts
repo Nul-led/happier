@@ -5,6 +5,7 @@ export type ActivitySurfaceSessionViewModel = Readonly<{
     serverUrl?: string | null;
     serverName?: string | null;
     sessionId: string;
+    contextLine?: string | null;
     title: string;
     subtitle: string | null;
     previewText: string | null;

@@ -10,6 +10,7 @@ import type { PendingMessage, Session, Machine, ScmStatus, ScmWorkingSnapshot, D
 import type { ScmCommitSelectionPatch } from '../domains/state/storageTypes';
 import type { NormalizedMessage } from '../typesRaw';
 import type { PermissionMode } from '../domains/permissions/permissionTypes';
+import type { WorkflowRunsDomain } from './domains/workflowRuns';
 import type { Profile } from '../domains/profiles/profile';
 import type { Purchases } from '../domains/purchases/purchases';
 import type { AccountPetMetadata } from '../domains/pets/accountPetLibraryTypes';
@@ -24,6 +25,7 @@ import type { SessionListIndexItem } from '../domains/sessionList/sessionListInd
 import type { MachineDisplayRenderable } from '../domains/machines/machineDisplayRenderable';
 import type { CustomerInfo } from '../domains/purchases/types';
 import type { ApplyMachinesOptions } from './domains/machines';
+import type { MachinePoolsDomain } from './domains/machinePools';
 import type { SessionMessages } from './domains/messages';
 import type { SessionPending } from './domains/pending';
 import type {
@@ -50,11 +52,9 @@ export interface SettingsDomainSlice {
     settingsScope: AccountSettingsScope | null;
     localSettings: LocalSettings;
     applySettings: (settings: Settings, version: number) => void;
-    replaceSettings: (settings: Settings, version: number) => void;
-    activateSettingsScope: (scope: AccountSettingsScope, legacyScopes?: readonly AccountSettingsScope[]) => void;
+    activateSettingsScope: (scope: AccountSettingsScope, legacyScopes?: readonly AccountSettingsScope[]) => Promise<void>;
     clearSettingsScope: () => void;
     applySettingsForScope: (scope: AccountSettingsScope, settings: Settings, version: number) => void;
-    replaceSettingsForScope: (scope: AccountSettingsScope, settings: Settings, version: number) => void;
     applySettingsLocal: (settings: Partial<Settings>) => void;
     applyLocalSettings: (settings: Partial<LocalSettings>, options?: { source?: SettingsAnalyticsSource }) => void;
 }
@@ -72,7 +72,6 @@ export interface ProfileDomainSlice {
 
 export interface SessionsDomainSlice {
     sessions: Record<string, Session>;
-    sessionListRenderables: Record<string, SessionListRenderableSession>;
     /**
      * Ids this viewer has watched be deleted. Neither session map can answer "does this session
      * exist" — both are list-scoped caches that an ordinary refresh evicts from — so anything
@@ -81,7 +80,9 @@ export interface SessionsDomainSlice {
      */
     deletedSessionIds: Record<string, true>;
     sessionListRenderableDelta: SessionListRenderableDelta;
-    sessionListRowStateByServerId: Readonly<Record<string, Readonly<Record<string, SessionListRenderableSession>>>>;
+    sessionListRowsByServerId: Readonly<Record<string, Readonly<Record<string, SessionListRenderableSession>>>>;
+    ordinarySessionListMembershipByServerId: Readonly<Record<string, readonly string[] | undefined>>;
+    archivedSessionListMembershipByServerId: Readonly<Record<string, readonly string[] | undefined>>;
     sessionListIndexByServerId: Readonly<Record<string, SessionListIndexItem[] | null | undefined>>;
     concurrentSessionListCacheByServerId: ConcurrentSessionListCacheByServerId;
     sessionScmStatus: Record<string, ScmStatus | null>;
@@ -90,14 +91,24 @@ export interface SessionsDomainSlice {
     workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey: Record<string, string[]>;
     reviewCommentsDraftsBySessionId: Record<string, ReviewCommentDraft[]>;
     reviewCommentsDraftsByWorkspaceCacheKey: Record<string, ReviewCommentDraft[]>;
-    actionDraftsBySessionId: Record<string, SessionActionDraft[]>;
+    sessionActionDraftsByAddressKey: Record<string, SessionActionDraft[]>;
     sessionLocalStateScope: ServerAccountScope | null;
     isDataReady: boolean;
     activateSessionLocalStateScope: (scope: ServerAccountScope) => void;
     clearSessionLocalStateScope: () => void;
     applySessions: (sessions: (Omit<Session, 'presence'> & { presence?: 'online' | number })[]) => void;
-    replaceSessionListRenderables: (sessions: SessionListRenderableSession[]) => void;
-    mergeSessionListRenderables: (sessions: SessionListRenderableSession[]) => void;
+    applyServerScopedSessionListRows: (
+        serverId: string,
+        sessions: SessionListRenderableSession[],
+        options: Readonly<{ source: 'ordinary' | 'archived' | 'query' | 'rowOnly'; mode: 'replace' | 'append' }>,
+    ) => void;
+    applyServerScopedSessionListRowPatches: (
+        serverId: string,
+        patches: ReadonlyArray<Readonly<{
+            sessionId: string;
+            patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
+        }>>,
+    ) => void;
     reconcileSessionListRowsForServerScope: (
         serverId: string,
         sessions: SessionListRenderableSession[],
@@ -105,12 +116,6 @@ export interface SessionsDomainSlice {
     ) => void;
     mergeSessionListRowsForServerScope: (serverId: string, sessions: SessionListRenderableSession[]) => void;
     clearSessionListRowsForServerScope: (serverId: string) => void;
-    applySessionListRenderablePatches: (
-        patches: ReadonlyArray<Readonly<{
-            sessionId: string;
-            patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
-        }>>,
-    ) => void;
     applyScmStatus: (sessionId: string, status: ScmStatus | null) => void;
     getActiveSessions: () => Session[];
     getSessionRepositoryTreeExpandedPaths: (sessionId: string) => string[];
@@ -128,17 +133,19 @@ export interface SessionsDomainSlice {
     deleteWorkspaceReviewCommentDraft: (workspaceCacheKey: string, commentId: string) => void;
     clearWorkspaceReviewCommentDrafts: (workspaceCacheKey: string) => void;
     createSessionActionDraft: (
-        sessionId: string,
+        scope: ServerAccountScope,
+        address: import('@/sync/domains/session/sessionAddress').SessionAddress,
         draft: Readonly<{ actionId: string; input?: Record<string, unknown> }>,
     ) => SessionActionDraft;
     updateSessionActionDraftInput: (
-        sessionId: string,
+        scope: ServerAccountScope,
+        address: import('@/sync/domains/session/sessionAddress').SessionAddress,
         draftId: string,
         patch: Record<string, unknown>,
     ) => void;
-    setSessionActionDraftStatus: (sessionId: string, draftId: string, status: SessionActionDraftStatus, error?: string | null) => void;
-    deleteSessionActionDraft: (sessionId: string, draftId: string) => void;
-    clearSessionActionDrafts: (sessionId: string) => void;
+    setSessionActionDraftStatus: (scope: ServerAccountScope, address: import('@/sync/domains/session/sessionAddress').SessionAddress, draftId: string, status: SessionActionDraftStatus, error?: string | null) => void;
+    deleteSessionActionDraft: (scope: ServerAccountScope, address: import('@/sync/domains/session/sessionAddress').SessionAddress, draftId: string) => void;
+    clearSessionActionDrafts: (scope: ServerAccountScope, address: import('@/sync/domains/session/sessionAddress').SessionAddress) => void;
     markSessionOptimisticThinking: (sessionId: string) => void;
     clearSessionOptimisticThinking: (sessionId: string) => void;
     markSessionResuming: (sessionId: string) => void;
@@ -147,6 +154,8 @@ export interface SessionsDomainSlice {
     clearSessionThinkingGrace: (sessionId: string) => void;
     applySessionTerminalLifecycle: (sessionId: string, turnCompletedAt: number | null) => void;
     markSessionViewed: (sessionId: string) => void;
+    /** Applies the server's authoritative responsible Account after a committed mutation. */
+    applySessionResponsibleAccount: (sessionId: string, responsibleAccountId: string | null, scope: ServerAccountScope, responsibleAccount?: import('@happier-dev/protocol').SessionAccessAccountSummaryV1 | null) => void;
     updateSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void;
     updateSessionModelMode: (sessionId: string, mode: SessionModelMode) => void;
     deleteSession: (sessionId: string) => void;
@@ -167,6 +176,8 @@ export interface MachinesDomainSlice {
 
 export interface MessagesDomainSlice {
     sessionMessages: Record<string, SessionMessages>;
+    sessionMessagesHistoryStartLoaded: Record<string, true>;
+    markSessionMessagesHistoryStartLoaded: (sessionId: string) => void;
     applyMessages: (sessionId: string, messages: NormalizedMessage[]) => { changed: string[]; hasReadyEvent: boolean };
     replaceSessionMessages: (sessionId: string, messages: NormalizedMessage[]) => { changed: string[]; hasReadyEvent: boolean };
     applyMessagesLoaded: (sessionId: string) => void;
@@ -246,6 +257,13 @@ export interface ArtifactsDomainSlice {
     deleteArtifact: (artifactId: string) => void;
 }
 
+/**
+ * The one Account-scoped map of workflow Run bodies, keyed by `runId`. Every
+ * transport that reads Runs normalizes into it and keeps only its own ordered
+ * id window beside it.
+ */
+export type WorkflowRunsDomainSlice = WorkflowRunsDomain;
+
 export interface AutomationsDomainSlice {
     automations: Record<string, AutomationDefinition>;
     automationDefinitionNextCursor: string | null;
@@ -254,11 +272,16 @@ export interface AutomationsDomainSlice {
         nextCursor: string;
         automations: Record<string, AutomationDefinition>;
     }> | null;
-    automationRunsByAutomationId: Record<string, AutomationDefinitionRun[]>;
+    /**
+     * Ordered newest-first Run membership for one Automation's query. The Run
+     * bodies live once in `workflowRunsById`, so an Automation list and an
+     * exact Run read cannot render two versions of the same Run.
+     */
+    automationRunIdsByAutomationId: Record<string, string[]>;
     automationRunNextCursorByAutomationId: Record<string, string | null>;
     automationRunTraversalsByAutomationId: Record<string, Readonly<{
         nextCursor: string;
-        runs: AutomationDefinitionRun[];
+        runIds: string[];
     }>>;
     applyAutomations: (automations: AutomationDefinition[], nextCursor?: string | null) => number | null;
     appendAutomations: (
@@ -302,51 +325,55 @@ export interface PetsDomainSlice {
 export interface ProjectDomainSlice {
     getProjects: () => import('../runtime/orchestration/projectManager').Project[];
     getProject: (projectId: string) => import('../runtime/orchestration/projectManager').Project | null;
-    getProjectForSession: (sessionId: string) => import('../runtime/orchestration/projectManager').Project | null;
+    getProjectForSession: (sessionId: string, serverId?: string | null) => import('../runtime/orchestration/projectManager').Project | null;
     getProjectSessions: (projectId: string) => string[];
     getProjectScmStatus: (projectId: string) => ScmStatus | null;
-    getSessionProjectScmStatus: (sessionId: string) => ScmStatus | null;
-    updateSessionProjectScmStatus: (sessionId: string, status: ScmStatus | null) => void;
+    getSessionProjectScmStatus: (sessionId: string, serverId?: string | null) => ScmStatus | null;
+    updateSessionProjectScmStatus: (sessionId: string, status: ScmStatus | null, serverId?: string | null) => void;
     getProjectScmSnapshot: (projectId: string) => ScmWorkingSnapshot | null;
     getProjectScmSnapshotError: (projectId: string) => import('../runtime/orchestration/projectManager').ProjectScmSnapshotError | null;
-    getSessionProjectScmSnapshot: (sessionId: string) => ScmWorkingSnapshot | null;
-    getSessionProjectScmSnapshotError: (sessionId: string) => import('../runtime/orchestration/projectManager').ProjectScmSnapshotError | null;
-    updateSessionProjectScmSnapshot: (sessionId: string, snapshot: ScmWorkingSnapshot | null) => void;
+    getSessionProjectScmSnapshot: (sessionId: string, serverId?: string | null) => ScmWorkingSnapshot | null;
+    getSessionProjectScmSnapshotError: (sessionId: string, serverId?: string | null) => import('../runtime/orchestration/projectManager').ProjectScmSnapshotError | null;
+    updateSessionProjectScmSnapshot: (sessionId: string, snapshot: ScmWorkingSnapshot | null, serverId?: string | null) => void;
     updateSessionProjectScmSnapshotError: (
         sessionId: string,
-        error: import('../runtime/orchestration/projectManager').ProjectScmSnapshotError | null
+        error: import('../runtime/orchestration/projectManager').ProjectScmSnapshotError | null,
+        serverId?: string | null,
     ) => void;
     publishSessionProjectScmSnapshots: (
         publishes: ReadonlyArray<Readonly<{
             sessionId: string;
+            serverId?: string | null;
             snapshot: ScmWorkingSnapshot;
             status: ScmStatus | null;
         }>>,
     ) => void;
-    getSessionProjectScmTouchedPaths: (sessionId: string) => string[];
-    markSessionProjectScmTouchedPaths: (sessionId: string, paths: string[]) => void;
-    pruneSessionProjectScmTouchedPaths: (sessionId: string, activePaths: Set<string>) => void;
-    getSessionProjectScmCommitSelectionPaths: (sessionId: string) => string[];
-    markSessionProjectScmCommitSelectionPaths: (sessionId: string, paths: string[]) => void;
-    unmarkSessionProjectScmCommitSelectionPaths: (sessionId: string, paths: string[]) => void;
-    clearSessionProjectScmCommitSelectionPaths: (sessionId: string) => void;
-    pruneSessionProjectScmCommitSelectionPaths: (sessionId: string, activePaths: Set<string>) => void;
-    getSessionProjectScmCommitSelectionPatches: (sessionId: string) => ScmCommitSelectionPatch[];
-    upsertSessionProjectScmCommitSelectionPatch: (sessionId: string, patchSelection: ScmCommitSelectionPatch) => void;
-    removeSessionProjectScmCommitSelectionPatch: (sessionId: string, path: string) => void;
-    clearSessionProjectScmCommitSelectionPatches: (sessionId: string) => void;
-    pruneSessionProjectScmCommitSelectionPatches: (sessionId: string, activePaths: Set<string>) => void;
-    getSessionProjectScmOperationLog: (sessionId: string) => import('../runtime/orchestration/projectManager').ScmProjectOperationLogEntry[];
+    getWorkspaceScmTouchedPathsForSession: (sessionId: string, serverId?: string | null) => string[];
+    markWorkspaceScmTouchedPathsForSession: (sessionId: string, paths: string[], serverId?: string | null) => void;
+    pruneWorkspaceScmTouchedPathsForSession: (sessionId: string, activePaths: Set<string>, serverId?: string | null) => void;
+    getSessionProjectScmCommitSelectionPaths: (sessionId: string, serverId?: string | null) => string[];
+    markSessionProjectScmCommitSelectionPaths: (sessionId: string, paths: string[], serverId?: string | null) => void;
+    unmarkSessionProjectScmCommitSelectionPaths: (sessionId: string, paths: string[], serverId?: string | null) => void;
+    clearSessionProjectScmCommitSelectionPaths: (sessionId: string, serverId?: string | null) => void;
+    pruneSessionProjectScmCommitSelectionPaths: (sessionId: string, activePaths: Set<string>, serverId?: string | null) => void;
+    getSessionProjectScmCommitSelectionPatches: (sessionId: string, serverId?: string | null) => ScmCommitSelectionPatch[];
+    upsertSessionProjectScmCommitSelectionPatch: (sessionId: string, patchSelection: ScmCommitSelectionPatch, serverId?: string | null) => void;
+    removeSessionProjectScmCommitSelectionPatch: (sessionId: string, path: string, serverId?: string | null) => void;
+    clearSessionProjectScmCommitSelectionPatches: (sessionId: string, serverId?: string | null) => void;
+    pruneSessionProjectScmCommitSelectionPatches: (sessionId: string, activePaths: Set<string>, serverId?: string | null) => void;
+    getSessionProjectScmOperationLog: (sessionId: string, serverId?: string | null) => import('../runtime/orchestration/projectManager').ScmProjectOperationLogEntry[];
     appendSessionProjectScmOperation: (
         sessionId: string,
         entry: Omit<import('../runtime/orchestration/projectManager').ScmProjectOperationLogEntry, 'id' | 'sessionId'>,
+        serverId?: string | null,
     ) => void;
-    getSessionProjectScmInFlightOperation: (sessionId: string) => import('../runtime/orchestration/projectManager').ScmProjectInFlightOperation | null;
+    getSessionProjectScmInFlightOperation: (sessionId: string, serverId?: string | null) => import('../runtime/orchestration/projectManager').ScmProjectInFlightOperation | null;
     beginSessionProjectScmOperation: (
         sessionId: string,
         operation: import('../runtime/orchestration/projectManager').ScmProjectOperationKind,
+        serverId?: string | null,
     ) => import('../runtime/orchestration/projectManager').BeginScmProjectOperationResult;
-    finishSessionProjectScmOperation: (sessionId: string, operationId: string) => boolean;
+    finishSessionProjectScmOperation: (sessionId: string, operationId: string, serverId?: string | null) => boolean;
 
     getWorkspaceScmStatus: (scope: WorkspaceScopeBase) => ScmStatus | null;
     updateWorkspaceScmStatus: (scope: WorkspaceScopeBase, status: ScmStatus | null) => void;
@@ -415,12 +442,14 @@ export type StorageState = SettingsDomainSlice
     & SessionsDomainSlice
     & SessionOrganizationDomain
     & MachinesDomainSlice
+    & MachinePoolsDomain
     & MessagesDomainSlice
     & PendingDomainSlice
     & TranscriptLoadingDomainSlice
     & RealtimeDomainSlice
     & TodosDomainSlice
     & ArtifactsDomainSlice
+    & WorkflowRunsDomainSlice
     & AutomationsDomainSlice
     & PetsDomainSlice
     & ProjectDomainSlice

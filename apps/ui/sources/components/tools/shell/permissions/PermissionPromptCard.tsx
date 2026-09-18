@@ -34,6 +34,7 @@ export const PermissionPromptCard = React.memo(function PermissionPromptCard(pro
     request: PendingPermissionRequest;
     location: PermissionToolCallMessageLocation | null;
     sessionId: string;
+    serverId?: string;
     metadata: Metadata | null;
     canApprovePermissions: boolean;
     disabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
@@ -54,9 +55,9 @@ export const PermissionPromptCard = React.memo(function PermissionPromptCard(pro
 
     const onViewTool = React.useCallback(() => {
         navigateWithBlurOnWeb(() => {
-            router.push(buildPermissionToolCallRoute({ sessionId: props.sessionId, location: props.location }));
+            router.push(buildPermissionToolCallRoute({ sessionId: props.sessionId, serverId: props.serverId, location: props.location }));
         });
-    }, [props.location, props.sessionId, router]);
+    }, [props.location, props.sessionId, props.serverId, router]);
     const canOpenToolRoute = canOpenPermissionToolCallRoute(props.location);
 
     const previewDetailLevel = React.useMemo(() => {
@@ -155,6 +156,7 @@ export const PermissionPromptCard = React.memo(function PermissionPromptCard(pro
                         metadata={props.metadata}
                         messages={[]}
                         sessionId={props.sessionId}
+                        serverId={props.serverId}
                         interaction={{
                             canSendMessages: false,
                             canApprovePermissions: props.canApprovePermissions,
@@ -180,6 +182,7 @@ export const PermissionPromptCard = React.memo(function PermissionPromptCard(pro
                             : {}),
                     }}
                     sessionId={props.sessionId}
+                    serverId={props.serverId}
                     toolName={props.request.tool}
                     toolInput={props.request.arguments}
                     metadata={props.metadata || null}

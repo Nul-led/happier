@@ -37,6 +37,9 @@ const automationState = vi.hoisted(() => ({
 const latestEditorProps = vi.hoisted(() => ({
     value: null as any,
 }));
+const latestWorkflowBodyProps = vi.hoisted(() => ({
+    value: null as any,
+}));
 const preventRemoveState = vi.hoisted(() => ({
     enabled: false,
     handler: null as null | ((event: Readonly<{ data: Readonly<{ action: unknown }> }>) => void),
@@ -55,7 +58,20 @@ vi.mock('@react-navigation/native', () => ({
 vi.mock('@/components/automations/editor/AutomationPluralEditorScreen', () => ({
     AutomationPluralEditorScreen: (props: any) => {
         latestEditorProps.value = props;
-        return React.createElement('AutomationPluralEditorScreen', props);
+        // The stand-in keeps the two document slots the real composition
+        // renders, so host content placed there stays observable.
+        return React.createElement(
+            'AutomationPluralEditorScreen',
+            props,
+            props.leading ?? null,
+            props.recipeEditor ?? null,
+        );
+    },
+}));
+vi.mock('@/components/workflows/screens/WorkflowEditorBody', () => ({
+    WorkflowEditorBody: (props: any) => {
+        latestWorkflowBodyProps.value = props;
+        return React.createElement('WorkflowEditorBody', { testID: props.testIDPrefix });
     },
 }));
 vi.mock('@/components/automations/editor/PluginEventAutomationEditor', () => ({
@@ -66,13 +82,15 @@ vi.mock('@/sync/sync', () => ({
 }));
 vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
     fetchAccountEncryptionMode: vi.fn(async () => ({ mode: 'plain', updatedAt: 1 })),
+    subscribeAccountEncryptionModeCacheInvalidation: () => () => {},
 }));
 vi.mock('@/sync/api/automations/apiAutomations', () => ({
     isAutomationApiErrorCode: (error: unknown, code: string) => (
         typeof error === 'object' && error !== null && (error as { code?: unknown }).code === code
     ),
 }));
-vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
+vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/scope/activeServerAccountScope')>()),
     captureActiveServerAccountScopeLifetime: () => {
         const scope = (storageState.value as {
             profileScope?: { serverId: string; accountId: string };
@@ -130,6 +148,17 @@ vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
 }));
 vi.mock('@/hooks/server/useAutomationsSupport', () => ({
     useAutomationsSupport: () => ({ enabled: true }),
+}));
+// The canonical server feature-decision seam. Automations stays enabled here so
+// the supported automations-enabled / workflows-unavailable configuration is the
+// one under test.
+const featureDecisions = vi.hoisted(() => ({
+    workflows: { state: 'enabled' } as Record<string, unknown> | null,
+}));
+vi.mock('@/hooks/server/useFeatureDecision', () => ({
+    useFeatureDecision: (featureId: string) => (
+        featureId === 'workflows' ? featureDecisions.workflows : { state: 'enabled' }
+    ),
 }));
 vi.mock('@/utils/platform/deferOnWeb', () => ({
     navigateWithBlurOnWeb: navigateWithBlurOnWebSpy,
@@ -339,11 +368,13 @@ async function mountHost(props: {
 describe('AutomationEditorHostScreen', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        featureDecisions.workflows = { state: 'enabled' };
         authorityState.current = true;
         authorityCaptures.list.length = 0;
         preventRemoveState.enabled = false;
         preventRemoveState.handler = null;
         latestEditorProps.value = null;
+        latestWorkflowBodyProps.value = null;
         seedStoreDefinition();
         seedStorageSessions();
     });
@@ -761,14 +792,18 @@ describe('AutomationEditorHostScreen', () => {
         expect(modalAlertSpy).not.toHaveBeenCalled();
     });
 
-    it('hosts the editor form in the shared keyboard-aware scroll owner', async () => {
+    it('leaves the page scroll and pinned Save to the shared editor instead of nesting its own', async () => {
         const { KeyboardAwareScrollView } = await import('@/components/ui/keyboardAvoidance/KeyboardAwareScrollView');
         const screen = await mountHost({});
         await flushRender();
 
-        // A plain ScrollView would let the on-screen keyboard cover the focused
-        // name/description/prompt fields the editor renders below the fold.
-        expect(screen.findAllByType(KeyboardAwareScrollView as never)).toHaveLength(1);
+        // The shared editor owns the one keyboard-aware page scroll with Save
+        // pinned above the document; a host scroll around it would nest two
+        // owners and push Save back below the fold. (The editor is a stand-in
+        // here, so any scroll owner found is the host's.)
+        expect(screen.findAllByType(KeyboardAwareScrollView as never)).toHaveLength(0);
+        expect(latestEditorProps.value.onSubmit).toBeTypeOf('function');
+        expect(latestEditorProps.value.onCancel).toBeTypeOf('function');
     });
 
     it('advances only the exact-turn row when explicitly adopting the current turn after staleness', async () => {
@@ -860,5 +895,383 @@ describe('AutomationEditorHostScreen', () => {
         const [savedDraft] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
         expect(savedDraft.name).toBe('Renamed before staleness');
         expect(savedDraft.triggers.at(-1)?.definition?.policy).toMatchObject({ sourceTurnId: 'turn-8' });
+    });
+});
+
+describe('AutomationEditorHostScreen shared Workflow editor body', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        featureDecisions.workflows = { state: 'enabled' };
+        authorityState.current = true;
+        authorityCaptures.list.length = 0;
+        latestEditorProps.value = null;
+        latestWorkflowBodyProps.value = null;
+        seedStoreDefinition();
+        seedStorageSessions();
+    });
+
+    function seedWorkflowRecipeDefinition() {
+        const value = definitionDetailValue();
+        const workflowRecipe = {
+            v: 2 as const,
+            templateVersion: 4,
+            workflow: {
+                t: 'plain' as const,
+                v: {
+                    definition: {
+                        version: 1 as const,
+                        inputs: [],
+                        defaults: {
+                            agentTarget: {
+                                kind: 'agent' as const,
+                                identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
+                            },
+                        },
+                        blocks: [{
+                            kind: 'step' as const,
+                            id: 'analyze',
+                            document: { text: 'Analyze the release', references: [], attachments: [] },
+                            input: [],
+                            result: { kind: 'text' as const },
+                        }],
+                    },
+                    project: { machineId: 'machine-1', directory: '/repo' },
+                },
+            },
+            triggerEvidence: null,
+        };
+        const detail = { ...value, targetType: null, executionRecipe: workflowRecipe };
+        automationState.definition = {
+            ...detail,
+            triggers: detail.triggers.map(({ triggerDefinitionEnvelope: _envelope, ...summary }) => summary),
+            detail: { kind: 'available' as const, templateVersion: 4, value: detail },
+        };
+        syncSpies.refreshAutomationDefinitionDetail.mockResolvedValue(automationState.definition);
+    }
+
+    function editWorkflowPrompt(text: string) {
+        const body = latestWorkflowBodyProps.value;
+        const step = body.draft.blocks[0];
+        body.onChange({
+            ...body.draft,
+            blocks: [{ ...step, document: { ...step.document, text } }],
+        });
+    }
+
+    it('opens a saved one-shot Automation in the shared Workflow definition editor', async () => {
+        const screen = await mountHost({});
+        await flushRender();
+
+        expect(latestEditorProps.value.recipeEditor).toBeTruthy();
+        const body = latestWorkflowBodyProps.value;
+        expect(body).not.toBeNull();
+        // The stored one-shot program is adapted into the canonical one-step
+        // definition, so the prompt is editable in the same editor a workflow
+        // Automation uses.
+        expect(body.draft.blocks).toHaveLength(1);
+        expect(body.draft.blocks[0].document.text).toBe('Ship notes');
+        expect(body.draft.defaults.conversation).toEqual({
+            kind: 'existing_session',
+            sessionId: 'session-target',
+            machineId: 'machine-1',
+        });
+        // The wrapper keeps one primary Save; the body offers no rival commit.
+        expect(body.onSave).toBeUndefined();
+        expect(body.onRunNow).toBeUndefined();
+        expect(screen).toBeDefined();
+    });
+
+    it('saves an edited prompt back through the released one-shot recipe', async () => {
+        syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
+        await mountHost({});
+        await flushRender();
+
+        await act(async () => editWorkflowPrompt('Ship notes and highlight risks'));
+        await flushRender();
+        await act(async () => latestEditorProps.value.onSubmit());
+        await flushRender();
+
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+        expect(syncSpies.saveAutomationEditorDraft).toHaveBeenCalledTimes(1);
+        const [savedDraft] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
+        expect(savedDraft.recipeDirty).toBe(true);
+        expect(savedDraft.executionRecipe.v).toBe(1);
+        expect(savedDraft.executionRecipe.templateVersion).toBe(5);
+        expect(savedDraft.executionRecipe.template).toEqual({
+            t: 'plain',
+            v: { v: 1, prompt: 'Ship notes and highlight risks' },
+        });
+        // One-shot execution semantics are preserved, not converted.
+        expect(savedDraft.executionRecipe.target).toEqual({
+            kind: 'existingSession',
+            sessionId: 'session-target',
+        });
+    });
+
+    it('names an empty required one-shot prompt beside Save and clears the reason once repaired', async () => {
+        await mountHost({});
+        await flushRender();
+
+        await act(async () => editWorkflowPrompt(''));
+        await flushRender();
+
+        expect(latestEditorProps.value.submitDisabled).toBe(true);
+        expect(latestEditorProps.value.submitDisabledReason).toBe('workflows.issue.invalid_input');
+
+        await act(async () => editWorkflowPrompt('Ship notes again'));
+        await flushRender();
+
+        expect(latestEditorProps.value.submitDisabled).toBe(false);
+        expect(latestEditorProps.value.submitDisabledReason).toBeNull();
+    });
+
+    it('leaves the stored recipe untouched when only Automation metadata changed', async () => {
+        syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
+        await mountHost({});
+        await flushRender();
+
+        await act(async () => latestEditorProps.value.onChange({
+            ...latestEditorProps.value.value,
+            name: 'Renamed only',
+        }));
+        await flushRender();
+        await act(async () => latestEditorProps.value.onSubmit());
+        await flushRender();
+
+        const [savedDraft] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
+        expect(savedDraft.name).toBe('Renamed only');
+        expect(savedDraft.recipeDirty).not.toBe(true);
+        expect(savedDraft.executionRecipe.templateVersion).toBe(4);
+    });
+
+    it('requires an explicit conversion before a grown workflow replaces the one-shot recipe', async () => {
+        syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
+        const screen = await mountHost({});
+        await flushRender();
+
+        await act(async () => {
+            const body = latestWorkflowBodyProps.value;
+            body.onChange({
+                ...body.draft,
+                blocks: [...body.draft.blocks, {
+                    kind: 'step',
+                    id: 'step-2',
+                    document: { text: 'Then publish them', references: [], attachments: [] },
+                    input: [],
+                    result: { kind: 'text' },
+                }],
+            });
+        });
+        await flushRender();
+
+        // The consequence is stated before Save, and Save cannot silently
+        // convert how future occurrences execute.
+        const card = screen.findByProps({ testID: 'automation-editor-workflow-conversion-required' });
+        expect(latestEditorProps.value.submitDisabled).toBe(true);
+        await act(async () => latestEditorProps.value.onSubmit());
+        await flushRender();
+        expect(syncSpies.saveAutomationEditorDraft).not.toHaveBeenCalled();
+
+        // Explicit conversion, then the one-machine workflow contract.
+        await act(async () => card.props.action.onPress());
+        await flushRender();
+        await act(async () => {
+            const body = latestWorkflowBodyProps.value;
+            body.onChangeProjectTarget({ machineId: 'machine-1', directory: '/repo' });
+        });
+        await flushRender();
+        await act(async () => {
+            const body = latestWorkflowBodyProps.value;
+            body.onChange({
+                ...body.draft,
+                defaults: {
+                    ...body.draft.defaults,
+                    agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
+                },
+            });
+        });
+        await flushRender();
+
+        expect(latestEditorProps.value.submitDisabled).toBe(false);
+        await act(async () => latestEditorProps.value.onSubmit());
+        await flushRender();
+
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+        const [savedDraft] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
+        expect(savedDraft.executionRecipe.v).toBe(2);
+        expect(savedDraft.executionRecipe.workflow.v.definition.blocks).toHaveLength(2);
+        expect(savedDraft.executionRecipe.workflow.v.project)
+            .toEqual({ machineId: 'machine-1', directory: '/repo' });
+        // One workflow runs on exactly one reviewed machine. The Automation's
+        // existing assignment already names it, so its priority is preserved
+        // rather than silently rewritten by the conversion.
+        expect(savedDraft.assignments).toEqual([{ machineId: 'machine-1', enabled: true, priority: 0 }]);
+    });
+
+    it('opens a saved managed workflow Automation from its frozen definition', async () => {
+        seedWorkflowRecipeDefinition();
+        await mountHost({});
+        await flushRender();
+
+        const body = latestWorkflowBodyProps.value;
+        expect(body).not.toBeNull();
+        expect(body.draft.blocks[0].id).toBe('analyze');
+        expect(body.draft.blocks[0].document.text).toBe('Analyze the release');
+        expect(body.projectTarget).toEqual({ machineId: 'machine-1', directory: '/repo' });
+    });
+
+    it('reseals an edited managed workflow definition through the canonical workflow recipe writer', async () => {
+        seedWorkflowRecipeDefinition();
+        syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
+        await mountHost({});
+        await flushRender();
+
+        await act(async () => editWorkflowPrompt('Analyze the release and report risks'));
+        await flushRender();
+        await act(async () => latestEditorProps.value.onSubmit());
+        await flushRender();
+
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+        const [savedDraft] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
+        expect(savedDraft.recipeDirty).toBe(true);
+        expect(savedDraft.executionRecipe.v).toBe(2);
+        expect(savedDraft.executionRecipe.templateVersion).toBe(5);
+        expect(savedDraft.executionRecipe.workflow.t).toBe('plain');
+        expect(savedDraft.executionRecipe.workflow.v.definition.blocks[0].document.text)
+            .toBe('Analyze the release and report risks');
+        expect(savedDraft.executionRecipe.workflow.v.project)
+            .toEqual({ machineId: 'machine-1', directory: '/repo' });
+    });
+
+    /**
+     * The outer Save of a saved managed workflow Automation answers to the
+     * same canonical draft validation the create wrapper and the neutral editor
+     * consume. An invalid edit disables Save up front — the body names the
+     * issue inline — and never reaches the recipe writer.
+     */
+    it('refuses to save an invalid managed workflow edit through the canonical draft validation', async () => {
+        seedWorkflowRecipeDefinition();
+        syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
+        await mountHost({});
+        await flushRender();
+        expect(latestEditorProps.value.submitDisabled).toBe(false);
+
+        await act(async () => editWorkflowPrompt(''));
+        await flushRender();
+        expect(latestEditorProps.value.submitDisabled).toBe(true);
+
+        await act(async () => editWorkflowPrompt('Analyze the release again'));
+        await flushRender();
+        expect(latestEditorProps.value.submitDisabled).toBe(false);
+        expect(syncSpies.saveAutomationEditorDraft).not.toHaveBeenCalled();
+    });
+
+    it('treats an unsaved workflow edit as dirty for Cancel and native beforeRemove', async () => {
+        await mountHost({});
+        await flushRender();
+
+        expect(preventRemoveState.enabled).toBe(false);
+        await act(async () => editWorkflowPrompt('Ship notes, carefully'));
+        await flushRender();
+        expect(preventRemoveState.enabled).toBe(true);
+    });
+
+    describe('under an unavailable canonical Workflows decision', () => {
+        const unavailableDecisions = [
+            ['disabled', { state: 'disabled', blockedBy: 'server' }],
+            ['unknown', { state: 'unknown' }],
+            ['unresolved', null],
+        ] as const;
+
+        async function growBeyondOneShot() {
+            await act(async () => {
+                const body = latestWorkflowBodyProps.value;
+                body.onChange({
+                    ...body.draft,
+                    blocks: [...body.draft.blocks, {
+                        kind: 'step',
+                        id: 'step-2',
+                        document: { text: 'Then publish them', references: [], attachments: [] },
+                        input: [],
+                        result: { kind: 'text' },
+                    }],
+                });
+            });
+            await flushRender();
+        }
+
+        it.each(unavailableDecisions)(
+            'keeps a saved one-shot Automation editable and saveable while the decision is %s',
+            async (_label, decision) => {
+                featureDecisions.workflows = decision as Record<string, unknown> | null;
+                syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
+                await mountHost({});
+                await flushRender();
+
+                await act(async () => editWorkflowPrompt('Ship notes and highlight risks'));
+                await flushRender();
+                await act(async () => latestEditorProps.value.onSubmit());
+                await flushRender();
+
+                const [savedDraft] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
+                expect(savedDraft.executionRecipe.v).toBe(1);
+            },
+        );
+
+        it.each(unavailableDecisions)(
+            'offers no conversion and refuses the v2 write while the decision is %s',
+            async (_label, decision) => {
+                featureDecisions.workflows = decision as Record<string, unknown> | null;
+                syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
+                const screen = await mountHost({});
+                await flushRender();
+
+                await growBeyondOneShot();
+
+                // The reason is stated, but the conversion offer is not: adopting
+                // the workflow contract is exactly what the canonical decision
+                // does not authorize here.
+                expect(screen.findByTestId('automation-editor-workflows-unavailable')).not.toBeNull();
+                expect(screen.findAllByTestId('automation-editor-workflow-conversion-required')).toHaveLength(0);
+                expect(latestEditorProps.value.submitDisabled).toBe(true);
+
+                await act(async () => latestEditorProps.value.onSubmit());
+                await flushRender();
+                expect(syncSpies.saveAutomationEditorDraft).not.toHaveBeenCalled();
+            },
+        );
+
+        it.each(unavailableDecisions)(
+            'opens a saved managed workflow Automation read-only while the decision is %s',
+            async (_label, decision) => {
+                seedWorkflowRecipeDefinition();
+                featureDecisions.workflows = decision as Record<string, unknown> | null;
+                syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
+                const screen = await mountHost({});
+                await flushRender();
+
+                // The stored v2 definition stays exactly as saved: it is neither
+                // editable here nor rewritten into a one-shot recipe.
+                expect(screen.findByTestId('automation-editor-workflow-recipe-unavailable')).not.toBeNull();
+                expect(latestWorkflowBodyProps.value).toBeNull();
+
+                // Ordinary Automation metadata remains editable and saveable; the
+                // untouched v2 recipe travels through unchanged.
+                await act(async () => latestEditorProps.value.onChange({
+                    ...latestEditorProps.value.value,
+                    name: 'Renamed only',
+                }));
+                await flushRender();
+                await act(async () => latestEditorProps.value.onSubmit());
+                await flushRender();
+
+                const [savedDraft] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
+                expect(savedDraft.name).toBe('Renamed only');
+                expect(savedDraft.executionRecipe.v).toBe(2);
+                expect(savedDraft.executionRecipe.templateVersion).toBe(4);
+                expect(savedDraft.executionRecipe.workflow.v.definition.blocks[0].document.text)
+                    .toBe('Analyze the release');
+            },
+        );
     });
 });

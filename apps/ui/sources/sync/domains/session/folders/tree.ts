@@ -32,7 +32,7 @@ export function buildSessionFolderTree(
     const workspaceFolders = folders.folders
         .filter((folder) => folder.workspace
             ? compareSessionFolderWorkspaceRefs(folder.workspace, workspace)
-            : options.includeLockedFolderIds?.has(folder.id) === true)
+            : folder.serverId === workspace.serverId && options.includeLockedFolderIds?.has(folder.id) === true)
         .slice()
         .sort(compareFolders);
     const childFoldersByParentId = new Map<string | null, SessionFolderListItem[]>();

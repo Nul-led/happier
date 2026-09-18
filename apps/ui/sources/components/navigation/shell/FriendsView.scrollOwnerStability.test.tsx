@@ -35,6 +35,10 @@ const feedStore = vi.hoisted(() => {
 });
 
 const profileState = vi.hoisted(() => ({ profile: { id: 'me' } }));
+const sessionState = vi.hoisted(() => ({
+    sessions: [] as Array<{ id: string; serverId?: string; owner?: string; updatedAt?: number; metadata: unknown }>,
+}));
+const navigateToSessionSpy = vi.hoisted(() => vi.fn());
 
 installNavigationShellCommonModuleMocks({
     reactNative: async () => {
@@ -71,10 +75,14 @@ installNavigationShellCommonModuleMocks({
             ),
             useFeedLoaded: () => true,
             useFriendsLoaded: () => true,
-            useAllSessions: () => [],
+            useAllSessions: () => sessionState.sessions,
         });
     },
 });
+
+vi.mock('@/hooks/session/useNavigateToSession', () => ({
+    useNavigateToSession: () => navigateToSessionSpy,
+}));
 
 vi.mock('@/sync/domains/state/storageStore', () => {
     const storage = Object.assign(
@@ -129,6 +137,8 @@ describe('FriendsView scroll owner stability', () => {
         scrollOwner.unmounts = 0;
         scrollOwner.offset = 0;
         feedStore.state.items = [{ id: 'feed-1' }];
+        sessionState.sessions = [];
+        navigateToSessionSpy.mockReset();
     });
 
     it('keeps one scroll container across a populated -> empty -> populated cycle', async () => {
@@ -165,5 +175,27 @@ describe('FriendsView scroll owner stability', () => {
             .map((node) => String(node.props.children ?? ''));
         expect(emptyCopy).toContain('friends.emptyTitle');
         expect(emptyCopy).toContain('friends.emptyDescription');
+    });
+
+    it('opens a shared Session through the canonical exact-Home navigator', async () => {
+        const { FriendsView } = await import('./FriendsView');
+        sessionState.sessions = [{
+            id: 'session:shared',
+            serverId: 'https://home-a.example:8443',
+            owner: 'friend-account',
+            updatedAt: 1,
+            metadata: { name: 'Shared work' },
+        }];
+
+        const tree = (await renderScreen(<FriendsView />)).tree;
+        const sharedSession = tree.root.find((node) => (
+            String(node.type) === 'Item' && node.props.title === 'Shared work'
+        ));
+
+        sharedSession.props.onPress();
+
+        expect(navigateToSessionSpy).toHaveBeenCalledWith('session:shared', {
+            serverId: 'https://home-a.example:8443',
+        });
     });
 });

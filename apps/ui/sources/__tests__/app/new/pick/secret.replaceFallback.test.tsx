@@ -7,7 +7,12 @@ import type { SecretsListProps } from '@/components/secrets/SecretsList';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import type { BackendTargetRefV2 } from '@happier-dev/protocol';
 import {
+    BUNDLED_AGENT_ROUTE_PARAMS,
+    createConfiguredAcpBackendCatalogSettings,
+    createConfiguredBackendRouteParams,
+    createDiscoveredPluginBackendDescribeResult,
     createNavigationMock,
+    createProjectionDescribeMock,
     createRouterMock,
     enableReactActEnvironment,
     installPickerCommonModuleMocks,
@@ -20,37 +25,24 @@ enableReactActEnvironment();
 const routerMock = createRouterMock();
 const navigationMock = createNavigationMock();
 const secretsListPropsRef = { current: null as SecretsListProps | null };
-const routeParamsState = vi.hoisted(() => ({
+const routeParamsState = {
     current: {
         agentType: 'claude',
-        backendTarget: JSON.stringify({
-            kind: 'backend',
-            backendId: 'claude-sonnet',
-            configuredBackendId: 'claude-sonnet',
-        }),
-        backendTargetKey: 'backend:claude-sonnet:configured:claude-sonnet',
+        ...createConfiguredBackendRouteParams('claude-sonnet'),
         dataId: 'draft-1',
         machineId: 'machine-2',
         spawnServerId: 'server-2',
     } as Record<string, string>,
-}));
-const settingsState = vi.hoisted(() => ({
+};
+const settingsState = {
     current: {
         lastUsedAgent: 'claude',
         lastUsedBackendTarget: null as BackendTargetRefV2 | null,
         backendEnabledByTargetKey: null as Record<string, boolean> | null,
         acpCatalogSettingsV1: null as unknown,
     },
-}));
-type MachineContributionRegistryProjectionDescribeFn =
-    typeof import('@/sync/ops/machineContributionRegistryProjection').machineContributionRegistryProjectionDescribe;
-const {
-    machineContributionRegistryProjectionDescribe,
-} = vi.hoisted(() => ({
-    machineContributionRegistryProjectionDescribe: vi.fn<MachineContributionRegistryProjectionDescribeFn>(
-        async () => ({ supported: false, reason: 'not-supported' }),
-    ),
-}));
+};
+const machineContributionRegistryProjectionDescribe = createProjectionDescribeMock();
 
 installPickerCommonModuleMocks({
     reactNative: async () =>
@@ -96,6 +88,7 @@ installPickerCommonModuleMocks({
                 }),
             },
         }),
+    projectionSeam: { describe: machineContributionRegistryProjectionDescribe },
 });
 
 vi.mock('@/components/secrets/SecretsList', () => ({
@@ -105,27 +98,12 @@ vi.mock('@/components/secrets/SecretsList', () => ({
     },
 }));
 
-vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
-    machineContributionRegistryProjectionDescribe: (...args: Parameters<MachineContributionRegistryProjectionDescribeFn>) =>
-        machineContributionRegistryProjectionDescribe(...args),
-    getMachineContributionRegistryProjectionRevision: () => 0,
-    subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
-    machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-}));
-
 describe('SecretPickerScreen replace fallback', () => {
     beforeEach(() => {
         vi.resetModules();
         routeParamsState.current = {
             agentType: 'claude',
-            backendTarget: JSON.stringify({
-                kind: 'backend',
-                backendId: 'claude-sonnet',
-                configuredBackendId: 'claude-sonnet',
-            }),
-            backendTargetKey: 'backend:claude-sonnet:configured:claude-sonnet',
+            ...createConfiguredBackendRouteParams('claude-sonnet'),
             dataId: 'draft-1',
             machineId: 'machine-2',
             spawnServerId: 'server-2',
@@ -177,12 +155,7 @@ describe('SecretPickerScreen replace fallback', () => {
         expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
             params: {
-                backendTarget: JSON.stringify({
-                    kind: 'backend',
-                    backendId: 'claude-sonnet',
-                    configuredBackendId: 'claude-sonnet',
-                }),
-                backendTargetKey: 'backend:claude-sonnet:configured:claude-sonnet',
+                ...createConfiguredBackendRouteParams('claude-sonnet'),
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 secretId: 'secret-picked',
@@ -251,27 +224,7 @@ describe('SecretPickerScreen replace fallback', () => {
             lastUsedAgent: 'codex',
             lastUsedBackendTarget: { kind: 'backend', backendId: 'stale-review-bot', configuredBackendId: 'stale-review-bot', sourceKind: 'configured' },
             backendEnabledByTargetKey: { 'agent:codex': true },
-            acpCatalogSettingsV1: {
-                v: 2,
-                backends: [{
-                    id: 'review-bot',
-                    name: 'review-bot',
-                    title: 'Review Bot',
-                    command: 'review-bot',
-                    args: [],
-                    env: {},
-                    transportProfile: 'generic',
-                    capabilities: {
-                        supportsLoadSession: false,
-                        supportsModes: 'unknown',
-                        supportsModels: 'unknown',
-                        supportsConfigOptions: 'unknown',
-                        promptImageSupport: 'unknown',
-                    },
-                    createdAt: 1,
-                    updatedAt: 1,
-                }],
-            },
+            acpCatalogSettingsV1: createConfiguredAcpBackendCatalogSettings('review-bot'),
         };
         const SecretPickerScreen = (await import('@/app/(app)/new/pick/secret')).default;
 
@@ -287,9 +240,7 @@ describe('SecretPickerScreen replace fallback', () => {
         expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
             params: {
-                agentType: 'codex',
-                backendTarget: JSON.stringify({ kind: 'backend', backendId: 'codex' }),
-                backendTargetKey: 'backend:codex',
+                ...BUNDLED_AGENT_ROUTE_PARAMS.codex,
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 secretId: 'secret-picked',
@@ -311,29 +262,7 @@ describe('SecretPickerScreen replace fallback', () => {
             backendEnabledByTargetKey: null,
             acpCatalogSettingsV1: null,
         };
-        machineContributionRegistryProjectionDescribe.mockResolvedValue({
-            supported: true,
-            projection: {
-                v: 1,
-                agentsById: {
-                    'acme.review.provider': {
-                        id: 'acme.review.provider',
-                        title: 'Acme Review Provider',
-                        channel: 'plugin',
-                        isBuiltIn: false,
-                        settingsBackendId: 'acme.review.backend',
-                    },
-                },
-                backendsById: {
-                    'acme.review.backend': {
-                        id: 'acme.review.backend',
-                        backendId: 'acme.review.backend',
-                        agentId: 'acme.review.provider',
-                        title: 'Acme Review Backend',
-                    },
-                },
-            },
-        });
+        machineContributionRegistryProjectionDescribe.mockResolvedValue(createDiscoveredPluginBackendDescribeResult());
         const SecretPickerScreen = (await import('@/app/(app)/new/pick/secret')).default;
 
         await renderScreen(React.createElement(SecretPickerScreen));
@@ -351,23 +280,15 @@ describe('SecretPickerScreen replace fallback', () => {
             serverId: 'server-2',
             timeoutMs: 10_000,
         }));
-        expect(routerMock.replace).toHaveBeenCalledTimes(1);
-        const [call] = routerMock.replace.mock.calls;
-        const args = call?.[0] as any;
-
-        expect(args).toEqual(expect.objectContaining({
+        expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
-            params: expect.objectContaining({
-                agentType: 'claude',
-                backendTargetKey: 'backend:claude',
+            params: {
+                ...BUNDLED_AGENT_ROUTE_PARAMS.claude,
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 secretId: 'secret-picked',
                 spawnServerId: 'server-2',
-            }),
-        }));
-
-        const backendTarget = parseJsonRouteParam(args?.params?.backendTarget) as any;
-        expect(backendTarget).toMatchObject({ kind: 'backend', backendId: 'claude' });
+            },
+        });
     });
 });

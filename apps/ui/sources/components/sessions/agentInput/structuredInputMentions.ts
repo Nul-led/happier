@@ -8,6 +8,7 @@ import {
     sanitizeMentionRefsV1,
     type ComposerAttachmentDraftV1,
     type MentionRefV1,
+    type RawIngressStructuredInputV1,
 } from '@happier-dev/protocol';
 
 import type { AutocompleteSuggestion } from '@/components/autocomplete/autocompleteTypes';
@@ -287,7 +288,14 @@ function reconcileStructuredInputMentionsWithChangedSpan(args: Readonly<{
 }>): ComposerStructuredInputMention[] {
     const nextMentions: ComposerStructuredInputMention[] = [];
     for (const mention of args.mentions) {
-        const changeBeforeMention = args.change.previousEnd <= mention.start;
+        // A suffix diff can begin inside a surviving token when the removed
+        // prefix ends with the same characters as that token (for example,
+        // deleting the first of two file references). The reference still has
+        // one safe exact destination: its old range shifted by the whole text
+        // delta. Admit that range when it matches; never search for another
+        // occurrence.
+        const changeBeforeMention = args.change.previousEnd <= mention.start
+            || args.change.previousStart <= mention.start;
         const changeAfterMention = args.change.previousStart >= mention.end;
         if (changeBeforeMention) {
             const shifted = {
@@ -442,6 +450,7 @@ export function buildStructuredInputMetaOverrides(args: Readonly<{
     text?: string;
     attachments?: readonly StructuredInputImageInput[];
     composerAttachments?: readonly ComposerAttachmentDraftV1[];
+    sessionDiscussionSelectionSourceV1?: RawIngressStructuredInputV1['sessionDiscussionSelectionSourceV1'];
 }>): Record<string, unknown> {
     const text = args.text;
     const survivingMentions = typeof text === 'string'
@@ -453,7 +462,13 @@ export function buildStructuredInputMetaOverrides(args: Readonly<{
         ...(args.attachments ? { attachments: args.attachments } : {}),
         ...(args.composerAttachments ? { composerAttachments: args.composerAttachments } : {}),
     });
-    return envelope ? { happierStructuredInputV1: envelope } : {};
+    const structuredEnvelope = args.sessionDiscussionSelectionSourceV1
+        ? {
+            ...(envelope ?? { v: 1 as const }),
+            sessionDiscussionSelectionSourceV1: args.sessionDiscussionSelectionSourceV1,
+        }
+        : envelope;
+    return structuredEnvelope ? { happierStructuredInputV1: structuredEnvelope } : {};
 }
 
 function readStructuredEnvelope(meta: Record<string, unknown> | null | undefined): Record<string, unknown> {
@@ -486,12 +501,14 @@ export function mergeMessageMetaOverrides(
     const vendorPluginMentions = mergeArrays(leftEnvelope.vendorPluginMentions, rightEnvelope.vendorPluginMentions);
     const skillMentions = mergeArrays(leftEnvelope.skillMentions, rightEnvelope.skillMentions);
     const composerAttachments = mergeArrays(leftEnvelope.composerAttachments, rightEnvelope.composerAttachments);
+    const sessionDiscussionSelectionSourceV1 = rightEnvelope.sessionDiscussionSelectionSourceV1
+        ?? leftEnvelope.sessionDiscussionSelectionSourceV1;
     const imageInputs = mergeArrays(
         [...(Array.isArray(leftEnvelope.imageInputs) ? leftEnvelope.imageInputs : []), ...(Array.isArray(leftEnvelope.attachments) ? leftEnvelope.attachments : [])],
         [...(Array.isArray(rightEnvelope.imageInputs) ? rightEnvelope.imageInputs : []), ...(Array.isArray(rightEnvelope.attachments) ? rightEnvelope.attachments : [])],
     );
 
-    if (mentions || vendorPluginMentions || skillMentions || imageInputs || composerAttachments) {
+    if (mentions || vendorPluginMentions || skillMentions || imageInputs || composerAttachments || sessionDiscussionSelectionSourceV1) {
         merged.happierStructuredInputV1 = {
             v: 1,
             ...(mentions ? { mentions } : {}),
@@ -499,6 +516,7 @@ export function mergeMessageMetaOverrides(
             ...(skillMentions ? { skillMentions } : {}),
             ...(imageInputs ? { imageInputs } : {}),
             ...(composerAttachments ? { composerAttachments } : {}),
+            ...(sessionDiscussionSelectionSourceV1 ? { sessionDiscussionSelectionSourceV1 } : {}),
         };
     }
 

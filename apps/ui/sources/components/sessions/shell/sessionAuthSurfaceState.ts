@@ -1,4 +1,5 @@
 import { createNotAuthenticatedError } from '@/sync/runtime/connectivity/authErrors';
+import type { SessionRouteHydrationState } from '@/sync/domains/session/sessionRouteHydrationState';
 
 export type SessionAuthSurfaceState = Readonly<{
     message: string;
@@ -6,6 +7,7 @@ export type SessionAuthSurfaceState = Readonly<{
 
 export function resolveSessionAuthSurfaceState(params: Readonly<{
     endpointStatus: unknown;
+    routeHydrationState?: SessionRouteHydrationState | null;
     syncError: {
         message: string;
         kind: 'auth' | 'config' | 'network' | 'server' | 'unknown';
@@ -14,7 +16,11 @@ export function resolveSessionAuthSurfaceState(params: Readonly<{
     if (params.syncError?.kind === 'auth') {
         return { message: params.syncError.message };
     }
-    if (params.endpointStatus === 'auth_failed') {
+    if (params.endpointStatus === 'auth_failed' || (
+        params.routeHydrationState?.kind === 'missing'
+        && (params.routeHydrationState.cause === 'unauthorized'
+            || params.routeHydrationState.cause === 'auth_unavailable')
+    )) {
         return { message: createNotAuthenticatedError().message };
     }
     return null;

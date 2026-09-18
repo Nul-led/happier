@@ -11,6 +11,7 @@ describe('executeSessionHandoffAction', () => {
       result: {
         handoffId: 'handoff_1',
         status,
+        workspace: { kind: 'none' as const },
       },
     }));
 
@@ -21,7 +22,10 @@ describe('executeSessionHandoffAction', () => {
       context: { defaultSessionId: 'sess_1', surface: 'ui', placement: 'session_info' } as any,
     });
 
-    expect(result).toEqual({ ok: true, result: { handoffId: 'handoff_1', status } });
+    expect(result).toEqual({
+      ok: true,
+      result: { handoffId: 'handoff_1', status, workspace: { kind: 'none' } },
+    });
   });
 
   it('passes optional handoff options through to the action executor', async () => {
@@ -32,6 +36,7 @@ describe('executeSessionHandoffAction', () => {
       result: {
         handoffId: 'handoff_1',
         status,
+        workspace: { kind: 'none' as const },
       },
     }));
 
@@ -112,6 +117,7 @@ describe('executeSessionHandoffAction', () => {
       ok: true,
       result: {
         status,
+        workspace: { kind: 'none' as const },
       },
     }));
 

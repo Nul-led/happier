@@ -131,6 +131,29 @@ function buildSnapshot(
     });
 }
 
+function buildMultiAllowanceSnapshot(): QualifiedConnectedAccountQuotaSnapshotV4 {
+    const base = buildSnapshot({ availableCount: 1, credits: [] });
+    return QualifiedConnectedAccountQuotaSnapshotV4Schema.parse({
+        ...base,
+        meters: [
+            {
+                ...base.meters[0],
+                meterId: 'standard:weekly',
+                label: 'Standard',
+                providerLimitId: 'standard',
+                used: 20,
+            },
+            {
+                ...base.meters[0],
+                meterId: 'spark:weekly',
+                label: 'Spark',
+                providerLimitId: 'spark',
+                used: 95,
+            },
+        ],
+    });
+}
+
 function buildQuotaResult(
     overrides: Partial<UseQualifiedConnectedAccountQuotaResult> = {},
 ): UseQualifiedConnectedAccountQuotaResult {
@@ -174,6 +197,23 @@ async function renderQualifiedAccountBlock(
 }
 
 describe('QualifiedAccountBlock', () => {
+    it('shows only allowance families selected by the owning pool while preserving account facts', async () => {
+        quotaHookState.value = buildQuotaResult({ snapshot: buildMultiAllowanceSnapshot() });
+
+        const screen = await renderQualifiedAccountBlock({
+            variant: 'poolMember',
+            groupId: 'g1',
+            quotaLimitSelection: {
+                mode: 'selected',
+                providerLimitIds: ['standard'],
+            },
+        });
+
+        expect(screen.getTextContent()).toContain('Pro');
+        expect(screen.getTextContent()).not.toContain('Spark');
+        expect(screen.findByTestId('acct:avatar:capacity')?.props).toBeTruthy();
+    });
+
     it('counts available resets through the shared summary owner, not the rendered row count', async () => {
         // A v4 account must read the same reset count a legacy account reads for
         // the same credits. Undisclosed credits collapse into ONE aggregate row,

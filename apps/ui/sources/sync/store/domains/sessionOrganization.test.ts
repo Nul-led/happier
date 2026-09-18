@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionOrganizationSnapshot } from '@happier-dev/protocol';
 
-import { buildSessionOrganizationServerKey } from '@/sync/domains/session/organization';
+import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
 
 import {
     createSessionOrganizationDomain,
@@ -33,6 +33,9 @@ function emptySnapshot(input: Partial<SessionOrganizationSnapshot> = {}): Sessio
         tagAssignments: input.tagAssignments ?? [],
         orderEntries: input.orderEntries ?? [],
         labels: input.labels ?? [],
+        ...(input.attentionStandings === undefined
+            ? {}
+            : { attentionStandings: input.attentionStandings }),
     };
 }
 
@@ -63,10 +66,10 @@ describe('createSessionOrganizationDomain', () => {
         // s1/s2 lost their folder (assignment cleared) but stay KNOWN, so the
         // missing-filter does not re-arm a per-session refetch for them.
         expect(harness.get().sessionOrganizationFolderAssignmentsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-a', 's1')]: null,
-            [buildSessionOrganizationServerKey('srv-a', 's2')]: null,
-            [buildSessionOrganizationServerKey('srv-a', 's3')]: 'folder-c',
-            [buildSessionOrganizationServerKey('srv-b', 'other')]: 'folder-other',
+            [buildSessionOrganizationSessionKey('srv-a', 's1')]: { sessionId: 's1', folderId: null },
+            [buildSessionOrganizationSessionKey('srv-a', 's2')]: { sessionId: 's2', folderId: null },
+            [buildSessionOrganizationSessionKey('srv-a', 's3')]: { sessionId: 's3', folderId: 'folder-c' },
+            [buildSessionOrganizationSessionKey('srv-b', 'other')]: { sessionId: 'other', folderId: 'folder-other' },
         });
     });
 
@@ -102,7 +105,7 @@ describe('createSessionOrganizationDomain', () => {
         }), { includeAllFolderAssignments: true });
 
         expect(harness.get().sessionOrganizationFolderAssignmentsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-a', 's1')]: 'folder-z',
+            [buildSessionOrganizationSessionKey('srv-a', 's1')]: { sessionId: 's1', folderId: 'folder-z' },
         });
     });
 
@@ -125,9 +128,9 @@ describe('createSessionOrganizationDomain', () => {
         }), { assignmentSessionIds: ['s1', 's2'] });
 
         expect(harness.get().sessionOrganizationFolderAssignmentsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-a', 's1')]: 'folder-new',
-            [buildSessionOrganizationServerKey('srv-a', 's2')]: null,
-            [buildSessionOrganizationServerKey('srv-a', 's3')]: 'folder-untouched',
+            [buildSessionOrganizationSessionKey('srv-a', 's1')]: { sessionId: 's1', folderId: 'folder-new' },
+            [buildSessionOrganizationSessionKey('srv-a', 's2')]: { sessionId: 's2', folderId: null },
+            [buildSessionOrganizationSessionKey('srv-a', 's3')]: { sessionId: 's3', folderId: 'folder-untouched' },
         });
     });
 
@@ -149,8 +152,8 @@ describe('createSessionOrganizationDomain', () => {
         }), { tagIds: ['tag-a'] });
 
         expect(harness.get().sessionOrganizationTagAssignmentsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-a', 's1')]: ['tag-b'],
-            [buildSessionOrganizationServerKey('srv-a', 's2')]: ['tag-a'],
+            [buildSessionOrganizationSessionKey('srv-a', 's1')]: { sessionId: 's1', tagIds: ['tag-b'] },
+            [buildSessionOrganizationSessionKey('srv-a', 's2')]: { sessionId: 's2', tagIds: ['tag-a'] },
         });
     });
 
@@ -166,8 +169,8 @@ describe('createSessionOrganizationDomain', () => {
         harness.get().reconcileSessionOrganizationFolderDelete('srv-a', ['deleted-folder'], null);
 
         expect(harness.get().sessionOrganizationFolderAssignmentsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-a', 's1')]: null,
-            [buildSessionOrganizationServerKey('srv-a', 's2')]: 'kept-folder',
+            [buildSessionOrganizationSessionKey('srv-a', 's1')]: { sessionId: 's1', folderId: null },
+            [buildSessionOrganizationSessionKey('srv-a', 's2')]: { sessionId: 's2', folderId: 'kept-folder' },
         });
     });
 
@@ -180,8 +183,34 @@ describe('createSessionOrganizationDomain', () => {
         harness.get().rollbackSessionOrganizationOptimistic(firstRecordId);
 
         expect(harness.get().sessionOrganizationTagAssignmentsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-a', 's1')]: ['tag-a', 'tag-b'],
+            [buildSessionOrganizationSessionKey('srv-a', 's1')]: { sessionId: 's1', tagIds: ['tag-a', 'tag-b'] },
         });
         expect(Object.keys(harness.get().sessionOrganizationOptimisticRecords)).toEqual([secondRecordId]);
+    });
+
+    it('keeps every Session-owned organization record distinct for delimiter-bearing addresses', () => {
+        const harness = createHarness();
+        const addresses = [
+            { serverId: 'https://home.example/a', sessionId: 'b:c' },
+            { serverId: 'https://home.example/a:b', sessionId: 'c' },
+        ] as const;
+        for (const [index, address] of addresses.entries()) {
+            harness.get().applySessionOrganizationSnapshot(address.serverId, emptySnapshot({
+                version: 1,
+                pins: [{ sessionId: address.sessionId, pinnedAt: index + 1, sortKey: null }],
+                folderAssignments: [{ sessionId: address.sessionId, folderId: `folder-${index}` }],
+                tagAssignments: [{ sessionId: address.sessionId, tagIds: [`tag-${index}`] }],
+                attentionStandings: [{ sessionId: address.sessionId, standing: true, updatedAt: index + 1 }],
+            }), { includeAllFolderAssignments: true, includeAllTagAssignments: true });
+        }
+
+        for (const [index, address] of addresses.entries()) {
+            const key = buildSessionOrganizationSessionKey(address.serverId, address.sessionId);
+            expect(harness.get().sessionOrganizationPinsBySessionKey[key]?.sessionId).toBe(address.sessionId);
+            expect(harness.get().sessionOrganizationFolderAssignmentsBySessionKey[key]?.folderId).toBe(`folder-${index}`);
+            expect(harness.get().sessionOrganizationTagAssignmentsBySessionKey[key]?.tagIds).toEqual([`tag-${index}`]);
+            expect(harness.get().sessionOrganizationAttentionStandingsBySessionKey[key]?.updatedAt).toBe(index + 1);
+        }
+        expect(Object.keys(harness.get().sessionOrganizationPinsBySessionKey)).toHaveLength(2);
     });
 });

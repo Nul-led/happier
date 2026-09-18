@@ -22,6 +22,7 @@ function normalizePreviewText(value: string | null | undefined): string | null {
 }
 
 export function deriveSessionSubagentActivityPreview(params: Readonly<{
+    accountScope?: import('@/sync/domains/scope/serverAccountScope').ServerAccountScope | null;
     subagent: SessionSubagent;
     reducerState: SidechainStateLike;
     session?: Session | null;
@@ -37,6 +38,7 @@ export function deriveSessionSubagentActivityPreview(params: Readonly<{
         const textPreview = normalizePreviewText(message?.text);
         if (textPreview) {
             if (!shouldIgnoreProviderSessionSubagentActivityPreviewText({
+                accountScope: params.accountScope,
                 subagent: params.subagent,
                 text: textPreview,
                 metadata: params.session ? readSessionOwnerMetadataView(params.session) : null,

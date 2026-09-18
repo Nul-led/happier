@@ -38,7 +38,7 @@ installSessionDetailsPanelCommonModuleMocks({
             useSessionProjectScmSnapshot: () => mockSnapshot,
             useSessionProjectScmSnapshotError: () => mockSnapshotError,
             useSessionRealtimeScmTranscriptConsumer: () => {},
-            useSessionProjectScmTouchedPaths: () => [],
+            useWorkspaceScmTouchedPathsForSession: () => [],
         });
     },
     text: async () => {
@@ -56,8 +56,8 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
     useAppPaneScope: () => ({ scopeState: {} }),
 }));
 
-vi.mock('./useSessionRightPanelGitTabState', () => ({
-    useSessionRightPanelGitTabState: () => ({
+vi.mock('@/components/workspaces/scm/useWorkspaceScmTabState', () => ({
+    useWorkspaceScmTabState: () => ({
         activeGitSubTab: 'commit',
         setActiveGitSubTab: vi.fn(),
         commitDraftMessage: '',

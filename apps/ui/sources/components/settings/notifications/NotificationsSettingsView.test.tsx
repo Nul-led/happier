@@ -101,17 +101,21 @@ const liveActivityRemoteDiagnosticsState = vi.hoisted(() => ({
         },
     },
 }));
+const followingFeatureState = vi.hoisted(() => ({ enabled: true }));
 
 const settingsState: {
+    sessionRemoteAlertsEnabled: boolean;
     notificationsSettingsV1: NotificationsSettingsV1;
     notificationChannelsV1: NotificationChannelV1[];
     attentionDeliveryPolicyV1: AttentionDeliveryPolicyV1;
 } = {
+    sessionRemoteAlertsEnabled: false,
     notificationsSettingsV1: {
         v: 1,
         pushEnabled: true,
         ready: true,
         readyIncludeMessageText: true,
+        requestIncludeMessageText: false,
         permissionRequest: true,
         userActionRequest: true,
         connectedServiceAccountSwitch: true,
@@ -127,12 +131,14 @@ const settingsState: {
             enabled: true,
             topics: enabledLegacyNotificationTopics,
             readyIncludeMessageText: true,
+            requestIncludeMessageText: true,
         },
     ],
     attentionDeliveryPolicyV1: DEFAULT_ATTENTION_DELIVERY_POLICY_V1,
 };
 
 const localSettingsState = {
+    deviceRemoteAlertsEnabled: true,
     attentionDeviceOverridesV1: DEFAULT_ATTENTION_DEVICE_OVERRIDES_V1,
     activityBadgesEnabled: true,
     activityBadgeShowUnread: true,
@@ -238,6 +244,8 @@ installSettingsViewCommonModuleMocks({
         return createStorageModuleStub({
             useSettings: () => settingsState,
             useLocalSettings: () => localSettingsState,
+            useSettingsVersion: () => null,
+            useAccountSettingsSyncStatus: () => ({ state: 'idle', lastSyncedAt: null }),
         });
     },
     unistyles: async () => {
@@ -273,6 +281,7 @@ vi.mock('@/activity/notifications/channels/tauriNotificationPlugin', () => ({
 }));
 
 vi.mock('@/sync/store/settingsWriters', () => ({
+    useAccountSettingsScope: () => null,
     useApplySettings: () => applySettingsMock,
     useApplyLocalSettings: () => applyLocalSettingsMock,
 }));
@@ -284,6 +293,10 @@ vi.mock('@/sync/engine/account/syncAccount', () => ({
 
 vi.mock('@/hooks/server/useFeatureDetails', () => ({
     useFeatureDetails: () => liveActivityRemoteDiagnosticsState.value,
+}));
+
+vi.mock('@/hooks/server/useFeatureEnabled', () => ({
+    useFeatureEnabled: () => followingFeatureState.enabled,
 }));
 
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
@@ -321,6 +334,9 @@ vi.mock('@/components/ui/forms/Switch', () => ({
 
 describe('NotificationsSettingsView', () => {
     beforeEach(() => {
+        settingsState.sessionRemoteAlertsEnabled = false;
+        localSettingsState.deviceRemoteAlertsEnabled = true;
+        followingFeatureState.enabled = true;
         activeHomeState.generation = 1;
         activeHomeState.snapshot = {
             serverId: 'home-studio',
@@ -350,6 +366,7 @@ describe('NotificationsSettingsView', () => {
             pushEnabled: true,
             ready: true,
             readyIncludeMessageText: true,
+            requestIncludeMessageText: false,
             permissionRequest: true,
             userActionRequest: true,
             connectedServiceAccountSwitch: true,
@@ -365,6 +382,7 @@ describe('NotificationsSettingsView', () => {
                 enabled: true,
                 topics: enabledLegacyNotificationTopics,
                 readyIncludeMessageText: true,
+                requestIncludeMessageText: true,
             },
         ];
         settingsState.attentionDeliveryPolicyV1 = DEFAULT_ATTENTION_DELIVERY_POLICY_V1;
@@ -396,6 +414,27 @@ describe('NotificationsSettingsView', () => {
         screen.pressRow('settings-notifications-push-troubleshoot');
 
         expect(routerPushMock).toHaveBeenCalledWith('/settings/notifications/push');
+    });
+
+    it('lets an opted-in Account withdraw remote alert consent without changing push or device preferences', async () => {
+        settingsState.sessionRemoteAlertsEnabled = true;
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+        const row = requireRow(screen, 'settings-notifications-remote-account');
+        expect(row.props.rightElement.props.value).toBe(true);
+        expect(row.props.rightElement.props.disabled).toBe(false);
+        await act(async () => { row.props.rightElement.props.onValueChange(false); });
+        expect(applySettingsMock).toHaveBeenCalledWith({ sessionRemoteAlertsEnabled: false });
+        expect(applyLocalSettingsMock).not.toHaveBeenCalled();
+    });
+
+    it('does not expose remote-alert settings while Session Follow is disabled', async () => {
+        followingFeatureState.enabled = false;
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+
+        expect(screen.findRow('settings-notifications-remote-account')).toBeNull();
+        expect(screen.findRow('settings-notifications-remote-device')).toBeNull();
     });
 
     it('names the focused Home for synced push consent', async () => {
@@ -814,6 +853,27 @@ describe('NotificationsSettingsView', () => {
         expect(delta).not.toHaveProperty('localNotificationsShowReadyMessageText');
     });
 
+    it('writes device-local request preview settings through the local settings writer', async () => {
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+        const previewItem = requireRowByTitle(screen, 'settingsNotifications.local.requestPreviewTitle');
+
+        await act(async () => {
+            previewItem.props.rightElement.props.onValueChange(false);
+        });
+
+        const delta = applyLocalSettingsMock.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(delta).toEqual(expect.objectContaining({
+            attentionDeviceOverridesV1: expect.objectContaining({
+                localNotifications: expect.objectContaining({
+                    requestPreviewBehavior: 'status_only',
+                }),
+            }),
+        }));
+        expect(delta).not.toHaveProperty('localNotificationsShowRequestMessageText');
+    });
+
     it('allows foreground notifications to inherit the account default again', async () => {
         localSettingsState.attentionDeviceOverridesV1 = {
             ...DEFAULT_ATTENTION_DEVICE_OVERRIDES_V1,
@@ -961,6 +1021,45 @@ describe('NotificationsSettingsView', () => {
         expect(pushItem.props.rightElement.props.value).toBe(false);
     });
 
+    it('writes request preview opt-out through the canonical event policy', async () => {
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+        const previewItem = requireRowByTitle(screen, 'settingsNotifications.types.requestPreview.title');
+        expect(previewItem.props.rightElement.props.value).toBe(true);
+        await act(async () => { previewItem.props.rightElement.props.onValueChange(false); });
+        expect(applySettingsMock).toHaveBeenCalledWith(expect.objectContaining({
+            attentionDeliveryPolicyV1: expect.objectContaining({ channels: expect.objectContaining({
+                expo_push: expect.objectContaining({ events: expect.objectContaining({
+                    permission_request: expect.objectContaining({ enabled: true, previewBehavior: 'status_only' }),
+                    user_action_request: expect.objectContaining({ enabled: true, previewBehavior: 'status_only' }),
+                }) }),
+            }) }),
+        }));
+        expect(applySettingsMock.mock.calls[0]?.[0]).not.toHaveProperty('notificationsSettingsV1');
+    });
+
+    it('edits the canonical global Follow update event without creating per-reason settings', async () => {
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+        const followUpdatesItem = requireRow(screen, 'settings-notifications-type-follow-update');
+
+        expect(followUpdatesItem.props.rightElement.props.value).toBe(true);
+        await act(async () => {
+            followUpdatesItem.props.rightElement.props.onValueChange(false);
+        });
+
+        expect(applySettingsMock).toHaveBeenCalledWith(expect.objectContaining({
+            attentionDeliveryPolicyV1: expect.objectContaining({
+                events: expect.objectContaining({ follow_update: expect.objectContaining({ enabled: false }) }),
+                channels: expect.objectContaining({
+                    expo_push: expect.objectContaining({
+                        events: expect.objectContaining({ follow_update: expect.objectContaining({ enabled: false }) }),
+                    }),
+                }),
+            }),
+        }));
+    });
+
     it('writes synced ready preview settings through the account settings writer', async () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
@@ -1090,6 +1189,7 @@ describe('NotificationsSettingsView', () => {
                         userActionRequest: true,
                     }),
                     readyIncludeMessageText: true,
+                    requestIncludeMessageText: true,
                 }),
                 expect.objectContaining({
                     v: 1,
@@ -1104,6 +1204,7 @@ describe('NotificationsSettingsView', () => {
                         userActionRequest: true,
                     }),
                     readyIncludeMessageText: false,
+                    requestIncludeMessageText: true,
                 }),
             ],
             attentionDeliveryPolicyV1: expect.objectContaining({
@@ -1112,8 +1213,8 @@ describe('NotificationsSettingsView', () => {
                         enabled: true,
                         events: expect.objectContaining({
                             ready: { enabled: true },
-                            permission_request: { enabled: true },
-                            user_action_request: { enabled: true },
+                            permission_request: { enabled: true, previewBehavior: 'include_preview' },
+                            user_action_request: { enabled: true, previewBehavior: 'include_preview' },
                         }),
                     }),
                 }),
@@ -1134,6 +1235,7 @@ describe('NotificationsSettingsView', () => {
                 signingSecret: null,
                 topics: enabledLegacyNotificationTopics,
                 readyIncludeMessageText: false,
+                requestIncludeMessageText: false,
             },
         ];
         modalConfirmMock.mockResolvedValue(true);
@@ -1163,6 +1265,7 @@ describe('NotificationsSettingsView', () => {
                         userActionRequest: true,
                     }),
                     readyIncludeMessageText: true,
+                    requestIncludeMessageText: true,
                 }),
             ],
             attentionDeliveryPolicyV1: expect.objectContaining({
@@ -1187,6 +1290,7 @@ describe('NotificationsSettingsView', () => {
                 signingSecret: null,
                 topics: enabledLegacyNotificationTopics,
                 readyIncludeMessageText: false,
+                requestIncludeMessageText: false,
             },
         ];
         modalPromptMock.mockResolvedValue('shared-webhook-secret');
@@ -1212,6 +1316,7 @@ describe('NotificationsSettingsView', () => {
                         userActionRequest: true,
                     }),
                     readyIncludeMessageText: true,
+                    requestIncludeMessageText: true,
                 }),
                 expect.objectContaining({
                     v: 1,
@@ -1229,6 +1334,7 @@ describe('NotificationsSettingsView', () => {
                         userActionRequest: true,
                     }),
                     readyIncludeMessageText: false,
+                    requestIncludeMessageText: false,
                 }),
             ],
             attentionDeliveryPolicyV1: expect.objectContaining({
@@ -1242,6 +1348,7 @@ describe('NotificationsSettingsView', () => {
     });
 
     it('clears a configured webhook signing secret from the settings screen', async () => {
+        modalConfirmMock.mockResolvedValueOnce(true);
         settingsState.notificationChannelsV1 = [
             ...settingsState.notificationChannelsV1,
             {
@@ -1256,6 +1363,7 @@ describe('NotificationsSettingsView', () => {
                 },
                 topics: enabledLegacyNotificationTopics,
                 readyIncludeMessageText: false,
+                requestIncludeMessageText: false,
             },
         ];
 
@@ -1284,6 +1392,7 @@ describe('NotificationsSettingsView', () => {
                         userActionRequest: true,
                     }),
                     readyIncludeMessageText: true,
+                    requestIncludeMessageText: true,
                 }),
                 expect.objectContaining({
                     v: 1,
@@ -1298,6 +1407,7 @@ describe('NotificationsSettingsView', () => {
                         userActionRequest: true,
                     }),
                     readyIncludeMessageText: false,
+                    requestIncludeMessageText: false,
                 }),
             ],
             attentionDeliveryPolicyV1: expect.objectContaining({

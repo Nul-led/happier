@@ -5,6 +5,8 @@ import {
     parseTerminalConnectLinkV4Parameters,
     type HomeConnectionDescriptorV1,
 } from '@happier-dev/protocol';
+import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
+import { resolveEffectiveServerUrlOverride } from '@/sync/domains/server/url/serverUrlOverridePolicy';
 
 export type ParsedTerminalConnectUrl = Readonly<{
     wireVersion?: 4;
@@ -25,6 +27,37 @@ export type ParsedTerminalConnectUrl = Readonly<{
 }>;
 
 export type TerminalConnectRouteParams = Readonly<Record<string, string | string[] | undefined>>;
+
+export type TerminalConnectPreAuthTargetDecision = Readonly<{
+    pendingServerUrl: string;
+    canNavigateToAuth: boolean;
+}>;
+
+export function resolveTerminalConnectPreAuthTarget(params: Readonly<{
+    requestedServerUrl: string | null | undefined;
+    activeServerUrl: string | null | undefined;
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
+    allowLegacyLoopbackOverride?: boolean;
+}>): TerminalConnectPreAuthTargetDecision | null {
+    const activeServerUrl = canonicalizeServerUrl(String(params.activeServerUrl ?? ''));
+    const descriptorServerUrl = params.homeConnectionDescriptor
+        ? canonicalizeServerUrl(params.homeConnectionDescriptor.canonicalServerUrl)
+        : '';
+    const requestedServerUrl = descriptorServerUrl
+        || canonicalizeServerUrl(String(params.requestedServerUrl ?? ''));
+    const effectiveServerUrl = resolveEffectiveServerUrlOverride({
+        requestedServerUrl,
+        activeServerUrl,
+        allowLoopbackOverride: params.homeConnectionDescriptor
+            ? false
+            : params.allowLegacyLoopbackOverride === true,
+    });
+    if (params.homeConnectionDescriptor && descriptorServerUrl && !effectiveServerUrl) {
+        return { pendingServerUrl: descriptorServerUrl, canNavigateToAuth: false };
+    }
+    const pendingServerUrl = effectiveServerUrl || activeServerUrl;
+    return pendingServerUrl ? { pendingServerUrl, canNavigateToAuth: true } : null;
+}
 
 const SAFE_SERVER_PROTOCOLS = new Set(['http:', 'https:']);
 const TERMINAL_CONNECT_WEB_PATH = '/terminal/connect';

@@ -5,13 +5,19 @@ import { SessionGettingStartedGuidance } from '@/components/sessions/guidance/Se
 import { useShouldBlockNewSessionWithGettingStartedGuidance } from '@/components/sessions/guidance/useShouldBlockNewSessionWithGettingStartedGuidance';
 import { NewSessionSimplePanel } from '@/components/sessions/new/components/NewSessionSimplePanel';
 import { NewSessionWizard } from '@/components/sessions/new/components/NewSessionWizard';
+import { NewSessionLaunchSurface } from '@/components/sessions/new/components/NewSessionLaunchSurface';
 import { useNewSessionScreenModel } from '@/components/sessions/new/hooks/useNewSessionScreenModel';
 import type { ExactTurnAutomationPrefill } from '@/components/automations/sessionLifecycle/exactTurnAutomationPrefill';
 import { NewSessionScreenPortalScope } from '@/components/sessions/new/navigation/newSessionContainedModalScreen';
-import { resolveNewSessionDraftRouteIdentity } from '@/components/sessions/new/navigation/newSessionDraftRouteIdentity';
+import {
+    resolveNewSessionDraftRouteIdentity,
+    resolveNewSessionDraftRouteScope,
+} from '@/components/sessions/new/navigation/newSessionDraftRouteIdentity';
 import { useResolveNewSessionOrdinaryEntryRoute } from '@/components/sessions/new/navigation/newSessionOrdinaryEntryRoute';
 import { isNewSessionDraftLaunchInCustody } from '@/components/sessions/new/modules/newSessionDraftLaunchCustody';
 import { NewSessionDraftComposerActions } from '@/components/sessions/drafts/NewSessionDraftComposerActions';
+import { deleteNewSessionDraftAfterConfirmation } from '@/components/sessions/drafts/deleteNewSessionDraftAfterConfirmation';
+import { buildSessionDraftSyncStatusBadge } from '@/components/sessions/drafts/sessionDraftStatusPresentation';
 import {
     SessionDraftConflictResolution,
     useSessionDraftConflictComposerBanner,
@@ -20,7 +26,7 @@ import { ComposerBannerCollapseProvider } from '@/components/sessions/composerBa
 import { ComposerAuxiliaryFrame } from '@/components/sessions/shell/view/ComposerAuxiliaryFrame';
 import type { AgentInputStatusBadge } from '@/components/sessions/agentInput/agentInputContracts';
 import { Modal } from '@/modal';
-import { useAllActionOperations } from '@/sync/domains/actionOperations/useActionOperations';
+import { readAllActionOperations, useAllActionOperations } from '@/sync/domains/actionOperations/useActionOperations';
 import { parseNewSessionCheckoutDraft } from '@/sync/domains/state/newSessionCheckoutDraft';
 import {
     clearNewSessionOrdinaryEntryDraftIdExact,
@@ -31,8 +37,14 @@ import {
     getSessionDraftSnapshot,
     subscribeSessionDraft,
     deleteSessionDraft,
+    deleteSessionDraftWithScopedRuntime,
     type SessionDraftSnapshot,
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
+import { useServerCredentialAccountScopeBindings, useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { areServerAccountScopesEqual } from '@/sync/domains/scope/serverAccountScope';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { createServerFetchAtEndpoint } from '@/sync/http/client';
+import { runWithSessionDraftRepositoryScopedRuntime } from '@/sync/ops/sessionDrafts/runWithSessionDraftRepositoryScopedRuntime';
 import { peekTempData, type NewSessionData } from '@/utils/sessions/tempDataStore';
 import { t } from '@/text';
 
@@ -51,20 +63,38 @@ function NewSessionScreenInner(props: Readonly<{
     const model = useNewSessionScreenModel(props);
 
     if (model.variant === 'simple') {
-        return <NewSessionSimplePanel {...model.simpleProps} />;
+        return (
+            <NewSessionLaunchSurface
+                overlay={model.launchOverlay}
+                onRequestClose={model.launchOnRequestClose}
+                overlayPresentation={model.overlayPresentation}
+                focusReturnRef={model.overlayFocusReturnRef}
+                overlayAccessibilityLabel={model.overlayAccessibilityLabel}
+            >
+                <NewSessionSimplePanel {...model.simpleProps} />
+            </NewSessionLaunchSurface>
+        );
     }
 
     const { layout, profiles, agent, machine, footer } = model.wizardProps;
 
     return (
-        <NewSessionWizard
-            popoverBoundaryRef={model.popoverBoundaryRef}
-            layout={layout}
-            profiles={profiles}
-            agent={agent}
-            machine={machine}
-            footer={footer}
-        />
+        <NewSessionLaunchSurface
+            overlay={model.launchOverlay}
+            onRequestClose={model.launchOnRequestClose}
+            overlayPresentation={model.overlayPresentation}
+            focusReturnRef={model.overlayFocusReturnRef}
+            overlayAccessibilityLabel={model.overlayAccessibilityLabel}
+        >
+            <NewSessionWizard
+                popoverBoundaryRef={model.popoverBoundaryRef}
+                layout={layout}
+                profiles={profiles}
+                agent={agent}
+                machine={machine}
+                footer={footer}
+            />
+        </NewSessionLaunchSurface>
     );
 }
 
@@ -93,15 +123,55 @@ function NewSessionScreen(props: Readonly<{
     automationExactTurnRetarget?: ExactTurnAutomationPrefill | null;
 }>) {
     const router = useRouter();
-    const { dataId, draftId: routeDraftId, draftOrigin, machineId, directory } = useLocalSearchParams<{
+    const {
+        dataId,
+        draftId: routeDraftId,
+        draftOrigin,
+        machineId,
+        directory,
+        draftServerId,
+        draftAccountId,
+    } = useLocalSearchParams<{
         dataId?: string;
         draftId?: string;
         draftOrigin?: string;
         spawnServerId?: string;
         machineId?: string;
         directory?: string;
+        draftServerId?: string;
+        draftAccountId?: string;
     }>();
-    const draftScope = useActiveServerAccountScope();
+    const activeDraftScope = useActiveServerAccountScope();
+    const requestedDraftScopeResolution = useServerCredentialAccountScopeResolution(draftServerId);
+    const draftScope = resolveNewSessionDraftRouteScope({
+        activeScope: activeDraftScope,
+        draftServerId,
+        draftAccountId,
+        requestedScopeResolution: requestedDraftScopeResolution,
+    });
+    const requestedDraftScopeBindings = useServerCredentialAccountScopeBindings(
+        draftServerId ? [draftServerId] : [],
+    );
+    const requestedDraftScopeBinding = draftServerId
+        ? [...requestedDraftScopeBindings.values()].find((binding) => (
+            draftScope !== null && areServerAccountScopesEqual(binding.scope, draftScope)
+        )) ?? null
+        : null;
+    const requestedDraftProfile = React.useMemo(
+        () => draftScope && requestedDraftScopeBinding
+            ? getServerProfileById(draftScope.serverId)
+            : null,
+        [draftScope, requestedDraftScopeBinding],
+    );
+    const requestedDraftActiveRequest = React.useMemo(
+        () => requestedDraftProfile && draftScope
+            ? createServerFetchAtEndpoint({
+                endpointUrl: requestedDraftProfile.serverUrl,
+                serverId: draftScope.serverId,
+            })
+            : null,
+        [draftScope, requestedDraftProfile],
+    );
     const resolveOrdinaryEntry = useResolveNewSessionOrdinaryEntryRoute();
     const [ordinaryEntryDraftId, setOrdinaryEntryDraftId] = useSettingMutable('newSessionOrdinaryEntryDraftId');
     const draftIdentity = React.useMemo(() => {
@@ -157,13 +227,39 @@ function NewSessionScreen(props: Readonly<{
     }, [resolveOrdinaryEntry, router]);
     const deleteDraft = React.useCallback(async () => {
         if (!draftScope || launchInCustody) return;
-        const confirmed = await Modal.confirm(
-            t('sessionDrafts.delete.confirmTitle'),
-            t('sessionDrafts.delete.confirmDescription'),
-            { confirmText: t('common.delete'), cancelText: t('common.cancel'), destructive: true },
-        );
-        if (!confirmed) return;
-        await deleteSessionDraft({ scope: draftScope, address: draftAddress });
+        const deleted = await deleteNewSessionDraftAfterConfirmation({
+            confirm: () => Modal.confirm(
+                t('sessionDrafts.delete.confirmTitle'),
+                t('sessionDrafts.delete.confirmDescription'),
+                { confirmText: t('common.delete'), cancelText: t('common.cancel'), destructive: true },
+            ),
+            readCurrentDraftDeletionDisposition: () => {
+                const currentDraft = getSessionDraftSnapshot(draftScope, draftAddress);
+                if (!currentDraft) return 'missing';
+                return isNewSessionDraftLaunchInCustody({
+                    accountId: draftScope.accountId,
+                    launchUserAttemptId: currentDraft.localSupplement.launchUserAttemptId,
+                    operations: readAllActionOperations(),
+                }) ? 'launch-custody' : 'deletable';
+            },
+            deleteDraft: () => {
+                if (activeDraftScope && areServerAccountScopesEqual(activeDraftScope, draftScope)) {
+                    return deleteSessionDraft({ scope: draftScope, address: draftAddress });
+                }
+                if (!requestedDraftScopeBinding || !requestedDraftActiveRequest) return Promise.resolve(false);
+                return runWithSessionDraftRepositoryScopedRuntime({
+                    binding: requestedDraftScopeBinding,
+                    activeRequest: requestedDraftActiveRequest,
+                    operation: ({ runtime, isCurrent }) => deleteSessionDraftWithScopedRuntime({
+                        scope: draftScope,
+                        address: draftAddress,
+                        runtime,
+                        isCurrent,
+                    }),
+                }).then((deleted) => deleted === true);
+            },
+        });
+        if (!deleted) return;
         const pointerDelta = clearNewSessionOrdinaryEntryDraftIdExact(
             { newSessionOrdinaryEntryDraftId: ordinaryEntryDraftId },
             draftIdentity.draftId,
@@ -174,7 +270,19 @@ function NewSessionScreen(props: Readonly<{
             draftId: nextEntry.draftId,
             draftOrigin: nextEntry.draftOrigin,
         } });
-    }, [draftAddress, draftIdentity.draftId, draftScope, launchInCustody, ordinaryEntryDraftId, resolveOrdinaryEntry, router, setOrdinaryEntryDraftId]);
+    }, [
+        activeDraftScope,
+        draftAddress,
+        draftIdentity.draftId,
+        draftScope,
+        launchInCustody,
+        ordinaryEntryDraftId,
+        requestedDraftActiveRequest,
+        requestedDraftScopeBinding,
+        resolveOrdinaryEntry,
+        router,
+        setOrdinaryEntryDraftId,
+    ]);
 
     const tempData = React.useMemo(() => {
         return typeof dataId === 'string' ? peekTempData<NewSessionData>(dataId) : null;
@@ -196,6 +304,10 @@ function NewSessionScreen(props: Readonly<{
     }, [machineId, directory, tempData]);
 
     const draftConflictBanner = useSessionDraftConflictComposerBanner(exactDraft?.conflict ?? null);
+    const draftSyncStatusBadge = React.useMemo(
+        () => buildSessionDraftSyncStatusBadge(exactDraft?.status ?? 'clean'),
+        [exactDraft?.status],
+    );
     const composerTopContent = React.useMemo(() => (
         draftScope && exactDraft?.materialized === true && exactDraft.conflict && !draftConflictBanner.collapsed ? (
             <ComposerAuxiliaryFrame>
@@ -207,7 +319,10 @@ function NewSessionScreen(props: Readonly<{
             </ComposerAuxiliaryFrame>
         ) : null
     ), [draftAddress, draftConflictBanner.collapsed, draftScope, exactDraft?.conflict, exactDraft?.materialized]);
-    const statusBadges = draftConflictBanner.statusBadge ? [draftConflictBanner.statusBadge] : undefined;
+    const statusBadges = React.useMemo(() => [
+        ...(draftSyncStatusBadge ? [draftSyncStatusBadge] : []),
+        ...(draftConflictBanner.statusBadge ? [draftConflictBanner.statusBadge] : []),
+    ], [draftConflictBanner.statusBadge, draftSyncStatusBadge]);
     const statusTrailingActions = React.useMemo(() => (
         draftScope && exactDraft?.materialized === true ? (
             <NewSessionDraftComposerActions

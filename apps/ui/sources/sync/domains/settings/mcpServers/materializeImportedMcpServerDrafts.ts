@@ -83,7 +83,7 @@ function resolveInputValueRef(params: Readonly<{
         id: secretId,
         name: secretName,
         kind: mapping.secretKind ?? 'apiKey',
-        encryptedValue: { _isSecretValue: true, value: mapping.secretValue.trim() },
+        encryptedValue: { _isSecretValue: true, value: mapping.secretValue },
         createdAt: params.nowMs,
         updatedAt: params.nowMs,
     });

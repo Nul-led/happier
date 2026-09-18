@@ -1,3 +1,6 @@
+import { useSessionCollaborationDestinationAdmitted } from '@/hooks/session/useSessionCollaborationAvailability';
+import { useSessionBoardFeatureEnabled } from '@/components/sessions/board/useSessionBoardFeatureEnabled';
+import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import * as React from 'react';
 import { Platform } from 'react-native';
 
@@ -55,6 +58,10 @@ const NEXT_SESSION_ACTION = 'nextSession';
 
 export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps) => {
     const lateralSwipe = useSessionLateralSwipe();
+    const sessionServerId = usePreferredServerIdForSession({ serverId: props.serverId, sessionId: props.sessionId });
+    const collaborationAdmitted = useSessionCollaborationDestinationAdmitted(sessionServerId ?? '');
+    const sessionSharingAvailable = Boolean(sessionServerId) && collaborationAdmitted;
+    const boardFeatureEnabled = useSessionBoardFeatureEnabled(sessionServerId);
     // The band's actions are built HERE rather than in the chrome host because a tab is
     // the only element in the band a screen reader can focus, and an action only reaches
     // the rotor through the element that owns it.
@@ -98,10 +105,12 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 
     const catalog = React.useMemo(() => resolveSessionCockpitMobileCatalog({
+        sessionSharingAvailable,
+        boardFeatureEnabled,
         terminalTabAvailable: props.terminalTabAvailable,
         pluginPlacements: props.pluginPlacements,
         projectionGeneration: props.projectionGeneration,
-    }), [props.pluginPlacements, props.projectionGeneration, props.terminalTabAvailable]);
+    }), [boardFeatureEnabled, sessionSharingAvailable, props.pluginPlacements, props.projectionGeneration, props.terminalTabAvailable]);
     const visibility = React.useMemo(() => resolveSessionCockpitMobileTabVisibility({
         catalog,
         pinnedSurfaceIds: [
@@ -127,6 +136,13 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
                             />
                         ),
                     },
+                };
+            }
+            if (entry.id === 'companion') {
+                return {
+                    id: 'companion',
+                    label: 'Companion',
+                    icon: 'stack-simple',
                 };
             }
             return {

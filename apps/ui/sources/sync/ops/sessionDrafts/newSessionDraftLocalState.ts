@@ -18,6 +18,7 @@ export type NewSessionDraftLocalState = Readonly<Pick<NewSessionDraft,
     | 'backendNewSessionOptionStateByTargetKey'
     | 'windowsRemoteSessionLaunchModeOverride'
     | 'placementCandidates'
+    | 'teamCredentialBindings'
     | 'composerAttachmentSeeds'
 >>;
 
@@ -35,6 +36,7 @@ export function buildNewSessionDraftLocalState(draft: NewSessionDraft): NewSessi
             ?? null,
         windowsRemoteSessionLaunchModeOverride: draft.windowsRemoteSessionLaunchModeOverride ?? null,
         ...(draft.placementCandidates === undefined ? {} : { placementCandidates: draft.placementCandidates }),
+        ...(draft.teamCredentialBindings === undefined ? {} : { teamCredentialBindings: draft.teamCredentialBindings }),
         ...(draft.composerAttachmentSeeds === undefined ? {} : { composerAttachmentSeeds: draft.composerAttachmentSeeds }),
     };
 }

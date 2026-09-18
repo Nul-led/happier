@@ -3,10 +3,13 @@ import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { resolveSessionListPreferredServerIdFromState } from '@/sync/domains/session/listing/sessionListLookupState';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
-import { readMachineControlTargetForSession } from '@/sync/ops/sessionMachineTarget';
+import {
+    readMachineControlTargetForSession,
+    type SessionMachineTargetIdentity,
+} from '@/sync/ops/sessionMachineTarget';
 import { SESSION_MACHINE_TARGET_UNAVAILABLE_ERROR } from '@/sync/runtime/sessionMachineRpcErrorCodes';
 
-import { uploadSessionAttachmentFromReaderWithCarrierFallbacks } from './uploadSessionAttachmentFromReaderWithCarrierFallbacks';
+import { uploadSessionAttachmentFromReaderViaMachineCarrier } from './uploadSessionAttachmentFromReaderViaMachineCarrier';
 import type { TransferFinalizeRecoveryFailure } from '../plumbing/directTransferFinalizeRecovery';
 
 type SessionRpcFailure = Readonly<{ success: false; error: string; errorCode?: string }>;
@@ -32,8 +35,11 @@ export type SessionAttachmentsUploadFinalizeResponse =
     | Readonly<{ success: true; path: string; sizeBytes: number; sha256: string }>
     | SessionRpcFailure;
 
-export async function uploadDaemonSessionAttachmentFromReader(params: Readonly<{
-    sessionId: string;
+type SessionAttachmentUploadTarget =
+    | Readonly<{ session: SessionMachineTargetIdentity; sessionId?: never }>
+    | Readonly<{ sessionId: string; session?: never }>;
+
+export async function uploadDaemonSessionAttachmentFromReader(params: SessionAttachmentUploadTarget & Readonly<{
     fileReader: TransferFileReader;
     request: SessionAttachmentsUploadInitRequest;
     signal?: AbortSignal | null;
@@ -43,12 +49,15 @@ export async function uploadDaemonSessionAttachmentFromReader(params: Readonly<{
     | TransferFailureResponse
     | TransferFinalizeRecoveryFailure<SessionAttachmentsUploadFinalizeResponse>
 > {
-    const machineTarget = readMachineControlTargetForSession(params.sessionId);
-    const preferredServerId = resolveSessionListPreferredServerIdFromState(
-        storage.getState(),
-        params.sessionId,
-        getActiveServerSnapshot().serverId,
-    );
+    const session = params.session ?? params.sessionId;
+    const machineTarget = readMachineControlTargetForSession(session);
+    const preferredServerId = typeof session === 'object' && 'serverId' in session
+        ? session.serverId
+        : resolveSessionListPreferredServerIdFromState(
+            storage.getState(),
+            typeof session === 'string' ? session : session.sessionId,
+            getActiveServerSnapshot().serverId,
+        );
     const serverId = preferredServerId ?? undefined;
     if (!machineTarget || !serverId) {
         return {
@@ -58,7 +67,7 @@ export async function uploadDaemonSessionAttachmentFromReader(params: Readonly<{
         };
     }
 
-    return await uploadSessionAttachmentFromReaderWithCarrierFallbacks({
+    return await uploadSessionAttachmentFromReaderViaMachineCarrier({
         machineId: machineTarget.machineId,
         serverId,
         fileReader: params.fileReader,

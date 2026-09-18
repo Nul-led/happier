@@ -15,16 +15,18 @@ import {
     resolveVendorResumeIdFromSessionMetadata,
 } from '@happier-dev/agents';
 import {
+    readAcpConfiguredBackendV1FromMetadata,
+    readLegacyConfiguredAcpBackendId,
     readRuntimeDescriptorV1FromMetadata,
     resolveLinkedExternalSessionMetadataV1,
     type PluginContributionIdentityV1,
 } from '@happier-dev/protocol';
-import { deriveAcpBackendIdFromFlavor, isAcpFlavorPrefix } from './acpFlavor';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import {
     supportsCurrentProjectedAgentSessionOpen,
     type CurrentProjectedAgentCapabilities,
 } from '@/agents/backendCatalog/currentAgentCapabilities';
+import { normalizeAcpCatalogSettingsV1 } from '@/sync/domains/acpCatalog/normalizeAcpCatalogSettingsV1';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
 
 export type ResumeCapabilityOptions = {
@@ -51,32 +53,53 @@ function isConfiguredAcpBackendEnabled(backendId: string, options?: ResumeCapabi
     return (backendEnabledByTargetKey as Record<string, unknown>)[targetKey] !== false;
 }
 
-function getConfiguredAcpBackendId(
-    flavor: string | null | undefined,
-    metadata?: SessionMetadata | null,
-): string | null {
-    const backendIdFromFlavor = deriveAcpBackendIdFromFlavor(flavor);
-    if (backendIdFromFlavor === null) {
-        return null;
-    }
+/**
+ * The configured ACP backend a Session (or an Agent carrier id) names, or
+ * `null` when neither carrier is present.
+ *
+ * `acpConfiguredBackendV1` is the canonical identity the daemon writes with the
+ * Session and the only carrier the daemon's own
+ * `resolveBackendTargetFromSessionMetadata` reads, so it outranks every other
+ * evidence here. The `acp:<backendId>` spelling stays a strictly lower-precedence
+ * carrier for two reachable reasons: the account-configured runtime publishes it
+ * as its Agent id, and released Sessions persist it as `flavor`. It is parsed by
+ * the Protocol compat owner rather than re-derived here, and it can never widen
+ * eligibility on its own because resume still requires the exact Account-declared
+ * backend below.
+ */
+export function resolveConfiguredAcpBackendId(params: Readonly<{
+    metadata?: SessionMetadata | null;
+    agent?: string | null;
+}>): string | null {
+    const canonicalBackendId = readAcpConfiguredBackendV1FromMetadata(params.metadata ?? null)?.backendId.trim();
+    if (canonicalBackendId) return canonicalBackendId;
 
-    const backendIdFromMetadata =
-        typeof metadata?.acpConfiguredBackendV1 === 'object'
-            && metadata.acpConfiguredBackendV1 !== null
-            && 'backendId' in metadata.acpConfiguredBackendV1
-            && typeof metadata.acpConfiguredBackendV1.backendId === 'string'
-            ? metadata.acpConfiguredBackendV1.backendId.trim()
-            : '';
+    return readLegacyConfiguredAcpBackendId(params.metadata?.flavor)
+        ?? readLegacyConfiguredAcpBackendId(params.agent);
+}
 
-    return backendIdFromMetadata.length > 0 ? backendIdFromMetadata : backendIdFromFlavor;
+/**
+ * Configured ACP resume requires the Account's own declaration that this exact
+ * backend supports `session/load`, matching the daemon admission gate in
+ * `prepareExecuteSpawnSessionRequest`, which refuses resume for a configured
+ * backend whose `capabilities.supportsLoadSession` is not true. A backend that
+ * is unknown to the current catalog, malformed, or silent about load support
+ * fails closed: presentation must never offer a resume the runtime will reject.
+ */
+function canConfiguredAcpBackendResume(backendId: string, options?: ResumeCapabilityOptions): boolean {
+    const catalog = normalizeAcpCatalogSettingsV1(options?.accountSettings?.acpCatalogSettingsV1);
+    const backend = catalog.backends.find((candidate) => candidate.id === backendId) ?? null;
+    if (backend?.capabilities.supportsLoadSession !== true) return false;
+
+    return isConfiguredAcpBackendEnabled(backendId, options);
 }
 
 export function canAgentResume(agent: string | null | undefined, options?: ResumeCapabilityOptions): boolean {
     if (typeof agent !== 'string') return false;
 
-    if (isAcpFlavorPrefix(agent)) {
-        const backendId = getConfiguredAcpBackendId(agent);
-        return backendId !== null && isConfiguredAcpBackendEnabled(backendId, options);
+    const configuredAcpBackendId = resolveConfiguredAcpBackendId({ agent });
+    if (configuredAcpBackendId !== null) {
+        return canConfiguredAcpBackendResume(configuredAcpBackendId, options);
     }
 
     const agentId = resolveExplicitAgentId(agent);
@@ -222,12 +245,12 @@ export function canResumeSessionWithOptions(metadata: SessionMetadata | null | u
     if (!metadata) return false;
     const flavor = metadata.flavor;
 
-    if (isAcpFlavorPrefix(flavor)) {
+    const configuredAcpBackendId = resolveConfiguredAcpBackendId({ metadata });
+    if (configuredAcpBackendId !== null) {
         const metadataRecord = asRecord(metadata);
         const linkedSession = resolveLinkedExternalSessionMetadataV1(metadataRecord);
         if (linkedSession.ok || linkedSession.error !== 'linked_session_not_found') return false;
-        const backendId = getConfiguredAcpBackendId(flavor, metadata);
-        return backendId !== null && isConfiguredAcpBackendEnabled(backendId, options);
+        return canConfiguredAcpBackendResume(configuredAcpBackendId, options);
     }
 
     const agentId = resolveAgentIdFromSessionMetadata(metadata) ?? resolveAgentIdFromFlavor(flavor);
@@ -263,7 +286,7 @@ export function canContinueSessionWithFreshSpawn(
     const flavor = metadata.flavor;
 
     // Configured ACP backends are governed by the normal resume gate.
-    if (isAcpFlavorPrefix(flavor)) return false;
+    if (resolveConfiguredAcpBackendId({ metadata }) !== null) return false;
 
     const agentId = resolveAgentIdFromSessionMetadata(metadata) ?? resolveAgentIdFromFlavor(flavor);
     if (!agentId) return false;
@@ -306,7 +329,10 @@ export function getAgentVendorResumeId(
 ): string | null {
     if (!metadata) return null;
 
-    if (isAcpFlavorPrefix(metadata.flavor) || isAcpFlavorPrefix(agent)) {
+    // Configured ACP attach has no vendor resume id: the provider Session is
+    // rejoined through the configured backend target, never through a flat
+    // vendor key that another Agent's metadata may also carry.
+    if (resolveConfiguredAcpBackendId({ metadata, agent }) !== null) {
         return null;
     }
 

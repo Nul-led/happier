@@ -1,0 +1,27 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.happier'
+version = '0.0.0'
+
+android {
+  namespace "dev.happier.activitynotifications"
+
+  defaultConfig {
+    versionCode 1
+    versionName "0.0.0"
+  }
+}
+
+dependencies {
+  // Reuse the incumbent native Session envelope/payload implementation in the
+  // isolated notification process. This is a code dependency, not a second
+  // credential store or notification-specific cipher.
+  implementation project(':happier-crypto-worker')
+  // Expo SDK 55 autolinks notifications through its bundled Maven publication,
+  // not as a Gradle subproject. Compile against that same published artifact.
+  compileOnly 'host.exp.exponent:expo.modules.notifications:55.0.16'
+  compileOnly 'com.google.firebase:firebase-messaging:25.0.1'
+}

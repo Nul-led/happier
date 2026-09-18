@@ -61,7 +61,7 @@ vi.mock('@/constants/Typography', () => ({
 }));
 
 describe('SearchResultsList native virtualization', () => {
-    it('uses compact LegendList windows on native for large file-search result sets', async () => {
+    it('keeps native search results in the virtualized list during refinement', async () => {
         const { SearchResultsList } = await import('./SearchResultsList');
         const searchResults = Array.from({ length: 40 }, (_, index) => ({
             fileType: 'file',
@@ -70,8 +70,7 @@ describe('SearchResultsList native virtualization', () => {
             fullPath: `src/file-${index}.ts`,
         }));
 
-        await renderScreen(
-            <SearchResultsList
+        const element = <SearchResultsList
                 theme={{
                     colors: {
                         border: { default: '#ddd' },
@@ -83,12 +82,12 @@ describe('SearchResultsList native virtualization', () => {
                 searchQuery="session"
                 searchResults={searchResults as any}
                 onFilePress={vi.fn()}
-            />,
-        );
+            />;
+        const screen = await renderScreen(element);
 
         expect(legendListState.props?.data).toHaveLength(40);
         expect(legendListState.props?.estimatedItemSize).toBeGreaterThan(0);
-        expect(legendListState.props?.initialNumToRender).toBe(12);
-        expect(legendListState.props?.maxToRenderPerBatch).toBe(12);
+        await screen.update(React.cloneElement(element, { isSearching: true, searchQuery: 'session.ts' }));
+        expect(legendListState.props?.data).toBe(searchResults);
     });
 });

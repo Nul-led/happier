@@ -48,6 +48,7 @@ import {
   resolveVoiceDictationReadiness,
 } from './voiceDictationReadiness';
 import { Icon } from '@/components/ui/icons/Icon';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 
 const voiceProviderRegistry = createDefaultVoiceProviderRegistry();
 
@@ -96,6 +97,7 @@ export function DictationSettingsSection(props: Readonly<{
   const { theme } = useUnistyles();
   const providerSpecs = useLocalSttProviderSpecs('dictation_stt');
   const accountSettings = useSettings();
+  const savedSecretCatalog = useSavedSecretCatalog();
   const settingsVersion = useSettingsVersion();
   const dictation = props.voice.dictation ?? voiceDictationSettingsDefaults;
   const [openMenu, setOpenMenu] = React.useState<null | 'provider' | 'language'>(null);
@@ -147,6 +149,15 @@ export function DictationSettingsSection(props: Readonly<{
     realm: 'daemon',
     phase: 'speech',
     settingsVersion,
+    savedSecretCatalog: {
+      status: savedSecretCatalog.status,
+      stale: savedSecretCatalog.stale,
+      entries: savedSecretCatalog.sharedEntries.map((entry) => ({
+        ref: entry.ref,
+        revision: entry.revision,
+        materialStatus: entry.materialStatus,
+      })),
+    },
   });
   const isCurrentReadinessCheck = readinessCheck !== null
     && readinessCheck.providerId === nativeModelSelection.providerId
@@ -162,6 +173,7 @@ export function DictationSettingsSection(props: Readonly<{
         executionMachineSelectionKind: props.executionMachineSelectionKind,
         localAvailability: props.localAvailability,
         nativeLocalNeuralModel: readinessCheck.nativeLocalNeuralModel ?? undefined,
+        resolveSavedSecret: savedSecretCatalog.resolveReference,
         ...(selectedRawSpeechContribution && readinessCheck.rawCredentialAuthorization
           ? {
               rawCredentialAuthorization: {

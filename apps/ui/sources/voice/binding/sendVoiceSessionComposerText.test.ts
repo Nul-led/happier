@@ -336,9 +336,10 @@ describe('sendVoiceSessionComposerText', () => {
             adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
             controlSessionId: 'voice-global',
             conversationSessionId: 'carrier-s1',
+            conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
             lifetime: 'runtime_attempt',
             transcriptMode: 'synthetic',
-            targetSessionId: 's1',
+            targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
             updatedAt: 123,
         });
         const events: string[] = [];
@@ -407,9 +408,10 @@ describe('sendVoiceSessionComposerText', () => {
             adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
             controlSessionId: 'voice-global',
             conversationSessionId: 'carrier-s1',
+            conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
             lifetime: 'runtime_attempt',
             transcriptMode: 'synthetic',
-            targetSessionId: 's1',
+            targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
             updatedAt: 123,
         });
 
@@ -452,8 +454,9 @@ describe('sendVoiceSessionComposerText', () => {
             adapterId: 'local_conversation',
             controlSessionId: 'voice-global',
             conversationSessionId: 'carrier-s1',
+            conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
             transcriptMode: 'native_session',
-            targetSessionId: null,
+            targetSessionAddress: null,
             updatedAt: 123,
         });
 
@@ -492,8 +495,8 @@ describe('sendVoiceSessionComposerText', () => {
         const store = createVoiceSessionBindingStore();
         store.getState().bind({
             adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs', controlSessionId: 'voice-global',
-            conversationSessionId: 'carrier-s1', lifetime: 'runtime_attempt', transcriptMode: 'synthetic',
-            targetSessionId: 's1', updatedAt: 123,
+            conversationSessionId: 'carrier-s1', conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' }, lifetime: 'runtime_attempt', transcriptMode: 'synthetic',
+            targetSessionAddress: { serverId: 'server-a', sessionId: 's1' }, updatedAt: 123,
         });
         const sendTextTurn = vi.fn(async () => {});
         const params = {
@@ -521,8 +524,8 @@ describe('sendVoiceSessionComposerText', () => {
         setCurrentConversationSession('carrier-s1');
         store.getState().bind({
             adapterId: 'local_conversation', controlSessionId: 'voice-global',
-            conversationSessionId: 'carrier-s1', transcriptMode: 'native_session',
-            targetSessionId: null, updatedAt: 123,
+            conversationSessionId: 'carrier-s1', conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' }, transcriptMode: 'native_session',
+            targetSessionAddress: null, updatedAt: 123,
         });
         const sendTextTurn = vi.fn(async () => {});
         const params = {
@@ -552,8 +555,9 @@ describe('sendVoiceSessionComposerText', () => {
             adapterId: 'local_conversation',
             controlSessionId: 'voice-global',
             conversationSessionId: 'carrier-s1',
+            conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
             transcriptMode: 'native_session',
-            targetSessionId: 's1',
+            targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
             updatedAt: 123,
         });
 

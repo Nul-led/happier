@@ -84,6 +84,33 @@ describe('createFakeCryptoWorker', () => {
         });
     });
 
+    it('rejects cryptographically valid envelopes that wrap a 31- or 33-byte key, as every native runtime must', async () => {
+        const worker = createFakeCryptoWorker();
+        const direct = CRYPTO_GOLDEN_VECTORS.encryptedDataKeyEnvelopeV1.directSecretKey;
+        const undersized = CRYPTO_GOLDEN_VECTORS.encryptedDataKeyEnvelopeV1.undersizedDataKeyEnvelope;
+        const oversized = CRYPTO_GOLDEN_VECTORS.encryptedDataKeyEnvelopeV1.oversizedDataKeyEnvelope;
+
+        const result = await worker.decryptDataKeyEnvelopeV1({
+            scope,
+            items: [
+                {
+                    envelopeBase64: base64FromHex(undersized.envelope.hex),
+                    recipientSecretKeyOrSeedBase64: base64FromHex(undersized.recipientSecretKeyOrSeed.hex),
+                },
+                {
+                    envelopeBase64: base64FromHex(direct.envelope.hex),
+                    recipientSecretKeyOrSeedBase64: base64FromHex(direct.recipientSecretKeyOrSeed.hex),
+                },
+                {
+                    envelopeBase64: base64FromHex(oversized.envelope.hex),
+                    recipientSecretKeyOrSeedBase64: base64FromHex(oversized.recipientSecretKeyOrSeed.hex),
+                },
+            ],
+        });
+
+        expect(result.items).toEqual([null, base64FromHex(direct.dataKey.hex), null]);
+    });
+
     it('decrypts secretbox JSON vectors through the same payload contract native uses', async () => {
         const worker = createFakeCryptoWorker();
 

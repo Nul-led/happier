@@ -5,7 +5,7 @@ import { Pressable } from 'react-native';
 import { useSettings } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { SecretsList } from '@/components/secrets/SecretsList';
-import { useSavedSecretsMutable } from '@/components/secrets/useSavedSecretsMutable';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 import { useUnistyles } from 'react-native-unistyles';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { buildBackendTargetRouteParams, resolveRouteCloseoutFallbackTarget } from '@/agents/backendCatalog/backendTargetRouteParams';
@@ -65,7 +65,7 @@ export default React.memo(function SecretPickerScreen() {
         settings.lastUsedBackendTarget,
     ]);
 
-    const [secrets, setSecrets] = useSavedSecretsMutable();
+    const savedSecretCatalog = useSavedSecretCatalog();
 
     const setSecretParamAndClose = React.useCallback((secretId: string) => {
         const roundTripFallbackTarget = resolveRouteCloseoutFallbackTarget({
@@ -162,8 +162,16 @@ export default React.memo(function SecretPickerScreen() {
             />
 
             <SecretsList
-                secrets={secrets}
-                onChangeSecrets={setSecrets}
+                secrets={savedSecretCatalog.personalSecrets}
+                sharedEntries={savedSecretCatalog.sharedEntries}
+                resolveSharedReference={savedSecretCatalog.resolveReference}
+                sharedCatalogStale={savedSecretCatalog.status === 'error'
+                    || (savedSecretCatalog.status === 'ready' && savedSecretCatalog.stale)}
+                onRetrySharedCatalog={() => { void savedSecretCatalog.reload().catch(() => {}); }}
+                onCreatePersonal={savedSecretCatalog.personalMutations.create}
+                onRenamePersonal={savedSecretCatalog.personalMutations.rename}
+                onRotatePersonal={savedSecretCatalog.personalMutations.rotate}
+                onDeletePersonal={savedSecretCatalog.personalMutations.delete}
                 selectedId={selectedId}
                 onSelectId={setSecretParamAndClose}
                 includeNoneRow

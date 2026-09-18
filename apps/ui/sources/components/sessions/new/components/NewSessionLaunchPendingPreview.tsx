@@ -5,23 +5,20 @@ import { useUnistyles } from 'react-native-unistyles';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
-import {
-    isNewSessionLaunchAttemptPendingBeforeSession,
-    type NewSessionLaunchAttempt,
-} from '@/components/sessions/new/modules/newSessionLaunchAttempt';
+import type { NewSessionLaunchAttempt } from '@/components/sessions/new/modules/newSessionLaunchAttempt';
 
-export function shouldRenderNewSessionLaunchPendingPreview(
-    launchAttempt: NewSessionLaunchAttempt | null | undefined,
-): launchAttempt is NewSessionLaunchAttempt {
-    return isNewSessionLaunchAttemptPendingBeforeSession(launchAttempt)
-        && (launchAttempt.prompt.displayText.trim().length > 0 || launchAttempt.prompt.prompt.trim().length > 0);
-}
-
+/**
+ * The compact `machine` presentation of the shared launch surface.
+ *
+ * Whether this card is the active presentation is decided once, by
+ * `resolveNewSessionLaunchPresentation`; the authoring layouts only place it.
+ * This component owns nothing but the rendering.
+ */
 export function NewSessionLaunchPendingPreview(props: Readonly<{
     launchAttempt: NewSessionLaunchAttempt | null | undefined;
 }>): React.ReactElement | null {
     const { theme } = useUnistyles();
-    if (!shouldRenderNewSessionLaunchPendingPreview(props.launchAttempt)) {
+    if (!props.launchAttempt) {
         return null;
     }
 

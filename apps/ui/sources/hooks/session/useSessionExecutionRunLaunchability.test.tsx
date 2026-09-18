@@ -20,6 +20,12 @@ const resumeCapabilityOptionsSpy = vi.hoisted(() =>
     vi.fn<(args: unknown) => { resumeCapabilityOptions: unknown }>(() => ({ resumeCapabilityOptions: [] })),
 );
 const canLaunchExecutionRunsForSessionSpy = vi.hoisted(() => vi.fn());
+const featureScopeSpy = vi.hoisted(() => vi.fn());
+const machineReachabilitySpy = vi.hoisted(() => vi.fn(() => ({ machineReachable: true })));
+const externalSessionRuntimeSpy = vi.hoisted(() => vi.fn(() => ({
+    externalSessionLink: null,
+    status: { runnerActive: true },
+})));
 const preferredServerIdState = vi.hoisted(() => ({
     value: 'server-canonical' as string | null,
 }));
@@ -44,11 +50,14 @@ installServerHookCommonModuleMocks({
 });
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: () => true,
+    useFeatureEnabled: (_featureId: string, scope?: unknown) => {
+        featureScopeSpy(scope);
+        return true;
+    },
 }));
 
-vi.mock('@/hooks/server/useSessionMachineReachability', () => ({
-    useSessionMachineReachability: () => ({ machineReachable: true }),
+vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
+    useSessionMachineReachability: (...args: unknown[]) => machineReachabilitySpy(...args),
 }));
 
 vi.mock('@/components/sessions/model/useSessionMachineTarget', () => ({
@@ -77,10 +86,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSes
 }));
 
 vi.mock('@/components/sessions/model/useSessionExternalSessionRuntime', () => ({
-    useSessionExternalSessionRuntime: () => ({
-        externalSessionLink: null,
-        status: { runnerActive: true },
-    }),
+    useSessionExternalSessionRuntime: (...args: unknown[]) => externalSessionRuntimeSpy(...args),
 }));
 
 vi.mock('@/sync/domains/executionRuns/canLaunchExecutionRunsForSession', async (importOriginal) => {
@@ -106,6 +112,9 @@ describe('useSessionExecutionRunLaunchability', () => {
         useSessionExecutionRunsSupportedSpy.mockReset();
         resumeCapabilityOptionsSpy.mockReset();
         canLaunchExecutionRunsForSessionSpy.mockReset();
+        featureScopeSpy.mockClear();
+        machineReachabilitySpy.mockClear();
+        externalSessionRuntimeSpy.mockClear();
         preferredServerIdState.value = 'server-canonical';
         sessionMachineTargetState.value = null;
         sessionState.value = {
@@ -157,6 +166,35 @@ describe('useSessionExecutionRunLaunchability', () => {
         expect(useExecutionRunsBackendsForSessionSpy).toHaveBeenCalledWith('session-1', 'server-explicit');
         expect(hook.getCurrent().sessionServerId).toBe('server-explicit');
 
+        await hook.unmount();
+    });
+
+    it('uses the explicit Home for feature, Machine, runtime and backend decisions even when the same-id Session points at another Home', async () => {
+        sessionState.value = {
+            id: 'same-session',
+            active: true,
+            serverId: 'home-a',
+            metadata: { flavor: 'claude', machineId: 'machine-a' },
+        } as any;
+        preferredServerIdState.value = 'home-a';
+        sessionMachineTargetState.value = { machineId: 'machine-b', basePath: '/home-b/workspace' };
+
+        const { useSessionExecutionRunLaunchability } = await import('./useSessionExecutionRunLaunchability');
+        const hook = await renderHook(() => useSessionExecutionRunLaunchability('same-session', sessionState.value, 'home-b'));
+
+        expect(featureScopeSpy).toHaveBeenCalledWith({ scopeKind: 'spawn', serverId: 'home-b' });
+        expect(useSessionExecutionRunsSupportedSpy).toHaveBeenCalledWith('same-session', 'home-b');
+        expect(useExecutionRunsBackendsForSessionSpy).toHaveBeenCalledWith('same-session', 'home-b');
+        expect(machineReachabilitySpy).toHaveBeenCalledWith('same-session', 'home-b');
+        expect(externalSessionRuntimeSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 'same-session',
+            serverId: 'home-b',
+        }));
+        expect(resumeCapabilityOptionsSpy).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-b',
+            serverId: 'home-b',
+        }));
+        expect(hook.getCurrent().sessionServerId).toBe('home-b');
         await hook.unmount();
     });
 

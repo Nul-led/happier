@@ -71,7 +71,17 @@ describe('useScmCommitHistory integration', () => {
         getStateMock.mockReset();
     });
 
-    it('paginates real git history and supports reset reload', async () => {
+    it('separates history identity for equal session IDs on different Homes', async () => {
+        const hook = await renderHook((props: HookProps) => useScmCommitHistory(props), {
+            initialProps: { sessionId: 'same', serverId: 'home-a', sessionPath: '/repo', readLogEnabled: false },
+        });
+        const identityA = hook.getCurrent().historyIdentity;
+        await hook.rerender({ sessionId: 'same', serverId: 'home-b', sessionPath: '/repo', readLogEnabled: false });
+        expect(hook.getCurrent().historyIdentity).not.toBe(identityA);
+        await hook.unmount();
+    });
+
+    it('paginates real git history and preserves loaded depth and its oldest commit on refresh', async () => {
         const workspace = createRepoWithCommits(65);
         const sessionId = 'session-history-1';
         const harness = createGitSessionRpcHarness(workspace);
@@ -122,13 +132,20 @@ describe('useScmCommitHistory integration', () => {
         const uniqueShas = new Set(secondPage.historyEntries.map((entry) => entry.sha));
         expect(uniqueShas.size).toBe(secondPage.historyEntries.length);
 
+        const oldestSha = secondPage.historyEntries.at(-1)?.sha;
+        writeFileSync(join(workspace, 'new-head.txt'), 'new commit');
+        git(workspace, ['add', 'new-head.txt']);
+        git(workspace, ['commit', '-m', 'new head']);
         await act(async () => {
             await hook.getCurrent().loadCommitHistory({ reset: true });
         });
-
         const resetPage = hook.getCurrent();
-        expect(resetPage.historyEntries).toHaveLength(50);
-        expect(resetPage.historyHasMore).toBe(true);
+        expect(resetPage.historyEntries).toHaveLength(66);
+        expect(resetPage.historyEntries[0]?.subject).toBe('new head');
+        expect(resetPage.historyEntries.at(-1)?.sha).toBe(oldestSha);
+        expect(resetPage.historyHasMore).toBe(false);
+        await hook.rerender({ sessionId, sessionPath: `${workspace}/another-repo`, readLogEnabled: true });
+        expect(hook.getCurrent().historyEntries).toEqual([]);
 
         await hook.unmount();
     });

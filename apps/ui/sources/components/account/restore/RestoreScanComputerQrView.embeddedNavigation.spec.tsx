@@ -87,7 +87,13 @@ describe('RestoreScanComputerQrView (embedded navigation)', () => {
         let tree!: renderer.ReactTestRenderer;
         try {
             await act(async () => {
-                tree = renderer.create(<RestoreScanComputerQrView entryIntent="add_home" embedded onShowQrInstead={onShowQrInstead} />);
+                tree = renderer.create(
+                    <RestoreScanComputerQrView
+                        entryIntent="add_home"
+                        embedded
+                        onShowQrInstead={onShowQrInstead}
+                    />,
+                );
             });
 
             const button = tree.root.findByProps({ testID: 'restore-show-qr-instead' });

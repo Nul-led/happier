@@ -103,19 +103,27 @@ vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
     getCachedReadyServerFeatures: () => getCachedServerFeatures(),
 }));
 
-const getRecoveryKeyReminderDismissed = vi.fn(async () => false);
-const setRecoveryKeyReminderDismissed = vi.fn(async () => true);
-const getCachedRecoveryKeyReminderDismissed = vi.fn<() => boolean | null>(() => null);
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getRecoveryKeyReminderDismissed,
-        setRecoveryKeyReminderDismissed,
-        getCachedRecoveryKeyReminderDismissed,
-    },
-    // RecoveryKeyReminderBanner gates on legacy credentials; include this export to
-    // keep the mock aligned with the real module surface.
-    isLegacyAuthCredentials: (credentials: unknown) => Boolean(credentials),
+const recoveryKeyReminderStorageMocks = vi.hoisted(() => ({
+    getRecoveryKeyReminderDismissed: vi.fn(async () => false),
+    setRecoveryKeyReminderDismissed: vi.fn(async () => true),
+    getCachedRecoveryKeyReminderDismissed: vi.fn<() => boolean | null>(() => null),
 }));
+const {
+    getRecoveryKeyReminderDismissed,
+    setRecoveryKeyReminderDismissed,
+    getCachedRecoveryKeyReminderDismissed,
+} = recoveryKeyReminderStorageMocks;
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+    return {
+        ...actual,
+        TokenStorage: {
+            ...actual.TokenStorage,
+            ...recoveryKeyReminderStorageMocks,
+        },
+        isLegacyAuthCredentials: (credentials: unknown) => Boolean(credentials),
+    };
+});
 
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -125,6 +133,7 @@ vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: {
         onPress?: () => void;
         rightElement?: React.ReactNode;
+        rightElementOutsidePressable?: boolean;
         testID?: string;
     }) => {
         const dismissElement = React.isValidElement<{
@@ -145,16 +154,16 @@ vi.mock('@/components/ui/lists/Item', () => ({
                   });
               })()
             : props.rightElement;
-        return (
-            <>
-                {React.createElement('Pressable', {
+        const row = React.createElement(
+            'Pressable',
+            {
                     accessibilityLabel: 'recovery-key-item',
                     testID: 'recovery-key-item',
                     onPress: props.onPress,
-                })}
-                {dismissElement}
-            </>
+            },
+            props.rightElementOutsidePressable ? null : dismissElement,
         );
+        return props.rightElementOutsidePressable ? <>{row}{dismissElement}</> : row;
     },
 }));
 
@@ -214,6 +223,12 @@ describe('RecoveryKeyReminderBanner', () => {
         await screen.pressByTestIdAsync('recovery-key-dismiss');
 
         expect(setRecoveryKeyReminderDismissed).toHaveBeenCalledWith(true);
+
+        const rowPressTarget = screen.findHostByTestId('recovery-key-item');
+        const dismissPressTarget = screen.findHostByTestId('recovery-key-dismiss');
+        let ancestor = dismissPressTarget?.parent ?? null;
+        while (ancestor && ancestor !== rowPressTarget) ancestor = ancestor.parent;
+        expect(ancestor).toBeNull();
     });
 
     it('does not render when server features cannot be fetched', async () => {

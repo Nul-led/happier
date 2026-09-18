@@ -9,6 +9,7 @@ import { renderScreen } from '@/dev/testkit';
 
 const model = Object.freeze({
     visible: true,
+    requiredHostMethods: Object.freeze([]),
     identity: Object.freeze({
         pluginId: 'acme.composer',
         localId: 'incident-tools',
@@ -36,6 +37,47 @@ const model = Object.freeze({
 });
 
 describe('DeclarativePluginSurface composerApply', () => {
+    it('renders host Action requests with the shared action pending and inactive states', async () => {
+        let settle!: (value: null) => void;
+        const pending = new Promise<null>((resolve) => { settle = resolve; });
+        const requests: Parameters<BoundPluginSurfaceController['dispatchAction']>[] = [];
+        const props = {
+            pluginId: 'acme.composer',
+            model: {
+                ...model,
+                requiredHostMethods: ['executeAction'],
+                root: { kind: 'action', path: 'root', order: 0, label: 'Send', enabled: true,
+                    hostAction: 'session.message.send', input: { text: 'Hello' } },
+            },
+            interactionEnabled: true,
+            daemonInteractionEnabled: true,
+            // Mounted Host API transport is the external execution boundary.
+            dispatchAction: async (...request: Parameters<BoundPluginSurfaceController['dispatchAction']>) => {
+                requests.push(request);
+                return pending;
+            },
+            actionAvailable: true,
+            openSurface: async () => null,
+            openSurfaceAvailable: false,
+            authorityGeneration: 1,
+        } satisfies React.ComponentProps<typeof DeclarativePluginSurface>;
+        const screen = await renderScreen(<DeclarativePluginSurface {...props} />);
+        const id = 'plugin-declarative-action:session.message.send';
+        const control = () => screen.findAllByType(HappierPressable).find((node) => node.props.testID === id);
+        expect(control()?.props.disabled).toBe(false);
+        let settlement: unknown;
+        await act(async () => { settlement = control()?.props.onPress(); });
+        expect(control()?.props.busy).toBe(true);
+        expect(requests).toEqual([['session.message.send', { text: 'Hello' }]]);
+        settle(null);
+        await act(async () => { await settlement; });
+        expect(control()?.props.busy).toBe(false);
+        await act(async () => { screen.update(<DeclarativePluginSurface {...props} daemonInteractionEnabled={false} />); });
+        expect(control()?.props.disabled).toBe(true);
+        await act(async () => { await control()?.props.onPress(); });
+        expect(requests).toHaveLength(1);
+    });
+
     it('forwards rejected Composer settlement through the shared pressable and clears pending safely', async () => {
         let rejectApply!: (error: Error) => void;
         const rejectedApply = new Promise<never>((_resolve, reject) => {

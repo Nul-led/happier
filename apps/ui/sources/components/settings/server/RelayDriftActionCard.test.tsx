@@ -59,7 +59,7 @@ function createSnapshot(overrides: Partial<SystemTaskRunState> = {}): SystemTask
     return {
         taskId: 'task_1',
         status: 'running',
-        currentStepId: 'relay.connectBackgroundService.configureRelay',
+        currentStepId: 'setup.repairThisComputer.configureRelay',
         latestMessage: 'executor message',
         awaitingInput: false,
         cancelRequested: false,

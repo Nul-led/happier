@@ -37,6 +37,7 @@ import { sync } from '@/sync/sync';
 import {
     createAccountScopedPluginSettingsTransport,
     createScopedPluginSettingsAdapter,
+    withoutScopedPluginSettingsWriteSnapshot,
     type ScopedPluginSettingsAccountRecordBoundary,
     type ScopedPluginSettingsAccountRecordRead,
     type ScopedPluginSettingsAccountRecordWriteResult,
@@ -163,34 +164,37 @@ function readAccountPluginSecretSettingsSnapshot(
 
 function createAccountPluginSecretSettingsBoundary(
     context: ActiveAccountRequestContext,
+    signal?: AbortSignal,
 ): AccountPluginSecretSettingsBoundary {
     return Object.freeze({
         readSnapshot({ target }) {
-            return isExactAccountTarget(target, context.target)
+            return !signal?.aborted && isExactAccountTarget(target, context.target)
                 ? readAccountPluginSecretSettingsSnapshot(context)
                 : null;
         },
         async writeOnce(input): Promise<AccountPluginSecretSettingsWriteResult> {
-            if (!isExactAccountTarget(input.target, context.target) || !isCurrent(context)) {
+            if (signal?.aborted || !isExactAccountTarget(input.target, context.target) || !isCurrent(context)) {
                 return { status: 'unavailable' };
             }
-            let retired = false;
-            const retirement = context.lifetime.onRetire(() => {
-                retired = true;
-            });
+            const controller = new AbortController();
+            const abort = () => controller.abort();
+            const retirement = context.lifetime.onRetire(abort);
+            signal?.addEventListener('abort', abort, { once: true });
+            if (signal?.aborted) abort();
             try {
-                if (retired || !isCurrent(context)) return { status: 'unavailable' };
+                if (controller.signal.aborted || !isCurrent(context)) return { status: 'unavailable' };
                 const result = await sync.mutateAccountSettingsOnce({
+                    signal: controller.signal,
+                    expectedSettingsScope: context.lifetime.scope,
                     expectedSettingsVersion: input.expectedRevision,
                     mutate(raw) {
-                        if (retired || !isCurrent(context)) {
+                        if (controller.signal.aborted || !isCurrent(context)) {
                             throw new Error('Account Settings scope changed while mutating a plugin secret');
                         }
                         return { settings: input.mutate(raw), value: null };
                     },
                 });
-                if (retired || !isCurrent(context)) return { status: 'unavailable' };
-                const snapshot = readAccountPluginSecretSettingsSnapshot(context);
+                const snapshot = controller.signal.aborted ? null : readAccountPluginSecretSettingsSnapshot(context);
                 if (result.status === 'conflict') {
                     return { status: 'conflict', snapshot };
                 }
@@ -202,12 +206,15 @@ function createAccountPluginSecretSettingsBoundary(
                             : null;
                     return { status: 'outcomeUnknown', snapshot: safeSnapshot };
                 }
-                return snapshot && snapshot.revision === result.settingsVersion
-                    ? { status: 'applied', snapshot }
-                    : { status: 'unavailable' };
+                return {
+                    status: 'applied',
+                    revision: result.settingsVersion,
+                    snapshot: snapshot?.revision === result.settingsVersion ? snapshot : null,
+                };
             } catch {
                 return { status: 'unavailable' };
             } finally {
+                signal?.removeEventListener('abort', abort);
                 retirement.dispose();
             }
         },
@@ -223,11 +230,12 @@ function createAccountPluginSecretSettingsBoundary(
 export async function eraseCurrentAccountPluginSecretBindings(input: Readonly<{
     pluginId: string;
     target: ScopedPluginSettingsAccountTarget;
+    signal?: AbortSignal;
 }>): Promise<AccountPluginSecretSettingsEraseResult> {
     const context = captureActiveAccountRequestContext(input.target);
     if (!context) return { status: 'unavailable' };
     return eraseAccountPluginSecretSettingsBindings({
-        boundary: createAccountPluginSecretSettingsBoundary(context),
+        boundary: createAccountPluginSecretSettingsBoundary(context, input.signal),
         target: input.target,
         pluginId: input.pluginId,
     });
@@ -335,6 +343,7 @@ function requestHeaders(context: ActiveAccountRequestContext): Readonly<Record<s
 async function readAccountEncryptionMode(
     context: ActiveAccountRequestContext,
 ): Promise<'plain' | 'e2ee' | null> {
+    if (!isCurrent(context)) return null;
     const response = await serverFetch(
         '/v1/account/encryption',
         { method: 'GET', headers: requestHeaders(context) },
@@ -355,8 +364,8 @@ async function readAccountEncryptionMode(
 
 async function readAccountRecord(
     input: Readonly<{ pluginId: string; target: ScopedPluginSettingsAccountTarget }>,
+    context: ActiveAccountRequestContext | null,
 ): Promise<ScopedPluginSettingsAccountRecordRead> {
-    const context = captureActiveAccountRequestContext(input.target);
     if (!context) return { status: 'unavailable' };
     try {
         const mode = await readAccountEncryptionMode(context);
@@ -404,8 +413,7 @@ async function writeAccountRecord(input: Readonly<{
     target: ScopedPluginSettingsAccountTarget;
     expectedRevision: number | 'absent';
     values: Readonly<Record<string, unknown>>;
-}>): Promise<ScopedPluginSettingsAccountRecordWriteResult> {
-    const context = captureActiveAccountRequestContext(input.target);
+}>, context: ActiveAccountRequestContext | null): Promise<ScopedPluginSettingsAccountRecordWriteResult> {
     if (!context) return { status: 'unavailable' };
     let issued = false;
     try {
@@ -425,13 +433,15 @@ async function writeAccountRecord(input: Readonly<{
                     randomBytes: getRandomBytes,
                 }),
             };
+        const body = JSON.stringify({ expectedRevision: input.expectedRevision, content });
+        if (!isCurrent(context)) return { status: 'unavailable' };
         issued = true;
         const response = await serverFetch(
             `/v1/account/plugin-settings/${encodePluginId(input.pluginId)}`,
             {
                 method: 'POST',
                 headers: requestHeaders(context),
-                body: JSON.stringify({ expectedRevision: input.expectedRevision, content }),
+                body,
             },
             {
                 includeAuth: false,
@@ -439,11 +449,9 @@ async function writeAccountRecord(input: Readonly<{
                 expectedActiveServer: context.expectedActiveServer,
             },
         );
-        if (!isCurrent(context)) return { status: 'unavailable' };
         if (response.status < 200 || response.status >= 300) {
             if (response.status !== 503) return { status: 'outcomeUnknown' };
             const unavailableBody = await response.json().catch(() => null);
-            if (!isCurrent(context)) return { status: 'unavailable' };
             if (PluginAccountSettingsStorageUnavailableV1Schema.safeParse(unavailableBody).success) {
                 // The route's typed storage-unavailable response proves no record
                 // mutation was produced, unlike a lost/malformed acknowledgement.
@@ -451,26 +459,39 @@ async function writeAccountRecord(input: Readonly<{
             }
             return { status: 'outcomeUnknown' };
         }
-        const body = await response.json().catch(() => null);
-        if (!isCurrent(context)) return { status: 'unavailable' };
-        const parsed = PluginAccountSettingsMutationResponseV1Schema.safeParse(body);
+        const responseBody = await response.json().catch(() => null);
+        const parsed = PluginAccountSettingsMutationResponseV1Schema.safeParse(responseBody);
         if (parsed.success) return parsed.data;
         return { status: 'outcomeUnknown' };
     } catch {
-        return issued && isCurrent(context)
+        return issued
             ? { status: 'outcomeUnknown' }
             : { status: 'unavailable' };
     }
 }
 
-const accountRecordBoundary: ScopedPluginSettingsAccountRecordBoundary = Object.freeze({
-    readRecord: readAccountRecord,
-    writeRecord: writeAccountRecord,
-});
-
-const accountTransport = createAccountScopedPluginSettingsTransport(accountRecordBoundary, {
-    resolveLegacyServerIdentityIds: (target) => getServerProfileLegacyServerIds(target.serverIdentityId),
-});
+function createAccountTransport(target: ScopedPluginSettingsAccountTarget) {
+    // One logical operation, including migration and settlement readback, must
+    // never recapture another Account between its record read and CAS write.
+    const context = captureActiveAccountRequestContext(target);
+    const boundary: ScopedPluginSettingsAccountRecordBoundary = {
+        readRecord: (input) => readAccountRecord(input, context),
+        writeRecord: (input) => writeAccountRecord(input, context),
+    };
+    const transport = createAccountScopedPluginSettingsTransport(boundary, {
+        resolveLegacyServerIdentityIds: (selected) => getServerProfileLegacyServerIds(selected.serverIdentityId),
+    });
+    return {
+        async read(input: Parameters<typeof transport.read>[0]): Promise<ScopedPluginSettingsReadResult> {
+            const result = await transport.read(input);
+            return context && isCurrent(context) ? result : { status: 'unavailable', reason: 'transport' };
+        },
+        async write(input: Parameters<typeof transport.write>[0]): Promise<ScopedPluginSettingsWriteResult> {
+            const result = await transport.write(input);
+            return context && isCurrent(context) ? result : withoutScopedPluginSettingsWriteSnapshot(result);
+        },
+    };
+}
 
 /** The single live owner consumed by all host-rendered plugin Settings. */
 const runtimeScopedPluginSettingsAdapter = createScopedPluginSettingsAdapter({
@@ -479,8 +500,8 @@ const runtimeScopedPluginSettingsAdapter = createScopedPluginSettingsAdapter({
     daemonSecretDelete: machinePluginSecretDelete,
     daemonGet: machinePluginSettingsGet,
     daemonSet: machinePluginSettingsSet,
-    accountRead: accountTransport.read,
-    accountWrite: accountTransport.write,
+    accountRead: (input) => createAccountTransport(input.target).read(input),
+    accountWrite: (input) => createAccountTransport(input.target).write(input),
 });
 
 export const scopedPluginSettingsAdapter: ScopedPluginSettingsAdapter = Object.freeze({

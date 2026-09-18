@@ -12,6 +12,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/guardedMachineRpc', () => 
 }));
 
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
+import { isTransferFinalizeRecoveryFailure } from './directTransferFinalizeRecovery';
 import { uploadBulkPayloadFromFileViaDirectImport } from './directTransferImportUpload';
 import {
     createTransferRecipientKeyPair,
@@ -31,7 +32,6 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
             return {
                 kind: 'native_http' as const,
                 localOrigin: 'http://127.0.0.1:48123',
-                requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
                 release,
             };
         });
@@ -124,7 +124,7 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
         expect(prepareImportSessionMock).toHaveBeenCalledWith(expect.objectContaining({
             method: RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE,
         }));
-        expect(acquirePreparedCarrier).toHaveBeenCalledWith({ operationId: 'upload-1', maxBytes: 5 });
+        expect(acquirePreparedCarrier).toHaveBeenCalledWith({ operationId: 'upload-1' });
         expect(order.slice(0, 3)).toEqual(['prepare', 'lease', 'transfer']);
         expect(release).toHaveBeenCalledTimes(1);
         expect(requests).toEqual([
@@ -133,7 +133,6 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
                 url: 'http://127.0.0.1:48123/machine-transfers/direct/imports/upload-1/chunks/0',
                 headers: {
                     'content-type': 'application/json',
-                    'x-happier-machine-local-capability': 'a'.repeat(64),
                 },
             },
             {
@@ -141,7 +140,6 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
                 url: 'http://127.0.0.1:48123/machine-transfers/direct/imports/upload-1/chunks/1',
                 headers: {
                     'content-type': 'application/json',
-                    'x-happier-machine-local-capability': 'a'.repeat(64),
                 },
             },
             {
@@ -149,13 +147,12 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
                 url: 'http://127.0.0.1:48123/machine-transfers/direct/imports/upload-1/chunks/2',
                 headers: {
                     'content-type': 'application/json',
-                    'x-happier-machine-local-capability': 'a'.repeat(64),
                 },
             },
             {
                 method: 'POST',
                 url: 'http://127.0.0.1:48123/machine-transfers/direct/imports/upload-1/finalize',
-                headers: { 'x-happier-machine-local-capability': 'a'.repeat(64) },
+                headers: {},
             },
         ]);
     });
@@ -342,6 +339,319 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
                 expiresAt: refreshedExpiresAt,
             },
         });
+    });
+
+    it('reacquires the pinned native carrier for a finalize recovery retry instead of the released loopback origin', async () => {
+        type FileUploadResponse = Readonly<{
+            success: true;
+            path: string;
+            sizeBytes: number;
+            sha256: string;
+        }>;
+        const finalizeUrls: string[] = [];
+        const acquiredOperationIds: string[] = [];
+        // A native lease owns an ephemeral loopback listener that ends with it.
+        const liveOrigins = new Set<string>();
+        let acquiredCount = 0;
+        const acquirePreparedCarrier = vi.fn(async (prepared: Readonly<{ operationId: string }>) => {
+            acquiredOperationIds.push(prepared.operationId);
+            const localOrigin = `http://127.0.0.1:${48123 + acquiredCount}`;
+            acquiredCount += 1;
+            liveOrigins.add(localOrigin);
+            return {
+                kind: 'native_http' as const,
+                localOrigin,
+                release: async () => {
+                    liveOrigins.delete(localOrigin);
+                },
+            };
+        });
+
+        prepareImportSessionMock.mockResolvedValue({
+            success: true,
+            uploadId: 'upload-recovery-carrier',
+            destDisplayPath: '/repo/payload.bin',
+            expectedSizeBytes: 5,
+            chunkSizeBytes: 5,
+            recipientPublicKeyBase64: Buffer.alloc(32, 7).toString('base64'),
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-recovery-carrier',
+                expiresAt: 5_000,
+            }],
+        });
+        setRuntimeFetch(async (input, init) => {
+            const url = new URL(String(input));
+            if (!liveOrigins.has(url.origin)) {
+                throw new TypeError('Failed to fetch');
+            }
+            if (url.pathname.endsWith('/chunks/0') && init?.method === 'PUT') {
+                return new Response(JSON.stringify({ success: true }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+            if (url.pathname.endsWith('/finalize') && init?.method === 'POST') {
+                finalizeUrls.push(url.toString());
+                if (finalizeUrls.length === 1) {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        error: 'Finalize recovery is required',
+                        errorCode: 'TRANSFER_FINALIZE_RECOVERY_REQUIRED',
+                        keepSession: true,
+                    }), { status: 500, headers: { 'content-type': 'application/json' } });
+                }
+                return new Response(JSON.stringify({
+                    success: true,
+                    finalized: { success: true, path: '/repo/payload.bin', sizeBytes: 5 },
+                    sha256: 'sha256:recovered',
+                }), { status: 200, headers: { 'content-type': 'application/json' } });
+            }
+            throw new Error(`unexpected request: ${String(init?.method)} ${url.toString()}`);
+        });
+
+        const result = await uploadBulkPayloadFromFileViaDirectImport<FileUploadResponse>({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            fileReader: {
+                sizeBytes: 5,
+                readBytes: async () => new TextEncoder().encode('hello'),
+                close: async () => {},
+            },
+            request: {
+                t: 'session_file_upload_v1',
+                workingDirectory: '/repo',
+                path: '/repo/payload.bin',
+                sizeBytes: 5,
+                overwrite: true,
+            },
+            acquirePreparedCarrier,
+        });
+
+        if (!isTransferFinalizeRecoveryFailure<FileUploadResponse>(result)) {
+            throw new Error(`expected a finalize recovery continuation, received ${JSON.stringify(result)}`);
+        }
+        expect(liveOrigins.size).toBe(0);
+
+        await expect(result.recovery.invoke('retry_finalize')).resolves.toEqual({
+            status: 'finalized',
+            response: {
+                success: true,
+                path: '/repo/payload.bin',
+                sizeBytes: 5,
+                sha256: 'sha256:recovered',
+            },
+        });
+        expect(acquiredOperationIds).toEqual(['upload-recovery-carrier', 'upload-recovery-carrier']);
+        expect(finalizeUrls).toEqual([
+            'http://127.0.0.1:48123/machine-transfers/direct/imports/upload-recovery-carrier/finalize',
+            'http://127.0.0.1:48124/machine-transfers/direct/imports/upload-recovery-carrier/finalize',
+        ]);
+        expect(liveOrigins.size).toBe(0);
+    });
+
+    it('reacquires the browser machine carrier requester for a finalize recovery retry', async () => {
+        type FileUploadResponse = Readonly<{
+            success: true;
+            path: string;
+            sizeBytes: number;
+            sha256: string;
+        }>;
+        setRuntimeFetch(async () => {
+            throw new Error('native fetch must not carry a selected browser machine transfer');
+        });
+        const finalizeCalls: string[] = [];
+        const liveLeases = new Set<number>();
+        let acquiredCount = 0;
+        const acquirePreparedCarrier = vi.fn(async () => {
+            acquiredCount += 1;
+            const leaseNumber = acquiredCount;
+            liveLeases.add(leaseNumber);
+            return {
+                kind: 'browser_stream' as const,
+                request: async (input: RequestInfo | URL, init?: RequestInit) => {
+                    if (!liveLeases.has(leaseNumber)) {
+                        throw new Error('released browser machine stream');
+                    }
+                    const url = String(input);
+                    if (url.includes('/finalize')) {
+                        finalizeCalls.push(`lease-${leaseNumber} ${url}`);
+                        if (finalizeCalls.length === 1) {
+                            return new Response(JSON.stringify({
+                                success: false,
+                                error: 'Finalize recovery is required',
+                                errorCode: 'TRANSFER_FINALIZE_RECOVERY_REQUIRED',
+                                keepSession: true,
+                            }), { status: 500, headers: { 'content-type': 'application/json' } });
+                        }
+                        return new Response(JSON.stringify({
+                            success: true,
+                            finalized: { success: true, path: '/repo/browser.bin', sizeBytes: 1 },
+                            sha256: 'sha256:browser-recovered',
+                        }), { status: 200, headers: { 'content-type': 'application/json' } });
+                    }
+                    void init;
+                    return new Response(JSON.stringify({ success: true }), {
+                        status: 200,
+                        headers: { 'content-type': 'application/json' },
+                    });
+                },
+                release: async () => {
+                    liveLeases.delete(leaseNumber);
+                },
+            };
+        });
+
+        prepareImportSessionMock.mockResolvedValue({
+            success: true,
+            uploadId: 'browser-recovery-1',
+            destDisplayPath: '/repo/browser.bin',
+            expectedSizeBytes: 1,
+            chunkSizeBytes: 1,
+            recipientPublicKeyBase64: Buffer.alloc(32, 7).toString('base64'),
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/browser-recovery-1?grant=kept',
+                expiresAt: 5_000,
+            }],
+        });
+
+        const result = await uploadBulkPayloadFromFileViaDirectImport<FileUploadResponse>({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            fileReader: {
+                sizeBytes: 1,
+                readBytes: async () => new Uint8Array([7]),
+                close: async () => undefined,
+            },
+            request: {
+                t: 'session_file_upload_v1',
+                workingDirectory: '/repo',
+                path: '/repo/browser.bin',
+                sizeBytes: 1,
+                overwrite: true,
+            },
+            acquirePreparedCarrier,
+        });
+
+        if (!isTransferFinalizeRecoveryFailure<FileUploadResponse>(result)) {
+            throw new Error(`expected a finalize recovery continuation, received ${JSON.stringify(result)}`);
+        }
+        expect(liveLeases.size).toBe(0);
+
+        await expect(result.recovery.invoke('retry_finalize')).resolves.toEqual({
+            status: 'finalized',
+            response: {
+                success: true,
+                path: '/repo/browser.bin',
+                sizeBytes: 1,
+                sha256: 'sha256:browser-recovered',
+            },
+        });
+        expect(finalizeCalls).toEqual([
+            'lease-1 http://127.0.0.1:46001/machine-transfers/direct/imports/browser-recovery-1/finalize?grant=kept',
+            'lease-2 http://127.0.0.1:46001/machine-transfers/direct/imports/browser-recovery-1/finalize?grant=kept',
+        ]);
+        expect(liveLeases.size).toBe(0);
+    });
+
+    it('keeps a finalize recovery retry actionable when the machine carrier cannot be reacquired', async () => {
+        type FileUploadResponse = Readonly<{
+            success: true;
+            path: string;
+            sizeBytes: number;
+            sha256: string;
+        }>;
+        const finalizeAttempts: string[] = [];
+        const liveOrigins = new Set<string>();
+        let acquiredCount = 0;
+        const acquirePreparedCarrier = vi.fn(async () => {
+            acquiredCount += 1;
+            if (acquiredCount > 1) {
+                throw Object.assign(new Error('The direct machine connection was interrupted. Retry the transfer.'), {
+                    errorCode: 'machine_carrier_transport_failed',
+                });
+            }
+            const localOrigin = 'http://127.0.0.1:48555';
+            liveOrigins.add(localOrigin);
+            return {
+                kind: 'native_http' as const,
+                localOrigin,
+                release: async () => {
+                    liveOrigins.delete(localOrigin);
+                },
+            };
+        });
+
+        prepareImportSessionMock.mockResolvedValue({
+            success: true,
+            uploadId: 'upload-recovery-unreachable',
+            destDisplayPath: '/repo/payload.bin',
+            expectedSizeBytes: 5,
+            chunkSizeBytes: 5,
+            recipientPublicKeyBase64: Buffer.alloc(32, 7).toString('base64'),
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-recovery-unreachable',
+                expiresAt: 5_000,
+            }],
+        });
+        setRuntimeFetch(async (input, init) => {
+            const url = new URL(String(input));
+            if (!liveOrigins.has(url.origin)) {
+                throw new TypeError('Failed to fetch');
+            }
+            if (url.pathname.endsWith('/chunks/0') && init?.method === 'PUT') {
+                return new Response(JSON.stringify({ success: true }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+            if (url.pathname.endsWith('/finalize') && init?.method === 'POST') {
+                finalizeAttempts.push(url.toString());
+                return new Response(JSON.stringify({
+                    success: false,
+                    error: 'Finalize recovery is required',
+                    errorCode: 'TRANSFER_FINALIZE_RECOVERY_REQUIRED',
+                    keepSession: true,
+                }), { status: 500, headers: { 'content-type': 'application/json' } });
+            }
+            throw new Error(`unexpected request: ${String(init?.method)} ${url.toString()}`);
+        });
+
+        const result = await uploadBulkPayloadFromFileViaDirectImport<FileUploadResponse>({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            fileReader: {
+                sizeBytes: 5,
+                readBytes: async () => new TextEncoder().encode('hello'),
+                close: async () => {},
+            },
+            request: {
+                t: 'session_file_upload_v1',
+                workingDirectory: '/repo',
+                path: '/repo/payload.bin',
+                sizeBytes: 5,
+                overwrite: true,
+            },
+            acquirePreparedCarrier,
+        });
+
+        if (!isTransferFinalizeRecoveryFailure<FileUploadResponse>(result)) {
+            throw new Error(`expected a finalize recovery continuation, received ${JSON.stringify(result)}`);
+        }
+
+        await expect(result.recovery.invoke('retry_finalize')).resolves.toEqual({
+            status: 'unavailable',
+            reason: 'session_unavailable',
+            error: 'The direct machine connection was interrupted. Retry the transfer.',
+        });
+        // Nothing was issued against the staged session, so the user keeps both actions.
+        expect(result.recovery.isActionable()).toBe(true);
+        expect(finalizeAttempts).toHaveLength(1);
     });
 
     it('accepts https direct import endpoints with a Serve path prefix', async () => {
@@ -891,7 +1201,6 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
             acquirePreparedCarrier: async () => ({
                 kind: 'native_http' as const,
                 localOrigin: 'http://127.0.0.1:48123',
-                requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
                 release,
             }),
         })).resolves.toEqual({

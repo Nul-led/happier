@@ -40,6 +40,49 @@ describe('sessionInitialPromptV1', () => {
         expect(readSessionInitialPromptV1(metadata)?.mode).toBe('append');
     });
 
+    it('round-trips an exact Discussion selection source without Run draft correlation', () => {
+        const metadata = writeSessionInitialPromptV1({
+            metadata: MetadataSchema.parse({}),
+            text: 'selected messages',
+            mode: 'append',
+            createdAtMs: 2,
+            source: {
+                kind: 'session_discussion',
+                sessionId: 'session-a',
+                discussionId: 'discussion-a',
+                messageIds: ['message-2', 'message-4'],
+            },
+        });
+
+        expect(readSessionInitialPromptV1(metadata)?.source).toEqual({
+            kind: 'session_discussion',
+            sessionId: 'session-a',
+            discussionId: 'discussion-a',
+            messageIds: ['message-2', 'message-4'],
+        });
+        expect(readSessionInitialPromptV1(metadata)?.source).not.toHaveProperty('draftCorrelationId');
+    });
+
+    it('does not admit a Run draft correlation into the fixed-parent Discussion handoff', () => {
+        const metadata = MetadataSchema.parse({
+            sessionInitialPromptV1: {
+                v: 1,
+                text: 'selected messages',
+                mode: 'append',
+                createdAtMs: 2,
+                source: {
+                    kind: 'session_discussion',
+                    sessionId: 'session-a',
+                    discussionId: 'discussion-a',
+                    messageIds: ['message-2'],
+                    draftCorrelationId: 'draft-a',
+                },
+            },
+        });
+
+        expect(readSessionInitialPromptV1(metadata)?.source).toBeUndefined();
+    });
+
     it('preserves metadata when writing blank prompts', () => {
         const metadata = MetadataSchema.parse({ other: 'value' });
 

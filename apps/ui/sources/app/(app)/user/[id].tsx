@@ -16,13 +16,15 @@ import { Modal } from '@/modal';
 import { t } from '@/text';
 import { trackFriendsConnect } from '@/track';
 import { useAllSessions } from '@/sync/domains/state/storage';
-import { useSessionSharingSupport } from '@/hooks/session/useSessionSharingSupport';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { HappyError } from '@/utils/errors/errors';
 import { getAuthProvider } from '@/auth/providers/registry';
 import { isSafeBadgeUrl } from '@/utils/url/urlSafety';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { Icon } from '@/components/ui/icons/Icon';
+import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 const USERNAME_PREFIX = '@';
 
@@ -37,9 +39,12 @@ export default function UserProfileScreen() {
     const { id } = useLocalSearchParams<{ id: string }>();
     const { credentials } = useAuth();
     const router = useRouter();
+    const navigateToSession = useNavigateToSession();
     const { theme } = useUnistyles();
     const sessions = useAllSessions();
-    const sharingSupported = useSessionSharingSupport();
+    // This route is explicitly an active-Home social surface, so the runtime-
+    // scoped decision is the exact one; a Session-qualified target is not known here.
+    const sharingSupported = useFeatureEnabled('sharing.session');
     const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
     const [isLoading, setIsLoading] = useState(true);
 
@@ -250,11 +255,11 @@ export default function UserProfileScreen() {
                     {sharedSessions.length > 0 ? (
                         sharedSessions.map((session) => (
                             <Item
-                                key={session.id}
+                                key={sessionAddressKey({ serverId: session.serverId, sessionId: session.id })}
                                 title={getSessionName(session)}
                                 subtitle={t('session.sharing.viewOnly')}
                                 icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.accent.blue} />}
-                                onPress={() => router.push(`/session/${session.id}`)}
+                                onPress={() => void navigateToSession(session.id, { serverId: session.serverId })}
                             />
                         ))
                     ) : (

@@ -97,14 +97,23 @@ describe('VoiceComposerPlanetMount targeting', () => {
         getStorage().setState(initialStorageState, true);
     });
 
-    async function renderMount(sessionId: string | null) {
+    async function renderMount(sessionId: string | null, serverId: string | null = null) {
         const { VoiceComposerPlanetMount } = await import('./VoiceComposerPlanetMount');
         return await renderScreen(
             <VoiceEnergyProvider
                 state={{ luminosity: 0.4, energized: false, direction: 'none' }}
                 previewTimeMs={0}
             >
-                <VoiceComposerPlanetMount sessionId={sessionId} />
+                <VoiceComposerPlanetMount
+                    target={sessionId === null
+                        ? { kind: 'global' }
+                        : {
+                            kind: 'session',
+                            sessionAddress: serverId === null
+                                ? null
+                                : { serverId, sessionId },
+                        }}
+                />
             </VoiceEnergyProvider>,
         );
     }
@@ -116,18 +125,18 @@ describe('VoiceComposerPlanetMount targeting', () => {
 
         await screen.pressByTestIdAsync('session-composer-voice');
 
-        expect(toggle).toHaveBeenCalledWith('');
+        expect(toggle).toHaveBeenCalledWith(null);
         await screen.unmount();
     });
 
     it('starts the exact normalized existing-session target', async () => {
         const { voiceSessionManager } = await import('@/voice/session/voiceSession');
         const toggle = vi.spyOn(voiceSessionManager, 'toggle').mockResolvedValue(undefined);
-        const screen = await renderMount('  session-7  ');
+        const screen = await renderMount('  session-7  ', ' server-b ');
 
         await screen.pressByTestIdAsync('session-composer-voice');
 
-        expect(toggle).toHaveBeenCalledWith('session-7');
+        expect(toggle).toHaveBeenCalledWith({ serverId: 'server-b', sessionId: 'session-7' });
         await screen.unmount();
     });
 

@@ -1,4 +1,8 @@
 import type { Metadata } from '@/sync/domains/state/storageTypes';
+import {
+    SessionDiscussionSelectionSourceV1Schema,
+    type SessionDiscussionSelectionSourceV1,
+} from '@happier-dev/protocol';
 
 export type SessionInitialPromptV1 = Readonly<{
     v: 1;
@@ -7,7 +11,12 @@ export type SessionInitialPromptV1 = Readonly<{
     createdAtMs: number;
     sourceMessageIds?: ReadonlyArray<string>;
     sourceSessionId?: string;
+    source?: Omit<SessionDiscussionSelectionSourceV1, 'draftCorrelationId'>;
 }>;
+
+const SessionInitialPromptDiscussionSourceV1Schema = SessionDiscussionSelectionSourceV1Schema.omit({
+    draftCorrelationId: true,
+});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -36,6 +45,8 @@ export function readSessionInitialPromptV1(metadata: Metadata | null | undefined
     const sourceSessionId = typeof candidate.sourceSessionId === 'string' && candidate.sourceSessionId.trim().length > 0
         ? candidate.sourceSessionId.trim()
         : null;
+    const sourceResult = SessionInitialPromptDiscussionSourceV1Schema.safeParse(candidate.source);
+    const source = sourceResult.success ? sourceResult.data : null;
 
     return {
         v: 1,
@@ -44,6 +55,7 @@ export function readSessionInitialPromptV1(metadata: Metadata | null | undefined
         createdAtMs,
         ...(sourceMessageIds ? { sourceMessageIds } : null),
         ...(sourceSessionId ? { sourceSessionId } : null),
+        ...(source ? { source } : null),
     };
 }
 
@@ -54,6 +66,7 @@ export function writeSessionInitialPromptV1(params: Readonly<{
     createdAtMs: number;
     sourceMessageIds?: ReadonlyArray<string> | null;
     sourceSessionId?: string | null;
+    source?: Omit<SessionDiscussionSelectionSourceV1, 'draftCorrelationId'> | null;
 }>): Metadata {
     const text = typeof params.text === 'string' ? params.text : String(params.text ?? '');
     if (!text.trim()) return params.metadata;
@@ -61,6 +74,8 @@ export function writeSessionInitialPromptV1(params: Readonly<{
     const sourceSessionId = typeof params.sourceSessionId === 'string' && params.sourceSessionId.trim().length > 0
         ? params.sourceSessionId.trim()
         : null;
+    const sourceResult = SessionInitialPromptDiscussionSourceV1Schema.safeParse(params.source);
+    const source = sourceResult.success ? sourceResult.data : null;
 
     return {
         ...params.metadata,
@@ -71,6 +86,7 @@ export function writeSessionInitialPromptV1(params: Readonly<{
             createdAtMs: params.createdAtMs,
             ...(sourceMessageIds ? { sourceMessageIds } : null),
             ...(sourceSessionId ? { sourceSessionId } : null),
+            ...(source ? { source } : null),
         },
     } as Metadata;
 }

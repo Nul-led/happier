@@ -13,12 +13,12 @@ export function useCommandMenuKeyboard(input: Readonly<{
     onMoveDown: () => void;
     onSelect: () => void;
     onClose: () => void;
-}>): { handleKey: (event: { key: string; shiftKey?: boolean }) => boolean } {
+}>): { handleKey: (event: { key: string; shiftKey?: boolean; isComposing?: boolean }) => boolean } {
     const { open, onMoveUp, onMoveDown, onSelect, onClose } = input;
 
     const handleKey = React.useCallback(
-        (event: { key: string; shiftKey?: boolean }): boolean => {
-            if (!open) return false;
+        (event: { key: string; shiftKey?: boolean; isComposing?: boolean }): boolean => {
+            if (!open || event.isComposing === true) return false;
 
             switch (event.key) {
                 case 'ArrowDown':

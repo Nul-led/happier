@@ -1,4 +1,5 @@
 import React from 'react';
+import { useShallow } from 'zustand/react/shallow';
 
 import type { LocalSettings } from '../domains/settings/localSettings';
 import type {
@@ -24,19 +25,21 @@ import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import type { SettingsAnalyticsSource } from '@/track/settingsAnalytics/types';
 import { getStorage } from '@/sync/domains/state/storageStore';
 import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
+import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 
-function requireCurrentSettingsVersion(): number {
-  const settingsVersion = getStorage().getState().settingsVersion;
+function requireSettingsVersion(settingsVersion: number | null): number {
   if (settingsVersion === null) throw new Error('Account settings version is unavailable');
   return settingsVersion;
 }
 
 async function persistAccountSettingsOnce(
+  expectedSettingsScope: AccountSettingsScope | null,
   expectedSettingsVersion: number,
   mutate: (raw: Readonly<Record<string, unknown>>) => Record<string, unknown>,
 ): Promise<void> {
   requireOneShotAccountSettingsMutationApplied(
     await getSyncSingleton().mutateAccountSettingsOnce({
+      expectedSettingsScope,
       expectedSettingsVersion,
       mutate: (raw) => ({ settings: mutate(raw), value: undefined }),
     }),
@@ -51,10 +54,28 @@ export function applyLocalSettingsFromDesktopMcpBridge(delta: Partial<LocalSetti
   applyLocalSettingsFromStore(delta, 'ui');
 }
 
+export function useAccountSettingsScope(): AccountSettingsScope | null {
+  return getStorage()((state) => state.settingsScope);
+}
+
+function useAccountSettingsMutationSnapshot(): Readonly<{
+  scope: AccountSettingsScope | null;
+  version: number | null;
+}> {
+  return getStorage()(useShallow((state) => ({
+    scope: state.settingsScope,
+    version: state.settingsVersion,
+  })));
+}
+
 export function useApplySettings(): (delta: SettingsWriteDelta) => void {
+  const expectedSettingsScope = useAccountSettingsScope();
   return React.useCallback((delta: SettingsWriteDelta) => {
-    getSyncSingleton().applySettings(delta, { source: 'ui' satisfies SettingsAnalyticsSource });
-  }, []);
+    getSyncSingleton().applySettings(delta, {
+      expectedSettingsScope,
+      source: 'ui' satisfies SettingsAnalyticsSource,
+    });
+  }, [expectedSettingsScope]);
 }
 
 export function useApplyProfileSave(): (input: Readonly<{
@@ -62,6 +83,7 @@ export function useApplyProfileSave(): (input: Readonly<{
   profileId: string;
   secretBindings?: Readonly<Record<string, string>>;
 }>) => void {
+  const applySettings = useApplySettings();
   return React.useCallback((input) => {
     const settings = getStorage().getState().settings ?? settingsDefaults;
     const delta: AccountSettingsWriteDelta = input.secretBindings === undefined
@@ -74,16 +96,17 @@ export function useApplyProfileSave(): (input: Readonly<{
           secretBindings: input.secretBindings,
         }),
       };
-    getSyncSingleton().applySettings(delta, { source: 'ui' satisfies SettingsAnalyticsSource });
-  }, []);
+    applySettings(delta);
+  }, [applySettings]);
 }
 
 export function useDeleteAiLaunchProfile(): (profileId: string) => Promise<void> {
+  const settingsSnapshot = useAccountSettingsMutationSnapshot();
   return React.useCallback(async (profileId: string) => {
-    await persistAccountSettingsOnce(requireCurrentSettingsVersion(), (raw) => (
+    await persistAccountSettingsOnce(settingsSnapshot.scope, requireSettingsVersion(settingsSnapshot.version), (raw) => (
       removeAiLaunchProfileFromAccountSettings(raw, profileId)
     ));
-  }, []);
+  }, [settingsSnapshot]);
 }
 
 /**
@@ -118,13 +141,11 @@ function mergeProfileSecretBindings(input: Readonly<{
 export function useApplyRetainedSecretBindingsByProfileId(): (
   bindings: RetainedSecretBindingsByProfileId,
 ) => void {
+  const applySettings = useApplySettings();
   return React.useCallback((secretBindingsByProfileId: RetainedSecretBindingsByProfileId) => {
     const delta: AccountSettingsWriteDelta = { secretBindingsByProfileId };
-    getSyncSingleton().applySettings(
-      delta,
-      { source: 'ui' satisfies SettingsAnalyticsSource },
-    );
-  }, []);
+    applySettings(delta);
+  }, [applySettings]);
 }
 
 /**
@@ -138,11 +159,12 @@ export function useApplyFavoriteModelSelectionReplacementIntent(): (
     proposed: CurrentSessionAuthoringSelectionsRuntimeProjection['currentFavoriteModelSelectionsV1'];
   }>,
 ) => Promise<void> {
+  const settingsSnapshot = useAccountSettingsMutationSnapshot();
   return React.useCallback(async (input) => {
-    await persistAccountSettingsOnce(requireCurrentSettingsVersion(), (raw) => (
+    await persistAccountSettingsOnce(settingsSnapshot.scope, requireSettingsVersion(settingsSnapshot.version), (raw) => (
       replayFavoriteModelSelectionReplacementIntent({ raw, ...input })
     ));
-  }, []);
+  }, [settingsSnapshot]);
 }
 
 /**
@@ -155,11 +177,12 @@ export function useApplyRememberedEngineSelectionReplacementIntent(): (
     proposed: CurrentSessionAuthoringSelectionsRuntimeProjection['currentRememberedEngineSelectionsByScopeV1'];
   }>,
 ) => Promise<void> {
+  const settingsSnapshot = useAccountSettingsMutationSnapshot();
   return React.useCallback(async (input) => {
-    await persistAccountSettingsOnce(requireCurrentSettingsVersion(), (raw) => (
+    await persistAccountSettingsOnce(settingsSnapshot.scope, requireSettingsVersion(settingsSnapshot.version), (raw) => (
       replayRememberedEngineSelectionReplacementIntent({ raw, ...input })
     ));
-  }, []);
+  }, [settingsSnapshot]);
 }
 
 export function useApplyLocalSettings(): (delta: Partial<LocalSettings>) => void {

@@ -1,0 +1,197 @@
+import type { ProjectedAuthenticationCatalog } from '@happier-dev/cli-common/authentication/authMethodCatalog';
+import type { HomeTargetInput } from '@happier-dev/cli-common/homeTarget';
+
+import type { AccountDirectoryAuthenticationAction, VerifiedAccountServiceAuthority } from '@/auth/accountDirectory/accountDirectoryAuthClient';
+import type { HomeAuthenticationExecution } from '@/auth/capabilities/authMethodCapabilities';
+
+type CatalogMethod = ProjectedAuthenticationCatalog['methods'][number];
+type CatalogAction = CatalogMethod['enabledActions'][number];
+
+export type WelcomeAuthenticationMethod =
+    | Readonly<{
+        method: CatalogMethod;
+        action: CatalogAction;
+        execution: HomeAuthenticationExecution;
+        authority: Readonly<{ purpose: 'home'; target: HomeTargetInput }>;
+        intendedHome: HomeTargetInput | null;
+    }>
+    | Readonly<{
+        method: CatalogMethod;
+        action: CatalogAction;
+        execution: AccountDirectoryAuthenticationAction['execution'];
+        authority: Readonly<{ purpose: 'account_service'; service: VerifiedAccountServiceAuthority }>;
+        intendedHome: HomeTargetInput | null;
+    }>;
+
+export type WelcomeAction =
+    | Readonly<{ kind: 'authenticate'; request: WelcomeAuthenticationMethod; labelRole: 'new_here' | 'method' }>
+    | Readonly<{ kind: 'scan_or_paste_home' }>
+    | Readonly<{ kind: 'choose_home' }>
+    | Readonly<{ kind: 'choose_sign_in_service' }>
+    | Readonly<{ kind: 'create_personal_home' }>;
+
+export type WelcomeEntryModel = Readonly<{
+    heading: 'first_time' | 'returning';
+    targetContext?: Readonly<{ label: string }>;
+    actions: readonly Readonly<{
+        id: string;
+        emphasis: 'primary' | 'secondary' | 'tertiary';
+        action: WelcomeAction;
+    }>[];
+    notice?: Readonly<{
+        kind: 'service_loading' | 'service_unavailable' | 'service_unsupported' | 'service_methodless';
+        serviceName: string | null;
+        hasUsableHomeMethods: boolean;
+    }>;
+}>;
+
+export type ComposeWelcomeEntryModelInput = Readonly<{
+    target:
+        | Readonly<{ kind: 'none' }>
+        | Readonly<{ kind: 'explicit_home' | 'selected_home'; home: HomeTargetInput; label: string }>;
+    homeMethods: readonly WelcomeAuthenticationMethod[];
+    /**
+     * Exact identity the Home methods were observed from. Only an equal service
+     * identity may be a same-server (`self`) deployment eligible for dedupe.
+     */
+    observedHomeServerIdentityId?: string;
+    context:
+        | Readonly<{ kind: 'home' }>
+        | Readonly<{ kind: 'team' | 'invitation'; label: string; dominantActionId: string | null }>;
+    allowedNavigation: Readonly<{
+        changeHome: boolean;
+        selectService: boolean;
+        scanOrPasteHome: boolean;
+        createPersonalHome: boolean;
+    }>;
+    serviceCatalogState:
+        | Readonly<{ kind: 'not_offered' }>
+        | Readonly<{ kind: 'loading'; hintName?: string }>
+        | Readonly<{
+            kind: 'ready';
+            authority: VerifiedAccountServiceAuthority;
+            name: string;
+            methods: readonly WelcomeAuthenticationMethod[];
+        }>
+        | Readonly<{ kind: 'unavailable' | 'unsupported' | 'methodless'; hintName?: string }>;
+    userHistory: 'first_time' | 'returning';
+}>;
+
+function targetIdentity(target: HomeTargetInput | null): string {
+    if (!target) return 'none';
+    if (target.kind === 'saved_profile') return `profile:${target.profileRef}`;
+    if (target.kind === 'https_url') return `url:${target.url}`;
+    return `descriptor:${target.descriptor.homeServerIdentityId}:${target.authority}`;
+}
+
+function methodAction(request: WelcomeAuthenticationMethod, labelRole: 'new_here' | 'method' = 'method'): WelcomeAction {
+    return { kind: 'authenticate', request, labelRole };
+}
+
+function actionIdentity(action: WelcomeAction): string {
+    if (action.kind !== 'authenticate') return action.kind;
+    const request = action.request;
+    const authority = request.authority.purpose === 'home'
+        ? `home:${targetIdentity(request.authority.target)}`
+        : `service:${request.authority.service.serverIdentityId}:${request.authority.service.endpointUrl}`;
+    return [authority, request.authority.purpose, request.method.id, request.action.id, request.action.mode, targetIdentity(request.intendedHome)].join('|');
+}
+
+function executionEquivalent(
+    home: WelcomeAuthenticationMethod['execution'],
+    service: WelcomeAuthenticationMethod['execution'],
+): boolean {
+    if (home.kind !== service.kind) return false;
+    if (home.kind === 'oauth' && service.kind === 'oauth') {
+        return home.providerId === service.providerId && home.mode === service.mode;
+    }
+    return true;
+}
+
+/**
+ * Same-server dual-role dedupe: on a `self` deployment the Home and its own
+ * sign-in service advertise the same providers. Only an exact identity match
+ * plus an equal method/action/mode/execution is a duplicate, and the direct
+ * Home row is always the one retained, so a Home recovery-key action is never
+ * collapsed into a token-only Directory action.
+ */
+function withoutSameServerDuplicates(
+    input: ComposeWelcomeEntryModelInput,
+): readonly WelcomeAuthenticationMethod[] {
+    if (input.serviceCatalogState.kind !== 'ready') return [];
+    const service = input.serviceCatalogState;
+    if (!input.observedHomeServerIdentityId || service.authority.serverIdentityId !== input.observedHomeServerIdentityId) {
+        return service.methods;
+    }
+    return service.methods.filter((row) => !input.homeMethods.some((home) => (
+        home.method.id === row.method.id
+        && home.action.id === row.action.id
+        && home.action.mode === row.action.mode
+        && executionEquivalent(home.execution, row.execution)
+    )));
+}
+
+export function composeWelcomeEntryModel(input: ComposeWelcomeEntryModelInput): WelcomeEntryModel {
+    const homeProvision = input.homeMethods.filter((row) => row.action.id === 'provision');
+    const homeDirect = input.homeMethods.filter((row) => row.action.id !== 'provision');
+    const serviceMethods = withoutSameServerDuplicates(input);
+    const actions: WelcomeAction[] = [];
+    // Only one card may carry the generic "new here" invitation. A Home that
+    // enables a second provisioning method offers a genuinely different
+    // journey, and two identically labelled cards would be unchoosable.
+    const [primaryProvision, ...remainingProvision] = homeProvision;
+    const primaryServiceProvision = serviceMethods.find((row) => row.action.id === 'provision');
+
+    if (input.userHistory === 'first_time') {
+        if (primaryProvision) actions.push(methodAction(primaryProvision, 'new_here'));
+        actions.push(...homeDirect.map((row) => methodAction(row)));
+        actions.push(...remainingProvision.map((row) => methodAction(row)));
+    } else {
+        actions.push(...homeDirect.map((row) => methodAction(row)));
+    }
+
+    if (input.userHistory === 'returning' && input.allowedNavigation.scanOrPasteHome) {
+        actions.push({ kind: 'scan_or_paste_home' });
+    }
+    actions.push(...serviceMethods.map((row) => methodAction(row, row === primaryServiceProvision ? 'new_here' : 'method')));
+    if (input.userHistory === 'first_time' && input.allowedNavigation.scanOrPasteHome) {
+        actions.push({ kind: 'scan_or_paste_home' });
+    }
+    if (input.allowedNavigation.changeHome) actions.push({ kind: 'choose_home' });
+    if (input.allowedNavigation.selectService && input.target.kind === 'none') actions.push({ kind: 'choose_sign_in_service' });
+    if (input.allowedNavigation.createPersonalHome) actions.push({ kind: 'create_personal_home' });
+    if (input.userHistory === 'returning') {
+        if (primaryProvision) actions.push(methodAction(primaryProvision, 'new_here'));
+        actions.push(...remainingProvision.map((row) => methodAction(row)));
+    }
+
+    const unique = actions.filter((action, index) => (
+        actions.findIndex((candidate) => actionIdentity(candidate) === actionIdentity(action)) === index
+    ));
+    const dominantActionId = input.context.kind === 'home' ? null : input.context.dominantActionId;
+    if (dominantActionId) {
+        const dominantIndex = unique.findIndex((action) => actionIdentity(action) === dominantActionId);
+        if (dominantIndex > 0) unique.unshift(unique.splice(dominantIndex, 1)[0]!);
+    }
+
+    const notice = input.serviceCatalogState.kind === 'loading'
+        ? { kind: 'service_loading' as const, serviceName: input.serviceCatalogState.hintName ?? null, hasUsableHomeMethods: input.homeMethods.length > 0 }
+        : input.serviceCatalogState.kind === 'unavailable'
+            ? { kind: 'service_unavailable' as const, serviceName: input.serviceCatalogState.hintName ?? null, hasUsableHomeMethods: input.homeMethods.length > 0 }
+            : input.serviceCatalogState.kind === 'unsupported'
+                ? { kind: 'service_unsupported' as const, serviceName: input.serviceCatalogState.hintName ?? null, hasUsableHomeMethods: input.homeMethods.length > 0 }
+                : input.serviceCatalogState.kind === 'methodless'
+                    ? { kind: 'service_methodless' as const, serviceName: input.serviceCatalogState.hintName ?? null, hasUsableHomeMethods: input.homeMethods.length > 0 }
+                    : undefined;
+
+    return {
+        heading: input.userHistory,
+        ...(input.target.kind === 'none' ? {} : { targetContext: { label: input.target.label } }),
+        actions: unique.map((action, index) => ({
+            id: actionIdentity(action),
+            emphasis: index === 0 ? 'primary' : 'secondary',
+            action,
+        })),
+        ...(notice ? { notice } : {}),
+    };
+}

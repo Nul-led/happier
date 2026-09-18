@@ -41,6 +41,7 @@ vi.mock('@/components/ui/overlays/FloatingOverlay', () => ({
 
 function operation(overrides: Partial<ActionOperationSnapshotV1> = {}): ActionOperationProjection {
     return {
+        serverId: 'server-1',
         snapshot: {
             version: 1,
             operationId: 'operation-1',
@@ -77,12 +78,13 @@ describe('ActionOperationActivityButtonView', () => {
     it('opens the shared responsive ledger and preserves its portal contract', async () => {
         const onOpenOperation = vi.fn();
         const markSeen = vi.fn();
+        const projectedOperation = operation();
         const { ActionOperationActivityButtonView } = await import('./ActionOperationActivityButton');
         const screen = await renderScreen(
             <ActionOperationActivityButtonView
-                operations={[operation()]}
+                operations={[projectedOperation]}
                 hasAttention={true}
-                preferredSessionId="session-1"
+                preferredSessionAddress={{ serverId: 'server-1', sessionId: 'session-1' }}
                 onOpenOperation={onOpenOperation}
                 onMarkVisibleTerminalSeen={markSeen}
             />,
@@ -116,7 +118,32 @@ describe('ActionOperationActivityButtonView', () => {
         act(() => {
             screen.findByTestId('inbox.action-operation.operation-1')?.props.onPress();
         });
-        expect(onOpenOperation).toHaveBeenCalledWith('operation-1');
+        expect(onOpenOperation).toHaveBeenCalledWith(projectedOperation);
+        expect(screen.findByTestId('action-operation-activity-popover')).toBeNull();
+    });
+
+    it('opens the exact Home-qualified projection when operation ids collide across Homes', async () => {
+        const onOpenOperation = vi.fn();
+        const first = operation();
+        const second = { ...operation(), serverId: 'server-2' };
+        const { ActionOperationActivityButtonView } = await import('./ActionOperationActivityButton');
+        const screen = await renderScreen(
+            <ActionOperationActivityButtonView
+                operations={[first, second]}
+                hasAttention={true}
+                onOpenOperation={onOpenOperation}
+                onMarkVisibleTerminalSeen={() => {}}
+            />,
+        );
+
+        await screen.pressByTestIdAsync('action-operation-activity-button');
+        const matchingRows = screen.findAllByTestId('inbox.action-operation.operation-1')
+            .filter((node) => typeof node.type === 'string');
+        expect(matchingRows).toHaveLength(2);
+
+        act(() => matchingRows[1]?.props.onPress());
+        expect(onOpenOperation).toHaveBeenCalledWith(second);
+        expect(onOpenOperation).not.toHaveBeenCalledWith(first);
     });
 
     it('keeps an unseen terminal ledger mounted while marking it seen', async () => {

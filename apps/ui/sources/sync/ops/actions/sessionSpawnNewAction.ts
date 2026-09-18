@@ -51,6 +51,10 @@ export type SessionSpawnNewActionFailureMessageKey =
 export type SessionSpawnNewResultFailureMessageKey =
     | 'newSession.launchStillPendingBody'
     | 'newSession.daemonRpcUnavailableBody'
+    | 'session.access.repairBody'
+    | 'session.access.preparationKeyUnavailable'
+    | 'teams.policy.externalSharingDisabled'
+    | 'teams.policy.externalSharingAdmins'
     | 'newSession.failedToStart';
 
 /**
@@ -86,6 +90,21 @@ export function resolveSessionSpawnNewResultFailureMessageKey(
 ): SessionSpawnNewResultFailureMessageKey {
     if (result.type === 'pending') {
         return 'newSession.launchStillPendingBody';
+    }
+    if (
+        result.code === 'recipient_key_unavailable'
+        || result.code === 'session_access_invalid_recipient_envelope'
+    ) {
+        return 'session.access.repairBody';
+    }
+    if (result.code === 'session_data_key_unavailable') {
+        return 'session.access.preparationKeyUnavailable';
+    }
+    if (result.code === 'session_access_external_sharing_disabled') {
+        return 'teams.policy.externalSharingDisabled';
+    }
+    if (result.code === 'session_access_external_sharing_requires_team_admin') {
+        return 'teams.policy.externalSharingAdmins';
     }
     return result.code === 'machine_offline'
         ? 'newSession.daemonRpcUnavailableBody'

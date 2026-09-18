@@ -2,6 +2,7 @@ import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionReadStateAction } from '@/sync/domains/session/readState/sessionReadState';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { SessionStopRecovery } from '@/sync/ops/sessionStopContract';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export type SessionActionSurface =
     | 'rowMenu'
@@ -11,6 +12,7 @@ export type SessionActionSurface =
     | 'selectionActionBar';
 
 export type SessionActionId =
+    | 'ui.session.follow'
     | 'ui.session.mark-read'
     | 'ui.session.mark-unread'
     | 'ui.session.rename'
@@ -37,6 +39,16 @@ export type SessionAttentionStandingAction =
     | { kind: 'clear-standing'; visible: true; targetStanding: false }
     | { kind: 'none'; visible: false };
 
+/**
+ * Reminder writes are Account-private organization intent, not Session-record edits. Scheduling
+ * requires a qualified readable active Session; an already stored reminder can still be cleared
+ * after archival through the server's synchronized-Session organization path.
+ */
+export type SessionReminderActionAvailability = Readonly<{
+    canSchedule: boolean;
+    canClear: boolean;
+}>;
+
 export type SessionActionSession = Session | SessionListRenderableSession;
 
 export type SessionActionTarget = Readonly<{
@@ -49,14 +61,16 @@ export type SessionActionTarget = Readonly<{
     hasRecoverableTerminalHost: boolean;
     isPinned: boolean;
     isOwnedByCurrentUser: boolean;
-    hasAdminAccess: boolean;
+    canUnarchive: boolean;
     canStop: boolean;
     canArchive: boolean;
     canRename: boolean;
     canResume: boolean;
     canDelete: boolean;
+    followEnabled?: boolean;
     readStateAction: SessionReadStateAction;
     attentionStandingAction: SessionAttentionStandingAction;
+    reminderAction: SessionReminderActionAvailability;
 }>;
 
 export type SessionActionOperationResult = Readonly<{
@@ -74,8 +88,9 @@ export type SessionActionExecutionInput = Readonly<{
 }>;
 
 export type SessionActionExecutionOperations = Readonly<{
+    openFollowEditor?: (params: Readonly<{ address: SessionAddress; archived: boolean }>) => void;
     stopArchiveFlow?: (params: {
-        sessionId: string;
+        address: SessionAddress;
         hideInactiveSessions: boolean;
         isPinned: boolean;
         archiveAfterStop: 'always' | 'never';
@@ -114,7 +129,7 @@ export type SessionActionExecutionOperations = Readonly<{
         readState: 'read' | 'unread',
         opts?: Readonly<{ serverId?: string | null }>,
     ) => Promise<SessionActionOperationResult>;
-    clearSessionVisibleWhenInactive?: (sessionId: string) => void;
+    clearSessionVisibleWhenInactive?: (address: SessionAddress) => void;
 }>;
 
 export type SessionActionExecutionContext = Readonly<{

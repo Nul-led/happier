@@ -1,5 +1,6 @@
 import { PluginProjectionV2Schema } from '@happier-dev/protocol';
 import type {
+    PluginUiPlatformV1,
     PluginUiTargetedContributionsV1,
 } from '@happier-dev/protocol/plugins/ui';
 
@@ -229,6 +230,12 @@ export function readPluginUiProjectionAdmissionSnapshot(input: Readonly<{
     scope: ServerAccountScope | null;
     targetKey: string;
     machineId: string;
+    /**
+     * The restoring client's platform. Retained bytes were admitted by whichever
+     * client last confirmed them, so rehydration re-applies the same projection
+     * gate as a live describe instead of restoring rows this client cannot mount.
+     */
+    platform?: PluginUiPlatformV1;
 }>): PluginUiProjectionModel | null {
     if (!input.scope) return null;
     const entry = loadPluginUiProjectionWarmCacheEntries(
@@ -236,7 +243,7 @@ export function readPluginUiProjectionAdmissionSnapshot(input: Readonly<{
         input.scope.accountId,
     )[input.targetKey];
     if (!entry || entry.machineId !== input.machineId) return null;
-    const model = normalizePluginUiProjection(entry.projection);
+    const model = normalizePluginUiProjection(entry.projection, input.platform);
     return hasAnyProjectionEntries(model) ? model : null;
 }
 

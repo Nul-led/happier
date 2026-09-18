@@ -6,6 +6,9 @@ import { HappierItemGroupBehavior, useHappierItemGroupItemBehavior } from '@happ
 
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Switch } from '@/components/ui/forms/Switch';
+import { Item } from '@/components/ui/lists/Item';
+import { Modal } from '@/modal';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
@@ -15,14 +18,22 @@ import { Typography } from '@/constants/Typography';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import type { CustomModalInjectedProps } from '@/modal';
 import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
-import { t } from '@/text';
+import { t, type TranslationKey } from '@/text';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 
 import type { ApiTokenExpiryPreset, ApiTokenSettingsController } from './apiTokenSettingsController';
 import { resolveApiTokenOperationErrorMessageKey } from './apiTokenSettingsPresentation';
 import { useApiTokenSettingsControllerState } from './useApiTokenSettingsControllerState';
 
 const EXPIRY_PRESETS: readonly ApiTokenExpiryPreset[] = ['30d', '90d', '1y', 'none'];
+const EXPIRY_PRESET_LABEL_KEYS = {
+    '30d': 'settingsApiTokens.create.expiryOptions.30d',
+    '90d': 'settingsApiTokens.create.expiryOptions.90d',
+    '1y': 'settingsApiTokens.create.expiryOptions.1y',
+    none: 'settingsApiTokens.create.expiryOptions.none',
+} satisfies Record<ApiTokenExpiryPreset, TranslationKey>;
 
 const stylesheet = StyleSheet.create((theme) => ({
     body: {
@@ -238,7 +249,7 @@ function ApiTokenExpiryPresetOption(props: ApiTokenExpiryPresetOptionProps): Rea
             }}
         >
             <Text style={[styles.presetText, props.selected ? styles.presetTextSelected : null]}>
-                {t('settingsApiTokens.create.expiryOptions.' + props.preset)}
+                {t(EXPIRY_PRESET_LABEL_KEYS[props.preset])}
             </Text>
         </Pressable>
     );
@@ -444,6 +455,7 @@ export function ApiTokenCreateModal(props: Readonly<{
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const router = useRouter();
+    const activeServerAccountScope = useActiveServerAccountScope();
     const state = useApiTokenSettingsControllerState(props.controller);
     const copyFeedback = useTemporaryCopyFeedback(1_500);
     const [copyError, setCopyError] = React.useState(false);
@@ -472,21 +484,20 @@ export function ApiTokenCreateModal(props: Readonly<{
                         size="normal"
                         display="inverted"
                         title={t('common.cancel')}
-                        disabled={state.createPending}
                         onPress={props.onClose}
                     />
                     <RoundButton
                         size="normal"
                         title={t('settingsApiTokens.create.submit')}
                         testID="settings-api-tokens-create-submit"
-                        disabled={!state.createDraft.label.trim() || state.createPending}
+                        disabled={!state.createDraft.label.trim() || state.createPending || !!state.recoveryTokenId}
                         loading={state.createPending}
                         action={props.controller.createToken}
                     />
                 </>
             )}
         </View>
-    ), [props.controller, props.onClose, reducedMotion, reveal, state.createDraft.label, state.createPending]);
+    ), [props.controller, props.onClose, reducedMotion, reveal, state.createDraft.label, state.createPending, state.recoveryTokenId]);
 
     useModalCardChrome(props.setChrome, React.useMemo(() => ({
         kind: 'card' as const,
@@ -592,7 +603,7 @@ export function ApiTokenCreateModal(props: Readonly<{
                                 style={styles.input}
                                 returnKeyType="done"
                                 onSubmitEditing={() => {
-                                    if (state.createDraft.label.trim() && !state.createPending) void props.controller.createToken();
+                                    if (state.createDraft.label.trim() && !state.createPending && !state.recoveryTokenId) void props.controller.createToken();
                                 }}
                             />
                         </View>
@@ -626,6 +637,33 @@ export function ApiTokenCreateModal(props: Readonly<{
                                 ))}
                             </HappierItemGroupBehavior>
                         </View>
+                        <Item
+                            title={t('settingsApiTokens.unattended.choice')}
+                            subtitle={t('settingsApiTokens.unattended.consequence')}
+                            rightElement={<Switch
+                                testID="settings-api-tokens-unattended-team-access"
+                                accessibilityLabel={t('settingsApiTokens.unattended.choice')}
+                                value={state.createDraft.authorizeUnattendedTeamAccess === true}
+                                disabled={state.createPending}
+                                onValueChange={(authorizeUnattendedTeamAccess) => props.controller.setCreateDraft({
+                                    ...state.createDraft,
+                                    authorizeUnattendedTeamAccess,
+                                })}
+                            />}
+                        />
+                        {state.canCreateEncrypted ? (
+                            <Item
+                                title={t('settingsApiTokens.encryption.choice')}
+                                subtitle={t('settingsApiTokens.encryption.consequence')}
+                                rightElement={<Switch
+                                    testID="settings-api-tokens-encryption-access"
+                                    accessibilityLabel={t('settingsApiTokens.encryption.choice')}
+                                    value={state.createDraft.encryptionAccess === true}
+                                    disabled={state.createPending}
+                                    onValueChange={(encryptionAccess) => props.controller.setCreateDraft({ ...state.createDraft, encryptionAccess })}
+                                />}
+                            />
+                        ) : null}
                         <View style={styles.guidanceRow}>
                             <Text style={styles.guidanceText}>{t('settingsApiTokens.create.actionSettingsPrefix')}</Text>
                             <Pressable
@@ -659,6 +697,43 @@ export function ApiTokenCreateModal(props: Readonly<{
                             <Text accessibilityLiveRegion="assertive" style={styles.error} testID="settings-api-tokens-create-error">
                                 {t(resolveApiTokenOperationErrorMessageKey(state.createError))}
                             </Text>
+                        ) : null}
+                        {state.recoveryTokenId ? (
+                            <View testID="settings-api-tokens-create-recovery" style={{ gap: 10 }}>
+                                <Text style={styles.guidanceText}>{t('settingsApiTokens.encryption.outcomeUnknown')}</Text>
+                                <Text selectable style={styles.secret}>{state.recoveryTokenId}</Text>
+                                <RoundButton size="normal" display="inverted" title={t('common.refresh')}
+                                    action={props.controller.refresh} />
+                                <RoundButton size="normal" display="inverted" title={t('settingsApiTokens.revoke.confirm')}
+                                    action={async () => {
+                                        const tokenId = state.recoveryTokenId;
+                                        if (!tokenId) return;
+                                        const confirmed = await Modal.confirm(
+                                            t('settingsApiTokens.revoke.title', { label: state.createDraft.label || tokenId }),
+                                            t('settingsApiTokens.revoke.body'),
+                                            { cancelText: t('common.cancel'), confirmText: t('settingsApiTokens.revoke.confirm'), destructive: true },
+                                        );
+                                        if (confirmed && props.controller.getState().recoveryTokenId === tokenId) {
+                                            await props.controller.revokeToken(tokenId);
+                                        }
+                                    }} />
+                            </View>
+                        ) : null}
+                        {(state.createError === 'api_token_encryption_not_ready' || state.createError === 'api_token_encryption_stale')
+                            && activeServerAccountScope ? (
+                            <RoundButton
+                                testID="settings-api-tokens-restore-encryption"
+                                size="normal"
+                                display="inverted"
+                                title={t('navigation.restoreWithSecretKey')}
+                                onPress={() => {
+                                    const returnTo = '/settings/account/api-tokens';
+                                    const targetServerUrl = String(getActiveServerSnapshot().serverUrl ?? '').trim();
+                                    if (!targetServerUrl) return;
+                                    props.onClose();
+                                    router.push(`/restore/manual?returnTo=${encodeURIComponent(returnTo)}&resumeCreate=1&label=${encodeURIComponent(state.createDraft.label.trim())}&expiry=${state.createDraft.expiryPreset}&targetServerId=${encodeURIComponent(activeServerAccountScope.serverId)}&targetServerUrl=${encodeURIComponent(targetServerUrl)}&expectedAccountId=${encodeURIComponent(activeServerAccountScope.accountId)}`);
+                                }}
+                            />
                         ) : null}
                     </View>
                 )}

@@ -7,9 +7,20 @@ import { flushHookEffects, invokeTestInstanceHandler, renderScreen } from '@/dev
 import type { DesktopActivityOverlayWindowStatePayload } from '../runtime/desktopActivityOverlayBridge';
 import { resolveDesktopActivityOverlayCardActionInstanceTestID } from './shared/desktopActivityOverlaySelectors.mjs';
 
-function flattenStyle(style: unknown): Record<string, unknown> {
+type PressableInteractionState = Readonly<{ pressed: boolean; hovered: boolean; focused: boolean }>;
+
+const restingPressableState: PressableInteractionState = { pressed: false, hovered: false, focused: false };
+
+/** `Pressable` styles are interaction-state callbacks, so resolve them at the requested state. */
+function flattenStyle(
+    style: unknown,
+    state: PressableInteractionState = restingPressableState,
+): Record<string, unknown> {
+    if (typeof style === 'function') {
+        return flattenStyle((style as (value: PressableInteractionState) => unknown)(state), state);
+    }
     if (Array.isArray(style)) {
-        return Object.assign({}, ...style.filter(Boolean).map(flattenStyle));
+        return Object.assign({}, ...style.filter(Boolean).map((entry) => flattenStyle(entry, state)));
     }
     return style && typeof style === 'object' ? style as Record<string, unknown> : {};
 }
@@ -68,10 +79,10 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('Text', props, props.children),
-    TextInput: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('TextInput', props, props.children),
-}));
+vi.mock('@/components/ui/text/Text', async () => {
+    const { createUiTextModuleMock } = await import('@/dev/testkit/mocks/uiText');
+    return createUiTextModuleMock();
+});
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -222,11 +233,71 @@ function createWindowState(
     };
 }
 
-async function renderRoute() {
+function createInlineQuestionExpandedState(): DesktopActivityOverlayWindowStatePayload {
+    const state = createWindowState({ expanded: true });
+    return {
+        ...state,
+        model: {
+            ...state.model,
+            isExpanded: true,
+            expanded: {
+                ...state.model.expanded,
+                rows: [],
+                cards: [{
+                    id: 'question-inline-1',
+                    kind: 'user_question',
+                    requestId: 'question-inline-1',
+                    sessionId: 'session-1',
+                    serverId: 'server-1',
+                    title: 'Which deployment target?',
+                    summary: 'Choose a target.',
+                    toolLabel: 'Claude asks',
+                    questionText: 'Which deployment target?',
+                    count: 1,
+                    openActionIdentifier: 'open-session:session-1',
+                    actions: [{
+                        id: 'other',
+                        label: 'Other',
+                        actionIdentifier: 'session.user_action.answer',
+                        data: {
+                            requestId: 'question-inline-1',
+                            sessionId: 'session-1',
+                            serverId: 'server-1',
+                        },
+                        tone: 'secondary',
+                        inputKind: 'inline_text',
+                    }],
+                }],
+            },
+        },
+    };
+}
+
+async function renderRoute(options: Parameters<typeof renderScreen>[1] = {}) {
     const { DesktopActivityOverlayRoute } = await import('./DesktopActivityOverlayRoute');
-    const screen = await renderScreen(<DesktopActivityOverlayRoute />);
+    const screen = await renderScreen(<DesktopActivityOverlayRoute />, options);
     await flushHookEffects();
     return screen;
+}
+
+/**
+ * Records which host node the island focuses. `react-test-renderer` resolves host refs through
+ * `createNodeMock`, so this is how a renderer test observes programmatic focus transfer.
+ */
+function createFocusRecorder() {
+    const focusedTestIds: string[] = [];
+    return {
+        focusedTestIds,
+        createNodeMock: (element: { type: unknown; props: Record<string, unknown> }) => ({
+            focus: () => {
+                focusedTestIds.push(String(element.props.testID ?? element.type));
+            },
+        }),
+    };
+}
+
+function keyEvent(key: string) {
+    return { key, nativeEvent: { key } };
 }
 
 describe('DesktopActivityOverlayRoute', () => {
@@ -494,9 +565,7 @@ describe('DesktopActivityOverlayRoute', () => {
 
         const screen = await renderRoute();
 
-        await act(async () => {
-            screen.pressByTestId('desktop-activity-overlay-expanded');
-        });
+        expect(screen.findByTestId('desktop-activity-overlay-expanded')?.props.onPress).toBeUndefined();
         expect(setDesktopActivityOverlayExpandedMock).not.toHaveBeenCalled();
         expect(emitDesktopActivityOverlayInteractionMock).not.toHaveBeenCalled();
 
@@ -523,7 +592,7 @@ describe('DesktopActivityOverlayRoute', () => {
         await act(async () => {
             invokeTestInstanceHandler(
                 expandedSurface,
-                'onHoverIn',
+                'onPointerEnter',
                 undefined,
                 'desktop-activity-overlay-expanded',
             );
@@ -538,7 +607,7 @@ describe('DesktopActivityOverlayRoute', () => {
         await act(async () => {
             invokeTestInstanceHandler(
                 expandedSurface,
-                'onHoverOut',
+                'onPointerLeave',
                 undefined,
                 'desktop-activity-overlay-expanded',
             );
@@ -549,7 +618,7 @@ describe('DesktopActivityOverlayRoute', () => {
         await act(async () => {
             invokeTestInstanceHandler(
                 expandedSurface,
-                'onHoverIn',
+                'onPointerEnter',
                 undefined,
                 'desktop-activity-overlay-expanded',
             );
@@ -560,7 +629,7 @@ describe('DesktopActivityOverlayRoute', () => {
         await act(async () => {
             invokeTestInstanceHandler(
                 expandedSurface,
-                'onHoverOut',
+                'onPointerLeave',
                 undefined,
                 'desktop-activity-overlay-expanded',
             );
@@ -619,7 +688,7 @@ describe('DesktopActivityOverlayRoute', () => {
         await act(async () => {
             invokeTestInstanceHandler(
                 expandedSurface,
-                'onHoverOut',
+                'onPointerLeave',
                 undefined,
                 'desktop-activity-overlay-expanded',
             );
@@ -753,6 +822,11 @@ describe('DesktopActivityOverlayRoute', () => {
         expect(sendButtonStyle.width).toBe(sendButtonStyle.height);
         expect(sendButtonStyle.borderRadius).toBe((sendButtonStyle.width as number) / 2);
         expect(screen.root.findAll((node) => node.props?.name === 'arrow-up')).toHaveLength(1);
+        expect(inputShell?.type).toBe('View');
+        expect(inputShell?.props.onPress).toBeUndefined();
+        expect(inputShell?.props.accessibilityRole).toBeUndefined();
+        expect(inputShell?.props.role).toBeUndefined();
+        expect(inputShell?.props.focusable).toBeUndefined();
 
         await act(async () => {
             screen.pressByTestId('desktop-activity-overlay-quick-reply-send');
@@ -767,7 +841,8 @@ describe('DesktopActivityOverlayRoute', () => {
         });
         const stopPropagation = vi.fn();
         await act(async () => {
-            invokeTestInstanceHandler(inputShell, 'onPress', { stopPropagation });
+            invokeTestInstanceHandler(inputShell, 'onPointerDown', { stopPropagation });
+            invokeTestInstanceHandler(inputShell, 'onClick', { stopPropagation });
             invokeTestInstanceHandler(input, 'onPress', { stopPropagation });
             invokeTestInstanceHandler(input, 'onPressIn', { stopPropagation });
         });
@@ -962,7 +1037,7 @@ describe('DesktopActivityOverlayRoute', () => {
         await act(async () => {
             invokeTestInstanceHandler(
                 screen.findByTestId('desktop-activity-overlay-expanded'),
-                'onHoverOut',
+                'onPointerLeave',
                 undefined,
                 'desktop-activity-overlay-expanded',
             );
@@ -981,7 +1056,7 @@ describe('DesktopActivityOverlayRoute', () => {
         await act(async () => {
             invokeTestInstanceHandler(
                 screen.findByTestId('desktop-activity-overlay-expanded'),
-                'onHoverOut',
+                'onPointerLeave',
                 undefined,
                 'desktop-activity-overlay-expanded',
             );
@@ -1039,7 +1114,7 @@ describe('DesktopActivityOverlayRoute', () => {
         ).toHaveLength(2);
     });
 
-    it('closes from Escape only when the quick reply draft is clean', async () => {
+    it('holds Escape from every origin while a quick reply draft is dirty, then dismisses when it is clean', async () => {
         isDesktopActivityOverlayWindowContextMock.mockReturnValue(true);
         getDesktopActivityOverlayWindowStateMock.mockResolvedValue({
             ...createWindowState({ expanded: true }),
@@ -1058,25 +1133,38 @@ describe('DesktopActivityOverlayRoute', () => {
         listenDesktopActivityOverlayWindowStateMock.mockResolvedValue(() => {});
 
         const screen = await renderRoute();
-        const input = screen.findByTestId('desktop-activity-overlay-quick-reply-input');
 
         await act(async () => {
             screen.changeTextByTestId('desktop-activity-overlay-quick-reply-input', 'draft');
+        });
+
+        // The dirty draft is the only dismissal lock, and it covers the shell origin as well as the
+        // composer: Escape on a row must not throw away text the person just typed.
+        await act(async () => {
             invokeTestInstanceHandler(
-                input,
+                screen.findByTestId('desktop-activity-overlay-expanded'),
+                'onKeyDown',
+                keyEvent('Escape'),
+                'desktop-activity-overlay-expanded',
+            );
+            invokeTestInstanceHandler(
+                screen.findByTestId('desktop-activity-overlay-quick-reply-input'),
                 'onKeyPress',
-                { nativeEvent: { key: 'Escape' } },
+                keyEvent('Escape'),
                 'desktop-activity-overlay-quick-reply-input',
             );
         });
         expect(setDesktopActivityOverlayExpandedMock).not.toHaveBeenCalledWith(false);
+        expect(
+            screen.findByTestId('desktop-activity-overlay-quick-reply-input')?.props.value,
+        ).toBe('draft');
 
         await act(async () => {
             screen.changeTextByTestId('desktop-activity-overlay-quick-reply-input', '');
             invokeTestInstanceHandler(
                 screen.findByTestId('desktop-activity-overlay-quick-reply-input'),
                 'onKeyPress',
-                { nativeEvent: { key: 'Escape' } },
+                keyEvent('Escape'),
                 'desktop-activity-overlay-quick-reply-input',
             );
         });
@@ -1086,6 +1174,303 @@ describe('DesktopActivityOverlayRoute', () => {
             actionIdentifier: 'overlay-set-expanded',
             data: { expanded: false, reason: 'keyboard_escape' },
         });
+    });
+
+    it('dismisses from Escape inside the island and returns focus to the collapsed trigger', async () => {
+        isDesktopActivityOverlayWindowContextMock.mockReturnValue(true);
+        const expandedState = createWindowState({ expanded: true });
+        let stateListener: ((payload: DesktopActivityOverlayWindowStatePayload) => void) | null = null;
+        getDesktopActivityOverlayWindowStateMock.mockResolvedValue(expandedState);
+        listenDesktopActivityOverlayWindowStateMock.mockImplementation(async (handler) => {
+            stateListener = handler;
+            return () => {};
+        });
+
+        const focus = createFocusRecorder();
+        const screen = await renderRoute({ createNodeMock: focus.createNodeMock });
+
+        await act(async () => {
+            invokeTestInstanceHandler(
+                screen.findByTestId('desktop-activity-overlay-expanded'),
+                'onKeyDown',
+                keyEvent('Escape'),
+                'desktop-activity-overlay-expanded',
+            );
+        });
+
+        expect(setDesktopActivityOverlayExpandedMock).toHaveBeenCalledWith(false);
+        expect(emitDesktopActivityOverlayInteractionMock).toHaveBeenCalledWith({
+            actionIdentifier: 'overlay-set-expanded',
+            data: { expanded: false, reason: 'keyboard_escape' },
+        });
+
+        await act(async () => {
+            stateListener?.({
+                ...expandedState,
+                expanded: false,
+                model: { ...expandedState.model, isExpanded: false },
+            });
+        });
+        await flushHookEffects();
+
+        expect(focus.focusedTestIds).toEqual(['desktop-activity-overlay-collapsed']);
+    });
+
+    it('dismisses an empty inline answer from Escape and returns focus to the collapsed trigger', async () => {
+        isDesktopActivityOverlayWindowContextMock.mockReturnValue(true);
+        const expandedState = createInlineQuestionExpandedState();
+        let stateListener: ((payload: DesktopActivityOverlayWindowStatePayload) => void) | null = null;
+        getDesktopActivityOverlayWindowStateMock.mockResolvedValue(expandedState);
+        listenDesktopActivityOverlayWindowStateMock.mockImplementation(async (handler) => {
+            stateListener = handler;
+            return () => {};
+        });
+
+        const focus = createFocusRecorder();
+        const screen = await renderRoute({ createNodeMock: focus.createNodeMock });
+        const inputTestId = 'desktop-activity-overlay-question-other-input-question-inline-1';
+
+        await act(async () => {
+            invokeTestInstanceHandler(
+                screen.findByTestId(inputTestId),
+                'onKeyPress',
+                keyEvent('Escape'),
+                inputTestId,
+            );
+        });
+
+        expect(setDesktopActivityOverlayExpandedMock).toHaveBeenCalledWith(false);
+        expect(emitDesktopActivityOverlayInteractionMock).toHaveBeenCalledWith({
+            actionIdentifier: 'overlay-set-expanded',
+            data: { expanded: false, reason: 'keyboard_escape' },
+        });
+
+        await act(async () => {
+            stateListener?.({
+                ...expandedState,
+                expanded: false,
+                model: { ...expandedState.model, isExpanded: false },
+            });
+        });
+        await flushHookEffects();
+
+        expect(focus.focusedTestIds).toEqual(['desktop-activity-overlay-collapsed']);
+    });
+
+    it('keeps a nonempty inline answer expanded and preserves its draft on Escape', async () => {
+        isDesktopActivityOverlayWindowContextMock.mockReturnValue(true);
+        getDesktopActivityOverlayWindowStateMock.mockResolvedValue(createInlineQuestionExpandedState());
+        listenDesktopActivityOverlayWindowStateMock.mockResolvedValue(() => {});
+
+        const screen = await renderRoute();
+        const inputTestId = 'desktop-activity-overlay-question-other-input-question-inline-1';
+
+        await act(async () => {
+            screen.changeTextByTestId(inputTestId, 'Canary');
+            invokeTestInstanceHandler(
+                screen.findByTestId(inputTestId),
+                'onKeyPress',
+                keyEvent('Escape'),
+                inputTestId,
+            );
+        });
+
+        expect(setDesktopActivityOverlayExpandedMock).not.toHaveBeenCalledWith(false);
+        expect(screen.findByTestId(inputTestId)?.props.value).toBe('Canary');
+        expect(screen.findByTestId('desktop-activity-overlay-expanded')).toBeTruthy();
+    });
+
+    it('transfers focus to the first meaningful action only when the island is expanded from the keyboard', async () => {
+        isDesktopActivityOverlayWindowContextMock.mockReturnValue(true);
+        const collapsedState = createWindowState();
+        let stateListener: ((payload: DesktopActivityOverlayWindowStatePayload) => void) | null = null;
+        getDesktopActivityOverlayWindowStateMock.mockResolvedValue(collapsedState);
+        listenDesktopActivityOverlayWindowStateMock.mockImplementation(async (handler) => {
+            stateListener = handler;
+            return () => {};
+        });
+
+        const focus = createFocusRecorder();
+        const screen = await renderRoute({ createNodeMock: focus.createNodeMock });
+
+        const expand = async () => {
+            await act(async () => {
+                stateListener?.({
+                    ...collapsedState,
+                    expanded: true,
+                    model: { ...collapsedState.model, isExpanded: true },
+                });
+            });
+            await flushHookEffects();
+        };
+        const collapse = async () => {
+            await act(async () => {
+                stateListener?.({
+                    ...collapsedState,
+                    expanded: false,
+                    model: { ...collapsedState.model, isExpanded: false },
+                });
+            });
+            await flushHookEffects();
+        };
+
+        await act(async () => {
+            screen.pressByTestId('desktop-activity-overlay-collapsed');
+        });
+        expect(emitDesktopActivityOverlayInteractionMock).toHaveBeenCalledWith({
+            actionIdentifier: 'overlay-set-expanded',
+            data: { expanded: true, reason: 'click' },
+        });
+        await expand();
+        expect(focus.focusedTestIds).toEqual([]);
+
+        await collapse();
+        await act(async () => {
+            invokeTestInstanceHandler(
+                screen.findByTestId('desktop-activity-overlay-collapsed'),
+                'onKeyDownCapture',
+                keyEvent('Enter'),
+                'desktop-activity-overlay-collapsed',
+            );
+            screen.pressByTestId('desktop-activity-overlay-collapsed');
+        });
+        expect(emitDesktopActivityOverlayInteractionMock).toHaveBeenCalledWith({
+            actionIdentifier: 'overlay-set-expanded',
+            data: { expanded: true, reason: 'keyboard_activate' },
+        });
+
+        await expand();
+        expect(focus.focusedTestIds).toEqual(['desktop-activity-overlay-session-row-session-1']);
+    });
+
+    it('focuses the island surface when a keyboard expansion has no row, card action or quick reply', async () => {
+        isDesktopActivityOverlayWindowContextMock.mockReturnValue(true);
+        const collapsedState = createWindowState();
+        const emptyExpandedModel = {
+            ...collapsedState.model,
+            isExpanded: true,
+            expanded: {
+                ...collapsedState.model.expanded,
+                rows: [],
+                cards: [],
+                quickReply: null,
+            },
+        } as DesktopActivityOverlayWindowStatePayload['model'];
+        let stateListener: ((payload: DesktopActivityOverlayWindowStatePayload) => void) | null = null;
+        getDesktopActivityOverlayWindowStateMock.mockResolvedValue(collapsedState);
+        listenDesktopActivityOverlayWindowStateMock.mockImplementation(async (handler) => {
+            stateListener = handler;
+            return () => {};
+        });
+
+        const focus = createFocusRecorder();
+        const screen = await renderRoute({ createNodeMock: focus.createNodeMock });
+
+        await act(async () => {
+            invokeTestInstanceHandler(
+                screen.findByTestId('desktop-activity-overlay-collapsed'),
+                'onKeyDownCapture',
+                keyEvent('Enter'),
+                'desktop-activity-overlay-collapsed',
+            );
+            screen.pressByTestId('desktop-activity-overlay-collapsed');
+        });
+        await act(async () => {
+            stateListener?.({ ...collapsedState, expanded: true, model: emptyExpandedModel });
+        });
+        await flushHookEffects();
+
+        // The shell is programmatically focusable so Escape still has an owner, but it never becomes
+        // a tab stop.
+        const surface = screen.findByTestId('desktop-activity-overlay-expanded');
+        expect(surface?.props.tabIndex).toBe(-1);
+        expect(focus.focusedTestIds).toEqual(['desktop-activity-overlay-expanded']);
+    });
+
+    it('keeps the expanded island open while focus stays inside after the pointer leaves', async () => {
+        vi.useFakeTimers();
+        isDesktopActivityOverlayWindowContextMock.mockReturnValue(true);
+        getDesktopActivityOverlayWindowStateMock.mockResolvedValue(createWindowState({ expanded: true }));
+        listenDesktopActivityOverlayWindowStateMock.mockResolvedValue(() => {});
+
+        const screen = await renderRoute();
+        const expandedSurface = screen.findByTestId('desktop-activity-overlay-expanded');
+        const leaveAndSettle = async () => {
+            await act(async () => {
+                invokeTestInstanceHandler(
+                    expandedSurface,
+                    'onPointerLeave',
+                    undefined,
+                    'desktop-activity-overlay-expanded',
+                );
+                await vi.advanceTimersByTimeAsync(1_500);
+            });
+        };
+
+        await act(async () => {
+            invokeTestInstanceHandler(
+                expandedSurface,
+                'onFocus',
+                undefined,
+                'desktop-activity-overlay-expanded',
+            );
+        });
+        await leaveAndSettle();
+        expect(setDesktopActivityOverlayExpandedMock).not.toHaveBeenCalledWith(false);
+
+        await act(async () => {
+            invokeTestInstanceHandler(
+                expandedSurface,
+                'onBlur',
+                undefined,
+                'desktop-activity-overlay-expanded',
+            );
+        });
+        await leaveAndSettle();
+        expect(setDesktopActivityOverlayExpandedMock).toHaveBeenCalledWith(false);
+    });
+
+    it('shows a focus ring on keyboard-focused rows and card actions', async () => {
+        isDesktopActivityOverlayWindowContextMock.mockReturnValue(true);
+        const baseState = createWindowState({ expanded: true });
+        getDesktopActivityOverlayWindowStateMock.mockResolvedValue({
+            ...baseState,
+            model: {
+                ...baseState.model,
+                expanded: {
+                    ...baseState.model.expanded,
+                    cards: [
+                        ...(baseState.model.expanded.cards ?? []),
+                        {
+                            id: 'permission-1',
+                            kind: 'permission_request',
+                            requestId: 'permission-1',
+                            sessionId: 'session-1',
+                            title: 'Edit src/auth/middleware.ts',
+                            summary: 'Approval is required before continuing.',
+                            toolLabel: 'Claude asks',
+                            questionText: null,
+                            count: 1,
+                            openActionIdentifier: 'open-session:session-1',
+                            allowActionIdentifier: 'approve-permission',
+                        },
+                    ],
+                },
+            } as unknown as DesktopActivityOverlayWindowStatePayload['model'],
+        });
+        listenDesktopActivityOverlayWindowStateMock.mockResolvedValue(() => {});
+
+        const screen = await renderRoute();
+        const resolveStyle = (testID: string, focused: boolean) => flattenStyle(
+            screen.findByTestId(testID)?.props.style,
+            { ...restingPressableState, focused },
+        );
+        const actionTestID = resolveDesktopActivityOverlayCardActionInstanceTestID('permission-1', 'allow');
+
+        expect(resolveStyle('desktop-activity-overlay-session-row-session-1', false).outlineColor).toBeUndefined();
+        expect(resolveStyle('desktop-activity-overlay-session-row-session-1', true).outlineColor).toBeTruthy();
+        expect(resolveStyle(actionTestID, false).outlineColor).toBeUndefined();
+        expect(resolveStyle(actionTestID, true).outlineColor).toBeTruthy();
     });
 
     it('renders hidden state and skips bridge sync when not in overlay window context', async () => {

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
+import { IDBFactory } from 'fake-indexeddb';
+import { resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
 
 const kvStore = vi.hoisted(() => new Map<string, string>());
 vi.mock('react-native-mmkv', () => {
@@ -74,6 +76,16 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
 vi.mock('@/utils/system/runtimeFetch', () => ({
     runtimeFetch: runtimeFetchMock,
 }));
+vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
+    runtimeFetchWithServerReachability: (params: Readonly<{
+        url: string;
+        init: RequestInit;
+        onIssued?: () => void;
+    }>) => {
+        params.onIssued?.();
+        return runtimeFetchMock(params.url, params.init);
+    },
+}));
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     const actual = await importOriginal<
         typeof import('@/auth/storage/tokenStorage')
@@ -121,6 +133,7 @@ import {
 import { saveAccountSettings, savePendingAccountSettings } from './domains/state/accountSettingsPersistence';
 import { loadPendingOutboxForSession } from './domains/state/pendingOutboxPersistence';
 import { createAccountSettingsScope } from './domains/settings/scope/accountSettingsScope';
+import { createServerAccountScope } from './domains/scope/serverAccountScope';
 import { settingsDefaults } from './domains/settings/settings';
 import { encodeBase64 } from '@/encryption/base64';
 import { encodeUTF8 } from '@/encryption/text';
@@ -137,7 +150,7 @@ import {
     type ExternalSessionTranscriptRawMessageV1,
 } from '@happier-dev/protocol';
 import { createVoiceHistoryConsumer } from '@/voice/history/voiceHistoryConsumer';
-import type { ServerAccountSessionRequestAuthority } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import type { ServerAccountRequestAuthority } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import {
     applyTranscriptStreamSegmentDelta,
     isTranscriptStreamSegmentAssemblyReady,
@@ -148,13 +161,13 @@ import { handleUpdateContainer } from './engine/socket/socket';
 
 const initialStorageState = storage.getState();
 
-function currentPendingInputFeaturesResponse(): Response {
+function currentPendingInputFeaturesResponse(protocolVersion = 1): Response {
     return Response.json({
         features: {},
         capabilities: {
             session: {
                 runtimeActivity: { protocolVersion: 2 },
-                pendingInput: { protocolVersion: 1 },
+                pendingInput: { protocolVersion },
             },
         },
     });
@@ -379,6 +392,8 @@ function buildTokenWithSub(sub: string): string {
 
 describe('sync.fetchMessages server-scoped known-session checks', () => {
     beforeEach(() => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        resetServerFeaturesClientForTests();
         storage.setState(initialStorageState, true);
         kvStore.clear();
         clearTabActiveServerId();
@@ -399,6 +414,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
     });
 
     afterEach(() => {
+        vi.unstubAllGlobals();
         resetDemoModeDepthForTests();
         resetSessionSurfaceVisibilityForTests();
         resetTranscriptStreamSegmentAssemblyForTests();
@@ -636,7 +652,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
         expect(applyMessages).not.toHaveBeenCalled();
         expect(storage.getState().sessions[sessionId]).toBeUndefined();
-        expect(storage.getState().sessionListRenderables[sessionId]).toBeUndefined();
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[sessionId]).find(Boolean)).toBeUndefined();
         expect(storage.getState().sessionMessages[sessionId]).toBeUndefined();
         expect(syncWithSocketState.sessionReceivedMessages.get(sessionId)).toBeUndefined();
         expect(syncWithSocketState.sessionMaterializedMaxSeqById[sessionId] ?? 0).toBe(0);
@@ -645,11 +661,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
     it('does not revive a locally retired Voice History carrier from a held account-authority refresh', async () => {
         const sessionId = 'voice-history-held-account-refresh';
         const accountId = 'voice-history-account';
-        const server = upsertServerProfile({
+        const server = await upsertServerProfile({
             serverUrl: 'https://voice-history-currentness.example',
             name: 'Voice History currentness',
         });
-        setActiveServerId(server.id, { scope: 'device' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope({ serverId: server.id, accountId });
         storage.getState().applySessions([{
             ...createSession(sessionId),
@@ -680,7 +696,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 return await heldPage;
             },
             release: async () => undefined,
-        } satisfies ServerAccountSessionRequestAuthority;
+        } satisfies ServerAccountRequestAuthority;
 
         const { sync } = await import('./sync');
         installPlainRetirementEncryption(sync);
@@ -717,9 +733,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
     });
 
     it('clears only the active server session-list cache entry when runtime state resets', async () => {
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const sideServer = upsertServerProfile({ serverUrl: 'https://side.example', name: 'Side' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const sideServer = await upsertServerProfile({ serverUrl: 'https://side.example', name: 'Side' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         const now = Date.now();
         const activeSession = {
             id: 'active-session',
@@ -745,16 +761,22 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             concurrentSessionListCacheByServerId: {
                 [activeServer.id]: {
                     serverName: 'Active',
-                    sessions: { [activeSession.id]: activeSession },
                 },
                 [sideServer.id]: {
                     serverName: 'Side',
-                    sessions: { [sideSession.id]: sideSession },
                 },
             },
-            sessionListRowStateByServerId: {
+            sessionListRowsByServerId: {
                 [activeServer.id]: { [activeSession.id]: activeSession },
                 [sideServer.id]: { [sideSession.id]: sideSession },
+            },
+            ordinarySessionListMembershipByServerId: {
+                [activeServer.id]: [activeSession.id],
+                [sideServer.id]: [sideSession.id],
+            },
+            archivedSessionListMembershipByServerId: {
+                [activeServer.id]: ['active-archived'],
+                [sideServer.id]: ['side-archived'],
             },
             sessionListIndexByServerId: {
                 [activeServer.id]: [{ type: 'session', sessionId: activeSession.id, serverId: activeServer.id }],
@@ -776,11 +798,16 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(storage.getState().concurrentSessionListCacheByServerId).toEqual({
             [sideServer.id]: {
                 serverName: 'Side',
-                sessions: { [sideSession.id]: sideSession },
             },
         });
-        expect(storage.getState().sessionListRowStateByServerId).toEqual({
+        expect(storage.getState().sessionListRowsByServerId).toEqual({
             [sideServer.id]: { [sideSession.id]: sideSession },
+        });
+        expect(storage.getState().ordinarySessionListMembershipByServerId).toEqual({
+            [sideServer.id]: [sideSession.id],
+        });
+        expect(storage.getState().archivedSessionListMembershipByServerId).toEqual({
+            [sideServer.id]: ['side-archived'],
         });
         expect(storage.getState().sessionListIndexByServerId).toEqual({
             [sideServer.id]: [{ type: 'session', sessionId: sideSession.id, serverId: sideServer.id }],
@@ -793,9 +820,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
     });
 
     it('clears only the active server machine-list cache entry when runtime state resets', async () => {
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const sideServer = upsertServerProfile({ serverUrl: 'https://side.example', name: 'Side' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const sideServer = await upsertServerProfile({ serverUrl: 'https://side.example', name: 'Side' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         const sideMachine = createMachine('side-machine');
 
         storage.setState((state) => ({
@@ -823,8 +850,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
     });
 
     it('activates the account settings scope and reloads scoped pending settings for active credentials', async () => {
-        const server = upsertServerProfile({ serverUrl: 'https://settings-scope.example', name: 'Settings Scope' });
-        setActiveServerId(server.id, { scope: 'device' });
+        const server = await upsertServerProfile({ serverUrl: 'https://settings-scope.example', name: 'Settings Scope' });
+        await setActiveServerId(server.id, { scope: 'device' });
         const scope = createAccountSettingsScope(server.id, 'account-settings-user');
         expect(scope).not.toBeNull();
         saveAccountSettings(scope!, { ...settingsDefaults, viewInline: true }, 7);
@@ -836,7 +863,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             secret: encodeBase64(new Uint8Array(32).fill(3), 'base64url'),
         };
 
-        (sync as any).activateAccountSettingsScopeForCredentials(credentials);
+        await (sync as any).activateAccountSettingsScopeForCredentials(credentials);
 
         expect(storage.getState().settingsScope).toEqual(scope);
         expect(storage.getState().settingsVersion).toBe(7);
@@ -846,8 +873,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
     });
 
     it('clears the account settings scope when credentials contain a malformed token', async () => {
-        const server = upsertServerProfile({ serverUrl: 'https://settings-scope.example', name: 'Settings Scope' });
-        setActiveServerId(server.id, { scope: 'device' });
+        const server = await upsertServerProfile({ serverUrl: 'https://settings-scope.example', name: 'Settings Scope' });
+        await setActiveServerId(server.id, { scope: 'device' });
         const scope = createAccountSettingsScope(server.id, 'account-settings-user');
         expect(scope).not.toBeNull();
         saveAccountSettings(scope!, { ...settingsDefaults, viewInline: true }, 7);
@@ -858,16 +885,16 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
         try {
             const { sync } = await import('./sync');
-            (sync as any).activateAccountSettingsScopeForCredentials({
+            await (sync as any).activateAccountSettingsScopeForCredentials({
                 token: buildTokenWithSub('account-settings-user'),
                 secret: encodeBase64(new Uint8Array(32).fill(3), 'base64url'),
             });
 
             process.env.EXPO_PUBLIC_HAPPIER_DEBUG_SETTINGS_SYNC = '1';
-            expect((sync as any).activateAccountSettingsScopeForCredentials({
+            await expect((sync as any).activateAccountSettingsScopeForCredentials({
                 token: 'not-a-token',
                 secret: encodeBase64(new Uint8Array(32).fill(4), 'base64url'),
-            })).toBeNull();
+            })).resolves.toBeNull();
 
             expect(storage.getState().settingsScope).toBeNull();
             expect(storage.getState().settingsVersion).toBeNull();
@@ -889,8 +916,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
     });
 
     it('rejects create credentials with an empty token subject and clears the active settings scope', async () => {
-        const server = upsertServerProfile({ serverUrl: 'https://settings-scope.example', name: 'Settings Scope' });
-        setActiveServerId(server.id, { scope: 'device' });
+        const server = await upsertServerProfile({ serverUrl: 'https://settings-scope.example', name: 'Settings Scope' });
+        await setActiveServerId(server.id, { scope: 'device' });
         const scope = createAccountSettingsScope(server.id, 'account-settings-user');
         expect(scope).not.toBeNull();
         saveAccountSettings(scope!, { ...settingsDefaults, viewInline: true }, 7);
@@ -901,7 +928,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
         try {
             const { sync } = await import('./sync');
-            (sync as any).activateAccountSettingsScopeForCredentials({
+            await (sync as any).activateAccountSettingsScopeForCredentials({
                 token: buildTokenWithSub('account-settings-user'),
                 secret: encodeBase64(new Uint8Array(32).fill(3), 'base64url'),
             });
@@ -2267,9 +2294,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('fetches persisted session messages through the preferred owner server when the owner is not active', async () => {
         const sessionId = 'persisted_session_remote_messages';
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
 
         storage.getState().applySessions([createSession(sessionId)]);
@@ -2335,9 +2362,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('pages older persisted session messages through the preferred owner server when the owner is not active', async () => {
         const sessionId = 'persisted_session_remote_older';
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
 
         storage.getState().applySessions([createSession(sessionId)]);
@@ -2422,9 +2449,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('fetches pending messages through the preferred owner server when the owner is not active', async () => {
         const sessionId = 'persisted_session_remote_pending_fetch';
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
 
         storage.getState().applySessions([{
@@ -2490,16 +2517,21 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(runtimeFetchMock).not.toHaveBeenCalled();
     });
 
-    it('enqueues pending messages through the preferred owner server when the owner is not active', async () => {
+    it.each([undefined, { kind: 'execution_run' as const, runId: 'run-a' }])('enqueues pending messages through the preferred or explicit owner server with recipient %j', async (recipient) => {
         const sessionId = 'persisted_session_remote_pending_enqueue';
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
-        resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
+        const pendingPath = `/v2/sessions/${sessionId}${recipient ? `/execution-runs/${recipient.runId}` : ''}/pending`;
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
+        // The target-aware case deliberately poisons the ambient resolver with
+        // the active duplicate. Its qualified caller must still choose Owner.
+        resolvePreferredServerIdForSessionIdMock.mockReturnValue(recipient ? activeServer.id : ownerServer.id);
 
         storage.getState().applySessions([{
             ...createSession(sessionId),
             encryptionMode: 'plain',
+            serverId: ownerServer.id,
+            metadata: { path: '/workspace', host: 'host', machineId: 'machine-1' },
         } as Session]);
 
         const ownerToken = buildTokenWithSub('owner-account');
@@ -2507,9 +2539,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
         runtimeFetchMock.mockImplementation(async (input) =>
             String(input).endsWith('/v1/features')
-                ? currentPendingInputFeaturesResponse()
+                ? currentPendingInputFeaturesResponse(recipient ? 3 : 1)
                 : Response.json({
-                    pending: { localId: 'owner-local-id' },
+                    pending: { localId: 'owner-local-id', ...(recipient ? { recipient } : {}) },
                     requestedAction: { v: 1, kind: 'send_now' },
                 }));
 
@@ -2525,6 +2557,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             undefined,
             {
                 localId: 'owner-local-id',
+                ...(recipient ? { serverId: ownerServer.id } : {}),
+                ...(recipient ? { recipient } : {}),
                 requestedAction: { v: 1, kind: 'send_now' },
             },
         );
@@ -2535,12 +2569,12 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
         expect(requestMock).not.toHaveBeenCalled();
         expect(runtimeFetchMock).toHaveBeenCalledWith(
-            `https://owner.example/v2/sessions/${sessionId}/pending`,
+            `https://owner.example${pendingPath}`,
             expect.objectContaining({
                 method: 'POST',
             }),
         );
-        const ownerPendingCall = findRuntimeFetchCall(`https://owner.example/v2/sessions/${sessionId}/pending`);
+        const ownerPendingCall = findRuntimeFetchCall(`https://owner.example${pendingPath}`);
         expectHeaderValue(ownerPendingCall?.[1]?.headers, 'Authorization', `Bearer ${ownerToken}`);
         expectHeaderValue(ownerPendingCall?.[1]?.headers, 'Content-Type', 'application/json');
         expect(JSON.parse(String(ownerPendingCall?.[1]?.body))).toMatchObject({
@@ -2549,29 +2583,373 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         const pendingMessages = storage.getState().sessionPending[sessionId]?.messages ?? [];
         expect(pendingMessages.map((message) => message.text)).toEqual(['hello pending']);
         expect(pendingMessages[0]?.localId).toBe(enqueueResult.localId);
+        if (recipient) {
+            expect(JSON.parse(String(ownerPendingCall?.[1]?.body))).toMatchObject({ v: 1, targetMachineId: 'machine-1' });
+            expect(storage.getState().sessions[sessionId]?.optimisticThinkingAt ?? null).toBeNull();
+            runtimeFetchMock.mockImplementation(async (input) => String(input).endsWith('/v1/features')
+                ? currentPendingInputFeaturesResponse(3)
+                : Response.json({ didUpdate: true, recipient }));
+            await sync.sendPendingMessageNow(sessionId, {
+                localId: enqueueResult.localId,
+                createdAt: 1,
+                rawRecord: pendingMessages[0]?.rawRecord,
+                text: 'hello pending',
+            });
+            expect(runtimeFetchMock).toHaveBeenCalledWith(
+                `https://owner.example${pendingPath}/${enqueueResult.localId}/action`,
+                expect.objectContaining({ method: 'PATCH' }),
+            );
+            expect(storage.getState().sessions[sessionId]?.optimisticThinkingAt ?? null).toBeNull();
+        }
+
+    });
+
+    it('refreshes an exact Home through its captured authority and publishes nothing after retirement', async () => {
+        const sessionId = 'duplicate-submit-refresh-session';
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://home-a-refresh.example', name: 'Home A' });
+        const mountedServer = await upsertServerProfile({ serverUrl: 'https://home-b-refresh.example', name: 'Home B' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: activeServer.id, accountId: 'account-a' });
+        const activeSession = {
+            ...createSession(sessionId),
+            serverId: activeServer.id,
+            encryptionMode: 'plain' as const,
+            metadata: { machineId: 'machine-a', path: '/home-a' },
+        } as Session;
+        storage.getState().applySessions([activeSession]);
+        const mountedScope = createServerAccountScope(mountedServer.id, 'account-b')!;
+        const mountedToken = buildTokenWithSub('account-b');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: mountedToken, secret: 'home-b-secret' });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+
+        let current = true;
+        const lifetime = {
+            scope: mountedScope,
+            isCurrent: () => current,
+            onRetire: () => ({ dispose() {} }),
+        };
+        let detailStarted!: () => void;
+        const detailStartedGate = new Promise<void>((resolve) => { detailStarted = resolve; });
+        let releaseDetail!: () => void;
+        const detailGate = new Promise<void>((resolve) => { releaseDetail = resolve; });
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = new URL(String(input));
+            if (url.pathname === `/v2/sessions/${sessionId}`) {
+                detailStarted();
+                await detailGate;
+                return Response.json({ session: {
+                    id: sessionId,
+                    seq: 7,
+                    createdAt: 1,
+                    updatedAt: 2,
+                    active: true,
+                    activeAt: 2,
+                    encryptionMode: 'plain',
+                    dataEncryptionKey: null,
+                    metadataLayoutVersion: 0,
+                    metadataVersion: 2,
+                    metadata: JSON.stringify({ machineId: 'machine-b', path: '/home-b' }),
+                    agentStateVersion: 0,
+                    agentState: null,
+                    share: null,
+                } });
+            }
+            return new Response(null, { status: 404 });
+        });
+
+        const { sync } = await import('./sync');
+        const ambientRefresh = vi.spyOn(sync, 'ensureSessionVisibleForMessageRoute');
+        const stateBeforeRefresh = storage.getState();
+        const activeProjectionBeforeRefresh = stateBeforeRefresh.sessions[sessionId];
+        const refresh = sync.refreshSessionForSubmit(sessionId, {
+            serverId: mountedServer.id,
+            accountLifetime: lifetime,
+        });
+        await detailStartedGate;
+        current = false;
+        releaseDetail();
+
+        await expect(refresh).rejects.toMatchObject({
+            name: 'SessionSnapshotReadError',
+            errorCode: 'stale_response',
+        });
+        expect(ambientRefresh).not.toHaveBeenCalled();
+        expect(requestMock).not.toHaveBeenCalled();
+        expect(storage.getState()).toBe(stateBeforeRefresh);
+        expect(storage.getState().sessions[sessionId]).toBe(activeProjectionBeforeRefresh);
+        expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
+        const [requestUrl, requestInit] = runtimeFetchMock.mock.calls[0]!;
+        expect(new URL(String(requestUrl)).origin).toBe('https://home-b-refresh.example');
+        expectHeaderValue(requestInit?.headers, 'Authorization', `Bearer ${mountedToken}`);
+    });
+
+    it('routes exact-Home delete and reorder mutations away from an active duplicate Session id', async () => {
+        const sessionId = 'duplicate-pending-session';
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://home-a.example', name: 'Home A' });
+        const mountedServer = await upsertServerProfile({ serverUrl: 'https://home-b.example', name: 'Home B' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: activeServer.id, accountId: 'account-a' });
+        resolvePreferredServerIdForSessionIdMock.mockReturnValue(activeServer.id);
+        storage.getState().applySessions([{
+            ...createSession(sessionId),
+            serverId: activeServer.id,
+            encryptionMode: 'plain',
+        } as Session]);
+
+        const activeScope = createServerAccountScope(activeServer.id, 'account-a')!;
+        const mountedScope = createServerAccountScope(mountedServer.id, 'account-b')!;
+        const pending = (id: string, scope: typeof activeScope) => ({
+            id,
+            localId: id,
+            createdAt: 1,
+            updatedAt: 1,
+            source: 'server_pending' as const,
+            deliveryStatus: 'accepted' as const,
+            text: id,
+            rawRecord: { role: 'user', content: { type: 'text', text: id }, meta: {} },
+            pendingOutboxScope: scope,
+        });
+        storage.getState().upsertPendingMessage(sessionId, pending('home-a-row', activeScope));
+        storage.getState().upsertPendingMessage(sessionId, pending('home-b-delete', mountedScope));
+        storage.getState().upsertPendingMessage(sessionId, pending('home-b-first', mountedScope));
+        storage.getState().upsertPendingMessage(sessionId, pending('home-b-second', mountedScope));
+
+        const mountedToken = buildTokenWithSub('account-b');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: mountedToken, secret: 'home-b-secret' });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith('/v1/features')) return currentPendingInputFeaturesResponse();
+            if (url.endsWith('/pending/home-b-delete') && init?.method === 'DELETE') {
+                return new Response(null, { status: 204 });
+            }
+            if (url.endsWith('/pending/reorder') && init?.method === 'POST') {
+                return new Response(null, { status: 204 });
+            }
+            if (url.endsWith('/pending?includeDiscarded=1')) {
+                return Response.json({ pending: [
+                    {
+                        localId: 'home-b-second',
+                        content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'home-b-second' }, meta: {} } },
+                        status: 'queued', position: 0, createdAt: 1, updatedAt: 2,
+                        discardedAt: null, discardedReason: null, authorAccountId: null,
+                    },
+                    {
+                        localId: 'home-b-first',
+                        content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'home-b-first' }, meta: {} } },
+                        status: 'queued', position: 1, createdAt: 1, updatedAt: 2,
+                        discardedAt: null, discardedReason: null, authorAccountId: null,
+                    },
+                ] });
+            }
+            return new Response(null, { status: 404 });
+        });
+
+        const { sync } = await import('./sync');
+        await sync.deletePendingMessage(sessionId, 'home-b-delete', { serverId: mountedServer.id });
+        await sync.reorderPendingMessages(
+            sessionId,
+            ['home-b-second', 'home-b-first'],
+            undefined,
+            { serverId: mountedServer.id },
+        );
+
+        expect(requestMock).not.toHaveBeenCalled();
+        const mutationCalls = runtimeFetchMock.mock.calls.filter(([input]) => !String(input).endsWith('/v1/features'));
+        expect(mutationCalls.map(([input]) => String(input))).toEqual([
+            `https://home-b.example/v2/sessions/${sessionId}/pending/home-b-delete`,
+            `https://home-b.example/v2/sessions/${sessionId}/pending/reorder`,
+            `https://home-b.example/v2/sessions/${sessionId}/pending?includeDiscarded=1`,
+        ]);
+        for (const [, init] of mutationCalls) {
+            expectHeaderValue(init?.headers, 'Authorization', `Bearer ${mountedToken}`);
+        }
+        const rows = storage.getState().sessionPending[sessionId]?.messages ?? [];
+        expect(rows.find((row) => row.id === 'home-a-row')).toMatchObject({
+            text: 'home-a-row',
+            pendingOutboxScope: activeScope,
+        });
+        expect(rows.some((row) => row.id === 'home-b-delete')).toBe(false);
+        expect(rows.filter((row) => row.pendingOutboxScope?.serverId === mountedServer.id).map((row) => row.localId))
+            .toEqual(['home-b-second', 'home-b-first']);
+    });
+
+    it('does not settle or clear an exact-Home pending edit after its captured credentials are replaced', async () => {
+        const sessionId = 'duplicate-pending-edit-session';
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://home-a-edit.example', name: 'Home A' });
+        const mountedServer = await upsertServerProfile({ serverUrl: 'https://home-b-edit.example', name: 'Home B' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: activeServer.id, accountId: 'account-a' });
+        const activeSession = {
+            ...createSession(sessionId),
+            serverId: activeServer.id,
+            encryptionMode: 'plain' as const,
+            metadata: { machineId: 'machine-a', path: '/home-a' },
+        } as Session;
+        const mountedSession = {
+            ...createSession(sessionId),
+            serverId: mountedServer.id,
+            encryptionMode: 'plain' as const,
+            metadata: { machineId: 'machine-b', path: '/home-b' },
+        } as Session;
+        storage.getState().applySessions([activeSession]);
+        const mountedScope = createServerAccountScope(mountedServer.id, 'account-b')!;
+        const original = {
+            id: 'home-b-edit',
+            localId: 'home-b-edit',
+            createdAt: 1,
+            updatedAt: 1,
+            source: 'server_pending' as const,
+            deliveryStatus: 'accepted' as const,
+            text: 'before',
+            rawRecord: { role: 'user' as const, content: { type: 'text' as const, text: 'before' }, meta: {} },
+            pendingOutboxScope: mountedScope,
+        };
+        storage.getState().upsertPendingMessage(sessionId, original);
+        getCredentialsForServerUrlMock.mockResolvedValue({
+            token: buildTokenWithSub('account-b'),
+            secret: 'home-b-secret',
+        });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+        let current = true;
+        const lifetime = {
+            scope: mountedScope,
+            isCurrent: () => current,
+            onRetire: () => ({ dispose() {} }),
+        };
+        let patchStarted!: () => void;
+        const patchStartedGate = new Promise<void>((resolve) => { patchStarted = resolve; });
+        let releasePatch!: () => void;
+        const patchGate = new Promise<void>((resolve) => { releasePatch = resolve; });
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith('/v1/features')) return currentPendingInputFeaturesResponse();
+            if (url.endsWith(`/v2/sessions/${sessionId}/pending/home-b-edit`) && init?.method === 'PATCH') {
+                patchStarted();
+                await patchGate;
+                return new Response(null, { status: 204 });
+            }
+            return new Response(null, { status: 404 });
+        });
+
+        const { sync } = await import('./sync');
+        const update = sync.updatePendingMessage(sessionId, original.id, 'after', undefined, {
+            serverId: mountedServer.id,
+            accountLifetime: lifetime,
+            session: mountedSession,
+        });
+        await patchStartedGate;
+        current = false;
+        releasePatch();
+
+        await expect(update).rejects.toThrow('Pending owner server-account scope changed');
+        expect(requestMock).not.toHaveBeenCalled();
+        expect(storage.getState().sessions[sessionId]).toMatchObject({
+            serverId: activeServer.id,
+            metadata: activeSession.metadata,
+        });
+        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([original]);
+    });
+
+    it('send-now reads and updates the mounted exact Home without touching the active duplicate Session state', async () => {
+        const sessionId = 'duplicate-send-now-session';
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://home-a.example', name: 'Home A' });
+        const mountedServer = await upsertServerProfile({ serverUrl: 'https://home-b.example', name: 'Home B' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: activeServer.id, accountId: 'account-a' });
+        resolvePreferredServerIdForSessionIdMock.mockReturnValue(activeServer.id);
+        storage.getState().applySessions([{
+            ...createSession(sessionId),
+            serverId: activeServer.id,
+            encryptionMode: 'plain',
+            optimisticThinkingAt: null,
+        } as Session]);
+        const mountedScope = createServerAccountScope(mountedServer.id, 'account-b')!;
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: 'home-b-send-now', localId: 'home-b-send-now', createdAt: 1, updatedAt: 1,
+            source: 'server_pending', deliveryStatus: 'accepted', text: 'send from B',
+            rawRecord: { role: 'user', content: { type: 'text', text: 'send from B' }, meta: {} },
+            pendingOutboxScope: mountedScope,
+        });
+
+        const mountedToken = buildTokenWithSub('account-b');
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: mountedToken, secret: 'home-b-secret' });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/v1/features')) return currentPendingInputFeaturesResponse();
+            if (url.endsWith('/v1/account/encryption/currentness')) return currentPlainAccountEncryptionCurrentnessResponse();
+            if (url.includes(`/v2/sessions/${sessionId}`) && !url.endsWith('/action')) {
+                return Response.json({ session: {
+                    id: sessionId,
+                    createdAt: 1,
+                    updatedAt: 2,
+                    seq: 3,
+                    active: true,
+                    activeAt: 2,
+                    encryptionMode: 'plain',
+                    dataEncryptionKey: null,
+                    metadataVersion: 1,
+                    metadata: JSON.stringify({ machineId: 'machine-b', path: '/home-b', host: 'host-b' }),
+                    agentStateVersion: 1,
+                    agentState: null,
+                    share: null,
+                    pendingCount: 1,
+                    pendingVersion: 1,
+                } });
+            }
+            if (url.endsWith(`/pending/home-b-send-now/action`)) return Response.json({ didUpdate: true });
+            return new Response(null, { status: 404 });
+        });
+
+        const { sync } = await import('./sync');
+        await expect(sync.sendPendingMessageNow(sessionId, {
+            localId: 'home-b-send-now',
+            createdAt: 1,
+            rawRecord: { role: 'user', content: { type: 'text', text: 'send from B' }, meta: {} },
+            text: 'send from B',
+        }, { serverId: mountedServer.id })).resolves.toEqual({ type: 'retry_scheduled' });
+
+        expect(requestMock).not.toHaveBeenCalled();
+        const actionCall = findRuntimeFetchCall(
+            `https://home-b.example/v2/sessions/${sessionId}/pending/home-b-send-now/action`,
+        );
+        expectHeaderValue(actionCall?.[1]?.headers, 'Authorization', `Bearer ${mountedToken}`);
+        expect(JSON.parse(String(actionCall?.[1]?.body))).toEqual({ requestedAction: { v: 1, kind: 'send_now' } });
+        expect(storage.getState().sessions[sessionId]).toMatchObject({
+            serverId: activeServer.id,
+            optimisticThinkingAt: null,
+        });
+        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
+            expect.objectContaining({
+                localId: 'home-b-send-now',
+                pendingOutboxScope: mountedScope,
+                pendingRequestedAction: { v: 1, kind: 'send_now' },
+            }),
+        ]);
     });
 
     it.each(['before transport', 'after response'] as const)(
         'fences the captured active server-account scope %s for dynamic apiSocket requests',
         async (crossing) => {
             const sessionId = `active_pending_scope_fence_${crossing.replace(' ', '_')}`;
-            const server = upsertServerProfile({ serverUrl: 'https://active-scope.example', name: 'Active scope' });
-            setActiveServerId(server.id, { scope: 'device' });
+            const server = await upsertServerProfile({ serverUrl: 'https://active-scope.example', name: 'Active scope' });
+            await setActiveServerId(server.id, { scope: 'device' });
             const { sync } = await import('./sync');
             const activate = (accountId: string) => (sync as any).activateAccountSettingsScopeForCredentials({
                 token: buildTokenWithSub(accountId),
                 secret: encodeBase64(new Uint8Array(32).fill(3), 'base64url'),
             });
-            activate('captured-account');
+            await activate('captured-account');
             const owner = await (sync as any).resolvePendingQueueOwnerContext(sessionId) as Readonly<{
                 request: (path: string, init?: RequestInit) => Promise<Response>;
             }>;
             if (crossing === 'before transport') {
-                activate('switched-account');
+                await activate('switched-account');
                 requestMock.mockResolvedValue(new Response(null, { status: 204 }));
             } else {
                 requestMock.mockImplementation(async () => {
-                    activate('switched-account');
+                    await activate('switched-account');
                     return new Response(null, { status: 204 });
                 });
             }
@@ -2585,8 +2963,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
     it('retains exact enqueue custody when the active-owner postflight fence rejects after a possible commit', async () => {
         const sessionId = 'active_pending_postflight_custody';
         const localId = 'postflight-local';
-        const server = upsertServerProfile({ serverUrl: 'https://active-postflight.example', name: 'Active postflight' });
-        setActiveServerId(server.id, { scope: 'device' });
+        const server = await upsertServerProfile({ serverUrl: 'https://active-postflight.example', name: 'Active postflight' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
         storage.getState().activateProfileScope({ serverId: server.id, accountId: 'captured-account' });
         const { sync } = await import('./sync');
@@ -2603,10 +2981,10 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             { localId },
         )).resolves.toEqual({ localId, accepted: false });
 
-        expect(loadPendingOutboxForSession(sessionId, {
+        expect((await loadPendingOutboxForSession(sessionId, {
             serverId: server.id,
             accountId: 'captured-account',
-        })).toEqual([
+        }))).toEqual([
             expect.objectContaining({ localId, operation: 'enqueue' }),
         ]);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
@@ -2617,9 +2995,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
     it('routes a pending update through the preferred owner server when it is not active', async () => {
         const sessionId = 'persisted_session_remote_pending_update';
         const pendingId = 'remote-pending-update';
-        const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-        const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+        const ownerServer = await upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
         storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
         storage.getState().upsertPendingMessage(sessionId, {
@@ -2652,9 +3030,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         async (crossed) => {
             const sessionId = `persisted_session_remote_refresh_${crossed}`;
             const pendingId = 'remote-refresh-row';
-            const activeServer = upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
-            const ownerServer = upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
-            setActiveServerId(activeServer.id, { scope: 'device' });
+            const activeServer = await upsertServerProfile({ serverUrl: 'https://active.example', name: 'Active' });
+            const ownerServer = await upsertServerProfile({ serverUrl: 'https://owner.example', name: 'Owner' });
+            await setActiveServerId(activeServer.id, { scope: 'device' });
             resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
             storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
             storage.getState().upsertPendingMessage(sessionId, {
@@ -2714,6 +3092,85 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             .rejects.toThrow('Pending message ID is invalid');
         expect(requestMock).not.toHaveBeenCalled();
         expect(runtimeFetchMock).not.toHaveBeenCalled();
+    });
+
+    it('refreshes the canonical session projection after changing resume-on-availability authorization', async () => {
+        const sessionId = 'active_pending_activation_projection';
+        const localId = 'pending-activation-row';
+        const server = await upsertServerProfile({ serverUrl: 'https://active-activation.example', name: 'Active activation' });
+        await setActiveServerId(server.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: server.id, accountId: 'account-a' });
+        storage.getState().applySessions([{
+            ...createSession(sessionId),
+            active: false,
+            activeAt: 100,
+            encryptionMode: 'plain',
+        } as Session]);
+        requestMock.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === `/v2/sessions/${sessionId}/pending/${localId}/action`) {
+                expect(init).toEqual(expect.objectContaining({
+                    method: 'PATCH',
+                    body: JSON.stringify({
+                        requestedAction: { v: 1, kind: 'enqueue' },
+                        resumeWhenAvailable: true,
+                    }),
+                }));
+                return Response.json({ didUpdate: true });
+            }
+            if (path === `/v2/sessions/${sessionId}`) {
+                return Response.json({
+                    session: {
+                        id: sessionId,
+                        createdAt: 1,
+                        updatedAt: 2,
+                        seq: 3,
+                        active: false,
+                        activeAt: 100,
+                        encryptionMode: 'plain',
+                        dataEncryptionKey: null,
+                        metadataVersion: 1,
+                        metadata: JSON.stringify({ machineId: 'machine-1', path: '/repo', flavor: 'codex' }),
+                        agentStateVersion: 1,
+                        agentState: null,
+                        share: null,
+                        pendingCount: 1,
+                        pendingVersion: 2,
+                        pendingActivationAuthorization: {
+                            requestId: localId,
+                            requestedAt: 200,
+                            status: 'waiting',
+                        },
+                    },
+                });
+            }
+            return new Response(null, { status: 404 });
+        });
+        runtimeFetchMock.mockResolvedValue(currentPendingInputFeaturesResponse(2));
+
+        const { sync } = await import('./sync');
+        (sync as any).credentials = { token: 'active-token', secret: 'active-secret' };
+        (sync as any).encryption = {
+            decryptEncryptionKey: async () => null,
+            initializeSessions: async () => {},
+            getSessionEncryption: () => null,
+        };
+
+        await expect(sync.updatePendingRequestedAction(
+            sessionId,
+            localId,
+            { v: 1, kind: 'enqueue' },
+            { resumeWhenAvailable: true },
+        )).resolves.toBeUndefined();
+
+        expect(requestMock).toHaveBeenCalledWith(
+            `/v2/sessions/${sessionId}`,
+            expect.objectContaining({ method: 'GET' }),
+        );
+        expect(storage.getState().sessions[sessionId]?.pendingActivationAuthorization).toEqual({
+            requestId: localId,
+            requestedAt: 200,
+            status: 'waiting',
+        });
     });
 
     it('routes abortSession through the preferred owner server scope', async () => {
@@ -3080,11 +3537,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('supports overriding the server scope used by patchSessionMetadataWithRetry', async () => {
         const sessionId = 'plain_metadata_session_override';
-        const activeServer = upsertServerProfile({
+        const activeServer = await upsertServerProfile({
             serverUrl: 'https://active-metadata.example',
             name: 'Active metadata',
         });
-        setActiveServerId(activeServer.id, { scope: 'device' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
         const sourceMetadata = {
             path: '/tmp/repo',
             host: 'test-host',
@@ -3187,6 +3644,87 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 }),
             }),
         });
+    });
+
+    it('does not apply or emit an exact metadata cleanup after its captured credentials retire', async () => {
+        const sessionId = 'exact_metadata_cleanup_retired';
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://home-a-metadata.example', name: 'Home A' });
+        const mountedServer = await upsertServerProfile({ serverUrl: 'https://home-b-metadata.example', name: 'Home B' });
+        await setActiveServerId(activeServer.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: activeServer.id, accountId: 'account-a' });
+        const activeMetadata = { machineId: 'machine-a', path: '/home-a', sessionInitialPromptV1: { v: 1, text: 'A', mode: 'replace', createdAtMs: 1 } };
+        storage.getState().applySessions([{
+            ...createSession(sessionId),
+            serverId: activeServer.id,
+            encryptionMode: 'plain',
+            metadataVersion: 4,
+            metadata: activeMetadata,
+        } as Session]);
+
+        getCredentialsForServerUrlMock.mockResolvedValue({
+            token: buildTokenWithSub('account-b'),
+            secret: 'home-b-secret',
+        });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+        let current = true;
+        const lifetime = {
+            scope: { serverId: mountedServer.id, accountId: 'account-b' },
+            isCurrent: () => current,
+            onRetire: () => ({ dispose() {} }),
+        };
+        let releaseDetail!: () => void;
+        const detailGate = new Promise<void>((resolve) => { releaseDetail = resolve; });
+        let detailStarted!: () => void;
+        const detailStartedGate = new Promise<void>((resolve) => { detailStarted = resolve; });
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith(`/v2/sessions/${sessionId}`)) {
+                detailStarted();
+                await detailGate;
+                return Response.json({ session: {
+                    id: sessionId,
+                    seq: 1,
+                    createdAt: 1,
+                    updatedAt: 2,
+                    active: true,
+                    activeAt: 2,
+                    encryptionMode: 'plain',
+                    dataEncryptionKey: null,
+                    metadataLayoutVersion: 0,
+                    metadataVersion: 2,
+                    metadata: JSON.stringify({ machineId: 'machine-b', path: '/home-b', sessionInitialPromptV1: { v: 1, text: 'B', mode: 'replace', createdAtMs: 2 } }),
+                    agentStateVersion: 0,
+                    agentState: null,
+                    share: null,
+                } });
+            }
+            if (url.endsWith('/v1/account/encryption/currentness')) {
+                return currentPlainAccountEncryptionCurrentnessResponse();
+            }
+            return new Response(null, { status: 404 });
+        });
+
+        const { sync } = await import('./sync');
+        const cleanup = sync.patchSessionMetadataWithRetry(
+            sessionId,
+            (metadata) => {
+                const { sessionInitialPromptV1: _removed, ...next } = metadata as Record<string, unknown>;
+                return next as typeof metadata;
+            },
+            { serverId: mountedServer.id, accountLifetime: lifetime },
+        );
+        await detailStartedGate;
+        current = false;
+        releaseDetail();
+
+        await expect(cleanup).rejects.toMatchObject({ code: 'session_account_scope_retired' });
+        expect(emitSessionMetadataUpdateWithServerScopeMock).not.toHaveBeenCalled();
+        expect(storage.getState().sessions[sessionId]).toMatchObject({
+            serverId: activeServer.id,
+            metadata: activeMetadata,
+            metadataVersion: 4,
+        });
+        expect(requestMock).not.toHaveBeenCalled();
     });
 
     it('hydrates lightweight session rows before patching metadata', async () => {
@@ -4055,11 +4593,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('hydrates the source-scoped linked session before applying a pre-hydration transcript invalidation', async () => {
         const sessionId = 'direct_session_push_delta_before_session_hydration';
-        const sourceServer = upsertServerProfile({
+        const sourceServer = await upsertServerProfile({
             serverUrl: 'https://external-invalidation-source.example',
             name: 'External invalidation source',
         });
-        setActiveServerId(sourceServer.id, { scope: 'device' });
+        await setActiveServerId(sourceServer.id, { scope: 'device' });
         expect(getActiveServerSnapshot().serverId).toBe(sourceServer.id);
         resolvePreferredServerIdForSessionIdMock.mockImplementation(
             (candidateSessionId) => candidateSessionId === sessionId
@@ -4121,11 +4659,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('hydrates an existing stale linked-session row before accepting the newer invalidation binding', async () => {
         const sessionId = 'direct_session_push_delta_after_link_generation_race';
-        const sourceServer = upsertServerProfile({
+        const sourceServer = await upsertServerProfile({
             serverUrl: 'https://external-invalidation-link-race.example',
             name: 'External invalidation link race',
         });
-        setActiveServerId(sourceServer.id, { scope: 'device' });
+        await setActiveServerId(sourceServer.id, { scope: 'device' });
         expect(getActiveServerSnapshot().serverId).toBe(sourceServer.id);
         resolvePreferredServerIdForSessionIdMock.mockImplementation(
             (candidateSessionId) => candidateSessionId === sessionId
@@ -4201,11 +4739,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('does not secure-refresh when exact hydration still cannot prove the invalidation binding', async () => {
         const sessionId = 'direct_session_push_delta_stale_event';
-        const sourceServer = upsertServerProfile({
+        const sourceServer = await upsertServerProfile({
             serverUrl: 'https://external-invalidation-stale-event.example',
             name: 'External invalidation stale event',
         });
-        setActiveServerId(sourceServer.id, { scope: 'device' });
+        await setActiveServerId(sourceServer.id, { scope: 'device' });
         expect(getActiveServerSnapshot().serverId).toBe(sourceServer.id);
         resolvePreferredServerIdForSessionIdMock.mockImplementation(
             (candidateSessionId) => candidateSessionId === sessionId
@@ -4281,11 +4819,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         localServerId,
     ) => {
         const sessionId = `direct_session_push_delta_${_caseName}_local_link`;
-        const sourceServer = upsertServerProfile({
+        const sourceServer = await upsertServerProfile({
             serverUrl: 'https://external-invalidation-unscoped.example',
             name: 'External invalidation unscoped source',
         });
-        setActiveServerId(sourceServer.id, { scope: 'device' });
+        await setActiveServerId(sourceServer.id, { scope: 'device' });
         expect(getActiveServerSnapshot().serverId).toBe(sourceServer.id);
         resolvePreferredServerIdForSessionIdMock.mockImplementation(
             (candidateSessionId) => candidateSessionId === sessionId
@@ -4339,11 +4877,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('cancels a pre-hydration invalidation when its captured server scope changes', async () => {
         const sessionId = 'direct_session_push_delta_scope_changes_during_hydration';
-        const sourceServer = upsertServerProfile({
+        const sourceServer = await upsertServerProfile({
             serverUrl: 'https://external-invalidation-cancelled.example',
             name: 'External invalidation cancelled source',
         });
-        setActiveServerId(sourceServer.id, { scope: 'device' });
+        await setActiveServerId(sourceServer.id, { scope: 'device' });
         expect(getActiveServerSnapshot().serverId).toBe(sourceServer.id);
         resolvePreferredServerIdForSessionIdMock.mockImplementation(
             (candidateSessionId) => candidateSessionId === sessionId
@@ -4407,11 +4945,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('drops a secure-refresh response when the accepted tail cursor changes in flight', async () => {
         const sessionId = 'direct_session_push_delta_cursor_changes_inflight';
-        const sourceServer = upsertServerProfile({
+        const sourceServer = await upsertServerProfile({
             serverUrl: 'https://external-invalidation-cursor-race.example',
             name: 'External invalidation cursor race',
         });
-        setActiveServerId(sourceServer.id, { scope: 'device' });
+        await setActiveServerId(sourceServer.id, { scope: 'device' });
         expect(getActiveServerSnapshot().serverId).toBe(sourceServer.id);
         storage.getState().applySessions([{
             ...createExternalSession(sessionId),
@@ -4465,11 +5003,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('drops a secure-refresh response whose full binding differs from the invalidation', async () => {
         const sessionId = 'direct_session_push_delta_response_binding_mismatch';
-        const sourceServer = upsertServerProfile({
+        const sourceServer = await upsertServerProfile({
             serverUrl: 'https://external-invalidation-response-mismatch.example',
             name: 'External invalidation response mismatch',
         });
-        setActiveServerId(sourceServer.id, { scope: 'device' });
+        await setActiveServerId(sourceServer.id, { scope: 'device' });
         expect(getActiveServerSnapshot().serverId).toBe(sourceServer.id);
         storage.getState().applySessions([{
             ...createExternalSession(sessionId),
@@ -4511,11 +5049,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('coalesces duplicate pre-hydration reads and applies their shared cursor transition once', async () => {
         const sessionId = 'direct_session_push_delta_duplicate_before_hydration';
-        const sourceServer = upsertServerProfile({
+        const sourceServer = await upsertServerProfile({
             serverUrl: 'https://external-invalidation-duplicate.example',
             name: 'External invalidation duplicate source',
         });
-        setActiveServerId(sourceServer.id, { scope: 'device' });
+        await setActiveServerId(sourceServer.id, { scope: 'device' });
         expect(getActiveServerSnapshot().serverId).toBe(sourceServer.id);
         resolvePreferredServerIdForSessionIdMock.mockImplementation(
             (candidateSessionId) => candidateSessionId === sessionId

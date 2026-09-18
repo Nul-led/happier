@@ -4,7 +4,6 @@ import type { Settings } from '../../domains/settings/settings';
 import { resolveSessionListIndexSettingsImpact } from './settingsSessionListIndexImpact';
 
 const baseSettings: Settings = {
-    groupInactiveSessionsByProject: false,
     sessionListActiveGroupingV1: 'date',
     sessionListInactiveGroupingV1: 'date',
     sessionListSectionModeV1: 'activity',
@@ -23,6 +22,14 @@ describe('resolveSessionListIndexSettingsImpact', () => {
         };
 
         expect(resolveSessionListIndexSettingsImpact(baseSettings, nextSettings)).toBe(true);
+    });
+
+    it('ignores a legacy-only groupInactiveSessionsByProject change', () => {
+        const nextSettings = {
+            ...baseSettings,
+        } as Settings;
+
+        expect(resolveSessionListIndexSettingsImpact(baseSettings, nextSettings)).toBe(false);
     });
 
     it('rebuilds when session section mode changes', () => {

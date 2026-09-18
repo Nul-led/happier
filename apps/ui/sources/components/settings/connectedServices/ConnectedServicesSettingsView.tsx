@@ -10,16 +10,18 @@ import { ItemList } from '@/components/ui/lists/ItemList';
 import { StatusDot } from '@/components/ui/status/StatusDot';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
-import { useProfile } from '@/sync/store/hooks';
+import { useActiveServerAccountScope, useProfile } from '@/sync/store/hooks';
 import { useSettingMutable, useSettings } from '@/sync/store/hooks';
 import { Modal } from '@/modal';
 import { getLegacyConnectedServiceRegistryEntry } from '@/sync/domains/connectedServices/connectedServiceRegistry';
 import {
+  useAppShellPluginUiProjection,
   useProjectedPluginLocalizedTextResolver,
   useProjectedConnectedServicesRegistry,
 } from '@/components/appShell/plugins/AppShellPluginUiProjection';
-import { AGENT_IDS, getAgentCore } from '@/agents/catalog/catalog';
+import { AGENT_IDS } from '@/agents/catalog/catalog';
 import { getResolvedAgentCatalogEntries } from '@/agents/backendCatalog/agentCatalogProjection';
+import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import {
   buildQualifiedPluginContributionKey,
   ConnectedServicesProviderStateSharingSettingsV1Schema,
@@ -59,6 +61,9 @@ import { ConnectedServiceQuotaSummaryCardSection } from './ConnectedServiceQuota
 import { ConnectedServicesDefaultAuthRow } from './ConnectedServicesDefaultAuthRow';
 import { ConnectedServicesProviderStateSharingDefaultsGroup } from './ConnectedServicesProviderStateSharingSettings';
 import { Icon } from '@/components/ui/icons/Icon';
+import { TeamCredentialCatalogSettingsGroup } from '@/components/settings/teams/credentials/TeamCredentialCatalogSettingsGroup';
+import { teamCredentialDetailPath } from '@/components/settings/teams/teamsRoutes';
+import { useHomeTeamCredentialModelCatalog } from '@/hooks/teams/useHomeTeamCredentialModelCatalog';
 
 const BRAND_ICON_SIZE = 24;
 
@@ -96,6 +101,8 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
   const { theme } = useUnistyles();
   const styles = stylesheet;
   const profile = useProfile();
+  const activeAccountScope = useActiveServerAccountScope();
+  const appShellProjection = useAppShellPluginUiProjection();
   const connectedServicesRegistrySnapshot = useProjectedConnectedServicesRegistry();
   const localizePluginText = useProjectedPluginLocalizedTextResolver();
   const connectedServicesRegistry = connectedServicesRegistrySnapshot.entries;
@@ -114,11 +121,27 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
   }, [poolAdoptionDismissedByKey, setPoolAdoptionDismissedByKey]);
   const router = useRouter();
   const accountGroupsEnabled = useFeatureEnabled('connectedServices.accountGroups');
-  const builtInAgentEntriesById = React.useMemo(() => new Map(
-    getResolvedAgentCatalogEntries({ enabledAgentIds: AGENT_IDS })
-      .filter((entry) => entry.isBuiltIn)
-      .map((entry) => [entry.agentId, entry] as const),
-  ), []);
+  const teamCredentialResourcesEnabled = useFeatureEnabled('teams.credentialResources', {
+    scopeKind: 'spawn',
+    serverId: activeAccountScope?.serverId,
+  });
+  const teamCredentialCatalog = useHomeTeamCredentialModelCatalog({
+    serverId: activeAccountScope?.serverId,
+    enabled: teamCredentialResourcesEnabled,
+  });
+  const daemonAgentProjection = useDaemonMergedProjectionInputs({
+    machineId: appShellProjection.machineId,
+    serverId: appShellProjection.serverId,
+    enabled: Boolean(appShellProjection.machineId),
+  });
+  const agentEntries = React.useMemo(() => getResolvedAgentCatalogEntries({
+    enabledAgentIds: AGENT_IDS,
+    mergedProviderProjectionById: daemonAgentProjection.inputs?.mergedProviderProjectionById ?? null,
+    mergedBackendProjectionById: daemonAgentProjection.inputs?.mergedBackendProjectionById ?? null,
+  }), [
+    daemonAgentProjection.inputs?.mergedBackendProjectionById,
+    daemonAgentProjection.inputs?.mergedProviderProjectionById,
+  ]);
   const normalizedProviderStateSharingSettings = React.useMemo(
     () => ConnectedServicesProviderStateSharingSettingsV1Schema.parse(providerStateSharingSettings),
     [providerStateSharingSettings],
@@ -456,27 +479,50 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
           );
         })}
       </ItemGroup>
+      <TeamCredentialCatalogSettingsGroup
+        title={t('teams.credentials.sharedWithYou')}
+        sourceKind="connected_service"
+        catalog={teamCredentialCatalog}
+        onOpen={(resource) => {
+          if (!activeAccountScope) return;
+          router.push(teamCredentialDetailPath({
+            serverId: activeAccountScope.serverId,
+            teamId: resource.teamId,
+          }, resource.id) as never);
+        }}
+      />
       <ItemGroup
         title={t('connectedServices.defaultAuth.title')}
         footer={t('connectedServices.defaultAuth.footer')}
       >
-        {AGENT_IDS.map((agentId) => {
-          const agentCore = getAgentCore(agentId);
-          const connectedAccountPurposes = builtInAgentEntriesById.get(agentId)?.connectedAccounts ?? [];
+        {agentEntries.map((agentEntry) => {
+          const connectedAccountPurposes = agentEntry.connectedAccounts;
           const declaredServices = connectedAccountPurposes.map((declaration) => (
             buildQualifiedPluginContributionKey(declaration.service)
           ));
           if (connectedAccountPurposes.length === 0) return null;
           return (
             <ConnectedServicesDefaultAuthRow
-              key={agentId}
-              agentId={agentId}
-              agentTitle={t(agentCore.displayNameKey)}
+              key={agentEntry.agentId}
+              agentId={agentEntry.agentId}
+              agentTitle={agentEntry.title}
               connectedAccountPurposes={connectedAccountPurposes}
               connectedAccountServiceKeys={declaredServices}
               connectedAccountsV4={qualifiedAccounts}
               connectedAccountGroupsV4={qualifiedGroups}
               accountGroupsEnabled={accountGroupsEnabled}
+              serverId={activeAccountScope?.serverId}
+              accountId={activeAccountScope?.accountId}
+              teamCredentialResources={teamCredentialCatalog.resources}
+              teamNameById={teamCredentialCatalog.teamNameById}
+              currentTeamCredentialResourceKeys={teamCredentialCatalog.currentResourceKeys}
+              onRecoverTeamCredentialResource={(resource) => {
+                if (!activeAccountScope) return;
+                router.push(teamCredentialDetailPath({
+                  serverId: activeAccountScope.serverId,
+                  teamId: resource.teamId,
+                }, resource.id) as never);
+              }}
               settings={{
                 connectedServicesProfileLabelByKey: settings.connectedServicesProfileLabelByKey,
                 connectedServicesDefaultProfileByServiceId: settings.connectedServicesDefaultProfileByServiceId,

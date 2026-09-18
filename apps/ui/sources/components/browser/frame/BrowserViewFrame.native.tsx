@@ -14,7 +14,7 @@ export function BrowserViewFrame(props: Readonly<{
             return (
                 <NativeWebViewEngine
                     title={props.engine.title}
-                    url={props.engine.url}
+                    {...(props.engine.html !== undefined ? { html: props.engine.html } : { url: props.engine.url })}
                     testID={props.engine.testID}
                     navigationCommand={props.engine.navigationCommand}
                     originWhitelist={props.engine.originWhitelist}
@@ -25,6 +25,7 @@ export function BrowserViewFrame(props: Readonly<{
                     onError={props.engine.onError}
                     onNavigationStateChange={props.engine.onNavigationStateChange}
                     onBlockedNavigation={props.engine.onBlockedNavigation}
+                    onUnexpectedNavigation={props.engine.onUnexpectedNavigation}
                     diagnostics={props.engine.diagnostics}
                     automation={props.engine.automation}
                     nativeMessageBridge={props.engine.nativeMessageBridge}

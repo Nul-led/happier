@@ -33,6 +33,9 @@ export const UI_FEATURE_REGISTRY = {
             icon: { ioniconName: 'timer-outline', color: '#007AFF' },
         },
     },
+    workflows: {
+        settingsToggle: undefined,
+    },
     'execution.runs': {
         settingsToggle: {
             showInSettings: true,
@@ -106,9 +109,15 @@ export const UI_FEATURE_REGISTRY = {
             icon: { ioniconName: 'analytics-outline', color: '#34C759' },
         },
     },
+    'connectedServices.subscription': {
+        settingsToggle: undefined,
+    },
     'connectedServices.accountGroups': {
         settingsToggle: undefined,
     },
+    'connectedServices.autoQuotaReset': { settingsToggle: undefined },
+    'connectedServices.autoDisablePlanInvalid': { settingsToggle: undefined },
+    'connectedServices.poolQuotaLimitSelection': { settingsToggle: undefined },
     'connectedServices.accountFallback': {
         settingsToggle: undefined,
     },
@@ -159,10 +168,40 @@ export const UI_FEATURE_REGISTRY = {
     'sessions.drafts': {
         settingsToggle: undefined,
     },
+    'sessions.ephemeralRunner': {
+        settingsToggle: undefined,
+    },
+    'sessions.filteredListing': {
+        settingsToggle: undefined,
+    },
+    'sessions.following': {
+        settingsToggle: undefined,
+    },
+    'sessions.collaboration': {
+        settingsToggle: undefined,
+    },
+    'sessions.conversations': {
+        settingsToggle: undefined,
+    },
+    'sessions.board': {
+        settingsToggle: undefined,
+    },
     'sessions.usageLimitRecovery': {
         settingsToggle: undefined,
     },
+    teams: {
+        settingsToggle: undefined,
+    },
+    'teams.credentialResources': {
+        settingsToggle: undefined,
+    },
+    'teams.credentialResources.externalApi': {
+        settingsToggle: undefined,
+    },
     machines: {
+        settingsToggle: undefined,
+    },
+    'machines.pools': {
         settingsToggle: undefined,
     },
     'machines.transfer': {

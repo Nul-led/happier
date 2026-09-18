@@ -11,7 +11,10 @@ describe('buildLocalMachineSetupSystemTaskSpec', () => {
 
         const { buildLocalMachineSetupSystemTaskSpec } = await import('./buildLocalMachineSetupSystemTaskSpec');
 
-        const spec = buildLocalMachineSetupSystemTaskSpec();
+        const spec = buildLocalMachineSetupSystemTaskSpec({
+            activeRelayUrl: 'https://relay.example.test',
+            activeWebappUrl: 'https://app.example.test',
+        });
         const params = spec.params as Record<string, unknown>;
         expect(params.channel).toBe('dev');
     });
@@ -34,5 +37,23 @@ describe('buildLocalMachineSetupSystemTaskSpec', () => {
             activeLocalRelayUrl: 'http://127.0.0.1:53288',
             installService: true,
         });
+    });
+
+    // The relay pair is the one thing a UI caller must never leave to the CLI's own selection:
+    // the executor's ambient fallback exists for terminal-initiated `hsetup`, not for the app.
+    it('requires an explicit relay pair from every UI caller', async () => {
+        vi.resetModules();
+        const { buildLocalMachineSetupSystemTaskSpec } = await import('./buildLocalMachineSetupSystemTaskSpec');
+
+        // @ts-expect-error omitting the relay pair must not compile
+        const omitted = () => buildLocalMachineSetupSystemTaskSpec();
+        expect(typeof omitted).toBe('function');
+
+        const params = buildLocalMachineSetupSystemTaskSpec({
+            activeRelayUrl: '  https://relay.example.test  ',
+            activeWebappUrl: '  https://app.example.test  ',
+        }).params as Record<string, unknown>;
+        expect(params.activeRelayUrl).toBe('https://relay.example.test');
+        expect(params.activeWebappUrl).toBe('https://app.example.test');
     });
 });

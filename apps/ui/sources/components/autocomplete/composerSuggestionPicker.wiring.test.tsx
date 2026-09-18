@@ -47,7 +47,7 @@ const storageStateMock = vi.hoisted(() => ({
         active?: boolean;
         metadata?: Record<string, unknown>;
     }>,
-    sessionListRowStateByServerId: {} as Record<string, Record<string, unknown>>,
+    sessionListRowsByServerId: {} as Record<string, Record<string, unknown>>,
     machines: {} as Record<string, unknown>,
     artifacts: {} as Record<string, { body?: string }>,
     getProjectForSession: vi.fn(),
@@ -306,7 +306,7 @@ describe('composer suggestion picker — host wiring', () => {
                 },
             },
         };
-        storageStateMock.sessionListRowStateByServerId = {};
+        storageStateMock.sessionListRowsByServerId = {};
     });
 
     it('opens the picker with the Files section for a warm session', async () => {
@@ -347,7 +347,7 @@ describe('composer suggestion picker — host wiring', () => {
     });
 
     it('offers the declared spawn server\'s Sessions to the new-session composer, excluding nothing', async () => {
-        storageStateMock.sessionListRowStateByServerId = {
+        storageStateMock.sessionListRowsByServerId = {
             'server-a': {
                 [SESSION_ID]: {
                     id: SESSION_ID,
@@ -404,7 +404,7 @@ describe('composer suggestion picker — host wiring', () => {
     });
 
     it('offers a same-server Session through the actual SessionView eligible-kind list', async () => {
-        storageStateMock.sessionListRowStateByServerId = {
+        storageStateMock.sessionListRowsByServerId = {
             'server-a': {
                 cmslj08960ku1tmhrd0v4a0a7: {
                     id: 'cmslj08960ku1tmhrd0v4a0a7',

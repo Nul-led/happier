@@ -22,5 +22,15 @@ Pod::Spec.new do |s|
     'DEFINES_MODULE' => 'YES'
   }
 
-  s.source_files = '**/*.{h,m,mm,swift}'
+  s.source_files = [
+    'HappierCryptoWorker.swift',
+    'HappierCryptoWorkerAesGcm.swift',
+    'HappierCryptoWorkerBase64.swift',
+    'HappierCryptoWorkerDataKeyEnvelope.swift',
+    'HappierCryptoWorkerModule.swift',
+    'HappierCryptoWorkerPassword.swift',
+    'HappierCryptoWorkerSecretbox.swift',
+    'HappierCryptoWorkerSessionCrypto.swift',
+    'HappierCryptoWorkerTypes.swift',
+  ]
 end

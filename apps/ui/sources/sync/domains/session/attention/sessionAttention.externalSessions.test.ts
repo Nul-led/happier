@@ -1,217 +1,150 @@
 import { describe, expect, it } from 'vitest';
 
-import { deriveSessionAttentionFlags, hasSessionAttention } from './sessionAttention';
+import {
+    deriveExternalSessionAttentionHasUnread,
+    readExternalSessionAttentionV1,
+    resolveSessionPersonalAttentionV1,
+} from '@happier-dev/protocol';
 
-describe('sessionAttention (direct sessions)', () => {
-    it('treats failed primary runtime issues as session attention', () => {
-        expect(hasSessionAttention({
-            id: 's1',
-            seq: 0,
-            createdAt: 0,
-            updatedAt: 0,
-            active: true,
-            activeAt: 0,
-            metadata: {},
-            agentState: null,
-            pendingCount: 0,
-            latestTurnStatus: 'failed',
-            lastRuntimeIssue: {
-                v: 1,
-                scope: 'primary_session',
-                status: 'failed',
-                source: 'agent_status_error',
-                code: 'agent_status_error',
-                occurredAt: 1,
-            },
-        } as any)).toBe(true);
+function externalAttention(metadata: unknown): boolean | null {
+    return deriveExternalSessionAttentionHasUnread(
+        readExternalSessionAttentionV1(
+            (metadata as { externalSessionAttentionV1?: unknown } | null | undefined)?.externalSessionAttentionV1,
+        ),
+    );
+}
+
+function trackedAttention(overrides: Record<string, unknown> = {}) {
+    return resolveSessionPersonalAttentionV1({
+        tracked: true,
+        accessible: true,
+        accountSuspended: false,
+        contentAvailable: true,
+        visibleSessionSeq: 0,
+        readState: { state: 'tracking', lastViewedSessionSeq: 0, unreadSince: null },
+        latestReadyEventSeq: null,
+        hasPrimarySessionFailure: false,
+        pendingBlockedCount: 0,
+        pendingPermissionRequestCount: 0,
+        pendingUserActionRequestCount: 0,
+        capabilities: { canSubmitAgentInput: true, canApprovePermissions: true },
+        responsible: false,
+        discussion: { hasUnread: false, hasMention: false },
+        attentionStanding: 'none',
+        reminderDue: false,
+        ...overrides,
+    } as Parameters<typeof resolveSessionPersonalAttentionV1>[0]);
+}
+
+describe('sessionAttention canonical owners (direct sessions)', () => {
+    it('treats a tracked primary failure as personal attention, while untracked stays quiet', () => {
+        const failed = trackedAttention({ hasPrimarySessionFailure: true });
+        expect(failed.needsAttention).toBe(true);
+        expect(failed.reasons).toContain('failed');
+
+        const untracked = resolveSessionPersonalAttentionV1({
+            tracked: false,
+            accessible: true,
+            accountSuspended: false,
+            contentAvailable: true,
+            visibleSessionSeq: 3,
+            readState: { state: 'not_started' },
+            latestReadyEventSeq: null,
+            hasPrimarySessionFailure: true,
+            pendingBlockedCount: 0,
+            pendingPermissionRequestCount: 0,
+            pendingUserActionRequestCount: 0,
+            capabilities: { canSubmitAgentInput: true, canApprovePermissions: true },
+            responsible: false,
+            discussion: { hasUnread: false, hasMention: false },
+            attentionStanding: 'none',
+            reminderDue: false,
+        });
+        expect(untracked.needsAttention).toBe(false);
     });
 
-    it('treats linked direct sessions with a newer observed token as unread', () => {
-        const flags = deriveSessionAttentionFlags({
-            id: 's1',
-            seq: 0,
-            createdAt: 0,
-            updatedAt: 0,
-            active: false,
-            activeAt: 0,
-            metadata: {
-                externalSessionV1: {
-                    v: 1,
-                    agentId: 'codex',
-                    machineId: 'machine-1',
-                    remoteSessionId: 'remote-1',
-                    source: { kind: 'codexHome', home: 'user' },
-                },
-                externalSessionAttentionV1: {
-                    v: 1,
-                    observedProgressToken: 'marker-2',
-                    viewedProgressToken: 'marker-1',
-                },
-            },
-            agentState: null,
-            pendingCount: 0,
-        } as any);
+    it('treats a tracked frontier advance as unread, while untracked Team access stays quiet', () => {
+        const tracked = trackedAttention({
+            visibleSessionSeq: 3,
+            readState: { state: 'tracking', lastViewedSessionSeq: 2, unreadSince: null },
+        });
+        expect(tracked.needsAttention).toBe(true);
+        expect(tracked.reasons).toContain('unread');
 
-        expect(flags.hasUnread).toBe(true);
+        const untracked = resolveSessionPersonalAttentionV1({
+            tracked: false,
+            accessible: true,
+            accountSuspended: false,
+            contentAvailable: true,
+            visibleSessionSeq: 3,
+            readState: { state: 'not_started' },
+            latestReadyEventSeq: null,
+            hasPrimarySessionFailure: false,
+            pendingBlockedCount: 0,
+            pendingPermissionRequestCount: 0,
+            pendingUserActionRequestCount: 0,
+            capabilities: { canSubmitAgentInput: true, canApprovePermissions: true },
+            responsible: false,
+            discussion: { hasUnread: false, hasMention: false },
+            attentionStanding: 'none',
+            reminderDue: false,
+        });
+        expect(untracked.needsAttention).toBe(false);
+    });
+});
+
+describe('sessionAttention canonical owners (linked direct sessions)', () => {
+    it('treats linked direct sessions with a newer observed token as unread', () => {
+        expect(externalAttention({
+            externalSessionAttentionV1: {
+                v: 1,
+                observedProgressToken: 'marker-2',
+                viewedProgressToken: 'marker-1',
+            },
+        })).toBe(true);
     });
 
     it('treats linked direct sessions with only an observed token as unread', () => {
-        const flags = deriveSessionAttentionFlags({
-            id: 's1',
-            seq: 0,
-            createdAt: 0,
-            updatedAt: 0,
-            active: false,
-            activeAt: 0,
-            metadata: {
-                externalSessionV1: {
-                    v: 1,
-                    agentId: 'codex',
-                    machineId: 'machine-1',
-                    remoteSessionId: 'remote-1',
-                    source: { kind: 'codexHome', home: 'user' },
-                },
-                externalSessionAttentionV1: {
-                    v: 1,
-                    observedProgressToken: 'marker-1',
-                },
+        expect(externalAttention({
+            externalSessionAttentionV1: {
+                v: 1,
+                observedProgressToken: 'marker-1',
             },
-            agentState: null,
-            pendingCount: 0,
-        } as any);
-
-        expect(flags.hasUnread).toBe(true);
+        })).toBe(true);
     });
 
     it('treats linked direct sessions with matching observed and viewed timestamps as read', () => {
-        const flags = deriveSessionAttentionFlags({
-            id: 's1',
-            seq: 0,
-            createdAt: 0,
-            updatedAt: 0,
-            active: false,
-            activeAt: 0,
-            metadata: {
-                externalSessionV1: {
-                    v: 1,
-                    agentId: 'codex',
-                    machineId: 'machine-1',
-                    remoteSessionId: 'remote-1',
-                    source: { kind: 'codexHome', home: 'user' },
-                },
-                externalSessionAttentionV1: {
-                    v: 1,
-                    observedAtMs: 100,
-                    viewedAtMs: 100,
-                },
+        expect(externalAttention({
+            externalSessionAttentionV1: {
+                v: 1,
+                observedAtMs: 100,
+                viewedAtMs: 100,
             },
-            agentState: null,
-            pendingCount: 0,
-        } as any);
-
-        expect(flags.hasUnread).toBe(false);
+        })).toBe(false);
     });
 
-    it('ignores direct-session follow policy when deriving unread state for linked direct sessions', () => {
-        const flags = deriveSessionAttentionFlags({
-            id: 's1',
-            seq: 0,
-            lastViewedSessionSeq: 0,
-            createdAt: 0,
-            updatedAt: 0,
-            active: false,
-            activeAt: 0,
-            metadata: {
-                externalSessionV1: {
-                    v: 1,
-                    agentId: 'codex',
-                    machineId: 'machine-1',
-                    remoteSessionId: 'remote-1',
-                    source: { kind: 'codexHome', home: 'user' },
-                    followPolicyV1: {
-                        v: 1,
-                        policy: 'background_follow',
-                    },
-                },
+    it('returns no external decision from follow policy alone', () => {
+        expect(externalAttention({
+            externalSessionV1: {
+                v: 1,
+                agentId: 'codex',
+                machineId: 'machine-1',
+                remoteSessionId: 'remote-1',
+                source: { kind: 'codexHome', home: 'user' },
+                followPolicyV1: { v: 1, policy: 'background_follow' },
             },
-            agentState: null,
-            pendingCount: 0,
-        } as any);
-
-        expect(flags.hasUnread).toBe(false);
+        })).toBeNull();
     });
 
-    it('falls back to committed transcript seq when direct-session markers are absent', () => {
-        const flags = deriveSessionAttentionFlags({
-            id: 's1',
-            seq: 3,
-            createdAt: 0,
-            updatedAt: 0,
-            active: false,
-            activeAt: 0,
-            metadata: {
-                externalSessionV1: {
-                    v: 1,
-                    agentId: 'codex',
-                    machineId: 'machine-1',
-                    remoteSessionId: 'remote-1',
-                    source: { kind: 'codexHome', home: 'user' },
-                },
+    it('returns no external decision when markers are absent', () => {
+        expect(externalAttention({
+            externalSessionV1: {
+                v: 1,
+                agentId: 'codex',
+                machineId: 'machine-1',
+                remoteSessionId: 'remote-1',
+                source: { kind: 'codexHome', home: 'user' },
             },
-            agentState: null,
-            pendingCount: 0,
-            lastViewedSessionSeq: 1,
-        } as any);
-
-        expect(flags.hasUnread).toBe(true);
-    });
-
-    it('does not treat normal non-terminal raw session seq as unread activity', () => {
-        const flags = deriveSessionAttentionFlags({
-            id: 's1',
-            seq: 3,
-            createdAt: 0,
-            updatedAt: 0,
-            active: true,
-            activeAt: 0,
-            metadata: null,
-            agentState: null,
-            pendingCount: 0,
-            latestTurnStatus: 'in_progress',
-            lastViewedSessionSeq: 2,
-        } as any);
-
-        expect(flags.hasUnread).toBe(false);
-        expect(hasSessionAttention({
-            id: 's1',
-            seq: 3,
-            createdAt: 0,
-            updatedAt: 0,
-            active: true,
-            activeAt: 0,
-            metadata: null,
-            agentState: null,
-            pendingCount: 0,
-            latestTurnStatus: 'in_progress',
-            lastViewedSessionSeq: 2,
-        } as any)).toBe(false);
-    });
-
-    it('treats terminal normal session seq as readable attention', () => {
-        const flags = deriveSessionAttentionFlags({
-            id: 's1',
-            seq: 3,
-            createdAt: 0,
-            updatedAt: 0,
-            active: false,
-            activeAt: 0,
-            metadata: null,
-            agentState: null,
-            pendingCount: 0,
-            latestTurnStatus: 'completed',
-            lastViewedSessionSeq: 2,
-        } as any);
-
-        expect(flags.hasUnread).toBe(true);
+        })).toBeNull();
     });
 });

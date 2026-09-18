@@ -68,7 +68,7 @@ describe('bundled voice runtime contract ownership', () => {
       'inputSchema: Parameters<typeof zodSchemaToJsonSchemaObject>[0]',
     );
     expect(runtimeHost).toContain(
-      'VoiceRealtimeJsonValueSchema.parse(zodSchemaToJsonSchemaObject(inputSchema))',
+      'StrictJsonValueSchema.parse(zodSchemaToJsonSchemaObject(inputSchema))',
     );
     expect(runtimeHost).not.toContain("import { defineSchema } from '@happier-dev/plugin-sdk';");
     expect(runtimeHost).not.toContain('defineSchema(inputSchema)');

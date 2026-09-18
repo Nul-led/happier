@@ -12,6 +12,7 @@ import {
 import { createCapturingFlatListMock } from '@/dev/testkit/mocks/virtualizedList';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 import { buildSessionListIndexFromViewData, type SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { SessionListReachabilityRenderable } from '@/sync/domains/state/storage';
 import { buildSessionOrganizationProjectionFromLegacyTestSettings } from './sessionOrganizationProjectionTestFixture';
@@ -19,6 +20,13 @@ import { createUseSettingMock, createUseSettingMutableMockFromReader } from '@/d
 import { HappyError } from '@/utils/errors/errors';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', () => ({
+    useUniversalSearchRuntime: () => ({
+        open: vi.fn(),
+        buildCommands: vi.fn(),
+    }),
+}));
 
 let capturedRootFlatListProps: any | null = null;
 const capturedRootVirtualizedListProps = vi.hoisted(() => ({ current: null as any }));
@@ -193,6 +201,7 @@ installSessionShellCommonModuleMocks({
                     if (key === 'compactSessionViewMinimal') return false;
                     if (key === 'sessionTagsEnabled') return true;
                     if (key === 'hideInactiveSessions') return hideInactiveSessions;
+                    if (key === 'workspaceRefsV1') return workspaceRefsV1;
                     if (key === 'workspacePathDisplayModeV1') return 'path';
                     return null;
                 } }),
@@ -226,10 +235,22 @@ installSessionShellCommonModuleMocks({
                     sessionListGroupOrderV1,
                     sessionTagsV1,
                 }),
+                useSessionOrganizationProjections: (serverIds: readonly string[]) => React.useMemo(
+                    () => Object.fromEntries(serverIds.map((serverId) => [
+                        serverId,
+                        buildSessionOrganizationProjectionFromLegacyTestSettings({
+                            serverId,
+                            pinnedSessionKeysV1,
+                            sessionListGroupOrderV1,
+                            sessionTagsV1,
+                        }),
+                    ])),
+                    [serverIds.join('\u0000'), pinnedSessionKeysV1, sessionListGroupOrderV1, sessionTagsV1],
+                ),
                 useSessionListRenderableWithServerScope: (_serverId: any, sessionId: string) => {
                     return findSessionListRenderable(sessionId);
                 },
-                useSessionListRowStateByServerId: () => ({
+                useSessionListRowsByServerId: () => ({
                     server_a: {
                         sess_a: sessionA,
                         sess_b: sessionB,
@@ -252,7 +273,7 @@ installSessionShellCommonModuleMocks({
                         if (!serverId || !sessionId) continue;
                         const session = findSessionListRenderable(sessionId);
                         if (!session) continue;
-                        renderables.set(`${serverId}\u0000${sessionId}`, {
+                        renderables.set(buildSessionListServerScopedRowKey(serverId, sessionId)!, {
                             id: sessionId,
                             metadata: session.metadata ?? null,
                         });
@@ -270,7 +291,7 @@ installSessionShellCommonModuleMocks({
                         if (!serverId || !sessionId) continue;
                         const session = findSessionListRenderable(sessionId);
                         if (!session) continue;
-                        renderables.set(`${serverId}\u0000${sessionId}`, session);
+                        renderables.set(buildSessionListServerScopedRowKey(serverId, sessionId)!, session);
                     }
                     return renderables;
                 },
@@ -366,13 +387,17 @@ vi.mock('@/sync/ops', async (importOriginal) => {
 
 vi.mock('@/sync/ops/sessionOrganization', () => ({
     resolveSessionOrganizationMutationScope: resolveSessionOrganizationMutationScopeOp,
+    requireSessionOrganizationMutationScope: async (serverId: string) => {
+        const result = await resolveSessionOrganizationMutationScopeOp(serverId);
+        if (result.ok) return result.scope;
+        const { HappyError: ErrorType } = await import('@/utils/errors/errors');
+        throw new ErrorType(`homeGovernance.unavailableTitle: ${result.requestedServerId || serverId}`, true);
+    },
     writeSessionOrganizationFolderAssignment: vi.fn(async () => undefined),
     writeSessionOrganizationFolders: vi.fn(async () => undefined),
     writeSessionOrganizationGroupOrder: vi.fn(async () => undefined),
     writeSessionOrganizationPin: setSessionPinOp,
-    writeSessionOrganizationPinForSessionKey: setSessionPinOp,
     writeSessionOrganizationTagLabels: setSessionTagAssignmentsOp,
-    writeSessionOrganizationTagLabelsForSessionKey: setSessionTagAssignmentsOp,
     writeSessionOrganizationWorkspaceLabels: vi.fn(async () => undefined),
     writeSessionOrganizationWorkspaceOrder: vi.fn(async () => undefined),
 }));
@@ -387,11 +412,15 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     };
 });
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentialsForServerUrl: vi.fn(async () => ({ token: 'test-token' })),
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: vi.fn(async () => ({ token: 'test-token' })),
+        },
+    });
+});
 
 vi.mock('@/sync/ops/sessionMachineTarget', () => ({
     readMachineTargetForSession: (sessionId: string) => readMachineTargetForSessionMock(sessionId),
@@ -700,9 +729,9 @@ describe('SessionsList pinning + per-group ordering', () => {
 
         await renderSessionsList();
 
-        expect(capturedRootFlatListProps).toBeNull();
-        expect(capturedRootVirtualizedListProps.current).toBeTruthy();
-        expect(capturedRootVirtualizedListProps.current?.scrollEventThrottle).toBe(32);
+        expect(capturedRootFlatListProps).toBeTruthy();
+        expect(capturedRootFlatListProps?.disableVirtualization).toBeUndefined();
+        expect(capturedRootFlatListProps?.scrollEventThrottle).toBe(32);
     });
 
     it('renders the full priority prefix before inactive history on large web lists', async () => {
@@ -759,8 +788,8 @@ describe('SessionsList pinning + per-group ordering', () => {
 
         await renderSessionsList();
 
-        expect(capturedRootFlatListProps).toBeNull();
-        expect(capturedRootVirtualizedListProps.current).toBeTruthy();
+        expect(capturedRootFlatListProps).toBeTruthy();
+        expect(capturedRootFlatListProps?.disableVirtualization).toBeUndefined();
     });
 
     it('passes session tags from organization projection into session items when enabled', async () => {
@@ -822,7 +851,7 @@ describe('SessionsList pinning + per-group ordering', () => {
         expect(setSessionTagAssignmentsOp).toHaveBeenCalledTimes(1);
         expect(setSessionTagAssignmentsOp).toHaveBeenCalledWith(expect.objectContaining({
             scope: expect.objectContaining({ serverId: 'server_a' }),
-            sessionKey: 'server_a:sess_a',
+            sessionId: 'sess_a',
             tags: ['urgent'],
         }));
     });
@@ -880,12 +909,52 @@ describe('SessionsList pinning + per-group ordering', () => {
         await act(async () => {
             invokeTestInstanceHandler(row, 'onTogglePinned', undefined, 'expected sess_a session row');
             await Promise.resolve();
+            await Promise.resolve();
         });
 
         expect(setSessionPinOp).toHaveBeenCalledTimes(1);
         expect(setSessionPinOp).toHaveBeenCalledWith(expect.objectContaining({
             scope: expect.objectContaining({ serverId: 'server_a' }),
-            sessionKey: 'server_a:sess_a',
+            sessionId: 'sess_a',
+            pinned: true,
+        }));
+    });
+
+    it('keeps the exact URL-shaped Home identity when pinning a qualified Session row', async () => {
+        const serverId = 'https://home.example.test:8443';
+        mockVisibleSessionListViewData = [
+            {
+                type: 'header',
+                title: 'Today',
+                headerKind: 'date',
+                groupKey,
+                serverId,
+                serverName: 'Remote Home',
+            },
+            {
+                type: 'session',
+                session: sessionA,
+                groupKey,
+                groupKind: 'date',
+                serverId,
+                serverName: 'Remote Home',
+            },
+        ];
+        const screen = await renderSessionsList();
+        const row = expectPresent(
+            findSessionItem(screen, 'sess_a'),
+            'expected URL-scoped sess_a row',
+        );
+
+        await act(async () => {
+            invokeTestInstanceHandler(row, 'onTogglePinned', undefined, 'expected URL-scoped sess_a row');
+            await Promise.resolve();
+        });
+
+        expect(resolveSessionOrganizationMutationScopeOp).toHaveBeenCalledWith(serverId);
+        expect(setSessionPinOp).toHaveBeenCalledWith(expect.objectContaining({
+            scope: expect.objectContaining({ serverId }),
+            sessionId: 'sess_a',
             pinned: true,
         }));
     });
@@ -910,7 +979,7 @@ describe('SessionsList pinning + per-group ordering', () => {
         );
     });
 
-    it('keeps the list action silent when organization mutation scope is unavailable', async () => {
+    it('surfaces the exact Home scope failure instead of silently dropping the list action', async () => {
         resolveSessionOrganizationMutationScopeOp.mockResolvedValueOnce({
             ok: false,
             reason: 'credentialsUnavailable',
@@ -930,6 +999,10 @@ describe('SessionsList pinning + per-group ordering', () => {
 
         expect(resolveSessionOrganizationMutationScopeOp).toHaveBeenCalledWith('server_a');
         expect(setSessionPinOp).not.toHaveBeenCalled();
+        expect(modalAlertSpy).toHaveBeenCalledWith(
+            'common.error',
+            expect.stringContaining('server_a'),
+        );
     });
 
     it('does not render project headers and forces path/machine subtitles into rows', async () => {
@@ -965,7 +1038,7 @@ describe('SessionsList pinning + per-group ordering', () => {
 
         const screen = await renderSessionsList();
 
-        expect(screen.findAll((node) => node.props?.accessibilityLabel === '~/repoA')).toHaveLength(1);
+        expect(screen.findAllHostsByTestId(`session-list-project-header:${projectGroupKey}`)).toHaveLength(1);
 
         const row1 = expectPresent(
             findSessionItem(screen, 'sess_p1'),

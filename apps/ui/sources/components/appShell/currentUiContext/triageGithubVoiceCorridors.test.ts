@@ -309,12 +309,8 @@ describe('Triage/GitHub projection and Voice Action source corridors', () => {
     try {
       await act(async () => {
         mounted.push(await createPluginUiTestkit({
-          identity: {
-            pluginId: TRIAGE_PLUGIN_ID,
-            pluginVersion: '0.0.0',
-            viewId: 'triage-list',
-            generation: 'triage-github-current-context-proof',
-          },
+          identity: { instanceId: 'fixture-instance-205', mountNonce: 'fixture-mount-205' },
+          authorPlugin: { id: TRIAGE_PLUGIN_ID, version: '0.0.0' },
           surface: publicationSurface,
           surfaceContext: createSurfaceContextFixture(),
           adapter: createPluginUiRnwSemanticSurfaceAdapter(),

@@ -4,6 +4,8 @@ import { setVoiceSessionSnapshot } from './voiceSessionStore';
 import type { VoiceSessionLifecycleController } from './voiceSessionLifecycleController';
 import type { VoiceSessionSnapshot } from './types';
 
+const sessionAddress = (sessionId: string) => ({ serverId: 'server-1', sessionId });
+
 function createLifecycleControllerStub(
   snapshot: VoiceSessionSnapshot = {
     adapterId: 'local_direct',
@@ -49,7 +51,7 @@ describe('voiceSessionManager', () => {
       getLifecycleController: () => lifecycleController,
     });
 
-    await mgr.toggle('toggle-session');
+    await mgr.toggle(sessionAddress('toggle-session'));
     await mgr.retry('retry-session');
     await mgr.stop('stop-session');
     await mgr.interrupt('interrupt-session');
@@ -57,7 +59,7 @@ describe('voiceSessionManager', () => {
     await mgr.setMuted('mute-session', true);
     mgr.sendContextUpdate('context-session', 'hello');
 
-    expect(lifecycleController.toggle).toHaveBeenCalledWith('toggle-session');
+    expect(lifecycleController.toggle).toHaveBeenCalledWith(sessionAddress('toggle-session'));
     expect(lifecycleController.retry).toHaveBeenCalledWith('retry-session');
     expect(lifecycleController.stop).toHaveBeenCalledWith('stop-session');
     expect(lifecycleController.interrupt).toHaveBeenCalledWith('interrupt-session');
@@ -87,7 +89,7 @@ describe('voiceSessionManager', () => {
       getLifecycleController: () => null,
     });
 
-    await mgr.toggle('s1');
+    await mgr.toggle(sessionAddress('s1'));
     await mgr.retry('s1');
     await mgr.stop('s1');
     await mgr.interrupt('s1');

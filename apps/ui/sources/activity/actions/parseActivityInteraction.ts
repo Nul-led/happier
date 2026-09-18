@@ -1,9 +1,11 @@
-import { PUSH_NOTIFICATION_ACTION_IDS } from '@happier-dev/protocol';
+import { PUSH_NOTIFICATION_ACTION_IDS, WorkflowRunUpdateNotificationV1Schema } from '@happier-dev/protocol';
 
 import { normalizeServerUrl } from '@/sync/domains/server/activeServerSwitch';
 import { coerceRelativeRoute } from '@/utils/path/routeUtils';
 
-import type { ParsedActivityInteraction } from './activityActionTypes';
+import { createWorkflowRunRoute } from '@/sync/domains/workflows/workflowRunRoute';
+
+import type { ActivityWorkflowRunTarget, ParsedActivityInteraction } from './activityActionTypes';
 import { createActivitySurfaceSessionRoute, parseActivitySurfaceSessionTarget } from './activitySurfaceTargets';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -36,6 +38,29 @@ function readServerId(data: unknown): string | null {
     if (!isRecord(data)) return null;
     const serverId = typeof data.serverId === 'string' ? data.serverId.trim() : '';
     return serverId || null;
+}
+
+/**
+ * The workflow Run a `workflow_run_update` notification points at.
+ *
+ * The four workflow fields are validated as a whole by the canonical
+ * notification schema, so the exact topic, the Run id contract and the closed
+ * update-kind vocabulary are all enforced by their owner. Only those fields are
+ * projected into it: the schema is strict, while real push data also carries
+ * the server routing the notification owner injects.
+ *
+ * A foreign topic, a malformed id or an update kind outside the closed set
+ * fails closed and produces no navigation.
+ */
+function readWorkflowRunTarget(data: unknown): ActivityWorkflowRunTarget | null {
+    if (!isRecord(data)) return null;
+    const parsed = WorkflowRunUpdateNotificationV1Schema.safeParse({
+        topic: data.topic,
+        runId: data.runId,
+        updateKind: data.updateKind,
+        ...(data.reason === undefined ? {} : { reason: data.reason }),
+    });
+    return parsed.success ? { runId: parsed.data.runId } : null;
 }
 
 function resolveRoute(data: unknown): string | null {
@@ -94,10 +119,12 @@ export function parseActivityInteraction(params: Readonly<{
                 : null;
     const activitySurfaceRoute = resolveActivitySurfaceRoute(actionIdentifier, params.data);
 
+    const workflowRun = readWorkflowRunTarget(params.data);
     const isOpenAction =
         isDefaultTap
         || actionIdentifier === PUSH_NOTIFICATION_ACTION_IDS.userActionOpenV1
-        || activitySurfaceRoute !== null;
+        || activitySurfaceRoute !== null
+        || workflowRun !== null;
     if (!isOpenAction && permissionAction === null) {
         return null;
     }
@@ -105,7 +132,11 @@ export function parseActivityInteraction(params: Readonly<{
     const sessionId = readSessionId(params.data);
     const requestId = readRequestId(params.data);
     const turnId = readTurnId(params.data);
-    const route = activitySurfaceRoute ?? resolveRoute(params.data);
+    // A workflow Run is addressed by identity, so its route is derived here and
+    // deliberately takes precedence over any `url` the payload carries.
+    const route = workflowRun
+        ? createWorkflowRunRoute(workflowRun.runId)
+        : activitySurfaceRoute ?? resolveRoute(params.data);
     const resolvedPermissionAction =
         permissionAction && sessionId && requestId
             ? {
@@ -127,5 +158,6 @@ export function parseActivityInteraction(params: Readonly<{
         route,
         serverUrl: resolveServerUrl(params.data),
         permissionAction: resolvedPermissionAction,
+        workflowRun,
     };
 }

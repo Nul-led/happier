@@ -10,7 +10,6 @@ export const SESSION_LIST_ORDERING_MODE_DEFAULT_V1: SessionListOrderingModeV1 = 
 export const SESSION_LIST_UPDATED_ORDERING_BUCKET_MS = 5 * 60_000;
 
 export type SessionListFolderSortModeV1 = 'foldersFirst' | 'mixed';
-export type SessionListOrderingSection = 'active' | 'inactive' | 'sessions';
 export type SessionListOrderingSectionMode = 'activity' | 'single';
 export type SessionListOrderingGroupKind = NonNullable<Extract<SessionListIndexItem, { type: 'session' }>['groupKind']>;
 
@@ -95,17 +94,18 @@ export function compareSessionListSessionOrderingKeys(
     return a.stableId.localeCompare(b.stableId);
 }
 
+/**
+ * Every date group orders by meaningful activity, in every section mode.
+ *
+ * A chronological group has no manual order to honour, so the stored project
+ * ordering preference stays dormant here and becomes effective again as soon as a
+ * project-grouped layout is selected.
+ */
 export function resolveEffectiveSessionListOrderingModeForGroup(params: Readonly<{
-    section: SessionListOrderingSection | null | undefined;
-    sectionMode: SessionListOrderingSectionMode;
     groupKind: SessionListOrderingGroupKind | null | undefined;
     userOrderingMode: SessionListOrderingModeV1;
 }>): SessionListOrderingModeV1 {
-    if (
-        params.sectionMode === 'activity'
-        && params.section === 'inactive'
-        && params.groupKind === 'date'
-    ) {
+    if (params.groupKind === 'date') {
         return 'updated';
     }
 

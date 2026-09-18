@@ -15,6 +15,7 @@ import { isDesktopActivityOverlayWindowContext } from '@/activity/adapters/deskt
 import { useNotificationResponseRouting } from '@/activity/notifications/runtime/useNotificationResponseRouting';
 import { invokeDesktopHost, isDesktopHost } from '@/utils/platform/desktopHost';
 import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
+import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 
 /**
  * Owns every navigation/auth-driven side effect from the app root layout.
@@ -33,6 +34,7 @@ export function RootLayoutNavigationEffects(): React.ReactElement | null {
     const debugRouterEnabled = process.env.EXPO_PUBLIC_DEBUG === '1';
     const isDesktopOverlayWindow = isDesktopActivityOverlayWindowContext();
     const isDesktopShell = isDesktopHost();
+    const activeServerAccountScope = useActiveServerAccountScope();
 
     useWebInitialRouteReconcile({ routerPathname: pathname });
 
@@ -70,6 +72,10 @@ export function RootLayoutNavigationEffects(): React.ReactElement | null {
     const pendingTerminalHandledRef = React.useRef(false);
     React.useEffect(() => {
         if (!isAuthenticated) {
+            pendingTerminalHandledRef.current = false;
+            return;
+        }
+        if (!activeServerAccountScope) {
             pendingTerminalHandledRef.current = false;
             return;
         }
@@ -120,7 +126,7 @@ export function RootLayoutNavigationEffects(): React.ReactElement | null {
         }
 
         pendingTerminalHandledRef.current = false;
-    }, [isAuthenticated, refreshAuth, segments]);
+    }, [activeServerAccountScope, isAuthenticated, refreshAuth, segments]);
 
     if (debugRouterEnabled && Platform.OS === 'web') {
         return (

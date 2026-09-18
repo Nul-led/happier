@@ -117,4 +117,22 @@ describe('SessionItem existing-session draft presentation', () => {
         expect(screen.findByTestId('session-list-item-session-draft-row')?.props.accessibilityActions)
             .toContainEqual({ name: 'deleteDraft', label: 'Delete draft' });
     });
+
+    it('shows the reminder clock in a minimal session row', async () => {
+        const { SessionItem } = await import('./SessionItem');
+        const session = createSessionFixture({ id: 'session-reminder-row', active: false });
+        const rowViewModel = createSessionItemRowViewModel({
+            session,
+            overrides: {
+                reminder: { state: 'scheduled', remindAt: Date.now() + 60_000 },
+                subtitleOverride: '/workspace/project',
+            },
+        });
+        const screen = await renderScreen(
+            <SessionItem session={session} rowViewModel={rowViewModel} compact compactMinimal />,
+        );
+
+        expect(screen.findByTestId('session-list-reminder-indicator:session-reminder-row')).not.toBeNull();
+        expect(rowViewModel.subtitleOverride).toBe('/workspace/project');
+    });
 });

@@ -16,6 +16,8 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 type SourceControlOperationsHistorySectionProps = Readonly<{
     theme: any;
+    historyIdentity: string;
+    onCommitLayout?: (sha: string, y: number, height: number) => void;
     historyLoading: boolean;
     historyEntries: ScmLogEntry[];
     historyHasMore: boolean;
@@ -28,15 +30,20 @@ export function SourceControlOperationsHistorySection(props: SourceControlOperat
     const [visibleCount, setVisibleCount] = React.useState(SCM_HISTORY_INITIAL_VISIBLE_COUNT);
     const renderedVisibleCount = Math.min(historyEntries.length, visibleCount);
 
-    const firstSha = historyEntries.at(0)?.sha ?? null;
-    const lastFirstShaRef = React.useRef<string | null>(firstSha);
-    React.useEffect(() => {
-        // Reset when the list is replaced (e.g., refresh/reset pagination).
-        if (lastFirstShaRef.current !== firstSha) {
-            lastFirstShaRef.current = firstSha;
-            setVisibleCount(SCM_HISTORY_INITIAL_VISIBLE_COUNT);
-        }
-    }, [firstSha]);
+    const [historyContext, setHistoryContext] = React.useState({
+        identity: props.historyIdentity,
+        entries: historyEntries,
+    });
+    if (historyContext.identity !== props.historyIdentity) {
+        setHistoryContext({ identity: props.historyIdentity, entries: historyEntries });
+        setVisibleCount(SCM_HISTORY_INITIAL_VISIBLE_COUNT);
+    } else if (historyContext.entries !== historyEntries) {
+        // Keep the oldest displayed commit visible when new commits arrive above it.
+        const lastVisibleSha = historyContext.entries[Math.min(visibleCount, historyContext.entries.length) - 1]?.sha;
+        const nextIndex = historyEntries.findIndex((entry) => entry.sha === lastVisibleSha);
+        setHistoryContext({ identity: props.historyIdentity, entries: historyEntries });
+        if (visibleCount > SCM_HISTORY_INITIAL_VISIBLE_COUNT && nextIndex >= visibleCount) setVisibleCount(nextIndex + 1);
+    }
 
     if (historyLoading && historyEntries.length === 0) {
         return <ActivitySpinner size="small" color={theme.colors.text.secondary} />;
@@ -70,6 +77,7 @@ export function SourceControlOperationsHistorySection(props: SourceControlOperat
                     isHead={index === 0}
                     showTrailingLine={index < visibleEntries.length - 1 || historyHasMore}
                     onOpenCommit={onOpenCommit}
+                    onCommitLayout={props.onCommitLayout}
                 />
             ))}
             {(historyHasMore || visibleCount < historyEntries.length) && (

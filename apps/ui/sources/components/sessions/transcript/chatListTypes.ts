@@ -63,6 +63,8 @@ export type PromotedJumpSeqViewportProtection = Readonly<{
 
 export type ChatListProps = Readonly<{
     session: Session;
+    /** Exact Session-surface lifecycle identity supplied by a qualified route/host. */
+    sessionSurfaceKey: string;
     bottomNotice?: ChatListBottomNotice | null;
     controlledByUserOverride?: boolean;
     controlSwitchTo?: 'remote' | null;
@@ -81,6 +83,9 @@ export type ChatListProps = Readonly<{
 export type ChatListInternalProps = Readonly<{
     metadata: Metadata | null;
     sessionId: string;
+    /** Exact server supplied by the mounted Session host. */
+    sessionServerId?: string | null;
+    sessionSurfaceKey: string;
     sessionActive: boolean;
     sessionThinking: boolean;
     groupingMode: string;

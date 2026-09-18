@@ -5,6 +5,7 @@ import type { LlmTaskRunnerConfigV1, SessionForkPoint } from '@happier-dev/proto
 import { forkSession } from '@/sync/ops';
 import { storage } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
+import { getStorage } from '@/sync/domains/state/storageStore';
 import { randomUUID } from '@/platform/randomUUID';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { actionOperationPresentationCoordinator } from '@/components/inbox/actionOperations/actionOperationPresentationRuntime';
@@ -190,7 +191,13 @@ export function useSessionForkStrategyFlow(params: Readonly<{
         const releaseUserRequestLease = sync.acquireUserRequestLease();
         try {
             const requestId = requestIdFor(route);
-            actionOperationPresentationCoordinator.register({ requestId, onStart: 'current' });
+            const profileScope = getStorage().getState().profileScope;
+            actionOperationPresentationCoordinator.register({
+                serverId: request.serverId,
+                accountId: profileScope?.serverId === request.serverId ? profileScope.accountId : '',
+                requestId,
+                onStart: 'current',
+            });
             const result = await forkSession({
                 ...(request.machineId ? { machineId: request.machineId } : {}),
                 ...(request.serverId ? { serverId: request.serverId } : {}),

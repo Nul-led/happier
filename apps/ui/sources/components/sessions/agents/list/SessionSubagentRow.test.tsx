@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import { renderScreen } from '@/dev/testkit';
-import { installSessionSubagentCommonModuleMocks } from '@/components/sessions/agents/sessionSubagentTestHelpers';
+import { createSessionAgentActivityRowForTest, installSessionSubagentCommonModuleMocks } from '@/components/sessions/agents/sessionSubagentTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -59,7 +59,8 @@ describe('SessionSubagentRow', () => {
 
         const screen = await renderScreen(<SessionSubagentRow
                     sessionId="s1"
-                    subagent={subagent}
+                    serverId="server-a"
+                    row={createSessionAgentActivityRowForTest(subagent)}
                     onOpenPreview={onOpenPreview}
                     onOpenFull={vi.fn()}
                     onOpenAdvanced={vi.fn()}
@@ -99,7 +100,8 @@ describe('SessionSubagentRow', () => {
 
         const screen = await renderScreen(<SessionSubagentRow
                     sessionId="s1"
-                    subagent={subagent}
+                    serverId="server-a"
+                    row={createSessionAgentActivityRowForTest(subagent)}
                     onOpenPreview={onOpenPreview}
                     onOpenFull={onOpenFull}
                     onOpenAdvanced={onOpenAdvanced}
@@ -127,7 +129,32 @@ describe('SessionSubagentRow', () => {
         expect(onOpenFull).toHaveBeenCalledTimes(0);
 
         await screen.pressByTestIdAsync('session-subagent-stop:execution_run:run_1');
-        expect(stopRunSpy).toHaveBeenCalledWith('s1', { runId: 'run_1' });
+        expect(stopRunSpy).toHaveBeenCalledWith('s1', { runId: 'run_1' }, { serverId: 'server-a' });
+    });
+
+    it('does not expose Run stop without an exact Home', async () => {
+        const { SessionSubagentRow } = await import('./SessionSubagentRow');
+        const subagent: SessionSubagent = {
+            id: 'execution_run:unqualified',
+            kind: 'execution_run',
+            status: 'running',
+            display: { title: 'unqualified', providerLabel: 'Codex' },
+            transcript: { toolMessageRouteId: 'message_1', sidechainId: 'toolu_1', toolId: 'toolu_1' },
+            runRef: { runId: 'run_unqualified', backendId: 'codex', intent: 'review' },
+            recipient: { kind: 'execution_run', runId: 'run_unqualified', label: 'Unqualified run' },
+            capabilities: { canOpen: true, canSend: true, canStop: true, canLaunchChild: false, canDelete: false, canOpenAdvancedRun: true },
+            timestamps: {},
+        };
+
+        const screen = await renderScreen(<SessionSubagentRow
+            sessionId="s1"
+            row={createSessionAgentActivityRowForTest(subagent)}
+            onOpenPreview={vi.fn()}
+            onOpenFull={vi.fn()}
+            onOpenAdvanced={vi.fn()}
+        />);
+
+        expect(screen.findByTestId('session-subagent-stop:execution_run:unqualified')).toBeNull();
     });
 
     it('sends structured shutdown commands for Claude teammates', async () => {
@@ -146,7 +173,7 @@ describe('SessionSubagentRow', () => {
 
         const screen = await renderScreen(<SessionSubagentRow
                     sessionId="s1"
-                    subagent={subagent}
+                    row={createSessionAgentActivityRowForTest(subagent)}
                     onOpenPreview={vi.fn()}
                     onOpenFull={vi.fn()}
                     onOpenAdvanced={null}

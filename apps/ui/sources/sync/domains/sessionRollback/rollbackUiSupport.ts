@@ -53,7 +53,7 @@ function hasConversationRollbackCapability(
     session: Session | null | undefined,
     currentAgentCapabilities?: CurrentProjectedAgentCapabilities | null,
 ): boolean {
-    if (!session || session.accessLevel === 'view') return false;
+    if (!session || session.access?.capabilities.submitAgentInput !== true) return false;
     const metadata = readSessionOwnerMetadataView(session);
     return supportsAgentLifecycleCapability({
         agentId: resolveAgentIdFromSessionMetadata(metadata),
@@ -72,7 +72,7 @@ export function resolveConversationRollbackSupport(params: Readonly<{
     supportsRollbackToPoint: boolean;
 }> {
     const session = params.session ?? null;
-    if (!session || session.active !== true || session.accessLevel === 'view') {
+    if (!session || session.active !== true || session.access?.capabilities.submitAgentInput !== true) {
         return {
             supportsLatestTurnRollback: false,
             supportsRollbackToPoint: false,
@@ -203,6 +203,7 @@ export function resolveTranscriptRollbackActions(params: Readonly<{
     turnChangeSets?: readonly TurnChangeSet[];
     currentAgentCapabilities?: CurrentProjectedAgentCapabilities | null;
 }>): Readonly<Record<string, TranscriptRollbackAction>> {
+    if (params.session?.access?.capabilities.submitAgentInput !== true) return EMPTY_TRANSCRIPT_ROLLBACK_ACTIONS;
     const support = resolveConversationRollbackSupport({
         session: params.session,
         currentAgentCapabilities: params.currentAgentCapabilities,

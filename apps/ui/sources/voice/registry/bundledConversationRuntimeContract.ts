@@ -1,5 +1,5 @@
 import type {
-  ConnectedServiceBindingsV1,
+  ConnectedServiceBindingsV2,
   VoiceConversationToolEffectCalls,
   VoiceRealtimeJsonValue,
   VoiceRealtimeToolResultV1,
@@ -14,6 +14,7 @@ import type {
   VoiceProviderExecutionAuthority,
 } from '@happier-dev/plugin-sdk/voice/client';
 import type { PluginDiagnosticData } from '@happier-dev/plugin-sdk';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import type {
   CreateVoiceConversationController,
@@ -218,12 +219,12 @@ export type BundledRealtimeProviderRuntimeHost = Readonly<{
   ensureBound(input: Readonly<{
     adapterId: string;
     controlSessionId: string;
-    requestedTargetSessionId: string | null;
+    requestedTargetSessionAddress: SessionAddress | null;
   }>): Promise<unknown>;
   acquireDirectMediaConversation(input: Readonly<{
     adapterId: string;
     controlSessionId: string;
-    requestedTargetSessionId: string | null;
+    requestedTargetSessionAddress: SessionAddress | null;
     retiringTranscriptDrain?: BundledRetiringDirectMediaTranscriptDrain;
   }>): BundledDirectMediaConversation | Promise<BundledDirectMediaConversation>;
   releaseDirectMediaConversation(input: Readonly<{
@@ -248,9 +249,9 @@ export type BundledRealtimeProviderRuntimeHost = Readonly<{
     provider: Readonly<{ pluginId: string; localId: string }>;
     agent: Readonly<{ pluginId: string; localId: string }>;
     controlSessionId: string;
-    requestedTargetSessionId: string | null;
+    requestedTargetSessionAddress: SessionAddress | null;
     settings: unknown;
-    connectedServices?: ConnectedServiceBindingsV1;
+    connectedServices?: ConnectedServiceBindingsV2;
   }>): Promise<VoiceAdapterConversationBinding | null>;
   readProviderConversationState?(input: Readonly<{
     providerId: string;
@@ -266,7 +267,7 @@ export type BundledRealtimeProviderRuntimeHost = Readonly<{
   }>): Promise<void>;
   applyTargetSelection(input: Readonly<{
     controlSessionId: string;
-    targetSessionId: string;
+    targetSessionAddress: SessionAddress;
     updateLastFocused: boolean;
   }>): Promise<void>;
   acquireAudioMode(ownerId: string): Promise<Readonly<{ release(): Promise<void> }>>;
@@ -393,7 +394,7 @@ type BundledRealtimeProviderRuntimeConfigBase = Readonly<{
   encodeTextTurn(text: string): readonly VoiceRealtimeJsonValue[];
   resolveConversationBinding?(input: Readonly<{
     controlSessionId: string;
-    requestedTargetSessionId: string | null;
+    requestedTargetSessionAddress: SessionAddress | null;
     settings: unknown;
   }>): Promise<VoiceAdapterConversationBinding | null>;
   resolveSurfaceCapabilities(settings: unknown): VoiceAdapterSurfaceCapabilities | null;

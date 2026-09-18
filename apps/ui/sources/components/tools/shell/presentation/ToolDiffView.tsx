@@ -14,6 +14,7 @@ import { buildCodeLinesFromTextDiff } from '@/components/ui/code/model/buildCode
 
 interface ToolDiffViewProps {
     sessionId?: string | null;
+    serverId?: string | null;
     filePath?: string | null;
     oldText: string;
     newText: string;
@@ -33,7 +34,7 @@ export const ToolDiffView = React.memo<ToolDiffViewProps>(({
 }) => {
     const wrapLines = useSetting('wrapLinesInDiffs');
     const reviewCommentsFeatureEnabled = useFeatureEnabled('files.reviewComments');
-    const reviewScope = useWorkspaceScopeForSession(sessionId);
+    const reviewScope = useWorkspaceScopeForSession(sessionId, serverId);
     const normalizedFilePath = typeof filePath === 'string' && filePath.trim().length > 0 ? filePath : null;
     const { lineThreshold: virtualizationLineThreshold, byteThreshold: virtualizationByteThreshold } = useInlineDiffVirtualizationThresholds();
     const { height: windowHeight } = useWindowDimensions();

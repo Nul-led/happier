@@ -1,0 +1,74 @@
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { TranscriptAccountActor } from '@/sync/domains/messages/transcriptAccountActor';
+import * as React from 'react';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
+import { Avatar } from '@/components/ui/avatar/Avatar';
+import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
+import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
+import { areServerAccountScopesEqual, serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
+import { t } from '@/text';
+
+export type SessionMessageAccountBylineProps = Readonly<{
+    messageId: string;
+    actor: TranscriptAccountActor | null | undefined;
+    viewerScope: ServerAccountScope | null;
+    hasOtherNamedCollaborator: boolean;
+}>;
+
+export function SessionMessageAccountByline(props: SessionMessageAccountBylineProps) {
+    const { actor, viewerScope } = props;
+    if (!actor || !viewerScope) return null;
+    const isSelf = areServerAccountScopesEqual(actor, viewerScope);
+    if (isSelf && !props.hasOtherNamedCollaborator) return null;
+    const name = actor.profile === null
+        ? t('message.accountActorFormerMember')
+        : isSelf
+            ? t('message.accountActorYou')
+            : formatAccountDisplayName(actor.profile) ?? t('message.accountActorUnnamedMember');
+    return (
+        <View style={styles.byline}>
+            <Text
+                testID={`transcript-account-attribution:${props.messageId}`}
+                accessibilityRole="text"
+                accessibilityLabel={t('message.accountActorSentBy', { name })}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                style={styles.name}
+            >
+                {name}
+            </Text>
+            <View
+                testID={`transcript-account-avatar:${props.messageId}`}
+                accessible={false}
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+            >
+                <Avatar
+                    id={actor.profile === null ? 'former-member' : serverAccountScopeKeySuffix(actor)}
+                    imageUrl={actor.profile?.avatarUrl}
+                    monochrome
+                    size={20}
+                />
+            </View>
+        </View>
+    );
+}
+
+const styles = StyleSheet.create((theme) => ({
+    byline: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        alignSelf: 'flex-end',
+        maxWidth: '100%',
+        paddingHorizontal: 16,
+        marginBottom: 4,
+        gap: 6,
+    },
+    name: {
+        ...Typography.rowMeta(),
+        flexShrink: 1,
+        color: theme.colors.text.secondary,
+    },
+}));

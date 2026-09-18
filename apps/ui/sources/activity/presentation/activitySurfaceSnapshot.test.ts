@@ -10,6 +10,7 @@ describe('buildActivitySurfaceSnapshot', () => {
         const snapshot = buildActivitySurfaceSnapshot({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'unread',
                     seq: 5,
                     latestReadyEventSeq: 5,
@@ -22,6 +23,7 @@ describe('buildActivitySurfaceSnapshot', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
                     seq: 10,
                     lastViewedSessionSeq: 10,
@@ -47,6 +49,7 @@ describe('buildActivitySurfaceSnapshot', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'thinking',
                     seq: 11,
                     lastViewedSessionSeq: 11,
@@ -70,21 +73,21 @@ describe('buildActivitySurfaceSnapshot', () => {
         expect(snapshot.primary?.sessionId).toBe('permission');
         expect(snapshot.primary?.title).toBe('Permission work');
         expect(snapshot.primary?.attentionState).toBe('permission_required');
+        // The default summary surface lists what is asking this Account for something. A running
+        // Session is neutral, so it keeps its own running count without occupying a slot.
         expect(snapshot.sessions.map((entry) => entry.sessionId)).toEqual([
             'permission',
-            'thinking',
             'unread',
         ]);
         expect(snapshot.counts).toMatchObject({
             unread: 1,
             permissionRequired: 1,
             actionRequired: 0,
-            queuedInput: 0,
             thinking: 1,
-            totalAttention: 3,
+            totalAttention: 2,
         });
         expect(snapshot.summaryCounts).toEqual({
-            attentionCount: 3,
+            attentionCount: 2,
             runningCount: 1,
             permissionCount: 1,
         });
@@ -103,7 +106,6 @@ describe('buildActivitySurfaceSnapshot', () => {
             unread: 0,
             permissionRequired: 0,
             actionRequired: 0,
-            queuedInput: 0,
             thinking: 0,
             totalAttention: 0,
         });
@@ -113,6 +115,7 @@ describe('buildActivitySurfaceSnapshot', () => {
         const snapshot = buildActivitySurfaceSnapshot({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
                     active: true,
                     presence: 'online',
@@ -136,6 +139,7 @@ describe('buildActivitySurfaceSnapshot', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'thinking',
                     active: true,
                     presence: 'online',
@@ -164,6 +168,7 @@ describe('buildActivitySurfaceSnapshot', () => {
         const snapshot = buildActivitySurfaceSnapshot({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
                     active: true,
                     presence: 'online',
@@ -202,6 +207,7 @@ describe('buildActivitySurfaceSnapshot', () => {
         const snapshot = buildActivitySurfaceSnapshot({
             sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
                     active: true,
                     presence: 'online',

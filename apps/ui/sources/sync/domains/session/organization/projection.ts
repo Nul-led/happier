@@ -1,7 +1,8 @@
 import {
     buildSessionOrganizationLabelKey,
     buildSessionOrganizationOrderScopeKey,
-    readSessionOrganizationServerScopedId,
+    buildSessionOrganizationSessionKey,
+    buildSessionOrganizationServerKey,
 } from './keys';
 import type {
     NormalizedSessionOrganizationState,
@@ -37,49 +38,55 @@ export function buildSessionOrganizationProjection(
     const labelsByLabelKey: Record<string, UiSessionOrganizationLabel> = {};
 
     for (const [key, pin] of Object.entries(state.pinsBySessionKey)) {
-        if (readSessionOrganizationServerScopedId(key, serverId) === pin.sessionId) {
+        if (key === buildSessionOrganizationSessionKey(serverId, pin.sessionId)) {
             pinsBySessionId[pin.sessionId] = pin;
         }
     }
     for (const [key, folder] of Object.entries(state.foldersByFolderKey)) {
-        if (readSessionOrganizationServerScopedId(key, serverId) === folder.folderId) {
+        if (key === buildSessionOrganizationServerKey(serverId, folder.folderId)) {
             foldersById[folder.folderId] = folder;
         }
     }
-    for (const [key, folderId] of Object.entries(state.folderAssignmentsBySessionKey)) {
-        const sessionId = readSessionOrganizationServerScopedId(key, serverId);
-        if (sessionId) {
-            folderAssignmentsBySessionId[sessionId] = folderId;
+    for (const [key, assignment] of Object.entries(state.folderAssignmentsBySessionKey)) {
+        if (key === buildSessionOrganizationSessionKey(serverId, assignment.sessionId)) {
+            folderAssignmentsBySessionId[assignment.sessionId] = assignment.folderId;
         }
     }
     for (const [key, tag] of Object.entries(state.tagsByTagKey)) {
-        if (readSessionOrganizationServerScopedId(key, serverId) === tag.tagId) {
+        if (key === buildSessionOrganizationServerKey(serverId, tag.tagId)) {
             tagsById[tag.tagId] = tag;
         }
     }
-    for (const [key, tagIds] of Object.entries(state.tagAssignmentsBySessionKey)) {
-        const sessionId = readSessionOrganizationServerScopedId(key, serverId);
-        if (sessionId) {
-            tagAssignmentsBySessionId[sessionId] = tagIds;
+    for (const [key, assignment] of Object.entries(state.tagAssignmentsBySessionKey)) {
+        if (key === buildSessionOrganizationSessionKey(serverId, assignment.sessionId)) {
+            tagAssignmentsBySessionId[assignment.sessionId] = assignment.tagIds;
         }
     }
     for (const [key, standing] of Object.entries(state.attentionStandingsBySessionKey)) {
-        if (readSessionOrganizationServerScopedId(key, serverId) === standing.sessionId) {
+        if (key === buildSessionOrganizationSessionKey(serverId, standing.sessionId)) {
             attentionStandingsBySessionId[standing.sessionId] = standing;
         }
     }
-    const serverPrefix = `${String(serverId).trim()}:`;
-    for (const [key, entries] of Object.entries(state.orderEntriesByScopeKey)) {
-        if (key.startsWith(serverPrefix)) {
-            const firstEntry = entries[0];
-            orderEntriesByScopeKey[firstEntry
-                ? buildSessionOrganizationOrderScopeKey({ serverId, scopeKind: firstEntry.scopeKind, scopeKey: firstEntry.scopeKey })
-                : key] = entries;
+    for (const entries of Object.values(state.orderEntriesByScopeKey)) {
+        const firstEntry = entries[0];
+        if (!firstEntry) continue;
+        const exactKey = buildSessionOrganizationOrderScopeKey({
+            serverId,
+            scopeKind: firstEntry.scopeKind,
+            scopeKey: firstEntry.scopeKey,
+        });
+        if (state.orderEntriesByScopeKey[exactKey] === entries) {
+            orderEntriesByScopeKey[exactKey] = entries;
         }
     }
-    for (const [key, label] of Object.entries(state.labelsByLabelKey)) {
-        if (key.startsWith(serverPrefix)) {
-            labelsByLabelKey[buildSessionOrganizationLabelKey({ serverId, labelKind: label.labelKind, scopeKey: label.scopeKey })] = label;
+    for (const label of Object.values(state.labelsByLabelKey)) {
+        const exactKey = buildSessionOrganizationLabelKey({
+            serverId,
+            labelKind: label.labelKind,
+            scopeKey: label.scopeKey,
+        });
+        if (state.labelsByLabelKey[exactKey] === label) {
+            labelsByLabelKey[exactKey] = label;
         }
     }
 
@@ -100,4 +107,21 @@ export function buildSessionOrganizationProjection(
         orderEntriesByScopeKey,
         labelsByLabelKey,
     };
+}
+
+/**
+ * Qualifies and deduplicates a mounted-Home projection set while leaving the
+ * actual projection cache/selector with its canonical store owner.
+ */
+export function buildSessionOrganizationProjections(
+    serverIds: readonly string[],
+    readProjection: (serverId: string) => SessionOrganizationProjection,
+): Readonly<Record<string, SessionOrganizationProjection>> {
+    const result: Record<string, SessionOrganizationProjection> = {};
+    for (const rawServerId of serverIds) {
+        const serverId = String(rawServerId ?? '').trim();
+        if (!serverId || Object.prototype.hasOwnProperty.call(result, serverId)) continue;
+        result[serverId] = readProjection(serverId);
+    }
+    return result;
 }

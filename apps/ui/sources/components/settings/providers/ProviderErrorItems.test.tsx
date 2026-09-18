@@ -48,6 +48,26 @@ describe('ProviderErrorItems', () => {
         expect(retry).toHaveBeenCalledOnce();
     });
 
+    it('keeps a temporarily unavailable Saved Secret retryable instead of offering replacement', async () => {
+        const retry = vi.fn();
+        const { ProviderErrorItems } = await import('./ProviderErrorItems');
+        const screen = await renderScreen(<ProviderErrorItems error={{
+            v: 1,
+            code: 'provider_secret_unavailable',
+            retryable: true,
+            action: 'retry',
+            connectionId: 'pc_shared',
+        }} retry={retry} />);
+
+        expect(screen.findAllByType('Item').map((item) => item.props.title)).toEqual([
+            'settingsProviders.errors.sourceUnavailableTitle',
+            'settingsProviders.errors.actions.retry',
+        ]);
+        await React.act(async () => { await screen.findAllByType('Item')[1]?.props.onPress?.(); });
+        expect(retry).toHaveBeenCalledOnce();
+        expect(push).not.toHaveBeenCalled();
+    });
+
     it('admits one recovery dispatch until the pending action settles, then re-enables it', async () => {
         const deferred = createDeferred<void>();
         const retry = vi.fn(() => deferred.promise);

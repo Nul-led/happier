@@ -32,7 +32,12 @@ export type ResolvePaneLayoutInput = Readonly<{
     detailsPreferredPx?: number;
 }>;
 
-const DEFAULT_MAIN_MIN_PX = 420;
+/**
+ * The canonical minimum width the main region keeps. Exported so surfaces that
+ * reserve space inside main (Session Companion's rail) budget against the same
+ * number instead of guessing a second Chat minimum.
+ */
+export const DEFAULT_MAIN_MIN_PX = 420;
 const DEFAULT_RIGHT_MIN_PX = 260;
 const DEFAULT_DETAILS_MIN_PX = 320;
 

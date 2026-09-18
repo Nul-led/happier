@@ -212,12 +212,15 @@ async function projectVoiceToolProviderModels(params: Readonly<{
     if (option.disabled === true) return [];
     const ref = option.value;
     const modelId = ref?.modelId ?? 'default';
+    const providerConnectionId = ref && 'providerConnectionId' in ref
+      ? ref.providerConnectionId
+      : null;
     return [{
       modelId,
       label: option.label,
       ...(option.description ? { description: option.description } : {}),
-      providerConnectionId: ref?.providerConnectionId ?? null,
-      ...(ref?.providerConnectionId
+      providerConnectionId,
+      ...(providerConnectionId
         ? { providerName: connectionNameBySectionId.get(section.id) ?? '' }
         : {}),
     }];
@@ -396,8 +399,8 @@ export async function listAgentModelsForVoiceTool(params: Readonly<{
   // machine capability probe answers whether this Agent supports selection, so
   // a missing bundled core must not be read as "no model selection".
   const bundledCore = isLegacyCompatProbe ? null : getAgentCore(agentId);
-  const supportsSelection = bundledCore ? bundledCore.model.supportsSelection === true : true;
-  const supportsFreeformFallback = bundledCore ? bundledCore.model.supportsFreeform === true : true;
+  const supportsSelection = bundledCore?.model?.supportsSelection !== false;
+  const supportsFreeformFallback = bundledCore?.model?.supportsFreeform === true;
 
   if (supportsSelection !== true) {
     return {

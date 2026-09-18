@@ -45,11 +45,8 @@ const requestSurface: PluginUiSurfaceContextV1 = {
 };
 
 const identity = {
-    pluginId: 'acme.preview',
-    pluginVersion: '1.2.3',
-    viewId: 'preview-pane',
-    generation: '7',
-    sessionId: 'session-1',
+    instanceId: 'preview-instance-7',
+    mountNonce: 'nonce-1',
 } as const;
 
 const translatedProjection: PluginUiProjectionModel = {
@@ -137,7 +134,7 @@ async function connectClient(input: Readonly<{
     const handler = createPluginHostedWebHostApiBridgeHandler({
         surface: requestSurface,
         requestIdPrefix: 'hosted-web',
-        bridgeNonce: 'nonce-1',
+        identity,
         ...(input.handleRequest ? { handleRequest: input.handleRequest } : {}),
         canonicalHostApi: {
             identity,
@@ -158,11 +155,7 @@ async function connectClient(input: Readonly<{
     // therefore skipped the host lifecycle that production now requires.
     await handler({
         version: 1,
-        pluginId: requestSurface.pluginId,
-        contributionId: requestSurface.contributionId,
-        surfaceId: requestSurface.surfaceId,
-        sessionId: requestSurface.sessionId,
-        nonce: 'nonce-1',
+        identity,
         sequence: ++sequence,
         kind: 'ready',
         payload: { ready: true },
@@ -182,11 +175,7 @@ async function connectClient(input: Readonly<{
                 sequence += 1;
                 const envelope: PluginHostedWebBridgeEnvelopeV1 = {
                     version: 1,
-                    pluginId: requestSurface.pluginId,
-                    contributionId: requestSurface.contributionId,
-                    surfaceId: requestSurface.surfaceId,
-                    sessionId: requestSurface.sessionId,
-                    nonce: 'nonce-1',
+                    identity,
                     sequence,
                     kind: 'hostApi',
                     payload: message as PluginUiJsonValueV1,

@@ -28,23 +28,30 @@ import {
     type QualifiedConnectedAccountUiGroup,
     type QualifiedConnectedAccountUiGroupMember,
 } from '@/sync/domains/connectedServices/qualifiedConnectedAccountUiSource';
-import type {
-    ConnectedServiceAuthGroupPolicyV1,
-    QualifiedConnectedAccountRef,
+import {
+    resolveConnectedServiceQuotaMeterLimitIdentity,
+    type ConnectedServiceAuthGroupPolicyV1,
+    type ConnectedServiceQuotaSnapshotV1,
+    type QualifiedConnectedAccountQuotaSnapshotV4,
+    type QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
 
 import { QualifiedAccountBlock } from '../account/QualifiedAccountBlock';
 import {
     PoolMembersSelectField,
     type PoolMembershipCandidate,
-} from '../account/PoolMembersSelectField';
-import { computePoolMembershipDiff } from '../account/poolMembershipDiff';
+} from './PoolMembersSelectField';
+import { computePoolMembershipDiff } from './poolMembershipDiff';
 import {
     presentQualifiedConnectedAccountTarget,
     type QualifiedConnectedAccountPresentationAccount,
     type QualifiedConnectedAccountTargetPresentation,
 } from '@/sync/domains/connectedServices/qualifiedConnectedAccountTargetPresentation';
 import { PoolMembersDropOverlay } from './PoolMembersDropOverlay';
+import {
+    PoolQuotaLimitsSelectField,
+    type PoolQuotaLimitCandidate,
+} from './PoolQuotaLimitsSelectField';
 
 type GroupStrategy = ConnectedServiceAuthGroupPolicyV1['strategy'];
 type GroupRecoveryMode = ConnectedServiceAuthGroupPolicyV1['recoveryMode'];
@@ -91,6 +98,18 @@ export type QualifiedPoolDetailViewProps = Readonly<{
     mutations: QualifiedPoolDetailMutations;
     /** `false` when the server or runtime cannot honor automatic fallback. */
     fallbackControlsEnabled?: boolean;
+    /** Explicit server permission combined with the applied service descriptor. */
+    autoQuotaResetEnabled?: boolean;
+    /** Explicit server permission for model-entitlement auto-disable policy. */
+    autoDisablePlanInvalidEnabled?: boolean;
+    /** Explicit negotiated permission to author a per-pool quota-family policy. */
+    quotaLimitSelectionEnabled?: boolean;
+    /** Current member quota snapshots; provider adapters own allowance identity and labels. */
+    quotaSnapshots?: ReadonlyArray<ConnectedServiceQuotaSnapshotV1 | QualifiedConnectedAccountQuotaSnapshotV4>;
+    /** Exact enabled-member population used by the current quota request. */
+    quotaEnabledMemberCount?: number;
+    /** Enabled members whose existing quota-store reads are still in flight. */
+    quotaLoadingMemberCount?: number;
     /** Explains why the fallback controls are unavailable. */
     fallbackDisabledSubtitle?: string;
     /**
@@ -100,6 +119,9 @@ export type QualifiedPoolDetailViewProps = Readonly<{
      * indistinguishable from one the user never made.
      */
     error?: string | null;
+    /** Starts the canonical Team credential offer journey for this Pool. */
+    onShareWithTeam?: () => void;
+    sharedWithTeamsAdministration?: React.ReactNode;
 }>;
 
 function parsePromptNumber(raw: string): number | null {
@@ -185,6 +207,104 @@ function sortMembersByPriority(
             ? left.priority - right.priority
             : left.ref.accountId.localeCompare(right.ref.accountId)
     ));
+}
+
+function humanizeProviderLimitId(providerLimitId: string): string {
+    return providerLimitId
+        .split(/[_-]+/g)
+        .filter(Boolean)
+        .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+        .join(' ');
+}
+
+function formatQuotaWindowDuration(durationMs: number): string {
+    const totalMinutes = Math.max(1, Math.round(durationMs / 60_000));
+    const days = Math.floor(totalMinutes / (24 * 60));
+    const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+    if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    return `${minutes}m`;
+}
+
+export function buildPoolQuotaLimitCandidates(input: Readonly<{
+    snapshots: ReadonlyArray<ConnectedServiceQuotaSnapshotV1 | QualifiedConnectedAccountQuotaSnapshotV4>;
+    selectedProviderLimitIds: readonly string[];
+    enabledMemberCount: number;
+}>): PoolQuotaLimitCandidate[] {
+    const evidenceById = new Map<string, {
+        labels: Set<string>;
+        meterIds: Set<string>;
+        windowDurationsByMeterId: Map<string, number | null>;
+        modelIds: Set<string>;
+        reportingMembers: Set<number>;
+    }>();
+    for (const [snapshotIndex, snapshot] of input.snapshots.entries()) {
+        for (const meter of snapshot.meters) {
+            const id = resolveConnectedServiceQuotaMeterLimitIdentity(meter);
+            const evidence = evidenceById.get(id) ?? {
+                labels: new Set<string>(),
+                meterIds: new Set<string>(),
+                windowDurationsByMeterId: new Map<string, number | null>(),
+                modelIds: new Set<string>(),
+                reportingMembers: new Set<number>(),
+            };
+            const label = meter.label.trim().replace(/\s+[·•]\s+(Primary|Secondary)$/i, '').trim();
+            if (label) evidence.labels.add(label);
+            evidence.meterIds.add(meter.meterId);
+            const duration = meter.windowDurationMs ?? null;
+            const existingDuration = evidence.windowDurationsByMeterId.get(meter.meterId);
+            evidence.windowDurationsByMeterId.set(
+                meter.meterId,
+                existingDuration === undefined || existingDuration === duration ? duration : null,
+            );
+            const modelId = meter.modelId?.trim();
+            if (modelId) evidence.modelIds.add(modelId);
+            evidence.reportingMembers.add(snapshotIndex);
+            evidenceById.set(id, evidence);
+        }
+    }
+    const candidates: PoolQuotaLimitCandidate[] = Array.from(evidenceById, ([providerLimitId, evidence]) => {
+        const labels = Array.from(evidence.labels).sort((left, right) => (
+            right.length - left.length || left.localeCompare(right)
+        ));
+        const providerLabel = labels.find((label) => label.toLowerCase() !== 'unknown') ?? null;
+        const opaque = providerLabel === null && labels.some((label) => label.toLowerCase() === 'unknown');
+        const windowDurations = Array.from(evidence.windowDurationsByMeterId.values());
+        const windowSummary = windowDurations.length > 0 && windowDurations.every((duration) => duration !== null)
+            ? Array.from(new Set(windowDurations as number[]))
+                .sort((left, right) => left - right)
+                .map(formatQuotaWindowDuration)
+                .join(' + ')
+            : null;
+        return {
+            providerLimitId,
+            title: opaque
+                ? t('connectedServices.detail.groupDetail.quotaLimitProviderAllowanceTitle')
+                : providerLabel ?? humanizeProviderLimitId(providerLimitId),
+            modelIds: Array.from(evidence.modelIds).sort(),
+            windowCount: evidence.meterIds.size,
+            windowSummary,
+            reportingMemberCount: evidence.reportingMembers.size,
+            enabledMemberCount: input.enabledMemberCount,
+            ...(opaque ? { technicalId: providerLimitId } : {}),
+        };
+    });
+    for (const providerLimitId of input.selectedProviderLimitIds) {
+        if (evidenceById.has(providerLimitId)) continue;
+        candidates.push({
+            providerLimitId,
+            title: humanizeProviderLimitId(providerLimitId),
+            modelIds: [],
+            windowCount: 0,
+            windowSummary: null,
+            reportingMemberCount: 0,
+            enabledMemberCount: input.enabledMemberCount,
+            technicalId: providerLimitId,
+            unavailable: true,
+        });
+    }
+    return candidates.sort((left, right) => left.title.localeCompare(right.title));
 }
 
 /**
@@ -501,6 +621,7 @@ export const QualifiedPoolDetailView = React.memo(function QualifiedPoolDetailVi
         ? `${props.serviceLabel} • ${label}`
         : label;
     const enabledCount = group.members.filter((member) => member.enabled).length;
+    const quotaEnabledMemberCount = props.quotaEnabledMemberCount ?? enabledCount;
     const autoSwitchSubtitle = fallbackDisabledSubtitle
         ?? (group.policy.autoSwitch
             ? t('connectedServices.detail.groupDetail.autoSwitchEnabledSubtitle')
@@ -510,6 +631,14 @@ export const QualifiedPoolDetailView = React.memo(function QualifiedPoolDetailVi
         .map((item) => sortedMembers.find((member) => member.ref.accountId === item.id))
         .filter((member): member is QualifiedConnectedAccountUiGroupMember => member != null);
     const memberCount = orderedMembers.length;
+    const quotaLimitSelection = group.policy.quotaLimitSelection;
+    const quotaLimitCandidates = React.useMemo(() => buildPoolQuotaLimitCandidates({
+        snapshots: props.quotaSnapshots ?? [],
+        enabledMemberCount: quotaEnabledMemberCount,
+        selectedProviderLimitIds: quotaLimitSelection?.mode === 'selected'
+            ? quotaLimitSelection.providerLimitIds
+            : [],
+    }), [props.quotaSnapshots, quotaEnabledMemberCount, quotaLimitSelection]);
 
     return (
         <ItemList testID={TEST_ID}>
@@ -541,6 +670,18 @@ export const QualifiedPoolDetailView = React.memo(function QualifiedPoolDetailVi
                 ) : null}
             </ItemGroup>
 
+            {props.onShareWithTeam ? (
+                <ItemGroup>
+                    <Item
+                        testID={`${TEST_ID}:share-with-team`}
+                        title={t('teams.credentials.create.action')}
+                        icon={<Icon name="users" size={20} color={theme.colors.accent.blue} />}
+                        onPress={props.onShareWithTeam}
+                    />
+                </ItemGroup>
+            ) : null}
+            {props.sharedWithTeamsAdministration}
+
             <ItemGroup
                 title={t('connectedServices.pools.detail.membersTitle')}
                 footer={t('connectedServices.detail.groupDetail.membersSubtitle', {
@@ -556,6 +697,10 @@ export const QualifiedPoolDetailView = React.memo(function QualifiedPoolDetailVi
                                 (candidate) => candidate.ref.accountId === accountId,
                             );
                             const identity = resolveAccountIdentity(accountId);
+                            const identityLabel = member.state.autoDisabledReason
+                                === 'model_not_entitled'
+                                ? t('connectedServices.detail.groups.memberAutoDisabledModelNotEntitled')
+                                : identity.secondaryLabel;
                             const isActive = accountId === group.activeAccountId;
                             const canSetActive = !isActive && fallbackControlsEnabled;
                             const actionId = (suffix: string) =>
@@ -606,10 +751,11 @@ export const QualifiedPoolDetailView = React.memo(function QualifiedPoolDetailVi
                                         testID={`${TEST_ID}:member:${accountId}`}
                                         account={member.ref}
                                         title={identity.primaryLabel}
-                                        identityLabel={identity.secondaryLabel}
+                                        identityLabel={identityLabel}
                                         status={account?.status}
                                         variant="poolMember"
                                         groupId={group.ref.groupId}
+                                        quotaLimitSelection={group.policy.quotaLimitSelection}
                                         enabled={member.enabled}
                                         onToggleEnabled={(next) => setMemberEnabled(member.ref, next)}
                                         isActive={isActive}
@@ -644,6 +790,16 @@ export const QualifiedPoolDetailView = React.memo(function QualifiedPoolDetailVi
             </ItemGroup>
 
             <ItemGroup title={t('connectedServices.pools.detail.behaviorTitle')}>
+                {props.quotaLimitSelectionEnabled === true ? (
+                    <PoolQuotaLimitsSelectField
+                        testID={`${TEST_ID}:quota-limits`}
+                        candidates={quotaLimitCandidates}
+                        selection={quotaLimitSelection}
+                        loadingMemberCount={props.quotaLoadingMemberCount}
+                        onCommit={(next) => { void patchPolicy({ quotaLimitSelection: next }); }}
+                        disabled={!fallbackControlsEnabled || mutations.mutating}
+                    />
+                ) : null}
                 <Item
                     testID={`${TEST_ID}:auto-switch`}
                     title={t('connectedServices.detail.groupDetail.autoSwitchTitle')}
@@ -664,6 +820,42 @@ export const QualifiedPoolDetailView = React.memo(function QualifiedPoolDetailVi
                     )}
                     showChevron={false}
                 />
+                {props.autoQuotaResetEnabled === true && (
+                    <Item
+                        testID={`${TEST_ID}:auto-quota-reset`}
+                        title={t('connectedServices.detail.groupDetail.autoQuotaResetTitle')}
+                        subtitle={t('connectedServices.detail.groupDetail.autoQuotaResetSubtitle')}
+                        rightElement={(
+                            <Switch
+                                testID={`${TEST_ID}:auto-quota-reset:toggle`}
+                                value={group.policy.autoUseQuotaResetsWhenExhausted === true}
+                                onValueChange={(autoUseQuotaResetsWhenExhausted) => void patchPolicy({ autoUseQuotaResetsWhenExhausted })}
+                                accessibilityLabel={t('connectedServices.detail.groupDetail.autoQuotaResetTitle')}
+                                disabled={!fallbackControlsEnabled || mutations.mutating}
+                                compact
+                            />
+                        )}
+                        showChevron={false}
+                    />
+                )}
+                {props.autoDisablePlanInvalidEnabled === true && (
+                    <Item
+                        testID={`${TEST_ID}:auto-disable-plan-invalid`}
+                        title={t('connectedServices.detail.groupDetail.autoDisablePlanInvalidTitle')}
+                        subtitle={t('connectedServices.detail.groupDetail.autoDisablePlanInvalidSubtitle')}
+                        rightElement={(
+                            <Switch
+                                testID={`${TEST_ID}:auto-disable-plan-invalid:toggle`}
+                                value={group.policy.autoDisablePlanInvalidAccounts === true}
+                                onValueChange={(autoDisablePlanInvalidAccounts) => void patchPolicy({ autoDisablePlanInvalidAccounts })}
+                                accessibilityLabel={t('connectedServices.detail.groupDetail.autoDisablePlanInvalidTitle')}
+                                disabled={!fallbackControlsEnabled || mutations.mutating}
+                                compact
+                            />
+                        )}
+                        showChevron={false}
+                    />
+                )}
                 <DropdownMenu
                     open={strategyOpen}
                     onOpenChange={setStrategyOpen}

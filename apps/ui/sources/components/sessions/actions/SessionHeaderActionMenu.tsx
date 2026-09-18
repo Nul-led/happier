@@ -7,6 +7,7 @@ import { useUnistyles } from 'react-native-unistyles';
 import { useRouter } from 'expo-router';
 
 import { storage, useProfile, useSetting, useSettings, useSessionOrganizationProjection } from '@/sync/domains/state/storage';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import { readCurrentProjectedAgentCapabilities } from '@/agents/backendCatalog/currentAgentCapabilities';
 import { useEnabledAgentIds } from '@/agents/hooks/useEnabledAgentIds';
@@ -27,6 +28,7 @@ import {
   resolveSessionHandoffUiAvailability,
 } from '@/sync/domains/sessionHandoff/resolveSessionHandoffUiAvailability';
 import type { PluginSurfaceOpenHandler } from '@/components/plugins/surfaces/openPluginSurface';
+import { useAccountSessionFollowEditorHost } from '@/components/sessions/follow/useAccountSessionFollowEditorHost';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
 import {
@@ -39,13 +41,13 @@ import { getVoiceAgentSessionTeleportAvailability } from '@/voice/agent/getVoice
 import { teleportVoiceAgentToSessionRoot } from '@/voice/agent/teleportVoiceAgentToSessionRoot';
 import { useHasGlobalVoiceAgentConversation } from '@/voice/agent/useHasGlobalVoiceAgentConversation';
 import { navigateWithBlurOnWeb } from '@/utils/platform/navigateWithBlurOnWeb';
-import { deferOnWeb } from '@/utils/platform/deferOnWeb';
 import { useSessionHandoffSourceReachability } from '@/sync/domains/sessionHandoff/useSessionHandoffSourceReachability';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { readExternalSessionFollowPolicy } from '@/sync/domains/session/external/externalSessionFollowMetadata';
 import { setExternalSessionFollowPolicy } from '@/components/sessions/external/follow/setExternalSessionFollowPolicy';
 import { readSessionDisplayTitleField } from '@/sync/state/selectors';
+import { getSessionStatus } from '@/utils/sessions/sessionUtils';
 import { useSessionReachableMachineTarget } from '@/components/sessions/model/useSessionMachineReachability';
 import {
   executeSessionAction,
@@ -91,6 +93,28 @@ import { emitSessionResumeRequest } from '@/components/sessions/model/sessionRes
 import { useResumeCapabilityOptions } from '@/agents/hooks/useResumeCapabilityOptions';
 import { supportsExternalSessionBackgroundFollow } from '@/components/sessions/external/browse/resolveExternalSessionBrowseSourceOptions';
 import { useOptionalCurrentUiContextReader } from '@/components/appShell/currentUiContext/CurrentUiContextProvider';
+import { openSessionFollowDestinationPicker } from '@/components/sessions/follow/openSessionFollowDestinationPicker';
+import { useSessionCompanionController } from '@/components/sessions/companion/state/useSessionCompanionController';
+import {
+  resolveSessionCompanionHeaderAccessibilityLabel,
+  type SessionCompanionHeaderIntent,
+} from '@/components/sessions/companion/sessionCompanionHeaderIntent';
+import { SessionCompanionHeaderButton } from '@/components/sessions/companion/SessionCompanionHeaderButton';
+import {
+  applySessionCompanionMutationWithNotice,
+  buildSessionPresentationNoticeKeyPrefix,
+} from '@/components/sessions/companion/presentation/sessionCompanionPresentationAdapter';
+import { useSessionCompanionRevealPort } from '@/components/sessions/companion/presentation/SessionCompanionRevealPort';
+import { publishPresentationNotice } from '@/components/sessions/presentation/presentationNotices';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import {
+  createSessionCollaborationHeaderMenuItem,
+  useSessionCollaborationHeaderState,
+} from '@/components/sessions/collaboration/SessionCollaborationHeaderEntry';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+
+const SESSION_FOLLOW_IN_ANOTHER_SESSION_ACTION_ID = 'session.follow.sources.add';
 
 function resolveSessionHandoffMenuSubtitle(handoffAvailability: ReturnType<typeof resolveSessionHandoffUiAvailability>, fallbackSubtitle: string | undefined): string | undefined {
   if (handoffAvailability.available) {
@@ -128,15 +152,36 @@ type SessionHeaderActionMenuProps = Readonly<{
   pluginUiScopedLaunchFacts?: PluginSurfaceScopedLaunchFacts | null;
   /** Existing Account-scope lifetime predicate for the rendered header authority. */
   pluginUiScopeIsCurrent?: (() => boolean) | null;
+  /** Exact route Account authority for draft-producing Session actions. */
+  actionAccountLifetime?: ServerAccountScopeLifetime | null;
   onOpenPluginSurface?: PluginSurfaceOpenHandler;
   /** One normalized list from the Session header's responsive-policy owner. */
   pluginHeaderActions?: readonly PluginSessionHeaderActionPresentation[];
   /** The Session header's bounded direct/overflow policy, never plugin metadata. */
   pluginHeaderActionPlacement?: 'direct' | 'overflow';
+  /** Final placement from the Session header's one optional-action selector. */
+  companionHeaderActionPlacement?: 'direct' | 'overflow' | null;
+  /** One semantic descriptor consumed by both Companion presentations. */
+  companionHeaderIntent?: SessionCompanionHeaderIntent | null;
+  /** Live collaboration presentation stays inside this memoized header child. */
+  collaborationHeader?: Readonly<{
+    target: SessionAddress;
+    compact: boolean;
+  }>;
 }>;
 
 function readCurrentSessionForOpenMenu(sessionId: string, fallback: Session): Session {
-  return storage.getState().sessions[sessionId] ?? fallback;
+  const current = storage.getState().sessions[sessionId];
+  if (!current) return fallback;
+
+  const fallbackServerId = typeof fallback.serverId === 'string' ? fallback.serverId.trim() : '';
+  if (!fallbackServerId) return current;
+
+  const currentServerId = typeof current.serverId === 'string' ? current.serverId.trim() : '';
+  return currentServerId
+    && areServerProfileIdentifiersEquivalent(currentServerId, fallbackServerId)
+    ? current
+    : fallback;
 }
 
 function signatureValue(value: unknown): string {
@@ -163,16 +208,15 @@ function readLegacyReadStateMetadata(metadata: unknown): Readonly<{
 }
 
 function buildSessionHeaderReadStateSignature(
-  state: Pick<StorageState, 'sessions' | 'sessionListRenderables' | 'sessionListRowStateByServerId' | 'sessionMessages'>,
+  state: Pick<StorageState, 'sessions' | 'sessionListRowsByServerId' | 'sessionMessages'>,
   sessionId: string,
   serverId: string | null,
 ): string {
   const normalizedServerId = typeof serverId === 'string' ? serverId.trim() : '';
   const session = state.sessions[sessionId];
-  const scopedRenderable = normalizedServerId
-    ? state.sessionListRowStateByServerId?.[normalizedServerId]?.[sessionId]
+  const renderable = normalizedServerId
+    ? state.sessionListRowsByServerId?.[normalizedServerId]?.[sessionId]
     : undefined;
-  const renderable = scopedRenderable ?? state.sessionListRenderables[sessionId];
   const messages = state.sessionMessages[sessionId] as Readonly<{
     isLoaded?: unknown;
     messageIdsOldestFirst?: ReadonlyArray<unknown>;
@@ -189,7 +233,7 @@ function buildSessionHeaderReadStateSignature(
     signatureValue(session?.lastViewedSessionSeq),
     signatureValue(session?.latestReadyEventSeq),
     signatureValue(session?.latestTurnStatus),
-    signatureValue(session?.accessLevel),
+    JSON.stringify(session?.access ?? null),
     signatureValue(readStateV1.sessionSeq),
     signatureValue(readStateV1.pendingActivityAt),
     signatureValue(renderable?.hasUnreadMessages),
@@ -214,6 +258,7 @@ function showSessionHeaderActionError(error: unknown): void {
 
 type WebActionMenuTriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement> & Readonly<{
   'data-testid': string;
+  ref?: React.Ref<HTMLButtonElement>;
   style: React.CSSProperties;
 }>;
 
@@ -240,15 +285,19 @@ function didSessionHeaderActionMenuPropsChange(
   if (prev.pluginUiProjection !== next.pluginUiProjection) return true;
   if (prev.pluginUiScopedLaunchFacts !== next.pluginUiScopedLaunchFacts) return true;
   if (prev.pluginUiScopeIsCurrent !== next.pluginUiScopeIsCurrent) return true;
+  if (prev.actionAccountLifetime !== next.actionAccountLifetime) return true;
   if (prev.onOpenPluginSurface !== next.onOpenPluginSurface) return true;
   if (prev.pluginHeaderActions !== next.pluginHeaderActions) return true;
   if (prev.pluginHeaderActionPlacement !== next.pluginHeaderActionPlacement) return true;
+  if (prev.companionHeaderActionPlacement !== next.companionHeaderActionPlacement) return true;
+  if (prev.companionHeaderIntent !== next.companionHeaderIntent) return true;
+  if (prev.collaborationHeader !== next.collaborationHeader) return true;
   if (prev.session.serverId !== next.session.serverId) return true;
   if (!areSessionActionMenuMetadataSemanticallyEqual(prev.session, next.session)) return true;
   if (prev.session.active !== next.session.active) return true;
   if (prev.session.owner !== next.session.owner) return true;
   if (prev.session.archivedAt !== next.session.archivedAt) return true;
-  if (prev.session.accessLevel !== next.session.accessLevel) return true;
+  if (prev.session.access !== next.session.access) return true;
   return (prev.session.seq > 0) !== (next.session.seq > 0);
 }
 
@@ -259,21 +308,112 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
   const enabledAgentIds = useEnabledAgentIds();
   const settings = useSettings();
   const profile = useProfile();
+  const actionDraftAccountScope = props.actionAccountLifetime?.isCurrent() === true
+    ? props.actionAccountLifetime.scope
+    : null;
   const sessionReplayEnabled = useSetting('sessionReplayEnabled');
   const voice = useSetting('voice');
   const hasGlobalVoiceAgentConversation = useHasGlobalVoiceAgentConversation();
   const sessionHandoffEnabled = useFeatureEnabled('sessions.handoff');
-  const executionRunsEnabled = useFeatureEnabled('execution.runs');
   const [open, setOpen] = React.useState(false);
+  const collaborationHeaderState = useSessionCollaborationHeaderState(
+    props.collaborationHeader?.target ?? null,
+    props.collaborationHeader?.compact === true,
+  );
   const session = React.useMemo(
     () => open ? readCurrentSessionForOpenMenu(props.sessionId, props.session) : props.session,
     [open, props.session, props.sessionId],
   );
-  const preferredSessionServerId = usePreferredServerIdForSession(props.sessionId, session.serverId ?? null);
+  const preferredSessionServerId = usePreferredServerIdForSession({
+    serverId: session.serverId ?? null,
+    sessionId: props.sessionId,
+  });
   const sessionServerId = React.useMemo(
     () => resolveSessionTargetServerId(props.sessionId, preferredSessionServerId ?? session.serverId ?? null),
     [preferredSessionServerId, session.serverId, props.sessionId],
   );
+  const companionAddress = React.useMemo(
+    () => normalizeSessionAddress(sessionServerId, props.sessionId),
+    [props.sessionId, sessionServerId],
+  );
+  const companionRevealPort = useSessionCompanionRevealPort(companionAddress);
+  const openCompanionFullSurface = React.useCallback(() => {
+    companionRevealPort?.openFullSurface();
+  }, [companionRevealPort]);
+  const companion = useSessionCompanionController({
+    sessionId: props.sessionId,
+    serverId: sessionServerId,
+    openFullSurface: openCompanionFullSurface,
+  });
+  const showCompanionInOverflow = props.companionHeaderActionPlacement === 'overflow'
+    && companionRevealPort !== null
+    && companion.availability === 'ready'
+    && props.companionHeaderIntent !== null
+    && props.companionHeaderIntent !== undefined;
+  const showCompanionDirect = props.companionHeaderActionPlacement === 'direct'
+    && companionRevealPort !== null
+    && companion.availability === 'ready'
+    && props.companionHeaderIntent !== null
+    && props.companionHeaderIntent !== undefined;
+  const companionHeaderIntent = props.companionHeaderIntent;
+  const companionNoticeKeyPrefix = React.useMemo(() => buildSessionPresentationNoticeKeyPrefix(
+    normalizeSessionAddress(sessionServerId, props.sessionId),
+    props.sessionId,
+  ), [props.sessionId, sessionServerId]);
+  const applyCompanionHeaderIntent = React.useCallback(() => {
+    if (!companionHeaderIntent) return;
+    const mutate = (input: Readonly<{
+      kind: string;
+      message: string;
+      apply: Parameters<typeof applySessionCompanionMutationWithNotice>[0]['apply'];
+    }>) => applySessionCompanionMutationWithNotice({
+      companion,
+      publishNotice: publishPresentationNotice,
+      noticeKeyPrefix: companionNoticeKeyPrefix,
+      ...input,
+    });
+    switch (companionHeaderIntent.operation) {
+      case 'hide':
+        mutate({
+          kind: 'companion.hide',
+          message: t('sessionBoard.companion.notices.hidden'),
+          apply: (controller) => controller.hide(),
+        });
+        return;
+      case 'expand':
+        mutate({
+          kind: 'companion.collapse.set',
+          message: t('sessionBoard.companion.actions.expand'),
+          apply: (controller) => controller.setCollapsed(false),
+        });
+        return;
+      case 'show':
+        {
+          const outcome = mutate({
+            kind: 'companion.show',
+            message: t('sessionBoard.companion.notices.shown'),
+            apply: (controller) => controller.show(),
+          });
+          if (outcome) companionRevealPort?.revealAfterMutation(outcome);
+        }
+        return;
+      case 'open_full':
+        companionRevealPort?.openFullSurface();
+        return;
+      case 'show_and_open_full':
+        {
+          const outcome = mutate({
+            kind: 'companion.show',
+            message: t('sessionBoard.companion.notices.shown'),
+            apply: (controller) => controller.show(),
+          });
+          if (outcome) companionRevealPort?.openFullSurface();
+        }
+    }
+  }, [companion, companionHeaderIntent, companionNoticeKeyPrefix, companionRevealPort]);
+  const executionRunsEnabled = useFeatureEnabled('execution.runs', sessionServerId
+    ? { scopeKind: 'spawn', serverId: sessionServerId }
+    : undefined);
   // Scoped to THIS Session's server, like the in-Session picker: the child is
   // created on that server, so an unrelated selected server must not decide
   // whether this conversation may continue with another Agent.
@@ -281,6 +421,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     scopeKind: 'spawn',
     serverId: sessionServerId,
   });
+  const followEditor = useAccountSessionFollowEditorHost({ serverId: sessionServerId ?? null, sessionId: props.sessionId });
   const readStateSignature = storage((state) =>
     buildSessionHeaderReadStateSignature(state, props.sessionId, sessionServerId ?? null),
   );
@@ -315,12 +456,14 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     session,
     serverId: sessionServerId ?? null,
     currentUserId,
-    isConnected: true,
+    isConnected: getSessionStatus(session).isConnected,
     attentionStandingEnabled,
+    followEnabled: followEditor.enabled,
     attentionStanding: isAttentionStandingSession,
     resumeCapabilityOptions,
   }), [
     attentionStandingEnabled,
+    followEditor.enabled,
     currentUserId,
     isAttentionStandingSession,
     readStateSignature,
@@ -443,6 +586,14 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
 
     const out: DropdownMenuItem[] = [];
 
+    if (props.collaborationHeader && collaborationHeaderState.overflow) {
+      out.push(createSessionCollaborationHeaderMenuItem({
+        iconColor: theme.colors.chrome.header.foreground,
+        attentionColor: theme.colors.text.link,
+        attentionLabel: collaborationHeaderState.attentionLabel,
+      }));
+    }
+
     if (externalSessionLink && supportsExternalSessionBackgroundFollowForLink) {
       out.push({
         id: 'session.externalSession.backgroundFollow',
@@ -451,8 +602,28 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
       });
     }
 
+    if (followEditor.enabled && sessionServerId) {
+      out.push({
+        id: SESSION_FOLLOW_IN_ANOTHER_SESSION_ACTION_ID,
+        title: t('session.follow.sources.add'),
+        subtitle: t('session.follow.sources.includeNextTurn'),
+      });
+    }
+
     if (Array.isArray(props.extraItems) && props.extraItems.length > 0) {
       out.push(...props.extraItems);
+    }
+
+    if (showCompanionInOverflow && companionHeaderIntent) {
+      out.push({
+        id: 'header.openCompanion',
+        title: t('sessionBoard.companion.a11y.headerAction', {
+          count: companionHeaderIntent.itemCount,
+        }),
+        accessibilityLabel: resolveSessionCompanionHeaderAccessibilityLabel(companionHeaderIntent),
+        checked: companionHeaderIntent.checked,
+        icon: <Icon name="stack-simple" size={16} color={theme.colors.chrome.header.foreground} />,
+      });
     }
 
     if (props.pluginHeaderActionPlacement === 'overflow') {
@@ -483,7 +654,16 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     out.push(...actionItems);
     return out;
   }, [
+    collaborationHeaderState.attentionLabel,
+    collaborationHeaderState.overflow,
+    props.collaborationHeader,
     props.extraItems,
+    showCompanionInOverflow,
+    companion.preference.items.length,
+    companion.preference.visible,
+    companionHeaderIntent?.accessibility,
+    companionHeaderIntent?.checked,
+    companionHeaderIntent?.itemCount,
     agentSwitchingEnabled,
     currentAgentCapabilities,
     session,
@@ -494,6 +674,8 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     externalSessionLink,
     externalSessionFollowPolicy,
     supportsExternalSessionBackgroundFollowForLink,
+    followEditor.enabled,
+    sessionServerId,
     sessionActionTarget,
     props.pluginHeaderActionPlacement,
     props.pluginHeaderActions,
@@ -508,10 +690,16 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     ? undefined
     : 15;
 
-  if (actions.length === 0 && directPluginHeaderActions.length === 0) return null;
+  if (actions.length === 0 && directPluginHeaderActions.length === 0 && !showCompanionDirect) return null;
 
   return (
     <>
+      {showCompanionDirect && companionHeaderIntent ? (
+        <SessionCompanionHeaderButton
+          intent={companionHeaderIntent}
+          onPress={applyCompanionHeaderIntent}
+        />
+      ) : null}
       {directPluginHeaderActions.map((action) => (
         <Pressable
           key={action.menuActionId}
@@ -541,13 +729,19 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           />
         </Pressable>
       ))}
+      {followEditor.editor}
       {actions.length > 0 ? (
+    <View ref={followEditor.anchorRef} collapsable={false}>
     <DropdownMenu
       open={open}
       onOpenChange={setOpen}
       items={actions}
       onSelect={(actionId) => {
         setOpen(false);
+        if (actionId === 'header.openCompanion' && showCompanionInOverflow) {
+          applyCompanionHeaderIntent();
+          return;
+        }
         if (props.onSelectExtraItem?.(actionId) === true) return;
         if (actionId.startsWith(PLUGIN_SESSION_HEADER_ACTION_MENU_PREFIX)) {
           invokePluginHeaderAction(actionId);
@@ -581,8 +775,21 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           })(), { tag: 'SessionHeaderActionMenu.execute.externalSessionBackgroundFollow' });
           return;
         }
+        if (actionId === SESSION_FOLLOW_IN_ANOTHER_SESSION_ACTION_ID) {
+          if (!sessionServerId) return;
+          openSessionFollowDestinationPicker({
+            serverId: sessionServerId,
+            sessionId: props.sessionId,
+          }, followEditor.triggerRef);
+          return;
+        }
         if (actionId === 'header.openRuns') {
-          router.push((`/session/${props.sessionId}/runs`) as any);
+          if (!sessionServerId) return;
+          router.push(buildScopedSessionRouteHref({
+            sessionId: props.sessionId,
+            serverId: sessionServerId,
+            suffix: '/runs',
+          }) as any);
           return;
         }
         if (actionId === 'header.openAutomations') {
@@ -638,6 +845,9 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
               await executeSessionAction({
                 actionId: actionId as any,
                 target: sessionActionTarget,
+                ...(actionId === 'ui.session.follow'
+                  ? { context: { operations: { openFollowEditor: followEditor.openEditor } } }
+                  : {}),
                 ...(actionId === SESSION_ACTION_RESUME_ID
                   ? {
                       context: {
@@ -660,28 +870,26 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           // A launcher only. The header must not also run the old auto-strategy
           // path behind the modal: the user chooses Native, Replay or Configure
           // before any fork effect is issued.
-          deferOnWeb(() => {
-            openSessionForkStrategyFlow({
-              sessionId: props.sessionId,
-              forkSupportSource: session,
-              serverId: sessionServerId ?? null,
-              machineId: reachableMachineId ?? ownerMetadata?.machineId ?? null,
-              forkPoint: { type: 'latest' },
-              settings,
-              replayEnabled: sessionReplayEnabled,
-              currentAgentCapabilities,
-              executionRunsEnabled: executionRunsEnabled === true,
-              agentSwitchingEnabled,
-              navigateToSession: (childSessionId, options) => {
-                router.push(buildScopedSessionRouteHref({
-                  sessionId: childSessionId,
-                  serverId: options?.serverId ?? sessionServerId,
-                }) as any);
-              },
-              navigateToNewSession: (route) => {
-                navigateWithBlurOnWeb(() => router.push(route as any));
-              },
-            });
+          openSessionForkStrategyFlow({
+            sessionId: props.sessionId,
+            forkSupportSource: session,
+            serverId: sessionServerId ?? null,
+            machineId: reachableMachineId ?? ownerMetadata?.machineId ?? null,
+            forkPoint: { type: 'latest' },
+            settings,
+            replayEnabled: sessionReplayEnabled,
+            currentAgentCapabilities,
+            executionRunsEnabled: executionRunsEnabled === true,
+            agentSwitchingEnabled,
+            navigateToSession: (childSessionId, options) => {
+              router.push(buildScopedSessionRouteHref({
+                sessionId: childSessionId,
+                serverId: options?.serverId ?? sessionServerId,
+              }) as any);
+            },
+            navigateToNewSession: (route) => {
+              navigateWithBlurOnWeb(() => router.push(route as any));
+            },
           });
           return;
         }
@@ -689,19 +897,17 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           if (!handoffAvailability.available) {
             return;
           }
-          deferOnWeb(() => {
-            fireAndForget((async () => {
-              const serverId = sessionServerId;
-              const res = await runSessionHandoffPickerFlow({
-                execute: executor.execute as any,
-                sessionId: props.sessionId,
-                sourceMachineId: sourceMachineId ?? null,
-                serverId,
-                placement: 'session_action_menu',
-              });
-              if (!res?.ok) return;
-            })(), { tag: 'SessionHeaderActionMenu.execute.sessionHandoff' });
-          });
+          fireAndForget((async () => {
+            const serverId = sessionServerId;
+            const res = await runSessionHandoffPickerFlow({
+              execute: executor.execute as any,
+              sessionId: props.sessionId,
+              sourceMachineId: sourceMachineId ?? null,
+              serverId,
+              placement: 'session_action_menu',
+            });
+            if (!res?.ok) return;
+          })(), { tag: 'SessionHeaderActionMenu.execute.sessionHandoff' });
           return;
         }
         const defaultBackend = resolveSessionActionDefaultBackend({
@@ -716,7 +922,18 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           defaultBackendId: defaultBackend.defaultBackendId,
           instructions: '',
         });
-        storage.getState().createSessionActionDraft(props.sessionId, { actionId, input });
+        const actionDraftServerId = typeof sessionServerId === 'string' ? sessionServerId.trim() : '';
+        if (
+          !actionDraftServerId
+          || !actionDraftAccountScope
+          || props.actionAccountLifetime?.isCurrent() !== true
+          || !areServerProfileIdentifiersEquivalent(actionDraftAccountScope.serverId, actionDraftServerId)
+        ) return;
+        storage.getState().createSessionActionDraft(
+          actionDraftAccountScope,
+          { serverId: actionDraftServerId, sessionId: props.sessionId },
+          { actionId, input },
+        );
       }}
       trigger={({ toggle }) => {
         const label = t('session.actionMenu.openA11y');
@@ -729,6 +946,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
         if (Platform.OS === 'web') {
           const webTriggerProps: WebActionMenuTriggerProps = {
             type: 'button',
+            ref: (node) => { followEditor.triggerRef.current = node as unknown as View; },
             'data-testid': 'session-header-action-menu-trigger',
             role: 'button',
             'aria-label': label,
@@ -762,6 +980,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
 
         return (
           <Pressable
+            ref={followEditor.triggerRef}
             onPress={toggle}
             hitSlop={headerInteractiveHitSlop}
             testID="session-header-action-menu-trigger"
@@ -786,6 +1005,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
       matchTriggerWidth={false}
       maxWidthCap={320}
     />
+    </View>
       ) : null}
     </>
   );

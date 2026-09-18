@@ -1,6 +1,7 @@
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { createAttemptGuard } from '@/utils/timing/attemptGuard';
 import { storage } from '@/sync/domains/state/storage';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
 import { settingsParse, type Settings } from '@/sync/domains/settings/settings';
 import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
@@ -493,15 +494,29 @@ function resolveLocalVoiceCaptureProvider(settings: any): LocalVoiceCaptureProvi
   return resolveVoiceSttCapturePlan(settings).provider;
 }
 
-async function ensureLocalConversationBindingForSession(settings: any, sessionId: string): Promise<boolean> {
+async function ensureLocalConversationBindingForSession(
+  settings: any,
+  sessionId: string,
+  requestedTargetSessionAddress?: SessionAddress | null,
+): Promise<boolean> {
   const { adapterId, config } = resolveLocalVoiceAdapterSettings(settings);
   if (adapterId !== 'local_conversation' || (config?.conversationMode ?? 'direct_session') !== 'agent') {
     return true;
   }
 
   const controlSessionId = resolveLocalConversationControlSessionId(settings, sessionId);
-  const requestedTargetSessionId =
-    String(sessionId ?? '').trim() === VOICE_AGENT_GLOBAL_SESSION_ID ? null : String(sessionId ?? '').trim();
+  const normalizedSessionId = String(sessionId ?? '').trim();
+  const isGlobalTarget = normalizedSessionId === VOICE_AGENT_GLOBAL_SESSION_ID;
+  if (
+    requestedTargetSessionAddress !== undefined
+    && ((isGlobalTarget && requestedTargetSessionAddress !== null)
+      || (!isGlobalTarget && requestedTargetSessionAddress?.sessionId !== normalizedSessionId))
+  ) {
+    throw Object.assign(new Error('session_unavailable'), { code: 'session_unavailable' });
+  }
+  const requestedTargetSessionId = requestedTargetSessionAddress === undefined
+    ? (isGlobalTarget ? null : normalizedSessionId)
+    : requestedTargetSessionAddress?.sessionId ?? null;
   const attempt = localVoicePreparationAttemptGuard.next();
   voiceConversationRuntimeMachine.transitionToConnecting({ controlSessionId });
   try {
@@ -509,6 +524,7 @@ async function ensureLocalConversationBindingForSession(settings: any, sessionId
       adapterId: 'local_conversation',
       controlSessionId,
       requestedTargetSessionId,
+      requestedTargetServerId: requestedTargetSessionAddress?.serverId,
     });
   } catch (error) {
     if (!localVoicePreparationAttemptGuard.isCurrent(attempt)) {
@@ -950,10 +966,10 @@ export function isLocalVoiceAgentActive(sessionId: string): boolean {
   return voiceAgentSessions.isActive(sessionId);
 }
 
-export function appendLocalVoiceAgentContextUpdate(sessionId: string, update: string): void {
+export function appendLocalVoiceAgentAttemptContextUpdate(sessionId: string, update: string): void {
   const settings = storage.getState().settings as any;
   const resolvedSessionId = resolveLocalConversationControlSessionId(settings, sessionId);
-  voiceAgentSessions.appendContextUpdate(resolvedSessionId, update);
+  voiceAgentSessions.appendAttemptContextUpdate(resolvedSessionId, update);
 }
 
 export function appendLocalVoiceAgentAutomaticUiContextUpdate(sessionId: string, update: string): void {
@@ -1138,6 +1154,7 @@ export async function setLocalVoiceMuted(sessionId: string, muted: boolean): Pro
 export async function toggleLocalVoiceTurn(
   sessionId: string,
   currentUiContext?: VoiceCurrentUiToolPort,
+  requestedTargetSessionAddress?: SessionAddress | null,
 ): Promise<void> {
   const initialSettings = storage.getState().settings as any;
   if (!isLocalVoiceProviderSelected(initialSettings)) {
@@ -1301,7 +1318,7 @@ export async function toggleLocalVoiceTurn(
       await inFlight.catch(() => {});
     }
 
-    if (!await ensureLocalConversationBindingForSession(settings, sessionId)) {
+    if (!await ensureLocalConversationBindingForSession(settings, sessionId, requestedTargetSessionAddress)) {
       return;
     }
     prewarmLocalVoiceAgentOnConnect({ settings, config });
@@ -1320,7 +1337,7 @@ export async function toggleLocalVoiceTurn(
   if (current.status === 'idle') {
     const settings = storage.getState().settings as any;
     const { config } = resolveLocalVoiceAdapterSettings(settings);
-    if (!await ensureLocalConversationBindingForSession(settings, sessionId)) {
+    if (!await ensureLocalConversationBindingForSession(settings, sessionId, requestedTargetSessionAddress)) {
       return;
     }
     prewarmLocalVoiceAgentOnConnect({ settings, config });

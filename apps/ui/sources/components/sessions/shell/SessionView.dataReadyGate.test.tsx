@@ -5,6 +5,7 @@ import type { ComposerAttachmentDraftV1 } from '@happier-dev/protocol';
 
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import { createDeferred, pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
@@ -48,6 +49,8 @@ const sessionEnqueuePendingMessageMock = vi.hoisted(() => vi.fn());
 const composerScopePluginPresentationSpy = vi.hoisted(() => vi.fn());
 const composerScopePluginPresentationState = vi.hoisted(() => ({ value: null as ComposerScopePluginPresentation | null }));
 
+// A bundler-only platform require that Node's loader cannot resolve in this run.
+vi.mock('@/components/ui/code/editor/CodeEditor', () => ({ CodeEditor: () => null }));
 vi.mock('@/agents/backendCatalog/getResolvedBackendCatalogEntries', () => ({
     getResolvedBackendCatalogEntries: () => [],
 }));
@@ -228,6 +231,9 @@ let sessionState: any = {
     presence: 'online',
     active: true,
     accessLevel: 'edit',
+    // The composer target reads write access from the canonical effective-access capabilities, not
+    // from `accessLevel`; a fixture without them renders a read-only composer.
+    access: createSessionAccessFixture('edit'),
     metadata: { machineId: 'm1', flavor: 'codex', version: '0.0.0', path: '/tmp', homeDir: '/tmp' },
     agentState: {},
 };
@@ -520,6 +526,57 @@ function flattenStyle(style: unknown): Record<string, unknown> {
 }
 
 describe('SessionView (data ready gating)', () => {
+    it.each([
+        'encrypted_access_pending',
+        'recipient_encryption_setup_required',
+        'encrypted_access_needs_repair',
+        'encrypted_content_unavailable',
+    ] as const)('settles %s without exposing the composer or transcript', async (availability) => {
+        sessionState = {
+            ...sessionState,
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: availability,
+        };
+        const { SessionView } = await sessionViewModulePromise;
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                {/* The mobile cockpit reaches every Session surface through this same override
+                    slot, so a blocked Session must settle ahead of it rather than beside it. */}
+                <SessionView
+                    id="s1"
+                    contentOverride={React.createElement('View', { testID: 'session-sensitive-override' })}
+                />
+            </AppPaneProvider>,
+        );
+
+        expect(screen.findAllByTestId('session-composer-input')).toHaveLength(0);
+        expect(screen.findAllHostsByTestId('session-content-unavailable')).toHaveLength(1);
+        expect(screen.findAllByTestId('session-header-action-menu-trigger')).toHaveLength(0);
+        expect(screen.findAllByTestId('session-encrypted-locked-restore')).toHaveLength(0);
+        expect(screen.findAllByTestId('session-sensitive-override')).toHaveLength(0);
+        expect(chatListPropsSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([true, false])('does not let a cached Session override explicit access denial (cached: %s)', async (cached) => {
+        sessionState = cached ? sessionState : null;
+        const { SessionView } = await sessionViewModulePromise;
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <SessionView
+                    id="s1"
+                    routeHydrationState={{ kind: 'missing', sessionId: 's1', cause: 'forbidden' }}
+                    contentOverride={React.createElement('View', { testID: 'session-sensitive-override' })}
+                />
+            </AppPaneProvider>,
+        );
+
+        expect(screen.findAllHostsByTestId('session-access-denied')).toHaveLength(1);
+        expect(screen.findAllByTestId('session-sensitive-override')).toHaveLength(0);
+        expect(screen.findAllByTestId('session-header-action-menu-trigger')).toHaveLength(0);
+        expect(screen.findAllByTestId('session-content-unavailable')).toHaveLength(0);
+        expect(screen.getTextContent()).not.toContain('errors.sessionDeleted');
+    });
+
     afterEach(() => {
         routerPushSpy.mockClear();
         endpointConnectivityStatus = 'online';
@@ -532,6 +589,7 @@ describe('SessionView (data ready gating)', () => {
             presence: 'online',
             active: true,
             accessLevel: 'edit',
+            access: createSessionAccessFixture('edit'),
             metadata: { machineId: 'm1', flavor: 'codex', version: '0.0.0', path: '/tmp', homeDir: '/tmp' },
             agentState: {},
         };

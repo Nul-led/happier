@@ -1,5 +1,25 @@
 const english = {
     settingsApiTokens: {
+        encryption: {
+            choice: "Encryption access",
+            consequence: "Grants Account-wide encryption access. Revocation stops future API authorization; keys or data already obtained cannot be recalled.",
+            enabled: "Encryption access enabled",
+            bearerOnly: "API access only",
+            unknown: "Encryption access unavailable",
+            outcomeUnknown: "Creation may have completed. Refresh the list and revoke this token before deliberately creating a replacement.",
+            unsupported: "This Home does not support encrypted API tokens yet. Update it or create an ordinary token.",
+            notReady: "Restore encryption access on this Home before creating an encrypted token.",
+            stale: "The Account encryption key changed. Restore encryption access on this Home.",
+            idConflict: "This token ID already exists. Revoke that exact token before creating a replacement.",
+        },
+        unattended: {
+            choice: "Unattended Team access",
+            consequence: "Copies this signed-in credential’s currently verified authentication methods into this token for restricted Team work. Encryption access is separate.",
+            authorized: "Unattended Team access authorized",
+            notAuthorized: "No unattended Team access",
+            evidenceLimit: "This credential has too many verified authentication methods to copy. No token was created.",
+            evidenceUnavailable: "This signed-in credential has no current authentication evidence to copy. Re-authenticate with the required method; no token was created.",
+        },
         title: 'API Tokens',
         entrySubtitle: 'Create and revoke tokens for integrations and automation.',
         description: 'Use API tokens to connect trusted integrations to your current Account. Tokens inherit the Action Settings policy for this Account.',
@@ -22,7 +42,7 @@ const english = {
         create: {
             button: 'Create token',
             title: 'Create API token',
-            subtitle: 'Name the integration and choose when this token expires.',
+            subtitle: 'Name the integration and choose when this token expires. Ordinary API requests and results are readable by your Home; encryption access can protect supported SDK calls.',
             submit: 'Create token',
             label: 'Label',
             labelPlaceholder: 'Release automation',
@@ -89,6 +109,25 @@ export const apiTokenSettingsTranslations = {
     en: english,
     ca: translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "Accés al xifratge",
+                consequence: "Concedeix accés al xifratge de tot el compte. La revocació atura futures autoritzacions d’API; les claus o dades ja obtingudes no es poden recuperar.",
+                enabled: "Accés al xifratge activat",
+                bearerOnly: "Només accés API",
+                unknown: "Accés al xifratge no disponible",
+                outcomeUnknown: "La creació pot haver finalitzat. Actualitza la llista i revoca aquest token abans de crear-ne un de nou.",
+                unsupported: "Aquest Home encara no admet tokens d’API xifrats. Actualitza’l o crea un token ordinari.",
+                notReady: "Restaura l’accés al xifratge en aquest Home abans de crear un token xifrat.",
+                stale: "La clau de xifratge del compte ha canviat. Restaura l’accés en aquest Home.",
+                idConflict: "Aquest identificador de token ja existeix. Revoca aquest token abans de crear-ne un altre.",
+            },
+            unattended: {
+                choice: "Accés desatès a l’equip",
+                consequence: "Copia en aquest token els mètodes d’autenticació verificats actualment d’aquesta credencial per al treball restringit de l’equip. L’accés al xifratge és independent.",
+                authorized: "Accés desatès a l’equip autoritzat",
+                notAuthorized: "Sense accés desatès a l’equip",
+                evidenceLimit: "Aquesta credencial té massa mètodes d’autenticació verificats per copiar-los. No s’ha creat cap token.",
+            },
             title: "Tokens d'API",
             entrySubtitle: 'Crea i revoca tokens per a integracions i automatitzacions.',
             description: 'Utilitza tokens d’API per connectar integracions de confiança al teu compte actual. Els tokens hereten la política de configuració d’accions d’aquest compte.',
@@ -111,7 +150,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: 'Crea un token',
                 title: "Crea un token d'API",
-                subtitle: 'Anomena la integració i tria quan caduca aquest token.',
+                subtitle: "Anomena la integració i tria quan caduca aquest token. El teu Home pot llegir les sol·licituds i els resultats de l’API ordinària; l’accés al xifratge pot protegir les crides de l’SDK compatibles.",
                 submit: 'Crea un token',
                 label: 'Etiqueta',
                 labelPlaceholder: 'Automatització de llançaments',
@@ -171,6 +210,25 @@ export const apiTokenSettingsTranslations = {
     }),
     de: translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "Verschlüsselungszugriff",
+                consequence: "Gewährt kontoweiten Verschlüsselungszugriff. Der Widerruf stoppt künftige API-Autorisierung; bereits erhaltene Schlüssel oder Daten können nicht zurückgerufen werden.",
+                enabled: "Verschlüsselungszugriff aktiviert",
+                bearerOnly: "Nur API-Zugriff",
+                unknown: "Verschlüsselungszugriff unbekannt",
+                outcomeUnknown: "Die Erstellung könnte abgeschlossen sein. Aktualisiere die Liste und widerrufe dieses Token, bevor du bewusst ein neues erstellst.",
+                unsupported: "Dieses Home unterstützt noch keine verschlüsselten API-Tokens. Aktualisiere es oder erstelle ein gewöhnliches Token.",
+                notReady: "Stelle den Verschlüsselungszugriff auf diesem Home wieder her, bevor du ein verschlüsseltes Token erstellst.",
+                stale: "Der Kontoschlüssel hat sich geändert. Stelle den Verschlüsselungszugriff auf diesem Home wieder her.",
+                idConflict: "Diese Token-ID existiert bereits. Widerrufe genau dieses Token, bevor du ein neues erstellst.",
+            },
+            unattended: {
+                choice: "Unbeaufsichtigter Teamzugriff",
+                consequence: "Kopiert die aktuell verifizierten Anmeldemethoden dieses Zugangsnachweises für eingeschränkte Teamarbeit in das Token. Verschlüsselungszugriff ist davon unabhängig.",
+                authorized: "Unbeaufsichtigter Teamzugriff autorisiert",
+                notAuthorized: "Kein unbeaufsichtigter Teamzugriff",
+                evidenceLimit: "Dieser Zugangsnachweis hat zu viele verifizierte Anmeldemethoden zum Kopieren. Es wurde kein Token erstellt.",
+            },
             title: 'API-Tokens',
             entrySubtitle: 'Erstelle und widerrufe Tokens für Integrationen und Automatisierungen.',
             description: 'Nutze API-Tokens, um vertrauenswürdige Integrationen mit deinem aktuellen Konto zu verbinden. Tokens übernehmen die Richtlinie der Aktionseinstellungen dieses Kontos.',
@@ -193,7 +251,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: 'Token erstellen',
                 title: 'API-Token erstellen',
-                subtitle: 'Benenne die Integration und wähle, wann dieser Token abläuft.',
+                subtitle: 'Benenne die Integration und wähle, wann dieser Token abläuft. Normale API-Anfragen und -Ergebnisse sind für dein Home lesbar; mit Verschlüsselungszugriff können unterstützte SDK-Aufrufe geschützt werden.',
                 submit: 'Token erstellen',
                 label: 'Bezeichnung',
                 labelPlaceholder: 'Release-Automatisierung',
@@ -253,6 +311,25 @@ export const apiTokenSettingsTranslations = {
     }),
     es: translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "Acceso al cifrado",
+                consequence: "Concede acceso al cifrado de toda la cuenta. La revocación detiene futuras autorizaciones de API; no se pueden recuperar las claves o los datos ya obtenidos.",
+                enabled: "Acceso al cifrado activado",
+                bearerOnly: "Solo acceso a la API",
+                unknown: "Acceso al cifrado no disponible",
+                outcomeUnknown: "La creación puede haberse completado. Actualiza la lista y revoca este token antes de crear otro deliberadamente.",
+                unsupported: "Este Home aún no admite tokens de API cifrados. Actualízalo o crea un token normal.",
+                notReady: "Restaura el acceso al cifrado en este Home antes de crear un token cifrado.",
+                stale: "La clave de cifrado de la cuenta cambió. Restaura el acceso en este Home.",
+                idConflict: "Este ID de token ya existe. Revoca ese token exacto antes de crear otro.",
+            },
+            unattended: {
+                choice: "Acceso desatendido al equipo",
+                consequence: "Copia en este token los métodos de autenticación actualmente verificados de esta credencial para trabajo restringido del equipo. El acceso de cifrado es independiente.",
+                authorized: "Acceso desatendido al equipo autorizado",
+                notAuthorized: "Sin acceso desatendido al equipo",
+                evidenceLimit: "Esta credencial tiene demasiados métodos de autenticación verificados para copiarlos. No se creó ningún token.",
+            },
             title: 'Tokens de API',
             entrySubtitle: 'Crea y revoca tokens para integraciones y automatizaciones.',
             description: 'Usa tokens de API para conectar integraciones de confianza a tu Cuenta actual. Los tokens heredan la política de Configuración de acciones de esta Cuenta.',
@@ -275,7 +352,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: 'Crear token',
                 title: 'Crear token de API',
-                subtitle: 'Nombra la integración y elige cuándo caduca este token.',
+                subtitle: 'Nombra la integración y elige cuándo caduca este token. Tu Home puede leer las solicitudes y los resultados de la API ordinaria; el acceso al cifrado puede proteger las llamadas del SDK compatibles.',
                 submit: 'Crear token',
                 label: 'Etiqueta',
                 labelPlaceholder: 'Automatización de lanzamientos',
@@ -335,6 +412,25 @@ export const apiTokenSettingsTranslations = {
     }),
     fr: translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "Accès au chiffrement",
+                consequence: "Accorde un accès au chiffrement de tout le compte. La révocation arrête les futures autorisations API ; les clés ou données déjà obtenues ne peuvent pas être rappelées.",
+                enabled: "Accès au chiffrement activé",
+                bearerOnly: "Accès API uniquement",
+                unknown: "Accès au chiffrement inconnu",
+                outcomeUnknown: "La création a peut-être abouti. Actualisez la liste et révoquez ce jeton avant d’en créer délibérément un autre.",
+                unsupported: "Ce Home ne prend pas encore en charge les jetons API chiffrés. Mettez-le à jour ou créez un jeton ordinaire.",
+                notReady: "Restaurez l’accès au chiffrement sur ce Home avant de créer un jeton chiffré.",
+                stale: "La clé de chiffrement du compte a changé. Restaurez l’accès sur ce Home.",
+                idConflict: "Cet identifiant de jeton existe déjà. Révoquez ce jeton précis avant d’en créer un autre.",
+            },
+            unattended: {
+                choice: "Accès autonome à l’équipe",
+                consequence: "Copie dans ce jeton les méthodes d’authentification actuellement vérifiées de cet identifiant pour le travail restreint de l’équipe. L’accès au chiffrement est indépendant.",
+                authorized: "Accès autonome à l’équipe autorisé",
+                notAuthorized: "Aucun accès autonome à l’équipe",
+                evidenceLimit: "Cet identifiant comporte trop de méthodes d’authentification vérifiées à copier. Aucun jeton n’a été créé.",
+            },
             title: 'Jetons API',
             entrySubtitle: 'Crée et révoque des jetons pour les intégrations et les automatisations.',
             description: 'Utilise des jetons API pour connecter des intégrations de confiance à ton compte actuel. Les jetons héritent de la politique des réglages d’actions de ce compte.',
@@ -357,7 +453,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: 'Créer un jeton',
                 title: 'Créer un jeton API',
-                subtitle: 'Nomme l’intégration et choisis quand ce jeton expire.',
+                subtitle: 'Nomme l’intégration et choisis quand ce jeton expire. Ton Home peut lire les requêtes et résultats de l’API ordinaire ; l’accès au chiffrement peut protéger les appels SDK compatibles.',
                 submit: 'Créer un jeton',
                 label: 'Libellé',
                 labelPlaceholder: 'Automatisation des versions',
@@ -417,6 +513,25 @@ export const apiTokenSettingsTranslations = {
     }),
     it: translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "Accesso alla crittografia",
+                consequence: "Concede accesso alla crittografia dell’intero account. La revoca interrompe le future autorizzazioni API; le chiavi o i dati già ottenuti non possono essere richiamati.",
+                enabled: "Accesso alla crittografia attivo",
+                bearerOnly: "Solo accesso API",
+                unknown: "Accesso alla crittografia sconosciuto",
+                outcomeUnknown: "La creazione potrebbe essere stata completata. Aggiorna l’elenco e revoca questo token prima di crearne deliberatamente un altro.",
+                unsupported: "Questo Home non supporta ancora i token API crittografati. Aggiornalo o crea un token ordinario.",
+                notReady: "Ripristina l’accesso alla crittografia su questo Home prima di creare un token crittografato.",
+                stale: "La chiave di crittografia dell’account è cambiata. Ripristina l’accesso su questo Home.",
+                idConflict: "Questo ID token esiste già. Revoca quel token esatto prima di crearne un altro.",
+            },
+            unattended: {
+                choice: "Accesso non presidiato al team",
+                consequence: "Copia in questo token i metodi di autenticazione attualmente verificati di questa credenziale per il lavoro limitato del team. L’accesso alla crittografia è indipendente.",
+                authorized: "Accesso non presidiato al team autorizzato",
+                notAuthorized: "Nessun accesso non presidiato al team",
+                evidenceLimit: "Questa credenziale ha troppi metodi di autenticazione verificati da copiare. Non è stato creato alcun token.",
+            },
             title: 'Token API',
             entrySubtitle: 'Crea e revoca token per integrazioni e automazioni.',
             description: 'Usa i token API per collegare integrazioni attendibili al tuo Account attuale. I token ereditano la policy delle Impostazioni azioni di questo Account.',
@@ -439,7 +554,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: 'Crea token',
                 title: 'Crea token API',
-                subtitle: 'Dai un nome all’integrazione e scegli quando scade questo token.',
+                subtitle: 'Dai un nome all’integrazione e scegli quando scade questo token. Il tuo Home può leggere richieste e risultati dell’API ordinaria; l’accesso alla crittografia può proteggere le chiamate SDK supportate.',
                 submit: 'Crea token',
                 label: 'Etichetta',
                 labelPlaceholder: 'Automazione delle release',
@@ -499,6 +614,25 @@ export const apiTokenSettingsTranslations = {
     }),
     ja: translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "暗号化へのアクセス",
+                consequence: "アカウント全体の暗号化へのアクセスを許可します。失効すると今後のAPI認可は停止しますが、取得済みの鍵やデータは回収できません。",
+                enabled: "暗号化アクセス有効",
+                bearerOnly: "APIアクセスのみ",
+                unknown: "暗号化アクセス不明",
+                outcomeUnknown: "作成が完了している可能性があります。一覧を更新し、このトークンを失効させてから新しいトークンを作成してください。",
+                unsupported: "このHomeは暗号化APIトークンにまだ対応していません。更新するか、通常のトークンを作成してください。",
+                notReady: "暗号化トークンを作成する前に、このHomeで暗号化へのアクセスを復元してください。",
+                stale: "アカウントの暗号鍵が変更されました。このHomeで暗号化へのアクセスを復元してください。",
+                idConflict: "このトークンIDは既に存在します。該当トークンを失効させてから新しく作成してください。",
+            },
+            unattended: {
+                choice: "無人のチームアクセス",
+                consequence: "制限されたチーム作業のため、この認証情報で現在検証済みの認証方法をトークンへコピーします。暗号化アクセスとは別です。",
+                authorized: "無人のチームアクセスを許可済み",
+                notAuthorized: "無人のチームアクセスなし",
+                evidenceLimit: "コピーできる検証済み認証方法の上限を超えています。トークンは作成されませんでした。",
+            },
             title: 'API トークン',
             entrySubtitle: '連携と自動化のためのトークンを作成・取り消しできます。',
             description: 'API トークンを使うと、信頼できる連携を現在のアカウントに接続できます。トークンには、このアカウントのアクション設定ポリシーが適用されます。',
@@ -521,7 +655,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: 'トークンを作成',
                 title: 'API トークンを作成',
-                subtitle: '連携に名前を付け、このトークンの有効期限を選択してください。',
+                subtitle: '連携に名前を付け、このトークンの有効期限を選択してください。通常の API リクエストと結果は Home から読み取れます。暗号化アクセスを使うと、対応する SDK 呼び出しを保護できます。',
                 submit: 'トークンを作成',
                 label: 'ラベル',
                 labelPlaceholder: 'リリースの自動化',
@@ -581,6 +715,25 @@ export const apiTokenSettingsTranslations = {
     }),
     pl: translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "Dostęp do szyfrowania",
+                consequence: "Przyznaje dostęp do szyfrowania całego konta. Unieważnienie zatrzymuje przyszłą autoryzację API; uzyskanych kluczy ani danych nie można odebrać.",
+                enabled: "Dostęp do szyfrowania włączony",
+                bearerOnly: "Tylko dostęp do API",
+                unknown: "Dostęp do szyfrowania nieznany",
+                outcomeUnknown: "Tworzenie mogło się zakończyć. Odśwież listę i unieważnij ten token przed świadomym utworzeniem nowego.",
+                unsupported: "Ten Home nie obsługuje jeszcze szyfrowanych tokenów API. Zaktualizuj go lub utwórz zwykły token.",
+                notReady: "Przywróć dostęp do szyfrowania na tym Home przed utworzeniem szyfrowanego tokenu.",
+                stale: "Klucz szyfrowania konta uległ zmianie. Przywróć dostęp na tym Home.",
+                idConflict: "Ten identyfikator tokenu już istnieje. Unieważnij dokładnie ten token przed utworzeniem nowego.",
+            },
+            unattended: {
+                choice: "Nienadzorowany dostęp do zespołu",
+                consequence: "Kopiuje do tokenu aktualnie zweryfikowane metody uwierzytelniania tego poświadczenia na potrzeby ograniczonej pracy zespołowej. Dostęp do szyfrowania jest niezależny.",
+                authorized: "Nienadzorowany dostęp do zespołu autoryzowany",
+                notAuthorized: "Brak nienadzorowanego dostępu do zespołu",
+                evidenceLimit: "To poświadczenie ma zbyt wiele zweryfikowanych metod uwierzytelniania do skopiowania. Token nie został utworzony.",
+            },
             title: 'Tokeny API',
             entrySubtitle: 'Twórz i unieważniaj tokeny dla integracji i automatyzacji.',
             description: 'Używaj tokenów API, aby łączyć zaufane integracje z bieżącym kontem. Tokeny dziedziczą zasady Ustawień akcji dla tego konta.',
@@ -603,7 +756,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: 'Utwórz token',
                 title: 'Utwórz token API',
-                subtitle: 'Nadaj integracji nazwę i wybierz, kiedy token wygaśnie.',
+                subtitle: 'Nadaj integracji nazwę i wybierz, kiedy token wygaśnie. Zwykłe żądania i wyniki API są czytelne dla Twojego Home; dostęp do szyfrowania może chronić obsługiwane wywołania SDK.',
                 submit: 'Utwórz token',
                 label: 'Etykieta',
                 labelPlaceholder: 'Automatyzacja wydań',
@@ -663,6 +816,25 @@ export const apiTokenSettingsTranslations = {
     }),
     pt: translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "Acesso à criptografia",
+                consequence: "Concede acesso à criptografia de toda a conta. A revogação interrompe futuras autorizações de API; chaves ou dados já obtidos não podem ser recuperados.",
+                enabled: "Acesso à criptografia ativado",
+                bearerOnly: "Somente acesso à API",
+                unknown: "Acesso à criptografia desconhecido",
+                outcomeUnknown: "A criação pode ter sido concluída. Atualize a lista e revogue este token antes de criar outro deliberadamente.",
+                unsupported: "Este Home ainda não oferece tokens de API criptografados. Atualize-o ou crie um token comum.",
+                notReady: "Restaure o acesso à criptografia neste Home antes de criar um token criptografado.",
+                stale: "A chave de criptografia da conta mudou. Restaure o acesso neste Home.",
+                idConflict: "Este ID de token já existe. Revogue esse token exato antes de criar outro.",
+            },
+            unattended: {
+                choice: "Acesso autônomo à equipe",
+                consequence: "Copia para este token os métodos de autenticação atualmente verificados desta credencial para trabalho restrito da equipe. O acesso à criptografia é independente.",
+                authorized: "Acesso autônomo à equipe autorizado",
+                notAuthorized: "Sem acesso autônomo à equipe",
+                evidenceLimit: "Esta credencial tem métodos de autenticação verificados demais para copiar. Nenhum token foi criado.",
+            },
             title: 'Tokens de API',
             entrySubtitle: 'Crie e revogue tokens para integrações e automações.',
             description: 'Use tokens de API para conectar integrações confiáveis à sua Conta atual. Os tokens herdam a política de Configurações de ações dessa Conta.',
@@ -685,7 +857,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: 'Criar token',
                 title: 'Criar token de API',
-                subtitle: 'Dê um nome à integração e escolha quando este token expira.',
+                subtitle: 'Dê um nome à integração e escolha quando este token expira. Seu Home pode ler solicitações e resultados da API comum; o acesso à criptografia pode proteger chamadas compatíveis do SDK.',
                 submit: 'Criar token',
                 label: 'Rótulo',
                 labelPlaceholder: 'Automação de lançamentos',
@@ -745,6 +917,25 @@ export const apiTokenSettingsTranslations = {
     }),
     ru: translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "Доступ к шифрованию",
+                consequence: "Предоставляет доступ к шифрованию всей учётной записи. Отзыв прекращает будущую авторизацию API; уже полученные ключи и данные отозвать нельзя.",
+                enabled: "Доступ к шифрованию включён",
+                bearerOnly: "Только доступ к API",
+                unknown: "Доступ к шифрованию неизвестен",
+                outcomeUnknown: "Создание могло завершиться. Обновите список и отзовите этот токен, прежде чем намеренно создавать замену.",
+                unsupported: "Этот Home пока не поддерживает зашифрованные API-токены. Обновите его или создайте обычный токен.",
+                notReady: "Восстановите доступ к шифрованию на этом Home перед созданием зашифрованного токена.",
+                stale: "Ключ шифрования учётной записи изменился. Восстановите доступ на этом Home.",
+                idConflict: "Этот идентификатор токена уже существует. Отзовите именно этот токен перед созданием нового.",
+            },
+            unattended: {
+                choice: "Автономный доступ к команде",
+                consequence: "Копирует в токен текущие подтверждённые способы аутентификации этих учётных данных для ограниченной командной работы. Доступ к шифрованию настраивается отдельно.",
+                authorized: "Автономный доступ к команде разрешён",
+                notAuthorized: "Без автономного доступа к команде",
+                evidenceLimit: "У этих учётных данных слишком много подтверждённых способов аутентификации для копирования. Токен не создан.",
+            },
             title: 'Токены API',
             entrySubtitle: 'Создавайте и отзывайте токены для интеграций и автоматизации.',
             description: 'Используйте токены API, чтобы подключать доверенные интеграции к текущему аккаунту. Токены наследуют политику настроек действий этого аккаунта.',
@@ -767,7 +958,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: 'Создать токен',
                 title: 'Создать токен API',
-                subtitle: 'Назовите интеграцию и выберите срок действия этого токена.',
+                subtitle: 'Назовите интеграцию и выберите срок действия этого токена. Ваш Home может читать обычные запросы и результаты API; доступ к шифрованию может защищать поддерживаемые вызовы SDK.',
                 submit: 'Создать токен',
                 label: 'Метка',
                 labelPlaceholder: 'Автоматизация релизов',
@@ -827,6 +1018,25 @@ export const apiTokenSettingsTranslations = {
     }),
     'zh-Hans': translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "加密访问",
+                consequence: "授予整个帐户的加密访问权限。撤销将停止未来的 API 授权；已获取的密钥或数据无法收回。",
+                enabled: "已启用加密访问",
+                bearerOnly: "仅 API 访问",
+                unknown: "加密访问未知",
+                outcomeUnknown: "创建可能已完成。请刷新列表并撤销此令牌，然后再主动创建替代令牌。",
+                unsupported: "此 Home 尚不支持加密 API 令牌。请更新它或创建普通令牌。",
+                notReady: "创建加密令牌之前，请在此 Home 恢复加密访问。",
+                stale: "帐户加密密钥已更改。请在此 Home 恢复访问。",
+                idConflict: "此令牌 ID 已存在。请先撤销该确切令牌，再创建新令牌。",
+            },
+            unattended: {
+                choice: "无人值守团队访问",
+                consequence: "将此凭据当前已验证的身份验证方式复制到令牌，用于受限团队工作。加密访问权限单独设置。",
+                authorized: "已授权无人值守团队访问",
+                notAuthorized: "无无人值守团队访问",
+                evidenceLimit: "此凭据包含过多已验证的身份验证方式，无法复制。未创建令牌。",
+            },
             title: 'API 令牌',
             entrySubtitle: '为集成和自动化创建及撤销令牌。',
             description: '使用 API 令牌将受信任的集成连接到当前帐户。令牌会继承此帐户的操作设置策略。',
@@ -849,7 +1059,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: '创建令牌',
                 title: '创建 API 令牌',
-                subtitle: '为集成命名，并选择此令牌的过期时间。',
+                subtitle: '为集成命名，并选择此令牌的过期时间。您的 Home 可以读取普通 API 请求和结果；加密访问可保护受支持的 SDK 调用。',
                 submit: '创建令牌',
                 label: '标签',
                 labelPlaceholder: '发布自动化',
@@ -909,6 +1119,25 @@ export const apiTokenSettingsTranslations = {
     }),
     'zh-Hant': translated({
         settingsApiTokens: {
+            encryption: {
+                choice: "加密存取",
+                consequence: "授予整個帳戶的加密存取權限。撤銷將停止未來的 API 授權；已取得的金鑰或資料無法收回。",
+                enabled: "已啟用加密存取",
+                bearerOnly: "僅 API 存取",
+                unknown: "加密存取未知",
+                outcomeUnknown: "建立可能已完成。請重新整理清單並撤銷此權杖，然後再主動建立替代權杖。",
+                unsupported: "此 Home 尚不支援加密 API 權杖。請更新它或建立一般權杖。",
+                notReady: "建立加密權杖之前，請在此 Home 恢復加密存取。",
+                stale: "帳戶加密金鑰已變更。請在此 Home 恢復存取。",
+                idConflict: "此權杖 ID 已存在。請先撤銷該確切權杖，再建立新權杖。",
+            },
+            unattended: {
+                choice: "無人值守團隊存取",
+                consequence: "將此憑證目前已驗證的驗證方式複製到權杖，用於受限團隊工作。加密存取權限另行設定。",
+                authorized: "已授權無人值守團隊存取",
+                notAuthorized: "無無人值守團隊存取",
+                evidenceLimit: "此憑證包含過多已驗證的驗證方式，無法複製。未建立權杖。",
+            },
             title: 'API 權杖',
             entrySubtitle: '為整合與自動化建立及撤銷權杖。',
             description: '使用 API 權杖將受信任的整合連線到目前帳戶。權杖會繼承此帳戶的動作設定政策。',
@@ -931,7 +1160,7 @@ export const apiTokenSettingsTranslations = {
             create: {
                 button: '建立權杖',
                 title: '建立 API 權杖',
-                subtitle: '為整合命名，並選擇此權杖的到期時間。',
+                subtitle: '為整合命名，並選擇此權杖的到期時間。您的 Home 可以讀取一般 API 請求和結果；加密存取可保護支援的 SDK 呼叫。',
                 submit: '建立權杖',
                 label: '標籤',
                 labelPlaceholder: '發佈自動化',

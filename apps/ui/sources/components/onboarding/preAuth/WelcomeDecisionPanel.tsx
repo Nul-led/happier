@@ -1,265 +1,55 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
-import Animated, {
-    Easing,
-    interpolate,
-    interpolateColor,
-    useAnimatedStyle,
-    useSharedValue,
-    withTiming,
-} from 'react-native-reanimated';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
 import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
 import { getAuthProvider } from '@/auth/providers/registry';
+import { describeHomeAuthenticationAction } from '@/components/account/auth/homeAuthenticationActionPresentation';
+import { createVerifiedAccountServiceAuthority } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
-import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { useLocalSetting } from '@/sync/store/hooks';
 import { t } from '@/text';
 import { useReturningGreeting } from './useReturningGreeting';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
-
-// Premium-feel hover affordances on the welcome buttons. The whole button
-// lifts 1px on hover and its content shifts:
-//   - primary button → filled ink, the trailing arrow slides 4px right
-//     (anticipates the forward action) and the whole pill dims slightly
-//   - secondary button → ghost outline, the QR icon scales to 1.08 and the
-//     background fades partway from surface.base toward surface.elevated
-//     (subtle darken in light theme, subtle lighten in dark theme —
-//     surface.elevated is defined per theme to flip in both directions)
-// All animations share the same Material standard easing + 180ms duration so
-// the two interactions read as one family. Native (iOS/Android) doesn't emit
-// hover events, so this is automatically a web/Tauri-only enhancement.
-const ICON_HOVER_TRANSLATE_PX = 4;
-const ICON_HOVER_SCALE = 1.08;
-const BUTTON_HOVER_LIFT_PX = 1;
-const PRIMARY_HOVER_OPACITY = 0.92;
-// Secondary button bg only fades half the way from surface.base toward
-// surface.elevated. That lands at the visual midpoint (~#f8f8f8 in light
-// theme, ~#1d1a1a in dark), which is subtler than the full elevated value
-// and reads as a hint rather than a state change.
-const SECONDARY_HOVER_BG_INTENSITY = 0.5;
-const ICON_HOVER_DURATION_MS = 180;
-// Material "standard" easing curve. Avoids springs (too playful for a CTA).
-const ICON_HOVER_EASING = Easing.bezier(0.4, 0, 0.2, 1);
-const DECISION_ROW_PRESSED_STYLE = { opacity: 0.88 };
-
-// Pressable made animatable so we can drive its style from a shared value.
-const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+import { WelcomeActionCard } from './WelcomeActionCard';
+import { WelcomeActionList, type WelcomeActionAdmission } from './WelcomeActionList';
+import {
+    composeWelcomeEntryModel,
+    type WelcomeEntryModel,
+    type WelcomeAuthenticationMethod,
+} from './composeWelcomeEntryModel';
 
 export type WelcomeDecisionPanelProps = Readonly<{
     authEntryOptions: AuthEntryOptions;
     /**
-     * Advertised methods of the selected sign-in service. When it advertises them, those actions
-     * are the welcome sign-in path and the Home-targeted actions are not offered beside them.
+     * Advertised methods of the exact effective sign-in service. These remain additive to any
+     * usable Home methods and never retarget the Home authority.
      */
     accountServiceEntry?: AccountServiceEntryOptions;
-    onContinueWithAccountServiceProvider?: (providerId: string) => Promise<void> | void;
+    onContinueWithAccountServiceProvider?: (request: WelcomeAuthenticationMethod) => Promise<void> | void;
     /** Key sign-in on the selected sign-in service. Never touches the focused Home. */
-    onContinueWithAccountServiceKey?: () => Promise<void> | void;
+    onContinueWithAccountServiceKey?: (request: WelcomeAuthenticationMethod) => Promise<void> | void;
     onChooseAccountService?: () => Promise<void> | void;
-    onCreateAccount: () => Promise<void> | void;
-    onCreateAccountViaProvider: (providerId: string) => Promise<void> | void;
-    onLoginWithKeylessProvider: (providerId: string) => Promise<void> | void;
-    onLoginWithMtls: () => Promise<void> | void;
+    onContinueWithHomeAuthentication?: (request: WelcomeAuthenticationMethod) => Promise<void> | void;
     onOpenRestore: () => void;
+    onOpenSecretKeyLogin?: () => void;
     onChangeRelay: () => void;
+    canChangeHome?: boolean;
     canScanQr?: boolean;
-    onStartScan?: () => void;
+    canCreatePersonalHome?: boolean;
+    onCreatePersonalHome?: () => void;
 }>;
 
-type DecisionButtonProps = Readonly<{
-    testID: string;
-    title: string;
-    subtitle?: string;
-    primary?: boolean;
-    iconName?: IconName;
-    onPress: () => Promise<void> | void;
-}>;
-
-function DecisionButton(props: DecisionButtonProps) {
-    const { theme } = useUnistyles();
-    const styles = stylesheet;
-    const reducedMotion = useReducedMotionPreference();
-    const [isHovered, setIsHovered] = React.useState(false);
-    const [isPressed, setIsPressed] = React.useState(false);
-    // Single 0→1 progress drives every hover-related animation on the button:
-    // the lift translateY, the primary's opacity dim, the secondary's bg
-    // colour fade, and the icon slide/scale. Keeping them on one timeline
-    // means they start and finish together and read as one motion.
-    const hoverProgress = useSharedValue(0);
-
-    React.useEffect(() => {
-        const target = isHovered ? 1 : 0;
-        if (reducedMotion) {
-            hoverProgress.value = target;
-            return;
-        }
-        hoverProgress.value = withTiming(target, {
-            duration: ICON_HOVER_DURATION_MS,
-            easing: ICON_HOVER_EASING,
-        });
-    }, [isHovered, reducedMotion, hoverProgress]);
-
-    const isPrimary = props.primary === true;
-    const supportsHoverAnimation = Platform.OS === 'web';
-    const primaryBg = theme.colors.button.primary.background;
-    const primaryTint = theme.colors.button.primary.tint;
-    const surfaceRest = theme.colors.surface.base;
-    const surfaceHover = theme.colors.surface.elevated;
-
-    // Outer animated style — applied to the Pressable itself.
-    //   - Both buttons: lift translateY: 0 → -1
-    //   - Primary: dim opacity: 1 → 0.92
-    //   - Secondary: background fades between surface.base and surface.elevated
-    const containerAnimatedStyle = useAnimatedStyle(() => {
-        const lift = interpolate(hoverProgress.value, [0, 1], [0, -BUTTON_HOVER_LIFT_PX]);
-        if (isPrimary) {
-            return {
-                transform: [{ translateY: lift }],
-                opacity: interpolate(hoverProgress.value, [0, 1], [1, PRIMARY_HOVER_OPACITY]),
-            };
-        }
-        // Scale the bg progress down so the colour only fades half the way
-        // toward surface.elevated. The full elevated shade reads too dark in
-        // light theme; landing at the midpoint keeps the cue subtle.
-        const bgProgress = interpolate(
-            hoverProgress.value,
-            [0, 1],
-            [0, SECONDARY_HOVER_BG_INTENSITY],
-        );
-        return {
-            transform: [{ translateY: lift }],
-            backgroundColor: interpolateColor(
-                bgProgress,
-                [0, 1],
-                [surfaceRest, surfaceHover],
-            ),
-        };
-    }, [isPrimary, primaryBg, surfaceRest, surfaceHover]);
-
-    // Inner animated style — applied to the icon's Animated.View only.
-    //   - Primary: arrow slides right (translateX)
-    //   - Secondary: icon scales up
-    const iconAnimatedStyle = useAnimatedStyle(() => {
-        if (isPrimary) {
-            const translateX = interpolate(hoverProgress.value, [0, 1], [0, ICON_HOVER_TRANSLATE_PX]);
-            return { transform: [{ translateX }] };
-        }
-        const scale = interpolate(hoverProgress.value, [0, 1], [1, ICON_HOVER_SCALE]);
-        return { transform: [{ scale }] };
-    }, [isPrimary]);
-
-    const foregroundColor = isPrimary ? primaryTint : theme.colors.text.primary;
-    const subtitleColor = isPrimary ? primaryTint : theme.colors.text.secondary;
-    const content = (
-        <>
-            <View testID={`${props.testID}-text`} style={styles.decisionTextBlock}>
-                <Text testID={`${props.testID}-title`} style={[styles.decisionTitle, { color: foregroundColor }]}>
-                    {props.title}
-                </Text>
-                {props.subtitle ? (
-                    <Text testID={`${props.testID}-subtitle`} style={[styles.decisionSubtitle, { color: subtitleColor }]}>
-                        {props.subtitle}
-                    </Text>
-                ) : null}
-            </View>
-            {props.iconName ? (
-                supportsHoverAnimation ? (
-                    <Animated.View style={iconAnimatedStyle}>
-                        <Icon
-                            testID={`${props.testID}-icon`}
-                            name={props.iconName}
-                            size={20}
-                            color={foregroundColor}
-                        />
-                    </Animated.View>
-                ) : (
-                    <View>
-                        <Icon
-                            testID={`${props.testID}-icon`}
-                            name={props.iconName}
-                            size={20}
-                            color={foregroundColor}
-                        />
-                    </View>
-                )
-            ) : null}
-        </>
-    );
-    const baseStyle = [
-        styles.decisionButton,
-        isPrimary
-            ? {
-                backgroundColor: primaryBg,
-                borderColor: primaryBg,
-            }
-            : {
-                // The rest backgroundColor is also baked in here so
-                // the button reads correctly on first paint before
-                // the animated value evaluates. The interpolation
-                // above then takes over on hover.
-                backgroundColor: surfaceRest,
-                borderColor: theme.colors.border.default,
-            },
-        isPressed ? DECISION_ROW_PRESSED_STYLE : null,
-    ];
-
-    if (!supportsHoverAnimation) {
-        return (
-            <Pressable
-                testID={props.testID}
-                accessibilityRole="button"
-                accessibilityLabel={props.title}
-                accessibilityHint={props.subtitle}
-                onPressIn={() => setIsPressed(true)}
-                onPressOut={() => setIsPressed(false)}
-                onPress={() => {
-                    void props.onPress();
-                }}
-                style={baseStyle}
-            >
-                {content}
-            </Pressable>
-        );
-    }
-
-    return (
-        <AnimatedPressable
-            testID={props.testID}
-            accessibilityRole="button"
-            accessibilityLabel={props.title}
-            accessibilityHint={props.subtitle}
-            onHoverIn={() => setIsHovered(true)}
-            onHoverOut={() => setIsHovered(false)}
-            onPressIn={() => setIsPressed(true)}
-            onPressOut={() => setIsPressed(false)}
-            onPress={() => {
-                void props.onPress();
-            }}
-            style={[
-                ...baseStyle,
-                containerAnimatedStyle,
-            ]}
-        >
-            {content}
-        </AnimatedPressable>
-    );
-}
+type WelcomeEntryModelAction = WelcomeEntryModel['actions'][number];
 
 export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(props: WelcomeDecisionPanelProps) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const options = props.authEntryOptions;
     const showBlocked = options.serverAvailability === 'unavailable' || options.serverAvailability === 'incompatible';
-    const providerId = options.providerId;
-    const keylessProviderId = options.keylessProviderId;
-    const primaryAction = options.primaryAction;
-    const showSecondaryKeylessProviderLogin = options.showKeylessProviderLogin && !options.keylessPrimary && !!keylessProviderId;
-    const handleLogin = props.canScanQr && props.onStartScan ? props.onStartScan : props.onOpenRestore;
+    const handleLogin = props.onOpenRestore;
     // Returning users (those who have authenticated on this device before) get
     // a warmer copy variant — a randomly-rotating warm greeting + an inverted
     // button hierarchy (Login becomes primary because that's the most likely
@@ -269,259 +59,165 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
     // seen flag.
     const isReturningUser = useLocalSetting('hasCompletedAuthOnce');
     const returningGreeting = useReturningGreeting();
-    // The selected sign-in service owns the welcome sign-in whenever it advertises methods this
-    // entry can complete. Its actions replace the Home-targeted ones rather than sitting beside
-    // them, so there is only ever one welcome authentication path.
+    const activeActionIdRef = React.useRef<string | null>(null);
+    const [pendingActionId, setPendingActionId] = React.useState<string | null>(null);
+    const runAction = React.useCallback(async (actionId: string, action: () => Promise<void> | void) => {
+        if (activeActionIdRef.current !== null) return;
+        activeActionIdRef.current = actionId;
+        setPendingActionId(actionId);
+        try {
+            await action();
+        } finally {
+            if (activeActionIdRef.current === actionId) {
+                activeActionIdRef.current = null;
+                setPendingActionId(null);
+            }
+        }
+    }, []);
+    const actionAdmission = React.useMemo<WelcomeActionAdmission>(() => ({
+        pendingActionId,
+        run: runAction,
+    }), [pendingActionId, runAction]);
     const accountServiceEntry = props.accountServiceEntry;
-    const continueWithAccountServiceProvider = props.onContinueWithAccountServiceProvider;
-    const continueWithAccountServiceKey = props.onContinueWithAccountServiceKey;
-    const accountServiceProviderIds = accountServiceEntry?.status === 'ready' && continueWithAccountServiceProvider
-        ? accountServiceEntry.discovery?.oauthProviderIds ?? []
-        : [];
-    // "Use a key" is offered only when the service itself advertises key login (A7): the
-    // key-only service then owns the welcome sign-in path instead of falling back to the
-    // ordinary active-Home actions.
-    const accountServiceKeyLoginAvailable = accountServiceEntry?.status === 'ready'
-        && !!continueWithAccountServiceKey
-        && (accountServiceEntry.discovery?.keyLoginAvailable ?? false);
-    const accountServiceSignInAvailable = accountServiceProviderIds.length > 0 || accountServiceKeyLoginAvailable;
-    const accountServiceModeActive = accountServiceEntry !== undefined;
-    const renderHomeEntryActions = (scanPrimary = false) => (
-        <>
-            <DecisionButton
-                testID="welcome-scan-existing-home"
-                primary={scanPrimary}
-                title={t('connect.scanExistingHomeQrTitle')}
-                iconName="qr-code"
-                onPress={handleLogin}
-            />
-            <DecisionButton
-                testID="welcome-use-different-home"
-                title={t('welcome.useDifferentHome')}
-                onPress={props.onChangeRelay}
-            />
-        </>
-    );
-
     const renderActions = () => {
-        if (accountServiceSignInAvailable) {
-            return (
-                <View style={styles.actionStack}>
-                    {accountServiceProviderIds.map((providerId, index) => (
-                        <DecisionButton
-                            key={providerId}
-                            testID={`welcome-account-service-provider-${providerId}`}
-                            primary={index === 0}
-                            title={t('welcome.signUpWithProvider', {
-                                provider: getAuthProvider(providerId)?.displayName ?? providerId,
-                            })}
-                            onPress={() => continueWithAccountServiceProvider!(providerId)}
-                        />
-                    ))}
-                    {accountServiceKeyLoginAvailable ? (
-                        <DecisionButton
-                            testID="welcome-account-service-key"
-                            primary={accountServiceProviderIds.length === 0}
-                            title={t('welcome.continueWithKey')}
-                            onPress={() => continueWithAccountServiceKey!()}
-                        />
-                    ) : null}
-                    {renderHomeEntryActions()}
-                </View>
-            );
-        }
-
-        if (accountServiceModeActive && !accountServiceSignInAvailable) {
-            const unsupported = accountServiceEntry.status === 'unsupported' || accountServiceEntry.status === 'ready';
-            return (
-                <View
-                    testID={accountServiceEntry.status === 'loading'
-                        ? 'welcome-auth-loading'
-                        : 'welcome-account-service-recovery'}
-                    style={styles.statusBlock}
-                >
-                    {accountServiceEntry.status === 'loading' ? (
-                        <ActivitySpinner color={theme.colors.text.primary} />
-                    ) : (
-                        <>
-                            <Text accessibilityRole="header" style={styles.statusTitle}>
-                                {unsupported
-                                    ? t('welcome.signInServiceUnsupportedTitle')
-                                    : t('welcome.signInServiceUnavailableTitle')}
-                            </Text>
-                            <Text style={styles.statusText}>
-                                {unsupported
-                                    ? t('welcome.signInServiceUnsupportedBody')
-                                    : t('welcome.signInServiceUnavailableBody', { serverUrl: accountServiceEntry.endpoint.url })}
-                            </Text>
-                        </>
-                    )}
-                    <View style={styles.statusActions}>
-                        {accountServiceEntry.status !== 'loading' ? (
-                            <DecisionButton
-                                testID="welcome-account-service-retry"
-                                title={t('common.retry')}
-                                onPress={accountServiceEntry.retry}
-                            />
-                        ) : null}
-                        {props.onChooseAccountService ? (
-                            <DecisionButton
-                                testID="welcome-account-service-choose"
-                                title={t('welcome.chooseSignInService')}
-                                onPress={props.onChooseAccountService}
-                            />
-                        ) : null}
-                        {renderHomeEntryActions()}
-                    </View>
-                </View>
-            );
-        }
-
-        if (options.serverAvailability === 'loading') {
-            return (
-                <View testID="welcome-auth-loading" style={styles.statusBlock}>
-                    <ActivitySpinner color={theme.colors.text.primary} />
-                    <Text style={styles.statusText}>{t('common.loading')}</Text>
-                </View>
-            );
-        }
-
-        if (showBlocked) {
-            return (
-                <View testID="welcome-auth-blocked" style={styles.statusBlock}>
-                    <Text style={styles.statusTitle}>
-                        {options.serverAvailability === 'incompatible'
-                            ? t('welcome.serverIncompatibleTitle')
-                            : t('welcome.serverUnavailableTitle')}
-                    </Text>
-                    <Text style={styles.statusText}>
-                        {options.serverAvailability === 'incompatible'
-                            ? t('welcome.serverIncompatibleBody', { serverUrl: options.serverUrlForCopy })
-                            : t('welcome.serverUnavailableBody', { serverUrl: options.serverUrlForCopy })}
-                    </Text>
-                    <View style={styles.statusActions}>
-                        <DecisionButton
-                            testID="welcome-auth-blocked-change-relay"
-                            title={t('welcome.useDifferentHome')}
-                            onPress={props.onChangeRelay}
-                        />
-                        <DecisionButton
-                            testID="welcome-auth-blocked-retry"
-                            title={t('common.retry')}
-                            onPress={options.retryServerCheck}
-                        />
-                    </View>
-                </View>
-            );
-        }
-
-        if (!options.showAuthActions) {
-            return (
-                <View testID="welcome-auth-blocked" style={styles.statusBlock}>
-                    <Text style={styles.statusText}>{options.serverUrlForCopy}</Text>
-                </View>
-            );
-        }
-
-        if (options.showAnonymousSignup) {
-            // First-time visitors see Start fresh as the primary CTA (the
-            // expected action when arriving for the first time). Returning
-            // users see Login as the primary CTA — they almost certainly want
-            // to sign back into their existing account, so we give the filled
-            // black slot to Login and demote Start fresh to the bordered card
-            // below. The optional keyless-provider login row sits between
-            // primary and secondary in both flows.
-            const startFreshButton = (
-                <DecisionButton
-                    testID="welcome-primary-start"
-                    primary={!isReturningUser}
-                    title={isReturningUser ? t('welcome.welcomeReturningStartFreshButton') : t('welcome.welcomePrimaryButton')}
-                    subtitle={isReturningUser ? t('welcome.welcomeReturningStartFreshSubtitle') : t('welcome.welcomePrimarySubtitle')}
-                    iconName="arrow-right"
-                    onPress={props.onCreateAccount}
-                />
-            );
-            return (
-                <View style={styles.actionStack}>
-                    {isReturningUser ? renderHomeEntryActions(true) : startFreshButton}
-                    {showSecondaryKeylessProviderLogin ? (
-                        <DecisionButton
-                            testID="welcome-login-provider"
-                            title={options.providerKeylessTitle}
-                            onPress={() => props.onLoginWithKeylessProvider(keylessProviderId!)}
-                        />
-                    ) : null}
-                    {options.showProviderSignup && providerId ? (
-                        <DecisionButton
-                            testID="welcome-signup-provider"
-                            title={options.providerSignupTitle}
-                            onPress={() => props.onCreateAccountViaProvider(providerId)}
-                        />
-                    ) : null}
-                    {isReturningUser ? startFreshButton : renderHomeEntryActions()}
-                </View>
-            );
-        }
-
-        if (primaryAction?.kind === 'mtls') {
-            return (
-                <View style={styles.actionStack}>
-                    <DecisionButton
-                        testID="welcome-mtls-primary"
-                        primary
-                        title={primaryAction.title}
-                        onPress={props.onLoginWithMtls}
-                    />
-                    {showSecondaryKeylessProviderLogin ? (
-                        <DecisionButton
-                            testID="welcome-login-provider"
-                            title={options.providerKeylessTitle}
-                            onPress={() => props.onLoginWithKeylessProvider(keylessProviderId!)}
-                        />
-                    ) : null}
-                    {renderHomeEntryActions()}
-                </View>
-            );
-        }
-
-        if (primaryAction?.kind === 'keyless' && keylessProviderId) {
-            return (
-                <View style={styles.actionStack}>
-                    <DecisionButton
-                        testID="welcome-provider-primary"
-                        primary
-                        title={primaryAction.title}
-                        onPress={() => props.onLoginWithKeylessProvider(keylessProviderId)}
-                    />
-                    {renderHomeEntryActions()}
-                </View>
-            );
-        }
-
-        if (primaryAction?.kind === 'provider-keyed' && providerId) {
-            return (
-                <View style={styles.actionStack}>
-                    <DecisionButton
-                        testID="welcome-provider-primary"
-                        primary
-                        title={primaryAction.title}
-                        onPress={() => props.onCreateAccountViaProvider(providerId)}
-                    />
-                    {showSecondaryKeylessProviderLogin ? (
-                        <DecisionButton
-                            testID="welcome-login-provider"
-                            title={options.providerKeylessTitle}
-                            onPress={() => props.onLoginWithKeylessProvider(keylessProviderId!)}
-                        />
-                    ) : null}
-                    {renderHomeEntryActions()}
-                </View>
-            );
-        }
-
+        const requestedHomeTarget = options.requestedHomeTarget;
+        const homeTarget = options.homeTarget;
+        const homeMethods: WelcomeAuthenticationMethod[] = homeTarget
+            && options.showAuthActions
+            && props.onContinueWithHomeAuthentication
+            && (options.serverAvailability === 'ready' || options.serverAvailability === 'legacy')
+            ? (options.authenticationActions ?? []).map(({ method, action, execution }) => ({
+                    method, action, execution,
+                    authority: { purpose: 'home' as const, target: homeTarget },
+                    intendedHome: homeTarget,
+                })) : [];
+        const discovery = accountServiceEntry?.status === 'ready' ? accountServiceEntry.discovery : null;
+        const serviceAuthority = discovery ? createVerifiedAccountServiceAuthority(discovery) : null;
+        const serviceMethods: WelcomeAuthenticationMethod[] = discovery && serviceAuthority
+            ? discovery.authenticationActions.filter(({ execution }) => (
+                execution.kind === 'oauth'
+                    ? props.onContinueWithAccountServiceProvider != null
+                    : props.onContinueWithAccountServiceKey != null
+            )).map(({ method, action, execution }) => ({ method, action, execution, authority: { purpose: 'account_service' as const, service: serviceAuthority }, intendedHome: requestedHomeTarget ?? null }))
+            : [];
+        const serviceName = discovery?.accountServiceDisplayName ?? accountServiceEntry?.endpoint?.displayName ?? null;
+        const serviceCatalogState = accountServiceEntry?.status === 'ready'
+            ? serviceMethods.length > 0 && serviceAuthority
+                ? { kind: 'ready' as const, authority: serviceAuthority, name: serviceName ?? accountServiceEntry.endpoint?.url ?? '', methods: serviceMethods }
+                : { kind: 'methodless' as const, hintName: serviceName ?? undefined }
+            : accountServiceEntry?.status === 'loading'
+                ? { kind: 'loading' as const, hintName: accountServiceEntry.endpoint?.displayName }
+                : accountServiceEntry?.status === 'unavailable'
+                    ? { kind: 'unavailable' as const, hintName: accountServiceEntry.endpoint?.displayName }
+                    : accountServiceEntry?.status === 'unsupported'
+                        ? { kind: 'unsupported' as const, hintName: accountServiceEntry.endpoint?.displayName }
+                        : { kind: 'not_offered' as const };
+        const model = composeWelcomeEntryModel({
+            target: requestedHomeTarget
+                ? { kind: 'selected_home', home: requestedHomeTarget, label: options.homeLabel ?? options.serverUrlForCopy }
+                : { kind: 'none' },
+            homeMethods,
+            ...(options.observedHomeServerIdentityId ? { observedHomeServerIdentityId: options.observedHomeServerIdentityId } : {}),
+            context: { kind: 'home' },
+            allowedNavigation: {
+                changeHome: props.canChangeHome !== false,
+                selectService: props.onChooseAccountService != null,
+                scanOrPasteHome: true,
+                createPersonalHome: props.canCreatePersonalHome === true && props.onCreatePersonalHome != null,
+            },
+            serviceCatalogState,
+            userHistory: isReturningUser ? 'returning' : 'first_time',
+        });
+        const renderAction = (row: WelcomeEntryModelAction, index: number) => {
+            const action = row.action;
+            if (action.kind === 'scan_or_paste_home') {
+                return <WelcomeActionCard key={row.id} actionId={row.id} testID="welcome-scan-existing-home" primary={row.emphasis === 'primary'} title={t('connect.scanExistingHomeQrTitle')} subtitle={t('welcome.welcomeSecondarySubtitle')} iconName="qr-code" onPress={handleLogin} />;
+            }
+            if (action.kind === 'choose_home') {
+                return <WelcomeActionCard key={row.id} actionId={row.id} testID="welcome-use-different-home" primary={row.emphasis === 'primary'} title={t('welcome.useDifferentHome')} subtitle={options.homeLabel ?? options.serverUrlForCopy} iconName="house" onPress={props.onChangeRelay} />;
+            }
+            if (action.kind === 'choose_sign_in_service') {
+                return <WelcomeActionCard key={row.id} actionId={row.id} testID="welcome-account-service-choose" primary={row.emphasis === 'primary'} title={t('welcome.chooseSignInService')} subtitle={t('welcome.signInServiceUrlPrompt')} iconName="globe" onPress={props.onChooseAccountService!} />;
+            }
+            if (action.kind === 'create_personal_home') {
+                return <WelcomeActionCard key={row.id} actionId={row.id} testID="welcome-create-personal-home" primary={row.emphasis === 'primary'} title={t('setupOnboarding.setupNewRelayAction')} subtitle={t('setupOnboarding.relayOnThisComputerSubtitle')} iconName="house" onPress={props.onCreatePersonalHome!} />;
+            }
+            if (action.kind !== 'authenticate') return null;
+            const request = action.request;
+            const provider = request.method.presentation?.displayName ?? getAuthProvider(request.method.id)?.displayName ?? request.method.id;
+            const presentation = describeHomeAuthenticationAction({
+                execution: request.execution,
+                providerName: provider,
+            });
+            const isKey = request.execution.kind === 'key_entry' || request.execution.kind === 'generated_key';
+            const isMtls = request.execution.kind === 'mtls';
+            const isService = request.authority.purpose === 'account_service';
+            const isNewHere = action.labelRole === 'new_here';
+            const testID = isService
+                ? isKey ? 'welcome-account-service-key' : `welcome-account-service-provider-${request.method.id}`
+                : isNewHere ? 'welcome-primary-start'
+                    : isMtls ? (row.emphasis === 'primary' ? 'welcome-mtls-primary' : 'welcome-mtls-login')
+                        : request.execution.kind === 'email_password' ? `welcome-${presentation.slug}`
+                            : index === 0 ? 'welcome-provider-primary' : 'welcome-login-provider';
+            const title = isNewHere
+                ? (isReturningUser ? t('welcome.welcomeReturningStartFreshButton') : t('welcome.welcomePrimaryButton'))
+                : presentation.title;
+            const subtitle = isNewHere
+                ? isService
+                    ? t('welcome.newHereServiceSubtitle', { service: serviceName ?? request.authority.service.endpointUrl })
+                    : t('welcome.newHereHomeSubtitle', { home: options.homeLabel ?? options.serverUrlForCopy })
+                : isService
+                    ? serviceName ?? request.authority.service.endpointUrl
+                    : options.homeLabel ?? options.serverUrlForCopy;
+            const invoke = () => {
+                if (request.authority.purpose === 'account_service') {
+                    return request.execution.kind === 'oauth'
+                        ? props.onContinueWithAccountServiceProvider?.(request)
+                        : props.onContinueWithAccountServiceKey?.(request);
+                }
+                return props.onContinueWithHomeAuthentication?.(request);
+            };
+            return <WelcomeActionCard key={row.id} actionId={row.id} testID={testID} primary={row.emphasis === 'primary'} title={title} subtitle={subtitle} iconName={presentation.iconName} onPress={invoke} />;
+        };
         return (
             <View style={styles.actionStack}>
-                {renderHomeEntryActions(primaryAction === null)}
+                {options.serverAvailability === 'loading' ? (
+                    <View testID="welcome-auth-loading" style={styles.statusBlock}>
+                        <ActivitySpinner color={theme.colors.text.primary} />
+                        <Text style={styles.statusText}>{t('common.loading')}</Text>
+                    </View>
+                ) : null}
+                {showBlocked ? (
+                    <View testID="welcome-auth-blocked" style={styles.statusBlock}>
+                        <Text style={styles.statusTitle}>{options.serverAvailability === 'incompatible' ? t('welcome.serverIncompatibleTitle') : t('welcome.serverUnavailableTitle')}</Text>
+                        <Text style={styles.statusText}>{options.serverAvailability === 'incompatible'
+                            ? t('welcome.serverIncompatibleBody', { serverUrl: options.serverUrlForCopy })
+                            : t('welcome.serverUnavailableBody', { serverUrl: options.serverUrlForCopy })}</Text>
+                        <WelcomeActionCard testID="welcome-auth-blocked-retry" title={t('common.retry')} onPress={options.retryServerCheck} />
+                    </View>
+                ) : null}
+                {model.notice ? (
+                    <View testID={model.notice.kind === 'service_loading' ? 'welcome-auth-loading' : 'welcome-account-service-recovery'} style={styles.statusBlock}>
+                        {model.notice.kind === 'service_loading' ? <ActivitySpinner color={theme.colors.text.primary} /> : null}
+                        <Text style={styles.statusText}>
+                            {model.notice.kind === 'service_loading'
+                                ? `${t('common.loading')}${model.notice.serviceName ? ` · ${model.notice.serviceName}` : ''}`
+                                : model.notice.kind === 'service_unavailable'
+                                    ? t('welcome.signInServiceUnavailableTitle')
+                                    : model.notice.kind === 'service_methodless'
+                                        ? t('welcome.signInServiceMethodlessTitle')
+                                        : t('welcome.signInServiceUnsupportedTitle')}
+                        </Text>
+                        {model.notice.kind !== 'service_loading' && accountServiceEntry ? <WelcomeActionCard testID="welcome-account-service-retry" title={t('common.retry')} onPress={accountServiceEntry.retry} /> : null}
+                    </View>
+                ) : null}
+                {model.actions.map(renderAction)}
+                {options.authEntryUnavailable ? (
+                    <View testID="welcome-auth-entry-degraded" style={styles.statusBlock}>
+                        <Text style={styles.statusText}>{t('welcome.signInOptionsPartialTitle')}</Text>
+                        <WelcomeActionCard testID="welcome-auth-entry-degraded-retry" title={t('common.retry')} onPress={options.retryServerCheck} />
+                    </View>
+                ) : null}
             </View>
         );
     };
@@ -543,12 +239,14 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                     {isReturningUser ? returningGreeting.subtitle : t('welcome.welcomeQuestionSubtitle')}
                 </Text>
             </View>
-            {!accountServiceModeActive && !accountServiceSignInAvailable && options.showAuthActions && primaryAction === null ? (
+            {options.showAuthActions && options.primaryAction === null ? (
                 <Text testID="welcome-signup-disabled" style={[styles.statusText, styles.signupDisabledNotice]}>
                     {t('errors.signupDisabled')}
                 </Text>
             ) : null}
-            {renderActions()}
+            <WelcomeActionList admission={actionAdmission}>
+                {renderActions()}
+            </WelcomeActionList>
         </View>
     );
 });
@@ -588,31 +286,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         gap: 12,
         width: '100%',
     },
-    decisionButton: {
-        minHeight: 66,
-        borderWidth: 1,
-        borderRadius: 14,
-        paddingHorizontal: 18,
-        paddingVertical: 10,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 16,
-    },
-    decisionTextBlock: {
-        flex: 1,
-        gap: 0,
-    },
-    decisionTitle: {
-        ...Typography.default('semiBold'),
-        fontSize: 16,
-        lineHeight: 22,
-    },
-    decisionSubtitle: {
-        ...Typography.default(),
-        fontSize: 13,
-        lineHeight: 18,
-    },
     statusBlock: {
         width: '100%',
         gap: 10,
@@ -639,9 +312,5 @@ const stylesheet = StyleSheet.create((theme) => ({
         textAlign: 'center',
         maxWidth: 440,
         alignSelf: 'center',
-    },
-    statusActions: {
-        gap: 10,
-        marginTop: 6,
     },
 }));

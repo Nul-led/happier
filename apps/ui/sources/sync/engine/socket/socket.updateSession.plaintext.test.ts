@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiUpdateContainer } from '@/sync/api/types/apiTypes';
-import { buildInboxSessionState } from '@/hooks/inbox/buildInboxSessionState';
+import { buildActivityOverviewSnapshot } from '@/activity/attention/buildActivityOverviewSnapshot';
+import { buildInboxSessionPresentation } from '@/activity/presentation/buildInboxSessionPresentation';
 import {
     markSessionSurfaceVisible,
     resetSessionSurfaceVisibilityForTests,
@@ -9,7 +10,10 @@ import {
 } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
+import { normalizeSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { flushActivityUpdates, handleSocketUpdate, handleUpdateContainer } from './socket';
 
 const socketPostDecryptSideEffectMocks = vi.hoisted(() => ({
@@ -27,6 +31,12 @@ vi.mock('@/voice/context/reportNewAgentRequestsFromSessionTransition', () => ({
 }));
 
 const initialStorageState = storage.getInitialState();
+
+function replaceActiveSessionListRows(rows: SessionListRenderableSession[]): void {
+    const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
+    if (!serverId) throw new Error('Expected an active Home for the socket fixture.');
+    storage.getState().applyServerScopedSessionListRows(serverId, rows, { source: 'ordinary', mode: 'replace' });
+}
 type HandleUpdateContainerParams = Parameters<typeof handleUpdateContainer>[0];
 type HandleUpdateContainerBaseParams = Omit<HandleUpdateContainerParams, 'updateData'>;
 
@@ -251,25 +261,28 @@ describe('socket update handling: plaintext update-session', () => {
                 },
             }),
         }));
-        const inbox = buildInboxSessionState({
-            sessions: [hydratedSession!],
-            sessionRows: [],
-            nowMs: 1_234,
+        const inbox = buildInboxSessionPresentation({
+            overview: buildActivityOverviewSnapshot({
+                sessions: [hydratedSession!],
+                nowMs: 1_234,
+            }),
         });
         expect(inbox.sessionsNeedingAttention).toEqual([
             expect.objectContaining({
-                session: expect.objectContaining({
-                    id: sessionId,
-                    metadata: expect.objectContaining({
-                        systemSessionV1: {
-                            v: 1,
-                            key: 'voice_conversation',
-                            hidden: true,
-                        },
-                        voiceConversationScopeV1: {
-                            v: 1,
-                            kind: 'voice_home',
-                        },
+                candidate: expect.objectContaining({
+                    session: expect.objectContaining({
+                        id: sessionId,
+                        metadata: expect.objectContaining({
+                            systemSessionV1: {
+                                v: 1,
+                                key: 'voice_conversation',
+                                hidden: true,
+                            },
+                            voiceConversationScopeV1: {
+                                v: 1,
+                                kind: 'voice_home',
+                            },
+                        }),
                     }),
                 }),
                 pendingPermissions: [
@@ -709,7 +722,7 @@ describe('socket update handling: plaintext update-session', () => {
             thinking: true,
             thinkingAt: 1_010,
         }));
-        expect(storage.getState().sessionListRenderables[sessionId]).toEqual(expect.objectContaining({
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[sessionId]).find(Boolean)).toEqual(expect.objectContaining({
             seq: 8,
             updatedAt: 1_010,
             latestTurnId: 'turn-2',
@@ -952,7 +965,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('patches cache-only renderables for plaintext update-session without forcing a sessions refresh', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_only',
                 seq: 1,
@@ -1011,7 +1024,7 @@ describe('socket update handling: plaintext update-session', () => {
             updateData,
         });
 
-        expect(storage.getState().sessionListRenderables['s_cached_only']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_only']).find(Boolean)).toEqual(
             expect.objectContaining({
                 updatedAt: 1235,
                 seq: 1,
@@ -1028,7 +1041,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('patches cache-only renderables for active-only update-session without forcing a sessions refresh', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_active_only',
                 seq: 1,
@@ -1063,7 +1076,7 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_active_only).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_active_only']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: false,
                 activeAt: 1230,
@@ -1077,7 +1090,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('patches cache-only renderables for runtime activity update-session without forcing a sessions refresh', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_runtime_activity_only',
                 seq: 1,
@@ -1119,7 +1132,7 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_runtime_activity_only).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_runtime_activity_only']).find(Boolean)).toEqual(
             expect.objectContaining({
                 runtimeActivityState: 'active',
                 runtimeActivityActiveCount: 1,
@@ -1134,7 +1147,7 @@ describe('socket update handling: plaintext update-session', () => {
 
     it('retains cache-only runtime activity truth and target-hydrates on an equal-revision conflict', async () => {
         vi.useFakeTimers();
-        storage.getState().replaceSessionListRenderables([{
+        replaceActiveSessionListRows([{
             id: 's_cached_runtime_conflict',
             seq: 1,
             createdAt: 1,
@@ -1174,7 +1187,7 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_runtime_conflict).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_runtime_conflict']).find(Boolean)).toEqual(
             expect.objectContaining({
                 runtimeActivityState: 'active',
                 runtimeActivityActiveCount: 1,
@@ -1231,8 +1244,50 @@ describe('socket update handling: plaintext update-session', () => {
         );
     });
 
+    it('preserves last-good responsibility and target-hydrates a malformed socket half-tuple', async () => {
+        const responsibleAccount = {
+            kind: 'account' as const,
+            accountId: 'account-alice',
+            firstName: 'Alice',
+            lastName: null,
+            username: 'alice',
+            avatarUrl: null,
+        };
+        storage.getState().applySessions([{
+            ...buildSession('s_responsibility_half_tuple'),
+            responsibleAccountId: responsibleAccount.accountId,
+            responsibleAccount,
+        }]);
+
+        const hydrateSessionById = vi.fn();
+        const params = buildBaseParams({ hydrateSessionById });
+        await handleUpdateContainer({
+            ...params,
+            updateData: {
+                id: 'u_responsibility_half_tuple',
+                seq: 12,
+                createdAt: 1_236,
+                body: {
+                    t: 'update-session',
+                    id: 's_responsibility_half_tuple',
+                    responsibleAccountId: 'account-bob',
+                },
+            },
+        });
+
+        const applySessionsSpy = params.applySessions as unknown as ReturnType<typeof vi.fn>;
+        expect(applySessionsSpy.mock.calls[0]?.[0]?.[0]).toEqual(expect.objectContaining({
+            responsibleAccountId: responsibleAccount.accountId,
+            responsibleAccount,
+        }));
+        expect(hydrateSessionById).toHaveBeenCalledWith(
+            's_responsibility_half_tuple',
+            'socket-update-responsibility-invalid',
+        );
+    });
+
     it('target-hydrates visible cache-only renderables after update-session projection patches', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_visible_update',
                 seq: 1,
@@ -1270,7 +1325,7 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_visible_update).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_visible_update']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: false,
                 activeAt: 1230,
@@ -1285,7 +1340,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('target-hydrates route-anchored cache-only renderables after update-session projection patches', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_route_update',
                 seq: 1,
@@ -1322,7 +1377,7 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_route_update).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_route_update']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: false,
                 activeAt: 1230,
@@ -1559,7 +1614,7 @@ describe('socket update handling: plaintext update-session', () => {
 
     it('coalesces cache-only non-urgent update-session projection patches until the activity window flushes', async () => {
         vi.useFakeTimers();
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_progress_only',
                 seq: 1,
@@ -1596,14 +1651,14 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        const beforeFlush = storage.getState().sessionListRenderables.s_cached_progress_only;
+        const beforeFlush = Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_progress_only']).find(Boolean);
         expect(beforeFlush?.latestTurnStatusObservedAt).toBeUndefined();
         expect(beforeFlush?.meaningfulActivityAt).toBeUndefined();
         expect(beforeFlush?.updatedAt).toBe(1);
 
         await vi.runAllTimersAsync();
 
-        expect(storage.getState().sessionListRenderables.s_cached_progress_only).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_progress_only']).find(Boolean)).toEqual(
             expect.objectContaining({
                 latestTurnStatusObservedAt: 1235,
                 meaningfulActivityAt: 1235,
@@ -1616,7 +1671,7 @@ describe('socket update handling: plaintext update-session', () => {
 
     it('applies urgent cache-only pending projection immediately after queued non-urgent progress', async () => {
         vi.useFakeTimers();
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_urgent_after_progress',
                 seq: 1,
@@ -1654,7 +1709,7 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        const beforePending = storage.getState().sessionListRenderables.s_cached_urgent_after_progress;
+        const beforePending = Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_urgent_after_progress']).find(Boolean);
         expect(beforePending?.latestTurnStatusObservedAt).toBeUndefined();
         expect(beforePending?.hasPendingPermissionRequests).toBe(false);
 
@@ -1672,7 +1727,7 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_urgent_after_progress).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_urgent_after_progress']).find(Boolean)).toEqual(
             expect.objectContaining({
                 latestTurnStatusObservedAt: 1235,
                 meaningfulActivityAt: 1235,
@@ -1687,7 +1742,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('marks cache-only renderables unread when ready projection advances past the read cursor', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_ready_unread',
                 seq: 945,
@@ -1726,7 +1781,7 @@ describe('socket update handling: plaintext update-session', () => {
             updateData,
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_ready_unread).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_ready_unread']).find(Boolean)).toEqual(
             expect.objectContaining({
                 latestReadyEventSeq: 946,
                 latestReadyEventAt: 1236,
@@ -1737,8 +1792,29 @@ describe('socket update handling: plaintext update-session', () => {
         expect((params.applySessions as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
     });
 
+    it('replaces private cache-only attention on an otherwise ordinary session update', async () => {
+        const viewer = {
+            readState: { state: 'not_started' as const },
+            relevance: { relevant: true, reasons: ['responsible_for_me' as const] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' as const },
+            follow: { follows: false, notificationLevel: 'none' as const },
+            notification: { level: 'none' as const, source: 'preference' as const },
+        };
+        replaceActiveSessionListRows([{
+            ...buildSession('private-cached'), archivedAt: null,
+            lastViewedSessionSeq: 0, latestReadyEventSeq: 8, hasUnreadMessages: true,
+        }]);
+        await handleUpdateContainer({
+            ...buildBaseParams(),
+            updateData: { id: 'private-update', seq: 8, createdAt: 2, body: {
+                t: 'update-session', id: 'private-cached', active: true, viewer,
+            } },
+        });
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['private-cached']).find(Boolean)).toMatchObject({ viewer, hasUnreadMessages: false });
+    });
+
     it('clears cache-only renderable unread when read cursor catches the ready projection', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_ready_read',
                 seq: 946,
@@ -1776,7 +1852,7 @@ describe('socket update handling: plaintext update-session', () => {
             updateData,
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_ready_read).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_ready_read']).find(Boolean)).toEqual(
             expect.objectContaining({
                 lastViewedSessionSeq: 946,
                 hasUnreadMessages: false,
@@ -1787,7 +1863,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('does not overwrite a newer cache-only title when a lower-version metadata payload arrives', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_meta_version_guard',
                 seq: 1,
@@ -1822,7 +1898,7 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        expect(storage.getState().sessionListRenderables['s_cached_meta_version_guard']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_meta_version_guard']).find(Boolean)).toEqual(
             expect.objectContaining({
                 metadata: expect.objectContaining({ name: 'Newer title' }),
                 metadataVersion: 5,
@@ -1835,7 +1911,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('recomputes cache-only unread state after metadata read-state updates are applied', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_metadata_read_state',
                 seq: 9,
@@ -1881,7 +1957,7 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_metadata_read_state).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_metadata_read_state']).find(Boolean)).toEqual(
             expect.objectContaining({
                 metadataVersion: 2,
                 metadata: expect.objectContaining({
@@ -1896,7 +1972,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('patches cache-only encrypted metadata while deferring hidden encrypted agentState', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_encrypted_state',
                 seq: 1,
@@ -1950,7 +2026,7 @@ describe('socket update handling: plaintext update-session', () => {
         expect(decryptAgentState).not.toHaveBeenCalled();
         expect(params.invalidateSessions).not.toHaveBeenCalled();
         expect((params.applySessions as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
-        expect(storage.getState().sessionListRenderables.s_cached_encrypted_state).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_encrypted_state']).find(Boolean)).toEqual(
             expect.objectContaining({
                 updatedAt: 1236,
                 metadataVersion: 2,
@@ -1963,7 +2039,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('patches archivedAt on cache-only renderables without forcing a sessions refresh', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_archived',
                 seq: 1,
@@ -2002,7 +2078,7 @@ describe('socket update handling: plaintext update-session', () => {
             updateData,
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_archived).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_archived']).find(Boolean)).toEqual(
             expect.objectContaining({
                 archivedAt: 44,
                 latestTurnId: 'turn-2',
@@ -2016,7 +2092,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('updates cache-only renderables for pending-changed without forcing a sessions refresh', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_pending',
                 seq: 1,
@@ -2057,7 +2133,7 @@ describe('socket update handling: plaintext update-session', () => {
             updateData,
         });
 
-        expect(storage.getState().sessionListRenderables['s_cached_pending']).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_pending']).find(Boolean)).toEqual(
             expect.objectContaining({
                 pendingCount: 4,
                 pendingBlockedCount: 1,
@@ -2071,7 +2147,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('clears cache-only blocked pending state when pending-changed sends explicit zero', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_pending_clear',
                 seq: 1,
@@ -2109,7 +2185,7 @@ describe('socket update handling: plaintext update-session', () => {
             } as ApiUpdateContainer,
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_pending_clear).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_pending_clear']).find(Boolean)).toEqual(
             expect.objectContaining({
                 pendingCount: 1,
                 pendingBlockedCount: 0,
@@ -2121,7 +2197,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('target-hydrates visible cache-only renderables after pending-changed patches', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_visible_pending',
                 seq: 1,
@@ -2161,7 +2237,7 @@ describe('socket update handling: plaintext update-session', () => {
             },
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_visible_pending).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_visible_pending']).find(Boolean)).toEqual(
             expect.objectContaining({
                 pendingCount: 4,
                 pendingVersion: 8,
@@ -2345,6 +2421,9 @@ describe('socket update handling: plaintext update-session', () => {
     it('patches hydrated share permission updates without forcing a sessions refresh', async () => {
         storage.getState().applySessions([{
             ...buildSession('s_share_existing'),
+            access: normalizeSessionAccessProjection({
+                share: { accessLevel: 'view', canApprovePermissions: false },
+            }, { allowLegacy: true }),
             accessLevel: 'view',
             canApprovePermissions: false,
         }]);
@@ -2373,8 +2452,58 @@ describe('socket update handling: plaintext update-session', () => {
             id: 's_share_existing',
             accessLevel: 'admin',
             canApprovePermissions: true,
+            access: expect.objectContaining({
+                role: 'recipient',
+                level: 'admin',
+                capabilities: expect.objectContaining({
+                    manageAccess: true,
+                    approveRuntimePermissions: true,
+                }),
+            }),
         }));
         expect(params.invalidateSessions).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ['a sourced current projection', {
+            ...normalizeSessionAccessProjection({
+                share: { accessLevel: 'view', canApprovePermissions: false },
+            }, { allowLegacy: true })!,
+            sources: [{ kind: 'direct' as const, shareId: 'share_current' }],
+        }],
+        ['malformed current authority normalized to null', null],
+    ])('does not let a released share event replace %s', async (_name, access) => {
+        storage.getState().applySessions([{
+            ...buildSession('s_share_current_authority'),
+            access,
+            accessLevel: 'view',
+            canApprovePermissions: false,
+        }]);
+        const params = buildBaseParams();
+
+        await handleUpdateContainer({
+            ...params,
+            updateData: {
+                id: 'u_share_current_authority',
+                seq: 15,
+                createdAt: 1_239,
+                body: {
+                    t: 'session-share-updated',
+                    sessionId: 's_share_current_authority',
+                    shareId: 'share_current',
+                    accessLevel: 'admin',
+                    canApprovePermissions: true,
+                    updatedAt: 1_239,
+                },
+            } as ApiUpdateContainer,
+        });
+
+        const applySessionsSpy = params.applySessions as unknown as ReturnType<typeof vi.fn>;
+        expect(applySessionsSpy.mock.calls[0]?.[0]?.[0]).toEqual(expect.objectContaining({
+            access,
+            accessLevel: 'admin',
+            canApprovePermissions: true,
+        }));
     });
 
     it('target-hydrates old share updates that cannot prove canApprovePermissions', async () => {
@@ -2467,7 +2596,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('preserves direct-session classification for cache-only renderables when an update omits externalSessionV1', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_direct',
                 seq: 1,
@@ -2527,7 +2656,7 @@ describe('socket update handling: plaintext update-session', () => {
         });
 
         expect((params.fetchSessions as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
-        const renderable = storage.getState().sessionListRenderables.s_cached_direct;
+        const renderable = Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_direct']).find(Boolean);
         expect(renderable?.metadata).toEqual(expect.objectContaining({
             path: '/work',
             host: 'devbox',
@@ -2539,7 +2668,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('preserves direct-session classification for cache-only renderables when an update sets externalSessionV1 to null', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_direct',
                 seq: 1,
@@ -2600,7 +2729,7 @@ describe('socket update handling: plaintext update-session', () => {
         });
 
         expect((params.fetchSessions as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
-        const renderable = storage.getState().sessionListRenderables.s_cached_direct;
+        const renderable = Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_direct']).find(Boolean);
         expect(renderable?.metadata).toEqual(expect.objectContaining({
             path: '/work',
             host: 'devbox',
@@ -2612,7 +2741,7 @@ describe('socket update handling: plaintext update-session', () => {
     });
 
     it('preserves direct-session classification for cache-only renderables when an update sets externalSessionV1 to null', async () => {
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_direct',
                 seq: 1,
@@ -2673,7 +2802,7 @@ describe('socket update handling: plaintext update-session', () => {
         });
 
         expect((params.fetchSessions as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
-        const renderable = storage.getState().sessionListRenderables.s_cached_direct;
+        const renderable = Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_direct']).find(Boolean);
         expect(renderable?.metadata).toEqual(expect.objectContaining({
             path: '/work',
             host: 'devbox',
@@ -2894,7 +3023,7 @@ describe('socket update handling: plaintext update-session', () => {
             flushIntervalMs: 60_000,
         });
         syncPerformanceTelemetry.reset();
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_activity_timestamp_gate',
                 seq: 1,
@@ -2930,7 +3059,7 @@ describe('socket update handling: plaintext update-session', () => {
             applySessions,
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_activity_timestamp_gate).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_timestamp_gate']).find(Boolean)).toEqual(
             expect.objectContaining({
                 activeAt: 1,
                 thinkingAt: 1,
@@ -2961,7 +3090,7 @@ describe('socket update handling: plaintext update-session', () => {
             applySessions,
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_activity_timestamp_gate).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_timestamp_gate']).find(Boolean)).toEqual(
             expect.objectContaining({
                 activeAt: 1,
                 thinkingAt: 1,
@@ -2977,7 +3106,7 @@ describe('socket update handling: plaintext update-session', () => {
 
         await vi.advanceTimersByTimeAsync(16);
 
-        expect(storage.getState().sessionListRenderables.s_cached_activity_timestamp_gate).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_timestamp_gate']).find(Boolean)).toEqual(
             expect.objectContaining({
                 activeAt: 61_001,
                 thinkingAt: 61_001,
@@ -2989,7 +3118,7 @@ describe('socket update handling: plaintext update-session', () => {
 
     it('refreshes cache-only activity timestamps even when a durable projection has a newer updatedAt', async () => {
         vi.useFakeTimers();
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_activity_heartbeat',
                 seq: 1,
@@ -3025,7 +3154,7 @@ describe('socket update handling: plaintext update-session', () => {
             applySessions,
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_activity_heartbeat).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_heartbeat']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: true,
                 activeAt: 1,
@@ -3038,7 +3167,7 @@ describe('socket update handling: plaintext update-session', () => {
 
         await vi.advanceTimersByTimeAsync(16);
 
-        expect(storage.getState().sessionListRenderables.s_cached_activity_heartbeat).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_heartbeat']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: true,
                 activeAt: 70_001,
@@ -3053,7 +3182,7 @@ describe('socket update handling: plaintext update-session', () => {
 
     it('target-hydrates visible cache-only renderables after activity patches', async () => {
         vi.useFakeTimers();
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_activity_visible',
                 seq: 1,
@@ -3096,7 +3225,7 @@ describe('socket update handling: plaintext update-session', () => {
 
         flushActivityUpdates(flushParams);
 
-        expect(storage.getState().sessionListRenderables.s_cached_activity_visible).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_visible']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: false,
                 activeAt: 1,
@@ -3110,7 +3239,7 @@ describe('socket update handling: plaintext update-session', () => {
 
         await vi.advanceTimersByTimeAsync(16);
 
-        expect(storage.getState().sessionListRenderables.s_cached_activity_visible).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_visible']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: true,
                 activeAt: 70_001,
@@ -3125,7 +3254,7 @@ describe('socket update handling: plaintext update-session', () => {
 
     it('skips queued cache-only activity patches when targeted hydration materializes the session before flush', async () => {
         vi.useFakeTimers();
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_activity_hydrated_before_flush',
                 seq: 1,
@@ -3191,7 +3320,7 @@ describe('socket update handling: plaintext update-session', () => {
                 updatedAt: 500,
             }),
         );
-        expect(storage.getState().sessionListRenderables.s_cached_activity_hydrated_before_flush).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_hydrated_before_flush']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: false,
                 activeAt: 500,
@@ -3205,7 +3334,7 @@ describe('socket update handling: plaintext update-session', () => {
 
     it('coalesces cache-only activity renderable patches before touching the list store', async () => {
         vi.useFakeTimers();
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_activity_coalesced_one',
                 seq: 1,
@@ -3267,7 +3396,7 @@ describe('socket update handling: plaintext update-session', () => {
             applySessions,
         });
 
-        expect(storage.getState().sessionListRenderables.s_cached_activity_coalesced_one).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_coalesced_one']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: false,
                 activeAt: 1,
@@ -3276,7 +3405,7 @@ describe('socket update handling: plaintext update-session', () => {
                 presence: 1,
             }),
         );
-        expect(storage.getState().sessionListRenderables.s_cached_activity_coalesced_two).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_coalesced_two']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: false,
                 activeAt: 1,
@@ -3289,7 +3418,7 @@ describe('socket update handling: plaintext update-session', () => {
 
         await vi.advanceTimersByTimeAsync(16);
 
-        expect(storage.getState().sessionListRenderables.s_cached_activity_coalesced_one).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_coalesced_one']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: true,
                 activeAt: 20,
@@ -3298,7 +3427,7 @@ describe('socket update handling: plaintext update-session', () => {
                 presence: 'online',
             }),
         );
-        expect(storage.getState().sessionListRenderables.s_cached_activity_coalesced_two).toEqual(
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s_cached_activity_coalesced_two']).find(Boolean)).toEqual(
             expect.objectContaining({
                 active: true,
                 activeAt: 21,
@@ -3394,7 +3523,7 @@ describe('socket update handling: plaintext update-session', () => {
         });
         syncPerformanceTelemetry.reset();
         storage.getState().applySessions([{ ...buildSession('s_hydrated_activity'), thinking: true, thinkingAt: 1 }]);
-        storage.getState().replaceSessionListRenderables([
+        replaceActiveSessionListRows([
             {
                 id: 's_cached_activity_timestamp_only',
                 seq: 1,

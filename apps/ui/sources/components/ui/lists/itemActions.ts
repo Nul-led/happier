@@ -17,6 +17,19 @@ export type ItemAction = {
     /** Optional testID for the inline icon pressable. */
     inlineTestID?: string;
     disabled?: boolean;
+    /** Whether this trigger currently owns an expanded anchored surface. */
+    expanded?: boolean;
+    /**
+     * The action represents the current value of a choice (a width, a sort order).
+     * Menus announce it as checked rather than disabling it — a valid value that is
+     * already applied is selected, not unavailable.
+     */
+    selected?: boolean;
+    /** Optional labelled section in the overflow menu. Ignored by inline layouts. */
+    group?: Readonly<{
+        id: string;
+        title: string;
+    }>;
     destructive?: boolean;
     color?: string;
 };

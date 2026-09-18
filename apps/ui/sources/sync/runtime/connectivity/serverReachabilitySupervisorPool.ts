@@ -502,10 +502,9 @@ export async function waitForServerReachable(params: Readonly<{
         entry.homeCarrier = params.homeCarrier ?? null;
     }
 
-    // IMPORTANT: `createManagedConnectionSupervisor.start()` will immediately create/connect a transport when the
-    // supervisor is already started but currently offline/auth_failed. For reachability supervision we must not
-    // bypass the existing probe/backoff schedule (otherwise each caller waiting for reachability can reset the
-    // offline state and cause request storms).
+    // `createManagedConnectionSupervisor.start()` now preserves an already scheduled offline reconnect. Keep the
+    // pool's narrower lifecycle guard so redundant callers do not restart an active supervisor; auth recovery below
+    // still performs an explicit restart only when its token changed.
     //
     // Only start when the supervisor has never been started (idle) or when it was explicitly stopped (shutting_down).
     // If we are stuck in auth_failed and the auth token changed, restart from a fresh initial probe.
@@ -659,14 +658,23 @@ export async function startServerReachabilitySupervisor(params: Readonly<{
         await entry.stopInFlight;
         const tokenChanged = entry.token !== params.token;
         const runtimeOriginRaw = String(params.runtimeOrigin ?? '').trim();
-        const runtimeOrigin = runtimeOriginRaw ? canonicalizeServerUrl(runtimeOriginRaw) : null;
-        if (runtimeOriginRaw && !runtimeOrigin) {
+        const canonicalRuntimeOrigin = runtimeOriginRaw ? canonicalizeServerUrl(runtimeOriginRaw) : null;
+        if (runtimeOriginRaw && !canonicalRuntimeOrigin) {
             throw new Error('Invalid server reachability runtime origin');
         }
+        // "No distinct origin" has two spellings among callers: omitting `runtimeOrigin`, and passing
+        // the canonical server URL itself. They describe the same transport, so they must produce the
+        // same stored identity — otherwise alternating callers on one entry read each other as a
+        // transport change and restart the supervisor (and the sync socket mirroring it) per request.
+        const runtimeOrigin = canonicalRuntimeOrigin === entry.serverUrl ? null : canonicalRuntimeOrigin;
         const homeCarrier = params.homeCarrier ?? null;
         // A replaced carrier is a replaced transport, exactly like a replaced
         // origin: the supervisor must re-probe rather than keep a stale verdict.
-        const transportChanged = entry.runtimeOrigin !== runtimeOrigin || entry.homeCarrier !== homeCarrier;
+        // A carrier is spelled by the EndpointId its transport cryptographically proves, never by
+        // object identity, so a re-leased carrier for the same endpoint is that same transport
+        // written a second way and must not read as a replacement.
+        const transportChanged = entry.runtimeOrigin !== runtimeOrigin
+            || (entry.homeCarrier?.endpointId ?? null) !== (homeCarrier?.endpointId ?? null);
         entry.token = params.token;
         entry.runtimeOrigin = runtimeOrigin;
         entry.homeCarrier = homeCarrier;

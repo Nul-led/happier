@@ -30,8 +30,12 @@ vi.mock('@/auth/pairing/pairingSecret', () => ({
     })),
 }));
 
-const pairingStartMock = vi.fn(async () => ({ ok: true, data: { pairId: 'pair_123', expiresAt: new Date(Date.now() + 60_000).toISOString() } }));
-const pairingStatusMock = vi.fn(async () => ({ ok: true, data: { state: 'pending', pairId: 'pair_123', expiresAt: new Date(Date.now() + 60_000).toISOString() } }));
+let defaultPairingExpiresAt = '';
+const pairingStartMock = vi.fn(async (..._args: unknown[]) => {
+    defaultPairingExpiresAt = new Date(Date.now() + 60_000).toISOString();
+    return { ok: true, data: { pairId: 'pair_123', expiresAt: defaultPairingExpiresAt } };
+});
+const pairingStatusMock = vi.fn(async () => ({ ok: true, data: { state: 'pending', pairId: 'pair_123', expiresAt: defaultPairingExpiresAt } }));
 const pairingConsumeMock = vi.fn(async () => ({ ok: true as const }));
 vi.mock('@/sync/api/account/apiPairingAuth', () => ({
     pairingStart: pairingStartMock,
@@ -40,8 +44,12 @@ vi.mock('@/sync/api/account/apiPairingAuth', () => ({
 }));
 
 const endpointFetchMock = vi.hoisted(() => vi.fn(async () => new Response(null, { status: 200 })));
+const endpointRequestContextMock = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/http/client', () => ({
-    createServerFetchAtEndpoint: () => endpointFetchMock,
+    createServerFetchAtEndpoint: (context: unknown) => {
+        endpointRequestContextMock(context);
+        return endpointFetchMock;
+    },
     serverFetch: vi.fn(() => { throw new Error('Focused Home request is forbidden'); }),
 }));
 
@@ -77,16 +85,27 @@ let cachedServerIdentityId: string | null = null;
 let cachedSnapshotOnlyUnscoped = false;
 let boundQrV2Enabled = true;
 let profileReady = true;
+/**
+ * When set, the Home's shared feature request never answers and only completes after
+ * this attempt bound — the real client's `REQUEST_ATTEMPT_TIMEOUT_MS`.
+ */
+let unansweredFeatureProbeAttemptMs: number | null = null;
 let descriptorOverride: import('@happier-dev/protocol').HomeConnectionDescriptorV1 | null = null;
 const serverProfileMocks = vi.hoisted(() => ({
     getServerProfileById: vi.fn(() => profileReady ? ({ id: 'srv-a' }) : null),
     buildHomeConnectionDescriptorForProfile: vi.fn(),
+    reconcileServerProfileHomeConnectionDescriptor: vi.fn(async () => ({ kind: 'applied' as const, profile: { id: 'srv-a' } })),
 }));
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getServerProfileById: serverProfileMocks.getServerProfileById,
     buildHomeConnectionDescriptorForProfile: serverProfileMocks.buildHomeConnectionDescriptorForProfile,
+    reconcileServerProfileHomeConnectionDescriptor: serverProfileMocks.reconcileServerProfileHomeConnectionDescriptor,
 }));
+const observeAuthenticatedServerFeaturesFreshMock = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
+    // Mirrors the real module's exported foreground budget; the hook imports it, so the
+    // fake must provide it or the module graph fails at import.
+    FOREGROUND_FEATURE_PROBE_WAIT_BUDGET_MS: 800,
     getCachedServerFeaturesSnapshot: (params?: { serverId?: string }) =>
         cachedSnapshotOnlyUnscoped && params?.serverId
             ? null
@@ -101,7 +120,16 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
                 },
             }
             : null,
-    getServerFeaturesSnapshot: async () => {
+    // Mirrors the real caller-budget contract (`serverFeaturesClient.ts`
+    // `waitForServerFeaturesSnapshot`): a caller that passes `timeoutMs` is released
+    // with a timeout snapshot while the shared request keeps running, and a caller
+    // that passes none waits out that request's own long attempt bound.
+    getServerFeaturesSnapshot: async (params?: { timeoutMs?: number }) => {
+        if (unansweredFeatureProbeAttemptMs !== null) {
+            const waitMs = params?.timeoutMs ?? unansweredFeatureProbeAttemptMs;
+            await new Promise((resolve) => { setTimeout(resolve, waitMs); });
+            return { status: 'error', reason: 'timeout' };
+        }
         profileReady = true;
         return cachedCanonicalServerUrl
             ? {
@@ -114,6 +142,7 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
             }
             : { status: 'error', reason: 'network' };
     },
+    observeAuthenticatedServerFeaturesFresh: observeAuthenticatedServerFeaturesFreshMock,
 }));
 
 vi.mock('@/auth/enrollment/homeEnrollmentTransport', async (importOriginal) => {
@@ -141,15 +170,20 @@ vi.mock('@/auth/enrollment/homeEnrollmentTransport', async (importOriginal) => {
 
 describe('usePairingSession (pairing deep link server URL)', () => {
     beforeEach(() => {
-        pairingStartMock.mockClear();
+        pairingStartMock.mockReset();
+        pairingStartMock.mockImplementation(async () => {
+            defaultPairingExpiresAt = new Date(Date.now() + 60_000).toISOString();
+            return { ok: true, data: { pairId: 'pair_123', expiresAt: defaultPairingExpiresAt } };
+        });
         pairingStatusMock.mockReset();
         pairingStatusMock.mockImplementation(async () => ({
             ok: true,
-            data: { state: 'pending', pairId: 'pair_123', expiresAt: new Date(Date.now() + 60_000).toISOString() },
+            data: { state: 'pending', pairId: 'pair_123', expiresAt: defaultPairingExpiresAt },
         }));
         pairingConsumeMock.mockClear();
         endpointFetchMock.mockReset();
         endpointFetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+        endpointRequestContextMock.mockClear();
         getCredentialsForServerUrlMock.mockClear();
         enrollmentTransportCloseMock.mockClear();
         cachedCanonicalServerUrl = null;
@@ -157,12 +191,15 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         cachedSnapshotOnlyUnscoped = false;
         boundQrV2Enabled = true;
         profileReady = true;
+        unansweredFeatureProbeAttemptMs = null;
         activeServerUrl = 'http://localhost:53288';
         activeShareableServerUrl = null;
         activeShareableServerUrlValidatedAgainstServerUrl = null;
         activeRuntimeOrigin = null;
         descriptorOverride = null;
         serverProfileMocks.getServerProfileById.mockClear();
+        serverProfileMocks.reconcileServerProfileHomeConnectionDescriptor.mockReset();
+        serverProfileMocks.reconcileServerProfileHomeConnectionDescriptor.mockResolvedValue({ kind: 'applied', profile: { id: 'srv-a' } });
         serverProfileMocks.buildHomeConnectionDescriptorForProfile.mockReset();
         serverProfileMocks.buildHomeConnectionDescriptorForProfile.mockImplementation(() => {
             if (descriptorOverride) return descriptorOverride;
@@ -186,7 +223,188 @@ describe('usePairingSession (pairing deep link server URL)', () => {
                 homeConnectionDescriptor: serverProfileMocks.buildHomeConnectionDescriptorForProfile(),
             };
         });
+        observeAuthenticatedServerFeaturesFreshMock.mockReset();
+        observeAuthenticatedServerFeaturesFreshMock.mockImplementation(async () => {
+            const descriptor = serverProfileMocks.buildHomeConnectionDescriptorForProfile();
+            return descriptor
+                ? {
+                    status: 'ready',
+                    serverIdentityId: descriptor.homeServerIdentityId,
+                    features: {
+                        features: { auth: { pairing: { boundQrV2: { enabled: boundQrV2Enabled } } } },
+                        capabilities: { server: { canonicalServerUrl: descriptor.canonicalServerUrl } },
+                        homeConnectionDescriptor: descriptor,
+                    },
+                }
+                : { status: 'error', reason: 'network' };
+        });
         appState.currentState = 'active';
+    });
+
+    it('issues the direct QR from the freshly authenticated exact descriptor instead of the retained profile descriptor', async () => {
+        cachedCanonicalServerUrl = 'https://home-a.test';
+        cachedServerIdentityId = 'srv_home_a';
+        activeServerUrl = cachedCanonicalServerUrl;
+        descriptorOverride = {
+            v: 1,
+            homeServerIdentityId: 'srv_home_a',
+            canonicalServerUrl: cachedCanonicalServerUrl,
+            revision: 1,
+            endpoints: [{ kind: 'https', url: 'https://old-ingress.example.test' }],
+        };
+        const freshDescriptor = {
+            ...descriptorOverride,
+            revision: 2,
+            endpoints: [{ kind: 'https' as const, url: 'https://new-ingress.example.test' }],
+        };
+        observeAuthenticatedServerFeaturesFreshMock.mockResolvedValueOnce({
+            status: 'ready',
+            serverIdentityId: 'srv_home_a',
+            features: {
+                features: { auth: { pairing: { boundQrV2: { enabled: true } } } },
+                capabilities: { server: { canonicalServerUrl: cachedCanonicalServerUrl } },
+                homeConnectionDescriptor: freshDescriptor,
+            },
+        });
+
+        const { parseHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
+        const { usePairingSession } = await import('./usePairingSession');
+        let hookApi: ReturnType<typeof usePairingSession> | null = null;
+        function Probe() { hookApi = usePairingSession({ enabled: true, isAuthenticated: true }); return null; }
+        const screen = await renderScreen(<Probe />);
+        try {
+            await act(async () => {
+                await expect(hookApi!.startPairing()).resolves.toEqual({ ok: true });
+            });
+
+            expect(observeAuthenticatedServerFeaturesFreshMock).toHaveBeenCalledWith({ request: expect.any(Function) });
+            expect(endpointRequestContextMock).toHaveBeenCalledWith(expect.objectContaining({
+                endpointUrl: cachedCanonicalServerUrl,
+                serverId: 'srv_home_a',
+                credentials: { token: 'captured-home-token' },
+            }));
+            expect(serverProfileMocks.reconcileServerProfileHomeConnectionDescriptor).toHaveBeenCalledWith({
+                serverUrl: cachedCanonicalServerUrl,
+                observedServerIdentityId: 'srv_home_a',
+                descriptor: freshDescriptor,
+                observation: 'exact',
+            });
+            expect(parseHomeQrInviteDeepLink(hookApi!.deepLink ?? '')?.invite.home).toEqual(freshDescriptor);
+            expect(pairingStartMock).toHaveBeenCalledWith(
+                expect.anything(),
+                expect.objectContaining({ descriptor: freshDescriptor }),
+                expect.anything(),
+            );
+        } finally {
+            act(() => screen.tree.unmount());
+        }
+    });
+
+    it.each([
+        {
+            name: 'the authenticated observation is unavailable',
+            observation: { status: 'error', reason: 'network' },
+        },
+        {
+            name: 'the observation exposes only the public descriptor projection',
+            observation: {
+                status: 'ready',
+                serverIdentityId: 'srv_home_a',
+                features: {
+                    features: { auth: { pairing: { boundQrV2: { enabled: true } } } },
+                    capabilities: { server: { canonicalServerUrl: 'https://home-a.test' } },
+                },
+            },
+        },
+        {
+            name: 'the authenticated descriptor identity contradicts the focused Home',
+            observation: {
+                status: 'ready',
+                serverIdentityId: 'srv_other_home',
+                features: {
+                    features: { auth: { pairing: { boundQrV2: { enabled: true } } } },
+                    capabilities: { server: { canonicalServerUrl: 'https://home-a.test' } },
+                    homeConnectionDescriptor: {
+                        v: 1,
+                        homeServerIdentityId: 'srv_other_home',
+                        canonicalServerUrl: 'https://home-a.test',
+                        revision: 2,
+                        endpoints: [{ kind: 'https', url: 'https://home-a.test' }],
+                    },
+                },
+            },
+        },
+    ])('fails closed before direct QR creation when $name', async ({ observation }) => {
+        cachedCanonicalServerUrl = 'https://home-a.test';
+        cachedServerIdentityId = 'srv_home_a';
+        activeServerUrl = cachedCanonicalServerUrl;
+        observeAuthenticatedServerFeaturesFreshMock.mockResolvedValueOnce(observation);
+
+        const { usePairingSession } = await import('./usePairingSession');
+        let hookApi: ReturnType<typeof usePairingSession> | null = null;
+        function Probe() { hookApi = usePairingSession({ enabled: true, isAuthenticated: true }); return null; }
+        const screen = await renderScreen(<Probe />);
+        try {
+            await act(async () => {
+                await expect(hookApi!.startPairing()).resolves.toEqual({ ok: false, status: 412 });
+            });
+            expect(pairingStartMock).not.toHaveBeenCalled();
+            expect(hookApi!.deepLink).toBeNull();
+        } finally {
+            act(() => screen.tree.unmount());
+        }
+    });
+
+    it('gives up the QR generating state when the Home feature probe never answers', async () => {
+        cachedCanonicalServerUrl = 'https://home-a.test';
+        cachedServerIdentityId = 'srv_home_a';
+        activeServerUrl = cachedCanonicalServerUrl;
+        // The Home accepts the request and never responds; the shared probe would keep
+        // trying for a full minute. A person is watching the QR placeholder, so this
+        // flow must fail over on its own budget instead.
+        unansweredFeatureProbeAttemptMs = 60_000;
+
+        const { usePairingSession } = await import('./usePairingSession');
+        let hookApi: ReturnType<typeof usePairingSession> | null = null;
+        function Probe() { hookApi = usePairingSession({ enabled: true, isAuthenticated: true }); return null; }
+        const screen = await renderScreen(<Probe />);
+        try {
+            await act(async () => {
+                await expect(hookApi!.startPairing()).resolves.toEqual({ ok: false, status: 412 });
+            });
+            expect(pairingStartMock).not.toHaveBeenCalled();
+            expect(hookApi!.deepLink).toBeNull();
+            expect(hookApi!.isStarting).toBe(false);
+        } finally {
+            act(() => screen.tree.unmount());
+        }
+        // The assertion that matters is the deadline itself: without a caller budget this
+        // resolves only after the 60 s attempt bound above.
+    }, 5_000);
+
+    it('fails closed before direct QR creation when the exact descriptor contradicts retained profile authority', async () => {
+        cachedCanonicalServerUrl = 'https://home-a.test';
+        cachedServerIdentityId = 'srv_home_a';
+        activeServerUrl = cachedCanonicalServerUrl;
+        serverProfileMocks.reconcileServerProfileHomeConnectionDescriptor.mockResolvedValueOnce({
+            kind: 'conflict',
+            code: 'equal_revision_conflict',
+            profile: { id: 'srv-a' },
+        });
+
+        const { usePairingSession } = await import('./usePairingSession');
+        let hookApi: ReturnType<typeof usePairingSession> | null = null;
+        function Probe() { hookApi = usePairingSession({ enabled: true, isAuthenticated: true }); return null; }
+        const screen = await renderScreen(<Probe />);
+        try {
+            await act(async () => {
+                await expect(hookApi!.startPairing()).resolves.toEqual({ ok: false, status: 412 });
+            });
+            expect(pairingStartMock).not.toHaveBeenCalled();
+            expect(hookApi!.deepLink).toBeNull();
+        } finally {
+            act(() => screen.tree.unmount());
+        }
     });
 
     it('starts from the ready active runtime snapshot when no profile-scoped cache entry exists', async () => {
@@ -360,7 +578,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             );
             expect(hookApi!.presentation).toEqual({ phase: 'invalid_request' });
             expect(hookApi!.deepLink).toBeNull();
-            expect(enrollmentTransportCloseMock).toHaveBeenCalledTimes(1);
+            expect(enrollmentTransportCloseMock).toHaveBeenCalledTimes(2);
         } finally {
             act(() => screen.tree.unmount());
         }
@@ -374,9 +592,10 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
         pairingStartMock.mockImplementationOnce(async () => {
             nowMs += 1_500;
+            defaultPairingExpiresAt = new Date(nowMs + 600_000).toISOString();
             return {
                 ok: true,
-                data: { pairId: 'pair_123', expiresAt: new Date(nowMs + 600_000).toISOString() },
+                data: { pairId: 'pair_123', expiresAt: defaultPairingExpiresAt },
             };
         });
 
@@ -442,6 +661,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
                     serverId: 'srv-a',
                     descriptor: expect.objectContaining({ homeServerIdentityId: 'srv_home_a' }),
                 }),
+                expect.objectContaining({ signal: expect.any(AbortSignal) }),
             );
         } finally {
             act(() => screen.tree.unmount());
@@ -645,15 +865,13 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('does not publish a start that resolves after the session is disabled', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        let resolveStart!: () => void;
-        pairingStartMock.mockImplementationOnce(() => new Promise((resolve) => {
-            resolveStart = () => resolve({
-                ok: true,
-                data: {
-                    pairId: 'pair_stale',
-                    expiresAt: new Date(Date.now() + 60_000).toISOString(),
-                },
-            });
+        let startSignal: AbortSignal | undefined;
+        pairingStartMock.mockImplementationOnce((...args: unknown[]) => new Promise((_resolve, reject) => {
+            const options = args[2] as Readonly<{ signal?: AbortSignal }> | undefined;
+            startSignal = options?.signal;
+            startSignal?.addEventListener('abort', () => {
+                reject(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
+            }, { once: true });
         }));
 
         const { usePairingSession } = await import('./usePairingSession');
@@ -674,10 +892,10 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         await act(async () => {
             screen.tree.update(<Probe enabled={false} />);
         });
+        expect(startSignal?.aborted).toBe(true);
         expect(hookApi!.deepLink).toBeNull();
 
         await act(async () => {
-            resolveStart();
             await expect(startPromise).resolves.toEqual({ ok: false, status: 409 });
         });
 
@@ -685,12 +903,15 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         expect(hookApi!.status).toBeNull();
         expect(hookApi!.pairingContext).toBeNull();
         expect(hookApi!.isStarting).toBe(false);
-        expect(enrollmentTransportCloseMock).toHaveBeenCalledTimes(1);
+        expect(enrollmentTransportCloseMock).toHaveBeenCalledTimes(2);
         act(() => screen.tree.unmount());
     });
 
     it('pauses pairing status polling while backgrounded', async () => {
         vi.useFakeTimers();
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+        let observedNowMs = Date.now();
+        const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => observedNowMs++);
         cachedCanonicalServerUrl = 'https://api.example.test';
         cachedServerIdentityId = 'srv_home_a';
         appState.currentState = 'active';
@@ -720,10 +941,15 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             });
 
             expect(pairingStatusMock).toHaveBeenCalledTimes(0);
+            expect(pairingConsumeMock).toHaveBeenCalledTimes(0);
+            expect(hookApi!.completionState).toBe('pending');
 
             documentStub.visibilityState = 'visible';
             await act(async () => {
-                await vi.advanceTimersByTimeAsync(1_100);
+                // The hidden poll is classified as a transient attempt by the
+                // canonical lifecycle, so its next slot uses the second
+                // bounded-backoff step (2s with deterministic zero jitter).
+                await vi.advanceTimersByTimeAsync(2_100);
             });
 
             expect(pairingStatusMock).toHaveBeenCalled();
@@ -731,6 +957,8 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             act(() => {
                 tree?.unmount();
             });
+            nowSpy.mockRestore();
+            randomSpy.mockRestore();
             vi.useRealTimers();
             globalWithDocument.document = previousDocument;
         }
@@ -837,7 +1065,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             expect(hookApi!.completionState).toBe('expired');
             expect(hookApi!.deepLink).toBeNull();
             expect(pairingStatusMock).toHaveBeenCalledTimes(1);
-            expect(enrollmentTransportCloseMock).toHaveBeenCalledTimes(1);
+            expect(enrollmentTransportCloseMock).toHaveBeenCalledTimes(2);
         } finally {
             act(() => screen.tree.unmount());
             vi.useRealTimers();
@@ -992,20 +1220,22 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             },
         });
         let resolveCredentials!: () => void;
-        getCredentialsForServerUrlMock.mockImplementationOnce(() => new Promise((resolve) => {
-            resolveCredentials = () => resolve({ token: 'captured-home-token' });
-        }));
+        getCredentialsForServerUrlMock
+            .mockResolvedValueOnce({ token: 'captured-home-token' })
+            .mockImplementationOnce(() => new Promise((resolve) => {
+                resolveCredentials = () => resolve({ token: 'captured-home-token' });
+            }));
 
         const { usePairingSession } = await import('./usePairingSession');
         let hookApi: ReturnType<typeof usePairingSession> | null = null;
         function Probe() { hookApi = usePairingSession({ enabled: true, isAuthenticated: true }); return null; }
         const screen = await renderScreen(<Probe />);
         await act(async () => { await hookApi!.startPairing(); });
-        await vi.waitFor(() => expect(getCredentialsForServerUrlMock).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(getCredentialsForServerUrlMock).toHaveBeenCalledTimes(2));
 
         act(() => screen.tree.unmount());
         resolveCredentials();
-        await vi.waitFor(() => expect(enrollmentTransportCloseMock).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(enrollmentTransportCloseMock).toHaveBeenCalledTimes(2));
         expect(endpointFetchMock).not.toHaveBeenCalled();
     });
 
@@ -1084,7 +1314,10 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             await act(async () => { await hookApi!.startPairing(); });
             await vi.waitFor(() => expect(hookApi!.completionState).toBe('invalid_request'));
             expect(endpointFetchMock).not.toHaveBeenCalled();
-            expect(getCredentialsForServerUrlMock).not.toHaveBeenCalled();
+            expect(getCredentialsForServerUrlMock).toHaveBeenCalledWith(
+                'https://home-a.test',
+                { serverId: 'srv_home_a' },
+            );
             expect(pairingConsumeMock).toHaveBeenCalledTimes(1);
             expect(hookApi!.pairingContext).toBeNull();
             expect(hookApi!.deepLink).toBeNull();

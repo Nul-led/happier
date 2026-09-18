@@ -8,6 +8,10 @@ class HappierCryptoWorkerModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("HappierCryptoWorker")
 
+    AsyncFunction("derivePasswordEnvelopeKey") { request: PasswordEnvelopeKeyRequest ->
+      return@AsyncFunction HappierCryptoWorkerPassword.derivePasswordEnvelopeKey(request)
+    }.runOnQueue(Queues.DEFAULT)
+
     AsyncFunction("getCapabilities") {
       return@AsyncFunction HappierCryptoWorker.capabilities()
     }.runOnQueue(Queues.DEFAULT)

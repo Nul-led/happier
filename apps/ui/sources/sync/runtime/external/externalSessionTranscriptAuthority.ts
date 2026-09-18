@@ -2,6 +2,7 @@ import type {
     ExternalSessionOperationProgressV1,
     ExternalSessionOperationSharedPresentationV1,
 } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 
 import {
     createExternalSessionOperationPresentationIdentity,
@@ -162,7 +163,9 @@ export function createExternalSessionTranscriptLiveSourceKey(
 ): string | null {
     const machineId = readNonEmptyString(identity.machineId);
     const agentId = readNonEmptyString(identity.agentId);
-    const remoteSessionId = readNonEmptyString(identity.remoteSessionId);
+    // The provider remote/session id is opaque: presence is decided without
+    // changing its bytes, so padded/newline variants stay distinct keys.
+    const remoteSessionId = readNonBlankOpaqueIdentifier(identity.remoteSessionId);
     const linkGeneration = readNonEmptyString(identity.linkGeneration);
     const sourceKind = readNonEmptyString(identity.sourceKind);
     if (!machineId || !agentId || !remoteSessionId || !linkGeneration || !sourceKind) {
@@ -227,7 +230,8 @@ export function createExternalSessionTranscriptLeaseScopeKeyFromLink(
 
     const machineId = readNonEmptyString(link.machineId);
     const agentId = readNonEmptyString(link.agentId);
-    const remoteSessionId = readNonEmptyString(link.remoteSessionId);
+    // Same opaque-id contract as the live-source key above.
+    const remoteSessionId = readNonBlankOpaqueIdentifier(link.remoteSessionId);
     const sourceKind = readNonEmptyString(link.source.kind);
     if (!machineId || !agentId || !remoteSessionId || !sourceKind) {
         return null;

@@ -2,6 +2,7 @@ package dev.happier.hostedwebframe
 
 import java.nio.file.Files
 import java.security.MessageDigest
+import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -13,6 +14,26 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HostedWebArtifactRegistryTest {
+  @Test
+  fun `inline document token is process-local and synchronously revoked`() {
+    val token = "hpa_${"a".repeat(64)}"
+    val html = "<!doctype html><main>current</main>"
+    HostedInlineDocumentRegistry.clear()
+
+    assertTrue(HostedInlineDocumentRegistry.register(mapOf("token" to token, "html" to html)))
+    assertEquals("https://$token.plugins.happier.dev", HostedInlineDocumentRegistry.originFor(token))
+    HostedInlineDocumentRegistry.withResolved(token, "/") { response ->
+      assertEquals(200, response.status)
+      assertTrue(response.bytes?.contentEquals(html.toByteArray()) == true)
+    }
+
+    assertTrue(HostedInlineDocumentRegistry.unregister(token))
+    assertNull(HostedInlineDocumentRegistry.originFor(token))
+    HostedInlineDocumentRegistry.withResolved(token, "/") { response ->
+      assertEquals(404, response.status)
+    }
+  }
+
   @Test
   fun `splits Protocol HTTP content types into Android MIME and nullable charset facts`() {
     assertEquals(
@@ -104,6 +125,32 @@ class HostedWebArtifactRegistryTest {
       assertEquals(200, registry.resolve(token, "/assets/app.js").status)
       writeResource(cacheRoot, scriptStoredFileName, mutatedBytes)
 
+      assertEquals(404, registry.resolve(token, "/assets/app.js").status)
+    } finally {
+      cacheRoot.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `current-load bytes remain token-scoped and need no persistent cache record`() {
+    val cacheRoot = Files.createTempDirectory("hosted-web-frame-current-load-test")
+    try {
+      val registry = HostedWebArtifactRegistry(cacheRoot.toFile())
+      val token = "hpat_current_load_token"
+      val bytes = "console.log('current load')".toByteArray()
+      val input = currentLoadRegistration(token, bytes)
+      val invalidInput = currentLoadRegistration(
+        token,
+        bytes,
+        digest = "sha256:${"0".repeat(64)}"
+      )
+
+      assertFalse(registry.register(invalidInput))
+      assertEquals(404, registry.resolve(token, "/assets/app.js").status)
+      assertTrue(registry.register(input))
+      assertTrue(registry.resolve(token, "/assets/app.js").bytes?.contentEquals(bytes) == true)
+      assertEquals(0, cacheRoot.toFile().walkTopDown().drop(1).count())
+      assertTrue(registry.unregister(token))
       assertEquals(404, registry.resolve(token, "/assets/app.js").status)
     } finally {
       cacheRoot.toFile().deleteRecursively()
@@ -233,27 +280,30 @@ class HostedWebArtifactRegistryTest {
   private fun registration(token: String, includeFallback: Boolean = false): Map<String, Any?> = mapOf(
     "token" to token,
     "storagePartitionId" to "hpa_${"e".repeat(64)}",
-    "storageLocator" to mapOf(
-      "namespace" to "happier-plugin-ui-artifacts-v1",
-      "accountKeyHash" to accountKeyHash,
-      "artifactKeyHash" to artifactKeyHash
-    ),
-    "resources" to buildList {
-      add(mapOf(
+    "storage" to mapOf(
+      "kind" to "persistent",
+      "locator" to mapOf(
+        "namespace" to "happier-plugin-ui-artifacts-v1",
+        "accountKeyHash" to accountKeyHash,
+        "artifactKeyHash" to artifactKeyHash
+      ),
+      "resources" to buildList {
+        add(mapOf(
           "resourceId" to "r0",
           "storedFileName" to scriptStoredFileName,
           "digest" to sha256Digest(scriptBytes),
           "byteSize" to scriptBytes.size
-      ))
-      if (includeFallback) {
-        add(mapOf(
-            "resourceId" to "r1",
-            "storedFileName" to entryStoredFileName,
-            "digest" to sha256Digest(entryBytes),
-            "byteSize" to entryBytes.size
         ))
+        if (includeFallback) {
+          add(mapOf(
+              "resourceId" to "r1",
+              "storedFileName" to entryStoredFileName,
+              "digest" to sha256Digest(entryBytes),
+              "byteSize" to entryBytes.size
+          ))
+        }
       }
-    },
+    ),
     "policyTable" to buildMap<String, Any?> {
       put("version", 1)
       put("routes", listOf(
@@ -294,6 +344,41 @@ class HostedWebArtifactRegistryTest {
         ))
       }
     }
+  )
+
+  private fun currentLoadRegistration(
+    token: String,
+    bytes: ByteArray,
+    digest: String = sha256Digest(bytes)
+  ): Map<String, Any?> = mapOf(
+    "token" to token,
+    "storagePartitionId" to "hpa_${"e".repeat(64)}",
+    "storage" to mapOf(
+      "kind" to "currentLoad",
+      "resources" to listOf(mapOf(
+        "resourceId" to "r0",
+        "digest" to digest,
+        "byteSize" to bytes.size,
+        "bytesBase64" to Base64.getEncoder().encodeToString(bytes)
+      ))
+    ),
+    "policyTable" to mapOf(
+      "version" to 1,
+      "routes" to listOf(mapOf(
+        "path" to "assets/app.js",
+        "outcome" to mapOf(
+          "kind" to "content",
+          "resourceId" to "r0",
+          "contentType" to "text/javascript; charset=utf-8",
+          "headers" to mapOf(
+            "Cache-Control" to "no-store",
+            "Content-Security-Policy" to "default-src 'none'",
+            "ETag" to "\"$digest\"",
+            "X-Content-Type-Options" to "nosniff"
+          )
+        )
+      ))
+    )
   )
 
   private fun sha256Digest(bytes: ByteArray): String {

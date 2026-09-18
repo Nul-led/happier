@@ -18,10 +18,15 @@ describe('localOnlyAccountSettings', () => {
             lastUsedBackendTarget: { kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' },
             lastNewSessionAgentPickerViewV1: { kind: 'favoriteModels' },
             newSessionOrdinaryEntryDraftId: '4a506d8a-85bd-4c42-a662-6f502f3acc45',
+            clientEncryptionRequirementLocalV1: 'require_e2ee',
+            clientEncryptionRequirementV1: 'require_e2ee',
             analyticsOptOut: true,
         } as any);
 
-        expect(stripped).toEqual({ analyticsOptOut: true });
+        expect(stripped).toEqual({
+            clientEncryptionRequirementV1: 'require_e2ee',
+            analyticsOptOut: true,
+        });
     });
 
     it('drops every derived runtime projection from untyped pending input', () => {
@@ -44,12 +49,14 @@ describe('localOnlyAccountSettings', () => {
             lastUsedAgent: 'codex',
             lastUsedBackendTarget: { kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' },
             lastNewSessionAgentPickerViewV1: { kind: 'favoriteModels' },
+            clientEncryptionRequirementLocalV1: 'require_e2ee',
         });
         const picked = pickLocalOnlyAccountSettings(settings);
         expect(picked).toMatchObject({
             lastUsedAgent: 'codex',
             lastUsedBackendTarget: { kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' },
             lastNewSessionAgentPickerViewV1: { kind: 'favoriteModels' },
+            clientEncryptionRequirementLocalV1: 'require_e2ee',
         });
     });
 
@@ -58,6 +65,8 @@ describe('localOnlyAccountSettings', () => {
         expect(LOCAL_ACCOUNT_SETTING_DEFINITIONS.lastUsedBackendTarget.storageScope).toBe('local');
         expect(LOCAL_ACCOUNT_SETTING_DEFINITIONS.lastNewSessionAgentPickerViewV1.storageScope).toBe('local');
         expect(LOCAL_ACCOUNT_SETTING_DEFINITIONS.newSessionOrdinaryEntryDraftId.storageScope).toBe('local');
+        expect(LOCAL_ACCOUNT_SETTING_DEFINITIONS.clientEncryptionRequirementLocalV1.storageScope).toBe('local');
+        expect(ACCOUNT_SETTING_ARTIFACTS.definitions.clientEncryptionRequirementV1.storageScope).toBe('account');
     });
 
     it('keeps every device-local Account setting out of the Protocol persistence catalog', () => {
@@ -70,6 +79,7 @@ describe('localOnlyAccountSettings', () => {
             'serverSelectionActiveTargetKind',
             'serverSelectionActiveTargetId',
             'terminalConnectLegacySecretExportEnabled',
+            'clientEncryptionRequirementLocalV1',
         ];
 
         for (const key of localOnlyKeys) {

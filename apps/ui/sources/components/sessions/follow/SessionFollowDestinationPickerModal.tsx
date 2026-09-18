@@ -1,0 +1,252 @@
+import type { SessionListQueryV1 } from '@happier-dev/protocol';
+import * as React from 'react';
+import { View } from 'react-native';
+
+import { SelectionList, type SelectionListOption, type SelectionListStep } from '@/components/ui/selectionList';
+import { Text } from '@/components/ui/text/Text';
+import { Item } from '@/components/ui/lists/Item';
+import type { CustomModalInjectedProps } from '@/modal';
+import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
+import { setSessionFollowSource } from '@/sync/api/session/sessionFollowSourcesApi';
+import { resolveSessionListQueryPresentation } from '@/sync/domains/session/listing/sessionListIndexPresentation';
+import { useSessionListQuerySourceState } from '@/sync/domains/session/listing/useSessionListQuerySourceState';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
+import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import { useMachineListByServerId, useSessionListRowRenderablesForItems } from '@/sync/domains/state/storage';
+import {
+    isServerReachabilityNetworkAllowed,
+    subscribeServerReachabilityNetworkAllowed,
+} from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { t } from '@/text';
+import { getSessionName, getSessionSubtitle } from '@/utils/sessions/sessionUtils';
+
+import {
+    resolveSessionFollowDestinationTargets,
+    resolveSessionFollowSourceTargets,
+} from './resolveSessionFollowDestinationTargets';
+import {
+    buildSessionFollowPickerContextTitle,
+    resolveSessionFollowPickerPresentation,
+} from './sessionFollowPickerPresentation';
+import { prepareSessionFollowSourceKey, type SessionFollowSourceKeyPreparationResult } from './prepareSessionFollowSourceKey';
+import type { SessionFollowSourcePreparationChange } from './openSessionFollowDestinationPicker';
+
+export type SessionFollowDestinationPickerModalProps = CustomModalInjectedProps & (
+    | Readonly<{ source: SessionAddress; destination?: never; onChanged?: (change?: SessionFollowSourcePreparationChange) => void | Promise<void> }>
+    | Readonly<{ destination: SessionAddress; source?: never; onChanged?: (change?: SessionFollowSourcePreparationChange) => void | Promise<void> }>
+);
+
+const SESSION_FOLLOW_PICKER_QUERY: SessionListQueryV1 = {
+    v: 1,
+    storage: 'active',
+    includeInactive: true,
+    scope: 'all_accessible',
+    attention: 'any',
+    audiences: [],
+    tagIds: [],
+    limit: 200,
+};
+
+function readSessionItems(
+    itemsByServerId: Readonly<Record<string, ReadonlyArray<SessionListIndexItem> | null | undefined>>,
+    serverId: string,
+): Extract<SessionListIndexItem, { type: 'session' }>[] {
+    return (itemsByServerId[serverId] ?? [])
+        .filter((item): item is Extract<SessionListIndexItem, { type: 'session' }> => item.type === 'session');
+}
+
+export const SessionFollowDestinationPickerModal = React.memo(function SessionFollowDestinationPickerModal(
+    props: SessionFollowDestinationPickerModalProps,
+) {
+    const fixedAddress: SessionAddress = props.source ?? props.destination;
+    const choosingDestination = props.source !== undefined;
+    const title = choosingDestination
+        ? t('session.follow.sources.add')
+        : t('session.follow.sources.addSource');
+    useModalCardChrome(props.setChrome, React.useMemo(() => ({
+        kind: 'card' as const,
+        title,
+        dimensions: { width: 560, maxHeightRatio: 0.9, size: 'lg' as const },
+    }), [title]));
+
+    const queryHomes = React.useMemo(() => [{
+        serverId: fixedAddress.serverId,
+        query: SESSION_FOLLOW_PICKER_QUERY,
+    }], [fixedAddress.serverId]);
+    const querySource = useSessionListQuerySourceState({ enabled: true, homes: queryHomes });
+    const itemsByServerId = querySource.byServerId;
+    const items = React.useMemo(
+        () => readSessionItems(itemsByServerId, fixedAddress.serverId),
+        [fixedAddress.serverId, itemsByServerId],
+    );
+    const renderables = useSessionListRowRenderablesForItems(items);
+    const machinesByServerId = useMachineListByServerId();
+    const online = React.useSyncExternalStore(
+        React.useCallback((listener) => subscribeServerReachabilityNetworkAllowed(() => listener()), []),
+        isServerReachabilityNetworkAllowed,
+        isServerReachabilityNetworkAllowed,
+    );
+    const candidates = React.useMemo(() => items.flatMap((item) => {
+        const session = renderables.get(sessionAddressKey({
+            serverId: fixedAddress.serverId,
+            sessionId: item.sessionId,
+        }));
+        return session ? [{ ...session, serverId: fixedAddress.serverId }] : [];
+    }), [fixedAddress.serverId, items, renderables]);
+    const destinations = React.useMemo(() => {
+        const eligible = choosingDestination
+            ? resolveSessionFollowDestinationTargets({ source: fixedAddress, sessions: candidates })
+            : resolveSessionFollowSourceTargets({ destination: fixedAddress, sessions: candidates });
+        const eligibleIds = new Set(eligible.map((candidate) => candidate.id));
+        return candidates.filter((candidate) => eligibleIds.has(candidate.id));
+    }, [candidates, choosingDestination, fixedAddress]);
+    const fixedSession = candidates.find((candidate) => candidate.id === fixedAddress.sessionId) ?? null;
+    const homeProfile = getServerProfileById(fixedAddress.serverId);
+    const contextTitle = buildSessionFollowPickerContextTitle({
+        actionTitle: title,
+        sessionTitle: fixedSession ? getSessionName(fixedSession) : null,
+        homeName: homeProfile?.name ?? null,
+    });
+    const [saving, setSaving] = React.useState(false);
+    const [failed, setFailed] = React.useState(false);
+    const [committedRelation, setCommittedRelation] = React.useState<Readonly<{
+        sourceSessionId: string;
+        destinationSessionId: string;
+    }> | null>(null);
+    const [preparation, setPreparation] = React.useState<'queued' | 'preparing' | SessionFollowSourceKeyPreparationResult | null>(null);
+    const destinationForPreparation = committedRelation
+        ? candidates.find((candidate) => candidate.id === committedRelation.destinationSessionId) ?? null
+        : null;
+    const destinationMachineId = destinationForPreparation
+        ? resolveSessionMachineId(readSessionOwnerMetadataView(destinationForPreparation))
+        : null;
+    const destinationMachine = destinationMachineId
+        ? (machinesByServerId[fixedAddress.serverId] ?? []).find((machine) => machine.id === destinationMachineId) ?? null
+        : null;
+    const retryReadinessSignature = committedRelation ? [
+        online ? 'online' : 'offline',
+        destinationMachineId ?? '',
+        destinationMachine?.active === true ? 'active' : 'inactive',
+        String(destinationMachine?.activeAt ?? ''),
+        String(destinationMachine?.operationProtocolCapabilitiesRevision ?? ''),
+    ].join('\u0000') : '';
+    const retryReadinessSignatureRef = React.useRef(retryReadinessSignature);
+    retryReadinessSignatureRef.current = retryReadinessSignature;
+    const lastAttemptReadinessSignatureRef = React.useRef<string | null>(null);
+    const queryPresentation = React.useMemo(() => resolveSessionListQueryPresentation({
+        selectedServerIds: [fixedAddress.serverId],
+        statesByServerId: querySource.statesByServerId,
+        coverageComplete: querySource.coverageComplete,
+        retainedRowCount: destinations.length,
+    }), [destinations.length, fixedAddress.serverId, querySource.coverageComplete, querySource.statesByServerId]);
+    const pickerPresentation = resolveSessionFollowPickerPresentation(queryPresentation, destinations.length);
+
+    const loadNext = querySource.loadNext;
+    React.useEffect(() => {
+        if (queryPresentation.kind !== 'ready' || queryPresentation.complete) return;
+        void loadNext();
+    }, [loadNext, queryPresentation]);
+
+    const options = React.useMemo<ReadonlyArray<SelectionListOption>>(() => destinations.map((session) => ({
+        id: session.id,
+        testID: `session-follow-destination-option-${session.id}`,
+        label: getSessionName(session),
+        subtitle: getSessionSubtitle(session),
+        disabled: saving || committedRelation !== null || !pickerPresentation.canSelect,
+    })), [committedRelation, destinations, pickerPresentation.canSelect, saving]);
+    const rootStep = React.useMemo<SelectionListStep>(() => ({
+        id: 'session-follow-destination-root',
+        title: contextTitle,
+        inputPlaceholder: t('transcript.selection.sendTo.searchPlaceholder'),
+        emptyStateLabel: t('transcript.selection.sendTo.noResults'),
+        sections: [{ kind: 'static', id: 'sessions', options, virtualization: 'auto' }],
+    }), [contextTitle, options]);
+
+    const prepareCommittedRelation = React.useCallback(async (relation: NonNullable<typeof committedRelation>) => {
+        setPreparation('preparing');
+        const result = await prepareSessionFollowSourceKey({ serverId: fixedAddress.serverId, ...relation });
+        lastAttemptReadinessSignatureRef.current = retryReadinessSignatureRef.current;
+        setPreparation(result);
+        if (result.kind === 'prepared' || result.kind === 'not_needed') {
+            await props.onChanged?.({ ...relation, preparation: 'prepared' });
+            props.onClose();
+            return;
+        }
+        await props.onChanged?.({ ...relation, preparation: 'waiting' });
+    }, [fixedAddress.serverId, props]);
+
+    React.useEffect(() => {
+        if (!online || !committedRelation || !preparation || preparation === 'preparing') return;
+        if (preparation !== 'queued' && preparation.kind !== 'waiting') return;
+        if (lastAttemptReadinessSignatureRef.current === retryReadinessSignature) return;
+        void prepareCommittedRelation(committedRelation);
+    }, [committedRelation, online, preparation, prepareCommittedRelation, retryReadinessSignature]);
+
+    return <View testID="session-follow-destination-picker" style={{ flex: 1, minHeight: 0 }}>
+        {failed ? <Text accessibilityLiveRegion="polite">{t('errors.unknownError')}</Text> : null}
+        {preparation === 'queued' || preparation === 'preparing' ? <Text
+            testID="session-follow-source-key-preparing"
+            accessibilityLiveRegion="polite"
+        >{t('session.follow.sources.sourceKeyPreparing')}</Text> : null}
+        {preparation && typeof preparation !== 'string' && preparation.kind === 'waiting' ? <Item
+            testID="session-follow-source-key-waiting"
+            // An outdated destination runtime is the same version gap the source
+            // list reports, so it uses that one actionable sentence. Repeating the
+            // preparation against it cannot succeed, and the readiness effect
+            // already re-attempts once the Machine advertises new capabilities —
+            // so this state offers no Retry the person could act on.
+            title={preparation.reason === 'unsupported'
+                ? t('session.follow.sources.unsupported')
+                : t('session.follow.sources.sourceKeyWaiting')}
+            accessibilityLiveRegion="polite"
+            {...(preparation.reason === 'unsupported' ? { mode: 'info' as const } : {
+                detail: t('common.retry'),
+                disabled: saving,
+                onPress: () => { if (committedRelation) void prepareCommittedRelation(committedRelation); },
+            })}
+        /> : null}
+        {pickerPresentation.statusKey ? <Text
+            testID="session-follow-picker-currentness"
+            accessibilityLiveRegion="polite"
+        >{t(pickerPresentation.statusKey)}</Text> : null}
+        <SelectionList
+            testID="session-follow-destination-list"
+            rootStep={rootStep}
+            onSelect={(destinationSessionId) => {
+                if (saving || !pickerPresentation.canSelect || !destinations.some((candidate) => candidate.id === destinationSessionId)) return;
+                setSaving(true);
+                setFailed(false);
+                const relation = {
+                    serverId: fixedAddress.serverId,
+                    sourceSessionId: choosingDestination ? fixedAddress.sessionId : destinationSessionId,
+                    destinationSessionId: choosingDestination ? destinationSessionId : fixedAddress.sessionId,
+                };
+                void setSessionFollowSource(relation).then((result) => {
+                    if (result.kind === 'ok') {
+                        const committed = {
+                            sourceSessionId: relation.sourceSessionId,
+                            destinationSessionId: relation.destinationSessionId,
+                        };
+                        setCommittedRelation(committed);
+                        setPreparation('queued');
+                        setSaving(false);
+                        void props.onChanged?.({ ...committed, preparation: 'waiting' });
+                        // The readiness effect starts the first attempt from current
+                        // hydrated state and owns subsequent reconnect/readiness retries.
+                        return;
+                    }
+                    setSaving(false);
+                    setFailed(true);
+                });
+            }}
+            onRequestClose={props.onClose}
+            autoFocusInputOnWeb
+            keyboardHintsEnabled
+            heightBehavior="contentDriven"
+            showsVerticalScrollIndicator
+        />
+    </View>;
+});

@@ -12,6 +12,7 @@ import {
 import { findModelOptionForEffectiveModelId } from './modelOptions';
 import type { Metadata } from '@/sync/domains/state/storageTypes';
 import { SessionModelSelectionIntentV1Schema } from '@happier-dev/protocol';
+import { buildAgentUniverseBackendTargetKey } from '@/agents/catalog/agentUniverse';
 
 function withMetadata(overrides: Partial<Metadata>): Metadata {
     return {
@@ -171,7 +172,7 @@ describe('modelOptions', () => {
         }), 'acme-pro')).toBe(true);
     });
 
-    it('ignores stale dynamic session model rows for static-only providers and uses the static catalog', () => {
+    it('uses current dynamic session model rows for a probe-enabled provider and fills the remaining static catalog', () => {
         const staticClaudeValues = getModelOptionsForAgentType('claude').map((option) => option.value);
         const out = getModelOptionsForSession(
             'claude',
@@ -189,15 +190,24 @@ describe('modelOptions', () => {
             }),
         );
 
-        expect(out.map((option) => option.value)).toEqual(staticClaudeValues);
+        expect(out.map((option) => option.value)).toEqual([
+            'default',
+            'claude-opus-4-6',
+            'claude-sonnet-4-6',
+            ...staticClaudeValues.filter((value) => ![
+                'default',
+                'claude-opus-4-6',
+                'claude-sonnet-4-6',
+            ].includes(value)),
+        ]);
         expect(out.find((option) => option.value === 'claude-opus-4-6')).toMatchObject({
-            label: 'Opus 4.6',
+            label: 'Opus 4.6 (From Session)',
             modelOptions: expect.arrayContaining([
                 expect.objectContaining({ id: 'reasoning_effort' }),
             ]),
         });
         expect(out.find((option) => option.value === 'claude-sonnet-4-6')).toMatchObject({
-            label: 'Sonnet 4.6',
+            label: 'Sonnet 4.6 (From Session)',
         });
     });
 
@@ -280,7 +290,7 @@ describe('modelOptions', () => {
                     v: 1,
                     updatedAt: 101,
                     selection: {
-                        agentTargetKey: 'backend:claude',
+                        agentTargetKey: buildAgentUniverseBackendTargetKey('claude'),
                         providerConnectionId: 'pc_01J00000000000000000000000',
                         modelId: 'provider-custom-model',
                     },
@@ -291,32 +301,32 @@ describe('modelOptions', () => {
         expect(out.some((option) => option.value === 'provider-custom-model')).toBe(true);
     });
 
-    it('appends custom metadata override models after the static catalog for static-only providers', () => {
-        const staticClaudeValues = getModelOptionsForAgentType('claude').map((option) => option.value);
-        const out = getModelOptionsForSession(
+    it('appends a selected custom model after the current dynamic and static catalog', () => {
+        const sessionModelsV1 = {
+            v: 1 as const,
+            agentId: 'claude',
+            updatedAt: 1,
+            currentModelId: 'claude-sonnet-4-6',
+            availableModels: [
+                { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6 (From Session)' },
+            ],
+        };
+        const baselineValues = getModelOptionsForSession(
             'claude',
-            withMetadata({
-                sessionModelsV1: {
-                    v: 1,
-                    agentId: 'claude',
-                    updatedAt: 1,
-                    currentModelId: 'claude-sonnet-4-6',
-                    availableModels: [
-                        { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6 (From Session)' },
-                    ],
-                },
-                modelOverrideV1: { v: 1, updatedAt: 100, modelId: 'claude-custom-model' },
-            }),
-        );
+            withMetadata({ sessionModelsV1 }),
+        ).map((option) => option.value);
+        const out = getModelOptionsForSession('claude', withMetadata({
+            sessionModelsV1,
+            modelOverrideV1: { v: 1, updatedAt: 100, modelId: 'claude-custom-model' },
+        }));
 
         expect(out.map((option) => option.value)).toEqual([
-            ...staticClaudeValues,
+            ...baselineValues,
             'claude-custom-model',
         ]);
     });
 
-    it('derives selectable ids from the same static-only session model policy for freeform providers', () => {
-        const staticClaudeValues = getModelOptionsForAgentType('claude').map((option) => option.value);
+    it('derives selectable ids from the same dynamic-plus-static session model policy', () => {
         const metadata = withMetadata({
             sessionModelsV1: {
                 v: 1,
@@ -330,10 +340,8 @@ describe('modelOptions', () => {
             modelOverrideV1: { v: 1, updatedAt: 100, modelId: 'claude-custom-model' },
         });
 
-        expect(getSelectableModelIdsForSession('claude', metadata)).toEqual([
-            ...staticClaudeValues,
-            'claude-custom-model',
-        ]);
+        expect(getSelectableModelIdsForSession('claude', metadata))
+            .toEqual(getModelOptionsForSession('claude', metadata).map((option) => option.value));
     });
 
     it('adds metadata override model into options for Gemini when freeform is enabled', () => {
@@ -407,7 +415,7 @@ describe('modelOptions', () => {
         ).toBe(false);
     });
 
-    it('does not treat static-only provider metadata as dynamic list support', () => {
+    it('recognizes dynamic list support for a probe-enabled bundled provider', () => {
         expect(
             hasDynamicModelListForSession(
                 'claude',
@@ -421,7 +429,25 @@ describe('modelOptions', () => {
                     },
                 }),
             ),
-        ).toBe(false);
+        ).toBe(true);
+    });
+
+    it('uses live session models for a bundled agent with no static model facts', () => {
+        const metadata = withMetadata({
+            sessionModelsV1: {
+                v: 1,
+                agentId: 'antigravity',
+                updatedAt: 1,
+                currentModelId: 'negotiated-model',
+                availableModels: [{ id: 'negotiated-model', name: 'Negotiated model' }],
+            },
+        });
+
+        expect(hasDynamicModelListForSession('antigravity', metadata)).toBe(true);
+        expect(getModelOptionsForSession('antigravity', metadata)).toEqual([
+            expect.objectContaining({ value: 'default' }),
+            expect.objectContaining({ value: 'negotiated-model', label: 'Negotiated model' }),
+        ]);
     });
 
     it('falls back to legacy ACP session models when canonical key is absent', () => {

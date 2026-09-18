@@ -1,10 +1,13 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { FlushHookEffectsOptions } from '@/dev/testkit';
-import { createDeferred, flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
-import { renderScreen } from '@/dev/testkit';
-import { createMachineFixture } from '@/dev/testkit';
+import type { FlushHookEffectsOptions } from '@/dev/testkit/hooks/flushHookEffects';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { installNewSessionScreenModelCommonModuleMocks } from './newSessionScreenModelTestHelpers';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import {
@@ -154,6 +157,8 @@ const persistedDraft = vi.hoisted(() => ({
     automationDraft: NewSessionAutomationDraft;
     updatedAt: number;
     backendTarget?: { kind: 'builtInAgent'; agentId: string };
+    access?: import('@happier-dev/protocol').SessionInitialAccessDraftV1 | null;
+    primaryTeamId?: string | null;
     resumeSessionId?: string | null;
     targetServerId?: string | null;
     placementCandidates?: readonly PluginUiSessionPlacementCandidateV1[];
@@ -165,6 +170,12 @@ const persistedDraft = vi.hoisted(() => ({
 const saveNewSessionDraftMock = vi.hoisted(() => vi.fn());
 const clearNewSessionDraftMock = vi.hoisted(() => vi.fn());
 const loadNewSessionDraftMock = vi.hoisted(() => vi.fn(() => JSON.parse(JSON.stringify(persistedDraft))));
+const persistedDraftRevisionState = vi.hoisted(() => ({ value: 1 }));
+const runTeamActionMock = vi.hoisted(() => vi.fn(async () => ({
+    kind: 'failed' as const,
+    failure: { kind: 'unreachable' as const, retryable: true, code: null },
+})));
+
 const platformOsState = vi.hoisted(() => ({
     value: 'web' as 'web' | 'ios' | 'android',
 }));
@@ -460,6 +471,7 @@ vi.mock('@/sync/store/hooks', async (importOriginal) => {
     return {
         ...actual,
         useActiveServerAccountScope: () => activeServerAccountScopeState.value,
+        useAccountSettingsScope: () => activeServerAccountScopeState.value,
     };
 });
 
@@ -716,9 +728,19 @@ vi.mock('@/components/sessions/composer/newSessionDraftRepositoryAdapter', async
     return {
         ...actual,
         readNewSessionDraftFromRepository: () => loadNewSessionDraftMock(),
+        readNewSessionDraftProjectionFromRepository: () => {
+            const draft = loadNewSessionDraftMock();
+            return draft ? { draft, revision: persistedDraftRevisionState.value } : null;
+        },
         writeNewSessionAuthoringDraftToRepository: ({ draft }: { draft: unknown }) => saveNewSessionDraftMock(draft),
     };
 });
+
+// Team discovery is a network boundary. The screen-model corridor keeps the
+// real access-draft controller and repository integration below it.
+vi.mock('@/sync/ops/teams/teamActionClient', () => ({
+    runTeamAction: runTeamActionMock,
+}));
 
 vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
     getMachineContributionRegistryProjectionRevision: () => 0,
@@ -1147,6 +1169,8 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         focusEffectRef.current = [];
         activeServerAccountScopeState.value = { serverId: 'server-a', accountId: 'account-a' };
         delete persistedDraft.placementCandidates;
+        delete persistedDraft.access;
+        delete persistedDraft.primaryTeamId;
         builtInProfileMockState.defaultProfiles.splice(0);
         builtInProfileMockState.profilesById.clear();
         routerPushMock.mockClear();
@@ -1168,6 +1192,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         saveNewSessionDraftMock.mockClear();
         clearNewSessionDraftMock.mockClear();
         loadNewSessionDraftMock.mockClear();
+        persistedDraftRevisionState.value = 1;
         readCachedSnapshotForMachinePathMock.mockReset();
         readCachedSnapshotForMachinePathMock.mockImplementation(() => repoSnapshotState.value);
         fetchSnapshotForMachinePathMock.mockReset();
@@ -2007,6 +2032,92 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
 
         const signature = JSON.parse(String(useCreateNewSessionArgsRef.current?.launchIntentSignature));
         expect(signature.sourceContext).toEqual(sourceContext);
+    });
+
+    it('uses the repository-selected access and Team context for both persistence and launch', async () => {
+        persistedDraft.access = { grants: [{
+            subject: { kind: 'account', accountId: 'alice' },
+            accessLevel: 'view',
+            canApprovePermissions: false,
+        }] };
+        persistedDraft.primaryTeamId = 'team-old';
+        let model: unknown = null;
+        await renderNewSessionScreenModel((nextModel) => { model = nextModel; });
+
+        persistedDraft.access = { grants: [{
+            subject: { kind: 'account', accountId: 'bob' },
+            accessLevel: 'edit',
+            canApprovePermissions: false,
+        }] };
+        persistedDraft.primaryTeamId = 'team-synced';
+        persistedDraftRevisionState.value = 2;
+        await act(async () => {
+            await runFocusEffects();
+        });
+        await settleNewSessionScreenModel();
+
+        expect(model).not.toBeNull();
+        expect(useCreateNewSessionArgsRef.current).toEqual(expect.objectContaining({
+            authoringDraft: expect.objectContaining({
+                access: persistedDraft.access,
+                primaryTeamId: 'team-synced',
+            }),
+        }));
+
+        await act(async () => {
+            model?.simpleProps?.setSessionPrompt('unrelated prompt edit');
+        });
+        saveNewSessionDraftMock.mockClear();
+        await act(async () => { persistDraftNowRef.current?.(); });
+        expect(saveNewSessionDraftMock).toHaveBeenLastCalledWith(expect.objectContaining({
+            input: 'unrelated prompt edit',
+            access: persistedDraft.access,
+            primaryTeamId: 'team-synced',
+        }));
+    });
+
+    it('uses the repository-selected access and Team context for wizard persistence and launch', async () => {
+        (settingsState as any).useEnhancedSessionWizard = true;
+        persistedDraft.access = { grants: [{
+            subject: { kind: 'account', accountId: 'alice' },
+            accessLevel: 'view',
+            canApprovePermissions: false,
+        }] };
+        persistedDraft.primaryTeamId = 'team-old';
+        let model: any = null;
+        await renderNewSessionScreenModel((nextModel) => { model = nextModel; });
+        expect(model?.variant).toBe('wizard');
+
+        persistedDraft.access = { grants: [{
+            subject: { kind: 'account', accountId: 'bob' },
+            accessLevel: 'edit',
+            canApprovePermissions: false,
+        }] };
+        persistedDraft.primaryTeamId = 'team-synced';
+        persistedDraftRevisionState.value = 2;
+        await act(async () => {
+            await runFocusEffects();
+        });
+        await settleNewSessionScreenModel();
+
+        expect(model).not.toBeNull();
+        expect(useCreateNewSessionArgsRef.current).toEqual(expect.objectContaining({
+            authoringDraft: expect.objectContaining({
+                access: persistedDraft.access,
+                primaryTeamId: 'team-synced',
+            }),
+        }));
+
+        await act(async () => {
+            model?.wizardProps?.setSessionPrompt('unrelated wizard prompt edit');
+        });
+        saveNewSessionDraftMock.mockClear();
+        await act(async () => { persistDraftNowRef.current?.(); });
+        expect(saveNewSessionDraftMock).toHaveBeenLastCalledWith(expect.objectContaining({
+            input: 'unrelated wizard prompt edit',
+            access: persistedDraft.access,
+            primaryTeamId: 'team-synced',
+        }));
     });
 
     it('passes the persisted target server to the server target resolver when the route has no override', async () => {

@@ -1,16 +1,25 @@
 import * as React from 'react';
 import type { ReactTestInstance } from 'react-test-renderer';
 import type { PluginMachineExecutionOriginV1 } from '@happier-dev/protocol';
+import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 import { normalizePluginUiDestinationBindingV1 } from '@happier-dev/protocol/plugins/ui';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { flushHookEffects, pressTestInstance, renderScreen, standardCleanup, type RenderScreenResult } from '@/dev/testkit';
+import {
+  flushHookEffects,
+  pressTestInstance,
+  renderScreen,
+  standardCleanup,
+  type RenderScreenResult,
+} from '@/dev/testkit';
 import {
   EMPTY_PLUGIN_UI_PROJECTION,
   type PluginUiProjectionModel,
   type PluginUiSurfacePlacementProjection,
 } from '@/sync/domains/plugins/ui/projection';
 import type { PluginSurfaceOpenHandler } from '@/components/plugins/surfaces/openPluginSurface';
+import { createPluginSurfaceDestinationNavigationBinding } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
+import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,6 +40,14 @@ const keyboardDismissSpy = vi.hoisted(() => vi.fn());
 const ensureSidechainMessagesLoadedSpy = vi.hoisted(() => vi.fn(async () => 'loaded' as const));
 const paneOpenRightSpy = vi.hoisted(() => vi.fn());
 const paneSetRightTabSpy = vi.hoisted(() => vi.fn());
+const paneOpenDetailsTabSpy = vi.hoisted(() => vi.fn());
+const paneSelectRightDestinationSpy = vi.hoisted(() => vi.fn());
+const paneScopeState = vi.hoisted(() => ({
+  value: null as null | {
+    details: { isOpen: boolean; activeTabKey: string | null; tabs: readonly unknown[]; groups: readonly unknown[] };
+    right: { isOpen: boolean };
+  },
+}));
 const appPaneSurfaceOpenSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
 const freshPaneBridgeFixture = vi.hoisted(() => ({ enabled: false }));
 const scopedPluginProjectionState = vi.hoisted(() => ({
@@ -40,10 +57,29 @@ const platformState = vi.hoisted(() => ({ os: 'web' as 'web' | 'android' }));
 const responsiveState = vi.hoisted(() => ({ deviceType: 'phone' as 'phone' | 'tablet', isLandscape: false }));
 const windowDimensionsState = vi.hoisted(() => ({ width: 800, height: 600 }));
 const executionRunsFeatureState = vi.hoisted(() => ({ enabled: false }));
+const backendCatalogEntriesState = vi.hoisted(() => ({
+  entries: [] as ResolvedBackendCatalogEntry[],
+}));
+const teamCredentialCatalogState = vi.hoisted(() => ({
+  resources: [] as TeamCredentialResourceCatalogEntryV1[],
+  teamNameById: {} as Record<string, string>,
+  currentResourceKeys: new Set<string>(),
+}));
+const boardFeatureState = vi.hoisted(() => ({
+  enabled: false,
+  itemCount: 0,
+  /** When set, only these Homes answer `enabled` for `sessions.board`. */
+  enabledServerIds: null as readonly string[] | null,
+}));
+const companionPreferenceState = vi.hoisted(() => ({
+  stored: undefined as undefined | Readonly<Record<string, unknown>>,
+}));
+const companionPreferenceMutateSpy = vi.hoisted(() => vi.fn());
 const sessionExecutionRunsSupportedState = vi.hoisted(() => ({ supported: false }));
 const executionRunsBackendsState = vi.hoisted(() => ({ backends: null as Record<string, unknown> | null }));
 const sessionMessagesState = vi.hoisted(() => ({ messages: [] as any[] }));
 const automationsSupportState = vi.hoisted(() => ({ enabled: false }));
+const automationsState = vi.hoisted(() => ({ enabledCount: 0 }));
 const localSettingsState = vi.hoisted(() => ({
   mobileWorkspaceExperienceV1: 'classic' as 'classic' | 'cockpit',
 }));
@@ -58,11 +94,31 @@ const connectedServicesAuthSwitchState = vi.hoisted(() => ({
         startedAtMs: number;
     },
 }));
+const createEditableSessionAccessFixture = vi.hoisted(() => () => ({
+  role: 'recipient' as const,
+  level: 'edit' as const,
+  capabilities: {
+    readTranscript: true,
+    submitAgentInput: true,
+    editSessionRecords: true,
+    approveRuntimePermissions: true,
+    manageAccess: false,
+    managePermissionDelegation: false,
+    managePublicLink: false,
+    archiveSession: false,
+    renameSession: false,
+    assignResponsibility: false,
+    stopSession: false,
+    deleteSession: false,
+  },
+}));
 const sessionState = vi.hoisted(() => ({
   session: {
     id: 's1',
+    serverId: 'server-1',
     metadata: null,
     accessLevel: 'edit',
+    access: createEditableSessionAccessFixture(),
     canApprovePermissions: true,
     agentState: { controlledByUser: true },
   } as any,
@@ -104,13 +160,51 @@ vi.mock('@/components/sessions/transcript/AgentContentView', () => ({
 }));
 vi.mock('@/components/appShell/panes/AppPaneScopeHost', () => ({
   AppPaneScopeHost: (props: any) => {
+    const projection = scopedPluginProjectionState.projection;
+    const binding = React.useMemo(() => createPluginSurfaceDestinationNavigationBinding({
+      placements: projection ? Object.values(projection.surfacePlacementsById) : [],
+      targetKind: 'session',
+      scopedLaunchFacts: {
+        serverId: 'server-1',
+        machineId: 'machine-1',
+        generation: projection?.generation ?? null,
+        interactionEnabled: true,
+      },
+    }), [projection]);
+    React.useEffect(() => {
+      const disposeRight = binding.registerOwner({
+        container: 'rightPane',
+        handler: (resolution) => appPaneSurfaceOpenSpy(resolution.request),
+      });
+      const disposeBottom = binding.registerOwner({
+        container: 'bottomPane',
+        handler: (resolution) => appPaneSurfaceOpenSpy(resolution.request),
+      });
+      const disposeDetails = binding.registerOwner({
+        container: 'detailsTab',
+        handler: (resolution) => appPaneSurfaceOpenSpy(resolution.request),
+      });
+      return () => {
+        disposeRight();
+        disposeBottom();
+        disposeDetails();
+      };
+    }, [binding]);
     React.useEffect(() => {
       if (!freshPaneBridgeFixture.enabled) return;
-      props.onPluginSurfaceOpenChange?.(appPaneSurfaceOpenSpy);
-      return () => props.onPluginSurfaceOpenChange?.(undefined);
-    }, [props.onPluginSurfaceOpenChange]);
+      props.onPluginSurfaceNavigationBindingChange?.(binding);
+      return () => props.onPluginSurfaceNavigationBindingChange?.(undefined);
+    }, [binding, props.onPluginSurfaceNavigationBindingChange]);
     return React.createElement('AppPaneScopeHost', props, props.main ?? null);
   },
+}));
+// Leaf Companion surfaces are stubbed so the shell's admission decision — mount
+// or do not mount — stays observable; the decision itself runs for real.
+vi.mock('@/components/sessions/companion/SessionCompanionHost', () => ({
+  SessionCompanionHost: (props: any) => React.createElement('SessionCompanionHost', props),
+}));
+vi.mock('@/components/sessions/companion/presentation/SessionCompanionPresentationBridge', () => ({
+  SessionCompanionPresentationBridge: (props: any) => React.createElement('SessionCompanionPresentationBridge', props),
 }));
 vi.mock('@/components/plugins/projection/useScopedPluginUiProjection', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/components/plugins/projection/useScopedPluginUiProjection')>();
@@ -135,10 +229,70 @@ vi.mock('@/components/sessions/panes/useRegisterSessionPaneDriver', () => ({
 }));
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
   useAppPaneScope: () => ({
-    scopeState: null,
+    scopeState: paneScopeState.value,
     openRight: paneOpenRightSpy,
     setRightTab: paneSetRightTabSpy,
+    openDetailsTab: paneOpenDetailsTabSpy,
+    selectRightDestination: paneSelectRightDestinationSpy,
   }),
+}));
+vi.mock('@/components/sessions/board/SessionBoardControllerProvider', () => ({
+  SessionBoardControllerProvider: ({ children }: React.PropsWithChildren) => children,
+  useMountedSessionBoardController: (address: { serverId: string; sessionId: string } | null) => (
+    boardFeatureState.enabled && address
+      ? {
+        address,
+        binding: {
+          status: 'ready',
+          snapshot: {
+            itemsById: new Map(Array.from(
+              { length: boardFeatureState.itemCount },
+              (_, index) => [`item-${index}`, {
+                itemId: `item-${index}`,
+                revision: `revision-${index}`,
+                state: {
+                  kind: 'ready',
+                  item: {
+                    v: 1,
+                    itemId: `item-${index}`,
+                    title: '',
+                    source: {
+                      kind: 'installedSurface',
+                      surface: { pluginId: 'acme.board', localId: `item-${index}` },
+                    },
+                  },
+                },
+              }],
+            )),
+            layoutState: { kind: 'ready' },
+            loading: 'idle',
+            freshness: 'fresh',
+            incomplete: false,
+            reachability: 'reachable',
+            canEdit: true,
+          },
+        },
+        pluginRuntime: {
+          pluginUiProjection: null,
+          pluginBrowserProjection: null,
+          phase: 'unavailable',
+          interactionEnabled: false,
+          machineId: null,
+          serverId: address.serverId,
+          platform: 'web',
+        },
+        // The mounted Board controller the Session shell reads for item
+        // affordances and source availability.
+        controller: {
+          supports: () => false,
+          run: () => undefined,
+          resolveSourceAvailability: () => undefined,
+        },
+        resolvePrimaryHost: () => null,
+        callerHostedHtmlRuntime: null,
+      }
+      : null
+  ),
 }));
 vi.mock('@/components/sessions/panes/url/useSessionPaneUrlSync', () => ({
   useSessionPaneUrlSync: () => {},
@@ -175,7 +329,15 @@ vi.mock('@/components/sessions/attachments/AttachmentFilePicker', () => ({
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-  useFeatureEnabled: () => executionRunsFeatureState.enabled,
+  useFeatureEnabled: (featureId: string, scope?: Readonly<{ serverId?: string | null }>) => {
+    if (featureId !== 'sessions.board') return executionRunsFeatureState.enabled;
+    // The exact Home decides. A same-id Session on another Home must never
+    // borrow this Home's answer.
+    if (boardFeatureState.enabledServerIds) {
+      return boardFeatureState.enabledServerIds.includes(scope?.serverId ?? '');
+    }
+    return boardFeatureState.enabled;
+  },
 }));
 vi.mock('@/hooks/server/useSessionExecutionRunsSupported', () => ({
   useSessionExecutionRunsSupported: () => sessionExecutionRunsSupportedState.supported,
@@ -187,7 +349,16 @@ vi.mock('@/hooks/server/useAutomationsSupport', () => ({
   useAutomationsSupport: () => ({ enabled: automationsSupportState.enabled }),
 }));
 vi.mock('@/agents/backendCatalog/getResolvedBackendCatalogEntries', () => ({
-  getResolvedBackendCatalogEntries: () => [],
+  getResolvedBackendCatalogEntries: () => backendCatalogEntriesState.entries,
+}));
+vi.mock('@/hooks/teams/useHomeTeamCredentialModelCatalog', () => ({
+  useHomeTeamCredentialModelCatalog: () => ({
+    resources: teamCredentialCatalogState.resources,
+    teamNameById: teamCredentialCatalogState.teamNameById,
+    homeNameByTeamId: {},
+    currentResourceKeys: teamCredentialCatalogState.currentResourceKeys,
+    current: true,
+  }),
 }));
 vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
   useDaemonMergedProjectionInputs: () => ({ inputs: null }),
@@ -251,6 +422,7 @@ vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
   useSessionReachableMachineTarget: () => null,
 }));
 vi.mock('@/components/sessions/model/useSessionMachineTarget', () => ({
+  useSessionMachineTarget: () => null,
   useSessionMachineControlTarget: () => sessionMachineControlTargetState.target,
 }));
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -398,6 +570,12 @@ installSessionShellCommonModuleMocks({
       useSessionReviewCommentsDrafts: () => [],
       useWorkspaceReviewCommentsDrafts: () => [],
       useSessionUsage: () => null,
+      useWorkflowRunRows: () => [],
+      useSessionCompanionPreferenceSlot: (sessionId: string | null, serverId?: string | null) => ({
+        storageKey: sessionId ? JSON.stringify([serverId ?? 'server-1', 'account-a', sessionId]) : null,
+        stored: companionPreferenceState.stored,
+      }),
+      useMutateSessionCompanionPreference: () => companionPreferenceMutateSpy,
       useLocalSetting: (key: string) => {
         if (key === 'acknowledgedCliVersions') return {};
         if (key === 'uiMultiPanePanelsEnabled') return false;
@@ -411,10 +589,12 @@ installSessionShellCommonModuleMocks({
       useLocalSettingMutable: () => [null, vi.fn()],
       useSetting: (key: string) => {
         if (key === 'mobileWorkspaceExperienceV1') return localSettingsState.mobileWorkspaceExperienceV1;
+        if (key === 'workspaceRefsV1' || key === 'workspaceSyncRelationshipsV1') return [];
         return null;
       },
       useSettings: () => ({ experiments: true, featureToggles: {} }),
       useAutomations: () => [],
+      useEnabledAutomationsCountForSession: () => automationsState.enabledCount,
     });
   },
 });
@@ -443,13 +623,40 @@ function findPressableByAccessibilityLabel(screen: RenderScreenResult, label: st
   return screen.findAll((node) => (node.type as unknown) === 'Pressable' && node.props?.accessibilityLabel === label)[0];
 }
 
-async function renderSessionView() {
+async function renderSessionView(routeServerId: string = 'server-1') {
   return renderScreen(
-    <SessionView id="s1" />,
+    <SessionView id="s1" routeServerId={routeServerId} />,
     {
       wrapper: AppPaneProviderWrapper,
     },
   );
+}
+
+const VISIBLE_COMPANION_PREFERENCE = Object.freeze({
+  v: 1,
+  visible: true,
+  collapsed: false,
+  edge: 'trailing',
+  density: 'compact',
+  items: [{ kind: 'builtin', id: 'session_summary' }],
+});
+
+function readCompanionRevealAddress(screen: RenderScreenResult): unknown {
+  const paneHost = screen.findAll((node) => (node.type as unknown) === 'AppPaneScopeHost')[0];
+  const wrapScopeContent = paneHost?.props?.wrapScopeContent;
+  if (typeof wrapScopeContent !== 'function') return null;
+  const wrapped = wrapScopeContent(React.createElement(React.Fragment, null));
+  return (wrapped as React.ReactElement<{ address?: unknown }>)?.props?.address ?? null;
+}
+
+function findCompanionMounts(screen: RenderScreenResult) {
+  return {
+    hosts: screen.findAll((node) => (node.type as unknown) === 'SessionCompanionHost'),
+    bridges: screen.findAll((node) => (node.type as unknown) === 'SessionCompanionPresentationBridge'),
+    // The shell publishes its Companion reveal port by wrapping the pane
+    // scope content; reading that wrapper's address needs no extra render.
+    revealAddress: readCompanionRevealAddress(screen),
+  };
 }
 
 function createSessionSurfacePlacement(input: Readonly<{
@@ -476,20 +683,14 @@ function createSessionSurfacePlacement(input: Readonly<{
     display: { developerFallback: input.descriptorId },
     availability: { state: 'available', reason: 'available', diagnostics: [] },
     headerActions: [],
-    hostOrigin: {
-      machineId: 'machine-1',
-      serverId: 'server-1',
-      generation: 1,
-      interactionEnabled: true,
-      executionOrigin: {
-        serverIdentityId: 'srv_account_one',
-        materializationRef: {
-          pluginId: 'acme.preview',
-          machineId: 'machine-1',
-          materializationId: `${input.descriptorId}-install-a`,
-        },
-      } satisfies PluginMachineExecutionOriginV1,
-    },
+    ...({
+      serverIdentityId: 'srv_account_one',
+      materializationRef: {
+        pluginId: 'acme.preview',
+        machineId: 'machine-1',
+        materializationId: `${input.descriptorId}-install-a`,
+      },
+    } satisfies PluginMachineExecutionOriginV1),
   };
 }
 
@@ -507,8 +708,10 @@ describe('SessionView header action menu visibility', () => {
     standardCleanup();
     sessionState.session = {
       id: 's1',
+      serverId: 'server-1',
       metadata: null,
       accessLevel: 'edit',
+      access: createEditableSessionAccessFixture(),
       canApprovePermissions: true,
       agentState: { controlledByUser: true },
     } as any;
@@ -516,27 +719,40 @@ describe('SessionView header action menu visibility', () => {
     responsiveState.deviceType = 'phone';
     responsiveState.isLandscape = false;
     executionRunsFeatureState.enabled = false;
+    backendCatalogEntriesState.entries = [];
+    teamCredentialCatalogState.resources = [];
+    teamCredentialCatalogState.teamNameById = {};
+    teamCredentialCatalogState.currentResourceKeys = new Set();
+    boardFeatureState.enabled = false;
+    boardFeatureState.itemCount = 0;
+    boardFeatureState.enabledServerIds = null;
+    companionPreferenceState.stored = undefined;
+    companionPreferenceMutateSpy.mockClear();
+    paneScopeState.value = null;
     sessionExecutionRunsSupportedState.supported = false;
     executionRunsBackendsState.backends = null;
     sessionMessagesState.messages = [];
     connectedServicesAuthSwitchState.restartState = null;
     automationsSupportState.enabled = false;
+    automationsState.enabledCount = 0;
     localSettingsState.mobileWorkspaceExperienceV1 = 'classic';
     sessionMachineControlTargetState.target = null;
     keyboardDismissSpy.mockReset();
-	    headerActionMenuSpy.mockClear();
-	    attachedTerminalState.available = false;
-	    attachedTerminalState.open.mockReset();
-	    chatHeaderSpy.mockClear();
-	    agentInputSpy.mockClear();
+    headerActionMenuSpy.mockClear();
+    attachedTerminalState.available = false;
+    attachedTerminalState.open.mockReset();
+    chatHeaderSpy.mockClear();
+    agentInputSpy.mockClear();
     connectedServicesAuthSwitchSpy.mockClear();
     ensureSidechainMessagesLoadedSpy.mockClear();
     paneOpenRightSpy.mockClear();
     paneSetRightTabSpy.mockClear();
-	  appPaneSurfaceOpenSpy.mockClear();
-	  freshPaneBridgeFixture.enabled = false;
-	  scopedPluginProjectionState.projection = null;
-	    routerPushSpy.mockReset();
+    paneOpenDetailsTabSpy.mockClear();
+    paneSelectRightDestinationSpy.mockClear();
+    appPaneSurfaceOpenSpy.mockClear();
+    freshPaneBridgeFixture.enabled = false;
+    scopedPluginProjectionState.projection = null;
+    routerPushSpy.mockReset();
     routerBackSpy.mockReset();
     navigateWithBlurOnWebSpy.mockClear();
     windowDimensionsState.width = 800;
@@ -604,13 +820,14 @@ describe('SessionView header action menu visibility', () => {
     expect(appPaneSurfaceOpenSpy).toHaveBeenNthCalledWith(2, bottomRequest);
     expect(appPaneSurfaceOpenSpy).toHaveBeenNthCalledWith(3, detailsRequest);
 
-    await expect(openSurface({
+    const rightSidebarRequest = {
       destination: rightSidebarPlacement.binding.destination,
       input: { source: 'session-header' },
-    })).resolves.toEqual({
-      ok: false,
-      code: 'unsupported_method',
-      reason: 'plugin_surface_open_launch_input_unsupported',
+    } as const;
+    await expect(openSurface(rightSidebarRequest)).resolves.toEqual({ ok: true });
+    expect(paneSelectRightDestinationSpy).toHaveBeenCalledWith({
+      kind: 'plugin',
+      destination: rightSidebarPlacement.binding.destination,
     });
     expect(appPaneSurfaceOpenSpy).toHaveBeenCalledTimes(3);
   });
@@ -620,6 +837,8 @@ describe('SessionView header action menu visibility', () => {
     vi.setSystemTime(new Date(1_000_000));
     sessionState.session = {
       ...sessionState.session,
+      encryptionMode: 'plain',
+      encryptedContentAvailability: 'ready',
       active: true,
       presence: 'online',
       thinking: false,
@@ -645,6 +864,7 @@ describe('SessionView header action menu visibility', () => {
     executionRunsBackendsState.backends = null;
     sessionMessagesState.messages = [];
     automationsSupportState.enabled = true;
+    automationsState.enabledCount = 1;
     routerPushSpy.mockReset();
     navigateWithBlurOnWebSpy.mockClear();
 
@@ -765,6 +985,7 @@ describe('SessionView header action menu visibility', () => {
         sourceTurnId: 'turn-exact',
         sourceServerId: 'server-1',
         serverId: 'server-1',
+        sessionLifecycleEvents: 'parentTurnCompleted',
       },
     });
   });
@@ -797,7 +1018,7 @@ describe('SessionView header action menu visibility', () => {
     headerActionMenuSpy.mockClear();
     chatHeaderSpy.mockClear();
 
-    await renderSessionView();
+    const screen = await renderSessionView();
     const firstHeaderProps = chatHeaderSpy.mock.calls.at(-1)?.[0] as any;
 
     sessionState.session = {
@@ -806,7 +1027,7 @@ describe('SessionView header action menu visibility', () => {
       updatedAt: (sessionState.session.updatedAt ?? 0) + 1,
     } as any;
 
-    await renderSessionView();
+    await screen.update(<SessionView id="s1" routeServerId="server-1" />);
 
     const rerenderedHeaderProps = chatHeaderSpy.mock.calls.at(-1)?.[0] as any;
     expect(rerenderedHeaderProps).toMatchObject({
@@ -854,7 +1075,7 @@ describe('SessionView header action menu visibility', () => {
       },
     } as any;
 
-    await screen.update(<SessionView id="s1" jumpToSeq={1} />);
+    await screen.update(<SessionView id="s1" routeServerId="server-1" jumpToSeq={1} />);
 
     const rerenderedHeaderActionMenuProps = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
     expect(rerenderedHeaderActionMenuProps?.session?.updatedAt).toBe(2);
@@ -875,6 +1096,110 @@ describe('SessionView header action menu visibility', () => {
     expect(connectedServicesAuthSwitchSpy.mock.calls.at(-1)?.[0]).toMatchObject({
       sessionId: 's1',
       machineId: 'machine-origin',
+    });
+  });
+
+  it('passes the current qualified Agent and current Team Connected Service choices to auth switching', async () => {
+    const connectedAccount = {
+      purpose: 'primary',
+      service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+      required: false,
+    } as const;
+    backendCatalogEntriesState.entries = [{
+      agentCatalogEntry: {
+        agentId: 'codex',
+        qualifiedId: 'happier.agent.codex/codex',
+        identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+        installedPackage: null,
+        projectionGeneration: 3,
+        catalogAgentId: 'codex',
+        iconAgentId: 'codex',
+        backendTargetKey: 'builtInAgent:codex',
+        title: 'Codex',
+        subtitle: null,
+        iconName: 'terminal',
+        channel: 'stable',
+        enabled: true,
+        isBuiltIn: true,
+        descriptor: null,
+        behavior: null,
+        authPlugin: null,
+        cli: null,
+        cliAuthBackgroundCheckSafe: true,
+        connectedAccounts: [connectedAccount],
+      },
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      backendTargetKey: 'builtInAgent:codex',
+      kind: 'builtInAgent',
+      backendId: 'codex',
+      agentId: 'codex',
+      catalogAgentId: 'codex',
+      builtInAgentId: 'codex',
+      iconAgentId: 'codex',
+      title: 'Codex',
+      subtitle: null,
+      cliAuthBackgroundCheckSafe: true,
+    } satisfies ResolvedBackendCatalogEntry];
+    const currentResource = {
+      id: 'resource-current',
+      teamId: 'team-current',
+      displayName: 'Current Team account',
+      resourceRevision: 7,
+      readiness: { kind: 'available' },
+      recoveryAction: null,
+      mayBroker: false,
+      mayReceiveDirect: true,
+      directMaterialState: 'current',
+      sessionUsePolicy: 'personal_allowed',
+      providerModels: [],
+      connectedServiceSelections: [{
+        source: 'team_resource',
+        resourceId: 'resource-current',
+        deliveryMode: 'direct',
+        disclosedMember: {
+          service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+          accountId: 'member-account',
+        },
+      }],
+      sourcePresentation: {
+        kind: 'connected_service',
+        service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+      },
+    } satisfies TeamCredentialResourceCatalogEntryV1;
+    const staleResource = {
+      ...currentResource,
+      id: 'resource-stale',
+      displayName: 'Stale Team account',
+      connectedServiceSelections: [{
+        ...currentResource.connectedServiceSelections[0],
+        resourceId: 'resource-stale',
+      }],
+    } satisfies TeamCredentialResourceCatalogEntryV1;
+    const currentWithoutConnectedServiceChoice = {
+      ...currentResource,
+      id: 'resource-provider-only',
+      displayName: 'Provider-only Team resource',
+      connectedServiceSelections: [],
+    } satisfies TeamCredentialResourceCatalogEntryV1;
+    teamCredentialCatalogState.resources = [
+      currentResource,
+      staleResource,
+      currentWithoutConnectedServiceChoice,
+    ];
+    teamCredentialCatalogState.currentResourceKeys = new Set([
+      'team-current:resource-current',
+      'team-current:resource-provider-only',
+    ]);
+    teamCredentialCatalogState.teamNameById = { 'team-current': 'Current Team' };
+
+    await renderSessionView();
+
+    expect(connectedServicesAuthSwitchSpy).toHaveBeenCalled();
+    expect(connectedServicesAuthSwitchSpy.mock.calls.at(-1)?.[0]).toMatchObject({
+      connectedAccounts: [connectedAccount],
+      agentIdentity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+      teamCredentialResources: [currentResource],
+      teamNameById: teamCredentialCatalogState.teamNameById,
     });
   });
 
@@ -927,18 +1252,19 @@ describe('SessionView header action menu visibility', () => {
       latestReadyEventAt: 2_500,
     } as any;
 
-    await screen.update(<SessionView id="s1" jumpToSeq={1} />);
+    await screen.update(<SessionView id="s1" routeServerId="server-1" jumpToSeq={1} />);
 
     expect(connectedServicesAuthSwitchSpy.mock.calls.at(-1)?.[0]?.intentionalRestartSignals).toEqual([]);
   });
 
-  it('keeps the open runs button visible when the transcript already contains execution-run signals', async () => {
+  it('keeps the runs destination in the compact header when the transcript already contains execution-run signals', async () => {
     platformState.os = 'web';
     responsiveState.deviceType = 'phone';
     responsiveState.isLandscape = false;
     executionRunsFeatureState.enabled = true;
     sessionExecutionRunsSupportedState.supported = true;
     executionRunsBackendsState.backends = null;
+    windowDimensionsState.width = 420;
     sessionMessagesState.messages = [
       {
         kind: 'tool-call',
@@ -946,13 +1272,12 @@ describe('SessionView header action menu visibility', () => {
       },
     ];
 
-    const screen = await renderSessionView();
-    const openRunsButton = findPressableByAccessibilityLabel(screen, 'session.openRuns');
-
-    expect(openRunsButton).toBeDefined();
+    await renderSessionView();
+    const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
+    expect((props?.extraItems ?? []).map((item: any) => item?.id)).toContain('header.openRuns');
   });
 
-	  it('renders a header subagents button when the transcript contains subagent activity', async () => {
+  it('renders a header subagents button when the transcript contains subagent activity', async () => {
     platformState.os = 'web';
     responsiveState.deviceType = 'phone';
     responsiveState.isLandscape = false;
@@ -977,40 +1302,40 @@ describe('SessionView header action menu visibility', () => {
     const screen = await renderSessionView();
     const openSubagentsButton = findPressableByAccessibilityLabel(screen, 'session.openSubagents');
 
-	    expect(openSubagentsButton).toBeDefined();
-	  });
+    expect(openSubagentsButton).toBeDefined();
+  });
 
-	  it('does not hydrate discovered sidechains from the session shell or header', async () => {
-	    platformState.os = 'web';
-	    responsiveState.deviceType = 'phone';
-	    responsiveState.isLandscape = false;
-	    executionRunsFeatureState.enabled = false;
-	    sessionExecutionRunsSupportedState.supported = false;
-	    executionRunsBackendsState.backends = null;
-	    sessionMessagesState.messages = [
-	      {
-	        id: 'tool-msg-1',
-	        kind: 'tool-call',
-	        createdAt: 1,
-	        tool: {
-	          name: 'Task',
-	          id: 'toolu_task_1',
-	          input: { name: 'Investigate regression', team_name: 'qa-team', agent_id: 'alpha@qa-team' },
-	          result: { tool_use_result: { team_name: 'qa-team', agent_id: 'alpha@qa-team', name: 'alpha' } },
-	          state: 'running',
-	        },
-	      },
-	    ];
+  it('does not hydrate discovered sidechains from the session shell or header', async () => {
+    platformState.os = 'web';
+    responsiveState.deviceType = 'phone';
+    responsiveState.isLandscape = false;
+    executionRunsFeatureState.enabled = false;
+    sessionExecutionRunsSupportedState.supported = false;
+    executionRunsBackendsState.backends = null;
+    sessionMessagesState.messages = [
+      {
+        id: 'tool-msg-1',
+        kind: 'tool-call',
+        createdAt: 1,
+        tool: {
+          name: 'Task',
+          id: 'toolu_task_1',
+          input: { name: 'Investigate regression', team_name: 'qa-team', agent_id: 'alpha@qa-team' },
+          result: { tool_use_result: { team_name: 'qa-team', agent_id: 'alpha@qa-team', name: 'alpha' } },
+          state: 'running',
+        },
+      },
+    ];
 
-	    const screen = await renderSessionView();
-	    const openSubagentsButton = findPressableByAccessibilityLabel(screen, 'session.openSubagents');
-	    await flushHookEffects();
+    const screen = await renderSessionView();
+    const openSubagentsButton = findPressableByAccessibilityLabel(screen, 'session.openSubagents');
+    await flushHookEffects();
 
-	    expect(openSubagentsButton).toBeDefined();
-	    expect(ensureSidechainMessagesLoadedSpy).not.toHaveBeenCalled();
-	  });
+    expect(openSubagentsButton).toBeDefined();
+    expect(ensureSidechainMessagesLoadedSpy).not.toHaveBeenCalled();
+  });
 
-	  it('renders a header subagents button when launch surfaces are available even before any subagents exist', async () => {
+  it('keeps the subagents destination in the compact header when launch surfaces are available before any subagents exist', async () => {
     platformState.os = 'web';
     responsiveState.deviceType = 'phone';
     responsiveState.isLandscape = false;
@@ -1023,11 +1348,11 @@ describe('SessionView header action menu visibility', () => {
       },
     };
     sessionMessagesState.messages = [];
+    windowDimensionsState.width = 420;
 
-    const screen = await renderSessionView();
-    const openSubagentsButton = findPressableByAccessibilityLabel(screen, 'session.openSubagents');
-
-    expect(openSubagentsButton).toBeDefined();
+    await renderSessionView();
+    const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
+    expect((props?.extraItems ?? []).map((item: any) => item?.id)).toContain('header.openSubagents');
   });
 
   it('renders SessionHeaderActionMenu even when automations and execution runs are disabled', async () => {
@@ -1052,6 +1377,114 @@ describe('SessionView header action menu visibility', () => {
     expect(extraIds).toContain('header.openAttachedSessionTerminal');
     expect(props?.onSelectExtraItem?.('header.openAttachedSessionTerminal')).toBe(true);
     expect(attachedTerminalState.open).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an empty Board reachable from overflow without spending a direct header slot', async () => {
+    boardFeatureState.enabled = true;
+    boardFeatureState.itemCount = 0;
+    const screen = await renderSessionView();
+
+    expect(screen.findByTestId('session-header-board-button')).toBeNull();
+    const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
+    expect((props?.extraItems ?? []).map((item: any) => item?.id)).toContain('header.openBoard');
+  });
+
+  it('promotes a populated Board to one accessible direct header action and opens the canonical Details tab', async () => {
+    boardFeatureState.enabled = true;
+    boardFeatureState.itemCount = 1;
+    windowDimensionsState.width = 800;
+    const screen = await renderSessionView();
+
+    const boardButton = screen.findByTestId('session-header-board-button');
+    expect(boardButton?.props.accessibilityRole).toBe('button');
+    expect(boardButton?.props.accessibilityLabel).toBeTruthy();
+    pressTestInstance(boardButton);
+
+    const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
+    expect((props?.extraItems ?? []).map((item: any) => item?.id)).not.toContain('header.openBoard');
+    expect(paneOpenDetailsTabSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'board', kind: 'board' }),
+      { intent: 'pinned' },
+    );
+  });
+
+  it('folds a populated Board back into overflow when the incumbent header budget is compact', async () => {
+    boardFeatureState.enabled = true;
+    boardFeatureState.itemCount = 1;
+    windowDimensionsState.width = 420;
+    const screen = await renderSessionView();
+
+    expect(screen.findByTestId('session-header-board-button')).toBeNull();
+    const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
+    expect((props?.extraItems ?? []).map((item: any) => item?.id)).toContain('header.openBoard');
+  });
+
+  it('keeps the active Board directly reachable even while its content projection is empty', async () => {
+    boardFeatureState.enabled = true;
+    boardFeatureState.itemCount = 0;
+    paneScopeState.value = {
+      right: { isOpen: false },
+      details: { isOpen: true, activeTabKey: 'board', tabs: [], groups: [] },
+    };
+    windowDimensionsState.width = 800;
+    const screen = await renderSessionView();
+
+    expect(screen.findByTestId('session-header-board-button')).not.toBeNull();
+    const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
+    expect((props?.extraItems ?? []).map((item: any) => item?.id)).not.toContain('header.openBoard');
+  });
+
+  describe('Lane 08 Companion admission', () => {
+    beforeEach(() => {
+      // A deliberate, already saved Companion preference on this device: the
+      // only thing that may change below is the exact Home's Board decision.
+      companionPreferenceState.stored = VISIBLE_COMPANION_PREFERENCE;
+      responsiveState.deviceType = 'tablet';
+      windowDimensionsState.width = 1200;
+    });
+
+    it('hides every Companion entry point when the exact Home does not enable sessions.board', async () => {
+      boardFeatureState.enabled = false;
+      const screen = await renderSessionView();
+
+      const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
+      expect(props?.companionHeaderActionPlacement ?? null).toBeNull();
+      expect(props?.companionHeaderIntent ?? null).toBeNull();
+      const mounts = findCompanionMounts(screen);
+      expect(mounts.hosts).toHaveLength(0);
+      expect(mounts.bridges).toHaveLength(0);
+      expect(mounts.revealAddress).toBeNull();
+      // Disabled is not a reason to rewrite this device's saved choices.
+      expect(companionPreferenceMutateSpy).not.toHaveBeenCalled();
+    });
+
+    it('restores the Companion header entry, rail host and presentation bridge when that Home enables Board', async () => {
+      boardFeatureState.enabled = true;
+      const screen = await renderSessionView();
+
+      const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
+      expect(props?.companionHeaderActionPlacement).not.toBeNull();
+      expect(props?.companionHeaderIntent).not.toBeNull();
+      const mounts = findCompanionMounts(screen);
+      expect(mounts.hosts).toHaveLength(1);
+      expect(mounts.bridges).toHaveLength(1);
+      expect(mounts.revealAddress).toEqual({ serverId: 'server-1', sessionId: 's1' });
+    });
+
+    it('never lets a same-id Session on another Home borrow this Home\'s Companion decision', async () => {
+      boardFeatureState.enabledServerIds = ['server-1'];
+
+      const enabledHome = await renderSessionView('server-1');
+      expect(findCompanionMounts(enabledHome).hosts).toHaveLength(1);
+
+      standardCleanup();
+      headerActionMenuSpy.mockClear();
+      const otherHome = await renderSessionView('server-2');
+      expect(findCompanionMounts(otherHome).hosts).toHaveLength(0);
+      expect((headerActionMenuSpy.mock.calls.at(-1)?.[0] as any)?.companionHeaderActionPlacement ?? null)
+        .toBeNull();
+    });
+
   });
 
   it('adds an open cockpit menu item on phone when classic mode is active', async () => {
@@ -1115,13 +1548,15 @@ describe('SessionView header action menu visibility', () => {
     vi.setSystemTime(new Date(1_000_000));
     sessionState.session = {
       ...sessionState.session,
+      encryptionMode: 'plain',
+      encryptedContentAvailability: 'ready',
       active: true,
-      activeAt: 1,
+      activeAt: 999_000,
       presence: 'online',
       thinking: false,
       thinkingAt: 0,
       latestTurnStatus: 'in_progress',
-      latestTurnStatusObservedAt: 1,
+      latestTurnStatusObservedAt: 999_000,
     } as any;
 
     await renderSessionView();

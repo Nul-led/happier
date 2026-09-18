@@ -15,12 +15,14 @@ const serverRuntimeMock = vi.hoisted(() => ({
     })),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/auth/storage/tokenStorage')>(),
     TokenStorage: tokenStorageMock,
     isLegacyAuthCredentials: (credentials: unknown) => Boolean(credentials),
 }));
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => serverRuntimeMock.getActiveServerSnapshot(),
+    getActiveServerHomeCarrier: () => null,
 }));
 
 describe('apiSocket.request server-scoped credentials', () => {
@@ -164,6 +166,35 @@ describe('apiSocket.request server-scoped credentials', () => {
         (apiSocket as any).config = { endpoint: 'https://stack.example.test', token: 'unused' };
 
         await expect(apiSocket.request('/v1/ping')).rejects.toMatchObject({ name: 'StaleServerGenerationError' });
+    });
+
+    it.each(['credentials', 'response'] as const)('rejects a Home switch with socket reconfiguration during %s', async (phase) => {
+        const { apiSocket } = await import('./apiSocket');
+        // Socket configuration is the external connection boundary exercised by this suite.
+        Reflect.set(apiSocket, 'config', {
+            endpoint: 'https://stack.example.test', token: 'unused', serverId: 'stack', generation: 1,
+        });
+        const switchHome = () => {
+            serverRuntimeMock.getActiveServerSnapshot.mockReturnValue({
+                serverId: 'other', serverUrl: 'https://other.example.test', kind: 'custom', generation: 2,
+            });
+            Reflect.set(apiSocket, 'config', {
+                endpoint: 'https://other.example.test', token: 'other-token', serverId: 'other', generation: 2,
+            });
+        };
+        tokenStorageMock.getCredentialsForServerUrl.mockImplementation(async () => {
+            if (phase === 'credentials') switchHome();
+            return { token: 'original-token', secret: 's' };
+        });
+        const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+            if (phase === 'response' && String(input).endsWith('/v1/ping')) switchHome();
+            return new Response('ok', { status: 200 });
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(apiSocket.request('/v1/ping')).rejects.toMatchObject({ name: 'StaleServerGenerationError' });
+        expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith('https://other.example.test'))).toBe(false);
+        if (phase === 'credentials') expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('does not fall back to active-server credentials when endpoint-scoped credentials are missing', async () => {

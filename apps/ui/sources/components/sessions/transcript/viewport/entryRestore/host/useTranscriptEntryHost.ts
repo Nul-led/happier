@@ -234,6 +234,7 @@ const WEB_FILL_MAX_TRANSIENT_RETRIES = 6;
 
 export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): TranscriptEntryHost {
     const requestSessionOpenInitialFillRef = React.useRef<() => void>(() => {});
+    const [materializationCommit, requestMaterializationCommit] = React.useReducer((value: number) => value + 1, 0);
     const hasObservedScrollSinceSessionEntry = React.useCallback((): boolean => {
         if (
             deps.lastUserScrollIntentAtMsRef.current !== Number.NEGATIVE_INFINITY ||
@@ -492,6 +493,7 @@ export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): Transcrip
         deps.anchorLookupInFlightRef.current = true;
         deps.anchorLookupLoadCountRef.current += 1;
         const requestedSessionId = deps.sessionId;
+        const isCurrentSession = () => deps.currentSessionIdRef.current === requestedSessionId;
         fireAndForget((async () => {
             let shouldRetryRestore = false;
             try {
@@ -501,26 +503,30 @@ export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): Transcrip
                     const result = await sync.loadTargetWindowMessages(requestedSessionId, target, {
                         direction: 'initial',
                     });
-                    if (deps.currentSessionIdRef.current !== requestedSessionId) return;
+                    if (!isCurrentSession()) return;
                     if (result?.status === 'loaded' && result.targetPresent) {
                         deps.activeTargetWindowTargetRef.current = target;
+                        shouldRetryRestore = true;
+                    } else if (result?.status === 'not_found') {
+                        deps.anchorLookupExhaustedRef.current = true;
                         shouldRetryRestore = true;
                     }
                 } else {
                     const result = await deps.loadOlder({ preservePrependViewport: false, showLoadingIndicator: false });
-                    if (deps.currentSessionIdRef.current !== requestedSessionId) return;
+                    if (!isCurrentSession()) return;
                     shouldRetryRestore = true;
                     if (result && (result.status === 'no_more' || result.hasMore === false)) {
                         deps.anchorLookupExhaustedRef.current = true;
                     }
                 }
-                await Promise.resolve();
-                await Promise.resolve();
             } finally {
-                deps.anchorLookupInFlightRef.current = false;
+                if (isCurrentSession()) deps.anchorLookupInFlightRef.current = false;
             }
-            if (shouldRetryRestore) {
-                deps.attemptEntryRestoreRef.current();
+            if (shouldRetryRestore && isCurrentSession()) {
+                // Load completion is not a React/DOM commit. Re-drive from the
+                // existing layout effect, after pending rows have committed; a
+                // direct microtask attempt can finalize the previous empty range.
+                requestMaterializationCommit();
             }
         })(), { tag: 'ChatList.restoreEntryAnchorLookup' });
         return true;
@@ -662,6 +668,7 @@ export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): Transcrip
         const exactAnchorRendererTarget = exactAnchorItem
             ? deps.renderWindowProjection.indexMap.resolveRendererTargetForItemId(exactAnchorItem.id)
             : null;
+        let anchorOutsideProjectionSeq: number | null = null;
         if (
             exactAnchorRendererTarget?.kind === 'outside-data'
             && exactAnchorRendererTarget.reason === 'projection-window'
@@ -680,7 +687,7 @@ export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): Transcrip
                 }).status !== 'not_found'
                 : false;
             if (!exactAnchorIsMountedInWebDom) {
-                if (requestBoundedEntryViewportMaterialization(exactAnchorRendererTarget.targetSeq)) return;
+                anchorOutsideProjectionSeq = exactAnchorRendererTarget.targetSeq;
             }
         }
         const nearestAnchorSourceIndex = anchor ? deps.resolveNearestSurvivingViewportAnchorIndexFromItems(anchor, items) : null;
@@ -697,6 +704,7 @@ export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): Transcrip
             ? deps.resolveEntryRestoreOwnerAnchor(anchor, exactAnchorSourceIndex ?? nearestAnchorSourceIndex, items)
             : null;
         const effects = deps.entryRestoreOwner.attempt({
+            anchorOutsideProjectionSeq,
             canMaterializeOlder: canRequestBoundedEntryViewportMaterialization(),
             contentHeight,
             currentSessionId: deps.sessionId,
@@ -740,7 +748,6 @@ export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): Transcrip
         deps.sessionOpenLatch,
         resolveEntryRestoreCanonicalMetrics,
         resolveEntryRestoreDeadlineMs,
-        requestBoundedEntryViewportMaterialization,
         verifyWebEntryRestoreTransaction,
     ]);
     useCommittedTranscriptRef(deps.attemptEntryRestoreRef, runEntryRestoreAttempt);
@@ -751,6 +758,7 @@ export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): Transcrip
             verifyWebEntryRestoreTransaction();
         }
     }, [
+        materializationCommit,
         deps.listContentHeight,
         deps.listDataLength,
         deps.listLayoutHeight,

@@ -101,6 +101,7 @@ import { isRecoveredHistoryTranscriptObservation } from '@/sync/domains/messages
 import type { TranscriptEventEmphasis } from '@/components/sessions/transcript/events/transcriptEventEmphasis';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Typography } from '@/constants/Typography';
+import { SessionMessageAccountByline } from './SessionMessageAccountByline';
 
 const FAIL_CLOSED_TRANSCRIPT_INTERACTION = deriveTranscriptInteraction({ kind: 'public' });
 const TRANSCRIPT_SELECTION_CHECKBOX_ANCHOR_TOP = 0;
@@ -220,6 +221,10 @@ function PluginMessageAttribution(props: Readonly<{ message: Message }>) {
     const provenance = readSessionMessageProvenanceV1(props.message.meta);
     return provenance?.kind === 'pluginSession' ? provenance : null;
   }, [props.message]);
+  // Trusted Account actor and descriptive producer provenance are independent
+  // siblings (Lane 04.4 §7.7): an authenticated runtime Account author plus the
+  // mediating plugin's external-source line are both true together, so the
+  // presence of one never suppresses the other.
   if (!pluginProvenance) return null;
 
   const label = readPluginMessageAttributionLabel(pluginProvenance);
@@ -290,6 +295,7 @@ function pushSessionFileDeepLink(
 
 function useStructuredMessageJumpHandler(
   sessionId: string,
+  serverId: string | null | undefined,
   enabled: boolean,
 ): StructuredMessageRendererParams['onJumpToAnchor'] {
   const router = useRouter();
@@ -301,11 +307,12 @@ function useStructuredMessageJumpHandler(
   const handler = React.useCallback((target: Parameters<NonNullable<StructuredMessageRendererParams['onJumpToAnchor']>>[0]) => {
     pushSessionFileDeepLink(routerRef.current, {
       sessionId,
+      ...(serverId ? { serverId } : {}),
       filePath: target.filePath,
       source: target.source,
       anchor: target.anchor,
     });
-  }, [sessionId]);
+  }, [serverId, sessionId]);
   return enabled ? handler : undefined;
 }
 
@@ -313,6 +320,7 @@ type MessageViewProps = {
   message: Message;
   metadata: Metadata | null;
   sessionId: string;
+  serverId?: string | null;
   layoutContext?: 'transcript' | 'tool_calls_group';
   forcePermissionPromptsInTranscript?: boolean;
   approvalRequests?: readonly OpenApprovalArtifactForSession[];
@@ -331,11 +339,11 @@ type MessageViewProps = {
 };
 
 export const MessageView = React.memo(function MessageView(props: MessageViewProps) {
-  const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId);
+  const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId, props.serverId);
   // Subscription width: this is a per-row hook, so a whole-record subscription made every
   // mounted row re-render on turn-lifecycle churn. `presence` was passed but
   // `deriveTranscriptInteractionFromSession` never reads it, so the narrow source drops it.
-  const interactionSource = useSessionInteractionSource(props.sessionId);
+  const interactionSource = useSessionInteractionSource(props.sessionId, props.serverId);
   const sessionInteraction = React.useMemo(() => interactionSource
     ? deriveTranscriptInteractionFromSession(interactionSource)
     : undefined, [interactionSource]);
@@ -387,6 +395,14 @@ export const MessageViewWithSessionCommon = React.memo(function MessageViewWithS
     <View style={styles.messageContainer} renderToHardwareTextureAndroid={true}>
       <View style={messageContentStyle}>
         <RecoveredHistoryIndicator message={props.message} />
+        {props.message.kind === 'user-text' && (
+          <SessionMessageAccountByline
+            messageId={props.message.id}
+            actor={props.message.accountActor}
+            viewerScope={props.messageDisplayCommon.accountActorViewerScope ?? null}
+            hasOtherNamedCollaborator={props.messageDisplayCommon.hasOtherNamedCollaborator === true}
+          />
+        )}
         <PluginMessageAttribution message={props.message} />
         <RenderBlock
           message={props.message}
@@ -424,6 +440,7 @@ function RenderBlock(props: {
   message: Message;
   metadata: Metadata | null;
   sessionId: string;
+  serverId?: string | null;
   layoutContext: 'transcript' | 'tool_calls_group';
   forcePermissionPromptsInTranscript?: boolean;
   approvalRequests?: readonly OpenApprovalArtifactForSession[];
@@ -453,6 +470,7 @@ function RenderBlock(props: {
           message={props.message}
           metadata={props.metadata}
           sessionId={props.sessionId}
+          serverId={props.toolChromeCommon.serverId}
           interaction={props.interaction}
           canSendMessages={props.interaction.canSendMessages === true}
           canOpenFiles={props.interaction.canOpenFiles === true}
@@ -475,6 +493,7 @@ function RenderBlock(props: {
           message={props.message}
           metadata={props.metadata}
           sessionId={props.sessionId}
+          serverId={props.toolChromeCommon.serverId}
           interaction={props.interaction}
           canSendMessages={props.interaction.canSendMessages === true}
           canOpenFiles={props.interaction.canOpenFiles === true}
@@ -527,6 +546,7 @@ function RenderBlock(props: {
             event={props.message.event}
             localId={props.message.localId}
             sessionId={props.sessionId}
+            serverId={props.serverId}
             emphasis={props.eventEmphasis}
           />
         </TranscriptJumpAttention>
@@ -544,6 +564,7 @@ function UserTextBlock(props: {
   message: UserTextMessage;
   metadata: Metadata | null;
   sessionId: string;
+  serverId?: string | null;
   interaction: TranscriptInteraction;
   canSendMessages: boolean;
   canOpenFiles: boolean;
@@ -566,7 +587,7 @@ function UserTextBlock(props: {
   const isWeb = Platform.OS === 'web';
 	  const router = useRouter();
 	  const isDiscarded = isCommittedMessageDiscarded(props.metadata, props.message.localId);
-  const handleJumpToAnchor = useStructuredMessageJumpHandler(props.sessionId, props.canOpenFiles);
+  const handleJumpToAnchor = useStructuredMessageJumpHandler(props.sessionId, props.serverId, props.canOpenFiles);
 
   const isVoiceAgentTurn = React.useMemo(() => {
     const envelope = parseHappierMetaEnvelope(props.message.meta);
@@ -587,9 +608,6 @@ function UserTextBlock(props: {
       : parseHappierMetaEnvelope(props.message.meta, 'happierMedia');
     return parseSessionMediaMessageMeta(envelope);
   }, [props.message.meta]);
-  const handleOpenSessionMediaPath = React.useCallback((filePath: string) => {
-    pushSessionFileDeepLink(router, { sessionId: props.sessionId, filePath });
-  }, [props.sessionId, router]);
   const isStructuredOnly = structuredNode != null;
 
   const attachmentsMeta = React.useMemo(() => {
@@ -611,8 +629,8 @@ function UserTextBlock(props: {
     });
   }, [attachmentsMeta]);
 	  const handleOpenAttachmentPath = React.useCallback((filePath: string) => {
-	    pushSessionFileDeepLink(router, { sessionId: props.sessionId, filePath });
-	  }, [props.sessionId, router]);
+	    pushSessionFileDeepLink(router, { sessionId: props.sessionId, serverId: props.serverId, filePath });
+	  }, [props.serverId, props.sessionId, router]);
 
   const unsupportedContentMeta = React.useMemo(
     () => readUnsupportedContentMeta(props.message.meta),
@@ -729,11 +747,12 @@ function UserTextBlock(props: {
 	    const anchor = resolved.anchor ?? null;
 	    pushSessionFileDeepLink(router, {
 	      sessionId: props.sessionId,
+	      serverId: props.serverId,
 	      filePath: resolved.filePath,
 	      ...(anchor ? { source: 'file' as const, anchor } : {}),
 	    });
 	    return true;
-	  }, [props.canOpenFiles, props.sessionId, router, workspacePath]);
+	  }, [props.canOpenFiles, props.serverId, props.sessionId, router, workspacePath]);
   const seq =
     typeof (props.message as any).seq === 'number' && Number.isFinite((props.message as any).seq)
       ? Math.trunc((props.message as any).seq)
@@ -819,6 +838,7 @@ function UserTextBlock(props: {
             {structuredReferences.length > 0 ? (
               <StructuredReferencesRow
                 sessionId={props.sessionId}
+                serverId={props.serverId ?? props.forkCommon.sessionForkSupportSource?.serverId}
                 references={structuredReferences}
                 fileOpenEnabled={props.canOpenFiles}
               />
@@ -850,6 +870,7 @@ function UserTextBlock(props: {
             {props.rollbackAction ? (
               <TranscriptRollbackActionButton
                 sessionId={props.sessionId}
+                serverId={props.serverId ?? props.forkCommon.sessionForkSupportSource?.serverId}
                 target={props.rollbackAction.target}
                 restoredDraftText={props.rollbackAction.restoredDraftText}
                 currentAgentCapabilities={props.rollbackAction.currentAgentCapabilities}
@@ -976,6 +997,7 @@ function UserTextBlock(props: {
             {structuredReferences.length > 0 ? (
               <StructuredReferencesRow
                 sessionId={props.sessionId}
+                serverId={props.serverId ?? props.forkCommon.sessionForkSupportSource?.serverId}
                 references={structuredReferences}
                 fileOpenEnabled={props.canOpenFiles}
               />
@@ -1008,6 +1030,7 @@ function UserTextBlock(props: {
             {props.rollbackAction ? (
               <TranscriptRollbackActionButton
                 sessionId={props.sessionId}
+                serverId={props.serverId ?? props.forkCommon.sessionForkSupportSource?.serverId}
                 target={props.rollbackAction.target}
                 restoredDraftText={props.rollbackAction.restoredDraftText}
                 currentAgentCapabilities={props.rollbackAction.currentAgentCapabilities}
@@ -1072,6 +1095,7 @@ function AgentTextBlock(props: {
   message: AgentTextMessage;
   metadata: Metadata | null;
   sessionId: string;
+  serverId?: string | null;
   interaction: TranscriptInteraction;
   canSendMessages: boolean;
   canOpenFiles: boolean;
@@ -1100,7 +1124,7 @@ function AgentTextBlock(props: {
   const [contextMenuOpen, setContextMenuOpen] = React.useState(false);
   const fallbackTextSelectable = shouldEnableFallbackTextNativeSelection(Platform.OS);
 	  const router = useRouter();
-  const handleJumpToAnchor = useStructuredMessageJumpHandler(props.sessionId, props.canOpenFiles);
+  const handleJumpToAnchor = useStructuredMessageJumpHandler(props.sessionId, props.serverId, props.canOpenFiles);
 	  const isVoiceAgentTurn = React.useMemo(() => {
     const envelope = parseHappierMetaEnvelope(props.message.meta);
     return envelope?.kind === 'voice_agent_turn.v1';
@@ -1251,11 +1275,12 @@ function AgentTextBlock(props: {
 	    const anchor = resolved.anchor ?? null;
 	    pushSessionFileDeepLink(router, {
 	      sessionId: props.sessionId,
+	      serverId: props.serverId,
 	      filePath: resolved.filePath,
 	      ...(anchor ? { source: 'file' as const, anchor } : {}),
 	    });
 	    return true;
-	  }, [props.canOpenFiles, props.sessionId, router, workspacePath]);
+	  }, [props.canOpenFiles, props.serverId, props.sessionId, router, workspacePath]);
   const seq =
     typeof (props.message as any).seq === 'number' && Number.isFinite((props.message as any).seq)
       ? Math.trunc((props.message as any).seq)
@@ -1406,8 +1431,8 @@ function AgentTextBlock(props: {
     enabled: !shouldRenderStreamingPlain,
   });
   const handleOpenAgentSessionMediaPath = React.useCallback((filePath: string) => {
-    pushSessionFileDeepLink(router, { sessionId: props.sessionId, filePath });
-  }, [props.sessionId, router]);
+    pushSessionFileDeepLink(router, { sessionId: props.sessionId, serverId: props.serverId, filePath });
+  }, [props.serverId, props.sessionId, router]);
   const agentSessionMediaMeta = React.useMemo(() => {
     const primaryEnvelope = parseHappierMetaEnvelope(props.message.meta);
     const envelope = primaryEnvelope?.kind === 'session_media.v1'
@@ -1548,6 +1573,7 @@ function AgentTextBlock(props: {
         {structuredReferencesDeferred.length > 0 ? (
           <StructuredReferencesRow
             sessionId={props.sessionId}
+            serverId={props.serverId ?? props.forkCommon.sessionForkSupportSource?.serverId}
             references={structuredReferencesDeferred}
             fileOpenEnabled={props.canOpenFiles}
           />
@@ -1584,6 +1610,7 @@ function AgentTextBlock(props: {
             {props.rollbackAction ? (
             <TranscriptRollbackActionButton
               sessionId={props.sessionId}
+              serverId={props.serverId ?? props.forkCommon.sessionForkSupportSource?.serverId}
               target={props.rollbackAction.target}
               restoredDraftText={props.rollbackAction.restoredDraftText}
               currentAgentCapabilities={props.rollbackAction.currentAgentCapabilities}
@@ -1865,6 +1892,7 @@ function ToolCallBlock(props: {
   const structuredPinHost = useRowActionHoverHost();
   const handleJumpToAnchor = useStructuredMessageJumpHandler(
     props.sessionId,
+    props.toolChromeCommon.serverId,
     props.interaction.canOpenFiles === true,
   );
 	  const toolViewTimelineChromeMode = props.toolChromeCommon.toolViewTimelineChromeMode;
@@ -1910,8 +1938,12 @@ function ToolCallBlock(props: {
     testID: `transcript-tool-call-pin:${props.message.id}`,
   });
   const handleOpenToolSessionMediaPath = React.useCallback((filePath: string) => {
-    pushSessionFileDeepLink(router, { sessionId: props.sessionId, filePath });
-  }, [props.sessionId, router]);
+    pushSessionFileDeepLink(router, {
+      sessionId: props.sessionId,
+      serverId: props.toolChromeCommon.serverId,
+      filePath,
+    });
+  }, [props.sessionId, props.toolChromeCommon.serverId, router]);
   const toolSessionMediaMeta = React.useMemo(() => {
     const primaryEnvelope = parseHappierMetaEnvelope(props.message.meta);
     const envelope = primaryEnvelope?.kind === 'session_media.v1'
@@ -1950,6 +1982,7 @@ function ToolCallBlock(props: {
           metadata={props.metadata}
           messages={props.message.children}
           sessionId={props.sessionId}
+          serverId={props.toolChromeCommon.serverId ?? undefined}
           messageId={toolRouteMessageId}
           jumpHighlightSeq={toolSeq}
           headerAction={toolPinAction}
@@ -1963,6 +1996,7 @@ function ToolCallBlock(props: {
           metadata={props.metadata}
           messages={props.message.children}
           sessionId={props.sessionId}
+          serverId={props.toolChromeCommon.serverId ?? undefined}
           messageId={toolRouteMessageId}
           jumpHighlightSeq={toolSeq}
           headerAction={toolPinAction}

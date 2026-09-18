@@ -3,7 +3,7 @@ import * as React from 'react';
 import { Pressable } from 'react-native';
 
 import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
 
 import {
     getToolViewComponent,
@@ -19,7 +19,7 @@ import {
 import { CodeView } from '@/components/ui/media/CodeView';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { useSetting } from '@/sync/domains/state/storage';
-import { maybeParseJson } from '@/components/tools/normalization/parse/parseJson';
+import { maybeParseJson } from '@happier-dev/protocol';
 import { Text, TextSelectabilityScope } from '@/components/ui/text/Text';
 import { parseToolUseError } from '@/utils/errors/toolErrorParser';
 import {
@@ -90,6 +90,8 @@ export const ToolInlineBody = React.memo(function ToolInlineBody(props: {
     metadata: Metadata | null;
     messages: Message[];
     sessionId?: string;
+    serverId?: string;
+    session?: Session;
     messageId?: string;
     interaction?: {
         canSendMessages: boolean;
@@ -193,6 +195,8 @@ export const ToolInlineBody = React.memo(function ToolInlineBody(props: {
                             metadata={props.metadata}
                             messages={props.messages}
                             sessionId={props.sessionId}
+                            serverId={props.serverId}
+                            session={props.session}
                             messageId={props.messageId}
                             detailLevel={props.detailLevel}
                             interaction={props.interaction}
@@ -222,6 +226,8 @@ export const ToolInlineBody = React.memo(function ToolInlineBody(props: {
                         metadata={props.metadata}
                         messages={props.messages}
                         sessionId={props.sessionId}
+                        serverId={props.serverId}
+                        session={props.session}
                     />
                 </ToolSectionSpacingProvider>
             );
@@ -238,6 +244,8 @@ export const ToolInlineBody = React.memo(function ToolInlineBody(props: {
                     metadata={props.metadata}
                     messages={props.messages}
                     sessionId={props.sessionId}
+                    serverId={props.serverId}
+                    session={props.session}
                 />
             );
         }
@@ -294,6 +302,8 @@ export const ToolInlineBody = React.memo(function ToolInlineBody(props: {
                         metadata={props.metadata}
                         messages={props.messages}
                         sessionId={props.sessionId}
+                        serverId={props.serverId}
+                        session={props.session}
                     />
                 ) : null}
                 {tool.state === 'completed' && tool.result ? (

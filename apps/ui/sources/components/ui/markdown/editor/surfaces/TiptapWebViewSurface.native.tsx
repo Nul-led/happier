@@ -550,6 +550,7 @@ export const TiptapWebViewSurface = React.forwardRef<MarkdownEditorSurfaceRef, M
             () => ({
                 getValue: () => lastDocRef.current,
                 flushPendingChange,
+                focus: () => messenger.webViewRef.current?.requestFocus?.(),
                 runCommand,
                 subscribeSelection,
                 subscribeMenuTrigger,

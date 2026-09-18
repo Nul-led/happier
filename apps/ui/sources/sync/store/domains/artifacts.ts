@@ -15,6 +15,7 @@ function retainNewestArtifacts(
 
 export type ArtifactsDomain = {
   artifacts: Record<string, DecryptedArtifact>;
+  artifactsLoaded: boolean;
   applyArtifacts: (artifacts: DecryptedArtifact[]) => void;
   addArtifact: (artifact: DecryptedArtifact) => void;
   updateArtifact: (artifact: DecryptedArtifact) => void;
@@ -29,6 +30,7 @@ export function createArtifactsDomain<S extends ArtifactsDomain>({
 }): ArtifactsDomain {
   return {
     artifacts: {},
+    artifactsLoaded: false,
     applyArtifacts: (artifacts) =>
       set((state) => {
         const mergedArtifacts = { ...state.artifacts };
@@ -39,6 +41,7 @@ export function createArtifactsDomain<S extends ArtifactsDomain>({
         return {
           ...state,
           artifacts: retainNewestArtifacts(mergedArtifacts),
+          artifactsLoaded: true,
         };
       }),
     addArtifact: (artifact) =>

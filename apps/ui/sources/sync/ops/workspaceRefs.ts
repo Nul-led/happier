@@ -26,18 +26,21 @@ async function mutateWorkspaceRefsInAccount(
     mutation: WorkspaceRefAccountMutation,
 ): Promise<WorkspaceRefAccountSettingsMutationResult> {
     const sync = getSyncSingleton();
-    const observedVersion = getStorage().getState().settingsVersion;
-    if (observedVersion === null) {
+    const observed = getStorage().getState();
+    const observedVersion = observed.settingsVersion;
+    const expectedSettingsScope = observed.settingsScope;
+    if (observedVersion === null || expectedSettingsScope === null) {
         return { ok: false, code: 'workspace_settings_unavailable' };
     }
 
-    await sync.refreshAccountSettingsFromServer(observedVersion);
+    await sync.refreshAccountSettingsFromServer(observedVersion, expectedSettingsScope);
     const expectedSettingsVersion = getStorage().getState().settingsVersion;
     if (expectedSettingsVersion === null) {
         return { ok: false, code: 'workspace_settings_unavailable' };
     }
 
     const result = await sync.mutateAccountSettingsOnce({
+        expectedSettingsScope,
         expectedSettingsVersion,
         mutate: (raw) => applyWorkspaceRefMutationToAccountSettings(raw, mutation),
     });

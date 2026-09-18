@@ -126,7 +126,11 @@ describe('provider-neutral loopback tunnel supervisor', () => {
             createLease: createLeaseFactory(),
         });
 
-        await expect(supervisor.ensureTunnel(createRequest())).rejects.toThrow('native_stop_failed');
+        await expect(supervisor.ensureTunnel(createRequest())).rejects.toMatchObject({
+            name: 'LoopbackTunnelPostAcquisitionError',
+            message: 'loopback_tunnel_probe_failed:remote-service-unreachable',
+            cleanupError: expect.objectContaining({ message: 'native_stop_failed' }),
+        });
 
         const failedLease = supervisor.listTunnels().leases[0];
         expect(failedLease).toEqual(expect.objectContaining({
@@ -164,8 +168,20 @@ describe('provider-neutral loopback tunnel supervisor', () => {
         const acquisitions = await Promise.allSettled([first, second]);
 
         expect(acquisitions).toEqual([
-            expect.objectContaining({ status: 'rejected', reason: expect.objectContaining({ message: 'native_stop_failed' }) }),
-            expect.objectContaining({ status: 'rejected', reason: expect.objectContaining({ message: 'native_stop_failed' }) }),
+            expect.objectContaining({
+                status: 'rejected',
+                reason: expect.objectContaining({
+                    message: 'loopback_tunnel_probe_failed:remote-service-unreachable',
+                    cleanupError: expect.objectContaining({ message: 'native_stop_failed' }),
+                }),
+            }),
+            expect.objectContaining({
+                status: 'rejected',
+                reason: expect.objectContaining({
+                    message: 'loopback_tunnel_probe_failed:remote-service-unreachable',
+                    cleanupError: expect.objectContaining({ message: 'native_stop_failed' }),
+                }),
+            }),
         ]);
         expect(supervisor.listTunnels().leases).toEqual([
             expect.objectContaining({ leaseId: 'loopback:home-key', status: 'failed' }),

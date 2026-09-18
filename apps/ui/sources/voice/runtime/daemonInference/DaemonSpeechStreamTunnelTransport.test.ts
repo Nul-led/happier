@@ -690,7 +690,7 @@ describe('DaemonSpeechStreamTunnelTransport', () => {
     expect(sendFrame).not.toHaveBeenCalled();
     expect(fallbackChunk).toHaveBeenCalledWith(expect.objectContaining({
       carrierFrame: expect.objectContaining({
-        kind: 'json_base64_v1_fallback',
+        kind: 'machine_rpc_json_base64',
         jsonBase64Envelope: { pcm16Base64: 'AQIDBA==' },
       }),
       compatibilityTransport: expect.objectContaining({

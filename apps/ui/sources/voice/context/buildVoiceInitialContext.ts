@@ -1,11 +1,14 @@
 import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
 import { storage } from '@/sync/domains/state/storage';
 import { formatSessionFull } from '@/voice/context/contextFormatters';
-import { resolveEffectiveVoiceTargetState } from '@/voice/context/resolveEffectiveVoiceTargetState';
 import { getVoiceContextFormatterPrefs } from '@/voice/context/voiceContextPrefs';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
 import type { VoiceHostAuthoredContextScope } from '@/voice/session/types';
 import { resolveVoiceContextSessionFromState } from './resolveVoiceContextSession';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { resolveVoiceSessionRef } from '@/voice/tools/actionImpl/sessionReference';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
 export type VoiceInitialContextResolution =
   | Readonly<{
@@ -24,6 +27,7 @@ export type VoiceInitialContextResolution =
   | Readonly<{
       kind: 'session';
       sessionId: string;
+      sessionAddress: SessionAddress;
       initialContext: string;
     }>;
 
@@ -36,6 +40,7 @@ export function resolveVoiceInitialContext(
   sessionId: string,
   options?: Readonly<{
     targetSessionId?: string | null;
+    targetSessionAddress?: SessionAddress | null;
     scope?: VoiceHostAuthoredContextScope;
   }>,
 ): VoiceInitialContextResolution {
@@ -45,11 +50,22 @@ export function resolveVoiceInitialContext(
 
   const state: any = storage.getState();
   const requestedSessionId = normalizeNonEmptyString(sessionId);
-  const targetSessionId = normalizeNonEmptyString(options?.targetSessionId);
-  const targetSession = targetSessionId
-    ? resolveVoiceContextSessionFromState(targetSessionId, state)
+  const requestedSessionAddress = requestedSessionId
+    ? resolveVoiceSessionRef(requestedSessionId, state, {
+        activeServerId: getActiveServerSnapshot().serverId,
+      })?.address ?? null
     : null;
-  const contextSessionId = targetSession ? targetSessionId : requestedSessionId;
+  const targetSessionAddress = options?.targetSessionAddress
+    ?? (normalizeNonEmptyString(options?.targetSessionId)
+      ? resolveVoiceSessionRef(options?.targetSessionId, state, {
+          activeServerId: getActiveServerSnapshot().serverId,
+        })?.address ?? null
+      : null);
+  const targetSession = targetSessionAddress
+    ? resolveVoiceContextSessionFromState(targetSessionAddress, state)
+    : null;
+  const contextSessionAddress = targetSession ? targetSessionAddress : requestedSessionAddress;
+  const contextSessionId = contextSessionAddress?.sessionId ?? requestedSessionId;
 
   if (!contextSessionId) {
     return {
@@ -61,7 +77,9 @@ export function resolveVoiceInitialContext(
     };
   }
 
-  const session = targetSession ?? resolveVoiceContextSessionFromState(contextSessionId, state);
+  const session = targetSession ?? (contextSessionAddress
+    ? resolveVoiceContextSessionFromState(contextSessionAddress, state)
+    : null);
   if (!session) {
     return {
       kind: 'missing_session',
@@ -74,12 +92,14 @@ export function resolveVoiceInitialContext(
     };
   }
 
-  const messages = readStoredSessionMessages(state, contextSessionId);
-  const targetState = resolveEffectiveVoiceTargetState(contextSessionId, { targetSessionId });
+  const messages = contextSessionAddress && areServerProfileIdentifiersEquivalent(contextSessionAddress.serverId, getActiveServerSnapshot().serverId)
+    ? readStoredSessionMessages(state, contextSessionId)
+    : [];
   const prefs = getVoiceContextFormatterPrefs({
     settings: state.settings,
     sessionId: contextSessionId,
-    trackedSessionIds: targetState.trackedSessionIds,
+    sessionAddress: contextSessionAddress,
+    isCurrentAttemptTarget: true,
   });
   const heading = contextSessionId === requestedSessionId
     ? 'THIS IS AN ACTIVE SESSION:'
@@ -87,16 +107,21 @@ export function resolveVoiceInitialContext(
   return {
     kind: 'session',
     sessionId: contextSessionId,
-    initialContext: `${heading}\n\n${formatSessionFull(session, messages, prefs)}`,
+    sessionAddress: contextSessionAddress!,
+    initialContext: `${heading}\n\n${formatSessionFull(session, messages, prefs, contextSessionAddress ?? undefined)}`,
   };
 }
 
 export function buildVoiceInitialContext(
   sessionId: string,
-  options?: Readonly<{ targetSessionId?: string | null }>,
+  options?: Readonly<{
+    targetSessionId?: string | null;
+    targetSessionAddress?: SessionAddress | null;
+  }>,
 ): string {
   const resolution = resolveVoiceInitialContext(sessionId, {
     targetSessionId: options?.targetSessionId,
+    targetSessionAddress: options?.targetSessionAddress,
     scope: 'session_context',
   });
   return resolution.kind === 'session' ? resolution.initialContext : '';

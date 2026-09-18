@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+
+const access = (level: Parameters<typeof createSessionAccessFixture>[0], approve = level === 'owner') => createSessionAccessFixture(level, { approveRuntimePermissions: approve });
 
 import { deriveTranscriptInteraction, deriveTranscriptInteractionFromSession } from './deriveTranscriptInteraction';
 
 describe('deriveTranscriptInteraction', () => {
+    it('fails unavailable access closed even when legacy fields imply ownership', () => {
+        expect(deriveTranscriptInteractionFromSession({ access: null, active: true })).toMatchObject({
+            canSendMessages: false, canApprovePermissions: false, canFork: false,
+            canOpenFiles: false, canPreviewMedia: false,
+        });
+    });
+
     it('fails public file and media interactions closed while granting session-owned surfaces', () => {
         expect(deriveTranscriptInteraction({ kind: 'public' })).toMatchObject({
             canOpenFiles: false,
@@ -10,8 +20,7 @@ describe('deriveTranscriptInteraction', () => {
         });
         expect(deriveTranscriptInteraction({
             kind: 'session',
-            accessLevel: 'view',
-            canApprovePermissions: false,
+            access: access('view', false),
         })).toMatchObject({
             canOpenFiles: true,
             canPreviewMedia: true,
@@ -20,13 +29,13 @@ describe('deriveTranscriptInteraction', () => {
 
     it('derives fork access from the transcript surface grant and fails closed for public/view surfaces', () => {
         expect(deriveTranscriptInteraction({ kind: 'public', disableToolNavigation: true }).canFork).toBe(false);
-        expect(deriveTranscriptInteraction({ kind: 'session', accessLevel: 'view', canApprovePermissions: false }).canFork).toBe(false);
-        expect(deriveTranscriptInteraction({ kind: 'session', accessLevel: 'edit', canApprovePermissions: false }).canFork).toBe(true);
-        expect(deriveTranscriptInteraction({ kind: 'session', accessLevel: undefined, canApprovePermissions: false }).canFork).toBe(true);
+        expect(deriveTranscriptInteraction({ kind: 'session', access: access('view', false) }).canFork).toBe(false);
+        expect(deriveTranscriptInteraction({ kind: 'session', access: access('edit', false) }).canFork).toBe(true);
+        expect(deriveTranscriptInteraction({ kind: 'session', access: access('owner') }).canFork).toBe(true);
     });
 
-    it('treats missing accessLevel as owner (full interaction)', () => {
-        expect(deriveTranscriptInteraction({ kind: 'session', accessLevel: undefined, canApprovePermissions: undefined })).toEqual({
+    it('uses explicit owner capabilities for full interaction', () => {
+        expect(deriveTranscriptInteraction({ kind: 'session', access: access('owner') })).toEqual({
             canSendMessages: true,
             canApprovePermissions: true,
             canFork: true,
@@ -41,8 +50,7 @@ describe('deriveTranscriptInteraction', () => {
         expect(
             deriveTranscriptInteraction({
                 kind: 'session',
-                accessLevel: undefined,
-                canApprovePermissions: undefined,
+                access: access('owner'),
                 isSessionActive: false,
             }),
         ).toEqual({
@@ -57,7 +65,7 @@ describe('deriveTranscriptInteraction', () => {
     });
 
     it('treats view access as read-only', () => {
-        expect(deriveTranscriptInteraction({ kind: 'session', accessLevel: 'view', canApprovePermissions: false })).toEqual({
+        expect(deriveTranscriptInteraction({ kind: 'session', access: access('view', false) })).toEqual({
             canSendMessages: false,
             canApprovePermissions: false,
             canFork: false,
@@ -72,8 +80,7 @@ describe('deriveTranscriptInteraction', () => {
         expect(
             deriveTranscriptInteraction({
                 kind: 'session',
-                accessLevel: 'view',
-                canApprovePermissions: false,
+                access: access('view', false),
                 isSessionActive: false,
             }),
         ).toEqual({
@@ -88,7 +95,7 @@ describe('deriveTranscriptInteraction', () => {
     });
 
     it('allows sending in edit/admin while permission approvals may be not granted', () => {
-        expect(deriveTranscriptInteraction({ kind: 'session', accessLevel: 'edit', canApprovePermissions: false })).toEqual({
+        expect(deriveTranscriptInteraction({ kind: 'session', access: access('edit', false) })).toEqual({
             canSendMessages: true,
             canApprovePermissions: false,
             canFork: true,
@@ -100,7 +107,7 @@ describe('deriveTranscriptInteraction', () => {
     });
 
     it('allows approvals when canApprovePermissions is true', () => {
-        expect(deriveTranscriptInteraction({ kind: 'session', accessLevel: 'edit', canApprovePermissions: true })).toEqual({
+        expect(deriveTranscriptInteraction({ kind: 'session', access: access('edit', true) })).toEqual({
             canSendMessages: true,
             canApprovePermissions: true,
             canFork: true,
@@ -115,8 +122,7 @@ describe('deriveTranscriptInteraction', () => {
         expect(
             deriveTranscriptInteraction({
                 kind: 'session',
-                accessLevel: 'edit',
-                canApprovePermissions: true,
+                access: access('edit', true),
                 isSessionActive: false,
             }),
         ).toEqual({
@@ -147,8 +153,7 @@ describe('deriveTranscriptInteractionFromSession', () => {
     it('treats session.active as the source of truth (even if presence is stale)', () => {
         expect(
             deriveTranscriptInteractionFromSession({
-                accessLevel: undefined,
-                canApprovePermissions: true,
+                access: access('owner'),
                 active: false,
                 presence: 'online',
             }),
@@ -166,8 +171,7 @@ describe('deriveTranscriptInteractionFromSession', () => {
     it('treats missing session.active as inactive for permission approvals (avoids presence drift)', () => {
         expect(
             deriveTranscriptInteractionFromSession({
-                accessLevel: undefined,
-                canApprovePermissions: true,
+                access: access('owner'),
                 active: undefined,
                 presence: 'online',
             }),

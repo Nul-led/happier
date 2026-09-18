@@ -1,228 +1,77 @@
-import {
-    accountDirectoryAuthClient,
-    type AccountDirectoryAuthMethodDiscovery,
-} from '@/auth/accountDirectory/accountDirectoryAuthClient';
-import { normalizeSecretKey } from '@/auth/recovery/secretKeyBackup';
-import type { AccountServiceEntryIntent } from '@/auth/storage/tokenStorage';
-import type { AccountDirectoryCapabilities } from '@happier-dev/protocol';
-import { decodeBase64 } from '@/encryption/base64';
-import { Modal } from '@/modal';
-import {
-    createAccountDirectoryServiceKey,
-    createAccountDirectorySession,
-    type AccountDirectorySession,
-    type AccountDirectorySessionSnapshot,
-} from '@/sync/domains/accountDirectory/accountDirectorySession';
-import {
-    setAccountServiceEndpoint,
-    type AccountServiceEndpointV1,
-} from '@/sync/domains/server/serverProfiles';
-import {
-    enrollPreferredDirectoryHome,
-    finalizePreferredHomeEnrollmentEntryIntent,
-    type PreferredDirectoryHomeEnrollmentResult,
-} from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
-import { refreshAccountHomeDirectory } from '@/sync/ops/accountDirectory/refreshAccountHomeDirectory';
-import { provisionAuthenticatedHomeLink } from '@/sync/ops/accountDirectory/provisionAuthenticatedHomeLink';
-import { t } from '@/text';
+import { accountDirectoryAuthClient, type VerifiedAccountServiceAuthority, type AccountDirectoryAuthTransport } from './accountDirectoryAuthClient';
+import { createAccountDirectoryServiceKey, createAccountDirectorySession, type AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
+import { isAccountDirectoryRelinkConflict } from '@/sync/api/accountDirectory/accountDirectoryClient';
+import { getRandomBytesAsync } from '@/platform/cryptoRandom';
+import { digestAccountDirectoryCredentialToken } from '@/auth/storage/tokenStorage';
 
 export type AccountServiceKeyAuthOutcome =
-    | Readonly<{ kind: 'cancelled' }>
-    | Readonly<{ kind: 'invalid_key' }>
-    | Readonly<{ kind: 'unavailable' }>
-    | Readonly<{ kind: 'failed' }>
+    | Readonly<{ kind: 'cancelled' | 'invalid_key' | 'unavailable' }>
+    | Readonly<{ kind: 'relink_required'; error: unknown }>
+    | Readonly<{ kind: 'failed'; error: unknown }>
     | Readonly<{
         kind: 'authenticated';
-        /** Canonical service key of the exact authenticated Account Service selection. */
         serviceKey: string;
-        discovery: AccountDirectoryAuthMethodDiscovery;
+        service: VerifiedAccountServiceAuthority;
         session: AccountDirectorySession;
+        credentialTokenDigest: string;
     }>;
 
-/**
- * The one canonical Account Service key sign-in ceremony (Lane 02 A7 / G02-2), shared by the
- * unauthenticated Welcome entry and authenticated Settings.
- *
- * It runs entirely against the exact selected service through Lane 01's explicit endpoint
- * boundary: endpoint-targeted method discovery (which proves the service advertises key
- * login), the secure secret prompt, restricted `account_directory` credential storage, and
- * the observed stable identity bound through the existing Account Service endpoint owner.
- * The focused Home is never read, no Home runtime is constructed, and the ordinary Home
- * credential namespace is never written.
- */
 export async function authenticateSelectedAccountServiceWithKey(input: Readonly<{
-    endpoint: AccountServiceEndpointV1;
-    /**
-     * Synchronous hook invoked with the observed service key immediately before the selection
-     * bind, so owners that track attempt/invalidation bookkeeping can update it first.
-     */
-    onServiceIdentityObserved?: (observed: Readonly<{
-        serverIdentityId: string;
-        serviceKey: string;
-    }>) => void;
-    shouldCancel?: () => boolean;
+    service: VerifiedAccountServiceAuthority;
+    secret: Uint8Array;
+    signal?: AbortSignal;
+    transport?: AccountDirectoryAuthTransport;
 }>): Promise<AccountServiceKeyAuthOutcome> {
-    let discovery: AccountDirectoryAuthMethodDiscovery;
+    if (input.signal?.aborted) return { kind: 'cancelled' };
+    if (!(input.secret instanceof Uint8Array) || input.secret.length !== 32) return { kind: 'invalid_key' };
+    const secret = input.secret.slice();
+    const { service } = input;
     try {
-        const result = await accountDirectoryAuthClient.discoverAuthenticationMethods({
-            endpointUrl: input.endpoint.url,
-            expectedServerIdentityId: input.endpoint.serverIdentityId,
-            requestedMethod: { kind: 'key' },
-        });
-        if (input.shouldCancel?.()) return { kind: 'cancelled' };
-        if (result.kind !== 'supported_account_service') {
-            return { kind: 'unavailable' };
-        }
-        discovery = result;
-    } catch {
-        return { kind: 'unavailable' };
-    }
-
-    const rawSecret = await Modal.prompt(
-        t('connect.secretKeyInputLabel'),
-        t('connect.restoreWithSecretKeyDescription'),
-        {
-            inputType: 'secure-text',
-            confirmText: t('common.login'),
-            cancelText: t('common.cancel'),
-        },
-    );
-    if (rawSecret === null || input.shouldCancel?.()) return { kind: 'cancelled' };
-
-    let secret: Uint8Array;
-    try {
-        secret = decodeBase64(normalizeSecretKey(rawSecret), 'base64url');
-        if (secret.length !== 32) throw new Error('Invalid secret key length');
-    } catch {
-        return { kind: 'invalid_key' };
-    }
-
-    try {
-        const authenticatedEndpoint = { ...input.endpoint, serverIdentityId: discovery.serverIdentityId };
-        const authenticatedServiceKey = createAccountDirectoryServiceKey({
-            endpoint: input.endpoint.url,
-            serverIdentityId: discovery.serverIdentityId,
-        });
-        input.onServiceIdentityObserved?.({
-            serverIdentityId: discovery.serverIdentityId,
-            serviceKey: authenticatedServiceKey,
-        });
-        setAccountServiceEndpoint(authenticatedEndpoint);
-        await accountDirectoryAuthClient.loginWithKey({
-            endpointUrl: input.endpoint.url,
-            endpointServerIdentityId: discovery.serverIdentityId,
-            canonicalServerUrl: discovery.canonicalServerUrl,
+        const credentials = await accountDirectoryAuthClient.loginWithKey({
+            endpointUrl: service.endpointUrl,
+            endpointServerIdentityId: service.serverIdentityId,
+            canonicalServerUrl: service.canonicalServerUrl,
             secret,
-            verifiedServerFeaturesSnapshot: discovery.snapshot,
+            signal: input.signal,
+            ...input.transport,
+            verifiedServerFeaturesSnapshot: service.snapshot,
         });
-        if (input.shouldCancel?.()) return { kind: 'cancelled' };
+        if (input.signal?.aborted) return { kind: 'cancelled' };
+        const target = { endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId };
+        const session = createAccountDirectorySession(target, { capability: service.capability, keyAuthSecret: secret, transport: input.transport });
+        input.signal?.addEventListener('abort', () => { session.takeKeyAuthSecret()?.fill(0); }, { once: true });
         return {
             kind: 'authenticated',
-            serviceKey: authenticatedServiceKey,
-            discovery,
-            session: createAccountDirectorySession({
-                endpoint: input.endpoint.url,
-                serverIdentityId: discovery.serverIdentityId,
-            }, { capability: discovery.capability }),
+            serviceKey: createAccountDirectoryServiceKey(target),
+            service,
+            session,
+            credentialTokenDigest: await digestAccountDirectoryCredentialToken(credentials.token),
         };
-    } catch {
-        return { kind: 'failed' };
+    } catch (error) {
+        if (input.signal?.aborted) return { kind: 'cancelled' };
+        if (isAccountDirectoryRelinkConflict(error)) return { kind: 'relink_required', error };
+        return { kind: 'failed', error };
+    } finally {
+        secret.fill(0);
     }
 }
 
-/**
- * Canonical post-authentication Directory refresh plus preferred-Home enrollment. The entry
- * intent is supplied by the caller: unauthenticated entry passes `enter_preferred_home`,
- * authenticated Settings passes `connect_service`. Neither refresh, credential storage, nor
- * adoption ever changes focus as a side effect; only the enrollment owner applies
- * `enter_preferred_home` through its explicit intent finalizer.
- */
-export async function refreshAndEnrollAccountServiceDirectory(
-    session: AccountDirectorySession,
-    options: Readonly<{
-        entryIntent: AccountServiceEntryIntent;
-        shouldCancel?: () => boolean;
-        shouldInvalidateContinuation?: () => boolean;
-        enroll?: boolean;
-    }>,
-): Promise<Readonly<{
-    snapshot: AccountDirectorySessionSnapshot;
-    enrollment: PreferredDirectoryHomeEnrollmentResult | null;
-}>> {
-    const completed = await completeAccountServicePostAuth(session, options);
-    return { snapshot: completed.snapshot, enrollment: completed.enrollment };
-}
-
-export type AccountServicePostAuthResult = Readonly<{
-    snapshot: AccountDirectorySessionSnapshot;
-    enrollment: PreferredDirectoryHomeEnrollmentResult | null;
-    failure?: 'home_link_failed' | 'directory_refresh_failed' | 'home_enrollment_failed';
-    entryIntentOutcome?: 'completed' | 'blocked' | 'superseded';
-}>;
-
-/**
- * Sole Lane 02 coordinator after either key or OAuth authentication commits.
- * It owns link -> refresh -> enrollment -> semantic entry intent ordering;
- * callbacks and screens only present this typed result.
- */
-export async function completeAccountServicePostAuth(
-    session: AccountDirectorySession,
-    options: Readonly<{
-        entryIntent: AccountServiceEntryIntent;
-        shouldCancel?: () => boolean;
-        shouldInvalidateContinuation?: () => boolean;
-        enroll?: boolean;
-        homeServerIdentityId?: string;
-        issuerServerIdentityId?: string;
-        capability?: AccountDirectoryCapabilities;
-    }>,
-): Promise<AccountServicePostAuthResult> {
-    if (options.homeServerIdentityId) {
-        if (!options.issuerServerIdentityId || !options.capability) {
-            return { snapshot: session.snapshot, enrollment: null, failure: 'home_link_failed' };
-        }
-        try {
-            const linked = await provisionAuthenticatedHomeLink({
-                session,
-                homeServerIdentityId: options.homeServerIdentityId,
-                issuerServerIdentityId: options.issuerServerIdentityId,
-                capability: options.capability,
-                shouldCancel: options.shouldCancel,
-            });
-            if (linked.kind !== 'linked') {
-                return { snapshot: session.snapshot, enrollment: null, failure: 'home_link_failed' };
-            }
-        } catch {
-            return { snapshot: session.snapshot, enrollment: null, failure: 'home_link_failed' };
-        }
-    }
-
-    let refreshed: AccountDirectorySessionSnapshot;
+export async function authenticateSelectedAccountServiceWithGeneratedKey(input: Readonly<{
+    service: VerifiedAccountServiceAuthority;
+    signal?: AbortSignal;
+    transport?: AccountDirectoryAuthTransport;
+}>): Promise<AccountServiceKeyAuthOutcome> {
+    if (input.signal?.aborted) return { kind: 'cancelled' };
+    const secret = await getRandomBytesAsync(32);
     try {
-        refreshed = await refreshAccountHomeDirectory(session, options);
-    } catch {
-        return { snapshot: session.snapshot, enrollment: null, failure: 'directory_refresh_failed' };
+        if (input.signal?.aborted) return { kind: 'cancelled' };
+        return await authenticateSelectedAccountServiceWithKey({
+            service: input.service,
+            secret,
+            signal: input.signal,
+            transport: input.transport,
+        });
+    } finally {
+        secret.fill(0);
     }
-    let enrollment: PreferredDirectoryHomeEnrollmentResult | null = null;
-    if (
-        refreshed.status === 'ready'
-        && session.supportsHomeEnrollment
-        && options.enroll !== false
-        && options.shouldCancel?.() !== true
-    ) {
-        try {
-            enrollment = await enrollPreferredDirectoryHome(session, options);
-        } catch {
-            return { snapshot: refreshed, enrollment: null, failure: 'home_enrollment_failed' };
-        }
-    }
-    const entryIntentOutcome = enrollment?.kind === 'enrolled'
-        ? await finalizePreferredHomeEnrollmentEntryIntent(
-            enrollment.homeServerIdentityId,
-            options.entryIntent,
-            session.serviceKey,
-            options.shouldCancel,
-        )
-        : undefined;
-    return { snapshot: refreshed, enrollment, ...(entryIntentOutcome ? { entryIntentOutcome } : {}) };
 }

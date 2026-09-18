@@ -32,6 +32,13 @@ export const SETTINGS_PAGE_CATALOG: readonly SettingsPageNode[] = [
                         icon: ({ theme }) => <Icon name="user-circle" size={16} color={theme.colors.text.secondary} />,
                         children: [
                             {
+                                id: 'accountSecurity',
+                                titleKey: 'settingsAccount.security',
+                                route: SETTINGS_ROUTES.accountSecurity,
+                                keywords: ['security', 'password', 'recovery', 'encryption', 'sign out'],
+                                icon: ({ theme }) => <Icon name="key" size={16} color={theme.colors.text.secondary} />,
+                                children: [
+                            {
                                 id: 'apiTokens',
                                 titleKey: 'settingsApiTokens.title',
                                 subtitleKey: 'settingsApiTokens.entrySubtitle',
@@ -39,7 +46,24 @@ export const SETTINGS_PAGE_CATALOG: readonly SettingsPageNode[] = [
                                 keywords: ['api token', 'personal access token', 'pat', 'automation', 'cli', 'sdk'],
                                 icon: ({ theme }) => <Icon name="key" size={16} color={theme.colors.text.secondary} />,
                             },
+                                ],
+                            },
                         ],
+                    },
+                    {
+                        id: 'teams',
+                        titleKey: 'teams.title',
+                        subtitleKey: 'teams.entrySubtitle',
+                        route: SETTINGS_ROUTES.teams,
+                        keywords: ['teams', 'members', 'groups', 'invitations'],
+                        icon: ({ theme }) => <Icon name="users" size={16} color={theme.colors.text.secondary} />,
+                    },
+                    {
+                        id: 'homeAdministration',
+                        titleKey: 'homeGovernance.title',
+                        route: SETTINGS_ROUTES.homeAdministration,
+                        keywords: ['home', 'administration', 'governance', 'people', 'policies'],
+                        icon: ({ theme }) => <Icon name="house" size={16} color={theme.colors.text.secondary} />,
                     },
                     {
                         id: 'secrets',
@@ -66,6 +90,14 @@ export const SETTINGS_PAGE_CATALOG: readonly SettingsPageNode[] = [
                         keywords: ['machines', 'devices', 'computer'],
                         icon: ({ theme }) => <Icon name="desktop" size={16} color={theme.colors.text.secondary} />,
                         children: [
+                            {
+                                id: 'machinePoolsNew',
+                                titleKey: 'machinePools.add',
+                                subtitleKey: 'machinePools.benefit',
+                                route: SETTINGS_ROUTES.machinePoolsNew,
+                                keywords: ['machine pools', 'pools', 'fallback', 'run on'],
+                                icon: ({ theme }) => <Icon name="stack" size={16} color={theme.colors.text.secondary} />,
+                            },
                             {
                                 id: 'machinesAdd',
                                 titleKey: 'settings.machineSetupSshMachineTitle',

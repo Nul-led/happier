@@ -127,6 +127,26 @@ function buildFileItemsFromPaths(filePaths: string[]): FileSearchItem[] {
     return files;
 }
 
+// Keep fuzzy score ordering within each relevance tier. Test/spec variants are
+// basename prefixes, after the exact stem, and before broader fuzzy matches.
+function fileSearchRelevance(file: FileSearchItem, query: string): number {
+    const needle = query.trim().toLowerCase().replace(/\\/g, '/').replace(/\/$/, '');
+    const name = file.fileName.toLowerCase().replace(/\/$/, '');
+    const path = file.fullPath.toLowerCase().replace(/\/$/, '');
+    if (path === needle || name === needle) return 0;
+    if (!needle.includes('/') && !needle.includes('.') && file.fileType === 'file') {
+        const extension = name.lastIndexOf('.');
+        if (extension > 0 && name.slice(0, extension) === needle) return 1;
+    }
+    if (!needle.includes('/') && name.startsWith(`${needle}.`)) return 2;
+    if ((needle.includes('/') ? path : name).startsWith(needle)) return 3;
+    return 4;
+}
+
+function rankFileSearchResults(files: FileSearchItem[], query: string, limit: number): FileSearchItem[] {
+    return files.sort((a, b) => fileSearchRelevance(a, query) - fileSearchRelevance(b, query)).slice(0, limit);
+}
+
 function createFuse(files: FileSearchItem[], threshold: number = 0.3): Fuse<FileSearchItem> {
     return new Fuse(files, {
         keys: [
@@ -522,10 +542,10 @@ export async function searchWorkspaceFiles(
         : input.resultType
         ? createFuse(searchableFiles, threshold)
         : threshold === 0.3 ? cache.fuse : createFuse(cache.files, threshold);
-    const cachedResults = fuse?.search(query, { limit }) ?? [];
+    const cachedResults = fuse?.search(query) ?? [];
     if (cachedResults.length > 0 && !cache.truncated) {
         throwIfWorkspaceFileSearchAborted(input.signal);
-        return project(cachedResults.map((r) => r.item), false);
+        return project(rankFileSearchResults(cachedResults.map((r) => r.item), query, limit), false);
     }
 
     const globResult = await buildFileItemsFromRipgrepGlob(
@@ -538,7 +558,7 @@ export async function searchWorkspaceFiles(
     throwIfWorkspaceFileSearchAborted(input.signal);
     throwIfWorkspaceFileSearchAccountRetired(accountLifetime);
     if (!globResult) {
-        return project(cachedResults.map((result) => result.item), cache.truncated);
+        return project(rankFileSearchResults(cachedResults.map((result) => result.item), query, limit), cache.truncated);
     }
 
     const known = new Set(cache.files.map((f) => f.fullPath));
@@ -567,6 +587,6 @@ export async function searchWorkspaceFiles(
         ? cache.files.filter((item) => item.fileType === input.resultType)
         : cache.files;
     const mergedFuse = createFuse(mergedSearchable, threshold);
-    const merged = mergedFuse.search(query, { limit }).map((result) => result.item);
+    const merged = rankFileSearchResults(mergedFuse.search(query).map((result) => result.item), query, limit);
     return project(merged, cache.truncated || globResult.truncated);
 }

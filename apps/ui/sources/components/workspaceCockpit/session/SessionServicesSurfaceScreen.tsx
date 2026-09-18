@@ -29,7 +29,7 @@ export type SessionServicesSurfaceScreenProps = Readonly<{
 export function SessionServicesSurfaceScreen(props: SessionServicesSurfaceScreenProps = {}): React.ReactElement {
     const sessionId = props.sessionId ?? '';
     const sessionMachineTarget = useSessionMachineTarget(sessionId);
-    const preferredServerId = usePreferredServerIdForSession(sessionId, props.serverId);
+    const preferredServerId = usePreferredServerIdForSession({ serverId: props.serverId, sessionId });
     const machineId = props.machineId ?? sessionMachineTarget?.machineId ?? null;
 
     return (

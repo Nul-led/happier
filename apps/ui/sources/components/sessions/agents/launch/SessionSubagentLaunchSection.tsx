@@ -49,12 +49,17 @@ const stylesheet = StyleSheet.create((theme) => ({
 
 export const SessionSubagentLaunchSection = React.memo((props: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     scopeId: string;
     session: Session | null;
     subagents: readonly SessionSubagent[];
 }>) => {
     const styles = stylesheet;
-    const { canShowExecutionRunLauncher } = useSessionExecutionRunLaunchability(props.sessionId, props.session);
+    const { canShowExecutionRunLauncher } = useSessionExecutionRunLaunchability(
+        props.sessionId,
+        props.session,
+        props.serverId,
+    );
     const [expanded, setExpanded] = React.useState(() => props.subagents.length === 0);
     const providerLaunchCards = React.useMemo(() => getSessionSubagentLaunchCards({
         sessionId: props.sessionId,

@@ -6,6 +6,7 @@ import type { Message } from '@/sync/domains/messages/messageTypes';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import { renderScreen } from '@/dev/testkit';
 import { installSessionSubagentCommonModuleMocks } from '@/components/sessions/agents/sessionSubagentTestHelpers';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -44,6 +45,10 @@ installSessionSubagentCommonModuleMocks({
     },
 });
 
+vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
+    useSessionViewShellSession: () => sessionState.session,
+}));
+
 vi.mock('@/components/tools/shell/views/ToolFullView', () => ({
     ToolFullView: () => React.createElement('ToolFullView'),
 }));
@@ -51,8 +56,9 @@ vi.mock('@/components/tools/shell/views/ToolFullView', () => ({
 const sessionState: {
     session: {
         id: string;
+        serverId: string;
         metadata: { flavor: string };
-        accessLevel: 'view' | 'edit' | 'admin' | undefined;
+        access: ReturnType<typeof createSessionAccessFixture> | undefined;
         canApprovePermissions: boolean;
     };
     message: Message | null;
@@ -60,8 +66,9 @@ const sessionState: {
 } = {
     session: {
         id: 's1',
+        serverId: 'server-a',
         metadata: { flavor: 'claude' },
-        accessLevel: 'edit',
+        access: createSessionAccessFixture('edit'),
         canApprovePermissions: true,
     },
     message: null as Message | null,
@@ -95,7 +102,7 @@ vi.mock('@/components/sessions/participants/composer/SessionParticipantComposer'
 }));
 
 describe('SessionSubagentDetailsView', () => {
-    it('renders transcript details for execution-run subagents when a tool transcript exists', async () => {
+    it('delegates execution-run subagents directly to the canonical Run details surface even when a tool transcript exists', async () => {
         const { SessionSubagentDetailsView } = await import('./SessionSubagentDetailsView');
         subagentsState.subagents = [{
             id: 'execution_run:run_1',
@@ -134,47 +141,26 @@ describe('SessionSubagentDetailsView', () => {
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<SessionSubagentDetailsView
                     sessionId="s1"
+                    serverId="server-exact"
                     scopeId="session:s1"
                     subagentId="execution_run:run_1"
                 />)).tree;
 
+        // One canonical Run surface, reached directly. The overview + own composer shell
+        // that used to wrap it is what allowed two independent composers on one run.
         expect(tree).toBeTruthy();
-        expect(messageDetailsSpy).toHaveBeenCalledWith(
+        expect(executionRunDetailsSpy).toHaveBeenCalledWith(
             expect.objectContaining({
                 sessionId: 's1',
-                message: expect.objectContaining({
-                    id: 'tool-msg-1',
-                    kind: 'tool-call',
-                }),
-                showComposer: false,
+                serverId: 'server-exact',
+                runId: 'run_1',
+                presentation: 'panel',
             }),
         );
-        expect(messageDetailsSpy.mock.calls.at(-1)?.[0]).not.toHaveProperty('presentation');
-        expect(participantComposerSpy).toHaveBeenCalledWith(
-            expect.objectContaining({
-                sessionId: 's1',
-                recipient: expect.objectContaining({
-                    kind: 'execution_run',
-                    runId: 'run_1',
-                }),
-                extraActionChips: expect.arrayContaining([
-                    expect.objectContaining({
-                        key: 'execution-run-delivery',
-                        controlId: 'delivery',
-                        collapsedOptionsPopover: expect.objectContaining({
-                            selectedOptionId: 'steer_if_supported',
-                        }),
-                    }),
-                ]),
-            }),
-        );
-        expect(overviewCardSpy).toHaveBeenCalledWith(expect.objectContaining({
-            subagent: expect.objectContaining({
-                id: 'execution_run:run_1',
-                kind: 'execution_run',
-            }),
-        }));
-        expect(executionRunDetailsSpy).not.toHaveBeenCalled();
+        expect(executionRunDetailsSpy.mock.calls.at(-1)?.[0]).not.toHaveProperty('showSendComposer');
+        expect(participantComposerSpy).not.toHaveBeenCalled();
+        expect(overviewCardSpy).not.toHaveBeenCalled();
+        expect(messageDetailsSpy).not.toHaveBeenCalled();
     });
 
     it('falls back to execution-run details when no tool transcript route is available', async () => {
@@ -209,8 +195,6 @@ describe('SessionSubagentDetailsView', () => {
                 sessionId: 's1',
                 runId: 'run_1',
                 presentation: 'panel',
-                showInfoCard: false,
-                showSendComposer: false,
             }),
         );
         expect(messageDetailsSpy).not.toHaveBeenCalled();
@@ -284,6 +268,7 @@ describe('SessionSubagentDetailsView', () => {
         expect(participantComposerSpy).toHaveBeenCalledWith(
             expect.objectContaining({
                 sessionId: 's1',
+                serverId: 'server-a',
                 recipient: expect.objectContaining({
                     kind: 'agent_team_member',
                     teamId: 'qa-team',
@@ -294,18 +279,22 @@ describe('SessionSubagentDetailsView', () => {
         expect(executionRunDetailsSpy).not.toHaveBeenCalled();
     });
 
-    it('allows sending for owner sessions without an explicit access level', async () => {
+    it('allows sending when the session grants agent-input submission', async () => {
         const { SessionSubagentDetailsView } = await import('./SessionSubagentDetailsView');
-        const previousAccessLevel = sessionState.session.accessLevel;
-        sessionState.session.accessLevel = undefined;
+        const previousAccess = sessionState.session.access;
+        sessionState.session.access = createSessionAccessFixture('owner');
         subagentsState.subagents = [{
-            id: 'execution_run:run_owner',
-            kind: 'execution_run',
+            id: 'agent_team_member:qa-team:owner',
+            kind: 'agent_team_member',
             status: 'running',
-            display: { title: 'Owner run' },
+            display: { title: 'owner' },
             transcript: { toolMessageRouteId: 'tool-msg-owner', sidechainId: 'toolu_owner', toolId: 'toolu_owner' },
-            runRef: { runId: 'run_owner', backendId: 'claude' },
-            recipient: { kind: 'execution_run', runId: 'run_owner' },
+            recipient: {
+                kind: 'agent_team_member',
+                teamId: 'qa-team',
+                memberId: 'owner@qa-team',
+                memberLabel: 'owner',
+            },
             capabilities: { canOpen: true, canSend: true, canStop: true, canLaunchChild: false, canDelete: false, canOpenAdvancedRun: true },
             timestamps: {},
         }];
@@ -333,7 +322,7 @@ describe('SessionSubagentDetailsView', () => {
         tree = (await renderScreen(<SessionSubagentDetailsView
                     sessionId="s1"
                     scopeId="session:s1"
-                    subagentId="execution_run:run_owner"
+                    subagentId="agent_team_member:qa-team:owner"
                 />)).tree;
 
         expect(tree).toBeTruthy();
@@ -341,12 +330,12 @@ describe('SessionSubagentDetailsView', () => {
             expect.objectContaining({
                 canSendMessages: true,
                 recipient: expect.objectContaining({
-                    kind: 'execution_run',
-                    runId: 'run_owner',
+                    kind: 'agent_team_member',
+                    memberId: 'owner@qa-team',
                 }),
             }),
         );
 
-        sessionState.session.accessLevel = previousAccessLevel;
+        sessionState.session.access = previousAccess;
     });
 });

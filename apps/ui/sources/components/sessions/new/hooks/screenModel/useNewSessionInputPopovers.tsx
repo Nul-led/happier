@@ -5,13 +5,23 @@ import type { AgentInputContentPopoverConfig } from '@/components/sessions/agent
 import { NewSessionPathSelectionContent } from '@/components/sessions/new/components/NewSessionPathSelectionContent';
 import { NewSessionMachineSelectionContent } from '@/components/sessions/new/components/NewSessionMachineSelectionContent';
 import { NewSessionResumeSelectionContent } from '@/components/sessions/new/components/NewSessionResumeSelectionContent';
-import { useServerScopedMachineOptions } from '@/components/sessions/new/hooks/machines/useServerScopedMachineOptions';
+import type { ServerScopedMachineGroup } from '@/components/sessions/new/hooks/machines/useServerScopedMachineOptions';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { useProfile as useAccountProfile } from '@/sync/store/hooks';
 import { t } from '@/text';
 import { openExternalSessionsResumeIdPickerModal } from '@/components/sessions/external/browse/openExternalSessionsResumeIdPickerModal';
 import { canBrowseExternalSessions, resolveExternalSessionBrowseLockedSource } from '@/components/sessions/external/browse/resolveExternalSessionBrowseLockedSourceOption';
-import type { PluginProjectionV2 } from '@happier-dev/protocol';
+import type { PluginProjectionV2, SessionAuthoringExecutionTargetV2 } from '@happier-dev/protocol';
+import type { RunnerArtifactTarget } from '@happier-dev/protocol/ephemeralRunner/runnerArtifact';
+import type { ServerScopedMachinePoolGroup } from '@/components/sessions/new/components/machineSelection/useMachineSelectionListModel';
+import { useMachinePoolSelection } from '@/components/sessions/new/hooks/machines/useMachinePoolSelection';
+import type { TemporaryComputerAvailability } from '@/components/sessions/new/hooks/useTemporaryComputerAvailability';
+import type { TemporaryComputerLaunchBlock } from '@/components/sessions/new/hooks/temporaryComputerLaunchReadiness';
+import {
+    describeTemporaryComputerLaunchBlock,
+    describeTemporaryComputerUnavailability,
+} from '@/components/sessions/new/hooks/temporaryComputerCopy';
+import { buildTemporaryComputerSelectionRows } from '@/components/sessions/new/components/machineSelection/buildTemporaryComputerSelectionRows';
 
 const LARGE_PICKER_LAYOUT: Pick<
     AgentInputContentPopoverConfig,
@@ -53,17 +63,39 @@ export function useNewSessionInputPopovers(params: Readonly<{
     setPathPickerSearchQuery: React.Dispatch<React.SetStateAction<string>>;
     favoriteDirectories: ReadonlyArray<string>;
     setFavoriteDirectories: (value: string[]) => void;
-    allowedTargetServerIds: ReadonlyArray<string>;
-    resolvedSettingsAllowedServerIds: ReadonlyArray<string>;
-    activeServerId: string;
-    activeServerProfilesSignature: string;
-    activeMachines: ReadonlyArray<Machine>;
+    /**
+     * The one resolved Home-group set the screen already used to project Pools. Machines and Pools
+     * must never be scoped to different Homes, including explicit-settings-rejected recovery, so the
+     * popover consumes that exact set instead of resolving a second one.
+     */
+    machineGroups: ReadonlyArray<ServerScopedMachineGroup>;
     selectedServerId: string | null;
     recentMachines: ReadonlyArray<Machine>;
     favoriteMachineItems: ReadonlyArray<Machine>;
-    setSelectedMachineId: React.Dispatch<React.SetStateAction<string | null>>;
-    getBestPathForMachine: (machineId: string) => string;
+    selectMachineTarget: (machine: Machine, serverId: string | null) => void;
+    toggleFavoriteMachine: (machine: Machine) => void;
     useMachinePickerSearch: boolean;
+    machinePoolGroups: ReadonlyArray<ServerScopedMachinePoolGroup>;
+    machinePoolRequestKey: string;
+    selectMachinePoolTarget: (target: Readonly<{ serverId: string; poolId: string; machineId: string }>) => void;
+    executionTarget: SessionAuthoringExecutionTargetV2 | null;
+    temporaryComputerAvailability: TemporaryComputerAvailability;
+    /**
+     * Exact launch-readiness block for the current authoring selection, or null.
+     * The destination stays offerable either way; this only explains it.
+     */
+    temporaryComputerLaunchBlock: TemporaryComputerLaunchBlock | null;
+    selectTemporaryComputer: (
+        artifactTarget: RunnerArtifactTarget,
+        workspace: Extract<SessionAuthoringExecutionTargetV2, { kind: 'temporary_computer' }>['workspace'],
+        packageExpiresAt?: number,
+    ) => void;
+    /** Existing canonical Machine refresh, used when the Home Machine projection failed. */
+    onRefreshMachines: () => void;
+    /** Existing canonical Pool refresh, offered beside a failed or unavailable Pool row. */
+    onRefreshMachinePools: (serverId: string) => void;
+    /** Existing Machine Pool settings route, offered when the activated Pool has no enabled member. */
+    onOpenMachinePoolSettings: (target: Readonly<{ serverId: string; poolId: string }>) => void;
     targetServerId: string | null;
     externalSessionsFeatureEnabled: boolean;
     resumeSessionId: string;
@@ -80,25 +112,42 @@ export function useNewSessionInputPopovers(params: Readonly<{
 }> {
     const modalPortalTarget = useModalPortalTarget();
     const accountProfile = useAccountProfile();
-    const machinePopoverServerIds = params.allowedTargetServerIds.length > 0
-        ? params.allowedTargetServerIds
-        : params.resolvedSettingsAllowedServerIds;
-    const machinePopoverGroups = useServerScopedMachineOptions({
-        allowedServerIds: machinePopoverServerIds,
-        activeServerId: params.activeServerId,
-        activeMachines: params.activeMachines,
-        refreshToken: params.activeServerProfilesSignature,
+    const machinePopoverGroups = params.machineGroups;
+    const executionTargetScopeKey = params.executionTarget?.kind === 'machine'
+        ? [
+            'machine',
+            params.executionTarget.target.serverId,
+            params.executionTarget.target.machineId,
+            params.executionTarget.selectionOrigin?.poolId ?? '',
+        ].join('\u0000')
+        : params.executionTarget?.kind === 'temporary_computer'
+            ? ['temporary_computer', params.executionTarget.serverId, params.executionTarget.artifactTarget].join('\u0000')
+            : 'unselected';
+    const machinePoolSelection = useMachinePoolSelection({
+        requestKey: params.machinePoolRequestKey,
+        requestKeyAlreadyConsumed: params.executionTarget?.kind === 'machine'
+            && params.executionTarget.selectionOrigin?.kind === 'machine_pool',
+        scopeKey: `${params.targetServerId ?? ''}\u0000${executionTargetScopeKey}`,
+        onResolved: params.selectMachinePoolTarget,
     });
     const machinePopoverRenderParamsRef = useLatestRef({
         favoriteMachineItems: params.favoriteMachineItems,
-        getBestPathForMachine: params.getBestPathForMachine,
+        selectMachineTarget: params.selectMachineTarget,
+        toggleFavoriteMachine: params.toggleFavoriteMachine,
         machinePopoverGroups,
+        machinePoolGroups: params.machinePoolGroups,
+        machinePoolSelection,
+        onRefreshMachines: params.onRefreshMachines,
+        onRefreshMachinePools: params.onRefreshMachinePools,
+        onOpenMachinePoolSettings: params.onOpenMachinePoolSettings,
         recentMachines: params.recentMachines,
         selectedMachine: params.selectedMachine,
         selectedServerId: params.selectedServerId,
-        setSelectedMachineId: params.setSelectedMachineId,
-        setSelectedPath: params.setSelectedPath,
         useMachinePickerSearch: params.useMachinePickerSearch,
+        executionTarget: params.executionTarget,
+        temporaryComputerAvailability: params.temporaryComputerAvailability,
+        temporaryComputerLaunchBlock: params.temporaryComputerLaunchBlock,
+        selectTemporaryComputer: params.selectTemporaryComputer,
     });
 
     const pathPopover = React.useMemo<AgentInputContentPopoverConfig>(() => ({
@@ -156,40 +205,86 @@ export function useNewSessionInputPopovers(params: Readonly<{
     const machinePopoverSignature = React.useMemo(() => buildNewSessionPopoverSignature({
         favoriteMachineItems: params.favoriteMachineItems,
         machinePopoverGroups,
+        machinePoolGroups: params.machinePoolGroups,
+        machinePoolSelectionStatus: machinePoolSelection.status,
         recentMachines: params.recentMachines,
         selectedMachineId: params.selectedMachine?.id ?? null,
         selectedServerId: params.selectedServerId,
         useMachinePickerSearch: params.useMachinePickerSearch,
+        temporaryComputerTargets: params.temporaryComputerAvailability.status === 'available'
+            ? params.temporaryComputerAvailability.artifacts.map((artifact) => artifact.identity.target)
+            : [],
+        selectedTemporaryComputer: params.executionTarget?.kind === 'temporary_computer'
+            ? params.executionTarget
+            : null,
     }), [
         machinePopoverGroups,
         params.favoriteMachineItems,
+        params.machinePoolGroups,
         params.recentMachines,
         params.selectedMachine?.id,
         params.selectedServerId,
+        params.executionTarget,
+        params.temporaryComputerAvailability,
         params.useMachinePickerSearch,
+        machinePoolSelection.status,
     ]);
 
     const machinePopover = React.useMemo<AgentInputContentPopoverConfig>(() => ({
         renderContent: ({ maxHeight, requestClose }) => {
             const renderParams = machinePopoverRenderParamsRef.current;
+            // One shared row owner with the full-screen picker: the composer
+            // popover and the picker route must never disagree about whether
+            // Temporary computer is offerable, or why it is not.
+            const temporaryComputers = buildTemporaryComputerSelectionRows({
+                serverId: renderParams.selectedServerId,
+                availability: renderParams.temporaryComputerAvailability,
+                selectedTarget: renderParams.executionTarget?.kind === 'temporary_computer'
+                    ? renderParams.executionTarget
+                    : null,
+                launchBlockText: renderParams.temporaryComputerLaunchBlock
+                    ? describeTemporaryComputerLaunchBlock(renderParams.temporaryComputerLaunchBlock)
+                    : null,
+                unavailableText: describeTemporaryComputerUnavailability(renderParams.temporaryComputerAvailability)
+                    ?? t('newSession.temporaryComputer.unavailable.platformRetired'),
+                onSelect: (artifactTarget, workspace, packageExpiresAt) => {
+                    renderParams.selectTemporaryComputer(artifactTarget, workspace, packageExpiresAt);
+                    requestClose();
+                },
+            });
             return (
                 <NewSessionMachineSelectionContent
                     groups={renderParams.machinePopoverGroups}
+                    poolGroups={renderParams.machinePoolGroups}
+                    poolSelectionStatus={renderParams.machinePoolSelection.status}
                     selectedMachine={renderParams.selectedMachine}
                     selectedServerId={renderParams.selectedServerId}
+                    temporaryComputers={temporaryComputers}
                     recentMachines={renderParams.recentMachines}
                     favoriteMachines={renderParams.favoriteMachineItems}
                     serverId={renderParams.selectedServerId}
                     onSelectMachine={(machine) => {
-                        renderParams.setSelectedMachineId(machine.id);
-                        renderParams.setSelectedPath(renderParams.getBestPathForMachine(machine.id));
+                        renderParams.machinePoolSelection.cancelPendingSelection();
+                        renderParams.selectMachineTarget(machine, renderParams.selectedServerId);
                         requestClose();
                     }}
                     onSelectScopedMachine={(machine) => {
-                        renderParams.setSelectedMachineId(machine.id);
-                        renderParams.setSelectedPath(renderParams.getBestPathForMachine(machine.id));
+                        renderParams.machinePoolSelection.cancelPendingSelection();
+                        renderParams.selectMachineTarget(machine, machine.serverId);
                         requestClose();
                     }}
+                    onSelectPool={async (selection) => {
+                        if (await renderParams.machinePoolSelection.selectPool(selection)) requestClose();
+                    }}
+                    onRefreshMachines={renderParams.onRefreshMachines}
+                    onRefreshPools={renderParams.onRefreshMachinePools}
+                    onOpenPoolSettings={(target) => {
+                        renderParams.machinePoolSelection.cancelPendingSelection();
+                        requestClose();
+                        renderParams.onOpenMachinePoolSettings(target);
+                    }}
+                    onDismissPoolSelection={renderParams.machinePoolSelection.cancelPendingSelection}
+                    onToggleFavorite={renderParams.toggleFavoriteMachine}
                     showSearch={renderParams.useMachinePickerSearch}
                     searchPlacement="header"
                     testIdPrefix="new-session-machine"
@@ -198,6 +293,7 @@ export function useNewSessionInputPopovers(params: Readonly<{
             );
         },
         ...LARGE_PICKER_LAYOUT,
+        onRequestClose: machinePoolSelection.cancelPendingSelection,
     }), [
         machinePopoverRenderParamsRef,
         machinePopoverSignature,
@@ -210,6 +306,9 @@ export function useNewSessionInputPopovers(params: Readonly<{
                 agentId: params.agentType,
                 projection: params.pluginProjectionV2,
                 machineId: params.selectedMachineId,
+                // The composer's resume chip only ever picks a remote session
+                // id, so resume-only listing sources are in scope here.
+                interaction: 'pickRemoteSessionId',
             });
         return {
             renderContent: ({ requestClose }) => (
@@ -240,6 +339,7 @@ export function useNewSessionInputPopovers(params: Readonly<{
                                 profile: accountProfile,
                                 settings: params.settings,
                                 projection: params.pluginProjectionV2,
+                                interaction: 'pickRemoteSessionId',
                             });
                             if (!source) return null;
                             requestClose();
@@ -253,11 +353,17 @@ export function useNewSessionInputPopovers(params: Readonly<{
                                     source,
                                 },
                             });
-                            if (typeof nextResumeSessionId === 'string') {
-                                const trimmedResumeSessionId = nextResumeSessionId.trim();
-                                if (trimmedResumeSessionId.length > 0) {
-                                    params.setResumeSessionId(trimmedResumeSessionId);
-                                }
+                            // An Agent-issued session id is opaque identity, not
+                            // user input: this surface only decides
+                            // present-vs-absent and stores the exact bytes. The
+                            // canonical authoring-draft owner
+                            // (`buildNewSessionAuthoringDraft` →
+                            // `normalizeOptionalString`) is the single normalizer.
+                            if (
+                                typeof nextResumeSessionId === 'string'
+                                && nextResumeSessionId.trim().length > 0
+                            ) {
+                                params.setResumeSessionId(nextResumeSessionId);
                             }
                             return null;
                         },

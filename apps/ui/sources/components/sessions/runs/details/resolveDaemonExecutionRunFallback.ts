@@ -5,9 +5,9 @@ import type { Message } from '@/sync/domains/messages/messageTypes';
 import { machineExecutionRunsList } from '@/sync/ops/machineExecutionRuns';
 import { storage } from '@/sync/domains/state/storage';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
-import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
 import { readDisplayMachineIdForSession } from '@/sync/ops/sessionMachineTarget';
 import { t } from '@/text';
+import { selectSessionViewShellSessionForRouteState } from '@/components/sessions/shell/sessionViewStableSession';
 
 export type ExecutionRunTranscriptFallback = Readonly<{
     run: ExecutionRunPublicState;
@@ -70,23 +70,26 @@ function buildExecutionRunPublicStateFromDaemonEntry(params: Readonly<{
 
 export async function resolveDaemonExecutionRunFallback(params: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     runId: string;
     transcriptFallback?: ExecutionRunTranscriptFallback | null;
 }>): Promise<ExecutionRunDaemonFallback | null> {
     const normalizedSessionId = normalizeSessionId(params.sessionId);
-    const session = storage.getState().sessions?.[normalizedSessionId];
+    const explicitServerId = params.serverId?.trim() || null;
+    if (!explicitServerId) return null;
+    const state = storage.getState();
+    const session = selectSessionViewShellSessionForRouteState(
+        state,
+        normalizedSessionId,
+        explicitServerId,
+    );
+    if (!session) return null;
     const machineId = readDisplayMachineIdForSession({
         sessionId: normalizedSessionId,
         metadata: session?.metadata ?? null,
     }) || null;
     if (!machineId) return null;
-    const serverId = (
-        resolvePreferredServerIdForSessionId(normalizedSessionId)
-        ?? session?.serverId
-        ?? ''
-    ).trim() || null;
-
-    const listed = await machineExecutionRunsList(machineId, { ...(serverId ? { serverId } : {}) });
+    const listed = await machineExecutionRunsList(machineId, { serverId: explicitServerId });
     if (!listed || listed.ok !== true) return null;
 
     const match = listed.runs.find((run) => String(run?.runId ?? '') === params.runId) ?? null;

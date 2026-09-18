@@ -96,8 +96,8 @@ describe('seedDemoWorld and clearDemoWorld', () => {
 
             const after = takeStoreSnapshot(storage.getState());
             expect(after.sessions['foreign-session']).toEqual(withForeignWrite.sessions['foreign-session']);
-            expect(after.sessionListRenderables['foreign-session']).toEqual(
-                withForeignWrite.sessionListRenderables['foreign-session'],
+            expect(after.sessionListRowsByServerId['foreign-server']?.['foreign-session']).toEqual(
+                withForeignWrite.sessionListRowsByServerId['foreign-server']?.['foreign-session'],
             );
             expect(after.machines['foreign-machine']).toEqual(withForeignWrite.machines['foreign-machine']);
             expect(after.machineDisplayById['foreign-machine']).toEqual(withForeignWrite.machineDisplayById['foreign-machine']);
@@ -109,7 +109,14 @@ describe('seedDemoWorld and clearDemoWorld', () => {
             expect(after.sessionPending[DEMO_RICH_SESSION_ID]).toBeUndefined();
             expect(after.reviewCommentsDraftsBySessionId[DEMO_RICH_SESSION_ID]).toBeUndefined();
             expect(omitKey(after.sessions, 'foreign-session')).toEqual(before.sessions);
-            expect(omitKey(after.sessionListRenderables, 'foreign-session')).toEqual(before.sessionListRenderables);
+            for (const serverId of new Set([
+                ...Object.keys(after.sessionListRowsByServerId),
+                ...Object.keys(before.sessionListRowsByServerId),
+            ])) {
+                expect(omitKey(after.sessionListRowsByServerId[serverId] ?? {}, 'foreign-session')).toEqual(
+                    before.sessionListRowsByServerId[serverId] ?? {},
+                );
+            }
             expect(omitKey(after.machines, 'foreign-machine')).toEqual(before.machines);
             expect(omitKey(after.machineDisplayById, 'foreign-machine')).toEqual(before.machineDisplayById);
             expect(after.settings).toEqual(before.settings);
@@ -302,7 +309,7 @@ describe('seedDemoWorld and clearDemoWorld', () => {
             name: 'HomeView restore test server',
             scope: 'device',
         });
-        saveHomeViewState({
+        await saveHomeViewState({
             version: 1,
             groups: [{ id: 'homes', name: 'Homes', serverIds: [previous.id] }],
             activeTargetKind: 'group',

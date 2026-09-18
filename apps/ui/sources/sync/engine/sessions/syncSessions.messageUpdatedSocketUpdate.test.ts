@@ -121,6 +121,23 @@ function buildHarness(
     return { params, applyMessages, applySessions, fetchSessions, onMessageGapDetected, markSessionMaterializedMaxSeq };
 }
 
+describe('socket Account actor metadata', () => {
+    it.each([
+        { v: 1, accountId: 'alice', profile: null }, null, undefined,
+    ])('preserves actor object/null/omission with the socket Home', async (accountActor) => {
+        const update = buildUpdate({ messageId: 'm2', messageSeq: 2 });
+        const harness = buildHarness({
+            serverId: 'home-a',
+            updateData: { ...update, body: { ...update.body, message: { ...update.body.message, accountActor } } },
+        });
+        await handleMessageUpdatedSocketUpdate(harness.params);
+        const message = harness.applyMessages.mock.calls[0]?.[1]?.[0];
+        expect(message).toBeDefined();
+        if (accountActor === undefined) expect(message).not.toHaveProperty('accountActor');
+        else expect(message.accountActor).toEqual(accountActor === null ? null : { ...accountActor, serverId: 'home-a' });
+    });
+});
+
 describe('handleMessageUpdatedSocketUpdate', () => {
     it('preserves update message seq on normalized messages and advances session seq', async () => {
         const { params, applyMessages, applySessions } = buildHarness({

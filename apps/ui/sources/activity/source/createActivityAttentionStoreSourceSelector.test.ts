@@ -1,6 +1,8 @@
+import { projectLegacySessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createSessionFixture } from '@/dev/testkit';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { storage } from '@/sync/domains/state/storageStore';
 
 import { createActivityAttentionStoreSourceSelector } from './createActivityAttentionStoreSourceSelector';
@@ -30,6 +32,120 @@ function expectNoObjectKeysOrValuesOnRecords(action: () => void, guardedRecords:
 }
 
 describe('createActivityAttentionStoreSourceSelector', () => {
+    it('does not project Session-list observations as an Activity-wide Home freshness fact', () => {
+        const selector = createActivityAttentionStoreSourceSelector({ 'server-a': ['same-session'] });
+        const base = storage.getState();
+        const source = selector({
+            ...base,
+            concurrentSessionListCacheByServerId: {
+                'server-b': {
+                    serverName: 'Home B',
+                    listObservation: { phase: 'ready', lastSuccessAt: 2_000 },
+                },
+            },
+        });
+        const observationOnlyChange = selector({
+            ...base,
+            concurrentSessionListCacheByServerId: {
+                'server-b': {
+                    serverName: 'Home B',
+                    listObservation: { phase: 'offline', lastSuccessAt: 2_000 },
+                },
+            },
+        });
+
+        expect(source).not.toHaveProperty('sessionListHomeObservationByServerId');
+        expect(observationOnlyChange).toBe(source);
+    });
+
+    it('projects workspace display settings and invalidates when their result changes', () => {
+        const selector = createActivityAttentionStoreSourceSelector();
+        const base = storage.getState();
+        const workspaceRef = {
+            id: 'workspace-a',
+            serverId: 'server-a',
+            machineId: 'machine-a',
+            rootPath: '/repo',
+            label: 'Repo',
+            createdAtMs: 1,
+            lastOpenedAtMs: null,
+        };
+        const first = selector({
+            ...base,
+            settings: {
+                ...base.settings,
+                workspaceRefsV1: [workspaceRef],
+                workspacePathDisplayModeV1: 'name',
+            },
+        });
+        const same = selector({
+            ...base,
+            settings: {
+                ...base.settings,
+                workspaceRefsV1: [{ ...workspaceRef }],
+                workspacePathDisplayModeV1: 'name',
+            },
+        });
+        const renamed = selector({
+            ...base,
+            settings: {
+                ...base.settings,
+                workspaceRefsV1: [{ ...workspaceRef, label: 'Happier Core' }],
+                workspacePathDisplayModeV1: 'name',
+            },
+        });
+        const pathMode = selector({
+            ...base,
+            settings: {
+                ...base.settings,
+                workspaceRefsV1: [{ ...workspaceRef, label: 'Happier Core' }],
+                workspacePathDisplayModeV1: 'path',
+            },
+        });
+
+        expect(first.workspaceRefsV1).toEqual([workspaceRef]);
+        expect(first.workspacePathDisplayModeV1).toBe('name');
+        expect(same).toBe(first);
+        expect(renamed).not.toBe(first);
+        expect(renamed.workspaceRefsV1?.[0]?.label).toBe('Happier Core');
+        expect(pathMode).not.toBe(renamed);
+        expect(pathMode.workspacePathDisplayModeV1).toBe('path');
+    });
+
+    it('does not swallow a changed safe audience when the Session sequence is unchanged', () => {
+        const selector = createActivityAttentionStoreSourceSelector();
+        const base = storage.getState();
+        const session = createSessionFixture({ access: {
+            role: 'recipient', level: 'view', capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }),
+            audienceContext: { kind: 'team', teamId: 'team-a' },
+        } });
+        const first = selector({ ...base, sessions: { [session.id]: session } });
+        const changed = { ...session, access: { ...session.access!, audienceContext: null } };
+        const next = selector({ ...base, sessions: { [session.id]: changed } });
+        expect(next).not.toBe(first);
+        expect(next.sessionsById[session.id].access?.audienceContext).toBeNull();
+    });
+
+    it('invalidates a viewer-only tracking change without a session sequence change', () => {
+        const selector = createActivityAttentionStoreSourceSelector();
+        const base = storage.getState();
+        const session = Object.assign(createSessionFixture(), { viewer: {
+            readState: { state: 'not_started' },
+            relevance: { relevant: true, reasons: ['followed_by_me'] },
+            follow: { follows: false, notificationLevel: null },
+            notification: { level: 'none', source: 'none' },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+        } } as const);
+        const first = selector({ ...base, sessions: { [session.id]: session } });
+        const followed = { ...session, viewer: { ...session.viewer,
+            readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+            follow: { follows: true, notificationLevel: 'none' },
+        } } as const;
+        const second = selector({ ...base, sessions: { [session.id]: followed } });
+        expect(second).not.toBe(first);
+        expect(second.sessionsById[session.id]).toBe(followed);
+    });
+
     it('invalidates when the canonical external-session agent identity changes', () => {
         const selector = createActivityAttentionStoreSourceSelector();
         const baseState = storage.getState();
@@ -476,17 +592,19 @@ describe('createActivityAttentionStoreSourceSelector', () => {
         expect(second.sessionsById[pendingSession.id]?.pendingPermissionRequestCount).toBe(1);
     });
 
-    it('does not invalidate attention when only the provider runtime activity projection changes', () => {
+    it('invalidates attention when the provider runtime activity projection changes', () => {
         const selector = createActivityAttentionStoreSourceSelector();
         const baseState = storage.getState();
         const firstSession = createSessionFixture({
             id: 'runtime-activity',
+            runtimeActivityState: 'idle',
             runtimeActivityActiveCount: 0,
             runtimeActivityObservedAt: 900,
             runtimeActivityRevision: 1_000,
         });
         const secondSession = {
             ...firstSession,
+            runtimeActivityState: 'active' as const,
             runtimeActivityActiveCount: 1,
             runtimeActivityObservedAt: 1_100,
             runtimeActivityRevision: 61_100,
@@ -505,8 +623,103 @@ describe('createActivityAttentionStoreSourceSelector', () => {
             },
         });
 
-        expect(second).toBe(first);
-        expect(second.sessionsById[secondSession.id]?.runtimeActivityActiveCount).toBe(0);
+        expect(second).not.toBe(first);
+        expect(second.sessionsById[secondSession.id]).toMatchObject({
+            runtimeActivityState: 'active',
+            runtimeActivityActiveCount: 1,
+        });
+    });
+
+    it('invalidates a cached renderable when provider runtime activity changes', () => {
+        const selector = createActivityAttentionStoreSourceSelector();
+        const baseState = storage.getState();
+        const firstRow = buildSessionListRenderableFromSession(createSessionFixture({
+            id: 'runtime-activity-renderable',
+            serverId: 'server-a',
+            runtimeActivityState: 'idle',
+            runtimeActivityActiveCount: 0,
+        }));
+        const secondRow = {
+            ...firstRow,
+            runtimeActivityState: 'active' as const,
+            runtimeActivityActiveCount: 1,
+        };
+        const first = selector({
+            ...baseState,
+            sessions: {},
+            ordinarySessionListMembershipByServerId: { 'server-a': [firstRow.id] },
+            sessionListRowsByServerId: { 'server-a': { [firstRow.id]: firstRow } },
+        });
+        const second = selector({
+            ...baseState,
+            sessions: {},
+            ordinarySessionListMembershipByServerId: { 'server-a': [secondRow.id] },
+            sessionListRowsByServerId: { 'server-a': { [secondRow.id]: secondRow } },
+        });
+
+        expect(second).not.toBe(first);
+        expect(second.sessionListRowsByServerId['server-a']?.[secondRow.id]).toMatchObject({
+            runtimeActivityState: 'active',
+            runtimeActivityActiveCount: 1,
+        });
+    });
+
+    it('invalidates for a changed personal-query row without scanning unrelated cached rows', () => {
+        const selector = createActivityAttentionStoreSourceSelector({
+            'server-a': ['collective-personal'],
+        });
+        const baseState = storage.getState();
+        const firstRow = buildSessionListRenderableFromSession(createSessionFixture({
+            id: 'collective-personal',
+            serverId: 'server-a',
+            seq: 1,
+            updatedAt: 1,
+        }));
+        const secondRow = { ...firstRow, seq: 2, updatedAt: 2 };
+        const unrelated = buildSessionListRenderableFromSession(createSessionFixture({
+            id: 'unrelated-query-cache',
+            serverId: 'server-a',
+            seq: 10,
+            updatedAt: 10,
+        }));
+
+        const first = selector({
+            ...baseState,
+            sessions: {},
+            ordinarySessionListMembershipByServerId: { 'server-a': [] },
+            sessionListRowsByServerId: {
+                'server-a': {
+                    [firstRow.id]: firstRow,
+                    [unrelated.id]: unrelated,
+                },
+            },
+        });
+        const unrelatedOnly = selector({
+            ...baseState,
+            sessions: {},
+            ordinarySessionListMembershipByServerId: { 'server-a': [] },
+            sessionListRowsByServerId: {
+                'server-a': {
+                    [firstRow.id]: firstRow,
+                    [unrelated.id]: { ...unrelated, seq: 11, updatedAt: 11 },
+                },
+            },
+        });
+        const changedPersonal = selector({
+            ...baseState,
+            sessions: {},
+            ordinarySessionListMembershipByServerId: { 'server-a': [] },
+            sessionListRowsByServerId: {
+                'server-a': {
+                    [secondRow.id]: secondRow,
+                    [unrelated.id]: unrelated,
+                },
+            },
+        });
+
+        expect(unrelatedOnly).toBe(first);
+        expect(changedPersonal).not.toBe(first);
+        expect(changedPersonal.sessionListRowsByServerId['server-a']?.[secondRow.id]?.seq).toBe(2);
     });
 
     it('builds the source signature without Object.keys or Object.values over hot state records', () => {
@@ -521,13 +734,14 @@ describe('createActivityAttentionStoreSourceSelector', () => {
             sessions: {
                 [session.id]: session,
             },
-            sessionListRenderables: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
         };
         let source: ReturnType<ReturnType<typeof createActivityAttentionStoreSourceSelector>> | undefined;
 
         expectNoObjectKeysOrValuesOnRecords(() => {
             source = selector(state);
-        }, [state.sessions, state.sessionListRenderables]);
+        }, [state.sessions, state.sessionListRowsByServerId]);
 
         expect(source?.sessionsById[session.id]).toBe(session);
     });

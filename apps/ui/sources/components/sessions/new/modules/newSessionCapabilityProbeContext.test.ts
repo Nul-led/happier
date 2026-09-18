@@ -1,7 +1,30 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ConnectedServiceBindingsV1Schema } from '@happier-dev/protocol';
 
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
+
 describe('resolveNewSessionCapabilityProbeContext (stability)', () => {
+    it('includes the selected launch profile in every session-control probe context', async () => {
+        vi.resetModules();
+        vi.doMock('@/agents/registry/registryUiBehavior', () => ({
+            resolveConfiguredAgentRuntimeKindFromUiBehavior: vi.fn(() => null),
+        }));
+        const { resolveNewSessionCapabilityProbeContext } = await import('./newSessionCapabilityProbeContext');
+        const backendTarget = {
+            kind: 'agent' as const,
+            identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.codex,
+        };
+
+        expect(resolveNewSessionCapabilityProbeContext({
+            backendTarget,
+            settings: {} as any,
+            selectedProfileId: 'work',
+        })).toMatchObject({
+            cacheKeySuffixParts: ['profile:work'],
+            capabilityParams: { profileId: 'work' },
+        });
+    });
+
     it('returns stable references when runtimeKind is unchanged', async () => {
         vi.resetModules();
 

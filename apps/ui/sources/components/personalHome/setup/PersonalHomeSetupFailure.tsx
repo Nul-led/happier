@@ -7,9 +7,9 @@ import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 
 const styles = StyleSheet.create((theme) => ({
-    root: { gap: 14, marginTop: 20 },
-    message: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 14, lineHeight: 21 },
-    actions: { flexDirection: 'row', gap: 10, flexWrap: 'wrap' },
+    root: { gap: 14, alignItems: 'center', alignSelf: 'stretch' },
+    message: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 14, lineHeight: 21, textAlign: 'center' },
+    actions: { flexDirection: 'row', gap: 10, flexWrap: 'wrap', justifyContent: 'center' },
     button: { minHeight: 44, borderRadius: 12, paddingHorizontal: 16, justifyContent: 'center', borderWidth: 1, borderColor: theme.colors.border.default },
     primary: { backgroundColor: theme.colors.button.primary.background, borderColor: theme.colors.button.primary.background },
     buttonText: { ...Typography.default('semiBold'), color: theme.colors.text.primary },

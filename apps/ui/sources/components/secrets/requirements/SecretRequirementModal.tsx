@@ -4,6 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { AIBackendProfile } from '@/sync/domains/profiles/profileCompatibility';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
+import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { Typography } from '@/constants/Typography';
 import type { CustomModalInjectedProps } from '@/modal';
 import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
@@ -11,6 +12,7 @@ import { t } from '@/text';
 import { useMachineEnvPresence } from '@/hooks/machine/useMachineEnvPresence';
 import { getActiveServerId } from '@/sync/domains/server/serverProfiles';
 import { SecretsList } from '@/components/secrets/SecretsList';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 import { ItemListStatic } from '@/components/ui/lists/ItemList';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
@@ -74,6 +76,10 @@ export type SecretRequirementModalProps = CustomModalInjectedProps & Readonly<{
     onChangeSecrets?: (next: SavedSecret[]) => void;
     onResolve: (result: SecretRequirementModalResult) => void;
     allowSessionOnly?: boolean;
+    /** Exact Home feature decision; false keeps personal choices but never observes shared rows. */
+    sharedSavedSecretsEnabled?: boolean;
+    /** Exact Account/Home paired with `secrets` for mounted cross-Home launchers. */
+    accountScope?: AccountSettingsScope | null;
     /**
      * Layout variant:
      * - `modal` (default): centered, content-sized card (web + legacy overlays)
@@ -85,6 +91,11 @@ export type SecretRequirementModalProps = CustomModalInjectedProps & Readonly<{
 export function SecretRequirementModal(props: SecretRequirementModalProps) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
+    const savedSecretCatalog = useSavedSecretCatalog({
+        sharedEnabled: props.sharedSavedSecretsEnabled !== false,
+        ...(Object.prototype.hasOwnProperty.call(props, 'accountScope') ? { scope: props.accountScope ?? null } : {}),
+        personalSecrets: props.secrets,
+    });
 
     const layoutVariant: 'modal' | 'screen' = props.layoutVariant ?? 'modal';
     const useCardChrome = layoutVariant === 'modal';
@@ -157,7 +168,7 @@ export function SecretRequirementModal(props: SecretRequirementModalProps) {
         if (variant === 'defaultForProfile') return 'saved';
         const selectedRaw = props.selectedSecretIdByEnvVarName?.[activeEnvVarName];
         const hasSessionOnly = typeof props.sessionOnlySecretValueByEnvVarName?.[activeEnvVarName] === 'string'
-            && String(props.sessionOnlySecretValueByEnvVarName?.[activeEnvVarName]).trim().length > 0;
+            && String(props.sessionOnlySecretValueByEnvVarName?.[activeEnvVarName]).length > 0;
         if (hasSessionOnly) return 'once';
         if (selectedRaw === '') return 'machine';
         if (typeof selectedRaw === 'string' && selectedRaw.trim().length > 0) return 'saved';
@@ -295,7 +306,7 @@ export function SecretRequirementModal(props: SecretRequirementModalProps) {
         setSessionOnlyValue(typeof nextSessionOnly === 'string' ? nextSessionOnly : '');
 
         const selectedRaw = props.selectedSecretIdByEnvVarName?.[activeEnvVarName];
-        const hasSessionOnly = typeof nextSessionOnly === 'string' && nextSessionOnly.trim().length > 0;
+        const hasSessionOnly = typeof nextSessionOnly === 'string' && nextSessionOnly.length > 0;
         if (variant === 'defaultForProfile') {
             setSelectedSource('saved');
             return;
@@ -586,8 +597,13 @@ export function SecretRequirementModal(props: SecretRequirementModalProps) {
                         <SecretsList
                             wrapInItemList={false}
                             secrets={props.secrets}
-                            onChangeSecrets={(next) => props.onChangeSecrets?.(next)}
-                            allowAdd={Boolean(props.onChangeSecrets)}
+                            sharedEntries={savedSecretCatalog.sharedEntries}
+                            allowSharedSelection={variant !== 'defaultForProfile'}
+                            onCreatePersonal={props.onChangeSecrets && savedSecretCatalog.personalMutationsAvailable ? savedSecretCatalog.personalMutations.create : undefined}
+                            onRenamePersonal={props.onChangeSecrets && savedSecretCatalog.personalMutationsAvailable ? savedSecretCatalog.personalMutations.rename : undefined}
+                            onRotatePersonal={props.onChangeSecrets && savedSecretCatalog.personalMutationsAvailable ? savedSecretCatalog.personalMutations.rotate : undefined}
+                            onDeletePersonal={props.onChangeSecrets && savedSecretCatalog.personalMutationsAvailable ? savedSecretCatalog.personalMutations.delete : undefined}
+                            allowAdd={Boolean(props.onChangeSecrets && savedSecretCatalog.personalMutationsAvailable)}
                             allowEdit
                             title={t('secrets.savedTitle')}
                             footer={null}
@@ -660,17 +676,16 @@ export function SecretRequirementModal(props: SecretRequirementModalProps) {
                                 />
                                 <View style={{ height: 10 }} />
                                 <Pressable
-                                    disabled={!sessionOnlyValue.trim()}
+                                    disabled={sessionOnlyValue.length === 0}
                                     onPress={() => {
-                                        const v = sessionOnlyValue.trim();
-                                        if (!v) return;
-                                        props.onResolve({ action: 'enterOnce', envVarName: activeEnvVarName, value: v });
+                                        if (sessionOnlyValue.length === 0) return;
+                                        props.onResolve({ action: 'enterOnce', envVarName: activeEnvVarName, value: sessionOnlyValue });
                                         props.onClose();
                                     }}
                                     style={({ pressed }) => [
                                         styles.primaryButton,
                                         {
-                                            opacity: !sessionOnlyValue.trim() ? 0.5 : (pressed ? 0.85 : 1),
+                                            opacity: sessionOnlyValue.length === 0 ? 0.5 : (pressed ? 0.85 : 1),
                                             backgroundColor: theme.colors.button.primary.background,
                                         },
                                     ]}

@@ -66,6 +66,14 @@ describe('getSecretSatisfaction', () => {
         expect(res.items[0]?.satisfiedBy).toBe('sessionOnly');
     });
 
+    it('treats a whitespace-only session secret as an opaque nonempty value', () => {
+        const profile = makeProfile([{ name: 'A', kind: 'secret', required: true }]);
+        const res = getSecretSatisfaction({ profile, secrets, sessionOnlyValues: { A: '   ' } });
+
+        expect(res.isSatisfied).toBe(true);
+        expect(res.items[0]?.satisfiedBy).toBe('sessionOnly');
+    });
+
     it('when selectedSecretIds[env] is empty string, only machine env (or sessionOnly) can satisfy', () => {
         const profile = makeProfile([{ name: 'A', kind: 'secret', required: true }]);
         const res = getSecretSatisfaction({

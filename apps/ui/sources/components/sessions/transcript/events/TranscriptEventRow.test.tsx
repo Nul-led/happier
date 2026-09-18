@@ -67,6 +67,7 @@ describe('TranscriptEventRow', () => {
     it('offers to clear the terminal composer for typed terminal draft blocked events', async () => {
         const screen = await renderScreen(
             <TranscriptEventRow
+                serverId="home-b"
                 sessionId="s1"
                 event={{
                     type: 'terminal-composer-draft-blocked',
@@ -86,7 +87,7 @@ describe('TranscriptEventRow', () => {
         expect(executeDefaultAction).toHaveBeenCalledWith(
             'session.terminalComposer.clear',
             { sessionId: 's1', expectedStateAtMs: 1234 },
-            { defaultSessionId: 's1', surface: 'ui', placement: 'pending_messages' },
+            { defaultSessionId: 's1', serverId: 'home-b', surface: 'ui', placement: 'pending_messages' },
         );
         expect(modalAlert).not.toHaveBeenCalled();
     });

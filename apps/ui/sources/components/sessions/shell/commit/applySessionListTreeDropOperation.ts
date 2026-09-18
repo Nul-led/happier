@@ -3,10 +3,14 @@ import {
     normalizeSessionListOrderingModeV1,
     normalizeSessionListFolderSortModeV1,
     resolveEffectiveSessionListFolderSortMode,
-    resolveEffectiveSessionListOrderingModeForGroup,
     type SessionListOrderingModeV1,
     type SessionListOrderingSectionMode,
 } from '@/sync/domains/session/listing/sessionListOrderingRules';
+import {
+    isSessionListSessionSiblingReorder,
+    normalizeSessionListSectionModeV1,
+    resolveSessionListSessionRowDragPolicy,
+} from '@/sync/domains/session/listing/sessionListLayout';
 
 import { applyFolderAssignmentChange } from './applyFolderAssignmentChange';
 import { applyFolderTreeMove } from './applyFolderTreeMove';
@@ -46,6 +50,7 @@ export type ApplySessionListTreeDropOperationContext = Readonly<{
     sessionListFolderSortModeV1?: SessionListFolderSortModeV1;
     sessionListOrderingModeV1?: SessionListOrderingModeV1;
     sessionListSectionModeV1?: SessionListOrderingSectionMode;
+    manualSessionOrderingEnabled?: boolean;
     isFolderOrganizationEnabled?: () => boolean;
     now: () => number;
     setSessionFoldersV1: (next: SessionFoldersV1) => void;
@@ -168,26 +173,20 @@ function resolveCurrentParentFolderId(params: Readonly<{
     return params.tree.containerMetadataById.get(params.source.metadata.containerId)?.folderId ?? null;
 }
 
-function normalizeSessionListSectionMode(value: SessionListOrderingSectionMode | undefined): SessionListOrderingSectionMode {
-    return value === 'single' ? 'single' : 'activity';
-}
-
-function resolveEffectiveOrderingModeForSessionSource(params: Readonly<{
+function canReorderSessionSourceSiblings(params: Readonly<{
     source: SessionListTreeDragSource;
     context: ApplySessionListTreeDropOperationContext;
-}>): SessionListOrderingModeV1 {
+}>): boolean {
     const item = params.source.metadata.item;
-    const sectionMode = normalizeSessionListSectionMode(params.context.sessionListSectionModeV1);
-    return resolveEffectiveSessionListOrderingModeForGroup({
-        section: sectionMode === 'single'
-            ? 'sessions'
-            : item.type === 'session'
-                ? item.section
-                : null,
-        sectionMode,
-        groupKind: item.type === 'session' ? item.groupKind : null,
-        userOrderingMode: normalizeSessionListOrderingModeV1(params.context.sessionListOrderingModeV1),
-    });
+    const sectionMode = normalizeSessionListSectionModeV1(params.context.sessionListSectionModeV1);
+    if (item.type !== 'session') return false;
+    return resolveSessionListSessionRowDragPolicy({
+        manualSessionOrderingEnabled: params.context.manualSessionOrderingEnabled !== false,
+        folderContainmentEnabled: false,
+        item,
+        sectionModeV1: sectionMode,
+        orderingModeV1: normalizeSessionListOrderingModeV1(params.context.sessionListOrderingModeV1),
+    }).canReorderSiblings;
 }
 
 function classifyDropOperation(params: Readonly<{
@@ -199,7 +198,10 @@ function classifyDropOperation(params: Readonly<{
     if (!destination) return 'invalid';
 
     if (source.metadata.kind === 'session') {
-        return (source.metadata.folderId ?? null) === destination.container.folderId
+        return isSessionListSessionSiblingReorder({
+            sourceFolderId: source.metadata.folderId,
+            destinationFolderId: destination.container.folderId,
+        })
             ? 'sessionSiblingReorder'
             : 'sessionContainerContainmentMove';
     }
@@ -281,7 +283,8 @@ async function applyFolderDrop(params: Readonly<{
 }>): Promise<boolean> {
     const { source, destination, context } = params;
     const folderId = source.metadata.folderId;
-    if (!folderId) return false;
+    const serverId = source.metadata.serverId;
+    if (!folderId || !serverId) return false;
 
     const currentParentFolderId = resolveCurrentParentFolderId({
         tree: params.tree,
@@ -301,6 +304,7 @@ async function applyFolderDrop(params: Readonly<{
     if (shouldMoveFolderTree) {
         applyFolderTreeMove({
             current: context.sessionFoldersV1,
+            serverId,
             folderId,
             parentId: destinationParentFolderId,
             beforeFolderId,
@@ -380,11 +384,11 @@ export async function applySessionListTreeDropOperation(params: Readonly<{
     }
 
     if (params.source.metadata.kind === 'session') {
-        const effectiveOrderingMode = resolveEffectiveOrderingModeForSessionSource({
+        const canReorderSiblings = canReorderSessionSourceSiblings({
             source: params.source,
             context: params.context,
         });
-        if (operationKind === 'sessionSiblingReorder' && effectiveOrderingMode !== 'custom') {
+        if (operationKind === 'sessionSiblingReorder' && !canReorderSiblings) {
             return {
                 ok: false,
                 reason: 'date-ordering-mode',
@@ -396,7 +400,7 @@ export async function applySessionListTreeDropOperation(params: Readonly<{
                 source: params.source,
                 destination,
                 context: params.context,
-                writeGroupOrder: effectiveOrderingMode === 'custom',
+                writeGroupOrder: canReorderSiblings,
             }),
         };
     }

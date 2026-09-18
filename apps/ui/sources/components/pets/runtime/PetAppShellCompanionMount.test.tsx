@@ -51,6 +51,7 @@ const settingsState = vi.hoisted((): PetAppShellCompanionTestState => ({
     },
 }));
 const applyLocalSettingsSpy = vi.hoisted(() => vi.fn());
+const executePetCompanionActionSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
 const reducedMotionState = vi.hoisted(() => ({ enabled: false }));
 const useActivityAttentionSourceSpy = vi.hoisted(() => vi.fn());
 const activityState = vi.hoisted(() => ({
@@ -60,7 +61,8 @@ const activitySourceState = vi.hoisted(() => ({
     source: {
         isDataReady: true,
         sessionsById: {},
-        sessionListRenderablesById: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         serverProfilesById: {},
@@ -94,9 +96,14 @@ function createActivitySource(sessions: readonly Session[]): ActivityAttentionSo
     return {
         isDataReady: true,
         sessionsById: Object.fromEntries(sessions.map((session) => [session.id, session])),
-        sessionListRenderablesById: Object.fromEntries(
-            sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)]),
-        ),
+        sessionListRowsByServerId: {
+            'server-a': Object.fromEntries(
+                sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)]),
+            ),
+        },
+        ordinarySessionListMembershipByServerId: {
+            'server-a': sessions.map((session) => session.id),
+        },
         sessionListIndexByServerId: {
             'server-a': sessions.map((session) => ({
                 type: 'session' as const,
@@ -169,12 +176,17 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const createStorageSnapshot = (): StorageState => ({
         sessionMessages: {},
         sessionPending: {},
-        sessionListRenderables: Object.fromEntries(
-            activityState.sessions.map((session) => [
-                session.id,
-                buildSessionListRenderableFromSession(session),
-            ]),
-        ),
+        sessionListRowsByServerId: {
+            'server-a': Object.fromEntries(
+                activityState.sessions.map((session) => [
+                    session.id,
+                    buildSessionListRenderableFromSession(session),
+                ]),
+            ),
+        },
+        ordinarySessionListMembershipByServerId: {
+            'server-a': activityState.sessions.map((session) => session.id),
+        },
     }) as StorageState;
     const storage = Object.assign(
         (selector?: (state: StorageState) => unknown) => {
@@ -207,6 +219,12 @@ vi.mock('@/sync/store/settingsWriters', () => ({
     useApplyLocalSettings: () => applyLocalSettingsSpy,
 }));
 
+vi.mock('@/sync/ops/actions/defaultActionExecutor', () => ({
+    createDefaultActionExecutor: () => ({
+        execute: executePetCompanionActionSpy,
+    }),
+}));
+
 describe('PetAppShellCompanionMount', () => {
     afterEach(() => {
         vi.restoreAllMocks();
@@ -231,6 +249,7 @@ describe('PetAppShellCompanionMount', () => {
         useActivityAttentionSourceSpy.mockClear();
         activityState.sessions = [];
         activitySourceState.source = createActivitySource([]);
+        executePetCompanionActionSpy.mockClear();
         vi.unstubAllGlobals();
     });
 
@@ -285,7 +304,7 @@ describe('PetAppShellCompanionMount', () => {
         expect(screen.findByTestId('desktop-pet-overlay-tray-item-session-needs-user')).toBeTruthy();
         expect(collectHostText(screen.tree)).toEqual(expect.arrayContaining([
             'project',
-            '~/project',
+            'Server A · project',
         ]));
     });
 
@@ -318,9 +337,96 @@ describe('PetAppShellCompanionMount', () => {
         expect(screen.findByTestId('desktop-pet-overlay-tray-item-session-dismiss-web')).toBeNull();
         expect(applyLocalSettingsSpy).toHaveBeenCalledWith({
             petsDismissedCompanionTrayItemKeys: expect.arrayContaining([
-                expect.stringMatching(/^waiting:session-dismiss-web:/),
+                JSON.stringify(['waiting', 'server-a', 'session-dismiss-web', '1']),
             ]),
         });
+    });
+
+    it('opens and replies to a secondary-Home activity item with its exact Home context', async () => {
+        enableAccountPetsForTest();
+        vi.spyOn(Date, 'now').mockReturnValue(12_000);
+        const activeHomeSession = createSessionFixture({
+            id: 'duplicate-session',
+            serverId: 'server-a',
+            active: true,
+            updatedAt: 10_000,
+            activeAt: 10_000,
+        });
+        const secondaryHomeSession = createSessionFixture({
+            id: 'duplicate-session',
+            serverId: 'home-b',
+            active: true,
+            pendingPermissionRequestCount: 1,
+            pendingRequestObservedAt: 11_000,
+            updatedAt: 11_000,
+            activeAt: 11_000,
+        });
+        activityState.sessions = [activeHomeSession];
+        activitySourceState.source = {
+            ...createActivitySource([activeHomeSession]),
+            sessionsById: {
+                [secondaryHomeSession.id]: secondaryHomeSession,
+            },
+            sessionListRowsByServerId: {
+                'server-a': {
+                    [activeHomeSession.id]: buildSessionListRenderableFromSession(activeHomeSession),
+                },
+                'home-b': {
+                    [secondaryHomeSession.id]: buildSessionListRenderableFromSession(secondaryHomeSession),
+                },
+            },
+            ordinarySessionListMembershipByServerId: {
+                'server-a': [activeHomeSession.id],
+                'home-b': [secondaryHomeSession.id],
+            },
+            sessionListIndexByServerId: {
+                'server-a': [{
+                    type: 'session',
+                    sessionId: activeHomeSession.id,
+                    serverId: 'server-a',
+                    serverName: 'Home A',
+                }],
+                'home-b': [{
+                    type: 'session',
+                    sessionId: secondaryHomeSession.id,
+                    serverId: 'home-b',
+                    serverName: 'Home B',
+                }],
+            },
+            activeServer: {
+                serverId: 'server-a',
+                serverUrl: 'https://home-a.example.test',
+                generation: 1,
+            },
+        };
+        const { PetAppShellCompanionMount } = await import('./PetAppShellCompanionMount');
+        const screen = await renderScreen(<PetAppShellCompanionMount />);
+
+        await screen.pressByTestIdAsync('desktop-pet-overlay-tray-item-duplicate-session');
+
+        expect(executePetCompanionActionSpy).toHaveBeenCalledWith(
+            'session.open',
+            { sessionId: 'duplicate-session' },
+            { defaultSessionId: 'duplicate-session', serverId: 'home-b' },
+        );
+        executePetCompanionActionSpy.mockClear();
+
+        await screen.pressByTestIdAsync('desktop-pet-overlay-tray-reply-action-duplicate-session');
+        await act(async () => {
+            invokeTestInstanceHandler(
+                screen.findByTestId('desktop-pet-overlay-tray-reply-input-duplicate-session'),
+                'onChangeText',
+                '  Reply to Home B  ',
+            );
+        });
+        await screen.pressByTestIdAsync('desktop-pet-overlay-tray-reply-send-duplicate-session');
+
+        expect(executePetCompanionActionSpy).toHaveBeenCalledWith(
+            'session.message.send',
+            { sessionId: 'duplicate-session', message: 'Reply to Home B' },
+            { defaultSessionId: 'duplicate-session', serverId: 'home-b' },
+        );
+        expect(screen.findByTestId('desktop-pet-overlay-tray-reply-input-duplicate-session')?.props.value).toBe('');
     });
 
     it('updates the rendered built-in pet when the selected pet changes', async () => {

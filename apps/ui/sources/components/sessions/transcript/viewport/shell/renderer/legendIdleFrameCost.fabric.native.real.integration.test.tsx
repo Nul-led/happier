@@ -20,9 +20,9 @@ import type { TranscriptListShellRef } from './types';
  *
  * The transcript's `end` hold is DURABLE by design: `finishHeldIntentSettle` closes the polling
  * window but deliberately does not clear the intent, so a reader parked at the tail keeps a live
- * held intent for the whole session. Every call to `requestHeldIntentSettle` therefore re-opens a
- * `LEGEND_HELD_INTENT_SETTLE_MS` (1500 ms) window that re-arms `requestAnimationFrame` once per
- * frame until its deadline - roughly 90 frames at 60 Hz.
+ * held intent for the whole session. Previously each geometry signal re-opened a 1500ms polling
+ * window even after end maintenance had handed off to Legend. Verification now quiesces at that
+ * handoff; later geometry rechecks through the same owner without clearing intent or provenance.
  *
  * MEASURED HERE (shipped native Legend 3.3.3, New Architecture, `Platform.OS === 'ios'`):
  *
@@ -31,6 +31,8 @@ import type { TranscriptListShellRef } from './types';
  *     readiness poll, `queuedMVCPRecalculate`) are all mount- or command-scoped and do not idle.
  *   - Before the regression fix, ONE content-free React commit cost 94 `requestAnimationFrame`
  *     calls - a whole settle window. The contract below prevents that cost from returning.
+ *   - After a real append, the old end loop scheduled 89 further verification frames after the
+ *     initial 64ms. The geometry test prevents that redundant post-handoff polling.
  *
  * So idle animation-frame cost in this app must not be a function of transcript COMMIT rate. A
  * content-free commit is not geometry evidence and must not reopen the settle transaction; only
@@ -62,6 +64,7 @@ const SETTLE_WINDOW_OBSERVATION_MS = 1600;
 const SESSION_ID = 'idle-frame-cost';
 
 let rafCallCount = 0;
+let heldIntentRafCallCount = 0;
 /**
  * `advanceMovementEpoch` -> `webDomObservation.invalidateUserMovementAuthority()`. The renderer
  * advances a movement epoch for a DATASET or geometry epoch, never for a bare re-render, so this
@@ -173,10 +176,12 @@ describe('Legend transcript renderer idle frame cost', () => {
 
     beforeEach(() => {
         rafCallCount = 0;
+        heldIntentRafCallCount = 0;
         movementAuthorityInvalidationCount = 0;
         vi.useFakeTimers();
         vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
             rafCallCount += 1;
+            if (callback.name === 'monitorHeldIntentThroughLayoutSettle') heldIntentRafCallCount += 1;
             return setTimeout(() => callback(Date.now()), FRAME_MS) as unknown as number;
         });
         vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle));
@@ -281,16 +286,17 @@ describe('Legend transcript renderer idle frame cost', () => {
         expect(movementAuthorityInvalidationCount).toBeGreaterThan(0);
     });
 
-    it('still opens the settle window when a commit carries new rows', async () => {
+    it('quiesces end verification after handoff and rechecks later geometry without another polling window', async () => {
         const { controller } = await mountIdleTranscript();
-
-        rafCallCount = 0;
-        await act(async () => {
-            controller.appendRow();
-            await Promise.resolve();
-        });
-        await advance(SETTLE_WINDOW_OBSERVATION_MS);
-
-        expect(rafCallCount).toBeGreaterThan(1);
+        for (let append = 0; append < 2; append += 1) {
+            await act(async () => {
+                controller.appendRow();
+                await Promise.resolve();
+            });
+            await advance(64);
+            heldIntentRafCallCount = 0;
+            await advance(SETTLE_WINDOW_OBSERVATION_MS);
+            expect(heldIntentRafCallCount).toBe(0);
+        }
     });
 });

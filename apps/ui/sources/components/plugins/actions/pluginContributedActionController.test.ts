@@ -331,15 +331,21 @@ function clientRegisteredCacheIdentity(): PluginReactNativeBundleCacheIdentity {
  * are never presented", so this fixture commits a real registration through the
  * production projection, cache and executable composition the gate reads.
  */
-function createRegisteredClientActionFixture(handler: PluginClientActionHandler) {
+function createRegisteredClientActionFixture(
+    handler: PluginClientActionHandler,
+    presentation: Pick<PluginProjectedActionV2, 'scopes' | 'placementBindings'> = {
+        scopes: ['global'],
+        placementBindings: ['commandPalette'],
+    },
+) {
     const projectedAction = Object.freeze({
         ...PluginProjectedActionV2Schema.parse({
             id: CLIENT_REGISTERED_LOCAL_ID,
             pluginId: CLIENT_REGISTERED_PLUGIN_ID,
             title: 'Refresh index',
-            scopes: ['global'],
+            scopes: presentation.scopes,
             surfaces: ['ui'],
-            placementBindings: ['commandPalette'],
+            placementBindings: presentation.placementBindings,
             execution: {
                 target: 'client',
                 client: {
@@ -1263,6 +1269,54 @@ describe('plugin contributed Action controller', () => {
         }
         expect(dispatch).not.toHaveBeenCalled();
     });
+
+    it.each(['commandPalette', 'composer.primary'] as const)(
+        'opens the qualified destination from a client Action through the default %s controller dispatch',
+        async (placement) => {
+            const opened: unknown[] = [];
+            const fixture = createRegisteredClientActionFixture(async (_input, context) => {
+                await context.ui.openSurface('review-status', { tab: 'summary' });
+                return { opened: true };
+            }, { scopes: ['session'], placementBindings: ['commandPalette', 'composer.primary'] });
+            const initial = snapshot([action({
+                id: CLIENT_REGISTERED_LOCAL_ID,
+                scopes: ['session'],
+                placementBindings: ['commandPalette', 'composer.primary'],
+            })], { pluginId: CLIENT_REGISTERED_PLUGIN_ID });
+            const current: PluginContributedActionCurrentSnapshot = {
+                ...initial,
+                resolveContributedAction: () => fixture.action,
+                host: {
+                    ...initial.host,
+                    currentComposerIntent: () => ({
+                        composer: { kind: 'session', sessionId: SESSION_ID },
+                        revision: 1,
+                    }),
+                    openSurface: async (request) => {
+                        opened.push(request);
+                        return { ok: true };
+                    },
+                },
+            };
+            const controller = createPluginContributedActionController({ resolveCurrent: () => current });
+            await fixture.composition.unload();
+            try {
+                await fixture.composition.reconcile([fixture.activation]);
+                const [entry] = controller.list({ placement, scope: 'session' });
+                if (!entry) throw new Error('expected registered client Action');
+                await expect(controller.open(entry)).resolves.toMatchObject({
+                    kind: 'direct',
+                    outcome: { ok: true, result: { opened: true } },
+                });
+                expect(opened).toEqual([{
+                    destination: { pluginId: CLIENT_REGISTERED_PLUGIN_ID, localId: 'review-status' },
+                    input: { tab: 'summary' },
+                }]);
+            } finally {
+                await fixture.composition.unload();
+            }
+        },
+    );
 
     it('projects one current Action into every declared placement binding with its presentation metadata', () => {
         const multiPlacement = Object.assign(action({

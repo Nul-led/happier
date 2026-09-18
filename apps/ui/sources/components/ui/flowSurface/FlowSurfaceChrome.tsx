@@ -7,6 +7,13 @@ import { Typography } from '@/constants/Typography';
 
 import { WizardCardLayout } from '@/components/onboarding/ui/WizardCardLayout';
 
+/**
+ * Horizontal inset of the card's content column. The action footer sits outside that
+ * column in the DOM, so it reads the same value from here rather than carrying its own
+ * copy and drifting to the card edge.
+ */
+export const FLOW_SURFACE_CONTENT_INSET = 24;
+
 export type FlowSurfaceChromeProps = Readonly<{
     children: React.ReactNode;
     testID?: string;
@@ -35,7 +42,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         gap: 10,
     },
     content: {
-        paddingHorizontal: 24,
+        paddingHorizontal: FLOW_SURFACE_CONTENT_INSET,
         paddingTop: 22,
         paddingBottom: 24,
         gap: 18,

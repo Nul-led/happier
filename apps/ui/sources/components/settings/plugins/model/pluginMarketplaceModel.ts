@@ -155,7 +155,7 @@ export type PluginMarketplaceActionRequest = Readonly<{
  * be reported as a disconnect. `accountRecovery` is Account-only truth with no
  * claim about a reachable machine or a retryable machine registry.
  */
-export type PluginReadOnlySnapshotReason = 'disconnected' | 'projectionUnavailable' | 'accountRecovery';
+export type PluginReadOnlySnapshotReason = 'disconnected' | 'projectionUnavailable' | 'installationUnavailable' | 'refreshing' | 'accountRecovery';
 
 export type PluginReadOnlySnapshotNoticeState = Readonly<{
     reason: PluginReadOnlySnapshotReason;
@@ -171,20 +171,20 @@ export function resolvePluginReadOnlySnapshotNotice(params: Readonly<{
     hasCatalog: boolean;
     hasMarketplaceSourceRegistry: boolean;
     hasProjectionInputs: boolean;
+    capabilityReadFailed?: boolean;
 }>): PluginReadOnlySnapshotNoticeState | null {
+    if (params.capabilityReadFailed) {
+        return { reason: params.daemonTransportOnline ? 'installationUnavailable' : 'disconnected' };
+    }
     if (params.daemonOperationsAvailable) {
         return null;
     }
-    const hasCachedTruth = params.hasCapabilitySnapshot
-        || params.installedPluginCount > 0
-        || params.developmentPluginCount > 0
-        || params.hasCatalog
-        || params.hasMarketplaceSourceRegistry
-        || params.hasProjectionInputs;
-    if (!hasCachedTruth) {
-        return null;
-    }
     const projectionAnswered = params.projectionPhase === 'error' || params.projectionPhase === 'unsupported';
+    if (params.daemonTransportOnline && !projectionAnswered) {
+        return params.hasCapabilitySnapshot || params.installedPluginCount > 0 || params.developmentPluginCount > 0
+            ? { reason: 'refreshing' }
+            : null;
+    }
     return {
         reason: params.daemonTransportOnline && projectionAnswered
             ? 'projectionUnavailable'

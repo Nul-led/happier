@@ -329,6 +329,9 @@ export function SelectableMenuResults(props: {
                             title={item.title}
                             subtitle={item.subtitleNode ?? item.subtitle}
                             accessibilityLabel={item.accessibilityLabel}
+                            accessibilityRole={item.checked === undefined ? props.itemProps?.accessibilityRole : 'radio'}
+                            webRole={item.checked === undefined ? props.itemProps?.webRole : 'radio'}
+                            accessibilityChecked={item.checked ?? props.itemProps?.accessibilityChecked}
                             icon={item.left}
                             rightElement={item.right}
                             selected={isSelected}
@@ -352,6 +355,8 @@ export function SelectableMenuResults(props: {
                             title={item.titleNode ?? item.title}
                             subtitle={item.subtitleNode ?? item.subtitle}
                             accessibilityLabel={item.accessibilityLabel}
+                            accessibilityRole={item.checked === undefined ? undefined : 'radio'}
+                            accessibilityChecked={item.checked}
                             containerStyle={item.rowContainerStyle}
                             titleStyle={item.rowTitleStyle}
                             subtitleStyle={item.rowSubtitleStyle}

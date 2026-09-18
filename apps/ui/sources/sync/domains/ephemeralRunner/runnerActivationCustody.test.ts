@@ -1,0 +1,110 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import tweetnacl from 'tweetnacl';
+import type { RunnerActivationBindingV1 } from '@happier-dev/protocol/ephemeralRunner/activation';
+import type { RunnerActivationProjectionV1 } from '@happier-dev/protocol/ephemeralRunner/projection';
+import { signRunnerClaimV1 } from '@happier-dev/protocol/ephemeralRunner/endpoint';
+import { signMachineInstallationProof } from '@happier-dev/protocol/machines/identity/installationIdentity';
+
+import { decodeBase64, encodeBase64 } from '@/encryption/base64';
+import {
+    createRunnerActivationKeyCustody,
+    openRunnerActivationKeyCustody,
+    readRunnerActivationSigningKey,
+} from './runnerActivationKeyCustody';
+import { retireRunnerActivationKeyCustodyAfterVerifiedClaim } from './runnerActivationCustody';
+
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock();
+});
+
+const scope = { serverId: 'home-a', accountId: 'creator-a' } as const;
+
+beforeEach(() => {
+    const values = new Map<string, string>();
+    vi.stubGlobal('window', { localStorage: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => { values.set(key, value); },
+        removeItem: (key: string) => { values.delete(key); },
+    } });
+});
+afterEach(() => vi.unstubAllGlobals());
+
+describe('Runner activation custody retirement', () => {
+    it('retains the exact signing key for an invalid claim and removes it only after verified claim binding', async () => {
+        const custody = await createRunnerActivationKeyCustody(scope);
+        const secretKey = decodeBase64(await readRunnerActivationSigningKey(scope, custody), 'base64url');
+        const installation = tweetnacl.sign.keyPair();
+        const binding: RunnerActivationBindingV1 = {
+            activationId: custody.activationId,
+            homeServerIdentityId: 'srv_runner',
+            creatorAccountId: scope.accountId,
+            creatorTokenEpoch: 1,
+            activationExpiresAt: null,
+            workspace: { kind: 'choose_on_endpoint' },
+            sessionId: 'session-a',
+            machineId: 'machine-a',
+            activationSigningPublicKey: custody.activationSigningPublicKey,
+            authoringCommitment: encodeBase64(new Uint8Array(32).fill(3), 'base64url'),
+            artifact: {
+                product: 'happier-runner',
+                version: '0.3.0',
+                target: 'linux-x64',
+                sha256: 'a'.repeat(64),
+            },
+            endpointFactsRecipient: { mode: 'plain', creatorAccountId: scope.accountId },
+        };
+        const claim = signRunnerClaimV1({
+            payload: {
+                v: 1,
+                purpose: 'happier.ephemeral-session-runner.claim',
+                binding,
+                runnerBoxPublicKey: encodeBase64(tweetnacl.box.keyPair().publicKey, 'base64url'),
+                installation: {
+                    installationId: 'runner-installation',
+                    publicKey: encodeBase64(installation.publicKey, 'base64url'),
+                    proof: signMachineInstallationProof({
+                        payload: {
+                            version: 1,
+                            installationId: 'runner-installation',
+                            machineId: binding.machineId,
+                            accountId: binding.creatorAccountId,
+                        },
+                        privateKey: installation.secretKey,
+                    }),
+                },
+                protocolEpoch: 1,
+            },
+            activationSecretKey: secretKey,
+        });
+        secretKey.fill(0);
+        const projection: RunnerActivationProjectionV1 = {
+            ...binding,
+            draftId: 'draft-a',
+            state: 'claimed',
+            closeReason: null,
+            progressPhase: null,
+            claim,
+            endpointFacts: null,
+            review: null,
+            consent: null,
+            readiness: null,
+            materialization: null,
+        };
+
+        await expect(retireRunnerActivationKeyCustodyAfterVerifiedClaim({
+            scope,
+            expectedBinding: binding,
+            projection: {
+                ...projection,
+                claim: { ...claim, signature: encodeBase64(new Uint8Array(64), 'base64url') },
+            },
+        })).rejects.toThrow('runner_activation_invalid_claim');
+        await expect(openRunnerActivationKeyCustody(scope, custody.activationId)).resolves.toEqual(custody);
+
+        await retireRunnerActivationKeyCustodyAfterVerifiedClaim({ scope, expectedBinding: binding, projection });
+        await expect(openRunnerActivationKeyCustody(scope, custody.activationId)).rejects.toMatchObject({
+            code: 'runner_activation_key_unavailable',
+        });
+    });
+});

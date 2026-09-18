@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { act } from 'react-test-renderer';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -67,6 +66,7 @@ const navigateWithBlurOnWebSpy = vi.hoisted(() => vi.fn((action: () => void) => 
 const navigationCanGoBackSpy = vi.fn(() => true);
 let localSearchParamsMock: Record<string, unknown> = { id: 'session-1', runId: 'run_1' };
 let hydrateReady = true;
+let hydratedServerId: string | undefined;
 let SessionRunDetailsScreen: typeof import('@/app/(app)/session/[id]/runs/[runId]').default;
 const sessionFixture: Session = {
     id: 'session-1',
@@ -216,8 +216,8 @@ vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 
 vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({
     useHydrateSessionForRoute: (sessionId: string) => hydrateReady
-        ? { kind: 'available', sessionId }
-        : { kind: 'loading', sessionId, reason: 'store-miss' },
+        ? { kind: 'available', sessionId, ...(hydratedServerId ? { serverId: hydratedServerId } : {}) }
+        : { kind: 'loading', sessionId, reason: 'store-miss', ...(hydratedServerId ? { serverId: hydratedServerId } : {}) },
 }));
 
 vi.mock('@/components/sessions/shell/SessionInvalidLinkFallback', () => ({
@@ -226,6 +226,7 @@ vi.mock('@/components/sessions/shell/SessionInvalidLinkFallback', () => ({
 
 vi.mock('@/sync/sync', () => ({
     sync: {
+        fetchPendingMessages: vi.fn(async () => undefined),
         sendMessage: vi.fn(async () => undefined),
         submitMessage: vi.fn(),
     },
@@ -274,6 +275,7 @@ describe('Session Run Details Screen', () => {
         navigationCanGoBackSpy.mockReturnValue(true);
         localSearchParamsMock = { id: 'session-1', runId: 'run_1' };
         hydrateReady = true;
+        hydratedServerId = undefined;
     });
 
     afterEach(() => {
@@ -326,6 +328,24 @@ describe('Session Run Details Screen', () => {
 
         expect(routerBackSpy).not.toHaveBeenCalled();
         expect(routerReplaceSpy).toHaveBeenCalledWith('/session/session-1');
+    });
+
+    it('keeps the hydrated Home qualified for Run loading and no-history navigation', async () => {
+        hydratedServerId = 'server-hydrated';
+        navigationCanGoBackSpy.mockReturnValue(false);
+        await renderRunDetailsScreen();
+
+        expect(getRunSpy).toHaveBeenCalledWith(
+            'session-1',
+            expect.objectContaining({ runId: 'run_1' }),
+            { serverId: 'server-hydrated' },
+        );
+
+        const stackOptions = stackScreenSpy.mock.calls.at(-1)?.[0]?.options;
+        const headerLeftScreen = await renderScreen(React.createElement(stackOptions.headerLeft));
+        await headerLeftScreen.pressByTestIdAsync('session-run-details-back');
+
+        expect(routerReplaceSpy).toHaveBeenCalledWith('/session/session-1?serverId=server-hydrated');
     });
 
     it('renders invalid-link fallback when the run id param is missing', async () => {
@@ -436,7 +456,7 @@ describe('Session Run Details Screen', () => {
         expect(routerPushSpy).toHaveBeenCalledWith('/session/session-1/message/tool%3Aside_1');
     });
 
-    it('can stop and send to running bounded backend runs', async () => {
+    it('stops a running bounded run without ever offering it a direct send box', async () => {
         getRunSpy.mockResolvedValueOnce({
             run: {
                 runId: 'run_1',
@@ -454,18 +474,15 @@ describe('Session Run Details Screen', () => {
         });
 
         const screen = await renderRunDetailsScreen();
-        expect(screen.findByTestId('session-run-details-send-input')).toBeTruthy();
-        await act(async () => {
-            screen.changeTextByTestId('session-run-details-send-input', 'hello');
-        });
-
-        expect(screen.findByTestId('session-run-details-send')).toBeTruthy();
-        await screen.pressByTestIdAsync('session-run-details-send');
-        expect(sendRunSpy).toHaveBeenCalledWith('session-1', expect.objectContaining({ runId: 'run_1', message: 'hello' }));
+        // A bounded job is finite work. It keeps its stop control and its result, and it
+        // never acquires the durable conversation composer.
+        expect(screen.findAllByTestId('session-run-details-send-input')).toHaveLength(0);
+        expect(screen.findAllByTestId('session-run-details-send')).toHaveLength(0);
 
         expect(screen.findByTestId('session-run-details-stop')).toBeTruthy();
         await screen.pressByTestIdAsync('session-run-details-stop');
         expect(stopRunSpy).toHaveBeenCalledWith('session-1', expect.objectContaining({ runId: 'run_1' }));
+        expect(sendRunSpy).not.toHaveBeenCalled();
     });
 
     it('hides the send composer for running voice-agent runs', async () => {

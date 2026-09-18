@@ -38,7 +38,7 @@ describe('resolveWorkspaceTargetForSessionFromState', () => {
                     metadata: { machineId: 'machine-a', path: '/repo/a' },
                 },
             },
-            sessionListRowStateByServerId: {
+            sessionListRowsByServerId: {
                 'home-a': { 'same-session': row('machine-a', '/repo/a') },
                 'home-b': { 'same-session': row('machine-b', '/repo/b') },
             },
@@ -79,29 +79,32 @@ describe('resolveWorkspaceTargetForSessionFromState', () => {
                     },
                 },
             },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 10,
-                    active: false,
-                    activeAt: 0,
-                    metadataVersion: 1,
-                    agentStateVersion: 1,
-                    metadata: {
-                        path: '/workspace/direct-repo',
-                        machineId: null,
-                        externalSessionV1: {
-                            v: 1,
-                            agentId: 'codex',
+            sessionListRowsByServerId: {
+                'server-a': {
+                    s1: {
+                        id: 's1',
+                        seq: 1,
+                        createdAt: 1,
+                        updatedAt: 10,
+                        active: false,
+                        activeAt: 0,
+                        metadataVersion: 1,
+                        agentStateVersion: 1,
+                        metadata: {
+                            path: '/workspace/direct-repo',
+                            machineId: null,
+                            externalSessionV1: {
+                                v: 1,
+                                agentId: 'codex',
+                            },
                         },
+                        thinking: false,
+                        thinkingAt: 0,
+                        presence: 0,
                     },
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 0,
                 },
             },
+            ordinarySessionListMembershipByServerId: { 'server-a': ['s1'] },
             sessionListIndexByServerId: {
                 'server-a': [
                     {
@@ -156,29 +159,6 @@ describe('resolveWorkspaceTargetForSessionFromState', () => {
                             source: { kind: 'codexHome', home: 'user' },
                         },
                     },
-                },
-            },
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 10,
-                    active: false,
-                    activeAt: 0,
-                    metadataVersion: 1,
-                    agentStateVersion: 1,
-                    metadata: {
-                        path: '/workspace/direct-repo',
-                        machineId: null,
-                        externalSessionV1: {
-                            v: 1,
-                            agentId: 'codex',
-                        },
-                    },
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 0,
                 },
             },
             machines: {

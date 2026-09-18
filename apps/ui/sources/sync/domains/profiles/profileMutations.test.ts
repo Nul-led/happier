@@ -29,6 +29,8 @@ describe('createEmptyCustomProfile', () => {
             id: 'legacy-provider', name: 'Legacy', description: 'Keep me',
             environmentVariables: [
                 { name: 'ANTHROPIC_BASE_URL', value: 'https://gateway.example' },
+                { name: 'AZURE_OPENAI_API_VERSION', value: '2024-02-15-preview' },
+                { name: 'OPENAI_API_TIMEOUT_MS', value: '600000' },
                 { name: 'SAFE_LAUNCH_FLAG', value: '1' },
             ],
             defaultPermissionModeByTargetKey: { 'backend:claude': 'acceptEdits' as const },
@@ -44,12 +46,16 @@ describe('createEmptyCustomProfile', () => {
             expect(converted).toMatchObject({
                 v: 2,
                 description: 'Keep me',
-                extraEnvironmentVariables: [{ name: 'SAFE_LAUNCH_FLAG', value: '1' }],
+                extraEnvironmentVariables: [
+                    { name: 'OPENAI_API_TIMEOUT_MS', value: '600000' },
+                    { name: 'SAFE_LAUNCH_FLAG', value: '1' },
+                ],
                 defaultPermissionModeByTargetKey: { 'backend:claude': 'acceptEdits' },
                 defaultPersistenceModeByTargetKey: { 'backend:claude': 'persisted' },
                 compatibilityByTargetKey: { 'backend:claude': true },
             });
             expect(converted.extraEnvironmentVariables).not.toContainEqual(expect.objectContaining({ name: 'ANTHROPIC_BASE_URL' }));
+            expect(converted.extraEnvironmentVariables).not.toContainEqual(expect.objectContaining({ name: 'AZURE_OPENAI_API_VERSION' }));
         }
     });
 

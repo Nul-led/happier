@@ -1,132 +1,196 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
+import { encodeTerminalConnectLinkV4Payload } from '@happier-dev/protocol';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 import { installTerminalRouteCommonModuleMocks } from './terminalRouteTestHelpers';
 
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const replaceMock = vi.fn();
-const setPendingMock = vi.fn((_pending: { publicKeyB64Url: string; serverUrl: string }) => {});
-const upsertActivateAndSwitchServerMock = vi.fn(async (_params: { serverUrl: string; source: string; scope: string; refreshAuth?: unknown }) => true);
-let activeServerUrl = 'https://api.happier.dev';
+const modalAlertAsyncMock = vi.fn(async () => {});
 
 installTerminalRouteCommonModuleMocks({
-    router: async () =>
-        createExpoRouterMock({
-            router: { back: vi.fn(), replace: replaceMock, push: vi.fn(), setParams: vi.fn() },
-            pathname: '/terminal/connect',
-        }).module,
+    router: async () => createExpoRouterMock({
+        router: { back: vi.fn(), replace: replaceMock, push: vi.fn(), setParams: vi.fn() },
+        pathname: '/terminal/connect',
+    }).module,
 });
-
-vi.mock('@/hooks/session/useConnectTerminal', () => ({
-    useConnectTerminal: () => ({ processAuthUrl: vi.fn(async () => {}), isLoading: false }),
-}));
 
 vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ isAuthenticated: false, credentials: null }),
 }));
 
-vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
-    setPendingTerminalConnect: setPendingMock,
-    clearPendingTerminalConnect: vi.fn(),
-    getPendingTerminalConnect: () => null,
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: { alertAsync: modalAlertAsyncMock } }).module;
+});
+
+vi.mock('@/auth/storage/tokenStorage', () => ({
+    TokenStorage: {
+        getCredentialsForServerUrl: vi.fn(async () => null),
+        readPendingExternalAuthState: vi.fn(async () => ({ value: null, serverMismatch: false })),
+        readPendingExternalAuthStateForServerUrl: vi.fn(async () => ({ value: null, serverMismatch: false })),
+    },
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
-    getActiveServerUrl: () => activeServerUrl,
-}));
+vi.mock('@/sync/domains/pending/pendingTerminalConnect', async () => (
+    await import('@/sync/domains/pending/pendingTerminalConnect.web')
+));
 
-vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
-    normalizeServerUrl: (value: string) => String(value ?? '').trim().replace(/\/+$/, ''),
-    upsertActivateAndSwitchServer: upsertActivateAndSwitchServerMock,
-}));
+function createStorage(): Storage {
+    const values = new Map<string, string>();
+    return {
+        get length() { return values.size; },
+        clear: () => values.clear(),
+        getItem: (key) => values.get(key) ?? null,
+        key: (index) => [...values.keys()][index] ?? null,
+        removeItem: (key) => { values.delete(key); },
+        setItem: (key, value) => { values.set(key, value); },
+    };
+}
+
+function createV4Link(serverUrl: string, serverIdentityId: string) {
+    const descriptor = {
+        v: 1 as const,
+        homeServerIdentityId: serverIdentityId,
+        canonicalServerUrl: serverUrl,
+        revision: 1,
+        endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const payload = encodeTerminalConnectLinkV4Payload({
+        v: 4,
+        publicKeyB64Url: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        pairing: {
+            v: 3,
+            secretB64Url: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
+            createdAtMs: 1_900_000_000_000,
+            expiresAtMs: 1_900_000_060_000,
+            homeServerIdentityId: serverIdentityId,
+            supportsTokenOnly: false,
+        },
+        homeConnectionDescriptor: descriptor,
+    });
+    return { descriptor, href: `https://ui.example.test/terminal/connect#v4=${encodeURIComponent(payload)}` };
+}
+
+async function activateServer(serverUrl: string) {
+    const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
+    return upsertAndActivateServer({ serverUrl, source: 'manual', scope: 'device', replaceEquivalentStoredUrl: true });
+}
+
+function setWindowLocation(href: string, sessionStorage: Storage) {
+    const url = new URL(href);
+    (globalThis as typeof globalThis & { window: Window }).window = {
+        location: {
+            hash: url.hash,
+            pathname: url.pathname,
+            search: url.search,
+            href,
+        },
+        history: { replaceState: vi.fn() },
+        sessionStorage,
+    } as unknown as Window;
+}
 
 describe('TerminalConnectScreen unauthenticated redirect', () => {
-    afterEach(() => {
-        standardCleanup();
-    });
+    let sessionStorage: Storage;
 
-    beforeEach(() => {
+    beforeEach(async () => {
         vi.resetModules();
-        vi.unmock('@/utils/path/terminalConnectUrl');
         replaceMock.mockClear();
-        setPendingMock.mockClear();
-        upsertActivateAndSwitchServerMock.mockClear();
-        activeServerUrl = 'https://api.happier.dev';
-        (globalThis as any).window = {
-            location: {
-                hash: '#key=abc123&server=https%3A%2F%2Fcompany.example.test',
-                pathname: '/terminal/connect',
-                search: '',
-                href: 'https://ui.example.test/terminal/connect#key=abc123&server=https%3A%2F%2Fcompany.example.test',
-            },
-            history: { replaceState: vi.fn() },
-        };
+        modalAlertAsyncMock.mockClear();
+        const localStorage = createStorage();
+        sessionStorage = createStorage();
+        vi.stubGlobal('localStorage', localStorage);
+        vi.stubGlobal('sessionStorage', sessionStorage);
+        await activateServer('https://api.happier.dev');
+        const { clearPendingTerminalConnect } = await import('@/sync/domains/pending/pendingTerminalConnect');
+        clearPendingTerminalConnect();
     });
 
-    it('stores pending connect and redirects to auth screen immediately', async () => {
+    afterEach(async () => {
+        const { clearPendingTerminalConnect } = await import('@/sync/domains/pending/pendingTerminalConnect');
+        clearPendingTerminalConnect();
+        standardCleanup();
+        vi.unstubAllGlobals();
+    });
+
+    it('captures a strict V4 descriptor in the real web owner and selects its Home before auth', async () => {
+        const link = createV4Link('https://company.example.test', 'srv_company_home');
+        setWindowLocation(link.href, sessionStorage);
         const Screen = (await import('@/app/(app)/terminal/connect')).default;
 
         await renderScreen(<Screen />);
         await act(async () => {});
 
-        expect(setPendingMock).toHaveBeenCalledWith({
-            publicKeyB64Url: 'abc123',
-            serverUrl: 'https://company.example.test',
-            serverIdentityId: '',
+        const { getPendingTerminalConnect } = await import('@/sync/domains/pending/pendingTerminalConnect');
+        await vi.waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/?server=https%3A%2F%2Fcompany.example.test'));
+        // The route deliberately keeps the auth redirect recoverable when the live connection
+        // switch cannot complete. Activate the target as the auth landing would, then read the
+        // real target-bound pre-auth record.
+        await activateServer('https://company.example.test');
+        expect(getPendingTerminalConnect()).toMatchObject({
+            serverIdentityId: 'srv_company_home',
+            homeConnectionDescriptor: link.descriptor,
         });
-        expect(upsertActivateAndSwitchServerMock).toHaveBeenCalledWith({
-            serverUrl: 'https://company.example.test',
-            source: 'url',
-            scope: 'tab',
-            refreshAuth: undefined,
-        });
-        expect(replaceMock).toHaveBeenCalledWith('/?server=https%3A%2F%2Fcompany.example.test');
     });
 
-    it('ignores loopback server overrides and keeps the active relay when redirecting', async () => {
+    it('does not crash when bootstrap session storage is unavailable', async () => {
+        setWindowLocation('https://ui.example.test/terminal/connect', sessionStorage);
+        Object.defineProperty((globalThis as typeof globalThis & { window: Window }).window, 'sessionStorage', {
+            configurable: true,
+            get: () => { throw new Error('storage denied'); },
+        });
         const Screen = (await import('@/app/(app)/terminal/connect')).default;
-        activeServerUrl = 'http://127.0.0.1:43005';
-        (globalThis as any).window.location = {
-            hash: '#key=abc123&server=http%3A%2F%2F127.0.0.1%3A3005',
-            pathname: '/terminal/connect',
-            search: '',
-            href: 'https://ui.example.test/terminal/connect#key=abc123&server=http%3A%2F%2F127.0.0.1%3A3005',
-        };
 
-        await renderScreen(<Screen />);
+        await expect(renderScreen(<Screen />)).resolves.toBeDefined();
+        const { getPendingTerminalConnect } = await import('@/sync/domains/pending/pendingTerminalConnect');
+        expect(getPendingTerminalConnect()).toBeNull();
+    });
+
+    it('uses real compatibility admission to prompt for an update without persistence or approval', async () => {
+        const href = 'https://ui.example.test/terminal/connect#key=abc123'
+            + '&server=https%3A%2F%2Fcompany.example.test'
+            + '&pairingSecret=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE'
+            + '&createdAt=1800000000000&expiresAt=1800000060000';
+        setWindowLocation(href, sessionStorage);
+        const Screen = (await import('@/app/(app)/terminal/connect')).default;
+
+        const screen = await renderScreen(<Screen />);
         await act(async () => {});
 
-        expect(setPendingMock).toHaveBeenCalledWith({
-            publicKeyB64Url: 'abc123',
-            serverUrl: 'http://127.0.0.1:43005',
-            serverIdentityId: '',
-        });
-        expect(upsertActivateAndSwitchServerMock).not.toHaveBeenCalled();
-        expect(replaceMock).toHaveBeenCalledWith('/?server=http%3A%2F%2F127.0.0.1%3A43005');
+        expect(modalAlertAsyncMock).toHaveBeenCalledWith(
+            'connect.updateRequiredTitle',
+            'connect.legacyPairingUpdateRequiredBody',
+            expect.any(Array),
+        );
+        expect((await import('@/sync/domains/pending/pendingTerminalConnect')).getPendingTerminalConnect()).toBeNull();
+        expect(replaceMock).not.toHaveBeenCalled();
+        expect(screen.findByTestId('terminal-connect-approve')).toBeNull();
     });
 
-    it('does not switch servers when the requested relay is loopback-equivalent to the active relay', async () => {
+    it('retains a strict V4 target without redirecting authentication through a different active Home', async () => {
+        await activateServer('http://localhost:53288');
+        const link = createV4Link('http://127.0.0.1:3005', 'srv_loopback_home');
+        setWindowLocation(link.href, sessionStorage);
         const Screen = (await import('@/app/(app)/terminal/connect')).default;
-        activeServerUrl = 'http://localhost:53288';
-        (globalThis as any).window.location = {
-            hash: '#key=abc123&server=http%3A%2F%2Fhappier-repo-dev-a1cc5e0671.localhost%3A53288',
-            pathname: '/terminal/connect',
-            search: '',
-            href: 'https://ui.example.test/terminal/connect#key=abc123&server=http%3A%2F%2Fhappier-repo-dev-a1cc5e0671.localhost%3A53288',
-        };
 
-        await renderScreen(<Screen />);
+        const screen = await renderScreen(<Screen />);
         await act(async () => {});
 
-        expect(setPendingMock).toHaveBeenCalledWith({
-            publicKeyB64Url: 'abc123',
-            serverUrl: 'http://happier-repo-dev-a1cc5e0671.localhost:53288',
-            serverIdentityId: '',
-        });
-        expect(upsertActivateAndSwitchServerMock).not.toHaveBeenCalled();
-        expect(replaceMock).toHaveBeenCalledWith('/?server=http%3A%2F%2Fhappier-repo-dev-a1cc5e0671.localhost%3A53288');
+        const { getActiveServerUrl } = await import('@/sync/domains/server/serverProfiles');
+        expect(getActiveServerUrl()).toBe('http://localhost:53288');
+        const { getPendingTerminalConnect } = await import('@/sync/domains/pending/pendingTerminalConnect');
+        expect(replaceMock).not.toHaveBeenCalled();
+        expect(JSON.stringify(screen.tree.toJSON())).toContain('welcome.serverUnavailableTitle');
+        expect(JSON.stringify(screen.tree.toJSON())).toContain('welcome.serverUnavailableBody');
+        await activateServer('http://127.0.0.1:3005');
+        await vi.waitFor(() => expect(getPendingTerminalConnect()).toMatchObject({
+            serverUrl: 'http://127.0.0.1:3005',
+            serverIdentityId: 'srv_loopback_home',
+            homeConnectionDescriptor: link.descriptor,
+        }));
     });
+
 });

@@ -35,6 +35,7 @@ import { RootLayoutNavigationEffects } from '@/components/navigation/root/RootLa
 import { RootLayoutRedirectGate } from '@/components/navigation/root/RootLayoutRedirectGate';
 import { useOnboardingJourneySessionActive } from '@/components/onboarding/tour/state/journeySession';
 import { VoiceAnnouncer } from '@/components/voice/surface/VoiceAnnouncer';
+import { ActivityPersonalSessionMembershipProvider } from '@/activity/source/activityPersonalSessionMembership';
 import { buildUniversalSearchRouteScreenOptions } from './universalSearchRouteScreenOptions';
 
 type StackScreenOptions = NativeStackNavigationOptions;
@@ -218,6 +219,31 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 headerTitle: t('automations.edit.title'),
                 headerBackTitle: back,
             },
+            workflowsIndex: {
+                headerShown: true,
+                headerTitle: t('workflows.title'),
+                headerBackTitle: back,
+            },
+            workflowsNew: {
+                headerShown: true,
+                headerTitle: t('workflows.newWorkflow'),
+                headerBackTitle: back,
+            },
+            workflowsEdit: {
+                headerShown: true,
+                headerTitle: t('workflows.title'),
+                headerBackTitle: back,
+            },
+            workflowsDetail: {
+                headerShown: true,
+                headerTitle: t('workflows.title'),
+                headerBackTitle: back,
+            },
+            workflowsRunDetail: {
+                headerShown: true,
+                headerTitle: t('workflows.run.title'),
+                headerBackTitle: back,
+            },
             automationsSettings: {
                 headerShown: true,
                 headerTitle: t('automations.settings.title'),
@@ -248,6 +274,11 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
             sessionCockpitSurface: SESSION_COCKPIT_SURFACE_STACK_SCREEN_OPTIONS,
             sessionRecent: visibleSessionHistory,
             sessionArchived: visibleSessionHistory,
+            teamSessions: {
+                headerShown: true,
+                headerTitle: t('settings.sessions'),
+                headerBackTitle: back,
+            },
             terminalIndex: {
                 headerTitle: t('navigation.connectTerminal'),
             },
@@ -393,6 +424,7 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
     return (
         <SessionCockpitChromeRegistryProvider>
             <BrowserPresentationRetentionProvider>
+            <ActivityPersonalSessionMembershipProvider enabled={isAuthenticated}>
             {/*
               * The one automatic Voice announcer for the whole app (§5.4a). It sits
               * OUTSIDE `AuthenticatedAppRuntimeMountsGate` on purpose: that gate returns
@@ -467,6 +499,26 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 <Stack.Screen
                     name="automations/settings"
                     options={rootStackRouteOptions.automationsSettings}
+                />
+                <Stack.Screen
+                    name="workflows/index"
+                    options={rootStackRouteOptions.workflowsIndex}
+                />
+                <Stack.Screen
+                    name="workflows/new"
+                    options={rootStackRouteOptions.workflowsNew}
+                />
+                <Stack.Screen
+                    name="workflows/edit"
+                    options={rootStackRouteOptions.workflowsEdit}
+                />
+                <Stack.Screen
+                    name="workflows/[id]/index"
+                    options={rootStackRouteOptions.workflowsDetail}
+                />
+                <Stack.Screen
+                    name="workflows/runs/[runId]"
+                    options={rootStackRouteOptions.workflowsRunDetail}
                 />
                 <Stack.Screen
                     name="session/[id]/automations"
@@ -552,6 +604,24 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                     options={rootStackRouteOptions.sessionArchived}
                 />
                 <Stack.Screen
+                    name="teams/[teamId]/sessions"
+                    options={rootStackRouteOptions.teamSessions}
+                />
+                {/*
+                 * The two public Team entries. Both are opened from a link by
+                 * somebody who may have no Home Account yet, so they take the
+                 * same full-viewport shell as OAuth and restore rather than app
+                 * chrome that would be answering for an Account they lack.
+                 */}
+                <Stack.Screen
+                    name="teams/[teamId]/sign-in"
+                    options={rootStackRouteOptions.hiddenHeader}
+                />
+                <Stack.Screen
+                    name="join/[token]"
+                    options={rootStackRouteOptions.hiddenHeader}
+                />
+                <Stack.Screen
                     name="terminal/connect"
                     options={rootStackRouteOptions.hiddenHeader}
                 />
@@ -581,6 +651,18 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 />
                 <Stack.Screen
                     name="restore/lost-access"
+                    options={rootStackRouteOptions.hiddenHeader}
+                />
+                <Stack.Screen
+                    name="auth/password/recover"
+                    options={rootStackRouteOptions.hiddenHeader}
+                />
+                <Stack.Screen
+                    name="auth/email/verify/[token]"
+                    options={rootStackRouteOptions.hiddenHeader}
+                />
+                <Stack.Screen
+                    name="auth/password/reset/[token]"
                     options={rootStackRouteOptions.hiddenHeader}
                 />
                 <Stack.Screen
@@ -719,6 +801,7 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 />
             </Stack>
             <MobileBottomChromeMountGate newSessionRendersFloatingComposer={newSessionRendersFloatingComposer} />
+            </ActivityPersonalSessionMembershipProvider>
             </BrowserPresentationRetentionProvider>
         </SessionCockpitChromeRegistryProvider>
     );

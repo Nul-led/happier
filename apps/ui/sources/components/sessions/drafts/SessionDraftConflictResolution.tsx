@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
-import type { SessionDraftAddressV1, StrictJsonValue } from '@happier-dev/protocol';
+import type { SessionDraftAddressV2, StrictJsonValue } from '@happier-dev/protocol';
 
 import { Typography } from '@/constants/Typography';
 import { Modal } from '@/modal';
@@ -73,7 +73,7 @@ export function useSessionDraftConflictComposerBanner(conflict: SessionDraftConf
 
 const SessionDraftConflictFieldView = React.memo(function SessionDraftConflictFieldView(props: Readonly<{
     scope: ServerAccountScope;
-    address: SessionDraftAddressV1;
+    address: SessionDraftAddressV2;
     field: SessionDraftConflictField;
 }>) {
     const [pendingAction, setPendingAction] = React.useState<'useSynced' | 'keepDevice' | null>(null);
@@ -149,7 +149,7 @@ const SessionDraftConflictFieldView = React.memo(function SessionDraftConflictFi
 
 export function SessionDraftConflictResolution(props: Readonly<{
     scope: ServerAccountScope;
-    address: SessionDraftAddressV1;
+    address: SessionDraftAddressV2;
     conflict: SessionDraftConflict;
 }>): React.ReactNode {
     if (props.conflict.fields.length === 0) return null;

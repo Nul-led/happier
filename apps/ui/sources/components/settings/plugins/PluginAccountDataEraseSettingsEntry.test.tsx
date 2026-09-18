@@ -229,6 +229,7 @@ async function hydrateAccountRecoveryReaderAfterReset(
                     }
                     return jsonResponse({
                         availabilityCursor: 42,
+                        packageAssets: [],
                         hostingCapability: { enabled: false },
                         intent: {
                             pluginId,

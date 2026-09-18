@@ -10,6 +10,10 @@ import { t } from '@/text';
 import { promptLegacyPairingUpdateRequired } from '@/auth/pairing/legacyPairingUpdateRequired';
 import { LEGACY_PAIRING_UPDATE_REQUIRED_RESTORE_ROUTE_PARAM } from '@/auth/pairing/legacyPairingUpdateRequiredRoute';
 import {
+    consumeHomeQrInviteRestoreHandoff,
+    HOME_QR_INVITE_RESTORE_ROUTE_PARAM,
+} from '@/auth/pairing/pairingUrl';
+import {
     HOME_QR_ENTRY_INTENT_ROUTE_PARAM,
     parseHomeQrEntryIntentRouteParam,
 } from '@/auth/pairing/homeQrEntryIntent';
@@ -17,7 +21,7 @@ import {
 export default function RestoreIndex() {
     const router = useRouter();
     const params = useLocalSearchParams<Readonly<{
-        pairingLink?: string | string[];
+        pairingHandoff?: string | string[];
         legacyPairingUpdateRequired?: string | string[];
         entryIntent?: string | string[];
     }>>();
@@ -25,9 +29,14 @@ export default function RestoreIndex() {
         params[HOME_QR_ENTRY_INTENT_ROUTE_PARAM],
     );
     const entryIntent = routedEntryIntent ?? 'enter_home';
-    const routedPairingLink = Array.isArray(params.pairingLink)
-        ? params.pairingLink[0] ?? null
-        : params.pairingLink ?? null;
+    const routedPairingHandoff = Array.isArray(params[HOME_QR_INVITE_RESTORE_ROUTE_PARAM])
+        ? params[HOME_QR_INVITE_RESTORE_ROUTE_PARAM][0] ?? null
+        : params[HOME_QR_INVITE_RESTORE_ROUTE_PARAM] ?? null;
+    const [routedPairingLink] = React.useState(() => (
+        routedPairingHandoff && routedEntryIntent
+            ? consumeHomeQrInviteRestoreHandoff(routedPairingHandoff)
+            : null
+    ));
     // A plain Welcome route owns `enter_home`, but routed authority-bearing input
     // must carry its entry point's explicit closed intent.
     const initialPairingLink = routedPairingLink && routedEntryIntent

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
     PluginHostedWebBridgeEnvelopeV1,
@@ -13,6 +13,11 @@ import type {
 import type { SurfaceContext } from '@happier-dev/plugin-sdk/ui';
 
 import { renderScreen } from '@/dev/testkit';
+import { createPluginSurfaceMountLifetimeFixture } from '@/dev/testkit/fixtures/pluginSurfaceMountLifetimeFixture';
+
+let mountLifetime: ReturnType<typeof createPluginSurfaceMountLifetimeFixture>;
+beforeEach(() => { mountLifetime = createPluginSurfaceMountLifetimeFixture(); });
+afterEach(() => { mountLifetime.dispose(); });
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import type { PluginNativeArtifactResourceHandle } from '@/sync/domains/plugins/availability/nativeArtifactResource';
 import type { PluginUiArtifactAdoption } from '@/sync/domains/plugins/ui/artifactAdoption';
@@ -111,16 +116,17 @@ vi.mock('./PluginHostedWebFrame', () => ({
         const bridge = props.bridge as Readonly<{
             attachHostMessages?: (send: (message: unknown) => void) => () => void;
         }> | null;
+        const attachHostMessages = bridge?.attachHostMessages;
         React.useLayoutEffect(() => {
-            if (!bridge?.attachHostMessages) return;
-            const detach = bridge.attachHostMessages((message) => {
+            if (!attachHostMessages) return;
+            const detach = attachHostMessages((message) => {
                 hostMessages.push(message);
             });
             return () => {
                 attachmentTeardownCount += 1;
                 detach();
             };
-        }, [bridge]);
+        }, [attachHostMessages]);
         React.useLayoutEffect(() => {
             frameMountCount += 1;
             return () => {
@@ -240,6 +246,7 @@ function createNativeArtifactAdoption(
 }
 
 function findBridge(): Readonly<{
+    identity: PluginUiHostApiWireIdentityV1;
     onMessage: (envelope: PluginHostedWebBridgeEnvelopeV1) => unknown;
 }> {
     const bridge = [...frameProps].reverse().find((props) => props.bridge)?.bridge;
@@ -247,24 +254,20 @@ function findBridge(): Readonly<{
         throw new Error('Expected a mounted hosted Artifact bridge.');
     }
     return bridge as Readonly<{
+        identity: PluginUiHostApiWireIdentityV1;
         onMessage: (envelope: PluginHostedWebBridgeEnvelopeV1) => unknown;
     }>;
 }
 
 function createBridgeEnvelope(input: Readonly<{
-    surface: PluginUiSurfaceContextV1;
-    nonce: string;
+    identity: PluginUiHostApiWireIdentityV1;
     sequence: number;
     kind: PluginHostedWebBridgeEnvelopeV1['kind'];
     payload: PluginHostedWebBridgeEnvelopeV1['payload'];
 }>): PluginHostedWebBridgeEnvelopeV1 {
     return {
         version: 1,
-        pluginId: input.surface.pluginId,
-        contributionId: input.surface.contributionId,
-        surfaceId: input.surface.surfaceId,
-        ...(input.surface.sessionId === undefined ? {} : { sessionId: input.surface.sessionId }),
-        nonce: input.nonce,
+        identity: input.identity,
         sequence: input.sequence,
         kind: input.kind,
         payload: input.payload,
@@ -300,12 +303,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             nativeArtifactAdoption: PluginUiArtifactAdoption<'hostedWebNative', PluginNativeArtifactResourceHandle>,
             mountInstanceKey: string,
         ) => (
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={surfaceContext}
                 pluginUiProjection={projection}
                 platform="ios"
-                bridgeNonce={`diagnostic-${mountInstanceKey}`}
                 projectionGeneration={27}
                 {...({
                     nativeArtifactAdoption,
@@ -354,12 +356,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const native = createHandle();
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         const screen = await renderScreen(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={{ ...surfaceContext, sessionId: 'session-1' }}
                 pluginUiProjection={projection}
                 platform="ios"
-                bridgeNonce="nonce-1"
                 {...({
                     nativeArtifactAdoption: createNativeArtifactAdoption(native.handle),
                     mountInstanceKey: 'target-one',
@@ -376,18 +377,18 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             .toBe(`happier-hosted-artifact://hpa_${'a'.repeat(64)}`);
         expect(mounted).not.toHaveProperty('url');
         const initialPathAndQuery = (mounted?.nativeArtifact as { initialPathAndQuery: string }).initialPathAndQuery;
-        expect(initialPathAndQuery).toContain('happierBridgeNonce=nonce-1');
+        expect(new URL(initialPathAndQuery, 'https://fixture.test').searchParams.get('happierBridgeNonce'))
+            .toBe(findBridge().identity.mountNonce);
         expect(initialPathAndQuery).not.toContain('happierSessionId');
         expect(initialPathAndQuery).not.toContain('happierLaunchInput');
         expect(initialPathAndQuery).not.toContain('happierSubPath');
 
         await screen.update(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={surfaceContext}
                 pluginUiProjection={projection}
                 platform="ios"
-                bridgeNonce="nonce-2"
                 {...({ nativeArtifactAdoption: null, mountInstanceKey: 'target-two' } as const)}
             />,
         );
@@ -400,12 +401,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const native = createHandle();
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         await renderScreen(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={{ ...surfaceContext, platform: 'android' }}
                 pluginUiProjection={projection}
                 platform="android"
-                bridgeNonce="nonce-android"
                 {...({ nativeArtifactAdoption: createNativeArtifactAdoption(native.handle), mountInstanceKey: 'target-android' } as const)}
             />,
         );
@@ -419,12 +419,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const native = createHandle();
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         await renderScreen(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={{ ...surfaceContext, platform: 'desktop' }}
                 pluginUiProjection={projection}
                 platform="desktop"
-                bridgeNonce="nonce-desktop"
                 {...({ nativeArtifactAdoption: createNativeArtifactAdoption(native.handle), mountInstanceKey: 'target-desktop' } as const)}
             />,
         );
@@ -444,12 +443,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const native = createHandle({ frameOrigin });
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         await renderScreen(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={{ ...surfaceContext, platform: 'desktop' }}
                 pluginUiProjection={projection}
                 platform="desktop"
-                bridgeNonce="nonce-windows-desktop"
                 {...({ nativeArtifactAdoption: createNativeArtifactAdoption(native.handle), mountInstanceKey: 'target-windows-desktop' } as const)}
             />,
         );
@@ -463,12 +461,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const native = createHandle();
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         await renderScreen(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={{ ...surfaceContext, platform: 'desktop' }}
                 pluginUiProjection={projection}
                 platform="desktop"
-                bridgeNonce="desktop-history-nonce"
                 navigationCommand={{ commandId: 'desktop-history-back-1', kind: 'goBack' }}
                 {...({ nativeArtifactAdoption: createNativeArtifactAdoption(native.handle), mountInstanceKey: 'desktop-history' } as const)}
             />,
@@ -491,12 +488,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const native = createHandle();
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         const screen = await renderScreen(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={surfaceContext}
                 pluginUiProjection={projection}
                 platform="ios"
-                bridgeNonce="native-lifecycle-nonce"
                 {...({ nativeArtifactAdoption: createNativeArtifactAdoption(native.handle), mountInstanceKey: 'native-lifecycle' } as const)}
             />,
         );
@@ -538,13 +534,12 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const navigation = { dispatch } as unknown as React.ContextType<typeof NavigationContext>;
         const firstScreen = await renderScreen(
             <NavigationContext.Provider value={navigation}>
-                <PluginHostedWebPane
+                <PluginHostedWebPane mountLifetime={mountLifetime}
                     contributionId="hostedWeb:acme.preview:preview-web"
                     surfaceContext={surfaceContext}
                     pluginUiProjection={projection}
                     platform="ios"
                     interactionEnabled
-                    bridgeNonce="native-history-route-nonce"
                     {...({ nativeArtifactAdoption: createNativeArtifactAdoption(native.handle), mountInstanceKey: 'native-history-route' } as const)}
                 />
             </NavigationContext.Provider>,
@@ -575,13 +570,12 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const second = createHandle();
         const screen = await renderScreen(
             <NavigationContext.Provider value={navigation}>
-                <PluginHostedWebPane
+                <PluginHostedWebPane mountLifetime={mountLifetime}
                     contributionId="hostedWeb:acme.preview:preview-web"
                     surfaceContext={surfaceContext}
                     pluginUiProjection={projection}
                     platform="ios"
                     interactionEnabled
-                    bridgeNonce="native-history-route-fallthrough-nonce"
                     {...({ nativeArtifactAdoption: createNativeArtifactAdoption(second.handle), mountInstanceKey: 'native-history-route-fallthrough' } as const)}
                 />
             </NavigationContext.Provider>,
@@ -611,7 +605,7 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const navigation = { dispatch } as unknown as React.ContextType<typeof NavigationContext>;
         const element = (focusEligible: boolean) => (
             <NavigationContext.Provider value={navigation}>
-                <PluginHostedWebPane
+                <PluginHostedWebPane mountLifetime={mountLifetime}
                     contributionId="hostedWeb:acme.preview:preview-web"
                     surfaceContext={surfaceContext}
                     pluginUiProjection={projection}
@@ -664,7 +658,7 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             });
             return (
                 <ModalPaneBoundaryView {...boundary.overlayProps}>
-                    <PluginHostedWebPane
+                    <PluginHostedWebPane mountLifetime={mountLifetime}
                         contributionId="hostedWeb:acme.preview:preview-web"
                         surfaceContext={{ ...surfaceContext, platform: 'android' }}
                         pluginUiProjection={projection}
@@ -708,12 +702,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const native = createHandle();
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         const screen = await renderScreen(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={surfaceContext}
                 pluginUiProjection={projection}
                 platform="ios"
-                bridgeNonce="targeted-native-load-error-nonce"
                 targetedFallback={React.createElement('TargetedHostedFallback', {
                     testID: 'targeted-hosted-native-load-error-fallback',
                 })}
@@ -736,12 +729,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const second = createHandle();
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         const screen = await renderScreen(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={surfaceContext}
                 pluginUiProjection={projection}
                 platform="ios"
-                bridgeNonce="first-native-target"
                 {...({ nativeArtifactAdoption: createNativeArtifactAdoption(first.handle), mountInstanceKey: 'first-native-target' } as const)}
             />,
         );
@@ -749,12 +741,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         expect(staleUnavailable).toBeTypeOf('function');
 
         await screen.update(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={surfaceContext}
                 pluginUiProjection={projection}
                 platform="ios"
-                bridgeNonce="second-native-target"
                 {...({ nativeArtifactAdoption: createNativeArtifactAdoption(second.handle), mountInstanceKey: 'second-native-target' } as const)}
             />,
         );
@@ -773,12 +764,11 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         const native = createHandle();
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         const screen = await renderScreen(
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={surfaceContext}
                 pluginUiProjection={projection}
                 platform="ios"
-                bridgeNonce="nonce-1"
                 {...({ nativeArtifactAdoption: createNativeArtifactAdoption(native.handle), mountInstanceKey: 'target-one' } as const)}
             />,
         );
@@ -812,7 +802,7 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             viewId: 'preview-pane',
             generation: '1',
             sessionId: 'session-1',
-        } as const satisfies PluginUiHostApiWireIdentityV1;
+        } as const;
         const bridgeProjection: PluginUiProjectionModel = {
             ...projection,
             hostedWebById: {
@@ -824,15 +814,14 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             },
         };
         const element = (launchInput: PluginUiLaunchInputV1 | undefined) => (
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={bridgeSurface}
                 pluginUiProjection={bridgeProjection}
                 platform="ios"
-                bridgeNonce="bridge-lifetime-nonce"
                 hostApi={{ platform: 'ios', channel: 'internal', handleRequest: async () => null }}
                 canonicalHostApi={{
-                    identity,
+                    authorPlugin: { id: identity.pluginId, version: identity.pluginVersion },
                     mount: canonicalMount,
                     methods: ['executeAction'],
                     target: { kind: 'session', sessionId: 'session-1' },
@@ -872,7 +861,7 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             viewId: 'preview-pane',
             generation: '1',
             sessionId: 'session-1',
-        } as const satisfies PluginUiHostApiWireIdentityV1;
+        } as const;
         const bridgeProjection: PluginUiProjectionModel = {
             ...projection,
             hostedWebById: {
@@ -884,7 +873,7 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             },
         };
         const element = (diagnostics: string[]) => (
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={{
                     ...surfaceContext,
@@ -893,10 +882,9 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
                 }}
                 pluginUiProjection={bridgeProjection}
                 platform="ios"
-                bridgeNonce="stable-context-nonce"
                 hostApi={{ platform: 'ios', channel: 'internal', handleRequest: async () => null }}
                 canonicalHostApi={{
-                    identity,
+                    authorPlugin: { id: identity.pluginId, version: identity.pluginVersion },
                     mount: canonicalMount,
                     methods: ['context', 'watchContext'],
                     target: { kind: 'session', sessionId: 'session-1' },
@@ -936,7 +924,7 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             viewId: 'preview-pane',
             generation: '1',
             sessionId: 'session-1',
-        } as const satisfies PluginUiHostApiWireIdentityV1;
+        } as const;
         const bridgeProjection: PluginUiProjectionModel = {
             ...projection,
             hostedWebById: {
@@ -951,15 +939,14 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             handleRequest: () => Promise<null>,
             translation: string,
         ) => (
-            <PluginHostedWebPane
+            <PluginHostedWebPane mountLifetime={mountLifetime}
                 contributionId="hostedWeb:acme.preview:preview-web"
                 surfaceContext={{ ...surfaceContext, sessionId: 'session-1' }}
                 pluginUiProjection={bridgeProjection}
                 platform="ios"
-                bridgeNonce="stable-native-handler-nonce"
                 hostApi={{ platform: 'ios', channel: 'internal', handleRequest }}
                 canonicalHostApi={{
-                    identity,
+                    authorPlugin: { id: identity.pluginId, version: identity.pluginVersion },
                     mount: canonicalMount,
                     methods: ['context', 'watchContext'],
                     target: { kind: 'session', sessionId: 'session-1' },
@@ -1035,18 +1022,17 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
                 viewId: 'preview-pane',
                 generation: '1',
                 sessionId: 'session-1',
-            } as const satisfies PluginUiHostApiWireIdentityV1;
+            } as const;
             await renderScreen(
-                <PluginHostedWebPane
+                <PluginHostedWebPane mountLifetime={mountLifetime}
                     contributionId="hostedWeb:acme.preview:preview-web"
                     surfaceContext={bridgeSurface}
                     pluginUiProjection={bridgeProjection}
                     platform="ios"
-                    bridgeNonce="artifact-revoke-nonce"
                     isCurrent={() => true}
                     hostApi={{ platform: 'ios', channel: 'internal', handleRequest }}
                     canonicalHostApi={{
-                        identity,
+                        authorPlugin: { id: identity.pluginId, version: identity.pluginVersion },
                         mount: canonicalMount,
                         methods: ['executeAction'],
                         target: { kind: 'session', sessionId: 'session-1' },
@@ -1066,8 +1052,7 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             dataDispose.mockClear();
             await act(async () => {
                 await Promise.resolve(bridge.onMessage(createBridgeEnvelope({
-                    surface: bridgeSurface,
-                    nonce: 'artifact-revoke-nonce',
+                    identity: bridge.identity,
                     sequence: 1,
                     kind: 'ready',
                     payload: { ready: true },
@@ -1082,8 +1067,7 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
                 parameters: { status: 'open' },
             };
             const pending = Promise.resolve(bridge.onMessage(createBridgeEnvelope({
-                surface: bridgeSurface,
-                nonce: 'artifact-revoke-nonce',
+                identity: bridge.identity,
                 sequence: 2,
                 kind: 'accountData',
                 payload: { kind: 'request', operation },
@@ -1107,21 +1091,19 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
                 expect(attachmentTeardownCount).toBe(0);
 
                 laterData = Promise.resolve(bridge.onMessage(createBridgeEnvelope({
-                    surface: bridgeSurface,
-                    nonce: 'artifact-revoke-nonce',
+                    identity: bridge.identity,
                     sequence: 3,
                     kind: 'accountData',
                     payload: { kind: 'request', operation },
                 })));
                 laterHostApi = Promise.resolve(bridge.onMessage(createBridgeEnvelope({
-                    surface: bridgeSurface,
-                    nonce: 'artifact-revoke-nonce',
+                    identity: bridge.identity,
                     sequence: 4,
                     kind: 'hostApi',
                     payload: {
                         wireVersion: 1,
                         kind: 'request',
-                        identity,
+                        identity: findBridge().identity,
                         requestId: 'post-revoke-host-api',
                         method: 'executeAction',
                         payload: { action: 'open' },

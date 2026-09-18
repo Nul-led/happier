@@ -15,6 +15,10 @@ function normalizeTextSegment(value, fallback = 'unknown') {
     return text.length > 0 ? text : fallback;
 }
 
+function attributeSelector(testID) {
+    return `[data-testid=${JSON.stringify(testID)}]`;
+}
+
 export function normalizeDesktopActivityOverlayCardKindForTestID(kind) {
     const normalized = normalizeTextSegment(kind);
     if (normalized === 'idle' || normalized === 'idle_state') {
@@ -31,7 +35,7 @@ function resolveCardInstanceIdFromCard(card) {
             return 'idle';
         case 'permission_request':
         case 'user_question':
-            return normalizeTextSegment(card?.requestId ?? card?.id);
+            return normalizeTextSegment(card?.id);
         case 'quota_summary':
             return normalizeTextSegment(card?.id);
         case 'completion_state':
@@ -54,7 +58,7 @@ export function resolveDesktopActivityOverlaySurfaceTestID(baseTestID, visualMod
 }
 
 export function resolveDesktopActivityOverlaySurfaceSelector(baseTestID, visualMode) {
-    return `[data-testid="${resolveDesktopActivityOverlaySurfaceTestID(baseTestID, visualMode)}"]`;
+    return attributeSelector(resolveDesktopActivityOverlaySurfaceTestID(baseTestID, visualMode));
 }
 
 export function resolveDesktopActivityOverlayCardKindTestID(kind) {
@@ -62,7 +66,7 @@ export function resolveDesktopActivityOverlayCardKindTestID(kind) {
 }
 
 export function resolveDesktopActivityOverlayCardKindSelector(kind) {
-    return `[data-testid="${resolveDesktopActivityOverlayCardKindTestID(kind)}"]`;
+    return attributeSelector(resolveDesktopActivityOverlayCardKindTestID(kind));
 }
 
 export function resolveDesktopActivityOverlayCardInstanceTestID(card) {
@@ -81,7 +85,7 @@ export function resolveDesktopActivityOverlayCardSelectorByKind(kind, cardInstan
                 ? 'idle'
                 : 'unknown',
     );
-    return `[data-testid="desktop-activity-overlay-card-${normalizedKind}-${resolvedCardInstanceId}"]`;
+    return attributeSelector(`desktop-activity-overlay-card-${normalizedKind}-${resolvedCardInstanceId}`);
 }
 
 export function resolveDesktopActivityOverlayCardActionKindTestID(actionId) {

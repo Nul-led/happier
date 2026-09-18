@@ -27,7 +27,9 @@ function createCrossoverHarness() {
     const published: PublishedState[] = [];
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionListViewData: null,
         sessionListViewDataByServerId: {},
         machines: {},
@@ -289,5 +291,37 @@ describe('pending domain: retention does not outlive its justification', () => {
         });
 
         expect(harness.get().sessionPending[SESSION_ID].messages).toHaveLength(0);
+    });
+});
+
+describe('pending domain: the main-count receipt never speaks for Run-target rows', () => {
+    it('retires main server_pending rows on a queue-empty receipt and keeps exact Run-target rows', () => {
+        const harness = createCrossoverHarness();
+        harness.pending.upsertPendingMessage(SESSION_ID, {
+            id: 'main-1',
+            localId: 'main-1',
+            createdAt: 1_000,
+            updatedAt: 1_000,
+            source: 'server_pending' as const,
+            text: 'main',
+            rawRecord: { role: 'user', content: { type: 'text', text: 'main' } } as any,
+        });
+        harness.pending.upsertPendingMessage(SESSION_ID, {
+            id: 'run-1',
+            localId: 'run-1',
+            createdAt: 1_001,
+            updatedAt: 1_001,
+            source: 'server_pending' as const,
+            recipient: { kind: 'execution_run' as const, runId: 'run_a' },
+            text: 'for the run',
+            rawRecord: { role: 'user', content: { type: 'text', text: 'for the run' } } as any,
+        });
+
+        // `pendingCount` is the MAIN queue's count (server I08): a Run-target enqueue on a Session
+        // whose main queue is empty publishes `pendingCount: 0`, which says nothing about the Run.
+        harness.pending.pruneServerPendingMessages(SESSION_ID);
+
+        expect(harness.get().sessionPending[SESSION_ID].messages.map((message: { localId?: string | null }) => message.localId))
+            .toEqual(['run-1']);
     });
 });

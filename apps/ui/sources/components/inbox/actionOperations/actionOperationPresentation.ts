@@ -62,11 +62,19 @@ export function readActionOperationDestinationSessionId(snapshot: ActionOperatio
     return null;
 }
 
-export function readActionOperationDestinationServerId(snapshot: ActionOperationSnapshot): string | null {
-    if (snapshot.state !== 'succeeded' || snapshot.actionId !== 'session.spawn_new') return null;
-    if (!snapshot.result || typeof snapshot.result !== 'object' || Array.isArray(snapshot.result)) return null;
-    const executionTarget = (snapshot.result as Record<string, unknown>).executionTarget;
-    return readStringField(executionTarget, 'serverId');
+export function readActionOperationDestinationServerId(
+    snapshot: ActionOperationSnapshot,
+    sourceServerId?: string | null,
+): string | null {
+    if (snapshot.state !== 'succeeded') return null;
+    if (
+        snapshot.actionId === 'session.spawn_new'
+        || snapshot.actionId === 'session.fork'
+        || snapshot.actionId === 'session.handoff'
+    ) {
+        return typeof sourceServerId === 'string' && sourceServerId.trim() ? sourceServerId.trim() : null;
+    }
+    return null;
 }
 
 export function readActionOperationSessionSpawnNewInitialInput(

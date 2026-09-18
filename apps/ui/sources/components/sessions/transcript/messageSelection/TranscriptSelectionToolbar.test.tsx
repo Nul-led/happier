@@ -1,8 +1,10 @@
 import * as React from 'react';
+import { Platform } from 'react-native';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 
 import { TranscriptMessageSelectionProvider, useTranscriptSelectionActions } from './TranscriptMessageSelectionContext';
 import { TranscriptSelectionToolbar } from './TranscriptSelectionToolbar';
@@ -25,7 +27,14 @@ vi.mock('@/modal', () => ({
     Modal: { alert: vi.fn() },
 }));
 
-function ToolbarHarness(props: { sendEnabled?: boolean; onSend?: () => void; maxWidth?: number }) {
+function ToolbarHarness(props: {
+    sendEnabled?: boolean;
+    onSend?: () => void;
+    maxWidth?: number;
+    formatSelection?: (messages: ReadonlyArray<{ id: string }>) => string | null;
+    selectionUnavailableText?: string;
+    additionalAction?: React.ComponentProps<typeof TranscriptSelectionToolbar>['additionalAction'];
+}) {
     const actions = useTranscriptSelectionActions();
     return (
         <>
@@ -40,6 +49,9 @@ function ToolbarHarness(props: { sendEnabled?: boolean; onSend?: () => void; max
                 roleLabels={{ user: 'You', assistant: 'Assistant' }}
                 sendToSessionEnabled={props.sendEnabled === true}
                 onSendToSession={props.onSend}
+                formatSelection={props.formatSelection}
+                selectionUnavailableText={props.selectionUnavailableText}
+                additionalAction={props.additionalAction}
                 maxWidth={props.maxWidth}
             />
         </>
@@ -65,7 +77,7 @@ async function pressByTestId(screen: Awaited<ReturnType<typeof renderScreen>>, t
     });
 }
 
-async function renderToolbar(props: { sendEnabled?: boolean; onSend?: () => void; maxWidth?: number } = {}) {
+async function renderToolbar(props: React.ComponentProps<typeof ToolbarHarness> = {}) {
     keyboardShortcutHandlersMock.mockClear();
     setClipboardStringSafeMock.mockClear();
     return renderScreen(
@@ -102,6 +114,49 @@ describe('TranscriptSelectionToolbar', () => {
 
         const toolbar = screen.findByTestId('transcript-selection-toolbar');
         expect(toolbar?.props.style).toContainEqual({ width: '100%', maxWidth: 640, alignSelf: 'center' });
+    });
+
+    it('keeps every selection action reachable at a narrow width with long text and accessible targets', async () => {
+        const screen = await renderToolbar({
+            maxWidth: 320,
+            sendEnabled: true,
+            onSend: vi.fn(),
+            additionalAction: {
+                testID: 'discussion-selection-ask-agent',
+                label: 'Ask an Agent about the selected conversation messages',
+                onPress: vi.fn(),
+            },
+        });
+
+        await pressByTestId(screen, 'enter-a');
+
+        const toolbar = screen.findByTestId('transcript-selection-toolbar');
+        const actions = screen.findByTestId('transcript-selection-toolbar-actions');
+        expect(toolbar?.props.style).toEqual(expect.arrayContaining([
+            expect.objectContaining({ flexWrap: 'wrap' }),
+            { width: '100%', maxWidth: 320, alignSelf: 'center' },
+        ]));
+        expect(actions?.props.style).toEqual(expect.objectContaining({ flexWrap: 'wrap' }));
+
+        const minimumTarget = resolveMinimumInteractiveTargetSize(Platform.OS);
+        for (const testID of [
+            'transcript-selection-copy',
+            'transcript-selection-send',
+            'discussion-selection-ask-agent',
+            'transcript-selection-select-all',
+            'transcript-selection-cancel',
+        ]) {
+            const action = findPressableByTestId(screen, testID);
+            const resolvedStyle = action.props.style({ pressed: false });
+            expect(resolvedStyle).toEqual(expect.arrayContaining([
+                expect.objectContaining({
+                    flexShrink: 1,
+                    maxWidth: '100%',
+                    minHeight: minimumTarget,
+                    minWidth: minimumTarget,
+                }),
+            ]));
+        }
     });
 
     it('hides Send when send-to-session is disabled and shows it when enabled', async () => {
@@ -159,5 +214,51 @@ describe('TranscriptSelectionToolbar', () => {
         await pressByTestId(screen, 'transcript-selection-send');
 
         expect(onSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses one caller-supplied canonical selection formatter for Copy', async () => {
+        const formatSelection = vi.fn(() => '**Alice:**\n\nSelected discussion row');
+        const screen = await renderToolbar({ formatSelection });
+
+        await pressByTestId(screen, 'enter-a');
+        await pressByTestId(screen, 'transcript-selection-copy');
+
+        expect(formatSelection).toHaveBeenCalledWith([expect.objectContaining({ id: 'a' })]);
+        expect(setClipboardStringSafeMock).toHaveBeenCalledWith('**Alice:**\n\nSelected discussion row');
+    });
+
+    it('mounts one canonical additional selection action with the selected rows', async () => {
+        const onPress = vi.fn();
+        const screen = await renderToolbar({
+            additionalAction: {
+                testID: 'discussion-selection-ask-agent',
+                label: 'Ask Agent',
+                onPress,
+            },
+        });
+
+        await pressByTestId(screen, 'enter-a');
+        await pressByTestId(screen, 'discussion-selection-ask-agent');
+
+        expect(onPress).toHaveBeenCalledWith([expect.objectContaining({ id: 'a' })]);
+    });
+
+    it('keeps selection visible but disables outward actions when canonical formatting is unavailable', async () => {
+        const onPress = vi.fn();
+        const screen = await renderToolbar({
+            formatSelection: () => null,
+            selectionUnavailableText: 'Selected message identity unavailable',
+            sendEnabled: true,
+            onSend: vi.fn(),
+            additionalAction: { testID: 'discussion-selection-ask-agent', label: 'Ask Agent', onPress },
+        });
+
+        await pressByTestId(screen, 'enter-a');
+
+        expect(screen.findByTestId('transcript-selection-unavailable')?.props.children)
+            .toBe('Selected message identity unavailable');
+        expect(findPressableByTestId(screen, 'transcript-selection-copy').props.disabled).toBe(true);
+        expect(findPressableByTestId(screen, 'transcript-selection-send').props.disabled).toBe(true);
+        expect(findPressableByTestId(screen, 'discussion-selection-ask-agent').props.disabled).toBe(true);
     });
 });

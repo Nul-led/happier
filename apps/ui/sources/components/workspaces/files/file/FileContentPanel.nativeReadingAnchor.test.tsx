@@ -1,0 +1,63 @@
+import React from 'react';
+import type { View } from 'react-native';
+import { act } from 'react-test-renderer';
+import { describe, expect, it, vi } from 'vitest';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { installCodeViewCommonModuleMocks } from '@/components/ui/code/view/codeViewTestHelpers';
+
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
+});
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({ useLocalSetting: () => 1 });
+});
+installCodeViewCommonModuleMocks({
+    reactNative: async () => {
+        const { createReactNativeNativeMock } = await import('@/dev/testkit/mocks/reactNative');
+        return createReactNativeNativeMock({ platformOS: 'android' });
+    },
+});
+
+describe('native file panel reading continuity', () => {
+    it.each([true, false])('retains nonvirtualized commented file reading with wrapLines=%s', async (wrapLines) => {
+        const { FileContentPanel } = await import('./FileContentPanel');
+        let scrollY = 55;
+        const props = {
+            theme: { colors: { text: { secondary: '#999' } } },
+            displayMode: 'file' as const,
+            sessionId: 's1', filePath: 'a.txt', diffContent: null, language: null,
+            selectedLineKeys: new Set<string>(), lineSelectionEnabled: false,
+            onToggleLine: vi.fn(), reviewCommentsEnabled: true, reviewCommentModeActive: true,
+            reviewCommentDrafts: [], scrollTestID: 'code-scroll', wrapLines,
+        };
+        const screen = await renderScreen(<FileContentPanel {...props} fileContent={'a\nb\nreading\nd'} />, {
+            createNodeMock: (element) => {
+                // Native host props are opaque at the renderer boundary.
+                const hostProps = element.props as { innerViewRef?: React.RefObject<View | null>; nativeID?: string };
+                const nativeID = hostProps.nativeID;
+                if (element.type === 'ScrollView') {
+                    // The native ScrollView owns this inner host View.
+                    if (hostProps.innerViewRef) hostProps.innerViewRef.current = {} as View;
+                    return { scrollTo: ({ y }: { y: number }) => { scrollY = y; } };
+                }
+                if (typeof nativeID === 'string') return {
+                    measureLayout: (_relative: unknown, success: (x: number, y: number, width: number, height: number) => void) => {
+                        success(0, (Number(nativeID.split(':').at(-1)) - 1) * 25, 100, 25);
+                    },
+                };
+                return null;
+            },
+        });
+        expect(screen.findAllByType('FlatList')).toHaveLength(0);
+        const scroll = screen.findAllByType('ScrollView');
+        expect(scroll).toHaveLength(1);
+        await act(async () => {
+            scroll[0].props.onScroll({ nativeEvent: { contentOffset: { y: scrollY } } });
+            for (const row of screen.tree.root.findAll((node) => typeof node.type === 'string' && String(node.type) === 'View' && typeof node.props.nativeID === 'string')) row.props.onLayout?.();
+        });
+        await act(async () => screen.tree.update(<FileContentPanel {...props} fileContent={'inserted\na\nb\nreading\nd'} />));
+        expect(scrollY).toBe(80);
+    });
+});

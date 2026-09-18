@@ -39,18 +39,9 @@ let localSearchParams: { machineId: string; selectedPath: string } = { machineId
 const routerApi = createRouterMock();
 const navigationApi = createNavigationMock();
 
-type ItemGroupProps = React.PropsWithChildren<Record<string, never>>;
 type PathSelectionListProps = {
     onCommit?: (value: string) => void;
 };
-
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
-vi.mock('@/components/ui/lists/ItemList', () => ({
-    ItemList: ({ children }: ItemGroupProps) => React.createElement('ItemList', null, children),
-}));
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 720 },
@@ -79,13 +70,6 @@ vi.mock('@/utils/sessions/recentPaths', () => ({
     getRecentPathsForMachine: () => [],
 }));
 
-vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
-
-vi.mock('@react-navigation/native', () => ({
-    CommonActions: {
-        setParams: (params: Record<string, unknown>) => ({ type: 'SET_PARAMS', payload: { params } }),
-    },
-}));
 installPickerCommonModuleMocks({
     text: async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock(),
     reactNative: async () =>

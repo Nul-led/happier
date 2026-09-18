@@ -1,10 +1,19 @@
+import type {
+    SessionAwarenessProjectionV1,
+    SessionPersonalAttentionProjectionV1,
+} from '@happier-dev/protocol';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionAttentionOptions } from '@/sync/domains/session/attention/sessionAttention';
 import type { SessionListAttentionState } from '@/sync/domains/session/listing/deriveSessionListActivity';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+import type { SessionContextPresentation } from '@/sync/domains/session/presentation/sessionContextPresentation';
 
 export type SessionActivityAttention = Readonly<{
     session: Session;
+    awareness: SessionAwarenessProjectionV1;
     sessionId: string;
+    address?: SessionAddress | null;
+    context?: SessionContextPresentation | null;
     serverId?: string | null;
     serverUrl?: string | null;
     serverName?: string | null;
@@ -25,6 +34,8 @@ export type SessionActivityAttention = Readonly<{
     title: string;
     subtitle: string;
     attentionState: SessionListAttentionState;
+    /** Canonical viewer-facing reasons; downstream surfaces classify, never re-derive them. */
+    personalAttention: SessionPersonalAttentionProjectionV1;
     hasAttention: boolean;
     priority: number;
     lastTurnCompletedAt: number | null;
@@ -53,7 +64,6 @@ export type ActivityOverviewCounts = Readonly<{
     unread: number;
     permissionRequired: number;
     actionRequired: number;
-    queuedInput: number;
     thinking: number;
     totalAttention: number;
 }>;

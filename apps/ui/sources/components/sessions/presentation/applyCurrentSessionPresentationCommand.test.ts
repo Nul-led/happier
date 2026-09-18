@@ -12,7 +12,7 @@ describe('applyCurrentSessionPresentationCommand', () => {
         const notify = vi.fn();
         const apply = vi.fn<() => ComposerTransactionResultV1>();
         expect(applyCurrentSessionPresentationCommand({
-            sessionId: 's1', hostNonce: 'new-host', clientId: 'client-1', focusedSessionId: 's1',
+            hostNonce: 'new-host', clientId: 'client-1', isCurrentSession: true,
             state: { v: 1, hostNonce: 'old-host', revision: 1, statuses: [], widgets: [], command: notifyCommand },
             notify,
             composer: { revision: 1, apply },
@@ -24,14 +24,14 @@ describe('applyCurrentSessionPresentationCommand', () => {
     it('applies a targeted notification fire-and-forget without synthesizing a transaction acknowledgement', () => {
         const notify = vi.fn();
         expect(applyCurrentSessionPresentationCommand({
-            sessionId: 's1', hostNonce: 'host-1', clientId: 'client-1', focusedSessionId: null,
+            hostNonce: 'host-1', clientId: 'client-1', isCurrentSession: false,
             state: { v: 1, hostNonce: 'host-1', revision: 1, statuses: [], widgets: [], command: notifyCommand },
             notify,
             composer: null,
         })).toEqual({
             ack: null,
         });
-        expect(notify).toHaveBeenCalledWith({ sessionId: 's1', message: 'Done', severity: 'info' });
+        expect(notify).toHaveBeenCalledWith({ message: 'Done', severity: 'info' });
     });
 
     it('checks the focused session then delegates the exact transaction once to the canonical composer owner', () => {
@@ -54,7 +54,7 @@ describe('applyCurrentSessionPresentationCommand', () => {
             },
         };
         expect(applyCurrentSessionPresentationCommand({
-            sessionId: 's1', hostNonce: 'host-1', clientId: 'client-1', focusedSessionId: 'other',
+            hostNonce: 'host-1', clientId: 'client-1', isCurrentSession: false,
             state, notify: vi.fn(), composer,
         })).toEqual({
             ack: {
@@ -67,7 +67,7 @@ describe('applyCurrentSessionPresentationCommand', () => {
         expect(apply).not.toHaveBeenCalled();
 
         expect(applyCurrentSessionPresentationCommand({
-            sessionId: 's1', hostNonce: 'host-1', clientId: 'client-1', focusedSessionId: 's1',
+            hostNonce: 'host-1', clientId: 'client-1', isCurrentSession: true,
             state, notify: vi.fn(), composer,
         })).toEqual({
             ack: {
@@ -79,5 +79,64 @@ describe('applyCurrentSessionPresentationCommand', () => {
         });
         expect(apply).toHaveBeenCalledTimes(1);
         expect(apply).toHaveBeenCalledWith(state.command.transaction);
+    });
+
+    it('applies a Board presentation intent only to the exact focused mounted Session adapter', () => {
+        const applyPresentationIntent = vi.fn(() => ({ status: 'applied' as const }));
+        const state = {
+            v: 1 as const,
+            hostNonce: 'host-1',
+            revision: 3,
+            statuses: [],
+            widgets: [],
+            command: {
+                id: 'p1', clientId: 'client-1', kind: 'presentation.apply' as const,
+                intent: { kind: 'board.item.reveal' as const, widgetId: 'note-1' },
+            },
+        };
+        expect(applyCurrentSessionPresentationCommand({
+            hostNonce: 'host-1', clientId: 'client-1', isCurrentSession: false,
+            state, notify: vi.fn(), composer: null,
+            presentation: { apply: applyPresentationIntent },
+        })).toEqual({
+            ack: { hostNonce: 'host-1', clientId: 'client-1', commandId: 'p1', result: { status: 'notCurrent' } },
+        });
+        expect(applyPresentationIntent).not.toHaveBeenCalled();
+
+        expect(applyCurrentSessionPresentationCommand({
+            hostNonce: 'host-1', clientId: 'client-1', isCurrentSession: true,
+            state, notify: vi.fn(), composer: null,
+            presentation: { apply: applyPresentationIntent },
+        })).toEqual({
+            ack: { hostNonce: 'host-1', clientId: 'client-1', commandId: 'p1', result: { status: 'applied' } },
+        });
+        expect(applyPresentationIntent).toHaveBeenCalledTimes(1);
+        expect(applyPresentationIntent).toHaveBeenCalledWith(state.command.intent);
+    });
+
+    it('returns the typed unavailable result when the exact current Session has no presentation adapter', () => {
+        const state = {
+            v: 1 as const,
+            hostNonce: 'host-1',
+            revision: 3,
+            statuses: [],
+            widgets: [],
+            command: {
+                id: 'p-unavailable', clientId: 'client-1', kind: 'presentation.apply' as const,
+                intent: { kind: 'companion.show' as const },
+            },
+        };
+
+        expect(applyCurrentSessionPresentationCommand({
+            hostNonce: 'host-1', clientId: 'client-1', isCurrentSession: true,
+            state, notify: vi.fn(), composer: null, presentation: null,
+        })).toEqual({
+            ack: {
+                hostNonce: 'host-1',
+                clientId: 'client-1',
+                commandId: 'p-unavailable',
+                result: { status: 'unavailable' },
+            },
+        });
     });
 });

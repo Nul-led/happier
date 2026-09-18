@@ -1,7 +1,12 @@
-import type { ScmFileStatus } from './scmStatusFiles';
-import type { ScmProjectOperationLogEntry } from '@/sync/runtime/orchestration/projectManager';
+import {
+    type SessionChangeAttribution,
+    type CheckpointOverlapObservation,
+    type FileChangeEvidence,
+} from '@happier-dev/protocol';
 
-export type SessionAttributionConfidence = 'high' | 'inferred';
+import type { ScmFileStatus } from './scmStatusFiles';
+import { isDirectoryLikeScmFileStatus } from './isDirectoryLikeScmFileStatus';
+
 export type ChangedFilesViewMode =
     | 'repository'
     | 'selected'
@@ -10,36 +15,59 @@ export type ChangedFilesViewMode =
     | 'turn_checkpoint'
     | 'session';
 export type ChangedFilesPresentation = 'list' | 'review';
-export type SessionAttributionReliability = 'high' | 'limited';
 
 export type SessionAttributedFile = {
     file: ScmFileStatus;
-    confidence: SessionAttributionConfidence;
+    /** Internal aggregate lineage retained with the evidence projection; never rendered as user copy. */
+    turns: readonly string[];
+    content: Pick<FileChangeEvidence, 'source' | 'confidence'>;
+    attribution: SessionChangeAttribution;
+    checkpointOverlap: CheckpointOverlapObservation;
+    evidence: readonly FileChangeEvidence[];
 };
+
+/** Shared lossless presentation adapter used by every mounted attributed-file surface. */
+export function filterPresentableSessionAttributedFiles(
+    files: readonly SessionAttributedFile[],
+): SessionAttributedFile[] {
+    return files.filter((entry) => Boolean(entry?.file) && !isDirectoryLikeScmFileStatus(entry.file));
+}
+
+/**
+ * Which Changed Files scopes the current evidence can back. One predicate
+ * (`isChangedFilesViewModeAvailable`) decides this for every consumer, so the offered scopes and
+ * the resolved scope can never disagree.
+ */
+export type ChangedFilesViewModeAvailability = {
+    showTurnViewToggle: boolean;
+    showTurnAgentReportedViewToggle?: boolean;
+    showTurnCheckpointViewToggle?: boolean;
+    showSessionViewToggle: boolean;
+    showSelectedViewToggle?: boolean;
+};
+
+/** Presentation order of the scopes a host may offer. */
+const ORDERED_CHANGED_FILES_VIEW_MODES: readonly ChangedFilesViewMode[] = [
+    'repository',
+    'selected',
+    'turn',
+    'turn_agent_reported',
+    'turn_checkpoint',
+    'session',
+];
 
 export function getDefaultChangedFilesViewMode(): ChangedFilesViewMode {
     return 'repository';
 }
 
-export function getPreferredChangedFilesViewMode(input: {
-    showTurnViewToggle: boolean;
-    showTurnAgentReportedViewToggle?: boolean;
-    showTurnCheckpointViewToggle?: boolean;
-    showSessionViewToggle: boolean;
-    showSelectedViewToggle?: boolean;
-}): ChangedFilesViewMode {
+export function getPreferredChangedFilesViewMode(input: ChangedFilesViewModeAvailability): ChangedFilesViewMode {
     if (input.showTurnViewToggle) return 'turn';
     if (input.showSessionViewToggle) return 'session';
     return getDefaultChangedFilesViewMode();
 }
 
-export function isChangedFilesViewModeAvailable(input: {
+export function isChangedFilesViewModeAvailable(input: ChangedFilesViewModeAvailability & {
     mode: ChangedFilesViewMode;
-    showTurnViewToggle: boolean;
-    showTurnAgentReportedViewToggle?: boolean;
-    showTurnCheckpointViewToggle?: boolean;
-    showSessionViewToggle: boolean;
-    showSelectedViewToggle?: boolean;
 }): boolean {
     if (input.mode === 'repository') return true;
     if (input.mode === 'selected') return input.showSelectedViewToggle === true;
@@ -49,96 +77,19 @@ export function isChangedFilesViewModeAvailable(input: {
     return input.showSessionViewToggle;
 }
 
-export function resolveChangedFilesViewMode(input: {
+export function resolveChangedFilesViewMode(input: ChangedFilesViewModeAvailability & {
     mode: ChangedFilesViewMode;
-    showTurnViewToggle: boolean;
-    showTurnAgentReportedViewToggle?: boolean;
-    showTurnCheckpointViewToggle?: boolean;
-    showSessionViewToggle: boolean;
-    showSelectedViewToggle?: boolean;
 }): ChangedFilesViewMode {
     if (isChangedFilesViewModeAvailable(input)) return input.mode;
     return getPreferredChangedFilesViewMode(input);
 }
 
-export function getSelectableChangedFilesViewModes(input: {
-    showTurnViewToggle: boolean;
-    showTurnAgentReportedViewToggle?: boolean;
-    showTurnCheckpointViewToggle?: boolean;
-    showSessionViewToggle: boolean;
-    showSelectedViewToggle?: boolean;
-}): ChangedFilesViewMode[] {
-    if (
-        !input.showTurnViewToggle
-        && input.showTurnAgentReportedViewToggle !== true
-        && input.showTurnCheckpointViewToggle !== true
-        && !input.showSessionViewToggle
-        && input.showSelectedViewToggle !== true
-    ) {
-        return [];
-    }
-    return [
-        'repository',
-        ...(input.showSelectedViewToggle === true ? ['selected' as const] : []),
-        ...(input.showTurnViewToggle ? ['turn' as const] : []),
-        ...(input.showTurnAgentReportedViewToggle === true ? ['turn_agent_reported' as const] : []),
-        ...(input.showTurnCheckpointViewToggle === true ? ['turn_checkpoint' as const] : []),
-        ...(input.showSessionViewToggle ? ['session' as const] : []),
-    ];
-}
-
-export function getSessionAttributionReliability(input: {
-    otherSessionCountInProject: number;
-}): SessionAttributionReliability {
-    return input.otherSessionCountInProject > 0 ? 'limited' : 'high';
-}
-
-export function canOfferSessionChangedFilesView(input: {
-    reliability: SessionAttributionReliability;
-    highConfidenceAttributionCount: number;
-}): boolean {
-    if (input.reliability === 'high') {
-        return true;
-    }
-    return input.highConfidenceAttributionCount > 0;
-}
-
-export function buildChangedFilesAttribution(input: {
-    allChangedFiles: readonly ScmFileStatus[];
-    touchedPaths: readonly string[];
-    operationLog: readonly ScmProjectOperationLogEntry[];
-    includeInferred?: boolean;
-}): {
-    sessionAttributedFiles: SessionAttributedFile[];
-    repositoryOnlyFiles: ScmFileStatus[];
-    suppressedInferredCount: number;
-} {
-    const includeInferred = input.includeInferred ?? true;
-    const touchedSet = new Set(input.touchedPaths);
-
-    const sessionAttributedFiles: SessionAttributedFile[] = [];
-    const repositoryOnlyFiles: ScmFileStatus[] = [];
-    let suppressedInferredCount = 0;
-
-    for (const file of input.allChangedFiles) {
-        if (touchedSet.has(file.fullPath)) {
-            if (includeInferred) {
-                sessionAttributedFiles.push({ file, confidence: 'inferred' });
-            } else {
-                repositoryOnlyFiles.push(file);
-                suppressedInferredCount += 1;
-            }
-            continue;
-        }
-        repositoryOnlyFiles.push(file);
-    }
-
-    sessionAttributedFiles.sort((a, b) => {
-        if (a.confidence === b.confidence) {
-            return a.file.fullPath.localeCompare(b.file.fullPath);
-        }
-        return a.confidence === 'high' ? -1 : 1;
-    });
-
-    return { sessionAttributedFiles, repositoryOnlyFiles, suppressedInferredCount };
+/**
+ * Derived from the availability predicate rather than a second list, so a host can never resolve a
+ * scope its selector refuses to offer. A lone repository scope is not a choice, so nothing is
+ * offered.
+ */
+export function getSelectableChangedFilesViewModes(input: ChangedFilesViewModeAvailability): ChangedFilesViewMode[] {
+    const modes = ORDERED_CHANGED_FILES_VIEW_MODES.filter((mode) => isChangedFilesViewModeAvailable({ ...input, mode }));
+    return modes.length > 1 ? modes : [];
 }

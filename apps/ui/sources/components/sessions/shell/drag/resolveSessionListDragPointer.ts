@@ -60,6 +60,8 @@ export type ResolveSessionListDragPointerParams = Readonly<{
     pointer: WindowPointer | null;
     /** Live viewport + scroll metrics, read once per resolve. */
     viewport: TreeViewportMetrics;
+    /** Effective policy for the dragged Session's current visible group. */
+    canReorderSessionSiblings?: boolean;
 }>;
 
 export type ResolveSessionListDragPointerResult = Readonly<{
@@ -144,6 +146,7 @@ export function resolveSessionListDragPointer(
         source: snapshot.source.treeSource,
         pointer: contentPointer,
         foldersFeatureEnabled: snapshot.foldersFeatureEnabled,
+        canReorderSessionSiblings: params.canReorderSessionSiblings,
     });
 
     const overlayGeometry = resolveTreeDropVisualGeometry({

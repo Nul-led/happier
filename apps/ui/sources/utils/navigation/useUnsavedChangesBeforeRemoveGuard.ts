@@ -19,6 +19,10 @@ export function useUnsavedChangesBeforeRemoveGuard(params: Readonly<{
     onDiscard?: () => void | Promise<void>;
     onSave?: () => boolean | Promise<boolean>;
     continueOnSave?: boolean;
+    /** Flush an editor-owned pending value before the dirty decision is read. */
+    prepareGuard?: () => void | Promise<void>;
+    /** Install the remove interceptor even before React draft state is dirty. */
+    interceptWhenClean?: boolean;
     onContinue: (action: unknown) => void;
     tag: string;
 }>) {
@@ -31,6 +35,8 @@ export function useUnsavedChangesBeforeRemoveGuard(params: Readonly<{
         onDiscard,
         onSave,
         continueOnSave,
+        prepareGuard,
+        interceptWhenClean,
         onContinue,
         tag,
     } = params;
@@ -44,6 +50,7 @@ export function useUnsavedChangesBeforeRemoveGuard(params: Readonly<{
         isDirtyRef,
         ignoreRef,
         requestDecision,
+        prepareGuard,
         onDiscard,
         onSave,
         continueOnSave,
@@ -54,6 +61,7 @@ export function useUnsavedChangesBeforeRemoveGuard(params: Readonly<{
         isDirtyRef,
         onDiscard,
         onSave,
+        prepareGuard,
         requestDecision,
         tag,
     ]);
@@ -77,7 +85,7 @@ export function useUnsavedChangesBeforeRemoveGuard(params: Readonly<{
         enabled
             && pendingContinuation === null
             && !ignoreRef?.current
-            && isDirty,
+            && (isDirty || interceptWhenClean === true),
         handlePreventedRemove,
     );
 

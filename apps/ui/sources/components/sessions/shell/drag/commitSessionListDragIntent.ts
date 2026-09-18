@@ -43,10 +43,14 @@ import {
     normalizeSessionListFolderSortModeV1,
     normalizeSessionListOrderingModeV1,
     resolveEffectiveSessionListFolderSortMode,
-    resolveEffectiveSessionListOrderingModeForGroup,
     type SessionListOrderingModeV1,
     type SessionListOrderingSectionMode,
 } from '@/sync/domains/session/listing/sessionListOrderingRules';
+import {
+    isSessionListSessionSiblingReorder,
+    normalizeSessionListSectionModeV1,
+    resolveSessionListSessionRowDragPolicy,
+} from '@/sync/domains/session/listing/sessionListLayout';
 
 import type {
     SessionListDragCommitNoOpReason,
@@ -63,6 +67,7 @@ import { buildSessionListGroupOrderAfterTreeDrop } from '../commit/applyGroupOrd
 import { buildSessionWorkspaceOrderAfterTreeDrop } from '../commit/applyWorkspaceOrderUpdate';
 import { buildSessionListDragSource } from '../drop-resolution/buildSessionListDragSource';
 import { buildSessionListTreeRows } from '../drop-resolution/buildSessionListTreeRows';
+import { isWorkspaceRootTreeRowId } from '../drop-resolution/treeRowId';
 import type {
     SessionListTreeContainerMetadata,
     SessionListTreeDragSource,
@@ -96,6 +101,7 @@ export type CommitSessionListDragIntentContext = Readonly<{
     sessionListFolderSortModeV1?: SessionListFolderSortModeV1;
     sessionListOrderingModeV1?: SessionListOrderingModeV1;
     sessionListSectionModeV1?: SessionListOrderingSectionMode;
+    manualSessionOrderingEnabled?: boolean;
     isFolderOrganizationEnabled?: () => boolean;
     now: () => number;
     setSessionFoldersV1: (next: SessionFoldersV1) => void;
@@ -333,10 +339,6 @@ function isOrderMapScopeUnchanged(params: Readonly<{
     return true;
 }
 
-function normalizeSessionListSectionMode(value: SessionListOrderingSectionMode | undefined): SessionListOrderingSectionMode {
-    return value === 'single' ? 'single' : 'activity';
-}
-
 function isSessionSiblingReorderBlockedByOrderingMode(params: Readonly<{
     source: SessionListTreeDragSource;
     context: CommitSessionListDragIntentContext;
@@ -344,18 +346,21 @@ function isSessionSiblingReorderBlockedByOrderingMode(params: Readonly<{
 }>): boolean {
     const { source, context, destination } = params;
     if (source.metadata.kind !== 'session') return false;
-    if ((source.metadata.folderId ?? null) !== destination.container.folderId) return false;
+    if (!isSessionListSessionSiblingReorder({
+        sourceFolderId: source.metadata.folderId,
+        destinationFolderId: destination.container.folderId,
+    })) return false;
 
     const item = source.metadata.item;
     if (!isSessionListSessionIndexItem(item)) return false;
-    const sectionMode = normalizeSessionListSectionMode(context.sessionListSectionModeV1);
-    const effectiveOrderingMode = resolveEffectiveSessionListOrderingModeForGroup({
-        section: sectionMode === 'single' ? 'sessions' : item.section,
-        sectionMode,
-        groupKind: item.groupKind,
-        userOrderingMode: normalizeSessionListOrderingModeV1(context.sessionListOrderingModeV1),
-    });
-    return effectiveOrderingMode !== 'custom';
+    const sectionMode = normalizeSessionListSectionModeV1(context.sessionListSectionModeV1);
+    return !resolveSessionListSessionRowDragPolicy({
+        manualSessionOrderingEnabled: context.manualSessionOrderingEnabled !== false,
+        folderContainmentEnabled: false,
+        item,
+        sectionModeV1: sectionMode,
+        orderingModeV1: normalizeSessionListOrderingModeV1(context.sessionListOrderingModeV1),
+    }).canReorderSiblings;
 }
 
 export async function commitSessionListDragIntent(params: Readonly<{
@@ -424,6 +429,7 @@ export async function commitSessionListDragIntent(params: Readonly<{
         sessionListFolderSortModeV1: context.sessionListFolderSortModeV1,
         sessionListOrderingModeV1: context.sessionListOrderingModeV1,
         sessionListSectionModeV1: context.sessionListSectionModeV1,
+        manualSessionOrderingEnabled: context.manualSessionOrderingEnabled,
         isFolderOrganizationEnabled: context.isFolderOrganizationEnabled,
         now: context.now,
         setSessionFoldersV1: context.setSessionFoldersV1,
@@ -446,5 +452,5 @@ export async function commitSessionListDragIntent(params: Readonly<{
 
 function intentSourceKindToTreeKind(intent: SessionListDragIntent): SessionListTreeRowMetadata['kind'] {
     if (intent.sourceKind === 'leaf') return 'session';
-    return intent.sourceRowId.startsWith('workspace-root:') ? 'workspace-root' : 'folder';
+    return isWorkspaceRootTreeRowId(intent.sourceRowId) ? 'workspace-root' : 'folder';
 }

@@ -1,3 +1,4 @@
+import { useSessionFilePaneNavigation } from '@/components/sessions/panes/useSessionFileDetailsOpener';
 import type { ReviewCommentAnchor, ReviewCommentSource } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 import {
     WorkspaceFileDetailsView,
@@ -13,6 +14,7 @@ export type SessionFileDeepLinkAnchor = Readonly<{
 
 export type SessionFileDetailsViewProps = Readonly<{
     sessionId: string;
+    serverId?: string | null;
     scopeId: string;
     filePath: string;
     deepLinkAnchor?: SessionFileDeepLinkAnchor | null;
@@ -23,10 +25,13 @@ export type SessionFileDetailsViewProps = Readonly<{
 
 export function SessionFileDetailsView(props: SessionFileDetailsViewProps) {
     const sessionId = props.sessionId;
-    const scope = useWorkspaceScopeForSession(sessionId);
+    const scope = useWorkspaceScopeForSession(sessionId, props.serverId);
+    const navigation = useSessionFilePaneNavigation({ scopeId: props.scopeId, sessionId, serverId: scope?.serverId ?? props.serverId });
 
     return (
         <WorkspaceFileDetailsView
+            onRevealInFilesTree={navigation.revealInFilesTree}
+            onOpenChanges={navigation.openChanges}
             scopeId={props.scopeId}
             scope={scope}
             filePath={props.filePath}

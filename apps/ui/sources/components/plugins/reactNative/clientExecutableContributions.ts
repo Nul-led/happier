@@ -32,6 +32,7 @@ import type {
 } from './loader';
 import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
 import { isPluginProjectedActionExecutable } from '@/sync/domains/plugins/ui/projection';
+import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
 export type PluginUiClientExecutableTarget = Readonly<{
     artifactId: string;
@@ -68,6 +69,10 @@ export type PluginUiClientExecutableRegistration = Readonly<{
     projectionGeneration: number;
     /** Exact installed package identity supplied by the activated projection. */
     pluginVersion?: string;
+    /** Exact activation facts, retained for target-owned client invocation context. */
+    immutableGenerationId?: string;
+    accountLifetime?: ActiveServerAccountScopeLifetime;
+    authority?: PluginUiExecutableAuthority;
     lifecycle: PluginUiClientExecutableRegistrationLifecycle;
 }>;
 
@@ -119,6 +124,9 @@ export type PluginUiClientExecutableRegistrationIndex = Readonly<{
         projectionGeneration: number;
         /** Optional for non-Action client families; Actions fail closed without it. */
         pluginVersion?: string;
+        immutableGenerationId?: string;
+        accountLifetime?: ActiveServerAccountScopeLifetime;
+        authority?: PluginUiExecutableAuthority;
         lifecycle: PluginUiClientExecutableRegistrationLifecycle;
     }>): PluginUiClientExecutableRegistrationScope;
     read(address: PluginUiClientExecutableRegistrationAddress): PluginUiClientExecutableRegistration | null;
@@ -258,6 +266,9 @@ export function createPluginUiClientExecutableRegistrationIndex(): PluginUiClien
         executionOrigin: PluginMachineExecutionOriginV1;
         projectionGeneration: number;
         pluginVersion?: string;
+        immutableGenerationId?: string;
+        accountLifetime?: ActiveServerAccountScopeLifetime;
+        authority?: PluginUiExecutableAuthority;
         lifecycle: PluginUiClientExecutableRegistrationLifecycle;
     }>): PluginUiClientExecutableRegistrationScope => {
         const exact = validateScopeInput(input);
@@ -358,6 +369,9 @@ export function createPluginUiClientExecutableRegistrationIndex(): PluginUiClien
                             ...(exact.pluginVersion === undefined
                                 ? {}
                                 : { pluginVersion: exact.pluginVersion }),
+                            ...(input.immutableGenerationId === undefined ? {} : { immutableGenerationId: input.immutableGenerationId }),
+                            ...(input.accountLifetime === undefined ? {} : { accountLifetime: input.accountLifetime }),
+                            ...(input.authority === undefined ? {} : { authority: input.authority }),
                             lifecycle: input.lifecycle,
                         }),
                     })] as const));
@@ -405,6 +419,8 @@ export type PluginUiClientExecutableActivation = Readonly<{
     projectionGeneration: number;
     /** Exact package version retained for client Action SDK context. */
     pluginVersion?: string;
+    immutableGenerationId?: string;
+    accountLifetime?: ActiveServerAccountScopeLifetime;
     cache: PluginReactNativeBundleCache;
     identity: PluginReactNativeBundleCacheIdentity;
     moduleReference: RepackInstalledArtifactModuleReference;
@@ -514,6 +530,7 @@ function clientExecutableModuleKey(activation: PluginUiClientExecutableActivatio
         activation.identity.channel,
         activation.identity.nativeCapabilitiesDigest,
         activation.pluginVersion ?? '',
+        activation.immutableGenerationId ?? '',
         activation.moduleReference.containerName,
         activation.moduleReference.modulePath,
         activation.moduleReference.exportName,
@@ -561,6 +578,7 @@ function clientExecutableActivationFingerprint(
         activation.identity.nativeCapabilitiesDigest,
         String(activation.identity.projectionGeneration),
         activation.pluginVersion ?? '',
+        activation.immutableGenerationId ?? '',
         activation.moduleReference.containerName,
         activation.moduleReference.modulePath,
         activation.moduleReference.exportName,
@@ -853,6 +871,9 @@ export function createPluginUiClientExecutableComposition(input: Readonly<{
                         ...(activation.pluginVersion === undefined
                             ? {}
                             : { pluginVersion: activation.pluginVersion }),
+                        ...(activation.immutableGenerationId === undefined ? {} : { immutableGenerationId: activation.immutableGenerationId }),
+                        ...(activation.accountLifetime === undefined ? {} : { accountLifetime: activation.accountLifetime }),
+                        authority: activation.authority,
                         lifecycle,
                     });
                     const derivedScope = activation.createScope?.(registrationScope);

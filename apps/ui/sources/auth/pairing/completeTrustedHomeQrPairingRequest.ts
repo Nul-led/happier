@@ -3,11 +3,8 @@ import type { HomeQrEnrollmentTarget } from '@/auth/flows/qrStart';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { resolveProvisioningMaterial } from '@/auth/terminal/resolveProvisioningMaterial';
 import { buildTerminalResponseV3, buildTerminalTokenOnlyResponseV3 } from '@/auth/terminal/terminalProvisioning';
-import { decodeBase64 } from '@/encryption/base64';
-import type { PairingStatus } from '@/sync/api/account/apiPairingAuth';
 import {
     deriveHomeQrBindingKeyV2,
-    verifyHomeQrBindingProofV2,
     type HomeQrInviteDirectionV2,
 } from '@happier-dev/protocol';
 
@@ -18,7 +15,6 @@ export type TrustedHomeQrCompletionContext = Readonly<{
     qrSecret: Uint8Array;
     issuedAtMs: number;
     expiresAtMs: number;
-    expectedRequesterPublicKeyBase64?: string;
 }>;
 
 export class InvalidTrustedHomeQrRequestError extends Error {
@@ -30,53 +26,26 @@ export class InvalidTrustedHomeQrRequestError extends Error {
     }
 }
 
-function decodeRequesterPublicKey(value: string): Uint8Array | null {
-    try {
-        const decoded = decodeBase64(value, 'base64');
-        return decoded.length === 32 ? decoded : null;
-    } catch {
-        return null;
-    }
-}
-
-/** Single trusted-device completion owner shared by both QR display directions. */
+/** Local credential/material sealing after the protocol owner verifies the requester. */
 export async function completeTrustedHomeQrPairingRequest(input: Readonly<{
     context: TrustedHomeQrCompletionContext;
-    status: Extract<PairingStatus, { state: 'requested' }>;
+    requesterPublicKey: Uint8Array;
     signal?: AbortSignal;
 }>): Promise<'completed' | 'already_completed'> {
-    const { context, status } = input;
-    const requesterPublicKey = decodeRequesterPublicKey(status.requestedPublicKey);
-    const responseExpiresAtMs = Date.parse(status.expiresAt);
-    const nowMs = Date.now();
-    if (
-        !requesterPublicKey
-        || context.qrSecret.length !== 32
-        || status.pairId !== context.pairId
-        || status.homeServerIdentityId !== context.target.descriptor.homeServerIdentityId
-        || responseExpiresAtMs !== context.expiresAtMs
-        || nowMs < context.issuedAtMs
-        || nowMs >= context.expiresAtMs
-        || (context.expectedRequesterPublicKeyBase64 !== undefined
-            && context.expectedRequesterPublicKeyBase64 !== status.requestedPublicKey)
-        || !verifyHomeQrBindingProofV2({
-            direction: context.direction,
-            qrSecret: context.qrSecret,
-            pairId: context.pairId,
-            homeServerIdentityId: context.target.descriptor.homeServerIdentityId,
-            requesterPublicKey,
-            expiresAtMs: context.expiresAtMs,
-        }, status.bindingProof)
-    ) {
-        throw new InvalidTrustedHomeQrRequestError();
-    }
+    const { context, requesterPublicKey } = input;
 
     const credentials = await TokenStorage.getCredentialsForServerUrl(
         context.target.descriptor.canonicalServerUrl,
         { serverId: context.target.serverId },
     );
+    if (input.signal?.aborted) {
+        throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
+    }
     if (!credentials) throw new InvalidTrustedHomeQrRequestError();
-    const material = resolveProvisioningMaterial(credentials);
+    const material = await resolveProvisioningMaterial(credentials);
+    if (input.signal?.aborted) {
+        throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
+    }
     const common = {
         terminalEphemeralPublicKey: requesterPublicKey,
         pairingSecret: deriveHomeQrBindingKeyV2(context.qrSecret),
@@ -86,6 +55,9 @@ export async function completeTrustedHomeQrPairingRequest(input: Readonly<{
     const response = material.type === 'tokenOnly'
         ? buildTerminalTokenOnlyResponseV3(common)
         : buildTerminalResponseV3({ ...common, contentPrivateKey: material.key });
+    if (input.signal?.aborted) {
+        throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
+    }
 
     return await completeAccountAuthRequest({
         token: credentials.token,

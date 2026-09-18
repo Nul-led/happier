@@ -14,7 +14,7 @@ import {
     subscribeToSessionNavigationCursor,
     useSessionNavigationCursor,
 } from './sessionNavigationCursorStore';
-import type { SessionListLikeItem } from './sessionNavigationOrder';
+import { buildServerScopedSessionKey, type SessionListLikeItem } from './sessionNavigationOrder';
 
 const session = (id: string, serverId: string): SessionListLikeItem => ({ type: 'session', serverId, sessionId: id });
 
@@ -43,7 +43,10 @@ describe('session navigation cursor store', () => {
 
         const stored = readSessionNavigationCursor();
         expect(stored?.identity.sourceScopeKey).toBe('scope-b');
-        expect(stored?.entries.map((entry) => entry.sessionKey)).toEqual(['server-a:gamma', 'server-a:delta']);
+        expect(stored?.entries.map((entry) => entry.sessionKey)).toEqual([
+            buildServerScopedSessionKey('gamma', 'server-a'),
+            buildServerScopedSessionKey('delta', 'server-a'),
+        ]);
     });
 
     it('reports the stored cursor to a subscriber and stops after unsubscribe', () => {

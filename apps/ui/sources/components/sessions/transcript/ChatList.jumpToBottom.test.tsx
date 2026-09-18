@@ -135,6 +135,7 @@ describe('ChatList (jump-to-bottom)', () => {
     await screen.update(
       <ChatList
         session={{ ...chatListHarnessState.sessionState }}
+        sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])}
         onViewportChange={onViewportChange}
       />,
     );
@@ -154,6 +155,7 @@ describe('ChatList (jump-to-bottom)', () => {
     await screen.update(
       <ChatList
         session={{ ...chatListHarnessState.sessionState }}
+        sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])}
         onViewportChange={onViewportChange}
       />,
     );
@@ -197,7 +199,7 @@ describe('ChatList (jump-to-bottom)', () => {
     };
 
     const { ChatList } = await import('./ChatList');
-    await screen.update(<ChatList session={{ ...chatListHarnessState.sessionState }} />);
+    await screen.update(<ChatList session={{ ...chatListHarnessState.sessionState }} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />);
 
     const jumpButtons = screen.findAllByTestId('transcript-jump-to-bottom');
     expect(jumpButtons.length).toBeGreaterThan(0);

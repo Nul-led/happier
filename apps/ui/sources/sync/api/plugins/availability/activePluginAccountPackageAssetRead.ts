@@ -23,7 +23,7 @@ import {
     withAccountStoredContentCompatibilityRequestDeclaration,
     type AccountStoredContentCompatibilityHeaderResolution,
 } from '@/sync/http/accountStoredContentCompatibility';
-import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import type { AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol';
 import {
     decodePackageAssetArchiveBodyV1,
@@ -91,7 +91,7 @@ function defaultDependencies(): ActivePluginAccountPackageAssetReaderDependencie
             };
         },
         captureRequestAuthority: async ({ scope, activeRequest }) => {
-            const authority = await captureSessionRequestAuthorityForServerAccountScope({ scope, activeRequest });
+            const authority = await captureServerRequestAuthorityForServerAccountScope({ scope, activeRequest });
             return Object.freeze({
                 request: authority.request,
                 release: authority.release,

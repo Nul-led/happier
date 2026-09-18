@@ -126,7 +126,7 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
 }));
 
-export const ExitPlanToolView = React.memo<ToolViewProps>(({ tool, sessionId, interaction }) => {
+export const ExitPlanToolView = React.memo<ToolViewProps>(({ tool, sessionId, serverId, interaction }) => {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const [isApproving, setIsApproving] = React.useState(false);
@@ -155,6 +155,13 @@ export const ExitPlanToolView = React.memo<ToolViewProps>(({ tool, sessionId, in
                 ? t('session.sharing.permissionApprovalsDisabledReadOnly')
                 : t('session.sharing.permissionApprovalsDisabledNotGranted');
     const permissionRequestId = resolvePermissionRequestId(tool);
+    // The permission RPCs take their owning server as their trailing options
+    // argument, and omit it entirely when this tool call has no server of its
+    // own so the caller's preferred-session scope still decides.
+    const permissionScope = React.useMemo(
+        () => (serverId === undefined ? undefined : { serverId }),
+        [serverId],
+    );
 
     const handleApprove = React.useCallback(async (mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', opts?: { updatedPermissions?: unknown }) => {
         if (!sessionId || isApproving || isRejecting || !canInteract) return;
@@ -170,11 +177,15 @@ export const ExitPlanToolView = React.memo<ToolViewProps>(({ tool, sessionId, in
                 await sessionAllowWithPermissionUpdates(sessionId, permissionId, {
                     mode,
                     updatedPermissions: opts.updatedPermissions,
+                    ...(permissionScope ?? {}),
                 });
             } else if (mode) {
-                await sessionAllow(sessionId, permissionId, mode);
+                await sessionAllow(sessionId, permissionId, mode, undefined, undefined, undefined, undefined, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
             } else {
-                await sessionAllow(sessionId, permissionId);
+                const allowArgs: Parameters<typeof sessionAllow> = permissionScope === undefined
+                    ? [sessionId, permissionId]
+                    : [sessionId, permissionId, undefined, undefined, undefined, undefined, undefined, permissionScope];
+                await sessionAllow(...allowArgs);
             }
             setIsResponded(true);
         } catch (error) {
@@ -182,7 +193,7 @@ export const ExitPlanToolView = React.memo<ToolViewProps>(({ tool, sessionId, in
         } finally {
             setIsApproving(false);
         }
-    }, [sessionId, permissionRequestId, canInteract, isApproving, isRejecting]);
+    }, [sessionId, serverId, permissionScope, permissionRequestId, canInteract, isApproving, isRejecting]);
 
     const handleApproveOptions = React.useCallback(() => {
         if (!canInteract || isApproving || isRejecting) return;
@@ -260,14 +271,17 @@ export const ExitPlanToolView = React.memo<ToolViewProps>(({ tool, sessionId, in
 
         setIsRejecting(true);
         try {
-            await sessionDeny(sessionId, permissionId);
+            const denyArgs: Parameters<typeof sessionDeny> = permissionScope === undefined
+                ? [sessionId, permissionId]
+                : [sessionId, permissionId, undefined, undefined, undefined, undefined, undefined, permissionScope];
+            await sessionDeny(...denyArgs);
             setIsResponded(true);
         } catch (error) {
             console.error('Failed to reject plan:', error);
         } finally {
             setIsRejecting(false);
         }
-    }, [sessionId, permissionRequestId, canInteract, isApproving, isRejecting]);
+    }, [sessionId, serverId, permissionScope, permissionRequestId, canInteract, isApproving, isRejecting]);
 
     const handleRequestChanges = React.useCallback(() => {
         if (!canInteract || isApproving || isRejecting) return;
@@ -296,7 +310,10 @@ export const ExitPlanToolView = React.memo<ToolViewProps>(({ tool, sessionId, in
 
         setIsRejecting(true);
         try {
-            await sessionDeny(sessionId, permissionId, undefined, undefined, undefined, trimmed);
+            const denyArgs: Parameters<typeof sessionDeny> = permissionScope === undefined
+                ? [sessionId, permissionId, undefined, undefined, undefined, trimmed]
+                : [sessionId, permissionId, undefined, undefined, undefined, trimmed, undefined, permissionScope];
+            await sessionDeny(...denyArgs);
             setIsResponded(true);
         } catch (error) {
             console.error('Failed to request plan changes:', error);
@@ -304,7 +321,7 @@ export const ExitPlanToolView = React.memo<ToolViewProps>(({ tool, sessionId, in
         } finally {
             setIsRejecting(false);
         }
-    }, [sessionId, permissionRequestId, canInteract, isApproving, isRejecting, changeRequestText]);
+    }, [sessionId, permissionScope, permissionRequestId, canInteract, isApproving, isRejecting, changeRequestText]);
 
     return (
         <ToolSectionView>

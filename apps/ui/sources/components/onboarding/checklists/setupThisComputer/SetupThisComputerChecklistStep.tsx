@@ -18,7 +18,6 @@ import {
     mapThisComputerSetupExecutionToStages,
 } from '@/components/systemTasks/thisComputerSetup/mapThisComputerSetupExecutionToStages';
 import { resolveThisComputerSetupPrompt } from '@/components/systemTasks/thisComputerSetup/resolveThisComputerSetupPrompt';
-import { useThisComputerSetupPromptModals } from '@/components/systemTasks/thisComputerSetup/useThisComputerSetupPromptModals';
 import { resolveThisComputerSetupFollowUp, useThisComputerSetupTask } from '@/components/systemTasks/useThisComputerSetupTask';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
 
@@ -104,7 +103,15 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
         startError,
         isStarting,
     } = useThisComputerSetupTask({
-        autoStart: false,
+        // Pairing is a blocking prompt: the executor waits for an answer and no CLI bound covers
+        // that wait, so the run has no terminal state unless the one approval owner answers it.
+        // The target is the Home this step is setting up — the same one the spec below sends.
+        ...(preflight.activeRelayUrl ? {
+            authRequestApproval: {
+                expectedRelayUrl: preflight.activeRelayUrl,
+                ...(preflight.activeServerId ? { serverId: preflight.activeServerId } : {}),
+            },
+        } : {}),
         onNeedsAuth: props.onNeedsAuth,
         onSucceeded: (snapshot) => {
             const machineId = snapshot.result?.ok
@@ -117,30 +124,33 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
     const promptEnvelope = React.useMemo(() => readLatestSystemTaskPrompt(activeTaskSnapshot), [activeTaskSnapshot]);
     const prompt = React.useMemo(() => resolveThisComputerSetupPrompt(promptEnvelope), [promptEnvelope]);
 
-    useThisComputerSetupPromptModals({
-        runner,
-        taskId: activeTaskId,
-        snapshot: activeTaskSnapshot,
-        prompt: promptEnvelope,
-    });
-
     const stageItems = React.useMemo(() => buildThisComputerSetupStageModel({
         preflight,
         prompt,
     }), [preflight, prompt]);
 
+    // The Home this computer is being set up for. Without one there is nothing to configure the
+    // background service against, and sending no explicit target would let the local CLI's own
+    // selected relay decide, so the step offers nothing to run instead of running the wrong thing.
+    const explicitSetupTarget = React.useMemo(() => {
+        const activeRelayUrl = preflight.activeRelayUrl;
+        const activeWebappUrl = preflight.activeWebappUrl;
+        return activeRelayUrl && activeWebappUrl ? { activeRelayUrl, activeWebappUrl } : null;
+    }, [preflight.activeRelayUrl, preflight.activeWebappUrl]);
     const buildExecutionPlan = React.useCallback((selectedIds: readonly string[]) => {
+        if (!explicitSetupTarget) {
+            throw new Error('This computer cannot be set up until a Home is selected.');
+        }
         const selected = new Set(selectedIds);
         const installService = selected.has('setup.thisComputer.installService');
         return buildLocalMachineSetupSystemTaskSpec({
-            activeRelayUrl: preflight.activeRelayUrl ?? undefined,
-            activeWebappUrl: preflight.activeWebappUrl ?? undefined,
+            ...explicitSetupTarget,
             activeLocalRelayUrl: preflight.activeLocalRelayUrl,
             installService,
             startService: installService && selected.has('setup.thisComputer.startService'),
             verifyService: installService && selected.has('setup.thisComputer.verifyService'),
         });
-    }, [preflight.activeLocalRelayUrl, preflight.activeRelayUrl, preflight.activeWebappUrl]);
+    }, [explicitSetupTarget, preflight.activeLocalRelayUrl]);
     const runExecutionPlan = React.useCallback(async (spec: ReturnType<typeof buildLocalMachineSetupSystemTaskSpec>) => {
         await start(spec);
     }, [start]);
@@ -209,7 +219,7 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
         if (controller.phase === 'select') {
             onWizardPrimaryChange({
                 label: t('common.continue'),
-                disabled: isReady ? false : isStarting,
+                disabled: isReady ? false : (isStarting || !explicitSetupTarget),
                 onPress: isReady && props.onRequestAdvance
                     ? (requestAdvanceRef.current ?? (() => undefined))
                     : async () => {
@@ -276,6 +286,7 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
     }, [
         activeTaskSnapshot,
         controller.phase,
+        explicitSetupTarget,
         followUp,
         isReady,
         isStarting,

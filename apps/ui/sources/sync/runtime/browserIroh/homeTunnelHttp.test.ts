@@ -173,6 +173,31 @@ describe('sync/runtime/browserIroh/homeTunnelHttp', () => {
         expect(fake.countOf('cancel')).toBe(0);
     });
 
+    it.each([
+        ['empty', 'HTTP/1.1 204 No Content\r\n\r\n'],
+        ['content-length', 'HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}'],
+        ['chunked', 'HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n'],
+    ])('rejects buffered response surplus after a completed %s response', async (_framing, firstResponse) => {
+        const fake = createFakeHomeStream();
+        const connection = createBrowserIrohHttpConnectionRequester({
+            stream: fake.stream,
+            expectedRemoteEndpointId: HOME_ENDPOINT_ID,
+        });
+        const pending = connection.request('https://machine.invalid/transfers/open', { method: 'POST' });
+        fake.push(`${firstResponse}HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nsecond`);
+
+        if (_framing === 'empty') {
+            await expectHttpErrorCode(pending, 'connection_not_reusable');
+        } else {
+            const response = await pending;
+            await expectHttpErrorCode(response.text(), 'connection_not_reusable');
+        }
+        await expect(connection.request('https://machine.invalid/transfers/chunks/0'))
+            .rejects.toMatchObject({ code: 'connection_not_reusable' });
+        expect(fake.countOf('cancel')).toBe(1);
+        expect(fake.countOf('close')).toBe(1);
+    });
+
     it('fails a caller-owned connection closed when a response cannot be reused', async () => {
         const fake = createFakeHomeStream();
         const connection = createBrowserIrohHttpConnectionRequester({
@@ -195,6 +220,15 @@ describe('sync/runtime/browserIroh/homeTunnelHttp', () => {
             'https://home.example.test/v1/account/me?scope=full#fragment',
             { headers: { authorization: 'Bearer token-1', accept: 'application/json' } },
         );
+        await vi.waitFor(() => {
+            expect(fake.hasPendingRead()).toBe(true);
+        });
+
+        // HTTP framing, not a transport FIN, delimits the request. Keeping the
+        // write side open is required for ordinary Home HTTP servers to send a
+        // response after asynchronous route work.
+        expect(fake.writtenText().endsWith('\r\n\r\n')).toBe(true);
+        expect(fake.countOf('finishWrite')).toBe(0);
         fake.push(
             'HTTP/1.1 200 OK\r\n'
             + 'content-type: application/json\r\n'
@@ -220,9 +254,75 @@ describe('sync/runtime/browserIroh/homeTunnelHttp', () => {
         expect(result.response.headers.get('content-type')).toBe('application/json');
         await expect(result.response.json()).resolves.toEqual({ account: 'a-1' });
 
-        expect(fake.countOf('finishWrite')).toBe(1);
+        expect(fake.countOf('finishWrite')).toBe(0);
         expect(fake.countOf('close')).toBe(1);
         expect(fake.countOf('cancel')).toBe(0);
+    });
+
+    it('treats a browser-provided undefined Request body as an empty body', async () => {
+        const bodyGetter = vi.spyOn(Request.prototype, 'body', 'get')
+            .mockReturnValue(undefined as never);
+        try {
+            const fake = createFakeHomeStream();
+            const pending = requesterFor(fake)('https://home.example.test/v1/sessions');
+            fake.push('HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n');
+
+            await expect(pending).resolves.toMatchObject({ response: { status: 204 } });
+            expect(fake.writtenText()).toContain('GET /v1/sessions HTTP/1.1\r\n');
+            expect(fake.writtenText()).not.toContain('transfer-encoding');
+            expect(fake.countOf('cancel')).toBe(0);
+        } finally {
+            bodyGetter.mockRestore();
+        }
+    });
+
+    it('preserves a browser-provided request body when its stream property is unavailable', async () => {
+        const NativeRequest = Request;
+        class RequestWithoutBodyStream {
+            readonly url: string;
+            readonly method: string;
+            readonly headers: Headers;
+            readonly signal: AbortSignal;
+            readonly body = undefined;
+            private readonly bytes: Uint8Array;
+
+            constructor(input: RequestInfo | URL, init?: RequestInit) {
+                this.url = String(input);
+                this.method = init?.method ?? 'GET';
+                this.headers = new Headers(init?.headers);
+                this.signal = init?.signal ?? new AbortController().signal;
+                this.bytes = new TextEncoder().encode(String(init?.body ?? ''));
+            }
+
+            async arrayBuffer() { return this.bytes.slice().buffer; }
+        }
+        vi.stubGlobal('Request', RequestWithoutBodyStream as unknown as typeof Request);
+        try {
+            const fake = createFakeHomeStream();
+            const connection = createBrowserIrohHttpConnectionRequester({
+                stream: fake.stream,
+                expectedRemoteEndpointId: HOME_ENDPOINT_ID,
+            });
+            const pending = connection.request('https://machine.invalid/v1/grants', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: '{"flow":"finite_transfer"}',
+            });
+            await vi.waitFor(() => {
+                expect(fake.writtenText()).toContain('1a\r\n{"flow":"finite_transfer"}\r\n0\r\n\r\n');
+            });
+            fake.push('HTTP/1.1 201 Created\r\ncontent-length: 0\r\n\r\n');
+
+            const response = await pending;
+            expect(response.status).toBe(201);
+            await expect(response.arrayBuffer()).resolves.toHaveProperty('byteLength', 0);
+            expect(fake.writtenText()).toContain('transfer-encoding: chunked\r\n');
+            expect(fake.writtenText()).toContain('1a\r\n{"flow":"finite_transfer"}\r\n0\r\n\r\n');
+            await connection.close();
+            expect(fake.countOf('cancel')).toBe(0);
+        } finally {
+            vi.stubGlobal('Request', NativeRequest);
+        }
     });
 
     it('streams a request body incrementally as chunked framing it owns', async () => {
@@ -244,7 +344,7 @@ describe('sync/runtime/browserIroh/homeTunnelHttp', () => {
         expect(wire).not.toContain('content-length: 999');
         expect(wire.endsWith('\r\n\r\n7\r\n{"a":1}\r\n0\r\n\r\n')).toBe(true);
         expect(result.response.status).toBe(201);
-        expect(fake.countOf('finishWrite')).toBe(1);
+        expect(fake.countOf('finishWrite')).toBe(0);
     });
 
     it('cancels the request body reader on a stream write failure without masking that failure', async () => {

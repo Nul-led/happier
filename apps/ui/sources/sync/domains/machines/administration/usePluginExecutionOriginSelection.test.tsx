@@ -23,6 +23,10 @@ vi.mock('@/sync/domains/state/storageStore', () => ({
             },
         }),
     },
+    getStorage: () => (
+        (selector: (state: Readonly<{ settingsScope: Readonly<{ serverId: string; accountId: string }> }>) => unknown) =>
+            selector({ settingsScope: { serverId: 'server-a', accountId: 'account-a' } })
+    ),
 }));
 
 const selectedOrigin: PluginMachineExecutionOriginV1 = {
@@ -177,6 +181,10 @@ describe('usePluginMachineExecutionOriginSelection', () => {
         });
 
         expect(fixture.mutateAccountSettingsOnce).toHaveBeenCalledOnce();
+        expect(fixture.mutateAccountSettingsOnce.mock.calls[0]?.[0]?.expectedSettingsScope).toEqual({
+            serverId: 'server-a',
+            accountId: 'account-a',
+        });
         expect(fixture.setSelections).not.toHaveBeenCalled();
         expect(fixture.canonicalRaw).toEqual({
             unrelatedRoot: { preserved: true },

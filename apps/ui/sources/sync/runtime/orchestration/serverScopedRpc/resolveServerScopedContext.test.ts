@@ -107,7 +107,8 @@ describe('resolveServerScopedContext', () => {
             { id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
         ]);
         const token = tokenForSub('account-b');
-        getCredentialsSpy.mockResolvedValue({ token, secret: 'secret-b' });
+        const credentials = { token, secret: 'secret-b' } as const;
+        getCredentialsSpy.mockResolvedValue(credentials);
         const fakeEncryption = {
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -130,6 +131,7 @@ describe('resolveServerScopedContext', () => {
             targetServerUrl: 'https://server-b.example.test',
             targetAccountId: 'account-b',
             token,
+            credentials,
             encryption: fakeEncryption,
         }));
     });

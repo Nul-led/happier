@@ -10,7 +10,8 @@ import {
     buildSessionListCacheEntriesFromRenderables,
     SESSION_LIST_WARM_CACHE_MAX_ENTRIES,
 } from './warmCacheAdapters';
-import type { SessionListCacheEntryV1 } from './warmCachePersistence';
+import { SessionListCacheEntryV1Schema, type SessionListCacheEntryV1 } from './warmCachePersistence';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 function makeWindowRenderable(id: string, meaningfulActivityAt: number): SessionListRenderableSession {
     return {
@@ -32,6 +33,129 @@ function makeWindowRenderable(id: string, meaningfulActivityAt: number): Session
 }
 
 describe('warmCacheAdapters', () => {
+    it('roundtrips current access authority and its fail-closed null sentinel', () => {
+        const access = {
+            role: 'recipient' as const,
+            level: 'edit' as const,
+            capabilities: {
+                readTranscript: true,
+                submitAgentInput: true,
+                editSessionRecords: true,
+                approveRuntimePermissions: false,
+                manageAccess: false,
+                managePermissionDelegation: false,
+                managePublicLink: false,
+                archiveSession: false,
+                renameSession: false,
+                assignResponsibility: false,
+                stopSession: false,
+                deleteSession: false,
+            },
+            sources: [{ kind: 'team' as const, teamId: 'team-1', requiredByTeamPolicy: false }],
+            audienceContext: { kind: 'team' as const, teamId: 'team-1' },
+            primaryTeamId: 'team-1',
+        };
+        const cached = SessionListCacheEntryV1Schema.parse(
+            buildSessionListCacheEntryFromRenderable(
+                createSessionListRenderableSessionFixture({ access, accessLevel: 'edit' }),
+            ),
+        );
+
+        expect(buildSessionListRenderableFromCacheEntry(cached).access).toEqual(access);
+
+        const unavailableCached = SessionListCacheEntryV1Schema.parse(
+            buildSessionListCacheEntryFromRenderable(
+                createSessionListRenderableSessionFixture({ access: null, accessLevel: undefined }),
+            ),
+        );
+        expect(buildSessionListRenderableFromCacheEntry(unavailableCached).access).toBeNull();
+
+        const legacyRenderable = createSessionListRenderableSessionFixture({
+            access: undefined,
+            accessLevel: undefined,
+        });
+        const legacyCached = buildSessionListCacheEntryFromRenderable(legacyRenderable);
+        const currentUnavailable = buildSessionListCacheEntryFromRenderable({
+            ...legacyRenderable,
+            access: null,
+        }, legacyCached);
+        expect(currentUnavailable).not.toBe(legacyCached);
+        expect(currentUnavailable.effectiveAccess).toBeNull();
+    });
+
+    it('roundtrips omitted, null and assigned responsibility with the safe summary', () => {
+        const omitted = buildSessionListCacheEntryFromRenderable(createSessionListRenderableSessionFixture());
+        expect('responsibleAccountId' in omitted).toBe(false);
+        expect('responsibleAccount' in omitted).toBe(false);
+
+        const unassigned = buildSessionListCacheEntryFromRenderable(createSessionListRenderableSessionFixture({
+            responsibleAccountId: null,
+            responsibleAccount: null,
+        }));
+        const restoredUnassigned = buildSessionListRenderableFromCacheEntry(SessionListCacheEntryV1Schema.parse(unassigned));
+        expect(restoredUnassigned.responsibleAccountId).toBeNull();
+        expect(restoredUnassigned.responsibleAccount).toBeNull();
+
+        const responsibleAccount = {
+            kind: 'account' as const,
+            accountId: 'account-alice',
+            firstName: 'Alice',
+            lastName: null,
+            username: 'alice',
+            avatarUrl: null,
+        };
+        const assigned = buildSessionListCacheEntryFromRenderable(createSessionListRenderableSessionFixture({
+            responsibleAccountId: responsibleAccount.accountId,
+            responsibleAccount,
+        }));
+        const restoredAssigned = buildSessionListRenderableFromCacheEntry(SessionListCacheEntryV1Schema.parse(assigned));
+        expect(restoredAssigned.responsibleAccountId).toBe(responsibleAccount.accountId);
+        expect(restoredAssigned.responsibleAccount).toEqual(responsibleAccount);
+    });
+
+    it('does not reconstruct runtime presence from durable active state', () => {
+        const cached = buildSessionListCacheEntryFromRenderable(makeWindowRenderable('active-cached', 10));
+
+        expect(buildSessionListRenderableFromCacheEntry(cached)).not.toHaveProperty('presence');
+    });
+
+    it('roundtrips a private quiet viewer without reviving a stale unread cache flag', () => {
+        const viewer = {
+            readState: { state: 'not_started' as const },
+            relevance: { relevant: true, reasons: ['responsible_for_me' as const] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' as const },
+            follow: { follows: false, notificationLevel: 'none' as const },
+            notification: { level: 'none' as const, source: 'preference' as const },
+        };
+        const renderable = createSessionListRenderableSessionFixture({
+            seq: 8, lastViewedSessionSeq: 0, hasUnreadMessages: true, viewer,
+        });
+        const cached = buildSessionListCacheEntryFromRenderable(renderable);
+        const restored = buildSessionListRenderableFromCacheEntry(SessionListCacheEntryV1Schema.parse(cached));
+        expect(restored.viewer).toEqual(viewer);
+        expect(restored.hasUnreadMessages).toBe(false);
+        const changed = buildSessionListCacheEntryFromRenderable({ ...renderable, viewer: { ...viewer, relevance: { relevant: false, reasons: [] } } }, cached);
+        expect(changed.viewer?.relevance.relevant).toBe(false);
+        expect(buildSessionListCacheEntryFromRenderable(renderable, cached)).toBe(cached);
+    });
+
+    it('does not revive a released shared-recipient unread flag from warm cache', () => {
+        const recipient = createSessionListRenderableSessionFixture({
+            viewer: undefined,
+            access: undefined,
+            accessLevel: 'view',
+            lastViewedSessionSeq: 2,
+            hasUnreadMessages: true,
+        });
+        const cached = buildSessionListCacheEntryFromRenderable(recipient);
+
+        expect(cached.hasUnreadMessages).toBe(false);
+        expect(buildSessionListRenderableFromCacheEntry({
+            ...cached,
+            hasUnreadMessages: true,
+        }).hasUnreadMessages).toBe(false);
+    });
+
     it('does not preserve or resurrect legacy private cache fields after the privacy layout contracts', () => {
         const previousEntry: SessionListCacheEntryV1 = {
             sessionId: 'privacy-contraction',

@@ -30,6 +30,10 @@ const PRESENTATIONS = Object.freeze({
         titleKey: 'settingsProviders.errors.secretMissingTitle',
         descriptionKey: 'settingsProviders.errors.secretMissingDescription',
     },
+    provider_secret_unavailable: {
+        titleKey: 'settingsProviders.errors.sourceUnavailableTitle',
+        descriptionKey: 'settingsProviders.errors.sourceUnavailableDescription',
+    },
     provider_not_enabled_on_machine: {
         titleKey: 'settingsProviders.errors.notEnabledOnMachineTitle',
         descriptionKey: 'settingsProviders.errors.notEnabledOnMachineDescription',

@@ -1,61 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { FeaturesResponse } from '@happier-dev/protocol';
-
-import { createRootLayoutFeaturesResponse } from '@/dev/testkit';
-
-let cachedFeatures: FeaturesResponse | null = null;
-
-function buildCachedFeatures(
-    providerId: string,
-    params: {
-        displayName?: string;
-        connectButtonColor?: string;
-        badgeIconName?: string;
-        supportsProfileBadge?: boolean;
-    } = {},
-): FeaturesResponse {
-    const ui = params.displayName
-        ? {
-              displayName: params.displayName,
-              ...(params.connectButtonColor ? { connectButtonColor: params.connectButtonColor } : {}),
-              ...(params.badgeIconName ? { badgeIconName: params.badgeIconName } : {}),
-              ...(params.supportsProfileBadge !== undefined ? { supportsProfileBadge: params.supportsProfileBadge } : {}),
-          }
-        : undefined;
-
-    return createRootLayoutFeaturesResponse({
-        capabilities: {
-            oauth: { providers: { [providerId]: { enabled: true, configured: true } } },
-            auth: {
-                signup: { methods: [{ id: providerId, enabled: true }] },
-                login: { methods: [{ id: 'key_challenge', enabled: true }], requiredProviders: [] },
-                providers: {
-                    [providerId]: {
-                        enabled: true,
-                        configured: true,
-                        ...(ui ? { ui } : {}),
-                        restrictions: { usersAllowlist: false, orgsAllowlist: false, orgMatch: 'any' },
-                        offboarding: {
-                            enabled: false,
-                            intervalSeconds: 86400,
-                            mode: 'per-request-cache',
-                            source: 'claims',
-                        },
-                    },
-                },
-            },
-        },
-    });
-}
-
-vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
-    getCachedReadyServerFeatures: () => cachedFeatures,
-}));
-
 describe('auth providers registry (fallback)', () => {
     beforeEach(() => {
-        cachedFeatures = null;
         vi.resetModules();
     });
 
@@ -65,36 +11,60 @@ describe('auth providers registry (fallback)', () => {
         expect(getAuthProvider('   ')).toBeNull();
     });
 
-    it('uses cached provider UI metadata for unknown providers', async () => {
-        cachedFeatures = buildCachedFeatures('okta', {
+    it('maps the full current descriptor presentation onto unknown providers', async () => {
+        const { getAuthProvider } = await import('./registry');
+        const okta = getAuthProvider('okta', {
             displayName: 'Acme Okta',
-            connectButtonColor: '#000000',
-            badgeIconName: 'okta-badge',
+            badgeIconName: 'shield-outline',
+            connectButtonColor: '#123456',
             supportsProfileBadge: true,
         });
-
-        const { getAuthProvider } = await import('./registry');
-        const okta = getAuthProvider('okta');
 
         expect(okta).toBeTruthy();
         expect(okta?.id).toBe('okta');
         expect(okta?.displayName).toBe('Acme Okta');
-        expect(okta?.connectButtonColor).toBe('#000000');
-        expect(okta?.badgeIconName).toBe('okta-badge');
+        expect(okta?.badgeIconName).toBe('shield-outline');
+        expect(okta?.connectButtonColor).toBe('#123456');
         expect(okta?.supportsProfileBadge).toBe(true);
     });
 
-    it('normalizes provider id lookups and reuses cached fallback instances', async () => {
-        cachedFeatures = buildCachedFeatures('okta', { displayName: 'Acme Okta' });
+    it('keeps dynamic providers badge-free when the descriptor has no presentation metadata', async () => {
+        const { getAuthProvider } = await import('./registry');
+        const provider = getAuthProvider('okta', { displayName: 'Acme Okta' });
+
+        expect(provider?.displayName).toBe('Acme Okta');
+        expect(provider?.badgeIconName).toBeUndefined();
+        expect(provider?.connectButtonColor).toBeUndefined();
+        expect(provider?.supportsProfileBadge).toBe(false);
+    });
+
+    it('does not cache dynamic presentation across endpoint observations', async () => {
         const { getAuthProvider } = await import('./registry');
 
-        const first = getAuthProvider('OKTA');
-        const second = getAuthProvider('okta');
-        expect(first).toBe(second);
+        const first = getAuthProvider('OKTA', { displayName: 'First', badgeIconName: 'one' });
+        const second = getAuthProvider('okta', { displayName: 'Second', badgeIconName: 'two' });
+        expect(first).not.toBe(second);
+        expect(first?.displayName).toBe('First');
+        expect(first?.badgeIconName).toBe('one');
+        expect(second?.displayName).toBe('Second');
+        expect(second?.badgeIconName).toBe('two');
+    });
+
+    it('keeps the built-in contribution when a descriptor matches a built-in id', async () => {
+        const { authProviderRegistry, getAuthProvider } = await import('./registry');
+        const builtIn = authProviderRegistry[0];
+        expect(builtIn?.id).toBe('github');
+
+        const resolved = getAuthProvider('GitHub', {
+            displayName: 'Impostor',
+            badgeIconName: 'impostor',
+            connectButtonColor: '#000000',
+            supportsProfileBadge: false,
+        });
+        expect(resolved).toBe(builtIn);
     });
 
     it('falls back to capitalized provider id when UI metadata is missing', async () => {
-        cachedFeatures = buildCachedFeatures('customsso');
         const { getAuthProvider } = await import('./registry');
         const provider = getAuthProvider('customsso');
         expect(provider?.displayName).toBe('Customsso');

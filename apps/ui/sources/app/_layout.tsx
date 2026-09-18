@@ -54,8 +54,11 @@ import { WebCryptoStartupGate } from '@/components/web/WebCryptoStartupGate';
 import { consumeRestartBugReportIntent } from '@/utils/system/restartBugReportIntent';
 import { getCurrentReactOwnerHint, getUnexpectedPrimitiveViewChildInfo } from '@/utils/system/debugUnexpectedTextNodeCapture';
 import { resolveForegroundNotificationBehavior } from '@/activity/notifications/resolveForegroundNotificationBehavior';
+import { noteActivityAlertPresented } from '@/activity/notifications/remoteAlerts/activityAlertPresentationNotes';
+import { resolveRemoteAlertForegroundPresentation } from '@/activity/notifications/remoteAlerts/resolveRemoteAlertForegroundPresentation';
 import { resolveBootCredentials } from '@/boot/resolveBootCredentials';
 import { runAppBootSequence, type AppBootReadyState } from '@/boot/runAppBootSequence';
+import { prepareSessionDraftPersistenceStorage } from '@/sync/ops/sessionDrafts/sessionDraftPersistenceStorage';
 import { prepareWarmCacheStorage } from '@/sync/domains/state/warmCachePersistence';
 import { installTauriMcpBridgeOnce } from '@/desktop/mcp/maybeInstallTauriMcpBridge';
 import { MainAppTabStateProvider } from '@/components/navigation/mobile/chrome/MainAppTabStateProvider';
@@ -303,8 +306,18 @@ function configureForegroundNotificationHandler(Notifications: ExpoNotifications
         const { data } = notification.request.content;
         const notifSessionId = typeof data?.sessionId === 'string' ? data.sessionId : null;
 
+        // A Home-submitted collaborator alert is qualified by its own Home and by
+        // what this device already showed for the same committed event.
+        const remoteAlert = resolveRemoteAlertForegroundPresentation({
+            data,
+            isSessionVisible: (address) => isSessionSurfaceVisible(address.sessionId, address.serverId),
+        });
+        if (remoteAlert.kind === 'suppress') {
+            return { shouldPlaySound: false, shouldSetBadge: true, shouldShowBanner: false, shouldShowList: false };
+        }
+
         // Same-session suppression: user already sees real-time updates.
-        if (notifSessionId && isSessionSurfaceVisible(notifSessionId)) {
+        if (remoteAlert.kind === 'not_remote_alert' && notifSessionId && isSessionSurfaceVisible(notifSessionId)) {
             return { shouldPlaySound: false, shouldSetBadge: true, shouldShowBanner: false, shouldShowList: false };
         }
 
@@ -313,6 +326,19 @@ function configureForegroundNotificationHandler(Notifications: ExpoNotifications
             localSettings: storage.getState().localSettings,
             accountSettings: storage.getState().settings,
         });
+
+        if (
+            remoteAlert.kind === 'present'
+            && remoteAlert.target.eventIdentity
+            && foregroundBehavior !== 'off'
+        ) {
+            noteActivityAlertPresented({
+                address: remoteAlert.target.address,
+                event: remoteAlert.target.event,
+                identity: remoteAlert.target.eventIdentity,
+                source: 'home_remote_alert',
+            });
+        }
 
         switch (foregroundBehavior) {
             case 'off':
@@ -672,10 +698,20 @@ function RootLayout() {
     return (
         <AppPresentationPlatformProvider>
             <WebCryptoStartupGate>
-                <AppBoot
-                    navigationTheme={navigationTheme}
+                <AppCrashRecoveryBoundary
                     onRestart={onRestart}
-                />
+                    onError={(error) => {
+                        try {
+                            (Sentry as any).captureException?.(error);
+                        } catch {
+                            // ignore
+                        }
+                    }}
+                >
+                    <AppBoot
+                        navigationTheme={navigationTheme}
+                    />
+                </AppCrashRecoveryBoundary>
             </WebCryptoStartupGate>
         </AppPresentationPlatformProvider>
     );
@@ -683,7 +719,6 @@ function RootLayout() {
 
 function AppBoot(props: {
     navigationTheme: any;
-    onRestart: () => void;
 }) {
     //
     // Init sequence
@@ -695,6 +730,7 @@ function AppBoot(props: {
     const isDesktopOverlayWindow = isDesktopOverlayWindowContext();
     const isDesktopActivityOverlayWindow = isDesktopActivityOverlayWindowContext();
     const [initState, setInitState] = React.useState<AppBootReadyState | null>(null);
+    const [bootError, setBootError] = React.useState<Error | null>(null);
     const restartBugReportCheckedRef = React.useRef(false);
     const isTerminalConnectRoute = isTerminalConnectWebPathname(pathname);
 
@@ -709,11 +745,16 @@ function AppBoot(props: {
             sodiumReady: sodium.ready,
             resolveCredentials: () => resolveBootCredentials(Platform.OS),
             prepareWarmCache: prepareWarmCacheStorage,
+            prepareSessionDrafts: prepareSessionDraftPersistenceStorage,
             restoreSync: isDesktopActivityOverlayWindow ? null : restoreConnectionToActiveServer,
             onReady: (state) => {
                 if (cancelled) return;
                 setInitState(state);
             },
+        }).catch((error: unknown) => {
+            if (cancelled) return;
+            setBootError(error instanceof Error ? error : new Error('Failed to initialize app storage', { cause: error }));
+            void SplashScreen.hideAsync().catch(() => {});
         });
         return () => {
             cancelled = true;
@@ -758,6 +799,7 @@ function AppBoot(props: {
     // Not inited
     //
 
+    if (bootError) throw bootError;
     if (!initState) {
         return null;
     }
@@ -812,15 +854,15 @@ function AppBoot(props: {
             </View>
         </View>
     );
-    const appShellWithRootDesktopDragSurface = shouldUseRootDesktopDragSurface ? (
+    const appShellWithRootDesktopDragSurface = (
         <DesktopMainContentDragSurface
-            enabled={Platform.OS === 'web' && desktopHost}
+            enabled={shouldUseRootDesktopDragSurface && Platform.OS === 'web' && desktopHost}
             leftOffsetPx={0}
             style={{ flex: 1 }}
         >
             {appShell}
         </DesktopMainContentDragSurface>
-    ) : appShell;
+    );
 
     const appContent = (
         <ThemePreferenceTransitionHost>
@@ -834,7 +876,7 @@ function AppBoot(props: {
         </ThemePreferenceTransitionHost>
     );
     /*
-     * Voice/realtime still wrap `SidebarNavigator`, whose drawer renders the sidebar voice
+     * Voice/realtime still wrap `SidebarNavigator`, which renders the sidebar voice
      * surface above the nested route layout. They intentionally live inside the Personal Home
      * content gate: the stable root canvas/chrome stays mounted during bootstrap, while
      * auth-dependent route, realtime, and voice hooks are not constructed before Home readiness.
@@ -873,19 +915,10 @@ function AppBoot(props: {
     }
 
     return (
-        <AppCrashRecoveryBoundary
-            onRestart={props.onRestart}
-            onError={(error) => {
-                try {
-                    (Sentry as any).captureException?.(error);
-                } catch {
-                    // ignore
-                }
-            }}
-        >
+        <>
             {!isTerminalConnectRoute ? <FaviconPermissionIndicator /> : null}
             {providers}
-        </AppCrashRecoveryBoundary>
+        </>
     );
 }
 

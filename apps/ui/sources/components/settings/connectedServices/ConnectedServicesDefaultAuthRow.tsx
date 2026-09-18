@@ -4,14 +4,17 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
     ConnectedServiceBindingsV1Schema,
+    ConnectedServicesDefaultAuthBindingsV2Schema,
+    ConnectedServicesDefaultAuthTeamResourceBindingV2Schema,
     parseQualifiedPluginContributionKey,
     type ConnectedServiceBindingSelectionV1,
-    type ConnectedServiceBindingsV1,
     type ConnectedServiceId,
     type ConnectedServicesDefaultAuthByAgentIdV1,
+    type ConnectedServicesDefaultAuthTeamResourceBindingV2,
     type AccountProfile,
     type PluginProjectedAgentConnectedAccountPurposeV2,
 } from '@happier-dev/protocol';
+import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 import type { ConnectedServicesAccountGroupOption } from '@happier-dev/agents';
 
 import type {
@@ -33,7 +36,11 @@ import {
     resolveQualifiedConnectedAccountServiceKey,
 } from '@/sync/domains/connectedServices/connectedServiceRegistry';
 import { useProjectedConnectedServicesRegistry } from '@/components/appShell/plugins/AppShellPluginUiProjection';
-import type { ConnectedServicesServiceBinding } from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
+import {
+    areTeamResourceConnectedServiceSelectionsEqual,
+    parseConnectedServicesServiceBinding,
+    type ConnectedServicesServiceBinding,
+} from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
 import {
     resolveConnectedServiceDisplayName,
     resolveQualifiedConnectedServiceRegistryDisplayName,
@@ -46,6 +53,7 @@ import {
 } from './model/resolveConnectedServicesAuthLabel';
 
 export type ConnectedServicesDefaultAuthRowProps = Readonly<{
+    /** Canonical Agent routing id used by the persisted default-auth map. */
     agentId: string;
     agentTitle: string;
     connectedAccountPurposes: readonly PluginProjectedAgentConnectedAccountPurposeV2[];
@@ -59,6 +67,12 @@ export type ConnectedServicesDefaultAuthRowProps = Readonly<{
     connectedAccountsV4?: ReadonlyArray<AccountProfile['connectedAccountsV4'][number]>;
     connectedAccountGroupsV4?: ReadonlyArray<AccountProfile['connectedAccountGroupsV4'][number]>;
     accountGroupsEnabled: boolean;
+    serverId?: string;
+    accountId?: string;
+    teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+    teamNameById?: Readonly<Record<string, string>>;
+    currentTeamCredentialResourceKeys?: ReadonlySet<string>;
+    onRecoverTeamCredentialResource?: (resource: TeamCredentialResourceCatalogEntryV1) => void;
     settings: {
         connectedServicesProfileLabelByKey: Record<string, string | undefined>;
         connectedServicesDefaultProfileByServiceId: Record<string, string | undefined>;
@@ -86,16 +100,58 @@ function buildNextDefaultAuthSettings(params: Readonly<{
     agentId: string;
     current: ConnectedServicesDefaultAuthByAgentIdV1;
     bindingsByServiceId: Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>;
+    changedServiceId: string;
+    serverId?: string;
+    accountId?: string;
+    teamCredentialResources: readonly TeamCredentialResourceCatalogEntryV1[];
 }>): ConnectedServicesDefaultAuthByAgentIdV1 {
-    const normalizedBindingsByServiceId: Record<string, ConnectedServiceBindingSelectionV1> = {};
+    const normalizedBindingsByServiceId: Record<
+        string,
+        ConnectedServiceBindingSelectionV1 | ConnectedServicesDefaultAuthTeamResourceBindingV2
+    > = {};
+    let hasTeamResourceBinding = false;
     for (const [serviceId, binding] of Object.entries(params.bindingsByServiceId)) {
-        if (!binding) continue;
-        if (binding.source === 'native') {
+        const parsedBinding = parseConnectedServicesServiceBinding(binding);
+        if (!parsedBinding) continue;
+        if (parsedBinding.source === 'team_resource') {
+            const existing = params.current.bindingsByAgentId[params.agentId]?.bindingsByServiceId[serviceId];
+            const retained = ConnectedServicesDefaultAuthTeamResourceBindingV2Schema.safeParse(existing);
+            if (serviceId !== params.changedServiceId
+                && retained.success
+                && areTeamResourceConnectedServiceSelectionsEqual(retained.data, parsedBinding)) {
+                normalizedBindingsByServiceId[serviceId] = retained.data;
+                hasTeamResourceBinding = true;
+                continue;
+            }
+            const resource = params.teamCredentialResources.find((candidate) => (
+                candidate.id === parsedBinding.resourceId
+                && candidate.connectedServiceSelections.some((selection) => (
+                    areTeamResourceConnectedServiceSelectionsEqual(selection, parsedBinding)
+                ))
+            ));
+            if (resource && params.serverId && params.accountId) {
+                normalizedBindingsByServiceId[serviceId] = {
+                    ...parsedBinding,
+                    serverId: params.serverId,
+                    accountId: params.accountId,
+                    teamId: resource.teamId,
+                    expectedResourceRevision: resource.resourceRevision,
+                };
+                hasTeamResourceBinding = true;
+            } else if (retained.success
+                && retained.data.resourceId === parsedBinding.resourceId
+                && retained.data.deliveryMode === parsedBinding.deliveryMode) {
+                normalizedBindingsByServiceId[serviceId] = retained.data;
+                hasTeamResourceBinding = true;
+            }
+            continue;
+        }
+        if (parsedBinding.source === 'native') {
             normalizedBindingsByServiceId[serviceId] = { source: 'native' };
             continue;
         }
-        if (binding.selection === 'group') {
-            const groupId = typeof binding.groupId === 'string' ? binding.groupId.trim() : '';
+        if (parsedBinding.selection === 'group') {
+            const groupId = typeof parsedBinding.groupId === 'string' ? parsedBinding.groupId.trim() : '';
             if (!groupId) continue;
             normalizedBindingsByServiceId[serviceId] = {
                 source: 'connected',
@@ -104,7 +160,7 @@ function buildNextDefaultAuthSettings(params: Readonly<{
             };
             continue;
         }
-        const profileId = typeof binding.profileId === 'string' ? binding.profileId.trim() : '';
+        const profileId = typeof parsedBinding.profileId === 'string' ? parsedBinding.profileId.trim() : '';
         if (!profileId) continue;
         normalizedBindingsByServiceId[serviceId] = {
             source: 'connected',
@@ -112,16 +168,21 @@ function buildNextDefaultAuthSettings(params: Readonly<{
             profileId,
         };
     }
-    const hasConnectedBinding = Object.values(normalizedBindingsByServiceId).some((binding) => binding.source === 'connected');
-    const bindingsByAgentId: Record<string, ConnectedServiceBindingsV1> = {
+    const hasNonNativeBinding = Object.values(normalizedBindingsByServiceId).some((binding) => binding.source !== 'native');
+    const bindingsByAgentId: ConnectedServicesDefaultAuthByAgentIdV1['bindingsByAgentId'] = {
         ...params.current.bindingsByAgentId,
     };
 
-    if (hasConnectedBinding) {
-        bindingsByAgentId[params.agentId] = ConnectedServiceBindingsV1Schema.parse({
+    if (hasNonNativeBinding) {
+        bindingsByAgentId[params.agentId] = hasTeamResourceBinding
+          ? ConnectedServicesDefaultAuthBindingsV2Schema.parse({
+            v: 2,
+            bindingsByServiceId: normalizedBindingsByServiceId,
+          })
+          : ConnectedServiceBindingsV1Schema.parse({
             v: 1,
             bindingsByServiceId: normalizedBindingsByServiceId,
-        });
+          });
     } else {
         delete bindingsByAgentId[params.agentId];
     }
@@ -130,6 +191,21 @@ function buildNextDefaultAuthSettings(params: Readonly<{
         v: 1,
         bindingsByAgentId,
     };
+}
+
+function pickerBindingFromPersisted(value: unknown): ConnectedServicesServiceBinding | undefined {
+    const qualifiedTeamResource = ConnectedServicesDefaultAuthTeamResourceBindingV2Schema.safeParse(value);
+    if (qualifiedTeamResource.success) {
+        const {
+            serverId: _serverId,
+            accountId: _accountId,
+            teamId: _teamId,
+            expectedResourceRevision: _revision,
+            ...selection
+        } = qualifiedTeamResource.data;
+        return selection;
+    }
+    return parseConnectedServicesServiceBinding(value) ?? undefined;
 }
 
 function resolveDefaultAuthWarningLabel(warningCode: ConnectedServicesAuthWarningCode | undefined): string | undefined {
@@ -153,8 +229,8 @@ function resolveReadyAutoSwitchPoolForProfile(params: Readonly<{
     binding: ConnectedServicesServiceBinding | undefined;
     groupOptions: ReadonlyArray<ConnectedServicesAccountGroupOption>;
 }>): ConnectedServicesAccountGroupOption | null {
-    const binding = params.binding;
-    if (!binding || binding.source !== 'connected' || binding.selection !== 'profile') return null;
+    const binding = parseConnectedServicesServiceBinding(params.binding);
+    if (!binding || binding.source !== 'connected' || binding.selection === 'group') return null;
     const profileId = typeof binding.profileId === 'string' ? binding.profileId.trim() : '';
     if (!profileId) return null;
     for (const group of params.groupOptions) {
@@ -205,7 +281,10 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
     ]);
 
     const defaultAuthSettings = props.settings.connectedServicesDefaultAuthByAgentIdV1 ?? EMPTY_DEFAULT_AUTH_SETTINGS;
-    const persistedBindingsByServiceId = defaultAuthSettings.bindingsByAgentId[props.agentId]?.bindingsByServiceId ?? EMPTY_SERVICE_BINDINGS;
+    const persistedBindings = defaultAuthSettings.bindingsByAgentId[props.agentId]?.bindingsByServiceId ?? EMPTY_SERVICE_BINDINGS;
+    const persistedBindingsByServiceId = React.useMemo(() => Object.fromEntries(
+        Object.entries(persistedBindings).map(([serviceId, binding]) => [serviceId, pickerBindingFromPersisted(binding)]),
+    ), [persistedBindings]);
     const [bindingsByServiceId, setBindingsByServiceId] = React.useState<
         Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>
     >(persistedBindingsByServiceId);
@@ -243,19 +322,52 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
             agentId: props.agentId,
             current: defaultAuthSettings,
             bindingsByServiceId: nextBindingsByServiceId,
+            changedServiceId: serviceId,
+            serverId: props.serverId,
+            accountId: props.accountId,
+            teamCredentialResources: props.teamCredentialResources ?? [],
         }));
     }, [
         bindingsByServiceId,
         defaultAuthSettings,
         props.agentId,
+        props.accountId,
         props.setDefaultAuthSettings,
+        props.serverId,
+        props.teamCredentialResources,
     ]);
 
     const resolveOptionAvailability = React.useCallback((availabilityParams: Readonly<{
         serviceId: string;
         optionId: string;
+        binding: ConnectedServicesServiceBinding;
     }>): ConnectedServicesSelectionOptionAvailability => {
         const state = authLabelModel.serviceStatesById[availabilityParams.serviceId];
+        const requestedBinding = availabilityParams.binding;
+        if (requestedBinding.source === 'team_resource') {
+            const persistedQualified = ConnectedServicesDefaultAuthTeamResourceBindingV2Schema.safeParse(
+                persistedBindings[availabilityParams.serviceId],
+            );
+            const resource = (props.teamCredentialResources ?? []).find((candidate) => (
+                candidate.id === requestedBinding.resourceId
+                && candidate.connectedServiceSelections.some((selection) => (
+                    areTeamResourceConnectedServiceSelectionsEqual(selection, requestedBinding)
+                ))
+            ));
+            if (resource && resource.readiness.kind !== 'available') {
+                return { subtitle: t('common.unavailable') };
+            }
+            const current = resource !== undefined
+                && props.currentTeamCredentialResourceKeys?.has(`${resource.teamId}:${resource.id}`) === true
+                && resource.id === requestedBinding.resourceId
+                && (!persistedQualified.success
+                    || !areTeamResourceConnectedServiceSelectionsEqual(persistedQualified.data, requestedBinding)
+                    || (persistedQualified.data.serverId === props.serverId
+                        && persistedQualified.data.accountId === props.accountId
+                        && persistedQualified.data.teamId === resource.teamId
+                        && persistedQualified.data.expectedResourceRevision === resource.resourceRevision));
+            if (!current) return { disabled: true, subtitle: t('common.unavailable') };
+        }
         if (
             state?.warningCode
             && availabilityParams.optionId === `connected-service:${encodeURIComponent(availabilityParams.serviceId)}:native`
@@ -265,7 +377,14 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
             };
         }
         return {};
-    }, [authLabelModel.serviceStatesById]);
+    }, [
+        authLabelModel.serviceStatesById,
+        persistedBindings,
+        props.accountId,
+        props.currentTeamCredentialResourceKeys,
+        props.serverId,
+        props.teamCredentialResources,
+    ]);
 
     const openPicker = React.useCallback(() => {
         Modal.show({
@@ -275,6 +394,9 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
                 profileOptionsByServiceId,
                 groupOptionsByServiceId: accountGroupOptionsByServiceId,
                 bindingsByServiceId,
+                teamCredentialResources: props.teamCredentialResources,
+                teamNameById: props.teamNameById,
+                onRecoverTeamCredentialResource: props.onRecoverTeamCredentialResource,
                 setBindingForService,
                 defaultProfileIdByServiceId: props.settings.connectedServicesDefaultProfileByServiceId,
                 resolveOptionAvailability,
@@ -296,7 +418,10 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
         props.agentId,
         props.agentTitle,
         props.onOpenConnectedServicesSettings,
+        props.onRecoverTeamCredentialResource,
         props.settings.connectedServicesDefaultProfileByServiceId,
+        props.teamCredentialResources,
+        props.teamNameById,
         resolveOptionAvailability,
         setBindingForService,
         supportedServiceIds,

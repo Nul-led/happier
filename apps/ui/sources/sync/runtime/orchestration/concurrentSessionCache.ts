@@ -1,3 +1,5 @@
+import { attachManagedSessionHumanPresenceSocket } from '@/sync/domains/session/humanPresence/attachManagedSessionHumanPresenceSocket';
+import { publishHomeAccountChange } from './homeAccountChange';
 import {
     TokenStorage,
     type AuthCredentials,
@@ -10,6 +12,7 @@ import { Encryption } from '@/sync/encryption/encryption';
 import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import { fetchAndApplyMachines, type MachineDataKeyCacheEntry } from '@/sync/engine/machines/syncMachines';
 import { fetchAndApplySessions } from '@/sync/engine/sessions/sessionSnapshot';
+import { resolveUiClientEncryptionRequirement } from '@/sync/domains/settings/clientEncryptionRequirement';
 import {
     getEffectiveServerSelectionFromRawSettings,
     type RawServerSelectionSettings,
@@ -43,13 +46,15 @@ import {
     invalidateCachedTransferRoutesForServer,
 } from '@/sync/domains/transfers/runtime/transferRouteCache';
 import type { ConcurrentSessionListCacheEntry } from '@/sync/domains/session/listing/concurrentSessionListCache';
+import {
+    areSessionListHomeObservationsEqual,
+    type SessionListHomeObservation,
+} from '@/sync/domains/session/listing/sessionListHomeObservation';
 import { buildMachineDisplayRenderableFromMachine } from '@/sync/domains/machines/machineDisplayRenderable';
 import {
-    areSessionListRenderablesEqual,
     buildSessionListRenderableFromSession,
     type SessionListRenderableSession,
 } from '@/sync/domains/session/listing/sessionListRenderable';
-import { shouldRebuildSessionListIndexForRowStateChange } from '@/sync/domains/session/listing/sessionListIndexRebuildImpact';
 import {
     buildMachineDisplaysByIdFromMachineList,
     buildSessionListIndexWithServerScope,
@@ -81,7 +86,7 @@ import {
 } from './concurrentServerConnections/createConcurrentServerSocketTransport';
 import {
     shouldRefreshConcurrentSessionCacheForUpdate,
-    shouldSchedulePushTokenReconciliationForUpdate,
+    isAccountChangeUpdate,
 } from './concurrentSessionCacheUpdateClassifier';
 import { startRuntimeActiveGatedInterval } from '@/utils/runtime/isRuntimeActive';
 import { areStoredMachinesEqual, hasMachineDaemonStateAdvanced } from '@/sync/store/domains/areStoredMachinesEqual';
@@ -93,6 +98,20 @@ import {
     stopPushTokenReconciliation,
 } from '@/sync/engine/account/syncAccount';
 import { refreshAuthenticatedServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
+import type { SessionListQueryPageRequest } from '@/sync/domains/session/listing/sessionListQueryController';
+import { HappyError } from '@/utils/errors/errors';
+import { parseToken } from '@/utils/auth/parseToken';
+import { fireAndForget } from '@/utils/system/fireAndForget';
+import { normalizeActionOperationEphemeralIngress } from '@/sync/domains/actionOperations/actionOperationEphemeralIngress';
+import { consumeActionOperationSnapshotPush } from '@/sync/domains/actionOperations/consumeActionOperationSnapshotPush';
+import { actionOperationPresentationCoordinator } from '@/components/inbox/actionOperations/actionOperationPresentationRuntime';
+import {
+    advanceOrdinarySessionListFrontier,
+    EMPTY_ORDINARY_SESSION_LIST_FRONTIER,
+    isOrdinarySessionListFrontierComplete,
+    resolveOrdinarySessionListContinuation,
+    type OrdinarySessionListFrontier,
+} from '@/sync/engine/sessions/ordinarySessionListFrontier';
 
 type ConcurrentTarget = Readonly<{
     id: string;
@@ -135,6 +154,13 @@ type ManagedConcurrentServer = {
     refreshInFlight: Promise<void> | null;
     refreshAbortController: AbortController | null;
     refreshTimer: ReturnType<typeof setTimeout> | null;
+    sessionListFrontier: OrdinarySessionListFrontier;
+    /**
+     * Time of this Home's last successful ordinary Session-list observation. Kept in memory and
+     * published to the store only on a phase transition, so a healthy Home refreshing every few
+     * minutes never rewrites state for a timestamp nothing currently renders.
+     */
+    lastSessionListSuccessAt: number | null;
 };
 
 const REFRESH_DEBOUNCE_MS = 600;
@@ -293,29 +319,6 @@ async function getOrCreateEncryption(entry: ManagedConcurrentServer): Promise<En
     return entry.encryption;
 }
 
-function areConcurrentSessionListCacheSessionsEqual(
-    previous: Readonly<Record<string, SessionListRenderableSession>> | null | undefined,
-    next: Readonly<Record<string, SessionListRenderableSession>> | null | undefined,
-): boolean {
-    if (previous === next) return true;
-    if (!previous || !next) return previous === next;
-
-    const previousIds = Object.keys(previous);
-    const nextIds = Object.keys(next);
-    if (previousIds.length !== nextIds.length) return false;
-
-    for (const sessionId of previousIds) {
-        const previousSession = previous[sessionId];
-        const nextSession = next[sessionId];
-        if (!nextSession) return false;
-        if (!areSessionListRenderablesEqual(previousSession, nextSession)) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 function compactSessionListRowsForViewData(
     input: Readonly<Record<string, SessionListRenderableSession | null | undefined>>,
 ): Record<string, SessionListRenderableSession> {
@@ -327,6 +330,21 @@ function compactSessionListRowsForViewData(
         }
     }
     return out;
+}
+
+function readOrdinarySessionListRowsForServer(
+    state: ReturnType<typeof storage.getState>,
+    serverId: string,
+): Readonly<Record<string, SessionListRenderableSession>> {
+    const rows = state.sessionListRowsByServerId?.[serverId] ?? {};
+    const membership = state.ordinarySessionListMembershipByServerId?.[serverId] ?? [];
+    if (membership.length === Object.keys(rows).length && membership.every((sessionId) => Boolean(rows[sessionId]))) {
+        return rows;
+    }
+    return Object.fromEntries(membership.flatMap((sessionId) => {
+        const row = rows[sessionId];
+        return row ? [[sessionId, row] as const] : [];
+    }));
 }
 
 function updateConcurrentSessionListCache(params: Readonly<{
@@ -351,80 +369,11 @@ function updateConcurrentSessionListCache(params: Readonly<{
             const nextName = String(next.serverName ?? '').trim() || null;
             if (
                 previousName === nextName
-                && areConcurrentSessionListCacheSessionsEqual(previous.sessions, next.sessions)
+                && areSessionListHomeObservationsEqual(previous.listObservation, next.listObservation)
             ) {
                 return state;
             }
         }
-
-        const nextRowStateByServerId = (() => {
-            const previousRowStateByServerId = state.sessionListRowStateByServerId ?? {};
-            const nextRows = next?.sessions ?? null;
-            if (!nextRows) {
-                if (!(serverId in previousRowStateByServerId)) {
-                    return previousRowStateByServerId;
-                }
-                const { [serverId]: _, ...rest } = previousRowStateByServerId;
-                return rest;
-            }
-
-            return previousRowStateByServerId[serverId] === nextRows
-                ? previousRowStateByServerId
-                : {
-                    ...previousRowStateByServerId,
-                    [serverId]: nextRows,
-                };
-        })();
-
-        const nextIndexByServerId = (() => {
-            const previousIndexByServerId = state.sessionListIndexByServerId ?? {};
-            const nextRows = next?.sessions ?? null;
-            if (!nextRows) {
-                if (!(serverId in previousIndexByServerId)) {
-                    return previousIndexByServerId;
-                }
-                const { [serverId]: _, ...rest } = previousIndexByServerId;
-                return rest;
-            }
-
-            const previousRows = previous?.sessions ?? null;
-            const previousName = String(previous?.serverName ?? '').trim() || null;
-            const nextName = String(next?.serverName ?? '').trim() || null;
-            const shouldRebuildIndex =
-                previousIndexByServerId[serverId] == null
-                || previousName !== nextName
-                || shouldRebuildSessionListIndexForRowStateChange(previousRows, nextRows, {
-                    groupInactiveSessionsByProject: state.settings.groupInactiveSessionsByProject === true,
-                    activeGroupingV1: state.settings.sessionListActiveGroupingV1,
-                    inactiveGroupingV1: state.settings.sessionListInactiveGroupingV1,
-                    sectionModeV1: state.settings.sessionListSectionModeV1,
-                });
-
-            if (!shouldRebuildIndex) {
-                return previousIndexByServerId;
-            }
-
-            const index = buildSessionListIndexWithServerScope({
-                sessions: nextRows,
-                machines: buildMachineDisplaysByIdFromMachineList(state.machineListByServerId?.[serverId]),
-                groupInactiveSessionsByProject: state.settings.groupInactiveSessionsByProject === true,
-                activeGroupingV1: state.settings.sessionListActiveGroupingV1,
-                inactiveGroupingV1: state.settings.sessionListInactiveGroupingV1,
-                sectionModeV1: state.settings.sessionListSectionModeV1,
-                serverScope: {
-                    serverId,
-                    serverName: nextName ?? undefined,
-                },
-                previousIndex: previousIndexByServerId[serverId] ?? null,
-            });
-
-            return previousIndexByServerId[serverId] === index
-                ? previousIndexByServerId
-                : {
-                    ...previousIndexByServerId,
-                    [serverId]: index,
-                };
-        })();
 
         return {
             ...state,
@@ -432,10 +381,50 @@ function updateConcurrentSessionListCache(params: Readonly<{
                 ...state.concurrentSessionListCacheByServerId,
                 [serverId]: next,
             },
-            sessionListRowStateByServerId: nextRowStateByServerId,
-            sessionListIndexByServerId: nextIndexByServerId,
         };
     });
+}
+
+/**
+ * Publishes the exact Home's raw list observation. This is the ordinary-Home half of Lane 07's one
+ * currentness fact: `SessionListQueryHomeState` supplies it for query-backed Homes, and every
+ * surface projects both through `buildSessionContextFacts` rather than timing its own staleness.
+ */
+function publishConcurrentSessionListObservation(params: Readonly<{
+    entry: ManagedConcurrentServer;
+    phase: SessionListHomeObservation['phase'];
+}>): void {
+    const serverId = normalizeServerId(params.entry.id);
+    if (!serverId) return;
+    updateConcurrentSessionListCache({
+        serverId,
+        entry: {
+            serverName: String(params.entry.serverName ?? '').trim() || null,
+            listObservation: {
+                phase: params.phase,
+                lastSuccessAt: params.entry.lastSessionListSuccessAt,
+            },
+        },
+    });
+}
+
+/**
+ * One successful Session-list observation for this exact Home. The timestamp always advances in
+ * memory; the store is only rewritten when the published phase is not already `ready`, because a
+ * current Home renders no last-updated words.
+ */
+function noteConcurrentSessionListObserved(entry: ManagedConcurrentServer): void {
+    entry.lastSessionListSuccessAt = Date.now();
+    const serverId = normalizeServerId(entry.id);
+    if (!serverId) return;
+    const published = storage.getState().concurrentSessionListCacheByServerId?.[serverId];
+    if (
+        published?.listObservation?.phase === 'ready'
+        && (String(published.serverName ?? '').trim() || null) === (String(entry.serverName ?? '').trim() || null)
+    ) {
+        return;
+    }
+    publishConcurrentSessionListObservation({ entry, phase: 'ready' });
 }
 
 function areMachineListsEqual(previous: Machine[] | null | undefined, next: Machine[] | null | undefined): boolean {
@@ -522,8 +511,8 @@ function updateConcurrentMachineListCache(input: {
                 return state.sessionListIndexByServerId;
             }
 
-            const rows = state.sessionListRowStateByServerId?.[serverId] ?? null;
-            if (!rows || typeof rows !== 'object') {
+            const rows = readOrdinarySessionListRowsForServer(state, serverId);
+            if (Object.keys(rows).length === 0) {
                 return state.sessionListIndexByServerId;
             }
 
@@ -532,7 +521,6 @@ function updateConcurrentMachineListCache(input: {
             const index = buildSessionListIndexWithServerScope({
                 sessions: compactSessionListRowsForViewData(rows),
                 machines: buildMachineDisplaysByIdFromMachineList(nextMachineListByServerId?.[serverId]),
-                groupInactiveSessionsByProject: state.settings.groupInactiveSessionsByProject === true,
                 activeGroupingV1: state.settings.sessionListActiveGroupingV1,
                 inactiveGroupingV1: state.settings.sessionListInactiveGroupingV1,
                 sectionModeV1: state.settings.sessionListSectionModeV1,
@@ -571,39 +559,24 @@ function updateConcurrentMachineListCache(input: {
 function clearConcurrentSessionListCache(serverIdRaw: string): void {
     const serverId = normalizeServerId(serverIdRaw);
     if (!serverId) return;
+    const activeServerId = normalizeServerId(getAppliedActiveServerId());
+    // The active ordinary Sync publishes its observation through this existing shared map. A
+    // concurrent-runtime reconciliation stops managing that Home, but must not erase the active
+    // owner's currentness fact while doing so.
+    if (areServerProfileIdentifiersEquivalent(serverId, activeServerId)) return;
     storage.setState((state) => {
         const current = state.concurrentSessionListCacheByServerId ?? {};
-        if (!(serverId in current)) {
-            return state;
-        }
+        if (!(serverId in current)) return state;
 
         const next = { ...current };
         delete next[serverId];
 
-        const activeServerId = normalizeServerId(getAppliedActiveServerId());
-        const shouldPruneCanonicalState = !areServerProfileIdentifiersEquivalent(serverId, activeServerId);
-
-        const nextRowStateByServerId = shouldPruneCanonicalState && state.sessionListRowStateByServerId && (serverId in state.sessionListRowStateByServerId)
-            ? (() => {
-                const { [serverId]: _removed, ...rest } = state.sessionListRowStateByServerId;
-                return rest;
-            })()
-            : state.sessionListRowStateByServerId;
-
-        const nextIndexByServerId = shouldPruneCanonicalState && state.sessionListIndexByServerId && (serverId in state.sessionListIndexByServerId)
-            ? (() => {
-                const { [serverId]: _removed, ...rest } = state.sessionListIndexByServerId;
-                return rest;
-            })()
-            : state.sessionListIndexByServerId;
-
         return {
             ...state,
             concurrentSessionListCacheByServerId: next,
-            sessionListRowStateByServerId: nextRowStateByServerId,
-            sessionListIndexByServerId: nextIndexByServerId,
         };
     });
+    storage.getState().clearSessionListRowsForServerScope(serverId);
 }
 
 function clearConcurrentMachineListCache(serverIdRaw: string): void {
@@ -640,23 +613,69 @@ async function refreshServerSnapshot(entry: ManagedConcurrentServer, signal: Abo
             responseBytes += contentLength;
         }
     }, signal);
-    let sessions: Session[] = [];
+    let fallbackSessions: Session[] = [];
+    let didApplySessionListRenderables = false;
     let machines: Machine[] = [];
+    const shouldContinue = () => (
+        !signal.aborted
+        && managedServers.get(entry.id) === entry
+        && entry.reachabilityState.phase === 'online'
+    );
+    const previousFrontier = entry.sessionListFrontier;
+    const continuation = resolveOrdinarySessionListContinuation(previousFrontier);
     try {
-        await fetchAndApplySessions({
+        const result = await fetchAndApplySessions({
+            clientEncryptionRequirement: resolveUiClientEncryptionRequirement({
+                syncedSettings: storage.getState().settings,
+                localSettings: storage.getState().settings,
+            }),
             serverId: entry.id,
+            sessionListCursor: continuation?.kind === 'ordinary' ? continuation.cursor : null,
+            sessionListAttentionCursor: continuation?.kind === 'attention' ? continuation.cursor : null,
+            includeActiveSessionRows: continuation === null,
+            includeSessionListAttentionRows: continuation === null || continuation.kind === 'attention',
             credentials: entry.credentials,
             encryption,
             sessionDataKeys: entry.sessionDataKeys,
             sessionDataKeyEnvelopes: entry.sessionDataKeyEnvelopes,
             request,
             getExistingSession: () => null,
-            applySessions: (nextSessions) => {
-                sessions = nextSessions as Session[];
+            getCurrentSessionListRenderable: (sessionId) => (
+                storage.getState().sessionListRowsByServerId?.[entry.id]?.[sessionId]
+                ?? null
+            ),
+            shouldContinue,
+            applySessionListRenderables: (nextRenderables) => {
+                if (!shouldContinue()) return;
+                didApplySessionListRenderables = true;
+                storage.getState().applyServerScopedSessionListRows(entry.id, nextRenderables, {
+                    source: 'ordinary',
+                    mode: continuation ? 'append' : 'replace',
+                });
             },
-            repairInvalidReadStateV1: async () => {},
+            applySessionListRenderablePatches: (patches) => {
+                if (!shouldContinue()) return;
+                storage.getState().applyServerScopedSessionListRowPatches(entry.id, patches);
+            },
+            applySessions: (nextSessions) => {
+                // Compatibility for focused test doubles and older adapters that
+                // still exercise only the hydrated callback. Production applies
+                // the lightweight renderable projection above.
+                if (!didApplySessionListRenderables) fallbackSessions = nextSessions as Session[];
+            },
             log: { log: () => {} },
         });
+        if (!result.current || !shouldContinue()) return;
+        entry.sessionListFrontier = advanceOrdinarySessionListFrontier({
+            previous: continuation ? previousFrontier : EMPTY_ORDINARY_SESSION_LIST_FRONTIER,
+            continuation,
+            result,
+        });
+        if (isOrdinarySessionListFrontierComplete(entry.sessionListFrontier)) {
+            noteConcurrentSessionListObserved(entry);
+        } else {
+            entry.refreshQueued = true;
+        }
 
         await fetchAndApplyMachines({
             credentials: entry.credentials,
@@ -664,26 +683,15 @@ async function refreshServerSnapshot(entry: ManagedConcurrentServer, signal: Abo
             machineDataKeys: entry.machineDataKeys,
             request,
             throwOnError: true,
+            sourceServerId: entry.id,
             applyMachines: (nextMachines) => {
                 machines = nextMachines;
             },
         });
 
         // Guard against late async writes: a refresh can finish after this server is removed.
-        if (managedServers.get(entry.id) !== entry || entry.reachabilityState.phase !== 'online') {
+        if (!shouldContinue()) {
             return;
-        }
-
-        const previousCacheEntry = storage.getState().concurrentSessionListCacheByServerId?.[entry.id] ?? null;
-        const previousSessions = previousCacheEntry && typeof previousCacheEntry === 'object'
-            ? previousCacheEntry.sessions
-            : null;
-        const nextSessions: Record<string, SessionListRenderableSession> = {};
-        for (const session of sessions) {
-            nextSessions[session.id] = buildSessionListRenderableFromSession(
-                session,
-                previousSessions && typeof previousSessions === 'object' ? previousSessions[session.id] : undefined,
-            );
         }
 
         updateConcurrentMachineListCache({
@@ -692,13 +700,16 @@ async function refreshServerSnapshot(entry: ManagedConcurrentServer, signal: Abo
             status: 'idle',
             authoritative: true,
         });
-        updateConcurrentSessionListCache({
-            serverId: entry.id,
-            entry: {
-                serverName: String(entry.serverName ?? '').trim() || null,
-                sessions: nextSessions,
-            },
-        });
+        if (!didApplySessionListRenderables) {
+            const previousRows = storage.getState().sessionListRowsByServerId?.[entry.id] ?? {};
+            const nextRenderables = fallbackSessions.map((session) => (
+                buildSessionListRenderableFromSession(session, previousRows[session.id])
+            ));
+            storage.getState().applyServerScopedSessionListRows(entry.id, nextRenderables, {
+                source: 'ordinary',
+                mode: continuation ? 'append' : 'replace',
+            });
+        }
     } finally {
         syncPerformanceTelemetry.recordDuration(
             'sync.concurrent.refresh',
@@ -706,6 +717,80 @@ async function refreshServerSnapshot(entry: ManagedConcurrentServer, signal: Abo
             { responseBytes },
         );
     }
+}
+
+export function isConcurrentSessionListQueryHomeOnline(serverIdRaw: string): boolean {
+    const serverId = normalizeServerId(serverIdRaw);
+    const entry = managedServers.get(serverId);
+    return Boolean(entry && entry.reachabilityState.phase === 'online');
+}
+
+export async function fetchConcurrentSessionListQueryPage(
+    serverIdRaw: string,
+    page: SessionListQueryPageRequest,
+) {
+    const serverId = normalizeServerId(serverIdRaw);
+    const entry = managedServers.get(serverId);
+    if (!entry || entry.reachabilityState.phase !== 'online') {
+        throw new HappyError('Selected Home query runtime is unavailable', true, {
+            kind: 'network',
+            code: 'home_unavailable',
+        });
+    }
+    const encryption = await getOrCreateEncryption(entry);
+    const request = createServerRequest(entry, (response) => {
+        if (isAuthenticationResponseStatus(response.status)) {
+            reportServerAuthFailed(entry.serverUrl, response.status, undefined, entry.credentials.token);
+        }
+    }, page.signal);
+    const shouldContinue = () => (
+        !page.signal.aborted
+        && managedServers.get(serverId) === entry
+        && entry.reachabilityState.phase === 'online'
+    );
+    return fetchAndApplySessions({
+        clientEncryptionRequirement: resolveUiClientEncryptionRequirement({
+            syncedSettings: storage.getState().settings,
+            localSettings: storage.getState().settings,
+        }),
+        serverId,
+        source: page.source,
+        sessionListPageSize: page.limit ?? (page.source.kind === 'query' ? page.source.body.limit : undefined),
+        sessionListCursor: page.cursor,
+        sessionListAttentionCursor: page.attentionCursor,
+        sessionListMaxPages: 1,
+        sessionListAttentionMaxPages: 1,
+        credentials: entry.credentials,
+        encryption,
+        sessionDataKeys: entry.sessionDataKeys,
+        sessionDataKeyEnvelopes: entry.sessionDataKeyEnvelopes,
+        request,
+        getExistingSession: () => null,
+        getCurrentSessionListRenderable: (sessionId) => (
+            storage.getState().sessionListRowsByServerId?.[serverId]?.[sessionId]
+            ?? null
+        ),
+        shouldContinue,
+        applySessionListRenderables: (sessions) => {
+            if (!shouldContinue()) return;
+            storage.getState().applyServerScopedSessionListRows(serverId, sessions, {
+                // Ordinary, archived and query pages share this pagination owner but
+                // remain distinct canonical memberships in the store.
+                source: page.membership,
+                mode: page.cursor || page.attentionCursor ? 'append' : 'replace',
+            });
+        },
+        applySessionListRenderablePatches: (patches) => {
+            if (!shouldContinue()) return;
+            storage.getState().applyServerScopedSessionListRowPatches(serverId, patches);
+            // Row hydration from an ad-hoc Voice/Action read is not a list observation: it owns no
+            // membership, so letting it advance this Home's currentness would make a one-off
+            // command answer "how fresh is this Home's Session list" (Lane 07.2 §6, L07-I35).
+            if (page.membership !== 'rowOnly') noteConcurrentSessionListObserved(entry);
+        },
+        applySessions: () => {},
+        log: { log: () => {} },
+    });
 }
 
 function isManagedServerActive(entry: ManagedConcurrentServer): boolean {
@@ -743,6 +828,14 @@ async function runRefresh(entry: ManagedConcurrentServer, source: 'socket' | 'ot
     entry.refreshInFlight = (async () => {
         const abortController = new AbortController();
         entry.refreshAbortController = abortController;
+        // One observation lifecycle per attempt: publish the attempt before the work so a Home
+        // with retained rows reads as refreshing rather than current, and a Home that has never
+        // been observed reads as loading rather than absent.
+        const successAtBeforeRefresh = entry.lastSessionListSuccessAt;
+        publishConcurrentSessionListObservation({
+            entry,
+            phase: successAtBeforeRefresh === null ? 'loading' : 'refreshing',
+        });
         try {
             await refreshServerSnapshot(entry, abortController.signal);
         } catch (error) {
@@ -756,6 +849,16 @@ async function runRefresh(entry: ManagedConcurrentServer, source: 'socket' | 'ot
                 machines: cachedMachines,
                 status: 'error',
             });
+            // Only this attempt's own failure is publishable. A Session-list success that landed
+            // during it and the reachability owner's `offline` fact are both more current than a
+            // stale error, so neither is overwritten. The last success time is preserved either
+            // way, so retained rows stay truthfully labelled.
+            if (
+                entry.reachabilityState.phase === 'online'
+                && entry.lastSessionListSuccessAt === successAtBeforeRefresh
+            ) {
+                publishConcurrentSessionListObservation({ entry, phase: 'error' });
+            }
         } finally {
             if (entry.refreshAbortController === abortController) {
                 entry.refreshAbortController = null;
@@ -848,6 +951,13 @@ async function createManagedServer(
         refreshInFlight: null,
         refreshAbortController: null,
         refreshTimer: null,
+        sessionListFrontier: EMPTY_ORDINARY_SESSION_LIST_FRONTIER,
+        // Recreating the managed entry (credential rotation, carrier change) does not un-observe
+        // this Home: its retained rows keep the success time already published for that exact
+        // serverId, so the first attempt of the new entry cannot report "never observed".
+        lastSessionListSuccessAt: storage.getState()
+            .concurrentSessionListCacheByServerId?.[normalizeServerId(target.id)]
+            ?.listObservation?.lastSuccessAt ?? null,
     };
 
     // The reachability subscription emits synchronously. Publish the exact
@@ -877,10 +987,15 @@ async function createManagedServer(
                 machines: cachedMachines,
                 status: 'error',
             });
+            // Retained rows stay visible; the shared context owner labels them as this Home's
+            // last known truth rather than letting a surface guess or drop them.
+            publishConcurrentSessionListObservation({ entry, phase: 'offline' });
             void entry.socketTransport?.disconnect({ intentional: true });
             return;
         }
 
+        // Reachability returning does not make this Home's rows current: the observation stays at
+        // its last published phase until a real list observation lands and flips it to `ready`.
         if (previousPhase !== 'online') {
             schedulePushTokenReconciliation();
         }
@@ -904,9 +1019,17 @@ async function createManagedServer(
                     }
                 },
             );
+            let ingressAccountId: string | null = null;
+            let hasConnectedOnce = false;
+            try {
+                ingressAccountId = parseToken(credentials.token);
+            } catch {
+                // Authentication/reachability owns invalid credentials. Action ingress fails closed.
+            }
             socket.on('update', (raw: unknown) => {
-                if (shouldSchedulePushTokenReconciliationForUpdate(raw)) {
+                if (isAccountChangeUpdate(raw)) {
                     schedulePushTokenReconciliation();
+                    publishHomeAccountChange(entry.id);
                 }
                 if (!shouldRefreshConcurrentSessionCacheForUpdate(raw)) {
                     return;
@@ -915,11 +1038,32 @@ async function createManagedServer(
             });
             socket.on('ephemeral', (raw: unknown) => {
                 statusDemandTransport.observeEphemeral(raw);
+                const update = normalizeActionOperationEphemeralIngress(raw);
+                const encryption = entry.encryption;
+                if (!update || !ingressAccountId || !encryption) return;
+                const accountId = ingressAccountId;
+                fireAndForget(consumeActionOperationSnapshotPush({
+                    update,
+                    accountId,
+                    sourceServerId: entry.id,
+                    openSnapshot: (ciphertext) => encryption.openActionOperationSnapshotRaw(ciphertext),
+                    shouldContinue: () => isManagedServerActive(entry),
+                    onSnapshot: (operation) => actionOperationPresentationCoordinator.observe(operation),
+                }), { tag: 'concurrentSessionCache.actionOperationEphemeral' });
             });
 
             entry.detachSocketTransportListeners = [
+                attachManagedSessionHumanPresenceSocket({
+                    serverId: entry.id, token: credentials.token, socket, transport,
+                }),
                 transport.onConnected(() => {
                     statusDemandTransport.resend();
+                    // This content-free secondary transport has no changes
+                    // cursor. A reconnect may have missed governance or Team
+                    // wakes, so conservatively invalidate only this captured
+                    // Home's reconstructible Account projections.
+                    if (hasConnectedOnce) publishHomeAccountChange(entry.id);
+                    hasConnectedOnce = true;
                     queueRefresh(entry);
                 }),
                 transport.onDisconnected((event: TransportDisconnectEvent) => {
@@ -1028,7 +1172,10 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
         }
     }
 
-    for (const target of targets) {
+    // Each target has independent credential, carrier, reachability, socket and
+    // feature owners. Starting them serially lets one slow/offline Home delay
+    // every later Home, so reconcile the target-local lifecycles concurrently.
+    await Promise.allSettled(targets.map(async (target) => {
         const credentials = await TokenStorage.getCredentialsForServerUrl(target.serverUrl, { serverId: target.id });
         if (!started || requestRevision !== reconcileRequestRevision) {
             return;
@@ -1041,7 +1188,7 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
                 machines: null,
                 status: 'signedOut',
             });
-            continue;
+            return;
         }
 
         const existing = managedServers.get(target.id);
@@ -1065,7 +1212,7 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
                     });
                 }
             }
-            continue;
+            return;
         }
 
         if (existing) {
@@ -1088,7 +1235,7 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
                 machines: storage.getState().machineListByServerId?.[target.id] ?? null,
                 status: 'error',
             });
-            continue;
+            return;
         }
         if (!started || requestRevision !== reconcileRequestRevision) {
             await irohLease?.release().catch(() => undefined);
@@ -1100,7 +1247,7 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
         } catch {
             // Construction rollback is exact and local; a later reconciliation
             // retries this Home without poisoning other secondary runtimes.
-            continue;
+            return;
         }
         // Reconcile the complete descriptor through this secondary Home's
         // already-authenticated scoped carrier. Public capability discovery is
@@ -1112,11 +1259,14 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
             scopedTransport: irohLease,
         });
         if (!started || requestRevision !== reconcileRequestRevision) {
-            stopManagedServer(next.id);
+            // The entry was published before feature acquisition so the
+            // synchronous reachability owner can initialize it. A newer
+            // reconcile may retain this same entry or replace it; stale work
+            // therefore has no disposal authority by server id.
             return;
         }
         queueRefresh(next);
-    }
+    }));
 }
 
 function scheduleReconcile(): void {

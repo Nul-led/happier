@@ -3,10 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
 import { storage } from '@/sync/domains/state/storageStore';
 import { useInboxHasContent } from './useInboxHasContent';
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen as renderScreenBase } from '@/dev/testkit';
 import type { Message } from '@/sync/domains/messages/messageTypes';
 import { createReducer } from '@/sync/reducer/reducer';
 import type { SessionMessages } from '@/sync/store/domains/messages';
+import { InboxModelProvider } from './useInboxModel';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,7 +32,21 @@ vi.mock('./useChangelog', () => ({
     }),
 }));
 
+const friendsGate = vi.hoisted(() => ({ enabled: true, identityReady: true }));
+
+vi.mock('@/hooks/server/useFriendsEnabled', () => ({
+    useFriendsEnabled: () => friendsGate.enabled,
+}));
+
+vi.mock('@/hooks/server/useFriendsIdentityReadiness', () => ({
+    useFriendsIdentityReadiness: () => ({ isReady: friendsGate.identityReady }),
+}));
+
 const originalDevFlag = (globalThis as any).__DEV__;
+
+function renderScreen(node: React.ReactNode) {
+    return renderScreenBase(React.createElement(InboxModelProvider, null, node));
+}
 
 function createPermissionMessage(createdAt: number): Message {
     return {
@@ -74,6 +89,16 @@ function createSessionMessages(overrides: Partial<SessionMessages> = {}): Sessio
     };
 }
 
+function withOrdinarySession(session: Readonly<Record<string, unknown>>) {
+    const sessionId = String(session.id);
+    const scopedSession = { ...session, serverId: 'server-a' };
+    return {
+        sessions: { [sessionId]: scopedSession },
+        sessionListRowsByServerId: { 'server-a': { [sessionId]: scopedSession } },
+        ordinarySessionListMembershipByServerId: { 'server-a': [sessionId] },
+    };
+}
+
 describe('useInboxHasContent', () => {
     let tree: renderer.ReactTestRenderer | null = null;
 
@@ -81,11 +106,14 @@ describe('useInboxHasContent', () => {
         (globalThis as any).__DEV__ = true;
         mockUpdateAvailable = false;
         mockHasUnread = false;
+        friendsGate.enabled = true;
+        friendsGate.identityReady = true;
         storage.setState({
             friends: {},
             feedItems: [],
             sessions: {},
-            sessionListRenderables: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
             artifacts: {},
             isDataReady: true,
         } as any);
@@ -104,13 +132,14 @@ describe('useInboxHasContent', () => {
             friends: {},
             feedItems: [],
             sessions: {},
-            sessionListRenderables: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
             artifacts: {},
             isDataReady: true,
         } as any);
     });
 
-    it('returns true when there are feed items', async () => {
+    it('does not light the inbox for passive feed history', async () => {
         storage.setState({
             friends: {},
             feedItems: [{ id: 'f1' } as any],
@@ -124,10 +153,10 @@ describe('useInboxHasContent', () => {
 
         tree = (await renderScreen(React.createElement(Test))).tree;
 
-        expect(latest).toBe(true);
+        expect(latest).toBe(false);
     });
 
-    it('returns true when there are pending outgoing friend requests', async () => {
+    it('does not light the inbox for outgoing friend requests', async () => {
         storage.setState({
             friends: {
                 u1: { id: 'u1', status: 'requested' },
@@ -143,7 +172,68 @@ describe('useInboxHasContent', () => {
 
         tree = (await renderScreen(React.createElement(Test))).tree;
 
+        expect(latest).toBe(false);
+    });
+
+    it('returns true for incoming friend requests that need a response', async () => {
+        storage.setState({
+            friends: {
+                u1: { id: 'u1', status: 'pending' },
+            },
+            feedItems: [],
+        } as any);
+
+        let latest: boolean | null = null;
+        function Test() {
+            latest = useInboxHasContent();
+            return React.createElement('View');
+        }
+
+        tree = (await renderScreen(React.createElement(Test))).tree;
+
         expect(latest).toBe(true);
+    });
+
+    it('does not light the inbox for friend requests the Inbox screen cannot show', async () => {
+        // The screen hides the friends section behind the same gate. A dot the
+        // user can never clear by opening the Inbox is worse than no dot.
+        friendsGate.enabled = false;
+        storage.setState({
+            friends: {
+                u1: { id: 'u1', status: 'pending' },
+            },
+            feedItems: [],
+        } as any);
+
+        let latest: boolean | null = null;
+        function Test() {
+            latest = useInboxHasContent();
+            return React.createElement('View');
+        }
+
+        tree = (await renderScreen(React.createElement(Test))).tree;
+
+        expect(latest).toBe(false);
+    });
+
+    it('does not light the inbox for friend requests before the friends identity is ready', async () => {
+        friendsGate.identityReady = false;
+        storage.setState({
+            friends: {
+                u1: { id: 'u1', status: 'pending' },
+            },
+            feedItems: [],
+        } as any);
+
+        let latest: boolean | null = null;
+        function Test() {
+            latest = useInboxHasContent();
+            return React.createElement('View');
+        }
+
+        tree = (await renderScreen(React.createElement(Test))).tree;
+
+        expect(latest).toBe(false);
     });
 
     it('returns false when there is no actionable content', async () => {
@@ -158,7 +248,7 @@ describe('useInboxHasContent', () => {
         expect(latest).toBe(false);
     });
 
-    it('returns true when changelog has unread entries', async () => {
+    it('does not light the inbox for changelog history', async () => {
         mockHasUnread = true;
 
         let latest: boolean | null = null;
@@ -169,7 +259,7 @@ describe('useInboxHasContent', () => {
 
         tree = (await renderScreen(React.createElement(Test))).tree;
 
-        expect(latest).toBe(true);
+        expect(latest).toBe(false);
     });
 
     it('returns true when there are open approval requests', async () => {
@@ -208,23 +298,21 @@ describe('useInboxHasContent', () => {
         storage.setState({
             friends: {},
             feedItems: [],
-            sessions: {
-                s1: {
-                    id: 's1',
-                    active: true,
-                    presence: 'online',
-                    agentState: {
-                        requests: {
-                            r1: {
-                                tool: 'bash',
-                                kind: 'permission',
-                                arguments: { command: 'echo hello' },
-                                createdAt: 999_000,
-                            },
+            ...withOrdinarySession({
+                id: 's1',
+                active: true,
+                presence: 'online',
+                agentState: {
+                    requests: {
+                        r1: {
+                            tool: 'bash',
+                            kind: 'permission',
+                            arguments: { command: 'echo hello' },
+                            createdAt: 999_000,
                         },
                     },
                 },
-            },
+            }),
         } as any);
 
         let latest: boolean | null = null;
@@ -243,23 +331,21 @@ describe('useInboxHasContent', () => {
         storage.setState({
             friends: {},
             feedItems: [],
-            sessions: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    active: true,
-                    activeAt: 1_000,
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 'online',
-                    metadata: null,
-                    metadataVersion: 0,
-                    agentState: null,
-                    agentStateVersion: 0,
-                },
-            },
+            ...withOrdinarySession({
+                id: 's1',
+                seq: 1,
+                createdAt: 1,
+                updatedAt: 1,
+                active: true,
+                activeAt: 1_000,
+                thinking: false,
+                thinkingAt: 0,
+                presence: 'online',
+                metadata: null,
+                metadataVersion: 0,
+                agentState: null,
+                agentStateVersion: 0,
+            }),
             sessionMessages: {},
         } as any);
 
@@ -296,23 +382,21 @@ describe('useInboxHasContent', () => {
         storage.setState({
             friends: {},
             feedItems: [],
-            sessions: {
-                s1: {
-                    id: 's1',
-                    seq: 1,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    active: true,
-                    activeAt: 1_000,
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 'online',
-                    metadata: null,
-                    metadataVersion: 0,
-                    agentState: null,
-                    agentStateVersion: 0,
-                },
-            },
+            ...withOrdinarySession({
+                id: 's1',
+                seq: 1,
+                createdAt: 1,
+                updatedAt: 1,
+                active: true,
+                activeAt: 1_000,
+                thinking: false,
+                thinkingAt: 0,
+                presence: 'online',
+                metadata: null,
+                metadataVersion: 0,
+                agentState: null,
+                agentStateVersion: 0,
+            }),
             sessionMessages: {
                 s1: trackedMessages,
             },
@@ -340,29 +424,27 @@ describe('useInboxHasContent', () => {
         expect(renderCount).toBe(initialRenderCount);
     });
 
-    it('returns true when there are unread sessions', async () => {
+    it('returns true when a completed unseen session is ready for review', async () => {
         storage.setState({
             friends: {},
             feedItems: [],
-            sessions: {
-                s1: {
-                    id: 's1',
-                    seq: 4,
-                    lastViewedSessionSeq: 1,
-                    updatedAt: 10,
-                    createdAt: 1,
-                    active: false,
-                    activeAt: 1,
-                    thinking: false,
-                    thinkingAt: 0,
-                    latestTurnStatus: 'completed',
-                    presence: 1,
-                    metadata: null,
-                    metadataVersion: 0,
-                    agentState: null,
-                    agentStateVersion: 0,
-                },
-            },
+            ...withOrdinarySession({
+                id: 's1',
+                seq: 4,
+                lastViewedSessionSeq: 1,
+                updatedAt: 10,
+                createdAt: 1,
+                active: false,
+                activeAt: 1,
+                thinking: false,
+                thinkingAt: 0,
+                latestTurnStatus: 'completed',
+                presence: 1,
+                metadata: null,
+                metadataVersion: 0,
+                agentState: null,
+                agentStateVersion: 0,
+            }),
         } as any);
 
         let latest: boolean | null = null;
@@ -376,32 +458,69 @@ describe('useInboxHasContent', () => {
         expect(latest).toBe(true);
     });
 
-    it('returns true when an unread session only exists in the session list rows', async () => {
+    it('does not light the inbox for transcript unread while a session is still working', async () => {
+        storage.setState({
+            friends: {},
+            feedItems: [],
+            ...withOrdinarySession({
+                id: 's1',
+                seq: 4,
+                lastViewedSessionSeq: 1,
+                updatedAt: 10,
+                createdAt: 1,
+                active: true,
+                activeAt: 10,
+                thinking: true,
+                thinkingAt: 10,
+                latestTurnStatus: 'in_progress',
+                presence: 1,
+                metadata: null,
+                metadataVersion: 0,
+                agentState: null,
+                agentStateVersion: 0,
+            }),
+        } as any);
+
+        let latest: boolean | null = null;
+        function Test() {
+            latest = useInboxHasContent();
+            return React.createElement('View');
+        }
+
+        tree = (await renderScreen(React.createElement(Test))).tree;
+
+        expect(latest).toBe(false);
+    });
+
+    it('ignores unread rows that are not members of the ordinary list corpus', async () => {
         storage.setState({
             friends: {},
             feedItems: [],
             sessions: {},
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 4,
-                    updatedAt: 10,
-                    createdAt: 1,
-                    active: false,
-                    activeAt: 1,
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 1,
-                    metadata: {
-                        name: 'Renderable unread',
-                        path: '/Users/leeroy/renderable',
-                        homeDir: '/Users/leeroy',
+            sessionListRowsByServerId: {
+                'server-a': {
+                    s1: {
+                        id: 's1',
+                        seq: 4,
+                        updatedAt: 10,
+                        createdAt: 1,
+                        active: false,
+                        activeAt: 1,
+                        thinking: false,
+                        thinkingAt: 0,
+                        presence: 1,
+                        metadata: {
+                            name: 'Query-only unread',
+                            path: '/Users/leeroy/query-only',
+                            homeDir: '/Users/leeroy',
+                        },
+                        metadataVersion: 0,
+                        agentStateVersion: 0,
+                        hasUnreadMessages: true,
                     },
-                    metadataVersion: 0,
-                    agentStateVersion: 0,
-                    hasUnreadMessages: true,
                 },
             },
+            ordinarySessionListMembershipByServerId: { 'server-a': [] },
         } as any);
 
         let latest: boolean | null = null;
@@ -412,16 +531,15 @@ describe('useInboxHasContent', () => {
 
         tree = (await renderScreen(React.createElement(Test))).tree;
 
-        expect(latest).toBe(true);
+        expect(latest).toBe(false);
     });
 
-    it('returns true when an unread session only exists in a server-scoped session row cache', async () => {
+    it('returns true when a completed unseen session only exists in a server-scoped session row cache', async () => {
         storage.setState({
             friends: {},
             feedItems: [],
             sessions: {},
-            sessionListRenderables: {},
-            sessionListRowStateByServerId: {
+            sessionListRowsByServerId: {
                 'server-b': {
                     s1: {
                         id: 's1',
@@ -432,6 +550,8 @@ describe('useInboxHasContent', () => {
                         activeAt: 1,
                         thinking: false,
                         thinkingAt: 0,
+                        latestTurnStatus: 'completed',
+                        lastTurnCompletedAt: 9,
                         presence: 1,
                         metadata: {
                             name: 'Scoped unread',
@@ -444,6 +564,7 @@ describe('useInboxHasContent', () => {
                     },
                 },
             },
+            ordinarySessionListMembershipByServerId: { 'server-b': ['s1'] },
         } as any);
 
         let latest: boolean | null = null;
@@ -457,33 +578,38 @@ describe('useInboxHasContent', () => {
         expect(latest).toBe(true);
     });
 
-    it('returns true for warm unread session rows before full data readiness', async () => {
+    it('returns true for warm completed unseen session rows before full data readiness', async () => {
         storage.setState({
             friends: {},
             feedItems: [],
             sessions: {},
             isDataReady: false,
-            sessionListRenderables: {
-                s1: {
-                    id: 's1',
-                    seq: 4,
-                    updatedAt: 10,
-                    createdAt: 1,
-                    active: false,
-                    activeAt: 1,
-                    thinking: false,
-                    thinkingAt: 0,
-                    presence: 1,
-                    metadata: {
-                        name: 'Warm unread',
-                        path: '/Users/leeroy/warm',
-                        homeDir: '/Users/leeroy',
+            sessionListRowsByServerId: {
+                'server-a': {
+                    s1: {
+                        id: 's1',
+                        seq: 4,
+                        updatedAt: 10,
+                        createdAt: 1,
+                        active: false,
+                        activeAt: 1,
+                        thinking: false,
+                        thinkingAt: 0,
+                        latestTurnStatus: 'completed',
+                        lastTurnCompletedAt: 9,
+                        presence: 1,
+                        metadata: {
+                            name: 'Warm unread',
+                            path: '/Users/leeroy/warm',
+                            homeDir: '/Users/leeroy',
+                        },
+                        metadataVersion: 0,
+                        agentStateVersion: 0,
+                        hasUnreadMessages: true,
                     },
-                    metadataVersion: 0,
-                    agentStateVersion: 0,
-                    hasUnreadMessages: true,
                 },
             },
+            ordinarySessionListMembershipByServerId: { 'server-a': ['s1'] },
         } as any);
 
         let latest: boolean | null = null;

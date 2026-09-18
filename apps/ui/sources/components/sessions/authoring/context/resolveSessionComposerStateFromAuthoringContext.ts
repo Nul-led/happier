@@ -1,12 +1,7 @@
-import type {
-    ExistingSessionAutomationAuthoringContext,
-    LiveSessionAuthoringContext,
-} from './sessionAuthoringContext';
+import type { LiveSessionAuthoringContext } from './sessionAuthoringContext';
 import { resolveSessionComposerState, type SessionComposerState } from './resolveSessionComposerState';
 
-export type SessionComposerAuthoringContext =
-    | ExistingSessionAutomationAuthoringContext
-    | LiveSessionAuthoringContext;
+export type SessionComposerAuthoringContext = LiveSessionAuthoringContext;
 
 export function resolveSessionComposerStateFromAuthoringContext(
     context: SessionComposerAuthoringContext,
@@ -14,20 +9,6 @@ export function resolveSessionComposerStateFromAuthoringContext(
         fallbackAgentId?: string | null;
     }>,
 ): SessionComposerState {
-    if (context.kind === 'automationExistingSession') {
-        return resolveSessionComposerState({
-            snapshot: context.snapshot,
-            session: context.session,
-            permissionModeOverride: context.draft.permissionMode as SessionComposerState['permissionMode'] | null,
-            modelModeOverride: (
-                context.draft.modelSelection?.ref.modelId
-                ?? context.draft.modelId
-            ) as SessionComposerState['modelMode'] | null,
-            profileIdOverride: context.draft.profileId ?? null,
-            currentPathOverride: context.draft.directory,
-        });
-    }
-
     return resolveSessionComposerState({
         snapshot: context.snapshot,
         session: context.session,

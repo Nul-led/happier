@@ -41,6 +41,7 @@ const logoutMock = vi.hoisted(() =>
     >(async () => ({ kind: 'completed' })),
 );
 const deleteCurrentAccountMock = vi.hoisted(() => vi.fn(async () => ({ status: 'deleted' as const })));
+const removeRunnerCreatorCustodyForAccountMock = vi.hoisted(() => vi.fn(async () => undefined));
 
 installAccountSettingsRouteModuleMocks({
     textModule: async () => {
@@ -107,6 +108,9 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => false,
 }));
 vi.mock('@/sync/api/account/deleteCurrentAccount', () => ({ deleteCurrentAccount: deleteCurrentAccountMock }));
+vi.mock('@/sync/domains/ephemeralRunner/runnerCreatorDraftRemoval', () => ({
+    removeRunnerCreatorCustodyForAccount: removeRunnerCreatorCustodyForAccountMock,
+}));
 
 vi.mock('@/components/account/ProviderIdentityItems', () => ({
     ProviderIdentityItems: () => null,
@@ -114,12 +118,24 @@ vi.mock('@/components/account/ProviderIdentityItems', () => ({
 
 const routerMockRef = getAccountSettingsRouteRouterMockRef();
 
+async function activateDeletionTestScope(): Promise<void> {
+    const serverProfiles = await import('@/sync/domains/server/serverProfiles');
+    const home = await serverProfiles.upsertServerProfile({
+        serverUrl: 'https://deletion-home.example.test',
+        name: 'Deletion Home',
+        source: 'manual',
+    });
+    await serverProfiles.setActiveServerId(home.id);
+    storage.getState().activateProfileScope({ serverId: home.id, accountId: 'account-a' });
+}
+
 describe('Settings → Account logout redirect', () => {
     afterEach(() => {
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
         logoutMock.mockClear();
         deleteCurrentAccountMock.mockClear();
+        removeRunnerCreatorCustodyForAccountMock.mockReset().mockResolvedValue(undefined);
         teardownStartedMock.mockClear();
         routerMockRef.current?.spies.push.mockReset();
         routerMockRef.current?.spies.back.mockReset();
@@ -133,12 +149,12 @@ describe('Settings → Account logout redirect', () => {
     it('routes after custody authorization and before tearing down auth state', async () => {
         storage.getState().applyProfile({ ...profileDefaults, linkedProviders: [], username: null });
         const serverProfiles = await import('@/sync/domains/server/serverProfiles');
-        const focusedHome = serverProfiles.upsertServerProfile({
+        const focusedHome = await serverProfiles.upsertServerProfile({
             serverUrl: 'https://studio-home.example.test',
             name: 'Studio Home',
             source: 'manual',
         });
-        serverProfiles.setActiveServerId(focusedHome.id);
+        await serverProfiles.setActiveServerId(focusedHome.id);
         let resolveLogout!: () => void;
         logoutMock.mockImplementationOnce(async (options) => {
             options?.beforeMutation?.();
@@ -288,6 +304,7 @@ describe('Settings → Account logout redirect', () => {
 
     it('requires typed confirmation before deletion and canonical logout cleanup', async () => {
         storage.getState().applyProfile({ ...profileDefaults, linkedProviders: [], username: null });
+        await activateDeletionTestScope();
         logoutMock.mockImplementationOnce(async (options) => { await options?.beforeMutation?.(); teardownStartedMock(); return { kind: 'completed' }; });
         vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => { const url = getRequestUrl(input); if (isFeaturesRequest(url)) return { ok: true, json: async () => createAccountFeaturesResponse() }; throw new Error(`Unexpected fetch: ${url}`); }) as unknown as typeof fetch);
         const { default: AccountScreen } = await import('@/app/(app)/settings/account');
@@ -302,5 +319,43 @@ describe('Settings → Account logout redirect', () => {
         expect(deleteCurrentAccountMock).toHaveBeenCalledWith(expect.objectContaining({ token: 't' }));
         expect(routerMockRef.current.spies.replace).toHaveBeenCalledWith('/');
         expect(teardownStartedMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries only acknowledged local Runner erasure before removing credentials', async () => {
+        storage.getState().applyProfile({ ...profileDefaults, linkedProviders: [], username: null });
+        await activateDeletionTestScope();
+        removeRunnerCreatorCustodyForAccountMock
+            .mockRejectedValueOnce(new Error('protected storage busy'))
+            .mockResolvedValueOnce(undefined);
+        logoutMock.mockImplementation(async (options) => {
+            await options?.beforeMutation?.();
+            teardownStartedMock();
+            return { kind: 'completed' };
+        });
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            const url = getRequestUrl(input);
+            if (isFeaturesRequest(url)) return { ok: true, json: async () => createAccountFeaturesResponse() };
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as unknown as typeof fetch);
+        const { default: AccountScreen } = await import('@/app/(app)/settings/account');
+        const screen = await renderSettingsView(<AccountScreen />);
+        const modal = modalMockRef.current;
+        if (!modal) throw new Error('Expected account modal mock');
+        modal.spies.prompt.mockResolvedValueOnce('DELETE');
+        modal.spies.alertAsync.mockImplementationOnce(async (_title, _message, buttons) => {
+            buttons?.find((button) => button.text === 'common.retry')?.onPress?.();
+        });
+
+        await act(async () => { await screen.findRowByTitle('settingsAccount.deleteAccount')?.props.onPress?.(); });
+
+        expect(deleteCurrentAccountMock).toHaveBeenCalledOnce();
+        expect(removeRunnerCreatorCustodyForAccountMock).toHaveBeenCalledTimes(2);
+        expect(logoutMock).toHaveBeenCalledTimes(2);
+        expect(teardownStartedMock).toHaveBeenCalledOnce();
+        expect(modal.spies.alertAsync).toHaveBeenCalledWith(
+            'settingsAccount.deleteAccountCleanupFailedTitle',
+            'settingsAccount.deleteAccountCleanupFailed',
+            expect.arrayContaining([expect.objectContaining({ text: 'common.retry' })]),
+        );
     });
 });

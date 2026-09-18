@@ -36,11 +36,18 @@ vi.mock('@/sync/sync', () => ({
 }));
 
 vi.mock('@/voice/registry/defaultRegistry', () => ({
-  createDefaultVoiceProviderRegistry: () => ({
-    get: () => state.currentDeclaration
+  createDefaultVoiceProviderRegistry: () => {
+    const currentEntry = () => state.currentDeclaration
       ? { kind: state.currentEntryKind, declaration: state.currentDeclaration }
-      : null,
-  }),
+      : null;
+    return {
+      get: currentEntry,
+      list: () => {
+        const entry = currentEntry();
+        return entry ? [entry] : [];
+      },
+    };
+  },
 }));
 
 vi.mock('@/sync/domains/settings/settings', () => ({

@@ -21,6 +21,7 @@ import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { useSessionTerminalAvailability } from '@/components/sessions/terminal/useSessionTerminalAvailability';
 import { SessionFullscreenPaneSafeAreaView } from '@/components/sessions/panes/SessionFullscreenPaneSafeAreaView';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 
 export default function TerminalScreenRoute() {
     const router = useRouter();
@@ -36,7 +37,7 @@ export default function TerminalScreenRoute() {
         routeScope.hydrationOptions,
     );
     const sessionHydrated = isSessionRouteHydrationAvailable(routeHydrationState);
-    const scopeId = `session:${sessionId}`;
+    const scopeId = createSessionPaneScopeId(sessionId, routeScope.serverId);
     const pane = useAppPaneScope(scopeId);
     const openRight = pane.openRight;
     const closeRight = pane.closeRight;
@@ -44,7 +45,7 @@ export default function TerminalScreenRoute() {
     const initializedRightPaneSessionRef = React.useRef<string | null>(null);
 
     const { cockpitEnabled } = useMobileWorkspaceExperienceState();
-    const { sidebarTabAvailable: terminalTabAvailable } = useSessionTerminalAvailability();
+    const { sidebarTabAvailable: terminalTabAvailable } = useSessionTerminalAvailability(routeScope.serverId);
 
     const detailsState = pane.scopeState?.details ?? null;
     const detailsSelection = React.useMemo(() => resolveFullscreenDetailsRouteSelection({

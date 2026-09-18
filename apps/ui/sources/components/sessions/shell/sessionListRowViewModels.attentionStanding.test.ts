@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
+import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
 
 import { buildSessionListRowViewModels } from './sessionListRowViewModels';
 
@@ -31,7 +32,7 @@ function createRenderableSession(id: string): SessionListRenderableSession {
     };
 }
 
-function buildRow(item: SessionIndexItem) {
+function buildRow(item: SessionIndexItem, attentionStandingPolicy?: Parameters<typeof buildSessionListRowViewModels>[0]['attentionStandingPolicy']) {
     const key = buildSessionListServerScopedRowKey(item.serverId, item.sessionId);
     if (!key) throw new Error('expected a row key');
     return buildSessionListRowViewModels({
@@ -46,6 +47,7 @@ function buildRow(item: SessionIndexItem) {
         selectedSessionId: null,
         showServerBadge: false,
         showPinnedServerBadge: false,
+        attentionStandingPolicy,
     })[0];
 }
 
@@ -71,5 +73,44 @@ describe('session list row view model attention standing', () => {
         expect(kept?.attentionStanding).toBe(true);
         expect(removed?.attentionStanding).toBe(false);
         expect(removed).not.toBe(kept);
+    });
+
+    it('preserves session context while projecting scheduled and due reminder state', () => {
+        const sessionKey = buildSessionOrganizationSessionKey(BASE_ITEM.serverId, BASE_ITEM.sessionId);
+        const withoutReminder = buildRow(BASE_ITEM);
+        const scheduled = buildRow(BASE_ITEM, {
+            defaultStanding: false,
+            overridesBySessionKey: {
+                [sessionKey]: { standing: false, remindAt: 2_000, updatedAt: 1 },
+            },
+        });
+        const due = buildRow(BASE_ITEM, {
+            defaultStanding: false,
+            overridesBySessionKey: {
+                [sessionKey]: { standing: false, remindAt: 900, updatedAt: 1 },
+            },
+        });
+
+        expect(scheduled?.subtitleOverride).toBe(withoutReminder?.subtitleOverride);
+        expect(scheduled).not.toBe(withoutReminder);
+        expect(scheduled?.reminder).toEqual({ state: 'scheduled', remindAt: 2_000 });
+        expect(due?.reminder).toEqual({ state: 'due', remindAt: 900 });
+    });
+
+    it('retains an unrelated row reference when another session reminder changes', () => {
+        const unrelatedItem = { ...BASE_ITEM, sessionId: 'sess_unrelated' };
+        const before = buildRow(unrelatedItem);
+        const after = buildRow(unrelatedItem, {
+            defaultStanding: false,
+            overridesBySessionKey: {
+                [buildSessionOrganizationSessionKey(BASE_ITEM.serverId, BASE_ITEM.sessionId)]: {
+                    standing: false,
+                    remindAt: 2_000,
+                    updatedAt: 1,
+                },
+            },
+        });
+
+        expect(after).toBe(before);
     });
 });

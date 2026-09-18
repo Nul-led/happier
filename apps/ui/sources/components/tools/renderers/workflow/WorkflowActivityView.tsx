@@ -9,18 +9,19 @@ import {
     buildWorkflowActivityRows,
     computeWorkflowRunRollup,
     resolveActiveWorkflowPhasePosition,
-    resolveWorkflowRunTone,
 } from '@/components/sessions/workState/sessionWorkflowActivityPresentation';
+import { resolveWorkflowRunTone } from '@/components/workflows/presentation/workflowPresentation';
 import { useWorkflowRunForToolUseId } from '@/components/sessions/workState/useSessionWorkflowActivity';
 import type { WorkflowActivityRowViewModel } from '@/components/sessions/workState/sessionWorkflowActivityTypes';
 import type { SessionWorkflowAgentStatusV1, SessionWorkflowRunSnapshotV1 } from '@happier-dev/protocol';
 import { useTranscriptRowLayoutMutation } from '@/components/sessions/transcript/measurement/TranscriptRowLayoutMutationContext';
 
+import { WorkflowAgentRow } from '@/components/workflows/presentation/WorkflowAgentRow';
+import { WorkflowPhaseHeader } from '@/components/workflows/presentation/WorkflowPhaseHeader';
+import { WorkflowRunHeader } from '@/components/workflows/presentation/WorkflowRunHeader';
+import { formatWorkflowRunStatusLabel } from '@/components/workflows/presentation/workflowStatusLabel';
+
 import type { ToolViewProps } from '../core/_registry';
-import { WorkflowAgentRow } from './WorkflowAgentRow';
-import { WorkflowPhaseHeader } from './WorkflowPhaseHeader';
-import { WorkflowRunHeader } from './WorkflowRunHeader';
-import { formatWorkflowRunStatusLabel } from './workflowStatusLabel';
 
 /**
  * UIW4 — records-backed transcript workflow card.
@@ -108,13 +109,14 @@ function formatFooter(snapshot: SessionWorkflowRunSnapshotV1): string {
     return parts.join(' · ');
 }
 
-export const WorkflowActivityView = React.memo<ToolViewProps>(({ tool, sessionId, metadata }) => {
+export const WorkflowActivityView = React.memo<ToolViewProps>(({ tool, sessionId, serverId, metadata }) => {
     const [visibleAgentLimit, setVisibleAgentLimit] = React.useState(INLINE_AGENT_INITIAL_LIMIT);
     const toolUseId = typeof tool.id === 'string' ? tool.id : null;
     const rowLayoutMutation = useTranscriptRowLayoutMutation();
     const rowLayoutMutationSourceId = `workflow-activity:${toolUseId ?? 'unknown'}`;
     const { detail: sourceDetail } = useWorkflowRunForToolUseId({
         sessionId: sessionId ?? '',
+        serverId,
         metadata,
         toolUseId,
     });

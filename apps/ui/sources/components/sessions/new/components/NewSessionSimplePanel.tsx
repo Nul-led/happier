@@ -41,7 +41,6 @@ import {
 import { computeNewSessionComposerPanelMaxHeight } from '@/components/sessions/agentInput/inputMaxHeight';
 import {
     NewSessionLaunchPendingPreview,
-    shouldRenderNewSessionLaunchPendingPreview,
 } from '@/components/sessions/new/components/NewSessionLaunchPendingPreview';
 import type { NewSessionLaunchAttempt } from '@/components/sessions/new/modules/newSessionLaunchAttempt';
 import { NewSessionProviderLaunchError } from '@/components/sessions/new/components/NewSessionProviderLaunchError';
@@ -104,6 +103,13 @@ export type NewSessionSimplePanelProps = Readonly<{
     canCreate: boolean;
     isCreating: boolean;
     pendingLaunchAttempt?: NewSessionLaunchAttempt | null;
+    /**
+     * Whether the compact pending card is the active launch presentation,
+     * resolved once by `resolveNewSessionLaunchPresentation`. This layout places
+     * the card; it never re-decides, which is how a Temporary-computer request
+     * used to end up with a pending card behind its own blocking surface.
+     */
+    launchPendingPreviewVisible?: boolean;
     providerLaunchError?: ProviderErrorV1 | null;
     retryProviderLaunch?: () => void;
     emptyAutocompleteKinds: React.ComponentProps<typeof AgentInput>['autocompleteKinds'];
@@ -375,8 +381,8 @@ export function NewSessionSimplePanel(props: NewSessionSimplePanelProps): React.
             // visible dismiss control off screen with it.
             ? (isFloatingComposer ? props.safeAreaTop + NEW_SESSION_CLOSE_ROW_HEIGHT : 0)
             : props.safeAreaTop + props.newSessionTopPadding);
-    const showPendingLaunchPreview = props.isCreating
-        && shouldRenderNewSessionLaunchPendingPreview(props.pendingLaunchAttempt);
+    const showPendingLaunchPreview = props.launchPendingPreviewVisible === true
+        && props.pendingLaunchAttempt != null;
     const shellStyle = [
         props.containerStyle,
         ...(shouldBottomAnchor

@@ -19,8 +19,6 @@ import {
 import type { ServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { useServerCredentialAccountScopes } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
-import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import { ensureSessionMetadataInventoryForServerAccountScope } from '@/sync/domains/session/fetchSessionMetadataInventoryForServerAccountScope';
 
 import { sessionTagKey } from '../sessionTagUtils';
 
@@ -55,13 +53,9 @@ export type SessionListMemorySearchAugmentationState = Readonly<{
     lastSuccessfulQuery?: string;
     lastSuccessfulScopeKey?: string;
     activeScopeKey: string;
-    sessionInventoryStatus: 'idle' | 'loading' | 'ready' | 'error';
-    retrySessionInventory: () => void;
 }>;
 
-type MemorySearchState = Omit<SessionListMemorySearchAugmentationState, 'sessionInventoryStatus' | 'retrySessionInventory'>;
-
-const IDLE_MEMORY_SEARCH_STATE: MemorySearchState = {
+const IDLE_MEMORY_SEARCH_STATE: SessionListMemorySearchAugmentationState = {
     memoryMatchedSessionKeys: EMPTY_MEMORY_MATCHED_SESSION_KEYS,
     memoryMatchedSessionTargets: EMPTY_MEMORY_MATCHED_SESSION_TARGETS,
     isSearchingMemory: false,
@@ -96,7 +90,6 @@ export type SessionListMemorySearchContext = Readonly<{
     machineId: string | null;
     activeScopeKey: string;
     accountBinding: ServerCredentialAccountScopeBinding | null;
-    inventoryServerId: string;
 }>;
 
 export function useSessionListMemorySearchContext(
@@ -113,11 +106,11 @@ export function useSessionListMemorySearchContext(
     const serverId = isHomeProvider
         ? providerDecision.homeServerId ?? ''
         : providerDecision.daemonTarget?.serverId ?? '';
-    const inventoryServerId = requestedServerId || serverId;
-    const credentialBindings = useServerCredentialAccountScopes([inventoryServerId]);
-    const accountBinding = inventoryServerId ? credentialBindings.get(inventoryServerId) ?? null : null;
+    const accountServerId = requestedServerId || serverId;
+    const credentialBindings = useServerCredentialAccountScopes([accountServerId]);
+    const accountBinding = accountServerId ? credentialBindings.get(accountServerId) ?? null : null;
     const accountScope = accountBinding
-        ? { serverId: inventoryServerId, accountId: accountBinding.accountId }
+        ? { serverId: accountServerId, accountId: accountBinding.accountId }
         : null;
     const activeScopeKey = buildSessionListMemorySearchScopeKey({
         accountScope,
@@ -133,8 +126,7 @@ export function useSessionListMemorySearchContext(
         machineId,
         activeScopeKey,
         accountBinding,
-        inventoryServerId,
-    }), [accountBinding, activeScopeKey, inventoryServerId, isHomeProvider, machineId, providerDecision, serverId]);
+    }), [accountBinding, activeScopeKey, isHomeProvider, machineId, providerDecision, serverId]);
 }
 
 function isAbortSupersession(error: unknown, signal: AbortSignal): boolean {
@@ -154,10 +146,10 @@ function resolveMemorySearchFailureReason(error: unknown): string {
 }
 
 function resolveIdleMemorySearchState(
-    current: MemorySearchState,
+    current: SessionListMemorySearchAugmentationState,
     activeScopeKey: string,
     memorySearchUnavailableReason?: string,
-): MemorySearchState {
+): SessionListMemorySearchAugmentationState {
     const hasMemoryMatches = current.memoryMatchedSessionKeys.size > 0;
     if (
         !hasMemoryMatches
@@ -179,10 +171,10 @@ function resolveIdleMemorySearchState(
 }
 
 function resolveRefreshingMemorySearchState(
-    current: MemorySearchState,
+    current: SessionListMemorySearchAugmentationState,
     normalizedQuery: string,
     activeScopeKey: string,
-): MemorySearchState {
+): SessionListMemorySearchAugmentationState {
     if (current.lastSuccessfulQuery === normalizedQuery && current.lastSuccessfulScopeKey === activeScopeKey) {
         if (!current.isSearchingMemory && current.memorySearchUnavailableReason === undefined) {
             return current;
@@ -220,60 +212,13 @@ export function useSessionListMemorySearchAugmentationForContext(
     input: SessionListMemorySearchAugmentationInput,
     context: SessionListMemorySearchContext,
 ): SessionListMemorySearchAugmentationState {
-    const { accountBinding, activeScopeKey, inventoryServerId, isHomeProvider, machineId, providerDecision, serverId } = context;
+    const { accountBinding, activeScopeKey, isHomeProvider, machineId, providerDecision, serverId } = context;
     const queryAvailable = providerDecision.queryAvailable;
     const unavailableReason = providerDecision.unavailableReason;
     const normalizedQuery = input.searchQuery.trim();
-    const hasInventoryQuery = normalizedQuery.length > 0;
-    const [state, setState] = React.useState<MemorySearchState>(IDLE_MEMORY_SEARCH_STATE);
-    const [sessionInventoryStatus, setSessionInventoryStatus] = React.useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-    const [sessionInventoryAttempt, retrySessionInventory] = React.useReducer((attempt: number) => attempt + 1, 0);
+    const [state, setState] = React.useState<SessionListMemorySearchAugmentationState>(IDLE_MEMORY_SEARCH_STATE);
     const activeScopeKeyRef = React.useRef(activeScopeKey);
     activeScopeKeyRef.current = activeScopeKey;
-
-    React.useEffect(() => {
-        if (
-            input.enabled === false
-            || !hasInventoryQuery
-            || !inventoryServerId
-            || !accountBinding
-            || !accountBinding.isCurrent()
-        ) {
-            setSessionInventoryStatus('idle');
-            return;
-        }
-        const scope = createServerAccountScope(inventoryServerId, accountBinding.accountId);
-        if (!scope) {
-            setSessionInventoryStatus('error');
-            return;
-        }
-        const controller = new AbortController();
-        let current = true;
-        setSessionInventoryStatus('loading');
-        void ensureSessionMetadataInventoryForServerAccountScope({
-            scope,
-            accountLifetime: accountBinding,
-            signal: controller.signal,
-            ...(sessionInventoryAttempt > 0 ? { refresh: true } : {}),
-        }).then(() => {
-            if (current && !controller.signal.aborted && accountBinding.isCurrent()) {
-                setSessionInventoryStatus('ready');
-            }
-        }).catch((error: unknown) => {
-            if (!current || isAbortSupersession(error, controller.signal) || !accountBinding.isCurrent()) return;
-            setSessionInventoryStatus('error');
-        });
-        return () => {
-            current = false;
-            controller.abort();
-        };
-    }, [
-        accountBinding,
-        input.enabled,
-        inventoryServerId,
-        hasInventoryQuery,
-        sessionInventoryAttempt,
-    ]);
 
     React.useEffect(() => {
         if (
@@ -463,18 +408,9 @@ export function useSessionListMemorySearchAugmentationForContext(
     ]);
 
     if (state.activeScopeKey !== activeScopeKey) {
-        return {
-            ...IDLE_MEMORY_SEARCH_STATE,
-            activeScopeKey,
-            sessionInventoryStatus,
-            retrySessionInventory,
-        };
+        return { ...IDLE_MEMORY_SEARCH_STATE, activeScopeKey };
     }
-    return {
-        ...state,
-        sessionInventoryStatus,
-        retrySessionInventory,
-    };
+    return state;
 }
 
 export function useSessionListMemorySearchAugmentation(

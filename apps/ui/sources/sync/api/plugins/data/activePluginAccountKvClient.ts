@@ -57,6 +57,8 @@ function kvError(code: string, message: string, retryable = false): PluginError 
 
 function unavailableError(reason: ActivePluginCollectionUnavailableReasonV1): PluginError {
     switch (reason) {
+        case 'mutation-outcome-unknown':
+            return kvError('plugin_account_storage_outcome_unknown', 'Account KV mutation outcome is unknown');
         case 'operation-cancelled':
             return kvError(CANCELLED_CODE, 'Plugin Account KV operation was cancelled');
         case 'request-not-serializable':
@@ -226,17 +228,18 @@ async function writeSnapshot(input: Readonly<{
         operation: input.operation,
         path: accountKvPath(input.pluginId),
         body: body.data,
+        kind: 'mutation',
         ...(input.options ? { options: input.options } : {}),
     });
     if (response.status !== 'response') throw unavailableError(response.reason);
     if (!response.ok) {
         throw PluginAccountStorageUnavailableV1Schema.safeParse(response.body).success
             ? kvError(ACCOUNT_STORAGE_UNAVAILABLE_CODE, 'Account KV is unavailable on this server')
-            : kvError(ACCOUNT_STORAGE_UNAVAILABLE_CODE, 'Account KV write is unavailable', true);
+            : unavailableError('mutation-outcome-unknown');
     }
     const parsed = PluginAccountStorageMutationResponseV1Schema.safeParse(response.body);
     if (!parsed.success) {
-        throw kvError(PROTOCOL_INVALID_CODE, 'Account KV mutation response is invalid');
+        throw unavailableError('mutation-outcome-unknown');
     }
     if (parsed.data.status === 'conflict') {
         return 'conflict';
@@ -388,7 +391,6 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                             }),
                         }));
                     }
-                    assertSignalActive(mergedSignal.signal);
                     return result;
                 } finally {
                     mergedSignal.dispose();

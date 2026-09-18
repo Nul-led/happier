@@ -52,9 +52,9 @@ describe('projectManager workspace-scoped SCM state', () => {
         projectManager.markWorkspaceScmTouchedPaths(scope, ['a.ts'], 10);
 
         projectManager.addSession(createSession('s1', 'm1', '/repo') as any, { serverId: 's' });
-        expect(projectManager.getSessionProjectScmTouchedPaths('s1')).toEqual(['a.ts']);
+        expect(projectManager.getWorkspaceScmTouchedPathsForSession('s1')).toEqual(['a.ts']);
 
-        projectManager.markSessionProjectScmTouchedPaths('s1', ['b.ts'], 11);
+        projectManager.markWorkspaceScmTouchedPathsForSession('s1', ['b.ts'], 11);
         expect(projectManager.getWorkspaceScmTouchedPaths(scope)).toEqual(['a.ts', 'b.ts']);
     });
 });

@@ -21,6 +21,11 @@ export type MarkdownSourceRangeAction = Readonly<{
     markdown: string;
 }>;
 
+export type MarkdownSourceRangeLayoutObserver = Readonly<{
+    onRanges: (ranges: readonly MarkdownSourceRangeAction[]) => void;
+    onLayout: (range: MarkdownSourceRangeAction, layout: Readonly<{ y: number; height: number }>) => void;
+}>;
+
 export const MarkdownView = React.memo((props: {
     testID?: string;
     markdown: string;
@@ -36,6 +41,7 @@ export const MarkdownView = React.memo((props: {
     streamingRevealPreset?: StreamingTextRevealPreset;
     staticRenderPlaceholderEnabled?: boolean;
     renderCacheKey?: string;
+    sourceRangeLayoutObserver?: MarkdownSourceRangeLayoutObserver;
     onPressSourceRange?: (action: MarkdownSourceRangeAction) => void;
     renderAfterSourceRange?: (action: MarkdownSourceRangeAction) => React.ReactNode;
     highlightSourceRange?: MarkdownSourceRange | null;
@@ -62,6 +68,7 @@ export const MarkdownView = React.memo((props: {
             streamingRevealPreset={props.streamingRevealPreset}
             staticRenderPlaceholderEnabled={props.staticRenderPlaceholderEnabled}
             renderCacheKey={props.renderCacheKey}
+            sourceRangeLayoutObserver={props.sourceRangeLayoutObserver}
             onPressSourceRange={props.onPressSourceRange}
             renderAfterSourceRange={props.renderAfterSourceRange}
             highlightSourceRange={props.highlightSourceRange}

@@ -18,10 +18,11 @@ function userMessage(id: string, seq: number, text: string): Message {
   };
 }
 
-function createState(partial: Partial<Pick<StorageState, 'sessions' | 'sessionMessages'>>): Pick<StorageState, 'sessions' | 'sessionMessages'> {
+function createState(partial: Partial<Pick<StorageState, 'sessions' | 'sessionMessages' | 'sessionMessagesHistoryStartLoaded'>>): Pick<StorageState, 'sessions' | 'sessionMessages' | 'sessionMessagesHistoryStartLoaded'> {
   return {
     sessions: partial.sessions ?? {},
     sessionMessages: partial.sessionMessages ?? {},
+    sessionMessagesHistoryStartLoaded: partial.sessionMessagesHistoryStartLoaded ?? {},
   };
 }
 
@@ -65,6 +66,52 @@ function sessionMessagesRow(params: Readonly<{
 describe('getForkedTranscriptSnapshotCached', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('reveals cached ancestor segments only as closer history starts are reached, without stealing child-native ids', () => {
+    const state = {
+      ...createState({
+        sessions: {
+          root: sessionRow('root', { path: '/tmp', host: 'h' }),
+          parent: sessionRow('parent', {
+            path: '/tmp', host: 'h',
+            forkV1: { v: 1, parentSessionId: 'root', parentCutoffSeqInclusive: 5, createdAtMs: 1, strategy: 'provider_native' },
+          }),
+          child: sessionRow('child', {
+            path: '/tmp', host: 'h',
+            forkV1: { v: 1, parentSessionId: 'parent', parentCutoffSeqInclusive: 50, createdAtMs: 2, strategy: 'provider_native' },
+          }),
+        },
+        sessionMessages: {
+          root: sessionMessagesRow({ idsOldestFirst: ['root-row'], messagesById: { 'root-row': userMessage('root-row', 5, 'root') }, messagesVersion: 1, isLoaded: true }),
+          parent: sessionMessagesRow({ idsOldestFirst: ['shared-id'], messagesById: { 'shared-id': userMessage('shared-id', 50, 'parent version') }, messagesVersion: 1, isLoaded: true }),
+          child: sessionMessagesRow({ idsOldestFirst: ['shared-id', 'child-tail'], messagesById: {
+            'shared-id': userMessage('shared-id', 100, 'child version'),
+            'child-tail': userMessage('child-tail', 101, 'child tail'),
+          }, messagesVersion: 1, isLoaded: true }),
+        },
+      }),
+      sessionMessagesHistoryStartLoaded: {} as Record<string, true>,
+    };
+    const childWindow = getForkedTranscriptSnapshotCached(state, 'child')!;
+    expect(childWindow.combinedMessageIdsOldestFirst).toEqual(['shared-id', 'child-tail']);
+    expect(childWindow.combinedMessagesById['shared-id']).toMatchObject({ seq: 100, text: 'child version' });
+    expect(childWindow.segments.map((segment) => segment.sessionId)).toEqual(['root', 'parent', 'child']);
+    expect(childWindow.segments[0]!.messageIdsOldestFirst).toEqual([]);
+
+    state.sessionMessagesHistoryStartLoaded = { child: true };
+    const parentWindow = getForkedTranscriptSnapshotCached(state, 'child')!;
+    expect(parentWindow).not.toBe(childWindow);
+    expect(parentWindow.combinedMessageIdsOldestFirst).toEqual(['shared-id', 'child-tail']);
+    expect(parentWindow.combinedMessagesById['shared-id']).toMatchObject({ seq: 50, text: 'parent version' });
+    expect(parentWindow.messageOriginById['shared-id']).toEqual({ sessionId: 'parent', isReadOnlyContext: true });
+    expect(parentWindow.segments[0]!.messageIdsOldestFirst).toEqual([]);
+
+    state.sessionMessagesHistoryStartLoaded = { child: true, parent: true };
+    const rootWindow = getForkedTranscriptSnapshotCached(state, 'child')!;
+    expect(rootWindow.combinedMessageIdsOldestFirst).toEqual(['root-row', 'shared-id', 'child-tail']);
+    expect(state.sessionMessages.parent!.messageIdsOldestFirst).toEqual(['shared-id']);
+    expect(state.sessionMessages.child!.messageIdsOldestFirst).toEqual(['shared-id', 'child-tail']);
   });
 
   it('returns null when the session has no fork metadata', () => {
@@ -112,6 +159,7 @@ describe('getForkedTranscriptSnapshotCached', () => {
         parent: sessionMessagesRow({ idsOldestFirst: ['p1', 'p2', 'p3'], messagesById: parentMessagesById, messagesVersion: 1, isLoaded: true }),
         child: sessionMessagesRow({ idsOldestFirst: ['c1'], messagesById: childMessagesById, messagesVersion: 1, isLoaded: true }),
       },
+      sessionMessagesHistoryStartLoaded: { child: true },
     });
 
     const snapshot = getForkedTranscriptSnapshotCached(state, 'child');
@@ -188,6 +236,7 @@ describe('getForkedTranscriptSnapshotCached', () => {
         parent: sessionMessagesRow({ idsOldestFirst: ['p1', 'p2'], messagesById: parentMessagesById, messagesVersion: 1, isLoaded: true }),
         child: sessionMessagesRow({ idsOldestFirst: ['c1'], messagesById: childMessagesById, messagesVersion: 1, isLoaded: true }),
       },
+      sessionMessagesHistoryStartLoaded: { child: true, parent: true },
     });
 
     const snapshot = getForkedTranscriptSnapshotCached(state, 'child');
@@ -205,7 +254,7 @@ describe('getForkedTranscriptSnapshotCached', () => {
     expect(snapshot!.messageOriginById['c1']).toEqual({ sessionId: 'child', isReadOnlyContext: false });
   });
 
-  it('dedupes overlapping message ids across segments by preferring the child segment', () => {
+  it('dedupes overlapping message ids across visible segments by preferring the ancestor segment', () => {
     const parentMessagesById: Record<string, Message> = {
       shared: userMessage('shared', 1, 'shared-parent'),
       p2: userMessage('p2', 2, 'two'),
@@ -237,6 +286,7 @@ describe('getForkedTranscriptSnapshotCached', () => {
         parent: sessionMessagesRow({ idsOldestFirst: ['shared', 'p2'], messagesById: parentMessagesById, messagesVersion: 1, isLoaded: true }),
         child: sessionMessagesRow({ idsOldestFirst: ['shared', 'c2'], messagesById: childMessagesById, messagesVersion: 1, isLoaded: true }),
       },
+      sessionMessagesHistoryStartLoaded: { child: true },
     });
 
     const snapshot = getForkedTranscriptSnapshotCached(state, 'child');

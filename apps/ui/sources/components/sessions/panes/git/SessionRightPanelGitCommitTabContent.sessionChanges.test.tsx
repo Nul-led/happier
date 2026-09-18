@@ -14,13 +14,14 @@ const commitSelectionInputSpy = vi.hoisted(() => vi.fn());
 
 function makeChangedFilesData(overrides: Record<string, unknown> = {}) {
     return {
-    attributionReliability: 'high',
+    sessionAttribution: { confidence: 'unknown', reason: 'unavailable' },
+        sessionCheckpointOverlap: 'unknown',
     allRepositoryChangedFiles: [],
     turnAttributedFiles: [],
     turnRepositoryOnlyFiles: [],
     sessionAttributedFiles: [],
     repositoryOnlyFiles: [],
-    suppressedInferredCount: 0,
+
     showTurnViewToggle: false,
     showSessionViewToggle: false,
     scmStatusFiles: null,
@@ -65,7 +66,7 @@ vi.mock('@/hooks/session/files/useChangedFilesData', () => ({
 }));
 
 vi.mock('@/sync/domains/session/changes/hooks/useDerivedSessionChangeSet', () => ({
-    useDerivedSessionChangeSet: (sessionId: string) => useDerivedSessionChangeSetSpy(sessionId),
+    useDerivedSessionChangeSet: (address: unknown) => useDerivedSessionChangeSetSpy(address),
 }));
 
 vi.mock('./useSessionRightPanelGitCommitSelection', () => ({
@@ -145,11 +146,10 @@ describe('SessionRightPanelGitCommitTabContent', () => {
         await renderScreen(<SessionRightPanelGitCommitTabContent
                     theme={{}}
                     sessionId="s1"
+                    serverId="home-a"
                     sessionPath="/tmp/repo"
                     scmSnapshot={{ capabilities: {} } as any}
-                    touchedPaths={[]}
-                    operationLog={[]}
-                    projectSessionIds={[]}
+                    workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
                     scmCommitStrategy="atomic"
@@ -176,6 +176,11 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     openFileInDetails={vi.fn()}
                     openFileInDetailsPinned={vi.fn()}
                 />);
+
+        expect(useDerivedSessionChangeSetSpy).toHaveBeenCalledWith({
+            serverId: 'home-a',
+            sessionId: 's1',
+        });
 
         expect(useChangedFilesDataSpy).toHaveBeenCalledWith(expect.objectContaining({
             latestTurnChangeSet: expect.objectContaining({ sessionId: 's1' }),
@@ -221,9 +226,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     sessionId="s1"
                     sessionPath="/tmp/repo"
                     scmSnapshot={{ capabilities: {} } as any}
-                    touchedPaths={[]}
-                    operationLog={[]}
-                    projectSessionIds={[]}
+                    workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
                     scmCommitStrategy="atomic"
@@ -290,9 +293,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                         sessionId="s1"
                         sessionPath="/tmp/repo"
                         scmSnapshot={{ capabilities: {} } as any}
-                        touchedPaths={[]}
-                        operationLog={[]}
-                        projectSessionIds={[]}
+                        workspaceTouchedPaths={[]}
                         commitSelectionPaths={[]}
                         commitSelectionPatches={[]}
                         scmCommitStrategy="atomic"
@@ -375,9 +376,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     sessionId="s1"
                     sessionPath="/tmp/repo"
                     scmSnapshot={{ capabilities: {} } as any}
-                    touchedPaths={[]}
-                    operationLog={[]}
-                    projectSessionIds={[]}
+                    workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
                     scmCommitStrategy="atomic"
@@ -433,9 +432,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     sessionId="s1"
                     sessionPath="/tmp/repo"
                     scmSnapshot={{ capabilities: {} } as any}
-                    touchedPaths={[]}
-                    operationLog={[]}
-                    projectSessionIds={[]}
+                    workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
                     scmCommitStrategy="atomic"
@@ -517,9 +514,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     sessionId="s1"
                     sessionPath="/tmp/repo"
                     scmSnapshot={{ capabilities: {} } as any}
-                    touchedPaths={[]}
-                    operationLog={[]}
-                    projectSessionIds={[]}
+                    workspaceTouchedPaths={[]}
                     commitSelectionPaths={['src/selected.ts']}
                     commitSelectionPatches={[]}
                     scmCommitStrategy="atomic"
@@ -577,9 +572,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     sessionId="s1"
                     sessionPath="/tmp/repo"
                     scmSnapshot={{ capabilities: {} } as any}
-                    touchedPaths={[]}
-                    operationLog={[]}
-                    projectSessionIds={[]}
+                    workspaceTouchedPaths={[]}
                     commitSelectionPaths={['src/visible.ts', 'src/generated/']}
                     commitSelectionPatches={[]}
                     scmCommitStrategy="atomic"
@@ -660,9 +653,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     sessionId="s1"
                     sessionPath="/tmp/repo"
                     scmSnapshot={{ capabilities: {} } as any}
-                    touchedPaths={[]}
-                    operationLog={[]}
-                    projectSessionIds={[]}
+                    workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
                     scmCommitStrategy="atomic"
@@ -718,9 +709,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     sessionId="s1"
                     sessionPath="/tmp/repo"
                     scmSnapshot={{ capabilities: {} } as any}
-                    touchedPaths={[]}
-                    operationLog={[]}
-                    projectSessionIds={[]}
+                    workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
                     scmCommitStrategy="atomic"
@@ -775,9 +764,9 @@ describe('SessionRightPanelGitCommitTabContent', () => {
             sessionId: 's1',
             sessionPath: '/tmp/repo',
             scmSnapshot: { capabilities: {} } as any,
-            touchedPaths: [],
-            operationLog: [],
-            projectSessionIds: [],
+            workspaceTouchedPaths: [],
+
+
             commitSelectionPaths: [],
             commitSelectionPatches: [],
             scmCommitStrategy: 'atomic' as const,

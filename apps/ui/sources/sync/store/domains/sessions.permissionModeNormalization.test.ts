@@ -5,8 +5,7 @@ import { createSessionsDomain } from './sessions';
 function createHarness() {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
-        sessionListRowStateByServerId: {},
+        sessionListRowsByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
@@ -15,7 +14,7 @@ function createHarness() {
         machines: {},
         machineDisplayById: {},
         sessionMessages: {},
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
     };
 
     const get = () => state;

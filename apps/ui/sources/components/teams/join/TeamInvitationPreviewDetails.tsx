@@ -1,0 +1,174 @@
+import * as React from 'react';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
+import type { TeamInvitationPreviewV1 } from '@happier-dev/protocol/teams';
+
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { Text } from '@/components/ui/text/Text';
+import { teamRoleLabel } from '@/components/settings/teams/teamLabels';
+import { t } from '@/text';
+
+import { resolveTeamJoinPresentation } from './teamJoinOutcome';
+import type { TeamInvitationPreviewState } from '@/hooks/teams/useTeamInvitationPreview';
+
+/**
+ * What joining this Team actually does, stated before the person confirms.
+ *
+ * Every line is a projection of the bounded preview the Home returned. Nothing
+ * here is inferred from the focused Home, the application origin, the inviter or
+ * a default: a consequence this Home did not publish is simply not shown, which
+ * is why the storage disclosure and the masked recipient are conditional rather
+ * than defaulted. The Guest sentence is the one consequence a role carries that
+ * the role label alone does not say, so it is stated in full.
+ */
+const PreviewLine = React.memo(function PreviewLine(props: Readonly<{
+    testID: string;
+    text: string;
+}>) {
+    return (
+        <Text testID={props.testID} style={styles.line}>
+            {props.text}
+        </Text>
+    );
+});
+
+/** A retained terminal invitation reads as its own state, never as a failure. */
+function terminalPresentation(state: Exclude<TeamInvitationPreviewV1['state'], 'active'>) {
+    switch (state) {
+        case 'accepted':
+            return resolveTeamJoinPresentation({ outcome: 'used' });
+        case 'revoked':
+            return resolveTeamJoinPresentation({ outcome: 'revoked' });
+        case 'expired':
+            return resolveTeamJoinPresentation({ outcome: 'expired' });
+    }
+}
+
+export const TeamInvitationPreviewDetails = React.memo(function TeamInvitationPreviewDetails(props: Readonly<{
+    state: TeamInvitationPreviewState;
+    /** Re-reads this exact invitation; the invitation itself is untouched. */
+    onRetry?: () => void;
+}>) {
+    const { state } = props;
+
+    if (state.kind === 'idle') return null;
+
+    if (state.kind === 'loading') {
+        // Geometry is preserved rather than replaced by a spinner: the Team
+        // lockup above is already rendered, and collapsing the consequences
+        // would make the primary action jump under the pointer.
+        return (
+            <View testID="team-join-preview-loading" style={styles.block}>
+                <Text style={styles.pending}>{t('teams.join.previewLoading')}</Text>
+            </View>
+        );
+    }
+
+    if (state.kind === 'update_required') {
+        return (
+            <SurfaceStateCard
+                testID="team-join-preview-update-required"
+                kind="warning"
+                title={t('teams.join.updateRequiredTitle')}
+                accessibilitySemantics="status"
+            />
+        );
+    }
+
+    if (state.kind === 'unavailable') {
+        return (
+            <SurfaceStateCard
+                testID="team-join-preview-unavailable"
+                kind="warning"
+                title={t('teams.join.invalidTitle')}
+                reason={t('teams.join.askForNew')}
+                accessibilitySemantics="status"
+            />
+        );
+    }
+
+    if (state.kind === 'failed') {
+        // The invitation is untouched; only this device's read failed.
+        return (
+            <SurfaceStateCard
+                testID="team-join-preview-failed"
+                kind="error"
+                title={t('teams.join.offlineTitle')}
+                reason={t('teams.join.offlineBody')}
+                action={state.retryable && props.onRetry
+                    ? { label: t('teams.join.retry'), onPress: props.onRetry }
+                    : undefined}
+                accessibilitySemantics="status"
+            />
+        );
+    }
+
+    const { preview } = state;
+    if (preview.state !== 'active') {
+        const presentation = terminalPresentation(preview.state);
+        return (
+            <SurfaceStateCard
+                testID={`team-join-preview-terminal-${preview.state}`}
+                kind="warning"
+                title={presentation.title}
+                reason={presentation.body ?? undefined}
+                accessibilitySemantics="status"
+            />
+        );
+    }
+
+    return (
+        <View testID="team-join-preview" style={styles.block}>
+            <PreviewLine
+                testID="team-join-preview-role"
+                text={t('teams.join.roleOffered', { role: teamRoleLabel(preview.role) })}
+            />
+            <PreviewLine
+                testID="team-join-preview-history"
+                text={preview.historyAccess === 'all_existing'
+                    ? t('teams.history.allExisting')
+                    : t('teams.history.fromMembership')}
+            />
+            {preview.role === 'guest' ? (
+                <PreviewLine
+                    testID="team-join-preview-guest"
+                    text={t('teams.join.guestNotice', { team: preview.team.name })}
+                />
+            ) : null}
+            {preview.home.storageMode === 'plain' ? (
+                <PreviewLine
+                    testID="team-join-preview-storage"
+                    text={t('teams.join.plainStorageNotice')}
+                />
+            ) : null}
+            {preview.recipientEmailMask !== null ? (
+                <PreviewLine
+                    testID="team-join-preview-recipient"
+                    text={t('teams.invitations.maskedRecipient', { email: preview.recipientEmailMask })}
+                />
+            ) : null}
+            <PreviewLine
+                testID="team-join-preview-expiry"
+                text={t('teams.invitations.expires', {
+                    when: new Date(preview.expiresAt).toLocaleDateString(),
+                })}
+            />
+        </View>
+    );
+});
+
+const styles = StyleSheet.create((theme) => ({
+    block: {
+        gap: 6,
+    },
+    line: {
+        fontSize: 14,
+        lineHeight: 20,
+        color: theme.colors.text.secondary,
+    },
+    pending: {
+        fontSize: 14,
+        lineHeight: 20,
+        color: theme.colors.text.secondary,
+    },
+}));

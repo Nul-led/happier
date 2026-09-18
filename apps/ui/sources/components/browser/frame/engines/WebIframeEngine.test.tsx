@@ -2,7 +2,8 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { createTestMessageChannel } from '@/dev/testkit/mocks/messageChannel';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import {
     applyBrowserDiagnosticEvents,
     createBrowserDiagnosticsUiStore,
@@ -22,9 +23,10 @@ function installTestWindow(): TestWindow {
 function dispatchMessage(
     target: TestWindow,
     input: Readonly<{
-        data: string;
+        data: unknown;
         origin: string;
         source?: MessageEventSource | null;
+        ports?: readonly MessagePort[];
     }>,
 ): void {
     const event = new Event('message') as MessageEvent;
@@ -37,6 +39,9 @@ function dispatchMessage(
         },
         source: {
             value: input.source ?? null,
+        },
+        ports: {
+            value: input.ports ?? [],
         },
     });
     target.dispatchEvent(event);
@@ -84,6 +89,45 @@ function diagnosticBatch(overrides: Record<string, unknown> = {}): Record<string
 }
 
 describe('WebIframeEngine diagnostics wiring', () => {
+    it.each(['unmount', 'navigation', 'source replacement'] as const)('does not deliver a pending bridge response after %s retirement', async (retirement) => {
+        const testWindow = installTestWindow();
+        const iframeSource = { postMessage: vi.fn() } as unknown as WindowProxy;
+        let finish!: (response: unknown) => void;
+        const pending = new Promise((resolve) => { finish = resolve; });
+        const webMessageBridge = {
+            targetOrigin: '*',
+            allowWildcardTargetOrigin: true,
+            onMessage: () => pending,
+        };
+        const screen = await renderScreen(
+            <WebIframeEngine
+                title="Inline"
+                html="<p>Inline</p>"
+                sandbox="allow-scripts"
+                testID="inline-frame"
+                revokeOnUnexpectedNavigation
+                webMessageBridge={webMessageBridge}
+            />,
+            { createNodeMock: (element) => element.type === 'iframe' ? { contentWindow: iframeSource } : null },
+        );
+        await act(async () => dispatchMessage(testWindow, {
+            data: 'request', origin: 'null', source: iframeSource,
+        }));
+        if (retirement === 'unmount') {
+            await screen.unmount();
+        } else if (retirement === 'source replacement') {
+            await screen.update(<WebIframeEngine title="Inline" html="<p>Replacement</p>" sandbox="allow-scripts" testID="inline-frame" revokeOnUnexpectedNavigation webMessageBridge={webMessageBridge} />);
+        } else {
+            const iframe = screen.findByType('iframe');
+            await act(async () => {
+                iframe.props.onLoad();
+                iframe.props.onLoad();
+            });
+        }
+        await act(async () => { finish({ result: 'retired-data' }); });
+        expect(iframeSource.postMessage).not.toHaveBeenCalled();
+    });
+
     beforeEach(() => {
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
@@ -396,6 +440,310 @@ describe('WebIframeEngine diagnostics wiring', () => {
             { accepted: true },
             '*',
         );
+    });
+
+    it('binds an opaque bridge to the admitted document port before host delivery', async () => {
+        const testWindow = installTestWindow();
+        const iframeSource = { postMessage: vi.fn() } as unknown as WindowProxy;
+        const documentChannel = createTestMessageChannel();
+        const onMessage = vi.fn((event: MessageEvent) => ({ replyTo: event.data }));
+        const onMessageAfterRerender = vi.fn((event: MessageEvent) => ({ replyTo: event.data }));
+        let sendHostMessage: ((message: unknown) => void) | null = null;
+        const attachHostMessages = (send: (message: unknown) => void) => {
+            sendHostMessage = send;
+            return () => { sendHostMessage = null; };
+        };
+        const webMessageBridge = (handleMessage: typeof onMessage) => ({
+            targetOrigin: '*',
+            allowWildcardTargetOrigin: true,
+            exactDocumentChannel: true,
+            onMessage: handleMessage,
+            attachHostMessages,
+        });
+
+        const screen = await renderScreen(
+            <WebIframeEngine
+                title="Opaque Artifact guest"
+                html="<p>admitted document</p>"
+                sandbox="allow-scripts"
+                testID="opaque-document-frame"
+                webMessageBridge={webMessageBridge(onMessage)}
+            />,
+            { createNodeMock: (element) => element.type === 'iframe' ? { contentWindow: iframeSource } : null },
+        );
+
+        await act(async () => {
+            dispatchMessage(testWindow, {
+                data: 'ready',
+                origin: 'null',
+                source: iframeSource,
+                ports: [documentChannel.port1],
+            });
+            await Promise.resolve();
+        });
+        expect(documentChannel.port1.postMessage).toHaveBeenCalledWith({ replyTo: 'ready' });
+
+        await screen.update(
+            <WebIframeEngine
+                title="Opaque Artifact guest"
+                html="<p>admitted document</p>"
+                sandbox="allow-scripts"
+                testID="opaque-document-frame"
+                webMessageBridge={webMessageBridge(onMessageAfterRerender)}
+            />,
+        );
+
+        await act(async () => {
+            documentChannel.port2.postMessage('document request');
+            sendHostMessage?.({ push: 'current document only' });
+            dispatchMessage(testWindow, { data: 'replacement request', origin: 'null', source: iframeSource });
+            await Promise.resolve();
+        });
+
+        expect(onMessage.mock.calls.map(([event]) => event.data)).toEqual(['ready']);
+        expect(onMessageAfterRerender.mock.calls.map(([event]) => event.data)).toEqual(['document request']);
+        expect(documentChannel.port1.postMessage).toHaveBeenCalledWith({ push: 'current document only' });
+        expect(iframeSource.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('retires an exact-document port when inline document authority changes and requires a fresh handshake', async () => {
+        const testWindow = installTestWindow();
+        const iframeSource = { postMessage: vi.fn() } as unknown as WindowProxy;
+        const incumbentChannel = createTestMessageChannel();
+        const replacementChannel = createTestMessageChannel();
+        const onMessage = vi.fn((event: MessageEvent) => ({ replyTo: event.data }));
+        let sendHostMessage: ((message: unknown) => void) | null = null;
+        const webMessageBridge = {
+            targetOrigin: '*',
+            allowWildcardTargetOrigin: true,
+            exactDocumentChannel: true,
+            onMessage,
+            attachHostMessages: (send: (message: unknown) => void) => {
+                sendHostMessage = send;
+                return () => { sendHostMessage = null; };
+            },
+        };
+        const screen = await renderScreen(
+            <WebIframeEngine
+                title="Opaque Artifact guest"
+                html="<p>incumbent document</p>"
+                sandbox="allow-scripts"
+                testID="opaque-document-frame"
+                webMessageBridge={webMessageBridge}
+            />,
+            { createNodeMock: (element) => element.type === 'iframe' ? { contentWindow: iframeSource } : null },
+        );
+
+        await act(async () => {
+            dispatchMessage(testWindow, {
+                data: 'incumbent ready',
+                origin: 'null',
+                source: iframeSource,
+                ports: [incumbentChannel.port1],
+            });
+            await Promise.resolve();
+        });
+        expect(onMessage.mock.calls.map(([event]) => event.data)).toEqual(['incumbent ready']);
+
+        incumbentChannel.port1PostMessage.mockClear();
+        await screen.update(
+            <WebIframeEngine
+                title="Opaque Artifact guest"
+                html="<p>replacement document</p>"
+                sandbox="allow-scripts"
+                testID="opaque-document-frame"
+                webMessageBridge={webMessageBridge}
+            />,
+        );
+
+        await act(async () => {
+            incumbentChannel.port2.postMessage('retired document request');
+            sendHostMessage?.({ push: 'before replacement handshake' });
+            dispatchMessage(testWindow, {
+                data: 'replacement without port',
+                origin: 'null',
+                source: iframeSource,
+            });
+            await Promise.resolve();
+        });
+        expect(incumbentChannel.port1Close).toHaveBeenCalledOnce();
+        expect(incumbentChannel.port1PostMessage).not.toHaveBeenCalled();
+        expect(replacementChannel.port1PostMessage).not.toHaveBeenCalled();
+        expect(onMessage.mock.calls.map(([event]) => event.data)).toEqual(['incumbent ready']);
+
+        await act(async () => {
+            dispatchMessage(testWindow, {
+                data: 'replacement ready',
+                origin: 'null',
+                source: iframeSource,
+                ports: [replacementChannel.port1],
+            });
+            replacementChannel.port2.postMessage('replacement request');
+            sendHostMessage?.({ push: 'replacement current' });
+            await Promise.resolve();
+        });
+        expect(onMessage.mock.calls.map(([event]) => event.data)).toEqual([
+            'incumbent ready',
+            'replacement ready',
+            'replacement request',
+        ]);
+        expect(replacementChannel.port1PostMessage).toHaveBeenCalledWith({ replyTo: 'replacement ready' });
+        expect(replacementChannel.port1PostMessage).toHaveBeenCalledWith({ replyTo: 'replacement request' });
+        expect(replacementChannel.port1PostMessage).toHaveBeenCalledWith({ push: 'replacement current' });
+        expect(iframeSource.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('delivers the attachment owner terminal push through an ordinary-origin frame before teardown', async () => {
+        installTestWindow();
+        const iframeSource = { postMessage: vi.fn() } as unknown as WindowProxy;
+        let detachCount = 0;
+        const screen = await renderScreen(
+            <WebIframeEngine
+                title="Ordinary guest"
+                url="https://guest.example.test/app"
+                sandbox="allow-scripts"
+                testID="ordinary-web-frame"
+                webMessageBridge={{
+                    targetOrigin: 'https://guest.example.test',
+                    onMessage: () => undefined,
+                    attachHostMessages: (send) => () => {
+                        detachCount += 1;
+                        send({ terminal: 'disconnected' });
+                    },
+                }}
+            />,
+            { createNodeMock: (element) => element.type === 'iframe' ? { contentWindow: iframeSource } : null },
+        );
+
+        await screen.unmount();
+
+        // The bridge owner's one terminal packet must reach the incumbent guest.
+        // Retiring the delivery primitive first drops it silently.
+        expect(iframeSource.postMessage).toHaveBeenCalledWith(
+            { terminal: 'disconnected' },
+            'https://guest.example.test',
+        );
+        expect(detachCount).toBe(1);
+    });
+
+    it('delivers the attachment owner terminal push over the incumbent document port before it is closed', async () => {
+        const testWindow = installTestWindow();
+        const iframeSource = { postMessage: vi.fn() } as unknown as WindowProxy;
+        const incumbentChannel = createTestMessageChannel();
+        const replacementChannel = createTestMessageChannel();
+        let detachCount = 0;
+        const bridge = (terminal: string) => ({
+            targetOrigin: '*',
+            allowWildcardTargetOrigin: true,
+            exactDocumentChannel: true,
+            onMessage: () => undefined,
+            attachHostMessages: (send: (message: unknown) => void) => () => {
+                detachCount += 1;
+                send({ terminal });
+            },
+        });
+
+        const screen = await renderScreen(
+            <WebIframeEngine
+                title="Opaque Artifact guest"
+                html="<p>incumbent document</p>"
+                sandbox="allow-scripts"
+                testID="opaque-document-frame"
+                webMessageBridge={bridge('incumbent-disconnected')}
+            />,
+            { createNodeMock: (element) => element.type === 'iframe' ? { contentWindow: iframeSource } : null },
+        );
+        await act(async () => {
+            dispatchMessage(testWindow, {
+                data: 'incumbent ready',
+                origin: 'null',
+                source: iframeSource,
+                ports: [incumbentChannel.port1],
+            });
+            await Promise.resolve();
+        });
+
+        // A replacement document retires the incumbent transport. The terminal
+        // packet must land on the incumbent port while it is still open.
+        await screen.update(
+            <WebIframeEngine
+                title="Opaque Artifact guest"
+                html="<p>replacement document</p>"
+                sandbox="allow-scripts"
+                testID="opaque-document-frame"
+                webMessageBridge={bridge('replacement-disconnected')}
+            />,
+        );
+        expect(incumbentChannel.port1PostMessage).toHaveBeenCalledWith({ terminal: 'incumbent-disconnected' });
+        expect(incumbentChannel.port1Close).toHaveBeenCalledOnce();
+        expect(detachCount).toBe(1);
+
+        await act(async () => {
+            dispatchMessage(testWindow, {
+                data: 'replacement ready',
+                origin: 'null',
+                source: iframeSource,
+                ports: [replacementChannel.port1],
+            });
+            await Promise.resolve();
+        });
+        await screen.unmount();
+
+        // Unmount is the same ordered retirement, and each attachment is
+        // disposed exactly once.
+        expect(replacementChannel.port1PostMessage).toHaveBeenCalledWith({ terminal: 'replacement-disconnected' });
+        expect(detachCount).toBe(2);
+        expect(incumbentChannel.port1PostMessage).not.toHaveBeenCalledWith({ terminal: 'replacement-disconnected' });
+        expect(iframeSource.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('issues one host-owned transient activation only to the exact focused iframe', async () => {
+        const testWindow = installTestWindow();
+        const iframeSource = { postMessage: vi.fn() } as unknown as WindowProxy;
+        const iframeElement = { contentWindow: iframeSource } as unknown as HTMLIFrameElement;
+        const otherElement = {} as Element;
+        const userActivation = { isActive: true };
+        let activeElement: Element | null = otherElement;
+        vi.stubGlobal('navigator', { userActivation });
+        vi.stubGlobal('document', {
+            get activeElement() { return activeElement; },
+        });
+        const receipts: Array<Readonly<{ consumeTransientActivation(): boolean }>> = [];
+
+        await renderScreen(
+            <WebIframeEngine
+                title="Inline"
+                html="<button>Send</button>"
+                sandbox="allow-scripts"
+                testID="inline-frame"
+                webMessageBridge={{
+                    targetOrigin: '*',
+                    allowWildcardTargetOrigin: true,
+                    onMessage: (...args: unknown[]) => {
+                        receipts.push(args[1] as Readonly<{ consumeTransientActivation(): boolean }>);
+                    },
+                }}
+            />,
+            { createNodeMock: (element) => element.type === 'iframe' ? iframeElement : null },
+        );
+
+        dispatchMessage(testWindow, { data: 'wrong-frame', origin: 'null', source: iframeSource });
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(false);
+
+        activeElement = iframeElement;
+        dispatchMessage(testWindow, { data: 'genuine', origin: 'null', source: iframeSource });
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(true);
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(false);
+
+        dispatchMessage(testWindow, { data: 'replay', origin: 'null', source: iframeSource });
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(false);
+
+        userActivation.isActive = false;
+        dispatchMessage(testWindow, { data: 'delayed', origin: 'null', source: iframeSource });
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(false);
+        userActivation.isActive = true;
+        dispatchMessage(testWindow, { data: 'next-genuine-activation', origin: 'null', source: iframeSource });
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(true);
     });
 
     it('posts eval requests into the iframe and routes nonce-bound eval results back to diagnostics', async () => {

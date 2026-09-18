@@ -63,6 +63,17 @@ describe('active focus transaction with the production connection manager', () =
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         vi.stubGlobal('window', { location: { origin: 'https://origin.example.test' } });
         vi.stubGlobal('document', {});
+        const lockTails = new Map<string, Promise<void>>();
+        vi.stubGlobal('navigator', {
+            locks: {
+                request: <T>(name: string, callback: () => T | PromiseLike<T>): Promise<T> => {
+                    const previous = lockTails.get(name) ?? Promise.resolve();
+                    const result = previous.then(callback);
+                    lockTails.set(name, result.then(() => undefined, () => undefined));
+                    return result;
+                },
+            },
+        });
 
         const firstSwitchStarted = createDeferred<void>();
         const releaseFirstSwitch = createDeferred<void>();
@@ -75,19 +86,19 @@ describe('active focus transaction with the production connection manager', () =
         });
 
         const profiles = await import('./serverProfiles');
-        const active = profiles.upsertServerProfile({
+        const active = await profiles.upsertServerProfile({
             serverUrl: 'https://active.example.test',
             name: 'Active',
         });
-        const middle = profiles.upsertServerProfile({
+        const middle = await profiles.upsertServerProfile({
             serverUrl: 'https://middle.example.test',
             name: 'Middle',
         });
-        const final = profiles.upsertServerProfile({
+        const final = await profiles.upsertServerProfile({
             serverUrl: 'https://final.example.test',
             name: 'Final',
         });
-        profiles.setActiveServerId(active.id, { scope: 'device' });
+        await profiles.setActiveServerId(active.id, { scope: 'device' });
         const [switches, connection] = await Promise.all([
             import('./activeServerSwitch'),
             import('@/sync/runtime/orchestration/connectionManager'),

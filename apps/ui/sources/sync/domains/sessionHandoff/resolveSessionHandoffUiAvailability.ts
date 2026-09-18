@@ -49,6 +49,9 @@ function hasResolvableSessionHandoffSource(input: Readonly<{
     session: SessionLike | null | undefined;
 }>): boolean {
     const sessionId = normalizeNonEmptyString(input.sessionId);
+    const reachableMachineId = normalizeNonEmptyString(input.reachableMachineId)
+        ?? (sessionId ? readMachineTargetForSession(sessionId)?.machineId : null)
+        ?? null;
     const sessionMetadata = input.session
         ? readSessionOwnerMetadataView({
             metadataLayoutVersion: input.session.metadataLayoutVersion,
@@ -56,15 +59,13 @@ function hasResolvableSessionHandoffSource(input: Readonly<{
             ownerMetadataView: input.session.ownerMetadataView,
         })
         : null;
-    if (!sessionMetadata) {
+    if (!reachableMachineId && !sessionMetadata) {
         return false;
     }
 
     return resolveSessionHandoffSourceMachineId({
-        reachableMachineId: normalizeNonEmptyString(input.reachableMachineId)
-            ?? (sessionId ? readMachineTargetForSession(sessionId)?.machineId : null)
-            ?? null,
-        sessionMetadata,
+        reachableMachineId,
+        ...(sessionMetadata ? { sessionMetadata } : {}),
     }) !== null;
 }
 
@@ -76,7 +77,9 @@ function readSourceMachineDaemonState(input: Readonly<{
 }>): unknown | null {
     const sessionId = normalizeNonEmptyString(input.sessionId);
     const serverId = normalizeNonEmptyString(input.serverId);
-    const reachableMachineId = normalizeNonEmptyString(input.reachableMachineId);
+    const reachableMachineId = normalizeNonEmptyString(input.reachableMachineId)
+        ?? (sessionId ? readMachineTargetForSession(sessionId)?.machineId : null)
+        ?? null;
     const sessionMetadata = input.session
         ? readSessionOwnerMetadataView({
             metadataLayoutVersion: input.session.metadataLayoutVersion,
@@ -84,13 +87,13 @@ function readSourceMachineDaemonState(input: Readonly<{
             ownerMetadataView: input.session.ownerMetadataView,
         })
         : null;
-    if (!sessionId || !sessionMetadata) {
+    if (!sessionId || (!reachableMachineId && !sessionMetadata)) {
         return null;
     }
 
     const sourceMachineId = resolveSessionHandoffSourceMachineId({
-        reachableMachineId: reachableMachineId ?? readMachineTargetForSession(sessionId)?.machineId ?? null,
-        sessionMetadata,
+        reachableMachineId,
+        ...(sessionMetadata ? { sessionMetadata } : {}),
     });
     if (!sourceMachineId) {
         return null;

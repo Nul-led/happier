@@ -31,13 +31,13 @@ describe('projectManager git attribution', () => {
         projectManager.addSession(createSession('s1', 'm1', '/repo') as any);
         projectManager.addSession(createSession('s2', 'm1', '/repo') as any);
 
-        projectManager.markSessionProjectScmTouchedPaths('s1', ['a.ts', 'b.ts'], 100);
-        expect(projectManager.getSessionProjectScmTouchedPaths('s1').sort()).toEqual(['a.ts', 'b.ts']);
-        expect(projectManager.getSessionProjectScmTouchedPaths('s2').sort()).toEqual(['a.ts', 'b.ts']);
+        projectManager.markWorkspaceScmTouchedPathsForSession('s1', ['a.ts', 'b.ts'], 100);
+        expect(projectManager.getWorkspaceScmTouchedPathsForSession('s1').sort()).toEqual(['a.ts', 'b.ts']);
+        expect(projectManager.getWorkspaceScmTouchedPathsForSession('s2').sort()).toEqual(['a.ts', 'b.ts']);
 
-        projectManager.pruneSessionProjectScmTouchedPaths('s2', new Set(['a.ts']));
-        expect(projectManager.getSessionProjectScmTouchedPaths('s1')).toEqual(['a.ts']);
-        expect(projectManager.getSessionProjectScmTouchedPaths('s2')).toEqual(['a.ts']);
+        projectManager.pruneWorkspaceScmTouchedPathsForSession('s2', new Set(['a.ts']));
+        expect(projectManager.getWorkspaceScmTouchedPathsForSession('s1')).toEqual(['a.ts']);
+        expect(projectManager.getWorkspaceScmTouchedPathsForSession('s2')).toEqual(['a.ts']);
     });
 
     it('stores bounded git operation log per project', () => {

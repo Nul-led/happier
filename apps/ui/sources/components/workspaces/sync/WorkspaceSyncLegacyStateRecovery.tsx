@@ -55,8 +55,10 @@ export const WorkspaceSyncLegacyStateRecovery = React.memo(function WorkspaceSyn
     const [outdatedMachineIds, setOutdatedMachineIds] = React.useState<readonly string[]>([]);
     const [checking, setChecking] = React.useState(false);
     const [inspectionFailed, setInspectionFailed] = React.useState(false);
+    const inspectionsInFlightRef = React.useRef(0);
 
     const inspect = React.useCallback(async () => {
+        inspectionsInFlightRef.current += 1;
         setChecking(true);
         const outdated: string[] = [];
         const settled = await Promise.allSettled(machines.map(async (machine): Promise<Finding | null> => {
@@ -92,8 +94,14 @@ export const WorkspaceSyncLegacyStateRecovery = React.memo(function WorkspaceSyn
             && machines[index]
             && !outdated.includes(machines[index]!.id)
         )));
-        setChecking(false);
+        inspectionsInFlightRef.current -= 1;
+        if (inspectionsInFlightRef.current === 0) setChecking(false);
     }, [machines]);
+
+    const reinspect = React.useCallback(() => {
+        if (inspectionsInFlightRef.current > 0) return;
+        void inspect();
+    }, [inspect]);
 
     React.useEffect(() => { void inspect(); }, [inspect]);
 
@@ -173,7 +181,9 @@ export const WorkspaceSyncLegacyStateRecovery = React.memo(function WorkspaceSyn
             <Item
                 testID="workspace-sync-legacy-reinspect"
                 title={t('workspaceSync.legacyRecovery.reinspect')}
-                onPress={() => { void inspect(); }}
+                onPress={reinspect}
+                loading={checking}
+                disabled={checking}
             />
         </ItemGroup>
     );

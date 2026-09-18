@@ -14,20 +14,19 @@ import { readPeerEndpointForServerScope } from '@/sync/domains/machines/peer/med
 import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { storage } from '@/sync/domains/state/storage';
 import { serverFetch } from '@/sync/http/client';
-import { getIrohApplicationEndpoint, probeIrohMachineHttpLifecycleAvailability, startIrohMachineHttpTunnel } from '@/sync/runtime/nativeIrohTunnels/machineHttpLifecycle';
+import { getIrohApplicationEndpoint, probeIrohMachineTransferLifecycleAvailability, startIrohMachineTransferTunnel } from '@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle';
 import { isBrowserIrohHost } from '@/sync/runtime/browserIroh/hostEligibility';
-import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { parseToken } from '@/utils/auth/parseToken';
-import { resolveTransferRouteDecision } from '../routing/resolveTransferRouteDecision';
-import { resolveMachineCarrierPreselection } from '../routing/resolveMachineCarrierPreselection';
-import type { MachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
-
-export type { MachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
+import { probeMachineRpcDirectRouteAvailability } from '../../probeMachineRpcDirectRouteAvailability';
+import { isMachineDaemonFiniteTransferApplicationSupported, isMachineDaemonLegacyTransferRpcEligible } from '../availability/machineDaemonTransferState';
+import { isMachineFiniteTransferRpcDeclared, resolveMachineCarrierPreselection } from '../routing/resolveMachineCarrierPreselection';
 
 /** Stable user-facing failure copy for an operation pinned to machine/1. */
 export const MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR = 'A direct machine connection is required for this transfer.';
 export const MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR = 'The direct machine connection was interrupted. Retry the transfer.';
 export const MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE = 'machine_carrier_transport_failed' as const;
+export const MACHINE_CARRIER_UNAVAILABLE_ERROR_CODE = 'machine_carrier_unavailable' as const;
 
 function createMachineCarrierTransportFailure(cause: unknown): Error & Readonly<{
     errorCode: typeof MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE;
@@ -53,7 +52,6 @@ export type MachineCarrierHttpLease = Readonly<
     | {
         kind: 'native_http';
         localOrigin: string;
-        requestHeaders: Readonly<Record<string, string>>;
         release: () => Promise<void> | void;
     }
     | {
@@ -67,9 +65,6 @@ export type AcquireMachineCarrierHttpLease = (input: Readonly<{
     operationId: string;
     machineId: string;
     serverId?: string | null;
-    flow: MachineCarrierTransferFlow;
-    /** Prepared-transfer byte ceiling consumed by the application transfer owner. */
-    maxBytes: number;
     signal?: AbortSignal;
 }>) => Promise<MachineCarrierHttpLease>;
 
@@ -86,14 +81,13 @@ function readTargetIrohEndpoint(serverId: string, machineId: string) {
 }
 
 export type MachineCarrierRoute = Readonly<
-    | { kind: 'standard' }
+    | { kind: 'unavailable'; error: string; errorCode: typeof MACHINE_CARRIER_UNAVAILABLE_ERROR_CODE }
+    | { kind: 'legacy_machine_rpc' }
     | {
         kind: 'iroh_peer';
         carrierKind: 'native_http' | 'browser_stream';
         acquire: (input: Readonly<{
             operationId: string;
-            flow: MachineCarrierTransferFlow;
-            maxBytes: number;
             signal?: AbortSignal;
         }>) => Promise<MachineCarrierHttpLease>;
     }
@@ -109,33 +103,83 @@ export function isIrohMachineCarrierRoute(
 /** One route decision for the whole transfer. Callers never reselect after prepare. */
 export async function resolveMachineCarrierRoute(machineId: string, serverId?: string | null): Promise<MachineCarrierRoute> {
     const server = resolveTargetServer(serverId);
-    const targetEndpoint = server ? readTargetIrohEndpoint(server.serverId, machineId) : null;
-    if (!server || !targetEndpoint) {
-        return { kind: 'standard' };
+    if (!server) {
+        return { kind: 'unavailable', error: MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR, errorCode: MACHINE_CARRIER_UNAVAILABLE_ERROR_CODE };
+    }
+    const targetEndpoint = readTargetIrohEndpoint(server.serverId, machineId);
+    const machineProjection = readPeerEndpointForServerScope({
+        state: storage.getState(),
+        serverId: server.serverId,
+        machineId,
+        select: (machine) => ({
+            kind: machine.kind,
+            active: machine.active,
+            revokedAt: machine.revokedAt,
+            daemonState: machine.daemonState,
+            operationProtocolCapabilities: machine.operationProtocolCapabilities,
+            operationProtocolCapabilitiesRevision: machine.operationProtocolCapabilitiesRevision,
+        }),
+    });
+    const machineDaemonState = machineProjection?.daemonState;
+    const legacyTransferSupported = isMachineDaemonLegacyTransferRpcEligible(machineDaemonState);
+    // A Runner publishes no daemon state at all, so its reachability comes from
+    // the strict Machine declaration. The daemon-state read below is retained
+    // only as the 0.2 predecessor compatibility path, not a second current owner.
+    const runnerFiniteTransferRpcDeclared = machineProjection?.kind === 'ephemeral_session_runner' && isMachineFiniteTransferRpcDeclared({
+        capabilities: machineProjection?.operationProtocolCapabilities,
+        revision: machineProjection?.operationProtocolCapabilitiesRevision,
+        active: machineProjection?.active,
+        revokedAt: machineProjection?.revokedAt,
+    });
+    const finiteTransferApplicationSupported = machineProjection?.kind === 'ephemeral_session_runner'
+        ? runnerFiniteTransferRpcDeclared
+        : isMachineDaemonFiniteTransferApplicationSupported(machineDaemonState);
+    if (!finiteTransferApplicationSupported && !legacyTransferSupported && !runnerFiniteTransferRpcDeclared) {
+        return { kind: 'unavailable', error: MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR, errorCode: MACHINE_CARRIER_UNAVAILABLE_ERROR_CODE };
     }
     const browserHost = isBrowserIrohHost();
-    const preselection = resolveMachineCarrierPreselection({
-        targetEndpoint,
-        host: browserHost
-            ? { kind: 'browser' }
-            : {
-                kind: 'native',
-                lifecycleAvailable: await probeIrohMachineHttpLifecycleAvailability(),
-            },
-    });
-    if (preselection.kind !== 'eligible') {
-        return { kind: 'standard' };
-    }
+    const host = browserHost
+        ? { kind: 'browser' as const }
+        : {
+            kind: 'native' as const,
+            lifecycleAvailable: targetEndpoint
+                ? await probeIrohMachineTransferLifecycleAvailability()
+                : false,
+        };
     const serverFeatures = await getReadyServerFeatures({ serverId: server.serverId });
-    const availableNow = { status: 'viable' as const, checkedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER };
-    const decision = resolveTransferRouteDecision({
+    let preselection = resolveMachineCarrierPreselection({
         serverFeatures,
-        directPeerRoute: availableNow,
-        directPeerRouteKinds: ['iroh_peer'],
-        machineRpcDirectRoute: availableNow,
+        targetEndpoint,
+        host,
+        legacyTransferSupported,
+        finiteTransferApplicationSupported,
+        runnerFiniteTransferRpcDeclared,
+        machineRpcDirectRoute: { status: 'unknown' },
     });
-    if (decision.kind !== 'selected' || decision.preferredRouteKind !== 'iroh_peer') {
-        return { kind: 'standard' };
+    if (preselection.kind === 'unavailable' && legacyTransferSupported) {
+        const machineRpcAvailability = await probeMachineRpcDirectRouteAvailability({
+            serverId: server.serverId,
+            remoteMachineId: machineId,
+        });
+        preselection = resolveMachineCarrierPreselection({
+            serverFeatures,
+            targetEndpoint,
+            host,
+            legacyTransferSupported: true,
+            finiteTransferApplicationSupported,
+            runnerFiniteTransferRpcDeclared,
+            machineRpcDirectRoute: machineRpcAvailability === 'viable'
+                ? { status: 'viable', checkedAt: Date.now(), expiresAt: Number.MAX_SAFE_INTEGER }
+                : machineRpcAvailability === 'unavailable'
+                    ? { status: 'unavailable', checkedAt: Date.now(), expiresAt: Date.now(), failureReason: 'machine_rpc_direct_unavailable' }
+                    : { status: 'unknown' },
+        });
+    }
+    if (preselection.kind === 'legacy_machine_rpc') {
+        return preselection;
+    }
+    if (preselection.kind !== 'iroh_peer') {
+        return { kind: 'unavailable', error: MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR, errorCode: MACHINE_CARRIER_UNAVAILABLE_ERROR_CODE };
     }
     if (preselection.carrierKind === 'browser_stream') {
         return {
@@ -205,13 +249,13 @@ export async function mintSignedMachineCarrierHandshake(input: Readonly<{
     const accountScope = createServerAccountScope(server.serverId, parseToken(credentials.token));
     if (!accountScope) throw new Error(MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR);
 
-    const authority = await captureSessionRequestAuthorityForServerAccountScope({
+    const authority = await captureServerRequestAuthorityForServerAccountScope({
         scope: accountScope,
         activeRequest: async (path, init) => await serverFetch(path, init),
     });
 
     try {
-        const initiatorEndpointId = await input.resolveInitiatorEndpointId(targetEndpoint.relayUrls);
+        const initiatorEndpointId = await input.resolveInitiatorEndpointId(targetEndpoint.relayUrls ?? []);
         const proofHandle = createEphemeralPeerRouteProofHandleV2({ randomBytes: getRandomBytes });
         try {
             const request = DirectRouteGrantRequestV2Schema.parse({
@@ -253,8 +297,8 @@ export async function mintSignedMachineCarrierHandshake(input: Readonly<{
             return {
                 handshakeJson: JSON.stringify(handshake),
                 signedTargetEndpointId: signedTarget.endpointId,
-                currentTargetDirectAddresses: currentTarget.directAddresses,
-                currentTargetRelayUrls: currentTarget.relayUrls,
+                currentTargetDirectAddresses: currentTarget.directAddresses ?? [],
+                currentTargetRelayUrls: currentTarget.relayUrls ?? [],
             };
         } finally {
             proofHandle.dispose();
@@ -267,7 +311,7 @@ export async function mintSignedMachineCarrierHandshake(input: Readonly<{
 /**
  * Production native account-client lease owner. The existing prepared-transfer
  * capability owns operation and payload size; V2 authorizes only the finite
- * transfer carrier and this owner starts one native HTTP lifecycle lease.
+ * transfer carrier and this owner starts one opaque fetch-facing native listener.
  */
 export const acquireMachineCarrierHttpLease: AcquireMachineCarrierHttpLease = async (input) => {
     const minted = await mintSignedMachineCarrierHandshake({
@@ -278,7 +322,7 @@ export const acquireMachineCarrierHttpLease: AcquireMachineCarrierHttpLease = as
             return applicationEndpoint.endpointId;
         },
     });
-    const lease = await startIrohMachineHttpTunnel({
+    const lease = await startIrohMachineTransferTunnel({
         endpointId: minted.signedTargetEndpointId,
         directAddresses: minted.currentTargetDirectAddresses,
         relayUrls: minted.currentTargetRelayUrls,
@@ -318,7 +362,7 @@ export const acquireBrowserMachineCarrierHttpLease: AcquireMachineCarrierHttpLea
         stream: {
             streamId: input.operationId,
             remoteEndpointId: streamLease.remoteEndpointId,
-            observedPath: streamLease.observedPath,
+            observedPath: streamLease.observedPath === 'relay' ? 'relay' : 'unknown',
             read: streamLease.duplex.read,
             write: streamLease.duplex.write,
             finishWrite: streamLease.duplex.finishWrite,
@@ -354,12 +398,6 @@ export const acquireBrowserMachineCarrierHttpLease: AcquireMachineCarrierHttpLea
         },
     };
 };
-
-export function normalizeMachineCarrierGrantMaxBytes(value: unknown): number | null {
-    return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-        ? value
-        : null;
-}
 
 /** Accepts only an explicit loopback HTTP origin owned by the native machine tunnel. */
 export function normalizeMachineCarrierHttpLocalOrigin(value: unknown): string | null {

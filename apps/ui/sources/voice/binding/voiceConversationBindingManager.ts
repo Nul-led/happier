@@ -4,6 +4,11 @@ import { voiceSessionBindingStore } from './voiceConversationBindingStore';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
 import type { VoiceConversationTargeting } from '@/voice/session/types';
 import type { VoiceConversationBindingResolution, VoiceSessionBinding } from './voiceConversationBindingTypes';
+import {
+    areSessionAddressesEqual,
+    normalizeSessionAddress,
+    type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
 
 type VoiceSessionBindingStoreLike = StoreApi<Readonly<{
     bindingsByConversationSessionId: Record<string, VoiceSessionBinding>;
@@ -18,6 +23,10 @@ function normalizeTargetSessionId(targetSessionId: string | null | undefined): s
     return typeof targetSessionId === 'string' && targetSessionId.trim().length > 0 ? targetSessionId.trim() : null;
 }
 
+function haveSameTargetAddress(left: SessionAddress | null, right: SessionAddress | null): boolean {
+    return left === null && right === null ? true : areSessionAddressesEqual(left, right);
+}
+
 function hasSameBindingSemantics(
     existing: VoiceSessionBinding,
     adapterId: string,
@@ -27,8 +36,12 @@ function hasSameBindingSemantics(
         existing.adapterId === adapterId
         && existing.controlSessionId === resolution.controlSessionId
         && existing.conversationSessionId === resolution.conversationSessionId
+        && areSessionAddressesEqual(
+            existing.conversationSessionAddress,
+            resolution.conversationSessionAddress,
+        )
         && existing.transcriptMode === resolution.transcriptMode
-        && normalizeTargetSessionId(existing.targetSessionId) === normalizeTargetSessionId(resolution.targetSessionId)
+        && haveSameTargetAddress(existing.targetSessionAddress, resolution.targetSessionAddress)
     );
 }
 
@@ -39,6 +52,7 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
         adapterId: string;
         controlSessionId: string;
         requestedTargetSessionId?: string | null;
+        requestedTargetServerId?: string | null;
     }>) => Promise<VoiceConversationBindingResolution | null>;
     resolveExistingBindingByConversationSessionId?: (
         conversationSessionId: string,
@@ -48,8 +62,8 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
     ) => VoiceConversationTargeting;
     appendTargetSwitchNote?: (params: Readonly<{
         conversationSessionId: string;
-        previousTargetSessionId: string | null;
-        targetSessionId: string | null;
+        previousTargetSessionAddress: SessionAddress | null;
+        targetSessionAddress: SessionAddress | null;
     }>) => void;
     persistBinding?: (binding: VoiceSessionBinding) => Promise<void> | void;
 }>) {
@@ -66,6 +80,7 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
         adapterId: string;
         controlSessionId: string;
         requestedTargetSessionId?: string | null;
+        requestedTargetServerId?: string | null;
     }>): Promise<VoiceSessionBinding | null> => {
         const adapterId = normalizeNonEmptyString(params.adapterId);
         const controlSessionId = normalizeNonEmptyString(params.controlSessionId);
@@ -77,6 +92,7 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
             adapterId,
             controlSessionId,
             requestedTargetSessionId,
+            requestedTargetServerId: params.requestedTargetServerId,
         });
         if (!resolution) return null;
         if (existing && hasSameBindingSemantics(existing, adapterId, resolution)) {
@@ -88,8 +104,9 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
             adapterId,
             controlSessionId: resolution.controlSessionId,
             conversationSessionId: resolution.conversationSessionId,
+            conversationSessionAddress: resolution.conversationSessionAddress,
             transcriptMode: resolution.transcriptMode,
-            targetSessionId: resolution.targetSessionId,
+            targetSessionAddress: resolution.targetSessionAddress,
             updatedAt: nowMs(),
         };
 
@@ -99,12 +116,12 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
         if (
             previous
             && previous.conversationSessionId === nextBinding.conversationSessionId
-            && previous.targetSessionId !== nextBinding.targetSessionId
+            && !haveSameTargetAddress(previous.targetSessionAddress, nextBinding.targetSessionAddress)
         ) {
             appendTargetSwitchNote({
                 conversationSessionId: nextBinding.conversationSessionId,
-                previousTargetSessionId: previous.targetSessionId,
-                targetSessionId: nextBinding.targetSessionId,
+                previousTargetSessionAddress: previous.targetSessionAddress,
+                targetSessionAddress: nextBinding.targetSessionAddress,
             });
         }
 
@@ -126,14 +143,19 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
         activeAdapterId: string | null;
         providerId: string;
         requestedTargetSessionId: string | null;
+        requestedTargetServerId?: string | null;
     }>): Promise<{ conversationSessionId: string | null } | null> => {
         const openConversationSessionId = normalizeNonEmptyString(params.openConversationSessionId);
         if (!openConversationSessionId) return null;
 
         const requestedTargetSessionId = normalizeTargetSessionId(params.requestedTargetSessionId);
+        const requestedTargetSessionAddress = normalizeSessionAddress(
+            params.requestedTargetServerId,
+            requestedTargetSessionId,
+        );
         const existing = resolveExistingBindingByConversationSessionId(openConversationSessionId);
         if (existing?.lifetime === 'runtime_attempt') {
-            return { conversationSessionId: normalizeTargetSessionId(existing.targetSessionId) };
+            return { conversationSessionId: existing.targetSessionAddress?.sessionId ?? null };
         }
         if (
             existing
@@ -143,7 +165,7 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
         }
         const shouldRebind =
             !existing
-            || normalizeTargetSessionId(existing.targetSessionId) !== requestedTargetSessionId;
+            || !haveSameTargetAddress(existing.targetSessionAddress, requestedTargetSessionAddress);
         if (!shouldRebind) {
             return { conversationSessionId: openConversationSessionId };
         }
@@ -161,32 +183,38 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
             adapterId: rebindAdapterId,
             controlSessionId,
             requestedTargetSessionId,
+            requestedTargetServerId: params.requestedTargetServerId,
         });
         return { conversationSessionId: rebound?.conversationSessionId ?? openConversationSessionId };
     };
 
     const syncTargetSession = async (params: Readonly<{
         controlSessionId: string;
-        targetSessionId: string | null;
+        targetSessionAddress: SessionAddress | null;
     }>): Promise<VoiceSessionBinding | null> => {
         const controlSessionId = normalizeNonEmptyString(params.controlSessionId);
         if (!controlSessionId) return null;
         const previous = store.getState().getByControlSessionId(controlSessionId);
         if (!previous) return null;
-        const targetSessionId = normalizeTargetSessionId(params.targetSessionId);
-        if (previous.targetSessionId === targetSessionId) return previous;
+        const targetSessionAddress = params.targetSessionAddress
+            ? normalizeSessionAddress(
+                params.targetSessionAddress.serverId,
+                params.targetSessionAddress.sessionId,
+            )
+            : null;
+        if (haveSameTargetAddress(previous.targetSessionAddress, targetSessionAddress)) return previous;
 
         const nextBinding: VoiceSessionBinding = {
             ...previous,
-            targetSessionId,
+            targetSessionAddress,
             updatedAt: nowMs(),
         };
         await Promise.resolve(persistBinding(nextBinding));
         store.getState().bind(nextBinding);
         appendTargetSwitchNote({
             conversationSessionId: nextBinding.conversationSessionId,
-            previousTargetSessionId: previous.targetSessionId,
-            targetSessionId,
+            previousTargetSessionAddress: previous.targetSessionAddress,
+            targetSessionAddress,
         });
         return nextBinding;
     };

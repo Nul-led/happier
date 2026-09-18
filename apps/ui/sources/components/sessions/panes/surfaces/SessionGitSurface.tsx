@@ -4,6 +4,7 @@ import { SessionRightPanelGitView } from '@/components/sessions/panes/git/Sessio
 
 export const SessionGitSurface = React.memo((props: Readonly<{
     sessionId: string;
+    serverId?: string;
     scopeId: string;
     onOpenFile?: (fullPath: string) => void;
     onOpenFilePinned?: (fullPath: string) => void;
@@ -14,6 +15,7 @@ export const SessionGitSurface = React.memo((props: Readonly<{
     return (
         <SessionRightPanelGitView
             sessionId={props.sessionId}
+            serverId={props.serverId}
             scopeId={props.scopeId}
             onOpenFile={props.onOpenFile}
             onOpenFilePinned={props.onOpenFilePinned}

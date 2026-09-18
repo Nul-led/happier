@@ -89,7 +89,7 @@ describe('newSessionDraftLifecycle', () => {
         expect(repository.clearLaunch).toHaveBeenCalledWith({ scope, address, userAttemptId: 'attempt-a' });
         expect(settingsRuntime.applySettings).toHaveBeenCalledWith(
             { newSessionOrdinaryEntryDraftId: null },
-            { source: 'ui' },
+            { expectedSettingsScope: scope, source: 'ui' },
         );
     });
 

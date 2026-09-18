@@ -8,6 +8,8 @@ import type { VoiceAdapterController, VoiceSessionSnapshot } from './types';
 const logSpy = vi.hoisted(() => vi.fn());
 vi.mock('@/log', () => ({ log: { log: logSpy } }));
 
+const sessionAddress = (sessionId: string) => ({ serverId: 'server-1', sessionId });
+
 function createRealtimeAdapter(input?: Readonly<{
     startError?: Error;
 }>) {
@@ -89,7 +91,7 @@ describe('Voice session lifecycle capture admission', () => {
         if (dictation.status !== 'acquired') throw new Error('expected Dictation admission');
         logSpy.mockClear();
 
-        await expect(lifecycle.toggle('session-1')).rejects.toMatchObject({
+        await expect(lifecycle.toggle(sessionAddress('session-1'))).rejects.toMatchObject({
             name: 'VoiceCaptureBusyError',
             code: 'voice_capture_busy_dictation',
             activeOwner: 'dictation',
@@ -106,7 +108,7 @@ describe('Voice session lifecycle capture admission', () => {
     it('retains admission through the realtime session and releases after End Voice', async () => {
         const { adapter, captureAdmission, lifecycle } = createHarness();
 
-        await lifecycle.toggle('session-1');
+        await lifecycle.toggle(sessionAddress('session-1'));
         expect(adapter.start).toHaveBeenCalledOnce();
         expect(captureAdmission.acquire('dictation')).toEqual({
             status: 'busy',
@@ -134,9 +136,12 @@ describe('Voice session lifecycle capture admission', () => {
         });
         const pending = createHarness(adapter);
 
-        const starting = pending.lifecycle.toggle('pending-start');
+        const starting = pending.lifecycle.toggle(sessionAddress('pending-start'));
         await vi.waitFor(() => {
-            expect(adapter.start).toHaveBeenCalledWith({ sessionId: 'pending-start' });
+            expect(adapter.start).toHaveBeenCalledWith({
+                sessionId: 'pending-start',
+                requestedTargetSessionAddress: sessionAddress('pending-start'),
+            });
         });
         const disposal = pending.lifecycle.dispose();
 
@@ -156,11 +161,11 @@ describe('Voice session lifecycle capture admission', () => {
             startError: new Error('mic_permission_denied'),
         });
         const failed = createHarness(failedAdapter);
-        await expect(failed.lifecycle.toggle('failed')).rejects.toThrow('mic_permission_denied');
+        await expect(failed.lifecycle.toggle(sessionAddress('failed'))).rejects.toThrow('mic_permission_denied');
         expect(failed.captureAdmission.acquire('dictation').status).toBe('acquired');
 
         const terminal = createHarness();
-        await terminal.lifecycle.toggle('terminal');
+        await terminal.lifecycle.toggle(sessionAddress('terminal'));
         terminal.adapter.publish({
             adapterId: 'realtime-test',
             sessionId: 'terminal',
@@ -176,7 +181,7 @@ describe('Voice session lifecycle capture admission', () => {
             resolveStop = resolve;
         }));
         const disposed = createHarness(disposedAdapter);
-        await disposed.lifecycle.toggle('disposed');
+        await disposed.lifecycle.toggle(sessionAddress('disposed'));
         const disposal = disposed.lifecycle.dispose();
         expect(disposed.adapter.stop).toHaveBeenCalledWith({ sessionId: 'disposed' });
         expect(disposed.captureAdmission.acquire('dictation')).toEqual({
@@ -191,7 +196,7 @@ describe('Voice session lifecycle capture admission', () => {
     it('releases a terminal error owner and lets Retry start a fresh realtime attempt', async () => {
         const { adapter, captureAdmission, lifecycle } = createHarness();
 
-        await lifecycle.toggle('retry-session');
+        await lifecycle.toggle(sessionAddress('retry-session'));
         adapter.publish({
             adapterId: 'realtime-test',
             sessionId: 'retry-session',
@@ -207,12 +212,13 @@ describe('Voice session lifecycle capture admission', () => {
         expect(dictation.status).toBe('acquired');
         if (dictation.status === 'acquired') dictation.lease.release();
 
-        await lifecycle.toggle('retry-session');
+        await lifecycle.toggle(sessionAddress('retry-session'));
 
         expect(adapter.stop).not.toHaveBeenCalled();
         expect(adapter.start).toHaveBeenCalledTimes(2);
         expect(adapter.start).toHaveBeenLastCalledWith({
             sessionId: 'retry-session',
+            requestedTargetSessionAddress: sessionAddress('retry-session'),
         });
     });
 });

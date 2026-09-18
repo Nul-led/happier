@@ -343,11 +343,15 @@ export function useUserMessageHistoryRemoteEntries(opts: Readonly<{
     enabled?: boolean;
     initialBeforeSeq?: number | null;
     sessionId: string | null;
+    serverId?: string | null;
 }>): UserMessageHistoryRemoteEntriesSnapshot {
     const normalizedSessionIdRaw = normalizeSessionId(opts.sessionId);
     const normalizedSessionId = normalizedSessionIdRaw.length > 0 ? normalizedSessionIdRaw : null;
     const sessionIdForHook = normalizedSessionId ?? '__none__';
-    const preferredServerId = usePreferredServerIdForSession(sessionIdForHook);
+    const preferredServerId = usePreferredServerIdForSession({
+        serverId: opts.serverId,
+        sessionId: sessionIdForHook,
+    });
     const activeScope = useActiveServerAccountScope();
     const serverFeaturesSnapshot = useServerFeaturesSnapshotForServerId(preferredServerId, {
         enabled: opts.enabled !== false && Boolean(normalizedSessionId && preferredServerId),
@@ -387,6 +391,7 @@ export function useUserMessageHistoryRemoteEntries(opts: Readonly<{
 export function useUserMessageHistory(opts: {
     scope: AgentInputHistoryScope;
     sessionId: string | null;
+    serverId?: string | null;
     maxEntries?: number;
 }): UserMessageHistoryNavigator {
     const normalizedSessionIdRaw = normalizeSessionId(opts.sessionId);
@@ -396,7 +401,10 @@ export function useUserMessageHistory(opts: {
     const { ids: sessionMessageIds } = useSessionTranscriptIds(sessionIdForHook);
     const sessionMessagesById = useSessionMessagesById(sessionIdForHook);
     const allSessionMessages = useAllSessionMessages(opts.scope === 'global');
-    const preferredServerId = usePreferredServerIdForSession(sessionIdForHook);
+    const preferredServerId = usePreferredServerIdForSession({
+        serverId: opts.serverId,
+        sessionId: sessionIdForHook,
+    });
     const serverFeaturesSnapshot = useServerFeaturesSnapshotForServerId(preferredServerId, {
         enabled: opts.scope === 'perSession' && Boolean(normalizedSessionId && preferredServerId),
     });
@@ -406,6 +414,7 @@ export function useUserMessageHistory(opts: {
         enabled: opts.scope === 'perSession',
         initialBeforeSeq: null,
         sessionId: normalizedSessionId,
+        serverId: opts.serverId,
     });
     const remoteHistoryRowsLengthRef = React.useRef(remoteHistoryState.rows.length);
     const remoteHistoryRequestNextPageRef = React.useRef(remoteHistoryState.requestNextPage);

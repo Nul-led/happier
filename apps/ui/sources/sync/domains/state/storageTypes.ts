@@ -1,3 +1,4 @@
+import type { TranscriptAccountActorMetadata } from '@/sync/domains/messages/transcriptAccountActor';
 import { z } from "zod";
 import { applyRuntimeDescriptorSessionMetadata, normalizeLegacyAgentVocabularySessionMetadata } from "@happier-dev/agents/session/state/metadataWriters";
 import type { PermissionMode, ModelMode } from "@/sync/domains/permissions/permissionTypes";
@@ -9,10 +10,12 @@ import type {
     ScmBackendId,
     ScmHostingProviderRef,
     ScmPullRequestStatusProjection,
+    SessionAccessAccountSummaryV1,
     SessionMessageRole,
     SessionRuntimeIssueV1,
     SessionTurnsProjectionV1,
     SessionContextUsageSnapshotV1,
+    SessionViewerProjectionV1,
 } from "@happier-dev/protocol";
 import { 
     createAgentRuntimeFacetsV1Schema,
@@ -24,6 +27,7 @@ import {
     createSessionTerminalMetadataSchema,
     createSessionSystemSessionV1Schema,
     normalizeCodexBackendMode,
+    readNonBlankOpaqueIdentifier,
     readRuntimeDescriptorV1,
     readRuntimeDescriptorV1FromMetadata,
     RuntimeDescriptorV1Schema,
@@ -31,7 +35,9 @@ import {
     SessionAppliedModelV1Schema,
     SessionModelSelectionIntentV1Schema,
     SessionMcpSelectionV1Schema,
+    MachinePoolSelectionOriginV1Schema,
     SessionMcpSelectionRestartRequiredV1Schema,
+    SessionDiscussionSelectionSourceV1Schema,
     SessionWorkspaceLocationV1Schema,
     WindowsRemoteSessionLaunchModeSchema,
 } from "@happier-dev/protocol";
@@ -84,6 +90,7 @@ const MetadataObjectSchema = z.object({
         updatedAt: z.number()
     }).optional(),
     machineId: z.string().optional(),
+    placementOrigin: MachinePoolSelectionOriginV1Schema.optional(),
     sessionWorkspaceLocationV1: SessionWorkspaceLocationV1Schema.optional(),
     handoffV1: z.object({
         v: z.literal(1),
@@ -314,6 +321,7 @@ const MetadataObjectSchema = z.object({
         createdAtMs: z.number(),
         sourceMessageIds: z.array(z.string()).optional(),
         sourceSessionId: z.string().optional(),
+        source: SessionDiscussionSelectionSourceV1Schema.omit({ draftCorrelationId: true }).optional(),
     }).optional().catch(undefined),
 }).passthrough();
 
@@ -362,8 +370,8 @@ export const MetadataSchema = z.preprocess((value) => {
             agentId: 'codex',
             agent: {
                 backendMode: releasedCodexBackendMode,
-                ...(typeof metadata.codexSessionId === 'string' && metadata.codexSessionId.trim()
-                    ? { providerSessionId: metadata.codexSessionId.trim() }
+                ...(readNonBlankOpaqueIdentifier(metadata.codexSessionId)
+                    ? { providerSessionId: metadata.codexSessionId as string }
                     : {}),
             },
         })
@@ -511,6 +519,9 @@ export interface Session {
     pendingBlockedCount?: number,
     pendingActivationAuthorization?: PendingActivationAuthorizationV1 | null,
     lastViewedSessionSeq?: number | null,
+    unreadSince?: number | null,
+    /** Absent only for supported Homes predating private viewer projection. */
+    viewer?: SessionViewerProjectionV1,
     pendingPermissionRequestCount?: number,
     pendingUserActionRequestCount?: number,
     pendingRequestObservedAt?: number | null,
@@ -536,6 +547,28 @@ export interface Session {
     publishedThroughServerSeq?: number | null,
     /** Server-owned sharing admission. Missing on older servers and fails closed for snapshots. */
     transcriptShareable?: boolean,
+    /**
+     * The one human Account currently responsible for this Session.
+     *
+     * `undefined` means this server did not project responsibility and must never
+     * be rendered as "No one"; `null` is a supporting server stating the Session
+     * is unassigned.
+     */
+    responsibleAccountId?: string | null,
+    /**
+     * Safe current summary for `responsibleAccountId`, projected at read/mutation
+     * time. `null` when unassigned; omitted exactly when the id is omitted. It
+     * lets the section render the named assignee without loading candidates.
+     */
+    responsibleAccount?: SessionAccessAccountSummaryV1 | null,
+    /**
+     * Safe audience-existence signal projected by the server's current-recipient
+     * owner: true when the current authorized human audience contains another
+     * Account besides this viewer. Presence-independent; never a roster and
+     * never authorization. Omitted means the producer did not project it, which
+     * preserves the last known value instead of asserting solo.
+     */
+    hasOtherNamedCollaborator?: boolean,
     metadataLayoutVersion?: number,
     metadata: Metadata | null,
     /**
@@ -552,7 +585,8 @@ export interface Session {
     agentStateVersion: number,
     thinking: boolean,
     thinkingAt: number,
-    presence: "online" | number, // "online" when active, timestamp when last seen
+    /** Device-observed runtime presence. Durable Session `active` state never manufactures it. */
+    presence?: "online" | number,
     optimisticThinkingAt?: number | null; // Local-only timestamp used for immediate "processing" UI feedback after submit
     resumingAt?: number | null; // Local-only: set at resume initiation; cleared by post-attach activity, definitive failure, or a bounded post-acceptance fallback.
     thinkingGraceUntil?: number | null; // Local-only timestamp used to debounce thinking indicator and avoid flicker between streaming chunks
@@ -583,6 +617,13 @@ export interface Session {
         timestamp: number;
     } | null;
     // Sharing-related fields
+    access?: import('@/sync/engine/sessions/normalizeSessionAccessProjection').NormalizedSessionAccessProjection | null;
+    /**
+     * Settled outcome of this viewer's Session data-key hydration. Derived by the canonical
+     * encryption owner, never persisted as a second availability store, and the only field a
+     * consumer should read to decide whether Session content is showable.
+     */
+    encryptedContentAvailability?: import('@/sync/domains/session/encryptedContentAvailability').SessionContentAvailability | null;
     owner?: string; // User ID of the session owner (for shared sessions)
     ownerProfile?: {
         id: string;
@@ -599,7 +640,8 @@ export type PendingDeliveryStatus = 'server_queued' | 'server_delivering' | 'ext
 
 export type { PendingDeliveryBlockedReason };
 
-export interface PendingMessage {
+export interface PendingMessage extends TranscriptAccountActorMetadata {
+    recipient?: Extract<import('@happier-dev/protocol').ParticipantRecipientRoutingIdentityV1, { kind: 'execution_run' }>;
     id: string;
     localId: string | null;
     createdAt: number;
@@ -684,6 +726,7 @@ export type MachineAvailability =
 
 export interface Machine {
     id: string;
+    kind?: import('@happier-dev/protocol').MachineKind;
     seq: number;
     createdAt: number;
     updatedAt: number;
@@ -697,6 +740,8 @@ export interface Machine {
     replacementActorUserId?: string | null;
     installationId?: string | null;
     contentPublicKeyFingerprint?: string | null;
+    operationProtocolCapabilities?: import('@happier-dev/protocol').MachineOperationProtocolCapabilitiesV1 | null;
+    operationProtocolCapabilitiesRevision?: number | null;
     metadata: MachineMetadata | null;
     metadataVersion: number;
     daemonState: any | null;  // Dynamic daemon state (runtime info)
@@ -714,6 +759,7 @@ export interface Machine {
 //
 
 export interface ScmStatus {
+    isComplete?: boolean;
     branch: string | null;
     isDirty: boolean;
     modifiedCount: number;
@@ -746,6 +792,7 @@ export type ScmEntryKind =
     | 'conflicted';
 
 export interface ScmPathStats {
+    isComplete?: boolean;
     includedAdded: number;
     includedRemoved: number;
     pendingAdded: number;
@@ -871,6 +918,7 @@ export interface ScmWorkingSnapshot {
     hasConflicts: boolean;
     entries: ScmWorkingEntry[];
     totals: {
+        isComplete?: boolean;
         includedFiles: number;
         pendingFiles: number;
         untrackedFiles: number;

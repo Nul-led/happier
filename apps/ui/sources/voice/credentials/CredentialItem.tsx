@@ -17,12 +17,14 @@ import {
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Item } from '@/components/ui/lists/Item';
 import { SavedSecretPickerModal } from '@/components/ui/forms/valueRefs/SavedSecretPickerModal';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 import { Modal } from '@/modal';
 import { randomUUID } from '@/platform/randomUUID';
 import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
 import { settingsParse, type Settings } from '@/sync/domains/settings/settings';
 import { storage, useSettings } from '@/sync/domains/state/storage';
 import { useSettingsVersion } from '@/sync/store/hooks';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 import { sync } from '@/sync/sync';
 import {
   requireOneShotAccountSettingsMutationApplied,
@@ -40,6 +42,7 @@ import {
   removeAccountVoiceCredential,
   resolveExactAccountVoiceCredentialSecretId,
   resolveAccountVoiceCredential,
+  resolveAccountVoiceCredentialApprovalDigest,
   resolveAccountVoiceCredentialSourceSelection,
   resolveAccountVoiceCredentialStatus,
   resolveSelectedVoiceCredentialRawGrants,
@@ -154,6 +157,8 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
 }>) {
   const settings = useSettings();
   const settingsVersion = useSettingsVersion();
+  const expectedSettingsScope = useAccountSettingsScope();
+  const savedSecretCatalog = useSavedSecretCatalog();
   const [gestureMenuOpen, setGestureMenuOpen] = React.useState(false);
   const latestSettingsRef = React.useRef(settings);
   latestSettingsRef.current = settings;
@@ -181,6 +186,7 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
         credentialSlotId: props.credentialSlotId,
         machineId: props.machineId,
         requiredRecipientContractDigest,
+        resolveSavedSecret: savedSecretCatalog.resolveReference,
       })
     : Object.freeze({ status: 'missing' as const, reference: null });
   const reference = credentialStatus.reference;
@@ -216,8 +222,7 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
     && !recipientApprovalRequired
     && credentialStatus.status !== 'unknown'
     // A snapshot without a readable secret collection offers nothing to select.
-    && Array.isArray(settings.secrets)
-    && settings.secrets.length > 0;
+    && savedSecretCatalog.entries.some((entry) => entry.capabilities.use);
 
   const runVoiceCredentialSourceMutation = async (
     contribution: PluginContributionIdentityV1,
@@ -266,16 +271,15 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
           ? current.declaration ?? null
           : null;
       },
-      mutateAccountSettingsOnce: observeProducedSettings
-        ? (input) => sync.mutateAccountSettingsOnce({
-            ...input,
-            mutate: (raw) => {
-              const produced = input.mutate(raw);
-              observeProducedSettings(settingsParse(produced.settings));
-              return produced;
-            },
-          })
-        : sync.mutateAccountSettingsOnce,
+      mutateAccountSettingsOnce: (input) => sync.mutateAccountSettingsOnce({
+        ...input,
+        expectedSettingsScope,
+        mutate: (raw) => {
+          const produced = input.mutate(raw);
+          observeProducedSettings?.(settingsParse(produced.settings));
+          return produced;
+        },
+      }),
     });
     if (result.status === 'conflict') {
       throw Object.assign(new Error('voice_credential_source_conflict'), {
@@ -297,7 +301,11 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
         code: 'account_settings_version_unavailable',
       });
     }
-    return await sync.mutateAccountSettingsOnce({ expectedSettingsVersion, mutate });
+    return await sync.mutateAccountSettingsOnce({
+      expectedSettingsScope,
+      expectedSettingsVersion,
+      mutate,
+    });
   };
 
   const pickStoredSavedSecretId = async (
@@ -359,24 +367,29 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
           credentialSlotId: props.credentialSlotId,
           machineId: props.machineId,
         });
-        const expectedSecretUpdatedAt = expectedSecretId
-          ? latestSettingsRef.current.secrets.find(
-              (candidate) => candidate.id === expectedSecretId,
-            )?.updatedAt ?? null
+        const expectedSavedSecret = expectedSecretId
+          ? savedSecretCatalog.resolveReference(expectedSecretId)
           : null;
+        const expectedSecretUpdatedAt = expectedSavedSecret?.revision ?? null;
         const approvalRequiredNow = resolveAccountVoiceCredentialStatus({
           settings: latestSettingsRef.current,
           contribution,
           credentialSlotId: props.credentialSlotId,
           machineId: props.machineId,
           requiredRecipientContractDigest,
+          resolveSavedSecret: savedSecretCatalog.resolveReference,
         }).status === 'review_required';
         if (approvalRequiredNow) {
+          const approvedRecipientContractDigest = resolveAccountVoiceCredentialApprovalDigest({
+            requiredRecipientContractDigest,
+            savedSecret: expectedSavedSecret,
+          });
           if (!recipientApproval
             || !expectedSecretId
             || expectedSecretUpdatedAt === null
             || !requiredRecipientContractDigest
-            || requiredRecipientContractDigest !== recipientApproval.digest) {
+            || requiredRecipientContractDigest !== recipientApproval.digest
+            || !approvedRecipientContractDigest) {
             throw Object.assign(new Error('invalid_voice_recipient_contract_approval'), {
               code: 'invalid_voice_recipient_contract_approval',
             });
@@ -394,7 +407,7 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
               machineId: props.machineId,
               expectedSecretId,
               expectedSecretUpdatedAt,
-              approvedRecipientContractDigest: recipientApproval.digest,
+              approvedRecipientContractDigest,
             });
             return { settings: approved.accountSettings, value: undefined };
           }));
@@ -446,6 +459,20 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
             return;
           }
           const selectedSecretId = pick.secretId;
+          const selectedSavedSecret = savedSecretCatalog.resolveReference(selectedSecretId);
+          if (selectedSavedSecret.status !== 'ready' || !selectedSavedSecret.secret) {
+            recordVoiceCredentialGestureFailure(
+              contribution,
+              gesture,
+              'unapplied',
+              'saved_secret_record_unavailable',
+            );
+            return;
+          }
+          const selectedApprovalDigest = resolveAccountVoiceCredentialApprovalDigest({
+            requiredRecipientContractDigest,
+            savedSecret: selectedSavedSecret,
+          });
           // The picker's own dismissal is still settling this click; give it the
           // same handoff the opener got before mounting the approval confirm.
           await settleWebOverlayHandoff();
@@ -465,8 +492,8 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
             secretId: selectedSecretId,
             expectedSecretId,
             expectedSecretUpdatedAt,
-            ...(recipientApproval
-              ? { approvedRecipientContractDigest: recipientApproval.digest }
+            ...(recipientApproval && selectedApprovalDigest
+              ? { approvedRecipientContractDigest: selectedApprovalDigest }
               : {}),
           };
           // Both paths are checked against the same question the row asks:
@@ -579,8 +606,8 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
           { inputType: 'secure-text' },
         );
         if (entered === null) return;
-        const secret = entered.trim();
-        if (secret) {
+        const secret = entered;
+        if (secret.length > 0) {
           const permitted = await confirmAccountVoiceCredentialWrite({
             disclosePlainStorage: props.disclosePlainStorage,
             resolveAccountMode: async () => {

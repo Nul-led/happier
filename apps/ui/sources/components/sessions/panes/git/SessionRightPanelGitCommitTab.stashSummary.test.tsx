@@ -93,11 +93,11 @@ describe('SessionRightPanelGitCommitTab (stash summary)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[] as any}
                     sessionAttributedFiles={[] as any}
                     repositoryOnlyFiles={[] as any}
-                    suppressedInferredCount={0}
+
                     repositorySelectedCount={0}
                     onSelectAll={() => {}}
                     onSelectNone={() => {}}
@@ -186,11 +186,11 @@ describe('SessionRightPanelGitCommitTab (stash summary)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[] as any}
                     sessionAttributedFiles={[] as any}
                     repositoryOnlyFiles={[] as any}
-                    suppressedInferredCount={0}
+
                     repositorySelectedCount={0}
                     onSelectAll={() => {}}
                     onSelectNone={() => {}}
@@ -255,11 +255,11 @@ describe('SessionRightPanelGitCommitTab (stash summary)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[] as any}
                     sessionAttributedFiles={[] as any}
                     repositoryOnlyFiles={[] as any}
-                    suppressedInferredCount={0}
+
                     repositorySelectedCount={0}
                     onSelectAll={() => {}}
                     onSelectNone={() => {}}

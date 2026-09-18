@@ -9,10 +9,9 @@ import { Text, TextInput } from '@/components/ui/text/Text';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { t } from '@/text';
 
-import { SessionListOrderingMenuButton, stopPressEventPropagation } from '../sessionListChrome';
+import { SessionListViewOptionsButton, stopPressEventPropagation } from '../sessionListChrome';
 import { sessionListStyles } from '../sessionListStyles';
 
-const TAG_FILTER_ITEM_PREFIX = 'session-list-tag-filter:';
 const SEARCH_INPUT_ANIMATION_MS = 170;
 const MINIMUM_INTERACTIVE_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
 const MINIMUM_INTERACTIVE_TARGET_STYLE = {
@@ -40,22 +39,33 @@ const SEARCH_INPUT_CHROME_RESET_STYLE = {
     WebkitAppearance: 'none',
 } as unknown as TextStyle;
 
-function resolveTagFromItemId(itemId: string): string | null {
-    if (!itemId.startsWith(TAG_FILTER_ITEM_PREFIX)) return null;
-    const tag = itemId.slice(TAG_FILTER_ITEM_PREFIX.length);
-    return tag.length > 0 ? tag : null;
-}
+/**
+ * One tag the compact shortcut can toggle.
+ *
+ * `id` is the qualified selection identity minted by the canonical filter owner;
+ * `label` is display metadata only. The shortcut never derives one from the
+ * other, so two Homes' same-label tags stay distinct selections.
+ */
+export type SessionListTagShortcutOption = Readonly<{
+    id: string;
+    label: string;
+}>;
 
 export type SessionListSearchChromeProps = Readonly<{
-    allKnownTags: ReadonlyArray<string>;
-    selectedTags: ReadonlyArray<string>;
+    filterControl?: React.ReactNode;
+    tagOptions: ReadonlyArray<SessionListTagShortcutOption>;
+    selectedTagOptionIds: ReadonlyArray<string>;
     searchQuery: string;
+    /** Exact Home whose transcript provider supplies contextual matches. */
+    searchScopeLabel?: string;
+    organizationServerId?: string | null;
     searchTrailingAccessory?: React.ReactNode;
     searchStatus?: Readonly<{
         message: string;
         onRetry?: () => void;
     }>;
-    onSelectedTagsChange: (tags: string[]) => void;
+    /** Hands one qualified option id back to the canonical filter writer. */
+    onToggleTagOption: (optionId: string) => void;
     onSearchQueryChange: (query: string) => void;
     /**
      * Opens the universal Search surface with the contextual query preserved. The
@@ -77,14 +87,16 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
     props: SessionListSearchChromeProps,
 ) {
     const {
-        allKnownTags,
+        filterControl,
         onSearchEverything,
         onSearchQueryChange,
-        onSelectedTagsChange,
+        onToggleTagOption,
         searchQuery,
+        searchScopeLabel,
         searchStatus,
         searchTrailingAccessory,
-        selectedTags,
+        selectedTagOptionIds,
+        tagOptions,
     } = props;
     const styles = sessionListStyles;
     const { theme } = useUnistyles();
@@ -99,7 +111,11 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
     const activeIconColor = theme.colors.accent.blue;
     const searchIsOpen = searchOpened || trimmedQuery.length > 0;
     const useExpandedNativeComposition = Platform.OS !== 'web' && searchIsOpen;
-    const selectedTagSet = React.useMemo(() => new Set(selectedTags), [selectedTags]);
+    const selectedTagOptionIdSet = React.useMemo(() => new Set(selectedTagOptionIds), [selectedTagOptionIds]);
+    const selectedTagOptionCount = React.useMemo(
+        () => tagOptions.reduce((count, option) => count + (selectedTagOptionIdSet.has(option.id) ? 1 : 0), 0),
+        [selectedTagOptionIdSet, tagOptions],
+    );
 
     React.useEffect(() => {
         Animated.timing(searchAnimation, {
@@ -156,26 +172,24 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
         setTagMenuOpen(open);
     }, []);
 
-    const tagItems = React.useMemo((): DropdownMenuItem[] => allKnownTags.map((tag) => {
-        const selected = selectedTagSet.has(tag);
+    const tagItems = React.useMemo((): DropdownMenuItem[] => tagOptions.map((option) => {
+        const selected = selectedTagOptionIdSet.has(option.id);
         return {
-            id: `${TAG_FILTER_ITEM_PREFIX}${tag}`,
-            title: tag,
+            id: option.id,
+            title: option.label,
             icon: <Icon name="tag" size={14} color={selected ? activeIconColor : iconColor} />,
             rightElement: selected
                 ? <Icon name="check" size={14} color={activeIconColor} />
                 : null,
         };
-    }), [activeIconColor, allKnownTags, iconColor, selectedTagSet]);
+    }), [activeIconColor, iconColor, selectedTagOptionIdSet, tagOptions]);
 
     const handleTagSelect = React.useCallback((itemId: string) => {
-        const tag = resolveTagFromItemId(itemId);
-        if (!tag) return;
-        const nextTags = selectedTagSet.has(tag)
-            ? selectedTags.filter((item) => item !== tag)
-            : [...selectedTags, tag];
-        onSelectedTagsChange(nextTags);
-    }, [onSelectedTagsChange, selectedTagSet, selectedTags]);
+        // Only ids this menu presented may write: the menu shows labels, and a
+        // label can never be turned back into the tag it belongs to.
+        if (!tagOptions.some((option) => option.id === itemId)) return;
+        onToggleTagOption(itemId);
+    }, [onToggleTagOption, tagOptions]);
 
     const handleSearchEverything = React.useCallback((event?: unknown) => {
         stopPressEventPropagation(event);
@@ -187,15 +201,15 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
         searchStatus?.onRetry?.();
     }, [searchStatus]);
 
-    const tagFilterControl = allKnownTags.length > 0 ? (
+    const tagFilterControl = tagOptions.length > 0 ? (
         <DropdownMenu
             open={tagMenuOpen}
             onOpenChange={handleTagMenuOpenChange}
             items={tagItems}
             onSelect={handleTagSelect}
-            selectedId={selectedTags[0] ?? null}
+            selectedId={selectedTagOptionIds[0] ?? null}
             variant="slim"
-            search={allKnownTags.length > 8}
+            search={tagOptions.length > 8}
             searchPlaceholder={t('sessionTags.searchOrAddPlaceholder')}
             closeOnSelect={false}
             showCategoryTitles={false}
@@ -214,17 +228,18 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
                     }}
                     accessibilityRole="button"
                     accessibilityLabel={t('sessionsList.filterByTags')}
+                    accessibilityState={{ expanded: tagMenuOpen, selected: selectedTagOptionCount > 0 }}
                 >
                     <Icon
                         name="tag"
                         size={16}
-                        color={selectedTags.length > 0 ? activeIconColor : iconColor}
+                        color={selectedTagOptionCount > 0 ? activeIconColor : iconColor}
                     />
                 </Pressable>
             )}
         />
     ) : null;
-    const orderingControl = <SessionListOrderingMenuButton placement="bottom" />;
+    const orderingControl = <SessionListViewOptionsButton placement="bottom" serverId={props.organizationServerId} />;
 
     return (
         <View style={styles.searchChrome} testID="session-list-search-chrome">
@@ -232,6 +247,7 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
                 testID="session-list-search-primary-controls"
                 style={styles.searchChromeControlsRow}
             >
+                {useExpandedNativeComposition ? null : filterControl}
                 <Pressable
                     testID="session-list-search-trigger"
                     accessible={!searchIsOpen}
@@ -339,8 +355,19 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
                     testID="session-list-search-auxiliary-controls"
                     style={styles.searchChromeAuxiliaryControlsRow}
                 >
+                    {filterControl}
                     {tagFilterControl}
                     {orderingControl}
+                </View>
+            ) : null}
+            {searchScopeLabel && trimmedQuery.length > 0 ? (
+                <View
+                    testID="session-list-search-scope"
+                    accessibilityLiveRegion="polite"
+                    style={styles.searchChromeScopeRow}
+                >
+                    <Icon name="hard-drives" size={13} color={iconColor} />
+                    <Text style={styles.searchChromeScopeText}>{searchScopeLabel}</Text>
                 </View>
             ) : null}
             {searchStatus && trimmedQuery.length > 0 ? (

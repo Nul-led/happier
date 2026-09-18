@@ -18,6 +18,7 @@ type Entry = {
     snapshot: WorkspaceSyncStatusSnapshot;
     listeners: Set<() => void>;
     inFlight: Promise<WorkspaceSyncStatusV1 | null> | null;
+    admissionGeneration: number;
 };
 
 const entries = new Map<string, Entry>();
@@ -31,7 +32,7 @@ function entryFor(scope: WorkspaceSyncStatusScope): Entry {
     const key = keyFor(scope);
     const existing = entries.get(key);
     if (existing) return existing;
-    const entry: Entry = { snapshot: IDLE_SNAPSHOT, listeners: new Set(), inFlight: null };
+    const entry: Entry = { snapshot: IDLE_SNAPSHOT, listeners: new Set(), inFlight: null, admissionGeneration: 0 };
     entries.set(key, entry);
     return entry;
 }
@@ -52,7 +53,9 @@ export function subscribeWorkspaceSyncStatus(scope: WorkspaceSyncStatusScope, li
 }
 
 export function setWorkspaceSyncStatus(scope: WorkspaceSyncStatusScope, status: WorkspaceSyncStatusV1): void {
-    publish(entryFor(scope), { phase: 'ready', status, error: null });
+    const entry = entryFor(scope);
+    entry.admissionGeneration += 1;
+    publish(entry, { phase: 'ready', status, error: null });
 }
 
 export function applyWorkspaceSyncStatusEvent(scope: WorkspaceSyncStatusScope, status: WorkspaceSyncStatusV1): void {
@@ -68,13 +71,17 @@ export function refreshWorkspaceSyncStatus(scope: WorkspaceSyncStatusScope): Pro
         status: entry.snapshot.status,
         error: null,
     });
+    const admissionGeneration = entry.admissionGeneration;
     const inFlight = getWorkspaceSyncStatus(scope).then(
         (status) => {
+            if (entry.admissionGeneration !== admissionGeneration) return entry.snapshot.status;
             publish(entry, { phase: 'ready', status, error: null });
             return status;
         },
         (error: unknown) => {
-            publish(entry, { phase: 'error', status: entry.snapshot.status, error });
+            if (entry.admissionGeneration === admissionGeneration) {
+                publish(entry, { phase: 'error', status: entry.snapshot.status, error });
+            }
             throw error;
         },
     ).finally(() => {

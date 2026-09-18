@@ -4,7 +4,7 @@ import type {
     PluginUiInlineSurfaceRoleV1,
     PluginUiTargetKindV1,
 } from '@happier-dev/protocol/plugins/ui';
-import { PluginUiDestinationReferenceV1Schema } from '@happier-dev/protocol/plugins/ui';
+import { PluginUiDestinationReferenceV1Schema, isPluginUiInlineSurfaceBindingForSurfaceV1 } from '@happier-dev/protocol/plugins/ui';
 import type { PluginContributionIdentityV1 } from '@happier-dev/protocol';
 
 import type {
@@ -128,9 +128,42 @@ export function selectPluginInlineSurfacePlacementsBySurface(
 ): readonly PluginUiInlineSurfacePlacementProjection[] {
     return sortedPlacements(Object.values(model.surfacePlacementsById).filter((entry): entry is PluginUiInlineSurfacePlacementProjection => (
         !isPluginUiDestinationSurfacePlacementProjection(entry)
-            && entry.binding.surface.pluginId === surface.pluginId
-            && entry.binding.surface.localId === surface.localId
+            && entry.binding.surface?.pluginId === surface.pluginId
+            && entry.binding.surface?.localId === surface.localId
             && entry.binding.role === role
+    )));
+}
+
+/**
+ * Every projected inline placement for one host-owned role. This is the Add
+ * picker's inventory over the canonical projection — not a widget catalog,
+ * store or second contribution registry. Selecting a stored item still uses
+ * `selectPluginInlineSurfacePlacementsBySurface`, which must resolve exactly
+ * one qualified identity.
+ */
+export function selectPluginInlineSurfacePlacementsForRole(
+    model: PluginUiProjectionModel,
+    role: PluginUiInlineSurfaceRoleV1,
+): readonly PluginUiInlineSurfacePlacementProjection[] {
+    return sortedPlacements(Object.values(model.surfacePlacementsById).filter((entry): entry is PluginUiInlineSurfacePlacementProjection => (
+        entry.binding.kind !== 'destination'
+            && entry.binding.role === role
+    )));
+}
+
+/**
+ * The creation candidates the picker may offer. An unavailable surface is not
+ * offered for a NEW item; an existing item whose source becomes unavailable is
+ * a separate retained-shell concern owned by the mounting host.
+ */
+export function selectRenderablePluginInlineSurfacePlacementsForRole(
+    model: PluginUiProjectionModel,
+    role: PluginUiInlineSurfaceRoleV1,
+    policyContext?: PluginUiPolicyEvaluationContext,
+): readonly PluginUiInlineSurfacePlacementProjection[] {
+    return Object.freeze(selectPluginInlineSurfacePlacementsForRole(model, role).filter((entry) => (
+        entry.availability.state === 'available'
+        && canRenderPluginUiProjectionEntry(entry, policyContext)
     )));
 }
 

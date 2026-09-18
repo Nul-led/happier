@@ -15,12 +15,14 @@ import { useSessionTerminalAvailability } from '@/components/sessions/terminal/u
 import { isTerminalDetailsTab } from '@/components/terminal/terminalDetailsTabModel';
 import { readSessionTerminalMode, setSessionTerminalMode } from '@/components/sessions/terminal/sessionTerminalMode';
 import { SESSION_HEADER_ICON_SIZE_PX } from '@/components/sessions/actions/sessionHeaderIconMetrics';
+import { parseSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 import { Icon } from '@/components/ui/icons/Icon';
 
 export const SessionHeaderTerminalButton = React.memo((_props: Readonly<{ sessionId: string; scopeId: string }>) => {
     const { theme } = useUnistyles();
     const pane = useAppPaneScope(_props.scopeId);
-    const { dockLocation, terminalEnabled } = useSessionTerminalAvailability();
+    const serverId = parseSessionPaneScopeId(_props.scopeId)?.address?.serverId ?? null;
+    const { dockLocation, terminalEnabled } = useSessionTerminalAvailability(serverId);
     const testId = useOptionalSessionScreenTestId('session-header-terminal-button');
 
     const scopeState = pane.scopeState;
@@ -38,8 +40,8 @@ export const SessionHeaderTerminalButton = React.memo((_props: Readonly<{ sessio
 
     const onPress = React.useCallback(() => {
         if (!terminalEnabled) return;
-        const wasAttachedTerminal = readSessionTerminalMode(_props.sessionId) === 'session_attach';
-        setSessionTerminalMode(_props.sessionId, 'workspace_shell');
+        const wasAttachedTerminal = readSessionTerminalMode(_props.sessionId, serverId) === 'session_attach';
+        setSessionTerminalMode(_props.sessionId, 'workspace_shell', serverId);
 
         if (dockLocation === 'bottom') {
             if (bottomTerminalActive && !wasAttachedTerminal) {
@@ -77,6 +79,7 @@ export const SessionHeaderTerminalButton = React.memo((_props: Readonly<{ sessio
         terminalEnabled,
         activeDetailsTab,
         _props.sessionId,
+        serverId,
     ]);
 
     if (!terminalEnabled) return null;

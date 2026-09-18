@@ -8,7 +8,7 @@ import {
     type SessionExecutionRunDetailsViewHandle,
 } from '@/components/sessions/runs/details/SessionExecutionRunDetailsView';
 import { SessionInvalidLinkFallback } from '@/components/sessions/shell/SessionInvalidLinkFallback';
-import { createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
+import { buildScopedSessionRouteHref, createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
 import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForRoute';
 import { useSessionRealtimeTranscriptConsumer } from '@/hooks/session/useSessionRealtimeTranscriptConsumer';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
@@ -28,20 +28,24 @@ export default function SessionRunDetailsScreen() {
     const { theme } = useUnistyles();
     const router = useRouter();
     const navigation = useNavigation();
-    const params = useLocalSearchParams<{ id?: string | string[]; serverId?: string | string[]; runId?: string | string[] }>();
+    const params = useLocalSearchParams<{ id?: string | string[]; serverId?: string | string[]; runId?: string | string[]; retryInputLocalId?: string | string[] }>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params as Record<string, unknown>), [params]);
     const sessionId = normalizeSessionId(params.id);
     const runId = normalizeParam(params.runId);
+    const retryInputLocalId = normalizeParam(params.retryInputLocalId);
     const routeHydrationState = useHydrateSessionForRoute(sessionId, 'SessionRunDetailsScreen.hydrate', routeScope.hydrationOptions);
     const hydrateReady = isSessionRouteHydrationAvailable(routeHydrationState);
     const hydrateMissing = isSessionRouteHydrationMissing(routeHydrationState);
+    const exactSessionServerId = routeHydrationState.serverId ?? routeScope.serverId;
     // The run detail view derives a live transcript fallback from the session's messages but is a
     // separate navigation screen that does not mark the session surface visible. Register it as an
     // explicit transcript consumer so hidden durable messages keep materializing while it is open.
-    useSessionRealtimeTranscriptConsumer(sessionId);
+    useSessionRealtimeTranscriptConsumer(sessionId, exactSessionServerId);
     const detailsRef = React.useRef<SessionExecutionRunDetailsViewHandle | null>(null);
     const headerTint = theme.colors.chrome.header.foreground ?? theme.colors.text.primary;
-    const parentSessionHref = sessionId ? routeScope.buildHref(sessionId) : '/session';
+    const parentSessionHref = sessionId
+        ? buildScopedSessionRouteHref({ sessionId, serverId: exactSessionServerId })
+        : '/session';
 
     const headerRight = React.useCallback(() => (
         <Pressable
@@ -94,7 +98,8 @@ export default function SessionRunDetailsScreen() {
                     ref={detailsRef}
                     sessionId={sessionId}
                     runId={runId}
-                    serverId={routeScope.serverId}
+                    serverId={exactSessionServerId}
+                    retryInputLocalId={retryInputLocalId ?? undefined}
                     presentation="screen"
                 />
             )}

@@ -453,6 +453,7 @@ pub enum DesktopPetOverlayCoordinateSpace {
 #[serde(rename_all = "camelCase")]
 pub struct DesktopPetOverlayShowMainWindowPayload {
     pub reason: DesktopPetOverlayShowMainWindowReason,
+    pub target_server_id: Option<String>,
     pub target_session_id: Option<String>,
     pub target_thread_id: Option<String>,
 }

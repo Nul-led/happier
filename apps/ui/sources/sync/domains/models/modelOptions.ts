@@ -177,7 +177,7 @@ function readSelectedModelOverrideId(agentType: AgentType, metadata: Metadata | 
 }
 
 function supportsDynamicSessionModelList(agentType: AgentType): boolean {
-    return !isBundledAgentId(agentType) || getAgentCore(agentType).model.dynamicProbe !== 'static-only';
+    return !isBundledAgentId(agentType) || getAgentCore(agentType).model?.dynamicProbe !== 'static-only';
 }
 
 function normalizeTargetKey(value: unknown): string {
@@ -235,7 +235,7 @@ export function hasDynamicModelListForSession(agentType: AgentType, metadata: Me
 export function supportsFreeformModelSelectionForSession(agentType: AgentType, metadata: Metadata | null | undefined): boolean {
     if (!isBundledAgentId(agentType)) return false;
     const core = getAgentCore(agentType);
-    return core.model.supportsSelection === true && core.model.supportsFreeform === true;
+    return core.model?.supportsSelection === true && core.model?.supportsFreeform === true;
 }
 
 function getModelLabel(mode: ModelMode): string {
@@ -302,7 +302,7 @@ function getStaticModelOptionsForAgentType(agentType: AgentType): readonly Model
 export function getModelOptionsForAgentType(agentType: AgentType): readonly ModelOption[] {
     if (!isBundledAgentId(agentType)) return [];
     const core = getAgentCore(agentType);
-    if (core.model.supportsSelection !== true) return [];
+    if (core.model?.supportsSelection === false) return [];
     return getStaticModelOptionsForAgentType(agentType);
 }
 
@@ -392,7 +392,8 @@ export function isModelSelectableForSession(agentType: AgentType, metadata: Meta
 
     const options = resolveModelOptionsForSession(agentType, metadata);
     if (findModelOptionForEffectiveModelId(options, normalized)) return true;
-    return isBundledAgentId(agentType) && isFreeformModelIdAllowed(getAgentCore(agentType).model, normalized);
+    const modelConfig = isBundledAgentId(agentType) ? getAgentCore(agentType).model : null;
+    return modelConfig ? isFreeformModelIdAllowed(modelConfig, normalized) : false;
 }
 
 export function getModelOptionsForSession(agentType: AgentType, metadata: Metadata | null | undefined): readonly ModelOption[] {

@@ -41,7 +41,6 @@ import {
 import {
     MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
     mintSignedMachineCarrierHandshake,
-    type MachineCarrierTransferFlow,
 } from './machineCarrierHttpLease';
 
 /** The only ALPN this seam dials. Shared constant with happier-iroh-core. */
@@ -141,8 +140,6 @@ export async function acquireBrowserMachineCarrierStreamLease(input: Readonly<{
     operationId: string;
     machineId: string;
     serverId?: string | null;
-    flow: MachineCarrierTransferFlow;
-    maxBytes: number;
     signal?: AbortSignal;
     acquireEndpointLease: AcquireBrowserMachineCarrierEndpointLease;
     openMachineCarrierStream: OpenMachineCarrierStream;

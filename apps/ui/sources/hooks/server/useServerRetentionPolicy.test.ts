@@ -19,7 +19,7 @@ describe('useServerRetentionPolicy', () => {
         resetServerFeaturesClientForTests();
         resetServerRetentionPolicyClientForTests();
 
-        const server = upsertServerProfile({ serverUrl: 'https://retention.example', name: 'Retention', source: 'manual' });
+        const server = await upsertServerProfile({ serverUrl: 'https://retention.example', name: 'Retention', source: 'manual' });
         const payload = buildServerFeaturesResponse();
         payload.capabilities.server = {
             retention: {

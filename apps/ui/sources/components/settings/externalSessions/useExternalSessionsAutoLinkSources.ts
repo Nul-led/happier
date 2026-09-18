@@ -7,6 +7,7 @@ import {
 import { sync } from '@/sync/sync';
 import { useSettingsVersion } from '@/sync/store/hooks';
 import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 
 import type {
     ExternalSessionsAutoLinkSourceDescriptor,
@@ -45,6 +46,7 @@ export function useExternalSessionsAutoLinkSources(params: Readonly<{
     const scopedAgentPluginId = params.scope?.agent.pluginId;
     const scopedAgentLocalId = params.scope?.agent.localId;
     const settingsVersion = useSettingsVersion();
+    const expectedSettingsScope = useAccountSettingsScope();
     const agentTitleByKey = React.useMemo(
         () => new Map(params.knownAgents.map((knownAgent) => [
             agentKey(knownAgent.agent),
@@ -85,6 +87,7 @@ export function useExternalSessionsAutoLinkSources(params: Readonly<{
                     if (settingsVersion === null) throw new Error('Account settings version is unavailable');
                     requireOneShotAccountSettingsMutationApplied(
                         await sync.mutateAccountSettingsOnce({
+                            expectedSettingsScope,
                             expectedSettingsVersion: settingsVersion,
                             mutate: (raw) => ({
                                 settings: {
@@ -113,6 +116,7 @@ export function useExternalSessionsAutoLinkSources(params: Readonly<{
         scopedAgentLocalId,
         scopedAgentPluginId,
         scopedMachineId,
+        expectedSettingsScope,
         settingsVersion,
     ]);
 }

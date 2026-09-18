@@ -4,7 +4,7 @@ import type {
 } from './bundledConversationRuntimeContract';
 import {
   buildQualifiedPluginContributionKey,
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
   createPluginContributionIdentity,
   deriveVoiceCredentialBindingIdentityV1,
   VoiceProviderContributionSchema,
@@ -80,6 +80,7 @@ import {
   resolveVoiceExecutionMachineId,
 } from '@/voice/settings/executionMachine';
 import { createAppShellTransientInteractions } from '@/components/appShell/plugins/appShellQuestionInteractions';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 type ExternalVoiceProviderProtocolLeaf = RealtimeVoiceProviderProtocol;
 export type VoiceConversationProviderContribution = Extract<
@@ -821,7 +822,7 @@ export function createExternalVoiceProviderRuntimeContribution(input: Readonly<{
       ? {
           async resolveConversationBinding(bindingInput: Readonly<{
             controlSessionId: string;
-            requestedTargetSessionId: string | null;
+            requestedTargetSessionAddress: SessionAddress | null;
             settings: unknown;
           }>) {
             const resolveBinding = input.host.resolveAgentRealtimeVoiceConversationBinding;
@@ -848,7 +849,7 @@ export function createExternalVoiceProviderRuntimeContribution(input: Readonly<{
             const parsedConfig = providerSettings.parseConfig(envelope.config);
             if (!parsedConfig || typeof parsedConfig !== 'object' || Array.isArray(parsedConfig)) return null;
             const parsedConfigRecord = parsedConfig as Readonly<Record<string, unknown>>;
-            const connectedServices = ConnectedServiceBindingsV1Schema.safeParse(
+            const connectedServices = ConnectedServiceBindingsV2IngressSchema.safeParse(
               parsedConfigRecord[execution.connectedServicesBinding.id],
             );
             if (!connectedServices.success) return null;

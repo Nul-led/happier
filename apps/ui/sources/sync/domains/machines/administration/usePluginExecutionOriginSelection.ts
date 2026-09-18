@@ -17,6 +17,7 @@ import {
     requireOneShotAccountSettingsMutationApplied,
     type OneShotAccountSettingsMutationResult,
 } from '@/sync/engine/settings/syncSettings';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 
 import {
     clearPluginMachineExecutionOriginPreference,
@@ -133,6 +134,7 @@ export function usePluginMachineExecutionOriginSelection(params: Readonly<{
     const machineSnapshots = useAllProfileMachineInventorySnapshots();
     const selections = useSetting('machineAdministrationSelectionsV1');
     const settingsVersion = useSettingsVersion();
+    const expectedSettingsScope = useAccountSettingsScope();
     const storedOrigin = selections.pluginExecutionOriginsByPluginId[params.pluginId] ?? null;
     const selectionRevisionRef = React.useRef<PluginExecutionOriginSelectionRevisionState>({
         pluginId: params.pluginId,
@@ -155,7 +157,7 @@ export function usePluginMachineExecutionOriginSelection(params: Readonly<{
             : [],
         machineSnapshots,
         classifyRelease: params.classifyRelease,
-    }), [machineSnapshots, materializationAdmission, params.classifyRelease]);
+    }), [machineSnapshots, materializationAdmission, params.classifyRelease, params.pluginId]);
     const state = React.useMemo(() => resolvePluginMachineExecutionOriginState({
         pluginId: params.pluginId,
         storedOrigin,
@@ -166,12 +168,12 @@ export function usePluginMachineExecutionOriginSelection(params: Readonly<{
         if (storedOrigin || state.kind !== 'selected' || state.selectionSource !== 'soleCandidate') return;
         if (settingsVersion === null) return;
         fireAndForget(
-            persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
+            persistMachineAdministrationSelectionMutation(expectedSettingsScope, settingsVersion, (current) => (
                 setPluginMachineExecutionOriginPreference(current, params.pluginId, state.origin)
             )).then(requireOneShotAccountSettingsMutationApplied),
             { tag: 'usePluginMachineExecutionOriginSelection.initialize' },
         );
-    }, [params.pluginId, settingsVersion, state, storedOrigin]);
+    }, [expectedSettingsScope, params.pluginId, settingsVersion, state, storedOrigin]);
 
     const selectOrigin = React.useCallback(async (
         origin: PluginMachineExecutionOriginV1,
@@ -182,17 +184,17 @@ export function usePluginMachineExecutionOriginSelection(params: Readonly<{
             candidates,
         });
         if (proposed.kind !== 'selected' || settingsVersion === null) return { status: 'unavailable' };
-        return await persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
+        return await persistMachineAdministrationSelectionMutation(expectedSettingsScope, settingsVersion, (current) => (
             setPluginMachineExecutionOriginPreference(current, params.pluginId, proposed.origin)
         ));
-    }, [candidates, params.pluginId, settingsVersion]);
+    }, [candidates, expectedSettingsScope, params.pluginId, settingsVersion]);
 
     const clearOrigin = React.useCallback(async (): Promise<PluginExecutionOriginSelectionMutationResult> => {
         if (settingsVersion === null) return { status: 'unavailable' };
-        return await persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
+        return await persistMachineAdministrationSelectionMutation(expectedSettingsScope, settingsVersion, (current) => (
             clearPluginMachineExecutionOriginPreference(current, params.pluginId)
         ));
-    }, [params.pluginId, settingsVersion]);
+    }, [expectedSettingsScope, params.pluginId, settingsVersion]);
 
     const resolveExecutionOrigin = React.useCallback(() => {
         const origin = storage.getState().settings.machineAdministrationSelectionsV1

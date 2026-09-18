@@ -9,6 +9,7 @@ function createHarness(initial: any = {}) {
         sessions: {},
         sessionPending: {},
         sessionMessages: {},
+        sessionListRowsByServerId: {},
         ...initial,
     };
 

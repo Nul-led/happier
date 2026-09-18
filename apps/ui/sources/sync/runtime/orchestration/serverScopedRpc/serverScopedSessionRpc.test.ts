@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { storage } from '@/sync/domains/state/storage';
+
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
+import { RPC_METHODS, SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS } from '@happier-dev/protocol/rpc';
+import { CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD } from '@happier-dev/protocol/sessions';
 
 import { resetScopedSessionDataKeyCacheForTests } from './resolveScopedSessionDataKey';
+import { sessionRpcWithPreferredSessionScope } from './sessionRpcWithPreferredSessionScope';
 
 const TOKEN_A = `hdr.${btoa(JSON.stringify({ sub: 'account-a' }))}.sig`;
 const TOKEN_B = `hdr.${btoa(JSON.stringify({ sub: 'account-b' }))}.sig`;
@@ -29,7 +35,12 @@ const createEphemeralSocketSpy = vi.hoisted(() => vi.fn());
 const getCredentialsSpy = vi.hoisted(() => vi.fn());
 const createEncryptionSpy = vi.hoisted(() => vi.fn());
 const listServerProfilesSpy = vi.hoisted(() => vi.fn());
-const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
+const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn(() => ({
+  serverId: 'server-a',
+  serverUrl: 'https://server-a.example.test',
+  kind: 'custom',
+  generation: 1,
+})));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient', () => ({
   createEphemeralServerSocketClient: (...args: unknown[]) => createEphemeralSocketSpy(...args),
@@ -41,30 +52,19 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
   },
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-  TokenStorage: {
-    getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsSpy(...args),
-  },
-  isTokenOnlyAuthCredentials: (credentials: unknown) => {
-    if (!credentials || typeof credentials !== 'object') return false;
-    const record = credentials as Record<string, unknown>;
-    return !('secret' in record) && !('encryption' in record);
-  },
-}));
-
 vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', () => ({
   createEncryptionFromAuthCredentials: (...args: unknown[]) => createEncryptionSpy(...args),
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', async () => {
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
   const { createServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
-  return createServerProfilesModuleMock({
+  return { ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(), ...createServerProfilesModuleMock({
     listServerProfiles: (...args: unknown[]) => listServerProfilesSpy(...args),
-  });
+  }) };
 });
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
-  getActiveServerSnapshot: (...args: unknown[]) => getActiveServerSnapshotSpy(...args),
+  getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
 }));
 
 vi.mock('@/utils/system/runtimeFetch', () => ({
@@ -79,8 +79,13 @@ vi.mock('@/utils/system/runtimeFetch', () => ({
   },
 }));
 
+vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockImplementation((...args) => getCredentialsSpy(...args));
+
+const initialStorageState = storage.getState();
+
 describe('sessionRpcWithServerScope', () => {
   afterEach(() => {
+    storage.setState(initialStorageState, true);
     vi.useRealTimers();
     sessionRpcSpy.mockReset();
     createEphemeralSocketSpy.mockReset();
@@ -308,6 +313,63 @@ describe('sessionRpcWithServerScope', () => {
       timeoutMs: 5000,
     });
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an active presentation bind pre-issuance failure without creating an ephemeral socket', async () => {
+    getActiveServerSnapshotSpy.mockReturnValue({
+      serverId: 'server-a',
+      serverUrl: 'https://server-a.example.test',
+      kind: 'custom',
+      generation: 1,
+    });
+    const encryptionFailure = Object.assign(
+      new Error('Session encryption not found for session-1'),
+      { rpcErrorCode: 'session_encryption_not_found' },
+    );
+    sessionRpcSpy.mockRejectedValueOnce(encryptionFailure);
+
+    const { sessionRpcWithServerScope } = await import('./serverScopedSessionRpc');
+    await expect(sessionRpcWithServerScope({
+      sessionId: 'session-1',
+      method: CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD,
+      payload: { clientId: 'client-1', focused: true, draftRevision: 1 },
+      timeoutMs: 5000,
+    })).rejects.toBe(encryptionFailure);
+
+    expect(createEphemeralSocketSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a presentation bind for a non-active Home without creating an ephemeral socket', async () => {
+    getActiveServerSnapshotSpy.mockReturnValue({
+      serverId: 'server-a',
+      serverUrl: 'https://server-a.example.test',
+      kind: 'custom',
+      generation: 1,
+    });
+    listServerProfilesSpy.mockReturnValue([
+      { id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
+    ]);
+    getCredentialsSpy.mockResolvedValue({ token: TOKEN_B, secret: 'secret-b' });
+    createEncryptionSpy.mockResolvedValue({
+      decryptEncryptionKey: vi.fn(async () => null),
+      initializeSessions: vi.fn(async () => {}),
+      getSessionEncryption: vi.fn(() => null),
+    });
+
+    const { sessionRpcWithServerScope } = await import('./serverScopedSessionRpc');
+    await expect(sessionRpcWithServerScope({
+      sessionId: 'session-1',
+      serverId: 'server-b',
+      method: CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD,
+      payload: { clientId: 'client-1', focused: true, draftRevision: 1 },
+      timeoutMs: 5000,
+    })).rejects.toMatchObject({
+      name: 'RpcError',
+      rpcErrorCode: 'current_session_presentation_active_home_required',
+    });
+
+    expect(sessionRpcSpy).not.toHaveBeenCalled();
+    expect(createEphemeralSocketSpy).not.toHaveBeenCalled();
   });
 
   it('falls back to a scoped plaintext RPC when active session RPC reports method not available', async () => {
@@ -644,7 +706,7 @@ describe('sessionRpcWithServerScope', () => {
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
   });
 
-  it('routes plaintext RPC with token-only credentials and never constructs encryption', async () => {
+  it('keeps an explicit Home B permission response off the active Home A socket', async () => {
     getActiveServerSnapshotSpy.mockReturnValue({
       serverId: 'server-a',
       serverUrl: 'https://server-a.example.test',
@@ -681,19 +743,21 @@ describe('sessionRpcWithServerScope', () => {
     };
     createEphemeralSocketSpy.mockResolvedValueOnce(fakeSocket);
 
-    const { sessionRpcWithServerScope } = await import('./serverScopedSessionRpc');
-    await expect(sessionRpcWithServerScope({
+    await expect(sessionRpcWithPreferredSessionScope({
       sessionId: 'session-1',
-      method: 'method-test',
-      payload: { value: 3 },
+      method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
+      payload: { id: 'permission-b', approved: true },
       serverId: 'server-b',
       timeoutMs: 5000,
     })).resolves.toEqual({ decodedPlain: true });
 
     expect(createEncryptionSpy).not.toHaveBeenCalled();
+    expect(sessionRpcSpy).not.toHaveBeenCalled();
+    expect(getCredentialsSpy).toHaveBeenCalledWith('https://server-b.example.test', { serverId: 'server-b' });
     expect(emitWithAck).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.CALL, {
-      method: 'session-1:method-test',
-      params: { value: 3 },
+      method: `session-1:${RPC_METHODS.SESSION_PERMISSION_RESPOND}`,
+      params: { id: 'permission-b', approved: true },
+      authorization: { kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE, sessionId: 'session-1' },
       timeoutMs: 5000,
     });
   });

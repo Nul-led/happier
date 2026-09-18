@@ -8,10 +8,12 @@ import type { QualifiedConnectedAccountUiGroup } from '@/sync/domains/connectedS
 import {
     ConnectedServiceAuthGroupPolicyV1Schema,
     type ConnectedServiceAuthGroupPolicyV1,
+    type ConnectedServiceQuotaSnapshotV1,
     type QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
 
 import {
+    buildPoolQuotaLimitCandidates,
     QualifiedPoolDetailView,
     type QualifiedPoolDetailAccount,
     type QualifiedPoolDetailMutations,
@@ -172,7 +174,16 @@ async function flush(times = 8): Promise<void> {
 
 async function renderPoolDetail(
     overrides: Partial<QualifiedConnectedAccountUiGroup> = {},
-    viewOverrides: Readonly<{ error?: string | null }> = {},
+    viewOverrides: Readonly<{
+        error?: string | null;
+        autoQuotaResetEnabled?: boolean;
+        autoDisablePlanInvalidEnabled?: boolean;
+        quotaLimitSelectionEnabled?: boolean;
+        quotaSnapshots?: ReadonlyArray<ConnectedServiceQuotaSnapshotV1>;
+        quotaEnabledMemberCount?: number;
+        quotaLoadingMemberCount?: number;
+        onShareWithTeam?: () => void;
+    }> = {},
 ) {
     const group = createGroup(overrides);
     const screen = await renderScreen(
@@ -182,6 +193,13 @@ async function renderPoolDetail(
             serviceLabel="Codex"
             mutations={createMutations()}
             error={viewOverrides.error ?? null}
+            autoQuotaResetEnabled={viewOverrides.autoQuotaResetEnabled}
+            autoDisablePlanInvalidEnabled={viewOverrides.autoDisablePlanInvalidEnabled}
+            quotaLimitSelectionEnabled={viewOverrides.quotaLimitSelectionEnabled}
+            quotaSnapshots={viewOverrides.quotaSnapshots}
+            quotaEnabledMemberCount={viewOverrides.quotaEnabledMemberCount}
+            quotaLoadingMemberCount={viewOverrides.quotaLoadingMemberCount}
+            onShareWithTeam={viewOverrides.onShareWithTeam}
         />,
     );
     await flush(2);
@@ -330,6 +348,221 @@ beforeEach(() => {
 });
 
 describe('QualifiedPoolDetailView', () => {
+    it('keeps provider allowance names, deduplicates windows, and reports enabled-member coverage', () => {
+        const candidates = buildPoolQuotaLimitCandidates({
+            enabledMemberCount: 3,
+            selectedProviderLimitIds: ['iguana_necktie', 'saved-but-unreported'],
+            snapshots: [
+                {
+                    v: 1,
+                    serviceId: 'openai-codex',
+                    profileId: 'work',
+                    fetchedAt: 1_000,
+                    staleAfterMs: 60_000,
+                    planLabel: null,
+                    accountLabel: null,
+                    meters: [
+                        {
+                            meterId: 'spark:primary', label: 'Spark · Primary', providerLimitId: 'spark', modelId: 'gpt-spark',
+                            windowDurationMs: 5 * 60 * 60_000,
+                            used: null, limit: null, unit: 'unknown', utilizationPct: 10, resetsAt: null, status: 'ok', details: {},
+                        },
+                        {
+                            meterId: 'spark:secondary', label: 'Spark · Secondary', providerLimitId: 'spark', modelId: 'gpt-spark',
+                            windowDurationMs: 7 * 24 * 60 * 60_000,
+                            used: null, limit: null, unit: 'unknown', utilizationPct: 20, resetsAt: null, status: 'ok', details: {},
+                        },
+                        {
+                            meterId: 'seven_day_fable', label: 'Weekly (Fable)', providerLimitId: 'seven_day_fable', modelId: null,
+                            used: null, limit: null, unit: 'unknown', utilizationPct: 30, resetsAt: null, status: 'ok', details: { rawScope: 'weekly_scoped' },
+                        },
+                        {
+                            meterId: 'iguana_necktie', label: 'Unknown', providerLimitId: 'iguana_necktie', modelId: null,
+                            used: null, limit: null, unit: 'unknown', utilizationPct: 40, resetsAt: null, status: 'ok', details: {},
+                        },
+                        {
+                            meterId: 'legacy-session', label: 'Legacy session', modelId: null,
+                            used: null, limit: null, unit: 'unknown', utilizationPct: 50, resetsAt: null, status: 'ok', details: {},
+                        },
+                    ],
+                },
+                {
+                    v: 1,
+                    serviceId: 'openai-codex',
+                    profileId: 'backup',
+                    fetchedAt: 1_000,
+                    staleAfterMs: 60_000,
+                    planLabel: null,
+                    accountLabel: null,
+                    meters: [{
+                        meterId: 'spark:primary', label: 'Spark · Primary', providerLimitId: 'spark', modelId: 'gpt-spark',
+                        windowDurationMs: 5 * 60 * 60_000,
+                        used: null, limit: null, unit: 'unknown', utilizationPct: 15, resetsAt: null, status: 'ok', details: {},
+                    }],
+                },
+            ],
+        });
+
+        expect(candidates).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                providerLimitId: 'spark',
+                title: 'Spark',
+                modelIds: ['gpt-spark'],
+                windowCount: 2,
+                windowSummary: '5h + 7d',
+                reportingMemberCount: 2,
+                enabledMemberCount: 3,
+            }),
+            expect.objectContaining({
+                providerLimitId: 'seven_day_fable',
+                title: 'Weekly (Fable)',
+                windowCount: 1,
+                reportingMemberCount: 1,
+            }),
+            expect.objectContaining({
+                providerLimitId: 'iguana_necktie',
+                title: 'connectedServices.detail.groupDetail.quotaLimitProviderAllowanceTitle',
+                technicalId: 'iguana_necktie',
+            }),
+            expect.objectContaining({
+                providerLimitId: 'saved-but-unreported',
+                technicalId: 'saved-but-unreported',
+                unavailable: true,
+                reportingMemberCount: 0,
+            }),
+            expect.objectContaining({
+                providerLimitId: 'legacy-session',
+                title: 'Legacy session',
+                reportingMemberCount: 1,
+            }),
+        ]));
+        expect(candidates.filter((candidate) => candidate.providerLimitId === 'spark')).toHaveLength(1);
+    });
+
+    it('authors one nonempty custom quota-family selection and preserves unavailable saved limits', async () => {
+        const { screen } = await renderPoolDetail({
+            policy: policy({
+                quotaLimitSelection: { mode: 'selected', providerLimitIds: ['legacy-limit'] },
+            }),
+        }, {
+            quotaLimitSelectionEnabled: true,
+            quotaSnapshots: [{
+                v: 1,
+                serviceId: 'openai-codex',
+                profileId: 'work',
+                fetchedAt: 1_000,
+                staleAfterMs: 60_000,
+                planLabel: null,
+                accountLabel: null,
+                meters: [{
+                    meterId: 'spark:primary',
+                    label: 'Spark · Primary',
+                    providerLimitId: 'spark',
+                    used: null,
+                    limit: null,
+                    unit: 'unknown',
+                    utilizationPct: 10,
+                    resetsAt: null,
+                    status: 'ok',
+                    details: {},
+                }],
+            }],
+        });
+        const menu = screen.root
+            .findAllByType('DropdownMenu' as never)
+            .find((candidate) => candidate.props.items?.some((item: { title?: string }) => (
+                item.title === 'connectedServices.detail.groupDetail.quotaLimitsAllTitle'
+            )));
+        expect(menu?.props.items).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'spark', title: 'Spark' }),
+            expect.objectContaining({
+                id: 'legacy-limit',
+                subtitle: expect.stringMatching(
+                    /quotaLimitUnavailableSubtitle.*quotaLimitTechnicalIdSubtitle/,
+                ),
+            }),
+        ]));
+
+        await act(async () => menu?.props.onOpenChange(true));
+        await act(async () => menu?.props.onSelect('legacy-limit'));
+        await act(async () => menu?.props.onOpenChange(false));
+        expect(patch).not.toHaveBeenCalled();
+
+        await act(async () => menu?.props.onOpenChange(true));
+        await act(async () => menu?.props.onSelect('spark'));
+        await act(async () => menu?.props.onOpenChange(false));
+        expect(patch).toHaveBeenCalledWith(expect.objectContaining({
+            policy: expect.objectContaining({
+                quotaLimitSelection: { mode: 'selected', providerLimitIds: ['legacy-limit', 'spark'] },
+            }),
+        }));
+    });
+
+    it('does not expose quota policy authoring when the negotiated feature is absent', async () => {
+        const { screen } = await renderPoolDetail();
+        expect(screen.root.findAllByType('DropdownMenu' as never).some(
+            (candidate) => candidate.props.items?.some((item: { title?: string }) => (
+                item.title === 'connectedServices.detail.groupDetail.quotaLimitsAllTitle'
+            )),
+        )).toBe(false);
+    });
+
+    it('marks the reported-limit inventory incomplete while enabled member quotas load', async () => {
+        const { screen } = await renderPoolDetail({}, {
+            quotaLimitSelectionEnabled: true,
+            quotaEnabledMemberCount: 2,
+            quotaLoadingMemberCount: 1,
+        });
+        const menu = screen.root
+            .findAllByType('DropdownMenu' as never)
+            .find((candidate) => candidate.props.items?.some((item: { title?: string }) => (
+                item.title === 'connectedServices.detail.groupDetail.quotaLimitsAllTitle'
+            )));
+        expect(menu?.props.items).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: ' ',
+                subtitle: 'connectedServices.detail.groupDetail.quotaLimitsAllLoadingSubtitle',
+            }),
+        ]));
+    });
+
+    it('offers the current Pool to a Team through the mounted source action', async () => {
+        const onShareWithTeam = vi.fn();
+        const { screen } = await renderPoolDetail({}, { onShareWithTeam });
+
+        screen.pressByTestId('connected-services-pool-detail:share-with-team');
+
+        expect(onShareWithTeam).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers explicit quota-reset spending only when the owning service and server support it', async () => {
+        const { screen } = await renderPoolDetail({}, { autoQuotaResetEnabled: true });
+        const toggle = screen.findByTestId('connected-services-pool-detail:auto-quota-reset:toggle');
+        expect(toggle).toBeTruthy();
+        expect(toggle?.props.value).toBe(false);
+        await act(async () => { await toggle?.props.onValueChange(true); });
+        expect(patch).toHaveBeenCalledWith(expect.objectContaining({
+            policy: expect.objectContaining({ autoUseQuotaResetsWhenExhausted: true }),
+        }));
+    });
+
+    it('fails closed when quota-reset support is absent', async () => {
+        const { screen } = await renderPoolDetail();
+        expect(screen.findByTestId('connected-services-pool-detail:auto-quota-reset:toggle')).toBeNull();
+    });
+
+    it('offers opt-in model-entitlement auto-disable only when the server enables it', async () => {
+        const { screen } = await renderPoolDetail({}, { autoDisablePlanInvalidEnabled: true });
+        const toggle = screen.findByTestId('connected-services-pool-detail:auto-disable-plan-invalid:toggle');
+        expect(toggle?.props.value).toBe(false);
+        await act(async () => { await toggle?.props.onValueChange(true); });
+        expect(patch).toHaveBeenCalledWith(expect.objectContaining({
+            policy: expect.objectContaining({ autoDisablePlanInvalidAccounts: true }),
+        }));
+
+        const unavailable = await renderPoolDetail();
+        expect(unavailable.screen.findByTestId('connected-services-pool-detail:auto-disable-plan-invalid:toggle')).toBeNull();
+    });
     it('renders members as pool-member account blocks in priority order', async () => {
         const { screen, group } = await renderPoolDetail();
 
@@ -343,6 +576,23 @@ describe('QualifiedPoolDetailView', () => {
         expect(memberBlock(screen, 'backup').isActive).toBe(false);
         // Two members means reorder is live: each row carries a drag gesture.
         expect(memberBlock(screen, 'work').reorderGesture).toBeTruthy();
+    });
+
+    it('shows why a model-ineligible member was disabled automatically', async () => {
+        const { screen } = await renderPoolDetail({
+            members: [
+                {
+                    ref: accountRef('work'),
+                    priority: 100,
+                    enabled: false,
+                    state: { autoDisabledReason: 'model_not_entitled' },
+                },
+            ],
+        });
+
+        expect(memberBlock(screen, 'work').identityLabel).toBe(
+            'connectedServices.detail.groups.memberAutoDisabledModelNotEntitled',
+        );
     });
 
     it('names a member by its human identity and keeps the remaining identity facts on the identity line', async () => {

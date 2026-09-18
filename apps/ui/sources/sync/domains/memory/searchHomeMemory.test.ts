@@ -85,8 +85,8 @@ function createHomeSearchHit(sessionId: string, summary = 'Personal Home summary
 }
 
 function activateHome(name: string, serverUrl: string): string {
-    const profile = upsertServerProfile({ serverUrl, name });
-    setActiveServerId(profile.id, { scope: 'device' });
+    const profile = await upsertServerProfile({ serverUrl, name });
+    await setActiveServerId(profile.id, { scope: 'device' });
     return profile.id;
 }
 
@@ -167,7 +167,7 @@ describe('searchHomeMemory', () => {
 
     it('sends an explicit Home B query to Home B while Home A stays focused', async () => {
         activateHome('Home A', 'https://home-a.example');
-        const homeB = upsertServerProfile({ serverUrl: 'https://home-b.example', name: 'Home B' });
+        const homeB = await upsertServerProfile({ serverUrl: 'https://home-b.example', name: 'Home B' });
         const homeBToken = tokenForSub('home-b-account');
         getCredentialsForServerUrlMock.mockResolvedValue({ token: homeBToken, secret: 'home-b-secret' });
         createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
@@ -248,12 +248,12 @@ describe('searchHomeMemory', () => {
 
     it('keeps the request bound to the explicitly targeted Home when focus moves during resolution', async () => {
         const homeA = activateHome('Home A', 'https://home-a.example');
-        const homeB = upsertServerProfile({ serverUrl: 'https://home-b.example', name: 'Home B' });
+        const homeB = await upsertServerProfile({ serverUrl: 'https://home-b.example', name: 'Home B' });
         const homeAToken = tokenForSub('home-a-account');
         const homeBToken = tokenForSub('home-b-account');
         // Focus flips to Home B while the target's credentials are still resolving.
         getCredentialsForServerUrlMock.mockImplementation(async (serverUrl: string) => {
-            setActiveServerId(homeB.id, { scope: 'device' });
+            await setActiveServerId(homeB.id, { scope: 'device' });
             return serverUrl === 'https://home-a.example'
                 ? { token: homeAToken, secret: 'home-a-secret' }
                 : { token: homeBToken, secret: 'home-b-secret' };

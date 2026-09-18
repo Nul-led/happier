@@ -6,11 +6,13 @@ import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import type { SecretRequirementScreenProps } from '@/components/secrets/requirements';
 import {
+    BUNDLED_AGENT_ROUTE_PARAMS,
+    createDiscoveredPluginBackendDescribeResult,
     createNavigationMock,
+    createProjectionDescribeMock,
     createRouterMock,
     enableReactActEnvironment,
     installPickerCommonModuleMocks,
-    parseJsonRouteParam,
 } from './testHarness';
 import { createUseSettingMock, createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/storage';
 
@@ -38,15 +40,7 @@ const settingsState = vi.hoisted(() => ({
         acpCatalogSettingsV1: null as unknown,
     },
 }));
-type MachineContributionRegistryProjectionDescribeFn =
-    typeof import('@/sync/ops/machineContributionRegistryProjection').machineContributionRegistryProjectionDescribe;
-const {
-    machineContributionRegistryProjectionDescribe,
-} = vi.hoisted(() => ({
-    machineContributionRegistryProjectionDescribe: vi.fn<MachineContributionRegistryProjectionDescribeFn>(
-        async () => ({ supported: false, reason: 'not-supported' }),
-    ),
-}));
+const machineContributionRegistryProjectionDescribe = createProjectionDescribeMock();
 
 installPickerCommonModuleMocks({
     reactNative: async () =>
@@ -99,6 +93,10 @@ installPickerCommonModuleMocks({
                 }),
             },
         }),
+    projectionSeam: { describe: machineContributionRegistryProjectionDescribe },
+    tempDataStore: {
+        storeTempData: () => 'temp-secret-result-id',
+    },
 });
 
 vi.mock('@/components/secrets/requirements', () => ({
@@ -106,20 +104,6 @@ vi.mock('@/components/secrets/requirements', () => ({
         secretRequirementScreenPropsRef.current = props;
         return null;
     },
-}));
-
-vi.mock('@/utils/sessions/tempDataStore', () => ({
-    storeTempData: () => 'temp-secret-result-id',
-}));
-
-vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
-    machineContributionRegistryProjectionDescribe: (...args: Parameters<MachineContributionRegistryProjectionDescribeFn>) =>
-        machineContributionRegistryProjectionDescribe(...args),
-    getMachineContributionRegistryProjectionRevision: () => 0,
-    subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
-    machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
 }));
 
 describe('SecretRequirementPickerScreen replace fallback', () => {
@@ -166,29 +150,7 @@ describe('SecretRequirementPickerScreen replace fallback', () => {
     });
 
     it('falls back to the preferred built-in target when route params only carry legacy customAcp and no explicit backend target is stored', async () => {
-        machineContributionRegistryProjectionDescribe.mockResolvedValue({
-            supported: true,
-            projection: {
-                v: 1,
-                agentsById: {
-                    'acme.review.provider': {
-                        id: 'acme.review.provider',
-                        title: 'Acme Review Provider',
-                        channel: 'plugin',
-                        isBuiltIn: false,
-                        settingsBackendId: 'acme.review.backend',
-                    },
-                },
-                backendsById: {
-                    'acme.review.backend': {
-                        id: 'acme.review.backend',
-                        backendId: 'acme.review.backend',
-                        agentId: 'acme.review.provider',
-                        title: 'Acme Review Backend',
-                    },
-                },
-            },
-        });
+        machineContributionRegistryProjectionDescribe.mockResolvedValue(createDiscoveredPluginBackendDescribeResult());
 
         const SecretRequirementPickerScreen = (await import('@/app/(app)/new/pick/secret-requirement')).default;
         await renderScreen(React.createElement(SecretRequirementPickerScreen));
@@ -206,23 +168,16 @@ describe('SecretRequirementPickerScreen replace fallback', () => {
             timeoutMs: 10_000,
         }));
         expect(routerMock.replace).toHaveBeenCalledTimes(1);
-        const [call] = routerMock.replace.mock.calls;
-        const args = call?.[0] as any;
-
-        expect(args).toEqual(expect.objectContaining({
+        expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
-            params: expect.objectContaining({
-                agentType: 'claude',
-                backendTargetKey: 'backend:claude',
+            params: {
+                ...BUNDLED_AGENT_ROUTE_PARAMS.claude,
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 profileId: 'deepseek',
                 secretRequirementResultId: 'temp-secret-result-id',
                 spawnServerId: 'server-2',
-            }),
-        }));
-
-        const backendTarget = parseJsonRouteParam(args?.params?.backendTarget) as any;
-        expect(backendTarget).toMatchObject({ kind: 'backend', backendId: 'claude' });
+            },
+        });
     });
 });

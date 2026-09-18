@@ -24,9 +24,9 @@ describe('useVoiceSurfaceTargetState', () => {
     beforeEach(() => {
         useVoiceTargetStore.setState({
             scope: 'global',
-            primaryActionSessionId: null,
-            trackedSessionIds: [],
-            lastFocusedSessionId: 'voice-last-focused',
+            primaryActionSessionAddress: null,
+            voiceLiveContextSessionAddresses: [],
+            lastFocusedSessionAddress: { serverId: 'server-a', sessionId: 'voice-last-focused' },
         } as any);
         resetSessionSurfaceVisibilityForTests();
         registerVoiceAdapters([]);
@@ -40,6 +40,7 @@ describe('useVoiceSurfaceTargetState', () => {
             pathname: '/session/exact-session',
             providerId: 'global_provider',
             sessionId: 'exact-session',
+            serverId: 'server-a',
             variant: 'session',
             voice: {
                 ui: {
@@ -59,9 +60,95 @@ describe('useVoiceSurfaceTargetState', () => {
         await hook.unmount();
     });
 
+    it('keeps an in-session Voice surface bound to its rendered Home when another Home is active', async () => {
+        registerVoiceAdapters([createSurfaceAdapter('surface_provider', false, 'surface')]);
+        const { useVoiceSurfaceTargetState } = await import('./useVoiceSurfaceTargetState');
+
+        const hook = await renderHook(() => useVoiceSurfaceTargetState({
+            pathname: '/session/shared-session',
+            providerId: 'surface_provider',
+            sessionId: 'shared-session',
+            serverId: 'server-b',
+            variant: 'session',
+            voice: null,
+            voicePrivacy: {
+                shareFilePaths: true,
+                shareSessionSummary: true,
+            },
+        }));
+
+        expect(hook.getCurrent().startSessionAddress).toEqual({
+            serverId: 'server-b',
+            sessionId: 'shared-session',
+        });
+        await hook.unmount();
+    });
+
+    it('does not reconstruct an in-session Voice target from a bare Session id', async () => {
+        registerVoiceAdapters([createSurfaceAdapter('surface_provider', false, 'surface')]);
+        const previousStorageState = storage.getState();
+        storage.setState((state) => ({
+            ...state,
+            sessions: {
+                ...state.sessions,
+                'shared-session': {
+                    id: 'shared-session',
+                    serverId: 'server-a',
+                    seq: 1,
+                    createdAt: 1,
+                    updatedAt: 1,
+                    active: false,
+                    activeAt: 1,
+                    presence: 1,
+                    metadata: null,
+                    metadataVersion: 1,
+                    agentState: null,
+                    agentStateVersion: 1,
+                    thinking: false,
+                    thinkingAt: 0,
+                } satisfies Session,
+            },
+        }));
+        const { useVoiceSurfaceTargetState } = await import('./useVoiceSurfaceTargetState');
+
+        const hook = await renderHook(() => useVoiceSurfaceTargetState({
+            pathname: '/session/shared-session',
+            providerId: 'surface_provider',
+            sessionId: 'shared-session',
+            serverId: null,
+            variant: 'session',
+            voice: null,
+            voicePrivacy: { shareFilePaths: true, shareSessionSummary: true },
+        }));
+
+        expect(hook.getCurrent().bindingScope).toBe('session');
+        expect(hook.getCurrent().startSessionAddress).toBeNull();
+        await hook.unmount();
+        storage.setState(previousStorageState, true);
+    });
+
+    it('treats an explicitly unavailable mounted address as authoritative over legacy qualified props', async () => {
+        registerVoiceAdapters([createSurfaceAdapter('surface_provider', false, 'surface')]);
+        const { useVoiceSurfaceTargetState } = await import('./useVoiceSurfaceTargetState');
+
+        const hook = await renderHook(() => useVoiceSurfaceTargetState({
+            pathname: '/session/shared-session',
+            providerId: 'surface_provider',
+            sessionAddress: null,
+            sessionId: 'shared-session',
+            serverId: 'server-a',
+            variant: 'session',
+            voice: null,
+            voicePrivacy: { shareFilePaths: true, shareSessionSummary: true },
+        }));
+
+        expect(hook.getCurrent().startSessionAddress).toBeNull();
+        await hook.unmount();
+    });
+
     it('keeps exact-session scope when the voice surface is explicitly placed in the sidebar', async () => {
         registerVoiceAdapters([createSurfaceAdapter('global_provider', true, 'global')]);
-        setFocusedSessionId('exact-session');
+        setFocusedSessionId('exact-session', 'server-a');
         const { useVoiceSurfaceTargetState } = await import('./useVoiceSurfaceTargetState');
 
         const hook = await renderHook(() => useVoiceSurfaceTargetState({
@@ -89,7 +176,7 @@ describe('useVoiceSurfaceTargetState', () => {
 
     it('prefers the focused visible session over the route session for surface-scoped sidebar targeting', async () => {
         registerVoiceAdapters([createSurfaceAdapter('surface_provider', false, 'surface')]);
-        setFocusedSessionId('split-focused-session');
+        setFocusedSessionId('split-focused-session', 'server-a');
         const { useVoiceSurfaceTargetState } = await import('./useVoiceSurfaceTargetState');
 
         const hook = await renderHook(() => useVoiceSurfaceTargetState({
@@ -108,13 +195,37 @@ describe('useVoiceSurfaceTargetState', () => {
         await hook.unmount();
     });
 
+    it('keeps the focused Session Home instead of retargeting Voice through the ambient active Home', async () => {
+        registerVoiceAdapters([createSurfaceAdapter('surface_provider', false, 'surface')]);
+        setFocusedSessionId('shared-session', 'server-b');
+        const { useVoiceSurfaceTargetState } = await import('./useVoiceSurfaceTargetState');
+
+        const hook = await renderHook(() => useVoiceSurfaceTargetState({
+            pathname: '/session/shared-session',
+            providerId: 'surface_provider',
+            sessionId: null,
+            variant: 'sidebar',
+            voice: null,
+            voicePrivacy: {
+                shareFilePaths: true,
+                shareSessionSummary: true,
+            },
+        }));
+
+        expect(hook.getCurrent().startSessionAddress).toEqual({
+            serverId: 'server-b',
+            sessionId: 'shared-session',
+        });
+        await hook.unmount();
+    });
+
     it('resolves a global-scoped Voice Home start independently of focused, routed, last-focused, or tool-target sessions', async () => {
         registerVoiceAdapters([createSurfaceAdapter('global_provider', true, 'global')]);
-        setFocusedSessionId('split-focused-session');
+        setFocusedSessionId('split-focused-session', 'server-a');
         useVoiceTargetStore.setState({
             scope: 'global',
-            primaryActionSessionId: 'tool-target-session',
-            lastFocusedSessionId: 'last-focused-session',
+            primaryActionSessionAddress: { serverId: 'server-a', sessionId: 'tool-target-session' },
+            lastFocusedSessionAddress: { serverId: 'server-a', sessionId: 'last-focused-session' },
         } as any);
         const { useVoiceSurfaceTargetState } = await import('./useVoiceSurfaceTargetState');
 
@@ -145,6 +256,7 @@ describe('useVoiceSurfaceTargetState', () => {
             pathname: '/session/route-session',
             providerId: 'global_provider',
             sessionId: 'exact-session',
+            serverId: 'server-a',
             variant: 'session',
             voice: {
                 ui: {
@@ -217,7 +329,7 @@ describe('useVoiceSurfaceTargetState', () => {
 
         try {
             registerVoiceAdapters([createSurfaceAdapter('happier.voice.elevenlabs/realtime-elevenlabs', false, 'surface')]);
-            setFocusedSessionId(selectedSessionId);
+            setFocusedSessionId(selectedSessionId, serverId);
             storage.setState((state) => ({
                 ...state,
                 sessions: {
@@ -263,44 +375,51 @@ describe('useVoiceSurfaceTargetState', () => {
                         thinkingAt: 0,
                     } satisfies Session,
                 },
-                sessionListRenderables: {
-                    ...state.sessionListRenderables,
-                    [selectedSessionId]: {
-                        id: selectedSessionId,
-                        seq: 1,
-                        createdAt: 1,
-                        updatedAt: 1,
-                        active: false,
-                        activeAt: 1,
-                        presence: 1,
-                        metadata: {
-                            host: 'surface-host',
-                            path: '/surface/selected',
-                            summaryText: 'Preferred selected summary',
-                        },
-                        metadataVersion: 1,
-                        agentStateVersion: 1,
-                        thinking: false,
-                        thinkingAt: 0,
-                    } satisfies SessionListRenderableSession,
-                    [unrelatedSessionId]: {
-                        id: unrelatedSessionId,
-                        seq: 1,
-                        createdAt: 1,
-                        updatedAt: 1,
-                        active: false,
-                        activeAt: 1,
-                        presence: 1,
-                        metadata: {
-                            host: 'surface-host',
-                            path: '/surface/unrelated',
-                            summaryText: 'Preferred unrelated summary',
-                        },
-                        metadataVersion: 1,
-                        agentStateVersion: 1,
-                        thinking: false,
-                        thinkingAt: 0,
-                    } satisfies SessionListRenderableSession,
+                sessionListRowsByServerId: {
+                    ...state.sessionListRowsByServerId,
+                    [serverId]: {
+                        ...(state.sessionListRowsByServerId[serverId] ?? {}),
+                        [selectedSessionId]: {
+                            id: selectedSessionId,
+                            seq: 1,
+                            createdAt: 1,
+                            updatedAt: 1,
+                            active: false,
+                            activeAt: 1,
+                            presence: 1,
+                            metadata: {
+                                host: 'surface-host',
+                                path: '/surface/selected',
+                                summaryText: 'Preferred selected summary',
+                            },
+                            metadataVersion: 1,
+                            agentStateVersion: 1,
+                            thinking: false,
+                            thinkingAt: 0,
+                        } satisfies SessionListRenderableSession,
+                        [unrelatedSessionId]: {
+                            id: unrelatedSessionId,
+                            seq: 1,
+                            createdAt: 1,
+                            updatedAt: 1,
+                            active: false,
+                            activeAt: 1,
+                            presence: 1,
+                            metadata: {
+                                host: 'surface-host',
+                                path: '/surface/unrelated',
+                                summaryText: 'Preferred unrelated summary',
+                            },
+                            metadataVersion: 1,
+                            agentStateVersion: 1,
+                            thinking: false,
+                            thinkingAt: 0,
+                        } satisfies SessionListRenderableSession,
+                    },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    ...state.ordinarySessionListMembershipByServerId,
+                    [serverId]: [selectedSessionId, unrelatedSessionId],
                 },
                 sessionListIndexByServerId: {
                     ...state.sessionListIndexByServerId,
@@ -311,7 +430,7 @@ describe('useVoiceSurfaceTargetState', () => {
                 },
                 concurrentSessionListCacheByServerId: {},
             }));
-            useVoiceTargetStore.getState().setPrimaryActionSessionId(selectedSessionId);
+            useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId, sessionId: selectedSessionId });
             const { useVoiceSurfaceTargetState } = await import('./useVoiceSurfaceTargetState');
 
             let renderCount = 0;
@@ -330,15 +449,18 @@ describe('useVoiceSurfaceTargetState', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRenderables: {
-                        ...state.sessionListRenderables,
-                        [unrelatedSessionId]: {
-                            ...state.sessionListRenderables[unrelatedSessionId]!,
-                            metadata: {
-                                ...state.sessionListRenderables[unrelatedSessionId]!.metadata,
-                                host: state.sessionListRenderables[unrelatedSessionId]!.metadata!.host,
-                                path: state.sessionListRenderables[unrelatedSessionId]!.metadata!.path,
-                                summaryText: 'Updated unrelated summary',
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
+                        [serverId]: {
+                            ...state.sessionListRowsByServerId[serverId],
+                            [unrelatedSessionId]: {
+                                ...state.sessionListRowsByServerId[serverId]![unrelatedSessionId]!,
+                                metadata: {
+                                    ...state.sessionListRowsByServerId[serverId]![unrelatedSessionId]!.metadata,
+                                    host: state.sessionListRowsByServerId[serverId]![unrelatedSessionId]!.metadata!.host,
+                                    path: state.sessionListRowsByServerId[serverId]![unrelatedSessionId]!.metadata!.path,
+                                    summaryText: 'Updated unrelated summary',
+                                },
                             },
                         },
                     },
@@ -350,15 +472,18 @@ describe('useVoiceSurfaceTargetState', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRenderables: {
-                        ...state.sessionListRenderables,
-                        [selectedSessionId]: {
-                            ...state.sessionListRenderables[selectedSessionId]!,
-                            metadata: {
-                                ...state.sessionListRenderables[selectedSessionId]!.metadata,
-                                host: state.sessionListRenderables[selectedSessionId]!.metadata!.host,
-                                path: state.sessionListRenderables[selectedSessionId]!.metadata!.path,
-                                summaryText: 'Updated preferred summary',
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
+                        [serverId]: {
+                            ...state.sessionListRowsByServerId[serverId],
+                            [selectedSessionId]: {
+                                ...state.sessionListRowsByServerId[serverId]![selectedSessionId]!,
+                                metadata: {
+                                    ...state.sessionListRowsByServerId[serverId]![selectedSessionId]!.metadata,
+                                    host: state.sessionListRowsByServerId[serverId]![selectedSessionId]!.metadata!.host,
+                                    path: state.sessionListRowsByServerId[serverId]![selectedSessionId]!.metadata!.path,
+                                    summaryText: 'Updated preferred summary',
+                                },
                             },
                         },
                     },
@@ -369,9 +494,15 @@ describe('useVoiceSurfaceTargetState', () => {
 
             await act(async () => {
                 storage.setState((state) => {
-                    const sessionListRenderables = { ...state.sessionListRenderables };
-                    delete sessionListRenderables[selectedSessionId];
-                    return { ...state, sessionListRenderables };
+                    const serverRows = { ...state.sessionListRowsByServerId[serverId] };
+                    delete serverRows[selectedSessionId];
+                    return {
+                        ...state,
+                        sessionListRowsByServerId: {
+                            ...state.sessionListRowsByServerId,
+                            [serverId]: serverRows,
+                        },
+                    };
                 });
                 await flushHookEffects({ cycles: 1, turns: 2 });
             });

@@ -2,7 +2,10 @@ import { buildActivityOverviewSnapshot } from '@/activity/attention/buildActivit
 import type { ActivityOverviewSnapshot } from '@/activity/attention/activityAttentionTypes';
 import { resolveActivitySurfacePolicy, type ActivitySurfacePolicy } from '@/activity/attention/resolveActivitySurfacePolicy';
 import { buildActivitySurfaceCountsViewModel } from '@/activity/presentation/buildActivitySurfaceCountsViewModel';
-import { buildActivitySurfaceViewModels } from '@/activity/presentation/buildActivitySurfaceViewModel';
+import {
+    buildActivitySurfaceViewModels,
+    type ActivitySurfaceCandidatePrivacyModeResolver,
+} from '@/activity/presentation/buildActivitySurfaceViewModel';
 import type {
     ActivitySurfaceCountsViewModel,
     ActivitySurfaceSessionViewModel,
@@ -67,6 +70,7 @@ export function buildActivitySurfaceSnapshot(params: Readonly<{
     overview?: ActivityOverviewSnapshot;
     policy?: ActivitySurfacePolicy;
     nowMs?: number;
+    resolveCandidatePrivacyMode?: ActivitySurfaceCandidatePrivacyModeResolver;
 }>): ActivitySurfaceSnapshot {
     const nowMs = params.nowMs ?? Date.now();
     const policy = params.policy ?? resolveActivitySurfacePolicy({});
@@ -84,6 +88,7 @@ export function buildActivitySurfaceSnapshot(params: Readonly<{
         showMachinePath: policy.widgets.showMachinePath,
         showPreviewText: policy.widgets.showPreviewText,
         nowMs,
+        resolveCandidatePrivacyMode: params.resolveCandidatePrivacyMode,
     });
 
     return {
@@ -93,7 +98,11 @@ export function buildActivitySurfaceSnapshot(params: Readonly<{
         summaryCounts: buildActivitySurfaceCountsViewModel(overview.counts),
         primary: sessions[0] ?? null,
         sessions,
-        defaultTarget: resolvePrimaryActivitySurfaceTarget(policy, sessions[0]?.sessionId ?? null),
+        defaultTarget: resolvePrimaryActivitySurfaceTarget(
+            policy,
+            sessions[0]?.sessionId ?? null,
+            sessions[0]?.serverId ?? null,
+        ),
         labels: buildActivitySurfaceSnapshotLabels(policy),
     };
 }

@@ -1,13 +1,10 @@
-function normalizePathForScope(path: string): string {
-    const replaced = path.replace(/\\/g, '/').replace(/^~(?=\/|$)/, '');
-    if (replaced.length <= 1) return replaced;
-    return replaced.endsWith('/') ? replaced.slice(0, -1) : replaced;
-}
+import { normalizeFileSystemPath } from '@/sync/domains/fileSystem/normalizeFileSystemPath';
+import { resolveAbsolutePath } from '@/utils/path/pathUtils';
 
-export function isSessionPathWithinRepoRoot(sessionPath: string, repoRoot: string): boolean {
-    const normalizedSessionPath = normalizePathForScope(sessionPath);
-    const normalizedRepoRoot = normalizePathForScope(repoRoot);
+export function isSessionPathWithinRepoRoot(sessionPath: string, repoRoot: string, homeDir?: string): boolean {
+    const normalizedSessionPath = normalizeFileSystemPath(resolveAbsolutePath(sessionPath, homeDir));
+    const normalizedRepoRoot = normalizeFileSystemPath(resolveAbsolutePath(repoRoot, homeDir));
     if (!normalizedSessionPath || !normalizedRepoRoot) return false;
     if (normalizedSessionPath === normalizedRepoRoot) return true;
-    return normalizedSessionPath.startsWith(`${normalizedRepoRoot}/`);
+    return normalizedSessionPath.startsWith(normalizedRepoRoot.endsWith('/') ? normalizedRepoRoot : `${normalizedRepoRoot}/`);
 }

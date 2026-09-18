@@ -9,7 +9,7 @@ const state = vi.hoisted(() => ({
         machineListByServerId: {} as Record<string, { id: string; daemonState?: unknown | null }[] | null>,
     },
     preferredServerId: 'server-1',
-    reachableMachineId: 'machine_source',
+    reachableMachineId: 'machine_source' as string | null,
 }));
 
 vi.mock('@/sync/domains/state/storage', () => createStorageModuleStub({
@@ -64,6 +64,20 @@ const HANDOFF_ELIGIBLE_SESSION = {
         machineId: 'machine_source',
         claudeSessionId: 'claude_session_1',
     },
+} as const;
+
+/**
+ * A layout-v1 session whose owner metadata projection has not landed on this device yet. The
+ * plaintext `metadata` bag is deliberately populated: a layout-v1 reader must not fall back to it,
+ * so the only admissible source of a machine here is the canonical reachable/control target.
+ */
+const COLD_OWNER_VIEW_LAYOUT_V1_SESSION = {
+    metadataLayoutVersion: 1,
+    metadata: {
+        flavor: 'claude',
+        machineId: 'machine_stale_layout0',
+    },
+    ownerMetadataView: null,
 } as const;
 
 const EXTERNAL_AGENT_HANDOFF_SESSION = {
@@ -402,6 +416,56 @@ describe('resolveSessionHandoffUiAvailability', () => {
         })).toEqual({
             available: true,
             reason: 'available',
+        });
+    });
+
+    it('keeps handoff available for a layout-v1 session with no owner metadata view when a canonical reachable source target exists', () => {
+        state.reachableMachineId = 'machine_source';
+        state.storageState.machineListByServerId = {
+            'server-explicit': [{
+                id: 'machine_source',
+                daemonState: buildActiveDaemonTransferState(),
+            }],
+        };
+        state.storageState.machines = {};
+
+        expect(resolveSessionHandoffUiAvailability({
+            sessionId: 'session-cold-owner-view',
+            serverId: 'server-explicit',
+            session: COLD_OWNER_VIEW_LAYOUT_V1_SESSION,
+            sessionHandoffFeatureEnabled: true,
+            serverSnapshot: buildReadyServerSnapshot({
+                directPeerEnabled: true,
+                serverRoutedEnabled: true,
+            }),
+        })).toEqual({
+            available: true,
+            reason: 'available',
+        });
+    });
+
+    it('stays session-ineligible when neither a reachable source target nor a readable owner metadata machine exists', () => {
+        state.reachableMachineId = null;
+        state.storageState.machineListByServerId = {
+            'server-explicit': [{
+                id: 'machine_source',
+                daemonState: buildActiveDaemonTransferState(),
+            }],
+        };
+        state.storageState.machines = {};
+
+        expect(resolveSessionHandoffUiAvailability({
+            sessionId: 'session-cold-owner-view',
+            serverId: 'server-explicit',
+            session: COLD_OWNER_VIEW_LAYOUT_V1_SESSION,
+            sessionHandoffFeatureEnabled: true,
+            serverSnapshot: buildReadyServerSnapshot({
+                directPeerEnabled: true,
+                serverRoutedEnabled: true,
+            }),
+        })).toEqual({
+            available: false,
+            reason: 'session_ineligible',
         });
     });
 

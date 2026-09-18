@@ -143,6 +143,53 @@ function defaultProps() {
     } as const;
 }
 
+describe('ExternalSessionBrowseCandidatesList Agent-session deletion affordance', () => {
+    const TRIGGER_TEST_ID = 'external-session-candidate-actions:session-1';
+
+    it.each([
+        ['the listing advertised deletion', true, true],
+        ['the listing advertised nothing', false, false],
+    ])('shows the destructive row control only when %s', async (_label, supported, expected) => {
+        const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
+        const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
+            {...defaultProps()}
+            candidateDeleteSupported={supported}
+            deletingCandidateKey={null}
+            onDeleteCandidate={vi.fn()}
+        />);
+
+        expect(screen.findByTestId(TRIGGER_TEST_ID) !== null).toBe(expected);
+    });
+
+    it('never offers deletion without a consumer that can perform it', async () => {
+        const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
+        const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
+            {...defaultProps()}
+            candidateDeleteSupported
+            deletingCandidateKey={null}
+        />);
+
+        expect(screen.findByTestId(TRIGGER_TEST_ID)).toBeNull();
+    });
+
+    it('names the destructive control after its own candidate for touch and screen readers', async () => {
+        const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
+        const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
+            {...defaultProps()}
+            candidateDeleteSupported
+            deletingCandidateKey={null}
+            onDeleteCandidate={vi.fn()}
+        />);
+
+        const trigger = screen.findByTestId(TRIGGER_TEST_ID);
+        // A bare ellipsis says nothing about which session it acts on, and the
+        // control is always present rather than revealed on hover.
+        expect(trigger?.props.accessibilityLabel).toBe(
+            'externalSessions.browseCandidateActionsAccessibilityLabel',
+        );
+    });
+});
+
 describe('ExternalSessionBrowseCandidatesList SelectionList shell', () => {
     beforeEach(() => {
         accessibilityPlatform.os = 'web';

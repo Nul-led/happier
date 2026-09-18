@@ -3,6 +3,7 @@ import {
   getActionSpec,
   listVoiceToolActionSpecs,
   normalizeSpawnSessionErrorDetail,
+  parseSessionAwarenessListResultV1,
   PluginContributionIdentityV1Schema,
   type ActionExecuteResult,
   type ActionId,
@@ -12,10 +13,10 @@ import {
   type PluginUiJsonValueV1,
 } from '@happier-dev/protocol/plugins/ui';
 
+import { sendSessionMessageWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionSendMessage';
 import { sync } from '@/sync/sync';
 import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import { SESSION_INPUT_TARGET_UPDATE_REQUIRED_ERROR_CODE } from '@/sync/domains/session/input/types';
 import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
 import {
   listPendingSessionRequests,
@@ -24,11 +25,16 @@ import {
 import {
   resolveSessionListLookupSessionServerScopeFromState,
 } from '@/sync/domains/session/listing/sessionListLookupState';
-import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
+import {
+  createDefaultActionExecutor,
+  projectServerScopedSessionSendMessageResult,
+} from '@/sync/ops/actions/defaultActionExecutor';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
 import { resolveAskUserQuestionDecisionAnswers } from '@/voice/requests/resolveAskUserQuestionDecisionAnswers';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { resolveVoiceActionSessionReference } from './actionImpl/resolveVoiceActionSessionReference';
+import { readAdmittedSessionReferenceCorpusOptions } from './actionImpl/admittedSessionReferenceCorpus';
 import type { VoiceCurrentUiToolPort } from './currentUiContextToolPort';
 import {
   isCurrentUiContextVoiceAction,
@@ -48,12 +54,18 @@ export type VoiceToolInvocationContext = Readonly<{
   signal?: AbortSignal;
   effectId?: string;
   callId?: string;
+  /** Host-captured Home scope; never accepted from tool arguments. */
+  serverId?: string | null;
 }>;
 
 export type VoiceToolHandler = (parameters: unknown, context?: VoiceToolInvocationContext) => Promise<string>;
 
 function normalizeId(raw: unknown): string {
   return String(raw ?? '').trim();
+}
+
+function resolveVoiceActionRequestId(context: VoiceToolInvocationContext | undefined): string | null {
+  return normalizeId(context?.effectId) || normalizeId(context?.callId) || null;
 }
 
 function asPlainObject(value: unknown): Record<string, unknown> | null {
@@ -89,11 +101,6 @@ function readVoiceActionInvocationInput(value: unknown): VoiceActionInvocationIn
   return input.success ? { action: action.data, input: input.data } : null;
 }
 
-function readErrorCode(error: unknown): string | null {
-  const record = asPlainObject(error);
-  const code = record?.code ?? record?.errorCode;
-  return typeof code === 'string' ? code : null;
-}
 
 type ToolOk = { ok: true } & Record<string, unknown>;
 type ToolError = { ok: false; errorCode: string; errorMessage: string } & Record<string, unknown>;
@@ -130,7 +137,7 @@ function getNestedActionFailure(value: unknown): { errorCode: string; errorMessa
   };
 }
 
-function serializeVoiceActionExecuteResult(
+export function serializeVoiceActionExecuteResult(
   actionId: ActionId,
   result: ActionExecuteResult,
   options?: Readonly<{
@@ -147,6 +154,11 @@ function serializeVoiceActionExecuteResult(
       ...(errorDetail ? { errorDetail } : {}),
       ...(options?.failurePayload ?? {}),
     });
+  }
+
+  const domainResult = asPlainObject(result.result);
+  if (domainResult?.ok === false && domainResult.status === 'partial') {
+    return JSON.stringify(domainResult);
   }
 
   const nestedFailure = getNestedActionFailure(result.result);
@@ -248,6 +260,7 @@ export function resolveVoiceToolEffectClass(toolName: string): VoiceToolEffectCl
 export function createVoiceToolHandlers(
   deps: Readonly<{
     resolveSessionId: (explicitSessionId?: string | null) => string | null;
+    currentSessionAddress?: SessionAddress | null;
     currentUiContext?: VoiceCurrentUiToolPort;
   }>,
 ): Readonly<Record<string, VoiceToolHandler>> {
@@ -386,71 +399,102 @@ export function createVoiceToolHandlers(
   };
 
   const executor = createDefaultActionExecutor({
+    resolveSessionReference: async ({ sessionId, sessionTitle, context, signal }) => {
+      const currentState = storage.getState();
+      const exactAddress = normalizeSessionAddress(context.serverId, sessionId);
+      const options = exactAddress ? null : readAdmittedSessionReferenceCorpusOptions(currentState);
+      return await resolveVoiceActionSessionReference({
+        ...(sessionId ? { sessionId } : {}),
+        ...(sessionTitle ? { sessionTitle } : {}),
+        ...(context.serverId ? { serverId: context.serverId } : {}),
+        ...(signal ? { signal } : {}),
+      }, options ? { state: currentState, options } : null);
+    },
     resolveServerIdForSessionId: (sessionId: string) => resolvePreferredServerIdForSessionId(sessionId) ?? null,
     resolveServerNameForSessionId: (sessionId: string) => resolveSessionListLookupSessionServerScopeFromState(storage.getState(), sessionId)?.serverName ?? null,
     listContributedActionDefinitions: () => (
       deps.currentUiContext?.listCurrentContributedActionDefinitions?.() ?? []
     ),
     isActionEnabled: (actionId) => isVoiceActionAvailableInState(storage.getState(), actionId),
-    sessionSendMessage: async ({ sessionId, message, signal }) => {
-      const session: any = storage.getState().sessions?.[sessionId] ?? null;
-      if (!session) {
-        return { ok: false, errorCode: 'session_not_found', error: 'session_not_found', details: { sessionId } };
-      }
-
-      const targetServerId = resolvePreferredServerIdForSessionId(sessionId);
-      const activeServerId = normalizeId(getActiveServerSnapshot().serverId);
-      const isActiveServer = !targetServerId || areServerProfileIdentifiersEquivalent(targetServerId, activeServerId);
-      if (isActiveServer) {
-        const encryption = (sync as unknown as { encryption?: { getSessionEncryption?: (id: string) => unknown } }).encryption?.getSessionEncryption?.(sessionId) ?? null;
-        if (!encryption) {
-          return { ok: false, errorCode: 'session_not_ready', error: 'session_not_ready', details: { sessionId } };
-        }
-      }
-
+    sessionSendMessage: async ({ sessionId, message, serverId, recipient, requestedAction, signal }) => {
       if (signal?.aborted) {
-        return { ok: false, errorCode: 'tool_cancelled', error: 'tool_cancelled', details: { sessionId } };
+        return { ok: false, errorCode: 'tool_cancelled', error: 'tool_cancelled' };
       }
-
-      try {
-        await sync.submitMessage(sessionId, message, undefined, undefined, {
-          callerSurface: 'voice_turn',
-          forceImmediate: true,
-          hostAdmissionOrigin: 'voice',
-        });
-      } catch (error) {
-        if (readErrorCode(error) === SESSION_INPUT_TARGET_UPDATE_REQUIRED_ERROR_CODE) {
-          return {
-            ok: false,
-            errorCode: SESSION_INPUT_TARGET_UPDATE_REQUIRED_ERROR_CODE,
-            error: SESSION_INPUT_TARGET_UPDATE_REQUIRED_ERROR_CODE,
-            details: { sessionId },
-          };
-        }
-        throw error;
-      }
-
-      return { ok: true, status: 'sent', sessionId };
+      const delivery = await sendSessionMessageWithServerScope({
+        sessionId,
+        message,
+        serverId,
+        recipient,
+        requestedAction,
+        hostAdmissionOrigin: 'voice',
+        ...(signal ? { signal } : {}),
+      });
+      const result = projectServerScopedSessionSendMessageResult(delivery);
+      return 'ok' in result && result.ok === false
+        ? { ...result, details: { sessionId } }
+        : result;
     },
   });
 
   const execute = async (
     toolName: string,
     parameters: unknown,
-    ctx?: { serverId?: string | null; signal?: AbortSignal },
+    ctx?: VoiceToolInvocationContext,
   ): Promise<string> => {
     const actionId = VOICE_TOOL_ACTION_ID_BY_TOOL_NAME[toolName];
     if (!actionId) return jsonError('unsupported_action', `unsupported_action:${toolName}`);
-    const res = await executor.execute(actionId, parameters, {
-      surface: 'voice',
-      defaultSessionId: deps.resolveSessionId(null),
-      ...(ctx?.serverId ? { serverId: ctx.serverId } : {}),
-      ...(ctx?.signal ? { signal: ctx.signal } : {}),
-    });
+    const input = asPlainObject(parameters ?? {});
+    const useAwareness = actionId === 'session.list' && input !== null
+      && input.view === undefined && input.includeLastMessagePreview !== true;
+    const hasNaturalSessionReference = Boolean(
+      normalizeId(input?.sessionId) || normalizeId(input?.sessionTitle),
+    );
+    const serverId = ctx?.serverId ?? (
+      !hasNaturalSessionReference ? deps.currentSessionAddress?.serverId : null
+    ) ?? (actionId === 'session.list' ? getActiveServerSnapshot().serverId : null);
+    const actionInput = useAwareness ? { ...input, view: 'awareness' } : parameters;
+    if (useAwareness && actionInput && typeof actionInput === 'object') {
+      Reflect.deleteProperty(actionInput, 'includeLastMessagePreview');
+    }
+    let res: Awaited<ReturnType<typeof executor.execute>>;
+    try {
+      res = await executor.execute(actionId, actionInput, {
+        surface: 'voice',
+        defaultSessionId: deps.resolveSessionId(null),
+        ...(serverId ? { serverId } : {}),
+        ...(resolveVoiceActionRequestId(ctx)
+          ? { actionRequestId: resolveVoiceActionRequestId(ctx)! }
+          : {}),
+        ...(ctx?.signal ? { signal: ctx.signal } : {}),
+      });
+    } catch (error) {
+      // The Account-qualified Action owner deliberately invalidates its
+      // captured authority when the invocation signal aborts. Voice presents
+      // that expected cancellation as a tool result, not an unhandled Action
+      // scope error; unrelated failures still propagate to their owner.
+      if (ctx?.signal?.aborted) return jsonError('tool_cancelled', 'tool_cancelled');
+      throw error;
+    }
+    if (ctx?.signal?.aborted) return jsonError('tool_cancelled', 'tool_cancelled');
+    if (res.ok && actionId === 'session.list') {
+      const awareness = parseSessionAwarenessListResultV1(res.result);
+      if (awareness) {
+        return jsonOk({
+          ...awareness,
+          sessions: awareness.sessions.map((session) => ({
+            ...session,
+            address: normalizeSessionAddress(serverId, session.sessionId),
+          })),
+        });
+      }
+    }
     return serializeVoiceActionExecuteResult(actionId, res);
   };
 
-  const answerUserActionRequest = async (parameters: unknown): Promise<string> => {
+  const answerUserActionRequest = async (
+    parameters: unknown,
+    context?: VoiceToolInvocationContext,
+  ): Promise<string> => {
     const rawParameters = asPlainObject(parameters ?? {});
     const spec = getActionSpec('session.user_action.answer');
     const parsed = spec.inputSchema.safeParse(parameters ?? {});
@@ -521,7 +565,15 @@ export function createVoiceToolHandlers(
         ...(reason ? { reason } : {}),
         ...(hasUpdatedPermissions ? { updatedPermissions: data.updatedPermissions } : {}),
       },
-      { surface: 'voice', serverId: targetServerId, defaultSessionId: deps.resolveSessionId(null) },
+      {
+        surface: 'voice',
+        serverId: targetServerId,
+        defaultSessionId: deps.resolveSessionId(null),
+        ...(resolveVoiceActionRequestId(context)
+          ? { actionRequestId: resolveVoiceActionRequestId(context)! }
+          : {}),
+        ...(context?.signal ? { signal: context.signal } : {}),
+      },
     );
     return serializeVoiceActionExecuteResult('session.user_action.answer', res, {
       failurePayload: { sessionId, requestId },

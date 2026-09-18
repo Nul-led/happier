@@ -5,6 +5,14 @@ import { ACTIVITY_SURFACE_LOCAL_SETTING_DEFINITIONS } from './registry/local/loc
 import { applyLocalSettings, localSettingsDefaults, localSettingsParse } from './localSettings';
 
 describe('localSettingsParse', () => {
+    it('keeps remote alert enrollment independent of local notification overrides', () => {
+        const settings = localSettingsParse({ localNotificationsEnabled: false });
+        expect(settings.deviceRemoteAlertsEnabled).toBe(true);
+        const optedOut = applyLocalSettings(settings, { deviceRemoteAlertsEnabled: false });
+        expect(localSettingsParse(optedOut).deviceRemoteAlertsEnabled).toBe(false);
+        expect(applyLocalSettings(optedOut, { localNotificationsEnabled: true }).deviceRemoteAlertsEnabled).toBe(false);
+    });
+
     it('defaults focused session folder state to null', () => {
         expect(localSettingsParse(null).sessionListFocusedFolderV1).toBeNull();
     });
@@ -51,6 +59,7 @@ describe('localSettingsParse', () => {
         expect(parsed.localNotificationsEnabled).toBe(true);
         expect(parsed.localNotificationsShowReady).toBe(true);
         expect(parsed.localNotificationsShowReadyMessageText).toBe(true);
+        expect(parsed.localNotificationsShowRequestMessageText).toBe(true);
         expect(parsed.localNotificationsShowPendingPermissionRequests).toBe(true);
         expect(parsed.localNotificationsShowPendingUserActionRequests).toBe(true);
         expect(parsed.localNotificationsForegroundBehavior).toBe('full');
@@ -107,6 +116,7 @@ describe('localSettingsParse', () => {
                     user_action_request: true,
                 },
                 previewBehavior: 'account',
+                requestPreviewBehavior: 'account',
             },
             badge: {
                 enabled: true,
@@ -638,6 +648,7 @@ describe('localSettingsParse', () => {
             localNotificationsEnabled: false,
             localNotificationsShowReady: false,
             localNotificationsShowReadyMessageText: false,
+            localNotificationsShowRequestMessageText: false,
             localNotificationsShowPendingPermissionRequests: true,
             localNotificationsShowPendingUserActionRequests: false,
             localNotificationsForegroundBehavior: 'silent',
@@ -664,6 +675,7 @@ describe('localSettingsParse', () => {
                     user_action_request: false,
                 },
                 previewBehavior: 'status_only',
+                requestPreviewBehavior: 'status_only',
             },
             badge: {
                 enabled: false,

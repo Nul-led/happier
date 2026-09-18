@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { useSessionListWorkspaceHeaderActions } from './useSessionListWorkspaceHeaderActions';
+import {
+    buildSessionProjectGroupingIdentity,
+    sessionProjectGroupingIdentityKey,
+} from '@/sync/domains/session/listing/sessionListProjectGroupingKeys';
 
 const addWorkspaceRefToAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true, workspaceRefId: 'workspace-ref-id' })));
 const resetWorkspaceRefNameInAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
@@ -138,6 +142,27 @@ describe('useSessionListWorkspaceHeaderActions', () => {
         expect(setCollapsedGroupKeys).toHaveBeenCalledWith({
             existing: false,
             alreadyExpanded: false,
+        });
+    });
+
+    it('toggles only the selected exact project tuple when legacy FNV values collide', () => {
+        const keyForMachine = (machineId: string) => sessionProjectGroupingIdentityKey(
+            buildSessionProjectGroupingIdentity('home-a', { machineId, pathKey: '/repo' }),
+        );
+        const groupA = keyForMachine('m29645');
+        const groupB = keyForMachine('m41845');
+        const setCollapsedGroupKeys = vi.fn();
+        const { handleToggleCollapse } = useSessionListWorkspaceHeaderActions({
+            workspaceRefs: [],
+            collapsedGroupKeys: { [groupA]: true, [groupB]: true },
+            setCollapsedGroupKeys,
+        });
+
+        handleToggleCollapse(groupA);
+
+        expect(setCollapsedGroupKeys).toHaveBeenCalledWith({
+            [groupA]: false,
+            [groupB]: true,
         });
     });
 });

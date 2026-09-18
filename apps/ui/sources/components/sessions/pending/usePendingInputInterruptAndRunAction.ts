@@ -14,7 +14,7 @@ function readRecord(value: unknown): Record<string, unknown> | null {
         : null;
 }
 
-export function usePendingInputInterruptAndRunAction(sessionId: string): Readonly<{
+export function usePendingInputInterruptAndRunAction(sessionId: string, serverId?: string | null): Readonly<{
     busy: boolean;
     interruptAndRun: (input: Readonly<{ localId: string; expectedStateAtMs?: number }>) => Promise<void>;
 }> {
@@ -46,6 +46,7 @@ export function usePendingInputInterruptAndRunAction(sessionId: string): Readonl
                     : {}),
             }, {
                 defaultSessionId: sessionId,
+                ...(serverId?.trim() ? { serverId: serverId.trim() } : {}),
                 surface: 'ui',
             });
             if (result.ok !== true) {
@@ -64,7 +65,7 @@ export function usePendingInputInterruptAndRunAction(sessionId: string): Readonl
         } finally {
             setBusy(false);
         }
-    }, [actionExecutor, busy, sessionId]);
+    }, [actionExecutor, busy, serverId, sessionId]);
 
     return { busy, interruptAndRun };
 }

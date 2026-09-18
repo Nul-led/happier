@@ -1,10 +1,12 @@
-import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import {
-    serverAccountScopeKeySuffix,
-    type ServerAccountScope,
-} from '@/sync/domains/scope/serverAccountScope';
+    buildRealmQualifiedSessionLocalPreferenceKey,
+    normalizeSessionLocalPreferenceIdentityPart,
+    resolveSessionLocalPreferenceRealm,
+    type SessionLocalPreferenceOwnerKind,
+} from './sessionLocalPreferenceKey';
 
-export type MobileSurfacePersistenceKind = 'session' | 'project';
+export type MobileSurfacePersistenceKind = SessionLocalPreferenceOwnerKind;
 
 export type SessionMobileSurfacePersistenceKeys = Readonly<{
     realmQualifiedStorageKey: string;
@@ -18,40 +20,25 @@ export type SessionMobileSurfacePersistenceKeys = Readonly<{
 
 const MOBILE_SURFACE_SELECTION_KEY_PREFIX = 'mobile-surface-selection:v2';
 
-function normalizeIdentityPart(value: unknown): string | null {
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-}
-
 /**
  * A mobile surface preference belongs to the current Account realm and one
  * concrete Session or Project owner. Old bare/session-server keys do not carry
  * enough authority to be safely re-homed, so readers deliberately do not
  * infer a realm for them.
  */
-export function resolveMobileSurfacePersistenceScope(input: Readonly<{
-    activeScope: ServerAccountScope | null | undefined;
-    activeServerId: string | null | undefined;
-    targetServerId: string | null | undefined;
-}>): ServerAccountScope | null {
-    const activeScope = input.activeScope ?? null;
-    const activeServerId = normalizeIdentityPart(input.activeServerId);
-    const targetServerId = normalizeIdentityPart(input.targetServerId);
-    if (!activeScope || !activeServerId || !targetServerId) return null;
-    if (!areServerProfileIdentifiersEquivalent(activeScope.serverId, activeServerId)) return null;
-    if (!areServerProfileIdentifiersEquivalent(activeScope.serverId, targetServerId)) return null;
-    return activeScope;
-}
+export const resolveMobileSurfacePersistenceScope = resolveSessionLocalPreferenceRealm;
 
 export function buildRealmQualifiedMobileSurfaceStorageKey(
     kind: MobileSurfacePersistenceKind,
     scope: ServerAccountScope,
     ownerId: string | null | undefined,
 ): string | null {
-    const normalizedOwnerId = normalizeIdentityPart(ownerId);
-    if (!normalizedOwnerId) return null;
-    return `${MOBILE_SURFACE_SELECTION_KEY_PREFIX}:${kind}:${serverAccountScopeKeySuffix(scope)}:${normalizedOwnerId.length}:${normalizedOwnerId}`;
+    return buildRealmQualifiedSessionLocalPreferenceKey({
+        prefix: MOBILE_SURFACE_SELECTION_KEY_PREFIX,
+        kind,
+        scope,
+        ownerId,
+    });
 }
 
 /**
@@ -65,8 +52,8 @@ export function resolveSessionMobileSurfacePersistenceKeys(input: Readonly<{
     activeServerId: string | null | undefined;
     targetServerId: string | null | undefined;
 }>): SessionMobileSurfacePersistenceKeys | null {
-    const sessionId = normalizeIdentityPart(input.sessionId);
-    const targetServerId = normalizeIdentityPart(input.targetServerId);
+    const sessionId = normalizeSessionLocalPreferenceIdentityPart(input.sessionId);
+    const targetServerId = normalizeSessionLocalPreferenceIdentityPart(input.targetServerId);
     if (!sessionId || !targetServerId) return null;
 
     const scope = resolveMobileSurfacePersistenceScope({

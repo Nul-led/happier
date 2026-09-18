@@ -138,9 +138,13 @@ function emptySessionOrganizationSnapshotResponse(): SessionOrganizationSnapshot
 async function fetchSessionOrganizationRoute(params: Readonly<{
     credentials: AuthCredentials;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
     path: string;
     init: RequestInit;
 }>): Promise<Response> {
+    if (params.requestAtEndpoint) {
+        return await params.requestAtEndpoint(params.path, params.init);
+    }
     const serverUrl = normalizeServerUrl(params.serverUrl);
     if (serverUrl) {
         return runtimeFetchWithServerReachability({
@@ -175,6 +179,7 @@ function buildSnapshotQuery(request: Partial<SessionOrganizationSnapshotRequest>
     appendBooleanParam(params, 'includeAllFolderAssignments', request.includeAllFolderAssignments);
     appendBooleanParam(params, 'includeAllTagAssignments', request.includeAllTagAssignments);
     appendBooleanParam(params, 'includeAttentionStandings', request.includeAttentionStandings);
+    appendBooleanParam(params, 'includeAttentionReminderTimes', request.includeAttentionReminderTimes);
     appendArrayParam(params, 'assignmentSessionIds', request.assignmentSessionIds);
     appendArrayParam(params, 'folderIds', request.folderIds);
     appendArrayParam(params, 'tagIds', request.tagIds);
@@ -188,11 +193,13 @@ function buildSnapshotQuery(request: Partial<SessionOrganizationSnapshotRequest>
 export async function fetchSessionOrganizationSnapshot(params: Readonly<{
     credentials: AuthCredentials;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
     request?: Partial<SessionOrganizationSnapshotRequest>;
 }>): Promise<SessionOrganizationSnapshotResponse> {
     const response = await fetchSessionOrganizationRoute({
         credentials: params.credentials,
         serverUrl: params.serverUrl,
+        requestAtEndpoint: params.requestAtEndpoint,
         path: `${SESSION_ORGANIZATION_ROUTE}${buildSnapshotQuery(params.request)}`,
         init: { headers: authHeaders(params.credentials) },
     });
@@ -209,12 +216,14 @@ export async function fetchSessionOrganizationSnapshot(params: Readonly<{
 export async function importLegacySessionOrganization(params: Readonly<{
     credentials: AuthCredentials;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
     request: ImportLegacySessionOrganizationRequest;
 }>): Promise<ImportLegacySessionOrganizationResponse> {
     const request = ImportLegacySessionOrganizationRequestSchema.parse(params.request);
     const response = await fetchSessionOrganizationRoute({
         credentials: params.credentials,
         serverUrl: params.serverUrl,
+        requestAtEndpoint: params.requestAtEndpoint,
         path: `${SESSION_ORGANIZATION_ROUTE}/import`,
         init: {
             method: 'POST',

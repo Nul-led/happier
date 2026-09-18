@@ -34,11 +34,11 @@ describe('serverProfiles demo persistence suspend', () => {
         const mod = await importFresh();
 
         // Establish a real, explicitly-selected profile the way a signed-in user would.
-        mod.upsertServerProfile({ serverUrl: 'https://real.example.test', name: 'Real', source: 'manual' });
+        await mod.upsertServerProfile({ serverUrl: 'https://real.example.test', name: 'Real', source: 'manual' });
         const realProfile = mod.listServerProfiles().find((p) => p.serverUrl === 'https://real.example.test/')
             ?? mod.listServerProfiles().find((p) => p.name === 'Real');
         expect(realProfile).toBeTruthy();
-        mod.setActiveServerId(realProfile!.id, { scope: 'device' });
+        await mod.setActiveServerId(realProfile!.id, { scope: 'device' });
 
         const realBackingBefore = readRealPersistedState(scope);
         expect(realBackingBefore).toBeTruthy();
@@ -49,12 +49,12 @@ describe('serverProfiles demo persistence suspend', () => {
         mod.suspendServerProfilePersistenceForDemo();
         expect(mod.isServerProfilePersistenceSuspendedForDemo()).toBe(true);
 
-        const demoProfile = mod.upsertServerProfile({
+        const demoProfile = await mod.upsertServerProfile({
             serverUrl: 'http://127.0.0.1:4099',
             name: 'Demo Relay',
             source: 'preconfigured',
         });
-        mod.setActiveServerId(demoProfile.id, { scope: 'device' });
+        await mod.setActiveServerId(demoProfile.id, { scope: 'device' });
 
         // In-memory runtime reflects the demo selection (the demo world renders).
         expect(mod.getActiveServerUrl()).toContain('127.0.0.1:4099');
@@ -65,7 +65,7 @@ describe('serverProfiles demo persistence suspend', () => {
 
         // Graceful teardown path: resume restores the real selection with the
         // durable store still intact.
-        mod.setActiveServerId(realProfile!.id, { scope: 'device' });
+        await mod.setActiveServerId(realProfile!.id, { scope: 'device' });
         mod.resumeServerProfilePersistenceForDemo();
         expect(mod.isServerProfilePersistenceSuspendedForDemo()).toBe(false);
         expect(mod.getActiveServerUrl()).toContain('real.example.test');

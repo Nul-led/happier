@@ -6,6 +6,7 @@ import type { ModelMode, PermissionMode } from '@/sync/domains/permissions/permi
 import { storage } from '@/sync/domains/state/storage';
 import type { PendingMessage, Session } from '@/sync/domains/state/storageTypes';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { TranscriptAccountActor } from '@/sync/domains/messages/transcriptAccountActor';
 import { nowServerMs } from '@/sync/runtime/time';
 import type { RawRecord } from '@/sync/typesRaw';
 import type { SessionMessageHostAdmissionOrigin } from '@/sync/domains/session/input/types';
@@ -28,6 +29,16 @@ import {
 
 type LocalOutboundDeliveryStatus = 'queued' | 'accepted';
 
+/** Local display only; the server admission receipt replaces this projection. */
+export function buildLocalOutboundAccountActor(scope: ServerAccountScope): TranscriptAccountActor {
+    return {
+        v: 1,
+        serverId: scope.serverId,
+        accountId: scope.accountId,
+        profile: { firstName: null, lastName: null, username: null, avatarUrl: null },
+    };
+}
+
 export function resolveOutgoingUserMessageModel(params: Readonly<{
     agentId: string | null;
     modelMode?: ModelMode | null;
@@ -36,12 +47,12 @@ export function resolveOutgoingUserMessageModel(params: Readonly<{
     if (!params.agentId || !isBundledAgentId(params.agentId)) return undefined;
     const agentCore = getAgentCore(params.agentId);
     if (params.structuredModelSelection) {
-        return agentCore.model.supportsSelection
+        return agentCore.model?.supportsSelection !== false
             ? projectSessionMessageModelSelectionToLegacyModelV1(params.structuredModelSelection)
             : undefined;
     }
-    const modelMode = params.modelMode || agentCore.model.defaultMode;
-    return agentCore.model.supportsSelection && modelMode !== 'default' ? modelMode : undefined;
+    const modelMode = params.modelMode || agentCore.model?.defaultMode;
+    return agentCore.model?.supportsSelection !== false && modelMode !== 'default' ? modelMode : undefined;
 }
 
 function resolveStructuredOutgoingModelSelection(sessionValue: unknown): SessionModelSelectionV1 | null {
@@ -142,6 +153,9 @@ export function buildLocalOutboundPendingUserMessage(params: Readonly<{
         source: 'local_outbound',
         deliveryStatus: params.deliveryStatus,
         pendingOutboxScope: params.pendingOutboxScope,
+        ...(params.pendingOutboxScope && params.rawRecord.role === 'user'
+            ? { accountActor: buildLocalOutboundAccountActor(params.pendingOutboxScope) }
+            : {}),
         pendingOutboxOperation: params.pendingOutboxOperation,
         text: params.text,
         displayText: params.displayText,

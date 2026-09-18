@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     areServerAccountScopesEqual,
     createServerAccountScope,
+    serverAccountScopeListKey,
     serverAccountScopeKeySuffix,
 } from './serverAccountScope';
 
@@ -32,5 +33,20 @@ describe('serverAccountScope', () => {
             .not.toBe(serverAccountScopeKeySuffix({ serverId: 'a', accountId: 'bc' }));
         expect(serverAccountScopeKeySuffix({ serverId: 'server:a', accountId: 'acct:b' }))
             .toBe('8:server:a6:acct:b');
+    });
+});
+
+describe('serverAccountScopeListKey', () => {
+    it('cannot collide when scope parts contain former delimiter bytes', () => {
+        const left = [
+            createServerAccountScope('home', 'account\u0000next')!,
+            createServerAccountScope('tail', 'person')!,
+        ];
+        const right = [
+            createServerAccountScope('home\u0000account', 'next')!,
+            createServerAccountScope('tail', 'person')!,
+        ];
+
+        expect(serverAccountScopeListKey(left)).not.toBe(serverAccountScopeListKey(right));
     });
 });

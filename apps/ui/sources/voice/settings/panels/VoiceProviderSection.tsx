@@ -53,6 +53,7 @@ import {
 import { getConnectedAccountAuthentication } from '@/sync/domains/connectedServices/connectedServiceRegistry';
 import { VoiceCredentialItem } from '@/voice/credentials/CredentialItem';
 import { VoiceRawCredentialAccessReview } from '@/voice/credentials/VoiceRawCredentialAccessReview';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 import { createDefaultVoiceProviderRegistry } from '@/voice/registry/defaultRegistry';
 import {
   parseLocalVoiceSttSettings,
@@ -298,6 +299,7 @@ export function VoiceProviderSection(props: {
   const { theme } = useUnistyles();
   const localizePluginText = useProjectedPluginLocalizedTextResolver();
   const accountSettings = useSettings();
+  const savedSecretCatalog = useSavedSecretCatalog();
   const accountProfile = useProfile();
   const activeAccountScopeLifetime = captureActiveServerAccountScopeLifetime();
   const accountGroupsEnabled = useFeatureEnabled('connectedServices.accountGroups');
@@ -372,6 +374,7 @@ export function VoiceProviderSection(props: {
     voiceAgentEnabled,
     rawCredentialAuthorizationByContribution:
       checkedReadiness?.rawCredentialAuthorizationByContribution,
+    resolveSavedSecret: savedSecretCatalog.resolveReference,
   });
   const rows = projectVoiceProviderSelectionRows(voice, registry).map((row) => {
     const settingsProjection = projectVoiceProviderSettings(row.entry, row.envelope);
@@ -390,6 +393,7 @@ export function VoiceProviderSection(props: {
           requiredRecipientContractDigest: resolveRequiredRecipientContractApprovalDigestV1(
             row.entry.accountCredentialSlot.recipientContract,
           ),
+          resolveSavedSecret: savedSecretCatalog.resolveReference,
         })
       : null;
     const accountCredentialReference = accountCredentialStatus?.status === 'ready'
@@ -636,6 +640,16 @@ export function VoiceProviderSection(props: {
     credentialAuthority: {
       voiceCredentialBindings: accountSettings.voiceSettingsV1.credentialBindings,
       connectedAccountPurposeBindingsV1: accountSettings.connectedAccountPurposeBindingsV1,
+      savedSecretCatalog: {
+        status: savedSecretCatalog.status,
+        stale: savedSecretCatalog.stale,
+        entries: savedSecretCatalog.sharedEntries.map((entry) => ({
+          ref: entry.ref,
+          revision: entry.revision,
+          materialStatus: entry.materialStatus,
+          use: entry.capabilities.use,
+        })),
+      },
     },
   });
   currentReadinessCheckKeyRef.current = selectedReadinessCheckKey;

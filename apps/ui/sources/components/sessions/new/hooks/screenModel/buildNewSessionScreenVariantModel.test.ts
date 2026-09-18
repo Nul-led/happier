@@ -12,6 +12,7 @@ describe('buildNewSessionScreenVariantModel', () => {
         const model = buildNewSessionScreenVariantModel({
             useEnhancedSessionWizard: true,
             popoverBoundaryRef: { current: null },
+            launchOverlay: null,
             simplePanelProps: {},
             checkoutCreationDraft: null,
             setCheckoutCreationDraft: () => {},

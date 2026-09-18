@@ -63,6 +63,11 @@ vi.mock('@/components/tools/shell/views/ToolInlineBody', () => ({
     ToolInlineBody: (props: any) => React.createElement('ToolInlineBody', props),
 }));
 
+vi.mock('@/sync/ops', () => ({
+    sessionAllow: vi.fn(async () => {}),
+    sessionDeny: vi.fn(async () => {}),
+}));
+
 describe('UserActionPromptCard (preview)', () => {
     it('hides the open-details action when the prompt location is not durably addressable', async () => {
         const { UserActionPromptCard } = await import('./UserActionPromptCard');
@@ -112,5 +117,35 @@ describe('UserActionPromptCard (preview)', () => {
         );
 
         expect(screen.findAllByTestId('user-action-prompt-card')).toHaveLength(0);
+    });
+
+    it('uses the distinct Action confirmation presentation for canonical Action requests', async () => {
+        const { UserActionPromptCard } = await import('./UserActionPromptCard');
+
+        const screen = await renderScreen(
+            <UserActionPromptCard
+                request={{
+                    id: 'action:request-1',
+                    tool: 'Happier Action confirmation',
+                    kind: 'user_action',
+                    source: 'happier_action',
+                    arguments: {
+                        actionId: 'session.title.set',
+                        preview: { summary: 'Rename this session' },
+                        sessionId: 'session-1',
+                        turnId: 'turn-1',
+                    },
+                    createdAt: 1,
+                    turnId: 'turn-1',
+                }}
+                location={null}
+                sessionId="session-1"
+                metadata={null}
+                canApprovePermissions={true}
+            />,
+        );
+
+        expect(screen.findByTestId('action-confirmation-prompt-card')).toBeTruthy();
+        expect(screen.findByTestId('user-action-prompt-card')).toBeNull();
     });
 });

@@ -19,6 +19,12 @@ import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 import { SessionOrganizationContentEnvelopeSchema } from '@happier-dev/protocol';
 import { profileDefaults } from '@/sync/domains/profiles/profile';
 import { evaluatePluginUiPolicy } from '@/sync/domains/plugins/ui/policy';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
+import { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
+import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -36,14 +42,20 @@ const allSessionsState = vi.hoisted(() => ({
 const allMachinesState = vi.hoisted(() => ({
     current: [] as any[],
 }));
+const machineListByServerIdState = vi.hoisted(() => ({
+    current: {} as Record<string, any[]>,
+}));
+const machinePoolListByServerIdState = vi.hoisted(() => ({
+    current: {} as Record<string, any[] | null>,
+}));
 const routerPushSpy = vi.fn();
 const routerBackSpy = vi.fn();
-const safeRouterBackSpy = vi.fn();
-const readMachineTargetForSessionSpy = vi.fn();
-const resolveSessionTargetServerIdSpy = vi.fn();
-const resolveServerIdForSessionIdFromLocalCacheSpy = vi.fn();
-const machineRpcWithServerScopeSpy = vi.fn();
-const machineContributionRegistryProjectionDescribeMock = vi.fn(async (..._args: unknown[]): Promise<any> => ({ supported: false, reason: 'not-supported' }));
+const safeRouterBackSpy = vi.hoisted(() => vi.fn());
+const readMachineTargetForSessionSpy = vi.hoisted(() => vi.fn());
+const resolveSessionTargetServerIdSpy = vi.hoisted(() => vi.fn());
+const resolveServerIdForSessionIdFromLocalCacheSpy = vi.hoisted(() => vi.fn());
+const machineRpcWithServerScopeSpy = vi.hoisted(() => vi.fn());
+const machineContributionRegistryProjectionDescribeMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<any> => ({ supported: false, reason: 'not-supported' })));
 const useSessionExecutionRunsSupportedSpy = vi.fn<(sessionId: string, sessionServerId?: string | null) => boolean>(() => false);
 type CreateDefaultActionExecutorConfig = Readonly<{
     resolveServerIdForSessionId?: (sessionId: string) => string | null;
@@ -52,25 +64,34 @@ type CreateDefaultActionExecutorConfig = Readonly<{
         options?: Readonly<{ serverId?: string | null }>,
     ) => void | Promise<void>;
 }>;
-const createDefaultActionExecutorSpy = vi.fn((_config: CreateDefaultActionExecutorConfig) => ({}));
-const sessionStopSpy = vi.fn(async () => ({ success: true }));
+const createDefaultActionExecutorSpy = vi.hoisted(() => vi.fn((_config: CreateDefaultActionExecutorConfig) => ({})));
+// `vi.mock('@/sync/ops', …)` below closes over these spies, and mock factories are
+// hoisted above ordinary `const` declarations. Once any import chain pulls
+// `@/sync/ops` in eagerly the factory runs first and a plain `const` is still in
+// its temporal dead zone, which fails the whole suite at load. `vi.hoisted` is the
+// canonical fix and matches the hoisted state this file already uses above.
+const sessionStopSpy = vi.hoisted(() => vi.fn(async () => ({ success: true })));
 type ArchiveSpyResult = Readonly<{
     success: boolean;
     archivedAt?: number | null;
     message?: string;
     code?: string;
 }>;
-const sessionArchiveSpy = vi.fn(async (): Promise<ArchiveSpyResult> => ({ success: true, archivedAt: 1 }));
-const sessionDeleteSpy = vi.fn(async () => ({ success: true }));
-const sessionSetManualReadStateSpy = vi.fn(async () => ({ success: true, readState: 'unread', lastViewedSessionSeq: 0, didChange: true }));
+const sessionArchiveSpy = vi.hoisted(() => vi.fn(async (): Promise<Readonly<{
+    success: boolean;
+    archivedAt?: number | null;
+    message?: string;
+    code?: string;
+}>> => ({ success: true, archivedAt: 1 })));
+const sessionDeleteSpy = vi.hoisted(() => vi.fn(async () => ({ success: true })));
+const sessionSetManualReadStateSpy = vi.hoisted(() => vi.fn(async () => ({ success: true, readState: 'unread', lastViewedSessionSeq: 0, didChange: true })));
 const modalAlertSpy = vi.fn();
 const modalConfirmSpy = vi.fn(async () => true);
 const modalPromptSpy = vi.fn(async () => 'urgent, review');
-const applySessionListRenderablePatchesSpy = vi.fn();
-const openMoveSheetSpy = vi.fn(async () => null as any);
-const setSessionFolderAssignmentSpy = vi.fn(async () => undefined);
-const setSessionPinSpy = vi.fn(async () => undefined);
-const setSessionTagLabelsSpy = vi.fn(async () => undefined);
+const openMoveSheetSpy = vi.hoisted(() => vi.fn(async () => null as any));
+const setSessionFolderAssignmentSpy = vi.hoisted(() => vi.fn(async () => undefined));
+const setSessionPinSpy = vi.hoisted(() => vi.fn(async () => undefined));
+const setSessionTagLabelsSpy = vi.hoisted(() => vi.fn(async () => undefined));
 type OrganizationMutationScopeResult =
     | Readonly<{
         ok: true;
@@ -87,17 +108,17 @@ type OrganizationMutationScopeResult =
         requestedServerId: string;
         serverId?: string;
     }>;
-const resolveSessionOrganizationMutationScopeSpy = vi.fn(
-    async (): Promise<OrganizationMutationScopeResult> => ({
+const resolveSessionOrganizationMutationScopeSpy = vi.hoisted(() => vi.fn(
+    async (serverId = 'server-1'): Promise<OrganizationMutationScopeResult> => ({
         ok: true,
         scope: {
             credentials: { token: 'token' },
-            serverId: 'server-1',
+            serverId,
             serverIdAliases: [],
             serverUrl: 'https://server.example.test',
         },
     }),
-);
+));
 let hideInactiveSessions = false;
 let organizationPinnedSessionKeys: unknown = null;
 let organizationTagsBySessionKey: unknown = null;
@@ -107,6 +128,7 @@ let backendEnabledByTargetKey: Settings['backendEnabledByTargetKey'] | null = nu
 let resolvedServerId = 'server-1';
 let sessionHandoffFeatureEnabled = false;
 let sessionFoldersFeatureEnabled = false;
+const folderFeatureScopes = vi.hoisted(() => [] as unknown[]);
 let serverFeaturesSnapshot: any = {
     status: 'ready',
     features: {
@@ -314,22 +336,12 @@ installSessionRouteCommonModuleMocks({
         createStorageModuleMock({
             importOriginal,
             overrides: {
-                storage: {
-                    getState: () => ({
-                        sessions: { [mockSessionId]: mockSession },
-                        machines: {},
-                        settings: {},
-                        concurrentSessionListCacheByServerId: {},
-                        sessionListIndexByServerId: {},
-                        sessionListRowStateByServerId: {},
-                        applySessionListRenderablePatches: applySessionListRenderablePatchesSpy,
-                    }),
-                } as any,
                 useSession: (sessionId: string) => useSessionSpy(sessionId),
                 useProfile: () => mockProfile,
                 useIsDataReady: () => isDataReady,
                 useAllSessions: () => allSessionsState.current,
                 useAllMachines: () => allMachinesState.current,
+                useMachineListByServerId: () => machineListByServerIdState.current,
                 useProjectForSession: () => null,
                 useLocalSetting: <K extends keyof LocalSettings>(name: K): LocalSettings[K] => {
                     if (name === 'devModeEnabled') {
@@ -369,6 +381,14 @@ vi.mock('@/sync/ops/sessionMachineTarget', () => ({
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
     useSessionReachableMachineTarget: (sessionId: string) => readMachineTargetForSessionSpy(sessionId),
 }));
+vi.mock('@/sync/engine/machines/useMachinePoolOriginName', () => ({
+    useMachinePoolOriginName: ({ serverId, poolId }: { serverId?: string | null; poolId?: string | null }) => {
+        if (!serverId || !poolId) return null;
+        return machinePoolListByServerIdState.current[serverId]
+            ?.find((entry) => entry.pool.id === poolId)
+            ?.pool.name.trim() || null;
+    },
+}));
 
 vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({
     useHydrateSessionForRoute: (sessionId: string) => ({
@@ -376,6 +396,59 @@ vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({
         sessionId,
     }),
 }));
+vi.mock('@/components/sessions/shell/sessionViewStableSession', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/components/sessions/shell/sessionViewStableSession')>();
+    return {
+        ...actual,
+        useSessionViewShellSession: (sessionId: string, expectedServerId?: string | null) => {
+            const normalizedMockSessionId = normalizeSessionId(mockSessionId);
+            const serverScopedMockSession = mockSession && mockServerId && !mockSession.serverId
+                ? { ...mockSession, serverId: mockServerId }
+                : mockSession;
+            const scopedMockSession = serverScopedMockSession && !serverScopedMockSession.access
+                ? {
+                    ...serverScopedMockSession,
+                    access: createSessionAccessFixture(serverScopedMockSession.accessLevel ?? 'owner'),
+                }
+                : serverScopedMockSession;
+            const selected = actual.selectSessionViewShellSessionForRouteState({
+                sessions: scopedMockSession ? { [normalizedMockSessionId]: scopedMockSession } : {},
+                sessionListIndexByServerId: {},
+                sessionListRowsByServerId: {},
+            }, sessionId, expectedServerId);
+            return actual.useStableSessionViewShellSession(selected);
+        },
+    };
+});
+vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/scope/useServerCredentialAccountScopes')>();
+    let bindingByServerId: Map<string, ReturnType<typeof createBinding>>;
+    const createBinding = (serverId: string) => {
+        const existing = bindingByServerId.get(serverId);
+        if (existing) return existing;
+        const scope = Object.freeze({ serverId, accountId: 'viewer-account' });
+        const binding = Object.freeze({
+            serverId,
+            accountId: 'viewer-account',
+            scope,
+            revision: 1,
+            isCurrent: () => true,
+            onRetire: () => Object.freeze({ dispose: () => undefined }),
+        });
+        bindingByServerId.set(serverId, binding);
+        return binding;
+    };
+    bindingByServerId = new Map();
+    return {
+        ...actual,
+        useServerCredentialAccountScopeBindings: (serverIds: readonly (string | null | undefined)[]) => new Map(
+            serverIds.flatMap((serverId) => {
+                const normalized = String(serverId ?? '').trim();
+                return normalized ? [[normalized, createBinding(normalized)] as const] : [];
+            }),
+        ),
+    };
+});
 vi.mock('@/utils/navigation/safeRouterBack', () => ({
     safeRouterBack: (...args: any[]) => safeRouterBackSpy(...args),
 }));
@@ -424,8 +497,9 @@ vi.mock('@/components/ui/media/CodeView', () => ({
         React.createElement('CodeView', { code, language }),
 }));
 vi.mock('@/components/sessions/info/SessionRetentionNotice', () => ({ SessionRetentionNotice: 'SessionRetentionNotice' }));
-vi.mock('@/components/sessions/panes/useSessionPanePluginRuntime', () => ({
-    useSessionPanePluginRuntime: () => ({
+vi.mock('@/components/sessions/plugins/useSessionPluginRuntime', () => ({
+    useSessionAddressForSessionId: () => ({ serverId: 'server-1', sessionId: 'session-1' }),
+    useSessionPluginRuntime: () => ({
         pluginUiProjection: mockPluginUiProjection,
         pluginBrowserProjection: null,
         phase: 'current',
@@ -473,14 +547,14 @@ vi.mock('@/agents/catalog/catalog', async (importOriginal) => {
         resolveAgentIdFromFlavor: (flavor: string | null | undefined) => mockResolveAgentIdFromFlavor(flavor),
     };
 });
-vi.mock('@/hooks/session/useSessionSharingSupport', () => ({ useSessionSharingSupport: () => false }));
 vi.mock('@/hooks/server/useAutomationsSupport', () => ({ useAutomationsSupport: () => ({ enabled: false }) }));
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: (featureId: string) => {
+    useFeatureEnabled: (featureId: string, scope?: unknown) => {
         if (featureId === 'sessions.handoff') {
             return sessionHandoffFeatureEnabled;
         }
         if (featureId === 'sessions.folders') {
+            folderFeatureScopes.push(scope);
             return sessionFoldersFeatureEnabled;
         }
         return false;
@@ -491,11 +565,15 @@ vi.mock('@/components/sessions/shell/move-sheet/useSessionListMoveSheet', () => 
         openMoveSheet: openMoveSheetSpy,
     }),
 }));
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentialsForServerUrl: vi.fn(async () => ({ token: 'token' })),
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: vi.fn(async () => ({ token: 'token' })),
+        },
+    });
+});
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
     return {
@@ -508,6 +586,12 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
 });
 vi.mock('@/sync/ops/sessionOrganization', () => ({
     resolveSessionOrganizationMutationScope: resolveSessionOrganizationMutationScopeSpy,
+    requireSessionOrganizationMutationScope: async (serverId: string) => {
+        const result = await resolveSessionOrganizationMutationScopeSpy(serverId);
+        if (result.ok) return result.scope;
+        const { HappyError } = await import('@/utils/errors/errors');
+        throw new HappyError(`homeGovernance.unavailableTitle: ${result.requestedServerId || serverId}`, true);
+    },
     writeSessionOrganizationFolderAssignment: setSessionFolderAssignmentSpy,
     writeSessionOrganizationPin: setSessionPinSpy,
     writeSessionOrganizationTagLabels: setSessionTagLabelsSpy,
@@ -516,7 +600,17 @@ vi.mock('@/hooks/server/useSessionExecutionRunsSupported', () => ({
     useSessionExecutionRunsSupported: (sessionId: string, sessionServerId?: string | null) =>
         useSessionExecutionRunsSupportedSpy(sessionId, sessionServerId),
 }));
-vi.mock('@/sync/ops/actions/defaultActionExecutor', () => ({ createDefaultActionExecutor: (config: CreateDefaultActionExecutorConfig) => createDefaultActionExecutorSpy(config) }));
+vi.mock('@/sync/ops/actions/defaultActionExecutor', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/ops/actions/defaultActionExecutor')>();
+    return {
+        ...actual,
+        createDefaultActionExecutor: (config: Parameters<typeof actual.createDefaultActionExecutor>[0]) => (
+            config && 'machinePoolAction' in config
+                ? actual.createDefaultActionExecutor(config)
+                : createDefaultActionExecutorSpy(config ?? {})
+        ),
+    };
+});
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId', () => ({
     resolvePreferredServerIdForSessionId: (sessionId: string) => resolveSessionTargetServerIdSpy(sessionId),
 }));
@@ -526,7 +620,8 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionI
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: (...args: unknown[]) => machineRpcWithServerScopeSpy(...args),
 }));
-vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({
+vi.mock('@/sync/domains/features/featureDecisionRuntime', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/features/featureDecisionRuntime')>(),
     useServerFeaturesSnapshotForServerId: () => serverFeaturesSnapshot,
 }));
 vi.mock('@/sync/domains/settings/actionsSettings', () => ({ isActionEnabledInState: () => true }));
@@ -581,6 +676,7 @@ vi.mock('@/components/ui/layout/layout', () => ({ layout: { screenPaddingHorizon
 
 describe('/session/[id]/info', () => {
     beforeEach(() => {
+        vi.mocked(TokenStorage.getCredentialsForServerUrl).mockResolvedValue({ token: 'token' });
         mockSessionId = 'session-1';
         mockServerId = undefined;
         mockSession = null;
@@ -610,15 +706,15 @@ describe('/session/[id]/info', () => {
         setSessionPinSpy.mockClear();
         setSessionTagLabelsSpy.mockClear();
         resolveSessionOrganizationMutationScopeSpy.mockReset();
-        resolveSessionOrganizationMutationScopeSpy.mockResolvedValue({
+        resolveSessionOrganizationMutationScopeSpy.mockImplementation(async (serverId = 'server-1') => ({
             ok: true,
             scope: {
                 credentials: { token: 'token' },
-                serverId: 'server-1',
+                serverId,
                 serverIdAliases: [],
                 serverUrl: 'https://server.example.test',
             },
-        });
+        }));
         resolveSessionTargetServerIdSpy.mockClear();
         resolveServerIdForSessionIdFromLocalCacheSpy.mockClear();
         machineRpcWithServerScopeSpy.mockClear();
@@ -635,8 +731,11 @@ describe('/session/[id]/info', () => {
         resolvedServerId = 'server-1';
         sessionHandoffFeatureEnabled = false;
         sessionFoldersFeatureEnabled = false;
+        folderFeatureScopes.length = 0;
         allSessionsState.current = [];
         allMachinesState.current = [];
+        machineListByServerIdState.current = {};
+        machinePoolListByServerIdState.current = {};
         serverFeaturesSnapshot = {
             status: 'ready',
             features: {
@@ -684,6 +783,9 @@ describe('/session/[id]/info', () => {
     afterEach(() => {
         clearTempData();
         standardCleanup();
+        resetRuntimeFetch();
+        resetServerFeaturesClientForTests();
+        vi.unstubAllGlobals();
     });
 
     async function renderInfoScreen() {
@@ -733,6 +835,93 @@ describe('/session/[id]/info', () => {
         const screen = await renderInfoScreen();
         expect(screen.getTextContent()).not.toContain('common.loading');
         expect(screen.getTextContent()).toContain('name');
+    });
+
+    it('shows the current exact Machine and an independently readable creation pool after handoff', async () => {
+        const token = `header.${Buffer.from(JSON.stringify({ sub: 'viewer-account' })).toString('base64')}.signature`;
+        vi.mocked(TokenStorage.getCredentialsForServerUrl).mockResolvedValue({ token });
+        const features = buildServerFeaturesResponse();
+        vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+            ...features,
+            features: {
+                ...features.features,
+                machines: { ...features.features.machines, pools: { enabled: true } },
+            },
+        })));
+        await getServerFeaturesSnapshot({ serverId: 'server-1', force: true });
+        const poolId = '0191f11b-4ab2-7ef2-8dd2-268abc9c191f';
+        mockSession = {
+            id: 'session-1',
+            serverId: 'server-1',
+            active: true,
+            accessLevel: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            seq: 1,
+            metadata: {
+                machineId: 'machine-before-handoff',
+                placementOrigin: { kind: 'machine_pool', poolId },
+            },
+        };
+        readMachineTargetForSessionSpy.mockReturnValue({
+            machineId: 'machine-after-handoff',
+            basePath: '/workspace',
+        });
+        machineListByServerIdState.current = {
+            'server-1': [{
+                id: 'machine-after-handoff',
+                metadata: { displayName: 'Mac Studio' },
+            }],
+            'server-2': [{
+                id: 'machine-after-handoff',
+                metadata: { displayName: 'Wrong Home machine' },
+            }],
+        };
+        machinePoolListByServerIdState.current = {
+            'server-1': [{
+                pool: { id: poolId, name: 'Development', description: null, revision: 1, createdAt: 1, updatedAt: 1, members: [] },
+                availability: { state: 'unknown' },
+            }],
+        };
+        setRuntimeFetch(async (url) => String(url).endsWith('/v1/account/encryption')
+            ? Response.json({ mode: 'plain', updatedAt: 1 })
+            : Response.json({ pools: machinePoolListByServerIdState.current['server-1'] }));
+
+        const screen = await renderInfoScreen();
+
+        expect(screen.findByTestId('session-info-execution-machine')?.props).toMatchObject({
+            subtitle: 'Mac Studio',
+        });
+        await vi.waitFor(() => expect(screen.findByTestId('session-info-placement-origin')?.props).toMatchObject({
+            subtitle: 'Development',
+        }));
+    });
+
+    it('does not disclose a stale or unreadable pool name from Session metadata', async () => {
+        mockSession = {
+            id: 'session-1',
+            serverId: 'server-1',
+            active: false,
+            accessLevel: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            seq: 1,
+            metadata: {
+                machineId: 'machine-1',
+                placementOrigin: {
+                    kind: 'machine_pool',
+                    poolId: '0191f11b-4ab2-7ef2-8dd2-268abc9c191f',
+                },
+            },
+        };
+        readMachineTargetForSessionSpy.mockReturnValue({ machineId: 'machine-1', basePath: '/workspace' });
+        machinePoolListByServerIdState.current = { 'server-1': [] };
+
+        const screen = await renderInfoScreen();
+
+        expect(screen.findByTestId('session-info-placement-origin')?.props).toMatchObject({
+            subtitle: 'machinePools.aMachinePool',
+        });
     });
 
     it('mounts projected Session-info sections through the shared semantic inline host', async () => {
@@ -891,8 +1080,18 @@ describe('/session/[id]/info', () => {
 
     it('normalizes the route id before looking up the session', async () => {
         mockSessionId = ['session-2 '] as any;
-        await renderInfoScreen();
-        expect(useSessionSpy).toHaveBeenCalledWith('session-2');
+        mockSession = {
+            id: 'session-2',
+            active: false,
+            accessLevel: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            seq: 1,
+            metadata: {},
+        };
+        const screen = await renderInfoScreen();
+        expect(screen.getTextContent()).toContain('name');
+        expect(screen.getTextContent()).not.toContain('errors.sessionDeleted');
     });
 
     it('threads the route session server id into the default action executor fallback', async () => {
@@ -1314,7 +1513,7 @@ describe('/session/[id]/info', () => {
         expect(sessionSetManualReadStateSpy).toHaveBeenCalledWith(
             'session-read-state',
             'unread',
-            { serverId: 'server-cached' },
+            { serverId: 'server-1' },
         );
     });
 
@@ -1365,7 +1564,7 @@ describe('/session/[id]/info', () => {
     it('surfaces pin and tag actions from the session view quick actions', async () => {
         mockServerId = 'server-b';
         organizationPinnedSessionKeys = [];
-        organizationTagsBySessionKey = { 'server-1:session-1': ['existing'] };
+        organizationTagsBySessionKey = { 'server-b:session-1': ['existing'] };
         mockSession = {
             id: 'session-1',
             active: false,
@@ -1384,7 +1583,7 @@ describe('/session/[id]/info', () => {
         await screen.pressByTestIdAsync('session-info-session-pin');
         expect(setSessionPinSpy).toHaveBeenCalledWith(expect.objectContaining({
             scope: expect.objectContaining({
-                serverId: 'server-1',
+                serverId: 'server-b',
                 serverUrl: 'https://server.example.test',
             }),
             sessionId: 'session-1',
@@ -1398,7 +1597,7 @@ describe('/session/[id]/info', () => {
         await screen.pressByTestIdAsync('session-tags-menu-item:fixture-tag-1');
         expect(setSessionTagLabelsSpy).toHaveBeenCalledWith(expect.objectContaining({
             scope: expect.objectContaining({
-                serverId: 'server-1',
+                serverId: 'server-b',
                 serverUrl: 'https://server.example.test',
             }),
             sessionId: 'session-1',
@@ -1432,7 +1631,7 @@ describe('/session/[id]/info', () => {
 
         await expect(
             screen.pressByTestIdAsync('session-info-session-pin'),
-        ).rejects.toThrow('errors.unknownError');
+        ).rejects.toThrow('server-1');
         expect(setSessionPinSpy).not.toHaveBeenCalled();
     });
 
@@ -1479,6 +1678,7 @@ describe('/session/[id]/info', () => {
         });
 
         const screen = await renderInfoScreen();
+        expect(folderFeatureScopes).toContainEqual({ scopeKind: 'spawn', serverId: 'server-1' });
         await screen.pressByTestIdAsync('session-info-session-move-to-folder');
 
         expect(openMoveSheetSpy).toHaveBeenCalledWith(expect.objectContaining({
@@ -1843,6 +2043,10 @@ describe('/session/[id]/info', () => {
                     agentId: 'codex',
                     agent: { backendMode: 'appServer' },
                 },
+                placementOrigin: {
+                    kind: 'machine_pool',
+                    poolId: '0191f11b-4ab2-7ef2-8dd2-268abc9c191f',
+                },
                 sessionModeOverrideV1: {
                     v: 1,
                     updatedAt: 100,
@@ -1896,6 +2100,7 @@ describe('/session/[id]/info', () => {
             },
             acpSessionModeId: 'plan',
         }));
+        expect(tempData).not.toHaveProperty('placementOrigin');
     });
 
     it('always shows the View session log action even when developer mode is disabled', async () => {
@@ -2096,14 +2301,15 @@ describe('/session/[id]/info', () => {
         expect(sessionStopSpy).toHaveBeenCalledWith('session-1', { serverId: 'server-cache-info' });
     });
 
-    it('stops with the cached owning server id before a stale route server id', async () => {
-        mockServerId = 'server-stale-route';
+    it('uses the explicit route Home for actions instead of a bare same-id cache', async () => {
+        mockServerId = 'server-b';
         hideInactiveSessions = true;
         organizationPinnedSessionKeys = [];
         resolvedServerId = 'server-preferred';
-        resolveServerIdForSessionIdFromLocalCacheSpy.mockReturnValue('server-cache-info');
+        resolveServerIdForSessionIdFromLocalCacheSpy.mockReturnValue('server-a');
         mockSession = {
             id: 'session-1',
+            serverId: 'server-b',
             active: true,
             accessLevel: null,
             createdAt: Date.now(),
@@ -2116,17 +2322,68 @@ describe('/session/[id]/info', () => {
         await screen.pressByTestIdAsync('sessionInfo.stopSession');
 
         expect(modalConfirmSpy).toHaveBeenCalledTimes(1);
-        expect(sessionStopSpy).toHaveBeenCalledWith('session-1', { serverId: 'server-cache-info' });
+        expect(sessionStopSpy).toHaveBeenCalledWith('session-1', { serverId: 'server-b' });
+        expect(resolveServerIdForSessionIdFromLocalCacheSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not render a cached same-id Session from another Home while the explicit route is pending', async () => {
+        mockServerId = 'server-b';
+        routeHydrationState = {
+            kind: 'loading',
+            sessionId: 'session-1',
+            serverId: 'server-b',
+            reason: 'store-miss',
+        };
+        mockSession = {
+            id: 'session-1',
+            serverId: 'server-a',
+            active: true,
+            accessLevel: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            seq: 1,
+            metadata: {},
+        };
+
+        const screen = await renderInfoScreen();
+
+        expect(screen.getTextContent()).toContain('common.loading');
+        expect(screen.findByTestId('sessionInfo.stopSession')).toBeNull();
+    });
+
+    it('does not render a cached same-id Session from another Home when the explicit route is missing', async () => {
+        mockServerId = 'server-b';
+        routeHydrationState = {
+            kind: 'missing',
+            sessionId: 'session-1',
+            serverId: 'server-b',
+            cause: 'not_found',
+        };
+        mockSession = {
+            id: 'session-1',
+            serverId: 'server-a',
+            active: true,
+            accessLevel: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            seq: 1,
+            metadata: {},
+        };
+
+        const screen = await renderInfoScreen();
+
+        expect(screen.getTextContent()).toContain('errors.sessionDeleted');
+        expect(screen.findByTestId('sessionInfo.stopSession')).toBeNull();
     });
 
     it('stops without prompting to archive when the session is pinned', async () => {
         mockServerId = 'server-b';
         hideInactiveSessions = true;
-        organizationPinnedSessionKeys = ['server-1:session-1'];
-        resolvedServerId = 'server-1';
+        organizationPinnedSessionKeys = ['server-b:session-1'];
+        resolvedServerId = 'server-b';
         mockSession = {
             id: 'session-1',
-            serverId: 'server-1',
+            serverId: 'server-b',
             active: true,
             accessLevel: null,
             createdAt: Date.now(),

@@ -2,6 +2,7 @@ import { resolveWorkspaceTargetForSession } from '@/sync/domains/session/resolve
 import {
     clearCachedWorkspaceRepositoryDirectoryEntries,
     getCachedWorkspaceRepositoryDirectoryEntries,
+    getCachedWorkspaceRepositoryGitIgnoreAvailable,
     listWorkspaceRepositoryDirectoryEntries,
     setCachedWorkspaceRepositoryDirectoryEntries,
     warmWorkspaceRepositoryDirectoryCache,
@@ -22,10 +23,16 @@ export function getCachedRepositoryDirectoryEntries(input: {
     });
 }
 
+export function getCachedRepositoryGitIgnoreAvailable(input: { sessionId: string; directoryPath: string }): boolean | undefined {
+    const target = resolveWorkspaceTargetForSession(input.sessionId);
+    return target ? getCachedWorkspaceRepositoryGitIgnoreAvailable({ workspaceCacheKey: target.workspaceCacheKey, directoryPath: input.directoryPath }) : undefined;
+}
+
 export function setCachedRepositoryDirectoryEntries(input: {
     sessionId: string;
     directoryPath: string;
     entries: RepositoryDirectoryEntry[];
+    gitIgnoreAvailable?: boolean;
 }): void {
     const target = resolveWorkspaceTargetForSession(input.sessionId);
     if (!target) return;
@@ -33,6 +40,7 @@ export function setCachedRepositoryDirectoryEntries(input: {
         workspaceCacheKey: target.workspaceCacheKey,
         directoryPath: input.directoryPath,
         entries: input.entries,
+        gitIgnoreAvailable: input.gitIgnoreAvailable,
     });
 }
 

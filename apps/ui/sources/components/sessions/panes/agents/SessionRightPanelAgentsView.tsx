@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import { useRouter } from 'expo-router';
@@ -8,13 +9,14 @@ import {
     type SidechainHydrationStatus,
 } from '@/hooks/session/useEnsureSidechainsLoaded';
 import { useSessionAgentActivityRoster } from '@/hooks/session/useSessionAgentActivity';
-import { useSession, useSetting } from '@/sync/domains/state/storage';
+import { useSetting } from '@/sync/domains/state/storage';
 import { useSessionMessagesReducerState } from '@/sync/store/hooks';
 import { deriveSessionSubagentActivityPreview } from '@/sync/domains/session/subagents/deriveSessionSubagentActivityPreview';
+import { partitionAgentActivityEntriesByLiveness } from '@/sync/domains/session/agentActivity';
 import {
-    partitionAgentActivityEntriesByLiveness,
-    type AgentActivityEntry,
-} from '@/sync/domains/session/agentActivity';
+    readSessionAgentActivityRows,
+    type SessionAgentActivityRow,
+} from '@/components/sessions/agents/presentation/sessionAgentActivityRows';
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { t } from '@/text';
 import { useDeviceType } from '@/utils/platform/responsive';
@@ -30,6 +32,7 @@ import { resolveSessionSubagentAdvancedRoute } from '@/components/sessions/agent
 import { SessionSubagentList } from '@/components/sessions/agents/list/SessionSubagentList';
 import { SessionSubagentLaunchSection } from '@/components/sessions/agents/launch/SessionSubagentLaunchSection';
 import { resolveTranscriptToolCallsCollapsedPreviewCount } from '@/sync/domains/settings/transcriptToolCallsCollapsedPreviewCount';
+import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
 
 const stylesheet = StyleSheet.create(() => ({
     container: {
@@ -50,8 +53,8 @@ const stylesheet = StyleSheet.create(() => ({
 }));
 
 function deriveRightPanelPreviewSidechainIds(params: Readonly<{
-    activeSubagents: readonly SessionSubagent[];
-    recentSubagents: readonly SessionSubagent[];
+    activeRows: readonly SessionAgentActivityRow[];
+    recentRows: readonly SessionAgentActivityRow[];
     previewLimit: number;
 }>): readonly string[] {
     if (params.previewLimit <= 0) return [];
@@ -66,29 +69,9 @@ function deriveRightPanelPreviewSidechainIds(params: Readonly<{
         sidechainIds.add(sidechainId);
     };
 
-    for (const subagent of params.activeSubagents) append(subagent);
-    for (const subagent of params.recentSubagents) append(subagent);
+    for (const row of params.activeRows) append(row.subagent);
+    for (const row of params.recentRows) append(row.subagent);
     return [...sidechainIds];
-}
-
-/**
- * The locally derived rows behind a slice of the merged roster, in that slice's order.
- *
- * A headline-only entry has no subagent yet — its transcript page has not arrived — and is skipped
- * here rather than drawn from an invented row: every control on a subagent row (open, send, stop)
- * needs a real route, recipient or run id, and a row synthesised to fill the gap would announce
- * controls that lead nowhere. The entry is not lost: it still exists in the merge and still counts.
- */
-function readSubagentsForEntries(
-    entries: readonly AgentActivityEntry[],
-    readSubagentForEntry: (entryId: string) => SessionSubagent | null,
-): readonly SessionSubagent[] {
-    const rows: SessionSubagent[] = [];
-    for (const entry of entries) {
-        const subagent = readSubagentForEntry(entry.id);
-        if (subagent) rows.push(subagent);
-    }
-    return rows;
 }
 
 function resolveRightPanelPreviewFallback(status: SidechainHydrationStatus | undefined): string | null {
@@ -97,39 +80,53 @@ function resolveRightPanelPreviewFallback(status: SidechainHydrationStatus | und
     return t('common.loading');
 }
 
-export const SessionRightPanelAgentsView = React.memo((props: Readonly<{ sessionId: string; scopeId: string }>) => {
+export const SessionRightPanelAgentsView = React.memo((props: Readonly<{
+    sessionId: string;
+    scopeId: string;
+    /** The Session pane's exact Home; never infer it from a same-id live cache entry. */
+    serverId?: string | null;
+}>) => {
     const styles = stylesheet;
     const router = useRouter();
     const deviceType = useDeviceType();
     const pane = useAppPaneScope(props.scopeId);
-    const session = useSession(props.sessionId);
+    const session = useSessionViewShellSession(props.sessionId, props.serverId);
+    const sessionServerId = props.serverId ?? session?.serverId ?? null;
+    const accountScopeResolution = useServerCredentialAccountScopeResolution(sessionServerId);
+    const accountScope = sessionServerId === null ? undefined
+        : accountScopeResolution.kind === 'bound' ? accountScopeResolution.scope : null;
     const reducerState = useSessionMessagesReducerState(props.sessionId);
     const transcriptToolCallsCollapsedPreviewCount = useSetting('transcriptToolCallsCollapsedPreviewCount');
     // The enriched width: this pane already pays for the transcript, so it is the one surface that
     // can observe a permission prompt — the only way a row reaches `waiting`.
     const { entries, readSubagentForEntry, subagents } = useSessionAgentActivityRoster({
         sessionId: props.sessionId,
+        serverId: sessionServerId,
         session,
     });
 
     // Both sections are cut from the MERGED status, so a row the publisher has already reported
     // finished leaves the live section without waiting for its tool result to arrive.
     const liveness = React.useMemo(() => partitionAgentActivityEntriesByLiveness(entries), [entries]);
-    const activeSubagents = React.useMemo(
-        () => readSubagentsForEntries(liveness.live, readSubagentForEntry),
+    // Entry + local row pairs, not a roster of subagents plus side maps: the entry is the
+    // canonical status and attention, the subagent is the operational handle a control
+    // needs. That pairing is what removed this pane's `pendingPermissionById` index and,
+    // with it, its local reinterpretation of `waiting` as "needs approval".
+    const activeRows = React.useMemo(
+        () => readSessionAgentActivityRows(liveness.live, readSubagentForEntry),
         [liveness.live, readSubagentForEntry],
     );
-    const recentSubagents = React.useMemo(
-        () => readSubagentsForEntries(liveness.finished, readSubagentForEntry),
+    const recentRows = React.useMemo(
+        () => readSessionAgentActivityRows(liveness.finished, readSubagentForEntry),
         [liveness.finished, readSubagentForEntry],
     );
     const previewSidechainIds = React.useMemo(() => {
         return deriveRightPanelPreviewSidechainIds({
-            activeSubagents,
-            recentSubagents,
+            activeRows,
+            recentRows,
             previewLimit: resolveTranscriptToolCallsCollapsedPreviewCount(transcriptToolCallsCollapsedPreviewCount),
         });
-    }, [activeSubagents, recentSubagents, transcriptToolCallsCollapsedPreviewCount]);
+    }, [activeRows, recentRows, transcriptToolCallsCollapsedPreviewCount]);
     const previewSidechainIdsSet = React.useMemo(() => new Set(previewSidechainIds), [previewSidechainIds]);
     const sidechainHydration = useEnsureSidechainsLoaded({
         enabled: previewSidechainIds.length > 0,
@@ -140,6 +137,7 @@ export const SessionRightPanelAgentsView = React.memo((props: Readonly<{ session
         const previews = new Map<string, string>();
         for (const subagent of subagents) {
             const preview = deriveSessionSubagentActivityPreview({
+                accountScope,
                 subagent,
                 reducerState,
                 session,
@@ -156,29 +154,20 @@ export const SessionRightPanelAgentsView = React.memo((props: Readonly<{ session
             if (fallback) previews.set(subagent.id, fallback);
         }
         return previews;
-    }, [previewSidechainIdsSet, reducerState, session, sidechainHydration.bySidechainId, subagents]);
-    // Read off the merged status rather than derived a second time here. `waiting` IS the pending
-    // prompt, resolved once at the roster owner — which also means a row the publisher has already
-    // reported terminal cannot show a badge inviting a person to answer a prompt that is over.
-    const pendingPermissionById = React.useMemo(() => {
-        const pending = new Map<string, boolean>();
-        for (const entry of entries) {
-            if (entry.status !== 'waiting' || !entry.subagentId) continue;
-            pending.set(entry.subagentId, true);
-        }
-        return pending;
-    }, [entries]);
+    }, [accountScope, previewSidechainIdsSet, reducerState, session, sidechainHydration.bySidechainId, subagents]);
     const openFull = React.useCallback((subagent: SessionSubagent) => {
         const route = resolveSessionSubagentFullRoute({
             sessionId: props.sessionId,
+            serverId: sessionServerId,
             subagent,
         });
         if (!route) return;
         router.push(route as any);
-    }, [props.sessionId, router]);
+    }, [props.sessionId, router, sessionServerId]);
     const openPreview = React.useCallback((subagent: SessionSubagent) => {
         const fullRoute = resolveSessionSubagentFullRoute({
             sessionId: props.sessionId,
+            serverId: sessionServerId,
             subagent,
         });
         if (deviceType === 'phone' || !subagent.capabilities.canOpen) {
@@ -186,15 +175,16 @@ export const SessionRightPanelAgentsView = React.memo((props: Readonly<{ session
             return;
         }
         pane.openDetailsTab(createSessionSubagentDetailsTab(subagent), { intent: 'preview' });
-    }, [deviceType, pane, props.sessionId, router]);
+    }, [deviceType, pane, props.sessionId, router, sessionServerId]);
     const openAdvanced = React.useCallback((subagent: SessionSubagent) => {
         const route = resolveSessionSubagentAdvancedRoute({
             sessionId: props.sessionId,
+            serverId: sessionServerId,
             subagent,
         });
         if (!route) return;
         router.push(route as any);
-    }, [props.sessionId, router]);
+    }, [props.sessionId, router, sessionServerId]);
     const openProviderTeammateLauncher = React.useCallback((teamId: string) => {
         const tab = createSessionTeammateLauncherDetailsTab({
             session,
@@ -212,15 +202,15 @@ export const SessionRightPanelAgentsView = React.memo((props: Readonly<{ session
                 style={styles.scroll}
                 contentContainerStyle={styles.content}
             >
-                <SessionSubagentLaunchSection sessionId={props.sessionId} scopeId={props.scopeId} session={session} subagents={subagents} />
+                <SessionSubagentLaunchSection sessionId={props.sessionId} serverId={sessionServerId} scopeId={props.scopeId} session={session} subagents={subagents} />
                 <SessionSubagentList
                     sessionId={props.sessionId}
+                    serverId={sessionServerId}
                     testID="session-agents-section-active"
                     title={t('session.subagents.panel.active')}
                     emptyLabel={t('session.subagents.panel.emptyActive')}
-                    subagents={activeSubagents}
+                    rows={activeRows}
                     activityPreviewById={activityPreviewById}
-                    pendingPermissionById={pendingPermissionById}
                     onOpenPreview={openPreview}
                     onOpenFull={openFull}
                     onOpenAdvanced={openAdvanced}
@@ -228,12 +218,12 @@ export const SessionRightPanelAgentsView = React.memo((props: Readonly<{ session
                 />
                 <SessionSubagentList
                     sessionId={props.sessionId}
+                    serverId={sessionServerId}
                     testID="session-agents-section-recent"
                     title={t('session.subagents.panel.recent')}
                     emptyLabel={t('session.subagents.panel.emptyRecent')}
-                    subagents={recentSubagents}
+                    rows={recentRows}
                     activityPreviewById={activityPreviewById}
-                    pendingPermissionById={pendingPermissionById}
                     onOpenPreview={openPreview}
                     onOpenFull={openFull}
                     onOpenAdvanced={openAdvanced}

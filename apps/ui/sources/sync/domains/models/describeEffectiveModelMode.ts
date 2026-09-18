@@ -57,7 +57,7 @@ export function describeEffectiveModelMode(params: {
 
     const selectedModelId = normalizeModelId(params.selectedModelId);
     const hasExplicitSelection = selectedModelId.length > 0;
-    const defaultModelId = normalizeModelId(core?.model.defaultMode) || 'default';
+    const defaultModelId = normalizeModelId(core?.model?.defaultMode) || 'default';
     const effectiveModelId = hasExplicitSelection ? selectedModelId : defaultModelId;
     const appliedModelId = readAppliedModelSelection({
         agentId,
@@ -67,13 +67,13 @@ export function describeEffectiveModelMode(params: {
 
     const isAcpSession = Boolean(readSessionModesState(params.metadata) || readSessionModelsState(params.metadata));
 
-    let applyScope: ModelApplyScope = isAcpSession ? 'live' : (core?.model.nonAcpApplyScope ?? 'next_prompt');
+    let applyScope: ModelApplyScope = isAcpSession ? 'live' : (core?.model?.nonAcpApplyScope ?? 'next_prompt');
     const notes: string[] = [];
 
     // When a model change takes effect is `applyScope`, not prose: the surface
     // renders that fact as one localized line. Only facts `applyScope` cannot
     // express stay here, so a picker never has a paragraph to show.
-    if (applyScope === 'live' && core?.model.acpApplyBehavior === 'restart_session') {
+    if (applyScope === 'live' && core?.model?.acpApplyBehavior === 'restart_session') {
         notes.push('This provider restarts the underlying session when switching models (context is preserved when possible).');
     }
 
@@ -85,7 +85,7 @@ export function describeEffectiveModelMode(params: {
         }
     }
 
-    if (core?.model.supportsSelection !== true && !hasDynamicList) {
+    if (core?.model?.supportsSelection === false && !hasDynamicList) {
         notes.push('Model selection is not available in the app for this provider.');
     }
 

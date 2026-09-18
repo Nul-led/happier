@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -49,6 +50,23 @@ vi.mock('./loadDaemonMergedProjectionInputs', () => ({
 
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
     captureActiveServerAccountScopeLifetime: () => activeAccountLifetime.value,
+}));
+
+vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
+    useServerCredentialAccountScopeBindings: (serverIds: readonly string[]) => {
+        const lifetime = activeAccountLifetime.value;
+        const serverId = serverIds[0];
+        return React.useMemo(() => {
+            if (!lifetime || !serverId) return new Map();
+            return new Map([[serverId, {
+                serverId,
+                accountId: lifetime.scope.accountId,
+                revision: 1,
+                isCurrent: lifetime.isCurrent,
+                onRetire: lifetime.onRetire,
+            }]]);
+        }, [lifetime, serverId]);
+    },
 }));
 
 function readyEntry(generation: number) {

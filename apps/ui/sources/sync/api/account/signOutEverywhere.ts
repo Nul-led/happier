@@ -12,7 +12,7 @@ import {
     type ActiveServerAccountScopeLifetime,
 } from '@/sync/domains/scope/activeServerAccountScope';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
 export type SignOutEverywhereOptionsV1 = Readonly<{
     /** The host Action can abandon its pending request without changing Account scope. */
@@ -76,12 +76,12 @@ export async function signOutEverywhere(
     const retirement = captured.lifetime.onRetire(abort);
     options?.signal?.addEventListener('abort', abort, { once: true });
     if (options?.signal?.aborted) abort();
-    let authority: Awaited<ReturnType<typeof captureSessionRequestAuthorityForServerAccountScope>> | null = null;
+    let authority: Awaited<ReturnType<typeof captureServerRequestAuthorityForServerAccountScope>> | null = null;
 
     try {
         if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
 
-        authority = await captureSessionRequestAuthorityForServerAccountScope({
+        authority = await captureServerRequestAuthorityForServerAccountScope({
             scope: captured.lifetime.scope,
             activeRequest: (path, init) => apiSocket.request(path, init),
         });

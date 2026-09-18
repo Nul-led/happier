@@ -15,12 +15,12 @@ export function formatAutomationError(error: unknown, fallback: string): Automat
         return { message: t('automations.exactTurn.staleBody'), action: t('automations.exactTurn.useCurrentTurn') };
     }
     if (isAutomationApiErrorCode(error, 'sourceTurnUnavailable') || isAutomationApiErrorCode(error, 'sourceSessionUnavailable')) {
-        return { message: t('automations.exactTurn.unavailable'), action: t('common.tryAgain') };
+        return { message: t('automations.exactTurn.unavailable'), action: t('errors.tryAgain') };
     }
     if (isAutomationApiErrorCode(error, 'automation_template_version_conflict') || isAutomationApiErrorCode(error, 'automation_trigger_revision_conflict')) {
-        return { message: t('automations.edit.updateFailed'), action: t('common.tryAgain') };
+        return { message: t('automations.edit.updateFailed'), action: t('errors.tryAgain') };
     }
-    return { message: fallback, action: t('common.tryAgain') };
+    return { message: fallback, action: t('errors.tryAgain') };
 }
 
 export function formatAutomationErrorMessage(error: unknown, fallback: string): string {

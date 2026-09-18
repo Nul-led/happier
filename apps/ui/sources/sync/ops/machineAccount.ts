@@ -5,6 +5,11 @@ import {
     writeProviderSettingsToAccountSettingsV1,
 } from '@happier-dev/protocol';
 import type { OneShotAccountSettingsMutationResult } from '@/sync/engine/settings/syncSettings';
+import {
+    areAccountSettingsScopesEqual,
+    type AccountSettingsScope,
+} from '@/sync/domains/settings/scope/accountSettingsScope';
+import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 
 export type MachineRevokeFromAccountResult =
     | { ok: true }
@@ -68,10 +73,12 @@ export type MachineRevokeWithProviderCleanupResult =
  */
 export async function machineRevokeWithProviderCleanup(
     machineId: string,
+    expectedSettingsScope: AccountSettingsScope | null,
     expectedSettingsVersion: number | null,
     dependencies: Readonly<{
         revoke(id: string): Promise<MachineRevokeFromAccountResult>;
         mutateAccountSettingsOnce<T>(input: Readonly<{
+            expectedSettingsScope: AccountSettingsScope | null;
             expectedSettingsVersion: number;
             mutate: (raw: Readonly<Record<string, unknown>>) => Readonly<{
                 settings: Record<string, unknown>;
@@ -82,6 +89,10 @@ export async function machineRevokeWithProviderCleanup(
 ): Promise<MachineRevokeWithProviderCleanupResult> {
     const id = String(machineId ?? '').trim();
     if (!id) return { ok: false, status: 400, error: 'machine_id_required' };
+    if (!expectedSettingsScope
+        || !areAccountSettingsScopesEqual(getActiveServerAccountScope(), expectedSettingsScope)) {
+        return { ok: false, status: 409, error: 'account_settings_scope_changed' };
+    }
     const revoked = await dependencies.revoke(id);
     const machineAlreadyRevoked = !revoked.ok && revoked.status === 410 && revoked.error === 'machine_revoked';
     if (!revoked.ok && !machineAlreadyRevoked) return revoked;
@@ -98,6 +109,7 @@ export async function machineRevokeWithProviderCleanup(
     }
     try {
         const mutation = await dependencies.mutateAccountSettingsOnce({
+            expectedSettingsScope,
             expectedSettingsVersion,
             mutate: (raw) => {
                 const basis = readProviderSettingsMutationBasisV1(raw);

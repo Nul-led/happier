@@ -213,9 +213,13 @@ const tokenStorageMock = vi.hoisted(() => ({
     clearPendingExternalAuth: vi.fn(async () => undefined),
     getAuthAutoRedirectSuppressedUntil: vi.fn(async () => 0),
 }));
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: tokenStorageMock,
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: tokenStorageMock,
+    });
+});
 
 vi.mock('@/auth/providers/externalAuthUrl', () => ({
     isSafeExternalAuthUrl: () => true,
@@ -273,48 +277,6 @@ vi.mock('@/components/onboarding/preAuth/WelcomeDecisionPanel', () => ({
     ),
 }));
 
-vi.mock('@/components/account/auth/AuthEntryView', () => ({
-    AuthEntryView: (props: any) => {
-        const availability = String(props?.options?.serverAvailability ?? '');
-        const providerId = String(props?.options?.providerId ?? '').trim() || null;
-        const keylessProviderId = String(props?.options?.keylessProviderId ?? '').trim() || null;
-        const configureRelay = React.createElement('AuthAction', {
-            testID: 'welcome-configure-server',
-            onPress: props.onChangeRelay,
-        });
-
-        if (availability === 'incompatible' || availability === 'unavailable') {
-            return React.createElement(React.Fragment, null, configureRelay);
-        }
-
-        return React.createElement(
-            React.Fragment,
-            null,
-            React.createElement('AuthAction', { testID: 'welcome-restore', onPress: props.onRestore }),
-            React.createElement('AuthAction', {
-                testID: 'welcome-signup-provider',
-                action: () => {
-                    const target = providerId ?? 'github';
-                    return props.onCreateAccountViaProvider?.(target);
-                },
-            }),
-            React.createElement('AuthAction', {
-                testID: 'welcome-create-account',
-                action: () => {
-                    if (keylessProviderId) {
-                        return props.onLoginWithKeylessProvider?.(keylessProviderId);
-                    }
-                    return props.onCreateAccount?.();
-                },
-            }),
-            React.createElement('AuthAction', {
-                testID: 'welcome-mtls-login',
-                action: () => props.onLoginWithMtls?.(),
-            }),
-        );
-    },
-}));
-
 const modalMock = createModalModuleMock({
     spies: {
         alert: vi.fn(),
@@ -354,7 +316,7 @@ async function advanceWizardToAuth(screen: RenderScreenResult) {
     );
 
     // The onboarding flow can pivot between welcome → relay select → welcome(auth actions).
-    // Drive it until AuthEntryView actions are visible.
+    // Drive it until the composed welcome actions are visible.
     for (let attempt = 0; attempt < 8; attempt += 1) {
         if (hasAuthActions()) return;
 

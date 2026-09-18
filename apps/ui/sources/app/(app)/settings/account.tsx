@@ -1,16 +1,12 @@
 import React, { useState } from 'react';
-import { View, Pressable, Platform, useWindowDimensions } from 'react-native';
+import { Platform, useWindowDimensions } from 'react-native';
 import { useAuth } from '@/auth/context/AuthContext';
-import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
-import { Typography } from '@/constants/Typography';
-import { formatSecretKeyForBackup } from '@/auth/recovery/secretKeyBackup';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { SettingsCatalogPageChildren } from '@/components/settings/SettingsCatalogOverviewGroup';
 import { Modal } from '@/modal';
 import { t } from '@/text';
-import { layout } from '@/components/ui/layout/layout';
 import { useSettingMutable, useProfile } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
 import { useUnistyles } from 'react-native-unistyles';
@@ -24,96 +20,28 @@ import { storage } from '@/sync/domains/state/storageStore';
 import { useFriendsEnabled } from '@/hooks/server/useFriendsEnabled';
 import { useFriendsIdentityReadiness } from '@/hooks/server/useFriendsIdentityReadiness';
 import { ProviderIdentityItems } from '@/components/account/ProviderIdentityItems';
-import {
-    isLegacyAuthCredentials,
-    isTokenOnlyAuthCredentials,
-} from '@/auth/storage/tokenStorage';
-import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import {
-    fetchAccountEncryptionCurrentness,
-    fetchAccountEncryptionMode,
-    getAccountEncryptionModeScopeKey,
-} from '@/sync/api/account/apiAccountEncryptionMode';
-import { CopiedPill } from '@/components/ui/copy/CopiedPill';
-import { setClipboardStringSafe } from '@/utils/ui/clipboard';
-import { migrateAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMigrate';
-import { Text } from '@/components/ui/text/Text';
 import { useRouter } from 'expo-router';
 import { isRunningOnMac } from '@/utils/platform/platform';
-import { buildAccountEncryptionMigrateToPlainRequest } from '@/sync/ops/account/buildAccountEncryptionMigrateToPlainRequest';
-import { getConnectedServiceCredentialSealed } from '@/sync/api/account/apiConnectedServicesV2';
-import { buildAccountEncryptionMigrateToE2eeRequest } from '@/sync/ops/account/buildAccountEncryptionMigrateToE2eeRequest';
-import { getConnectedServiceCredentialPlain } from '@/sync/api/account/apiConnectedServicesV3';
-import {
-    getQualifiedConnectedAccountConfigurationV4,
-    getQualifiedConnectedAccountCredentialV4,
-} from '@/sync/api/account/apiQualifiedConnectedAccountsV4';
 import { isWebMobileLikeQrScannerHost } from '@/utils/platform/webMobileHeuristics';
 import { canUseCurrentDeviceQrScanner } from '@/utils/platform/qrScannerSupport';
-import {
-    ACCOUNT_ERASURE_CONFIRMATION_V1,
-    AccountEncryptionMigrateInvalidParamsReasonSchema,
-} from '@happier-dev/protocol';
-import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
-import { fetchMachineRows } from '@/sync/engine/machines/syncMachines';
-import { kvList } from '@/sync/api/account/apiKv';
-import {
-    fetchArtifact,
-    fetchArtifacts,
-} from '@/sync/api/artifacts/apiArtifacts';
-import {
-    buildAccountEncryptionMigrationStorageDirectives,
-} from '@/sync/ops/account/buildAccountEncryptionMigrationStorageDirectives';
-import {
-    fetchAccountEncryptionMigrationSessionInventory,
-} from '@/sync/ops/account/fetchAccountEncryptionMigrationSessionInventory';
-import {
-    fetchReviewCommentAccountEncryptionMigrationInventory,
-} from '@/sync/domains/reviews/comments/accountEncryptionMigrationApi';
-import {
-    fetchSessionOrganizationAccountEncryptionMigrationInventory,
-} from '@/sync/ops/account/fetchSessionOrganizationAccountEncryptionMigrationInventory';
-import {
-    prepareAccountEncryptionMigrateToE2eeKey,
-} from '@/sync/ops/account/prepareAccountEncryptionMigrateToE2eeKey';
-import {
-    openAccountEncryptionFirstKeyExternalAuthUrl,
-    retryPendingAccountEncryptionFirstKeyExternalAuth,
-    resumeAccountEncryptionFirstKeyExternalAuth,
-    startAccountEncryptionFirstKeyExternalAuth,
-} from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
-import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
+import { ACCOUNT_ERASURE_CONFIRMATION_V1 } from '@happier-dev/protocol';
 import { Icon } from '@/components/ui/icons/Icon';
-import {
-    presentFirstKeyCredentialLifecycle,
-} from '@/components/account/presentFirstKeyCredentialLifecycle';
-import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
-import {
-    acknowledgeNewSessionDraftEncryptionMigration,
-    listNewSessionDraftEncryptionMigrationCandidates,
-} from '@/sync/ops/sessionDrafts/sessionDraftRepository';
-import { runAccountEncryptionModeMigration } from '@/sync/ops/account/runAccountEncryptionModeMigration';
+import { presentFirstKeyCredentialLifecycle } from '@/components/account/presentFirstKeyCredentialLifecycle';
 import { deleteCurrentAccount } from '@/sync/api/account/deleteCurrentAccount';
+import { accountErasureFailureNotice } from '@/components/settings/home/governance/homeGovernanceLabels';
 import { AccountDeletedLocalCleanupError, completeAccountDeletion } from '@/components/settings/account/accountDeletionLifecycle';
 import { SettingsHistorySection } from '@/components/settings/account/SettingsHistorySection';
 import { AccountServiceSettingsSection } from '@/components/settings/account/AccountServiceSettingsSection';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import { ADD_HOME_RESTORE_PATH } from '@/auth/pairing/homeQrEntryIntent';
-
-type AccountEncryptionModePresentation = Readonly<{
-    scope: string | null;
-    mode: 'e2ee' | 'plain' | null;
-    recoveryRequired: boolean;
-}>;
+import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 
 export default React.memo(() => {
     const { theme } = useUnistyles();
     const auth = useAuth();
     const router = useRouter();
     const { width, height } = useWindowDimensions();
-    const [showSecret, setShowSecret] = useState(false);
-    const [copiedRecently, setCopiedRecently] = useState(false);
     const [accountDeletionPending, setAccountDeletionPending] = useState(false);
     const [analyticsOptOut, setAnalyticsOptOut] = useSettingMutable('analyticsOptOut');
     const [crashReportsOptOut, setCrashReportsOptOut] = useSettingMutable('crashReportsOptOut');
@@ -122,171 +50,16 @@ export default React.memo(() => {
     const friendsIdentityReadiness = useFriendsIdentityReadiness();
     const friendsEnabled = useFriendsEnabled();
     const applyProfile = storage((state) => state.applyProfile);
-    const encryptionAccountOptOutEnabled = useFeatureEnabled('encryption.accountOptOut');
-    const sessionDraftSyncEnabled = useFeatureEnabled('sessions.drafts');
     const activeServer = useActiveServerSnapshot();
     const activeHomeName = getServerProfileById(activeServer.serverId)?.name.trim()
         || activeServer.serverUrl.trim()
         || t('settingsAccount.currentHome');
-    const accountEncryptionScope = auth.credentials
-        ? getAccountEncryptionModeScopeKey(auth.credentials, activeServer)
-        : null;
-
-    const [accountEncryptionPresentation, setAccountEncryptionPresentation] =
-        useState<AccountEncryptionModePresentation>({
-            scope: null,
-            mode: null,
-            recoveryRequired: false,
-        });
-    const [accountEncryptionModeLoading, setAccountEncryptionModeLoading] = useState(false);
-    const [accountEncryptionModeSaving, setAccountEncryptionModeSaving] = useState(false);
-    const accountEncryptionPresentationIsCurrent =
-        accountEncryptionScope !== null
-        && accountEncryptionPresentation.scope === accountEncryptionScope;
-    const accountEncryptionMode = accountEncryptionPresentationIsCurrent
-        ? accountEncryptionPresentation.mode
-        : null;
-    const accountEncryptionRecoveryRequired =
-        accountEncryptionPresentationIsCurrent
-        && accountEncryptionPresentation.recoveryRequired;
-    const publishAccountEncryptionPresentation = React.useCallback(
-        (
-            scope: string | null,
-            mode: 'e2ee' | 'plain' | null,
-            recoveryRequired = false,
-        ) => {
-            setAccountEncryptionPresentation({
-                scope,
-                mode,
-                recoveryRequired,
-            });
-        },
-        [],
-    );
-    const firstKeyRecoveryAttemptedTokenRef =
-        React.useRef<string | null>(null);
-
-    // Get the current secret key
-    const legacySecret =
-        auth.credentials && isLegacyAuthCredentials(auth.credentials)
-            ? auth.credentials.secret
-            : '';
-    const formattedSecret = legacySecret ? formatSecretKeyForBackup(legacySecret) : '';
-
     // Profile display values
     const displayName = getDisplayName(profile);
     const canSetUsername =
         friendsEnabled &&
         !friendsIdentityReadiness.isLoadingFeatures &&
         friendsIdentityReadiness.gate.gateVariant === 'username';
-
-    React.useEffect(() => {
-        if (!encryptionAccountOptOutEnabled) return;
-        const credentials = auth.credentials;
-        const presentationScope = accountEncryptionScope;
-        if (!credentials?.token || !presentationScope) return;
-        const credentialsToken = credentials.token;
-
-        let cancelled = false;
-        const handleAccountEncryptionModeError = async (
-            error: unknown,
-        ): Promise<void> => {
-            if (cancelled) return;
-            if (
-                error instanceof HappyError
-                && error.code === 'account-encryption-recovery-required'
-            ) {
-                publishAccountEncryptionPresentation(
-                    presentationScope,
-                    null,
-                    true,
-                );
-                return;
-            }
-            await Modal.alertAsync(
-                t('common.error'),
-                error instanceof HappyError
-                    ? error.message
-                    : t(
-                        'settingsAccount.encryptionUpdateFailed',
-                    ),
-            );
-        };
-        setAccountEncryptionModeLoading(true);
-        publishAccountEncryptionPresentation(
-            presentationScope,
-            null,
-            false,
-        );
-        fetchAccountEncryptionMode(credentials)
-            .then(async (res) => {
-                if (cancelled) return;
-                try {
-                    if (
-                        res.mode === 'plain'
-                        && !isTokenOnlyAuthCredentials(credentials)
-                    ) {
-                        const credentialReplacement =
-                            await auth.loginWithCredentials({
-                                token: credentialsToken,
-                            });
-                        if (credentialReplacement.kind !== 'completed') {
-                            throw new Error(
-                                'Plain Account credentials could not be persisted',
-                            );
-                        }
-                        if (cancelled) return;
-                    }
-                    publishAccountEncryptionPresentation(
-                        presentationScope,
-                        res.mode,
-                    );
-                    const recoveryAttemptKey =
-                        isLegacyAuthCredentials(credentials)
-                            ? [
-                                credentials.token,
-                                credentials.secret,
-                            ].join('\u0000')
-                            : credentials.token;
-                    if (
-                        res.mode !== 'e2ee'
-                        || firstKeyRecoveryAttemptedTokenRef.current
-                            === recoveryAttemptKey
-                    ) {
-                        return;
-                    }
-                    firstKeyRecoveryAttemptedTokenRef.current =
-                        recoveryAttemptKey;
-                    const replayed =
-                        await retryPendingAccountEncryptionFirstKeyExternalAuth({
-                            currentCredentials: credentials,
-                            persistCredentials:
-                                auth.loginWithCredentials,
-                        });
-                    if (cancelled || !replayed) return;
-                    publishAccountEncryptionPresentation(
-                        presentationScope,
-                        replayed.mode,
-                    );
-                } catch (error) {
-                    await handleAccountEncryptionModeError(error);
-                }
-            })
-            .catch(handleAccountEncryptionModeError)
-            .finally(() => {
-                if (cancelled) return;
-                setAccountEncryptionModeLoading(false);
-            });
-
-        return () => {
-            cancelled = true;
-        };
-    }, [
-        auth.credentials,
-        accountEncryptionScope,
-        encryptionAccountOptOutEnabled,
-        publishAccountEncryptionPresentation,
-    ]);
 
     const [savingUsername, saveUsername] = useHappyAction(async () => {
         if (!auth.credentials) return;
@@ -321,21 +94,6 @@ export default React.memo(() => {
             throw e;
         }
     });
-
-    const handleShowSecret = () => {
-        setShowSecret(!showSecret);
-    };
-
-    const handleCopySecret = async () => {
-        if (!formattedSecret) return;
-        const copied = await setClipboardStringSafe(formattedSecret);
-        if (!copied) {
-            Modal.alert(t('common.error'), t('settingsAccount.secretKeyCopyFailed'));
-            return;
-        }
-        setCopiedRecently(true);
-        setTimeout(() => setCopiedRecently(false), 2000);
-    };
 
     const handleLogout = async () => {
         const confirmed = await Modal.confirm(
@@ -387,17 +145,51 @@ export default React.memo(() => {
         if (confirmation === null) return;
         if (confirmation.trim() !== ACCOUNT_ERASURE_CONFIRMATION_V1) { await Modal.alertAsync(t('settingsAccount.deleteAccountInvalidTitle'), t('settingsAccount.deleteAccountInvalidBody')); return; }
         const credentials = auth.credentials;
-        if (!credentials) { await Modal.alertAsync(t('common.error'), t('settingsAccount.deleteAccountFailed')); return; }
+        const deletionScope = getActiveServerAccountScope();
+        if (!credentials || !deletionScope) { await Modal.alertAsync(t('common.error'), t('settingsAccount.deleteAccountFailed')); return; }
         setAccountDeletionPending(true);
-        try { await presentFirstKeyCredentialLifecycle({ run: async () => await completeAccountDeletion({ deleteCurrentAccount: async () => await deleteCurrentAccount(credentials), logout: auth.logout, replace: (path) => router.replace(path) }) }); }
-        catch (error) { if (error instanceof AccountDeletedLocalCleanupError) await Modal.alertAsync(t('settingsAccount.deleteAccountCleanupFailedTitle'), t('settingsAccount.deleteAccountCleanupFailed')); else await Modal.alertAsync(t('settingsAccount.deleteAccountFailedTitle'), t('settingsAccount.deleteAccountFailed')); }
+        let runDeletionCleanup = async () => await completeAccountDeletion({
+            scope: deletionScope,
+            deleteCurrentAccount: async () => await deleteCurrentAccount(credentials),
+            logout: auth.logout,
+            replace: (path) => router.replace(path),
+        });
+        try {
+            while (true) {
+                try {
+                    await presentFirstKeyCredentialLifecycle({ run: runDeletionCleanup });
+                    break;
+                } catch (error) {
+                    if (!(error instanceof AccountDeletedLocalCleanupError)) throw error;
+                    let retry = false;
+                    await Modal.alertAsync(
+                        t('settingsAccount.deleteAccountCleanupFailedTitle'),
+                        t('settingsAccount.deleteAccountCleanupFailed'),
+                        [
+                            { text: t('common.cancel'), style: 'cancel' },
+                            { text: t('common.retry'), onPress: () => { retry = true; } },
+                        ],
+                    );
+                    if (!retry) break;
+                    runDeletionCleanup = error.retryLocalCleanup;
+                }
+            }
+        } catch (error) {
+            // The Home's typed verdict names the real obstacle — the last Home
+            // or Team owner must hand ownership on first — so it is shown
+            // through the same owner that names it for administrators. Only an
+            // answer without a verdict keeps the "not confirmed" notice.
+            const notice = accountErasureFailureNotice(error);
+            await Modal.alertAsync(notice.title, notice.body);
+        }
         finally { setAccountDeletionPending(false); }
     };
 
     const isPhoneSizedWeb = Platform.OS === 'web' && isWebMobileLikeQrScannerHost({ width, height });
     const showAddYourPhone = isRunningOnMac() || (Platform.OS === 'web' && !isPhoneSizedWeb);
+    // Only Link new device needs this device's scanner. Add another Home opens the
+    // shared add_home restore entry, which falls back to pasting a pairing link.
     const showLinkNewDevice = canUseCurrentDeviceQrScanner();
-    const showAccountAccessGroup = showAddYourPhone || showLinkNewDevice;
     return (
         <>
             <ItemList>
@@ -431,41 +223,37 @@ export default React.memo(() => {
                 <AccountServiceSettingsSection />
 
                 {/* Account access / linking */}
-                {showAccountAccessGroup ? (
-                    <ItemGroup>
-                        {showAddYourPhone ? (
-                            <Item
-                                testID="settings-account-add-your-phone"
-                                title={t('settings.addYourPhone')}
-                                subtitle={t('settings.addYourPhoneSubtitle')}
-                                icon={<Icon name="device-mobile" size={29} color={theme.colors.accent.blue} />}
-                                onPress={() => router.push('/settings/add-phone')}
-                                showChevron={false}
-                            />
-                        ) : null}
-                        {showLinkNewDevice ? (
-                            <>
-                                <Item
-                                    testID="settings-account-add-home"
-                                    title={t('settingsAccount.addAnotherHome')}
-                                    subtitle={t('settingsAccount.addAnotherHomeSubtitle')}
-                                    icon={<Icon name="house" size={29} color={theme.colors.accent.blue} />}
-                                    onPress={() => router.push(ADD_HOME_RESTORE_PATH)}
-                                    showChevron={false}
-                                />
-                                <Item
-                                    testID="settings-account-link-new-device"
-                                    title={t('settingsAccount.linkNewDevice')}
-                                    subtitle={isConnecting ? t('common.scanning') : t('settingsAccount.linkNewDeviceSubtitle')}
-                                    icon={<Icon name="qr-code" size={29} color={theme.colors.accent.blue} />}
-                                    onPress={connectAccount}
-                                    disabled={isConnecting}
-                                    showChevron={false}
-                                />
-                            </>
-                        ) : null}
-                    </ItemGroup>
-                ) : null}
+                <ItemGroup>
+                    {showAddYourPhone ? (
+                        <Item
+                            testID="settings-account-add-your-phone"
+                            title={t('settings.addYourPhone')}
+                            subtitle={t('settings.addYourPhoneSubtitle')}
+                            icon={<Icon name="device-mobile" size={29} color={theme.colors.accent.blue} />}
+                            onPress={() => router.push('/settings/add-phone')}
+                            showChevron={false}
+                        />
+                    ) : null}
+                    <Item
+                        testID="settings-account-add-home"
+                        title={t('settingsAccount.addAnotherHome')}
+                        subtitle={t('settingsAccount.addAnotherHomeSubtitle')}
+                        icon={<Icon name="house" size={29} color={theme.colors.accent.blue} />}
+                        onPress={() => router.push(ADD_HOME_RESTORE_PATH)}
+                        showChevron={false}
+                    />
+                    {showLinkNewDevice ? (
+                        <Item
+                            testID="settings-account-link-new-device"
+                            title={t('settingsAccount.linkNewDevice')}
+                            subtitle={isConnecting ? t('common.scanning') : t('settingsAccount.linkNewDeviceSubtitle')}
+                            icon={<Icon name="qr-code" size={29} color={theme.colors.accent.blue} />}
+                            onPress={connectAccount}
+                            disabled={isConnecting}
+                            showChevron={false}
+                        />
+                    ) : null}
+                </ItemGroup>
 
                 {/* Profile Section */}
                 <ItemGroup title={t('settingsAccount.profile')}>
@@ -498,534 +286,11 @@ export default React.memo(() => {
                         />
                 </ItemGroup>
 
-                {/* Backup Section */}
-                {formattedSecret ? (
-                    <ItemGroup title={t('settingsAccount.backup')} footer={t('settingsAccount.backupDescription')}>
-                        <Item
-                            testID="settings-account-secret-key-item"
-                            title={t('settingsAccount.secretKey')}
-                            subtitle={showSecret ? t('settingsAccount.tapToHide') : t('settingsAccount.tapToReveal')}
-                            icon={
-                                <Icon
-                                    name={showSecret ? 'eye-slash' : 'eye'}
-                                    size={29}
-                                    color={theme.colors.accent.orange}
-                                />
-                            }
-                            onPress={handleShowSecret}
-                            rightElement={
-                                copiedRecently ? (
-                                    <CopiedPill visible testID="settings-account-secret-key-copy-feedback" />
-                                ) : (
-                                    <Pressable testID="settings-account-secret-key-copy" onPress={handleCopySecret} hitSlop={12}>
-                                        <Icon
-                                            name="copy"
-                                            size={16}
-                                            color={theme.colors.text.secondary}
-                                        />
-                                    </Pressable>
-                                )
-                            }
-                            showChevron={false}
-                        />
-                    </ItemGroup>
-                ) : null}
-
                 {/* Account Settings history/restore (client-side classification-aware restore owner) */}
                 <SettingsHistorySection
                     credentials={auth.credentials}
                     encryption={sync.encryption}
                 />
-
-                {/* Secret Key Display */}
-                {formattedSecret && showSecret && (
-                    <ItemGroup>
-                        <Pressable testID="settings-account-secret-key-revealed" onPress={handleCopySecret}>
-                            <View style={{
-                                backgroundColor: theme.colors.surface.base,
-                                paddingHorizontal: 16,
-                                paddingVertical: 14,
-                                width: '100%',
-                                maxWidth: layout.maxWidth,
-                                alignSelf: 'center'
-                            }}>
-                                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                                    <Text style={{
-                                        fontSize: 11,
-                                        color: theme.colors.text.secondary,
-                                        letterSpacing: 0.5,
-                                        textTransform: 'uppercase',
-                                        ...Typography.default('semiBold')
-                                    }}>
-                                        {t('settingsAccount.secretKeyLabel')}
-                                    </Text>
-                                    <Icon
-                                        name={copiedRecently ? "check-circle" : "copy"}
-                                        size={16}
-                                        color={copiedRecently ? theme.colors.state.success.foreground : theme.colors.text.secondary}
-                                    />
-                                </View>
-                                <Text style={{
-                                    fontSize: 13,
-                                    letterSpacing: 0.5,
-                                    lineHeight: 20,
-                                    color: theme.colors.text.primary,
-                                    ...Typography.mono()
-                                }}>
-                                    <Text testID="settings-account-secret-key-value">{formattedSecret}</Text>
-                                </Text>
-                            </View>
-                        </Pressable>
-                    </ItemGroup>
-                )}
-
-                {/* Analytics Section */}
-                {encryptionAccountOptOutEnabled && (
-                    <ItemGroup title={t('terminal.encryption')}>
-                        {accountEncryptionRecoveryRequired ? (
-                            <Item
-                                testID="settings-account-encryption-recovery"
-                                title={t('navigation.restoreWithSecretKey')}
-                                subtitle={t('settingsAccount.restoreRequiredBody')}
-                                onPress={() => router.push('/restore/manual')}
-                            />
-                        ) : null}
-                        <Item
-                            title={t('terminal.endToEndEncrypted')}
-                            rightElement={
-                                <Switch
-                                    testID="settings-account-encryption-mode-switch"
-                                    value={(accountEncryptionMode ?? 'e2ee') === 'e2ee'}
-                                    disabled={
-                                        accountEncryptionModeLoading ||
-                                        accountEncryptionModeSaving ||
-                                        !auth.credentials ||
-                                        accountEncryptionMode == null
-                                    }
-                                    onValueChange={async (enabled) => {
-                                        if (!auth.credentials) return;
-                                        if (accountEncryptionMode == null) return;
-                                        const credentials = auth.credentials;
-                                        const presentationScope =
-                                            accountEncryptionScope;
-                                        const credentialsToken =
-                                            credentials.token;
-                                        const nextMode = enabled ? 'e2ee' : 'plain';
-                                        const sourceEncryption = sync.encryption;
-
-                                        setAccountEncryptionModeSaving(true);
-                                        try {
-                                            if (
-                                                nextMode === 'e2ee'
-                                                && isTokenOnlyAuthCredentials(
-                                                    credentials,
-                                                )
-                                            ) {
-                                                const replayed =
-                                                    await retryPendingAccountEncryptionFirstKeyExternalAuth({
-                                                        currentCredentials:
-                                                            credentials,
-                                                        persistCredentials:
-                                                            auth.loginWithCredentials,
-                                                    });
-                                                if (replayed) {
-                                                    publishAccountEncryptionPresentation(
-                                                        presentationScope,
-                                                        replayed.mode,
-                                                    );
-                                                    return;
-                                                }
-                                            }
-                                            if (nextMode === 'plain' && !sourceEncryption) {
-                                                throw new Error(
-                                                    'Account encryption material is unavailable for the E2EE-to-plaintext migration',
-                                                );
-                                            }
-                                            const currentness =
-                                                await fetchAccountEncryptionCurrentness(
-                                                    credentials,
-                                                );
-                                            if (
-                                                currentness.mode
-                                                !== accountEncryptionMode
-                                            ) {
-                                                if (
-                                                    currentness.mode === 'plain'
-                                                    && !isTokenOnlyAuthCredentials(
-                                                        credentials,
-                                                    )
-                                                ) {
-                                                    const credentialReplacement =
-                                                        await auth.loginWithCredentials({
-                                                            token: credentialsToken,
-                                                        });
-                                                    if (
-                                                        credentialReplacement.kind
-                                                        !== 'completed'
-                                                    ) {
-                                                        throw new Error(
-                                                            'Plain Account credentials could not be persisted',
-                                                        );
-                                                    }
-                                                    publishAccountEncryptionPresentation(
-                                                        presentationScope,
-                                                        currentness.mode,
-                                                    );
-                                                    return;
-                                                }
-                                                publishAccountEncryptionPresentation(
-                                                    presentationScope,
-                                                    currentness.mode,
-                                                );
-                                                throw new Error(
-                                                    'Account encryption mode changed while preparing the migration',
-                                                );
-                                            }
-                                            const expectedSettingsVersion = storage.getState().settingsVersion ?? 0;
-                                            const connectedServiceProfiles = profile.connectedServicesV2.flatMap((svc) =>
-                                                svc.profiles.map((p) => ({
-                                                    serviceId: svc.serviceId as any,
-                                                    profileId: p.profileId,
-                                                })),
-                                            );
-                                            const automations = Object.values(storage.getState().automations ?? {}).map((a: any) => ({
-                                                id: a.id,
-                                                templateVersion: a.templateVersion,
-                                                templateCiphertext: a.templateCiphertext,
-                                            }));
-                                            const preparedE2eeKey =
-                                                nextMode === 'e2ee'
-                                                    ? await prepareAccountEncryptionMigrateToE2eeKey({
-                                                        credentials,
-                                                        expectedSigningKeyFingerprint:
-                                                            currentness
-                                                                .signingKeyFingerprint,
-                                                        expectedContentKeyFingerprint:
-                                                            currentness
-                                                                .contentKeyFingerprint,
-                                                    })
-                                                    : null;
-                                            const targetEncryption =
-                                                nextMode === 'e2ee'
-                                                    ? await createEncryptionFromAuthCredentials(
-                                                        preparedE2eeKey!
-                                                            .credentials,
-                                                    )
-                                                    : null;
-                                            const [
-                                                machineRows,
-                                                todoRows,
-                                                artifactList,
-                                                sessionRows,
-                                                reviewCommentsInventory,
-                                                sessionOrganizationInventory,
-                                            ] = await Promise.all([
-                                                fetchMachineRows({
-                                                    credentials,
-                                                }),
-                                                kvList(credentials, {
-                                                    prefix: 'todo.',
-                                                    limit: 1000,
-                                                    retry: 'none',
-                                                }).then(
-                                                    (response) =>
-                                                        response.items,
-                                                ),
-                                                fetchArtifacts(credentials, {
-                                                    retry: 'none',
-                                                }),
-                                                fetchAccountEncryptionMigrationSessionInventory({
-                                                    token: credentials.token,
-                                                }),
-                                                fetchReviewCommentAccountEncryptionMigrationInventory(),
-                                                fetchSessionOrganizationAccountEncryptionMigrationInventory(),
-                                            ]);
-                                            const artifactRows =
-                                                await runTasksWithLimit(
-                                                    artifactList.map(
-                                                        (artifact) =>
-                                                            async () => {
-                                                                const full =
-                                                                    await fetchArtifact(
-                                                                        credentials,
-                                                                        artifact.id,
-                                                                        {
-                                                                            retry:
-                                                                                'none',
-                                                                        },
-                                                                    );
-                                                                if (
-                                                                    typeof full.body
-                                                                        !==
-                                                                        'string'
-                                                                    || typeof full.bodyVersion
-                                                                        !==
-                                                                        'number'
-                                                                ) {
-                                                                    throw new Error(
-                                                                        `Artifact migration snapshot is incomplete (${artifact.id})`,
-                                                                    );
-                                                                }
-                                                                return {
-                                                                    id: full.id,
-                                                                    header:
-                                                                        full.header,
-                                                                    headerVersion:
-                                                                        full.headerVersion,
-                                                                    body:
-                                                                        full.body,
-                                                                    bodyVersion:
-                                                                        full.bodyVersion,
-                                                                    dataEncryptionKey:
-                                                                        full.dataEncryptionKey,
-                                                                };
-                                                            },
-                                                    ),
-                                                    4,
-                                                );
-                                            const storageDirectives =
-                                                await buildAccountEncryptionMigrationStorageDirectives({
-                                                    fromMode:
-                                                        currentness.mode,
-                                                    toMode: nextMode,
-                                                    sourceEncryption:
-                                                        nextMode === 'plain'
-                                                            ? sourceEncryption
-                                                            : null,
-                                                    targetEncryption,
-                                                    machines: machineRows,
-                                                    todos: todoRows,
-                                                    artifacts: artifactRows,
-                                                    sessions: sessionRows,
-                                                    reviewCommentsInventory,
-                                                    sessionOrganizationInventory,
-                                                    sessionSourceCredentials:
-                                                        credentials,
-                                                    sessionTargetCredentials:
-                                                        preparedE2eeKey
-                                                            ?.credentials
-                                                        ?? null,
-                                                });
-                                            const sessionDraftScope = sessionDraftSyncEnabled
-                                                ? getActiveServerAccountScope()
-                                                : null;
-                                            const sessionDrafts = sessionDraftScope
-                                                ? listNewSessionDraftEncryptionMigrationCandidates(
-                                                    sessionDraftScope,
-                                                )
-                                                : [];
-                                            const request = nextMode === 'plain'
-                                                ? await buildAccountEncryptionMigrateToPlainRequest({
-                                                    credentials,
-                                                    expectedAccountVersion:
-                                                        currentness.version,
-                                                    expectedSigningKeyFingerprint:
-                                                        currentness
-                                                            .signingKeyFingerprint,
-                                                    expectedContentKeyFingerprint:
-                                                        currentness
-                                                            .contentKeyFingerprint,
-                                                    storageDirectives,
-                                                    expectedSettingsVersion,
-                                                    settings: storage.getState().settings,
-                                                    connectedServiceProfiles,
-                                                    qualifiedConnectedAccounts:
-                                                        profile.connectedAccountsV4,
-                                                    automations,
-                                                    sessionDrafts,
-                                                    fetchConnectedServiceCredentialSealed: async ({ serviceId, profileId }) =>
-                                                        await getConnectedServiceCredentialSealed(credentials, { serviceId, profileId }),
-                                                    fetchQualifiedConnectedAccountCredential: async (ref) =>
-                                                        await getQualifiedConnectedAccountCredentialV4(credentials, ref),
-                                                    fetchQualifiedConnectedAccountConfiguration: async (ref) =>
-                                                        await getQualifiedConnectedAccountConfigurationV4(credentials, ref),
-                                                    decryptAutomationTemplateRaw: async (payloadCiphertext: string) =>
-                                                        await sourceEncryption!.decryptAutomationTemplateRaw(payloadCiphertext),
-                                                })
-                                                : await buildAccountEncryptionMigrateToE2eeRequest({
-                                                    credentials:
-                                                        preparedE2eeKey!
-                                                            .credentials,
-                                                    accountId: profile.id,
-                                                    expectedAccountVersion:
-                                                        currentness.version,
-                                                    expectedSigningKeyFingerprint:
-                                                        currentness
-                                                            .signingKeyFingerprint,
-                                                    expectedContentKeyFingerprint:
-                                                        currentness
-                                                            .contentKeyFingerprint,
-                                                    storageDirectives,
-                                                    expectedSettingsVersion,
-                                                    settings: storage.getState().settings,
-                                                    connectedServiceProfiles,
-                                                    qualifiedConnectedAccounts:
-                                                        profile.connectedAccountsV4,
-                                                    automations,
-                                                    sessionDrafts,
-                                                    keyProof:
-                                                        preparedE2eeKey!
-                                                            .keyProof,
-                                                    fetchConnectedServiceCredentialPlain: async ({ serviceId, profileId }) =>
-                                                        await getConnectedServiceCredentialPlain(credentials, { serviceId, profileId }),
-                                                    fetchQualifiedConnectedAccountCredential: async (ref) =>
-                                                        await getQualifiedConnectedAccountCredentialV4(credentials, ref),
-                                                    fetchQualifiedConnectedAccountConfiguration: async (ref) =>
-                                                        await getQualifiedConnectedAccountConfigurationV4(credentials, ref),
-                                                });
-
-                                            const result =
-                                                nextMode === 'e2ee'
-                                                && preparedE2eeKey!
-                                                    .requiresExternalAuthProof
-                                                    ? await (async () => {
-                                                        const externalAuth =
-                                                            await startAccountEncryptionFirstKeyExternalAuth({
-                                                                accountId:
-                                                                    profile.id,
-                                                                currentCredentials:
-                                                                    credentials,
-                                                                proposedCredentials:
-                                                                    preparedE2eeKey!
-                                                                        .credentials,
-                                                                request,
-                                                                linkedProviderIds:
-                                                                    (
-                                                                        profile
-                                                                            .linkedProviders
-                                                                        ?? []
-                                                                    ).map(
-                                                                        (
-                                                                            provider,
-                                                                        ) =>
-                                                                            provider.id,
-                                                                    ),
-                                                                returnTo:
-                                                                    '/settings/account',
-                                                                target: {
-                                                                    serverId: activeServer.serverId,
-                                                                    serverUrl: activeServer.serverUrl,
-                                                                },
-                                                            });
-                                                        if (
-                                                            externalAuth.kind
-                                                            === 'oauth'
-                                                        ) {
-                                                            await openAccountEncryptionFirstKeyExternalAuthUrl(
-                                                                externalAuth.url,
-                                                            );
-                                                            return null;
-                                                        }
-                                                        const resumed =
-                                                            await resumeAccountEncryptionFirstKeyExternalAuth({
-                                                            provider:
-                                                                externalAuth
-                                                                    .externalAuthProof
-                                                                    .provider,
-                                                            pending:
-                                                                externalAuth
-                                                                    .externalAuthProof
-                                                                    .pending,
-                                                            currentCredentials:
-                                                                credentials,
-                                                            persistCredentials:
-                                                                auth.loginWithCredentials,
-                                                        });
-                                                        return resumed.migration;
-                                                    })()
-                                                    : await runAccountEncryptionModeMigration({
-                                                        request,
-                                                        migrate: async (migrationRequest) =>
-                                                            await migrateAccountEncryptionMode(
-                                                                credentials,
-                                                                migrationRequest,
-                                                            ),
-                                                        activateTargetMode: () => {
-                                                            sync.reconfigureSessionDraftRepositoryForAccountMode(
-                                                                nextMode === 'e2ee'
-                                                                    ? preparedE2eeKey!.credentials
-                                                                    : credentials,
-                                                                nextMode,
-                                                            );
-                                                        },
-                                                        acknowledgeSessionDrafts: async (records) => {
-                                                            if (!sessionDraftScope) {
-                                                                throw new Error(
-                                                                    'Session draft repository scope is unavailable',
-                                                                );
-                                                            }
-                                                            await acknowledgeNewSessionDraftEncryptionMigration(
-                                                                sessionDraftScope,
-                                                                records,
-                                                            );
-                                                        },
-                                                    });
-                                            if (!result) return;
-                                            if (
-                                                nextMode === 'plain'
-                                                && result.mode === 'plain'
-                                            ) {
-                                                const credentialReplacement =
-                                                    await auth.loginWithCredentials({
-                                                        token: credentials.token,
-                                                    });
-                                                if (
-                                                    credentialReplacement.kind
-                                                    !== 'completed'
-                                                ) {
-                                                    throw new Error(
-                                                        'Plain Account credentials could not be persisted',
-                                                    );
-                                                }
-                                            }
-                                            publishAccountEncryptionPresentation(
-                                                presentationScope,
-                                                result.mode,
-                                            );
-
-                                        } catch (e) {
-                                            if (e instanceof HappyError) {
-                                                if (nextMode === 'e2ee' && e.status === 400) {
-                                                    if (
-                                                        e.code === AccountEncryptionMigrateInvalidParamsReasonSchema.enum.restore_required
-                                                    ) {
-                                                        await Modal.alertAsync(
-                                                            t('settingsAccount.restoreRequiredTitle'),
-                                                            t('settingsAccount.restoreRequiredBody'),
-                                                            [
-                                                                {
-                                                                    text: t('navigation.restoreWithSecretKey'),
-                                                                    onPress: () => router.push('/restore/manual'),
-                                                                },
-                                                                {
-                                                                    text: t('connect.lostAccessConfirmButton'),
-                                                                    style: 'destructive',
-                                                                    onPress: () => router.push('/restore/lost-access'),
-                                                                },
-                                                            ],
-                                                        );
-                                                        return;
-                                                    }
-                                                    if (e.code === AccountEncryptionMigrateInvalidParamsReasonSchema.enum.key_proof_required) {
-                                                        await Modal.alertAsync(t('common.error'), t('settingsAccount.secretKeyMissing'));
-                                                        return;
-                                                    }
-                                                }
-                                                await Modal.alertAsync(t('common.error'), e.message);
-                                                return;
-                                            }
-                                            await Modal.alertAsync(t('common.error'), t('settingsAccount.encryptionUpdateFailed'));
-                                            return;
-                                        } finally {
-                                            setAccountEncryptionModeSaving(false);
-                                        }
-                                    }}
-                                />
-                            }
-                            showChevron={false}
-                        />
-                    </ItemGroup>
-                )}
 
                 <ItemGroup
                     title={t('settingsAccount.privacy')}

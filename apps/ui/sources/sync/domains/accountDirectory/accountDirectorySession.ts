@@ -8,19 +8,15 @@ import {
     type AccountDirectoryHomeEntryV1,
     type AccountDirectoryMeResponseV1,
     type HomeConnectionDescriptorV1,
-    type HomeConnectionEndpointV1,
 } from '@/sync/api/accountDirectory/accountDirectoryClient';
-import type { AccountDirectoryCredentialTarget } from '@/auth/storage/tokenStorage';
+import type { AccountDirectoryCredentialCustody, AccountDirectoryCredentialTarget } from '@/auth/storage/tokenStorage';
+import type { AccountDirectoryAuthTransport } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import {
-    accountDirectoryCredentialStorage,
     normalizeAccountDirectoryEndpoint,
 } from '@/auth/accountDirectory/accountDirectoryCredentialStorage';
+import type { AccountServiceDirectoryAdoptionResult } from '@happier-dev/cli-common/accountService';
 
 export type AccountDirectorySessionStatus = 'idle' | 'loading' | 'ready' | 'stale' | 'unsupported' | 'error';
-export type AccountDirectoryHomeAdoptionTarget = Readonly<{
-    homeServerIdentityId: string;
-    label: string;
-}>;
 export type AccountDirectoryReconciliationResult =
     | Readonly<{ kind: 'not_run' }>
     | Readonly<{
@@ -28,11 +24,7 @@ export type AccountDirectoryReconciliationResult =
         snapshotStatus: Exclude<AccountDirectorySessionStatus, 'ready'>;
         error: unknown | null;
     }>
-    | Readonly<{
-        kind: 'completed' | 'cancelled';
-        adopted: readonly AccountDirectoryHomeAdoptionTarget[];
-        failures: readonly (AccountDirectoryHomeAdoptionTarget & Readonly<{ error: unknown }>)[];
-    }>;
+    | AccountServiceDirectoryAdoptionResult;
 export type AccountDirectorySessionSnapshot = Readonly<{
     endpoint: string;
     status: AccountDirectorySessionStatus;
@@ -46,6 +38,9 @@ export type AccountDirectorySessionSnapshot = Readonly<{
 type SessionOptions = Readonly<{
     client?: AccountDirectoryClient;
     capability: AccountDirectoryCapabilities;
+    keyAuthSecret?: Uint8Array;
+    transport?: AccountDirectoryAuthTransport;
+    credentialCustody?: AccountDirectoryCredentialCustody;
 }>;
 
 export function createAccountDirectoryServiceKey(target: Readonly<{
@@ -82,6 +77,7 @@ export class AccountDirectorySession {
     private refreshPromise: Promise<AccountDirectorySessionSnapshot> | null = null;
     private lifecycleRevision = 0;
     private readonly credentialTarget: AccountDirectoryCredentialTarget;
+    private keyAuthSecret: Uint8Array | null;
 
     constructor(target: AccountDirectoryCredentialTarget, options: SessionOptions) {
         const normalized = normalizeAccountDirectoryEndpoint(target.endpoint);
@@ -89,8 +85,13 @@ export class AccountDirectorySession {
         const serverIdentityId = target.serverIdentityId.trim();
         if (!serverIdentityId) throw new Error('Account Service identity is required');
         this.credentialTarget = { endpoint: normalized, serverIdentityId };
+        this.keyAuthSecret = options.keyAuthSecret?.slice() ?? null;
         this.snapshotValue = initialSnapshot(normalized);
-        this.client = options.client ?? createAccountDirectoryClient(this.credentialTarget);
+        this.client = options.client ?? createAccountDirectoryClient(
+            this.credentialTarget,
+            options.transport,
+            options.credentialCustody,
+        );
         this.capability = parseAccountDirectoryCapability(options.capability);
     }
 
@@ -104,6 +105,17 @@ export class AccountDirectorySession {
 
     get serviceKey(): string {
         return createAccountDirectoryServiceKey(this.credentialTarget);
+    }
+
+    captureLifecycle(): () => boolean {
+        const revision = this.lifecycleRevision;
+        return () => revision === this.lifecycleRevision && this.client.isCurrent();
+    }
+
+    takeKeyAuthSecret(): Uint8Array | null {
+        const secret = this.keyAuthSecret;
+        this.keyAuthSecret = null;
+        return secret;
     }
 
     subscribe(listener: (snapshot: AccountDirectorySessionSnapshot) => void): () => void {
@@ -137,16 +149,13 @@ export class AccountDirectorySession {
     }
 
     /**
-     * Publishes relocation endpoint facts through the Account Service's
-     * monotonic V2 owner. Older servers reject this operation; callers must not
-     * fall back to ordinary V1 overwrite semantics.
+     * Publishes the destination Home's exact committed descriptor. Directory
+     * persists and reads it back; only the Home allocates its revision.
      */
     async publishHomeDescriptor(home: Readonly<{
         homeServerIdentityId: string;
         label: string;
-        minimumOuterRevisionExclusive: number;
-        canonicalServerUrl: string;
-        endpoints: readonly HomeConnectionEndpointV1[];
+        connectionDescriptor: HomeConnectionDescriptorV1;
     }>) {
         if (this.capability?.homeDirectory !== true) {
             this.update({ ...this.snapshotValue, status: 'unsupported', error: null });
@@ -200,8 +209,7 @@ export class AccountDirectorySession {
             return this.snapshotValue;
         }
 
-        const lifecycleRevision = this.lifecycleRevision;
-        const isCurrent = () => lifecycleRevision === this.lifecycleRevision;
+        const isCurrent = this.captureLifecycle();
         if (!isCurrent()) return this.snapshotValue;
         this.update({ ...this.snapshotValue, status: 'loading', error: null });
         this.refreshPromise = (async () => {
@@ -237,7 +245,9 @@ export class AccountDirectorySession {
 
     async logout(): Promise<boolean> {
         this.lifecycleRevision += 1;
-        const removed = await accountDirectoryCredentialStorage.logout(this.credentialTarget);
+        this.keyAuthSecret?.fill(0);
+        this.keyAuthSecret = null;
+        const removed = await this.client.logout();
         this.update(initialSnapshot(this.snapshotValue.endpoint));
         return removed;
     }

@@ -18,9 +18,9 @@ import {
 } from '@/sync/ops/sessions';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import {
-  captureSessionRequestAuthorityForServerAccountScope,
-  type ServerAccountSessionRequestAuthority,
-} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+  captureServerRequestAuthorityForServerAccountScope,
+  type ServerAccountRequestAuthority,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { t, tLoose } from '@/text';
 import { createDefaultVoiceProviderRegistry } from '@/voice/registry/defaultRegistry';
 import type { VoiceProviderRegistry } from '@/voice/registry/providerRegistry';
@@ -147,29 +147,29 @@ export function resolveVoiceHistoryProviderLabel(
 }
 
 type DefaultVoiceHistoryCapturedScope = VoiceHistoryCapturedScope & Readonly<{
-  authority: ServerAccountSessionRequestAuthority;
+  authority: ServerAccountRequestAuthority;
 }>;
 
 export type DefaultVoiceHistoryRuntime = Readonly<{
   readActiveScope(): ServerAccountScope | null;
-  captureAuthority(scope: ServerAccountScope): Promise<ServerAccountSessionRequestAuthority>;
-  prepareSessionLookup(authority: ServerAccountSessionRequestAuthority): Promise<void>;
+  captureAuthority(scope: ServerAccountScope): Promise<ServerAccountRequestAuthority>;
+  prepareSessionLookup(authority: ServerAccountRequestAuthority): Promise<void>;
   lookupByTags(
     tags: readonly string[],
-    authority: ServerAccountSessionRequestAuthority,
+    authority: ServerAccountRequestAuthority,
   ): Promise<readonly { id: string }[]>;
   hydrateSession(
     sessionId: string,
-    authority: ServerAccountSessionRequestAuthority,
+    authority: ServerAccountRequestAuthority,
   ): Promise<Readonly<{ kind: string; sessionId?: string }>>;
   readHydratedSession(sessionId: string): Session | null;
   refreshSessionMessages(
     sessionId: string,
-    authority: ServerAccountSessionRequestAuthority,
+    authority: ServerAccountRequestAuthority,
   ): Promise<void>;
   loadOlderMessages(
     sessionId: string,
-    authority: ServerAccountSessionRequestAuthority,
+    authority: ServerAccountRequestAuthority,
   ): Promise<VoiceHistoryPageResult>;
   readMessages(sessionId: string): readonly Message[];
   readMessagesRevision(sessionId: string): number;
@@ -181,7 +181,7 @@ export type DefaultVoiceHistoryRuntime = Readonly<{
    */
   deleteSession(
     sessionId: string,
-    authority: ServerAccountSessionRequestAuthority,
+    authority: ServerAccountRequestAuthority,
   ): Promise<SessionDeleteResult>;
   retireLocalSession(sessionId: string): void;
 }>;
@@ -266,7 +266,7 @@ export function createDefaultVoiceHistoryConsumer() {
   const runtime: DefaultVoiceHistoryRuntime = {
     readActiveScope: getActiveServerAccountScope,
     captureAuthority: (scope) =>
-      captureSessionRequestAuthorityForServerAccountScope({
+      captureServerRequestAuthorityForServerAccountScope({
         scope,
         activeRequest: (path, init) => apiSocket.request(path, init),
       }),

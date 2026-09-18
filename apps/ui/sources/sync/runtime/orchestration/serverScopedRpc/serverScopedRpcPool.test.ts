@@ -5,6 +5,12 @@ import {
     resolveScopedMachineTransport,
 } from './serverScopedRpcPool';
 import { MACHINE_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol';
+import tweetnacl from 'tweetnacl';
+import {
+    computeRunnerMachineContentKeyFingerprintV1,
+    encodeBase64,
+    signRunnerMachineContentKeyBindingV1,
+} from '@happier-dev/protocol';
 
 function readAuthorizationHeader(headers: RequestInit['headers']): string {
     if (!headers) return '';
@@ -30,6 +36,83 @@ describe('resolveScopedMachineTransport', () => {
         } catch {
             // ignore
         }
+    });
+
+    it('rejects a Runner transport whose creator proof does not match the exact installation', async () => {
+        const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(21));
+        const dataKey = new Uint8Array(32).fill(23);
+        const binding = signRunnerMachineContentKeyBindingV1({
+            payload: {
+                v: 1,
+                purpose: 'happier.ephemeral-runner.machine-content-key',
+                homeServerIdentityId: 'server-b',
+                activationId: '11111111-1111-4111-8111-111111111111',
+                creatorAccountId: 'account-b',
+                machineId: 'runner-1',
+                installationId: 'installation-1',
+                machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(dataKey),
+            },
+            accountSigningPublicKey: signing.publicKey,
+            accountSigningSecretKey: signing.secretKey,
+        });
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
+                return { ok: true, status: 200, json: async () => ({}) };
+            }
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    machine: {
+                        id: 'runner-1', kind: 'ephemeral_session_runner',
+                        installationId: 'substituted-installation', dataEncryptionKey: 'runner-envelope',
+                        runnerContentKeyBinding: binding,
+                    },
+                }),
+            };
+        }));
+
+        await expect(resolveScopedMachineTransport({
+            serverId: 'server-b', serverUrl: 'https://server-b.example.test',
+            token: 'token-b', accountId: 'account-b', machineId: 'runner-1',
+            decryptEncryptionKey: async () => dataKey,
+            expectedRunnerBinding: {
+                homeServerIdentityId: 'server-b',
+                creatorAccountId: 'account-b',
+                machineId: 'runner-1',
+                accountSigningPublicKeyBase64Url: encodeBase64(signing.publicKey, 'base64url'),
+            },
+        })).resolves.toBeNull();
+    });
+
+    it('rejects a Home-published plaintext Runner marker for an E2EE Account', async () => {
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
+                return { ok: true, status: 200, json: async () => ({}) };
+            }
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    machine: {
+                        id: 'runner-1',
+                        kind: 'ephemeral_session_runner',
+                        installationId: 'installation-1',
+                        dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
+                        runnerContentKeyBinding: null,
+                    },
+                }),
+            };
+        }));
+
+        await expect(resolveScopedMachineTransport({
+            serverId: 'server-b',
+            serverUrl: 'https://server-b.example.test',
+            token: 'token-b',
+            accountId: 'account-b',
+            machineId: 'runner-1',
+            expectedAccountMode: 'e2ee',
+        })).resolves.toBeNull();
     });
 
     it('resolves one exact machine without enumerating the account machine list', async () => {
@@ -311,7 +394,10 @@ describe('resolveScopedMachineTransport', () => {
             decryptEncryptionKey: decryptSpy,
         });
 
-        expect(first).toBeNull();
+        // A released persistent Machine with no published envelope still uses
+        // the Account-derived legacy key. The unresolved result is deliberately
+        // not cached, so a later published envelope is fetched and opened.
+        expect(first).toEqual({ mode: 'e2ee', dataKey: null });
         expect(second).toEqual({ mode: 'e2ee', dataKey: new Uint8Array([9, 9, 9]) });
         expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/v1/machines')).length).toBe(2);
         expect(decryptSpy).toHaveBeenCalledTimes(1);

@@ -28,7 +28,7 @@ export type TranscriptExitSnapshotSelection = Readonly<{
 export type TranscriptSameSessionHandoff = Readonly<{
     fromExperience: TranscriptExperience;
     producerMountToken: object;
-    sessionId: string;
+    sessionKey: string;
     source: TranscriptExitSnapshotSelection['source'];
     toExperience: TranscriptExperience;
     viewport: TranscriptExitEntrySnapshot;
@@ -37,29 +37,29 @@ export type TranscriptSameSessionHandoff = Readonly<{
 export type TranscriptSameSessionHandoffRoute = Readonly<{
     claimAfterCommit(input: Readonly<{
         incomingMountToken: object;
-        sessionId: string;
+        sessionKey: string;
         toExperience: TranscriptExperience;
     }>): TranscriptSameSessionHandoff | null;
     peekForRender(input: Readonly<{
         incomingMountToken: object;
-        sessionId: string;
+        sessionKey: string;
         toExperience: TranscriptExperience;
     }>): TranscriptSameSessionHandoff | null;
     prepareReplacement(input: Readonly<{
         fromExperience: TranscriptExperience;
-        sessionId: string;
+        sessionKey: string;
         toExperience: TranscriptExperience;
     }>): TranscriptSameSessionHandoff | null;
     refreshForDeletion(input: Readonly<{
         producerMountToken: object;
         selection: TranscriptExitSnapshotSelection | null;
-        sessionId: string;
+        sessionKey: string;
     }>): boolean;
     registerProducer(input: Readonly<{
         captureForHandoff(): TranscriptExitSnapshotSelection | null;
         experience: TranscriptExperience;
         mountToken: object;
-        sessionId: string;
+        sessionKey: string;
     }>): () => void;
     experience: TranscriptExperience | null;
 }>;
@@ -79,11 +79,11 @@ const TranscriptSameSessionHandoffContext =
 export function TranscriptSameSessionHandoffProvider(props: Readonly<{
     children(experience: TranscriptExperience): React.ReactNode;
     desiredExperience: TranscriptExperience;
-    sessionId: string;
+    sessionAddressKey: string;
 }>) {
     return (
         <TranscriptSameSessionHandoffProviderForSession
-            key={props.sessionId}
+            key={props.sessionAddressKey}
             {...props}
         />
     );
@@ -92,25 +92,25 @@ export function TranscriptSameSessionHandoffProvider(props: Readonly<{
 function TranscriptSameSessionHandoffProviderForSession(props: Readonly<{
     children(experience: TranscriptExperience): React.ReactNode;
     desiredExperience: TranscriptExperience;
-    sessionId: string;
+    sessionAddressKey: string;
 }>) {
     const [experience, setExperience] = React.useState(props.desiredExperience);
     const producerRef = React.useRef<Readonly<{
         captureForHandoff(): TranscriptExitSnapshotSelection | null;
         experience: TranscriptExperience;
         mountToken: object;
-        sessionId: string;
+        sessionKey: string;
     }> | null>(null);
     const slotRef = React.useRef<TranscriptSameSessionHandoff | null>(null);
     const route = React.useMemo<TranscriptSameSessionHandoffRoute>(() => {
         const readEligibleSlot = (input: Readonly<{
             incomingMountToken: object;
-            sessionId: string;
+            sessionKey: string;
             toExperience: TranscriptExperience;
         }>): TranscriptSameSessionHandoff | null => {
             const slot = slotRef.current;
             if (!slot) return null;
-            if (input.sessionId !== props.sessionId || slot.sessionId !== input.sessionId) return null;
+            if (input.sessionKey !== props.sessionAddressKey || slot.sessionKey !== input.sessionKey) return null;
             if (slot.toExperience !== input.toExperience) return null;
             if (slot.producerMountToken === input.incomingMountToken) return null;
             return slot;
@@ -124,12 +124,12 @@ function TranscriptSameSessionHandoffProviderForSession(props: Readonly<{
             },
             peekForRender: readEligibleSlot,
             prepareReplacement(input) {
-                if (input.sessionId !== props.sessionId) return null;
+                if (input.sessionKey !== props.sessionAddressKey) return null;
                 if (input.fromExperience === input.toExperience) return null;
                 const producer = producerRef.current;
                 if (
                     !producer ||
-                    producer.sessionId !== input.sessionId ||
+                    producer.sessionKey !== input.sessionKey ||
                     producer.experience !== input.fromExperience
                 ) {
                     return null;
@@ -142,7 +142,7 @@ function TranscriptSameSessionHandoffProviderForSession(props: Readonly<{
                 const handoff: TranscriptSameSessionHandoff = {
                     fromExperience: input.fromExperience,
                     producerMountToken: producer.mountToken,
-                    sessionId: input.sessionId,
+                    sessionKey: input.sessionKey,
                     source: selection.source,
                     toExperience: input.toExperience,
                     viewport: selection.viewport,
@@ -155,8 +155,8 @@ function TranscriptSameSessionHandoffProviderForSession(props: Readonly<{
                 if (
                     !slot ||
                     !input.selection ||
-                    input.sessionId !== props.sessionId ||
-                    slot.sessionId !== input.sessionId ||
+                    input.sessionKey !== props.sessionAddressKey ||
+                    slot.sessionKey !== input.sessionKey ||
                     slot.producerMountToken !== input.producerMountToken
                 ) {
                     return false;
@@ -169,7 +169,7 @@ function TranscriptSameSessionHandoffProviderForSession(props: Readonly<{
                 return true;
             },
             registerProducer(input) {
-                if (input.sessionId !== props.sessionId) return () => undefined;
+                if (input.sessionKey !== props.sessionAddressKey) return () => undefined;
                 const current = producerRef.current;
                 if (current && current.mountToken !== input.mountToken) {
                     return () => undefined;
@@ -183,24 +183,24 @@ function TranscriptSameSessionHandoffProviderForSession(props: Readonly<{
             },
             experience,
         };
-    }, [experience, props.sessionId]);
+    }, [experience, props.sessionAddressKey]);
 
     React.useLayoutEffect(() => {
         return () => {
             producerRef.current = null;
             slotRef.current = null;
         };
-    }, [props.sessionId]);
+    }, [props.sessionAddressKey]);
 
     React.useLayoutEffect(() => {
         if (props.desiredExperience === experience) return;
         route.prepareReplacement({
             fromExperience: experience,
-            sessionId: props.sessionId,
+            sessionKey: props.sessionAddressKey,
             toExperience: props.desiredExperience,
         });
         setExperience(props.desiredExperience);
-    }, [experience, props.desiredExperience, props.sessionId, route]);
+    }, [experience, props.desiredExperience, props.sessionAddressKey, route]);
 
     return (
         <TranscriptSameSessionHandoffContext.Provider value={route}>
@@ -216,7 +216,7 @@ export function useTranscriptSameSessionHandoffRoute(): TranscriptSameSessionHan
 export function useTranscriptSameSessionHandoff(deps: Readonly<{
     captureForHandoff(): TranscriptExitSnapshotSelection | null;
     explicitJump: boolean;
-    sessionId: string;
+    sessionKey: string;
 }>): Readonly<{
     claimedViewportRef: React.MutableRefObject<TranscriptExitEntrySnapshot | null>;
     refreshForDeletion(selection: TranscriptExitSnapshotSelection | null): void;
@@ -231,7 +231,7 @@ export function useTranscriptSameSessionHandoff(deps: Readonly<{
     const renderHandoff = !deps.explicitJump && route.experience
         ? route.peekForRender({
             incomingMountToken: mountToken,
-            sessionId: deps.sessionId,
+            sessionKey: deps.sessionKey,
             toExperience: route.experience,
         })
         : null;
@@ -241,13 +241,13 @@ export function useTranscriptSameSessionHandoff(deps: Readonly<{
         if (!route.experience) return;
         const claimed = route.claimAfterCommit({
             incomingMountToken: mountToken,
-            sessionId: deps.sessionId,
+            sessionKey: deps.sessionKey,
             toExperience: route.experience,
         });
         if (!deps.explicitJump && claimedViewportRef.current === null) {
             claimedViewportRef.current = claimed?.viewport ?? null;
         }
-    }, [deps.explicitJump, deps.sessionId, mountToken, route]);
+    }, [deps.explicitJump, deps.sessionKey, mountToken, route]);
 
     React.useLayoutEffect(() => {
         if (!route.experience) return;
@@ -255,9 +255,9 @@ export function useTranscriptSameSessionHandoff(deps: Readonly<{
             captureForHandoff: deps.captureForHandoff,
             experience: route.experience,
             mountToken,
-            sessionId: deps.sessionId,
+            sessionKey: deps.sessionKey,
         });
-    }, [deps.captureForHandoff, deps.sessionId, mountToken, route]);
+    }, [deps.captureForHandoff, deps.sessionKey, mountToken, route]);
 
     const refreshForDeletion = React.useCallback((
         selection: TranscriptExitSnapshotSelection | null,
@@ -265,9 +265,9 @@ export function useTranscriptSameSessionHandoff(deps: Readonly<{
         route.refreshForDeletion({
             producerMountToken: mountToken,
             selection,
-            sessionId: deps.sessionId,
+            sessionKey: deps.sessionKey,
         });
-    }, [deps.sessionId, mountToken, route]);
+    }, [deps.sessionKey, mountToken, route]);
 
     return {
         claimedViewportRef,

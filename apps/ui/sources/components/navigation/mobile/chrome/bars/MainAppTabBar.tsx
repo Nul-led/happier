@@ -93,6 +93,7 @@ export const MainAppTabBar = React.memo((props: MainAppTabBarProps) => {
     const friendsBadgeEnabled = useSetting('tabBarFriendsBadgeEnabled');
     const inboxBadgeEnabled = useSetting('tabBarInboxBadgeEnabled');
     const sessionsBadgeEnabled = useSetting('tabBarSessionsBadgeEnabled');
+    const showSessionsAttentionBadge = sessionsBadgeEnabled && sessionsHaveAttention;
     const metrics = resolveTabBarMetrics(useSetting('tabBarSize'), useSetting('tabBarShowLabels'));
 
     const tabs: { key: TabType; label: string }[] = React.useMemo(() => {
@@ -131,6 +132,9 @@ export const MainAppTabBar = React.memo((props: MainAppTabBarProps) => {
             >
                 {tabs.map((tab) => {
                     const isActive = props.activeTab === tab.key;
+                    const accessibilityLabel = tab.key === 'sessions' && showSessionsAttentionBadge
+                        ? t('tabs.sessionsNeedsAttention')
+                        : tab.label;
                     const webKeyDownProps: WebTabKeyDownProps = Platform.OS === 'web'
                         ? { onKeyDown: (event) => handleTabKeyDown(tab.key, event) }
                         : {};
@@ -147,7 +151,7 @@ export const MainAppTabBar = React.memo((props: MainAppTabBarProps) => {
                             onPress={() => props.onTabPress(tab.key)}
                             hitSlop={8}
                             accessibilityRole="tab"
-                            accessibilityLabel={tab.label}
+                            accessibilityLabel={accessibilityLabel}
                             accessibilityState={{ selected: isActive }}
                             aria-selected={isActive}
                             {...webKeyDownProps}
@@ -162,7 +166,7 @@ export const MainAppTabBar = React.memo((props: MainAppTabBarProps) => {
                                 {tab.key === 'friends' && friendsBadgeEnabled && friendRequests.length > 0 && (
                                     <TabBadge variant="count" value={friendRequests.length} />
                                 )}
-                                {tab.key === 'sessions' && sessionsBadgeEnabled && sessionsHaveAttention && (
+                                {tab.key === 'sessions' && showSessionsAttentionBadge && (
                                     <TabBadge variant="dot" />
                                 )}
                                 {tab.key === 'inbox' && inboxBadgeEnabled && inboxHasContent && (

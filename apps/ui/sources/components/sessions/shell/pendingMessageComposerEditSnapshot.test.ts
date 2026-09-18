@@ -188,6 +188,29 @@ describe('pending message composer semantic draft snapshot', () => {
         });
     });
 
+    it('places positionless admitted references into exact pending composer ranges', () => {
+        const mention = {
+            kind: 'happier.file',
+            ref: 'file:src/index.ts',
+            token: '@src/index.ts',
+        } as const;
+
+        expect(hydratePendingMessageComposerAttachmentDrafts({
+            happierStructuredInputV1: {
+                v: 1,
+                mentions: [mention],
+            },
+        }, 'Edit @src/index.ts now')).toEqual({
+            status: 'ready',
+            mentions: [{
+                ...mention,
+                start: 5,
+                end: 18,
+            }],
+            attachments: [],
+        });
+    });
+
     it('treats every field registered by the draft catalog as semantic draft state', () => {
         for (const fieldId of Object.keys(SESSION_DRAFT_VALUE_FIELD_CATALOG)) {
             expect(isEmptyPendingMessageComposerSemanticDraftSnapshot(
@@ -203,11 +226,11 @@ describe('pending message composer semantic draft snapshot', () => {
         const previous = {
             ...createSnapshotWithValue('routing.recipient'),
             'routing.recipient': { kind: 'execution_run', runId: 'run-a' },
-            'routing.executionRunDelivery': 'interrupt',
+            'routing.executionRunRequestedAction': { v: 1, kind: 'send_now' },
         } as PendingMessageComposerSemanticDraftSnapshot;
         const current = {
             ...createSnapshotWithValue('structuredInput.mentions'),
-            'routing.executionRunDelivery': 'prompt',
+            'routing.executionRunRequestedAction': { v: 1, kind: 'enqueue' },
         } as PendingMessageComposerSemanticDraftSnapshot;
 
         expect(readPendingMessageComposerSemanticDraftFieldsToRestore(
@@ -224,14 +247,14 @@ describe('pending message composer semantic draft snapshot', () => {
         const previous = {
             ...createSnapshotWithValue('routing.recipient'),
             'routing.recipient': { kind: 'execution_run', runId: 'run-a' },
-            'routing.executionRunDelivery': 'interrupt',
+            'routing.executionRunRequestedAction': { v: 1, kind: 'send_now' },
         } as PendingMessageComposerSemanticDraftSnapshot;
         const current = createSnapshotWithValue('structuredInput.mentions');
         expect(readPendingMessageComposerSemanticDraftFieldsToRestore(
             previous,
             current,
             fieldIds,
-        )).toEqual(['routing.recipient', 'routing.executionRunDelivery']);
+        )).toEqual(['routing.recipient', 'routing.executionRunRequestedAction']);
     });
 
     it('restores the prior generic attachments when an unchanged contentless pending edit is abandoned', () => {

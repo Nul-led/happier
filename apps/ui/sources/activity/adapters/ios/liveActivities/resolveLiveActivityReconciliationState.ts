@@ -1,6 +1,8 @@
 import type { ActivitySurfacePolicy } from '@/activity/attention/resolveActivitySurfacePolicy';
+import type { ActivitySurfaceCandidatePrivacyModeResolver } from '@/activity/presentation/buildActivitySurfaceViewModel';
 import type { ActivityOverviewSnapshot } from '@/activity/attention/activityAttentionTypes';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { buildLiveActivitySnapshots, type LiveActivitySnapshot } from './buildLiveActivitySnapshots';
 
@@ -8,7 +10,7 @@ const LIVE_ACTIVITY_DYNAMIC_PRIMARY_DWELL_MS = 90_000;
 
 export type LiveActivityReconciliationState = Readonly<{
     snapshots: readonly LiveActivitySnapshot[];
-    preferredPrimarySessionId: string | null;
+    preferredPrimaryAddress: SessionAddress | null;
     preferredPrimaryActivityInstanceKey: string | null;
     preferredPrimaryChangedAtMs: number | null;
 }>;
@@ -17,12 +19,13 @@ export function resolveLiveActivityReconciliationState(params: Readonly<{
     sessions: readonly Session[];
     overview?: ActivityOverviewSnapshot;
     policy: ActivitySurfacePolicy;
-    currentPreferredPrimarySessionId?: string | null;
+    currentPreferredPrimaryAddress?: SessionAddress | null;
     currentPreferredPrimaryActivityInstanceKey?: string | null;
     currentPreferredPrimaryChangedAtMs?: number | null;
     dwellMs?: number;
     staleAfterMs?: number;
     nowMs?: number;
+    resolveCandidatePrivacyMode?: ActivitySurfaceCandidatePrivacyModeResolver;
 }>): LiveActivityReconciliationState {
     const nowMs = params.nowMs ?? Date.now();
     const dwellMs = typeof params.dwellMs === 'number' && Number.isFinite(params.dwellMs)
@@ -32,9 +35,10 @@ export function resolveLiveActivityReconciliationState(params: Readonly<{
         sessions: params.sessions,
         overview: params.overview,
         policy: params.policy,
-        preferredPrimarySessionId: params.currentPreferredPrimarySessionId ?? null,
+        preferredPrimaryAddress: params.currentPreferredPrimaryAddress ?? null,
         staleAfterMs: params.staleAfterMs,
         nowMs,
+        resolveCandidatePrivacyMode: params.resolveCandidatePrivacyMode,
     });
     const currentKey = normalizeKey(params.currentPreferredPrimaryActivityInstanceKey);
     const currentChangedAtMs = typeof params.currentPreferredPrimaryChangedAtMs === 'number'
@@ -53,6 +57,7 @@ export function resolveLiveActivityReconciliationState(params: Readonly<{
             preferredPrimaryActivityInstanceKey: currentKey,
             staleAfterMs: params.staleAfterMs,
             nowMs,
+            resolveCandidatePrivacyMode: params.resolveCandidatePrivacyMode,
         })
         : rawSnapshots;
     const preferredPrimaryActivityInstanceKey = snapshots[0]?.activityInstanceKey ?? null;
@@ -64,8 +69,8 @@ export function resolveLiveActivityReconciliationState(params: Readonly<{
 
     return {
         snapshots,
-        preferredPrimarySessionId: params.policy.liveActivities.strategy === 'pinned_primary'
-            ? (snapshots[0]?.sessionId ?? null)
+        preferredPrimaryAddress: params.policy.liveActivities.strategy === 'pinned_primary' && snapshots[0]
+            ? normalizeSessionAddress(snapshots[0].serverId, snapshots[0].sessionId)
             : null,
         preferredPrimaryActivityInstanceKey,
         preferredPrimaryChangedAtMs,

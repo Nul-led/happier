@@ -15,8 +15,9 @@ describe('createVoiceSessionBindingStore', () => {
       adapterId: 'local_conversation',
       controlSessionId: 'voice-global',
       conversationSessionId: 'carrier-a',
+      conversationSessionAddress: { serverId: 'server-1', sessionId: 'carrier-a' },
       transcriptMode: 'synthetic',
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: 'server-1', sessionId: 's1' },
       updatedAt: 1,
     });
 
@@ -24,8 +25,9 @@ describe('createVoiceSessionBindingStore', () => {
       adapterId: 'local_conversation',
       controlSessionId: 'voice-global',
       conversationSessionId: 'carrier-b',
+      conversationSessionAddress: { serverId: 'server-1', sessionId: 'carrier-b' },
       transcriptMode: 'synthetic',
-      targetSessionId: 's2',
+      targetSessionAddress: { serverId: 'server-1', sessionId: 's2' },
       updatedAt: 2,
     });
 
@@ -34,7 +36,7 @@ describe('createVoiceSessionBindingStore', () => {
       expect.objectContaining({
         controlSessionId: 'voice-global',
         conversationSessionId: 'carrier-b',
-        targetSessionId: 's2',
+        targetSessionAddress: { serverId: 'server-1', sessionId: 's2' },
       }),
     );
     expect(store.getState().list()).toHaveLength(1);
@@ -59,8 +61,9 @@ describe('createVoiceSessionBindingStore', () => {
                 adapterId: 'local_conversation',
                 controlSessionId: '__voice_agent__',
                 conversationSessionId: 'carrier-old',
+                conversationSessionAddress: { serverId: 'server-old', sessionId: 'carrier-old' },
                 transcriptMode: 'synthetic',
-                targetSessionId: 's-old',
+                targetSessionAddress: { serverId: 'server-old', sessionId: 's-old' },
                 updatedAt: 100,
               },
             ),
@@ -72,8 +75,9 @@ describe('createVoiceSessionBindingStore', () => {
                 adapterId: 'local_conversation',
                 controlSessionId: '__voice_agent__',
                 conversationSessionId: 'carrier-new',
+                conversationSessionAddress: { serverId: 'server-new', sessionId: 'carrier-new' },
                 transcriptMode: 'synthetic',
-                targetSessionId: 's-new',
+                targetSessionAddress: { serverId: 'server-new', sessionId: 's-new' },
                 updatedAt: 200,
               },
             ),
@@ -85,7 +89,7 @@ describe('createVoiceSessionBindingStore', () => {
     expect(store.getState().getByControlSessionId('__voice_agent__')).toEqual(
       expect.objectContaining({
         conversationSessionId: 'carrier-new',
-        targetSessionId: 's-new',
+        targetSessionAddress: { serverId: 'server-new', sessionId: 's-new' },
         updatedAt: 200,
       }),
     );
@@ -98,8 +102,9 @@ describe('createVoiceSessionBindingStore', () => {
       adapterId: '  local_conversation  ',
       controlSessionId: '  voice-global  ',
       conversationSessionId: '  carrier-a  ',
+      conversationSessionAddress: { serverId: '  server-1  ', sessionId: '  carrier-a  ' },
       transcriptMode: 'synthetic',
-      targetSessionId: '  s1  ',
+      targetSessionAddress: { serverId: '  server-1  ', sessionId: '  s1  ' },
       updatedAt: 1,
     });
 
@@ -108,7 +113,7 @@ describe('createVoiceSessionBindingStore', () => {
         adapterId: 'local_conversation',
         controlSessionId: 'voice-global',
         conversationSessionId: 'carrier-a',
-        targetSessionId: 's1',
+        targetSessionAddress: { serverId: 'server-1', sessionId: 's1' },
       }),
     );
     expect(store.getState().getByControlSessionId('voice-global')).toEqual(
@@ -116,7 +121,7 @@ describe('createVoiceSessionBindingStore', () => {
         adapterId: 'local_conversation',
         controlSessionId: 'voice-global',
         conversationSessionId: 'carrier-a',
-        targetSessionId: 's1',
+        targetSessionAddress: { serverId: 'server-1', sessionId: 's1' },
       }),
     );
   });
@@ -138,8 +143,9 @@ describe('createVoiceSessionBindingStore', () => {
                 adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
                 controlSessionId: '__voice_agent__',
                 conversationSessionId: 'carrier-s1',
+                conversationSessionAddress: { serverId: 'srv-1', sessionId: 'carrier-s1' },
                 transcriptMode: 'synthetic',
-                targetSessionId: 'root-s1',
+                targetSessionAddress: { serverId: 'srv-1', sessionId: 'root-s1' },
                 updatedAt: 10,
               },
             ),
@@ -148,22 +154,25 @@ describe('createVoiceSessionBindingStore', () => {
         sessionListIndexByServerId: {
           'srv-1': [{ type: 'session', sessionId: 'carrier-s1', serverId: 'srv-1', serverName: 'Primary' }],
         },
-        sessionListRenderables: {
-          'carrier-s1': {
-            id: 'carrier-s1',
-            seq: 1,
-            createdAt: 10,
-            updatedAt: 10,
-            active: true,
-            activeAt: 10,
-            metadataVersion: 1,
-            agentStateVersion: 0,
-            metadata: { summaryText: 'Cached shell metadata only', path: '/tmp/carrier-s1' },
-            thinking: false,
-            thinkingAt: 0,
-            presence: 'online',
+        sessionListRowsByServerId: {
+          'srv-1': {
+            'carrier-s1': {
+              id: 'carrier-s1',
+              seq: 1,
+              createdAt: 10,
+              updatedAt: 10,
+              active: true,
+              activeAt: 10,
+              metadataVersion: 1,
+              agentStateVersion: 0,
+              metadata: { summaryText: 'Cached shell metadata only', path: '/tmp/carrier-s1' },
+              thinking: false,
+              thinkingAt: 0,
+              presence: 'online',
+            },
           },
         },
+        ordinarySessionListMembershipByServerId: { 'srv-1': ['carrier-s1'] },
       },
     });
 
@@ -173,7 +182,7 @@ describe('createVoiceSessionBindingStore', () => {
       expect.objectContaining({
         adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
         conversationSessionId: 'carrier-s1',
-        targetSessionId: 'root-s1',
+        targetSessionAddress: { serverId: 'srv-1', sessionId: 'root-s1' },
       }),
     );
   });
@@ -186,8 +195,9 @@ describe('createVoiceSessionBindingStore', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'carrier-owner',
+      conversationSessionAddress: { serverId: 'srv-owner', sessionId: 'carrier-owner' },
       transcriptMode: 'native_session' as const,
-      targetSessionId: 'owner-target',
+      targetSessionAddress: { serverId: 'srv-owner', sessionId: 'owner-target' },
       updatedAt: 20,
     };
 
@@ -197,7 +207,7 @@ describe('createVoiceSessionBindingStore', () => {
           metadataLayoutVersion: 1,
           metadata: writeVoiceConversationBindingMetadata(
             { v: 1, systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true } },
-            { ...binding, targetSessionId: 'shared-private-lookalike' },
+            { ...binding, targetSessionAddress: { serverId: 'srv-owner', sessionId: 'shared-private-lookalike' } },
           ),
           ownerMetadataView: writeVoiceConversationBindingMetadata(
             { systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true } },
@@ -211,7 +221,10 @@ describe('createVoiceSessionBindingStore', () => {
       state: state as any,
     });
 
-    expect(store.getState().getByControlSessionId('__voice_agent__')?.targetSessionId).toBe('owner-target');
+    expect(store.getState().getByControlSessionId('__voice_agent__')?.targetSessionAddress).toEqual({
+      serverId: 'srv-owner',
+      sessionId: 'owner-target',
+    });
 
     state.sessions['carrier-owner'].ownerMetadataView = null as any;
     syncPersistedVoiceConversationBindings({ store, state: state as any });
@@ -226,9 +239,10 @@ describe('createVoiceSessionBindingStore', () => {
       adapterId: 'happier.voice.openai/realtime-openai',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-history-reused-carrier',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'voice-history-reused-carrier' },
       lifetime: 'runtime_attempt' as const,
       transcriptMode: 'synthetic' as const,
-      targetSessionId: null,
+      targetSessionAddress: null,
       updatedAt: 42,
     };
 
@@ -270,9 +284,10 @@ describe('createVoiceSessionBindingStore', () => {
       adapterId: 'happier.voice.openai/realtime-openai',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'runtime-carrier-a',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'runtime-carrier-a' },
       lifetime: 'runtime_attempt' as const,
       transcriptMode: 'synthetic' as const,
-      targetSessionId: null,
+      targetSessionAddress: null,
       updatedAt: 10,
     };
 
@@ -291,6 +306,7 @@ describe('createVoiceSessionBindingStore', () => {
               {
                 ...runtimeBinding,
                 conversationSessionId: 'persisted-carrier-b',
+                conversationSessionAddress: { serverId: 'server-a', sessionId: 'persisted-carrier-b' },
                 lifetime: undefined,
                 updatedAt: 20,
               },

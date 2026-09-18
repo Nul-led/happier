@@ -22,7 +22,6 @@ const navigationApi = createNavigationMock();
 const routerApi = createRouterMock();
 let searchParams = { selectedId: '', machineId: 'm1' };
 
-vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 installPickerCommonModuleMocks({
     text: async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock(),
     reactNative: async () =>
@@ -82,6 +81,10 @@ installPickerCommonModuleMocks({
             useLocalSearchParams: () => searchParams,
         };
     },
+    tempDataStore: {
+        storeTempData: () => 'temp',
+        getTempData: () => null,
+    },
 });
 
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
@@ -123,11 +126,6 @@ vi.mock('@/sync/domains/profiles/profileCompatibility', async (importOriginal) =
         getProfileEnvironmentVariables: () => ({}),
     };
 });
-
-vi.mock('@/utils/sessions/tempDataStore', () => ({
-    storeTempData: () => 'temp',
-    getTempData: () => null,
-}));
 
 describe('ProfilePickerScreen (Stack.Screen options stability)', () => {
     afterEach(() => {

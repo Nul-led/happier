@@ -70,7 +70,10 @@ let lastScannerProps: any = null;
 vi.mock('@/components/qr/QrCodeScannerView', () => ({
     QrCodeScannerView: (props: any) => {
         lastScannerProps = props;
-        return React.createElement('QrCodeScannerView', props);
+        // The real view renders `footer` in the granted, denied and unavailable
+        // branches alike; rendering it here keeps the camera-denial paste path
+        // reachable from these route tests.
+        return React.createElement('QrCodeScannerView', props, props.footer);
     },
 }));
 
@@ -143,45 +146,80 @@ describe('/scan/terminal', () => {
         expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
     });
 
-    it('uses the terminal-specific manual-entry prompt copy', async () => {
-        promptSpy.mockResolvedValueOnce(' happier://terminal?key=manual&server=https%3A%2F%2Fapi.happier.dev ');
-
+    it('keeps the terminal manual-entry copy on the canonical full-screen form', async () => {
         const { default: Screen } = await import('@/app/(app)/scan/terminal');
 
-        await renderScreen(<Screen />);
+        const screen = await renderScreen(<Screen />);
 
-        const footerElement = lastScannerProps?.footer;
-        expect(footerElement).toBeTruthy();
-        const footerView = footerElement as React.ReactElement<{ children?: React.ReactNode }>;
-        const footerChildren = React.Children.toArray(footerView.props.children);
-        const roundButton = footerChildren.find(
-            (
-                child,
-            ): child is React.ReactElement<{ action?: () => Promise<void>; testID?: string }> => {
-                if (!React.isValidElement(child)) {
-                    return false;
-                }
-                const button = child as React.ReactElement<{ action?: () => Promise<void>; testID?: string }>;
-                return button.props.testID === 'scan-terminal-enter-url';
-            },
-        );
-        expect(roundButton).toBeTruthy();
-        if (!roundButton) throw new Error('Expected RoundButton in footer');
+        expect(screen.findAllByTestId('pairing-link-entry-form')).toHaveLength(0);
+
+        await screen.pressByTestIdAsync('scan-terminal-enter-url');
+
+        expect(promptSpy).not.toHaveBeenCalled();
+        expect(screen.findAllByTestId('pairing-link-entry-form').length).toBeGreaterThan(0);
+        expect(screen.findAllByType('QrCodeScannerView' as never)).toHaveLength(0);
+
+        const text = screen.getTextContent();
+        expect(text).toContain('modals.authenticateTerminal');
+        expect(text).toContain('modals.pasteUrlFromTerminal');
+        const input = screen.findHostByTestId('restore-pairing-link-input');
+        expect(input?.props.placeholder).toBe('connect.terminalUrlPlaceholder');
+        expect(input?.props.autoFocus).toBe(true);
+        expect(screen.findByTestId('restore-pairing-link-submit').props.title).toBe('common.authenticate');
+    });
+
+    it('submits a pasted terminal link through the shared scan processor', async () => {
+        const { default: Screen } = await import('@/app/(app)/scan/terminal');
+
+        const screen = await renderScreen(<Screen />);
+        await screen.pressByTestIdAsync('scan-terminal-enter-url');
 
         await act(async () => {
-            await roundButton.props.action?.();
+            screen.changeTextByTestId(
+                'restore-pairing-link-input',
+                '  happier://terminal?key=manual&server=https%3A%2F%2Fapi.happier.dev  ',
+            );
+        });
+        await act(async () => {
+            await screen.findByTestId('restore-pairing-link-submit').props.action();
         });
 
-        expect(promptSpy).toHaveBeenCalledWith(
-            'modals.authenticateTerminal',
-            'modals.pasteUrlFromTerminal',
-            {
-                placeholder: 'connect.terminalUrlPlaceholder',
-                confirmText: 'common.authenticate',
-                cancelText: 'common.cancel',
-            },
-        );
+        expect(promptSpy).not.toHaveBeenCalled();
         expect(processTerminalAuthUrlSpy).toHaveBeenCalledWith('happier://terminal?key=manual&server=https%3A%2F%2Fapi.happier.dev');
+        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects a pasted account URL from the terminal form with an inline alert and a retained draft', async () => {
+        const { default: Screen } = await import('@/app/(app)/scan/terminal');
+
+        const screen = await renderScreen(<Screen />);
+        await screen.pressByTestIdAsync('scan-terminal-enter-url');
+
+        await act(async () => {
+            screen.changeTextByTestId('restore-pairing-link-input', 'happier:///account?abc123');
+        });
+        await act(async () => {
+            await screen.findByTestId('restore-pairing-link-submit').props.action();
+        });
+
+        expect(alertAsyncSpy).toHaveBeenCalledWith('common.error', 'modals.invalidAuthUrl', [{ text: 'common.ok' }]);
+        expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
+        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
+        expect(screen.findHostByTestId('restore-pairing-link-error')?.props.accessibilityRole).toBe('alert');
+        expect(screen.findHostByTestId('restore-pairing-link-input')?.props.value).toBe('happier:///account?abc123');
+    });
+
+    it('returns to the camera from the pairing link form without leaving the route', async () => {
+        const { default: Screen } = await import('@/app/(app)/scan/terminal');
+
+        const screen = await renderScreen(<Screen />);
+        await screen.pressByTestIdAsync('scan-terminal-enter-url');
+        await screen.pressByTestIdAsync('restore-pairing-link-back');
+
+        expect(screen.findAllByTestId('pairing-link-entry-form')).toHaveLength(0);
+        expect(screen.findAllByType('QrCodeScannerView' as never).length).toBeGreaterThan(0);
+        expect(routerBackSpy).not.toHaveBeenCalled();
+        expect(routerReplaceSpy).not.toHaveBeenCalled();
     });
 
     it('uses safe fallback navigation after a successful terminal approval when there is no back stack', async () => {

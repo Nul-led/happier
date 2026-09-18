@@ -235,20 +235,23 @@ describe('ActionSettingsDetailView', () => {
         expect(capture.items.some((item) => item.testID === 'settings-actions:action:review.start:target:plugin')).toBe(true);
         expect(capture.segmentedTabBars.some((bar) =>
             bar.testIDPrefix === 'settings-actions:action:review.start:target:cli:mode'
-            && bar.activeTabId === 'allowed',
+            && bar.activeTabId === 'default',
         )).toBe(true);
         expect(capture.segmentedTabBars.some((bar) =>
             bar.testIDPrefix === 'settings-actions:action:review.start:target:api:mode'
-            && bar.activeTabId === 'allowed',
+            && bar.activeTabId === 'default',
         )).toBe(true);
         expect(capture.segmentedTabBars.some((bar) =>
             bar.testIDPrefix === 'settings-actions:action:review.start:target:plugin:mode'
-            && bar.activeTabId === 'allowed',
+            && bar.activeTabId === 'default',
         )).toBe(true);
         const apiMode = capture.segmentedTabBars.find((bar) =>
             bar.testIDPrefix === 'settings-actions:action:review.start:target:api:mode',
         );
-        expect(apiMode?.accessibilityLabel).toBe('External API & SDK');
+        const apiRow = capture.items.find((item) =>
+            item.testID === 'settings-actions:action:review.start:target:api',
+        );
+        expect(apiMode?.accessibilityLabel).toBe(apiRow?.title);
         const commandPaletteSwitch = capture.switches.find((switchProps) =>
             switchProps.testID === 'settings-actions:action:review.start:target:command_palette:enabled',
         );
@@ -258,7 +261,7 @@ describe('ActionSettingsDetailView', () => {
         expect(commandPaletteSwitch?.accessibilityLabel).toBe(commandPaletteRow?.title);
     });
 
-    it('renders prompt_doc.update Session agent as ask-first and removes Allowed (LIVE-1)', async () => {
+    it('renders dangerous Agent confirmation as the inherited default with explicit overrides', async () => {
         const { ActionSettingsDetailContent } = await import('./ActionSettingsDetailView');
 
         const screen = await renderScreen(<ActionSettingsDetailContent actionId="prompt_doc.update" />);
@@ -267,14 +270,13 @@ describe('ActionSettingsDetailView', () => {
             bar.testIDPrefix === 'settings-actions:action:prompt_doc.update:target:agent:mode',
         );
         expect(sessionAgentMode).toBeTruthy();
-        expect(sessionAgentMode?.activeTabId).toBe('ask_first');
+        expect(sessionAgentMode?.activeTabId).toBe('default');
         expect((sessionAgentMode?.tabs as Array<{ id: string }>).map((tab) => tab.id)).toEqual([
             'off',
+            'default',
             'ask_first',
+            'allowed',
         ]);
-        expect(await screen.findByTestId(
-            'settings-actions:action:prompt_doc.update:target:agent:floored-reason',
-        )).toBeTruthy();
     });
 
     it('persists ask-first approval mode through the canonical settings writer', async () => {
@@ -426,7 +428,7 @@ describe('ActionSettingsDetailView', () => {
         expect(cliTarget?.subtitleAccessory).toBeTruthy();
         expect(capture.segmentedTabBars.some((bar) =>
             bar.testIDPrefix === 'settings-actions:action:review.start:target:cli:mode'
-            && bar.activeTabId === 'allowed',
+            && bar.activeTabId === 'default',
         )).toBe(true);
     });
 
@@ -486,9 +488,10 @@ describe('ActionSettingsDetailView', () => {
             ));
             expect(modeControl?.accessibilityLabel).toBe(target?.title);
             expect(modeControl?.targetSize).toBe('platform');
-            expect(modeControl?.activeTabId).toBe('allowed');
+            expect(modeControl?.activeTabId).toBe('default');
             expect((modeControl?.tabs as Array<{ id: string }>).map((tab) => tab.id)).toEqual([
                 'off',
+                'default',
                 'ask_first',
                 'allowed',
             ]);

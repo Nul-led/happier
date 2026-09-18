@@ -1,0 +1,212 @@
+import type { EffectiveSessionAccessLevelV1, PrincipalRefV1, SessionAccessLevelV1 } from '@happier-dev/protocol';
+
+export type SessionAccessPrincipalRef = PrincipalRefV1;
+export type SessionAccessGrantRef = PrincipalRefV1;
+export type SessionAccessLevel = SessionAccessLevelV1;
+export type SessionAccessUiReason = Readonly<{ code: string; message: string }>;
+export type SessionAccessUiError = SessionAccessUiReason & Readonly<{ retryable: boolean }>;
+/**
+ * Inputs for the canonical `Avatar` owner, not a second avatar model: it already
+ * owns image loading and the generated identity fallback, so a principal only
+ * has to say which Account it is and where its picture lives. Teams and Groups
+ * carry no Account profile and are drawn with their kind glyph instead.
+ */
+export type SessionAccessAvatarPresentation = Readonly<{ id: string; imageUrl?: string }>;
+export type SessionAccessPrincipalPresentation = Readonly<{
+    ref: PrincipalRefV1;
+    key: string;
+    displayName: string;
+    secondaryLabel?: string;
+    avatar?: SessionAccessAvatarPresentation;
+    accessibilityLabel: string;
+}>;
+/**
+ * Level semantics are explained once by the editor's shared access-help row, so
+ * an option carries only its value and localized label. A per-option description
+ * no producer ever populates would be a dead contract branch.
+ */
+export type SessionAccessLevelOption = Readonly<{ value: SessionAccessLevel; label: string }>;
+export type SessionAccessLevelControlModel =
+    | Readonly<{ kind: 'editable'; value: SessionAccessLevel; options: readonly SessionAccessLevelOption[] }>
+    | Readonly<{ kind: 'locked'; value: SessionAccessLevel; reason: SessionAccessUiReason }>;
+export type SessionAccessDelegationControlModel =
+    | Readonly<{ kind: 'hidden' }>
+    | Readonly<{ kind: 'editable'; value: boolean }>
+    | Readonly<{ kind: 'locked'; value: boolean; reason: SessionAccessUiReason }>;
+export type SessionAccessRemovalModel =
+    | Readonly<{ kind: 'allowed' | 'confirming' }>
+    | Readonly<{ kind: 'blocked'; reason: SessionAccessUiReason }>;
+export type SessionAccessGrantOperationModel =
+    | Readonly<{ kind: 'idle' | 'saving' | 'removing' }>
+    | Readonly<{ kind: 'error'; error: SessionAccessUiError }>;
+export type SessionAccessOwnerRowModel = Readonly<{ principal: SessionAccessPrincipalPresentation }>;
+export type SessionAccessGrantRowModel = Readonly<{
+    grant: SessionAccessGrantRef;
+    principal: SessionAccessPrincipalPresentation;
+    level: SessionAccessLevelControlModel;
+    permissionDelegation: SessionAccessDelegationControlModel;
+    removal: SessionAccessRemovalModel;
+    requiredByTeamPolicy: boolean;
+    operation: SessionAccessGrantOperationModel;
+}>;
+export type SessionAccessCandidateRowModel = Readonly<{
+    principal: SessionAccessPrincipalPresentation;
+    teamMembership?: Readonly<{ teamId: string; teamMembershipId: string; accountId: string }>;
+    teamGroup?: Readonly<{ teamId: string; teamGroupId: string }>;
+    addition: Readonly<{ kind: 'allowed' }> | Readonly<{ kind: 'blocked'; reason: SessionAccessUiReason }>;
+    operation: SessionAccessGrantOperationModel;
+}>;
+export type SessionAccessDirectoryKind = PrincipalRefV1['kind'];
+export type SessionAccessDirectorySectionModel = Readonly<{
+    kind: SessionAccessDirectoryKind;
+    title: string;
+    candidates: readonly SessionAccessCandidateRowModel[];
+    status: 'idle' | 'loading' | 'refreshing' | 'error';
+    error?: SessionAccessUiError;
+    cursor: string | null;
+    hasMore: boolean;
+    loadingMore: boolean;
+    resolverKey?: string;
+    resolveCandidates?: (query: string, signal: AbortSignal) => Promise<readonly SessionAccessCandidateRowModel[]>;
+}>;
+export type SessionAccessDirectoryModel = Readonly<{ query: string; sections: readonly SessionAccessDirectorySectionModel[] }>;
+export type SessionAccessSummaryPresentation = Readonly<{ label: string; accessibilityLabel: string; requiredByTeamPolicy: boolean }>;
+/**
+ * Safe presentation of the current Account's server-admitted access.
+ *
+ * Source labels deliberately carry no grant, Team, Group, or Account identifiers.
+ * A non-manager may inspect the reason their own Session is reachable without
+ * receiving the private grant roster that remains manager-only.
+ */
+export type SessionAccessViewerPresentation = Readonly<{
+    level: EffectiveSessionAccessLevelV1;
+    levelLabel: string;
+    sourceLabels: readonly string[];
+    accessibilityLabel: string;
+}>;
+export type SessionAccessContextOption = Readonly<{
+    teamId: string | null;
+    label: string;
+    blockedReason?: SessionAccessUiReason;
+}>;
+export type SessionAccessContextModel = Readonly<{
+    primaryTeamId: string | null;
+    options: readonly SessionAccessContextOption[];
+    operation?: 'idle' | 'saving' | 'error';
+    error?: SessionAccessUiError;
+    confirmation?: Readonly<{
+        teamId: string | null;
+        label: string;
+        consequences: readonly string[];
+    }>;
+}>;
+export type SessionAccessEditorNotice = Readonly<{
+    message: string;
+    reason?: SessionAccessUiReason;
+    action?: 'clear_access';
+}>;
+
+/** What the Home says about one authorized Account's ability to open this Session. */
+export type SessionAccessEncryptionRecipientState =
+    | 'prepared'
+    | 'pending'
+    | 'invalid'
+    | 'plain_account'
+    | 'encryption_setup_required'
+    | 'encryption_inconsistent';
+export type SessionAccessEncryptionRecipientRowModel = Readonly<{
+    recipientAccountId: string;
+    state: SessionAccessEncryptionRecipientState;
+    label: string;
+    stateLabel: string;
+    accessibilityLabel: string;
+}>;
+/**
+ * Which rows are listed beneath the aggregate: the exceptions discovery already
+ * fetched (the default), or the explicit `Show all people` view paged on demand
+ * through the same authorized collection.
+ */
+export type SessionAccessEncryptionRecipientsView = 'exceptions' | 'all';
+/**
+ * The rows beneath the aggregate. Absent while the default view has nothing to
+ * name, so a healthy audience stays one quiet line and the editor never loads
+ * people it does not need.
+ */
+export type SessionAccessEncryptionRecipientsModel = Readonly<{
+    rows: readonly SessionAccessEncryptionRecipientRowModel[];
+    hasMore: boolean;
+    loading: boolean;
+    error?: SessionAccessUiError;
+}>;
+/**
+ * One Session-scoped encryption aggregate, never a per-grant census.
+ *
+ * Every count is the Home's own summary for the whole authorized audience: a Team
+ * grant is one row and many Accounts, so a locally recomputed number would be a
+ * quieter untruth than showing none.
+ */
+export type SessionAccessEncryptionModel = Readonly<{
+    /** `42 prepared · 3 pending · 1 needs setup or repair`, or the quiet ready line. */
+    summaryLabel: string;
+    accessibilityLabel: string;
+    /** Determinate committed progress; present only while this client is preparing. */
+    progressLabel?: string;
+    /** `Prepare now` / `Prepare again`; absent when this device can do nothing. */
+    actionLabel?: string;
+    reason?: SessionAccessUiReason;
+    error?: SessionAccessUiError;
+    showAllLabel: string;
+    recipientsView: SessionAccessEncryptionRecipientsView;
+    recipients?: SessionAccessEncryptionRecipientsModel;
+}>;
+export type SessionAccessEditorModel = Readonly<{
+    revision: string | number;
+    accessMode: 'editable' | 'read_only';
+    readOnlyReason?: SessionAccessUiReason;
+    content: Readonly<{ phase: 'initial' | 'ready' | 'refreshing' | 'error'; hasLastAcknowledgedSnapshot: boolean; issue?: SessionAccessUiError }>;
+    owner: SessionAccessOwnerRowModel | null;
+    viewerAccess?: SessionAccessViewerPresentation;
+    grants: readonly SessionAccessGrantRowModel[];
+    directory: SessionAccessDirectoryModel;
+    summary: SessionAccessSummaryPresentation;
+    context?: SessionAccessContextModel;
+    notice?: SessionAccessEditorNotice;
+    encryption?: SessionAccessEncryptionModel;
+}>;
+export type SessionAccessEditorActions = Readonly<{
+    setQuery(query: string): void;
+    retryContent(): void;
+    retryDirectory(kind: SessionAccessDirectoryKind): void;
+    loadMore(kind: SessionAccessDirectoryKind): void;
+    addPrincipal(principal: SessionAccessPrincipalRef): void;
+    setAccessLevel(grant: SessionAccessGrantRef, level: SessionAccessLevel): void;
+    setPermissionDelegation(grant: SessionAccessGrantRef, enabled: boolean): void;
+    requestRemove(grant: SessionAccessGrantRef): void;
+    confirmRemove(grant: SessionAccessGrantRef): void;
+    cancelRemove(grant: SessionAccessGrantRef): void;
+    explain(reason: SessionAccessUiReason): void;
+    setContext(teamId: string | null): void;
+    confirmContext(): void;
+    cancelContext(): void;
+    clearAccess(): void;
+    prepareAccess(recipientAccountId?: string): void;
+    /** Opens or closes the explicit `state=all` recipient diagnostic. */
+    toggleAllRecipients(): void;
+    /** Pages the open diagnostic through the collection's own cursor. */
+    loadMoreRecipients(): void;
+}>;
+export type SessionAccessEditorController = Readonly<{ model: SessionAccessEditorModel; actions: SessionAccessEditorActions }>;
+export type SessionAccessEditorPresentation = 'compact' | 'full';
+export type SessionAccessEditorProps = Readonly<{
+    model: SessionAccessEditorModel;
+    actions: SessionAccessEditorActions;
+    presentation: SessionAccessEditorPresentation;
+    onRequestClose?: () => void;
+    /**
+     * Supplied only by an anchored compact host that can hand off to the full
+     * Collaboration surface with Access focused. Absent everywhere the editor is
+     * already the full surface, so it never offers to open itself.
+     */
+    onOpenFullSurface?: () => void;
+    testID?: string;
+}>;

@@ -34,10 +34,12 @@ function createSessionMessages(messages: readonly Message[]): SessionMessages {
 }
 
 function buildSessionListProjection(sessions: readonly ReturnType<typeof createSessionFixture>[]) {
+    const rows = Object.fromEntries(
+        sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)]),
+    );
     return {
-        sessionListRenderables: Object.fromEntries(
-            sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)]),
-        ),
+        sessionListRowsByServerId: { 'server-a': rows },
+        ordinarySessionListMembershipByServerId: { 'server-a': sessions.map((session) => session.id) },
         sessionListIndexByServerId: {
             'server-a': sessions.map((session) => ({
                 type: 'session' as const,
@@ -59,9 +61,53 @@ describe('usePetCompanionActivityModel', () => {
         standardCleanup();
     });
 
+    it.each([
+        { encryptionMode: 'e2ee' as const, encryptedContentAvailability: undefined, readable: false },
+        { encryptionMode: 'e2ee' as const, encryptedContentAvailability: 'ready' as const, readable: true },
+        { encryptionMode: 'plain' as const, encryptedContentAvailability: undefined, readable: true },
+    ])('gates retained pet copy by canonical availability: $encryptionMode/$encryptedContentAvailability', async ({ encryptionMode, encryptedContentAvailability, readable }) => {
+        const previousState = storage.getState();
+        const session = createSessionFixture({
+            id: 'private-pet', encryptionMode, encryptedContentAvailability,
+            active: true, presence: 'online', seq: 2, lastViewedSessionSeq: 0,
+            createdAt: 1_000, updatedAt: 2_000, activeAt: 2_000,
+            pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0, pendingRequestObservedAt: 2_000,
+            metadata: { path: '/private/path', host: 'private-host', name: 'Private retained title' },
+        });
+        const message: Message = {
+            kind: 'agent-text', id: 'private-message', localId: null, createdAt: 2_000,
+            text: 'Private retained transcript', isThinking: false,
+        };
+        try {
+            storage.setState((state) => ({
+                ...state, isDataReady: true, sessions: { [session.id]: session },
+                ...buildSessionListProjection([session]),
+                sessionMessages: { [session.id]: createSessionMessages([message]) },
+            }));
+            const hook = await renderHook(() => usePetCompanionActivityModel(), {
+                flushOptions: { cycles: 1, turns: 4 },
+            });
+            const model = hook.getCurrent();
+            await hook.unmount();
+            expect(model.trayItems).toHaveLength(1);
+            expect(model.trayItems[0]?.address).toEqual({ serverId: 'server-a', sessionId: session.id });
+            if (readable) {
+                expect(model.trayItems[0]?.title).toBe('Private retained title');
+                expect(model.trayItems[0]?.subtitle).toBe(model.trayItems[0]?.contextLine);
+            } else {
+                expect(JSON.stringify(model)).not.toContain('Private retained');
+                expect(model.trayItems[0]?.subtitle).toBe(model.trayItems[0]?.contextLine);
+                expect(model.trayItems[0]?.contextLine).toContain('Server A');
+            }
+        } finally {
+            storage.setState(previousState, true);
+        }
+    });
+
     it('does not map a failed tool call to failed or waiting session activity', async () => {
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'failed-session',
             active: true,
             seq: 1,
@@ -123,6 +169,7 @@ describe('usePetCompanionActivityModel', () => {
     it('does not recompute activity when unrelated storage state changes', async () => {
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'stable-session',
             active: true,
             seq: 1,
@@ -169,6 +216,7 @@ describe('usePetCompanionActivityModel', () => {
     it('does not recompute activity when a hidden system session changes', async () => {
         const previousState = storage.getState();
         const visibleSession = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'visible-waiting-session',
             active: true,
             seq: 1,
@@ -193,6 +241,7 @@ describe('usePetCompanionActivityModel', () => {
             thinkingAt: 0,
         });
         const hiddenSession = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'hidden-system-update-session',
             active: true,
             seq: 1,
@@ -207,7 +256,7 @@ describe('usePetCompanionActivityModel', () => {
                 path: '/tmp/hidden-system-update-session',
                 host: 'test-host',
                 summary: { text: 'Hidden system session', updatedAt: 2_000 },
-                systemSessionV1: { v: 1, key: 'voice_carrier', hidden: true },
+                systemSessionV1: { v: 1, key: 'voice_transcript_history', hidden: true },
             },
         });
 
@@ -219,7 +268,7 @@ describe('usePetCompanionActivityModel', () => {
                     [visibleSession.id]: visibleSession,
                     [hiddenSession.id]: hiddenSession,
                 },
-                ...buildSessionListProjection([visibleSession, hiddenSession]),
+                ...buildSessionListProjection([visibleSession]),
                 sessionMessages: {},
             }));
 
@@ -257,7 +306,7 @@ describe('usePetCompanionActivityModel', () => {
                         [visibleSession.id]: visibleSession,
                         [updatedHiddenSession.id]: updatedHiddenSession,
                     },
-                    ...buildSessionListProjection([visibleSession, updatedHiddenSession]),
+                    ...buildSessionListProjection([visibleSession]),
                 }));
             });
 
@@ -274,6 +323,7 @@ describe('usePetCompanionActivityModel', () => {
         vi.mocked(Date.now).mockReturnValue(130_000);
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'fallback-meaningful-session',
             active: true,
             seq: 1,
@@ -354,6 +404,7 @@ describe('usePetCompanionActivityModel', () => {
         vi.mocked(Date.now).mockReturnValue(130_000);
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'renderable-meaningful-session',
             active: true,
             seq: 1,
@@ -374,9 +425,12 @@ describe('usePetCompanionActivityModel', () => {
                 ...state,
                 isDataReady: true,
                 sessions: {},
-                sessionListRenderables: {
-                    [session.id]: buildSessionListRenderableFromSession(session),
+                sessionListRowsByServerId: {
+                    'server-a': {
+                        [session.id]: buildSessionListRenderableFromSession(session),
+                    },
                 },
+                ordinarySessionListMembershipByServerId: { 'server-a': [session.id] },
                 sessionListIndexByServerId: {
                     'server-a': [
                         { type: 'session', sessionId: session.id, serverId: 'server-a', serverName: 'Server A' },
@@ -403,8 +457,11 @@ describe('usePetCompanionActivityModel', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRenderables: {
-                        [bookkeepingSession.id]: buildSessionListRenderableFromSession(bookkeepingSession),
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
+                        'server-a': {
+                            [bookkeepingSession.id]: buildSessionListRenderableFromSession(bookkeepingSession),
+                        },
                     },
                 }));
             });
@@ -420,8 +477,11 @@ describe('usePetCompanionActivityModel', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRenderables: {
-                        [meaningfulSession.id]: buildSessionListRenderableFromSession(meaningfulSession),
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
+                        'server-a': {
+                            [meaningfulSession.id]: buildSessionListRenderableFromSession(meaningfulSession),
+                        },
                     },
                 }));
             });
@@ -442,6 +502,7 @@ describe('usePetCompanionActivityModel', () => {
     it('ignores transcript updates outside the companion session scope', async () => {
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'scoped-session',
             active: true,
             seq: 1,
@@ -499,6 +560,7 @@ describe('usePetCompanionActivityModel', () => {
     it('aggregates runtime failure signals across non-selected sessions', async () => {
         const previousState = storage.getState();
         const activeSession = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'active-session',
             active: true,
             seq: 1,
@@ -511,6 +573,7 @@ describe('usePetCompanionActivityModel', () => {
         });
         const failedSession = {
             ...createSessionFixture({
+            encryptionMode: 'plain',
             id: 'failed-session',
             active: true,
             seq: 2,
@@ -587,6 +650,7 @@ describe('usePetCompanionActivityModel', () => {
         vi.mocked(Date.now).mockReturnValue(12_000);
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'historical-thinking-session',
             active: true,
             seq: 1,
@@ -628,6 +692,7 @@ describe('usePetCompanionActivityModel', () => {
         vi.mocked(Date.now).mockReturnValue(900_000_000);
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'old-unread-session',
             active: true,
             seq: 5,
@@ -666,9 +731,10 @@ describe('usePetCompanionActivityModel', () => {
         }
     });
 
-    it('does not use unhydrated unread rows as pet waiting activity without projected runtime attention', async () => {
+    it('uses an unhydrated canonical permission projection as pet waiting activity', async () => {
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'renderable-only-unread',
             active: true,
             seq: 4,
@@ -679,6 +745,7 @@ describe('usePetCompanionActivityModel', () => {
             thinking: false,
             thinkingAt: 0,
             pendingPermissionRequestCount: 1,
+            pendingUserActionRequestCount: 0,
             pendingRequestObservedAt: 3_000,
             metadata: {
                 path: '/tmp/renderable-only-unread',
@@ -692,9 +759,12 @@ describe('usePetCompanionActivityModel', () => {
                 ...state,
                 isDataReady: true,
                 sessions: {},
-                sessionListRenderables: {
-                    [session.id]: buildSessionListRenderableFromSession(session),
+                sessionListRowsByServerId: {
+                    'server-a': {
+                        [session.id]: buildSessionListRenderableFromSession(session),
+                    },
                 },
+                ordinarySessionListMembershipByServerId: { 'server-a': [session.id] },
                 sessionListIndexByServerId: {
                     'server-a': [
                         { type: 'session', sessionId: session.id, serverId: 'server-a', serverName: 'Server A' },
@@ -708,10 +778,13 @@ describe('usePetCompanionActivityModel', () => {
             });
 
             expect(hook.getCurrent()).toMatchObject({
-                state: 'idle',
-                reason: 'idle',
+                state: 'waiting',
+                reason: 'waiting',
                 sessionId: session.id,
-                trayItems: [],
+                trayItems: [expect.objectContaining({
+                    sessionId: session.id,
+                    status: 'waiting',
+                })],
             });
 
             await hook.unmount();
@@ -723,6 +796,7 @@ describe('usePetCompanionActivityModel', () => {
     it('excludes hidden system sessions from companion activity', async () => {
         const previousState = storage.getState();
         const voiceSession = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'voice-system-session',
             active: true,
             seq: 1,
@@ -741,6 +815,7 @@ describe('usePetCompanionActivityModel', () => {
             },
         });
         const visibleSession = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'visible-session',
             active: true,
             seq: 2,
@@ -811,6 +886,7 @@ describe('usePetCompanionActivityModel', () => {
         vi.setSystemTime(4_000);
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'recent-thinking-session',
             active: true,
             seq: 1,
@@ -863,6 +939,7 @@ describe('usePetCompanionActivityModel', () => {
     it('does not use queued pending input as waiting activity', async () => {
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'stale-queued-session',
             active: true,
             seq: 2,
@@ -905,6 +982,7 @@ describe('usePetCompanionActivityModel', () => {
         vi.mocked(Date.now).mockReturnValue(4_000);
         const previousState = storage.getState();
         const onlineSession = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'presence-session',
             active: true,
             seq: 1,
@@ -966,6 +1044,7 @@ describe('usePetCompanionActivityModel', () => {
     it('uses unhydrated agent-state requests as waiting activity', async () => {
         const previousState = storage.getState();
         const session = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'agent-state-request-session',
             active: true,
             seq: 1,

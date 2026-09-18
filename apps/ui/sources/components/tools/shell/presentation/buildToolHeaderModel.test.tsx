@@ -20,7 +20,11 @@ vi.mock('@/components/tools/shell/presentation/resolveToolHeaderTextPresentation
 }));
 
 vi.mock('@/components/tools/catalog', () => ({
-    knownTools: {},
+    knownTools: {
+        SubAgentRun: {
+            icon: (_size: number, _color: string, opts: unknown) => opts,
+        },
+    },
 }));
 
 vi.mock('@/components/tools/renderers/core/_registry', () => ({
@@ -37,6 +41,29 @@ vi.mock('@/agents/catalog/catalog', async (importOriginal) => {
 });
 
 describe('buildToolHeaderModel', () => {
+    it('passes normalized tool and session metadata to contextual catalog icons', () => {
+        const tool = {
+            name: 'SubAgentRun',
+            state: 'running',
+            input: { backendTarget: { kind: 'builtInAgent', agentId: 'codex' } },
+            createdAt: 1,
+            startedAt: 1,
+            completedAt: null,
+            description: null,
+            result: null,
+        } as any;
+        const metadata = { flavor: 'claude' } as any;
+        const model = buildToolHeaderModel({
+            tool,
+            metadata,
+            iconSize: 16,
+            iconColorPrimary: '#111',
+            iconColorSecondary: '#555',
+        });
+
+        expect(model.icon).toEqual({ tool, metadata });
+    });
+
     it('marks completed unknown tools as collapsed by default', () => {
         const model = buildToolHeaderModel({
             tool: {

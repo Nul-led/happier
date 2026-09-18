@@ -417,6 +417,148 @@ describe('sync/runtime/browserIroh/sharedEndpointOwner', () => {
         expect(owner.status().leaseCount).toBe(0);
     });
 
+    it('retries failed requested Machine custody before a later Machine acquisition without releasing live Home custody', async () => {
+        let leaseCounter = 0;
+        let streamCounter = 0;
+        let failedMachineClose = true;
+        const connectionCloseAttempts: string[] = [];
+        const owner = createBrowserIrohSharedEndpointOwner({
+            randomBytes: (length) => new Uint8Array(length).fill(7),
+            bindEndpoint: async () => ({
+                endpointId: 'endpoint-local',
+                appliedRelayUrls: () => [RELAY_A],
+                applyRelayUrls: async () => {},
+                openStream: async ({ endpointId }) => ({
+                    remoteEndpointId: endpointId,
+                    observedPath: 'relay',
+                    read: async () => ({ bytes: new Uint8Array(), done: true }),
+                    write: async () => {},
+                    finishWrite: async () => {},
+                    cancel: () => {},
+                    close: async () => {},
+                }),
+                closeConnection: async ({ streamKind, endpointId }) => {
+                    connectionCloseAttempts.push(`${streamKind}:${endpointId}`);
+                    if (streamKind === 'machine' && failedMachineClose) {
+                        failedMachineClose = false;
+                        throw new Error('machine connection close failed');
+                    }
+                },
+                close: async () => {},
+            }),
+            newLeaseId: () => `lease-${(leaseCounter += 1)}`,
+            newStreamId: () => `stream-${(streamCounter += 1)}`,
+        });
+        const homeLease = await owner.acquireLease({ clientId: 'tab-a', relayUrls: [RELAY_A] });
+        await owner.openStream({
+            clientId: 'tab-a', leaseId: homeLease.leaseId, streamKind: 'home', endpointId: 'home-remote', relayUrls: [RELAY_A],
+        });
+        const failedLease = await owner.acquireLease({ clientId: 'tab-a', relayUrls: [RELAY_A] });
+        await owner.openStream({
+            clientId: 'tab-a', leaseId: failedLease.leaseId, streamKind: 'machine', endpointId: 'machine-old', relayUrls: [RELAY_A],
+        });
+        await expect(owner.releaseLease({ clientId: 'tab-a', leaseId: failedLease.leaseId }))
+            .rejects.toThrow('machine connection close failed');
+
+        const laterLease = await owner.acquireLease({ clientId: 'tab-a', relayUrls: [RELAY_A] });
+        await owner.openStream({
+            clientId: 'tab-a', leaseId: laterLease.leaseId, streamKind: 'machine', endpointId: 'machine-new', relayUrls: [RELAY_A],
+        });
+
+        expect(connectionCloseAttempts).toEqual([
+            'machine:machine-old',
+            'machine:machine-old',
+        ]);
+        expect(owner.status()).toMatchObject({ leaseCount: 2 });
+        await expect(owner.readStream({ clientId: 'tab-a', streamId: 'stream-1', maxBytes: 1 }))
+            .resolves.toEqual({ bytes: new Uint8Array(), done: true });
+    });
+
+    it('retries a failed requested stream close on later Machine acquisition without releasing its live lease', async () => {
+        let leaseCounter = 0;
+        let streamCounter = 0;
+        let closeAttempts = 0;
+        const owner = createBrowserIrohSharedEndpointOwner({
+            randomBytes: (length) => new Uint8Array(length).fill(7),
+            bindEndpoint: async () => ({
+                endpointId: 'endpoint-local',
+                appliedRelayUrls: () => [RELAY_A],
+                applyRelayUrls: async () => {},
+                openStream: async ({ endpointId }) => ({
+                    remoteEndpointId: endpointId,
+                    observedPath: 'relay',
+                    read: async () => ({ bytes: new Uint8Array(), done: true }),
+                    write: async () => {},
+                    finishWrite: async () => {},
+                    cancel: () => {},
+                    close: async () => {
+                        closeAttempts += 1;
+                        if (closeAttempts === 1) throw new Error('stream close failed');
+                    },
+                }),
+                closeConnection: async () => {},
+                close: async () => {},
+            }),
+            newLeaseId: () => `lease-${(leaseCounter += 1)}`,
+            newStreamId: () => `stream-${(streamCounter += 1)}`,
+        });
+        const firstLease = await owner.acquireLease({ clientId: 'tab-a', relayUrls: [RELAY_A] });
+        const firstStream = await owner.openStream({
+            clientId: 'tab-a', leaseId: firstLease.leaseId, streamKind: 'machine', endpointId: 'machine-old', relayUrls: [RELAY_A],
+        });
+        await expect(owner.closeStream({ clientId: 'tab-a', streamId: firstStream.streamId }))
+            .rejects.toThrow('stream close failed');
+
+        const laterLease = await owner.acquireLease({ clientId: 'tab-a', relayUrls: [RELAY_A] });
+        await owner.openStream({
+            clientId: 'tab-a', leaseId: laterLease.leaseId, streamKind: 'machine', endpointId: 'machine-new', relayUrls: [RELAY_A],
+        });
+
+        expect(closeAttempts).toBe(2);
+        expect(owner.status()).toMatchObject({ leaseCount: 2 });
+        await expect(owner.releaseLease({ clientId: 'tab-a', leaseId: firstLease.leaseId }))
+            .resolves.toBeUndefined();
+    });
+
+    it('retries prior failed requested custody when the page releases its client without touching a sibling client', async () => {
+        let leaseCounter = 0;
+        let closeAttempts = 0;
+        const owner = createBrowserIrohSharedEndpointOwner({
+            randomBytes: (length) => new Uint8Array(length).fill(7),
+            bindEndpoint: async () => ({
+                endpointId: 'endpoint-local',
+                appliedRelayUrls: () => [RELAY_A],
+                applyRelayUrls: async () => {},
+                openStream: unavailableTestStream,
+                closeConnection: async ({ endpointId }) => {
+                    if (endpointId === 'machine-old') {
+                        closeAttempts += 1;
+                        if (closeAttempts === 1) throw new Error('machine connection close failed');
+                    }
+                },
+                close: async () => {},
+            }),
+            newLeaseId: () => `lease-${(leaseCounter += 1)}`,
+        });
+        const failedLease = await owner.acquireLease({ clientId: 'tab-a', relayUrls: [RELAY_A] });
+        const siblingLease = await owner.acquireLease({ clientId: 'tab-b', relayUrls: [RELAY_A] });
+        await expect(owner.openStream({
+            clientId: 'tab-a', leaseId: failedLease.leaseId, streamKind: 'machine', endpointId: 'machine-old', relayUrls: [RELAY_A],
+        })).rejects.toThrow('stream boundary is not configured');
+        await expect(owner.openStream({
+            clientId: 'tab-b', leaseId: siblingLease.leaseId, streamKind: 'home', endpointId: 'home-sibling', relayUrls: [RELAY_A],
+        })).rejects.toThrow('stream boundary is not configured');
+        await expect(owner.releaseLease({ clientId: 'tab-a', leaseId: failedLease.leaseId }))
+            .rejects.toThrow('machine connection close failed');
+
+        await expect(owner.releaseClient('tab-a')).resolves.toBeUndefined();
+
+        expect(closeAttempts).toBe(2);
+        expect(owner.status()).toMatchObject({ leaseCount: 1 });
+        await expect(owner.releaseLease({ clientId: 'tab-b', leaseId: siblingLease.leaseId }))
+            .resolves.toBeUndefined();
+    });
+
     it('is required because the existing per-tab sync identity diverges across tabs', () => {
         // Characterisation of the owner this slice must NOT reuse. `webSyncClientIdentity`
         // is deliberately session-scoped: two tabs of the same profile get two identities,

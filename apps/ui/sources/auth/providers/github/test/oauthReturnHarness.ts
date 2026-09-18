@@ -7,6 +7,7 @@ import type {
     PendingExternalAuth,
     PendingExternalConnect,
 } from '@/auth/storage/tokenStorage';
+import type { TeamInvitationPostAuthContinuationV1 } from '@happier-dev/protocol';
 import type {
     AuthCredentialLifecycleResult,
 } from '@/auth/context/AuthContext';
@@ -28,6 +29,15 @@ export const trackAccountCreatedSpy = vi.fn();
 export const trackAccountRestoredSpy = vi.fn();
 export const resumeAccountEncryptionFirstKeyExternalAuthSpy =
     vi.fn(async () => ({ returnTo: '/settings/account' }));
+export const resumeAccountPasswordEnrollmentExternalAuthSpy =
+    vi.fn(async () => ({ returnTo: '/settings/account/security?verificationToken=mailbox-proof' }));
+export const cancelAccountPasswordEnrollmentExternalAuthSpy =
+    vi.fn(async () => ({ returnTo: '/settings/account/security?verificationToken=mailbox-proof' }));
+export const clearAccountPasswordEnrollmentExternalAuthCustodySpy = vi.fn();
+export const readAccountPasswordEnrollmentExternalAuthCallbackContextSpy =
+    vi.fn<() => Readonly<{
+        target: Readonly<{ serverId: string; serverUrl: string }>;
+    }> | null>(() => null);
 export const accountDirectoryCredentialSetSpy = vi.fn(async () => true);
 export const accountDirectoryCredentialGetSpy = vi.fn(async () => null as AuthCredentials | null);
 export const pendingAccountDirectoryAuthGetSpy = vi.fn(async () => null as PendingAccountDirectoryAuth | null);
@@ -35,6 +45,7 @@ export const pendingAccountDirectoryAuthCustodyResolveSpy = vi.fn<
     () => Promise<import('@/auth/storage/tokenStorage').PendingAccountDirectoryAuthCustodyResolution>
 >(async () => ({ kind: 'absent' }));
 export const pendingAccountDirectoryAuthClearSpy = vi.fn(async () => true);
+export const accountDirectoryExchangeOAuthSpy = vi.fn();
 const hoistedModal = vi.hoisted(() => ({
     show: vi.fn((config: { onRequestClose?: () => void }) => {
         config.onRequestClose?.();
@@ -46,6 +57,22 @@ const hoistedModal = vi.hoisted(() => ({
     confirm: vi.fn(async () => true),
 }));
 export const modal = hoistedModal;
+const hoistedWebBrowser = vi.hoisted(() => ({
+    maybeCompleteAuthSession: vi.fn<() => {
+        type: 'success' | 'failed';
+        message: string;
+    }>(() => ({
+        type: 'failed' as const,
+        message: 'No auth session is currently in progress',
+    })),
+}));
+export const maybeCompleteAuthSessionSpy =
+    hoistedWebBrowser.maybeCompleteAuthSession;
+
+vi.mock('expo-web-browser', () => ({
+    maybeCompleteAuthSession:
+        hoistedWebBrowser.maybeCompleteAuthSession,
+}));
 
 let activeServerSnapshotState: {
     serverId: string;
@@ -79,6 +106,11 @@ let authState: {
     credentials: null,
 };
 
+function isCurrentPendingExternalAuth(expected: PendingExternalAuth): boolean {
+    return pendingExternalAuthState !== null
+        && JSON.stringify(pendingExternalAuthState) === JSON.stringify(expected);
+}
+
 async function clearPendingExternalAuthForHarness(
     options?: Readonly<{
         removeFirstKeyMigrationAttempted?:
@@ -101,6 +133,21 @@ async function clearPendingExternalAuthForHarness(
 
 export const clearPendingExternalAuthMock =
     vi.fn(clearPendingExternalAuthForHarness);
+export const recordTeamInvitationPostAuthContinuationMock = vi.fn(
+    async (
+        expected: PendingExternalAuth,
+        continuation: TeamInvitationPostAuthContinuationV1,
+    ): Promise<PendingExternalAuth | null> => {
+        if (!isCurrentPendingExternalAuth(expected)) return null;
+        const updated = { ...expected, postAuthInvitation: continuation };
+        pendingExternalAuthState = updated;
+        return updated;
+    },
+);
+export const isPendingExternalAuthContinuationCurrentMock = vi.fn(
+    async (expected: PendingExternalAuth): Promise<boolean> =>
+        isCurrentPendingExternalAuth(expected),
+);
 export const clearPendingExternalConnectMock = vi.fn(async () => true);
 export const readPendingExternalAuthStateMock = vi.fn(async () => ({
     value: pendingExternalAuthState,
@@ -126,7 +173,7 @@ export function setPendingAccountDirectoryAuthState(
         ? {
             ...next,
             canonicalServerUrl: next.canonicalServerUrl ?? next.endpoint,
-            entryIntent: next.entryIntent ?? 'connect_service',
+            entryIntent: next.entryIntent ?? { kind: 'enter', target: { kind: 'automatic' } },
         }
         : null;
     if (next?.endpoint && next.serverIdentityId) {
@@ -177,16 +224,41 @@ vi.mock('@/auth/context/AuthContext', () => ({
 
 vi.mock(
     '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth',
-    () => ({
-        resumeAccountEncryptionFirstKeyExternalAuth:
-            resumeAccountEncryptionFirstKeyExternalAuthSpy,
-    }),
+    async (importOriginal) => {
+        const actual = await importOriginal<
+            typeof import('@/sync/ops/account/accountEncryptionFirstKeyExternalAuth')
+        >();
+        return {
+            ...actual,
+            resumeAccountEncryptionFirstKeyExternalAuth:
+                resumeAccountEncryptionFirstKeyExternalAuthSpy,
+            resumeAccountPasswordEnrollmentExternalAuth:
+                resumeAccountPasswordEnrollmentExternalAuthSpy,
+            cancelAccountPasswordEnrollmentExternalAuth:
+                cancelAccountPasswordEnrollmentExternalAuthSpy,
+            clearAccountPasswordEnrollmentExternalAuthCustody:
+                clearAccountPasswordEnrollmentExternalAuthCustodySpy,
+            readAccountPasswordEnrollmentExternalAuthCallbackContext:
+                readAccountPasswordEnrollmentExternalAuthCallbackContextSpy,
+        };
+    },
 );
 
 vi.mock('@/track', () => ({
     trackAccountCreated: trackAccountCreatedSpy,
     trackAccountRestored: trackAccountRestoredSpy,
 }));
+
+vi.mock('@/auth/accountDirectory/accountDirectoryAuthClient', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/auth/accountDirectory/accountDirectoryAuthClient')>();
+    return {
+        ...actual,
+        accountDirectoryAuthClient: {
+            ...actual.accountDirectoryAuthClient,
+            exchangeOAuth: accountDirectoryExchangeOAuthSpy,
+        },
+    };
+});
 
 vi.mock('@/modal', () => ({ Modal: modal }));
 
@@ -220,14 +292,17 @@ vi.mock('@/auth/storage/tokenStorage', async () => {
             readPendingExternalAuthState: readPendingExternalAuthStateMock,
             readPendingExternalAuthContinuationState:
                 readPendingExternalAuthStateMock,
+            readPendingExternalAuthStateForServerUrl:
+                readPendingExternalAuthStateMock,
             clearPendingExternalAuth: clearPendingExternalAuthMock,
+            isPendingExternalAuthContinuationCurrent:
+                isPendingExternalAuthContinuationCurrentMock,
+            recordTeamInvitationPostAuthContinuation:
+                recordTeamInvitationPostAuthContinuationMock,
             getPendingExternalConnect: async () => pendingExternalConnectState,
             clearPendingExternalConnect: clearPendingExternalConnectMock,
             getCredentials: async () => storedCredentialsState,
-            getCredentialsForServerUrl: async (
-                ...args: Parameters<typeof actual.TokenStorage.getCredentialsForServerUrl>
-            ) => storedCredentialsState
-                ?? await actual.TokenStorage.getCredentialsForServerUrl(...args),
+            getCredentialsForServerUrl: async () => storedCredentialsState,
             getPendingAccountDirectoryAuth: pendingAccountDirectoryAuthGetSpy,
             resolvePendingAccountDirectoryAuthCustody: pendingAccountDirectoryAuthCustodyResolveSpy,
             clearPendingAccountDirectoryAuth: pendingAccountDirectoryAuthClearSpy,
@@ -316,6 +391,22 @@ export function resetOAuthHarness() {
     resumeAccountEncryptionFirstKeyExternalAuthSpy.mockResolvedValue({
         returnTo: '/settings/account',
     });
+    resumeAccountPasswordEnrollmentExternalAuthSpy.mockReset();
+    resumeAccountPasswordEnrollmentExternalAuthSpy.mockResolvedValue({
+        returnTo: '/settings/account/security?verificationToken=mailbox-proof',
+    });
+    cancelAccountPasswordEnrollmentExternalAuthSpy.mockReset();
+    cancelAccountPasswordEnrollmentExternalAuthSpy.mockResolvedValue({
+        returnTo: '/settings/account/security?verificationToken=mailbox-proof',
+    });
+    clearAccountPasswordEnrollmentExternalAuthCustodySpy.mockReset();
+    readAccountPasswordEnrollmentExternalAuthCallbackContextSpy.mockReset();
+    readAccountPasswordEnrollmentExternalAuthCallbackContextSpy.mockReturnValue(null);
+    maybeCompleteAuthSessionSpy.mockReset();
+    maybeCompleteAuthSessionSpy.mockReturnValue({
+        type: 'failed',
+        message: 'No auth session is currently in progress',
+    });
     accountDirectoryCredentialSetSpy.mockReset();
     accountDirectoryCredentialSetSpy.mockResolvedValue(true);
     accountDirectoryCredentialGetSpy.mockReset();
@@ -328,6 +419,7 @@ export function resetOAuthHarness() {
         : { kind: 'absent' as const });
     pendingAccountDirectoryAuthClearSpy.mockReset();
     pendingAccountDirectoryAuthClearSpy.mockResolvedValue(true);
+    accountDirectoryExchangeOAuthSpy.mockReset();
     if (typeof modal.alert.mockReset === 'function') {
         modal.alert.mockReset();
     } else {
@@ -350,6 +442,19 @@ export function resetOAuthHarness() {
     clearPendingExternalAuthMock.mockReset();
     clearPendingExternalAuthMock.mockImplementation(
         clearPendingExternalAuthForHarness,
+    );
+    recordTeamInvitationPostAuthContinuationMock.mockReset();
+    recordTeamInvitationPostAuthContinuationMock.mockImplementation(
+        async (expected, continuation) => {
+            if (!isCurrentPendingExternalAuth(expected)) return null;
+            const updated = { ...expected, postAuthInvitation: continuation };
+            pendingExternalAuthState = updated;
+            return updated;
+        },
+    );
+    isPendingExternalAuthContinuationCurrentMock.mockReset();
+    isPendingExternalAuthContinuationCurrentMock.mockImplementation(
+        async (expected) => isCurrentPendingExternalAuth(expected),
     );
     clearPendingExternalConnectMock.mockReset();
     clearPendingExternalConnectMock.mockResolvedValue(true);

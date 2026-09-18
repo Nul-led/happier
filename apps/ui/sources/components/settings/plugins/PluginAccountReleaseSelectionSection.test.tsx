@@ -3,6 +3,29 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createPluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
+
+function createHostedReader() {
+    const pluginId = 'example.tasks';
+    return createPluginAccountAvailabilityReader({
+        scope: { serverId: 'server-a', accountId: 'account-a' },
+        snapshot: {
+            availabilityCursor: 4, materializations: [], snapshots: [],
+            intentReads: [{ pluginId, response: {
+                availabilityCursor: 4,
+                hostingCapability: { enabled: true, maxArtifactBytes: 1024, maxAccountBytes: 2048 },
+                intent: { pluginId, desiredVersion: '2.0.0', enabled: true, offlineUiHosting: 'enabled', writableCollections: [], revision: 'intent-1' },
+                release: {
+                    ref: { pluginId, version: '2.0.0' }, archiveDigestSha256: `sha256:${'a'.repeat(64)}`,
+                    normalizedManifest: { schemaVersion: 2, id: pluginId, version: '2.0.0', displayName: 'Tasks', engines: { happier: '^1.0.0' }, runtime: { apiVersion: 1 }, contributes: {} },
+                    collectionContracts: [],
+                    uiSlots: [{ contributionId: 'ui', tier: 'hostedWeb', platform: 'web', artifactDigest: `sha256:${'b'.repeat(64)}`, compatibility: { hostUiApiVersion: '1.0.0' } }],
+                    packageAssetArchive: { archiveDigestSha256: `sha256:${'c'.repeat(64)}`, resources: [] },
+                }, uiArtifacts: [], packageAssets: [],
+            } }],
+        },
+    });
+}
 
 const select = vi.hoisted(() => vi.fn(async () => Object.freeze({
     kind: 'selected' as const,
@@ -145,7 +168,7 @@ describe('PluginAccountReleaseSelectionSection', () => {
     it('shows current hosted status and exposes removal plus exact local cache clear actions', async () => {
         readHostedArtifactStatus.mockReturnValue('hosted');
         const { PluginAccountReleaseSelectionSection } = await import('./PluginAccountReleaseSelectionSection');
-        const reader = { subscribe: () => () => {} } as never;
+        const reader = createHostedReader();
         const screen = await renderScreen(
             <PluginAccountReleaseSelectionSection
                 pluginId="example.tasks"
@@ -180,7 +203,7 @@ describe('PluginAccountReleaseSelectionSection', () => {
         readHostedArtifactStatus.mockReturnValue('notOptedIn' as never);
         setHostedArtifactsEnabled.mockResolvedValueOnce({ kind } as never);
         const { PluginAccountReleaseSelectionSection } = await import('./PluginAccountReleaseSelectionSection');
-        const reader = { subscribe: () => () => {} } as never;
+        const reader = createHostedReader();
         const screen = await renderScreen(
             <PluginAccountReleaseSelectionSection
                 pluginId="example.tasks"
@@ -204,7 +227,7 @@ describe('PluginAccountReleaseSelectionSection', () => {
     it('keeps the Account hosting lifecycle reachable without a machine-selectable release version', async () => {
         readHostedArtifactStatus.mockReturnValue('hosted');
         const { PluginAccountReleaseSelectionSection } = await import('./PluginAccountReleaseSelectionSection');
-        const reader = { subscribe: () => () => {} } as never;
+        const reader = createHostedReader();
         const screen = await renderScreen(
             <PluginAccountReleaseSelectionSection
                 pluginId="example.tasks"
@@ -240,7 +263,7 @@ describe('PluginAccountReleaseSelectionSection', () => {
             <PluginAccountReleaseSelectionSection
                 pluginId="example.tasks"
                 version={null}
-                reader={{ subscribe: () => () => {} } as never}
+                reader={null}
                 projection={null}
                 daemon={{ serverId: null, serverIdentityId: null, machineId: null }}
                 testID="plugin.release"

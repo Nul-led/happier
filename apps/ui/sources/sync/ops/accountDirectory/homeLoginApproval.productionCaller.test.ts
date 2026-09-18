@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import sodium from '@/encryption/libsodium.lib';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
@@ -8,26 +8,27 @@ import {
     HomeLoginRedemptionResultV1Schema,
 } from '@happier-dev/protocol';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
+import { createReactNativeNativeMock } from '@/dev/testkit/mocks/reactNative';
+import { installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage.testHelpers';
+import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
+import { createDirectoryHttpFixture } from './accountDirectoryTestFixtures';
 
-const setCredentialsForServerUrlMock = vi.hoisted(() => vi.fn<
-    (...args: unknown[]) => Promise<{ rollback: () => Promise<void> }>
->(async () => ({ rollback: async () => {} })));
+const secureStoreValues = new Map<string, string>();
+installTokenStorageWebPlatformMocks({
+    reactNative: () => createReactNativeNativeMock({ Platform: { OS: 'ios' } }),
+    secureStore: () => ({
+        getItemAsync: async (key: string) => secureStoreValues.get(key) ?? null,
+        setItemAsync: async (key: string, value: string) => { secureStoreValues.set(key, value); },
+        deleteItemAsync: async (key: string) => { secureStoreValues.delete(key); },
+    }),
+});
+
 const endpointFetchMock = vi.hoisted(() => vi.fn());
 const acquireIrohHomeRuntimeOriginMock = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/http/client', () => ({
     createServerFetchAtEndpoint: vi.fn(() => endpointFetchMock),
     serverFetch: vi.fn(),
 }));
-vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
-    return {
-        ...actual,
-        TokenStorage: {
-            ...actual.TokenStorage,
-            setCredentialsForServerUrlWithRollback: (...args: unknown[]) => setCredentialsForServerUrlMock(...args),
-        },
-    };
-});
 vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/runtime/nativeIrohTunnels/runtime')>();
     return {
@@ -38,16 +39,22 @@ vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', async (importOriginal) => {
 
 describe('Directory enrollment production composition', () => {
     const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+    let restoreLocalStorage: (() => void) | null = null;
 
     beforeAll(async () => {
         await sodium.ready;
     });
 
+    beforeEach(() => {
+        secureStoreValues.clear();
+        restoreLocalStorage = installLocalStorageMock().restore;
+    });
+
     afterEach(() => {
+        restoreLocalStorage?.();
+        restoreLocalStorage = null;
         if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
-        setCredentialsForServerUrlMock.mockClear();
-        setCredentialsForServerUrlMock.mockResolvedValue({ rollback: async () => {} });
         endpointFetchMock.mockReset();
         acquireIrohHomeRuntimeOriginMock.mockReset();
         vi.resetModules();
@@ -131,19 +138,19 @@ describe('Directory enrollment production composition', () => {
             kind: 'enrolled',
             homeServerIdentityId: descriptor.homeServerIdentityId,
         });
-        expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        await expect(TokenStorage.getCredentialsForServerUrl(
             descriptor.canonicalServerUrl,
             { serverId: descriptor.homeServerIdentityId },
-            { token: 'iroh-home-token' },
-        );
+        )).resolves.toEqual({ token: 'iroh-home-token' });
     });
 
     it('enrolls a fresh destination-bound Home through one advisory credential write without changing focus or groups', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `directory_enrollment_${Date.now()}_${Math.random()}`;
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const focused = profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
-        profiles.setActiveServerId(focused.id);
-        profiles.saveHomeViewState({
+        const focused = await profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
+        await profiles.setActiveServerId(focused.id);
+        await profiles.saveHomeViewState({
             version: 1,
             activeTargetKind: 'server',
             activeTargetId: focused.id,
@@ -176,6 +183,7 @@ describe('Directory enrollment production composition', () => {
         };
         let requesterPublicKey: Uint8Array | null = null;
         const client = {
+            isCurrent: () => true,
             getMe: vi.fn(async () => ({ accountId: 'account-1' })),
             listHomes: vi.fn(async () => ({ homes: [home], preferredHomeServerIdentityId: 'srv_home_b' })),
             requestLoginAssertion: vi.fn(async (_homeServerIdentityId: string, body: { clientBoxPublicKeyBase64: string }) => {
@@ -249,7 +257,7 @@ describe('Directory enrollment production composition', () => {
             },
         });
         const { refreshAccountHomeDirectory } = await import('./refreshAccountHomeDirectory');
-        const { enrollPreferredDirectoryHome } = await import('./enrollPreferredDirectoryHome');
+        const { enrollDirectoryHome } = await import('./enrollDirectoryHome');
         expect(profiles.preflightHomeProfileAdoption({
             descriptor: home.connectionDescriptor,
             source: 'account-directory',
@@ -260,25 +268,6 @@ describe('Directory enrollment production composition', () => {
             serverIdentityId: 'srv_home_b',
             credentialWrite: 'required',
         });
-        setCredentialsForServerUrlMock.mockImplementationOnce(async () => {
-            expect(endpointFetchMock.mock.calls.map(([path]) => path)).toEqual([
-                '/v1/features',
-                '/v1/auth/home-login',
-                '/v1/features/authenticated',
-            ]);
-            expect(profiles.listServerProfiles()).toEqual(expect.arrayContaining([
-                expect.objectContaining({
-                    serverIdentityId: 'srv_home_b',
-                    source: 'account-directory',
-                }),
-            ]));
-            expect(profiles.getActiveServerSnapshot()).toMatchObject({
-                serverId: activeBefore.serverId,
-                serverUrl: activeBefore.serverUrl,
-            });
-            return { rollback: async () => {} };
-        });
-
         await expect(refreshAccountHomeDirectory(session)).resolves.toMatchObject({ status: 'ready' });
         expect(profiles.listServerProfiles()).toEqual(expect.arrayContaining([
             expect.objectContaining({
@@ -286,7 +275,14 @@ describe('Directory enrollment production composition', () => {
                 source: 'account-directory',
             }),
         ]));
-        const result = await enrollPreferredDirectoryHome(session, { entryIntent: 'connect_service' });
+        const result = await enrollDirectoryHome({ session, service: createDirectoryHttpFixture().service,
+            intent: { kind: 'enroll', homeServerIdentityId: home.homeServerIdentityId } },
+            {
+                home,
+                shouldCancel: () => false,
+                complete: async () => ({ kind: 'home_enrolled', homeServerIdentityId: home.homeServerIdentityId }),
+                completeRetained: async () => ({ kind: 'home_enrolled', homeServerIdentityId: home.homeServerIdentityId }),
+            });
 
         expect(requesterPublicKey).toEqual(keyPair.publicKey);
         expect(endpointFetchMock).toHaveBeenCalledTimes(3);
@@ -295,12 +291,11 @@ describe('Directory enrollment production composition', () => {
             '/v1/auth/home-login',
             '/v1/features/authenticated',
         ]);
-        expect(setCredentialsForServerUrlMock).toHaveBeenCalledTimes(1);
-        expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        await expect(TokenStorage.getCredentialsForServerUrl(
             'https://canonical.home-b.test',
             { serverId: 'srv_home_b' },
-            { token: 'home-b-token' },
-        );
+        )).resolves.toEqual({ token: 'home-b-token' });
         expect(profiles.listServerProfiles()).toEqual(expect.arrayContaining([
             expect.objectContaining({ serverIdentityId: 'srv_home_b', name: 'Home B' }),
         ]));
@@ -310,7 +305,6 @@ describe('Directory enrollment production composition', () => {
                 serverIdentityId: 'srv_home_b',
                 name: 'Home B',
                 canonicalServerUrl: 'https://canonical.home-b.test',
-                connectionDescriptorRevision: 2,
                 homeConnectionDescriptor: observedDescriptor,
             }),
         ]));
@@ -347,19 +341,15 @@ describe('Directory enrollment production composition', () => {
             createdAtMs: now,
             updatedAtMs: now,
         };
-        const session = {
-            serviceKey: 'https://directory.test\u0000srv_directory',
-            supportsHomeEnrollment: true,
-            snapshot: {
-                endpoint: 'https://directory.test',
-                status: 'ready' as const,
-                homes: [home],
-                preferredHomeServerIdentityId: home.homeServerIdentityId,
-                refreshedAtMs: now,
-                error: null,
-                reconciliation: { kind: 'not_run' as const },
-            },
-            requestLoginAssertion: vi.fn(async (_homeServerIdentityId: string, clientBoxPublicKeyBase64: string) => ({
+        const { AccountDirectorySession } = await import('@/sync/domains/accountDirectory/accountDirectorySession');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const target = { endpoint: 'https://directory.test', serverIdentityId: 'srv_directory' };
+        await TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'directory-token' });
+        const session = new AccountDirectorySession(target, { capability: {
+            version: 1, homeDirectory: true, homeEnrollment: true,
+            homeLoginAssertion: { keyId: 'a'.repeat(64), publicKeyBase64Url: 'A'.repeat(43) },
+        } });
+        endpointFetchMock.mockImplementationOnce(async (_path: string, init: RequestInit) => new Response(JSON.stringify({
                 v: 1 as const,
                 purpose: 'happier.home-login' as const,
                 issuerServerIdentityId: 'srv_directory',
@@ -370,20 +360,27 @@ describe('Directory enrollment production composition', () => {
                     canonicalServerUrl: 'https://attacker.test',
                     endpoints: [{ kind: 'https' as const, url: 'https://attacker.test' }],
                 }),
-                clientBoxPublicKeyBase64,
+                clientBoxPublicKeyBase64: JSON.parse(String(init.body)).clientBoxPublicKeyBase64,
                 issuedAtMs: now - 1_000,
                 expiresAtMs: now + 2 * 60_000,
                 keyId: 'a'.repeat(64),
                 signatureBase64Url: 'A'.repeat(86),
-            })),
-        };
-        const { enrollPreferredDirectoryHome } = await import('./enrollPreferredDirectoryHome');
+            })));
+        const { enrollDirectoryHome } = await import('./enrollDirectoryHome');
 
-        await expect(enrollPreferredDirectoryHome(session, {
-            entryIntent: 'connect_service',
+        await expect(enrollDirectoryHome({ session, service: createDirectoryHttpFixture().service,
+            intent: { kind: 'enroll', homeServerIdentityId: home.homeServerIdentityId } }, {
+            home, shouldCancel: () => false,
+            complete: async () => ({ kind: 'home_enrolled', homeServerIdentityId: home.homeServerIdentityId }),
+            completeRetained: async () => ({ kind: 'home_enrolled', homeServerIdentityId: home.homeServerIdentityId }),
         })).resolves.toMatchObject({ kind: 'failed' });
-        expect(endpointFetchMock).not.toHaveBeenCalled();
-        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        expect(endpointFetchMock.mock.calls.map(([path]) => path)).toEqual([
+            `/v1/account-directory/homes/${home.homeServerIdentityId}/login-assertion`,
+        ]);
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            home.canonicalServerUrl,
+            { serverId: home.homeServerIdentityId },
+        )).resolves.toBeNull();
     });
 
     it('persists a later valid Home when an earlier Directory entry conflicts in the real profile owner', async () => {
@@ -399,7 +396,7 @@ describe('Directory enrollment production composition', () => {
                 endpoints: [{ kind: 'https', url: 'https://claimed-route.test' }],
             },
         });
-        profiles.setActiveServerId(focused.id);
+        await profiles.setActiveServerId(focused.id);
         const activeBefore = profiles.getActiveServerSnapshot();
         const now = Date.now();
         const conflicting = {
@@ -438,6 +435,7 @@ describe('Directory enrollment production composition', () => {
             serverIdentityId: 'srv_directory',
         }, {
             client: {
+                isCurrent: () => true,
                 listHomes: vi.fn(async () => ({
                     homes: [conflicting, valid],
                     preferredHomeServerIdentityId: valid.homeServerIdentityId,
@@ -459,7 +457,7 @@ describe('Directory enrollment production composition', () => {
         if (result.status !== 'ready') throw result.error;
 
         expect(result.reconciliation).toMatchObject({
-            kind: 'completed',
+            kind: 'partial',
             adopted: [{ homeServerIdentityId: 'srv_valid_home', label: 'Valid Home' }],
             failures: [{ homeServerIdentityId: 'srv_conflicting_home', label: 'Conflicting Home' }],
         });

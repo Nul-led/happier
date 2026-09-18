@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { installSessionEmbeddedTerminalCommonModuleMocks } from './sessionEmbeddedTerminalTestHelpers';
 
 let lastXtermProps: Readonly<{
@@ -8,6 +9,7 @@ let lastXtermProps: Readonly<{
     onWriteComplete?: (event: unknown) => void;
 }> | null = null;
 const sessionEmbeddedTerminalPtySpy = vi.hoisted(() => vi.fn());
+const nativeSurfaceUnmountSpy = vi.hoisted(() => vi.fn());
 const getClipboardStringTrimmedSafeMock = vi.hoisted(() => vi.fn());
 
 installSessionEmbeddedTerminalCommonModuleMocks({
@@ -93,12 +95,32 @@ vi.mock('@/components/terminal/xterm/webview/XtermWebViewSurface.native', () => 
         onWriteComplete?: (event: unknown) => void;
         children?: React.ReactNode;
     }>>((props, _ref) => {
+        React.useEffect(() => () => nativeSurfaceUnmountSpy(), []);
         lastXtermProps = props;
         return React.createElement('XtermWebViewSurface', props, props.children);
     }),
 }));
 
 describe('SessionEmbeddedTerminalPane (native)', () => {
+    beforeAll(async () => { await import('./SessionEmbeddedTerminalPane.native'); });
+    afterEach(standardCleanup);
+    it('isolates terminal identity for the same session id on different Homes', async () => {
+        const { SessionEmbeddedTerminalPane } = await import('./SessionEmbeddedTerminalPane.native');
+        const { renderScreen } = await import('@/dev/testkit');
+        sessionEmbeddedTerminalPtySpy.mockClear();
+        nativeSurfaceUnmountSpy.mockClear();
+        const screen = await renderScreen(<SessionEmbeddedTerminalPane sessionId="s1" scopeId="session:address:home-a:s1" currentDockLocation="sidebar" terminalMode="session_attach" />);
+        const first = sessionEmbeddedTerminalPtySpy.mock.calls.at(-1)?.[0];
+        await act(async () => {
+            screen.update(<SessionEmbeddedTerminalPane sessionId="s1" scopeId="session:address:home-b:s1" currentDockLocation="sidebar" terminalMode="session_attach" />);
+        });
+        const second = sessionEmbeddedTerminalPtySpy.mock.calls.at(-1)?.[0];
+        expect(first).toEqual(expect.objectContaining({ serverId: 'home-a' }));
+        expect(second).toEqual(expect.objectContaining({ serverId: 'home-b' }));
+        expect(second.terminalKey).not.toBe(first.terminalKey);
+        expect(nativeSurfaceUnmountSpy).toHaveBeenCalledTimes(1);
+    });
+
     it('renders an Xterm WebView surface wired to the PTY hook', async () => {
         lastXtermProps = null;
         onInputSpy.mockClear();

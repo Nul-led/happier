@@ -31,6 +31,8 @@ import {
 } from '@/voice/credentials/accountVoiceCredential';
 import { resolveVoiceConnectedAccountTargetEligibility } from '@/voice/credentials/sourceEligibility';
 import { createDefaultVoiceProviderRegistry } from '@/voice/registry/defaultRegistry';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 
 type SourceRow = Readonly<{
   item: DropdownMenuItem;
@@ -76,6 +78,8 @@ export function VoiceCredentialSourceField(props: Readonly<{
 }>) {
   const settings = useSettings();
   const settingsVersion = useSettingsVersion();
+  const expectedSettingsScope = useAccountSettingsScope();
+  const savedSecretCatalog = useSavedSecretCatalog();
   const profile = useProfile();
   const projectedConnectedServicesRegistry = useProjectedConnectedServicesRegistry();
   const localizePluginText = useProjectedPluginLocalizedTextResolver();
@@ -126,6 +130,9 @@ export function VoiceCredentialSourceField(props: Readonly<{
     [connectedSources],
   );
   const rows = React.useMemo<readonly SourceRow[]>(() => {
+    const selectedSavedSecret = resolution?.savedSecret
+      ? savedSecretCatalog.resolveReference(resolution.savedSecret.secretId)
+      : null;
     const next: SourceRow[] = [{
       item: {
         id: 'none',
@@ -142,7 +149,7 @@ export function VoiceCredentialSourceField(props: Readonly<{
           subtitle: tLoose('settingsVoice.realtimeProviders.authentication.savedSecret.subtitle'),
         },
         selection: Object.freeze({ kind: 'savedSecret' }),
-        usable: Boolean(resolution?.savedSecret),
+        usable: selectedSavedSecret?.status === 'ready',
       });
     }
     for (const account of profile.connectedAccountsV4 ?? []) {
@@ -244,6 +251,7 @@ export function VoiceCredentialSourceField(props: Readonly<{
     projectedConnectedServicesRegistry,
     props.credentials.sources,
     resolution,
+    savedSecretCatalog.resolveReference,
     settings.connectedServicesProfileLabelByKey,
   ]);
   const selected = resolution?.selection ?? NONE_SELECTION;
@@ -253,12 +261,15 @@ export function VoiceCredentialSourceField(props: Readonly<{
   // re-picking a source here is the repair, so every row stays selectable.
   const selectedId = resolution ? selectionId(selected) : '';
   const selectedRow = rows.find((row) => row.item.id === selectedId) ?? null;
+  const selectedSavedSecret = resolution?.savedSecret
+    ? savedSecretCatalog.resolveReference(resolution.savedSecret.secretId)
+    : null;
   const status = React.useMemo<VoiceCredentialSourceFieldStatus>(() => Object.freeze({
     selection: selected,
     usable: selected.kind === 'savedSecret'
-      ? Boolean(resolution?.savedSecret)
+      ? selectedSavedSecret?.status === 'ready'
       : selectedRow?.usable === true,
-  }), [resolution?.savedSecret, selected, selectedRow?.usable]);
+  }), [selected, selectedRow?.usable, selectedSavedSecret?.status]);
   React.useEffect(() => {
     props.onStatusChanged?.(status);
   }, [props.onStatusChanged, status]);
@@ -314,7 +325,10 @@ export function VoiceCredentialSourceField(props: Readonly<{
             ? current.declaration ?? null
             : null;
         },
-        mutateAccountSettingsOnce: sync.mutateAccountSettingsOnce,
+        mutateAccountSettingsOnce: (input) => sync.mutateAccountSettingsOnce({
+          ...input,
+          expectedSettingsScope,
+        }),
       });
       fireAndForget(mutation.then((result) => {
         if (

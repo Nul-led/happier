@@ -2,10 +2,15 @@ import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import {
+    SessionAuthoringExecutionTargetV2Schema,
+    TemporaryComputerActivationRefV1Schema,
+} from '@happier-dev/protocol';
 
 import {
     buildNewSessionDraftRowPresentation,
     resolveNewSessionDraftAgentId,
+    resolveNewSessionDraftMachineId,
     type NewSessionDraftAvailabilitySummary,
 } from '@/components/sessions/drafts/newSessionDraftPresentation';
 import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentation/SessionAgentCatalogIdentityIcon';
@@ -23,7 +28,9 @@ import {
     useMachineListStatusByServerId,
 } from '@/sync/domains/state/storage';
 import {
+    deleteSessionDraftWithScopedRuntime,
     deleteSessionDraft,
+    ensureSessionDraftRepositoryHydratedWithScopedRuntime,
     listNewSessionDraftProjections,
     subscribeSessionDraftList,
     type NewSessionDraftProjection,
@@ -41,21 +48,117 @@ import {
     SESSION_LIST_ROW_STATUS_TEXT_METRICS,
 } from '@/components/sessions/shell/resolveSessionListDensityViewState';
 import { useIsTablet } from '@/utils/platform/responsive';
+import { useTemporaryComputerLaunchObservation, type TemporaryComputerLaunchStatus } from '@/components/sessions/new/hooks/useTemporaryComputerLaunch';
+import { createRunnerActivationClient, type RunnerActivationClient } from '@/sync/api/ephemeralRunner/runnerActivationClient';
+import { createServerFetchAtEndpoint } from '@/sync/http/client';
+import { createServerRequestForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
+import {
+    areServerProfileIdentifiersEquivalent,
+    getServerProfileById,
+    listServerProfiles,
+    resolveServerProfileScopeId,
+} from '@/sync/domains/server/serverProfiles';
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
+import {
+    useServerCredentialAccountScopeBindings,
+    type ServerCredentialAccountScopeBinding,
+} from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { homeDisplayName } from '@/components/settings/home/governance/homeGovernanceLabels';
+import { serverAccountScopeKeySuffix, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { SessionListViewContext } from './search/sessionListViewFilters';
+import { deleteNewSessionDraftAfterConfirmation } from '@/components/sessions/drafts/deleteNewSessionDraftAfterConfirmation';
+import { runWithSessionDraftRepositoryScopedRuntime } from '@/sync/ops/sessionDrafts/runWithSessionDraftRepositoryScopedRuntime';
 
 export { buildNewSessionDraftRowPresentation } from '@/components/sessions/drafts/newSessionDraftPresentation';
+export { deleteNewSessionDraftAfterConfirmation } from '@/components/sessions/drafts/deleteNewSessionDraftAfterConfirmation';
 
 const EMPTY_DRAFTS: readonly NewSessionDraftProjection[] = Object.freeze([]);
 type FocusableDraftTarget = React.ComponentRef<typeof Pressable>;
 
-export async function deleteNewSessionDraftAfterConfirmation(params: Readonly<{
-    confirm: () => Promise<boolean>;
-    readCurrentDraftDeletionDisposition: () => 'deletable' | 'missing' | 'launch-custody';
-    deleteDraft: () => Promise<void>;
-}>): Promise<boolean> {
-    if (!await params.confirm()) return false;
-    if (params.readCurrentDraftDeletionDisposition() !== 'deletable') return false;
-    await params.deleteDraft();
-    return true;
+export function buildNewSessionDraftContinueRoute(
+    draftId: string,
+    scope: ServerAccountScope,
+): Readonly<{
+    pathname: '/new';
+    params: Readonly<{
+        draftId: string;
+        spawnServerId: string;
+        draftServerId: string;
+        draftAccountId: string;
+    }>;
+}> {
+    return {
+        pathname: '/new',
+        params: {
+            draftId,
+            spawnServerId: scope.serverId,
+            draftServerId: scope.serverId,
+            draftAccountId: scope.accountId,
+        },
+    };
+}
+
+export function resolveNewSessionDraftSectionTitle(input: Readonly<{
+    serverId: string | null;
+    homeName: string | null;
+    viewContext: SessionListViewContext;
+}>): string {
+    if (
+        !input.serverId
+        || input.viewContext.kind !== 'team'
+        || input.viewContext.team.serverId === input.serverId
+    ) return t('sessionDrafts.sectionTitle');
+    const home = input.homeName?.trim() || input.serverId;
+    return t('sessionDrafts.sectionTitleForHome', { home });
+}
+
+export function resolveNewSessionDraftWaitingSectionTitle(input: Readonly<{
+    serverId: string;
+    homeName: string | null;
+}>): string {
+    const home = input.homeName?.trim() || input.serverId;
+    return t('sessionDrafts.waitingSectionTitleForHome', { home });
+}
+
+function resolveRunnerDraftActivation(input: NewSessionDraftProjection): Readonly<{
+    isTemporaryComputer: boolean;
+    publicRef: ReturnType<typeof TemporaryComputerActivationRefV1Schema.parse> | null;
+}> {
+    // Temporary-computer authoring exists only in the current catalogued
+    // document; the released V1 vocabulary cannot carry either field.
+    const document = input.document;
+    if (document.v !== 2 || document.target.kind !== 'newSession') {
+        return { isTemporaryComputer: false, publicRef: null };
+    }
+    const targetResult = SessionAuthoringExecutionTargetV2Schema.nullable().safeParse(
+        document.target.authoring.executionTarget?.value ?? null,
+    );
+    const referenceResult = TemporaryComputerActivationRefV1Schema.nullable().safeParse(
+        document.target.authoring.temporaryComputerActivationRef?.value ?? null,
+    );
+    const publicRef = referenceResult.success ? referenceResult.data : null;
+    return {
+        isTemporaryComputer: (targetResult.success && targetResult.data?.kind === 'temporary_computer') || publicRef !== null,
+        publicRef,
+    };
+}
+
+function runnerDraftStatusKey(status: TemporaryComputerLaunchStatus): Parameters<typeof t>[0] | null {
+    if (status === 'idle') return null;
+    return `newSession.temporaryComputer.status.${status}` as Parameters<typeof t>[0];
+}
+
+export function isNewSessionDraftDeletionBlocked(input: Readonly<{
+    draft: NewSessionDraftProjection;
+    accountId: string;
+    operations: Parameters<typeof isNewSessionDraftLaunchInCustody>[0]['operations'];
+}>): boolean {
+    if (resolveRunnerDraftActivation(input.draft).isTemporaryComputer) return false;
+    return isNewSessionDraftLaunchInCustody({
+        accountId: input.accountId,
+        launchUserAttemptId: input.draft.localSupplement.launchUserAttemptId,
+        operations: input.operations,
+    });
 }
 
 export function resolveNewSessionDraftMachineUnavailable(input: Readonly<{
@@ -85,18 +188,39 @@ const stylesheet = StyleSheet.create(() => ({
 const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonly<{
     draft: NewSessionDraftProjection;
     availability?: NewSessionDraftAvailabilitySummary;
-    onContinue: (draftId: string) => void;
-    onDelete: (draftId: string) => Promise<boolean>;
+    onContinue: (draftId: string, scope?: ServerAccountScope) => void;
+    onDelete: (draftId: string, scope?: ServerAccountScope) => Promise<boolean>;
     pressableRef: React.Ref<FocusableDraftTarget>;
     deleteDisabled: boolean;
     density: SessionRowDensity;
     serverId: string | null;
+    runnerActivationClient: RunnerActivationClient | null;
+    rowScope?: ServerAccountScope;
 }>) {
     const { theme } = useUnistyles();
     const isTablet = useIsTablet();
     const presentation = buildNewSessionDraftRowPresentation(props.draft, props.availability);
+    // Schema parsing returns a fresh public-reference object. Preserve it for
+    // the draft revision so the observer effect does not refetch on each state
+    // projection and create a render/request loop.
+    const runnerActivation = React.useMemo(
+        () => resolveRunnerDraftActivation(props.draft),
+        [props.draft],
+    );
+    const runnerLaunch = useTemporaryComputerLaunchObservation({
+        client: runnerActivation.isTemporaryComputer ? props.runnerActivationClient : null,
+        // The wake that keeps this row truthful is published by the exact Home
+        // that owns the activation — the same Home the transport above targets.
+        serverId: props.serverId,
+        draftId: props.draft.draftId,
+        existingPublicRef: runnerActivation.publicRef,
+    });
     const draftId = props.draft.draftId;
-    const status = presentation.statusKey ? t(presentation.statusKey) : null;
+    const activationStatusKey = runnerDraftStatusKey(runnerLaunch.status);
+    const statusKey = props.draft.status === 'conflict'
+        ? presentation.statusKey
+        : activationStatusKey ?? presentation.statusKey;
+    const status = statusKey ? t(statusKey) : null;
     const minimal = props.density === 'minimal';
     const itemDensity = props.density === 'default'
         ? 'comfortable'
@@ -118,12 +242,7 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
         readableNativePhoneMinimal,
     });
     const agentId = resolveNewSessionDraftAgentId(props.draft);
-    const machineIdValue = props.draft.document.target.kind === 'newSession'
-        ? props.draft.document.target.authoring.machineId?.value
-        : null;
-    const machineId = typeof machineIdValue === 'string' && machineIdValue.trim()
-        ? machineIdValue.trim()
-        : null;
+    const machineId = resolveNewSessionDraftMachineId(props.draft);
     const subtitleTextMetrics = SESSION_LIST_ROW_STATUS_TEXT_METRICS[props.density];
     const accessibleSummary = [
         presentation.title, status, t('sessionDrafts.continueEditing'),
@@ -155,7 +274,9 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
                 />
             ) : undefined}
             iconBoxSize={minimal ? identityMetrics.slotSize : undefined}
-            onPress={() => props.onContinue(draftId)}
+            onPress={() => props.rowScope
+                ? props.onContinue(draftId, props.rowScope)
+                : props.onContinue(draftId)}
             accessibilityRole="button"
             accessibilityLabel={accessibleSummary}
             rightElement={(
@@ -176,7 +297,12 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                         onPress={(event) => {
                             event.stopPropagation();
-                            fireAndForget(props.onDelete(draftId), { tag: 'NewSessionDraftRow.delete' });
+                            fireAndForget(
+                                props.rowScope
+                                    ? props.onDelete(draftId, props.rowScope)
+                                    : props.onDelete(draftId),
+                                { tag: 'NewSessionDraftRow.delete' },
+                            );
                         }}
                     >
                         <Icon
@@ -197,11 +323,15 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
 export const NewSessionDraftsSectionView = React.memo(function NewSessionDraftsSectionView(props: Readonly<{
     drafts: readonly NewSessionDraftProjection[];
     availabilityByDraftId?: Readonly<Record<string, NewSessionDraftAvailabilitySummary>>;
-    onContinue: (draftId: string) => void;
-    onDelete: (draftId: string) => Promise<boolean>;
+    onContinue: (draftId: string, scope?: ServerAccountScope) => void;
+    onDelete: (draftId: string, scope?: ServerAccountScope) => Promise<boolean>;
     deleteDisabledDraftIds?: ReadonlySet<string>;
     density?: SessionRowDensity;
     serverId?: string | null;
+    sectionTitle?: string;
+    sectionTestID?: string;
+    runnerActivationClient?: RunnerActivationClient | null;
+    rowScope?: ServerAccountScope | null;
 }>) {
     const rowTargetsRef = React.useRef(new Map<string, FocusableDraftTarget>());
     const listFocusFallbackRef = useFocusReturnFallbackRef<FocusReturnTarget>();
@@ -220,10 +350,12 @@ export const NewSessionDraftsSectionView = React.memo(function NewSessionDraftsS
             .filter((candidate) => candidate.draftId !== draftId)
             .sort((left, right) => left.distance - right.distance || right.index - left.index)
             .map((candidate) => candidate.draftId);
-        const deleted = await props.onDelete(draftId);
+        const deleted = props.rowScope
+            ? await props.onDelete(draftId, props.rowScope)
+            : await props.onDelete(draftId);
         if (deleted) setPendingFocusRestore({ deletedDraftId: draftId, candidateDraftIds });
         return deleted;
-    }, [props.drafts, props.onDelete]);
+    }, [props.drafts, props.onDelete, props.rowScope]);
     React.useEffect(() => {
         if (!pendingFocusRestore) return;
         if (props.drafts.some((draft) => draft.draftId === pendingFocusRestore.deletedDraftId)) return;
@@ -238,9 +370,9 @@ export const NewSessionDraftsSectionView = React.memo(function NewSessionDraftsS
     }, [listFocusFallbackRef, pendingFocusRestore, props.drafts]);
     if (props.drafts.length === 0) return null;
     return (
-        <View testID="session-drafts-section" style={stylesheet.section}>
+        <View testID={props.sectionTestID ?? 'session-drafts-section'} style={stylesheet.section}>
             <ItemGroup
-                title={t('sessionDrafts.sectionTitle')}
+                title={props.sectionTitle ?? t('sessionDrafts.sectionTitle')}
                 containerStyle={stylesheet.group}
                 selectableItemCountOverride={props.drafts.length}
             >
@@ -255,6 +387,8 @@ export const NewSessionDraftsSectionView = React.memo(function NewSessionDraftsS
                         deleteDisabled={props.deleteDisabledDraftIds?.has(draft.draftId) === true}
                         density={props.density ?? 'default'}
                         serverId={props.serverId ?? null}
+                        runnerActivationClient={props.runnerActivationClient ?? null}
+                        rowScope={props.rowScope ?? undefined}
                     />
                 ))}
             </ItemGroup>
@@ -262,8 +396,7 @@ export const NewSessionDraftsSectionView = React.memo(function NewSessionDraftsS
     );
 });
 
-export function useNewSessionDraftProjections(): readonly NewSessionDraftProjection[] {
-    const scope = useActiveServerAccountScope();
+export function useNewSessionDraftProjections(scope: ServerAccountScope | null): readonly NewSessionDraftProjection[] {
     const subscribe = React.useCallback((listener: () => void) => (
         scope ? subscribeSessionDraftList(scope, listener) : () => undefined
     ), [scope]);
@@ -271,23 +404,35 @@ export function useNewSessionDraftProjections(): readonly NewSessionDraftProject
     return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
-export const NewSessionDraftsSection = React.memo(function NewSessionDraftsSection(props: Readonly<{
+const ServerScopedNewSessionDraftsSection = React.memo(function ServerScopedNewSessionDraftsSection(props: Readonly<{
+    scope: ServerAccountScope;
     density?: SessionRowDensity;
+    viewContext?: SessionListViewContext;
+    temporaryComputerOnly?: boolean;
+    inactiveScopeBinding?: ServerCredentialAccountScopeBinding;
 }>) {
     const router = useRouter();
-    const scope = useActiveServerAccountScope();
     const machines = useLaunchSelectionMachines();
     const machineListStatusByServerId = useMachineListStatusByServerId();
-    const drafts = useNewSessionDraftProjections();
+    const allDrafts = useNewSessionDraftProjections(props.scope);
+    const drafts = React.useMemo(() => (
+        props.temporaryComputerOnly
+            // An inactive Home contributes recovery rows only after a package
+            // activation exists. A merely selected Temporary-computer target is
+            // still that Home's ordinary authoring draft.
+            ? allDrafts.filter((draft) => resolveRunnerDraftActivation(draft).publicRef !== null)
+            : allDrafts
+    ), [allDrafts, props.temporaryComputerOnly]);
     const actionOperations = useAllActionOperations();
     const pluginProjection = useAppShellPluginUiProjection();
+    const serverProfilesGeneration = useServerProfilesGeneration();
     const deleteDisabledDraftIds = React.useMemo(() => new Set(drafts.flatMap((draft) => (
-        scope && isNewSessionDraftLaunchInCustody({
-            accountId: scope.accountId,
-            launchUserAttemptId: draft.localSupplement.launchUserAttemptId,
-            operations: actionOperations,
-        }) ? [draft.draftId] : []
-    ))), [actionOperations, drafts, scope]);
+            isNewSessionDraftDeletionBlocked({
+                draft,
+                accountId: props.scope.accountId,
+                operations: actionOperations,
+            }) ? [draft.draftId] : []
+    ))), [actionOperations, drafts, props.scope.accountId]);
     const onlineMachineIds = React.useMemo(() => new Set(
         machines.filter((machine) => isMachineOnline(machine)).map((machine) => machine.id),
     ), [machines]);
@@ -297,9 +442,7 @@ export const NewSessionDraftsSection = React.memo(function NewSessionDraftsSecti
             : null;
         const installedPluginIds = new Set(Object.keys(currentPluginProjection?.installedPackagesById ?? {}));
         return Object.fromEntries(drafts.map((draft) => {
-            const machineId = draft.document.target.kind === 'newSession'
-                ? draft.document.target.authoring.machineId?.value
-                : null;
+            const machineId = resolveNewSessionDraftMachineId(draft);
             const attachmentSummary = currentPluginProjection
                 ? summarizeComposerAttachmentDraftAvailability({
                     values: draft.document.composer.attachments.value,
@@ -310,7 +453,7 @@ export const NewSessionDraftsSection = React.memo(function NewSessionDraftsSecti
             return [draft.draftId, {
                 machineUnavailable: resolveNewSessionDraftMachineUnavailable({
                     machineId,
-                    inventoryCurrent: scope !== null && machineListStatusByServerId[scope.serverId] === 'idle',
+                    inventoryCurrent: machineListStatusByServerId[props.scope.serverId] === 'idle',
                     onlineMachineIds,
                 }),
                 ...attachmentSummary,
@@ -322,11 +465,67 @@ export const NewSessionDraftsSection = React.memo(function NewSessionDraftsSecti
         onlineMachineIds,
         pluginProjection.phase,
         pluginProjection.pluginUiProjection,
-        scope,
+        props.scope.serverId,
     ]);
-    const handleContinue = React.useCallback((draftId: string) => router.push({ pathname: '/new', params: { draftId } }), [router]);
-    const handleDelete = React.useCallback((draftId: string) => {
-        if (!scope) return Promise.resolve(false);
+    const handleContinue = React.useCallback((draftId: string, scope?: ServerAccountScope) => {
+        if (!scope) return;
+        router.push(buildNewSessionDraftContinueRoute(draftId, scope));
+    }, [router]);
+    const homeProfile = React.useMemo(
+        () => getServerProfileById(props.scope.serverId),
+        [props.scope.serverId, serverProfilesGeneration],
+    );
+    const activeRequest = React.useMemo(() => homeProfile ? createServerFetchAtEndpoint({
+        endpointUrl: homeProfile.serverUrl,
+        serverId: props.scope.serverId,
+    }) : null, [homeProfile, props.scope.serverId]);
+    const mountedRef = React.useRef(true);
+    React.useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+        };
+    }, []);
+    React.useEffect(() => {
+        if (!props.inactiveScopeBinding || !activeRequest) return;
+        let active = true;
+        fireAndForget(runWithSessionDraftRepositoryScopedRuntime({
+            binding: props.inactiveScopeBinding,
+            activeRequest,
+            operation: ({ scope, runtime, isCurrent }) => ensureSessionDraftRepositoryHydratedWithScopedRuntime({
+                scope,
+                runtime,
+                isCurrent: () => active
+                    && mountedRef.current
+                    && isCurrent(),
+            }),
+        }), { tag: 'NewSessionDraftsSection.hydrateInactiveScope' });
+        return () => {
+            active = false;
+        };
+    }, [activeRequest, props.inactiveScopeBinding]);
+    const sectionTitle = resolveNewSessionDraftSectionTitle({
+        serverId: props.scope.serverId,
+        homeName: homeDisplayName(props.scope.serverId),
+        viewContext: props.viewContext ?? { kind: 'global' },
+    });
+    const displayedSectionTitle = props.temporaryComputerOnly
+        ? resolveNewSessionDraftWaitingSectionTitle({
+            serverId: props.scope.serverId,
+            homeName: homeDisplayName(props.scope.serverId),
+        })
+        : sectionTitle;
+    const runnerActivationClient = React.useMemo(() => {
+        if (!activeRequest) return null;
+        return createRunnerActivationClient(createServerRequestForServerAccountScope({
+            scope: props.scope,
+            activeRequest,
+        }));
+    }, [activeRequest, props.scope]);
+    const handleDelete = React.useCallback((draftId: string, scope?: ServerAccountScope) => {
+        if (!scope || scope.serverId !== props.scope.serverId || scope.accountId !== props.scope.accountId) {
+            return Promise.resolve(false);
+        }
         return deleteNewSessionDraftAfterConfirmation({
             confirm: () => Modal.confirm(
                 t('sessionDrafts.delete.confirmTitle'),
@@ -337,15 +536,33 @@ export const NewSessionDraftsSection = React.memo(function NewSessionDraftsSecti
                 const currentDraft = listNewSessionDraftProjections(scope)
                     .find((draft) => draft.draftId === draftId);
                 if (!currentDraft) return 'missing';
-                return isNewSessionDraftLaunchInCustody({
+                return isNewSessionDraftDeletionBlocked({
+                    draft: currentDraft,
                     accountId: scope.accountId,
-                    launchUserAttemptId: currentDraft.localSupplement.launchUserAttemptId,
                     operations: readAllActionOperations(),
                 }) ? 'launch-custody' : 'deletable';
             },
-            deleteDraft: () => deleteSessionDraft({ scope, address: { kind: 'newSession', draftId } }),
+            // The canonical server tombstone atomically closes any pending Runner
+            // activation for this draft. A separate cancel call here would create
+            // a competing lifecycle and an offline race.
+            deleteDraft: () => {
+                if (!props.inactiveScopeBinding) {
+                    return deleteSessionDraft({ scope, address: { kind: 'newSession', draftId } });
+                }
+                if (!activeRequest) return Promise.resolve(false);
+                return runWithSessionDraftRepositoryScopedRuntime({
+                    binding: props.inactiveScopeBinding,
+                    activeRequest,
+                    operation: ({ runtime, isCurrent }) => deleteSessionDraftWithScopedRuntime({
+                        scope,
+                        address: { kind: 'newSession', draftId },
+                        runtime,
+                        isCurrent: () => mountedRef.current && isCurrent(),
+                    }),
+                }).then((deleted) => deleted === true);
+            },
         });
-    }, [scope]);
+    }, [activeRequest, props.inactiveScopeBinding, props.scope]);
 
     return (
         <NewSessionDraftsSectionView
@@ -355,7 +572,61 @@ export const NewSessionDraftsSection = React.memo(function NewSessionDraftsSecti
             onDelete={handleDelete}
             deleteDisabledDraftIds={deleteDisabledDraftIds}
             density={props.density}
-            serverId={scope?.serverId ?? null}
+            serverId={props.scope.serverId}
+            sectionTitle={displayedSectionTitle}
+            sectionTestID={props.temporaryComputerOnly
+                ? `session-drafts-waiting-section:${props.scope.serverId}:${props.scope.accountId}`
+                : undefined}
+            runnerActivationClient={runnerActivationClient}
+            rowScope={props.scope}
         />
+    );
+});
+
+// Waiting drafts stay outside the Session corpus. The focused Home keeps its
+// ordinary Drafts section, while authenticated inactive Homes project only
+// Temporary-computer drafts from their existing qualified repositories. This
+// preserves cross-Home recovery without creating a second draft corpus or
+// allowing the active Home to supply another row's Account scope.
+export const NewSessionDraftsSection = React.memo(function NewSessionDraftsSection(props: Readonly<{
+    density?: SessionRowDensity;
+    viewContext?: SessionListViewContext;
+}>) {
+    const activeScope = useActiveServerAccountScope();
+    const serverProfilesGeneration = useServerProfilesGeneration();
+    const serverIds = React.useMemo(
+        () => [...new Set(listServerProfiles().map(resolveServerProfileScopeId))].sort(),
+        [serverProfilesGeneration],
+    );
+    const credentialBindings = useServerCredentialAccountScopeBindings(serverIds);
+    const inactiveBindings = React.useMemo(() => {
+        if (!activeScope) return [];
+        return [...credentialBindings.values()].flatMap((binding) => (
+            binding.isCurrent()
+            && !areServerProfileIdentifiersEquivalent(binding.scope.serverId, activeScope.serverId)
+                ? [binding]
+                : []
+        ));
+    }, [activeScope, credentialBindings]);
+    if (!activeScope) return null;
+    return (
+        <>
+            <ServerScopedNewSessionDraftsSection
+                key={serverAccountScopeKeySuffix(activeScope)}
+                scope={activeScope}
+                density={props.density}
+                viewContext={props.viewContext}
+            />
+            {inactiveBindings.map((binding) => (
+                <ServerScopedNewSessionDraftsSection
+                    key={serverAccountScopeKeySuffix(binding.scope)}
+                    scope={binding.scope}
+                    density={props.density}
+                    viewContext={props.viewContext}
+                    temporaryComputerOnly
+                    inactiveScopeBinding={binding}
+                />
+            ))}
+        </>
     );
 });

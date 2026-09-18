@@ -56,16 +56,19 @@ export function buildSecretRequirementRouteParams(params: Readonly<{
 export function buildMachinePickerRouteParams(params: Readonly<{
     dataId?: string | null;
     draftId?: string | null;
+    machinePoolId?: string | null;
     selectedMachineId: string | null;
     targetServerId: string | null;
 }>): Readonly<{
     dataId?: string;
     draftId?: string;
+    machinePoolId?: string;
     selectedId?: string;
     spawnServerId?: string;
 }> {
     return {
         ...buildNewSessionContextRouteParams(params),
+        ...(params.machinePoolId ? { machinePoolId: params.machinePoolId } : {}),
         ...(params.selectedMachineId ? { selectedId: params.selectedMachineId } : {}),
     };
 }

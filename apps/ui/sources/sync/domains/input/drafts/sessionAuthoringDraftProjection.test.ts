@@ -6,7 +6,14 @@ describe('projectSyncedSessionAuthoringFields', () => {
     it('projects every catalogued synchronized launch selection and excludes private or duplicate owners', () => {
         const projected = projectSyncedSessionAuthoringFields({
             targetType: 'new_session',
-            executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+            executionTarget: {
+                kind: 'machine',
+                target: { serverId: 'server-a', machineId: 'machine-a' },
+                selectionOrigin: {
+                    kind: 'machine_pool',
+                    poolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+                },
+            },
             directory: '/workspace/repo',
             checkoutCreationDraft: {
                 kind: 'git_worktree',
@@ -45,7 +52,14 @@ describe('projectSyncedSessionAuthoringFields', () => {
 
         expect(projected).toEqual(expect.objectContaining({
             targetType: 'new_session',
-            executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+            executionTarget: {
+                kind: 'machine',
+                target: { serverId: 'server-a', machineId: 'machine-a' },
+                selectionOrigin: {
+                    kind: 'machine_pool',
+                    poolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+                },
+            },
             directory: '/workspace/repo',
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
             permissionMode: 'acceptEdits',
@@ -82,19 +96,19 @@ describe('projectSyncedSessionAuthoringFields', () => {
     it('isolates a malformed catalogued field without dropping valid siblings', () => {
         expect(projectSyncedSessionAuthoringFields({
             targetType: 'new_session',
-            executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-a', machineId: 'machine-a' } },
             directory: '',
             permissionMode: 'default',
         })).toEqual({
             targetType: 'new_session',
-            executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-a', machineId: 'machine-a' } },
             permissionMode: 'default',
         });
     });
 
     it('uses the synchronized draft schemas to reject private nested runtime and credential data', () => {
         expect(projectSyncedSessionAuthoringFields({
-            executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-a', machineId: 'machine-a' } },
             terminal: {
                 mode: 'tmux',
                 tmux: { sessionName: 'safe-name', tmpDir: '/private/local/path' },
@@ -114,7 +128,7 @@ describe('projectSyncedSessionAuthoringFields', () => {
             environmentVariables: { SECRET: 'must-not-sync' },
             sessionEncryptionKeyBase64: 'must-not-sync',
         })).toEqual({
-            executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-a', machineId: 'machine-a' } },
         });
     });
 });
@@ -137,7 +151,10 @@ describe('projectNewSessionDraftSyncedAuthoringFields', () => {
             scopeServerId: 'server-a',
         })).toMatchObject({
             targetType: 'new_session',
-            executionTarget: { serverId: 'server-b', machineId: 'machine-b' },
+            executionTarget: {
+                kind: 'machine',
+                target: { serverId: 'server-b', machineId: 'machine-b' },
+            },
             directory: '/repo',
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
             permissionMode: 'default',
@@ -159,7 +176,10 @@ describe('projectNewSessionDraftSyncedAuthoringFields', () => {
             },
             scopeServerId: 'server-a',
         })).toMatchObject({
-            executionTarget: { serverId: 'server-a', machineId: 'machine-b' },
+            executionTarget: {
+                kind: 'machine',
+                target: { serverId: 'server-a', machineId: 'machine-b' },
+            },
         });
     });
 
@@ -172,7 +192,14 @@ describe('projectNewSessionDraftSyncedAuthoringFields', () => {
                 selectedProfileId: null,
                 selectedSecretId: null,
                 targetServerId: 'server-compat',
-                executionTarget: { serverId: 'server-canonical', machineId: 'machine-canonical' },
+                executionTarget: {
+                    kind: 'machine',
+                    target: { serverId: 'server-canonical', machineId: 'machine-canonical' },
+                    selectionOrigin: {
+                        kind: 'machine_pool',
+                        poolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+                    },
+                },
                 agentType: 'claude',
                 agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
                 permissionMode: 'default',
@@ -181,7 +208,14 @@ describe('projectNewSessionDraftSyncedAuthoringFields', () => {
             },
             scopeServerId: 'server-a',
         })).toMatchObject({
-            executionTarget: { serverId: 'server-canonical', machineId: 'machine-canonical' },
+            executionTarget: {
+                kind: 'machine',
+                target: { serverId: 'server-canonical', machineId: 'machine-canonical' },
+                selectionOrigin: {
+                    kind: 'machine_pool',
+                    poolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+                },
+            },
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
         });
     });

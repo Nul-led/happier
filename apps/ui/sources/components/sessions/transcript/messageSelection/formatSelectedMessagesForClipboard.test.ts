@@ -54,4 +54,20 @@ describe('formatSelectedMessagesForClipboard', () => {
             roleLabels: { user: 'Utilisateur', assistant: 'Assistant FR' },
         })).toBe('**Utilisateur:**\n\nBonjour\n\n**Assistant FR:**\n\nSalut');
     });
+
+    it('uses a resolved per-message author label without changing plain copy text', () => {
+        const entries = [
+            { role: 'user' as const, label: 'Alice Example', text: 'First' },
+            { role: 'user' as const, label: 'Bob Example', text: 'Second' },
+        ];
+
+        expect(formatSelectedMessagesForClipboard(entries, {
+            format: 'markdown_labeled',
+            roleLabels,
+        })).toBe('**Alice Example:**\n\nFirst\n\n**Bob Example:**\n\nSecond');
+        expect(formatSelectedMessagesForClipboard(entries, {
+            format: 'plain',
+            roleLabels,
+        })).toBe('First\n\nSecond');
+    });
 });

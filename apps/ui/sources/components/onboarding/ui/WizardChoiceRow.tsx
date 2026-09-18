@@ -35,7 +35,7 @@ type WizardChoiceRowProps = Readonly<{
         disabled?: boolean;
         onPress: () => void;
     }>>;
-    onPress: () => void;
+    onPress: () => void | Promise<void>;
 }>;
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -91,7 +91,7 @@ export const WizardChoiceRow = React.memo(function WizardChoiceRow(props: Wizard
 
     const onPress = React.useCallback(() => {
         if (rowDisabled) return;
-        props.onPress();
+        return props.onPress();
     }, [props.onPress, rowDisabled]);
     const onKeyDown = React.useCallback((event: unknown) => {
         if (!isWeb || !event || typeof event !== 'object') return;

@@ -4,6 +4,7 @@ import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionLis
 import type { SessionFolderWorkspaceRefV1 } from '@/sync/domains/session/folders';
 
 import { buildSessionListDragSnapshot } from './sessionListDragSnapshot';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import { treeRowId } from '../drop-resolution/treeRowId';
 
 const workspaceA: SessionFolderWorkspaceRefV1 = {
@@ -66,11 +67,35 @@ function viewItems(): SessionListIndexItem[] {
 }
 
 describe('buildSessionListDragSnapshot', () => {
+    it('resolves a URL-shaped Home without parsing the list key', () => {
+        const serverId = 'https://home.example.test:8443';
+        const workspace = { ...workspaceA, serverId };
+        const item: Extract<SessionListIndexItem, { type: 'session' }> = {
+            ...sessionIndexItem('session:with:delimiters', 'project-a', null, 0),
+            serverId,
+            workspace,
+        };
+        const items: SessionListIndexItem[] = [
+            { ...projectHeader('project-a'), serverId, workspace },
+            item,
+        ];
+
+        const snapshot = buildSessionListDragSnapshot({
+            items,
+            viewItems: items,
+            sessionDragKey: sessionAddressKey({ serverId, sessionId: item.sessionId }),
+            foldersFeatureEnabled: true,
+        });
+
+        expect(snapshot.source.sourceRowId).toBe(treeRowId.session(serverId, item.sessionId));
+        expect(snapshot.source.treeSource.metadata).toMatchObject({ serverId, sessionId: item.sessionId });
+    });
+
     it('freezes tree topology (rows/drop zones/metadata) WITHOUT any pixel geometry', () => {
         const snapshot = buildSessionListDragSnapshot({
             items: indexItems(),
             viewItems: viewItems(),
-            sessionDragKey: 'server-a:inside-a',
+            sessionDragKey: sessionAddressKey({ serverId: 'server-a', sessionId: 'inside-a' }),
             foldersFeatureEnabled: true,
         });
 
@@ -100,7 +125,7 @@ describe('buildSessionListDragSnapshot', () => {
         const snapshot = buildSessionListDragSnapshot({
             items: indexItems(),
             viewItems: items,
-            sessionDragKey: 'server-a:inside-a',
+            sessionDragKey: sessionAddressKey({ serverId: 'server-a', sessionId: 'inside-a' }),
             foldersFeatureEnabled: true,
         });
 
@@ -113,13 +138,13 @@ describe('buildSessionListDragSnapshot', () => {
         const a = buildSessionListDragSnapshot({
             items: indexItems(),
             viewItems: viewItems(),
-            sessionDragKey: 'server-a:inside-a',
+            sessionDragKey: sessionAddressKey({ serverId: 'server-a', sessionId: 'inside-a' }),
             foldersFeatureEnabled: true,
         });
         const b = buildSessionListDragSnapshot({
             items: indexItems(),
             viewItems: viewItems(),
-            sessionDragKey: 'server-a:inside-a',
+            sessionDragKey: sessionAddressKey({ serverId: 'server-a', sessionId: 'inside-a' }),
             foldersFeatureEnabled: true,
         });
 
@@ -134,7 +159,7 @@ describe('buildSessionListDragSnapshot', () => {
         const snapshot = buildSessionListDragSnapshot({
             items: indexItems(),
             viewItems: viewItems(),
-            sessionDragKey: 'server-a:root-a',
+            sessionDragKey: sessionAddressKey({ serverId: 'server-a', sessionId: 'root-a' }),
             foldersFeatureEnabled: true,
         });
 
@@ -144,7 +169,7 @@ describe('buildSessionListDragSnapshot', () => {
             zone.role === 'sibling-before'
             && zone.targetRowId === treeRowId.session('server-a', 'root-a'));
         expect(siblingZone).toBeTruthy();
-        expect(siblingZone?.anchorRowId).toBe(treeRowId.folder('folder-a'));
+        expect(siblingZone?.anchorRowId).toBe(treeRowId.folder('server-a', 'folder-a'));
         expect(siblingZone).not.toHaveProperty('bounds');
 
         // Root-edge zones carry the first/last child row as their bounds anchor.
@@ -155,18 +180,18 @@ describe('buildSessionListDragSnapshot', () => {
         const rootBeforeFirst = snapshot.topology.dropZones.find((zone) =>
             zone.role === 'root-before-first'
             && zone.containerId === treeRowId.workspaceRoot('project-a'));
-        expect(rootBeforeFirst?.anchorRowId).toBe(treeRowId.folder('folder-a'));
+        expect(rootBeforeFirst?.anchorRowId).toBe(treeRowId.folder('server-a', 'folder-a'));
     });
 
     it('resolves a folder drag source from a folder drag key', () => {
         const snapshot = buildSessionListDragSnapshot({
             items: indexItems(),
             viewItems: viewItems(),
-            sessionDragKey: treeRowId.folder('folder-a'),
+            sessionDragKey: treeRowId.folder('server-a', 'folder-a'),
             foldersFeatureEnabled: true,
         });
 
-        expect(snapshot.source.sourceRowId).toBe(treeRowId.folder('folder-a'));
+        expect(snapshot.source.sourceRowId).toBe(treeRowId.folder('server-a', 'folder-a'));
         expect(snapshot.source.kind).toBe('container');
         // A folder container source excludes its own descendants from drop targets.
         expect(snapshot.source.treeSource.excludedDescendantIds.has(treeRowId.session('server-a', 'inside-a'))).toBe(true);

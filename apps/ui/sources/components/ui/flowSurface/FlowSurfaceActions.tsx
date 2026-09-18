@@ -4,6 +4,8 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 
+import { FLOW_SURFACE_CONTENT_INSET } from './FlowSurfaceChrome';
+
 export type FlowSurfaceAction = Readonly<{
     testID?: string;
     label: string;
@@ -20,6 +22,9 @@ export type FlowSurfaceActionsProps = Readonly<{
 
 const stylesheet = StyleSheet.create({
     container: {
+        // The actions belong to the card's content column, not to its edges.
+        paddingHorizontal: FLOW_SURFACE_CONTENT_INSET,
+        paddingBottom: FLOW_SURFACE_CONTENT_INSET,
         gap: 12,
     },
 });
@@ -32,8 +37,8 @@ export function FlowSurfaceActions(props: FlowSurfaceActionsProps) {
             <RoundButton
                 testID={props.primary.testID}
                 title={props.primary.label}
-                onPress={props.primary.onPress}
-                size="large"
+                action={() => Promise.resolve(props.primary.onPress())}
+                size="normal"
                 disabled={props.primary.disabled}
                 loading={props.primary.loading}
             />
@@ -41,8 +46,8 @@ export function FlowSurfaceActions(props: FlowSurfaceActionsProps) {
                 <RoundButton
                     testID={props.secondary.testID}
                     title={props.secondary.label}
-                    onPress={props.secondary.onPress}
-                    size="large"
+                    action={() => Promise.resolve(props.secondary!.onPress())}
+                    size="normal"
                     display={props.secondary.display ?? 'inverted'}
                     disabled={props.secondary.disabled}
                     loading={props.secondary.loading}

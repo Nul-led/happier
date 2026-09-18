@@ -86,6 +86,7 @@ function createMemoryPersistentArtifactStore() {
             const key = derivePluginReactNativePersistentArtifactKey(record.persistentIdentity);
             writes.push(key);
             records.set(key, record);
+            return 'persisted';
         },
         remove: async (requestedIdentity) => {
             const key = derivePluginUiPersistentArtifactKey(requestedIdentity);
@@ -119,13 +120,13 @@ describe('React Native bundle cache', () => {
         const originalTauriInternals = Object.getOwnPropertyDescriptor(globalThis, '__TAURI_INTERNALS__');
         const createBrowserStore = vi.fn(() => ({
             read: async () => null,
-            write: async () => undefined,
+            write: async () => 'persisted' as const,
             remove: async () => undefined,
             removeAccount: async () => undefined,
         }));
         const createTauriStore = vi.fn(() => ({
             read: async () => null,
-            write: async () => undefined,
+            write: async () => 'persisted' as const,
             remove: async () => undefined,
             removeAccount: async () => undefined,
             describeNativeResource: async () => null,
@@ -359,7 +360,7 @@ describe('React Native bundle cache', () => {
 
         allowRemoval();
         await removal;
-        await expect(write).resolves.toBeUndefined();
+        await expect(write).resolves.toBe('persisted');
         expect(persistent.records.get(derivePluginReactNativePersistentArtifactKey(identity))).toMatchObject({ bytes });
         scope.release();
     });
@@ -478,7 +479,7 @@ describe('React Native bundle cache', () => {
                 write: async (record) => {
                     beginWrite();
                     await writeGate;
-                    await persistent.store.write(record);
+                    return persistent.store.write(record);
                 },
             },
         });

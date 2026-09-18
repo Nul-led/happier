@@ -9,6 +9,8 @@ enum HappierCryptoWorkerDataKeyEnvelope {
   private static let nonceBytes = 24
   private static let macBytes = 16
   private static let sha512Bytes = 64
+  private static let dataKeyBytes = 32
+  private static let envelopeTotalBytes = envelopeVersionBytes + publicKeyBytes + nonceBytes + macBytes + dataKeyBytes
 
   static func decryptDataKeyEnvelopeV1Batch(_ items: [[String: String]]) -> [String?] {
     items.map { item in
@@ -32,7 +34,9 @@ enum HappierCryptoWorkerDataKeyEnvelope {
     guard recipientSecretKeyOrSeed.count == secretKeyBytes else {
       return nil
     }
-    guard envelope.count >= envelopeVersionBytes + publicKeyBytes + nonceBytes + macBytes else {
+    // The envelope carries exactly one fixed-size data key, so a differently
+    // sized but cryptographically valid envelope is rejected before opening.
+    guard envelope.count == envelopeTotalBytes else {
       return nil
     }
 
@@ -50,7 +54,7 @@ enum HappierCryptoWorkerDataKeyEnvelope {
     let secret = [UInt8](recipientSecretKeyOrSeed)
 
     if let opened = openBoxBundle(ephemeralPublicKey: ephemeralPublicKey, nonce: nonce, boxed: boxed, secretKey: secret) {
-      return Data(opened)
+      return opened.count == dataKeyBytes ? Data(opened) : nil
     }
 
     var hash = [UInt8](repeating: 0, count: sha512Bytes)
@@ -82,6 +86,9 @@ enum HappierCryptoWorkerDataKeyEnvelope {
       boxed: boxed,
       secretKey: Array(hash.prefix(secretKeyBytes))
     ) else {
+      return nil
+    }
+    guard openedFromSeed.count == dataKeyBytes else {
       return nil
     }
     return Data(openedFromSeed)

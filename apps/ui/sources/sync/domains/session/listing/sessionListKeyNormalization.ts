@@ -1,6 +1,6 @@
 import { normalizeTrimmedString } from './normalizeTrimmedString';
 
-import { LruMap } from '@/utils/cache/lruMap';
+import { normalizeSessionAddress, sessionAddressKey } from '../sessionAddress';
 
 export const EMPTY_SESSION_LIST_SERVER_KEY = '__unknown_server__';
 
@@ -18,18 +18,7 @@ const EMPTY_NORMALIZED_SESSION_LIST_KEY_PARTS: NormalizedSessionListKeyParts = {
     sessionKey: null,
 };
 
-function readMaxNormalizedSessionListKeyPartsCacheEntriesFromEnv(): number {
-    const raw = String(process.env.EXPO_PUBLIC_HAPPIER_SESSION_LIST_KEY_PARTS_CACHE_MAX ?? '').trim();
-    if (!raw) return 4096;
-    const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed)) return 4096;
-    return Math.max(1, Math.min(100_000, parsed));
-}
-
-const NORMALIZED_SESSION_LIST_KEY_PARTS_CACHE = new LruMap<string, NormalizedSessionListKeyParts>({
-    maxEntries: readMaxNormalizedSessionListKeyPartsCacheEntriesFromEnv(),
-});
-
+/** Normalizes the structured parts used by current Session-list owners. */
 export function normalizeSessionListKeyParts(
     serverIdRaw: unknown,
     sessionIdRaw?: unknown,
@@ -40,35 +29,29 @@ export function normalizeSessionListKeyParts(
         return EMPTY_NORMALIZED_SESSION_LIST_KEY_PARTS;
     }
 
-    const cacheKey = `${serverId}\u0000${sessionId}`;
-    const cachedParts = NORMALIZED_SESSION_LIST_KEY_PARTS_CACHE.get(cacheKey);
-    if (cachedParts) {
-        return cachedParts;
-    }
-
-    const normalizedParts = {
+    return {
         serverId,
         sessionId,
         serverKey: serverId || EMPTY_SESSION_LIST_SERVER_KEY,
-        sessionKey: serverId && sessionId ? `${serverId}:${sessionId}` : null,
+        sessionKey: serverId && sessionId ? sessionAddressKey({ serverId, sessionId }) : null,
     };
-    NORMALIZED_SESSION_LIST_KEY_PARTS_CACHE.set(cacheKey, normalizedParts);
-    return normalizedParts;
 }
 
 export function buildSessionListServerScopedRowKey(
     serverIdRaw: unknown,
     sessionIdRaw?: unknown,
 ): string | null {
-    const { serverId, sessionId } = normalizeSessionListKeyParts(serverIdRaw, sessionIdRaw);
-    return serverId && sessionId ? `${serverId}\u0000${sessionId}` : null;
+    const address = normalizeSessionAddress(serverIdRaw, sessionIdRaw);
+    return address ? sessionAddressKey(address) : null;
 }
 
 export function buildSessionListRowScopeKey(
     serverIdRaw: unknown,
     sessionIdRaw?: unknown,
 ): string | null {
-    const { serverId, sessionId } = normalizeSessionListKeyParts(serverIdRaw, sessionIdRaw);
+    const sessionId = typeof sessionIdRaw === 'string' ? sessionIdRaw.trim() : '';
     if (!sessionId) return null;
-    return serverId ? `${serverId}\u0000${sessionId}` : sessionId;
+    // A missing Home is used only by the incumbent active-Home row subscription.
+    if (serverIdRaw === null || serverIdRaw === undefined || serverIdRaw === '') return sessionId;
+    return buildSessionListServerScopedRowKey(serverIdRaw, sessionId);
 }

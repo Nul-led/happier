@@ -34,6 +34,7 @@ import {
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
 import { resolveTerminalSpawnOptions } from '@/sync/domains/settings/terminalSettings';
+import { resolveWindowsTerminalAvailable } from '@/capabilities/windowsTerminalAvailability';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import type { Settings } from '@/sync/domains/settings/settings';
@@ -117,6 +118,9 @@ export function useNewSessionAvailabilityState(params: Readonly<{
     capabilityServerId: string;
     externalSessionsFeatureEnabled: boolean;
     settings: Settings;
+    pluginSettings?: AgentPluginSettingsSnapshot | null;
+    pluginSettingsAgentId?: string | null;
+    pluginSettingsReadiness?: AgentPluginSettingsReadiness | null;
     /** Explicit bundled behavior backing for static New Session controls. */
     staticAgentId?: AgentId | null;
     /**
@@ -442,16 +446,10 @@ export function useNewSessionAvailabilityState(params: Readonly<{
     }, [isProfileAvailable, params.allProfiles]);
 
     const selectedMachineIsWindows = params.selectedMachine?.metadata?.platform === 'win32';
-    const windowsTerminalAvailable = React.useMemo(() => {
-        if (!selectedMachineIsWindows) return false;
-        const result = selectedMachineCapabilitiesSnapshot?.response.results['tool.windowsTerminal'];
-        if (result?.ok !== true) {
-            return false;
-        }
-        const data = result.data;
-        const available = data && typeof data === 'object' && 'available' in data ? data.available : false;
-        return available === true;
-    }, [selectedMachineCapabilitiesSnapshot, selectedMachineIsWindows]);
+    const windowsTerminalAvailable = React.useMemo(() => resolveWindowsTerminalAvailable({
+        targetIsWindows: selectedMachineIsWindows,
+        response: selectedMachineCapabilitiesSnapshot?.response,
+    }), [selectedMachineCapabilitiesSnapshot, selectedMachineIsWindows]);
 
     return {
         cliAvailability,

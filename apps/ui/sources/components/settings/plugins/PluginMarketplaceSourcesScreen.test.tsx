@@ -6,9 +6,11 @@ import type { MarketplaceSourceRegistryV1 } from '@happier-dev/protocol';
 import { flushHookEffects, renderSettingsView, standardCleanup } from '@/dev/testkit';
 import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
 import { t } from '@/text';
+import type { ActionInputForm } from '@/components/plugins/actions/actionInputForm';
 
 const mocks = vi.hoisted(() => ({
     prompt: vi.fn(),
+    show: vi.fn(),
     confirm: vi.fn(),
     alertAsync: vi.fn(),
     upsertMarketplaceSource: vi.fn(),
@@ -30,7 +32,7 @@ vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks
 }));
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock({
-    spies: { prompt: mocks.prompt, confirm: mocks.confirm, alertAsync: mocks.alertAsync },
+    spies: { prompt: mocks.prompt, show: mocks.show, confirm: mocks.confirm, alertAsync: mocks.alertAsync },
 }).module);
 // The composed settings state hook pulls in the whole daemon administration
 // environment (transport, capabilities, projections) behind its facade. This
@@ -110,6 +112,8 @@ function createRegistry(): MarketplaceSourceRegistryV1 {
 describe('PluginMarketplaceSourcesScreen', () => {
     beforeEach(() => {
         mocks.prompt.mockReset();
+        mocks.show.mockReset();
+        mocks.show.mockReturnValue('source-edit-form');
         mocks.confirm.mockReset();
         mocks.alertAsync.mockReset();
         mocks.upsertMarketplaceSource.mockReset();
@@ -133,14 +137,18 @@ describe('PluginMarketplaceSourcesScreen', () => {
     });
 
     it('edits a user source by replacing the same source identity when its URL changes', async () => {
-        mocks.prompt
-            .mockResolvedValueOnce('https://renamed.example.test/index.json')
-            .mockResolvedValueOnce('Renamed source')
-            .mockResolvedValueOnce('');
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
         await act(async () => {
             screen.pressRow('settings.plugins.sources.source.marketplace:user');
             await flushHookEffects();
+        });
+        const form = mocks.show.mock.calls.at(-1)?.[0]?.props.form as ActionInputForm;
+        expect(form).toBeDefined();
+        expect(form.getInput()).toEqual({ sourceUrl: 'https://mine.example.test/index.json', title: 'My source', description: '' });
+        await act(async () => {
+            form.replaceInput({ ...form.getInput(), sourceUrl: 'https://renamed.example.test/index.json' });
+            form.replaceInput({ ...form.getInput(), title: 'Renamed source' });
+            await form.submit();
         });
 
         expect(mocks.upsertMarketplaceSource).toHaveBeenCalledTimes(1);
@@ -187,20 +195,44 @@ describe('PluginMarketplaceSourcesScreen', () => {
         expect(screen.findRow('settings.plugins.sources.add')?.props.loading).toBe(false);
     });
 
-    it('abandons an edit when the optional description prompt is cancelled', async () => {
-        mocks.prompt
-            .mockResolvedValueOnce('https://renamed.example.test/index.json')
-            .mockResolvedValueOnce('Renamed source')
-            .mockResolvedValueOnce(null);
-
+    it('abandons the complete source draft when its form is cancelled', async () => {
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
         await act(async () => {
             screen.pressRow('settings.plugins.sources.source.marketplace:user');
             await flushHookEffects();
         });
+        const form = mocks.show.mock.calls.at(-1)?.[0]?.props.form as ActionInputForm;
+        expect(form).toBeDefined();
+        form.replaceInput({ ...form.getInput(), title: 'Unsaved name' });
+        form.cancel();
 
         expect(mocks.upsertMarketplaceSource).not.toHaveBeenCalled();
         expect(mocks.alertAsync).not.toHaveBeenCalled();
+    });
+
+    it('preserves all source fields for correction after an edit is rejected', async () => {
+        mocks.upsertMarketplaceSource.mockResolvedValueOnce({ status: 'unavailable' });
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.source.marketplace:user');
+            await flushHookEffects();
+        });
+        const form = mocks.show.mock.calls.at(-1)?.[0]?.props.form as ActionInputForm;
+        expect(form).toBeDefined();
+        const draft = { sourceUrl: 'https://new.example.test/index.json', title: 'New name', description: 'Keep this description' };
+        await act(async () => {
+            form.replaceInput(draft);
+            await form.submit();
+        });
+        expect(form.isRetired()).toBe(false);
+        expect(form.getInput()).toEqual(draft);
+        await act(async () => {
+            form.replaceInput({ ...form.getInput(), title: 'Corrected name' });
+            await form.submit();
+        });
+        expect(mocks.upsertMarketplaceSource).toHaveBeenLastCalledWith(expect.objectContaining({
+            ...draft, title: 'Corrected name', sourceId: 'marketplace:user',
+        }));
     });
 
     it('presents an error and releases the busy state when adding a source fails', async () => {

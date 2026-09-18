@@ -46,19 +46,6 @@ const INDEXING_CHIP_BEHAVIOR = Object.freeze({
 const BASE_PARAMS = {
     agentOptionState: { allowIndexing: false },
     showAutomationActionChips: false,
-    automationDraft: {
-        enabled: false,
-        name: '',
-        description: '',
-        triggers: [{
-            clientId: 'schedule-hourly',
-            definition: {
-                kind: 'schedule' as const,
-                enabled: true,
-                schedule: { kind: 'interval' as const, everyMs: 60 * 60_000 },
-            },
-        }],
-    },
     automationLabel: 'Automate',
     showServerPickerChip: false,
     targetServerId: null,
@@ -103,7 +90,7 @@ describe('useNewSessionAgentInputExtraActionChips (installed Agent)', () => {
                 runtimeCarrierAgentId: params.runtimeCarrierAgentId,
                 selectedMachineId: params.selectedMachineId,
                 setAgentOptionState: vi.fn(),
-                onAutomationChange: vi.fn(),
+                onOpenAutomationEditor: vi.fn(),
                 onTranscriptStorageChange: vi.fn(),
                 onWindowsRemoteSessionLaunchModeChange: vi.fn(),
                 onActionShortcutPress: vi.fn(),

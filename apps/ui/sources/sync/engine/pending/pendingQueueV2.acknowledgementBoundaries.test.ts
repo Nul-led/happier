@@ -322,8 +322,9 @@ function publishedLocalIds(): string[] {
         .map((message: PendingMessage) => message.localId ?? message.id);
 }
 
-function armSession(): ServerAccountScope {
-    const server = upsertServerProfile({ serverUrl: 'https://ack-boundary.example.test', name: 'AckBoundary' });
+async function armSession(): Promise<ServerAccountScope> {
+    const server = await upsertServerProfile({ serverUrl: 'https://ack-boundary.example.test', name: 'AckBoundary' });
+    await resetPendingQueueState({ serverId: server.id, accountId: 'account' });
     storage.getState().applySessions([{
         ...buildSession({ sessionId: SESSION_ID }),
         encryptionMode: 'plain',
@@ -331,12 +332,12 @@ function armSession(): ServerAccountScope {
     }]);
     storage.getState().applyMessages(SESSION_ID, [committedTwin('ack-boundary-loaded-tail', LOADED_HEAD_SEQ)]);
     storage.getState().applyMessagesLoaded(SESSION_ID);
-    setActiveServerId(server.id, { scope: 'tab' });
+    await setActiveServerId(server.id, { scope: 'device' });
     return { serverId: server.id, accountId: 'account' } as const;
 }
 
 describe('pending acknowledgement boundaries', () => {
-    beforeEach(() => resetPendingQueueState());
+    beforeEach(async () => await resetPendingQueueState());
 
     /**
      * The completeness gate. Adding an export without declaring its direction fails here, which is
@@ -357,7 +358,7 @@ describe('pending acknowledgement boundaries', () => {
          * and the response deletes a message the server owns.
          */
         it(`${exportName} keeps the localId it acknowledged when a pre-boundary read answers a successor`, async () => {
-            const scope = armSession();
+            const scope = await armSession();
             const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
             let release!: () => void;
@@ -407,7 +408,7 @@ describe('pending acknowledgement boundaries', () => {
      * canonical row. This is that case, and it is the one the branch cannot serve.
      */
     it('updatePendingMessageV2 keeps a canonical server row it acknowledged with no durable outbox custody', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         // The row reaches this client the only way a foreign device's row can: a completed snapshot.
@@ -469,7 +470,7 @@ describe('pending acknowledgement boundaries', () => {
      * recorded, the successor would skip and the witness would survive.
      */
     it('does not record a localId the server never acknowledged', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         await fetchAndApplyPendingMessagesV2({
@@ -530,7 +531,7 @@ describe('pending acknowledgement boundaries', () => {
      * elsewhere in this file: it survives only while a snapshot is being refused.
      */
     it('sendPendingDeliveryAsNewV2 refuses a pre-POST read that omits the replacement the server named', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
         const REPLACEMENT_LOCAL_ID = 'send-as-new-ack-boundary-replacement';
 
@@ -613,7 +614,7 @@ describe('pending acknowledgement boundaries', () => {
      * acknowledged` below: the accepted set dies with the in-flight chain.
      */
     it('records the enqueue acknowledgement above the branches that retire local custody', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         await fetchAndApplyPendingMessagesV2({
@@ -685,7 +686,7 @@ describe('pending acknowledgement boundaries', () => {
 
     /** The same ordering against the OTHER moved line: the replay POST's own acknowledgement. */
     it('records the replay acknowledgement above the branches that retire local custody', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         await fetchAndApplyPendingMessagesV2({
@@ -765,7 +766,7 @@ describe('pending acknowledgement boundaries', () => {
      * chain has to self-clear as soon as no predecessor is in flight.
      */
     it('does not skip forever when the server stops listing a localId a PATCH acknowledged', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         let release!: () => void;

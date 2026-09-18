@@ -5,6 +5,28 @@ import { loadHomeViewState } from '../server/serverProfiles';
 import { stripServerSelectionSettingsProjection } from '../server/selection/serverSelectionSettingsAdapter';
 import { getPersistenceStorage } from './persistenceStorage';
 
+type LocalAttentionSettingsMutationListener = () => void;
+const localAttentionSettingsMutationListeners = new Set<LocalAttentionSettingsMutationListener>();
+let localAttentionSettingsMutationToken = 0;
+
+export function subscribeLocalAttentionSettingsMutations(listener: LocalAttentionSettingsMutationListener): () => void {
+    localAttentionSettingsMutationListeners.add(listener);
+    return () => localAttentionSettingsMutationListeners.delete(listener);
+}
+
+/**
+ * In-process generation of this device's attention/preview/quiet-hours policy.
+ *
+ * A reconciliation that captured the policy also captures this value, so a
+ * later step can tell synchronously that the policy moved under it instead of
+ * re-reading a Home over the network. It is deliberately not persisted and
+ * carries no meaning across restarts: a restart re-reads the current policy
+ * anyway, so no second persisted generation exists to drift.
+ */
+export function readLocalAttentionSettingsMutationToken(): number {
+    return localAttentionSettingsMutationToken;
+}
+
 function settingsKey(): string {
     return 'settings';
 }
@@ -58,7 +80,17 @@ export function loadLocalSettings(): LocalSettings {
 
 export function saveLocalSettings(settings: LocalSettings) {
     const mmkv = getPersistenceStorage();
+    const previous = loadLocalSettings();
     mmkv.set(localSettingsKey(), JSON.stringify(settings));
+    if (
+        previous.deviceRemoteAlertsEnabled !== settings.deviceRemoteAlertsEnabled
+        || JSON.stringify(previous.attentionDeviceOverridesV1) !== JSON.stringify(settings.attentionDeviceOverridesV1)
+    ) {
+        localAttentionSettingsMutationToken += 1;
+        for (const listener of [...localAttentionSettingsMutationListeners]) {
+            try { listener(); } catch { /* local settings persistence remains authoritative */ }
+        }
+    }
 }
 
 export function loadPurchases(): Purchases {

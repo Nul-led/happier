@@ -65,6 +65,7 @@ export function buildNewSessionAuthoringContext(params: Readonly<{
             selectedPath: params.selectedPath,
             allowOfflineMachine: submissionMode === 'createAutomation',
             spawnReadiness: params.selectedMachineSpawnReadiness,
+            executionTarget: params.buildDraft(effectiveAutomationDraft).executionTarget,
         }),
         submissionMode,
         submitAccessibilityLabelKey: resolveSubmitAccessibilityLabelKey(submissionMode),

@@ -6,7 +6,7 @@ import { flushHookEffects, renderHook } from '@/dev/testkit';
 import type { ParticipantRecipientV1 } from '@happier-dev/protocol';
 
 import type { SessionParticipantTarget } from '@/sync/domains/session/participants/participantTargets';
-import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { ServerAccountScope, ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import {
     readSessionDraftValue,
     resetSessionDraftValueCachesForTests,
@@ -69,6 +69,13 @@ function getActiveScope(): ServerAccountScope {
     return scope;
 }
 
+const activeAccountLifetime: ServerAccountScopeLifetime = Object.freeze({
+    scope: Object.freeze({ serverId: 'server-a', accountId: 'account-a' }),
+    isCurrent: () => activeScopeState.value?.serverId === 'server-a'
+        && activeScopeState.value.accountId === 'account-a',
+    onRetire: () => Object.freeze({ dispose: () => undefined }),
+});
+
 describe('useSessionRecipientState', () => {
     beforeEach(() => {
         activeScopeState.value = { serverId: 'server-a', accountId: 'account-a' };
@@ -93,14 +100,14 @@ describe('useSessionRecipientState', () => {
                 flushOptions: { cycles: 2, turns: 2 },
             },
         );
-        expect((hook.getCurrent() as any).executionRunDelivery).toBe('steer_if_supported');
+        expect((hook.getCurrent() as any).executionRunRequestedAction).toEqual({ v: 1, kind: 'enqueue' });
 
         await act(async () => {
-            (hook.getCurrent() as any).setExecutionRunDelivery('interrupt');
+            (hook.getCurrent() as any).setExecutionRunRequestedAction({ v: 1, kind: 'send_now' });
             await flushHookEffects({ cycles: 2, turns: 2 });
         });
 
-        expect((hook.getCurrent() as any).executionRunDelivery).toBe('interrupt');
+        expect((hook.getCurrent() as any).executionRunRequestedAction).toEqual({ v: 1, kind: 'send_now' });
         await hook.unmount();
     });
 
@@ -190,6 +197,7 @@ describe('useSessionRecipientState', () => {
                 useSessionRecipientState({
                     targets: nextTargets,
                     autoRecipient: auto,
+                    accountLifetime: activeAccountLifetime,
                     draftPersistence: {
                         sessionId: 'session-a',
                         surface: 'mainComposer',
@@ -222,6 +230,7 @@ describe('useSessionRecipientState', () => {
                 return useSessionRecipientState({
                     targets,
                     autoRecipient: null,
+                    accountLifetime: activeAccountLifetime,
                     draftPersistence: { sessionId: 'session-a', surface: 'mainComposer' },
                 });
             },
@@ -261,6 +270,7 @@ describe('useSessionRecipientState', () => {
                 return useSessionRecipientState({
                     targets: [{ ...persistedTarget }],
                     autoRecipient: null,
+                    accountLifetime: activeAccountLifetime,
                     draftPersistence: { sessionId: 'session-a', surface: 'mainComposer' },
                 });
             },
@@ -287,6 +297,7 @@ describe('useSessionRecipientState', () => {
                 useSessionRecipientState({
                     targets: nextTargets,
                     autoRecipient: auto,
+                    accountLifetime: activeAccountLifetime,
                     draftPersistence: {
                         sessionId: 'session-a',
                         surface: 'mainComposer',
@@ -313,13 +324,13 @@ describe('useSessionRecipientState', () => {
         writeExistingSessionDraft({
             scope: getActiveScope(),
             sessionId: 'session-a',
-            patch: { routing: { executionRunDelivery: 'interrupt' } },
+            patch: { routing: { executionRunRequestedAction: { v: 1, kind: 'send_now' } } },
             materializationIntent: 'userEdit',
         });
         writeExistingSessionDraft({
             scope: getActiveScope(),
             sessionId: 'session-b',
-            patch: { routing: { executionRunDelivery: 'invalid-delivery' } },
+            patch: { routing: { executionRunRequestedAction: 'invalid-delivery' } },
             materializationIntent: 'userEdit',
         });
 
@@ -328,6 +339,7 @@ describe('useSessionRecipientState', () => {
                 useSessionRecipientState({
                     targets: [target(auto)],
                     autoRecipient: auto,
+                    accountLifetime: activeAccountLifetime,
                     draftPersistence: {
                         sessionId,
                         surface: 'mainComposer',
@@ -339,12 +351,12 @@ describe('useSessionRecipientState', () => {
             },
         );
 
-        expect(hook.getCurrent().executionRunDelivery).toBe('interrupt');
+        expect(hook.getCurrent().executionRunRequestedAction).toEqual({ v: 1, kind: 'send_now' });
 
         await hook.rerender({ sessionId: 'session-b' });
         await flushHookEffects({ cycles: 2, turns: 2 });
 
-        expect(hook.getCurrent().executionRunDelivery).toBe('steer_if_supported');
+        expect(hook.getCurrent().executionRunRequestedAction).toEqual({ v: 1, kind: 'enqueue' });
         await hook.unmount();
     });
 
@@ -359,6 +371,7 @@ describe('useSessionRecipientState', () => {
             () => useSessionRecipientState({
                 targets: [target(manual)],
                 autoRecipient: null,
+                accountLifetime: activeAccountLifetime,
                 draftPersistence: {
                     sessionId: 'session-a',
                     surface: 'mainComposer',
@@ -369,12 +382,12 @@ describe('useSessionRecipientState', () => {
 
         await act(async () => {
             hook.getCurrent().setManualRecipient(manual);
-            hook.getCurrent().setExecutionRunDelivery('prompt');
+            hook.getCurrent().setExecutionRunRequestedAction({ v: 1, kind: 'enqueue' });
             await flushHookEffects({ cycles: 2, turns: 2 });
         });
 
         expect(readSessionDraftValue(activeScopeState.value, 'session-a', 'routing.recipient')).toEqual(manual);
-        expect(readSessionDraftValue(activeScopeState.value, 'session-a', 'routing.executionRunDelivery')).toBe('prompt');
+        expect(readSessionDraftValue(activeScopeState.value, 'session-a', 'routing.executionRunRequestedAction')).toEqual({ v: 1, kind: 'enqueue' });
         await hook.unmount();
     });
 
@@ -384,6 +397,7 @@ describe('useSessionRecipientState', () => {
             () => useSessionRecipientState({
                 targets: [target(auto)],
                 autoRecipient: auto,
+                accountLifetime: activeAccountLifetime,
                 draftPersistence: {
                     sessionId: 'session-a',
                     surface: 'mainComposer',
@@ -421,12 +435,12 @@ describe('useSessionRecipientState', () => {
 
         await act(async () => {
             hook.getCurrent().setManualRecipient(manual);
-            hook.getCurrent().setExecutionRunDelivery('interrupt');
+            hook.getCurrent().setExecutionRunRequestedAction({ v: 1, kind: 'send_now' });
             await flushHookEffects({ cycles: 2, turns: 2 });
         });
 
         expect(readSessionDraftValue(activeScopeState.value, 'session-a', 'routing.recipient')).toBeUndefined();
-        expect(readSessionDraftValue(activeScopeState.value, 'session-a', 'routing.executionRunDelivery')).toBeUndefined();
+        expect(readSessionDraftValue(activeScopeState.value, 'session-a', 'routing.executionRunRequestedAction')).toBeUndefined();
         await hook.unmount();
     });
 });

@@ -8,7 +8,6 @@ import {
 } from './resolveSessionListGroupingModes';
 
 export type SessionListIndexRebuildSettings = Readonly<{
-    groupInactiveSessionsByProject: boolean;
     activeGroupingV1?: SessionListGroupingMode;
     inactiveGroupingV1?: SessionListGroupingMode;
     sectionModeV1?: SessionListSectionMode;

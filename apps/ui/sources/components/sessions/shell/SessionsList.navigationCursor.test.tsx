@@ -2,10 +2,12 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { UniversalSearchRuntimeProvider } from '@/components/appShell/search/UniversalSearchRuntimeContext';
 import {
     readSessionNavigationCursor,
     resetSessionNavigationCursorForTests,
 } from '@/sync/domains/session/navigation/sessionNavigationCursorStore';
+import { buildServerScopedSessionKey } from '@/sync/domains/session/navigation/sessionNavigationOrder';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { VisibleSessionListPaneState } from '@/hooks/session/useVisibleSessionListPaneState';
 
@@ -92,7 +94,7 @@ async function renderListAndNeighbours(params: Readonly<{
     }
 
     const screen = await renderScreen(
-        <>
+        <UniversalSearchRuntimeProvider value={{ open: vi.fn(), buildCommands: () => [] }}>
             <SessionsListView
                 storageKind="all"
                 paneState={buildPaneState(params.items)}
@@ -105,7 +107,7 @@ async function renderListAndNeighbours(params: Readonly<{
                 }}
             />
             <NeighbourProbe />
-        </>,
+        </UniversalSearchRuntimeProvider>,
     );
     return { observed, screen };
 }
@@ -125,9 +127,9 @@ describe('SessionsList session-navigation cursor publication', () => {
         const cursor = readSessionNavigationCursor();
         expect(cursor?.identity.origin).toBe('session-list');
         expect(cursor?.entries.map((entry) => entry.sessionKey)).toEqual([
-            'server_a:s1',
-            'server_a:s2',
-            'server_a:s3',
+            buildServerScopedSessionKey('s1', 'server_a'),
+            buildServerScopedSessionKey('s2', 'server_a'),
+            buildServerScopedSessionKey('s3', 'server_a'),
         ]);
     });
 

@@ -1,3 +1,4 @@
+import { attachManagedSessionHumanPresenceSocket } from '@/sync/domains/session/humanPresence/attachManagedSessionHumanPresenceSocket';
 import { Socket } from 'socket.io-client';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { Encryption } from '@/sync/encryption/encryption';
@@ -15,11 +16,11 @@ import {
     RPC_ERROR_MESSAGES,
     RPC_METHODS,
     SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS,
-    resolveSocketRpcSessionWriteAuthorizationMethod,
+    resolveSocketRpcSessionAuthorization,
     type SocketRpcAuthorizationContext,
 } from '@happier-dev/protocol/rpc';
 import { handleUiBrowserRecordingCaptureFrameRequest } from '@/sync/domains/browser/recording/reverseCaptureHandler';
-import { serverFetch, StaleServerGenerationError } from '@/sync/http/client';
+import { serverFetch, StaleServerGenerationError, type ServerFetchOptions } from '@/sync/http/client';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import {
     getServerProfileById,
@@ -30,7 +31,6 @@ import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetr
 import { storage } from '@/sync/domains/state/storage';
 import {
     canonicalizeServerUrl,
-    resolveIndependentHttpsServerOrigin,
 } from '@/sync/domains/server/url/serverUrlCanonical';
 import {
     type ManagedConnectionState,
@@ -58,8 +58,9 @@ import {
 import {
     requireCurrentAccountStoredContentServerCompatibility,
 } from '@/sync/api/capabilities/accountStoredContentCompatibility';
-import { resolveActiveServerRuntimeOrigin } from '@/sync/runtime/nativeLoopbackTunnels/runtimeOrigin';
+import { isServerRuntimeTransportPublished, resolveActiveServerRuntimeOrigin } from '@/sync/runtime/nativeLoopbackTunnels/runtimeOrigin';
 import { getActiveServerHomeCarrier } from '@/sync/domains/server/serverRuntime';
+import { ServerScopedTransportUnavailableError } from '@/sync/runtime/homeCarrier';
 
 const STATIC_EXPO_PUBLIC_HAPPIER_SOCKET_ACK_AUTH_SETTLE_TIMEOUT_MS =
     process.env.EXPO_PUBLIC_HAPPIER_SOCKET_ACK_AUTH_SETTLE_TIMEOUT_MS;
@@ -231,6 +232,13 @@ export interface SyncSocketState {
 
 export type SyncSocketListener = (state: SyncSocketState) => void;
 
+/** Immutable origin of an inbound event from one concrete socket installation. */
+export type SyncSocketMessageContext = Readonly<{
+    serverId: string | null;
+}>;
+
+type SyncSocketMessageHandler = (data: any, context: SyncSocketMessageContext) => void;
+
 /**
  * Inbound machine-scoped reverse-RPC handler. Receives the already-decrypted request params and
  * returns the response payload that this socket will re-encrypt (machine-scoped e2ee) for the ack.
@@ -248,7 +256,7 @@ class ApiSocket {
     private socketTransportKey: string | null = null;
     private config: SyncSocketConfig | null = null;
     private encryption: Encryption | null = null;
-    private messageHandlers: Map<string, Set<(data: any) => void>> = new Map();
+    private messageHandlers: Map<string, Set<SyncSocketMessageHandler>> = new Map();
     private reconnectedListeners: Set<() => void> = new Set();
     private statusListeners: Set<(status: 'disconnected' | 'connecting' | 'connected' | 'error') => void> = new Set();
     private connectionStateListeners: Set<(state: ManagedConnectionState) => void> = new Set();
@@ -303,22 +311,30 @@ class ApiSocket {
         const hasCapturedServerTarget = Boolean(
             this.config.serverId && this.config.generation !== undefined,
         );
-        const runtimeOrigin = this.config.runtimeOrigin
-            || (hasCapturedServerTarget ? null : resolveActiveServerRuntimeOrigin(snapshot))
-            || serverUrl;
         const focusedProfile = getServerProfileById(this.config.serverId ?? snapshot.serverId);
-        const hasIndependentHttpsIngress = resolveIndependentHttpsServerOrigin(
-            focusedProfile?.publicServerUrl ?? '',
-        ) !== null;
+        if (
+            focusedProfile?.homeConnectionDescriptor
+            && (!this.config.serverId || this.config.serverId === snapshot.serverId)
+            && (this.config.generation === undefined || this.config.generation === snapshot.generation)
+            && canonicalizeServerUrl(endpoint) === canonicalizeServerUrl(snapshot.serverUrl)
+        ) {
+            // A disconnected socket is not subscribed to publication changes.
+            // Resume from the current owner, never its previously captured lease.
+            this.config.carrier = snapshot.carrier;
+            this.config.runtimeOrigin = snapshot.runtimeOrigin;
+            this.config.homeCarrier = getActiveServerHomeCarrier();
+        }
         // `carrier` is set by — and only by — a completed transport publication,
         // whether that published a runtime origin or a semantic carrier that has
         // none. Waiting on `runtimeOrigin` alone would strand a browser Home
         // whose verified carrier is exactly the thing without an origin.
-        const awaitsVerifiedIrohOrigin = Boolean(
-            focusedProfile?.irohEndpoint
-            && !(this.config.carrier ?? (hasCapturedServerTarget ? undefined : snapshot.carrier))
-            && !hasIndependentHttpsIngress,
-        );
+        const carrier = this.config.carrier ?? (hasCapturedServerTarget ? undefined : snapshot.carrier);
+        const awaitsVerifiedHomeCarrier = !isServerRuntimeTransportPublished({
+            serverId: this.config.serverId ?? snapshot.serverId, carrier,
+        });
+        const runtimeOrigin = this.config.runtimeOrigin
+            || (hasCapturedServerTarget || awaitsVerifiedHomeCarrier ? null : resolveActiveServerRuntimeOrigin(snapshot))
+            || serverUrl;
 
         if (
             this.reachabilityUnsubscribe
@@ -351,10 +367,18 @@ class ApiSocket {
                     || (this.config.generation !== undefined && this.config.generation !== nextSnapshot.generation)
                     || canonicalizeServerUrl(this.config.endpoint) !== canonicalizeServerUrl(nextSnapshot.serverUrl)
                 ) return;
-                const nextRuntimeOrigin = resolveActiveServerRuntimeOrigin(nextSnapshot) || this.config.endpoint;
-                this.config.runtimeOrigin = nextRuntimeOrigin;
                 this.config.carrier = nextSnapshot.carrier;
                 this.config.homeCarrier = getActiveServerHomeCarrier();
+                if (!isServerRuntimeTransportPublished(nextSnapshot)) {
+                    this.config.runtimeOrigin = undefined;
+                    // Unpublication is not authority to select canonical HTTPS.
+                    // The existing connection owner will publish its next policy
+                    // decision; meanwhile stop readiness and its socket traffic.
+                    void stopServerReachabilitySupervisor(this.config.endpoint, this.config.token);
+                    return;
+                }
+                const nextRuntimeOrigin = resolveActiveServerRuntimeOrigin(nextSnapshot) || this.config.endpoint;
+                this.config.runtimeOrigin = nextRuntimeOrigin;
                 void startServerReachabilitySupervisor({
                     serverUrl: this.config.endpoint,
                     token: this.config.token,
@@ -368,7 +392,7 @@ class ApiSocket {
             });
         }
 
-        if (awaitsVerifiedIrohOrigin) return;
+        if (awaitsVerifiedHomeCarrier) return;
 
         void startServerReachabilitySupervisor({
             serverUrl,
@@ -450,14 +474,14 @@ class ApiSocket {
     // Message Handling
     //
 
-    onMessage(event: string, handler: (data: any) => void) {
-        const handlers = this.messageHandlers.get(event) ?? new Set<(data: any) => void>();
+    onMessage(event: string, handler: SyncSocketMessageHandler) {
+        const handlers = this.messageHandlers.get(event) ?? new Set<SyncSocketMessageHandler>();
         handlers.add(handler);
         this.messageHandlers.set(event, handlers);
         return () => this.offMessage(event, handler);
     }
 
-    offMessage(event: string, handler: (data: any) => void) {
+    offMessage(event: string, handler: SyncSocketMessageHandler) {
         const handlers = this.messageHandlers.get(event);
         if (!handlers) {
             return;
@@ -520,7 +544,7 @@ class ApiSocket {
                 payload: encryptedParams,
                 timeoutMs: options?.timeoutMs,
                 requestId,
-                ...(resolveSocketRpcSessionWriteAuthorizationMethod(method)
+                ...(resolveSocketRpcSessionAuthorization(method)
                     ? {
                         authorization: {
                             kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE,
@@ -741,40 +765,44 @@ class ApiSocket {
     // HTTP Requests
     //
 
-    async request(path: string, options?: RequestInit): Promise<Response> {
+    async request(path: string, options?: RequestInit, requestOptions?: Pick<ServerFetchOptions, 'onIssued'>): Promise<Response> {
         if (!this.config) {
             throw new Error('SyncSocket not initialized');
         }
         const snapshot = getActiveServerSnapshot();
+        // Socket reconfiguration during credential loading must not retarget this request.
+        const endpoint = this.config.endpoint;
+        const serverId = this.config.serverId ?? snapshot.serverId;
+        const generation = this.config.generation ?? snapshot.generation;
         if (
-            (this.config.serverId && this.config.serverId !== snapshot.serverId)
-            || (this.config.generation !== undefined && this.config.generation !== snapshot.generation)
+            serverId !== snapshot.serverId
+            || generation !== snapshot.generation
         ) {
             throw new StaleServerGenerationError();
         }
-        const endpointComparableKey = createServerUrlComparableKey(this.config.endpoint);
+        const endpointComparableKey = createServerUrlComparableKey(endpoint);
         const activeServerComparableKey = createServerUrlComparableKey(snapshot.serverUrl);
         const serverLookupOptions =
             endpointComparableKey
             && activeServerComparableKey
             && endpointComparableKey === activeServerComparableKey
-            && (this.config.serverId ?? snapshot.serverId)
-                ? { serverId: this.config.serverId ?? snapshot.serverId }
+            && serverId
+                ? { serverId }
                 : undefined;
 
-        const credentials = await TokenStorage.getCredentialsForServerUrl(this.config.endpoint, serverLookupOptions);
+        const credentials = await TokenStorage.getCredentialsForServerUrl(endpoint, serverLookupOptions);
         if (!credentials) {
             throw new Error('No authentication credentials');
         }
         const afterCredentialRead = getActiveServerSnapshot();
         if (
-            afterCredentialRead.serverId !== (this.config.serverId ?? snapshot.serverId)
-            || afterCredentialRead.generation !== (this.config.generation ?? snapshot.generation)
+            afterCredentialRead.serverId !== serverId
+            || afterCredentialRead.generation !== generation
         ) {
             throw new StaleServerGenerationError();
         }
 
-        const url = `${this.config.endpoint}${path}`;
+        const url = `${endpoint}${path}`;
         const method = String(options?.method ?? 'GET').toUpperCase();
         const hasBody = options?.body != null;
         const hasSignal = Boolean(options?.signal);
@@ -789,7 +817,7 @@ class ApiSocket {
         const requestKey = canDedupe
             // Intentionally exclude `snapshot.generation` from the de-dupe key so concurrent callers still share
             // a single in-flight fetch even if the active server generation changes while bootstrapping.
-            ? `${this.config.serverId ?? snapshot.serverId ?? ''}:${method}:${url}:tk:${getOrCreateTokenCacheKey(credentials.token)}`
+            ? `${serverId ?? ''}:${method}:${url}:tk:${getOrCreateTokenCacheKey(credentials.token)}`
             : null;
 
         let response: Response;
@@ -804,7 +832,7 @@ class ApiSocket {
                         ...options,
                         headers,
                     },
-                    { includeAuth: false },
+                    { includeAuth: false, ...requestOptions },
                 ) as Promise<Response>;
                 this.inFlightHttpRequestsByKey.set(requestKey, promise);
                 try {
@@ -822,14 +850,14 @@ class ApiSocket {
                     ...options,
                     headers,
                 },
-                { includeAuth: false },
+                { includeAuth: false, ...requestOptions },
             );
         }
 
         const current = getActiveServerSnapshot();
         if (
-            current.generation !== (this.config.generation ?? snapshot.generation)
-            || current.serverId !== (this.config.serverId ?? snapshot.serverId)
+            current.generation !== generation
+            || current.serverId !== serverId
         ) {
             throw new StaleServerGenerationError();
         }
@@ -859,21 +887,10 @@ class ApiSocket {
         if (this.config && this.config.token !== newToken) {
             this.config.token = newToken;
 
-            const serverUrl = canonicalizeServerUrl(this.config.endpoint) || this.config.endpoint;
-            const runtimeOrigin = this.config.runtimeOrigin || serverUrl;
-            void startServerReachabilitySupervisor({
-                serverUrl,
-                token: newToken,
-                ...(canonicalizeServerUrl(runtimeOrigin) === canonicalizeServerUrl(serverUrl) ? {} : { runtimeOrigin }),
-                homeCarrier: 'homeCarrier' in this.config
-                    ? this.config.homeCarrier ?? null
-                    : getActiveServerHomeCarrier(),
-            });
-
             if (this.socket) {
                 this.disconnect();
-                this.connect();
             }
+            this.connect();
         }
     }
 
@@ -934,6 +951,10 @@ class ApiSocket {
         const hasCapturedServerTarget = Boolean(
             this.config.serverId && this.config.generation !== undefined,
         );
+        if (!isServerRuntimeTransportPublished({
+            serverId: this.config.serverId ?? snapshot.serverId,
+            carrier: this.config.carrier ?? (hasCapturedServerTarget ? undefined : snapshot.carrier),
+        })) throw new ServerScopedTransportUnavailableError();
         const transportEndpoint = this.config.runtimeOrigin
             || (hasCapturedServerTarget ? null : resolveActiveServerRuntimeOrigin(snapshot))
             || this.config.endpoint;
@@ -974,9 +995,16 @@ class ApiSocket {
                 }
             },
         );
-        this.installSocketEventHandlers(socket, statusDemandTransport.observeEphemeral);
+        const messageContext: SyncSocketMessageContext = Object.freeze({
+            serverId: String(this.config.serverId ?? '').trim() || null,
+        });
+        this.installSocketEventHandlers(socket, statusDemandTransport.observeEphemeral, messageContext);
 
         this.detachSocketTransportListeners = [
+            attachManagedSessionHumanPresenceSocket({
+                serverId: this.config.serverId ?? getActiveServerSnapshot().serverId,
+                token: this.config.token, socket, transport,
+            }),
             transport.onConnected(() => {
                 this.clearError();
                 this.updateStatus('connected');
@@ -1011,6 +1039,7 @@ class ApiSocket {
     private installSocketEventHandlers(
         socket: Socket,
         observeStatusDemandEphemeral: (update: unknown) => void,
+        messageContext: SyncSocketMessageContext,
     ) {
         socket.on?.('server:restarting', (payload: unknown) => {
             const config = this.config;
@@ -1039,7 +1068,7 @@ class ApiSocket {
                         return;
                     }
                     for (const handler of Array.from(handlers)) {
-                        handler(data);
+                        handler(data, messageContext);
                     }
                 },
             );

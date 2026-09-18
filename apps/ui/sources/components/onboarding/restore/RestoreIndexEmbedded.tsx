@@ -9,6 +9,8 @@ import { isWebMobileLikeQrScannerHost } from '@/utils/platform/webMobileHeuristi
 import { RestoreQrView } from '@/components/account/restore/RestoreQrView';
 import { RestoreScanComputerQrView } from '@/components/account/restore/RestoreScanComputerQrView';
 import type { HomeQrEntryIntent } from '@/auth/pairing/homeQrEntryIntent';
+import { PairingLinkEntryForm } from '@/components/account/restore/PairingLinkEntryForm';
+import { useScannedAuthUrlProcessor } from '@/hooks/auth/useScannedAuthUrlProcessor';
 
 export type RestoreIndexEmbeddedProps = Readonly<{
     entryIntent: HomeQrEntryIntent;
@@ -53,8 +55,21 @@ export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(pro
         || !props.reverseTargetProfileId
         || isNativePhone
         || isWebPhoneWithCamera;
-    const [currentView, setCurrentView] = React.useState<'qr' | 'scanner' | null>(null);
+    const { processAuthUrl } = useScannedAuthUrlProcessor({
+        allowedUrlKind: 'account',
+        homeQrEntryIntent: props.entryIntent,
+    });
+    const [currentView, setCurrentView] = React.useState<'qr' | 'scanner' | 'paste' | null>(null);
     const activeView = currentView ?? (showScannerFirst ? 'scanner' : 'qr');
+
+    if (activeView === 'paste') {
+        return (
+            <PairingLinkEntryForm
+                onBack={() => setCurrentView('scanner')}
+                onSubmit={processAuthUrl}
+            />
+        );
+    }
 
     return activeView === 'scanner' ? (
         <RestoreScanComputerQrView
@@ -63,6 +78,7 @@ export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(pro
             initialPairingLink={props.initialPairingLink}
             onBack={props.onBack}
             onOpenSecretKeyLogin={props.onOpenSecretKeyLogin}
+            onOpenPairingLinkEntry={() => setCurrentView('paste')}
             onShowQrInstead={props.reverseTargetProfileId ? () => setCurrentView('qr') : undefined}
             onNavigationLockChange={props.onNavigationLockChange}
         />

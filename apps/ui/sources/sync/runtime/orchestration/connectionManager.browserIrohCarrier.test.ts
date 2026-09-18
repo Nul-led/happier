@@ -1,10 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createTokenStorageModuleMock } from '@/dev/testkit';
 import { IrohError } from '@happier-dev/iroh-native';
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 
 const CANONICAL_URL = 'https://ingressless-home.example.test';
 const HOME_ENDPOINT_ID = 'a'.repeat(64);
 const RELAY_URLS = ['https://relay.happier.test/'];
+const HOME_DESCRIPTOR = {
+    v: 1, homeServerIdentityId: 'srv_home_a', canonicalServerUrl: CANONICAL_URL, revision: 1,
+    endpoints: [{ kind: 'iroh', endpointId: HOME_ENDPOINT_ID, relayUrls: RELAY_URLS }],
+} satisfies HomeConnectionDescriptorV1;
 
 const nativeRuntimeMock = {
     ensureHomeTunnel: vi.fn(async () => {
@@ -50,7 +56,10 @@ function mockEnvironment(options: Readonly<{
     profile?: Record<string, unknown> | null;
     browserHost?: boolean;
     snapshot?: Record<string, unknown>;
-}> = {}): Readonly<{ syncSwitchServer: ReturnType<typeof vi.fn> }> {
+}> = {}): Readonly<{
+    syncSwitchServer: ReturnType<typeof vi.fn>;
+    retryNow: ReturnType<typeof vi.fn>;
+}> {
     const snapshot = options.snapshot ?? {
         serverId: 'srv_home_a',
         serverUrl: CANONICAL_URL,
@@ -72,18 +81,20 @@ function mockEnvironment(options: Readonly<{
                 id: 'profile-a',
                 serverIdentityId: 'srv_home_a',
                 serverUrl: CANONICAL_URL,
-                irohEndpoint: { endpointId: HOME_ENDPOINT_ID, relayUrls: RELAY_URLS },
+                homeConnectionDescriptor: HOME_DESCRIPTOR,
             }
             : options.profile),
     }));
-    vi.doMock('@/auth/storage/tokenStorage', () => ({
-        TokenStorage: {
+    vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => await createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
             getCredentials: vi.fn(async () => ({ token: 'home-token', secret: 'home-secret' })),
             getCredentialsForServerUrl: vi.fn(async () => ({ token: 'home-token', secret: 'home-secret' })),
         },
     }));
     const syncSwitchServer = vi.fn(async () => {});
-    vi.doMock('@/sync/sync', () => ({ syncSwitchServer, sync: { retryNow: vi.fn() }, syncRestore: vi.fn() }));
+    const retryNow = vi.fn();
+    vi.doMock('@/sync/sync', () => ({ syncSwitchServer, sync: { retryNow }, syncRestore: vi.fn() }));
     vi.doMock('@/sync/http/client', () => ({ abortServerFetches: vi.fn() }));
     vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
         getIrohHomeTunnelRuntime: () => nativeRuntimeMock,
@@ -102,7 +113,7 @@ function mockEnvironment(options: Readonly<{
         >();
         return { ...actual, acquireBrowserIrohHomeCarrier: acquireBrowserCarrierSpy };
     });
-    return { syncSwitchServer };
+    return { syncSwitchServer, retryNow };
 }
 
 afterEach(() => {
@@ -127,13 +138,18 @@ describe('focused-Home browser Iroh carrier selection', () => {
         expect(acquireBrowserCarrierSpy).toHaveBeenCalledWith({
             purpose: 'authenticated_home',
             homeServerIdentityId: 'srv_home_a',
-            endpoint: { endpointId: HOME_ENDPOINT_ID, relayUrls: RELAY_URLS },
+            endpoint: expect.objectContaining({ endpointId: HOME_ENDPOINT_ID, relayUrls: RELAY_URLS }),
             canonicalServerUrl: CANONICAL_URL,
             credentials: { token: 'home-token', secret: 'home-secret' },
         });
         const published = publishSpy.mock.calls[0]?.[0] as Published;
         expect(published.carrier).toBe('iroh');
-        expect(published.homeCarrier).toBe(carrier);
+        expect(published.homeCarrier).toMatchObject({
+            leaseId: carrier.leaseId,
+            endpointId: carrier.endpointId,
+            request: carrier.request,
+            createWebSocket: carrier.createWebSocket,
+        });
         // No loopback listener exists in a browser, so no origin is invented.
         expect(published.runtimeOrigin).toBeUndefined();
         expect(publishSpy.mock.invocationCallOrder[0])
@@ -143,6 +159,7 @@ describe('focused-Home browser Iroh carrier selection', () => {
     it('keeps a native host on the native lease', async () => {
         nativeRuntimeMock.ensureHomeTunnel.mockResolvedValue({
             leaseId: 'native-lease',
+            homeServerIdentityId: 'srv_home_a',
             endpointId: HOME_ENDPOINT_ID,
             status: 'ready',
             runtimeOrigin: 'http://127.0.0.1:43123',
@@ -165,7 +182,9 @@ describe('focused-Home browser Iroh carrier selection', () => {
                 serverIdentityId: 'srv_home_a',
                 serverUrl: CANONICAL_URL,
                 publicServerUrl: 'https://public.example.test',
-                irohEndpoint: { endpointId: HOME_ENDPOINT_ID, relayUrls: RELAY_URLS },
+                homeConnectionDescriptor: {
+                    ...HOME_DESCRIPTOR, endpoints: [...HOME_DESCRIPTOR.endpoints, { kind: 'https', url: 'https://public.example.test' }],
+                },
             },
         });
 
@@ -188,6 +207,98 @@ describe('focused-Home browser Iroh carrier selection', () => {
         expect(publishSpy).not.toHaveBeenCalled();
     });
 
+    it('keeps focused recovery pinned to Iroh when the selected carrier becomes unavailable', async () => {
+        const carrier = createBrowserCarrier('browser-lease-before-suspend');
+        acquireBrowserCarrierSpy
+            .mockResolvedValueOnce(carrier)
+            .mockRejectedValueOnce(new IrohError('unavailable', 'browser Iroh suspended'));
+        mockEnvironment({
+            snapshot: {
+                serverId: 'srv_home_a',
+                serverUrl: CANONICAL_URL,
+                carrier: 'iroh',
+                generation: 42,
+            },
+            profile: {
+                id: 'profile-a',
+                serverIdentityId: 'srv_home_a',
+                serverUrl: CANONICAL_URL,
+                publicServerUrl: 'https://public.example.test',
+                homeConnectionDescriptor: {
+                    ...HOME_DESCRIPTOR,
+                    endpoints: [...HOME_DESCRIPTOR.endpoints, { kind: 'https', url: 'https://public.example.test' }],
+                },
+            },
+        });
+
+        const { switchConnectionToActiveServer, retryActiveServerConnection } = await import('./connectionManager');
+        await switchConnectionToActiveServer();
+        await expect(retryActiveServerConnection())
+            .rejects.toThrow('No verified transport is available for the target Home');
+
+        expect(carrier.release).toHaveBeenCalledTimes(1);
+        expect(publishSpy.mock.calls.map(([publication]) => publication.carrier)).toEqual(['iroh']);
+    });
+
+    it('reselects HTTPS when retrying a Home whose initial Iroh selection safely fell back', async () => {
+        acquireBrowserCarrierSpy.mockRejectedValue(new IrohError('unavailable', 'worker script missing'));
+        const { retryNow } = mockEnvironment({
+            snapshot: {
+                serverId: 'srv_home_a',
+                serverUrl: CANONICAL_URL,
+                carrier: 'https',
+                generation: 42,
+            },
+            profile: {
+                id: 'profile-a',
+                serverIdentityId: 'srv_home_a',
+                serverUrl: CANONICAL_URL,
+                publicServerUrl: 'https://public.example.test',
+                homeConnectionDescriptor: {
+                    ...HOME_DESCRIPTOR,
+                    endpoints: [...HOME_DESCRIPTOR.endpoints, { kind: 'https', url: 'https://public.example.test' }],
+                },
+            },
+        });
+
+        const { switchConnectionToActiveServer, retryActiveServerConnection } = await import('./connectionManager');
+        await switchConnectionToActiveServer();
+        await expect(retryActiveServerConnection()).resolves.toBeUndefined();
+
+        expect(publishSpy.mock.calls.map(([publication]) => publication.carrier)).toEqual(['https', 'https']);
+        expect(retryNow).toHaveBeenCalledTimes(1);
+    });
+
+    it('reselects the sole HTTPS carrier on focused retry', async () => {
+        const httpsDescriptor = {
+            ...HOME_DESCRIPTOR,
+            endpoints: [{ kind: 'https', url: 'https://public.example.test' }],
+        } satisfies HomeConnectionDescriptorV1;
+        const { retryNow } = mockEnvironment({
+            snapshot: {
+                serverId: 'srv_home_a',
+                serverUrl: CANONICAL_URL,
+                carrier: 'https',
+                generation: 42,
+            },
+            profile: {
+                id: 'profile-a',
+                serverIdentityId: 'srv_home_a',
+                serverUrl: CANONICAL_URL,
+                publicServerUrl: 'https://public.example.test',
+                homeConnectionDescriptor: httpsDescriptor,
+            },
+        });
+
+        const { switchConnectionToActiveServer, retryActiveServerConnection } = await import('./connectionManager');
+        await switchConnectionToActiveServer();
+        await expect(retryActiveServerConnection()).resolves.toBeUndefined();
+
+        expect(acquireBrowserCarrierSpy).not.toHaveBeenCalled();
+        expect(publishSpy.mock.calls.map(([publication]) => publication.carrier)).toEqual(['https', 'https']);
+        expect(retryNow).toHaveBeenCalledTimes(1);
+    });
+
     it('never falls back after an identity or authorization failure', async () => {
         acquireBrowserCarrierSpy.mockRejectedValue(new IrohError('identity_mismatch', 'proved another endpoint'));
         mockEnvironment({
@@ -196,7 +307,9 @@ describe('focused-Home browser Iroh carrier selection', () => {
                 serverIdentityId: 'srv_home_a',
                 serverUrl: CANONICAL_URL,
                 publicServerUrl: 'https://public.example.test',
-                irohEndpoint: { endpointId: HOME_ENDPOINT_ID, relayUrls: RELAY_URLS },
+                homeConnectionDescriptor: {
+                    ...HOME_DESCRIPTOR, endpoints: [...HOME_DESCRIPTOR.endpoints, { kind: 'https', url: 'https://public.example.test' }],
+                },
             },
         });
 

@@ -20,8 +20,12 @@ function resolveVoiceAgentRunMetadataSessionId(state: any): string | null {
 export async function resetVoiceAgentPersistenceState(params: Readonly<{
     stop: () => Promise<void>;
 }>): Promise<void> {
+    // Reset is one user intent. Bind its server-backed settings mutation before
+    // stopping the runtime so a Home focus change during that await cannot
+    // retarget the transcript invalidation to the newly active Account.
+    const expectedSettingsScope = storage.getState().settingsScope ?? null;
     await params.stop();
-    invalidatePersistentVoiceTranscript();
+    invalidatePersistentVoiceTranscript(expectedSettingsScope);
 
     const state = storage.getState() as any;
     const conversationSessionId = resolveVoiceAgentRunMetadataSessionId(state);

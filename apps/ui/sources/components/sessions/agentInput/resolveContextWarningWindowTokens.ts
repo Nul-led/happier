@@ -5,6 +5,7 @@ import { resolveSessionMachineId } from '@/sync/domains/session/external/resolve
 import { resolveSessionModelSelectionDisposition } from '@/sync/domains/models/resolveSessionModelSelectionDisposition';
 import type { CurrentSessionRunnerProcessIdentity } from '@/sync/domains/models/resolveSessionModelSelectionDisposition';
 import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessionControlMetadata';
 import { getAgentStaticModels } from '@happier-dev/agents';
 import {
@@ -39,19 +40,21 @@ function resolveCatalogContextWindowTokens(agentId: string, modelId: string): nu
 function resolveSessionContextWindowBehavior(
     agentId: string,
     metadata: Metadata | null | undefined,
+    accountScope?: ServerAccountScope | null,
 ): AgentUiBehavior['contextWindow'] {
-    return resolveAgentUiBehavior(agentId, resolveSessionMachineId(metadata)).contextWindow;
+    return resolveAgentUiBehavior(agentId, resolveSessionMachineId(metadata), accountScope).contextWindow;
 }
 
 function resolveBehaviorContextWindowTokensForModel(
     agentId: string,
     metadata: Metadata | null | undefined,
     model: Readonly<{ id?: unknown; description?: unknown }> | null | undefined,
+    accountScope?: ServerAccountScope | null,
 ): number | null {
     const modelId = normalizeModelId(model?.id);
     if (!modelId) return null;
     return normalizeContextWindowTokens(
-        resolveSessionContextWindowBehavior(agentId, metadata)?.getContextWindowTokensForModel?.({
+        resolveSessionContextWindowBehavior(agentId, metadata, accountScope)?.getContextWindowTokensForModel?.({
             modelId,
             description: model?.description,
         }),
@@ -69,6 +72,7 @@ type ContextUsageData = Readonly<{
 }> | null | undefined;
 
 export function resolveContextWindowTokens(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     agentId: string;
     agentTargetKey?: string | null;
     metadata: Metadata | null | undefined;
@@ -89,7 +93,7 @@ export function resolveContextWindowTokens(params: Readonly<{
     }
 
     const assumed = resolveAssumedContextWindowTokens(params);
-    const bumpForObservedUsage = resolveSessionContextWindowBehavior(params.agentId, params.metadata)
+    const bumpForObservedUsage = resolveSessionContextWindowBehavior(params.agentId, params.metadata, params.accountScope)
         ?.bumpContextWindowTokensForObservedUsage;
     return assumed === null || !bumpForObservedUsage
         ? assumed
@@ -100,6 +104,7 @@ export function resolveContextWindowTokens(params: Readonly<{
 }
 
 function resolveAssumedContextWindowTokens(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     agentId: string;
     agentTargetKey?: string | null;
     metadata: Metadata | null | undefined;
@@ -126,7 +131,9 @@ function resolveAssumedContextWindowTokens(params: Readonly<{
     const sessionModelsState = readSessionModelsState(params.metadata);
     const selectedModelId = normalizeModelId(contextSelection?.modelId);
     if (contextSelection !== null && contextSelection.providerConnectionId !== null) {
-        const bindingModel = providerBinding?.connectionId === contextSelection.providerConnectionId
+        const bindingModel = providerBinding
+            && 'connectionId' in providerBinding
+            && providerBinding.connectionId === contextSelection.providerConnectionId
             && normalizeModelId(providerBinding.model?.id) === selectedModelId
             ? providerBinding.model
             : null;
@@ -146,7 +153,7 @@ function resolveAssumedContextWindowTokens(params: Readonly<{
             ? sessionModelsState.availableModels.find((model) => normalizeModelId(model.id) === selectedModelId)
             : null;
         const contextWindowTokens = normalizeContextWindowTokens(matchingModel?.contextWindowTokens)
-            ?? resolveBehaviorContextWindowTokensForModel(params.agentId, params.metadata, matchingModel);
+            ?? resolveBehaviorContextWindowTokensForModel(params.agentId, params.metadata, matchingModel, params.accountScope);
         if (contextWindowTokens !== null) {
             return contextWindowTokens;
         }
@@ -156,6 +163,7 @@ function resolveAssumedContextWindowTokens(params: Readonly<{
         params.agentId,
         params.metadata,
         { id: selectedModelId },
+        params.accountScope,
     );
     if (behaviorContextWindowTokens !== null) {
         return behaviorContextWindowTokens;
@@ -163,11 +171,12 @@ function resolveAssumedContextWindowTokens(params: Readonly<{
 
     return resolveCatalogContextWindowTokens(params.agentId, selectedModelId)
         ?? normalizeContextWindowTokens(
-            resolveSessionContextWindowBehavior(params.agentId, params.metadata)?.getDefaultContextWindowTokens?.(),
+            resolveSessionContextWindowBehavior(params.agentId, params.metadata, params.accountScope)?.getDefaultContextWindowTokens?.(),
         );
 }
 
 export function resolveContextWarningWindowTokens(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     agentId: string;
     agentTargetKey?: string | null;
     metadata: Metadata | null | undefined;

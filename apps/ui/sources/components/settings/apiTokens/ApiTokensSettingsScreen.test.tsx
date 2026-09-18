@@ -17,11 +17,25 @@ const runtime = vi.hoisted(() => ({
     activeAccountScopeLifetime: null as ActiveServerAccountScopeLifetime | null,
     activeServerAccountScope: null as Readonly<{ serverId: string; accountId: string }> | null,
     activeServerAccountScopeListeners: new Set<() => void>(),
+    activeServerSnapshot: { serverId: 'server-a', serverUrl: 'https://home-a.example.test' },
     hostActivelyViewed: true,
     hostActivelyViewedListeners: new Set<() => void>(),
+    routeParams: {} as Record<string, string | undefined>,
+    setRouteParams: vi.fn(),
+    showCreateModal: vi.fn(),
 }));
 
 installSettingsViewCommonModuleMocks({
+    router: async () => {
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+        const routerMock = createExpoRouterMock({
+            router: { setParams: runtime.setRouteParams },
+        }).module;
+        return {
+            ...routerMock,
+            useLocalSearchParams: () => runtime.routeParams,
+        };
+    },
     storage: async () => {
         const React = await import('react');
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
@@ -38,6 +52,10 @@ installSettingsViewCommonModuleMocks({
         };
     },
 });
+
+vi.mock('./showApiTokenCreateModal', () => ({
+    showApiTokenCreateModal: (...args: unknown[]) => runtime.showCreateModal(...args),
+}));
 
 vi.mock('react-native-reanimated', async () => {
     const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
@@ -62,6 +80,10 @@ vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
 
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
     captureActiveServerAccountScopeLifetime: () => runtime.activeAccountScopeLifetime,
+}));
+
+vi.mock('@/sync/domains/server/serverRuntime', () => ({
+    getActiveServerSnapshot: () => runtime.activeServerSnapshot,
 }));
 
 vi.mock('@/sync/ops/actions/frontDoorRuntimeActionExecutor', () => ({
@@ -117,7 +139,8 @@ function createController(state: ApiTokenSettingsState) {
             getState: () => state,
             subscribe: () => () => {},
             refresh,
-            setCreateDraft: () => {},
+            refreshEncryptionAvailability: async () => {},
+            setCreateDraft: (_draft: ApiTokenSettingsState['createDraft']) => {},
             resetCreateDraft: () => {},
             createToken: async () => {},
             acknowledgeReveal: () => {},
@@ -130,6 +153,7 @@ function createController(state: ApiTokenSettingsState) {
             retire: () => {},
         } satisfies ApiTokenSettingsController,
         refresh,
+        refreshEncryptionAvailability: async () => {},
     };
 }
 
@@ -145,6 +169,7 @@ function createObservableController(initialState: ApiTokenSettingsState) {
             return () => listeners.delete(listener);
         },
         refresh,
+        refreshEncryptionAvailability: async () => {},
         setCreateDraft: () => {},
         resetCreateDraft: () => {},
         createToken: async () => {},
@@ -178,12 +203,88 @@ afterEach(() => {
     runtime.executeApiTokenAction.mockReset();
     runtime.activeAccountScopeLifetime = null;
     runtime.activeServerAccountScope = null;
+    runtime.activeServerSnapshot = { serverId: 'server-a', serverUrl: 'https://home-a.example.test' };
     runtime.activeServerAccountScopeListeners.clear();
     runtime.hostActivelyViewed = true;
     runtime.hostActivelyViewedListeners.clear();
+    runtime.routeParams = {};
+    runtime.setRouteParams.mockClear();
+    runtime.showCreateModal.mockClear();
 });
 
 describe('ApiTokensSettingsScreen', () => {
+    it('restores only the non-secret draft fields and reopens the existing create modal', async () => {
+        const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
+        runtime.activeServerAccountScope = { serverId: 'server-a', accountId: 'account-a' };
+        runtime.routeParams = {
+            resumeCreate: '1',
+            label: 'Release deploy',
+            expiry: '1y',
+            targetServerId: 'server-a',
+            targetServerUrl: 'https://home-a.example.test',
+            expectedAccountId: 'account-a',
+        };
+        const state: ApiTokenSettingsState = {
+            phase: 'ready', tokens: [], isRefreshing: false, listError: null,
+            createDraft: { label: '', expiryPreset: '90d' }, canCreateEncrypted: false,
+            recoveryTokenId: null, createPending: false, createError: null, reveal: null,
+            operation: null, operationTokenId: null, operationError: null, operationNotice: null,
+        };
+        const { controller } = createController(state);
+        const setCreateDraft = vi.spyOn(controller, 'setCreateDraft');
+
+        await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
+
+        expect(setCreateDraft).toHaveBeenCalledWith({ label: 'Release deploy', expiryPreset: '1y' });
+        expect(runtime.showCreateModal).toHaveBeenCalledWith(controller);
+        expect(runtime.setRouteParams).toHaveBeenCalledWith({
+            resumeCreate: undefined,
+            label: undefined,
+            expiry: undefined,
+            targetServerId: undefined,
+            targetServerUrl: undefined,
+            expectedAccountId: undefined,
+        });
+        expect(setCreateDraft.mock.calls[0]?.[0]).not.toHaveProperty('encryptionAccess');
+        expect(setCreateDraft.mock.calls[0]?.[0]).not.toHaveProperty('token');
+        expect(setCreateDraft.mock.calls[0]?.[0]).not.toHaveProperty('secret');
+    });
+
+    it('retires a recovery continuation instead of reopening creation on a different Home Account', async () => {
+        const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
+        runtime.activeServerAccountScope = { serverId: 'server-b', accountId: 'account-b' };
+        runtime.activeServerSnapshot = { serverId: 'server-b', serverUrl: 'https://home-b.example.test' };
+        runtime.routeParams = {
+            resumeCreate: '1',
+            label: 'Release deploy',
+            expiry: '1y',
+            targetServerId: 'server-a',
+            targetServerUrl: 'https://home-a.example.test',
+            expectedAccountId: 'account-a',
+        };
+        const state: ApiTokenSettingsState = {
+            phase: 'ready', tokens: [], isRefreshing: false, listError: null,
+            createDraft: { label: '', expiryPreset: '90d' }, canCreateEncrypted: false,
+            recoveryTokenId: null, createPending: false, createError: null, reveal: null,
+            operation: null, operationTokenId: null, operationError: null, operationNotice: null,
+        };
+        const { controller } = createController(state);
+        const setCreateDraft = vi.spyOn(controller, 'setCreateDraft');
+
+        await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
+
+        expect(setCreateDraft).not.toHaveBeenCalled();
+        expect(runtime.showCreateModal).not.toHaveBeenCalled();
+        expect(runtime.setRouteParams).toHaveBeenCalledWith({
+            resumeCreate: undefined,
+            label: undefined,
+            expiry: undefined,
+            targetServerId: undefined,
+            targetServerUrl: undefined,
+            expectedAccountId: undefined,
+        });
+    });
+
     it('puts the primary create action in the empty state without duplicating it in the header', async () => {
         const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
         const { controller } = createController({
@@ -192,6 +293,8 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -215,6 +318,8 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -247,6 +352,8 @@ describe('ApiTokensSettingsScreen', () => {
                     createdAt: '2026-08-22T12:00:00.000Z',
                     lastUsedAt: null,
                     expiresAt: null,
+                    hasEncryptionAccess: false,
+                    hasUnattendedTeamAccess: false,
                 }],
             },
         });
@@ -275,6 +382,8 @@ describe('ApiTokensSettingsScreen', () => {
             createdAt: '2026-08-22T12:00:00.000Z',
             lastUsedAt: null,
             expiresAt: null,
+            hasEncryptionAccess: false,
+            hasUnattendedTeamAccess: false,
         }, {
             tokenId: '22222222-2222-4222-8222-222222222222',
             label: 'Release',
@@ -282,6 +391,8 @@ describe('ApiTokensSettingsScreen', () => {
             createdAt: '2026-08-22T12:00:00.000Z',
             lastUsedAt: null,
             expiresAt: null,
+            hasEncryptionAccess: true,
+            hasUnattendedTeamAccess: false,
         }] as const;
         const { controller } = createController({
             phase: 'ready',
@@ -289,6 +400,8 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -320,6 +433,8 @@ describe('ApiTokensSettingsScreen', () => {
                     createdAt: '2026-08-22T12:00:00.000Z',
                     lastUsedAt: null,
                     expiresAt: null,
+                    hasEncryptionAccess: false,
+                    hasUnattendedTeamAccess: false,
                 }],
             },
         });
@@ -369,10 +484,14 @@ describe('ApiTokensSettingsScreen', () => {
                 createdAt: '2026-08-22T12:00:00.000Z',
                 lastUsedAt: null,
                 expiresAt: null,
+                hasEncryptionAccess: false,
+                hasUnattendedTeamAccess: false,
             }],
             isRefreshing: false,
             listError: 'auth_unavailable',
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -402,6 +521,8 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: 'auth_unavailable',
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -431,6 +552,8 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: true,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -454,6 +577,8 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: 'auth_unavailable',
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -480,6 +605,8 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: 'auth_unavailable',
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -509,6 +636,8 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -540,7 +669,7 @@ describe('ApiTokensSettingsScreen', () => {
         expect(runtime.shimmerRepeats).not.toHaveBeenCalled();
     });
 
-    it('pauses its single relative-time/expiry clock while hidden and refreshes both states when visible again', async () => {
+    it('shows exact expiry and pauses its single relative-time/expiry clock while hidden', async () => {
         vi.useFakeTimers();
         const now = Date.parse('2026-08-22T12:00:00.000Z');
         vi.setSystemTime(now);
@@ -553,11 +682,15 @@ describe('ApiTokensSettingsScreen', () => {
                 displayPrefix: 'hap_v1_11111111',
                 createdAt: new Date(now - 30_000).toISOString(),
                 lastUsedAt: null,
-                expiresAt: new Date(now + 7 * 24 * 60 * 60 * 1000 + 30_000).toISOString(),
+                expiresAt: new Date(now + 30_000).toISOString(),
+                hasEncryptionAccess: false,
+                hasUnattendedTeamAccess: false,
             }],
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -571,6 +704,10 @@ describe('ApiTokensSettingsScreen', () => {
         const relativeTimeNow = () => screen.findAll((node) => node.props?.atMs === now - 30_000)[0]?.props.nowMs;
 
         expect(relativeTimeNow()).toBe(now);
+        expect(screen.getTextContent()).toContain(new Date(now + 30_000).toLocaleString(undefined, {
+            dateStyle: 'medium',
+            timeStyle: 'short',
+        }));
         expect(screen.findByTestId('settings-api-tokens-status:11111111-1111-4111-8111-111111111111')).toBeNull();
 
         await act(async () => {
@@ -600,6 +737,8 @@ describe('ApiTokensSettingsScreen', () => {
             createdAt: '2026-08-22T12:00:00.000Z',
             lastUsedAt: null,
             expiresAt: null,
+            hasEncryptionAccess: false,
+            hasUnattendedTeamAccess: false,
         } as const;
         const tokenB = {
             tokenId: '22222222-2222-4222-8222-222222222222',
@@ -608,6 +747,8 @@ describe('ApiTokensSettingsScreen', () => {
             createdAt: '2026-08-22T12:00:00.000Z',
             lastUsedAt: null,
             expiresAt: null,
+            hasEncryptionAccess: true,
+            hasUnattendedTeamAccess: false,
         } as const;
         const initialState: ApiTokenSettingsState = {
             phase: 'ready',
@@ -615,6 +756,8 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -654,6 +797,8 @@ describe('ApiTokensSettingsScreen', () => {
             createdAt: '2026-08-22T12:00:00.000Z',
             lastUsedAt: null,
             expiresAt: null,
+            hasEncryptionAccess: false,
+            hasUnattendedTeamAccess: false,
         } as const;
         const otherToken = {
             tokenId: '22222222-2222-4222-8222-222222222222',
@@ -662,6 +807,8 @@ describe('ApiTokensSettingsScreen', () => {
             createdAt: '2026-08-22T12:00:00.000Z',
             lastUsedAt: null,
             expiresAt: null,
+            hasEncryptionAccess: false,
+            hasUnattendedTeamAccess: false,
         } as const;
         const initialState: ApiTokenSettingsState = {
             phase: 'ready',
@@ -669,6 +816,8 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: 'auth_unavailable',
             createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null,
             createPending: false,
             createError: null,
             reveal: null,
@@ -717,7 +866,9 @@ describe('ApiTokensSettingsScreen', () => {
         const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
         const initialState: ApiTokenSettingsState = {
             phase: 'ready', tokens: [], isRefreshing: false, listError: null,
-            createDraft: { label: '', expiryPreset: '90d' }, createPending: false,
+            createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null, createPending: false,
             createError: null, reveal: null, operation: null, operationTokenId: null,
             operationError: null, operationNotice: 'revoked',
         };
@@ -735,7 +886,9 @@ describe('ApiTokensSettingsScreen', () => {
         const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
         const observable = createObservableController({
             phase: 'ready', tokens: [], isRefreshing: false, listError: null,
-            createDraft: { label: '', expiryPreset: '90d' }, createPending: false,
+            createDraft: { label: '', expiryPreset: '90d' },
+            canCreateEncrypted: false,
+            recoveryTokenId: null, createPending: false,
             createError: null, reveal: null, operation: null, operationTokenId: null,
             operationError: 'invalid_request', operationNotice: null,
         });

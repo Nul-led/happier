@@ -14,9 +14,11 @@ import { FieldItem } from '@/components/ui/forms/FieldItem';
 import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Icon } from '@/components/ui/icons/Icon';
+import { layout } from '@/components/ui/layout/layout';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemGroupColumn, ItemGroupColumns } from '@/components/ui/lists/ItemGroupColumns';
+import { ItemList } from '@/components/ui/lists/ItemList';
 import { usePopoverBoundaryRef } from '@/components/ui/popover';
 import {
     SelectionList,
@@ -34,10 +36,10 @@ import {
     type AutomationTriggerEditorValue,
     type AutomationEditorTriggerDraft,
 } from '@/sync/domains/automations/automationEditorDraft';
+import { useKeyboardShortcutHandlers } from '@/keyboard';
 import { restoreFocusToBestTarget } from '@/keyboard/focusReturn';
 import { clampAutomationIntervalMinutes } from '@/sync/domains/automations/automationDraft';
 import { t } from '@/text';
-import { AutomationRecipeComposer } from './AutomationRecipeComposer';
 
 type ScheduleTriggerDefinition = Extract<AutomationTriggerDefinitionInput, Readonly<{ kind: 'schedule' }>>;
 
@@ -87,6 +89,33 @@ type AutomationTriggerEditorSharedProps = Readonly<{
     onCancel?: () => void;
     submitting?: boolean;
     submitDisabled?: boolean;
+    /**
+     * Why Save is refused, in the person's language, when it is.
+     *
+     * The host already knows the exact blocker it disabled Save for; this
+     * carries that same fact to the surface instead of leaving an inert button
+     * with no explanation. Nothing is revalidated here — an unnamed blocker
+     * stays `null` rather than being guessed at.
+     */
+    submitDisabledReason?: string | null;
+    /**
+     * The host's recipe editor, composed in the one shared create/edit position
+     * between the Automation's own metadata and its triggers.
+     *
+     * Every Automation authoring host — create, edit and the Session-origin
+     * wrapper — composes the shared Workflow definition editor through this one
+     * slot instead of owning a second recipe surface or a second page order, so
+     * a saved Automation and a saved workflow are authored by the same controls
+     * in the same reading order on every viewport.
+     */
+    recipeEditor?: React.ReactNode;
+    /**
+     * Host content that opens the scrolling document, ahead of the Automation's
+     * own metadata (the edit host's exact-turn staleness card). It scrolls with
+     * the document beneath the pinned page actions rather than competing with
+     * them for the fixed region.
+     */
+    leading?: React.ReactNode;
 }>;
 
 export type AutomationPluralEditorScreenProps = AutomationTriggerEditorSharedProps & Readonly<{
@@ -107,7 +136,6 @@ type AutomationTriggerEditorContentsProps = AutomationTriggerEditorSharedProps &
     onChange: (next: AutomationTriggerEditorValue) => void;
     onSubmit?: (draft: AutomationTriggerEditorValue) => void;
     variant: 'create' | 'edit' | 'embedded';
-    recipeEditor?: React.ReactNode;
 }>;
 
 type EditorState =
@@ -179,13 +207,38 @@ const stylesheet = StyleSheet.create((theme) => ({
         borderColor: theme.colors.border.default,
         backgroundColor: theme.colors.surface.base,
     },
+    /**
+     * The readable content column both authoring hosts used to apply around
+     * this composition; the pinned surface and the document share it.
+     */
+    content: {
+        maxWidth: layout.maxWidth,
+        alignSelf: 'center',
+        width: '100%',
+    },
+    /**
+     * The pinned page-action surface: opaque canvas plus the canonical hairline,
+     * so the document slides beneath it instead of showing through.
+     */
+    commandBar: {
+        backgroundColor: theme.colors.background.canvas,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: theme.colors.border.default,
+        paddingTop: 10,
+        paddingBottom: 10,
+        zIndex: 10,
+    },
     actions: {
         flexDirection: 'row',
         justifyContent: 'flex-end',
         gap: 10,
         paddingHorizontal: Platform.select({ ios: 32, default: 24 }),
-        paddingTop: 24,
-        paddingBottom: 10,
+    },
+    submitBlockedReason: {
+        color: theme.colors.text.destructive,
+        textAlign: 'right',
+        paddingHorizontal: Platform.select({ ios: 32, default: 24 }),
+        paddingBottom: 8,
     },
     actionButton: {
         minHeight: Platform.select({ ios: 44, android: 48, default: 44 }),
@@ -828,7 +881,101 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
         });
     }, [props.onSessionSelectionStale, props.resolveCurrentSessionTurn, updateLifecycleDefinition]);
 
-    return (
+    /**
+     * The page actions and the refusal reason, as one pinned surface.
+     *
+     * Every decision stays where it was — the host's `onSubmit`/`onCancel`,
+     * its `submitDisabled` fact and the reason it names — this only moves where
+     * they are presented. Rendered at the very bottom of the document, Create
+     * and Save sat beneath the composed recipe, the triggers and the software
+     * keyboard on a phone; here they stay on screen while the document scrolls
+     * beneath them, and the reason explaining a refused action travels with it.
+     */
+    const hasPageActions = props.onSubmit !== undefined || props.onCancel !== undefined;
+    /**
+     * The pinned Save, as the one submit path the control, the keyboard command
+     * and a host intent all press. Eligibility is enforced here rather than
+     * only on the pressable, so a refused Save stays refused however it is
+     * reached; the host names the reason beside the control.
+     */
+    const { onSubmit: submitPage } = props;
+    const submitBlocked = props.submitDisabled === true || props.submitting === true;
+    const submit = React.useCallback(() => {
+        if (submitPage === undefined || submitBlocked) return;
+        const submittedDraft = commitMatchCountDraft();
+        if (!submittedDraft) return;
+        submitPage(submittedDraft);
+    }, [commitMatchCountDraft, submitBlocked, submitPage]);
+    // `workflow.save` answers the same page Save as the visible control (UX
+    // §3.6); this page has no Run, so `workflow.run` is deliberately absent.
+    useKeyboardShortcutHandlers(React.useMemo(
+        () => (submitPage === undefined ? {} : { 'workflow.save': submit }),
+        [submit, submitPage],
+    ));
+    const actionSurface = hasPageActions ? (
+        <View testID="automation-editor-command-bar" style={styles.commandBar}>
+            <View style={styles.content}>
+                {props.onSubmit && props.submitDisabled === true && props.submitDisabledReason ? (
+                    /* The repairable cause, beside the control it disables. An
+                       inert Save with no sentence is the silent no-op the UX
+                       contract forbids. */
+                    <Text
+                        testID="automation-editor-submit-blocked-reason"
+                        accessibilityRole="alert"
+                        style={styles.submitBlockedReason}
+                    >
+                        {props.submitDisabledReason}
+                    </Text>
+                ) : null}
+                <View style={styles.actions}>
+                    {props.onCancel ? (
+                        <Pressable
+                            testID="automation-editor-cancel"
+                            accessibilityRole="button"
+                            disabled={props.submitting}
+                            onPress={props.onCancel}
+                            style={({ pressed }) => [
+                                styles.actionButton,
+                                props.submitting ? styles.disabled : null,
+                                pressed ? styles.kindButtonPressed : null,
+                            ]}
+                        >
+                            <Text>{t('common.cancel')}</Text>
+                        </Pressable>
+                    ) : null}
+                    {props.onSubmit ? (
+                        <Pressable
+                            testID="automation-editor-submit"
+                            accessibilityRole="button"
+                            accessibilityState={{
+                                disabled: props.submitDisabled === true || props.submitting === true,
+                                busy: props.submitting === true,
+                            }}
+                            {...(props.submitDisabled === true && props.submitDisabledReason
+                                ? { accessibilityHint: props.submitDisabledReason }
+                                : {})}
+                            disabled={submitBlocked}
+                            onPress={submit}
+                            style={({ pressed }) => [
+                                styles.actionButton,
+                                styles.primaryAction,
+                                props.submitDisabled || props.submitting ? styles.disabled : null,
+                                pressed ? styles.kindButtonPressed : null,
+                            ]}
+                        >
+                            <Text style={styles.primaryActionText}>
+                                {props.submitting
+                                    ? t('artifacts.saving')
+                                    : props.variant === 'edit' ? t('common.save') : t('common.create')}
+                            </Text>
+                        </Pressable>
+                    ) : null}
+                </View>
+            </View>
+        </View>
+    ) : null;
+
+    const document = (
         <View testID="automation-plural-editor" style={styles.root}>
             <ItemGroup title={t('automations.form.groupAutomationTitle')}>
                 <Item
@@ -1164,66 +1311,51 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                     ) : null}
                 </>
             ) : null}
-
-            {props.onSubmit || props.onCancel ? (
-                <View style={styles.actions}>
-                    {props.onCancel ? (
-                        <Pressable
-                            testID="automation-editor-cancel"
-                            accessibilityRole="button"
-                            disabled={props.submitting}
-                            onPress={props.onCancel}
-                            style={({ pressed }) => [
-                                styles.actionButton,
-                                props.submitting ? styles.disabled : null,
-                                pressed ? styles.kindButtonPressed : null,
-                            ]}
-                        >
-                            <Text>{t('common.cancel')}</Text>
-                        </Pressable>
-                    ) : null}
-                    {props.onSubmit ? (
-                        <Pressable
-                            testID="automation-editor-submit"
-                            accessibilityRole="button"
-                            accessibilityState={{
-                                disabled: props.submitDisabled === true || props.submitting === true,
-                                busy: props.submitting === true,
-                            }}
-                            disabled={props.submitDisabled === true || props.submitting === true}
-                            onPress={() => {
-                                const submittedDraft = commitMatchCountDraft();
-                                if (!submittedDraft) return;
-                                props.onSubmit?.(submittedDraft);
-                            }}
-                            style={({ pressed }) => [
-                                styles.actionButton,
-                                styles.primaryAction,
-                                props.submitDisabled || props.submitting ? styles.disabled : null,
-                                pressed ? styles.kindButtonPressed : null,
-                            ]}
-                        >
-                            <Text style={styles.primaryActionText}>
-                                {props.submitting
-                                    ? t('artifacts.saving')
-                                    : props.variant === 'edit' ? t('common.save') : t('common.create')}
-                            </Text>
-                        </Pressable>
-                    ) : null}
-                </View>
-            ) : null}
         </View>
+    );
+
+    // A host that offers no page action has nothing to pin and keeps its own
+    // single scroll owner; it receives the document alone, so no host nests two.
+    if (actionSurface === null) return document;
+
+    return (
+        <ItemList
+            testID="automation-editor-scroll"
+            style={{ paddingTop: 0 }}
+            // A form with focusable name, description, prompt and trigger
+            // fields: the list's shared native keyboard owner keeps the
+            // focused field above the keyboard instead of beneath it.
+            keyboardAware
+            keyboardShouldPersistTaps="handled"
+            // The action surface is the pinned first child, so the page's
+            // primary action stays reachable while the document scrolls under
+            // it and while the software keyboard occupies the bottom.
+            stickyHeaderIndices={[0]}
+        >
+            {actionSurface}
+            <View style={styles.content}>
+                {props.leading ?? null}
+                {document}
+            </View>
+        </ItemList>
     );
 });
 
-/** Recipe-independent editor used by embedded authoring surfaces. */
+/**
+ * Metadata + trigger editor for a host that owns the recipe draft itself.
+ *
+ * It is the same composition the full editor uses — including the shared
+ * `recipeEditor` position — for a host whose recipe is not yet an
+ * `AutomationEditorDraft`, so creation does not fabricate a recipe its save
+ * owner would immediately discard.
+ */
 export const AutomationTriggerEditor = React.memo(function AutomationTriggerEditor(
     props: AutomationTriggerEditorProps,
 ): React.ReactElement {
     return <AutomationTriggerEditorContents {...props} variant="embedded" />;
 });
 
-/** Full Automation editor composes the shared trigger editor with the canonical recipe owner. */
+/** Full Automation editor composes the shared trigger editor with its host's recipe editor. */
 export const AutomationPluralEditorScreen = React.memo(function AutomationPluralEditorScreen(
     props: AutomationPluralEditorScreenProps,
 ): React.ReactElement {
@@ -1238,7 +1370,6 @@ export const AutomationPluralEditorScreen = React.memo(function AutomationPlural
             onSubmit={props.onSubmit
                 ? (next) => props.onSubmit?.({ ...props.value, ...next })
                 : undefined}
-            recipeEditor={<AutomationRecipeComposer value={props.value} onChange={emitChange} />}
         />
     );
 });

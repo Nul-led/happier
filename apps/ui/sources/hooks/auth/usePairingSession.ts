@@ -5,11 +5,20 @@ import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollment
 import { buildRenderableHomeQrInviteDeepLink } from '@/auth/pairing/pairingUrl';
 import { createPairingSecret } from '@/auth/pairing/pairingSecret';
 import { completeTrustedHomeQrPairingRequest, InvalidTrustedHomeQrRequestError } from '@/auth/pairing/completeTrustedHomeQrPairingRequest';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { decodeBase64 } from '@/encryption/base64';
 import { pairingConsume, pairingStart, pairingStatus, type PairingCallTarget, type PairingStatus } from '@/sync/api/account/apiPairingAuth';
-import { getServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
+import {
+    FOREGROUND_FEATURE_PROBE_WAIT_BUDGET_MS,
+    getServerFeaturesSnapshot,
+    observeAuthenticatedServerFeaturesFresh,
+} from '@/sync/api/capabilities/serverFeaturesClient';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { buildHomeConnectionDescriptorForProfile, getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import {
+    buildHomeConnectionDescriptorForProfile,
+    getServerProfileById,
+    reconcileServerProfileHomeConnectionDescriptor,
+} from '@/sync/domains/server/serverProfiles';
 import { isRuntimeActive } from '@/utils/runtime/isRuntimeActive';
 
 type StartPairingResult = { ok: true } | { ok: false; status: number; reason?: 'invalid_invite' | 'update_required' };
@@ -49,6 +58,7 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
     const [requestedDeviceLabel, setRequestedDeviceLabel] = React.useState<string | null>(null);
     const [isStarting, setIsStarting] = React.useState(false);
     const isStartingRef = React.useRef(false);
+    const startingAbortRef = React.useRef<AbortController | null>(null);
     const generationRef = React.useRef(0);
     const activeRef = React.useRef<Readonly<{ lifecycle: StartedLifecycle; context: PairingContext }> | null>(null);
 
@@ -58,10 +68,18 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
     }, []);
     const clearSession = React.useCallback(() => {
         generationRef.current += 1; isStartingRef.current = false;
+        startingAbortRef.current?.abort(); startingAbortRef.current = null;
         const active = activeRef.current; activeRef.current = null; void active?.lifecycle.cancel();
         resetPresentation(false); setCompletionState('idle'); setIsStarting(false);
     }, [resetPresentation]);
-    React.useEffect(() => () => { generationRef.current += 1; const active = activeRef.current; activeRef.current = null; void active?.lifecycle.cancel(); }, []);
+    React.useEffect(() => () => {
+        generationRef.current += 1;
+        startingAbortRef.current?.abort();
+        startingAbortRef.current = null;
+        const active = activeRef.current;
+        activeRef.current = null;
+        void active?.lifecycle.cancel();
+    }, []);
     React.useEffect(() => { if (!(enabled && isAuthenticated)) clearSession(); }, [clearSession, enabled, isAuthenticated]);
 
     const startPairing = React.useCallback(async (): Promise<StartPairingResult> => {
@@ -69,14 +87,25 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
         if (isStartingRef.current) return { ok: false, status: 409 };
         const generation = ++generationRef.current;
         const isCurrent = () => generationRef.current === generation;
+        startingAbortRef.current?.abort();
+        const startingAbort = new AbortController();
+        startingAbortRef.current = startingAbort;
         const previous = activeRef.current; activeRef.current = null; await previous?.lifecycle.cancel();
         if (!isCurrent()) return { ok: false, status: 409 };
         isStartingRef.current = true; setIsStarting(true); setCompletionState('idle'); resetPresentation(false);
         let target: PairingCallTarget | null = null;
         let lifecycleOwnsTarget = false;
+        let observationTransport: Awaited<ReturnType<typeof resolveHomeEnrollmentTransport>> | null = null;
         try {
             const active = getActiveServerSnapshot();
-            const snapshot = await getServerFeaturesSnapshot({ serverId: active.serverId });
+            // A person is waiting on the QR: a Home that cannot answer promptly must
+            // surface the failure instead of holding the generating state open for the
+            // shared probe's full attempt bound. The shared request keeps running for
+            // the consumers still waiting on it.
+            const snapshot = await getServerFeaturesSnapshot({
+                serverId: active.serverId,
+                timeoutMs: FOREGROUND_FEATURE_PROBE_WAIT_BUDGET_MS,
+            });
             if (!isCurrent()) return { ok: false, status: 409 };
             if (snapshot.status === 'unsupported') {
                 setCompletionState('completion_failed');
@@ -85,41 +114,99 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
             if (snapshot.status !== 'ready') { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
             const observedIdentity = String(snapshot.serverIdentityId ?? '').trim();
             const profile = getServerProfileById(active.serverId);
-            const descriptor = profile ? buildHomeConnectionDescriptorForProfile(profile) : null;
-            if (!descriptor || !observedIdentity || descriptor.homeServerIdentityId !== observedIdentity) { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
-            const transport = await resolveHomeEnrollmentTransport(descriptor, { runtimeOrigin: active.runtimeOrigin, runtimeCarrier: active.carrier });
+            const retainedDescriptor = profile ? buildHomeConnectionDescriptorForProfile(profile) : null;
+            if (!retainedDescriptor || !observedIdentity || retainedDescriptor.homeServerIdentityId !== observedIdentity) { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
+            const credentials = await TokenStorage.getCredentialsForServerUrl(retainedDescriptor.canonicalServerUrl, {
+                serverId: retainedDescriptor.homeServerIdentityId,
+            });
+            if (!credentials) { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
+            observationTransport = await resolveHomeEnrollmentTransport(retainedDescriptor, {
+                runtimeOrigin: active.runtimeOrigin,
+                runtimeCarrier: active.carrier,
+                verification: { kind: 'authenticated', token: credentials.token },
+            });
+            if (!observationTransport.ok) { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
+            const authenticatedSnapshot = await observeAuthenticatedServerFeaturesFresh({
+                request: observationTransport.transport.createRequest({
+                    serverId: retainedDescriptor.homeServerIdentityId,
+                    credentials,
+                }),
+            });
+            if (!isCurrent()) return { ok: false, status: 409 };
+            const authenticatedIdentity = authenticatedSnapshot.status === 'ready'
+                ? String(authenticatedSnapshot.serverIdentityId ?? '').trim()
+                : '';
+            const descriptor = authenticatedSnapshot.status === 'ready'
+                ? authenticatedSnapshot.features.homeConnectionDescriptor
+                : null;
+            if (
+                !descriptor
+                || authenticatedIdentity !== retainedDescriptor.homeServerIdentityId
+                || descriptor.homeServerIdentityId !== retainedDescriptor.homeServerIdentityId
+            ) {
+                setCompletionState('completion_failed');
+                return { ok: false, status: 412 };
+            }
+            const reconciliation = await reconcileServerProfileHomeConnectionDescriptor({
+                serverUrl: retainedDescriptor.canonicalServerUrl,
+                observedServerIdentityId: authenticatedIdentity,
+                descriptor,
+                observation: 'exact',
+            });
+            if (reconciliation.kind !== 'applied' && reconciliation.kind !== 'unchanged') {
+                setCompletionState('completion_failed');
+                return { ok: false, status: 412 };
+            }
+            await observationTransport.transport.close();
+            observationTransport = null;
+            const transport = await resolveHomeEnrollmentTransport(descriptor, {
+                runtimeOrigin: active.runtimeOrigin,
+                runtimeCarrier: active.carrier,
+                verification: { kind: 'authenticated', token: credentials.token },
+            });
             if (!transport.ok) { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
             target = { ...transport.transport, serverId: active.serverId };
             if (!isCurrent()) return { ok: false, status: 409 };
             const immutableTarget = target;
             const started = await startDirectHomeQrLifecycle({
-                features: snapshot.features,
+                features: authenticatedSnapshot.features,
                 descriptor,
+                signal: startingAbort.signal,
                 adapters: {
                     randomBytes: async () => decodeBase64((await createPairingSecret()).secret, 'base64url'),
                     now: Date.now,
-                    start: async (body) => {
-                        const result = await pairingStart(body, immutableTarget);
+                    start: async ({ signal, ...body }) => {
+                        const result = await pairingStart(body, immutableTarget, { signal });
                         return result.ok ? { ok: true, pairId: result.data.pairId, expiresAt: result.data.expiresAt } : { ok: false, status: result.status };
                     },
                     poll: async ({ pairId, signal, timeoutMs }) => {
-                        if (!isRuntimeActive()) return { ok: true, status: { state: 'pending', pairId, expiresAt: new Date(Date.now() + timeoutMs).toISOString() } };
+                        if (!isRuntimeActive()) return { ok: false, reason: 'transient', status: 0 };
                         const result = await pairingStatus({ pairId }, immutableTarget, { signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) });
                         if (result.ok) { if (isCurrent()) setStatus(result.data); return { ok: true, status: result.data }; }
                         if (result.reason === 'not_found') return { ok: false, reason: 'not_found', status: result.status };
                         if (result.reason === 'http_error' && (result.status === 0 || result.status === 408 || result.status === 429 || result.status >= 500)) return { ok: false, reason: 'transient', status: result.status };
                         return { ok: false, reason: 'invalid', status: result.status };
                     },
-                    consume: async ({ pairId, intent, signal, timeoutMs }) => ({
-                        ok: (await pairingConsume(
+                    consume: async ({ pairId, intent, signal, timeoutMs }) => {
+                        const result = await pairingConsume(
                             { pairId, intent },
                             immutableTarget,
                             { signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) },
-                        )).ok,
-                    }),
-                    complete: async ({ context, status: requested, signal }) => {
-                        if (isCurrent()) { setDeepLink(null); setRequestedDeviceLabel(requested.requestedDeviceLabel); setCompletionState('adding'); }
-                        try { return await completeTrustedHomeQrPairingRequest({ context: { ...context, target: immutableTarget }, status: requested, signal }); }
+                        );
+                        if (result.ok) return { ok: true, outcome: 'cancelled' };
+                        return result.reason === 'already_decided'
+                            ? { ok: true, outcome: 'completion_won' }
+                            : { ok: false };
+                    },
+                    complete: async ({ context, requestedDeviceLabel, requesterPublicKey, signal }) => {
+                        if (isCurrent()) { setDeepLink(null); setRequestedDeviceLabel(requestedDeviceLabel); setCompletionState('adding'); }
+                        try {
+                            return await completeTrustedHomeQrPairingRequest({
+                                context: { ...context, target: immutableTarget },
+                                requesterPublicKey,
+                                signal,
+                            });
+                        }
                         catch (error) {
                             if (error instanceof InvalidTrustedHomeQrRequestError) throw new DirectHomeQrCompletionError('invalid');
                             if (error instanceof AccountCompletionError && error.retryable) { if (isCurrent()) setCompletionState('retrying'); throw new DirectHomeQrCompletionError('retryable'); }
@@ -138,6 +225,7 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
                 setCompletionState('completion_failed');
                 return { ok: false, status: started.status, ...(started.reason === 'invalid_invite' ? { reason: 'invalid_invite' as const } : {}) };
             }
+            if (started.kind === 'cancelled') return { ok: false, status: 409 };
             const context = { pairId: started.invite.pairId, target: immutableTarget, issuedAtMs: started.invite.issuedAtMs, expiresAtMs: started.invite.expiresAtMs };
             activeRef.current = { lifecycle: started, context };
             setPairingContext(context); setDeepLink(started.link); setQrAvailable(started.qrAvailable);
@@ -151,8 +239,14 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
                 else if (outcome.kind === 'failed') { resetPresentation(false); setCompletionState('completion_failed'); }
             });
             return { ok: true };
-        } catch { if (isCurrent()) setCompletionState('completion_failed'); return { ok: false, status: 500 }; }
+        } catch {
+            if (!isCurrent()) return { ok: false, status: 409 };
+            setCompletionState('completion_failed');
+            return { ok: false, status: 500 };
+        }
         finally {
+            if (startingAbortRef.current === startingAbort) startingAbortRef.current = null;
+            if (observationTransport?.ok) await observationTransport.transport.close().catch(() => {});
             if (target && !lifecycleOwnsTarget) await target.close().catch(() => {});
             if (isCurrent()) { isStartingRef.current = false; setIsStarting(false); }
         }
@@ -163,7 +257,8 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
         if (!active || completionState !== 'pending') return { ok: false, status: 409 };
         const result = await active.lifecycle.cancel();
         if (!result.ok) return { ok: false, status: 500 };
-        clearSession(); return { ok: true };
+        if (result.outcome === 'cancelled') clearSession();
+        return { ok: true };
     }, [clearSession, completionState]);
 
     const presentation = React.useMemo<PairingPresentation>(() => {

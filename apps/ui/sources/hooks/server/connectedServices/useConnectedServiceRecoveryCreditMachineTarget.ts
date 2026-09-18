@@ -5,7 +5,7 @@ import {
 } from '@happier-dev/agents';
 import {
     type AccountProfile,
-    type ConnectedServiceBindingSelectionV1,
+    type ConnectedServiceBindingSelectionV2,
     type ConnectedServiceId,
 } from '@happier-dev/protocol';
 
@@ -31,8 +31,18 @@ function buildRecordById<T extends Readonly<{ id: string }>>(items: ReadonlyArra
     return record;
 }
 
+/**
+ * Whether a session binding runs on this Account's own connected profile.
+ *
+ * The canonical session binding union is V2, so a `team_resource` selection is
+ * reachable here. A Team resource is bound by resource identity — its direct
+ * `disclosedMember` is a qualified Team account ref, never this Account's local
+ * profile id — so it is decisively not a match for a personal recovery credit,
+ * and Team delivery authority stays with its own owner rather than being
+ * re-decided here.
+ */
 function bindingTargetsProfile(params: Readonly<{
-    binding: ConnectedServiceBindingSelectionV1 | undefined;
+    binding: ConnectedServiceBindingSelectionV2 | undefined;
     services: ReadonlyArray<AccountProfileConnectedService>;
     /** Canonical qualified service key of the session bindings. */
     serviceKey: string;
@@ -74,7 +84,7 @@ function resolveConnectedServiceMachineTargetStatusForBinding(params: Readonly<{
     legacyServiceId: ConnectedServiceId | null;
     sessions: ReadonlyArray<Session> | null;
     machines: ReadonlyArray<Machine>;
-    matches: (binding: ConnectedServiceBindingSelectionV1 | undefined) => boolean;
+    matches: (binding: ConnectedServiceBindingSelectionV2 | undefined) => boolean;
 }>): ConnectedServiceBindingMachineTargetStatus {
     if (!params.sessions || params.sessions.length === 0) {
         return { machineId: null, reason: 'no_bound_session' };
@@ -117,7 +127,7 @@ function resolveConnectedServiceMachineTargetForBinding(params: Readonly<{
     legacyServiceId: ConnectedServiceId | null;
     sessions: ReadonlyArray<Session> | null;
     machines: ReadonlyArray<Machine>;
-    matches: (binding: ConnectedServiceBindingSelectionV1 | undefined) => boolean;
+    matches: (binding: ConnectedServiceBindingSelectionV2 | undefined) => boolean;
 }>): string | null {
     return resolveConnectedServiceMachineTargetStatusForBinding(params).machineId;
 }

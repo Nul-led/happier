@@ -16,6 +16,7 @@ async function loadClient(params?: Readonly<{
     response?: Response;
     retireBeforeRequest?: boolean;
     retireDuringRequest?: boolean;
+    lostResponse?: boolean;
     serverProtocolVersion?: number | null;
 }>) {
     vi.resetModules();
@@ -28,6 +29,7 @@ async function loadClient(params?: Readonly<{
             current = false;
             for (const callback of [...retireCallbacks]) callback();
         }
+        if (params?.lostResponse) throw new Error('Response lost after erase dispatch');
         return params?.response ?? new Response(JSON.stringify({ status: 'erased', changed: true }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -70,8 +72,8 @@ async function loadClient(params?: Readonly<{
     vi.doMock('@/sync/api/session/apiSocket', () => ({
         apiSocket: { request: activeRequest },
     }));
-    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-        captureSessionRequestAuthorityForServerAccountScope: captureAuthority,
+    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+        captureServerRequestAuthorityForServerAccountScope: captureAuthority,
     }));
 
     const client = await import('./eraseCurrentAccountPluginData');
@@ -179,19 +181,19 @@ describe('eraseCurrentAccountPluginData', () => {
         expect(client.transport).not.toHaveBeenCalled();
     });
 
-    it('aborts the in-flight request and drops a response after an Account switch', async () => {
+    it('retains exact erase settlement after an Account switch', async () => {
         const client = await loadClient({ retireDuringRequest: true });
 
         await expect(client.eraseCurrentAccountPluginData(input)).resolves.toEqual({
-            status: 'pending',
-            reason: 'unavailable',
+            status: 'completed',
+            changed: true,
         });
 
         const [, init] = client.transport.mock.calls[0]!;
         expect(init?.signal?.aborted).toBe(true);
     });
 
-    it('drops a response whose body resolves after the captured Account scope retires', async () => {
+    it('retains exact erase settlement whose body resolves after the captured Account scope retires', async () => {
         let markJsonStarted!: () => void;
         const jsonStarted = new Promise<void>((resolve) => { markJsonStarted = resolve; });
         let resolveJson!: (value: unknown) => void;
@@ -214,9 +216,21 @@ describe('eraseCurrentAccountPluginData', () => {
         resolveJson({ status: 'erased', changed: true });
 
         await expect(erase).resolves.toEqual({
-            status: 'pending',
-            reason: 'unavailable',
+            status: 'completed',
+            changed: true,
         });
+    });
+
+    it.each(['lost', 'malformed', 'http-error'] as const)('reports %s erase acknowledgement as outcome unknown without replay', async (failure) => {
+        const client = await loadClient({
+            retireDuringRequest: true,
+            lostResponse: failure === 'lost',
+            response: new Response('{}', { status: failure === 'http-error' ? 500 : 200 }),
+        });
+        await expect(client.eraseCurrentAccountPluginData(input)).resolves.toEqual({
+            status: 'pending', reason: 'outcome-unknown',
+        });
+        expect(client.transport).toHaveBeenCalledOnce();
     });
 
     it('fails closed before issuing an erase request when the server protocol is too old', async () => {

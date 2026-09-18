@@ -6,6 +6,7 @@ import {
 } from './adapter';
 import { createNativeSshTunnelSupervisor } from './supervisor';
 import { disposeIrohHomeTunnelRuntime, getIrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/runtime';
+import { irohMachineTransferRuntimeActivity } from '@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle';
 import type { IrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/types';
 import type {
     NativeSshCredentialsRef,
@@ -205,7 +206,7 @@ export function bindNativeTunnelRuntimeActivity(params: Readonly<{
             for (const runtime of runtimes) runtime.markSuspended();
             return;
         }
-        for (const runtime of runtimes) await runtime.markForeground();
+        await Promise.allSettled(runtimes.map(async (runtime) => await runtime.markForeground()));
     };
     if (!active) {
         for (const runtime of runtimes) runtime.markSuspended();
@@ -225,7 +226,7 @@ export function startNativeSshTunnelRuntimeAppStateLifecycle(): void {
         isActive: isRuntimeActive,
         subscribe: subscribeToRuntimeActiveChange,
         runtime: getNativeSshTunnelRuntime(),
-        additionalRuntimes: [getIrohHomeTunnelRuntime()],
+        additionalRuntimes: [getIrohHomeTunnelRuntime(), irohMachineTransferRuntimeActivity],
     });
 }
 

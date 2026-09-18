@@ -31,7 +31,7 @@ import {
     withAccountStoredContentCompatibilityRequestDeclaration,
     type AccountStoredContentCompatibilityHeaderResolution,
 } from '@/sync/http/accountStoredContentCompatibility';
-import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import {
     createAccountScopedCryptoMaterialSnapshotV1,
     convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
@@ -43,11 +43,22 @@ import {
     PluginAvailabilityUiArtifactPublishActionOutputV1Schema,
     PluginAvailabilityUiArtifactReadActionInputV1Schema,
     PluginAvailabilityUiArtifactReadActionOutputV1Schema,
+    PluginAvailabilityPackageAssetPublishActionInputV1Schema,
+    PluginAvailabilityPackageAssetPublishActionOutputV1Schema,
+    PackageAssetArchiveHeaderV1Schema,
+    PackageAssetArchiveBodyV1Schema,
+    normalizePackageAssetArchiveDescriptorV1,
+    encodePackageAssetArchiveBodyV1,
+    openPackageAssetArchiveV1,
     isPluginUiReleaseSlotCompatibleWithArtifactLinkV1,
     type PluginAvailabilityUiArtifactPublishActionInputV1,
     type PluginAvailabilityUiArtifactPublishActionOutputV1,
     type PluginAvailabilityUiArtifactReadActionInputV1,
     type PluginAvailabilityUiArtifactReadActionOutputV1,
+    type PluginAvailabilityPackageAssetPublishActionInputV1,
+    type PluginAvailabilityPackageAssetPublishActionOutputV1,
+    type PackageAssetArchiveV1,
+    type PackageAssetArchiveDescriptorV1,
 } from '@happier-dev/protocol/plugins/availability';
 import {
     createPluginUiArtifactArchiveV1,
@@ -178,10 +189,24 @@ export type ActivePluginAccountHostedArtifactPublishResult =
     }>
     | ActivePluginAccountHostedArtifactUnavailable;
 
+export type ActivePluginAccountPackageAssetsPublishInput = Readonly<{
+    accountLifetime: ActiveServerAccountScopeLifetime;
+    release: PluginAvailabilityPackageAssetPublishActionInputV1['release'];
+    archive: PackageAssetArchiveV1;
+    signal?: AbortSignal;
+}>;
+
+export type ActivePluginAccountPackageAssetsPublishResult =
+    | Readonly<{ kind: 'published'; value: PluginAvailabilityPackageAssetPublishActionOutputV1 }>
+    | ActivePluginAccountHostedArtifactUnavailable;
+
 export type ActivePluginAccountHostedArtifactPublisher = Readonly<{
     publish: (
         input: ActivePluginAccountHostedArtifactPublishInput,
     ) => Promise<ActivePluginAccountHostedArtifactPublishResult>;
+    publishPackageAssets: (
+        input: ActivePluginAccountPackageAssetsPublishInput,
+    ) => Promise<ActivePluginAccountPackageAssetsPublishResult>;
 }>;
 
 export type ActivePluginAccountHostedArtifactPublisherDependencies =
@@ -260,24 +285,6 @@ function archiveMatchesPublishSlot(input: Readonly<{
         && frameworkCompatibilityMatches;
 }
 
-function sameHostCompatibility(
-    left: PluginAvailabilityUiArtifactPublishActionInputV1['hostCompatibility'],
-    right: PluginAvailabilityUiArtifactPublishActionOutputV1['link']['compatibility'],
-): boolean {
-    return left.hostAppVersion === right.hostAppVersion
-        && left.hostUiApiVersion === right.hostUiApiVersion
-        && left.reactVersion === right.reactVersion
-        && left.reactNativeVersion === right.reactNativeVersion
-        && left.expoRuntimeVersion === right.expoRuntimeVersion
-        && left.hermesVersion === right.hermesVersion
-        && left.platform === right.platform
-        && left.channel === right.channel
-        && left.nativeCapabilities.length === right.nativeCapabilities.length
-        && left.nativeCapabilities.every((capability, index) => (
-            capability === right.nativeCapabilities[index]
-        ));
-}
-
 function publishResponseMatchesExpected(input: Readonly<{
     response: PluginAvailabilityUiArtifactPublishActionOutputV1;
     request: PluginAvailabilityUiArtifactPublishActionInputV1;
@@ -288,9 +295,9 @@ function publishResponseMatchesExpected(input: Readonly<{
         && link.contributionId === input.request.slot.contributionId
         && link.tier === input.request.slot.tier
         && link.platform === input.request.slot.platform
-        && link.artifactId === input.request.artifactId
+        && (input.response.outcome === 'rejoined' || link.artifactId === input.request.artifactId)
         && link.artifactDigest === input.request.slot.artifactDigest
-        && sameHostCompatibility(input.request.hostCompatibility, link.compatibility);
+        && isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(input.request.slot, link.compatibility);
 }
 
 async function resolveCurrentE2eeArtifactEnvelopeKeySealer(input: Readonly<{
@@ -345,7 +352,7 @@ function defaultDependencies(): ActivePluginAccountHostedArtifactReaderDependenc
             };
         },
         captureRequestAuthority: async ({ scope, activeRequest }) => {
-            const authority = await captureSessionRequestAuthorityForServerAccountScope({
+            const authority = await captureServerRequestAuthorityForServerAccountScope({
                 scope,
                 activeRequest,
             });
@@ -575,8 +582,8 @@ export function createActivePluginAccountHostedArtifactReader(
 }
 
 /**
- * The explicit present-client publication action for one already-admitted UI
- * archive. It never chooses a byte source, uploads automatically, or owns
+ * Explicit present-client publication for already-admitted UI or package Asset
+ * archives. It never chooses a byte source, uploads automatically, or owns
  * retry/cache state; it only constructs the incumbent Artifact envelope and
  * uses Availability's atomic qualified publication route.
  */
@@ -588,9 +595,15 @@ export function createActivePluginAccountHostedArtifactPublisher(
         ...overrides,
     };
 
-    const publish = async (
+    function publish(
         input: ActivePluginAccountHostedArtifactPublishInput,
-    ): Promise<ActivePluginAccountHostedArtifactPublishResult> => {
+    ): Promise<ActivePluginAccountHostedArtifactPublishResult>;
+    function publish(
+        input: ActivePluginAccountPackageAssetsPublishInput,
+    ): Promise<ActivePluginAccountPackageAssetsPublishResult>;
+    async function publish(
+        input: ActivePluginAccountHostedArtifactPublishInput | ActivePluginAccountPackageAssetsPublishInput,
+    ): Promise<ActivePluginAccountHostedArtifactPublishResult | ActivePluginAccountPackageAssetsPublishResult> {
         if (input.signal?.aborted) return unavailable('operation_cancelled');
         if (!input.accountLifetime.isCurrent()) return unavailable('account_scope_changed');
         const capturedLifetime = dependencies.captureLifetime();
@@ -606,24 +619,39 @@ export function createActivePluginAccountHostedArtifactPublisher(
             return unavailable('server_generation_changed');
         }
 
-        let archive: NonNullable<ReturnType<typeof createPluginUiArtifactArchiveV1>>;
+        let archive: Readonly<{
+            header: Parameters<typeof createAccountArtifactStoredEnvelope>[0]['header'];
+            body: string;
+            packageDescriptor?: PackageAssetArchiveDescriptorV1;
+        }>;
         try {
-            const created = createPluginUiArtifactArchiveV1({
-                pluginId: input.release.pluginId,
-                artifactGraph: input.artifactGraph,
-                files: input.files,
-            });
-            if (
-                !created
-                || !archiveMatchesPublishSlot({ archive: created, slot: input.slot })
-                || !isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(
-                    input.slot,
-                    input.hostCompatibility,
-                )
-            ) {
-                return unavailable('source_archive_invalid');
+            if ('archive' in input) {
+                // Snapshot and verify through Protocol before any Account key or transport is acquired.
+                const header = PackageAssetArchiveHeaderV1Schema.parse(input.archive.header);
+                const body = PackageAssetArchiveBodyV1Schema.parse(input.archive.body);
+                const descriptor = normalizePackageAssetArchiveDescriptorV1(input.archive.descriptor);
+                if (!openPackageAssetArchiveV1({ expectedDescriptor: descriptor, header, body })) {
+                    return unavailable('source_archive_invalid');
+                }
+                archive = { header, body: encodePackageAssetArchiveBodyV1(body), packageDescriptor: descriptor };
+            } else {
+                const created = createPluginUiArtifactArchiveV1({
+                    pluginId: input.release.pluginId,
+                    artifactGraph: input.artifactGraph,
+                    files: input.files,
+                });
+                if (
+                    !created
+                    || !archiveMatchesPublishSlot({ archive: created, slot: input.slot })
+                    || !isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(
+                        input.slot,
+                        input.hostCompatibility,
+                    )
+                ) {
+                    return unavailable('source_archive_invalid');
+                }
+                archive = { header: created.header, body: encodePluginUiArtifactArchiveBodyV1(created.body) };
             }
-            archive = created;
         } catch {
             return unavailable('source_archive_invalid');
         }
@@ -711,7 +739,7 @@ export function createActivePluginAccountHostedArtifactPublisher(
             const envelope = await createAccountArtifactStoredEnvelope({
                 mode: accountCurrentness.mode,
                 header: archive.header,
-                body: { body: encodePluginUiArtifactArchiveBodyV1(archive.body) },
+                body: { body: archive.body },
                 ...(encryptDataEncryptionKey ? { encryptDataEncryptionKey } : {}),
             });
             const currentnessAfterEnvelope = readCurrentnessCode({
@@ -726,20 +754,29 @@ export function createActivePluginAccountHostedArtifactPublisher(
             }
             if (!envelope) return unavailable('artifact_envelope_unavailable');
 
-            const request = PluginAvailabilityUiArtifactPublishActionInputV1Schema.safeParse({
-                release: input.release,
-                slot: input.slot,
-                hostCompatibility: input.hostCompatibility,
-                artifactId: randomUUID(),
-                artifact: envelope,
-            });
+            const artifactId = randomUUID();
+            const request = 'archive' in input
+                ? PluginAvailabilityPackageAssetPublishActionInputV1Schema.safeParse({
+                    release: input.release,
+                    artifactId,
+                    artifact: envelope,
+                })
+                : PluginAvailabilityUiArtifactPublishActionInputV1Schema.safeParse({
+                    release: input.release,
+                    slot: input.slot,
+                    hostCompatibility: input.hostCompatibility,
+                    artifactId,
+                    artifact: envelope,
+                });
             if (!request.success) return unavailable('source_archive_invalid');
 
             let raw: unknown;
             try {
                 const response = await authority.request(
                     PluginAvailabilityActionHttpPathsV1[
-                        'account.plugins.availability.uiArtifact.publish'
+                        'archive' in input
+                            ? 'account.plugins.availability.packageAsset.publish'
+                            : 'account.plugins.availability.uiArtifact.publish'
                     ],
                     withAccountStoredContentCompatibilityRequestDeclaration({
                         method: 'POST',
@@ -765,6 +802,21 @@ export function createActivePluginAccountHostedArtifactPublisher(
             if (controller.signal.aborted) {
                 return unavailable(input.signal?.aborted ? 'operation_cancelled' : 'account_scope_changed');
             }
+            if (!('slot' in request.data)) {
+                const parsed = PluginAvailabilityPackageAssetPublishActionOutputV1Schema.safeParse(raw);
+                if (!parsed.success) return unavailable('response_invalid');
+                const { link, outcome } = parsed.data;
+                if (
+                    link.release.pluginId !== request.data.release.pluginId
+                    || link.release.version !== request.data.release.version
+                    || (outcome === 'created' && link.artifactId !== request.data.artifactId)
+                    || JSON.stringify(normalizePackageAssetArchiveDescriptorV1(link.descriptor))
+                        !== JSON.stringify(archive.packageDescriptor)
+                ) {
+                    return unavailable('response_identity_mismatch');
+                }
+                return Object.freeze({ kind: 'published', value: parsed.data });
+            }
             const parsed = PluginAvailabilityUiArtifactPublishActionOutputV1Schema.safeParse(raw);
             if (!parsed.success) return unavailable('response_invalid');
             if (!publishResponseMatchesExpected({ response: parsed.data, request: request.data })) {
@@ -774,9 +826,9 @@ export function createActivePluginAccountHostedArtifactPublisher(
         } finally {
             await release();
         }
-    };
+    }
 
-    return Object.freeze({ publish });
+    return Object.freeze({ publish, publishPackageAssets: publish });
 }
 
 const installedReader = createActivePluginAccountHostedArtifactReader();
@@ -787,6 +839,13 @@ export async function publishActivePluginAccountHostedArtifact(
     input: ActivePluginAccountHostedArtifactPublishInput,
 ): Promise<ActivePluginAccountHostedArtifactPublishResult> {
     return await installedPublisher.publish(input);
+}
+
+/** Explicit package publication; acquisition and user intent remain caller-owned. */
+export async function publishActivePluginAccountPackageAssets(
+    input: ActivePluginAccountPackageAssetsPublishInput,
+): Promise<ActivePluginAccountPackageAssetsPublishResult> {
+    return await installedPublisher.publishPackageAssets(input);
 }
 
 /**

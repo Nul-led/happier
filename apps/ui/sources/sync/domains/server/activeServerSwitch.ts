@@ -106,7 +106,9 @@ function canSkipActiveServerIdSwitch(params: Readonly<{
     activeServerId: string;
     targetServerId: string;
     scope: 'device' | 'tab';
+    requireExactProfile: boolean;
 }>): boolean {
+    if (params.requireExactProfile && params.activeServerId !== params.targetServerId) return false;
     if (!areServerProfileIdentifiersEquivalent(params.activeServerId, params.targetServerId)) return false;
     if (params.scope === 'tab') return true;
     return !getTabActiveServerId()
@@ -114,21 +116,21 @@ function canSkipActiveServerIdSwitch(params: Readonly<{
 }
 
 async function stageActiveServerAndSwitch(
-    stage: () => void,
+    stage: () => Promise<void>,
     refreshAuth?: () => Promise<void>,
 ): Promise<void> {
     const previousDeviceServerId = getDeviceDefaultServerId();
     const previousTabServerId = getTabActiveServerId();
-    stage();
+    await stage();
 
     try {
         await switchConnectionToActiveServer();
         await refreshAuth?.();
     } catch (switchError) {
         try {
-            setActiveServer({ serverId: previousDeviceServerId, scope: 'device' });
+            await setActiveServer({ serverId: previousDeviceServerId, scope: 'device' });
             if (previousTabServerId) {
-                setActiveServer({ serverId: previousTabServerId, scope: 'tab' });
+                await setActiveServer({ serverId: previousTabServerId, scope: 'tab' });
             } else {
                 clearTabActiveServerId();
             }
@@ -166,12 +168,12 @@ export async function upsertActivateAndSwitchServer(params: Readonly<{
                     source: 'manual',
                     preserveUserLabel: true,
                 });
-                await stageActiveServerAndSwitch(() => {
-                    setActiveServer({ serverId: profile.id, scope });
+                await stageActiveServerAndSwitch(async () => {
+                    await setActiveServer({ serverId: profile.id, scope });
                 }, params.refreshAuth ?? undefined);
             } else {
-                await stageActiveServerAndSwitch(() => {
-                    upsertAndActivateServer({
+                await stageActiveServerAndSwitch(async () => {
+                    await upsertAndActivateServer({
                         serverUrl: targetServerUrl,
                         name: params.name ?? defaultServerNameFromUrl(targetServerUrl),
                         source,
@@ -187,6 +189,8 @@ export async function setActiveServerAndSwitch(params: Readonly<{
     serverId: string;
     scope?: 'device' | 'tab';
     refreshAuth?: (() => Promise<void>) | null;
+    /** Reassert the requested saved profile even when its stable Home identity is already focused. */
+    requireExactProfile?: boolean;
 }>): Promise<ActiveServerSwitchResult> {
     return await serializeActiveServerSwitch(async () => {
         const targetServerId = String(params.serverId ?? '').trim();
@@ -194,11 +198,16 @@ export async function setActiveServerAndSwitch(params: Readonly<{
 
         const active = getActiveServerSnapshot();
         const scope = params.scope ?? 'device';
-        if (canSkipActiveServerIdSwitch({ activeServerId: active.serverId, targetServerId, scope })) return 'already_active';
+        if (canSkipActiveServerIdSwitch({
+            activeServerId: active.serverId,
+            targetServerId,
+            scope,
+            requireExactProfile: params.requireExactProfile === true,
+        })) return 'already_active';
 
         return await runGuardedActiveServerSwitch(async () => {
-            await stageActiveServerAndSwitch(() => {
-                setActiveServer({
+            await stageActiveServerAndSwitch(async () => {
+                await setActiveServer({
                     serverId: targetServerId,
                     scope,
                 });

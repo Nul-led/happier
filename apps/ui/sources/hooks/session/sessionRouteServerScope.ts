@@ -1,3 +1,6 @@
+import { listSessionAddressesForSessionIdFromLocalState, type SessionAddressLookupQueryState, type SessionAddressLookupState } from '@/sync/domains/session/resolveSessionAddressFromLocalState';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+
 type SessionRouteServerScopeParams = Readonly<Record<string, unknown>>;
 
 type SessionRouteHrefQueryValue = string | number | boolean | null | undefined;
@@ -11,6 +14,7 @@ type BuildScopedSessionRouteHrefParams = Readonly<{
 
 export type SessionRouteServerScope = Readonly<{
     serverId: string | null;
+    candidateAddresses: readonly SessionAddress[];
     hydrationOptions?: Readonly<{ serverId: string }>;
     withParams: <T extends Record<string, unknown>>(params: T) => T & { serverId?: string };
     buildHref: (sessionId: string, options?: Readonly<{
@@ -73,11 +77,18 @@ export function buildScopedSessionRouteHref(params: BuildScopedSessionRouteHrefP
 
 export function createSessionRouteServerScope(
     params: SessionRouteServerScopeParams | null | undefined,
+    state?: SessionAddressLookupState | null,
+    options?: Readonly<{ queryStates?: readonly SessionAddressLookupQueryState[] }>,
 ): SessionRouteServerScope {
-    const serverId = readSessionRouteServerId(params);
+    const explicitServerId = readSessionRouteServerId(params);
+    const candidateAddresses = explicitServerId ? [] : listSessionAddressesForSessionIdFromLocalState(
+        state, normalizeRouteParam(params?.id) ?? '', options,
+    );
+    const serverId = explicitServerId ?? (candidateAddresses.length === 1 ? candidateAddresses[0].serverId : null);
 
     return {
         serverId,
+        candidateAddresses,
         hydrationOptions: serverId ? { serverId } : undefined,
         withParams: <T extends Record<string, unknown>>(nextParams: T) =>
             mergeSessionRouteServerScopeParams(nextParams, serverId),

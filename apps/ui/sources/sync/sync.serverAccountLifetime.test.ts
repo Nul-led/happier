@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { workflowRunRowFromAutomationRun } from '@/sync/store/domains/workflowRuns';
 import { act } from 'react-test-renderer';
 import {
     AutomationDefinitionDetailSchema,
@@ -132,6 +133,7 @@ vi.mock('./engine/automations/syncAutomations', async (importOriginal) => ({
 
 import { sync } from './sync';
 import { storage } from './domains/state/storage';
+import { getActiveServerSnapshot } from './domains/server/serverRuntime';
 
 /** Test-only view of the incumbent owner; production code never exposes this seam. */
 type SyncResetOwnerTestSeam = {
@@ -269,6 +271,43 @@ describe('Sync Server/Account lifetime reset boundary', () => {
         expect(owner.serverScopeGeneration).toBe(generationBeforeReset + 1);
     });
 
+    it('preserves per-Home Pool rows across active-sync teardown until credential ownership changes', () => {
+        const owner = sync as unknown as SyncResetOwnerTestSeam;
+        retireLifetime.mockReset();
+        const activeServerId = getActiveServerSnapshot().serverId;
+        const otherServerId = `${activeServerId}-other`;
+        const row = { pool: { id: 'pool', name: 'Private', members: [] }, availability: { state: 'unknown' } } as never;
+        storage.setState({
+            machinePoolListByServerId: { [activeServerId]: [row], [otherServerId]: [row] },
+            machinePoolListStatusByServerId: { [activeServerId]: 'idle', [otherServerId]: 'idle' },
+            machinePoolAccountIdByServerId: { [activeServerId]: 'active-account', [otherServerId]: 'other-account' },
+        });
+
+        owner.resetServerScopedRuntimeState();
+
+        expect(storage.getState().machinePoolListByServerId[activeServerId]).toEqual([row]);
+        expect(storage.getState().machinePoolListStatusByServerId[activeServerId]).toBe('idle');
+        expect(storage.getState().machinePoolAccountIdByServerId[activeServerId]).toBe('active-account');
+        expect(storage.getState().machinePoolListByServerId[otherServerId]).toEqual([row]);
+        expect(storage.getState().machinePoolAccountIdByServerId[otherServerId]).toBe('other-account');
+    });
+
+    it('keeps signed-out Pool rows visible but inert when the active Sync runtime disconnects', () => {
+        const activeServerId = getActiveServerSnapshot().serverId;
+        const row = { pool: { id: 'pool', name: 'Private', members: [] }, availability: { state: 'unknown' } } as never;
+        storage.setState({
+            machinePoolListByServerId: { [activeServerId]: [row] },
+            machinePoolListStatusByServerId: { [activeServerId]: 'idle' },
+            machinePoolAccountIdByServerId: { [activeServerId]: 'active-account' },
+        });
+
+        sync.disconnectServer();
+
+        expect(storage.getState().machinePoolListByServerId[activeServerId]).toEqual([row]);
+        expect(storage.getState().machinePoolListStatusByServerId[activeServerId]).toBe('signedOut');
+        expect(storage.getState().machinePoolAccountIdByServerId[activeServerId]).toBe('active-account');
+    });
+
     it('removes Automation definition, run history, and cursor from a retained route when its Server/Account scope retires', async () => {
         const owner = sync as unknown as SyncResetOwnerTestSeam;
         // The preceding synchronous-retirement discriminator deliberately
@@ -309,7 +348,8 @@ describe('Sync Server/Account lifetime reset boundary', () => {
                 ...previousState,
                 isDataReady: true,
                 automations: { [definition.id]: definition },
-                automationRunsByAutomationId: { [definition.id]: [run] },
+                workflowRunsById: { [run.id]: workflowRunRowFromAutomationRun(run) },
+                automationRunIdsByAutomationId: { [definition.id]: [run.id] },
                 automationRunNextCursorByAutomationId: { [definition.id]: 'older-runs' },
             });
 
@@ -338,8 +378,10 @@ describe('Sync Server/Account lifetime reset boundary', () => {
                     nextCursor: null,
                 });
                 expect(storage.getState().automations).toEqual({});
-                expect(storage.getState().automationRunsByAutomationId).toEqual({});
+                expect(storage.getState().workflowRunsById).toEqual({});
+                expect(storage.getState().automationRunIdsByAutomationId).toEqual({});
                 expect(storage.getState().automationRunNextCursorByAutomationId).toEqual({});
+                expect(storage.getState().automationRunTraversalsByAutomationId).toEqual({});
             } finally {
                 await hook.unmount();
             }

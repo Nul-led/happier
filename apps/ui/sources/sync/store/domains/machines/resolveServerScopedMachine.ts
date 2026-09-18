@@ -1,3 +1,5 @@
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { resolveExactServerScopedMachine } from '@/sync/domains/machines/resolveServerScopedMachines';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
 type ServerScopedMachineState = Readonly<{
@@ -26,6 +28,13 @@ export function resolveServerScopedMachine(
                 return null;
             }
         }
+        return resolveExactServerScopedMachine({
+            serverId: normalizedServerId,
+            machineId: normalizedMachineId,
+            activeServerId: getActiveServerSnapshot().serverId,
+            activeMachines: Object.values(state.machines).filter((machine): machine is Machine => Boolean(machine)),
+            machineListByServerId: state.machineListByServerId ?? {},
+        });
     }
 
     return state.machines[normalizedMachineId] ?? null;

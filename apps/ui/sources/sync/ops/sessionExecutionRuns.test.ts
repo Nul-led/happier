@@ -1,9 +1,10 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RPC_ERROR_CODES, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 const sessionRpcMock = vi.hoisted(() => vi.fn());
 const canUseSessionRpcMock = vi.hoisted(() => vi.fn(() => true));
+const readMachineControlTargetMock = vi.hoisted(() => vi.fn(() => ({ machineId: 'machine-1' })));
 const notifyExecutionRunActivityMock = vi.hoisted(() => vi.fn());
 const expectRpcTimeout = expect.objectContaining({ timeoutMs: expect.any(Number) });
 const sessionState = vi.hoisted(() => ({
@@ -17,9 +18,31 @@ vi.mock('../api/session/apiSocket', () => ({
     },
 }));
 
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc', async (importOriginal) => {
+    const { createServerScopedSessionRpcModuleMock } = await import('@/dev/testkit/mocks/serverScopedRpc');
+    return createServerScopedSessionRpcModuleMock({
+        importOriginal,
+        overrides: {
+            sessionRpcWithServerScope: async (params: Readonly<{
+                sessionId: string;
+                serverId?: string | null;
+                method: string;
+                payload: unknown;
+            }>) => sessionRpcMock(
+                params.sessionId,
+                params.method,
+                params.payload,
+                { serverId: params.serverId, timeoutMs: 1 },
+            ),
+        },
+    });
+});
+
 vi.mock('./sessionMachineTarget', () => ({
     INACTIVE_SESSION_RPC_UNAVAILABLE_ERROR: 'Session RPC unavailable for inactive session',
     canUseSessionRpc: (...args: Parameters<typeof canUseSessionRpcMock>) => canUseSessionRpcMock(...args),
+    readMachineControlTargetForSession: (...args: Parameters<typeof readMachineControlTargetMock>) =>
+        readMachineControlTargetMock(...args),
 }));
 
 vi.mock('@/sync/runtime/executionRuns/executionRunActivityBus', () => ({
@@ -48,10 +71,19 @@ describe('sessionExecutionRuns', () => {
         vi.resetModules();
     });
 
+    beforeEach(() => {
+        sessionState.sessions = {
+            'session-1': { id: 'session-1', serverId: 'server-a', active: true },
+            'session-inactive': { id: 'session-inactive', serverId: 'server-a', active: false },
+        };
+    });
+
     afterEach(() => {
         sessionRpcMock.mockReset();
         canUseSessionRpcMock.mockReset();
         canUseSessionRpcMock.mockReturnValue(true);
+        readMachineControlTargetMock.mockReset();
+        readMachineControlTargetMock.mockReturnValue({ machineId: 'machine-1' });
         notifyExecutionRunActivityMock.mockReset();
         sessionState.sessions = {};
         sessionState.settings = {};
@@ -89,7 +121,10 @@ describe('sessionExecutionRuns', () => {
         });
 
         expect(response).toEqual({ ok: true });
-        expect(notifyExecutionRunActivityMock).toHaveBeenCalledWith('session-1');
+        expect(notifyExecutionRunActivityMock).toHaveBeenCalledWith({
+            serverId: 'server-a',
+            sessionId: 'session-1',
+        });
     });
 
     it('calls execution.run.start through session RPC', async () => {
@@ -139,6 +174,28 @@ describe('sessionExecutionRuns', () => {
         expect((response as any).errorCode).toBe('permission_denied');
     });
 
+    it('returns typed noRunCreated and emits no RPC when the preflight target witness changed', async () => {
+        readMachineControlTargetMock.mockReturnValue({ machineId: 'machine-2' });
+
+        const response = await sessionExecutionRuns.sessionExecutionRunStart('session-1', {
+            intent: 'review',
+            backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
+            instructions: 'Review this repo.',
+            permissionMode: 'read_only',
+            retentionPolicy: 'ephemeral',
+            runClass: 'bounded',
+            ioMode: 'request_response',
+        }, { serverId: 'server-a', expectedMachineId: 'machine-1' });
+
+        expect(response).toEqual({
+            ok: false,
+            error: 'execution_run_target_changed',
+            errorCode: 'execution_run_target_changed',
+            details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
+        });
+        expect(sessionRpcMock).not.toHaveBeenCalled();
+    });
+
     it('returns bare error responses from execution.run.start without collapsing them to unsupported', async () => {
         sessionRpcMock.mockResolvedValue({ error: 'Unable to resolve a default base branch for CodeRabbit review.' });
 
@@ -177,76 +234,6 @@ describe('sessionExecutionRuns', () => {
         });
     });
 
-    it('calls execution.run.send through session RPC', async () => {
-        sessionRpcMock.mockResolvedValue({ ok: true });
-
-        const response = await sessionExecutionRuns.sessionExecutionRunSend('session-1', { runId: 'run_1', message: 'hello' });
-
-        expect(sessionRpcMock).toHaveBeenCalledWith(
-            'session-1',
-            SESSION_RPC_METHODS.EXECUTION_RUN_SEND,
-            { runId: 'run_1', message: 'hello', delivery: 'steer_if_supported' },
-            expectRpcTimeout,
-        );
-        expect(response.ok).toBe(true);
-    });
-
-    it('notifies execution-run activity after execution.run.send succeeds', async () => {
-        sessionRpcMock.mockResolvedValue({ ok: true });
-
-        const response = await sessionExecutionRuns.sessionExecutionRunSend('session-1', { runId: 'run_1', message: 'hello' });
-
-        expect(response).toEqual({ ok: true });
-        expect(notifyExecutionRunActivityMock).toHaveBeenCalledWith('session-1');
-    });
-
-    it('returns ok:false error shapes from execution.run.send without treating them as unsupported', async () => {
-        sessionRpcMock.mockResolvedValue({ ok: false, error: 'Not found', errorCode: 'execution_run_not_found' });
-
-        const response = await sessionExecutionRuns.sessionExecutionRunSend('session-1', { runId: 'run_1', message: 'hello' });
-
-        expect((response as any).ok).toBe(false);
-        expect((response as any).errorCode).toBe('execution_run_not_found');
-    });
-
-    it('rejects execution.run.send for inactive replay forks that cannot resume before session RPC', async () => {
-        sessionRpcMock.mockResolvedValue({ ok: true });
-        sessionState.sessions['session-inactive'] = {
-            id: 'session-inactive',
-            active: false,
-            metadata: {
-                flavor: 'claude',
-                claudeSessionId: '',
-                forkV1: {
-                    v: 1,
-                    parentSessionId: 'parent-session',
-                    parentCutoffSeqInclusive: 7,
-                    createdAtMs: 1000,
-                    strategy: 'replay',
-                    providerHint: { providerId: 'claude' },
-                },
-                replaySeedV1: {
-                    v: 1,
-                    seedText: '',
-                    sourceSessionId: 'parent-session',
-                    sourceCutoffSeqInclusive: 7,
-                    createdAtMs: 1000,
-                    appliedToLocalId: 'local-1',
-                    appliedAtMs: 2000,
-                },
-            },
-        };
-
-        const response = await sessionExecutionRuns.sessionExecutionRunSend('session-inactive', { runId: 'run_1', message: 'hello' });
-
-        expect(sessionRpcMock).not.toHaveBeenCalled();
-        expect(response).toEqual({
-            ok: false,
-            error: 'SESSION_NOT_RESUMABLE',
-            errorCode: 'SESSION_NOT_RESUMABLE',
-        });
-    });
-
     it('calls execution.run.stop through session RPC', async () => {
         sessionRpcMock.mockResolvedValue({ ok: true });
 
@@ -261,13 +248,38 @@ describe('sessionExecutionRuns', () => {
         expect(response.ok).toBe(true);
     });
 
+    it('cancels the exact retained Run turn and resumes through canonical ensure', async () => {
+        sessionRpcMock
+            .mockResolvedValueOnce({
+                ok: true, status: 'requested', runId: 'run_1', occurrenceId: 'occurrence_1', turnId: 'turn_1',
+            })
+            .mockResolvedValueOnce({ ok: true });
+
+        await expect(sessionExecutionRuns.sessionExecutionRunCancelTurn('session-1', {
+            runId: 'run_1', occurrenceId: 'occurrence_1', turnId: 'turn_1',
+        })).resolves.toMatchObject({ ok: true, status: 'requested' });
+        await expect(sessionExecutionRuns.sessionExecutionRunResume('session-1', {
+            runId: 'run_1',
+        })).resolves.toEqual({ ok: true });
+
+        expect(sessionRpcMock.mock.calls.slice(-2).map((call) => [call[1], call[2]])).toEqual([
+            [SESSION_RPC_METHODS.EXECUTION_RUN_CANCEL_TURN_V1, {
+                runId: 'run_1', occurrenceId: 'occurrence_1', turnId: 'turn_1',
+            }],
+            [SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE, { runId: 'run_1', resume: true }],
+        ]);
+    });
+
     it('notifies execution-run activity after execution.run.stop succeeds', async () => {
         sessionRpcMock.mockResolvedValue({ ok: true });
 
         const response = await sessionExecutionRuns.sessionExecutionRunStop('session-1', { runId: 'run_1' });
 
         expect(response).toEqual({ ok: true });
-        expect(notifyExecutionRunActivityMock).toHaveBeenCalledWith('session-1');
+        expect(notifyExecutionRunActivityMock).toHaveBeenCalledWith({
+            serverId: 'server-a',
+            sessionId: 'session-1',
+        });
     });
 
     it('returns ok:false error shapes from execution.run.stop without treating them as unsupported', async () => {
@@ -306,6 +318,22 @@ describe('sessionExecutionRuns', () => {
             expectRpcTimeout,
         );
         expect(Array.isArray((response as any).runs)).toBe(true);
+    });
+
+    it('fails closed instead of routing a same-id Session operation to another Home', async () => {
+        sessionRpcMock.mockResolvedValue({ runs: [] });
+
+        await expect(sessionExecutionRuns.sessionExecutionRunList(
+            'session-1',
+            {},
+            { serverId: 'server-b' },
+        )).resolves.toEqual({
+            ok: false,
+            error: 'Execution Run Home is unavailable',
+            errorCode: 'execution_run_home_unavailable',
+        });
+
+        expect(sessionRpcMock).not.toHaveBeenCalled();
     });
 
     it('fails closed when execution.run.list returns a sparse non-contract run', async () => {
@@ -388,6 +416,7 @@ describe('sessionExecutionRuns', () => {
         sessionRpcMock.mockResolvedValue({ ok: true });
         sessionState.sessions['session-inactive'] = {
             id: 'session-inactive',
+            serverId: 'server-a',
             active: false,
             metadata: {
                 flavor: 'claude',
@@ -439,13 +468,6 @@ describe('sessionExecutionRuns', () => {
                 ok: false,
                 error: 'Already finished',
                 errorCode: 'execution_run_not_running',
-            }),
-        ).toBe(true);
-        expect(
-            sessionExecutionRuns.isExecutionRunNotRunningSendError({
-                ok: false,
-                error: 'Not running',
-                errorCode: 'execution_run_not_allowed',
             }),
         ).toBe(true);
     });

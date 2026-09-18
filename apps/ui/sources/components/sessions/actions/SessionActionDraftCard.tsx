@@ -7,7 +7,6 @@ import { useRouter } from 'expo-router';
 import { storage } from '@/sync/domains/state/storage';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 import { resolveActionExecutionFailureMessage } from '@/sync/ops/actions/resolveActionExecutionFailureMessage';
-import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { t } from '@/text';
 import type { SessionActionDraft } from '@/sync/domains/sessionActions/sessionActionDraftTypes';
@@ -19,10 +18,11 @@ import { useSessionActionFieldOptions } from './useSessionActionFieldOptions';
 import { normalizeActionInput, normalizeActionInputPatch } from '@/sync/domains/actions/normalizeActionInputPatch';
 
 
-export function SessionActionDraftCard(props: Readonly<{ sessionId: string; draft: SessionActionDraft }>) {
+export function SessionActionDraftCard(props: Readonly<{ draft: SessionActionDraft }>) {
   const { theme } = useUnistyles();
   const router = useRouter();
-  const sessionServerId = usePreferredServerIdForSession(props.sessionId);
+  const sessionServerId = props.draft.address.serverId;
+  const sessionId = props.draft.address.sessionId;
   const spec = getActionSpec(props.draft.actionId as any);
   const executor = React.useMemo(
     () => createDefaultActionExecutor({
@@ -41,39 +41,43 @@ export function SessionActionDraftCard(props: Readonly<{ sessionId: string; draf
   // F-4 (2026-08-11): ONE owner for "which options does this field show". This card used to resolve
   // it inline; the transcript row's size key now needs the same answer for an OFFSCREEN row, and two
   // implementations of it would be exactly the drift the height-bearing descriptor exists to prevent.
-  const resolveFieldOptions = useSessionActionFieldOptions(props.sessionId, sessionServerId);
+  const resolveFieldOptions = useSessionActionFieldOptions(sessionId, sessionServerId);
   const submitInFlightRef = React.useRef(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const draftScope = React.useMemo(() => ({
+    serverId: props.draft.address.serverId,
+    accountId: props.draft.accountId,
+  }), [props.draft.accountId, props.draft.address.serverId]);
 
   const setInputPatch = React.useCallback(
     (patch: Record<string, unknown>) => {
       const normalizedPatch = normalizeActionInputPatch({ actionId: props.draft.actionId, patch });
-      storage.getState().updateSessionActionDraftInput(props.sessionId, props.draft.id, normalizedPatch);
-      storage.getState().setSessionActionDraftStatus(props.sessionId, props.draft.id, 'editing', null);
+      storage.getState().updateSessionActionDraftInput(draftScope, props.draft.address, props.draft.id, normalizedPatch);
+      storage.getState().setSessionActionDraftStatus(draftScope, props.draft.address, props.draft.id, 'editing', null);
     },
-    [props.draft.actionId, props.draft.id, props.sessionId],
+    [draftScope, props.draft.actionId, props.draft.address, props.draft.id],
   );
 
   const setStatus = React.useCallback(
     (status: 'editing' | 'running' | 'succeeded' | 'failed', error?: string | null) => {
-      storage.getState().setSessionActionDraftStatus(props.sessionId, props.draft.id, status as any, error);
+      storage.getState().setSessionActionDraftStatus(draftScope, props.draft.address, props.draft.id, status as any, error);
     },
-    [props.draft.id, props.sessionId],
+    [draftScope, props.draft.address, props.draft.id],
   );
 
   const cancel = React.useCallback(() => {
-    storage.getState().deleteSessionActionDraft(props.sessionId, props.draft.id);
-  }, [props.draft.id, props.sessionId]);
+    storage.getState().deleteSessionActionDraft(draftScope, props.draft.address, props.draft.id);
+  }, [draftScope, props.draft.address, props.draft.id]);
 
   // The row's height-bearing paint is resolved by its painter and consumed by BOTH this card and
   // `transcriptRowShellSignature` (F-P6), so the size key can never disagree with what is rendered.
   const paint = React.useMemo(
     () => resolveSessionActionDraftHeightBearingPaint({
       draft: { actionId: props.draft.actionId, input: props.draft.input ?? {}, error: props.draft.error },
-      sessionId: props.sessionId,
+      sessionId,
       resolveFieldOptions,
     }),
-    [props.draft.actionId, props.draft.error, props.draft.input, props.sessionId, resolveFieldOptions],
+    [props.draft.actionId, props.draft.error, props.draft.input, sessionId, resolveFieldOptions],
   );
   const fields = React.useMemo(() => paint.fields.map((entry) => entry.field), [paint]);
 
@@ -100,10 +104,10 @@ export function SessionActionDraftCard(props: Readonly<{ sessionId: string; draf
       const res = await executor.execute(
         props.draft.actionId as any,
         {
-          sessionId: props.sessionId,
+          sessionId,
           ...normalizedInput,
         },
-        { defaultSessionId: props.sessionId, surface: 'ui', placement: 'session_action_menu' } as any,
+        { defaultSessionId: sessionId, surface: 'ui', placement: 'session_action_menu' } as any,
       );
       const errorMessage = resolveActionExecutionFailureMessage(res, 'Failed to start');
       if (errorMessage) {
@@ -120,7 +124,7 @@ export function SessionActionDraftCard(props: Readonly<{ sessionId: string; draf
       submitInFlightRef.current = false;
       setIsSubmitting(false);
     }
-  }, [cancel, executor, props.draft.actionId, props.draft.input, props.sessionId, setStatus, validationError]);
+  }, [cancel, executor, props.draft.actionId, props.draft.input, sessionId, setStatus, validationError]);
 
   const title = spec.title;
   const error = paint.errorLine;

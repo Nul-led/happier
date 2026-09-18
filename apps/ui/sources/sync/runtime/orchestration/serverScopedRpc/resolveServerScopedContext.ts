@@ -84,6 +84,7 @@ export async function resolveServerScopedContext(params: Readonly<{
         ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
         release: transport.release,
         token: credentials.token,
+        credentials,
         encryption,
     };
 }

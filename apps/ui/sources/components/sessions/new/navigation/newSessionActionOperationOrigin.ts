@@ -4,17 +4,22 @@ import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
 
 import type { ActionOperationReentryOrigin } from '@/components/inbox/actionOperations/actionOperationPresentationCoordinator';
 import { actionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
+import { actionOperationRequestAddressKey } from '@/sync/domains/actionOperations/qualifiedActionOperation';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { getSessionDraftSnapshot } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 
-function shouldReopenPersistedDraft(snapshot: ActionOperationSnapshotV1): boolean {
+function shouldReopenPersistedDraft(snapshot: ActionOperationSnapshotV1, scope: ServerAccountScope): boolean {
     if (snapshot.state === 'failed' || snapshot.state === 'cancelled') {
         return true;
     }
     if (snapshot.state !== 'succeeded' || !snapshot.requestId) {
         return false;
     }
-    return actionOperationStore.getSnapshot().followUpAttentionByRequestId.has(snapshot.requestId);
+    return actionOperationStore.getSnapshot().followUpAttentionByRequestKey.has(actionOperationRequestAddressKey({
+        serverId: scope.serverId,
+        accountId: scope.accountId,
+        requestId: snapshot.requestId,
+    }));
 }
 
 /**
@@ -34,7 +39,7 @@ export function createNewSessionActionOperationOrigin(
 
     return Object.freeze({
         resolve(snapshot: ActionOperationSnapshotV1): (() => void) | null {
-            if (!shouldReopenPersistedDraft(snapshot)) {
+            if (!shouldReopenPersistedDraft(snapshot, persistedDraftScope)) {
                 return null;
             }
             if (!getSessionDraftSnapshot(persistedDraftScope, { kind: 'newSession', draftId: persistedDraftId })) {

@@ -97,6 +97,10 @@ vi.mock('expo-clipboard', () => ({
 }));
 vi.mock('@/sync/store/hooks', () => ({
   useSettingsVersion: () => 1,
+  useSetting: (key: string) => {
+    const value = (storageBoundary.settings as Readonly<Record<string, unknown>> | null)?.[key];
+    return key === 'secrets' && value === undefined ? [] : value;
+  },
   useLocalSetting: (key: string) => {
     if (key === 'uiItemDensity') return 'comfortable';
     if (key === 'uiFontScale') return 1;
@@ -683,9 +687,12 @@ describe('DictationSettingsSection', () => {
         },
       },
     };
-    const declaration = createDefaultVoiceProviderRegistry()
-      .get('happier.voice.google/gemini-stt')?.declaration;
-    if (declaration?.kind !== 'speech') throw new Error('Expected Gemini STT declaration');
+    const entry = createDefaultVoiceProviderRegistry()
+      .get('happier.voice.google/gemini-stt');
+    if (entry?.kind !== 'voice.speech-engine.v1' || entry.declaration?.kind !== 'speech') {
+      throw new Error('Expected Gemini STT declaration');
+    }
+    const declaration = entry.declaration;
     const ready = saveAndUseAccountVoiceCredential({
       settings: settingsParse({ voice }),
       contribution: { pluginId: 'happier.voice.google', localId: 'gemini-stt' },

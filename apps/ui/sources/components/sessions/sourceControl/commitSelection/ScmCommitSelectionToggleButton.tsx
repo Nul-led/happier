@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable } from 'react-native';
+import { Platform, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
@@ -16,6 +16,7 @@ import { isAtomicCommitStrategy } from '@/scm/settings/commitStrategy';
 
 export type ScmCommitSelectionToggleButtonProps = Readonly<{
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     snapshot: ScmWorkingSnapshot | null;
     scmWriteEnabled: boolean;
@@ -43,36 +44,39 @@ export const ScmCommitSelectionToggleButton = React.memo((props: ScmCommitSelect
             : t('files.fileActions.stageFile');
 
     return (
-        <IconButton
-            variant="plain"
-            size={28}
-            testID={`scm-commit-selection-toggle-${toTestIdSafeValue(props.file.fullPath)}`}
-            accessibilityLabel={accessibilityLabel}
-            disabled={busy || !props.scmWriteEnabled}
-            icon={busy
-                ? <ActivitySpinner size={iconMatchedSpinnerSize(COMMIT_TOGGLE_ICON_SIZE_PX)} color={theme.colors.text.secondary} />
-                : <Icon name={iconName as any} size={COMMIT_TOGGLE_ICON_SIZE_PX} color={iconColor} />}
-            onPress={(e: any) => {
-                e?.stopPropagation?.();
-                fireAndForget((async () => {
-                    setBusy(true);
-                    try {
-                        await applyFileStageAction({
-                            sessionId: props.sessionId,
-                            sessionPath: props.sessionPath,
-                            filePath: props.file.fullPath,
-                            snapshot: props.snapshot,
-                            scmWriteEnabled: props.scmWriteEnabled,
-                            commitStrategy: props.commitStrategy,
-                            stage: !props.selectedForCommit,
-                            surface: props.surface,
-                        });
-                        await props.onAfterToggle?.();
-                    } finally {
-                        setBusy(false);
-                    }
-                })(), { tag: 'ScmCommitSelectionToggleButton.onPress' });
-            }}
-        />
+        <View style={Platform.OS === 'web' ? { marginVertical: -3 } : undefined}>
+            <IconButton
+                variant="plain"
+                size={28}
+                testID={`scm-commit-selection-toggle-${toTestIdSafeValue(props.file.fullPath)}`}
+                accessibilityLabel={accessibilityLabel}
+                disabled={busy || !props.scmWriteEnabled}
+                icon={busy
+                    ? <ActivitySpinner size={iconMatchedSpinnerSize(COMMIT_TOGGLE_ICON_SIZE_PX)} color={theme.colors.text.secondary} />
+                    : <Icon name={iconName as any} size={COMMIT_TOGGLE_ICON_SIZE_PX} color={iconColor} />}
+                onPress={(e: any) => {
+                    e?.stopPropagation?.();
+                    fireAndForget((async () => {
+                        setBusy(true);
+                        try {
+                            await applyFileStageAction({
+                                sessionId: props.sessionId,
+                                serverId: props.serverId,
+                                sessionPath: props.sessionPath,
+                                filePath: props.file.fullPath,
+                                snapshot: props.snapshot,
+                                scmWriteEnabled: props.scmWriteEnabled,
+                                commitStrategy: props.commitStrategy,
+                                stage: !props.selectedForCommit,
+                                surface: props.surface,
+                            });
+                            await props.onAfterToggle?.();
+                        } finally {
+                            setBusy(false);
+                        }
+                    })(), { tag: 'ScmCommitSelectionToggleButton.onPress' });
+                }}
+            />
+        </View>
     );
 });

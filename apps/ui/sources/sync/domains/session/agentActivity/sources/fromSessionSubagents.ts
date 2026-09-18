@@ -1,7 +1,12 @@
 import { fromSubagentStatus } from '@happier-dev/protocol';
 
 import type { SessionSubagent, SessionSubagentKind } from '../../subagents/types';
-import type { AgentActivityEntryKind, AgentActivityLocalEntry } from '../types';
+import {
+    NO_SESSION_AGENT_ACTIVITY_ATTENTION,
+    type AgentActivityEntryKind,
+    type AgentActivityLocalEntry,
+    type SessionAgentActivityAttentionKind,
+} from '../types';
 
 /**
  * Locally derived subagents, adapted into the merge's vocabulary.
@@ -51,23 +56,25 @@ function readInstant(value: number | null | undefined): number | null {
 export function toLocalAgentActivityEntry(params: Readonly<{
     subagent: SessionSubagent;
     /**
-     * Whether a permission prompt for this subagent is on screen right now.
+     * What this subagent is waiting on a person for right now, in canonical order.
      *
      * Only the enriched roster can answer it — the prompt lives in the full transcript — so it is
-     * an input rather than something derived here, and a count-only host passes `false` rather than
+     * an input rather than something derived here, and a count-only host passes nothing rather than
      * subscribing to a transcript to learn a number.
      */
-    hasPendingPermission?: boolean;
+    attentionKinds?: readonly SessionAgentActivityAttentionKind[];
 }>): AgentActivityLocalEntry {
     const { subagent } = params;
+    const attentionKinds = params.attentionKinds ?? NO_SESSION_AGENT_ACTIVITY_ATTENTION;
     return {
         id: subagent.id,
         kind: resolveSessionSubagentActivityKind(subagent),
         handle: resolveSessionSubagentActivityHandle(subagent),
         // A prompt on screen means a PERSON is the blocker, which is the one thing the publisher
         // structurally cannot see. It is applied here, at the source, so the merge's own rule about
-        // who owns status stays about sources rather than about statuses.
-        status: params.hasPendingPermission === true ? 'waiting' : fromSubagentStatus(subagent.status),
+        // who owns status stays about sources rather than about statuses. WHICH prompt it is travels
+        // beside the status rather than collapsing into it.
+        status: attentionKinds.length > 0 ? 'waiting' : fromSubagentStatus(subagent.status),
         title: subagent.display.title,
         metaDetail: subagent.display.subtitle ?? null,
         startedAtMs: readInstant(subagent.timestamps.startedAtMs),
@@ -76,5 +83,6 @@ export function toLocalAgentActivityEntry(params: Readonly<{
         runId: subagent.runRef?.runId ?? null,
         sidechainId: subagent.transcript.sidechainId ?? null,
         subagentId: subagent.id,
+        attentionKinds,
     };
 }

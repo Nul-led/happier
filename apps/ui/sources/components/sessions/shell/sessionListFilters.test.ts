@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 import { filterSessionListItemsForHeaderControls } from './sessionListFilters';
 
@@ -34,6 +35,10 @@ const inactiveHeader: Extract<SessionListIndexItem, { type: 'header' }> = {
     serverId: 'server-a',
 };
 
+function key(sessionId: string): string {
+    return sessionAddressKey({ serverId: 'server-a', sessionId });
+}
+
 describe('filterSessionListItemsForHeaderControls', () => {
     it('filters sessions by indexed search text and prunes empty headers', () => {
         const result = filterSessionListItemsForHeaderControls([
@@ -42,16 +47,130 @@ describe('filterSessionListItemsForHeaderControls', () => {
             sessionItem('beta'),
         ], {
             searchQuery: 'invoice parser',
-            selectedTags: [],
-            sessionTags: {},
+            selectedTagIds: [],
+            sessionTagIdsBySessionKey: {},
             searchableTextBySessionKey: {
-                'server-a:beta': 'Please repair the invoice parser regression.',
+                [key('beta')]: 'Please repair the invoice parser regression.',
             },
         });
 
         expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
             'Active',
             'beta',
+        ]);
+    });
+
+    it('leaves no empty date header when a Recent activity search matches only one day', () => {
+        const dateHeader = (title: string, groupKey: string): Extract<SessionListIndexItem, { type: 'header' }> => ({
+            type: 'header',
+            title,
+            headerKind: 'date',
+            groupKey,
+            serverId: 'server-a',
+        });
+
+        const result = filterSessionListItemsForHeaderControls([
+            dateHeader('Today', 'recent:day:2026-02-17'),
+            sessionItem('today-a', { groupKey: 'recent:day:2026-02-17', groupKind: 'date' }),
+            dateHeader('Yesterday', 'recent:day:2026-02-16'),
+            sessionItem('yesterday-a', { groupKey: 'recent:day:2026-02-16', groupKind: 'date' }),
+            sessionItem('yesterday-b', { groupKey: 'recent:day:2026-02-16', groupKind: 'date' }),
+        ], {
+            searchQuery: 'invoice parser',
+            selectedTagIds: [],
+            sessionTagIdsBySessionKey: {},
+            searchableTextBySessionKey: {
+                [key('yesterday-b')]: 'Please repair the invoice parser regression.',
+            },
+        });
+
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+            'Yesterday',
+            'yesterday-b',
+        ]);
+    });
+
+    it('keeps the Active section above the surviving date group and drops the empty one', () => {
+        const dateHeader = (title: string, groupKey: string): Extract<SessionListIndexItem, { type: 'header' }> => ({
+            type: 'header',
+            title,
+            headerKind: 'date',
+            groupKey,
+            serverId: 'server-a',
+        });
+
+        const result = filterSessionListItemsForHeaderControls([
+            activeHeader,
+            dateHeader('Today', 'active:day:2026-02-17'),
+            sessionItem('today-a', { groupKey: 'active:day:2026-02-17', groupKind: 'date' }),
+            dateHeader('Yesterday', 'active:day:2026-02-16'),
+            sessionItem('yesterday-a', { groupKey: 'active:day:2026-02-16', groupKind: 'date' }),
+            inactiveHeader,
+            sessionItem('archived-a', {
+                section: 'inactive',
+                groupKey: 'inactive',
+            }),
+        ], {
+            searchQuery: 'invoice parser',
+            selectedTagIds: [],
+            sessionTagIdsBySessionKey: {},
+            searchableTextBySessionKey: {
+                [key('yesterday-a')]: 'Please repair the invoice parser regression.',
+            },
+        });
+
+        // The section a row belongs to is not a sibling of its date group: Active &
+        // inactive must still say which section the surviving day sits in.
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+            'Active',
+            'Yesterday',
+            'yesterday-a',
+        ]);
+    });
+
+    it('keeps the whole ancestor chain from primary section through server and folder headers', () => {
+        const serverHeader: Extract<SessionListIndexItem, { type: 'header' }> = {
+            type: 'header',
+            title: 'Home A',
+            headerKind: 'server',
+            groupKey: 'server:server-a',
+            serverId: 'server-a',
+        };
+        const folderHeader = (
+            title: string,
+            groupKey: string,
+            folderDepth: number,
+        ): Extract<SessionListIndexItem, { type: 'header' }> => ({
+            type: 'header',
+            title,
+            headerKind: 'folder',
+            groupKey,
+            serverId: 'server-a',
+            folderDepth,
+        });
+
+        const result = filterSessionListItemsForHeaderControls([
+            activeHeader,
+            serverHeader,
+            folderHeader('Billing', 'folder:billing', 0),
+            sessionItem('billing-a', { groupKey: 'folder:billing', groupKind: 'folder' }),
+            folderHeader('Invoices', 'folder:billing/invoices', 1),
+            sessionItem('invoices-a', { groupKey: 'folder:billing/invoices', groupKind: 'folder' }),
+        ], {
+            searchQuery: 'invoice parser',
+            selectedTagIds: [],
+            sessionTagIdsBySessionKey: {},
+            searchableTextBySessionKey: {
+                [key('invoices-a')]: 'Please repair the invoice parser regression.',
+            },
+        });
+
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+            'Active',
+            'Home A',
+            'Billing',
+            'Invoices',
+            'invoices-a',
         ]);
     });
 
@@ -62,10 +181,10 @@ describe('filterSessionListItemsForHeaderControls', () => {
             sessionItem('beta'),
         ], {
             searchQuery: 'vector cache',
-            selectedTags: [],
-            sessionTags: {},
+            selectedTagIds: [],
+            sessionTagIdsBySessionKey: {},
             searchableTextBySessionKey: {},
-            memoryMatchedSessionKeys: new Set(['server-a:beta']),
+            memoryMatchedSessionKeys: new Set([key('beta')]),
         });
 
         expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
@@ -83,18 +202,18 @@ describe('filterSessionListItemsForHeaderControls', () => {
             sessionItem('transcript-first'),
         ], {
             searchQuery: 'payments',
-            selectedTags: [],
-            sessionTags: {},
+            selectedTagIds: [],
+            sessionTagIdsBySessionKey: {},
             searchableTextBySessionKey: {
-                'server-a:metadata': 'release payments migration',
-                'server-a:exact': 'exact\nPayments',
+                [key('metadata')]: 'release payments migration',
+                [key('exact')]: 'exact\nPayments',
             },
             primarySearchableTextBySessionKey: {
-                'server-a:exact': 'Payments',
+                [key('exact')]: 'Payments',
             },
             memoryMatchedSessionKeys: new Set([
-                'server-a:transcript-first',
-                'server-a:transcript-second',
+                key('transcript-first'),
+                key('transcript-second'),
             ]),
         });
 
@@ -114,13 +233,13 @@ describe('filterSessionListItemsForHeaderControls', () => {
             sessionItem('beta'),
         ], {
             searchQuery: 'vector cache',
-            selectedTags: ['release'],
-            sessionTags: {
-                'server-a:alpha': ['release'],
-                'server-a:beta': ['later'],
+            selectedTagIds: [{ serverId: 'server-a', tagId: 'tag-release' }],
+            sessionTagIdsBySessionKey: {
+                [key('alpha')]: ['tag-release'],
+                [key('beta')]: ['tag-later'],
             },
             searchableTextBySessionKey: {},
-            memoryMatchedSessionKeys: new Set(['server-a:beta']),
+            memoryMatchedSessionKeys: new Set([key('beta')]),
         });
 
         expect(result).toEqual([]);
@@ -133,10 +252,13 @@ describe('filterSessionListItemsForHeaderControls', () => {
             sessionItem('beta'),
         ], {
             searchQuery: '',
-            selectedTags: ['release', 'billing'],
-            sessionTags: {
-                'server-a:alpha': ['ops'],
-                'server-a:beta': ['billing'],
+            selectedTagIds: [
+                { serverId: 'server-a', tagId: 'tag-release' },
+                { serverId: 'server-a', tagId: 'tag-billing' },
+            ],
+            sessionTagIdsBySessionKey: {
+                [key('alpha')]: ['tag-ops'],
+                [key('beta')]: ['tag-billing'],
             },
             searchableTextBySessionKey: {},
         });
@@ -153,9 +275,9 @@ describe('filterSessionListItemsForHeaderControls', () => {
             sessionItem('alpha'),
         ], {
             searchQuery: '',
-            selectedTags: ['missing'],
-            sessionTags: {
-                'server-a:alpha': ['release'],
+            selectedTagIds: [{ serverId: 'server-a', tagId: 'tag-missing' }],
+            sessionTagIdsBySessionKey: {
+                [key('alpha')]: ['tag-release'],
             },
             searchableTextBySessionKey: {},
         });
@@ -174,10 +296,10 @@ describe('filterSessionListItemsForHeaderControls', () => {
             }),
         ], {
             searchQuery: '',
-            selectedTags: ['later'],
-            sessionTags: {
-                'server-a:alpha': ['release'],
-                'server-a:beta': ['later'],
+            selectedTagIds: [{ serverId: 'server-a', tagId: 'tag-later' }],
+            sessionTagIdsBySessionKey: {
+                [key('alpha')]: ['tag-release'],
+                [key('beta')]: ['tag-later'],
             },
             searchableTextBySessionKey: {},
         });
@@ -206,13 +328,74 @@ describe('filterSessionListItemsForHeaderControls', () => {
             sessionItem('beta'),
         ], {
             searchQuery: 'nothing matches',
-            selectedTags: [],
-            sessionTags: {},
+            selectedTagIds: [],
+            sessionTagIdsBySessionKey: {},
             searchableTextBySessionKey: {},
         });
 
         // The stable search chrome owns the field's lifetime, so no header is kept
         // alive purely to host it; the list-level no-results message reports zero hits.
         expect(result).toEqual([]);
+    });
+
+    it('matches the Home-local tag id rather than the label beside it', () => {
+        const result = filterSessionListItemsForHeaderControls([
+            activeHeader,
+            sessionItem('alpha'),
+            sessionItem('beta'),
+        ], {
+            searchQuery: '',
+            // The selection is an opaque id; `urgent` is only what the tag reads as.
+            selectedTagIds: [{ serverId: 'server-a', tagId: 'tag_01HX' }],
+            sessionTagIdsBySessionKey: {
+                [key('alpha')]: ['tag_01HX'],
+                [key('beta')]: ['urgent'],
+            },
+            searchableTextBySessionKey: {},
+        });
+
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+            'Active',
+            'alpha',
+        ]);
+    });
+
+    it('never lets one Home tag match another Home row that merely reads the same', () => {
+        const homeBHeader: Extract<SessionListIndexItem, { type: 'header' }> = {
+            type: 'header',
+            title: 'Home B',
+            headerKind: 'server',
+            groupKey: 'server-b',
+            serverId: 'server-b',
+        };
+        const homeBSession: Extract<SessionListIndexItem, { type: 'session' }> = {
+            type: 'session',
+            sessionId: 'beta',
+            serverId: 'server-b',
+            section: 'active',
+            groupKey: 'server-b',
+            groupKind: 'active',
+        };
+
+        const result = filterSessionListItemsForHeaderControls([
+            activeHeader,
+            sessionItem('alpha'),
+            homeBHeader,
+            homeBSession,
+        ], {
+            searchQuery: '',
+            // Both Homes call their tag `urgent`; only Home A's id is selected.
+            selectedTagIds: [{ serverId: 'server-a', tagId: 'tag-a-1' }],
+            sessionTagIdsBySessionKey: {
+                [key('alpha')]: ['tag-a-1'],
+                [sessionAddressKey({ serverId: 'server-b', sessionId: 'beta' })]: ['tag-b-7'],
+            },
+            searchableTextBySessionKey: {},
+        });
+
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+            'Active',
+            'alpha',
+        ]);
     });
 });

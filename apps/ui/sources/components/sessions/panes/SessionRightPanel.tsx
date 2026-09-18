@@ -1,3 +1,6 @@
+import { parseSessionPaneScopeId } from './sessionPaneScopeId';
+import { useSessionCollaborationDestinationAdmitted } from '@/hooks/session/useSessionCollaborationAvailability';
+import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -27,6 +30,7 @@ import { PluginReactNativeUnavailable } from '@/components/plugins/reactNative/P
 import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
 import { RetainedPanelSurface } from '@/components/ui/panels/RetainedPanelSurface';
 import { SessionRightPanelAgentsView } from '@/components/sessions/panes/agents/SessionRightPanelAgentsView';
+import { SessionBoardPane } from '@/components/sessions/board/SessionBoardPane';
 import { SessionTranscriptNavigationPane } from '@/components/sessions/panes/SessionTranscriptNavigationPane';
 import { getPreferredLanguage, t } from '@/text';
 import { resolveOptionalSessionScreenTestId, useSessionScreenTestIdsEnabled } from '../shell/sessionScreenTestIds';
@@ -37,6 +41,7 @@ import { SessionGitSurface } from './surfaces/SessionGitSurface';
 import { SessionTerminalSurface } from './surfaces/SessionTerminalSurface';
 import { useSessionFileDetailsOpener } from './useSessionFileDetailsOpener';
 import { useSessionTerminalAvailability } from '@/components/sessions/terminal/useSessionTerminalAvailability';
+import { useSessionBoardFeatureEnabled } from '@/components/sessions/board/useSessionBoardFeatureEnabled';
 import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { useServicesOpenInBrowser } from '@/components/sessions/localServices/useServicesOpenInBrowser';
 import {
@@ -45,11 +50,18 @@ import {
 } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
 import { Icon } from '@/components/ui/icons/Icon';
 import {
-    useSessionPanePluginRuntime,
+    useSessionAddressForSessionId,
+    useSessionPluginRuntime,
     type SessionPaneSurfaceScope,
-} from './useSessionPanePluginRuntime';
+} from '@/components/sessions/plugins/useSessionPluginRuntime';
 import { useDeviceType } from '@/utils/platform/responsive';
 import { createPluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
+import { createSessionBoardDetailsTab } from './details/sessionDetailsTabBuilders';
+import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
+import type { SessionBoardPrimaryMountResolver } from '@/sync/domains/session/board';
+import { useMountedSessionBoardController } from '@/components/sessions/board/SessionBoardControllerProvider';
+
+const SessionCollaborationSurface = React.lazy(() => import('@/components/sessions/collaboration/SessionCollaborationSurface').then((module) => ({ default: module.SessionCollaborationSurface })));
 
 export type SessionRightPanelProps = Readonly<{
     sessionId: string;
@@ -62,7 +74,11 @@ export type SessionRightPanelProps = Readonly<{
      * same surface as the desktop right pane but need to navigate back in the router stack.
      */
     onRequestClose?: () => void;
+    /** One executable-mount decision derived by the enclosing Session shell. */
+    resolveBoardPrimaryHost?: SessionBoardPrimaryMountResolver;
 }>;
+
+const NO_BOARD_PRIMARY_MOUNT: SessionBoardPrimaryMountResolver = () => null;
 
 type RightTabId = string;
 
@@ -136,14 +152,33 @@ const SessionRightPanelContent = React.memo((props: SessionRightPanelProps) => {
     const pane = useAppPaneScope(props.scopeId);
     const scopeState = pane.scopeState;
     const headerPaddingTop = 10;
-    const { sidebarTabAvailable: terminalTabAvailable } = useSessionTerminalAvailability();
+    const { sidebarTabAvailable: terminalTabAvailable } = useSessionTerminalAvailability(props.paneSurfaceScope?.serverId ?? parseSessionPaneScopeId(props.scopeId)?.address?.serverId);
+    // The Board tab is decided by the EXACT Session's Home, carried by the route
+    // or pane scope — never by the ambient preferred/main Home selection.
+    const boardFeatureServerId = props.paneSurfaceScope?.serverId
+        ?? parseSessionPaneScopeId(props.scopeId)?.address?.serverId
+        ?? null;
+    const boardFeatureEnabled = useSessionBoardFeatureEnabled(boardFeatureServerId);
     const sessionScreenTestIdsEnabled = useSessionScreenTestIdsEnabled();
     const closeButtonAtStart = props.presentation === 'screen' && Platform.OS !== 'web';
     const headerSafeAreaTop = closeButtonAtStart ? 0 : insets.top;
-    const pluginRuntime = useSessionPanePluginRuntime({
-        sessionId: props.sessionId,
+    const sessionAddress = useSessionAddressForSessionId(
+        props.sessionId,
+        props.paneSurfaceScope?.serverId ?? parseSessionPaneScopeId(props.scopeId)?.address?.serverId,
+    );
+    const collaborationAddress = props.paneSurfaceScope
+        ? props.paneSurfaceScope.sessionId === props.sessionId
+            ? normalizeSessionAddress(props.paneSurfaceScope.serverId, props.sessionId)
+            : null
+        : sessionAddress;
+    const mountedBoard = useMountedSessionBoardController(collaborationAddress);
+    const collaborationAdmitted = useSessionCollaborationDestinationAdmitted(collaborationAddress?.serverId ?? '');
+    const sessionSharingAvailable = collaborationAddress !== null && collaborationAdmitted;
+    const pluginRuntime = useSessionPluginRuntime({
+        address: sessionAddress,
         paneSurfaceScope: props.paneSurfaceScope,
     });
+    const session = useSessionViewShellSession(props.sessionId, pluginRuntime.serverId);
     const runtimeAdmission = React.useMemo(() => Object.freeze({
         platform: pluginRuntime.platform,
         formFactor: resolvePluginUiRuntimeFormFactor({ deviceType }),
@@ -162,13 +197,17 @@ const SessionRightPanelContent = React.memo((props: SessionRightPanelProps) => {
         [pluginLocale, pluginRuntime.pluginUiProjection],
     );
     const rightPanelTabs = React.useMemo(() => resolveSessionRightSidebarTabs({
+        sessionSharingAvailable,
         terminalTabAvailable,
+        boardFeatureEnabled,
         presentation: props.presentation === 'screen' ? 'mobile' : 'desktop',
         pluginPlacements: pluginRightSidebarPlacements,
         projectionGeneration: pluginRuntime.pluginUiProjection?.generation ?? null,
         runtimeAdmission,
         localize: localizePluginText,
     }), [
+        sessionSharingAvailable,
+        boardFeatureEnabled,
         localizePluginText,
         pluginRuntime.pluginUiProjection?.generation,
         pluginRightSidebarPlacements,
@@ -190,6 +229,8 @@ const SessionRightPanelContent = React.memo((props: SessionRightPanelProps) => {
     const activeTab = rightTabSelection.kind === 'available'
         ? rightTabSelection.tab.id
         : null;
+    const resolveBoardPrimaryHost = props.resolveBoardPrimaryHost ?? NO_BOARD_PRIMARY_MOUNT;
+    const callerHostedHtmlRuntime = mountedBoard?.callerHostedHtmlRuntime ?? null;
     const activePluginPlacement = rightTabSelection.kind === 'available'
         && rightTabSelection.tab.owner === 'plugin'
         ? rightTabSelection.tab.placement
@@ -294,6 +335,12 @@ const SessionRightPanelContent = React.memo((props: SessionRightPanelProps) => {
 
     const { openFileInDetails, openFileInDetailsPinned } = useSessionFileDetailsOpener(props.scopeId);
     const availableTabIds = React.useMemo(() => new Set(rightPanelTabs.map((tab) => tab.id)), [rightPanelTabs]);
+    const openBoardItemInDetails = React.useCallback((itemId: string) => {
+        pane.openDetailsTab(createSessionBoardDetailsTab({ kind: 'item', itemId }), { intent: 'pinned' });
+    }, [pane]);
+    const openBoardInDetails = React.useCallback(() => {
+        pane.openDetailsTab(createSessionBoardDetailsTab(), { intent: 'pinned' });
+    }, [pane]);
 
     const openServiceInBrowser = useServicesOpenInBrowser({
         scopeId: props.scopeId,
@@ -351,7 +398,7 @@ const SessionRightPanelContent = React.memo((props: SessionRightPanelProps) => {
                             testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-rightpanel-surface-git')}
                         >
                             <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
-                                <SessionGitSurface sessionId={props.sessionId} scopeId={props.scopeId} />
+                                <SessionGitSurface sessionId={props.sessionId} scopeId={props.scopeId} serverId={props.paneSurfaceScope?.serverId ?? parseSessionPaneScopeId(props.scopeId)?.address?.serverId} />
                             </React.Suspense>
                         </RetainedPanelSurface>
                         <RetainedPanelSurface
@@ -361,7 +408,9 @@ const SessionRightPanelContent = React.memo((props: SessionRightPanelProps) => {
                         >
                             <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
                                 <SessionBrowseFilesSurface
+                                    scopeId={props.scopeId}
                                     sessionId={props.sessionId}
+                                    serverId={props.paneSurfaceScope?.serverId ?? parseSessionPaneScopeId(props.scopeId)?.address?.serverId}
                                     onOpenFile={openFileInDetails}
                                     onOpenFilePinned={openFileInDetailsPinned}
                                 />
@@ -373,7 +422,11 @@ const SessionRightPanelContent = React.memo((props: SessionRightPanelProps) => {
                             testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-rightpanel-surface-agents')}
                         >
                             <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
-                                <SessionRightPanelAgentsView sessionId={props.sessionId} scopeId={props.scopeId} />
+                                <SessionRightPanelAgentsView
+                                    sessionId={props.sessionId}
+                                    scopeId={props.scopeId}
+                                    serverId={props.paneSurfaceScope?.serverId ?? parseSessionPaneScopeId(props.scopeId)?.address?.serverId}
+                                />
                             </React.Suspense>
                         </RetainedPanelSurface>
                         <RetainedPanelSurface
@@ -388,6 +441,44 @@ const SessionRightPanelContent = React.memo((props: SessionRightPanelProps) => {
                                 testIDPrefix="session-transcript-navigation"
                             />
                         </RetainedPanelSurface>
+                        {availableTabIds.has('collaboration') && collaborationAddress ? (
+                            <RetainedPanelSurface
+                                isActive={activeTab === 'collaboration'}
+                                mode="absolute-overlay"
+                                testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-rightpanel-surface-collaboration')}
+                            >
+                                <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
+                                    <SessionCollaborationSurface
+                                        key={sessionAddressKey(collaborationAddress)}
+                                        target={collaborationAddress}
+                                    />
+                                </React.Suspense>
+                            </RetainedPanelSurface>
+                        ) : null}
+                        {availableTabIds.has('board') && session && (
+                            <RetainedPanelSurface
+                                isActive={activeTab === 'board'}
+                                mode="absolute-overlay"
+                                testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-rightpanel-surface-board')}
+                            >
+                                <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
+                                    <SessionBoardPane
+                                        sessionId={props.sessionId}
+                                        session={session}
+                                        serverId={pluginRuntime.serverId}
+                                        host="sidebar"
+                                        resolvePrimaryHost={resolveBoardPrimaryHost}
+                                        density="compact"
+                                        layout="single"
+                                        interaction="navigation"
+                                        onOpenItemHere={openBoardItemInDetails}
+                                        onOpenBoardDetails={openBoardInDetails}
+                                        pluginRuntime={pluginRuntime}
+                                        {...(callerHostedHtmlRuntime ? { callerHostedHtmlRuntime } : {})}
+                                    />
+                                </React.Suspense>
+                            </RetainedPanelSurface>
+                        )}
                         {availableTabIds.has('terminal') && (
                             <RetainedPanelSurface
                                 isActive={activeTab === 'terminal'}

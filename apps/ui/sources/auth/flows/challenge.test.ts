@@ -12,6 +12,11 @@ import {
     createExpectedAccountKeyChallengeSigningInputV1,
     createKeyChallengeV2SigningInput,
 } from '@happier-dev/protocol';
+import {
+    HOME_ADDRESS_MISMATCH_AUTH_CODE,
+    HOME_IDENTITY_MISMATCH_AUTH_CODE,
+} from './authenticationFailure';
+import { HappyError } from '@/utils/errors/errors';
 
 describe('Account signing', () => {
     it('signs caller-provided bytes with the canonical Account key', () => {
@@ -60,7 +65,40 @@ describe('Account signing', () => {
         ).toBe(false);
     });
 
-    it('signs only the selected server audience for a v2 challenge', () => {
+    it('refuses an issued v2 address the caller has not accepted', () => {
+        const secret = new Uint8Array(32).fill(9);
+        const challenge = {
+            challengeId: 'challenge-123',
+            nonce: 'nonce-abc',
+            issuedAt: '2026-08-22T12:00:00.000Z',
+            expiresAt: '2026-08-22T12:05:00.000Z',
+            audience: {
+                origin: 'https://selected.example.test',
+                serverIdentityId: 'srv_selected',
+            },
+        };
+
+        let thrown: unknown;
+        try {
+            authChallengeV2(secret, {
+                challenge,
+                expectedAudience: {
+                    origin: 'http://192.168.1.5:3005',
+                    serverIdentityId: 'srv_selected',
+                },
+            });
+        } catch (error) {
+            thrown = error;
+        }
+
+        expect(thrown).toBeInstanceOf(HappyError);
+        expect(thrown).toMatchObject({
+            kind: 'auth',
+            code: HOME_ADDRESS_MISMATCH_AUTH_CODE,
+        });
+    });
+
+    it('signs the issued v2 audience when the same Home is reached through another accepted origin', () => {
         const secret = new Uint8Array(32).fill(9);
         const challenge = {
             challengeId: 'challenge-123',
@@ -75,7 +113,12 @@ describe('Account signing', () => {
 
         const result = authChallengeV2(secret, {
             challenge,
-            expectedAudience: challenge.audience,
+            // Same Home, reached over the LAN instead of its canonical origin.
+            expectedAudience: {
+                origin: 'http://192.168.1.5:3005',
+                serverIdentityId: 'srv_selected',
+            },
+            acceptAlternateOrigin: true,
         });
 
         expect(
@@ -85,12 +128,40 @@ describe('Account signing', () => {
                 result.publicKey,
             ),
         ).toBe(true);
-        expect(() => authChallengeV2(secret, {
-            challenge,
-            expectedAudience: {
-                origin: 'https://attacker.example.test',
-                serverIdentityId: 'srv_attacker',
+    });
+
+    it('refuses a v2 challenge issued by a different Home identity', () => {
+        const secret = new Uint8Array(32).fill(9);
+        const challenge = {
+            challengeId: 'challenge-123',
+            nonce: 'nonce-abc',
+            issuedAt: '2026-08-22T12:00:00.000Z',
+            expiresAt: '2026-08-22T12:05:00.000Z',
+            audience: {
+                origin: 'https://selected.example.test',
+                serverIdentityId: 'srv_selected',
             },
-        })).toThrow(/audience/i);
+        };
+
+        let thrown: unknown;
+        try {
+            authChallengeV2(secret, {
+                challenge,
+                expectedAudience: {
+                    // Identical origin, different Home: a relayed challenge.
+                    origin: 'https://selected.example.test',
+                    serverIdentityId: 'srv_other_home',
+                },
+                acceptAlternateOrigin: true,
+            });
+        } catch (error) {
+            thrown = error;
+        }
+
+        expect(thrown).toBeInstanceOf(HappyError);
+        expect(thrown).toMatchObject({
+            kind: 'auth',
+            code: HOME_IDENTITY_MISMATCH_AUTH_CODE,
+        });
     });
 });

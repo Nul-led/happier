@@ -2,12 +2,19 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// This list-shell test does not exercise Markdown. The patched package subpath
+// is a genuine third-party boundary and may be absent before UI postinstall.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: () => [],
+}));
+
 import { findGestureByKind, renderScreen, standardCleanup } from '@/dev/testkit';
 import { SESSION_LIST_ROW_HEIGHT_DEFAULT } from './sessionListRowHeights';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 import { buildSessionListIndexFromViewData } from '@/sync/domains/sessionList/sessionListIndex';
+import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
-import { clearSessionListHeaderFilterRetentionForTests } from './search/useSessionListHeaderFilterRetention';
+import { clearSessionListViewFilterRetentionForTests } from './search/useSessionListViewFilters';
 import { buildSessionOrganizationProjectionFromLegacyTestSettings } from './sessionOrganizationProjectionTestFixture';
 import { createUseSettingMock, createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/storage';
 
@@ -26,11 +33,14 @@ const markSessionListScrollActivityMock = vi.hoisted(() => vi.fn());
 const preloadEnrichedMarkdownRuntimeSpy = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const setSessionPinOp = vi.hoisted(() => vi.fn(async () => undefined));
 const setSessionTagAssignmentsOp = vi.hoisted(() => vi.fn(async () => undefined));
+const exactHomeCredentialAccounts = vi.hoisted(() => new Map<string, string>());
 const keyboardShortcutHandlersRef = vi.hoisted(() => ({
     current: null as Record<string, (() => void)> | null,
 }));
+const layoutMaxWidthStyle = vi.hoisted(() => ({ maxWidth: 1280 } as const));
 let mockPathname = '';
 let platformOs: 'ios' | 'android' = 'ios';
+let filteredListingEnabled = false;
 
 vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', () => ({
     useUniversalSearchRuntime: () => ({
@@ -51,6 +61,7 @@ const virtualizedListState = vi.hoisted(() => ({
     current: null as null | {
         props: any | null;
         refHandle: unknown;
+        reset(): void;
     },
 }));
 let allMachines = [
@@ -98,6 +109,11 @@ let allMachines = [
     },
 ];
 let storageState: any = {
+    clearSessionListRowsForServerScope: (serverId: string) => {
+        const nextRowsByServerId = { ...storageState.sessionListRowsByServerId };
+        delete nextRowsByServerId[serverId];
+        storageState.sessionListRowsByServerId = nextRowsByServerId;
+    },
     sessions: {
         sess_a: {
             active: true,
@@ -146,6 +162,7 @@ let storageState: any = {
 };
 
 const groupKey = 'server:server_a:day:2026-02-17';
+const defaultProjectGroupKey = 'server:server_a:project:default';
 
 const sessionA = {
     id: 'sess_a',
@@ -241,16 +258,12 @@ vi.mock('@/components/ui/feedback/UpdateBanner', () => ({
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 1280 },
-    useLayoutMaxWidthStyle: () => ({ maxWidth: 1280 }),
+    useLayoutMaxWidthStyle: () => layoutMaxWidthStyle,
     useLayoutMaxWidth: () => 1280,
 }));
 
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
     DropdownMenu: (props: any) => React.createElement('DropdownMenu', props),
-}));
-
-vi.mock('@/sync/domains/session/listing/sessionListOrderingStateV1', () => ({
-    SESSION_LIST_GROUP_ORDER_MAX_KEYS_PER_GROUP: 50,
 }));
 
 vi.mock('@/sync/domains/session/listing/deriveSessionListActivity', () => ({
@@ -352,9 +365,9 @@ installSessionShellCommonModuleMocks({
             const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
             if (!normalizedSessionId) return null;
             const scopedRow = normalizedServerId
-                ? storageState.sessionListRowStateByServerId?.[normalizedServerId]?.[normalizedSessionId]
+                ? storageState.sessionListRowsByServerId?.[normalizedServerId]?.[normalizedSessionId]
                 : null;
-            return scopedRow ?? storageState.sessionListRenderables?.[normalizedSessionId] ?? null;
+            return scopedRow ?? null;
         };
         const buildRowRenderableMapForItems = (items: readonly any[] | null | undefined) => {
             const next = new Map<string, any>();
@@ -364,7 +377,8 @@ installSessionShellCommonModuleMocks({
                 const sessionId = typeof item.sessionId === 'string' ? item.sessionId.trim() : '';
                 if (!serverId || !sessionId) continue;
                 const row = resolveRowRenderableForTest(serverId, sessionId);
-                if (row) next.set(`${serverId}\u0000${sessionId}`, row);
+                const key = buildSessionListServerScopedRowKey(serverId, sessionId);
+                if (row && key) next.set(key, row);
             }
             return next;
         };
@@ -376,7 +390,8 @@ installSessionShellCommonModuleMocks({
                 const sessionId = typeof item.sessionId === 'string' ? item.sessionId.trim() : '';
                 if (!serverId || !sessionId) continue;
                 const row = resolveRowRenderableForTest(serverId, sessionId);
-                if (row) next.set(`${serverId}\u0000${sessionId}`, {
+                const key = buildSessionListServerScopedRowKey(serverId, sessionId);
+                if (row && key) next.set(key, {
                     id: row.id,
                     metadata: row.metadata,
                 });
@@ -391,6 +406,7 @@ installSessionShellCommonModuleMocks({
                     if (key === 'compactSessionViewMinimal') return false;
                     if (key === 'sessionTagsEnabled') return true;
                     if (key === 'sessionListOrderingModeV1') return sessionListOrderingModeV1;
+                    if (key === 'workspaceRefsV1') return workspaceRefsV1;
                     if (key === 'workspacePathDisplayModeV1') return workspacePathDisplayModeV1;
                     return null;
                 } }),
@@ -416,6 +432,17 @@ installSessionShellCommonModuleMocks({
                     pinnedSessionKeysV1,
                     sessionTagsV1,
                 }),
+                useSessionOrganizationProjections: (serverIds: readonly string[]) => React.useMemo(
+                    () => Object.fromEntries(serverIds.map((serverId) => [
+                        serverId,
+                        buildSessionOrganizationProjectionFromLegacyTestSettings({
+                            serverId,
+                            pinnedSessionKeysV1,
+                            sessionTagsV1,
+                        }),
+                    ])),
+                    [serverIds.join('\u0000'), pinnedSessionKeysV1, sessionTagsV1],
+                ),
                 useSessionListRenderableWithServerScope: (_serverId: any, sessionId: string) => {
                     if (sessionId === 'sess_a') return sessionA as any;
                     if (sessionId === 'sess_b') return sessionB as any;
@@ -423,7 +450,7 @@ installSessionShellCommonModuleMocks({
                 },
                 useSessionListReachabilityRenderablesForItems: buildReachabilityRenderableMapForItems,
                 useSessionListRowRenderablesForItems: buildRowRenderableMapForItems,
-                useSessionListRowStateByServerId: () => ({
+                useSessionListRowsByServerId: () => ({
                     server_a: {
                         sess_a: sessionA,
                         sess_b: sessionB,
@@ -476,20 +503,21 @@ vi.mock('@/sync/ops/sessionOrganization', () => ({
     writeSessionOrganizationFolders: vi.fn(async () => undefined),
     writeSessionOrganizationGroupOrder: vi.fn(async () => undefined),
     writeSessionOrganizationPin: setSessionPinOp,
-    writeSessionOrganizationPinForSessionKey: setSessionPinOp,
     writeSessionOrganizationTagLabels: setSessionTagAssignmentsOp,
-    writeSessionOrganizationTagLabelsForSessionKey: setSessionTagAssignmentsOp,
     writeSessionOrganizationWorkspaceLabels: vi.fn(async () => undefined),
     writeSessionOrganizationWorkspaceOrder: vi.fn(async () => undefined),
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-    const serverProfile = { id: 'server_a', serverUrl: 'https://server-a.example.test' };
+    const serverProfiles = [{ id: 'server_a', serverUrl: 'https://server-a.example.test' }];
+    const readServerProfiles = () => exactHomeCredentialAccounts.has('server_b')
+        ? [...serverProfiles, { id: 'server_b', serverUrl: 'https://server-b.example.test' }]
+        : serverProfiles;
     return {
         ...actual,
-        listServerProfiles: () => [serverProfile],
-        getServerProfileById: (serverId: string) => (serverId === serverProfile.id ? serverProfile : null),
+        listServerProfiles: readServerProfiles,
+        getServerProfileById: (serverId: string) => readServerProfiles().find((profile) => profile.id === serverId) ?? null,
     };
 });
 
@@ -498,7 +526,16 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     return await createTokenStorageModuleMock({
         importOriginal,
         tokenStorage: {
-            getCredentialsForServerUrl: vi.fn(async () => ({ token: 'test-token' })),
+            getCredentialsForServerUrl: vi.fn(async (serverUrl: string) => {
+                const accountId = exactHomeCredentialAccounts.get(serverUrl.includes('server-b') ? 'server_b' : 'server_a');
+                return {
+                    token: accountId === 'account-b'
+                        ? 'header.eyJzdWIiOiJhY2NvdW50LWIifQ==.signature'
+                        : accountId === 'account-a'
+                            ? 'header.eyJzdWIiOiJhY2NvdW50LWEifQ==.signature'
+                            : 'test-token',
+                };
+            }),
         },
     });
 });
@@ -522,7 +559,10 @@ vi.mock('@/hooks/session/useNavigateToSession', () => ({
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: (featureId: string) => featureId === 'sessions.folders',
+    useFeatureEnabled: (featureId: string) => (
+        featureId === 'sessions.folders'
+        || (featureId === 'sessions.filteredListing' && filteredListingEnabled)
+    ),
 }));
 
 vi.mock('@/keyboard/KeyboardShortcutProvider', () => ({
@@ -551,25 +591,25 @@ vi.mock('@/hooks/server/useEffectiveServerSelection', () => ({
 let mockVisibleSessionListViewData: any[] = [
     {
         type: 'header',
-        title: 'Today',
-        headerKind: 'date',
-        groupKey,
+        title: 'Project',
+        headerKind: 'project',
+        groupKey: defaultProjectGroupKey,
         serverId: 'server_a',
         serverName: 'Server A',
     },
     {
         type: 'session',
         session: sessionA,
-        groupKey,
-        groupKind: 'date',
+        groupKey: defaultProjectGroupKey,
+        groupKind: 'project',
         serverId: 'server_a',
         serverName: 'Server A',
     },
     {
         type: 'session',
         session: sessionB,
-        groupKey,
-        groupKind: 'date',
+        groupKey: defaultProjectGroupKey,
+        groupKind: 'project',
         serverId: 'server_a',
         serverName: 'Server A',
     },
@@ -602,35 +642,35 @@ function resetVisibleSessionListViewData(): void {
     mockVisibleSessionListViewData = [
         {
             type: 'header',
-            title: 'Today',
-            headerKind: 'date',
-            groupKey,
+            title: 'Project',
+            headerKind: 'project',
+            groupKey: defaultProjectGroupKey,
             serverId: 'server_a',
             serverName: 'Server A',
         },
         {
             type: 'session',
             session: sessionA,
-            groupKey,
-            groupKind: 'date',
+            groupKey: defaultProjectGroupKey,
+            groupKind: 'project',
             serverId: 'server_a',
             serverName: 'Server A',
         },
         {
             type: 'session',
             session: sessionB,
-            groupKey,
-            groupKind: 'date',
+            groupKey: defaultProjectGroupKey,
+            groupKind: 'project',
             serverId: 'server_a',
             serverName: 'Server A',
         },
     ];
 }
 
-async function renderSessionsList() {
+async function renderSessionsList(props: React.ComponentProps<typeof import('./SessionsList').SessionsList> = {}) {
     await vi.resetModules();
     const { SessionsList } = await import('./SessionsList');
-    return renderScreen(<SessionsList />);
+    return renderScreen(<SessionsList {...props} />);
 }
 
 async function renderSessionsListWithSurfaceOwnership(surfaceOwnership: Readonly<{
@@ -691,7 +731,7 @@ function findRecordedGestureDetectors(
 
 describe('SessionsList (native virtualization)', () => {
     beforeEach(async () => {
-        virtualizedListState.current = null;
+        virtualizedListState.current?.reset();
         sessionListOrderingModeV1 = 'custom';
         mockPathname = '';
         pinnedSessionKeysV1 = [];
@@ -714,20 +754,18 @@ describe('SessionsList (native virtualization)', () => {
         markSessionListScrollActivityMock.mockClear();
         preloadEnrichedMarkdownRuntimeSpy.mockClear();
         keyboardShortcutHandlersRef.current = null;
-        clearSessionListHeaderFilterRetentionForTests();
+        exactHomeCredentialAccounts.clear();
+        clearSessionListViewFilterRetentionForTests();
         const { resetSessionListPaneRetentionForTests } = await import('./sessionListPaneRetention');
         resetSessionListPaneRetentionForTests();
         mockAllowedServerIds = ['server_a'];
         platformOs = 'ios';
+        filteredListingEnabled = false;
         workspacePathDisplayModeV1 = null;
         readMachineTargetForSessionMock.mockReset();
         readMachineTargetForSessionMock.mockImplementation(() => null);
         resetVisibleSessionListViewData();
-        storageState.sessionListRenderables = {
-            sess_a: sessionA,
-            sess_b: sessionB,
-        };
-        storageState.sessionListRowStateByServerId = {
+        storageState.sessionListRowsByServerId = {
             server_a: {
                 sess_a: sessionA,
                 sess_b: sessionB,
@@ -829,8 +867,21 @@ describe('SessionsList (native virtualization)', () => {
         expect(screen.findAll((node) =>
             String(node.type) === 'DropdownMenu'
             && Array.isArray((node.props as any)?.items)
-            && (node.props as any).items.some((item: any) => item?.id === 'activeGroupingProject')
+            && (node.props as any).items.some((item: any) => item?.id === 'layout:projects')
         )).toHaveLength(1);
+    });
+
+    it('renders the canonical filter editor trigger when structural listing is available', async () => {
+        filteredListingEnabled = true;
+
+        const screen = await renderSessionsList();
+
+        const trigger = expectPresent(
+            screen.findByTestId('session-list-filter-trigger'),
+            'expected filter editor trigger',
+        );
+        expect(trigger.props.accessibilityRole).toBe('button');
+        expect(trigger.props.accessibilityLabel).toBe('sessionsList.filtersMyWork');
     });
 
     it('keeps the header search input open with text and filters visible sessions', async () => {
@@ -997,7 +1048,10 @@ describe('SessionsList (native virtualization)', () => {
         await act(async () => {
             inputOnOpen.props.onChangeText?.('s');
         });
-        const inputAfterFirstChar = screen.findByTestId('session-list-search-input');
+        const inputAfterFirstChar = expectPresent(
+            screen.findByTestId('session-list-search-input'),
+            'expected retained search input after typing',
+        );
         expect(inputAfterFirstChar).toBe(inputOnOpen);
         expect(inputAfterFirstChar.props.value).toBe('s');
 
@@ -1010,7 +1064,10 @@ describe('SessionsList (native virtualization)', () => {
         expect(screen.findAllByTestId('session-list-session:sess_b')).toHaveLength(1);
 
         await act(async () => {
-            screen.findByTestId('session-list-search-input').props.onChangeText?.('zzz-no-results');
+            expectPresent(
+                screen.findByTestId('session-list-search-input'),
+                'expected search input before no-results query',
+            ).props.onChangeText?.('zzz-no-results');
         });
         expect(screen.findByTestId('session-list-search-input')).toBe(inputOnOpen);
         expect(screen.findAllByTestId('session-list-session:sess_a')).toHaveLength(0);
@@ -1019,14 +1076,20 @@ describe('SessionsList (native virtualization)', () => {
 
         // Clearing keeps the same field mounted and restores the prior list state.
         await act(async () => {
-            screen.findByTestId('session-list-search-input').props.onChangeText?.('');
+            expectPresent(
+                screen.findByTestId('session-list-search-input'),
+                'expected search input before clearing',
+            ).props.onChangeText?.('');
         });
         expect(screen.findByTestId('session-list-search-input')).toBe(inputOnOpen);
         expect(screen.findAllByTestId('session-list-session:sess_a')).toHaveLength(1);
         expect(screen.findAllByTestId('session-list-session:sess_b')).toHaveLength(1);
 
         await act(async () => {
-            screen.findByTestId('session-list-search-input').props.onChangeText?.('sess_a');
+            expectPresent(
+                screen.findByTestId('session-list-search-input'),
+                'expected search input before the final query',
+            ).props.onChangeText?.('sess_a');
         });
         expect(screen.findByTestId('session-list-search-input')).toBe(inputOnOpen);
         expect(screen.findAllByTestId('session-list-session:sess_a')).toHaveLength(1);
@@ -1042,7 +1105,10 @@ describe('SessionsList (native virtualization)', () => {
             ).props.onPress?.({ stopPropagation: vi.fn() });
         });
         await act(async () => {
-            screen.findByTestId('session-list-search-input').props.onChangeText?.('vector');
+            expectPresent(
+                screen.findByTestId('session-list-search-input'),
+                'expected search input before contextual escalation',
+            ).props.onChangeText?.('vector');
         });
 
         const escalation = expectPresent(
@@ -1057,6 +1123,54 @@ describe('SessionsList (native virtualization)', () => {
 
         expect(openUniversalSearchSpy).toHaveBeenCalledWith('vector');
         expect(routerPushSpy).not.toHaveBeenCalled();
+    });
+
+    it('seeds Search everything from the mounted Team Home instead of the globally active Home', async () => {
+        filteredListingEnabled = true;
+        exactHomeCredentialAccounts.set('server_a', 'account-a');
+        exactHomeCredentialAccounts.set('server_b', 'account-b');
+        const screen = await renderSessionsList({
+            viewContext: {
+                kind: 'team',
+                team: { serverId: 'server_b', teamId: 'team_b' },
+                teamDisplayName: 'Team B',
+            },
+        });
+        await act(async () => {
+            await Promise.resolve();
+            expectPresent(
+                screen.findByTestId('session-list-search-trigger'),
+                'expected Team-context search trigger',
+            ).props.onPress?.({ stopPropagation: vi.fn() });
+        });
+        await act(async () => {
+            expectPresent(
+                screen.findByTestId('session-list-search-input'),
+                'expected Team-context search input',
+            ).props.onChangeText?.('vector');
+        });
+
+        await vi.waitFor(() => {
+            expect(screen.findByTestId('session-list-search-everything')).toBeTruthy();
+        });
+        await act(async () => {
+            expectPresent(
+                screen.findByTestId('session-list-search-everything'),
+                'expected Team-context Search everything action after its exact Account binding resolves',
+            ).props.onPress?.({ stopPropagation: vi.fn() });
+        });
+
+        expect(openUniversalSearchSpy).toHaveBeenCalledWith('vector', {
+            accountId: 'account-b',
+            serverId: 'server_b',
+            sessionId: null,
+            machineId: null,
+            rootPath: null,
+        });
+        expect(openUniversalSearchSpy).not.toHaveBeenCalledWith('vector', expect.objectContaining({
+            accountId: 'account-a',
+            serverId: 'server_a',
+        }));
     });
 
     it('keeps focused search open when clearing the last character after no results', async () => {
@@ -1176,6 +1290,35 @@ describe('SessionsList (native virtualization)', () => {
         await act(async () => {
             tagMenu.props.onSelect?.(importantItem.id);
         });
+
+        expect(screen.findAllByTestId('session-list-session:sess_a')).toHaveLength(1);
+        expect(screen.findAllByTestId('session-list-session:sess_b')).toHaveLength(0);
+    });
+
+    it('retains a selected tag through a temporary missing organization projection', async () => {
+        sessionTagsV1 = { 'server_a:sess_a': ['important'], 'server_a:sess_b': ['later'] };
+        const screen = await renderSessionsList();
+        const tagMenu = expectPresent(
+            findDropdownByItemTitle(screen, 'important'),
+            'expected tag filter dropdown',
+        );
+        const importantItem = expectPresent(
+            tagMenu.props.items.find((item: any) => item.title === 'important'),
+            'expected important tag filter item',
+        );
+
+        await act(async () => {
+            tagMenu.props.onSelect?.(importantItem.id);
+        });
+        expect(screen.findAllByTestId('session-list-session:sess_b')).toHaveLength(0);
+
+        // A loading/offline projection may temporarily have no known tags. That
+        // absence is not authoritative deletion evidence and must not erase the
+        // canonical qualified filter selection.
+        sessionTagsV1 = {};
+        await screen.update(<SessionsList />);
+        sessionTagsV1 = { 'server_a:sess_a': ['important'], 'server_a:sess_b': ['later'] };
+        await screen.update(<SessionsList />);
 
         expect(screen.findAllByTestId('session-list-session:sess_a')).toHaveLength(1);
         expect(screen.findAllByTestId('session-list-session:sess_b')).toHaveLength(0);
@@ -1484,11 +1627,11 @@ describe('SessionsList (native virtualization)', () => {
                 serverName: 'Server A',
             })),
         ];
-        storageState.sessionListRenderables = Object.fromEntries(
+        const serverRows = Object.fromEntries(
             profiledSessions.map((session) => [session.id, session]),
         );
-        storageState.sessionListRowStateByServerId = {
-            server_a: storageState.sessionListRenderables,
+        storageState.sessionListRowsByServerId = {
+            server_a: serverRows,
         };
 
         await vi.resetModules();
@@ -1599,10 +1742,10 @@ describe('SessionsList (native virtualization)', () => {
         const initialExtraData = initialProps?.extraData;
         const { SessionsList } = await import('./SessionsList');
 
-        storageState.sessionListRowStateByServerId = {
-            ...storageState.sessionListRowStateByServerId,
+        storageState.sessionListRowsByServerId = {
+            ...storageState.sessionListRowsByServerId,
             server_a: {
-                ...storageState.sessionListRowStateByServerId.server_a,
+                ...storageState.sessionListRowsByServerId.server_a,
                 sess_a: {
                     ...sessionA,
                     active: true,
@@ -1704,6 +1847,33 @@ describe('SessionsList (native virtualization)', () => {
     });
 
     it('passes path secondary-line mode for date-grouped rows', async () => {
+        mockVisibleSessionListViewData = [
+            {
+                type: 'header',
+                title: 'Today',
+                headerKind: 'date',
+                groupKey,
+                serverId: 'server_a',
+                serverName: 'Server A',
+            },
+            {
+                type: 'session',
+                session: sessionA,
+                groupKey,
+                groupKind: 'date',
+                serverId: 'server_a',
+                serverName: 'Server A',
+            },
+            {
+                type: 'session',
+                session: sessionB,
+                groupKey,
+                groupKind: 'date',
+                serverId: 'server_a',
+                serverName: 'Server A',
+            },
+        ];
+
         const screen = await renderSessionsList();
         expect(findSessionItem(screen, 'sess_a')?.props.secondaryLineMode).toBe('path');
         expect(findSessionItem(screen, 'sess_b')?.props.secondaryLineMode).toBe('path');
@@ -1741,33 +1911,6 @@ describe('SessionsList (native virtualization)', () => {
         const screen = await renderSessionsList();
         expect(screen.findAllByTestId('session-list-session:sess_a')).toHaveLength(1);
         expect(findSessionItem(screen, 'sess_a')?.props.secondaryLineMode).toBe('status');
-
-        mockVisibleSessionListViewData = [
-            {
-                type: 'header',
-                title: 'Today',
-                headerKind: 'date',
-                groupKey,
-                serverId: 'server_a',
-                serverName: 'Server A',
-            },
-            {
-                type: 'session',
-                session: sessionA,
-                groupKey,
-                groupKind: 'date',
-                serverId: 'server_a',
-                serverName: 'Server A',
-            },
-            {
-                type: 'session',
-                session: sessionB,
-                groupKey,
-                groupKind: 'date',
-                serverId: 'server_a',
-                serverName: 'Server A',
-            },
-        ];
     });
 
     it('shows an Open project action for project headers with a resolvable WorkspaceRef', async () => {
@@ -1844,7 +1987,10 @@ describe('SessionsList (native virtualization)', () => {
 
         await renderSessionsList();
 
-        expect(setSessionMruOrderV1).toHaveBeenCalledWith(['server_a:sess_b', 'server_a:sess_a']);
+        expect(setSessionMruOrderV1).toHaveBeenCalledWith([
+            buildSessionListServerScopedRowKey('server_a', 'sess_b'),
+            buildSessionListServerScopedRowKey('server_a', 'sess_a'),
+        ]);
     });
 
     it('does not record active session changes into the MRU order when the surface is not data-active', async () => {

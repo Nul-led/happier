@@ -7,7 +7,17 @@ import {
 
 const fetchHistoryMock = vi.hoisted(() => vi.fn());
 const restoreMock = vi.hoisted(() => vi.fn());
-const storageStateMock = vi.hoisted(() => vi.fn(() => ({ settingsVersion: 12 })));
+const settingsScope = { serverId: 'server-a', accountId: 'account-a' } as const;
+const scopeState = vi.hoisted(() => ({
+    current: { serverId: 'server-a', accountId: 'account-a' } as {
+        serverId: string;
+        accountId: string;
+    } | null,
+}));
+const storageStateMock = vi.hoisted(() => vi.fn(() => ({
+    settingsVersion: 12,
+    settingsScope: scopeState.current,
+})));
 
 vi.mock('@/sync/api/account/apiAccountSettingsHistory', () => ({
     fetchAccountSettingsHistory: fetchHistoryMock,
@@ -52,6 +62,10 @@ vi.mock('@/voice/registry/generatedBundledVoiceEntries', () => ({
     BUNDLED_FIRST_PARTY_VOICE_PRESENTATIONS: Object.freeze([]),
 }));
 
+vi.mock('@/sync/store/settingsWriters', () => ({
+    useAccountSettingsScope: () => settingsScope,
+}));
+
 const modalSpies = vi.hoisted(() => ({
     confirm: vi.fn(async (_title?: string, _message?: string) => true),
     alert: vi.fn(async (_title?: string, _message?: string) => undefined),
@@ -84,6 +98,7 @@ describe('SettingsHistorySection', () => {
     beforeEach(() => {
         fetchHistoryMock.mockReset();
         restoreMock.mockReset();
+        scopeState.current = settingsScope;
         storageStateMock.mockClear();
         modalSpies.confirm.mockReset();
         modalSpies.confirm.mockResolvedValue(true);
@@ -106,6 +121,7 @@ describe('SettingsHistorySection', () => {
         expect(modalSpies.confirm).toHaveBeenCalled();
         expect(restoreMock).toHaveBeenCalledWith(expect.objectContaining({
             credentials,
+            settingsScope,
             historyVersion: 3,
             expectedSettingsVersion: 12,
         }));
@@ -163,6 +179,25 @@ describe('SettingsHistorySection', () => {
         expect(restoreMock).not.toHaveBeenCalled();
     });
 
+    it('never restores into a different Account after confirmation resolves', async () => {
+        let resolveConfirmation!: (confirmed: boolean) => void;
+        modalSpies.confirm.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+            resolveConfirmation = resolve;
+        }));
+        const screen = await renderSection();
+        await vi.waitFor(() => {
+            expect(screen.findByTestId('settings-account-history-restore-3')).not.toBeNull();
+        });
+
+        await screen.pressByTestIdAsync('settings-account-history-restore-3');
+        scopeState.current = { serverId: 'server-b', accountId: 'account-b' };
+        resolveConfirmation(true);
+
+        await vi.waitFor(() => {
+            expect(restoreMock).not.toHaveBeenCalled();
+        });
+    });
+
     it('reports an empty history without offering restore actions', async () => {
         fetchHistoryMock.mockResolvedValue({ status: 'ready', snapshots: [] });
         const screen = await renderSection();
@@ -172,4 +207,16 @@ describe('SettingsHistorySection', () => {
         expect(screen.findByTestId('settings-account-history-restore-2')).toBeNull();
         expect(screen.findByTestId('settings-account-history-restore-3')).toBeNull();
     });
+    it('does not refresh history from the retained A finally handler after focus changes to B', async () => {
+        restoreMock.mockResolvedValue({ status: 'applied', settingsVersion: 13 });
+        modalSpies.alert.mockImplementationOnce(async () => {
+            scopeState.current = { serverId: 'server-b', accountId: 'account-b' };
+        });
+        const screen = await renderSection();
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-history-restore-3')).not.toBeNull());
+        await screen.pressByTestIdAsync('settings-account-history-restore-3');
+        await vi.waitFor(() => expect(modalSpies.alert).toHaveBeenCalled());
+        expect(fetchHistoryMock).toHaveBeenCalledTimes(1);
+    });
+
 });

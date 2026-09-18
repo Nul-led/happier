@@ -21,6 +21,7 @@ import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionLis
 import { useSessionListIndexByServerId, useSessionListRowRenderablesForItems, useSessions } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import { resolveServerIdForSessionIdFromLocalCache } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache';
 import { t } from '@/text';
 import { formatShortRelativeTimeAt } from '@/utils/time/formatShortRelativeTime';
@@ -101,7 +102,7 @@ function appendTranscriptSendToTarget(
     const serverId = normalizeNonEmptyString(rawServerId);
     if (!sessionId || !serverId) return;
 
-    const targetKey = `${serverId}\u0000${sessionId}`;
+    const targetKey = sessionAddressKey({ serverId, sessionId });
     if (seenTargetKeys.has(targetKey)) return;
     seenTargetKeys.add(targetKey);
     targets.push({ ...session, serverId });
@@ -133,7 +134,7 @@ function appendSessionListTargets(
         const serverId = normalizeNonEmptyString(item.serverId);
         const sessionId = normalizeNonEmptyString(item.sessionId);
         if (!serverId || !sessionId) continue;
-        const renderable = sessionListRowRenderablesByKey.get(`${serverId}:${sessionId}`);
+        const renderable = sessionListRowRenderablesByKey.get(sessionAddressKey({ serverId, sessionId }));
         if (!renderable) continue;
         appendTranscriptSendToTarget(targets, seenTargetKeys, renderable, serverId);
     }

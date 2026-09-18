@@ -1,13 +1,14 @@
+import { areSessionAddressesEqual, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { createVoiceQaFormatterPrefs, formatVoiceQaSessionLabel } from './formatVoiceQaSessionLabel';
 import { useVoiceQaStore, type VoiceQaProvider } from './voiceQaStore';
 
-export function beginVoiceQaRun(qaStore: typeof useVoiceQaStore, provider: VoiceQaProvider, sessionId: string): void {
+export function beginVoiceQaRun(qaStore: typeof useVoiceQaStore, provider: VoiceQaProvider, sessionId: string, targetSessionAddress: SessionAddress | null): void {
     const store = qaStore.getState();
     const current = qaStore.getState();
-    if (current.provider !== provider || current.sessionId !== sessionId) {
+    if (current.provider !== provider || current.sessionId !== sessionId || (current.targetSessionAddress !== targetSessionAddress && !areSessionAddressesEqual(current.targetSessionAddress, targetSessionAddress))) {
         store.clear();
     }
-    store.begin(provider, sessionId);
+    store.begin(provider, sessionId, { targetSessionAddress });
 }
 
 export function resolveVoiceQaOperationalProvider(
@@ -29,7 +30,7 @@ export function isVoiceQaTurnAbortedError(error: unknown): boolean {
     return false;
 }
 
-export function formatVoiceQaTargetLabel(sessionId: string, settings: unknown): string {
+export function formatVoiceQaTargetLabel(sessionId: SessionAddress | string, settings: unknown): string {
     const prefs = createVoiceQaFormatterPrefs(settings);
     return formatVoiceQaSessionLabel(sessionId, prefs, {
         emptyLabel: 'selected session',

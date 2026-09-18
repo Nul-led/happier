@@ -131,10 +131,11 @@ describe('MessageView (tool timeline chrome mode)', () => {
             children: [],
         };
 
-        await renderScreen(<MessageView message={message} metadata={null} sessionId="s1" />);
+        await renderScreen(<MessageView message={message} metadata={null} sessionId="s1" serverId="home-b" />);
 
         expect(renderedToolTimelineRowProps).toHaveLength(1);
         expect(renderedToolTimelineRowProps[0]!.messageId).toBe('server:server-msg-1');
+        expect(renderedToolTimelineRowProps[0]!.serverId).toBe('home-b');
     });
 
     it('renders ToolTimelineRow when toolViewTimelineChromeMode is activity_feed', async () => {
@@ -268,10 +269,11 @@ describe('MessageView (tool timeline chrome mode)', () => {
             children: [],
         };
 
-        await renderScreen(<MessageView message={message} metadata={null} sessionId="s1" />);
+        await renderScreen(<MessageView message={message} metadata={null} sessionId="s1" serverId="home-b" />);
 
         expect(renderedToolViewProps).toHaveLength(1);
         expect(renderedToolViewProps[0]!.messageId).toBe('server:server-msg-1');
+        expect(renderedToolViewProps[0]!.serverId).toBe('home-b');
     });
 
 

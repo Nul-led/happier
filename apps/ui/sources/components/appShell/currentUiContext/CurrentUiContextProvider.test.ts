@@ -148,7 +148,7 @@ vi.mock('@/sync/store/hooks', async (importOriginal) => ({
     useMachine: () => providerState.machine as never,
     useSession: () => providerState.session as never,
     useSessionDisplayNameSource: () => (providerState.sessionDisplaySource ?? providerState.session) as never,
-    useSetting: () => providerState.voiceSettings as never,
+    useSetting: (key: string) => key === 'secrets' ? [] : providerState.voiceSettings as never,
 }));
 
 vi.mock('@/sync/domains/state/storage', async () => {
@@ -446,10 +446,13 @@ describe('CurrentUiContextProvider', () => {
         });
 
         expect(hook.getCurrent()?.readCurrentUiContext()?.navigation.area).toBe('app');
+        expect(hook.getCurrent()?.readCurrentSessionId?.()).toBeNull();
 
         providerState.focusedSessionId = 'session-a';
         await hook.rerender();
         expect(hook.getCurrent()?.readCurrentUiContext()?.navigation.area).toBe('session');
+        expect(hook.getCurrent()?.readCurrentSessionId?.()).toBe('session-a');
+        expect(JSON.stringify(hook.getCurrent()?.readCurrentUiContext())).not.toContain('session-a');
 
         providerState.visibleModalKind = 'confirm';
         await hook.rerender();
@@ -458,6 +461,13 @@ describe('CurrentUiContextProvider', () => {
             presentation: 'modal',
             screen: 'confirm',
         });
+        providerState.focusedSessionId = 'session-b';
+        providerState.routeParams = { id: 'session-b' };
+        await hook.rerender();
+        expect(hook.getCurrent()?.readCurrentSessionId?.()).toBe('session-b');
+        const retainedReader = hook.getCurrent();
+        await hook.unmount();
+        expect(retainedReader?.readCurrentSessionId?.()).toBeNull();
     });
 
     it('does not notify current-context readers for a foreground Session activity update that preserves display metadata', async () => {

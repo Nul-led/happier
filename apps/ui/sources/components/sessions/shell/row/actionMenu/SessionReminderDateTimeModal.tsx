@@ -1,0 +1,110 @@
+import * as React from 'react';
+import { ScrollView, View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
+
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Switch } from '@/components/ui/forms/Switch';
+import { Item } from '@/components/ui/lists/Item';
+import {
+    LocalDateTimeEditor,
+    resolveFutureLocalDateTime,
+} from '@/components/ui/dateTime/LocalDateTimeEditor';
+import { toLocalDateTimeDraft, type LocalDateTimeDraft } from '@/components/ui/dateTime/localDateTimeValue';
+import type { CustomModalInjectedProps } from '@/modal/types';
+import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
+import {
+    formatSessionReminderPresetRuleLabel,
+    inferSessionReminderPresetRule,
+    resolveSessionReminderPresetRule,
+    type SessionReminderPresetV1,
+} from '@/sync/domains/session/organization/sessionReminderPreset';
+import { t } from '@/text';
+
+export type SessionReminderDateTimeResult = Readonly<{
+    remindAt: number;
+    preset?: SessionReminderPresetV1;
+}>;
+
+export function SessionReminderDateTimeModal(props: Readonly<{
+    nowMs: number;
+    onResolve: (value: SessionReminderDateTimeResult | null) => void;
+}> & CustomModalInjectedProps) {
+    const { theme } = useUnistyles();
+    const initial = React.useMemo(() => new Date(resolveSessionReminderPresetRule({
+        kind: 'relative_day',
+        daysAhead: 1,
+        minuteOfDay: 9 * 60,
+    }, props.nowMs)), [props.nowMs]);
+    const [draft, setDraft] = React.useState<LocalDateTimeDraft>(() => toLocalDateTimeDraft(initial));
+    const [savePreset, setSavePreset] = React.useState(false);
+    const validTimestamp = resolveFutureLocalDateTime(draft, props.nowMs);
+    const rule = validTimestamp === null ? null : inferSessionReminderPresetRule(validTimestamp, props.nowMs);
+
+    const finish = React.useCallback((value: SessionReminderDateTimeResult | null) => {
+        props.onResolve(value);
+        props.onClose();
+    }, [props]);
+
+    const footer = React.useMemo(() => (
+        <View style={{ paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
+            <RoundButton display="inverted" title={t('common.cancel')} onPress={() => finish(null)} />
+            <RoundButton
+                title={t('sessionsList.reminders.setReminder')}
+                disabled={validTimestamp === null}
+                onPress={() => {
+                    if (validTimestamp === null) return;
+                    finish({
+                        remindAt: validTimestamp,
+                        ...(savePreset && rule ? { preset: { rule } } : {}),
+                    });
+                }}
+            />
+        </View>
+    ), [finish, rule, savePreset, validTimestamp]);
+
+    useModalCardChrome(props.setChrome, React.useMemo(() => ({
+        kind: 'card' as const,
+        title: t('sessionsList.reminders.customTitle'),
+        subtitle: t('sessionsList.reminders.customMessage'),
+        testID: 'session-reminder-date-time-modal',
+        dimensions: { width: 480, maxHeightRatio: 0.86, size: 'md' as const },
+        footer,
+    }), [footer]));
+
+    return (
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 18, gap: 16 }}>
+            <LocalDateTimeEditor
+                nowMs={props.nowMs}
+                value={draft}
+                onChange={setDraft}
+                testIDPrefix="session-reminder"
+                labels={{
+                    date: t('sessionsList.reminders.dateLabel'),
+                    time: t('sessionsList.reminders.timeLabel'),
+                    pastInstant: t('sessionsList.reminders.futureTimeRequired'),
+                }}
+            />
+
+            <View style={{ borderRadius: 14, borderWidth: 1, borderColor: theme.colors.border.default, overflow: 'hidden' }}>
+                <Item
+                    title={t('sessionsList.reminders.addToPresets')}
+                    subtitle={savePreset
+                        ? (rule ? formatSessionReminderPresetRuleLabel(rule, props.nowMs) : t('sessionsList.reminders.presetPreviewUnavailable'))
+                        : undefined}
+                    rightElement={(
+                        <Switch
+                            value={savePreset}
+                            onValueChange={setSavePreset}
+                            accessibilityRole="switch"
+                            accessibilityLabel={t('sessionsList.reminders.addToPresets')}
+                            accessibilityState={{ checked: savePreset }}
+                        />
+                    )}
+                    rightElementOutsidePressable
+                    showChevron={false}
+                    showDivider={false}
+                />
+            </View>
+        </ScrollView>
+    );
+}

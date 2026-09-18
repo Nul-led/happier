@@ -54,8 +54,7 @@ export function resolveWorkspaceTargetForSessionFromState(
         };
     }
     const cachedScope = resolveSessionListLookupSessionServerScopeFromState(state, sessionId);
-    const hasRenderableSession = Boolean(state?.sessionListRenderables?.[sessionId]);
-    if (!cachedScope?.serverId && !hasRenderableSession && !fallbackServerId) {
+    if (!cachedScope?.serverId && !fallbackServerId) {
         return null;
     }
 

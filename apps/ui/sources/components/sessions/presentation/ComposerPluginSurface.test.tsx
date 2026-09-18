@@ -3,10 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type {
     DaemonPluginUiComposerSurfaceCatalogEntryV1,
-    PluginProjectionV2,
+} from '@happier-dev/protocol';
+import {
+    DaemonPluginUiComposerSurfaceCatalogEntryV1Schema,
+    PluginProjectionV2Schema,
 } from '@happier-dev/protocol';
 
 import { renderScreen } from '@/dev/testkit';
+import { createComposerPresentationTransactionApplier } from './sessionComposerPresentationTargets';
 
 const pluginSurfaceHostSpy = vi.hoisted(() => vi.fn());
 
@@ -25,7 +29,7 @@ vi.mock('@/components/plugins/surfaces/PluginSurfaceHost', () => ({
 }));
 
 function createCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
-    return {
+    return DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
         contribution: { pluginId: 'acme.compose', localId: 'summary' },
         immutableGenerationId: 'generation-1',
         projectionGeneration: 7,
@@ -53,8 +57,20 @@ function createCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
             target: { pluginId: 'acme.compose', immutableGenerationId: 'generation-1' },
             points: [],
         },
-    } as DaemonPluginUiComposerSurfaceCatalogEntryV1;
+    });
 }
+
+function createProjection(generation: number) {
+    return PluginProjectionV2Schema.parse({
+        v: 2,
+        generation,
+        familiesById: {},
+    });
+}
+
+const transactionApplier = createComposerPresentationTransactionApplier({
+    composerAttachmentsById: {},
+});
 
 const lifetime = {
     isCurrent: () => true,
@@ -84,11 +100,11 @@ describe('ComposerPluginSurface', () => {
             projectionGeneration={7}
             catalogEntries={[catalogEntry]}
             pluginProjectionById={{}}
-            pluginProjectionV2={{ v: 2, generation: 7 } as PluginProjectionV2}
+            pluginProjectionV2={createProjection(7)}
             machineId="machine-1"
             serverId="server-1"
             parentLifetime={lifetime}
-            transactionApplier={{ apply: () => ({ status: 'rejected' }) } as never}
+            transactionApplier={transactionApplier}
             fallback={fallback}
         />);
 
@@ -126,7 +142,7 @@ describe('ComposerPluginSurface', () => {
     it('passes the existing mount/catalog identity to the host for boundary recovery', async () => {
         const { ComposerPluginSurface } = await import('./ComposerPluginSurface');
         const renderComposer = (immutableGenerationId: string, projectionGeneration: number) => {
-            const catalogEntry = {
+            const catalogEntry = DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
                 ...createCatalogEntry(),
                 immutableGenerationId,
                 projectionGeneration,
@@ -134,7 +150,7 @@ describe('ComposerPluginSurface', () => {
                     target: { pluginId: 'acme.compose', immutableGenerationId },
                     points: [],
                 },
-            } as DaemonPluginUiComposerSurfaceCatalogEntryV1;
+            });
             return (
                 <ComposerPluginSurface
                     request={{
@@ -153,11 +169,11 @@ describe('ComposerPluginSurface', () => {
                     projectionGeneration={projectionGeneration}
                     catalogEntries={[catalogEntry]}
                     pluginProjectionById={{}}
-                    pluginProjectionV2={{ v: 2, generation: projectionGeneration } as PluginProjectionV2}
+                    pluginProjectionV2={createProjection(projectionGeneration)}
                     machineId="machine-1"
                     serverId="server-1"
                     parentLifetime={lifetime}
-                    transactionApplier={{ apply: () => ({ status: 'rejected' }) } as never}
+                    transactionApplier={transactionApplier}
                 />
             );
         };
@@ -203,11 +219,11 @@ describe('ComposerPluginSurface', () => {
             projectionGeneration={7}
             catalogEntries={[catalogEntry]}
             pluginProjectionById={{}}
-            pluginProjectionV2={{ v: 2, generation: 7 } as PluginProjectionV2}
+            pluginProjectionV2={createProjection(7)}
             machineId="machine-1"
             serverId="server-1"
             parentLifetime={lifetime}
-            transactionApplier={{ apply: () => ({ status: 'rejected' }) } as never}
+            transactionApplier={transactionApplier}
         />);
         const readPlatform = (): unknown => (
             (pluginSurfaceHostSpy.mock.calls.at(-1)?.[0] as Readonly<{ platform?: unknown }>)?.platform

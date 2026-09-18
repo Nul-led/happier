@@ -91,6 +91,26 @@ describe('workspaceFileSearch', () => {
         activeAccountLifetime = null;
     });
 
+    it('ranks exact basenames and stems before prefixes and fuzzy matches before applying the limit', async () => {
+        machineRipgrepMock.mockResolvedValue({ success: true, stdout: [
+            'src/normalizeSecretStringPromptInput.ts',
+            'src/promptInputHelper.ts',
+            'src/promptInput.test.ts',
+            'packages/a/promptInput.ts',
+            'packages/b/promptInput.ts',
+            'promptInput/child.ts',
+        ].join('\n') });
+        const { searchWorkspaceFiles } = await import('./workspaceFileSearch');
+        const results = await searchWorkspaceFiles({ scope: SCOPE_A, query: 'PROMPTINPUT', limit: 4 });
+        expect(results.map((file) => file.fullPath)).toEqual([
+            'promptInput/', 'packages/a/promptInput.ts', 'packages/b/promptInput.ts', 'src/promptInput.test.ts',
+        ]);
+        expect((await searchWorkspaceFiles({ scope: SCOPE_A, query: 'promptInput.ts', limit: 2 })).map((file) => file.fullPath))
+            .toEqual(['packages/a/promptInput.ts', 'packages/b/promptInput.ts']);
+        expect((await searchWorkspaceFiles({ scope: SCOPE_A, query: 'packages/b/promptInput.ts', limit: 1 }))[0]?.fullPath)
+            .toBe('packages/b/promptInput.ts');
+    });
+
     it('does not reuse the same server, machine, and root cache across Account lifetimes', async () => {
         activeAccountLifetime = createAccountLifetimeFixture('account-a');
         machineRipgrepMock.mockResolvedValueOnce({ success: true, stdout: 'src/account-a.ts\n' });

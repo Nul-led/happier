@@ -54,4 +54,27 @@ describe('saved secret architecture', () => {
 
         expect(violations).toEqual([]);
     });
+
+    it('keeps catalog pickers and the Secrets list off the legacy whole-array mutation hook', () => {
+        const canonicalCatalogConsumers = [
+            'app/(app)/new/pick/secret.tsx',
+            'app/(app)/settings/secrets.tsx',
+            'components/secrets/SecretsList.tsx',
+            'components/ui/forms/valueRefs/SavedSecretPickerModal.tsx',
+        ];
+        const violations = canonicalCatalogConsumers.filter((relativePath) => (
+            readFileSync(join(UI_SOURCES_ROOT, relativePath), 'utf8').includes('useSavedSecretsMutable')
+        ));
+
+        expect(violations).toEqual([]);
+    });
+
+    it('keeps SecretsList mutation behavior callback-driven', () => {
+        const contents = readFileSync(join(UI_SOURCES_ROOT, 'components/secrets/SecretsList.tsx'), 'utf8');
+
+        expect(contents).not.toContain('onChangeSecrets');
+        expect(contents).not.toContain('function newId');
+        expect(contents).not.toContain('Modal.prompt');
+        expect(contents).not.toContain('Modal.confirm');
+    });
 });

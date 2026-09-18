@@ -1,5 +1,5 @@
 import {
-    PluginWebhookActionHttpPathsV1,
+    getActionSpec,
     PluginWebhookActionInputSchemasV1,
     PluginWebhookActionOutputSchemasV1,
     type PluginWebhookPresentUserActionIdV1,
@@ -29,8 +29,10 @@ export function createPluginWebhookEndpointHttpActionExecutor(params: Readonly<{
     const request = params.request ?? serverFetch;
     return async (actionId, input, options) => {
         const parsedInput = PluginWebhookActionInputSchemasV1[actionId].parse(input);
-        const response = await request(PluginWebhookActionHttpPathsV1[actionId], {
-            method: 'POST',
+        const transport = getActionSpec(actionId).serverTransport;
+        if (!transport) throw new TypeError(`Unsupported plugin webhook Action transport: ${actionId}`);
+        const response = await request(transport.path, {
+            method: transport.method,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(parsedInput),
             ...(options?.signal === undefined ? {} : { signal: options.signal }),

@@ -70,10 +70,11 @@ export function useSessionActionFieldOptions(
  */
 export function useSessionActionFieldOptionsForRowHeight(
     sessionId: string,
+    sessionServerId?: string | null,
 ): ResolveSessionActionFieldOptions {
-    const hasActionDrafts = useSessionHasActionDrafts(sessionId);
+    const serverId = usePreferredServerIdForSession({ serverId: sessionServerId, sessionId }, true);
+    const hasActionDrafts = useSessionHasActionDrafts({ serverId, sessionId });
     const enabledAgentIds = useEnabledAgentIds();
-    const serverId = usePreferredServerIdForSession(sessionId, null, hasActionDrafts);
     const executionRunsBackends = useExecutionRunsBackendsForSession(sessionId, serverId, hasActionDrafts);
 
     const lists = buildSessionActionFieldOptionLists({

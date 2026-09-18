@@ -9,7 +9,8 @@ import { createVoiceTurnStreaming } from './voiceTurnStreaming';
 import { createVoiceWelcomePolicy } from './voiceWelcomePolicy';
 
 export type VoiceExecutionTransport = Readonly<{
-    appendContextUpdate: (sessionId: string, update: string) => void;
+    /** Explicit context scoped to the current Voice attempt (QA/manual injection only). */
+    appendAttemptContextUpdate: (sessionId: string, update: string) => void;
     appendAutomaticUiContextUpdate: (sessionId: string, update: string) => void;
     commitUserTranscript: (sessionId: string, text: string, localId: string) => Promise<void>;
     commit: (sessionId: string) => Promise<string>;
@@ -36,7 +37,7 @@ export type VoiceExecutionTransport = Readonly<{
 export function createVoiceExecutionTransport(): VoiceExecutionTransport {
     const voiceAgentBySessionId = new Map<string, VoiceAgentHandle>();
     const voiceAgentInitBySessionId = new Map<string, Promise<VoiceAgentHandle>>();
-    const voiceAgentPendingSessionContextBySessionId = new Map<string, string[]>();
+    const voiceAttemptExplicitContextBySessionId = new Map<string, string[]>();
     // A null entry records that this attempt has already admitted its deferred
     // target context, so a recovered handle cannot queue it for the next turn.
     const deferredTargetSessionContextBySessionId = new Map<string, string | null>();
@@ -100,7 +101,7 @@ export function createVoiceExecutionTransport(): VoiceExecutionTransport {
             }),
         voiceAgentBySessionId,
         voiceAgentInitBySessionId,
-        voiceAgentPendingSessionContextBySessionId,
+        voiceAttemptExplicitContextBySessionId,
         deferredTargetSessionContextBySessionId,
         latestAutomaticUiContextBySessionId,
     });
@@ -115,7 +116,7 @@ export function createVoiceExecutionTransport(): VoiceExecutionTransport {
         interruptActiveTurn,
         resetCachedHandle: recovery.resetCachedHandle,
         trackActiveTurn,
-        voiceAgentPendingSessionContextBySessionId,
+        voiceAttemptExplicitContextBySessionId,
         deferredTargetSessionContextBySessionId,
         latestAutomaticUiContextBySessionId,
         voiceAgentTurnAbortControllerBySessionId,
@@ -164,7 +165,7 @@ export function createVoiceExecutionTransport(): VoiceExecutionTransport {
     };
 
     return {
-        appendContextUpdate: recovery.appendContextUpdate,
+        appendAttemptContextUpdate: recovery.appendAttemptContextUpdate,
         appendAutomaticUiContextUpdate: recovery.appendAutomaticUiContextUpdate,
         commitUserTranscript,
         commit: recovery.commit,

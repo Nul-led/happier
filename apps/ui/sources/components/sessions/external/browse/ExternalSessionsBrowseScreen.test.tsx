@@ -31,6 +31,8 @@ import { installNewSessionComponentsCommonModuleMocks } from '../../new/componen
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const candidateDeleteSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const, deleted: true as const })));
+const modalConfirmSpy = vi.hoisted(() => vi.fn(async () => true));
 const candidatesListSpy = vi.hoisted(() => vi.fn(async (): Promise<ExternalSessionsCandidatesListResponse> => ({
     ok: true,
     candidates: [
@@ -257,6 +259,7 @@ installNewSessionComponentsCommonModuleMocks({
     modal: () => createModalModuleMock({
         spies: {
             alert: modalAlertSpy,
+            confirm: modalConfirmSpy,
         },
     }).module,
     storage: () => createStorageModuleStub({
@@ -303,7 +306,22 @@ vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
 
 vi.mock('@/components/ui/lists/ItemList', () => createPassThroughModule(['ItemList']));
 vi.mock('@/components/ui/lists/ItemGroup', () => createPassThroughModule(['ItemGroup']));
-vi.mock('@/components/ui/lists/Item', () => createPassThroughModule(['Item']));
+// Same pass-through host element as its siblings, plus the row accessory
+// mounted as a child. The real `Item` renders `rightElement` into the tree, so
+// a mock that only forwards it as an inert prop would hide every accessory
+// control — the candidate delete overflow among them — from this screen.
+vi.mock('@/components/ui/lists/Item', () => ({
+    Item: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
+        React.createElement(
+            'Item',
+            props,
+            props.rightElement as React.ReactNode,
+            props.children,
+        ),
+}));
+// The row overflow is asserted by type, so it needs a host element with that
+// name; the real component only renders generic Views and would be invisible.
+vi.mock('@/components/ui/lists/ItemRowActions', () => createPassThroughModule(['ItemRowActions']));
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => createPassThroughModule(['DropdownMenu']));
 vi.mock('@/components/ui/forms/Switch', () => createPassThroughModule(['Switch']));
 vi.mock('@/components/ui/popover', () => createPassThroughModule(['PopoverScope']));
@@ -324,12 +342,19 @@ const { module: capturedLegendList, state: legendListState } = createCapturingLe
     renderItems: true,
 });
 
+// The mock factory runs while this file's own static imports are still being
+// evaluated (the virtualized list backend pulls Legend in transitively), which
+// is before `capturedLegendList` is initialized. Read the captured
+// implementation at render time instead, so the factory never touches the
+// binding during module collection.
 vi.mock('@legendapp/list/react-native', () => ({
-    LegendList: capturedLegendList.LegendList,
+    LegendList: React.forwardRef<unknown, Record<string, unknown>>((props, ref) =>
+        React.createElement(capturedLegendList.LegendList, { ...props, ref })),
 }));
 
 vi.mock('@/sync/ops/machineExternalSessions', () => ({
     machineExternalSessionsCandidatesList: candidatesListSpy,
+    machineExternalSessionCandidateDelete: candidateDeleteSpy,
     machineExternalSessionLinkEnsure: linkEnsureSpy,
 }));
 
@@ -406,6 +431,10 @@ describe('ExternalSessionsBrowseScreen', () => {
             nextCursor: null,
         });
         linkEnsureSpy.mockClear();
+        candidateDeleteSpy.mockClear();
+        candidateDeleteSpy.mockResolvedValue({ ok: true, deleted: true });
+        modalConfirmSpy.mockClear();
+        modalConfirmSpy.mockResolvedValue(true);
         routerPushSpy.mockClear();
         modalAlertSpy.mockClear();
         mutateAccountSettingsSpy.mockClear();
@@ -525,6 +554,357 @@ describe('ExternalSessionsBrowseScreen', () => {
         expect(screen.findByTestId('external-sessions-browse-auto-link')).toBeNull();
         expect(mutateAccountSettingsSpy).not.toHaveBeenCalled();
         expect(linkEnsureSpy).not.toHaveBeenCalled();
+    });
+
+
+    describe('Agent-owned candidate deletion', () => {
+        const deletableCandidates = [{
+            remoteSessionId: ' provider\nsession-1 ',
+            title: 'Existing Codex Session',
+            updatedAtMs: 1_700_000_000_000,
+        }] as ExternalSessionCandidateV1[];
+
+        function findCandidateActions(screen: Readonly<{
+            findAllByType: (type: string) => ReadonlyArray<Readonly<{ props: Record<string, unknown> }>>;
+        }>) {
+            return screen.findAllByType('ItemRowActions').find(
+                (node) => Array.isArray(node.props.actions),
+            );
+        }
+
+        it('offers no deletion when the listing did not advertise the capability', async () => {
+            candidatesListSpy.mockResolvedValue({
+                ok: true,
+                candidates: deletableCandidates,
+                nextCursor: null,
+            });
+            const { ExternalSessionsBrowseScreen } = await externalSessionsBrowseScreenModulePromise;
+            const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
+            await flushHookEffects();
+
+            expect(screen.findAllByType('ItemRowActions')).toHaveLength(0);
+            expect(candidateDeleteSpy).not.toHaveBeenCalled();
+        });
+
+        it('confirms, deletes the exact opaque id, and removes the row only after the Agent commits', async () => {
+            candidatesListSpy.mockResolvedValue({
+                ok: true,
+                candidates: deletableCandidates,
+                nextCursor: null,
+                capabilities: { deleteCandidate: true },
+            });
+            const { ExternalSessionsBrowseScreen } = await externalSessionsBrowseScreenModulePromise;
+            const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
+            await flushHookEffects();
+
+            const actions = findCandidateActions(screen)?.props.actions as ReadonlyArray<Readonly<{
+                id: string;
+                destructive?: boolean;
+                onPress: () => void;
+            }>>;
+            const deleteAction = actions.find((action) => action.id === 'delete_agent_session');
+            expect(deleteAction?.destructive).toBe(true);
+            expect(screen.findByTestId('direct-session-candidate: provider\nsession-1 ')).not.toBeNull();
+
+            await act(async () => {
+                deleteAction?.onPress();
+                await flushHookEffects();
+            });
+
+            expect(modalConfirmSpy).toHaveBeenCalledTimes(1);
+            // The destructive call is server-scoped: it must reach the same
+            // server that served the listing, not an ambient default.
+            expect(candidateDeleteSpy).toHaveBeenCalledWith(
+                {
+                    machineId: 'machine-1',
+                    agentId: 'codex',
+                    source: { kind: 'codexHome', home: 'user' },
+                    remoteSessionId: ' provider\nsession-1 ',
+                },
+                { serverId: 'server-a' },
+            );
+            expect(screen.findByTestId('direct-session-candidate: provider\nsession-1 ')).toBeNull();
+        });
+
+        it('deletes nothing when the user cancels the confirmation', async () => {
+            candidatesListSpy.mockResolvedValue({
+                ok: true,
+                candidates: deletableCandidates,
+                nextCursor: null,
+                capabilities: { deleteCandidate: true },
+            });
+            modalConfirmSpy.mockResolvedValue(false);
+            const { ExternalSessionsBrowseScreen } = await externalSessionsBrowseScreenModulePromise;
+            const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
+            await flushHookEffects();
+
+            const actions = findCandidateActions(screen)?.props.actions as ReadonlyArray<Readonly<{
+                id: string;
+                onPress: () => void;
+            }>>;
+            await act(async () => {
+                actions.find((action) => action.id === 'delete_agent_session')?.onPress();
+                await flushHookEffects();
+            });
+
+            expect(modalConfirmSpy).toHaveBeenCalledTimes(1);
+            expect(candidateDeleteSpy).not.toHaveBeenCalled();
+            expect(screen.findByTestId('direct-session-candidate: provider\nsession-1 ')).not.toBeNull();
+        });
+
+        it('keeps the row and reports the failure when the Agent refuses deletion', async () => {
+            candidatesListSpy.mockResolvedValue({
+                ok: true,
+                candidates: deletableCandidates,
+                nextCursor: null,
+                capabilities: { deleteCandidate: true },
+            });
+            candidateDeleteSpy.mockResolvedValueOnce({
+                ok: false,
+                errorCode: 'agent_unavailable',
+                error: 'provider refused deletion',
+            } as never);
+            const { ExternalSessionsBrowseScreen } = await externalSessionsBrowseScreenModulePromise;
+            const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
+            await flushHookEffects();
+
+            const actions = findCandidateActions(screen)?.props.actions as ReadonlyArray<Readonly<{
+                id: string;
+                onPress: () => void;
+            }>>;
+            await act(async () => {
+                actions.find((action) => action.id === 'delete_agent_session')?.onPress();
+                await flushHookEffects();
+            });
+
+            expect(modalAlertSpy).toHaveBeenCalledWith(
+                'common.error',
+                'externalSessions.browseAgentUnavailable',
+            );
+            expect(screen.findByTestId('direct-session-candidate: provider\nsession-1 ')).not.toBeNull();
+            const retryable = findCandidateActions(screen)?.props.actions as ReadonlyArray<Readonly<{
+                id: string;
+                disabled?: boolean;
+            }>>;
+            expect(retryable.find((action) => action.id === 'delete_agent_session')?.disabled).toBe(false);
+        });
+
+        /**
+         * One deletion is in flight; the whole destructive affordance is
+         * suspended until it settles, but only the row actually being deleted
+         * may show progress. A second row that still offered its delete control
+         * would let the user start an overlapping Agent-side deletion the
+         * screen cannot represent.
+         */
+        it('suspends every candidate delete while one is pending and shows progress only on its own row', async () => {
+            candidatesListSpy.mockResolvedValue({
+                ok: true,
+                candidates: [
+                    ...deletableCandidates,
+                    {
+                        remoteSessionId: ' provider\nsession-2 ',
+                        title: 'Second Codex Session',
+                        updatedAtMs: 1_700_000_001_000,
+                    },
+                ] as ExternalSessionCandidateV1[],
+                nextCursor: null,
+                capabilities: { deleteCandidate: true },
+            });
+            const pendingDeletion = createDeferred<{ ok: true; deleted: true }>();
+            candidateDeleteSpy.mockImplementationOnce(() => pendingDeletion.promise);
+            const { ExternalSessionsBrowseScreen } = await externalSessionsBrowseScreenModulePromise;
+            const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
+            await flushHookEffects();
+
+            const readDeleteActionDisabledByRow = () => new Map(
+                screen.findAllByType('ItemRowActions')
+                    .map((node) => [
+                        node.props.overflowTriggerTestID as string,
+                        (node.props.actions as ReadonlyArray<Readonly<{
+                            id: string;
+                            disabled?: boolean;
+                            onPress: () => void;
+                        }>>).find((action) => action.id === 'delete_agent_session'),
+                    ] as const),
+            );
+            const readRowLoadingByTestId = () => new Map(
+                screen.findAllByType('Item')
+                    .filter((node) => typeof node.props.testID === 'string'
+                        && (node.props.testID as string).startsWith('direct-session-candidate:'))
+                    .map((node) => [node.props.testID as string, node.props.loading === true] as const),
+            );
+
+            const idle = readDeleteActionDisabledByRow();
+            expect(idle.size).toBe(2);
+            expect([...idle.values()].map((action) => action?.disabled)).toEqual([false, false]);
+
+            await act(async () => {
+                idle.get('external-session-candidate-actions: provider\nsession-1 ')?.onPress();
+                await flushHookEffects();
+            });
+
+            const pending = readDeleteActionDisabledByRow();
+            expect([...pending.values()].map((action) => action?.disabled)).toEqual([true, true]);
+            expect(readRowLoadingByTestId()).toEqual(new Map([
+                ['direct-session-candidate: provider\nsession-1 ', true],
+                ['direct-session-candidate: provider\nsession-2 ', false],
+            ]));
+
+            await act(async () => {
+                pendingDeletion.resolve({ ok: true, deleted: true });
+                await pendingDeletion.promise;
+                await flushHookEffects();
+            });
+
+            // The surviving sibling re-enables the moment the deletion settles.
+            const settled = readDeleteActionDisabledByRow();
+            expect([...settled.values()].map((action) => action?.disabled)).toEqual([false]);
+            expect(readRowLoadingByTestId()).toEqual(new Map([
+                ['direct-session-candidate: provider\nsession-2 ', false],
+            ]));
+        });
+
+        /**
+         * Admission has to be decided synchronously. Two activations dispatched
+         * from the same commit both read the pre-press pending state, so a guard
+         * that only consults rendered state lets each open its own confirmation
+         * and send its own irreversible Agent-side deletion.
+         */
+        it('admits one destructive request when two presses land before the pending state commits', async () => {
+            candidatesListSpy.mockResolvedValue({
+                ok: true,
+                candidates: deletableCandidates,
+                nextCursor: null,
+                capabilities: { deleteCandidate: true },
+            });
+            const pendingConfirmation = createDeferred<boolean>();
+            modalConfirmSpy.mockImplementationOnce(() => pendingConfirmation.promise);
+            const { ExternalSessionsBrowseScreen } = await externalSessionsBrowseScreenModulePromise;
+            const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
+            await flushHookEffects();
+
+            const deleteAction = (findCandidateActions(screen)?.props.actions as ReadonlyArray<Readonly<{
+                id: string;
+                onPress: () => void;
+            }>>).find((action) => action.id === 'delete_agent_session');
+
+            await act(async () => {
+                deleteAction?.onPress();
+                deleteAction?.onPress();
+                await flushHookEffects();
+            });
+
+            expect(modalConfirmSpy).toHaveBeenCalledTimes(1);
+            expect(candidateDeleteSpy).not.toHaveBeenCalled();
+
+            await act(async () => {
+                pendingConfirmation.resolve(true);
+                await pendingConfirmation.promise;
+                await flushHookEffects();
+            });
+
+            expect(modalConfirmSpy).toHaveBeenCalledTimes(1);
+            expect(candidateDeleteSpy).toHaveBeenCalledTimes(1);
+            expect(screen.findByTestId('direct-session-candidate: provider\nsession-1 ')).toBeNull();
+        });
+
+        /**
+         * A destructive request belongs to the browse scope that produced it.
+         * The Agent's opaque id is only unique inside one machine, Agent and
+         * source, so neither a confirmation answered after the scope moved nor
+         * a success that lands after it may be replayed against a same-keyed
+         * row in the listing now on screen, and neither may leave that listing
+         * holding the departed scope's pending state.
+         */
+        it('fences a candidate deletion across a scope switch and spares the colliding row', async () => {
+            machinesState = [
+                { id: 'machine-1', active: true, metadata: { displayName: 'MacBook Pro', host: 'mbp.local' } },
+                { id: 'machine-2', active: true, metadata: { displayName: 'Linux Box', host: 'linux.local' } },
+            ];
+            // Both machines serve a row under the same Agent-owned key: the id is
+            // opaque and unique only inside the scope that produced it.
+            const collidingKey = 'shared-agent-session';
+            candidatesListSpy.mockResolvedValue({
+                ok: true,
+                candidates: [{
+                    remoteSessionId: collidingKey,
+                    title: 'Colliding Agent Session',
+                    updatedAtMs: 1_700_000_000_000,
+                }] as ExternalSessionCandidateV1[],
+                nextCursor: null,
+                capabilities: { deleteCandidate: true },
+            });
+            const readDeleteAction = () => (findCandidateActions(screen)?.props.actions as ReadonlyArray<Readonly<{
+                id: string;
+                disabled?: boolean;
+                onPress: () => void;
+            }>>).find((action) => action.id === 'delete_agent_session');
+            const { ExternalSessionsBrowseScreen } = await externalSessionsBrowseScreenModulePromise;
+            const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
+            await flushHookEffects();
+
+            // The scope moves while the confirmation is still on screen.
+            const pendingConfirmation = createDeferred<boolean>();
+            modalConfirmSpy.mockImplementationOnce(() => pendingConfirmation.promise);
+            await act(async () => {
+                readDeleteAction()?.onPress();
+                await Promise.resolve();
+            });
+            await act(async () => {
+                administrationTargetSelection.controller.select('machine-2', 'server-identity-b');
+            });
+            await flushHookEffects();
+            await act(async () => {
+                pendingConfirmation.resolve(true);
+                await pendingConfirmation.promise;
+                await flushHookEffects();
+            });
+
+            expect(candidateDeleteSpy).not.toHaveBeenCalled();
+            expect(modalAlertSpy).not.toHaveBeenCalled();
+            expect(screen.findByTestId(`direct-session-candidate:${collidingKey}`)).not.toBeNull();
+            expect(readDeleteAction()?.disabled).toBe(false);
+
+            // The confirmation is answered inside the scope, but the scope moves
+            // back while the Agent call is still in flight.
+            const pendingDeletion = createDeferred<{ ok: true; deleted: true }>();
+            candidateDeleteSpy.mockImplementationOnce(() => pendingDeletion.promise);
+            await act(async () => {
+                readDeleteAction()?.onPress();
+                await flushHookEffects();
+            });
+            expect(candidateDeleteSpy).toHaveBeenCalledTimes(1);
+            expect(candidateDeleteSpy).toHaveBeenLastCalledWith(
+                expect.objectContaining({ machineId: 'machine-2' }),
+                { serverId: 'server-b' },
+            );
+
+            await act(async () => {
+                administrationTargetSelection.controller.select('machine-1', 'server-identity-a');
+            });
+            await flushHookEffects();
+            await act(async () => {
+                pendingDeletion.resolve({ ok: true, deleted: true });
+                await pendingDeletion.promise;
+                await flushHookEffects();
+            });
+
+            expect(modalAlertSpy).not.toHaveBeenCalled();
+            expect(screen.findByTestId(`direct-session-candidate:${collidingKey}`)).not.toBeNull();
+            // Pending ownership left with the departed scope, so the listing on
+            // screen is neither stuck in progress nor refused a fresh deletion.
+            expect(readDeleteAction()?.disabled).toBe(false);
+            await act(async () => {
+                readDeleteAction()?.onPress();
+                await flushHookEffects();
+            });
+            expect(candidateDeleteSpy).toHaveBeenCalledTimes(2);
+            expect(candidateDeleteSpy).toHaveBeenLastCalledWith(
+                expect.objectContaining({ machineId: 'machine-1' }),
+                { serverId: 'server-a' },
+            );
+            expect(screen.findByTestId(`direct-session-candidate:${collidingKey}`)).toBeNull();
+        });
     });
 
     afterEach(() => {

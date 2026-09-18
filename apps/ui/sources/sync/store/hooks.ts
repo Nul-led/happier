@@ -1,7 +1,15 @@
 import React from 'react';
+import { isPendingMessageForRecipient } from '@/sync/domains/pending/pendingMessageRecipient';
 import { useShallow } from 'zustand/react/shallow';
-import type { PrimaryTurnStatusV1 } from '@happier-dev/protocol';
+import type { MachinePoolViewV1, PrimaryTurnStatusV1 } from '@happier-dev/protocol';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
+import {
+  resolveAutomationRunProjections,
+  resolveWorkflowRunRows,
+  type WorkflowRunRow,
+} from '@/sync/store/domains/workflowRuns';
+import { normalizeSessionAddress, sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { listSessionAddressesForSessionIdFromLocalState } from '@/sync/domains/session/resolveSessionAddressFromLocalState';
 
 import type {
   AutomationDefinition,
@@ -18,9 +26,10 @@ import type {
 } from '../domains/state/storageTypes';
 import type { DecryptedArtifact } from '../domains/artifacts/artifactTypes';
 import {
-  collectOpenApprovalSessionIds,
+  collectOpenApprovalSessionReferences,
   listOpenApprovalArtifactsForSession,
   type OpenApprovalArtifactForSession,
+  type OpenApprovalSessionReference,
 } from '../domains/artifacts/approvalArtifacts';
 import { countEnabledAutomationDefinitionsLinkedToSession } from '../domains/automations/automationSessionLink';
 import type { LocalSettings } from '../domains/settings/localSettings';
@@ -32,6 +41,8 @@ import {
     resolveSessionMobileSurfacePersistenceKeys,
     type SessionMobileSurfacePersistenceKeys,
 } from '../domains/settings/mobileSurfacePersistence';
+import { buildRealmQualifiedSessionCompanionPreferenceKey } from '@/components/sessions/companion/state/sessionCompanionPreferenceKey';
+import { resolveSessionLocalPreferenceRealm } from '../domains/settings/sessionLocalPreferenceKey';
 import type { AgentTextMessage, Message } from '../domains/messages/messageTypes';
 import { messageAttentionImpact } from '../domains/messages/messageUserAttention';
 import type {
@@ -51,6 +62,11 @@ import {
   summarizeSessionListReadableActivityFromMessageRecords,
   type SessionListRenderableSession,
 } from '../domains/session/listing/sessionListRenderable';
+import {
+  buildSessionListHomeObservations,
+  type SessionListHomeObservationByServerId,
+} from '../domains/session/listing/sessionListHomeObservation';
+import type { SessionListQueryHomeState } from '../domains/session/listing/sessionListQueryController';
 import type { SessionListIndexItem } from '../domains/sessionList/sessionListIndex';
 import { deriveSessionListMeaningfulActivityAt } from '../domains/session/listing/deriveSessionListActivity';
 import { getPermissionsInUiWhileLocal } from '../domains/state/agentStateCapabilities';
@@ -95,7 +111,10 @@ import {
   resolveSessionListRuntimePriorityRowNextFreshnessAtMs,
 } from '../domains/session/listing/sessionListRuntimePriorityRows';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import { areServerProfileIdentifiersEquivalent } from '../domains/server/serverProfiles';
+import {
+  areServerProfileIdentifiersEquivalent,
+  resolveServerProfileScopeIdForIdentifier,
+} from '../domains/server/serverProfiles';
 import {
   readSessionListRowForServerId,
   readSessionListRowsForServerId,
@@ -103,6 +122,7 @@ import {
 import { buildSessionFolderAssignmentKey } from '../domains/session/folders';
 import {
   buildSessionOrganizationProjection,
+  buildSessionOrganizationProjections,
   type SessionOrganizationProjection,
 } from '../domains/session/organization';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
@@ -126,13 +146,16 @@ import type { KnownEntitlements } from '../domains/state/storageStore';
 import type { ForkedTranscriptSnapshot } from '../domains/sessionFork/forkedTranscriptSnapshot';
 import { getForkedTranscriptSnapshotCached } from '../domains/sessionFork/forkedTranscriptSnapshot';
 import {
+  findSessionListLookupSession,
   resolveSessionListLookupSessionServerScopeFromState,
   resolveSessionListPreferredSessionMetadataFromState,
   type SessionMetadataLike,
 } from '../domains/session/listing/sessionListLookupState';
 import { resolveVisibleMachinesForActiveServerFromState } from './domains/machines/resolveMachinesForActiveServerFromState';
+import { isMachineVisibleForSelection } from '@/sync/domains/machines/identity/filterVisibleMachines';
 import type { SessionsDomainSlice, StorageState } from './types';
 
+export { useAccountSettingsScope } from './settingsWriters';
 export type { MessageStoreRef } from './messageSelection';
 
 export function useSessions() {
@@ -188,19 +211,19 @@ export type SessionReferenceTarget = Readonly<{
 }>;
 
 /**
- * The exact projection a transcript session reference consumes. A reference's identity is the
- * session id, so only two things can change what it renders: whether that session is still
- * present for this viewer, and the metadata its title is derived from. Turn-lifecycle churn
+ * The exact projection a transcript session reference consumes. A reference's identity is its
+ * Home-qualified session address, so only two things can change what it renders: whether that
+ * exact session is still present for this viewer, and the metadata its title is derived from. Turn-lifecycle churn
  * (thinking, agentState, seq, presence, updatedAt) changes neither, so a reference chip must
  * not re-render for it.
  *
  * **A cache miss is not evidence that the session is gone**, which is the whole content of this
- * hook. Both session maps are list-scoped caches, and neither is a record of what exists:
+ * hook. Both the qualified row cache and hydrated Session map are scoped caches, and neither is
+ * a record of what exists:
  *
- * - `sessionListRenderables` holds one entry per row the session list currently covers. A
- *   replace-mode `/v2/sessions` page evicts every previously-known row it omits inside its
- *   removal window, and that endpoint filters `archivedAt: null` **server-side**, so archiving a
- *   session is by itself enough to empty this map of it.
+ * - `sessionListRowsByServerId` holds rows learned for a Home; ordinary and archived membership
+ *   are separate. A replace-mode `/v2/sessions` page can remove ordinary membership, and that
+ *   endpoint filters `archivedAt: null` **server-side**.
  * - `sessions` holds only the full records this run hydrated, which is a deliberately small set.
  *   It is in practice a *subset* of the renderables, so it can never rescue a row the renderable
  *   eviction removed. That is why answering presence from either map, or from their union,
@@ -211,18 +234,38 @@ export type SessionReferenceTarget = Readonly<{
  * session route — which already answers a genuinely missing id with its own explicit
  * "Session isn't available" screen — owns the failure the client cannot predict.
  *
- * `deleted` therefore comes from `deletedSessionIds`, written only by `deleteSession`. `metadata`
- * is whichever cached copy exists so a known session still shows its live title; it is always a
- * *stored* object, never a projection, so the selection stays referentially stable.
+ * `deleted` therefore comes from `deletedSessionIds`, written only by `deleteSession`; a current
+ * exact-Home row is positive evidence that a same-id deletion signal did not delete this target.
+ * `metadata` comes from the canonical exact-Home row (or the active Session record at the legacy
+ * unqualified boundary), so a known session still shows its live title without cross-Home bleed.
  */
-export function useSessionReferenceTarget(sessionId: string): SessionReferenceTarget {
+export function useSessionReferenceTarget(
+  sessionId: string,
+  serverId?: string | null,
+): SessionReferenceTarget {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const normalizedServerId = normalizeTrimmedString(serverId);
+  const activeServerId = normalizeTrimmedString(useActiveServerSnapshot(!normalizedServerId).serverId);
+  const lookupServerId = normalizedServerId || activeServerId;
   return getStorage()(
-    useShallow((state) => ({
-      deleted: state.deletedSessionIds[sessionId] === true,
-      metadata: state.sessionListRenderables[sessionId]?.metadata
-        ?? state.sessions[sessionId]?.metadata
-        ?? null,
-    })),
+    useShallow((state) => {
+      const exactRow = lookupServerId && normalizedSessionId
+        ? findSessionListLookupSession(state, {
+            serverId: lookupServerId,
+            sessionId: normalizedSessionId,
+          })?.session ?? null
+        : null;
+      return {
+        // A current exact row is positive evidence that this Home's target exists,
+        // even if the active-Home compatibility deletion map holds the same bare id.
+        deleted: exactRow
+          ? false
+          : state.deletedSessionIds[normalizedSessionId] === true,
+        metadata: exactRow?.metadata
+          ?? (!normalizedServerId ? state.sessions[normalizedSessionId]?.metadata : null)
+          ?? null,
+      };
+    }),
   );
 }
 
@@ -341,8 +384,7 @@ export function useSessionMachineId(sessionId: string): string | null {
 }
 
 export type SessionInteractionSource = Readonly<{
-  accessLevel: Session['accessLevel'];
-  canApprovePermissions: Session['canApprovePermissions'];
+  access: Session['access'];
   active: Session['active'];
 }>;
 
@@ -352,28 +394,40 @@ export type SessionInteractionSource = Readonly<{
  * agentState, agentStateVersion, updatedAt, seq, presence) cannot change interaction rights,
  * so a row must not re-render for it.
  */
-export function useSessionInteractionSource(sessionId: string): SessionInteractionSource | null {
+export function useSessionInteractionSource(
+  sessionId: string,
+  serverId?: string | null,
+): SessionInteractionSource | null {
   return getStorage()(
     useShallow((state) => {
-      const session = state.sessions[sessionId];
+      const normalizedServerId = normalizeTrimmedString(serverId);
+      const session = normalizedServerId
+        ? state.sessionListRowsByServerId[normalizedServerId]?.[sessionId]
+        : state.sessions[sessionId];
       if (!session) return null;
       return {
-        accessLevel: session.accessLevel,
-        canApprovePermissions: session.canApprovePermissions,
+        access: session.access,
         active: session.active,
       };
     })
   );
 }
 
-export function useSessionListPreferredMetadata(sessionId: string | null | undefined): SessionMetadataLike {
-  const normalizedSessionId = normalizeSessionId(sessionId);
+export function useSessionListPreferredMetadata(
+  target: SessionAddress | string | null | undefined,
+): SessionMetadataLike {
+  const normalizedTarget = typeof target === 'object' && target !== null
+    ? normalizeSessionAddress(target.serverId, target.sessionId)
+    : normalizeSessionId(target);
   return getStorage()(useShallow((state) =>
-    resolveSessionListPreferredSessionMetadataFromState(state, normalizedSessionId)));
+    resolveSessionListPreferredSessionMetadataFromState(state, normalizedTarget ?? '')));
 }
 
 export function useSessionListRenderable(id: string): SessionListRenderableSession | null {
-  return getStorage()(useShallow((state) => state.sessionListRenderables[id] ?? null));
+  const activeServerId = normalizeTrimmedString(useActiveServerSnapshot().serverId);
+  return getStorage()(useShallow((state) => (
+    readSessionListRowForServerId(state.sessionListRowsByServerId, activeServerId, id)
+  )));
 }
 
 const ROW_PROGRESS_RENDERABLE_MIN_UPDATE_INTERVAL_MS = 30_000;
@@ -536,30 +590,34 @@ export function useSessionListRenderableWithServerScope(
     }
 
     if (normalizedServerId) {
-      const scoped = readSessionListRowsForServerId(state.sessionListRowStateByServerId, normalizedServerId);
+      const scoped = readSessionListRowsForServerId(state.sessionListRowsByServerId, normalizedServerId);
       if (scoped && typeof scoped === 'object') {
         return projectSessionListRowRenderable(
           scoped[normalizedSessionId],
-          `${normalizedServerId}\u0000${normalizedSessionId}`,
-        );
-      }
-
-      if (activeServerId && areServerProfileIdentifiersEquivalent(activeServerId, normalizedServerId)) {
-        return projectSessionListRowRenderable(
-          state.sessionListRenderables[normalizedSessionId],
-          `${normalizedServerId}\u0000${normalizedSessionId}`,
+          sessionAddressKey({ serverId: normalizedServerId, sessionId: normalizedSessionId }),
         );
       }
 
       return null;
     }
 
-    return projectSessionListRowRenderable(state.sessionListRenderables[normalizedSessionId]);
+    return projectSessionListRowRenderable(
+      readSessionListRowForServerId(state.sessionListRowsByServerId, activeServerId, normalizedSessionId),
+      activeServerId
+        ? sessionAddressKey({ serverId: activeServerId, sessionId: normalizedSessionId })
+        : JSON.stringify(['legacy_unscoped_session', normalizedSessionId]),
+    );
   }));
 }
 
+const EMPTY_SESSION_LIST_RENDERABLES_BY_ID: Record<string, SessionListRenderableSession> = {};
+
 export function useSessionListRenderablesById(): Record<string, SessionListRenderableSession> {
-  return getStorage()(useShallow((state) => state.sessionListRenderables));
+  const activeServerId = normalizeTrimmedString(useActiveServerSnapshot().serverId);
+  return getStorage()(useShallow((state) => (
+    readSessionListRowsForServerId(state.sessionListRowsByServerId, activeServerId)
+    ?? EMPTY_SESSION_LIST_RENDERABLES_BY_ID
+  )));
 }
 
 export type SessionListAttentionRow = Readonly<{
@@ -568,8 +626,16 @@ export type SessionListAttentionRow = Readonly<{
   session: SessionListRenderableSession;
 }>;
 
-export function useSessionListRowStateByServerId(): SessionsDomainSlice['sessionListRowStateByServerId'] {
-  return getStorage()(useShallow((state) => state.sessionListRowStateByServerId));
+export function useSessionListRowsByServerId(): SessionsDomainSlice['sessionListRowsByServerId'] {
+  return getStorage()(useShallow((state) => state.sessionListRowsByServerId));
+}
+
+export function useOrdinarySessionListMembershipByServerId(): SessionsDomainSlice['ordinarySessionListMembershipByServerId'] {
+  return getStorage()(useShallow((state) => state.ordinarySessionListMembershipByServerId ?? {}));
+}
+
+export function useArchivedSessionListMembershipByServerId(): SessionsDomainSlice['archivedSessionListMembershipByServerId'] {
+  return getStorage()(useShallow((state) => state.archivedSessionListMembershipByServerId ?? {}));
 }
 
 const emptySessionListRuntimePriorityRowKeys = new Set<string>() as ReadonlySet<string>;
@@ -595,7 +661,7 @@ function createSessionListRuntimePriorityRowKeysSelector(
   return (state) => {
     const nextRaw = buildSessionListRuntimePriorityRowKeys(
       stableItems,
-      state.sessionListRowStateByServerId,
+      state.sessionListRowsByServerId,
       nowMs,
     );
     const next = nextRaw.size === 0 ? emptySessionListRuntimePriorityRowKeys : nextRaw;
@@ -610,7 +676,7 @@ function createSessionListRuntimePriorityRowKeysSelector(
 
 function resolveNextSessionListRuntimePriorityFreshnessAtMs(
   items: ReadonlyArray<SessionListIndexItem> | null | undefined,
-  rowStateByServerId: StorageState['sessionListRowStateByServerId'],
+  rowStateByServerId: StorageState['sessionListRowsByServerId'],
   nowMs: number,
 ): number | null {
   let nextAt: number | null = null;
@@ -637,7 +703,7 @@ function useSessionListRuntimePriorityNowMs(
     React.useMemo(
       () => (state: StorageState) => resolveNextSessionListRuntimePriorityFreshnessAtMs(
         items,
-        state.sessionListRowStateByServerId,
+        state.sessionListRowsByServerId,
         runtimeNowMs,
       ),
       [items, runtimeNowMs],
@@ -734,7 +800,7 @@ export function useSessionListReachabilityRenderablesForItems(
     const next = new Map<string, SessionListReachabilityRenderable>();
     for (const itemKey of itemKeys) {
       const row = readSessionListRowForServerId(
-        state.sessionListRowStateByServerId,
+        state.sessionListRowsByServerId,
         itemKey.serverId,
         itemKey.sessionId,
       );
@@ -774,7 +840,7 @@ export function useSessionListRowRenderablesForItems(
     const next = new Map<string, SessionListRenderableSession>();
     for (const itemKey of itemKeys) {
       const row = readSessionListRowForServerId(
-        state.sessionListRowStateByServerId,
+        state.sessionListRowsByServerId,
         itemKey.serverId,
         itemKey.sessionId,
       );
@@ -838,12 +904,31 @@ export function useSessionListIndexByServerId(
 
 export function useSessionFolderAssignment(serverId: string | null | undefined, sessionId: string): string | null {
   return getStorage()(useShallow((state) => (
-    state.sessionOrganizationFolderAssignmentsBySessionKey[buildSessionFolderAssignmentKey(serverId, sessionId)] ?? null
+    state.sessionOrganizationFolderAssignmentsBySessionKey[buildSessionFolderAssignmentKey(serverId, sessionId)]?.folderId ?? null
   )));
 }
 
+const sessionFolderAssignmentsProjectionCache = new WeakMap<
+  StorageState['sessionOrganizationFolderAssignmentsBySessionKey'],
+  Record<string, string | null>
+>();
+
+function projectSessionFolderAssignmentValues(
+  assignments: StorageState['sessionOrganizationFolderAssignmentsBySessionKey'],
+): Record<string, string | null> {
+  const cached = sessionFolderAssignmentsProjectionCache.get(assignments);
+  if (cached) return cached;
+  const projected = Object.fromEntries(
+    Object.entries(assignments).map(([key, assignment]) => [key, assignment.folderId]),
+  );
+  sessionFolderAssignmentsProjectionCache.set(assignments, projected);
+  return projected;
+}
+
 export function useSessionFolderAssignmentsBySessionKey(): Record<string, string | null> {
-  return getStorage()(useShallow((state) => state.sessionOrganizationFolderAssignmentsBySessionKey));
+  return getStorage()(useShallow((state) => projectSessionFolderAssignmentValues(
+    state.sessionOrganizationFolderAssignmentsBySessionKey,
+  )));
 }
 
 type SessionOrganizationProjectionCacheEntry = Readonly<{
@@ -919,6 +1004,27 @@ export function useSessionOrganizationProjection(serverId: string | null | undef
   }));
 }
 
+const EMPTY_SESSION_ORGANIZATION_PROJECTIONS_BY_SERVER_ID: Readonly<Record<string, SessionOrganizationProjection>> = Object.freeze({});
+
+/**
+ * The canonical multi-Home organization projection selector. Every value is
+ * produced by the same cache as the single-Home hook, so mounted list filters
+ * do not create another organization-state owner.
+ */
+export function useSessionOrganizationProjections(
+  serverIds: readonly string[],
+): Readonly<Record<string, SessionOrganizationProjection>> {
+  return getStorage()(useShallow((state) => {
+    const projections = buildSessionOrganizationProjections(
+      serverIds,
+      (serverId) => readSessionOrganizationProjectionCached(state, serverId),
+    );
+    return Object.keys(projections).length > 0
+      ? projections
+      : EMPTY_SESSION_ORGANIZATION_PROJECTIONS_BY_SERVER_ID;
+  }));
+}
+
 const EMPTY_SESSION_ORGANIZATION_PINNED_SESSION_KEYS: readonly string[] = [];
 
 export function useSessionOrganizationPinnedSessionKeys(): readonly string[] {
@@ -973,7 +1079,8 @@ export function useSessionServerId(sessionId: string, enabled = true): string | 
       return resolveSessionListLookupSessionServerScopeFromState({
         sessions: state.sessions as Record<string, { serverId?: unknown } | null>,
         sessionListIndexByServerId: state.sessionListIndexByServerId,
-        sessionListRenderables: state.sessionListRenderables,
+        sessionListRowsByServerId: state.sessionListRowsByServerId,
+        ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
         concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId,
       }, normalizedSessionId)?.serverId ?? null;
     }, [normalizedSessionId, store]);
@@ -985,7 +1092,7 @@ export function useSessionServerId(sessionId: string, enabled = true): string | 
 }
 
 function resolveSessionLastMobileSurfacePersistenceKeysFromState(
-  state: Pick<StorageState, 'profileScope' | 'sessions' | 'sessionListIndexByServerId' | 'sessionListRenderables' | 'concurrentSessionListCacheByServerId'>,
+  state: Pick<StorageState, 'profileScope' | 'sessions' | 'sessionListIndexByServerId' | 'sessionListRowsByServerId' | 'ordinarySessionListMembershipByServerId' | 'concurrentSessionListCacheByServerId'>,
   sessionId: string,
   activeServerId: string | null | undefined,
   explicitServerId?: string | null,
@@ -997,7 +1104,8 @@ function resolveSessionLastMobileSurfacePersistenceKeysFromState(
     || (resolveSessionListLookupSessionServerScopeFromState({
       sessions: state.sessions as Record<string, { serverId?: unknown } | null>,
       sessionListIndexByServerId: state.sessionListIndexByServerId,
-      sessionListRenderables: state.sessionListRenderables,
+      sessionListRowsByServerId: state.sessionListRowsByServerId,
+      ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
       concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId,
     }, normalizedSessionId)?.serverId ?? null);
   return resolveSessionMobileSurfacePersistenceKeys({
@@ -1016,6 +1124,32 @@ function readSessionLastMobileSurfaceFromMap(
   predecessorSurface: LocalSettings['sessionLastMobileSurfaceBySessionId'][string] | null;
 }> {
   return readSessionMobileSurfaceWithPredecessor(persistedBySessionId, persistenceKeys);
+}
+
+function resolveSessionCompanionPreferenceStorageKeyFromState(
+  state: Pick<StorageState, 'profileScope' | 'sessions' | 'sessionListIndexByServerId' | 'sessionListRowsByServerId' | 'ordinarySessionListMembershipByServerId' | 'concurrentSessionListCacheByServerId'>,
+  sessionId: string,
+  activeServerId: string | null | undefined,
+  explicitServerId?: string | null,
+): string | null {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  if (!normalizedSessionId) return null;
+  const resolvedServerId = normalizeTrimmedString(explicitServerId)
+    || (resolveSessionListLookupSessionServerScopeFromState({
+      sessions: state.sessions as Record<string, { serverId?: unknown } | null>,
+      sessionListIndexByServerId: state.sessionListIndexByServerId,
+      sessionListRowsByServerId: state.sessionListRowsByServerId,
+      ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
+      concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId,
+    }, normalizedSessionId)?.serverId ?? null);
+  const scope = resolveSessionLocalPreferenceRealm({
+    activeScope: state.profileScope,
+    activeServerId,
+    targetServerId: resolvedServerId,
+  });
+  return scope
+    ? buildRealmQualifiedSessionCompanionPreferenceKey(scope, normalizedSessionId)
+    : null;
 }
 
 function resolveProjectLastMobileSurfaceStorageKeyFromState(
@@ -1066,7 +1200,7 @@ const emptyArray: unknown[] = [];
 const emptyRecord: Record<string, any> = {};
 const emptyReviewCommentDrafts: ReviewCommentDraft[] = [];
 const emptyActionDrafts: SessionActionDraft[] = [];
-const emptyOpenApprovalSessionIds: ReadonlyArray<string> = Object.freeze([]);
+const emptyOpenApprovalSessionReferences: ReadonlyArray<OpenApprovalSessionReference> = Object.freeze([]);
 const emptyOpenApprovalArtifactsForSession: ReadonlyArray<OpenApprovalArtifactForSession> = Object.freeze([]);
 
 type SessionMessagesArrayCacheEntry = Readonly<{
@@ -1457,7 +1591,13 @@ export function useSessionLatestThinkingMessageActivityAtMs(sessionId: string): 
 
 export function useHasUnreadMessages(sessionId: string): boolean {
   const normalizedSessionId = normalizeSessionId(sessionId);
+  const activeServerId = normalizeTrimmedString(useActiveServerSnapshot().serverId);
   return getStorage()((state) => {
+    const renderable = readSessionListRowForServerId(
+      state.sessionListRowsByServerId,
+      activeServerId,
+      normalizedSessionId,
+    );
     const session = state.sessions[normalizedSessionId];
     if (session) {
       const readableActivity = summarizeCommittedSessionMessagesForUnread(state.sessionMessages[normalizedSessionId]);
@@ -1469,12 +1609,12 @@ export function useHasUnreadMessages(sessionId: string): boolean {
         && readableSeq <= 0
         && !readExternalSessionLink(readSessionOwnerMetadataView(session))
       ) {
-        return state.sessionListRenderables[normalizedSessionId]?.hasUnreadMessages === true;
+        return renderable?.hasUnreadMessages === true;
       }
       return hasUnreadMessages;
     }
 
-    return state.sessionListRenderables[normalizedSessionId]?.hasUnreadMessages === true;
+    return renderable?.hasUnreadMessages === true;
   });
 }
 
@@ -1483,11 +1623,16 @@ export function useSessionReadyActivity(sessionId: string): {
   latestReadyEventAt: number | null;
 } {
   const normalizedSessionId = normalizeSessionId(sessionId);
+  const activeServerId = normalizeTrimmedString(useActiveServerSnapshot().serverId);
   return getStorage()(
     useShallow((state) => {
       const session = state.sessions[normalizedSessionId];
       const sessionMessages = state.sessionMessages[normalizedSessionId];
-      const renderable = state.sessionListRenderables[normalizedSessionId];
+      const renderable = readSessionListRowForServerId(
+        state.sessionListRowsByServerId,
+        activeServerId,
+        normalizedSessionId,
+      );
       return {
         latestReadyEventSeq:
           sessionMessages?.latestReadyEventSeq
@@ -1512,17 +1657,22 @@ export function useSessionVisibleReadSeq(
   }>,
 ): number | null {
   const normalizedSessionId = normalizeSessionId(sessionId);
+  const activeServerId = normalizeTrimmedString(useActiveServerSnapshot().serverId);
   const { sessionSeq, latestTurnStatus } = params;
   const selector = React.useMemo(() => {
     let previousSessionMessages: StorageState['sessionMessages'][string] | null | undefined;
     let previousSession: StorageState['sessions'][string] | null | undefined;
-    let previousRenderable: StorageState['sessionListRenderables'][string] | null | undefined;
+    let previousRenderable: SessionListRenderableSession | null | undefined;
     let previousResult: number | null = null;
 
     return (state: StorageState): number | null => {
       const sessionMessages = state.sessionMessages[normalizedSessionId];
       const session = state.sessions[normalizedSessionId];
-      const renderable = state.sessionListRenderables[normalizedSessionId];
+      const renderable = readSessionListRowForServerId(
+        state.sessionListRowsByServerId,
+        activeServerId,
+        normalizedSessionId,
+      );
       if (
         sessionMessages === previousSessionMessages
         && session === previousSession
@@ -1563,7 +1713,7 @@ export function useSessionVisibleReadSeq(
       }, readableActivity);
       return previousResult;
     };
-  }, [latestTurnStatus, normalizedSessionId, sessionSeq]);
+  }, [activeServerId, latestTurnStatus, normalizedSessionId, sessionSeq]);
 
   return getStorage()(selector);
 }
@@ -1573,31 +1723,41 @@ function hasTerminalPrimaryTurnStatus(status: PrimaryTurnStatusV1 | null | undef
 }
 
 export function useSessionPendingMessages(
-  sessionId: string
+  sessionId: string,
+  recipient?: PendingMessage['recipient'],
 ): { messages: PendingMessage[]; discarded: DiscardedPendingMessage[]; isLoaded: boolean } {
   const normalizedSessionId = normalizeSessionId(sessionId);
-  return getStorage()(
-    useShallow((state) => {
-      const pending = state.sessionPending[normalizedSessionId];
-      return {
-        messages: pending?.messages ?? emptyArray,
-        discarded: pending?.discarded ?? emptyArray,
-        isLoaded: pending?.isLoaded ?? false,
-      };
-    })
-  );
+  const messages = getStorage()(useShallow((state) =>
+    (state.sessionPending[normalizedSessionId]?.messages ?? emptyArray)
+      .filter((message) => isPendingMessageForRecipient(message, recipient))
+  ));
+  const discarded = getStorage()(useShallow((state) =>
+    (state.sessionPending[normalizedSessionId]?.discarded ?? emptyArray)
+      .filter((message) => isPendingMessageForRecipient(message, recipient))
+  ));
+  const isLoaded = getStorage()((state) => state.sessionPending[normalizedSessionId]?.isLoaded ?? false);
+  return React.useMemo(() => ({ messages, discarded, isLoaded }), [messages, discarded, isLoaded]);
 }
 
 export function useSessionListMeaningfulActivityAt(sessionId: string): number | null {
   const normalizedSessionId = normalizeSessionId(sessionId);
+  const activeServerId = normalizeTrimmedString(useActiveServerSnapshot().serverId);
   return getStorage()(
-    useShallow((state) => selectSessionListMeaningfulActivityAt(state, normalizedSessionId))
+    useShallow((state) => selectSessionListMeaningfulActivityAt(state, activeServerId, normalizedSessionId))
   );
 }
 
-function selectSessionListMeaningfulActivityAt(state: StorageState, sessionId: string): number | null {
+function selectSessionListMeaningfulActivityAt(
+  state: StorageState,
+  activeServerId: string,
+  sessionId: string,
+): number | null {
   const session = state.sessions[sessionId];
-  const renderable = state.sessionListRenderables[sessionId];
+  const renderable = readSessionListRowForServerId(
+    state.sessionListRowsByServerId,
+    activeServerId,
+    sessionId,
+  );
   const transcript = state.sessionMessages[sessionId];
   const pending = state.sessionPending[sessionId];
 
@@ -1624,7 +1784,6 @@ function selectSessionListMeaningfulActivityAt(state: StorageState, sessionId: s
     sessionMeaningfulActivityAt: session?.meaningfulActivityAt ?? renderable?.meaningfulActivityAt ?? null,
     sessionCreatedAt: session?.createdAt ?? renderable?.createdAt ?? null,
     latestCommittedMessageCreatedAt,
-    latestThinkingActivityAt: transcript?.latestThinkingMessageActivityAtMs ?? null,
     latestPendingMessageCreatedAt,
   });
 }
@@ -1650,9 +1809,13 @@ export function useWorkspaceReviewCommentsDrafts(scope: WorkspaceScopeBase | nul
   );
 }
 
-export function useSessionActionDrafts(sessionId: string): SessionActionDraft[] {
+export function useSessionActionDrafts(address: import('@/sync/domains/session/sessionAddress').SessionAddress): SessionActionDraft[] {
+  const addressKey = React.useMemo(
+    () => sessionAddressKey(address),
+    [address.serverId, address.sessionId],
+  );
   return getStorage()(
-    useShallow((state) => (state.actionDraftsBySessionId ? (state.actionDraftsBySessionId[sessionId] ?? emptyActionDrafts) : emptyActionDrafts))
+    useShallow((state) => state.sessionActionDraftsByAddressKey?.[addressKey] ?? emptyActionDrafts)
   );
 }
 
@@ -1665,9 +1828,13 @@ export function useSessionActionDrafts(sessionId: string): SessionActionDraft[] 
  * (`useSessionActionFieldOptionsForRowHeight`) at all, and it must not itself become a per-keystroke
  * re-render of the whole transcript.
  */
-export function useSessionHasActionDrafts(sessionId: string): boolean {
+export function useSessionHasActionDrafts(address: import('@/sync/domains/session/sessionAddress').SessionAddress): boolean {
+  const addressKey = React.useMemo(
+    () => sessionAddressKey(address),
+    [address.serverId, address.sessionId],
+  );
   return getStorage()(
-    (state) => (state.actionDraftsBySessionId?.[sessionId]?.length ?? 0) > 0
+    (state) => (state.sessionActionDraftsByAddressKey?.[addressKey]?.length ?? 0) > 0
   );
 }
 
@@ -1757,12 +1924,50 @@ export function useMessagesByIds(sessionId: string, messageIds: readonly string[
   }, [selectedMessages]);
 }
 
-export function useSessionUsage(sessionId: string) {
+export type ExactSessionUsageScope = Readonly<{
+  serverId: string;
+  session: Pick<Session, 'id' | 'serverId' | 'latestUsage'>;
+}>;
+
+/**
+ * Reads the active transcript's usage, with an exact-Home mode for mounted
+ * Session surfaces. The transcript reducer is intentionally keyed by the
+ * legacy bare Session id because it belongs to the active Home; an exact
+ * caller may consume it only while that active Home is equivalent to its
+ * target. Its supplied Session remains the fallback for an inactive Home.
+ */
+export function useSessionUsage(sessionId: string, exactScope?: ExactSessionUsageScope) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const targetServerId = resolveServerProfileScopeIdForIdentifier(exactScope?.serverId);
+  const activeServerId = resolveServerProfileScopeIdForIdentifier(
+    useActiveServerSnapshot(Boolean(exactScope)).serverId,
+  );
+  const suppliedSession = exactScope?.session ?? null;
+  const suppliedSessionServerId = resolveServerProfileScopeIdForIdentifier(suppliedSession?.serverId);
+  const exactSessionMatches = Boolean(
+    exactScope
+    && normalizedSessionId
+    && targetServerId
+    && normalizeSessionId(suppliedSession?.id) === normalizedSessionId
+    && (
+      suppliedSessionServerId
+        ? areServerProfileIdentifiersEquivalent(suppliedSessionServerId, targetServerId)
+        : areServerProfileIdentifiersEquivalent(activeServerId, targetServerId)
+    )
+  );
+  const activeHomeMatches = exactSessionMatches
+    && areServerProfileIdentifiersEquivalent(activeServerId, targetServerId);
+
   return getStorage()(
     useShallow((state) => {
-      const sessionMessages = state.sessionMessages?.[sessionId];
+      if (exactScope && !exactSessionMatches) return null;
+      const sessionMessages = activeHomeMatches || !exactScope
+        ? state.sessionMessages?.[normalizedSessionId]
+        : undefined;
       return sessionMessages?.reducerState?.latestUsage
-        ?? state.sessions?.[sessionId]?.latestUsage
+        ?? (exactScope
+          ? suppliedSession?.latestUsage
+          : state.sessions?.[normalizedSessionId]?.latestUsage)
         ?? null;
     })
   );
@@ -1965,10 +2170,7 @@ export function useMachineListByServerId(): Record<string, Machine[] | null> {
         continue;
       }
 
-      const visibleMachines = machines.filter((machine) => {
-        const revokedAt = machine.revokedAt;
-        return !(typeof revokedAt === 'number' && Number.isFinite(revokedAt) && revokedAt > 0);
-      });
+      const visibleMachines = machines.filter(isMachineVisibleForSelection);
       if (visibleMachines.length !== machines.length) {
         hasChanges = true;
         nextByServerId[serverId] = visibleMachines;
@@ -1989,6 +2191,24 @@ export function useMachineListStatusByServerId(): Record<string, 'idle' | 'loadi
       ? (machineListStatusByServerId as unknown as Record<string, 'idle' | 'loading' | 'signedOut' | 'error'>)
       : {};
   }, [machineListStatusByServerId]);
+}
+
+const EMPTY_MACHINE_POOL_LIST_BY_SERVER_ID: Record<string, MachinePoolViewV1[] | null> = {};
+
+export function useMachinePoolListByServerId(): Record<string, MachinePoolViewV1[] | null> {
+  return getStorage()((state) => state.machinePoolListByServerId ?? EMPTY_MACHINE_POOL_LIST_BY_SERVER_ID);
+}
+
+export function useMachinePoolListForServer(serverId: string): MachinePoolViewV1[] | null {
+  return getStorage()((state) => state.machinePoolListByServerId[serverId] ?? null);
+}
+
+export function useMachinePoolListStatusByServerId(): Record<string, 'idle' | 'loading' | 'signedOut' | 'error'> {
+  return getStorage()((state) => state.machinePoolListStatusByServerId ?? {});
+}
+
+export function useMachinePoolAccountIdByServerId(): Record<string, string> {
+  return getStorage()((state) => state.machinePoolAccountIdByServerId ?? {});
 }
 
 const noopMachineSubscribe = () => () => {};
@@ -2086,10 +2306,14 @@ export function useAllSessionsForAttention(): Session[] {
 }
 
 export function useAllSessionListRenderables(): SessionListRenderableSession[] {
+  const activeServerId = normalizeTrimmedString(useActiveServerSnapshot().serverId);
   return getStorage()(
     useShallow((state) => {
       if (!state.isDataReady) return emptyArray as SessionListRenderableSession[];
-      return sortValuesByUpdatedAtDescending(state.sessionListRenderables);
+      return sortValuesByUpdatedAtDescending(
+        readSessionListRowsForServerId(state.sessionListRowsByServerId, activeServerId)
+        ?? EMPTY_SESSION_LIST_RENDERABLES_BY_ID,
+      );
     })
   );
 }
@@ -2117,20 +2341,37 @@ function appendSessionListAttentionRows(params: Readonly<{
     const session = sessions[sessionIdRaw];
     if (!session) continue;
 
-    const key = `${serverId ?? 'local'}:${session.id}`;
+    // Structured tuple, never a delimiter: a Home named `local`, a delimiter-bearing Home id and
+    // a row with no Home binding must all stay distinct here (L07-R36).
+    const key = JSON.stringify([serverId, session.id]);
     if (params.seenKeys.has(key)) continue;
     params.seenKeys.add(key);
     params.rows.push({ serverId, serverName, session });
   }
 }
 
+/**
+ * The raw per-Home list observation for every currently known Home. It is the one currentness
+ * fact Lane 07 surfaces project through `buildSessionContextFacts`; no consumer re-derives
+ * staleness from Session timestamps or its own clock.
+ */
+export function useSessionListHomeObservations(
+  queryStatesByServerId?: Readonly<Record<string, SessionListQueryHomeState | undefined>>,
+): SessionListHomeObservationByServerId {
+  const cacheByServerId = getStorage()((state) => state.concurrentSessionListCacheByServerId);
+
+  return React.useMemo(() => buildSessionListHomeObservations({
+    concurrentSessionListCacheByServerId: cacheByServerId,
+    queryStatesByServerId,
+  }), [cacheByServerId, queryStatesByServerId]);
+}
+
 export function useAllSessionListAttentionRows(): SessionListAttentionRow[] {
-  const activeServerId = normalizeOptionalString(useActiveServerSnapshot().serverId);
   const snapshot = getStorage()(
     useShallow((state) => ({
       isDataReady: state.isDataReady,
-      sessionListRenderables: state.sessionListRenderables,
-      sessionListRowStateByServerId: state.sessionListRowStateByServerId,
+      sessionListRowsByServerId: state.sessionListRowsByServerId,
+      ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
       concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId,
     }))
   );
@@ -2139,43 +2380,23 @@ export function useAllSessionListAttentionRows(): SessionListAttentionRow[] {
     const rows: SessionListAttentionRow[] = [];
     const seenKeys = new Set<string>();
 
-    for (const serverIdRaw in snapshot.sessionListRowStateByServerId ?? {}) {
+    for (const serverIdRaw in snapshot.ordinarySessionListMembershipByServerId ?? {}) {
       const serverId = normalizeOptionalString(serverIdRaw);
       if (!serverId) continue;
+      const rowsForServer = snapshot.sessionListRowsByServerId?.[serverIdRaw];
+      const membership = snapshot.ordinarySessionListMembershipByServerId?.[serverIdRaw] ?? [];
+      const sessions = Object.fromEntries(
+        membership.flatMap((sessionId) => {
+          const row = rowsForServer?.[sessionId];
+          return row ? [[sessionId, row] as const] : [];
+        }),
+      );
       appendSessionListAttentionRows({
         rows,
         seenKeys,
         serverId,
-        sessions: snapshot.sessionListRowStateByServerId?.[serverIdRaw],
-      });
-    }
-
-    if (activeServerId) {
-      appendSessionListAttentionRows({
-        rows,
-        seenKeys,
-        serverId: activeServerId,
-        sessions: snapshot.sessionListRenderables,
-      });
-    } else {
-      appendSessionListAttentionRows({
-        rows,
-        seenKeys,
-        serverId: null,
-        sessions: snapshot.sessionListRenderables,
-      });
-    }
-
-    for (const serverIdRaw in snapshot.concurrentSessionListCacheByServerId ?? {}) {
-      const serverId = normalizeOptionalString(serverIdRaw);
-      if (!serverId) continue;
-      const entry = snapshot.concurrentSessionListCacheByServerId?.[serverIdRaw];
-      appendSessionListAttentionRows({
-        rows,
-        seenKeys,
-        serverId,
-        serverName: entry?.serverName ?? null,
-        sessions: entry?.sessions,
+        serverName: snapshot.concurrentSessionListCacheByServerId?.[serverIdRaw]?.serverName ?? null,
+        sessions,
       });
     }
 
@@ -2184,10 +2405,9 @@ export function useAllSessionListAttentionRows(): SessionListAttentionRow[] {
     }
     return rows;
   }, [
-    activeServerId,
     snapshot.concurrentSessionListCacheByServerId,
-    snapshot.sessionListRenderables,
-    snapshot.sessionListRowStateByServerId,
+    snapshot.ordinarySessionListMembershipByServerId,
+    snapshot.sessionListRowsByServerId,
   ]);
 }
 
@@ -2214,9 +2434,9 @@ export function useProject(projectId: string | null) {
   return getStorage()(useShallow((state) => (projectId ? state.getProject(projectId) : null)));
 }
 
-export function useProjectForSession(sessionId: string | null) {
+export function useProjectForSession(sessionId: string | null, serverId?: string | null) {
   return getStorage()(
-    useShallow((state) => (sessionId ? state.getProjectForSession(sessionId) : null))
+    useShallow((state) => (sessionId ? state.getProjectForSession(sessionId, serverId) : null))
   );
 }
 
@@ -2235,27 +2455,37 @@ export function useProjectForSession(sessionId: string | null) {
  * The result is a plain `string | null`, so `useShallow` would only add a ref and a wrapper — the
  * default `Object.is` snapshot check is already exact for a primitive.
  */
-export function useSessionWorkspacePath(sessionId: string | null): string | null {
+export function useSessionWorkspacePath(sessionId: string | null, serverId?: string | null): string | null {
+  const activeServerId = normalizeTrimmedString(useActiveServerSnapshot().serverId);
+  const exactServerId = normalizeTrimmedString(serverId);
   return getStorage()((state) => {
     const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
     if (!normalizedSessionId) return null;
     return resolveWorkspaceTargetForSessionFromState({
       sessions: state.sessions,
-      sessionListRenderables: state.sessionListRenderables,
+      sessionListRowsByServerId: state.sessionListRowsByServerId,
+      ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
       machines: state.machines,
       sessionListIndexByServerId: state.sessionListIndexByServerId,
       getProjectForSession: createProjectForSessionResolver(state.sessions),
-    }, normalizedSessionId)?.rootPath ?? null;
+      // A qualified caller names the Home; only an unqualified one may fall back to
+      // same-id cache discovery, which cannot separate two Homes hosting one Session id.
+    }, exactServerId ? { sessionId: normalizedSessionId, serverId: exactServerId } : normalizedSessionId)?.rootPath ?? null;
   });
 }
 
-export function useSessionRpcAvailabilityState(sessionId: string | null): Readonly<{
+export function useSessionRpcAvailabilityState(sessionId: string | null, serverId?: string | null): Readonly<{
   sessionExists: boolean;
   sessionRpcAvailable: boolean;
 }> {
   return getStorage()(
     useShallow((state) => {
-      const session = sessionId ? state.sessions[sessionId] ?? null : null;
+      const normalizedServerId = normalizeTrimmedString(serverId);
+      const session = sessionId
+        ? normalizedServerId
+          ? state.sessionListRowsByServerId[normalizedServerId]?.[sessionId] ?? null
+          : state.sessions[sessionId] ?? null
+        : null;
       const sessionExists = Boolean(session);
       return {
         sessionExists,
@@ -2273,9 +2503,9 @@ export function useProjectScmStatus(projectId: string | null) {
   return getStorage()(useShallow((state) => (projectId ? state.getProjectScmStatus(projectId) : null)));
 }
 
-export function useSessionProjectScmStatus(sessionId: string | null) {
+export function useSessionProjectScmStatus(sessionId: string | null, serverId?: string | null) {
   return getStorage()(
-    useShallow((state) => (sessionId ? state.getSessionProjectScmStatus(sessionId) : null))
+    useShallow((state) => (sessionId ? state.getSessionProjectScmStatus(sessionId, serverId) : null))
   );
 }
 
@@ -2285,9 +2515,9 @@ export function useProjectScmSnapshot(projectId: string | null): ScmWorkingSnaps
   );
 }
 
-export function useSessionProjectScmSnapshot(sessionId: string | null): ScmWorkingSnapshot | null {
+export function useSessionProjectScmSnapshot(sessionId: string | null, serverId?: string | null): ScmWorkingSnapshot | null {
   return getStorage()(
-    useShallow((state) => (sessionId ? state.getSessionProjectScmSnapshot(sessionId) : null))
+    useShallow((state) => (sessionId ? state.getSessionProjectScmSnapshot(sessionId, serverId) : null))
   );
 }
 
@@ -2311,10 +2541,10 @@ export function useSessionRealtimeScmTranscriptConsumer(
 }
 
 export function useSessionProjectScmSnapshotError(
-  sessionId: string | null
+  sessionId: string | null, serverId?: string | null
 ): import('../runtime/orchestration/projectManager').ProjectScmSnapshotError | null {
   return getStorage()(
-    useShallow((state) => (sessionId ? state.getSessionProjectScmSnapshotError(sessionId) : null))
+    useShallow((state) => (sessionId ? state.getSessionProjectScmSnapshotError(sessionId, serverId) : null))
   );
 }
 
@@ -2352,33 +2582,33 @@ export function useWorkspaceScmInFlightOperation(scope: WorkspaceScopeBase | nul
   return getStorage()(useShallow((state) => (scope ? state.getWorkspaceScmInFlightOperation(scope) : null)));
 }
 
-export function useSessionProjectScmTouchedPaths(sessionId: string | null): string[] {
+export function useWorkspaceScmTouchedPathsForSession(sessionId: string | null, serverId?: string | null): string[] {
   return getStorage()(
-    useShallow((state) => (sessionId ? state.getSessionProjectScmTouchedPaths(sessionId) : []))
+    useShallow((state) => (sessionId ? state.getWorkspaceScmTouchedPathsForSession(sessionId, serverId) : []))
   );
 }
 
-export function useSessionProjectScmCommitSelectionPaths(sessionId: string | null): string[] {
+export function useSessionProjectScmCommitSelectionPaths(sessionId: string | null, serverId?: string | null): string[] {
   return getStorage()(
-    useShallow((state) => (sessionId ? state.getSessionProjectScmCommitSelectionPaths(sessionId) : []))
+    useShallow((state) => (sessionId ? state.getSessionProjectScmCommitSelectionPaths(sessionId, serverId) : []))
   );
 }
 
-export function useSessionProjectScmCommitSelectionPatches(sessionId: string | null): ScmCommitSelectionPatch[] {
+export function useSessionProjectScmCommitSelectionPatches(sessionId: string | null, serverId?: string | null): ScmCommitSelectionPatch[] {
   return getStorage()(
-    useShallow((state) => (sessionId ? state.getSessionProjectScmCommitSelectionPatches(sessionId) : []))
+    useShallow((state) => (sessionId ? state.getSessionProjectScmCommitSelectionPatches(sessionId, serverId) : []))
   );
 }
 
-export function useSessionProjectScmOperationLog(sessionId: string | null) {
+export function useSessionProjectScmOperationLog(sessionId: string | null, serverId?: string | null) {
   return getStorage()(
-    useShallow((state) => (sessionId ? state.getSessionProjectScmOperationLog(sessionId) : []))
+    useShallow((state) => (sessionId ? state.getSessionProjectScmOperationLog(sessionId, serverId) : []))
   );
 }
 
-export function useSessionProjectScmInFlightOperation(sessionId: string | null) {
+export function useSessionProjectScmInFlightOperation(sessionId: string | null, serverId?: string | null) {
   return getStorage()(
-    useShallow((state) => (sessionId ? state.getSessionProjectScmInFlightOperation(sessionId) : null))
+    useShallow((state) => (sessionId ? state.getSessionProjectScmInFlightOperation(sessionId, serverId) : null))
   );
 }
 
@@ -2489,6 +2719,78 @@ export function usePersistSessionLastMobileSurface(): (
   }, [activeServer.serverId, applyLocalSettings]);
 }
 
+export type SessionCompanionPreferenceEntry = LocalSettings['sessionCompanionPreferencesBySessionV1'][string];
+
+export type SessionCompanionPreferenceSlot = Readonly<{
+  /** `null` when the current Account/Home cannot prove this Session's realm. */
+  storageKey: string | null;
+  /** The raw stored entry, left unparsed so a newer client's value is never rewritten on read. */
+  stored: SessionCompanionPreferenceEntry | undefined;
+}>;
+
+/**
+ * Reads one Session's Companion preference slot. The subscription is one map
+ * lookup, so a Companion change in another Session does not rerender this one,
+ * and reading never writes a default.
+ */
+export function useSessionCompanionPreferenceSlot(
+  sessionId: string | null,
+  serverId?: string | null,
+): SessionCompanionPreferenceSlot {
+  const activeServer = useActiveServerSnapshot();
+  return getStorage()(useShallow((state): SessionCompanionPreferenceSlot => {
+    if (!sessionId) return { storageKey: null, stored: undefined };
+    const storageKey = resolveSessionCompanionPreferenceStorageKeyFromState(
+      state,
+      sessionId,
+      activeServer.serverId,
+      serverId,
+    );
+    return {
+      storageKey,
+      stored: storageKey
+        ? state.localSettings.sessionCompanionPreferencesBySessionV1?.[storageKey]
+        : undefined,
+    };
+  }));
+}
+
+/**
+ * Applies one exact realm key. The updater receives the latest stored entry read
+ * inside the mutation, so a stale hook closure can neither resurrect an old value
+ * nor drop another Session's concurrent change. Returning `null` writes nothing.
+ *
+ * There is no CAS, revision or conflict state: this is one device-local preference.
+ */
+export function useMutateSessionCompanionPreference(): (
+  sessionId: string,
+  updater: (stored: SessionCompanionPreferenceEntry | undefined) => SessionCompanionPreferenceEntry | null,
+  serverId?: string | null,
+) => boolean {
+  const applyLocalSettings = useApplyLocalSettings();
+  const activeServer = useActiveServerSnapshot();
+  return React.useCallback((sessionId, updater, serverId) => {
+    const state = getStorage().getState();
+    const storageKey = resolveSessionCompanionPreferenceStorageKeyFromState(
+      state,
+      sessionId,
+      activeServer.serverId,
+      serverId,
+    );
+    if (!storageKey) return false;
+    const current = state.localSettings.sessionCompanionPreferencesBySessionV1 ?? {};
+    const next = updater(current[storageKey]);
+    if (next === null) return false;
+    applyLocalSettings({
+      sessionCompanionPreferencesBySessionV1: {
+        ...current,
+        [storageKey]: next,
+      },
+    });
+    return true;
+  }, [activeServer.serverId, applyLocalSettings]);
+}
+
 export function useProjectLastMobileSurface(workspaceRefId: string | null): LocalSettings['projectLastMobileSurfaceByWorkspaceRefId'][string] | null {
   const activeServer = useActiveServerSnapshot();
   return getStorage()(useShallow((state) => {
@@ -2548,36 +2850,40 @@ export function useArtifacts(): DecryptedArtifact[] {
   );
 }
 
-function collectOpenApprovalSessionIdListFromArtifacts(
+export function useArtifactsLoaded(): boolean {
+  return getStorage()((state) => state.isDataReady && state.artifactsLoaded);
+}
+
+function collectOpenApprovalSessionReferenceListFromArtifacts(
   artifacts: Readonly<Record<string, DecryptedArtifact>>,
-): ReadonlyArray<string> {
+): ReadonlyArray<OpenApprovalSessionReference> {
   const visibleArtifacts: DecryptedArtifact[] = [];
   for (const artifact of Object.values(artifacts)) {
     if (artifact.draft === true) continue;
     visibleArtifacts.push(artifact);
   }
-  const ids = collectOpenApprovalSessionIds(visibleArtifacts);
-  return ids.size === 0 ? emptyOpenApprovalSessionIds : Array.from(ids).sort();
+  const references = collectOpenApprovalSessionReferences(visibleArtifacts);
+  return references.length === 0 ? emptyOpenApprovalSessionReferences : references;
 }
 
-export function useOpenApprovalSessionIds(): ReadonlyArray<string> {
-  const selectorRef = React.useRef<((state: StorageState) => ReadonlyArray<string>) | null>(null);
+export function useOpenApprovalSessionReferences(): ReadonlyArray<OpenApprovalSessionReference> {
+  const selectorRef = React.useRef<((state: StorageState) => ReadonlyArray<OpenApprovalSessionReference>) | null>(null);
   if (!selectorRef.current) {
     let previousIsDataReady: boolean | null = null;
     let previousArtifacts: StorageState['artifacts'] | null = null;
-    let previousIds: ReadonlyArray<string> = emptyOpenApprovalSessionIds;
+    let previousReferences: ReadonlyArray<OpenApprovalSessionReference> = emptyOpenApprovalSessionReferences;
 
     selectorRef.current = (state) => {
       if (state.isDataReady === previousIsDataReady && state.artifacts === previousArtifacts) {
-        return previousIds;
+        return previousReferences;
       }
 
       previousIsDataReady = state.isDataReady;
       previousArtifacts = state.artifacts;
-      previousIds = state.isDataReady
-        ? collectOpenApprovalSessionIdListFromArtifacts(state.artifacts)
-        : emptyOpenApprovalSessionIds;
-      return previousIds;
+      previousReferences = state.isDataReady
+        ? collectOpenApprovalSessionReferenceListFromArtifacts(state.artifacts)
+        : emptyOpenApprovalSessionReferences;
+      return previousReferences;
     };
   }
 
@@ -2607,9 +2913,15 @@ function collectVisibleArtifacts(artifacts: Readonly<Record<string, DecryptedArt
 }
 
 export function useOpenApprovalArtifactsForSession(
-  sessionId: string | null | undefined,
+  target: SessionAddress | null | undefined,
 ): ReadonlyArray<OpenApprovalArtifactForSession> {
-  const normalizedSessionId = normalizeSessionId(sessionId);
+  const targetServerId = target?.serverId ?? null;
+  const targetSessionId = target?.sessionId ?? null;
+  const normalizedTarget = React.useMemo<SessionAddress | null>(() => {
+    return targetServerId && targetSessionId
+      ? { serverId: targetServerId, sessionId: targetSessionId }
+      : null;
+  }, [targetServerId, targetSessionId]);
   const selector = React.useMemo(() => {
     let previousIsDataReady: boolean | null = null;
     let previousArtifacts: StorageState['artifacts'] | null = null;
@@ -2617,7 +2929,7 @@ export function useOpenApprovalArtifactsForSession(
     let previousApprovals: ReadonlyArray<OpenApprovalArtifactForSession> = emptyOpenApprovalArtifactsForSession;
 
     return (state: StorageState): ReadonlyArray<OpenApprovalArtifactForSession> => {
-      if (!normalizedSessionId || !state.isDataReady) {
+      if (!normalizedTarget || !state.isDataReady) {
         previousIsDataReady = state.isDataReady;
         previousArtifacts = state.artifacts;
         previousSignature = '';
@@ -2633,7 +2945,10 @@ export function useOpenApprovalArtifactsForSession(
       previousArtifacts = state.artifacts;
       const nextApprovals = listOpenApprovalArtifactsForSession(
         collectVisibleArtifacts(state.artifacts),
-        normalizedSessionId,
+        normalizedTarget,
+        {
+          knownSessionAddresses: listSessionAddressesForSessionIdFromLocalState(state, normalizedTarget.sessionId),
+        },
       );
       const nextSignature = buildOpenApprovalArtifactsForSessionSignature(nextApprovals);
       if (nextSignature === previousSignature) {
@@ -2646,7 +2961,7 @@ export function useOpenApprovalArtifactsForSession(
         : nextApprovals;
       return previousApprovals;
     };
-  }, [normalizedSessionId]);
+  }, [normalizedTarget]);
 
   return getStorage()(useShallow(selector));
 }
@@ -2722,10 +3037,58 @@ export function useAutomation(automationId: string): AutomationDefinition | null
   return getStorage()(useShallow((state) => state.automations[automationId] ?? null));
 }
 
+/**
+ * An Automation's ordered Run window, projected onto the shared Run bodies.
+ * The shallow comparison keeps the identity of an unchanged window stable, so
+ * a refresh that restates the same revisions does not rerender the history.
+ */
 export function useAutomationRuns(automationId: string): AutomationDefinitionRun[] {
   return getStorage()(
-    useShallow((state) => state.automationRunsByAutomationId[automationId] ?? emptyArray)
+    useShallow((state) => {
+      const runIds = state.automationRunIdsByAutomationId[automationId];
+      if (!runIds || runIds.length === 0) return emptyArray as AutomationDefinitionRun[];
+      return resolveAutomationRunProjections(state.workflowRunsById, runIds);
+    })
   ) as AutomationDefinitionRun[];
+}
+
+/**
+ * One exact Run by its own identity. This is the reader an exact route, a deep
+ * link or a notification uses: it resolves the same body an Automation list
+ * shows, and it never needs the Run's origin Automation.
+ */
+export function useWorkflowRun(runId: string | null | undefined): WorkflowRunRow | null {
+  return getStorage()((state) => (runId ? state.workflowRunsById[runId] ?? null : null));
+}
+
+/**
+ * An ordered window of Run ids, projected onto the shared bodies.
+ *
+ * Every Run this Account has read shares one map, so reading the map itself
+ * subscribes a surface to every other Run's exact refresh — a Run screen
+ * settling a control rerendered the whole collection and every mounted Session
+ * section. The shallow comparison narrows that to the rows the window actually
+ * names: an unrelated body changes nothing here, while a referenced row's new
+ * revision still arrives immediately. Ids with no loaded body are skipped by the
+ * same canonical projection the collection already uses.
+ */
+export function useWorkflowRunRows(runIds: readonly string[]): WorkflowRunRow[] {
+  return getStorage()(
+    useShallow((state) => (
+      runIds.length === 0
+        ? (emptyArray as WorkflowRunRow[])
+        : resolveWorkflowRunRows(state.workflowRunsById, runIds)
+    ))
+  ) as WorkflowRunRow[];
+}
+
+/**
+ * The Automation projection of one exact Run. Automation surfaces keep their
+ * existing row contract while resolving the same shared body a workflow route
+ * resolves, so the two cannot render divergent copies.
+ */
+export function useAutomationRunById(runId: string | null | undefined): AutomationDefinitionRun | null {
+  return getStorage()((state) => (runId ? state.workflowRunsById[runId]?.automation ?? null : null));
 }
 
 export function useAutomationRunNextCursor(automationId: string): string | null {

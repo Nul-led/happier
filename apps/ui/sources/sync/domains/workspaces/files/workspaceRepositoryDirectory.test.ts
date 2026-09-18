@@ -92,3 +92,24 @@ describe('workspaceRepositoryDirectory', () => {
         expect(machineFilesystemListDirectoryMock).toHaveBeenCalledTimes(2);
     });
 });
+
+
+describe('workspace directory Git ignore metadata', () => {
+    it('preserves classification through the canonical workspace cache', async () => {
+        machineFilesystemListDirectoryMock.mockReset().mockResolvedValue({ ok: true, path: '/repo', truncated: false, gitIgnoreAvailable: true,
+            entries: [{ name: 'node_modules', path: '/repo/node_modules', type: 'directory', gitIgnored: true }, { name: '.env.example', path: '/repo/.env.example', type: 'file', gitIgnored: false }],
+        });
+        const mod = await import('./workspaceRepositoryDirectory');
+        const input = { scope: SCOPE_A, directoryPath: 'classified' };
+        const result = await mod.listWorkspaceRepositoryDirectoryEntries(input);
+        expect(result).toMatchObject({ ok: true, gitIgnoreAvailable: true, entries: [{ gitIgnored: true }, { gitIgnored: false }] });
+        expect(await mod.warmWorkspaceRepositoryDirectoryCache(input)).toEqual(result);
+    });
+    it('keeps old daemon entries unclassified and visible', async () => {
+        machineFilesystemListDirectoryMock.mockReset().mockResolvedValue({ ok: true, path: '/repo', truncated: false,
+            entries: [{ name: 'node_modules', path: '/repo/node_modules', type: 'directory' }],
+        });
+        const mod = await import('./workspaceRepositoryDirectory');
+        expect(await mod.listWorkspaceRepositoryDirectoryEntries({ scope: SCOPE_A, directoryPath: 'legacy' })).toMatchObject({ ok: true, gitIgnoreAvailable: false, entries: [{ name: 'node_modules' }] });
+    });
+});

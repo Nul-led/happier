@@ -4,6 +4,9 @@ export type SessionMobileSurface =
     | 'browse'
     | 'git'
     | 'navigation'
+    | 'companion'
+    | 'board'
+    | 'collaboration'
     | 'tabs'
     | 'browser'
     | 'services'
@@ -11,7 +14,7 @@ export type SessionMobileSurface =
     | SessionPluginMobileSurface;
 export type SessionLegacyRouteKind = 'index' | 'files' | 'git' | 'details' | 'terminal';
 
-type SessionRightTabId = 'git' | 'files' | 'navigation' | 'terminal' | 'browser' | 'services' | SessionPluginMobileSurface;
+type SessionRightTabId = 'git' | 'files' | 'navigation' | 'collaboration' | 'board' | 'terminal' | 'browser' | 'services' | SessionPluginMobileSurface;
 type SessionRoutePathQueryValue = string | number | boolean | null | undefined;
 
 type SessionRoutePathOptions = Readonly<{
@@ -32,6 +35,9 @@ export function normalizeSessionMobileSurface(value: string | null | undefined):
         || normalized === 'browse'
         || normalized === 'git'
         || normalized === 'navigation'
+        || normalized === 'companion'
+        || normalized === 'board'
+        || normalized === 'collaboration'
         || normalized === 'tabs'
         || normalized === 'browser'
         || normalized === 'services'
@@ -43,6 +49,29 @@ export function normalizeSessionMobileSurface(value: string | null | undefined):
         return normalized;
     }
     return null;
+}
+
+/**
+ * Companion's full presentation is the existing Cockpit destination. An
+ * explicit Companion route therefore selects that host even when the viewer's
+ * normal Session experience is classic (for example a narrow desktop window
+ * where the reserved rail cannot fit). Other route hints retain the person's
+ * normal experience choice.
+ */
+export function shouldUseSessionCockpitExperience(input: Readonly<{
+    cockpitEnabled: boolean;
+    explicitSurface: string | null | undefined;
+    /**
+     * The exact Home's `sessions.board` decision. Companion presents Board
+     * content and has no feature of its own, so a stale or shared Companion
+     * link cannot claim the Cockpit experience on a Home without Board;
+     * omitted means unavailable.
+     */
+    companionDestinationAvailable?: boolean;
+}>): boolean {
+    return input.cockpitEnabled
+        || (input.companionDestinationAvailable === true
+            && normalizeSessionMobileSurface(input.explicitSurface) === 'companion');
 }
 
 export function isSessionPluginMobileSurface(value: string): value is SessionPluginMobileSurface {
@@ -87,7 +116,13 @@ export function resolveSessionRightTabIdForSurface(
     if (surface === 'navigation') {
         return 'navigation';
     }
-    if (surface === 'chat' || surface === 'tabs') {
+    if (surface === 'collaboration') {
+        return 'collaboration';
+    }
+    if (surface === 'board') {
+        return 'board';
+    }
+    if (surface === 'chat' || surface === 'tabs' || surface === 'companion') {
         return null;
     }
     if (isSessionPluginMobileSurface(surface)) {
@@ -142,6 +177,12 @@ export function resolveSessionMobileSurfaceIntent(input: Readonly<{
     if (input.activeRightTabId === 'navigation') {
         return 'navigation';
     }
+    if (input.activeRightTabId === 'collaboration') {
+        return 'collaboration';
+    }
+    if (input.activeRightTabId === 'board') {
+        return 'board';
+    }
     if (input.activeRightTabId && isSessionPluginMobileSurface(input.activeRightTabId)) {
         return input.activeRightTabId;
     }
@@ -162,6 +203,9 @@ export function resolveSessionRoutePathForSurface(
     if (
         surface === 'chat'
         || surface === 'navigation'
+        || surface === 'companion'
+        || surface === 'board'
+        || surface === 'collaboration'
         || surface === 'browser'
         || surface === 'services'
         || surface.startsWith('plugin:')

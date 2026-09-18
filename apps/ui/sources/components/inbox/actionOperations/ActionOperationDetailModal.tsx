@@ -11,17 +11,24 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { useActionOperation } from '@/sync/domains/actionOperations/useActionOperations';
-import { useMachine, useSessionListPreferredMetadata } from '@/sync/domains/state/storage';
+import { actionOperationAddress } from '@/sync/domains/actionOperations/qualifiedActionOperation';
+import {
+    useServerScopedMachine,
+    useSessionListRenderableWithServerScope,
+} from '@/sync/domains/state/storage';
 import { createActivitySurfaceSessionRoute } from '@/activity/actions/activitySurfaceTargets';
 import { isActionOperationTerminal } from '@/sync/domains/actionOperations/actionOperationStore';
 import { acknowledgeActionOperationPresented } from '@/sync/domains/actionOperations/acknowledgeActionOperationPresented';
-import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
-import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { t } from '@/text';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
+import { useSessionAudienceContext } from '@/hooks/teams/useSessionAudienceContext';
+import { useSessionListHomeObservations } from '@/sync/store/hooks';
 
 import {
     formatActionOperationAge,
     readActionOperationDestinationSessionId,
+    readActionOperationDestinationServerId,
     readActionOperationPluginIdentity,
     resolveActionOperationStatus,
 } from './actionOperationPresentation';
@@ -32,6 +39,7 @@ import {
 } from './actionOperationDetailPresentation';
 import { resumeActionOperationHandoff } from './resumeActionOperationHandoff';
 import { ActionOperationDetailControls } from './ActionOperationDetailControls';
+import { projectActionOperationSourceContext } from './actionOperationSourceContext';
 
 function translateHostStatus(value: 'accepted' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'reconnecting' | 'unavailable'): string {
     switch (value) {
@@ -90,6 +98,7 @@ function translateRecovery(detail: ActionOperationDetailProjection): string | nu
 }
 
 export type ActionOperationDetailModalProps = CustomModalInjectedProps & Readonly<{
+    serverId: string | null;
     operationId: string;
 }>;
 
@@ -98,10 +107,23 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
 ) {
     const { theme } = useUnistyles();
     const router = useRouter();
-    const operation = useActionOperation(props.operationId);
-    const machine = useMachine(operation?.snapshot.scope.machineId ?? '');
+    useServerProfilesGeneration();
+    const operation = useActionOperation(actionOperationAddress(props.serverId, props.operationId));
     const sessionId = operation?.snapshot.scope.sessionId ?? null;
-    const sessionMetadata = useSessionListPreferredMetadata(sessionId);
+    const exactServerId = operation?.serverId ?? null;
+    const session = useSessionListRenderableWithServerScope(
+        exactServerId,
+        exactServerId && sessionId ? sessionId : '',
+    );
+    const machine = useServerScopedMachine(
+        exactServerId,
+        exactServerId ? operation?.snapshot.scope.machineId ?? '' : '',
+    );
+    const sessionAddresses = React.useMemo(() => exactServerId && sessionId
+        ? [{ serverId: exactServerId, sessionId }]
+        : [], [exactServerId, sessionId]);
+    const audienceContext = useSessionAudienceContext(sessionAddresses);
+    const homeObservations = useSessionListHomeObservations();
     const [resumePending, setResumePending] = React.useState(false);
     const [resumeFeedback, setResumeFeedback] = React.useState<string | null>(null);
     const mountedRef = React.useRef(true);
@@ -127,7 +149,7 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
 
     React.useEffect(() => {
         if (operation && isActionOperationTerminal(operation.snapshot.state)) {
-            acknowledgeActionOperationPresented(operation.snapshot);
+            acknowledgeActionOperationPresented(operation.snapshot, operation.serverId);
         }
     }, [operation]);
 
@@ -141,6 +163,15 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
     }
 
     const { snapshot, observation } = operation;
+    const sourceContext = projectActionOperationSourceContext({
+        serverId: operation.serverId,
+        snapshot,
+        session,
+        machine,
+        serverProfile: operation.serverId ? getServerProfileById(operation.serverId) : null,
+        audienceScope: operation.serverId ? audienceContext.scopes.get(operation.serverId) : null,
+        homeObservation: operation.serverId ? homeObservations[operation.serverId] ?? null : null,
+    });
     const status = resolveActionOperationStatus(snapshot, observation);
     const statusLabel = status.label.kind === 'producer'
         ? status.label.value
@@ -162,6 +193,7 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
         setResumePending(true);
         setResumeFeedback(null);
         void resumeActionOperationHandoff({
+            serverId: operation.serverId,
             handoffId: detail.nextAction.handoffId,
             sessionId: detail.nextAction.sessionId,
             targetMachineId: detail.nextAction.targetMachineId,
@@ -220,13 +252,19 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
                 <Item
                     mode="info"
                     title={t('inbox.actionOperations.machine')}
-                    subtitle={machine ? getMachineDisplayName(machine) : snapshot.scope.machineId}
+                    subtitle={[
+                        sourceContext.machineTitle ?? snapshot.scope.machineId,
+                        sessionId ? null : sourceContext.contextLine,
+                    ].filter(Boolean).join(' · ')}
                 />
                 {sessionId ? (
                     <Item
                         mode="info"
                         title={t('inbox.actionOperations.session')}
-                        subtitle={sessionMetadata ? getSessionName({ id: sessionId, metadata: sessionMetadata }) : sessionId}
+                        subtitle={[
+                            sourceContext.sessionTitle ?? sessionId,
+                            sourceContext.contextLine,
+                        ].filter(Boolean).join(' · ')}
                     />
                 ) : null}
                 <Item
@@ -331,13 +369,13 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
             ) : null}
 
             <ActionOperationDetailControls
-                operation={snapshot}
+                operation={operation}
                 terminal={terminal}
-                canCancel={detail.canCancel}
+                canCancel={Boolean(operation.serverId) && detail.canCancel}
                 onClose={props.onClose}
                 leading={(
                     <>
-                        {detail.nextAction?.kind === 'resume_handoff' ? (
+                        {operation.serverId && detail.nextAction?.kind === 'resume_handoff' ? (
                             <RoundButton
                                 title={t('inbox.actionOperations.recovery.resumeAction')}
                                 testID="action-operation-resume-handoff"
@@ -346,12 +384,15 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
                                 onPress={requestHandoffResume}
                             />
                         ) : null}
-                        {openSessionId ? (
+                        {openSessionId && readActionOperationDestinationServerId(snapshot, operation.serverId) ? (
                             <RoundButton
                                 title={t('runs.openSession')}
                                 testID="action-operation-open-session"
                                 onPress={() => {
-                                    router.push(createActivitySurfaceSessionRoute(openSessionId));
+                                    router.push(createActivitySurfaceSessionRoute(
+                                        openSessionId,
+                                        readActionOperationDestinationServerId(snapshot, operation.serverId),
+                                    ));
                                     props.onClose();
                                 }}
                             />

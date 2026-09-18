@@ -44,6 +44,8 @@ export function useKeyboardState(): Readonly<{ height: number; isVisible: boolea
 
 export function useKeyboardHandler(): void {}
 
+export function useFocusedInputHandler(_handlers: unknown): void {}
+
 export function useReanimatedKeyboardAnimation(): KeyboardAnimation {
     return defaultKeyboardAnimation;
 }

@@ -29,6 +29,7 @@ import {
     createPluginAccountAvailabilityReader,
     type PluginAccountAvailabilitySnapshot,
 } from '@/sync/domains/plugins/availability/reader';
+import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit';
 
 const pluginId = 'example.tasks';
 const collectionDefinition = defineAccountCollection({
@@ -140,6 +141,7 @@ function createAvailabilityReader() {
             pluginId,
             response: {
                 availabilityCursor: 7,
+                packageAssets: [],
                 hostingCapability: {
                     enabled: true,
                     maxArtifactBytes: 1024,
@@ -177,7 +179,7 @@ function createAvailabilityReader() {
 async function loadClient(options: Readonly<{
     mutationResponse?: () => Response;
     accountKvRead?: () => Response | Promise<Response>;
-    accountKvWrite?: (body: unknown) => Response | Promise<Response>;
+    accountKvWrite?: (body: unknown, init?: RequestInit) => Response | Promise<Response>;
     availabilityReader?: ReturnType<typeof createAvailabilityReader>;
     readAvailability?: () => ReturnType<typeof createAvailabilityReader>;
 }> = {}) {
@@ -195,13 +197,10 @@ async function loadClient(options: Readonly<{
     const accountKvWrites: unknown[] = [];
     const transport = vi.fn(async (path: string, _init?: RequestInit) => {
         if (path === '/v1/account/encryption/currentness') {
-            return new Response(JSON.stringify({
-                mode: 'plain',
+            return new Response(JSON.stringify(createPlainAccountEncryptionCurrentnessFixture({
                 version: 7,
-                signingKeyFingerprint: null,
-                contentKeyFingerprint: null,
                 updatedAt: 11,
-            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            })), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
         if (path === '/v1/plugins/data/contract') {
             return new Response(JSON.stringify({ access: 'writable', contract }), {
@@ -224,7 +223,7 @@ async function loadClient(options: Readonly<{
             }
             const parsedBody = JSON.parse(String(_init?.body ?? 'null')) as unknown;
             accountKvWrites.push(parsedBody);
-            return await (options.accountKvWrite?.(parsedBody) ?? new Response(
+            return await (options.accountKvWrite?.(parsedBody, _init) ?? new Response(
                 JSON.stringify({ status: 'updated', revision: 3 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
             ));
@@ -251,8 +250,8 @@ async function loadClient(options: Readonly<{
         }),
     }));
     vi.doMock('@/sync/api/session/apiSocket', () => ({ apiSocket: { request: vi.fn() } }));
-    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-        captureSessionRequestAuthorityForServerAccountScope: async () => ({
+    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+        captureServerRequestAuthorityForServerAccountScope: async () => ({
             scope: lifetime.scope,
             context: { token: 'account-token' },
             request: transport,
@@ -290,6 +289,51 @@ async function loadClient(options: Readonly<{
 }
 
 describe('Plugin UI Data client', () => {
+    it.each(['cancelled', 'retired', 'lost', 'malformed'] as const)('settles issued Account KV transactions without replay when %s', async (settlement) => {
+        const cancellation = new AbortController();
+        let retire: () => void = () => undefined;
+        let persisted: unknown;
+        const harness = await loadClient({
+            accountKvWrite: (body) => {
+                persisted = body;
+                if (settlement === 'cancelled') cancellation.abort();
+                if (settlement === 'retired') retire();
+                if (settlement === 'lost') throw new Error('Response lost after commit');
+                return new Response(JSON.stringify(settlement === 'malformed' ? {} : { status: 'updated', revision: 0 }), { status: 200 });
+            },
+        });
+        retire = harness.retire;
+        let callbacks = 0;
+        const outcome = harness.client.accountKv.transaction(async (transaction) => {
+            callbacks += 1;
+            await transaction.set('theme', 'dark', { expectedVersion: 'absent' });
+            return 'callback-result';
+        }, { signal: cancellation.signal });
+        if (settlement === 'lost' || settlement === 'malformed') {
+            await expect(outcome).rejects.toMatchObject({ code: 'plugin_account_storage_outcome_unknown', retryable: false });
+        } else {
+            await expect(outcome).resolves.toBe('callback-result');
+        }
+        expect(callbacks).toBe(1);
+        expect(persisted).toMatchObject({ content: { t: 'plain', v: { values: { theme: { value: 'dark' } } } } });
+    });
+
+    it('preserves an issued Collection put through the UI facade after retirement', async () => {
+        let retire: () => void = () => undefined;
+        const harness = await loadClient({
+            mutationResponse: () => {
+                retire();
+                return new Response(JSON.stringify({
+                    status: 'updated', results: [{ rowId: 'task-1', revision: 2, deleted: false }], changeCursor: 19,
+                }), { status: 200 });
+            },
+        });
+        retire = harness.retire;
+        const value = { id: 'task-1', title: 'Settled', status: 'open' as const };
+        await expect(harness.client.collection(collectionDefinition).put(value, { expectedRevision: 1 }))
+            .resolves.toEqual({ rowId: 'task-1', revision: 2, value });
+    });
+
     it('rejects Account KV before transport when the exact current release lacks storage.account', async () => {
         const admitted = createAvailabilityReader();
         const currentRelease = admitted.readCurrentReleaseSelection({ pluginId });
@@ -304,6 +348,7 @@ describe('Plugin UI Data client', () => {
                     pluginId,
                     response: {
                         availabilityCursor: 8,
+                        packageAssets: [],
                         hostingCapability: {
                             enabled: true,
                             maxArtifactBytes: 1024,
@@ -679,7 +724,48 @@ describe('Plugin UI Data client', () => {
         expect(accountKvWrites).toEqual([]);
     });
 
-    it('does not reread a direct Account KV row after cancellation wins a physical conflict', async () => {
+    it('carries an inner direct transaction signal into the physical commit request', async () => {
+        const cancellation = new AbortController();
+        let dispatched!: () => void;
+        const dispatch = new Promise<void>((resolve) => { dispatched = resolve; });
+        let requestSignal: AbortSignal | null = null;
+        const { client, accountKvWrites } = await loadClient({
+            accountKvWrite: async (_body, init) => {
+                requestSignal = init?.signal ?? null;
+                dispatched();
+                // A real transport rejects an in-flight request when its own
+                // signal aborts, so the interrupted physical write settles the
+                // way the platform settles it.
+                await new Promise<void>((_resolve, reject) => {
+                    init?.signal?.addEventListener('abort', () => {
+                        reject(new Error('Account KV commit request aborted'));
+                    }, { once: true });
+                });
+                return new Response(JSON.stringify({ status: 'updated', revision: 3 }), { status: 200 });
+            },
+        });
+
+        const outcome = client.accountKv.transaction(async (transaction) => {
+            await transaction.set('cursor', true, {
+                expectedVersion: 'absent',
+                signal: cancellation.signal,
+            });
+        });
+        await dispatch;
+        expect(requestSignal).not.toBeNull();
+        expect(requestSignal!.aborted).toBe(false);
+
+        cancellation.abort();
+
+        expect(requestSignal!.aborted).toBe(true);
+        // Cancelling a dispatched write cannot claim the server did not commit.
+        await expect(outcome).rejects.toMatchObject({
+            code: 'plugin_account_storage_outcome_unknown',
+        });
+        expect(accountKvWrites).toHaveLength(1);
+    });
+
+    it('preserves a direct Account KV physical conflict after cancellation without rereading', async () => {
         const cancellation = new AbortController();
         let reads = 0;
         const { client, accountKvWrites } = await loadClient({
@@ -702,7 +788,7 @@ describe('Plugin UI Data client', () => {
         await expect(client.accountKv.set('target', 'mine', {
             expectedVersion: 'absent',
             signal: cancellation.signal,
-        })).rejects.toMatchObject({ code: 'plugin_collection_cancelled' });
+        })).rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
 
         expect(accountKvWrites).toHaveLength(1);
         expect(reads).toBe(1);

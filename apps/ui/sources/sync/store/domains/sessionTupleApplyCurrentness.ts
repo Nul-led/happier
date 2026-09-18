@@ -1,4 +1,5 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { isSessionAccessRecipient } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 
 export type SessionTupleApplyCurrentness = Readonly<{
@@ -9,7 +10,7 @@ export type SessionTupleApplyCurrentness = Readonly<{
 
 type SessionTupleOrderingFields = Pick<
     Session,
-    'accessLevel' | 'agentStateVersion' | 'metadataLayoutVersion' | 'metadataVersion'
+    'access' | 'accessLevel' | 'agentStateVersion' | 'metadataLayoutVersion' | 'metadataVersion'
 >;
 
 function normalizeOrderingNumber(value: unknown): number | null {
@@ -47,10 +48,7 @@ export function classifySessionTupleApplyCurrentness(
     const previousLayoutVersion = readSessionMetadataLayoutVersion(previousSession.metadataLayoutVersion);
     const incomingLayoutVersion = readSessionMetadataLayoutVersion(incomingSession.metadataLayoutVersion);
     const metadataLayoutVersionsValid = previousLayoutVersion >= 0 && incomingLayoutVersion >= 0;
-    const isParticipantProjection =
-        incomingSession.accessLevel === 'view'
-        || incomingSession.accessLevel === 'edit'
-        || incomingSession.accessLevel === 'admin';
+    const isParticipantProjection = isSessionAccessRecipient(incomingSession.access, incomingSession.accessLevel);
     const isAuthoritativeParticipantPrivacyContraction =
         previousLayoutVersion === 0
         && incomingLayoutVersion === 1

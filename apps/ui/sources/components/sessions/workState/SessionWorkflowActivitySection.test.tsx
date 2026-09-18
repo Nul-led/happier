@@ -4,6 +4,7 @@ import renderer from 'react-test-renderer';
 
 import {
     collectHostText,
+    collectNodeText,
     makeSessionWorkflowRunHeadline,
     makeSessionWorkflowRunSnapshot,
     pressTestInstanceAsync,
@@ -185,6 +186,68 @@ describe('SessionWorkflowActivitySection', () => {
         const text = collectHostText(tree);
         expect(text).toContain('Pending detail');
         expect(text).toContain('loading');
+    });
+
+    it('offers an observed Activity/Flow reading mode without fabricating managed workflow actions', async () => {
+        const runA = headlineRun({ runId: 'run/42 a', title: 'Build', totalAgents: 2 });
+        const snapA = snapshot({
+            runId: runA.runId,
+            title: 'Build',
+            totalAgents: 2,
+            phases: [{ id: 'phase/exact', title: 'Implementation', order: 1, agentIds: ['agent/exact'] }],
+            agents: [
+                { id: 'agent/exact', title: 'Implementer', status: 'active', updatedAt: 1 },
+                { id: 'agent/unassigned', title: 'Reviewer', status: 'pending', updatedAt: 1 },
+            ],
+        });
+        const tree = await render(activityState({
+            headline: { v: 1, backendId: 'claude', updatedAt: 1, primaryRunId: runA.runId, activeRuns: [runA] },
+            activeRuns: [runA],
+            runDetailById: new Map([[runA.runId, loaded(snapA)]]),
+            loadedRunsById: new Map([[runA.runId, snapA]]),
+        }));
+
+        expect(collectHostText(tree)).toContain('observedActivity');
+        expect(collectHostText(tree)).toContain('observedActivityBody');
+        expect(tree.root.findAllByProps({ testID: `workflow-run-panel-open-${runA.runId}` })).toHaveLength(0);
+
+        await pressTestInstanceAsync(
+            tree.root.findByProps({ testID: `workflow-run-panel-view-${runA.runId}:flow` }),
+            'show observed workflow flow',
+        );
+
+        expect(tree.root.findByProps({ testID: `workflow-run-panel-flow-${runA.runId}-observed-note` })).toBeTruthy();
+        const exactAgentNode = tree.root.findByProps({
+            testID: `workflow-run-panel-flow-${runA.runId}-node-agent:agent/exact`,
+        });
+        expect(exactAgentNode.props.accessibilityState).toMatchObject({ selected: false });
+        expect(exactAgentNode.findAllByType('Text')
+            .flatMap((node) => collectNodeText(node))).toContain('statusActive');
+        expect(tree.root.findByProps({
+            testID: `workflow-run-panel-flow-${runA.runId}-node-agent:agent/unassigned`,
+        })).toBeTruthy();
+        expect(tree.root.findAllByProps({
+            testID: `workflow-run-panel-flow-${runA.runId}-edit-step`,
+        })).toHaveLength(0);
+
+        await pressTestInstanceAsync(exactAgentNode, 'select exact observed agent');
+        expect(tree.root.findByProps({
+            testID: `workflow-run-panel-flow-${runA.runId}-node-agent:agent/exact`,
+        }).props.accessibilityState).toMatchObject({ selected: true });
+
+        await pressTestInstanceAsync(
+            tree.root.findByProps({ testID: `workflow-run-panel-view-${runA.runId}:activity` }),
+            'return to observed activity',
+        );
+        expect(tree.root.findByProps({ testID: `workflow-agent-${runA.runId}-agent/exact` })).toBeTruthy();
+
+        await pressTestInstanceAsync(
+            tree.root.findByProps({ testID: `workflow-run-panel-view-${runA.runId}:flow` }),
+            'return to observed flow',
+        );
+        expect(tree.root.findByProps({
+            testID: `workflow-run-panel-flow-${runA.runId}-node-agent:agent/exact`,
+        }).props.accessibilityState).toMatchObject({ selected: true });
     });
 
     it('keeps a 300-agent run bounded through progressive row windows', async () => {

@@ -1,3 +1,4 @@
+import { buildNewSessionAuthoringDraftFromPersistedDraft, buildNewSessionAuthoringDraftFromTempData, buildNewSessionTempDataFromAuthoringDraft, buildPersistedNewSessionDraftFromAuthoringDraft } from '@/components/sessions/authoring/draft/sessionAuthoringDraftAdapters';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ComposerAttachmentDraftV1 } from '@happier-dev/protocol';
@@ -13,7 +14,11 @@ import {
 
 import {
     readNewSessionDraftFromRepository,
+    readNewSessionDraftProjectionFromRepository,
     clearNewSessionComposerAttachmentSeedsFromRepository,
+    hasNewSessionDraftAccessConflict,
+    hasNewSessionDraftPrimaryTeamConflict,
+    writeTemporaryComputerActivationRefToRepository,
     writeNewSessionAuthoringDraftToRepository,
     writeNewSessionDraftToRepository,
 } from './newSessionDraftRepositoryAdapter';
@@ -49,8 +54,184 @@ afterEach(() => {
     resetSessionDraftRepositoryForTests();
 });
 
+/**
+ * Temporary-computer authoring lives only in the current catalogued document,
+ * so these assertions read it through that exact document version rather than
+ * the released V1 vocabulary the same union also carries.
+ */
+function cataloguedNewSessionAuthoring(
+    snapshot: ReturnType<typeof getSessionDraftSnapshot>,
+) {
+    const document = snapshot?.document;
+    if (document?.v !== 2 || document.target.kind !== 'newSession') return undefined;
+    return document.target.authoring;
+}
+
 describe('newSessionDraftRepositoryAdapter', () => {
-    it('projects a published 0.2 draft into canonical 0.3 selections without deleting predecessor fields', () => {
+    it('writes and clears only the Temporary computer activation reference', () => {
+        const draftId = 'temporary-computer-reference-only';
+        const executionTarget = {
+            kind: 'temporary_computer',
+            serverId: 'server-a',
+            artifactTarget: 'linux-x64',
+            workspace: { kind: 'choose_on_endpoint' },
+        } as const;
+        writeNewSessionDraft({
+            scope,
+            draftId,
+            patch: {
+                text: 'newer composer text',
+                authoring: { executionTarget, directory: '/newer/path' },
+            },
+            materializationIntent: 'userEdit',
+        });
+        const before = getSessionDraftSnapshot(scope, { kind: 'newSession', draftId });
+        const reference = {
+            v: 1,
+            activationId: '1d79cf10-cabc-4132-a8b8-bafaa7d60b2e',
+            createdOnDeviceLabel: 'Creating device',
+        } as const;
+
+        writeTemporaryComputerActivationRefToRepository({ scope, draftId, activationRef: reference });
+
+        const written = getSessionDraftSnapshot(scope, { kind: 'newSession', draftId });
+        expect(written?.document.composer.text).toEqual(before?.document.composer.text);
+        expect(written?.document.target).toMatchObject({
+            authoring: {
+                executionTarget: cataloguedNewSessionAuthoring(before)?.executionTarget,
+                directory: cataloguedNewSessionAuthoring(before)?.directory,
+                temporaryComputerActivationRef: { value: reference },
+            },
+        });
+
+        writeTemporaryComputerActivationRefToRepository({ scope, draftId, activationRef: null });
+
+        const cleared = getSessionDraftSnapshot(scope, { kind: 'newSession', draftId });
+        expect(cleared?.document.composer.text).toEqual(before?.document.composer.text);
+        expect(cataloguedNewSessionAuthoring(cleared)?.temporaryComputerActivationRef?.value).toBeNull();
+        expect(cataloguedNewSessionAuthoring(cleared)?.executionTarget)
+            .toEqual(cataloguedNewSessionAuthoring(before)?.executionTarget);
+    });
+
+    it('preserves Temporary computer intent and its activation reference through authoring, reentry and repository edits', () => {
+        const draftId = 'temporary-computer-draft';
+        const executionTarget = {
+            kind: 'temporary_computer',
+            serverId: 'server-a',
+            artifactTarget: 'darwin-arm64',
+            workspace: { kind: 'choose_on_endpoint' },
+        } as const;
+        const temporaryComputerActivationRef = {
+            v: 1,
+            activationId: '1d79cf10-cabc-4132-a8b8-bafaa7d60b2e',
+            createdOnDeviceLabel: 'My laptop',
+        } as const;
+        writeNewSessionDraft({
+            scope,
+            draftId,
+            patch: {
+                text: 'Keep the reviewed request',
+                authoring: {
+                    executionTarget,
+                    temporaryComputerActivationRef,
+                    directory: '/previous-machine-folder',
+                },
+            },
+            materializationIntent: 'userEdit',
+        });
+
+        const recovered = readNewSessionDraftFromRepository({ scope, draftId });
+        expect(recovered).toMatchObject({
+            executionTarget,
+            temporaryComputerActivationRef,
+            selectedMachineId: null,
+            targetServerId: 'server-a',
+            selectedPath: '/previous-machine-folder',
+        });
+        if (!recovered) throw new Error('Expected the retained New Session draft');
+
+        const authored = buildNewSessionAuthoringDraftFromPersistedDraft(recovered);
+        const reentry = buildNewSessionTempDataFromAuthoringDraft({ draft: authored, machineId: 'stale-machine' });
+        expect(reentry.machineId).toBeUndefined();
+        const reentered = buildNewSessionAuthoringDraftFromTempData(reentry);
+        const persisted = buildPersistedNewSessionDraftFromAuthoringDraft({
+            draft: reentered,
+            machineId: 'stale-machine',
+            targetServerId: 'another-home',
+            selectedSecretId: null,
+            selectedSecretIdByProfileIdByEnvVarName: null,
+            sessionOnlySecretValueEncByProfileIdByEnvVarName: null,
+            backendNewSessionOptionStateByTargetKey: null,
+            updatedAt: 20,
+        });
+        expect(persisted).toMatchObject({
+            executionTarget,
+            temporaryComputerActivationRef,
+            selectedMachineId: null,
+            targetServerId: 'server-a',
+            selectedPath: '/previous-machine-folder',
+        });
+        writeNewSessionAuthoringDraftToRepository({ scope, draftId, draft: persisted });
+        expect(getSessionDraftSnapshot(scope, { kind: 'newSession', draftId })?.document.target).toMatchObject({
+            authoring: {
+                executionTarget: { value: executionTarget },
+                temporaryComputerActivationRef: { value: temporaryComputerActivationRef },
+                directory: { value: '/previous-machine-folder' },
+            },
+        });
+    });
+
+    it('round-trips and explicitly clears initial access in the canonical synchronized authoring document', () => {
+        const access = { grants: [{ subject: { kind: 'account' as const, accountId: 'person-b' }, accessLevel: 'edit' as const, canApprovePermissions: true }] };
+        const draftId = 'access-draft';
+        writeNewSessionAuthoringDraftToRepository({ scope, draftId, draft: authoringDraft({ access, primaryTeamId: 'team-a' }) });
+        const firstSnapshot = getSessionDraftSnapshot(scope, { kind: 'newSession', draftId });
+        const projection = readNewSessionDraftProjectionFromRepository({ scope, draftId });
+        const recovered = projection?.draft ?? null;
+        expect(projection?.revision).toBe(firstSnapshot?.revision);
+        expect(recovered?.access).toEqual(access);
+        expect(recovered?.primaryTeamId).toBe('team-a');
+        const authored = buildNewSessionAuthoringDraftFromPersistedDraft(recovered!);
+        expect(authored.access).toEqual(access);
+        const temp = buildNewSessionTempDataFromAuthoringDraft({ draft: authored, machineId: 'machine-b' });
+        expect(buildNewSessionAuthoringDraftFromTempData(temp).access).toEqual(access);
+        expect(getSessionDraftSnapshot(scope, { kind: 'newSession', draftId })?.document.target).toMatchObject({
+            authoring: { access: { value: access } },
+        });
+        writeNewSessionAuthoringDraftToRepository({ scope, draftId, draft: authoringDraft({ access: null, primaryTeamId: null }) });
+        expect(readNewSessionDraftFromRepository({ scope, draftId })?.access).toBeNull();
+        expect(readNewSessionDraftFromRepository({ scope, draftId })?.primaryTeamId).toBeNull();
+    });
+
+    it('projects a clean conflict with per-field access and Team-context presence', () => {
+        const draftId = 'conflict-presence';
+        const access = { grants: [{ subject: { kind: 'account' as const, accountId: 'person-b' }, accessLevel: 'edit' as const, canApprovePermissions: true }] };
+        writeNewSessionAuthoringDraftToRepository({ scope, draftId, draft: authoringDraft({ access, primaryTeamId: 'team-a' }) });
+        const clean = readNewSessionDraftProjectionFromRepository({ scope, draftId });
+        expect(clean?.conflict).toBeNull();
+        expect(hasNewSessionDraftAccessConflict(clean?.conflict)).toBe(false);
+        expect(hasNewSessionDraftPrimaryTeamConflict(clean?.conflict)).toBe(false);
+        expect(hasNewSessionDraftAccessConflict({ fields: [{
+            fieldId: 'target.authoring.access',
+            path: { kind: 'authoring', fieldId: 'access' },
+            mine: null,
+            synced: null,
+        }] })).toBe(true);
+        expect(hasNewSessionDraftPrimaryTeamConflict({ fields: [{
+            fieldId: 'target.authoring.primaryTeamId',
+            path: { kind: 'authoring', fieldId: 'primaryTeamId' },
+            mine: null,
+            synced: null,
+        }] })).toBe(true);
+        expect(hasNewSessionDraftAccessConflict({ fields: [{
+            fieldId: 'target.authoring.primaryTeamId',
+            path: { kind: 'authoring', fieldId: 'primaryTeamId' },
+            mine: null,
+            synced: null,
+        }] })).toBe(false);
+    });
+
+    it('projects a published 0.2 draft and contracts predecessor fields when a current-only value is written', () => {
         const draftId = 'predecessor-draft';
         writeNewSessionDraft({
             scope,
@@ -75,7 +256,7 @@ describe('newSessionDraftRepositoryAdapter', () => {
             input: 'Continue on another device',
             selectedMachineId: 'machine-legacy',
             targetServerId: 'server-legacy',
-            executionTarget: { serverId: 'server-legacy', machineId: 'machine-legacy' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-legacy', machineId: 'machine-legacy' } },
             agentType: 'codex',
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
             modelSelection: {
@@ -89,21 +270,31 @@ describe('newSessionDraftRepositoryAdapter', () => {
         });
 
         writeNewSessionDraftToRepository({ scope, draftId, draft: recovered! });
-        expect(getSessionDraftSnapshot(scope, { kind: 'newSession', draftId })?.document.target).toMatchObject({
+        const current = getSessionDraftSnapshot(scope, { kind: 'newSession', draftId })?.document;
+        expect(current).toMatchObject({
+            v: 2,
+            target: {
             kind: 'newSession',
             authoring: {
-                machineId: { value: 'machine-legacy' },
-                serverId: { value: 'server-legacy' },
-                agentId: { value: 'codex' },
-                backendTarget: { value: { kind: 'builtInAgent', agentId: 'codex' } },
-                modelId: { value: 'gpt-5' },
-                codexBackendMode: { value: 'appServer' },
-                executionTarget: { value: { serverId: 'server-legacy', machineId: 'machine-legacy' } },
+                executionTarget: {
+                    value: {
+                        kind: 'machine',
+                        target: { serverId: 'server-legacy', machineId: 'machine-legacy' },
+                    },
+                },
                 agentTarget: {
                     value: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
                 },
             },
+            },
         });
+        if (current?.target.kind !== 'newSession') throw new Error('expected new-session draft');
+        expect(current.target.authoring).not.toHaveProperty('machineId');
+        expect(current.target.authoring).not.toHaveProperty('serverId');
+        expect(current.target.authoring).not.toHaveProperty('agentId');
+        expect(current.target.authoring).not.toHaveProperty('backendTarget');
+        expect(current.target.authoring).not.toHaveProperty('modelId');
+        expect(current.target.authoring).not.toHaveProperty('codexBackendMode');
     });
 
     it('persists delayed authoring fields without rewriting the canonical composer document', () => {
@@ -134,7 +325,12 @@ describe('newSessionDraftRepositoryAdapter', () => {
         expect(snapshot?.document.target).toMatchObject({
             kind: 'newSession',
             authoring: {
-                executionTarget: { value: { serverId: 'server-a', machineId: 'machine-b' } },
+                executionTarget: {
+                    value: {
+                        kind: 'machine',
+                        target: { serverId: 'server-a', machineId: 'machine-b' },
+                    },
+                },
                 directory: { value: '/repo' },
                 agentTarget: {
                     value: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
@@ -148,13 +344,29 @@ describe('newSessionDraftRepositoryAdapter', () => {
         writeNewSessionDraftToRepository({
             scope,
             draftId,
-            draft: authoringDraft(),
+            draft: authoringDraft({
+                executionTarget: {
+                    kind: 'machine',
+                    target: { serverId: 'server-a', machineId: 'machine-b' },
+                    selectionOrigin: {
+                        kind: 'machine_pool',
+                        poolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+                    },
+                },
+            }),
         });
 
         expect(readNewSessionDraftFromRepository({ scope, draftId })).toMatchObject({
             selectedMachineId: 'machine-b',
             targetServerId: 'server-a',
-            executionTarget: { serverId: 'server-a', machineId: 'machine-b' },
+            executionTarget: {
+                kind: 'machine',
+                target: { serverId: 'server-a', machineId: 'machine-b' },
+                selectionOrigin: {
+                    kind: 'machine_pool',
+                    poolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+                },
+            },
             agentType: 'codex',
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
         });

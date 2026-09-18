@@ -1,6 +1,5 @@
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import {
-    DEFAULT_SESSION_INACTIVE_RESUME_POLICY,
     isNonSteerablePromptPayload,
     type PendingRequestedActionV1,
     type SessionInactiveResumePolicy,
@@ -243,7 +242,7 @@ export function decideSessionMessageDelivery(opts: {
     session: Session | null;
     nowMs?: number;
     forceImmediate?: boolean;
-    /** How ordinary input may resume an inactive/offline runtime. */
+    /** Passed by submit callers for resume orchestration; it never changes delivery priority. */
     sessionInactiveResumePolicy?: SessionInactiveResumePolicy;
     providerNonSteerableReason?: ProviderNonSteerableSendReason | null;
     text?: string;
@@ -295,10 +294,7 @@ export function decideSessionMessageDelivery(opts: {
             pendingSupportState,
             requestedAction: {
                 v: 1,
-                kind: opts.forceImmediate === true
-                    || (opts.sessionInactiveResumePolicy ?? DEFAULT_SESSION_INACTIVE_RESUME_POLICY) === 'when_available'
-                    ? 'send_now'
-                    : 'enqueue',
+                kind: opts.forceImmediate === true ? 'send_now' : 'enqueue',
             },
         };
     }
@@ -329,9 +325,7 @@ export function decideSessionMessageDelivery(opts: {
             pendingSupportState,
             requestedAction: {
                 v: 1,
-                kind: (opts.sessionInactiveResumePolicy ?? DEFAULT_SESSION_INACTIVE_RESUME_POLICY) === 'when_available'
-                    ? 'send_now'
-                    : 'enqueue',
+                kind: 'enqueue',
             },
         };
     }

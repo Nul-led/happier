@@ -5,6 +5,10 @@ import type {
     DaemonProviderCurrentSelectionRecoveryV1,
     DaemonProviderModelProjectionRefreshFailureV1,
 } from '@happier-dev/protocol/rpc';
+import type {
+    TeamCredentialProviderModelSelectionV1,
+    TeamCredentialResourceCatalogEntryV1,
+} from '@happier-dev/protocol/teams';
 
 import { ProviderErrorItems } from '@/components/settings/providers/ProviderErrorItems';
 import {
@@ -25,7 +29,9 @@ import {
     type SessionNativeModelOption,
 } from './buildSessionModelPickerSections';
 import {
+    isTeamCredentialProviderModelPickerValue,
     sessionModelSelectionKey,
+    type SessionModelPickerOptionValue,
     type SessionModelPickerValue,
 } from './sessionModelSelectionKey';
 import {
@@ -81,9 +87,10 @@ export function buildSessionModelPickerNotes(input: Readonly<{
 
 export function resolveSessionModelPickerSelection(input: Readonly<{
     groups: readonly SessionModelProjectionGroup[];
-    ref: SessionModelPickerValue;
-}>): SessionModelPickerExperimentalConfirmation | Readonly<{ kind: 'select'; ref: SessionModelPickerValue }> {
+    ref: SessionModelPickerOptionValue;
+}>): SessionModelPickerExperimentalConfirmation | Readonly<{ kind: 'select'; ref: SessionModelPickerOptionValue }> {
     if (input.ref === null) return { kind: 'select', ref: null };
+    if (isTeamCredentialProviderModelPickerValue(input.ref)) return { kind: 'select', ref: input.ref };
     for (const group of input.groups) {
         const row = group.rows.find((candidate) => (
             sessionModelSelectionKey(candidate.ref) === sessionModelSelectionKey(input.ref)
@@ -110,6 +117,11 @@ export function SessionModelPicker(props: Readonly<{
     agentTargetKey: string;
     nativeModels: readonly SessionNativeModelOption[];
     providerGroups: readonly SessionModelProjectionGroup[];
+    teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+    teamNameById?: Readonly<Record<string, string>>;
+    homeNameByTeamId?: Readonly<Record<string, string>>;
+    currentTeamCredentialResourceKeys?: ReadonlySet<string>;
+    selectedTeamCredentialModel?: TeamCredentialProviderModelSelectionV1 | null;
     providerProjectionAuthoritative: boolean;
     projectionError?: ProviderErrorV1 | null;
     projectionFailures?: readonly DaemonProviderModelProjectionRefreshFailureV1[];
@@ -143,6 +155,8 @@ export function SessionModelPicker(props: Readonly<{
     /** Forwarded verbatim; the hosting surface decides, this adapter never does. */
     multiColumn?: boolean;
     onSelect: (ref: SessionModelPickerValue) => void;
+    onSelectTeamCredentialModel?: (selection: TeamCredentialProviderModelSelectionV1) => void;
+    onRecoverTeamCredentialResource?: (resource: TeamCredentialResourceCatalogEntryV1) => void;
 }>) {
     const canConfirmExperimental = Boolean(props.experimentalConfirmation);
     const baseSections = React.useMemo(() => buildSessionModelPickerSections({
@@ -153,7 +167,13 @@ export function SessionModelPicker(props: Readonly<{
         canConfirmExperimental,
         providerProjectionAuthoritative: props.providerProjectionAuthoritative,
         selected: props.selected,
+        selectedTeamCredentialModel: props.selectedTeamCredentialModel ?? undefined,
         currentSelectionRecovery: props.currentSelectionRecovery,
+        teamCredentialResources: props.teamCredentialResources,
+        teamNameById: props.teamNameById,
+        homeNameByTeamId: props.homeNameByTeamId,
+        currentTeamCredentialResourceKeys: props.currentTeamCredentialResourceKeys,
+        onRecoverTeamCredentialResource: props.onRecoverTeamCredentialResource,
     }), [
         props.agentTargetKey,
         props.currentSelectionRecovery,
@@ -163,6 +183,12 @@ export function SessionModelPicker(props: Readonly<{
         props.providerGroups,
         props.providerProjectionAuthoritative,
         props.selected,
+        props.selectedTeamCredentialModel,
+        props.teamCredentialResources,
+        props.teamNameById,
+        props.homeNameByTeamId,
+        props.currentTeamCredentialResourceKeys,
+        props.onRecoverTeamCredentialResource,
     ]);
     const reportedModelPresentation = React.useMemo(() => {
         const reportedModel = props.reportedModel;
@@ -231,13 +257,13 @@ export function SessionModelPicker(props: Readonly<{
             }),
         ];
     }, [props.favoriteEntries, reportedModelPresentation.sections]);
-    const favoriteOptions = React.useMemo<OptionPickerFavoriteOptions<SessionModelPickerValue> | undefined>(() => {
+    const favoriteOptions = React.useMemo<OptionPickerFavoriteOptions<SessionModelPickerOptionValue> | undefined>(() => {
         if (!props.favoriteKeys || !props.onToggleFavorite) return undefined;
         return {
             values: props.favoriteKeys,
-            isFavoritable: (option) => option.value !== null,
+            isFavoritable: (option) => option.value !== null && !isTeamCredentialProviderModelPickerValue(option.value),
             onToggle: (option) => {
-                if (option.value) props.onToggleFavorite?.(option.value);
+                if (option.value && !isTeamCredentialProviderModelPickerValue(option.value)) props.onToggleFavorite?.(option.value);
             },
         };
     }, [props.favoriteKeys, props.onToggleFavorite]);
@@ -280,17 +306,21 @@ export function SessionModelPicker(props: Readonly<{
         selected: props.selected,
         suppressionNote: t('settingsProviders.models.connectedServiceSuppressed'),
     }), [props.notes, props.providerGroups, props.selected]);
-    const commitSelection = React.useCallback((ref: SessionModelPickerValue) => {
+    const commitSelection = React.useCallback((ref: SessionModelPickerOptionValue) => {
         props.experimentalConfirmation?.clear();
+        if (isTeamCredentialProviderModelPickerValue(ref)) {
+            props.onSelectTeamCredentialModel?.(ref);
+            return;
+        }
         props.onSelect(ref);
-    }, [props.experimentalConfirmation, props.onSelect]);
+    }, [props.experimentalConfirmation, props.onSelect, props.onSelectTeamCredentialModel]);
     const currentSelectionRecovery = props.currentSelectionRecovery
         && sessionModelSelectionKey(props.currentSelectionRecovery.ref) === sessionModelSelectionKey(props.selected)
         ? props.currentSelectionRecovery
         : null;
 
     return (
-        <OptionPickerOverlay<SessionModelPickerValue>
+        <OptionPickerOverlay<SessionModelPickerOptionValue>
             fillAvailableSpace={props.fillAvailableSpace}
             showTitle={props.showTitle}
             maxHeight={props.maxHeight}
@@ -304,7 +334,7 @@ export function SessionModelPicker(props: Readonly<{
             notes={notes}
             options={[]}
             sections={sections}
-            selectedValue={props.selected}
+            selectedValue={props.selectedTeamCredentialModel ?? props.selected}
             getValueKey={sessionModelSelectionKey}
             emptyText={t('settingsProviders.models.empty')}
             headerAccessory={props.headerAccessory}
@@ -312,7 +342,7 @@ export function SessionModelPicker(props: Readonly<{
                 canEnterCustomValue: true as const,
                 customLabel: t('modelPickerOverlay.customTitle'),
                 customDescription: customTarget.label,
-                getCustomValue: (value: SessionModelPickerValue) => value?.modelId ?? null,
+                getCustomValue: (value: SessionModelPickerOptionValue) => value?.modelId ?? null,
                 onSubmitCustomValue: (modelId: string) => commitSelection({
                     agentTargetKey: props.agentTargetKey,
                     providerConnectionId: customTarget.kind === 'connection' ? customTarget.connectionId : null,

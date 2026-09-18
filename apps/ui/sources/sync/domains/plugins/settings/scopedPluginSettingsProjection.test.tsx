@@ -799,7 +799,7 @@ describe('useScopedPluginSettingsProjection', () => {
             removedFieldWrite.resolve(ready({ endpoint: 'https://one.example.test', enabled: false }, '4'));
             staleCompletion = await commit!;
         });
-        expect(staleCompletion).toBeNull();
+        expect(staleCompletion).toEqual({ status: 'applied', revision: { kind: 'daemon', value: '4' } });
         expect(projection!.state.writePending).toBe(true);
         expect(projection!.state.values).toEqual({ endpoint: 'https://three.example.test', enabled: true });
 
@@ -988,7 +988,7 @@ describe('useScopedPluginSettingsProjection', () => {
             staleCompletion = await commit!;
         });
 
-        expect(staleCompletion).toBeNull();
+        expect(staleCompletion).toEqual({ status: 'applied', revision: { kind: 'daemon', value: '2' } });
         expect(projection!.state.writePending).toBe(true);
         expect(projection!.state.values).toEqual({ endpoint: 'https://reconnected.example.test', enabled: true });
 

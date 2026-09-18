@@ -56,8 +56,8 @@ function makeMachine(partial: Partial<Machine> & Pick<Machine, 'id'>): Machine {
 describe('buildSessionListViewData', () => {
     it('reuses a shared empty array when there are no visible sessions', () => {
         const valuesSpy = vi.spyOn(Object, 'values');
-        const first = buildSessionListViewData({}, {}, { groupInactiveSessionsByProject: false });
-        const second = buildSessionListViewData({}, {}, { groupInactiveSessionsByProject: true });
+        const first = buildSessionListViewData({}, {}, {});
+        const second = buildSessionListViewData({}, {}, { activeGroupingV1: 'date' });
 
         expect(first).toBe(second);
         expect(first).toEqual([]);
@@ -81,7 +81,7 @@ describe('buildSessionListViewData', () => {
                     id: 'm1',
                     metadata: { host: 'm1', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/home/u' },
                 }),
-            }, { groupInactiveSessionsByProject: false });
+            }, {});
             const sortCallsWithSingletonBucket = sortSpy.mock.calls.length;
 
             const twoSessionData = buildSessionListViewData({
@@ -104,7 +104,7 @@ describe('buildSessionListViewData', () => {
                     id: 'm1',
                     metadata: { host: 'm1', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/home/u' },
                 }),
-            }, { groupInactiveSessionsByProject: false });
+            }, {});
 
             expect(singleSessionData.some((item) => item.type === 'session')).toBe(true);
             expect(twoSessionData.some((item) => item.type === 'session')).toBe(true);
@@ -137,7 +137,7 @@ describe('buildSessionListViewData', () => {
                     id: 'm1',
                     metadata: { host: 'm1', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/home/u' },
                 }),
-            }, { groupInactiveSessionsByProject: false });
+            }, {});
 
             expect(data.some((item) => item.type === 'session')).toBe(true);
             expect(sortSpy).not.toHaveBeenCalled();
@@ -176,8 +176,8 @@ describe('buildSessionListViewData', () => {
                     metadata: { host: 'm1', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/home/u' },
                 }),
             }, {
-                groupInactiveSessionsByProject: false,
                 inactiveGroupingV1: 'date',
+                sectionModeV1: 'activity',
             });
 
             const summary = data.map((item) => {
@@ -226,7 +226,7 @@ describe('buildSessionListViewData', () => {
             }),
         };
 
-        const data = buildSessionListViewData(sessions, { [machine.id]: machine }, { groupInactiveSessionsByProject: false });
+        const data = buildSessionListViewData(sessions, { [machine.id]: machine }, {});
         const sessionIds = data.filter((i) => i.type === 'session').map((i: any) => i.session.id);
         expect(sessionIds).toEqual(['user']);
     });
@@ -259,7 +259,6 @@ describe('buildSessionListViewData', () => {
         };
 
         const data = buildSessionListViewData(sessions, { [machine.id]: machine }, {
-            groupInactiveSessionsByProject: false,
             activeGroupingV1: 'project',
             inactiveGroupingV1: 'date',
             sectionModeV1: 'single',
@@ -323,8 +322,8 @@ describe('buildSessionListViewData', () => {
                 }),
             };
 
-            const first = buildSessionListViewData(sessions, { [machine.id]: machine }, { groupInactiveSessionsByProject: false });
-            const second = buildSessionListViewData(sessions, { [machine.id]: machine }, { groupInactiveSessionsByProject: true });
+            const first = buildSessionListViewData(sessions, { [machine.id]: machine }, {});
+            const second = buildSessionListViewData(sessions, { [machine.id]: machine }, { activeGroupingV1: 'date' });
 
             expect(first).toBe(second);
             expect(first).toEqual([]);
@@ -371,7 +370,10 @@ describe('buildSessionListViewData', () => {
             [machineB.id]: machineB,
         };
 
-        const data = buildSessionListViewData(sessions, machines, { groupInactiveSessionsByProject: true });
+        const data = buildSessionListViewData(sessions, machines, {
+            inactiveGroupingV1: 'project',
+            sectionModeV1: 'activity',
+        });
 
         const summary = data.map((item) => {
             switch (item.type) {
@@ -411,7 +413,6 @@ describe('buildSessionListViewData', () => {
         }, {
             [machine.id]: machine,
         }, {
-            groupInactiveSessionsByProject: true,
             serverScope: { serverId: 'server-1' },
         });
 
@@ -449,7 +450,6 @@ describe('buildSessionListViewData', () => {
         }, {
             [machine.id]: machine,
         }, {
-            groupInactiveSessionsByProject: true,
             serverScope: { serverId: 'server-1' },
         });
 
@@ -498,7 +498,6 @@ describe('buildSessionListViewData', () => {
             sessions,
             { [machineTarget.id]: machineTarget },
             {
-                groupInactiveSessionsByProject: true,
                 sessionTargetState: {
                     sessions,
                     machines: { [machineTarget.id]: machineTarget },
@@ -547,12 +546,12 @@ describe('buildSessionListViewData', () => {
             sessions,
             { [machine.id]: machine },
             {
-                groupInactiveSessionsByProject: true,
                 activeGroupingV1: 'project',
                 serverScope: { serverId: 'server-1' },
                 sessionTargetState: {
                     sessions,
-                    sessionListRenderables: sessions,
+                    sessionListRowsByServerId: { 'server-1': sessions },
+                    ordinarySessionListMembershipByServerId: { 'server-1': ['s1'] },
                     machines: {},
                     getProjectForSession: () => null,
                 },
@@ -578,7 +577,7 @@ describe('buildSessionListViewData', () => {
             }),
         };
 
-        const data = buildSessionListViewData(sessions, { [machine.id]: machine }, { groupInactiveSessionsByProject: true });
+        const data = buildSessionListViewData(sessions, { [machine.id]: machine }, {});
         const header = data.find((i) => i.type === 'header' && i.headerKind === 'project') as any;
         expect(header?.title).toBe('/home/userfoo/repo');
     });
@@ -609,7 +608,6 @@ describe('buildSessionListViewData', () => {
             sessions,
             { [machine.id]: machine },
             {
-                groupInactiveSessionsByProject: true,
                 serverScope: { serverId: ' server-a ', serverName: ' Server A ' },
             }
         );
@@ -654,9 +652,9 @@ describe('buildSessionListViewData', () => {
             };
 
             const data = buildSessionListViewData(sessions, { [machine.id]: machine }, {
-                groupInactiveSessionsByProject: false,
                 activeGroupingV1: 'project',
                 inactiveGroupingV1: 'date',
+                sectionModeV1: 'activity',
             });
 
             const summary = data.map((item) => {
@@ -703,7 +701,10 @@ describe('buildSessionListViewData', () => {
                 updatedAt: 1,
                 metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u', host: 'm1', version: '0.0.0', flavor: 'claude' },
             }),
-        }, { [machine.id]: machine }, { groupInactiveSessionsByProject: true });
+        }, { [machine.id]: machine }, {
+            inactiveGroupingV1: 'project',
+            sectionModeV1: 'activity',
+        });
 
         const projectGroupKeys = data.flatMap((item) => (
             item.type === 'header' && item.headerKind === 'project' && item.groupKey
@@ -713,10 +714,77 @@ describe('buildSessionListViewData', () => {
 
         expect(projectGroupKeys).toHaveLength(2);
         expect(new Set(projectGroupKeys).size).toBe(1);
-        expect(projectGroupKeys[0]).toMatch(/^server:[^:]+:project:/);
+        expect(projectGroupKeys[0]).toMatch(/^\[/);
     });
 
-    it('places shared sessions into a dedicated subgroup inside active and inactive sections', () => {
+    it('keeps delimiter-adversarial Machine and path tuples as independent project groups', () => {
+        const machineA = makeMachine({ id: 'm', metadata: { host: 'a', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/' } });
+        const machineB = makeMachine({ id: 'm:/repo', metadata: { host: 'b', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h' } });
+        const data = buildSessionListViewData({
+            a: makeSession({
+                id: 'a', active: true, createdAt: 2, updatedAt: 2,
+                metadata: { machineId: 'm', path: '/repo:x', homeDir: '/', host: 'a', version: '0.0.0', flavor: 'claude' },
+            }),
+            b: makeSession({
+                id: 'b', active: true, createdAt: 1, updatedAt: 1,
+                metadata: { machineId: 'm:/repo', path: 'x', host: 'b', version: '0.0.0', flavor: 'claude' },
+            }),
+        }, { [machineA.id]: machineA, [machineB.id]: machineB }, {
+            sectionModeV1: 'single',
+            activeGroupingV1: 'project',
+            serverScope: { serverId: 'home-a' },
+        });
+
+        const headers = data.filter((item) => item.type === 'header' && item.headerKind === 'project');
+        expect(headers).toHaveLength(2);
+        expect(new Set(headers.map((item) => item.groupKey)).size).toBe(2);
+        expect(new Set(headers.map((item) => item.workspaceKey)).size).toBe(2);
+    });
+
+    it('keeps the confirmed legacy FNV collision pair as independent collapse and order targets', () => {
+        const machineA = makeMachine({ id: 'm29645', metadata: { host: 'a', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/' } });
+        const machineB = makeMachine({ id: 'm41845', metadata: { host: 'b', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/' } });
+        const data = buildSessionListViewData({
+            a: makeSession({
+                id: 'a', active: true, createdAt: 2, updatedAt: 2,
+                metadata: { machineId: 'm29645', path: '/repo', homeDir: '/', host: 'a', version: '0.0.0', flavor: 'claude' },
+            }),
+            b: makeSession({
+                id: 'b', active: true, createdAt: 1, updatedAt: 1,
+                metadata: { machineId: 'm41845', path: '/repo', homeDir: '/', host: 'b', version: '0.0.0', flavor: 'claude' },
+            }),
+        }, { [machineA.id]: machineA, [machineB.id]: machineB }, {
+            sectionModeV1: 'single',
+            activeGroupingV1: 'project',
+            serverScope: { serverId: 'home-a' },
+        });
+
+        const headers = data.filter((item) => item.type === 'header' && item.headerKind === 'project');
+        expect(headers).toHaveLength(2);
+        expect(new Set(headers.map((item) => item.groupKey)).size).toBe(2);
+        expect(new Set(headers.map((item) => item.workspaceKey)).size).toBe(2);
+    });
+
+    it('includes exact Home identity in project collapse and persisted workspace-order keys', () => {
+        const machine = makeMachine({ id: 'm1', metadata: { host: 'a', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/' } });
+        const buildForHome = (serverId: string) => buildSessionListViewData({
+            session: makeSession({
+                id: 'session', active: true, createdAt: 1, updatedAt: 1,
+                metadata: { machineId: 'm1', path: '/repo', homeDir: '/', host: 'a', version: '0.0.0', flavor: 'claude' },
+            }),
+        }, { [machine.id]: machine }, {
+            sectionModeV1: 'single',
+            activeGroupingV1: 'project',
+            serverScope: { serverId },
+        }).find((item) => item.type === 'header' && item.headerKind === 'project');
+
+        const homeA = buildForHome('home-a');
+        const homeB = buildForHome('home-b');
+        expect(homeA?.groupKey).not.toBe(homeB?.groupKey);
+        expect(homeA?.workspaceKey).not.toBe(homeB?.workspaceKey);
+    });
+
+    it('admits directly shared sessions into the same base layout without an ownership partition', () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date(2026, 1, 17, 12, 0, 0));
 
@@ -757,7 +825,9 @@ describe('buildSessionListViewData', () => {
                 } as any),
             };
 
-            const data = buildSessionListViewData(sessions, { [machine.id]: machine }, { groupInactiveSessionsByProject: false });
+            const data = buildSessionListViewData(sessions, { [machine.id]: machine }, {
+                sectionModeV1: 'activity',
+            });
 
             const summary = data.map((item) => {
                 switch (item.type) {
@@ -770,18 +840,56 @@ describe('buildSessionListViewData', () => {
 
             expect(summary).toEqual([
                 'header:active:Active',
-                'header:shared:Shared sessions',
-                'session:sharedActive:active:shared',
+                'header:project:~/shared-active',
+                'session:sharedActive:active:project',
                 'header:project:~/own-active',
                 'session:ownActive:active:project',
                 'header:inactive:Inactive',
-                'header:shared:Shared sessions',
-                'session:sharedInactive:inactive:shared',
                 'header:date:Yesterday',
+                'session:sharedInactive:inactive:date',
                 'session:ownInactive:inactive:date',
             ]);
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it('admits directly shared sessions into the one Projects list without an ownership partition', () => {
+        const machine = makeMachine({
+            id: 'm1',
+            metadata: { host: 'm1', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/home/u' },
+        });
+        const sessions: Record<string, Session> = {
+            own: makeSession({
+                id: 'own',
+                active: true,
+                createdAt: 1_000,
+                updatedAt: 1_000,
+                metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u', host: 'm1', version: '0.0.0', flavor: 'claude' },
+            }),
+            shared: makeSession({
+                id: 'shared',
+                active: true,
+                createdAt: 2_000,
+                updatedAt: 2_000,
+                metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u', host: 'm1', version: '0.0.0', flavor: 'claude' },
+                owner: 'friend-1',
+            } as any),
+        };
+
+        const data = buildSessionListViewData(sessions, { [machine.id]: machine }, {
+            sectionModeV1: 'single',
+            activeGroupingV1: 'project',
+        });
+
+        expect(data.map((item) => item.type === 'header'
+            ? `header:${item.headerKind ?? 'unknown'}:${item.title}`
+            : `session:${item.session.id}:${item.groupKind ?? 'default'}`,
+        )).toEqual([
+            'header:sessions:Sessions',
+            'header:project:~/repo',
+            'session:shared:project',
+            'session:own:project',
+        ]);
     });
 });

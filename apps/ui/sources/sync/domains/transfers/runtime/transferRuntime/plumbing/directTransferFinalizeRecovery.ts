@@ -3,9 +3,14 @@ import {
     DIRECT_IMPORT_FINALIZE_OUTCOME_INDETERMINATE_ERROR_CODE,
     DIRECT_IMPORT_REMOTE_COMMITTED_RESULT_UNUSABLE_ERROR_CODE,
     finalizeDirectImportSession,
+    resolveDirectImportCarrierRequest,
     TRANSFER_FINALIZE_RECOVERY_REQUIRED_ERROR_CODE,
     type DirectTransferImportFinalizeResponse,
 } from './directTransferImportClient';
+import {
+    MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+    type MachineCarrierHttpLease,
+} from './machineCarrierHttpLease';
 
 export type TransferFinalizeRecoveryActionResult<TResponse> =
     | Readonly<{ status: 'finalized'; response: TResponse }>
@@ -101,7 +106,18 @@ export function createDirectTransferFinalizeRecovery<TResponse>(params: Readonly
     machineId: string;
     serverId?: string | null;
     uploadId: string;
+    /**
+     * The prepared transfer's endpoint. Its origin is not durable: the upload
+     * hands carrier custody back before this continuation exists, so each retry
+     * reacquires the pinned carrier and rebases this endpoint onto it.
+     */
     baseUrl: string;
+    /**
+     * The upload's own carrier acquisition, pinned to the selected
+     * machine/server. Every retry supplies its own cancellation scope, so the
+     * completed upload's signal never reaches a reacquisition made here.
+     */
+    acquireCarrier?: ((prepared: Readonly<{ operationId: string; signal?: AbortSignal }>) => Promise<MachineCarrierHttpLease | null>) | null;
     expiresAt: number;
     timeoutMs?: number | null;
     parseFinalizeResponse: (
@@ -132,20 +148,9 @@ export function createDirectTransferFinalizeRecovery<TResponse>(params: Readonly
         return inFlight;
     };
 
-    const retryFinalize = (): Promise<TransferFinalizeRecoveryActionResult<TResponse>> => runOnce(async () => {
-        let response: DirectTransferImportFinalizeResponse;
-        try {
-            response = await finalizeDirectImportSession({
-                baseUrl: params.baseUrl,
-                timeoutMs: params.timeoutMs ?? null,
-            });
-        } catch {
-            return settleTransferFinalizeRecovery(createUnavailableResult({
-                reason: 'session_unavailable',
-                error: 'The staged upload is no longer available',
-            }));
-        }
-
+    const finalizeResponseOutcome = (
+        response: DirectTransferImportFinalizeResponse,
+    ): TransferFinalizeRecoveryOperationOutcome<TResponse> => {
         if (response.success !== true) {
             if (response.errorCode === TRANSFER_FINALIZE_RECOVERY_REQUIRED_ERROR_CODE) {
                 return retainTransferFinalizeRecovery({
@@ -187,6 +192,49 @@ export function createDirectTransferFinalizeRecovery<TResponse>(params: Readonly
             status: 'finalized',
             response: parsed,
         });
+    };
+
+    const retryFinalize = (): Promise<TransferFinalizeRecoveryActionResult<TResponse>> => runOnce(async () => {
+        let carrier: MachineCarrierHttpLease | null = null;
+        try {
+            let carrierRequest: ReturnType<typeof resolveDirectImportCarrierRequest>;
+            try {
+                carrier = params.acquireCarrier
+                    ? await params.acquireCarrier({ operationId: params.uploadId })
+                    : null;
+                carrierRequest = resolveDirectImportCarrierRequest({
+                    endpointUrl: params.baseUrl,
+                    carrier,
+                });
+            } catch {
+                // Nothing was issued, so the staged session is untouched and the
+                // user can retry once the machine is reachable again.
+                return retainTransferFinalizeRecovery(createUnavailableResult({
+                    reason: 'session_unavailable',
+                    error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+                }));
+            }
+
+            let response: DirectTransferImportFinalizeResponse;
+            try {
+                response = await finalizeDirectImportSession({
+                    baseUrl: carrierRequest.url,
+                    timeoutMs: params.timeoutMs ?? null,
+                    ...(carrierRequest.request ? { request: carrierRequest.request } : {}),
+                });
+            } catch {
+                return settleTransferFinalizeRecovery(createUnavailableResult({
+                    reason: 'session_unavailable',
+                    error: 'The staged upload is no longer available',
+                }));
+            }
+
+            return finalizeResponseOutcome(response);
+        } finally {
+            // Custody returns to the lease owner exactly as the upload does; a
+            // failed release stays retained and retryable there.
+            await Promise.resolve(carrier?.release()).catch(() => undefined);
+        }
     });
 
     const discard = (): Promise<TransferFinalizeRecoveryActionResult<TResponse>> => runOnce(async () => {

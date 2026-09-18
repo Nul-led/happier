@@ -384,15 +384,9 @@ function resolveLockedConnectedServiceSourceOption(params: Readonly<{
             && (option.source as Record<string, unknown>)[params.descriptor.groupIdField] === groupId
         ));
         if (exact) return exact;
-        const presentation = params.sourceOptions.find((option) => (
-            matchesConnectedSource(option)
-            && (option.source as Record<string, unknown>)[params.descriptor.profileIdField] === binding?.profileId
-        ));
         return {
             key: `${params.descriptor.keyPrefix}:${params.descriptor.serviceId}:group:${groupId}`,
-            labelKey: presentation?.labelKey ?? groupId,
-            ...(presentation?.labelParams ? { labelParams: presentation.labelParams } : {}),
-            ...(presentation?.detail ? { detail: presentation.detail } : {}),
+            labelKey: groupId,
             source: {
                 ...params.descriptor.source,
                 [params.descriptor.serviceIdField]: params.descriptor.serviceId,
@@ -721,26 +715,36 @@ function createNewSessionBehavior(
         newSession?.transcriptStorageModesByBackendMode,
     );
 
-    if (!environmentDescriptor || transcriptStorageModesByBackendMode.size === 0) return undefined;
+    if (!environmentDescriptor) return undefined;
 
     return {
-        resolveConfiguredRuntimeKind: ({ agentId, settings }) => (
-            agentId === environmentDescriptor.providerId
-                ? normalizeEnumValue(
-                    readSetting(settings, environmentDescriptor.backendMode.settingKey),
-                    environmentDescriptor.backendMode,
-                )
-                : null
-        ),
-        supportsTranscriptStorageMode: ({ agentId, settings, storageMode }) => {
-            if (agentId !== environmentDescriptor.providerId) return true;
-            const backendMode = normalizeEnumValue(
-                readSetting(settings, environmentDescriptor.backendMode.settingKey),
-                environmentDescriptor.backendMode,
-            );
-            const allowedModes = transcriptStorageModesByBackendMode.get(backendMode);
-            return allowedModes ? allowedModes.includes(storageMode) : true;
+        runtimeDescriptorV1: {
+            backendMode: {
+                settingKey: environmentDescriptor.backendMode.settingKey,
+                values: environmentDescriptor.backendMode.values,
+            },
         },
+        ...(transcriptStorageModesByBackendMode.size === 0
+            ? {}
+            : {
+                resolveConfiguredRuntimeKind: ({ agentId, settings }) => (
+                    agentId === environmentDescriptor.providerId
+                        ? normalizeEnumValue(
+                            readSetting(settings, environmentDescriptor.backendMode.settingKey),
+                            environmentDescriptor.backendMode,
+                        )
+                        : null
+                ),
+                supportsTranscriptStorageMode: ({ agentId, settings, storageMode }) => {
+                    if (agentId !== environmentDescriptor.providerId) return true;
+                    const backendMode = normalizeEnumValue(
+                        readSetting(settings, environmentDescriptor.backendMode.settingKey),
+                        environmentDescriptor.backendMode,
+                    );
+                    const allowedModes = transcriptStorageModesByBackendMode.get(backendMode);
+                    return allowedModes ? allowedModes.includes(storageMode) : true;
+                },
+            }),
     };
 }
 

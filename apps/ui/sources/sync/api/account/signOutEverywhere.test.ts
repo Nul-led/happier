@@ -53,8 +53,8 @@ async function loadClient(params?: Readonly<{
     vi.doMock('@/sync/api/session/apiSocket', () => ({
         apiSocket: { request: activeRequest },
     }));
-    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-        captureSessionRequestAuthorityForServerAccountScope: captureAuthority,
+    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+        captureServerRequestAuthorityForServerAccountScope: captureAuthority,
     }));
 
     const client = await import('./signOutEverywhere');

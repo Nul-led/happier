@@ -8,6 +8,7 @@ import type {
     WindowsRemoteSessionLaunchMode,
 } from '@happier-dev/protocol';
 import type { NewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
+import type { SessionTeamCredentialBindingIntentListV1 } from '@happier-dev/protocol/teams';
 
 type SessionAuthoringDraftBase = Readonly<Omit<
     SessionAuthoringValueV1,
@@ -27,4 +28,6 @@ type SessionAuthoringDraftBase = Readonly<Omit<
 export type SessionAuthoringDraft = Readonly<SessionAuthoringDraftBase & {
     connectedServices: SessionAuthoringValueV1['connectedServices'];
     terminal: SessionAuthoringTerminalV1 | null;
+    primaryTeamId?: string | null;
+    teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
 }>;

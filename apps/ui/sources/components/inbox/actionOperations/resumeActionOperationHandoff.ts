@@ -25,16 +25,18 @@ function failureMessage(value: unknown): string {
 }
 
 export async function resumeActionOperationHandoff(params: Readonly<{
+    serverId: string | null;
     handoffId: string;
     sessionId: string;
     targetMachineId: string;
     createAttemptId?: () => string;
 }>): Promise<ResumeActionOperationHandoffResult> {
-    if (!params.targetMachineId.trim()) return { kind: 'not_available' };
+    if (!params.serverId?.trim() || !params.targetMachineId.trim()) return { kind: 'not_available' };
     let statusEnvelope: Readonly<Record<string, unknown>> | null;
     try {
         statusEnvelope = readRecord(await machineRpcWithServerScope<unknown, { handoffId: string }>({
             machineId: params.targetMachineId,
+            serverId: params.serverId,
             method: RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET_V3,
             payload: { handoffId: params.handoffId },
         }));
@@ -65,6 +67,7 @@ export async function resumeActionOperationHandoff(params: Readonly<{
             attemptId: string;
         }>({
             machineId: params.targetMachineId,
+            serverId: params.serverId,
             method: RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESUME_V3,
             payload: {
             handoffId: params.handoffId,

@@ -23,64 +23,17 @@ import {
     type DirectTransferImportFinalizeResponse,
 } from '../plumbing/directTransferImportClient';
 import type { TransferFinalizeRecoveryFailure } from '../plumbing/directTransferFinalizeRecovery';
-import { uploadBulkPayloadFromFileWithCarrierFallbacks } from '../plumbing/uploadBulkPayloadFromFileWithCarrierFallbacks';
+import { uploadBulkPayloadFromFileViaMachineCarrier } from '../plumbing/uploadBulkPayloadFromFileViaMachineCarrier';
 import { createBufferedTransferDestination } from '../carriers/createBufferedTransferDestination';
-import { downloadBulkPayloadViaMachineRpcToDestination } from '../carriers/downloadBulkPayloadViaMachineRpcToDestination';
 import { downloadBulkPayloadViaDirectExportToDestination } from '../plumbing/directTransferExportDownload';
-import {
-    MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
-    MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
-    resolveMachineCarrierRoute,
-    type MachineCarrierRoute,
-} from '../plumbing/machineCarrierHttpLease';
-import { resolveMachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
+import { resolveMachineCarrierRoute } from '../plumbing/machineCarrierHttpLease';
 
 type TransferFailureResponse = Readonly<{ success: false; error: string; errorCode?: string }>;
-type ComposerMediaStageUploadInitResponse =
-    | Readonly<{
-        success: true;
-        uploadId: string;
-        chunkSizeBytes: number;
-        recipientPublicKeyBase64: string;
-    }>
-    | TransferFailureResponse;
-type ComposerMediaStageUploadChunkResponse = Readonly<{ success: true }> | TransferFailureResponse;
-type ComposerMediaStageUploadAbortResponse = Readonly<{ success: true }> | TransferFailureResponse;
-type ComposerMediaStageUploadFinalizeResponse =
-    | Readonly<{ success: true; path: string; sizeBytes: number; sha256: string; result?: unknown }>
-    | TransferFailureResponse;
-
 export type ComposerMediaStageUploadResult = Readonly<{
     success: true;
     handle: ComposerContentHandleV1;
 }>;
 
-type ComposerMediaStageDownloadInitRequest = Readonly<{
-    t: 'composer_media_stage_inspect_v1';
-    handle: ComposerContentHandleV1;
-    offset: number;
-    maxBytes: number;
-    recipientPublicKeyBase64: string;
-}>;
-type ComposerMediaStageDownloadInitResponse =
-    | Readonly<{
-        success: true;
-        downloadId: string;
-        chunkSizeBytes: number;
-        sizeBytes: number;
-        name: string;
-    }>
-    | TransferFailureResponse;
-type ComposerMediaStageDownloadChunkResponse =
-    | Readonly<{
-        success: true;
-        payloadBase64?: string;
-        encryptedDataKeyEnvelopeBase64?: string;
-        contentBase64?: string;
-        isLast: boolean;
-    }>
-    | TransferFailureResponse;
-type ComposerMediaStageDownloadFinalizeResponse = Readonly<{ success: true }> | TransferFailureResponse;
 type ComposerMediaStageReleaseResponse = Readonly<{ success: true }> | TransferFailureResponse;
 type ComposerMediaStageCapabilityResponse =
     | Readonly<{
@@ -196,12 +149,7 @@ export async function uploadComposerMediaStageFromReader(params: Readonly<{
         sizeBytes: params.fileReader.sizeBytes,
         sha256: params.sha256.trim().toLowerCase(),
     };
-    const transferClient = createWorkspaceFileTransferRpcCaller({
-        machineId: request.executionTarget.machineId,
-        serverId: request.executionTarget.serverId,
-    });
-
-    return await uploadBulkPayloadFromFileWithCarrierFallbacks<ComposerMediaStageUploadResult>({
+    return await uploadBulkPayloadFromFileViaMachineCarrier<ComposerMediaStageUploadResult>({
         machineId: request.executionTarget.machineId,
         serverId: request.executionTarget.serverId,
         fileReader: params.fileReader,
@@ -213,31 +161,6 @@ export async function uploadComposerMediaStageFromReader(params: Readonly<{
             response,
             request,
         }),
-        relay: {
-            init: async () => await transferClient.call<ComposerMediaStageUploadInitResponse, ComposerMediaStageUploadRequest>({
-                machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT,
-                request,
-            }),
-            sendChunk: async (chunk) => await transferClient.call<ComposerMediaStageUploadChunkResponse, typeof chunk>({
-                machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_CHUNK,
-                request: chunk,
-            }),
-            finalize: async (finalize) => {
-                const response = await transferClient.call<ComposerMediaStageUploadFinalizeResponse, typeof finalize>({
-                    machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_FINALIZE,
-                    request: finalize,
-                });
-                if (!response.success) return response;
-                const handle = parseComposerMediaStageHandle({ value: response.result, request });
-                return handle
-                    ? { success: true, handle }
-                    : { success: false, error: 'Composer media stage finalized with an invalid handle' };
-            },
-            abort: async (abort) => await transferClient.call<ComposerMediaStageUploadAbortResponse, typeof abort>({
-                machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_ABORT,
-                request: abort,
-            }),
-        },
         signal: params.signal ?? null,
         onProgress: params.onProgress ?? null,
     });
@@ -258,13 +181,28 @@ export async function inspectComposerContent(
 
     const expectedSizeBytes = resolveInspectionRange(handle.data, request.data);
     const buffered = createBufferedTransferDestination(request.data.maxBytes);
-    let machineRoute: MachineCarrierRoute | null = null;
     const directExportRequest = {
         t: 'composer_media_stage_inspect_v1',
         handle: handle.data,
         offset: request.data.offset,
         maxBytes: request.data.maxBytes,
     } as const;
+
+    if (options?.signal?.aborted) {
+        buffered.reset();
+        return transferFailure('Composer media inspection canceled');
+    }
+    const machineRoute = await resolveMachineCarrierRoute(
+        handle.data.executionTarget.machineId,
+        handle.data.executionTarget.serverId,
+    );
+    if (machineRoute.kind !== 'iroh_peer') {
+        buffered.reset();
+        return machineRoute.kind === 'unavailable'
+            ? transferFailure(machineRoute.error, machineRoute.errorCode)
+            : transferFailure('This transfer requires a newer machine runtime');
+    }
+
     const direct = await downloadBulkPayloadViaDirectExportToDestination({
         machineId: handle.data.executionTarget.machineId,
         serverId: handle.data.executionTarget.serverId,
@@ -276,20 +214,10 @@ export async function inspectComposerContent(
                 : transferFailure('Composer media inspection returned an invalid range')
         ),
         signal: options?.signal ?? null,
-        acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
-            machineRoute ??= await resolveMachineCarrierRoute(
-                handle.data.executionTarget.machineId,
-                handle.data.executionTarget.serverId,
-            );
-            return machineRoute.kind === 'iroh_peer'
-                ? await machineRoute.acquire({
-                    operationId,
-                    flow: resolveMachineCarrierTransferFlow(directExportRequest),
-                    maxBytes,
-                    signal: options?.signal ?? undefined,
-                })
-                : null;
-        },
+        acquirePreparedCarrier: async ({ operationId }) => await machineRoute.acquire({
+            operationId,
+            signal: options?.signal ?? undefined,
+        }),
     });
     if (direct.ok) {
         const result = ComposerContentInspectWireResultV1Schema.safeParse({
@@ -301,75 +229,8 @@ export async function inspectComposerContent(
             ? { success: true, result: result.data }
             : transferFailure('Composer media inspection returned an invalid range');
     }
-    if (direct.errorCode === MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE) {
-        buffered.reset();
-        return transferFailure(MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR, MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE);
-    }
     buffered.reset();
-    const transferClient = createWorkspaceFileTransferRpcCaller({
-        machineId: handle.data.executionTarget.machineId,
-        serverId: handle.data.executionTarget.serverId,
-    });
-    const transfer = await downloadBulkPayloadViaMachineRpcToDestination({
-        destination: buffered.destination,
-        init: async ({ recipientPublicKeyBase64 }) => await transferClient.call<
-            ComposerMediaStageDownloadInitResponse,
-            ComposerMediaStageDownloadInitRequest
-        >({
-            machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_INIT,
-            request: {
-                t: 'composer_media_stage_inspect_v1',
-                handle: handle.data,
-                offset: request.data.offset,
-                maxBytes: request.data.maxBytes,
-                recipientPublicKeyBase64,
-            },
-            signal: options?.signal ?? null,
-        }),
-        readChunk: async (chunk) => await transferClient.call<
-            ComposerMediaStageDownloadChunkResponse,
-            typeof chunk
-        >({
-            machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_CHUNK,
-            request: chunk,
-            signal: options?.signal ?? null,
-        }),
-        finalize: async (finalize) => await transferClient.call<
-            ComposerMediaStageDownloadFinalizeResponse,
-            typeof finalize
-        >({
-            machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_FINALIZE,
-            request: finalize,
-            signal: options?.signal ?? null,
-        }),
-        abort: async (abort) => await transferClient.call<ComposerMediaStageDownloadFinalizeResponse, typeof abort>({
-            machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_ABORT,
-            request: abort,
-            signal: options?.signal ?? null,
-        }),
-        onInit: async (init) => (
-            init.name === handle.data.name && init.sizeBytes === expectedSizeBytes
-                ? undefined
-                : transferFailure('Composer media inspection returned an invalid range')
-        ),
-        signal: options?.signal ?? null,
-    });
-    if (!transfer.ok) return transferFailure(transfer.error, transfer.errorCode);
-    if (options?.signal?.aborted) {
-        buffered.reset();
-        return transferFailure('Composer media inspection canceled');
-    }
-
-    const result = ComposerContentInspectWireResultV1Schema.safeParse({
-        offset: request.data.offset,
-        bytesBase64: buffered.toBase64(),
-        eof: request.data.offset + transfer.sizeBytes >= handle.data.sizeBytes,
-    });
-    if (!result.success) {
-        buffered.reset();
-        return transferFailure('Composer media inspection returned an invalid range');
-    }
-    return { success: true, result: result.data };
+    return transferFailure(direct.error, direct.errorCode);
 }
 
 type ComposerMediaStageClaimResponse =

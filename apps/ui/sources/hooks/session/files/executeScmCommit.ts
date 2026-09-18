@@ -18,6 +18,7 @@ import { runScmOperationWithGitIndexLockRecovery } from '@/scm/operations/gitInd
 
 export async function executeScmCommit(input: {
     sessionId: string;
+    serverId?: string;
     repoPath: string;
     commitMessage: string;
     scmCommitStrategy: ScmCommitStrategy;
@@ -31,9 +32,65 @@ export async function executeScmCommit(input: {
     shouldContinue?: () => boolean;
 }): Promise<{ ok: boolean }> {
     let didSucceed = false;
+    let createdCommitSha: string | undefined;
+    const showRefreshFailure = (error: unknown) => {
+        const refreshMessage = t('files.commitRefreshFailed', { sha: createdCommitSha ?? '' });
+        reportSessionScmOperation({
+            state: storage.getState(),
+            sessionId: input.sessionId, serverId: input.serverId,
+            operation: 'refresh',
+            status: 'failed',
+            detail: refreshMessage,
+            rawError: error instanceof Error ? error.message : String(error ?? ''),
+            errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+            surface: 'files',
+            tracking: input.tracking,
+        });
+        Modal.alert(t('files.commitCreated'), refreshMessage, [
+            { text: t('common.ok'), style: 'cancel' },
+            {
+                text: t('files.retryRefresh'),
+                onPress: async () => {
+                    if (input.shouldContinue?.() === false) return;
+                    const retryResult = await withSessionProjectScmOperationLock({
+                        state: storage.getState(),
+                        sessionId: input.sessionId, serverId: input.serverId,
+                        operation: 'refresh',
+                        run: async () => {
+                            input.setScmOperationBusy(true);
+                            try {
+                                await refreshRepository();
+                            } finally {
+                                input.setScmOperationBusy(false);
+                                input.setScmOperationStatus(null);
+                            }
+                        },
+                    });
+                    if (!retryResult.started) Modal.alert(t('common.error'), retryResult.message);
+                },
+            },
+        ]);
+    };
+    const refreshRepository = async (): Promise<void> => {
+        try {
+            input.setScmOperationStatus(t('files.refreshingRepository'));
+            await input.refreshScmData();
+            await input.loadCommitHistory({ reset: true });
+            reportSessionScmOperation({
+                state: storage.getState(),
+                sessionId: input.sessionId, serverId: input.serverId,
+                operation: 'refresh',
+                status: 'success',
+                surface: 'files',
+                tracking: input.tracking,
+            });
+        } catch (error) {
+            showRefreshFailure(error);
+        }
+    };
     const lockResult = await withSessionProjectScmOperationLock({
         state: storage.getState(),
-        sessionId: input.sessionId,
+        sessionId: input.sessionId, serverId: input.serverId,
         operation: 'commit',
         run: async () => {
             input.setScmOperationBusy(true);
@@ -48,13 +105,13 @@ export async function executeScmCommit(input: {
                     message: input.commitMessage,
                     ...(requestScope ? { scope: requestScope } : {}),
                     ...(includePatches ? { patches: input.commitSelectionPatches } : {}),
-                });
+                }, input.serverId);
                 let response = await createCommit();
-                if (!response.success) {
+                if (!response.success && !response.commitSha) {
                     response = await runScmOperationWithGitIndexLockRecovery({
                         cwd: input.repoPath,
                         failedResponse: response,
-                        removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(input.sessionId, request),
+                        removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(input.sessionId, request, input.serverId),
                         retryOriginalOperation: createCommit,
                     });
                 }
@@ -76,7 +133,7 @@ export async function executeScmCommit(input: {
                     });
                     reportSessionScmOperation({
                         state: storage.getState(),
-                        sessionId: input.sessionId,
+                        sessionId: input.sessionId, serverId: input.serverId,
                         operation: 'commit',
                         status: 'failed',
                         detail: errorMessage,
@@ -89,50 +146,36 @@ export async function executeScmCommit(input: {
                     return;
                 }
 
-                input.setScmOperationStatus('Refreshing repository status…');
+                didSucceed = true;
+                createdCommitSha = response.commitSha;
                 try {
-                    await input.refreshScmData();
-                    await input.loadCommitHistory({ reset: true });
-                } catch (refreshError) {
-                    const refreshMessage = getScmUserFacingError({
-                        error: refreshError instanceof Error ? refreshError.message : String(refreshError ?? ''),
-                        fallback: 'Commit was created, but repository refresh failed. Resolve the issue and try refreshing source control status.',
-                    });
+                    storage.getState().clearSessionProjectScmCommitSelectionPaths(input.sessionId, input.serverId);
+                    storage.getState().clearSessionProjectScmCommitSelectionPatches(input.sessionId, input.serverId);
+                } finally {
                     reportSessionScmOperation({
                         state: storage.getState(),
-                        sessionId: input.sessionId,
+                        sessionId: input.sessionId, serverId: input.serverId,
                         operation: 'commit',
-                        status: 'failed',
-                        detail: refreshMessage,
-                        rawError: refreshError instanceof Error ? refreshError.message : String(refreshError ?? ''),
-                        errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+                        status: 'success',
+                        detail: response.commitSha || undefined,
                         surface: 'files',
                         tracking: input.tracking,
                     });
-                    Modal.alert(t('common.error'), refreshMessage);
-                    return;
                 }
 
-                storage.getState().clearSessionProjectScmCommitSelectionPaths(input.sessionId);
-                storage.getState().clearSessionProjectScmCommitSelectionPatches(input.sessionId);
-                reportSessionScmOperation({
-                    state: storage.getState(),
-                    sessionId: input.sessionId,
-                    operation: 'commit',
-                    status: 'success',
-                    detail: response.commitSha || undefined,
-                    surface: 'files',
-                    tracking: input.tracking,
-                });
-                didSucceed = true;
+                await refreshRepository();
             } catch (error) {
+                if (didSucceed) {
+                    showRefreshFailure(error);
+                    return;
+                }
                 const fallbackMessage = getScmUserFacingError({
                     error: error instanceof Error ? error.message : String(error ?? ''),
                     fallback: 'Failed to create commit',
                 });
                 reportSessionScmOperation({
                     state: storage.getState(),
-                    sessionId: input.sessionId,
+                    sessionId: input.sessionId, serverId: input.serverId,
                     operation: 'commit',
                     status: 'failed',
                     detail: fallbackMessage,

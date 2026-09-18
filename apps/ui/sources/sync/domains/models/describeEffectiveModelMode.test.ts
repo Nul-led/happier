@@ -133,7 +133,7 @@ describe('describeEffectiveModelMode', () => {
             metadata: null,
         });
 
-        expect(out.effectiveModelId).toBe(getAgentCore('gemini').model.defaultMode);
+        expect(out.effectiveModelId).toBe(getAgentCore('gemini').model?.defaultMode);
         expect(out.notes.join(' ')).not.toMatch(/custom model ids|not validated/i);
     });
 
@@ -215,7 +215,7 @@ describe('describeEffectiveModelMode', () => {
             metadata: null,
         });
 
-        expect(out.effectiveModelId).toBe(getAgentCore('codex').model.defaultMode);
+        expect(out.effectiveModelId).toBe(getAgentCore('codex').model?.defaultMode);
         expect(out.notes.join(' ')).not.toMatch(/custom model ids|not validated/i);
     });
 });

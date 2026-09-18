@@ -112,11 +112,11 @@ describe('oauth/[provider] return (provisioning choice)', () => {
 
   it('persists and opens the immutable OAuth Home even when focus changes before finalization resolves', async () => {
     const profiles = await import('@/sync/domains/server/serverProfiles');
-    const profile = profiles.upsertServerProfile({
+    const profile = await profiles.upsertServerProfile({
       serverUrl: 'https://oauth-home-a.test',
       source: 'manual',
     });
-    profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_oauth_home_a');
+    await profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_oauth_home_a');
     setActiveServerSnapshot({
       serverId: 'srv_oauth_home_a',
       serverUrl: 'https://oauth-home-a.test',

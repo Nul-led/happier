@@ -2,7 +2,6 @@ import { Platform } from 'react-native';
 
 import { desktopHostKind, type DesktopHostKind } from '@/utils/platform/desktopHost';
 
-import { buildLocalMachineSetupSystemTaskSpec } from './buildLocalMachineSetupSystemTaskSpec';
 import { createSystemTaskBridge } from './createSystemTaskBridge';
 import { createSystemTaskRunner } from './createSystemTaskRunner';
 import type { SystemTaskRunner, SystemTaskRunnerMode } from './types';
@@ -51,8 +50,4 @@ export function getSystemTasksRunner(): SystemTaskRunner {
     });
     sharedRunner = createSystemTaskRunner({ bridge, mode });
     return sharedRunner;
-}
-
-export function buildDefaultThisComputerTaskSpec() {
-    return buildLocalMachineSetupSystemTaskSpec();
 }

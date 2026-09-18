@@ -103,6 +103,7 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     return createPartialStorageModuleMock(importOriginal, {
         useAllSessions: () => effectBoundary.sessions,
         useAllMachines: () => effectBoundary.machines,
+        useLocalSetting: () => null,
         useSetting: (name: string) => {
             if (name === 'externalSessionsSettingsV1') return effectBoundary.settings;
             if (name === 'backendEnabledByTargetKey') return {};
@@ -128,8 +129,17 @@ vi.mock('@/sync/ops/machineExternalSessions', () => ({
 vi.mock('@/sync/sync', () => ({
     sync: {
         applySessionMetadataLocally: effectBoundary.applySessionMetadataLocally,
-        mutateAccountSettings: effectBoundary.mutateAccountSettings,
+        mutateAccountSettingsOnce: effectBoundary.mutateAccountSettings,
     },
+}));
+
+vi.mock('@/sync/store/hooks', () => ({
+    useLocalSetting: () => null,
+    useSettingsVersion: () => 1,
+}));
+
+vi.mock('@/sync/store/settingsWriters', () => ({
+    useAccountSettingsScope: () => ({ serverId: 'server-1', accountId: 'account-1' }),
 }));
 
 vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) => ({
@@ -277,6 +287,7 @@ describe('ExternalSessionsSettingsView passive shell', () => {
     beforeEach(async () => {
         effectBoundary.machines = [];
         effectBoundary.machineRpc.mockReset();
+        effectBoundary.followPolicySet.mockReset();
         accountCurrentnessState.current = true;
         modalMock.spies.alert.mockClear();
         modalMock.spies.alertAsync.mockClear();
@@ -314,9 +325,16 @@ describe('ExternalSessionsSettingsView passive shell', () => {
         };
         effectBoundary.mutateAccountSettings.mockReset();
         effectBoundary.mutateAccountSettings.mockImplementation(async (
-            mutate: (raw: Readonly<Record<string, unknown>>) => Record<string, unknown>,
+            input: Readonly<{
+                mutate: (raw: Readonly<Record<string, unknown>>) => Readonly<{
+                    settings: Record<string, unknown>;
+                    value: unknown;
+                }>;
+            }>,
         ) => {
-            effectBoundary.accountSettings = mutate(effectBoundary.accountSettings);
+            const result = input.mutate(effectBoundary.accountSettings);
+            effectBoundary.accountSettings = result.settings;
+            return { status: 'applied', settingsVersion: 2, value: result.value };
         });
         virtualizedBoundary.props = null;
         virtualizedBoundary.mountLimit = Number.POSITIVE_INFINITY;

@@ -372,7 +372,10 @@ const hstackWebArtifactExportBlockList = /[\\/]\.expo[\\/]hstack[\\/]web-artifac
 // packer's exact startsWith semantics at its crawl boundary so in-progress and rollback trees
 // never compete with the canonical workspace `src/**` and `dist/**` trees.
 const packTransientPublicationBlockList =
-  /[\\/](?:\.tmp\.|\.backup\.|\.restore\.|\.dist\.build\.|\.dist\.hstack-stage-|dist\.staging\.|dist\.probe\.|dist\.__finalize_backup__\.)[^\\/]*(?:[\\/]|$)/;
+  /[\\/](?:\.tmp\.|\.backup\.|\.restore\.|\.dist\.build\.|\.dist\.backup\.|\.dist\.hstack-stage-|\.happier-plugin-ui-stage-|\.happier-plugin-ui-staging(?:[\\/]|$)|dist\.staging\.|dist\.probe\.|dist\.__finalize_backup__\.)[^\\/]*(?:[\\/]|$)/;
+// Repository metadata is never a bundle input. Excluding it at the crawl boundary also prevents
+// Metro's fallback watcher from racing short-lived nested checkout and agent-instruction paths.
+const repositoryMetadataBlockList = /[\\/](?:\.git|\.agents|\.codex)(?:[\\/]|$)/;
 // The CLI's isolated runtime-snapshot staging area can retain multi-gigabyte native artifacts.
 // It is not a Metro input, but `apps/cli` is an Expo workspace watch root in stack runs.
 const cliRunnerSnapshotsBlockList = /[\\/]apps[\\/]cli[\\/]\.runner-snapshots(?:[\\/]|$)/;
@@ -393,10 +396,10 @@ const nestedDependencyNodeModulesBlockList =
   /[\\/]node_modules[\\/](?!react-native[\\/]node_modules[\\/]@react-native[\\/])(?:@[^\\/]+[\\/])?[^\\/]+[\\/]node_modules[\\/]/;
 const existingBlockList = config.resolver.blockList;
   config.resolver.blockList = Array.isArray(existingBlockList)
-  ? [...existingBlockList, testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, cliRunnerSnapshotsBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList]
+  ? [...existingBlockList, testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, repositoryMetadataBlockList, cliRunnerSnapshotsBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList]
   : existingBlockList
-    ? [existingBlockList, testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, cliRunnerSnapshotsBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList]
-    : [testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, cliRunnerSnapshotsBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList];
+    ? [existingBlockList, testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, repositoryMetadataBlockList, cliRunnerSnapshotsBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList]
+    : [testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, repositoryMetadataBlockList, cliRunnerSnapshotsBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList];
 
 addInternalWorkspaceWatchFolders();
 

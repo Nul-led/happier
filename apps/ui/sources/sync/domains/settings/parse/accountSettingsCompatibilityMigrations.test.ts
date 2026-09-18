@@ -121,7 +121,7 @@ describe('applyAccountSettingsCompatibilityMigrations', () => {
         );
     });
 
-    it('retains Protocol-migrated backend CLI source preferences without a second UI migration', () => {
+    it('rekeys Protocol-migrated backend CLI source preferences through the Agent catalog owner', () => {
         const input = {
             backendCliSourcePreferenceById: {
                 codex: 'managed-first',
@@ -139,6 +139,44 @@ describe('applyAccountSettingsCompatibilityMigrations', () => {
         expect(migrated.backendCliSourcePreferenceByTargetKey).toEqual({
             [resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' })]: 'managed-first',
             [resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'gemini' })]: 'system-first',
+        });
+    });
+
+    it('rekeys predecessor target aliases and gives an explicit canonical Agent entry precedence', () => {
+        const codexTargetKey = resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' });
+        const input = {
+            backendEnabledByTargetKey: {
+                'backend:codex': false,
+            },
+            backendCliSourcePreferenceByTargetKey: {
+                'backend:codex': 'managed-first',
+                [codexTargetKey]: 'system-first',
+            },
+            sessionDefaultPermissionModeByTargetKey: {
+                'backend:codex': 'read-only',
+            },
+            newSessionDefaultPersistenceModeByTargetKeyV1: {
+                'backend:codex': 'direct',
+            },
+        };
+        const migrated = applyAccountSettingsCompatibilityMigrations({
+            input,
+            settings: accountSettingsParse(input),
+            inputSchemaVersion: 6,
+            supportedSchemaVersion: 7,
+        });
+
+        expect(migrated.backendEnabledByTargetKey).toEqual({
+            [codexTargetKey]: false,
+        });
+        expect(migrated.backendCliSourcePreferenceByTargetKey).toEqual({
+            [codexTargetKey]: 'system-first',
+        });
+        expect(migrated.sessionDefaultPermissionModeByTargetKey).toEqual({
+            [codexTargetKey]: 'read-only',
+        });
+        expect(migrated.newSessionDefaultPersistenceModeByTargetKeyV1).toEqual({
+            [codexTargetKey]: 'direct',
         });
     });
 

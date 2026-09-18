@@ -1,4 +1,8 @@
 import { applySettings, settingsDefaults, settingsParse, type Settings } from '@/sync/domains/settings/settings';
+import {
+    REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS,
+    resolveAttentionDeliveryPreviewBehavior,
+} from '@happier-dev/protocol';
 import { areAccountSettingsJsonValuesEqual } from '@/sync/domains/settings/accountSettingsStructuralEquality';
 import { stripMigratedSessionOrganizationSettings } from '@/sync/domains/settings/parse/accountSettingsLegacyCleanup';
 import {
@@ -21,6 +25,25 @@ import { getPersistenceStorage } from './persistenceStorage';
 import { loadSettings } from './settingsPersistence';
 import { loadHomeViewState, migrateHomeViewStateFromSettings } from '@/sync/domains/server/serverProfiles';
 import { stripServerSelectionSettingsProjection } from '@/sync/domains/server/selection/serverSelectionSettingsAdapter';
+
+type AccountSettingsPersistenceMutationListener = (scope: AccountSettingsScope) => void;
+const accountSettingsPersistenceMutationListeners = new Set<AccountSettingsPersistenceMutationListener>();
+
+export function subscribeAccountSettingsPersistenceMutations(
+    listener: AccountSettingsPersistenceMutationListener,
+): () => void {
+    accountSettingsPersistenceMutationListeners.add(listener);
+    return () => accountSettingsPersistenceMutationListeners.delete(listener);
+}
+
+/**
+ * Snapshot the canonical persisted bytes for one exact Account settings scope.
+ * Enrollment uses this only as an in-process currentness token: persistence
+ * remains the authority, and a restart always begins by reading current bytes.
+ */
+export function readAccountSettingsPersistenceMutationToken(scope: AccountSettingsScope): string | null {
+    return getPersistenceStorage().getString(accountSettingsKey(scope)) ?? null;
+}
 
 function accountSettingsKey(scope: AccountSettingsScope): string {
     return `account-settings:v2:${accountSettingsScopeKeySuffix(scope)}`;
@@ -185,7 +208,23 @@ function saveAccountSettingsEnvelope(
     const persistedSettings = loadHomeViewState()
         ? stripServerSelectionSettingsProjection(sanitizedSettings)
         : sanitizedSettings;
-    getPersistenceStorage().set(accountSettingsKey(scope), JSON.stringify({ settings: persistedSettings, version }));
+    // Native notification extensions cannot run the application Settings parser.
+    // Keep this derived presentation in the same atomic record as its sole source:
+    // local edits also pass here before their Home settings-version CAS succeeds.
+    const policy = settingsParse(persistedSettings).attentionDeliveryPolicyV1;
+    const nativeNotificationPreviews = {
+        v: 1,
+        events: Object.fromEntries(
+            REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS.map((event) => [
+                event,
+                resolveAttentionDeliveryPreviewBehavior({ policy, event, channel: 'expo_push' }),
+            ]),
+        ),
+    };
+    getPersistenceStorage().set(accountSettingsKey(scope), JSON.stringify({ settings: persistedSettings, version, nativeNotificationPreviews }));
+    for (const listener of [...accountSettingsPersistenceMutationListeners]) {
+        try { listener(scope); } catch { /* persistence success remains authoritative */ }
+    }
 }
 
 export function loadAccountSettings(scope: AccountSettingsScope): { settings: unknown; version: number | null } {
@@ -220,10 +259,10 @@ export function saveAccountSettings(scope: AccountSettingsScope, settings: Setti
     saveAccountSettingsEnvelope(scope, settings, version);
 }
 
-export function prepareAccountSettingsScopeForActivation(
+export async function prepareAccountSettingsScopeForActivation(
     scope: AccountSettingsScope,
     legacyScopes: readonly AccountSettingsScope[] = [],
-): void {
+): Promise<void> {
     const storage = getPersistenceStorage();
     const scopedSettingsExists = typeof storage.getString(accountSettingsKey(scope)) === 'string';
     const legacySettingsExists = typeof storage.getString('settings') === 'string';
@@ -376,7 +415,7 @@ export function prepareAccountSettingsScopeForActivation(
     // after legacy/identity migrations have normalized the source values.
     if (!loadHomeViewState()) {
         const source = settingsParse(loadAccountSettings(scope).settings);
-        migrateHomeViewStateFromSettings(source as Record<string, unknown>);
+        await migrateHomeViewStateFromSettings(source as Record<string, unknown>);
     }
 }
 

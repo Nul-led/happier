@@ -1,3 +1,5 @@
+import { useSessionFilePaneNavigation } from '@/components/sessions/panes/useSessionFileDetailsOpener';
+import { resolveServerIdForSessionIdFromLocalCache } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache';
 import * as React from 'react';
 import { Platform, View } from 'react-native';
 import { router } from 'expo-router';
@@ -33,16 +35,14 @@ import { withSessionProjectScmOperationLock } from '@/scm/operations/withOperati
 import {
     storage,
     useProjectForSession,
-    useProjectSessions,
-    useSession,
+    useSessionListRenderableWithServerScope,
     useSessionProjectScmCommitSelectionPaths,
     useSessionProjectScmCommitSelectionPatches,
     useSessionProjectScmInFlightOperation,
-    useSessionProjectScmOperationLog,
     useSessionProjectScmSnapshot,
     useSessionProjectScmSnapshotError,
     useSessionRealtimeScmTranscriptConsumer,
-    useSessionProjectScmTouchedPaths,
+    useWorkspaceScmTouchedPathsForSession,
     useSetting,
     useSettingMutable,
 } from '@/sync/domains/state/storage';
@@ -55,7 +55,7 @@ import { SourceControlBranchMenu } from '@/components/sessions/sourceControl/bra
 import { SessionRightPanelGitCommitTabContent } from './SessionRightPanelGitCommitTabContent';
 import { WorkspaceScmHistoryTab } from '@/components/workspaces/scm/WorkspaceScmHistoryTab';
 import { WorkspaceScmUpdateTab } from '@/components/workspaces/scm/WorkspaceScmUpdateTab';
-import { useSessionRightPanelGitTabState } from './useSessionRightPanelGitTabState';
+import { useWorkspaceScmTabState } from '@/components/workspaces/scm/useWorkspaceScmTabState';
 import { useSessionRightPanelGitOpenDetails } from './useSessionRightPanelGitOpenDetails';
 import { shouldLoadSessionGitHistory } from './shouldLoadSessionGitHistory';
 import type { SourceControlRemoteAction } from '@/components/workspaces/scm/SourceControlRemoteActionsRail';
@@ -88,6 +88,7 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 export type SessionRightPanelGitViewProps = Readonly<{
     sessionId: string;
+    serverId?: string;
     scopeId: string;
     onOpenFile?: (fullPath: string) => void;
     onOpenFilePinned?: (fullPath: string) => void;
@@ -110,13 +111,14 @@ function normalizeOptionalRouteSegment(value: string | null | undefined): string
 export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitViewProps) => {
     const { theme } = useUnistyles();
     const pane = useAppPaneScope(props.scopeId);
+    const fileNavigation = useSessionFilePaneNavigation({ scopeId: props.scopeId, sessionId: props.sessionId, serverId: props.serverId ?? resolveServerIdForSessionIdFromLocalCache(props.sessionId) });
     const resumeSession = useSessionResumeAction();
     const requestSessionResume = React.useCallback(() => {
         fireAndForget(emitSessionResumeRequest(props.sessionId), {
             tag: 'SessionRightPanelGitView.resumeSession',
         });
-    }, [props.sessionId]);
-    const { activeGitSubTab, commitDraftMessage, setCommitDraftMessage, setActiveGitSubTab } = useSessionRightPanelGitTabState(pane);
+    }, [props.sessionId, props.serverId]);
+    const { activeGitSubTab, commitDraftMessage, setCommitDraftMessage, setActiveGitSubTab } = useWorkspaceScmTabState(pane);
     const defaultOpenDetails = useSessionRightPanelGitOpenDetails(pane);
     const openFileInDetailsSource = props.onOpenFile ?? defaultOpenDetails.openFileInDetails;
     const openFileInDetailsPinnedSource = props.onOpenFilePinned ?? defaultOpenDetails.openFileInDetailsPinned;
@@ -137,18 +139,17 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
         openCommitInDetailsRef.current(sha);
     }, []);
 
-    const session = useSession(props.sessionId);
+    const session = useSessionListRenderableWithServerScope(props.serverId, props.sessionId);
     const ownerMetadata = session ? readSessionOwnerMetadataView(session) : null;
-    const scmSnapshot = useSessionProjectScmSnapshot(props.sessionId);
-    const lastGoodScmSnapshot = useLastNonNullValue(scmSnapshot, { resetKey: props.sessionId });
+    const scmSnapshot = useSessionProjectScmSnapshot(props.sessionId, props.serverId);
+    const lastGoodScmSnapshot = useLastNonNullValue(scmSnapshot, { resetKey: props.scopeId });
     const effectiveScmSnapshot = scmSnapshot ?? lastGoodScmSnapshot;
-    useSessionRealtimeScmTranscriptConsumer(props.sessionId, effectiveScmSnapshot);
-    const scmSnapshotError = useSessionProjectScmSnapshotError(props.sessionId);
-    const touchedPaths = useSessionProjectScmTouchedPaths(props.sessionId);
-    const operationLog = useSessionProjectScmOperationLog(props.sessionId);
-    const inFlightScmOperation = useSessionProjectScmInFlightOperation(props.sessionId);
-    const commitSelectionPaths = useSessionProjectScmCommitSelectionPaths(props.sessionId);
-    const commitSelectionPatches = useSessionProjectScmCommitSelectionPatches(props.sessionId);
+    useSessionRealtimeScmTranscriptConsumer(props.sessionId, effectiveScmSnapshot, props.serverId);
+    const scmSnapshotError = useSessionProjectScmSnapshotError(props.sessionId, props.serverId);
+    const workspaceTouchedPaths = useWorkspaceScmTouchedPathsForSession(props.sessionId, props.serverId);
+    const inFlightScmOperation = useSessionProjectScmInFlightOperation(props.sessionId, props.serverId);
+    const commitSelectionPaths = useSessionProjectScmCommitSelectionPaths(props.sessionId, props.serverId);
+    const commitSelectionPatches = useSessionProjectScmCommitSelectionPatches(props.sessionId, props.serverId);
     const scmCommitStrategySetting = useSetting('scmCommitStrategy');
     const scmCommitStrategy: ScmCommitStrategy = React.useMemo(() => {
         if (typeof scmCommitStrategySetting !== 'string') return 'atomic';
@@ -159,24 +160,23 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
     const [scmRemoteConfirmPolicy, setScmRemoteConfirmPolicy] = useSettingMutable('scmRemoteConfirmPolicy');
     const scmPushRejectPolicy = useSetting('scmPushRejectPolicy');
     const autoRefreshIntervalSetting = useSetting('scmFilesAutoRefreshIntervalMs');
-    const scmWriteEnabled = useFeatureEnabled('scm.writeOperations');
+    const scmWriteEnabled = useFeatureEnabled('scm.writeOperations', props.serverId ? { scopeKind: 'spawn', serverId: props.serverId } : undefined);
     const activeServerSnapshot = useActiveServerSnapshot();
-    const project = useProjectForSession(props.sessionId);
+    const project = useProjectForSession(props.sessionId, props.serverId);
     const contributionCatalog = useDaemonScmContributionCatalog({
         machineId: project?.key.machineId ?? ownerMetadata?.machineId ?? null,
-        serverId: project?.key.serverId ?? session?.serverId ?? activeServerSnapshot.serverId,
+        serverId: props.serverId ?? project?.key.serverId ?? session?.serverId ?? activeServerSnapshot.serverId,
     });
     const backendUiRegistry = React.useMemo(
         () => createScmUiBackendRegistry(contributionCatalog),
         [contributionCatalog],
     );
-    const projectSessionIds = useProjectSessions(project?.id ?? null);
     const hasGlobalOperationInFlight = Boolean(inFlightScmOperation);
     const sessionPath = resolveSessionWorkspacePath({
         sessionPath: ownerMetadata?.path ?? null,
         projectPath: project?.key?.rootPath ?? null,
     });
-    const { machineReachable, machineRpcTargetAvailable } = useSessionMachineReachability(props.sessionId);
+    const { machineReachable, machineRpcTargetAvailable } = useSessionMachineReachability(props.sessionId, props.serverId);
     const isSessionInactive = session?.active === false;
     const maxIntervalMs = React.useMemo(() => {
         const raw = typeof autoRefreshIntervalSetting === 'number' && Number.isFinite(autoRefreshIntervalSetting)
@@ -192,26 +192,27 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
     const getSnapshotSignature = React.useCallback(() => snapshotSignature, [snapshotSignature]);
 
     const {
+        historyIdentity: commitHistoryInitKey,
         historyEntries,
         historyLoading,
         historyHasMore,
         loadCommitHistory,
     } = useScmCommitHistory({
-        sessionId: props.sessionId,
+        sessionId: props.sessionId, serverId: props.serverId,
         readLogEnabled: effectiveScmSnapshot?.repo.isRepo === true && (effectiveScmSnapshot?.capabilities?.readLog ?? true),
         sessionPath,
+        historyBranch: effectiveScmSnapshot?.branch.head,
     });
 
     const refreshScmData = React.useCallback(async () => {
-        await scmStatusSync.invalidateFromUserAndAwait(props.sessionId);
-    }, [props.sessionId]);
+        await scmStatusSync.invalidateFromUserAndAwait(props.sessionId, props.serverId);
+    }, [props.sessionId, props.serverId]);
     const refreshScmDataFromAutoRefresh = React.useCallback(async () => {
-        await scmStatusSync.invalidateFromAutoRefreshAndAwait(props.sessionId);
-    }, [props.sessionId]);
+        await scmStatusSync.invalidateFromAutoRefreshAndAwait(props.sessionId, props.serverId);
+    }, [props.sessionId, props.serverId]);
 
-    const initialRefreshKey = `${props.sessionId}:${sessionPath ?? ''}`;
+    const initialRefreshKey = JSON.stringify([props.serverId, props.sessionId, sessionPath]);
     const didInitialRefreshKeyRef = React.useRef<string | null>(null);
-    const commitHistoryInitKey = `${props.sessionId}:${sessionPath ?? ''}`;
     const didInitCommitHistoryKeyRef = React.useRef<string | null>(null);
     React.useEffect(() => {
         if (didInitialRefreshKeyRef.current === initialRefreshKey) return;
@@ -239,7 +240,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
         commitMessageGeneratorEnabled,
         generateCommitMessageSuggestion,
     } = useFilesScmOperations({
-        sessionId: props.sessionId,
+        sessionId: props.sessionId, serverId: props.serverId,
         sessionPath,
         scmSnapshot: effectiveScmSnapshot,
         scmWriteEnabled,
@@ -325,10 +326,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
         return await generateCommitMessageSuggestion();
     }, [generateCommitMessageSuggestion]);
 
-    const onOpenFilesSidebar = React.useCallback(() => {
-        pane.openRight({ tabId: 'files' });
-        pane.setRightTab('files');
-    }, [pane.openRight, pane.setRightTab]);
+    const onOpenFilesSidebar = fileNavigation.openFiles;
 
     const defaultOpenReviewAllChanges = React.useCallback(() => {
         pane.openDetailsTab(createSessionScmReviewDetailsTab(), { intent: 'pinned' });
@@ -370,7 +368,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
         inFlightScmOperation && inFlightScmOperation.sessionId !== props.sessionId
     );
     const { canPublish, publishBusy, publishBranch } = usePublishBranchAction({
-        sessionId: props.sessionId,
+        sessionId: props.sessionId, serverId: props.serverId,
         snapshot: effectiveScmSnapshot,
         writeEnabled: scmWriteEnabled === true && Boolean(sessionPath),
         disabled: false,
@@ -527,8 +525,8 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
     }, [commitAdjacentPushState, onCommitAdjacentPush]);
 
     const refreshScmDataFromMutation = React.useCallback(async () => {
-        await scmStatusSync.invalidateFromMutationAndAwait(props.sessionId);
-    }, [props.sessionId]);
+        await scmStatusSync.invalidateFromMutationAndAwait(props.sessionId, props.serverId);
+    }, [props.sessionId, props.serverId]);
     const runSessionUpdateMutation = React.useCallback(async <T extends ScmUpdateMutationResponse>(input: {
         operation: ScmProjectOperationKind;
         fallbackError: string;
@@ -536,7 +534,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
     }): Promise<T> => {
         const lockResult = await withSessionProjectScmOperationLock({
             state: storage.getState(),
-            sessionId: props.sessionId,
+            sessionId: props.sessionId, serverId: props.serverId,
             operation: input.operation,
             run: async () => {
                 let response = await input.run();
@@ -545,7 +543,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
                         response = await runScmOperationWithGitIndexLockRecovery({
                             cwd: sessionPath,
                             failedResponse: response,
-                            removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(props.sessionId, request),
+                            removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(props.sessionId, request, props.serverId),
                             retryOriginalOperation: input.run,
                         });
                     }
@@ -553,7 +551,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
                 if (!response.success) {
                     reportSessionScmOperation({
                         state: storage.getState(),
-                        sessionId: props.sessionId,
+                        sessionId: props.sessionId, serverId: props.serverId,
                         operation: input.operation,
                         status: 'failed',
                         detail: getScmUserFacingError({
@@ -571,7 +569,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
 
                 reportSessionScmOperation({
                     state: storage.getState(),
-                    sessionId: props.sessionId,
+                    sessionId: props.sessionId, serverId: props.serverId,
                     operation: input.operation,
                     status: 'success',
                     surface: 'update',
@@ -594,92 +592,92 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
             } as T;
         }
         return lockResult.value;
-    }, [props.sessionId, sessionPath]);
+    }, [props.sessionId, props.serverId, sessionPath]);
     const addRemote = React.useCallback(
         (request: Parameters<typeof sessionScmRemoteAdd>[1]) => runSessionUpdateMutation({
             operation: 'remote_add',
             fallbackError: t('files.sourceControlOperations.update.remotes.errors.addFailed'),
-            run: () => sessionScmRemoteAdd(props.sessionId, request),
+            run: () => sessionScmRemoteAdd(props.sessionId, request, props.serverId),
         }),
-        [props.sessionId, runSessionUpdateMutation],
+        [props.sessionId, props.serverId, runSessionUpdateMutation],
     );
     const setRemoteUrl = React.useCallback(
         (request: Parameters<typeof sessionScmRemoteSetUrl>[1]) => runSessionUpdateMutation({
             operation: 'remote_set_url',
             fallbackError: t('files.sourceControlOperations.update.remotes.errors.saveFailed'),
-            run: () => sessionScmRemoteSetUrl(props.sessionId, request),
+            run: () => sessionScmRemoteSetUrl(props.sessionId, request, props.serverId),
         }),
-        [props.sessionId, runSessionUpdateMutation],
+        [props.sessionId, props.serverId, runSessionUpdateMutation],
     );
     const removeRemote = React.useCallback(
         (name: string) => runSessionUpdateMutation({
             operation: 'remote_remove',
             fallbackError: t('files.sourceControlOperations.update.remotes.errors.removeFailed'),
-            run: () => sessionScmRemoteRemove(props.sessionId, { name }),
+            run: () => sessionScmRemoteRemove(props.sessionId, { name }, props.serverId),
         }),
-        [props.sessionId, runSessionUpdateMutation],
+        [props.sessionId, props.serverId, runSessionUpdateMutation],
     );
     const mergeBranch = React.useCallback(
         (sourceRef: string) => runSessionUpdateMutation({
             operation: 'branch_merge',
             fallbackError: t('files.sourceControlOperations.update.branchIntegration.errors.mergeFailed'),
-            run: () => sessionScmBranchMerge(props.sessionId, { sourceRef }),
+            run: () => sessionScmBranchMerge(props.sessionId, { sourceRef }, props.serverId),
         }),
-        [props.sessionId, runSessionUpdateMutation],
+        [props.sessionId, props.serverId, runSessionUpdateMutation],
     );
     const rebaseBranch = React.useCallback(
         (sourceRef: string) => runSessionUpdateMutation({
             operation: 'branch_rebase',
             fallbackError: t('files.sourceControlOperations.update.branchIntegration.errors.rebaseFailed'),
-            run: () => sessionScmBranchRebase(props.sessionId, { sourceRef }),
+            run: () => sessionScmBranchRebase(props.sessionId, { sourceRef }, props.serverId),
         }),
-        [props.sessionId, runSessionUpdateMutation],
+        [props.sessionId, props.serverId, runSessionUpdateMutation],
     );
     const continueBranchOperation = React.useCallback(
         (operation: 'merge' | 'rebase') => runSessionUpdateMutation({
             operation: 'branch_operation_continue',
             fallbackError: t('files.sourceControlOperations.update.branchIntegration.errors.continueFailed'),
-            run: () => sessionScmBranchOperationContinue(props.sessionId, { operation }),
+            run: () => sessionScmBranchOperationContinue(props.sessionId, { operation }, props.serverId),
         }),
-        [props.sessionId, runSessionUpdateMutation],
+        [props.sessionId, props.serverId, runSessionUpdateMutation],
     );
     const abortBranchOperation = React.useCallback(
         (operation: 'merge' | 'rebase') => runSessionUpdateMutation({
             operation: 'branch_operation_abort',
             fallbackError: t('files.sourceControlOperations.update.branchIntegration.errors.abortFailed'),
-            run: () => sessionScmBranchOperationAbort(props.sessionId, { operation }),
+            run: () => sessionScmBranchOperationAbort(props.sessionId, { operation }, props.serverId),
         }),
-        [props.sessionId, runSessionUpdateMutation],
+        [props.sessionId, props.serverId, runSessionUpdateMutation],
     );
     const initializeRepository = React.useCallback(
-        () => sessionScmRepositoryInit(props.sessionId, {}),
-        [props.sessionId],
+        () => sessionScmRepositoryInit(props.sessionId, {}, props.serverId),
+        [props.sessionId, props.serverId],
     );
     const openOrReusePullRequest = React.useCallback(
-        (request: { base: string; head: string }) => sessionScmPullRequestOpenOrReuse(props.sessionId, request),
-        [props.sessionId],
+        (request: { base: string; head: string }) => sessionScmPullRequestOpenOrReuse(props.sessionId, request, props.serverId),
+        [props.sessionId, props.serverId],
     );
     const openComposePullRequest = React.useCallback(
-        (request: { base: string; head: string }) => sessionScmPullRequestOpenCompose(props.sessionId, request),
-        [props.sessionId],
+        (request: { base: string; head: string }) => sessionScmPullRequestOpenCompose(props.sessionId, request, props.serverId),
+        [props.sessionId, props.serverId],
     );
     const createFeatureBranch = React.useCallback(
-        (request: { name: string; checkout: true; startPoint?: string }) => sessionScmBranchCreate(props.sessionId, request),
-        [props.sessionId],
+        (request: { name: string; checkout: true; startPoint?: string }) => sessionScmBranchCreate(props.sessionId, request, props.serverId),
+        [props.sessionId, props.serverId],
     );
     const publishProviderKind = effectiveScmSnapshot?.hostingProvider?.kind ?? null;
     const describePublishTargets = React.useCallback(
         () => sessionScmHostingRepositoryDescribePublishTargets(props.sessionId, {
             ...(publishProviderKind ? { providerKind: publishProviderKind } : {}),
-        }),
-        [props.sessionId, publishProviderKind],
+        }, props.serverId),
+        [props.sessionId, props.serverId, publishProviderKind],
     );
     const publishRepository = React.useCallback(
-        (request: Parameters<typeof sessionScmHostingRepositoryPublish>[1]) => sessionScmHostingRepositoryPublish(props.sessionId, request),
-        [props.sessionId],
+        (request: Parameters<typeof sessionScmHostingRepositoryPublish>[1]) => sessionScmHostingRepositoryPublish(props.sessionId, request, props.serverId),
+        [props.sessionId, props.serverId],
     );
     const publishRemediationMachineId = normalizeOptionalRouteSegment(project?.key.machineId ?? ownerMetadata?.machineId ?? null);
-    const publishRemediationServerId = normalizeOptionalRouteSegment(project?.key.serverId ?? session?.serverId ?? activeServerSnapshot.serverId);
+    const publishRemediationServerId = normalizeOptionalRouteSegment(props.serverId ?? project?.key.serverId ?? session?.serverId ?? activeServerSnapshot.serverId);
     const openGitHubConnectedService = React.useCallback(() => {
         router.push({ pathname: '/(app)/settings/connected-services/[serviceId]', params: { serviceId: 'github' } });
     }, []);
@@ -782,11 +780,12 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
         <SessionRightPanelGitCommitTabContent
             theme={theme}
             sessionId={props.sessionId}
+            serverId={props.serverId}
             sessionPath={sessionPath}
             scmSnapshot={effectiveScmSnapshot}
-            touchedPaths={touchedPaths}
-            operationLog={operationLog}
-            projectSessionIds={projectSessionIds}
+            workspaceTouchedPaths={workspaceTouchedPaths}
+
+
             commitSelectionPaths={commitSelectionPaths}
             commitSelectionPatches={commitSelectionPatches}
             scmCommitStrategy={scmCommitStrategy}
@@ -827,6 +826,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
             branchTrigger={scmStatusFilesSummary ? (
                 <SourceControlBranchMenu
                     sessionId={props.sessionId}
+            serverId={props.serverId}
                     currentBranch={scmStatusFilesSummary.branch ?? null}
                     snapshot={effectiveScmSnapshot}
                     writeEnabled={scmWriteEnabled}
@@ -885,6 +885,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
 
     const historyTab = (
         <WorkspaceScmHistoryTab
+            historyIdentity={commitHistoryInitKey}
             theme={theme}
             historyLoading={historyLoading}
             historyEntries={historyEntries}

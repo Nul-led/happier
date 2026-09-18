@@ -19,7 +19,7 @@ import { Typography } from '@/constants/Typography';
 import { ServerReachabilityRemediationCard } from '@/components/settings/server/sections/ServerReachabilityRemediationCard';
 import { Icon } from '@/components/ui/icons/Icon';
 
-type AddTargetsSectionProps = Readonly<{
+export type AddTargetsSectionProps = Readonly<{
     // Add server form
     autoMode: boolean;
     inputUrl: string;
@@ -35,6 +35,7 @@ type AddTargetsSectionProps = Readonly<{
     onReachabilityRemediationAction: (actionId: EndpointReachabilityRemediationAction['id']) => Promise<void> | void;
     prefillHint?: string | null;
     defaultExpanded?: 'server' | 'group' | null;
+    initialGroupServerIds?: readonly string[];
 
     // Add server group form
     servers: ReadonlyArray<ServerProfile>;
@@ -107,7 +108,18 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
     const [expanded, setExpanded] = React.useState<ExpandedKind>(props.defaultExpanded ?? null);
 
     const [groupName, setGroupName] = React.useState('');
-    const [groupServerIds, setGroupServerIds] = React.useState<string[]>([]);
+    const [groupServerIds, setGroupServerIds] = React.useState<string[]>(() => {
+        const requested = props.initialGroupServerIds ?? [];
+        const seen = new Set<string>();
+        const next: string[] = [];
+        for (const raw of requested) {
+            const id = normalizeId(raw);
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            next.push(id);
+        }
+        return next;
+    });
     const [isSavingGroup, setIsSavingGroup] = React.useState(false);
 
     const toggleExpanded = React.useCallback((kind: ExpandedKind) => {
@@ -124,13 +136,16 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
 
     React.useEffect(() => {
         if (expanded !== 'group') return;
-        // Seed selection from current active server for a predictable first group.
+        // The explicit seed is captured by the state initializer. Refreshes may
+        // change this prop while the editor is open, but must not overwrite the
+        // user's toggles. Existing callers continue to seed the focused Home.
+        if (props.initialGroupServerIds !== undefined) return;
         const seed = normalizeId(props.activeServerId);
         setGroupServerIds((prev) => {
             if (prev.length > 0) return prev;
             return seed ? [seed] : [];
         });
-    }, [expanded, props.activeServerId]);
+    }, [expanded, props.activeServerId, props.initialGroupServerIds]);
 
     const selectedGroupServerIds = React.useMemo(() => {
         const seen = new Set<string>();

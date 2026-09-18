@@ -1,10 +1,25 @@
+import { sessionCollaborationTranslations } from './sessionCollaborationTranslations';
+import { sessionMessageAccountActorTranslations } from './sessionMessageAccountActorTranslations';
+import { sessionAccessTranslations } from './sessionAccessTranslations';
+import { nativePasswordTranslations } from './nativePasswordTranslations';
+import { sessionFollowTranslations } from './sessionFollowTranslations';
+import { sessionHomeFreshnessTranslations } from './sessionHomeFreshnessTranslations';
+import { sessionReminderTranslations } from './sessionReminderTranslations';
 import { settingsProvidersTranslations } from './settingsProvidersTranslations';
 import { providerSessionTranslations } from './providerSessionTranslations';
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
+import { machinePoolTranslations } from './machinePoolTranslations';
+import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
+import { sessionResponsibilityTranslations } from './sessionResponsibilityTranslations';
+import { sessionListFilterTranslations } from './sessionListFilterTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
+import { sessionBoardTranslations } from './sessionBoardTranslations';
 import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscoverTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
+import { sessionAgentActivityTranslations } from './sessionAgentActivityTranslations';
+import { changedFileEvidenceTranslations } from './changedFileEvidenceTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
 import { voiceProviderPrivacyTranslations } from './voiceProviderPrivacyTranslations';
@@ -20,9 +35,14 @@ import { pluginInvocationLogTranslations } from './pluginInvocationLogTranslatio
 import { eventAutomationComposerTranslations } from './eventAutomationComposerTranslations';
 import { automationTriggerSetTranslations } from './automationTriggerSetTranslations';
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
+import { actionConfirmationTranslations } from './actionConfirmationTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeGovernanceTranslations } from './homeGovernanceTranslations';
+import { workflowTranslations } from './workflowTranslations';
+import { teamsTranslations } from './teamsTranslations';
+import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
 import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
 
@@ -158,6 +178,8 @@ const newSessionMcpTranslationExtension = {
   mcpReasonBindingDisabled: 'Desactivats per la vinculació del servidor',
   mcpReasonAvailablePortable: 'Compatibles amb aquesta sessió',
   mcpReasonNotPortable: 'No compatibles amb aquesta sessió',
+  profileReasonNotPortable: 'No compatibles amb aquesta sessió',
+  connectedServicesReasonNotPortable: 'No compatibles amb aquesta sessió',
 } as const;
 
 const settingsAppearanceTranslationExtension = {
@@ -629,6 +651,7 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
  * Must match the exact structure of the English translations
  */
 export const ca = {
+    actionConfirmations: actionConfirmationTranslations.ca,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ca, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ca.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
@@ -641,6 +664,9 @@ export const ca = {
     },
     voice: voiceReadinessTranslations.ca,
     pluginPermissions: pluginPermissionTranslations.ca,
+    sessionBoard: sessionBoardTranslations.ca,
+    ...sessionAgentActivityTranslations,
+    ...changedFileEvidenceTranslations.ca,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.ca,
     pluginSurfaces: {
         state: {
@@ -727,6 +753,8 @@ export const ca = {
             transcriptScrollPageDown: 'Baixa una pàgina de la transcripció',
             transcriptScrollPageUp: 'Puja una pàgina de la transcripció',
             transcriptScrollTop: 'Ves a l’inici de la transcripció',
+            workflowSave: 'Desa el flux de treball',
+            workflowRun: 'Executa el flux de treball',
 
             permissionCycle: "Mode de permís de cicle",
             splitCanvasCloseLeaf: "Tancament dividit",
@@ -747,6 +775,7 @@ export const ca = {
         inbox: 'Safata',
         friends: 'Amics',
         sessions: 'Sessions',
+        sessionsNeedsAttention: 'Sessions, requereix atenció',
         settings: 'Configuració',
 
         projects: 'Projectes',},
@@ -842,12 +871,16 @@ export const ca = {
     inbox: {
         ...actionOperationInboxTranslations,
         openSession: ({ session }: { session: string }) => `Obre la sessió: ${session}`,
+        readySessionAccessibilityLabel: ({ session }: { session: string }) => `A punt per revisar: ${session}`,
         // Inbox screen
         emptyTitle: 'Tot al dia',
         emptyDescription: 'Ara mateix no hi ha sol·licituds ni actualitzacions pendents.',
         approvals: 'Aprovacions',
         permissions: 'Permisos',
-        unreadSessions: 'Sessions sense llegir',
+        readySessions: 'A punt per revisar',
+        errors: 'Errors',
+        markAllRead: 'Marca-ho tot com a llegit',
+        openInbox: 'Obre la safata d’entrada',
         updates: 'Activitat',
     },
 
@@ -874,6 +907,7 @@ export const ca = {
         status: {
             open: 'Pendent',
             approved: 'Aprovada',
+            executing: 'En execució',
             rejected: 'Rebutjada',
             executed: 'Executada',
             failed: 'Fallida',
@@ -1007,6 +1041,7 @@ export const ca = {
             toggleFinished: 'Alterna execucions finalitzades',
             refresh: 'Actualitza execucions',
         },
+        openRun: 'Obre l\'execució',
         openSession: 'Obre la sessió',
         sessionTitle: ({ sessionId }: { sessionId: string }) => `Sessió ${sessionId}`,
         runLabel: ({ runId }: { runId: string }) => `execució ${runId}`,
@@ -1099,7 +1134,6 @@ export const ca = {
             title: 'Edita automatització',
             saveAutomationLabel: 'Desa automatització',
             messageLabel: 'MISSATGE',
-            messagePlaceholder: 'Missatge per enviar',
             messageHelpText:
                 'Aquest missatge s’enviarà a la cua de la sessió com a missatge d’usuari pendent.',
             updateFailed: 'No s\'ha pogut actualitzar l\'automatització.',
@@ -1371,7 +1405,6 @@ export const ca = {
             },
         },
         create: {
-            defaultName: 'Missatge programat',
             createFailed: 'No s\'ha pogut crear l\'automatització.',
             unavailableGroupTitle: 'No disponible',
             cannotCreateForSession: 'No es pot crear una automatització per a aquesta sessió',
@@ -1562,6 +1595,12 @@ export const ca = {
 
 
     status: {
+        encryptedUnavailable: "Detalls xifrats no disponibles",
+        encryptedPreparing: "Preparant l’accés xifrat",
+        encryptedRepairNeeded: "Cal reparar l’accés xifrat",
+        awaitingUpdates: "Esperant actualitzacions",
+        queuedInput: "Entrada en cua",
+        unread: "No llegit",
         connected: 'connectat',
         connecting: 'connectant',
         disconnected: 'desconnectat',
@@ -1621,6 +1660,8 @@ export const ca = {
             pathRelay: 'Relay segur',
             publicIngressAbsent: 'No configurat',
             relayDisabled: 'Desactivat',
+            relayNone: 'Cap',
+            relayDisabledWithDirect: ({ direct }: { direct: number }) => `Desactivat · ${direct} adreces directes`,
             relayAutomatic: ({ relays, direct }: { relays: string; direct: number }) =>
                 `Automàtic · ${relays} · ${direct} adreces directes`,
         },
@@ -1653,15 +1694,15 @@ export const ca = {
 
     connect: {
         restoreAccount: 'Restaura el compte',
-        enterSecretKey: 'Introdueix la teva clau secreta',
-        invalidSecretKey: 'Clau secreta no vàlida. Comprova-ho i torna-ho a provar.',
+        enterSecretKey: 'Introdueix la teva clau de recuperació',
+        invalidSecretKey: 'Clau de recuperació no vàlida. Comprova-ho i torna-ho a provar.',
         enterUrlManually: 'Introdueix l\'URL manualment',
         scanComputerQrUnavailableTitle: 'No es pot escanejar el QR de l’ordinador',
         scanComputerQrUnavailableBody:
             'Aquest mètode d’inici de sessió està desactivat en aquest servidor. Fes servir una altra opció a continuació per restaurar el compte.',
         scanComputerQrInstructions: 'Escaneja el codi QR que es mostra a Happier al teu ordinador (Configuració → Afegeix el teu telèfon).',
         scanComputerQrButton: 'Escanejar QR per iniciar sessió',
-        scanExistingHomeQrTitle: 'Escaneja un QR d’una Home existent',
+        scanExistingHomeQrTitle: 'Escaneja un QR o enganxa un enllaç de Home',
         waitingForApproval: 'Esperant aprovació…',
         securingCredentials: 'Protegint les credencials…',
         showQrInstead: 'Mostra un codi QR en el seu lloc',
@@ -1707,20 +1748,20 @@ export const ca = {
         restoreQrInstructions: 'En un dispositiu on ja hagis iniciat sessió, ves a Configuració → Compte i escaneja aquest codi QR.',
         externalAuthVerifiedTitle: ({ provider }: { provider: string }) => `${provider} verificat`,
         externalAuthVerifiedBody: ({ provider }: { provider: string }) =>
-            `Hem trobat un compte de Happier existent vinculat a ${provider}. Per acabar d'iniciar sessió en aquest dispositiu, restaura la clau del teu compte amb el codi QR o amb la teva clau secreta.`,
-        restoreWithSecretKeyInstead: 'Restaura amb clau secreta',
-        restoreWithSecretKeyDescription: 'Introdueix la teva clau secreta per recuperar l’accés al teu compte.',
+            `Hem trobat un compte de Happier existent vinculat a ${provider}. Per acabar d'iniciar sessió en aquest dispositiu, restaura la clau del teu compte amb el codi QR o amb la teva clau de recuperació.`,
+        restoreWithSecretKeyInstead: 'Restaura amb clau de recuperació',
+        restoreWithSecretKeyDescription: 'Introdueix la teva clau de recuperació per recuperar l’accés al teu compte.',
         lostAccessLink: 'Sense accés?',
         lostAccessTitle: 'Has perdut l’accés al teu compte?',
         lostAccessBody:
-            'Si ja no tens cap dispositiu enllaçat a aquest compte i has perdut la clau secreta, pots restablir el compte amb el teu proveïdor d’identitat. Això crea un nou compte de Happier. No es pot recuperar l’historial xifrat anterior.',
+            'Si ja no tens cap dispositiu enllaçat a aquest compte i has perdut la clau de recuperació, pots restablir el compte amb el teu proveïdor d’identitat. Això crea un nou compte de Happier. No es pot recuperar l’historial xifrat anterior.',
         lostAccessContinue: ({ provider }: { provider: string }) => `Continua amb ${provider}`,
         lostAccessConfirmTitle: 'Restablir el compte?',
         lostAccessConfirmBody:
             'Això crearà un nou compte i tornarà a enllaçar la teva identitat. No es pot recuperar l’historial xifrat anterior.',
         lostAccessConfirmButton: 'Restablir i continuar',
         secretKeyPlaceholder: 'XXXXX-XXXXX-XXXXX...',
-        secretKeyInputLabel: 'Clau secreta',
+        secretKeyInputLabel: 'Clau de recuperació',
         linkNewDeviceTitle: 'Vincular Nou Dispositiu',
         linkNewDeviceSubtitle: 'Escaneja el codi QR que es mostra al teu nou dispositiu per vincular-lo a aquest compte',
         linkNewDeviceQrInstructions: 'Obre Happier al teu nou dispositiu i mostra el codi QR',
@@ -2131,6 +2172,7 @@ export const ca = {
                 title: 'Instruccions de les execucions de Happier',
                 subtitle: 'Desactivar-les elimina l’encaminament natiu prioritari i la mecànica d’execucions de Happier dels prompts del sistema dels agents de codi.',
             },
+            notifyParentOnCompletion: { title: 'Notifica el pare quan acaben les execucions', subtitle: 'Envia un esdeveniment de finalització estructurat a l’agent pare.' },
             characterBudget: {
                 title: 'Límit de regles personalitzades',
                 subtitle: ({ value }: { value: string }) => `${value} caràcters`,
@@ -2351,10 +2393,10 @@ export const ca = {
         actionsSubtitle: 'Tria on apareix cada acció a l’aplicació, la veu i les integracions.',
         prompts: 'Prompts i habilitats',
         promptsSubtitle: 'Biblioteca de prompts, plantilles i piles',
-        servers: 'Relés',
-        serversSubtitle: 'Relays desats, grups i valors per defecte',
+        servers: 'Homes',
+        serversSubtitle: 'Homes desades, grups i valors per defecte',
 	        systemStatus: 'Estat del sistema',
-	        systemStatusSubtitle: 'Relays, compte, màquines, dimoni',
+	        systemStatusSubtitle: 'Homes, compte, màquines, dimoni',
 		        mcpServers: 'Servidors MCP',
 		        mcpServersSubtitle: 'Gestiona servidors MCP i enllaços',
 		        mcpServersComingSoon: 'La configuració dels servidors MCP arribarà aviat.',
@@ -2516,10 +2558,10 @@ export const ca = {
             application: 'Aplicació',
             updates: 'Actualitzacions',
             appHealth: 'Salut de l\'aplicació i sincronització',
-            currentServer: 'Relay actual',
+            currentServer: 'Home actual',
             identity: 'Identitat connectada',
-            configuredServers: 'Relays configurats',
-            machinesActiveServer: 'Màquines (relay actiu)',
+            configuredServers: 'Homes configurades',
+            machinesActiveServer: 'Màquines (Home activa)',
             machinesOtherServer: ({ server }: { server: string }) => `Màquines (${server})`,
             actions: 'Accions',
         },
@@ -2564,13 +2606,18 @@ export const ca = {
         },
         server: {
             activeServer: 'Home actiu',
+            activeHomeHealth: 'Estat de la Home activa',
+        },
+        transport: {
+            irohCurrent: 'Transport Iroh',
+            irohHistory: 'Historial del transport Iroh',
         },
         identity: {
             accountId: 'ID del compte',
             username: 'Nom d\'usuari',
         },
         servers: {
-            noneConfigured: 'No hi ha relays configurats',
+            noneConfigured: 'No hi ha Homes configurades',
             active: 'Actiu',
         },
         machines: {
@@ -2600,9 +2647,9 @@ export const ca = {
         },
         actions: {
             runDiagnosis: 'Executa el diagnòstic',
-            runDiagnosisSubtitle: 'Detecta desajustos de relay/compte/dimoni',
+            runDiagnosisSubtitle: 'Detecta desajustos de Home/compte/dimoni',
             refreshMachineAttribution: 'Actualitza l\'atribució del dimoni',
-            refreshMachineAttributionSubtitle: 'Obté relay/compte del dimoni per a algunes màquines en línia',
+            refreshMachineAttributionSubtitle: 'Obté Home/compte del dimoni per a algunes màquines en línia',
             copyJson: 'Copia el JSON d\'estat del sistema',
             copyJsonSubtitle: 'Comparteix una instantània redactada per a suport',
         },
@@ -3196,6 +3243,7 @@ export const ca = {
                 memberActive: 'Membre actiu',
                 memberEnabled: 'Activat',
                 memberDisabled: 'Desactivat',
+                memberAutoDisabledModelNotEntitled: 'Desactivat automàticament: model seleccionat no disponible',
                 memberPriority: ({ priority }: { priority: number }) => `Prioritat ${priority}`,
                 memberExhaustedUntil: ({ time }: { time: string }) => `Esgotat fins a ${time}`,
                 memberQuotaExhaustedUntil: ({ time }: { time: string }) => `Ús limitat fins a ${time}`,
@@ -3265,8 +3313,25 @@ export const ca = {
                 membersSubtitle: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} activats`,
                 optionsTitle: 'Opcions',
                 autoSwitchTitle: 'Fallback automàtic',
+                autoQuotaResetTitle: "Utilitza els restabliments de quota automàticament",
+                autoDisablePlanInvalidTitle: "Desactiva els comptes que no poden utilitzar el model seleccionat",
+                autoDisablePlanInvalidSubtitle: "Desactiva automàticament un compte del grup quan el seu pla no pot utilitzar el model seleccionat. El pots tornar a activar manualment. Desactivat per defecte.",
+                autoQuotaResetSubtitle: "Gasta un restabliment disponible només quan cap compte del grup està preparat i es pot restablir la quota esgotada. Desactivat per defecte.",
                 autoSwitchEnabledSubtitle: 'Canvia a un altre membre quan el compte actiu necessita recuperació.',
                 autoSwitchDisabledSubtitle: 'Continua usant el membre actiu fins que el canviïs manualment.',
+                quotaLimitsTitle: 'Límits d’ús',
+                quotaLimitsAllTitle: 'Tots els límits informats',
+                quotaLimitsAllSubtitle: 'Fes servir totes les assignacions que informa aquest proveïdor per decidir els canvis.',
+                quotaLimitsAllLoadingSubtitle: ({ count }: { count: number }) => `L’inventari de límits pot ser incomplet mentre es ${count === 1 ? 'carrega 1 compte' : `carreguen ${count} comptes`}.`,
+                quotaLimitsSelectedSubtitle: ({ count }: { count: number }) => `${count} ${count === 1 ? 'límit seleccionat' : 'límits seleccionats'}`,
+                quotaLimitUnavailableSubtitle: 'No informat actualment · es conserva a la política del pool',
+                quotaLimitProviderAllowanceTitle: 'Assignació del proveïdor',
+                quotaLimitTechnicalIdSubtitle: ({ providerLimitId }: { providerLimitId: string }) => `ID del límit: ${providerLimitId}`,
+                quotaLimitModelSubtitle: ({ modelId }: { modelId: string }) => `Model: ${modelId}`,
+                quotaLimitModelsSubtitle: ({ count }: { count: number }) => `${count} àmbits de model`,
+                quotaLimitWindowsSubtitle: ({ count }: { count: number }) => `${count} finestres`,
+                quotaLimitReportingSubtitle: ({ reporting, total }: { reporting: number; total: number }) => `${reporting} de ${total} comptes activats n’informen`,
+                quotaLimitsSearchPlaceholder: 'Cerca límits d’ús',
                 strategyTitle: 'Estratègia de selecció',
                 strategyPriorityTitle: 'Ordre de prioritat',
                 strategyPrioritySubtitle: 'Prova primer els números de prioritat més baixos.',
@@ -3679,6 +3744,25 @@ export const ca = {
     },
 
     settingsNotifications: {
+        remoteAlerts: {
+            title: "Alertes de sessió amb l’app tancada",
+            accountTitle: "Permet alertes de sessió remotes",
+            disclosure: "Permet que aquest Home llegeixi les categories d’alertes, les hores de silenci i el fus horari, els límits de previsualització i les preferències de so per enviar alertes permeses amb l’app tancada. No es comparteixen el contingut de les sessions ni les claus de xifratge.",
+            footer: "Sense aquest consentiment, les notificacions existents del propietari i les actualitzacions en primer pla continuen disponibles. Els canvis remots necessiten connexió; les alertes ja enviades no es poden retirar.",
+            deviceTitle: "Rep en aquest dispositiu",
+            deviceSubtitle: "Només afecta les alertes de sessió remotes en aquest dispositiu.",
+            statusTitle: "Política al Home",
+            current: "Actualitzada a la darrera comprovació",
+            disabled: "No activades al Home",
+            stale: "Cal sincronitzar la política",
+            unavailable: "Alertes remotes no disponibles",
+            pending: "Els canvis locals esperen la sincronització",
+            statusHelp: "L’estat del Home reflecteix la darrera política confirmada, no els canvis locals sense sincronitzar.",
+            deviceUnavailable: "Aquesta versió de l’app no pot registrar aquest dispositiu.",
+            deviceEnrolled: "Registre del dispositiu confirmat",
+            deviceNotEnrolled: "Registre del dispositiu sense confirmar",
+            supportedEvents: "Aquest dispositiu admet actualment alertes de sessió preparada. El lliurament també depèn del permís de notificacions del sistema.",
+        },
         badges: {
             title: 'Insígnies en aquest dispositiu',
             footer: 'Tria quina activitat contribueix a la insígnia de la icona de l’app en aquest dispositiu.',
@@ -3705,6 +3789,8 @@ export const ca = {
             readySubtitle: 'Mostra una notificació local quan s’acabi un torn',
             readyPreviewTitle: 'Previsualitzacions dels missatges a punt',
             readyPreviewSubtitle: 'Inclou el darrer missatge de l’assistent a les notificacions d’A punt d’aquest dispositiu',
+            requestPreviewTitle: "Previsualització de sol·licituds",
+            requestPreviewSubtitle: "Inclou les ordres que requereixen permís, les preguntes i les opcions de resposta. Poden aparèixer a la pantalla de bloqueig.",
             permissionRequestsTitle: 'Sol·licituds de permís',
             permissionRequestsSubtitle: 'Mostra una notificació local quan una sessió necessiti aprovació',
             userActionsTitle: 'Sol·licituds d’acció',
@@ -3848,6 +3934,8 @@ export const ca = {
             readySubtitle: 'Envia quan un torn acabi i l’agent estigui esperant la teva ordre',
             readyPreviewTitle: 'Previsualitzacions dels missatges a punt',
             readyPreviewSubtitle: 'Inclou el text del darrer missatge de l’assistent a les notificacions quan estigui a punt d’aquest webhook',
+            requestPreviewTitle: "Previsualització de sol·licituds",
+            requestPreviewSubtitle: "Inclou les ordres que requereixen permís, les preguntes i les opcions de resposta a les dades d’aquest webhook.",
             permissionRequestsTitle: 'Sol·licituds de permís',
             permissionRequestsSubtitle: 'Envia quan una sessió queda bloquejada esperant aprovació',
             userActionsTitle: 'Sol·licituds d’acció',
@@ -3874,6 +3962,10 @@ export const ca = {
                 title: 'Previsualitzacions dels missatges a punt',
                 subtitle: 'Inclou el text del darrer missatge de l’assistent a les notificacions de torns a punt',
             },
+            requestPreview: {
+                title: "Previsualització de sol·licituds",
+                subtitle: "Inclou les ordres que requereixen permís, les preguntes i les opcions de resposta. Poden aparèixer a la pantalla de bloqueig.",
+            },
             permissionRequests: {
                 title: 'Sol·licituds de permís',
                 subtitle: 'Notifica quan una sessió està bloquejada esperant una aprovació',
@@ -3896,6 +3988,15 @@ export const ca = {
             readyFallbackBody: 'El torn ha acabat. Obre la sessió per continuar.',
             permissionFallbackBody: 'Cal aprovació.',
             userActionFallbackBody: 'Aquesta sessió necessita la teva intervenció.',
+            requestLabels: {
+                command: "Ordre",
+                file: "Fitxer",
+                selectOne: "Selecciona una opció",
+                selectMultiple: "Selecciona diverses opcions",
+                customAnswer: "Es permet una resposta personalitzada",
+                localMessages: "Missatges locals",
+                remoteMessages: "Missatges remots",
+            },
         },
         channels: {
             default: 'Per defecte',
@@ -4310,31 +4411,6 @@ export const ca = {
             kilo: {
                 title: "Kilo"
             },
-            kimi: {
-                title: "Kimi",
-                sections: {
-                    compatibility: {
-                        title: 'Compatibilitat',
-                        footer: 'Utilitza el mode de compatibilitat només en entorns Linux/contenidor on l\'inici de Kimi ACP es queda penjat.'
-                    }
-                },
-                fields: {
-                    kimiAcpPythonSelector: {
-                        title: 'Selector de stdio de Python',
-                        subtitle: 'Tria com Happier inicia el bucle stdio de Python de Kimi ACP.',
-                        options: {
-                            auto: {
-                                title: 'Automàtic',
-                                subtitle: 'Utilitza el selector de Python predeterminat de Kimi.'
-                            },
-                            poll: {
-                                title: 'Mode de compatibilitat',
-                                subtitle: 'Utilitza poll() en lloc d\'epoll() per al stdio de Kimi ACP.'
-                            }
-                        }
-                    }
-                }
-            },
             kiro: {
                 title: "Kiro"
             },
@@ -4694,6 +4770,14 @@ export const ca = {
         invalidFormat: 'Format no vàlid',
         operationFailed: 'L\'operació ha fallat',
         signupDisabled: 'Aquest servidor té la creació de comptes nous desactivada. Inicia sessió amb un compte existent o demana a l\'administrador del servidor que activi els registres.',
+        accountDisabled: ({ home }: { home: string }) => `Aquest compte està desactivat a ${home}. Contacta amb un administrador del Home.`,
+        homeIdentityMismatch: ({ home }: { home: string }) =>
+            `${home} ha respost com un Home diferent del que hi ha desat aquí. No s'ha iniciat cap sessió. Comprova l'adreça o afegeix aquest Home com un de nou.`,
+        homeAddressMismatchTitle: 'És aquest el Home correcte?',
+        homeAddressMismatchBody: ({ claimed, reached }: { claimed: string; reached: string }) =>
+            `Has arribat a aquest Home a ${reached}, però diu que la seva adreça és ${claimed}. Continua només si reconeixes les dues adreces com el mateix Home.`,
+        homeAddressNotConfirmed: ({ home }: { home: string }) =>
+            `L'inici de sessió a ${home} s'ha aturat perquè no s'ha confirmat la seva adreça.`,
         failedToForkSession: 'No s’ha pogut bifurcar la sessió',
         daemonUnavailableTitle: 'Dimoni no disponible',
         daemonUnavailableBody:
@@ -4889,6 +4973,94 @@ deps: {
         startNewSessionInFolder: 'Nova sessió aquí',
         noMachineSelected: 'Si us plau, selecciona una màquina per iniciar la sessió',
         noPathSelected: 'Si us plau, selecciona un directori per iniciar la sessió',
+        temporaryComputer: {
+            title: 'Ordinador temporal',
+            subtitle: 'Prepara un paquet Runner verificat per a un altre ordinador.',
+            cancelConnectedTitle: 'Vols cancel·lar aquest ordinador temporal?',
+            cancelConnectedBody: 'L’altre ordinador ja s’ha connectat. Cancel·lar tanca aquesta sol·licitud per a totes dues bandes i manté aquí el teu esborrany actual.',
+            choosePlatform: 'Tria la plataforma de l’ordinador',
+            platformSubtitle: 'Paquet verificat de Happier Runner',
+            platform: {
+                'windows-x64': 'Windows · x64',
+                'darwin-arm64': 'macOS · Apple silicon',
+                'darwin-x64': 'macOS · Intel',
+                'linux-x64': 'Linux · x64',
+                'linux-arm64': 'Linux · ARM64',
+                unknown: 'Plataforma no reconeguda',
+            },
+            destination: {
+                windows: 'Ordinador Windows temporal',
+                darwin: 'Ordinador Mac temporal',
+                linux: 'Ordinador Linux temporal',
+            },
+            exportPackage: 'Desa o comparteix el paquet',
+            exportClaimed: 'Un ordinador ja té aquest paquet, així que no es pot tornar a enviar.',
+            target: {
+                home: ({ home }: { home: string }) => `Llar: ${home}`,
+                account: ({ account }: { account: string }) => `Compte: ${account}`,
+                workspaceChoose: 'La carpeta la trien ells',
+                workspaceHome: 'La seva carpeta personal',
+            },
+            endpointFacts: {
+                unreadable: 'Aquest dispositiu no pot llegir les dades que ha enviat aquell ordinador.',
+            },
+            createNewPackage: 'Crea un paquet nou',
+            returnToEditing: 'Torna a l’edició',
+            unavailable: {
+                loading: 'S’estan comprovant els paquets disponibles…',
+                notAvailable: 'Els ordinadors temporals no estan disponibles en aquesta llar.',
+                notPublished: 'Encara no s’ha publicat cap paquet verificat de Happier Runner per a aquesta llar.',
+                unreachable: 'No s’han pogut comprovar els paquets de Happier Runner. Revisa la connexió i torna-ho a provar.',
+                automation: 'Un ordinador temporal necessita que algú aprovi la sol·licitud, així que les automatitzacions no en poden fer servir cap.',
+                platformRetired: 'Aquesta plataforma ja no es publica. Tria’n una altra.',
+            },
+            blocked: {
+                agentUnsupported: 'Aquest agent no es pot instal·lar sol en un ordinador temporal. Tria un altre agent.',
+                modelUnselected: 'Tria un model d’equip per a aquest agent abans d’enviar.',
+                modelUnavailable: 'El model d’equip seleccionat no està disponible per a aquest agent. Tria’n un altre.',
+                brokerUnavailable: 'No s’ha pogut preparar l’accés a la IA per a aquest ordinador temporal. Torna-ho a provar.',
+            },
+            expiry: {
+                title: 'Caducitat del paquet',
+                never: 'Mai',
+                neverDetail: 'Per defecte · el paquet espera fins que es connecti o el cancel·lis',
+                inOneDay: 'D’aquí a 24 hores',
+                inOneWeek: 'D’aquí a 7 dies',
+                custom: 'Tria una data i hora…',
+                dateLabel: 'Data',
+                timeLabel: 'Hora',
+                pastInstant: 'Tria una hora futura.',
+                noExpiry: 'Sense caducitat',
+                expiresAt: ({ date }: { date: string }) => `Caduca ${date}`,
+            },
+            closed: {
+                canceled: 'Aquesta sol·licitud d’ordinador temporal s’ha cancel·lat.',
+                declined: 'L’altre ordinador ha rebutjat aquesta sol·licitud. No s’ha creat res.',
+                expired: 'Aquesta sol·licitud ha caducat abans que l’ordinador temporal es connectés.',
+                revoked: 'L’accés ha canviat, de manera que aquest paquet ja no es pot fer servir.',
+                failed: 'L’ordinador temporal no ha pogut completar la configuració. No s’ha creat res.',
+            },
+            status: {
+                idle: 'A punt',
+                reconciling: 'S’està comprovant aquesta sol·licitud…',
+                preparing: 'S’està preparant el paquet…',
+                waiting_for_computer: 'Esperant l’ordinador',
+                review_unavailable: 'Encara no es pot preparar l’accés a la IA seleccionat per a aquest ordinador temporal. Cancel·la la sol·licitud i torna-ho a provar després d’actualitzar Happier.',
+                materialization_unavailable: 'Aquest ordinador temporal encara no pot crear la sessió. Cancel·la la sol·licitud i torna-ho a provar després d’actualitzar Happier.',
+                waiting_for_approval: 'Esperant l’aprovació',
+                connected: 'Ordinador connectat',
+                installing_agent: 'S’està instal·lant l’Agent seleccionat…',
+                checking_ai_access: 'S’està comprovant l’accés a la IA…',
+                preparing_encryption: 'S’està preparant la Sessió xifrada…',
+                creating_session: 'S’està creant la Sessió…',
+                canceling: 'S’està cancel·lant…',
+                profile_changed: 'El perfil seleccionat ha canviat o s’ha eliminat, així que aquesta sol·licitud no s’ha enviat. Revisa la configuració d’aquesta sessió.',
+                profile_environment_unavailable: 'Un secret que necessita aquest perfil no està disponible per a aquest compte, així que aquesta sol·licitud no s’ha enviat. Revisa la configuració d’aquesta sessió.',
+                cancel_failed: 'No s’ha pogut cancel·lar sense connexió. Aquesta sol·licitud continua visible.',
+                failed: 'La configuració de l’ordinador temporal necessita atenció.',
+                succeeded: 'La sessió és a punt.',
+            },
+        },
         machinePicker: {
             searchPlaceholder: 'Cerca màquines...',
             recentTitle: 'Recents',
@@ -5067,6 +5239,9 @@ deps: {
     sessionHandoff: sessionHandoffTranslationExtensions.ca,
 
     session: {
+        access: sessionAccessTranslations['ca'],
+        follow: sessionFollowTranslations['ca'],
+        homeFreshness: sessionHomeFreshnessTranslations['ca'],
         providerBinding: providerSessionTranslations.ca,
         transcriptNavigation: {
             title: 'Navega',
@@ -5099,6 +5274,16 @@ deps: {
 
         inputPlaceholder: 'Escriu un missatge...',
         usageLimitRecovery: {
+            overloadTitle: "Model sobrecarregat",
+            overloadWaiting: "Esperant per tornar-ho a provar.",
+            overloadDispatching: "Tornant-ho a provar.",
+            overloadAwaiting: "Esperant una resposta del model.",
+            overloadStopped: "S’han aturat els intents automàtics. Pots tornar-ho a provar.",
+            overloadExhausted: "S’han esgotat els intents automàtics. Pots tornar-ho a provar.",
+            overloadOffline: "Torna a connectar-te a la màquina de la sessió per comprovar els intents.",
+            stopRetrying: "Atura els intents",
+            overloadCountdown: ({ seconds, attempt }: { seconds: number; attempt: number }) => `Model sobrecarregat — nou intent en ${seconds} segons · intent ${attempt}`,
+            overloadAttempt: ({ attempt }: { attempt: number }) => `Intent ${attempt}`,
             title: 'S’ha assolit el límit d’ús',
             banner: {
                 title: 'S’ha assolit el límit d’ús',
@@ -5244,6 +5429,8 @@ deps: {
                 statusPaused: 'En pausa',
                 statusComplete: 'Completat',
                 statusBudgetLimited: 'Limitat pel pressupost',
+                budgetReachedBody: 'Aquest objectiu ha assolit el seu pressupost de tokens. Treu el pressupost per continuar.',
+                removeBudgetAndResume: 'Treu el pressupost i continua',
                 statusInterrupted: 'Interromput',
                 setTitle: 'Defineix un objectiu',
                 setSubtitle: 'Dona un focus a aquesta sessió perquè l’agent no es desviï.',
@@ -5414,6 +5601,8 @@ deps: {
 	        resuming: 'Reprenent...',
 	        resumeFailed: 'No s’ha pogut reprendre la sessió',
 	        invalidLinkTitle: 'Enllaç de sessió invàlid',
+        whichHomeTitle: "Quin Home?",
+        whichHomeDescription: "Aquesta sessió és present en més d’un Home. Tria el Home que vols obrir.",
 	        invalidLinkDescription: 'L’enllaç de la sessió falta o no és vàlid. Comprova l’URL i torna-ho a provar.',
 	        resumeSupportNoteChecking: 'Nota: Happier encara està comprovant si aquesta màquina pot reprendre la sessió del proveïdor.',
 	        resumeSupportNoteUnverified: 'Nota: Happier no ha pogut verificar la compatibilitat de represa en aquesta màquina.',
@@ -5475,6 +5664,7 @@ deps: {
                       groupCount: ({ count }: { count: number }) => `${count} agents`,
                       launchExecutionRunsTitle: "Inicia execucions",
                       launchExecutionRunsSubtitle: "Obre l'iniciador d'execucions amb valors predefinits de revisió, pla o delegació.",
+                      newAgentConversation: "Nova conversa amb un agent",
                       launchExecutionRunsAdvanced: "Avançat…",
                       launchClaudeTeamsTitle: "Inicia equips Claude",
                       launchClaudeTeamsSubtitle: "Crea un equip o inicia un company amb ordres estructurades d'equips Claude.",
@@ -5515,6 +5705,7 @@ deps: {
                 },
                 actionMenu: {
                     openA11y: 'Obre les accions de la sessió',
+                    backgroundFollow: 'Sincronització en segon pla',
                 },
               detailsPanel: {
                   emptyHint: 'Obre un fitxer o un diff des del panell dret.',
@@ -5614,13 +5805,28 @@ deps: {
                     ambiguousTerminalDelivery: 'L’estat de l’entrega és ambigu',
                     terminalHostUnreachable: 'No es pot accedir al host del terminal',
                     runtimeDisposedBeforeDelivery: 'El runtime s’ha tancat abans de l’entrega',
+                    targetUnavailable: 'La conversa d’agent seleccionada ja no està disponible. No s’ha enviat res.',
                     runtimeConfigBlocked: 'La configuració del runtime bloqueja l’entrega',
                     invalidPromptText: 'El text del missatge no es pot entregar',
                     manualUserHandled: 'Marcat com a gestionat',
                     attemptExpiredBeforeWrite: 'L’intent d’entrega ha caducat abans d’escriure',
                     providerRejectedBeforeAcceptance: 'El proveïdor ha rebutjat el missatge',
                     payloadTooLarge: 'El missatge és massa gran',
+                    deliveryOutcomeUncertain: 'Aquest missatge pot haver arribat ja a l’agent: comprova-ho abans de reenviar-lo',
                     unknown: 'Cal revisar l’estat de l’entrega',
+                },
+                admissionRejected: {
+                    invalid: 'El missatge no s’ha pogut acceptar tal com està.',
+                    archived: 'Aquesta sessió està arxivada i ja no accepta entrades.',
+                    unauthorized: 'No tens permís per enviar a aquesta sessió.',
+                    targetUnavailable: 'La conversa d’agent seleccionada ja no està disponible. No s’ha enviat res.',
+                    targetUpdateRequired: 'Enviar a una conversa d’agent requereix una Home i un ordinador actualitzats. No s’ha enviat res.',
+                    cancelled: 'L’enviament s’ha cancel·lat abans de ser acceptat.',
+                    untrustedAssertion: 'No s’ha pogut verificar l’origen del missatge.',
+                    idempotencyConflict: 'Aquest missatge ja estava a la cua per a una altra destinació.',
+                    sourceAuthorityMismatch: 'Aquest missatge pertany a una altra font i no es pot enviar des d’aquí.',
+                    permissionCeilingRejected: 'Els permisos sol·licitats superen el que permet aquesta sessió.',
+                    encryptionModeMismatch: 'Aquest missatge no coincideix amb el mode de xifratge de la sessió.',
                 },
 	                empty: 'No hi ha missatges pendents.',
 	                decryptFailed: "No s'ha pogut desxifrar aquest missatge pendent.",
@@ -5715,6 +5921,8 @@ deps: {
           },
 
 
+          ...sessionResponsibilityTranslations.ca,
+        collaboration: sessionCollaborationTranslations.ca,
           sharing: {
               title: 'Compartició',
               directSharing: 'Compartició directa',
@@ -6029,7 +6237,7 @@ deps: {
 
     server: {
         // Used by Server Configuration screen (app/(app)/server.tsx)
-        serverConfiguration: 'Configuració del Relay',
+        serverConfiguration: 'Configuració de Home',
         enterServerUrl: 'Introdueix una URL del Relay',
         notValidHappyServer: 'No és un Relay Happier vàlid',
         changeServer: 'Canvia de Home',
@@ -6044,7 +6252,7 @@ deps: {
         customServerUrlLabel: 'Adreça del Home',
         advancedFeatureFooter: 'Aquesta és una funció avançada. Només canvia el Relay si saps el que fas. Hauràs de tancar la sessió i tornar-la a iniciar després de canviar els Relays.',
         useThisServer: 'Utilitza aquest Relay',
-        autoConfigHint: 'Si t’allotges tu mateix: configura primer el Relay, després inicia la sessió (o crea un compte) i, finalment, connecta el teu terminal.',
+        autoConfigHint: 'Si t’allotges tu mateix: configura primer el teu Home, després inicia la sessió (o crea un compte) i, finalment, connecta el teu terminal.',
         renameServer: 'Reanomena el Relay',
         renameServerPrompt: 'Introdueix un nom nou per a aquest Relay.',
         renameServerGroup: 'Reanomena el grup de Relays',
@@ -6088,25 +6296,25 @@ deps: {
         saveServerGroup: 'Desa el grup',
         serverGroupMustHaveServer: 'Un grup de Relays ha d\'incloure almenys un Relay.',
         relayDrift: {
-            bannerDifferentRelayTitle: 'El teu servei en segon pla està connectat a un altre Relay',
+            bannerDifferentRelayTitle: 'El teu servei en segon pla està connectat a un altre Home',
             bannerDifferentRelayDescription: ({ activeRelayUrl, daemonRelayUrl }: { activeRelayUrl: string; daemonRelayUrl: string }) =>
                 `Aplicació: ${activeRelayUrl} · Servei en segon pla: ${daemonRelayUrl}`,
-            bannerNeedsAuthTitle: 'El teu servei en segon pla ha d’iniciar sessió en aquest Relay',
+            bannerNeedsAuthTitle: 'El teu servei en segon pla ha d’iniciar sessió en aquest Home',
             bannerNeedsAuthDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
                 `L’aplicació fa servir ${activeRelayUrl}, però el servei en segon pla encara necessita aprovació o inici de sessió.`,
-            bannerNotConfiguredTitle: 'El teu servei en segon pla encara no està connectat a aquest Relay',
+            bannerNotConfiguredTitle: 'El teu servei en segon pla encara no està connectat a aquest Home',
             bannerNotConfiguredDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
                 `L’aplicació fa servir ${activeRelayUrl}, però aquest ordinador encara no ha acabat de connectar el servei en segon pla.`,
-            bannerNotInstalledTitle: 'El teu servei en segon pla no està instal·lat per a aquest Relay',
+            bannerNotInstalledTitle: 'El teu servei en segon pla no està instal·lat per a aquest Home',
             bannerNotInstalledDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
                 `L’aplicació fa servir ${activeRelayUrl}, però aquest ordinador encara ha d’instal·lar-hi el servei en segon pla.`,
             bannerNotRunningTitle: 'El teu servei en segon pla està instal·lat però no s’executa',
             bannerNotRunningDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
                 `L’aplicació fa servir ${activeRelayUrl}, però el servei en segon pla està aturat i cal tornar-lo a iniciar.`,
-            repairAction: 'Connecta el servei en segon pla a aquest Relay',
-            progressTitle: 'S’està connectant el servei en segon pla a aquest Relay',
+            repairAction: 'Connecta el servei en segon pla a aquest Home',
+            progressTitle: 'S’està connectant el servei en segon pla a aquest Home',
             progressStepPrepare: 'Prepara el servei en segon pla',
-            progressStepConfigureRelay: 'Actualitza la connexió del Relay',
+            progressStepConfigureRelay: 'Actualitza la connexió del Home',
             progressStepAuthenticate: 'Acaba l’inici de sessió i l’aprovació',
             progressStepFinish: 'Completa la reparació',
             statusUnknown: 'Desconegut',
@@ -6118,12 +6326,12 @@ deps: {
             automaticDeletionEnabled: 'La supressió automàtica està activada',
             detailsUnavailable: 'La supressió automàtica està activada, però aquest client no pot mostrar totes les polítiques actives',
             singlePolicySummary: ({ domain, policy }: { domain: string; policy: string }) => `${domain}: ${policy}`,
-            relayCleanupSummary: ({ policies }: { policies: string }) => `Aquest relay neteja ${policies}.`,
+            relayCleanupSummary: ({ policies }: { policies: string }) => `Aquest Home neteja ${policies}.`,
             relayCleanupAfterDays: ({ domain, count }: { domain: string; count: number }) => `${domain} al cap de ${count} ${plural({ count, singular: 'dia', plural: 'dies' })}`,
             relayCleanupInactiveSessionsAfterDays: ({ count }: { count: number }) => `sessions inactives al cap de ${count} ${plural({ count, singular: 'dia', plural: 'dies' })}`,
             deleteInactiveSessionsDays: ({ count }: { count: number }) => `Suprimeix les sessions inactives al cap de ${count} ${plural({ count, singular: 'dia', plural: 'dies' })}.`,
             deleteOlderThanDays: ({ count }: { count: number }) => `Suprimeix les dades al cap de ${count} ${plural({ count, singular: 'dia', plural: 'dies' })}.`,
-            sessionNotice: ({ count }: { count: number }) => `Aquest servidor suprimeix les sessions inactives al cap de ${count} ${plural({ count, singular: 'dia', plural: 'dies' })} d'inactivitat.`,
+            sessionNotice: ({ count }: { count: number }) => `Aquest Home suprimeix les sessions inactives al cap de ${count} ${plural({ count, singular: 'dia', plural: 'dies' })} d'inactivitat.`,
             sessions: 'Sessions',
             sidechainMessages: 'Transcripcions dels subagents',
             usageEvents: 'Esdeveniments d\'ús',
@@ -6141,12 +6349,12 @@ deps: {
             automationRunEvents: 'Esdeveniments d\'execucio d\'automatitzacio',
         },
         multiServerView: {
-            title: 'Vista concurrent de múltiples Relays',
-            footer: 'Selecciona si vols combinar diversos Relays en una sola llista de sessions.',
+            title: 'Vista concurrent de múltiples Homes',
+            footer: 'Selecciona si vols combinar diversos Homes en una sola llista de sessions.',
             presentationTitle: 'Mode de presentació',
             presentation: {
-                flatWithBadges: 'Llista plana amb insígnies de Relay',
-                groupedByServer: 'Agrupat per Relay',
+                flatWithBadges: 'Llista plana amb insígnies de Home',
+                groupedByServer: 'Agrupat per Home',
             },
         },
     },
@@ -6162,6 +6370,8 @@ deps: {
     },
 
     sessionsList: {
+        reminders: sessionReminderTranslations['ca'],
+        ...sessionListFilterTranslations.ca,
         serverHeader: ({ server }: { server: string }) => `Servidor: ${server}`,
         storagePersistedTab: 'Happier',
         storageAllFilter: 'Totes',
@@ -6247,6 +6457,7 @@ deps: {
         },
         attentionSectionTitle: 'Requereix atenció',
         workingSectionTitle: 'Treballant',
+        loadingSectionTitle: 'Carregant',
         backgroundWorkingSectionTitle: 'Treballant en segon pla',
         selectionSelectedCount: ({ count }: { count: number }) => count === 1 ? '1 session selected' : `${count} sessions selected`,
         selectionA11ySelectedCount: ({ count }: { count: number }) => count === 1 ? '1 session selected' : `${count} sessions selected`,
@@ -6299,6 +6510,10 @@ deps: {
         browseLoadMore: "Carrega més sessions",
         browseFailedToLoad: "No s'han pogut carregar les sessions externes.",
         browseLinkFailed: "No s'ha pogut enllaçar la sessió externa seleccionada.",
+        browseCandidateActionsAccessibilityLabel: ({ title }: { title: string }) => `Més accions per a ${title}`,
+        browseDeleteCandidateConfirmTitle: 'Vols suprimir la sessió del proveïdor?',
+        browseDeleteCandidateConfirmMessage: ({ title, agent }: { title: string; agent: string }) => `Vols suprimir «${title}» de ${agent}? L’agent elimina la seva pròpia sessió; l’historial de sessions de Happier es manté.`,
+        browseDeleteCandidateFailed: "No s'ha pogut suprimir la sessió de l'agent.",
     },
 
     workspacePresentation: {
@@ -6566,6 +6781,8 @@ deps: {
             badgePlanMode: 'Mode de planificació',
         },
         agent: {
+            sectionTitle: 'Agent',
+            unselected: 'Tria un agent',
             claude: 'Claude',
             codex: 'Codex',
             cursor: 'Cursor',
@@ -6858,6 +7075,7 @@ deps: {
             replaceAll: 'Reemplaça tot',
             summaryEdits: ({ count }: { count: number }) => `${count} ${plural({ count, singular: 'edició', plural: 'edicions' })}`,
         },
+        subAgentTitle: ({ label }: { label: string }) => `${label} Agent`,
         names: {
             task: 'Tasca',
             subAgent: 'Sub-agent',
@@ -6932,6 +7150,8 @@ deps: {
     },
 
       files: {
+            revealInFiles: "Mostra a Fitxers",
+            openChanges: "Obre els canvis",
           searchPlaceholder: 'Cerca fitxers...',
             clearSearchA11y: 'Esborra la cerca',
             createFileA11y: 'Crea un fitxer',
@@ -7143,12 +7363,6 @@ deps: {
           checkpointAttributionShared: 'L’atribució del punt de control es comparteix amb altra activitat del worktree.',
           checkpointAttributionUnknown: 'No s’ha pogut determinar l’atribució del punt de control.',
           otherRepositoryChanges: ({ count }: { count: number }) => `Altres canvis del repositori (${count})`,
-        attributionReliabilityHigh: 'Atribució de millor esforç. La vista del repositori continua sent la font de veritat.',
-        attributionReliabilityLimited: 'Fiabilitat limitada: hi ha diverses sessions actives per a aquest repositori. Mostrant només atribució directa.',
-        attributionLegendFull: 'direct = de les operacions d’aquesta sessió, inferred = atribució basada en instantània',
-        attributionLegendDirectOnly: 'direct = de les operacions d’aquesta sessió',
-        inferredSuppressed: ({ count }: { count: number }) =>
-            `${count} fitxer${count === 1 ? '' : 's'} inferit${count === 1 ? '' : 's'} mantingut${count === 1 ? '' : 's'} en canvis només del repositori.`,
         noSessionAttributedChanges: 'No s’han detectat canvis atribuïts a la sessió.',
         noLatestTurnChanges: 'No s’han detectat canvis de l’últim torn.',
         notRepo: 'No és un repositori de control de versions',
@@ -7168,6 +7382,10 @@ deps: {
         },
         repositoryFolderLoadFailed: "No s'ha pogut carregar la carpeta",
         repositoryCollapseAll: 'Replega-ho tot',
+          commitCreated: "Commit creat",
+          commitRefreshFailed: ({ sha }: { sha: string }) => `S’ha creat el commit ${sha}, però no s’ha pogut actualitzar el repositori. Torna a actualitzar l’estat del control de versions.`,
+          refreshingRepository: "Actualitzant el repositori…",
+          retryRefresh: "Torna a actualitzar",
           sourceControlOperationsLog: {
               title: 'Operacions recents de control de versions',
               allSessions: 'Totes les sessions',
@@ -7183,11 +7401,14 @@ deps: {
         reviewNoMatches: 'Sense coincidències',
         reviewLargeDiffOneAtATime: "S'ha detectat un diff gran; els diffs es carregaran en desplaçar-te.",
         reviewDiffRequestFailed: "No s'ha pogut carregar el diff",
+        reviewPreviousHunk: "Bloc anterior",
+        reviewNextHunk: "Bloc següent",
         reviewUnableToLoadDiff: "No s'ha pogut carregar el diff",
         searching: 'Cercant fitxers...',
         noFilesFound: 'No s\'han trobat fitxers',
         noFilesInProject: 'No hi ha fitxers al projecte',
         tryDifferentTerm: 'Prova un terme de cerca diferent',
+        previousSearchResults: "Resultats de la cerca anterior",
         searchResults: ({ count }: { count: number }) => `Resultats de la cerca (${count})`,
         projectRoot: 'Arrel del projecte',
         stagedChanges: ({ count }: { count: number }) => `Canvis preparats (${count})`,
@@ -7206,7 +7427,9 @@ deps: {
                 "Aquest fitxer ha canviat al disc mentre l'editaves. L'esborrany s'ha mantingut sense canvis; revisa el fitxer més recent abans de desar.",
           selectionFailed: "No s'ha pogut actualitzar la selecció",
           openReviewCommentsFailed: "No s'han pogut obrir els comentaris de revisió",
-              reviewComments: {
+              reviewPreviousFile: "Fitxer anterior",
+                  reviewNextFile: "Fitxer següent",
+                  reviewComments: {
                   title: ({ count }: { count: number }) => `Comentaris de revisió (${count})`,
                   placeholder: 'Afegeix un comentari de revisió…',
                   jump: 'Ves-hi',
@@ -7215,6 +7438,7 @@ deps: {
                     draftsChipLabel: ({ count }: { count: number }) => `Revisió (${count})`,
                     modalSubtitle: 'Revisa quins comentaris s’enviaran amb el pròxim missatge.',
                     modalSummary: ({ included, count }: { included: number; count: number }) => `${included} de ${count} seleccionats per al pròxim prompt`,
+                    goToComposer: 'Ves al missatge',
                     detachOrDiscardTitle: 'Vols treure els comentaris de revisió?',
                     detachOrDiscardBody: 'Desvincular els manté desats però els exclou del pròxim prompt. Descartar els elimina.',
                     detachFromPrompt: 'Desvincula del prompt',
@@ -7339,6 +7563,7 @@ deps: {
             combined: 'Combinat',
         },
         fileActions: {
+            selectLines: 'Selecciona línies',
             selectForCommit: 'Selecciona per al commit',
             selectFilesToCommit: 'Selecciona fitxers per al commit',
             stageFile: 'Afegeix a l\'índex',
@@ -7357,6 +7582,9 @@ deps: {
             selectEntireFileForCommit: "Seleccioneu el fitxer sencer per a la confirmació",},
 	        toolbar: {
 	            changedFiles: 'Fitxers canviats',
+	            projectFiles: "Projecte",
+	            allFiles: "Tots els fitxers",
+	            projectFilesUnavailable: "El filtre del projecte no està disponible aquí. Es mostren tots els fitxers.",
 	            hiddenFiles: 'Mostra fitxers ocults',
 	            details: 'Detalls',
 	            upload: 'Pujar',
@@ -7624,7 +7852,6 @@ deps: {
               confirm: 'Elimina el bloqueig i torna-ho a provar',
               failed: ({ error }: { error: string }) => `La recuperació del bloqueig d’índex ha fallat: ${error}`,
           },
-          checkpointAttributionExclusive: 'El contingut del checkpoint és exacte per a aquest interval de torn i el worktree era exclusiu d’aquesta sessió.',
           noAgentReportedTurnChanges: 'No s’han detectat canvis informats per l’agent per a aquest torn.',
           noCheckpointTurnChanges: 'No s’han detectat canvis de checkpoint per a aquest torn.',},
 
@@ -8363,6 +8590,9 @@ deps: {
             },
         },
         details: {
+            launchOrigin: {
+                discussion: ({ discussionId }: { discussionId: string }) => `Iniciat des de la conversa ${discussionId}`,
+            },
             titles: {
                 executionRun: 'Execució',
                 executionRunWithIntent: ({ intent }: { intent: string }) => `${intent} · execució`,
@@ -8711,14 +8941,18 @@ settingsSession: {
 	                activeColorAttentionOnlySubtitle: 'Fes servir el color actiu només per a sessions que necessiten la teva atenció.',
 	                activeColorAllActiveTitle: 'Totes les sessions actives',
 	                activeColorAllActiveSubtitle: 'Fes servir el color actiu per a cada sessió activa i connectada.',
-	                sectionModeTitle: 'Seccions de sessions',
-	                sectionModeSubtitle: 'Tria si les sessions se separen per activitat.',
-	                sectionModeActivitySelectedSubtitle: 'Separa sessions actives i inactives',
-	                sectionModeSingleSelectedSubtitle: 'Mostra una sola seccio de sessions agrupada per espai de treball',
-	                sectionModeActivityTitle: 'Actives i inactives',
-	                sectionModeActivitySubtitle: 'Separa les sessions per activitat abans d\'agrupar-les per espai de treball.',
-	                sectionModeSingleTitle: 'Totes les sessions juntes',
-	                sectionModeSingleSubtitle: 'Usa una sola seccio de sessions i mante l\'agrupacio per espai de treball per a cada sessio.',
+	                layoutTitle: 'Disposició',
+	                layoutSubtitle: 'Organitza l’única llista de sessions per projecte, recència o activitat.',
+	                layoutProjectsTitle: 'Projectes',
+	                layoutRecentActivityTitle: 'Activitat recent',
+	                layoutActiveInactiveTitle: 'Actives i inactives',
+	                attentionPlacementTitle: 'Ubicació de l’atenció',
+	                sectionsTitle: 'Seccions',
+	                placementInPlaceTitle: 'Al seu lloc',
+	                placementAtTopTitle: 'A dalt',
+	                placementWithinGroupsTitle: 'Dins dels grups',
+	                sortWithinProjectsTitle: 'Ordena dins dels projectes',
+	                folderDisplayOffTitle: 'Sense carpetes',
 	                menuSections: {
 	                    sortBy: 'Ordena per',
 	                    show: 'Mostra',
@@ -10301,6 +10535,7 @@ settingsSession: {
     },
 
     settingsAccount: {
+        security: "Seguretat del compte",
         history: {
             title: "Historial de configuració",
             footer: "Restaura les preferències del compte des d'una instantània desada. Les dades de l'aplicació, els secrets i les credencials mantenen els valors actuals.",
@@ -10340,8 +10575,10 @@ settingsSession: {
         showProviderOnProfile: ({ provider }: { provider: string }) => `Mostra ${provider} al perfil`,
         tapToDisconnect: 'Toca per desconnectar',
         accountServiceOAuth: accountServiceOAuthTranslations.ca,
+        nativePassword: nativePasswordTranslations['ca'],
         accountHomeDiscoveryTitle: 'Compte i descoberta de Homes',
         accountServiceSignInService: 'Servei d’inici de sessió',
+        accountServiceSignedInTo: ({ accountService }: { accountService: string }) => `Sessió iniciada a ${accountService}`,
         accountServiceIdentity: 'Identitat del servei',
         accountServiceHomeDirectoryCapability: 'Capacitat de descoberta de Homes',
         accountServiceHomeEnrollmentCapability: 'Capacitat d’inici de sessió als Homes',
@@ -10351,40 +10588,46 @@ settingsSession: {
         accountServiceDiagnosticUnsupported: 'No compatible',
         accountServiceDiagnosticUnavailable: 'No disponible',
         accountServiceHomes: 'Homes del servei de compte',
+        accountServiceFindHomes: 'Troba les teves llars',
+        accountServiceFindHomesDescription: 'Troba les llars enllaçades i obre la llar seleccionada o preferida.',
         accountServiceCheckingConnection: 'Checking connection…',
-        accountServiceReconnectRequired: 'Reconnect Account Service',
-        accountServiceReconnectDescription: 'Your Account Service sign-in has expired. Sign in again to refresh or connect Homes.',
+        accountServiceReconnectRequired: ({ accountService }: { accountService?: string }) => accountService ? `Torna a iniciar sessió a ${accountService}` : 'Torna a iniciar sessió al teu compte',
+        accountServiceReconnectDescription: 'L’inici de sessió del teu compte ha caducat. Torna a iniciar sessió per actualitzar o connectar llars.',
         accountServiceDiscoveryDescription: 'Discovers and connects linked Homes automatically. Your existing Homes and current focus stay unchanged.',
         accountServiceDiscoveringHomes: 'Discovering linked Homes…',
         accountServiceDiscoveryUnsupported: 'Home discovery is not available',
-        accountServiceDiscoveryUnsupportedDescription: 'Choose another Account Service to discover linked Homes.',
+        accountServiceDiscoveryUnsupportedDescription: 'Utilitza un altre compte per trobar llars enllaçades.',
         accountServiceDiscoveryUnavailable: 'Homes could not be refreshed',
         accountServiceDiscoveryUnavailableDescription: 'Your existing Homes and current focus are unchanged. Try again.',
         accountServiceHomesEmpty: 'No linked Homes yet',
-        accountServiceHomesEmptyDescription: 'Link a Home to this Account Service, then refresh.',
+        accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `Encara no hi ha cap llar enllaçada a ${accountService}. Enllaça una llar i actualitza.` : 'Encara no hi ha cap llar enllaçada a aquest compte. Enllaça una llar i actualitza.',
         accountServiceConnectHome: 'Connect Home',
         accountServiceLinkThisHome: 'Link this Home',
-        accountServiceLinkThisHomeDescription: 'Let {accountService} help your other devices find this Home and request access.',
+        accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `Permet que ${accountService} ajudi els teus altres dispositius a trobar aquesta llar i sol·licitar-hi accés.` : 'Permet que el teu compte ajudi els altres dispositius a trobar aquesta llar i sol·licitar-hi accés.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
         accountServiceHomeApprovalRequired: 'Approval needed',
         accountServiceHomeConnectionFailed: 'Connection failed',
         accountServicePreferredHome: 'Preferit',
         accountServiceSetPreferredHome: 'Defineix com a preferit',
-        accountServiceRemoveHome: 'Elimina del servei de compte',
-        accountServiceRemoveHomeConfirmTitle: 'Vols eliminar aquest Home?',
-        accountServiceRemoveHomeConfirmBody: ({ label }: { label: string }) => `${label} només s’eliminarà del directori del servei de compte. El perfil local, les credencials, les dades i la connexió actual no canviaran.`,
-        accountServiceRelinkConfirmTitle: 'Vols tornar a connectar aquest servei de compte?',
-        accountServiceRelinkConfirmBody: 'El compte o la clau de signatura del servei de compte ha canviat. Continua només si esperaves aquest canvi. Happier substituirà la confiança fixada en aquest Home.',
+        accountServiceRemoveHome: ({ accountService }: { accountService?: string }) => accountService ? `Elimina de les meves llars de ${accountService}` : 'Elimina de les meves llars',
+        accountServiceRemoveHomeConfirmTitle: ({ label, accountService }: { label: string; accountService?: string }) => accountService ? `Vols eliminar ${label} de ${accountService}?` : `Vols eliminar ${label} de les llars enllaçades?`,
+        accountServiceRemoveHomeConfirmBody: ({ label, accountService }: { label: string; accountService?: string }) => `${label} només s’eliminarà de ${accountService ? `les teves llars de ${accountService}` : 'les llars enllaçades'}. El perfil local, les credencials, les dades i la connexió actual no canviaran.`,
+        accountServiceUnlinkHome: ({ accountService }: { accountService?: string }) => accountService ? `Impedeix que ${accountService} iniciï sessió en aquesta llar` : 'Atura l’inici de sessió delegat en aquesta llar',
+        accountServiceUnlinkHomeConfirmTitle: ({ label, accountService }: { label: string; accountService?: string }) => accountService ? `Vols impedir que ${accountService} iniciï sessió a ${label}?` : `Vols aturar l’inici de sessió delegat a ${label}?`,
+        accountServiceUnlinkHomeConfirmBody: ({ label, accountService }: { label: string; accountService?: string }) => `A partir d’ara, ${label} rebutjarà els nous inicis de sessió de ${accountService ?? 'aquest compte'}. Els dispositius que ja han iniciat sessió a ${label} conserven l’accés fins que hi tanquis la sessió, i ${label} continua a ${accountService ? `les teves llars de ${accountService}` : 'les llars enllaçades'}.`,
+        accountServiceUnlinkHomeConfirmAction: 'Atura l’inici de sessió',
+        accountServiceRelinkConfirmTitle: ({ accountService }: { accountService?: string }) => accountService ? `Vols tornar a connectar ${accountService}?` : 'Vols tornar a connectar el teu compte?',
+        accountServiceRelinkConfirmBody: ({ accountService }: { accountService?: string }) => `El compte o la clau de signatura${accountService ? ` de ${accountService}` : ''} ha canviat. Continua només si esperaves aquest canvi. Happier substituirà la informació d’inici de sessió de confiança desada per a aquesta llar.`,
         server: 'Servidor',
         backup: 'Còpia de seguretat',
-        backupDescription: 'La teva clau secreta és l\'única manera de recuperar el teu compte. Desa-la en un lloc segur com un gestor de contrasenyes.',
-        secretKey: 'Clau secreta',
+        backupDescription: "La clau de recuperació restaura l’accés a aquest compte xifrat. Desa-la en un lloc segur, com un gestor de contrasenyes.",
+        secretKey: "Clau de recuperació",
         tapToReveal: 'Toca per revelar',
         tapToHide: 'Toca per ocultar',
-        secretKeyLabel: 'CLAU SECRETA (TOCA PER COPIAR)',
-        secretKeyCopied: 'Clau secreta copiada al porta-retalls. Desa-la en un lloc segur!',
-        secretKeyCopyFailed: 'Ha fallat copiar la clau secreta',
+        secretKeyLabel: 'CLAU DE RECUPERACIÓ (TOCA PER COPIAR)',
+        secretKeyCopied: 'Clau de recuperació copiada al porta-retalls. Desa-la en un lloc segur!',
+        secretKeyCopyFailed: 'Ha fallat copiar la clau de recuperació',
         privacy: 'Privadesa',
         privacyDescription: 'Ajuda a millorar l\'aplicació compartint dades d\'ús anònimes. No es recopila informació personal.',
         analytics: 'Analítiques',
@@ -10396,7 +10639,7 @@ settingsSession: {
         dangerZone: 'Zona de perill',
         logout: 'Tanca la sessió',
         logoutSubtitle: 'Tanca la sessió d’aquesta llar en aquest dispositiu',
-        logoutConfirm: 'Estàs segur que vols tancar la sessió? Assegura\'t d\'haver fet una còpia de seguretat de la teva clau secreta!',
+        logoutConfirm: 'Estàs segur que vols tancar la sessió? Assegura\'t d\'haver fet una còpia de seguretat de la teva clau de recuperació!',
         currentHome: 'Llar actual',
         logoutHome: ({ home }: { home: string }) => `Tanca la sessió de ${home}`,
         logoutHomeSubtitle: ({ home }: { home: string }) => `Tanca la sessió de ${home} en aquest dispositiu. Les altres llars desades i el servei de compte continuaran connectats.`,
@@ -10415,10 +10658,14 @@ settingsSession: {
         deleteAccountCleanupFailedTitle: "Compte suprimit",
         deleteAccountCleanupFailed: "El servidor ha confirmat la supressió, però aquest dispositiu no ha pogut acabar d’esborrar les dades locals. Torna a obrir Happier i tanca la sessió si el compte encara apareix.",
         encryptionUpdateFailed: 'No s\'ha pogut actualitzar la configuració de xifrat',
-        secretKeyMissing: 'Clau secreta no disponible. Restaura el teu compte primer.',
+        requireE2ee: 'Exigeix xifratge d’extrem a extrem',
+        requireE2eeDescription: 'Rebutja la configuració del compte i les sessions en text pla en aquest dispositiu i als dimonis sincronitzats.',
+        requireE2eeNeedsEncryptionTitle: 'Activa primer el xifratge',
+        requireE2eeNeedsEncryptionDescription: 'Activa el xifratge d’extrem a extrem per a aquest compte abans d’exigir-lo.',
+        secretKeyMissing: 'Clau de recuperació no disponible. Restaura el teu compte primer.',
         restoreRequiredTitle: 'Cal restaurar',
         restoreRequiredBody:
-            'Aquest compte té historial xifrat. Per tornar a activar el xifrat en aquest dispositiu, restaura la teva clau secreta. Si has perdut la clau, pots reiniciar el compte per començar de nou (l\'historial xifrat antic no es pot recuperar).',
+            'Aquest compte té historial xifrat. Per tornar a activar el xifrat en aquest dispositiu, restaura la teva clau de recuperació. Si has perdut la clau, pots reiniciar el compte per començar de nou (l\'historial xifrat antic no es pot recuperar).',
     },
 
     settingsLanguage: {
@@ -10689,8 +10936,8 @@ settingsSession: {
         clientSideProcessing: 'Processament del costat del client',
         linkProcessedLocally: 'Enllaç processat localment al navegador',
         linkProcessedOnDevice: 'Enllaç processat localment al dispositiu',
-        switchServerToConnectTerminal: ({ serverUrl }: { serverUrl: string }) =>
-            `Aquesta connexió és per a ${serverUrl}. Vols canviar de servidor i continuar?`,
+        switchServerToConnectTerminal: ({ serverUrl, signedInServerUrl }: { serverUrl: string; signedInServerUrl: string }) =>
+            `Aquesta connexió és per a ${serverUrl}. Has iniciat la sessió a ${signedInServerUrl}. Vols canviar de Home i continuar?`,
     },
 
     terminalEmbedded: {
@@ -10780,7 +11027,7 @@ settingsSession: {
         // Navigation titles and screen headers
         connectTerminal: 'Connecta el terminal',
         linkNewDevice: 'Enllaça un nou dispositiu',
-        restoreWithSecretKey: 'Restaura amb clau secreta',
+        restoreWithSecretKey: 'Restaura amb clau de recuperació',
         whatsNew: 'Novetats',
         friends: 'Amics',
         automations: 'Automatitzacions',
@@ -10832,20 +11079,26 @@ settingsSession: {
         welcomeQuestionSubtitle: 'És el teu primer cop aquí?',
         welcomeQuestionBody: 'Happier és el centre de control dels teus agents de codificació amb IA. No cal correu electrònic. El teu compte és una clau privada, generada en aquest dispositiu.',
 
-        welcomePrimaryButton: 'Primera vegada aquí — comencem',
+        welcomePrimaryButton: 'Ets nou aquí?',
         welcomePrimarySubtitle: 'Un toc. Sense formulari. La teva clau viu aquí.',
+        newHereHomeSubtitle: ({ home }: { home: string }) => `Crea un compte privat a ${home}.`,
+        newHereServiceSubtitle: ({ service }: { service: string }) => `Crea un compte amb ${service} i després troba o afegeix el teu Home.`,
 
         welcomeSecondaryButton: 'Inicia sessió — ja faig servir Happier',
         continueWithKey: 'Fes servir una clau',
         chooseSignInService: 'Tria el servei d’inici de sessió',
+        accountKeyDescription: ({ service }: { service: string }) => `Introdueix la clau segura de ${service}.`,
+        accountKeySubmit: 'Continua de manera segura',
         signInServiceUrlPrompt: 'Avançat: introdueix l’adreça del servei que fas servir per iniciar sessió i trobar els teus Homes.',
         signInServiceInvalidAddress: 'Introdueix una adreça http o https vàlida.',
         signInServiceUnavailableTitle: 'No es pot connectar al servei d’inici de sessió',
         signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `No ens podem connectar a ${serverUrl}. Torna-ho a provar o tria un altre servei d’inici de sessió.`,
         signInServiceUnsupportedTitle: 'Servei d’inici de sessió no compatible',
+        signInServiceMethodlessTitle: 'Aquí no hi ha cap mètode d’inici de sessió disponible',
+        signInOptionsPartialTitle: 'No s’han pogut carregar algunes opcions d’inici de sessió',
         signInServiceUnsupportedBody: 'Aquesta adreça és un Home o no ofereix inici de sessió de compte. Tria un altre servei.',
         useDifferentHome: 'Fes servir una altra Home',
-        welcomeSecondarySubtitle: 'Escaneja un codi QR o introdueix la teva clau secreta',
+        welcomeSecondarySubtitle: 'Escaneja un codi QR o introdueix la teva clau de recuperació',
 
         // Unified onboarding redesign — returning-user copy variants.
         // Shown when localSettings.hasCompletedAuthOnce === true, i.e. the
@@ -10998,8 +11251,8 @@ settingsSession: {
         authRestoreSubtitle: 'Fes servir un codi QR o un enllaç per connectar aquest dispositiu',
         addHomeTitle: 'Afegeix una altra Home',
         addHomeSubtitle: 'Escaneja un codi QR per afegir una Home sense sortir de l’actual',
-        authSecretKeyTitle: 'Inicia sessió amb clau secreta',
-        authSecretKeySubtitle: 'Introdueix la teva clau secreta per iniciar sessió a Happier',
+        authSecretKeyTitle: 'Inicia sessió amb clau de recuperació',
+        authSecretKeySubtitle: 'Introdueix la teva clau de recuperació per iniciar sessió a Happier',
         authLostAccessTitle: 'Has perdut l’accés?',
         authLostAccessSubtitle: 'Reinicia el teu compte amb el teu proveïdor d’identitat',
         webDesktopOnlyTitle: 'Cal l’app d’escriptori',
@@ -11256,6 +11509,8 @@ settingsSession: {
         },
           repairBackgroundServiceAction: 'Repara el servei en segon pla',
           repairBackgroundServiceProgressTitle: 'S’està reparant el servei en segon pla',
+          cliPath: cliPathExposureTranslations.ca,
+          cliTrust: cliTrustPromptTranslations.ca,
           runtimeInventory: 'Inventari del runtime de Happier',
           runtimeInventoryOverview: 'Resum',
           runtimeInventoryInstallations: 'Instal·lacions',
@@ -11293,6 +11548,7 @@ settingsSession: {
         },},
 
     message: {
+        ...sessionMessageAccountActorTranslations['ca'],
         sessionReferenceUnavailable: 'Sessió no disponible',
         sessionReferenceOpen: ({ name }: { name: string }) => `Obre la sessió ${name}`,
         switchedToMode: ({ mode }: { mode: string }) => `S'ha canviat al mode ${mode}`,
@@ -11985,6 +12241,44 @@ settingsSession: {
     },
 
     secrets: {
+        catalog: {
+            unavailableName: 'Secret compartit',
+            operationFailed: 'Aquest secret compartit ha canviat o no està disponible ara mateix. Actualitza-ho i torna-ho a provar.',
+            outcomeUnknown: 'Happier no ha pogut confirmar si aquest secret s’ha compartit. Actualitza la llista abans de tornar-ho a provar.',
+            shareDisclosureTitle: 'Vols compartir aquest secret?',
+            shareDisclosureBody: 'Qui el rebi el pot fer servir a qualsevol lloc on Happier accepti secrets desats. Les apps i les eines locals en poden rebre el valor.',
+            shareDisclosureTargetCount: ({ count }: { count: number }) => count === 1 ? '1 destinatari' : `${count} destinataris`,
+            shareDisclosureConfirm: ({ target }: { target: string }) => `Comparteix amb ${target}`,
+            approvalPending: 'A l’espera d’aprovació. Els teus canvis es conserven fins que es decideixi.',
+            approvalDeclined: 'Aquesta sol·licitud no s’ha aprovat, així que no ha canviat res.',
+            createSharedTitle: 'Nou secret compartit',
+            createSharedSubtitle: 'Crea un secret per compartir amb persones, Equips o Grups. No s’afegeix als teus secrets personals.',
+            createSharedAction: 'Afegeix un secret compartit',
+            kindTitle: 'Tipus de secret',
+            kinds: {
+                apiKey: 'Clau d’API',
+                token: 'Token',
+                password: 'Contrasenya',
+                other: 'Altre',
+            },
+            actions: {
+                manageAccess: 'Gestiona l’accés',
+            },
+            relationship: {
+                owner: 'Els teus',
+                recipient: 'Compartits amb tu',
+            },
+            status: {
+                ready: 'A punt',
+                preparing_encrypted_access: 'Preparant l’accés xifrat',
+                recipient_mode_unsupported: 'No disponible per al mode de xifratge d’aquest compte',
+                temporarily_unavailable: 'No disponible ara mateix · torna-ho a provar quan aquest Home es torni a connectar',
+                access_removed: 'Accés retirat · tria un altre secret',
+                deleted: 'Eliminat · tria un altre secret',
+                update_required: 'Actualitza Happier per fer servir aquest secret compartit',
+                resource_corrupt: 'Cal reparar les dades del secret',
+            },
+        },
         addTitle: 'Nou secret',
         savedTitle: 'Secrets desats',
         badgeReady: 'Secret',
@@ -12101,9 +12395,24 @@ settingsSession: {
       appPanelsTitle: "Taulers de connectors",
       appPanelsSubtitle: "Obre els taulers de l'aplicació aportats pels connectors instal·lats.",
       executionOriginReleaseContentConflict: "El contingut de la versió no coincideix. Publica una versió nova.",
-      administrationMachineTitle: "Màquina d’administració",
-      executionOriginTitle: "Origen d’execució",
+      administrationMachineTitle: "Gestiona a",
+      executionOriginTitle: "Executa a",
+      targetSelection: {
+        clear: "Esborra la selecció",
+        locked: "Els detalls de la màquina estan bloquejats. Tria una altra màquina.",
+        missing: "Ja no es troba. Tria una altra màquina.",
+        replaced: "Substituït. Tria explícitament el substitut.",
+        revoked: "Accés revocat. Tria una altra màquina.",
+        selectionRequired: "Tria on s’executa aquest connector.",
+        differentVersions: "Versions diferents. Tria la versió que vols executar.",
+        pluginMismatch: "Aquesta selecció pertany a un altre connector. Esborra-la per tornar a triar.",
+        noMaterialization: "No hi ha cap instal·lació del connector disponible.",
+        unknown: "No s’ha pogut verificar la disponibilitat.",
+      },
       readOnlyProjectionUnavailable: "Els detalls dels connectors en memòria cau són de només lectura: aquest dispositiu és accessible, però no s'ha pogut carregar el seu registre de connectors. Torna-ho a provar per gestionar els connectors.",
+      installedEmpty: "No hi ha connectors instal·lats en aquesta màquina",
+      installationReadUnavailable: "No s’han pogut consultar els connectors instal·lats en aquesta màquina. Torna-ho a provar per comprovar-ne l’estat actual.",
+      readOnlyRefreshing: "S’estan actualitzant els connectors. La informació anterior continua visible; les accions esperen l’estat actual.",
       readOnlyAccountRecovery: "Els detalls del compte del connector estan disponibles, però els detalls específics de la màquina no estaran disponibles fins que hi hagi una instal·lació de connector compatible.",
       readOnlySnapshot: "Els detalls dels connectors en memòria cau són de només lectura mentre aquest dispositiu està desconnectat. Torna a connectar-lo per gestionar els connectors.",
       viewSelectorLabel: "Vistes de gestió de connectors",
@@ -12310,6 +12619,7 @@ settingsSession: {
         cacheTitle: 'Memòria cau de resums',
         cacheSubtitle: 'Els resums de checkpoint es reutilitzen per rebut; els resums del working tree són temporals.',
     },
+    machinePools: machinePoolTranslations.ca,
     externalSessions: {
         ...externalSessionOperationTranslations.ca,
         ...externalSessionSettingsTranslations.ca,
@@ -12317,29 +12627,29 @@ settingsSession: {
         settingsEntrySubtitle: 'Revisa com gestiona Happier les sessions iniciades fora de l’aplicació.',
         settingsSafetyGroupTitle: 'Com funciona',
         settingsPassiveTitle: 'Només lectura per defecte',
-        settingsPassiveSubtitle: 'Obrir aquesta pàgina és passiu. Mai no inicia ni reprèn cap Agent, canvia la seva configuració, instal·la hooks ni comença a seguir una sessió.',
-        settingsFollowGroupTitle: 'Seguiment passiu',
-        settingsRestoreTitle: 'Mantén el seguiment passiu després de reiniciar',
-        settingsRestoreEnabledSubtitle: 'Torna a connectar les sessions que segueixes explícitament quan es reinicia el daemon.',
-        settingsRestoreDisabledSubtitle: 'No tornis a connectar les sessions seguides després de reiniciar el daemon.',
+        settingsPassiveSubtitle: "Obrir aquesta pàgina és passiu. Mai no inicia ni reprèn cap Agent, canvia la seva configuració, instal·la hooks ni comença a sincronitzar una sessió.",
+        settingsFollowGroupTitle: "Mantén sincronitzada la sessió externa",
+        settingsRestoreTitle: "Mantén la sincronització en segon pla després de reiniciar",
+        settingsRestoreEnabledSubtitle: "Torna a connectar les sessions que has triat explícitament sincronitzar quan es reinicia el daemon.",
+        settingsRestoreDisabledSubtitle: "No tornis a connectar les sessions sincronitzades després de reiniciar el daemon.",
         settingsRestoreFooter: 'La restauració només observa una font d’Agent existent. Mai no inicia ni reprèn l’Agent.',
         settingsNotificationsTitle: 'Notificacions',
         settingsNotificationsActiveSubtitle: 'Les notificacions de disponibilitat només s’apliquen a sessions amb seguiment passiu activat.',
         settingsNotificationsInactiveSubtitle: 'Activa el seguiment passiu d’una sessió per rebre’n les notificacions.',
-        settingsActiveFollowsGroupTitle: 'Seguiment de sessions',
+        settingsActiveFollowsGroupTitle: "Sincronització de sessions externes",
         settingsActiveFollowsFooter: 'Cada opció només s’aplica a aquella sessió. Mai no s’hi inclouen altres sessions automàticament.',
         settingsActiveFollowsEmptyTitle: 'Encara no hi ha sessions externes',
-        settingsActiveFollowsEmptySubtitle: 'Les sessions externes enllaçades apareixeran aquí amb el seu estat actual.',
-        settingsFollowToggleHint: 'Inicia o atura el seguiment passiu en segon pla d’aquesta sessió.',
-        followStatusDisabled: 'Sense seguiment',
-        followStatusPaused: 'Seguiment en pausa',
-        followStatusReacquiring: 'S’està reconnectant el seguiment…',
-        followStatusActive: 'Seguiment actiu',
-        followStatusError: 'El seguiment requereix atenció',
-        followStatusUnknown: 'Estat del seguiment no disponible',
-        followStatusMachineOffline: 'La màquina està fora de línia; el seguiment passiu es reprendrà quan es reconnecti',
-        followStatusUnsupported: 'Aquest Agent no admet el seguiment passiu',
-        followUpdateFailed: 'Happier no ha pogut actualitzar el seguiment passiu d’aquesta sessió. Torna-ho a provar.',
+        settingsActiveFollowsEmptySubtitle: "Les sessions externes enllaçades apareixeran aquí amb el seu estat actual.",
+        settingsFollowToggleHint: "Inicia o atura la sincronització en segon pla d’aquesta sessió.",
+        followStatusDisabled: "Sense sincronització",
+        followStatusPaused: "Sincronització en pausa",
+        followStatusReacquiring: "S’està reconnectant la sincronització…",
+        followStatusActive: "Sincronització activa",
+        followStatusError: "El sincronització requereix atenció",
+        followStatusUnknown: "Estat de la sincronització no disponible",
+        followStatusMachineOffline: "La màquina està fora de línia; la sincronització en segon pla es reprendrà quan es reconnecti",
+        followStatusUnsupported: "Aquest Agent no admet la sincronització en segon pla",
+        followUpdateFailed: "Happier no ha pogut actualitzar la sincronització en segon pla d’aquesta sessió. Torna-ho a provar.",
         browseTitle: "Explora sessions externes",
         browseOpenExisting: "Explora sessions externes",
         browseActionSubtitle: "Tria una màquina, un agent i una sessió per obrir-la aquí.",
@@ -12369,6 +12679,10 @@ settingsSession: {
         browseLoadMore: "Carrega més sessions",
         browseFailedToLoad: "No s'han pogut carregar les sessions externes.",
         browseLinkFailed: "No s'ha pogut enllaçar la sessió externa seleccionada.",
+        browseCandidateActionsAccessibilityLabel: ({ title }: { title: string }) => `Més accions per a ${title}`,
+        browseDeleteCandidateConfirmTitle: 'Vols suprimir la sessió del proveïdor?',
+        browseDeleteCandidateConfirmMessage: ({ title, agent }: { title: string; agent: string }) => `Vols suprimir «${title}» de ${agent}? L’agent elimina la seva pròpia sessió; l’historial de sessions de Happier es manté.`,
+        browseDeleteCandidateFailed: "No s'ha pogut suprimir la sessió de l'agent.",
     },
     pluginReactNative: {
         unavailable: "La UI React Native del plugin no està disponible",
@@ -12407,6 +12721,10 @@ settingsSession: {
         hostedWebEndpointPolicyDenied: 'L’adreça d’aquesta vista està bloquejada per la seva política de seguretat. Comprova la configuració del connector o fes servir un amfitrió compatible.',
         missingRequirement: 'A aquesta vista del connector li falta un requisit en aquest dispositiu.',
     },
+    workflows: workflowTranslations.ca,
+    homeGovernance: homeGovernanceTranslations.ca,
+    teams: teamsTranslations.ca.teams,
+    identityAdministration: identityAdministrationTranslations.ca.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.ca,
         bootstrap: {

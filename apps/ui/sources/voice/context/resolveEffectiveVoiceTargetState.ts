@@ -1,32 +1,62 @@
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import {
+    areSessionAddressesEqual,
+    normalizeSessionAddress,
+    type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
+import { storage } from '@/sync/domains/state/storage';
 import { resolveActiveLocalVoiceAgentBinding } from '@/voice/context/resolveActiveLocalVoiceAgentBinding';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
+import { resolveVoiceSessionRef } from '@/voice/tools/actionImpl/sessionReference';
+
+function resolveAddress(target: SessionAddress | string | null | undefined): SessionAddress | null {
+    if (target && typeof target === 'object') {
+        return normalizeSessionAddress(target.serverId, target.sessionId);
+    }
+    const sessionId = normalizeNonEmptyString(target);
+    if (!sessionId) return null;
+    return resolveVoiceSessionRef(sessionId, storage.getState(), {
+        activeServerId: getActiveServerSnapshot().serverId,
+    })?.address ?? null;
+}
 
 export function resolveEffectiveVoiceTargetState(
-    sessionId: string,
-    options?: Readonly<{ targetSessionId?: string | null }>,
+    target: SessionAddress | string,
+    options?: Readonly<{
+        targetSessionAddress?: SessionAddress | null;
+        /** Persisted/pre-migration binding adapter. It resolves only with an unambiguous local origin. */
+        targetSessionId?: string | null;
+    }>,
 ): Readonly<{
-    primaryActionSessionId: string | null;
-    trackedSessionIds: ReadonlyArray<string>;
+    primaryActionSessionAddress: SessionAddress | null;
+    voiceLiveContextSessionAddresses: ReadonlyArray<SessionAddress>;
 }> {
     const store = useVoiceTargetStore.getState();
-    const trackedSessionIds = Array.isArray(store.trackedSessionIds) ? store.trackedSessionIds : [];
-    const explicitTargetSessionId = normalizeNonEmptyString(options?.targetSessionId);
+    const voiceLiveContextSessionAddresses = Array.isArray(store.voiceLiveContextSessionAddresses)
+        ? store.voiceLiveContextSessionAddresses
+        : [];
+    const currentAddress = resolveAddress(target);
+    const explicitTargetAddress = resolveAddress(
+        options?.targetSessionAddress ?? normalizeNonEmptyString(options?.targetSessionId),
+    );
     const activeLocalBinding = resolveActiveLocalVoiceAgentBinding();
-    const boundTargetSessionId =
-        explicitTargetSessionId ?? normalizeNonEmptyString(activeLocalBinding?.binding?.targetSessionId);
+    const boundTargetAddress = explicitTargetAddress
+        ?? activeLocalBinding?.binding?.targetSessionAddress
+        ?? null;
 
-    if (boundTargetSessionId !== sessionId) {
+    if (!currentAddress || !areSessionAddressesEqual(boundTargetAddress, currentAddress)) {
         return {
-            primaryActionSessionId: store.primaryActionSessionId,
-            trackedSessionIds,
+            primaryActionSessionAddress: store.primaryActionSessionAddress,
+            voiceLiveContextSessionAddresses,
         };
     }
 
     return {
-        primaryActionSessionId: sessionId,
-        trackedSessionIds: trackedSessionIds.includes(sessionId)
-            ? trackedSessionIds
-            : [...trackedSessionIds, sessionId],
+        primaryActionSessionAddress: currentAddress,
+        voiceLiveContextSessionAddresses: voiceLiveContextSessionAddresses.some((address) =>
+            areSessionAddressesEqual(address, currentAddress))
+            ? voiceLiveContextSessionAddresses
+            : [...voiceLiveContextSessionAddresses, currentAddress],
     };
 }

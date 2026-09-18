@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { derivePluginCollectionIdentityTagV1, normalizePluginAccountCollectionContractV1, PluginManifestV2Schema } from '@happier-dev/protocol';
+import { derivePluginCollectionIdentityTagV1, normalizePluginAccountCollectionContractV1, PluginAccountCollectionContributionV1Schema, PluginManifestV2Schema } from '@happier-dev/protocol';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 import { defineAccountCollection } from '@happier-dev/plugin-sdk/collections';
 import type { PluginUiDataClient } from '@happier-dev/plugin-ui/data';
@@ -8,6 +8,7 @@ import {
     createPluginAccountAvailabilityReader,
     type PluginAccountAvailabilitySnapshot,
 } from '@/sync/domains/plugins/availability/reader';
+import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit';
 
 const pluginId = 'example.tasks';
 const collectionDefinition = defineAccountCollection({
@@ -121,6 +122,7 @@ function createAvailabilityReader(input: Readonly<{ accountKv?: boolean }> = {})
                 pluginId,
                 response: {
                     availabilityCursor: 7,
+                    packageAssets: [],
                     hostingCapability: {
                         enabled: true,
                         maxArtifactBytes: 1024,
@@ -175,13 +177,10 @@ async function loadBridge(input: Readonly<{
     const accountKvWrites: unknown[] = [];
     const transport = vi.fn(async (path: string, _init?: RequestInit) => {
         if (path === '/v1/account/encryption/currentness') {
-            return new Response(JSON.stringify({
-                mode: 'plain',
+            return new Response(JSON.stringify(createPlainAccountEncryptionCurrentnessFixture({
                 version: 7,
-                signingKeyFingerprint: null,
-                contentKeyFingerprint: null,
                 updatedAt: 11,
-            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            })), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
         if (path === '/v1/plugins/data/contract') {
             return new Response(JSON.stringify({ access: 'writable', contract }), {
@@ -222,8 +221,8 @@ async function loadBridge(input: Readonly<{
         }),
     }));
     vi.doMock('@/sync/api/session/apiSocket', () => ({ apiSocket: { request: vi.fn() } }));
-    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-        captureSessionRequestAuthorityForServerAccountScope: async () => ({
+    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+        captureServerRequestAuthorityForServerAccountScope: async () => ({
             scope: lifetime.scope,
             context: { token: 'account-token' },
             request: transport,
@@ -309,7 +308,7 @@ describe('hosted-web Account Data bridge adapter', () => {
         await expect(bridge.handle({
             kind: 'data',
             operation: 'collection.forget',
-            definition: collectionDefinition,
+            definition: PluginAccountCollectionContributionV1Schema.parse(collectionDefinition),
             arguments: ['task-1', { expectedRevision: 7 }],
         }, { signal: controller.signal })).resolves.toEqual({
             kind: 'data',

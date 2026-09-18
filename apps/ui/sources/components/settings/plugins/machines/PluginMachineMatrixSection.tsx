@@ -3,6 +3,8 @@ import type { PluginAccountAvailabilityIntentReadResponseV1 } from '@happier-dev
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { Icon } from '@/components/ui/icons/Icon';
 import { t } from '@/text';
 import { formatShortRelativeTime } from '@/utils/time/formatShortRelativeTime';
 
@@ -80,8 +82,9 @@ function cellAccessibilityLabel(cell: PluginMachineMatrixCellV1): string {
  * where is it broken or missing?".
  *
  * It is structurally incapable of retargeting anything: its props carry no
- * callback, its rows carry no portable target or execution origin, and every
- * row renders in the non-interactive `info` mode. Administration mutations
+ * callback, its machine rows carry no portable target or execution origin,
+ * and those rows render in the non-interactive `info` mode. The disclosure
+ * only changes presentation. Administration mutations
  * stay bound to the exact machine selected in the administration picker.
  */
 export const PluginMachineMatrixSection = React.memo(function PluginMachineMatrixSection(props: Readonly<{
@@ -93,10 +96,45 @@ export const PluginMachineMatrixSection = React.memo(function PluginMachineMatri
         props.pluginId === undefined ? {} : { pluginId: props.pluginId },
     );
     const prefix = props.testIDPrefix ?? 'settings.plugins.machineMatrix';
+    const needsAttention = matrix.kind === 'unavailable'
+        || matrix.unresolvedServerCount > 0
+        || matrix.rows.some((row) => row.cells.some((cell) => (
+            cell.state === 'untrusted' || cell.state === 'incompatible'
+            || cell.state === 'staleOffline' || cell.state === 'machineUnavailable'
+            || cell.state === 'unknown'
+        )));
+    const [expandedOverride, setExpandedOverride] = React.useState<boolean | null>(null);
+    const expanded = expandedOverride ?? needsAttention;
+
+    return (
+        <ItemGroup>
+            <ExpandableItem
+                expanded={expanded}
+                onExpandedChange={setExpandedOverride}
+                header={({ headerProps }) => (
+                    <Item
+                        {...headerProps}
+                        testID={`${prefix}.disclosure`}
+                        title={t('settingsPlugins.machineMatrix.title')}
+                        showChevron={false}
+                        rightElement={<Icon name={expanded ? 'caret-up' : 'caret-down'} size={20} />}
+                    />
+                )}
+            >
+                <PluginMachineMatrixRows matrix={matrix} prefix={prefix} />
+            </ExpandableItem>
+        </ItemGroup>
+    );
+});
+
+function PluginMachineMatrixRows({ matrix, prefix }: Readonly<{
+    matrix: ReturnType<typeof usePluginMachineMatrix>;
+    prefix: string;
+}>) {
 
     if (matrix.kind === 'unavailable') {
         return (
-            <ItemGroup title={t('settingsPlugins.machineMatrix.title')}>
+            <ItemGroup>
                 <Item
                     testID={`${prefix}.unavailable`}
                     title={t('settingsPlugins.machineMatrix.unavailable')}
@@ -109,7 +147,7 @@ export const PluginMachineMatrixSection = React.memo(function PluginMachineMatri
 
     if (matrix.rows.length === 0) {
         return (
-            <ItemGroup title={t('settingsPlugins.machineMatrix.title')} footer={t('settingsPlugins.machineMatrix.footer')}>
+            <ItemGroup footer={t('settingsPlugins.machineMatrix.footer')}>
                 <Item
                     testID={`${prefix}.empty`}
                     title={t('settingsPlugins.machineMatrix.empty')}
@@ -129,7 +167,6 @@ export const PluginMachineMatrixSection = React.memo(function PluginMachineMatri
             {matrix.rows.map((row, index) => (
                 <ItemGroup
                     key={row.pluginId}
-                    {...(index === 0 ? { title: t('settingsPlugins.machineMatrix.title') } : {})}
                     {...(index === matrix.rows.length - 1 ? { footer } : {})}
                 >
                     <Item
@@ -172,4 +209,4 @@ export const PluginMachineMatrixSection = React.memo(function PluginMachineMatri
             ))}
         </>
     );
-});
+}

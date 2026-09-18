@@ -1,11 +1,16 @@
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import { isPersistentMachine } from '@happier-dev/protocol';
 
 import { isMachineReplaced } from './machineIdentityTypes';
 
-export function isMachineVisibleForLaunchSelection(machine: Machine): boolean {
+export function isMachineVisibleForSelection(machine: Machine): boolean {
     const revokedAt = machine.revokedAt;
-    if (typeof revokedAt === 'number' && Number.isFinite(revokedAt) && revokedAt > 0) return false;
-    return !isMachineReplaced(machine);
+    return isPersistentMachine(machine)
+        && !(typeof revokedAt === 'number' && Number.isFinite(revokedAt) && revokedAt > 0);
+}
+
+export function isMachineVisibleForLaunchSelection(machine: Machine): boolean {
+    return isMachineVisibleForSelection(machine) && !isMachineReplaced(machine);
 }
 
 export function filterVisibleMachinesForLaunchSelection(machines: ReadonlyArray<Machine>): Machine[] {

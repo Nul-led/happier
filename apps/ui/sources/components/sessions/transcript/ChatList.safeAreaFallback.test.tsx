@@ -180,7 +180,7 @@ describe('ChatList safe area', () => {
             thinking: null,
         } as any;
 
-        await renderScreen(<ChatList session={session} />);
+        await renderScreen(<ChatList session={session} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />);
         expect(capturedHeaderSpacerHeight).toBe(12);
     });
 });

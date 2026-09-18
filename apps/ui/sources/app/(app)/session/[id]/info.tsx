@@ -7,7 +7,17 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Avatar } from '@/components/ui/avatar/Avatar';
-import { storage, useProfile, useSession, useLocalSetting, useSetting, useSettings, useSessionOrganizationProjection } from '@/sync/domains/state/storage';
+import {
+    storage,
+    useProfile,
+    useLocalSetting,
+    useSetting,
+    useSettings,
+    useSessionOrganizationProjection,
+    useMachineListByServerId,
+} from '@/sync/domains/state/storage';
+import { useMachinePoolOriginName } from '@/sync/engine/machines/useMachinePoolOriginName';
+import type { MachinePoolProjectionMachine } from '@/sync/engine/machines/useMachinePoolProjections';
 import { getSessionName, useSessionStatus, formatOSPlatform, formatPathRelativeToHome, getSessionAvatarId } from '@/utils/sessions/sessionUtils';
 import { Modal } from '@/modal';
 import { useUnistyles } from 'react-native-unistyles';
@@ -26,7 +36,9 @@ import { getAgentCore, isBundledAgentId } from '@/agents/catalog/catalog';
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import { formatAgentLikeIdForDisplay } from '@/agents/catalog/formatAgentLikeIdForDisplay';
 import { getAgentVendorResumeId } from '@/agents/runtime/resumeCapabilities';
-import { useSessionSharingSupport } from '@/hooks/session/useSessionSharingSupport';
+import { useSessionCollaborationDestinationAdmitted } from '@/hooks/session/useSessionCollaborationAvailability';
+import { useOpenSessionCollaboration } from '@/components/sessions/collaboration/useOpenSessionCollaboration';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import { useAutomationsSupport } from '@/hooks/server/useAutomationsSupport';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useSessionExecutionRunsSupported } from '@/hooks/server/useSessionExecutionRunsSupported';
@@ -48,6 +60,7 @@ import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from
 import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
 import { useSessionHandoffSourceReachability, type SessionHandoffRuntimeAvailability } from '@/sync/domains/sessionHandoff/useSessionHandoffSourceReachability';
 import { useSessionReachableMachineTarget } from '@/components/sessions/model/useSessionMachineReachability';
+import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
@@ -66,6 +79,8 @@ import {
 import { resolveSessionActionDefaultBackendTitle } from '@/sync/domains/session/resolveSessionActionDefaultBackendTitle';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import { createSessionActionTarget } from '@/components/sessions/actions/sessionActionContext';
+import { useAccountSessionFollowEditorHost } from '@/components/sessions/follow/useAccountSessionFollowEditorHost';
+import { SessionFollowSourcesEditor } from '@/components/sessions/follow/SessionFollowSourcesEditor';
 import { executeSessionAction } from '@/components/sessions/actions/sessionActionExecution';
 import {
     SESSION_ACTION_ARCHIVE_ID,
@@ -95,7 +110,7 @@ import {
     type SessionFolderWorkspaceRefV1,
 } from '@/sync/domains/session/folders';
 import {
-    resolveSessionOrganizationMutationScope,
+    requireSessionOrganizationMutationScope,
     writeSessionOrganizationFolderAssignment,
     writeSessionOrganizationPin,
     writeSessionOrganizationTagLabels,
@@ -117,12 +132,13 @@ import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSession
 import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
 import { readUiAiLaunchProfilesForLegacyUi } from '@/sync/domains/profiles/aiLaunchProfileCollection';
 import { Icon } from '@/components/ui/icons/Icon';
-import { useSessionPanePluginRuntime } from '@/components/sessions/panes/useSessionPanePluginRuntime';
+import { useSessionAddressForSessionId, useSessionPluginRuntime } from '@/components/sessions/plugins/useSessionPluginRuntime';
 import { PluginInlineSurfaceHost } from '@/components/plugins/surfaces';
 import { evaluatePluginUiPolicy } from '@/sync/domains/plugins/ui/policy';
 import { usePluginUiSessionPolicyEvaluationContext } from '@/components/sessions/model/usePluginUiSessionPolicyEvaluationContext';
 import { WorkspaceSyncRelationshipList } from '@/components/workspaces/sync/WorkspaceSyncRelationshipList';
 import { resolveSessionWorkspaceDisplayPresentation } from '@/sync/domains/session/listing/sessionWorkspaceDisplayPresentation';
+import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 
 type RawJsonSectionId = 'agentState' | 'metadata' | 'sessionStatus' | 'session';
 type RawJsonSnapshot = Readonly<{
@@ -134,6 +150,24 @@ const SESSION_INFO_IDLE_MOVE_RESULT = Object.freeze({
     instruction: Object.freeze({ kind: 'idle' as const }),
     visual: Object.freeze({ kind: 'none' as const }),
 });
+
+function SessionMachinePoolOriginItem(props: Readonly<{
+    serverId: string | null;
+    poolId: string;
+    machines?: readonly MachinePoolProjectionMachine[];
+}>) {
+    const { theme } = useUnistyles();
+    const name = useMachinePoolOriginName(props);
+    return (
+        <Item
+            testID="session-info-placement-origin"
+            title={t('machinePools.chosenFrom')}
+            subtitle={name ?? t('machinePools.aMachinePool')}
+            icon={<Icon name="stack" size={29} color={theme.colors.accent.indigo} />}
+            showChevron={false}
+        />
+    );
+}
 
 function resolveSessionInfoWorkspaceRef(
     session: Session,
@@ -189,7 +223,8 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const { theme } = useUnistyles();
     const router = useRouter();
     const profile = useProfile();
-    const pluginRuntime = useSessionPanePluginRuntime({ sessionId: session.id });
+    const sessionPluginAddress = useSessionAddressForSessionId(session.id, sessionServerId);
+    const pluginRuntime = useSessionPluginRuntime({ address: sessionPluginAddress });
     const localDevModeEnabled = useLocalSetting('devModeEnabled');
     const devModeEnabled = isSessionDebugInformationEnabled(localDevModeEnabled);
     const sessionName = getSessionName(session);
@@ -198,9 +233,13 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         subscribeToTranscript: false,
     });
     const enabledAgentIds = useEnabledAgentIds();
-    const executionRunsEnabled = useFeatureEnabled('execution.runs');
+    const executionRunsEnabled = useFeatureEnabled('execution.runs', sessionServerId
+        ? { scopeKind: 'spawn', serverId: sessionServerId }
+        : undefined);
     const sessionHandoffEnabled = useFeatureEnabled('sessions.handoff');
-    const sessionFoldersEnabled = useFeatureEnabled('sessions.folders');
+    const sessionFoldersEnabled = useFeatureEnabled('sessions.folders', sessionServerId
+        ? { scopeKind: 'spawn', serverId: sessionServerId }
+        : { scopeKind: 'main_selection' });
     // Scoped to THIS Session's server, like the in-Session picker: the child is
     // created on that server, so an unrelated selected server must not decide
     // whether this conversation may continue with another Agent.
@@ -222,6 +261,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const sessionReplayEnabled = useSetting('sessionReplayEnabled') === true;
     const settings = useSettings();
     const workspaceRefsV1 = useSetting('workspaceRefsV1');
+    const machineListByServerId = useMachineListByServerId();
     const workspaceDisplay = React.useMemo(() => resolveSessionWorkspaceDisplayPresentation({
         serverId: sessionServerId,
         metadata,
@@ -229,13 +269,20 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     }), [metadata, sessionServerId, workspaceRefsV1]);
     const hideInactiveSessions = useSetting('hideInactiveSessions') === true;
     const { openMoveSheet } = useSessionListMoveSheet();
-    const sharingSupported = useSessionSharingSupport();
+    const collaborationAdmitted = useSessionCollaborationDestinationAdmitted(sessionServerId ?? '');
+    const collaborationTarget = React.useMemo(
+        () => normalizeSessionAddress(sessionServerId, session.id),
+        [session.id, sessionServerId],
+    );
+    // An ordinary `Collaboration` row is not an access affordance: it opens the
+    // destination's default mode. Only `Manage access`-intent entry points ask
+    // for the Access focus target.
+    const openSessionCollaboration = useOpenSessionCollaboration({ target: collaborationTarget, replace: true });
     const automationsSupport = useAutomationsSupport();
     const showAutomations = automationsSupport?.enabled !== false;
     const [expandedRawJsonSnapshot, setExpandedRawJsonSnapshot] = React.useState<RawJsonSnapshot | null>(null);
     // Check if CLI version is outdated
     const isCliOutdated = metadata?.version && !isVersionSupported(metadata.version, MINIMUM_CLI_VERSION);
-    const canManageSharing = !session.accessLevel || session.accessLevel === 'admin';
     // A session whose Agent the presentation reader cannot name has no brand to
     // show. Substituting the product default would present it as Claude's.
     const agentId = readSessionPresentationAgentId(session);
@@ -350,8 +397,16 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
             { surface: 'ui', placement: 'session_info' } as any,
         );
     }, [actionsSettingsV1]);
-    const reachableMachineTarget = useSessionReachableMachineTarget(session.id);
+    const reachableMachineTarget = useSessionReachableMachineTarget(session.id, sessionServerId);
     const reachableMachineId = reachableMachineTarget?.machineId ?? null;
+    const currentExecutionMachineId = reachableMachineId ?? sourceMachineIdForHandoff;
+    const currentExecutionMachine = sessionServerId && currentExecutionMachineId
+        ? (machineListByServerId[sessionServerId] ?? [])
+            .find((machine) => machine.id === currentExecutionMachineId)
+        : null;
+    const currentExecutionMachineLabel = currentExecutionMachineId
+        ? getMachineDisplayName(currentExecutionMachine) ?? currentExecutionMachineId
+        : null;
     const handoffAvailability = resolveSessionHandoffUiAvailability({
         sessionId: session.id,
         serverId: sessionServerId,
@@ -485,9 +540,13 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         });
     }, [routeScope, router, session.id]);
 
-    const cachedSessionServerId = resolveServerIdForSessionIdFromLocalCache(session.id);
-    const resolvedServerId = cachedSessionServerId ?? sessionServerId;
-    const scopedMutationServerId = cachedSessionServerId ?? routeScope.serverId ?? sessionServerId ?? null;
+    // A qualified route owns this screen's identity. Bare-id cache discovery is only a
+    // compatibility fallback for navigation that did not carry a Home.
+    const cachedSessionServerId = routeScope.serverId
+        ? null
+        : resolveServerIdForSessionIdFromLocalCache(session.id);
+    const resolvedServerId = routeScope.serverId ?? sessionServerId ?? cachedSessionServerId;
+    const scopedMutationServerId = routeScope.serverId ?? sessionServerId ?? cachedSessionServerId ?? null;
     const organizationProjection = useSessionOrganizationProjection(resolvedServerId ?? null);
     const organizationListViewState = React.useMemo(() => buildSessionOrganizationListViewState({
         serverId: resolvedServerId ?? '',
@@ -498,7 +557,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const sessionFoldersV1 = organizationListViewState.sessionFoldersV1;
     const isPinnedSession = Boolean(
         resolvedServerId &&
-        pinnedSessionKeysV1.includes(`${resolvedServerId}:${session.id}`),
+        pinnedSessionKeysV1.includes(sessionTagKey(resolvedServerId, session.id)),
     );
     const isArchivedSession = session.archivedAt != null;
     const currentUserId = typeof profile?.id === 'string' ? profile.id : null;
@@ -511,6 +570,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const attentionStandingEnabled = attentionStanding.actionEnabled && sessionSettingsKey != null;
     const isAttentionStandingSession = sessionSettingsKey != null
         && resolveSessionAttentionStanding(attentionStanding.policy, sessionSettingsKey);
+    const followEditor = useAccountSessionFollowEditorHost({ serverId: scopedMutationServerId ?? null, sessionId: session.id });
     const sessionActionTarget = React.useMemo(() => createSessionActionTarget({
         session,
         serverId: scopedMutationServerId,
@@ -518,9 +578,11 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         isConnected: sessionStatus.isConnected,
         isPinned: isPinnedSession,
         attentionStandingEnabled,
+        followEnabled: followEditor.enabled,
         attentionStanding: isAttentionStandingSession,
     }), [
         attentionStandingEnabled,
+        followEditor.enabled,
         currentUserId,
         isAttentionStandingSession,
         isPinnedSession,
@@ -556,11 +618,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         const serverId = typeof serverIdRaw === 'string' && serverIdRaw.trim()
             ? serverIdRaw.trim()
             : scopedMutationServerId;
-        const result = await resolveSessionOrganizationMutationScope(serverId);
-        if (!result.ok) {
-            throw new HappyError(t('errors.unknownError'), false);
-        }
-        return result.scope;
+        return await requireSessionOrganizationMutationScope(serverId);
     }, [scopedMutationServerId]);
     const pinInfoItemProps = React.useMemo(() => createSessionActionInfoItemProps({
         actionId: isPinnedSession ? SESSION_ACTION_UNPIN_ID : SESSION_ACTION_PIN_ID,
@@ -970,6 +1028,22 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         icon={<Icon name="pulse" size={29} color={sessionStatus.isConnected ? theme.colors.state.success.foreground : theme.colors.text.secondary} />}
                         showChevron={false}
                     />
+                    {currentExecutionMachineLabel && (
+                        <Item
+                            testID="session-info-execution-machine"
+                            title={t('machinePools.executionMachine')}
+                            subtitle={currentExecutionMachineLabel}
+                            icon={<Icon name="desktop" size={29} color={theme.colors.accent.indigo} />}
+                            showChevron={false}
+                        />
+                    )}
+                    {metadata?.placementOrigin?.kind === 'machine_pool' && (
+                        <SessionMachinePoolOriginItem
+                            serverId={sessionServerId}
+                            poolId={metadata.placementOrigin.poolId}
+                            machines={sessionServerId ? machineListByServerId[sessionServerId] ?? undefined : undefined}
+                        />
+                    )}
                     <Item
                         title={t('sessionInfo.created')}
                         subtitle={formatDate(session.createdAt)}
@@ -1017,7 +1091,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             copy={sessionDebugInformation.text}
                         />
                     ) : null}
-                    {!session.accessLevel && forkActionEnabled && forkSupported && (
+                    {session.access?.role === 'owner' && forkActionEnabled && forkSupported && (
                         <Item
                             testID="session-info-fork-session"
                             title={t('sessionInfo.forkSession')}
@@ -1026,7 +1100,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             onPress={performFork}
                         />
                     )}
-                    {!session.accessLevel && handoffActionEnabled && handoffSupported && (
+                    {session.access?.role === 'owner' && handoffActionEnabled && handoffSupported && (
                         <Item
                             title={handoffActionSpec.title}
                             subtitle={handoffActionSpec.description}
@@ -1142,12 +1216,12 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             }}
                         />
                     )}
-                    {canManageSharing && sharingSupported && (
+                    {collaborationTarget && collaborationAdmitted && (
                         <Item
-                            title={t('sessionInfo.manageSharing')}
-                            subtitle={t('sessionInfo.manageSharingSubtitle')}
-                            icon={<Icon name="share" size={29} color={theme.colors.accent.blue} />}
-                            onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/sharing' }))}
+                            testID="session-info-collaboration"
+                            title={t('session.collaboration.title')}
+                            icon={<Icon name="users" size={29} color={theme.colors.accent.blue} />}
+                            onPress={openSessionCollaboration}
                         />
                     )}
                     {sessionActionTarget.isOwnedByCurrentUser ? (
@@ -1319,7 +1393,30 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                 )}
 
                 {/* Activity */}
+                {followEditor.editor}
+                <SessionFollowSourcesEditor
+                    destination={session}
+                    serverId={scopedMutationServerId}
+                    destinationMachineId={currentExecutionMachineId}
+                />
                 <ItemGroup title={t('sessionInfo.activity')}>
+                    {visibleSessionActionIds.has('ui.session.follow') ? (
+                        <View ref={followEditor.anchorRef} collapsable={false}>
+                            <Item
+                                pressableRef={followEditor.triggerRef}
+                                testID="session-info-follow"
+                                title={t('session.follow.editor.title')}
+                                icon={<Icon name="bell" size={29} color={theme.colors.text.secondary} />}
+                                onPress={() => {
+                                    void executeSessionAction({
+                                        actionId: 'ui.session.follow',
+                                        target: sessionActionTarget,
+                                        context: { operations: { openFollowEditor: followEditor.openEditor } },
+                                    });
+                                }}
+                            />
+                        </View>
+                    ) : null}
                     <Item
                         title={t('sessionInfo.sessionStatus')}
                         detail={sessionStatus.statusText}
@@ -1433,8 +1530,9 @@ export default () => {
         routeScope.hydrationOptions,
     );
     const sessionHydrated = isSessionRouteHydrationAvailable(routeHydrationState);
-    const session = useSession(sessionId);
+    const session = useSessionViewShellSession(sessionId, routeScope.serverId);
     const sessionServerId = React.useMemo(() => {
+        if (routeScope.serverId) return routeScope.serverId;
         const directFallback = String(session?.serverId ?? '').trim() || null;
         const listPreferredServerId = resolveSessionListPreferredServerIdFromState(
             storage.getState(),
@@ -1445,8 +1543,8 @@ export default () => {
         const resolvedServerId = canonicalServerId ?? listPreferredServerId ?? directFallback;
         const normalizedServerId = String(resolvedServerId ?? directFallback ?? '').trim();
         return normalizedServerId || null;
-    }, [session?.serverId, sessionId]);
-    const reachableMachineIdForHandoff = useSessionReachableMachineTarget(sessionId)?.machineId ?? null;
+    }, [routeScope.serverId, session?.serverId, sessionId]);
+    const reachableMachineIdForHandoff = useSessionReachableMachineTarget(sessionId, sessionServerId)?.machineId ?? null;
     const sourceMachineIdForHandoff = React.useMemo(
         () => resolveSessionHandoffSourceMachineId({
             reachableMachineId: reachableMachineIdForHandoff,

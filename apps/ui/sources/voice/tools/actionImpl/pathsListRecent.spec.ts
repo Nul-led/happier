@@ -1,16 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { installVoiceToolActionImplCommonModuleMocks } from './voiceToolActionImplTestHelpers';
 
 const voiceTargetState = {
     scope: 'global' as 'global' | 'session',
-    primaryActionSessionId: null as string | null,
-    lastFocusedSessionId: null as string | null,
+    primaryActionSessionAddress: null as SessionAddress | null,
+    lastFocusedSessionAddress: null as SessionAddress | null,
 };
 
 const state: any = {
     sessions: {
         s1: {
             id: 's1',
+            serverId: 'server-a',
             active: true,
             presence: 'online',
             updatedAt: 1000,
@@ -61,11 +63,12 @@ vi.mock('@/voice/runtime/voiceTargetStore', async (importOriginal) => ({
 describe('listRecentPathsForVoiceTool', () => {
     beforeEach(() => {
         voiceTargetState.scope = 'global';
-        voiceTargetState.primaryActionSessionId = null;
-        voiceTargetState.lastFocusedSessionId = null;
+        voiceTargetState.primaryActionSessionAddress = null;
+        voiceTargetState.lastFocusedSessionAddress = null;
         state.sessions = {
             s1: {
                 id: 's1',
+                serverId: 'server-a',
                 active: true,
                 presence: 'online',
                 updatedAt: 1000,
@@ -85,6 +88,10 @@ describe('listRecentPathsForVoiceTool', () => {
         state.settings.voice.privacy.shareFilePaths = false;
         state.settings.recentMachinePaths = [{ machineId: 'm1', path: '/Users/leeroy/projects/happier' }];
         state.getProjectForSession = () => null;
+        state.sessionListRowsByServerId = {};
+        state.ordinarySessionListMembershipByServerId = {};
+        state.sessionListIndexByServerId = {};
+        state.concurrentSessionListCacheByServerId = {};
     });
 
     it('returns redacted labels without workspace handles when file paths are hidden', async () => {
@@ -124,10 +131,11 @@ describe('listRecentPathsForVoiceTool', () => {
     });
 
     it('resolves the default machine and lastUsedAt from an explicit replacement target even when raw path sharing is force-enabled', async () => {
-        voiceTargetState.primaryActionSessionId = 's1';
+        voiceTargetState.primaryActionSessionAddress = { serverId: 'server-a', sessionId: 's1' };
         state.sessions = {
             s1: {
                 id: 's1',
+                serverId: 'server-a',
                 active: true,
                 presence: 'online',
                 updatedAt: 1000,
@@ -175,10 +183,11 @@ describe('listRecentPathsForVoiceTool', () => {
 
     it('does not route a session-scoped inventory read through a stale global target', async () => {
         voiceTargetState.scope = 'session';
-        voiceTargetState.primaryActionSessionId = 'stale-global-session';
+        voiceTargetState.primaryActionSessionAddress = { serverId: 'server-a', sessionId: 'stale-global-session' };
         state.sessions = {
             'stale-global-session': {
                 id: 'stale-global-session',
+                serverId: 'server-a',
                 active: true,
                 presence: 'online',
                 updatedAt: 2000,
@@ -243,6 +252,7 @@ describe('listRecentPathsForVoiceTool', () => {
         state.sessions = {
             s1: {
                 id: 's1',
+                serverId: 'server-a',
                 active: true,
                 presence: 'online',
                 updatedAt: 1000,
@@ -252,15 +262,20 @@ describe('listRecentPathsForVoiceTool', () => {
                 },
             },
         };
-        state.sessionListRenderables = {
-            s1: {
-                id: 's1',
-                updatedAt: 1000,
-                metadata: {
-                    machineId: 'm1',
-                    path: '/Users/leeroy/projects/happier',
+        state.sessionListRowsByServerId = {
+            'server-a': {
+                s1: {
+                    id: 's1',
+                    updatedAt: 1000,
+                    metadata: {
+                        machineId: 'm1',
+                        path: '/Users/leeroy/projects/happier',
+                    },
                 },
             },
+        };
+        state.ordinarySessionListMembershipByServerId = {
+            'server-a': ['s1'],
         };
         state.sessionListIndexByServerId = {
             'server-a': [

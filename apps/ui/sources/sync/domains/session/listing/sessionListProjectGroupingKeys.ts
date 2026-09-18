@@ -2,8 +2,6 @@ import { resolveAbsolutePath } from '@/utils/path/pathUtils';
 import { normalizeNonEmptyString } from '@/utils/strings/normalizeNonEmptyString';
 import { normalizeTrimmedString } from './normalizeTrimmedString';
 
-import { LruMap } from '@/utils/cache/lruMap';
-
 function normalizePathForProjectGrouping(path: string): string {
     const withForwardSlashes = path.replace(/\\/g, '/');
     const leadingUncSlashes = withForwardSlashes.match(/^\/{2,}/)?.[0].length ?? 0;
@@ -38,42 +36,31 @@ export type SessionProjectGroupingKeyPartsWithMachineMetadata = SessionProjectGr
     displayPath: string | null;
 }>;
 
-function readMaxSessionProjectGroupingKeyPartsCacheEntriesFromEnv(): number {
-    const raw = String(process.env.EXPO_PUBLIC_HAPPIER_SESSION_LIST_PROJECT_GROUPING_CACHE_MAX ?? '').trim();
-    if (!raw) return 4096;
-    const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed)) return 4096;
-    return Math.max(1, Math.min(100_000, parsed));
-}
+export type SessionProjectGroupingIdentity = readonly [
+    serverId: string | null,
+    machineId: string | null,
+    pathKey: string,
+];
 
 function normalizeHostForProjectGrouping(value: unknown): string | null {
     const host = normalizeNonEmptyString(value);
     return host ? host.toLowerCase().replace(/\.local$/, '') : null;
 }
 
-const SESSION_PROJECT_GROUPING_KEY_PARTS_CACHE = new LruMap<string, SessionProjectGroupingKeyParts>({
-    maxEntries: readMaxSessionProjectGroupingKeyPartsCacheEntriesFromEnv(),
-});
-const SESSION_PROJECT_GROUPING_KEY_PARTS_WITH_MACHINE_METADATA_CACHE = new LruMap<string, SessionProjectGroupingKeyPartsWithMachineMetadata>({
-    maxEntries: readMaxSessionProjectGroupingKeyPartsCacheEntriesFromEnv(),
-});
-
-function buildSessionProjectGroupingKeyPartsCacheKey(parts: Readonly<{
-    machineGroupId: string;
-    host: string | null;
-    machineId: string | null;
-    homeDir: string | null;
-    pathKey: string;
-    displayPath?: string | null;
-}>): string {
+export function buildSessionProjectGroupingIdentity(
+    serverIdInput: unknown,
+    parts: Pick<SessionProjectGroupingKeyParts, 'machineId' | 'pathKey'>,
+): SessionProjectGroupingIdentity {
     return [
-        parts.machineGroupId,
-        parts.host ?? '',
-        parts.machineId ?? '',
-        parts.homeDir ?? '',
+        normalizeTrimmedString(serverIdInput) || null,
+        parts.machineId,
         parts.pathKey,
-        parts.displayPath ?? '',
-    ].join('\u0000');
+    ];
+}
+
+/** Stable, reversible encoding of the exact Home/Machine/path tuple. */
+export function sessionProjectGroupingIdentityKey(identity: SessionProjectGroupingIdentity): string {
+    return JSON.stringify(identity);
 }
 
 export function resolveSessionProjectGroupingKeyParts(metadata: Readonly<{
@@ -89,20 +76,13 @@ export function resolveSessionProjectGroupingKeyParts(metadata: Readonly<{
     const pathKey = normalizeSessionPathForProjectGrouping(metadata?.path, homeDir);
     const machineGroupId = machineId ? `id:${machineId}` : 'unknown';
 
-    const normalizedParts = {
+    return {
         machineGroupId,
         host,
         machineId,
         homeDir,
         pathKey,
     };
-    const cacheKey = buildSessionProjectGroupingKeyPartsCacheKey(normalizedParts);
-    const cached = SESSION_PROJECT_GROUPING_KEY_PARTS_CACHE.get(cacheKey);
-    if (cached) {
-        return cached;
-    }
-    SESSION_PROJECT_GROUPING_KEY_PARTS_CACHE.set(cacheKey, normalizedParts);
-    return normalizedParts;
 }
 
 export function resolveSessionProjectGroupingKeyPartsWithMachineMetadata(
@@ -126,7 +106,7 @@ export function resolveSessionProjectGroupingKeyPartsWithMachineMetadata(
     const pathKey = normalizeSessionPathForProjectGrouping(displayPathInput ?? metadata?.path, homeDir);
     const machineGroupId = parts.machineId ? `id:${parts.machineId}` : 'unknown';
 
-    const normalizedParts = {
+    return {
         machineGroupId,
         host,
         machineId: parts.machineId,
@@ -134,11 +114,4 @@ export function resolveSessionProjectGroupingKeyPartsWithMachineMetadata(
         pathKey,
         displayPath,
     };
-    const cacheKey = buildSessionProjectGroupingKeyPartsCacheKey(normalizedParts);
-    const cached = SESSION_PROJECT_GROUPING_KEY_PARTS_WITH_MACHINE_METADATA_CACHE.get(cacheKey);
-    if (cached) {
-        return cached;
-    }
-    SESSION_PROJECT_GROUPING_KEY_PARTS_WITH_MACHINE_METADATA_CACHE.set(cacheKey, normalizedParts);
-    return normalizedParts;
 }

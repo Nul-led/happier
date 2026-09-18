@@ -104,9 +104,9 @@ export function readWebServerUrlOverrideFromLocation(): WebServerUrlOverride | n
     }
 }
 
-export function bootstrapActiveServerFromWebLocation(
+export async function bootstrapActiveServerFromWebLocation(
     opts: Readonly<{ scope?: 'device' | 'tab' }> = {},
-): WebServerUrlOverride | null {
+): Promise<WebServerUrlOverride | null> {
     const override = readWebServerUrlOverrideFromLocation();
     if (!override) return null;
 
@@ -124,7 +124,7 @@ export function bootstrapActiveServerFromWebLocation(
     );
     if (!currentKey || !desiredKey || currentKey !== desiredKey || replaceEquivalentStoredUrl) {
         try {
-            upsertAndActivateServer({
+            await upsertAndActivateServer({
                 serverUrl: desired,
                 ...(replaceEquivalentStoredUrl ? {} : { source: 'url' }),
                 scope: opts.scope ?? 'device',

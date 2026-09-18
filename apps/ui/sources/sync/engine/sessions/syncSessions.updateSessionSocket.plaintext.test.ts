@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { projectLegacySessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { storage } from '@/sync/domains/state/storage';
@@ -42,9 +43,221 @@ function createDeferred<T>(): {
 }
 
 describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
+  it('projects a newer Agent headline into the exact list-row socket patch', async () => {
+    const renderable = {
+      ...createSession({ sessionId: 'same-id', encryptionMode: 'plain' }),
+      agentActivityHeadline: { v: 1, backendId: 'claude', updatedAt: 1, activeEntries: [] },
+    };
+    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
+      renderable,
+      updateBody: {
+        metadata: {
+          version: 2,
+          value: JSON.stringify({
+            sessionAgentActivityHeadlineV1: {
+              v: 1, backendId: 'claude', updatedAt: 2,
+              activeEntries: [{ entryId: 'workflow_agent:wf_1:toolu_1', kind: 'workflow_agent', title: 'Home A', status: 'running', updatedAt: 2 }],
+            },
+          }),
+        },
+      },
+      updateSeq: 2,
+      updateCreatedAt: 2,
+      sessionEncryption: null,
+    });
+
+    expect(patch.agentActivityHeadline).toEqual(expect.objectContaining({
+      updatedAt: 2,
+      activeEntries: [expect.objectContaining({ title: 'Home A' })],
+    }));
+  });
+
+  it('clears an owner-only Agent headline when an access-only socket update makes the row a recipient', async () => {
+    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
+      renderable: {
+        ...createSession({ sessionId: 'same-id', encryptionMode: 'plain' }),
+        agentActivityHeadline: { v: 1, backendId: 'claude', updatedAt: 1, activeEntries: [] },
+      },
+      updateBody: {
+        effectiveAccess: {
+          v: 1,
+          level: 'view',
+          capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view', canApprovePermissions: false }),
+        },
+      },
+      updateSeq: 2,
+      updateCreatedAt: 2,
+      sessionEncryption: null,
+    });
+
+    expect(patch.agentActivityHeadline).toBeNull();
+    expect(patch.access).toMatchObject({ role: 'recipient', level: 'view' });
+  });
+
+  it('clears an owner-only Agent headline when a supplied effective-access projection is malformed', async () => {
+    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
+      renderable: {
+        ...createSession({ sessionId: 'same-id', encryptionMode: 'plain' }),
+        agentActivityHeadline: { v: 1, backendId: 'claude', updatedAt: 1, activeEntries: [] },
+      },
+      updateBody: { effectiveAccess: { v: 1, level: 'view' } },
+      updateSeq: 2,
+      updateCreatedAt: 2,
+      sessionEncryption: null,
+    });
+
+    expect(patch.agentActivityHeadline).toBeNull();
+    expect(patch.access).toBeNull();
+  });
+
+  it.each(['wrong_key', 'unsupported', 'ready'] as const)('uses authenticated metadata outcome for socket availability (%s)', async (kind) => {
+    const { Encryption } = await import('@/sync/encryption/encryption');
+    const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+    await encryption.initializeSessions(new Map([['s1', new Uint8Array(32).fill(8)]]));
+    const writer = await Encryption.create(new Uint8Array(32).fill(7));
+    await writer.initializeSessions(new Map([['s1', new Uint8Array(32).fill(kind === 'wrong_key' ? 9 : 8)]]));
+    const value = await writer.getSessionEncryption('s1')!.encryptRaw(kind === 'unsupported' ? null : { path: '/work', host: 'host' });
+    const { nextSession } = await buildUpdatedSessionFromSocketUpdate({
+      session: { ...createSession({ sessionId: 's1', encryptionMode: 'e2ee' }), encryptedContentAvailability: 'encrypted_access_pending' },
+      updateBody: { metadata: { version: 2, value } },
+      updateSeq: 2, updateCreatedAt: 2,
+      sessionEncryption: encryption.getSessionEncryption('s1'),
+    });
+    expect(nextSession.encryptedContentAvailability).toBe(kind === 'wrong_key' ? 'encrypted_content_unavailable' : 'ready');
+    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
+      renderable: { ...createSession({ sessionId: 's1', encryptionMode: 'e2ee' }), encryptedContentAvailability: 'encrypted_access_pending' },
+      updateBody: { metadata: { version: 2, value } },
+      updateSeq: 2, updateCreatedAt: 2,
+      sessionEncryption: encryption.getSessionEncryption('s1'),
+    });
+    expect(patch.encryptedContentAvailability).toBe(nextSession.encryptedContentAvailability);
+  });
+
+  it('preserves a content failure through activity updates and clears it when later metadata authenticates', async () => {
+    const { Encryption } = await import('@/sync/encryption/encryption');
+    const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+    await encryption.initializeSessions(new Map([['s1', new Uint8Array(32).fill(8)]]));
+    const sessionEncryption = encryption.getSessionEncryption('s1')!;
+    const locked: Session = {
+      ...createSession({ sessionId: 's1', encryptionMode: 'e2ee' }),
+      metadata: null,
+      encryptedContentAvailability: 'encrypted_content_unavailable',
+    };
+    const activity = { updateBody: { active: true, activeAt: 3 }, updateSeq: 3, updateCreatedAt: 3, sessionEncryption };
+    const { nextSession } = await buildUpdatedSessionFromSocketUpdate({ session: locked, ...activity });
+    const activityPatch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({ renderable: locked, ...activity });
+    expect(nextSession.encryptedContentAvailability).toBe('encrypted_content_unavailable');
+    expect({ ...locked, ...activityPatch }.encryptedContentAvailability).toBe('encrypted_content_unavailable');
+
+    const value = await sessionEncryption.encryptRaw({ path: '/work', host: 'host' });
+    const recovery = { updateBody: { metadata: { version: 2, value } }, updateSeq: 4, updateCreatedAt: 4, sessionEncryption };
+    const recovered = await buildUpdatedSessionFromSocketUpdate({ session: nextSession, ...recovery });
+    const recoveredPatch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({ renderable: { ...locked, ...activityPatch }, ...recovery });
+    expect(recovered.nextSession.encryptedContentAvailability).toBe('ready');
+    expect(recovered.nextSession.metadata).toMatchObject({ path: '/work', host: 'host' });
+    expect(recoveredPatch.encryptedContentAvailability).toBe('ready');
+    expect(recoveredPatch.metadata).toMatchObject({ path: '/work', host: 'host' });
+  });
+
   afterEach(() => {
     syncPerformanceTelemetry.configure({ enabled: false });
     syncPerformanceTelemetry.reset();
+  });
+
+  it('never installs an Account fallback reader for an unopenable new-session envelope', async () => {
+    const { Encryption } = await import('@/sync/encryption/encryption');
+    const { encodeBase64 } = await import('@/encryption/base64');
+    const { sealEncryptedDataKeyEnvelopeV1 } = await import('@happier-dev/protocol');
+    const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+    const otherRecipient = await Encryption.create(new Uint8Array(32).fill(8));
+    const envelope = sealEncryptedDataKeyEnvelopeV1({
+      dataKey: new Uint8Array(32).fill(9),
+      recipientPublicKey: otherRecipient.contentDataKey,
+      randomBytes: (length) => new Uint8Array(length).fill(3),
+    });
+
+    const nextSession = await buildNewSessionFromSocketUpdate({
+      updateBody: {
+        t: 'new-session', id: 'socket_unopenable_envelope',
+        encryptionMode: 'e2ee', dataEncryptionKey: encodeBase64(envelope, 'base64'),
+        metadataLayoutVersion: 0, metadataVersion: 1, metadata: 'encrypted-metadata',
+        agentStateVersion: 1, agentState: null,
+      },
+      updateSeq: 1,
+      updateCreatedAt: 1,
+      encryption,
+    });
+
+    expect(nextSession).toBeNull();
+    expect(encryption.getSessionEncryption('socket_unopenable_envelope')).toBeNull();
+  });
+
+  it('drops a new-session socket bootstrap when Account encryption changes during initialization', async () => {
+    let generation = 4;
+    const decryptMetadata = vi.fn(async () => ({ path: '/stale', host: 'stale' }));
+    const nextSession = await buildNewSessionFromSocketUpdate({
+      updateBody: {
+        t: 'new-session', id: 'socket_generation_changed',
+        encryptionMode: 'e2ee', dataEncryptionKey: 'present-envelope',
+        metadataLayoutVersion: 0, metadataVersion: 1, metadata: 'encrypted-metadata',
+        agentStateVersion: 1, agentState: null,
+      },
+      updateSeq: 1,
+      updateCreatedAt: 1,
+      sourceServerId: 'server-a',
+      encryption: {
+        decryptEncryptionKey: async () => new Uint8Array(32).fill(7),
+        initializeSessions: async (_sessionKeys, options) => {
+          generation += 1;
+          if (options?.shouldContinue?.() === false) return null;
+          return { accountId: 'account-a', serverId: 'server-a', generation };
+        },
+        getSessionEncryption: () => ({
+          decryptMetadata,
+          decryptMetadataPayload: decryptMetadata,
+          decryptAgentState: async () => ({}),
+        }),
+        getCurrentEncryptionGenerationScope: () => ({
+          accountId: 'account-a', serverId: 'server-a', generation,
+        }),
+        isCurrentEncryptionGenerationScope: scope => scope.generation === generation,
+      },
+    });
+
+    expect(nextSession).toBeNull();
+    expect(decryptMetadata).not.toHaveBeenCalled();
+  });
+
+  it('rejects an explicitly malformed new-session encryption mode instead of inferring E2EE from its envelope', async () => {
+    const initializeSessions = vi.fn(async () => {});
+    const decryptMetadata = vi.fn(async () => ({ path: '/must-not-open', host: 'must-not-open' }));
+    const nextSession = await buildNewSessionFromSocketUpdate({
+      updateBody: {
+        t: 'new-session',
+        id: 'socket_invalid_encryption_mode',
+        encryptionMode: 'encrypted-somehow',
+        dataEncryptionKey: 'present-envelope',
+        metadataVersion: 1,
+        metadata: 'encrypted-metadata',
+        agentStateVersion: 1,
+        agentState: null,
+      },
+      updateSeq: 1,
+      updateCreatedAt: 1,
+      encryption: {
+        decryptEncryptionKey: async () => new Uint8Array(32).fill(7),
+        initializeSessions,
+        getSessionEncryption: () => ({
+          decryptMetadata,
+          decryptMetadataPayload: decryptMetadata,
+          decryptAgentState: async () => ({}),
+        }),
+      },
+    });
+
+    expect(nextSession).toBeNull();
+    expect(initializeSessions).not.toHaveBeenCalled();
+    expect(decryptMetadata).not.toHaveBeenCalled();
   });
 
   it('parses plaintext metadata and agentState when session encryptionMode is plain', async () => {
@@ -271,7 +484,7 @@ describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
       } as any,
     });
 
-    expect(decryptMetadataPayload).toHaveBeenCalledWith(1, 'encrypted-shared-envelope');
+    expect(decryptMetadataPayload.mock.calls[0]?.slice(0, 2)).toEqual([1, 'encrypted-shared-envelope']);
     expect(decryptMetadata).not.toHaveBeenCalled();
     expect(nextSession.metadata).toEqual(sharedMetadata);
     expect(JSON.stringify(nextSession)).not.toMatch(/private-native-id|private-tool|private-worktree/);
@@ -418,7 +631,7 @@ describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
     expect(patch.thinking).toBe(false);
   });
 
-  it('applies runtime activity projection fields to renderable socket patches', async () => {
+  it('does not infer runtime presence from durable active fields in renderable socket patches', async () => {
     const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
       renderable: {
         id: 's1',
@@ -447,7 +660,7 @@ describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
     expect(patch.activeAt).toBe(123_456);
     expect(patch.thinking).toBe(false);
     expect(patch.thinkingAt).toBe(123_456);
-    expect(patch.presence).toBe(123_456);
+    expect(patch.presence).toBeUndefined();
   });
 
   it('applies pending request observation timestamps to renderable socket patches', async () => {
@@ -664,7 +877,7 @@ describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
       },
     });
 
-    expect(decryptSessionSnapshotState).toHaveBeenCalledWith(2, 'enc-meta', 3, 'enc-state');
+    expect(decryptSessionSnapshotState.mock.calls[0]?.slice(0, 4)).toEqual([2, 'enc-meta', 3, 'enc-state']);
     expect(decryptMetadata).not.toHaveBeenCalled();
     expect(decryptMetadataPayload).not.toHaveBeenCalled();
     expect(decryptAgentState).not.toHaveBeenCalled();

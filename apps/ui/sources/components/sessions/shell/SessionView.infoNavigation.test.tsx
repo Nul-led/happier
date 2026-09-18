@@ -1,4 +1,5 @@
 import * as React from 'react';
+import renderer, { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
@@ -22,6 +23,26 @@ vi.mock('@/agents/backendCatalog/getResolvedBackendCatalogEntries', () => ({
 vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
     useDaemonMergedProjectionInputs: () => ({ inputs: null }),
 }));
+// The remote source mirror intentionally omits build-generated app artifact bytes.
+// This shell suite has no installed-plugin fixture, so its package boundary is
+// truthfully an empty bundled inventory rather than requiring a generator run.
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', () => ({
+    BUNDLED_PLUGIN_UI_APP_ARTIFACTS: Object.freeze([]),
+}));
+vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
+    createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
+        kind: 'appExact' as const,
+        readFile: vi.fn(async () => null),
+    }),
+}));
+vi.mock('@/sync/domains/plugins/availability/reader', () => ({
+    createPluginAccountAvailabilityReader: vi.fn(() => null),
+    createPluginAccountAvailabilityReaderStore: vi.fn(() => ({
+        get: vi.fn(() => null),
+        subscribe: vi.fn(() => () => {}),
+    })),
+    projectPluginAccountAvailabilityMaterializationIdentity: vi.fn(() => null),
+}));
 
 const routerPushSpy = vi.hoisted(() => vi.fn());
 const routerNavigateSpy = vi.hoisted(() => vi.fn());
@@ -31,6 +52,9 @@ const routerBackSpy = vi.hoisted(() => vi.fn(() => {
 }));
 const chatHeaderPropsSpy = vi.hoisted(() => vi.fn());
 const capturedOpenSessionSpy = vi.hoisted(() => vi.fn<(sid: string) => void>());
+const companionHostPropsSpy = vi.hoisted(() => vi.fn());
+const boardControllerState = vi.hoisted(() => ({ unavailable: false }));
+const openDetailsTabSpy = vi.hoisted(() => vi.fn());
 const resolveServerIdForSessionIdFromLocalCacheSpy = vi.hoisted(() =>
     vi.fn<(sessionId: string) => string | null>((sessionId: string) =>
         sessionId === 's1' ? 'server-cache' : null
@@ -115,6 +139,10 @@ installSessionShellCommonModuleMocks({
             useSessionReviewCommentsDrafts: () => [],
             useWorkspaceReviewCommentsDrafts: () => [],
             useSessionUsage: () => null,
+            useSessionCompanionPreferenceSlot: () => ({
+                stored: undefined,
+                storageKey: 'server-2 account-1 s1',
+            }),
             useLocalSetting: <K extends keyof LocalSettings>(key: K) => localSettingsDefaults[key],
             useLocalSettingMutable: <K extends keyof LocalSettings>(key: K) => [
                 localSettingsDefaults[key],
@@ -142,10 +170,22 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionI
     };
 });
 
-vi.mock('react-native-reanimated', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/index.js', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/index', () => ({ __esModule: true, default: {} }));
+vi.mock('react-native-reanimated', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock();
+});
+vi.mock('react-native-reanimated/lib/module', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock();
+});
+vi.mock('react-native-reanimated/lib/module/index.js', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock();
+});
+vi.mock('react-native-reanimated/lib/module/index', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock();
+});
 vi.mock('expo-linear-gradient', () => ({
     LinearGradient: 'LinearGradient',
 }));
@@ -174,6 +214,41 @@ vi.mock('@/components/sessions/transcript/ChatHeaderView', () => ({
 }));
 vi.mock('@/components/sessions/transcript/AgentContentView', () => ({
     AgentContentView: () => null,
+}));
+vi.mock('@/components/ui/code/editor/CodeEditor', () => ({ CodeEditor: () => null }));
+vi.mock('@/components/sessions/companion/SessionCompanionHost', () => ({
+    SessionCompanionHost: (props: Record<string, unknown>) => {
+        companionHostPropsSpy(props);
+        return React.createElement('SessionCompanionHost', props);
+    },
+}));
+vi.mock('@/components/sessions/board/SessionBoardControllerProvider', () => ({
+    SessionBoardControllerProvider: ({ children }: React.PropsWithChildren) => children,
+    useMountedSessionBoardController: (address: { serverId: string; sessionId: string } | null) => (
+        boardControllerState.unavailable || !address
+            ? null
+            : {
+                address,
+                binding: {
+                    status: 'ready' as const,
+                    snapshot: { itemsById: new Map() },
+                },
+                pluginRuntime: {
+                    serverId: address.serverId,
+                    machineId: 'm1',
+                    pluginUiProjection: null,
+                    pluginBrowserProjection: null,
+                    phase: 'current' as const,
+                    interactionEnabled: true,
+                    platform: 'web' as const,
+                },
+                controller: {
+                    supports: () => false,
+                    resolveSourceAvailability: () => ({ kind: 'available' as const }),
+                },
+                callerHostedHtmlRuntime: null,
+            }
+    ),
 }));
 vi.mock('@/components/appShell/panes/AppPaneScopeHost', () => ({
     AppPaneScopeHost: (props: any) => React.createElement('AppPaneScopeHost', props, props.main ?? null),
@@ -242,7 +317,7 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
         openRight: vi.fn(),
         setRightTab: vi.fn(),
         closeRight: vi.fn(),
-        openDetailsTab: vi.fn(),
+        openDetailsTab: openDetailsTabSpy,
         closeDetails: vi.fn(),
         pinDetailsTab: vi.fn(),
         closeDetailsTab: vi.fn(),
@@ -353,6 +428,9 @@ describe('SessionView info navigation', () => {
         routerBackSpy.mockClear();
         chatHeaderPropsSpy.mockReset();
         capturedOpenSessionSpy.mockReset();
+        companionHostPropsSpy.mockReset();
+        boardControllerState.unavailable = false;
+        openDetailsTabSpy.mockReset();
         resolveServerIdForSessionIdFromLocalCacheSpy.mockReset();
         resolveServerIdForSessionIdFromLocalCacheSpy.mockImplementation((sessionId: string) =>
             sessionId === 's1' ? 'server-cache' : null
@@ -390,6 +468,98 @@ describe('SessionView info navigation', () => {
         const singular = routerNavigateSpy.mock.calls[0]?.[1]?.dangerouslySingular;
         expect(typeof singular).toBe('function');
         expect(singular()).toBe('session-info');
+    });
+
+    it('keeps the mounted Summary available before Board inventory is ready and routes it through the exact Home', async () => {
+        boardControllerState.unavailable = true;
+        const { SessionView } = await import('./SessionView');
+
+        let tree: renderer.ReactTestRenderer | null = null;
+        act(() => {
+            tree = renderer.create(
+                <AppPaneProviderWrapper>
+                    <SessionView id="s1" routeServerId="server-2" />
+                </AppPaneProviderWrapper>,
+            );
+        });
+
+        const companionProps = companionHostPropsSpy.mock.calls.at(-1)?.[0] as Readonly<{
+            address: { serverId: string; sessionId: string };
+            boardBinding: unknown | null;
+            pluginRuntime?: unknown;
+            summaryDestinations: { sessionInfo: () => void };
+        }> | undefined;
+        expect(companionProps).toMatchObject({
+            address: { serverId: 'server-2', sessionId: 's1' },
+            boardBinding: null,
+        });
+        expect(companionProps).not.toHaveProperty('pluginRuntime');
+
+        companionProps?.summaryDestinations.sessionInfo();
+
+        expect(routerPushSpy).toHaveBeenCalledWith('/session/s1/info?serverId=server-2');
+        expect(routerPushSpy).not.toHaveBeenCalledWith('/session/s1/info?serverId=server-cache');
+        act(() => tree?.unmount());
+    });
+
+    it('keeps every nested current-Session destination on the exact route Home when the bare cache names another Home', async () => {
+        // The bare resolver is authoritative only for a different, genuinely
+        // unqualified target. This view already holds its own Session's exact
+        // Home-qualified identity.
+        resolveServerIdForSessionIdFromLocalCacheSpy.mockImplementation((sessionId: string) =>
+            sessionId === 's1' ? 'server-other-home' : null
+        );
+        const { SessionView } = await import('./SessionView');
+
+        let tree: renderer.ReactTestRenderer | null = null;
+        act(() => {
+            tree = renderer.create(
+                <AppPaneProviderWrapper>
+                    <SessionView id="s1" routeServerId="server-2" />
+                </AppPaneProviderWrapper>,
+            );
+        });
+
+        const companionProps = companionHostPropsSpy.mock.calls.at(-1)?.[0] as Readonly<{
+            summaryDestinations: Readonly<{
+                sessionInfo: () => void;
+                workflow: () => void;
+                usage: () => void;
+            }>;
+        }> | undefined;
+        expect(companionProps).toBeDefined();
+
+        companionProps?.summaryDestinations.sessionInfo();
+        companionProps?.summaryDestinations.workflow();
+        companionProps?.summaryDestinations.usage();
+
+        expect(routerPushSpy).toHaveBeenCalledWith('/session/s1/info?serverId=server-2');
+        expect(routerPushSpy).toHaveBeenCalledWith('/session/s1/runs?serverId=server-2');
+        expect(routerPushSpy).toHaveBeenCalledWith('/session/s1/usage?serverId=server-2');
+        expect(routerPushSpy.mock.calls.map((call) => String(call[0]))
+            .filter((href) => href.includes('server-other-home'))).toEqual([]);
+        act(() => tree?.unmount());
+    });
+
+    it('opens the exact Companion widget in the existing Board details owner', async () => {
+        const { SessionView } = await import('./SessionView');
+        await renderScreen(
+            <SessionView id="s1" routeServerId="server-2" />,
+            { wrapper: AppPaneProviderWrapper },
+        );
+        const companionProps = companionHostPropsSpy.mock.calls.at(-1)?.[0] as Readonly<{
+            onRevealBoardItem: (itemId: string) => void;
+        }>;
+
+        companionProps.onRevealBoardItem('widget-7');
+
+        expect(openDetailsTabSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+                key: 'board:widget-7',
+                resource: { kind: 'board', focusTarget: { kind: 'item', itemId: 'widget-7' } },
+            }),
+            { intent: 'pinned' },
+        );
     });
 
     it('opens session info via singular navigate using the route server id when cache resolution is unavailable', async () => {

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApprovalRequestSchema, buildApprovalRequestArtifactHeaderV1 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 type TestState = {
@@ -39,6 +40,8 @@ const apiTokenSummary = {
     createdAt: '2026-08-22T12:00:00.000Z',
     lastUsedAt: null,
     expiresAt: '2026-11-20T12:00:00.000Z',
+    hasEncryptionAccess: false,
+    hasUnattendedTeamAccess: false,
 } as const;
 const createCurrentAccountApiToken = vi.fn(async () => ({
     token: `hap_v1_${apiTokenSummary.tokenId}_${'A'.repeat(43)}`,
@@ -47,6 +50,57 @@ const createCurrentAccountApiToken = vi.fn(async () => ({
 const listCurrentAccountApiTokens = vi.fn(async () => ({ tokens: [apiTokenSummary] }));
 const revokeCurrentAccountApiToken = vi.fn(async () => ({ revoked: true }));
 const revokeAllCurrentAccountApiTokens = vi.fn(async () => ({ revokedCount: 1 }));
+
+function approvalRequestBodyV2(input: Readonly<{
+    actionId: 'session.title.set' | 'session.stop';
+    actionArgs: Readonly<Record<string, unknown>>;
+    summary: string;
+}>): string {
+    return JSON.stringify({
+        v: 2,
+        status: 'open',
+        createdAtMs: 1,
+        updatedAtMs: 1,
+        createdBy: { surface: 'mcp', sessionId: 's1' },
+        requestedSurface: 'mcp',
+        executionOriginV1: {
+            v: 1,
+            authority: 'account_automation',
+            surface: 'mcp',
+            caller: { kind: 'host' },
+            serverId: 'srv-main',
+            sessionId: 's1',
+            target: { kind: 'session', sessionId: 's1' },
+            actionId: input.actionId,
+            requestId: `request-${input.actionId}`,
+        },
+        actionId: input.actionId,
+        actionArgs: input.actionArgs,
+        summary: input.summary,
+    });
+}
+
+function approvalArtifact(id: string, body: string) {
+    const request = ApprovalRequestSchema.parse(JSON.parse(body));
+    return {
+        id,
+        header: buildApprovalRequestArtifactHeaderV1(request),
+        body,
+    };
+}
+
+function expectTerminalApprovalFailureUpdate(artifactId: string, errorCode: string): void {
+    expect(updateArtifactWithHeader).toHaveBeenCalledTimes(2);
+    const lastCall = updateArtifactWithHeader.mock.calls.at(-1);
+    if (!lastCall) throw new Error('expected terminal approval update');
+    expect(lastCall[0]).toBe(artifactId);
+    const persisted = ApprovalRequestSchema.parse(JSON.parse(String(lastCall[2])));
+    expect(persisted).toMatchObject({
+        status: 'failed',
+        decision: { kind: 'approve' },
+        execution: { ok: false, errorCode },
+    });
+}
 
 vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
     sessionExecutionRunStart,
@@ -243,20 +297,14 @@ describe('createDefaultActionExecutor approvals', () => {
             },
             sessions: { s1: { id: 's1' } },
             artifacts: {
-                'artifact-1': {
-                    id: 'artifact-1',
-                    body: JSON.stringify({
-                        v: 1,
-                        status: 'open',
-                        createdAtMs: 1,
-                        updatedAtMs: 1,
-                        createdBy: { surface: 'mcp', sessionId: 's1' },
-                        requestedSurface: 'mcp',
+                'artifact-1': approvalArtifact(
+                    'artifact-1',
+                    approvalRequestBodyV2({
                         actionId: 'session.title.set',
                         actionArgs: { sessionId: 's1', title: 'Renamed from approval' },
                         summary: 'Set session title',
                     }),
-                },
+                ),
             },
         };
         sessionRename.mockClear();
@@ -393,7 +441,7 @@ describe('createDefaultActionExecutor approvals', () => {
 
         await expect(executor.execute(
             'account.apiTokens.create' as any,
-            { label: apiTokenSummary.label, expiresAt: apiTokenSummary.expiresAt },
+            { tokenId: apiTokenSummary.tokenId, label: apiTokenSummary.label, expiresAt: apiTokenSummary.expiresAt },
             context,
         )).resolves.toEqual({
             ok: true,
@@ -417,7 +465,7 @@ describe('createDefaultActionExecutor approvals', () => {
         });
 
         expect(createCurrentAccountApiToken).toHaveBeenCalledExactlyOnceWith(
-            { label: apiTokenSummary.label, expiresAt: apiTokenSummary.expiresAt },
+            { tokenId: apiTokenSummary.tokenId, label: apiTokenSummary.label, expiresAt: apiTokenSummary.expiresAt },
             { signal: controller.signal },
         );
         expect(listCurrentAccountApiTokens).toHaveBeenCalledExactlyOnceWith({}, { signal: controller.signal });
@@ -576,7 +624,10 @@ describe('createDefaultActionExecutor approvals', () => {
     it('routes session.message.send through the active readiness barrier', async () => {
         const sendSessionMessageWithServerScope = await getSendSessionMessageWithServerScopeMock();
         sendSessionMessageWithServerScope.mockReset();
-        sendSessionMessageWithServerScope.mockResolvedValueOnce({ ok: true });
+        sendSessionMessageWithServerScope.mockResolvedValueOnce({
+            ok: true,
+            ack: { ok: true, localId: 'ui-input-1', accepted: true, persistence: 'pending' },
+        });
 
         const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
         const executor = createDefaultActionExecutor({
@@ -589,7 +640,10 @@ describe('createDefaultActionExecutor approvals', () => {
             { surface: 'ui' },
         );
 
-        expect(res).toEqual({ ok: true, result: { ok: true } });
+        expect(res).toEqual({
+            ok: true,
+            result: { status: 'accepted', localId: 'ui-input-1' },
+        });
         expect(sendSessionMessageWithServerScope).toHaveBeenCalledWith({
             sessionId: 's1',
             message: 'Hello from action',
@@ -598,7 +652,7 @@ describe('createDefaultActionExecutor approvals', () => {
         });
     });
 
-    it('executes approved session.title.set requests when the approval was created from the MCP surface', async () => {
+    it('does not replay an MCP approval locally when its exact daemon origin is unavailable', async () => {
         const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
         const executor = createDefaultActionExecutor();
 
@@ -608,12 +662,18 @@ describe('createDefaultActionExecutor approvals', () => {
             { surface: 'ui' },
         );
 
-        expect(res.ok).toBe(true);
-        expect((res as any).result?.status).toBe('executed');
-        expect(patchSessionMetadataWithRetry).toHaveBeenCalledTimes(1);
+        expect(res).toMatchObject({
+            ok: true,
+            result: {
+                status: 'failed',
+                execution: { ok: false, errorCode: 'approval_stale' },
+            },
+        });
+        expectTerminalApprovalFailureUpdate('artifact-1', 'approval_stale');
+        expect(patchSessionMetadataWithRetry).not.toHaveBeenCalled();
     });
 
-    it('routes surfaced ui actions through approvals when settings require approval for that surface', async () => {
+    it('requires an exact Home scope before creating a surfaced UI approval', async () => {
         state.settings.actionsSettingsV1.actions['review.start'] = {
             enabledPlacements: [],
             disabledSurfaces: [],
@@ -631,16 +691,15 @@ describe('createDefaultActionExecutor approvals', () => {
             { surface: 'ui' },
         );
 
-        expect(res.ok).toBe(true);
-        expect((res as any).result).toEqual(expect.objectContaining({
-            kind: 'approval_request_created',
-            artifactId: 'artifact-created',
-            actionId: 'review.start',
-        }));
+        expect(res).toEqual({
+            ok: false,
+            errorCode: 'approval_origin_unavailable',
+            error: 'approval_origin_unavailable',
+        });
         expect(sessionExecutionRunStart).not.toHaveBeenCalled();
     });
 
-    it('executes session.title.set approvals even when the session is missing locally', async () => {
+    it('does not use local Session cache absence to bypass exact-daemon approval replay', async () => {
         state.sessions = {};
         const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
         const executor = createDefaultActionExecutor();
@@ -651,32 +710,32 @@ describe('createDefaultActionExecutor approvals', () => {
             { surface: 'ui' },
         );
 
-        expect(res.ok).toBe(true);
-        expect((res as any).result?.status).toBe('executed');
-        expect(patchSessionMetadataWithRetry).toHaveBeenCalledTimes(1);
+        expect(res).toMatchObject({
+            ok: true,
+            result: {
+                status: 'failed',
+                execution: { ok: false, errorCode: 'approval_stale' },
+            },
+        });
+        expectTerminalApprovalFailureUpdate('artifact-1', 'approval_stale');
+        expect(patchSessionMetadataWithRetry).not.toHaveBeenCalled();
     });
 
-    it('executes approved session.stop requests when the approval was created from the MCP surface', async () => {
+    it('does not replay an approved MCP stop locally without its exact daemon origin', async () => {
         state.settings.actionsSettingsV1.actions['session.stop'] = {
             enabledPlacements: [],
             disabledSurfaces: [],
             disabledPlacements: [],
             approvalRequiredSurfaces: [],
         };
-        state.artifacts['artifact-stop'] = {
-            id: 'artifact-stop',
-            body: JSON.stringify({
-                v: 1,
-                status: 'open',
-                createdAtMs: 1,
-                updatedAtMs: 1,
-                createdBy: { surface: 'mcp', sessionId: 's1' },
-                requestedSurface: 'mcp',
+        state.artifacts['artifact-stop'] = approvalArtifact(
+            'artifact-stop',
+            approvalRequestBodyV2({
                 actionId: 'session.stop',
                 actionArgs: { sessionId: 's1' },
                 summary: 'Stop session',
             }),
-        };
+        );
         sessionStopWithServerScope.mockClear();
 
         const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
@@ -688,27 +747,23 @@ describe('createDefaultActionExecutor approvals', () => {
             { surface: 'ui' },
         );
 
-        expect(res.ok).toBe(true);
-        expect((res as any).result?.status).toBe('executed');
-        expect(sessionStopWithServerScope).toHaveBeenCalledWith('s1', { serverId: undefined });
+        expect(res).toMatchObject({
+            ok: true,
+            result: {
+                status: 'failed',
+                execution: { ok: false, errorCode: 'approval_stale' },
+            },
+        });
+        expectTerminalApprovalFailureUpdate('artifact-stop', 'approval_stale');
+        expect(sessionStopWithServerScope).not.toHaveBeenCalled();
     });
 
-    it('routes deferred session directory approval replay to the target daemon without serializing the host proof as spawn input', async () => {
+    it('fails a legacy directory approval safely when immutable execution origin is unavailable', async () => {
         const { machineRpcWithServerScope } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc');
-        const targetDecisionResult = {
-            ok: true,
-            status: 'executed' as const,
-            execution: {
-                executedAtMs: 3,
-                ok: true as const,
-                result: { type: 'pending', retryWithSameCreationKey: true, outcome: 'accepted' },
-            },
-        };
         vi.mocked(machineRpcWithServerScope).mockReset();
-        vi.mocked(machineRpcWithServerScope).mockResolvedValueOnce(targetDecisionResult);
-        state.artifacts['artifact-directory-spawn'] = {
-            id: 'artifact-directory-spawn',
-            body: JSON.stringify({
+        state.artifacts['artifact-directory-spawn'] = approvalArtifact(
+            'artifact-directory-spawn',
+            JSON.stringify({
                 v: 1,
                 status: 'open',
                 createdAtMs: 1,
@@ -735,7 +790,7 @@ describe('createDefaultActionExecutor approvals', () => {
                 summary: 'Create session',
                 serverId: 'srv-target',
             }),
-        };
+        );
 
         const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
         const executor = createDefaultActionExecutor();
@@ -743,19 +798,40 @@ describe('createDefaultActionExecutor approvals', () => {
         await expect(executor.execute(
             'approval.request.decide' as any,
             { artifactId: 'artifact-directory-spawn', decision: 'approve' },
-            { surface: 'ui', serverId: 'srv-target' },
-        )).resolves.toEqual({ ok: true, result: targetDecisionResult });
-
-        expect(machineRpcWithServerScope).toHaveBeenCalledExactlyOnceWith({
-            serverId: 'srv-target',
-            machineId: 'machine-target',
-            method: RPC_METHODS.APPROVAL_REQUEST_DECIDE,
-            payload: {
-                artifactId: 'artifact-directory-spawn',
-                decision: 'approve',
-                serverId: 'srv-target',
+            { surface: 'ui' },
+        )).resolves.toMatchObject({
+            ok: true,
+            result: {
+                status: 'failed',
+                execution: { ok: false, errorCode: 'approval_stale' },
             },
         });
-        expect(updateArtifactWithHeader).not.toHaveBeenCalled();
+
+        expect(machineRpcWithServerScope).not.toHaveBeenCalled();
+        expectTerminalApprovalFailureUpdate('artifact-directory-spawn', 'approval_stale');
+    });
+
+    it('routes V2 replay by the current profile while carrying stable Home and immutable origin evidence', async () => {
+        const { machineRpcWithServerScope } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc');
+        vi.mocked(machineRpcWithServerScope).mockReset();
+        vi.mocked(machineRpcWithServerScope).mockResolvedValueOnce({ ok: true });
+        const { replayApprovedApprovalRequestAtExactDaemon } = await import('./defaultActionExecutor');
+
+        await replayApprovedApprovalRequestAtExactDaemon({
+            artifactId: 'approval-cross-device',
+            executionTarget: {
+                serverId: 'ui-A',
+                serverIdentityId: 'stable-home-a',
+                originServerId: 'local-A',
+                machineId: 'machine-exact',
+            },
+        });
+
+        expect(machineRpcWithServerScope).toHaveBeenCalledExactlyOnceWith({
+            serverId: 'ui-A',
+            machineId: 'machine-exact',
+            method: RPC_METHODS.APPROVAL_REQUEST_REPLAY_APPROVED,
+            payload: { artifactId: 'approval-cross-device' },
+        });
     });
 });

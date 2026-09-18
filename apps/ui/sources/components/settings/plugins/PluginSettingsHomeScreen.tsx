@@ -14,7 +14,8 @@ import { Typography } from '@/constants/Typography';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { Modal } from '@/modal';
 import { t } from '@/text';
-import type { PluginScaffoldUiMode } from '@happier-dev/protocol';
+import { createActionInputForm } from '@/components/plugins/actions/actionInputForm';
+import { presentActionInputForm } from '@/components/plugins/actions/presentActionInputForm';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
 import { seedNewSessionDraftV1 } from '@/components/sessions/new/newSessionDraftSeed';
@@ -102,58 +103,6 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
         : state.discoverSources.find((source) => source.id === state.selectedDiscoverSourceId)?.title ?? null;
     const views = createPluginSettingsViews((key) => t(key));
     const activeAccountScope = useActiveServerAccountScope();
-    /** The collected scaffold answers, shared by the deterministic and Agent-assisted create flows. */
-    const promptDevelopmentCreateParams = React.useCallback(async (): Promise<Readonly<{
-        targetDir: string;
-        displayName: string;
-        pluginId: string;
-        ui?: PluginScaffoldUiMode;
-    }> | null> => {
-        const targetDir = (await Modal.prompt(
-            t('settingsPlugins.developmentCreateDirectoryTitle'),
-            t('settingsPlugins.developmentCreateDirectoryBody'),
-            { confirmText: t('common.next'), cancelText: t('common.cancel') },
-        ))?.trim();
-        if (!targetDir) return null;
-        const displayName = (await Modal.prompt(
-            t('settingsPlugins.developmentCreateNameTitle'),
-            t('settingsPlugins.developmentCreateNameBody'),
-            { confirmText: t('common.next'), cancelText: t('common.cancel') },
-        ))?.trim();
-        if (!displayName) return null;
-        const pluginId = (await Modal.prompt(
-            t('settingsPlugins.developmentCreateIdTitle'),
-            t('settingsPlugins.developmentCreateIdBody'),
-            { placeholder: 'com.example.my-plugin', confirmText: t('common.next'), cancelText: t('common.cancel') },
-        ))?.trim();
-        if (!pluginId) return null;
-        // The scaffold's UI mode is part of what the author is creating, so the
-        // in-app lifecycle asks for it. Without this step every plugin created
-        // from the app is a non-UI plugin and no later in-app step can add a
-        // surface to it.
-        let ui: PluginScaffoldUiMode | undefined;
-        let uiChosen = false;
-        await Modal.alertAsync(
-            t('settingsPlugins.developmentCreateSurfaceTitle'),
-            t('settingsPlugins.developmentCreateSurfaceBody'),
-            [
-                {
-                    text: t('settingsPlugins.developmentCreateSurfaceReactNative'),
-                    onPress: () => { ui = 'reactNative'; uiChosen = true; },
-                },
-                {
-                    text: t('settingsPlugins.developmentCreateSurfaceHostedWeb'),
-                    onPress: () => { ui = 'hostedWeb'; uiChosen = true; },
-                },
-                {
-                    text: t('settingsPlugins.developmentCreateSurfaceNone'),
-                    onPress: () => { ui = undefined; uiChosen = true; },
-                },
-            ],
-        );
-        if (!uiChosen) return null;
-        return { targetDir, displayName, pluginId, ...(ui ? { ui } : {}) };
-    }, []);
     /**
      * Opens the ordinary New Session composer on the exact selected
      * administration target and the given plugin source root.
@@ -183,50 +132,53 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
         if (!draftId) return;
         router.push({ pathname: '/new', params: buildNewSessionLaunchRouteParams({ draftId }) });
     }, [activeAccountScope, router, state.executionMachineId, state.executionServerId]);
-    const createDevelopmentPlugin = React.useCallback(async () => {
+    // Both entry points share one transient form. All answers remain editable
+    // together, including after declining the consequential create confirmation.
+    const createDevelopmentPlugin = React.useCallback((withAgent: boolean) => {
         if (!state.daemonOperationsAvailable || !state.developmentCreateAvailable) return;
-        const params = await promptDevelopmentCreateParams();
-        if (!params) return;
-        const confirmed = await Modal.confirm(
-            t('settingsPlugins.developmentCreateConfirmTitle'),
-            t('settingsPlugins.developmentCreateConfirmBody', {
-                pluginId: params.pluginId,
-                targetDir: params.targetDir,
-            }),
-            { confirmText: t('settingsPlugins.developmentCreate'), cancelText: t('common.cancel') },
-        );
-        if (!confirmed) return;
-        state.runDevelopmentCreate(params);
-    }, [state, promptDevelopmentCreateParams]);
-    /**
-     * The Agent-assisted create path: the exact same deterministic scaffold
-     * prompts, the exact same canonical `create` action — and then the scaffold
-     * result's returned source root opens the ordinary authoring Session.
-     * Nothing about trust, review, or the scaffold owner changes.
-     */
-    const createDevelopmentPluginWithAgent = React.useCallback(async () => {
-        if (!state.daemonOperationsAvailable || !state.developmentCreateAvailable) return;
-        const params = await promptDevelopmentCreateParams();
-        if (!params) return;
-        const confirmed = await Modal.confirm(
-            t('settingsPlugins.developmentCreateConfirmTitle'),
-            t('settingsPlugins.developmentCreateConfirmBody', {
-                pluginId: params.pluginId,
-                targetDir: params.targetDir,
-            }),
-            { confirmText: t('settingsPlugins.developmentCreateWithAgent'), cancelText: t('common.cancel') },
-        );
-        if (!confirmed) return;
-        state.runDevelopmentCreate({
-            ...params,
-            onCreated: ({ pluginId, sourceRootPath }) => {
-                openPluginAuthoringSession({
-                    sourceRootPath,
-                    promptText: t('settingsPlugins.developmentCreateWithAgentPrompt', { pluginId }),
+        const title = t(withAgent ? 'settingsPlugins.developmentCreateWithAgent' : 'settingsPlugins.developmentCreate');
+        const form = createActionInputForm({
+            presentation: {
+                title,
+                description: t('settingsPlugins.developmentCreateSubtitle'),
+                inputHints: {
+                    submitLabel: title,
+                    fields: [
+                        { path: 'targetDir', title: t('settingsPlugins.developmentCreateDirectoryTitle'), description: t('settingsPlugins.developmentCreateDirectoryBody'), widget: 'text', required: true },
+                        { path: 'displayName', title: t('settingsPlugins.developmentCreateNameTitle'), description: t('settingsPlugins.developmentCreateNameBody'), widget: 'text', required: true },
+                        { path: 'pluginId', title: t('settingsPlugins.developmentCreateIdTitle'), description: t('settingsPlugins.developmentCreateIdBody'), widget: 'text', required: true },
+                        { path: 'ui', title: t('settingsPlugins.developmentCreateSurfaceTitle'), description: t('settingsPlugins.developmentCreateSurfaceBody'), widget: 'select', required: true, options: [
+                            { value: 'reactNative', label: t('settingsPlugins.developmentCreateSurfaceReactNative') },
+                            { value: 'hostedWeb', label: t('settingsPlugins.developmentCreateSurfaceHostedWeb') },
+                            { value: 'none', label: t('settingsPlugins.developmentCreateSurfaceNone') },
+                        ] },
+                    ],
+                },
+            },
+            submit: async (input, context) => {
+                const targetDir = typeof input.targetDir === 'string' ? input.targetDir.trim() : '';
+                const displayName = typeof input.displayName === 'string' ? input.displayName.trim() : '';
+                const pluginId = typeof input.pluginId === 'string' ? input.pluginId.trim() : '';
+                const ui = input.ui;
+                if (!targetDir || !displayName || !pluginId || (ui !== 'reactNative' && ui !== 'hostedWeb' && ui !== 'none')) return { ok: false };
+                const confirmed = await Modal.confirm(
+                    t('settingsPlugins.developmentCreateConfirmTitle'),
+                    t('settingsPlugins.developmentCreateConfirmBody', { pluginId, targetDir }),
+                    { confirmText: title, cancelText: t('common.cancel') },
+                );
+                if (!confirmed || context.signal.aborted) return { ok: false };
+                state.runDevelopmentCreate({
+                    targetDir, displayName, pluginId,
+                    ...(ui === 'none' ? {} : { ui }),
+                    ...(withAgent ? { onCreated: (created: Readonly<{ pluginId: string; sourceRootPath: string }>) => {
+                        openPluginAuthoringSession({ sourceRootPath: created.sourceRootPath, promptText: t('settingsPlugins.developmentCreateWithAgentPrompt', { pluginId: created.pluginId }) });
+                    } } : {}),
                 });
+                return { ok: true };
             },
         });
-    }, [openPluginAuthoringSession, state, promptDevelopmentCreateParams]);
+        presentActionInputForm({ form });
+    }, [openPluginAuthoringSession, state]);
     /**
      * Opens the ordinary authoring Session for an existing development source,
      * at that entry's exact `sourceRootPath` reported by the daemon.
@@ -275,6 +227,7 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
             <MachineAdministrationTargetSelector
                 selection={state.administrationTargetSelection}
                 testIDPrefix="settings.plugins.administration.target"
+                groupTitle={t('settingsPlugins.administrationMachineTitle')}
             />
 
             {/*
@@ -295,32 +248,6 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
                 testID="settings.plugins.accountDataErase"
             />
 
-            {webhooksAvailable ? (
-                <ItemGroup>
-                    <Item
-                        testID="settings.plugins.webhooks"
-                        title={t('settingsPlugins.webhookAdministration.title')}
-                        subtitle={t('settingsPlugins.webhookAdministration.footer')}
-                        icon={<Icon name="link" size={29} color={theme.colors.accent.indigo} />}
-                        onPress={() => router.push(SETTINGS_ROUTES.pluginWebhooks)}
-                    />
-                </ItemGroup>
-            ) : null}
-
-            <ItemGroup>
-                <Item
-                    testID="settings.plugins.sources"
-                    title={t('settingsPlugins.sourceAdministration.title')}
-                    subtitle={t('settingsPlugins.sourceAdministration.subtitle')}
-                    icon={<Icon name="globe" size={29} color={theme.colors.accent.indigo} />}
-                    onPress={() => router.push(SETTINGS_ROUTES.pluginSources)}
-                />
-            </ItemGroup>
-
-            <NativeAppPluginPanelsSettingsEntry />
-
-            <PluginAppPagesSettingsEntry />
-
             <View style={styles.viewSelector}>
                 <ScrollView
                     testID="settings.plugins.management.viewScroller"
@@ -328,7 +255,7 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
                     showsHorizontalScrollIndicator={false}
                 >
                     <SegmentedTabBar
-                        tabs={views}
+                        tabs={views.filter((view) => view.id === 'installed' || view.id === 'discover')}
                         activeTabId={state.activeView}
                         onSelectTab={state.setActiveView}
                         testIDPrefix="settings.plugins.management.view"
@@ -346,6 +273,9 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
                 <>
                     <InstalledPluginsSection
                         installedPlugins={state.installedPlugins}
+                        truthSettled={state.pluginTruthSettled}
+                        unavailable={state.readOnlySnapshotNotice !== null}
+                        onDiscover={() => state.setActiveView('discover')}
                         canRunActions={state.canRefreshInstalledPlugins}
                         isPluginActionInFlight={state.isPluginActionInFlight}
                         onNavigateToPlugin={(pluginId) => router.push(buildPluginDetailRoute(pluginId))}
@@ -464,6 +394,7 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
                         isPluginActionInFlight={state.isPluginActionInFlight}
                         onAction={state.runCatalogAction}
                         onLoadMore={state.loadMoreDiscover}
+                        onNavigateToPlugin={(pluginId) => router.push(buildPluginDetailRoute(pluginId))}
                     />
                 </>
             ) : null}
@@ -476,10 +407,10 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
                     canRunActions={state.daemonOperationsAvailable}
                     isPluginActionInFlight={state.isPluginActionInFlight}
                     onCreate={() => {
-                        void createDevelopmentPlugin();
+                        createDevelopmentPlugin(false);
                     }}
                     onCreateWithAgent={() => {
-                        void createDevelopmentPluginWithAgent();
+                        createDevelopmentPlugin(true);
                     }}
                     onDevelopSourceRoot={() => {
                         void developPluginSourceRoot();
@@ -492,6 +423,39 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
             {state.activeView === 'diagnostics' ? (
                 <PluginDiagnosticsSnapshotSection diagnostics={state.currentDiagnostics} />
             ) : null}
+
+            <View style={styles.viewSelector}>
+                <SegmentedTabBar
+                    tabs={views.filter((view) => view.id === 'development' || view.id === 'diagnostics')}
+                    activeTabId={state.activeView}
+                    onSelectTab={state.setActiveView}
+                    testIDPrefix="settings.plugins.management.view"
+                    accessibilityLabel={t('settingsPlugins.viewSelectorLabel')}
+                    segmentSizing="content"
+                    targetSize="platform"
+                />
+            </View>
+
+            <ItemGroup>
+                <Item
+                    testID="settings.plugins.sources"
+                    title={t('settingsPlugins.sourceAdministration.title')}
+                    subtitle={t('settingsPlugins.sourceAdministration.subtitle')}
+                    icon={<Icon name="globe" size={29} color={theme.colors.accent.indigo} />}
+                    onPress={() => router.push(SETTINGS_ROUTES.pluginSources)}
+                />
+                {webhooksAvailable ? (
+                    <Item
+                        testID="settings.plugins.webhooks"
+                        title={t('settingsPlugins.webhookAdministration.title')}
+                        subtitle={t('settingsPlugins.webhookAdministration.footer')}
+                        icon={<Icon name="link" size={29} color={theme.colors.accent.indigo} />}
+                        onPress={() => router.push(SETTINGS_ROUTES.pluginWebhooks)}
+                    />
+                ) : null}
+            </ItemGroup>
+            <NativeAppPluginPanelsSettingsEntry />
+            <PluginAppPagesSettingsEntry />
         </ItemList>
     );
 });

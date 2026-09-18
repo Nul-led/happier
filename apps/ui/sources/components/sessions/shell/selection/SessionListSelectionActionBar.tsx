@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { Platform, Pressable, View, useWindowDimensions } from 'react-native';
-import * as safeAreaContext from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -27,6 +26,7 @@ import { GlassPanel } from '@/components/ui/glass/GlassPanel';
 import { HorizontalScrollableRow } from '@/components/ui/scroll/HorizontalScrollableRow';
 import { Text } from '@/components/ui/text/Text';
 import { useSessionCockpitBottomChromeHeight } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
+import { useOptionalSafeAreaInsets } from '@/hooks/ui/useOptionalSafeAreaInsets';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -64,10 +64,6 @@ type ConfirmActionState = Readonly<{
 const EMPTY_TARGETS: readonly SessionBulkActionTarget[] = Object.freeze([]);
 const ACTION_BAR_COMPACT_HEIGHT_THRESHOLD = 760;
 const SELECTION_ACTION_BAR_RADIUS = 16;
-const ZERO_SAFE_AREA_INSETS = Object.freeze({ top: 0, right: 0, bottom: 0, left: 0 });
-const SafeAreaInsetsContext = (
-    safeAreaContext as unknown as { SafeAreaInsetsContext?: React.Context<typeof ZERO_SAFE_AREA_INSETS | null> }
-).SafeAreaInsetsContext ?? React.createContext<typeof ZERO_SAFE_AREA_INSETS | null>(ZERO_SAFE_AREA_INSETS);
 
 function safeActionTestId(actionId: string): string {
     const stableActionId = actionId.startsWith('ui.') ? actionId.slice(3) : actionId;
@@ -287,7 +283,7 @@ const stylesheet = StyleSheet.create((theme) => ({
 export function SessionListSelectionActionBarHost(props: SessionListSelectionActionBarHostProps = {}): React.ReactElement | null {
     const styles = stylesheet;
     const { theme } = useUnistyles();
-    const safeAreaInsets = React.useContext(SafeAreaInsetsContext) ?? ZERO_SAFE_AREA_INSETS;
+    const safeAreaInsets = useOptionalSafeAreaInsets();
     const windowDimensions = useWindowDimensions();
     const bottomChromeHeight = useSessionCockpitBottomChromeHeight();
     const selection = useOptionalSessionListSelectionState();

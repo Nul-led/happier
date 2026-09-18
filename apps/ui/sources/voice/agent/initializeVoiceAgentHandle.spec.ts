@@ -5,7 +5,10 @@ import { installVoiceAgentCommonModuleMocks } from './voiceAgentTestHelpers';
 const start = vi.fn(async (_params: any) => ({ voiceAgentId: 'voice-agent-1' }));
 const ensureVoiceAgentInstallablesBackground = vi.fn(async (_args: unknown) => {});
 const assertDaemonVoiceAgentRuntimeSupported = vi.fn(async () => {});
-const resolveVoiceAgentInitialContexts = vi.fn((_sessionId: string, _options?: Readonly<{ targetSessionId?: string | null }>) => ({
+const resolveVoiceAgentInitialContexts = vi.fn((_sessionId: string, _options?: Readonly<{
+    targetSessionId?: string | null;
+    targetSessionAddress?: Readonly<{ serverId: string; sessionId: string }> | null;
+}>) => ({
     bootstrapInitialContext: 'bootstrap-context',
     deferredTargetSessionContext: '',
 }));
@@ -55,18 +58,21 @@ const state: any = {
             },
         },
     },
-    sessionListRenderables: {
-        s1: {
-            id: 's1',
-            active: true,
-            presence: 'online',
-            modelMode: 'default',
-            metadata: {
-                flavor: 'codex',
-                profileId: 'cached-profile',
+    sessionListRowsByServerId: {
+        'server-a': {
+            s1: {
+                id: 's1',
+                active: true,
+                presence: 'online',
+                modelMode: 'default',
+                metadata: {
+                    flavor: 'codex',
+                    profileId: 'cached-profile',
+                },
             },
         },
     },
+    ordinarySessionListMembershipByServerId: { 'server-a': ['s1'] },
     sessionListIndexByServerId: {
         'server-a': [
             {
@@ -103,7 +109,10 @@ vi.mock('@/voice/agent/ensureVoiceAgentInstallablesBackground', () => ({
 }));
 
 vi.mock('@/voice/agent/resolveVoiceAgentInitialContexts', () => ({
-    resolveVoiceAgentInitialContexts: (sessionId: string, options?: Readonly<{ targetSessionId?: string | null }>) =>
+    resolveVoiceAgentInitialContexts: (sessionId: string, options?: Readonly<{
+        targetSessionId?: string | null;
+        targetSessionAddress?: Readonly<{ serverId: string; sessionId: string }> | null;
+    }>) =>
         resolveVoiceAgentInitialContexts(sessionId, options),
 }));
 
@@ -169,9 +178,9 @@ describe('initializeVoiceAgentHandle', () => {
                 localControl: { supported: true },
             },
         };
-        state.sessionListRenderables.s1.metadataLayoutVersion = 0;
-        delete state.sessionListRenderables.s1.ownerMetadataView;
-        state.sessionListRenderables.s1.metadata = {
+        state.sessionListRowsByServerId['server-a'].s1.metadataLayoutVersion = 0;
+        delete state.sessionListRowsByServerId['server-a'].s1.ownerMetadataView;
+        state.sessionListRowsByServerId['server-a'].s1.metadata = {
             flavor: 'codex',
             profileId: 'cached-profile',
             agentRuntimeCapabilitiesV1: {
@@ -206,8 +215,8 @@ describe('initializeVoiceAgentHandle', () => {
                 sessionId: 's1',
                 agentId: 'codex',
                 profileId: 'cached-profile',
-                chatModelId: getAgentCore('codex').model.defaultMode,
-                commitModelId: getAgentCore('codex').model.defaultMode,
+                chatModelId: getAgentCore('codex').model?.defaultMode,
+                commitModelId: getAgentCore('codex').model?.defaultMode,
             }),
         );
     });
@@ -216,13 +225,13 @@ describe('initializeVoiceAgentHandle', () => {
         ['visible session metadata', () => {
             state.sessions.s1.metadataLayoutVersion = 1;
             state.sessions.s1.ownerMetadataView = null;
-            state.sessionListRenderables.s1.metadataLayoutVersion = 1;
-            state.sessionListRenderables.s1.ownerMetadataView = null;
+            state.sessionListRowsByServerId['server-a'].s1.metadataLayoutVersion = 1;
+            state.sessionListRowsByServerId['server-a'].s1.ownerMetadataView = null;
         }],
         ['cached session metadata', () => {
             state.sessions.s1.metadata = null;
-            state.sessionListRenderables.s1.metadataLayoutVersion = 1;
-            state.sessionListRenderables.s1.ownerMetadataView = null;
+            state.sessionListRowsByServerId['server-a'].s1.metadataLayoutVersion = 1;
+            state.sessionListRowsByServerId['server-a'].s1.ownerMetadataView = null;
         }],
     ])('fails closed without RPC when the %s Agent is unreadable', async (_case, arrange) => {
         arrange();

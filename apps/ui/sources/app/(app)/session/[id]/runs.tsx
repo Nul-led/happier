@@ -18,9 +18,9 @@ import { resolveExecutionRunLauncherIntents } from '@/components/sessions/runs/l
 import { ConstrainedScreenContent } from '@/components/ui/layout/ConstrainedScreenContent';
 import { Text } from '@/components/ui/text/Text';
 import { getErrorMessage } from '@/utils/errors/getErrorMessage';
-import { useSession } from '@/sync/domains/state/storage';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
+import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
 
 
 type LoadState =
@@ -83,12 +83,16 @@ function SessionRunsScreenContent(props: Readonly<{
 }>) {
   const { theme } = useUnistyles();
   const router = useRouter();
-  const session = useSession(props.sessionId);
+  const session = useSessionViewShellSession(props.sessionId, props.routeScope.serverId);
 
   const [state, setState] = React.useState<LoadState>({ status: 'loading' });
   const loadGenerationRef = React.useRef(0);
   const headerTint = theme.colors.chrome.header.foreground ?? theme.colors.text.primary;
-  const { canLaunchExecutionRuns, executionRunsBackends } = useSessionExecutionRunLaunchability(props.sessionId, session);
+  const { canLaunchExecutionRuns, executionRunsBackends } = useSessionExecutionRunLaunchability(
+    props.sessionId,
+    session,
+    props.routeScope.serverId,
+  );
   const launchIntents = React.useMemo(
     () => resolveExecutionRunLauncherIntents(executionRunsBackends as ExecutionRunBackendCapabilityMap),
     [executionRunsBackends],

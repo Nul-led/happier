@@ -3,6 +3,7 @@ import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
+import type { SessionAgentActivityRow } from '@/components/sessions/agents/presentation/sessionAgentActivityRows';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import { t } from '@/text';
 
@@ -50,26 +51,31 @@ const stylesheet = StyleSheet.create((theme) => ({
 
 export const SessionSubagentList = React.memo((props: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     testID: string;
     title: string;
     emptyLabel: string;
-    subagents: readonly SessionSubagent[];
+    /**
+     * Merged entry + local row pairs, in roster order. The entry carries the canonical
+     * status and attention; the subagent carries the operational handles a control needs.
+     * Passing them together is what removed the host-local `pendingPermissionById` index.
+     */
+    rows: readonly SessionAgentActivityRow[];
     activityPreviewById: ReadonlyMap<string, string>;
-    pendingPermissionById: ReadonlyMap<string, boolean>;
     onOpenPreview: (subagent: SessionSubagent) => void;
     onOpenFull: (subagent: SessionSubagent) => void;
     onOpenAdvanced: (subagent: SessionSubagent) => void;
     onLaunchTeammate?: ((teamId: string) => void) | null;
 }>) => {
     const styles = stylesheet;
-    const groups = React.useMemo(() => groupSessionSubagents(props.subagents), [props.subagents]);
+    const groups = React.useMemo(() => groupSessionSubagents(props.rows), [props.rows]);
 
     return (
         <View testID={props.testID} style={styles.section}>
             <View style={styles.header}>
                 <Text style={styles.title}>{props.title}</Text>
                 <View testID={`session-agents-section-count:${props.testID}`} style={styles.countPill}>
-                    <Text style={styles.countText}>{t('session.subagents.panel.sectionCount', { count: props.subagents.length })}</Text>
+                    <Text style={styles.countText}>{t('session.subagents.panel.sectionCount', { count: props.rows.length })}</Text>
                 </View>
             </View>
             {groups.length === 0 ? (
@@ -78,10 +84,10 @@ export const SessionSubagentList = React.memo((props: Readonly<{
                 <SessionSubagentGroup
                     key={group.key}
                     sessionId={props.sessionId}
+                    serverId={props.serverId}
                     label={group.label}
-                    subagents={group.items}
+                    rows={group.items}
                     activityPreviewById={props.activityPreviewById}
-                    pendingPermissionById={props.pendingPermissionById}
                     onOpenPreview={props.onOpenPreview}
                     onOpenFull={props.onOpenFull}
                     onOpenAdvanced={props.onOpenAdvanced}

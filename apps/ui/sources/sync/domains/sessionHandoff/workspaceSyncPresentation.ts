@@ -25,6 +25,17 @@ export type WorkspaceSyncErrorTranslationKey =
     | 'workspaceSync.error.conflictNeedsAttention'
     | 'workspaceSync.error.needsAttention';
 
+/**
+ * One reader for the daemon-supplied typed failure code. Workspace sync
+ * failures arrive as thrown transport/daemon errors, and every surface must
+ * read the same field rather than parsing messages.
+ */
+export function readWorkspaceSyncErrorCode(error: unknown): string | null {
+    if (!error || typeof error !== 'object') return null;
+    const code = (error as { code?: unknown }).code;
+    return typeof code === 'string' && code.length > 0 ? code : null;
+}
+
 export function resolveWorkspaceSyncModeTranslationKey(value: unknown): WorkspaceSyncModeTranslationKey | null {
     switch (value) {
         case 'copy_once': return 'workspaceSync.mode.copyOnce';

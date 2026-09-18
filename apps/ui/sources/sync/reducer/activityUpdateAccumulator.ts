@@ -1,4 +1,5 @@
 import type { ApiEphemeralActivityUpdate } from '../api/types/apiTypes';
+import { activityInstanceKey } from '../domains/session/sessionAddress';
 
 type ActivityUpdateAccumulatorOptions = Readonly<{
     shouldContinue?: () => boolean;
@@ -17,7 +18,7 @@ function normalizeSourceServerId(sourceServerId: string | null | undefined): str
 }
 
 function buildScopedActivityUpdateKey(sessionId: string, sourceServerId: string | null): string {
-    return `${sourceServerId ?? ''}\u0000${sessionId}`;
+    return activityInstanceKey({ serverId: sourceServerId, sessionId }, 'ephemeral_activity_update');
 }
 
 export class ActivityUpdateAccumulator {

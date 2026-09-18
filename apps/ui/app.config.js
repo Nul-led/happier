@@ -471,6 +471,7 @@ const baseExpoConfig = {
                 { buildIdentity: terminalNativeEvidenceBuildIdentity },
             ]] : []),
             require("./modules/happier-hardware-keyboard-shortcuts/app.plugin.js"),
+            require("./modules/happier-activity-notifications/app.plugin.js"),
             ...(androidReleaseShrinkerPlugin ? [androidReleaseShrinkerPlugin] : []),
             [
                 "@sentry/react-native/expo",

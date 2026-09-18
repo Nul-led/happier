@@ -1,9 +1,8 @@
 import * as React from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Platform, RefreshControl, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
 
-import { useAuth } from '@/auth/context/AuthContext';
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { ShimmerView } from '@/components/ui/feedback/ShimmerView';
@@ -22,8 +21,11 @@ import { Typography } from '@/constants/Typography';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { Modal } from '@/modal';
 import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { t } from '@/text';
 import { useHostActivelyViewed } from '@/utils/runtime/useHostActivelyViewed';
+import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 
 import {
     createApiTokenSettingsController,
@@ -37,7 +39,6 @@ import {
 } from './apiTokenSettingsPresentation';
 import { showApiTokenCreateModal } from './showApiTokenCreateModal';
 import { useApiTokenSettingsControllerState } from './useApiTokenSettingsControllerState';
-import { completeApiTokenSettingsSignOutEverywhere } from './apiTokenSettingsSignOutLifecycle';
 
 function resolveOperationNotice(notice: 'revoked' | 'revokedAll' | 'signedOutEverywhere'): string {
     if (notice === 'revoked') return t('settingsApiTokens.notices.revoked');
@@ -48,7 +49,6 @@ function resolveOperationNotice(notice: 'revoked' | 'revokedAll' | 'signedOutEve
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
-const API_TOKEN_EXPIRING_WINDOW_MS = 7 * DAY_MS;
 const SKELETON_TITLE = '██████████';
 const SKELETON_PREFIX = '████████';
 const SKELETON_METADATA = '████████';
@@ -84,9 +84,7 @@ function resolveNextApiTokenPresentationChangeAt(
 
         const expiresAtMs = token.expiresAt ? Date.parse(token.expiresAt) : Number.NaN;
         if (!Number.isFinite(expiresAtMs)) continue;
-        const expiringAtMs = expiresAtMs - API_TOKEN_EXPIRING_WINDOW_MS;
-        if (nowMs < expiringAtMs) consider(expiringAtMs);
-        else if (nowMs < expiresAtMs) consider(expiresAtMs);
+        if (nowMs < expiresAtMs) consider(expiresAtMs);
     }
 
     return nextAt;
@@ -222,9 +220,10 @@ function TokenRow(props: Readonly<{
     const lastUsedAt = props.token.lastUsedAt ? Date.parse(props.token.lastUsedAt) : null;
     const statusLabel = presentation.status === 'expired'
         ? t('settingsApiTokens.status.expired')
-        : presentation.status === 'expiring'
-            ? t('settingsApiTokens.status.expiring')
-            : null;
+        : null;
+    const exactExpiry = props.token.expiresAt
+        ? formatWithCachedDateTimeFormatter(new Date(props.token.expiresAt), undefined, { dateStyle: 'medium', timeStyle: 'short' })
+        : t('settingsApiTokens.create.expiryOptions.none');
     const revokingThisToken = props.operation === 'revoke' && props.operationTokenId === props.token.tokenId;
 
     const revoke = React.useCallback(async () => {
@@ -263,6 +262,9 @@ function TokenRow(props: Readonly<{
             subtitle={(
                 <View style={styles.rowMetadata}>
                     <Text style={styles.prefix}>{presentation.displayPrefix}</Text>
+                    <Text style={styles.metadataLabel}>{t(`settingsApiTokens.encryption.${presentation.encryptionAccess}`)}</Text>
+                    <Text style={styles.separator}>·</Text>
+                    <Text style={styles.metadataLabel}>{t(`settingsApiTokens.unattended.${presentation.unattendedTeamAccess}`)}</Text>
                     <Text style={styles.separator}>·</Text>
                     <Text style={styles.metadataLabel}>{t('settingsApiTokens.created')}</Text>
                     <RelativeTimeText atMs={createdAt} nowMs={props.nowMs} />
@@ -275,6 +277,9 @@ function TokenRow(props: Readonly<{
                             <RelativeTimeText atMs={lastUsedAt} nowMs={props.nowMs} />
                         </>
                     )}
+                    <Text style={styles.separator}>·</Text>
+                    <Text style={styles.metadataLabel}>{t('connect.expiresAtLabel')}</Text>
+                    <Text style={styles.metadataLabel}>{exactExpiry}</Text>
                     {statusLabel ? (
                         <StatusPill
                             testID={`settings-api-tokens-status:${props.token.tokenId}`}
@@ -386,8 +391,15 @@ export const ApiTokensSettingsScreen = React.memo(function ApiTokensSettingsScre
     controller?: ApiTokenSettingsController;
 }> = {}) {
     const { theme } = useUnistyles();
-    const auth = useAuth();
     const router = useRouter();
+    const resumeParams = useLocalSearchParams<{
+        resumeCreate?: string | string[];
+        label?: string | string[];
+        expiry?: string | string[];
+        targetServerId?: string | string[];
+        targetServerUrl?: string | string[];
+        expectedAccountId?: string | string[];
+    }>();
     const styles = stylesheet;
     const contentMaxWidthStyle = useLayoutMaxWidthStyle();
     const ownedControllerRef = React.useRef<ApiTokenSettingsController | null>(null);
@@ -410,6 +422,63 @@ export const ApiTokensSettingsScreen = React.memo(function ApiTokensSettingsScre
         || state.createPending
         || state.operation !== null;
     const announcedOperationNoticeRef = React.useRef<typeof state.operationNotice | null>(null);
+    const resumedCreateRef = React.useRef(false);
+
+    React.useEffect(() => {
+        if (resumedCreateRef.current) return;
+        const resume = Array.isArray(resumeParams.resumeCreate) ? resumeParams.resumeCreate[0] : resumeParams.resumeCreate;
+        if (resume !== '1') return;
+        const label = Array.isArray(resumeParams.label) ? resumeParams.label[0] : resumeParams.label;
+        const expiryRaw = Array.isArray(resumeParams.expiry) ? resumeParams.expiry[0] : resumeParams.expiry;
+        const expiryPreset = expiryRaw === '30d' || expiryRaw === '90d' || expiryRaw === '1y' || expiryRaw === 'none'
+            ? expiryRaw : '90d';
+        const targetServerId = String(Array.isArray(resumeParams.targetServerId)
+            ? resumeParams.targetServerId[0] ?? ''
+            : resumeParams.targetServerId ?? '').trim();
+        const targetServerUrl = String(Array.isArray(resumeParams.targetServerUrl)
+            ? resumeParams.targetServerUrl[0] ?? ''
+            : resumeParams.targetServerUrl ?? '').trim();
+        const expectedAccountId = String(Array.isArray(resumeParams.expectedAccountId)
+            ? resumeParams.expectedAccountId[0] ?? ''
+            : resumeParams.expectedAccountId ?? '').trim();
+        const clearResumeParams = () => router.setParams({
+            resumeCreate: undefined,
+            label: undefined,
+            expiry: undefined,
+            targetServerId: undefined,
+            targetServerUrl: undefined,
+            expectedAccountId: undefined,
+        });
+        resumedCreateRef.current = true;
+        const activeServer = getActiveServerSnapshot();
+        const targetMatchesActiveAccount = Boolean(
+            targetServerId
+            && targetServerUrl
+            && expectedAccountId
+            && activeServerAccountScope
+            && activeServerAccountScope.serverId === targetServerId
+            && activeServerAccountScope.accountId === expectedAccountId
+            && activeServer.serverId === targetServerId
+            && createServerUrlComparableKey(activeServer.serverUrl) === createServerUrlComparableKey(targetServerUrl),
+        );
+        if (!targetMatchesActiveAccount) {
+            clearResumeParams();
+            return;
+        }
+        controller.setCreateDraft({ label: String(label ?? '').slice(0, 256), expiryPreset });
+        showApiTokenCreateModal(controller);
+        clearResumeParams();
+    }, [
+        activeServerAccountScope,
+        controller,
+        resumeParams.expectedAccountId,
+        resumeParams.expiry,
+        resumeParams.label,
+        resumeParams.resumeCreate,
+        resumeParams.targetServerId,
+        resumeParams.targetServerUrl,
+        router,
+    ]);
 
     React.useEffect(() => {
         void controller.refresh();
@@ -448,19 +517,6 @@ export const ApiTokensSettingsScreen = React.memo(function ApiTokensSettingsScre
         if (confirmed) await controller.revokeAllTokens();
     }, [controller]);
 
-    const signOutEverywhere = React.useCallback(async () => {
-        const confirmed = await Modal.confirm(
-            t('settingsApiTokens.signOutEverywhere.title'),
-            t('settingsApiTokens.signOutEverywhere.body'),
-            { cancelText: t('common.cancel'), confirmText: t('settingsApiTokens.signOutEverywhere.confirm'), destructive: true },
-        );
-        if (!confirmed) return;
-        await completeApiTokenSettingsSignOutEverywhere({
-            signOutEverywhere: controller.signOutEverywhere,
-            logout: auth.logout,
-            replace: (path) => router.replace(path),
-        });
-    }, [auth.logout, controller, router]);
     const openCreate = React.useCallback(() => {
         showApiTokenCreateModal(controller);
     }, [controller]);
@@ -591,16 +647,6 @@ export const ApiTokensSettingsScreen = React.memo(function ApiTokensSettingsScre
                     disabled={state.tokens.length === 0 || actionsPending}
                     loading={state.operation === 'revokeAll'}
                     onPress={revokeAll}
-                />
-                <Item
-                    testID="settings-api-tokens-sign-out-everywhere"
-                    title={t('settingsApiTokens.signOutEverywhere.title')}
-                    subtitle={t('settingsApiTokens.signOutEverywhere.subtitle')}
-                    icon={<Icon name="sign-out" size={24} color={theme.colors.state.danger.foreground} />}
-                    destructive
-                    disabled={actionsPending}
-                    loading={state.operation === 'signOutEverywhere'}
-                    onPress={signOutEverywhere}
                 />
             </ItemGroup>
         </ItemList>

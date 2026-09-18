@@ -310,9 +310,11 @@ describe('authQRWait explicit-target enrollment', () => {
         const keypair = generateAuthKeyPair();
         const issuedAtMs = Date.now();
         const context = createV2Context({ issuedAtMs, expiresAtMs: issuedAtMs + 500 });
-        let requestSignal: AbortSignal | null = null;
+        // Collected rather than held in a single `let`: a variable only ever assigned inside
+        // this callback narrows to `null` at the assertion below.
+        const requestSignals: AbortSignal[] = [];
         endpointFetchMock.mockImplementationOnce((_path: string, init: RequestInit) => new Promise((_resolve, reject) => {
-            requestSignal = init.signal ?? null;
+            if (init.signal) requestSignals.push(init.signal);
             init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
         }));
 
@@ -320,7 +322,7 @@ describe('authQRWait explicit-target enrollment', () => {
         await vi.waitFor(() => expect(endpointFetchMock).toHaveBeenCalledTimes(1));
         await vi.advanceTimersByTimeAsync(500);
 
-        expect(requestSignal?.aborted).toBe(true);
+        expect(requestSignals[0]?.aborted).toBe(true);
         await expect(resultPromise).resolves.toEqual({ ok: false, reason: 'expired' });
         expect(endpointFetchMock).toHaveBeenCalledTimes(1);
     });

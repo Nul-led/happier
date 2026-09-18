@@ -15,6 +15,9 @@ import {
     setActiveServerSnapshot,
     trackAccountCreatedSpy,
     upsertAndActivateServerSpy,
+    accountDirectoryExchangeOAuthSpy,
+    pendingAccountDirectoryAuthClearSpy,
+    setPendingAccountDirectoryAuthState,
 } from './test/oauthReturnHarness';
 import { renderScreen } from '@/dev/testkit';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
@@ -63,6 +66,84 @@ afterEach(() => {
 });
 
 describe('/oauth/[provider] (auth flow)', () => {
+    it('removes Account Service Cancel at credential commit and completes the recorded continuation', async () => {
+        resetOAuthHarness();
+        const endpoint = 'https://directory.test';
+        const serverIdentityId = 'srv_directory';
+        const pending = {
+            endpoint,
+            serverIdentityId,
+            canonicalServerUrl: endpoint,
+            provider: 'github',
+            purpose: 'account_directory' as const,
+            credentialTarget: 'account_directory' as const,
+            entryIntent: { kind: 'enter' as const, target: { kind: 'automatic' as const } },
+            mode: 'keyless' as const,
+            proof: 'bound-proof',
+            pending: 'provider-pending',
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 60_000,
+            returnTo: '/setup/wizard',
+        };
+        setPendingAccountDirectoryAuthState(pending);
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            purpose: 'account_directory',
+            credentialTarget: 'account_directory',
+            endpointUrl: endpoint,
+            serverIdentityId,
+            canonicalServerUrl: endpoint,
+            pending: pending.pending,
+            mode: pending.mode,
+        });
+        let startCommit!: () => void;
+        const commitStartHeld = new Promise<void>((resolve) => { startCommit = resolve; });
+        let finishExchange!: () => void;
+        const exchangeHeld = new Promise<void>((resolve) => { finishExchange = resolve; });
+        accountDirectoryExchangeOAuthSpy.mockImplementationOnce(async (input: {
+            onCredentialCommitStarted?: () => void;
+        }) => {
+            await commitStartHeld;
+            input.onCredentialCommitStarted?.();
+            await exchangeHeld;
+            return {
+                kind: 'cancelled',
+                accountCredentialCommitted: true,
+            };
+        });
+
+        const { default: Screen } = await import('@/app/(app)/oauth/[provider]');
+        const screen = await renderScreen(React.createElement(Screen));
+        try {
+            await vi.waitFor(() => expect(accountDirectoryExchangeOAuthSpy).toHaveBeenCalledOnce());
+            const cancelButton = screen.findByTestId('oauth-return-wizard-secondary');
+            expect(cancelButton).not.toBeNull();
+            expect(cancelButton?.props.onPress).toBeTypeOf('function');
+            expect(screen.getTextContent()).toContain('Signing in to the Account Service');
+            const lateCancel = cancelButton!.props.onPress as () => Promise<void>;
+
+            await act(async () => {
+                startCommit();
+            });
+            await vi.waitFor(() => expect(screen.findByTestId('oauth-return-wizard-secondary')).toBeNull());
+            expect(screen.findByTestId('oauth-return-wizard-secondary')).toBeNull();
+            await lateCancel();
+            expect(pendingAccountDirectoryAuthClearSpy).not.toHaveBeenCalled();
+            expect(replaceSpy).not.toHaveBeenCalled();
+
+            await act(async () => {
+                finishExchange();
+                await accountDirectoryExchangeOAuthSpy.mock.results[0]?.value;
+            });
+            await vi.waitFor(() => expect(replaceSpy).toHaveBeenCalledWith(expect.objectContaining({
+                pathname: '/setup/wizard',
+                params: expect.objectContaining({ accountServiceReturn: '1' }),
+            })));
+        } finally {
+            await screen.unmount();
+        }
+    });
+
     it('uses the pending external auth serverUrl for finalize requests when present', async () => {
         setActiveServerSnapshot({ serverUrl: 'http://api.example.test' });
         setPendingExternalAuthState({ provider: 'github', secret: OAUTH_SECRET, serverUrl: 'http://api.example.test' });

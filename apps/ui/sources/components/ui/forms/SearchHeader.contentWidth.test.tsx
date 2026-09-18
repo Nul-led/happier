@@ -74,6 +74,37 @@ function findSearchHeaderContainerStyle(screen: Awaited<ReturnType<typeof render
     return matchingNode ? flattenStyle(matchingNode.props.style) : {};
 }
 
+function findSearchInputWrapperStyle(
+    screen: Awaited<ReturnType<typeof renderScreen>>,
+): Record<string, unknown> {
+    const matchingNode = screen.findAllByType('View' as never).find((node) => {
+        const style = flattenStyle(node.props.style);
+        return style.flexDirection === 'row' && style.borderRadius !== undefined;
+    });
+    return matchingNode ? flattenStyle(matchingNode.props.style) : {};
+}
+
+describe('SearchHeader touch target', () => {
+    it('keeps the search field at least the platform minimum interactive size', async () => {
+        shared.contentWidthMode = 'compact';
+        const { SearchHeader } = await import('./SearchHeader');
+        const { resolveMinimumInteractiveTargetSize } = await import('@/components/ui/interactiveTargetSize');
+        const { Platform } = await import('react-native');
+
+        const screen = await renderScreen(
+            <SearchHeader value="" onChangeText={() => {}} placeholder="Search actions" />,
+        );
+
+        // The minimum comes from the platform-policy owner, so this follows a
+        // change there instead of pinning a number of its own. Padding and line
+        // height alone previously left the field under it.
+        const minimum = resolveMinimumInteractiveTargetSize(Platform.OS);
+        const wrapper = findSearchInputWrapperStyle(screen);
+        expect(typeof wrapper.minHeight).toBe('number');
+        expect(wrapper.minHeight as number).toBeGreaterThanOrEqual(minimum);
+    });
+});
+
 describe('SearchHeader content width', () => {
     it('updates the search field max width when the local content width setting changes', async () => {
         shared.contentWidthMode = 'compact';

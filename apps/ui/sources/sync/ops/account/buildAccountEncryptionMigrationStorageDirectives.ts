@@ -12,7 +12,6 @@ import {
     isPlainMachineDataKeyMarker,
     openSessionOwnerMetadataEnvelopeV1,
     sealSessionOwnerMetadataEnvelopeV1,
-    ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS,
     AccountEncryptionMigrateReviewCommentsDirectiveSchema,
     type AccountEncryptionMigrateArtifactsDirective,
     type AccountEncryptionMigrateMachinesDirective,
@@ -41,6 +40,7 @@ import {
     encodeTodoStoredContent,
 } from '@/sync/domains/todos/todoStoredContent';
 import type { Encryption } from '@/sync/encryption/encryption';
+import { normalizeSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { readSessionLayout1OwnerMetadata } from '@/sync/engine/sessions/readSessionLayout1OwnerProjection';
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import { buildReviewCommentAccountEncryptionMigrationDirective } from '@/sync/domains/reviews/comments/accountEncryptionMigration';
@@ -388,14 +388,6 @@ function buildSessionDirective(params: Readonly<{
     targetCredentials: AuthCredentials | null;
 }>): AccountEncryptionMigrateSessionsDirective {
     if (params.rows.length === 0) return { action: 'assert_empty' };
-    if (
-        params.rows.length
-        > ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS
-    ) {
-        throw new Error(
-            'Session migration inventory exceeds the supported bound',
-        );
-    }
     const seenSessionIds = new Set<string>();
     const targetCredentials = params.targetCredentials;
     if (params.toMode === 'e2ee' && !targetCredentials) {
@@ -423,7 +415,8 @@ function buildSessionDirective(params: Readonly<{
         }
         seenSessionIds.add(row.id);
         const ownerRead = readSessionLayout1OwnerMetadata({
-            share: null,
+            // This owner-only inventory is the Account migration endpoint, not a Session list.
+            access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
             accountMode: params.fromMode,
             ownerMetadataEnvelope: row.ownerMetadata,
             credentials: params.sourceCredentials,

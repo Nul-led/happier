@@ -118,6 +118,22 @@ const STABILIZED_HEIGHT_SHRINK_DELAY_MS = 180;
 /** Section id for the synthetic, filter-bypassing `buildInputRow` row. */
 const SELECTION_LIST_INPUT_ROW_SECTION_ID = 'selection-list:input-row';
 
+function stepContainsExpandedContent(
+    step: SelectionListStep,
+    visited: Set<SelectionListStep> = new Set(),
+): boolean {
+    if (visited.has(step)) return false;
+    visited.add(step);
+    for (const section of step.sections) {
+        if (section.kind !== 'static') continue;
+        for (const option of section.options) {
+            if (option.expandedContent !== undefined) return true;
+            if (option.openStep && stepContainsExpandedContent(option.openStep, visited)) return true;
+        }
+    }
+    return false;
+}
+
 function useSelectionListStatusAnnouncement(
     sections: ReadonlyArray<SelectionListSectionDescriptor>,
     states: ReadonlyMap<string, DynamicSectionState>,
@@ -258,6 +274,25 @@ function sectionPlanRendersOptions(sectionPlan: SectionRenderPlan): boolean {
  * own unit tests.
  */
 export function SelectionList(props: SelectionListProps): React.ReactElement {
+    const selection = props.selection ?? {
+        kind: 'single' as const,
+        selectedId: props.selectedOptionId ?? null,
+    };
+    if (
+        selection.kind === 'multiple'
+        && (
+            stepContainsExpandedContent(props.rootStep)
+            || (props.syncActiveStep != null && stepContainsExpandedContent(props.syncActiveStep))
+        )
+    ) {
+        throw new Error('SelectionList multiple selection cannot be combined with expandedContent');
+    }
+    const selectedOptionId = selection.kind === 'single' ? selection.selectedId : null;
+    const multipleSelectedIds = selection.kind === 'multiple' ? selection.selectedIds : null;
+    const selectedOptionIds = React.useMemo<ReadonlySet<string>>(
+        () => multipleSelectedIds ?? (selectedOptionId == null ? new Set() : new Set([selectedOptionId])),
+        [multipleSelectedIds, selectedOptionId],
+    );
     const styles = stylesheet;
 
     const stack = useSelectionListStepStack(props.rootStep);
@@ -416,6 +451,12 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         },
         [currentStep.sections, currentStep.disableInputFilter, buildInputRow, dynamicSectionStates, inputValue, filterQuery],
     );
+    if (
+        selection.kind === 'multiple'
+        && renderPlan.some((section) => section.options.some((option) => option.expandedContent !== undefined))
+    ) {
+        throw new Error('SelectionList multiple selection cannot be combined with expandedContent');
+    }
     const statusAnnouncement = useSelectionListStatusAnnouncement(
         currentStep.sections,
         dynamicSectionStates,
@@ -490,8 +531,8 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
     const preferredFocusedOptionId = React.useMemo(() => {
         const fromStep = currentStep.resolveDefaultFocusedOptionId?.(inputValue);
         if (fromStep !== undefined && fromStep !== null) return fromStep;
-        return props.selectedOptionId ?? null;
-    }, [currentStep, inputValue, props.selectedOptionId]);
+        return selectedOptionId;
+    }, [currentStep, inputValue, selectedOptionId]);
 
     // Roving row focus, owned ONCE (see `useSelectionListRovingFocus`). It is
     // resolved HERE — before autocomplete — because the ghost suffix is a
@@ -1011,12 +1052,13 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         <SelectionListBody
             step={currentStep}
             rootTestID={resolvedTestId}
-            selectedOptionId={props.selectedOptionId ?? null}
+            selectedOptionIds={selectedOptionIds}
+            multiselectable={selection.kind === 'multiple'}
             plan={renderPlan}
             virtualizedOptionSource={virtualizedOptionSource}
             focusedOptionId={focusedOptionId}
             focusedOptionIndex={virtualizedOptionSource === undefined ? undefined : focus.focusedIndex}
-            scrollTargetOptionId={props.activeScrollOptionId ?? focusedOptionId ?? props.selectedOptionId ?? null}
+            scrollTargetOptionId={props.activeScrollOptionId ?? focusedOptionId ?? selectedOptionId}
             listboxId={listboxId}
             accessibilityLabel={props.listAccessibilityLabel}
             onSelect={props.onSelect}
@@ -1044,7 +1086,8 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
             mode="measure"
             step={currentStep}
             rootTestID={resolvedTestId}
-            selectedOptionId={props.selectedOptionId ?? null}
+            selectedOptionIds={selectedOptionIds}
+            multiselectable={selection.kind === 'multiple'}
             plan={renderPlan}
             virtualizedOptionSource={virtualizedOptionSource}
             focusedOptionId={focusedOptionId}

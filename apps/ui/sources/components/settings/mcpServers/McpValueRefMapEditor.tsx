@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useUnistyles } from 'react-native-unistyles';
 
-import type { McpValueRefV1 } from '@happier-dev/protocol';
+import type { McpValueRefV1, SavedSecretCatalogEntryV1 } from '@happier-dev/protocol';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -11,15 +11,22 @@ import { t } from '@/text';
 
 import { ValueRefEditorModal, getValueRefEditorModalTitle } from '@/components/ui/forms/valueRefs/ValueRefEditorModal';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 
 type ValueRefKind = 'env' | 'header';
 
-function describeValueRef(valueRef: McpValueRefV1, secrets: readonly SavedSecret[]): string {
+function describeValueRef(
+    valueRef: McpValueRefV1,
+    secrets: readonly SavedSecret[],
+    catalogEntries: readonly SavedSecretCatalogEntryV1[],
+): string {
     if (valueRef.t === 'literal') {
         return t('settings.mcpServersValueSourceLiteral');
     }
     const secretId = valueRef.secretId;
-    const secretName = secrets.find((s) => s.id === secretId)?.name ?? null;
+    const secretName = catalogEntries.find((entry) => entry.ref === secretId)?.name
+        ?? secrets.find((s) => s.id === secretId)?.name
+        ?? null;
     if (secretName) {
         return t('settings.mcpServersValueSourceSavedSecretNamed', { name: secretName });
     }
@@ -41,6 +48,7 @@ export const McpValueRefMapEditor = React.memo(function McpValueRefMapEditor(pro
     testIdPrefix: string;
 }>) {
     const { theme } = useUnistyles();
+    const catalog = useSavedSecretCatalog();
 
     const rows = React.useMemo(() => {
         return Object.entries(props.entries)
@@ -109,7 +117,7 @@ export const McpValueRefMapEditor = React.memo(function McpValueRefMapEditor(pro
                         key={key}
                         testID={`${props.testIdPrefix}.row.${idx}`}
                         title={key}
-                        subtitle={describeValueRef(valueRef, props.secrets)}
+                        subtitle={describeValueRef(valueRef, props.secrets, catalog.entries)}
                         icon={<Icon name={props.iconName} size={29} color={theme.colors.accent.purple} />}
                         onPress={() => {
                             openEditor({

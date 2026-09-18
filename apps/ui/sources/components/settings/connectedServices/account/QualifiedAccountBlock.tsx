@@ -12,12 +12,16 @@ import {
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 import { deriveAccountCapacityPct } from '@/sync/domains/connectedServices/deriveAccountCapacityPct';
 import { parseDisplayableCredentialHealthStatus } from '@/sync/domains/connectedServices/parseDisplayableCredentialHealthStatus';
+import { projectConnectedServiceQuotaSnapshotForLimitSelection } from '@/sync/domains/connectedServices/projectConnectedServiceQuotaSnapshotForLimitSelection';
 import { shouldHideQuotaForCredentialStatus } from '@/sync/domains/connectedServices/shouldHideQuotaForCredentialStatus';
 import {
     connectedServiceProfileKey,
     qualifiedConnectedAccountPreferenceServiceKey,
 } from '@/sync/domains/connectedServices/connectedServiceProfilePreferences';
-import { type QualifiedConnectedAccountRef } from '@happier-dev/protocol';
+import type {
+    ConnectedServiceQuotaLimitSelectionV1,
+    QualifiedConnectedAccountRef,
+} from '@happier-dev/protocol';
 
 import { resolveAccountUsageRows } from './accountBlockModel';
 import {
@@ -76,6 +80,8 @@ export interface QualifiedAccountBlockProps {
     variant?: AccountBlockVariant;
     /** poolMember: owning pool id (namespaces collapse + reorder). */
     groupId?: string | null;
+    /** Pool allowance families that contribute to this member's usage and capacity. */
+    quotaLimitSelection?: ConnectedServiceQuotaLimitSelectionV1;
     /** poolMember: member enabled state + toggle. */
     enabled?: boolean;
     onToggleEnabled?: (next: boolean) => void;
@@ -101,9 +107,12 @@ type SharedViewProps = Omit<React.ComponentProps<typeof AccountBlockView>, 'quot
  * LOCAL preference, so they keep working via the shared per-account settings map.
  */
 const QuotaConnectedQualifiedAccountBlock = React.memo(function QuotaConnectedQualifiedAccountBlock(
-    props: Readonly<SharedViewProps & { account: QualifiedConnectedAccountRef }>,
+    props: Readonly<SharedViewProps & {
+        account: QualifiedConnectedAccountRef;
+        quotaLimitSelection?: ConnectedServiceQuotaLimitSelectionV1;
+    }>,
 ) {
-    const { account, ...viewProps } = props;
+    const { account, quotaLimitSelection, ...viewProps } = props;
     const hook = useQualifiedConnectedAccountQuota(account);
     const pinnedByKey = useSetting('connectedServicesQuotaPinnedMeterIdsByKey');
     const applySettings = useApplySettings();
@@ -122,10 +131,14 @@ const QuotaConnectedQualifiedAccountBlock = React.memo(function QuotaConnectedQu
     }, [applySettings, pinnedByKey, settingKey]);
 
     const snapshot = hook.snapshot;
+    const displaySnapshot = React.useMemo(
+        () => projectConnectedServiceQuotaSnapshotForLimitSelection(snapshot, quotaLimitSelection),
+        [quotaLimitSelection, snapshot],
+    );
     const nowMs = Date.now();
-    const gauge = snapshot
+    const gauge = displaySnapshot
         ? computeConnectedServiceQuotaGaugeViewModel({
-            snapshot,
+            snapshot: displaySnapshot,
             windowMode: 'most_constrained',
             nowMs,
             formatter: ACCOUNT_BLOCK_GAUGE_LABEL_FORMATTER,
@@ -216,7 +229,13 @@ export const QualifiedAccountBlock = React.memo(function QualifiedAccountBlock(
         return <AccountBlockView {...shared} quota={null} />;
     }
 
-    return <QuotaConnectedQualifiedAccountBlock {...shared} account={props.account} />;
+    return (
+        <QuotaConnectedQualifiedAccountBlock
+            {...shared}
+            account={props.account}
+            quotaLimitSelection={props.quotaLimitSelection}
+        />
+    );
 });
 
 QualifiedAccountBlock.displayName = 'QualifiedAccountBlock';

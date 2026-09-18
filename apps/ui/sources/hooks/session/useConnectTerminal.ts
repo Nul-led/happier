@@ -6,20 +6,31 @@ import {
     type AuthCredentials,
 } from '@/auth/storage/tokenStorage';
 import { approveTerminalPairing } from '@/auth/terminal/approveTerminalPairing';
-import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
+import {
+    buildEstablishedHomeTransportDescriptor,
+    resolveHomeEnrollmentTransport,
+} from '@/auth/enrollment/homeEnrollmentTransport';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import {
     buildHomeConnectionDescriptorForProfile,
     getActiveServerUrl,
     listServerProfiles,
+    resolveServerProfileForPortableIdentity,
+    type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
 import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 import { normalizeServerUrl } from '@/sync/domains/server/activeServerSwitch';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { resolveEffectiveServerUrlOverride } from '@/sync/domains/server/url/serverUrlOverridePolicy';
 import { clearPendingTerminalConnect, setPendingTerminalConnect } from '@/sync/domains/pending/pendingTerminalConnect';
-import { buildTerminalConnectAuthRedirectHref, parseTerminalConnectUrl } from '@/utils/path/terminalConnectUrl';
+import type { PendingTerminalConnect } from '@/sync/domains/pending/pendingTerminalConnect.shared';
+import {
+    buildTerminalConnectAuthRedirectHref,
+    parseTerminalConnectUrl,
+    resolveTerminalConnectPreAuthTarget,
+    type ParsedTerminalConnectUrl,
+} from '@/utils/path/terminalConnectUrl';
 import { canUseCurrentDeviceQrScanner } from '@/utils/platform/qrScannerSupport';
 import { decodeBase64 } from '@/encryption/base64';
 import { promptLegacyPairingUpdateRequired } from '@/auth/pairing/legacyPairingUpdateRequired';
@@ -37,62 +48,86 @@ type TerminalApprovalTarget = Readonly<{
     credentials: AuthCredentials | null;
 }>;
 
+/**
+ * A Home is identified by its stable `serverIdentityId`; hostnames and ports are only
+ * routing facts. A daemon pairing on this machine therefore advertises its own loopback
+ * address for a Home this device may already know under a different host, so the link's
+ * identity — not its URL — selects the signed-in profile.
+ *
+ * URL comparison survives only for a link that carries no identity at all, and then only
+ * across profiles with no pinned identity of their own: an anonymous URL must never unlock
+ * an identity-bound Home's credentials.
+ */
+function findSignedInProfileForTerminalLink(params: Readonly<{
+    expectedServerIdentityId: string;
+    endpointUrl: string;
+}>): ServerProfile | null {
+    const expectedServerIdentityId = params.expectedServerIdentityId.trim();
+    if (expectedServerIdentityId) {
+        const resolution = resolveServerProfileForPortableIdentity(expectedServerIdentityId);
+        return resolution.kind === 'resolved' ? resolution.profile : null;
+    }
+    const targetKey = createServerUrlComparableKey(params.endpointUrl);
+    if (!targetKey) return null;
+    const matches = listServerProfiles().filter((profile) => (
+        !profile.serverIdentityId
+        && (
+            createServerUrlComparableKey(profile.serverUrl) === targetKey
+            || createServerUrlComparableKey(profile.canonicalServerUrl ?? '') === targetKey
+            || createServerUrlComparableKey(profile.publicServerUrl ?? '') === targetKey
+        )
+    ));
+    return matches.length === 1 ? matches[0]! : null;
+}
+
 async function resolveTerminalApprovalTarget(params: Readonly<{
     requestedEndpointUrl: string | null;
     focusedEndpointUrl: string;
     expectedServerIdentityId: string;
     descriptor?: HomeConnectionDescriptorV1;
 }>): Promise<TerminalApprovalTarget> {
-    if (params.descriptor) {
-        if (params.descriptor.homeServerIdentityId !== params.expectedServerIdentityId) {
-            throw new Error('Terminal pairing descriptor identity does not match the link destination');
-        }
-        const matches = listServerProfiles().filter(
-            (profile) => profile.serverIdentityId?.trim() === params.expectedServerIdentityId,
-        );
-        if (matches.length !== 1) {
-            return { endpointUrl: params.descriptor.canonicalServerUrl, descriptor: params.descriptor, credentials: null };
-        }
-        const credentials = await TokenStorage.getCredentialsForServerUrl(matches[0]!.serverUrl, {
-            serverId: params.expectedServerIdentityId,
-        });
-        return {
-            endpointUrl: params.descriptor.canonicalServerUrl,
-            serverId: params.expectedServerIdentityId,
-            descriptor: params.descriptor,
-            credentials,
-        };
+    if (params.descriptor && params.descriptor.homeServerIdentityId !== params.expectedServerIdentityId) {
+        throw new Error('Terminal pairing descriptor identity does not match the link destination');
     }
-    const endpointUrl = params.requestedEndpointUrl || params.focusedEndpointUrl;
+    const endpointUrl = params.descriptor?.canonicalServerUrl
+        || params.requestedEndpointUrl
+        || params.focusedEndpointUrl;
     if (!endpointUrl) throw new Error('Terminal pairing requires an explicit target server');
-    const targetKey = createServerUrlComparableKey(endpointUrl);
-    const matches = listServerProfiles()
-        .filter((profile) => (
-            profile.serverIdentityId?.trim() === params.expectedServerIdentityId
-            && (
-            createServerUrlComparableKey(profile.serverUrl) === targetKey
-            || createServerUrlComparableKey(profile.canonicalServerUrl ?? '') === targetKey
-            || createServerUrlComparableKey(profile.publicServerUrl ?? '') === targetKey
-            )
-        ));
-    if (matches.length !== 1) return { endpointUrl, credentials: null };
-    const descriptor = buildHomeConnectionDescriptorForProfile(matches[0]!);
-    if (!descriptor) return { endpointUrl, credentials: null };
-    const serverId = params.expectedServerIdentityId;
-    const credentials = await TokenStorage.getCredentialsForServerUrl(endpointUrl, { serverId });
-    return { endpointUrl, serverId, descriptor, credentials };
+
+    const profile = findSignedInProfileForTerminalLink({
+        expectedServerIdentityId: params.expectedServerIdentityId,
+        endpointUrl,
+    });
+    // Descriptor precedence: the link's verified descriptor, then the Home's published one,
+    // then this device's own established connection to that Home. The last case is the only
+    // one available for a Home reachable over loopback HTTP, which publishes no descriptor at
+    // all while the CLI still issues identity-bearing URL-only links for it.
+    const descriptor = params.descriptor
+        ?? (profile
+            ? buildHomeConnectionDescriptorForProfile(profile)
+                ?? (profile.serverIdentityId
+                    ? buildEstablishedHomeTransportDescriptor({
+                        canonicalServerUrl: profile.canonicalServerUrl ?? profile.serverUrl,
+                        homeServerIdentityId: profile.serverIdentityId,
+                    })
+                    : null)
+            : null);
+    if (!profile || !descriptor) {
+        return { endpointUrl, ...(descriptor ? { descriptor } : {}), credentials: null };
+    }
+    const serverId = params.expectedServerIdentityId.trim();
+    const credentials = await TokenStorage.getCredentialsForServerUrl(
+        profile.serverUrl,
+        serverId ? { serverId } : {},
+    );
+    return { endpointUrl, ...(serverId ? { serverId } : {}), descriptor, credentials };
 }
 
 export function useConnectTerminal(options?: UseConnectTerminalOptions) {
     const auth = useAuth();
     const [isLoading, setIsLoading] = React.useState(false);
 
-    const processAuthUrl = React.useCallback(async (url: string) => {
-        const parsed = parseTerminalConnectUrl(url);
-        if (!parsed) {
-            await Modal.alertAsync(t('common.error'), t('modals.invalidAuthUrl'), [{ text: t('common.ok') }]);
-            return false;
-        }
+    const processParsedAuthUrl = React.useCallback(async (parsed: ParsedTerminalConnectUrl) => {
         if (parsed.compatibility?.admission === 'update_required') {
             const action = await promptLegacyPairingUpdateRequired();
             if (action === 'scan_new_qr') router.push('/scan/terminal');
@@ -103,7 +138,7 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
         try {
             const currentServerUrl = normalizeServerUrl(getActiveServerUrl());
             const effectiveParsedServerUrl = resolveEffectiveServerUrlOverride({
-                requestedServerUrl: parsed.serverUrl,
+                requestedServerUrl: parsed.serverUrl ?? parsed.homeConnectionDescriptor?.canonicalServerUrl,
                 activeServerUrl: currentServerUrl,
                 allowLoopbackOverride: options?.allowLoopbackServerOverride === true,
             });
@@ -117,22 +152,63 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
             const activeCredentials = target.credentials;
 
             if (!activeCredentials) {
-                setPendingTerminalConnect({
+                const preAuthTarget = resolveTerminalConnectPreAuthTarget({
+                    requestedServerUrl: parsed.serverUrl ?? parsed.homeConnectionDescriptor?.canonicalServerUrl,
+                    activeServerUrl: currentServerUrl,
+                    ...(parsed.homeConnectionDescriptor ? { homeConnectionDescriptor: parsed.homeConnectionDescriptor } : {}),
+                    allowLegacyLoopbackOverride: options?.allowLoopbackServerOverride === true,
+                });
+                if (!preAuthTarget) {
+                    throw new Error('Terminal pairing requires a pre-auth target Home');
+                }
+                const pendingServerUrl = preAuthTarget.pendingServerUrl;
+                const pendingConnect: PendingTerminalConnect = {
                     publicKeyB64Url: parsed.publicKeyB64Url,
-                    serverUrl: effectiveParsedServerUrl || currentServerUrl || getActiveServerUrl(),
+                    serverUrl: pendingServerUrl,
                     serverIdentityId: parsed.serverIdentityId ?? '',
                     ...(parsed.pairing ? { pairing: parsed.pairing } : {}),
                     ...(parsed.supportsTokenOnly ? { supportsTokenOnly: true } : {}),
                     ...(parsed.homeConnectionDescriptor
                         ? { homeConnectionDescriptor: parsed.homeConnectionDescriptor }
                         : {}),
-                });
-                await Modal.alertAsync(t('terminal.connectTerminal'), t('modals.pleaseSignInFirst'), [
-                    { text: t('common.continue') },
-                ]);
-                router.replace(buildTerminalConnectAuthRedirectHref({
-                    serverUrl: effectiveParsedServerUrl || currentServerUrl || getActiveServerUrl(),
-                }));
+                };
+                if (preAuthTarget.canNavigateToAuth === false) {
+                    setPendingTerminalConnect(pendingConnect);
+                    await Modal.alertAsync(
+                        t('welcome.serverUnavailableTitle'),
+                        t('welcome.serverUnavailableBody', { serverUrl: pendingServerUrl }),
+                        [{ text: t('common.continue') }],
+                    );
+                    return false;
+                }
+                // Signed in, just not to the Home this link belongs to. The sign-in prompt is a
+                // dead end there: it redirects to auth, the pending intent brings the user back
+                // here, and the same prompt reappears. Name both Homes once instead, and leave
+                // nothing pending when the switch is declined so nothing can bounce back.
+                if (auth.credentials) {
+                    const shouldSwitchHome = await Modal.confirm(
+                        t('terminal.connectTerminal'),
+                        t('terminal.switchServerToConnectTerminal', {
+                            serverUrl: target.endpointUrl,
+                            signedInServerUrl: currentServerUrl,
+                        }),
+                        { confirmText: t('server.switchToServer') },
+                    );
+                    if (!shouldSwitchHome) {
+                        clearPendingTerminalConnect();
+                        return false;
+                    }
+                    setPendingTerminalConnect(pendingConnect);
+                    router.replace(buildTerminalConnectAuthRedirectHref({ serverUrl: pendingServerUrl }));
+                    return false;
+                }
+                setPendingTerminalConnect(pendingConnect);
+                await Modal.alertAsync(
+                    t('terminal.connectTerminal'),
+                    t('modals.pleaseSignInFirst'),
+                    [{ text: t('common.continue') }],
+                );
+                router.replace(buildTerminalConnectAuthRedirectHref({ serverUrl: pendingServerUrl }));
                 return false;
             }
 
@@ -212,6 +288,15 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
         }
     }, [auth.credentials, options]);
 
+    const processAuthUrl = React.useCallback(async (url: string) => {
+        const parsed = parseTerminalConnectUrl(url);
+        if (!parsed) {
+            await Modal.alertAsync(t('common.error'), t('modals.invalidAuthUrl'), [{ text: t('common.ok') }]);
+            return false;
+        }
+        return await processParsedAuthUrl(parsed);
+    }, [processParsedAuthUrl]);
+
     const connectTerminal = React.useCallback(async () => {
         const canUseScanner = canUseCurrentDeviceQrScanner();
         if (!canUseScanner) {
@@ -229,6 +314,7 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
         connectTerminal,
         connectWithUrl,
         isLoading,
-        processAuthUrl
+        processAuthUrl,
+        processParsedAuthUrl,
     };
 }

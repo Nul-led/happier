@@ -1,7 +1,7 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import {
     normalizeSessionTagLabels,
-    readSessionOrganizationServerScopedId,
+    buildSessionOrganizationServerKey,
     readSessionOrganizationTagLabel,
     type UiSessionOrganizationTag,
 } from '@/sync/domains/session/organization';
@@ -15,7 +15,7 @@ function readCurrentServerTags(serverId: string): UiSessionOrganizationTag[] {
     const state = getStorage().getState();
     const tags: UiSessionOrganizationTag[] = [];
     for (const [key, tag] of Object.entries(state.sessionOrganizationTagsByTagKey)) {
-        if (readSessionOrganizationServerScopedId(key, serverId) !== tag.tagId) continue;
+        if (key !== buildSessionOrganizationServerKey(serverId, tag.tagId)) continue;
         if (tag.archivedAt != null) continue;
         tags.push(tag);
     }

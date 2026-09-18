@@ -17,6 +17,13 @@ import {
     type UsageRecapCardValueTone,
 } from './buildUsageRecapCardModels';
 import { resolveUsageCostModeLabel } from './resolveUsageCostModeLabel';
+import {
+    buildUsageCsvDocument,
+    exportUsageCsvDocument,
+    exportUsageTextDocument,
+    formatUsageExportFileTimestamp,
+    shareUsageExportCacheFile,
+} from './usageExportFile';
 
 export type UsageAnalyticsExportInput = Readonly<{
     viewModel: UsageAnalyticsViewModel;
@@ -51,6 +58,13 @@ export type UsageAnalyticsExportPayload = Readonly<{
     pivotTable: UsagePivotTableExport | null;
 }>;
 
+/** Only the image share reaches expo-sharing directly: it shares a captured
+ * frame rather than a text document the shared exporter can write. */
+type ExpoSharingModule = Readonly<{
+    isAvailableAsync?: () => Promise<boolean>;
+    shareAsync?: (uri: string) => Promise<void>;
+}>;
+
 const DEFAULT_PIVOT_DIMENSION: UsagePivotDimension = 'model';
 
 /** The active pivot dimension's ranked rows, flattened for CSV/JSON export (E-5). */
@@ -71,10 +85,6 @@ export function buildUsagePivotTableExport(input: UsageAnalyticsExportInput): Us
     };
 }
 
-function escapeCsvField(value: string): string {
-    return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
 /**
  * The active pivot dimension's table as CSV (E-5). Header + one row per ranked
  * entry: rank, key, name, tokens, cost, events, share%. Raw numeric values (no
@@ -82,20 +92,18 @@ function escapeCsvField(value: string): string {
  */
 export function buildUsagePivotCsv(input: UsageAnalyticsExportInput): string {
     const table = buildUsagePivotTableExport(input);
-    const header = ['rank', 'key', 'name', 'tokens', 'cost', 'events', 'share_pct'];
-    const lines = [header.join(',')];
-    for (const row of table.rows) {
-        lines.push([
+    return buildUsageCsvDocument([
+        ['rank', 'key', 'name', 'tokens', 'cost', 'events', 'share_pct'],
+        ...table.rows.map((row) => [
             String(row.rank),
-            escapeCsvField(row.key),
-            escapeCsvField(row.name),
+            row.key,
+            row.name,
             String(row.tokens),
             String(row.cost),
             String(row.events),
             row.sharePct.toFixed(2),
-        ].join(','));
-    }
-    return `${lines.join('\n')}\n`;
+        ]),
+    ]);
 }
 
 export type UsageRecapCardExportPayload = Readonly<{
@@ -119,56 +127,6 @@ function formatPeriodLabel(period: UsageFilterState['period']): string {
 function formatTimelineLeaderLabel(input: UsageAnalyticsViewModel['modelTimeline'] | UsageAnalyticsViewModel['engineTimeline']): string | null {
     const mostRecentBucket = [...input].sort((left, right) => right.bucketStartMs - left.bucketStartMs)[0];
     return mostRecentBucket?.leaders[0]?.label ?? null;
-}
-
-function formatFileTimestamp(date: Date): string {
-    return date.toISOString().replace(/[:.]/g, '-');
-}
-
-type ExpoFileSystemDirectory = Readonly<{
-    uri: string;
-}>;
-
-type ExpoFileSystemFile = Readonly<{
-    uri: string;
-    write: (content: string) => void;
-    delete: () => void;
-}>;
-
-type ExpoFileSystemModule = Readonly<{
-    File: new (parent: ExpoFileSystemDirectory | string, name: string) => ExpoFileSystemFile;
-    Paths?: Readonly<{
-        cache?: ExpoFileSystemDirectory | string | null;
-        document?: ExpoFileSystemDirectory | string | null;
-    }>;
-}>;
-
-type ExpoSharingModule = Readonly<{
-    isAvailableAsync?: () => Promise<boolean>;
-    shareAsync?: (uri: string) => Promise<void>;
-}>;
-
-async function writeNativeCacheTextFile(input: Readonly<{
-    content: string;
-    fileName: string;
-}>): Promise<ExpoFileSystemFile | null> {
-    const FileSystem = await import('expo-file-system') as ExpoFileSystemModule;
-    const baseDirectory = FileSystem.Paths?.cache ?? FileSystem.Paths?.document ?? null;
-    if (!baseDirectory) {
-        return null;
-    }
-
-    const file = new FileSystem.File(baseDirectory, input.fileName);
-    file.write(input.content);
-    return file;
-}
-
-function deleteNativeFileBestEffort(file: ExpoFileSystemFile): void {
-    try {
-        file.delete();
-    } catch {
-        // best effort
-    }
 }
 
 export function buildUsageAnalyticsExportPayload(input: UsageAnalyticsExportInput): UsageAnalyticsExportPayload {
@@ -261,32 +219,13 @@ async function shareTextOnWeb(text: string): Promise<boolean> {
 }
 
 async function shareTextOnNative(text: string): Promise<boolean> {
-    try {
-        const Sharing = await import('expo-sharing') as ExpoSharingModule;
-        const file = await writeNativeCacheTextFile({
-            content: text,
-            fileName: `usage-summary-${formatFileTimestamp(new Date())}.txt`,
-        });
-        if (!file) {
-            return setClipboardStringSafe(text);
-        }
-
-        try {
-            if (typeof Sharing.isAvailableAsync === 'function' && typeof Sharing.shareAsync === 'function') {
-                const available = await Sharing.isAvailableAsync();
-                if (available) {
-                    await Sharing.shareAsync(file.uri);
-                    return true;
-                }
-            }
-        } finally {
-            deleteNativeFileBestEffort(file);
-        }
-
-        return setClipboardStringSafe(text);
-    } catch {
-        return setClipboardStringSafe(text);
-    }
+    const shared = await shareUsageExportCacheFile({
+        content: text,
+        fileName: `usage-summary-${formatUsageExportFileTimestamp(new Date())}.txt`,
+    });
+    // A platform that cannot take the file still owes the reader the numbers,
+    // so the summary goes to the clipboard rather than silently failing.
+    return shared ? true : setClipboardStringSafe(text);
 }
 
 export async function shareUsageAnalyticsSummary(input: UsageAnalyticsExportInput): Promise<boolean> {
@@ -350,7 +289,7 @@ export async function shareUsageRecapCardImage(
                 quality: 1,
                 result: 'data-uri',
             });
-            if (downloadDataUriOnWeb(dataUri, `usage-recap-${input.cardId}-${formatFileTimestamp(new Date())}.png`)) {
+            if (downloadDataUriOnWeb(dataUri, `usage-recap-${input.cardId}-${formatUsageExportFileTimestamp(new Date())}.png`)) {
                 return true;
             }
             return await shareUsageRecapCardSummary(input);
@@ -379,141 +318,13 @@ export async function shareUsageRecapCardImage(
     }
 }
 
-async function downloadJsonOnWeb(payload: UsageAnalyticsExportPayload): Promise<boolean> {
-    const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    try {
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = `usage-${formatFileTimestamp(new Date())}.json`;
-        anchor.rel = 'noopener noreferrer';
-        try {
-            anchor.style.display = 'none';
-        } catch {
-            // ignore
-        }
-        try {
-            document.body?.appendChild(anchor);
-        } catch {
-            // ignore
-        }
-        anchor.click();
-        setTimeout(() => {
-            try {
-                anchor.remove();
-            } catch {
-                // ignore
-            }
-        }, 0);
-    } finally {
-        setTimeout(() => {
-            try {
-                URL.revokeObjectURL(url);
-            } catch {
-                // ignore
-            }
-        }, 1000);
-    }
-    return true;
-}
-
-async function downloadJsonOnNative(payload: UsageAnalyticsExportPayload): Promise<boolean> {
-    try {
-        const Sharing = await import('expo-sharing') as ExpoSharingModule;
-        const file = await writeNativeCacheTextFile({
-            content: `${JSON.stringify(payload, null, 2)}\n`,
-            fileName: `usage-${formatFileTimestamp(new Date())}.json`,
-        });
-        if (!file) {
-            return false;
-        }
-
-        try {
-            if (typeof Sharing.isAvailableAsync === 'function' && typeof Sharing.shareAsync === 'function') {
-                const available = await Sharing.isAvailableAsync();
-                if (available) {
-                    await Sharing.shareAsync(file.uri);
-                    return true;
-                }
-            }
-        } finally {
-            deleteNativeFileBestEffort(file);
-        }
-
-        return false;
-    } catch {
-        return false;
-    }
-}
-
 export async function exportUsageAnalyticsJson(input: UsageAnalyticsExportInput): Promise<boolean> {
     const payload = buildUsageAnalyticsExportPayload(input);
-    if (Platform.OS === 'web') {
-        return await downloadJsonOnWeb(payload);
-    }
-    return await downloadJsonOnNative(payload);
-}
-
-async function downloadCsvOnWeb(csv: string, fileName: string): Promise<boolean> {
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    try {
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = fileName;
-        anchor.rel = 'noopener noreferrer';
-        try {
-            anchor.style.display = 'none';
-        } catch {
-            // ignore
-        }
-        try {
-            document.body?.appendChild(anchor);
-        } catch {
-            // ignore
-        }
-        anchor.click();
-        setTimeout(() => {
-            try {
-                anchor.remove();
-            } catch {
-                // ignore
-            }
-        }, 0);
-    } finally {
-        setTimeout(() => {
-            try {
-                URL.revokeObjectURL(url);
-            } catch {
-                // ignore
-            }
-        }, 1000);
-    }
-    return true;
-}
-
-async function downloadCsvOnNative(csv: string, fileName: string): Promise<boolean> {
-    try {
-        const Sharing = await import('expo-sharing') as ExpoSharingModule;
-        const file = await writeNativeCacheTextFile({ content: csv, fileName });
-        if (!file) {
-            return false;
-        }
-        try {
-            if (typeof Sharing.isAvailableAsync === 'function' && typeof Sharing.shareAsync === 'function') {
-                const available = await Sharing.isAvailableAsync();
-                if (available) {
-                    await Sharing.shareAsync(file.uri);
-                    return true;
-                }
-            }
-        } finally {
-            deleteNativeFileBestEffort(file);
-        }
-        return false;
-    } catch {
-        return false;
-    }
+    return await exportUsageTextDocument({
+        content: `${JSON.stringify(payload, null, 2)}\n`,
+        fileName: `usage-${formatUsageExportFileTimestamp(new Date())}.json`,
+        mimeType: 'application/json',
+    });
 }
 
 /**
@@ -523,10 +334,8 @@ async function downloadCsvOnNative(csv: string, fileName: string): Promise<boole
  */
 export async function exportUsagePivotCsv(input: UsageAnalyticsExportInput): Promise<boolean> {
     const table = buildUsagePivotTableExport(input);
-    const csv = buildUsagePivotCsv(input);
-    const fileName = `usage-${table.dimension}-${formatFileTimestamp(new Date())}.csv`;
-    if (Platform.OS === 'web') {
-        return await downloadCsvOnWeb(csv, fileName);
-    }
-    return await downloadCsvOnNative(csv, fileName);
+    return await exportUsageCsvDocument({
+        csv: buildUsagePivotCsv(input),
+        fileName: `usage-${table.dimension}-${formatUsageExportFileTimestamp(new Date())}.csv`,
+    });
 }

@@ -7,26 +7,21 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { InlineAddExpander } from '@/components/ui/forms/InlineAddExpander';
-import { Modal } from '@/modal';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Icon } from '@/components/ui/icons/Icon';
+import type { SavedSecretCatalogCorruptEntryV1, SavedSecretCatalogEntryV1 } from '@happier-dev/protocol';
+import type { SavedSecretReferenceResolution } from '@/sync/store/settings/savedSecretCatalogSnapshot';
 
-
-function newId(): string {
-    try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const c: any = (globalThis as any).crypto;
-        if (c && typeof c.randomUUID === 'function') return c.randomUUID();
-    } catch { }
-    return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
 
 export interface SecretsListProps {
-    secrets: SavedSecret[];
-    onChangeSecrets: (next: SavedSecret[]) => void;
+    secrets: readonly SavedSecret[];
+    onCreatePersonal?: (input: Readonly<{ name: string; value: string }>) => Promise<string | null>;
+    onRenamePersonal?: (secret: SavedSecret) => Promise<boolean>;
+    onRotatePersonal?: (secret: SavedSecret) => Promise<boolean>;
+    onDeletePersonal?: (secret: SavedSecret) => Promise<boolean>;
 
     title?: string;
     footer?: string | null;
@@ -43,8 +38,40 @@ export interface SecretsListProps {
     allowAdd?: boolean;
     allowEdit?: boolean;
     onAfterAddSelectId?: (id: string) => void;
+    onSharePersonal?: (secret: SavedSecret) => void;
+    sharingPersonalId?: string | null;
+    onCreateShared?: () => void;
+
+    /** Shared-resource rows from the canonical Account-scoped catalog. */
+    sharedEntries?: readonly SavedSecretCatalogEntryV1[];
+    /** Settings-only repair projection. Picker callers deliberately omit it. */
+    corruptEntries?: readonly SavedSecretCatalogCorruptEntryV1[];
+    onDeleteCorruptShared?: (entry: Extract<SavedSecretCatalogCorruptEntryV1, { relationship: 'owner' }>) => void;
+    resolveSharedReference?: (ref: string) => SavedSecretReferenceResolution;
+    onRenameShared?: (entry: SavedSecretCatalogEntryV1) => void;
+    onRotateShared?: (entry: SavedSecretCatalogEntryV1) => void;
+    onManageAccessShared?: (entry: SavedSecretCatalogEntryV1) => void;
+    onDeleteShared?: (entry: SavedSecretCatalogEntryV1) => void;
+    sharedMutationsDisabled?: boolean;
+    sharedApprovalId?: string | null;
+    onOpenSharedApproval?: () => void;
+    allowSharedSelection?: boolean;
+    sharedCatalogStale?: boolean;
+    onRetrySharedCatalog?: () => void;
 
     wrapInItemList?: boolean;
+}
+
+function sharedSecretStatusLabel(status: SavedSecretCatalogEntryV1['materialStatus']): string {
+    switch (status) {
+        case 'ready': return t('secrets.catalog.status.ready');
+        case 'preparing_encrypted_access': return t('secrets.catalog.status.preparing_encrypted_access');
+        case 'recipient_mode_unsupported': return t('secrets.catalog.status.recipient_mode_unsupported');
+        case 'temporarily_unavailable': return t('secrets.catalog.status.temporarily_unavailable');
+        case 'access_removed': return t('secrets.catalog.status.access_removed');
+        case 'deleted': return t('secrets.catalog.status.deleted');
+        case 'update_required': return t('secrets.catalog.status.update_required');
+    }
 }
 
 export function SecretsList(props: SecretsListProps) {
@@ -53,11 +80,14 @@ export function SecretsList(props: SecretsListProps) {
     const {
         secrets,
         defaultId,
-        onChangeSecrets,
         onAfterAddSelectId,
         selectedId,
         onSelectId,
         onSetDefaultId,
+        onCreatePersonal,
+        onRenamePersonal,
+        onRotatePersonal,
+        onDeletePersonal,
     } = props;
 
     const orderedSecrets = React.useMemo(() => {
@@ -80,82 +110,161 @@ export function SecretsList(props: SecretsListProps) {
         setIsAddExpanded(false);
     }, []);
 
-    const submitAddSecret = React.useCallback(() => {
+    const submitAddSecret = React.useCallback(async () => {
         const name = draftName.trim();
-        const value = draftValue.trim();
+        const value = draftValue;
         if (!name) return;
-        if (!value) return;
-
-        const now = Date.now();
-        const next: SavedSecret = {
-            id: newId(),
-            name,
-            kind: 'apiKey',
-            encryptedValue: { _isSecretValue: true, value },
-            createdAt: now,
-            updatedAt: now,
-        };
-        onChangeSecrets([next, ...secrets]);
-        onAfterAddSelectId?.(next.id);
+        if (value.length === 0) return;
+        const createdId = await onCreatePersonal?.({ name, value });
+        if (!createdId) return;
+        onAfterAddSelectId?.(createdId);
         resetAddDraft();
-    }, [draftName, draftValue, onAfterAddSelectId, onChangeSecrets, resetAddDraft, secrets]);
-
-    const renameSecret = React.useCallback(async (secret: SavedSecret) => {
-        const name = await Modal.prompt(
-            t('secrets.prompts.renameTitle'),
-            t('secrets.prompts.renameDescription'),
-            { defaultValue: secret.name, placeholder: t('secrets.fields.name'), cancelText: t('common.cancel'), confirmText: t('common.rename') },
-        );
-        if (name === null) return;
-        if (!name.trim()) {
-            Modal.alert(t('common.error'), t('secrets.validation.nameRequired'));
-            return;
-        }
-        const now = Date.now();
-        onChangeSecrets(secrets.map((k) => (k.id === secret.id ? { ...k, name: name.trim(), updatedAt: now } : k)));
-    }, [onChangeSecrets, secrets]);
-
-    const replaceSecretValue = React.useCallback(async (secret: SavedSecret) => {
-        const value = await Modal.prompt(
-            t('secrets.prompts.replaceValueTitle'),
-            t('secrets.prompts.replaceValueDescription'),
-            { placeholder: 'sk-...', inputType: 'secure-text', cancelText: t('common.cancel'), confirmText: t('secrets.actions.replace') },
-        );
-        if (value === null) return;
-        if (!value.trim()) {
-            Modal.alert(t('common.error'), t('secrets.validation.valueRequired'));
-            return;
-        }
-        const now = Date.now();
-        onChangeSecrets(secrets.map((k) => (
-            k.id === secret.id
-                ? { ...k, encryptedValue: { ...(k.encryptedValue ?? { _isSecretValue: true }), _isSecretValue: true, value: value.trim() }, updatedAt: now }
-                : k
-        )));
-    }, [onChangeSecrets, secrets]);
+    }, [draftName, draftValue, onAfterAddSelectId, onCreatePersonal, resetAddDraft]);
 
     const deleteSecret = React.useCallback(async (secret: SavedSecret) => {
-        const confirmed = await Modal.confirm(
-            t('secrets.prompts.deleteTitle'),
-            t('secrets.prompts.deleteConfirm', { name: secret.name }),
-            { cancelText: t('common.cancel'), confirmText: t('common.delete'), destructive: true },
-        );
-        if (!confirmed) return;
-        onChangeSecrets(secrets.filter((k) => k.id !== secret.id));
+        if (!await onDeletePersonal?.(secret)) return;
         if (selectedId === secret.id) {
             onSelectId?.('');
         }
         if (defaultId === secret.id) {
             onSetDefaultId?.(null);
         }
-    }, [defaultId, onChangeSecrets, onSelectId, onSetDefaultId, secrets, selectedId]);
+    }, [defaultId, onDeletePersonal, onSelectId, onSetDefaultId, selectedId]);
 
-    const groupTitle = props.title ?? t('settings.secrets');
+    const groupTitle = props.title ?? ((props.sharedEntries?.length ?? 0) + (props.corruptEntries?.length ?? 0) > 0
+        ? t('secrets.catalog.relationship.owner')
+        : t('settings.secrets'));
     const groupFooter = props.footer === undefined ? t('settings.secretsSubtitle') : (props.footer ?? undefined);
+    const ownerSharedEntries = (props.sharedEntries ?? []).filter((entry) => entry.relationship === 'owner');
+    const recipientSharedEntries = (props.sharedEntries ?? []).filter((entry) => entry.relationship === 'recipient');
+    const ownerCorruptEntries = (props.corruptEntries ?? []).filter(
+        (entry): entry is Extract<SavedSecretCatalogCorruptEntryV1, { relationship: 'owner' }> => entry.relationship === 'owner',
+    );
+    const recipientCorruptEntries = (props.corruptEntries ?? []).filter((entry) => entry.relationship === 'recipient');
+
+    const renderCorruptEntry = (entry: SavedSecretCatalogCorruptEntryV1, idx: number, total: number) => {
+        const ownerEntry = entry.relationship === 'owner' ? entry : null;
+        const ownerCanDelete = ownerEntry !== null && Boolean(props.onDeleteCorruptShared);
+        return (
+            <Item
+                key={ownerEntry ? `owner:${ownerEntry.repair.resourceId}` : `recipient:${idx}`}
+                testID={`saved-secret-corrupt:${entry.relationship}:${idx}`}
+                title={t('secrets.catalog.unavailableName')}
+                subtitle={t('secrets.catalog.status.resource_corrupt')}
+                accessibilityLabel={[
+                    t('secrets.catalog.unavailableName'),
+                    entry.relationship === 'owner'
+                        ? t('secrets.catalog.relationship.owner')
+                        : t('secrets.catalog.relationship.recipient'),
+                    t('secrets.catalog.status.resource_corrupt'),
+                ].join(', ')}
+                icon={<Icon name="warning-circle" size={29} color={theme.colors.state.warning.foreground} />}
+                showChevron={false}
+                showDivider={idx < total - 1}
+                mode="info"
+                rightElementOutsidePressable={ownerCanDelete}
+                rightElement={ownerCanDelete ? (
+                    <ItemRowActions
+                        title={t('secrets.catalog.unavailableName')}
+                        overflowTriggerTestID={`saved-secret-corrupt:owner:${idx}:more`}
+                        actions={[{
+                            id: 'delete',
+                            inlineTestID: `saved-secret-corrupt:owner:${idx}:delete`,
+                            title: t('common.delete'),
+                            icon: 'trash',
+                            destructive: true,
+                            disabled: props.sharedMutationsDisabled,
+                            onPress: () => { if (ownerEntry) props.onDeleteCorruptShared?.(ownerEntry); },
+                        }]}
+                    />
+                ) : undefined}
+            />
+        );
+    };
+
+    const renderSharedEntry = (entry: SavedSecretCatalogEntryV1, idx: number, total: number) => {
+        const resolvedStatus = props.resolveSharedReference?.(entry.ref).status ?? entry.materialStatus;
+        const ready = props.allowSharedSelection !== false
+            && resolvedStatus === 'ready'
+            && entry.capabilities.use;
+        const actions = [
+            entry.capabilities.rename && props.onRenameShared ? {
+                id: 'rename', title: t('common.rename'), icon: 'pencil' as const,
+                disabled: props.sharedMutationsDisabled,
+                onPress: () => props.onRenameShared?.(entry),
+            } : null,
+            entry.capabilities.rotate && props.onRotateShared ? {
+                id: 'rotate', title: t('secrets.actions.replaceValue'), icon: 'arrow-clockwise' as const,
+                disabled: props.sharedMutationsDisabled,
+                onPress: () => props.onRotateShared?.(entry),
+            } : null,
+            entry.capabilities.manageAccess && props.onManageAccessShared ? {
+                id: 'manageAccess', title: t('secrets.catalog.actions.manageAccess'), icon: 'users' as const,
+                disabled: props.sharedMutationsDisabled,
+                onPress: () => props.onManageAccessShared?.(entry),
+            } : null,
+            entry.capabilities.delete && props.onDeleteShared ? {
+                id: 'delete', title: t('common.delete'), icon: 'trash' as const, destructive: true,
+                disabled: props.sharedMutationsDisabled,
+                onPress: () => props.onDeleteShared?.(entry),
+            } : null,
+        ].filter((action): action is NonNullable<typeof action> => action !== null);
+        return (
+            <Item
+                key={entry.ref}
+                testID={`saved-secret:${entry.ref}`}
+                title={entry.name ?? t('secrets.catalog.unavailableName')}
+                subtitle={sharedSecretStatusLabel(resolvedStatus)}
+                accessibilityLabel={[
+                    entry.name ?? t('secrets.catalog.unavailableName'),
+                    entry.relationship === 'owner'
+                        ? t('secrets.catalog.relationship.owner')
+                        : t('secrets.catalog.relationship.recipient'),
+                    sharedSecretStatusLabel(resolvedStatus),
+                ].join(', ')}
+                icon={<Icon name="key" size={29} color={theme.colors.button.secondary.tint} />}
+                onPress={props.onSelectId && ready ? () => props.onSelectId?.(entry.ref) : undefined}
+                showChevron={false}
+                selected={Boolean(props.onSelectId) && props.selectedId === entry.ref}
+                showDivider={idx < total - 1}
+                disabled={Boolean(props.onSelectId) && !ready}
+                rightElementOutsidePressable={actions.length > 0}
+                rightElement={actions.length > 0 ? (
+                    <ItemRowActions
+                        title={entry.name ?? t('secrets.catalog.unavailableName')}
+                        overflowTriggerTestID={`saved-secret:${entry.ref}:more`}
+                        compactActionIds={['manageAccess']}
+                        actions={actions}
+                    />
+                ) : undefined}
+            />
+        );
+    };
 
     const group = (
         <>
+            {props.sharedApprovalId && props.onOpenSharedApproval ? (
+                <ItemGroup>
+                    <Item
+                        testID="saved-secret-approval"
+                        title={t('approvals.title')}
+                        subtitle={t('secrets.catalog.approvalPending')}
+                        accessibilityLiveRegion="polite"
+                        onPress={props.onOpenSharedApproval}
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            ) : null}
             <ItemGroup title={groupTitle}>
+                {props.sharedCatalogStale && props.onRetrySharedCatalog ? (
+                    <Item
+                        testID="saved-secret-catalog-retry"
+                        title={t('common.retry')}
+                        subtitle={t('secrets.catalog.operationFailed')}
+                        onPress={props.onRetrySharedCatalog}
+                        showChevron={false}
+                    />
+                ) : null}
                 {props.includeNoneRow && (
                     <Item
                         testID="saved-secret:none"
@@ -169,7 +278,7 @@ export function SecretsList(props: SecretsListProps) {
                     />
                 )}
 
-                {props.secrets.length === 0 ? (
+                {props.secrets.length === 0 && (props.sharedEntries?.length ?? 0) === 0 && (props.corruptEntries?.length ?? 0) === 0 ? (
                     <Item
                         testID="saved-secret:empty"
                         title={t('secrets.emptyTitle')}
@@ -178,7 +287,8 @@ export function SecretsList(props: SecretsListProps) {
                         showChevron={false}
                     />
                 ) : (
-                    orderedSecrets.map((secret, idx) => {
+                    <>
+                    {orderedSecrets.map((secret, idx) => {
                         const isSelected = props.selectedId === secret.id;
                         const isDefault = props.defaultId === secret.id;
                         return (
@@ -191,7 +301,7 @@ export function SecretsList(props: SecretsListProps) {
                                 onPress={props.onSelectId ? () => props.onSelectId?.(secret.id) : undefined}
                                 showChevron={false}
                                 selected={Boolean(props.onSelectId) ? isSelected : false}
-                                showDivider={idx < orderedSecrets.length - 1}
+                                showDivider={idx < orderedSecrets.length - 1 || (props.sharedEntries?.length ?? 0) > 0}
                                 // The accessory owns its own buttons (rename/replace/delete,
                                 // set-default), so it must sit beside the row's activation
                                 // owner rather than inside it. Without this the row stops
@@ -220,15 +330,23 @@ export function SecretsList(props: SecretsListProps) {
                                             />
                                         )}
 
-                                        {props.allowEdit !== false && (
+                                        {props.allowEdit !== false && (onRenamePersonal || onRotatePersonal || onDeletePersonal) && (
                                             <ItemRowActions
                                                 title={secret.name}
                                                 overflowTriggerTestID={`saved-secret:${secret.id}:more`}
                                                 compactActionIds={['edit']}
                                                 actions={[
-                                                    { id: 'edit', inlineTestID: `saved-secret:${secret.id}:rename`, title: t('common.rename'), icon: 'pencil', onPress: () => { void renameSecret(secret); } },
-                                                    { id: 'replace', inlineTestID: `saved-secret:${secret.id}:replace`, title: t('secrets.actions.replaceValue'), icon: 'arrow-clockwise', onPress: () => { void replaceSecretValue(secret); } },
-                                                    { id: 'delete', inlineTestID: `saved-secret:${secret.id}:delete`, title: t('common.delete'), icon: 'trash', destructive: true, onPress: () => { void deleteSecret(secret); } },
+                                                    ...(onRenamePersonal ? [{ id: 'edit', inlineTestID: `saved-secret:${secret.id}:rename`, title: t('common.rename'), icon: 'pencil' as const, onPress: () => { void onRenamePersonal(secret); } }] : []),
+                                                    ...(onRotatePersonal ? [{ id: 'replace', inlineTestID: `saved-secret:${secret.id}:replace`, title: t('secrets.actions.replaceValue'), icon: 'arrow-clockwise' as const, onPress: () => { void onRotatePersonal(secret); } }] : []),
+                                                    ...(props.onSharePersonal ? [{
+                                                        id: 'share',
+                                                        inlineTestID: `saved-secret:${secret.id}:share`,
+                                                        title: t('common.share'),
+                                                        icon: 'users' as const,
+                                                        disabled: props.sharingPersonalId !== null && props.sharingPersonalId !== undefined,
+                                                        onPress: () => props.onSharePersonal?.(secret),
+                                                    }] : []),
+                                                    ...(onDeletePersonal ? [{ id: 'delete', inlineTestID: `saved-secret:${secret.id}:delete`, title: t('common.delete'), icon: 'trash' as const, destructive: true, onPress: () => { void deleteSecret(secret); } }] : []),
                                                 ]}
                                             />
                                         )}
@@ -247,11 +365,30 @@ export function SecretsList(props: SecretsListProps) {
                                 )}
                             />
                         );
-                    })
+                    })}
+                    {ownerSharedEntries.map((entry, idx) => renderSharedEntry(entry, idx, ownerSharedEntries.length))}
+                    {ownerCorruptEntries.map((entry, idx) => renderCorruptEntry(entry, idx, ownerCorruptEntries.length))}
+                    </>
                 )}
             </ItemGroup>
+            {recipientSharedEntries.length + recipientCorruptEntries.length > 0 ? (
+                <ItemGroup title={t('secrets.catalog.relationship.recipient')}>
+                    {recipientSharedEntries.map((entry, idx) => renderSharedEntry(entry, idx, recipientSharedEntries.length))}
+                    {recipientCorruptEntries.map((entry, idx) => renderCorruptEntry(entry, idx, recipientCorruptEntries.length))}
+                </ItemGroup>
+            ) : null}
             <ItemGroup footer={groupFooter}>
-                {props.allowAdd !== false ? (
+                {props.onCreateShared ? (
+                    <Item
+                        testID="saved-secret-create-shared"
+                        title={t('secrets.catalog.createSharedTitle')}
+                        subtitle={t('secrets.catalog.createSharedSubtitle')}
+                        icon={<Icon name="users" size={29} color={theme.colors.button.secondary.tint} />}
+                        onPress={props.onCreateShared}
+                        showChevron={false}
+                    />
+                ) : null}
+                {props.allowAdd !== false && onCreatePersonal ? (
                     <InlineAddExpander
                         triggerTestID="saved-secret-add"
                         isOpen={isAddExpanded}
@@ -261,7 +398,7 @@ export function SecretsList(props: SecretsListProps) {
                         icon={<Icon name="plus-circle" size={29} color={theme.colors.button.secondary.tint} />}
                         onCancel={resetAddDraft}
                         onSave={submitAddSecret}
-                        saveDisabled={!draftName.trim() || !draftValue.trim()}
+                        saveDisabled={!draftName.trim() || draftValue.length === 0}
                         cancelLabel={t('common.cancel')}
                         saveLabel={t('common.save')}
                         autoFocusRef={nameInputRef}

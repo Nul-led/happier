@@ -41,11 +41,21 @@ import {
   type VoiceRuntimeFailureDiagnosticReason,
 } from '@/voice/runtime/voiceRuntimeFailureCode';
 import type { VoiceMachineErrorKind } from '@/voice/runtime/machine/voiceConversationRuntimeTypes';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 function readRequest(value: VoiceRealtimeJsonValue): Readonly<Record<string, VoiceRealtimeJsonValue>> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Readonly<Record<string, VoiceRealtimeJsonValue>>
     : {};
+}
+
+function readRequestedTargetSessionAddress(
+  request: Readonly<Record<string, VoiceRealtimeJsonValue>>,
+): SessionAddress | null {
+  const target = request.requestedTargetSessionAddress;
+  if (!target || typeof target !== 'object' || Array.isArray(target)) return null;
+  const targetRecord = target as Readonly<Record<string, VoiceRealtimeJsonValue>>;
+  return normalizeSessionAddress(targetRecord.serverId, targetRecord.sessionId);
 }
 
 function abortIfRequested(signal: AbortSignal): void {
@@ -159,7 +169,7 @@ export function createBundledRealtimeProviderRuntime(
       controlSessionId: string;
       conversationSessionId: string;
       transcriptAttemptIdentity: string;
-      targetSessionId: string | null;
+      targetSessionAddress: SessionAddress | null;
       retiringTranscriptDrain: BundledRetiringDirectMediaTranscriptDrain | null;
       bindingOwnership: BundledDirectMediaBindingOwnership | null;
     }> | null;
@@ -481,14 +491,12 @@ export function createBundledRealtimeProviderRuntime(
       controlSessionId: string; attemptId: number; request: VoiceRealtimeJsonValue; signal: AbortSignal;
     }>) {
       const request = readRequest(input.request);
-      const target = typeof request.requestedTargetSessionId === 'string' && request.requestedTargetSessionId.trim()
-        ? request.requestedTargetSessionId.trim()
-        : null;
+      const targetSessionAddress = readRequestedTargetSessionAddress(request);
       if (config.execution.kind === 'direct_media') return;
       await host.ensureBound({
         adapterId: providerId,
         controlSessionId: input.controlSessionId,
-        requestedTargetSessionId: target,
+        requestedTargetSessionAddress: targetSessionAddress,
       });
       abortIfRequested(input.signal);
       beginTranscriptProjection(input);
@@ -529,20 +537,17 @@ export function createBundledRealtimeProviderRuntime(
       const prepare = (async () => {
         if (config.execution.kind === 'direct_media') {
           const request = readRequest(input.request);
-          const target = typeof request.requestedTargetSessionId === 'string'
-            && request.requestedTargetSessionId.trim()
-            ? request.requestedTargetSessionId.trim()
-            : null;
+          const targetSessionAddress = readRequestedTargetSessionAddress(request);
           const acquired = await host.acquireDirectMediaConversation({
             adapterId: providerId,
             controlSessionId: input.controlSessionId,
-            requestedTargetSessionId: target,
+            requestedTargetSessionAddress: targetSessionAddress,
           });
           attempt.directMediaConversation = Object.freeze({
             controlSessionId: input.controlSessionId,
             conversationSessionId: acquired.conversationSessionId,
             transcriptAttemptIdentity: beginTranscriptProjection(input).attemptIdentity,
-            targetSessionId: target,
+            targetSessionAddress,
             retiringTranscriptDrain: null,
             bindingOwnership: acquired.bindingOwnership ?? null,
           });
@@ -1136,7 +1141,7 @@ export function createBundledRealtimeProviderRuntime(
           if (
             !resourceAttempt
             || !directMediaConversation
-            || directMediaConversation.targetSessionId !== null
+            || directMediaConversation.targetSessionAddress !== null
             || resourceAttempt.releasePromise !== null
           ) {
             // The attempt's carrier is no longer the one this control session
@@ -1182,7 +1187,7 @@ export function createBundledRealtimeProviderRuntime(
                 const acquired = await host.acquireDirectMediaConversation({
                   adapterId: providerId,
                   controlSessionId,
-                  requestedTargetSessionId: null,
+                  requestedTargetSessionAddress: null,
                   ...(retiringTranscriptDrain ? { retiringTranscriptDrain } : {}),
                 });
                 if (
@@ -1207,7 +1212,7 @@ export function createBundledRealtimeProviderRuntime(
                   controlSessionId,
                   conversationSessionId: acquired.conversationSessionId,
                   transcriptAttemptIdentity: nextAttempt.attemptIdentity,
-                  targetSessionId: null,
+                  targetSessionAddress: null,
                   retiringTranscriptDrain,
                   bindingOwnership: acquired.bindingOwnership ?? null,
                 });
@@ -1506,7 +1511,7 @@ export function createBundledRealtimeProviderRuntime(
       ? 'current_ui_only'
       : 'session_context';
 
-  const start = async (input: Readonly<{ sessionId: string; initialContext?: string; textOnly?: boolean }>) => {
+  const start = async (input: Parameters<VoiceAdapterController['start']>[0]) => {
     if (disposed || !isCurrentGeneration()) {
       throw Object.assign(new Error('voice_runtime_generation_revoked'), {
         code: 'voice_runtime_generation_revoked',
@@ -1521,12 +1526,19 @@ export function createBundledRealtimeProviderRuntime(
     );
     const normalized = String(input.sessionId ?? '').trim();
     const controlSessionId = normalized || host.globalVoiceSessionId;
-    const requestedTargetSessionId = controlSessionId === host.globalVoiceSessionId ? null : controlSessionId;
-    if (requestedTargetSessionId) {
+    const requestedTargetSessionAddress = input.requestedTargetSessionAddress;
+    const targetMatchesControlSession = requestedTargetSessionAddress?.sessionId === controlSessionId;
+    if (
+      (controlSessionId === host.globalVoiceSessionId && requestedTargetSessionAddress !== null)
+      || (controlSessionId !== host.globalVoiceSessionId && !targetMatchesControlSession)
+    ) {
+      throw Object.assign(new Error('session_unavailable'), { code: 'session_unavailable' });
+    }
+    if (requestedTargetSessionAddress) {
       try {
         await host.applyTargetSelection({
           controlSessionId,
-          targetSessionId: requestedTargetSessionId,
+          targetSessionAddress: requestedTargetSessionAddress,
           updateLastFocused: true,
         });
       } catch (error) {
@@ -1570,7 +1582,7 @@ export function createBundledRealtimeProviderRuntime(
         controlSessionId,
         request: {
           ...(initialContext ? { initialContext } : {}),
-          ...(requestedTargetSessionId ? { requestedTargetSessionId } : {}),
+          ...(requestedTargetSessionAddress ? { requestedTargetSessionAddress } : {}),
           textOnly: input.textOnly === true,
         },
       });
@@ -1681,7 +1693,10 @@ export function createBundledRealtimeProviderRuntime(
       : 'route_target',
     start,
     stop,
-    async toggle(input) { if (runtime!.getActiveControlSessionId()) await stop(); else await start(input); },
+    async toggle(input) {
+      if (runtime!.getActiveControlSessionId()) await stop();
+      else await start({ ...input, requestedTargetSessionAddress: null });
+    },
     async retry() {
       await runtime?.requestReconnect();
     },
@@ -1796,7 +1811,13 @@ export function createBundledRealtimeProviderRuntime(
             'unsupported_action',
           );
         }
-        if (!runtime!.getActiveControlSessionId()) await start({ sessionId: controlSessionId, textOnly: true });
+        if (!runtime!.getActiveControlSessionId()) {
+          await start({
+            sessionId: controlSessionId,
+            requestedTargetSessionAddress: null,
+            textOnly: true,
+          });
+        }
         if (host.resolveConversationSessionId(controlSessionId, providerId) !== conversationSessionId) {
           throw createVoiceTextTurnRejectedBeforeEffectError(
             new Error('voice_transcript_carrier_changed'),

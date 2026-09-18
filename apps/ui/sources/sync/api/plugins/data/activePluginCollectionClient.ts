@@ -43,6 +43,7 @@ import {
     type PluginCollectionRowV1,
 } from '@happier-dev/protocol';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
+import { mergeAbortSignals } from '@happier-dev/plugin-sdk/async';
 import type {
     PluginAccountCollectionDefinition,
     PluginAccountCollectionValue,
@@ -66,9 +67,9 @@ import {
     withAccountStoredContentCompatibilityRequestDeclaration,
     type AccountStoredContentCompatibilityUnavailableReason,
 } from '@/sync/http/accountStoredContentCompatibility';
-import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
-import { watchActivePluginCollectionChanges } from './queryPluginCollectionUiQuery';
+import { watchActivePluginCollectionChanges } from './pluginCollectionChangeWatch';
 
 export type ActivePluginCollectionUnavailableReasonV1 =
     | AccountStoredContentCompatibilityUnavailableReason
@@ -82,6 +83,7 @@ export type ActivePluginCollectionUnavailableReasonV1 =
     | 'collection-unavailable'
     | 'writer-contract-unavailable'
     | 'response-invalid'
+    | 'mutation-outcome-unknown'
     /**
      * The runtime's `JSON.stringify` refused this request body. Protocol admits
      * strict JSON iteratively and carries no depth quota, so an admitted value
@@ -291,7 +293,7 @@ export type ActivePluginCollectionClientV1<
 export type PreparedCollectionOperation = Readonly<{
     lifetime: ActiveServerAccountScopeLifetime;
     serverSnapshot: ReturnType<typeof getActiveServerSnapshot>;
-    authority: Awaited<ReturnType<typeof captureSessionRequestAuthorityForServerAccountScope>>;
+    authority: Awaited<ReturnType<typeof captureServerRequestAuthorityForServerAccountScope>>;
     encryptionMode: 'plain' | 'e2ee';
     material: AccountScopedCryptoMaterial | null;
     headers: Headers;
@@ -394,7 +396,7 @@ export async function prepareCollectionOperation(
     const abort = () => controller.abort();
     const retirement = lifetime.onRetire(abort);
     options?.signal?.addEventListener('abort', abort, { once: true });
-    let authority: Awaited<ReturnType<typeof captureSessionRequestAuthorityForServerAccountScope>> | null = null;
+    let authority: Awaited<ReturnType<typeof captureServerRequestAuthorityForServerAccountScope>> | null = null;
     const release = async (): Promise<void> => {
         await authority?.release?.();
         options?.signal?.removeEventListener('abort', abort);
@@ -405,7 +407,7 @@ export async function prepareCollectionOperation(
         return unavailable('operation-cancelled');
     }
     try {
-        authority = await captureSessionRequestAuthorityForServerAccountScope({
+        authority = await captureServerRequestAuthorityForServerAccountScope({
             scope: lifetime.scope,
             activeRequest: (path, init) => apiSocket.request(path, init),
         });
@@ -472,6 +474,7 @@ export async function requestCollectionOperation(input: Readonly<{
     /** Omit together with a `GET` method for a read-only Account Data route. */
     body?: unknown;
     method?: 'GET' | 'POST';
+    kind?: 'read' | 'mutation';
     options?: ActivePluginCollectionOperationOptionsV1;
 }>): Promise<
     | Readonly<{ status: 'response'; ok: boolean; body: unknown }>
@@ -490,17 +493,27 @@ export async function requestCollectionOperation(input: Readonly<{
             return unavailable('request-not-serializable');
         }
     }
+    const beforeRequest = getPreparedCollectionOperationCurrentness(input.operation);
+    if (beforeRequest) return unavailable(beforeRequest);
+    // The prepared operation signal only carries the cancellation known when the
+    // operation was prepared. A per-request signal — a transaction's composed
+    // participant cancellation, for example — reaches the transport only if it
+    // is composed here, at the one place the physical request is issued.
+    const cancellation = mergeAbortSignals([input.operation.signal, input.options?.signal]);
     try {
+        if (cancellation.signal.aborted) {
+            return unavailable(input.options?.signal?.aborted ? 'operation-cancelled' : 'account-scope-changed');
+        }
         const response = await input.operation.authority.request(
             input.path,
             withAccountStoredContentCompatibilityRequestDeclaration({
                 method,
                 headers: input.operation.headers,
                 ...(method === 'GET' ? {} : { body: serializedBody }),
-                signal: input.operation.signal,
+                signal: cancellation.signal,
             }, PLUGIN_DATA_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
         );
-        if (input.operation.signal.aborted) {
+        if (input.kind !== 'mutation' && cancellation.signal.aborted) {
             return unavailable(input.options?.signal?.aborted
                 ? 'operation-cancelled'
                 : 'account-scope-changed');
@@ -509,9 +522,9 @@ export async function requestCollectionOperation(input: Readonly<{
             input.operation.lifetime,
             input.operation.serverSnapshot,
         );
-        if (currentness) return unavailable(currentness);
+        if (input.kind !== 'mutation' && currentness) return unavailable(currentness);
         const body = await response.json().catch(() => null);
-        if (input.operation.signal.aborted) {
+        if (input.kind !== 'mutation' && cancellation.signal.aborted) {
             return unavailable(input.options?.signal?.aborted
                 ? 'operation-cancelled'
                 : 'account-scope-changed');
@@ -520,14 +533,19 @@ export async function requestCollectionOperation(input: Readonly<{
             input.operation.lifetime,
             input.operation.serverSnapshot,
         );
-        if (currentnessAfterBody) return unavailable(currentnessAfterBody);
+        if (input.kind !== 'mutation' && currentnessAfterBody) return unavailable(currentnessAfterBody);
         return { status: 'response', ok: response.ok, body };
     } catch {
+        // An interrupted mutation stays outcome-unknown: cancelling the request
+        // cannot establish that the server did not apply it.
+        if (input.kind === 'mutation') return unavailable('mutation-outcome-unknown');
         return unavailable(input.options?.signal?.aborted
             ? 'operation-cancelled'
             : input.operation.lifetime.isCurrent()
                 ? 'transport-unavailable'
                 : 'account-scope-changed');
+    } finally {
+        cancellation.dispose();
     }
 }
 
@@ -620,7 +638,7 @@ function mapReadError(value: unknown): ActivePluginCollectionUnavailableV1 | Act
 
 function mapMutationError(value: unknown): ActivePluginCollectionUnavailableV1 | ActivePluginCollectionRejectedV1 {
     const parsed = PluginCollectionMutationErrorV1Schema.safeParse(value);
-    if (!parsed.success) return unavailable('response-invalid');
+    if (!parsed.success) return unavailable('mutation-outcome-unknown');
     if (parsed.data.error === 'collection_relation_restricted') {
         return rejected(parsed.data.error, {
             relationRestriction: {
@@ -899,13 +917,14 @@ export function createActivePluginCollectionClient<
             const response = await requestCollectionOperation({
                 operation: prepared.operation,
                 path: PLUGIN_COLLECTION_MUTATION_HTTP_PATH_V1,
+                kind: 'mutation',
                 body: sealed.request,
                 options,
             });
             if (response.status === 'unavailable') return response;
             if (!response.ok) return mapMutationError(response.body);
             const result = PluginCollectionMutationResultV1Schema.safeParse(response.body);
-            if (!result.success) return unavailable('response-invalid');
+            if (!result.success) return unavailable('mutation-outcome-unknown');
             return result.data.status === 'conflict'
                 ? { status: 'conflict', conflicts: result.data.conflicts }
                 : {
@@ -948,13 +967,14 @@ export function createActivePluginCollectionClient<
             const response = await requestCollectionOperation({
                 operation: prepared.operation,
                 path: PLUGIN_COLLECTION_FORGET_HTTP_PATH_V1,
+                kind: 'mutation',
                 body: body.data,
                 options,
             });
             if (response.status === 'unavailable') return response;
             if (!response.ok) return mapMutationError(response.body);
             const result = PluginCollectionForgetResultV1Schema.safeParse(response.body);
-            return result.success ? result.data : unavailable('response-invalid');
+            return result.success ? result.data : unavailable('mutation-outcome-unknown');
         } finally {
             await prepared.operation.release();
         }

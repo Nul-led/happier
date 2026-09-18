@@ -263,13 +263,17 @@ async function isStagedMediaAdmissionAvailable(
 export async function submitComposerSnapshot(input: Readonly<{
     snapshot: ComposerSnapshotV1 | null;
     route: ComposerSubmissionRoute;
-    clearAcceptedSnapshot: (snapshot: ComposerSubmissionSnapshot) => boolean;
+    /** Sendable bytes owned by this mounted composer but staged outside the portable document. */
+    additionalSendableContent?: boolean;
+    /** Clears through the owner token associated with the exact captured snapshot. */
+    clearAcceptedSnapshot: (capturedSnapshot: ComposerSnapshotV1) => boolean;
 }>): Promise<ComposerSubmissionResult> {
-    if (!input.snapshot || !input.snapshot.capabilities.submit || !input.snapshot.state.submittable) {
+    const capturedSnapshot = input.snapshot;
+    if (!capturedSnapshot || !capturedSnapshot.capabilities.submit || !capturedSnapshot.state.submittable) {
         return { status: 'unavailable' };
     }
 
-    const snapshot = captureComposerSubmissionSnapshot(input.snapshot);
+    const snapshot = captureComposerSubmissionSnapshot(capturedSnapshot);
     if (!snapshot) return { status: 'unavailable' };
     if (!isSubmissionRouteForSnapshot(snapshot, input.route)) {
         return { status: 'blocked', reason: 'scopeMismatch', snapshot };
@@ -277,7 +281,7 @@ export async function submitComposerSnapshot(input: Readonly<{
     if (hasUnavailableAttachment(snapshot)) {
         return { status: 'blocked', reason: 'attachmentUnavailable', snapshot };
     }
-    if (isTextlessAndAttachmentless(snapshot)) {
+    if (isTextlessAndAttachmentless(snapshot) && input.additionalSendableContent !== true) {
         return { status: 'notSendable', snapshot };
     }
     const stagedMedia = readStagedMediaHandles(snapshot);
@@ -294,7 +298,7 @@ export async function submitComposerSnapshot(input: Readonly<{
         accept: () => {
             if (didAcceptAtHandoff) return clearedAtHandoff;
             didAcceptAtHandoff = true;
-            clearedAtHandoff = input.clearAcceptedSnapshot(snapshot);
+            clearedAtHandoff = input.clearAcceptedSnapshot(capturedSnapshot);
             return clearedAtHandoff;
         },
     };
@@ -317,8 +321,8 @@ export async function submitComposerSnapshot(input: Readonly<{
         status: 'accepted',
         snapshot,
         // The document owner retains the exact ref boundary and independently
-        // clears each field whose current value still matches this detached
-        // snapshot, leaving newer fields intact after accepted handoff.
+        // clears each field whose current value still matches the capture that
+        // produced this detached submission, leaving newer fields intact.
         cleared: didAcceptAtHandoff ? clearedAtHandoff : handoff.accept(),
     };
 }

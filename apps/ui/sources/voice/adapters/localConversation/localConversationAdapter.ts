@@ -26,7 +26,9 @@ export function createLocalConversationVoiceAdapter(input: Readonly<{
   currentUiContext?: VoiceCurrentUiToolPort;
 }> = {}): VoiceAdapterController {
   return createLocalVoiceAdapter('local_conversation', {
-    contextUpdates: true,
+    // Stored Session changes are reconciled by the daemon at Voice turn
+    // admission. The UI adapter must not retain a second Follow queue.
+    contextUpdates: false,
     textTurns: true,
     resolveBindingTranscriptMode: resolveLocalConversationTranscriptMode,
     resolveSurfaceCapabilities: (voiceSettings) => {
@@ -55,9 +57,10 @@ export function createLocalConversationVoiceAdapter(input: Readonly<{
         sendContextualUpdate: (update, contextClass) => {
           if (contextClass === 'current_ui') {
             active.sendAutomaticUiContextUpdate(update);
-            return;
           }
-          active.sendContextualUpdate(update);
+          // Stored Session updates are reconciled by the daemon on the next
+          // accepted Voice turn. The foreground UI owns only current-UI
+          // projection and immediate announcement, never Follow custody.
         },
         sendTextMessage: (text) => fireAndForget(active.sendTextUpdate(text), {
           tag: 'local_voice_agent_text_update',

@@ -19,6 +19,7 @@ import {
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { mergeAbortSignals } from '@/utils/runtime/abortSignals';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { normalizeVoiceRuntimeFailureCode } from '../voiceRuntimeFailureCode';
 
@@ -35,7 +36,7 @@ export function cleanupBoundAgentSessionRealtimeService(
 }
 
 type SessionRpc = (input: Readonly<{
-  sessionId: string;
+  sessionAddress: SessionAddress;
   method: string;
   payload: unknown;
   signal: AbortSignal;
@@ -140,7 +141,7 @@ function waitForOperationOrAbort<T>(
 
 export function createAgentSessionRealtimeService(input: Readonly<{
   provider: Readonly<{ pluginId: string; localId: string }>;
-  conversationSessionId: string;
+  conversationSessionAddress: SessionAddress;
   applicationAttemptId: string;
   signal: AbortSignal;
   sessionRpc: SessionRpc;
@@ -194,7 +195,7 @@ export function createAgentSessionRealtimeService(input: Readonly<{
   ): Promise<unknown> => {
     if (signal.aborted) throw new Error(AGENT_REALTIME_REQUEST_ABORTED_REJECTION);
     return await input.sessionRpc({
-      sessionId: input.conversationSessionId,
+      sessionAddress: input.conversationSessionAddress,
       method,
       payload,
       signal,

@@ -819,10 +819,19 @@ describe('settings', () => {
             expect((parsed as any).sessionListInactiveGroupingV1).toBe('project');
         });
 
-        it('defaults the session list section mode to activity grouping', () => {
+        it('keeps the canonical inactive grouping when the legacy Boolean contradicts it', () => {
+            const parsed = settingsParse({
+                groupInactiveSessionsByProject: true,
+                sessionListInactiveGroupingV1: 'date',
+            } as any);
+
+            expect((parsed as any).sessionListInactiveGroupingV1).toBe('date');
+        });
+
+        it('defaults the session list section mode to the single Projects layout', () => {
             const parsed = settingsParse({});
 
-            expect((parsed as any).sessionListSectionModeV1).toBe('activity');
+            expect((parsed as any).sessionListSectionModeV1).toBe('single');
         });
 
         it('parses the unified session list section mode', () => {
@@ -1368,6 +1377,7 @@ describe('settings', () => {
                 pushEnabled: true,
                 ready: true,
                 readyIncludeMessageText: true,
+                requestIncludeMessageText: false,
                 foregroundBehavior: 'full',
                 permissionRequest: true,
                 userActionRequest: true,
@@ -1390,6 +1400,7 @@ describe('settings', () => {
                         connectedServiceQuotaRecovered: true,
                     },
                     readyIncludeMessageText: true,
+                    requestIncludeMessageText: false,
                 },
             ]);
             expect((settingsDefaults as any).attentionDeliveryPolicyV1).toEqual(

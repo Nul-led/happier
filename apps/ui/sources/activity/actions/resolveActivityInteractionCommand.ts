@@ -1,5 +1,7 @@
 import type { ActionId } from '@happier-dev/protocol';
 
+import { createWorkflowRunRoute } from '@/sync/domains/workflows/workflowRunRoute';
+
 import type { ParsedActivityInteraction } from './activityActionTypes';
 import {
     createActivitySurfaceSessionRoute,
@@ -9,7 +11,11 @@ import {
 import { parseActivityInteraction } from './parseActivityInteraction';
 
 export type ActivityInteractionIdentity = Readonly<{
-    serverId: string;
+    /**
+     * `null` is a Session with no Home binding — never a placeholder id. A Home whose profile id
+     * is literally `local` is a real Home and keeps routing to itself (Lane 07.1 §4).
+     */
+    serverId: string | null;
     sessionId: string;
     activityName?: string | null;
     activityInstanceKey?: string | null;
@@ -45,6 +51,18 @@ export type ActivityInteractionCommand =
     }>
     | Readonly<{
         kind: 'openInbox';
+        route: string;
+    }>
+    | Readonly<{
+        /**
+         * An Account-scoped workflow Run. It carries no Session identity on
+         * purpose: a Run outlives its originating Session and is discoverable
+         * by `runId` alone, so the Session-identity gate must not apply.
+         */
+        kind: 'openWorkflowRun';
+        runId: string;
+        serverId: string | null;
+        serverUrl: string | null;
         route: string;
     }>
     | Readonly<{
@@ -90,9 +108,9 @@ function readStringField(data: unknown, key: string): string {
 }
 
 function normalizeIdentity(identity: ActivityInteractionIdentity): ActivityInteractionIdentity | null {
-    const serverId = identity.serverId.trim();
+    const serverId = typeof identity.serverId === 'string' ? identity.serverId.trim() || null : null;
     const sessionId = identity.sessionId.trim();
-    if (!serverId || !sessionId) return null;
+    if (!sessionId) return null;
     const activityName = typeof identity.activityName === 'string' ? identity.activityName.trim() : '';
     const activityInstanceKey = typeof identity.activityInstanceKey === 'string' ? identity.activityInstanceKey.trim() : '';
     return {
@@ -203,10 +221,6 @@ function ignore(reason: ActivityInteractionIgnoreReason, target: ActivityInterac
     };
 }
 
-function resolveRouteServerId(serverId: string | null): string | null {
-    return serverId === 'local' ? null : serverId;
-}
-
 function openSessionCommand(params: Readonly<{
     identity: ActivityInteractionIdentity | null;
     target: ActivityInteractionTargetContext;
@@ -214,13 +228,14 @@ function openSessionCommand(params: Readonly<{
 }>): ActivityInteractionCommand {
     const sessionId = params.identity?.sessionId ?? params.target.sessionId;
     if (!sessionId) return ignore('missing_identity', params.target);
-    const serverId = params.identity?.serverId ?? params.target.serverId ?? null;
+    // A known identity is authoritative, including its explicit "no Home binding".
+    const serverId = params.identity ? params.identity.serverId : params.target.serverId ?? null;
     return {
         kind: 'openSession',
         sessionId,
         serverId,
         serverUrl: params.target.serverUrl ?? null,
-        route: createActivitySurfaceSessionRoute(sessionId, resolveRouteServerId(serverId)),
+        route: createActivitySurfaceSessionRoute(sessionId, serverId),
         identity: params.identity,
         ...(params.fallbackReason ? { fallbackReason: params.fallbackReason } : {}),
     };
@@ -278,6 +293,19 @@ export function resolveActivityInteractionCommand(params: Readonly<{
     const settingsCommand = resolveSettingsCommand(actionIdentifier, target);
     if (settingsCommand) return settingsCommand;
 
+    // Resolved before the Session-identity gate below: a workflow Run is
+    // Account-scoped, so requiring a known Session identity would drop every
+    // workflow deep link on a client that has not loaded that Session.
+    if (parsed?.workflowRun && parsed.isOpenAction) {
+        return {
+            kind: 'openWorkflowRun',
+            runId: parsed.workflowRun.runId,
+            serverId: target.serverId,
+            serverUrl: target.serverUrl ?? parsed.serverUrl ?? null,
+            route: createWorkflowRunRoute(parsed.workflowRun.runId),
+        };
+    }
+
     if (actionIdentifier === 'open-inbox' || (parsed?.route === '/inbox' && parsed.permissionAction === null)) {
         return {
             kind: 'openInbox',
@@ -296,16 +324,13 @@ export function resolveActivityInteractionCommand(params: Readonly<{
     if (actionIdentifier.startsWith('focus-composer:')) {
         const sessionId = identity?.sessionId ?? target.sessionId ?? '';
         if (!sessionId) return ignore('missing_identity', target);
-        const serverId = identity?.serverId ?? target.serverId ?? null;
+        const serverId = identity ? identity.serverId : target.serverId ?? null;
         return {
             kind: 'focusComposer',
             sessionId,
             serverId,
             serverUrl: target.serverUrl ?? null,
-            route: createActivitySurfaceSessionRoute(
-                sessionId,
-                resolveRouteServerId(serverId),
-            ),
+            route: createActivitySurfaceSessionRoute(sessionId, serverId),
             identity,
         };
     }

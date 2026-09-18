@@ -5,7 +5,11 @@ import {
     resolveSessionNavigationCursorStep,
     type SessionNavigationCursorIdentity,
 } from './sessionNavigationCursor';
-import { resolveSessionMruNavigation, type SessionListLikeItem } from './sessionNavigationOrder';
+import {
+    buildServerScopedSessionKey,
+    resolveSessionMruNavigation,
+    type SessionListLikeItem,
+} from './sessionNavigationOrder';
 
 const identity: SessionNavigationCursorIdentity = {
     origin: 'session-list',
@@ -31,7 +35,7 @@ describe('session navigation cursor', () => {
         ]);
 
         expect(cursor).not.toBeNull();
-        expect(cursor?.entries.map((entry) => entry.sessionKey)).toEqual(['server-a:alpha', 'server-a:beta']);
+        expect(cursor?.entries.map((entry) => entry.sessionKey)).toEqual([buildServerScopedSessionKey('alpha', 'server-a'), buildServerScopedSessionKey('beta', 'server-a')]);
         expect(cursor?.capturedAtMs).toBe(1_000);
         expect(cursor?.identity).toEqual(identity);
     });
@@ -44,12 +48,12 @@ describe('session navigation cursor', () => {
     it('preserves server-scoped keys so one session id on two servers is two entries', () => {
         const cursor = buildCursorFrom([session('alpha', 'server-a'), session('alpha', 'server-b')]);
 
-        expect(cursor?.entries.map((entry) => entry.sessionKey)).toEqual(['server-a:alpha', 'server-b:alpha']);
+        expect(cursor?.entries.map((entry) => entry.sessionKey)).toEqual([buildServerScopedSessionKey('alpha', 'server-a'), buildServerScopedSessionKey('alpha', 'server-b')]);
         expect(resolveSessionNavigationCursorStep({
             cursor,
-            anchorSessionKey: 'server-a:alpha',
+            anchorSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             direction: 'next',
-        })).toMatchObject({ kind: 'target', cursorSessionKey: 'server-b:alpha' });
+        })).toMatchObject({ kind: 'target', cursorSessionKey: buildServerScopedSessionKey('alpha', 'server-b') });
     });
 
     it('steps through the frozen order even when the live list would have reordered', () => {
@@ -66,14 +70,14 @@ describe('session navigation cursor', () => {
 
         expect(resolveSessionNavigationCursorStep({
             cursor: frozen,
-            anchorSessionKey: 'server-a:alpha',
+            anchorSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             direction: 'next',
-        })).toMatchObject({ kind: 'target', cursorSessionKey: 'server-a:beta' });
+        })).toMatchObject({ kind: 'target', cursorSessionKey: buildServerScopedSessionKey('beta', 'server-a') });
         // The same step against the reordered live order is an edge, so the frozen
         // result above cannot have come from the current list order.
         expect(resolveSessionNavigationCursorStep({
             cursor: live,
-            anchorSessionKey: 'server-a:alpha',
+            anchorSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             direction: 'next',
         })).toEqual({ kind: 'edge' });
     });
@@ -87,10 +91,10 @@ describe('session navigation cursor', () => {
 
         expect(resolveSessionNavigationCursorStep({
             cursor,
-            anchorSessionKey: 'server-a:alpha',
+            anchorSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             direction: 'next',
-            isEntryNavigable: (entry) => entry.sessionKey !== 'server-a:beta',
-        })).toMatchObject({ kind: 'target', cursorSessionKey: 'server-a:gamma' });
+            isEntryNavigable: (entry) => entry.sessionKey !== buildServerScopedSessionKey('beta', 'server-a'),
+        })).toMatchObject({ kind: 'target', cursorSessionKey: buildServerScopedSessionKey('gamma', 'server-a') });
     });
 
     it('reports an edge when every remaining entry in that direction is unnavigable', () => {
@@ -102,9 +106,9 @@ describe('session navigation cursor', () => {
 
         expect(resolveSessionNavigationCursorStep({
             cursor,
-            anchorSessionKey: 'server-a:alpha',
+            anchorSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             direction: 'next',
-            isEntryNavigable: (entry) => entry.sessionKey === 'server-a:alpha',
+            isEntryNavigable: (entry) => entry.sessionKey === buildServerScopedSessionKey('alpha', 'server-a'),
         })).toEqual({ kind: 'edge' });
     });
 
@@ -116,7 +120,7 @@ describe('session navigation cursor', () => {
 
         expect(resolveSessionNavigationCursorStep({
             cursor,
-            anchorSessionKey: 'server-a:missing',
+            anchorSessionKey: buildServerScopedSessionKey('missing', 'server-a'),
             direction: 'next',
         })).toEqual({ kind: 'unavailable' });
         expect(resolveSessionNavigationCursorStep({
@@ -126,7 +130,7 @@ describe('session navigation cursor', () => {
         })).toEqual({ kind: 'unavailable' });
         expect(resolveSessionNavigationCursorStep({
             cursor: null,
-            anchorSessionKey: 'server-a:alpha',
+            anchorSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             direction: 'next',
         })).toEqual({ kind: 'unavailable' });
     });
@@ -140,7 +144,7 @@ describe('session navigation cursor', () => {
 
         const first = resolveSessionNavigationCursorStep({
             cursor,
-            anchorSessionKey: 'server-a:alpha',
+            anchorSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             direction: 'next',
         });
         expect(first.kind).toBe('target');
@@ -150,7 +154,7 @@ describe('session navigation cursor', () => {
             direction: 'next',
         });
 
-        expect(second).toMatchObject({ kind: 'target', cursorSessionKey: 'server-a:gamma' });
+        expect(second).toMatchObject({ kind: 'target', cursorSessionKey: buildServerScopedSessionKey('gamma', 'server-a') });
     });
 
     it('clamps at both ends and never wraps, unlike MRU navigation', () => {
@@ -162,21 +166,22 @@ describe('session navigation cursor', () => {
 
         expect(resolveSessionNavigationCursorStep({
             cursor,
-            anchorSessionKey: 'server-a:gamma',
+            anchorSessionKey: buildServerScopedSessionKey('gamma', 'server-a'),
             direction: 'next',
         })).toEqual({ kind: 'edge' });
         expect(resolveSessionNavigationCursorStep({
             cursor,
-            anchorSessionKey: 'server-a:alpha',
+            anchorSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             direction: 'previous',
         })).toEqual({ kind: 'edge' });
 
         // MRU navigation over the same order wraps; the cursor must not.
         expect(resolveSessionMruNavigation({
-            order: ['server-a:alpha', 'server-a:beta', 'server-a:gamma'],
-            activeSessionKey: 'server-a:alpha',
+            order: [buildServerScopedSessionKey('alpha', 'server-a'), buildServerScopedSessionKey('beta', 'server-a'), buildServerScopedSessionKey('gamma', 'server-a')],
+            knownSessionEntries: cursor?.entries ?? [],
+            activeSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             cursorSessionKey: null,
             direction: 'next',
-        })?.sessionKey).toBe('server-a:gamma');
+        })?.sessionKey).toBe(buildServerScopedSessionKey('gamma', 'server-a'));
     });
 });

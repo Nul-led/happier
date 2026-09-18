@@ -20,7 +20,7 @@ import { listServerProfiles } from '@/sync/domains/server/serverProfiles';
 import { useMachineListByServerId, useProfile } from '@/sync/domains/state/storage';
 import { serverFetch } from '@/sync/http/client';
 import { t } from '@/text';
-import { isMachineOnline } from '@/utils/sessions/machineUtils';
+import { getMachineDisplayName, isMachineOnline } from '@/utils/sessions/machineUtils';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
@@ -210,8 +210,7 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
         setReport(null);
         setMachineRunById({});
 
-        const online = onlineMachinesActiveServer.slice(0, 3);
-        for (const machine of online) {
+        for (const machine of onlineMachinesActiveServer) {
             setMachineRunById((prev) => ({ ...prev, [machine.id]: { status: 'loading' } }));
 
             const nextStatus = await fetchMachineDoctorSnapshot({
@@ -303,9 +302,48 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
         return count;
     }, [activeServerSnapshot.serverId, machineListByServerId, readMachineDoctorSnapshot]);
 
+    const failedMachineNames = React.useMemo(() => onlineMachinesActiveServer
+        .filter((machine) => machineRunById[machine.id]?.status === 'error')
+        .map((machine) => getMachineDisplayName(machine) ?? machine.id), [machineRunById, onlineMachinesActiveServer]);
+
+    const accessibilityStatus = React.useMemo(() => {
+        if (running) {
+            return t('diagnosis.machineRuns.loading');
+        }
+        if (!report) {
+            return null;
+        }
+
+        const summary: string[] = [];
+        if (failedMachineNames.length > 0) {
+            summary.push(
+                `${t('diagnosis.sections.machineRuns')}: ${t('diagnosis.machineRuns.error')} ${failedMachineNames.length}.`,
+            );
+        }
+        if (report.findings.length > 0) {
+            const firstFinding = report.findings[0];
+            if (firstFinding) {
+                summary.push(
+                    `${t('diagnosis.sections.findings')}: ${report.findings.length}. ${resolveFindingTitle(firstFinding)}.`,
+                );
+            }
+        }
+        return summary.length > 0 ? summary.join(' ') : t('diagnosis.findings.none');
+    }, [failedMachineNames.length, report, running]);
+
     return (
         <ItemList style={{ paddingTop: 0 }} testID="diagnosis-screen">
             <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
+                {accessibilityStatus ? (
+                    <Text
+                        testID="diagnosis-accessibility-status"
+                        style={styles.accessibilityStatus}
+                        accessibilityLiveRegion="polite"
+                        {...({ role: 'status', 'aria-live': 'polite' } as Record<string, unknown>)}
+                    >
+                        {accessibilityStatus}
+                    </Text>
+                ) : null}
                 <ItemGroup title={t('diagnosis.sections.overview')}>
                     <Item
                         title={t('diagnosis.overview.activeServer')}
@@ -357,6 +395,7 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
                             testID="diagnosis-paste-input"
                             style={styles.pasteInput}
                             placeholder={t('diagnosis.pasteDoctorJson.placeholder')}
+                            accessibilityLabel={t('diagnosis.sections.pasteDoctorJson')}
                             placeholderTextColor={theme.colors.input.placeholder}
                             value={pastedJson}
                             onChangeText={(value) => {
@@ -378,9 +417,21 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
                             showChevron={false}
                         />
                         {pastedParseError ? (
-                            <Text style={styles.errorText}>{t('diagnosis.pasteDoctorJson.error', { error: pastedParseError })}</Text>
+                            <Text
+                                style={styles.errorText}
+                                accessibilityLiveRegion="polite"
+                                {...({ role: 'status', 'aria-live': 'polite' } as Record<string, unknown>)}
+                            >
+                                {t('diagnosis.pasteDoctorJson.error', { error: pastedParseError })}
+                            </Text>
                         ) : pastedSnapshot ? (
-                            <Text style={styles.okText}>{t('diagnosis.pasteDoctorJson.ok')}</Text>
+                            <Text
+                                style={styles.okText}
+                                accessibilityLiveRegion="polite"
+                                {...({ role: 'status', 'aria-live': 'polite' } as Record<string, unknown>)}
+                            >
+                                {t('diagnosis.pasteDoctorJson.ok')}
+                            </Text>
                         ) : (
                             <Text style={styles.helperText}>{t('diagnosis.pasteDoctorJson.helper')}</Text>
                         )}
@@ -388,13 +439,13 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
                 </ItemGroup>
 
                 <ItemGroup title={t('diagnosis.sections.machineRuns')}>
-                    {onlineMachinesActiveServer.slice(0, 3).length === 0 ? (
+                    {onlineMachinesActiveServer.length === 0 ? (
                         <Item
                             title={t('diagnosis.machineRuns.none')}
                             icon={<Icon name="laptop" size={24} color={theme.colors.text.secondary} />}
                             disabled
                         />
-                    ) : onlineMachinesActiveServer.slice(0, 3).map((m) => {
+                    ) : onlineMachinesActiveServer.map((m) => {
                         const status = machineRunById[m.id] ?? { status: 'idle' as const };
                         const detail = status.status === 'loading'
                             ? t('diagnosis.machineRuns.loading')
@@ -413,7 +464,7 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
                         return (
                             <Item
                                 key={m.id}
-                                title={m.metadata?.displayName ?? m.metadata?.host ?? m.id}
+                                title={getMachineDisplayName(m) ?? m.id}
                                 subtitle={subtitle}
                                 detail={detail}
                                 icon={<Icon name="laptop" size={24} color={iconColor} />}
@@ -439,11 +490,19 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
                             icon={<Icon name="info" size={24} color={theme.colors.text.secondary} />}
                             disabled
                         />
-                    ) : report.findings.length === 0 ? (
+                    ) : report.findings.length === 0 && failedMachineNames.length === 0 ? (
                         <Item
                             title={t('diagnosis.findings.none')}
                             subtitle={t('diagnosis.findings.noneSubtitle')}
                             icon={<Icon name="check-circle" size={24} color={theme.colors.state.success.foreground} />}
+                            disabled
+                        />
+                    ) : report.findings.length === 0 ? (
+                        <Item
+                            testID="diagnosis-machine-run-summary"
+                            title={t('diagnosis.machineRuns.error')}
+                            subtitle={`${t('diagnosis.sections.machineRuns')}: ${failedMachineNames.join(', ')}`}
+                            icon={<Icon name="warning-circle" size={24} color={theme.colors.state.danger.foreground} />}
                             disabled
                         />
                     ) : report.findings.map((finding, idx) => (
@@ -477,6 +536,13 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
 });
 
 const diagnosisStyles = StyleSheet.create((theme) => ({
+    accessibilityStatus: {
+        position: 'absolute',
+        width: 1,
+        height: 1,
+        opacity: 0,
+        pointerEvents: 'none',
+    },
     pasteContainer: {
         paddingHorizontal: 16,
         paddingTop: 12,

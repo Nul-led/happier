@@ -11,6 +11,11 @@ const irohReleaseMock = vi.hoisted(() => vi.fn(async () => {}));
 const acquireIrohHomeRuntimeOriginMock = vi.hoisted(() => vi.fn<(input: unknown) => Promise<unknown>>(async () => ({
     leaseId: 'qr-iroh-lease',
     runtimeOrigin: 'http://127.0.0.1:45992',
+    homeServerIdentityId: 'srv_home_b',
+    endpointId: 'iroh-home-b',
+    carrier: 'iroh',
+    observedPath: 'direct',
+    status: 'ready',
     release: irohReleaseMock,
 })));
 

@@ -1,8 +1,8 @@
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import {
-    captureSessionRequestAuthorityForServerAccountScope,
-    type ServerAccountSessionRequestAuthority,
-} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+    captureServerRequestAuthorityForServerAccountScope,
+    type ServerAccountRequestAuthority,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { areServerAccountScopesEqual, createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { serverFetch } from '@/sync/http/client';
 import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
@@ -29,8 +29,8 @@ export type MemorySearchSessionRead = Readonly<{
 export async function captureMemorySearchSessionReadAuthority(input: Readonly<{
     serverId: string;
     accountId: string;
-}>): Promise<ServerAccountSessionRequestAuthority> {
-    return await captureSessionRequestAuthorityForServerAccountScope({
+}>): Promise<ServerAccountRequestAuthority> {
+    return await captureServerRequestAuthorityForServerAccountScope({
         scope: createServerAccountScope(input.serverId, input.accountId),
         activeRequest: (path, init) => serverFetch(path, init),
     });
@@ -222,7 +222,7 @@ export async function authorizeMemorySessionRange<TAuthority>(params: Readonly<{
 export async function readMemorySearchSessionForServerScope(
     args: Readonly<{
         target: MemorySearchSessionTargetV1;
-        authority: ServerAccountSessionRequestAuthority;
+        authority: ServerAccountRequestAuthority;
         signal: AbortSignal;
     }>,
 ): Promise<MemorySearchSessionRead> {

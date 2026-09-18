@@ -27,6 +27,17 @@ export type SessionViewLayoutProps = Readonly<{
     deviceType: string;
     onBackPress: () => void;
     chatBottomSpacing?: 'default' | 'none';
+    /** Viewer-local Session Companion placement. It reserves width as a flex sibling. */
+    companion?: React.ReactNode;
+    /**
+     * The logical side the viewer chose for that rail.
+     *
+     * It is applied by reversing this one row rather than by an `order` style,
+     * because Yoga has no `order`: a CSS-only reorder works on web and desktop
+     * and silently does nothing on iOS and Android, which would leave "Move to
+     * the left side" as a control with no observable effect on a tablet.
+     */
+    companionEdge?: 'leading' | 'trailing';
 }>;
 
 export function SessionViewLayout(props: SessionViewLayoutProps) {
@@ -83,14 +94,24 @@ export function SessionViewLayout(props: SessionViewLayoutProps) {
             )}
 
             <View
-                onLayout={handleContentLayout}
-                style={{ flexBasis: 0, flexGrow: 1, minHeight: 0, minWidth: 0, paddingBottom: contentPaddingBottom }}
+                style={{
+                    flex: 1,
+                    minHeight: 0,
+                    minWidth: 0,
+                    flexDirection: props.companionEdge === 'leading' ? 'row-reverse' : 'row',
+                }}
             >
-                <AgentContentView
-                    content={props.content}
-                    input={props.input}
-                    placeholder={props.placeholder}
-                />
+                <View
+                    onLayout={handleContentLayout}
+                    style={{ flexBasis: 0, flexGrow: 1, minHeight: 0, minWidth: 0, paddingBottom: contentPaddingBottom }}
+                >
+                    <AgentContentView
+                        content={props.content}
+                        input={props.input}
+                        placeholder={props.placeholder}
+                    />
+                </View>
+                {props.companion}
             </View>
 
             {showBackButton && (

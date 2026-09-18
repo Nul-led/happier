@@ -58,6 +58,7 @@ export type MarkdownEditMode = 'raw' | 'rich';
 export type MarkdownEditorHandle = Readonly<{
     getValue: () => string;
     flushPendingChange: () => Promise<void>;
+    focus?: () => void;
 }>;
 
 /**

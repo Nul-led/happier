@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createAccountEncryptionModeModuleMock } from '@/dev/testkit';
 
 const mocks = vi.hoisted(() => ({
     createEncryptionFromAuthCredentials: vi.fn(),
@@ -16,9 +17,11 @@ vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', () => ({
     createEncryptionFromAuthCredentials: mocks.createEncryptionFromAuthCredentials,
 }));
 
-vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
-    fetchAccountEncryptionMode: mocks.fetchAccountEncryptionMode,
-}));
+vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) =>
+    await createAccountEncryptionModeModuleMock({
+        importOriginal,
+        overrides: { fetchAccountEncryptionMode: mocks.fetchAccountEncryptionMode },
+    }));
 
 vi.mock('@/sync/api/session/sessionOrganizationApi', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/api/session/sessionOrganizationApi')>();

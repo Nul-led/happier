@@ -10,6 +10,17 @@ function stubWebLocation(href: string) {
         history: { replaceState: vi.fn() },
     });
     vi.stubGlobal('document', {});
+    const lockTails = new Map<string, Promise<void>>();
+    vi.stubGlobal('navigator', {
+        locks: {
+            request: <T>(name: string, callback: () => T | PromiseLike<T>): Promise<T> => {
+                const previous = lockTails.get(name) ?? Promise.resolve();
+                const result = previous.then(callback);
+                lockTails.set(name, result.then(() => undefined, () => undefined));
+                return result;
+            },
+        },
+    });
 }
 
 async function importFreshBootstrap() {
@@ -45,7 +56,7 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         stubWebLocation('http://happier-github-auth-e2ee.localhost:19081/?server=http%3A%2F%2Flocalhost%3A57010');
 
         const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
-        const result = bootstrapActiveServerFromWebLocation({ scope: 'device' });
+        const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
 
         const { getActiveServerUrl } = await importFreshServerProfiles();
         expect(getActiveServerUrl()).toBe('http://localhost:57010');
@@ -59,7 +70,7 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         stubWebLocation('http://happier-github-auth-e2ee.localhost:19081/?server=http%3A%2F%2F127.0.0.1%3A57010');
 
         const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
-        const result = bootstrapActiveServerFromWebLocation({ scope: 'device' });
+        const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
 
         const { getActiveServerId, getActiveServerUrl } = await importFreshServerProfiles();
         expect(getActiveServerId()).toBe('qa-stack.localhost-57010');
@@ -74,7 +85,7 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         stubWebLocation('http://happier-repo-dev-a1cc5e0671.localhost:19081/?server=http%3A%2F%2Fhappier-repo-dev-a1cc5e0671.localhost%3A57010');
 
         const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
-        const result = bootstrapActiveServerFromWebLocation({ scope: 'device' });
+        const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
 
         const { getActiveServerId, getActiveServerUrl } = await importFreshServerProfiles();
         expect(getActiveServerId()).toBe('localhost-57010');
@@ -89,7 +100,7 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         stubWebLocation('http://happier-github-auth-e2ee.localhost:19081/session/session-1?server=http%3A%2F%2F127.0.0.1%3A57010&serverId=127.0.0.1-57010&tab=files');
 
         const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
-        const result = bootstrapActiveServerFromWebLocation({ scope: 'device' });
+        const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
 
         expect(result?.serverUrl).toBe('http://127.0.0.1:57010');
         expect(result?.cleanedRelativeUrl).toBe('/session/session-1?tab=files');
@@ -106,7 +117,7 @@ describe('bootstrapActiveServerFromWebLocation', () => {
 
         const { bootstrapActiveServerFromWebLocation, readWebServerUrlOverrideFromLocation } = await importFreshBootstrap();
         const override = readWebServerUrlOverrideFromLocation();
-        const result = bootstrapActiveServerFromWebLocation({ scope: 'device' });
+        const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
 
         const { getActiveServerUrl } = await importFreshServerProfiles();
         expect(override).toBeNull();

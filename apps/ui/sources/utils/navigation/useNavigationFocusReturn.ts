@@ -2,6 +2,7 @@ import * as React from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 
 import {
+    type FocusReturnTarget,
     type NavigationFocusReturnIntent,
     useNavigationFocusReturnIntentRef,
     useRestoreFocusToTrigger,
@@ -24,7 +25,9 @@ export type NavigationFocusReturnCapture = Readonly<{
 }>;
 
 export type NavigateWithFocusReturn = ((navigate: () => void) => void) & Readonly<{
-    capture: () => NavigationFocusReturnCapture;
+    capture: (stableTestId?: string) => NavigationFocusReturnCapture;
+    navigateFrom: (stableTestId: string, navigate: () => void) => void;
+    targetRef: (stableTestId: string) => React.RefCallback<Exclude<FocusReturnTarget, number | null | undefined>>;
 }>;
 
 function readActiveFocusReturnTestId(): string | null {
@@ -71,15 +74,39 @@ function resolveVisibleFocusReturnTarget(stableTestId: string): DomFocusReturnTa
 
 export function useNavigationFocusReturn(options: Readonly<{ ready?: boolean }> = {}) {
     const ready = options.ready ?? true;
-    const targetRef = React.useRef<DomFocusReturnTarget | null>(null);
+    const targetRef = React.useRef<FocusReturnTarget>(null);
+    const nativeTargetsByTestIdRef = React.useRef(new Map<string, Exclude<FocusReturnTarget, number | null | undefined>>());
+    const nativeTargetCallbacksByTestIdRef = React.useRef(new Map<
+        string,
+        React.RefCallback<Exclude<FocusReturnTarget, number | null | undefined>>
+    >());
     const navigationIntentRef = useNavigationFocusReturnIntentRef();
     const restoreFocus = useRestoreFocusToTrigger(targetRef);
+
+    const targetRefForTestId = React.useCallback((stableTestId: string) => {
+        const existing = nativeTargetCallbacksByTestIdRef.current.get(stableTestId);
+        if (existing) return existing;
+        const callback: React.RefCallback<Exclude<FocusReturnTarget, number | null | undefined>> = (target) => {
+            if (target) {
+                nativeTargetsByTestIdRef.current.set(stableTestId, target);
+            } else {
+                nativeTargetsByTestIdRef.current.delete(stableTestId);
+                nativeTargetCallbacksByTestIdRef.current.delete(stableTestId);
+            }
+        };
+        nativeTargetCallbacksByTestIdRef.current.set(stableTestId, callback);
+        return callback;
+    }, []);
 
     useFocusEffect(React.useCallback(() => {
         if (!ready) return;
         const intent = navigationIntentRef.current;
         if (!intent) return;
-        const target = resolveVisibleFocusReturnTarget(intent.testId);
+        // React Native has no document-wide active-element or testID query API. The currently
+        // focused screen supplies its mounted host ref for the same stable identity instead.
+        const target = typeof document === 'undefined'
+            ? nativeTargetsByTestIdRef.current.get(intent.testId) ?? null
+            : resolveVisibleFocusReturnTarget(intent.testId);
         if (!target) {
             if (navigationIntentRef.current === intent) {
                 navigationIntentRef.current = null;
@@ -95,8 +122,13 @@ export function useNavigationFocusReturn(options: Readonly<{ ready?: boolean }> 
         }
     }, [navigationIntentRef, ready, restoreFocus]));
 
-    const capture = React.useCallback((): NavigationFocusReturnCapture => {
-        const testId = readActiveFocusReturnTestId();
+    const capture = React.useCallback((stableTestId?: string): NavigationFocusReturnCapture => {
+        const testId = readActiveFocusReturnTestId()
+            ?? (typeof document === 'undefined'
+                && stableTestId
+                && nativeTargetsByTestIdRef.current.has(stableTestId)
+                ? stableTestId
+                : null);
         if (!testId) {
             return Object.freeze({
                 navigate: (navigate: () => void) => navigate(),
@@ -126,6 +158,10 @@ export function useNavigationFocusReturn(options: Readonly<{ ready?: boolean }> 
 
     return React.useMemo<NavigateWithFocusReturn>(() => Object.assign(
         (navigate: () => void) => capture().navigate(navigate),
-        { capture },
-    ), [capture]);
+        {
+            capture,
+            navigateFrom: (stableTestId: string, navigate: () => void) => capture(stableTestId).navigate(navigate),
+            targetRef: targetRefForTestId,
+        },
+    ), [capture, targetRefForTestId]);
 }

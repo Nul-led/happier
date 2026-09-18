@@ -1,10 +1,12 @@
-import type { ParticipantRecipientV1 } from '@happier-dev/protocol';
+import type { ExecutionRunLaunchOrigin, ParticipantRecipientV1 } from '@happier-dev/protocol';
 
 export type SessionSubagentKind = 'execution_run' | 'agent_team_member' | 'subagent_sidechain';
 export type SessionSubagentStatus = 'running' | 'succeeded' | 'failed' | 'timedOut' | 'cancelled' | 'terminated' | 'unknown';
 
 export type SessionSubagentRunRef = Readonly<{
     runId: string;
+    /** Parsed at the canonical transcript boundary; display provenance only, never authority. */
+    launchOrigin?: ExecutionRunLaunchOrigin | null;
     backendId?: string | null;
     intent?: string | null;
     runClass?: string | null;

@@ -99,10 +99,6 @@ export function installTerminalRouteCommonModuleMocks(
         TextInput: 'TextInput',
     }));
 
-    vi.mock('@/constants/Typography', () => ({
-        Typography: { default: () => ({}) },
-    }));
-
     vi.mock('@expo/vector-icons', () => ({
         Ionicons: 'Ionicons',
     }));

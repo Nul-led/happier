@@ -55,7 +55,7 @@ describe('useSessionRunningExecutionRuns', () => {
 
         const hook = await renderHook(
             ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, enabled }),
+                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
             {
                 initialProps: { sessionId: 's1', enabled: true },
             },
@@ -85,7 +85,7 @@ describe('useSessionRunningExecutionRuns', () => {
 
         const hook = await renderHook(
             ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, enabled }),
+                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
             {
                 initialProps: { sessionId: 's1', enabled: true },
             },
@@ -103,7 +103,7 @@ describe('useSessionRunningExecutionRuns', () => {
 
         const hook = await renderHook(
             ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, enabled }),
+                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
             {
                 initialProps: { sessionId: 's1', enabled: true },
             },
@@ -116,6 +116,23 @@ describe('useSessionRunningExecutionRuns', () => {
         expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(1);
     });
 
+    it('polls the exact Home for a qualified Session address', async () => {
+        sessionExecutionRunListSpy.mockResolvedValueOnce({ runs: [] });
+
+        const hook = await renderHook(() => useSessionRunningExecutionRuns({
+            sessionId: 'same-session',
+            serverId: 'home-b',
+            enabled: true,
+        }));
+
+        expect(sessionExecutionRunListSpy).toHaveBeenCalledWith(
+            'same-session',
+            {},
+            { serverId: 'home-b' },
+        );
+        hook.unmount();
+    });
+
     it('keeps the empty running-runs reference stable after an idle poll', async () => {
         sessionExecutionRunListSpy.mockResolvedValueOnce({ runs: [] });
 
@@ -123,7 +140,7 @@ describe('useSessionRunningExecutionRuns', () => {
         const hook = await renderHook(
             ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) => {
                 renderCount += 1;
-                return useSessionRunningExecutionRuns({ sessionId, enabled });
+                return useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled });
             },
             {
                 initialProps: { sessionId: 's1', enabled: true },
@@ -143,7 +160,7 @@ describe('useSessionRunningExecutionRuns', () => {
 
         const hook = await renderHook(
             ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, enabled }),
+                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
             {
                 initialProps: { sessionId: 's1', enabled: true },
             },
@@ -161,7 +178,7 @@ describe('useSessionRunningExecutionRuns', () => {
 
         const hook = await renderHook(
             ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, enabled }),
+                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
             {
                 initialProps: { sessionId: 's1', enabled: true },
             },
@@ -169,7 +186,7 @@ describe('useSessionRunningExecutionRuns', () => {
         expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(1);
         expect(hook.getCurrent()).toEqual([]);
 
-        notifyExecutionRunActivity('s1');
+        notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
         await flushHookEffects({ cycles: 1, turns: 1 });
 
         expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(2);
@@ -190,14 +207,14 @@ describe('useSessionRunningExecutionRuns', () => {
 
         const hook = await renderHook(
             ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, enabled }),
+                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
             {
                 initialProps: { sessionId: 's1', enabled: true },
             },
         );
         expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(1);
 
-        notifyExecutionRunActivity('s1');
+        notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
         await flushHookEffects({ cycles: 1, turns: 1 });
 
         expect(resolveFirstPoll).not.toBeNull();
@@ -220,7 +237,7 @@ describe('useSessionRunningExecutionRuns', () => {
 
         const hook = await renderHook(
             ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, enabled }),
+                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
             {
                 initialProps: { sessionId: 's1', enabled: true },
             },

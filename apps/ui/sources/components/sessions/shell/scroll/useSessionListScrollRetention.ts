@@ -1,6 +1,20 @@
 import * as React from 'react';
 
 type ScrollToOffset = (params: { offset: number; animated?: boolean }) => void;
+type ScrollToIndex = (params: {
+    index: number;
+    animated?: boolean;
+    viewOffset?: number;
+    viewPosition?: number;
+}) => void;
+
+type SessionListViewabilityInfo = Readonly<{
+    viewableItems: readonly Readonly<{
+        item?: unknown;
+        index?: number | null;
+        isViewable?: boolean;
+    }>[];
+}>;
 
 type SessionListScrollRetentionLayoutEvent = Readonly<{
     nativeEvent?: {
@@ -27,6 +41,12 @@ type SessionListScrollRetentionScrollEvent = Readonly<{
 type SessionListScrollRetentionEntry = {
     lastVisibleOffsetY: number;
     restorePending: boolean;
+    anchor: {
+        nodeId: string;
+        viewportOffset: number;
+        measurementGeneration: number;
+        measured: boolean;
+    } | null;
 };
 
 const retainedScrollByKey = new Map<string, SessionListScrollRetentionEntry>();
@@ -60,14 +80,30 @@ function getScrollRetentionEntry(retentionKey: string): SessionListScrollRetenti
     const entry = {
         lastVisibleOffsetY: 0,
         restorePending: false,
+        anchor: null,
     };
     retainedScrollByKey.set(retentionKey, entry);
     return entry;
 }
 
+export function releaseSessionListScrollRetention(retentionKey: string): boolean {
+    return retainedScrollByKey.delete(retentionKey);
+}
+
+export function readSessionListScrollRetentionEntryCountForTests(): number {
+    return retainedScrollByKey.size;
+}
+
+export function resetSessionListScrollRetentionForTests(): void {
+    retainedScrollByKey.clear();
+}
+
 export function useSessionListScrollRetention(params: Readonly<{
     retentionKey: string;
     scrollToOffset: ScrollToOffset;
+    scrollToIndex?: ScrollToIndex;
+    nodeIds?: readonly string[];
+    measureNodeViewportOffset?: (nodeId: string) => Promise<number | null>;
     /**
      * Whether this surface is the live one. Defaults to true.
      *
@@ -81,8 +117,16 @@ export function useSessionListScrollRetention(params: Readonly<{
     surfaceActive?: boolean;
 }>) {
     const surfaceActive = params.surfaceActive !== false;
+    const surfaceActiveRef = React.useRef(surfaceActive);
+    surfaceActiveRef.current = surfaceActive;
+    const retentionKeyRef = React.useRef(params.retentionKey);
+    retentionKeyRef.current = params.retentionKey;
     const scrollToOffsetRef = React.useRef(params.scrollToOffset);
     scrollToOffsetRef.current = params.scrollToOffset;
+    const scrollToIndexRef = React.useRef(params.scrollToIndex);
+    scrollToIndexRef.current = params.scrollToIndex;
+    const measureNodeViewportOffsetRef = React.useRef(params.measureNodeViewportOffset);
+    measureNodeViewportOffsetRef.current = params.measureNodeViewportOffset;
     const retentionEntry = React.useMemo(
         () => getScrollRetentionEntry(params.retentionKey),
         [params.retentionKey],
@@ -90,6 +134,119 @@ export function useSessionListScrollRetention(params: Readonly<{
 
     const visibleViewportHeightRef = React.useRef(0);
     const contentHeightRef = React.useRef<number | null>(null);
+    const pendingMembershipRestoreRef = React.useRef<Readonly<{
+        retentionKey: string;
+        nodeId: string;
+        targetIndex: number;
+        measurementGeneration: number;
+    }> | null>(null);
+
+    const restorePendingMembershipAnchor = React.useCallback(() => {
+        const pending = pendingMembershipRestoreRef.current;
+        const anchor = retentionEntry.anchor;
+        if (!pending || !anchor || !anchor.measured) return;
+        if (
+            pending.retentionKey !== retentionKeyRef.current
+            || pending.nodeId !== anchor.nodeId
+            || pending.measurementGeneration !== anchor.measurementGeneration
+        ) return;
+        pendingMembershipRestoreRef.current = null;
+        if (!surfaceActiveRef.current) return;
+        scrollToIndexRef.current?.({
+            index: pending.targetIndex,
+            animated: false,
+            viewOffset: anchor.viewportOffset,
+            viewPosition: 0,
+        });
+    }, [retentionEntry]);
+
+    const handleViewableItemsChanged = React.useCallback((info: SessionListViewabilityInfo) => {
+        if (!surfaceActive) return;
+        const firstVisibleSession = [...info.viewableItems]
+            .filter((token) => token.isViewable !== false)
+            .sort((left, right) => (left.index ?? Number.MAX_SAFE_INTEGER) - (right.index ?? Number.MAX_SAFE_INTEGER))
+            .map((token) => token.item)
+            .find((item): item is Readonly<{ id: string }> => (
+                typeof item === 'object'
+                && item !== null
+                && typeof (item as { id?: unknown }).id === 'string'
+                && (item as { id: string }).id.startsWith('session:')
+            ));
+        if (!firstVisibleSession) {
+            retentionEntry.anchor = null;
+            return;
+        }
+
+        const previousGeneration = retentionEntry.anchor?.measurementGeneration ?? 0;
+        const anchor = {
+            nodeId: firstVisibleSession.id,
+            viewportOffset: 0,
+            measurementGeneration: previousGeneration + 1,
+            measured: measureNodeViewportOffsetRef.current === undefined,
+        };
+        retentionEntry.anchor = anchor;
+        if (anchor.measured) {
+            restorePendingMembershipAnchor();
+            return;
+        }
+        void Promise.resolve()
+            .then(() => measureNodeViewportOffsetRef.current?.(anchor.nodeId) ?? null)
+            .then(
+                (measuredOffset) => {
+                    if (retentionEntry.anchor !== anchor) return;
+                    anchor.viewportOffset = readFiniteNumber(measuredOffset) ?? 0;
+                    anchor.measured = true;
+                    restorePendingMembershipAnchor();
+                },
+                () => {
+                    if (retentionEntry.anchor !== anchor) return;
+                    anchor.viewportOffset = 0;
+                    anchor.measured = true;
+                    restorePendingMembershipAnchor();
+                },
+            );
+    }, [restorePendingMembershipAnchor, retentionEntry, surfaceActive]);
+
+    const previousMembershipRef = React.useRef<Readonly<{
+        retentionKey: string;
+        nodeIds: readonly string[];
+    }> | null>(null);
+    React.useEffect(() => {
+        const nextNodeIds = params.nodeIds;
+        if (!nextNodeIds || !params.scrollToIndex) return;
+        const previous = previousMembershipRef.current;
+        previousMembershipRef.current = { retentionKey: params.retentionKey, nodeIds: nextNodeIds };
+        if (!previous || previous.retentionKey !== params.retentionKey) {
+            pendingMembershipRestoreRef.current = null;
+            return;
+        }
+        if (
+            previous.nodeIds.length === nextNodeIds.length
+            && previous.nodeIds.every((nodeId, index) => nodeId === nextNodeIds[index])
+        ) return;
+
+        const anchor = retentionEntry.anchor;
+        if (!anchor) return;
+        const targetIndex = nextNodeIds.indexOf(anchor.nodeId);
+        if (targetIndex < 0) {
+            pendingMembershipRestoreRef.current = null;
+            if (surfaceActive) {
+                scrollToOffsetRef.current({ offset: 0, animated: false });
+            }
+            return;
+        }
+        pendingMembershipRestoreRef.current = {
+            retentionKey: params.retentionKey,
+            nodeId: anchor.nodeId,
+            targetIndex,
+            measurementGeneration: anchor.measurementGeneration,
+        };
+        restorePendingMembershipAnchor();
+    }, [params.nodeIds, params.retentionKey, params.scrollToIndex, restorePendingMembershipAnchor, retentionEntry, surfaceActive]);
+
+    const handleScrollInteractionStart = React.useCallback(() => {
+        pendingMembershipRestoreRef.current = null;
+    }, []);
 
     React.useEffect(() => () => {
         if (visibleViewportHeightRef.current <= 0) return;
@@ -158,5 +315,7 @@ export function useSessionListScrollRetention(params: Readonly<{
     return React.useMemo(() => ({
         handleLayout,
         handleScroll,
-    }), [handleLayout, handleScroll]);
+        handleScrollInteractionStart,
+        handleViewableItemsChanged,
+    }), [handleLayout, handleScroll, handleScrollInteractionStart, handleViewableItemsChanged]);
 }

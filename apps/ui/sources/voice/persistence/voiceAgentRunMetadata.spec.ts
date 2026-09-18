@@ -1,19 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+
 const patchSessionMetadataWithRetry = vi.fn();
+
+// Hydrated `sessions` entries are the active Home's entity map, so this file's single Home
+// must be the active one: a bare session id resolves through the active Home address, and a
+// mismatched fixture server id would make every owner-metadata read unreachable.
+const serverId = getActiveServerSnapshot().serverId;
 
 const stateRef = {
     current: {
         sessions: {
             sys_voice: {
                 id: 'sys_voice',
-                serverId: 'server-1',
+                serverId,
                 updatedAt: 10,
                 metadata: { systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true } },
             },
-            s1: { id: 's1', serverId: 'server-1', updatedAt: 1, metadata: { flavor: 'claude' } },
+            s1: { id: 's1', serverId, updatedAt: 1, metadata: { flavor: 'claude' } },
         },
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
     } as any,
@@ -55,7 +63,8 @@ describe('voiceAgentRunMetadata', () => {
                 ownerMetadataView: undefined,
             },
         },
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
     };
@@ -278,24 +287,28 @@ describe('voiceAgentRunMetadata', () => {
     };
     stateRef.current = {
         ...stateRef.current,
-        sessionListRenderables: {
-            ...stateRef.current.sessionListRenderables,
-            s1: {
-                id: 's1',
-                active: true,
-                updatedAt: 1,
-                metadata: {
-                    voiceAgentRunV1: {
-                        v: 1,
-                        runId: 'run_cached',
-                        backendTarget: claudeTarget,
-                        backendId: 'claude',
-                        resumeHandle: { kind: 'provider_session.v1', backendTarget: claudeBackendTarget, providerSessionId: 'vs_cached' },
-                        updatedAtMs: 222,
+        sessionListRowsByServerId: {
+            ...stateRef.current.sessionListRowsByServerId,
+            [serverId]: {
+                ...(stateRef.current.sessionListRowsByServerId?.[serverId] ?? {}),
+                s1: {
+                    id: 's1',
+                    active: true,
+                    updatedAt: 1,
+                    metadata: {
+                        voiceAgentRunV1: {
+                            v: 1,
+                            runId: 'run_cached',
+                            backendTarget: claudeTarget,
+                            backendId: 'claude',
+                            resumeHandle: { kind: 'provider_session.v1', backendTarget: claudeBackendTarget, providerSessionId: 'vs_cached' },
+                            updatedAtMs: 222,
+                        },
                     },
                 },
             },
         },
+        ordinarySessionListMembershipByServerId: { [serverId]: ['s1'] },
     };
 
     const { readVoiceAgentRunMetadataFromSession } = await import('./voiceAgentRunMetadata');

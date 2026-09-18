@@ -33,8 +33,7 @@ const SESSION_VIEW_RUNTIME_DISPLAY_STATE_CACHE = new LruMap<string, SessionViewR
 function buildCacheKey(input: Input): string {
     return JSON.stringify([
         getPreferredLanguage(),
-        input.session.accessLevel ?? '',
-        input.session.canApprovePermissions ? 1 : 0,
+        input.session.access ?? null,
         input.session.active ? 1 : 0,
         input.session.presence ?? '',
         input.session.agentState?.controlledByUser === true ? 1 : 0,
@@ -57,8 +56,7 @@ export function resolveSessionViewRuntimeDisplayState(input: Input): SessionView
 
     const localControlState = getSessionLocalControlState(input.session);
     const transcriptInteraction = deriveTranscriptInteractionFromSession({
-        accessLevel: input.session.accessLevel,
-        canApprovePermissions: input.session.canApprovePermissions,
+        access: input.session.access,
         active: input.session.active,
         presence: input.session.presence,
     });

@@ -60,6 +60,20 @@ describe('useCommandMenuKeyboard', () => {
             expect(cbs.onClose).toHaveBeenCalledOnce();
         });
 
+        it.each(['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'])(
+            'does not consume %s or invoke menu actions while an IME composition is active',
+            async (pressedKey) => {
+                const cbs = makeCallbacks();
+                const { getCurrent } = await renderHook(() => useCommandMenuKeyboard({ open: true, ...cbs }));
+
+                expect(getCurrent().handleKey({ key: pressedKey, shiftKey: false, isComposing: true })).toBe(false);
+                expect(cbs.onMoveDown).not.toHaveBeenCalled();
+                expect(cbs.onMoveUp).not.toHaveBeenCalled();
+                expect(cbs.onSelect).not.toHaveBeenCalled();
+                expect(cbs.onClose).not.toHaveBeenCalled();
+            },
+        );
+
         it('Home returns false (parity; no new shortcuts)', async () => {
             const cbs = makeCallbacks();
             const { getCurrent } = await renderHook(() => useCommandMenuKeyboard({ open: true, ...cbs }));

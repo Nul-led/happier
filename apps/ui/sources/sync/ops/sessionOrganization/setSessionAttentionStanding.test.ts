@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { storage } from '@/sync/domains/state/storageStore';
+import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
 
 const mocks = vi.hoisted(() => ({
     setSessionAttentionStanding: vi.fn(),
@@ -17,7 +18,7 @@ vi.mock('@/sync/api/session/sessionOrganizationApi', async (importOriginal) => {
 const credentials = { token: 'token-a', secret: 'secret-a' };
 const SERVER_ID = 'server-standing-op';
 const SESSION_ID = 'session-standing-op';
-const SESSION_KEY = `${SERVER_ID}:${SESSION_ID}`;
+const SESSION_KEY = buildSessionOrganizationSessionKey(SERVER_ID, SESSION_ID);
 
 describe('setSessionAttentionStanding op', () => {
     let previousState: ReturnType<typeof storage.getState>;
@@ -81,5 +82,18 @@ describe('setSessionAttentionStanding op', () => {
         expect(storage.getState().sessionOrganizationAttentionStandingsBySessionKey[SESSION_KEY])
             .toEqual({ sessionId: SESSION_ID, standing: true, updatedAt: 1 });
         expect(Object.keys(storage.getState().sessionOrganizationOptimisticRecords)).toEqual([]);
+    });
+
+    it('changes only the reminder field when scheduling and clearing', async () => {
+        const { setSessionAttentionStanding } = await import('./setSessionAttentionStanding');
+        mocks.setSessionAttentionStanding
+            .mockResolvedValueOnce({ standing: { sessionId: SESSION_ID, standing: true, remindAt: 2_000, updatedAt: 2 } })
+            .mockResolvedValueOnce({ standing: { sessionId: SESSION_ID, standing: true, updatedAt: 3 } });
+
+        await setSessionAttentionStanding({ credentials, serverId: SERVER_ID, sessionId: SESSION_ID, remindAt: 2_000 });
+        await setSessionAttentionStanding({ credentials, serverId: SERVER_ID, sessionId: SESSION_ID, remindAt: null });
+
+        expect(mocks.setSessionAttentionStanding).toHaveBeenNthCalledWith(1, expect.objectContaining({ request: { remindAt: 2_000 } }));
+        expect(mocks.setSessionAttentionStanding).toHaveBeenNthCalledWith(2, expect.objectContaining({ request: { remindAt: null } }));
     });
 });

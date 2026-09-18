@@ -46,11 +46,32 @@ describe('canCancelPersonalHomeOperationProgress', () => {
         expect(canCancelPersonalHomeOperationProgress('relay.runtime.personal_home.inspect.v1', 'personal_home.inspecting')).toBe(false);
     });
 
+    it('uses the relocation task action and canonical phase to expose only the reversible window', () => {
+        const relocation = {
+            action: 'personalHome.relocate',
+            personalHomeRelocation: {
+                operationId: 'relocation-1',
+                destinationMachineId: 'machine-b',
+                sourceDescriptorRevision: 4,
+            },
+        };
+
+        expect(canCancelPersonalHomeOperationProgress('remote.ssh.manageHost.v1', 'remote.cli.install', relocation)).toBe(true);
+        expect(canCancelPersonalHomeOperationProgress('remote.ssh.manageHost.v1', 'personal_home.preflight', relocation)).toBe(true);
+        expect(canCancelPersonalHomeOperationProgress('remote.ssh.manageHost.v1', 'personal_home.staging_destination', relocation)).toBe(true);
+        expect(canCancelPersonalHomeOperationProgress('remote.ssh.manageHost.v1', 'personal_home.quarantining_source', relocation)).toBe(true);
+        expect(canCancelPersonalHomeOperationProgress('remote.ssh.manageHost.v1', 'personal_home.publishing_destination', relocation)).toBe(false);
+        expect(canCancelPersonalHomeOperationProgress('remote.ssh.manageHost.v1', 'personal_home.finishing_move', relocation)).toBe(false);
+        expect(canCancelPersonalHomeOperationProgress('remote.ssh.manageHost.v1', 'remote.cli.install', { action: 'personalHome.status' })).toBe(false);
+        expect(canCancelPersonalHomeOperationProgress('remote.ssh.manageHost.v1', 'personal_home.preflight', { action: 'relayRuntime.status' })).toBe(false);
+    });
+
     it('declares one named irreversible boundary per moving-data operation', () => {
         expect(PERSONAL_HOME_OPERATION_IRREVERSIBLE_BOUNDARY_STEP).toEqual({
             'relay.runtime.personal_home.backup.v1': 'stopping_home',
             'relay.runtime.personal_home.restore.v1': 'stopping_home',
             'relay.runtime.personal_home.erase.v1': 'erasing',
+            'remote.ssh.manageHost.v1:personalHome.relocate': 'publishing_destination',
         });
     });
 });

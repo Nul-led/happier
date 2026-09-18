@@ -14,6 +14,7 @@ import type { ProviderParticipantSnapshot, SessionProviderBehavior } from './ses
 import { createSessionProviderBehaviorFromDescriptor } from './sessionProviderBehaviorDescriptors';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { resolveProjectedAgentUiBehaviorEntry } from '@/agents/registry/agentUiBehaviorProjection';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 
 const SESSION_PROVIDER_BEHAVIORS: Readonly<Partial<Record<AgentId, SessionProviderBehavior>>> = Object.freeze(
     Object.fromEntries(
@@ -63,13 +64,13 @@ function declaresProjectedSessionProviderBehavior(descriptor: Readonly<Record<st
         && Object.hasOwn(session, 'providerBehavior');
 }
 
-function listSessionProviderBehaviors(params: Readonly<{ flavor: string | null; metadata?: unknown }>): readonly SessionProviderBehavior[] {
+function listSessionProviderBehaviors(params: Readonly<{ flavor: string | null; metadata?: unknown; accountScope?: ServerAccountScope | null }>): readonly SessionProviderBehavior[] {
     const primaryAgentId = resolveAgentIdFromSessionMetadata(params.metadata) ?? resolveAgentIdFromFlavor(params.flavor);
     if (!primaryAgentId) return [];
 
     const machineId = readMetadataMachineId(params.metadata);
     const projected = machineId
-        ? resolveProjectedAgentUiBehaviorEntry(primaryAgentId, machineId)
+        ? resolveProjectedAgentUiBehaviorEntry(primaryAgentId, machineId, params.accountScope)
         : null;
     if (projected && declaresProjectedSessionProviderBehavior(projected.descriptor)) {
         return [createSessionProviderBehaviorFromDescriptor(projected.descriptor).behavior];
@@ -92,12 +93,13 @@ function readSessionProviderBehaviorFlavor(metadata: unknown): string | null {
 }
 
 export function deriveProviderParticipantSnapshot(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     flavor: string | null;
     metadata?: unknown;
     messages: readonly Message[];
 }>): ProviderParticipantSnapshot {
     const snapshots: Record<string, unknown> = {};
-    for (const behavior of listSessionProviderBehaviors({ flavor: params.flavor, metadata: params.metadata })) {
+    for (const behavior of listSessionProviderBehaviors(params)) {
         let snapshot: ProviderParticipantSnapshot | null | undefined;
         try {
             snapshot = behavior.participants?.deriveSnapshot?.(params);
@@ -111,12 +113,13 @@ export function deriveProviderParticipantSnapshot(params: Readonly<{
 }
 
 export function deriveProviderParticipantSidechainIds(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     flavor: string | null;
     metadata?: unknown;
     messages: readonly Message[];
 }>): readonly string[] {
     const sidechainIds = new Set<string>();
-    for (const behavior of listSessionProviderBehaviors({ flavor: params.flavor, metadata: params.metadata })) {
+    for (const behavior of listSessionProviderBehaviors(params)) {
         let ids: readonly string[] = [];
         try {
             ids = behavior.participants?.deriveSidechainIds?.(params) ?? [];
@@ -132,6 +135,7 @@ export function deriveProviderParticipantSidechainIds(params: Readonly<{
 }
 
 export function deriveProviderParticipantTargets(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     session: Session;
     messages: readonly Message[];
     currentTargets: readonly SessionParticipantTarget[];
@@ -141,7 +145,7 @@ export function deriveProviderParticipantTargets(params: Readonly<{
     const extras: SessionParticipantTarget[] = [];
     const seenKeys = new Set(params.currentTargets.map((target) => target.key));
 
-    for (const behavior of listSessionProviderBehaviors({ flavor, metadata })) {
+    for (const behavior of listSessionProviderBehaviors({ flavor, metadata, accountScope: params.accountScope })) {
         let targets: readonly SessionParticipantTarget[] = [];
         try {
             targets = behavior.participants?.deriveTargets?.(params) ?? [];
@@ -159,12 +163,13 @@ export function deriveProviderParticipantTargets(params: Readonly<{
 }
 
 export function deriveProviderSessionSubagents(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     flavor: string | null;
     metadata?: unknown;
     messages: readonly Message[];
 }>): readonly SessionSubagent[] {
     const subagents: SessionSubagent[] = [];
-    for (const behavior of listSessionProviderBehaviors({ flavor: params.flavor, metadata: params.metadata })) {
+    for (const behavior of listSessionProviderBehaviors(params)) {
         let derived: readonly SessionSubagent[] = [];
         try {
             derived = behavior.subagents?.deriveSubagents?.(params) ?? [];
@@ -181,7 +186,7 @@ export function resolveProviderSessionSubagentAutoRecipient(
 ): ReturnType<NonNullable<NonNullable<SessionProviderBehavior['subagents']>['resolveAutoRecipient']>> {
     const metadata = readSessionOwnerMetadataView(context.session);
     const flavor = readSessionProviderBehaviorFlavor(metadata);
-    for (const behavior of listSessionProviderBehaviors({ flavor, metadata })) {
+    for (const behavior of listSessionProviderBehaviors({ flavor, metadata, accountScope: context.accountScope })) {
         let recipient: ReturnType<NonNullable<NonNullable<SessionProviderBehavior['subagents']>['resolveAutoRecipient']>> = null;
         try {
             recipient = behavior.subagents?.resolveAutoRecipient?.(context) ?? null;
@@ -194,12 +199,13 @@ export function resolveProviderSessionSubagentAutoRecipient(
 }
 
 export function shouldIgnoreProviderSessionSubagentActivityPreviewText(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     subagent: SessionSubagent;
     text: string;
     metadata?: unknown;
 }>): boolean {
     const flavor = readSessionProviderBehaviorFlavor(params.metadata);
-    for (const behavior of listSessionProviderBehaviors({ flavor, metadata: params.metadata })) {
+    for (const behavior of listSessionProviderBehaviors({ flavor, metadata: params.metadata, accountScope: params.accountScope })) {
         let shouldIgnore = false;
         try {
             shouldIgnore = behavior.subagents?.shouldIgnoreActivityPreviewText?.(params) === true;

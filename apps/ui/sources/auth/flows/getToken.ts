@@ -1,8 +1,11 @@
 import { authChallenge, authChallengeV2 } from './challenge';
+import { createAuthenticationFailure } from './authenticationFailure';
+import { confirmAlternateIssuedHomeAddress } from './homeAddressTrust';
 import { encodeBase64 } from '@/encryption/base64';
 import { Encryption } from '@/sync/encryption/encryption';
 import sodium from '@/encryption/libsodium.lib';
 import {
+    FOREGROUND_FEATURE_PROBE_WAIT_BUDGET_MS,
     getServerFeaturesSnapshot,
     probeServerFeaturesAtUrl,
     type ServerFeaturesSnapshot,
@@ -13,19 +16,19 @@ import {
 import * as serverHttp from '@/sync/http/client';
 import type { ServerFetch, ServerFetchOptions } from '@/sync/http/client';
 import {
-    AuthErrorCodeSchema,
     canonicalizeKeyChallengeV2AudienceOrigin,
     KeyChallengeV2IssueResponseSchema,
     readServerEnabledBit,
+    signAccountContentKeyBindingV1,
     type KeyChallengeAuthRequest,
+    type KeyChallengeV2IssueResponse,
 } from '@happier-dev/protocol';
+import type { TeamInvitationAccountAdmissionV1 } from '@happier-dev/protocol';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { HappyError } from '@/utils/errors/errors';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
-
-const CONTENT_KEY_BINDING_PREFIX = new TextEncoder().encode('Happy content key v1\u0000');
 
 type AuthRequest = (
     path: string,
@@ -54,6 +57,15 @@ type AuthTokenCoreParams = Readonly<{
     secret: Uint8Array;
     expectedAccountId?: string;
     expectedServerIdentityId?: string;
+    admission?: TeamInvitationAccountAdmissionV1;
+    requireExistingAccount?: true;
+    /**
+     * A challenge the Home already issued for this exact Account inside a
+     * verified native flow. Reusing it is what carries that flow's server-owned
+     * evidence into the credential; issuing a second challenge here would
+     * silently downgrade the credential's recorded provenance.
+     */
+    issuedChallenge?: KeyChallengeV2IssueResponse;
     requireKeyChallengeV2: boolean;
     credentialTarget: AuthCredentialTarget;
     request: AuthRequest;
@@ -94,46 +106,27 @@ function readNestedBoolean(
     return typeof current === 'boolean' ? current : undefined;
 }
 
-function resolveSelectedKeyChallengeV2Audience(): Readonly<{
+/**
+ * `anchorUrl` is the focused Home's address captured *before* this authentication
+ * probed it. A Home's own feature response can carry a connection descriptor that
+ * rewrites the profile's canonical URL, so reading that URL afterwards would let
+ * the endpoint under judgement choose the address it is judged against.
+ */
+function resolveSelectedKeyChallengeV2Audience(anchorUrl: string): Readonly<{
     origin: string;
     serverIdentityId: string;
 }> {
     const active = getActiveServerSnapshot();
     const profile = getServerProfileById(active.serverId);
-    const origin = canonicalizeKeyChallengeV2AudienceOrigin(
-        profile?.canonicalServerUrl ?? active.serverUrl ?? profile?.serverUrl,
-    );
+    const origin = canonicalizeKeyChallengeV2AudienceOrigin(anchorUrl);
     if (!origin || !profile?.serverIdentityId) {
         throw new Error('Authentication failed: selected server identity is unavailable for key-challenge v2.');
     }
     return { origin, serverIdentityId: profile.serverIdentityId };
 }
 
-async function throwAuthenticationFailure(response: Pick<Response, 'status' | 'json'>): Promise<never> {
-    let code: string | undefined;
-    try {
-        const payload = await response.json() as unknown;
-        const candidate = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
-            ? (payload as { error?: unknown }).error
-            : undefined;
-        const parsed = AuthErrorCodeSchema.safeParse(candidate);
-        if (parsed.success) {
-            code = parsed.data;
-        }
-    } catch {
-        // A non-JSON failure still retains its HTTP classification below.
-    }
-
-    const isServerFailure = response.status >= 500;
-    throw new HappyError(
-        `Authentication failed: ${response.status}`,
-        isServerFailure,
-        {
-            status: response.status,
-            kind: isServerFailure ? 'server' : 'auth',
-            ...(code ? { code } : {}),
-        },
-    );
+async function throwAuthenticationFailure(response: Pick<Response, 'status' | 'json'>, target: AuthCredentialTarget): Promise<never> {
+    throw createAuthenticationFailure(response.status, await response.json().catch(() => null), target);
 }
 
 function readAuthToken(payload: unknown): string {
@@ -206,40 +199,55 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
 
     let body: KeyChallengeAuthRequest;
     if (supportsKeyChallengeV2 && readyServerFeaturesSnapshot) {
-        const issueResponse = await params.request(authPaths.challenge, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(
-                params.expectedAccountId
-                    ? { expectedAccountId: params.expectedAccountId }
-                    : {},
-            ),
-        }, { includeAuth: false });
-        if (!issueResponse.ok) {
-            await throwAuthenticationFailure(issueResponse);
+        let issuedChallenge = params.issuedChallenge;
+        if (!issuedChallenge) {
+            const issueResponse = await params.request(authPaths.challenge, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(
+                    params.expectedAccountId
+                        ? { expectedAccountId: params.expectedAccountId }
+                        : {},
+                ),
+            }, { includeAuth: false });
+            if (!issueResponse.ok) {
+                await throwAuthenticationFailure(issueResponse, params.credentialTarget);
+            }
+            let issuePayload: unknown;
+            try {
+                issuePayload = await issueResponse.json();
+            } catch {
+                throw new Error('Authentication failed: invalid key-challenge v2 response.');
+            }
+            const parsedIssue = KeyChallengeV2IssueResponseSchema.safeParse(issuePayload);
+            if (!parsedIssue.success) {
+                throw new Error('Authentication failed: invalid key-challenge v2 response.');
+            }
+            issuedChallenge = parsedIssue.data;
         }
-        let issuePayload: unknown;
-        try {
-            issuePayload = await issueResponse.json();
-        } catch {
-            throw new Error('Authentication failed: invalid key-challenge v2 response.');
-        }
-        const parsedIssue = KeyChallengeV2IssueResponseSchema.safeParse(issuePayload);
-        if (!parsedIssue.success) {
-            throw new Error('Authentication failed: invalid key-challenge v2 response.');
-        }
+        const expectedAudience = params.resolveAudience(readyServerFeaturesSnapshot);
+        const acceptAlternateOrigin =
+            issuedChallenge.audience.origin !== expectedAudience.origin
+            && await confirmAlternateIssuedHomeAddress({
+                issued: issuedChallenge.audience,
+                expected: expectedAudience,
+            });
         const assertion = authChallengeV2(params.secret, {
-            challenge: parsedIssue.data,
-            expectedAudience: params.resolveAudience(readyServerFeaturesSnapshot),
+            challenge: issuedChallenge,
+            expectedAudience,
+            ...(acceptAlternateOrigin ? { acceptAlternateOrigin: true } : {}),
             ...(params.expectedAccountId ? { expectedAccountId: params.expectedAccountId } : {}),
+            ...(params.requireExistingAccount ? { requireExistingAccount: true } : {}),
         });
         body = {
-            challengeId: parsedIssue.data.challengeId,
+            challengeId: issuedChallenge.challengeId,
             signature: encodeBase64(assertion.signature),
             publicKey: encodeBase64(assertion.publicKey),
             ...(params.expectedAccountId ? { expectedAccountId: params.expectedAccountId } : {}),
+            ...(params.admission ? { admission: params.admission } : {}),
+            ...(params.requireExistingAccount ? { requireExistingAccount: true } : {}),
         };
     } else {
         const assertion = authChallenge(params.secret, params.expectedAccountId
@@ -250,6 +258,7 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
             signature: encodeBase64(assertion.signature),
             publicKey: encodeBase64(assertion.publicKey),
             ...(params.expectedAccountId ? { expectedAccountId: params.expectedAccountId } : {}),
+            ...(params.admission ? { admission: params.admission } : {}),
         };
     }
 
@@ -263,10 +272,10 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
         const contentPublicKey = encryption.contentDataKey;
 
         const signingKeyPair = sodium.crypto_sign_seed_keypair(params.secret);
-        const binding = new Uint8Array(CONTENT_KEY_BINDING_PREFIX.length + contentPublicKey.length);
-        binding.set(CONTENT_KEY_BINDING_PREFIX, 0);
-        binding.set(contentPublicKey, CONTENT_KEY_BINDING_PREFIX.length);
-        const contentPublicKeySig = sodium.crypto_sign_detached(binding, signingKeyPair.privateKey);
+        const contentPublicKeySig = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signingKeyPair.privateKey,
+            contentPublicKey,
+        });
 
         body.contentPublicKey = encodeBase64(contentPublicKey);
         body.contentPublicKeySig = encodeBase64(contentPublicKeySig);
@@ -280,7 +289,7 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
         body: JSON.stringify(body),
     }, { includeAuth: false });
     if (!response.ok) {
-        await throwAuthenticationFailure(response);
+        await throwAuthenticationFailure(response, params.credentialTarget);
     }
     const payload: unknown = await response.json();
     return { token: readAuthToken(payload) };
@@ -297,6 +306,7 @@ export async function authGetToken(
         expectedAccountId: string;
     }>,
 ): Promise<string> {
+    const addressAnchorUrl = getActiveServerSnapshot().serverUrl;
     const credentials = await authGetTokenCore({
         secret,
         ...(options ? { expectedAccountId: options.expectedAccountId } : {}),
@@ -304,12 +314,15 @@ export async function authGetToken(
         credentialTarget: 'ordinary_home',
         request: serverHttp.serverFetch,
         probe: async () => await getServerFeaturesSnapshot({
-            timeoutMs: 800,
             // Always refresh the assertion scheme before login. A stale v1
             // snapshot must not keep an upgraded server on replayable v1.
             force: true,
+            // A login probe that cannot answer promptly must release the
+            // caller to the released v1 request shape instead of holding the
+            // sign-in behind the shared probe's much longer attempt bound.
+            timeoutMs: FOREGROUND_FEATURE_PROBE_WAIT_BUDGET_MS,
         }),
-        resolveAudience: resolveSelectedKeyChallengeV2Audience,
+        resolveAudience: () => resolveSelectedKeyChallengeV2Audience(addressAnchorUrl),
     });
     return credentials.token;
 }
@@ -318,13 +331,28 @@ export type AuthGetTokenAtEndpointParams = Readonly<{
     endpointUrl: string;
     /** Ephemeral request address; never used as the signed auth audience. */
     runtimeOrigin?: string;
+    /**
+     * Address fact this flow did not receive from `endpointUrl` itself — a scanned
+     * or pasted Home descriptor's canonical URL. First contact is judged against
+     * it; without one, the contacted endpoint is the anchor. A `canonicalServerUrl`
+     * read back from a saved profile is not one, because the endpoint's own feature
+     * response can rewrite it.
+     */
+    addressAnchorUrl?: string;
     /** Semantic browser/native carrier for this exact Home request. */
     homeCarrier?: HomeCarrier;
     signal?: AbortSignal;
+    /** Captured flow lifetime; checked before each authentication request and result. */
+    isCurrent?: () => boolean;
     serverId?: string;
     canonicalServerUrl?: string;
     serverIdentityId?: string;
     expectedAccountId?: string;
+    admission?: TeamInvitationAccountAdmissionV1;
+    /** Refuse to turn an unknown recovery key into a newly provisioned Account. */
+    requireExistingAccount?: true;
+    /** Reuse a challenge the Home already issued inside a verified native flow. */
+    issuedChallenge?: KeyChallengeV2IssueResponse;
     secret: Uint8Array;
     requireKeyChallengeV2: boolean;
     /** Selects the dedicated server-controlled restricted mint route. */
@@ -341,10 +369,18 @@ export type AuthGetTokenAtEndpointParams = Readonly<{
 export async function authGetTokenAtEndpoint(
     params: AuthGetTokenAtEndpointParams,
 ): Promise<AuthCredentials> {
-    const canonicalUrl = String(params.canonicalServerUrl ?? params.endpointUrl ?? '').trim();
+    const assertCurrent = () => {
+        if (params.signal?.aborted || params.isCurrent?.() === false) {
+            const error = new Error('Authentication cancelled');
+            error.name = 'AbortError';
+            throw error;
+        }
+    };
+    assertCurrent();
+    const anchorUrl = String(params.addressAnchorUrl ?? params.endpointUrl ?? '').trim();
     const expectedServerIdentityId = String(params.serverIdentityId ?? '').trim() || null;
     const targetServerId = String(params.serverId ?? expectedServerIdentityId ?? '').trim() || undefined;
-    const request = serverHttp.createServerFetchAtEndpoint({
+    const endpointRequest = serverHttp.createServerFetchAtEndpoint({
         endpointUrl: params.endpointUrl,
         ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
         ...(params.homeCarrier ? { homeCarrier: params.homeCarrier } : {}),
@@ -352,10 +388,19 @@ export async function authGetTokenAtEndpoint(
         credentials: null,
         signal: params.signal,
     });
-    return await authGetTokenCore({
+    const request: AuthRequest = async (path, init, options) => {
+        assertCurrent();
+        const response = await endpointRequest(path, init, options);
+        assertCurrent();
+        return response;
+    };
+    const credentials = await authGetTokenCore({
         secret: params.secret,
         ...(params.expectedAccountId ? { expectedAccountId: params.expectedAccountId } : {}),
+        ...(params.admission ? { admission: params.admission } : {}),
+        ...(params.requireExistingAccount ? { requireExistingAccount: true } : {}),
         ...(expectedServerIdentityId ? { expectedServerIdentityId } : {}),
+        ...(params.issuedChallenge ? { issuedChallenge: params.issuedChallenge } : {}),
         requireKeyChallengeV2: params.requireKeyChallengeV2,
         credentialTarget: params.credentialTarget ?? 'ordinary_home',
         request,
@@ -368,7 +413,7 @@ export async function authGetTokenAtEndpoint(
                 force: true,
             }),
         resolveAudience: (snapshot) => {
-            const origin = canonicalizeKeyChallengeV2AudienceOrigin(canonicalUrl);
+            const origin = canonicalizeKeyChallengeV2AudienceOrigin(anchorUrl);
             const observedIdentity = readObservedServerIdentityId(snapshot);
             if (!origin || !(expectedServerIdentityId ?? observedIdentity)) {
                 throw new Error('Authentication failed: selected server identity is unavailable for key-challenge v2.');
@@ -379,4 +424,6 @@ export async function authGetTokenAtEndpoint(
             };
         },
     });
+    assertCurrent();
+    return credentials;
 }

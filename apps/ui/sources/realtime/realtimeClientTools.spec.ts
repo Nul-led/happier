@@ -58,7 +58,7 @@ describe('realtimeClientTools action projection', () => {
     };
 
     useVoiceTargetStore.getState().setScope('global');
-    useVoiceTargetStore.getState().setPrimaryActionSessionId('s1');
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: 'server-a', sessionId: 's1' });
   });
 
   it('does not expose speech-driven permission approval as a provider tool', async () => {

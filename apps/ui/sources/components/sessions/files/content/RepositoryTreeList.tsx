@@ -1,3 +1,4 @@
+import { useFilesystemTreeKeyboard } from '@/components/ui/filesystemBrowser/useFilesystemTreeKeyboard';
 import * as React from 'react';
 import { Platform, View, type ScrollViewProps, type ViewStyle } from 'react-native';
 
@@ -34,6 +35,10 @@ type RepositoryTreeListProps = {
     sessionId: string;
     reloadToken?: number;
     detailsMode?: boolean;
+    visibilityMode?: 'project' | 'all';
+    revealedPaths?: readonly string[];
+    revealRequest?: Readonly<{ path: string }>;
+    onGitIgnoreAvailableChange?: (available: boolean | undefined) => void;
     writeActionsEnabled?: boolean;
     onRequestRefresh?: (() => void) | null;
     onRequestDownload?: ((params: Readonly<{ path: string; asZip: boolean }>) => Promise<{ ok: true } | { ok: false; error: string }>) | null;
@@ -110,14 +115,34 @@ export function RepositoryTreeList(props: RepositoryTreeListProps): React.ReactE
     const canDownload = React.useCallback((_transferSizeBytes?: number | null) => {
         return transferAvailability.available;
     }, [transferAvailability.available]);
-    const { rootLoading, rootError, nodes, toggleDirectory, retryRoot, retryDirectory } = useRepositoryTreeBrowser({
+    const preservedPaths = React.useMemo(() => [
+        ...(props.revealedPaths ?? []),
+        ...(props.scmSnapshot?.entries.flatMap(entry => entry.previousPath ? [entry.path, entry.previousPath] : [entry.path]) ?? []),
+    ], [props.revealedPaths, props.scmSnapshot]);
+    const { rootLoading, rootError, nodes, toggleDirectory, retryRoot, retryDirectory, gitIgnoreAvailable } = useRepositoryTreeBrowser({
         sessionId,
         enabled: true,
         expandedPaths,
         onExpandedPathsChange,
         reloadToken: props.reloadToken,
+        visibilityMode: props.visibilityMode,
+        preservedPaths,
     });
 
+    React.useEffect(() => {
+        props.onGitIgnoreAvailableChange?.(gitIgnoreAvailable);
+    }, [props.onGitIgnoreAvailableChange, gitIgnoreAvailable]);
+
+    const keyboardListRef = React.useRef<import('@/components/ui/lists/virtualized/virtualizedListTypes').VirtualizedListRef>(null);
+    const focusIndex = React.useCallback((index: number) => keyboardListRef.current?.scrollToIndex({ index, animated: false }), []);
+    const treeKeyboard = useFilesystemTreeKeyboard(nodes, focusIndex);
+    const focusedRevealRef = React.useRef<typeof props.revealRequest>(undefined);
+    React.useEffect(() => {
+        const request = props.revealRequest;
+        if (!request || focusedRevealRef.current === request || !nodes.some(node => node.path === request.path)) return;
+        focusedRevealRef.current = request;
+        treeKeyboard.focusPath(request.path);
+    }, [nodes, props.revealRequest, treeKeyboard.focusPath]);
     const badgeIndex = useScmTreeBadgeIndex(props.scmSnapshot ?? null);
     const badgeSignature = buildScmTreeBadgeSignature(props.scmSnapshot ?? null);
     const rowActions = useRepositoryTreeRowActions({
@@ -130,6 +155,7 @@ export function RepositoryTreeList(props: RepositoryTreeListProps): React.ReactE
     });
 
     const rowRenderState = React.useMemo(() => ({
+        treeKeyboard,
         badgeIndex,
         canDownload,
         detailsMode,
@@ -145,6 +171,7 @@ export function RepositoryTreeList(props: RepositoryTreeListProps): React.ReactE
         webDropHoverPath: props.webDropHoverPath,
         writeActionsEnabled,
     }), [
+        treeKeyboard,
         badgeIndex,
         canDownload,
         detailsMode,
@@ -274,12 +301,12 @@ export function RepositoryTreeList(props: RepositoryTreeListProps): React.ReactE
                         <Text style={{ fontSize: 12, color: rowState.theme.colors.state.neutral.foreground, ...Typography.mono('semiBold') }}>
                             {node.type === 'directory' ? `${badge.kindLetter}${badge.changedCount}` : badge.kindLetter}
                         </Text>
-                        {badge.added > 0 ? (
+                        {badge.isComplete !== false && badge.added > 0 ? (
                             <Text style={{ fontSize: 12, color: rowState.theme.colors.state.success.foreground, ...Typography.mono('semiBold') }}>
                                 {`+${badge.added}`}
                             </Text>
                         ) : null}
-                        {badge.removed > 0 ? (
+                        {badge.isComplete !== false && badge.removed > 0 ? (
                             <Text
                                 style={{
                                     fontSize: 12,
@@ -319,6 +346,10 @@ export function RepositoryTreeList(props: RepositoryTreeListProps): React.ReactE
 
         return (
             <FilesystemBrowserRow
+                treeItemProps={rowState.treeKeyboard.getRowProps(node,
+                    node.type === 'directory' ? () => { void rowState.toggleDirectory(node.path); } : undefined,
+                    node.type === 'file' ? () => (rowState.onOpenFilePinned ?? rowState.onOpenFile)(node.path) : undefined,
+                )}
                 node={node}
                 title={node.type === 'directory' ? `${node.name}/` : node.name}
                 subtitle={subtitle}
@@ -394,6 +425,8 @@ export function RepositoryTreeList(props: RepositoryTreeListProps): React.ReactE
 
     return (
         <FilesystemBrowser
+            treeRole
+            listRef={keyboardListRef}
             nodes={nodes}
             rootLoading={rootLoading}
             rootError={rootError}

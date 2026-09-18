@@ -32,6 +32,75 @@ const groupOptionsByServiceId: ConnectedServicesAccountGroupOptionsByServiceId =
 };
 
 describe('connectedServicesNewSessionBindings', () => {
+    it('can serialize an all-native V2 payload for an existing-session disconnect', () => {
+        expect(buildConnectedServicesBindingsPayload({
+            supportedConnectedServiceIds: ['anthropic'],
+            connectedServiceProfileOptionsByServiceId: profileOptionsByServiceId,
+            connectedServicesBindingsByServiceId: {
+                anthropic: { source: 'native' },
+            },
+            defaultProfileByServiceId: {},
+            emitWhenAllNative: true,
+        })).toEqual({
+            v: 2,
+            bindingsByServiceId: {
+                [ANTHROPIC_SERVICE_KEY]: { source: 'native' },
+            },
+        });
+    });
+
+    it('serializes an exact Team resource binding as V2 without source metadata', () => {
+        const result = buildConnectedServicesBindingsPayload({
+            supportedConnectedServiceIds: ['anthropic'],
+            connectedServiceProfileOptionsByServiceId: profileOptionsByServiceId,
+            connectedServicesBindingsByServiceId: {
+                anthropic: {
+                    source: 'team_resource',
+                    resourceId: 'resource-1',
+                    deliveryMode: 'brokered',
+                },
+            },
+            defaultProfileByServiceId: {},
+        });
+
+        expect(result).toEqual({
+            v: 2,
+            bindingsByServiceId: {
+                [ANTHROPIC_SERVICE_KEY]: {
+                    source: 'team_resource',
+                    resourceId: 'resource-1',
+                    deliveryMode: 'brokered',
+                },
+            },
+        });
+        expect(JSON.stringify(result)).not.toContain('accountId');
+        expect(JSON.stringify(result)).not.toContain('custodian');
+    });
+
+    it('preserves valid authored qualified bindings that are no longer declared', () => {
+        const linearServiceKey = 'happier.connect.linear/linear';
+        const result = buildConnectedServicesBindingsPayload({
+            supportedConnectedServiceIds: ['anthropic'],
+            connectedServiceProfileOptionsByServiceId: profileOptionsByServiceId,
+            connectedServicesBindingsByServiceId: {
+                [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'backup' },
+                [linearServiceKey]: { source: 'connected', selection: 'profile', profileId: 'linear-work' },
+                linear: { source: 'native' },
+                'not/a/qualified/key': { source: 'native' },
+            },
+            defaultProfileByServiceId: {},
+            emitWhenAllNative: true,
+        });
+
+        expect(result).toEqual({
+            v: 2,
+            bindingsByServiceId: {
+                [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'backup' },
+                [linearServiceKey]: { source: 'connected', selection: 'profile', profileId: 'linear-work' },
+            },
+        });
+    });
+
     it('emits a group binding without persisting a stale fallback profile', () => {
         const result = buildConnectedServicesBindingsPayload({
             supportedConnectedServiceIds: ['anthropic'],
@@ -114,7 +183,7 @@ describe('connectedServicesNewSessionBindings', () => {
         });
 
         expect(result).toEqual({
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'team' },
             },
@@ -149,7 +218,7 @@ describe('connectedServicesNewSessionBindings', () => {
         });
 
         expect(result).toEqual({
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'team' },
             },
@@ -184,7 +253,7 @@ describe('connectedServicesNewSessionBindings', () => {
         });
 
         expect(result).toEqual({
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'team' },
             },

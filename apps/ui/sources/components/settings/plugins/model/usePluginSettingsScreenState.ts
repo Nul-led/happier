@@ -502,6 +502,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         : null;
     const pluginTruthSettled = executionTarget === null || (
         machineCapabilities.state.status === 'loaded'
+        && daemonAdministrationAvailable
         && daemonMergedProjection.phase === 'ready'
     );
     const registryDiagnostics = projectionInputs?.registryDiagnostics ?? [];
@@ -519,6 +520,11 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         hasCatalog: discoverEntries.length > 0,
         hasMarketplaceSourceRegistry: marketplaceSourceRegistry !== null,
         hasProjectionInputs: projectionInputs !== null,
+        capabilityReadFailed: machineCapabilities.state.status === 'error'
+            || machineCapabilities.state.status === 'not-supported'
+            || (machineCapabilities.state.status === 'loaded'
+                && currentDaemonCapabilitiesState === machineCapabilities.state
+                && !daemonAdministrationAvailable),
     });
     /**
      * Re-reads daemon-owned plugin truth: the projection cache holds a failure
@@ -529,11 +535,14 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         setProjectionRefreshKey((prev) => prev + 1);
         const currentTarget = resolveCurrentExecutionTarget(executionTarget);
         if (!currentTarget) return;
+        if (readOnlySnapshotNotice?.reason === 'installationUnavailable') {
+            machineCapabilities.refresh({ bypassCache: true });
+        }
         publishMachineContributionRegistryProjectionInvalidation({
             machineId: currentTarget.machine.id,
             serverId: currentTarget.serverId,
         });
-    }, [executionTarget, resolveCurrentExecutionTarget]);
+    }, [executionTarget, machineCapabilities.refresh, readOnlySnapshotNotice?.reason, resolveCurrentExecutionTarget]);
     /**
      * Reconciles one commit-intended mutation whose outcome the daemon could
      * not confirm, against the exact original target only.

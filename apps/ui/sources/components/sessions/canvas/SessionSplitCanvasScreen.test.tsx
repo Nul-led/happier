@@ -195,7 +195,7 @@ describe('SessionSplitCanvasScreen', () => {
             surfaceFocused: false,
             surfaceVisible: true,
             routeAnchor: false,
-            routeServerId: undefined,
+            routeServerId: 'server-route',
             jumpToSeq: null,
             paneUrlState: undefined,
             initialAttachmentDrafts: null,

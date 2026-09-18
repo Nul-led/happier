@@ -4,10 +4,13 @@ import { buildActivitySurfaceCountsViewModel } from '@/activity/presentation/bui
 import {
     buildActivitySurfaceViewModels,
     resolvePrimaryActivitySurfaceTarget,
+    type ActivitySurfaceCandidatePrivacyModeResolver,
 } from '@/activity/presentation/buildActivitySurfaceViewModel';
 import type { ActivitySurfaceSessionViewModel } from '@/activity/presentation/activitySurfaceViewModels';
 import { resolveActivitySurfaceSlots } from '@/activity/selection/resolveActivitySurfaceSlots';
 import { t } from '@/text';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import type { DesktopActivityOverlaySource } from '../runtime/useDesktopActivityOverlaySource';
 import type { DesktopOverlayPolicy } from '../runtime/resolveDesktopOverlayPolicy';
@@ -39,62 +42,34 @@ function buildDesktopActivityOverlaySnapshotLabels(): DesktopActivityOverlaySnap
     };
 }
 
-function buildServerIdBySessionId(
-    source: DesktopActivityOverlaySource,
-): ReadonlyMap<string, string> {
-    const serverIdBySessionId = new Map<string, string>();
-    for (const [ownerServerId, items] of Object.entries(source.sessionListIndexByServerId)) {
-        const trimmedOwnerServerId = ownerServerId.trim();
-        if (!trimmedOwnerServerId || !Array.isArray(items)) {
-            continue;
-        }
-        for (const item of items) {
-            if (item.type !== 'session') {
-                continue;
-            }
-            const sessionId = item.sessionId.trim();
-            const rawItemServerId = typeof item.serverId === 'string' ? item.serverId : '';
-            const serverId = rawItemServerId.trim() || trimmedOwnerServerId;
-            if (sessionId && serverId && !serverIdBySessionId.has(sessionId)) {
-                serverIdBySessionId.set(sessionId, serverId);
-            }
-        }
-    }
-    return serverIdBySessionId;
-}
-
-function resolveSessionServerId(
-    sessionId: string,
-    fallbackServerId: string | null,
-    serverIdBySessionId: ReadonlyMap<string, string>,
-): string | null {
-    const fallback = typeof fallbackServerId === 'string' && fallbackServerId.trim().length > 0
-        ? fallbackServerId.trim()
-        : null;
-    return fallback ?? serverIdBySessionId.get(sessionId) ?? null;
-}
-
 function buildDesktopActivityOverlaySessionSnapshots(
     sessionViewModels: readonly ActivitySurfaceSessionViewModel[],
     candidates: readonly SessionActivityAttention[],
-    serverIdBySessionId: ReadonlyMap<string, string>,
 ): readonly DesktopActivityOverlaySessionSnapshot[] {
-    const candidateById = new Map<string, SessionActivityAttention>();
+    const candidateByAddress = new Map<string, SessionActivityAttention>();
     for (const candidate of candidates) {
-        candidateById.set(candidate.sessionId, candidate);
+        if (candidate.address) {
+            candidateByAddress.set(sessionAddressKey(candidate.address), candidate);
+        }
     }
 
+    const resolveLegacyCandidate = (sessionId: string): SessionActivityAttention | undefined => {
+        const matches = candidates.filter((candidate) => candidate.sessionId === sessionId);
+        return matches.length === 1 ? matches[0] : undefined;
+    };
+
     return sessionViewModels.map((viewModel) => {
-        const candidate = candidateById.get(viewModel.sessionId);
+        const candidate = viewModel.serverId
+            ? candidateByAddress.get(sessionAddressKey({
+                serverId: viewModel.serverId,
+                sessionId: viewModel.sessionId,
+            }))
+            : resolveLegacyCandidate(viewModel.sessionId);
         return {
             sessionId: viewModel.sessionId,
-            serverId: resolveSessionServerId(
-                viewModel.sessionId,
-                viewModel.serverId,
-                serverIdBySessionId,
-            ),
+            serverId: viewModel.serverId,
             title: viewModel.title,
-            subtitle: viewModel.subtitle ?? null,
+            subtitle: viewModel.contextLine ?? viewModel.subtitle ?? null,
             statusText: viewModel.statusText ?? null,
             previewText: viewModel.previewText ?? null,
             attentionState: viewModel.attentionState,
@@ -109,9 +84,10 @@ export function buildDesktopActivityOverlaySnapshot(params: Readonly<{
     sourceOverview?: ActivityOverviewSnapshot;
     activityPolicy: ActivitySurfacePolicy;
     desktopPolicy: DesktopOverlayPolicy;
-    previousPrimarySessionId?: string | null;
+    previousPrimaryAddress?: SessionAddress | null;
     previousPrimaryChangedAtMs?: number | null;
     nowMs?: number;
+    resolveCandidatePrivacyMode?: ActivitySurfaceCandidatePrivacyModeResolver;
 }>): DesktopActivityOverlaySnapshot {
     const nowMs = params.nowMs ?? Date.now();
     const overview = params.sourceOverview ?? buildDesktopActivityOverlayOverviewFromSource({
@@ -127,7 +103,7 @@ export function buildDesktopActivityOverlaySnapshot(params: Readonly<{
             dwellMs: desktopTiming?.dwellMs ?? selectionSpec.dwellMs,
             staleAfterMs: desktopTiming?.staleAfterMs ?? selectionSpec.staleAfterMs,
         },
-        previousPrimarySessionId: params.previousPrimarySessionId ?? null,
+        previousPrimaryAddress: params.previousPrimaryAddress ?? null,
         previousPrimaryChangedAtMs: params.previousPrimaryChangedAtMs ?? null,
         nowMs,
     });
@@ -137,22 +113,20 @@ export function buildDesktopActivityOverlaySnapshot(params: Readonly<{
         showMachinePath: true,
         showPreviewText: params.desktopPolicy.showPreviewText,
         nowMs,
+        resolveCandidatePrivacyMode: params.resolveCandidatePrivacyMode,
     });
-    const serverIdBySessionId = buildServerIdBySessionId(params.source);
     const desktopSessions = buildDesktopActivityOverlaySessionSnapshots(
         selectedSessions,
         slots.selectedSessions,
-        serverIdBySessionId,
     );
     const requestSnapshots = buildDesktopActivityOverlayRequestSnapshots({
         candidates: slots.selectedSessions,
-        serverIdBySessionId,
+        resolveCandidatePrivacyMode: params.resolveCandidatePrivacyMode,
     });
     const quotaSummaries = buildDesktopActivityOverlayQuotaSummarySnapshots(params.source.quotaSummaries);
     const completionStates = buildDesktopActivityOverlayCompletionSnapshots({
         candidates: slots.selectedSessions,
         sessionViewModels: selectedSessions,
-        serverIdBySessionId,
         nowMs,
     });
     const state = slots.selectedSessions.length > 0 ? 'content' : 'idle';
@@ -172,6 +146,7 @@ export function buildDesktopActivityOverlaySnapshot(params: Readonly<{
         defaultTarget: resolvePrimaryActivitySurfaceTarget(
             params.activityPolicy,
             desktopSessions[0]?.sessionId ?? null,
+            desktopSessions[0]?.serverId ?? null,
         ),
         labels: buildDesktopActivityOverlaySnapshotLabels(),
     };

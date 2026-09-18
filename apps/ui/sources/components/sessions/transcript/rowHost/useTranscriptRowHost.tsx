@@ -143,6 +143,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
         rollbackActionsByMessageId,
         rollbackRanges,
         sessionId,
+        sessionServerId,
         toolChromeCommon,
     } = deps.props;
     const pendingExternalSessionOperationFocusTransitionRef = React.useRef<Readonly<{
@@ -191,7 +192,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
     }, [listData, returnFocusToTranscriptViewport, sessionId]);
     const operationMachineId =
         externalSessionOperationOwnerTarget?.machineId ?? null;
-    const sessionServerId =
+    const operationServerId =
         externalSessionOperationOwnerTarget?.serverId ?? null;
     const operationRowCapabilities = React.useMemo(
         () => resolveExternalSessionOperationRowCapabilities({
@@ -258,7 +259,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
                 machineId: operationMachineId,
                 sessionId,
                 ...actionRef,
-            }, sessionServerId ? { serverId: sessionServerId } : undefined);
+            }, operationServerId ? { serverId: operationServerId } : undefined);
             if (!result.ok) {
                 clearExternalSessionOperationFocusTransition(
                     focusTransition.itemId,
@@ -306,8 +307,8 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
         clearExternalSessionOperationFocusTransition,
         onExternalSessionOperationActionResult,
         operationMachineId,
+        operationServerId,
         sessionId,
-        sessionServerId,
     ]);
     /**
      * Carry the pending block's painted bubble height to the committed row that will replace it.
@@ -358,7 +359,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
             return <TranscriptWindowGapRow gap={item} />;
         }
         if (item.kind === 'action-draft') {
-            return wrapTranscriptItemForAnchor(item, <SessionActionDraftCard sessionId={sessionId} draft={item.draft} />);
+            return wrapTranscriptItemForAnchor(item, <SessionActionDraftCard draft={item.draft} />);
         }
         if (item.kind === 'fork-divider') {
             return wrapTranscriptItemForAnchor(item, (
@@ -386,6 +387,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
                 >
                     <PendingMessagesTranscriptBlock
                         sessionId={sessionId}
+                        serverId={sessionServerId ?? null}
                         pendingMessages={item.pendingMessages}
                         discardedMessages={item.discardedMessages}
                         onEditPendingMessage={onEditPendingMessage}
@@ -402,6 +404,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
                         request={item.request}
                         location={null}
                         sessionId={sessionId}
+                        serverId={sessionServerId ?? undefined}
                         metadata={metadata}
                         canApprovePermissions={transcriptInteraction.permissionDisabledReason === 'inactive'
                             ? true
@@ -715,6 +718,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
         rollbackActionsByMessageId,
         rollbackRanges,
         sessionId,
+        sessionServerId,
         toolChromeCommon,
         resolveKindForMessageId,
         resolveThinkingExpanded,

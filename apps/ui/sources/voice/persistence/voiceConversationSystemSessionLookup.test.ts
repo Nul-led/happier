@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 
 import {
   findReusableVoiceConversationRuntimeSessionId,
@@ -85,6 +86,7 @@ describe('voiceConversationSystemSessionLookup', () => {
   });
 
   it('prefers visible lookup metadata over stale raw session metadata when resolving reusable sessions', () => {
+    const serverId = getActiveServerSnapshot().serverId;
     const state = {
       sessions: {
         voice_cached: {
@@ -97,21 +99,24 @@ describe('voiceConversationSystemSessionLookup', () => {
           },
         },
       },
-      sessionListRenderables: {
-        voice_cached: {
-          id: 'voice_cached',
-          active: true,
-          updatedAt: 7,
-          metadata: {
-            systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true },
-            machineId: 'machine-1',
-            path: '/tmp/canonical',
+      sessionListRowsByServerId: {
+        [serverId]: {
+          voice_cached: {
+            id: 'voice_cached',
+            active: true,
+            updatedAt: 7,
+            metadata: {
+              systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true },
+              machineId: 'machine-1',
+              path: '/tmp/canonical',
+            },
           },
         },
       },
+      ordinarySessionListMembershipByServerId: { [serverId]: ['voice_cached'] },
       sessionListIndexByServerId: {
-        'server-1': [
-          { type: 'session', sessionId: 'voice_cached', serverId: 'server-1', serverName: 'Server 1' },
+        [serverId]: [
+          { type: 'session', sessionId: 'voice_cached', serverId, serverName: 'Active' },
         ],
       },
     };
@@ -121,6 +126,7 @@ describe('voiceConversationSystemSessionLookup', () => {
   });
 
   it('preserves canonical Voice markers when preferred session-list metadata is flattened', () => {
+    const serverId = getActiveServerSnapshot().serverId;
     const state = {
       sessions: {
         voice_cached: {
@@ -139,21 +145,24 @@ describe('voiceConversationSystemSessionLookup', () => {
           },
         },
       },
-      sessionListRenderables: {
-        voice_cached: {
-          id: 'voice_cached',
-          active: true,
-          updatedAt: 7,
-          metadata: {
-            machineId: 'machine-current',
-            path: '/tmp/current',
-            hiddenSystemSession: true,
+      sessionListRowsByServerId: {
+        [serverId]: {
+          voice_cached: {
+            id: 'voice_cached',
+            active: true,
+            updatedAt: 7,
+            metadata: {
+              machineId: 'machine-current',
+              path: '/tmp/current',
+              hiddenSystemSession: true,
+            },
           },
         },
       },
+      ordinarySessionListMembershipByServerId: { [serverId]: ['voice_cached'] },
       sessionListIndexByServerId: {
-        'server-1': [
-          { type: 'session', sessionId: 'voice_cached', serverId: 'server-1', serverName: 'Server 1' },
+        [serverId]: [
+          { type: 'session', sessionId: 'voice_cached', serverId, serverName: 'Active' },
         ],
       },
     };

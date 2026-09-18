@@ -58,7 +58,13 @@ import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGen
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
 
-type SearchParams = Readonly<{ url?: string | string[]; auto?: string | string[]; source?: string | string[] }>;
+type SearchParams = Readonly<{
+    url?: string | string[];
+    auto?: string | string[];
+    source?: string | string[];
+    groupEditor?: string | string[];
+    groupServerIds?: string | string[];
+}>;
 type SwitchServerByIdOptions = Readonly<{
     normalizeRoute?: boolean;
     preserveSelectionTarget?: boolean;
@@ -110,6 +116,7 @@ export type ServerSettingsController = Readonly<{
     reachabilityRemediationTaskSnapshot: SystemTaskRunState | null;
     addServerPrefillHint: string | null;
     addServerDefaultExpanded: 'server' | 'group' | null;
+    initialGroupServerIds?: readonly string[];
     onChangeUrl: (value: string) => void;
     onChangeName: (value: string) => void;
     onResetServer: () => Promise<void>;
@@ -162,11 +169,28 @@ export function useServerSettingsScreenController(): ServerSettingsController {
     }, [inputUrl]);
 
     const route = React.useMemo(() => {
-        return parseServerSettingsRouteParams({ url: searchParams.url, auto: searchParams.auto, source: searchParams.source });
-    }, [searchParams.auto, searchParams.source, searchParams.url]);
+        return parseServerSettingsRouteParams({
+            url: searchParams.url,
+            auto: searchParams.auto,
+            source: searchParams.source,
+            groupEditor: searchParams.groupEditor,
+            groupServerIds: searchParams.groupServerIds,
+        });
+    }, [
+        searchParams.auto,
+        searchParams.groupEditor,
+        searchParams.groupServerIds,
+        searchParams.source,
+        searchParams.url,
+    ]);
     const autoMode = route.auto;
     const addServerPrefillHint = route.source === 'notification' && route.url ? t('server.notificationAddServerHint') : null;
-    const addServerDefaultExpanded = route.source === 'notification' && route.url ? ('server' as const) : null;
+    const addServerDefaultExpanded = route.groupEditor
+        ? ('group' as const)
+        : route.source === 'notification' && route.url
+            ? ('server' as const)
+            : null;
+    const initialGroupServerIds = route.groupEditor ? route.initialGroupServerIds : undefined;
 
     const switchServerById = React.useCallback(async (serverId: string, opts?: SwitchServerByIdOptions) => {
         const targetProfile = getServerProfileById(serverId);
@@ -180,7 +204,7 @@ export function useServerSettingsScreenController(): ServerSettingsController {
         if (switched === 'blocked') return switched;
         if (opts?.preserveSelectionTarget !== true) {
             const target = buildServerSelectionActiveTargetForServer(targetServerId);
-            setHomeViewSelectionSettings(
+            await setHomeViewSelectionSettings(
                 (current) => ({ ...current, ...target }),
                 { targetScope: selectionScope },
             );
@@ -403,7 +427,7 @@ export function useServerSettingsScreenController(): ServerSettingsController {
         const normalizedStored = normalizeStoredServerSelectionGroups(serverSelectionScopeSettings.serverSelectionGroups);
         const rawComparable = Array.isArray(serverSelectionGroups) ? serverSelectionGroups : [];
         if (JSON.stringify(normalizedStored) !== JSON.stringify(rawComparable)) {
-            setHomeViewSelectionSettings((current) => ({
+            void setHomeViewSelectionSettings((current) => ({
                 ...current,
                 serverSelectionGroups: normalizeServerSelectionGroupsForSettings(normalizedStored),
             }), { targetScope: routineSelectionScope });
@@ -414,7 +438,7 @@ export function useServerSettingsScreenController(): ServerSettingsController {
             : null;
         const id = String(serverSelectionActiveTargetId ?? '').trim();
         if (kind === 'group' && id && !normalizedStored.some((profile) => profile.id === id)) {
-            setHomeViewSelectionSettings((current) => ({
+            void setHomeViewSelectionSettings((current) => ({
                 ...current,
                 serverSelectionActiveTargetKind: activeServerIdValue ? 'server' : null,
                 serverSelectionActiveTargetId: activeServerIdValue || null,
@@ -561,7 +585,7 @@ export function useServerSettingsScreenController(): ServerSettingsController {
                             && canonical.id !== created.id
                         ) {
                             try {
-                                removeServerProfile(created.id);
+                                await removeServerProfile(created.id);
                             } catch {
                                 // ignore; best-effort cleanup
                             }
@@ -622,6 +646,7 @@ export function useServerSettingsScreenController(): ServerSettingsController {
         reachabilityRemediationTaskSnapshot,
         addServerPrefillHint,
         addServerDefaultExpanded,
+        initialGroupServerIds,
         onChangeUrl: (value) => {
             setInputUrl(value);
             setError(null);

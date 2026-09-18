@@ -1,8 +1,8 @@
 import {
-    ConnectedServiceBindingsV1Schema,
+    ConnectedServiceBindingsV2IngressSchema,
     buildQualifiedPluginContributionKey,
     type BackendTargetRefV2,
-    type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingsV2,
     type PersistedBackendTargetRefV2,
 } from '@happier-dev/protocol';
 import { getAgentModelConfig } from '@happier-dev/agents';
@@ -110,6 +110,7 @@ export function resolveNewSessionOperationalProviderId(params: Readonly<{
 export function resolveNewSessionCapabilityProbeContext(params: Readonly<{
     backendTarget: PersistedBackendTargetRefV2;
     settings: Settings;
+    selectedProfileId?: string | null;
     runtimeCarrierAgentId?: string | null;
     machineId?: string | null;
     pluginSettings?: AgentPluginSettingsSnapshot | null;
@@ -130,22 +131,29 @@ export function resolveNewSessionCapabilityProbeContext(params: Readonly<{
         ...(params.pluginSettings ? { pluginSettings: params.pluginSettings } : {}),
         ...(params.machineId?.trim() ? { machineId: params.machineId } : {}),
     });
-    if (!runtimeKind) return null;
+    const selectedProfileId = params.selectedProfileId?.trim() || null;
+    if (!runtimeKind && !selectedProfileId) return null;
 
+    const cacheKeySuffixParts = [
+        ...(runtimeKind ? [runtimeKind] : []),
+        ...(selectedProfileId ? [`profile:${selectedProfileId}`] : []),
+    ];
+    const capabilityParams = selectedProfileId ? { profileId: selectedProfileId } : {};
     return getOrCreateProbeContext({
-        key: `runtime:${runtimeKind}`,
-        cacheKeySuffixParts: [runtimeKind],
-        capabilityParams: {},
+        key: stableJsonStringify({ cacheKeySuffixParts, capabilityParams }),
+        cacheKeySuffixParts,
+        capabilityParams,
     });
 }
 
 export function resolveNewSessionModelCapabilityProbeContext(params: Readonly<{
     backendTarget: PersistedBackendTargetRefV2;
     settings: Settings;
+    selectedProfileId?: string | null;
     runtimeCarrierAgentId?: string | null;
     machineId?: string | null;
     pluginSettings?: AgentPluginSettingsSnapshot | null;
-    connectedServices?: ConnectedServiceBindingsV1 | null;
+    connectedServices?: ConnectedServiceBindingsV2 | null;
     connectedServicesCacheIdentity?: string | null;
 }>): NewSessionCapabilityProbeContext | null {
     const shared = resolveNewSessionCapabilityProbeContext(params);
@@ -161,7 +169,7 @@ export function resolveNewSessionModelCapabilityProbeContext(params: Readonly<{
     const observationServiceKey = observation
         ? resolveQualifiedConnectedAccountServiceKey(observation.connectedServiceId)
         : null;
-    const bindings = ConnectedServiceBindingsV1Schema.safeParse(params.connectedServices);
+    const bindings = ConnectedServiceBindingsV2IngressSchema.safeParse(params.connectedServices);
     const selection = observationServiceKey && bindings.success
         ? bindings.data.bindingsByServiceId[observationServiceKey]
         : null;

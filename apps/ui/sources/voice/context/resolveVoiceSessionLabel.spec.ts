@@ -1,3 +1,4 @@
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { storage } from '@/sync/domains/state/storage';
@@ -5,11 +6,21 @@ import { storage } from '@/sync/domains/state/storage';
 import { resolveVoiceSessionLabel } from './resolveVoiceSessionLabel';
 
 describe('resolveVoiceSessionLabel', () => {
+  it('does not use another Home raw metadata when the qualified target is unavailable', () => {
+    storage.setState((state) => ({
+      ...state,
+      sessions: { same: { id: 'same', metadata: { summaryText: 'Active Home private title' } } },
+    }) as never);
+    expect(resolveVoiceSessionLabel({ serverId: 'unavailable-home', sessionId: 'same' }, {
+      voiceShareSessionSummary: true, voiceShareFilePaths: false,
+    })).toBe('the current session');
+  });
   beforeEach(() => {
     storage.setState((state: any) => ({
       ...state,
       sessions: {},
-      sessionListRenderables: {},
+      sessionListRowsByServerId: {},
+      ordinarySessionListMembershipByServerId: {},
       sessionListIndexByServerId: {},
       concurrentSessionListCacheByServerId: {},
     }));
@@ -27,22 +38,27 @@ describe('resolveVoiceSessionLabel', () => {
           },
         },
       },
-      sessionListRenderables: {
-        s_matrix: {
-          id: 's_matrix',
-          updatedAt: 42,
-          metadata: {
-            summaryText: 'Lookup session summary',
-            path: '/Users/alice/project-alpha',
+      sessionListRowsByServerId: {
+        [getActiveServerSnapshot().serverId]: {
+          s_matrix: {
+            id: 's_matrix',
+            updatedAt: 42,
+            metadata: {
+              summaryText: 'Lookup session summary',
+              path: '/Users/alice/project-alpha',
+            },
           },
         },
       },
+      ordinarySessionListMembershipByServerId: {
+        [getActiveServerSnapshot().serverId]: ['s_matrix'],
+      },
       sessionListIndexByServerId: {
-        'active-server': [
+        [getActiveServerSnapshot().serverId]: [
           {
             type: 'session',
             sessionId: 's_matrix',
-            serverId: 'active-server',
+            serverId: getActiveServerSnapshot().serverId,
             serverName: 'Active',
           },
         ],
@@ -69,22 +85,27 @@ describe('resolveVoiceSessionLabel', () => {
           },
         },
       },
-      sessionListRenderables: {
-        s_matrix: {
-          id: 's_matrix',
-          updatedAt: 42,
-          metadata: {
-            summaryText: 'Trimmed session summary',
-            path: '/Users/alice/project-alpha',
+      sessionListRowsByServerId: {
+        [getActiveServerSnapshot().serverId]: {
+          s_matrix: {
+            id: 's_matrix',
+            updatedAt: 42,
+            metadata: {
+              summaryText: 'Trimmed session summary',
+              path: '/Users/alice/project-alpha',
+            },
           },
         },
       },
+      ordinarySessionListMembershipByServerId: {
+        [getActiveServerSnapshot().serverId]: ['s_matrix'],
+      },
       sessionListIndexByServerId: {
-        'active-server': [
+        [getActiveServerSnapshot().serverId]: [
           {
             type: 'session',
             sessionId: 's_matrix',
-            serverId: 'active-server',
+            serverId: getActiveServerSnapshot().serverId,
             serverName: 'Active',
           },
         ],

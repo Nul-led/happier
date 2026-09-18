@@ -121,7 +121,7 @@ function buildSearchTextProjection(
         // exact server partition; bare-id global Session/renderable maps could
         // otherwise leak another Home's same-id metadata into this haystack.
         const renderable = readSessionListRowForServerId(
-            state.sessionListRowStateByServerId,
+            state.sessionListRowsByServerId,
             entry.serverId,
             entry.sessionId,
         );
@@ -161,11 +161,13 @@ function createSessionListSearchTextProjectionSelector(
     organization?: SessionListSearchOrganization,
 ): (state: StorageState) => SessionListSearchTextProjection {
     const sessionKeys = collectSessionKeys(items);
+    let previousState: StorageState | null = null;
     let previousDeltaRevision: number | null = null;
     let previousResult: SessionListSearchTextProjection | null = null;
 
     return (state) => {
         if (!enabled || sessionKeys.length === 0) return EMPTY_SEARCH_TEXT_PROJECTION;
+        if (previousResult && previousState === state) return previousResult;
         const renderableDelta = state.sessionListRenderableDelta;
         if (
             previousResult
@@ -176,11 +178,13 @@ function createSessionListSearchTextProjectionSelector(
             && renderableDelta.changedSessionIds.length === 0
             && renderableDelta.removedSessionIds.length === 0
         ) {
+            previousState = state;
             previousDeltaRevision = renderableDelta.revision;
             return previousResult;
         }
 
         previousResult = buildSearchTextProjection(state, sessionKeys, organization);
+        previousState = state;
         previousDeltaRevision = renderableDelta?.revision ?? null;
         return previousResult;
     };

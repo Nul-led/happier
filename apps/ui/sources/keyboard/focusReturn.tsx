@@ -115,6 +115,22 @@ export function readDocumentFocusReturnTarget(doc: Document): FocusReturnTarget 
     return canFocusTarget(activeElement) ? activeElement : null;
 }
 
+/**
+ * The control a press came from, as a focus-return target: the host element
+ * on web, the native event tag on native, else whatever the document currently
+ * focuses. A surface records this when a press opens an overlay so closing it
+ * can return focus to that exact control rather than to the page.
+ */
+export function readPressFocusReturnTarget(event: unknown): FocusReturnTarget {
+    const press = typeof event === 'object' && event !== null
+        ? event as Readonly<{ currentTarget?: unknown; nativeEvent?: Readonly<{ target?: unknown }> }>
+        : null;
+    if (canFocusTarget(press?.currentTarget)) return press.currentTarget;
+    const nativeTag = press?.nativeEvent?.target;
+    if (isNativeFocusTarget(nativeTag as FocusReturnTarget)) return nativeTag as NativeFocusReturnTarget;
+    return typeof document === 'undefined' ? null : readDocumentFocusReturnTarget(document);
+}
+
 export function restoreFocusToBestTarget(
     triggerRef: FocusReturnRef,
     fallbackRef?: FocusReturnRef,
@@ -157,6 +173,21 @@ export function useNavigationFocusReturnIntentRef() {
     const context = React.useContext(FocusReturnContext);
     const localIntentRef = React.useRef<NavigationFocusReturnIntent | null>(null);
     return context?.navigationIntentRef ?? localIntentRef;
+}
+
+/**
+ * Retargets an already-captured navigation return without creating a new intent.
+ * This is used when the originating row is deliberately removed while its detail
+ * route is open. Deep links and unrelated navigation therefore remain untouched.
+ */
+export function useRetargetNavigationFocusReturnIntent() {
+    const navigationIntentRef = useNavigationFocusReturnIntentRef();
+    return React.useCallback((originatingTestId: string, nextTestId: string): boolean => {
+        const current = navigationIntentRef.current;
+        if (!current || current.testId !== originatingTestId) return false;
+        navigationIntentRef.current = { ...current, testId: nextTestId };
+        return true;
+    }, [navigationIntentRef]);
 }
 
 export function useRestoreFocusToTrigger(triggerRef: FocusReturnRef) {

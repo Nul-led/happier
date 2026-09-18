@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 const mmkvStore = vi.hoisted(() => new Map<string, string>());
 
@@ -61,8 +62,7 @@ function reviewDraft(id: string, body: string) {
 function createHarness() {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
-        sessionListRowStateByServerId: {},
+        sessionListRowsByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
@@ -71,12 +71,12 @@ function createHarness() {
         workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey: {},
         reviewCommentsDraftsBySessionId: {},
         reviewCommentsDraftsByWorkspaceCacheKey: {},
-        actionDraftsBySessionId: {},
+        sessionActionDraftsByAddressKey: {},
         isDataReady: false,
         machines: {},
         machineDisplayById: {},
         sessionMessages: {},
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
     };
 
     const get = () => state;
@@ -106,7 +106,8 @@ describe('sessions domain: local server/account scope', () => {
         domain.markSessionViewed('s1');
         domain.upsertSessionReviewCommentDraft('s1', reviewDraft('comment-a', 'account A review'));
         domain.upsertWorkspaceReviewCommentDraft('workspace-a', reviewDraft('workspace-comment-a', 'account A workspace review'));
-        const actionDraft = domain.createSessionActionDraft('s1', {
+        const address = { serverId: scopeA.serverId, sessionId: 's1' };
+        const actionDraft = domain.createSessionActionDraft(scopeA, address, {
             actionId: 'run-tests',
             input: { target: 'unit' },
         });
@@ -115,7 +116,7 @@ describe('sessions domain: local server/account scope', () => {
         expect(get().sessions.s1?.modelMode).toBe('gemini-2.5-pro');
         expect(get().reviewCommentsDraftsBySessionId.s1?.[0]?.body).toBe('account A review');
         expect(get().reviewCommentsDraftsByWorkspaceCacheKey['workspace-a']?.[0]?.body).toBe('account A workspace review');
-        expect(get().actionDraftsBySessionId.s1?.[0]?.id).toBe(actionDraft.id);
+        expect(get().sessionActionDraftsByAddressKey[sessionAddressKey(address)]?.[0]?.id).toBe(actionDraft.id);
         expect(get().sessionLastViewed.s1).toBeTypeOf('number');
 
         domain.activateSessionLocalStateScope(scopeB);
@@ -125,7 +126,7 @@ describe('sessions domain: local server/account scope', () => {
         expect(get().sessions.s1?.modelMode).not.toBe('gemini-2.5-pro');
         expect(get().reviewCommentsDraftsBySessionId.s1 ?? []).toEqual([]);
         expect(get().reviewCommentsDraftsByWorkspaceCacheKey['workspace-a'] ?? []).toEqual([]);
-        expect(get().actionDraftsBySessionId.s1 ?? []).toEqual([]);
+        expect(get().sessionActionDraftsByAddressKey[sessionAddressKey(address)] ?? []).toEqual([]);
         expect(get().sessionLastViewed.s1).toBeUndefined();
 
         domain.activateSessionLocalStateScope(scopeA);
@@ -135,7 +136,7 @@ describe('sessions domain: local server/account scope', () => {
         expect(get().sessions.s1?.modelMode).toBe('gemini-2.5-pro');
         expect(get().reviewCommentsDraftsBySessionId.s1?.[0]?.body).toBe('account A review');
         expect(get().reviewCommentsDraftsByWorkspaceCacheKey['workspace-a']?.[0]?.body).toBe('account A workspace review');
-        expect(get().actionDraftsBySessionId.s1?.[0]?.id).toBe(actionDraft.id);
+        expect(get().sessionActionDraftsByAddressKey[sessionAddressKey(address)]?.[0]?.id).toBe(actionDraft.id);
         expect(get().sessionLastViewed.s1).toBeTypeOf('number');
     });
 });

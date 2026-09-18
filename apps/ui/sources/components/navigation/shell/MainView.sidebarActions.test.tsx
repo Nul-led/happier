@@ -267,6 +267,8 @@ describe('MainView sidebar actions', () => {
         tree = (await renderScreen(<MainView variant="phone" />)).tree;
 
         const header = tree!.findByType('Header');
+        const renderedHeaderTitle = await renderScreen(header.props.title);
+        expect(renderedHeaderTitle.findByType('ConnectionStatusControl').props.variant).toBe('header');
         const headerRight = header.props.headerRight();
         expect(headerRight).toBeTruthy();
 

@@ -1,4 +1,6 @@
 import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
+import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
+import { isSessionAccessOwner } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 
 import type { SessionListRenderableSession } from './sessionListRenderable';
 
@@ -30,6 +32,11 @@ export function buildSessionFromListRenderable(
         serverId?: string | null;
     }> = {},
 ): Session {
+    const {
+        responsibleAccountId: _baseResponsibleAccountId,
+        responsibleAccount: _baseResponsibleAccount,
+        ...baseSessionWithoutResponsibility
+    } = options.baseSession ?? {};
     const seq = normalizeProjectionSeq(renderable.seq);
     const normalizedServerId = typeof options.serverId === 'string' && options.serverId.trim()
         ? options.serverId.trim()
@@ -49,10 +56,22 @@ export function buildSessionFromListRenderable(
     const agentStateVersion = hasCurrentCanonicalAgentState
         ? options.baseSession!.agentStateVersion
         : renderable.agentStateVersion;
+    const metadataLayoutVersion = readSessionMetadataLayoutVersion(
+        renderable.metadataLayoutVersion ?? options.baseSession?.metadataLayoutVersion,
+    );
+    const ownerMetadataView = metadataLayoutVersion === 1
+        && isSessionAccessOwner(renderable.access, renderable.accessLevel)
+        ? renderable.metadata as Metadata | null
+        : null;
 
     return {
-        ...options.baseSession,
+        ...baseSessionWithoutResponsibility,
         id: renderable.id,
+        viewer: renderable.viewer,
+        encryptionMode: renderable.encryptionMode ?? options.baseSession?.encryptionMode,
+        encryptedContentAvailability: renderable.encryptedContentAvailability !== undefined
+            ? renderable.encryptedContentAvailability
+            : options.baseSession?.encryptedContentAvailability,
         serverId: normalizedServerId,
         seq: renderable.hasUnreadMessages === true ? Math.max(1, seq) : seq,
         createdAt: renderable.createdAt,
@@ -65,7 +84,11 @@ export function buildSessionFromListRenderable(
         pendingCount: renderable.pendingCount,
         pendingBlockedCount: renderable.pendingBlockedCount,
         pendingActivationAuthorization: renderable.pendingActivationAuthorization ?? null,
-        lastViewedSessionSeq: renderable.hasUnreadMessages === true ? 0 : seq,
+        lastViewedSessionSeq: renderable.viewer !== undefined
+            ? renderable.viewer.readState.state === 'tracking'
+                ? renderable.viewer.readState.lastViewedSessionSeq
+                : null
+            : renderable.hasUnreadMessages === true ? 0 : seq,
         pendingPermissionRequestCount: typeof renderable.hasPendingPermissionRequests === 'boolean'
             ? renderable.hasPendingPermissionRequests ? 1 : 0
             : options.baseSession?.pendingPermissionRequestCount,
@@ -87,6 +110,8 @@ export function buildSessionFromListRenderable(
         lastRuntimeIssue: renderable.lastRuntimeIssue ?? null,
         lastTurnCompletedAt: renderable.lastTurnCompletedAt ?? null,
         metadata: mergeRenderableMetadata(options.baseSession?.metadata, renderable.metadata),
+        metadataLayoutVersion: metadataLayoutVersion || undefined,
+        ownerMetadataView,
         metadataVersion: renderable.metadataVersion,
         agentState,
         agentStateVersion,
@@ -97,6 +122,13 @@ export function buildSessionFromListRenderable(
         resumingAt: renderable.resumingAt,
         thinkingGraceUntil: renderable.thinkingGraceUntil,
         owner: renderable.owner,
+        access: renderable.access,
+        ...(Object.prototype.hasOwnProperty.call(renderable, 'responsibleAccountId')
+            ? { responsibleAccountId: renderable.responsibleAccountId }
+            : {}),
+        ...(Object.prototype.hasOwnProperty.call(renderable, 'responsibleAccount')
+            ? { responsibleAccount: renderable.responsibleAccount }
+            : {}),
         accessLevel: renderable.accessLevel,
         canApprovePermissions: renderable.canApprovePermissions,
     };

@@ -327,6 +327,49 @@ describe('Item mode prop', () => {
         }
     });
 
+    it('paints split-row hover and press feedback on the full surface containing both controls', async () => {
+        const { Item } = await import('../Item');
+        const { Pressable, Text } = await import('react-native');
+        const screen = await renderScreen(
+            <Item
+                title="Review"
+                testID="split-row"
+                onPress={() => {}}
+                rightElement={(
+                    <Pressable testID="split-row-action" onPress={() => {}}>
+                        <Text>Mark read</Text>
+                    </Pressable>
+                )}
+                rightElementOutsidePressable
+            />,
+        );
+
+        const row = () => findHostNodeByTestID(screen, 'split-row');
+        const action = findHostNodeByTestID(screen, 'split-row-action');
+        if (!row() || !action || !row()!.parent) throw new Error('Expected split row surface and controls');
+
+        const initialSurface = row()!.parent!;
+        expect(initialSurface.type).toBe('View');
+        expect(hasAncestor(action, initialSurface)).toBe(true);
+        expect(flattenTestStyle(initialSurface.props.style).backgroundColor).toBe('transparent');
+
+        await act(async () => {
+            row()!.props.onHoverIn();
+        });
+        expect(flattenTestStyle(row()!.parent!.props.style).backgroundColor).toBe(lightTheme.colors.surface.pressed);
+
+        await act(async () => {
+            row()!.props.onHoverOut();
+            row()!.props.onPressIn();
+        });
+        expect(flattenTestStyle(row()!.parent!.props.style).backgroundColor).toBe(lightTheme.colors.surface.pressed);
+
+        await act(async () => {
+            row()!.props.onPressOut();
+        });
+        expect(flattenTestStyle(row()!.parent!.props.style).backgroundColor).toBe('transparent');
+    });
+
     it('applies a hover background on web for interactive items', async () => {
         const { Item } = await import('../Item');
         const screen = await renderScreen(<Item title="Hover Row" testID="item-hover" onPress={() => {}} />);

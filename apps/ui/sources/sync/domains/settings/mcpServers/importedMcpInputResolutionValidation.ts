@@ -13,7 +13,7 @@ export function getImportedMcpInputResolutionIssues(mapping: ImportedMcpInputRes
         if (!mapping.secretName.trim()) {
             issues.push('missingSecretName');
         }
-        if (!mapping.secretValue.trim()) {
+        if (mapping.secretValue.length === 0) {
             issues.push('missingSecretValue');
         }
         return issues;

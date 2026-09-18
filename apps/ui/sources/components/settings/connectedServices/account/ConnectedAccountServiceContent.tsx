@@ -4,7 +4,9 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import type {
     ConnectedServiceId,
+    ConnectedServiceQuotaSnapshotV1,
     PluginConnectedAccountAuthenticationModeV2,
+    QualifiedConnectedAccountQuotaSnapshotV4,
     QualifiedConnectedAccountProfileV4,
     QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
@@ -25,6 +27,7 @@ import {
 } from './buildConnectedServiceAccountRowActions';
 import { QualifiedAccountBlock } from './QualifiedAccountBlock';
 import { QualifiedAccountDetailView } from './QualifiedAccountDetailView';
+import { SharedWithTeamsForSource } from '@/components/settings/teams/credentials/SharedWithTeamsSourceAdministration';
 import {
     presentQualifiedConnectedAccountTarget,
     type QualifiedConnectedAccountTargetPresentation,
@@ -64,6 +67,7 @@ import {
     type QualifiedConnectedAccountUiLegacyPeerClass,
 } from '@/sync/domains/connectedServices/qualifiedConnectedAccountUiSource';
 import { resolveProjectedLocalizedText } from '@/components/plugins/surfaces/resolvePluginDisplayString';
+import { teamsDirectoryShareCredentialPath } from '@/components/settings/teams/teamsRoutes';
 
 export type ConnectedAccountServiceProfile = QualifiedConnectedAccountProfileV4;
 
@@ -133,8 +137,11 @@ function FocusedScreenNotice(props: Readonly<{
  * `ItemList`; the unfocused service detail renders into the route's list.
  */
 export const ConnectedAccountServiceContent = React.memo(function ConnectedAccountServiceContent(props: Readonly<{
+    serverId?: string;
+    teamCredentialResourcesEnabled?: boolean;
     localize?: (value: Parameters<typeof resolveProjectedLocalizedText>[0]) => string;
     title: string;
+    quotaResetSupported?: boolean;
     service: QualifiedConnectedAccountRef['service'];
     legacyServiceId?: ConnectedServiceId | null;
     /**
@@ -151,6 +158,11 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
     accountLabels?: Readonly<Record<string, string | undefined>>;
     defaultAccountId?: string | null;
     groups?: UseQualifiedConnectedAccountGroupsResult;
+    quotaSnapshots?: ReadonlyArray<
+        ConnectedServiceQuotaSnapshotV1 | QualifiedConnectedAccountQuotaSnapshotV4
+    >;
+    quotaEnabledMemberCount?: number;
+    quotaLoadingMemberCount?: number;
     busy: boolean;
     onEditLabel?(account: QualifiedConnectedAccountRef): void;
     onToggleDefault?(account: QualifiedConnectedAccountRef): void;
@@ -211,6 +223,12 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
     // is registered fail-closed, so a missing or malformed bit disables the
     // controls rather than offering a switch the server will not honor.
     const accountFallbackEnabled = useFeatureEnabled('connectedServices.accountFallback');
+    const autoQuotaResetEnabled = useFeatureEnabled('connectedServices.autoQuotaReset');
+    const autoDisablePlanInvalidEnabled = useFeatureEnabled('connectedServices.autoDisablePlanInvalid');
+    const quotaLimitSelectionEnabled = useFeatureEnabled('connectedServices.poolQuotaLimitSelection');
+    const focusedGroup = focus?.kind === 'group'
+        ? groups.groups.find((candidate) => candidate.ref.groupId === focus.groupId) ?? null
+        : null;
     const legacyQuotaSupported = props.legacyServiceId
         && props.legacyPeerClass
         ? isQualifiedConnectedAccountLegacyOperationSupported({
@@ -397,9 +415,8 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
     );
 
     if (focus?.kind === 'group') {
-        const group = groups.groups.find(
-            (candidate) => candidate.ref.groupId === focus.groupId,
-        ) ?? null;
+        const shareServerId = props.serverId;
+        const group = focusedGroup;
         if (!group) {
             return groups.status === 'loading' ? (
                 <FocusedScreenNotice
@@ -425,17 +442,36 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
                 serviceLabel={props.title}
                 mutations={poolMutations}
                 fallbackControlsEnabled={accountFallbackEnabled}
+                autoQuotaResetEnabled={autoQuotaResetEnabled && props.quotaResetSupported === true}
+                autoDisablePlanInvalidEnabled={autoDisablePlanInvalidEnabled}
+                quotaLimitSelectionEnabled={quotaLimitSelectionEnabled}
+                quotaSnapshots={props.quotaSnapshots ?? []}
+                quotaEnabledMemberCount={props.quotaEnabledMemberCount}
+                quotaLoadingMemberCount={props.quotaLoadingMemberCount}
                 fallbackDisabledSubtitle={
                     t('connectedServices.detail.groupActions.accountFallbackDisabled')
                 }
                 // Mutations here report failure by returning null and setting this;
                 // without it a rejected change just reconciles away silently.
                 error={groups.error}
+                {...(shareServerId && props.teamCredentialResourcesEnabled === true ? {
+                    sharedWithTeamsAdministration: <SharedWithTeamsForSource
+                        serverId={shareServerId}
+                        source={{ v: 1, kind: 'connected_pool', target: { kind: 'group', service: group.ref.service, groupId: group.ref.groupId } }}
+                    />,
+                    onShareWithTeam: () => router.push(teamsDirectoryShareCredentialPath({
+                        kind: 'connected_pool',
+                        serverId: shareServerId,
+                        service: group.ref.service,
+                        groupId: group.ref.groupId,
+                    })),
+                } : {})}
             />
         );
     }
 
     if (focus?.kind === 'account') {
+        const shareServerId = props.serverId;
         const account = accounts.find(
             (candidate) => candidate.ref.accountId === focus.accountId,
         ) ?? null;
@@ -474,6 +510,17 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
                 } : {})}
                 {...(accountIsRevisioned && props.onEditLabel ? {
                     onEditLabel: () => props.onEditLabel?.(account.ref),
+                } : {})}
+                {...(shareServerId && props.teamCredentialResourcesEnabled === true ? {
+                    sharedWithTeamsAdministration: <SharedWithTeamsForSource
+                        serverId={shareServerId}
+                        source={{ v: 1, kind: 'connected_account', target: { kind: 'account', account: account.ref } }}
+                    />,
+                    onShareWithTeam: () => router.push(teamsDirectoryShareCredentialPath({
+                        kind: 'connected_account',
+                        serverId: shareServerId,
+                        account: account.ref,
+                    })),
                 } : {})}
                 {...(canReconnect(account) ? {
                     onReconnect: () => props.onBeginReconnect?.(account.ref),

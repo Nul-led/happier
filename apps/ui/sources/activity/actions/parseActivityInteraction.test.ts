@@ -21,6 +21,7 @@ describe('parseActivityInteraction', () => {
             route: '/session/session-1',
             serverUrl: 'https://stack.example.test',
             permissionAction: null,
+            workflowRun: null,
         });
     });
 
@@ -46,6 +47,7 @@ describe('parseActivityInteraction', () => {
                 sessionId: 'session-2',
                 requestId: 'req-1',
             },
+            workflowRun: null,
         });
     });
 
@@ -96,6 +98,7 @@ describe('parseActivityInteraction', () => {
             route: '/session/session-primary?serverId=server-primary',
             serverUrl: null,
             permissionAction: null,
+            workflowRun: null,
         });
         expect(session).toEqual({
             actionIdentifier: 'open-session:session-2',
@@ -104,6 +107,7 @@ describe('parseActivityInteraction', () => {
             route: '/session/session-2?serverId=server-2',
             serverUrl: null,
             permissionAction: null,
+            workflowRun: null,
         });
         expect(inbox).toEqual({
             actionIdentifier: 'open-inbox',
@@ -112,6 +116,7 @@ describe('parseActivityInteraction', () => {
             route: '/inbox',
             serverUrl: null,
             permissionAction: null,
+            workflowRun: null,
         });
     });
 });

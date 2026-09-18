@@ -37,6 +37,7 @@ describe('pendingNotificationAction', () => {
         clearPendingNotificationAction();
         setPendingNotificationAction({
             serverUrl: 'https://action-a.example.test',
+            serverId: 'server-a-profile',
             sessionId: 's_a',
             requestId: 'r_a',
             action: 'allow',
@@ -62,6 +63,7 @@ describe('pendingNotificationAction', () => {
         await activateServerAccount('https://action-a.example.test', 'account-a');
         expect(getPendingNotificationAction()).toEqual({
             serverUrl: 'https://action-a.example.test',
+            serverId: 'server-a-profile',
             sessionId: 's_a',
             requestId: 'r_a',
             action: 'allow',
@@ -130,7 +132,7 @@ describe('pendingNotificationAction', () => {
             action: 'allow',
         });
 
-        setServerProfileIdentityForUrl('https://notify.example.test', 'srv_notify_identity');
+        await setServerProfileIdentityForUrl('https://notify.example.test', 'srv_notify_identity');
         const identityScope = createServerAccountScope('srv_notify_identity', 'account-a');
         expect(identityScope).not.toBeNull();
         if (!identityScope) return;

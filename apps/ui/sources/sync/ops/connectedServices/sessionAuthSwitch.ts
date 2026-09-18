@@ -1,11 +1,12 @@
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 import { prepareAccountSettingsForDaemonSpawnIfNeeded } from '@/sync/ops/accountSettingsDaemonSpawnPreparation';
 import type {
-    ConnectedServiceBindingsV1,
+    ConnectedServiceBindingsV2,
     ConnectedAccountServiceKey,
     ConnectedServiceUxDiagnosticV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import type { SessionTeamCredentialBindingIntentListV1 } from '@happier-dev/protocol/teams';
 
 export const SESSION_CONNECTED_SERVICE_AUTH_SWITCH_MACHINE_RPC_METHOD =
     RPC_METHODS.DAEMON_SESSION_CONNECTED_SERVICE_AUTH_SWITCH;
@@ -80,7 +81,7 @@ export type SessionConnectedServiceAuthSwitchResult =
     | Readonly<{
         ok: true;
         action: SessionConnectedServiceAuthSwitchStatus;
-        normalizedBindings?: ConnectedServiceBindingsV1;
+        normalizedBindings?: ConnectedServiceBindingsV2;
         continuityByServiceId?: Readonly<Record<string, string>>;
         warnings?: readonly string[];
       }>
@@ -98,9 +99,12 @@ export async function setSessionConnectedServiceAuthBinding(params: Readonly<{
     agentId: string;
     machineId: string;
     serverId?: string | null;
-    bindings: ConnectedServiceBindingsV1;
+    bindings: ConnectedServiceBindingsV2;
     rematerializeServiceId?: ConnectedAccountServiceKey;
     expectedGroupGenerationByServiceId?: Readonly<Record<string, number>>;
+    teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
+    previousTeamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
+    teamVisibilityGrantConsent?: Readonly<{ teamId: string }>;
     accountSettingsVersionHint?: number;
 }>): Promise<SessionConnectedServiceAuthSwitchResult> {
     const accountSettingsPreparation = await prepareAccountSettingsForDaemonSpawnIfNeeded(params.accountSettingsVersionHint);
@@ -110,9 +114,12 @@ export async function setSessionConnectedServiceAuthBinding(params: Readonly<{
     const response = await machineRpcWithServerScope<SessionConnectedServiceAuthSwitchResult, {
         sessionId: string;
         agentId: string;
-        bindings: ConnectedServiceBindingsV1;
+        bindings: ConnectedServiceBindingsV2;
         rematerializeServiceId?: ConnectedAccountServiceKey;
         expectedGroupGenerationByServiceId?: Readonly<Record<string, number>>;
+        teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
+        previousTeamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
+        teamVisibilityGrantConsent?: Readonly<{ teamId: string }>;
         accountSettingsVersionHint?: number;
     }>({
         machineId: params.machineId,
@@ -130,6 +137,11 @@ export async function setSessionConnectedServiceAuthBinding(params: Readonly<{
             ...(params.expectedGroupGenerationByServiceId
                 ? { expectedGroupGenerationByServiceId: params.expectedGroupGenerationByServiceId }
                 : {}),
+            ...(params.teamCredentialBindings ? { teamCredentialBindings: params.teamCredentialBindings } : {}),
+            ...(params.previousTeamCredentialBindings
+                ? { previousTeamCredentialBindings: params.previousTeamCredentialBindings }
+                : {}),
+            ...(params.teamVisibilityGrantConsent ? { teamVisibilityGrantConsent: params.teamVisibilityGrantConsent } : {}),
             ...(typeof accountSettingsVersionHint === 'number' ? { accountSettingsVersionHint } : {}),
         },
     });

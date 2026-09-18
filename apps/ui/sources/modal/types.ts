@@ -167,6 +167,7 @@ export interface IModal {
         cancelText?: string;
         confirmText?: string;
         destructive?: boolean;
+        focusReturnRef?: FocusReturnRef;
     }): Promise<boolean>;
     prompt(title: string, message?: string, options?: {
         placeholder?: string;

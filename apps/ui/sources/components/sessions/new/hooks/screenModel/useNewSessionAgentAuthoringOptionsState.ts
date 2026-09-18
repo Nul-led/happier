@@ -147,11 +147,11 @@ function resolveAuthoringModelState(params: Readonly<{
     const modelMode = resolveInitialNewSessionModelMode({
         draftModelMode: candidate?.ref.modelId ?? null,
         modelConfig: {
-            defaultMode: core?.model.defaultMode ?? 'default',
-            allowedModes: core?.model.allowedModes ?? [],
-            supportsFreeform: core?.model.supportsFreeform ?? false,
-            freeformModelIdPrefixes: core?.model.freeformModelIdPrefixes ?? [],
-            dynamicProbe: core?.model.dynamicProbe ?? 'auto',
+            defaultMode: core?.model?.defaultMode ?? 'default',
+            allowedModes: core?.model?.allowedModes ?? [],
+            supportsFreeform: core?.model?.supportsFreeform ?? false,
+            freeformModelIdPrefixes: core?.model?.freeformModelIdPrefixes ?? [],
+            dynamicProbe: core?.model?.dynamicProbe ?? 'auto',
         },
     });
     return {
@@ -315,7 +315,7 @@ export function useNewSessionAgentAuthoringOptionsState(params: Readonly<{
             backendTargetKey: currentBackendTargetKey,
             value: {
                 modelMode: parsed?.ref.modelId ?? (isBundledAgentId(params.agentType)
-                    ? getAgentCore(params.agentType).model.defaultMode ?? 'default'
+                    ? getAgentCore(params.agentType).model?.defaultMode ?? 'default'
                     : 'default'),
                 modelSelection: parsed,
             },

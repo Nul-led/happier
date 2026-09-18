@@ -38,16 +38,18 @@ export function captureSessionAutomationAuthority(params: Readonly<{
         accountSettings?: Record<string, unknown> | null;
     }>;
 }>): SessionAutomationAuthority | null {
-    const sessionId = String(params.session?.id ?? '').trim();
-    const serverId = String(params.session?.serverId ?? '').trim();
+    const session = params.session;
+    const sessionId = String(session?.id ?? '').trim();
+    const serverId = String(session?.serverId ?? '').trim();
     if (
-        !sessionId
+        session == null
+        || !sessionId
         || !serverId
         || params.routeSessionId !== sessionId
         || (params.routeServerId != null && params.routeServerId !== serverId)
         || params.activeServerId !== serverId
         || params.automationsEnabled !== true
-        || !isAutomationSessionCandidate(params.session, params.accountSettings)
+        || !isAutomationSessionCandidate(session, params.accountSettings)
         || !params.accountLifetime?.isCurrent()
     ) return null;
 

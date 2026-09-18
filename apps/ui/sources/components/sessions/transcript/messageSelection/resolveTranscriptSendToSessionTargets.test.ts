@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 import { setServerProfileIdentityForUrl, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { resolveTranscriptSendToSessionTargets, type TranscriptSendToSessionTargetCandidate } from './resolveTranscriptSendToSessionTargets';
@@ -7,7 +8,7 @@ function candidate(input: Partial<TranscriptSendToSessionTargetCandidate> & Pick
     return {
         id: input.id,
         serverId: input.serverId ?? 'server-a',
-        accessLevel: input.accessLevel,
+        access: input.access === undefined ? createSessionAccessFixture() : input.access,
         metadata: input.metadata ?? {},
         meaningfulActivityAt: input.meaningfulActivityAt ?? null,
         updatedAt: input.updatedAt ?? 0,
@@ -22,9 +23,10 @@ describe('resolveTranscriptSendToSessionTargets', () => {
             sourceServerId: 'server-a',
             sessions: [
                 candidate({ id: 'source', updatedAt: 50 }),
-                candidate({ id: 'writable-edit', accessLevel: 'edit', updatedAt: 40 }),
-                candidate({ id: 'writable-owner', accessLevel: undefined, updatedAt: 30 }),
-                candidate({ id: 'read-only', accessLevel: 'view', updatedAt: 20 }),
+                candidate({ id: 'writable-edit', access: createSessionAccessFixture('edit'), updatedAt: 40 }),
+                candidate({ id: 'writable-owner', access: createSessionAccessFixture(), updatedAt: 30 }),
+                candidate({ id: 'unavailable', access: null }),
+                candidate({ id: 'read-only', access: createSessionAccessFixture('view'), updatedAt: 20 }),
                 candidate({ id: 'other-server', serverId: 'server-b', updatedAt: 10 }),
                 candidate({ id: 'hidden', metadata: { hiddenSystemSession: true }, updatedAt: 60 }),
             ],
@@ -54,21 +56,21 @@ describe('resolveTranscriptSendToSessionTargets', () => {
         ]);
     });
 
-    it('keeps writable destination sessions whose server id is equivalent to the source server identity', () => {
-        const profile = upsertServerProfile({
+    it('keeps writable destination sessions whose server id is equivalent to the source server identity', async () => {
+        const profile = await upsertServerProfile({
             serverUrl: 'https://send-targets.example.test',
             name: 'Send Targets',
             source: 'manual',
         });
-        setServerProfileIdentityForUrl(profile.serverUrl, 'srv_send_targets');
+        await setServerProfileIdentityForUrl(profile.serverUrl, 'srv_send_targets');
 
         const targets = resolveTranscriptSendToSessionTargets({
             sourceSessionId: 'source',
             sourceServerId: 'srv_send_targets',
             sessions: [
                 candidate({ id: 'source', serverId: profile.id }),
-                candidate({ id: 'same-server-profile-id', serverId: profile.id, accessLevel: 'edit', updatedAt: 40 }),
-                candidate({ id: 'different-server', serverId: 'server-b', accessLevel: 'edit', updatedAt: 30 }),
+                candidate({ id: 'same-server-profile-id', serverId: profile.id, access: createSessionAccessFixture('edit'), updatedAt: 40 }),
+                candidate({ id: 'different-server', serverId: 'server-b', access: createSessionAccessFixture('edit'), updatedAt: 30 }),
             ],
         });
 

@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { renderHook } from '@/dev/testkit';
+
+vi.mock('@/modal', () => ({ Modal: { alert: vi.fn() } }));
+vi.mock('@/text', () => ({ t: (key: string) => key }));
 
 import { useAttachmentDraftManager } from './useAttachmentDraftManager';
 
@@ -63,5 +66,27 @@ describe('useAttachmentDraftManager', () => {
 
         expect(hook.getCurrent().drafts).toEqual([]);
         expect(hook.getCurrent().getDraftRevisionSnapshot()).toBe(before + 1);
+    });
+
+    it('publishes the current process-local snapshot synchronously with each mutation', async () => {
+        const hook = await renderHook(() => useAttachmentDraftManager({
+            enabled: true,
+            maxFileBytes: 1024,
+        }));
+
+        const manager = hook.getCurrent();
+        const nextDraft = {
+            id: 'draft-immediate',
+            source: { kind: 'memory', name: 'instant.txt', bytes: new Uint8Array([1]) },
+            status: 'pending',
+        } as const;
+
+        await act(async () => {
+            manager.replaceDrafts([nextDraft]);
+            expect(manager.getDraftsSnapshot()).toEqual([nextDraft]);
+
+            manager.clearDrafts();
+            expect(manager.getDraftsSnapshot()).toEqual([]);
+        });
     });
 });

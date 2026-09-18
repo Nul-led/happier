@@ -49,7 +49,7 @@ describe('pendingQueueV2 Pending mutation equality tag on an E2EE session', () =
     ) => updatePendingMessageV2Impl({ ...params, outboxScope });
 
     beforeEach(() => {
-        resetPendingQueueState();
+        await resetPendingQueueState(outboxScope);
     });
 
     it('does not let the server confirm a candidate plaintext from the transmitted tag', async () => {
@@ -168,7 +168,7 @@ describe('pendingQueueV2 Pending mutation equality tag on an E2EE session', () =
         const encryption = await createPendingQueueEncryption({ sessionId });
 
         const tagFor = async (text: string): Promise<unknown> => {
-            resetPendingQueueState();
+            await resetPendingQueueState(outboxScope);
             storage.getState().applySessions([buildSession({ sessionId })]);
             storage.getState().upsertPendingMessage(sessionId, {
                 id: 'server-row-id',

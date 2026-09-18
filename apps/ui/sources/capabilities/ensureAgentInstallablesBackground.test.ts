@@ -523,5 +523,102 @@ describe('ensureAgentInstallablesBackground', () => {
 
             expect(machineCapabilitiesInvoke).not.toHaveBeenCalled();
         });
+        it('prewarms a declarative pinned-archive managed dependency the daemon projects', async () => {
+            const installId = 'dep.antigravity.agy-acp-server';
+            publishProjectedAgentUiBehaviorDescriptors({
+                machineId: 'machine-agy',
+                descriptorsByAgentId: {
+                    antigravity: {
+                        kind: 'plugin.ui.v1',
+                        pluginId: 'happier.agent.antigravity',
+                        agentId: 'antigravity',
+                        version: 1,
+                        behavior: { newSession: { relevantInstallableDepKeys: [installId] } },
+                    },
+                },
+            });
+
+            const pinnedArchiveProjection = {
+                ...codexAcpPluginProjection,
+                familiesById: {
+                    managedDependencies: {
+                        family: 'managedDependencies',
+                        entriesById: {
+                            [installId]: {
+                                id: installId,
+                                pluginId: 'happier.agent.antigravity',
+                                key: installId,
+                                capabilityId: installId,
+                                sourceKind: 'pinned_archive',
+                                display: { name: 'Antigravity ACP server' },
+                                defaultPolicy: {
+                                    autoInstallWhenNeeded: true,
+                                    autoUpdateMode: 'off',
+                                },
+                                experimental: true,
+                            },
+                        },
+                    },
+                },
+            } satisfies PluginProjectionV2;
+
+            const settings = settingsParse({} as any);
+            const prefetchMachineCapabilities = vi.fn(async () => {});
+            const machineCapabilitiesInvoke = vi.fn(
+                async (): Promise<MachineCapabilitiesInvokeResult> => ({
+                    supported: true,
+                    response: { ok: true, result: null },
+                }),
+            );
+            const getMachineCapabilitiesSnapshot = vi.fn(
+                (): MachineCapabilitiesSnapshot => ({
+                    response: {
+                        protocolVersion: 1 as const,
+                        results: {
+                            [installId]: {
+                                ok: true as const,
+                                checkedAt: Date.now(),
+                                data: {
+                                    installed: false,
+                                    installedVersion: null,
+                                    sourceKind: 'pinned_archive' as const,
+                                    lastInstallLogPath: null,
+                                    lastBackgroundUpdateCheckAtMs: null,
+                                },
+                            },
+                        },
+                    },
+                }),
+            );
+
+            await ensureAgentInstallablesBackground(
+                {
+                    agentId: 'antigravity',
+                    machineId: 'machine-agy',
+                    serverId: 's1',
+                    settings,
+                    resumeSessionId: '',
+                },
+                {
+                    prefetchMachineCapabilities,
+                    getMachineCapabilitiesSnapshot,
+                    machineCapabilitiesInvoke,
+                    loadDaemonMergedProjectionInputs: vi.fn(async () => ({
+                        mergedProviderProjectionById: {},
+                        mergedBackendProjectionById: {},
+                        discoveredBackendIds: [],
+                        pluginProjectionById: {},
+                        pluginProjectionV2: pinnedArchiveProjection,
+                        registryDiagnostics: [],
+                    })),
+                },
+            );
+
+            expect(machineCapabilitiesInvoke).toHaveBeenCalledWith(
+                'machine-agy',
+                expect.objectContaining({ id: installId, method: 'install' }),
+                expect.anything(),
+            );
+        });
     });
 });

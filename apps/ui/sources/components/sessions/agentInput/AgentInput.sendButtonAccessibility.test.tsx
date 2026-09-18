@@ -1453,3 +1453,120 @@ describe('AgentInput (send button accessibility)', () => {
         await screen.unmount();
     });
 });
+
+describe('AgentInput human typing presence', () => {
+    const cleanups: Array<() => void> = [];
+    afterEach(() => {
+        cleanups.splice(0).reverse().forEach((cleanup) => cleanup());
+    });
+
+    async function openComposer() {
+        const { AgentInput } = await import('./AgentInput');
+        const { SessionHumanPresenceVisibleReplaceV1Schema } = await import('@happier-dev/protocol');
+        const { attachSessionHumanPresenceSocket } = await import('@/sync/domains/session/humanPresence/sessionHumanPresenceRuntime');
+        const { markSessionSurfaceHidden, markSessionSurfaceVisible } = await import('@/sync/domains/session/sessionSurfaceVisibility');
+        const sent: unknown[] = [];
+        markSessionSurfaceVisible('typing-session', 'typing-home');
+        cleanups.push(() => markSessionSurfaceHidden('typing-session', 'typing-home'));
+        cleanups.push(attachSessionHumanPresenceSocket({
+            serverId: 'typing-home',
+            accountId: 'typing-self',
+            transport: {
+                isConnected: () => true,
+                subscribeStatus: () => () => {},
+                subscribeSnapshot: () => () => {},
+                sendWithAck: async (_event, payload) => ({
+                    v: 1,
+                    ok: true,
+                    admittedSessionIds: SessionHumanPresenceVisibleReplaceV1Schema.parse(payload).sessionIds,
+                }),
+                send: (event, payload) => {
+                    if (event === 'session-human-presence:typing-set') sent.push(payload);
+                },
+            },
+        }));
+        const initialProps = {
+            sessionId: 'typing-session',
+            sessionTypingPresence: { serverId: 'typing-home', canSubmitAgentInput: true },
+            value: 'Saved draft',
+            placeholder: 'Type',
+            onChangeText: () => {},
+            onSend: () => {},
+            autocompleteKinds: [],
+            autocompleteSuggestions: async () => [],
+        };
+        const screen = await renderScreen(<AgentInput {...initialProps} />);
+        const input = () => screen.root.findByProps({ testID: 'session-composer-input' });
+        const focus = async () => act(async () => { input().props.onFocus(); });
+        const edit = async (text: string) => act(async () => {
+            input().props.onStateChange({ text, selection: { start: text.length, end: text.length } });
+            input().props.onChangeText(text);
+        });
+        return { screen, sent, input, focus, edit, initialProps, AgentInput };
+    }
+
+    it('publishes only actual focused edits and clears on blur without transmitting draft content', async () => {
+        const { screen, sent, input, focus, edit, initialProps, AgentInput } = await openComposer();
+        expect(sent).toEqual([]);
+        await focus();
+        await screen.update(<AgentInput {...initialProps} value="Hydrated replacement" />);
+        await act(async () => {
+            input().props.onStateChange({ text: 'Hydrated replacement', selection: { start: 0, end: 0 } });
+        });
+        expect(sent).toEqual([]);
+        await edit('Private composing text');
+        expect(sent).toEqual([{ v: 1, sessionId: 'typing-session', typing: true }]);
+        await act(async () => { input().props.onBlur(); });
+        expect(sent.at(-1)).toEqual({ v: 1, sessionId: 'typing-session', typing: false });
+        await edit('Not focused');
+        expect(sent).toHaveLength(2);
+        await screen.unmount();
+    });
+
+    it.each(['clear', 'send', 'access loss', 'disabled', 'hidden', 'session change', 'unmount'] as const)(
+        'stops active typing on %s', async (reason) => {
+            const { screen, sent, focus, edit, initialProps, AgentInput } = await openComposer();
+            await focus();
+            await edit('Composing');
+            expect(sent.at(-1)).toEqual({ v: 1, sessionId: 'typing-session', typing: true });
+            if (reason === 'clear') await edit('   ');
+            if (reason === 'send') await screen.pressByTestIdAsync('session-composer-send');
+            if (reason === 'access loss') await screen.update(<AgentInput {...initialProps}
+                sessionTypingPresence={{ serverId: 'typing-home', canSubmitAgentInput: false }} />);
+            if (reason === 'disabled') await screen.update(<AgentInput {...initialProps} disabled />);
+            if (reason === 'hidden') await screen.update(<AgentInput {...initialProps} surfacePresented={false} />);
+            if (reason === 'session change') await screen.update(<AgentInput {...initialProps} sessionId="another-session" />);
+            if (reason === 'unmount') await screen.unmount();
+            expect(sent.at(-1)).toEqual({ v: 1, sessionId: 'typing-session', typing: false });
+            if (reason !== 'unmount') await screen.unmount();
+        },
+    );
+
+    it('never starts for view-only or sessionless composers', async () => {
+        const { screen, sent, focus, edit, initialProps, AgentInput } = await openComposer();
+        await screen.update(<AgentInput {...initialProps}
+            sessionTypingPresence={{ serverId: 'typing-home', canSubmitAgentInput: false }} />);
+        await focus();
+        await edit('Read-only');
+        expect(sent).toEqual([]);
+        await screen.update(<AgentInput {...initialProps} sessionId={undefined} />);
+        const input = screen.root.findByProps({ testID: 'new-session-composer-input' });
+        await act(async () => {
+            input.props.onFocus();
+            input.props.onStateChange({ text: 'New Session', selection: { start: 11, end: 11 } });
+        });
+        expect(sent).toEqual([]);
+        await screen.unmount();
+    });
+
+    it('keeps another active input typing when an idle composer for the same Session mounts and unmounts', async () => {
+        const { screen, sent, focus, edit, initialProps, AgentInput } = await openComposer();
+        await focus();
+        await edit('Active input');
+        const idle = await renderScreen(<AgentInput {...initialProps} value="" />);
+        await idle.unmount();
+        expect(sent).toEqual([{ v: 1, sessionId: 'typing-session', typing: true }]);
+        await screen.unmount();
+        expect(sent.at(-1)).toEqual({ v: 1, sessionId: 'typing-session', typing: false });
+    });
+});

@@ -9,6 +9,9 @@ import {
 } from '@happier-dev/protocol';
 
 import { AutomationPluralEditorScreen } from '@/components/automations/editor/AutomationPluralEditorScreen';
+import { WorkflowEditorBody, type WorkflowEditorView } from '@/components/workflows/screens/WorkflowEditorBody';
+import { useWorkflowsAvailability } from '@/components/workflows/gating/workflowsAvailability';
+import { useWorkflowAuthoringHost } from '@/components/workflows/screens/useWorkflowAuthoringHost';
 import {
     readPluginEventAutomationEditSeed,
     readPluginEventAutomationPrivateDetail,
@@ -40,27 +43,53 @@ import {
     createAutomationEditorLifetimeIdentity,
     isAutomationEditorLifetimeIdentityCurrent,
     createAutomationEditorTriggerClientId,
+    isAutomationWorkflowRecipe,
+    replaceAutomationEditorExecutionRecipe,
     requireAutomationEditorDraftIdentity,
     shouldValidateAutomationEditorLifecycleTrigger,
     type AutomationEditorDraft,
+    type AutomationEditorExecutionRecipe,
     type AutomationEditorTriggerDefinitionSeed,
 } from '@/sync/domains/automations/automationEditorDraft';
+import { buildAutomationRecipeFromSessionAuthoring, openAutomationRecipeForAuthoring } from '@/sync/domains/automations/automationRecipeAuthoring';
+import {
+    buildAutomationWorkflowRecipe,
+    openAutomationWorkflowRecipeForAuthoring,
+} from '@/sync/domains/workflows/automationWorkflowRecipe';
+import {
+    projectAutomationWorkflowRecipeToEditorDraft,
+    projectEditorDraftToLegacyAutomationRecipe,
+    projectLegacyAutomationRecipeToEditorDraft,
+    type AutomationWorkflowEditorOrigin,
+    type AutomationWorkflowEditorProjection,
+} from '@/sync/domains/workflows/automationRecipeWorkflowDraft';
+import { buildWorkflowScheduleSeed } from '@/sync/domains/workflows/workflowScheduleSeed';
+import {
+    firstBlockingWorkflowIssue,
+    resolveWorkflowSaveBlockedReason,
+    validateWorkflowEditorDraft,
+} from '@/sync/domains/workflows/workflowAuthoring';
+import {
+    describeWorkflowCommandBlockedReason,
+} from '@/components/workflows/presentation/workflowBlockedReasonText';
+import {
+    EMPTY_WORKFLOW_EDITOR_VIEW_STATE,
+    selectWorkflowBlock,
+    type WorkflowEditorDraft,
+    type WorkflowEditorViewState,
+} from '@/sync/domains/workflows/workflowEditorDraft';
+import type { WorkflowProjectTargetV1 } from '@happier-dev/protocol/workflows';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
 import { captureSessionAutomationAuthority } from '@/sync/domains/automations/sessionAutomationAuthority';
 import { isAutomationSessionCandidate } from '@/sync/domains/automations/isAutomationSessionCandidate';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { storage, useActiveServerAccountScope, useAutomation, useSessions, useSettings } from '@/sync/domains/state/storage';
+import { storage, useActiveServerAccountScope, useAllMachines, useAutomation, useSessions, useSettings } from '@/sync/domains/state/storage';
+import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
 import { navigateWithBlurOnWeb } from '@/utils/platform/deferOnWeb';
-import {
-    type ActiveUnsavedChangesGuard,
-    runUnsavedChangesGuard,
-} from '@/utils/navigation/runGuardedNavigation';
-import { useActiveUnsavedChangesGuard } from '@/utils/navigation/useActiveUnsavedChangesGuard';
-import { useUnsavedChangesBeforeRemoveGuard } from '@/utils/navigation/useUnsavedChangesBeforeRemoveGuard';
-import { promptUnsavedChangesAlert } from '@/utils/ui/promptUnsavedChangesAlert';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -131,6 +160,70 @@ function buildTriggerSeeds(params: Readonly<{
         });
     }
     return seeds;
+}
+
+/**
+ * Opens the saved recipe as the shared Workflow definition draft.
+ *
+ * Both recipe epochs reach one editor body: the released one-shot recipe is
+ * adapted into the canonical one-step definition, and a managed workflow recipe
+ * already is one. Decryption stays with the Account envelope owners; this
+ * function only chooses which of them to ask.
+ */
+async function openAutomationRecipeAsWorkflowDraft(params: Readonly<{
+    recipe: AutomationEditorExecutionRecipe;
+    draftId: string;
+    name: string;
+    machineId: string | null;
+    isCurrent: () => boolean;
+}>): Promise<AutomationWorkflowEditorProjection> {
+    const encryption = sync.encryption;
+    const recipe = params.recipe;
+    if (isAutomationWorkflowRecipe(recipe)) {
+        const stored = await openAutomationWorkflowRecipeForAuthoring({
+            recipe,
+            ...(encryption
+                ? { decryptRaw: (ciphertext: string) => encryption.decryptAutomationTemplateRaw(ciphertext) }
+                : {}),
+            isCurrent: params.isCurrent,
+        });
+        return projectAutomationWorkflowRecipeToEditorDraft({
+            draftId: params.draftId,
+            name: params.name,
+            stored,
+        });
+    }
+    const program = await openAutomationRecipeForAuthoring({
+        recipe,
+        ...(encryption
+            ? { decryptRaw: (ciphertext: string) => encryption.decryptAutomationTemplateRaw(ciphertext) }
+            : {}),
+        isCurrent: params.isCurrent,
+    });
+    return projectLegacyAutomationRecipeToEditorDraft({
+        draftId: params.draftId,
+        name: params.name,
+        program,
+        target: recipe.target,
+        machineId: params.machineId,
+    });
+}
+
+/**
+ * The Session an Automation's recipe already targets, if any.
+ *
+ * A managed workflow recipe has no one-shot target at all, so every reader goes
+ * through this guard rather than reaching for `recipe.target` on the union.
+ */
+function automationRecipeExistingSessionId(recipe: AutomationEditorExecutionRecipe): string | null {
+    if (isAutomationWorkflowRecipe(recipe)) return null;
+    return recipe.target.kind === 'existingSession' ? recipe.target.sessionId : null;
+}
+
+function resolveAutomationAssignmentMachineId(draft: AutomationEditorDraft): string | null {
+    return draft.assignments.find((assignment) => assignment.enabled)?.machineId
+        ?? draft.assignments[0]?.machineId
+        ?? null;
 }
 
 function appendExactTurnPrefill(
@@ -210,8 +303,7 @@ function replaceLifecycleRowsWithCurrentTurns(draft: AutomationEditorDraft): Aut
         );
         if (!current) return null;
         if (
-            draft.executionRecipe.target.kind === 'existingSession'
-            && draft.executionRecipe.target.sessionId === current.sourceSessionId
+            automationRecipeExistingSessionId(draft.executionRecipe) === current.sourceSessionId
         ) return null;
         if (current.sourceTurnId === definition.policy.sourceTurnId) {
             triggers.push(trigger);
@@ -256,6 +348,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
     );
     const exactTurnBindingRef = React.useRef(exactTurnBinding);
     exactTurnBindingRef.current = exactTurnBinding;
+    const workflows = useWorkflowsAvailability();
     const exactTurnSupport = useAutomationsSupport({
         scopeKind: 'spawn',
         serverId: exactTurnBinding?.sourceServerId ?? activeServer.serverId,
@@ -295,10 +388,23 @@ export function AutomationEditorHostScreen(props: Readonly<{
         exactTurnBinding?.sourceServerId,
         exactTurnBinding?.sourceSessionId,
     ]);
+    const machines = useAllMachines();
     const [draft, setDraft] = React.useState<AutomationEditorDraft | null>(null);
     const hydratedDraftRef = React.useRef<AutomationEditorDraft | null>(null);
+    // The shared Workflow definition draft this Automation edits, plus the
+    // recipe epoch it came from. The recipe itself is resealed only on Save.
+    const [workflowDraft, setWorkflowDraft] = React.useState<WorkflowEditorDraft | null>(null);
+    const hydratedWorkflowDraftRef = React.useRef<WorkflowEditorDraft | null>(null);
+    const latestWorkflowDraftRef = React.useRef<WorkflowEditorDraft | null>(null);
+    latestWorkflowDraftRef.current = workflowDraft;
+    const [recipeOrigin, setRecipeOrigin] = React.useState<AutomationWorkflowEditorOrigin | null>(null);
+    const [projectTarget, setProjectTarget] = React.useState<WorkflowProjectTargetV1 | null>(null);
+    const [convertToWorkflow, setConvertToWorkflow] = React.useState(false);
+    const [workflowView, setWorkflowView] = React.useState<WorkflowEditorView>('steps');
+    const [workflowSelection, setWorkflowSelection] = React.useState<WorkflowEditorViewState>(
+        EMPTY_WORKFLOW_EDITOR_VIEW_STATE,
+    );
     const [isDirty, setIsDirty] = React.useState(false);
-    const isDirtyRef = React.useRef(false);
     const [draftLifetimeIdentity, setDraftLifetimeIdentity] = React.useState<string | null>(null);
     const latestDraftRef = React.useRef(draft);
     latestDraftRef.current = draft;
@@ -318,11 +424,16 @@ export function AutomationEditorHostScreen(props: Readonly<{
         setHydrationState({ kind: 'loading' });
         setDraft(null);
         hydratedDraftRef.current = null;
-        isDirtyRef.current = false;
         setIsDirty(false);
         setDraftLifetimeIdentity(null);
         setEventEditSeeds(new Map());
         setStalePrefill(null);
+        setWorkflowDraft(null);
+        hydratedWorkflowDraftRef.current = null;
+        setRecipeOrigin(null);
+        setProjectTarget(null);
+        setConvertToWorkflow(false);
+        setWorkflowSelection(EMPTY_WORKFLOW_EDITOR_VIEW_STATE);
         void (async () => {
             const credentials = sync.getCredentials();
             if (!credentials || !accountLifetime) throw new Error('Automation Account is unavailable');
@@ -358,6 +469,27 @@ export function AutomationEditorHostScreen(props: Readonly<{
                 setHydrationState({ kind: 'privateUnavailable' });
                 return;
             }
+            // The stored recipe is private Account content: an unavailable
+            // envelope fails closed instead of opening an empty editor that
+            // would overwrite the saved program on Save.
+            let recipeProjection: AutomationWorkflowEditorProjection;
+            try {
+                recipeProjection = await openAutomationRecipeAsWorkflowDraft({
+                    recipe: hydrated.executionRecipe,
+                    draftId: `automation-${props.automationId}`,
+                    name: hydrated.name,
+                    machineId: resolveAutomationAssignmentMachineId(hydrated),
+                    isCurrent: () => alive
+                        && accountLifetime.isCurrent()
+                        && capturedIdentity === editorLifetimeIdentity,
+                });
+            } catch {
+                if (alive && accountLifetime.isCurrent() && capturedIdentity === editorLifetimeIdentity) {
+                    setHydrationState({ kind: 'privateUnavailable' });
+                }
+                return;
+            }
+            if (!alive || !accountLifetime.isCurrent() || capturedIdentity !== editorLifetimeIdentity) return;
             const observed = exactTurnBindingRef.current;
             const current = observed
                 ? readExactActiveParentTurn(storage.getState().sessions[observed.sourceSessionId])
@@ -386,8 +518,11 @@ export function AutomationEditorHostScreen(props: Readonly<{
                 // onto that baseline, so adding or merging its Event remains
                 // unsaved and participates in Cancel/beforeRemove guards.
                 hydratedDraftRef.current = hydrated;
-                isDirtyRef.current = withPrefill !== hydrated;
-                setIsDirty(isDirtyRef.current);
+                hydratedWorkflowDraftRef.current = recipeProjection.draft;
+                setWorkflowDraft(recipeProjection.draft);
+                setRecipeOrigin(recipeProjection.origin);
+                setProjectTarget(recipeProjection.project);
+                setIsDirty(withPrefill !== hydrated);
                 setDraft(withPrefill);
                 setHydrationState({ kind: 'ready' });
             }
@@ -413,14 +548,201 @@ export function AutomationEditorHostScreen(props: Readonly<{
         sessionId: session.id,
         label: getSessionName(session),
         currentParentTurnId: readExactActiveParentTurn(session)?.sourceTurnId ?? null,
-        selectable: draft?.executionRecipe.target.kind !== 'existingSession'
-            || draft.executionRecipe.target.sessionId !== session.id,
-    })), [activeServer.serverId, draft?.executionRecipe.target, sessions, settings]);
+        selectable: draft === null
+            || automationRecipeExistingSessionId(draft.executionRecipe) !== session.id,
+    })), [activeServer.serverId, draft, sessions, settings]);
+    const workflowMachineName = React.useMemo(() => {
+        const machineId = projectTarget?.machineId ?? null;
+        if (machineId === null) return null;
+        const machine = machines.find((candidate) => candidate.id === machineId);
+        return machine === undefined ? machineId : getMachineDisplayName(machine);
+    }, [machines, projectTarget?.machineId]);
+    // The same host adapter the neutral editor uses, so editing an Automation's
+    // recipe offers the same Agent options and prompt reference scope.
+    const authoringHost = useWorkflowAuthoringHost({
+        projectTarget,
+        serverId: activeServer.serverId ?? null,
+    });
     const eventAuthoringMachineId = React.useMemo(() => (
         draft?.assignments.find((assignment) => assignment.enabled)?.machineId
         ?? draft?.assignments[0]?.machineId
         ?? null
     ), [draft?.assignments]);
+
+    // A one-shot Automation keeps its released recipe while the author only
+    // edits what that recipe can express. This probe names the first change
+    // that needs the workflow format, so the consequence is stated before Save
+    // rather than discovered as a silently converted execution semantics.
+    const legacyWriteBackProbe = React.useMemo(() => (
+        recipeOrigin?.kind === 'legacy'
+            && workflowDraft !== null
+            && workflowDraft !== hydratedWorkflowDraftRef.current
+            ? projectEditorDraftToLegacyAutomationRecipe({
+                draft: workflowDraft,
+                target: recipeOrigin.target,
+                // Representability only; the committed write stamps its own time.
+                configurationUpdatedAtMs: 0,
+            })
+            : null
+    ), [recipeOrigin, workflowDraft]);
+    // An empty prompt is ordinary repairable authoring, not a reason to change
+    // how this Automation executes.
+    const promptRequired = legacyWriteBackProbe?.kind === 'unavailable'
+        && legacyWriteBackProbe.reason === 'prompt_required';
+    const conversionRequired = legacyWriteBackProbe?.kind === 'unavailable'
+        && !promptRequired
+        && !convertToWorkflow;
+    const projectUnresolved = projectTarget === null || projectTarget.directory.trim().length === 0;
+    const workflowRecipeSelected = recipeOrigin?.kind === 'workflow' || convertToWorkflow;
+    // A managed workflow recipe answers to the same canonical draft validation
+    // as the neutral editor and the create wrapper: Save is refused up front,
+    // with the body naming the exact issue inline, rather than accepted and
+    // then failed by the scheduling seed. The Automation's own name is the
+    // definition's name here, so an unnamed workflow copy is not a reason.
+    const workflowSaveEligibility = React.useMemo(() => {
+        if (workflowDraft === null || !workflowRecipeSelected) return { reason: null, blockingIssue: null };
+        const named = { ...workflowDraft, name: draft?.name.trim() || workflowDraft.name };
+        const validation = validateWorkflowEditorDraft(named);
+        return {
+            reason: resolveWorkflowSaveBlockedReason({ draft: named, validation }),
+            // The exact issue the reason refers to, so the refusal can name it
+            // rather than repeating a generic "invalid".
+            blockingIssue: firstBlockingWorkflowIssue(validation),
+        };
+    }, [draft?.name, workflowDraft, workflowRecipeSelected]);
+    const workflowSaveBlockedReason = workflowSaveEligibility.reason;
+    const workflowSaveBlockingIssue = workflowSaveEligibility.blockingIssue;
+    // The canonical Workflows decision is the sole authority for structured
+    // Workflow authoring, and `automations` is never a proxy for it. A one-shot
+    // Automation therefore stays fully editable here, while adopting the
+    // workflow contract — and editing an already-managed workflow definition —
+    // needs the decision Workflow Run admission also answers to.
+    /**
+     * The exact blocker Save is refused for, named once.
+     *
+     * Nothing is revalidated here: each term is the same already-resolved fact
+     * the boolean was built from, and the boolean is now derived from this so
+     * an inert Save and its explanation cannot disagree.
+     */
+    const submitBlockedReason = React.useMemo<string | null>(() => {
+        // The Automation's own name is the definition's name here, so the
+        // canonical Save-eligibility owner already names this exact blocker.
+        if (!draft?.name.trim()) return t('workflows.save.nameRequired');
+        if (promptRequired) return describeWorkflowCommandBlockedReason({
+            reason: 'definition_invalid',
+            blockingIssue: { code: 'invalid_input' },
+        });
+        if (conversionRequired) return t('workflows.conversion.body');
+        if (convertToWorkflow && projectUnresolved) return t('workflows.conversion.machineRequired');
+        return describeWorkflowCommandBlockedReason({
+            reason: workflowSaveBlockedReason,
+            blockingIssue: workflowSaveBlockingIssue,
+        });
+    }, [
+        conversionRequired,
+        convertToWorkflow,
+        draft?.name,
+        promptRequired,
+        projectUnresolved,
+        workflowSaveBlockedReason,
+        workflowSaveBlockingIssue,
+    ]);
+
+    const conversionUnavailable = conversionRequired && !workflows.available;
+    const savedWorkflowRecipeUnavailable = recipeOrigin?.kind === 'workflow' && !workflows.available;
+
+    const prepareDraftForSave = React.useCallback(async (params: Readonly<{
+        draft: AutomationEditorDraft;
+        workflowDraft: WorkflowEditorDraft | null;
+        isCurrent: () => boolean;
+    }>): Promise<AutomationEditorDraft | null> => {
+        const origin = recipeOrigin;
+        const workflow = params.workflowDraft;
+        if (origin === null || workflow === null) return params.draft;
+        if (workflow === hydratedWorkflowDraftRef.current && !convertToWorkflow) return params.draft;
+        // Only a recipe write reaches here. A managed workflow recipe — whether
+        // already stored or newly adopted — is refused rather than resealed
+        // when the canonical Workflows decision does not authorize it, and the
+        // stored definition is never rewritten into the one-shot arm to fit.
+        if ((origin.kind === 'workflow' || convertToWorkflow) && !workflows.available) {
+            await Modal.alert(t('workflows.unavailable.title'), t('workflows.unavailable.body'));
+            return null;
+        }
+        const credentials = sync.getCredentials();
+        if (!credentials) return null;
+        const encryption = sync.encryption;
+        const templateVersion = (params.draft.expectedTemplateVersion === null
+            ? params.draft.executionRecipe.templateVersion
+            : params.draft.expectedTemplateVersion + 1);
+
+        if (origin.kind === 'legacy' && !convertToWorkflow) {
+            const writeBack = projectEditorDraftToLegacyAutomationRecipe({
+                draft: workflow,
+                target: origin.target,
+                configurationUpdatedAtMs: Date.now(),
+            });
+            // The visible conversion card already owns this explanation.
+            if (writeBack.kind !== 'available') return null;
+            const recipe = await buildAutomationRecipeFromSessionAuthoring({
+                credentials,
+                templateVersion,
+                prompt: writeBack.prompt,
+                mentions: writeBack.mentions,
+                target: writeBack.target,
+                ...(encryption
+                    ? { encryptRaw: (value: unknown) => encryption.encryptAutomationTemplateRaw(value) }
+                    : {}),
+                isCurrent: params.isCurrent,
+            });
+            return replaceAutomationEditorExecutionRecipe(params.draft, recipe);
+        }
+
+        const project = projectTarget;
+        if (project === null || project.directory.trim().length === 0) {
+            await Modal.alert(t('workflows.conversion.title'), t('workflows.conversion.machineRequired'));
+            return null;
+        }
+        const reviewed = buildWorkflowScheduleSeed({
+            draft: { ...workflow, name: params.draft.name.trim() || workflow.name },
+            project,
+            saved: origin.kind === 'workflow' && origin.source && hydratedWorkflowDraftRef.current
+                ? {
+                    definitionId: origin.source.definitionId,
+                    revision: origin.source.revision,
+                    definition: hydratedWorkflowDraftRef.current,
+                }
+                : null,
+        });
+        if (reviewed.kind !== 'available') {
+            await Modal.alert(
+                t('common.error'),
+                // The editor body shows the exact per-block issue inline; this
+                // last-resort alert states only that the save did not happen.
+                t('automations.edit.updateFailed'),
+            );
+            return null;
+        }
+        const recipe = await buildAutomationWorkflowRecipe({
+            credentials,
+            automationId: requireAutomationEditorDraftIdentity(params.draft),
+            templateVersion,
+            seed: reviewed.seed,
+            ...(encryption
+                ? { encryptRaw: (value: unknown) => encryption.encryptAutomationTemplateRaw(value) }
+                : {}),
+            isCurrent: params.isCurrent,
+        });
+        const next = replaceAutomationEditorExecutionRecipe(params.draft, recipe);
+        // One workflow runs on exactly one machine. An assignment that already
+        // names it keeps its priority; anything else adopts the reviewed
+        // placement the author selected above.
+        const assignment = next.assignments.length === 1 ? next.assignments[0] : undefined;
+        return assignment !== undefined
+            && assignment.machineId === project.machineId
+            && assignment.enabled !== false
+            ? next
+            : { ...next, assignments: [{ machineId: project.machineId, enabled: true, priority: 100 }] };
+    }, [convertToWorkflow, projectTarget, recipeOrigin, workflows.available]);
 
     const handleSave = React.useCallback(async (draftOverride?: AutomationEditorDraft): Promise<boolean> => {
         const capturedDraft = draftOverride ?? latestDraftRef.current;
@@ -513,17 +835,24 @@ export function AutomationEditorHostScreen(props: Readonly<{
             }
             return false;
         }
+        const capturedWorkflowDraft = latestWorkflowDraftRef.current;
         const isCurrent = () => mountedRef.current
             && accountLifetime.isCurrent()
             && capturedDraftLifetimeIdentity === editorLifetimeIdentity
             && exactTurnAuthorityIsCurrent()
             && lifecycleAuthoritiesAreCurrent()
-            && latestDraftRef.current === capturedDraft;
+            && latestDraftRef.current === capturedDraft
+            && latestWorkflowDraftRef.current === capturedWorkflowDraft;
         setSubmitting(true);
         try {
-            const saved = await sync.saveAutomationEditorDraft(capturedDraft, { isCurrent });
+            const prepared = await prepareDraftForSave({
+                draft: capturedDraft,
+                workflowDraft: capturedWorkflowDraft,
+                isCurrent,
+            });
+            if (prepared === null) return false;
+            const saved = await sync.saveAutomationEditorDraft(prepared, { isCurrent });
             if (isCurrent()) {
-                isDirtyRef.current = false;
                 setIsDirty(false);
                 navigateWithBlurOnWeb(() => router.replace(`/automations/${saved.id}` as never));
                 return true;
@@ -554,56 +883,20 @@ export function AutomationEditorHostScreen(props: Readonly<{
             if (mountedRef.current) setSubmitting(false);
         }
         return false;
-    }, [draftLifetimeIdentity, editorLifetimeIdentity, exactTurnAuthority, exactTurnBinding, props.automationId, router, submitting]);
+    }, [draftLifetimeIdentity, editorLifetimeIdentity, exactTurnAuthority, exactTurnBinding, prepareDraftForSave, props.automationId, router, submitting]);
 
-    const requestUnsavedChangesDecision = React.useCallback(() => promptUnsavedChangesAlert(
-        (title, message, buttons) => Modal.alert(title, message, buttons),
-        {
-            title: t('common.discardChanges'),
-            message: t('common.unsavedChangesWarning'),
-            discardText: t('common.discard'),
-            saveText: t('common.save'),
-            keepEditingText: t('common.keepEditing'),
-        },
-    ), []);
-    const discardDraft = React.useCallback(() => {
-        isDirtyRef.current = false;
-        setIsDirty(false);
-    }, []);
-    const unsavedChangesGuard = React.useMemo<ActiveUnsavedChangesGuard>(() => ({
-        isDirtyRef,
-        requestDecision: requestUnsavedChangesDecision,
-        onDiscard: discardDraft,
-        onSave: handleSave,
-        continueOnSave: false,
-        tag: 'AutomationEditorHostScreen.beforeRemove',
-    }), [discardDraft, handleSave, requestUnsavedChangesDecision]);
-    const continueNavigation = React.useCallback((action: unknown) => {
-        const dispatch = (navigation as { dispatch?: (nextAction: unknown) => void } | null)?.dispatch;
-        if (action && typeof dispatch === 'function') {
-            dispatch(action);
-            return;
-        }
-        router.back();
-    }, [navigation, router]);
-    useUnsavedChangesBeforeRemoveGuard({
-        isDirty,
-        isDirtyRef,
-        requestDecision: requestUnsavedChangesDecision,
-        onDiscard: discardDraft,
-        onSave: handleSave,
-        continueOnSave: false,
-        onContinue: continueNavigation,
-        tag: unsavedChangesGuard.tag,
-    });
-    useActiveUnsavedChangesGuard({
+    const discardDraft = React.useCallback(() => { setIsDirty(false); }, []);
+    const leaveEditor = React.useCallback(() => { router.back(); }, [router]);
+    // One departure contract for Cancel, native Back, the shell and unload.
+    const unsavedChangesGuard = useUnsavedDraftNavigationGuard({
         navigation,
-        guard: unsavedChangesGuard,
-        enabled: isDirty,
+        isDirty,
+        onDiscard: discardDraft,
+        onSave: handleSave,
+        onLeave: leaveEditor,
+        tag: 'AutomationEditorHostScreen.beforeRemove',
     });
-    const handleCancel = React.useCallback(() => {
-        void runUnsavedChangesGuard(unsavedChangesGuard, () => router.back());
-    }, [router, unsavedChangesGuard]);
+    const handleCancel = unsavedChangesGuard.requestLeave;
 
     // Explicit "Use current turn": the only path that mutates the mounted
     // binding. It advances just the exact lifecycle row(s) through the
@@ -636,8 +929,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
         }
         const appended = appendExactTurnPrefill(retargeted, recovered);
         setDraft(appended);
-        isDirtyRef.current = appended !== hydratedDraftRef.current;
-        setIsDirty(isDirtyRef.current);
+        setIsDirty(appended !== hydratedDraftRef.current);
         setStalePrefill(null);
         setExactTurnBinding(recovered);
         // Route params remain URL truth only; the mounted draft above was the
@@ -694,65 +986,138 @@ export function AutomationEditorHostScreen(props: Readonly<{
 
     return (
         <View style={stylesheet.root}>
-            {/* The plural editor is a form with focusable name, description,
-                prompt, and trigger fields, so it uses the list's shared native
-                keyboard owner instead of letting the keyboard cover them. */}
-            <ItemList style={{ paddingTop: 0 }} keyboardAware>
-                <View style={stylesheet.content}>
-                    {stalePrefill ? (
-                        <SurfaceStateCard
-                            testID="automation-edit-exact-turn-stale"
-                            kind="warning"
-                            title={t('automations.exactTurn.staleTitle')}
-                            reason={t('automations.exactTurn.staleBody')}
-                            action={{
-                                label: t('automations.exactTurn.useCurrentTurn'),
-                                onPress: () => { void adoptCurrentTurn(); },
-                            }}
-                            accessibilitySemantics="alert"
-                        />
-                    ) : null}
-                    <AutomationPluralEditorScreen
-                        variant="edit"
-                        value={draft}
-                        onChange={(next) => {
-                            setDraft(next);
-                            if (next !== hydratedDraftRef.current) {
-                                isDirtyRef.current = true;
-                                setIsDirty(true);
-                            }
+            {/* The shared editor owns the keyboard-aware page scroll and the
+                pinned Save; a host scroll around it would nest two owners. */}
+            <AutomationPluralEditorScreen
+                variant="edit"
+                leading={stalePrefill ? (
+                    <SurfaceStateCard
+                        testID="automation-edit-exact-turn-stale"
+                        kind="warning"
+                        title={t('automations.exactTurn.staleTitle')}
+                        reason={t('automations.exactTurn.staleBody')}
+                        action={{
+                            label: t('automations.exactTurn.useCurrentTurn'),
+                            onPress: () => { void adoptCurrentTurn(); },
                         }}
-                        sessionOptions={sessionOptions}
-                        resolveCurrentSessionTurn={(sessionId) => {
-                            const candidate = storage.getState().sessions[sessionId];
-                            if (!candidate || !isAutomationSessionCandidate(candidate, storage.getState().settings)) return null;
-                            const current = readExactActiveParentTurn(candidate);
-                            return current ? {
-                                sourceSessionId: current.sourceSessionId,
-                                sourceTurnId: current.sourceTurnId,
-                            } : null;
-                        }}
-                        onSessionSelectionStale={() => { void sync.refreshSessions(); }}
-                        renderPluginEventEditor={(editorProps) => (
-                            <PluginEventAutomationEditor
-                                key={editorProps.clientId}
-                                automationId={requireAutomationEditorDraftIdentity(draft)}
-                                clientId={editorProps.clientId}
-                                value={editorProps.value}
-                                seed={eventEditSeeds.get(editorProps.clientId) ?? null}
-                                authoringMachineId={eventAuthoringMachineId}
-                                serverId={getActiveServerSnapshot().serverId ?? null}
-                                onComplete={editorProps.onComplete}
-                                onCancel={editorProps.onCancel}
-                            />
-                        )}
-                        onSubmit={(submittedDraft) => { void handleSave(submittedDraft); }}
-                        onCancel={handleCancel}
-                        submitting={submitting}
-                        submitDisabled={!draft.name.trim()}
+                        accessibilitySemantics="alert"
                     />
-                </View>
-            </ItemList>
+                ) : null}
+                value={draft}
+                onChange={(next) => {
+                    setDraft(next);
+                    if (next !== hydratedDraftRef.current) setIsDirty(true);
+                }}
+                sessionOptions={sessionOptions}
+                resolveCurrentSessionTurn={(sessionId) => {
+                    const candidate = storage.getState().sessions[sessionId];
+                    if (!candidate || !isAutomationSessionCandidate(candidate, storage.getState().settings)) return null;
+                    const current = readExactActiveParentTurn(candidate);
+                    return current ? {
+                        sourceSessionId: current.sourceSessionId,
+                        sourceTurnId: current.sourceTurnId,
+                    } : null;
+                }}
+                onSessionSelectionStale={() => { void sync.refreshSessions(); }}
+                renderPluginEventEditor={(editorProps) => (
+                    <PluginEventAutomationEditor
+                        key={editorProps.clientId}
+                        automationId={requireAutomationEditorDraftIdentity(draft)}
+                        clientId={editorProps.clientId}
+                        value={editorProps.value}
+                        seed={eventEditSeeds.get(editorProps.clientId) ?? null}
+                        authoringMachineId={eventAuthoringMachineId}
+                        serverId={getActiveServerSnapshot().serverId ?? null}
+                        onComplete={editorProps.onComplete}
+                        onCancel={editorProps.onCancel}
+                    />
+                )}
+                onSubmit={(submittedDraft) => { void handleSave(submittedDraft); }}
+                onCancel={handleCancel}
+                submitting={submitting}
+                // Derived from the named reason so an inert Save and the
+                // sentence beside it cannot disagree.
+                submitDisabled={submitBlockedReason !== null}
+                submitDisabledReason={submitBlockedReason}
+                recipeEditor={workflowDraft === null ? null : savedWorkflowRecipeUnavailable ? (
+                    /* The stored workflow definition stays exactly as
+                       saved: it is not opened for editing here, and it
+                       is never rewritten into a one-shot recipe to make
+                       it representable. Automation metadata and
+                       triggers remain editable above. */
+                    <SurfaceStateCard
+                        testID="automation-editor-workflow-recipe-unavailable"
+                        kind="unavailable"
+                        title={t('workflows.unavailable.title')}
+                        reason={t('workflows.unavailable.savedAutomation')}
+                    />
+                ) : (
+                    <>
+                        {conversionUnavailable ? (
+                            /* The reason is stated, but the conversion
+                               offer is not: adopting the workflow
+                               contract is exactly what the canonical
+                               decision does not authorize. */
+                            <SurfaceStateCard
+                                testID="automation-editor-workflows-unavailable"
+                                kind="warning"
+                                title={t('workflows.conversion.title')}
+                                reason={t('workflows.unavailable.conversion')}
+                                accessibilitySemantics="alert"
+                            />
+                        ) : conversionRequired ? (
+                            <SurfaceStateCard
+                                testID="automation-editor-workflow-conversion-required"
+                                kind="warning"
+                                title={t('workflows.conversion.title')}
+                                reason={t('workflows.conversion.body')}
+                                action={{
+                                    label: t('workflows.conversion.action'),
+                                    onPress: () => setConvertToWorkflow(true),
+                                }}
+                                accessibilitySemantics="alert"
+                            />
+                        ) : null}
+                        {convertToWorkflow && projectUnresolved ? (
+                            <SurfaceStateCard
+                                testID="automation-editor-workflow-machine-required"
+                                kind="warning"
+                                title={t('workflows.conversion.title')}
+                                reason={t('workflows.conversion.machineRequired')}
+                                accessibilitySemantics="alert"
+                            />
+                        ) : null}
+                        <WorkflowEditorBody
+                            draft={workflowDraft}
+                            authoringFacts={authoringHost.authoringFacts}
+                            existingSessions={authoringHost.existingSessions}
+                            composerScope={authoringHost.composerScope}
+                            onChange={(next) => {
+                                setWorkflowDraft(next);
+                                if (next !== hydratedWorkflowDraftRef.current) setIsDirty(true);
+                            }}
+                            machineName={workflowMachineName}
+                            projectTarget={projectTarget}
+                            {...(workflowRecipeSelected ? {
+                                projectMachines: machines,
+                                onChangeProjectTarget: setProjectTarget,
+                            } : {})}
+                            selectedBlockId={workflowSelection.selectedBlockId}
+                            onSelectBlock={(blockId) => setWorkflowSelection((current) => (
+                                selectWorkflowBlock(current, blockId)
+                            ))}
+                            onCustomizeBlock={(blockId) => setWorkflowSelection((current) => (
+                                selectWorkflowBlock(current, blockId)
+                            ))}
+                            view={workflowView}
+                            onChangeView={setWorkflowView}
+                            primaryAction="save"
+                            showNameField={false}
+                            testIDPrefix="automation-workflow-definition"
+                        />
+                    </>
+                )}
+            />
         </View>
     );
 }

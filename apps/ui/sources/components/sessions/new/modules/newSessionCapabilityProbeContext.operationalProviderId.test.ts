@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 
 import { resolveNewSessionOperationalProviderId } from './newSessionCapabilityProbeContext';
 
@@ -40,7 +40,7 @@ describe('resolveNewSessionOperationalProviderId', () => {
 
     it('resolves a bundled Agent carrier to its bundled agent id', () => {
         expect(resolveNewSessionOperationalProviderId({
-            backendTarget: { kind: 'agent', identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES.claude },
+            backendTarget: { kind: 'agent', identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude },
             runtimeCarrierAgentId: 'claude',
         })).toBe('claude');
     });

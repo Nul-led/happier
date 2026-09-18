@@ -1,5 +1,6 @@
 import React from 'react';
-import { Pressable, View } from 'react-native';
+import * as Sharing from 'expo-sharing';
+import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Typography } from '@/constants/Typography';
@@ -13,6 +14,9 @@ import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { Icon } from '@/components/ui/icons/Icon';
+import { downloadWebFile } from '@/sync/runtime/files/downloadWebFile';
+import { createNativeCacheFileSink } from '@/sync/runtime/files/nativeCacheFileSink';
+import { encodeBase64 } from '@/encryption/base64';
 
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -76,7 +80,9 @@ const stylesheet = StyleSheet.create((theme) => ({
 }));
 
 type Props = CustomModalInjectedProps & Readonly<{
-    secret: string;
+    secret: string | Uint8Array;
+    onSaved?: () => void | Promise<void>;
+    onDefer?: () => void | Promise<void>;
 }>;
 
 export function SecretKeyBackupModal(props: Props) {
@@ -86,8 +92,16 @@ export function SecretKeyBackupModal(props: Props) {
     const [revealed, setRevealed] = React.useState(false);
     const copyFeedback = useTemporaryCopyFeedback();
 
-    const formattedSecret = React.useMemo(() => formatSecretKeyForBackup(props.secret), [props.secret]);
+    const secretText = React.useMemo(
+        () => typeof props.secret === 'string' ? props.secret : encodeBase64(props.secret, 'base64url'),
+        [props.secret],
+    );
+    const formattedSecret = React.useMemo(() => formatSecretKeyForBackup(secretText), [secretText]);
     const maskedSecret = React.useMemo(() => formattedSecret.replace(/[A-Za-z0-9]/g, '•'), [formattedSecret]);
+
+    React.useEffect(() => () => {
+        if (props.secret instanceof Uint8Array) props.secret.fill(0);
+    }, [props.secret]);
 
     const handleCopy = React.useCallback(async () => {
         const copied = await setClipboardStringSafe(formattedSecret);
@@ -98,11 +112,43 @@ export function SecretKeyBackupModal(props: Props) {
         copyFeedback.markCopied();
     }, [copyFeedback, formattedSecret]);
 
+    const handleExport = React.useCallback(async () => {
+        const contents = `${formattedSecret}\n`;
+        try {
+            if (Platform.OS === 'web') {
+                downloadWebFile(new Blob([contents], { type: 'text/plain;charset=utf-8' }), 'happier-recovery-key.txt', async () => {});
+                return;
+            }
+            const sink = await createNativeCacheFileSink({
+                directoryName: 'happier-recovery-key',
+                fileName: 'happier-recovery-key.txt',
+            });
+            if (!sink.ok) throw new Error(sink.error);
+            try {
+                await sink.writeBytes(new TextEncoder().encode(contents));
+                await sink.close();
+                if (!await Sharing.isAvailableAsync()) throw new Error('sharing_unavailable');
+                await Sharing.shareAsync(sink.fileUri, { mimeType: 'text/plain' });
+            } finally {
+                await sink.cleanup();
+            }
+        } catch {
+            Modal.alert(t('common.error'), t('settingsAccount.secretKeyCopyFailed'));
+        }
+    }, [formattedSecret]);
+
+    const finish = React.useCallback(async (kind: 'saved' | 'later') => {
+        if (kind === 'saved') await props.onSaved?.();
+        else await props.onDefer?.();
+        props.onClose();
+    }, [props.onClose, props.onDefer, props.onSaved]);
+
     const footer = React.useMemo(() => (
-        <View style={styles.footerContent}>
-            <RoundButton title={t('common.ok')} onPress={props.onClose} size="normal" />
+        <View style={[styles.footerContent, { gap: 8 }]}>
+            <RoundButton testID="recovery-key-saved" title={t('settingsApiTokens.reveal.savedIt')} onPress={() => finish('saved')} size="normal" />
+            <RoundButton testID="recovery-key-later" title={t('settingsAccount.nativePassword.recoveryKeyLater')} onPress={() => finish('later')} size="normal" />
         </View>
-    ), [props.onClose]);
+    ), [finish]);
 
     const chrome = React.useMemo(() => ({
         kind: 'card' as const,
@@ -142,10 +188,16 @@ export function SecretKeyBackupModal(props: Props) {
                     {copyFeedback.isCopied() ? (
                         <CopiedPill visible testID="secret-key-backup-copy-feedback" />
                     ) : (
-                        <RoundButton title={t('common.copy')} onPress={handleCopy} size="normal" />
+                        <RoundButton testID="recovery-key-copy" title={t('common.copy')} onPress={handleCopy} size="normal" />
                     )}
                 </View>
             </View>
+            <RoundButton
+                testID="recovery-key-download"
+                title={Platform.OS === 'web' ? t('settingsAccount.nativePassword.recoveryKeyDownload') : t('common.share')}
+                onPress={handleExport}
+                size="normal"
+            />
         </View>
     );
 }

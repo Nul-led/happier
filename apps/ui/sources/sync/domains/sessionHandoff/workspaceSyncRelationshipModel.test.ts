@@ -217,5 +217,76 @@ describe('projectWorkspaceSyncRelationships', () => {
             'forward-one-way',
             'reverse-two-way',
         ]);
+
+        expect(selectWorkspaceSyncRelationshipSummariesForHandoff(summaries, {
+            source: { serverId: 'server-1', machineId: 'machine-source', rootPath: '/Users/tester/repo/packages/app' },
+            target: { serverId: 'server-1', machineId: 'machine-target', rootPath: 'c:/repos/target' },
+        }).map((summary) => summary.relationshipId)).toEqual([
+            'forward-one-way',
+            'reverse-two-way',
+        ]);
+
+        expect(selectWorkspaceSyncRelationshipSummariesForHandoff(summaries, {
+            source: { serverId: 'server-1', machineId: 'machine-target', rootPath: 'C:\\Repos\\Target\\packages\\app' },
+            target: { serverId: 'server-1', machineId: 'machine-source', rootPath: '/Users/tester/repo' },
+        }).map((summary) => summary.relationshipId)).toEqual([
+            'reverse-one-way',
+            'reverse-two-way',
+        ]);
+
+        const nonMatchingScopes = [
+            {
+                source: { serverId: 'server-1', machineId: 'machine-source', rootPath: '/Users/tester/repository' },
+                target: { serverId: 'server-1', machineId: 'machine-target', rootPath: 'c:/repos/target' },
+            },
+            {
+                source: { serverId: 'server-2', machineId: 'machine-source', rootPath: '/Users/tester/repo/packages/app' },
+                target: { serverId: 'server-1', machineId: 'machine-target', rootPath: 'c:/repos/target' },
+            },
+            {
+                source: { serverId: 'server-1', machineId: 'machine-other', rootPath: '/Users/tester/repo/packages/app' },
+                target: { serverId: 'server-1', machineId: 'machine-target', rootPath: 'c:/repos/target' },
+            },
+            {
+                source: { serverId: 'server-1', machineId: 'machine-source', rootPath: '/Users/tester' },
+                target: { serverId: 'server-1', machineId: 'machine-target', rootPath: 'c:/repos/target' },
+            },
+            {
+                source: { serverId: 'server-1', machineId: 'machine-source', rootPath: '/Users/tester/repo/packages/app' },
+                target: { serverId: 'server-1', machineId: 'machine-target', rootPath: 'c:/repos/target/nested' },
+            },
+        ];
+
+        for (const scopes of nonMatchingScopes) {
+            expect(selectWorkspaceSyncRelationshipSummariesForHandoff(summaries, scopes)).toEqual([]);
+        }
+
+        const allFilesPolicyFields = { ...policyFields, selection: 'all_files' as const };
+        const allFilesSummaries = summaries.map((summary) => ({
+            ...summary,
+            relationship: {
+                ...summary.relationship,
+                contentPolicy: {
+                    ...allFilesPolicyFields,
+                    policyDigest: computeWorkspaceSyncPolicyDigest(allFilesPolicyFields),
+                },
+            },
+        }));
+        expect(selectWorkspaceSyncRelationshipSummariesForHandoff(allFilesSummaries, {
+            source: { serverId: 'server-1', machineId: 'machine-source', rootPath: '/Users/tester/repo' },
+            target: { serverId: 'server-1', machineId: 'machine-target', rootPath: 'c:/repos/target' },
+        }).map((summary) => summary.relationshipId)).toEqual(['forward-one-way', 'reverse-two-way']);
+        for (const scopes of [
+            {
+                source: { serverId: 'server-1', machineId: 'machine-source', rootPath: '/Users/tester/repo/packages/app' },
+                target: { serverId: 'server-1', machineId: 'machine-target', rootPath: 'c:/repos/target' },
+            },
+            {
+                source: { serverId: 'server-1', machineId: 'machine-target', rootPath: 'C:\\Repos\\Target\\packages\\app' },
+                target: { serverId: 'server-1', machineId: 'machine-source', rootPath: '/Users/tester/repo' },
+            },
+        ]) {
+            expect(selectWorkspaceSyncRelationshipSummariesForHandoff(allFilesSummaries, scopes)).toEqual([]);
+        }
     });
 });

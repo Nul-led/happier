@@ -6,12 +6,16 @@ import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { storage } from '@/sync/domains/state/storageStore';
 import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 import type { VisibleSessionListPaneState } from '@/hooks/session/useVisibleSessionListPaneState';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
 import { useSessionListRenderModels } from './useSessionListRenderModels';
+import { computeVisibleSessionListIndex } from '@/sync/domains/session/listing/computeVisibleSessionListIndex';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { removeServerProfile, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 
 function makeRenderable(id: string, metadata: SessionListRenderableSession['metadata']): SessionListRenderableSession {
     return {
@@ -39,7 +43,328 @@ function rowKey(serverId: string, sessionId: string): string {
     return key;
 }
 
+function accountToken(accountId: string): string {
+    const payload = globalThis.btoa(JSON.stringify({ sub: accountId }))
+        .replaceAll('+', '-')
+        .replaceAll('/', '_')
+        .replaceAll('=', '');
+    return `header.${payload}.signature`;
+}
+
 describe('useSessionListRenderModels', () => {
+    it('does not return retained Account A row data after the same Home binds Account B', async () => {
+        const previousState = storage.getState();
+        const profile = await upsertServerProfile({
+            serverUrl: 'https://session-render-cache-lifetime.example.test',
+            name: 'Session render cache lifetime',
+        });
+        const otherProfile = await upsertServerProfile({
+            serverUrl: 'https://session-render-cache-unrelated.example.test',
+            name: 'Unrelated Session render cache',
+        });
+        const serverId = profile.serverIdentityId ?? profile.id;
+        const otherServerId = otherProfile.serverIdentityId ?? otherProfile.id;
+        const sessionId = 'same-session';
+        const aRow = {
+            ...makeRenderable(sessionId, {
+                name: 'Account A private title',
+                path: '/account-a/private-workspace',
+                homeDir: '/account-a',
+                host: 'account-a-host',
+                machineId: 'machine-a',
+            }),
+            responsibleAccountId: 'account-a',
+            responsibleAccount: {
+                kind: 'human' as const,
+                accountId: 'account-a',
+                firstName: 'Alice',
+                lastName: 'Private',
+                username: 'alice-private',
+            },
+        } satisfies SessionListRenderableSession;
+        const bRow = {
+            ...makeRenderable(sessionId, {
+                name: 'Account B title',
+                path: '/account-b/workspace',
+                homeDir: '/account-b',
+                host: 'account-b-host',
+                machineId: 'machine-b',
+            }),
+            responsibleAccountId: 'account-b',
+            responsibleAccount: {
+                kind: 'human' as const,
+                accountId: 'account-b',
+                firstName: 'Bob',
+                lastName: 'Current',
+                username: 'bob-current',
+            },
+        } satisfies SessionListRenderableSession;
+        const unrelatedRow = makeRenderable('unrelated-session', {
+            name: 'Unrelated Account C title',
+            path: '/account-c/workspace',
+            homeDir: '/account-c',
+            host: 'account-c-host',
+            machineId: 'machine-c',
+        });
+        const paneState = {
+            summary: { sessionsReady: true, sessionCount: 2 },
+            visibleSessionListIndex: [
+                {
+                    type: 'session' as const,
+                    sessionId,
+                    serverId,
+                    groupKey: 'active',
+                },
+                {
+                    type: 'session' as const,
+                    sessionId: unrelatedRow.id,
+                    serverId: otherServerId,
+                    groupKey: 'active',
+                },
+            ],
+            hasHiddenInactiveSessions: false,
+            folderFocus: null,
+            folderFeatureEnabledServerIds: [],
+            showLoading: false,
+            showEmptyState: false,
+        } satisfies VisibleSessionListPaneState;
+        const common = {
+            paneState,
+            collapsedGroupKeys: {},
+            machineDisplayById: {},
+            workspaceLabels: {},
+            workspaceRefs: [],
+            pinnedKeySet: new Set<string>(),
+            sessionTags: {},
+            selectedSessionId: null,
+            showServerBadge: false,
+            showPinnedServerBadge: false,
+            clocksActive: false,
+        };
+        let hook: Awaited<ReturnType<typeof renderHook>> | null = null;
+
+        try {
+            await TokenStorage.setCredentialsForServerUrl(profile.serverUrl, { serverId }, {
+                token: accountToken('account-a'),
+            });
+            await TokenStorage.setCredentialsForServerUrl(otherProfile.serverUrl, { serverId: otherServerId }, {
+                token: accountToken('account-c'),
+            });
+            storage.setState((state) => ({
+                ...state,
+                sessionListRowsByServerId: {
+                    ...state.sessionListRowsByServerId,
+                    [serverId]: { [sessionId]: aRow },
+                    [otherServerId]: { [unrelatedRow.id]: unrelatedRow },
+                },
+            }));
+            hook = await renderHook(
+                (props: { rowSubscriptionKeys: ReadonlySet<string> | null }) => useSessionListRenderModels({
+                    ...common,
+                    rowSubscriptionKeys: props.rowSubscriptionKeys,
+                }),
+                { initialProps: { rowSubscriptionKeys: null } },
+            );
+            await vi.waitFor(() => {
+                expect(hook?.getCurrent().rowViewModels[0]?.session?.metadata?.name)
+                    .toBe('Account A private title');
+            });
+            const unrelatedSessionBeforeRetirement = hook.getCurrent().rowViewModels[1]?.session;
+
+            await act(async () => {
+                await TokenStorage.setCredentialsForServerUrl(profile.serverUrl, { serverId }, {
+                    token: accountToken('account-b'),
+                });
+                storage.setState((state) => ({
+                    ...state,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
+                        [serverId]: {},
+                    },
+                }));
+                await hook?.rerender({ rowSubscriptionKeys: new Set<string>() });
+            });
+            await flushHookEffects({ cycles: 2, turns: 2 });
+
+            const placeholderJson = JSON.stringify(hook.getCurrent().rowViewModels[0] ?? null);
+            expect(placeholderJson).not.toContain('Account A private title');
+            expect(placeholderJson).not.toContain('/account-a/private-workspace');
+            expect(placeholderJson).not.toContain('alice-private');
+            expect(hook.getCurrent().rowViewModels[0]?.session).toBeNull();
+            expect(hook.getCurrent().rowViewModels[1]?.session).toBe(unrelatedSessionBeforeRetirement);
+
+            await act(async () => {
+                storage.setState((state) => ({
+                    ...state,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
+                        [serverId]: { [sessionId]: bRow },
+                    },
+                }));
+                await hook?.rerender({ rowSubscriptionKeys: new Set([rowKey(serverId, sessionId)]) });
+            });
+            await flushHookEffects({ cycles: 1, turns: 2 });
+
+            expect(hook.getCurrent().rowViewModels[0]?.session?.metadata?.name).toBe('Account B title');
+            expect(hook.getCurrent().rowViewModels[0]?.session?.responsibleAccountId).toBe('account-b');
+            expect(JSON.stringify(hook.getCurrent().rowViewModels[0])).not.toContain('Account A');
+        } finally {
+            await hook?.unmount();
+            storage.setState(previousState);
+            await TokenStorage.removeCredentialsForServerUrl(profile.serverUrl, { serverId });
+            await TokenStorage.removeCredentialsForServerUrl(otherProfile.serverUrl, { serverId: otherServerId });
+            await removeServerProfile(profile.id);
+            await removeServerProfile(otherProfile.id);
+        }
+    });
+
+    it('keeps retained row context stable when only the Home query phase becomes offline', async () => {
+        const previousState = storage.getState();
+        const row = makeRenderable('same-session', { path: '/workspace/project', host: 'home-a' });
+        const makeQueryState = (phase: 'ready' | 'offline') => ({
+            requestedQueryKey: 'query-a',
+            appliedQueryKey: 'query-a',
+            addresses: [{ serverId: 'home-a', sessionId: 'same-session' }],
+            nextCursor: null,
+            hasNext: false,
+            attentionNextCursor: null,
+            attentionHasNext: false,
+            phase,
+            freshnessAt: 1_000,
+            failureReason: null,
+            failureCode: null,
+            appliedSourceKind: 'query' as const,
+        });
+        const pane = (phase: 'ready' | 'offline'): VisibleSessionListPaneState => ({
+            summary: { sessionsReady: true, sessionCount: 1 },
+            visibleSessionListIndex: [{
+                type: 'session', sessionId: 'same-session', serverId: 'home-a', groupKey: 'active',
+            }],
+            hasHiddenInactiveSessions: false,
+            folderFocus: null,
+            folderFeatureEnabledServerIds: [],
+            showLoading: false,
+            showEmptyState: false,
+            query: {
+                active: true,
+                statesByServerId: { 'home-a': makeQueryState(phase) },
+                byServerId: {},
+                source: [],
+                coverageComplete: phase === 'ready',
+                loadNext: async () => {},
+                refresh: async () => {},
+            },
+        });
+        storage.setState((state) => ({
+            ...state,
+            sessionListRowsByServerId: { 'home-a': { 'same-session': row } },
+            concurrentSessionListCacheByServerId: {},
+        }));
+        const common = {
+            collapsedGroupKeys: {}, machineDisplayById: {}, workspaceLabels: {}, workspaceRefs: [],
+            pinnedKeySet: new Set<string>(), sessionTags: {}, selectedSessionId: null,
+            showServerBadge: false, showPinnedServerBadge: false, clocksActive: false,
+        };
+        const hook = await renderHook(
+            (props: { paneState: VisibleSessionListPaneState }) => useSessionListRenderModels({ ...common, ...props }),
+            { initialProps: { paneState: pane('ready') } },
+        );
+        try {
+            const readySubtitle = hook.getCurrent().rowViewModels[0]?.subtitleOverride;
+            expect(readySubtitle).not.toContain('Offline');
+            await hook.rerender({ paneState: pane('offline') });
+            expect(hook.getCurrent().rowViewModels[0]?.subtitleOverride).toBe(readySubtitle);
+        } finally {
+            await hook.unmount();
+            storage.setState(previousState);
+        }
+    });
+
+    it.each([1_000, 10_000])('measures layout and visible subscription work for %i loaded rows', async (count) => {
+        syncPerformanceTelemetry.configure({ enabled: true, slowThresholdMs: 0 });
+        const previousState = storage.getState();
+        const rowsByServer: Record<string, Record<string, SessionListRenderableSession>> = {};
+        const source: SessionListIndexItem[] = [];
+        const subscribedKeys = new Set<string>();
+        for (let index = 0; index < count; index += 1) {
+            const serverId = `measurement-home-${index % 3}`;
+            const id = `measurement-session-${index}`;
+            const row = {
+                ...makeRenderable(id, { path: `/workspace/project-${index % 10}`, host: serverId }),
+                meaningfulActivityAt: 1_700_000_000_000 - index * 300_000,
+            };
+            (rowsByServer[serverId] ??= {})[id] = row;
+            source.push({ type: 'session', sessionId: id, serverId, section: 'inactive', groupKind: 'project', groupKey: `${serverId}:project-${index % 10}` });
+            if (index < 30) subscribedKeys.add(rowKey(serverId, id));
+        }
+        const indexTimes: { layout: string; durationMs: number }[] = [];
+        const buildIndex = (layout: 'projects' | 'recent_activity') => {
+            const start = performance.now();
+            const result = computeVisibleSessionListIndex({
+                source,
+                resolveSessionRow: (serverId, id) => rowsByServer[serverId ?? '']?.[id] ?? null,
+                hideInactiveSessions: false, pinnedSessionKeysV1: [], sessionListGroupOrderV1: {},
+                sessionListSectionModeV1: 'single', sessionListLayoutChoice: layout,
+                presentation: { enabled: false, presentation: 'flat' }, nowMs: 1_700_000_000_000,
+            });
+            indexTimes.push({ layout, durationMs: performance.now() - start });
+            return result;
+        };
+        let renderCount = 0;
+        const pane = (index: ReadonlyArray<SessionListIndexItem> | null) => ({
+            summary: { sessionsReady: true, sessionCount: count },
+            visibleSessionListIndex: index, hasHiddenInactiveSessions: false,
+            folderFocus: null, showLoading: false, showEmptyState: false,
+        } as VisibleSessionListPaneState);
+        const common = {
+            collapsedGroupKeys: {}, machineDisplayById: {}, workspaceLabels: {}, workspaceRefs: [],
+            pinnedKeySet: new Set<string>(), sessionTags: {}, selectedSessionId: null,
+            showServerBadge: false, showPinnedServerBadge: false, clocksActive: false,
+            rowViewModelMode: 'deferred' as const,
+        };
+        storage.setState({ sessionListRowsByServerId: rowsByServer });
+        const started = performance.now();
+        const hook = await renderHook((props: { paneState: VisibleSessionListPaneState; rowSubscriptionKeys: ReadonlySet<string> | null }) => {
+            renderCount += 1;
+            return useSessionListRenderModels({ ...common, ...props });
+        }, { initialProps: { paneState: pane(buildIndex('projects')), rowSubscriptionKeys: null } });
+        try {
+            await flushHookEffects({ cycles: 1, turns: 2 });
+            const initialModelMs = performance.now() - started;
+            expect(hook.getCurrent().rowViewModels).toHaveLength(count);
+            // Match the production shell's deferred row models and virtualizer lifecycle.
+            await hook.rerender({ paneState: pane(source), rowSubscriptionKeys: subscribedKeys });
+            const beforeUnrelated = renderCount;
+            await act(async () => {
+                const id = `measurement-session-${count - 1}`;
+                const serverId = `measurement-home-${(count - 1) % 3}`;
+                const rows = rowsByServer[serverId]!;
+                storage.setState({ sessionListRowsByServerId: {
+                    ...rowsByServer, [serverId]: { ...rows, [id]: { ...rows[id]!, updatedAt: 999 } },
+                } });
+            });
+            await flushHookEffects({ cycles: 1, turns: 2 });
+            const offscreenUpdateRenders = renderCount - beforeUnrelated;
+            expect(offscreenUpdateRenders).toBe(0);
+            const switchStarted = performance.now();
+            for (let change = 0; change < 6; change += 1) {
+                await hook.rerender({ paneState: pane(buildIndex(change % 2 === 0 ? 'recent_activity' : 'projects')), rowSubscriptionKeys: subscribedKeys });
+                expect(hook.getCurrent().listItems.filter((item) => item.type === 'session')).toHaveLength(count);
+                expect(hook.getCurrent().rowViewModels.filter(Boolean)).toHaveLength(0);
+            }
+            console.info('SESSION_ROW_MODEL_MEASUREMENT', JSON.stringify({
+                loadedRows: count, homes: 3, subscribedRows: subscribedKeys.size,
+                initialModelMs, offscreenUpdateRenders, hookRenders: renderCount,
+                layoutChanges: 6, layoutSwitchMs: performance.now() - switchStarted, indexTimes,
+                derivations: syncPerformanceTelemetry.snapshot().events.map(({ name, count, totalMs, maxMs }) => ({ name, count, totalMs, maxMs })),
+                boundary: 'real index and production deferred shell; not native row paint or geometry',
+            }));
+        } finally {
+            await hook.unmount();
+            storage.setState(previousState);
+        }
+    }, 60_000);
+
     beforeEach(() => {
         syncPerformanceTelemetry.configure({ enabled: false });
         syncPerformanceTelemetry.reset();
@@ -70,7 +395,7 @@ describe('useSessionListRenderModels', () => {
             } satisfies SessionListRenderableSession;
             storage.setState((state) => ({
                 ...state,
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'server-1': {
                         'session-1': row,
                     },
@@ -138,7 +463,7 @@ describe('useSessionListRenderModels', () => {
             });
             storage.setState((state) => ({
                 ...state,
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'server-1': {
                         'session-1': row,
                     },
@@ -187,10 +512,10 @@ describe('useSessionListRenderModels', () => {
             act(() => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
-                        ...state.sessionListRowStateByServerId,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
                         'server-1': {
-                            ...state.sessionListRowStateByServerId?.['server-1'],
+                            ...state.sessionListRowsByServerId?.['server-1'],
                             'session-1': {
                                 ...row,
                                 active: true,
@@ -372,13 +697,24 @@ describe('useSessionListRenderModels', () => {
                 showPinnedServerBadge: false,
             }));
 
+        // Telemetry aggregates repeated derivations of one event name: `fields`
+        // sums every observation, so asserting exact summed cardinality silently
+        // depends on the render-pass count, and mount-time subscription hydration
+        // (audience/credential bindings) legitimately re-renders the hook. Assert
+        // per-derivation cardinality through `fieldStats` instead: min/max bound
+        // every single observation, so a derivation observing stale or leaked
+        // counts still fails, while the number of render passes does not matter.
         const events = syncPerformanceTelemetry.snapshot().events;
-        expect(events.find((event) => event.name === 'ui.sessionsList.render.collapsedFiltering')?.fields)
-            .toMatchObject({ items: 2, collapsedGroups: 0 });
-        expect(events.find((event) => event.name === 'ui.sessionsList.render.reachabilityDisplayMap')?.fields)
-            .toMatchObject({ items: 2, machines: 0, displayRows: 1 });
-        expect(events.find((event) => event.name === 'ui.sessionsList.render.selectedMapping')?.fields)
-            .toMatchObject({ items: 2, selectable: 1 });
+        const expectPerDerivationCardinality = (name: string, fields: Record<string, number>) => {
+            const event = events.find((candidate) => candidate.name === name);
+            expect(event?.count ?? 0).toBeGreaterThan(0);
+            for (const [field, value] of Object.entries(fields)) {
+                expect(event?.fieldStats[field]).toMatchObject({ min: value, max: value, last: value });
+            }
+        };
+        expectPerDerivationCardinality('ui.sessionsList.render.collapsedFiltering', { items: 2, collapsedGroups: 0 });
+        expectPerDerivationCardinality('ui.sessionsList.render.reachabilityDisplayMap', { items: 2, machines: 0, displayRows: 1 });
+        expectPerDerivationCardinality('ui.sessionsList.render.selectedMapping', { items: 2, selectable: 1 });
         syncPerformanceTelemetry.configure({ enabled: false });
     });
 
@@ -429,9 +765,9 @@ describe('useSessionListRenderModels', () => {
                 sessionTags: {},
                 headerFilters: {
                     searchQuery: 'rebound',
-                    selectedTags: [],
+                    selectedTagIds: [],
                     searchableTextBySessionKey: {
-                        'server-1:session-1': 'rebound workspace',
+                        [sessionAddressKey({ serverId: 'server-1', sessionId: 'session-1' })]: 'rebound workspace',
                     },
                 },
                 selectedSessionId: null,
@@ -442,6 +778,82 @@ describe('useSessionListRenderModels', () => {
         expect(hook.getCurrent().listItems.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
             'Active',
             'Today',
+            'session-1',
+        ]);
+
+        await hook.unmount();
+    });
+
+    it('keeps the one-section corpus rendered when only the Pinned section is collapsed', async () => {
+        const pinnedGroupKey = 'pinned';
+        const projectGroupKey = 'server:server-1:project:repo';
+        const paneState = {
+            summary: {
+                sessionsReady: true,
+                sessionCount: 2,
+            },
+            // Projects and Recent activity head the corpus with `sessions`, never
+            // with Active/Inactive, so collapsing Pinned must not swallow it.
+            visibleSessionListIndex: [
+                {
+                    type: 'header',
+                    title: 'Pinned',
+                    headerKind: 'pinned',
+                    groupKey: pinnedGroupKey,
+                },
+                {
+                    type: 'session',
+                    sessionId: 'pinned-session',
+                    serverId: 'server-1',
+                    groupKey: pinnedGroupKey,
+                    groupKind: 'pinned',
+                },
+                {
+                    type: 'header',
+                    title: 'Sessions',
+                    headerKind: 'sessions',
+                    groupKey: 'sessions:server-1',
+                    serverId: 'server-1',
+                },
+                {
+                    type: 'header',
+                    title: 'Repo',
+                    headerKind: 'project',
+                    groupKey: projectGroupKey,
+                    serverId: 'server-1',
+                },
+                {
+                    type: 'session',
+                    sessionId: 'session-1',
+                    serverId: 'server-1',
+                    groupKey: projectGroupKey,
+                    groupKind: 'project',
+                },
+            ] satisfies ReadonlyArray<SessionListIndexItem>,
+            hasHiddenInactiveSessions: false,
+            folderFocus: null,
+            showLoading: false,
+            showEmptyState: false,
+        } as VisibleSessionListPaneState;
+
+        const hook = await renderHook(() =>
+            useSessionListRenderModels({
+                paneState,
+                collapsedGroupKeys: { [pinnedGroupKey]: true },
+                machineDisplayById: {},
+                workspaceLabels: {},
+                workspaceRefs: [],
+                pinnedKeySet: new Set<string>(),
+                sessionTags: {},
+                selectedSessionId: null,
+                showServerBadge: false,
+                showPinnedServerBadge: false,
+            }));
+
+        expect(hook.getCurrent().listItems.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+            'Pinned',
+            'Sessions',
+            'Repo',
             'session-1',
         ]);
 
@@ -465,7 +877,7 @@ describe('useSessionListRenderModels', () => {
             });
             storage.setState((state) => ({
                 ...state,
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'server-1': {
                         'session-1': visibleRow,
                         'session-2': backgroundRow,
@@ -518,10 +930,10 @@ describe('useSessionListRenderModels', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
-                        ...state.sessionListRowStateByServerId,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
                         'server-1': {
-                            ...(state.sessionListRowStateByServerId['server-1'] ?? {}),
+                            ...(state.sessionListRowsByServerId['server-1'] ?? {}),
                             'session-2': {
                                 ...backgroundRow,
                                 updatedAt: 42,
@@ -564,7 +976,7 @@ describe('useSessionListRenderModels', () => {
             });
             storage.setState((state) => ({
                 ...state,
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'server-1': {
                         'session-1': visibleRow,
                         'session-2': backgroundRow,
@@ -632,10 +1044,10 @@ describe('useSessionListRenderModels', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
-                        ...state.sessionListRowStateByServerId,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
                         'server-1': {
-                            ...(state.sessionListRowStateByServerId['server-1'] ?? {}),
+                            ...(state.sessionListRowsByServerId['server-1'] ?? {}),
                             'session-2': {
                                 ...backgroundRow,
                                 hasUnreadMessages: true,
@@ -654,10 +1066,10 @@ describe('useSessionListRenderModels', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
-                        ...state.sessionListRowStateByServerId,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
                         'server-1': {
-                            ...(state.sessionListRowStateByServerId['server-1'] ?? {}),
+                            ...(state.sessionListRowsByServerId['server-1'] ?? {}),
                             'session-1': {
                                 ...visibleRow,
                                 hasUnreadMessages: true,
@@ -694,7 +1106,7 @@ describe('useSessionListRenderModels', () => {
             });
             storage.setState((state) => ({
                 ...state,
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'server-1': {
                         'session-1': existingRow,
                     },
@@ -759,10 +1171,10 @@ describe('useSessionListRenderModels', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
-                        ...state.sessionListRowStateByServerId,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
                         'server-1': {
-                            ...(state.sessionListRowStateByServerId['server-1'] ?? {}),
+                            ...(state.sessionListRowsByServerId['server-1'] ?? {}),
                             'session-0': insertedRow,
                         },
                     },
@@ -795,7 +1207,7 @@ describe('useSessionListRenderModels', () => {
             });
             storage.setState((state) => ({
                 ...state,
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'server-1': {
                         'session-1': existingRow,
                     },
@@ -883,10 +1295,10 @@ describe('useSessionListRenderModels', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
-                        ...state.sessionListRowStateByServerId,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
                         'server-1': {
-                            ...(state.sessionListRowStateByServerId['server-1'] ?? {}),
+                            ...(state.sessionListRowsByServerId['server-1'] ?? {}),
                             'session-0': insertedRow,
                         },
                     },
@@ -919,7 +1331,7 @@ describe('useSessionListRenderModels', () => {
             });
             storage.setState((state) => ({
                 ...state,
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'server-1': {
                         'session-1': firstRow,
                         'session-2': secondRow,
@@ -971,10 +1383,10 @@ describe('useSessionListRenderModels', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
-                        ...state.sessionListRowStateByServerId,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
                         'server-1': {
-                            ...(state.sessionListRowStateByServerId['server-1'] ?? {}),
+                            ...(state.sessionListRowsByServerId['server-1'] ?? {}),
                             'session-2': {
                                 ...secondRow,
                                 meaningfulActivityAt: secondRow.meaningfulActivityAt === 200 ? 300 : 200,

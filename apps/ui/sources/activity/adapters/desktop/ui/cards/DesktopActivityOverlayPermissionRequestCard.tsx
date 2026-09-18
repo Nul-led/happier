@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { View } from 'react-native';
 
 import type { DesktopActivityOverlayVisualMode } from '../DesktopActivityOverlayVisualMode';
 import type {
@@ -15,6 +16,8 @@ export function DesktopActivityOverlayPermissionRequestCard(props: Readonly<{
     card: PermissionRequestCard;
     visualMode: DesktopActivityOverlayVisualMode;
     testID: string;
+    initialFocusActionId?: string | null;
+    initialFocusRef?: React.Ref<View>;
     onAction?: (action: DesktopActivityOverlayActionDescriptor) => void;
 }>): React.ReactElement {
     const actions = resolveDesktopActivityOverlayRequestCardActions(props.card);
@@ -29,9 +32,11 @@ export function DesktopActivityOverlayPermissionRequestCard(props: Readonly<{
             badgeText={props.card.count > 1 ? String(props.card.count) : null}
         >
             <DesktopActivityOverlayCardActions
-                cardId={props.card.requestId}
+                cardId={props.card.id}
                 visualMode={props.visualMode}
                 actions={actions}
+                initialFocusActionId={props.initialFocusActionId}
+                initialFocusRef={props.initialFocusRef}
                 onAction={props.onAction}
             />
         </DesktopActivityOverlayCardFrame>

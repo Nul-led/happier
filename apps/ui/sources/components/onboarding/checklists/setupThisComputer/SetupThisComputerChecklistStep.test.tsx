@@ -9,9 +9,10 @@ import type { SetupThisComputerWizardPrimaryState } from './SetupThisComputerChe
 
 const preflightMock = vi.hoisted(() => ({
     value: {
-        activeRelayUrl: 'https://relay.example.test',
-        activeWebappUrl: 'https://app.example.test',
+        activeRelayUrl: 'https://relay.example.test' as string | null,
+        activeWebappUrl: 'https://app.example.test' as string | null,
         activeLocalRelayUrl: 'http://127.0.0.1:53288',
+        activeServerId: 'srv_relay_example' as string | null,
         localCliReady: false,
         serviceInstalled: false,
         daemonRunning: false,
@@ -563,6 +564,38 @@ describe('SetupThisComputerChecklistStep', () => {
                 verifyService: false,
             }),
         }));
+    });
+
+    // Runs last: it leaves the shared preflight mock without a Home.
+    it('offers nothing to run when no Home is selected, instead of setting up against the CLI relay', async () => {
+        const { SetupThisComputerChecklistStep } = await import('./SetupThisComputerChecklistStep');
+
+        preflightMock.value = {
+            ...preflightMock.value,
+            activeRelayUrl: null,
+            activeWebappUrl: null,
+            localCliReady: false,
+            serviceInstalled: false,
+            daemonRunning: false,
+            machineId: null,
+            needsAuth: true,
+            pairingRequired: true,
+        };
+        taskHookMock.value.activeTaskSnapshot = null;
+        taskHookMock.value.start.mockClear();
+
+        const primaryRef: { current: SetupThisComputerWizardPrimaryState | null } = { current: null };
+        await renderScreen(
+            <SetupThisComputerChecklistStep
+                testID="setup-this-computer"
+                onWizardPrimaryChange={(state) => {
+                    primaryRef.current = state;
+                }}
+            />,
+        );
+
+        expect(primaryRef.current?.disabled).toBe(true);
+        expect(taskHookMock.value.start).not.toHaveBeenCalled();
     });
 
 });

@@ -36,6 +36,7 @@ const activeServerState = vi.hoisted(() => {
   };
 });
 const listRunsSpy = vi.hoisted(() => vi.fn());
+const featureScopeSpy = vi.hoisted(() => vi.fn());
 const usePreferredServerIdForSessionSpy = vi.hoisted(() =>
   vi.fn((_sessionId: string, fallbackServerId?: string | null) => {
     const normalizedFallback = typeof fallbackServerId === 'string' ? fallbackServerId.trim() : '';
@@ -44,7 +45,10 @@ const usePreferredServerIdForSessionSpy = vi.hoisted(() =>
 );
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-  useFeatureEnabled: () => featureState.enabled,
+  useFeatureEnabled: (_featureId: string, scope?: unknown) => {
+    featureScopeSpy(scope);
+    return featureState.enabled;
+  },
 }));
 
 vi.mock('@/hooks/server/useExecutionRunsBackendsForSession', () => ({
@@ -121,6 +125,7 @@ describe('useSessionExecutionRunsSupported', () => {
     activeServerState.reset();
     listRunsSpy.mockReset();
     usePreferredServerIdForSessionSpy.mockClear();
+    featureScopeSpy.mockClear();
   });
 
   afterEach(() => {
@@ -156,7 +161,7 @@ describe('useSessionExecutionRunsSupported', () => {
 
     const harness = await renderHarness('session-historical');
 
-    expect(listRunsSpy).toHaveBeenCalledWith('session-historical', {});
+    expect(listRunsSpy).toHaveBeenCalledWith('session-historical', {}, { serverId: 'server-1' });
     expect(harness.getValue()).toBe(true);
     harness.unmount();
   });
@@ -166,7 +171,7 @@ describe('useSessionExecutionRunsSupported', () => {
 
     const harness = await renderHarness('session-empty');
 
-    expect(listRunsSpy).toHaveBeenCalledWith('session-empty', {});
+    expect(listRunsSpy).toHaveBeenCalledWith('session-empty', {}, { serverId: 'server-1' });
     expect(harness.getValue()).toBe(false);
     harness.unmount();
   });
@@ -195,7 +200,7 @@ describe('useSessionExecutionRunsSupported', () => {
 
     const harness = await renderHarness('session-with-runs');
 
-    expect(listRunsSpy).toHaveBeenCalledWith('session-with-runs', {});
+    expect(listRunsSpy).toHaveBeenCalledWith('session-with-runs', {}, { serverId: 'server-1' });
     expect(harness.getValue()).toBe(true);
 
     harness.rerenderSync('session-without-runs');
@@ -255,6 +260,19 @@ describe('useSessionExecutionRunsSupported', () => {
     const { useSessionExecutionRunsSupported } = await import('./useSessionExecutionRunsSupported');
     const harness = await renderHarness('session-explicit', 'server-explicit');
 
+    expect(harness.getValue()).toBe(true);
+    harness.unmount();
+  });
+
+  it('keeps historical support and feature admission on the explicit Home when the same Session id exists on the preferred Home', async () => {
+    sessionState.preferredServerId = 'home-a';
+    sessionState.session = { id: 'same-session', active: true, serverId: 'home-a' } as any;
+    listRunsSpy.mockResolvedValueOnce({ runs: [{ runId: 'run-home-b' }] });
+
+    const harness = await renderHarness('same-session', 'home-b');
+
+    expect(featureScopeSpy).toHaveBeenCalledWith({ scopeKind: 'spawn', serverId: 'home-b' });
+    expect(listRunsSpy).toHaveBeenCalledWith('same-session', {}, { serverId: 'home-b' });
     expect(harness.getValue()).toBe(true);
     harness.unmount();
   });

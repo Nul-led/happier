@@ -2,7 +2,8 @@ import type { TranslationKey } from '@/text';
 import type { PluginUiDestinationGroupHintV1 } from '@happier-dev/protocol/plugins/ui';
 import type { PluginSurfaceDestinationBadge } from '@/components/plugins/surfaces/pluginSurfaceDestinations';
 import type { PluginUiSurfacePlacementProjection } from '@/sync/domains/plugins/ui/projection';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import type { IconName } from '@/components/ui/icons/Icon';
+import { SESSION_BOARD_DESTINATION } from '@/components/sessions/board/sessionBoardDestination';
 
 export type RightSidebarScope = 'session' | 'project' | 'app';
 export type RightSidebarPresentation = 'desktop' | 'mobile';
@@ -12,11 +13,13 @@ export type RightSidebarBuiltInTabId =
     | 'files'
     | 'navigation'
     | 'agents'
+    | 'collaboration'
+    | 'board'
     | 'terminal'
     | 'browser'
     | 'services';
 
-export type RightSidebarMobileSurface = 'browse' | 'git' | 'navigation' | 'terminal' | 'browser' | 'services' | 'plugin';
+export type RightSidebarMobileSurface = 'collaboration' | 'browse' | 'git' | 'navigation' | 'board' | 'terminal' | 'browser' | 'services' | 'plugin';
 
 export type RightSidebarTabOwner = 'builtin' | 'plugin';
 
@@ -68,6 +71,14 @@ export type RightSidebarAvailabilityInput = Readonly<{
     scope: RightSidebarScope;
     terminalTabAvailable: boolean;
     presentation: RightSidebarPresentation;
+    /**
+     * The exact Home's `sessions.board` decision. Board availability is a feature
+     * decision, not a content check: an empty Board still shows its tab, and a
+     * missing or malformed decision fails closed.
+     */
+    boardFeatureEnabled: boolean;
+    /** Normalized exact-Home Collaboration host admission; missing fails closed. */
+    sessionSharingAvailable?: boolean;
 }>;
 
 export const RIGHT_SIDEBAR_BUILTIN_TABS: readonly RightSidebarBuiltinTabDefinition[] = [
@@ -104,6 +115,16 @@ export const RIGHT_SIDEBAR_BUILTIN_TABS: readonly RightSidebarBuiltinTabDefiniti
         scopes: ['session'],
     },
     {
+        id: 'collaboration',
+        owner: 'builtin',
+        labelKey: 'session.collaboration.title',
+        icon: 'users',
+        order: 32,
+        scopes: ['session'],
+        mobileSurfaces: { session: 'collaboration' },
+        available: (input) => input.sessionSharingAvailable === true,
+    },
+    {
         id: 'navigation',
         owner: 'builtin',
         labelKey: 'session.transcriptNavigation.title',
@@ -115,6 +136,21 @@ export const RIGHT_SIDEBAR_BUILTIN_TABS: readonly RightSidebarBuiltinTabDefiniti
         mobileSurfaces: {
             session: 'navigation',
         },
+    },
+    {
+        // The compact Board monitor/navigator. It sits after `navigation` (35) and
+        // keeps the incumbent default selection: inserting a tab must not move the
+        // pane someone already had open.
+        id: SESSION_BOARD_DESTINATION.id,
+        owner: 'builtin',
+        labelKey: SESSION_BOARD_DESTINATION.labelKey,
+        icon: SESSION_BOARD_DESTINATION.icon,
+        order: 37,
+        scopes: ['session'],
+        mobileSurfaces: {
+            session: 'board',
+        },
+        available: (input) => input.boardFeatureEnabled,
     },
     {
         id: 'terminal',

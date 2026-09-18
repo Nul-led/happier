@@ -9,6 +9,7 @@ import { derivePendingRequestFlagsFromSession } from '@/sync/domains/session/pen
 import type { Message } from '@/sync/domains/messages/messageTypes';
 import { deriveSessionListMeaningfulActivityAt } from '@/sync/domains/session/listing/deriveSessionListActivity';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import type { SessionMessages } from '@/sync/store/domains/messages';
 import type { SessionPending } from '@/sync/store/domains/pending';
 
@@ -18,8 +19,10 @@ import type {
     PetCompanionSessionSignals,
 } from './petCompanionActivityTypes';
 
-function selectCompanionSessionId(sessions: readonly Session[]): string | null {
-    return sessions.find((session) => session.active)?.id ?? sessions[0]?.id ?? null;
+function selectCompanionSessionAddress(candidates: readonly SessionActivityAttention[]): SessionAddress | null {
+    return candidates.find((candidate) => candidate.session.active)?.address
+        ?? candidates[0]?.address
+        ?? null;
 }
 
 function normalizeMessageSubtitleText(value: string | null | undefined): string | null {
@@ -84,18 +87,21 @@ function usePetCompanionSignalState(sessionIds: readonly string[]): PetCompanion
     }, [pendingRows, sessionIds, transcripts]);
 }
 
-function buildSessionSignalsBySessionId(
+function buildSessionSignalsByAddressKey(
     state: PetCompanionSignalState,
     candidates: readonly SessionActivityAttention[],
+    activeServerId: string | null,
 ): Record<string, PetCompanionSessionSignals> {
-    const signalsBySessionId: Record<string, PetCompanionSessionSignals> = {};
+    const signalsByAddressKey: Record<string, PetCompanionSessionSignals> = {};
     const sessionMessages = state.sessionMessages ?? {};
     const sessionPending = state.sessionPending ?? {};
 
     for (const candidate of candidates) {
+        if (!candidate.address) continue;
         const session = candidate.session;
-        const transcript = sessionMessages[session.id];
-        const pending = sessionPending[session.id];
+        const mayUseActiveHomeState = candidate.address.serverId === activeServerId;
+        const transcript = mayUseActiveHomeState ? sessionMessages[session.id] : undefined;
+        const pending = mayUseActiveHomeState ? sessionPending[session.id] : undefined;
         const messages = Object.values(transcript?.messagesById ?? {});
         const latestCommittedMessageId =
             transcript?.messageIdsOldestFirst?.length
@@ -115,7 +121,7 @@ function buildSessionSignalsBySessionId(
         }
         const pendingRequestFlags = derivePendingRequestFlagsFromSession(session, messages);
 
-        signalsBySessionId[session.id] = {
+        signalsByAddressKey[sessionAddressKey(candidate.address)] = {
             hasFailure: candidate.attentionState === 'failed',
             hasPendingPermissionRequests: candidate.reasons.hasPendingPermissionRequests
                 || pendingRequestFlags.hasPendingPermissionRequests,
@@ -136,7 +142,7 @@ function buildSessionSignalsBySessionId(
         };
     }
 
-    return signalsBySessionId;
+    return signalsByAddressKey;
 }
 
 export function usePetCompanionActivityModel(input?: Readonly<{
@@ -154,28 +160,43 @@ export function usePetCompanionActivityModel(input?: Readonly<{
     );
     const activityCandidates = overview.candidates;
     const activitySessions = React.useMemo(
-        () => activityCandidates.map((candidate) => candidate.session),
+        () => activityCandidates.flatMap((candidate) => candidate.address
+            ? [{ ...candidate.session, serverId: candidate.address.serverId }]
+            : []),
         [activityCandidates],
     );
     const signalSessionIds = React.useMemo(
         () => activityCandidates.map((candidate) => candidate.session.id),
         [activityCandidates],
     );
-    const selectedSessionId = React.useMemo(() => selectCompanionSessionId(activitySessions), [activitySessions]);
+    const selectedAddress = React.useMemo(
+        () => selectCompanionSessionAddress(activityCandidates),
+        [activityCandidates],
+    );
     const dismissedTrayItemKeys = input?.dismissedTrayItemKeys;
     const signalState = usePetCompanionSignalState(signalSessionIds);
-    const signalsBySessionId = React.useMemo(
-        () => buildSessionSignalsBySessionId(signalState, activityCandidates),
-        [activityCandidates, signalState],
+    const signalsByAddressKey = React.useMemo(
+        () => buildSessionSignalsByAddressKey(
+            signalState,
+            activityCandidates,
+            activitySource.activeServer?.serverId ?? null,
+        ),
+        [activityCandidates, activitySource.activeServer?.serverId, signalState],
     );
+    const contextsByAddressKey = React.useMemo(() => Object.fromEntries(
+        activityCandidates.flatMap((candidate) => candidate.address
+            ? [[sessionAddressKey(candidate.address), candidate.context ?? null] as const]
+            : []),
+    ), [activityCandidates]);
 
     const model = React.useMemo(() => buildPetCompanionActivityModel({
         sessions: activitySessions,
-        selectedSessionId,
-        signalsBySessionId,
+        selectedAddress,
+        signalsByAddressKey,
+        contextsByAddressKey,
         dismissedTrayItemKeys,
         nowMs,
-    }), [activitySessions, dismissedTrayItemKeys, nowMs, selectedSessionId, signalsBySessionId]);
+    }), [activitySessions, contextsByAddressKey, dismissedTrayItemKeys, nowMs, selectedAddress, signalsByAddressKey]);
 
     React.useEffect(() => {
         let nextExpiryAtMs: number | null = null;

@@ -29,6 +29,7 @@ function normalizePaths(paths: readonly string[]): string[] {
 
 export async function applyBulkFileStageAction(input: Readonly<{
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     paths: readonly string[];
     snapshot: ScmWorkingSnapshot | null;
@@ -44,6 +45,7 @@ export async function applyBulkFileStageAction(input: Readonly<{
 
     const {
         sessionId,
+        serverId,
         sessionPath,
         snapshot,
         scmWriteEnabled,
@@ -55,16 +57,17 @@ export async function applyBulkFileStageAction(input: Readonly<{
 
     if (isAtomicCommitStrategy(commitStrategy)) {
         if (stage) {
-            storage.getState().markSessionProjectScmCommitSelectionPaths(sessionId, paths);
+            storage.getState().markSessionProjectScmCommitSelectionPaths(sessionId, paths, serverId);
         } else {
-            storage.getState().unmarkSessionProjectScmCommitSelectionPaths(sessionId, paths);
+            storage.getState().unmarkSessionProjectScmCommitSelectionPaths(sessionId, paths, serverId);
         }
         for (const path of paths) {
-            storage.getState().removeSessionProjectScmCommitSelectionPatch(sessionId, path);
+            storage.getState().removeSessionProjectScmCommitSelectionPatch(sessionId, path, serverId);
         }
         reportSessionScmOperation({
             state: storage.getState(),
             sessionId,
+            ...(serverId ? { serverId } : {}),
             operation: stage ? 'stage' : 'unstage',
             status: 'success',
             detail: stage
@@ -98,11 +101,12 @@ export async function applyBulkFileStageAction(input: Readonly<{
     const lockResult = await withSessionProjectScmOperationLock({
         state: storage.getState(),
         sessionId,
+        serverId,
         operation: stage ? 'stage' : 'unstage',
         run: async () => {
             const runScmOperation = async () => stage
-                ? await sessionScmChangeInclude(sessionId, { paths })
-                : await sessionScmChangeExclude(sessionId, { paths });
+                ? await sessionScmChangeInclude(sessionId, { paths }, ...(serverId === undefined ? [] : [serverId]))
+                : await sessionScmChangeExclude(sessionId, { paths }, ...(serverId === undefined ? [] : [serverId]));
             let response = await runScmOperation();
 
             if (!response.success) {
@@ -110,7 +114,11 @@ export async function applyBulkFileStageAction(input: Readonly<{
                     response = await runScmOperationWithGitIndexLockRecovery({
                         cwd: sessionPath,
                         failedResponse: response,
-                        removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request),
+                        removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(
+                            sessionId,
+                            request,
+                            ...(serverId === undefined ? [] : [serverId]),
+                        ),
                         retryOriginalOperation: runScmOperation,
                     });
                 }
@@ -134,6 +142,7 @@ export async function applyBulkFileStageAction(input: Readonly<{
                 reportSessionScmOperation({
                     state: storage.getState(),
                     sessionId,
+                    ...(serverId ? { serverId } : {}),
                     operation: stage ? 'stage' : 'unstage',
                     status: 'failed',
                     detail: errorMessage,
@@ -149,13 +158,17 @@ export async function applyBulkFileStageAction(input: Readonly<{
             reportSessionScmOperation({
                 state: storage.getState(),
                 sessionId,
+                ...(serverId ? { serverId } : {}),
                 operation: stage ? 'stage' : 'unstage',
                 status: 'success',
                 detail: `${paths.length} file(s)`,
                 surface,
                 tracking,
             });
-            await scmStatusSync.invalidateFromMutationAndAwait(sessionId);
+            await scmStatusSync.invalidateFromMutationAndAwait(
+                sessionId,
+                ...(serverId === undefined ? [] : [serverId]),
+            );
             if (refreshAll) {
                 await refreshAll();
             }

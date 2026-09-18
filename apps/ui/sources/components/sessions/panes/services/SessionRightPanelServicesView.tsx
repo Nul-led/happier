@@ -34,8 +34,8 @@ export type SessionRightPanelServicesViewProps = Readonly<{
 
 export function SessionRightPanelServicesView(props: SessionRightPanelServicesViewProps = {}): React.ReactElement {
     const sessionId = props.sessionId ?? '';
-    const sessionMachineTarget = useSessionMachineTarget(sessionId);
-    const preferredServerId = usePreferredServerIdForSession(sessionId);
+    const preferredServerId = usePreferredServerIdForSession({ serverId: props.serverId, sessionId });
+    const sessionMachineTarget = useSessionMachineTarget(sessionId, preferredServerId);
     // Keep the fallback hooks alive for standalone direct routes. A supplied
     // pane target, including explicit null, is already AppPane-authoritative.
     const machineId = props.machineId !== undefined

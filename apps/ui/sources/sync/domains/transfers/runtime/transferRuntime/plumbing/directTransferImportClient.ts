@@ -138,10 +138,40 @@ export type PreparedDirectImportSession = Readonly<{
     recipientPublicKeyBase64: string;
     expiresAt: number;
     baseUrls: readonly string[];
-    requestHeaders?: Readonly<Record<string, string>>;
     request?: MachineCarrierHttpRequester;
     releaseCarrier?: (() => Promise<void> | void) | null;
 }>;
+
+/**
+ * The one rule for issuing a direct-import request over a machine carrier.
+ *
+ * A native lease owns an ephemeral loopback listener, so its origin is valid
+ * only while that exact lease is held: the prepared endpoint path and query stay
+ * authoritative and the current lease supplies the origin. A browser lease owns
+ * the request path itself and contributes a requester instead of an origin.
+ * Preparation and finalize recovery both resolve through here so a retry cannot
+ * keep reaching a released carrier.
+ */
+export function resolveDirectImportCarrierRequest(input: Readonly<{
+    endpointUrl: string;
+    carrier?: MachineCarrierHttpLease | null;
+    httpOriginOverride?: string | null;
+}>): Readonly<{
+    url: string;
+    request?: MachineCarrierHttpRequester;
+    /** True when a carrier or explicit origin owns this request path. */
+    carrierBound: boolean;
+}> {
+    const localOrigin = input.carrier?.kind === 'native_http'
+        ? input.carrier.localOrigin
+        : input.httpOriginOverride ?? null;
+    const request = input.carrier?.kind === 'browser_stream' ? input.carrier.request : undefined;
+    return {
+        url: localOrigin ? rebaseMachineCarrierHttpEndpoint(input.endpointUrl, localOrigin) : input.endpointUrl,
+        ...(request ? { request } : {}),
+        carrierBound: localOrigin !== null || request !== undefined,
+    };
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -341,7 +371,7 @@ export async function prepareDirectImportSession(params: Readonly<{
     signal?: AbortSignal | null;
     preferScoped?: boolean;
     httpOriginOverride?: string | null;
-    acquirePreparedCarrier?: ((prepared: Readonly<{ operationId: string; maxBytes: number }>) => Promise<MachineCarrierHttpLease | null>) | null;
+    acquirePreparedCarrier?: ((prepared: Readonly<{ operationId: string; signal?: AbortSignal }>) => Promise<MachineCarrierHttpLease | null>) | null;
 }>): Promise<
     | Readonly<{ success: true; session: PreparedDirectImportSession }>
     | Readonly<{ success: false; error: string; errorCode?: string }>
@@ -410,14 +440,14 @@ export async function prepareDirectImportSession(params: Readonly<{
     }
 
     let preparedCarrier: Awaited<ReturnType<NonNullable<typeof params.acquirePreparedCarrier>>> | null = null;
-    let effectiveOrigin = params.httpOriginOverride ?? null;
     if (params.acquirePreparedCarrier) {
         try {
             preparedCarrier = await params.acquirePreparedCarrier({
                 operationId: uploadId,
-                maxBytes: Math.max(1, Math.floor(prepare.expectedSizeBytes)),
+                // The live prepare owns this acquisition, so caller
+                // cancellation still settles it.
+                ...(params.signal ? { signal: params.signal } : {}),
             });
-            if (preparedCarrier?.kind === 'native_http') effectiveOrigin = preparedCarrier.localOrigin;
         } catch {
             return await failOwnedSession({
                 success: false,
@@ -436,17 +466,17 @@ export async function prepareDirectImportSession(params: Readonly<{
             continue;
         }
         try {
-            const endpointUrl = effectiveOrigin
-                ? rebaseMachineCarrierHttpEndpoint(parsedCandidate.data.url, effectiveOrigin)
-                : parsedCandidate.data.url;
-            if (!isSafeDirectTransferEndpointCandidate({ ...parsedCandidate.data, url: endpointUrl })) {
+            const carrierRequest = resolveDirectImportCarrierRequest({
+                endpointUrl: parsedCandidate.data.url,
+                carrier: preparedCarrier,
+                httpOriginOverride: params.httpOriginOverride ?? null,
+            });
+            if (!isSafeDirectTransferEndpointCandidate({ ...parsedCandidate.data, url: carrierRequest.url })) {
                 continue;
             }
-            const normalizedBaseUrl = normalizeDirectPeerImportEndpointBaseUrl(endpointUrl);
-            const preserveCarrierQuery = effectiveOrigin !== null
-                || preparedCarrier?.kind === 'browser_stream';
-            baseUrls.push(preserveCarrierQuery
-                ? `${normalizedBaseUrl}${new URL(endpointUrl).search}`
+            const normalizedBaseUrl = normalizeDirectPeerImportEndpointBaseUrl(carrierRequest.url);
+            baseUrls.push(carrierRequest.carrierBound
+                ? `${normalizedBaseUrl}${new URL(carrierRequest.url).search}`
                 : normalizedBaseUrl);
         } catch {
             hasMalformedEndpointCandidate = true;
@@ -455,7 +485,7 @@ export async function prepareDirectImportSession(params: Readonly<{
     }
 
     if (baseUrls.length === 0) {
-        // Hand carrier custody back to the machine HTTP lease owner; a failed
+        // Hand carrier custody back to the native transfer lease owner; a failed
         // release stays retained and retryable there rather than here.
         if (preparedCarrier) await Promise.resolve(preparedCarrier.release()).catch(() => undefined);
         return await failOwnedSession(hasMalformedEndpointCandidate
@@ -477,7 +507,6 @@ export async function prepareDirectImportSession(params: Readonly<{
             recipientPublicKeyBase64,
             expiresAt: prepare.expiresAt,
             baseUrls,
-            ...(preparedCarrier?.kind === 'native_http' ? { requestHeaders: preparedCarrier.requestHeaders } : {}),
             ...(preparedCarrier?.kind === 'browser_stream' ? { request: preparedCarrier.request } : {}),
             ...(preparedCarrier ? { releaseCarrier: preparedCarrier.release } : {}),
         },
@@ -489,7 +518,6 @@ async function putJson(url: string, input: Readonly<{
     maxResponseBytes: number;
     timeoutMs: number;
     signal?: AbortSignal | null;
-    requestHeaders?: Readonly<Record<string, string>>;
     request?: MachineCarrierHttpRequester;
 }>): Promise<unknown> {
     const requestSignal = createDirectTransferRequestAbortSignal(input);
@@ -497,7 +525,6 @@ async function putJson(url: string, input: Readonly<{
         const response = await (input.request ?? runtimeFetch)(url, {
             method: 'PUT',
             headers: {
-                ...input.requestHeaders,
                 'content-type': 'application/json',
             },
             body: JSON.stringify(input.body),
@@ -522,7 +549,6 @@ export async function sendDirectImportChunk(params: Readonly<{
     encryptedDataKeyEnvelopeBase64: string;
     timeoutMs?: number | null;
     signal?: AbortSignal | null;
-    requestHeaders?: Readonly<Record<string, string>>;
     request?: MachineCarrierHttpRequester;
 }>): Promise<DirectTransferImportChunkResponse> {
     const response = await putJson(
@@ -535,7 +561,6 @@ export async function sendDirectImportChunk(params: Readonly<{
             maxResponseBytes: DIRECT_IMPORT_CHUNK_RESPONSE_MAX_BYTES,
             timeoutMs: resolveDirectTransferRequestTimeoutMs(params.timeoutMs),
             signal: params.signal ?? null,
-            requestHeaders: params.requestHeaders,
             request: params.request,
         },
     );
@@ -575,7 +600,6 @@ export async function finalizeDirectImportSession(params: Readonly<{
     baseUrl: string;
     timeoutMs?: number | null;
     signal?: AbortSignal | null;
-    requestHeaders?: Readonly<Record<string, string>>;
     request?: MachineCarrierHttpRequester;
 }>): Promise<DirectTransferImportFinalizeResponse> {
     const requestSignal = createDirectTransferRequestAbortSignal({
@@ -593,7 +617,6 @@ export async function finalizeDirectImportSession(params: Readonly<{
         finalizeRequestIssued = true;
         const response = await (params.request ?? runtimeFetch)(finalizeUrl, {
             method: 'POST',
-            headers: params.requestHeaders,
             credentials: 'same-origin',
             signal: requestSignal.signal,
         });

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
 const activeSnapshotMock = vi.hoisted(() => vi.fn(() => ({
@@ -21,6 +22,9 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
         invalidateCredentialsTokenForServerUrl: vi.fn(async () => false),
     },
 }));
+// The address-trust decision can ask the person; this lean endpoint suite keeps
+// the modal surface out of its graph.
+vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock().module);
 
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), {
@@ -58,6 +62,89 @@ afterEach(() => {
 });
 
 describe('explicit endpoint authentication foundations', () => {
+    it('does not redeem when the captured authentication flow retires during challenge issuance', async () => {
+        let current = true;
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/v1/features')) return jsonResponse({ features: {}, capabilities: keyChallengeV2Capabilities('srv_home_b') });
+            if (url.endsWith('/v1/auth/challenge')) {
+                current = false;
+                return jsonResponse({
+                    challengeId: 'retired-challenge', nonce: 'nonce',
+                    issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                    audience: { origin: 'https://home-b.example.test', serverIdentityId: 'srv_home_b' },
+                });
+            }
+            return jsonResponse({ token: 'must-not-mint' });
+        });
+        const { authGetTokenAtEndpoint } = await import('./getToken');
+        await expect(authGetTokenAtEndpoint({
+            endpointUrl: 'https://home-b.example.test', serverIdentityId: 'srv_home_b',
+            secret: new Uint8Array(32).fill(7), requireKeyChallengeV2: true,
+            isCurrent: () => current,
+        })).rejects.toMatchObject({ name: 'AbortError' });
+        expect(runtimeFetchMock.mock.calls.map(([url]) => String(url))).not.toContain('https://home-b.example.test/v1/auth');
+    });
+
+    it('signs a scanned descriptor address at first contact without asking, even from a loopback endpoint', async () => {
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/v1/features')) {
+                return jsonResponse({ features: {}, capabilities: keyChallengeV2Capabilities('srv_qr_home') });
+            }
+            if (url.endsWith('/v1/auth/challenge')) {
+                return jsonResponse({
+                    challengeId: 'challenge-qr', nonce: 'nonce-qr',
+                    issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                    audience: { origin: 'https://qr-home.example.test', serverIdentityId: 'srv_qr_home' },
+                });
+            }
+            return jsonResponse({ token: 'qr-home-token' });
+        });
+
+        const { authGetTokenAtEndpoint } = await import('./getToken');
+        await expect(authGetTokenAtEndpoint({
+            endpointUrl: 'http://127.0.0.1:4310',
+            // Out of band: this canonical URL arrived with the scanned descriptor,
+            // not from the endpoint being contacted.
+            addressAnchorUrl: 'https://qr-home.example.test',
+            canonicalServerUrl: 'https://qr-home.example.test',
+            serverIdentityId: 'srv_qr_home',
+            secret: new Uint8Array(32).fill(3),
+            requireKeyChallengeV2: true,
+        })).resolves.toMatchObject({ token: 'qr-home-token' });
+    });
+
+    it('asks before signing a first-contact address that only the caller-supplied canonical URL vouches for', async () => {
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/v1/features')) {
+                return jsonResponse({ features: {}, capabilities: keyChallengeV2Capabilities('srv_unanchored_home') });
+            }
+            if (url.endsWith('/v1/auth/challenge')) {
+                return jsonResponse({
+                    challengeId: 'challenge-unanchored', nonce: 'nonce-unanchored',
+                    issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                    audience: { origin: 'https://unanchored-home.example.test', serverIdentityId: 'srv_unanchored_home' },
+                });
+            }
+            return jsonResponse({ token: 'must-not-redeem' });
+        });
+
+        const { authGetTokenAtEndpoint } = await import('./getToken');
+        // No out-of-band anchor: a canonical URL the flow read back from profile
+        // state is not a fact the contacted endpoint could not have supplied.
+        await expect(authGetTokenAtEndpoint({
+            endpointUrl: 'http://127.0.0.1:4311',
+            canonicalServerUrl: 'https://unanchored-home.example.test',
+            serverIdentityId: 'srv_unanchored_home',
+            secret: new Uint8Array(32).fill(4),
+            requireKeyChallengeV2: true,
+        })).rejects.toMatchObject({ kind: 'auth', code: 'home-address-mismatch' });
+        expect(runtimeFetchMock.mock.calls.map(([url]) => String(url)))
+            .not.toContain('http://127.0.0.1:4311/v1/auth');
+    });
+
     it('sends an explicit target request through runtimeOrigin without consulting focused Home state', async () => {
         runtimeFetchMock.mockResolvedValue(jsonResponse({ ok: true }));
 
@@ -149,6 +236,7 @@ describe('explicit endpoint authentication foundations', () => {
             serverIdentityId: 'srv_home_b',
             secret: new Uint8Array(32).fill(7),
             requireKeyChallengeV2: true,
+            requireExistingAccount: true,
         })).resolves.toEqual({ token: 'home-b-token' });
         expect(runtimeFetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
             'https://home-b.example.test/api/v1/features',
@@ -161,6 +249,7 @@ describe('explicit endpoint authentication foundations', () => {
             challengeId: 'challenge-home-b',
             publicKey: expect.any(String),
             signature: expect.any(String),
+            requireExistingAccount: true,
         });
         expect(activeSnapshotMock).not.toHaveBeenCalled();
     });
@@ -245,10 +334,9 @@ describe('explicit endpoint authentication foundations', () => {
             verifiedServerFeaturesSnapshot: {
                 status: 'ready',
                 serverIdentityId: 'srv_directory',
-                features: {
-                    features: {},
+                features: createRootLayoutFeaturesResponse({
                     capabilities: keyChallengeV2Capabilities('srv_directory'),
-                },
+                }),
             },
         })).resolves.toEqual({ token: 'restricted-directory-token' });
 

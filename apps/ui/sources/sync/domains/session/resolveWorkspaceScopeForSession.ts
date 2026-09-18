@@ -9,17 +9,24 @@ export function resolveWorkspaceScopeForSession(sessionId: string): WorkspaceSco
     return resolveWorkspaceTargetForSession(sessionId);
 }
 
-export function useWorkspaceScopeForSession(sessionId: string | null | undefined): WorkspaceScopeBase | null {
+export function useWorkspaceScopeForSession(
+    sessionId: string | null | undefined,
+    serverId?: string | null,
+): WorkspaceScopeBase | null {
     const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    const normalizedServerId = typeof serverId === 'string' ? serverId.trim() : '';
     const selector = useShallow((state: StorageState): WorkspaceScopeBase | null => {
         if (!normalizedSessionId) return null;
         return resolveWorkspaceTargetForSessionFromState({
             sessions: state.sessions,
-            sessionListRenderables: state.sessionListRenderables,
+            sessionListRowsByServerId: state.sessionListRowsByServerId,
+            ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
             machines: state.machines,
             sessionListIndexByServerId: state.sessionListIndexByServerId,
             getProjectForSession: state.getProjectForSession,
-        }, normalizedSessionId);
+            // A qualified caller names the Home; only an unqualified one may fall back to same-id
+            // discovery, which cannot separate two Homes hosting one Session id.
+        }, normalizedServerId ? { sessionId: normalizedSessionId, serverId: normalizedServerId } : normalizedSessionId);
     });
     const workspaceState = typeof storage === 'function'
         ? storage(selector)

@@ -121,6 +121,7 @@ installNavigationShellCommonModuleMocks({
 });
 
 vi.mock('react-native-safe-area-context', () => ({
+    initialWindowMetrics: null,
     useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
@@ -193,8 +194,8 @@ vi.mock('@/utils/platform/responsive', () => ({
     useHeaderHeight: () => 56,
 }));
 
-vi.mock('@/hooks/inbox/useInboxHasContent', () => ({
-    useInboxHasContent: () => inboxState.hasContent,
+vi.mock('@/hooks/inbox/useInboxModel', () => ({
+    useInboxModel: () => ({ hasContent: inboxState.hasContent }),
 }));
 
 vi.mock('@/hooks/server/useFriendsEnabled', () => ({

@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest'
 import { ApiMessageSchema } from './apiTypes'
 
 describe('ApiMessageSchema', () => {
+  it('preserves evaluated actor objects and explicit null while accepting older omissions', () => {
+    const row = { id: 'm1', seq: 1, createdAt: 1, content: { t: 'plain', v: {} } };
+    const actor = { v: 1, accountId: 'alice', profile: null };
+    expect(ApiMessageSchema.parse({ ...row, accountActor: actor })).toHaveProperty('accountActor', actor);
+    expect(ApiMessageSchema.parse({ ...row, accountActor: null })).toHaveProperty('accountActor', null);
+    expect(ApiMessageSchema.parse(row)).not.toHaveProperty('accountActor');
+    expect(ApiMessageSchema.safeParse({ ...row, accountActor: { ...actor, role: 'owner' } }).success).toBe(false);
+  });
+
   it('accepts encrypted message envelopes', () => {
     const parsed = ApiMessageSchema.safeParse({
       id: 'm1',

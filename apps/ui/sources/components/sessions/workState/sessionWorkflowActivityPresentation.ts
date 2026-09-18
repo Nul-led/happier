@@ -5,19 +5,30 @@ import {
 } from '@happier-dev/protocol';
 
 import type {
+    WorkflowRunDetailState,
     SessionWorkflowActivityHeadlineV1,
     SessionWorkflowAgentStatusV1,
     SessionWorkflowRunHeadlineV1,
     SessionWorkflowRunSnapshotV1,
-    SessionWorkflowRunStatusV1,
     WorkflowActivityRowViewModel,
     WorkflowAgentRowViewModel,
     WorkflowPhaseRollup,
     WorkflowPhaseViewModel,
 } from './sessionWorkflowActivityTypes';
+import type { WorkflowRunSnapshotObservation } from '@/sync/ops/sessionWorkflowActivity';
 
-/** Workflow status tone shared by the compact badge, popover, and transcript card (themed downstream). */
-export type WorkflowStatusTone = 'active' | 'warning' | 'complete' | 'neutral';
+/** Quiet presentation is a workflow decision; transport failures stay typed. */
+export function projectWorkflowRunDetail(runId: string, result: WorkflowRunSnapshotObservation, previous?: WorkflowRunDetailState | null): WorkflowRunDetailState {
+    const prior = previous?.runId === runId ? previous : null;
+    if (result.status === 'loading') return prior?.state === 'loaded' ? prior : { state: 'loading', runId };
+    if (result.status === 'ready') return {
+        state: 'loaded', runId, snapshot: result.value,
+        ...(result.freshness === 'stale' ? { stale: true as const } : {}),
+        ...(result.lastError ? { lastError: result.lastError.status } : {}),
+    };
+    if (prior?.state === 'loaded' && result.status !== 'forbidden' && result.status !== 'not_found' && result.status !== 'mode_mismatch') return { ...prior, stale: true, lastError: result.status };
+    return { state: 'missing', runId, reason: result.status };
+}
 
 const TERMINAL_RUN_STATUSES = new Set(['complete', 'failed', 'stopped', 'cancelled']);
 const UNASSIGNED_PHASE_ID = 'unassigned';
@@ -217,38 +228,6 @@ export function buildWorkflowActivityRows(snapshot: SessionWorkflowRunSnapshotV1
     }
 
     return rows;
-}
-
-/** Run-status tone: failed/blocked warns, active is active, terminal-success is complete. */
-export function resolveWorkflowRunTone(status: SessionWorkflowRunStatusV1): WorkflowStatusTone {
-    if (status === 'failed' || status === 'blocked' || status === 'stopped') return 'warning';
-    if (status === 'active') return 'active';
-    if (status === 'complete') return 'complete';
-    if (status === 'cancelled') return 'neutral';
-    return 'neutral';
-}
-
-/** Phase/run rollup tone: any failed/blocked agent warns, any active agent is active, all-complete is complete. */
-export function resolveWorkflowRollupTone(rollup: WorkflowPhaseRollup): WorkflowStatusTone {
-    if (rollup.failed > 0 || rollup.blocked > 0) return 'warning';
-    if (rollup.active > 0) return 'active';
-    if (rollup.total > 0 && rollup.complete === rollup.total) return 'complete';
-    return 'neutral';
-}
-
-/** Progress meter tone for `MeterBar`: success/warning/danger/neutral from a run-level rollup. */
-export function resolveWorkflowMeterTone(rollup: WorkflowPhaseRollup): 'success' | 'warning' | 'danger' | 'neutral' {
-    if (rollup.failed > 0) return 'danger';
-    if (rollup.blocked > 0) return 'warning';
-    if (rollup.total > 0 && rollup.complete === rollup.total) return 'success';
-    if (rollup.active > 0) return 'success';
-    return 'neutral';
-}
-
-/** Completed-over-total fraction in 0..1 for the progress meter; 0 when there are no agents. */
-export function resolveWorkflowProgressFraction(run: Pick<SessionWorkflowRunHeadlineV1, 'completedAgents' | 'totalAgents'>): number {
-    if (run.totalAgents <= 0) return 0;
-    return Math.min(1, Math.max(0, run.completedAgents / run.totalAgents));
 }
 
 /** Rollup over all agents in a loaded run snapshot (run-level counts derived from agent rows). */

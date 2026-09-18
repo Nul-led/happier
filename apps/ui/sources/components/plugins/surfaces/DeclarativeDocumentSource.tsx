@@ -299,10 +299,10 @@ function projectNormalizedNode(input: Readonly<{
         })));
     }
 
-    if (node.kind === 'action' && readRecord(node.effect)?.kind === 'composerApply') {
-        // The Protocol normalizer already accepted the closed transaction. The
-        // mounted renderer supplies its private Composer scope later, so this
-        // dynamic-document projection has no Composer ref/currentness owner.
+    if (node.kind === 'action' && (node.hostAction !== undefined || readRecord(node.effect)?.kind === 'composerApply')) {
+        // Protocol accepted the request. The mounted Host API supplies Action
+        // admission or the private Composer scope; this projection cannot
+        // grant either through a contributed Action inventory entry.
         projected.enabled = true;
     } else if (node.kind === 'action' || (node.kind === 'item' && node.action !== undefined)) {
         const action = readRecord(node.action);

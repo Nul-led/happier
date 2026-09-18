@@ -1,7 +1,15 @@
-import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import {
+    hasUnreadActivityForSessionViewer,
+    normalizeSessionViewerCompatibility,
+} from '@/sync/domains/session/readState/sessionViewer';
+import {
+    areResponsibleAccountSummariesEqual,
+    type SessionListRenderableSession,
+} from '@/sync/domains/session/listing/sessionListRenderable';
 import { areSessionListRenderableExternalSessionIdentitiesEqual } from '@/sync/domains/session/listing/sessionListRenderableMetadataComparison';
 import { parseSessionRuntimeActivityProjectionFields } from '@happier-dev/protocol';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
+import { normalizeSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 
 import type {
     SessionListCacheEntryV1,
@@ -104,6 +112,7 @@ function areSessionListCacheEntriesEqual(
         && nextEntry.activeAt === previousEntry.activeAt
         && nextEntry.archivedAt === previousEntry.archivedAt
         && nextEntry.lastViewedSessionSeq === previousEntry.lastViewedSessionSeq
+        && areCacheJsonValuesEqual(nextEntry.viewer, previousEntry.viewer)
         && nextEntry.pendingCount === previousEntry.pendingCount
         && nextEntry.pendingBlockedCount === previousEntry.pendingBlockedCount
         && nextEntry.pendingVersion === previousEntry.pendingVersion
@@ -118,8 +127,18 @@ function areSessionListCacheEntriesEqual(
         && (nextEntry.latestReadyEventSeq ?? null) === (previousEntry.latestReadyEventSeq ?? null)
         && (nextEntry.latestReadyEventAt ?? null) === (previousEntry.latestReadyEventAt ?? null)
         && (nextEntry.pendingRequestObservedAt ?? null) === (previousEntry.pendingRequestObservedAt ?? null)
+        && (
+            nextEntry.effectiveAccess === previousEntry.effectiveAccess
+            || (
+                nextEntry.effectiveAccess !== undefined
+                && previousEntry.effectiveAccess !== undefined
+                && areCacheJsonValuesEqual(nextEntry.effectiveAccess, previousEntry.effectiveAccess)
+            )
+        )
         && nextEntry.accessLevel === previousEntry.accessLevel
         && nextEntry.canApprovePermissions === previousEntry.canApprovePermissions
+        && nextEntry.responsibleAccountId === previousEntry.responsibleAccountId
+        && areResponsibleAccountSummariesEqual(nextEntry.responsibleAccount, previousEntry.responsibleAccount)
         && nextEntry.name === previousEntry.name
         && nextEntry.summaryText === previousEntry.summaryText
         && nextEntry.path === previousEntry.path
@@ -149,6 +168,16 @@ function countOwnEntries(record: Readonly<Record<string, unknown>> | null | unde
 
 export function buildSessionListRenderableFromCacheEntry(entry: SessionListCacheEntryV1): SessionListRenderableSession {
     const metadataUsable = isSessionListCacheEntryMetadataUsable(entry);
+    const access = entry.effectiveAccess === null
+        ? null
+        : entry.effectiveAccess === undefined
+            ? undefined
+            : normalizeSessionAccessProjection({ effectiveAccess: entry.effectiveAccess });
+    const viewer = normalizeSessionViewerCompatibility({
+        viewer: entry.viewer,
+        access,
+        accessLevel: entry.accessLevel,
+    });
     return {
         id: entry.sessionId,
         seq: normalizeNonNegativeInteger(entry.seq) ?? 0,
@@ -163,6 +192,7 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
         pendingVersion: entry.pendingVersion,
         pendingActivationAuthorization: entry.pendingActivationAuthorization ?? null,
         lastViewedSessionSeq: normalizeNonNegativeInteger(entry.lastViewedSessionSeq),
+        viewer: entry.viewer,
         metadataLayoutVersion: entry.metadataLayoutVersion,
         metadataVersion: entry.metadataVersion,
         agentStateVersion: entry.agentStateVersion,
@@ -179,7 +209,6 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
         } : null,
         thinking: false,
         thinkingAt: 0,
-        presence: entry.active ? 'online' : entry.activeAt,
         latestTurnStatus: entry.latestTurnStatus ?? null,
         latestTurnStatusObservedAt: normalizeNonNegativeNumber(entry.latestTurnStatusObservedAt),
         lastRuntimeIssue: entry.lastRuntimeIssue ?? null,
@@ -187,13 +216,22 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
         rollbackEligibleTurnStarts: normalizeNonNegativeNumberArray(entry.rollbackEligibleTurnStarts),
         latestReadyEventSeq: normalizeNonNegativeInteger(entry.latestReadyEventSeq),
         latestReadyEventAt: normalizeNonNegativeNumber(entry.latestReadyEventAt),
+        access,
         accessLevel: entry.accessLevel,
         canApprovePermissions: entry.canApprovePermissions,
+        ...(Object.prototype.hasOwnProperty.call(entry, 'responsibleAccountId')
+            ? { responsibleAccountId: entry.responsibleAccountId }
+            : {}),
+        ...(Object.prototype.hasOwnProperty.call(entry, 'responsibleAccount')
+            ? { responsibleAccount: entry.responsibleAccount }
+            : {}),
         keepVisibleWhenInactive: entry.keepVisibleWhenInactive === true,
         hasPendingPermissionRequests: entry.hasPendingPermissionRequests === true,
         hasPendingUserActionRequests: entry.hasPendingUserActionRequests === true,
         pendingRequestObservedAt: normalizeNonNegativeNumber(entry.pendingRequestObservedAt),
-        hasUnreadMessages: normalizeBoolean(entry.hasUnreadMessages),
+        hasUnreadMessages: viewer.kind === 'current'
+            ? hasUnreadActivityForSessionViewer(viewer.viewer)
+            : viewer.kind === 'legacy_owner' && normalizeBoolean(entry.hasUnreadMessages),
         metadataUnavailable: !metadataUsable,
     };
 }
@@ -225,7 +263,8 @@ function shouldPreserveSessionReadStateFromPreviousEntry(
     previousEntry: SessionListCacheEntryV1 | undefined,
 ): previousEntry is SessionListCacheEntryV1 {
     return (
-        typeof session.lastViewedSessionSeq !== 'number'
+        session.viewer === undefined
+        && typeof session.lastViewedSessionSeq !== 'number'
         && typeof session.hasUnreadMessages !== 'boolean'
         && Boolean(previousEntry)
     );
@@ -241,8 +280,10 @@ export function buildSessionListCacheEntryFromRenderable(
     const legacyMetadata = readSessionMetadataLayoutVersion(session.metadataLayoutVersion) === 0
         ? session.metadata
         : null;
+    const viewer = normalizeSessionViewerCompatibility(session);
     const nextEntry: SessionListCacheEntryV1 = {
         sessionId: session.id,
+        viewer: session.viewer,
         seq: preserveReadState ? previousEntry.seq : normalizeNonNegativeInteger(session.seq) ?? 0,
         metadataLayoutVersion: preserveMetadata
             ? previousEntry.metadataLayoutVersion
@@ -272,8 +313,32 @@ export function buildSessionListCacheEntryFromRenderable(
         pendingRequestObservedAt: preserveAgentState
             ? previousEntry.pendingRequestObservedAt ?? null
             : normalizeNonNegativeNumber(session.pendingRequestObservedAt),
+        ...(session.access === null
+            ? { effectiveAccess: null }
+            : session.access?.sources !== undefined
+                ? {
+                    effectiveAccess: {
+                        v: 1 as const,
+                        level: session.access.level,
+                        sources: session.access.sources,
+                        capabilities: session.access.capabilities,
+                        ...(session.access.audienceContext !== undefined
+                            ? { audienceContext: session.access.audienceContext }
+                            : {}),
+                        ...(session.access.primaryTeamId !== undefined
+                            ? { primaryTeamId: session.access.primaryTeamId }
+                            : {}),
+                    },
+                }
+                : {}),
         accessLevel: session.accessLevel,
         canApprovePermissions: session.canApprovePermissions,
+        ...(Object.prototype.hasOwnProperty.call(session, 'responsibleAccountId')
+            ? { responsibleAccountId: session.responsibleAccountId }
+            : {}),
+        ...(Object.prototype.hasOwnProperty.call(session, 'responsibleAccount')
+            ? { responsibleAccount: session.responsibleAccount }
+            : {}),
         name: preserveMetadata ? previousEntry.name : legacyMetadata?.name,
         summaryText: preserveMetadata ? previousEntry.summaryText ?? null : session.metadata?.summaryText ?? null,
         path: preserveMetadata ? previousEntry.path : legacyMetadata?.path ?? '',
@@ -299,9 +364,12 @@ export function buildSessionListCacheEntryFromRenderable(
             : typeof session.hasPendingUserActionRequests === 'boolean'
                 ? session.hasPendingUserActionRequests
                 : undefined,
-        hasUnreadMessages: preserveReadState
-            ? normalizeBoolean(previousEntry.hasUnreadMessages)
-            : normalizeBoolean(session.hasUnreadMessages),
+        hasUnreadMessages: viewer.kind === 'current'
+            ? hasUnreadActivityForSessionViewer(viewer.viewer)
+            : viewer.kind === 'legacy_owner'
+                && (preserveReadState
+                    ? normalizeBoolean(previousEntry.hasUnreadMessages)
+                    : normalizeBoolean(session.hasUnreadMessages)),
     };
 
     return previousEntry && areSessionListCacheEntriesEqual(nextEntry, previousEntry) ? previousEntry : nextEntry;

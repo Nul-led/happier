@@ -1,0 +1,34 @@
+import * as React from 'react';
+import { Platform, Pressable, type StyleProp, type View, type ViewStyle } from 'react-native';
+
+import { DeferredAnchoredTooltip } from './DeferredAnchoredTooltip';
+
+/** Focusable help text with no action. Action controls keep their own interaction owner. */
+export function Tooltip(props: Readonly<{
+    label: string;
+    children: React.ReactNode;
+    testID?: string;
+    style?: StyleProp<ViewStyle>;
+}>) {
+    const anchorRef = React.useRef<View | null>(null);
+    const [hovered, setHovered] = React.useState(false);
+    const [focused, setFocused] = React.useState(false);
+    return (
+        <Pressable
+            ref={anchorRef}
+            testID={props.testID}
+            accessibilityRole="text"
+            accessibilityLabel={props.label}
+            onHoverIn={() => setHovered(true)}
+            onHoverOut={() => setHovered(false)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            style={props.style}
+        >
+            {props.children}
+            {Platform.OS === 'web' && (hovered || focused) ? (
+                <DeferredAnchoredTooltip activationKey={`${hovered}:${focused}`} anchorRef={anchorRef} label={props.label} testID={props.testID ? `${props.testID}-tooltip` : undefined} />
+            ) : null}
+        </Pressable>
+    );
+}

@@ -12,6 +12,9 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 const desktopHostMock = vi.hoisted(() => ({
     invocations: [] as Array<Readonly<{ command: string; args: Record<string, unknown> | undefined }>>,
     kind: null as 'tauri' | 'electron' | null,
+    runtimePurpose: { kind: 'generic' } as
+        | Readonly<{ kind: 'generic' }>
+        | Readonly<{ kind: 'personal-home'; canonicalServerUrl: string }>,
 }));
 const relocationInputs = vi.hoisted(() => ({
     remoteHosts: [] as unknown[],
@@ -31,6 +34,26 @@ vi.mock('@/utils/platform/desktopHost', () => ({
         }
         if (command === 'get_system_task_snapshot') {
             const taskId = String(args?.taskId ?? '');
+            if (taskId.includes('relay.runtime.status.v1')) {
+                return {
+                    events: [],
+                    result: {
+                        protocolVersion: 1,
+                        taskId,
+                        ok: true,
+                        data: {
+                            installed: true,
+                            dataPresent: true,
+                            version: '1',
+                            relayUrl: 'http://127.0.0.1:43123',
+                            healthy: true,
+                            purpose: desktopHostMock.runtimePurpose,
+                            anonymousSignupEnabled: desktopHostMock.runtimePurpose.kind === 'personal-home' ? false : null,
+                            service: { active: true, enabled: true },
+                        },
+                    },
+                };
+            }
             if (taskId.includes('relay.runtime.uninstall.v1')) {
                 return {
                     events: [],
@@ -178,6 +201,7 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
     beforeEach(() => {
         desktopHostMock.kind = null;
         desktopHostMock.invocations.length = 0;
+        desktopHostMock.runtimePurpose = { kind: 'generic' };
         relocationInputs.remoteHosts = [];
         rebuildHomeSearchIndex.mockClear();
     });
@@ -288,8 +312,64 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
         expect(screen.findAllByType('LocalRelayRuntimeControlSection' as any)).toHaveLength(0);
     });
 
+    it('keeps runtime-scoped Personal Home operations armed after profile-only removal', async () => {
+        desktopHostMock.kind = 'tauri';
+        desktopHostMock.runtimePurpose = {
+            kind: 'personal-home',
+            canonicalServerUrl: 'http://127.0.0.1:43123',
+        };
+        // "Remove Home from Happier" leaves the managed runtime running and only drops the saved
+        // profile, so this is the reachable post-removal state of the Settings screen.
+        setController({ servers: [] });
+
+        const { ServerSettingsScreen } = await import('./ServerSettingsScreen');
+        const screen = await renderScreen(React.createElement(ServerSettingsScreen));
+
+        await vi.waitFor(() => expect(
+            screen.findAllByType('PersonalHomeRuntimeControlSection' as any),
+        ).toHaveLength(1));
+        expect(screen.findAllByType('LocalRelayRuntimeControlSection' as any)).toHaveLength(0);
+
+        const operations = screen.findAllByType('PersonalHomeRuntimeControlSection' as any)[0]?.props.operations;
+        expect(operations).toBeDefined();
+        expect(typeof operations.selectBackupArchive).toBe('function');
+        expect(typeof operations.selectBackupExportDestination).toBe('function');
+        expect(typeof operations.revealBackupOutput).toBe('function');
+        expect(typeof operations.openDataLocation).toBe('function');
+        expect(typeof operations.openLogs).toBe('function');
+        expect(typeof operations.uninstallRuntime).toBe('function');
+        // Profile-scoped operations have no target and are withheld rather than faked.
+        expect(operations.removeProfile).toBeUndefined();
+        expect(operations.repairSearch).toBeUndefined();
+        expect(operations.relocation).toBeUndefined();
+    });
+
+    it('does not let a stale completed profile override a fresh generic runtime purpose', async () => {
+        const { ServerLocalRuntimeControlSection } = await import('./ServerSettingsScreen');
+        const screen = await renderScreen(React.createElement(ServerLocalRuntimeControlSection, {
+            controller: {
+                status: {
+                    installed: true,
+                    dataPresent: true,
+                    version: '1',
+                    relayUrl: 'http://127.0.0.1:43123',
+                    healthy: true,
+                    purpose: { kind: 'generic' },
+                    anonymousSignupEnabled: null,
+                    service: { active: true, enabled: true },
+                },
+            } as never,
+            homeLabel: 'Stale Personal Home',
+            operations: {},
+        }));
+
+        expect(screen.findAllByType('PersonalHomeRuntimeControlSection' as any)).toHaveLength(0);
+        expect(screen.findAllByType('LocalRelayRuntimeControlSection' as any)).toHaveLength(1);
+    });
+
     it('supplies the full production Personal Home operations contract through existing canonical bridges', async () => {
         desktopHostMock.kind = 'tauri';
+        desktopHostMock.runtimePurpose = { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' };
         const onRemoveServer = vi.fn(async (..._removedProfiles: unknown[]) => {});
         const personalHomeProfile = {
             id: 'home-1',
@@ -310,6 +390,9 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
         const { ServerSettingsScreen } = await import('./ServerSettingsScreen');
 
         const screen = await renderScreen(React.createElement(ServerSettingsScreen));
+        await vi.waitFor(() => expect(
+            screen.findAllByType('PersonalHomeRuntimeControlSection' as any),
+        ).toHaveLength(1));
         const sections = screen.findAllByType('PersonalHomeRuntimeControlSection' as any);
         expect(sections).toHaveLength(1);
         const operations = sections[0].props.operations;
@@ -353,6 +436,7 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
 
     it('keeps an eligible managed SSH relocation destination available without Account Directory publication', async () => {
         desktopHostMock.kind = 'tauri';
+        desktopHostMock.runtimePurpose = { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' };
         relocationInputs.remoteHosts = [{
             id: 'managed-host-1',
             name: 'Home server',
@@ -376,6 +460,9 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
 
         const { ServerSettingsScreen } = await import('./ServerSettingsScreen');
         const screen = await renderScreen(React.createElement(ServerSettingsScreen));
+        await vi.waitFor(() => expect(
+            screen.findAllByType('PersonalHomeRuntimeControlSection' as any),
+        ).toHaveLength(1));
         const section = screen.findAllByType('PersonalHomeRuntimeControlSection' as any)[0];
 
         expect(section?.props.operations.relocation.destinations).toEqual([{
@@ -407,6 +494,7 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
 
     it('finds the managed Personal Home independent of focus and never changes focus', async () => {
         desktopHostMock.kind = 'tauri';
+        desktopHostMock.runtimePurpose = { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' };
         const previousTauriInternals = (globalThis as any).__TAURI_INTERNALS__;
         (globalThis as any).__TAURI_INTERNALS__ = { invoke: () => undefined };
         const onRemoveServer = vi.fn(async (..._removedProfiles: unknown[]) => {});
@@ -437,6 +525,9 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
             const screen = await renderScreen(React.createElement(ServerSettingsScreen));
 
             // The focused profile is the generic server, yet the managed Home section is found.
+            await vi.waitFor(() => expect(
+                screen.findAllByType('PersonalHomeRuntimeControlSection' as any),
+            ).toHaveLength(1));
             const sections = screen.findAllByType('PersonalHomeRuntimeControlSection' as any);
             expect(sections).toHaveLength(1);
             expect(screen.findAllByType('LocalRelayRuntimeControlSection' as any)).toHaveLength(0);

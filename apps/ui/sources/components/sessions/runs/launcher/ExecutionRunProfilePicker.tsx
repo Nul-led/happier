@@ -1,8 +1,9 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { Platform, Pressable, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 
 import type { ExecutionRunLauncherProfileChoice } from './resolveExecutionRunLauncherProfileChoices';
 
@@ -10,11 +11,13 @@ export const ExecutionRunProfilePicker = React.memo((props: Readonly<{
     choices: readonly ExecutionRunLauncherProfileChoice[];
     selectedId: string;
     selectedGenerationId: string;
+    editable?: boolean;
     sectionLabel: string;
     resolveAccessibilityLabel: (title: string) => string;
     onSelect: (choice: ExecutionRunLauncherProfileChoice) => void;
 }>) => {
     const { theme } = useUnistyles();
+    const interactiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
     if (props.choices.length === 0) return null;
 
     return (
@@ -32,17 +35,21 @@ export const ExecutionRunProfilePicker = React.memo((props: Readonly<{
                             testID={`execution-run-launcher-profile:${choice.id}`}
                             accessibilityRole="button"
                             accessibilityLabel={props.resolveAccessibilityLabel(choice.title)}
-                            accessibilityState={{ selected, disabled: choice.disabled }}
-                            disabled={choice.disabled}
+                            accessibilityState={{ selected, disabled: choice.disabled || props.editable === false }}
+                            disabled={choice.disabled || props.editable === false}
                             onPress={() => props.onSelect(choice)}
                             style={({ pressed }) => ({
+                                minWidth: interactiveTargetSize,
+                                minHeight: interactiveTargetSize,
+                                alignItems: 'center',
+                                justifyContent: 'center',
                                 paddingVertical: 8,
                                 paddingHorizontal: 10,
                                 borderRadius: 10,
                                 borderWidth: 1,
                                 borderColor: theme.colors.border.default,
                                 backgroundColor: theme.colors.surface.inset,
-                                opacity: choice.disabled ? 0.45 : pressed ? 0.7 : 1,
+                                opacity: choice.disabled || props.editable === false ? 0.45 : pressed ? 0.7 : 1,
                             })}
                         >
                             <Text style={{

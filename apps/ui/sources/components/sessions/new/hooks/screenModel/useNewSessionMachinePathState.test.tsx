@@ -17,7 +17,7 @@ type MachineFixtureInput = {
 };
 
 type HookState = ReturnType<typeof useNewSessionMachinePathState>;
-type HookParams = Parameters<typeof useNewSessionMachinePathState>[0];
+type HookParams = Omit<Parameters<typeof useNewSessionMachinePathState>[0], 'serverId'> & { serverId?: string | null };
 
 function makeMachine({ id, metadata, ...overrides }: MachineFixtureInput): Machine {
     const base = createMachineFixture({ id, ...overrides });
@@ -82,12 +82,336 @@ function getSelection(state: HookState): Readonly<{
 }
 
 function renderMachinePathState(initialProps: HookParams) {
-    return renderHook((props: HookParams) => useNewSessionMachinePathState(props), {
+    return renderHook((props: HookParams) => useNewSessionMachinePathState({ serverId: 'server-a', ...props }), {
         initialProps,
     });
 }
 
 describe('useNewSessionMachinePathState', () => {
+    it('commits a Temporary computer target without pairing it with a machine', async () => {
+        const hook = await renderHook(() => useNewSessionMachinePathState({
+            serverId: 'server-a',
+            machines: [makeMachine({ id: 'machine-a' })],
+            recentMachinePaths: [],
+            machineIdParam: null,
+            pathParam: null,
+        }));
+
+        await act(async () => {
+            hook.getCurrent().setTemporaryComputerTarget({
+                serverId: 'server-a',
+                artifactTarget: 'linux-x64',
+                workspace: { kind: 'choose_on_endpoint' },
+            });
+        });
+
+        expect(hook.getCurrent().executionTarget).toEqual({
+            kind: 'temporary_computer',
+            serverId: 'server-a',
+            artifactTarget: 'linux-x64',
+            workspace: { kind: 'choose_on_endpoint' },
+        });
+        expect(hook.getCurrent().selectedMachineId).toBeNull();
+        await hook.unmount();
+    });
+
+    it('applies a fresh rich picker target after an earlier explicit Machine selection', async () => {
+        const initial = {
+            machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/a' } }),
+            recentMachinePaths: [],
+            machineIdParam: 'machine-a',
+            pathParam: '/a/repo',
+            executionTargetRequestKey: 'seed-before-picker',
+            persistedExecutionTarget: {
+                kind: 'machine' as const,
+                target: { serverId: 'server-a', machineId: 'machine-a' },
+            },
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+        await act(async () => hook.getCurrent().setSelectedMachineId('machine-a'));
+
+        const temporaryTarget = {
+            kind: 'temporary_computer' as const,
+            serverId: 'server-a',
+            artifactTarget: 'linux-x64' as const,
+            workspace: { kind: 'choose_on_endpoint' as const },
+        };
+        await hook.rerender({
+            ...initial,
+            machineIdParam: null,
+            pathParam: null,
+            executionTargetRequestKey: 'picker-return',
+            persistedExecutionTarget: temporaryTarget,
+        });
+
+        expect(hook.getCurrent()).toMatchObject({
+            executionTarget: temporaryTarget,
+            selectedMachineId: null,
+            selectedPath: '',
+        });
+        await hook.unmount();
+    });
+
+    it('clears a prior Pool origin when the user explicitly selects the same Machine', async () => {
+        const poolId = '3a948f0c-bc30-491c-b764-37f0e6744d1f';
+        const initial = {
+            machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/a' } }),
+            recentMachinePaths: [],
+            machineIdParam: 'machine-a',
+            pathParam: null,
+            routeSelectionOrigin: { kind: 'machine_pool' as const, poolId },
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+        expect(hook.getCurrent().executionTarget).toMatchObject({
+            kind: 'machine',
+            selectionOrigin: { kind: 'machine_pool', poolId },
+        });
+
+        await act(async () => hook.getCurrent().setSelectedMachineId('machine-a'));
+        await hook.rerender({ ...initial, routeSelectionOrigin: undefined });
+
+        expect(hook.getCurrent().executionTarget).toEqual({
+            kind: 'machine',
+            target: { serverId: 'server-a', machineId: 'machine-a' },
+        });
+        await hook.unmount();
+    });
+
+    it('applies a newly resolved Pool origin when the exact Machine is unchanged', async () => {
+        const poolId = '3a948f0c-bc30-491c-b764-37f0e6744d1f';
+        const initial = {
+            machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/a' } }),
+            recentMachinePaths: [],
+            machineIdParam: 'machine-a',
+            pathParam: null,
+            routeSelectionOrigin: undefined,
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+        expect(hook.getCurrent().executionTarget).toEqual({
+            kind: 'machine',
+            target: { serverId: 'server-a', machineId: 'machine-a' },
+        });
+
+        await hook.rerender({
+            ...initial,
+            routeSelectionOrigin: { kind: 'machine_pool' as const, poolId },
+        });
+
+        expect(hook.getCurrent().executionTarget).toMatchObject({
+            kind: 'machine',
+            target: { serverId: 'server-a', machineId: 'machine-a' },
+            selectionOrigin: { kind: 'machine_pool', poolId },
+        });
+        await hook.unmount();
+    });
+
+    it('can attach a resolved Pool origin without waiting for route parameter hydration', async () => {
+        const poolId = '3a948f0c-bc30-491c-b764-37f0e6744d1f';
+        const hook = await renderMachinePathState({
+            machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/a' } }),
+            recentMachinePaths: [],
+            machineIdParam: null,
+            pathParam: null,
+        });
+
+        await act(async () => hook.getCurrent().setSelectedMachineTarget({
+            machineId: 'machine-a',
+            selectionOrigin: { kind: 'machine_pool', poolId },
+        }));
+
+        expect(hook.getCurrent().executionTarget).toMatchObject({
+            kind: 'machine',
+            target: { serverId: 'server-a', machineId: 'machine-a' },
+            selectionOrigin: { kind: 'machine_pool', poolId },
+        });
+        await hook.unmount();
+    });
+
+    it('commits an explicit Machine and its Machine-scoped path through one target transition', async () => {
+        const hook = await renderMachinePathState({
+            machines: toMachines(
+                { id: 'machine-a', metadata: { homeDir: '/a' } },
+                { id: 'machine-b', metadata: { homeDir: '/b' } },
+            ),
+            recentMachinePaths: [],
+            machineIdParam: 'machine-a',
+            pathParam: '/a/repo',
+        });
+
+        await act(async () => hook.getCurrent().setSelectedMachineTarget({
+            machineId: 'machine-b',
+            path: '/b/repo',
+        }));
+
+        expect(getSelection(hook.getCurrent())).toEqual({
+            selectedMachineId: 'machine-b',
+            selectedPath: '/b/repo',
+        });
+        await hook.unmount();
+    });
+
+    it('retains a Temporary computer target and its independent directory until an explicit Machine replacement', async () => {
+        const executionTarget = {
+            kind: 'temporary_computer',
+            serverId: 'server-a',
+            artifactTarget: 'darwin-arm64',
+            workspace: { kind: 'choose_on_endpoint' },
+        } as const;
+        const initial = {
+            serverId: 'server-a',
+            machines: toMachines({ id: 'available', metadata: { homeDir: '/available' } }),
+            recentMachinePaths: [],
+            machineIdParam: null,
+            pathParam: null,
+            persistedExecutionTarget: executionTarget,
+            persistedPath: '/retained-machine-directory',
+        };
+        const hook = await renderMachinePathState(initial);
+        expect(hook.getCurrent()).toMatchObject({
+            executionTarget,
+            selectedMachineId: null,
+            selectedPath: '/retained-machine-directory',
+        });
+        await hook.rerender({ ...initial, machines: [] });
+        await hook.rerender(initial);
+        expect(hook.getCurrent()).toMatchObject({ executionTarget, selectedMachineId: null });
+
+        await act(async () => hook.getCurrent().setSelectedMachineId('available'));
+        await hook.rerender(initial);
+        expect(hook.getCurrent()).toMatchObject({
+            executionTarget: { kind: 'machine', target: { serverId: 'server-a', machineId: 'available' } },
+            selectedMachineId: 'available',
+        });
+    });
+
+    it('accepts a fresh exact route replacement before its Machine snapshot arrives', async () => {
+        const initial = {
+            machines: toMachines({ id: 'original', metadata: { homeDir: '/original' } }),
+            recentMachinePaths: [],
+            machineIdParam: 'original',
+            pathParam: '/original/repo',
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+        await act(async () => hook.getCurrent().setSelectedMachineId('original'));
+        await hook.rerender({ ...initial, machineIdParam: 'replacement', pathParam: '/replacement/repo' });
+        expect(getSelection(hook.getCurrent())).toEqual({ selectedMachineId: 'replacement', selectedPath: '/replacement/repo' });
+        await hook.unmount();
+    });
+
+    it('does not transfer an edited implicit Machine path to an exact picker target that has not hydrated', async () => {
+        const initial = {
+            machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/a' } }),
+            recentMachinePaths: [],
+            machineIdParam: null,
+            pathParam: null,
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+        await act(async () => hook.getCurrent().setSelectedPath('/a/authored-repo'));
+
+        await hook.rerender({ ...initial, machineIdParam: 'machine-b' });
+        expect(getSelection(hook.getCurrent())).toEqual({
+            selectedMachineId: 'machine-b',
+            selectedPath: '',
+        });
+
+        await hook.rerender({
+            ...initial,
+            machines: toMachines(
+                { id: 'machine-a', metadata: { homeDir: '/a' } },
+                { id: 'machine-b', metadata: { homeDir: '/b' } },
+            ),
+            machineIdParam: 'machine-b',
+        });
+        expect(getSelection(hook.getCurrent())).toEqual({
+            selectedMachineId: 'machine-b',
+            selectedPath: '/b',
+        });
+        await hook.unmount();
+    });
+
+    it('does not restore an absent route target after the user replaces it and it reconnects', async () => {
+        const initial = {
+            machines: toMachines({ id: 'replacement', metadata: { homeDir: '/replacement' } }),
+            recentMachinePaths: [],
+            machineIdParam: 'original',
+            pathParam: '/original/repo',
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+        await act(async () => {
+            hook.getCurrent().setSelectedMachineId('replacement');
+            hook.getCurrent().setSelectedPath('/replacement/repo');
+        });
+        await hook.rerender({
+            ...initial,
+            machines: toMachines(
+                { id: 'original', metadata: { homeDir: '/original' } },
+                { id: 'replacement', metadata: { homeDir: '/replacement' } },
+            ),
+        });
+        expect(getSelection(hook.getCurrent())).toEqual({
+            selectedMachineId: 'replacement',
+            selectedPath: '/replacement/repo',
+        });
+        await hook.unmount();
+    });
+
+    it('pins the implicit target once its directory is edited, including uncommitted typing', async () => {
+        const initial = {
+            machines: toMachines({ id: 'original', metadata: { homeDir: '/original' } }),
+            recentMachinePaths: [],
+            machineIdParam: null,
+            pathParam: null,
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+        await act(async () => hook.getCurrent().setDraftSelectedPath('/original/typing'));
+        await hook.rerender({
+            ...initial,
+            machines: toMachines({ id: 'replacement', metadata: { homeDir: '/replacement' } }),
+        });
+        expect(hook.getCurrent().selectedMachineId).toBe('original');
+        expect(hook.getCurrent().getRequestedPath()).toBe('/original/typing');
+        await hook.unmount();
+    });
+
+    it('applies a deliberate route Home change even when both Homes use the same Machine id', async () => {
+        const initial = {
+            machines: toMachines({ id: 'shared-id', metadata: { homeDir: '/home-a' } }),
+            recentMachinePaths: [],
+            machineIdParam: 'shared-id',
+            pathParam: null,
+            cacheScopeKey: 'home-a',
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+        await hook.rerender({
+            ...initial,
+            machines: toMachines({ id: 'shared-id', metadata: { homeDir: '/home-b' } }),
+            cacheScopeKey: 'home-b',
+        });
+        expect(getSelection(hook.getCurrent())).toEqual({ selectedMachineId: 'shared-id', selectedPath: '/home-b' });
+        await hook.unmount();
+    });
+
+    it('does not restore the prior Home path from a draft echo after an exact Home change', async () => {
+        const initial = {
+            machines: toMachines({ id: 'shared-id', metadata: { homeDir: '/home-a' } }),
+            recentMachinePaths: [],
+            machineIdParam: 'shared-id',
+            pathParam: null,
+            cacheScopeKey: 'home-a',
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+        const changed = {
+            ...initial,
+            machines: toMachines({ id: 'shared-id', metadata: { homeDir: '/home-b' } }),
+            cacheScopeKey: 'home-b',
+        };
+        await hook.rerender(changed);
+        expect(hook.getCurrent().selectedPath).toBe('/home-b');
+        await hook.rerender({ ...changed, persistedMachineId: 'shared-id', persistedPath: '/home-a' });
+        expect(hook.getCurrent().selectedPath).toBe('/home-b');
+        await hook.unmount();
+    });
+
     it('seeds the selected path from previous sessions when no stored recent path exists', async () => {
         const initialProps = {
             machines: toMachines({ id: 'machine-1', metadata: { homeDir: '/Users/test' } }),
@@ -133,7 +457,7 @@ describe('useNewSessionMachinePathState', () => {
         });
 
         expect(getSelection(hook.getCurrent())).toEqual({
-            selectedMachineId: null,
+            selectedMachineId: 'machine-target',
             selectedPath: '/repo/desired',
         });
 
@@ -170,7 +494,7 @@ describe('useNewSessionMachinePathState', () => {
         });
 
         expect(getSelection(hook.getCurrent())).toEqual({
-            selectedMachineId: null,
+            selectedMachineId: 'machine-target',
             selectedPath: '',
         });
 
@@ -200,14 +524,14 @@ describe('useNewSessionMachinePathState', () => {
         } as HookParams & { persistedMachineId: string; persistedPath: string });
 
         expect(getSelection(hook.getCurrent())).toEqual({
-            selectedMachineId: null,
+            selectedMachineId: 'machine-b',
             selectedPath: '/b/repo',
         });
 
         await hook.unmount();
     });
 
-    it('reconciles a persisted machine preference to another online machine when the persisted machine is offline', async () => {
+    it('keeps a persisted exact machine and its path when another machine is online', async () => {
         const now = Date.now();
 
         const hook = await renderMachinePathState({
@@ -226,8 +550,8 @@ describe('useNewSessionMachinePathState', () => {
         });
 
         expect(getSelection(hook.getCurrent())).toEqual({
-            selectedMachineId: 'machine-online',
-            selectedPath: '/online',
+            selectedMachineId: 'machine-offline',
+            selectedPath: '/repo/stale',
         });
 
         await hook.unmount();
@@ -448,6 +772,55 @@ describe('useNewSessionMachinePathState', () => {
         await hook.unmount();
     });
 
+    it('keeps an explicitly selected exact machine and path when that machine disappears', async () => {
+        const hook = await renderMachinePathState({
+            machines: toMachines(
+                { id: 'machine-a', metadata: { homeDir: '/a' } },
+                { id: 'machine-b', metadata: { homeDir: '/b' } },
+            ),
+            recentMachinePaths: [],
+            machineIdParam: null,
+            pathParam: null,
+        });
+
+        await act(async () => {
+            hook.getCurrent().setSelectedMachineId('machine-a');
+            hook.getCurrent().setSelectedPath('/a/repo');
+        });
+
+        await hook.rerender({
+            machines: toMachines({ id: 'machine-b', metadata: { homeDir: '/b' } }),
+            recentMachinePaths: [{ machineId: 'machine-b', path: '/b/repo' }],
+            machineIdParam: null,
+            pathParam: null,
+        });
+
+        expect(getSelection(hook.getCurrent())).toEqual({
+            selectedMachineId: 'machine-a',
+            selectedPath: '/a/repo',
+        });
+
+        await hook.unmount();
+    });
+
+    it('keeps an absent persisted exact machine and path instead of selecting an available machine', async () => {
+        const hook = await renderMachinePathState({
+            machines: toMachines({ id: 'machine-b', metadata: { homeDir: '/b' } }),
+            recentMachinePaths: [{ machineId: 'machine-b', path: '/b/repo' }],
+            machineIdParam: null,
+            pathParam: null,
+            persistedMachineId: 'machine-a',
+            persistedPath: '/a/repo',
+        });
+
+        expect(getSelection(hook.getCurrent())).toEqual({
+            selectedMachineId: 'machine-a',
+            selectedPath: '/a/repo',
+        });
+
+        await hook.unmount();
+    });
+
     it('preserves the current selection when it becomes offline but still exists', async () => {
         const now = Date.now();
         const initialMachines = toMachines(
@@ -579,7 +952,7 @@ describe('useNewSessionMachinePathState', () => {
 
         expect(getSelection(hook.getCurrent())).toEqual({
             selectedMachineId: 'machine-online',
-            selectedPath: '/offline',
+            selectedPath: '/online',
         });
 
         await hook.rerender({
@@ -589,21 +962,6 @@ describe('useNewSessionMachinePathState', () => {
             ),
             recentMachinePaths: [],
             machineIdParam: 'machine-offline',
-            pathParam: null,
-        });
-
-        expect(getSelection(hook.getCurrent())).toEqual({
-            selectedMachineId: 'machine-online',
-            selectedPath: '/offline',
-        });
-
-        await hook.rerender({
-            machines: toMachines(
-                { id: 'machine-offline', metadata: { homeDir: '/offline' }, activeAt: now - 3 * 60_000 },
-                { id: 'machine-online', metadata: { homeDir: '/online' }, activeAt: now - 10_000 },
-            ),
-            recentMachinePaths: [],
-            machineIdParam: 'machine-offline-next',
             pathParam: null,
         });
 

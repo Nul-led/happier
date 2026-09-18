@@ -1,158 +1,128 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { adoptHomeProfile } from '@/sync/domains/server/serverProfiles';
+import { createDirectoryHttpFixture } from './accountDirectoryTestFixtures';
+import { provisionAuthenticatedHomeLink, revokeAuthenticatedHomeLink } from './provisionAuthenticatedHomeLink';
 
-import type { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
-import { provisionAuthenticatedHomeLink } from './provisionAuthenticatedHomeLink';
+const boundary = vi.hoisted(() => ({ request: vi.fn(), acquire: vi.fn(), release: vi.fn(async () => {}) }));
+vi.mock('@/sync/http/client', () => ({ createServerFetchAtEndpoint: () => boundary.request }));
+vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({ acquireIrohHomeRuntimeOrigin: (...args: unknown[]) => boundary.acquire(...args) }));
+vi.mock('@/utils/platform/desktopHost', () => ({ desktopHostKind: () => 'tauri', isDesktopHost: () => true }));
 
-const order = vi.hoisted((): string[] => []);
-const isRelinkConflictMock = vi.hoisted(() => vi.fn((_error: unknown) => false));
-const putHomeDirectoryLinkMock = vi.hoisted(() => vi.fn(async () => { order.push('publish-home-link'); }));
-const transportCloseMock = vi.hoisted(() => vi.fn(async () => {}));
-const resolveHomeEnrollmentTransportMock = vi.hoisted(() => vi.fn(async () => {
-    order.push('open-home-transport');
-    return { ok: true, transport: { close: transportCloseMock } };
-}));
-const getCredentialsMock = vi.hoisted(() => vi.fn(async () => ({ token: 'home-token' })));
-
-vi.mock('@/sync/api/accountDirectory/accountDirectoryClient', () => ({
-    isAccountDirectoryRelinkConflict: isRelinkConflictMock,
-    putHomeDirectoryLink: putHomeDirectoryLinkMock,
-}));
-vi.mock('@/auth/enrollment/homeEnrollmentTransport', () => ({
-    resolveHomeEnrollmentTransport: resolveHomeEnrollmentTransportMock,
-}));
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentialsForServerUrl: getCredentialsMock,
-    },
-}));
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    resolveServerProfileForPortableIdentity: () => ({
-        kind: 'resolved',
-        profile: { id: 'home-a', name: 'Home A', serverUrl: 'https://home-a.test', serverIdentityId: 'srv_home_a' },
-    }),
-    buildHomeConnectionDescriptorForProfile: () => ({
-        v: 1,
-        homeServerIdentityId: 'srv_home_a',
-        canonicalServerUrl: 'https://home-a.test',
-        revision: 1,
-        endpoints: [{ kind: 'https', url: 'https://home-a.test' }],
-    }),
-}));
-
-describe('provisionAuthenticatedHomeLink shared publication owner', () => {
-    beforeEach(() => {
-        order.length = 0;
-        vi.clearAllMocks();
+describe('provisionAuthenticatedHomeLink', () => {
+    const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+    let fixture: ReturnType<typeof createDirectoryHttpFixture>;
+    let session: AccountDirectorySession;
+    let homeStatus: number;
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+    beforeEach(async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `directory_link_${Date.now()}_${Math.random()}`;
+        boundary.request.mockReset();
+        boundary.acquire.mockReset();
+        boundary.release.mockClear();
+        fixture = createDirectoryHttpFixture();
+        homeStatus = 200;
+        await TokenStorage.accountDirectoryAuthCredentials.set(
+            { endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { token: 'directory-token' },
+        );
+        session = new AccountDirectorySession(
+            { endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId },
+            { capability: fixture.service.capability },
+        );
+        await adoptHomeProfile({ descriptor: fixture.home.connectionDescriptor, source: 'qr' });
+        await TokenStorage.setCredentialsForServerUrl(fixture.home.canonicalServerUrl, { serverId: fixture.home.homeServerIdentityId }, { token: fixture.token });
+        boundary.request.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account-directory/me') return json({
+                v: 1, accountId: 'directory-subject', displayName: null, avatar: null, linkedAuthenticationMethods: [],
+            });
+            if (path.startsWith('/v1/account/directory-links/')) return json(homeStatus === 200 ? {
+                v: 1, issuerServerIdentityId: fixture.service.serverIdentityId, issuerSubjectId: 'directory-subject',
+                issuerSigningKeyId: fixture.service.capability.homeLoginAssertion.keyId,
+                issuerSigningPublicKeyBase64Url: fixture.service.capability.homeLoginAssertion.publicKeyBase64Url,
+            } : { error: 'invalid_request' }, homeStatus);
+            if (path.startsWith('/v1/account-directory/homes/')) return json(fixture.home);
+            return fixture.request(fixture.service.endpointUrl, path, init);
+        });
+    });
+    afterEach(() => {
+        if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+        else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
+    });
+    const input = () => ({
+        session, homeServerIdentityId: fixture.home.homeServerIdentityId,
+        issuerServerIdentityId: fixture.service.serverIdentityId, capability: fixture.service.capability,
     });
 
-    it('lets the shared owner resolve both credential authorities before opening Home transport', async () => {
-        const session = {
-            serviceKey: 'https://directory.test\u0000srv_account_service',
-            readAccountSummary: vi.fn(async () => {
-                order.push('read-account-subject');
-                return { accountId: 'account-1' };
-            }),
-            putHome: vi.fn(async () => {
-                order.push('publish-account-home');
-                return {};
-            }),
-        } as unknown as AccountDirectorySession;
-
-        await expect(provisionAuthenticatedHomeLink({
-            session,
-            homeServerIdentityId: 'srv_home_a',
-            issuerServerIdentityId: 'srv_account_service',
-            capability: {
-                version: 1,
-                homeDirectory: true,
-                homeEnrollment: true,
-                homeLoginAssertion: { keyId: 'a'.repeat(64), publicKeyBase64Url: 'A'.repeat(43) },
-            },
-        })).resolves.toEqual({ kind: 'linked', homeServerIdentityId: 'srv_home_a' });
-
-        expect(order).toEqual([
-            'read-account-subject',
-            'open-home-transport',
-            'publish-home-link',
-            'publish-account-home',
+    it('publishes the Home trust link before its Directory entry', async () => {
+        expect(await provisionAuthenticatedHomeLink(input())).toEqual({ kind: 'linked', homeServerIdentityId: fixture.home.homeServerIdentityId });
+        expect(boundary.request.mock.calls.map(([path]) => path)).toEqual([
+            '/v1/account-directory/me',
+            '/v1/account/directory-links/' + fixture.service.serverIdentityId,
+            '/v1/account-directory/homes/' + fixture.home.homeServerIdentityId,
         ]);
-        expect(transportCloseMock).toHaveBeenCalledOnce();
     });
 
-    it('fails before Home contact when the authenticated Account Service identity differs from the issuer', async () => {
-        const session = {
-            serviceKey: 'https://directory.test\u0000srv_other_service',
-            readAccountSummary: vi.fn(async () => ({ accountId: 'account-1' })),
-            putHome: vi.fn(async () => ({})),
-        } as unknown as AccountDirectorySession;
-
-        await expect(provisionAuthenticatedHomeLink({
-            session,
-            homeServerIdentityId: 'srv_home_a',
-            issuerServerIdentityId: 'srv_account_service',
-            capability: {
-                version: 1,
-                homeDirectory: true,
-                homeEnrollment: true,
-                homeLoginAssertion: { keyId: 'a'.repeat(64), publicKeyBase64Url: 'A'.repeat(43) },
-            },
-        })).resolves.toEqual({ kind: 'failed' });
-
-        expect(resolveHomeEnrollmentTransportMock).not.toHaveBeenCalled();
-        expect(putHomeDirectoryLinkMock).not.toHaveBeenCalled();
-        expect(session.readAccountSummary).not.toHaveBeenCalled();
-        expect(session.putHome).not.toHaveBeenCalled();
+    it('refuses a different selected issuer before contacting either authority', async () => {
+        expect(await provisionAuthenticatedHomeLink({ ...input(), issuerServerIdentityId: 'srv_other' })).toEqual({ kind: 'failed' });
+        expect(boundary.request).not.toHaveBeenCalled();
     });
 
-    it('fails closed when profile resolution does not preserve the captured Home identity', async () => {
-        const session = {
-            serviceKey: 'https://directory.test\u0000srv_account_service',
-            readAccountSummary: vi.fn(async () => ({ accountId: 'account-1' })),
-            putHome: vi.fn(async () => ({})),
-        } as unknown as AccountDirectorySession;
-
-        await expect(provisionAuthenticatedHomeLink({
-            session,
-            homeServerIdentityId: 'srv_other_home',
-            issuerServerIdentityId: 'srv_account_service',
-            capability: {
-                version: 1,
-                homeDirectory: true,
-                homeEnrollment: true,
-                homeLoginAssertion: { keyId: 'a'.repeat(64), publicKeyBase64Url: 'A'.repeat(43) },
-            },
-        })).resolves.toEqual({ kind: 'unavailable', reason: 'home_profile_unavailable' });
-
-        expect(getCredentialsMock).not.toHaveBeenCalled();
-        expect(resolveHomeEnrollmentTransportMock).not.toHaveBeenCalled();
-        expect(session.readAccountSummary).not.toHaveBeenCalled();
-        expect(session.putHome).not.toHaveBeenCalled();
+    it('fails closed for a missing Home without borrowing focused credentials', async () => {
+        expect(await provisionAuthenticatedHomeLink({ ...input(), homeServerIdentityId: 'srv_missing' })).toEqual({ kind: 'unavailable', reason: 'home_profile_unavailable' });
+        expect(boundary.request).not.toHaveBeenCalled();
     });
 
-    it('preserves explicit relink mapping without publishing the Home to the Account Service', async () => {
-        const conflict = new Error('conflicting signing key');
-        putHomeDirectoryLinkMock.mockRejectedValueOnce(conflict);
-        isRelinkConflictMock.mockImplementationOnce((error) => error === conflict);
-        const session = {
-            serviceKey: 'https://directory.test\u0000srv_account_service',
-            readAccountSummary: vi.fn(async () => ({ accountId: 'account-1' })),
-            putHome: vi.fn(async () => ({})),
-        } as unknown as AccountDirectorySession;
+    it('reports relink-required without publishing the Directory entry', async () => {
+        homeStatus = 409;
+        expect(await provisionAuthenticatedHomeLink(input())).toEqual({ kind: 'relink_required', homeServerIdentityId: fixture.home.homeServerIdentityId });
+        expect(boundary.request.mock.calls.some(([path]) => String(path).startsWith('/v1/account-directory/homes/'))).toBe(false);
+    });
 
-        await expect(provisionAuthenticatedHomeLink({
-            session,
-            homeServerIdentityId: 'srv_home_a',
-            issuerServerIdentityId: 'srv_account_service',
-            capability: {
-                version: 1,
-                homeDirectory: true,
-                homeEnrollment: true,
-                homeLoginAssertion: { keyId: 'a'.repeat(64), publicKeyBase64Url: 'A'.repeat(43) },
-            },
-        })).resolves.toEqual({ kind: 'relink_required', homeServerIdentityId: 'srv_home_a' });
+    it('revokes the Home trust link with the Home credential and never writes to the Account Service', async () => {
+        boundary.request.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path.startsWith('/v1/account/directory-links/')) {
+                expect(init?.method).toBe('DELETE');
+                return json({ v: 1, deleted: true, issuerServerIdentityId: fixture.service.serverIdentityId });
+            }
+            throw new Error(`Unexpected request ${path}`);
+        });
+        expect(await revokeAuthenticatedHomeLink({
+            homeServerIdentityId: fixture.home.homeServerIdentityId,
+            issuerServerIdentityId: fixture.service.serverIdentityId,
+        })).toEqual({ kind: 'unlinked', homeServerIdentityId: fixture.home.homeServerIdentityId });
+        expect(boundary.request.mock.calls.map(([path]) => path)).toEqual([
+            '/v1/account/directory-links/' + fixture.service.serverIdentityId,
+        ]);
+    });
 
-        expect(isRelinkConflictMock).toHaveBeenCalledWith(conflict);
-        expect(session.putHome).not.toHaveBeenCalled();
-        expect(transportCloseMock).toHaveBeenCalledOnce();
+    it('fails closed when the Home has no stored credential instead of borrowing focused state', async () => {
+        await TokenStorage.removeCredentialsForServerUrl(fixture.home.canonicalServerUrl, { serverId: fixture.home.homeServerIdentityId });
+        expect(await revokeAuthenticatedHomeLink({
+            homeServerIdentityId: fixture.home.homeServerIdentityId,
+            issuerServerIdentityId: fixture.service.serverIdentityId,
+        })).toEqual({ kind: 'unavailable', reason: 'home_credentials_unavailable' });
+        expect(boundary.request).not.toHaveBeenCalled();
+    });
+
+    it('does not publish a link after credential replacement while Home transport is acquired', async () => {
+        const endpointId = 'c'.repeat(64);
+        const descriptor = { ...fixture.home.connectionDescriptor, revision: 2, endpoints: [{ kind: 'iroh' as const, endpointId }] };
+        await adoptHomeProfile({ descriptor, source: 'qr', descriptorAuthority: 'current_connection_observation' });
+        let release!: () => void;
+        boundary.acquire.mockImplementation(async () => {
+            await new Promise<void>((resolve) => { release = resolve; });
+            return { leaseId: 'link-test', endpointId, homeServerIdentityId: fixture.home.homeServerIdentityId,
+                runtimeOrigin: 'http://127.0.0.1:54321', status: 'ready', release: boundary.release };
+        });
+        const result = provisionAuthenticatedHomeLink(input());
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+        await TokenStorage.accountDirectoryAuthCredentials.set(
+            { endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { token: 'replacement' },
+        );
+        release();
+        expect(await result).toMatchObject({ kind: 'failed' });
+        expect(boundary.request.mock.calls.map(([path]) => path)).toEqual(['/v1/account-directory/me']);
+        expect(boundary.release).toHaveBeenCalledOnce();
     });
 });

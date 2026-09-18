@@ -21,7 +21,10 @@ import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
-import { DesktopActivityOverlayCollapsed } from './DesktopActivityOverlayCollapsed';
+import {
+    DesktopActivityOverlayCollapsed,
+    type DesktopActivityOverlayCollapsedPressOrigin,
+} from './DesktopActivityOverlayCollapsed';
 import { DesktopActivityOverlayExpanded } from './DesktopActivityOverlayExpanded';
 import { DesktopActivityOverlayMotionFrame } from './DesktopActivityOverlayMotionFrame';
 import { resolveDesktopActivityOverlayVisualMode } from './DesktopActivityOverlayVisualMode';
@@ -30,6 +33,7 @@ import { useDesktopOverlayTransparentDocumentBackground } from './useDesktopOver
 
 type DesktopActivityOverlayExpandedReason =
     | 'click'
+    | 'keyboard_activate'
     | 'hover'
     | 'outside_hover'
     | 'keyboard_escape';
@@ -68,10 +72,21 @@ export function DesktopActivityOverlayRoute(): React.ReactElement {
     const state = useDesktopActivityOverlayState();
     const inOverlayWindowContext = isDesktopActivityOverlayWindowContext();
     const [quickReplyDraft, setQuickReplyDraft] = React.useState('');
+    // Mirrors the draft for event-time decisions: a key handler must see the character just typed,
+    // not the value of the last committed render.
+    const quickReplyDraftRef = React.useRef('');
     const [quickReplyInputLocked, setQuickReplyInputLocked] = React.useState(false);
     const quickReplyInputLockedRef = React.useRef(false);
     const hoverExpandTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const hoverLeaveCollapseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Focus ownership for the island. Refs rather than state: nothing renders from them, and the
+    // hover-leave timer only has to read the settled value when it fires.
+    const collapsedTriggerRef = React.useRef<View | null>(null);
+    const expandedSurfaceRef = React.useRef<View | null>(null);
+    const expandedFocusTargetRef = React.useRef<View | null>(null);
+    const expandedFocusWithinRef = React.useRef(false);
+    const keyboardExpandPendingRef = React.useRef(false);
+    const collapsedFocusReturnPendingRef = React.useRef(false);
     useDesktopOverlayTransparentDocumentBackground(inOverlayWindowContext);
     const clearHoverExpandTimeout = React.useCallback(() => {
         if (hoverExpandTimeoutRef.current !== null) {
@@ -100,6 +115,15 @@ export function DesktopActivityOverlayRoute(): React.ReactElement {
             clearHoverLeaveCollapseTimeout();
         }
     }, [clearHoverLeaveCollapseTimeout, state?.expanded, state?.visible]);
+
+    const setExpandedFocusWithin = React.useCallback((focusWithin: boolean) => {
+        expandedFocusWithinRef.current = focusWithin;
+    }, []);
+
+    const applyQuickReplyDraft = React.useCallback((draft: string) => {
+        quickReplyDraftRef.current = draft;
+        setQuickReplyDraft(draft);
+    }, []);
 
     const setOverlayInputLocked = React.useCallback((locked: boolean) => {
         if (quickReplyInputLockedRef.current === locked) {
@@ -134,6 +158,31 @@ export function DesktopActivityOverlayRoute(): React.ReactElement {
 
         return () => clearInterval(interval);
     }, [quickReplyInputLocked]);
+
+    const overlayVisible = state?.visible === true;
+    const overlayExpanded = overlayVisible && state?.expanded === true;
+
+    React.useEffect(() => {
+        if (!overlayExpanded) {
+            expandedFocusWithinRef.current = false;
+            return;
+        }
+        if (!keyboardExpandPendingRef.current) {
+            return;
+        }
+        keyboardExpandPendingRef.current = false;
+        // The resolved control is preferred; the shell keeps Escape reachable when the expanded model
+        // has nothing to act on, or when its card was dismissed before the transfer ran.
+        (expandedFocusTargetRef.current ?? expandedSurfaceRef.current)?.focus();
+    }, [overlayExpanded]);
+
+    React.useEffect(() => {
+        if (!overlayVisible || overlayExpanded || !collapsedFocusReturnPendingRef.current) {
+            return;
+        }
+        collapsedFocusReturnPendingRef.current = false;
+        collapsedTriggerRef.current?.focus();
+    }, [overlayExpanded, overlayVisible]);
 
     const dragHandlers = useDesktopOverlayDragController({
         enabled: Boolean(
@@ -173,6 +222,8 @@ export function DesktopActivityOverlayRoute(): React.ReactElement {
     const setOverlayExpanded = (expanded: boolean, reason: DesktopActivityOverlayExpandedReason) => {
         clearHoverExpandTimeout();
         clearHoverLeaveCollapseTimeout();
+        keyboardExpandPendingRef.current = expanded && reason === 'keyboard_activate';
+        collapsedFocusReturnPendingRef.current = !expanded && reason === 'keyboard_escape';
         fireAndForget(setDesktopActivityOverlayExpanded(expanded), {
             tag: expanded ? 'DesktopActivityOverlayRoute.expand' : 'DesktopActivityOverlayRoute.collapse',
         });
@@ -181,8 +232,22 @@ export function DesktopActivityOverlayRoute(): React.ReactElement {
 
     const hoverExpandEnabled = visualMode !== 'notch_integrated' && state.policy.expandedBehavior === 'hover';
 
-    const onCollapsedPress = () => {
-        setOverlayExpanded(true, 'click');
+    const onCollapsedPress = (origin: DesktopActivityOverlayCollapsedPressOrigin) => {
+        setOverlayExpanded(true, origin === 'keyboard' ? 'keyboard_activate' : 'click');
+    };
+
+    /**
+     * The island's single keyboard-dismissal decision, whichever control the key came from. A
+     * nonempty quick reply draft is the route-wide lock: Escape must never silently discard typed
+     * text, so it stays put and the person clears or sends the draft first. Inline card editors own
+     * the same decision locally because react-native-web does not bubble their key event; only an
+     * empty inline answer forwards dismissal here.
+     */
+    const requestKeyboardDismiss = () => {
+        if (quickReplyDraftRef.current.length > 0) {
+            return;
+        }
+        setOverlayExpanded(false, 'keyboard_escape');
     };
 
     const onCollapsedHoverIn = hoverExpandEnabled
@@ -209,6 +274,11 @@ export function DesktopActivityOverlayRoute(): React.ReactElement {
         clearHoverLeaveCollapseTimeout();
         hoverLeaveCollapseTimeoutRef.current = setTimeout(() => {
             hoverLeaveCollapseTimeoutRef.current = null;
+            // Keyboard focus owns the surface: the pointer leaving never pulls it out from under a
+            // focused control inside the island.
+            if (expandedFocusWithinRef.current) {
+                return;
+            }
             setOverlayExpanded(false, 'outside_hover');
         }, DESKTOP_ACTIVITY_OVERLAY_EXPANDED_HOVER_LEAVE_COLLAPSE_DELAY_MS);
     };
@@ -227,8 +297,12 @@ export function DesktopActivityOverlayRoute(): React.ReactElement {
                     <DesktopActivityOverlayExpanded
                         model={state.model}
                         visualMode={visualMode}
+                        surfaceRef={expandedSurfaceRef}
+                        initialFocusRef={expandedFocusTargetRef}
                         onHoverIn={onExpandedHoverIn}
                         onHoverOut={onExpandedHoverOut}
+                        onFocusWithinChange={setExpandedFocusWithin}
+                        onDismissKey={requestKeyboardDismiss}
                         onOpenSession={(sessionId, serverId) => {
                             emitInteraction(
                                 createActivitySurfaceSessionTarget(sessionId, serverId),
@@ -239,7 +313,7 @@ export function DesktopActivityOverlayRoute(): React.ReactElement {
                             emitInteraction(action.actionIdentifier, { ...(action.data ?? {}) });
                         }}
                         quickReplyDraft={quickReplyDraft}
-                        onQuickReplyDraftChange={setQuickReplyDraft}
+                        onQuickReplyDraftChange={applyQuickReplyDraft}
                         onQuickReplySend={async ({ sessionId, serverId, message }) => {
                             try {
                                 const result = await executeDesktopActivityOverlayInteractionWithResult({
@@ -252,9 +326,6 @@ export function DesktopActivityOverlayRoute(): React.ReactElement {
                             }
                         }}
                         onQuickReplyInputLockChange={setOverlayInputLocked}
-                        onQuickReplyCleanEscape={() => {
-                            setOverlayExpanded(false, 'keyboard_escape');
-                        }}
                     />
                 </DesktopActivityOverlayMotionFrame>
             </View>
@@ -276,6 +347,7 @@ export function DesktopActivityOverlayRoute(): React.ReactElement {
                     visualMode={visualMode}
                     physicalNotchWidth={physicalNotchWidth}
                     dragHandlers={dragHandlers}
+                    pressableRef={collapsedTriggerRef}
                     onPress={onCollapsedPress}
                     onHoverIn={onCollapsedHoverIn}
                     onHoverOut={onCollapsedHoverOut}

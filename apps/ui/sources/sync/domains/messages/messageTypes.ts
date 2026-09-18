@@ -2,6 +2,7 @@ import { AgentEvent } from '../../typesRaw';
 import type { MessageStructuredPresentationV1 } from '@happier-dev/protocol';
 import { MessageMeta } from './messageMetaTypes';
 import type { TranscriptObservationMetadata } from './transcriptObservationProvenance';
+import type { TranscriptAccountActorMetadata } from './transcriptAccountActor';
 
 export type ToolCall = {
     // Provider-side identifier for this tool call (e.g. ACP callId, Claude tool_use id).
@@ -47,7 +48,7 @@ export type UserTextMessage = {
     displayText?: string; // Optional text to display in UI instead of actual text
     meta?: MessageMeta;
     structuredPresentation?: MessageStructuredPresentationV1;
-} & TranscriptObservationMetadata;
+} & TranscriptObservationMetadata & TranscriptAccountActorMetadata;
 
 export type ModeSwitchMessage = {
     kind: 'agent-event';
@@ -64,7 +65,7 @@ export type ModeSwitchMessage = {
     createdAt: number;
     event: AgentEvent;
     meta?: MessageMeta;
-} & TranscriptObservationMetadata;
+} & TranscriptObservationMetadata & TranscriptAccountActorMetadata;
 
 export type AgentTextMessage = {
     kind: 'agent-text';
@@ -78,7 +79,7 @@ export type AgentTextMessage = {
     isThinking?: boolean;
     meta?: MessageMeta;
     structuredPresentation?: MessageStructuredPresentationV1;
-} & TranscriptObservationMetadata;
+} & TranscriptObservationMetadata & TranscriptAccountActorMetadata;
 
 export type ToolCallMessage = {
     kind: 'tool-call';
@@ -91,6 +92,6 @@ export type ToolCallMessage = {
     tool: ToolCall;
     children: Message[];
     meta?: MessageMeta;
-} & TranscriptObservationMetadata;
+} & TranscriptObservationMetadata & TranscriptAccountActorMetadata;
 
 export type Message = UserTextMessage | AgentTextMessage | ToolCallMessage | ModeSwitchMessage;

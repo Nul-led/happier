@@ -305,6 +305,13 @@ export function createRepackInstalledArtifactModuleLoader(params: Readonly<{
     }) => {
         const scriptId = createInstalledArtifactScriptId(identity);
         const resolverKey = createInstalledArtifactResolverKey(scriptId);
+        const moduleReference =
+            inputModuleReference
+            ?? params.resolveFederatedModule?.(identity)
+            ?? resolveDefaultFederatedModule(identity);
+        if (!isRepackInstalledArtifactModuleReference(moduleReference)) {
+            throw new Error('Re.Pack installed artifact loading requires a federation module reference');
+        }
         const entryFile = entryRelativePath
             ? files?.find((file) => file.relativePath === entryRelativePath)
             : files?.find((file) => file.digest === identity.artifactDigest);
@@ -326,9 +333,12 @@ export function createRepackInstalledArtifactModuleLoader(params: Readonly<{
                     return undefined;
                 }
                 const callerId = typeof caller === 'string' ? caller : undefined;
+                if (callerId !== moduleReference.containerName) {
+                    return undefined;
+                }
                 const chunkFile = files?.find((file) =>
                     file !== entryFile
-                    && requestedScriptMatchesFile({ file, requestedScriptId, ...(callerId ? { caller: callerId } : {}) })
+                    && requestedScriptMatchesFile({ file, requestedScriptId, caller: callerId })
                 );
                 if (!chunkFile) {
                     return undefined;
@@ -382,13 +392,6 @@ export function createRepackInstalledArtifactModuleLoader(params: Readonly<{
                     // Eviction is a hygiene step, not load-critical.
                 }
                 throw loadError;
-            }
-            const moduleReference =
-                inputModuleReference
-                ?? params?.resolveFederatedModule?.(identity)
-                ?? resolveDefaultFederatedModule(identity);
-            if (!isRepackInstalledArtifactModuleReference(moduleReference)) {
-                throw new Error('Re.Pack installed artifact loading requires a federation module reference');
             }
             const namespace = await repack.federated.importModule(
                 moduleReference.containerName,

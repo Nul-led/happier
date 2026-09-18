@@ -1,10 +1,15 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { renderHook, standardCleanup } from '@/dev/testkit';
 
 import { useHasUnreadMessages } from '@/sync/domains/state/storage';
 import { storage } from '@/sync/domains/state/storageStore';
+
+vi.mock('@/sync/domains/server/serverRuntime', () => ({
+    getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'https://example.com', generation: 1 }),
+    subscribeActiveServer: () => () => {},
+}));
 
 afterEach(() => {
     standardCleanup();
@@ -72,31 +77,38 @@ describe('useHasUnreadMessages', () => {
             storage.setState((state) => ({
                 ...state,
                 sessions: {},
-                sessionListRenderables: {
-                    ...state.sessionListRenderables,
-                    'direct-session-cache-only': {
-                        id: 'direct-session-cache-only',
-                        seq: 0,
-                        createdAt: 1,
-                        updatedAt: 2,
-                        active: false,
-                        activeAt: 2,
-                        archivedAt: null,
-                        metadataVersion: 1,
-                        agentStateVersion: 0,
-                        metadata: {
-                            path: '/tmp/direct',
-                            host: 'localhost',
-                            externalSessionV1: {
-                                v: 1,
-                                agentId: 'claude',
+                sessionListRowsByServerId: {
+                    ...state.sessionListRowsByServerId,
+                    'server-1': {
+                        ...(state.sessionListRowsByServerId['server-1'] ?? {}),
+                        'direct-session-cache-only': {
+                            id: 'direct-session-cache-only',
+                            seq: 0,
+                            createdAt: 1,
+                            updatedAt: 2,
+                            active: false,
+                            activeAt: 2,
+                            archivedAt: null,
+                            metadataVersion: 1,
+                            agentStateVersion: 0,
+                            metadata: {
+                                path: '/tmp/direct',
+                                host: 'localhost',
+                                externalSessionV1: {
+                                    v: 1,
+                                    agentId: 'claude',
+                                },
                             },
-                        },
-                        thinking: false,
-                        thinkingAt: 0,
-                        presence: 'online',
-                        hasUnreadMessages: true,
-                    } as any,
+                            thinking: false,
+                            thinkingAt: 0,
+                            presence: 'online',
+                            hasUnreadMessages: true,
+                        } as any,
+                    },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    ...state.ordinarySessionListMembershipByServerId,
+                    'server-1': ['direct-session-cache-only'],
                 },
             }));
 
@@ -141,7 +153,8 @@ describe('useHasUnreadMessages', () => {
                         },
                     },
                 },
-                sessionListRenderables: {},
+                sessionListRowsByServerId: {},
+                ordinarySessionListMembershipByServerId: {},
                 isDataReady: true,
             } as never));
 
@@ -198,7 +211,8 @@ describe('useHasUnreadMessages', () => {
                         },
                     },
                 },
-                sessionListRenderables: {},
+                sessionListRowsByServerId: {},
+                ordinarySessionListMembershipByServerId: {},
                 isDataReady: true,
             } as never));
 
@@ -233,7 +247,8 @@ describe('useHasUnreadMessages', () => {
                         isLoaded: false,
                     },
                 },
-                sessionListRenderables: {},
+                sessionListRowsByServerId: {},
+                ordinarySessionListMembershipByServerId: {},
                 isDataReady: true,
             } as never));
 
@@ -268,26 +283,29 @@ describe('useHasUnreadMessages', () => {
                         isLoaded: false,
                     },
                 },
-                sessionListRenderables: {
-                    s1: {
-                        id: 's1',
-                        seq: 946,
-                        createdAt: 1,
-                        updatedAt: 2,
-                        active: true,
-                        activeAt: 2,
-                        archivedAt: null,
-                        lastViewedSessionSeq: 945,
-                        metadataVersion: 1,
-                        agentStateVersion: 0,
-                        metadata: null,
-                        thinking: false,
-                        thinkingAt: 0,
-                        presence: 'online',
-                        latestTurnStatus: 'in_progress',
-                        hasUnreadMessages: true,
+                sessionListRowsByServerId: {
+                    'server-1': {
+                        s1: {
+                            id: 's1',
+                            seq: 946,
+                            createdAt: 1,
+                            updatedAt: 2,
+                            active: true,
+                            activeAt: 2,
+                            archivedAt: null,
+                            lastViewedSessionSeq: 945,
+                            metadataVersion: 1,
+                            agentStateVersion: 0,
+                            metadata: null,
+                            thinking: false,
+                            thinkingAt: 0,
+                            presence: 'online',
+                            latestTurnStatus: 'in_progress',
+                            hasUnreadMessages: true,
+                        },
                     },
                 },
+                ordinarySessionListMembershipByServerId: { 'server-1': ['s1'] },
                 isDataReady: true,
             } as never));
 
@@ -324,7 +342,8 @@ describe('useHasUnreadMessages', () => {
                         isLoaded: false,
                     },
                 },
-                sessionListRenderables: {},
+                sessionListRowsByServerId: {},
+                ordinarySessionListMembershipByServerId: {},
                 isDataReady: true,
             } as never));
 

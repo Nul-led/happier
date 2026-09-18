@@ -11,6 +11,7 @@ import {
   type VoiceProviderContribution,
 } from '@happier-dev/protocol';
 import type { PluginClientApi } from '@happier-dev/plugin-sdk';
+import type { BundledSpeechDaemonClient } from '@/voice/credentials/bundledSpeechClient';
 import { PluginReleaseFactsV1Schema } from '@happier-dev/protocol/plugins/availability';
 import {
   PluginUiArtifactsManifestV1Schema,
@@ -172,6 +173,7 @@ function createCurrentVoiceArtifactAdmission(input: Readonly<{
         pluginId: input.pluginId,
         response: {
           availabilityCursor: 1,
+          packageAssets: [],
           hostingCapability: { enabled: false },
           intent: {
             pluginId: input.pluginId,
@@ -692,8 +694,8 @@ describe('projected external Voice provider activation', () => {
     })).resolves.toEqual([]);
 
     const registry = createDefaultVoiceProviderRegistry();
-    const transcribe = vi.fn(async () => 'packed transcript');
-    const synthesize = vi.fn(async () => ({
+    const transcribe = vi.fn<BundledSpeechDaemonClient['transcribe']>(async () => 'packed transcript');
+    const synthesize = vi.fn<BundledSpeechDaemonClient['synthesize']>(async () => ({
       bytes: new Uint8Array([1]),
       mimeType: 'audio/wav' as const,
     }));

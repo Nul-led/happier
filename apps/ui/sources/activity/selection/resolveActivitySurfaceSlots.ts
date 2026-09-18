@@ -6,20 +6,26 @@ import type {
     ResolveActivitySurfaceSlotsParams,
 } from './activitySurfaceSelectionTypes';
 import { applyActivitySelectionDwell } from './applyActivitySelectionDwell';
+import { areSessionAddressesEqual } from '@/sync/domains/session/sessionAddress';
 
 function isUrgentCandidate(candidate: SessionActivityAttention, selection: Pick<
     ActivitySurfaceSelectionSpec,
     'includeUrgent' | 'includeReady' | 'activeOnly'
 >): boolean {
+    if (!candidate.hasAttention) return false;
+
     if (selection.activeOnly && candidate.session.active !== true) {
         return false;
     }
 
     switch (candidate.attentionState) {
+        case 'failed':
         case 'permission_required':
         case 'action_required':
         case 'pending':
             return selection.includeUrgent;
+        case 'ready':
+        case 'attention':
         case 'unread':
             return selection.includeReady;
         case 'thinking':
@@ -96,8 +102,11 @@ function resolveSelectedSessions(
     }
 
     if (params.selection.selectionReason === 'pinned_primary') {
-        const preferredPrimary = params.preferredPrimarySessionId
-            ? eligibleSessions.find((candidate) => candidate.sessionId === params.preferredPrimarySessionId) ?? null
+        const preferredPrimary = params.preferredPrimaryAddress
+            ? eligibleSessions.find((candidate) => areSessionAddressesEqual(
+                candidate.address,
+                params.preferredPrimaryAddress,
+            )) ?? null
             : null;
         if (preferredPrimary) {
             return {
@@ -139,7 +148,7 @@ export function resolveActivitySurfaceSlots(params: ResolveActivitySurfaceSlotsP
         selectedSessions: selected.selectedSessions,
         selection: params.selection,
         previousPrimary: {
-            sessionId: params.previousPrimarySessionId,
+            address: params.previousPrimaryAddress,
             activityInstanceKey: params.previousPrimaryActivityInstanceKey,
             changedAtMs: params.previousPrimaryChangedAtMs,
         },

@@ -187,8 +187,8 @@ describe('ServerConfigScreen', () => {
 
     it('renders saved server profiles', async () => {
         const { upsertServerProfile, setActiveServerId } = await import('@/sync/domains/server/serverProfiles');
-        const company = upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
-        setActiveServerId(company.id, { scope: 'device' });
+        const company = await upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+        await setActiveServerId(company.id, { scope: 'device' });
 
         const screen = await renderServerScreen();
         expect(findItemByTitle(screen, 'Company')).toBeTruthy();
@@ -285,9 +285,9 @@ describe('ServerConfigScreen', () => {
 
     it('does not change active target settings when cancelling a signed-out server group switch', async () => {
         const { upsertServerProfile, setActiveServerId } = await import('@/sync/domains/server/serverProfiles');
-        const a = upsertServerProfile({ serverUrl: 'http://localhost:3013', name: 'Server A' });
-        const b = upsertServerProfile({ serverUrl: 'http://localhost:3012', name: 'Server B' });
-        setActiveServerId(a.id, { scope: 'device' });
+        const a = await upsertServerProfile({ serverUrl: 'http://localhost:3013', name: 'Server A' });
+        const b = await upsertServerProfile({ serverUrl: 'http://localhost:3012', name: 'Server B' });
+        await setActiveServerId(a.id, { scope: 'device' });
 
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         (TokenStorage.getCredentialsForServerUrl as any).mockResolvedValue(null);

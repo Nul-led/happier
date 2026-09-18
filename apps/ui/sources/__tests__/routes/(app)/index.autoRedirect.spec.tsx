@@ -236,9 +236,8 @@ describe('/ (welcome) auto redirect', () => {
         expect(shared.openURL).not.toHaveBeenCalled();
     }, testTimeoutMs);
 
-    it('retries one transient server features failure before surfacing unavailable state', async () => {
+    it('does not retry or auto-redirect after a transient server-features failure without an explicit recovery event', async () => {
         vi.resetModules();
-        process.env.EXPO_PUBLIC_HAPPIER_WELCOME_SERVER_CHECK_RETRY_DELAY_MS = '1';
 
         getServerFeaturesSnapshotMock
             .mockResolvedValueOnce({ status: 'error', reason: 'network' })
@@ -253,20 +252,16 @@ describe('/ (welcome) auto redirect', () => {
                 }),
             });
 
-        try {
-            await renderWelcomeScreen();
-            await flushHookEffects();
+        await renderWelcomeScreen();
+        await flushHookEffects();
 
-            await act(async () => {
-                await new Promise((resolve) => setTimeout(resolve, 25));
-            });
-            await flushHookEffects();
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        });
+        await flushHookEffects();
 
-            expect(getServerFeaturesSnapshotMock).toHaveBeenCalledTimes(2);
-            expect(shared.openURL).toHaveBeenCalledWith('https://server.test/v1/auth/mtls/start?returnTo=happier%3A%2F%2F%2Fmtls');
-        } finally {
-            delete process.env.EXPO_PUBLIC_HAPPIER_WELCOME_SERVER_CHECK_RETRY_DELAY_MS;
-        }
+        expect(getServerFeaturesSnapshotMock).toHaveBeenCalledTimes(1);
+        expect(shared.openURL).not.toHaveBeenCalled();
     }, testTimeoutMs);
 
     it('refuses unsafe external signup URLs', async () => {

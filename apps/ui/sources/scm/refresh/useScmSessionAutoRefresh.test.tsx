@@ -54,6 +54,20 @@ describe('useScmSessionAutoRefresh', () => {
         expect(invalidateFromAutoRefresh).toHaveBeenCalledTimes(2);
     });
 
+    it('keeps every refresh qualified to the mounted Home', async () => {
+        const { useScmSessionAutoRefresh } = await import('./useScmSessionAutoRefresh');
+
+        await renderHook(() => useScmSessionAutoRefresh({
+            sessionId: 'session-1',
+            serverId: 'home-b',
+            intervalMs: 300_000,
+        }));
+
+        expect(invalidateFromAutoRefresh).toHaveBeenLastCalledWith('session-1', 'home-b');
+        await vi.advanceTimersByTimeAsync(300_000);
+        expect(invalidateFromAutoRefresh).toHaveBeenLastCalledWith('session-1', 'home-b');
+    });
+
     it('does not make the machine run git while the app is backgrounded', async () => {
         const { useScmSessionAutoRefresh } = await import('./useScmSessionAutoRefresh');
 

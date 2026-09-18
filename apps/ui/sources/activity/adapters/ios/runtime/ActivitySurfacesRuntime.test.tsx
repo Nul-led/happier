@@ -1,10 +1,27 @@
 import * as React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
-import { buildLiveActivityRemoteUpdateCapabilityDiagnostics, PUSH_NOTIFICATION_ACTION_IDS } from '@happier-dev/protocol';
+import {
+    accountSettingsParse,
+    buildLiveActivityRemoteUpdateCapabilityDiagnostics,
+    PUSH_NOTIFICATION_ACTION_IDS,
+} from '@happier-dev/protocol';
 
 import { createSessionFixture as createBaseSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { renderScreen } from '@/dev/testkit';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { saveAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
+
+import {
+    buildHappierFocusLiveActivityIdentity,
+    buildLiveActivityInstanceKey,
+} from '../liveActivities/liveActivityIdentity';
+
+/** The production Activity identity encoder, so fixtures cannot drift from real keys. */
+function liveActivityKey(serverId: string, sessionId: string): string {
+    return buildLiveActivityInstanceKey(buildHappierFocusLiveActivityIdentity({ serverId, sessionId }));
+}
+
 
 function createSessionFixture(
     overrides: Parameters<typeof createBaseSessionFixture>[0] = {},
@@ -14,6 +31,11 @@ function createSessionFixture(
         || (overrides.pendingUserActionRequestCount ?? 0) > 0;
 
     return createBaseSessionFixture({
+        // Activity routing is Home-qualified. Most runtime cases exercise the
+        // exact default Home; tests for a genuinely unbound instance opt into
+        // `serverId: null` explicitly instead of relying on an omitted fixture
+        // field that the list projection later invents independently.
+        ...(overrides.serverId === undefined ? { serverId: 'server-a' } : {}),
         ...(typeof overrides.seq === 'number' && overrides.latestReadyEventSeq === undefined
             ? { latestReadyEventSeq: overrides.seq }
             : {}),
@@ -43,6 +65,15 @@ const sessionsState = vi.hoisted(() => ({
 const sessionIndexServerOverridesState = vi.hoisted(() => ({
     value: {} as Record<string, string>,
 }));
+
+function resolveFixtureServerId(session: ReturnType<typeof createSessionFixture>): string {
+    const overrideServerId = sessionIndexServerOverridesState.value[session.id];
+    return typeof overrideServerId === 'string' && overrideServerId.trim()
+        ? overrideServerId.trim()
+        : typeof session.serverId === 'string' && session.serverId.trim()
+            ? session.serverId.trim()
+            : 'server-a';
+}
 
 const dataReadyState = vi.hoisted(() => ({
     value: true,
@@ -326,13 +357,17 @@ vi.mock('@/sync/domains/features/featureDecisionRuntime', async (importOriginal)
     };
 });
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    listServerProfiles: () => serverProfilesState.profiles,
-    getServerProfilesGeneration: () => serverProfilesState.generation,
-    subscribeServerProfiles: () => () => undefined,
-    getActiveServerSnapshot: () => serverProfilesState.active,
-    subscribeActiveServer: () => () => undefined,
-}));
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+    return {
+        ...actual,
+        listServerProfiles: () => serverProfilesState.profiles,
+        getServerProfilesGeneration: () => serverProfilesState.generation,
+        subscribeServerProfiles: () => () => undefined,
+        getActiveServerSnapshot: () => serverProfilesState.active,
+        subscribeActiveServer: () => () => undefined,
+    };
+});
 
 vi.mock('@/sync/api/session/apiLiveActivityTargets', () => ({
     registerLiveActivityTarget,
@@ -345,33 +380,44 @@ vi.mock('@/sync/domains/state/pushTokenRegistration', () => ({
 
 vi.mock('@/sync/domains/state/storage', async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-    const createActivitySourceStorageState = () => ({
-        isDataReady: dataReadyState.value,
-        sessions: Object.fromEntries(sessionsState.value.map((session) => [session.id, session])),
-        sessionListRenderables: {},
-        sessionMessages: {},
-        sessionListIndexByServerId: sessionsState.value.reduce<Record<string, Array<{
+    const createActivitySourceStorageState = () => {
+        const sessionListRowsByServerId: Record<string, Record<string, ReturnType<typeof buildSessionListRenderableFromSession>>> = {};
+        const ordinarySessionListMembershipByServerId: Record<string, string[]> = {};
+        for (const session of sessionsState.value) {
+            const serverId = resolveFixtureServerId(session);
+            (sessionListRowsByServerId[serverId] ??= {})[session.id] = buildSessionListRenderableFromSession(session);
+            (ordinarySessionListMembershipByServerId[serverId] ??= []).push(session.id);
+        }
+        const sessionListIndexByServerId = sessionsState.value.reduce<Record<string, Array<{
             type: 'session';
             sessionId: string;
             serverId?: string;
         }>>>((byServerId, session) => {
-            const overrideServerId = sessionIndexServerOverridesState.value[session.id];
-            const serverId = typeof overrideServerId === 'string' && overrideServerId.trim()
-                ? overrideServerId.trim()
-                : typeof session.serverId === 'string' && session.serverId.trim()
-                ? session.serverId.trim()
-                : 'local';
+            const serverId = resolveFixtureServerId(session);
             const items = byServerId[serverId] ?? [];
             items.push({
                 type: 'session',
                 sessionId: session.id,
-                ...(serverId === 'local' ? {} : { serverId }),
+                serverId,
             });
             byServerId[serverId] = items;
             return byServerId;
-        }, {}),
-        concurrentSessionListCacheByServerId: {},
-    });
+        }, {});
+        return {
+            isDataReady: dataReadyState.value,
+            settings: {
+                workspacePathDisplayModeV1: 'name' as const,
+                workspaceRefsV1: [],
+                ...settingsState.value,
+            },
+            sessions: Object.fromEntries(sessionsState.value.map((session) => [session.id, session])),
+            sessionListRowsByServerId,
+            ordinarySessionListMembershipByServerId,
+            sessionMessages: {},
+            sessionListIndexByServerId,
+            concurrentSessionListCacheByServerId: {},
+        };
+    };
     const storage = Object.assign(
         (selector?: (state: ReturnType<typeof createActivitySourceStorageState>) => unknown) => {
             const state = createActivitySourceStorageState();
@@ -396,6 +442,30 @@ vi.mock('@/sync/domains/state/storage', async () => {
     });
 });
 
+// Activity surfaces are an Account delivery channel: every candidate is admitted by
+// its own Home's persisted Account policy. Binding the Home/Account identity here
+// keeps these cases exercising the real admission path instead of device credentials.
+vi.mock('@/hooks/teams/useSessionAudienceContext', async () => {
+    const { createSessionAudienceContextModuleMock } = await import('@/dev/testkit/mocks/sessionAudienceContext');
+    return createSessionAudienceContextModuleMock();
+});
+
+const ACTIVITY_TEST_HOME_SERVER_IDS = ['server-a', 'server-b', 'local'] as const;
+
+function persistDefaultActivityHomeAccountSettings(): void {
+    for (const serverId of ACTIVITY_TEST_HOME_SERVER_IDS) {
+        saveAccountSettings({ serverId, accountId: `account-${serverId}` }, accountSettingsParse({}), 1);
+    }
+}
+
+function persistActivityHomeAccountSettings(serverId: string): void {
+    saveAccountSettings(
+        { serverId, accountId: `account-${serverId}` },
+        accountSettingsParse(settingsState.value),
+        1,
+    );
+}
+
 vi.mock('./iosActivityWidgetModules', () => ({
     HappierFocusWidget: {
         updateSnapshot: focusWidgetUpdateSnapshot,
@@ -414,6 +484,7 @@ function configureDirectApnsRemoteUpdatesForServer(serverId: string): void {
         ['expo-widgets', { enablePushNotifications: true, widgets: [] }],
     ];
     settingsState.value = createFeatureToggleState({ directApnsRemoteUpdates: true });
+    persistActivityHomeAccountSettings(serverId);
     serverFeaturesMainSelectionState.value = {
         status: 'ready',
         serverIds: [serverId],
@@ -464,6 +535,7 @@ function configureHostedRelayRemoteUpdatesForServer(serverId: string): void {
             },
         },
     };
+    persistActivityHomeAccountSettings(serverId);
     serverFeaturesMainSelectionState.value = {
         status: 'ready',
         serverIds: [serverId],
@@ -511,6 +583,7 @@ function configureBackgroundWakeRemoteUpdatesForServer(serverId: string): void {
             },
         },
     };
+    persistActivityHomeAccountSettings(serverId);
     serverFeaturesMainSelectionState.value = {
         status: 'ready',
         serverIds: [serverId],
@@ -560,6 +633,10 @@ function configureVerifiedLocalServerContext(serverId: string): void {
 }
 
 describe('ActivitySurfacesRuntime', () => {
+    beforeEach(() => {
+        persistDefaultActivityHomeAccountSettings();
+    });
+
     afterEach(() => {
         vi.useRealTimers();
         vi.unstubAllEnvs();
@@ -689,7 +766,7 @@ describe('ActivitySurfacesRuntime', () => {
         expect(existingEnd).toHaveBeenCalledTimes(1);
         expect(liveActivityStart).toHaveBeenCalledWith(
             expect.objectContaining({
-                activityInstanceKey: 'server-a:HappierFocusLiveActivity:permission',
+                activityInstanceKey: liveActivityKey('server-a', 'permission'),
                 serverId: 'server-a',
                 sessionId: 'permission',
             }),
@@ -742,7 +819,7 @@ describe('ActivitySurfacesRuntime', () => {
                 sessionId: 'permission',
                 title: 'Permission work',
                 attentionState: 'permission_required',
-                previewText: null,
+                previewText: 'Permission work',
             }),
             sessions: expect.arrayContaining([
                 expect.objectContaining({ sessionId: 'permission' }),
@@ -759,9 +836,9 @@ describe('ActivitySurfacesRuntime', () => {
         expect(liveActivityStart).toHaveBeenCalledWith(
             expect.objectContaining({
                 sessionId: 'permission',
-                title: expect.not.stringContaining('Permission work'),
-                previewText: null,
-                statusText: null,
+                title: 'Permission work',
+                previewText: 'Permission work',
+                statusText: 'Awaiting updates',
                 defaultTarget: 'open-session:permission?serverId=server-a',
             }),
             '/session/permission?serverId=server-a',
@@ -821,6 +898,9 @@ describe('ActivitySurfacesRuntime', () => {
         localSettingsState.value = createLocalSettingsState({
             attentionDeviceOverridesV1: {
                 v: 1,
+                liveActivities: {
+                    privacyMode: 'status_only',
+                },
                 widgets: {
                     privacyMode: 'include_preview',
                 },
@@ -990,9 +1070,9 @@ describe('ActivitySurfacesRuntime', () => {
                 attentionState: 'permission_required',
                 presentationTemplate: 'urgentAttention',
                 apnsPriority: 5,
-                relevanceScore: 100,
+                relevanceScore: 89,
             }),
-            '/session/permission',
+            '/session/permission?serverId=server-a',
         );
 
         await act(async () => {
@@ -1474,7 +1554,7 @@ describe('ActivitySurfacesRuntime', () => {
             deviceId: 'device-1',
             serverId: 'server-a',
             sessionId: 'permission',
-            activityInstanceKey: 'server-a:HappierFocusLiveActivity:permission',
+            activityInstanceKey: liveActivityKey('server-a', 'permission'),
             activityId: 'native-activity-1',
             activityName: 'HappierFocusLiveActivity',
             transportMode: 'direct_apns',
@@ -1521,8 +1601,8 @@ describe('ActivitySurfacesRuntime', () => {
             deviceId: 'device-1',
             serverId: 'server-a',
             sessionId: 'permission',
-            activityInstanceKey: 'server-a:HappierFocusLiveActivity:permission',
-            activityId: 'server-a:HappierFocusLiveActivity:permission',
+            activityInstanceKey: liveActivityKey('server-a', 'permission'),
+            activityId: liveActivityKey('server-a', 'permission'),
             activityName: 'HappierFocusLiveActivity',
             transportMode: 'direct_apns',
             tokenKind: 'activitykit_update_token',
@@ -1566,7 +1646,7 @@ describe('ActivitySurfacesRuntime', () => {
 
         await act(async () => {});
         expect(registerLiveActivityTarget).toHaveBeenCalledWith(expect.objectContaining({
-            activityId: 'server-a:HappierFocusLiveActivity:permission',
+            activityId: liveActivityKey('server-a', 'permission'),
             rawToken: 'raw-activitykit-token-current',
         }));
 
@@ -1623,8 +1703,8 @@ describe('ActivitySurfacesRuntime', () => {
             deviceId: 'device-1',
             serverId: 'server-a',
             sessionId: 'permission',
-            activityInstanceKey: 'server-a:HappierFocusLiveActivity:permission',
-            activityId: 'server-a:HappierFocusLiveActivity:permission',
+            activityInstanceKey: liveActivityKey('server-a', 'permission'),
+            activityId: liveActivityKey('server-a', 'permission'),
             activityName: 'HappierFocusLiveActivity',
             transportMode: 'background_wake_best_effort',
             tokenKind: 'expo_push_token',
@@ -1763,6 +1843,9 @@ describe('ActivitySurfacesRuntime', () => {
 
     it('replaces ActivityKit token listeners when the selected remote transport rotates', async () => {
         liveActivityHandleTokenApiState.enabled = true;
+        registerLiveActivityTarget
+            .mockResolvedValueOnce({ targetId: 'target-direct-1' })
+            .mockResolvedValueOnce({ targetId: 'target-hosted-1' });
         configureDirectApnsRemoteUpdatesForServer('server-a');
         const session = createSessionFixture({
             id: 'permission',
@@ -1797,16 +1880,18 @@ describe('ActivitySurfacesRuntime', () => {
             rawToken: 'raw-activitykit-token-1',
         }));
 
-        configureHostedRelayRemoteUpdatesForServer('server-a');
-        sessionsState.value = [{
-            ...session,
-            updatedAt: session.updatedAt + 1,
-        }];
         await act(async () => {
+            configureHostedRelayRemoteUpdatesForServer('server-a');
+            sessionsState.value = [{
+                ...session,
+                updatedAt: session.updatedAt + 1,
+            }];
             screen.tree.update(React.createElement(ActivitySurfacesRuntime));
         });
 
-        expect(markLiveActivityTargetEnded).toHaveBeenCalledWith('target-direct-1', { serverId: 'server-a' });
+        // Keep the current transport target until its replacement registers, then retire it.
+        // This avoids an update gap during transport rotation and keeps one registry authoritative.
+        expect(markLiveActivityTargetEnded).not.toHaveBeenCalled();
         expect(liveActivityPushTokenListeners).toHaveLength(1);
         await act(async () => {
             liveActivityPushTokenListeners[0]?.({
@@ -1819,6 +1904,9 @@ describe('ActivitySurfacesRuntime', () => {
             transportMode: 'hosted_happier_relay',
             rawToken: 'raw-activitykit-token-2',
         }));
+        await vi.waitFor(() => {
+            expect(markLiveActivityTargetEnded).toHaveBeenCalledWith('target-direct-1', { serverId: 'server-a' });
+        });
 
         await act(async () => {
             screen.tree.unmount();
@@ -1851,14 +1939,13 @@ describe('ActivitySurfacesRuntime', () => {
         expect(liveActivityStart).toHaveBeenCalledTimes(1);
         expect(liveActivityPushTokenListeners).toHaveLength(0);
 
-        liveActivityHandleTokenApiState.throwOnAddPushTokenListener = true;
-        configureDirectApnsRemoteUpdatesForServer('server-a');
-        sessionsState.value = [{
-            ...session,
-            updatedAt: session.updatedAt + 1,
-        }];
-
         await expect(act(async () => {
+            liveActivityHandleTokenApiState.throwOnAddPushTokenListener = true;
+            configureDirectApnsRemoteUpdatesForServer('server-a');
+            sessionsState.value = [{
+                ...session,
+                updatedAt: session.updatedAt + 1,
+            }];
             screen.tree.update(React.createElement(ActivitySurfacesRuntime));
         })).resolves.toBeUndefined();
 
@@ -1908,6 +1995,66 @@ describe('ActivitySurfacesRuntime', () => {
         });
 
         expect(markLiveActivityTargetEnded).toHaveBeenCalledWith('target-direct-1', { serverId: 'server-a' });
+
+        await act(async () => {
+            screen.tree.unmount();
+        });
+    });
+
+    it('keeps and retries the exact remote target after end transport failure without blocking local teardown', async () => {
+        liveActivityHandleTokenApiState.enabled = true;
+        configureDirectApnsRemoteUpdatesForServer('server-a');
+        const session = createSessionFixture({
+            id: 'permission',
+            serverId: 'server-a',
+            seq: 10,
+            lastViewedSessionSeq: 10,
+            active: true,
+            presence: 'online',
+            pendingPermissionRequestCount: 1,
+            metadata: {
+                path: '/Users/tester/project/permission',
+                host: 'tester.local',
+                homeDir: '/Users/tester',
+                summary: { text: 'Permission work', updatedAt: 1 },
+            },
+        });
+        sessionsState.value = [session];
+        markLiveActivityTargetEnded
+            .mockRejectedValueOnce(new Error('temporary transport failure'))
+            .mockResolvedValueOnce(undefined);
+
+        const { ActivitySurfacesRuntime } = await import('./ActivitySurfacesRuntime');
+        const screen = await renderScreen(React.createElement(ActivitySurfacesRuntime));
+
+        await act(async () => {});
+        await act(async () => {
+            liveActivityPushTokenListeners[0]?.({
+                activityId: 'native-activity-1',
+                pushToken: 'raw-activitykit-token',
+            });
+        });
+
+        sessionsState.value = [];
+        await expect(act(async () => {
+            screen.tree.update(React.createElement(ActivitySurfacesRuntime));
+        })).resolves.toBeUndefined();
+        await act(async () => {});
+        expect(liveActivityEnd).toHaveBeenCalledTimes(1);
+        expect(markLiveActivityTargetEnded).toHaveBeenCalledTimes(1);
+
+        // A subsequent ordinary reconciliation is the retry trigger. No timer, outbox or
+        // second lifecycle is involved, and the exact Home/target binding is preserved.
+        settingsState.value = { ...settingsState.value };
+        await act(async () => {
+            screen.tree.update(React.createElement(ActivitySurfacesRuntime));
+        });
+        await act(async () => {});
+
+        expect(markLiveActivityTargetEnded.mock.calls).toEqual([
+            ['target-direct-1', { serverId: 'server-a' }],
+            ['target-direct-1', { serverId: 'server-a' }],
+        ]);
 
         await act(async () => {
             screen.tree.unmount();
@@ -2000,7 +2147,7 @@ describe('ActivitySurfacesRuntime', () => {
                     sessionId: 'permission',
                     requestId: 'request-1',
                     activityName: 'HappierFocusLiveActivity',
-                    activityInstanceKey: 'server-a:HappierFocusLiveActivity:permission',
+                    activityInstanceKey: liveActivityKey('server-a', 'permission'),
                 },
             });
         });
@@ -2060,7 +2207,7 @@ describe('ActivitySurfacesRuntime', () => {
                     sessionId: 'permission',
                     requestId: 'request-1',
                     activityName: 'HappierFocusLiveActivity',
-                    activityInstanceKey: 'server-a:HappierFocusLiveActivity:permission',
+                    activityInstanceKey: liveActivityKey('server-a', 'permission'),
                 },
             });
         });
@@ -2116,7 +2263,7 @@ describe('ActivitySurfacesRuntime', () => {
                     sessionId: 'permission',
                     requestId: 'request-1',
                     activityName: 'HappierFocusLiveActivity',
-                    activityInstanceKey: 'server-a:HappierFocusLiveActivity:permission',
+                    activityInstanceKey: liveActivityKey('server-a', 'permission'),
                 },
             });
         });
@@ -2310,7 +2457,7 @@ describe('ActivitySurfacesRuntime', () => {
                     sessionId: 'permission',
                     requestId: 'request-1',
                     activityName: 'HappierFocusLiveActivity',
-                    activityInstanceKey: 'server-b:HappierFocusLiveActivity:permission',
+                    activityInstanceKey: liveActivityKey('server-b', 'permission'),
                 },
             });
         });
@@ -2373,6 +2520,7 @@ describe('ActivitySurfacesRuntime', () => {
         sessionsState.value = [
             createSessionFixture({
                 id: 'permission',
+                serverId: 'local',
                 seq: 10,
                 lastViewedSessionSeq: 10,
                 active: true,
@@ -2402,7 +2550,7 @@ describe('ActivitySurfacesRuntime', () => {
             });
         });
 
-        expect(routerPush).toHaveBeenCalledWith('/session/permission');
+        expect(routerPush).toHaveBeenCalledWith('/session/permission?serverId=local');
 
         await act(async () => {
             screen.tree.unmount();

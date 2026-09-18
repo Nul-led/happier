@@ -1,5 +1,6 @@
 import { Platform, Alert } from 'react-native';
 import { t } from '@/text';
+import type { FocusReturnRef } from '@/keyboard/focusReturn';
 import { AlertButton, ModalConfig, CustomModalConfig, IModal, type CustomModalShowConfig, type CustomModalComponentType, type CustomModalInjectedProps } from './types';
 
 type ModalProviderFunctions = Readonly<{
@@ -148,6 +149,7 @@ class ModalManagerClass implements IModal {
             cancelText?: string;
             confirmText?: string;
             destructive?: boolean;
+            focusReturnRef?: FocusReturnRef;
         }
     ): Promise<boolean> {
         if (Platform.OS === 'web') {
@@ -163,7 +165,8 @@ class ModalManagerClass implements IModal {
                 message,
                 cancelText: options?.cancelText,
                 confirmText: options?.confirmText,
-                destructive: options?.destructive
+                destructive: options?.destructive,
+                focusReturnRef: options?.focusReturnRef,
             } as Omit<ModalConfig, 'id'>);
 
             return new Promise<boolean>((resolve) => {

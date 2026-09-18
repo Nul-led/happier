@@ -3,6 +3,8 @@ import { usePathname } from 'expo-router';
 import Fuse from 'fuse.js';
 
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { useTeamsSettingsAdmission } from '@/hooks/teams/useTeamsSettingsAdmission';
+import { useHomeAdministrationSettingsAdmission } from '@/hooks/home/useHomeAdministrationSettingsAdmission';
 import { useLocalSetting, useSetting } from '@/sync/domains/state/storage';
 import { getPreferredLanguage, t } from '@/text';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
@@ -28,12 +30,20 @@ type SettingsPageSearchDoc = Readonly<{
     pathTokens: readonly string[];
 }>;
 
-function resolveGateVisibility(node: SettingsPageNode, ctx: Readonly<{
+type CatalogVisibilityContext = Readonly<{
     useProfiles: boolean;
     devModeEnabled: boolean;
     tauriDesktop: boolean;
     features: Readonly<Record<string, boolean>>;
-}>): boolean {
+    teamsAdmitted: boolean;
+    homeAdministrationAdmitted: boolean;
+}>;
+
+function resolveGateVisibility(node: SettingsPageNode, ctx: CatalogVisibilityContext): boolean {
+    // These two destinations consume their exact Home-set admission owners.
+    // Neither the focused Home nor a catalog-local role check can decide them.
+    if (node.id === 'teams' && !ctx.teamsAdmitted) return false;
+    if (node.id === 'homeAdministration' && !ctx.homeAdministrationAdmitted) return false;
     const gate = node.gate;
     if (!gate) return true;
     if (gate.featureId && ctx.features[gate.featureId] !== true) return false;
@@ -43,12 +53,7 @@ function resolveGateVisibility(node: SettingsPageNode, ctx: Readonly<{
     return true;
 }
 
-function resolveTree(nodes: readonly SettingsPageNode[], ctx: Readonly<{
-    useProfiles: boolean;
-    devModeEnabled: boolean;
-    tauriDesktop: boolean;
-    features: Readonly<Record<string, boolean>>;
-}>): ResolvedSettingsPageNode[] {
+function resolveTree(nodes: readonly SettingsPageNode[], ctx: CatalogVisibilityContext): ResolvedSettingsPageNode[] {
     const out: ResolvedSettingsPageNode[] = [];
     for (const node of nodes) {
         if (!resolveGateVisibility(node, ctx)) continue;
@@ -158,6 +163,8 @@ export function useResolvedSettingsPageCatalog(): ResolvedCatalog {
     const useProfiles = Boolean(useSetting('useProfiles'));
     const devModeEnabled = Boolean(useLocalSetting('devModeEnabled'));
     const tauriDesktop = isDesktopHost();
+    const teamsAdmitted = useTeamsSettingsAdmission().admitted;
+    const homeAdministrationAdmitted = useHomeAdministrationSettingsAdmission().admitted;
 
     const usageReportingEnabled = useFeatureEnabled('usage.reporting');
     const executionRunsEnabled = useFeatureEnabled('execution.runs');
@@ -214,11 +221,15 @@ export function useResolvedSettingsPageCatalog(): ResolvedCatalog {
             devModeEnabled,
             tauriDesktop,
             features: featureSnapshot,
+            teamsAdmitted,
+            homeAdministrationAdmitted,
         });
     }, [
         appShellPluginUiProjection.pluginUiProjection,
         devModeEnabled,
         featureSnapshot,
+        teamsAdmitted,
+        homeAdministrationAdmitted,
         locale,
         tauriDesktop,
         useProfiles,

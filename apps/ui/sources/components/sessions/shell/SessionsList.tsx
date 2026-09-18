@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Platform, RefreshControl } from 'react-native';
+import { useNavigation } from 'expo-router';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import type { SessionListStorageFilter } from '@/sync/domains/session/sessionStorageKind';
@@ -7,9 +8,17 @@ import { sessionListStyles } from './sessionListStyles';
 import { SessionListDropOverlay } from './drag/SessionListDropOverlay';
 import { SessionListVirtualizedContent } from './sessionListVirtualizedContent';
 import { SessionListSearchChrome } from './search/SessionListSearchChrome';
+import {
+    useSessionListViewFilterController,
+    type SessionListCorpusStorage,
+    type SessionListViewFilterController,
+} from './search/useSessionListViewFilterController';
 import { preloadEnrichedMarkdownRuntime } from '@/components/markdown/enriched/preloadEnrichedMarkdownRuntime';
 import { useSessionListViewStateFromPaneState } from './useSessionListViewState';
-import { useSessionListScrollRetention } from './scroll/useSessionListScrollRetention';
+import {
+    releaseSessionListScrollRetention,
+    useSessionListScrollRetention,
+} from './scroll/useSessionListScrollRetention';
 import { buildSessionListRetentionKey } from './scroll/sessionListRetentionKey';
 import { useVisibleSessionListPaneState, type VisibleSessionListPaneState } from '@/hooks/session/useVisibleSessionListPaneState';
 import { sync } from '@/sync/sync';
@@ -25,9 +34,16 @@ import { SessionListSelectionActionBarHost } from './selection/SessionListSelect
 import { KeyboardAwareScreen } from '@/components/ui/keyboardAvoidance/KeyboardAwareScreen';
 import {
     readRetainedSessionListPaneState,
+    releaseRetainedSessionListPaneState,
     retainSessionListPaneState,
-    useSessionListPaneSourceScopeKey,
+    setRetainedSessionListPaneQueryMembershipActive,
+    setRetainedSessionListPaneReferenceCorpusActive,
 } from './sessionListPaneRetention';
+import type { SessionListViewContext } from './search/sessionListViewFilters';
+import {
+    registerSessionListRouteRemovalRelease,
+    type SessionListRouteRemovalNavigation,
+} from './sessionListRouteRetention';
 
 const SESSION_LIST_END_REACHED_THRESHOLD_RATIO = 0.4;
 
@@ -50,29 +66,78 @@ function isSessionListScrollNearEnd(event: SessionListScrollNearEndEvent): boole
     return offsetY + viewportHeight >= contentHeight - thresholdPx;
 }
 
+function buildSessionListViewRetentionKey(params: Readonly<{
+    storageKind: SessionListStorageFilter;
+    sourceScopeKey: string;
+    viewContextKey: string;
+    corpusStorage: SessionListCorpusStorage;
+}>): string {
+    return buildSessionListRetentionKey(
+        params.storageKind,
+        JSON.stringify([
+            params.sourceScopeKey,
+            'context',
+            params.viewContextKey,
+            'corpus',
+            params.corpusStorage,
+        ]),
+    );
+}
+
 export function SessionsList(props: Readonly<{
     storageKind?: SessionListStorageFilter;
+    corpusStorage?: SessionListCorpusStorage;
     pathname?: string;
     surfaceOwnership?: Partial<SessionListSurfaceOwnership>;
+    viewContext?: SessionListViewContext;
+    releaseRetentionOnRouteRemoval?: boolean;
 }>) {
     return <SessionsListView {...props} />;
 }
 
 export function SessionsListView(props: Readonly<{
     storageKind?: SessionListStorageFilter;
+    corpusStorage?: SessionListCorpusStorage;
     paneState?: VisibleSessionListPaneState;
     pathname?: string;
     surfaceOwnership?: Partial<SessionListSurfaceOwnership>;
+    viewContext?: SessionListViewContext;
+    releaseRetentionOnRouteRemoval?: boolean;
+}>) {
+    const corpusStorage = props.corpusStorage ?? 'active';
+    const filterController = useSessionListViewFilterController(corpusStorage, props.viewContext);
+
+    return (
+        <SessionsListViewWithFilterController
+            {...props}
+            corpusStorage={corpusStorage}
+            filterController={filterController}
+        />
+    );
+}
+
+export function SessionsListViewWithFilterController(props: Readonly<{
+    storageKind?: SessionListStorageFilter;
+    corpusStorage: SessionListCorpusStorage;
+    filterController: SessionListViewFilterController;
+    paneState?: VisibleSessionListPaneState;
+    pathname?: string;
+    surfaceOwnership?: Partial<SessionListSurfaceOwnership>;
+    releaseRetentionOnRouteRemoval?: boolean;
 }>) {
     React.useEffect(() => {
         fireAndForget(preloadEnrichedMarkdownRuntime(), { tag: 'SessionsList.preloadEnrichedMarkdownRuntime' });
     }, []);
 
-    const storageKind = props.storageKind ?? 'all';
+    const filterController = props.filterController;
+    const corpusStorage = props.corpusStorage;
+    const storageKind = filterController.sourceAvailable ? filterController.filters.source : 'persisted';
     if (props.paneState) {
         return (
             <SessionsListViewContent
                 storageKind={storageKind}
+                corpusStorage={corpusStorage}
+                filterController={filterController}
                 paneState={props.paneState}
                 pathname={props.pathname}
                 surfaceOwnership={props.surfaceOwnership}
@@ -80,16 +145,28 @@ export function SessionsListView(props: Readonly<{
         );
     }
 
-    return <SessionsListViewWithResolvedPaneState storageKind={storageKind} pathname={props.pathname} surfaceOwnership={props.surfaceOwnership} />;
+    return (
+        <SessionsListViewWithResolvedPaneState
+            storageKind={storageKind}
+            corpusStorage={corpusStorage}
+            filterController={filterController}
+            pathname={props.pathname}
+            surfaceOwnership={props.surfaceOwnership}
+            releaseRetentionOnRouteRemoval={props.releaseRetentionOnRouteRemoval}
+        />
+    );
 }
 
 function SessionsListViewWithResolvedPaneState(props: Readonly<{
     storageKind: SessionListStorageFilter;
+    corpusStorage: SessionListCorpusStorage;
+    filterController: SessionListViewFilterController;
     pathname?: string;
     surfaceOwnership?: Partial<SessionListSurfaceOwnership>;
+    releaseRetentionOnRouteRemoval?: boolean;
 }>) {
     const surfaceOwnership = normalizeSessionListSurfaceOwnership(props.surfaceOwnership);
-    const sourceScopeKey = useSessionListPaneSourceScopeKey();
+    const sourceScopeKey = props.filterController.retentionScopeKey;
     const retentionIdentity = React.useMemo(() => ({
         storageKind: props.storageKind,
         pathname: props.pathname,
@@ -98,6 +175,9 @@ function SessionsListViewWithResolvedPaneState(props: Readonly<{
     const paneState = useVisibleSessionListPaneState(props.storageKind, {
         pathname: props.pathname,
         sessionListSurfaceDataActive: surfaceOwnership.dataActive,
+        queryHomes: props.filterController.pagingHomes,
+        emptyQuerySelectionComplete: props.filterController.emptyQuerySelectionComplete,
+        corpusStorage: props.corpusStorage,
     });
     React.useEffect(() => {
         if (!surfaceOwnership.dataActive) return;
@@ -106,23 +186,92 @@ function SessionsListViewWithResolvedPaneState(props: Readonly<{
             pathname: props.pathname,
             sourceScopeKey,
             paneState,
+            queryMembershipActive: true,
+            referenceCorpusActive: surfaceOwnership.interactive,
+            selectedServerIds: props.filterController.queryHomes.map((home) => home.serverId),
         });
-    }, [paneState, props.pathname, props.storageKind, sourceScopeKey, surfaceOwnership.dataActive]);
+    }, [paneState, props.filterController.queryHomes, props.pathname, props.storageKind, sourceScopeKey, surfaceOwnership.dataActive, surfaceOwnership.interactive]);
+    React.useEffect(() => {
+        setRetainedSessionListPaneQueryMembershipActive(retentionIdentity, surfaceOwnership.dataActive);
+        return () => setRetainedSessionListPaneQueryMembershipActive(retentionIdentity, false);
+    }, [retentionIdentity, surfaceOwnership.dataActive]);
+    React.useEffect(() => {
+        setRetainedSessionListPaneReferenceCorpusActive(retentionIdentity, surfaceOwnership.interactive);
+        return () => setRetainedSessionListPaneReferenceCorpusActive(retentionIdentity, false);
+    }, [retentionIdentity, surfaceOwnership.interactive]);
     const renderedPaneState = surfaceOwnership.dataActive
         ? paneState
         : readRetainedSessionListPaneState(retentionIdentity)?.paneState ?? paneState;
     return (
-        <SessionsListViewContent
-            storageKind={props.storageKind}
-            paneState={renderedPaneState}
-            pathname={props.pathname}
-            surfaceOwnership={surfaceOwnership}
-        />
+        <>
+            {props.releaseRetentionOnRouteRemoval ? (
+                <SessionListRouteRetentionRelease
+                    corpusStorage={props.corpusStorage}
+                    retentionIdentity={retentionIdentity}
+                    viewContextKey={props.filterController.viewContextKey}
+                />
+            ) : null}
+            <SessionsListViewContent
+                storageKind={props.storageKind}
+                corpusStorage={props.corpusStorage}
+                filterController={props.filterController}
+                paneState={renderedPaneState}
+                pathname={props.pathname}
+                surfaceOwnership={surfaceOwnership}
+            />
+        </>
     );
+}
+
+function SessionListRouteRetentionRelease(props: Readonly<{
+    corpusStorage: SessionListCorpusStorage;
+    retentionIdentity: Readonly<{
+        storageKind: SessionListStorageFilter;
+        pathname?: string;
+        sourceScopeKey: string;
+    }>;
+    viewContextKey: string;
+}>) {
+    const navigation = useNavigation() as SessionListRouteRemovalNavigation;
+    const scrollRetentionKey = React.useMemo(
+        () => buildSessionListViewRetentionKey({
+            storageKind: props.retentionIdentity.storageKind,
+            sourceScopeKey: props.retentionIdentity.sourceScopeKey,
+            viewContextKey: props.viewContextKey,
+            corpusStorage: props.corpusStorage,
+        }),
+        [props.corpusStorage, props.retentionIdentity, props.viewContextKey],
+    );
+    const routeEntriesRef = React.useRef(new Map<string, Readonly<{
+        paneIdentity: typeof props.retentionIdentity;
+        scrollRetentionKey: string;
+    }>>());
+    const routeEntryKey = JSON.stringify([
+        props.retentionIdentity.storageKind,
+        props.retentionIdentity.pathname ?? '/',
+        props.retentionIdentity.sourceScopeKey,
+        scrollRetentionKey,
+    ]);
+    routeEntriesRef.current.set(routeEntryKey, {
+        paneIdentity: props.retentionIdentity,
+        scrollRetentionKey,
+    });
+
+    React.useEffect(() => registerSessionListRouteRemovalRelease(navigation, () => {
+        for (const entry of routeEntriesRef.current.values()) {
+            releaseRetainedSessionListPaneState(entry.paneIdentity);
+            releaseSessionListScrollRetention(entry.scrollRetentionKey);
+        }
+        routeEntriesRef.current.clear();
+    }), [navigation]);
+
+    return null;
 }
 
 type SessionsListViewContentProps = Readonly<{
     storageKind: SessionListStorageFilter;
+    corpusStorage: SessionListCorpusStorage;
+    filterController: SessionListViewFilterController;
     paneState: VisibleSessionListPaneState;
     pathname?: string;
     surfaceOwnership?: Partial<SessionListSurfaceOwnership>;
@@ -152,34 +301,52 @@ function VisibleSessionsListViewContent(
         [maxWidthStyle, styles.contentContainer],
     );
     const safeArea = useChromeSafeAreaInsets();
-    const sourceScopeKey = useSessionListPaneSourceScopeKey();
+    const sourceScopeKey = props.filterController.retentionScopeKey;
     const surfaceOwnership = props.surfaceOwnership;
     const surfaceDataActiveRef = React.useRef(surfaceOwnership.dataActive);
     surfaceDataActiveRef.current = surfaceOwnership.dataActive;
+    React.useEffect(() => () => {
+        surfaceDataActiveRef.current = false;
+    }, []);
     const [refreshingSessions, setRefreshingSessions] = React.useState(false);
     const refreshingSessionsRef = React.useRef(false);
-    const viewState = useSessionListViewStateFromPaneState(props.storageKind, props.paneState, {
+    const viewState = useSessionListViewStateFromPaneState(props.storageKind, props.paneState, props.filterController, {
         pathname: props.pathname,
         surfaceOwnership,
     });
     const {
+        measureNodeViewportOffset,
+        nodeIds,
         onTreeScroll,
         onTreeViewportLayout,
+        scrollToIndex,
         scrollToOffset,
     } = viewState;
     const retentionKey = React.useMemo(
-        () => buildSessionListRetentionKey(props.storageKind, sourceScopeKey),
-        [props.storageKind, sourceScopeKey],
+        () => buildSessionListViewRetentionKey({
+            storageKind: props.storageKind,
+            sourceScopeKey,
+            viewContextKey: props.filterController.viewContextKey,
+            corpusStorage: props.corpusStorage,
+        }),
+        [props.corpusStorage, props.filterController.viewContextKey, props.storageKind, sourceScopeKey],
     );
     const scrollRetention = useSessionListScrollRetention({
         retentionKey,
+        measureNodeViewportOffset,
+        nodeIds,
+        scrollToIndex,
         scrollToOffset,
         surfaceActive: surfaceOwnership.dataActive,
     });
     const handleLoadMoreSessions = React.useCallback(() => {
         if (!surfaceDataActiveRef.current) return;
-        fireAndForget(sync.fetchMoreSessions(), { tag: 'SessionsList.fetchMoreSessions' });
-    }, []);
+        const query = props.paneState.query;
+        fireAndForget(
+            query?.active === true ? query.loadNext() : sync.fetchMoreSessions(),
+            { tag: query?.active === true ? 'SessionsList.query.loadNext' : 'SessionsList.fetchMoreSessions' },
+        );
+    }, [props.paneState.query]);
     const handleRefreshSessions = React.useCallback(async () => {
         if (!surfaceDataActiveRef.current) return;
         if (refreshingSessionsRef.current) return;
@@ -188,13 +355,27 @@ function VisibleSessionsListViewContent(
         try {
             await runRefreshDiagnosticAction(
                 { action: 'pull_to_refresh', screen: 'session_list' },
-                () => sync.refreshSessions(),
+                () => props.paneState.query?.active === true
+                    ? props.paneState.query.refresh()
+                    : sync.refreshSessions(),
             );
         } finally {
             refreshingSessionsRef.current = false;
             setRefreshingSessions(false);
         }
-    }, []);
+    }, [props.paneState.query]);
+    const handleClearFilters = React.useCallback(() => {
+        props.filterController.resetFilters();
+    }, [props.filterController]);
+    const handleBrowseAllAccessible = React.useCallback(() => {
+        props.filterController.updateFilters((current) => ({
+            ...current,
+            scope: 'all_accessible',
+        }));
+    }, [props.filterController]);
+    const handleShowInactive = React.useCallback(() => {
+        props.filterController.setIncludeInactive(true);
+    }, [props.filterController]);
     const handleTreeViewportLayout = React.useCallback((event: { nativeEvent?: { layout?: { height?: number } } }) => {
         onTreeViewportLayout(event);
         scrollRetention.handleLayout(event);
@@ -215,6 +396,14 @@ function VisibleSessionsListViewContent(
             handleLoadMoreSessions();
         }
     }, [handleLoadMoreSessions, onTreeScroll, scrollRetention]);
+    const handleViewableItemsChanged = React.useCallback((info: Parameters<typeof viewState.onViewableItemsChanged>[0]) => {
+        scrollRetention.handleViewableItemsChanged(info);
+        viewState.onViewableItemsChanged(info);
+    }, [scrollRetention, viewState.onViewableItemsChanged]);
+    const handleNativeListScrollInteractionStart = React.useCallback(() => {
+        scrollRetention.handleScrollInteractionStart();
+        viewState.onNativeListScrollInteractionStart();
+    }, [scrollRetention, viewState.onNativeListScrollInteractionStart]);
     const nativeRefreshControl = React.useMemo(() => {
         if (Platform.OS === 'web' || !surfaceOwnership.dataActive) return undefined;
         return (
@@ -224,6 +413,45 @@ function VisibleSessionsListViewContent(
             />
         );
     }, [handleRefreshSessions, refreshingSessions, surfaceOwnership.dataActive]);
+    const queryVisibleSessionCount = React.useMemo(
+        () => viewState.nodeIds.reduce(
+            (count, nodeId) => count + (nodeId.startsWith('session:') ? 1 : 0),
+            0,
+        ),
+        [viewState.nodeIds],
+    );
+    const queryPresentationState = React.useMemo(() => {
+        const presentation = props.paneState.queryPresentation;
+        if (!presentation) return undefined;
+        return {
+            presentation,
+            visibleSessionCount: queryVisibleSessionCount,
+            filters: props.filterController.filters,
+            defaults: props.filterController.defaultFilters,
+            viewContext: props.filterController.viewContext,
+            includeInactive: props.filterController.includeInactive,
+            hasHiddenInactiveSessions: props.paneState.hasHiddenInactiveSessions,
+            onRetry: handleRefreshSessions,
+            onLoadMore: handleLoadMoreSessions,
+            onClearFilters: handleClearFilters,
+            onBrowseAllAccessible: handleBrowseAllAccessible,
+            onShowInactive: handleShowInactive,
+        };
+    }, [
+        handleBrowseAllAccessible,
+        handleClearFilters,
+        handleLoadMoreSessions,
+        handleRefreshSessions,
+        handleShowInactive,
+        props.filterController.defaultFilters,
+        props.filterController.filters,
+        props.filterController.includeInactive,
+        props.filterController.viewContext,
+        props.paneState.queryPresentation,
+        props.paneState.query?.active,
+        props.paneState.hasHiddenInactiveSessions,
+        queryVisibleSessionCount,
+    ]);
 
     return (
         <SessionListSelectionStoreProvider store={viewState.sessionListSelectionStore}>
@@ -249,14 +477,16 @@ function VisibleSessionsListViewContent(
                         renderItem={viewState.renderVirtualizedItem}
                         rowExtraData={viewState.virtualizedRowExtraData}
                         filteredNoResultsMessage={viewState.filteredNoResultsMessage}
+                        queryPresentationState={queryPresentationState}
+                        viewContext={props.filterController.viewContext}
                         onScroll={handleTreeScroll}
-                        onScrollBeginDrag={viewState.onNativeListScrollInteractionStart}
+                        onScrollBeginDrag={handleNativeListScrollInteractionStart}
                         onScrollEndDrag={viewState.onNativeListScrollInteractionEnd}
-                        onMomentumScrollBegin={viewState.onNativeListScrollInteractionStart}
+                        onMomentumScrollBegin={handleNativeListScrollInteractionStart}
                         onMomentumScrollEnd={viewState.onNativeListScrollInteractionEnd}
                         onEndReached={surfaceOwnership.dataActive ? handleLoadMoreSessions : undefined}
                         nativeRefreshControl={nativeRefreshControl}
-                        onViewableItemsChanged={viewState.onViewableItemsChanged}
+                        onViewableItemsChanged={handleViewableItemsChanged}
                         viewabilityConfig={viewState.viewabilityConfig}
                         onLayout={handleTreeViewportLayout}
                         onContentSizeChange={viewState.onTreeContentSizeChange}
@@ -269,6 +499,8 @@ function VisibleSessionsListViewContent(
                         }}
                         onPressArchivedSessions={viewState.onPressArchivedSessions}
                         folderFocus={viewState.folderFocus}
+                        showDrafts={props.corpusStorage === 'active'}
+                        showArchivedShortcut={props.corpusStorage === 'active'}
                         folderFocusRootTitle={viewState.folderFocusRootTitle}
                         onClearFolderFocus={viewState.onClearFolderFocus}
                         onSelectFolderBreadcrumb={viewState.onSelectFolderBreadcrumb}

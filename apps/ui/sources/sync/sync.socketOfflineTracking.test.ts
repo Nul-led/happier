@@ -345,6 +345,26 @@ describe('sync socket offline tracking', () => {
     expect((sync as any).lastSocketDisconnectedAtMs ?? null).toBeNull();
   }, 60_000);
 
+  it('publishes active ordinary Session-list offline state without erasing its last success', () => {
+    const serverId = getActiveServerSnapshot().serverId;
+    expect(serverId).not.toBe('');
+    storage.setState((state) => ({
+      ...state,
+      concurrentSessionListCacheByServerId: {
+        ...state.concurrentSessionListCacheByServerId,
+        [serverId]: {
+          serverName: 'Active Home',
+          listObservation: { phase: 'ready', lastSuccessAt: 1_000 },
+        },
+      },
+    }));
+
+    (sync as any).subscribeToUpdates();
+
+    expect(storage.getState().concurrentSessionListCacheByServerId[serverId]?.listObservation)
+      .toEqual({ phase: 'offline', lastSuccessAt: 1_000 });
+  });
+
   it('uses captured offline duration for loaded transcript catch-up after connected status clears the disconnect timestamp', async () => {
     (sync as any).subscribeToUpdates();
 
@@ -789,7 +809,7 @@ describe('sync socket offline tracking', () => {
       body: buildUpdateBody(sessionId),
     });
     expect(storage.getState().sessions[sessionId]).toBeUndefined();
-    expect(storage.getState().sessionListRenderables[sessionId]).toBeUndefined();
+    expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[sessionId]).find(Boolean)).toBeUndefined();
 
     releaseSnapshot();
     await snapshotFetch;
@@ -797,7 +817,7 @@ describe('sync socket offline tracking', () => {
     expect(activeSnapshotCalls).toBe(2);
 
     expect(storage.getState().sessions[sessionId]).toBeUndefined();
-    expect(storage.getState().sessionListRenderables[sessionId]).toBeUndefined();
+    expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[sessionId]).find(Boolean)).toBeUndefined();
   });
 
   it('does not restore a Voice History carrier from an older session snapshot when exact hydration reports it absent', async () => {
@@ -917,14 +937,14 @@ describe('sync socket offline tracking', () => {
     await exactHydration;
 
     expect(storage.getState().sessions[sessionId]).toBeUndefined();
-    expect(storage.getState().sessionListRenderables[sessionId]).toBeUndefined();
+    expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[sessionId]).find(Boolean)).toBeUndefined();
 
     releaseOlderSnapshot();
     await olderSnapshot;
     await (sync as any).sessionsSync.awaitQueue({ timeoutMs: 2_000 });
 
     expect(storage.getState().sessions[sessionId]).toBeUndefined();
-    expect(storage.getState().sessionListRenderables[sessionId]).toBeUndefined();
+    expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[sessionId]).find(Boolean)).toBeUndefined();
   });
 
   it('fetches and hydrates cold hidden Voice attention rows when session-list attention placement is off', async () => {
@@ -1055,6 +1075,109 @@ describe('sync socket offline tracking', () => {
       latestReadyEventSeq: 4,
       lastViewedSessionSeq: 2,
     });
+  });
+
+  it('resumes the bounded ordinary attention frontier through fetchMoreSessions without restarting page one', async () => {
+    upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+    const attentionCursors: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof Request
+          ? input.url
+          : 'url' in input
+            ? String(input.url)
+            : input.toString();
+      if (url.includes('/v2/session-organization')) {
+        return new Response(JSON.stringify({
+          snapshot: {
+            schemaVersion: 1,
+            version: 0,
+            pins: [],
+            folders: [],
+            folderAssignments: [],
+            tags: [],
+            tagAssignments: [],
+            orderEntries: [],
+            labels: [],
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/v2/sessions/active')) {
+        return new Response(JSON.stringify({ sessions: [], nextCursor: null, hasNext: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/v2/sessions')) {
+        const parsed = new URL(url, 'http://localhost');
+        const attentionCursor = parsed.searchParams.get('attentionCursor');
+        if (!attentionCursor) {
+          return new Response(JSON.stringify({
+            sessions: [],
+            nextCursor: null,
+            hasNext: false,
+            attentionNextCursor: 'attention-1',
+            attentionHasNext: true,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        attentionCursors.push(attentionCursor);
+        const page = Number(attentionCursor.split('-')[1]);
+        const terminal = page === 101;
+        return new Response(JSON.stringify({
+          sessions: terminal ? [{
+            id: 'attention-page-101',
+            seq: 1,
+            createdAt: 1,
+            updatedAt: 101,
+            active: true,
+            activeAt: 101,
+            archivedAt: null,
+            encryptionMode: 'plain',
+            metadata: JSON.stringify({ path: '/tmp/attention-page-101', host: 'test-host' }),
+            metadataVersion: 1,
+            agentState: JSON.stringify({}),
+            agentStateVersion: 1,
+            dataEncryptionKey: null,
+            share: null,
+          }] : [],
+          nextCursor: null,
+          hasNext: false,
+          attentionNextCursor: terminal ? null : `attention-${page + 1}`,
+          attentionHasNext: !terminal,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    routeApiSocketRequestsThroughFetch(fetchMock);
+    (sync as any).credentials = { token: 'hdr.eyJzdWIiOiJhdHRlbnRpb24tZnJvbnRpZXIifQ.sig', secret: 'secret' };
+    (sync as any).encryption = {
+      decryptEncryptionKey: async () => null,
+      initializeSessions: async () => {},
+      removeSessionEncryption: () => {},
+      getSessionEncryption: () => null,
+    };
+
+    await (sync as any).fetchSessions();
+
+    expect(attentionCursors).toHaveLength(100);
+    expect(attentionCursors[0]).toBe('attention-1');
+    expect(attentionCursors.at(-1)).toBe('attention-100');
+    expect(sync.readOrdinarySessionListCoverage().coverage).toBe('incomplete');
+    expect(storage.getState().concurrentSessionListCacheByServerId[getActiveServerSnapshot().serverId!]?.listObservation?.phase)
+      .not.toBe('ready');
+
+    await sync.fetchMoreSessions();
+
+    expect(attentionCursors).toHaveLength(101);
+    expect(attentionCursors.at(-1)).toBe('attention-101');
+    expect(storage.getState().sessionListRowsByServerId[getActiveServerSnapshot().serverId!]?.['attention-page-101'])
+      .toBeDefined();
+    expect(sync.readOrdinarySessionListCoverage().coverage).toBe('complete');
   });
 
   it('does not prefetch session folder assignments for every session snapshot page', async () => {
@@ -1399,7 +1522,7 @@ describe('sync socket offline tracking', () => {
   it('loads session organization before the initial session bootstrap request', async () => {
     const serverUrl = 'http://localhost:53289';
     upsertAndActivateServer({ serverUrl, scope: 'device' });
-    setServerProfileIdentityForUrl(serverUrl, 'srv_test_identity');
+    await setServerProfileIdentityForUrl(serverUrl, 'srv_test_identity');
     setActiveServer({ serverId: 'srv_test_identity', scope: 'device' });
     const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
     expect(activeServerId).toBe('srv_test_identity');
@@ -1490,7 +1613,7 @@ describe('sync socket offline tracking', () => {
   it('marks server-backed pinned rows as required hydration during session list fetches', async () => {
     const serverUrl = 'http://localhost:53291';
     upsertAndActivateServer({ serverUrl, scope: 'device' });
-    setServerProfileIdentityForUrl(serverUrl, 'srv_required_pin_hydration');
+    await setServerProfileIdentityForUrl(serverUrl, 'srv_required_pin_hydration');
     setActiveServer({ serverId: 'srv_required_pin_hydration', scope: 'device' });
     const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
     expect(activeServerId).toBe('srv_required_pin_hydration');
@@ -1613,7 +1736,7 @@ describe('sync socket offline tracking', () => {
   it('continues clean session bootstrap when optional session organization route is unavailable', async () => {
     const serverUrl = 'http://localhost:53290';
     upsertAndActivateServer({ serverUrl, scope: 'device' });
-    setServerProfileIdentityForUrl(serverUrl, 'srv_session_org_unavailable');
+    await setServerProfileIdentityForUrl(serverUrl, 'srv_session_org_unavailable');
     setActiveServer({ serverId: 'srv_session_org_unavailable', scope: 'device' });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -2138,5 +2261,22 @@ describe('sync socket offline tracking', () => {
         }),
       }),
     ]);
+  });
+
+  it('publishes ready for the active Home after an ordinary Session-list fetch succeeds', async () => {
+    stubSnapshotRefreshFetch();
+    upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+    const serverId = getActiveServerSnapshot().serverId;
+    (sync as any).credentials = { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' };
+    (sync as any).encryption = {
+      decryptEncryptionKey: async () => null,
+      initializeSessions: async () => {},
+      getSessionEncryption: () => null,
+    };
+
+    await (sync as any).fetchSessions();
+
+    expect(storage.getState().concurrentSessionListCacheByServerId[serverId]?.listObservation)
+      .toMatchObject({ phase: 'ready', lastSuccessAt: expect.any(Number) });
   });
 });

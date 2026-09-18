@@ -15,7 +15,7 @@ import {
     resolveBundledAgentIdFromContributionIdentity,
     type AgentId,
 } from '@/agents/catalog/catalog';
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 import { isLegacyCompatAgentType } from '@/agents/backendCatalog/legacyCompatAgents';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
@@ -113,7 +113,7 @@ function readCanonicalAgentTarget(
     : linked.ok && linked.linkedSession.qualifiedIdentity
       ? { kind: 'agent' as const, identity: linked.linkedSession.qualifiedIdentity.agent }
       : resolvedAgentId && isBundledAgentId(resolvedAgentId)
-        ? { kind: 'agent' as const, identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[resolvedAgentId] }
+        ? { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[resolvedAgentId] }
         : null;
   const parsed = AgentExecutionTargetV1Schema.safeParse(candidate);
   if (!parsed.success) return null;

@@ -89,7 +89,7 @@ vi.mock('@/components/sessions/workState/useSessionWorkflowActivity', async () =
 vi.mock('@/components/sessions/transcript/MessageView', async () => {
     const { useTranscriptMotion } = await import('./motion/TranscriptMotionContext');
     const { WorkflowActivityView } = await import('@/components/tools/renderers/workflow/WorkflowActivityView');
-    const { WorkflowAgentRow } = await import('@/components/tools/renderers/workflow/WorkflowAgentRow');
+    const { WorkflowAgentRow } = await import('@/components/workflows/presentation/WorkflowAgentRow');
     return {
         MessageViewWithSessionCommon: (props: Record<string, any>) => {
             hostState.motionConfigs.push(useTranscriptMotion()?.config ?? null);

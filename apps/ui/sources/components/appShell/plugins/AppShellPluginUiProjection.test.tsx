@@ -489,6 +489,7 @@ function installSelectedAppScopePluginFixture(input: Readonly<{
             pluginId: input.pluginId,
             response: {
                 availabilityCursor: 1,
+                packageAssets: [],
                 hostingCapability: { enabled: false },
                 intent: {
                     pluginId: input.pluginId,

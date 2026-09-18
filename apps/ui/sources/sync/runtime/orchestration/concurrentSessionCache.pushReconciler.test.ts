@@ -51,20 +51,21 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
     },
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentialsForServerUrl: (...args: unknown[]) => mocks.getCredentialsForServerUrl(...args),
-    },
-    subscribeHomeCredentialMutations: (listener: () => void) => {
-        mocks.credentialMutationListeners.add(listener);
-        return () => {
-            mocks.credentialMutationListeners.delete(listener);
-        };
-    },
-    isLegacyAuthCredentials: () => true,
-    isDataKeyAuthCredentials: () => false,
-    isTokenOnlyAuthCredentials: () => false,
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: (serverUrl, options) => mocks.getCredentialsForServerUrl(serverUrl, options),
+        },
+        subscribeHomeCredentialMutations: (listener) => {
+            mocks.credentialMutationListeners.add(listener);
+            return () => {
+                mocks.credentialMutationListeners.delete(listener);
+            };
+        },
+    });
+});
 
 const profiles = [
     {
@@ -132,6 +133,25 @@ vi.mock('@/sync/engine/machines/syncMachines', () => ({
     fetchAndApplyMachines: vi.fn(async () => undefined),
 }));
 
+const {
+    startConcurrentSessionCacheSync,
+    stopConcurrentSessionCacheSync,
+} = await import('./concurrentSessionCache');
+const { schedulePushTokenReconciliation } = await import('@/sync/engine/account/syncAccount');
+const { saveLocalSettings } = await import('@/sync/domains/state/settingsPersistence');
+const { localSettingsDefaults } = await import('@/sync/domains/settings/localSettings');
+
+function saveDeviceAttentionPolicy(previewBehavior: 'include_preview' | 'status_only'): void {
+    saveLocalSettings({
+        ...localSettingsDefaults,
+        deviceRemoteAlertsEnabled: true,
+        attentionDeviceOverridesV1: {
+            ...localSettingsDefaults.attentionDeviceOverridesV1,
+            privacy: { previewBehavior },
+        },
+    });
+}
+
 let stopLifecycle: (() => void) | null = null;
 
 async function flushSchedulerTurn(): Promise<void> {
@@ -161,9 +181,6 @@ describe('device-level push token reconciliation lifecycle', () => {
     });
 
     it('runs reconciliation from the mounted device lifecycle without an authenticated focused Sync', async () => {
-        const concurrentModule = await import('./concurrentSessionCache');
-        const { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } = concurrentModule;
-        const { schedulePushTokenReconciliation } = await import('@/sync/engine/account/syncAccount');
         stopLifecycle = stopConcurrentSessionCacheSync;
 
         startConcurrentSessionCacheSync();
@@ -184,8 +201,6 @@ describe('device-level push token reconciliation lifecycle', () => {
     }, 60_000);
 
     it('coalesces concurrent triggers into one registration run', async () => {
-        const { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } = await import('./concurrentSessionCache');
-        const { schedulePushTokenReconciliation } = await import('@/sync/engine/account/syncAccount');
         stopLifecycle = stopConcurrentSessionCacheSync;
 
         startConcurrentSessionCacheSync();
@@ -200,8 +215,6 @@ describe('device-level push token reconciliation lifecycle', () => {
     });
 
     it('schedules a run when a Home credential mutation arrives after mount', async () => {
-        const { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } = await import('./concurrentSessionCache');
-        const { schedulePushTokenReconciliation } = await import('@/sync/engine/account/syncAccount');
         stopLifecycle = stopConcurrentSessionCacheSync;
 
         startConcurrentSessionCacheSync();
@@ -218,8 +231,38 @@ describe('device-level push token reconciliation lifecycle', () => {
         expect(mocks.registerPushToken).toHaveBeenCalledTimes(1);
     });
 
+    it('coalesces device attention policy writes into one enrollment reconciliation', async () => {
+        stopLifecycle = stopConcurrentSessionCacheSync;
+
+        startConcurrentSessionCacheSync();
+        await flushSchedulerTurn();
+        expect(mocks.registerPushToken).toHaveBeenCalledTimes(1);
+        mocks.registerPushToken.mockClear();
+
+        saveDeviceAttentionPolicy('include_preview');
+        saveDeviceAttentionPolicy('status_only');
+
+        await flushSchedulerTurn();
+        expect(mocks.registerPushToken).toHaveBeenCalledTimes(1);
+        await flushSchedulerTurn();
+        expect(mocks.registerPushToken).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not reconcile a device attention policy write after the lifecycle stops', async () => {
+        startConcurrentSessionCacheSync();
+        await flushSchedulerTurn();
+        stopConcurrentSessionCacheSync();
+        stopLifecycle = null;
+        mocks.registerPushToken.mockClear();
+
+        saveDeviceAttentionPolicy('status_only');
+        saveDeviceAttentionPolicy('include_preview');
+        await flushSchedulerTurn();
+
+        expect(mocks.registerPushToken).not.toHaveBeenCalled();
+    });
+
     it('schedules a fresh canonical read when Expo reports an in-process push-token change', async () => {
-        const { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } = await import('./concurrentSessionCache');
         stopLifecycle = stopConcurrentSessionCacheSync;
         mocks.readPushPermission.mockResolvedValue({
             ok: true as const,
@@ -238,9 +281,6 @@ describe('device-level push token reconciliation lifecycle', () => {
     });
 
     it('does not run or stay scheduled after the device lifecycle stops', async () => {
-        const { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } = await import('./concurrentSessionCache');
-        const { schedulePushTokenReconciliation } = await import('@/sync/engine/account/syncAccount');
-
         startConcurrentSessionCacheSync();
         stopConcurrentSessionCacheSync();
         stopLifecycle = null;

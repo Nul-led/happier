@@ -98,6 +98,32 @@ describe('Encryption.initializeSessions (key updates)', () => {
     expect(generation.getCurrentGeneration('account-a', 'server-a')).toBe(1);
   });
 
+  it('does not let a guarded key replacement cancel itself when it advances the owning generation', async () => {
+    const encryption = await Encryption.create(new Uint8Array(32).fill(1));
+    const generationScope = expectGenerationScopeReader(encryption);
+    const scope = { accountId: 'account-a', serverId: 'server-a' } as const;
+
+    await encryption.initializeSessions(
+      new Map([['session_1', new Uint8Array(32).fill(2)]]),
+      scope,
+    );
+    const before = encryption.getSessionEncryption('session_1');
+    const captured = generationScope.getCurrentEncryptionGenerationScope(scope);
+
+    const committed = await encryption.initializeSessions(
+      new Map([['session_1', new Uint8Array(32).fill(3)]]),
+      {
+        ...scope,
+        shouldContinue: () => generationScope.isCurrentEncryptionGenerationScope(captured),
+      },
+    );
+
+    expect(encryption.getSessionEncryption('session_1')).not.toBe(before);
+    expect(generationScope.isCurrentEncryptionGenerationScope(captured)).toBe(false);
+    expect(committed).not.toBeNull();
+    expect(generationScope.isCurrentEncryptionGenerationScope(committed!)).toBe(true);
+  });
+
   it('invalidates the previous owning scope when a session is rebound to a different account or server', async () => {
     const encryption = await Encryption.create(new Uint8Array(32).fill(1));
     const generation = expectGenerationReader(encryption);
@@ -122,6 +148,45 @@ describe('Encryption.initializeSessions (key updates)', () => {
     expect(generationScope.isCurrentEncryptionGenerationScope(captured)).toBe(false);
     expect(generation.getCurrentGeneration('account-a', 'server-a')).toBe(1);
     expect(generation.getCurrentGeneration('account-b', 'server-b')).toBe(0);
+  });
+
+  it('invalidates an overlapping first initializer displaced while its key was opening', async () => {
+    const encryption = await Encryption.create(new Uint8Array(32).fill(1));
+    const generationScope = expectGenerationScopeReader(encryption);
+    const originalOpenEncryption = encryption.openEncryption.bind(encryption);
+    let releaseAccountA!: () => void;
+    const accountAGate = new Promise<void>((resolve) => {
+      releaseAccountA = resolve;
+    });
+    let accountAStarted!: () => void;
+    const accountAStart = new Promise<void>((resolve) => {
+      accountAStarted = resolve;
+    });
+    vi.spyOn(encryption, 'openEncryption').mockImplementation(async (dataKey, scope) => {
+      const opened = await originalOpenEncryption(dataKey, scope);
+      if (scope.accountId === 'account-a') {
+        accountAStarted();
+        await accountAGate;
+      }
+      return opened;
+    });
+
+    const pendingAccountA = encryption.initializeSessions(
+      new Map([['session_1', new Uint8Array(32).fill(2)]]),
+      { accountId: 'account-a', serverId: 'server-a' },
+    );
+    await accountAStart;
+    const committedAccountB = await encryption.initializeSessions(
+      new Map([['session_1', new Uint8Array(32).fill(3)]]),
+      { accountId: 'account-b', serverId: 'server-b' },
+    );
+    releaseAccountA();
+    const committedAccountA = await pendingAccountA;
+
+    expect(committedAccountA).not.toBeNull();
+    expect(committedAccountB).not.toBeNull();
+    expect(generationScope.isCurrentEncryptionGenerationScope(committedAccountB!)).toBe(false);
+    expect(generationScope.isCurrentEncryptionGenerationScope(committedAccountA!)).toBe(true);
   });
 
   it('isolates worker generation by account and server scope', async () => {

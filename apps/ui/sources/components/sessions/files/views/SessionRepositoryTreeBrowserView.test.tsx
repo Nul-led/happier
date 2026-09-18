@@ -7,6 +7,9 @@ import { installSessionFilesViewCommonModuleMocks } from './sessionFilesViewsTes
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).__DEV__ = false;
 
+const stableExpandedPaths = vi.hoisted(() => [] as string[]);
+const setExpandedPathsSpy = vi.hoisted(() => vi.fn());
+
 installSessionFilesViewCommonModuleMocks({
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -18,10 +21,10 @@ installSessionFilesViewCommonModuleMocks({
             },
         });
     },
-    storage: async (importOriginal) => {
-        const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-        return createPartialStorageModuleMock(importOriginal, {
-            storage: { getState: () => ({ setSessionRepositoryTreeExpandedPaths: vi.fn() }) } as any,
+    storage: async () => {
+        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleStub({
+            storage: { getState: () => ({ getSessionRepositoryTreeExpandedPaths: () => stableExpandedPaths, setSessionRepositoryTreeExpandedPaths: setExpandedPathsSpy }) } as any,
             useSession: () => ({ active: sessionActive, metadata: { machineId: 'm1', host: 'mbp', path: sessionPath } }) as any,
             useProjectForSession: () => ({ key: { serverId: 'server', machineId: 'm1', rootPath: projectPath } }) as any,
             useAllMachines: () => (
@@ -30,7 +33,7 @@ installSessionFilesViewCommonModuleMocks({
                     : [{ id: 'm1', active: false, activeAt: 1, metadata: { host: 'mbp', platform: 'darwin', happyCliVersion: '0', happyHomeDir: '/tmp/.h', homeDir: '/tmp' } }]
             ) as any,
             useMachine: () => ({ id: 'm1' }) as any,
-            useSessionRepositoryTreeExpandedPaths: () => [],
+            useSessionRepositoryTreeExpandedPaths: () => stableExpandedPaths,
             useSessionProjectScmSnapshot: () => null,
         });
     },
@@ -94,7 +97,7 @@ vi.mock('@/components/workspaces/files/repositoryTree/SearchResultsList', () => 
         const first = props.searchResults?.[0];
         return React.createElement('View' as any, {
             testID: first ? `search-results:${first.fullPath}` : 'search-results:empty',
-            onPress: () => props.onFilePress?.(first),
+            onPress: () => first?.fileType === 'folder' ? props.onFolderPress?.(first) : props.onFilePress?.(first),
         });
     },
 }));
@@ -105,6 +108,7 @@ let sessionPath: string | null = null;
 let projectPath: string | null = '/repo';
 let machineRpcTargetAvailable = true;
 let workspaceTargetAvailable = true;
+let workspaceRootPath = '/repo';
 const invalidateFromUserSpy = vi.fn();
 
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
@@ -119,9 +123,9 @@ vi.mock('@/hooks/session/useSessionWorkspaceTarget', () => ({
     useSessionWorkspaceTarget: () => (
         workspaceTargetAvailable
             ? {
-                workspaceCacheKey: 'server:m1:/repo',
+                workspaceCacheKey: `server:m1:${workspaceRootPath}`,
                 machineId: 'm1',
-                rootPath: '/repo',
+                rootPath: workspaceRootPath,
                 serverId: 'server',
             }
             : null
@@ -138,9 +142,9 @@ vi.mock('@/sync/domains/session/resolveWorkspaceTargetForSession', () => ({
     resolveWorkspaceTargetForSession: () => (
         workspaceTargetAvailable
             ? {
-                workspaceCacheKey: 'server:m1:/repo',
+                workspaceCacheKey: `server:m1:${workspaceRootPath}`,
                 machineId: 'm1',
-                rootPath: '/repo',
+                rootPath: workspaceRootPath,
                 serverId: 'server',
             }
             : null
@@ -152,13 +156,7 @@ vi.mock('@/sync/ops/workspaceFileSystem', () => ({
     workspaceCreateDirectory: vi.fn(async () => ({ success: true })),
 }));
 
-vi.mock('@/utils/path/isSafeWorkspaceRelativePath', () => ({
-    isSafeWorkspaceRelativePath: () => true,
-}));
 
-vi.mock('@/components/workspaces/files/repositoryTree/computeExpandedPathsForReveal', () => ({
-    computeExpandedPathsForReveal: ({ expandedPaths }: any) => expandedPaths,
-}));
 
 vi.mock('@/scm/scmStatusSync', () => ({
     scmStatusSync: { invalidateFromUser: (sessionId: string) => invalidateFromUserSpy(sessionId) },
@@ -209,6 +207,7 @@ async function waitForTestId(screen: Awaited<ReturnType<typeof renderRepositoryT
 
 describe('SessionRepositoryTreeBrowserView', () => {
     beforeEach(() => {
+        setExpandedPathsSpy.mockClear();
         searchFilesSpy.mockReset();
         searchWorkspaceFilesSpy.mockReset();
         latestWorkspaceTransferParams = null;
@@ -221,6 +220,7 @@ describe('SessionRepositoryTreeBrowserView', () => {
         machineReachable = true;
         machineRpcTargetAvailable = true;
         workspaceTargetAvailable = true;
+        workspaceRootPath = '/repo';
         sessionPath = null;
         projectPath = '/repo';
         invalidateFromUserSpy.mockReset();
@@ -260,6 +260,18 @@ describe('SessionRepositoryTreeBrowserView', () => {
         });
 
         expect(screen.findByTestId('repository-tree-search')).toBeNull();
+    });
+
+    it('reveals a matching folder in the tree without opening or replacing file details', async () => {
+        searchWorkspaceFilesSpy.mockResolvedValueOnce([{ fileName: 'nested/', filePath: 'src/', fullPath: 'src/nested/', fileType: 'folder' }]);
+        const { screen, onOpenFile } = await renderRepositoryTreeBrowserView();
+        await updateSearchQuery(screen, 'nested');
+        await waitForTestId(screen, 'search-results:src/nested/');
+        await screen.pressByTestIdAsync('search-results:src/nested/');
+        expect(screen.findByTestId('repository-tree-search')?.props.value).toBe('');
+        expect(setExpandedPathsSpy).toHaveBeenCalledWith('s1', ['src', 'src/nested']);
+        expect(workspaceRepositoryTreeListProps.revealRequest?.path).toBe('src/nested');
+        expect(onOpenFile).not.toHaveBeenCalled();
     });
 
     it('searches via searchFiles and calls onOpenFile from results', async () => {
@@ -304,6 +316,24 @@ describe('SessionRepositoryTreeBrowserView', () => {
 
         expect(searchWorkspaceFilesSpy).toHaveBeenCalledTimes(2);
         expect(screen.findByTestId('search-results:after.txt')).toBeTruthy();
+    });
+
+    it('retains previous query rows while searching but never shows them for another session', async () => {
+        searchWorkspaceFilesSpy.mockResolvedValueOnce([
+            { fileName: 'api.ts', filePath: 'src/', fullPath: 'src/api.ts', fileType: 'file' },
+        ]);
+        const { screen, SessionRepositoryTreeBrowserView } = await renderRepositoryTreeBrowserView();
+        await updateSearchQuery(screen, 'api');
+        await waitForTestId(screen, 'search-results:src/api.ts');
+        searchWorkspaceFilesSpy.mockImplementation(() => new Promise(() => {}));
+        await updateSearchQuery(screen, 'api.ts');
+        expect(screen.findByTestId('search-results:src/api.ts')).not.toBeNull();
+        workspaceRootPath = '/other';
+        await screen.update(<SessionRepositoryTreeBrowserView sessionId="s1" onOpenFile={vi.fn()} searchQuery="api.ts" />);
+        expect(screen.findByTestId('search-results:src/api.ts') === null).toBe(true);
+        workspaceRootPath = '/repo';
+        await screen.update(<SessionRepositoryTreeBrowserView sessionId="s2" onOpenFile={vi.fn()} searchQuery="api.ts" />);
+        expect(screen.findByTestId('search-results:src/api.ts') === null).toBe(true);
     });
 
     /**

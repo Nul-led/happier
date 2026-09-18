@@ -3,10 +3,24 @@ import renderer, { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import * as registryUiBehavior from '@/agents/registry/registryUiBehavior';
 import { createSessionFixture } from '../fixtures/sessionFixtures';
+import { createAccountEncryptionModeModuleMock } from './accountEncryptionMode';
 import { createRegistryUiBehaviorModuleMock } from './registryUiBehavior';
 import { createTokenStorageModuleMock } from './tokenStorage';
 
 describe('UI testkit mock factories', () => {
+    it('preserves account-encryption-mode exports while allowing a focused reader override', async () => {
+        const fetchAccountEncryptionMode = vi.fn(async () => ({ mode: 'plain' as const, updatedAt: 0 }));
+        const moduleMock = await createAccountEncryptionModeModuleMock({
+            importOriginal: async () => await import('@/sync/api/account/apiAccountEncryptionMode'),
+            overrides: { fetchAccountEncryptionMode },
+        });
+
+        expect(await moduleMock.fetchAccountEncryptionMode({ token: 'test-token' }))
+            .toEqual({ mode: 'plain', updatedAt: 0 });
+        expect(moduleMock.subscribeAccountEncryptionModeCacheInvalidation).toBeTypeOf('function');
+        expect(moduleMock.invalidateAccountEncryptionModeCache).toBeTypeOf('function');
+    });
+
     it('preserves token-storage exports and supplies a removable credential-mutation boundary', async () => {
         const moduleMock = await createTokenStorageModuleMock({
             importOriginal: async () => await import('@/auth/storage/tokenStorage'),
@@ -19,6 +33,7 @@ describe('UI testkit mock factories', () => {
         expect(await moduleMock.TokenStorage.getCredentialsForServerUrl('https://home.example.test'))
             .toEqual({ token: 'test-token' });
         expect(moduleMock.TokenStorage.getCredentials).toBeTypeOf('function');
+        expect(moduleMock.TokenStorage.accountDirectoryAuthCredentials.get).toBeTypeOf('function');
         expect(moduleMock.subscribeHomeCredentialMutations(listener)).toBeTypeOf('function');
     });
 
@@ -102,6 +117,8 @@ describe('UI testkit mock factories', () => {
     it('renders Pressable render-prop children with the default unpressed state', async () => {
         const { createReactNativeWebMock } = await import('./reactNative');
         const moduleMock = await createReactNativeWebMock();
+        const backHandlerSubscription = moduleMock.BackHandler.addEventListener('hardwareBackPress', () => true);
+        expect(backHandlerSubscription.remove).toEqual(expect.any(Function));
         const renderChild = vi.fn((state: { pressed: boolean }) => (
             React.createElement('Text', { testID: 'pressable-child' }, state.pressed ? 'pressed' : 'idle')
         ));
@@ -661,6 +678,9 @@ describe('UI testkit mock factories', () => {
 
     it('creates a storage module stub without importing the original module', async () => {
         const { createStorageModuleStub } = await import('./storage');
+        const { buildSessionListServerScopedRowKey } = await import(
+            '@/sync/domains/session/listing/sessionListKeyNormalization'
+        );
 
         const mock = createStorageModuleStub({
             useSettingMutable: () => [false, vi.fn()],
@@ -672,7 +692,7 @@ describe('UI testkit mock factories', () => {
         expect(mock.useSessionLastMobileSurface('session-a')).toBeNull();
         expect(mock.useProjectLastMobileSurface('workspace-a')).toBeNull();
         expect(mock.useArtifacts()).toEqual([]);
-        expect(mock.useOpenApprovalArtifactsForSession('session-a')).toEqual([]);
+        expect(mock.useOpenApprovalArtifactsForSession({ serverId: 'home-a', sessionId: 'session-a' })).toEqual([]);
         expect(mock.useEnabledAutomationsCountForSession('session-a')).toBe(0);
         const reducerState = mock.useSessionMessagesReducerState('session-a');
         expect(reducerState.messages).toBeInstanceOf(Map);
@@ -696,6 +716,9 @@ describe('UI testkit mock factories', () => {
             lastErrorMessage: null,
         });
         expect(mock.useSyncError()).toBeNull();
+        expect(mock.buildSessionListReachabilityRenderableKey('home\u0000part', 'session')).toBe(
+            buildSessionListServerScopedRowKey('home\u0000part', 'session'),
+        );
     });
 
     it('creates a selector-capable storage store mock with getState support', async () => {

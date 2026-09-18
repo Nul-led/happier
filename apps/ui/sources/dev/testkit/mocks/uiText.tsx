@@ -5,9 +5,16 @@ export type UiTextModuleMockOptions = Readonly<{
     TextInputTag?: string;
 }>;
 
+/**
+ * `forwardRef` so a test can reach the host node through `createNodeMock` — the app `Text`/`TextInput`
+ * primitives forward refs, and renderer tests that assert programmatic focus need the same contract.
+ */
 function createHostComponent(tagName: string) {
-    return ({ children, ...props }: { children?: React.ReactNode } & Record<string, unknown>) =>
-        React.createElement(tagName, props, children ?? null);
+    return React.forwardRef<unknown, { children?: React.ReactNode } & Record<string, unknown>>(
+        function UiTextHost({ children, ...props }, ref) {
+            return React.createElement(tagName, { ...props, ref }, children ?? null);
+        },
+    );
 }
 
 export function createUiTextModuleMock(options: UiTextModuleMockOptions = {}) {

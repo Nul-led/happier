@@ -5,12 +5,13 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 import type { VisibleSessionListPaneStateOptions } from '@/hooks/session/useVisibleSessionListPaneState';
 import { SessionsListWrapper } from './SessionsListWrapper';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
-import { resetSessionListPaneRetentionForTests } from './sessionListPaneRetention';
+import { readActiveRetainedSessionListQueryStates, resetSessionListPaneRetentionForTests } from './sessionListPaneRetention';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const sessionListState = vi.hoisted(() => ({
     data: [] as any[] | null,
+    query: undefined as any,
     storageKinds: [] as string[],
     paneCalls: [] as Array<{
         storageKind: string;
@@ -45,6 +46,10 @@ const serverSelectionState = vi.hoisted(() => ({
 }));
 const accountScopeState = vi.hoisted(() => ({
     scope: { serverId: 'server-a', accountId: 'account-a' } as { serverId: string; accountId: string } | null,
+    accountIdByServerId: new Map([
+        ['server-a', 'account-a'],
+        ['server-b', 'account-b'],
+    ]),
 }));
 const gettingStartedState = vi.hoisted(() => ({
     kind: 'create_session' as 'create_session' | 'connect_machine' | 'start_daemon' | 'select_session' | 'loading',
@@ -76,6 +81,12 @@ vi.mock('expo-router', () => ({
 }));
 vi.mock('@/hooks/server/useEffectiveServerSelection', () => ({
     useResolvedActiveServerSelection: () => serverSelectionState.selection,
+    // The canonical list's filter controller resolves feature decisions, which read
+    // the effective selection through this same owner.
+    useEffectiveServerSelection: () => ({
+        ...serverSelectionState.selection,
+        serverIds: serverSelectionState.selection.allowedServerIds,
+    }),
 }));
 vi.mock('@/sync/domains/state/storage', async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
@@ -109,6 +120,7 @@ vi.mock('@/hooks/session/useVisibleSessionListPaneState', () => ({
             hasHiddenInactiveSessions: false,
             showLoading: false,
             showEmptyState: sessionCount === 0,
+            query: sessionListState.query,
         };
     },
 }));
@@ -118,6 +130,21 @@ vi.mock('@/components/sessions/model/useSessionListStorageKind', () => ({
         storageKind: featureDecisionState.enabled ? storageKindState.storageKind : 'persisted',
         setStorageKind: storageKindState.setStorageKind,
     }),
+}));
+vi.mock('./search/useSessionListViewFilterController', () => ({
+    useSessionListViewFilterController: () => {
+        const serverIds = [...serverSelectionState.selection.allowedServerIds].sort();
+        return {
+            sourceAvailable: featureDecisionState.enabled,
+            filters: { source: storageKindState.storageKind },
+            queryHomes: [],
+            pagingHomes: [],
+            retentionScopeKey: JSON.stringify(serverIds.map((serverId) => [
+                serverId,
+                accountScopeState.accountIdByServerId.get(serverId) ?? null,
+            ])),
+        };
+    },
 }));
 vi.mock('@/components/sessions/shell/SessionsListStorageChrome', () => ({
     SessionsListStorageChrome: (props: any) => React.createElement('SessionsListStorageChrome', props),
@@ -146,6 +173,7 @@ vi.mock('@/components/sessions/guidance/useSessionGettingStartedGuidanceBaseMode
 vi.mock('@/components/sessions/shell/SessionsList', () => ({
     SessionsList: (props: any) => React.createElement('SessionsList', props),
     SessionsListView: (props: any) => React.createElement('SessionsListView', props),
+    SessionsListViewWithFilterController: (props: any) => React.createElement('SessionsListView', props),
 }));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({
     ActivitySpinner: (props: any) => React.createElement('ActivitySpinner', props),
@@ -161,6 +189,7 @@ vi.mock('@expo/vector-icons', async () => {
 describe('SessionsListWrapper (empty state)', () => {
     beforeEach(() => {
         sessionListState.data = [];
+        sessionListState.query = undefined;
         sessionListState.storageKinds = [];
         sessionListState.paneCalls = [];
         featureDecisionState.enabled = false;
@@ -176,6 +205,10 @@ describe('SessionsListWrapper (empty state)', () => {
             presentation: 'grouped',
         };
         accountScopeState.scope = { serverId: 'server-a', accountId: 'account-a' };
+        accountScopeState.accountIdByServerId = new Map([
+            ['server-a', 'account-a'],
+            ['server-b', 'account-b'],
+        ]);
         focusState.focused = true;
         routeState.pathname = '/';
         resetSessionListPaneRetentionForTests();
@@ -192,6 +225,24 @@ describe('SessionsListWrapper (empty state)', () => {
         expect(() => screen.findByType('SessionGettingStartedGuidance' as any)).toThrow();
 
         await screen.unmount();
+    });
+
+    it('exposes query membership only while its pane owns active Session-list data', async () => {
+        sessionListState.query = {
+            active: true,
+            statesByServerId: {
+                'team-home': {
+                    requestedQueryKey: 'team-query', appliedQueryKey: 'team-query',
+                    addresses: [{ serverId: 'team-home', sessionId: 'team-only' }],
+                    nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
+                    phase: 'ready', freshnessAt: 1, failureReason: null, failureCode: null, appliedSourceKind: 'query',
+                },
+            },
+        };
+        const screen = await renderScreen(<SessionsListWrapper pathname="/" />);
+        expect(readActiveRetainedSessionListQueryStates()).toHaveLength(1);
+        await screen.unmount();
+        expect(readActiveRetainedSessionListQueryStates()).toEqual([]);
     });
 
     it('keeps using the shared sessions empty state when this computer needs to reconnect', async () => {
@@ -436,6 +487,41 @@ describe('SessionsListWrapper (empty state)', () => {
         await inactiveScreen.unmount();
     });
 
+    it('retains the global A+B pane when focus moves from A to B inside the same credential corpus', async () => {
+        serverSelectionState.selection = {
+            activeTarget: { kind: 'server', id: 'server-a', serverId: 'server-a' },
+            activeServerId: 'server-a',
+            allowedServerIds: ['server-a', 'server-b'],
+            enabled: true,
+            explicit: true,
+            presentation: 'grouped',
+        };
+        const retainedIndex = [
+            { type: 'session', sessionId: 'session-a', serverId: 'server-a' },
+            { type: 'session', sessionId: 'session-b', serverId: 'server-b' },
+        ];
+        sessionListState.data = retainedIndex;
+        const activeScreen = await renderScreen(<SessionsListWrapper pathname="/" />);
+        await activeScreen.unmount();
+
+        sessionListState.data = null;
+        sessionListState.paneCalls = [];
+        routeState.pathname = '/session/session-b';
+        serverSelectionState.selection = {
+            ...serverSelectionState.selection,
+            activeTarget: { kind: 'server', id: 'server-b', serverId: 'server-b' },
+            activeServerId: 'server-b',
+        };
+        accountScopeState.scope = { serverId: 'server-b', accountId: 'account-b' };
+
+        const inactiveScreen = await renderScreen(<SessionsListWrapper pathname="/" />);
+
+        expect(sessionListState.paneCalls).toEqual([]);
+        expect(inactiveScreen.findByType('SessionsListView' as any).props.paneState.visibleSessionListIndex)
+            .toBe(retainedIndex);
+        await inactiveScreen.unmount();
+    });
+
     it('does not render a retained pane snapshot after the active account scope changes', async () => {
         const accountAIndex = [{ type: 'session', sessionId: 'session-a', serverId: 'server-a' }];
         sessionListState.data = accountAIndex;
@@ -450,6 +536,7 @@ describe('SessionsListWrapper (empty state)', () => {
         sessionListState.paneCalls = [];
         routeState.pathname = '/session/session-a';
         accountScopeState.scope = { serverId: 'server-a', accountId: 'account-b' };
+        accountScopeState.accountIdByServerId.set('server-a', 'account-b');
 
         const inactiveScreen = await renderScreen(<SessionsListWrapper pathname="/" />);
 

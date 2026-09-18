@@ -1,21 +1,46 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
 import { getActionSpec, type ActionId } from '@happier-dev/protocol';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { useUnistyles } from 'react-native-unistyles';
 
 import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
-import { useMachine, useSession } from '@/sync/domains/state/storage';
-import { readDisplayMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
-import { Text } from '@/components/ui/text/Text';
+import {
+  useMachine,
+  useServerScopedMachine,
+  useSession,
+  useSessionListRenderableWithServerScope,
+} from '@/sync/domains/state/storage';
+import { useSessionListHomeObservations } from '@/sync/store/hooks';
+import { readDisplayMachineIdForSession, readDisplayMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
-import { formatPathRelativeToHome, getSessionName } from '@/utils/sessions/sessionUtils';
+import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { t } from '@/text';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { Icon } from '@/components/ui/icons/Icon';
+import { readApprovalSessionEndpointLabels } from '@/components/approvals/approvalEndpointLabels';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
+import {
+  buildSessionContextFacts,
+  projectSessionContextPresentation,
+} from '@/sync/domains/session/presentation/sessionContextPresentation';
+import { resolveSessionWorkspaceDisplayPresentation } from '@/sync/domains/session/listing/sessionWorkspaceDisplayPresentation';
+import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
+import type { WorkspacePathDisplayModeV1 } from '@/sync/domains/workspaces/workspaceDisplayPresentation';
+import { Item } from '@/components/ui/lists/Item';
 
 export const ApprovalInboxCard = React.memo((props: Readonly<{
   artifact: DecryptedArtifact;
   onPress: () => void;
+  /** Supplied by the Inbox's one shared audience observer; never subscribe per approval card. */
+  audienceScope?: ServerAccountScope;
+  /** Account workspace facts supplied once by the shared Inbox model source. */
+  workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
+  workspacePathDisplayModeV1?: WorkspacePathDisplayModeV1 | null;
+  /** Testable awareness-projection time. */
+  nowMs?: number;
+  showDivider?: boolean;
+  density?: 'comfortable' | 'cozy' | 'compact' | 'tight';
 }>): React.ReactElement => {
   const { theme } = useUnistyles();
 
@@ -25,13 +50,47 @@ export const ApprovalInboxCard = React.memo((props: Readonly<{
     ? props.artifact.header.qualifiedActionId.trim()
     : '';
   const sessionId = typeof props.artifact.header?.sessionId === 'string' ? props.artifact.header.sessionId.trim() : '';
-  const session = useSession(sessionId);
+  const serverId = typeof props.artifact.header?.serverId === 'string'
+    ? props.artifact.header.serverId.trim()
+    : '';
+  const homeObservations = useSessionListHomeObservations();
+  const legacySession = useSession(serverId ? '' : sessionId);
+  const scopedSession = useSessionListRenderableWithServerScope(serverId || null, serverId ? sessionId : '');
+  const session = serverId ? scopedSession : legacySession;
   const ownerMetadata = session ? readSessionOwnerMetadataView(session) : null;
-  const displayTarget = readDisplayMachineTargetForSession({
-    sessionId,
-    metadata: ownerMetadata,
-  });
-  const machine = useMachine(displayTarget?.machineId ?? '');
+  const legacyDisplayTarget = serverId ? null : readDisplayMachineTargetForSession({ sessionId, metadata: ownerMetadata });
+  const machineId = serverId
+    ? readDisplayMachineIdForSession({ sessionId: null, metadata: ownerMetadata })
+    : legacyDisplayTarget?.machineId ?? '';
+  const legacyMachine = useMachine(serverId ? '' : machineId);
+  const scopedMachine = useServerScopedMachine(serverId || null, serverId ? machineId : '');
+  const machine = serverId ? scopedMachine : legacyMachine;
+  const awareness = session ? projectUiSessionAwareness(session, props.nowMs ?? Date.now()) : null;
+  const workspacePresentation = session && ownerMetadata && (!serverId || awareness?.workspace)
+    ? resolveSessionWorkspaceDisplayPresentation({
+        serverId: serverId || null,
+        metadata: ownerMetadata,
+        machineTarget: legacyDisplayTarget,
+        workspaceRefs: props.workspaceRefs,
+        workspacePathDisplayModeV1: props.workspacePathDisplayModeV1,
+      })
+    : null;
+  const context = serverId && session
+    ? projectSessionContextPresentation(buildSessionContextFacts({
+        address: { serverId, sessionId },
+        serverProfile: getServerProfileById(serverId),
+        awareness,
+        viewer: session.viewer,
+        audienceContext: session.access?.audienceContext,
+        audienceScope: props.audienceScope,
+        workspaceLabel: workspacePresentation?.displayTitle ?? null,
+        homeDir: ownerMetadata?.homeDir ?? null,
+        // The same exact-Home currentness Session rows and Activity show, so an Inbox card from a
+        // Home Happier can no longer reach reads identically (Lane 07.4 §12).
+        homeObservation: homeObservations[serverId] ?? null,
+        nowMs: props.nowMs ?? Date.now(),
+      }))
+    : null;
 
   const actionTitle = React.useMemo(() => {
     if (!actionIdRaw) return null;
@@ -42,77 +101,42 @@ export const ApprovalInboxCard = React.memo((props: Readonly<{
     }
   }, [actionIdRaw]);
 
-  const sessionTitle = session ? getSessionName(session) : null;
-  const displayPath = session ? displayTarget?.basePath ?? '' : '';
-  const pathLabel = displayPath
-    ? formatPathRelativeToHome(displayPath, ownerMetadata?.homeDir)
+  const sessionTitle = session && (!serverId || context?.mayShowDecryptedContent === true)
+    ? getSessionName(session)
     : null;
-  const machineLabel = getMachineDisplayName(machine);
-  const accessibilityLabel = qualifiedActionId
+  const scopedEndpoint = serverId
+    ? readApprovalSessionEndpointLabels({ session, machine, machineId })
+    : null;
+  const machineLabel = scopedEndpoint?.machineLabel ?? getMachineDisplayName(machine);
+  const actionAccessibilityLabel = qualifiedActionId
     ? `${String(title)} · ${qualifiedActionId}`
     : actionTitle
       ? `${String(title)} · ${actionTitle}`
       : String(title);
+  const accessibilityLabel = [actionAccessibilityLabel, sessionTitle, context?.accessibilityContext, machineLabel]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join(' · ');
+  const subtitle = [
+    actionTitle ?? qualifiedActionId,
+    sessionTitle,
+    context?.contextLine,
+    machineLabel,
+    serverId ? null : workspacePresentation?.displayTitle,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).join('\n');
 
   return (
-    <Pressable
+    <Item
       testID={`inbox.approval.${props.artifact.id}`}
-      accessibilityRole="button"
+      title={title}
+      subtitle={subtitle || undefined}
+      subtitleLines={5}
+      icon={<Icon name="warning-circle" size={18} color={theme.colors.status.error} />}
       accessibilityLabel={accessibilityLabel}
       onPress={props.onPress}
-      style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
-    >
-      <View style={styles.headerRow}>
-        <Icon name="warning-circle" size={16} color={theme.colors.status.error} />
-        <View style={styles.headerText}>
-          <Text style={styles.title}>{title}</Text>
-          {actionTitle || qualifiedActionId ? <Text style={styles.subtitle}>{actionTitle ?? qualifiedActionId}</Text> : null}
-        </View>
-        <Icon name="caret-right" size={16} color={theme.colors.text.secondary} />
-      </View>
-
-      {sessionTitle ? <Text style={styles.meta}>{sessionTitle}</Text> : null}
-      {machineLabel ? <Text style={styles.meta}>{machineLabel}</Text> : null}
-      {pathLabel ? <Text style={styles.meta}>{pathLabel}</Text> : null}
-    </Pressable>
+      showDivider={props.showDivider}
+      density={props.density}
+    />
   );
 });
 
 ApprovalInboxCard.displayName = 'ApprovalInboxCard';
-
-const styles = StyleSheet.create((theme) => ({
-  card: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.colors.border.default,
-    backgroundColor: theme.colors.surface.elevated,
-    padding: 14,
-    gap: 6,
-  },
-  cardPressed: {
-    backgroundColor: theme.colors.surface.pressedOverlay,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-  headerText: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  title: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: theme.colors.text.primary,
-  },
-  subtitle: {
-    fontSize: 12,
-    color: theme.colors.text.secondary,
-  },
-  meta: {
-    fontSize: 12,
-    color: theme.colors.text.secondary,
-  },
-}));

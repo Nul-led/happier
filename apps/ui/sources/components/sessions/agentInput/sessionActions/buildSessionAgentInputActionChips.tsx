@@ -7,15 +7,25 @@ import type { AgentInputExtraActionChip } from '@/components/sessions/agentInput
 import { listAgentInputActionChipActionIds } from '@/components/sessions/agentInput/sessionActions/listAgentInputActionChipActionIds';
 import { buildExecutionRunActionDraftInputForUi } from '@/sync/domains/actions/buildExecutionRunActionDraftInputForUi';
 import { createAgentInputActionShortcutChip } from '@/components/sessions/agentInput/sessionActions/createAgentInputActionShortcutChip';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 
 export function buildSessionAgentInputActionChips(params: Readonly<{
-    sessionId: string;
+    address: SessionAddress;
+    accountScope: ServerAccountScope | null;
+    accountScopeIsCurrent?: (() => boolean) | null;
     defaultBackendTarget?: BackendTargetRefV2Input | null;
     defaultBackendId: string | null;
     instructionsText: string;
 }>): ReadonlyArray<AgentInputExtraActionChip> {
     const stateSnapshot = storage.getState() as any;
+    if (
+        !params.accountScope
+        || params.accountScopeIsCurrent?.() === false
+        || params.accountScope.serverId !== params.address.serverId
+    ) return [];
+    const accountScope = params.accountScope;
     const actionIds = listAgentInputActionChipActionIds(stateSnapshot);
     if (actionIds.length === 0) return [];
 
@@ -28,7 +38,7 @@ export function buildSessionAgentInputActionChips(params: Readonly<{
         const spec = getActionSpec(actionId as any);
         const input = buildExecutionRunActionDraftInputForUi({
             actionId: actionId as any,
-            sessionId: params.sessionId,
+            sessionId: params.address.sessionId,
             defaultBackendTarget: params.defaultBackendTarget ?? null,
             defaultBackendId: backendId,
             instructions,
@@ -39,10 +49,12 @@ export function buildSessionAgentInputActionChips(params: Readonly<{
             label: spec.title,
             layout: 'row',
             onPress: () => {
-                storage.getState().createSessionActionDraft(params.sessionId, {
-                    actionId,
-                    input,
-                });
+                if (params.accountScopeIsCurrent?.() === false) return;
+                storage.getState().createSessionActionDraft(
+                    accountScope,
+                    params.address,
+                    { actionId, input },
+                );
             },
         });
     });

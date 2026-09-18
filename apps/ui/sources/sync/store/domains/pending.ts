@@ -2,6 +2,7 @@ import type { Message } from '../../domains/messages/messageTypes';
 import { isRecoveredHistoryTranscriptObservation } from '../../domains/messages/transcriptObservationProvenance';
 import type { DiscardedPendingMessage, PendingMessage } from '../../domains/state/storageTypes';
 import { shouldPreservePendingProjectionAfterCommittedUserLocalId } from '../../domains/pending/pendingTranscriptProjection';
+import { isPendingMessageForRecipient } from '../../domains/pending/pendingMessageRecipient';
 
 import type { StoreGet, StoreSet } from './_shared';
 
@@ -276,6 +277,12 @@ export function createPendingDomain<S extends PendingDomain & PendingDomainDepen
             const existing = state.sessionPending[sessionId];
             if (!existing || existing.messages.length === 0) return state;
             const nextMessages = existing.messages.filter((message) => {
+                // `pendingCount` counts the MAIN queue only (server pending state I08); a Run-scoped
+                // enqueue on a Session whose main queue is empty publishes `pendingCount: 0`. The
+                // receipt for an exact Run target is that target's own snapshot refresh
+                // (`sync/engine/socket/socket.ts` pending-changed → `fetchPendingMessages(…, recipient)`),
+                // never this main-queue count, so rows addressed to a Run are left alone here.
+                if (!isPendingMessageForRecipient(message, undefined)) return true;
                 if (message.source === 'server_pending') return false;
                 // The server pending queue never spoke for this row, so a queue-empty notice is not
                 // a receipt for it. Retiring it here is the "neither row" frame.

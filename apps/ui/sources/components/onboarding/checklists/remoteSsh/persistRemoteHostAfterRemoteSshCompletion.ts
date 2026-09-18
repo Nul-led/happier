@@ -11,6 +11,7 @@ import {
 import { upsertRemoteHostLocalOverrides } from '@/sync/domains/remoteHosts/remoteHostLocalOverrides';
 import { randomUUID } from '@/platform/randomUUID';
 import { adoptHomeProfile } from '@/sync/domains/server/serverProfiles';
+import { getStorage } from '@/sync/domains/state/storageStore';
 
 export async function persistRemoteHostAfterRemoteSshCompletion(params: Readonly<{
     managementEnabled: boolean;
@@ -33,6 +34,7 @@ export async function persistRemoteHostAfterRemoteSshCompletion(params: Readonly
         relayRuntimeUrl: string | null;
     }>;
 }>) {
+    const expectedSettingsScope = getStorage().getState().settingsScope;
     const usedSavedHostId = params.runContext?.selectedSavedRemoteHostId ?? params.selectedSavedRemoteHostId;
     const shouldSaveHost = Boolean(
         params.runContext?.saveHost
@@ -95,7 +97,7 @@ export async function persistRemoteHostAfterRemoteSshCompletion(params: Readonly
         try {
             getSyncSingleton().applySettings({
                 remoteHostsV1: upsertRemoteHost(params.remoteHostsRaw, newHost),
-            }, { source: 'ui' });
+            }, { expectedSettingsScope, source: 'ui' });
         } catch {
             // Ignore persistence errors; bootstrap completion is still valid.
         }
@@ -122,7 +124,7 @@ export async function persistRemoteHostAfterRemoteSshCompletion(params: Readonly
     try {
         getSyncSingleton().applySettings({
             remoteHostsV1: upsertRemoteHost(params.remoteHostsRaw, updated),
-        }, { source: 'ui' });
+        }, { expectedSettingsScope, source: 'ui' });
     } catch {
         // Ignore
     }

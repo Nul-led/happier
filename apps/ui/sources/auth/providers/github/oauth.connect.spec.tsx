@@ -6,6 +6,7 @@ import {
     clearPendingExternalConnectMock,
     flushOAuthEffects,
     localSearchParamsMock,
+    loginWithCredentialsSpy,
     modal,
     replaceSpy,
     resetOAuthHarness,
@@ -220,6 +221,83 @@ describe('/oauth/[provider] (connect flow)', () => {
         promptSpy.mockRestore();
     });
 
+    it('finalizes normal connect and adopts the replacement credential', async () => {
+        setAuthenticated();
+        replaceSpy.mockReset();
+        loginWithCredentialsSpy.mockClear();
+        setPendingExternalConnectState({ provider: 'github', returnTo: '/friends' });
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'connect',
+            status: 'connected',
+            pending: 'p-normal',
+            username: 'account-owner',
+        });
+        const fetchMock = stubFetch(async (url, init) => {
+            if (url.endsWith('/v1/connect/external/github/finalize')) {
+                expect(JSON.parse(String(init?.body))).toEqual({
+                    pending: 'p-normal',
+                    username: 'account-owner',
+                });
+                return { ok: true, body: { success: true, token: 'replacement-token' } };
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        });
+
+        await runWithOAuthScreen(async () => {
+            await flushOAuthEffects();
+            expect(fetchMock).toHaveBeenCalled();
+            expect(loginWithCredentialsSpy).toHaveBeenCalledWith({
+                token: 'replacement-token',
+                secret: OAUTH_SECRET,
+            });
+            expect(replaceSpy).toHaveBeenCalledWith('/friends');
+        });
+    });
+
+    it('preserves predecessor callback completion without a pending finalizer handle', async () => {
+        setAuthenticated();
+        replaceSpy.mockReset();
+        loginWithCredentialsSpy.mockClear();
+        setPendingExternalConnectState({ provider: 'github', returnTo: '/friends' });
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'connect',
+            status: 'connected',
+        });
+
+        await runWithOAuthScreen(async () => {
+            await flushOAuthEffects();
+            expect(loginWithCredentialsSpy).not.toHaveBeenCalled();
+            expect(replaceSpy).toHaveBeenCalledWith('/friends');
+        });
+    });
+
+    it('clears normal connect continuation after a typed finalization error', async () => {
+        setAuthenticated();
+        replaceSpy.mockReset();
+        setPendingExternalConnectState({ provider: 'github', returnTo: '/friends' });
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'connect',
+            status: 'connected',
+            pending: 'p-normal',
+            username: 'account-owner',
+        });
+        stubFetch(async () => ({
+            ok: false,
+            status: 400,
+            body: { error: 'invalid-pending' },
+        }));
+        const alertSpy = vi.spyOn(modal, 'alert').mockImplementation(async () => {});
+
+        await runWithOAuthScreen(async () => {
+            await flushOAuthEffects();
+            expect(alertSpy).toHaveBeenCalled();
+            expect(replaceSpy).toHaveBeenCalledWith('/friends');
+        });
+    });
+
     it('finalizes connect when the user picks an available username', async () => {
         setAuthenticated();
         replaceSpy.mockReset();
@@ -238,7 +316,7 @@ describe('/oauth/[provider] (connect flow)', () => {
                 expect(init?.method).toBe('POST');
                 const body = JSON.parse(String(init?.body ?? '{}'));
                 expect(body).toEqual({ pending: 'p1', username: 'octocat_2' });
-                return { ok: true, body: { success: true } };
+                return { ok: true, body: { success: true, token: 'replacement-token' } };
             }
             throw new Error(`Unexpected fetch: ${url}`);
         });
@@ -250,11 +328,41 @@ describe('/oauth/[provider] (connect flow)', () => {
             await flushOAuthEffects();
             expect(promptSpy).toHaveBeenCalled();
             expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/v1/connect/external/github/finalize'), expect.anything());
+            expect(loginWithCredentialsSpy).toHaveBeenCalledWith({ token: 'replacement-token', secret: OAUTH_SECRET });
             expect(replaceSpy).toHaveBeenCalledWith('/friends');
         });
 
         promptSpy.mockRestore();
         alertSpy.mockRestore();
+    });
+
+    it('keeps predecessor connect completion usable when no replacement credential is returned', async () => {
+        setAuthenticated();
+        replaceSpy.mockReset();
+        loginWithCredentialsSpy.mockClear();
+        setPendingExternalConnectState({ provider: 'github', returnTo: '/friends' });
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'connect',
+            status: 'username_required',
+            login: 'octocat',
+            pending: 'p1',
+        });
+        stubFetch(async (url) => {
+            if (url.endsWith('/v1/connect/external/github/finalize')) {
+                return { ok: true, body: { success: true } };
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        });
+        const promptSpy = vi.spyOn(modal, 'prompt').mockResolvedValue('octocat_2');
+
+        await runWithOAuthScreen(async () => {
+            await flushOAuthEffects();
+            expect(loginWithCredentialsSpy).not.toHaveBeenCalled();
+            expect(replaceSpy).toHaveBeenCalledWith('/friends');
+        });
+
+        promptSpy.mockRestore();
     });
 
     it('re-prompts when the chosen username is taken', async () => {
@@ -282,7 +390,7 @@ describe('/oauth/[provider] (connect flow)', () => {
                         body: { error: 'username-taken' },
                     };
                 }
-                return { ok: true, body: { success: true } };
+                return { ok: true, body: { success: true, token: 'replacement-token' } };
             }
             throw new Error(`Unexpected fetch: ${url}`);
         });

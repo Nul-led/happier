@@ -6,12 +6,17 @@ import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 
 import { t } from '@/text';
 
-export type ExternalSessionBrowseOperation = 'list' | 'link';
+export type ExternalSessionBrowseOperation = 'list' | 'link' | 'delete';
 
 function fallbackMessage(operation: ExternalSessionBrowseOperation): string {
-    return t(operation === 'link'
-        ? 'externalSessions.browseLinkFailed'
-        : 'externalSessions.browseFailedToLoad');
+    switch (operation) {
+        case 'link':
+            return t('externalSessions.browseLinkFailed');
+        case 'delete':
+            return t('externalSessions.browseDeleteCandidateFailed');
+        case 'list':
+            return t('externalSessions.browseFailedToLoad');
+    }
 }
 
 export function resolveExternalSessionBrowseRpcErrorMessage(

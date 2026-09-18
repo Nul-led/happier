@@ -1,0 +1,158 @@
+import { describe, expect, it } from 'vitest';
+import type { GetSessionFollowResponse, SetSessionFollowResponse } from '@happier-dev/protocol';
+
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+
+import {
+    createAccountSessionFollowController,
+    type AccountSessionFollowTransport,
+    type FollowTransportResult,
+} from './accountSessionFollowController';
+
+const address = { serverId: 'home-a', sessionId: 'same-id' };
+const initial: GetSessionFollowResponse = {
+    follow: { sessionId: 'same-id', following: true, notificationLevel: 'important', includeInVoice: false },
+    isSessionOwner: false,
+    capabilities: { manageFollow: true },
+    voiceInitialSnapshotPending: false,
+};
+
+function createTransport(overrides: Partial<AccountSessionFollowTransport> = {}): AccountSessionFollowTransport {
+    // Only the HTTP boundary is substituted; controller state and settlement stay real.
+    return {
+        get: async () => ({ kind: 'ok', value: initial }),
+        set: async (target, preferences) => ({ kind: 'ok', value: {
+            changed: true,
+            follow: { sessionId: target.sessionId, following: true, ...preferences },
+            voiceInitialSnapshotPending: preferences.includeInVoice,
+        } }),
+        remove: async () => ({ kind: 'ok', value: { changed: true } }),
+        ...overrides,
+    };
+}
+
+describe('Account Session Follow controller', () => {
+    it('settles the initial Voice pending state from the refreshed Home projection', async () => {
+        let pending = true;
+        const controller = createAccountSessionFollowController(address, createTransport({
+            get: async () => ({ kind: 'ok', value: {
+                ...initial,
+                follow: { ...initial.follow!, includeInVoice: true },
+                voiceInitialSnapshotPending: pending,
+            } }),
+        }));
+        await controller.refresh();
+        expect(controller.getSnapshot().voiceInitialSnapshotPending).toBe(true);
+        pending = false;
+        await controller.refresh();
+        expect(controller.getSnapshot().voiceInitialSnapshotPending).toBe(false);
+    });
+
+    it('keeps Voice independent from notifications and rolls a failed edit back to the confirmed preference', async () => {
+        const response = createDeferred<FollowTransportResult<SetSessionFollowResponse>>();
+        const controller = createAccountSessionFollowController(address, createTransport({ set: async () => response.promise }));
+        await controller.refresh();
+        const save = controller.set({ notificationLevel: 'none', includeInVoice: true });
+        // A Home wake during the save must not hide the failed edit's retry.
+        await controller.refresh();
+        expect(controller.getSnapshot()).toMatchObject({
+            saving: true,
+            projection: initial,
+            draft: { notificationLevel: 'none', includeInVoice: true },
+        });
+        response.resolve({ kind: 'failed', error: 'unavailable' });
+        await save;
+        expect(controller.getSnapshot()).toMatchObject({
+            saving: false,
+            projection: initial,
+            error: 'unavailable',
+            draft: { notificationLevel: 'none', includeInVoice: true },
+        });
+    });
+
+    it('retries the edited preferences on the captured Home and preserves the successful Voice choice on a later edit', async () => {
+        const submitted: Array<Readonly<{ serverId: string; sessionId: string; includeInVoice: boolean; notificationLevel: string }>> = [];
+        let fail = true;
+        const transport = createTransport({ set: async (target, preferences) => {
+            submitted.push({ ...target, ...preferences });
+            if (fail) return { kind: 'failed', error: 'unavailable' };
+            return { kind: 'ok', value: {
+                changed: true,
+                follow: { sessionId: target.sessionId, following: true, ...preferences },
+                voiceInitialSnapshotPending: preferences.includeInVoice,
+            } };
+        } });
+        const controller = createAccountSessionFollowController(address, transport);
+        await controller.refresh();
+        await controller.set({ notificationLevel: 'none', includeInVoice: true });
+        fail = false;
+        await controller.retry();
+        expect(controller.getSnapshot().projection?.follow).toMatchObject({ notificationLevel: 'none', includeInVoice: true });
+        expect(controller.getSnapshot().projection?.voiceInitialSnapshotPending).toBe(true);
+        expect(controller.getSnapshot().voiceInitialSnapshotPending).toBe(true);
+        await controller.set({ notificationLevel: 'all_messages', includeInVoice: true });
+        expect(submitted).toEqual([
+            { ...address, notificationLevel: 'none', includeInVoice: true },
+            { ...address, notificationLevel: 'none', includeInVoice: true },
+            { ...address, notificationLevel: 'all_messages', includeInVoice: true },
+        ]);
+    });
+
+    it('does not let a stale refresh overwrite a successful mutation', async () => {
+        const read = createDeferred<FollowTransportResult<GetSessionFollowResponse>>();
+        let reads = 0;
+        const controller = createAccountSessionFollowController(address, createTransport({
+            get: async () => ++reads === 1 ? { kind: 'ok', value: initial } : read.promise,
+        }));
+        await controller.refresh();
+        const refresh = controller.refresh();
+        await controller.set({ notificationLevel: 'none', includeInVoice: true });
+        read.resolve({ kind: 'ok', value: initial });
+        await refresh;
+        expect(controller.getSnapshot().projection?.follow).toMatchObject({ notificationLevel: 'none', includeInVoice: true });
+    });
+
+    it('keeps an unavailable refresh visible, then clears private state after access loss', async () => {
+        let failure: 'unavailable' | 'session_not_found' | null = null;
+        const controller = createAccountSessionFollowController(address, createTransport({
+            get: async () => failure ? { kind: 'failed', error: failure } : { kind: 'ok', value: initial },
+        }));
+        await controller.refresh();
+        failure = 'unavailable';
+        await controller.refresh();
+        expect(controller.getSnapshot().projection).toEqual(initial);
+        failure = 'session_not_found';
+        await controller.refresh();
+        expect(controller.getSnapshot()).toMatchObject({ projection: null, draft: null, error: 'session_not_found' });
+    });
+
+    it('retains an explicit Unfollow and never sends writes while offline', async () => {
+        const writes: string[] = [];
+        const controller = createAccountSessionFollowController(address, createTransport({ remove: async () => {
+            writes.push('remove');
+            return { kind: 'ok', value: { changed: true } };
+        } }));
+        await controller.refresh();
+        controller.setOnline(false);
+        await controller.remove();
+        expect(writes).toEqual([]);
+        controller.setOnline(true);
+        await controller.remove();
+        expect(controller.getSnapshot().projection?.follow).toEqual({
+            sessionId: address.sessionId, following: false, notificationLevel: 'none', includeInVoice: false,
+        });
+        expect(controller.getSnapshot().projection?.voiceInitialSnapshotPending).toBe(false);
+        expect(controller.getSnapshot().voiceInitialSnapshotPending).toBe(false);
+    });
+
+    it('drops a late response after its editor lifetime retires', async () => {
+        const read = createDeferred<FollowTransportResult<GetSessionFollowResponse>>();
+        const controller = createAccountSessionFollowController(address, createTransport({ get: async () => read.promise }));
+        const load = controller.refresh();
+        controller.dispose();
+        const retired = controller.getSnapshot();
+        read.resolve({ kind: 'ok', value: initial });
+        await load;
+        expect(controller.getSnapshot()).toBe(retired);
+    });
+});

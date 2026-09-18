@@ -1,4 +1,4 @@
-import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import { isTokenOnlyAuthCredentials, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { log } from '@/log';
 import type { Machine, MachineLockedReason } from '@/sync/domains/state/storageTypes';
 import { serverFetch } from '@/sync/http/client';
@@ -7,9 +7,13 @@ import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDi
 import type { MachineDisplayCacheEntryV1 } from '@/sync/domains/state/warmCachePersistence';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 import {
+    MachineKindFromLegacyProjectionSchema,
+    MachineOperationProtocolCapabilitiesV1Schema,
     decodePlainMachineStoredContent,
     isPlainMachineDataKeyMarker,
+    resolvePublishedMachineDataEncryptionKeyV1,
 } from '@happier-dev/protocol';
+import { resolveExpectedRunnerMachineContentKeyBindingV1 } from '@/sync/domains/machines/runnerMachineContentKeyTrust';
 
 type MachineEncryption = {
     decryptMetadata: (version: number, value: string) => Promise<any>;
@@ -18,7 +22,7 @@ type MachineEncryption = {
 
 type SyncEncryption = {
     decryptEncryptionKeys: (values: readonly string[]) => Promise<Array<Uint8Array | null>>;
-    initializeMachines: (machineKeysMap: Map<string, Uint8Array | null>) => Promise<void>;
+    initializeMachines: (machineKeysMap: Map<string, Uint8Array | null>, unavailableMachineIds?: ReadonlySet<string>) => Promise<void>;
     getMachineEncryption: (machineId: string) => MachineEncryption | null;
 };
 
@@ -38,6 +42,7 @@ export type MachineDataKeyCacheEntry = Readonly<{
 
 type MachineIdentityFields = Pick<
     Machine,
+    | 'kind'
     | 'replacedByMachineId'
     | 'replacedAt'
     | 'replacementReason'
@@ -45,17 +50,23 @@ type MachineIdentityFields = Pick<
     | 'replacementActorUserId'
     | 'installationId'
     | 'contentPublicKeyFingerprint'
+    | 'operationProtocolCapabilities'
+    | 'operationProtocolCapabilitiesRevision'
 >;
 
-type MachineIdentityFieldSource = Readonly<Partial<MachineIdentityFields>>;
+type MachineIdentityFieldSource = Readonly<Partial<Omit<MachineIdentityFields, 'operationProtocolCapabilities'>> & {
+    operationProtocolCapabilities?: unknown;
+}>;
 
 export type FetchedMachineRow = Readonly<{
     id: string;
+    kind?: Machine['kind'];
     metadata: string;
     metadataVersion: number;
     daemonState?: string | null;
     daemonStateVersion?: number;
     dataEncryptionKey?: string | null;
+    runnerContentKeyBinding?: unknown;
     seq: number;
     active: boolean;
     activeAt: number;
@@ -67,6 +78,8 @@ export type FetchedMachineRow = Readonly<{
     replacementActorUserId?: string | null;
     installationId?: string | null;
     contentPublicKeyFingerprint?: string | null;
+    operationProtocolCapabilities?: unknown;
+    operationProtocolCapabilitiesRevision?: number | null;
     createdAt: number;
     updatedAt: number;
 }>;
@@ -92,7 +105,11 @@ export async function fetchMachineRows(params: Readonly<{
 }
 
 function readMachineIdentityFields(source: MachineIdentityFieldSource): MachineIdentityFields {
+    const capabilities = MachineOperationProtocolCapabilitiesV1Schema.safeParse(source.operationProtocolCapabilities);
+    const revision = source.operationProtocolCapabilitiesRevision;
+    const accepted = capabilities.success && typeof revision === 'number' && Number.isInteger(revision) && revision > 0;
     return {
+        kind: MachineKindFromLegacyProjectionSchema.parse(source.kind),
         replacedByMachineId: source.replacedByMachineId ?? null,
         replacedAt: source.replacedAt ?? null,
         replacementReason: source.replacementReason ?? null,
@@ -100,6 +117,8 @@ function readMachineIdentityFields(source: MachineIdentityFieldSource): MachineI
         replacementActorUserId: source.replacementActorUserId ?? null,
         installationId: source.installationId ?? null,
         contentPublicKeyFingerprint: source.contentPublicKeyFingerprint ?? null,
+        operationProtocolCapabilities: accepted ? capabilities.data : null,
+        operationProtocolCapabilitiesRevision: accepted ? revision : null,
     };
 }
 
@@ -162,7 +181,7 @@ function warnMachineDataEncryptionKeyDecryptFailureOnce(encryption: SyncEncrypti
     }
     if (warnedMachineIds.has(machineId)) return;
     warnedMachineIds.add(machineId);
-    console.warn(`Failed to decrypt data encryption key for machine ${machineId}; falling back to legacy machine encryption.`);
+    console.warn(`Failed to decrypt data encryption key for machine ${machineId}; machine encryption is unavailable.`);
 }
 
 export async function buildUpdatedMachineFromSocketUpdate(params: {
@@ -321,6 +340,8 @@ export async function fetchAndApplyMachines(params: {
      * inconsistencies (SWR-style) and to avoid confusing UI flicker.
      */
     replace?: boolean;
+    /** Exact Home identity for creator-authenticated Runner Machine key proof. */
+    sourceServerId?: string | null;
     /**
      * When true, propagate network/HTTP/parse failures to the caller.
      *
@@ -373,10 +394,11 @@ export async function fetchAndApplyMachines(params: {
     // forced onto the JS reference path (a curve25519 open, plus a second one whenever
     // the account key is stored as a seed) no matter how healthy the native worker is.
     const machineKeysMap = new Map<string, Uint8Array | null>();
+    const unavailableMachineIds = new Set<string>();
     type MachineKeyKind = 'plain' | 'legacy' | 'encrypted' | 'encrypted_unavailable';
     const classifyMachineKey = (machine: FetchedMachineRow): Readonly<{ kind: MachineKeyKind; envelope: string | null }> => {
         if (isPlainMachineDataKeyMarker(machine.dataEncryptionKey)) return { kind: 'plain', envelope: null };
-        if (!machine.dataEncryptionKey) return { kind: 'legacy', envelope: null };
+        if (machine.dataEncryptionKey === null || machine.dataEncryptionKey === undefined) return { kind: 'legacy', envelope: null };
         if (!encryption) return { kind: 'encrypted_unavailable', envelope: null };
         return { kind: 'encrypted', envelope: machine.dataEncryptionKey };
     };
@@ -408,28 +430,46 @@ export async function fetchAndApplyMachines(params: {
     for (let index = 0; index < pendingMachineIds.length; index += 1) {
         freshKeyByMachineId.set(pendingMachineIds[index]!, pendingDecryptedKeys[index] ?? null);
     }
+    const machineById = new Map(machines.map((machine) => [machine.id, machine] as const));
     for (const result of machineKeyKinds) {
         const reusedKey = reusedKeyByMachineId.get(result.machineId);
         const decryptedKey = reusedKey ?? freshKeyByMachineId.get(result.machineId) ?? null;
-        if (!decryptedKey) {
+        const machine = machineById.get(result.machineId)!;
+        const expectedRunnerBinding = machine.kind === 'ephemeral_session_runner'
+            ? resolveExpectedRunnerMachineContentKeyBindingV1({
+                credentials,
+                homeServerIdentityId: params.sourceServerId,
+                machineId: machine.id,
+            })
+            : null;
+        const resolution = resolvePublishedMachineDataEncryptionKeyV1({
+            machine,
+            openedDataEncryptionKey: decryptedKey,
+            expectedAccountMode: isTokenOnlyAuthCredentials(credentials)
+                ? 'plain'
+                : 'e2ee',
+            ...(expectedRunnerBinding ? { expectedRunnerBinding } : {}),
+        });
+        if (resolution.status !== 'e2ee') {
             // A rotated envelope that fails to open — or a machine that moved to plain or
             // legacy storage — must not leave the previous key cached: the next refresh
             // would reuse a key this machine no longer uses.
             machineDataKeys.delete(result.machineId);
         }
-        if (!decryptedKey && (result.kind === 'encrypted' || result.kind === 'encrypted_unavailable')) {
+        if (resolution.status === 'unavailable') {
             if (encryption) {
                 warnMachineDataEncryptionKeyDecryptFailureOnce(encryption, result.machineId);
             } else {
                 console.warn(`Account encryption material is unavailable for machine ${result.machineId}.`);
             }
-            machineKeysMap.set(result.machineId, null);
+            unavailableMachineIds.add(result.machineId);
             continue;
         }
-        if (result.kind === 'plain') continue;
-        machineKeysMap.set(result.machineId, decryptedKey);
-        if (decryptedKey && result.envelope) {
-            machineDataKeys.set(result.machineId, { envelope: result.envelope, dataKey: decryptedKey });
+        if (resolution.status === 'plain') continue;
+        const acceptedKey = resolution.status === 'e2ee' ? resolution.dataKey : null;
+        machineKeysMap.set(result.machineId, acceptedKey);
+        if (acceptedKey && result.envelope) {
+            machineDataKeys.set(result.machineId, { envelope: result.envelope, dataKey: acceptedKey });
         }
     }
 
@@ -437,7 +477,7 @@ export async function fetchAndApplyMachines(params: {
     let machineEncryptionReady = encryption !== null;
     if (encryption) {
         try {
-            await encryption.initializeMachines(machineKeysMap);
+            await encryption.initializeMachines(machineKeysMap, unavailableMachineIds);
         } catch (error) {
             machineEncryptionReady = false;
             console.error('[machinesSnapshot] Failed to initialize machine encryption; continuing with cached/unencrypted machine rows', error);
@@ -482,6 +522,12 @@ export async function fetchAndApplyMachines(params: {
         cachedEntry: MachineDisplayCacheEntryV1 | undefined,
         existingMachine: Machine | null | undefined,
     ): Machine => {
+        if (unavailableMachineIds.has(machine.id)) {
+            return createLockedMachineView(
+                machine,
+                encryption ? 'decryption_failed' : 'encryption_material_unavailable',
+            );
+        }
         if (isPlainMachineDataKeyMarker(machine.dataEncryptionKey)) {
             try {
                 return createReadablePlainMachineView(machine);
@@ -493,7 +539,7 @@ export async function fetchAndApplyMachines(params: {
         if (!encryption) {
             return createLockedMachineView(machine, 'encryption_material_unavailable');
         }
-        if (!machineEncryptionReady || !encryption.getMachineEncryption(machine.id)) {
+        if (unavailableMachineIds.has(machine.id) || !machineEncryptionReady || !encryption.getMachineEncryption(machine.id)) {
             return createLockedMachineView(machine, 'decryption_failed');
         }
         const hasEncryptedDaemonState = typeof machine.daemonState === 'string' && machine.daemonState.length > 0;
@@ -524,6 +570,12 @@ export async function fetchAndApplyMachines(params: {
     };
 
     const decryptMachine = async (machine: typeof machines[number]): Promise<Machine | null> => {
+        if (unavailableMachineIds.has(machine.id)) {
+            return createLockedMachineView(
+                machine,
+                encryption ? 'decryption_failed' : 'encryption_material_unavailable',
+            );
+        }
         if (isPlainMachineDataKeyMarker(machine.dataEncryptionKey)) {
             try {
                 return createReadablePlainMachineView(machine);

@@ -118,7 +118,7 @@ describe('refreshWorkspaceFileDetails (fallback diff)', () => {
 
         await expect(resultPromise).resolves.toMatchObject({
             status: 'ready',
-            error: null,
+            error: 'files.fileReadFailed',
             fileContent: null,
             fileWriteSupported: false,
         });

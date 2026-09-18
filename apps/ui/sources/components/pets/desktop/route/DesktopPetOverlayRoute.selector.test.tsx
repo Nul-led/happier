@@ -17,6 +17,7 @@ import { resolveBuiltInPetPackage } from '@/components/pets/builtIns/builtInPetR
 import type { StorageState } from '@/sync/store/types';
 import type { LocalPetSourceMetadata } from '@/sync/domains/pets/localPetSourceTypes';
 import { createReducer } from '@/sync/reducer/reducer';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { AccountPetLibraryEntryV1 } from '@happier-dev/protocol';
 import { PET_DAEMON_RPC_METHODS } from '@happier-dev/protocol';
 
@@ -127,6 +128,20 @@ const activeServerSnapshotState = vi.hoisted(() => ({
         generation: 1,
     },
 }));
+
+function createPetsStorageSessions() {
+    return sessionsState.current.map((session) => {
+        const signals = sessionSignalsState.current[session.id];
+        return signals?.hasUnreadMessages === true
+            ? {
+                ...session,
+                seq: Math.max(1, session.seq ?? 0),
+                latestReadyEventSeq: Math.max(1, session.seq ?? 0),
+                lastViewedSessionSeq: 0,
+            }
+            : session;
+    });
+}
 
 const accountPet = {
     accountPetId: 'account-pet-1',
@@ -242,28 +257,27 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
         ...localSettingsState.current,
     });
 
-    const createPetsStorageStore = () =>
-        createStorageStoreMock({
+    const createPetsStorageStore = () => {
+        const sessions = createPetsStorageSessions();
+        const serverId = activeServerSnapshotState.current.serverId;
+        return createStorageStoreMock({
             isDataReady: true,
-            sessions: Object.fromEntries(sessionsState.current.map((session) => {
-                const signals = sessionSignalsState.current[session.id];
-                return [session.id, signals?.hasUnreadMessages === true
-                    ? {
-                        ...session,
-                        seq: Math.max(1, session.seq ?? 0),
-                        latestReadyEventSeq: Math.max(1, session.seq ?? 0),
-                        lastViewedSessionSeq: 0,
-                    }
-                    : session];
-            })),
+            sessions: Object.fromEntries(sessions.map((session) => [session.id, session])),
+            sessionListRowsByServerId: {
+                [serverId]: Object.fromEntries(
+                    sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)]),
+                ),
+            },
+            ordinarySessionListMembershipByServerId: {
+                [serverId]: sessions.map((session) => session.id),
+            },
             sessionListIndexByServerId: {
-                [activeServerSnapshotState.current.serverId]: sessionsState.current.map((session) => ({
+                [serverId]: sessions.map((session) => ({
                     type: 'session' as const,
                     sessionId: session.id,
-                    serverId: activeServerSnapshotState.current.serverId,
+                    serverId,
                 })),
             },
-            sessionListRenderables: {},
             concurrentSessionListCacheByServerId: {},
             sessionMessages: Object.fromEntries(
                 Object.entries(sessionSignalsState.current).map(([sessionId, signals]) => [sessionId, {
@@ -289,6 +303,7 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
             accountPetsById: accountPetsState.current,
             localPetSourcesBySourceKey: localPetSourcesState.current,
         });
+    };
     function storageStub(): StorageState;
     function storageStub<U>(selector: (state: StorageState) => U): U;
     function storageStub<U>(selector?: (state: StorageState) => U): StorageState | U {
@@ -501,11 +516,14 @@ describe('DesktopPetOverlayRoute selectors', () => {
         const nativeActivity = {
             state: 'waiting',
             reason: 'permission',
+            address: { serverId: 'server-a', sessionId: 'session-native' },
             sessionId: 'session-native',
             trayItems: [{
                 id: 'session-native:permission',
                 dismissKey: 'session-native:permission',
+                address: { serverId: 'server-a', sessionId: 'session-native' },
                 sessionId: 'session-native',
+                contextLine: 'Home A',
                 status: 'waiting',
                 priority: 100,
                 title: 'Native session',
@@ -698,6 +716,7 @@ describe('DesktopPetOverlayRoute selectors', () => {
         expect(item?.props.dataSet).toEqual({
             petNoDrag: 'true',
             petTraySessionId: 'session-waiting',
+            petTrayServerId: 'server-pets',
         });
         expect(status).not.toBeNull();
     });
@@ -780,7 +799,7 @@ describe('DesktopPetOverlayRoute selectors', () => {
         const screen = await renderScreen(<DesktopPetOverlayRoute />);
         const status = screen.findByTestId('desktop-pet-overlay-tray-status-session-status-waiting');
 
-        expect(status?.props['data-pet-status-icon']).toBe('time-outline');
+        expect(status?.props['data-pet-status-icon']).toBe('clock');
         expect(status?.props.accessibilityRole).toBeUndefined();
         expect(status?.props.onPress).toBeUndefined();
     });
@@ -1348,9 +1367,16 @@ describe('DesktopPetOverlayRoute selectors', () => {
         expect(executePetOverlayActionMock).toHaveBeenCalledWith(
             'session.open',
             { sessionId: 'session-open' },
-            expect.objectContaining({ defaultSessionId: 'session-open' }),
+            expect.objectContaining({
+                defaultSessionId: 'session-open',
+                serverId: 'server-pets',
+            }),
         );
-        expect(showMainWindowFromDesktopPetOverlayMock).toHaveBeenCalledTimes(1);
+        expect(showMainWindowFromDesktopPetOverlayMock).toHaveBeenCalledWith({
+            reason: 'tray-action',
+            targetServerId: 'server-pets',
+            targetSessionId: 'session-open',
+        });
     });
 
     it('dismisses tray items from the no-drag tray action', async () => {
@@ -1375,7 +1401,7 @@ describe('DesktopPetOverlayRoute selectors', () => {
         expect(screen.findByTestId('desktop-pet-overlay-context-toggle')).toBeNull();
         expect(applyLocalSettingsMock).toHaveBeenCalledWith({
             petsDismissedCompanionTrayItemKeys: expect.arrayContaining([
-                expect.stringMatching(/^waiting:session-dismiss:/),
+                JSON.stringify(['waiting', 'server-pets', 'session-dismiss', '1']),
             ]),
         });
     });
@@ -1383,7 +1409,9 @@ describe('DesktopPetOverlayRoute selectors', () => {
     it('persists dismissed tray items until the same session has newer activity', async () => {
         localSettingsState.current = {
             ...localSettingsState.current,
-            petsDismissedCompanionTrayItemKeys: ['waiting:session-dismissed:1000'],
+            petsDismissedCompanionTrayItemKeys: [
+                JSON.stringify(['waiting', 'server-pets', 'session-dismissed', '1000']),
+            ],
         } as typeof localSettingsState.current;
         sessionsState.current = [
             createSessionFixture({
@@ -1552,7 +1580,10 @@ describe('DesktopPetOverlayRoute selectors', () => {
         expect(executePetOverlayActionMock).toHaveBeenCalledWith(
             'session.message.send',
             { sessionId: 'session-reply', message: 'Ship it\nwith details' },
-            expect.objectContaining({ defaultSessionId: 'session-reply' }),
+            expect.objectContaining({
+                defaultSessionId: 'session-reply',
+                serverId: 'server-pets',
+            }),
         );
         executePetOverlayActionMock.mockClear();
 
@@ -1566,7 +1597,10 @@ describe('DesktopPetOverlayRoute selectors', () => {
         expect(executePetOverlayActionMock).toHaveBeenCalledWith(
             'session.message.send',
             { sessionId: 'session-reply', message: 'Ship it' },
-            expect.objectContaining({ defaultSessionId: 'session-reply' }),
+            expect.objectContaining({
+                defaultSessionId: 'session-reply',
+                serverId: 'server-pets',
+            }),
         );
     });
 
@@ -2358,6 +2392,7 @@ describe('DesktopPetOverlayRoute selectors', () => {
                 activityModel={{
                     state: 'idle',
                     reason: 'idle',
+                    address: null,
                     sessionId: null,
                     trayItems: [],
                 }}

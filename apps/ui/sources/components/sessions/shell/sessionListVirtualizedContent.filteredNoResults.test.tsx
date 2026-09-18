@@ -85,4 +85,85 @@ describe('SessionListVirtualizedContent filtered no-results state', () => {
         expect(screen.findByTestId('session-drafts-section')).toBeTruthy();
         expect(screen.findByTestId('session-drafts-section')?.props.density).toBe('minimal');
     });
+
+    it('omits waiting drafts and the archived shortcut when the host is rendering the archived corpus', async () => {
+        const { SessionListVirtualizedContent } = await import('./sessionListVirtualizedContent');
+
+        const screen = await renderScreen(React.createElement(SessionListVirtualizedContent as any, {
+            nodes: [],
+            rowHeight: 48,
+            safeAreaBottom: 0,
+            renderItem: () => null,
+            rowExtraData: null,
+            onStopScrollEventPropagationOnWeb: vi.fn(),
+            onPressArchivedSessions: vi.fn(),
+            folderFocus: null,
+            onClearFolderFocus: vi.fn(),
+            onSelectFolderBreadcrumb: vi.fn(),
+            showDrafts: false,
+            showArchivedShortcut: false,
+        }));
+
+        expect(screen.findByTestId('session-drafts-section')).toBeNull();
+        expect(screen.getTextContent()).not.toContain('sessionInfo.archivedSessions');
+        expect(screen.getTextContent()).not.toContain('sessionInfo.inactiveAndArchivedSessions');
+    });
+
+    it('renders the typed incomplete-search state and loads older query pages', async () => {
+        const onLoadMore = vi.fn();
+        const { SessionListVirtualizedContent } = await import('./sessionListVirtualizedContent');
+
+        const filters = {
+            scope: 'my_work',
+            attention: 'any',
+            homeServerIds: ['home-a'],
+            audiences: [],
+            tagIds: [],
+            source: 'all',
+            searchQuery: 'auth',
+        } as const;
+        const screen = await renderScreen(React.createElement(SessionListVirtualizedContent as any, {
+            nodes: [],
+            rowHeight: 48,
+            safeAreaBottom: 0,
+            renderItem: () => null,
+            rowExtraData: null,
+            onStopScrollEventPropagationOnWeb: vi.fn(),
+            onPressArchivedSessions: vi.fn(),
+            folderFocus: null,
+            onClearFolderFocus: vi.fn(),
+            onSelectFolderBreadcrumb: vi.fn(),
+            filteredNoResultsMessage: 'directSessions.browseNoSearchResults',
+            viewContext: {
+                kind: 'team',
+                team: { serverId: 'home-a', teamId: 'team-a' },
+                teamDisplayName: 'Design',
+            },
+            queryPresentationState: {
+                presentation: { kind: 'ready', complete: false },
+                visibleSessionCount: 0,
+                filters,
+                defaults: { ...filters, searchQuery: '' },
+                // Empty-state presentation is not the draft-section context owner.
+                viewContext: { kind: 'global' },
+                includeInactive: true,
+                hasHiddenInactiveSessions: false,
+                onRetry: vi.fn(),
+                onLoadMore,
+                onClearFilters: vi.fn(),
+                onBrowseAllAccessible: vi.fn(),
+                onShowInactive: vi.fn(),
+            },
+        }));
+
+        expect(screen.getTextContent()).toContain('sessionsList.queryNoMatchesLoadedTitle');
+        expect(screen.getTextContent()).not.toContain('directSessions.browseNoSearchResults');
+        expect(screen.findByTestId('session-drafts-section')?.props.viewContext).toEqual({
+            kind: 'team',
+            team: { serverId: 'home-a', teamId: 'team-a' },
+            teamDisplayName: 'Design',
+        });
+        await screen.pressByTestIdAsync('session-list-query-action:load_more');
+        expect(onLoadMore).toHaveBeenCalledTimes(1);
+    });
 });

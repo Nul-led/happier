@@ -31,11 +31,10 @@ vi.mock('@/components/plugins/reactNative/bundleCache', async (importOriginal) =
     const actual = await importOriginal<typeof import('@/components/plugins/reactNative/bundleCache')>();
     return {
         ...actual,
-        getInstalledPluginReactNativeBundleCache: () => {
-            const cache = availabilityProjectionFixture.cache;
-            if (!cache) throw new Error('Expected an Availability projection cache fixture.');
-            return cache as ReturnType<typeof actual.getInstalledPluginReactNativeBundleCache>;
-        },
+        getInstalledPluginReactNativeBundleCache: () => (
+            availabilityProjectionFixture.cache
+                ?? actual.getInstalledPluginReactNativeBundleCache()
+        ),
     };
 });
 
@@ -118,6 +117,7 @@ function fixture() {
     ]);
     const response: PluginAccountAvailabilityIntentReadResponseV1 = {
         availabilityCursor: 1,
+        packageAssets: [],
         hostingCapability: { enabled: true, maxArtifactBytes: 1024, maxAccountBytes: 2048 },
         intent: {
             pluginId: slot.pluginId,
@@ -249,6 +249,7 @@ function createNativePersistentStore(input: Readonly<{
     const read = vi.fn(async () => record);
     const write = vi.fn(async (next: PluginUiPersistentArtifactRecord) => {
         record = next;
+        return 'persisted' as const;
     });
     const remove = vi.fn(async (identity: PluginUiPersistentArtifactRecord['persistentIdentity']) => {
         await input.onRemove?.(identity);
@@ -375,6 +376,7 @@ function createPersistentStore() {
     const read = vi.fn(async () => record);
     const write = vi.fn(async (next: PluginUiPersistentArtifactRecord) => {
         record = next;
+        return 'persisted' as const;
     });
     const store: PluginUiPersistentArtifactStore = Object.freeze({
         read,
@@ -801,6 +803,7 @@ describe('hosted-web Artifact availability producer', () => {
             read,
             write: async (next) => {
                 record = next;
+                return 'persisted';
             },
             remove: async () => {
                 record = null;
@@ -897,6 +900,7 @@ describe('hosted-web Artifact availability producer', () => {
         });
         const write = vi.fn(async (next: PluginUiPersistentArtifactRecord) => {
             record = next;
+            return 'persisted' as const;
         });
         const removeAccount = vi.fn(async () => {
             record = null;

@@ -1,10 +1,19 @@
 import type { ApiChangeEntry } from '@/sync/api/types/apiTypes';
-import { ChangeKindSchema, type ChangeKind } from '@happier-dev/protocol/changes';
+import { ACCOUNT_SESSION_FOLLOW_CHANGE_ENTITY_ID } from '@happier-dev/protocol';
+import {
+    ChangeKindSchema,
+    HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1,
+    SessionOrganizationChangeHintSchema,
+    TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1,
+    type ChangeKind,
+} from '@happier-dev/protocol/changes';
 import {
     SessionDraftChangeHintV1Schema,
-    canonicalSessionDraftAddressV1,
-    type SessionDraftAddressV1,
+    SessionDraftChangeHintV2Schema,
+    canonicalSessionDraftAddressV2,
+    type SessionDraftAddressV2,
     type SessionDraftChangeHintV1,
+    type SessionDraftChangeHintV2,
 } from '@happier-dev/protocol';
 
 export type PlannedKvAction =
@@ -19,6 +28,7 @@ export type PlannedSessionOrganizationAction =
         assignmentSessionIds: string[];
         folderIds: string[];
         tagIds: string[];
+        deletedTagIds: string[];
         orderScopes: Array<{ scopeKind: 'pinned' | 'folder' | 'tag' | 'workspace' | 'group'; scopeKey: string }>;
         includeFolders: boolean;
         includeTags: boolean;
@@ -76,7 +86,9 @@ export const CHANGE_CHECKPOINT_COVERAGE = {
     friend_accepted: { plannerOwner: 'friends', snapshotDomain: 'friends' },
     kv: { plannerOwner: 'kv', snapshotDomain: 'todos' },
     machine: { plannerOwner: 'machines', snapshotDomain: 'machines' },
+    machinePool: { plannerOwner: 'machine-pools', snapshotDomain: 'machine-pools' },
     pet: { plannerOwner: 'pets', snapshotDomain: 'pets' },
+    savedSecretResource: { plannerOwner: 'saved-secrets', snapshotDomain: 'saved-secret-resource-catalog' },
     pluginDomain: { plannerOwner: 'plugin-domain', snapshotDomain: 'plugin-domain-level-triggered' },
     session: { plannerOwner: 'sessions', snapshotDomain: 'sessions-and-session-messages' },
     share: { plannerOwner: 'sessions', snapshotDomain: 'sessions' },
@@ -84,6 +96,7 @@ export const CHANGE_CHECKPOINT_COVERAGE = {
 
 export type PlannedChangeActions = {
     changes: ApiChangeEntry[];
+    workflowRunIdsToRefresh: string[];
     sessionIdsToCatchUp: string[];
     sessionTranscriptRepairs: PlannedSessionTranscriptRepair[];
     sessionFolderAssignmentSessionIds: string[];
@@ -93,6 +106,7 @@ export type PlannedChangeActions = {
         sessions: boolean;
         sessionFolderAssignments: boolean;
         machines: boolean;
+        machinePools: boolean;
         artifacts: boolean;
         settings: boolean;
         profile: boolean;
@@ -100,9 +114,10 @@ export type PlannedChangeActions = {
         feed: boolean;
         automations: boolean;
         pets: boolean;
+        savedSecretResources: boolean;
     };
     kv: PlannedKvAction;
-    sessionDraftAddresses?: SessionDraftAddressV1[];
+    sessionDraftAddresses?: SessionDraftAddressV2[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -132,13 +147,20 @@ function hasSessionFolderAssignmentHint(change: ApiChangeEntry): boolean {
 }
 
 function hasSessionOrganizationHint(change: ApiChangeEntry): boolean {
-    const hint = change.hint;
-    return isRecord(hint) && hint.sessionOrganization === true;
+    return SessionOrganizationChangeHintSchema.safeParse(change.hint).success;
 }
 
-export function getChangeSessionDraftHint(change: ApiChangeEntry): SessionDraftChangeHintV1 | null {
+function readSessionOrganizationHint(change: ApiChangeEntry) {
+    const parsed = SessionOrganizationChangeHintSchema.safeParse(change.hint);
+    return parsed.success ? parsed.data : null;
+}
+
+export function getChangeSessionDraftHint(change: ApiChangeEntry): SessionDraftChangeHintV1 | SessionDraftChangeHintV2 | null {
     if (change.kind !== 'account') return null;
-    const parsed = SessionDraftChangeHintV1Schema.safeParse(change.hint);
+    const schema = isRecord(change.hint) && change.hint.v === 2
+        ? SessionDraftChangeHintV2Schema
+        : SessionDraftChangeHintV1Schema;
+    const parsed = schema.safeParse(change.hint);
     return parsed.success ? parsed.data : null;
 }
 
@@ -190,6 +212,20 @@ export function getChangeUpdatedMessageHint(
     return { seq: Math.trunc(seq), messageId };
 }
 
+function requiresFollowSessionRefresh(change: ApiChangeEntry): boolean {
+    return change.kind === 'account' && change.entityId === ACCOUNT_SESSION_FOLLOW_CHANGE_ENTITY_ID;
+}
+
+export function changeRequiresSavedSecretCatalogRefresh(change: Pick<ApiChangeEntry, 'kind' | 'entityId' | 'hint'>): boolean {
+    const isAccountCurrentnessChange = change.kind === 'account'
+        && change.entityId === 'self'
+        && (!isRecord(change.hint)
+            || Object.keys(change.hint).some((key) => key !== 'settingsVersion'));
+    return change.kind === 'savedSecretResource'
+        || (change.kind === 'account' && change.entityId === TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1)
+        || isAccountCurrentnessChange;
+}
+
 export function classifyChangeForCheckpoint(
     change: ApiChangeEntry,
     _clientState: ChangeCheckpointClientState,
@@ -212,6 +248,30 @@ export function classifyChangeForCheckpoint(
     }
 
     const coverage = CHANGE_CHECKPOINT_COVERAGE[kind];
+
+    if (requiresFollowSessionRefresh(change)) {
+        return {
+            kind,
+            cursor,
+            entityId,
+            decision: 'critical',
+            plannerOwner: 'sessions',
+            snapshotDomain: 'sessions',
+            materializationProof: 'sessions',
+        };
+    }
+
+    if (kind === 'account' && entityId.startsWith('workflow-run:') && entityId.length > 'workflow-run:'.length) {
+        return {
+            kind,
+            cursor,
+            entityId,
+            decision: 'critical',
+            plannerOwner: 'workflow-runs',
+            snapshotDomain: 'workflow-run',
+            materializationProof: 'workflow-run',
+        };
+    }
 
     if (getChangeSessionDraftHint(change)) {
         return {
@@ -294,6 +354,7 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
     const organizationAssignmentSessionIds = new Set<string>();
     const organizationFolderIds = new Set<string>();
     const organizationTagIds = new Set<string>();
+    const organizationDeletedTagIds = new Set<string>();
     const organizationOrderScopes = new Map<string, { scopeKind: 'pinned' | 'folder' | 'tag' | 'workspace' | 'group'; scopeKey: string }>();
     const unsupportedChanges: UnsupportedChangeMarker[] = [];
     let invalidateSessions = false;
@@ -303,6 +364,7 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
     let organizationIncludeTags = false;
     let organizationIncludeLabels = false;
     let invalidateMachines = false;
+    let invalidateMachinePools = false;
     let invalidateArtifacts = false;
     let invalidateSettings = false;
     let invalidateProfile = false;
@@ -310,10 +372,12 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
     let invalidateFeed = false;
     let invalidateAutomations = false;
     let invalidatePets = false;
+    let invalidateSavedSecretResources = false;
 
     let kvFull = false;
     const kvKeys = new Set<string>();
-    const sessionDraftAddresses = new Map<string, SessionDraftAddressV1>();
+    const sessionDraftAddresses = new Map<string, SessionDraftAddressV2>();
+    const workflowRunIdsToRefresh = new Set<string>();
 
     for (const change of changes) {
         const kind = change.kind;
@@ -328,7 +392,7 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
 
         const sessionDraftHint = getChangeSessionDraftHint(change);
         if (sessionDraftHint) {
-            sessionDraftAddresses.set(canonicalSessionDraftAddressV1(sessionDraftHint.address), sessionDraftHint.address);
+            sessionDraftAddresses.set(canonicalSessionDraftAddressV2(sessionDraftHint.address), sessionDraftHint.address);
             continue;
         }
 
@@ -344,6 +408,7 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
                 continue;
             }
             if (kind === 'session' && hasSessionOrganizationHint(change)) {
+                const organizationHint = readSessionOrganizationHint(change);
                 organizationRefresh = true;
                 if (typeof change.entityId === 'string' && change.entityId.length > 0) {
                     organizationAssignmentSessionIds.add(change.entityId);
@@ -351,6 +416,7 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
                 for (const sessionId of readHintStringArray(change, 'sessionIds')) organizationAssignmentSessionIds.add(sessionId);
                 for (const folderId of readHintStringArray(change, 'folderIds')) organizationFolderIds.add(folderId);
                 for (const tagId of readHintStringArray(change, 'tagIds')) organizationTagIds.add(tagId);
+                for (const tagId of organizationHint?.deletedTagIds ?? []) organizationDeletedTagIds.add(tagId);
                 for (const scope of readOrganizationOrderScopes(change)) organizationOrderScopes.set(`${scope.scopeKind}:${scope.scopeKey}`, scope);
                 const hintScope = isRecord(change.hint) && typeof change.hint.scope === 'string' ? change.hint.scope : '';
                 // A standing change moves rows between the attention band and the rest of the
@@ -385,6 +451,30 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
         }
 
         if (kind === 'account') {
+            if (changeRequiresSavedSecretCatalogRefresh(change)) {
+                invalidateSavedSecretResources = true;
+            }
+            if (change.entityId.startsWith('workflow-run:')) {
+                const runId = change.entityId.slice('workflow-run:'.length);
+                if (runId) workflowRunIdsToRefresh.add(runId);
+                continue;
+            }
+            if (change.entityId === ACCOUNT_SESSION_FOLLOW_CHANGE_ENTITY_ID) {
+                if (requiresFollowSessionRefresh(change)) invalidateSessions = true;
+                continue;
+            }
+            if (
+                change.entityId === TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1
+                || change.entityId === HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1
+            ) {
+                // Scoped snapshot materialization consumes these stable entity
+                // IDs before the cursor advances. They are not Account profile
+                // or encrypted-settings mutations.
+                // Team and Group membership are also authorization inputs for
+                // shared Saved Secrets, so retire material at this same wake
+                // and let the catalog owner re-observe current grants.
+                continue;
+            }
             if (
                 change.entityId === 'session-folder-assignments'
                 || hasSessionFolderAssignmentHint(change)
@@ -395,10 +485,12 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
                 continue;
             }
             if (hasSessionOrganizationHint(change)) {
+                const organizationHint = readSessionOrganizationHint(change);
                 organizationRefresh = true;
                 for (const sessionId of readHintStringArray(change, 'sessionIds')) organizationAssignmentSessionIds.add(sessionId);
                 for (const folderId of readHintStringArray(change, 'folderIds')) organizationFolderIds.add(folderId);
                 for (const tagId of readHintStringArray(change, 'tagIds')) organizationTagIds.add(tagId);
+                for (const tagId of organizationHint?.deletedTagIds ?? []) organizationDeletedTagIds.add(tagId);
                 for (const scope of readOrganizationOrderScopes(change)) organizationOrderScopes.set(`${scope.scopeKind}:${scope.scopeKey}`, scope);
                 const hintScope = isRecord(change.hint) && typeof change.hint.scope === 'string' ? change.hint.scope : '';
                 // A standing change moves rows between the attention band and the rest of the
@@ -419,6 +511,11 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
 
         if (kind === 'machine') {
             invalidateMachines = true;
+            continue;
+        }
+
+        if (kind === 'machinePool') {
+            invalidateMachinePools = true;
             continue;
         }
 
@@ -444,6 +541,11 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
 
         if (kind === 'pet') {
             invalidatePets = true;
+            continue;
+        }
+
+        if (changeRequiresSavedSecretCatalogRefresh(change)) {
+            invalidateSavedSecretResources = true;
             continue;
         }
 
@@ -479,6 +581,7 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
 
     return {
         changes: [...changes],
+        workflowRunIdsToRefresh: [...workflowRunIdsToRefresh].sort(),
         sessionIdsToCatchUp: Array.from(sessionIds).sort(),
         sessionTranscriptRepairs: Array.from(sessionTranscriptRepairs.entries())
             .map(([sessionId, repair]) => ({
@@ -494,6 +597,7 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
                 assignmentSessionIds: Array.from(organizationAssignmentSessionIds).sort(),
                 folderIds: Array.from(organizationFolderIds).sort(),
                 tagIds: Array.from(organizationTagIds).sort(),
+                deletedTagIds: Array.from(organizationDeletedTagIds).sort(),
                 orderScopes: Array.from(organizationOrderScopes.values()),
                 includeFolders: organizationIncludeFolders,
                 includeTags: organizationIncludeTags,
@@ -505,6 +609,7 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
             sessions: invalidateSessions,
             sessionFolderAssignments: invalidateSessionFolderAssignments,
             machines: invalidateMachines,
+            machinePools: invalidateMachinePools,
             artifacts: invalidateArtifacts,
             settings: invalidateSettings,
             profile: invalidateProfile,
@@ -512,10 +617,47 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
             feed: invalidateFeed,
             automations: invalidateAutomations,
             pets: invalidatePets,
+            savedSecretResources: invalidateSavedSecretResources,
         },
         kv,
         sessionDraftAddresses: [...sessionDraftAddresses.values()].sort((left, right) => (
-            canonicalSessionDraftAddressV1(left).localeCompare(canonicalSessionDraftAddressV1(right))
+            canonicalSessionDraftAddressV2(left).localeCompare(canonicalSessionDraftAddressV2(right))
         )),
     };
+}
+
+/**
+ * Projects the canonical materialization plan onto filtered-list membership.
+ *
+ * Most membership-changing facts already require the incumbent Sessions refresh.
+ * Team/Group changes and tag organization changes are the two strict-query-only
+ * additions: released owner/direct Session snapshots do not consume them, while
+ * the filtered query does. Keeping the projection here prevents each list consumer
+ * from reinterpreting raw AccountChange hints.
+ */
+export function plannedChangesAffectSessionListQuery(
+    planned: PlannedChangeActions,
+): boolean {
+    if (planned.invalidate.sessions) return true;
+    if (
+        planned.sessionOrganization.mode === 'snapshot'
+        && planned.sessionOrganization.includeTags
+    ) {
+        return true;
+    }
+    return planned.changes.some((change) => {
+        if (change.kind !== 'account') return false;
+        if (
+            change.entityId === TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1
+            || change.entityId === HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1
+        ) return true;
+        if (change.entityId !== 'self') return false;
+
+        // Settings writes identify their exact version. Other `self` changes can
+        // alter Account/credential currentness used by restricted-Team admission,
+        // so an absent or broader hint remains conservative.
+        const hint = change.hint;
+        return !isRecord(hint)
+            || Object.keys(hint).some((key) => key !== 'settingsVersion');
+    });
 }

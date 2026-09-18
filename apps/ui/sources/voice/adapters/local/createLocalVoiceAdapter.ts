@@ -50,12 +50,20 @@ export function createLocalVoiceAdapter(
   const getSnapshot = (): VoiceSessionSnapshot =>
     deriveLocalVoiceSessionSnapshot(id, 'local', getVoiceConversationRuntimeSnapshot());
 
-  const start = async (opts: Readonly<{ sessionId: string; initialContext?: string }>) => {
+  const start = async (opts: Parameters<VoiceAdapterController['start']>[0]) => {
     void opts.initialContext;
-    await localVoiceRuntimeController.toggleTurn(opts.sessionId, capabilities.currentUiContext);
+    await localVoiceRuntimeController.toggleTurn(
+      opts.sessionId,
+      capabilities.currentUiContext,
+      opts.requestedTargetSessionAddress,
+    );
   };
 
-  const toggle = async (opts: Readonly<{ sessionId: string }>) => start(opts);
+  // Retained only for the adapter's legacy direct-control seam. Product Start
+  // enters through `start`, where the qualified target is required.
+  const toggle = async (opts: Readonly<{ sessionId: string }>) => {
+    await localVoiceRuntimeController.toggleTurn(opts.sessionId, capabilities.currentUiContext);
+  };
 
   const stop = async (_opts: Readonly<{ sessionId: string }>) => {
     await localVoiceRuntimeController.stopSession();

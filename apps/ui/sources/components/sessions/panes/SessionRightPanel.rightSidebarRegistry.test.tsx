@@ -18,6 +18,7 @@ import {
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let terminalFeatureEnabled = true;
+let boardFeatureEnabled = false;
 let scopeState: any = {
     right: { isOpen: true, activeTabId: 'browser', tabState: {} },
 };
@@ -42,10 +43,15 @@ const pluginProjectionState = vi.hoisted<{
 }));
 const useScopedPluginUiProjectionMock = vi.hoisted(() => vi.fn());
 const sessionRightPanelDeviceType = vi.hoisted(() => ({ value: 'tablet' as 'phone' | 'tablet' }));
+const mountedBoardRuntimeState = vi.hoisted(() => ({
+    calls: [] as unknown[],
+    byServerId: new Map<string, object>(),
+}));
 
 const openRightSpy = vi.fn();
 const setRightTabSpy = vi.fn();
 const selectRightDestinationSpy = vi.fn();
+const openDetailsTabSpy = vi.fn();
 
 installSessionDetailsPanelCommonModuleMocks({
     text: async () => {
@@ -63,16 +69,45 @@ installSessionDetailsPanelCommonModuleMocks({
     },
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
 vi.mock('@/utils/platform/deferOnWeb', () => ({
     deferOnWeb: (fn: any) => fn(),
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: (featureId: string) => featureId === 'terminal.embeddedPty' ? terminalFeatureEnabled : false,
+    useFeatureEnabled: (featureId: string) => featureId === 'terminal.embeddedPty'
+        ? terminalFeatureEnabled
+        : featureId === 'sessions.board'
+            ? boardFeatureEnabled
+            : false,
+}));
+
+vi.mock('@/components/sessions/board/SessionBoardPane', () => ({
+    SessionBoardPane: (props: Record<string, unknown>) => React.createElement('SessionBoardPaneStub', props),
+}));
+
+vi.mock('@/components/sessions/board/SessionBoardControllerProvider', () => ({
+    useMountedSessionBoardController: (address: Readonly<{ serverId: string }> | null) => {
+        mountedBoardRuntimeState.calls.push(address);
+        if (!address) return null;
+        const callerHostedHtmlRuntime = mountedBoardRuntimeState.byServerId.get(address.serverId);
+        return callerHostedHtmlRuntime
+            ? { callerHostedHtmlRuntime }
+            : null;
+    },
+}));
+
+vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
+    useSessionViewShellSession: (sessionId: string, serverId: string | null) => ({
+        id: sessionId,
+        serverId,
+        metadata: null,
+    }),
+}));
+
+vi.mock('@/components/ui/surfaces/hostedHtml/useSessionCallerHostedHtmlRuntime', () => ({
+    useSessionCallerHostedHtmlRuntime: () => {
+        throw new Error('right panels must consume the Session shell mounted Board runtime');
+    },
 }));
 
 vi.mock('@/utils/platform/responsive', () => ({
@@ -86,7 +121,7 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
         setRightTab: setRightTabSpy,
         selectRightDestination: selectRightDestinationSpy,
         closeRight: vi.fn(),
-        openDetailsTab: vi.fn(),
+        openDetailsTab: openDetailsTabSpy,
     }),
 }));
 
@@ -134,6 +169,14 @@ vi.mock('@/components/sessions/model/useSessionMachineTarget', () => ({
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession', () => ({
     usePreferredServerIdForSession: () => 'server-1',
 }));
+
+vi.mock('@/sync/store/hooks', async (importOriginal) => {
+    const original = await importOriginal<typeof import('@/sync/store/hooks')>();
+    return {
+        ...original,
+        useSessionServerId: (_sessionId: string, enabled: boolean) => enabled ? 'server-1' : null,
+    };
+});
 
 vi.mock('@/components/plugins/surfaces', () => ({
     PluginSurfacePlacementHost: (props: Record<string, unknown>) => React.createElement('PluginSurfacePlacementHostStub', props),
@@ -247,6 +290,7 @@ function createPluginProjection(input: Readonly<{
 describe('SessionRightPanel right-sidebar registry tabs', () => {
     beforeEach(() => {
         terminalFeatureEnabled = true;
+        boardFeatureEnabled = false;
         scopeState = { right: { isOpen: true, activeTabId: 'browser', tabState: {} } };
         pluginProjectionState.value = {
             pluginUiProjection: null,
@@ -261,6 +305,53 @@ describe('SessionRightPanel right-sidebar registry tabs', () => {
         openRightSpy.mockClear();
         setRightTabSpy.mockClear();
         selectRightDestinationSpy.mockClear();
+        openDetailsTabSpy.mockClear();
+        mountedBoardRuntimeState.calls.length = 0;
+        mountedBoardRuntimeState.byServerId.clear();
+    });
+
+    it('keeps the compact Board navigational and opens editing in canonical Details', async () => {
+        boardFeatureEnabled = true;
+        scopeState = { right: { isOpen: true, activeTabId: 'board', tabState: {} } };
+        const screen = await renderScreen(<SessionRightPanel sessionId="s1" scopeId="session:s1" />);
+
+        const board = screen.findByType('SessionBoardPaneStub' as never);
+        expect(board.props.interaction).toBe('navigation');
+        expect(board.props.layout).toBe('single');
+        board.props.onOpenBoardDetails();
+        expect(openDetailsTabSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('switches caller-hosted HTML with the exact Home shell runtime instead of ambient construction', async () => {
+        boardFeatureEnabled = true;
+        scopeState = { right: { isOpen: true, activeTabId: 'board', tabState: {} } };
+        const homeARuntime = Object.freeze({ serverIdentityId: 'home-a-runtime' });
+        const homeBRuntime = Object.freeze({ serverIdentityId: 'home-b-runtime' });
+        mountedBoardRuntimeState.byServerId.set('home-a', homeARuntime);
+        mountedBoardRuntimeState.byServerId.set('home-b', homeBRuntime);
+
+        const createProps = (serverId: string) => ({
+            sessionId: 's1',
+            scopeId: `session:${serverId}:s1`,
+            paneSurfaceScope: {
+                targetKind: 'session' as const,
+                sessionId: 's1',
+                machineId: 'machine-1',
+                serverId,
+                pluginUiProjection: EMPTY_PLUGIN_UI_PROJECTION,
+                projectionPhase: 'current' as const,
+                interactionEnabled: true,
+                platform: 'web' as const,
+            },
+        });
+
+        const screen = await renderScreen(<SessionRightPanel {...createProps('home-a')} />);
+        expect(screen.findByType('SessionBoardPaneStub' as never).props.callerHostedHtmlRuntime).toBe(homeARuntime);
+        expect(mountedBoardRuntimeState.calls.at(-1)).toEqual({ serverId: 'home-a', sessionId: 's1' });
+
+        await screen.update(<SessionRightPanel {...createProps('home-b')} />);
+        expect(screen.findByType('SessionBoardPaneStub' as never).props.callerHostedHtmlRuntime).toBe(homeBRuntime);
+        expect(mountedBoardRuntimeState.calls.at(-1)).toEqual({ serverId: 'home-b', sessionId: 's1' });
     });
 
     it('drops the Browser tab on desktop but keeps Services (D1)', async () => {

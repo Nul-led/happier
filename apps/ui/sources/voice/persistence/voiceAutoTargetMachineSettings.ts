@@ -2,6 +2,7 @@ import { storage } from '@/sync/domains/state/storage';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
 import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
+import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 
 export function readVoiceAutoTargetMachineId(state: any): string | null {
     const target = voiceSettingsParse(state?.settings?.voice).executionMachine;
@@ -9,7 +10,10 @@ export function readVoiceAutoTargetMachineId(state: any): string | null {
     return normalizeNonEmptyString(target?.autoMachineId);
 }
 
-export function persistVoiceAutoTargetMachineId(machineId: string | null): void {
+export function persistVoiceAutoTargetMachineId(
+    machineId: string | null,
+    expectedSettingsScope: AccountSettingsScope | null,
+): void {
     const normalizedMachineId = normalizeNonEmptyString(machineId);
     const state: any = storage.getState();
     if (!state?.settings?.voice) return;
@@ -26,5 +30,5 @@ export function persistVoiceAutoTargetMachineId(machineId: string | null): void 
                 autoMachineId: normalizedMachineId,
             },
         },
-    }, { source: 'ui' });
+    }, { expectedSettingsScope, source: 'ui' });
 }

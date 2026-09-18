@@ -1,5 +1,6 @@
 import type { ActivityOverviewSnapshot, SessionActivityAttention } from '@/activity/attention/activityAttentionTypes';
 import type { ActivitySurfacePolicy } from '@/activity/attention/resolveActivitySurfacePolicy';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 export type ActivitySurfaceSelectionMode = 'focused' | 'attention' | 'running' | 'summary';
 export type ActivitySurfaceSelectionReason = 'all_eligible' | 'dynamic_primary' | 'pinned_primary' | 'session_specific';
 
@@ -31,8 +32,8 @@ export type ResolveActivitySurfaceSlotsParams = Readonly<{
     overview: ActivityOverviewSnapshot;
     selection: ActivitySurfaceSelectionSpec;
     applyCap?: boolean;
-    preferredPrimarySessionId?: string | null;
-    previousPrimarySessionId?: string | null;
+    preferredPrimaryAddress?: SessionAddress | null;
+    previousPrimaryAddress?: SessionAddress | null;
     previousPrimaryActivityInstanceKey?: string | null;
     previousPrimaryChangedAtMs?: number | null;
     nowMs?: number;

@@ -190,11 +190,7 @@ vi.mock('./OtaUpdateStatusSection', () => ({
     OtaUpdateStatusSection: () => null,
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
+vi.mock('@/constants/Typography', async (importOriginal) => await importOriginal());
 
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
     useActiveServerSnapshot: () => state.activeServerSnapshot,

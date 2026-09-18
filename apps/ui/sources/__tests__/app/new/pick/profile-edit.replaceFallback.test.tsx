@@ -7,11 +7,13 @@ import { settingsDefaults } from '@/sync/domains/settings/settings';
 import type { AiLaunchProfile } from '@happier-dev/protocol';
 import { createEmptyCustomProfile } from '@/sync/domains/profiles/profileMutations';
 import {
+    BUNDLED_AGENT_ROUTE_PARAMS,
+    createDiscoveredPluginBackendDescribeResult,
     createNavigationMock,
+    createProjectionDescribeMock,
     createRouterMock,
     enableReactActEnvironment,
     installPickerCommonModuleMocks,
-    parseJsonRouteParam,
     PICKER_NAV_STATE,
     PICKER_THEME_COLORS,
 } from './testHarness';
@@ -51,15 +53,7 @@ const settingsState = vi.hoisted(() => ({
 }));
 const lastUsedProfileWriter = vi.hoisted(() => vi.fn());
 const applyProfileSaveSpy = vi.hoisted(() => vi.fn());
-type MachineContributionRegistryProjectionDescribeFn =
-    typeof import('@/sync/ops/machineContributionRegistryProjection').machineContributionRegistryProjectionDescribe;
-const {
-    machineContributionRegistryProjectionDescribe,
-} = vi.hoisted(() => ({
-    machineContributionRegistryProjectionDescribe: vi.fn<MachineContributionRegistryProjectionDescribeFn>(
-        async () => ({ supported: false, reason: 'not-supported' }),
-    ),
-}));
+const machineContributionRegistryProjectionDescribe = createProjectionDescribeMock();
 
 installPickerCommonModuleMocks({
     reactNative: async () =>
@@ -125,6 +119,7 @@ installPickerCommonModuleMocks({
                 show: vi.fn(),
             },
         }).module,
+    projectionSeam: { describe: machineContributionRegistryProjectionDescribe },
 });
 
 vi.mock('@/components/profiles/edit', () => ({
@@ -142,7 +137,6 @@ vi.mock('expo-constants', () => ({
     default: { statusBarHeight: 0 },
 }));
 
-vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 vi.mock('@react-navigation/elements', () => ({
     useHeaderHeight: () => 0,
 }));
@@ -168,15 +162,6 @@ vi.mock('@/utils/ui/promptUnsavedChangesAlert', () => ({
 vi.mock('@/components/ui/keyboardAvoidance', () => ({
     KeyboardAwareScreen: ({ children, ...props }: any) =>
         React.createElement('KeyboardAwareScreen', props, children),
-}));
-vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
-    machineContributionRegistryProjectionDescribe: (...args: Parameters<MachineContributionRegistryProjectionDescribeFn>) =>
-        machineContributionRegistryProjectionDescribe(...args),
-    getMachineContributionRegistryProjectionRevision: () => 0,
-    subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
-    machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
-    machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
 }));
 
 describe('ProfileEditScreen replace fallback', () => {
@@ -222,29 +207,7 @@ describe('ProfileEditScreen replace fallback', () => {
     });
 
     it('falls back to the preferred built-in target when route params only carry legacy customAcp even when merged projection lists discovered plugin backends', async () => {
-        machineContributionRegistryProjectionDescribe.mockResolvedValue({
-            supported: true,
-            projection: {
-                v: 1,
-                agentsById: {
-                    'acme.review.provider': {
-                        id: 'acme.review.provider',
-                        title: 'Acme Review Provider',
-                        channel: 'plugin',
-                        isBuiltIn: false,
-                        settingsBackendId: 'acme.review.backend',
-                    },
-                },
-                backendsById: {
-                    'acme.review.backend': {
-                        id: 'acme.review.backend',
-                        backendId: 'acme.review.backend',
-                        agentId: 'acme.review.provider',
-                        title: 'Acme Review Backend',
-                    },
-                },
-            },
-        });
+        machineContributionRegistryProjectionDescribe.mockResolvedValue(createDiscoveredPluginBackendDescribeResult());
 
         const ProfileEditScreen = (await import('@/app/(app)/new/pick/profile-edit')).default;
         await act(async () => {
@@ -271,26 +234,14 @@ describe('ProfileEditScreen replace fallback', () => {
             timeoutMs: 10_000,
         }));
         expect(routerMock.replace).toHaveBeenCalledTimes(1);
-        const [call] = routerMock.replace.mock.calls;
-        const args = call?.[0] as any;
-
-        expect(args).toEqual(expect.objectContaining({
+        expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
-            params: expect.objectContaining({
-                backendTargetKey: 'agent:happier.agent.claude/claude',
+            params: {
+                ...BUNDLED_AGENT_ROUTE_PARAMS.claude,
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 profileId: 'profile-new',
                 spawnServerId: 'server-2',
-            }),
-        }));
-
-        const backendTarget = parseJsonRouteParam(args?.params?.backendTarget) as any;
-        expect(backendTarget).toEqual({
-            kind: 'agent',
-            identity: {
-                pluginId: 'happier.agent.claude',
-                localId: 'claude',
             },
         });
     });

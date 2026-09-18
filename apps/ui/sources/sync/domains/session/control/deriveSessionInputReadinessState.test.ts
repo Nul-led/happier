@@ -73,4 +73,21 @@ describe('deriveSessionInputReadinessState', () => {
         expect(readiness.isInputBusy).toBe(true);
         expect(readiness.canWakePendingQueue).toBe(false);
     });
+
+    it('does not erase an observed pending permission merely because its timestamp is unavailable', () => {
+        const readiness = deriveSessionInputReadinessState({
+            active: true,
+            presence: 'online',
+            thinking: false,
+            thinkingAt: 0,
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: nowMs - 1_000,
+            hasPendingPermissionRequests: true,
+            pendingRequestObservedAt: null,
+        }, nowMs);
+
+        expect(readiness.disposition).toBe('blocked');
+        expect(readiness.isInputBusy).toBe(true);
+        expect(readiness.canWakePendingQueue).toBe(false);
+    });
 });

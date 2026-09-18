@@ -26,7 +26,7 @@ const terminalOps = vi.hoisted(() => ({
     resize: vi.fn(),
 }));
 
-const useFeatureEnabledMock = vi.hoisted(() => vi.fn((_featureId: string) => true));
+const useFeatureEnabledMock = vi.hoisted(() => vi.fn((_featureId: string, _scope?: unknown) => true));
 const queuedWriteResult = { status: 'queued' } satisfies EmbeddedTerminalWriteBytesResult;
 const clipboardState = vi.hoisted(() => ({
     setClipboardStringSafe: vi.fn(async () => true),
@@ -50,7 +50,7 @@ function readWriteGeneration(value: unknown): number | null {
 }
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: (featureId: string) => useFeatureEnabledMock(featureId),
+    useFeatureEnabled: (featureId: string, scope?: unknown) => useFeatureEnabledMock(featureId, scope),
 }));
 
 vi.mock('@/sync/ops/machineTerminal', () => ({
@@ -91,7 +91,7 @@ describe('useMachineTerminalSession', () => {
         vi.useRealTimers();
     });
 
-    it('keeps the stable terminal key on a typed session-attach request', async () => {
+    it('keeps the stable terminal key and Home on a typed session-attach request', async () => {
         terminalOps.ensure.mockResolvedValue({ ok: true, terminalId: 'term-attach', reused: false });
         terminalOps.streamReadBytes.mockResolvedValueOnce({
             ok: true,
@@ -116,6 +116,8 @@ describe('useMachineTerminalSession', () => {
         const hook = await renderHook(
             () => useMachineTerminalSession({
                 machineId: 'machine-1',
+                serverId: 'home-a',
+                closeOnUnmount: true,
                 cwd: null,
                 launch,
                 terminalKey: 'session:session-1:attached',
@@ -129,12 +131,35 @@ describe('useMachineTerminalSession', () => {
         });
         await flushHookEffects({ cycles: 4, turns: 2, runOnlyPendingTimers: true });
 
+        expect(useFeatureEnabledMock).toHaveBeenCalledWith('terminal.transport.byteStream', { scopeKind: 'spawn', serverId: 'home-a' });
         expect(terminalOps.ensure).toHaveBeenCalledWith('machine-1', expect.objectContaining({
             terminalKey: 'session:session-1:attached',
             launch: { kind: 'session_attach', sessionId: 'session-1' },
-        }));
+        }), { serverId: 'home-a' });
+        expect(terminalOps.streamReadBytes).toHaveBeenCalledWith('machine-1', expect.any(Object), expect.objectContaining({ serverId: 'home-a' }));
+
+        terminalOps.streamSendInput.mockResolvedValue({ ok: true });
+        await act(async () => {
+            hook.getCurrent().onInput('pwd\r');
+        });
+        await flushHookEffects({ cycles: 2, turns: 2, runOnlyPendingTimers: true });
+        expect(terminalOps.streamSendInput).toHaveBeenCalledWith(
+            'machine-1',
+            { terminalId: 'term-attach', event: { t: 'text', text: 'pwd\r' } },
+            expect.objectContaining({ serverId: 'home-a' }),
+        );
+
+        terminalOps.restart.mockResolvedValue({ ok: true, terminalId: 'term-restarted', reused: false });
+        terminalOps.streamReadBytes.mockResolvedValue({
+            ok: true, terminalId: 'term-restarted', frames: [], nextByteOffset: 0,
+            availableByteOffset: 0, droppedBeforeByteOffset: 0, done: true,
+        });
+        await act(async () => hook.getCurrent().requestRestart());
+        await flushHookEffects({ cycles: 4, turns: 2, runOnlyPendingTimers: true });
+        expect(terminalOps.restart).toHaveBeenCalledWith('machine-1', expect.any(Object), { serverId: 'home-a' });
 
         await hook.unmount();
+        expect(terminalOps.close).toHaveBeenCalledWith('machine-1', { terminalId: 'term-restarted' }, { serverId: 'home-a' });
     });
 
     it('owns bounded title, bell, and user-selection copy policy at the session controller', async () => {

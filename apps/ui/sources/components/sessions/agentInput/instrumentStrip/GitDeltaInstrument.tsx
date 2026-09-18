@@ -46,7 +46,7 @@ export const GitDeltaInstrument = React.memo(function GitDeltaInstrument(props: 
     // composer chip — no numbers/labels for zero changes, and never empty.
     const isCleanRepo = !git.hasLineChanges && !git.hasAnyChanges;
 
-    const accessibilityLabel = git.hasLineChanges
+    const accessibilityLabel = git.isComplete !== false && git.hasLineChanges
         ? t('instrument.git.linesLabel', { added: git.linesAdded, removed: git.linesRemoved })
         : isCleanRepo
             ? t('settings.sourceControl')
@@ -59,7 +59,7 @@ export const GitDeltaInstrument = React.memo(function GitDeltaInstrument(props: 
             {showBranchIcon ? normalizeNodeForView(
                 <Icon name="git-branch" size={14} color={theme.colors.text.secondary} />,
             ) : null}
-            {isCleanRepo ? null : git.hasLineChanges ? (
+            {isCleanRepo ? null : git.isComplete !== false && git.hasLineChanges ? (
                 <View style={instrumentStripStyles.instrumentSlot}>
                     {git.linesAdded > 0 ? (
                         <AnimatedNumber

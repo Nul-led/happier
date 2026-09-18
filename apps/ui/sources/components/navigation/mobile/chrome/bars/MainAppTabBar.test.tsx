@@ -151,7 +151,7 @@ describe('MainAppTabBar', () => {
             ['settings', 'tabs.settings', false],
             ['friends', 'tabs.friends', false],
             ['projects', 'tabs.projects', false],
-            ['sessions', 'tabs.sessions', true],
+            ['sessions', 'tabs.sessionsNeedsAttention', true],
             ['inbox', 'tabs.inbox', false],
         ] as const;
 
@@ -266,6 +266,44 @@ describe('MainAppTabBar', () => {
 
         expect(sessionsTab).toBeTruthy();
         expect(hasIndicatorDot(sessionsTab!)).toBe(true);
+    });
+
+    it('announces Sessions attention only while its enabled badge is active', async () => {
+        const { MainAppTabBar } = await import('./MainAppTabBar');
+
+        sessionsAttentionState.hasAttention = false;
+        const quietScreen = await renderScreen(
+            <MainAppTabBar activeTab="sessions" onTabPress={() => {}} />,
+        );
+        const quietSessionsTab = quietScreen.findByTestId('tabbar-tab-sessions');
+        expect(quietSessionsTab?.props.accessibilityLabel).toBe('tabs.sessions');
+        expect(quietSessionsTab?.props.accessibilityState).toEqual({ selected: true });
+
+        sessionsAttentionState.hasAttention = true;
+        const attentionScreen = await renderScreen(
+            <MainAppTabBar activeTab="sessions" onTabPress={() => {}} />,
+        );
+        const attentionSessionsTab = attentionScreen.findByTestId('tabbar-tab-sessions');
+        expect(attentionSessionsTab?.props.accessibilityLabel).toBe('tabs.sessionsNeedsAttention');
+        expect(attentionSessionsTab?.props.accessibilityState).toEqual({ selected: true });
+        expect(attentionScreen.tree.root.findAll(
+            (node) => node.props.accessibilityLabel === 'tabs.sessionsNeedsAttention',
+        )).toHaveLength(1);
+
+        const attentionDot = attentionSessionsTab?.find(
+            (node) => String(node.type) === 'View' && node.props?.style?.width === 6,
+        );
+        expect(attentionDot?.props.accessible).toBe(false);
+        expect(attentionDot?.props.accessibilityElementsHidden).toBe(true);
+        expect(attentionDot?.props.importantForAccessibility).toBe('no-hide-descendants');
+
+        badgeSettingsState.sessions = false;
+        const disabledScreen = await renderScreen(
+            <MainAppTabBar activeTab="sessions" onTabPress={() => {}} />,
+        );
+        const disabledSessionsTab = disabledScreen.findByTestId('tabbar-tab-sessions');
+        expect(disabledSessionsTab?.props.accessibilityLabel).toBe('tabs.sessions');
+        expect(disabledSessionsTab?.props.accessibilityState).toEqual({ selected: true });
     });
 
     it('renders without crashing when expo-image omits Image', async () => {

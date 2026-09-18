@@ -110,7 +110,7 @@ export function useNewSessionPreflightModelsState(params: Readonly<{
         // An Agent with no bundled model config declares probing through its own
         // contribution; the bundled static-only veto does not apply to it.
         return !isBundledAgentId(agentType)
-            || getAgentCore(agentType)?.model.dynamicProbe !== 'static-only';
+            || getAgentCore(agentType)?.model?.dynamicProbe !== 'static-only';
     }, [agentType]);
 
     const probeContextKey = buildNewSessionCapabilityProbeContextKey(params.probeContext);
@@ -194,7 +194,7 @@ export function useNewSessionPreflightModelsState(params: Readonly<{
         }
 
         const core = getAgentCore(agentType);
-        if (core?.model.dynamicProbe === 'static-only') {
+        if (core?.model?.dynamicProbe === 'static-only') {
             // This provider intentionally does not support dynamic model probing; rely on catalog-only models.
             // Clear any previously cached dynamic list for this scope so we don't render stale/unknown models.
             lastScopeKeyRef.current = probeScopeKey;
@@ -260,7 +260,7 @@ export function useNewSessionPreflightModelsState(params: Readonly<{
             // A bundled Agent that declares no model selection is settled here.
             // Without a bundled core the machine capability probe itself answers
             // whether the Agent supports selection, so let it decide.
-            if ((core !== null && core.model.supportsSelection !== true) || !params.selectedMachineId) {
+            if (core?.model?.supportsSelection === false || !params.selectedMachineId) {
                 if (!cancelled) {
                     setProbePhase('idle');
                 }

@@ -2,6 +2,11 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { act } from 'react-test-renderer';
+
+vi.mock('react-native', async () => (await import('@/dev/testkit/mocks/reactNative')).createReactNativeWebMock());
+vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
+vi.mock('react-native-reanimated', async () => (await import('@/dev/testkit/mocks/reanimated')).createReanimatedModuleMock());
 
 const fixture = vi.hoisted(() => ({
     materializationAdmission: null as unknown,
@@ -18,7 +23,7 @@ vi.mock('@/components/ui/lists/Item', () => ({
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: (props: React.PropsWithChildren) => React.createElement('ItemGroup', props, props.children),
 }));
-vi.mock('@/text', () => ({ t: (key: string) => key }));
+vi.mock('@/text', async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock());
 vi.mock('@/sync/domains/plugins/availability/projection', () => ({
     useActivePluginAccountAvailabilityReader: () => ({
         readMaterializations: () => fixture.materializationAdmission,
@@ -94,6 +99,7 @@ describe('PluginMachineMatrixSection', () => {
                 pluginId: 'acme.plugin',
                 response: {
                     availabilityCursor: 7,
+                    packageAssets: [],
                     hostingCapability: {
                         enabled: true,
                         maxArtifactBytes: 1024,
@@ -181,18 +187,19 @@ describe('PluginMachineMatrixSection', () => {
         ]);
         expect(cells.map((props) => props.accessibilityLabel)).toEqual([
             'machine-a: settingsPlugins.machineMatrix.state.installedCurrent. Server One · common.version 1.0.0',
-            'machine-b: settingsPlugins.machineMatrix.state.staleOffline. Server One · common.version 1.0.0 · settingsPlugins.machineMatrix.lastObserved',
+            expect.stringContaining('machine-b: settingsPlugins.machineMatrix.state.staleOffline. Server One · common.version 1.0.0 · settingsPlugins.machineMatrix.lastObserved'),
         ]);
     });
 
-    it('renders no interactive affordance, so a matrix cell can never retarget administration', async () => {
+    it('renders no interactive matrix row, so a cell can never retarget administration', async () => {
         const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
         await renderScreen(<PluginMachineMatrixSection pluginId="acme.plugin" />);
 
         expect(capturedItemProps.length).toBeGreaterThan(0);
         const interactive = capturedItemProps.filter((props) => (
-            props.mode !== 'info'
+            props.testID !== 'settings.plugins.machineMatrix.disclosure' && (props.mode !== 'info'
             || Object.entries(props).some(([, value]) => typeof value === 'function')
+            )
         ));
         expect(interactive).toEqual([]);
     });
@@ -206,7 +213,29 @@ describe('PluginMachineMatrixSection', () => {
         await renderScreen(<PluginMachineMatrixSection pluginId="acme.plugin" />);
 
         expect(capturedItemProps.map((props) => props.title)).toEqual([
+            'settingsPlugins.machineMatrix.title',
             'settingsPlugins.machineMatrix.unavailable',
         ]);
+    });
+
+    it('starts healthy matrices collapsed and allows inspection', async () => {
+        fixture.snapshots = [{ ...(fixture.snapshots[0] as object), machines: [machine('machine-a', true)] }];
+        fixture.materializationAdmission = {
+            ...(fixture.materializationAdmission as object), materializations: [materialization('machine-a')],
+        };
+        const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
+        await renderScreen(<PluginMachineMatrixSection />);
+        expect(capturedItemProps.some((props) => String(props.testID).endsWith('.cell'))).toBe(false);
+        const disclosure = capturedItemProps.find((props) => props.testID === 'settings.plugins.machineMatrix.disclosure');
+        expect(disclosure?.accessibilityState).toEqual({ expanded: false });
+        await act(async () => { (disclosure?.onPress as () => void)(); });
+        expect(capturedItemProps.some((props) => String(props.testID).endsWith('.cell'))).toBe(true);
+    });
+
+    it('opens automatically for existing stale machine attention', async () => {
+        const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
+        await renderScreen(<PluginMachineMatrixSection />);
+        expect(capturedItemProps.find((props) => props.testID === 'settings.plugins.machineMatrix.disclosure')?.accessibilityState)
+            .toEqual({ expanded: true });
     });
 });

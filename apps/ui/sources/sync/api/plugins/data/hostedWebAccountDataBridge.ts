@@ -325,10 +325,7 @@ export function createHostedWebAccountDataBridge(input: Readonly<{
                         value = null;
                         break;
                 }
-            } else if (operation.operation.startsWith('collection.')) {
-                if (!operation.definition) {
-                    throw new Error('Collection definition is required.');
-                }
+            } else if ('definition' in operation) {
                 const collection = input.dataClient.collection(
                     operation.definition as unknown as PluginAccountCollectionDefinition,
                 ) as PluginUiAccountCollectionForDefinition<PluginAccountCollectionDefinition>;

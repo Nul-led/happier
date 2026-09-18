@@ -37,6 +37,12 @@ export type ToolbarButtonProps = Readonly<{
     trailing?: React.ReactNode;
     onPress?: (event: GestureResponderEvent) => void;
     disabled?: boolean;
+    /**
+     * The action this button issues is in flight and not yet settled. It is
+     * announced as busy alongside `disabled`, so assistive technology hears
+     * "waiting", not "unavailable".
+     */
+    busy?: boolean;
     /** Renders the resting fill as if hovered — for a control that is toggled on. */
     active?: boolean;
     tone?: ToolbarButtonTone;
@@ -110,7 +116,7 @@ export const ToolbarButton = React.memo((props: ToolbarButtonProps) => {
             disabled={props.disabled}
             accessibilityRole="button"
             accessibilityLabel={props.accessibilityLabel ?? props.label}
-            accessibilityState={{ disabled: Boolean(props.disabled) }}
+            accessibilityState={{ disabled: Boolean(props.disabled), ...(props.busy ? { busy: true } : {}) }}
             style={({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
                 styles.base,
                 props.size === 'md' ? styles.md : null,

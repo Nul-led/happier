@@ -187,6 +187,24 @@ describe('useHydrateSessionForRoute', () => {
         expect(ensureSessionVisibleForMessageRouteSpy).not.toHaveBeenCalled();
     });
 
+    it('returns the unique stored Session Home for a bare route', async () => {
+        await storeSession({
+            id: 'session-1',
+            serverId: 'server-unique',
+            agentState: { controlledByUser: true },
+            encryptionMode: 'plain',
+        });
+
+        const hook = await renderHook(() => useHydrateSessionForRoute('session-1', 'route.hydrate'));
+
+        expect(hook.getCurrent()).toMatchObject({
+            kind: 'available',
+            sessionId: 'session-1',
+            serverId: 'server-unique',
+        });
+        expect(ensureSessionVisibleForMessageRouteSpy).not.toHaveBeenCalled();
+    });
+
     it('does not treat layout-v1 shared metadata as an authoritative owner hydration', async () => {
         const deferred = createDeferred<unknown>();
         ensureSessionVisibleForMessageRouteSpy.mockReturnValueOnce(deferred.promise);

@@ -25,6 +25,7 @@ function contribution(
     settingsSectionId: `voice.fixture.${providerId}`,
     roles: ['dictation_stt', 'conversation_stt'],
     requirements: [],
+    supportedPlatforms: ['web', 'ios', 'android'],
     ...overrides,
   } as VoiceUiRuntimeContribution;
 }
@@ -94,6 +95,15 @@ describe('voice provider registry', () => {
       bundledContributions: [collision.contribution, collision.contribution],
       bundledPresentations: [collision.presentation],
     })).toThrowError(/duplicate_voice_provider_id/u);
+  });
+
+  it('rejects a built-in descriptor that omits its exact platform applicability', () => {
+    const missingPlatforms = contribution('missing-platforms');
+    const { supportedPlatforms: _supportedPlatforms, ...raw } = missingPlatforms;
+
+    expect(() => createVoiceProviderRegistry({
+      builtIn: [raw as VoiceUiRuntimeContribution],
+    })).toThrowError(/invalid_voice_provider_descriptor/u);
   });
 
   it('removes disabled bundled-package contributions without removing built-ins', () => {

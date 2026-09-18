@@ -1,9 +1,10 @@
 import { AsyncLock } from '@/utils/system/lock';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 const locksBySessionKey = new Map<string, AsyncLock>();
 
 function getSessionAssignmentLock(serverId: string, sessionId: string): AsyncLock {
-    const key = `${serverId}:${sessionId}`;
+    const key = sessionAddressKey({ serverId: serverId.trim(), sessionId: sessionId.trim() });
     const existing = locksBySessionKey.get(key);
     if (existing) return existing;
     const lock = new AsyncLock();

@@ -40,6 +40,8 @@ export const REQUIRED_GRAPH_OWNERS = [
   'sources/sync/http/client.ts',
   'sources/sync/api/session/connection/createSyncSocketTransport.ts',
   'sources/sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierBrowserStream.ts',
+  'sources/sync/domains/transfers/runtime/transferRuntime/plumbing/uploadBulkPayloadFromFileViaMachineCarrier.ts',
+  'sources/sync/domains/transfers/runtime/transferRuntime/families/uploadSessionAttachmentFromReaderViaMachineCarrier.ts',
 ];
 
 /** The commands the loaded page must expose for the A7.3 journey to be drivable. */

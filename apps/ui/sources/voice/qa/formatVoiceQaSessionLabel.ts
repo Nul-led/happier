@@ -1,3 +1,4 @@
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { getVoiceContextFormatterPrefs } from '@/voice/context/voiceContextPrefs';
 import type { ResolvedVoiceContextFormatterPrefs } from '@/voice/context/contextFormatters';
 import { resolveVoiceSessionLabel } from '@/voice/context/resolveVoiceSessionLabel';
@@ -14,7 +15,7 @@ export function createVoiceQaFormatterPrefs(settings: unknown): ResolvedVoiceCon
 }
 
 export function formatVoiceQaSessionLabel(
-    sessionId: string | null | undefined,
+    sessionId: SessionAddress | string | null | undefined,
     prefs: ResolvedVoiceContextFormatterPrefs,
     options: Readonly<{
         emptyLabel: string;
@@ -22,8 +23,8 @@ export function formatVoiceQaSessionLabel(
         fallbackLabel: string;
     }>,
 ): string {
-    const normalizedSessionId = normalizeSessionId(sessionId);
+    const normalizedSessionId = normalizeSessionId(typeof sessionId === 'object' ? sessionId?.sessionId : sessionId);
     if (!normalizedSessionId) return options.emptyLabel;
     if (normalizedSessionId === VOICE_AGENT_GLOBAL_SESSION_ID) return options.globalLabel;
-    return resolveVoiceSessionLabel(normalizedSessionId, prefs, { fallbackLabel: options.fallbackLabel });
+    return resolveVoiceSessionLabel(typeof sessionId === 'object' && sessionId ? sessionId : normalizedSessionId, prefs, { fallbackLabel: options.fallbackLabel });
 }

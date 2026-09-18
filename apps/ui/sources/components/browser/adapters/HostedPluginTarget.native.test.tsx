@@ -14,6 +14,30 @@ vi.mock('react-native-webview', () => ({
 }));
 
 describe('HostedPluginTarget native', () => {
+    it('mounts inline source through the existing native engine without a URL or Artifact', async () => {
+        const { HostedPluginTarget } = await import('./HostedPluginTarget.native');
+        lastWebViewProps = null;
+        await renderScreen(<HostedPluginTarget title="Inline" html="<p>Inline</p>" testID="inline" />);
+        const webViewProps = lastWebViewProps as Readonly<Record<string, unknown>> | null;
+        expect(webViewProps?.source).toEqual({ html: expect.stringContaining('<p>Inline</p>'), baseUrl: 'about:blank' });
+        expect((webViewProps?.source as { html: string }).html).toContain("default-src 'none'");
+        expect(webViewProps).toMatchObject({
+            cacheEnabled: false,
+            domStorageEnabled: false,
+            sharedCookiesEnabled: false,
+            thirdPartyCookiesEnabled: false,
+            allowFileAccess: false,
+            allowFileAccessFromFileURLs: false,
+            allowUniversalAccessFromFileURLs: false,
+            javaScriptCanOpenWindowsAutomatically: false,
+            mixedContentMode: 'never',
+        });
+        const shouldStartLoad = webViewProps?.onShouldStartLoadWithRequest as (
+            request: Readonly<{ url: string; isTopFrame?: boolean }>,
+        ) => boolean;
+        expect(shouldStartLoad({ url: 'about:blank', isTopFrame: true })).toBe(true);
+        expect(shouldStartLoad({ url: 'https://escape.example.test', isTopFrame: true })).toBe(false);
+    });
     it('blocks insecure non-loopback hosted-plugin URLs before creating a native WebView', async () => {
         const { HostedPluginTarget } = await import('./HostedPluginTarget.native');
         lastWebViewProps = null;
@@ -117,11 +141,7 @@ describe('HostedPluginTarget native', () => {
                 testID="hosted-plugin"
                 bridge={{
                     expectedOrigin: 'https://preview.example.test',
-                    expectedPluginId: 'plugin.example',
-                    expectedContributionId: 'hosted-web',
-                    expectedSurfaceId: 'surface-1',
-                    expectedNonce: 'nonce-1',
-                    expectedSessionId: 'session-1',
+                    identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
                     allowedMessageKinds: new Set(['ready']),
                     onMessage,
                 }}
@@ -141,11 +161,7 @@ describe('HostedPluginTarget native', () => {
                 url: 'https://evil.example.test/plugin',
                 data: JSON.stringify({
                     version: 1,
-                    pluginId: 'plugin.example',
-                    contributionId: 'hosted-web',
-                    surfaceId: 'surface-1',
-                    sessionId: 'session-1',
-                    nonce: 'nonce-1',
+                    identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
                     sequence: 1,
                     kind: 'ready',
                     payload: { ready: true },
@@ -157,11 +173,7 @@ describe('HostedPluginTarget native', () => {
                 url: 'https://preview.example.test/plugin',
                 data: JSON.stringify({
                     version: 1,
-                    pluginId: 'plugin.example',
-                    contributionId: 'hosted-web',
-                    surfaceId: 'surface-1',
-                    sessionId: 'session-1',
-                    nonce: 'wrong-nonce',
+                    identity: { instanceId: 'mount-1', mountNonce: 'wrong-nonce' },
                     sequence: 1,
                     kind: 'ready',
                     payload: { ready: true },
@@ -173,10 +185,7 @@ describe('HostedPluginTarget native', () => {
                 url: 'https://preview.example.test/plugin',
                 data: JSON.stringify({
                     version: 1,
-                    pluginId: 'plugin.example',
-                    contributionId: 'hosted-web',
-                    surfaceId: 'surface-1',
-                    nonce: 'nonce-1',
+                    identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
                     sequence: 1,
                     kind: 'ready',
                     payload: { ready: true },
@@ -185,9 +194,9 @@ describe('HostedPluginTarget native', () => {
         });
 
         expect(onMessage).toHaveBeenCalledTimes(1);
-        expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({
+        expect(onMessage.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
             kind: 'ready',
-            nonce: 'nonce-1',
+            identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
         }));
     });
 

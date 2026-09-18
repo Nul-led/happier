@@ -3,11 +3,13 @@ import {
     StrictJsonValueSchema,
     type ComposerCapabilitiesV1,
     type ComposerRefV1,
+    type SessionDraftAddressV2,
     type StrictJsonValue,
 } from '@happier-dev/protocol';
 
 import {
     readComposerDraftDocumentChanges,
+    reconcileComposerDraftDocumentTextReplacement,
     type MutableComposerDocumentOwner,
     type ComposerDraftDocument,
     type ComposerDraftFieldCurrentness,
@@ -58,12 +60,9 @@ type RepositoryComposerDocumentRead = Readonly<{
 
 function readRepositoryComposerDocument(
     scope: ServerAccountScope,
-    address: Extract<ComposerRefV1, { kind: 'session' | 'newSession' }>,
+    address: Extract<SessionDraftAddressV2, { kind: 'session' | 'run' | 'newSession' }>,
 ): RepositoryComposerDocumentRead {
-    const repositoryAddress = address.kind === 'session'
-        ? { kind: 'session' as const, sessionId: address.sessionId }
-        : { kind: 'newSession' as const, draftId: address.instanceId };
-    const snapshot = getSessionDraftSnapshot(scope, repositoryAddress);
+    const snapshot = getSessionDraftSnapshot(scope, address);
     if (!snapshot) return { document: EMPTY_DOCUMENT, repositoryRevision: 0 };
 
     const text = typeof snapshot.document.composer.text.value === 'string'
@@ -102,14 +101,26 @@ function readRepositoryComposerDocument(
  */
 export function createRepositoryComposerDocumentOwner(input: Readonly<{
     scope: ServerAccountScope;
-    ref: Extract<ComposerRefV1, { kind: 'session' | 'newSession' }>;
+    ref: Extract<ComposerRefV1, { kind: 'session' | 'newSession' | 'participantMessage' }>;
+    /**
+     * Repository identity is deliberately independent from the public composer
+     * identity. A Run composer remains a `participantMessage` to plugin and
+     * presentation consumers while its document uses the existing synchronized
+     * `{ kind: 'run' }` draft address.
+     */
+    address?: Extract<SessionDraftAddressV2, { kind: 'session' | 'run' | 'newSession' }>;
     isCurrent?: () => boolean;
 }>): MutableComposerDocumentOwner {
-    const address = input.ref.kind === 'session'
+    const address = input.address ?? (input.ref.kind === 'session'
         ? { kind: 'session' as const, sessionId: input.ref.sessionId }
-        : { kind: 'newSession' as const, draftId: input.ref.instanceId };
-    const projectsRepositoryRevision = input.ref.kind === 'session';
-    const initial = readRepositoryComposerDocument(input.scope, input.ref);
+        : input.ref.kind === 'newSession'
+            ? { kind: 'newSession' as const, draftId: input.ref.instanceId }
+            : null);
+    if (address === null) {
+        throw new Error('A participant composer requires an explicit synchronized draft address');
+    }
+    const projectsRepositoryRevision = address.kind !== 'newSession';
+    const initial = readRepositoryComposerDocument(input.scope, address);
     let observed = {
         document: initial.document,
         revision: projectsRepositoryRevision ? initial.repositoryRevision : 0,
@@ -117,7 +128,7 @@ export function createRepositoryComposerDocumentOwner(input: Readonly<{
     const repositoryCurrentnessByCapture = new WeakMap<ComposerDraftFieldCurrentness, SessionDraftCurrentness>();
 
     const refresh = () => {
-        const next = readRepositoryComposerDocument(input.scope, input.ref);
+        const next = readRepositoryComposerDocument(input.scope, address);
         const changes = readComposerDraftDocumentChanges(observed.document, next.document);
         const documentChanged = changes.text
             || changes.structuredInputMentions
@@ -134,8 +145,13 @@ export function createRepositoryComposerDocumentOwner(input: Readonly<{
     const owner: MutableComposerDocumentOwner = {
         ref: input.ref,
         capabilities: CAPABILITIES,
-        read: refresh,
-        observe: (listener) => subscribeSessionDraft(input.scope, address, () => {
+        read: () => input.isCurrent?.() === false
+            ? { document: EMPTY_DOCUMENT, revision: observed.revision }
+            : refresh(),
+        observe: (listener) => input.isCurrent?.() === false
+            ? () => undefined
+            : subscribeSessionDraft(input.scope, address, () => {
+            if (input.isCurrent?.() === false) return;
             const previousRevision = observed.revision;
             const next = refresh();
             if (next.revision !== previousRevision) listener();
@@ -156,17 +172,18 @@ export function createRepositoryComposerDocumentOwner(input: Readonly<{
                 mentions: nextMentions.map(strictJson),
                 attachments: nextAttachments.map(strictJson),
             };
-            if (input.ref.kind === 'session') {
+            if (address.kind === 'session' || address.kind === 'run') {
                 writeExistingSessionDraft({
                     scope: input.scope,
-                    sessionId: input.ref.sessionId,
+                    sessionId: address.sessionId,
+                    ...(address.kind === 'run' ? { runId: address.runId } : {}),
                     patch,
                     materializationIntent: 'userEdit',
                 });
             } else {
                 writeNewSessionDraft({
                     scope: input.scope,
-                    draftId: input.ref.instanceId,
+                    draftId: address.draftId,
                     patch,
                     materializationIntent: 'userEdit',
                 });
@@ -180,6 +197,7 @@ export function createRepositoryComposerDocumentOwner(input: Readonly<{
                 structuredInputMentionsMutationRevision: 0,
                 composerAttachmentsMutationRevision: 0,
             };
+            if (input.isCurrent?.() === false) return currentness;
             repositoryCurrentnessByCapture.set(currentness, captureSessionDraftCurrentness({
                 scope: input.scope,
                 address,
@@ -196,6 +214,7 @@ export function createRepositoryComposerDocumentOwner(input: Readonly<{
                     composerAttachments: false,
                 },
             } as const);
+            if (input.isCurrent?.() === false) return noChange();
             if (!sameComposerDocumentRef(input.ref, currentness.ref)) return noChange();
             const repositoryCurrentness = repositoryCurrentnessByCapture.get(currentness);
             if (!repositoryCurrentness) return noChange();
@@ -210,42 +229,48 @@ export function createRepositoryComposerDocumentOwner(input: Readonly<{
                 fieldIds: [...fieldIds],
             });
             const capturedTextMutationId = repositoryCurrentness.mutationIds['composer.text'];
-            const capturedMentionsMutationId = repositoryCurrentness.mutationIds['composer.mentions'];
             const textCurrent = capturedTextMutationId !== undefined
                 && current.mutationIds['composer.text'] === capturedTextMutationId;
-            const mentionsCurrent = capturedMentionsMutationId !== undefined
-                && current.mutationIds['composer.mentions'] === capturedMentionsMutationId;
-            const textAndMentionsWillClear = textCurrent && mentionsCurrent;
+            const capturedAttachmentsMutationId = repositoryCurrentness.mutationIds['composer.attachments'];
+            const attachmentsCurrent = capturedAttachmentsMutationId !== undefined
+                && current.mutationIds['composer.attachments'] === capturedAttachmentsMutationId;
             const beforeClear = refresh().document;
-            const changed = clearSessionDraftCurrentnessLocal({
+            if (!textCurrent && !attachmentsCurrent) return noChange();
+            const clearFieldIds = [
+                ...(textCurrent ? ['composer.text' as const] : []),
+                ...(textCurrent ? ['composer.mentions' as const] : []),
+                ...(attachmentsCurrent ? ['composer.attachments' as const] : []),
+            ];
+            clearSessionDraftCurrentnessLocal({
                 scope: input.scope,
                 address,
                 currentness: repositoryCurrentness,
-                fieldIds: textAndMentionsWillClear
-                    ? [...fieldIds]
-                    : ['composer.attachments'],
+                fieldIds: clearFieldIds,
+                clearComposerReferencesWithCurrentText: true,
             });
+            const changes = readComposerDraftDocumentChanges(beforeClear, refresh().document);
+            const changed = changes.text || changes.structuredInputMentions || changes.composerAttachments;
             if (changed) void flushSessionDraft({ scope: input.scope, address });
-            const changes = changed
-                ? readComposerDraftDocumentChanges(beforeClear, refresh().document)
-                : noChange().changes;
             return {
-                changed: changes.text || changes.structuredInputMentions || changes.composerAttachments,
+                changed,
                 changes,
             };
         },
         clear: () => {
+            if (input.isCurrent?.() === false) return;
             void deleteSessionDraft({ scope: input.scope, address });
         },
         replaceDocument: (document) => {
+            if (input.isCurrent?.() === false) return observed.revision;
             const current = refresh();
+            const reconciled = reconcileComposerDraftDocumentTextReplacement(current.document, document);
             const result = owner.apply(current.revision, {
-                text: document.text,
+                text: reconciled.text,
                 references: composerReferencesFromStructuredMentions({
-                    text: document.text,
-                    mentions: document.structuredInputMentions,
+                    text: reconciled.text,
+                    mentions: reconciled.structuredInputMentions,
                 }),
-                attachments: document.composerAttachments.map((attachment) => ({
+                attachments: reconciled.composerAttachments.map((attachment) => ({
                     ...attachment,
                     availability: { status: 'ready' as const },
                 })),

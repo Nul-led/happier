@@ -2,6 +2,7 @@ import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { findTestInstanceByTypeWithProps, flushHookEffects, renderScreen } from '@/dev/testkit';
 import { installSessionDetailsPanelCommonModuleMocks } from './sessionDetailsPanelTestHelpers';
+import { EMPTY_PLUGIN_UI_PROJECTION } from '@/sync/domains/plugins/ui/projection';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -39,6 +40,8 @@ type ScopeStateFixture = Readonly<{
     details: Readonly<{
         isOpen: boolean;
         activeTabKey: string;
+        groups?: ReadonlyArray<Readonly<{ id: string; activeTabKey: string | null }>>;
+        maximizedGroupId?: string | null;
         tabs: ReadonlyArray<Readonly<{
             key: string;
             kind: string;
@@ -68,6 +71,24 @@ function createScopeState(): ScopeStateFixture {
 }
 
 let scopeState = createScopeState();
+let boardFeatureEnabled = false;
+let mountedBoardItemCount = 0;
+let mountedBoardAddressMatches = true;
+const mountedBoardAddressCalls: unknown[] = [];
+const mountedCallerHostedHtmlRuntime = Object.freeze({ serverIdentityId: 'home-a-runtime' });
+
+function getStyleValue(style: unknown, key: string): unknown {
+    if (Array.isArray(style)) {
+        for (let index = style.length - 1; index >= 0; index -= 1) {
+            const value = getStyleValue(style[index], key);
+            if (typeof value !== 'undefined') return value;
+        }
+        return undefined;
+    }
+    return style && typeof style === 'object'
+        ? (style as Record<string, unknown>)[key]
+        : undefined;
+}
 
 installSessionDetailsPanelCommonModuleMocks({
     reactNative: async () => {
@@ -101,10 +122,6 @@ installSessionDetailsPanelCommonModuleMocks({
     },
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
 vi.mock('@/components/sessions/files/views/SessionCommitDetailsView', () => ({
     SessionCommitDetailsView: () => React.createElement('SessionCommitDetailsView'),
 }));
@@ -119,6 +136,10 @@ vi.mock('@/components/sessions/files/views/SessionScmReviewDetailsView', () => (
 
 vi.mock('@/components/ui/media/FileIcon', () => ({
     FileIcon: 'FileIcon',
+}));
+
+vi.mock('@/components/ui/code/editor/CodeEditor', () => ({
+    CodeEditor: (props: Record<string, unknown>) => React.createElement('CodeEditor', props),
 }));
 
 const unpinDetailsTab = vi.fn();
@@ -139,9 +160,61 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
     }),
 }));
 
+vi.mock('@/hooks/server/useFeatureEnabled', () => ({
+    useFeatureEnabled: (featureId: string, scope: Readonly<{ serverId?: string | null }>) => {
+        if (featureId !== 'sessions.board' || scope.serverId !== 'home-a') return false;
+        return boardFeatureEnabled;
+    },
+}));
+
+vi.mock('@/components/sessions/board/SessionBoardControllerProvider', () => ({
+    useMountedSessionBoardController: (address: unknown) => {
+        mountedBoardAddressCalls.push(address);
+        if (!mountedBoardAddressMatches) return null;
+        return {
+            callerHostedHtmlRuntime: mountedCallerHostedHtmlRuntime,
+            binding: {
+                status: 'ready',
+                snapshot: {
+                    itemsById: new Map(
+                        Array.from({ length: mountedBoardItemCount }, (_, index) => [`item-${index}`, {}]),
+                    ),
+                },
+            },
+        };
+    },
+}));
+
+vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
+    useSessionViewShellSession: (sessionId: string, serverId: string | null) => ({
+        id: sessionId,
+        serverId,
+        metadata: null,
+    }),
+}));
+
+vi.mock('@/components/ui/surfaces/hostedHtml/useSessionCallerHostedHtmlRuntime', () => ({
+    useSessionCallerHostedHtmlRuntime: () => {
+        throw new Error('panels must consume the Session shell mounted Board runtime');
+    },
+}));
+
 async function renderSessionDetailsPanel() {
     const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
-    const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
+    const screen = await renderScreen(<SessionDetailsPanel
+        sessionId="s1"
+        scopeId="session:s1"
+        paneSurfaceScope={{
+            targetKind: 'session',
+            sessionId: 's1',
+            machineId: 'machine-a',
+            serverId: 'home-a',
+            pluginUiProjection: EMPTY_PLUGIN_UI_PROJECTION,
+            projectionPhase: 'current',
+            interactionEnabled: true,
+            platform: 'web',
+        }}
+    />);
     await flushHookEffects({ cycles: 1, frames: 1 });
     return screen;
 }
@@ -155,6 +228,10 @@ describe('SessionDetailsPanel (keep mounted tabs)', () => {
         openRight.mockClear();
         closeRight.mockClear();
         unpinDetailsTab.mockClear();
+        boardFeatureEnabled = false;
+        mountedBoardItemCount = 0;
+        mountedBoardAddressMatches = true;
+        mountedBoardAddressCalls.length = 0;
         wheelHandlers.length = 0;
         touchMoveHandlers.length = 0;
     });
@@ -164,6 +241,103 @@ describe('SessionDetailsPanel (keep mounted tabs)', () => {
 
         expect(screen.findAllByType('SessionFileDetailsView')).toHaveLength(1);
         expect(screen.findAllByType('SessionScmReviewDetailsView')).toHaveLength(1);
+    });
+
+    it('promotes Board to a dedicated exact-Home header action only for content or a visible Board', async () => {
+        const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
+        boardFeatureEnabled = true;
+
+        let screen = await renderSessionDetailsPanel();
+        expect(screen.findByTestId('session-details-open-board')).toBeUndefined();
+        expect(mountedBoardAddressCalls.at(-1)).toEqual({ serverId: 'home-a', sessionId: 's1' });
+
+        mountedBoardItemCount = 1;
+        screen.tree.update(<SessionDetailsPanel
+            sessionId="s1"
+            scopeId="session:s1"
+            paneSurfaceScope={{
+                targetKind: 'session',
+                sessionId: 's1',
+                machineId: 'machine-a',
+                serverId: 'home-a',
+                pluginUiProjection: EMPTY_PLUGIN_UI_PROJECTION,
+                projectionPhase: 'current',
+                interactionEnabled: true,
+                platform: 'web',
+            }}
+        />);
+        expect(screen.findByTestId('session-details-open-board')).toBeTruthy();
+
+        mountedBoardItemCount = 0;
+        scopeState = {
+            ...scopeState,
+            details: {
+                ...scopeState.details,
+                groups: [{ id: 'secondary', activeTabKey: 'board' }],
+            },
+        };
+        screen.tree.update(<SessionDetailsPanel
+            sessionId="s1"
+            scopeId="session:s1"
+            paneSurfaceScope={{
+                targetKind: 'session',
+                sessionId: 's1',
+                machineId: 'machine-a',
+                serverId: 'home-a',
+                pluginUiProjection: EMPTY_PLUGIN_UI_PROJECTION,
+                projectionPhase: 'current',
+                interactionEnabled: true,
+                platform: 'web',
+            }}
+        />);
+        expect(screen.findByTestId('session-details-open-board')).toBeTruthy();
+
+        mountedBoardAddressMatches = false;
+        scopeState = createScopeState();
+        screen.tree.update(<SessionDetailsPanel
+            sessionId="s1"
+            scopeId="session:s1"
+            paneSurfaceScope={{
+                targetKind: 'session',
+                sessionId: 's1',
+                machineId: 'machine-a',
+                serverId: 'home-a',
+                pluginUiProjection: EMPTY_PLUGIN_UI_PROJECTION,
+                projectionPhase: 'current',
+                interactionEnabled: true,
+                platform: 'web',
+            }}
+        />);
+        expect(screen.findByTestId('session-details-open-board')).toBeUndefined();
+    });
+
+    it('keeps the dedicated Board header action hidden when the exact Home disables Board', async () => {
+        const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
+        mountedBoardItemCount = 1;
+        scopeState = {
+            ...scopeState,
+            details: {
+                ...scopeState.details,
+                activeTabKey: 'board',
+            },
+        };
+
+        const screen = await renderScreen(<SessionDetailsPanel
+            sessionId="s1"
+            scopeId="session:s1"
+            paneSurfaceScope={{
+                targetKind: 'session',
+                sessionId: 's1',
+                machineId: 'machine-a',
+                serverId: 'home-a',
+                pluginUiProjection: EMPTY_PLUGIN_UI_PROJECTION,
+                projectionPhase: 'current',
+                interactionEnabled: true,
+                platform: 'web',
+            }}
+        />);
+
+        expect(screen.findByTestId('session-details-open-board')).toBeUndefined();
     });
 
     it('does not hide inactive tab surfaces via accessibility props on web (preserve scroll state)', async () => {
@@ -178,6 +352,8 @@ describe('SessionDetailsPanel (keep mounted tabs)', () => {
         // on react-native-web, which would drop scroll/editing state when switching tabs.
         const inactiveSurface = surfaces.find((s) => (s.props as any).pointerEvents === 'none');
         expect(inactiveSurface).toBeTruthy();
+        expect(getStyleValue(inactiveSurface!.props.style, 'display')).toBe('flex');
+        expect(getStyleValue(inactiveSurface!.props.style, 'visibility')).toBe('hidden');
         expect((inactiveSurface!.props as any).accessibilityElementsHidden).toBeUndefined();
         expect((inactiveSurface!.props as any).importantForAccessibility).toBeUndefined();
     });

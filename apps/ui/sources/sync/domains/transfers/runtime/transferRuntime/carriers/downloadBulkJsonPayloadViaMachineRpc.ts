@@ -2,24 +2,21 @@ import { downloadBulkPayloadViaMachineRpcToDestination } from './downloadBulkPay
 import { resolveBulkTransferJsonMaxBytes } from '../plumbing/resolveBulkTransferJsonMaxBytes';
 
 export async function downloadBulkJsonPayloadViaMachineRpc<TPayload>(params: Readonly<{
-    init: (request: Readonly<{ recipientPublicKeyBase64: string }>) =>
-        Promise<
-            | Readonly<{ success: true; downloadId: string; chunkSizeBytes: number; sizeBytes: number; name: string }>
-            | Readonly<{ success: false; error: string; errorCode?: string }>
-        >;
-    readChunk: (request: Readonly<{ downloadId: string; index: number }>) =>
-        Promise<
-            | Readonly<{
-                success: true;
-                payloadBase64?: string;
-                encryptedDataKeyEnvelopeBase64?: string;
-                contentBase64?: string;
-                isLast: boolean;
-            }>
-            | Readonly<{ success: false; error: string; errorCode?: string }>
-        >;
-    finalize: (request: Readonly<{ downloadId: string }>) =>
-        Promise<Readonly<{ success: boolean; error?: string }>>;
+    init: (request: Readonly<{ recipientPublicKeyBase64: string }>) => Promise<
+        | Readonly<{ success: true; downloadId: string; chunkSizeBytes: number; sizeBytes: number; name: string }>
+        | Readonly<{ success: false; error: string; errorCode?: string }>
+    >;
+    readChunk: (request: Readonly<{ downloadId: string; index: number }>) => Promise<
+        | Readonly<{
+            success: true;
+            payloadBase64?: string;
+            encryptedDataKeyEnvelopeBase64?: string;
+            contentBase64?: string;
+            isLast: boolean;
+        }>
+        | Readonly<{ success: false; error: string; errorCode?: string }>
+    >;
+    finalize: (request: Readonly<{ downloadId: string }>) => Promise<Readonly<{ success: boolean; error?: string }>>;
     parsePayload: (value: unknown) => TPayload | null;
     abort?: ((request: Readonly<{ downloadId: string }>) => Promise<unknown>) | null;
     onProgress?: ((progress: Readonly<{ downloadedBytes: number; totalBytes: number }>) => void) | null;
@@ -39,12 +36,8 @@ export async function downloadBulkJsonPayloadViaMachineRpc<TPayload>(params: Rea
             bufferOffset = 0;
             return;
         }
-
         const currentBuffer = buffer;
-        if (requiredBytes <= currentBuffer.byteLength) {
-            return;
-        }
-
+        if (requiredBytes <= currentBuffer.byteLength) return;
         const nextCapacity = Math.min(
             jsonMaxBytes,
             Math.max(requiredBytes, Math.max(1, currentBuffer.byteLength) * 2),
@@ -57,14 +50,6 @@ export async function downloadBulkJsonPayloadViaMachineRpc<TPayload>(params: Rea
         buffer = next;
     }
 
-    function readBufferedPayloadBytes(): Uint8Array | null {
-        if (buffer === null) {
-            return null;
-        }
-
-        return buffer.subarray(0, receivedBytes);
-    }
-
     const download = await downloadBulkPayloadViaMachineRpcToDestination({
         destination: {
             writeBytes: async (bytes) => {
@@ -74,11 +59,8 @@ export async function downloadBulkJsonPayloadViaMachineRpc<TPayload>(params: Rea
                 }
                 receivedBytes = nextTotal;
                 ensureCapacity(bufferOffset + bytes.byteLength);
-                if (buffer === null) {
-                    throw new Error('Downloaded transfer payload returned an unsupported response');
-                }
-                const writeBuffer = buffer;
-                writeBuffer.set(bytes, bufferOffset);
+                if (buffer === null) throw new Error('Downloaded transfer payload returned an unsupported response');
+                buffer.set(bytes, bufferOffset);
                 bufferOffset += bytes.byteLength;
             },
             close: async () => {},
@@ -94,48 +76,24 @@ export async function downloadBulkJsonPayloadViaMachineRpc<TPayload>(params: Rea
         abort: params.abort ?? null,
         onInit: async (init) => {
             if (init.sizeBytes > jsonMaxBytes) {
-                return {
-                    success: false as const,
-                    error: `Downloaded JSON payload exceeds max allowed bytes (${jsonMaxBytes})`,
-                };
+                return { success: false as const, error: `Downloaded JSON payload exceeds max allowed bytes (${jsonMaxBytes})` };
             }
             ensureCapacity(init.sizeBytes);
         },
         onProgress: params.onProgress ?? null,
         signal: params.signal ?? null,
     });
+    if (!download.ok) return download;
 
-    if (!download.ok) {
-        return download;
-    }
-
-    let parsedJson: unknown;
     try {
-        const decodeBuffer = readBufferedPayloadBytes();
-        if (!decodeBuffer) {
-            return {
-                ok: false,
-                error: 'Downloaded transfer payload returned an unsupported response',
-            };
-        }
-        parsedJson = JSON.parse(new TextDecoder('utf-8', { fatal: false }).decode(decodeBuffer));
+        if (buffer === null) return { ok: false, error: 'Downloaded transfer payload returned an unsupported response' };
+        const parsedPayload = params.parsePayload(JSON.parse(
+            new TextDecoder('utf-8', { fatal: false }).decode(buffer.subarray(0, receivedBytes)),
+        ));
+        return parsedPayload === null
+            ? { ok: false, error: 'Downloaded transfer payload returned an unsupported response' }
+            : { ok: true, payload: parsedPayload };
     } catch {
-        return {
-            ok: false,
-            error: 'Downloaded transfer payload is not valid JSON',
-        };
+        return { ok: false, error: 'Downloaded transfer payload is not valid JSON' };
     }
-
-    const parsedPayload = params.parsePayload(parsedJson);
-    if (parsedPayload === null) {
-        return {
-            ok: false,
-            error: 'Downloaded transfer payload returned an unsupported response',
-        };
-    }
-
-    return {
-        ok: true,
-        payload: parsedPayload,
-    };
 }

@@ -115,6 +115,7 @@ describe('resolveConnectedServiceQuotaProfileRefForSession', () => {
             // The group's persisted active member is in an explicit
             // needs_reauth, so the eligible member wins instead.
             profileId: 'work',
+            groupId: 'pool-1',
         });
     });
 

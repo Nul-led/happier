@@ -5,6 +5,7 @@ import { act } from 'react-test-renderer';
 import { AppPaneScopeHost } from '@/components/appShell/panes/AppPaneScopeHost';
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -58,6 +59,42 @@ afterEach(() => {
 });
 
 describe('StructuredReferencesRow file references', () => {
+    it('opens the exact Home pane when two Homes use the same session id', async () => {
+        const { StructuredReferencesRow } = await import('./StructuredReferencesRow');
+        const firstScopeId = createSessionPaneScopeId('same-session', 'server-a');
+        const secondScopeId = createSessionPaneScopeId('same-session', 'server-b');
+        let firstState: any = null;
+        let secondState: any = null;
+        const Probe = () => {
+            firstState = useAppPaneScope(firstScopeId).scopeState;
+            secondState = useAppPaneScope(secondScopeId).scopeState;
+            return null;
+        };
+
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <StructuredReferencesRow
+                    sessionId="same-session"
+                    serverId="server-a"
+                    references={[{ kind: 'file', path: 'src/a.ts' }]}
+                    fileOpenEnabled
+                />
+                <StructuredReferencesRow
+                    sessionId="same-session"
+                    serverId="server-b"
+                    references={[{ kind: 'file', path: 'src/b.ts' }]}
+                    fileOpenEnabled
+                />
+                <Probe />
+            </AppPaneProvider>,
+        );
+
+        await pressTestInstanceAsync(screen.findByTestId('linked-workspace-file:src/a.ts')!, 'linked-workspace-file:src/a.ts');
+
+        expect(firstState?.details?.tabs?.[0]?.key).toBe('file:src/a.ts');
+        expect(secondState?.details?.isOpen ?? false).toBe(false);
+    });
+
     it('opens details tab when multi-pane is available', async () => {
         const { StructuredReferencesRow } = await import('./StructuredReferencesRow');
 
@@ -134,7 +171,10 @@ describe('StructuredReferencesRow file references', () => {
         const fileChip = screen.findByTestId('linked-workspace-file:deep/nested/AGENTS.md');
         expect(fileChip).toBeTruthy();
         const row = fileChip?.parent;
-        expect(row?.props?.style).toEqual(
+        const rowStyle = typeof row?.props?.style === 'function'
+            ? row.parent?.props?.style
+            : row?.props?.style;
+        expect(rowStyle).toEqual(
             expect.objectContaining({
                 maxWidth: '100%',
                 minWidth: 0,

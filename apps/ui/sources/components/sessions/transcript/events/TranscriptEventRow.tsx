@@ -44,9 +44,10 @@ function readTerminalComposerDraftBlockedMessage(event: AgentEvent): string | nu
 function TerminalComposerClearEventAction(props: Readonly<{
     event: AgentEvent;
     sessionId: string;
+    serverId?: string | null;
 }>) {
     const { theme } = useUnistyles();
-    const terminalComposerClear = useTerminalComposerClearAction(props.sessionId);
+    const terminalComposerClear = useTerminalComposerClearAction(props.sessionId, props.serverId);
     const expectedStateAtMs = readTerminalComposerDraftBlockedStateAtMs(props.event);
 
     return (
@@ -282,6 +283,7 @@ export const TranscriptEventRow = React.memo(function TranscriptEventRow(props: 
      */
     localId?: string | null;
     sessionId?: string | null;
+    serverId?: string | null;
     emphasis?: TranscriptEventEmphasis;
 }) {
     const { theme } = useUnistyles();
@@ -454,6 +456,7 @@ export const TranscriptEventRow = React.memo(function TranscriptEventRow(props: 
                         <TerminalComposerClearEventAction
                             event={props.event}
                             sessionId={terminalComposerClearSessionId}
+                            serverId={props.serverId}
                         />
                     ) : null}
                 </View>

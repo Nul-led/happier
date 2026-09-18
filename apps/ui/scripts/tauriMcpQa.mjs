@@ -7,6 +7,11 @@ import { userInfo } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import {
+  resolvePersonalHomeRuntimeArtifactPaths,
+  resolvePersonalHomeRuntimeLayout,
+} from '@happier-dev/cli-common/firstPartyRuntime';
+
 import { prepareTauriSidecar } from './prepareTauriSidecar.mjs';
 import { buildStackTauriDevConfig, resolveStackTauriDevUrl } from '../../stack/scripts/utils/tauri/dev_runtime.mjs';
 import { ensureDevExpoServer } from '../../stack/scripts/utils/dev/expo_dev.mjs';
@@ -457,11 +462,9 @@ export function resolveTauriMcpQaRunMode({ argv = [], env = process.env } = {}) 
   const runWizardEnv = readBooleanEnv(env.HAPPIER_TAURI_QA_RUN_WIZARD, true);
   const runSelectedScenario = !keepRunning && (requestedScenario !== 'wizard' || (!args.includes('--no-wizard') && runWizardEnv));
   const teeLogs = args.includes('--tee-logs') || readBooleanEnv(env.HAPPIER_TAURI_QA_TEE_LOGS, false);
-  const requireCompleteVerification = args.includes('--require-complete');
 
   return {
     keepRunning,
-    requireCompleteVerification,
     runWizard: requestedScenario === 'wizard' && runSelectedScenario,
     runSelectedScenario,
     requestedScenario,
@@ -519,6 +522,12 @@ export function assertPersonalHomeQaLaunchIsolation({ plan, env = process.env } 
   if (hostHome && disposableHome === hostHome) {
     throw new Error('[tauri-qa] Personal Home loaded QA refuses to use the current OS user home.');
   }
+  const layout = resolvePersonalHomeRuntimeLayout({ env, homeDir: disposableHome, mode: 'user' });
+  const disposableRoot = `${disposableHome.replace(/[\\/]+$/u, '')}/`;
+  const mutableRoots = [layout.installRoot, layout.configDir, layout.dataDir, layout.logsDir];
+  if (mutableRoots.some((path) => path !== disposableHome && !path.replace(/\\/gu, '/').startsWith(disposableRoot.replace(/\\/gu, '/')))) {
+    throw new Error('[tauri-qa] Personal Home loaded QA refuses runtime paths outside the disposable OS home.');
+  }
   if (
     String(plan?.tauriDev?.env?.HOME ?? '').trim() !== disposableHome
     || String(plan?.tauriDev?.env?.USERPROFILE ?? '').trim() !== disposableHome
@@ -539,10 +548,14 @@ export function assertPersonalHomeQaLaunchIsolation({ plan, env = process.env } 
 export function assertPersonalHomeQaPrelaunchFactsEmpty({ plan, env = process.env } = {}) {
   if (String(plan?.qaScenario?.id ?? '').trim().toLowerCase() !== 'personal-home') return;
   const disposableHome = String(env.HAPPIER_TAURI_PERSONAL_HOME_QA_HOME ?? '').trim();
+  const layout = resolvePersonalHomeRuntimeLayout({ env, homeDir: disposableHome, mode: 'user' });
+  const artifacts = resolvePersonalHomeRuntimeArtifactPaths(layout);
   const retainedRuntimePaths = [
-    join(disposableHome, '.happier', 'self-host', 'self-host-state.json'),
-    join(disposableHome, '.happier', 'self-host', 'config', 'server.env'),
-    join(disposableHome, '.happier', 'self-host', 'data', 'happier-server-light.sqlite'),
+    join(layout.installRoot, 'self-host-state.json'),
+    join(layout.configDir, 'server.env'),
+    layout.databasePath,
+    layout.masterSecretPath,
+    ...Object.values(artifacts),
   ];
   const retained = retainedRuntimePaths.find((path) => existsSync(path));
   if (retained) {
@@ -710,7 +723,6 @@ export async function resolveTauriMcpQaPlan({
       ? {
           id: 'personal-home',
           script: 'scripts/qa/tauriPersonalHomeMcpQa.mjs',
-          ...(runMode.requireCompleteVerification ? { args: ['--require-complete'] } : {}),
           envOverrides: qaScenarioEnvOverrides,
         }
     : {
@@ -863,7 +875,6 @@ function printUsage() {
     '  --activity-surfaces  Run the native desktop activity-surfaces QA capture',
     '  --desktop-sidebar-chrome  Run the native desktop sidebar chrome QA capture',
     '  --personal-home  Run the loaded Desktop Personal Home bootstrap scenario',
-    '  --require-complete  Fail selected Personal Home QA unless verificationStatus is complete',
     '  --no-wizard  Do not run the one-shot onboarding wizard capture',
     '  --tee-logs  Also print child process logs to stdout/stderr',
     '',
@@ -899,7 +910,6 @@ export function buildTauriMcpQaScenarioEnv({
   plan,
   effectiveEnv = process.env,
   attachableApp,
-  freshPrelaunchFactsVerified = false,
 } = {}) {
   const personalHomeScenario = String(plan?.qaScenario?.id ?? '').trim().toLowerCase() === 'personal-home';
   const launchedEnv = personalHomeScenario ? (plan?.tauriDev?.env ?? {}) : {};
@@ -908,9 +918,6 @@ export function buildTauriMcpQaScenarioEnv({
     ...launchedEnv,
     HAPPIER_TAURI_MCP_PORT: String(attachableApp?.driverSessionPort ?? ''),
     HAPPIER_TAURI_MCP_APP_IDENTIFIER: String(attachableApp?.resolvedAppIdentifier ?? ''),
-    ...(personalHomeScenario && freshPrelaunchFactsVerified
-      ? { HAPPIER_TAURI_PERSONAL_HOME_QA_FRESH_PRELAUNCH_VERIFIED: '1' }
-      : {}),
   };
 }
 
@@ -984,7 +991,6 @@ export async function relaunchPersonalHomeTauriApp({
     plan,
     effectiveEnv,
     attachableApp,
-    freshPrelaunchFactsVerified: true,
   });
   if (String(qaEnv.HOME ?? '').trim() !== expectedHome
       || String(qaEnv.USERPROFILE ?? '').trim() !== expectedHome) {
@@ -1031,7 +1037,6 @@ async function main(argv = process.argv.slice(2)) {
 
   assertPersonalHomeQaLaunchIsolation({ plan, env: effectiveEnv });
   assertPersonalHomeQaPrelaunchFactsEmpty({ plan, env: effectiveEnv });
-  const freshPrelaunchFactsVerified = String(plan?.qaScenario?.id ?? '').trim().toLowerCase() === 'personal-home';
 
   const children = [];
   await ensureTauriMcpQaLaunchArtifacts({ plan });
@@ -1132,7 +1137,6 @@ async function main(argv = process.argv.slice(2)) {
     plan,
     effectiveEnv,
     attachableApp,
-    freshPrelaunchFactsVerified,
   });
 
   if (plan.runSelectedScenario) {

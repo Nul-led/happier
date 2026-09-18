@@ -13,6 +13,9 @@ import { resolveVoiceSessionLabel } from "@/voice/context/resolveVoiceSessionLab
 import { resolveVoiceToolResultHumanSummary } from "@/voice/context/resolveVoiceToolResultHumanSummary";
 import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoiceSessionOwnerMetadata';
 import { isInventoryPrivacyVoiceToolName } from '@/sync/domains/settings/actionSettingsPolicy';
+import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { t } from '@/text';
 interface SessionMetadata {
     summary?: { text?: string };
     path?: string;
@@ -101,7 +104,7 @@ function resolvePrefs(prefs?: VoiceContextFormatterPrefs): ResolvedVoiceContextF
 }
 
 function formatSessionReference(
-    sessionId: string,
+    sessionId: SessionAddress | string,
     prefs: Readonly<{ voiceShareSessionSummary: boolean; voiceShareFilePaths: boolean }>,
     metadata?: SessionMetadata | null,
     fallbackLabel = 'the current session',
@@ -176,14 +179,14 @@ export function summarizeAgentRequestForVoiceHuman(
     prefs?: VoiceContextFormatterPrefs,
 ): string {
     const resolved = resolvePrefs(prefs);
-    const sharedToolName = resolved.voiceShareToolNames ? toolName : 'the requested tool';
+    const sharedToolName = resolved.voiceShareToolNames ? toolName : t('voice.readiness.requestedTool');
 
     if (requestKind === 'permission') {
         const summarized = formatPermissionRequestSummary({
             toolName: sharedToolName,
             toolInput: resolved.voiceShareFilePaths ? toolArgs : redactVoicePathLikeData(toolArgs ?? null),
         }).replace(/^Permission required:\s*/i, '').trim();
-        return `The coding session needs permission for ${summarized}. Review it in the session UI to approve or deny.`;
+        return t('voice.readiness.permissionAnnouncement', { summary: summarized });
     }
 
     const summary = collectUserActionSummary(toolName, toolArgs, resolved);
@@ -195,11 +198,11 @@ export function summarizeAgentRequestForVoiceHuman(
             ?.replace(/<\/question_text>$/, '')
             ?.trim();
         if (firstQuestion) {
-            return `The coding session needs your input. ${firstQuestion}`;
+            return t('voice.readiness.userActionAnnouncement', { question: firstQuestion });
         }
     }
 
-  return 'The coding session needs your input. Answer the question so I can continue.';
+  return t('voice.readiness.userActionFallback');
 }
 
 export function summarizeAssistantMessagesForVoiceHuman(
@@ -248,7 +251,7 @@ export function summarizeMessagesForVoiceHuman(
  * when explicitly enabled via prefs.
  */
 export function formatPermissionRequest(
-    sessionId: string,
+    sessionId: SessionAddress | string,
     requestId: string,
     toolName: string,
     toolArgs: any,
@@ -278,7 +281,7 @@ export function formatPermissionRequest(
  * Format a structured user-action request (for example AskUserQuestion) for natural language voice context.
  */
 export function formatUserActionRequest(
-    sessionId: string,
+    sessionId: SessionAddress | string,
     requestId: string,
     toolName: string,
     toolArgs: any,
@@ -363,7 +366,7 @@ export function formatNewSingleMessage(sessionId: string, message: Message, pref
     return `New message in ${formatSessionReference(sessionId, resolved)}\n\n${formatted}`;
 }
 
-export function formatNewMessages(sessionId: string, messages: Message[], prefs?: VoiceContextFormatterPrefs): string | null {
+export function formatNewMessages(sessionId: SessionAddress | string, messages: Message[], prefs?: VoiceContextFormatterPrefs): string | null {
     let formatted = [...messages].sort((a, b) => a.createdAt - b.createdAt).map((m) => formatMessageWithPrefs(m, prefs)).filter(Boolean);
     if (formatted.length === 0) {
         return null;
@@ -372,7 +375,7 @@ export function formatNewMessages(sessionId: string, messages: Message[], prefs?
     return `New messages in ${formatSessionReference(sessionId, resolved)}\n\n${formatted.join('\n\n')}`;
 }
 
-function formatRecentMessages(sessionId: string, messages: Message[], prefs?: VoiceContextFormatterPrefs): string | null {
+function formatRecentMessages(sessionId: SessionAddress | string, messages: Message[], prefs?: VoiceContextFormatterPrefs): string | null {
     const resolved = resolvePrefs(prefs);
     if (!resolved.voiceShareRecentMessages) return null;
     if (resolved.voiceRecentMessagesCount <= 0) return null;
@@ -388,12 +391,17 @@ function formatRecentMessages(sessionId: string, messages: Message[], prefs?: Vo
 // Session states
 //
 
-export function formatSessionFull(session: Session, messages: Message[], prefs?: VoiceContextFormatterPrefs): string {
+export function formatSessionFull(session: Session, messages: Message[], prefs?: VoiceContextFormatterPrefs, address?: SessionAddress): string {
     const resolved = resolvePrefs(prefs);
-    const state: any = storage.getState();
-    const lookupSessionMetadata = resolveSessionListPreferredSessionMetadataFromState(state, session.id);
+    const awareness = projectUiSessionAwareness(session, Date.now());
+    if (awareness.availability === 'locked') {
+        return '# Session: the current session\n\nEncrypted details unavailable';
+    }
+    const state = storage.getState();
+    const target = address ?? normalizeSessionAddress(session.serverId, session.id) ?? session.id;
+    const lookupSessionMetadata = resolveSessionListPreferredSessionMetadataFromState(state, target);
     const sharedSessionMetadata = lookupSessionMetadata ?? session.metadata;
-    const ownerSessionMetadata = readVoiceSessionOwnerMetadataFromState(state, session.id);
+    const ownerSessionMetadata = readVoiceSessionOwnerMetadataFromState(state, target);
     const rawSessionSummary =
         typeof sharedSessionMetadata?.summary?.text === 'string'
             ? sharedSessionMetadata.summary.text
@@ -406,7 +414,8 @@ export function formatSessionFull(session: Session, messages: Message[], prefs?:
     const lines: string[] = [];
 
     // Add session context
-    lines.push(`# Session: ${resolveVoiceSessionLabel(session.id, resolved, { metadata: sharedSessionMetadata, fallbackLabel: 'the current session' })}`);
+    lines.push(`# Session: ${resolveVoiceSessionLabel(target, resolved, { metadata: sharedSessionMetadata, fallbackLabel: 'the current session' })}`);
+    lines.push(`Runtime: ${awareness.runtime}; freshness: ${awareness.freshness}; lifecycle: ${awareness.lifecycle}`);
     if (resolved.voiceShareFilePaths && ownerSessionMetadata && typeof ownerSessionMetadata.path === 'string') {
         const path = String(ownerSessionMetadata.path);
         if (path.trim().length > 0) {
@@ -425,7 +434,7 @@ export function formatSessionFull(session: Session, messages: Message[], prefs?:
             if (request.kind === 'user_action') {
                 pendingRequestSections.push(
                     formatUserActionRequest(
-                        session.id,
+                        target,
                         request.id,
                         request.tool,
                         request.arguments,
@@ -437,7 +446,7 @@ export function formatSessionFull(session: Session, messages: Message[], prefs?:
 
             pendingRequestSections.push(
                 formatPermissionRequest(
-                    session.id,
+                    target,
                     request.id,
                     request.tool,
                     request.arguments,
@@ -451,7 +460,7 @@ export function formatSessionFull(session: Session, messages: Message[], prefs?:
         }
     }
 
-    const recent = formatRecentMessages(session.id, messages, prefs);
+    const recent = formatRecentMessages(target, messages, prefs);
     if (recent) {
         lines.push('## Recent Messages');
         lines.push(recent);
@@ -461,7 +470,7 @@ export function formatSessionFull(session: Session, messages: Message[], prefs?:
 }
 
 export function formatSessionOffline(
-    sessionId: string,
+    sessionId: SessionAddress | string,
     metadata: SessionMetadata | undefined,
     formatterPrefs: VoiceContextFormatterPrefs,
 ): string {
@@ -470,7 +479,7 @@ export function formatSessionOffline(
 }
 
 export function formatSessionOnline(
-    sessionId: string,
+    sessionId: SessionAddress | string,
     metadata: SessionMetadata | undefined,
     formatterPrefs: VoiceContextFormatterPrefs,
 ): string {
@@ -479,7 +488,7 @@ export function formatSessionOnline(
 }
 
 export function formatReadyEvent(
-    sessionId: string,
+    sessionId: SessionAddress | string,
     messages?: ReadonlyArray<Message>,
     prefs?: VoiceContextFormatterPrefs,
 ): string {

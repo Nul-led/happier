@@ -26,6 +26,7 @@ export function resolveUiPostinstallTasks({ env }) {
             'setup-skia-web',
             'vendor-monaco',
             'vendor-pierre-diffs-worker',
+            'vendor-password-kdf-worker',
             'vendor-codemirror-webview-bundle',
             'vendor-xterm-webview-bundle',
             'vendor-tiptap-webview-bundle',

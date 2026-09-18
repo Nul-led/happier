@@ -358,7 +358,8 @@ function createHydratedVoiceConversationSession(
               adapterId: binding.adapterId,
               controlSessionId: binding.controlSessionId,
               transcriptMode: binding.transcriptMode,
-              targetSessionId: binding.targetSessionId,
+              targetSessionId: binding.targetSessionAddress?.sessionId ?? null,
+              targetServerId: binding.targetSessionAddress?.serverId ?? null,
               updatedAt: binding.updatedAt,
             },
           }
@@ -376,10 +377,14 @@ vi.mock('@/sync/store/hooks', async (importOriginal) => {
         useLocalSetting: () => 1,
         useSession: (sessionId: string) =>
             (storageState.current?.sessions?.[sessionId] ?? null),
-        useSessionListPreferredMetadata: (sessionId: string) =>
-            storageState.current?.sessionListRenderables?.[sessionId]?.metadata
-            ?? storageState.current?.sessions?.[sessionId]?.metadata
-            ?? null,
+        useSessionListPreferredMetadata: (sessionId: string) => {
+            const rowsByServerId: Record<string, Record<string, { metadata?: unknown }>> =
+                storageState.current?.sessionListRowsByServerId ?? {};
+            const scopedMetadata = Object.values(rowsByServerId)
+                .map((rows) => rows?.[sessionId]?.metadata)
+                .find((metadata) => metadata != null);
+            return scopedMetadata ?? storageState.current?.sessions?.[sessionId]?.metadata ?? null;
+        },
     };
 });
 
@@ -824,8 +829,9 @@ describe('VoiceSurface', () => {
       adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'carrier-s1',
+      conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'carrier-s1' },
       transcriptMode: 'synthetic',
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 's1' },
       updatedAt: 1,
     });
     storageState.current = {
@@ -891,8 +897,9 @@ describe('VoiceSurface', () => {
         adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
         controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
         conversationSessionId: 'carrier-s2',
+        conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'carrier-s2' },
         transcriptMode: 'synthetic',
-        targetSessionId: 's2',
+        targetSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 's2' },
         updatedAt: 2,
       });
     });
@@ -1124,7 +1131,7 @@ describe('VoiceSurface', () => {
     };
     const { useVoiceTargetStore } = await import('@/voice/runtime/voiceTargetStore');
     useVoiceTargetStore.getState().setScope('global');
-    useVoiceTargetStore.getState().setPrimaryActionSessionId('s_target');
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: 'server-a', sessionId: 's_target' });
 
     const { setVoiceSessionSnapshot } = await import('@/voice/session/voiceSessionStore');
     setVoiceSessionSnapshot({
@@ -1171,14 +1178,19 @@ describe('VoiceSurface', () => {
           },
         },
       },
-      sessionListRenderables: {
-        s_target: {
-          id: 's_target',
-          updatedAt: 99,
-          metadata: {
-            summaryText: 'Lookup target session summary',
+      sessionListRowsByServerId: {
+        'active-server': {
+          s_target: {
+            id: 's_target',
+            updatedAt: 99,
+            metadata: {
+              summaryText: 'Lookup target session summary',
+            },
           },
         },
+      },
+      ordinarySessionListMembershipByServerId: {
+        'active-server': ['s_target'],
       },
       sessionListIndexByServerId: {
         'active-server': [
@@ -1194,7 +1206,7 @@ describe('VoiceSurface', () => {
     };
     const { useVoiceTargetStore } = await import('@/voice/runtime/voiceTargetStore');
     useVoiceTargetStore.getState().setScope('global');
-    useVoiceTargetStore.getState().setPrimaryActionSessionId('s_target');
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: 'server-a', sessionId: 's_target' });
 
     const { setVoiceSessionSnapshot } = await import('@/voice/session/voiceSessionStore');
     setVoiceSessionSnapshot({
@@ -1226,8 +1238,9 @@ describe('VoiceSurface', () => {
       adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'persisted-voice-session',
+      conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'persisted-voice-session' },
       transcriptMode: 'synthetic',
-      targetSessionId: null,
+      targetSessionAddress: null,
       updatedAt: 1,
     });
     voiceSettingState.current = {
@@ -1313,8 +1326,9 @@ describe('VoiceSurface', () => {
         adapterId: CODEX_VOICE_PROVIDER_ID,
         controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
         conversationSessionId: 'hidden-codex-voice-a',
+        conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'hidden-codex-voice-a' },
         transcriptMode: 'native_session',
-        targetSessionId: null,
+        targetSessionAddress: null,
         updatedAt: 100,
       } satisfies VoiceSessionBinding;
       const hydratedHiddenSession = createHydratedVoiceConversationSession(
@@ -1347,8 +1361,9 @@ describe('VoiceSurface', () => {
         adapterId: CODEX_VOICE_PROVIDER_ID,
         controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
         conversationSessionId: 'hidden-codex-voice-a',
+        conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'hidden-codex-voice-a' },
         transcriptMode: 'native_session',
-        targetSessionId: null,
+        targetSessionAddress: null,
         updatedAt: 100,
       });
 
@@ -1386,8 +1401,9 @@ describe('VoiceSurface', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'persisted-voice-session-s2',
+      conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'persisted-voice-session-s2' },
       transcriptMode: 'native_session',
-      targetSessionId: 's2',
+      targetSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 's2' },
       updatedAt: 2,
     });
     voiceSettingState.current = createElevenLabsVoiceSettings({
@@ -1435,8 +1451,9 @@ describe('VoiceSurface', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'persisted-voice-session',
+      conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'persisted-voice-session' },
       transcriptMode: 'native_session',
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 's1' },
       updatedAt: 1,
     });
 
@@ -1910,9 +1927,9 @@ describe('VoiceSurface', () => {
     const currentVoiceTargetStore = await getVoiceTargetStore();
     currentVoiceTargetStore.setState({
       scope: 'global',
-      lastFocusedSessionId: 'stale-session',
-      primaryActionSessionId: null,
-      trackedSessionIds: [],
+      lastFocusedSessionAddress: { serverId: 'server-a', sessionId: 'stale-session' },
+      primaryActionSessionAddress: null,
+      voiceLiveContextSessionAddresses: [],
     });
 
     const { setVoiceSessionSnapshot } = await import('@/voice/session/voiceSessionStore');
@@ -1961,9 +1978,9 @@ describe('VoiceSurface', () => {
     const currentVoiceTargetStore = await getVoiceTargetStore();
     currentVoiceTargetStore.setState({
       scope: 'global',
-      lastFocusedSessionId: null,
-      primaryActionSessionId: null,
-      trackedSessionIds: [],
+      lastFocusedSessionAddress: null,
+      primaryActionSessionAddress: null,
+      voiceLiveContextSessionAddresses: [],
     });
 
     const { setVoiceSessionSnapshot } = await import('@/voice/session/voiceSessionStore');
@@ -2015,9 +2032,9 @@ describe('VoiceSurface', () => {
     const currentVoiceTargetStore = await getVoiceTargetStore();
     currentVoiceTargetStore.setState({
       scope: 'global',
-      lastFocusedSessionId: null,
-      primaryActionSessionId: null,
-      trackedSessionIds: [],
+      lastFocusedSessionAddress: null,
+      primaryActionSessionAddress: null,
+      voiceLiveContextSessionAddresses: [],
     });
     const {
       resetSessionSurfaceVisibilityForTests,
@@ -2084,9 +2101,9 @@ describe('VoiceSurface', () => {
     const currentVoiceTargetStore = await getVoiceTargetStore();
     currentVoiceTargetStore.setState({
       scope: 'global',
-      lastFocusedSessionId: null,
-      primaryActionSessionId: null,
-      trackedSessionIds: [],
+      lastFocusedSessionAddress: null,
+      primaryActionSessionAddress: null,
+      voiceLiveContextSessionAddresses: [],
     });
     const { resetSessionSurfaceVisibilityForTests } = await import(
       '@/sync/domains/session/sessionSurfaceVisibility'
@@ -2125,6 +2142,21 @@ describe('VoiceSurface', () => {
     vi.resetModules();
     featureEnabledState['voice.agent'] = true;
     pathnameState.current = '/session/s1';
+    activeServerSnapshotState.current = {
+      serverId: 'server-a',
+      serverUrl: 'https://server-a.example.test',
+      generation: 2,
+    };
+    storageState.current = {
+      ...storageState.current,
+      sessions: {
+        s1: { id: 's1', serverId: 'server-a', updatedAt: 1, metadata: {} },
+      },
+      ordinarySessionListMembershipByServerId: {
+        'server-a': ['s1'],
+        'server-b': ['s1'],
+      },
+    };
     voiceSettingState.current = {
       providerId: 'happier.agent.codex/realtime-codex',
       ui: { activityFeedEnabled: false, scopeDefault: 'global', surfaceLocation: 'session' },
@@ -2132,9 +2164,9 @@ describe('VoiceSurface', () => {
     const currentVoiceTargetStore = await getVoiceTargetStore();
     currentVoiceTargetStore.setState({
       scope: 'global',
-      lastFocusedSessionId: 'stale-session',
-      primaryActionSessionId: 'different-tool-target',
-      trackedSessionIds: [],
+      lastFocusedSessionAddress: { serverId: 'server-a', sessionId: 'stale-session' },
+      primaryActionSessionAddress: { serverId: 'server-a', sessionId: 'different-tool-target' },
+      voiceLiveContextSessionAddresses: [],
     });
     const { setVoiceSessionSnapshot } = await import('@/voice/session/voiceSessionStore');
     setVoiceSessionSnapshot({
@@ -2149,7 +2181,10 @@ describe('VoiceSurface', () => {
     const toggleSpy = vi.spyOn(voiceSessionManager, 'toggle').mockResolvedValue(undefined as any);
     const { VoiceSurface } = await import('./VoiceSurface');
     const screen = await renderVoiceSurfaceWithAdapter(
-      React.createElement(VoiceSurface, { variant: 'session', sessionId: 's1' }),
+      React.createElement(VoiceSurface, {
+        variant: 'session',
+        sessionAddress: { serverId: 'server-b', sessionId: 's1' },
+      }),
       createGlobalSurfaceTestAdapter(CODEX_VOICE_PROVIDER_ID),
     );
 
@@ -2158,8 +2193,8 @@ describe('VoiceSurface', () => {
       'voiceAssistant.startVoice',
     );
 
-    expect(toggleSpy).toHaveBeenCalledWith('s1');
-    expect(toggleSpy).not.toHaveBeenCalledWith('');
+    expect(toggleSpy).toHaveBeenCalledWith({ serverId: 'server-b', sessionId: 's1' });
+    expect(toggleSpy).not.toHaveBeenCalledWith(null);
     expect(screen.getTextContent()).toContain('voiceSurface.targetSession: the current session');
     expect(screen.getTextContent()).not.toContain('different-tool-target');
     toggleSpy.mockRestore();
@@ -2338,9 +2373,9 @@ describe('VoiceSurface', () => {
     const currentVoiceTargetStore = await getVoiceTargetStore();
     currentVoiceTargetStore.setState({
       scope: 'global',
-      lastFocusedSessionId: null,
-      primaryActionSessionId: null,
-      trackedSessionIds: [],
+      lastFocusedSessionAddress: null,
+      primaryActionSessionAddress: null,
+      voiceLiveContextSessionAddresses: [],
     });
 
     const { setVoiceSessionSnapshot } = await import('@/voice/session/voiceSessionStore');
@@ -2409,8 +2444,9 @@ describe('VoiceSurface', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'voice-root-s1',
+      conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'voice-root-s1' },
       transcriptMode: 'native_session',
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 's1' },
       updatedAt: 1,
     });
 
@@ -2638,8 +2674,9 @@ describe('VoiceSurface', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'carrier-s1',
+      conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'carrier-s1' },
       transcriptMode: 'synthetic',
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 's1' },
       updatedAt: 1,
     });
 
@@ -2667,7 +2704,7 @@ describe('VoiceSurface', () => {
       surfaceLocation: 'auto',
     });
     const currentVoiceTargetStore = await getVoiceTargetStore();
-    currentVoiceTargetStore.getState().setLastFocusedSessionId(null);
+    currentVoiceTargetStore.getState().setLastFocusedSessionAddress(null);
 
     const { setVoiceSessionSnapshot } = await import('@/voice/session/voiceSessionStore');
     setVoiceSessionSnapshot({
@@ -2744,7 +2781,7 @@ describe('VoiceSurface', () => {
       ui: { activityFeedEnabled: false, scopeDefault: 'global', surfaceLocation: 'auto' },
     };
     const currentVoiceTargetStore = await getVoiceTargetStore();
-    currentVoiceTargetStore.getState().setLastFocusedSessionId(null);
+    currentVoiceTargetStore.getState().setLastFocusedSessionAddress(null);
 
     const { setVoiceSessionSnapshot } = await import('@/voice/session/voiceSessionStore');
     setVoiceSessionSnapshot({
@@ -2796,8 +2833,9 @@ describe('VoiceSurface', () => {
       adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'carrier-s1',
+      conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'carrier-s1' },
       transcriptMode: 'synthetic',
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 's1' },
       updatedAt: 1,
     });
 
@@ -2877,8 +2915,9 @@ describe('VoiceSurface', () => {
       adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'carrier-s1',
+      conversationSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 'carrier-s1' },
       transcriptMode: 'synthetic',
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: activeServerSnapshotState.current.serverId, sessionId: 's1' },
       updatedAt: 1,
     });
 

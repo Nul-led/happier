@@ -23,6 +23,7 @@ const onboardingVisible = (stepId: WizardStepId) => (context: WizardContext): bo
         case 'auth':
         case 'auth_restore':
         case 'auth_secret_key':
+        case 'auth_service_select':
         case 'auth_lost_access':
             return true;
         case 'host_relay_remote':
@@ -179,6 +180,15 @@ const wizardStepRegistryEntries = [
         surface: 'onboarding',
         canSkip: true,
         visibleWhen: onboardingVisible('auth_secret_key'),
+    },
+    {
+        id: 'auth_service_select',
+        titleKey: 'welcome.chooseSignInService',
+        subtitleKey: 'welcome.signInServiceUrlPrompt',
+        kind: 'auth',
+        surface: 'onboarding',
+        canSkip: false,
+        visibleWhen: onboardingVisible('auth_service_select'),
     },
     {
         id: 'auth_lost_access',

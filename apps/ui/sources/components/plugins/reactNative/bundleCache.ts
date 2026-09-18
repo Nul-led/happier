@@ -23,6 +23,7 @@ import {
     type PluginUiPersistentArtifactNativeResourceStore,
     type PluginUiPersistentArtifactRecord,
     type PluginUiPersistentArtifactStore,
+    type PluginUiPersistentArtifactWriteDisposition,
 } from '@/sync/domains/plugins/ui/artifactByteCache';
 import type {
     PluginReactNativeArtifactLeaseCacheSink,
@@ -81,7 +82,9 @@ export type PluginReactNativePersistentArtifactStore = Readonly<{
     read: (
         identity: PluginReactNativePersistentArtifactIdentity,
     ) => Promise<PluginReactNativePersistentArtifactRecord | null>;
-    write: (record: PluginReactNativePersistentArtifactRecord) => Promise<void>;
+    write: (
+        record: PluginReactNativePersistentArtifactRecord,
+    ) => Promise<PluginUiPersistentArtifactWriteDisposition>;
     /** Exact removal is tier-agnostic; cache read/write ownership stays RN-only. */
     remove: (identity: PluginUiPersistentArtifactIdentity) => Promise<void>;
     removeAccount: (scope: ServerAccountScope) => Promise<void>;
@@ -318,7 +321,7 @@ export function adaptPluginUiPersistentArtifactStoreForReactNativeBundleCache(
                 : null;
         },
         write: async (record) => {
-            await store.write(record);
+            return store.write(record);
         },
         remove: async (identity) => {
             await store.remove(identity);
@@ -380,10 +383,11 @@ export function createPluginReactNativePersistentAccountOperationStore(input: Re
             if (!isCurrent()) {
                 throw new Error('react_native_artifact_persistent_operation_invalidated');
             }
-            await input.store.write(record);
+            const disposition = await input.store.write(record);
             if (!isCurrent()) {
                 throw new Error('react_native_artifact_persistent_operation_invalidated');
             }
+            return disposition;
         },
         remove: async (identity) => {
             if (!areServerAccountScopesEqual(identity.accountScope, input.operation.scope)) return;
@@ -514,10 +518,11 @@ export function createPluginReactNativeArtifactLeasePersistentScope(input: Reado
             if (!isPluginReactNativePersistentArtifactRecord(record) || !canUseStore()) {
                 throw new Error('react_native_artifact_persistent_scope_retired');
             }
-            const written = await operation?.writePersistentArtifact(record) ?? false;
-            if (!written || !canUseStore()) {
+            const disposition = await operation?.writePersistentArtifact(record) ?? null;
+            if (disposition === null || !canUseStore()) {
                 throw new Error('react_native_artifact_persistent_write_invalidated');
             }
+            return disposition;
         },
         remove: async (identity) => {
             if (!isPluginReactNativePersistentArtifactIdentity(identity) || !canRemovePersistentArtifact()) return;
@@ -733,16 +738,22 @@ type DefaultPersistentArtifactStore = Readonly<{
     reactNativeStore: PluginReactNativePersistentArtifactStore;
     /** Present only where the app-private native Artifact filesystem exists. */
     nativeStore: PluginUiPersistentArtifactNativeResourceStore | null;
-    nativeResourceRegistrar: PluginNativeArtifactResourceRegistrar | null;
 }>;
 
-function createDefaultPersistentArtifactStore(): DefaultPersistentArtifactStore {
+function createDefaultNativeArtifactResourceRegistrar(): PluginNativeArtifactResourceRegistrar | null {
+    if (isDesktopHost()) return createTauriPluginNativeArtifactResourceRegistrar();
+    if (typeof globalThis.caches !== 'undefined') return null;
+    return createExpoPluginNativeArtifactResourceRegistrar();
+}
+
+function createDefaultPersistentArtifactStore(
+    registry: PluginNativeArtifactResourceRegistry | null,
+): DefaultPersistentArtifactStore {
     if (isDesktopHost()) {
         const nativeStore = createTauriPluginUiPersistentArtifactStore();
         return Object.freeze({
             reactNativeStore: adaptPluginUiPersistentArtifactStoreForReactNativeBundleCache(nativeStore),
             nativeStore,
-            nativeResourceRegistrar: createTauriPluginNativeArtifactResourceRegistrar(),
         });
     }
     if (typeof globalThis.caches !== 'undefined') {
@@ -750,14 +761,16 @@ function createDefaultPersistentArtifactStore(): DefaultPersistentArtifactStore 
         return Object.freeze({
             reactNativeStore: adaptPluginUiPersistentArtifactStoreForReactNativeBundleCache(browserStore),
             nativeStore: null,
-            nativeResourceRegistrar: null,
         });
     }
-    const nativeStore = createReactNativePersistentArtifactStore();
+    const nativeStore = createReactNativePersistentArtifactStore({
+        isPersistentArtifactIdentityInUse: (identityKey) => (
+            registry?.isPersistentArtifactIdentityInUse(identityKey) ?? false
+        ),
+    });
     return Object.freeze({
         reactNativeStore: adaptPluginUiPersistentArtifactStoreForReactNativeBundleCache(nativeStore),
         nativeStore,
-        nativeResourceRegistrar: createExpoPluginNativeArtifactResourceRegistrar(),
     });
 }
 
@@ -767,17 +780,18 @@ export type InstalledPluginNativeArtifactResources = Readonly<{
     registry: PluginNativeArtifactResourceRegistry;
 }>;
 
-const defaultPersistentArtifactStore = createDefaultPersistentArtifactStore();
+const nativeResourceRegistrar = createDefaultNativeArtifactResourceRegistrar();
+const installedNativeArtifactRegistry = nativeResourceRegistrar
+    ? createPluginNativeArtifactResourceRegistry({ registrar: nativeResourceRegistrar })
+    : null;
+const defaultPersistentArtifactStore = createDefaultPersistentArtifactStore(installedNativeArtifactRegistry);
 const installedDiskGc = createReactNativeInstalledArtifactDiskGc();
 const nativeStore = defaultPersistentArtifactStore.nativeStore;
-const nativeResourceRegistrar = defaultPersistentArtifactStore.nativeResourceRegistrar;
-const installedNativeArtifactComposition = nativeStore && nativeResourceRegistrar
+const installedNativeArtifactComposition = nativeStore && installedNativeArtifactRegistry
     ? createPluginReactNativeBundleCacheWithNativeArtifactResources({
         diskGc: installedDiskGc,
         persistentStore: nativeStore,
-        registry: createPluginNativeArtifactResourceRegistry({
-            registrar: nativeResourceRegistrar,
-        }),
+        registry: installedNativeArtifactRegistry,
     })
     : null;
 const installedNativeArtifactResources: InstalledPluginNativeArtifactResources | null = installedNativeArtifactComposition

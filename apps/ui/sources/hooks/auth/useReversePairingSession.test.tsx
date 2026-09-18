@@ -170,19 +170,21 @@ describe('useReversePairingSession', () => {
         await hook.unmount();
     });
 
-    it('preserves an immutable pair-id conflict without creating the account request', async () => {
-        state.pairingStart.mockResolvedValueOnce({ ok: false, reason: 'pair_id_conflict', status: 409 });
+    it('displays the requester invite before the authenticated scanner creates the Home pairing row', async () => {
+        state.pairingRequest.mockImplementation(() => new Promise(() => {}));
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
         const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
-        await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('invalid'));
+        await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('ready'));
 
-        expect(state.authStart).not.toHaveBeenCalled();
-        expect(state.pairingRequest).not.toHaveBeenCalled();
+        expect(state.pairingStart).not.toHaveBeenCalled();
+        expect(state.authStart).toHaveBeenCalledOnce();
+        expect(state.pairingRequest).toHaveBeenCalledOnce();
+        expect(hook.getCurrent().canCancel).toBe(true);
         await hook.unmount();
     });
 
-    it('prevents destructive cancellation after the bound requester claim is accepted', async () => {
+    it('keeps the invite visible but transfers cancellation authority after requester registration', async () => {
         let resolveWait!: (value: { ok: false; reason: 'cancelled' }) => void;
         state.authWait.mockImplementation(() => new Promise((resolve) => {
             resolveWait = resolve;
@@ -190,8 +192,9 @@ describe('useReversePairingSession', () => {
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
         const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
-        await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('connecting'));
+        await vi.waitFor(() => expect(state.authWait).toHaveBeenCalledOnce());
 
+        expect(hook.getCurrent().presentation.phase).toBe('ready');
         expect(hook.getCurrent().canCancel).toBe(false);
 
         await act(async () => resolveWait({ ok: false, reason: 'cancelled' }));
@@ -210,7 +213,11 @@ describe('useReversePairingSession', () => {
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
         const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
-        await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('connecting'));
+        await vi.waitFor(() => expect(state.authWait).toHaveBeenCalledOnce());
+
+        expect(hook.getCurrent().presentation.phase).toBe('ready');
+        expect(hook.getCurrent().canCancel).toBe(false);
+        expect(state.pairingStart).not.toHaveBeenCalled();
 
         // A focus change after claim cannot retarget the immutable run.
         await act(async () => resolveWait({
@@ -248,6 +255,40 @@ describe('useReversePairingSession', () => {
         await hook.unmount();
     });
 
+    it('detaches presentation without aborting server-authoritative completion and adoption', async () => {
+        let resolveWait!: (value: {
+            ok: true;
+            credentials: { token: string };
+            homeServerIdentityId: string;
+        }) => void;
+        let waitSignal: AbortSignal | null = null;
+        state.authWait.mockImplementation((_keypair, _target, options: { signal: AbortSignal }) => {
+            waitSignal = options.signal;
+            return new Promise((resolve) => {
+                resolveWait = resolve;
+            });
+        });
+
+        const { useReversePairingSession } = await import('./useReversePairingSession');
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
+        await vi.waitFor(() => expect(state.authWait).toHaveBeenCalledOnce());
+
+        await hook.unmount();
+        expect(waitSignal?.aborted).toBe(false);
+        expect(target.close).not.toHaveBeenCalled();
+
+        await act(async () => resolveWait({
+            ok: true,
+            credentials: { token: 'immutable-home-token' },
+            homeServerIdentityId: descriptor.homeServerIdentityId,
+        }));
+        await vi.waitFor(() => expect(state.adopt).toHaveBeenCalledWith(expect.objectContaining({
+            descriptor,
+            credentials: { token: 'immutable-home-token' },
+        })));
+        await vi.waitFor(() => expect(target.close).toHaveBeenCalledOnce());
+    });
+
     it('keeps an oversized valid invite live as an exact warned link without a QR image', async () => {
         state.qrAvailable = false;
         state.pairingRequest.mockImplementation(() => new Promise(() => {}));
@@ -281,10 +322,8 @@ describe('useReversePairingSession', () => {
         await act(async () => hook.getCurrent().cancel());
 
         expect(requestSignal?.aborted).toBe(true);
-        expect(state.pairingConsume).toHaveBeenCalledWith(
-            { pairId: 'pair-known', intent: 'cancel' },
-            expect.objectContaining({ serverId: 'known-profile' }),
-        );
+        expect(state.pairingStart).not.toHaveBeenCalled();
+        expect(state.pairingConsume).not.toHaveBeenCalled();
         expect(target.close).toHaveBeenCalledOnce();
         expect(hook.getCurrent().presentation).toEqual({
             phase: 'retryable_error',
@@ -301,11 +340,11 @@ describe('useReversePairingSession', () => {
         await hook.unmount();
     });
 
-    it('retries the initial bound claim with the same authority before expiry', async () => {
+    it('waits through a missing pre-row response and retries the same bound request after the scanner starts it', async () => {
         vi.useFakeTimers();
         try {
             state.pairingRequest
-                .mockResolvedValueOnce({ ok: false, status: 503 })
+                .mockResolvedValueOnce({ ok: false, reason: 'not_found', status: 404 })
                 .mockResolvedValueOnce({ ok: true, data: { state: 'requested' } });
             state.authWait.mockImplementation(() => new Promise(() => {}));
 
@@ -317,21 +356,24 @@ describe('useReversePairingSession', () => {
 
             expect(state.pairingRequest).toHaveBeenCalledTimes(2);
             expect(state.pairingRequest.mock.calls[1]?.[0]).toEqual(state.pairingRequest.mock.calls[0]?.[0]);
-            expect(hook.getCurrent().presentation.phase).toBe('connecting');
+            expect(state.pairingStart).not.toHaveBeenCalled();
+            expect(hook.getCurrent().presentation.phase).toBe('ready');
+            expect(hook.getCurrent().canCancel).toBe(false);
             await hook.unmount();
         } finally {
             vi.useRealTimers();
         }
     });
 
-    it('treats post-start not_found as terminal instead of retrying', async () => {
-        state.pairingRequest.mockResolvedValueOnce({ ok: false, reason: 'not_found', status: 404 });
+    it('treats a malformed or target-rejected request as terminal instead of retrying', async () => {
+        state.pairingRequest.mockResolvedValueOnce({ ok: false, reason: 'invalid_target', status: 403 });
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
         const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
         await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('invalid'));
 
         expect(state.pairingRequest).toHaveBeenCalledOnce();
+        expect(state.authWait).not.toHaveBeenCalled();
         await hook.unmount();
     });
 

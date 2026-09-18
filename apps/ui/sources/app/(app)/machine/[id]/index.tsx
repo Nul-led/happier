@@ -16,6 +16,7 @@ import {
     useSettings,
 } from '@/sync/domains/state/storage';
 import { useSettingsVersion } from '@/sync/store/hooks';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 import type { Machine, MachineMetadata, Session } from '@/sync/domains/state/storageTypes';
 import {
     machineStopDaemon,
@@ -71,6 +72,7 @@ import {
     type DaemonExecutionRunEntry,
 } from '@happier-dev/protocol';
 import { ExecutionRunRow } from '@/components/sessions/runs/ExecutionRunRow';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { readExecutionRunSessionAssociation } from '@/components/sessions/runs/readExecutionRunSessionAssociation';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { useMountedShouldContinue } from '@/hooks/ui/useMountedShouldContinue';
@@ -259,6 +261,7 @@ export default function MachineDetailScreen() {
     const [terminalTmuxByMachineId, setTerminalTmuxByMachineId] = useSettingMutable('sessionTmuxByMachineId');
     const settings = useSettings();
     const settingsVersion = useSettingsVersion();
+    const expectedSettingsScope = useAccountSettingsScope();
     const hasDurableProviderCleanup = useMemo(() => {
         if (!machineId || !machine?.revokedAt) return false;
         return hasProviderMachineStateV1(
@@ -498,7 +501,7 @@ export default function MachineDetailScreen() {
 
             setIsRevokingMachine(true);
             try {
-                const result = await machineRevokeWithProviderCleanup(machineId, settingsVersion, {
+                const result = await machineRevokeWithProviderCleanup(machineId, expectedSettingsScope, settingsVersion, {
                     revoke: machineRevokeFromAccount,
                     mutateAccountSettingsOnce: sync.mutateAccountSettingsOnce,
                 });
@@ -522,7 +525,7 @@ export default function MachineDetailScreen() {
                 setIsRevokingMachine(false);
             }
         })(), { tag: 'MachineDetailScreen.revokeMachine' });
-    }, [isRevokingMachine, machine?.revokedAt, machineId, providerCleanupPending, router, settingsVersion]);
+    }, [expectedSettingsScope, isRevokingMachine, machine?.revokedAt, machineId, providerCleanupPending, router, settingsVersion]);
 
     const replacementCandidates = useMemo<MachineReplacementPickerCandidate[]>(() => {
         if (!machineId) return [];
@@ -856,8 +859,6 @@ export default function MachineDetailScreen() {
                     updatedMetadata,
                     machine.metadataVersion
                 );
-                
-                Modal.alert(t('common.success'), t('machine.renamedSuccess'));
             } catch (error) {
                 Modal.alert(
                     t('common.error'),
@@ -964,6 +965,8 @@ export default function MachineDetailScreen() {
             } as const;
             const releaseUserRequestLease = sync.acquireUserRequestLease();
             actionOperationPresentationCoordinator.register({
+                serverId: targetServerId,
+                accountId: expectedSettingsScope?.accountId ?? '',
                 requestId: spawnInput.creationKey,
                 onStart: 'current',
             });
@@ -1646,7 +1649,11 @@ export default function MachineDetailScreen() {
                                                 key={run.runId}
                                                 run={run as any}
                                                 subtitle={`${t('runs.runLabel', { runId: run.runId })} · ${detailParts.join(' · ')}`}
-                                                onPress={sessionId ? () => router.push(`/session/${sessionId}/runs/${run.runId}` as any) : undefined}
+                                                onPress={sessionId ? () => router.push(buildScopedSessionRouteHref({
+                                                    sessionId,
+                                                    serverId: machineServerId,
+                                                    suffix: `/runs/${encodeURIComponent(run.runId)}`,
+                                                }) as any) : undefined}
                                                 rightAccessory={canStop ? (
                                                     <Pressable
                                                         accessibilityRole="button"

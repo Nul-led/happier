@@ -6,7 +6,7 @@ import {
 } from '@happier-dev/protocol';
 import { isBundledAgentId } from '@happier-dev/agents';
 
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '../registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 
 export function createPluginAgentSettingsRoute(agent: PluginContributionIdentityV1): string {
     return `/(app)/settings/agents/${encodeURIComponent(agent.localId)}?pluginId=${encodeURIComponent(agent.pluginId)}`;
@@ -42,7 +42,7 @@ export function resolveAgentModelsTargetKey(params: Readonly<{
     if (isBundledAgentId(agentId)) {
         return buildBackendTargetKeyV2({
             kind: 'agent',
-            identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[agentId],
+            identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[agentId],
         });
     }
 

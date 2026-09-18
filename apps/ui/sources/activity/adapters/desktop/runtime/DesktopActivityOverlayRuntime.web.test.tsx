@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { accountSettingsParse } from '@happier-dev/protocol';
+
 import { renderScreen } from '@/dev/testkit';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 
@@ -77,10 +79,22 @@ vi.mock('@/sync/domains/state/storage', async () => {
             sessionsState.value.map((session) => [session.id, session]),
         ),
         sessionListIndexByServerId: sessionListIndexState.value,
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {
+            'server-1': Object.fromEntries(sessionsState.value.map((session) => [session.id, session])),
+        },
+        ordinarySessionListMembershipByServerId: {
+            'server-1': sessionsState.value.map((session) => String(session.id)),
+        },
         sessionMessages: {},
         concurrentSessionListCacheByServerId: {},
         localSettings: localSettingsState.value,
+        // The production store always carries the canonical Account settings
+        // projection. Keep this boundary fixture truthful now that Activity
+        // consumes workspace presentation through that owner.
+        settings: {
+            workspaceRefsV1: [],
+            workspacePathDisplayModeV1: 'absolute',
+        },
     });
     const storage = Object.assign(
         ((selector?: (state: ReturnType<typeof storageState>) => unknown) =>
@@ -112,6 +126,18 @@ vi.mock('./desktopActivityOverlayBridge', async () => {
     };
 });
 
+// The overlay admits each candidate through its own Home's Account policy, so the
+// Home stays bound to an Account identity with persisted settings.
+vi.mock('@/hooks/teams/useSessionAudienceContext', async () => {
+    const { createSessionAudienceContextModuleMock } = await import('@/dev/testkit/mocks/sessionAudienceContext');
+    return createSessionAudienceContextModuleMock();
+});
+
+async function persistDesktopOverlayWebHomeAccountSettings(): Promise<void> {
+    const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
+    saveAccountSettings({ serverId: 'server-1', accountId: 'account-server-1' }, accountSettingsParse({}), 1);
+}
+
 vi.mock('expo-router', () => expoRouterMock.module);
 
 vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries', () => ({
@@ -123,7 +149,8 @@ vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries', ()
 }));
 
 describe('DesktopActivityOverlayRuntime.web', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
+        await persistDesktopOverlayWebHomeAccountSettings();
         isDesktopHostMock.mockReturnValue(true);
         isDesktopOverlayWindowContextMock.mockReturnValue(false);
         syncDesktopActivityOverlayMock.mockImplementation(async () => {});

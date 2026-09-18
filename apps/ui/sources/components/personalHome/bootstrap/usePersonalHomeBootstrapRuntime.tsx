@@ -43,6 +43,7 @@ import type {
 } from './personalHomeBootstrapTypes';
 import { PersonalHomeBootstrapGate } from './PersonalHomeBootstrapGate';
 import { isPersonalHomeBootstrapRuntimeHost } from './personalHomeBootstrapHost';
+import { awaitPersonalHomeBootstrapQaMutationPause } from './personalHomeBootstrapQaMutationPause';
 import {
     runPersonalHomeBootstrapFromSystemTasks,
     type PersonalHomeEndpointSnapshot,
@@ -359,7 +360,13 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
             ...(existingRuntimeDisposition ? { existingRuntimeDisposition } : {}),
             ...(trigger === 'retry' ? { allowErasedRuntimeRecreate: true } : {}),
             deps: {
-                runRelayTask: async (kind, options) => await runRelayTaskAndWait(kind, options),
+                runRelayTask: async (kind, options) => {
+                    // Checked-in loaded-QA seam: inert unless a QA driver armed this exact durable
+                    // mutation. It only delays the request, so the canonical admission/precondition
+                    // owners still decide whether a competing uninstall/erase wins.
+                    await awaitPersonalHomeBootstrapQaMutationPause(kind);
+                    return await runRelayTaskAndWait(kind, options);
+                },
                 probeEndpoint: probePersonalHomeEndpoint,
                 readCredentials: async ({ serverUrl, serverIdentityId }) => (
                     await TokenStorage.getCredentialsForServerUrl(serverUrl, { serverId: serverIdentityId })
@@ -514,7 +521,7 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
         ) {
             throw new Error('Verified Personal Home completion did not retain its stable Home identity.');
         }
-        activateServerProfileIfSelectionImplicit(result.profileId);
+        await activateServerProfileIfSelectionImplicit(result.profileId);
         // Credential/profile writes are non-focusing. Ask the existing auth owner to re-read the
         // selected Home. The profile owner activates the first local Home only while selection
         // remains implicit; an explicit device or tab selection stays unchanged.

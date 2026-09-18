@@ -3,10 +3,10 @@ import type { AcpBackendDefinitionV1 } from '@happier-dev/protocol';
 
 import { resolvePreferredBackendTarget } from './resolvePreferredBackendTarget';
 import { resolvePreferredBackendTargetFromSettings } from './resolvePreferredBackendTargetFromSettings';
-import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 
-const CLAUDE_TARGET = { kind: 'agent' as const, identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES.claude };
-const CODEX_TARGET = { kind: 'agent' as const, identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES.codex };
+const CLAUDE_TARGET = { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude };
+const CODEX_TARGET = { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.codex };
 const REVIEW_BOT_ACP_BACKEND = {
     id: 'review-bot',
     name: 'review-bot',

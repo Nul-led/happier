@@ -2,6 +2,7 @@ import {
     readAiLaunchProfileCollection,
     readProviderSettingsFromAccountSettingsV1,
     shouldPreserveLegacyAiLaunchProfileBindingV1,
+    parseSavedSecretRefV1,
     type AccountSettingsDefaults,
 } from '@happier-dev/protocol';
 
@@ -39,6 +40,18 @@ export function readRetainedSecretBindingsByProfileId(
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isKnownSavedSecretReference(
+    value: string,
+    personalSecretIds: ReadonlySet<string>,
+): boolean {
+    if (personalSecretIds.has(value)) return true;
+    try {
+        return parseSavedSecretRefV1(value).kind === 'shared_resource';
+    } catch {
+        return false;
+    }
 }
 
 function normalizeEnvVarRequirements(value: unknown): EnvVarRequirementLike[] {
@@ -89,7 +102,11 @@ function readCurrentSecretBindingMap(params: Readonly<{
     let changed = false;
     for (const [rawEnvName, secretId] of Object.entries(params.value)) {
         const envName = normalizeEnvVarName(rawEnvName);
-        if (!envName || !params.allowedSecretEnvVarNames.has(envName) || !params.secretIds.has(secretId)) {
+        if (
+            !envName
+            || !params.allowedSecretEnvVarNames.has(envName)
+            || !isKnownSavedSecretReference(secretId, params.secretIds)
+        ) {
             changed = true;
             continue;
         }

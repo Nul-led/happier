@@ -1,4 +1,6 @@
 import * as React from 'react';
+import { usePathname, useRouter } from 'expo-router';
+import { buildAuthenticatedAccountEntryHref } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
 import { createHomeLoginRequesterFingerprintV1 } from '@happier-dev/protocol';
 import { Platform, StyleSheet, View } from 'react-native';
 
@@ -24,12 +26,15 @@ import {
     type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
 import {
-    cancelPendingPreferredHomeEnrollment,
-    getPendingPreferredHomeEnrollment,
-    resumePendingPreferredHomeEnrollment,
-    subscribePendingPreferredHomeEnrollment,
-} from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
-import type { HomeLoginContinuationResult } from '@/sync/ops/accountDirectory/homeLoginApproval';
+    cancelPendingDirectoryHomeEnrollment,
+    getPendingDirectoryHomeEnrollment,
+    resumePendingDirectoryHomeEnrollment,
+    subscribePendingDirectoryHomeEnrollment,
+} from '@/sync/ops/accountDirectory/enrollDirectoryHome';
+import type { AccountPostAuthInput, AccountPostAuthResult } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
+import { AccountServiceContinuation } from '@/components/account/auth/AccountServiceContinuation';
+import { AccountServiceHomeAuthenticationAdapter } from '@/components/account/auth/AccountServiceHomeAuthenticationAdapter';
+import { AUTHENTICATED_ACCOUNT_ENTRY_ROUTE } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
 import { t } from '@/text';
 import {
     useAccountDirectoryActivePolling,
@@ -97,17 +102,21 @@ function HomeApprovalAccessibilityStatus({ announcement }: Readonly<{
 
 function pendingEnrollmentResultAnnouncement(
     homeName: string,
-    result: HomeLoginContinuationResult | null | void,
+    result: AccountPostAuthResult | null | void,
 ): string {
     const prefix = `${homeName}. `;
-    if (!result || result.kind === 'failed' || result.kind === 'transport_unavailable') {
-        return `${prefix}${t('errors.operationFailed')}. ${t('common.retry')}`;
-    }
-    if (result.kind === 'enrolled') return `${prefix}${t('connect.homeAddedPreservedFocusBody')}`;
+    if (!result) return `${prefix}${t('errors.operationFailed')}`;
+    if (result.kind === 'home_enrolled' || result.kind === 'home_entered') return `${prefix}${t('connect.homeAddedPreservedFocusBody')}`;
     if (result.kind === 'approval_required') return `${prefix}${t('connect.waitingForApproval')}`;
-    if (result.kind === 'rejected') return `${prefix}${t('connect.pairingRejectedBody')}`;
-    if (result.kind === 'expired') return `${prefix}${t('approvals.status.expired')}. ${t('connect.startAgain')}`;
-    if (result.kind === 'partial_commit') return `${prefix}${t('connect.homeEnrollmentPartialCommitBody')}`;
+    if (result.kind === 'home_material_required') return `${prefix}${t('navigation.restoreWithSecretKey')}`;
+    if (result.kind === 'failure') {
+        if (result.code.source === 'home') {
+            if (result.code.code === 'rejected') return `${prefix}${t('connect.pairingRejectedBody')}`;
+            if (result.code.code === 'expired') return `${prefix}${t('approvals.status.expired')}. ${t('connect.startAgain')}`;
+            if (result.code.code === 'partial_commit') return `${prefix}${t('connect.homeEnrollmentPartialCommitBody')}`;
+        }
+        return `${prefix}${t('errors.operationFailed')}${result.recovery === 'retry_stage' ? `. ${t('common.retry')}` : ''}`;
+    }
     return `${prefix}${t('approvals.stopWaiting')}`;
 }
 
@@ -149,9 +158,15 @@ async function withHomeApprovalTarget<T>(
 }
 
 export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly ServerProfile[] }>) {
+    const router = useRouter();
+    const invokingPath = usePathname();
     const [state, setState] = React.useState<LoadState>({ kind: 'loading', items: [] });
     const [busyKeys, setBusyKeys] = React.useState<readonly string[]>([]);
     const [decisionErrorKeys, setDecisionErrorKeys] = React.useState<readonly string[]>([]);
+    const [continuation, setContinuation] = React.useState<Readonly<{ input: AccountPostAuthInput; result: AccountPostAuthResult }> | null>(null);
+    const [homeAuthentication, setHomeAuthentication] = React.useState<Readonly<{
+        input: AccountPostAuthInput; previous: AccountPostAuthResult; homeServerIdentityId: string;
+    }> | null>(null);
     const [announcement, setAnnouncement] = React.useState<StatusAnnouncement>({
         revision: 0,
         text: t('common.loading'),
@@ -161,9 +176,9 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
     const approvalSnapshotKeyRef = React.useRef<string | null>(null);
     const approvalRefreshPromiseRef = React.useRef<Promise<AccountDirectoryActivePollingOutcome> | null>(null);
     const pendingEnrollment = React.useSyncExternalStore(
-        subscribePendingPreferredHomeEnrollment,
-        getPendingPreferredHomeEnrollment,
-        getPendingPreferredHomeEnrollment,
+        subscribePendingDirectoryHomeEnrollment,
+        getPendingDirectoryHomeEnrollment,
+        getPendingDirectoryHomeEnrollment,
     );
     const publishAnnouncement = React.useCallback((text: string) => {
         if (!mountedRef.current) return;
@@ -280,12 +295,15 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
     const runPendingEnrollmentOperation = React.useCallback(async (
         homeName: string,
         operationKind: 'resume' | 'cancel',
-        operation: () => Promise<HomeLoginContinuationResult | null | void>,
+        operation: () => Promise<AccountPostAuthResult | null | void>,
     ) => {
         const pendingKey = 'pending-enrollment';
         setBusyKeys((current) => current.includes(pendingKey) ? current : [...current, pendingKey]);
         try {
+            const pending = getPendingDirectoryHomeEnrollment();
             const result = await operation();
+            if (mountedRef.current && pending && result && operationKind === 'resume') setContinuation({ input: pending.input, result });
+            if (operationKind === 'cancel') setContinuation(null);
             publishAnnouncement(
                 operationKind === 'cancel'
                     ? `${homeName}. ${t('approvals.stopWaiting')}`
@@ -319,12 +337,20 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
 
     const poll = React.useCallback(async (): Promise<AccountDirectoryActivePollingOutcome> => {
         try {
-            return await load('poll');
+            const [loaded, resumed] = await Promise.all([
+                load('poll'),
+                pendingEnrollment ? resumePendingDirectoryHomeEnrollment() : Promise.resolve(null),
+            ]);
+            if (mountedRef.current && pendingEnrollment && resumed && resumed.kind !== 'approval_required') {
+                setContinuation({ input: pendingEnrollment.input, result: resumed });
+            }
+            if (resumed && resumed.kind !== 'approval_required') publishAnnouncement(pendingEnrollmentResultAnnouncement(pendingEnrollmentName, resumed));
+            return loaded === 'backoff' || (resumed?.kind === 'failure' && resumed.recovery === 'retry_stage') ? 'backoff' : 'completed';
         } catch {
             // The visible pending card and explicit Retry remain available.
             return 'backoff';
         }
-    }, [load]);
+    }, [load, pendingEnrollment, pendingEnrollmentName, publishAnnouncement]);
     useAccountDirectoryActivePolling(poll);
 
     const pendingEnrollmentGroup = pendingEnrollment ? (
@@ -358,7 +384,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
                 onPress={() => void runPendingEnrollmentOperation(
                     pendingEnrollmentName,
                     'resume',
-                    resumePendingPreferredHomeEnrollment,
+                    resumePendingDirectoryHomeEnrollment,
                 )}
             />
             <Item
@@ -369,7 +395,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
                 onPress={() => void runPendingEnrollmentOperation(
                     pendingEnrollmentName,
                     'cancel',
-                    cancelPendingPreferredHomeEnrollment,
+                    cancelPendingDirectoryHomeEnrollment,
                 )}
             />
         </ItemGroup>
@@ -379,6 +405,25 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
         <>
             <HomeApprovalAccessibilityStatus announcement={announcement} />
             {pendingEnrollmentGroup}
+            {continuation && continuation.result.kind !== 'stopped' ? (
+                <View testID="settings.server.homeEnrollment.continuation">
+                    {homeAuthentication ? <AccountServiceHomeAuthenticationAdapter {...homeAuthentication}
+                        returnTo={AUTHENTICATED_ACCOUNT_ENTRY_ROUTE} accountEntryReturnTo={invokingPath}
+                        onBack={() => setHomeAuthentication(null)}
+                        onResult={(result) => {
+                            setContinuation({ input: homeAuthentication.input, result });
+                            setHomeAuthentication(null);
+                        }} /> : <AccountServiceContinuation input={continuation.input} result={continuation.result}
+                        onOpenHomeAuthentication={(input, homeServerIdentityId, previous) => setHomeAuthentication({ input, homeServerIdentityId, previous })}
+                        onReauthenticate={(input) => router.push(buildAuthenticatedAccountEntryHref({
+                            service: input.service,
+                            intent: input.intent,
+                            returnTo: invokingPath,
+                        }))}
+                        onResult={(result, input) => setContinuation({ input: input ?? continuation.input, result })}
+                        onBack={() => setContinuation(null)} />}
+                </View>
+            ) : null}
             {content}
         </>
     );

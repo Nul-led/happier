@@ -1,4 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { storage } from '@/sync/domains/state/storage';
+import { apiSocket } from '@/sync/api/session/apiSocket';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { EMPTY_SCM_CAPABILITIES } from './core/snapshotMappers';
 
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import {
@@ -6,6 +12,7 @@ import {
     collectChangedPaths,
     isSessionPathWithinRepoRoot,
     shouldAttributeChangedPaths,
+    ScmStatusSync,
 } from './scmStatusSync';
 
 function makeSnapshot(entries: ScmWorkingSnapshot['entries']): ScmWorkingSnapshot {
@@ -37,10 +44,78 @@ describe('isSessionPathWithinRepoRoot', () => {
         expect(isSessionPathWithinRepoRoot('/tmp/repo', '/repo')).toBe(false);
     });
 
-    it('treats tilde-prefixed session paths as in-scope when they match the repo root', () => {
-        expect(isSessionPathWithinRepoRoot('~/Documents/Development/happier/dev', '/Documents/Development/happier/dev')).toBe(true);
-        expect(isSessionPathWithinRepoRoot('~/repo', '/repo')).toBe(true);
+    it('does not reinterpret an unknown home as the filesystem root', () => {
+        expect(isSessionPathWithinRepoRoot('~/repo', '/repo')).toBe(false);
         expect(isSessionPathWithinRepoRoot('~/repo-other', '/repo')).toBe(false);
+    });
+});
+
+describe('repository scope snapshot publication and reuse', () => {
+    const initialState = storage.getState();
+    afterEach(() => {
+        storage.setState(initialState, true);
+        vi.restoreAllMocks();
+    });
+
+    it('keeps identical session and repository IDs on different Homes in independent sync lifetimes', () => {
+        const base = createSessionFixture();
+        const session = createSessionFixture({ id: 'same', metadata: { ...base.metadata!, machineId: 'm', path: '/repo' } });
+        storage.setState({
+            sessions: { same: session },
+            sessionListRowsByServerId: { a: { same: session }, b: { same: session } },
+        });
+        const syncer = new ScmStatusSync();
+        const a = syncer.getSync('same', 'a');
+        const b = syncer.getSync('same', 'b');
+        expect(a).not.toBe(b);
+        expect(syncer.getSync('same', 'a')).toBe(a);
+        syncer.stop('same', 'b');
+        expect(syncer.getSync('same', 'a')).toBe(a);
+        syncer.stop('same', 'a');
+    });
+
+    it.each([
+        { root: 'c:/users/alice/repo', home: 'C:\\Users\\Alice\\', member: 'C:\\Users\\Alice\\Repo/src', late: '\\\\?\\C:\\USERS\\ALICE\\repo\\late', sibling: 'C:\\Users\\Alice\\repo2' },
+        { root: '//server/share/repo', home: '\\\\Server\\Share\\', member: '\\\\?\\UNC\\SERVER\\SHARE\\Repo\\src', late: '\\\\server\\SHARE\\repo/late', sibling: '\\\\server\\share\\repo2' },
+        { root: '/home/alice/repo', home: '/home/alice/', member: '~/repo/src', late: '~\\repo/late', sibling: '/home/alice2/repo' },
+    ])('publishes and reuses $root across equivalent path spellings', async ({ root, home, member, late, sibling }) => {
+        const machine = createMachineFixture();
+        const session = (id: string, path: string, machineId = machine.id) => {
+            const base = createSessionFixture();
+            return createSessionFixture({ id, metadata: { ...base.metadata!, path, machineId, homeDir: undefined } });
+        };
+        storage.setState({
+            machines: { [machine.id]: { ...machine, metadata: { ...machine.metadata!, homeDir: home } } },
+            sessions: {
+                root: session('root', root),
+                member: session('member', member),
+                sibling: session('sibling', sibling),
+                otherMachine: session('otherMachine', member, 'other-machine'),
+            },
+        });
+        // Mock only the RPC transport; repository resolution, mapping, sync and storage remain real.
+        const rpc = vi.spyOn(apiSocket, 'machineRPC').mockResolvedValue({
+            success: true,
+            snapshot: { ...makeSnapshot([]), repo: { isRepo: true, rootPath: root }, capabilities: EMPTY_SCM_CAPABILITIES },
+        });
+        const syncer = new ScmStatusSync();
+        try {
+            await syncer.getSync('root').invalidateAndAwait();
+            expect(storage.getState().getSessionProjectScmSnapshotError('root')).toBeNull();
+            const snapshot = storage.getState().getSessionProjectScmSnapshot('root');
+            expect(snapshot).not.toBeNull();
+            expect(storage.getState().getSessionProjectScmSnapshot('member')).toEqual(snapshot);
+            expect(storage.getState().getSessionProjectScmSnapshot('sibling')).toBeNull();
+            expect(storage.getState().getSessionProjectScmSnapshot('otherMachine')).toBeNull();
+
+            storage.setState({ sessions: { ...storage.getState().sessions, late: session('late', late) } });
+            const rpcCount = rpc.mock.calls.length;
+            syncer.getSync('late');
+            expect(storage.getState().getSessionProjectScmSnapshot('late')).toEqual(snapshot);
+            expect(rpc.mock.calls.length).toBe(rpcCount);
+        } finally {
+            for (const id of ['root', 'member', 'late', 'sibling', 'otherMachine']) syncer.stop(id);
+        }
     });
 });
 

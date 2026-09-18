@@ -1,14 +1,17 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import {
     encodeBase64,
+    buildQualifiedPluginContributionKey,
+    createPluginContributionIdentity,
     DaemonContributionRegistryProjectionAutomationEligibleEventSetupSurfaceV1Schema,
     DaemonPluginUiComposerSurfaceCatalogEntryV1Schema,
     DaemonPluginUiTargetedSurfaceMountV1Schema,
     normalizePluginAccountCollectionContractV1,
     PluginProjectedActionV2Schema,
+    PluginDeclarativeProjectedModelV1Schema,
     PluginProjectionV2Schema,
     type DaemonPluginUiTargetedSurfaceMountV1,
     type DaemonContributionRegistryProjectionAutomationEligibleEventSetupSurfaceV1,
@@ -92,7 +95,13 @@ function createMemoryWatchdogPersistence(): PluginReactNativeWatchdogPersistence
     };
 }
 
-import { createDeferred, flushHookEffects, renderScreen } from '@/dev/testkit';
+import {
+    createDeferred,
+    createPlainAccountEncryptionCurrentnessFixture,
+    flushHookEffects,
+    renderScreen,
+} from '@/dev/testkit';
+import { createTestMessageChannel } from '@/dev/testkit/mocks/messageChannel';
 import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { darkTheme, lightTheme } from '@/theme';
@@ -160,6 +169,7 @@ const EXPECTED_GENERIC_DESTINATION_HOST_METHODS = [
     'executeAction',
     'readResource',
     'watchResource',
+    'openConnectedAccounts',
     'notify',
     'confirm',
     'diagnostic',
@@ -217,6 +227,7 @@ const {
 const pluginSurfaceConnectivity = vi.hoisted(() => ({
     endpointStatus: 'online' as 'online' | 'offline',
     machineOnline: true,
+    machineOnlineById: new Map<string, boolean>(),
     daemonStateVersion: 1,
 }));
 const pluginSurfaceAccountLifetime = vi.hoisted(() => {
@@ -240,6 +251,11 @@ const pluginSurfaceAccountLifetime = vi.hoisted(() => {
         });
     };
     const defaultScope = Object.freeze({ serverId: 'server-a', accountId: 'account-a' });
+    const usedScopes = new Map<string, Readonly<{ serverId: string; accountId: string }>>();
+    const recordScope = (scope: Readonly<{ serverId: string; accountId: string }>) => {
+        usedScopes.set(`${scope.serverId}\u0000${scope.accountId}`, scope);
+    };
+    recordScope(defaultScope);
     let defaultLifetime = createLifetime(defaultScope);
     return {
         defaultLifetime,
@@ -248,15 +264,21 @@ const pluginSurfaceAccountLifetime = vi.hoisted(() => {
             current = true;
             lifetimeRevision += 1;
             retirementCallbacks.clear();
+            usedScopes.clear();
+            recordScope(defaultScope);
             defaultLifetime = createLifetime(defaultScope);
             this.defaultLifetime = defaultLifetime;
             this.value = defaultLifetime;
         },
         setScope(scope: Readonly<{ serverId: string; accountId: string }>) {
+            recordScope(scope);
             current = true;
             lifetimeRevision += 1;
             retirementCallbacks.clear();
             this.value = createLifetime(scope);
+        },
+        scopesUsed() {
+            return [...usedScopes.values()];
         },
         retire() {
             current = false;
@@ -275,6 +297,10 @@ const pluginSurfaceAccountLifetime = vi.hoisted(() => {
  * prove the same cold, target-scoped A→B composition contract.
  */
 describe('external targeted source products through the bound surface host', () => {
+    beforeEach(() => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
+    });
+
     const targetPluginId = 'fixture.physical-copy-target';
     const contributorPluginId = 'fixture.physical-copy-contributor';
     const contributorGeneration = 'physical-copy-contributor-generation-a';
@@ -777,16 +803,16 @@ describe('external targeted source products through the bound surface host', () 
     });
 });
 
-function createMemoryCacheStorage(): Readonly<{
+const pluginArtifactCacheStorage = vi.hoisted((): Readonly<{
     cacheStorage: CacheStorage;
     clear: () => void;
-}> {
+}> => {
     const stores = new Map<string, Map<string, Response>>();
     const requestUrl = (request: RequestInfo | URL): string => {
         if (typeof request === 'string') return request;
         return request instanceof URL ? request.href : request.url;
     };
-    return Object.freeze({
+    const fixture = Object.freeze({
         // This is the browser CacheStorage system boundary consumed by the
         // installed Artifact cache; the host and Artifact owners stay real.
         cacheStorage: {
@@ -809,9 +835,11 @@ function createMemoryCacheStorage(): Readonly<{
         } as unknown as CacheStorage,
         clear: () => stores.clear(),
     });
-}
-
-const pluginArtifactCacheStorage = createMemoryCacheStorage();
+    // The installed Artifact cache chooses its platform store at module load,
+    // before beforeEach runs. Supply its genuine browser boundary first.
+    vi.stubGlobal('caches', fixture.cacheStorage);
+    return fixture;
+});
 const observedDeclarativeHostApis = vi.hoisted(() => [] as PluginUiHostApi[]);
 const declarativeSettingsGetMock = vi.hoisted(() => vi.fn());
 const declarativeSettingsSetMock = vi.hoisted(() => vi.fn());
@@ -881,6 +909,7 @@ const accountEncryptionModeFetch = vi.hoisted(() => vi.fn<
 type AccountEncryptionModeResult = Awaited<ReturnType<
     typeof import('@/sync/api/account/apiAccountEncryptionMode').fetchAccountEncryptionMode
 >>;
+let restoreCredentialBoundary: (() => void) | undefined;
 
 vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@/sync/ops/machineContributionRegistryProjection')>()),
@@ -900,11 +929,14 @@ vi.mock('@/sync/api/plugins/data/queryPluginCollectionUiQuery', () => ({
     ),
 }));
 
-vi.mock('@/sync/domains/state/storage', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('@/sync/domains/state/storage')>()),
+vi.mock('@/sync/store/hooks', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/store/hooks')>()),
     useEndpointStatus: () => pluginSurfaceConnectivity.endpointStatus,
-    useMachineCliDetectionTarget: () => ({
-        isOnline: pluginSurfaceConnectivity.machineOnline,
+    useMachineCliDetectionTarget: (machineId: string | null) => ({
+        isOnline: machineId === null
+            ? false
+            : pluginSurfaceConnectivity.machineOnlineById.get(machineId)
+                ?? pluginSurfaceConnectivity.machineOnline,
         daemonStateVersion: pluginSurfaceConnectivity.daemonStateVersion,
     }),
 }));
@@ -913,32 +945,17 @@ vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
     captureActiveServerAccountScopeLifetime: () => pluginSurfaceAccountLifetime.value,
 }));
 
-vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) => {
-    const original = await importOriginal<typeof import('@/sync/api/account/apiAccountEncryptionMode')>();
+vi.mock('@/sync/http/client', async (importOriginal) => {
+    const original = await importOriginal<typeof import('@/sync/http/client')>();
     return {
         ...original,
-        fetchAccountEncryptionMode: (...args: Parameters<typeof original.fetchAccountEncryptionMode>) => (
-            accountEncryptionModeFetch(...args)
-        ),
-    };
-});
-
-vi.mock('@/sync/sync', async (importOriginal) => {
-    const original = await importOriginal<typeof import('@/sync/sync')>();
-    return {
-        ...original,
-        // Credentials are a genuine process boundary for the mount; preserve
-        // the real Sync owner for every other method while making this test
-        // fixture's current credential scope deterministic.
-        sync: new Proxy(original.sync, {
-            get(target, property) {
-                if (property === 'getCredentials') {
-                    return () => accountEncryptionModeCredentials.value;
-                }
-                const value = Reflect.get(target, property, target);
-                return typeof value === 'function' ? value.bind(target) : value;
-            },
-        }),
+        serverFetch: async (...args: Parameters<typeof original.serverFetch>) => {
+            if (args[0] === '/v1/account/encryption') {
+                const result = await accountEncryptionModeFetch(accountEncryptionModeCredentials.value!);
+                return new Response(JSON.stringify(result), { status: 200 });
+            }
+            return original.serverFetch(...args);
+        },
     };
 });
 
@@ -956,15 +973,15 @@ vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => {
     };
 });
 
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', async (importOriginal) => {
-    const original = await importOriginal<typeof import('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope')>();
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', async (importOriginal) => {
+    const original = await importOriginal<typeof import('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope')>();
     return {
         ...original,
-        captureSessionRequestAuthorityForServerAccountScope: (...args: Parameters<
-            typeof original.captureSessionRequestAuthorityForServerAccountScope
+        captureServerRequestAuthorityForServerAccountScope: (...args: Parameters<
+            typeof original.captureServerRequestAuthorityForServerAccountScope
         >) => {
             if (!pluginDataTransport.enabled) {
-                return original.captureSessionRequestAuthorityForServerAccountScope(...args);
+                return original.captureServerRequestAuthorityForServerAccountScope(...args);
             }
             return Promise.resolve({
                 scope: args[0].scope,
@@ -1157,7 +1174,9 @@ vi.mock('@/components/appShell/currentUiContext/CurrentUiContextProvider', async
     };
 });
 
-afterEach(() => {
+afterEach(async () => {
+    restoreCredentialBoundary?.();
+    restoreCredentialBoundary = undefined;
     vi.useRealTimers();
     activeLanguage.value = 'en';
     surfaceEnvironment.platform = 'web';
@@ -1171,6 +1190,7 @@ afterEach(() => {
     surfaceEnvironment.theme = null;
     pluginSurfaceConnectivity.endpointStatus = 'online';
     pluginSurfaceConnectivity.machineOnline = true;
+    pluginSurfaceConnectivity.machineOnlineById.clear();
     pluginSurfaceConnectivity.daemonStateVersion = 1;
     declarativeSettingsGetMock.mockReset();
     declarativeSettingsSetMock.mockReset();
@@ -1182,10 +1202,10 @@ afterEach(() => {
         serverUrl: 'https://plugin-data.example',
         requirements: undefined,
     });
-    resourceReadMock.mockClear();
-    resourceWatchOpenMock.mockClear();
-    resourceWatchNextMock.mockClear();
-    resourceWatchCloseMock.mockClear();
+    resourceReadMock.mockReset();
+    resourceWatchOpenMock.mockReset();
+    resourceWatchNextMock.mockReset();
+    resourceWatchCloseMock.mockReset();
     pluginSurfaceDiagnosticLog.mockClear();
     reactNativeSurfaceRuntime.enabled = false;
     reactNativeSurfaceRuntime.module = null;
@@ -1193,6 +1213,12 @@ afterEach(() => {
     currentUiContextMountPublisher.value = null;
     currentUiContextMountLifecycle.active = true;
     observedDeclarativeHostApis.length = 0;
+    const { forgetPluginUiProjectionAdmissionSnapshots } = await import(
+        '@/sync/domains/plugins/ui/projectionWarmCache'
+    );
+    for (const scope of pluginSurfaceAccountLifetime.scopesUsed()) {
+        forgetPluginUiProjectionAdmissionSnapshots(scope);
+    }
     pluginSurfaceAccountLifetime.reset();
     activePluginAvailability.reader = null;
     reactNativeCrashReports.submit.mockReset();
@@ -1201,12 +1227,61 @@ afterEach(() => {
 });
 
 beforeEach(async () => {
+    resourceReadMock.mockReset();
+    resourceReadMock.mockResolvedValue({
+        supported: true,
+        result: {
+            ok: true,
+            contentType: 'application/json',
+            digest: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+            bytesBase64: 'e30=',
+        },
+    });
+    resourceWatchOpenMock.mockReset();
+    resourceWatchOpenMock.mockResolvedValue({
+        supported: true,
+        result: {
+            ok: true,
+            digest: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+        },
+    });
+    resourceWatchNextMock.mockReset();
+    resourceWatchNextMock.mockImplementation(async (_machineId, rawRequest) => {
+        const request = rawRequest as Readonly<{ subscriptionId?: unknown }>;
+        if (typeof request.subscriptionId !== 'string') throw new Error('expected_resource_watch_subscription');
+        return {
+            supported: true,
+            result: {
+                ok: true,
+                status: 'event',
+                event: {
+                    version: 1,
+                    subscriptionId: request.subscriptionId,
+                    kind: 'error',
+                    code: 'unavailable',
+                    diagnostics: ['test_resource_watch_complete'],
+                },
+            },
+        };
+    });
+    resourceWatchCloseMock.mockReset();
+    resourceWatchCloseMock.mockResolvedValue(undefined);
     pluginArtifactCacheStorage.clear();
     vi.stubGlobal('caches', pluginArtifactCacheStorage.cacheStorage);
     contributionProjectionDescribeMock.mockReset();
     contributionProjectionDescribeMock.mockResolvedValue({ supported: false, reason: 'not-supported' });
     accountEncryptionModeCredentials.value = { token: 'plugin-surface-account-mode-test-token' };
+    // Mutate the genuine singleton boundary: a module-replacement Proxy can
+    // leave cyclic imports holding the original, credential-less Sync object.
+    const credentialBoundary = vi.spyOn((await import('@/sync/sync')).sync, 'getCredentials')
+        .mockImplementation(() => {
+            const credentials = accountEncryptionModeCredentials.value;
+            if (!credentials) throw new Error('Account credentials unavailable in test boundary');
+            return credentials;
+        });
+    restoreCredentialBoundary = () => credentialBoundary.mockRestore();
     accountEncryptionModeFetch.mockResolvedValue({ mode: 'e2ee', updatedAt: 1 });
+    (await import('@/sync/api/account/apiAccountEncryptionMode')).invalidateAccountEncryptionModeCache();
     const { clearDaemonMergedProjectionCacheForTests } = await import(
         '@/agents/backendCatalog/loadDaemonMergedProjectionInputs'
     );
@@ -1250,15 +1325,15 @@ function destinationBinding(input: PluginUiDestinationBindingInputV1): PluginUiD
 }
 
 /**
- * Project a hand-built declarative fixture model into the shape the daemon
- * producer emits: every field binding carries its qualified identity and the
- * model carries the producer-owned `declarativeInventory` the UI admission
- * owner requires. Fixture-only derivation; producer/consumer parity itself is
- * owned by the CLI projection and UI admission owner tests.
+ * Build the strict daemon-projected fixture envelope, retaining evaluated
+ * Action availability and Settings bindings that an authored document lacks.
+ * The canonical wire schema checks every returned field; normalizer-only
+ * bookkeeping such as `nodes` never enters the projected model.
  */
-function admittedDeclarativeModelFixture(model: Readonly<Record<string, unknown>>): Record<string, unknown> {
+function admittedDeclarativeModelFixture(model: Readonly<Record<string, unknown>>) {
     const cloned = JSON.parse(JSON.stringify(model)) as Record<string, unknown>;
-    const identity = cloned.identity as { pluginId: string };
+    const identity = cloned.identity as { pluginId: string; localId: string; generation: string };
+    const contribution = createPluginContributionIdentity({ pluginId: identity.pluginId, localId: identity.localId });
     const settingsInventory: Array<Record<string, unknown>> = [];
     const walk = (node: unknown): void => {
         if (Array.isArray(node)) {
@@ -1270,10 +1345,17 @@ function admittedDeclarativeModelFixture(model: Readonly<Record<string, unknown>
         if (record.kind === 'field' && record.setting && typeof record.setting === 'object') {
             const setting = record.setting as Record<string, unknown>;
             if (typeof setting.id !== 'string' || setting.id.length === 0) return;
+            const descriptor = (setting.descriptor ?? {}) as Record<string, unknown>;
+            setting.contributionId ??= identity.localId;
+            setting.descriptor = {
+                id: setting.id,
+                title: record.label ?? setting.id,
+                target: { kind: 'plugin' },
+                ...descriptor,
+            };
             if (typeof setting.qualifiedId !== 'string' || setting.qualifiedId.length === 0) {
-                setting.qualifiedId = `${identity.pluginId}/${setting.id}`;
+                setting.qualifiedId = `${identity.pluginId}/settings/${descriptor.scope}/${setting.contributionId}/fields/${setting.id}`;
             }
-            const descriptor = setting.descriptor as Record<string, unknown> | undefined;
             settingsInventory.push({
                 pluginId: identity.pluginId,
                 id: setting.id,
@@ -1293,7 +1375,13 @@ function admittedDeclarativeModelFixture(model: Readonly<Record<string, unknown>
         settings: settingsInventory,
         uiQueries: existingInventory.uiQueries ?? [],
     };
-    return cloned;
+    return PluginDeclarativeProjectedModelV1Schema.parse({
+        identity: { ...contribution, qualifiedId: buildQualifiedPluginContributionKey(contribution), generation: identity.generation },
+        visible: cloned.visible,
+        requiredHostMethods: cloned.requiredHostMethods ?? [],
+        declarativeInventory: cloned.declarativeInventory,
+        root: cloned.root,
+    });
 }
 
 /**
@@ -1539,6 +1627,7 @@ function prepareGeneratedHostedWebArtifactFrame(): void {
                 pluginId,
                 response: PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
                     availabilityCursor: 11,
+                    packageAssets: [],
                     hostingCapability: {
                         enabled: true,
                         maxArtifactBytes: 1024,
@@ -1627,13 +1716,6 @@ const browserHostedWebPlacement = surfacePlacementFixture({
     // negotiation tests below assert that only this selected member grants the
     // dynamic methods; renderer declarations remain admission-only.
     runtime: { resourceCapability: { readable: true, dynamic: true } },
-});
-
-const generatedBrowserHostedWebHostIdentity = Object.freeze({
-    pluginId: generatedHostedWebArtifactFixture.pluginId,
-    pluginVersion: generatedHostedWebArtifactFixture.releaseVersion,
-    viewId: browserHostedWebPlacement.id,
-    generation: String(generatedHostedWebArtifactFixture.projectionGeneration),
 });
 
 /**
@@ -1977,6 +2059,8 @@ function primeExactTargetedContributions(input: Readonly<{
     projectionGeneration?: number;
     /** Exact response-local B projection; never the broad A presentation map. */
     projection?: PluginProjectionV2;
+    /** The exact raw V2 Action map used by the mounted Action definitions. */
+    actionsById?: PluginProjectionV2['actionsById'];
     targetedContributions?: Readonly<Record<string, unknown>>;
     targetedSurfaceMounts?: readonly DaemonPluginUiTargetedSurfaceMountV1[];
 }>) {
@@ -1988,24 +2072,30 @@ function primeExactTargetedContributions(input: Readonly<{
         target: mountedTarget,
         points: [],
     });
+    const exactProjection = input.projection === undefined
+        ? PluginProjectionV2Schema.parse({
+            v: 2,
+            generation: input.projectionGeneration ?? 1,
+            installedPackagesById: {},
+            agentsById: {},
+            backendsById: {},
+            actionsById: input.actionsById ?? {},
+            toolsById: {},
+            commandsById: {},
+            resourcesById: {},
+            settingsById: {},
+            familiesById: {},
+            diagnostics: [],
+        })
+        : input.actionsById === undefined
+            ? input.projection
+            : PluginProjectionV2Schema.parse({
+                ...input.projection,
+                actionsById: input.actionsById,
+            });
     contributionProjectionDescribeMock.mockResolvedValue({
         supported: true,
-        projection: {
-            ...(input.projection ?? PluginProjectionV2Schema.parse({
-                v: 2,
-                generation: input.projectionGeneration ?? 1,
-                installedPackagesById: {},
-                agentsById: {},
-                backendsById: {},
-                actionsById: {},
-                toolsById: {},
-                commandsById: {},
-                resourcesById: {},
-                settingsById: {},
-                familiesById: {},
-                diagnostics: [],
-            })),
-        },
+        projection: exactProjection,
         targetedContributions,
         ...(input.targetedSurfaceMounts === undefined
             ? {}
@@ -2190,7 +2280,140 @@ function reactNativeInlineSurfacePlacementFixture(
     });
 }
 
+function daemonSettingsPageFixture(): PluginUiSettingsPageProjection {
+    const binding = normalizePluginUiSettingsPageBindingV1({
+        pluginId: 'acme.settings-target',
+        pageId: 'defaults',
+        rendererId: 'settings-form',
+    });
+    if (!binding) throw new Error('Settings page fixture needs a normalized binding');
+    return {
+        id: 'settingsPage:acme.settings-target:defaults',
+        pluginId: 'acme.settings-target',
+        contributionKind: 'settingsPage',
+        descriptorId: 'defaults',
+        page: {
+            id: { pluginId: 'acme.settings-target', localId: 'defaults' },
+            group: { kind: 'host', id: 'general' },
+            title: 'Defaults',
+        },
+        binding,
+        renderer: {
+            kind: 'declarative',
+            contributionId: 'settings-form',
+            model: admittedDeclarativeModelFixture({
+                identity: {
+                    pluginId: 'acme.settings-target',
+                    localId: 'settings-form',
+                    qualifiedId: 'acme.settings-target/settings-form',
+                    generation: '1',
+                },
+                visible: true,
+                root: {
+                    kind: 'group',
+                    path: 'root',
+                    order: 0,
+                    children: [{
+                        kind: 'field',
+                        path: 'root.children[0]',
+                        order: 0,
+                        label: 'Endpoint',
+                        control: { kind: 'text', settingId: 'endpoint' },
+                        setting: {
+                            id: 'endpoint',
+                            descriptor: { scope: 'daemon', schema: { type: 'string' } },
+                        },
+                    }],
+                },
+            }),
+        },
+        availability: { state: 'available', reason: 'available', diagnostics: [] },
+    };
+}
+
 describe('PluginSurfacePlacementHost', () => {
+    it('keys daemon Settings reachability to the explicit selected target, not the mount origin', async () => {
+        declarativeSettingsGetMock.mockResolvedValue({
+            supported: true,
+            snapshot: {
+                protocolVersion: 1,
+                pluginId: 'acme.settings-target',
+                scope: { kind: 'daemon' },
+                revision: '0',
+                values: { endpoint: 'https://selected.example.test' },
+                redactedKeys: [],
+            },
+        });
+        declarativeSettingsSetMock.mockResolvedValue({
+            supported: true,
+            snapshot: {
+                protocolVersion: 1,
+                pluginId: 'acme.settings-target',
+                scope: { kind: 'daemon' },
+                revision: '1',
+                values: { endpoint: 'https://updated.example.test' },
+                redactedKeys: [],
+            },
+        });
+        const page = daemonSettingsPageFixture();
+        const daemonSettingsTarget = {
+            kind: 'daemon' as const,
+            serverIdentityId: 'settings-server-identity',
+            machineId: 'settings-machine',
+            serverId: 'settings-server',
+        };
+        const isDaemonSettingsTargetCurrent = vi.fn(() => true);
+        const { PluginSettingsPageHost } = await import('./PluginSurfaceHost');
+        const renderPage = () => (
+            <PluginSettingsPageHost
+                page={page}
+                machineId="origin-machine"
+                serverId="origin-server"
+                daemonSettingsTarget={daemonSettingsTarget}
+                isDaemonSettingsTargetCurrent={isDaemonSettingsTargetCurrent}
+                settingsScopesEnabled={{ account: true, daemon: true }}
+                pluginUiProjection={EMPTY_PLUGIN_UI_PROJECTION}
+                platform="web"
+                projectionInteractionEnabled={false}
+            />
+        );
+
+        pluginSurfaceConnectivity.machineOnlineById.set('origin-machine', false);
+        pluginSurfaceConnectivity.machineOnlineById.set('settings-machine', true);
+        const screen = await renderScreen(renderPage());
+        await vi.waitFor(() => expect(declarativeSettingsGetMock).toHaveBeenCalledWith(
+            'settings-machine',
+            expect.objectContaining({ pluginId: 'acme.settings-target' }),
+        ));
+        await vi.waitFor(() => expect(
+            screen.findByTestId('plugin-declarative-field:root.children[0]')?.props.editable,
+        ).toBe(true));
+        await act(async () => {
+            screen.changeTextByTestId('plugin-declarative-field:root.children[0]', 'https://updated.example.test');
+        });
+        await act(async () => {
+            screen.pressByTestId('plugin-declarative-field-save:root.children[0]');
+        });
+        await vi.waitFor(() => expect(declarativeSettingsSetMock).toHaveBeenCalledWith(
+            'settings-machine',
+            expect.objectContaining({
+                serverId: 'settings-server',
+                serverIdentityId: 'settings-server-identity',
+                pluginId: 'acme.settings-target',
+            }),
+        ));
+
+        declarativeSettingsSetMock.mockClear();
+        pluginSurfaceConnectivity.machineOnlineById.set('origin-machine', true);
+        pluginSurfaceConnectivity.machineOnlineById.set('settings-machine', false);
+        await screen.update(renderPage());
+        expect(screen.findByTestId('plugin-declarative-field:root.children[0]')?.props.editable).toBe(false);
+        await act(async () => {
+            screen.pressByTestId('plugin-declarative-field-save:root.children[0]');
+        });
+        expect(declarativeSettingsSetMock).not.toHaveBeenCalled();
+    });
+
     it('uses an explicit Settings daemon target and rejects its write after that target retires', async () => {
         declarativeSettingsGetMock.mockResolvedValue({
             supported: true,
@@ -2257,7 +2480,8 @@ describe('PluginSurfacePlacementHost', () => {
             machineId: 'settings-machine',
             serverId: 'settings-server',
         };
-        const isDaemonSettingsTargetCurrent = vi.fn(() => false);
+        let daemonSettingsTargetCurrent = true;
+        const isDaemonSettingsTargetCurrent = vi.fn(() => daemonSettingsTargetCurrent);
         const { PluginSettingsPageHost } = await import('./PluginSurfaceHost');
         const screen = await renderScreen(
             <PluginSettingsPageHost
@@ -2281,6 +2505,7 @@ describe('PluginSurfacePlacementHost', () => {
         });
         expect(declarativeSettingsGetMock).not.toHaveBeenCalledWith('ambient-machine', expect.anything());
 
+        daemonSettingsTargetCurrent = false;
         await act(async () => {
             screen.changeTextByTestId('plugin-declarative-field:root.children[0]', 'https://stale.example.test');
         });
@@ -2294,12 +2519,12 @@ describe('PluginSurfacePlacementHost', () => {
 
     it('renders an evaluated declarative model and uses canonical settings/action RPCs', async () => {
         surfaceEnvironment.platform = 'android';
-        const daemonProfile = upsertServerProfile({
+        const daemonProfile = await upsertServerProfile({
             serverUrl: 'https://server-a',
             name: 'Declarative Settings Test',
         });
         expect(daemonProfile.id).toBe('server-a');
-        expect(setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_server_a')).toMatchObject({
+        expect(await setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_server_a')).toMatchObject({
             id: 'server-a',
             serverIdentityId: 'srv_server_a',
         });
@@ -2343,28 +2568,30 @@ describe('PluginSurfacePlacementHost', () => {
             availability: { state: 'available', reason: 'available', diagnostics: [] },
             headerActions: [],
         } as const;
+        const exactActionsById = {
+            'acme.forms/save': projectedDaemonUiAction({
+                pluginId: 'acme.forms',
+                localId: 'save',
+                machineId: 'machine-1',
+                materializationId: 'materialization-forms-current',
+            }),
+            'acme.shared/reset': projectedDaemonUiAction({
+                pluginId: 'acme.shared',
+                localId: 'reset',
+                machineId: 'machine-1',
+                materializationId: 'materialization-shared-current',
+            }),
+        } satisfies PluginProjectionV2['actionsById'];
         const targetFixture = primeExactTargetedContributions({
             pluginId: 'acme.forms',
             immutableGenerationId: 'forms-generation-7',
             projectionGeneration: 7,
+            actionsById: exactActionsById,
         });
         const projectedUi = withMountedTargetPackage({
             ...EMPTY_PLUGIN_UI_PROJECTION,
             generation: 7,
-            actionsById: {
-                'acme.forms/save': projectedDaemonUiAction({
-                    pluginId: 'acme.forms',
-                    localId: 'save',
-                    machineId: 'machine-1',
-                    materializationId: 'materialization-forms-current',
-                }),
-                'acme.shared/reset': projectedDaemonUiAction({
-                    pluginId: 'acme.shared',
-                    localId: 'reset',
-                    machineId: 'machine-1',
-                    materializationId: 'materialization-shared-current',
-                }),
-            },
+            actionsById: exactActionsById,
         }, targetFixture, {
             displayName: 'Forms',
             version: '1.0.0',
@@ -2719,7 +2946,18 @@ describe('PluginSurfacePlacementHost', () => {
                         kind: 'targetedSurface',
                         path: 'root',
                         order: 0,
-                        surface: { presentation: 'fill' },
+                        surface: {
+                            point: { pointId: 'fill', protocol: { id: 'fill', version: 1 } },
+                            contributor: {
+                                pluginId: 'acme.fill-contributor',
+                                contributionId: 'fill',
+                                immutableGenerationId: 'fill-contributor-generation',
+                            },
+                            role: 'detail',
+                            presentation: 'fill',
+                        },
+                        input: null,
+                        instanceKey: `targeted-surface:v1:${'a'.repeat(64)}`,
                     },
                 })}
                 interactionEnabled={true}
@@ -3015,22 +3253,24 @@ describe('PluginSurfacePlacementHost', () => {
             availability: { state: 'available', reason: 'available', diagnostics: [] },
             headerActions: [],
         } as const;
+        const exactActionsById = {
+            'acme.actionsonly/run': projectedDaemonUiAction({
+                pluginId: 'acme.actionsonly',
+                localId: 'run',
+                machineId: 'machine-1',
+                materializationId: 'materialization-actionsonly-current',
+            }),
+        } satisfies PluginProjectionV2['actionsById'];
         const targetFixture = primeExactTargetedContributions({
             pluginId: 'acme.actionsonly',
             immutableGenerationId: 'actionsonly-generation-7',
             projectionGeneration: 7,
+            actionsById: exactActionsById,
         });
         const projectedUi = withMountedTargetPackage({
             ...EMPTY_PLUGIN_UI_PROJECTION,
             generation: 7,
-            actionsById: {
-                'acme.actionsonly/run': projectedDaemonUiAction({
-                    pluginId: 'acme.actionsonly',
-                    localId: 'run',
-                    machineId: 'machine-1',
-                    materializationId: 'materialization-actionsonly-current',
-                }),
-            },
+            actionsById: exactActionsById,
         }, targetFixture, {
             displayName: 'Actions only',
             version: '1.0.0',
@@ -3221,28 +3461,30 @@ describe('PluginSurfacePlacementHost', () => {
         } as const;
         // The model's `g1` labels its declarative bindings, but the canonical
         // action transport must carry the daemon projection generation instead.
+        const exactActionsById = {
+            'acme.repos/open': projectedDaemonUiAction({
+                pluginId: 'acme.repos',
+                localId: 'open',
+                machineId: 'machine-1',
+                materializationId: 'materialization-repos-current',
+            }),
+            'acme.repos/archive': projectedDaemonUiAction({
+                pluginId: 'acme.repos',
+                localId: 'archive',
+                machineId: 'machine-1',
+                materializationId: 'materialization-repos-current',
+            }),
+        } satisfies PluginProjectionV2['actionsById'];
         const targetFixture = primeExactTargetedContributions({
             pluginId: 'acme.repos',
             immutableGenerationId: 'repos-generation-1',
             projectionGeneration: 1,
+            actionsById: exactActionsById,
         });
         const projectedUi = withMountedTargetPackage({
             ...EMPTY_PLUGIN_UI_PROJECTION,
             generation: 1,
-            actionsById: {
-                'acme.repos/open': projectedDaemonUiAction({
-                    pluginId: 'acme.repos',
-                    localId: 'open',
-                    machineId: 'machine-1',
-                    materializationId: 'materialization-repos-current',
-                }),
-                'acme.repos/archive': projectedDaemonUiAction({
-                    pluginId: 'acme.repos',
-                    localId: 'archive',
-                    machineId: 'machine-1',
-                    materializationId: 'materialization-repos-current',
-                }),
-            },
+            actionsById: exactActionsById,
         }, targetFixture, {
             displayName: 'Repositories',
             version: '1.0.0',
@@ -3323,19 +3565,19 @@ describe('PluginSurfacePlacementHost', () => {
     // F7 — a unioned app-scope contribution carries the machine that produced it,
     // and every effect this mount performs must reach THAT machine.
     it('executes a unioned contribution against its own origin machine, not the mount\'s ambient one', async () => {
-        const ambientServer = upsertServerProfile({
+        const ambientServer = await upsertServerProfile({
             serverUrl: 'https://server-ambient',
             name: 'Ambient Settings Origin Test',
         });
-        const originServer = upsertServerProfile({
+        const originServer = await upsertServerProfile({
             serverUrl: 'https://server-origin',
             name: 'Origin Settings Origin Test',
         });
-        expect(setServerProfileIdentityForUrl(ambientServer.serverUrl, 'srv_ambient')).toMatchObject({
+        expect(await setServerProfileIdentityForUrl(ambientServer.serverUrl, 'srv_ambient')).toMatchObject({
             id: ambientServer.id,
             serverIdentityId: 'srv_ambient',
         });
-        expect(setServerProfileIdentityForUrl(originServer.serverUrl, 'srv_origin')).toMatchObject({
+        expect(await setServerProfileIdentityForUrl(originServer.serverUrl, 'srv_origin')).toMatchObject({
             id: originServer.id,
             serverIdentityId: 'srv_origin',
         });
@@ -3421,11 +3663,13 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('keeps Account-local declarative interaction available while daemon-owned settings recover offline', async () => {
-        const daemonProfile = upsertServerProfile({
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server-a', accountId: 'account-a' });
+        accountEncryptionModeFetch.mockResolvedValue({ mode: 'plain', updatedAt: 1 });
+        const daemonProfile = await upsertServerProfile({
             serverUrl: 'https://server-recovery',
             name: 'Recovery Settings Test',
         });
-        expect(setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_recovery')).toMatchObject({
+        expect(await setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_recovery')).toMatchObject({
             id: daemonProfile.id,
             serverIdentityId: 'srv_recovery',
         });
@@ -3512,6 +3756,7 @@ describe('PluginSurfacePlacementHost', () => {
                     pluginId: 'acme.forms',
                     response: {
                         availabilityCursor: 1,
+                        packageAssets: [],
                         hostingCapability: {
                             enabled: true,
                             maxArtifactBytes: 1024,
@@ -3560,17 +3805,19 @@ describe('PluginSurfacePlacementHost', () => {
         });
         pluginDataTransport.enabled = true;
         pluginDataTransport.request.mockImplementation(async (path: string) => {
+            if (path === '/v1/account/encryption') {
+                return new Response(JSON.stringify({ mode: 'plain', updatedAt: 1 }), {
+                    status: 200, headers: { 'Content-Type': 'application/json' },
+                });
+            }
             if (path === '/v1/account/encryption/currentness') {
-                return new Response(JSON.stringify({
-                    mode: 'plain',
+                return new Response(JSON.stringify(createPlainAccountEncryptionCurrentnessFixture({
                     version: 1,
-                    signingKeyFingerprint: null,
-                    contentKeyFingerprint: null,
                     updatedAt: 1,
-                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                })), { status: 200, headers: { 'Content-Type': 'application/json' } });
             }
             if (path === '/v1/plugins/data/contract') {
-                return new Response(JSON.stringify({ contract: accountCollectionContract }), {
+                return new Response(JSON.stringify({ access: 'writable', contract: accountCollectionContract }), {
                     status: 200,
                     headers: { 'Content-Type': 'application/json' },
                 });
@@ -3643,8 +3890,7 @@ describe('PluginSurfacePlacementHost', () => {
             </PluginSurfaceFocusEligibilityProvider>
         );
         const screen = await renderScreen(renderPlacement('generation-1'));
-        await act(async () => { await Promise.resolve(); });
-        expect(createActivePluginCollectionUiQueryPagerMock).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(createActivePluginCollectionUiQueryPagerMock).toHaveBeenCalledTimes(1));
         expect(declarativeSettingsGetMock).not.toHaveBeenCalled();
         expect(screen.findByTestId('plugin-declarative-field:root.children[0]')?.props.editable).toBe(false);
         expect(screen.findByTestId('plugin-declarative-action:acme.forms/save')?.props.disabled).toBe(true);
@@ -3731,11 +3977,11 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('fails closed before a daemon-backed declarative surface can act without a current Account lifetime', async () => {
-        const daemonProfile = upsertServerProfile({
+        const daemonProfile = await upsertServerProfile({
             serverUrl: 'https://server-missing-account-lifetime',
             name: 'Missing Account Lifetime Test',
         });
-        expect(setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_missing_account_lifetime')).toMatchObject({
+        expect(await setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_missing_account_lifetime')).toMatchObject({
             id: daemonProfile.id,
             serverIdentityId: 'srv_missing_account_lifetime',
         });
@@ -3835,11 +4081,11 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('serializes declarative setting writes and preserves the exact failed draft for retry', async () => {
-        const daemonProfile = upsertServerProfile({
+        const daemonProfile = await upsertServerProfile({
             serverUrl: 'https://server-write-serialization',
             name: 'Serialized Settings Writes Test',
         });
-        expect(setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_write_serialization')).toMatchObject({
+        expect(await setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_write_serialization')).toMatchObject({
             id: daemonProfile.id,
             serverIdentityId: 'srv_write_serialization',
         });
@@ -3905,11 +4151,11 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('preserves an unsaved surviving declarative draft across a root replacement and retires it when removed', async () => {
-        const daemonProfile = upsertServerProfile({
+        const daemonProfile = await upsertServerProfile({
             serverUrl: 'https://server-root-replacement',
             name: 'Root replacement Settings Test',
         });
-        expect(setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_root_replacement')).toMatchObject({
+        expect(await setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_root_replacement')).toMatchObject({
             id: daemonProfile.id,
             serverIdentityId: 'srv_root_replacement',
         });
@@ -3988,11 +4234,11 @@ describe('PluginSurfacePlacementHost', () => {
     }, 180_000);
 
     it('does not let a pre-reconnect write completion release the current authority write lock', async () => {
-        const daemonProfile = upsertServerProfile({
+        const daemonProfile = await upsertServerProfile({
             serverUrl: 'https://server-write-reconnect',
             name: 'Reconnect Settings Writes Test',
         });
-        expect(setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_write_reconnect')).toMatchObject({
+        expect(await setServerProfileIdentityForUrl(daemonProfile.serverUrl, 'srv_write_reconnect')).toMatchObject({
             id: daemonProfile.id,
             serverIdentityId: 'srv_write_reconnect',
         });
@@ -4167,6 +4413,113 @@ describe('PluginSurfacePlacementHost', () => {
         expect(handleRequest).not.toHaveBeenCalled();
     });
 
+    it.each(['com.acme.external-inline', 'built-in.review-inline'])(
+        'mounts %s inline HTML through the same isolated frame without an Artifact request',
+        async (pluginId) => {
+            const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
+            const html = '<!doctype html><html><body><p>Inline destination</p></body></html>';
+            const hostWindow = new EventTarget();
+            const iframeSource = { postMessage: vi.fn() };
+            vi.stubGlobal('window', hostWindow);
+            vi.stubGlobal('location', { origin: 'https://host.happier.test' });
+            onTestFinished(() => { vi.unstubAllGlobals(); });
+            const placement = surfacePlacementFixture({
+                binding: {
+                    pluginId,
+                    destinationId: 'status',
+                    rendererId: 'panel',
+                    container: 'servicesPanel',
+                    target: { kind: 'services' },
+                },
+                renderer: {
+                    kind: 'hostedHtml',
+                    contributionId: 'panel',
+                    source: { kind: 'html', html },
+                    requiredHostMethods: ['context'],
+                    requestedCapabilities: { networkOrigins: ['https://api.example.com'] },
+                },
+            });
+            const targetFixture = primeExactTargetedContributions({
+                pluginId: placement.pluginId,
+                immutableGenerationId: 'inline-html-generation',
+            });
+            const projection = withMountedTargetPackage(EMPTY_PLUGIN_UI_PROJECTION, targetFixture, {
+                displayName: 'Inline destination',
+                version: '1.0.0',
+            });
+            const screen = await renderScreen(
+                <PluginSurfacePlacementHost
+                    placement={placement}
+                    machineId="machine_1"
+                    pluginUiProjection={projection}
+                    platform="web"
+                />,
+                {
+                    createNodeMock: (element) => element.type === 'iframe'
+                        ? { contentWindow: iframeSource }
+                        : null,
+                },
+            );
+            await vi.waitFor(() => expect(screen.root.findAllByType('iframe')).toHaveLength(1));
+            expect(screen.root.findAll((node) => typeof node.props.testID === 'string'
+                && node.props.testID.startsWith('plugin-surface-unavailable-diagnostic-'))
+                .map((node) => node.props.testID)).toEqual([]);
+            const frame = screen.root.findByType('iframe');
+            expect(frame.props.srcDoc).toContain(html);
+            expect(frame.props.srcDoc).toContain("connect-src https://api.example.com");
+            expect(frame.props.sandbox).not.toContain('allow-same-origin');
+            expect(pluginDataTransport.request).not.toHaveBeenCalled();
+
+            // Both a bundled plugin and an external-style plugin negotiate through
+            // the same incumbent installed-plugin Host API. Provenance changes no
+            // capability, frame, or transport branch.
+            const encodedConfig = String(frame.props.srcDoc)
+                .match(/Object\.freeze\((\{.*?\})\),writable:false/)?.[1];
+            if (!encodedConfig) throw new Error('expected_inline_frame_bootstrap');
+            const config: { identity: { instanceId: string; mountNonce: string } } = JSON.parse(encodedConfig);
+            const documentChannel = createTestMessageChannel();
+            const ready = new Event('message');
+            Object.defineProperties(ready, {
+                origin: { value: 'null' },
+                source: { value: iframeSource },
+                ports: { value: [documentChannel.port1] },
+                data: { value: {
+                    version: 1,
+                    identity: config.identity,
+                    sequence: 1,
+                    kind: 'ready',
+                    payload: { ready: true },
+                } },
+            });
+            await act(async () => {
+                hostWindow.dispatchEvent(ready);
+                documentChannel.port2.postMessage({
+                    version: 1,
+                    identity: config.identity,
+                    sequence: 2,
+                    kind: 'hostApi',
+                    payload: {
+                        wireVersion: 1,
+                        kind: 'negotiate',
+                        identity: config.identity,
+                        apiRange: '^1.0.0',
+                    },
+                });
+                await Promise.resolve();
+            });
+            await vi.waitFor(() => expect(documentChannel.port1PostMessage).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    kind: 'result',
+                    payload: expect.objectContaining({
+                        kind: 'negotiated',
+                        methods: expect.arrayContaining(['context']),
+                    }),
+                }),
+            ));
+            expect(iframeSource.postMessage).not.toHaveBeenCalled();
+        },
+    );
+
     it('renders explicit unavailable states for unavailable or unevaluated placements', async () => {
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const unavailablePlacement = {
@@ -4250,7 +4603,7 @@ describe('PluginSurfacePlacementHost', () => {
         expect(screen.findByTestId('plugin-hosted-web-frame')).toBeTruthy();
     });
 
-    it('gives the hosted-web bridge the bound controller surface identity, not a second one built at the frame', async () => {
+    it('gives the hosted-web bridge an opaque mount identity without exposing controller routing', async () => {
         // The hosted-web mount used to build its own `PluginUiSurfaceContextV1`
         // beside the controller's, spelling `contributionId` as the RENDERER
         // contribution ('panel') while every other mount spells it as the
@@ -4271,8 +4624,11 @@ describe('PluginSurfacePlacementHost', () => {
         );
         const frame = screen.root.findByType('iframe');
         const src = new URL(String(frame?.props.src ?? 'https://unused.test/'));
-        expect(src.searchParams.get('happierContributionId')).toBe('hosted-panel');
-        expect(src.searchParams.get('happierSurfaceId')).toBe('surfacePlacement:acme.browser:hosted-panel');
+        expect(src.searchParams.get('happierInstanceId')).toBeTruthy();
+        expect(src.searchParams.get('happierBridgeNonce')).toBeTruthy();
+        expect(src.searchParams.has('happierPluginId')).toBe(false);
+        expect(src.searchParams.has('happierContributionId')).toBe(false);
+        expect(src.searchParams.has('happierSurfaceId')).toBe(false);
         expect(src.searchParams.get('happierSessionId')).toBeNull();
     });
 
@@ -4414,67 +4770,9 @@ describe('PluginSurfacePlacementHost', () => {
         const previousLocation = (globalThis as any).location;
         const previousBootstrap = Object.getOwnPropertyDescriptor(globalThis, bootstrapKey);
         let guestListener: ((message: unknown) => void) | undefined;
-        let bootstrapIdentity: Readonly<{
-            pluginId: string;
-            pluginVersion: string;
-            viewId: string;
-            generation: string;
-            sessionId?: string;
-        }> | null = null;
-        const iframeSource = {
-            postMessage: vi.fn((message: unknown) => {
-                const record = message && typeof message === 'object'
-                    ? message as Readonly<{ direction?: unknown; kind?: unknown; payload?: unknown }>
-                    : null;
-                if (record?.direction === 'hostToFrame' && record.kind === 'bootstrap') {
-                    const payload = record.payload;
-                    const identity = payload && typeof payload === 'object'
-                        ? (payload as Readonly<{ identity?: unknown }>).identity
-                        : null;
-                    if (identity && typeof identity === 'object') {
-                        bootstrapIdentity = identity as typeof bootstrapIdentity;
-                    }
-                    return;
-                }
-                if (record?.direction === 'hostToFrame' && record.kind === 'hostApi') {
-                    guestListener?.(record.payload);
-                    return;
-                }
-                if (record?.kind === 'result') {
-                    guestListener?.(record.payload);
-                }
-            }),
-        } as unknown as WindowProxy;
+        const iframeSource = { postMessage: vi.fn() } as unknown as WindowProxy;
+        const documentChannel = createTestMessageChannel();
         let store: ReturnType<typeof createPluginUiResourceStore> | null = null;
-
-        const dispatchGuestEnvelope = (input: Readonly<{
-            pluginId: string;
-            contributionId: string;
-            surfaceId: string;
-            sessionId: string | null;
-            nonce: string;
-            sequence: number;
-            kind: string;
-            payload: unknown;
-        }>) => {
-            const event = new Event('message') as MessageEvent;
-            Object.defineProperties(event, {
-                origin: { value: 'null' },
-                source: { value: iframeSource },
-                data: { value: {
-                    version: 1,
-                    pluginId: input.pluginId,
-                    contributionId: input.contributionId,
-                    surfaceId: input.surfaceId,
-                    ...(input.sessionId === null ? {} : { sessionId: input.sessionId }),
-                    nonce: input.nonce,
-                    sequence: input.sequence,
-                    kind: input.kind,
-                    payload: input.payload,
-                } },
-            });
-            hostWindow.dispatchEvent(event);
-        };
 
         (globalThis as any).window = hostWindow;
         (globalThis as any).location = { origin: hostOrigin };
@@ -4510,34 +4808,43 @@ describe('PluginSurfacePlacementHost', () => {
             );
             await vi.waitFor(() => expect(screen.root.findAllByType('iframe')).toHaveLength(1));
             const frameUrl = new URL(String(screen.root.findByType('iframe').props.src));
-            const pluginId = frameUrl.searchParams.get('happierPluginId');
-            const contributionId = frameUrl.searchParams.get('happierContributionId');
-            const surfaceId = frameUrl.searchParams.get('happierSurfaceId');
-            const nonce = frameUrl.searchParams.get('happierBridgeNonce');
-            if (!pluginId || !contributionId || !surfaceId || !nonce) {
+            const instanceId = frameUrl.searchParams.get('happierInstanceId');
+            const mountNonce = frameUrl.searchParams.get('happierBridgeNonce');
+            if (!instanceId || !mountNonce) {
                 throw new Error('expected_generated_hosted_frame_bridge_identity');
             }
 
             // The guest becomes eligible only by its strict opaque-origin ready
-            // message; the host returns the private bootstrap through the frame
-            // it just mounted, rather than through a test-only host adapter.
+            // message and transfers the document-bound channel that carries the
+            // private bootstrap and all later Host API traffic.
             await act(async () => {
-                dispatchGuestEnvelope({
-                    pluginId,
-                    contributionId,
-                    surfaceId,
-                    sessionId: 'session_1',
-                    nonce,
-                    sequence: 1,
-                    kind: 'ready',
-                    payload: { ready: true },
+                const ready = new Event('message') as MessageEvent;
+                Object.defineProperties(ready, {
+                    origin: { value: 'null' },
+                    source: { value: iframeSource },
+                    ports: { value: [documentChannel.port1] },
+                    data: { value: {
+                        version: 1,
+                        identity: { instanceId, mountNonce },
+                        sequence: 1,
+                        kind: 'ready',
+                        payload: { ready: true },
+                    } },
                 });
+                hostWindow.dispatchEvent(ready);
                 await Promise.resolve();
                 await Promise.resolve();
             });
-            await vi.waitFor(() => expect(bootstrapIdentity).not.toBeNull());
-            const identity = bootstrapIdentity;
-            if (!identity) throw new Error('expected_generated_hosted_frame_bootstrap');
+            await vi.waitFor(() => expect(documentChannel.port1PostMessage).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    direction: 'hostToFrame',
+                    kind: 'bootstrap',
+                    payload: expect.objectContaining({
+                        identity: { instanceId, mountNonce },
+                    }),
+                }),
+            ));
+            const identity = { instanceId, mountNonce };
 
             let guestSequence = 1;
             Reflect.set(globalThis, bootstrapKey, {
@@ -4545,12 +4852,9 @@ describe('PluginSurfacePlacementHost', () => {
                 transport: {
                     send: (message: unknown) => {
                         guestSequence += 1;
-                        dispatchGuestEnvelope({
-                            pluginId,
-                            contributionId,
-                            surfaceId,
-                            sessionId: 'session_1',
-                            nonce,
+                        documentChannel.port2.postMessage({
+                            version: 1,
+                            identity,
                             sequence: guestSequence,
                             kind: 'hostApi',
                             payload: message,
@@ -4558,9 +4862,18 @@ describe('PluginSurfacePlacementHost', () => {
                     },
                     subscribe: (listener: (message: unknown) => void) => {
                         guestListener = listener;
+                        documentChannel.port2.onmessage = (event) => {
+                            const record = event.data && typeof event.data === 'object'
+                                ? event.data as Readonly<{ kind?: unknown; payload?: unknown }>
+                                : null;
+                            if (record?.kind === 'hostApi' || record?.kind === 'result') {
+                                guestListener?.(record.payload);
+                            }
+                        };
                         return Object.freeze({
                             dispose: () => {
                                 if (guestListener === listener) guestListener = undefined;
+                                documentChannel.port2.onmessage = null;
                             },
                         });
                     },
@@ -4608,7 +4921,7 @@ describe('PluginSurfacePlacementHost', () => {
             }));
             expect(resourceReadMock).toHaveBeenCalledTimes(readsBeforeInvalidation + 1);
 
-            const invalidationPushes = (iframeSource.postMessage as ReturnType<typeof vi.fn>).mock.calls
+            const invalidationPushes = documentChannel.port1PostMessage.mock.calls
                 .map(([message]) => message)
                 .filter((message): message is Readonly<{
                     direction: 'hostToFrame';
@@ -4648,7 +4961,7 @@ describe('PluginSurfacePlacementHost', () => {
             });
             expect(resourceReadMock).toHaveBeenCalledTimes(readsAfterRetirement);
             expect(snapshots).toHaveLength(snapshotCountAfterRetirement);
-            expect((iframeSource.postMessage as ReturnType<typeof vi.fn>).mock.calls
+            expect(documentChannel.port1PostMessage.mock.calls
                 .filter(([message]) => message && typeof message === 'object'
                     && (message as Readonly<{ direction?: unknown }>).direction === 'hostToFrame'
                     && (message as Readonly<{ kind?: unknown }>).kind === 'hostApi'
@@ -4723,17 +5036,20 @@ describe('PluginSurfacePlacementHost', () => {
             expect(frameUrl.searchParams.has('happierViewId')).toBe(false);
             expect(frameUrl.searchParams.has('happierGeneration')).toBe(false);
             expect(frameUrl.searchParams.get('happierHostOrigin')).toBe('https://host.happier.test');
+            const frameIdentity = {
+                instanceId: frameUrl.searchParams.get('happierInstanceId'),
+                mountNonce: frameUrl.searchParams.get('happierBridgeNonce'),
+            };
+            const documentChannel = createTestMessageChannel();
 
             await act(async () => {
                 const event = new Event('message') as MessageEvent;
                 Object.defineProperties(event, {
                     origin: { value: 'null' },
+                    ports: { value: [documentChannel.port1] },
                     data: { value: {
                         version: 1,
-                        pluginId: 'acme.browser',
-                        contributionId: 'hosted-panel',
-                        surfaceId: 'surfacePlacement:acme.browser:hosted-panel',
-                        nonce: frameUrl.searchParams.get('happierBridgeNonce'),
+                        identity: frameIdentity,
                         sequence: 1,
                         kind: 'ready',
                         payload: { ready: true },
@@ -4744,43 +5060,34 @@ describe('PluginSurfacePlacementHost', () => {
                 await Promise.resolve();
                 await Promise.resolve();
             });
-            expect((iframeSource.postMessage as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+            await vi.waitFor(() => expect(documentChannel.port1PostMessage).toHaveBeenCalledWith(
                 expect.objectContaining({
                     direction: 'hostToFrame',
                     kind: 'bootstrap',
                     payload: expect.objectContaining({
-                        identity: generatedBrowserHostedWebHostIdentity,
+                        identity: frameIdentity,
                     }),
                 }),
-                '*',
-            );
+            ));
+            expect(iframeSource.postMessage).not.toHaveBeenCalled();
 
             await act(async () => {
-                const event = new Event('message') as MessageEvent;
-                Object.defineProperties(event, {
-                    origin: { value: 'null' },
-                    data: { value: {
-                        version: 1,
-                        pluginId: 'acme.browser',
-                        contributionId: 'hosted-panel',
-                        surfaceId: 'surfacePlacement:acme.browser:hosted-panel',
-                        nonce: frameUrl.searchParams.get('happierBridgeNonce'),
-                        sequence: 2,
-                        kind: 'hostApi',
-                        payload: {
-                            wireVersion: 1,
-                            kind: 'negotiate',
-                            identity: generatedBrowserHostedWebHostIdentity,
-                            apiRange: '^1.0.0',
-                        },
-                    } },
-                    source: { value: iframeSource },
+                documentChannel.port2.postMessage({
+                    version: 1,
+                    identity: frameIdentity,
+                    sequence: 2,
+                    kind: 'hostApi',
+                    payload: {
+                        wireVersion: 1,
+                        kind: 'negotiate',
+                        identity: frameIdentity,
+                        apiRange: '^1.0.0',
+                    },
                 });
-                (globalThis as any).window.dispatchEvent(event);
                 await Promise.resolve();
             });
 
-            expect((iframeSource.postMessage as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+            await vi.waitFor(() => expect(documentChannel.port1PostMessage).toHaveBeenCalledWith(
                 expect.objectContaining({
                     kind: 'result',
                     payload: expect.objectContaining({
@@ -4812,8 +5119,7 @@ describe('PluginSurfacePlacementHost', () => {
                         }),
                     }),
                 }),
-                '*',
-            );
+            ));
             expect(handleRequest).not.toHaveBeenCalled();
         } finally {
             (globalThis as any).window = previousWindow;
@@ -4861,17 +5167,20 @@ describe('PluginSurfacePlacementHost', () => {
             );
             await vi.waitFor(() => expect(screen.root.findAllByType('iframe')).toHaveLength(1));
             const frameUrl = new URL(String(screen.root.findByType('iframe').props.src));
+            const frameIdentity = {
+                instanceId: frameUrl.searchParams.get('happierInstanceId'),
+                mountNonce: frameUrl.searchParams.get('happierBridgeNonce'),
+            };
+            const documentChannel = createTestMessageChannel();
 
             await act(async () => {
                 const event = new Event('message') as MessageEvent;
                 Object.defineProperties(event, {
                     origin: { value: 'null' },
+                    ports: { value: [documentChannel.port1] },
                     data: { value: {
                         version: 1,
-                        pluginId: 'acme.browser',
-                        contributionId: 'hosted-panel',
-                        surfaceId: 'surfacePlacement:acme.browser:hosted-panel',
-                        nonce: frameUrl.searchParams.get('happierBridgeNonce'),
+                        identity: frameIdentity,
                         sequence: 1,
                         // `ready` is an internal bootstrap lifecycle message:
                         // it is admitted for a canonical host binding even when
@@ -4885,37 +5194,28 @@ describe('PluginSurfacePlacementHost', () => {
                 await Promise.resolve();
                 await Promise.resolve();
             });
-            expect((iframeSource.postMessage as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+            expect(documentChannel.port1PostMessage).toHaveBeenCalledWith(
                 expect.objectContaining({ direction: 'hostToFrame', kind: 'bootstrap' }),
-                '*',
             );
+            expect(iframeSource.postMessage).not.toHaveBeenCalled();
 
             await act(async () => {
-                const event = new Event('message') as MessageEvent;
-                Object.defineProperties(event, {
-                    origin: { value: 'null' },
-                    data: { value: {
-                        version: 1,
-                        pluginId: 'acme.browser',
-                        contributionId: 'hosted-panel',
-                        surfaceId: 'surfacePlacement:acme.browser:hosted-panel',
-                        nonce: frameUrl.searchParams.get('happierBridgeNonce'),
-                        sequence: 2,
-                        kind: 'hostApi',
-                        payload: {
-                            wireVersion: 1,
-                            kind: 'negotiate',
-                            identity: generatedBrowserHostedWebHostIdentity,
-                            apiRange: '^1.0.0',
-                        },
-                    } },
-                    source: { value: iframeSource },
+                documentChannel.port2.postMessage({
+                    version: 1,
+                    identity: frameIdentity,
+                    sequence: 2,
+                    kind: 'hostApi',
+                    payload: {
+                        wireVersion: 1,
+                        kind: 'negotiate',
+                        identity: frameIdentity,
+                        apiRange: '^1.0.0',
+                    },
                 });
-                (globalThis as any).window.dispatchEvent(event);
                 await Promise.resolve();
             });
 
-            expect((iframeSource.postMessage as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+            await vi.waitFor(() => expect(documentChannel.port1PostMessage).toHaveBeenCalledWith(
                 expect.objectContaining({
                     kind: 'result',
                     payload: expect.objectContaining({
@@ -4930,8 +5230,7 @@ describe('PluginSurfacePlacementHost', () => {
                         methods: EXPECTED_GENERIC_DESTINATION_HOST_METHODS,
                     }),
                 }),
-                '*',
-            );
+            ));
 
         } finally {
             (globalThis as any).window = previousWindow;
@@ -5084,6 +5383,7 @@ describe('PluginSurfacePlacementHost', () => {
                     pluginId: 'acme.browser',
                     response: {
                         availabilityCursor: 1,
+                        packageAssets: [],
                         hostingCapability: { enabled: false },
                         intent: {
                             pluginId: 'acme.browser',
@@ -5319,6 +5619,7 @@ describe('PluginSurfacePlacementHost', () => {
                     pluginId: 'acme.docs',
                     response: PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
                         availabilityCursor: 1,
+                        packageAssets: [],
                         hostingCapability: {
                             enabled: true,
                             maxArtifactBytes: 1024,
@@ -5541,6 +5842,7 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('binds one exact generated crash state to the surface report and reset operations', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         const crashState = generatedReactNativeCrashState();
         reactNativeCrashReports.submit.mockResolvedValue({
@@ -6162,6 +6464,7 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('admits a disabled generated binding only to expose its exact reset operation', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         const crashState = generatedReactNativeCrashState({ disabled: true });
         reactNativeCrashReports.submit.mockResolvedValue({
@@ -6214,6 +6517,7 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('withholds a generated mount and Host API context until the current Account mode resolves', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         let resolveAccountEncryptionMode!: (value: AccountEncryptionModeResult) => void;
         const accountEncryptionModePending = new Promise<AccountEncryptionModeResult>((resolve) => {
@@ -6259,6 +6563,7 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('mounts generated RNW with the canonical SDK render context and no invented Re.Pack identity', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         surfaceEnvironment.dark = true;
         surfaceEnvironment.rtl = true;
@@ -6364,7 +6669,7 @@ describe('PluginSurfacePlacementHost', () => {
         } as unknown as PluginUiProjectionModel;
         const cache = getInstalledPluginReactNativeBundleCache();
         const persistentIdentity = {
-            accountScope: { serverId: 'server-a', accountId: 'account-a' },
+            accountScope: { serverId: 'server_1', accountId: 'account-a' },
             releaseVersion: '3.2.1',
             pluginId: generatedIdentity.pluginId,
             contributionId: 'native-panel-artifact',
@@ -6372,6 +6677,7 @@ describe('PluginSurfacePlacementHost', () => {
             platform: 'web' as const,
             artifactDigest,
         };
+        cache.bindAccountLifetime(pluginSurfaceAccountLifetime.value!);
         expect(await cache.writePersistentArtifact({
             persistentIdentity,
             bytes: entryBytes,
@@ -6388,7 +6694,7 @@ describe('PluginSurfacePlacementHost', () => {
             bytes: entryBytes,
         }));
         const generatedAccountAvailabilityReader = createPluginAccountAvailabilityReader({
-            scope: { serverId: 'server-a', accountId: 'account-a' },
+            scope: { serverId: 'server_1', accountId: 'account-a' },
             snapshot: {
                 availabilityCursor: 44,
                 materializations: [],
@@ -6397,6 +6703,7 @@ describe('PluginSurfacePlacementHost', () => {
                     pluginId: generatedIdentity.pluginId,
                     response: {
                         availabilityCursor: 44,
+                        packageAssets: [],
                         hostingCapability: { enabled: false },
                         intent: {
                             pluginId: generatedIdentity.pluginId,
@@ -6473,7 +6780,7 @@ describe('PluginSurfacePlacementHost', () => {
             );
         };
         const screen = await renderScreen(renderPlacement());
-        await flushHookEffects();
+        await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
         let props = reactNativeSurfaceProps.at(-1) as {
             hostApi?: unknown;
             renderContext?: {
@@ -6801,6 +7108,8 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('keeps an Account-data RN renderer mounted through an all-daemons-offline cold start while daemon methods stay unavailable', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server-a', accountId: 'account-a' });
+        accountEncryptionModeFetch.mockResolvedValue({ mode: 'plain', updatedAt: 1 });
         reactNativeSurfaceProps.length = 0;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const collectionDefinition = defineAccountCollection({
@@ -6845,6 +7154,7 @@ describe('PluginSurfacePlacementHost', () => {
                     pluginId: 'acme.browser',
                     response: {
                         availabilityCursor: 1,
+                        packageAssets: [],
                         hostingCapability: {
                             enabled: true,
                             maxArtifactBytes: 1024,
@@ -6894,17 +7204,19 @@ describe('PluginSurfacePlacementHost', () => {
         pluginDataTransport.enabled = true;
         const accountKvWrites: unknown[] = [];
         pluginDataTransport.request.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') {
+                return new Response(JSON.stringify({ mode: 'plain', updatedAt: 1 }), {
+                    status: 200, headers: { 'Content-Type': 'application/json' },
+                });
+            }
             if (path === '/v1/account/encryption/currentness') {
-                return new Response(JSON.stringify({
-                    mode: 'plain',
+                return new Response(JSON.stringify(createPlainAccountEncryptionCurrentnessFixture({
                     version: 1,
-                    signingKeyFingerprint: null,
-                    contentKeyFingerprint: null,
                     updatedAt: 1,
-                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                })), { status: 200, headers: { 'Content-Type': 'application/json' } });
             }
             if (path === '/v1/plugins/data/contract') {
-                return new Response(JSON.stringify({ contract }), {
+                return new Response(JSON.stringify({ access: 'writable', contract }), {
                     status: 200,
                     headers: { 'Content-Type': 'application/json' },
                 });
@@ -6973,14 +7285,87 @@ describe('PluginSurfacePlacementHost', () => {
                 },
             },
         } as unknown as PluginUiProjectionModel;
-        const projection = withExactGeneratedMountedTarget({
+        const exactTarget = withExactGeneratedMountedTarget({
             projection: baseProjection,
             pluginId: 'acme.browser',
             immutableGenerationId: 'browser-account-data-offline-generation-91',
             projectionGeneration: 91,
             displayName: 'Browser Inspector',
             version: '3.2.1',
-        }).projection;
+        });
+        const projection = exactTarget.projection;
+        const custodyScope = { serverId: 'server-a', accountId: 'account-a' };
+        const retainedProjection = PluginProjectionV2Schema.parse({
+            v: 2,
+            generation: 91,
+            installedPackagesById: {
+                'acme.browser': {
+                    id: 'acme.browser',
+                    displayName: 'Browser Inspector',
+                    version: '3.2.1',
+                    enabled: true,
+                    source: { kind: 'bundled', locator: 'acme.browser' },
+                    immutableGenerationId: exactTarget.targetFixture.mountedTarget.immutableGenerationId,
+                    brand: { state: 'missing' },
+                },
+            },
+            familiesById: {
+                pluginUi: {
+                    family: 'pluginUi',
+                    entriesById: {
+                        'translations:acme.browser': {
+                            id: 'translations:acme.browser',
+                            pluginId: 'acme.browser',
+                            contributionKind: 'translations',
+                            locales: ['en'],
+                            bundles: { en: { title: 'Browser Inspector' } },
+                        },
+                    },
+                },
+            },
+        });
+        const retainedTargetedContributions = PluginUiTargetedContributionsV1Schema.parse({
+            target: exactTarget.targetFixture.mountedTarget,
+            points: [{
+                pointId: 'account-data',
+                protocols: [{
+                    protocol: { id: 'account/data', version: 1 },
+                    contributions: [{
+                        contributor: {
+                            pluginId: 'acme.browser',
+                            contributionId: 'account-data',
+                            immutableGenerationId: exactTarget.targetFixture.mountedTarget.immutableGenerationId,
+                        },
+                        protocol: { id: 'account/data', version: 1 },
+                        operations: [],
+                        surfaces: [],
+                    }],
+                }],
+            }],
+        });
+        const { prepareWarmCacheEncryptionKey } = await import('@/sync/domains/state/warmCacheEncryptionKey');
+        await prepareWarmCacheEncryptionKey();
+        const {
+            pluginUiProjectionAdmissionTargetKey,
+            savePluginUiProjectionAdmissionSnapshot,
+            savePluginUiProjectionTargetedAdmissionSnapshot,
+        } = await import('@/sync/domains/plugins/ui/projectionWarmCache');
+        const custodyTargetKey = pluginUiProjectionAdmissionTargetKey({
+            serverId: 'server-a',
+            machineId: 'machine_1',
+        });
+        savePluginUiProjectionAdmissionSnapshot({
+            scope: custodyScope,
+            targetKey: custodyTargetKey,
+            machineId: 'machine_1',
+            projection: retainedProjection,
+        });
+        savePluginUiProjectionTargetedAdmissionSnapshot({
+            scope: custodyScope,
+            targetKey: custodyTargetKey,
+            machineId: 'machine_1',
+            targetedContributions: retainedTargetedContributions,
+        });
         const placement = {
             ...generatedReactNativePlacement({
                 crashState: generatedReactNativeCrashState({
@@ -7003,7 +7388,7 @@ describe('PluginSurfacePlacementHost', () => {
                     placement={placement}
                     resourceBrowserTarget={target}
                     machineId="machine_1"
-                    serverId="server_1"
+                    serverId="server-a"
                     pluginUiProjection={projection}
                     platform="web"
                     reactNativeLoaderBackend={{
@@ -7077,6 +7462,7 @@ describe('PluginSurfacePlacementHost', () => {
                     pluginId: 'acme.browser',
                     response: {
                         availabilityCursor: 2,
+                        packageAssets: [],
                         hostingCapability: {
                             enabled: true,
                             maxArtifactBytes: 1024,
@@ -7146,7 +7532,7 @@ describe('PluginSurfacePlacementHost', () => {
             bytes: new Uint8Array([123, 125]),
         });
         expect(resourceReadMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
-            serverId: 'server_1',
+            serverId: 'server-a',
             expectedGeneration: '91',
             callerPluginId: 'acme.browser',
             resource: { pluginId: 'acme.browser', localId: 'snapshot' },
@@ -7157,6 +7543,7 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('keeps structurally admitted RN Host API methods stable across reconnect without remounting it', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const renderMethodSets: string[] = [];
@@ -7247,6 +7634,7 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('EU-5a: carries openSurface launch input into the canonical render context and replaces it on reopen', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const { getInstalledPluginReactNativeBundleCache } = await import('@/components/plugins/reactNative/bundleCache');
@@ -7390,6 +7778,7 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('RN-2: mounts a devHotReload source loadable from the projected dev-server URL', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const module = {
@@ -7499,6 +7888,7 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('RN-2: does not build a dev load path for a denied devHotReload projection (no dev URL / fallback)', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
@@ -7546,6 +7936,7 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('keeps the declared RN renderer when its runtime is unavailable', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
@@ -7613,6 +8004,7 @@ describe('PluginSurfacePlacementHost', () => {
     });
 
     it('fails closed when the exact RN binding cannot install projected Host API requirements', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
@@ -7958,6 +8350,10 @@ describe('PluginSurfacePlacementHost', () => {
  * production code.
  */
 describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => {
+    beforeEach(() => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
+    });
+
     const generatedArtifactEntry = 'react-native/native-panel/index.js';
     const generatedArtifactBytes = new TextEncoder().encode('export function renderSurface() { return null; }');
     const generatedIdentity = {
@@ -8029,9 +8425,10 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         return props.renderContext!.surface;
     }
 
-    it('retires an app-page A current-UI command before the retained native host renders B', async () => {
+    it('forgets app-page A current UI before focus can restore it after navigation', async () => {
         reactNativeSurfaceProps.length = 0;
         await primeGeneratedArtifact();
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
 
         type PublishedRecord = Readonly<{
             entityLabel: string | undefined;
@@ -8109,26 +8506,12 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 reference: { number: 2 },
             },
         } satisfies Parameters<RenderContext['hostApi']['publishCurrentUiContext']>[0];
-        let recordObservedDuringBLayout: PublishedRecord | null | undefined;
-        let publishB: (() => void) | null = null;
-        const readPublishB = (): (() => void) | null => publishB;
         const renderContexts: RenderContext[] = [];
         const CurrentUiContextProbe = (props: Readonly<{ context: RenderContext }>): React.ReactElement => {
             React.useLayoutEffect(() => {
                 if (props.context.subPath === 'issues/a') {
                     props.context.hostApi.publishCurrentUiContext(enrichmentA);
-                    return;
                 }
-                if (props.context.subPath === 'issues/b') {
-                    recordObservedDuringBLayout = currentRecord;
-                }
-            }, [props.context.hostApi, props.context.subPath]);
-            React.useEffect(() => {
-                if (props.context.subPath !== 'issues/b') return;
-                publishB = () => props.context.hostApi.publishCurrentUiContext(enrichmentB);
-                return () => {
-                    publishB = null;
-                };
             }, [props.context.hostApi, props.context.subPath]);
             return React.createElement('View', { testID: `current-ui-context:${props.context.subPath ?? 'root'}` });
         };
@@ -8190,8 +8573,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             version: '3.2.1',
         }).projection;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-        const renderPlacement = (subPath: string) => (
-            <PluginSurfaceFocusEligibilityProvider active currentUiContextActive>
+        const renderPlacement = (subPath: string, focusEligible = true) => (
+            <PluginSurfaceFocusEligibilityProvider active={focusEligible} currentUiContextActive={focusEligible}>
                 <PluginSurfacePlacementHost
                     placement={appPagePlacement}
                     machineId="machine_1"
@@ -8226,24 +8609,16 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             if (!commandA) throw new Error('Expected A to publish its opaque command.');
 
             await screen.update(renderPlacement('issues/b'));
-            await vi.waitFor(() => expect(renderContexts.some((entry) => entry.subPath === 'issues/b')).toBe(true));
-            const contextB = readLatestContext('issues/b');
-
-            // The physical RN adapter intentionally remains alive for a page
-            // location update. Its semantic record must nevertheless be gone
-            // before B's child layout effect is permitted to publish.
-            expect(contextB.hostApi).toBe(contextA.hostApi);
-            expect(contextB.signal).toBe(contextA.signal);
-            expect(recordObservedDuringBLayout).toBeNull();
-            expect(readCurrentRecord()).toBeNull();
+            await vi.waitFor(() => expect(readCurrentRecord()).toBeNull());
             expect(readCurrentRecord()?.commandIds.includes(commandA) ?? false).toBe(false);
             expect(publicationA.clear).toHaveBeenCalledTimes(1);
 
-            await vi.waitFor(() => expect(readPublishB()).not.toBeNull());
-            const publishCurrentB = readPublishB();
-            if (!publishCurrentB) throw new Error('Expected B to retain its normal delayed publication.');
+            await screen.update(renderPlacement('issues/b', false));
+            await screen.update(renderPlacement('issues/b', true));
+            expect(readCurrentRecord()).toBeNull();
+
             await act(async () => {
-                publishCurrentB();
+                contextA.hostApi.publishCurrentUiContext(enrichmentB);
                 await Promise.resolve();
                 await Promise.resolve();
             });
@@ -8466,6 +8841,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
     });
 
     it('mounts a fresh all-daemons-offline process from the last-confirmed targeted admission in device custody', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server-a', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         await primeGeneratedArtifact();
         const { prepareWarmCacheEncryptionKey } = await import('@/sync/domains/state/warmCacheEncryptionKey');
@@ -8541,7 +8917,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         savePluginUiProjectionAdmissionSnapshot({
             scope: custodyScope,
             targetKey: pluginUiProjectionAdmissionTargetKey({
-                serverId: 'server_1',
+                serverId: 'server-a',
                 machineId: 'machine_1',
             }),
             machineId: 'machine_1',
@@ -8557,7 +8933,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 placement={browserReactNativePlacement}
                 resourceBrowserTarget={target}
                 machineId="machine_1"
-                serverId="server_1"
+                serverId="server-a"
                 pluginUiProjection={projection}
                 platform="web"
                 reactNativeLoaderBackend={{
@@ -8590,7 +8966,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             PluginUiProjectionCacheEntryV1Schema,
         } = await import('@/sync/domains/state/warmCachePersistence');
         const persistedEntry = loadPluginUiProjectionWarmCacheEntries('server-a', 'account-a')[
-            pluginUiProjectionAdmissionTargetKey({ serverId: 'server_1', machineId: 'machine_1' })
+            pluginUiProjectionAdmissionTargetKey({ serverId: 'server-a', machineId: 'machine_1' })
         ];
         const reparsedEntry = PluginUiProjectionCacheEntryV1Schema.safeParse(
             JSON.parse(JSON.stringify(persistedEntry)),
@@ -8930,65 +9306,14 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 })]),
             })]),
         });
-        const validTargetedMount = DaemonPluginUiTargetedSurfaceMountV1Schema.parse({
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: surface.point,
-            contributor: surface.contributor,
-            role: surface.role,
-            presentation: surface.presentation,
-            inputSchema: defineProtocolObject({}, { policy: 'additive-open/preserve' }).jsonSchema,
-            rendererChain: Object.freeze([Object.freeze({
-                pluginId: surface.contributor.pluginId,
-                localId: surface.contributor.contributionId,
-            })]),
-            selectedRenderer: Object.freeze({
-                identity: Object.freeze({
-                    pluginId: surface.contributor.pluginId,
-                    localId: surface.contributor.contributionId,
-                }),
-                renderer: Object.freeze({
-                    kind: 'declarative' as const,
-                    contributionId: surface.contributor.contributionId,
-                    model: Object.freeze(admittedDeclarativeModelFixture({
-                        visible: true,
-                        identity: Object.freeze({
-                            pluginId: surface.contributor.pluginId,
-                            localId: surface.contributor.contributionId,
-                            generation: '77',
-                        }),
-                        root: Object.freeze({
-                            kind: 'state',
-                            path: 'root',
-                            order: 0,
-                            state: 'empty',
-                            title: 'Review detail',
-                        }),
-                    })),
-                }),
-                availability: Object.freeze({ state: 'available' as const, reason: 'available', diagnostics: Object.freeze([]) }),
-            }),
-            executionOrigin: mountedExecutionOrigin('acme.review', 'machine_1', 'review-materialization-b'),
-            resourceCapability: Object.freeze({ readable: true, dynamic: true }),
-            contributorTargetedContributions: Object.freeze({
-                target: Object.freeze({
-                    pluginId: surface.contributor.pluginId,
-                    immutableGenerationId: surface.contributor.immutableGenerationId,
-                }),
-                points: Object.freeze([]),
-            }),
-        });
-        // The mount stays exactly what Protocol admitted: a hostile-object
-        // mutation after the parser cannot arrive through trusted JSON/Protocol
-        // projection, so this fixture injects no defect beyond its normal data.
-        // The projection generation is the exact one the declarative model
-        // identity names; a mismatching generation would fail the mount closed.
+        // The cold snapshot exposes B's handle but has no resolved physical
+        // mount for it. An exact valid mount would render B, not this fallback.
         const targetFixture = primeExactTargetedContributions({
             pluginId: mountedTarget.pluginId,
             immutableGenerationId: mountedTarget.immutableGenerationId,
             projectionGeneration: 77,
             targetedContributions,
-            targetedSurfaceMounts: [validTargetedMount],
+            targetedSurfaceMounts: [],
         });
         const projection = withMountedTargetPackage(generatedReactNativeProjection, targetFixture, {
             displayName: 'Browser Inspector',
@@ -9191,6 +9516,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
     });
 
     it('keeps B caller fallback through its issued generated V2 Artifact frame without borrowing the parent projection', async () => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server-a', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         const mountedTarget = Object.freeze({
             pluginId: 'acme.browser',
@@ -9352,6 +9678,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     pluginId: surface.contributor.pluginId,
                     response: PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
                         availabilityCursor: 1,
+                        packageAssets: [],
                         hostingCapability: {
                             enabled: true,
                             maxArtifactBytes: 1024,
@@ -9488,16 +9815,13 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             });
             const frame = child.findByType('iframe');
             const src = new URL(String(frame?.props.src ?? 'https://unused.test/'));
-            const instanceKey = derivePluginUiTargetedSurfaceMountInstanceKeyV1({
-                targetPluginId: mountedTarget.pluginId,
-                surface,
-                rawInstanceKey: 'review-hosted-42',
-            });
             expect(src.origin).toBe('https://artifacts.happier.test');
             expect(src.pathname).toBe(`/v1/plugins/availability/ui-artifacts/browser/${issuedCapability}/`);
-            expect(src.searchParams.get('happierPluginId')).toBe(surface.contributor.pluginId);
-            expect(src.searchParams.get('happierContributionId')).toBe(surface.contributor.contributionId);
-            expect(src.searchParams.get('happierSurfaceId')).toBe(`targeted:${instanceKey}`);
+            expect(src.searchParams.get('happierInstanceId')).toBeTruthy();
+            expect(src.searchParams.get('happierBridgeNonce')).toBeTruthy();
+            expect(src.searchParams.has('happierPluginId')).toBe(false);
+            expect(src.searchParams.has('happierContributionId')).toBe(false);
+            expect(src.searchParams.has('happierSurfaceId')).toBe(false);
             await act(async () => {
                 await vi.advanceTimersByTimeAsync(30_000);
             });
@@ -11826,6 +12150,108 @@ describe('Composer physical surface mount', () => {
         }
     });
 
+    it.each(['composer', 'destination'] as const)('advertises Composer observation to an inline HTML guest through the real %s surface', async (surface) => {
+        const { ComposerPluginSurface } = await import('@/components/sessions/presentation/ComposerPluginSurface');
+        const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
+        const contribution = { pluginId: 'acme.browser', localId: 'summary' };
+        const rendererIdentity = { pluginId: 'acme.browser', localId: 'panel' };
+        const immutableGenerationId = 'inline-composer-generation';
+        let snapshot: ComposerSnapshotV1 = {
+            revision: 1, ref: { kind: 'session', sessionId: 'session-a' }, text: 'Initial', references: [], attachments: [],
+            layout: 'wrap', capabilities: { text: true, references: true, attachments: true, submit: true },
+            state: { focused: true, editable: true, submittable: true, submitting: false, running: false },
+        };
+        const unregister = registerComposerPresentationTarget(snapshot.ref, {
+            readRevision: () => snapshot.revision, replace: () => snapshot.revision, readSnapshot: () => snapshot,
+        });
+        onTestFinished(unregister);
+        const catalogEntry = DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
+            contribution,
+            immutableGenerationId,
+            projectionGeneration: 11,
+            role: 'region',
+            rendererChain: [rendererIdentity],
+            selectedRenderer: {
+                identity: rendererIdentity,
+                renderer: { kind: 'hostedHtml', contributionId: 'panel', requiredHostMethods: [], source: { kind: 'html', html: '<p>Composer</p>' } },
+                availability: { state: 'available', reason: 'available', diagnostics: [] },
+            },
+            executionOrigin: mountedExecutionOrigin(contribution.pluginId, 'machine_1', 'compose-materialization-a'),
+            resourceCapability: { readable: true, dynamic: true },
+            contributorTargetedContributions: { target: { pluginId: contribution.pluginId, immutableGenerationId }, points: [] },
+        });
+        const hostWindow = new EventTarget();
+        const iframeSource = { postMessage: vi.fn() };
+        vi.stubGlobal('window', hostWindow);
+        vi.stubGlobal('location', { origin: 'https://host.happier.test' });
+        onTestFinished(() => { vi.unstubAllGlobals(); });
+        const targetFixture = primeExactTargetedContributions({ pluginId: contribution.pluginId, immutableGenerationId });
+        const projection = withMountedTargetPackage(EMPTY_PLUGIN_UI_PROJECTION, targetFixture, { displayName: 'Inline', version: '1.0.0' });
+        const screen = await renderScreen(surface === 'destination' ? <PluginSurfacePlacementHost
+            placement={{ ...appPageHostedWebPlacement, renderer: { kind: 'hostedHtml', contributionId: 'panel', source: { kind: 'html', html: '<p>Composer</p>' } } }}
+            machineId="machine_1" pluginUiProjection={projection} platform="web"
+        /> : <ComposerPluginSurface
+            request={{ contribution, immutableGenerationId, role: 'region', instanceKey: 'inline-composer', input: {
+                v: 1, role: 'region', composer: { kind: 'session', sessionId: 'session-a' }, regionLocalId: 'summary',
+            } }}
+            physicalTarget={{ kind: 'session', sessionId: 'session-a' }}
+            projectionGeneration={11}
+            catalogEntries={[catalogEntry]}
+            pluginProjectionById={{}}
+            pluginProjectionV2={PluginProjectionV2Schema.parse({
+                v: 2, generation: 11, installedPackagesById: {}, agentsById: {}, backendsById: {}, actionsById: {},
+                toolsById: {}, commandsById: {}, resourcesById: {}, settingsById: {}, familiesById: {}, diagnostics: [],
+            })}
+            machineId="machine_1"
+            serverId="server-a"
+            parentLifetime={{ isCurrent: () => true, onRetire: () => ({ dispose() {} }) }}
+            transactionApplier={{ apply: () => ({ status: 'rejected' }) } as never}
+        />, { createNodeMock: (element) => element.type === 'iframe' ? { contentWindow: iframeSource } : null });
+        await vi.waitFor(() => expect(screen.root.findAllByType('iframe')).toHaveLength(1));
+        const document = String(screen.root.findByType('iframe').props.srcDoc);
+        const encodedConfig = document.match(/Object\.freeze\((\{.*?\})\),writable:false/)?.[1];
+        if (!encodedConfig) throw new Error('expected_inline_frame_bootstrap');
+        const config: { identity: { instanceId: string; mountNonce: string } } = JSON.parse(encodedConfig);
+        const documentChannel = createTestMessageChannel();
+        const event = new Event('message');
+        Object.defineProperties(event, {
+            origin: { value: 'null' }, source: { value: iframeSource },
+            ports: { value: [documentChannel.port1] },
+            data: { value: { version: 1, identity: config.identity, sequence: 1, kind: 'ready', payload: { ready: true } } },
+        });
+        await act(async () => { hostWindow.dispatchEvent(event); });
+        await act(async () => {
+            documentChannel.port2.postMessage({
+                version: 1, identity: config.identity, sequence: 2, kind: 'hostApi', payload: {
+                wireVersion: 1, kind: 'negotiate', identity: config.identity, apiRange: '^1.0.0',
+                },
+            });
+            await Promise.resolve();
+        });
+        await vi.waitFor(() => expect(documentChannel.port1PostMessage).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'result', payload: expect.objectContaining({
+                kind: 'negotiated', methods: expect.arrayContaining(['watchComposer']),
+            }),
+        })));
+        expect(iframeSource.postMessage).not.toHaveBeenCalled();
+        await act(async () => {
+            documentChannel.port2.postMessage({
+                version: 1, identity: config.identity, sequence: 3, kind: 'hostApi', payload: {
+                wireVersion: 1, kind: 'subscribe', identity: config.identity, requestId: 'watch-1',
+                subscriptionId: 'composer-watch', method: 'watchComposer', payload: { ref: snapshot.ref },
+                },
+            });
+            await Promise.resolve();
+        });
+        snapshot = { ...snapshot, revision: 2, text: 'Changed' };
+        await act(async () => { notifyComposerPresentationTargetChanged(snapshot.ref); });
+        await vi.waitFor(() => expect(documentChannel.port1PostMessage).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'hostApi', payload: expect.objectContaining({
+                kind: 'subscription', subscriptionId: 'composer-watch', event: snapshot,
+            }),
+        })));
+    });
+
     it('lends the exact hosted Composer bridge publisher only while its embedded mount is alive', async () => {
         const contribution = Object.freeze({ pluginId: 'acme.browser', localId: 'summary' });
         const rendererIdentity = Object.freeze({ pluginId: 'acme.browser', localId: 'panel' });
@@ -11966,6 +12392,10 @@ describe('Composer physical surface mount', () => {
  * mocked, and it is asserted on.
  */
 describe('canonical action dispatch reaches every mounted placement (EU-2)', () => {
+    beforeEach(() => {
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server-1', accountId: 'account-a' });
+    });
+
     const crossPathEntry = 'react-native/cross-path/index.js';
     const crossPathBytes = new TextEncoder().encode('export function renderSurface() { return null; }');
     const crossPathFileDigest = 'sha256:1111111111111111111111111111111111111111111111111111111111111111';
@@ -12006,10 +12436,20 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
         const { normalizePluginUiProjection } = await import('@/sync/domains/plugins/ui/projection');
         const binding = destinationBinding(bindingInput);
         const placementId = `surfacePlacement:${binding.destination.pluginId}:${binding.destination.localId}`;
+        const exactActionsById = {
+            'acme.browser/refresh-index': projectedDaemonUiAction({
+                pluginId: 'acme.browser',
+                localId: 'refresh-index',
+                machineId: 'machine_1',
+                materializationId: 'materialization-cross-path-current',
+                serverIdentityId: 'srv_server_1',
+            }),
+        } satisfies PluginProjectionV2['actionsById'];
         const targetFixture = primeExactTargetedContributions({
             pluginId: binding.destination.pluginId,
             immutableGenerationId: 'browser-cross-path-generation-91',
             projectionGeneration: 91,
+            actionsById: exactActionsById,
             ...(options.exactProjection === undefined ? {} : { projection: options.exactProjection }),
         });
         const baseModel = normalizePluginUiProjection({
@@ -12018,15 +12458,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
             installedPackagesById: {},
             agentsById: {},
             backendsById: {},
-            actionsById: {
-                'acme.browser/refresh-index': projectedDaemonUiAction({
-                    pluginId: 'acme.browser',
-                    localId: 'refresh-index',
-                    machineId: 'machine_1',
-                    materializationId: 'materialization-cross-path-current',
-                    serverIdentityId: 'srv_server_1',
-                }),
-            },
+            actionsById: exactActionsById,
             toolsById: {},
             commandsById: {},
             resourcesById: {},
@@ -12193,7 +12625,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
             const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
             const { placement, model } = await projectPlacementFromBinding(testCase.binding);
 
-            await renderScreen(
+            const screen = await renderScreen(
                 <PluginSurfacePlacementHost
                     placement={placement}
                     pluginUiProjection={model}
@@ -12209,7 +12641,12 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                 />,
             );
 
-            await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
+            await vi.waitFor(() => expect(
+                reactNativeSurfaceProps,
+                screen.findAll((node) => typeof node.props.testID === 'string'
+                    && node.props.testID.startsWith('plugin-surface-unavailable-diagnostic-'))
+                    .map((node) => node.props.testID).join(', '),
+            ).not.toHaveLength(0));
 
             const hostApi = readMountedHostApi();
             expect(hostApi.version().methods).toContain('executeAction');

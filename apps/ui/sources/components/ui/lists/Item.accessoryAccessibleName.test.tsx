@@ -26,7 +26,8 @@ vi.mock('react-native', async () => {
  */
 function findControlsByRole(screen: RenderScreenResult, role: string): ReactTestInstance[] {
     return screen.findAll((node) => (
-        node.props?.role === role || node.props?.accessibilityRole === role
+        typeof node.type === 'string'
+        && (node.props?.role === role || node.props?.accessibilityRole === role)
     ));
 }
 
@@ -35,6 +36,21 @@ function accessibleNameOf(node: ReactTestInstance): string | undefined {
 }
 
 describe('Item accessory accessible name (web)', () => {
+    it('keeps a radio choice checked when keyboard highlight is elsewhere', async () => {
+        const { Item } = await import('./Item');
+        const screen = await renderScreen(<Item
+            title="Projects"
+            onPress={() => {}}
+            webRole="radio"
+            accessibilityRole="radio"
+            selected={false}
+            accessibilityChecked
+        />);
+        const controls = findControlsByRole(screen, 'radio');
+        expect(controls.length).toBeGreaterThan(0);
+        expect(controls.every((node) => node.props['aria-checked'] === true)).toBe(true);
+    });
+
     it('names an unlabelled switch accessory with the row title', async () => {
         const { Item } = await import('./Item');
         const { Switch } = await import('@/components/ui/forms/Switch.web');

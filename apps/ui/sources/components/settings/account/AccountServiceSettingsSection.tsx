@@ -1,13 +1,17 @@
 import * as React from 'react';
-import { Linking } from 'react-native';
+import { View } from 'react-native';
+import { AccountServiceContinuation } from '@/components/account/auth/AccountServiceContinuation';
+import { AccountServiceHomeAuthenticationAdapter } from '@/components/account/auth/AccountServiceHomeAuthenticationAdapter';
+import { AccountServiceSelectionForm } from '@/components/account/auth/AccountServiceSelectionForm';
+import { WizardModalShell } from '@/components/onboarding';
+import { AUTHENTICATED_ACCOUNT_ENTRY_ROUTE } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
+import { useRouter } from 'expo-router';
+import { buildAuthenticatedAccountEntryHref } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
+import { useAccountDirectoryActivePolling } from '@/sync/ops/accountDirectory/useAccountDirectoryActivePolling';
 
-import { accountDirectoryCredentialStorage, normalizeAccountDirectoryEndpoint } from '@/auth/accountDirectory/accountDirectoryCredentialStorage';
-import { accountDirectoryAuthClient } from '@/auth/accountDirectory/accountDirectoryAuthClient';
-import {
-    authenticateSelectedAccountServiceWithKey,
-    refreshAndEnrollAccountServiceDirectory,
-} from '@/auth/accountDirectory/accountDirectoryKeyAuth';
-import { isSafeExternalAuthUrl } from '@/auth/providers/externalAuthUrl';
+import { accountDirectoryCredentialStorage } from '@/auth/accountDirectory/accountDirectoryCredentialStorage';
+import { accountDirectoryAuthClient, createVerifiedAccountServiceAuthority, type VerifiedAccountServiceAuthority } from '@/auth/accountDirectory/accountDirectoryAuthClient';
+import { completeAccountServicePostAuth, confirmAccountServiceHomeRelink, resumeAccountServicePostAuth, type AccountPostAuthInput, type AccountPostAuthResult } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { useServerAuthStatusByServerId } from '@/components/settings/server/hooks/useServerAuthStatusByServerId';
 import { Item } from '@/components/ui/lists/Item';
@@ -34,15 +38,14 @@ import {
     type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
 import {
-    cancelPendingPreferredHomeEnrollment,
-    enrollPreferredDirectoryHome,
-    getPendingPreferredHomeEnrollment,
-    resumePendingPreferredHomeEnrollment,
-    subscribePendingPreferredHomeEnrollment,
-    type PreferredDirectoryHomeEnrollmentResult,
-} from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
-import { provisionAuthenticatedHomeLink } from '@/sync/ops/accountDirectory/provisionAuthenticatedHomeLink';
+    cancelPendingDirectoryHomeEnrollment,
+    getPendingDirectoryHomeEnrollment,
+    resumePendingDirectoryHomeEnrollment,
+    subscribePendingDirectoryHomeEnrollment,
+} from '@/sync/ops/accountDirectory/enrollDirectoryHome';
+import { revokeAuthenticatedHomeLink } from '@/sync/ops/accountDirectory/provisionAuthenticatedHomeLink';
 import { refreshAccountHomeDirectory } from '@/sync/ops/accountDirectory/refreshAccountHomeDirectory';
+import { selectAccountServiceEndpoint } from '@/sync/ops/accountDirectory/selectAccountServiceEndpoint';
 import { t } from '@/text';
 
 type AccountServiceConnectionView =
@@ -55,6 +58,7 @@ type AccountServiceConnectionView =
 type DirectorySessionBinding = Readonly<{
     serviceKey: string;
     session: AccountDirectorySession;
+    service: VerifiedAccountServiceAuthority;
 }>;
 
 type AccountServiceCapabilityPresentation = Readonly<{
@@ -67,7 +71,7 @@ type AccountServiceCapabilityPresentation = Readonly<{
     homeEnrollment: boolean;
 }>;
 
-type RowActionKind = 'set_preferred' | 'remove' | 'enroll' | 'link';
+type RowActionKind = 'set_preferred' | 'remove' | 'enroll' | 'link' | 'unlink';
 type EnrollmentFailureView = 'rejected' | 'expired' | 'failed' | 'partial_commit';
 type EnrollmentView = 'enrolled' | 'approval_required' | EnrollmentFailureView;
 type ServiceAttempt = {
@@ -105,20 +109,10 @@ function formatHomeEndpointDetails(home: AccountDirectorySessionSnapshot['homes'
     )).join(' · ');
 }
 
-function projectEnrollment(result: PreferredDirectoryHomeEnrollmentResult | null): EnrollmentView | null {
-    if (!result) return null;
-    if (result.kind === 'enrolled') return 'enrolled';
-    if (result.kind === 'approval_required') return 'approval_required';
-    if (result.kind === 'rejected') return 'rejected';
-    if (result.kind === 'expired') return 'expired';
-    if (result.kind === 'partial_commit') return 'partial_commit';
-    if (result.kind === 'unavailable' && result.reason === 'no_preferred_home') return null;
+function projectEnrollmentFailure(result: AccountPostAuthResult | null): EnrollmentFailureView | null {
+    if (result?.kind !== 'failure') return null;
+    if (result.code.source === 'home' && (result.code.code === 'rejected' || result.code.code === 'expired' || result.code.code === 'partial_commit')) return result.code.code;
     return 'failed';
-}
-
-function projectEnrollmentFailure(result: PreferredDirectoryHomeEnrollmentResult | null): EnrollmentFailureView | null {
-    const view = projectEnrollment(result);
-    return view !== null && view !== 'enrolled' && view !== 'approval_required' ? view : null;
 }
 
 /**
@@ -126,6 +120,13 @@ function projectEnrollmentFailure(result: PreferredDirectoryHomeEnrollmentResult
  * Home profiles/runtime; refresh is the only path that adopts Directory Homes.
  */
 export function AccountServiceSettingsSection(): React.ReactElement {
+    const router = useRouter();
+    const continuationAbortRef = React.useRef<AbortController | null>(null);
+    React.useEffect(() => () => continuationAbortRef.current?.abort(), []);
+    const [continuationResults, setContinuationResults] = React.useState<Readonly<Record<string, { input: AccountPostAuthInput; result: AccountPostAuthResult }>>>({});
+    const [homeAuthentication, setHomeAuthentication] = React.useState<Readonly<{
+        input: AccountPostAuthInput; previous: AccountPostAuthResult; homeServerIdentityId: string;
+    }> | null>(null);
     const endpoint = React.useSyncExternalStore(
         (listener) => subscribeAccountServiceEndpoint(() => listener()),
         resolveSelectedAccountServiceEndpoint,
@@ -149,10 +150,11 @@ export function AccountServiceSettingsSection(): React.ReactElement {
     const [pendingRowActions, setPendingRowActions] = React.useState<Readonly<Record<string, RowActionKind>>>({});
     const [enrollmentFailures, setEnrollmentFailures] = React.useState<Readonly<Partial<Record<string, EnrollmentFailureView>>>>({});
     const [advancedExpanded, setAdvancedExpanded] = React.useState(false);
+    const [selectingEndpoint, setSelectingEndpoint] = React.useState(false);
     const pendingEnrollment = React.useSyncExternalStore(
-        subscribePendingPreferredHomeEnrollment,
-        getPendingPreferredHomeEnrollment,
-        getPendingPreferredHomeEnrollment,
+        subscribePendingDirectoryHomeEnrollment,
+        getPendingDirectoryHomeEnrollment,
+        getPendingDirectoryHomeEnrollment,
     );
     const activeAttemptRef = React.useRef<ServiceAttempt | null>(null);
     const attemptSequenceRef = React.useRef(0);
@@ -167,6 +169,12 @@ export function AccountServiceSettingsSection(): React.ReactElement {
         : { kind: 'loading', serviceKey } as const;
     const directorySession = directorySessionBinding?.serviceKey === serviceKey
         ? directorySessionBinding.session
+        : null;
+    const verifiedAccountServiceName = directorySessionBinding?.serviceKey === serviceKey
+        ? directorySessionBinding.service.snapshot.features.accountServicePresentation?.displayName?.trim() || undefined
+        : undefined;
+    const verifiedAccountServiceIdentity = directorySessionBinding?.serviceKey === serviceKey
+        ? directorySessionBinding.service.serverIdentityId
         : null;
     const subscribeDirectorySession = React.useCallback((listener: () => void) => (
         directorySession?.subscribe(() => listener()) ?? (() => {})
@@ -206,10 +214,11 @@ export function AccountServiceSettingsSection(): React.ReactElement {
     }, []);
 
     const invalidateAttempts = React.useCallback(() => {
+        continuationAbortRef.current?.abort();
         activeAttemptRef.current = null;
         attemptSequenceRef.current += 1;
         serviceInvalidationRevisionRef.current += 1;
-        return cancelPendingPreferredHomeEnrollment();
+        return cancelPendingDirectoryHomeEnrollment();
     }, []);
 
     React.useEffect(() => {
@@ -252,7 +261,7 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                 if (cancelled) return;
                 const resolvedServiceKey = accountServiceKey({ ...endpoint, serverIdentityId });
                 if (observedIdentity) {
-                    setAccountServiceEndpoint({ ...endpoint, serverIdentityId });
+                    await setAccountServiceEndpoint({ ...endpoint, serverIdentityId });
                 }
                 setConnectionView((current) => (
                     current.kind === 'credential_expired' && current.serviceKey === resolvedServiceKey
@@ -279,45 +288,7 @@ export function AccountServiceSettingsSection(): React.ReactElement {
         }
     }, [invalidateAttempts, pendingEnrollment, serviceKey]);
 
-    const selectEndpoint = React.useCallback(async () => {
-        if (busy) return;
-        setBusy(true);
-        try {
-            const raw = await Modal.prompt(
-                t('settingsAccount.server'),
-                undefined,
-                {
-                    defaultValue: endpoint.url,
-                    placeholder: t('common.urlPlaceholder'),
-                    confirmText: t('common.use'),
-                    cancelText: t('common.cancel'),
-                },
-            );
-            if (raw === null) return;
-            const normalized = normalizeAccountDirectoryEndpoint(raw);
-            if (!normalized) {
-                await Modal.alertAsync(t('common.error'), t('errors.invalidFormat'));
-                return;
-            }
-            const observed = await accountDirectoryAuthClient.discoverAuthenticationMethods({
-                endpointUrl: normalized,
-            });
-            if (observed.kind !== 'supported_account_service') {
-                await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
-                return;
-            }
-            setAccountServiceEndpoint({
-                url: normalized,
-                serverIdentityId: observed.serverIdentityId,
-                displayName: displayNameForEndpoint(normalized),
-                source: 'user',
-            });
-        } finally {
-            setBusy(false);
-        }
-    }, [busy, endpoint.url]);
-
-    const refreshAndEnroll = React.useCallback(async () => {
+    const refreshDirectory = React.useCallback(async () => {
         if (!connected || directoryRefreshing) return;
         const requestedServiceKey = serviceKey;
         const { attempt, shouldCancel, shouldInvalidateContinuation } = beginAttempt(requestedServiceKey);
@@ -349,7 +320,7 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                 setConnectionView({ kind: 'loading', serviceKey: observedServiceKey });
                 setPendingRowActions({});
                 setEnrollmentFailures({});
-                setAccountServiceEndpoint(observedEndpoint);
+                await setAccountServiceEndpoint(observedEndpoint);
             }
             const session = directorySessionBinding?.serviceKey === observedServiceKey
                 ? directorySessionBinding.session
@@ -358,7 +329,7 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                     serverIdentityId: endpointServerIdentityId,
                 }, { capability });
             if (session !== directorySessionBinding?.session) {
-                setDirectorySessionBinding({ serviceKey: observedServiceKey, session });
+                setDirectorySessionBinding({ serviceKey: observedServiceKey, session, service: createVerifiedAccountServiceAuthority(observed) });
             }
             capabilityValidated = true;
             setCapabilityPresentation({
@@ -367,29 +338,8 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                 homeDirectory: capability.homeDirectory,
                 homeEnrollment: capability.homeEnrollment,
             });
-            const preferredHomeServerIdentityId = session.snapshot.preferredHomeServerIdentityId;
-            if (preferredHomeServerIdentityId) {
-                setPendingRowActions((current) => ({ ...current, [preferredHomeServerIdentityId]: 'enroll' }));
-            }
-            const refreshed = await refreshAndEnrollAccountServiceDirectory(session, {
-                entryIntent: 'connect_service',
-                shouldCancel,
-                shouldInvalidateContinuation,
-                enroll: pendingEnrollment?.serviceKey !== observedServiceKey,
-            });
-            if (shouldCancel()) return;
-            if (refreshed.snapshot.status === 'ready') {
-                const enrolledHomeServerIdentityId = refreshed.snapshot.preferredHomeServerIdentityId;
-                const failure = projectEnrollmentFailure(refreshed.enrollment);
-                if (enrolledHomeServerIdentityId) {
-                    setEnrollmentFailures((current) => {
-                        const next = { ...current };
-                        if (failure) next[enrolledHomeServerIdentityId] = failure;
-                        else delete next[enrolledHomeServerIdentityId];
-                        return next;
-                    });
-                }
-            } else if (isExpiredCredentialError(refreshed.snapshot.error)) {
+            const refreshed = await refreshAccountHomeDirectory(session, { shouldCancel });
+            if (!shouldCancel() && isExpiredCredentialError(refreshed.error)) {
                 setConnectionView({ kind: 'credential_expired', serviceKey: observedServiceKey });
             }
         } catch {
@@ -414,125 +364,41 @@ export function AccountServiceSettingsSection(): React.ReactElement {
         if (!connected || directoryRefreshing) return;
         if (automaticallyHydratedServiceKeyRef.current === serviceKey) return;
         automaticallyHydratedServiceKeyRef.current = serviceKey;
-        void refreshAndEnroll();
-    }, [connected, directoryRefreshing, refreshAndEnroll, serviceKey]);
+        void refreshDirectory();
+    }, [connected, directoryRefreshing, refreshDirectory, serviceKey]);
 
-    const loginWithKey = React.useCallback(async () => {
+    const startAccountJourney = React.useCallback(async (source?: string | AccountPostAuthInput) => {
         if (busy) return;
         setBusy(true);
-        const { attempt, shouldCancel, shouldInvalidateContinuation } = beginAttempt(serviceKey);
         try {
-            // One canonical Account Service key ceremony, shared with unauthenticated Welcome.
-            // Settings composes it with its connect_service intent and keeps focus unchanged.
-            const auth = await authenticateSelectedAccountServiceWithKey({
-                endpoint,
-                shouldCancel,
-                onServiceIdentityObserved: ({ serviceKey: authenticatedServiceKey }) => {
-                    attempt.serviceKey = authenticatedServiceKey;
-                    serviceKeyRef.current = authenticatedServiceKey;
-                    previousServiceKeyRef.current = authenticatedServiceKey;
-                    automaticallyHydratedServiceKeyRef.current = authenticatedServiceKey;
-                },
-            });
-            if (auth.kind === 'cancelled') return;
-            if (auth.kind === 'invalid_key') {
-                await Modal.alertAsync(t('common.error'), t('connect.invalidSecretKey'));
+            if (typeof source === 'object') {
+                router.push(buildAuthenticatedAccountEntryHref({
+                    service: source.service,
+                    intent: source.intent,
+                    returnTo: '/settings/account',
+                }));
                 return;
             }
-            if (auth.kind !== 'authenticated') {
-                throw new Error('Account Service key login unavailable');
-            }
-            const authenticatedServiceKey = auth.serviceKey;
-            setConnectionView({ kind: 'connected', serviceKey: authenticatedServiceKey });
-            setDirectorySessionBinding({ serviceKey: authenticatedServiceKey, session: auth.session });
-            setCapabilityPresentation({
-                kind: 'supported',
-                serviceKey: authenticatedServiceKey,
-                homeDirectory: auth.discovery.capability.homeDirectory,
-                homeEnrollment: auth.discovery.capability.homeEnrollment,
-            });
-            const refreshed = await refreshAndEnrollAccountServiceDirectory(auth.session, {
-                entryIntent: 'connect_service',
-                shouldCancel,
-                shouldInvalidateContinuation,
-            });
-            if (shouldCancel()) return;
-            if (refreshed.snapshot.status === 'ready') {
-                const preferredIdentity = refreshed.snapshot.preferredHomeServerIdentityId;
-                const failure = projectEnrollmentFailure(refreshed.enrollment);
-                if (preferredIdentity && failure) {
-                    setEnrollmentFailures((current) => ({ ...current, [preferredIdentity]: failure }));
-                }
-            } else if (isExpiredCredentialError(refreshed.snapshot.error)) {
-                setConnectionView({ kind: 'credential_expired', serviceKey: authenticatedServiceKey });
-            }
-        } catch {
-            if (!shouldCancel()) await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
-        } finally {
-            setBusy(false);
-        }
-    }, [beginAttempt, busy, endpoint, serviceKey]);
-
-    const startOAuthForHome = React.useCallback(async (homeServerIdentityId?: string) => {
-        if (busy) return;
-        setBusy(true);
-        const { attempt, shouldCancel } = beginAttempt(serviceKey);
-        let endpointServerIdentityId = '';
-        let pendingMayExist = false;
-        try {
             const discovery = await accountDirectoryAuthClient.discoverAuthenticationMethods({
                 endpointUrl: endpoint.url,
                 expectedServerIdentityId: endpoint.serverIdentityId,
-                requestedMethod: { kind: 'oauth' },
             });
-            if (shouldCancel()) return;
-            if (discovery.kind !== 'supported_account_service' || !discovery.preferredProvisionProviderId) {
-                throw new Error('Account Service OAuth unavailable');
-            }
-            const capability = discovery.capability;
-            endpointServerIdentityId = discovery.serverIdentityId;
-            const providerId = discovery.preferredProvisionProviderId;
-            const canonicalServerUrl = discovery.canonicalServerUrl;
-            const authenticatedEndpoint = { ...endpoint, serverIdentityId: endpointServerIdentityId };
-            const authenticatedServiceKey = accountServiceKey(authenticatedEndpoint);
-            attempt.serviceKey = authenticatedServiceKey;
-            serviceKeyRef.current = authenticatedServiceKey;
-            previousServiceKeyRef.current = authenticatedServiceKey;
-            setAccountServiceEndpoint(authenticatedEndpoint);
-            const url = await accountDirectoryAuthClient.startOAuth({
-                endpointUrl: endpoint.url,
-                endpointServerIdentityId,
-                canonicalServerUrl,
-                providerId,
-                // Linked plaintext/keyless Accounts can complete without
-                // manufacturing a Home signing secret. An unlinked identity
-                // receives the typed keyed-required result and the callback
-                // starts a fresh keyed continuation.
-                mode: 'keyless',
-                entryIntent: 'connect_service',
+            if (discovery.kind !== 'supported_account_service') throw new Error('Account Service unavailable');
+            router.push(buildAuthenticatedAccountEntryHref({
+                service: { endpointUrl: discovery.endpointUrl, serverIdentityId: discovery.serverIdentityId },
+                intent: source
+                    ? { kind: 'link', homeServerIdentityId: source }
+                    : { kind: 'refresh' },
                 returnTo: '/settings/account',
-                ...(homeServerIdentityId ? { homeServerIdentityId } : {}),
-            });
-            pendingMayExist = true;
-            if (shouldCancel()) throw new Error('Account Service OAuth attempt cancelled');
-            if (!isSafeExternalAuthUrl(url)) throw new Error('Invalid Account Service OAuth URL');
-            await Linking.openURL(url);
+            }));
         } catch {
-            if (pendingMayExist) {
-                await TokenStorage.clearPendingAccountDirectoryAuth({
-                    endpoint: endpoint.url,
-                    serverIdentityId: endpointServerIdentityId,
-                }).catch(() => false);
-            }
-            if (!shouldCancel()) await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
+            await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
         } finally {
             setBusy(false);
         }
-    }, [beginAttempt, busy, endpoint, serviceKey]);
+    }, [busy, endpoint, router]);
 
-    const login = React.useCallback(async () => {
-        await startOAuthForHome();
-    }, [startOAuthForHome]);
+    const login = React.useCallback(() => startAccountJourney(), [startAccountJourney]);
 
     const disconnect = React.useCallback(async () => {
         if (busy) return;
@@ -571,25 +437,6 @@ export function AccountServiceSettingsSection(): React.ReactElement {
             if (shouldCancel()) return;
             const snapshot = await directorySession.refresh();
             if (shouldCancel()) return;
-            if (
-                snapshot.status === 'ready'
-                && snapshot.preferredHomeServerIdentityId === homeServerIdentityId
-            ) {
-                setPendingRowActions((current) => ({ ...current, [homeServerIdentityId]: 'enroll' }));
-                const result = await enrollPreferredDirectoryHome(directorySession, {
-                    entryIntent: 'connect_service',
-                    shouldCancel,
-                    shouldInvalidateContinuation,
-                });
-                if (shouldCancel()) return;
-                setEnrollmentFailures((current) => {
-                    const next = { ...current };
-                    const failure = projectEnrollmentFailure(result);
-                    if (failure) next[homeServerIdentityId] = failure;
-                    else delete next[homeServerIdentityId];
-                    return next;
-                });
-            }
         } catch {
             if (!shouldCancel()) await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
         } finally {
@@ -604,8 +451,8 @@ export function AccountServiceSettingsSection(): React.ReactElement {
     const removeHome = React.useCallback(async (homeServerIdentityId: string, label: string) => {
         if (!directorySession || pendingRowActions[homeServerIdentityId]) return;
         const confirmed = await Modal.confirm(
-            t('settingsAccount.accountServiceRemoveHomeConfirmTitle'),
-            t('settingsAccount.accountServiceRemoveHomeConfirmBody', { label }),
+            t('settingsAccount.accountServiceRemoveHomeConfirmTitle', { label, accountService: verifiedAccountServiceName }),
+            t('settingsAccount.accountServiceRemoveHomeConfirmBody', { label, accountService: verifiedAccountServiceName }),
             {
                 confirmText: t('common.remove'),
                 cancelText: t('common.cancel'),
@@ -629,37 +476,78 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                 return next;
             });
         }
-    }, [beginAttempt, directorySession, pendingRowActions, serviceKey]);
+    }, [beginAttempt, directorySession, pendingRowActions, serviceKey, verifiedAccountServiceName]);
 
-    const enrollHome = React.useCallback(async (homeServerIdentityId: string) => {
-        if (!directorySession || pendingRowActions[homeServerIdentityId]) return;
-        const { shouldCancel, shouldInvalidateContinuation } = beginAttempt(serviceKey);
-        setPendingRowActions((current) => ({ ...current, [homeServerIdentityId]: 'enroll' }));
+    const unlinkHome = React.useCallback(async (homeServerIdentityId: string, label: string) => {
+        if (!verifiedAccountServiceIdentity || pendingRowActions[homeServerIdentityId]) return;
+        const confirmed = await Modal.confirm(
+            t('settingsAccount.accountServiceUnlinkHomeConfirmTitle', { label, accountService: verifiedAccountServiceName }),
+            t('settingsAccount.accountServiceUnlinkHomeConfirmBody', { label, accountService: verifiedAccountServiceName }),
+            {
+                confirmText: t('settingsAccount.accountServiceUnlinkHomeConfirmAction'),
+                cancelText: t('common.cancel'),
+                destructive: true,
+            },
+        );
+        if (!confirmed) return;
+        const shouldCancel = () => serviceKeyRef.current !== serviceKey;
+        setPendingRowActions((current) => ({ ...current, [homeServerIdentityId]: 'unlink' }));
         try {
-            const result = pendingEnrollment?.serviceKey === serviceKey
-                && pendingEnrollment.homeServerIdentityId === homeServerIdentityId
-                ? await resumePendingPreferredHomeEnrollment()
-                : await enrollPreferredDirectoryHome(directorySession, {
-                    entryIntent: 'connect_service',
-                    shouldCancel,
-                    shouldInvalidateContinuation,
-                });
-            if (!result) return;
-            if (shouldCancel()) return;
-            const enrollment = projectEnrollmentFailure(result);
+            const result = await revokeAuthenticatedHomeLink({
+                homeServerIdentityId,
+                issuerServerIdentityId: verifiedAccountServiceIdentity,
+                shouldCancel,
+            });
+            if (result.kind !== 'unlinked' && !shouldCancel()) {
+                await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
+            }
+        } finally {
+            setPendingRowActions((current) => {
+                const next = { ...current };
+                delete next[homeServerIdentityId];
+                return next;
+            });
+        }
+    }, [pendingRowActions, serviceKey, verifiedAccountServiceIdentity, verifiedAccountServiceName]);
+
+    const continueHome = React.useCallback(async (homeServerIdentityId: string, kind: 'link' | 'enroll') => {
+        if (!directorySessionBinding || pendingRowActions[homeServerIdentityId]) return;
+        if (pendingEnrollment?.serviceKey === serviceKey && pendingEnrollment.homeServerIdentityId === homeServerIdentityId) {
+            const result = await resumePendingDirectoryHomeEnrollment();
+            if (result) setContinuationResults((current) => ({ ...current, [homeServerIdentityId]: { input: pendingEnrollment.input, result } }));
+            return;
+        }
+        continuationAbortRef.current?.abort();
+        const controller = new AbortController();
+        continuationAbortRef.current = controller;
+        const input = { service: directorySessionBinding.service, session: directorySessionBinding.session,
+            intent: { kind, homeServerIdentityId }, signal: controller.signal } as const;
+        setPendingRowActions((current) => ({ ...current, [homeServerIdentityId]: kind }));
+        try {
+            const previous = continuationResults[homeServerIdentityId]?.result;
+            let result = pendingEnrollment?.homeServerIdentityId === homeServerIdentityId
+                ? await resumePendingDirectoryHomeEnrollment()
+                : previous?.kind === 'failure' && previous.recovery === 'retry_stage'
+                    ? await resumeAccountServicePostAuth(input, previous)
+                    : await completeAccountServicePostAuth(input);
+            if (result?.kind === 'failure' && result.recovery === 'relink_home') {
+                const confirmed = await Modal.confirm(t('settingsAccount.accountServiceRelinkConfirmTitle', { accountService: verifiedAccountServiceName }),
+                    t('settingsAccount.accountServiceRelinkConfirmBody', { accountService: verifiedAccountServiceName }),
+                    { confirmText: t('common.continue'), cancelText: t('common.cancel') });
+                if (confirmed && !controller.signal.aborted) result = await confirmAccountServiceHomeRelink(input);
+            }
+            if (!result || controller.signal.aborted) return;
+            setContinuationResults((current) => ({ ...current, [homeServerIdentityId]: { input, result } }));
+            if (result.kind === 'failure' && result.recovery === 'reauthenticate_account') {
+                setConnectionView({ kind: 'credential_expired', serviceKey });
+            }
             setEnrollmentFailures((current) => {
                 const next = { ...current };
-                if (enrollment) next[homeServerIdentityId] = enrollment;
+                const failure = projectEnrollmentFailure(result);
+                if (failure) next[homeServerIdentityId] = failure;
                 else delete next[homeServerIdentityId];
                 return next;
             });
-        } catch {
-            if (!shouldCancel()) {
-                setEnrollmentFailures((current) => ({
-                    ...current,
-                    [homeServerIdentityId]: 'failed',
-                }));
-            }
         } finally {
             setPendingRowActions((current) => {
                 const next = { ...current };
@@ -667,106 +555,24 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                 return next;
             });
         }
-    }, [beginAttempt, directorySession, pendingEnrollment, pendingRowActions, serviceKey]);
+    }, [continuationResults, directorySessionBinding, pendingEnrollment, pendingRowActions, serviceKey, verifiedAccountServiceName]);
 
+    const enrollHome = React.useCallback((homeServerIdentityId: string) => continueHome(homeServerIdentityId, 'enroll'), [continueHome]);
     const linkHome = React.useCallback(async (profile: ServerProfile) => {
-        const homeServerIdentityId = profile.serverIdentityId?.trim() ?? '';
-        if (!homeServerIdentityId || pendingRowActions[homeServerIdentityId]) return;
-        if (!connected) {
-            await startOAuthForHome(homeServerIdentityId);
-            return;
-        }
+        const identity = profile.serverIdentityId;
+        if (!identity) return;
+        if (!connected) await startAccountJourney(identity);
+        else await continueHome(identity, 'link');
+    }, [connected, continueHome, startAccountJourney]);
 
-        const { attempt, shouldCancel, shouldInvalidateContinuation } = beginAttempt(serviceKey);
-        setPendingRowActions((current) => ({ ...current, [homeServerIdentityId]: 'link' }));
-        try {
-            const observed = await accountDirectoryAuthClient.discoverAuthenticationMethods({
-                endpointUrl: endpoint.url,
-                expectedServerIdentityId: endpoint.serverIdentityId,
-            });
-            if (shouldCancel()) return;
-            if (observed.kind !== 'supported_account_service') {
-                throw new Error('Account Service Home linking unavailable');
-            }
-            const capability = observed.capability;
-            const endpointServerIdentityId = observed.serverIdentityId;
-            const capturedEndpointServerIdentityId = endpoint.serverIdentityId?.trim() ?? '';
-            if (
-                capturedEndpointServerIdentityId
-                && endpointServerIdentityId !== capturedEndpointServerIdentityId
-            ) {
-                throw new Error('Account Service identity changed during Home linking');
-            }
-            const observedEndpoint = { ...endpoint, serverIdentityId: endpointServerIdentityId };
-            const observedServiceKey = accountServiceKey(observedEndpoint);
-            if (observedServiceKey !== serviceKey) {
-                attempt.serviceKey = observedServiceKey;
-                serviceKeyRef.current = observedServiceKey;
-                previousServiceKeyRef.current = observedServiceKey;
-                automaticallyHydratedServiceKeyRef.current = observedServiceKey;
-                setAccountServiceEndpoint(observedEndpoint);
-            }
-            const session = directorySessionBinding?.serviceKey === observedServiceKey
-                ? directorySessionBinding.session
-                : createAccountDirectorySession({
-                    endpoint: endpoint.url,
-                    serverIdentityId: endpointServerIdentityId,
-                }, { capability });
-            if (session !== directorySessionBinding?.session) {
-                setDirectorySessionBinding({ serviceKey: observedServiceKey, session });
-            }
-            const provisionInput = {
-                session,
-                homeServerIdentityId,
-                issuerServerIdentityId: endpointServerIdentityId,
-                capability,
-                shouldCancel,
-            } as const;
-            let provisioned = await provisionAuthenticatedHomeLink(provisionInput);
-            if (shouldCancel()) return;
-            if (provisioned.kind === 'relink_required') {
-                const confirmed = await Modal.confirm(
-                    t('settingsAccount.accountServiceRelinkConfirmTitle'),
-                    t('settingsAccount.accountServiceRelinkConfirmBody'),
-                    {
-                        confirmText: t('common.continue'),
-                        cancelText: t('common.cancel'),
-                    },
-                );
-                if (!confirmed || shouldCancel()) return;
-                provisioned = await provisionAuthenticatedHomeLink({ ...provisionInput, relink: true });
-            }
-            if (provisioned.kind !== 'linked' || shouldCancel()) {
-                throw new Error('Authenticated Home relationship provisioning failed');
-            }
-            const refreshed = await refreshAccountHomeDirectory(session, { shouldCancel });
-            if (shouldCancel()) return;
-            let enrollment: PreferredDirectoryHomeEnrollmentResult | null = null;
-            if (refreshed.status === 'ready') {
-                enrollment = await enrollPreferredDirectoryHome(session, {
-                    entryIntent: 'connect_service',
-                    shouldCancel,
-                    shouldInvalidateContinuation,
-                });
-            }
-            if (shouldCancel()) return;
-            if (refreshed.status === 'ready') {
-                const preferredIdentity = refreshed.preferredHomeServerIdentityId;
-                const failure = projectEnrollmentFailure(enrollment);
-                if (preferredIdentity && failure) {
-                    setEnrollmentFailures((current) => ({ ...current, [preferredIdentity]: failure }));
-                }
-            }
-        } catch {
-            if (!shouldCancel()) await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
-        } finally {
-            setPendingRowActions((current) => {
-                const next = { ...current };
-                delete next[homeServerIdentityId];
-                return next;
-            });
+    useAccountDirectoryActivePolling(async () => {
+        if (!pendingEnrollment || pendingEnrollment.serviceKey !== serviceKey) return 'completed';
+        const result = await resumePendingDirectoryHomeEnrollment();
+        if (result && result.kind !== 'approval_required') {
+            setContinuationResults((current) => ({ ...current, [pendingEnrollment.homeServerIdentityId]: { input: pendingEnrollment.input, result } }));
         }
-    }, [beginAttempt, connected, directorySessionBinding, endpoint, pendingRowActions, serviceKey, startOAuthForHome]);
+        return result?.kind === 'failure' && result.recovery === 'retry_stage' ? 'backoff' : 'completed';
+    }, pendingEnrollment?.serviceKey === serviceKey);
 
     const linkableProfiles = profiles.filter((profile) => {
         const identity = profile.serverIdentityId?.trim() ?? '';
@@ -788,7 +594,7 @@ export function AccountServiceSettingsSection(): React.ReactElement {
         : visibleConnection.kind === 'connected'
             ? t('settingsAccount.statusActive')
             : visibleConnection.kind === 'credential_expired'
-                ? t('settingsAccount.accountServiceReconnectRequired')
+                ? t('settingsAccount.accountServiceReconnectRequired', { accountService: verifiedAccountServiceName })
                 : visibleConnection.kind === 'custody_unavailable'
                     ? t('common.unavailable')
                 : t('settingsAccount.statusNotAuthenticated');
@@ -824,7 +630,7 @@ export function AccountServiceSettingsSection(): React.ReactElement {
             <Item
                 testID="settings-account-service-directory-credential-expired"
                 mode="info"
-                title={t('settingsAccount.accountServiceReconnectRequired')}
+                title={t('settingsAccount.accountServiceReconnectRequired', { accountService: verifiedAccountServiceName })}
                 subtitle={t('settingsAccount.accountServiceReconnectDescription')}
                 showChevron={false}
             />
@@ -867,11 +673,36 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                                 testID="settings-account-service-directory-empty"
                                 mode="info"
                                 title={t('settingsAccount.accountServiceHomesEmpty')}
-                                subtitle={t('settingsAccount.accountServiceHomesEmptyDescription')}
+                                subtitle={t('settingsAccount.accountServiceHomesEmptyDescription', { accountService: verifiedAccountServiceName })}
                                 showChevron={false}
                             />
                         )
                         : null;
+
+    if (selectingEndpoint) {
+        return (
+            <WizardModalShell
+                testID="settings-account-service-selection"
+                title={t('settingsAccount.accountServiceSignInService')}
+                subtitle={endpoint.url}
+                layoutPresentation="fullscreen"
+                stepIndex={0}
+                stepCount={1}
+                showSkip={false}
+                showBack={false}
+            >
+                <AccountServiceSelectionForm
+                    currentEndpoint={endpoint}
+                    onBack={() => setSelectingEndpoint(false)}
+                    onSelect={async (entered, options) => {
+                        const result = await selectAccountServiceEndpoint(entered, options);
+                        if (result.kind === 'selected') setSelectingEndpoint(false);
+                        return result;
+                    }}
+                />
+            </WizardModalShell>
+        );
+    }
 
     return (
         <>
@@ -909,7 +740,7 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                         subtitle={endpoint.url}
                         subtitleLines={1}
                         subtitleEllipsizeMode="middle"
-                        onPress={selectEndpoint}
+                        onPress={() => setSelectingEndpoint(true)}
                         disabled={busy}
                     />
                     <Item
@@ -982,21 +813,12 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                             />
                         );
                     })}
-                    {canAuthenticate ? (
-                        <Item
-                            testID="settings-account-service-key-login"
-                            title={t('navigation.restoreWithSecretKey')}
-                            onPress={loginWithKey}
-                            disabled={busy}
-                            showChevron={false}
-                        />
-                    ) : null}
                     {connected ? (
                         <>
                             <Item
                                 testID="settings-account-service-refresh"
                                 title={t('common.refresh')}
-                                onPress={refreshAndEnroll}
+                                onPress={refreshDirectory}
                                 disabled={directoryRefreshing}
                                 loading={directoryRefreshing}
                                 showChevron={false}
@@ -1024,6 +846,32 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                         const pendingAction = pendingRowActions[home.homeServerIdentityId];
                         const profile = linkableProfileByIdentity.get(home.homeServerIdentityId)
                             ?? profiles.find((candidate) => candidate.id === home.homeServerIdentityId);
+                        const retained = continuationResults[home.homeServerIdentityId];
+                        const continuation = retained?.input.session.serviceKey === serviceKey ? retained : undefined;
+                        if (continuation?.result.kind === 'home_material_required' || continuation?.result.kind === 'failure') {
+                            return <View key={home.homeServerIdentityId} testID={`settings-account-service-material-${home.homeServerIdentityId}`}>
+                                {homeAuthentication?.input === continuation.input ? <AccountServiceHomeAuthenticationAdapter
+                                    {...homeAuthentication} returnTo={AUTHENTICATED_ACCOUNT_ENTRY_ROUTE} accountEntryReturnTo="/settings/account"
+                                    onBack={() => setHomeAuthentication(null)}
+                                    onResult={(result) => {
+                                        setContinuationResults((current) => ({ ...current,
+                                            [home.homeServerIdentityId]: { input: homeAuthentication.input, result } }));
+                                        setHomeAuthentication(null);
+                                        setEnrollmentFailures((current) => {
+                                            const next = { ...current };
+                                            const failure = projectEnrollmentFailure(result);
+                                            if (failure) next[home.homeServerIdentityId] = failure;
+                                            else delete next[home.homeServerIdentityId];
+                                            return next;
+                                        });
+                                    }} /> : <AccountServiceContinuation input={continuation.input} result={continuation.result}
+                                    onReauthenticate={startAccountJourney}
+                                    onOpenHomeAuthentication={(input, homeServerIdentityId, previous) => setHomeAuthentication({ input, homeServerIdentityId, previous })}
+                                    onResult={(result, input) => setContinuationResults((current) => ({ ...current,
+                                        [home.homeServerIdentityId]: { input: input ?? continuation.input, result } }))}
+                                    onBack={() => router.back()} />}
+                            </View>;
+                        }
                         const durablyEnrolled = profile
                             ? authStatusByProfileId[resolveServerProfileScopeId(profile)] === 'signedIn'
                             : false;
@@ -1044,20 +892,19 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                                     ? pendingForHome.kind === 'approval_required' ? 'approval_required' : 'failed'
                                     : adoptionFailed ? 'failed' : null);
                         const setPreferredTitle = t('settingsAccount.accountServiceSetPreferredHome');
-                        const removeTitle = t('settingsAccount.accountServiceRemoveHome');
-                        const enrollmentNeedsRetry = enrollmentView === 'failed'
-                            || enrollmentView === 'partial_commit';
+                        const removeTitle = t('settingsAccount.accountServiceRemoveHome', { accountService: verifiedAccountServiceName });
+                        const enrollmentNeedsRetry = pendingForHome?.kind === 'transport_unavailable';
                         const enrollmentCanRestart = Boolean(pendingForHome)
                             || enrollmentNeedsRetry
-                            || enrollmentView === 'rejected'
                             || enrollmentView === 'expired';
                         const enrollTitle = pendingForHome
                             ? t('common.retry')
                             : enrollmentNeedsRetry
                             ? t('settingsAccount.accountServiceRetryHomeConnection')
                             : t('settingsAccount.accountServiceConnectHome');
+                        const homeSignedIn = Boolean(profile && authStatusByProfileId[resolveServerProfileScopeId(profile)] === 'signedIn');
                         const actions = [
-                            ...(profile && authStatusByProfileId[resolveServerProfileScopeId(profile)] === 'signedIn' ? [{
+                            ...(profile && homeSignedIn ? [{
                                 id: `${testID}-link`,
                                 inlineTestID: `${testID}-link`,
                                 title: t('settingsAccount.accountServiceLinkThisHome'),
@@ -1066,6 +913,16 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                                     : 'link' as const,
                                 disabled: Boolean(pendingAction) || busy,
                                 onPress: () => { void linkHome(profile); },
+                            }, {
+                                id: `${testID}-unlink`,
+                                inlineTestID: `${testID}-unlink`,
+                                title: t('settingsAccount.accountServiceUnlinkHome', { accountService: verifiedAccountServiceName }),
+                                icon: pendingAction === 'unlink'
+                                    ? <ActivitySpinner size="small" />
+                                    : 'link-break' as const,
+                                disabled: Boolean(pendingAction) || busy,
+                                destructive: true,
+                                onPress: () => { void unlinkHome(home.homeServerIdentityId, home.label); },
                             }] : []),
                             ...(!preferred ? [{
                                 id: `${testID}-set-preferred`,
@@ -1077,7 +934,7 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                                 disabled: Boolean(pendingAction),
                                 onPress: () => { void setPreferredHome(home.homeServerIdentityId); },
                             }] : []),
-                            ...(preferred && enrollmentCanRestart ? [{
+                            ...(!durablyEnrolled || enrollmentCanRestart ? [{
                                 id: `${testID}-enroll`,
                                 inlineTestID: `${testID}-enroll`,
                                 title: enrollTitle,
@@ -1099,11 +956,11 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                                 onPress: () => { void removeHome(home.homeServerIdentityId, home.label); },
                             },
                         ];
-                        const commonActionId = preferred && enrollmentCanRestart
+                        const commonActionId = !durablyEnrolled || enrollmentCanRestart
                             ? `${testID}-enroll`
                             : !preferred
                                 ? `${testID}-set-preferred`
-                                : profile && authStatusByProfileId[resolveServerProfileScopeId(profile)] === 'signedIn'
+                                : homeSignedIn
                                     ? `${testID}-link`
                                     : null;
                         const preferredLabel = t('settingsAccount.accountServicePreferredHome');
@@ -1160,10 +1017,9 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                                 key={profile.id}
                                 testID={testID}
                                 title={profile.name}
-                                subtitle={t('settingsAccount.accountServiceLinkThisHomeDescription').replace(
-                                    '{accountService}',
-                                    endpoint.displayName ?? displayNameForEndpoint(endpoint.url),
-                                )}
+                                subtitle={t('settingsAccount.accountServiceLinkThisHomeDescription', {
+                                    accountService: verifiedAccountServiceName,
+                                })}
                                 mode="info"
                                 rightElement={(
                                     <ItemRowActions

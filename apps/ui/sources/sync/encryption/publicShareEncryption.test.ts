@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { PUBLIC_SHARE_ENCRYPTED_DATA_KEY_CURRENT_V0_BYTES } from '@happier-dev/protocol';
 
-import { decodeBase64 } from '@/encryption/base64';
+import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import {
     decryptDataKeyFromPublicShare,
     encryptDataKeyForPublicShare,
@@ -17,7 +18,7 @@ const LEGACY_PREVIEW_VECTOR = {
 } as const;
 
 describe('public-share encryption compatibility', () => {
-    it('keeps the released 165-byte SecretBox writer readable by the current viewer', async () => {
+    it('keeps the released current SecretBox writer readable by the current viewer', async () => {
         // Stable ui-mobile-v0.2.0 and ui-web-v0.2.0 plus preview
         // ui-web-v0.2.2-preview.1775585938.1 all use this writer.
         const dataKey = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
@@ -26,7 +27,7 @@ describe('public-share encryption compatibility', () => {
         const encrypted = await encryptDataKeyForPublicShare(dataKey, token);
         const opened = await decryptDataKeyFromPublicShare(encrypted, token);
 
-        expect(decodeBase64(encrypted, 'base64')).toHaveLength(165);
+        expect(decodeBase64(encrypted, 'base64')).toHaveLength(PUBLIC_SHARE_ENCRYPTED_DATA_KEY_CURRENT_V0_BYTES);
         expect(opened).toEqual(dataKey);
     });
 
@@ -37,5 +38,23 @@ describe('public-share encryption compatibility', () => {
         );
 
         expect(opened).toEqual(decodeBase64(LEGACY_PREVIEW_VECTOR.dataKeyB64, 'base64'));
+    });
+
+    it('fails closed when a current-shape envelope carries a wrong-sized data key', async () => {
+        // 31 bytes base64-encode to the same 44-char body as a 32-byte key,
+        // so this envelope passes length admission and must be rejected on
+        // payload validation instead of being handed to the viewer.
+        const { encryptSecretBox } = await import('@/encryption/libsodium');
+        const { deriveKey: deriveWrappingKey } = await import('@/encryption/deriveKey');
+        const shortKey = Uint8Array.from({ length: 31 }, (_, index) => index + 1);
+        const token = 'wrong-size-key-public-share-vector';
+        const wrappingKey = await deriveWrappingKey(
+            new TextEncoder().encode(token),
+            'Happy Public Share',
+            ['v1'],
+        );
+        const tampered = encryptSecretBox({ v: 0, keyB64: encodeBase64(shortKey, 'base64') }, wrappingKey);
+
+        await expect(decryptDataKeyFromPublicShare(encodeBase64(tampered, 'base64'), token)).resolves.toBeNull();
     });
 });

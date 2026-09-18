@@ -24,6 +24,7 @@ export const LinkFilePickerPopoverContent = React.memo((props: LinkFilePickerPop
         const browser = (
             <SessionRepositoryTreeBrowserView
                 sessionId={props.sessionId}
+                serverId={props.serverId}
                 density="panel"
                 onRequestClose={props.onRequestClose}
                 onOpenFile={handlePickPath}

@@ -24,6 +24,7 @@ type DiffMode = 'included' | 'pending' | 'both';
 
 export function useFileScmStageActions(input: {
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     filePath: string;
     scmSnapshot: ScmWorkingSnapshot | null;
@@ -39,6 +40,7 @@ export function useFileScmStageActions(input: {
 }) {
     const {
         sessionId,
+        serverId,
         sessionPath,
         filePath,
         scmSnapshot,
@@ -66,6 +68,7 @@ export function useFileScmStageActions(input: {
         if (isAtomicCommitStrategy(scmCommitStrategy)) {
             await applyFileStageAction({
                 sessionId,
+                serverId,
                 sessionPath,
                 filePath,
                 snapshot: scmSnapshot,
@@ -124,14 +127,15 @@ export function useFileScmStageActions(input: {
 
         if (atomicVirtualLineSelectionEnabled) {
             try {
-                storage.getState().unmarkSessionProjectScmCommitSelectionPaths(sessionId, [filePath]);
+                storage.getState().unmarkSessionProjectScmCommitSelectionPaths(sessionId, [filePath], serverId);
                 storage.getState().upsertSessionProjectScmCommitSelectionPatch(sessionId, {
                     path: filePath,
                     patch,
-                });
+                }, serverId);
                 reportSessionScmOperation({
                     state: storage.getState(),
                     sessionId,
+                    ...(serverId ? { serverId } : {}),
                     operation: 'stage',
                     status: 'success',
                     path: filePath,
@@ -171,13 +175,14 @@ export function useFileScmStageActions(input: {
         const lockResult = await withSessionProjectScmOperationLock({
             state: storage.getState(),
             sessionId,
+            ...(serverId ? { serverId } : {}),
             operation: stageSelected ? 'stage' : 'unstage',
             run: async () => {
                 setIsApplyingStageSafe(true);
                 try {
                     const response = stageSelected
-                        ? await sessionScmChangeInclude(sessionId, { patch })
-                        : await sessionScmChangeExclude(sessionId, { patch });
+                        ? await sessionScmChangeInclude(sessionId, { patch }, serverId)
+                        : await sessionScmChangeExclude(sessionId, { patch }, serverId);
 
                     if (!response.success) {
                         const errorMessage = getScmUserFacingError({
@@ -188,6 +193,7 @@ export function useFileScmStageActions(input: {
                         reportSessionScmOperation({
                             state: storage.getState(),
                             sessionId,
+                            ...(serverId ? { serverId } : {}),
                             operation: stageSelected ? 'stage' : 'unstage',
                             status: 'failed',
                             path: filePath,
@@ -212,6 +218,7 @@ export function useFileScmStageActions(input: {
                     reportSessionScmOperation({
                         state: storage.getState(),
                         sessionId,
+                        ...(serverId ? { serverId } : {}),
                         operation: stageSelected ? 'stage' : 'unstage',
                         status: 'success',
                         path: filePath,
@@ -223,7 +230,7 @@ export function useFileScmStageActions(input: {
                         setSelectedLineKeys(new Set());
                     }
                     applied = true;
-                    await scmStatusSync.invalidateFromMutationAndAwait(sessionId);
+                    await scmStatusSync.invalidateFromMutationAndAwait(sessionId, serverId);
                     if (mountedRef.current) {
                         await refreshAll();
                     }

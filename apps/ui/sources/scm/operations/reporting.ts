@@ -16,6 +16,7 @@ interface ScmOperationState {
     appendSessionProjectScmOperation: (
         sessionId: string,
         entry: Omit<ScmProjectOperationLogEntry, 'id' | 'sessionId'>,
+        serverId?: string,
     ) => void;
 }
 
@@ -45,6 +46,7 @@ export function trackBlockedScmOperation(input: {
 export function reportSessionScmOperation(input: {
     state: ScmOperationState;
     sessionId: string;
+    serverId?: string;
     operation: ScmProjectOperationKind;
     status: ScmProjectOperationStatus;
     surface: ScmOperationSurface;
@@ -63,7 +65,7 @@ export function reportSessionScmOperation(input: {
         timestamp,
         ...(input.path ? { path: input.path } : {}),
         ...(input.detail ? { detail: input.detail } : {}),
-    });
+    }, ...(input.serverId === undefined ? [] : [input.serverId]));
 
     input.tracking?.capture('scm_operation_result', {
         operation: input.operation,

@@ -14,6 +14,7 @@ type AccountSettingsPersistenceModule = Readonly<{
     prepareAccountSettingsScopeForActivation: (scope: AccountSettingsScope, legacyScopes?: readonly AccountSettingsScope[]) => void;
     loadPendingAccountSettings: (scope: AccountSettingsScope) => Partial<Settings>;
     savePendingAccountSettings: (scope: AccountSettingsScope, settings: Partial<Settings>) => void;
+    subscribeAccountSettingsPersistenceMutations: (listener: (scope: AccountSettingsScope) => void) => () => void;
 }>;
 
 const store = vi.hoisted(() => new Map<string, string>());
@@ -93,6 +94,53 @@ describe('accountSettingsPersistence', () => {
         store.clear();
     });
 
+    it('replaces native preview ceilings with the current settings, including an offline privacy change', async () => {
+        const mod = await loadAccountSettingsPersistenceModule();
+        expect(mod).not.toBeNull();
+        if (!mod) return;
+        const policy = settingsDefaults.attentionDeliveryPolicyV1;
+        const initial = {
+            ...settingsDefaults,
+            attentionDeliveryPolicyV1: {
+                ...policy,
+                events: { ...policy.events, ready: { ...policy.events.ready, previewBehavior: 'include_preview' as const } },
+            },
+        };
+        mod.saveAccountSettings(scopeA, initial, 9);
+        mod.saveAccountSettings(sameAccountDifferentServer, initial, 9);
+        const readNativePolicy = (scope: AccountSettingsScope) => JSON.parse(store.get(accountSettingsStorageKey(scope)) ?? '{}').nativeNotificationPreviews;
+        expect(readNativePolicy(scopeA)).toMatchObject({ v: 1, events: { ready: 'include_preview' } });
+
+        // Local edits persist before a Home CAS succeeds, so the version is deliberately unchanged.
+        mod.saveAccountSettings(scopeA, {
+            ...initial,
+            attentionDeliveryPolicyV1: {
+                ...initial.attentionDeliveryPolicyV1,
+                events: { ...initial.attentionDeliveryPolicyV1.events, ready: { ...policy.events.ready, previewBehavior: 'status_only' } },
+            },
+        }, 9);
+        expect(readNativePolicy(scopeA)).toMatchObject({ v: 1, events: { ready: 'status_only' } });
+        expect(readNativePolicy(sameAccountDifferentServer)).toMatchObject({ v: 1, events: { ready: 'include_preview' } });
+
+        // A predecessor replaces the whole envelope; its write cannot retain a permissive projection.
+        writeLegacyAccountSettingsCache(scopeA, { ...settingsDefaults }, 10);
+        expect(readNativePolicy(scopeA)).toBeUndefined();
+    });
+
+    it('invalidates native consumers immediately after an exact Account settings write', async () => {
+        const mod = await loadAccountSettingsPersistenceModule();
+        expect(mod).not.toBeNull();
+        if (!mod) return;
+        const mutations: AccountSettingsScope[] = [];
+        const unsubscribe = mod.subscribeAccountSettingsPersistenceMutations((scope) => mutations.push(scope));
+
+        mod.saveAccountSettings(scopeA, settingsDefaults, 3);
+        unsubscribe();
+        mod.saveAccountSettings(sameServerDifferentAccount, settingsDefaults, 4);
+
+        expect(mutations).toEqual([scopeA]);
+    });
+
     it('persists account settings separately for each server/account scope', async () => {
         const mod = await loadAccountSettingsPersistenceModule();
         expect(mod, 'account settings persistence module should exist').not.toBeNull();
@@ -157,7 +205,7 @@ describe('accountSettingsPersistence', () => {
     it('does not mirror device-global Home selection into legacy settings persistence', async () => {
         const { saveHomeViewState } = await import('../server/serverProfiles');
         const { loadSettings, saveSettings } = await import('./settingsPersistence');
-        saveHomeViewState({
+        await saveHomeViewState({
             version: 1,
             groups: [{ id: 'global', name: 'Global', serverIds: ['server-a'] }],
             activeTargetKind: 'server',

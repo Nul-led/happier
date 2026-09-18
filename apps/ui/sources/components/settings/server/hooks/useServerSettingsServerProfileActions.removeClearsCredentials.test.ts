@@ -44,11 +44,13 @@ const pendingTerminalConnectMock = vi.hoisted(() => ({
     set: vi.fn((value: { publicKeyB64Url: string; serverUrl: string; serverIdentityId: string }) => {
         pendingTerminalConnectMock.current = value;
     }),
+    retarget: vi.fn(),
 }));
 
 vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
     getPendingTerminalConnect: () => pendingTerminalConnectMock.current,
     setPendingTerminalConnect: pendingTerminalConnectMock.set,
+    retargetPendingTerminalConnectToServerUrl: pendingTerminalConnectMock.retarget,
 }));
 
 vi.mock('expo-secure-store', () => ({}));
@@ -90,11 +92,11 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         (Modal.confirm as any).mockResolvedValueOnce(true);
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const profile = profiles.upsertServerProfile({
+        const profile = await profiles.upsertServerProfile({
             serverUrl: 'https://server-a.example.test',
             name: 'Server A',
         });
-        profiles.setActiveServerId(profile.id, { scope: 'device' });
+        await profiles.setActiveServerId(profile.id, { scope: 'device' });
 
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         await expect(TokenStorage.setCredentials({ token: 'token-a', secret: 'secret-a' })).resolves.toBe(true);
@@ -122,7 +124,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         await actions.onRemoveServer(profile);
         expect(revision).toBeGreaterThan(0);
 
-        const readded = profiles.upsertServerProfile({ serverUrl: profile.serverUrl, name: 'Server A (again)' });
+        const readded = await profiles.upsertServerProfile({ serverUrl: profile.serverUrl, name: 'Server A (again)' });
         expect(readded.id).toBe(profile.id);
         await expect(TokenStorage.getCredentialsForServerUrl(profile.serverUrl)).resolves.toBeNull();
 
@@ -134,15 +136,15 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         const localStorageHandle = installLocalStorageMock();
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const targetProfile = profiles.upsertServerProfile({
+        const targetProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://marked.example.test',
             name: 'Marked',
         });
-        const activeProfile = profiles.upsertServerProfile({
+        const activeProfile = await profiles.upsertServerProfile({
             serverUrl: 'https://active.example.test',
             name: 'Active',
         });
-        profiles.setActiveServerId(targetProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(targetProfile.id, { scope: 'device' });
 
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         await expect(TokenStorage.setCredentials({
@@ -167,7 +169,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
                 migrationSubmissionAttempted: true,
             },
         })).resolves.toBe(true);
-        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+        await profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
         const { Modal } = await import('@/modal');
         (Modal.confirm as any).mockResolvedValueOnce(true);
 
@@ -233,11 +235,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
 
         await actions.onSwitchServer(profile);
 
-        expect(pendingTerminalConnectMock.set).toHaveBeenCalledWith({
-            publicKeyB64Url: 'abc123',
-            serverUrl: 'https://correct.example.test',
-            serverIdentityId: 'srv_original_home',
-        });
+        expect(pendingTerminalConnectMock.retarget).toHaveBeenCalledWith('https://correct.example.test');
         expect(onSwitchServerById).toHaveBeenCalledWith('server-correct', 'tab');
     });
 
@@ -303,7 +301,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         await actions.onSwitchServer(profile);
 
         expect(onSwitchServerById).toHaveBeenCalledWith('server-blocked', 'tab');
-        expect(pendingTerminalConnectMock.set).not.toHaveBeenCalled();
+        expect(pendingTerminalConnectMock.retarget).not.toHaveBeenCalled();
         expect(setRevision).not.toHaveBeenCalled();
     });
 
@@ -338,11 +336,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
 
         await actions.onSwitchServer(profile);
 
-        expect(pendingTerminalConnectMock.set).toHaveBeenCalledWith({
-            publicKeyB64Url: 'abc123',
-            serverUrl: 'https://correct.example.test',
-            serverIdentityId: 'srv_original_home',
-        });
+        expect(pendingTerminalConnectMock.retarget).toHaveBeenCalledWith('https://correct.example.test');
         expect(onSwitchServerById).toHaveBeenCalledWith('srv_identity_correct', 'tab');
     });
 });

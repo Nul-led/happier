@@ -35,13 +35,13 @@ describe('session handoff UI request client', () => {
             ok: true,
             handoffId: 'handoff-1',
             status: { handoffId: 'handoff-1', status: 'completed', phase: 'finalizing', recoveryActions: [] },
+            workspace: { kind: 'relationship', relationshipId: 'relationship-1', created: true },
         });
         const { startSessionHandoff } = await import('./sessionHandoffs');
         await expect(startSessionHandoff({
             sessionId: 'session-1',
             targetMachineId: 'target-1',
             serverId: 'server-1',
-            sessionStorageMode: 'persisted',
             workspaceAction: {
                 kind: 'create_relationship',
                 mode: 'keep_synced',
@@ -61,6 +61,12 @@ describe('session handoff UI request client', () => {
                 rootFingerprint: 'a'.repeat(64),
                 operationId: 'handoff-action-1',
             },
+            handoffTargetReplacementApprovalReceiptId: 'approval-receipt-1',
+            handoffTargetReplacementApprovalActionInput: {
+                sessionId: 'session-1',
+                targetMachineId: 'target-1',
+                targetPath: '/target/repo',
+            },
         })).resolves.toMatchObject({ ok: true, result: { handoffId: 'handoff-1' } });
         expect(machineRpc).toHaveBeenCalledTimes(1);
         expect(machineRpc).toHaveBeenCalledWith(expect.objectContaining({
@@ -77,8 +83,18 @@ describe('session handoff UI request client', () => {
                 }),
                 actionRequestId: 'handoff-action-1',
                 handoffTargetReplacementApproval: expect.objectContaining({ operationId: 'handoff-action-1' }),
+                handoffTargetReplacementApprovalReceiptId: 'approval-receipt-1',
+                handoffTargetReplacementApprovalActionInput: {
+                    sessionId: 'session-1',
+                    targetMachineId: 'target-1',
+                    targetPath: '/target/repo',
+                },
             }),
         }));
+        // Source transcript storage is the source daemon's own derivation, made
+        // from owner metadata before any stop or export. The client sends no
+        // competing answer for it to agree with.
+        expect(machineRpc.mock.calls[0]?.[0]?.payload).not.toHaveProperty('sessionStorageMode');
     });
 
     it('exposes typed status and cancellation requests as thin owner commands', async () => {
@@ -90,5 +106,106 @@ describe('session handoff UI request client', () => {
         await expect(cancelSessionHandoff({ machineId: 'target-1', handoffId: 'handoff-1', serverId: 'server-1' })).resolves.toMatchObject({ ok: true, status: { status: 'aborted' } });
         expect(machineRpc).toHaveBeenNthCalledWith(1, expect.objectContaining({ method: 'daemon.sessionHandoff.status.get.v3', payload: { handoffId: 'handoff-1' } }));
         expect(machineRpc).toHaveBeenNthCalledWith(2, expect.objectContaining({ method: 'daemon.sessionHandoff.abort.v3', payload: { handoffId: 'handoff-1', reason: 'user_cancelled' } }));
+    });
+
+    it('canonicalizes a valid predecessor start response to an explicit none workspace outcome', async () => {
+        machineRpc.mockResolvedValueOnce({
+            handoffId: 'handoff-legacy',
+            targetPath: '/target/workspace',
+            endpointCandidates: [],
+            status: {
+                handoffId: 'handoff-legacy',
+                sessionId: 'session-1',
+                sourceMachineId: 'source-1',
+                targetMachineId: 'target-1',
+                status: 'completed',
+                phase: 'finalizing',
+                transportStrategy: 'server_routed_stream',
+                recoveryActions: [],
+            },
+        });
+        const { startSessionHandoff } = await import('./sessionHandoffs');
+
+        await expect(startSessionHandoff({
+            sessionId: 'session-1',
+            targetMachineId: 'target-1',
+            serverId: 'server-1',
+            workspaceAction: { kind: 'none' },
+        })).resolves.toMatchObject({
+            ok: true,
+            result: { workspace: { kind: 'none' } },
+        });
+    });
+
+    it('requires an update when a predecessor response cannot report a requested workspace outcome', async () => {
+        machineRpc.mockResolvedValueOnce({
+            handoffId: 'handoff-legacy',
+            targetPath: '/target/workspace',
+            endpointCandidates: [],
+            status: {
+                handoffId: 'handoff-legacy',
+                sessionId: 'session-1',
+                sourceMachineId: 'source-1',
+                targetMachineId: 'target-1',
+                status: 'completed',
+                phase: 'finalizing',
+                transportStrategy: 'server_routed_stream',
+                recoveryActions: [],
+            },
+        });
+        const { startSessionHandoff } = await import('./sessionHandoffs');
+
+        await expect(startSessionHandoff({
+            sessionId: 'session-1',
+            targetMachineId: 'target-1',
+            serverId: 'server-1',
+            workspaceAction: {
+                kind: 'relationship',
+                relationshipId: 'relationship-1',
+                flushBeforeCommit: true,
+            },
+        })).resolves.toMatchObject({
+            ok: false,
+            errorCode: 'workspace_sync_update_required',
+        });
+    });
+
+    it('returns the typed update requirement when an older source daemon lacks the current workspace handoff method', async () => {
+        machineRpc.mockRejectedValueOnce(Object.assign(
+            new Error('RPC method not available'),
+            { rpcErrorCode: 'RPC_METHOD_NOT_AVAILABLE' },
+        ));
+        const { startSessionHandoff } = await import('./sessionHandoffs');
+
+        await expect(startSessionHandoff({
+            sessionId: 'session-1',
+            targetMachineId: 'target-1',
+            serverId: 'server-1',
+            workspaceAction: {
+                kind: 'relationship',
+                relationshipId: 'relationship-1',
+                flushBeforeCommit: true,
+            },
+        })).resolves.toMatchObject({
+            ok: false,
+            errorCode: 'workspace_sync_update_required',
+        });
+    });
+
+    it('does not reinterpret a missing handoff method as workspace skew when no workspace operation was requested', async () => {
+        machineRpc.mockRejectedValueOnce(Object.assign(
+            new Error('RPC method not available'),
+            { rpcErrorCode: 'RPC_METHOD_NOT_AVAILABLE' },
+        ));
+        const { startSessionHandoff } = await import('./sessionHandoffs');
+
+        await expect(startSessionHandoff({
+            sessionId: 'session-1',
+            targetMachineId: 'target-1',
+            serverId: 'server-1',
+        })).resolves.toMatchObject({
+            ok: false,
+            errorCode: 'UNEXPECTED',
+        });
     });
 });

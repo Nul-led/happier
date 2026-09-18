@@ -9,6 +9,7 @@ import type { UseExternalSessionRuntimeResult } from '@/components/sessions/mode
 import {
     EMPTY_AGENT_ACTIVITY_COUNTS,
     NO_AGENT_ACTIVITY_EVIDENCE,
+    NO_SESSION_AGENT_ACTIVITY_ATTENTION,
     deriveAgentActivityCounts,
     deriveAgentActivityEntries,
     sortAgentActivityEntries,
@@ -17,13 +18,18 @@ import {
     type AgentActivityCounts,
     type AgentActivityEntry,
     type AgentActivityMergeDiagnostics,
+    type SessionAgentActivityAttentionKind,
 } from '@/sync/domains/session/agentActivity';
-import { deriveSessionSubagentHasPendingPermission } from '@/sync/domains/session/subagents/deriveSessionSubagentHasPendingPermission';
+import { deriveSessionSubagentPendingAttentionKinds } from '@/sync/domains/session/subagents/deriveSessionSubagentPendingAttentionKinds';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
+import type { Message } from '@/sync/domains/messages/messageTypes';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import {
     useSession,
+    useSessionListRenderableWithServerScope,
     useSessionMessages,
     useSessionMessagesReducerState,
     useSessionSubagentSourceMessages,
@@ -54,13 +60,14 @@ import { useSessionSubagents } from './useSessionSubagents';
 
 export type SessionAgentActivityEnrichment = Readonly<{
     /**
-     * Subagent ids with a permission prompt on screen right now, or `null` when this host did not
-     * buy the transcript needed to know.
+     * What each subagent is waiting on a person for right now, or `null` when this host did not buy
+     * the transcript needed to know.
      *
      * `null` is not "none": it is "not observed", and the difference matters because a prompt is
-     * the one fact that escalates a row to `waiting`.
+     * the one fact that escalates a row to `waiting`. A subagent absent from the map has been
+     * observed and is waiting on nobody.
      */
-    pendingPermissionIds: ReadonlySet<string> | null;
+    attentionKindsBySubagentId: ReadonlyMap<string, readonly SessionAgentActivityAttentionKind[]> | null;
 }>;
 
 /**
@@ -70,7 +77,7 @@ export type SessionAgentActivityEnrichment = Readonly<{
  * enrichment field added later cannot silently make the narrow path start paying for it.
  */
 export const NO_SESSION_AGENT_ACTIVITY_ENRICHMENT: SessionAgentActivityEnrichment = Object.freeze({
-    pendingPermissionIds: null,
+    attentionKindsBySubagentId: null,
 });
 
 export type SessionAgentActivityState = Readonly<{
@@ -95,9 +102,19 @@ export type SessionAgentActivityState = Readonly<{
     participantTargets: ReturnType<typeof useSessionSubagents>['participantTargets'];
     /** The subagent behind an entry id, or `null` for a headline-only entry. */
     readSubagentForEntry: (entryId: string) => SessionSubagent | null;
+    /**
+     * The entry for an Execution Run id, or `null`.
+     *
+     * Owned here so a run-addressed surface — Run Details, a conversation's run reference, a route
+     * that only knows a run id — reads the same merged row every other surface reads. Callers that
+     * scanned `subagents` or built a local index instead could, and did, select a workflow or child
+     * entry that merely mentions the same run id.
+     */
+    readExecutionRunEntry: (runId: string) => AgentActivityEntry | null;
 }>;
 
 const EMPTY_ENTRIES: readonly AgentActivityEntry[] = Object.freeze([]);
+const EMPTY_MESSAGES = Object.freeze([]) as readonly Message[];
 
 function readEntryKey(entry: AgentActivityEntry): string {
     return entry.id;
@@ -105,6 +122,13 @@ function readEntryKey(entry: AgentActivityEntry): string {
 
 export type SessionAgentActivityParams = Readonly<{
     sessionId: string;
+    /**
+     * A mounted cross-Home surface supplies its exact Home.  The legacy
+     * Session-id-only callers retain their established active-Home behavior,
+     * but a qualified caller must never read another Home's same-id runtime
+     * projection from the legacy live-session/message cache.
+     */
+    serverId?: string;
     /**
      * The session, when the host already holds it. Omitted, it is read from the store — but a host
      * that has one passes it so both derivations see the same object.
@@ -118,22 +142,53 @@ export type SessionAgentActivityParams = Readonly<{
     externalSessionRuntime?: UseExternalSessionRuntimeResult;
 }>;
 
+function normalizeServerScopeId(serverId: string | null | undefined): string {
+    const raw = typeof serverId === 'string' ? serverId.trim() : '';
+    return raw ? resolveServerProfileScopeIdForIdentifier(raw) || raw : '';
+}
+
+function readActivitySessionForScope(
+    session: Session | null,
+    serverId: string | undefined,
+): Session | null {
+    if (!session || !serverId) return session;
+
+    const expectedServerId = normalizeServerScopeId(serverId);
+    if (!expectedServerId) return null;
+    const declaredServerId = normalizeServerScopeId(session.serverId);
+    if (declaredServerId) return declaredServerId === expectedServerId ? session : null;
+
+    // Released live Session records can predate their explicit serverId field.
+    // They are safe only for the currently active Home; an omitted declaration
+    // must not let a qualified background/Home-B surface borrow them.
+    return normalizeServerScopeId(getActiveServerSnapshot().serverId) === expectedServerId
+        ? session
+        : null;
+}
+
 /**
  * The narrow width: the subagent-source projection plus the headline. No transcript subscription.
  */
 export function useSessionAgentActivity(params: SessionAgentActivityParams): SessionAgentActivityState {
     const storeSession = useSession(params.sessionId);
-    const session = params.session !== undefined ? params.session : storeSession;
+    const serverScopeId = normalizeServerScopeId(params.serverId);
+    const scopedRenderable = useSessionListRenderableWithServerScope(serverScopeId || params.serverId, params.sessionId);
+    const session = readActivitySessionForScope(
+        params.session !== undefined ? params.session : storeSession,
+        params.serverId,
+    );
     const messages = useSessionSubagentSourceMessages(params.sessionId);
     const roster = useSessionSubagents({
         sessionId: params.sessionId,
+        serverId: serverScopeId || params.serverId,
         session,
-        messages,
+        messages: session ? messages : EMPTY_MESSAGES,
         ...(params.externalSessionRuntime ? { externalSessionRuntime: params.externalSessionRuntime } : {}),
     });
 
     return useMergedSessionAgentActivity({
         session,
+        headline: session ? undefined : scopedRenderable?.agentActivityHeadline ?? null,
         roster,
         enrichment: NO_SESSION_AGENT_ACTIVITY_ENRICHMENT,
     });
@@ -142,20 +197,26 @@ export function useSessionAgentActivity(params: SessionAgentActivityParams): Ses
 /**
  * The enriched width: the same model, plus the transcript facts a rendered roster shows.
  *
- * Today that is the pending-permission observation, which is the only way a row can reach `waiting`
+ * Today that is the pending-attention observation, which is the only way a row can reach `waiting`
  * — the publisher cannot see a prompt, so this width is where the escalation becomes possible at
- * all.
+ * all, and the only place that can tell an approval apart from a question.
  */
 export function useSessionAgentActivityRoster(
     params: SessionAgentActivityParams,
 ): SessionAgentActivityState {
     const storeSession = useSession(params.sessionId);
-    const session = params.session !== undefined ? params.session : storeSession;
+    const serverScopeId = normalizeServerScopeId(params.serverId);
+    const scopedRenderable = useSessionListRenderableWithServerScope(serverScopeId || params.serverId, params.sessionId);
+    const session = readActivitySessionForScope(
+        params.session !== undefined ? params.session : storeSession,
+        params.serverId,
+    );
     const messages = useSessionSubagentSourceMessages(params.sessionId);
     const roster = useSessionSubagents({
         sessionId: params.sessionId,
+        serverId: serverScopeId || params.serverId,
         session,
-        messages,
+        messages: session ? messages : EMPTY_MESSAGES,
         ...(params.externalSessionRuntime ? { externalSessionRuntime: params.externalSessionRuntime } : {}),
     });
     const enrichment = useSessionAgentActivityTranscriptEnrichment({
@@ -163,7 +224,12 @@ export function useSessionAgentActivityRoster(
         subagents: roster.subagents,
     });
 
-    return useMergedSessionAgentActivity({ session, roster, enrichment });
+    return useMergedSessionAgentActivity({
+        session,
+        headline: session ? undefined : scopedRenderable?.agentActivityHeadline ?? null,
+        roster,
+        enrichment,
+    });
 }
 
 /**
@@ -181,17 +247,20 @@ function useSessionAgentActivityTranscriptEnrichment(params: Readonly<{
     const { subagents } = params;
 
     return React.useMemo(() => {
-        const pendingPermissionIds = new Set<string>();
+        const attentionKindsBySubagentId = new Map<string, readonly SessionAgentActivityAttentionKind[]>();
         for (const subagent of subagents) {
-            if (!deriveSessionSubagentHasPendingPermission({ subagent, reducerState, messages })) continue;
-            pendingPermissionIds.add(subagent.id);
+            const attentionKinds = deriveSessionSubagentPendingAttentionKinds({ subagent, reducerState, messages });
+            if (attentionKinds.length === 0) continue;
+            attentionKindsBySubagentId.set(subagent.id, attentionKinds);
         }
-        return { pendingPermissionIds };
+        return { attentionKindsBySubagentId };
     }, [messages, reducerState, subagents]);
 }
 
 function useMergedSessionAgentActivity(params: Readonly<{
     session: Session | null;
+    /** A Home-qualified concurrent-list headline when the raw live cache is another Home. */
+    headline?: SessionAgentActivityHeadlineV1 | null;
     roster: ReturnType<typeof useSessionSubagents>;
     enrichment: SessionAgentActivityEnrichment;
 }>): SessionAgentActivityState {
@@ -199,18 +268,19 @@ function useMergedSessionAgentActivity(params: Readonly<{
     const { participantTargets, subagents } = params.roster;
 
     const headline = React.useMemo<SessionAgentActivityHeadlineV1 | null>(() => {
+        if (params.headline !== undefined) return params.headline;
         if (!session) return null;
         return readSessionAgentActivityHeadlineFromMetadata(readSessionOwnerMetadataView(session));
-    }, [session]);
+    }, [params.headline, session]);
 
-    const { pendingPermissionIds } = enrichment;
+    const { attentionKindsBySubagentId } = enrichment;
     const merged = React.useMemo(() => {
         const local = subagents.map((subagent) => toLocalAgentActivityEntry({
             subagent,
-            hasPendingPermission: pendingPermissionIds?.has(subagent.id) ?? false,
+            attentionKinds: attentionKindsBySubagentId?.get(subagent.id) ?? NO_SESSION_AGENT_ACTIVITY_ATTENTION,
         }));
         return deriveAgentActivityEntries({ headline, local });
-    }, [headline, pendingPermissionIds, subagents]);
+    }, [attentionKindsBySubagentId, headline, subagents]);
 
     const derivedEntries = React.useMemo(
         () => sortAgentActivityEntries(merged.entries, merged.evidenceAtMsById),
@@ -242,19 +312,32 @@ function useMergedSessionAgentActivity(params: Readonly<{
         return byEntryId;
     }, [entries]);
 
+    const executionRunEntryByRunId = React.useMemo(() => {
+        const byRunId = new Map<string, AgentActivityEntry>();
+        for (const entry of entries) {
+            if (entry.kind !== 'execution_run' || entry.runId === null || byRunId.has(entry.runId)) continue;
+            byRunId.set(entry.runId, entry);
+        }
+        return byRunId;
+    }, [entries]);
+
     // Read through a ref so the resolver keeps ONE identity for the life of the host: a callback
     // that changed with the roster would re-render every memoized row whenever any one agent moved.
     const lookupRef = React.useRef<{
+        executionRunEntryByRunId: ReadonlyMap<string, AgentActivityEntry>;
         subagentIdByEntryId: ReadonlyMap<string, string>;
         subagentById: ReadonlyMap<string, SessionSubagent>;
-    }>({ subagentIdByEntryId, subagentById });
-    lookupRef.current = { subagentIdByEntryId, subagentById };
+    }>({ executionRunEntryByRunId, subagentIdByEntryId, subagentById });
+    lookupRef.current = { executionRunEntryByRunId, subagentIdByEntryId, subagentById };
     const readSubagentForEntry = React.useCallback((entryId: string): SessionSubagent | null => {
         const lookup = lookupRef.current;
         // Fall back to the raw id so a caller holding a local id (a route, a details tab) resolves
         // too — a merged entry is keyed by the headline's id, which that caller never saw.
         return lookup.subagentById.get(lookup.subagentIdByEntryId.get(entryId) ?? entryId) ?? null;
     }, []);
+    const readExecutionRunEntry = React.useCallback((runId: string): AgentActivityEntry | null => (
+        lookupRef.current.executionRunEntryByRunId.get(runId) ?? null
+    ), []);
 
     const evidenceAtMsById = merged.evidenceAtMsById.size === 0
         ? NO_AGENT_ACTIVITY_EVIDENCE
@@ -268,12 +351,14 @@ function useMergedSessionAgentActivity(params: Readonly<{
         subagents,
         participantTargets,
         readSubagentForEntry,
+        readExecutionRunEntry,
     }), [
         counts,
         entries,
         evidenceAtMsById,
         merged.diagnostics,
         participantTargets,
+        readExecutionRunEntry,
         readSubagentForEntry,
         subagents,
     ]);

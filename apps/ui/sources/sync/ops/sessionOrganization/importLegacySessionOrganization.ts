@@ -14,6 +14,8 @@ export async function importLegacySessionOrganization(params: Readonly<{
     credentials: AuthCredentials;
     serverId: string;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
+    accountMode?: 'plain' | 'e2ee';
     request: ImportLegacySessionOrganizationRequest;
 }>): Promise<void> {
     const request: ImportLegacySessionOrganizationRequest = {
@@ -23,6 +25,8 @@ export async function importLegacySessionOrganization(params: Readonly<{
             display: await prepareSessionOrganizationDisplayEnvelopeForWrite({
                 credentials: params.credentials,
                 envelope: folder.display,
+                accountMode: params.accountMode,
+                request: params.requestAtEndpoint,
             }),
         }))),
         tags: await Promise.all(params.request.tags.map(async (tag) => ({
@@ -30,6 +34,8 @@ export async function importLegacySessionOrganization(params: Readonly<{
             display: await prepareSessionOrganizationDisplayEnvelopeForWrite({
                 credentials: params.credentials,
                 envelope: tag.display,
+                accountMode: params.accountMode,
+                request: params.requestAtEndpoint,
             }),
         }))),
         labels: await Promise.all(params.request.labels.map(async (label) => ({
@@ -37,12 +43,15 @@ export async function importLegacySessionOrganization(params: Readonly<{
             display: await prepareSessionOrganizationDisplayEnvelopeForWrite({
                 credentials: params.credentials,
                 envelope: label.display,
+                accountMode: params.accountMode,
+                request: params.requestAtEndpoint,
             }),
         }))),
     };
     await importLegacySessionOrganizationApi({
         credentials: params.credentials,
         serverUrl: params.serverUrl,
+        requestAtEndpoint: params.requestAtEndpoint,
         request,
     });
 
@@ -50,6 +59,7 @@ export async function importLegacySessionOrganization(params: Readonly<{
         credentials: params.credentials,
         serverId: params.serverId,
         serverUrl: params.serverUrl,
+        requestAtEndpoint: params.requestAtEndpoint,
         request: {
             includeFolders: true,
             includeTags: true,

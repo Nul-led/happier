@@ -5,6 +5,8 @@ import { actionOperationStore, type ActionOperationStore } from './actionOperati
 
 export function subscribeActionOperationByRequestId(params: Readonly<{
     requestId: string;
+    serverId: string | null;
+    accountId?: string | null;
     onUpdate: (operation: ActionOperationSnapshotV1) => void;
     store?: ActionOperationStore;
 }>): () => void {
@@ -12,7 +14,12 @@ export function subscribeActionOperationByRequestId(params: Readonly<{
     let lastOperationId: string | null = null;
     let lastRevision = 0;
     const read = () => {
-        const operation = actionOperationSelectors.selectSnapshotByRequestId(store.getSnapshot(), params.requestId);
+        const operation = actionOperationSelectors.selectSnapshotByRequestId(
+            store.getSnapshot(),
+            params.requestId,
+            params.serverId,
+            params.accountId,
+        );
         if (!operation || (operation.operationId === lastOperationId && operation.revision <= lastRevision)) return;
         lastOperationId = operation.operationId;
         lastRevision = operation.revision;

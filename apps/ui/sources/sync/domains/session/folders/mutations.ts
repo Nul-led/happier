@@ -8,7 +8,13 @@ import {
     rebalanceSortKeys,
 } from './orderKey';
 import type { SessionFolderV1, SessionFoldersV1, SessionFolderWorkspaceRefV1 } from './types';
+import { sessionFolderAddressKey } from './assignmentKeys';
 import { buildSessionFolderWorkspaceRefKey } from './workspaceRefs';
+
+function matchesFolderAddress(folder: SessionFolderV1, serverId: string, folderId: string): boolean {
+    return sessionFolderAddressKey({ serverId: folder.workspace.serverId, folderId: folder.id })
+        === sessionFolderAddressKey({ serverId, folderId });
+}
 
 export type CreateSessionFolderResult = Readonly<{
     next: SessionFoldersV1;
@@ -44,20 +50,23 @@ export function createSessionFolder(params: Readonly<{
         updatedAt: params.now,
     };
     const next = normalizeSessionFolders({ v: 1, folders: [...params.current.folders, folder] });
-    const normalizedFolder = next.folders.find((candidate) => candidate.id === folder.id) ?? folder;
+    const normalizedFolder = next.folders.find((candidate) => (
+        matchesFolderAddress(candidate, folder.workspace.serverId, folder.id)
+    )) ?? folder;
     return { next, folder: normalizedFolder };
 }
 
 export function deleteSessionFolder(params: Readonly<{
     current: SessionFoldersV1;
+    serverId: string;
     folderId: string;
 }>): Readonly<{
     next: SessionFoldersV1;
     deletedFolderIds: readonly string[];
     replacementFolderId: string | null;
 }> {
-    const byId = new Map(params.current.folders.map((folder) => [folder.id, folder] as const));
-    const target = byId.get(params.folderId);
+    const serverId = params.serverId.trim();
+    const target = params.current.folders.find((folder) => matchesFolderAddress(folder, serverId, params.folderId));
     if (!target) {
         return { next: params.current, deletedFolderIds: [], replacementFolderId: null };
     }
@@ -66,7 +75,9 @@ export function deleteSessionFolder(params: Readonly<{
     const collect = (folderId: string) => {
         deleted.add(folderId);
         for (const folder of params.current.folders) {
-            if (folder.parentId === folderId && !deleted.has(folder.id)) collect(folder.id);
+            if (folder.workspace.serverId === serverId
+                && folder.parentId === folderId
+                && !deleted.has(folder.id)) collect(folder.id);
         }
     };
     collect(target.id);
@@ -74,7 +85,9 @@ export function deleteSessionFolder(params: Readonly<{
     return {
         next: normalizeSessionFolders({
             v: 1,
-            folders: params.current.folders.filter((folder) => !deleted.has(folder.id)),
+            folders: params.current.folders.filter((folder) => (
+                folder.workspace.serverId !== serverId || !deleted.has(folder.id)
+            )),
         }),
         deletedFolderIds: Array.from(deleted),
         replacementFolderId: target.parentId,
@@ -83,6 +96,7 @@ export function deleteSessionFolder(params: Readonly<{
 
 export function renameSessionFolder(params: Readonly<{
     current: SessionFoldersV1;
+    serverId: string;
     folderId: string;
     name: string;
     now: number;
@@ -90,7 +104,8 @@ export function renameSessionFolder(params: Readonly<{
     next: SessionFoldersV1;
     folder: SessionFolderV1 | null;
 }> {
-    const target = params.current.folders.find((folder) => folder.id === params.folderId);
+    const serverId = params.serverId.trim();
+    const target = params.current.folders.find((folder) => matchesFolderAddress(folder, serverId, params.folderId));
     if (!target) {
         return { next: params.current, folder: null };
     }
@@ -99,7 +114,7 @@ export function renameSessionFolder(params: Readonly<{
     const siblingNames = new Set(
         params.current.folders
             .filter((folder) => (
-                folder.id !== target.id
+                !matchesFolderAddress(folder, serverId, target.id)
                 && buildSessionFolderWorkspaceRefKey(folder.workspace) === workspaceKey
                 && folder.parentId === target.parentId
             ))
@@ -108,13 +123,13 @@ export function renameSessionFolder(params: Readonly<{
     const name = makeSiblingUniqueSessionFolderName(normalizeSessionFolderName(params.name) ?? target.name, siblingNames);
     const next = normalizeSessionFolders({
         v: 1,
-        folders: params.current.folders.map((folder) => folder.id === target.id
+        folders: params.current.folders.map((folder) => matchesFolderAddress(folder, serverId, target.id)
             ? { ...folder, name, updatedAt: params.now }
             : folder),
     });
     return {
         next,
-        folder: next.folders.find((folder) => folder.id === target.id) ?? null,
+        folder: next.folders.find((folder) => matchesFolderAddress(folder, serverId, target.id)) ?? null,
     };
 }
 
@@ -143,6 +158,7 @@ function compareFolderSortOrder(a: SessionFolderV1, b: SessionFolderV1): number 
 
 export function moveSessionFolder(params: Readonly<{
     current: SessionFoldersV1;
+    serverId: string;
     folderId: string;
     parentId: string | null;
     beforeFolderId?: string | null;
@@ -153,14 +169,17 @@ export function moveSessionFolder(params: Readonly<{
     folder: SessionFolderV1 | null;
 }> {
     const current = normalizeSessionFolders(params.current);
-    const byId = new Map(current.folders.map((folder) => [folder.id, folder] as const));
-    const target = byId.get(params.folderId);
+    const serverId = params.serverId.trim();
+    const target = current.folders.find((folder) => matchesFolderAddress(folder, serverId, params.folderId));
     if (!target) {
         return { next: params.current, folder: null };
     }
     if (params.parentId === target.id) {
         return { next: params.current, folder: null };
     }
+    const byId = new Map(current.folders
+        .filter((folder) => folder.workspace.serverId === serverId)
+        .map((folder) => [folder.id, folder] as const));
     const parent = params.parentId ? byId.get(params.parentId) ?? null : null;
     if (params.parentId && !parent) {
         return { next: params.current, folder: null };
@@ -199,7 +218,7 @@ export function moveSessionFolder(params: Readonly<{
 
     const destinationSiblings = current.folders
         .filter((folder) => (
-            folder.id !== target.id
+            !matchesFolderAddress(folder, serverId, target.id)
             && buildSessionFolderWorkspaceRefKey(folder.workspace) === buildSessionFolderWorkspaceRefKey(target.workspace)
             && (folder.parentId ?? null) === (params.parentId ?? null)
         ))
@@ -229,19 +248,19 @@ export function moveSessionFolder(params: Readonly<{
 
     const next = normalizeSessionFolders({
         v: 1,
-        folders: current.folders.map((folder) => folder.id === target.id
+        folders: current.folders.map((folder) => matchesFolderAddress(folder, serverId, target.id)
             ? {
                 ...folder,
                 parentId: params.parentId,
                 sortKey: sortKeyByFolderId.get(folder.id) ?? folder.sortKey,
                 updatedAt: params.now,
             }
-            : sortKeyByFolderId.has(folder.id)
+            : folder.workspace.serverId === serverId && sortKeyByFolderId.has(folder.id)
                 ? { ...folder, sortKey: sortKeyByFolderId.get(folder.id), updatedAt: params.now }
                 : folder),
     });
     return {
         next,
-        folder: next.folders.find((folder) => folder.id === target.id) ?? null,
+        folder: next.folders.find((folder) => matchesFolderAddress(folder, serverId, target.id)) ?? null,
     };
 }

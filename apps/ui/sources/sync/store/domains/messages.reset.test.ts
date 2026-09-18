@@ -8,6 +8,7 @@ function createHarness(initial: any) {
         sessions: {},
         sessionPending: {},
         sessionMessages: {},
+        sessionListRowsByServerId: {},
         ...initial,
     };
 
@@ -66,6 +67,7 @@ describe('messages domain: resetSessionMessages', () => {
         const store = createStore<any>((set, get) => ({
             ...createMessagesDomain({ set, get } as any),
             sessionPending: {},
+            sessionListRowsByServerId: {},
             sessions: {
                 s1: {
                     id: 's1',
@@ -90,8 +92,9 @@ describe('messages domain: resetSessionMessages', () => {
             content: { type: 'text', text: 'old' },
         } as any]);
         store.getState().applyMessagesLoaded('s1');
+        store.setState({ sessionMessagesHistoryStartLoaded: { s1: true } });
 
-        const observed: Array<{ texts: string[]; isLoaded: boolean }> = [];
+        const observed: Array<{ texts: string[]; isLoaded: boolean; historyStartLoaded: boolean }> = [];
         const unsubscribe = store.subscribe((state) => {
             const transcript = state.sessionMessages.s1;
             observed.push({
@@ -100,6 +103,7 @@ describe('messages domain: resetSessionMessages', () => {
                     return message?.kind === 'user-text' ? [message.text] : [];
                 }),
                 isLoaded: transcript.isLoaded,
+                historyStartLoaded: state.sessionMessagesHistoryStartLoaded?.s1 === true,
             });
         });
 
@@ -117,6 +121,7 @@ describe('messages domain: resetSessionMessages', () => {
         expect(observed).toEqual([{
             texts: ['replacement'],
             isLoaded: true,
+            historyStartLoaded: false,
         }]);
     });
 });

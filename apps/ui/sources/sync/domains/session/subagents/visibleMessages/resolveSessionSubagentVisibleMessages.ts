@@ -32,6 +32,7 @@ function declaresProjectedVisibleMessages(descriptor: Readonly<Record<string, un
 }
 
 export function resolveSessionSubagentVisibleMessages(params: Readonly<{
+    accountScope?: import('@/sync/domains/scope/serverAccountScope').ServerAccountScope | null;
     session: Session;
     tool: ToolCall;
     messages: readonly Message[];
@@ -41,6 +42,7 @@ export function resolveSessionSubagentVisibleMessages(params: Readonly<{
     if (!Array.isArray(params.focusedMessages) || params.focusedMessages.length === 0) return [];
 
     const subagents = deriveSessionSubagents({
+        accountScope: params.accountScope,
         session: params.session,
         messages: params.messages,
         activeExecutionRuns: params.activeExecutionRuns,
@@ -60,7 +62,7 @@ export function resolveSessionSubagentVisibleMessages(params: Readonly<{
         ? ownerMetadata.machineId.trim()
         : null;
     const projected = machineId
-        ? resolveProjectedAgentUiBehaviorEntry(agentId, machineId)
+        ? resolveProjectedAgentUiBehaviorEntry(agentId, machineId, params.accountScope)
         : null;
     const projectedDeclaration = projected && declaresProjectedVisibleMessages(projected.descriptor)
         ? [{

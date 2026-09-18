@@ -6,7 +6,9 @@ import {
     standardCleanup,
 } from '@/dev/testkit';
 import {
+    createConfiguredBackendRouteParams,
     createNavigationMock,
+    createProjectionDescribeMock,
     createRouterMock,
     createStackOptionsCapture,
     enableReactActEnvironment,
@@ -21,10 +23,10 @@ enableReactActEnvironment();
 const routerMock = createRouterMock();
 const navigationMock = createNavigationMock();
 const stackOptionsCapture = createStackOptionsCapture();
-const routeParamsState = vi.hoisted(() => ({
+const routeParamsState = {
     current: {} as Record<string, string>,
-}));
-const storeTempDataSpy = vi.hoisted(() => vi.fn(() => 'invalid-secret-result-id'));
+};
+const storeTempDataSpy = vi.fn(() => 'invalid-secret-result-id');
 
 installPickerCommonModuleMocks({
     text: async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock(),
@@ -63,18 +65,14 @@ installPickerCommonModuleMocks({
         (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock({
             theme: { colors: PICKER_THEME_COLORS },
         }),
+    projectionSeam: { describe: createProjectionDescribeMock() },
+    tempDataStore: {
+        storeTempData: (...args: Parameters<typeof storeTempDataSpy>) => storeTempDataSpy(...args),
+    },
 });
-
-vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
-    useDaemonMergedProjectionInputs: () => ({ inputs: null }),
-}));
 
 vi.mock('@/components/secrets/requirements', () => ({
     SecretRequirementScreen: () => React.createElement('SecretRequirementScreen'),
-}));
-
-vi.mock('@/utils/sessions/tempDataStore', () => ({
-    storeTempData: (...args: Parameters<typeof storeTempDataSpy>) => storeTempDataSpy(...args),
 }));
 
 vi.mock('@/components/ui/popover', () => ({
@@ -112,14 +110,15 @@ describe('SecretRequirementPickerScreen invalid route state', () => {
         const SecretRequirementPickerScreen = (await import('@/app/(app)/new/pick/secret-requirement')).default;
         await renderScreen(React.createElement(SecretRequirementPickerScreen));
 
-        expect(routerMock.replace).toHaveBeenCalledWith('/new');
+        // No return route exists, so the picker replaces to the structured
+        // new-session href; an empty route carries no new-session context.
+        expect(routerMock.replace).toHaveBeenCalledWith({ pathname: '/new', params: {} });
     });
 
     it('returns a cancel result with current backend route context when the profile route state is unusable', async () => {
         routeParamsState.current = {
             agentType: 'customAcp',
-            backendTarget: JSON.stringify({ kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' }),
-            backendTargetKey: 'backend:review-bot:configured:review-bot',
+            ...createConfiguredBackendRouteParams('review-bot'),
             dataId: 'draft-1',
             machineId: 'machine-1',
             profileId: 'missing-profile',
@@ -136,15 +135,14 @@ describe('SecretRequirementPickerScreen invalid route state', () => {
         });
         expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
-            params: expect.objectContaining({
-                backendTarget: routeParamsState.current.backendTarget,
-                backendTargetKey: 'backend:review-bot:configured:review-bot',
+            params: {
+                ...createConfiguredBackendRouteParams('review-bot'),
                 dataId: 'draft-1',
                 machineId: 'machine-1',
                 profileId: 'missing-profile',
                 secretRequirementResultId: 'invalid-secret-result-id',
                 spawnServerId: 'server-2',
-            }),
+            },
         });
     });
 });

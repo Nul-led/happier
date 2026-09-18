@@ -23,7 +23,7 @@ vi.mock('../api/session/apiSocket', () => ({
     },
 }));
 
-const sessionsModulePromise = import('./sessions');
+import { sessionRename } from './sessions';
 
 describe('sessionRename', () => {
     beforeEach(() => {
@@ -36,19 +36,19 @@ describe('sessionRename', () => {
 
     it('updates metadata summary via sync.patchSessionMetadataWithRetry', async () => {
         patchSessionMetadataWithRetryMock.mockResolvedValueOnce(undefined);
-        const { sessionRename } = await sessionsModulePromise;
-
         const result = await sessionRename('sess-1', 'New title');
 
         expect(result).toEqual({ success: true });
         expect(getSyncSingletonMock).toHaveBeenCalledTimes(1);
         expect(patchSessionMetadataWithRetryMock).toHaveBeenCalledTimes(1);
 
-        const [sessionId, updater] = patchSessionMetadataWithRetryMock.mock.calls[0] as [
+        const [sessionId, updater, options] = patchSessionMetadataWithRetryMock.mock.calls[0] as [
             string,
             (metadata: Record<string, unknown>) => Record<string, unknown>,
+            { mutationIntent: string },
         ];
         expect(sessionId).toBe('sess-1');
+        expect(options).toEqual({ serverId: null, mutationIntent: 'rename_session' });
 
         const updated = updater({ existing: 'keep' });
         expect(updated).toEqual(expect.objectContaining({
@@ -62,18 +62,17 @@ describe('sessionRename', () => {
 
     it('passes serverId override through to patchSessionMetadataWithRetry', async () => {
         patchSessionMetadataWithRetryMock.mockResolvedValueOnce(undefined);
-        const { sessionRename } = await sessionsModulePromise;
-
         const result = await sessionRename('sess-1', 'New title', { serverId: 'server-b' });
 
         expect(result).toEqual({ success: true });
-        expect(patchSessionMetadataWithRetryMock).toHaveBeenCalledWith('sess-1', expect.any(Function), { serverId: 'server-b' });
+        expect(patchSessionMetadataWithRetryMock).toHaveBeenCalledWith('sess-1', expect.any(Function), {
+            serverId: 'server-b',
+            mutationIntent: 'rename_session',
+        });
     });
 
     it('returns an error message when patching fails', async () => {
         patchSessionMetadataWithRetryMock.mockRejectedValueOnce(new Error('boom'));
-        const { sessionRename } = await sessionsModulePromise;
-
         const result = await sessionRename('sess-1', 'New title');
 
         expect(result).toEqual({ success: false, message: 'Session state metadata update failed: unknown_error' });

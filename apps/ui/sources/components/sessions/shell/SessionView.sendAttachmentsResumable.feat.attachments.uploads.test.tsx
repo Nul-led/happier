@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 import * as React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +9,7 @@ import {
     readSessionShellDraftTextForTest,
     resetSessionShellDraftStateForTest,
 } from './sessionShellTestHelpers';
+import { composerRefV1Key } from '@happier-dev/protocol/plugins/ui/composerRef';
 import { clearSessionAttachmentDrafts } from '@/components/sessions/attachments/sessionAttachmentDraftStore';
 import {
     clearSessionDraftValuesForSession,
@@ -16,6 +18,18 @@ import {
 } from '@/dev/testkit/sessionDraftRepositoryTestkit';
 import type { PendingMessage } from '@/sync/domains/state/storageTypes';
 import type { SessionPending } from '@/sync/store/domains/pending';
+
+vi.mock('@/components/ui/code/editor/CodeEditor', () => ({ CodeEditor: () => null }));
+vi.mock('@/components/sessions/companion/presentation/SessionCompanionPresentationBridge', () => ({
+    SessionCompanionPresentationBridge: () => null,
+}));
+vi.mock('@/components/sessions/companion/SessionCompanionHost', () => ({
+    SessionCompanionHost: () => null,
+}));
+vi.mock('@/components/sessions/board/SessionBoardControllerProvider', () => ({
+    SessionBoardControllerProvider: ({ children }: React.PropsWithChildren) => children,
+    useMountedSessionBoardController: () => null,
+}));
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -28,6 +42,7 @@ const sessionState = vi.hoisted(() => ({
         presence: 'offline',
         active: false,
         accessLevel: 'edit',
+        access: { level: 'edit', capabilities: { readTranscript: true, submitAgentInput: true } },
         metadata: {
             machineId: 'm1',
             flavor: 'codex',
@@ -82,9 +97,56 @@ const sessionPendingMessagesState = vi.hoisted(() => ({
     listeners: new Set<() => void>(),
 }));
 const deleteWorkspaceReviewCommentDraftSpy = vi.hoisted(() => vi.fn());
+// The transcript rows the canonical subagent/participant-target owner reads. Seeding
+// them lets a case address a real Session-owned Execution Run through the composer's
+// recipient without mocking the derivation itself.
+const sessionSubagentSourceMessagesState = vi.hoisted(() => ({
+    current: [] as any[],
+}));
+const companionPreferenceSlot = vi.hoisted(() => ({ storageKey: null, stored: undefined }));
+const machineDisplayNamesById = vi.hoisted(() => ({}));
+const mutateCompanionPreference = vi.hoisted(() => vi.fn());
+const settingWriter = vi.hoisted(() => vi.fn());
+const localSettingWriter = vi.hoisted(() => vi.fn());
+const settingsSnapshot = vi.hoisted(() => ({ experiments: true, featureToggles: {} }));
+const realtimeStatus = vi.hoisted(() => ({ status: 'connected' }));
 
 const pendingFireAndForget: Promise<unknown>[] = [];
 const TEST_SERVER_ACCOUNT_SCOPE = null;
+
+function mainAttachmentDraftScope(serverId: string) {
+    return {
+        serverId,
+        accountId: 'account-1',
+        sessionId: 's1',
+        occurrenceId: composerRefV1Key({ kind: 'session', sessionId: 's1' }),
+    } as const;
+}
+
+/**
+ * One running Session-owned Execution Run as the transcript actually records it.
+ * The canonical subagent/participant-target owner derives the addressable recipient
+ * from this row; nothing here substitutes for that derivation.
+ */
+function createRunningSubAgentRunMessage(runId: string) {
+    const now = Date.now();
+    return {
+        kind: 'tool-call' as const,
+        id: `tool-${runId}`,
+        localId: null,
+        createdAt: now,
+        tool: {
+            name: 'SubAgentRun',
+            state: 'running' as const,
+            input: { runId },
+            createdAt: now,
+            startedAt: now,
+            completedAt: null,
+            description: null,
+        },
+        children: [],
+    };
+}
 
 const resolveSessionComposerSendMock = vi.fn((..._args: any[]) => ({ kind: 'send', text: 'hello' }));
 const chatListPropsSpy = vi.hoisted(() => vi.fn());
@@ -519,7 +581,7 @@ installSessionShellCommonModuleMocks({
             // Keep the hook aligned with the same canonical session fixture used by useSession.
             useSessionMachineId: () => sessionState.session.metadata.machineId ?? null,
             useIsDataReady: () => true,
-            useRealtimeStatus: () => ({ status: 'connected' }),
+            useRealtimeStatus: () => realtimeStatus,
             useSessionMessages: () => ({ messages: [], isLoaded: true }),
             useSessionTranscriptIds: () => ({ ids: [], isLoaded: true }),
             useSessionPendingMessages: () => {
@@ -533,12 +595,15 @@ installSessionShellCommonModuleMocks({
                 }, []);
                 return { messages: sessionPendingMessagesState.current, discarded: [] };
             },
-            useSessionSubagentSourceMessages: () => [],
+            useSessionSubagentSourceMessages: () => sessionSubagentSourceMessagesState.current,
             useSessionReviewCommentsDrafts: () => [],
             useWorkspaceReviewCommentsDrafts: () => reviewCommentDraftsState.current,
+            useSessionCompanionPreferenceSlot: () => companionPreferenceSlot,
+            useMutateSessionCompanionPreference: () => mutateCompanionPreference,
             useSessionUsage: () => null,
-            useSetting: () => null,
-            useSettings: () => ({ experiments: true, featureToggles: {} }),
+            useSetting: (key: keyof typeof settingsDefaults) => settingsDefaults[key],
+            useMachineDisplayNamesById: () => machineDisplayNamesById,
+            useSettings: () => settingsSnapshot,
             useAutomations: () => [],
             useMachine: () => null,
             useLocalSetting: (key: string) => {
@@ -551,8 +616,8 @@ installSessionShellCommonModuleMocks({
                 if (key === 'detailsPaneWidthBasisPx') return 1200;
                 return null;
             },
-            useLocalSettingMutable: () => [null, vi.fn()],
-            useSettingMutable: () => [null, vi.fn()],
+            useLocalSettingMutable: () => [null, localSettingWriter],
+            useSettingMutable: () => [null, settingWriter],
         });
     },
 });
@@ -571,15 +636,24 @@ vi.mock('@/agents/catalog/catalog', () => ({
     DEFAULT_AGENT_ID: 'codex',
     buildResumeSessionExtrasFromUiState: () => null,
     getAgentCore: () => ({
-        model: { defaultMode: 'default' },
-        cli: { spawnAgent: 'codex' },
-        localControl: { supported: true },
-        resume: {
-            vendorResumeIdField: 'codexSessionId',
-            supportsVendorResume: true,
-            experimental: true,
-        },
+        id: 'codex',
+        displayNameKey: 'agentInput.agent.codex',
+        subtitleKey: 'profiles.aiBackend.codexSubtitle',
+        permissionModeI18nPrefix: 'agentInput.codexPermissionMode',
+        availability: { experimental: false },
+        connectedServices: [],
         uiConnectedService: { serviceId: null, labelKey: 'agentInput.agent.codex', connectRoute: null },
+        flavorAliases: ['codex'],
+        cli: { detectKey: 'codex' },
+        permissions: { modeGroup: 'codexLike', promptProtocol: 'codexDecision' },
+        sessionModes: { kind: 'none' },
+        model: { defaultMode: 'default', supportsSelection: false, supportsFreeform: false, allowedModes: [] },
+        resume: { vendorResumeIdField: null },
+        localControl: { supported: false },
+        toolRendering: { hideUnknownToolsByDefault: false },
+        tools: {},
+        sessionStorage: { direct: false },
+        ui: { agentPickerIconName: 'terminal-outline' },
     }),
     getAgentResumeExperimentsFromSettings: () => null,
     getNewSessionRelevantInstallableDepKeys: () => [],
@@ -681,11 +755,14 @@ const {
 const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
 const { getInactiveSessionUiState } = await import('@/components/sessions/model/inactiveSessionUi');
 const { SessionView } = await import('./SessionView');
+const { prepareSessionDraftPersistenceStorage } = await import('@/sync/ops/sessionDrafts/sessionDraftPersistenceStorage');
+await prepareSessionDraftPersistenceStorage();
 
 describe('SessionView (attachments.uploads resumable send)', () => {
     beforeEach(() => {
         chooseSubmitModeState.mode = 'agent_queue';
-        clearSessionAttachmentDrafts('s1');
+        clearSessionAttachmentDrafts(mainAttachmentDraftScope('server-1'));
+        clearSessionAttachmentDrafts(mainAttachmentDraftScope('server-2'));
         sendMessageSpy.mockClear();
         enqueuePendingMessageSpy.mockClear();
         updatePendingMessageSpy.mockClear();
@@ -782,6 +859,63 @@ describe('SessionView (attachments.uploads resumable send)', () => {
                 secondTree?.unmount();
             });
             pendingFireAndForget.length = 0;
+        }
+    });
+
+    it('keeps the main composer attachment draft isolated by exact Home while preserving same-Home remounts', async () => {
+        let firstHomeTree: renderer.ReactTestRenderer | undefined;
+        let restoredFirstHomeTree: renderer.ReactTestRenderer | undefined;
+        try {
+            firstHomeTree = (await renderScreen(<AppPaneProvider>
+                <SessionView id="s1" routeServerId="server-1" />
+            </AppPaneProvider>)).tree;
+
+            const mountedFirstHomeTree = firstHomeTree;
+            if (!mountedFirstHomeTree) throw new Error('First Home SessionView did not mount');
+            const firstHomeInput = findTestInstanceByTypeWithProps(mountedFirstHomeTree, 'AgentInput' as any, {}) as any;
+            await act(async () => {
+                invokeTestInstanceHandler(firstHomeInput, 'onAttachmentsAdded', [
+                    { name: 'home-one.txt', size: 1, type: 'text/plain', slice: () => new Blob([new Uint8Array([97])]) } as any,
+                ], 'AgentInput');
+            });
+
+            await act(async () => {
+                mountedFirstHomeTree.update(<AppPaneProvider>
+                    <SessionView id="s1" routeServerId="server-2" />
+                </AppPaneProvider>);
+            });
+            const secondHomeInput = findTestInstanceByTypeWithProps(mountedFirstHomeTree, 'AgentInput' as any, {}) as any;
+            expect(secondHomeInput.props.attachmentRowItems).toEqual([]);
+
+            await act(async () => {
+                mountedFirstHomeTree.update(<AppPaneProvider>
+                    <SessionView id="s1" routeServerId="server-1" />
+                </AppPaneProvider>);
+            });
+            const returnedFirstHomeInput = findTestInstanceByTypeWithProps(mountedFirstHomeTree, 'AgentInput' as any, {}) as any;
+            expect(returnedFirstHomeInput.props.attachmentRowItems).toEqual([
+                expect.objectContaining({ label: 'home-one.txt', status: 'pending' }),
+            ]);
+
+            act(() => {
+                firstHomeTree?.unmount();
+            });
+            firstHomeTree = undefined;
+
+            restoredFirstHomeTree = (await renderScreen(<AppPaneProvider>
+                <SessionView id="s1" routeServerId="server-1" />
+            </AppPaneProvider>)).tree;
+            const mountedRestoredFirstHomeTree = restoredFirstHomeTree;
+            if (!mountedRestoredFirstHomeTree) throw new Error('Restored first Home SessionView did not mount');
+            const restoredFirstHomeInput = findTestInstanceByTypeWithProps(mountedRestoredFirstHomeTree, 'AgentInput' as any, {}) as any;
+            expect(restoredFirstHomeInput.props.attachmentRowItems).toEqual([
+                expect.objectContaining({ label: 'home-one.txt', status: 'pending' }),
+            ]);
+        } finally {
+            act(() => {
+                firstHomeTree?.unmount();
+                restoredFirstHomeTree?.unmount();
+            });
         }
     });
 
@@ -947,6 +1081,138 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             act(() => {
                 tree?.unmount();
             });
+            pendingFireAndForget.length = 0;
+        }
+    });
+
+    it('admits an attachment to the exact Execution Run target instead of refusing it', async () => {
+        // A Session-owned Execution Run is an ordinary target of canonical Session input
+        // admission: the same upload, the same encrypted Session media path, the same
+        // settlement. The refusal this replaces existed only because the removed direct
+        // `execution.run.send` route had no attachment channel of its own.
+        featureEnabledState.reviewComments = false;
+        chooseSubmitModeState.mode = 'agent_queue';
+        sendMessageSpy.mockClear();
+        enqueuePendingMessageSpy.mockClear();
+        resumeSessionSpy.mockClear();
+        uploadSpy.mockClear();
+        modalAlertSpy.mockClear();
+        resolveSessionComposerSendMock.mockClear();
+        reviewCommentDraftsState.current = [];
+        pendingFireAndForget.length = 0;
+
+        sessionSubagentSourceMessagesState.current = [createRunningSubAgentRunMessage('run-a')];
+        writeSessionDraftValue(
+            TEST_SERVER_ACCOUNT_SCOPE,
+            's1',
+            'routing.recipient',
+            { mode: 'manual', recipient: { kind: 'execution_run', runId: 'run-a' } },
+        );
+        writeSessionDraftValue(TEST_SERVER_ACCOUNT_SCOPE, 's1', 'routing.executionRunRequestedAction', { v: 1, kind: 'enqueue' });
+
+        let tree: renderer.ReactTestRenderer | undefined;
+        try {
+            tree = (await renderScreen(<AppPaneProvider>
+                        <SessionView id="s1" />
+                    </AppPaneProvider>)).tree;
+            pendingFireAndForget.length = 0;
+
+            const renderedTree = tree;
+            if (!renderedTree) throw new Error('SessionView test renderer did not mount');
+
+            const agentInput = findTestInstanceByTypeWithProps(renderedTree, 'AgentInput' as any, {}) as any;
+            await act(async () => {
+                invokeTestInstanceHandler(agentInput, 'onAttachmentsAdded', [
+                    { name: 'a.txt', size: 1, type: 'text/plain', slice: () => new Blob([new Uint8Array([97])]) } as any,
+                ], 'AgentInput');
+            });
+
+            await act(async () => {
+                invokeTestInstanceHandler(agentInput, 'onSend', undefined, 'AgentInput');
+            });
+
+            expect(pendingFireAndForget.length).toBe(1);
+            await pendingFireAndForget[0];
+
+            expect(modalAlertSpy).not.toHaveBeenCalled();
+            expect(uploadSpy).toHaveBeenCalled();
+            expect(sendMessageSpy).not.toHaveBeenCalled();
+            // The parent Session's Agent is not this input's destination, so nothing
+            // starts it on the run's behalf.
+            expect(resumeSessionSpy).not.toHaveBeenCalled();
+            expect(enqueuePendingMessageSpy).toHaveBeenCalledTimes(1);
+
+            const [sentSessionId, sentText, , sentMetaOverrides, sentOptions] = enqueuePendingMessageSpy.mock.calls[0] ?? [];
+            expect(sentSessionId).toBe('s1');
+            expect(String(sentText)).toContain('a.txt');
+            // The uploaded attachment envelope survives intact: the destination is the
+            // durable pending target, not a second authored routing fact competing for
+            // the same single `happier` slot.
+            expect(sentMetaOverrides).toMatchObject({
+                happier: { kind: 'attachments.v1' },
+            });
+            expect(sentOptions).toMatchObject({
+                recipient: { kind: 'execution_run', runId: 'run-a' },
+                requestedAction: { v: 1, kind: 'enqueue' },
+            });
+        } finally {
+            act(() => {
+                tree?.unmount();
+            });
+            sessionSubagentSourceMessagesState.current = [];
+            pendingFireAndForget.length = 0;
+        }
+    });
+
+    it('still refuses attachments addressed to an Agent-team recipient', async () => {
+        // Agent-team recipients remain parent-runtime participant metadata rather than
+        // independent runtime targets, so lifting the run refusal must not lift theirs.
+        featureEnabledState.reviewComments = false;
+        enqueuePendingMessageSpy.mockClear();
+        sendMessageSpy.mockClear();
+        uploadSpy.mockClear();
+        modalAlertSpy.mockClear();
+        reviewCommentDraftsState.current = [];
+        pendingFireAndForget.length = 0;
+
+        sessionSubagentSourceMessagesState.current = [createRunningSubAgentRunMessage('run-a')];
+        writeSessionDraftValue(
+            TEST_SERVER_ACCOUNT_SCOPE,
+            's1',
+            'routing.recipient',
+            { mode: 'manual', recipient: { kind: 'agent_team_broadcast', teamId: 'team-a' } },
+        );
+
+        let tree: renderer.ReactTestRenderer | undefined;
+        try {
+            tree = (await renderScreen(<AppPaneProvider>
+                        <SessionView id="s1" />
+                    </AppPaneProvider>)).tree;
+            pendingFireAndForget.length = 0;
+
+            const renderedTree = tree;
+            if (!renderedTree) throw new Error('SessionView test renderer did not mount');
+
+            const agentInput = findTestInstanceByTypeWithProps(renderedTree, 'AgentInput' as any, {}) as any;
+            await act(async () => {
+                invokeTestInstanceHandler(agentInput, 'onAttachmentsAdded', [
+                    { name: 'a.txt', size: 1, type: 'text/plain', slice: () => new Blob([new Uint8Array([97])]) } as any,
+                ], 'AgentInput');
+            });
+
+            await act(async () => {
+                invokeTestInstanceHandler(agentInput, 'onSend', undefined, 'AgentInput');
+            });
+            for (const settled of pendingFireAndForget) await settled;
+
+            expect(uploadSpy).not.toHaveBeenCalled();
+            expect(enqueuePendingMessageSpy).not.toHaveBeenCalled();
+            expect(sendMessageSpy).not.toHaveBeenCalled();
+        } finally {
+            act(() => {
+                tree?.unmount();
+            });
+            sessionSubagentSourceMessagesState.current = [];
             pendingFireAndForget.length = 0;
         }
     });
@@ -1272,8 +1538,8 @@ describe('SessionView (attachments.uploads resumable send)', () => {
         writeSessionDraftValue(
             TEST_SERVER_ACCOUNT_SCOPE,
             's1',
-            'routing.executionRunDelivery',
-            'interrupt',
+            'routing.executionRunRequestedAction',
+            { v: 1, kind: 'send_now' },
         );
 
         let refreshPendingMessages!: () => void;
@@ -1329,8 +1595,8 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             expect(readSessionDraftValue(
                 TEST_SERVER_ACCOUNT_SCOPE,
                 's1',
-                'routing.executionRunDelivery',
-            )).toBe('interrupt');
+                'routing.executionRunRequestedAction',
+            )).toEqual({ v: 1, kind: 'send_now' });
 
             await act(async () => {
                 invokeTestInstanceHandler(agentInput, 'onChangeText', 'Edited queued text', 'AgentInput');
@@ -1358,8 +1624,8 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             expect(readSessionDraftValue(
                 TEST_SERVER_ACCOUNT_SCOPE,
                 's1',
-                'routing.executionRunDelivery',
-            )).toBe('interrupt');
+                'routing.executionRunRequestedAction',
+            )).toEqual({ v: 1, kind: 'send_now' });
             expect(agentInput.props.statusBadges?.some((badge: any) => badge.key === 'pending-message-edit')).toBe(false);
         } finally {
             act(() => {
@@ -1465,8 +1731,8 @@ describe('SessionView (attachments.uploads resumable send)', () => {
         writeSessionDraftValue(
             TEST_SERVER_ACCOUNT_SCOPE,
             's1',
-            'routing.executionRunDelivery',
-            'interrupt',
+            'routing.executionRunRequestedAction',
+            { v: 1, kind: 'send_now' },
         );
 
         let tree: renderer.ReactTestRenderer | undefined;
@@ -1495,8 +1761,8 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             writeSessionDraftValue(
                 TEST_SERVER_ACCOUNT_SCOPE,
                 's1',
-                'routing.executionRunDelivery',
-                'prompt',
+                'routing.executionRunRequestedAction',
+                { v: 1, kind: 'enqueue' },
             );
             sessionPendingMessagesState.current = [];
             await act(async () => {
@@ -1514,8 +1780,8 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             expect(readSessionDraftValue(
                 TEST_SERVER_ACCOUNT_SCOPE,
                 's1',
-                'routing.executionRunDelivery',
-            )).toBe('prompt');
+                'routing.executionRunRequestedAction',
+            )).toEqual({ v: 1, kind: 'enqueue' });
         } finally {
             act(() => {
                 tree?.unmount();
@@ -1539,8 +1805,8 @@ describe('SessionView (attachments.uploads resumable send)', () => {
         writeSessionDraftValue(
             TEST_SERVER_ACCOUNT_SCOPE,
             's1',
-            'routing.executionRunDelivery',
-            'interrupt',
+            'routing.executionRunRequestedAction',
+            { v: 1, kind: 'send_now' },
         );
 
         let firstTree: renderer.ReactTestRenderer | undefined;
@@ -1598,8 +1864,8 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             expect(readSessionDraftValue(
                 TEST_SERVER_ACCOUNT_SCOPE,
                 's1',
-                'routing.executionRunDelivery',
-            )).toBe('interrupt');
+                'routing.executionRunRequestedAction',
+            )).toEqual({ v: 1, kind: 'send_now' });
 
             secondTree = (await renderScreen(<AppPaneProvider>
                         <SessionView id="s1" />
@@ -2330,10 +2596,13 @@ describe('SessionView (attachments.uploads resumable send)', () => {
                     value: { issueId: 430 },
                     presentation: { label: 'Prepared issue #430', typeLabel: 'Issue' },
                 }],
-            }, {
+            }, expect.objectContaining({
                 replacementLocalId,
                 preparedComposerAdmission: { stagedMediaHandles: [] },
-            });
+                serverId: 'server-1',
+                accountLifetime: expect.any(Object),
+                session: expect.objectContaining({ id: 's1' }),
+            }));
             expect(acceptPendingMessageComposerAdmissionMock).toHaveBeenCalledWith('s1', {
                 sessionId: 's1',
                 localId: replacementLocalId,
@@ -2493,8 +2762,8 @@ describe('SessionView (attachments.uploads resumable send)', () => {
         writeSessionDraftValue(
             TEST_SERVER_ACCOUNT_SCOPE,
             's1',
-            'routing.executionRunDelivery',
-            'interrupt',
+            'routing.executionRunRequestedAction',
+            { v: 1, kind: 'send_now' },
         );
 
         let tree: renderer.ReactTestRenderer | undefined;
@@ -2550,8 +2819,8 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             expect(readSessionDraftValue(
                 TEST_SERVER_ACCOUNT_SCOPE,
                 's1',
-                'routing.executionRunDelivery',
-            )).toBe('interrupt');
+                'routing.executionRunRequestedAction',
+            )).toEqual({ v: 1, kind: 'send_now' });
             expect(patchSessionMetadataWithRetrySpy).not.toHaveBeenCalled();
             expect(updatePendingMessageSpy).not.toHaveBeenCalled();
             expect(modalAlertSpy).toHaveBeenCalledWith(

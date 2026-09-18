@@ -4,13 +4,15 @@ import {
     type HappierPressableRole,
 } from '@happier-dev/plugin-ui/presentation';
 import * as React from 'react';
-import { View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { ActivitySpinner, iconMatchedSpinnerSize } from '@/components/ui/feedback/ActivitySpinner';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+
+import { DeferredAnchoredTooltip } from '@/components/ui/overlays/DeferredAnchoredTooltip';
 
 const DEFAULT_SIZE = 28;
 
@@ -227,6 +229,7 @@ export function IconButton(props: Readonly<{
         ? props.disabledReason
         : props.tooltip;
     const hasTooltip = tooltipContent != null && tooltipContent.length > 0;
+    const tooltipAnchorRef = React.useRef<View | null>(null);
 
     return (
         <HappierPressable
@@ -249,7 +252,12 @@ export function IconButton(props: Readonly<{
                 state.disabled ? styles.buttonDisabled : null,
             ]}
             overlay={hasTooltip ? (state) => (
-                state.hovered || state.focused ? (
+                state.hovered || state.focused ? (Platform.OS === 'web' ? (
+                    <>
+                        <View ref={tooltipAnchorRef} style={{ pointerEvents: 'none', position: 'absolute', top: 0, left: 0, width: size, height: size }} />
+                        <DeferredAnchoredTooltip activationKey={`${state.hovered}:${state.focused}`} anchorRef={tooltipAnchorRef} label={tooltipContent!} testID={props.testID ? `${props.testID}-tooltip` : undefined} />
+                    </>
+                ) : (
                     <View style={styles.tooltipWrap}>
                         <View testID={props.testID ? `${props.testID}-tooltip` : undefined} style={styles.tooltip}>
                             <Text style={styles.tooltipText} numberOfLines={3}>
@@ -257,7 +265,7 @@ export function IconButton(props: Readonly<{
                             </Text>
                         </View>
                     </View>
-                ) : null
+                )) : null
             ) : undefined}
         >
             {(state) => (

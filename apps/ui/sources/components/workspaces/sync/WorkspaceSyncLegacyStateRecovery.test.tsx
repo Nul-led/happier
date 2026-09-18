@@ -115,4 +115,27 @@ describe('WorkspaceSyncLegacyStateRecovery', () => {
             .toBe('/private/quarantine/workspace-replication.retired-v1-123-x');
         expect(screen.findByTestId('workspace-sync-legacy-inspection-failed')).not.toBeNull();
     });
+
+    it('prevents another inspection while the current inspection is still running', async () => {
+        let resolveInspection!: (value: { status: 'absent' }) => void;
+        const pendingInspection = new Promise((resolve) => {
+            resolveInspection = resolve;
+        });
+        inspect.mockReturnValue(pendingInspection);
+        const { WorkspaceSyncLegacyStateRecovery } = await import('./WorkspaceSyncLegacyStateRecovery');
+        const screen = await renderScreen(<WorkspaceSyncLegacyStateRecovery />);
+        await act(async () => undefined);
+
+        const reinspect = screen.findByTestId('workspace-sync-legacy-reinspect');
+        expect(reinspect?.props.disabled).toBe(true);
+        expect(reinspect?.props.loading).toBe(true);
+        reinspect?.props.onPress();
+        reinspect?.props.onPress();
+        expect(inspect).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            resolveInspection({ status: 'absent' });
+            await Promise.resolve();
+        });
+    });
 });

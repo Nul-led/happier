@@ -57,11 +57,8 @@ const surface: PluginUiSurfaceContextV1 = {
 };
 
 const canonicalIdentity = {
-    pluginId: 'acme.preview',
-    pluginVersion: '1.2.3',
-    viewId: 'preview-pane',
-    generation: '7',
-    sessionId: 'session-1',
+    instanceId: 'instance-1',
+    mountNonce: 'nonce-1',
 } as const;
 
 const canonicalSurface = {
@@ -144,11 +141,7 @@ function createHostedEnvelope(
 ): PluginHostedWebBridgeEnvelopeV1 {
     return {
         version: 1,
-        pluginId: surface.pluginId,
-        contributionId: surface.contributionId,
-        surfaceId: surface.surfaceId,
-        sessionId: surface.sessionId,
-        nonce: 'nonce-1',
+        identity: canonicalIdentity,
         sequence,
         kind,
         payload,
@@ -159,7 +152,7 @@ async function createHostedCarrier(mount: MountFixture, methods: readonly Plugin
     const handler = createPluginHostedWebHostApiBridgeHandler({
         surface,
         requestIdPrefix: 'hosted-settlement',
-        bridgeNonce: 'nonce-1',
+        identity: canonicalIdentity,
         canonicalHostApi: {
             identity: canonicalIdentity,
             surface: canonicalSurface,

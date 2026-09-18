@@ -2,10 +2,25 @@ import { describe, expect, it } from 'vitest';
 
 import type { DesktopActivityOverlaySnapshot } from './buildDesktopActivityOverlaySnapshot';
 import type { DesktopOverlayPolicy } from '@/activity/adapters/desktop/runtime/resolveDesktopOverlayPolicy';
+import { activityInstanceKey, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 import { buildDesktopActivityOverlayModel } from './buildDesktopActivityOverlayModel';
 
-function createSnapshot(overrides: Partial<DesktopActivityOverlaySnapshot> = {}): DesktopActivityOverlaySnapshot {
+type RequestSnapshotFixture = Omit<DesktopActivityOverlaySnapshot['permissionRequests'][number], 'activityInstanceId'>
+    & Partial<Pick<DesktopActivityOverlaySnapshot['permissionRequests'][number], 'activityInstanceId'>>;
+type SnapshotOverrides = Omit<Partial<DesktopActivityOverlaySnapshot>, 'permissionRequests' | 'userQuestions'> & Readonly<{
+    permissionRequests?: readonly RequestSnapshotFixture[];
+    userQuestions?: readonly RequestSnapshotFixture[];
+}>;
+
+function requestActivityInstanceId(request: RequestSnapshotFixture): string {
+    return request.activityInstanceId ?? activityInstanceKey(
+        { serverId: request.serverId, sessionId: request.sessionId },
+        JSON.stringify([request.kind, request.requestId]),
+    );
+}
+
+function createSnapshot(overrides: SnapshotOverrides = {}): DesktopActivityOverlaySnapshot {
     const base: DesktopActivityOverlaySnapshot = {
         version: 1,
         generatedAt: 1_700_000_000_000,
@@ -14,7 +29,6 @@ function createSnapshot(overrides: Partial<DesktopActivityOverlaySnapshot> = {})
             unread: 1,
             permissionRequired: 1,
             actionRequired: 0,
-            queuedInput: 0,
             thinking: 1,
             totalAttention: 2,
         },
@@ -72,6 +86,14 @@ function createSnapshot(overrides: Partial<DesktopActivityOverlaySnapshot> = {})
     return {
         ...base,
         ...overrides,
+        permissionRequests: (overrides.permissionRequests ?? base.permissionRequests).map((request) => ({
+            ...request,
+            activityInstanceId: requestActivityInstanceId(request),
+        })),
+        userQuestions: (overrides.userQuestions ?? base.userQuestions).map((request) => ({
+            ...request,
+            activityInstanceId: requestActivityInstanceId(request),
+        })),
     };
 }
 
@@ -245,7 +267,6 @@ describe('buildDesktopActivityOverlayModel', () => {
                     unread: 1,
                     permissionRequired: 0,
                     actionRequired: 0,
-                    queuedInput: 0,
                     thinking: 0,
                     totalAttention: 1,
                 },
@@ -278,7 +299,6 @@ describe('buildDesktopActivityOverlayModel', () => {
                     unread: 0,
                     permissionRequired: 0,
                     actionRequired: 0,
-                    queuedInput: 0,
                     thinking: 0,
                     totalAttention: 0,
                 },
@@ -328,7 +348,6 @@ describe('buildDesktopActivityOverlayModel', () => {
                     unread: 0,
                     permissionRequired: 0,
                     actionRequired: 0,
-                    queuedInput: 1,
                     thinking: 1,
                     totalAttention: 0,
                 },
@@ -351,7 +370,6 @@ describe('buildDesktopActivityOverlayModel', () => {
                     unread: 0,
                     permissionRequired: 0,
                     actionRequired: 0,
-                    queuedInput: 1,
                     thinking: 0,
                     totalAttention: 0,
                 },
@@ -376,7 +394,6 @@ describe('buildDesktopActivityOverlayModel', () => {
                     unread: 0,
                     permissionRequired: 0,
                     actionRequired: 0,
-                    queuedInput: 0,
                     thinking: 0,
                     totalAttention: 0,
                 },
@@ -420,11 +437,76 @@ describe('buildDesktopActivityOverlayModel', () => {
 
         expect(model.expanded.cards?.[0]).toEqual(expect.objectContaining({
             kind: 'permission_request',
-            id: 'permission:perm-1',
+            id: activityInstanceKey(
+                { serverId: 'server-1', sessionId: 'session-primary' },
+                JSON.stringify(['permission_request', 'perm-1']),
+            ),
         }));
         expect(model.collapsed.title).toBe('Approve command');
         expect(model.collapsed.statusText).toBe('npm test');
         expect(model.collapsed.primaryCardKind).toBe('permission_request');
+    });
+
+    it('preserves exact request instance identity across Homes, sessions, reorder, and delimiter-bearing ids', () => {
+        const requestInstanceId = (serverId: string, sessionId: string, kind: 'permission_request' | 'user_question', requestId: string) => (
+            activityInstanceKey({ serverId, sessionId }, JSON.stringify([kind, requestId]))
+        );
+        const permissionRequest = (serverId: string, sessionId: string, requestId: string) => ({
+            kind: 'permission_request' as const,
+            activityInstanceId: requestInstanceId(serverId, sessionId, 'permission_request', requestId),
+            requestId,
+            serverId,
+            sessionId,
+            title: `Approve on ${serverId}/${sessionId}`,
+            summary: null,
+            toolLabel: 'Bash',
+            questionText: null,
+            count: 1,
+            openActionIdentifier: `open-session:${sessionId}?serverId=${serverId}`,
+            allowActionIdentifier: 'session.permission.respond',
+            denyActionIdentifier: 'session.permission.respond',
+            directOptions: [],
+        });
+        const requests = [
+            permissionRequest('home-a', 'session-x', 'shared-request'),
+            permissionRequest('home-b', 'session-x', 'shared-request'),
+            permissionRequest('home-a', 'session-y', 'shared-request'),
+            permissionRequest('https://home.example/a', 'b:c', 'request:with:delimiters'),
+            permissionRequest('https://home.example/a:b', 'c', 'request:with:delimiters'),
+        ];
+        const buildCards = (permissionRequests: typeof requests) => buildDesktopActivityOverlayModel({
+            snapshot: createSnapshot({ permissionRequests }),
+            policy: createPolicy(),
+            isExpanded: true,
+        }).expanded.cards?.filter((card) => card.kind === 'permission_request') ?? [];
+
+        const original = buildCards(requests);
+        const reorderedAfterResolve = buildCards([requests[4], requests[2], requests[1], requests[3]]);
+        const originalIds = original.map((card) => card.id);
+
+        expect(new Set(originalIds).size).toBe(requests.length);
+        expect(originalIds).toEqual(requests.map((request) => request.activityInstanceId));
+        expect(reorderedAfterResolve.map((card) => card.id)).toEqual([
+            requests[4].activityInstanceId,
+            requests[2].activityInstanceId,
+            requests[1].activityInstanceId,
+            requests[3].activityInstanceId,
+        ]);
+        expect(original[1]).toEqual(expect.objectContaining({
+            requestId: 'shared-request',
+            serverId: 'home-b',
+            sessionId: 'session-x',
+            actions: expect.arrayContaining([
+                expect.objectContaining({
+                    actionIdentifier: 'session.permission.respond',
+                    data: expect.objectContaining({
+                        requestId: 'shared-request',
+                        serverId: 'home-b',
+                        sessionId: 'session-x',
+                    }),
+                }),
+            ]),
+        }));
     });
 
     it('builds the four collapsed carousel slides from stable session transformations', () => {
@@ -435,7 +517,6 @@ describe('buildDesktopActivityOverlayModel', () => {
                     unread: 0,
                     permissionRequired: 0,
                     actionRequired: 0,
-                    queuedInput: 0,
                     thinking: 1,
                     totalAttention: 0,
                 },
@@ -558,7 +639,6 @@ describe('buildDesktopActivityOverlayModel', () => {
                     unread: 0,
                     permissionRequired: 0,
                     actionRequired: 0,
-                    queuedInput: 0,
                     thinking: 0,
                     totalAttention: 0,
                 },
@@ -610,7 +690,7 @@ describe('buildDesktopActivityOverlayModel', () => {
         expect(model.collapsed.transitionCue).toEqual({
             kind: 'bounce_on_ready',
             phase: 'ready',
-            key: 'ready:session-primary:1699999999000:0:0:1:0',
+            key: JSON.stringify(['ready', 'server-1', 'session-primary', 1699999999000, 0, 0, 1, 0]),
             durationMs: 150,
         });
     });
@@ -644,9 +724,31 @@ describe('buildDesktopActivityOverlayModel', () => {
         expect(model.collapsed.transitionCue).toEqual({
             kind: 'phase_flash',
             phase: 'attention',
-            key: 'attention:session-primary:10:1:0:0:1',
+            key: JSON.stringify(['attention', 'server-1', 'session-primary', 10, 1, 0, 0, 1]),
             durationMs: 150,
         });
+    });
+
+    it('keys collapsed transition cues by the exact Home and collision-safe Session tuple', () => {
+        const buildKey = (serverId: string, sessionId: string) => buildDesktopActivityOverlayModel({
+            snapshot: createSnapshot({
+                primary: {
+                    ...createSnapshot().primary!,
+                    serverId,
+                    sessionId,
+                },
+                sessions: [{
+                    ...createSnapshot().sessions[0]!,
+                    serverId,
+                    sessionId,
+                }],
+            }),
+            policy: createPolicy(),
+            isExpanded: false,
+        }).collapsed.transitionCue?.key;
+
+        expect(buildKey('home-a', 'same-session')).not.toBe(buildKey('home-b', 'same-session'));
+        expect(buildKey('home:a', 'session')).not.toBe(buildKey('home', 'a:session'));
     });
 
     it('escalates the collapsed urgency level from unattended attention time', () => {
@@ -722,9 +824,26 @@ describe('buildDesktopActivityOverlayModel', () => {
         });
     });
 
-    it('surfaces direct user-question actions, quota summaries, and completion cards in priority order', () => {
+    it('surfaces permissions before user questions, quota summaries, and completion cards in priority order', () => {
         const model = buildDesktopActivityOverlayModel({
             snapshot: createSnapshot({
+                permissionRequests: [
+                    {
+                        kind: 'permission_request',
+                        requestId: 'permission-1',
+                        serverId: 'server-1',
+                        sessionId: 'session-primary',
+                        title: 'Approve deployment',
+                        summary: 'Deploy to production',
+                        toolLabel: 'Deploy',
+                        questionText: null,
+                        count: 1,
+                        openActionIdentifier: 'open-session:session-primary',
+                        allowActionIdentifier: 'session.permission.respond',
+                        denyActionIdentifier: 'session.permission.respond',
+                        directOptions: [],
+                    },
+                ],
                 userQuestions: [
                     {
                         kind: 'user_question',
@@ -779,9 +898,25 @@ describe('buildDesktopActivityOverlayModel', () => {
             isExpanded: true,
         });
 
+        expect(model.expanded.cards?.map((card) => card.kind)).toEqual([
+            'permission_request',
+            'user_question',
+            'quota_summary',
+            'completion_state',
+        ]);
         expect(model.expanded.cards?.[0]).toEqual(expect.objectContaining({
+            kind: 'permission_request',
+            id: activityInstanceKey(
+                { serverId: 'server-1', sessionId: 'session-primary' },
+                JSON.stringify(['permission_request', 'permission-1']),
+            ),
+        }));
+        expect(model.expanded.cards?.[1]).toEqual(expect.objectContaining({
             kind: 'user_question',
-            id: 'question:question-1',
+            id: activityInstanceKey(
+                { serverId: 'server-1', sessionId: 'session-primary' },
+                JSON.stringify(['user_question', 'question-1']),
+            ),
             actions: expect.arrayContaining([
                 expect.objectContaining({
                     actionIdentifier: 'session.user_action.answer',
@@ -807,7 +942,10 @@ describe('buildDesktopActivityOverlayModel', () => {
             }),
             expect.objectContaining({
                 kind: 'completion_state',
-                id: 'completion:session-primary',
+                id: activityInstanceKey(
+                    { serverId: 'server-1', sessionId: 'session-primary' },
+                    'completion',
+                ),
                 variant: 'turn_complete',
                 autoDismissMs: 15000,
                 sticky: false,
@@ -817,8 +955,8 @@ describe('buildDesktopActivityOverlayModel', () => {
             expect.objectContaining({ kind: 'session_overview' }),
             expect.objectContaining({ kind: 'multi_session_list' }),
         ]));
-        expect(model.collapsed.title).toBe('Which deployment target?');
-        expect(model.collapsed.accentText).toBe('AskUserQuestion');
+        expect(model.collapsed.title).toBe('Approve deployment');
+        expect(model.collapsed.accentText).toBe('Deploy');
     });
 
     it('adds low-risk permission always-allow actions while high-risk permissions open for review', () => {
@@ -863,8 +1001,8 @@ describe('buildDesktopActivityOverlayModel', () => {
             isExpanded: true,
         });
 
-        const lowRiskCard = model.expanded.cards?.find((card) => card.id === 'permission:perm-low');
-        const highRiskCard = model.expanded.cards?.find((card) => card.id === 'permission:perm-high');
+        const lowRiskCard = model.expanded.cards?.find((card) => card.kind === 'permission_request' && card.requestId === 'perm-low');
+        const highRiskCard = model.expanded.cards?.find((card) => card.kind === 'permission_request' && card.requestId === 'perm-high');
 
         expect(lowRiskCard).toEqual(expect.objectContaining({
             kind: 'permission_request',
@@ -890,6 +1028,138 @@ describe('buildDesktopActivityOverlayModel', () => {
                 expect.objectContaining({ id: expect.stringContaining('allow') }),
             ]),
         }));
+    });
+
+    it('keeps completion cards distinct when two Homes reuse a session id', () => {
+        const model = buildDesktopActivityOverlayModel({
+            snapshot: createSnapshot({
+                sessions: [
+                    {
+                        ...createSnapshot().sessions[0],
+                        serverId: 'server-a',
+                        sessionId: 'shared-session',
+                        title: 'Home A session',
+                    },
+                    {
+                        ...createSnapshot().sessions[0],
+                        serverId: 'server-b',
+                        sessionId: 'shared-session',
+                        title: 'Home B session',
+                    },
+                ],
+                completionStates: [
+                    {
+                        sessionId: 'shared-session',
+                        serverId: 'server-a',
+                        title: 'Home A session',
+                        summary: 'Ready',
+                        openActionIdentifier: 'open-session:shared-session?serverId=server-a',
+                        variant: 'turn_complete',
+                        autoDismissMs: 15_000,
+                        sticky: false,
+                    },
+                    {
+                        sessionId: 'shared-session',
+                        serverId: 'server-b',
+                        title: 'Home B session',
+                        summary: 'Ready',
+                        openActionIdentifier: 'open-session:shared-session?serverId=server-b',
+                        variant: 'turn_complete',
+                        autoDismissMs: 15_000,
+                        sticky: false,
+                    },
+                ],
+            }),
+            policy: createPolicy({ visibilityMode: 'active_sessions' }),
+            isExpanded: true,
+        });
+
+        const completionCards = model.expanded.cards?.filter((card) => card.kind === 'completion_state') ?? [];
+        expect(completionCards).toHaveLength(2);
+        expect(new Set(completionCards.map((card) => card.id)).size).toBe(2);
+        expect(completionCards.map((card) => card.id)).toEqual([
+            activityInstanceKey(
+                { serverId: 'server-a', sessionId: 'shared-session' },
+                'completion',
+            ),
+            activityInstanceKey(
+                { serverId: 'server-b', sessionId: 'shared-session' },
+                'completion',
+            ),
+        ]);
+        expect(completionCards.map((card) => card.serverId)).toEqual(['server-a', 'server-b']);
+    });
+
+    it('keeps an unscoped legacy completion distinct from an exact tuple with colliding JSON text', () => {
+        const exactAddress = { serverId: 'server-a', sessionId: 'shared-session' } as const;
+        const legacySessionId = sessionAddressKey(exactAddress);
+        const model = buildDesktopActivityOverlayModel({
+            snapshot: createSnapshot({
+                completionStates: [
+                    {
+                        sessionId: exactAddress.sessionId,
+                        serverId: exactAddress.serverId,
+                        title: 'Exact Home session',
+                        summary: 'Ready',
+                        openActionIdentifier: 'open-session:shared-session?serverId=server-a',
+                        variant: 'turn_complete',
+                        autoDismissMs: 15_000,
+                        sticky: false,
+                    },
+                    {
+                        sessionId: legacySessionId,
+                        serverId: null,
+                        title: 'Legacy unscoped session',
+                        summary: 'Ready',
+                        openActionIdentifier: 'open-session:legacy',
+                        variant: 'turn_complete',
+                        autoDismissMs: 15_000,
+                        sticky: false,
+                    },
+                ],
+            }),
+            policy: createPolicy({ visibilityMode: 'active_sessions' }),
+            isExpanded: true,
+        });
+
+        const completionCards = model.expanded.cards?.filter((card) => card.kind === 'completion_state') ?? [];
+        expect(completionCards.map((card) => card.id)).toEqual([
+            activityInstanceKey(exactAddress, 'completion'),
+            activityInstanceKey({ serverId: null, sessionId: legacySessionId }, 'completion'),
+        ]);
+        expect(new Set(completionCards.map((card) => card.id)).size).toBe(2);
+    });
+
+    it('keys a current session overview by qualified identity, with legacy unscoped identity distinct', () => {
+        const buildSessionCardId = (serverId: string | null, sessionId: string) => {
+            const model = buildDesktopActivityOverlayModel({
+                snapshot: createSnapshot({
+                    permissionRequests: [],
+                    userQuestions: [],
+                    quotaSummaries: [],
+                    completionStates: [],
+                    sessions: [{
+                        ...createSnapshot().sessions[0],
+                        serverId,
+                        sessionId,
+                    }],
+                }),
+                policy: createPolicy({ visibilityMode: 'active_sessions' }),
+                isExpanded: true,
+            });
+            return model.expanded.cards?.find((card) => card.kind === 'session_overview')?.id;
+        };
+        const collidingText = sessionAddressKey({ serverId: 'server-a', sessionId: 'shared-session' });
+
+        expect(buildSessionCardId('server-a', 'shared-session')).toBe(
+            activityInstanceKey({ serverId: 'server-a', sessionId: 'shared-session' }, 'session'),
+        );
+        expect(buildSessionCardId('server-a', 'shared-session')).not.toBe(
+            buildSessionCardId('server-b', 'shared-session'),
+        );
+        expect(buildSessionCardId('server-a', collidingText)).not.toBe(
+            buildSessionCardId(null, collidingText),
+        );
     });
 
     it('numbers user-question choices and adds inline other for single-question flows', () => {
@@ -969,7 +1239,10 @@ describe('buildDesktopActivityOverlayModel', () => {
 
         expect(model.expanded.cards?.[0]).toEqual(expect.objectContaining({
             kind: 'user_question',
-            id: 'question:question-legacy',
+            id: activityInstanceKey(
+                { serverId: null, sessionId: 'session-primary' },
+                JSON.stringify(['user_question', 'question-legacy']),
+            ),
             actions: [
                 expect.objectContaining({
                     actionIdentifier: 'open-session:session-primary',

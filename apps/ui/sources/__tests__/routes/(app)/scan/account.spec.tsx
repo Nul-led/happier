@@ -36,7 +36,10 @@ let lastScannerProps: any = null;
 vi.mock('@/components/qr/QrCodeScannerView', () => ({
     QrCodeScannerView: (props: any) => {
         lastScannerProps = props;
-        return React.createElement('QrCodeScannerView', props);
+        // The real view renders `footer` in the granted, denied and unavailable
+        // branches alike; rendering it here keeps the camera-denial paste path
+        // reachable from these route tests.
+        return React.createElement('QrCodeScannerView', props, props.footer);
     },
 }));
 
@@ -170,9 +173,9 @@ describe('/scan/account', () => {
             await lastScannerProps.onScan(inviteLink);
         });
 
-        expect(routerPushSpy).toHaveBeenCalledWith(
-            `/restore?pairingLink=${encodeURIComponent(inviteLink)}&entryIntent=add_home`,
-        );
+        const route = String(routerPushSpy.mock.calls[0]?.[0] ?? '');
+        expect(route).toMatch(/^\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=add_home$/u);
+        expect(route).not.toContain(encodeURIComponent(inviteLink));
         expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
         expect(alertAsyncSpy).not.toHaveBeenCalled();
     });
@@ -194,48 +197,116 @@ describe('/scan/account', () => {
         expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
     });
 
-    it('supports manually entering an account link URL when the scanner is unavailable', async () => {
-        promptSpy.mockResolvedValueOnce(' happier:///account?manual ');
-
+    it('opens the canonical full-screen pairing link form instead of a modal prompt', async () => {
         const { default: Screen } = await import('@/app/(app)/scan/account');
 
-        await renderScreen(<Screen />);
+        const screen = await renderScreen(<Screen />);
 
-        const footerElement = lastScannerProps?.footer;
-        expect(footerElement).toBeTruthy();
-        const footerView = footerElement as React.ReactElement<{ children?: React.ReactNode }>;
-        const footerChildren = React.Children.toArray(footerView.props.children);
-        const roundButton = footerChildren.find(
-            (
-                child,
-            ): child is React.ReactElement<{ action?: () => Promise<void>; testID?: string }> => {
-                if (!React.isValidElement(child)) {
-                    return false;
-                }
-                const button = child as React.ReactElement<{ action?: () => Promise<void>; testID?: string }>;
-                return button.props.testID === 'scan-account-enter-url';
-            },
-        );
-        expect(roundButton).toBeTruthy();
-        if (!roundButton) throw new Error('Expected RoundButton in footer');
+        expect(screen.findAllByTestId('pairing-link-entry-form')).toHaveLength(0);
+
+        await screen.pressByTestIdAsync('scan-account-enter-url');
+
+        expect(promptSpy).not.toHaveBeenCalled();
+        expect(screen.findAllByTestId('pairing-link-entry-form').length).toBeGreaterThan(0);
+        expect(screen.findAllByType('QrCodeScannerView' as never)).toHaveLength(0);
+
+        const input = screen.findHostByTestId('restore-pairing-link-input');
+        expect(input?.props.placeholder).toBe('connect.accountUrlPlaceholder');
+        expect(input?.props.autoFocus).toBe(true);
+        expect(input?.props.accessibilityLabel).toBe('connect.enterUrlManually');
+        expect(screen.getTextContent()).toContain('connect.enterUrlManually');
+        expect(screen.findByTestId('restore-pairing-link-submit').props.title).toBe('common.continue');
+    });
+
+    it('submits a pasted account link through the shared scan processor', async () => {
+        const { default: Screen } = await import('@/app/(app)/scan/account');
+
+        const screen = await renderScreen(<Screen />);
+        await screen.pressByTestIdAsync('scan-account-enter-url');
 
         await act(async () => {
-            await roundButton.props.action?.();
+            screen.changeTextByTestId('restore-pairing-link-input', '  happier:///account?manual  ');
+        });
+        await act(async () => {
+            await screen.findByTestId('restore-pairing-link-submit').props.action();
         });
 
-        expect(promptSpy).toHaveBeenCalledTimes(1);
-        expect(promptSpy).toHaveBeenCalledWith(
-            'connect.enterUrlManually',
-            undefined,
-            {
-                placeholder: 'connect.accountUrlPlaceholder',
-                confirmText: 'common.continue',
-                cancelText: 'common.cancel',
-            },
-        );
+        expect(promptSpy).not.toHaveBeenCalled();
         expect(processAccountAuthUrlSpy).toHaveBeenCalledTimes(1);
         expect(processAccountAuthUrlSpy).toHaveBeenCalledWith('happier:///account?manual');
         expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps a rejected pasted draft with an inline accessible alert', async () => {
+        processAccountAuthUrlSpy.mockResolvedValueOnce(false);
+        const { default: Screen } = await import('@/app/(app)/scan/account');
+
+        const screen = await renderScreen(<Screen />);
+        await screen.pressByTestIdAsync('scan-account-enter-url');
+
+        await act(async () => {
+            screen.changeTextByTestId('restore-pairing-link-input', 'happier:///account?rejected');
+        });
+        await act(async () => {
+            await screen.findByTestId('restore-pairing-link-submit').props.action();
+        });
+
+        const alert = screen.findHostByTestId('restore-pairing-link-error');
+        expect(alert?.props.accessibilityRole).toBe('alert');
+        expect(screen.findHostByTestId('restore-pairing-link-input')?.props.value)
+            .toBe('happier:///account?rejected');
+    });
+
+    it('routes a pasted V2 Home invite as an authenticated add-for-later enrollment', async () => {
+        const { buildHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const inviteLink = buildHomeQrInviteDeepLink({
+            invite: {
+                v: 2,
+                intent: 'home_device',
+                direction: 'trusted_home_displays',
+                pairId: 'pair-pasted-link',
+                home: {
+                    v: 1,
+                    homeServerIdentityId: 'srv_home_b',
+                    canonicalServerUrl: 'https://home-b.test',
+                    revision: 1,
+                    endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+                },
+                qrSecretBase64Url: encodeBase64(new Uint8Array(32).fill(11), 'base64url'),
+                issuedAtMs: Date.now(),
+                expiresAtMs: Date.now() + 60_000,
+            },
+        });
+        const { default: Screen } = await import('@/app/(app)/scan/account');
+
+        const screen = await renderScreen(<Screen />);
+        await screen.pressByTestIdAsync('scan-account-enter-url');
+
+        await act(async () => {
+            screen.changeTextByTestId('restore-pairing-link-input', inviteLink);
+        });
+        await act(async () => {
+            await screen.findByTestId('restore-pairing-link-submit').props.action();
+        });
+
+        const route = String(routerPushSpy.mock.calls[0]?.[0] ?? '');
+        expect(route).toMatch(/^\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=add_home$/u);
+        expect(route).not.toContain(encodeURIComponent(inviteLink));
+        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns to the camera from the pairing link form without leaving the route', async () => {
+        const { default: Screen } = await import('@/app/(app)/scan/account');
+
+        const screen = await renderScreen(<Screen />);
+        await screen.pressByTestIdAsync('scan-account-enter-url');
+        await screen.pressByTestIdAsync('restore-pairing-link-back');
+
+        expect(screen.findAllByTestId('pairing-link-entry-form')).toHaveLength(0);
+        expect(screen.findAllByType('QrCodeScannerView' as never).length).toBeGreaterThan(0);
+        expect(routerBackSpy).not.toHaveBeenCalled();
+        expect(routerReplaceSpy).not.toHaveBeenCalled();
     });
 
     it('uses safe fallback navigation when cancelling without history', async () => {

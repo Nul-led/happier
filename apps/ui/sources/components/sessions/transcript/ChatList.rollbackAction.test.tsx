@@ -105,7 +105,7 @@ const { ChatList } = await import('./ChatList');
 
 function renderRollbackChatListSession() {
     return renderChatList(
-        <ChatList session={{ ...chatListHarnessState.sessionState }} />,
+        <ChatList session={{ ...chatListHarnessState.sessionState }} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />,
     );
 }
 
@@ -231,7 +231,7 @@ describe('ChatList rollback action', () => {
             ...chatListHarnessState.sessionState,
             ...rollbackEligibleTurnStarts([1]),
         };
-        await screen.update(<ChatList session={{ ...chatListHarnessState.sessionState }} />);
+        await screen.update(<ChatList session={{ ...chatListHarnessState.sessionState }} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />);
 
         const after = requireCapturedLegendListProps();
         expect(after.data).toBe(before.data);
@@ -337,7 +337,7 @@ describe('ChatList rollback action', () => {
             metadata: { flavor: 'codex', codexBackendMode: 'appServer' },
         };
 
-        await screen.update(<ChatList session={{ ...chatListHarnessState.sessionState }} />);
+        await screen.update(<ChatList session={{ ...chatListHarnessState.sessionState }} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />);
 
         expect(requireCapturedLegendListProps().renderItem).toBe(firstRenderItem);
 

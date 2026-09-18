@@ -74,8 +74,11 @@ async function callScmPreferMachine<
     sessionId: string,
     method: string,
     request: R,
+    serverId?: string | null,
 ): Promise<T> {
-    const machineTarget = readMachineControlTargetForSession(sessionId);
+    const machineTarget = readMachineControlTargetForSession(
+        serverId === undefined ? sessionId : { sessionId, serverId: serverId ?? '' },
+    );
 
     if (!machineTarget) {
         return {
@@ -90,13 +93,15 @@ async function callScmPreferMachine<
         agentRootPath: machineTarget.agentBasePath,
         requestPath: request.cwd,
     });
-    const serverId = resolvePreferredServerIdForSessionId(sessionId);
+    const resolvedServerId = serverId === undefined
+        ? resolvePreferredServerIdForSessionId(sessionId)
+        : serverId;
     try {
         return await runMachineScmRpc<T, R>(
             machineTarget.machineId,
             method,
             { ...request, cwd } as R,
-            { serverId },
+            { serverId: resolvedServerId },
         );
     } catch (error) {
         return scmFallbackError<T>(error);
@@ -105,396 +110,468 @@ async function callScmPreferMachine<
 
 export async function sessionScmStatusSnapshot(
     sessionId: string,
-    request: ScmStatusSnapshotRequest
+    request: ScmStatusSnapshotRequest,
+    serverId?: string | null,
 ): Promise<ScmStatusSnapshotResponse> {
     return await callScmPreferMachine<ScmStatusSnapshotResponse, ScmStatusSnapshotRequest>(
         sessionId,
         RPC_METHODS.SCM_STATUS_SNAPSHOT,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmDiffFile(
     sessionId: string,
-    request: ScmDiffFileRequest
+    request: ScmDiffFileRequest,
+    serverId?: string | null,
 ): Promise<ScmDiffFileResponse> {
     return await callScmPreferMachine<ScmDiffFileResponse, ScmDiffFileRequest>(
         sessionId,
         RPC_METHODS.SCM_DIFF_FILE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmDiffCommit(
     sessionId: string,
-    request: ScmDiffCommitRequest
+    request: ScmDiffCommitRequest,
+    serverId?: string | null,
 ): Promise<ScmDiffCommitResponse> {
     return await callScmPreferMachine<ScmDiffCommitResponse, ScmDiffCommitRequest>(
         sessionId,
         RPC_METHODS.SCM_DIFF_COMMIT,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmChangeInclude(
     sessionId: string,
-    request: ScmChangeApplyRequest
+    request: ScmChangeApplyRequest,
+    serverId?: string | null,
 ): Promise<ScmChangeApplyResponse> {
     return await callScmPreferMachine<ScmChangeApplyResponse, ScmChangeApplyRequest>(
         sessionId,
         RPC_METHODS.SCM_CHANGE_INCLUDE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmChangeExclude(
     sessionId: string,
-    request: ScmChangeApplyRequest
+    request: ScmChangeApplyRequest,
+    serverId?: string | null,
 ): Promise<ScmChangeApplyResponse> {
     return await callScmPreferMachine<ScmChangeApplyResponse, ScmChangeApplyRequest>(
         sessionId,
         RPC_METHODS.SCM_CHANGE_EXCLUDE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmChangeDiscard(
     sessionId: string,
-    request: ScmChangeDiscardRequest
+    request: ScmChangeDiscardRequest,
+    serverId?: string | null,
 ): Promise<ScmChangeDiscardResponse> {
     return await callScmPreferMachine<ScmChangeDiscardResponse, ScmChangeDiscardRequest>(
         sessionId,
         RPC_METHODS.SCM_CHANGE_DISCARD,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmCommitCreate(
     sessionId: string,
-    request: ScmCommitCreateRequest
+    request: ScmCommitCreateRequest,
+    serverId?: string | null,
 ): Promise<ScmCommitCreateResponse> {
     return await callScmPreferMachine<ScmCommitCreateResponse, ScmCommitCreateRequest>(
         sessionId,
         RPC_METHODS.SCM_COMMIT_CREATE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmLogList(
     sessionId: string,
-    request: ScmLogListRequest
+    request: ScmLogListRequest,
+    serverId?: string | null,
 ): Promise<ScmLogListResponse> {
     return await callScmPreferMachine<ScmLogListResponse, ScmLogListRequest>(
         sessionId,
         RPC_METHODS.SCM_LOG_LIST,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmCommitBackout(
     sessionId: string,
-    request: ScmCommitBackoutRequest
+    request: ScmCommitBackoutRequest,
+    serverId?: string | null,
 ): Promise<ScmCommitBackoutResponse> {
     return await callScmPreferMachine<ScmCommitBackoutResponse, ScmCommitBackoutRequest>(
         sessionId,
         RPC_METHODS.SCM_COMMIT_BACKOUT,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmRemoteFetch(
     sessionId: string,
-    request: ScmRemoteRequest
+    request: ScmRemoteRequest,
+    serverId?: string | null,
 ): Promise<ScmRemoteResponse> {
     return await callScmPreferMachine<ScmRemoteResponse, ScmRemoteRequest>(
         sessionId,
         RPC_METHODS.SCM_REMOTE_FETCH,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmRemotePush(
     sessionId: string,
-    request: ScmRemoteRequest
+    request: ScmRemoteRequest,
+    serverId?: string | null,
 ): Promise<ScmRemoteResponse> {
     return await callScmPreferMachine<ScmRemoteResponse, ScmRemoteRequest>(
         sessionId,
         RPC_METHODS.SCM_REMOTE_PUSH,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmRemotePull(
     sessionId: string,
-    request: ScmRemoteRequest
+    request: ScmRemoteRequest,
+    serverId?: string | null,
 ): Promise<ScmRemoteResponse> {
     return await callScmPreferMachine<ScmRemoteResponse, ScmRemoteRequest>(
         sessionId,
         RPC_METHODS.SCM_REMOTE_PULL,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmBranchList(
     sessionId: string,
-    request: ScmBranchListRequest
+    request: ScmBranchListRequest,
+    serverId?: string | null,
 ): Promise<ScmBranchListResponse> {
     return await callScmPreferMachine<ScmBranchListResponse, ScmBranchListRequest>(
         sessionId,
         RPC_METHODS.SCM_BRANCH_LIST,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmBranchCreate(
     sessionId: string,
-    request: ScmBranchCreateRequest
+    request: ScmBranchCreateRequest,
+    serverId?: string | null,
 ): Promise<ScmBranchCreateResponse> {
     return await callScmPreferMachine<ScmBranchCreateResponse, ScmBranchCreateRequest>(
         sessionId,
         RPC_METHODS.SCM_BRANCH_CREATE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmBranchCheckout(
     sessionId: string,
-    request: ScmBranchCheckoutRequest
+    request: ScmBranchCheckoutRequest,
+    serverId?: string | null,
 ): Promise<ScmBranchCheckoutResponse> {
     return await callScmPreferMachine<ScmBranchCheckoutResponse, ScmBranchCheckoutRequest>(
         sessionId,
         RPC_METHODS.SCM_BRANCH_CHECKOUT,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmBranchMerge(
     sessionId: string,
-    request: ScmBranchIntegrationRequest
+    request: ScmBranchIntegrationRequest,
+    serverId?: string | null,
 ): Promise<ScmBranchIntegrationResponse> {
     return await callScmPreferMachine<ScmBranchIntegrationResponse, ScmBranchIntegrationRequest>(
         sessionId,
         RPC_METHODS.SCM_BRANCH_MERGE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmBranchRebase(
     sessionId: string,
-    request: ScmBranchIntegrationRequest
+    request: ScmBranchIntegrationRequest,
+    serverId?: string | null,
 ): Promise<ScmBranchIntegrationResponse> {
     return await callScmPreferMachine<ScmBranchIntegrationResponse, ScmBranchIntegrationRequest>(
         sessionId,
         RPC_METHODS.SCM_BRANCH_REBASE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmBranchOperationContinue(
     sessionId: string,
-    request: ScmBranchOperationControlRequest
+    request: ScmBranchOperationControlRequest,
+    serverId?: string | null,
 ): Promise<ScmBranchIntegrationResponse> {
     return await callScmPreferMachine<ScmBranchIntegrationResponse, ScmBranchOperationControlRequest>(
         sessionId,
         RPC_METHODS.SCM_BRANCH_OPERATION_CONTINUE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmBranchOperationAbort(
     sessionId: string,
-    request: ScmBranchOperationControlRequest
+    request: ScmBranchOperationControlRequest,
+    serverId?: string | null,
 ): Promise<ScmBranchIntegrationResponse> {
     return await callScmPreferMachine<ScmBranchIntegrationResponse, ScmBranchOperationControlRequest>(
         sessionId,
         RPC_METHODS.SCM_BRANCH_OPERATION_ABORT,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmRemotePublish(
     sessionId: string,
-    request: ScmRemotePublishRequest
+    request: ScmRemotePublishRequest,
+    serverId?: string | null,
 ): Promise<ScmRemotePublishResponse> {
     return await callScmPreferMachine<ScmRemotePublishResponse, ScmRemotePublishRequest>(
         sessionId,
         RPC_METHODS.SCM_REMOTE_PUBLISH,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmRemoteAdd(
     sessionId: string,
-    request: ScmRemoteAddRequest
+    request: ScmRemoteAddRequest,
+    serverId?: string | null,
 ): Promise<ScmRemoteManagementResponse> {
     return await callScmPreferMachine<ScmRemoteManagementResponse, ScmRemoteAddRequest>(
         sessionId,
         RPC_METHODS.SCM_REMOTE_ADD,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmRemoteSetUrl(
     sessionId: string,
-    request: ScmRemoteSetUrlRequest
+    request: ScmRemoteSetUrlRequest,
+    serverId?: string | null,
 ): Promise<ScmRemoteManagementResponse> {
     return await callScmPreferMachine<ScmRemoteManagementResponse, ScmRemoteSetUrlRequest>(
         sessionId,
         RPC_METHODS.SCM_REMOTE_SET_URL,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmRemoteRemove(
     sessionId: string,
-    request: ScmRemoteRemoveRequest
+    request: ScmRemoteRemoveRequest,
+    serverId?: string | null,
 ): Promise<ScmRemoteManagementResponse> {
     return await callScmPreferMachine<ScmRemoteManagementResponse, ScmRemoteRemoveRequest>(
         sessionId,
         RPC_METHODS.SCM_REMOTE_REMOVE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmPullRequestList(
     sessionId: string,
-    request: ScmPullRequestListRequest
+    request: ScmPullRequestListRequest,
+    serverId?: string | null,
 ): Promise<ScmPullRequestListResponse> {
     return await callScmPreferMachine<ScmPullRequestListResponse, ScmPullRequestListRequest>(
         sessionId,
         RPC_METHODS.SCM_PULL_REQUEST_LIST,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmPullRequestGet(
     sessionId: string,
-    request: ScmPullRequestGetRequest
+    request: ScmPullRequestGetRequest,
+    serverId?: string | null,
 ): Promise<ScmPullRequestGetResponse> {
     return await callScmPreferMachine<ScmPullRequestGetResponse, ScmPullRequestGetRequest>(
         sessionId,
         RPC_METHODS.SCM_PULL_REQUEST_GET,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmPullRequestOpenCompose(
     sessionId: string,
-    request: ScmPullRequestOpenComposeRequest
+    request: ScmPullRequestOpenComposeRequest,
+    serverId?: string | null,
 ): Promise<ScmPullRequestOpenComposeResponse> {
     return await callScmPreferMachine<ScmPullRequestOpenComposeResponse, ScmPullRequestOpenComposeRequest>(
         sessionId,
         RPC_METHODS.SCM_PULL_REQUEST_OPEN_COMPOSE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmPullRequestOpenOrReuse(
     sessionId: string,
-    request: ScmPullRequestOpenOrReuseRequest
+    request: ScmPullRequestOpenOrReuseRequest,
+    serverId?: string | null,
 ): Promise<ScmPullRequestOpenOrReuseResponse> {
     return await callScmPreferMachine<ScmPullRequestOpenOrReuseResponse, ScmPullRequestOpenOrReuseRequest>(
         sessionId,
         RPC_METHODS.SCM_PULL_REQUEST_OPEN_OR_REUSE,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmRepositoryInit(
     sessionId: string,
-    request: ScmRepositoryInitRequest
+    request: ScmRepositoryInitRequest,
+    serverId?: string | null,
 ): Promise<ScmRepositoryInitResponse> {
     return await callScmPreferMachine<ScmRepositoryInitResponse, ScmRepositoryInitRequest>(
         sessionId,
         RPC_METHODS.SCM_REPOSITORY_INIT,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmHostingRepositoryDescribePublishTargets(
     sessionId: string,
-    request: ScmHostingRepositoryDescribePublishTargetsRequest
+    request: ScmHostingRepositoryDescribePublishTargetsRequest,
+    serverId?: string | null,
 ): Promise<ScmHostingRepositoryDescribePublishTargetsResponse> {
     return await callScmPreferMachine<ScmHostingRepositoryDescribePublishTargetsResponse, ScmHostingRepositoryDescribePublishTargetsRequest>(
         sessionId,
         RPC_METHODS.SCM_HOSTING_REPOSITORY_DESCRIBE_PUBLISH_TARGETS,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmHostingRepositoryPublish(
     sessionId: string,
-    request: ScmHostingRepositoryPublishRequest
+    request: ScmHostingRepositoryPublishRequest,
+    serverId?: string | null,
 ): Promise<ScmHostingRepositoryPublishResponse> {
     return await callScmPreferMachine<ScmHostingRepositoryPublishResponse, ScmHostingRepositoryPublishRequest>(
         sessionId,
         RPC_METHODS.SCM_HOSTING_REPOSITORY_PUBLISH,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmRepositoryRemoveIndexLock(
     sessionId: string,
-    request: ScmRepositoryRemoveIndexLockRequest
+    request: ScmRepositoryRemoveIndexLockRequest,
+    serverId?: string | null,
 ): Promise<ScmRepositoryRemoveIndexLockResponse> {
     return await callScmPreferMachine<ScmRepositoryRemoveIndexLockResponse, ScmRepositoryRemoveIndexLockRequest>(
         sessionId,
         RPC_METHODS.SCM_REPOSITORY_REMOVE_INDEX_LOCK,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmStashList(
     sessionId: string,
-    request: ScmStashListRequest
+    request: ScmStashListRequest,
+    serverId?: string | null,
 ): Promise<ScmStashListResponse> {
     return await callScmPreferMachine<ScmStashListResponse, ScmStashListRequest>(
         sessionId,
         RPC_METHODS.SCM_STASH_LIST,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmStashDrop(
     sessionId: string,
-    request: ScmStashDropRequest
+    request: ScmStashDropRequest,
+    serverId?: string | null,
 ): Promise<ScmStashDropResponse> {
     return await callScmPreferMachine<ScmStashDropResponse, ScmStashDropRequest>(
         sessionId,
         RPC_METHODS.SCM_STASH_DROP,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmStashPop(
     sessionId: string,
-    request: ScmStashPopRequest
+    request: ScmStashPopRequest,
+    serverId?: string | null,
 ): Promise<ScmStashPopResponse> {
     return await callScmPreferMachine<ScmStashPopResponse, ScmStashPopRequest>(
         sessionId,
         RPC_METHODS.SCM_STASH_POP,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmStashApply(
     sessionId: string,
-    request: ScmStashApplyRequest
+    request: ScmStashApplyRequest,
+    serverId?: string | null,
 ): Promise<ScmStashApplyResponse> {
     return await callScmPreferMachine<ScmStashApplyResponse, ScmStashApplyRequest>(
         sessionId,
         RPC_METHODS.SCM_STASH_APPLY,
-        request
+        request,
+        serverId,
     );
 }
 
 export async function sessionScmStashShow(
     sessionId: string,
-    request: ScmStashShowRequest
+    request: ScmStashShowRequest,
+    serverId?: string | null,
 ): Promise<ScmStashShowResponse> {
     return await callScmPreferMachine<ScmStashShowResponse, ScmStashShowRequest>(
         sessionId,
         RPC_METHODS.SCM_STASH_SHOW,
-        request
+        request,
+        serverId,
     );
 }

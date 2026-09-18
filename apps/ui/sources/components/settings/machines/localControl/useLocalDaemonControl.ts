@@ -2,6 +2,7 @@ import * as React from 'react';
 import type { SystemTaskResult } from '@happier-dev/protocol';
 
 import { getDefaultSystemTaskRunner, useSystemTaskSnapshot, waitForSystemTaskResult } from '@/components/systemTasks';
+import { useSystemTaskAuthRequestApproval } from '@/components/systemTasks/useSystemTaskAuthRequestApproval';
 import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTasks/types';
 import { isSystemTaskBridgeUnavailableError, readSystemTaskStartErrorMessage } from '@/components/systemTasks/systemTaskStartError';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
@@ -174,6 +175,21 @@ export function useLocalDaemonControl(options: Readonly<{
             return null;
         }
     }, [activeServerSnapshot.activeLocalRelayUrl, activeServerSnapshot.serverUrl, isUnavailable, runner]);
+
+    // Repair pairs this computer when its credentials are missing or stale, so its blocking
+    // token-only prompt is answered by the one approval owner, scoped to the active Home.
+    useSystemTaskAuthRequestApproval({
+        runner,
+        taskId: repairTaskId,
+        ...(activeServerSnapshot.serverUrl
+            ? {
+                approval: {
+                    expectedRelayUrl: activeServerSnapshot.serverUrl,
+                    ...(activeServerSnapshot.serverId ? { serverId: activeServerSnapshot.serverId } : {}),
+                },
+            }
+            : {}),
+    });
 
     React.useEffect(() => {
         if (isUnavailable) {

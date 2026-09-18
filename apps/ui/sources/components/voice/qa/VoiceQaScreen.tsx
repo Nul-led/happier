@@ -1,3 +1,5 @@
+import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import * as React from 'react';
 import { Platform, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -12,7 +14,6 @@ import { ItemList } from '@/components/ui/lists/ItemList';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { t, tLoose } from '@/text';
 import { storage } from '@/sync/domains/state/storage';
-import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 import { voiceConversationBindingResolver } from '@/voice/binding/VoiceConversationBindingResolver';
 import { voiceSessionBindingStore } from '@/voice/binding/voiceConversationBindingStore';
 import { createVoiceQaFormatterPrefs, formatVoiceQaSessionLabel } from '@/voice/qa/formatVoiceQaSessionLabel';
@@ -125,6 +126,7 @@ export function VoiceQaScreen() {
   const router = useRouter();
   const routeParams = useLocalSearchParams<{
     voiceQaSessionId?: string | string[];
+    voiceQaServerId?: string | string[];
     voiceQaMode?: string | string[];
     voiceQaTransportRoute?: string | string[];
     voiceQaOutputCapture?: string | string[];
@@ -161,6 +163,7 @@ export function VoiceQaScreen() {
   const recordedAudioAbortControllersRef = React.useRef(new Set<AbortController>());
   const recordedAudioSettingsScopeOwnerId = React.useId();
   const routeSessionId = normalizeVoiceQaRouteParam(routeParams.voiceQaSessionId);
+  const routeServerId = normalizeVoiceQaRouteParam(routeParams.voiceQaServerId);
   const routeQaMode = normalizeVoiceQaRouteParam(routeParams.voiceQaMode) === 'media' ? 'media' : 'text';
   const routeTransportRouteRequirement =
     normalizeVoiceQaRouteParam(routeParams.voiceQaTransportRoute) === 'server_relay'
@@ -229,7 +232,11 @@ export function VoiceQaScreen() {
   }, [releaseRecordedAudioObjectUrl]);
 
   const voice: any = appState.settings?.voice;
-  const effectiveActivitySessionId = qaState.runtimeSessionId ?? qaState.sessionId ?? targetState.primaryActionSessionId ?? targetState.lastFocusedSessionId ?? '';
+  const effectiveActivitySessionId = qaState.runtimeSessionId
+    ?? qaState.sessionId
+    ?? targetState.primaryActionSessionAddress?.sessionId
+    ?? targetState.lastFocusedSessionAddress?.sessionId
+    ?? '';
 
   const runAction = React.useCallback(async (name: string, action: () => Promise<void>) => {
     setBusyAction(name);
@@ -354,38 +361,25 @@ export function VoiceQaScreen() {
     const controlSessionId = qaState.sessionId ?? voiceSessionState.sessionId ?? null;
     if (!controlSessionId) return null;
     return voiceConversationBindingResolver.resolveByControlSessionId({ controlSessionId })?.conversationSessionId ?? null;
-  }, [bindingState, qaState.runtimeSessionId, qaState.sessionId, voiceSessionState.sessionId]);
+  }, [appState, bindingState, qaState.runtimeSessionId, qaState.sessionId, voiceSessionState.sessionId]);
   const boundVoiceBinding = React.useMemo(() => {
     const controlSessionId = qaState.sessionId ?? voiceSessionState.sessionId ?? null;
     if (!controlSessionId) return null;
     return voiceConversationBindingResolver.resolveByControlSessionId({ controlSessionId }) ?? null;
-  }, [bindingState, qaState.sessionId, voiceSessionState.sessionId]);
-  const helperSessionId = React.useMemo(() => {
-    const qaTargetSessionId = normalizeSessionId(qaState.targetSessionId);
-    if (qaTargetSessionId && qaTargetSessionId !== VOICE_AGENT_GLOBAL_SESSION_ID) {
-      return qaTargetSessionId;
-    }
-    return (
-      normalizeSessionId(boundVoiceBinding?.targetSessionId)
-      ?? normalizeSessionId(targetState.primaryActionSessionId)
-      ?? normalizeSessionId(targetState.lastFocusedSessionId)
-      ?? qaTargetSessionId
-      ?? null
-    );
-  }, [
-    boundVoiceBinding?.targetSessionId,
-    qaState.targetSessionId,
-    targetState.lastFocusedSessionId,
-    targetState.primaryActionSessionId,
-  ]);
+  }, [appState, bindingState, qaState.sessionId, voiceSessionState.sessionId]);
+  const helperSessionAddress = qaState.targetSessionAddress
+    ?? boundVoiceBinding?.targetSessionAddress
+    ?? targetState.primaryActionSessionAddress
+    ?? targetState.lastFocusedSessionAddress
+    ?? null;
   const helperSessionText = React.useMemo(
     () =>
-      formatVoiceQaSessionLabel(helperSessionId, formatterPrefs, {
+      formatVoiceQaSessionLabel(helperSessionAddress ?? (qaState.sessionId === VOICE_AGENT_GLOBAL_SESSION_ID ? VOICE_AGENT_GLOBAL_SESSION_ID : null), formatterPrefs, {
         emptyLabel: t('voiceSurface.noTarget'),
         globalLabel: t('voiceActivity.format.voiceAgent'),
         fallbackLabel: t('devVoiceQa.targetSession'),
       }),
-    [appState, formatterPrefs, helperSessionId],
+    [appState, formatterPrefs, helperSessionAddress, qaState.sessionId],
   );
   const runtimeSessionId =
     normalizeSessionId(qaState.runtimeSessionId)
@@ -621,6 +615,7 @@ export function VoiceQaScreen() {
                   void runAction('start', async () => {
                     await voiceQaController.start({
                       sessionId: sessionIdRef.current,
+                      ...(routeServerId ? { sessionAddress: normalizeSessionAddress(routeServerId, sessionIdRef.current) } : {}),
                       initialContext: initialContextRef.current,
                       ...(routeQaMode === 'media' ? { mode: 'media' as const } : {}),
                       ...(routeQaMode === 'media' && routeTransportRouteRequirement
@@ -679,6 +674,7 @@ export function VoiceQaScreen() {
                   void runAction('send', async () => {
                     await voiceQaController.sendPrompt({
                       sessionId: sessionIdRef.current,
+                      ...(routeServerId ? { sessionAddress: normalizeSessionAddress(routeServerId, sessionIdRef.current) } : {}),
                       prompt: promptRef.current,
                     });
                   })
@@ -694,6 +690,7 @@ export function VoiceQaScreen() {
                   void runAction('context', async () => {
                     await voiceQaController.sendContextUpdate({
                       sessionId: sessionIdRef.current,
+                      ...(routeServerId ? { sessionAddress: normalizeSessionAddress(routeServerId, sessionIdRef.current) } : {}),
                       update: contextUpdateRef.current,
                     });
                   })

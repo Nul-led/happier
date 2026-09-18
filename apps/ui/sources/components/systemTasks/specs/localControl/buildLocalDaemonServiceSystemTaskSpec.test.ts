@@ -43,6 +43,21 @@ describe('buildLocalDaemonServiceSystemTaskSpec', () => {
         });
     });
 
+    it('builds the PATH exposure tasks on the same local params', () => {
+        for (const kind of ['cli.pathExposure.ensure.v1', 'cli.pathExposure.remove.v1'] as const) {
+            expect(buildLocalDaemonServiceSystemTaskSpec(kind)).toEqual({
+                protocolVersion: 1,
+                kind,
+                params: {
+                    channel: 'stable',
+                    target: { kind: 'local' },
+                    surface: 'desktop.ui',
+                    mode: 'user',
+                },
+            });
+        }
+    });
+
     it('builds daemon service restart tasks for the local machine', () => {
         expect(buildLocalDaemonServiceSystemTaskSpec('daemon.service.restart.v1')).toEqual({
             protocolVersion: 1,

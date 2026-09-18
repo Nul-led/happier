@@ -14,10 +14,16 @@ export async function refreshAccountHomeDirectory(
     session: AccountDirectorySession,
     options: AccountDirectoryRefreshOptions = {},
 ): Promise<AccountDirectorySessionSnapshot> {
-    if (options.shouldCancel?.()) {
+    const isCurrent = session.captureLifecycle();
+    const shouldCancel = () => !isCurrent() || options.shouldCancel?.() === true;
+    if (shouldCancel()) {
         return session.recordReconciliation({ kind: 'cancelled', adopted: [], failures: [] });
     }
     const snapshot = await session.refresh();
+    // `refresh()` itself rejects late publication, but logout also resets the
+    // session snapshot while the request is in flight. Do not decorate that
+    // newer reset state with reconciliation owned by the superseded lifecycle.
+    if (!isCurrent()) return session.snapshot;
     if (snapshot.status !== 'ready') {
         return session.recordReconciliation({
             kind: 'snapshot_unavailable',
@@ -25,13 +31,14 @@ export async function refreshAccountHomeDirectory(
             error: snapshot.error,
         });
     }
-    if (options.shouldCancel?.()) {
+    if (shouldCancel()) {
         return session.recordReconciliation({ kind: 'cancelled', adopted: [], failures: [] });
     }
     const reconciliation = await adoptAccountServiceDirectoryHomes({
         homes: snapshot.homes,
         adoptHome: adoptDirectoryHome,
-        shouldCancel: options.shouldCancel,
+        shouldCancel,
     });
+    if (!isCurrent()) return session.snapshot;
     return session.recordReconciliation(reconciliation);
 }

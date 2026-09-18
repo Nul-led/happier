@@ -3,17 +3,20 @@ import { Pressable, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
+import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
 import { t } from '@/text';
-import { WorkflowAgentRow } from '@/components/tools/renderers/workflow/WorkflowAgentRow';
-import { WorkflowPhaseHeader } from '@/components/tools/renderers/workflow/WorkflowPhaseHeader';
-import { WorkflowRunHeader } from '@/components/tools/renderers/workflow/WorkflowRunHeader';
-import { formatWorkflowRunStatusLabel } from '@/components/tools/renderers/workflow/workflowStatusLabel';
+import { WorkflowFlowView } from '@/components/workflows/flow/WorkflowFlowView';
+import { projectObservedWorkflowFlow } from '@/components/workflows/flow/workflowFlowProjection';
+import { WorkflowAgentRow } from '@/components/workflows/presentation/WorkflowAgentRow';
+import { WorkflowPhaseHeader } from '@/components/workflows/presentation/WorkflowPhaseHeader';
+import { WorkflowRunHeader } from '@/components/workflows/presentation/WorkflowRunHeader';
+import { formatWorkflowRunStatusLabel } from '@/components/workflows/presentation/workflowStatusLabel';
+import { resolveWorkflowRunTone } from '@/components/workflows/presentation/workflowPresentation';
 
 import {
     buildWorkflowActivityRows,
     computeWorkflowRunRollup,
     resolveActiveWorkflowPhasePosition,
-    resolveWorkflowRunTone,
 } from './sessionWorkflowActivityPresentation';
 import type { SessionWorkflowActivityState } from './useSessionWorkflowActivity';
 import type { SessionWorkflowRunHeadlineV1, SessionWorkflowRunSnapshotV1 } from '@happier-dev/protocol';
@@ -72,9 +75,13 @@ export function areSessionWorkflowRunPanelPropsEqual(
 const SessionWorkflowRunPanel = React.memo<SessionWorkflowRunPanelProps>((props) => {
     const [expanded, setExpanded] = React.useState(props.defaultExpanded);
     const [visibleRowCount, setVisibleRowCount] = React.useState(INLINE_ROW_INITIAL_COUNT);
+    const [view, setView] = React.useState<'activity' | 'flow'>('activity');
+    const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(null);
 
     React.useEffect(() => {
         setVisibleRowCount(INLINE_ROW_INITIAL_COUNT);
+        setView('activity');
+        setSelectedNodeId(null);
     }, [props.runHeadline.runId]);
 
     const rollup = React.useMemo(
@@ -95,6 +102,10 @@ const SessionWorkflowRunPanel = React.memo<SessionWorkflowRunPanelProps>((props)
 
     const allRows = React.useMemo<readonly WorkflowActivityRowViewModel[]>(
         () => (props.snapshot ? buildWorkflowActivityRows(props.snapshot) : []),
+        [props.snapshot],
+    );
+    const flowProjection = React.useMemo(
+        () => (props.snapshot ? projectObservedWorkflowFlow(props.snapshot) : null),
         [props.snapshot],
     );
     const visibleRows = allRows.slice(0, visibleRowCount);
@@ -134,47 +145,74 @@ const SessionWorkflowRunPanel = React.memo<SessionWorkflowRunPanelProps>((props)
             </Pressable>
             {expanded ? (
                 props.detailState === 'loaded' && props.snapshot ? (
-                    allRows.length === 0 ? (
-                        // A loaded run can legitimately carry no phase/agent detail (e.g. a backgrounded
-                        // Workflow whose persisted transcript holds only a terminal task-notification).
-                        // Degrade to a graceful line instead of an empty expansion shell.
-                        <Text style={styles.skeleton}>{t('tools.workflowActivityView.noDetail')}</Text>
-                    ) : (
-                        <View style={styles.rows}>
-                            {visibleRows.map((row) =>
-                                row.kind === 'phaseHeader' ? (
-                                    <WorkflowPhaseHeader key={row.rowId} title={row.title} fallback={row.fallback} rollup={row.rollup} />
+                    <View style={styles.observedContent}>
+                        <Text style={styles.observedKind}>{t('workflows.run.observedActivity')}</Text>
+                        <SegmentedTabBar<'activity' | 'flow'>
+                            tabs={[
+                                { id: 'activity', label: t('workflows.tabs.activity') },
+                                { id: 'flow', label: t('workflows.tabs.flow') },
+                            ]}
+                            activeTabId={view}
+                            onSelectTab={setView}
+                            testIDPrefix={`workflow-run-panel-view-${props.runHeadline.runId}`}
+                            accessibilityLabel={t('workflows.tabsAccessibility.activityFlow')}
+                            compact
+                            targetSize="platform"
+                        />
+                        {view === 'flow' && flowProjection ? (
+                            <WorkflowFlowView
+                                projection={flowProjection}
+                                selectedNodeId={selectedNodeId}
+                                onSelectNode={setSelectedNodeId}
+                                testIDPrefix={`workflow-run-panel-flow-${props.runHeadline.runId}`}
+                            />
+                        ) : (
+                            <View style={styles.rows}>
+                                <Text style={styles.observedBody}>{t('workflows.run.observedActivityBody')}</Text>
+                                {allRows.length === 0 ? (
+                                    // A loaded run can legitimately carry no phase/agent detail (e.g. a backgrounded
+                                    // Workflow whose persisted transcript holds only a terminal task-notification).
+                                    // Degrade to a graceful line instead of an empty expansion shell.
+                                    <Text style={styles.skeleton}>{t('tools.workflowActivityView.noDetail')}</Text>
                                 ) : (
-                                    <WorkflowAgentRow
-                                        key={row.rowId}
-                                        title={row.agent.title}
-                                        status={row.agent.status}
-                                        {...(row.agent.model ? { model: row.agent.model } : {})}
-                                        {...(typeof row.agent.tokensUsed === 'number' ? { tokensUsed: row.agent.tokensUsed } : {})}
-                                        {...(typeof row.agent.toolCalls === 'number' ? { toolCalls: row.agent.toolCalls } : {})}
-                                        {...(typeof row.agent.timeUsedSeconds === 'number' ? { timeUsedSeconds: row.agent.timeUsedSeconds } : {})}
-                                        {...(row.agent.resultPreview ? { resultPreview: row.agent.resultPreview } : {})}
-                                        {...(row.agent.summary ? { summary: row.agent.summary } : {})}
-                                        testID={`workflow-agent-${row.agent.runId}-${row.agent.agentId}`}
-                                    />
-                                ),
-                            )}
-                            {hiddenCount > 0 ? (
-                                <Pressable
-                                    onPress={() => setVisibleRowCount((current) => Math.min(allRows.length, current + INLINE_ROW_PAGE_SIZE))}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('tools.workflowActivityView.showMore', { count: hiddenCount })}
-                                    style={styles.showMore}
-                                    testID={`workflow-run-${props.runHeadline.runId}-show-more`}
-                                    hitSlop={8}
-                                >
-                                    <Text style={styles.showMoreText}>
-                                        {t('tools.workflowActivityView.showMore', { count: hiddenCount })}
-                                    </Text>
-                                </Pressable>
-                            ) : null}
-                        </View>
-                    )
+                                    <>
+                                        {visibleRows.map((row) =>
+                                            row.kind === 'phaseHeader' ? (
+                                                <WorkflowPhaseHeader key={row.rowId} title={row.title} fallback={row.fallback} rollup={row.rollup} />
+                                            ) : (
+                                                <WorkflowAgentRow
+                                                    key={row.rowId}
+                                                    title={row.agent.title}
+                                                    status={row.agent.status}
+                                                    {...(row.agent.model ? { model: row.agent.model } : {})}
+                                                    {...(typeof row.agent.tokensUsed === 'number' ? { tokensUsed: row.agent.tokensUsed } : {})}
+                                                    {...(typeof row.agent.toolCalls === 'number' ? { toolCalls: row.agent.toolCalls } : {})}
+                                                    {...(typeof row.agent.timeUsedSeconds === 'number' ? { timeUsedSeconds: row.agent.timeUsedSeconds } : {})}
+                                                    {...(row.agent.resultPreview ? { resultPreview: row.agent.resultPreview } : {})}
+                                                    {...(row.agent.summary ? { summary: row.agent.summary } : {})}
+                                                    testID={`workflow-agent-${row.agent.runId}-${row.agent.agentId}`}
+                                                />
+                                            ),
+                                        )}
+                                        {hiddenCount > 0 ? (
+                                            <Pressable
+                                                onPress={() => setVisibleRowCount((current) => Math.min(allRows.length, current + INLINE_ROW_PAGE_SIZE))}
+                                                accessibilityRole="button"
+                                                accessibilityLabel={t('tools.workflowActivityView.showMore', { count: hiddenCount })}
+                                                style={styles.showMore}
+                                                testID={`workflow-run-${props.runHeadline.runId}-show-more`}
+                                                hitSlop={8}
+                                            >
+                                                <Text style={styles.showMoreText}>
+                                                    {t('tools.workflowActivityView.showMore', { count: hiddenCount })}
+                                                </Text>
+                                            </Pressable>
+                                        ) : null}
+                                    </>
+                                )}
+                            </View>
+                        )}
+                    </View>
                 ) : (
                     <Text style={styles.skeleton}>
                         {props.detailState === 'missing'
@@ -236,6 +274,19 @@ const styles = StyleSheet.create((theme) => ({
     },
     rows: {
         gap: 0,
+    },
+    observedContent: {
+        gap: theme.margins.sm,
+    },
+    observedKind: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: theme.colors.text.secondary,
+    },
+    observedBody: {
+        fontSize: 12,
+        color: theme.colors.text.secondary,
+        paddingBottom: theme.margins.xs,
     },
     skeleton: {
         fontSize: 12,

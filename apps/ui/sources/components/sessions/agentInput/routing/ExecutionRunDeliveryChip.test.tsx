@@ -58,10 +58,10 @@ function asSelectionListPopoverProps(value: unknown): any {
     return value as any;
 }
 
-describe('ExecutionRunDeliveryChip', () => {
+describe('ExecutionRunRequestedActionChip', () => {
     it('does not render when recipient is not an execution_run', async () => {
         capturedSelectionListPopoverProps = null;
-        const { ExecutionRunDeliveryChip } = await import('./ExecutionRunDeliveryChip');
+        const { ExecutionRunRequestedActionChip } = await import('./ExecutionRunRequestedActionChip');
         const ctx = {
             chipStyle: () => ({ padding: 4 }),
             iconColor: '#000',
@@ -71,11 +71,11 @@ describe('ExecutionRunDeliveryChip', () => {
             popoverAnchorRef: { current: null },
         } as const;
 
-        const screen = await renderScreen(<ExecutionRunDeliveryChip
+        const screen = await renderScreen(<ExecutionRunRequestedActionChip
                     ctx={ctx}
                     recipient={{ kind: 'agent_team_broadcast', teamId: 'probe' }}
-                    delivery="steer_if_supported"
-                    onDeliveryChange={() => {}}
+                    requestedAction={{ v: 1, kind: 'steer_if_active' }}
+                    onRequestedActionChange={() => {}}
                 />);
 
         expect(screen.tree.toJSON()).toBeNull();
@@ -84,7 +84,7 @@ describe('ExecutionRunDeliveryChip', () => {
 
     it('opens the shared simple-options popover and anchors it to the delivery chip ref', async () => {
         capturedSelectionListPopoverProps = null;
-        const { ExecutionRunDeliveryChip } = await import('./ExecutionRunDeliveryChip');
+        const { ExecutionRunRequestedActionChip } = await import('./ExecutionRunRequestedActionChip');
         const externalAnchorRef = { current: { id: 'composer-anchor' } };
         const ctx = {
             chipStyle: () => ({ padding: 4 }),
@@ -95,11 +95,11 @@ describe('ExecutionRunDeliveryChip', () => {
             popoverAnchorRef: externalAnchorRef,
         } as const;
 
-        const screen = await renderScreen(<ExecutionRunDeliveryChip
+        const screen = await renderScreen(<ExecutionRunRequestedActionChip
                     ctx={ctx}
                     recipient={{ kind: 'execution_run', runId: 'run_1' }}
-                    delivery="interrupt"
-                    onDeliveryChange={() => {}}
+                    requestedAction={{ v: 1, kind: 'send_now' }}
+                    onRequestedActionChange={() => {}}
                 />);
 
         expect(asSelectionListPopoverProps(capturedSelectionListPopoverProps)?.open).toBe(false);
@@ -109,12 +109,12 @@ describe('ExecutionRunDeliveryChip', () => {
         const pickerProps = asSelectionListPopoverProps(capturedSelectionListPopoverProps);
         expect(pickerProps?.open).toBe(true);
         expect(pickerProps?.rootStep?.title).toBe('runs.delivery.title');
-        expect(pickerProps?.selectedOptionId).toBe('interrupt');
+        expect(pickerProps?.selectedOptionId).toBe('send_now');
         expect(pickerProps?.anchorRef).not.toBe(externalAnchorRef);
         expect(((pickerProps?.rootStep?.sections?.[0]?.options) ?? []).map((option: { id: string }) => option.id)).toEqual([
-            'prompt',
-            'steer_if_supported',
-            'interrupt',
+            'enqueue',
+            'steer_if_active',
+            'send_now',
         ]);
     });
 
@@ -128,7 +128,7 @@ describe('ExecutionRunDeliveryChip', () => {
      */
     it('wrapper-level onSelect does NOT close the popover synchronously (close happens only via onRequestClose)', async () => {
         capturedSelectionListPopoverProps = null;
-        const { ExecutionRunDeliveryChip } = await import('./ExecutionRunDeliveryChip');
+        const { ExecutionRunRequestedActionChip } = await import('./ExecutionRunRequestedActionChip');
         const ctx = {
             chipStyle: () => ({ padding: 4 }),
             iconColor: '#000',
@@ -138,11 +138,11 @@ describe('ExecutionRunDeliveryChip', () => {
             popoverAnchorRef: { current: null },
         } as const;
 
-        const screen = await renderScreen(<ExecutionRunDeliveryChip
+        const screen = await renderScreen(<ExecutionRunRequestedActionChip
                     ctx={ctx}
                     recipient={{ kind: 'execution_run', runId: 'run_1' }}
-                    delivery="steer_if_supported"
-                    onDeliveryChange={() => {}}
+                    requestedAction={{ v: 1, kind: 'steer_if_active' }}
+                    onRequestedActionChange={() => {}}
                 />);
 
         // Open the popover via the trigger.
@@ -155,7 +155,7 @@ describe('ExecutionRunDeliveryChip', () => {
         expect(typeof wrapperOnSelect).toBe('function');
 
         act(() => {
-            wrapperOnSelect('prompt');
+            wrapperOnSelect('enqueue');
         });
 
         // Popover should still be open — the wrapper owns the close path.
@@ -169,10 +169,10 @@ describe('ExecutionRunDeliveryChip', () => {
         expect(asSelectionListPopoverProps(capturedSelectionListPopoverProps)?.open).toBe(false);
     });
 
-    it('forwards all shared picker selection changes to onDeliveryChange via per-option onSelect (RV-1 F1)', async () => {
+    it('forwards all shared picker selection changes to onRequestedActionChange via per-option onSelect (RV-1 F1)', async () => {
         capturedSelectionListPopoverProps = null;
-        const { ExecutionRunDeliveryChip } = await import('./ExecutionRunDeliveryChip');
-        const onDeliveryChange = vi.fn();
+        const { ExecutionRunRequestedActionChip } = await import('./ExecutionRunRequestedActionChip');
+        const onRequestedActionChange = vi.fn();
         const ctx = {
             chipStyle: () => ({ padding: 4 }),
             iconColor: '#000',
@@ -182,22 +182,22 @@ describe('ExecutionRunDeliveryChip', () => {
             popoverAnchorRef: { current: null },
         } as const;
 
-        await renderScreen(<ExecutionRunDeliveryChip
+        await renderScreen(<ExecutionRunRequestedActionChip
                     ctx={ctx}
                     recipient={{ kind: 'execution_run', runId: 'run_1' }}
-                    delivery="steer_if_supported"
-                    onDeliveryChange={onDeliveryChange}
+                    requestedAction={{ v: 1, kind: 'steer_if_active' }}
+                    onRequestedActionChange={onRequestedActionChange}
                 />);
 
-        // Per-option onSelect (set inside `buildExecutionRunDeliveryRootStep`)
+        // Per-option onSelect (set inside `buildExecutionRunRequestedActionRootStep`)
         // carries the mutation. The popover-level onSelect is close-only.
         const props = asSelectionListPopoverProps(capturedSelectionListPopoverProps);
         const promptOption = props?.rootStep?.sections?.[0]?.options?.find(
-            (option: { id: string }) => option.id === 'prompt',
+            (option: { id: string }) => option.id === 'enqueue',
         );
         expect(typeof promptOption?.onSelect).toBe('function');
         promptOption!.onSelect!();
 
-        expect(onDeliveryChange).toHaveBeenCalledWith('prompt');
+        expect(onRequestedActionChange).toHaveBeenCalledWith({ v: 1, kind: 'enqueue' });
     });
 });

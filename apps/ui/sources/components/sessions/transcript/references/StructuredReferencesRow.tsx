@@ -14,6 +14,8 @@ import { useLocalSetting, useSessionReferenceTarget } from '@/sync/domains/state
 import { Icon } from '@/components/ui/icons/Icon';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import type { TranscriptStructuredReference } from './messageStructuredReferences';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 
 /**
  * The transcript's structured-references row (D-6). It presents every reference a message
@@ -35,6 +37,7 @@ const REFERENCE_PREFIX = '@';
 
 export type StructuredReferencesRowProps = Readonly<{
     sessionId: string;
+    serverId?: string | null;
     references: readonly TranscriptStructuredReference[];
     fileOpenEnabled: boolean;
 }>;
@@ -87,12 +90,13 @@ function getBasename(path: string): string {
 
 const SessionReferenceChip = React.memo((props: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     label: string | null;
 }>) => {
     const styles = stylesheet;
     const { theme } = useUnistyles();
     const router = useRouter();
-    const target = useSessionReferenceTarget(props.sessionId);
+    const target = useSessionReferenceTarget(props.sessionId, props.serverId);
 
     // The live title wins over the label captured when the reference was composed, so a renamed
     // session reads correctly without the reference changing — identity is the id, and the
@@ -108,8 +112,11 @@ const SessionReferenceChip = React.memo((props: Readonly<{
     const title = liveTitle ?? props.label;
 
     const openSession = React.useCallback(() => {
-        router.push(`/session/${encodeURIComponent(props.sessionId)}` as never);
-    }, [props.sessionId, router]);
+        router.push(buildScopedSessionRouteHref({
+            sessionId: props.sessionId,
+            serverId: props.serverId,
+        }) as never);
+    }, [props.serverId, props.sessionId, router]);
 
     const testID = `transcript-session-reference:${props.sessionId}`;
 
@@ -161,7 +168,10 @@ export const StructuredReferencesRow = React.memo((props: StructuredReferencesRo
     const multiPaneEnabled = useLocalSetting('uiMultiPanePanelsEnabled') !== false;
     const paneScopeLayout = useOptionalAppPaneScopeLayout();
 
-    const scopeId = React.useMemo(() => `session:${props.sessionId}`, [props.sessionId]);
+    const scopeId = React.useMemo(
+        () => createSessionPaneScopeId(props.sessionId, props.serverId),
+        [props.serverId, props.sessionId],
+    );
     const pane = useAppPaneScope(scopeId);
 
     const openFile = React.useCallback((path: string) => {
@@ -173,7 +183,12 @@ export const StructuredReferencesRow = React.memo((props: StructuredReferencesRo
         });
 
         if (!shouldOpenInDetailsPane) {
-            const href = `/session/${props.sessionId}/file?path=${encodeURIComponent(path)}`;
+            const href = buildScopedSessionRouteHref({
+                sessionId: props.sessionId,
+                serverId: props.serverId,
+                suffix: '/file',
+                query: { path },
+            });
             router.push(href as never);
             return;
         }
@@ -184,7 +199,7 @@ export const StructuredReferencesRow = React.memo((props: StructuredReferencesRo
             title: getBasename(path),
             resource: { kind: 'file', path },
         });
-    }, [deviceType, multiPaneEnabled, pane, paneScopeLayout?.containerWidthPx, props.sessionId, router, windowWidth]);
+    }, [deviceType, multiPaneEnabled, pane, paneScopeLayout?.containerWidthPx, props.serverId, props.sessionId, router, windowWidth]);
 
     if (props.references.length === 0) return null;
 
@@ -196,6 +211,7 @@ export const StructuredReferencesRow = React.memo((props: StructuredReferencesRo
                         <SessionReferenceChip
                             key={`session:${reference.sessionId}`}
                             sessionId={reference.sessionId}
+                            serverId={props.serverId}
                             label={reference.label}
                         />
                     );

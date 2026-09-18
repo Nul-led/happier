@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
+import {
+    buildHappierFocusLiveActivityIdentity,
+    buildLiveActivityInstanceKey,
+} from '../liveActivities/liveActivityIdentity';
+
+/** The production Activity identity encoder, so fixtures cannot drift from real keys. */
+function liveActivityKey(serverId: string, sessionId: string): string {
+    return buildLiveActivityInstanceKey(buildHappierFocusLiveActivityIdentity({ serverId, sessionId }));
+}
+
+
 async function loadModule() {
     return import('./applyLiveActivityBackgroundWakePayload').catch(() => null);
 }
@@ -57,7 +68,7 @@ describe('applyLiveActivityBackgroundWakePayload', () => {
         const result = mod.resolveLiveActivityBackgroundWakePayloadApplication({
             payload: createWakePayload(),
             current: {
-                activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+                activityInstanceKey: liveActivityKey('server-a', 'session-1'),
                 generatedAt: 500,
                 snapshotFingerprint: 'fingerprint-old',
             },
@@ -69,7 +80,7 @@ describe('applyLiveActivityBackgroundWakePayload', () => {
                 serverId: 'server-a',
                 sessionId: 'session-1',
                 activityName: 'HappierFocusLiveActivity',
-                activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+                activityInstanceKey: liveActivityKey('server-a', 'session-1'),
                 title: 'Session work',
             },
         });
@@ -86,7 +97,7 @@ describe('applyLiveActivityBackgroundWakePayload', () => {
                 contentState: createContentState({ generatedAt: 1_000 }),
             }),
             current: {
-                activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+                activityInstanceKey: liveActivityKey('server-a', 'session-1'),
                 generatedAt: 2_000,
                 snapshotFingerprint: 'fingerprint-newer-local',
             },
@@ -106,7 +117,7 @@ describe('applyLiveActivityBackgroundWakePayload', () => {
         const result = mod.resolveLiveActivityBackgroundWakePayloadApplication({
             payload: createWakePayload({ snapshotFingerprint: 'same-fingerprint' }),
             current: {
-                activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+                activityInstanceKey: liveActivityKey('server-a', 'session-1'),
                 generatedAt: 1_000,
                 snapshotFingerprint: 'same-fingerprint',
             },
@@ -129,7 +140,7 @@ describe('applyLiveActivityBackgroundWakePayload', () => {
                 contentState: null,
             }),
             current: {
-                activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+                activityInstanceKey: liveActivityKey('server-a', 'session-1'),
                 generatedAt: 1_000,
                 snapshotFingerprint: 'fingerprint-old',
             },
@@ -137,7 +148,7 @@ describe('applyLiveActivityBackgroundWakePayload', () => {
 
         expect(result).toEqual({
             action: 'apply_end',
-            activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+            activityInstanceKey: liveActivityKey('server-a', 'session-1'),
         });
     });
 

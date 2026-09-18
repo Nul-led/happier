@@ -49,6 +49,8 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 export type WorkspaceRightPanelGitViewProps = WorkspaceSourceControlViewProps & Readonly<{
     onOpenCommit?: (sha: string) => void;
+    activeSubTabId?: GitSubTabId;
+    onActiveSubTabChange?: (tabId: GitSubTabId) => void;
 }>;
 
 type ScmUpdateMutationResponse = Readonly<{
@@ -59,7 +61,9 @@ type ScmUpdateMutationResponse = Readonly<{
 
 export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanelGitViewProps) => {
     const { theme } = useUnistyles();
-    const [activeSubTab, setActiveSubTab] = React.useState<GitSubTabId>('commit');
+    const [localActiveSubTab, setLocalActiveSubTab] = React.useState<GitSubTabId>('commit');
+    const activeSubTab = props.activeSubTabId ?? localActiveSubTab;
+    const setActiveSubTab = props.onActiveSubTabChange ?? setLocalActiveSubTab;
     const [scmOperationBusy, setScmOperationBusy] = React.useState(false);
     const [scmOperationStatus, setScmOperationStatus] = React.useState<string | null>(null);
 
@@ -96,13 +100,13 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
         [snapshot],
     );
 
-    const { historyEntries, historyLoading, historyHasMore, loadCommitHistory } = useWorkspaceScmCommitHistory({
+    const { historyIdentity: commitHistoryInitKey, historyEntries, historyLoading, historyHasMore, loadCommitHistory } = useWorkspaceScmCommitHistory({
         serverId: props.serverId,
         machineId: props.machineId,
         rootPath: props.rootPath,
+        historyBranch: snapshot?.branch.head,
         readLogEnabled: snapshot?.repo.isRepo === true && (snapshot.capabilities?.readLog ?? true),
     });
-    const commitHistoryInitKey = `${props.serverId}:${props.machineId}:${props.rootPath}`;
     const didInitCommitHistoryKeyRef = React.useRef<string | null>(null);
 
     React.useEffect(() => {
@@ -473,6 +477,7 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
             {staleSnapshotNotice}
             {activeSubTab === 'history' ? (
                 <WorkspaceScmHistoryTab
+                    historyIdentity={commitHistoryInitKey}
                     theme={theme}
                     historyLoading={historyLoading}
                     historyEntries={historyEntries}

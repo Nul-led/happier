@@ -88,7 +88,7 @@ installSessionRouteCommonModuleMocks({
             sessions: {},
             concurrentSessionListCacheByServerId: {},
             sessionListIndexByServerId: {},
-            sessionListRowStateByServerId: {},
+            sessionListRowsByServerId: {},
           }),
         } as any,
         useSession: () => mockSession,

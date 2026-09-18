@@ -19,7 +19,7 @@ import {
  */
 export type SessionCockpitMobileCatalogEntry =
     | Readonly<{
-        id: 'chat' | 'tabs';
+        id: 'chat' | 'tabs' | 'companion';
         owner: 'host';
     }>
     | Readonly<{
@@ -72,6 +72,15 @@ function addCatalogEntry(
 
 export function resolveSessionCockpitMobileCatalog(input: Readonly<{
     terminalTabAvailable: boolean;
+    /**
+     * The exact Home's `sessions.board` decision; omitted means disabled.
+     *
+     * It admits BOTH Session Board destinations: the Board surface itself and
+     * the host-owned Companion destination that presents Board content. There is
+     * no Companion-specific feature, so a Home without Board publishes neither.
+     */
+    boardFeatureEnabled?: boolean;
+    sessionSharingAvailable?: boolean;
     pluginPlacements?: readonly PluginUiSurfacePlacementProjection[];
     projectionGeneration?: number | null;
     runtimeAdmission?: RightSidebarPluginTabRuntimeAdmission;
@@ -81,6 +90,8 @@ export function resolveSessionCockpitMobileCatalog(input: Readonly<{
         tabs: resolveSessionRightSidebarTabs({
             presentation: 'mobile',
             terminalTabAvailable: input.terminalTabAvailable,
+            boardFeatureEnabled: input.boardFeatureEnabled === true,
+            sessionSharingAvailable: input.sessionSharingAvailable === true,
             pluginPlacements: input.pluginPlacements,
             projectionGeneration: input.projectionGeneration,
             ...(input.runtimeAdmission === undefined ? {} : { runtimeAdmission: input.runtimeAdmission }),
@@ -114,6 +125,12 @@ export function resolveSessionCockpitMobileCatalog(input: Readonly<{
     addCatalogEntry(result, entryForBuiltinTab('files'));
     addCatalogEntry(result, entryForBuiltinTab('git'));
     addCatalogEntry(result, Object.freeze({ id: 'tabs', owner: 'host' as const }));
+    // Companion is host-owned like Chat and Details, but it presents Board
+    // content: it is published only where the same exact-Home Board decision
+    // admits the Board destination itself.
+    if (input.boardFeatureEnabled === true) {
+        addCatalogEntry(result, Object.freeze({ id: 'companion', owner: 'host' as const }));
+    }
     for (const entry of remainingBuiltIns) addCatalogEntry(result, entry);
     for (const entry of pluginEntries) addCatalogEntry(result, entry);
     addCatalogEntry(result, entryForBuiltinTab('terminal'));

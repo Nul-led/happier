@@ -9,29 +9,45 @@ const {
     mockRuntimeFetchWithServerReachability,
     mockStorageState,
     mockActiveServerSnapshot,
+    mockInvalidateSessionListSnapshot,
 } = vi.hoisted(() => ({
     mockRequest: vi.fn(),
     mockResolveContext: vi.fn(),
     mockRuntimeFetchWithServerReachability: vi.fn(),
+    mockInvalidateSessionListSnapshot: vi.fn(),
     mockActiveServerSnapshot: {
         serverId: 'server-a',
         serverUrl: 'https://active.example',
     },
     mockStorageState: {
+        profileScope: null as StorageState['profileScope'],
         sessions: {} as StorageState['sessions'],
-        sessionListRenderables: {} as StorageState['sessionListRenderables'],
-        sessionListRowStateByServerId: {} as StorageState['sessionListRowStateByServerId'],
+        sessionListRowsByServerId: {} as StorageState['sessionListRowsByServerId'],
+        ordinarySessionListMembershipByServerId: {} as StorageState['ordinarySessionListMembershipByServerId'],
         sessionListIndexByServerId: {} as StorageState['sessionListIndexByServerId'],
         concurrentSessionListCacheByServerId: {} as StorageState['concurrentSessionListCacheByServerId'],
         settings: {
             schemaVersion: 1,
-            groupInactiveSessionsByProject: false,
             sessionListActiveGroupingV1: 'project',
             sessionListInactiveGroupingV1: 'date',
         } as StorageState['settings'],
         machineListByServerId: {} as StorageState['machineListByServerId'],
         applySessions: vi.fn(),
-        applySessionListRenderablePatches: vi.fn(),
+        applyServerScopedSessionListRowPatches: vi.fn((serverId: string, patches: Array<{ sessionId: string; patch: Partial<SessionListRenderableSession> }>) => {
+            const previousRows = mockStorageState.sessionListRowsByServerId[serverId] ?? {};
+            const nextRows = { ...previousRows };
+            for (const { sessionId, patch } of patches) {
+                const previous = nextRows[sessionId];
+                if (previous) nextRows[sessionId] = { ...previous, ...patch };
+            }
+            mockStorageState.sessionListRowsByServerId = {
+                ...mockStorageState.sessionListRowsByServerId,
+                [serverId]: nextRows,
+            };
+            mockStorageState.sessionListIndexByServerId = {
+                ...mockStorageState.sessionListIndexByServerId,
+            };
+        }),
         setState: vi.fn((updater: (state: any) => any) => {
             const nextState = updater(mockStorageState as any);
             Object.assign(mockStorageState, nextState);
@@ -39,21 +55,36 @@ const {
     },
 }));
 
+const actionSettingsBoundary = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
+
+vi.mock('@/sync/sync', () => ({
+    sync: { invalidateSessionListSnapshot: mockInvalidateSessionListSnapshot },
+}));
+
 vi.mock('@/sync/api/session/apiSocket', () => ({
     apiSocket: {
         request: mockRequest,
+        disconnect: vi.fn(),
     },
 }));
 
 vi.mock(
-    '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedSessionContext',
-    async (importOriginal) =>
-        (await import('@/dev/testkit')).createServerScopedSessionContextModuleMock({
-            importOriginal,
-            overrides: {
-                resolveServerScopedSessionContext: mockResolveContext,
-            },
-        }),
+    '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext',
+    () => ({
+        resolveServerAccountRequestContext: async (params: Readonly<{ serverId?: string | null; preferScoped?: boolean }>) => {
+            const result = await mockResolveContext(params);
+            if (params.preferScoped !== true || result?.scope !== 'active') return result;
+            return {
+                scope: 'scoped',
+                timeoutMs: result.timeoutMs ?? 1000,
+                targetServerId: result.targetServerId ?? params.serverId ?? mockActiveServerSnapshot.serverId,
+                targetServerUrl: result.targetServerUrl ?? mockActiveServerSnapshot.serverUrl,
+                targetAccountId: mockStorageState.profileScope?.accountId ?? 'account-a',
+                token: result.token ?? 'tok',
+                encryption: result.encryption ?? null,
+            };
+        },
+    }),
 );
 
 vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
@@ -64,18 +95,49 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => mockActiveServerSnapshot,
 }));
 
-vi.mock('@/sync/domains/state/storage', async () =>
-    (await import('@/dev/testkit')).createStorageModuleStub({
-        storage: {
-            getState: () => mockStorageState,
-            getInitialState: () => mockStorageState,
-            setState: (updater: (state: typeof mockStorageState) => typeof mockStorageState) =>
-                mockStorageState.setState(updater),
-            subscribe: () => () => undefined,
-            destroy: () => undefined,
-        },
-    }),
-);
+vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
+    captureActiveServerAccountScopeLifetime: () => {
+        const scope = {
+            serverId: mockActiveServerSnapshot.serverId,
+            accountId: mockStorageState.profileScope?.accountId ?? 'account-a',
+        };
+        return {
+            scope,
+            isCurrent: () => mockActiveServerSnapshot.serverId === scope.serverId
+                && (mockStorageState.profileScope?.accountId ?? 'account-a') === scope.accountId,
+            onRetire: () => ({ dispose: () => undefined }),
+        };
+    },
+}));
+
+vi.mock('../actions/actionAccountContext', () => ({
+    captureActionAccountContext: vi.fn(async (serverId: string) => ({
+        serverId,
+        accountId: mockStorageState.profileScope?.accountId ?? 'account-a',
+        credentials: { token: 'unused' },
+        accountMode: 'plain' as const,
+        request: vi.fn(),
+        assertCurrent: () => undefined,
+        dispose: () => undefined,
+        readSettings: async () => actionSettingsBoundary.current,
+        readLiveSettings: () => null,
+        runPrepared: async <T>(run: () => Promise<T>) => await run(),
+        fetchArtifact: vi.fn(),
+        createArtifact: vi.fn(),
+        updateArtifact: vi.fn(),
+    })),
+}));
+
+vi.mock('@/sync/domains/state/storage', () => ({
+    storage: {
+        getState: () => mockStorageState,
+        getInitialState: () => mockStorageState,
+        setState: (updater: (state: typeof mockStorageState) => typeof mockStorageState) =>
+            mockStorageState.setState(updater),
+        subscribe: () => () => undefined,
+        destroy: () => undefined,
+    },
+}));
 
 import { resetSessionSurfaceVisibilityForTests, setFocusedSessionId } from '../../domains/session/sessionSurfaceVisibility';
 import {
@@ -83,7 +145,7 @@ import {
     resetSessionManualUnreadHoldsForTests,
     shouldSuppressAutomaticMarkViewed,
 } from '../../domains/session/readState/sessionManualUnreadHold';
-import { sessionSetManualReadStateWithServerScope } from '../../ops';
+import { sessionSetManualReadStateWithServerScope } from '../sessionReadState';
 
 function makeResponse(opts: Readonly<{ ok: boolean; status?: number; json?: unknown; text?: string }>) {
     return {
@@ -123,23 +185,190 @@ function makeSession(overrides: Partial<TestSession> = {}): TestSession {
 
 describe('sessionSetManualReadStateWithServerScope', () => {
     beforeEach(() => {
+        mockActiveServerSnapshot.serverId = 'server-a';
+        mockActiveServerSnapshot.serverUrl = 'https://active.example';
         mockRequest.mockReset();
         mockResolveContext.mockReset();
         mockRuntimeFetchWithServerReachability.mockReset();
+        mockInvalidateSessionListSnapshot.mockReset();
+        mockRuntimeFetchWithServerReachability.mockImplementation(async (params: Readonly<{ url: string; init?: RequestInit }>) => {
+            const path = new URL(params.url).pathname;
+            return await mockRequest(path, params.init);
+        });
+        mockStorageState.profileScope = null;
         mockStorageState.sessions = {};
-        mockStorageState.sessionListRenderables = {};
-        mockStorageState.sessionListRowStateByServerId = {};
+        mockStorageState.sessionListRowsByServerId = {};
+        mockStorageState.ordinarySessionListMembershipByServerId = {};
         mockStorageState.sessionListIndexByServerId = {};
         mockStorageState.concurrentSessionListCacheByServerId = {};
         mockStorageState.machineListByServerId = {};
         mockStorageState.applySessions.mockReset();
-        mockStorageState.applySessionListRenderablePatches.mockReset();
+        mockStorageState.applyServerScopedSessionListRowPatches.mockClear();
         mockStorageState.setState.mockClear();
+        actionSettingsBoundary.current = {};
         resetSessionManualUnreadHoldsForTests();
         resetSessionSurfaceVisibilityForTests();
     });
 
-    it('uses active apiSocket.request and applies the returned cursor after success', async () => {
+    it('enters the shared Action policy before the existing domain transport', async () => {
+        mockStorageState.sessions = { 'sid-1': makeSession() };
+        actionSettingsBoundary.current = {
+            actionsSettingsV1: {
+                v: 1,
+                actions: {
+                    'session.read_state.set': { enabled: false },
+                },
+            },
+        };
+        mockResolveContext.mockResolvedValue({ scope: 'active', targetServerId: 'server-a' });
+        mockRequest.mockResolvedValue(makeResponse({
+            ok: true,
+            json: { success: true, state: 'read', lastViewedSessionSeq: 7, didChange: true },
+        }));
+
+        await expect(sessionSetManualReadStateWithServerScope('sid-1', 'read', { serverId: 'server-a' }))
+            .resolves.toEqual({ success: false, message: 'action_disabled' });
+        expect(mockRequest).not.toHaveBeenCalled();
+        expect(mockStorageState.applySessions).not.toHaveBeenCalled();
+    });
+
+    it('updates the private viewer frontier without rewriting owner metadata', async () => {
+        const metadata = { path: '', host: '', readStateV1: { v: 1 as const, sessionSeq: 7, pendingActivityAt: 0, updatedAt: 1 } };
+        mockStorageState.sessions = {
+            'sid-1': makeSession({ metadata, viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 7, unreadSince: null },
+                relevance: { relevant: true, reasons: ['owned_by_me'] },
+                attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+                follow: { follows: false, notificationLevel: null },
+                notification: { level: 'important', source: 'owner' },
+            } }),
+        };
+        mockResolveContext.mockResolvedValue({ scope: 'active', targetServerId: 'server-a' });
+        mockRequest.mockResolvedValue(makeResponse({ ok: true,
+            json: { success: true, state: 'unread', lastViewedSessionSeq: 6, didChange: true, viewer: { ...mockStorageState.sessions['sid-1'].viewer, readState: { state: 'tracking', lastViewedSessionSeq: 6, unreadSince: 123 } } },
+        }));
+        await sessionSetManualReadStateWithServerScope('sid-1', 'unread', { serverId: 'server-a' });
+        const next = mockStorageState.applySessions.mock.calls[0]?.[0]?.[0];
+        expect(next.viewer.readState).toEqual({ state: 'tracking', lastViewedSessionSeq: 6, unreadSince: 123 });
+        expect(next.metadata).toEqual(metadata);
+    });
+
+    it('applies canonical attention from the private viewer response', async () => {
+        const viewer = {
+            readState: { state: 'tracking' as const, lastViewedSessionSeq: 7, unreadSince: null },
+            relevance: { relevant: true, reasons: ['owned_by_me' as const] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' as const },
+            follow: { follows: false as const, notificationLevel: null },
+            notification: { level: 'important' as const, source: 'owner' as const },
+        };
+        mockStorageState.sessions = { 'sid-1': makeSession({ viewer: { ...viewer, attention: { ...viewer.attention, needsAttention: true, reasons: ['unread'], primary: 'unread' } } }) };
+        mockResolveContext.mockResolvedValue({ scope: 'active', targetServerId: 'server-a' });
+        mockRequest.mockResolvedValue(makeResponse({ ok: true, json: {
+            success: true, state: 'read', lastViewedSessionSeq: 7, didChange: true, viewer,
+        } }));
+        await sessionSetManualReadStateWithServerScope('sid-1', 'read', { serverId: 'server-a' });
+        expect(mockStorageState.applySessions.mock.calls[0]?.[0]?.[0]?.viewer).toEqual(viewer);
+    });
+
+    it('does not retarget a response when the focused Home changes during the request', async () => {
+        const sourceRows = { 'sid-1': makeSession({ hasUnreadMessages: false }) };
+        mockStorageState.concurrentSessionListCacheByServerId = {
+            'server-a': { serverName: 'A' },
+        };
+        mockStorageState.sessionListRowsByServerId = { 'server-a': sourceRows };
+        mockStorageState.sessions = { 'sid-1': makeSession({ lastViewedSessionSeq: 1 }) };
+        mockResolveContext.mockResolvedValue({ scope: 'active', targetServerId: 'server-a' });
+        mockRequest.mockImplementation(async () => {
+            mockActiveServerSnapshot.serverId = 'server-b';
+            return makeResponse({ ok: true, json: {
+                success: true, state: 'unread', lastViewedSessionSeq: 6, didChange: true,
+            } });
+        });
+        await sessionSetManualReadStateWithServerScope('sid-1', 'unread', { serverId: 'server-a' });
+        expect(mockStorageState.applySessions).not.toHaveBeenCalled();
+        expect(mockStorageState.sessionListRowsByServerId['server-a']?.['sid-1']?.lastViewedSessionSeq).toBe(6);
+    });
+
+    it('refuses manual reads for an untracked viewer without a request or local enrollment', async () => {
+        mockStorageState.sessions = { 'sid-1': makeSession({ viewer: {
+            readState: { state: 'not_started' },
+            relevance: { relevant: false, reasons: [] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+            follow: { follows: false, notificationLevel: null },
+            notification: { level: 'none', source: 'none' },
+        } }) };
+        mockResolveContext.mockResolvedValue({ scope: 'active', targetServerId: 'server-a' });
+        mockRequest.mockResolvedValue(makeResponse({ ok: true, json: { success: true, state: 'read', lastViewedSessionSeq: 7 } }));
+        const response = await sessionSetManualReadStateWithServerScope('sid-1', 'read', { serverId: 'server-a' });
+        expect(response).toEqual({ success: false, message: 'session_not_tracked' });
+        expect(mockRequest).not.toHaveBeenCalled();
+        expect(mockStorageState.applySessions).not.toHaveBeenCalled();
+    });
+
+    it('does not restore tracking from a delayed read response after Unfollow', async () => {
+        const quiet = {
+            readState: { state: 'not_started' as const },
+            relevance: { relevant: false, reasons: [] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' as const },
+            follow: { follows: false as const, notificationLevel: null },
+            notification: { level: 'none' as const, source: 'none' as const },
+        };
+        const tracking = { ...quiet, readState: { state: 'tracking' as const, lastViewedSessionSeq: 7, unreadSince: null } };
+        mockStorageState.sessions = { 'sid-1': makeSession({ viewer: tracking }) };
+        mockResolveContext.mockResolvedValue({ scope: 'active', targetServerId: 'server-a' });
+        mockRequest.mockImplementation(async () => {
+            mockStorageState.sessions['sid-1'] = makeSession({ viewer: quiet });
+            return makeResponse({ ok: true, json: { success: true, state: 'read', lastViewedSessionSeq: 7, viewer: tracking } });
+        });
+        const result = await sessionSetManualReadStateWithServerScope('sid-1', 'read', { serverId: 'server-a' });
+        expect(result).toEqual({ success: false, message: 'session_not_tracked' });
+        expect(mockStorageState.applySessions).not.toHaveBeenCalled();
+    });
+
+    it('refreshes a no-longer-tracked viewer on conflict without reporting a read mutation', async () => {
+        const viewer = {
+            readState: { state: 'not_started' as const },
+            relevance: { relevant: false, reasons: [] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' as const },
+            follow: { follows: false as const, notificationLevel: null },
+            notification: { level: 'none' as const, source: 'none' as const },
+        };
+        mockStorageState.sessions = { 'sid-1': makeSession({ viewer: {
+            ...viewer, readState: { state: 'tracking', lastViewedSessionSeq: 0, unreadSince: 1 },
+        } }) };
+        mockResolveContext.mockResolvedValue({ scope: 'active', targetServerId: 'server-a' });
+        mockRequest.mockResolvedValue(makeResponse({ ok: false, status: 409,
+            json: { error: 'session_not_tracked', viewer }, text: 'session_not_tracked',
+        }));
+        const result = await sessionSetManualReadStateWithServerScope('sid-1', 'read', { serverId: 'server-a' });
+        expect(result.success).toBe(false);
+        expect(mockStorageState.applySessions.mock.calls[0]?.[0]?.[0]?.viewer).toEqual(viewer);
+    });
+
+    it('does not apply a private response after switching Accounts on the same Home', async () => {
+        mockStorageState.profileScope = { serverId: 'server-a', accountId: 'alice' };
+        mockStorageState.sessions = { 'sid-1': makeSession() };
+        mockResolveContext.mockResolvedValue({ scope: 'active', targetServerId: 'server-a' });
+        mockRequest.mockImplementation(async () => {
+            mockStorageState.profileScope = { serverId: 'server-a', accountId: 'bob' };
+            return makeResponse({ ok: true, json: { success: true, state: 'unread', lastViewedSessionSeq: 6, didChange: true } });
+        });
+        await sessionSetManualReadStateWithServerScope('sid-1', 'unread', { serverId: 'server-a' });
+        expect(mockStorageState.applySessions).not.toHaveBeenCalled();
+    });
+
+    it('does not send through a different Home after request scope resolution', async () => {
+        mockResolveContext.mockImplementation(async () => {
+            mockActiveServerSnapshot.serverId = 'server-b';
+            return { scope: 'active' };
+        });
+        mockRequest.mockResolvedValue(makeResponse({ ok: true, json: { success: true, state: 'read', lastViewedSessionSeq: 7 } }));
+        const result = await sessionSetManualReadStateWithServerScope('sid-1', 'read', { serverId: 'server-a' });
+        expect(result.success).toBe(false);
+        expect(mockRequest).not.toHaveBeenCalled();
+    });
+
+    it('uses the exact-Home scoped transport and applies the returned cursor after success', async () => {
         mockStorageState.sessions = {
             'sid-1': makeSession({ lastViewedSessionSeq: 7 }),
         };
@@ -159,12 +388,16 @@ describe('sessionSetManualReadStateWithServerScope', () => {
         const res = await sessionSetManualReadStateWithServerScope('sid-1', 'unread', { serverId: 'server-a' });
 
         expect(res).toEqual({ success: true, readState: 'unread', lastViewedSessionSeq: 6, didChange: true });
-        expect(mockRequest).toHaveBeenCalledWith('/v2/sessions/sid-1/read-state', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ state: 'unread' }),
-        });
-        expect(mockRuntimeFetchWithServerReachability).not.toHaveBeenCalled();
+        expect(mockRuntimeFetchWithServerReachability).toHaveBeenCalledWith(expect.objectContaining({
+            serverUrl: 'https://active.example',
+            token: 'tok',
+            url: 'https://active.example/v2/sessions/sid-1/read-state',
+            init: expect.objectContaining({
+                method: 'POST',
+                body: JSON.stringify({ state: 'unread' }),
+                signal: expect.any(AbortSignal),
+            }),
+        }));
         expect(mockStorageState.applySessions).toHaveBeenCalledWith([
             expect.objectContaining({
                 id: 'sid-1',
@@ -209,7 +442,7 @@ describe('sessionSetManualReadStateWithServerScope', () => {
         expect(mockRequest).not.toHaveBeenCalled();
     });
 
-    it('keeps a nullable cursor and lowers stale legacy metadata after success', async () => {
+    it('keeps a nullable cursor without maintaining legacy metadata after success', async () => {
         mockStorageState.sessions = {
             'sid-1': makeSession({
                 lastViewedSessionSeq: null,
@@ -241,7 +474,7 @@ describe('sessionSetManualReadStateWithServerScope', () => {
                 id: 'sid-1',
                 lastViewedSessionSeq: null,
                 metadata: expect.objectContaining({
-                    readStateV1: expect.objectContaining({ sessionSeq: 6 }),
+                    readStateV1: expect.objectContaining({ sessionSeq: 7 }),
                 }),
             }),
         ]);
@@ -293,8 +526,8 @@ describe('sessionSetManualReadStateWithServerScope', () => {
     });
 
     it('patches renderable unread state when only a list renderable is cached', async () => {
-        mockStorageState.sessionListRenderables = {
-            'sid-1': makeSession({ hasUnreadMessages: false }),
+        mockStorageState.sessionListRowsByServerId = {
+            'server-a': { 'sid-1': makeSession({ hasUnreadMessages: false }) },
         };
         mockResolveContext.mockResolvedValue({
             scope: 'active',
@@ -312,14 +545,14 @@ describe('sessionSetManualReadStateWithServerScope', () => {
         await sessionSetManualReadStateWithServerScope('sid-1', 'unread', { serverId: 'server-a' });
 
         expect(mockStorageState.applySessions).not.toHaveBeenCalled();
-        expect(mockStorageState.applySessionListRenderablePatches).toHaveBeenCalledWith([
+        expect(mockStorageState.applyServerScopedSessionListRowPatches).toHaveBeenCalledWith('server-a', [
             { sessionId: 'sid-1', patch: { hasUnreadMessages: true, lastViewedSessionSeq: 6 } },
         ]);
     });
 
     it('patches renderable cursors even when the unread flag is unchanged', async () => {
-        mockStorageState.sessionListRenderables = {
-            'sid-1': makeSession({ hasUnreadMessages: false, lastViewedSessionSeq: 6 }),
+        mockStorageState.sessionListRowsByServerId = {
+            'server-a': { 'sid-1': makeSession({ hasUnreadMessages: false, lastViewedSessionSeq: 6 }) },
         };
         mockResolveContext.mockResolvedValue({
             scope: 'active',
@@ -337,14 +570,14 @@ describe('sessionSetManualReadStateWithServerScope', () => {
         await sessionSetManualReadStateWithServerScope('sid-1', 'read', { serverId: 'server-a' });
 
         expect(mockStorageState.applySessions).not.toHaveBeenCalled();
-        expect(mockStorageState.applySessionListRenderablePatches).toHaveBeenCalledWith([
+        expect(mockStorageState.applyServerScopedSessionListRowPatches).toHaveBeenCalledWith('server-a', [
             { sessionId: 'sid-1', patch: { hasUnreadMessages: false, lastViewedSessionSeq: 7 } },
         ]);
     });
 
-    it('lowers stale legacy metadata when patching a renderable-only unread null cursor', async () => {
-        mockStorageState.sessionListRenderables = {
-            'sid-1': makeSession({
+    it('does not rewrite legacy metadata when patching a renderable-only unread null cursor', async () => {
+        mockStorageState.sessionListRowsByServerId = {
+            'server-a': { 'sid-1': makeSession({
                 hasUnreadMessages: false,
                 lastViewedSessionSeq: null,
                 metadata: {
@@ -352,7 +585,7 @@ describe('sessionSetManualReadStateWithServerScope', () => {
                     host: '',
                     readStateV1: { v: 1, sessionSeq: 7, pendingActivityAt: 0, updatedAt: 100 },
                 },
-            }),
+            }) },
         };
         mockResolveContext.mockResolvedValue({
             scope: 'active',
@@ -370,15 +603,12 @@ describe('sessionSetManualReadStateWithServerScope', () => {
         await sessionSetManualReadStateWithServerScope('sid-1', 'unread', { serverId: 'server-a' });
 
         expect(mockStorageState.applySessions).not.toHaveBeenCalled();
-        expect(mockStorageState.applySessionListRenderablePatches).toHaveBeenCalledWith([
+        expect(mockStorageState.applyServerScopedSessionListRowPatches).toHaveBeenCalledWith('server-a', [
             {
                 sessionId: 'sid-1',
                 patch: expect.objectContaining({
                     hasUnreadMessages: true,
                     lastViewedSessionSeq: null,
-                    metadata: expect.objectContaining({
-                        readStateV1: expect.objectContaining({ sessionSeq: 6 }),
-                    }),
                 }),
             },
         ]);
@@ -411,10 +641,9 @@ describe('sessionSetManualReadStateWithServerScope', () => {
         mockStorageState.concurrentSessionListCacheByServerId = {
             'server-b': {
                 serverName: 'Server B',
-                sessions: serverBRows,
             },
         };
-        mockStorageState.sessionListRowStateByServerId = {
+        mockStorageState.sessionListRowsByServerId = {
             'server-b': serverBRows,
         };
         mockStorageState.sessionListIndexByServerId = {
@@ -437,15 +666,12 @@ describe('sessionSetManualReadStateWithServerScope', () => {
         await sessionSetManualReadStateWithServerScope('sid-1', 'unread', { serverId: 'server-b' });
 
         expect(mockStorageState.applySessions).not.toHaveBeenCalled();
-        expect(mockStorageState.applySessionListRenderablePatches).not.toHaveBeenCalled();
-        expect(mockStorageState.concurrentSessionListCacheByServerId['server-b']?.sessions?.['sid-1']?.hasUnreadMessages).toBe(true);
-        expect(mockStorageState.concurrentSessionListCacheByServerId['server-b']?.sessions?.['sid-1']?.lastViewedSessionSeq).toBe(6);
-        expect(mockStorageState.sessionListRowStateByServerId['server-b']?.['sid-1']?.hasUnreadMessages).toBe(true);
-        expect(mockStorageState.sessionListRowStateByServerId['server-b']?.['sid-1']?.lastViewedSessionSeq).toBe(6);
+        expect(mockStorageState.sessionListRowsByServerId['server-b']?.['sid-1']?.hasUnreadMessages).toBe(true);
+        expect(mockStorageState.sessionListRowsByServerId['server-b']?.['sid-1']?.lastViewedSessionSeq).toBe(6);
         expect(mockStorageState.sessionListIndexByServerId['server-b']).not.toBe(previousIndex);
     });
 
-    it('lowers stale legacy metadata when patching a non-active cache unread null cursor', async () => {
+    it('preserves legacy metadata when patching a non-active cache unread null cursor', async () => {
         const serverBRows: Record<string, SessionListRenderableSession> = {
             'sid-1': {
                 id: 'sid-1',
@@ -474,10 +700,9 @@ describe('sessionSetManualReadStateWithServerScope', () => {
         mockStorageState.concurrentSessionListCacheByServerId = {
             'server-b': {
                 serverName: 'Server B',
-                sessions: serverBRows,
             },
         };
-        mockStorageState.sessionListRowStateByServerId = {
+        mockStorageState.sessionListRowsByServerId = {
             'server-b': serverBRows,
         };
         mockResolveContext.mockResolvedValue({
@@ -495,8 +720,7 @@ describe('sessionSetManualReadStateWithServerScope', () => {
 
         await sessionSetManualReadStateWithServerScope('sid-1', 'unread', { serverId: 'server-b' });
 
-        expect(mockStorageState.concurrentSessionListCacheByServerId['server-b']?.sessions?.['sid-1']?.metadata?.readStateV1?.sessionSeq).toBe(6);
-        expect(mockStorageState.sessionListRowStateByServerId['server-b']?.['sid-1']?.metadata?.readStateV1?.sessionSeq).toBe(6);
+        expect(mockStorageState.sessionListRowsByServerId['server-b']?.['sid-1']?.metadata?.readStateV1?.sessionSeq).toBe(7);
     });
 
     it('registers an active-view hold after marking the focused session unread', async () => {
@@ -543,8 +767,7 @@ describe('sessionSetManualReadStateWithServerScope', () => {
 
         const res = await sessionSetManualReadStateWithServerScope('sid-1', 'unread', { serverId: 'server-a' });
 
-        expect(res).toEqual({ success: false, message: 'Forbidden' });
+        expect(res).toEqual({ success: false, message: 'forbidden' });
         expect(mockStorageState.applySessions).not.toHaveBeenCalled();
-        expect(mockStorageState.applySessionListRenderablePatches).not.toHaveBeenCalled();
     });
 });

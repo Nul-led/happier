@@ -1,0 +1,24 @@
+{
+  "name": "happier-activity-notifications",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Native Activity remote alert presentation and narrow prepared-context access.",
+  "main": "index.ts",
+  "files": [
+    "android",
+    "app.plugin.js",
+    "expo-module.config.json",
+    "index.ts",
+    "ios",
+    "package.json",
+    "withActivityNotificationsAndroid.js",
+    "withActivityNotificationsIos.js"
+  ],
+  "scripts": {
+    "test:plugins": "node --test tests/androidPlugin.test.mjs tests/iosPlugin.test.mjs tests/nativeAlertContract.test.mjs",
+    "test:swift": "swiftc -o \"${TMPDIR:-/tmp}/happier-activity-notification-service-tests\" ios/ActivityNotificationEvents.swift ios/ActivityNotificationStorageLocation.swift ios/ActivityPreparedContext.swift ios/ActivityNotificationEnricher.swift ios/notificationService/HappierActivityNotificationService.swift tests/NotificationServiceTests.swift && \"${TMPDIR:-/tmp}/happier-activity-notification-service-tests\""
+  },
+  "devDependencies": { "expo-modules-core": "55.0.20" },
+  "peerDependencies": { "expo": "*" },
+  "peerDependenciesMeta": { "expo": { "optional": true } }
+}

@@ -10,8 +10,10 @@ import type {
 import { renderScreen } from '@/dev/testkit';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import type { ServerScopedMachine } from '@/components/sessions/new/hooks/machines/useServerScopedMachineOptions';
+import type { MachinePoolViewV1 } from '@happier-dev/protocol';
 
 import { installNewSessionComponentsCommonModuleMocks } from './newSessionComponentsTestHelpers';
+import { buildMachineDestinationModel } from './machineSelection/buildMachineDestinationModel';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -307,6 +309,381 @@ describe('NewSessionMachineSelectionContent', () => {
 
         expect(onSelectMachine).toHaveBeenCalledWith(expect.objectContaining({ id: 'm-select' }));
         expect(onSelectScopedMachine).not.toHaveBeenCalled();
+    });
+
+    it('allows a current cached zero-online Pool to perform authoritative resolve after reconnect', async () => {
+        const { NewSessionMachineSelectionContent } = await import('./NewSessionMachineSelectionContent');
+        const machine = createMachine({ id: 'm-select', metadata: { displayName: 'Select', host: 'host', homeDir: '/Users/tester' } });
+        const pool = {
+            pool: {
+                id: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+                name: 'Development',
+                description: null,
+                revision: 1,
+                createdAt: 1,
+                updatedAt: 1,
+                members: [{ machineId: machine.id, priorityTier: 0, enabled: true, state: 'offline' }],
+            },
+            availability: { state: 'known', connectedCount: 0, enabledCount: 1 },
+        } satisfies MachinePoolViewV1;
+        const onSelectPool = vi.fn();
+
+        const screen = await renderScreen(<NewSessionMachineSelectionContent
+            groups={[{
+                serverId: 'server-a',
+                serverName: 'Server A',
+                loading: false,
+                signedOut: false,
+                machines: [createScopedMachine(machine, { serverId: 'server-a', serverName: 'Server A' })],
+            }]}
+            poolGroups={[{ serverId: 'server-a', accountId: 'account-a', serverName: 'Server A', pools: [pool] }]}
+            selectedMachine={null}
+            selectedServerId="server-a"
+            recentMachines={[]}
+            favoriteMachines={[]}
+            onSelectMachine={() => {}}
+            onSelectScopedMachine={() => {}}
+            onSelectPool={onSelectPool}
+            testIdPrefix="new-session-machine"
+        />);
+
+        const props = getLastSelectionList();
+        expect(props.rootStep.sections.map((section) => section.id)).toEqual(['machine-pools', 'all']);
+        const poolOption = getOption(getSection(props, 'machine-pools'), `pool:server-a:${pool.pool.id}`);
+        expect(poolOption.label).toBe('Development');
+        expect(poolOption.subtitle).toContain('Select');
+        expect(poolOption.accessibilityLabel).toContain('Development');
+        expect(poolOption.accessibilityLabel).toContain('Select');
+        expect(poolOption.disabled).not.toBe(true);
+
+        await screen.pressByTestIdAsync(`new-session-machine-pool-option:server-a:${pool.pool.id}`);
+        expect(onSelectPool).toHaveBeenCalledWith({ serverId: 'server-a', accountId: 'account-a', pool });
+    });
+
+    it('keeps a retained Pool visible but inert while its Home projection is non-current', async () => {
+        const { NewSessionMachineSelectionContent } = await import('./NewSessionMachineSelectionContent');
+        const pool = {
+            pool: {
+                id: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+                name: 'Development',
+                description: null,
+                revision: 1,
+                createdAt: 1,
+                updatedAt: 1,
+                members: [],
+            },
+            availability: { state: 'unknown' as const },
+        } satisfies MachinePoolViewV1;
+        const onSelectPool = vi.fn();
+        const screen = await renderScreen(<NewSessionMachineSelectionContent
+            groups={[{ serverId: 'server-a', serverName: 'Server A', loading: false, signedOut: false, machines: [] }]}
+            poolGroups={[{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                pools: [pool],
+                status: 'error',
+                projectionReady: false,
+            }]}
+            selectedMachine={null}
+            selectedServerId="server-a"
+            recentMachines={[]}
+            favoriteMachines={[]}
+            onSelectMachine={() => {}}
+            onSelectScopedMachine={() => {}}
+            onSelectPool={onSelectPool}
+            testIdPrefix="new-session-machine"
+        />);
+
+        const option = getOption(getSection(getLastSelectionList(), 'machine-pools'), `pool:server-a:${pool.pool.id}`);
+        expect(option.disabled).toBe(true);
+        await screen.pressByTestIdAsync(`new-session-machine-pool-option:server-a:${pool.pool.id}`);
+        expect(onSelectPool).not.toHaveBeenCalled();
+    });
+
+    it('shows a non-destination Pool loading row while the zero-cached Pool answer is pending', async () => {
+        const { NewSessionMachineSelectionContent } = await import('./NewSessionMachineSelectionContent');
+        const machine = createMachine({ id: 'm-only', metadata: { displayName: 'Only', host: 'host', homeDir: '/Users/tester' } });
+        const scopedMachine = createScopedMachine(machine, { serverId: 'server-a', serverName: 'Server A' });
+        const onSelectMachine = vi.fn();
+        const onSelectScopedMachine = vi.fn();
+        const onSelectPool = vi.fn();
+
+        const screen = await renderScreen(<NewSessionMachineSelectionContent
+            groups={[{
+                serverId: 'server-a',
+                serverName: 'Server A',
+                loading: false,
+                signedOut: false,
+                machines: [scopedMachine],
+            }]}
+            poolGroups={[{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                pools: [],
+                featureStatus: 'loading',
+                status: 'loading',
+                projectionReady: false,
+            }]}
+            selectedMachine={null}
+            selectedServerId="server-a"
+            recentMachines={[]}
+            favoriteMachines={[]}
+            onSelectMachine={onSelectMachine}
+            onSelectScopedMachine={onSelectScopedMachine}
+            onSelectPool={onSelectPool}
+            testIdPrefix="new-session-machine"
+        />);
+
+        const poolSection = getSection(capturedSelectionLists.at(-1)!, 'machine-pools');
+        const status = getOption(poolSection, 'pool-status:server-a');
+        expect(status.label).toBe('common.loading');
+        expect(status.disabled).toBe(true);
+        await screen.pressByTestIdAsync('new-session-machine-pool-status:server-a');
+        expect(onSelectMachine).not.toHaveBeenCalled();
+        expect(onSelectScopedMachine).not.toHaveBeenCalled();
+        expect(onSelectPool).not.toHaveBeenCalled();
+
+        const destinations = buildMachineDestinationModel({
+            groups: [{
+                serverId: 'server-a',
+                serverName: 'Server A',
+                loading: false,
+                signedOut: false,
+                machines: [scopedMachine],
+            }],
+            poolGroups: [{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                pools: [],
+                featureStatus: 'loading',
+                status: 'loading',
+                projectionReady: false,
+            }],
+        });
+        expect(destinations.destinationRowCount).toBe(1);
+        expect(destinations.destinationSetSettled).toBe(false);
+        expect(destinations.soleSelectableDestination).toBeNull();
+    });
+
+    it('hides the Machine pools section entirely on a settled feature-disabled Home', async () => {
+        const { NewSessionMachineSelectionContent } = await import('./NewSessionMachineSelectionContent');
+        const machine = createMachine({ id: 'm-only', metadata: { displayName: 'Only', host: 'host', homeDir: '/Users/tester' } });
+        const scopedMachine = createScopedMachine(machine, { serverId: 'server-a', serverName: 'Server A' });
+        const onSelectMachine = vi.fn();
+        const onSelectPool = vi.fn();
+
+        const screen = await renderScreen(<NewSessionMachineSelectionContent
+            groups={[{
+                serverId: 'server-a',
+                serverName: 'Server A',
+                loading: false,
+                signedOut: false,
+                machines: [scopedMachine],
+            }]}
+            poolGroups={[{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                pools: [],
+                featureStatus: 'disabled',
+                status: 'idle',
+                projectionReady: true,
+            }]}
+            selectedMachine={null}
+            selectedServerId="server-a"
+            recentMachines={[]}
+            favoriteMachines={[]}
+            onSelectMachine={onSelectMachine}
+            onSelectScopedMachine={() => {}}
+            onSelectPool={onSelectPool}
+            testIdPrefix="new-session-machine"
+        />);
+
+        // Settings renders nothing for a settled disabled Home, and so does the
+        // destination picker: a Home without the feature advertises no dead
+        // section telling the person to go update their server.
+        const sections = capturedSelectionLists.at(-1)!.rootStep.sections.map((section) => section.id);
+        expect(sections).not.toContain('machine-pools');
+        expect(screen.findByTestId('new-session-machine-pool-status:server-a')).toBeNull();
+        expect(onSelectMachine).not.toHaveBeenCalled();
+        expect(onSelectPool).not.toHaveBeenCalled();
+
+        const destinations = buildMachineDestinationModel({
+            groups: [{
+                serverId: 'server-a',
+                serverName: 'Server A',
+                loading: false,
+                signedOut: false,
+                machines: [scopedMachine],
+            }],
+            poolGroups: [{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                pools: [],
+                featureStatus: 'disabled',
+                status: 'idle',
+                projectionReady: true,
+            }],
+        });
+        expect(destinations.destinationRowCount).toBe(1);
+        expect(destinations.destinationSetSettled).toBe(true);
+        expect(destinations.soleSelectableDestination?.machine.id).toBe('m-only');
+    });
+
+    it('shows zero-cached Pool failure with exact-Home Retry without changing destination count', async () => {
+        const { NewSessionMachineSelectionContent } = await import('./NewSessionMachineSelectionContent');
+        const machine = createMachine({ id: 'm-only', metadata: { displayName: 'Only', host: 'host', homeDir: '/Users/tester' } });
+        const scopedMachine = createScopedMachine(machine, { serverId: 'server-a', serverName: 'Server A' });
+        const onSelectPool = vi.fn();
+        const onRefreshPools = vi.fn();
+
+        const screen = await renderScreen(<NewSessionMachineSelectionContent
+            groups={[{
+                serverId: 'server-a',
+                serverName: 'Server A',
+                loading: false,
+                signedOut: false,
+                machines: [scopedMachine],
+            }]}
+            poolGroups={[{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                pools: [],
+                featureStatus: 'error',
+                status: 'error',
+                projectionReady: false,
+            }]}
+            selectedMachine={null}
+            selectedServerId="server-a"
+            recentMachines={[]}
+            favoriteMachines={[]}
+            onSelectMachine={() => {}}
+            onSelectScopedMachine={() => {}}
+            onSelectPool={onSelectPool}
+            onRefreshPools={onRefreshPools}
+            testIdPrefix="new-session-machine"
+        />);
+
+        const poolSection = getSection(capturedSelectionLists.at(-1)!, 'machine-pools');
+        const status = getOption(poolSection, 'pool-status:server-a');
+        expect(status.label).toBe('machinePools.refreshFailed');
+        expect(status.disabled).toBe(true);
+        await screen.pressByTestIdAsync('new-session-machine-pool-status:server-a');
+        expect(onSelectPool).not.toHaveBeenCalled();
+        await screen.pressByTestIdAsync('new-session-machine-pool-refresh:server-a');
+        expect(onRefreshPools).toHaveBeenCalledWith('server-a');
+
+        const destinations = buildMachineDestinationModel({
+            groups: [{
+                serverId: 'server-a',
+                serverName: 'Server A',
+                loading: false,
+                signedOut: false,
+                machines: [scopedMachine],
+            }],
+            poolGroups: [{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                pools: [],
+                featureStatus: 'error',
+                status: 'error',
+                projectionReady: false,
+            }],
+        });
+        expect(destinations.destinationRowCount).toBe(1);
+        expect(destinations.destinationSetSettled).toBe(false);
+        expect(destinations.soleSelectableDestination).toBeNull();
+    });
+
+    it('mounts failed-Home retry through the existing Machine refresh owner', async () => {
+        const { NewSessionMachineSelectionContent } = await import('./NewSessionMachineSelectionContent');
+        const pool = {
+            pool: {
+                id: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+                name: 'Development',
+                description: null,
+                revision: 1,
+                createdAt: 1,
+                updatedAt: 1,
+                members: [],
+            },
+            availability: { state: 'unknown' as const },
+        } satisfies MachinePoolViewV1;
+        const onRefreshMachines = vi.fn();
+        const onRefreshPools = vi.fn();
+        const screen = await renderScreen(<NewSessionMachineSelectionContent
+            groups={[{
+                serverId: 'server-a',
+                serverName: 'Server A',
+                loading: false,
+                signedOut: false,
+                error: true,
+                machines: [],
+            }]}
+            poolGroups={[{
+                serverId: 'server-a',
+                accountId: 'account-a',
+                serverName: 'Server A',
+                pools: [pool],
+                status: 'idle',
+                projectionReady: true,
+            }]}
+            selectedMachine={null}
+            selectedServerId="server-a"
+            recentMachines={[]}
+            favoriteMachines={[]}
+            onSelectMachine={() => {}}
+            onSelectScopedMachine={() => {}}
+            onSelectPool={() => {}}
+            onRefreshMachines={onRefreshMachines}
+            onRefreshPools={onRefreshPools}
+            testIdPrefix="new-session-machine"
+        />);
+
+        await screen.pressByTestIdAsync('new-session-machine-pool-refresh:server-a');
+
+        expect(onRefreshMachines).toHaveBeenCalledOnce();
+        expect(onRefreshPools).not.toHaveBeenCalled();
+    });
+
+    it('disambiguates duplicate Pool names in both visible and accessible labels', async () => {
+        const { NewSessionMachineSelectionContent } = await import('./NewSessionMachineSelectionContent');
+        const pool = (id: string) => ({
+            pool: {
+                id,
+                name: 'Development',
+                description: null,
+                revision: 1,
+                createdAt: 1,
+                updatedAt: 1,
+                members: [],
+            },
+            availability: { state: 'known' as const, connectedCount: 1, enabledCount: 1 },
+        }) satisfies MachinePoolViewV1;
+        const first = pool('3a948f0c-bc30-491c-b764-37f0e6744d1f');
+        const second = pool('4b948f0c-bc30-491c-b764-37f0e6744d20');
+
+        await renderScreen(<NewSessionMachineSelectionContent
+            groups={[{ serverId: 'server-a', serverName: 'Server A', loading: false, signedOut: false, machines: [] }]}
+            poolGroups={[{ serverId: 'server-a', accountId: 'account-a', serverName: 'Server A', pools: [first, second] }]}
+            selectedMachine={null}
+            selectedServerId="server-a"
+            recentMachines={[]}
+            favoriteMachines={[]}
+            onSelectMachine={() => {}}
+            onSelectScopedMachine={() => {}}
+            onSelectPool={() => {}}
+        />);
+
+        const options = getSection(getLastSelectionList(), 'machine-pools').options;
+        expect(options.map((option) => option.label)).toEqual(['Development', 'Development']);
+        expect(options[0]?.subtitle).toContain(first.pool.id.slice(0, 8));
+        expect(options[1]?.subtitle).toContain(second.pool.id.slice(0, 8));
+        expect(options[0]?.accessibilityLabel).toContain(first.pool.id);
+        expect(options[1]?.accessibilityLabel).toContain(second.pool.id);
     });
 
     it('builds scoped sections with loading, signed-out, empty, disabled, and selected rows for multi-server selection', async () => {

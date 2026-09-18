@@ -14,13 +14,17 @@ import type { NewSessionAutomationDraft } from '@/sync/domains/automations/autom
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import type { NewSessionCheckoutCreationDraft } from '@/sync/domains/state/newSessionCheckoutDraft';
 import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
-import type { AgentExecutionTargetV1, BackendTargetRefV2, SessionExecutionTargetV1, SessionModelSelectionV1, SessionOrganizationPlacementV1 } from '@happier-dev/protocol';
+import type { AgentExecutionTargetV1, BackendTargetRefV2, SessionModelSelectionV1, SessionOrganizationPlacementV1 } from '@happier-dev/protocol';
 import type { AgentId } from '@/agents/catalog/catalog';
 import type { PluginUiSessionPlacementCandidateV1 } from '@happier-dev/protocol/plugins/ui';
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { NewSessionPromptStore } from './newSessionPromptStore';
 import type { BackendNewSessionOptionStateByTargetKey } from '@/utils/sessions/backendNewSessionOptionState';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import {
+    createNewSessionDraftPersistenceBinding,
+    persistNewSessionDraftAndPause,
+} from './newSessionDraftPersistenceBinding';
 import type { MachineSpawnReadiness } from '@/sync/domains/machines/identity/resolveMachineSpawnReadiness';
 
 type PersistedDraft = ReturnType<typeof buildPersistedNewSessionDraftFromAuthoringDraft>;
@@ -36,8 +40,12 @@ export function useNewSessionAuthoringState(params: Readonly<{
     selectedMachine: Machine | null;
     selectedMachineSpawnReadiness?: MachineSpawnReadiness | null;
     selectedPath: string;
-    executionTarget: SessionExecutionTargetV1 | null;
+    executionTarget: SessionAuthoringDraft['executionTarget'];
+    temporaryComputerActivationRef?: SessionAuthoringDraft['temporaryComputerActivationRef'];
     organizationPlacement: SessionOrganizationPlacementV1;
+    access?: SessionAuthoringDraft['access'];
+    primaryTeamId?: SessionAuthoringDraft['primaryTeamId'];
+    teamCredentialBindings?: SessionAuthoringDraft['teamCredentialBindings'];
     checkoutCreationDraft: NewSessionCheckoutCreationDraft | null;
     promptStore: NewSessionPromptStore;
     /** Compatibility-only bundled identity for persisted legacy draft fields. */
@@ -73,13 +81,30 @@ export function useNewSessionAuthoringState(params: Readonly<{
     canCreate: boolean;
     buildCurrentPersistedDraft: () => PersistedDraft;
     persistDraftIfEnabled: (draft: PersistedDraft) => void;
+    persistCurrentDraftAndPause: (scope: ServerAccountScope) => void;
+    pauseDraftPersistence: (scope: ServerAccountScope) => void;
+    resumeDraftPersistence: (scope: ServerAccountScope) => void;
     disableDraftPersistence: () => void;
     draftPersistenceEnabled: boolean;
     draftPersistenceGenerationRef: React.MutableRefObject<number>;
 }> {
-    const [draftPersistenceEnabled, setDraftPersistenceEnabled] = React.useState(true);
-    const draftPersistenceEnabledRef = React.useRef(true);
+    const initiallyFrozenByActivation = params.draftScope !== null
+        && params.draftScope !== undefined
+        && params.temporaryComputerActivationRef != null;
+    const [draftPersistenceEnabled, setDraftPersistenceEnabled] = React.useState(!initiallyFrozenByActivation);
+    const draftPersistenceBindingRef = React.useRef(createNewSessionDraftPersistenceBinding(params.draftScope ?? null));
+    draftPersistenceBindingRef.current.follow(params.draftScope ?? null);
+    // Reopening a waiting draft must be frozen before the first autosave effect,
+    // including while an explicitly routed Home binding resolves after mount.
+    if (params.draftScope && params.temporaryComputerActivationRef != null) {
+        draftPersistenceBindingRef.current.pause(params.draftScope);
+    }
     const draftPersistenceGenerationRef = React.useRef(0);
+    React.useEffect(() => {
+        if (params.draftScope && params.temporaryComputerActivationRef != null) {
+            setDraftPersistenceEnabled(false);
+        }
+    }, [params.draftScope, params.temporaryComputerActivationRef]);
     const draftAgentId = React.useMemo(() => resolveNewSessionCompatAgentType({
         backendTarget: params.backendTarget,
         persistedAgentId: params.settings.lastUsedAgent,
@@ -94,9 +119,13 @@ export function useNewSessionAuthoringState(params: Readonly<{
         const sessionPrompt = promptStore.getPrompt();
         return buildNewSessionAuthoringDraftFromResolvedInputs({
         executionTarget: params.executionTarget,
+        temporaryComputerActivationRef: params.temporaryComputerActivationRef,
         directory: params.selectedPath,
         checkoutCreationDraft: params.checkoutCreationDraft,
         organizationPlacement: params.organizationPlacement,
+        access: params.access,
+        primaryTeamId: params.primaryTeamId,
+        teamCredentialBindings: params.teamCredentialBindings,
         prompt: sessionPrompt,
         displayText: sessionPrompt,
         agentTarget: params.agentTarget,
@@ -127,6 +156,7 @@ export function useNewSessionAuthoringState(params: Readonly<{
         });
     }, [
         params.acpSessionModeId,
+        params.temporaryComputerActivationRef,
         params.automationRequestedByRoute,
         params.staticAgentId,
         params.agentNewSessionOptions,
@@ -143,6 +173,8 @@ export function useNewSessionAuthoringState(params: Readonly<{
         params.selectedPath,
         params.executionTarget,
         params.organizationPlacement,
+        params.access,
+        params.primaryTeamId,
         params.selectedProfileId,
         params.sessionConfigOptionOverrides,
         promptStore,
@@ -225,20 +257,49 @@ export function useNewSessionAuthoringState(params: Readonly<{
     ]);
 
     const persistDraftIfEnabled = React.useCallback((draft: PersistedDraft) => {
-        if (!draftPersistenceEnabledRef.current) {
-            return;
-        }
-
-        if (!params.draftScope || !params.draftId) return;
+        const scope = draftPersistenceBindingRef.current.readScopeForWrite();
+        if (!scope || !params.draftId) return;
         writeNewSessionAuthoringDraftToRepository({
-            scope: params.draftScope,
+            scope,
             draftId: params.draftId,
             draft,
         });
-    }, [params.draftId, params.draftScope]);
+    }, [params.draftId]);
+
+    const pauseDraftPersistence = React.useCallback((scope: ServerAccountScope) => {
+        draftPersistenceBindingRef.current.pause(scope);
+        draftPersistenceGenerationRef.current += 1;
+        setDraftPersistenceEnabled(false);
+    }, []);
+
+    const persistCurrentDraftAndPause = React.useCallback((scope: ServerAccountScope) => {
+        const draftId = params.draftId;
+        if (!draftId) {
+            throw new Error('runner_creator_draft_unavailable');
+        }
+        persistNewSessionDraftAndPause({
+            binding: draftPersistenceBindingRef.current,
+            scope,
+            persist: (exactScope) => {
+                writeNewSessionAuthoringDraftToRepository({
+                    scope: exactScope,
+                    draftId,
+                    draft: buildCurrentPersistedDraft(),
+                });
+            },
+        });
+        draftPersistenceGenerationRef.current += 1;
+        setDraftPersistenceEnabled(false);
+    }, [buildCurrentPersistedDraft, params.draftId]);
+
+    const resumeDraftPersistence = React.useCallback((scope: ServerAccountScope) => {
+        if (!draftPersistenceBindingRef.current.resume(scope)) return;
+        draftPersistenceGenerationRef.current += 1;
+        setDraftPersistenceEnabled(true);
+    }, []);
 
     const disableDraftPersistence = React.useCallback(() => {
-        draftPersistenceEnabledRef.current = false;
+        draftPersistenceBindingRef.current.disable();
         draftPersistenceGenerationRef.current += 1;
         setDraftPersistenceEnabled(false);
     }, []);
@@ -250,6 +311,9 @@ export function useNewSessionAuthoringState(params: Readonly<{
         canCreate,
         buildCurrentPersistedDraft,
         persistDraftIfEnabled,
+        persistCurrentDraftAndPause,
+        pauseDraftPersistence,
+        resumeDraftPersistence,
         disableDraftPersistence,
         draftPersistenceEnabled,
         draftPersistenceGenerationRef,

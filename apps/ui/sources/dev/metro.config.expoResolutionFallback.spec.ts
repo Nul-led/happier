@@ -271,7 +271,7 @@ describe('apps/ui/metro.config.js (Expo resolution fallbacks)', () => {
         });
     });
 
-    it('ignores internal workspace dist publications while continuing to watch source', () => {
+    it('ignores internal workspace publications and metadata while continuing to watch source', () => {
         process.env.HAPPIER_STACK_STACK = 'qa-test';
         delete process.env.CI;
         delete process.env.EXPO_NO_METRO_WORKSPACE_ROOT;
@@ -286,6 +286,18 @@ describe('apps/ui/metro.config.js (Expo resolution fallbacks)', () => {
         );
 
         expect(isBlocked(path.resolve(__dirname, '../../../../packages/agents/dist/models.js'))).toBe(true);
+        expect(isBlocked(path.resolve(
+            __dirname,
+            '../../../../packages/plugin-sdk/.dist.backup.123/actions/index.js',
+        ))).toBe(true);
+        expect(isBlocked(path.resolve(
+            __dirname,
+            '../../../../apps/cli/src/agent/acp/runtime/publicSession/.git/index',
+        ))).toBe(true);
+        expect(isBlocked(path.resolve(
+            __dirname,
+            '../../../../packages/plugins/devin/src/ui/.agents/settings.json',
+        ))).toBe(true);
         expect(isBlocked(path.resolve(__dirname, '../../../../packages/agents/src/models.ts'))).toBe(false);
     });
 

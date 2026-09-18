@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PluginReleaseFactsV1Schema } from '@happier-dev/protocol/plugins/availability';
 
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
-import type { PluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
+import { createPluginAccountAvailabilityReader, type PluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
 
 import {
     createPluginAccountReleaseSelectionController,
@@ -55,6 +55,7 @@ function dependencies(input: Readonly<{
     setIntent?: PluginAccountReleaseSelectionControllerDependencies['setIntent'];
     removeHostedArtifact?: PluginAccountReleaseSelectionControllerDependencies['removeHostedArtifact'];
     removeCachedArtifact?: PluginAccountReleaseSelectionControllerDependencies['removeCachedArtifact'];
+    removePackageAssets?: PluginAccountReleaseSelectionControllerDependencies['removePackageAssets'];
 }>): PluginAccountReleaseSelectionControllerDependencies {
     return {
         captureLifetime: () => input.lifetime,
@@ -85,6 +86,7 @@ function dependencies(input: Readonly<{
         setIntent: input.setIntent ?? (async () => Object.freeze({ kind: 'updated' as const, intent: {} as never })),
         removeHostedArtifact: input.removeHostedArtifact ?? (async () => Object.freeze({ kind: 'removed' as const })),
         removeCachedArtifact: input.removeCachedArtifact ?? (async () => {}),
+        removePackageAssets: input.removePackageAssets ?? (async () => Object.freeze({ kind: 'removed' as const })),
     };
 }
 
@@ -107,6 +109,51 @@ function actionInput(input: Readonly<{
 }
 
 describe('Plugin Account release selection controller', () => {
+    it.each([false, true])('offers explicit Account hosting and exact removal for an assets-only release (hosted=%s)', async (hosted) => {
+        const active = createLifetime();
+        const release = PluginReleaseFactsV1Schema.parse({
+            ...facts,
+            normalizedManifest: {
+                ...facts.normalizedManifest,
+                contributes: { resources: [{ id: 'brand', kind: 'asset', path: 'assets/brand.png', contentType: 'image/png' }] },
+            },
+            packageAssetArchive: {
+                ...facts.packageAssetArchive,
+                resources: [{ resourceId: 'brand', path: 'assets/brand.png', mimeType: 'image/png', byteSize: 3, digestSha256: `sha256:${'d'.repeat(64)}` }],
+            },
+        });
+        const intent = {
+            pluginId, desiredVersion: targetVersion, enabled: true,
+            offlineUiHosting: 'disabled' as const, writableCollections: [], revision: 'intent-current',
+        };
+        const reader = createPluginAccountAvailabilityReader({
+            scope: active.lifetime.scope,
+            snapshot: {
+                availabilityCursor: 4, materializations: [], snapshots: [],
+                intentReads: [{ pluginId, response: {
+                    availabilityCursor: 4,
+                    hostingCapability: { enabled: true, maxArtifactBytes: 1024, maxAccountBytes: 2048 },
+                    intent, release, uiArtifacts: [], packageAssets: hosted ? [{ release: release.ref, artifactId: '00000000-0000-4000-8000-000000000001', descriptor: release.packageAssetArchive }] : [],
+                } }],
+            },
+        });
+        const setIntent = vi.fn<PluginAccountReleaseSelectionControllerDependencies['setIntent']>(async (input) => ({ kind: 'updated' as const, intent: { ...intent, offlineUiHosting: input.offlineUiHosting } }));
+        const removePackageAssets = vi.fn<PluginAccountReleaseSelectionControllerDependencies['removePackageAssets']>(async () => {
+            expect(setIntent.mock.lastCall?.[0].offlineUiHosting).toBe('disabled');
+            return { kind: 'removed' };
+        });
+        const controller = createPluginAccountReleaseSelectionController(dependencies({ lifetime: active.lifetime, setIntent, removePackageAssets }));
+        expect(controller.readHostedArtifactStatus({ pluginId, reader })).toBe(hosted ? 'disabledHosted' : 'notOptedIn');
+        expect(setIntent).not.toHaveBeenCalled();
+        await expect(controller.setHostedArtifactsEnabled({ pluginId, reader, enabled: true })).resolves.toEqual({ kind: 'updated' });
+        expect(setIntent).toHaveBeenCalledWith({ pluginId, desiredVersion: targetVersion, enabled: true, offlineUiHosting: 'enabled', writableCollections: [], expectedRevision: intent.revision });
+        await expect(controller.disableAndRemoveHostedArtifacts({ pluginId, reader })).resolves.toEqual({ kind: 'updated' });
+        if (hosted) {
+            expect(removePackageAssets).toHaveBeenCalledWith({ accountLifetime: active.lifetime, target: { release: release.ref } });
+        } else {
+            expect(removePackageAssets).not.toHaveBeenCalled();
+        }
+    });
     it('sends an initial exact target CAS without resolving candidate artifact preparation', async () => {
         const active = createLifetime();
         const select = vi.fn<PluginAccountReleaseSelectionControllerDependencies['select']>(async () => Object.freeze({
@@ -371,8 +418,9 @@ describe('Plugin Account release selection controller', () => {
                     ? { enabled: true, maxArtifactBytes: 1, maxAccountBytes: 1, maxAccountArtifacts: 1 }
                     : { enabled: false },
                 intent: { pluginId, desiredVersion: targetVersion, enabled: true, offlineUiHosting: 'disabled' as const, writableCollections: [], revision: 'intent-current' },
-                release: { ref: { pluginId, version: targetVersion }, normalizedManifest: facts.normalizedManifest, uiSlots: [slot] },
+                release: { ref: { pluginId, version: targetVersion }, normalizedManifest: facts.normalizedManifest, uiSlots: [slot], packageAssetArchive: facts.packageAssetArchive },
                 uiArtifacts: [],
+                packageAssets: [],
             }),
         } as unknown as PluginAccountAvailabilityReader);
         const controller = createPluginAccountReleaseSelectionController(dependencies({
@@ -416,8 +464,9 @@ describe('Plugin Account release selection controller', () => {
                 availabilityCursor: 4,
                 hostingCapability: { enabled: true, maxArtifactBytes: 1, maxAccountBytes: 1, maxAccountArtifacts: 1 },
                 intent: { pluginId, desiredVersion: targetVersion, enabled: true, offlineUiHosting: 'enabled' as const, writableCollections: [], revision: 'intent-current' },
-                release: { ref: { pluginId, version: targetVersion }, normalizedManifest: facts.normalizedManifest, uiSlots: [slot] },
+                release: { ref: { pluginId, version: targetVersion }, normalizedManifest: facts.normalizedManifest, uiSlots: [slot], packageAssetArchive: facts.packageAssetArchive },
                 uiArtifacts: [{ release: { pluginId, version: targetVersion }, contributionId: slot.contributionId, tier: slot.tier, platform: slot.platform }],
+                packageAssets: [],
             }),
         } as unknown as PluginAccountAvailabilityReader;
         const controller = createPluginAccountReleaseSelectionController(dependencies({

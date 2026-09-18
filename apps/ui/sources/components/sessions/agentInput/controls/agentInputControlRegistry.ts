@@ -14,6 +14,7 @@ export const AGENT_INPUT_CONTROL_REGISTRY = [
     { id: 'checkout', line: 'primary' },
     { id: 'automation', line: 'primary' },
     { id: 'stop', line: 'primary' },
+    { id: 'sessionAccess', line: 'primary' },
     { id: 'recipient', line: 'primary' },
     { id: 'delivery', line: 'primary' },
     { id: 'attachments', line: 'primary' },

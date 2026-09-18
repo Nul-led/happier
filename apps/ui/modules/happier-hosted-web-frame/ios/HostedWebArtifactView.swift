@@ -12,12 +12,14 @@ private let hostedWebBridgeName = "HappierHostedWebFrameBridge"
 private final class HostedWebArtifactSchemeHandler: NSObject, WKURLSchemeHandler {
   private let token: String
   private let origin: HostedWebArtifactOrigin
+  private let inlineDocument: Bool
   private let lock = NSLock()
   private var stoppedTasks = Set<ObjectIdentifier>()
 
-  init(token: String, origin: HostedWebArtifactOrigin) {
+  init(token: String, origin: HostedWebArtifactOrigin, inlineDocument: Bool = false) {
     self.token = token
     self.origin = origin
+    self.inlineDocument = inlineDocument
   }
 
   func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
@@ -37,10 +39,9 @@ private final class HostedWebArtifactSchemeHandler: NSObject, WKURLSchemeHandler
 
     let encodedPath = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath
     let requestPath = encodedPath?.isEmpty == false ? encodedPath! : "/"
-    let response = HostedWebArtifactRegistryOwner.shared.readResponse(
-      token: token,
-      requestPath: requestPath,
-    )
+    let response = inlineDocument
+      ? HostedInlineDocumentRegistry.shared.readResponse(token: token, requestPath: requestPath)
+      : HostedWebArtifactRegistryOwner.shared.readResponse(token: token, requestPath: requestPath)
     guard response.status == 200,
           let contentType = response.contentType,
           let bytes = response.bytes else {
@@ -122,10 +123,10 @@ private final class HostedWebArtifactSchemeHandler: NSObject, WKURLSchemeHandler
 }
 
 /**
- Native frame for one already-registered Artifact token. Its public props are
- intentionally unable to accept a remote URL, raw bytes, cache path, Account,
- launch identity, or session identity. The host owns the bridge envelope and
- currentness; this view only provides the verified local surface primitive.
+ Native frame for one already-registered Artifact or inline-document token.
+ Its public props cannot accept a remote URL, raw bytes, cache path, Account,
+ launch identity, or Session identity. The selected native registry owns bytes
+ and currentness; this view only provides the verified local surface primitive.
  */
 final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessageHandler, WKUIDelegate {
   let onMessage = EventDispatcher()
@@ -143,14 +144,17 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
   private static let webKitFrameLoadInterruptedByPolicyChange = 102
 
   private var artifactHandleToken: String?
+  private var inlineDocumentHandleToken: String?
   private var initialPathAndQuery: String?
   private var title: String?
   private var allowedNavigationOrigins = Set<HostedWebArtifactOrigin>()
+  private var externalHttpLinks = false
   private var activeOrigin: HostedWebArtifactOrigin?
   private var activeSchemeHandler: HostedWebArtifactSchemeHandler?
   private var webView: WKWebView?
   private var historyObservation: NSKeyValueObservation?
   private var loadedKey: String?
+  private var activeInlineDocument = false
   private var disposed = false
 
   override init(frame: CGRect) {
@@ -163,6 +167,10 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
     super.init(coder: coder)
     backgroundColor = .clear
     clipsToBounds = true
+  }
+
+  func setExternalHttpLinks(_ enabled: Bool) {
+    externalHttpLinks = enabled
   }
 
   deinit {
@@ -196,11 +204,23 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
 
   func setArtifactHandleToken(_ token: String?) {
     let normalized = token?.isEmpty == false ? token : nil
-    guard artifactHandleToken != normalized else {
+    guard artifactHandleToken != normalized || (normalized != nil && inlineDocumentHandleToken != nil) else {
       return
     }
     clearCurrentFrameState()
     artifactHandleToken = normalized
+    if normalized != nil { inlineDocumentHandleToken = nil }
+    loadIfReady()
+  }
+
+  func setInlineDocumentHandleToken(_ token: String?) {
+    let normalized = token?.isEmpty == false ? token : nil
+    guard inlineDocumentHandleToken != normalized || (normalized != nil && artifactHandleToken != nil) else {
+      return
+    }
+    clearCurrentFrameState()
+    inlineDocumentHandleToken = normalized
+    if normalized != nil { artifactHandleToken = nil }
     loadIfReady()
   }
 
@@ -250,22 +270,31 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
   }
 
   private func loadIfReady() {
-    guard !disposed,
-          let token = artifactHandleToken,
-          let pathAndQuery = initialPathAndQuery,
-          let origin = HostedWebArtifactRegistryOwner.shared.origin(for: token) else {
-      if !disposed, artifactHandleToken != nil, initialPathAndQuery != nil {
-        onLoadError(["code": "hosted_web_artifact_handle_unavailable"])
-      }
+    guard !disposed else { return }
+    let inlineDocument = inlineDocumentHandleToken != nil
+    guard let token = inlineDocumentHandleToken ?? artifactHandleToken else { return }
+    let pathAndQuery = inlineDocument ? "/" : initialPathAndQuery
+    guard let pathAndQuery else { return }
+    let origin = inlineDocument
+      ? HostedInlineDocumentRegistry.shared.origin(for: token)
+      : HostedWebArtifactRegistryOwner.shared.origin(for: token)
+    guard let origin else {
+      onLoadError(["code": inlineDocument
+        ? "hosted_web_inline_document_handle_unavailable"
+        : "hosted_web_artifact_handle_unavailable"])
       return
     }
-    let key = "\(token)\u{001F}\(pathAndQuery)"
+    let key = "\(inlineDocument ? "inline" : "artifact")\u{001F}\(token)\u{001F}\(pathAndQuery)"
     guard loadedKey != key, let url = URL(string: origin.serialized + pathAndQuery) else {
       return
     }
 
     clearCurrentFrameState()
-    let schemeHandler = HostedWebArtifactSchemeHandler(token: token, origin: origin)
+    let schemeHandler = HostedWebArtifactSchemeHandler(
+      token: token,
+      origin: origin,
+      inlineDocument: inlineDocument
+    )
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = WKWebsiteDataStore.nonPersistent()
     configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -292,6 +321,7 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
     ])
 
     activeOrigin = origin
+    activeInlineDocument = inlineDocument
     activeSchemeHandler = schemeHandler
     webView = nextWebView
     historyObservation = nextWebView.observe(\.canGoBack, options: [.new]) { [weak self] observedWebView, _ in
@@ -312,6 +342,7 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
     historyObservation?.invalidate()
     historyObservation = nil
     activeOrigin = nil
+    activeInlineDocument = false
     activeSchemeHandler = nil
     loadedKey = nil
     guard let webView else {
@@ -327,12 +358,15 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
   }
 
   private func isActiveArtifactPage() -> Bool {
-    guard let token = artifactHandleToken,
+    guard let token = activeInlineDocument ? inlineDocumentHandleToken : artifactHandleToken,
           let activeOrigin,
-          HostedWebArtifactRegistryOwner.shared.origin(for: token) == activeOrigin,
           let url = webView?.url else {
       return false
     }
+    let currentOrigin = activeInlineDocument
+      ? HostedInlineDocumentRegistry.shared.origin(for: token)
+      : HostedWebArtifactRegistryOwner.shared.origin(for: token)
+    guard currentOrigin == activeOrigin else { return false }
     return activeOrigin.matches(url)
   }
 
@@ -358,6 +392,10 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
       decisionHandler(.cancel)
       return
     }
+    if #available(iOS 14.5, *), navigationAction.shouldPerformDownload {
+      decisionHandler(.cancel)
+      return
+    }
     if let targetFrame = navigationAction.targetFrame, !targetFrame.isMainFrame {
       decisionHandler(.allow)
       return
@@ -366,7 +404,11 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
       decisionHandler(.allow)
       return
     }
-    if allowedNavigationOrigins.contains(where: { $0.matches(url) }) {
+    let activatedExternalHttpLink = activeInlineDocument
+      && externalHttpLinks
+      && navigationAction.navigationType == .linkActivated
+      && (url.scheme == "http" || url.scheme == "https")
+    if activatedExternalHttpLink || allowedNavigationOrigins.contains(where: { $0.matches(url) }) {
       // The host, never this WebView, opens a declared external destination.
       onExternalNavigation(["url": url.absoluteString])
       decisionHandler(.cancel)
@@ -374,6 +416,18 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
     }
     unloadUnexpectedNavigation(url)
     decisionHandler(.cancel)
+  }
+
+  @available(iOS 18.0, *)
+  func webView(
+    _ webView: WKWebView,
+    runOpenPanelWith parameters: WKOpenPanelParameters,
+    initiatedByFrame frame: WKFrameInfo,
+    completionHandler: @escaping ([URL]?) -> Void
+  ) {
+    // Hosted documents never receive direct filesystem access. A future
+    // user-selected file flow must remain an explicit host-mediated action.
+    completionHandler(nil)
   }
 
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -419,13 +473,16 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
     // the pane handles recovery.
     guard !Self.isExpectedNavigationCancellation(error),
           webView === self.webView,
-          let token = artifactHandleToken,
+          let token = activeInlineDocument ? inlineDocumentHandleToken : artifactHandleToken,
           let activeOrigin,
-          HostedWebArtifactRegistryOwner.shared.origin(for: token) == activeOrigin,
           activeSchemeHandler != nil,
           loadedKey != nil else {
       return
     }
+    let currentOrigin = activeInlineDocument
+      ? HostedInlineDocumentRegistry.shared.origin(for: token)
+      : HostedWebArtifactRegistryOwner.shared.origin(for: token)
+    guard currentOrigin == activeOrigin else { return }
     clearCurrentFrameState()
     onLoadError(["code": "hosted_web_artifact_load_failed"])
   }

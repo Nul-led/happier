@@ -990,18 +990,25 @@ describe('AgentInput states the Voice planet’s target', () => {
         );
     }
 
-    it('starts the composer’s own session from an existing-session composer', async () => {
+    it('starts the composer’s exact qualified session even when another Home owns typing presence', async () => {
         voiceSettingState.current = READY_VOICE_SETTING;
         const routing = await spyOnLifecycleRouting();
 
-        const screen = await renderSessionComposer({ sessionId: 'session-7' });
+        const screen = await renderSessionComposer({
+            sessionId: 'shared-session',
+            sessionAddress: { serverId: 'server-b', sessionId: 'shared-session' },
+            sessionTypingPresence: { serverId: 'server-a', canSubmitAgentInput: true },
+        });
 
         const planet = screen.findByTestId(PLANET_TEST_ID);
         expect(planet).not.toBeNull();
         expect(planet!.props.accessibilityLabel).toBe('voiceAssistant.startVoice');
 
         await screen.pressByTestIdAsync(PLANET_TEST_ID);
-        expect(routing.toggle).toHaveBeenCalledWith('session-7');
+        expect(routing.toggle).toHaveBeenCalledWith({
+            serverId: 'server-b',
+            sessionId: 'shared-session',
+        });
 
         await screen.unmount();
     });
@@ -1023,8 +1030,7 @@ describe('AgentInput states the Voice planet’s target', () => {
         expect(planet!.props.accessibilityLabel).toBe('voiceAssistant.startGlobalVoice');
 
         await screen.pressByTestIdAsync(PLANET_TEST_ID);
-        // The empty session id is the canonical global/hidden-owner start.
-        expect(routing.toggle).toHaveBeenCalledWith('');
+        expect(routing.toggle).toHaveBeenCalledWith(null);
 
         // Starting Voice is not sending, discarding, or re-mounting the prompt being written.
         expect(screen.root.findByType('MultiTextInput' as any).props.value).toBe('unsent draft');

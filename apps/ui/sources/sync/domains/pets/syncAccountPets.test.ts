@@ -3,9 +3,14 @@ import type { AuthCredentials } from "@/auth/storage/tokenStorage";
 import type { AccountPetMetadata } from "./accountPetLibraryTypes";
 
 const fetchAccountEncryptionCurrentness = vi.hoisted(() => vi.fn());
+const resolveRuntimeFeatureDecisionOrThrow = vi.hoisted(() => vi.fn());
 
 vi.mock("@/sync/api/account/apiAccountEncryptionMode", () => ({
     fetchAccountEncryptionCurrentness,
+}));
+
+vi.mock("@/sync/domains/features/featureDecisionInputs", () => ({
+    resolveRuntimeFeatureDecisionOrThrow,
 }));
 
 const credentials: AuthCredentials = { token: "token-1", secret: "secret-1" };
@@ -44,6 +49,8 @@ describe("fetchAndApplyAccountPets", () => {
             contentKeyFingerprint: null,
             updatedAt: 1,
         });
+        resolveRuntimeFeatureDecisionOrThrow.mockReset();
+        resolveRuntimeFeatureDecisionOrThrow.mockResolvedValue({ state: "enabled" });
     });
 
     it("fetches and materializes account pets when pets.sync is enabled", async () => {
@@ -91,6 +98,22 @@ describe("fetchAndApplyAccountPets", () => {
         expect(result).toEqual({ status: "disabled" });
         expect(listPets).not.toHaveBeenCalled();
         expect(applyAccountPets).toHaveBeenCalledWith([]);
+    });
+
+    it("preserves the last-known-good library when the feature decision is temporarily unavailable", async () => {
+        const error = Object.assign(new Error("feature probe unavailable"), { retryable: true });
+        resolveRuntimeFeatureDecisionOrThrow.mockRejectedValue(error);
+        const listPets = vi.fn();
+        const applyAccountPets = vi.fn();
+        const { fetchAndApplyAccountPets } = await import("./syncAccountPets");
+
+        await expect(fetchAndApplyAccountPets({
+            credentials,
+            listPets,
+            applyAccountPets,
+        })).rejects.toBe(error);
+        expect(listPets).not.toHaveBeenCalled();
+        expect(applyAccountPets).not.toHaveBeenCalled();
     });
 
     it("preserves the last-known-good library and returns typed unavailable", async () => {

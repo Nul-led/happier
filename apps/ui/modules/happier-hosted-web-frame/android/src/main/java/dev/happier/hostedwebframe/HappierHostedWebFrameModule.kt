@@ -8,8 +8,9 @@ import expo.modules.kotlin.modules.ModuleDefinition
 
 /**
  * The only JavaScript-to-native registration seam for hosted-web Artifact
- * frames. Registration receives opaque Artifact metadata only; the exported
- * view resolves one registered token through [HostedWebArtifactRegistryOwner].
+ * frames. Registration receives opaque persistent coordinates or token-owned
+ * current-load bytes; the exported view resolves one registered token through
+ * [HostedWebArtifactRegistryOwner] without exposing either to hosted content.
  */
 class HappierHostedWebFrameModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -57,6 +58,25 @@ class HappierHostedWebFrameModule : Module() {
       HostedWebArtifactRegistryOwner.unregister(context, token)
     }
 
+    AsyncFunction("registerInlineDocument") { input: Map<String, Any?> ->
+      val capability = HostedWebArtifactView.profileIsolationUnavailableCapability()
+      if (capability != null) {
+        return@AsyncFunction mapOf(
+          "kind" to "unavailable",
+          "code" to "hosted_web_profile_isolation_unavailable",
+          "capability" to capability
+        )
+      }
+      if (HostedInlineDocumentRegistry.register(input)) mapOf("kind" to "registered") else mapOf(
+        "kind" to "unavailable",
+        "code" to "native_inline_document_registration_failed"
+      )
+    }.runOnQueue(Queues.DEFAULT)
+
+    Function("unregisterInlineDocument") { token: String ->
+      HostedInlineDocumentRegistry.unregister(token)
+    }
+
     View(HostedWebArtifactView::class) {
       Events("onMessage", "onLoadStart", "onLoadEnd", "onLoadError", "onExternalNavigation", "onBlockedNavigation", "onHistoryStateChange")
 
@@ -66,11 +86,17 @@ class HappierHostedWebFrameModule : Module() {
       Prop<String?>("artifactHandleToken") { view, token ->
         view.setArtifactHandleToken(token)
       }
+      Prop<String?>("inlineDocumentHandleToken") { view, token ->
+        view.setInlineDocumentHandleToken(token)
+      }
       Prop<String?>("initialPathAndQuery") { view, pathAndQuery ->
         view.setInitialPathAndQuery(pathAndQuery)
       }
       Prop<List<String>>("allowedNavigationOrigins") { view, origins ->
         view.setAllowedNavigationOrigins(origins)
+      }
+      Prop<Boolean>("externalHttpLinks") { view, enabled ->
+        view.setExternalHttpLinks(enabled)
       }
 
       AsyncFunction("postHostMessage") { view: HostedWebArtifactView, serializedMessage: String ->
@@ -87,6 +113,7 @@ class HappierHostedWebFrameModule : Module() {
 
     OnDestroy {
       HostedWebArtifactRegistryOwner.clear()
+      HostedInlineDocumentRegistry.clear()
     }
   }
 }

@@ -1,19 +1,20 @@
 import type { VoiceSessionStatus } from '@/voice/session/types';
-import { resolveVoiceActionTargetSessionId, type VoiceAssistantScope } from '@/voice/runtime/voiceTargetStore';
+import { resolveVoiceActionTargetAddress, type VoiceAssistantScope } from '@/voice/runtime/voiceTargetStore';
+import { areSessionAddressesEqual, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export function deriveSessionMicActive(opts: Readonly<{
   voiceStatus: VoiceSessionStatus;
   scope: VoiceAssistantScope;
-  sessionId: string;
-  primaryActionSessionId: string | null;
-  lastFocusedSessionId: string | null;
+  sessionAddress: SessionAddress;
+  primaryActionSessionAddress: SessionAddress | null;
+  lastFocusedSessionAddress: SessionAddress | null;
 }>): boolean {
   if (opts.voiceStatus === 'disconnected') return false;
 
-  return resolveVoiceActionTargetSessionId({
+  return areSessionAddressesEqual(resolveVoiceActionTargetAddress({
     scope: opts.scope,
-    currentSessionId: opts.scope === 'session' ? opts.sessionId : null,
-    primaryActionSessionId: opts.primaryActionSessionId,
-    lastFocusedSessionId: opts.lastFocusedSessionId,
-  }) === opts.sessionId;
+    currentSessionAddress: opts.scope === 'session' ? opts.sessionAddress : null,
+    primaryActionSessionAddress: opts.primaryActionSessionAddress,
+    lastFocusedSessionAddress: opts.lastFocusedSessionAddress,
+  }), opts.sessionAddress);
 }

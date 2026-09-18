@@ -6,6 +6,8 @@ import { SESSION_MACHINE_TARGET_UNAVAILABLE_ERROR_CODE } from '@/sync/runtime/se
 import { createDeferred, flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import type { MachineAdministrationTargetSelectionMockController } from '@/dev/testkit/mocks/machineAdministrationTargetSelection';
 
+import { sessionTagKey } from '../sessionTagUtils';
+
 const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
 const homeSearchMock = vi.hoisted(() => vi.fn());
 const ensureSessionVisibleMock = vi.hoisted(() => vi.fn(async () => ({ kind: 'available' as const })));
@@ -52,16 +54,16 @@ const featureRuntimeState = vi.hoisted(() => ({ homeSearch: undefined as unknown
 const storageState = vi.hoisted(() => {
     const state = {
         sessions: {} as Record<string, { id: string; serverId?: string }>,
-        sessionListRowStateByServerId: {} as Record<string, Record<string, unknown>>,
+        sessionListRowsByServerId: {} as Record<string, Record<string, unknown>>,
         clearSessionListRowsForServerScope: vi.fn((serverId: string) => {
-            delete state.sessionListRowStateByServerId[serverId];
+            delete state.sessionListRowsByServerId[serverId];
         }),
         reconcileSessionListRowsForServerScope: vi.fn((serverId: string, rows: ReadonlyArray<{ id: string }>) => {
-            state.sessionListRowStateByServerId[serverId] = Object.fromEntries(rows.map((row) => [row.id, row]));
+            state.sessionListRowsByServerId[serverId] = Object.fromEntries(rows.map((row) => [row.id, row]));
         }),
         mergeSessionListRowsForServerScope: vi.fn((serverId: string, rows: ReadonlyArray<{ id: string }>) => {
-            state.sessionListRowStateByServerId[serverId] = {
-                ...state.sessionListRowStateByServerId[serverId],
+            state.sessionListRowsByServerId[serverId] = {
+                ...state.sessionListRowsByServerId[serverId],
                 ...Object.fromEntries(rows.map((row) => [row.id, row])),
             };
         }),
@@ -95,8 +97,8 @@ vi.mock('@/sync/runtime/getSyncSingleton', () => ({
     }),
 }));
 
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-    captureSessionRequestAuthorityForServerAccountScope: captureSessionRequestAuthorityMock,
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+    captureServerRequestAuthorityForServerAccountScope: captureSessionRequestAuthorityMock,
 }));
 
 vi.mock('@/sync/domains/state/storageStore', () => ({
@@ -113,17 +115,21 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
     getServerProfileById: (serverId: string) => ({ id: serverId, serverUrl: `https://${serverId}.example.test` }),
     resolveServerProfileScopeIdForIdentifier: (serverId: string) => serverId,
 }));
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentialsForServerUrl: async (_url: string, options: { serverId?: string }) => ({
-            token: credentialAccounts.get(options.serverId ?? '') ?? '',
-        }),
-    },
-    subscribeHomeCredentialMutations: (listener: (event: { serverId: string; serverUrl: string; kind: 'credentials_set' | 'credentials_removed' }) => void) => {
-        credentialMutationListeners.add(listener);
-        return () => credentialMutationListeners.delete(listener);
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal: importOriginal as () => Promise<typeof import('@/auth/storage/tokenStorage')>,
+        tokenStorage: {
+            getCredentialsForServerUrl: async (_url, options) => ({
+                token: credentialAccounts.get(options?.serverId ?? '') ?? '',
+            }),
+        },
+        subscribeHomeCredentialMutations: (listener: (event: { serverId: string; serverUrl: string; kind: 'credentials_set' | 'credentials_removed' }) => void) => {
+            credentialMutationListeners.add(listener);
+            return () => credentialMutationListeners.delete(listener);
+        },
+    });
+});
 vi.mock('@/utils/auth/parseToken', () => ({ parseToken: (token: string) => token }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
@@ -261,12 +267,11 @@ afterEach(() => {
     accountScopeState.current = { serverId: 'server-a', accountId: 'account-a' };
     featureRuntimeState.homeSearch = undefined;
     storageState.sessions = {};
-    storageState.sessionListRowStateByServerId = {};
+    storageState.sessionListRowsByServerId = {};
     storageState.clearSessionListRowsForServerScope.mockClear();
     storageState.reconcileSessionListRowsForServerScope.mockClear();
     storageState.mergeSessionListRowsForServerScope.mockClear();
     selectionHolder.controller?.reset();
-    credentialMutationListeners.clear();
     credentialAccounts.clear();
     credentialAccounts.set('server-a', 'account-a');
     credentialAccounts.set('server-b', 'account-b');
@@ -275,75 +280,6 @@ afterEach(() => {
 });
 
 describe('useSessionListMemorySearchAugmentation', () => {
-    it('surfaces real metadata-inventory failure as retryable and clears it when the query retires', async () => {
-        featureEnabledState.memorySearch = false;
-        featureEnabledState.search = false;
-        captureSessionRequestAuthorityMock.mockRejectedValue(new Error('inventory unavailable'));
-        const {
-            useSessionListMemorySearchAugmentationForContext,
-            useSessionListMemorySearchContext,
-        } = await import('./useSessionListMemorySearchAugmentation');
-        const hook = await renderHook(
-            (props: { searchQuery: string }) => useSessionListMemorySearchAugmentationForContext(
-                props,
-                useSessionListMemorySearchContext({ serverId: 'server-a' }),
-            ),
-            { initialProps: { searchQuery: 'payments' } },
-        );
-        await flushHookEffects({ cycles: 4 });
-
-        expect(hook.getCurrent().sessionInventoryStatus).toBe('error');
-        expect(captureSessionRequestAuthorityMock).toHaveBeenCalledTimes(1);
-
-        await act(async () => hook.getCurrent().retrySessionInventory());
-        await flushHookEffects({ cycles: 4 });
-        expect(hook.getCurrent().sessionInventoryStatus).toBe('error');
-        expect(captureSessionRequestAuthorityMock).toHaveBeenCalledTimes(2);
-
-        await hook.rerender({ searchQuery: '' });
-        await flushHookEffects({ cycles: 2 });
-        expect(hook.getCurrent().sessionInventoryStatus).toBe('idle');
-    });
-
-    it('keeps an aborted metadata inventory silent after the contextual query retires', async () => {
-        featureEnabledState.memorySearch = false;
-        featureEnabledState.search = false;
-        const pendingAuthority = createDeferred<{
-            scope: { serverId: string; accountId: string };
-            context: { scope: string };
-            request: () => Promise<Response>;
-            release: () => Promise<void>;
-        }>();
-        captureSessionRequestAuthorityMock.mockImplementationOnce(async () => pendingAuthority.promise);
-        const {
-            useSessionListMemorySearchAugmentationForContext,
-            useSessionListMemorySearchContext,
-        } = await import('./useSessionListMemorySearchAugmentation');
-        const hook = await renderHook(
-            (props: { searchQuery: string }) => useSessionListMemorySearchAugmentationForContext(
-                props,
-                useSessionListMemorySearchContext({ serverId: 'server-a' }),
-            ),
-            { initialProps: { searchQuery: 'payments' } },
-        );
-        await flushHookEffects({ cycles: 3 });
-        expect(hook.getCurrent().sessionInventoryStatus).toBe('loading');
-
-        await hook.rerender({ searchQuery: '' });
-        await flushHookEffects({ cycles: 2 });
-        expect(hook.getCurrent().sessionInventoryStatus).toBe('idle');
-
-        pendingAuthority.resolve({
-            scope: { serverId: 'server-a', accountId: 'account-a' },
-            context: { scope: 'scoped' },
-            request: async () => new Response('{}'),
-            release: async () => undefined,
-        });
-        await flushHookEffects({ cycles: 3 });
-        expect(hook.getCurrent().sessionInventoryStatus).toBe('idle');
-    });
-
-
     it('keys results by Account, provider, exact Home/server, and daemon machine', async () => {
         const { buildSessionListMemorySearchScopeKey } = await import('./useSessionListMemorySearchAugmentation');
         const base = {
@@ -380,29 +316,36 @@ describe('useSessionListMemorySearchAugmentation', () => {
             hits: [createMemorySearchHit('same-session')],
         });
 
-        const { buildSessionListRetentionKey } = await import('../scroll/sessionListRetentionKey');
-        const { useSessionListHeaderFilterRetention } = await import('./useSessionListHeaderFilterRetention');
+        const { useSessionListViewFilters } = await import('./useSessionListViewFilters');
         const {
             useSessionListMemorySearchAugmentationForContext,
             useSessionListMemorySearchContext,
         } = await import('./useSessionListMemorySearchAugmentation');
         const hook = await renderHook(() => {
             const memoryContext = useSessionListMemorySearchContext();
-            const filters = useSessionListHeaderFilterRetention(
-                buildSessionListRetentionKey(
-                    'all',
-                    `account-a:list-home-a\u0000transcript:${memoryContext.activeScopeKey}`,
-                ),
-            );
+            // The canonical credential-corpus filter owner. The memory-search scope
+            // is part of the context key, so switching machine or provider
+            // authority retires the contextual query with its owner.
+            const filters = useSessionListViewFilters({
+                contextKey: `all\u0000account-a:list-home-a\u0000transcript:${memoryContext.activeScopeKey}`,
+                accountScopeResolutions: new Map([
+                    ['server-a', { kind: 'bound' as const, scope: { serverId: 'server-a', accountId: 'account-a' } }],
+                ]),
+                defaults: {},
+            });
             const memory = useSessionListMemorySearchAugmentationForContext(
-                { searchQuery: filters.searchQuery },
+                { searchQuery: filters.filters.searchQuery },
                 memoryContext,
             );
-            return { ...filters, memory };
+            return {
+                searchQuery: filters.filters.searchQuery,
+                setSearchQuery: filters.setSearchQuery,
+                memory,
+            };
         });
         await act(async () => hook.getCurrent().setSearchQuery('private-query'));
         await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
-        expect([...hook.getCurrent().memory.memoryMatchedSessionKeys]).toEqual(['server-a:same-session']);
+        expect([...hook.getCurrent().memory.memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'same-session')]);
 
         await act(async () => selection().select('machine-b'));
 
@@ -411,7 +354,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
 
         await act(async () => hook.getCurrent().setSearchQuery('private-query'));
         await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
-        expect([...hook.getCurrent().memory.memoryMatchedSessionKeys]).toEqual(['server-a:same-session']);
+        expect([...hook.getCurrent().memory.memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'same-session')]);
 
         await act(async () => {
             withReadyHomeSearch();
@@ -446,13 +389,13 @@ describe('useSessionListMemorySearchAugmentation', () => {
             serverId: 'home-b',
             accountId: 'account-b',
         }));
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['home-b:same-session']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('home-b', 'same-session')]);
         expect(hook.getCurrent().memoryMatchedSessionTargets).toEqual([
             expect.objectContaining({ serverId: 'home-b', sessionId: 'same-session' }),
         ]);
     });
 
-    it('does not call the daemon for short queries', async () => {
+    it('keeps a one-character query local and starts neither provider search nor Session-list inventory', async () => {
         vi.useFakeTimers();
         const hook = await renderMemoryAugmentationHook({
             searchQuery: 'v',
@@ -461,8 +404,40 @@ describe('useSessionListMemorySearchAugmentation', () => {
         await flushHookEffects({ advanceTimersMs: 500, cycles: 2 });
 
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+        expect(captureSessionRequestAuthorityMock).not.toHaveBeenCalled();
+        expect(scopedSessionRequestMock).not.toHaveBeenCalled();
         expect(hook.getCurrent().memoryMatchedSessionKeys.size).toBe(0);
         expect(hook.getCurrent().isSearchingMemory).toBe(false);
+    });
+
+    it('starts only the bounded provider at the accepted query threshold', async () => {
+        vi.useFakeTimers();
+        machineRpcWithServerScopeMock.mockResolvedValue({ v: 1, ok: true, hits: [] });
+
+        const hook = await renderMemoryAugmentationHook({ searchQuery: 've' });
+        await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
+
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledOnce();
+        expect(captureSessionRequestAuthorityMock).toHaveBeenCalledOnce();
+        expect(scopedSessionRequestMock).not.toHaveBeenCalled();
+        expect(hook.getCurrent().lastSuccessfulQuery).toBe('ve');
+    });
+
+    it('authorizes provider hits row by row without fetching current or archived Session-list pages', async () => {
+        vi.useFakeTimers();
+        machineRpcWithServerScopeMock.mockResolvedValue({
+            v: 1,
+            ok: true,
+            hits: [createMemorySearchHit('session-1')],
+        });
+
+        const hook = await renderMemoryAugmentationHook({ searchQuery: 'vector' });
+        await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
+
+        expect(scopedSessionRequestMock.mock.calls.map(([path]) => path)).toEqual([
+            '/v2/sessions/session-1',
+        ]);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'session-1')]);
     });
 
     it('does not call the daemon when the surface is not data-active', async () => {
@@ -522,7 +497,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
             method: RPC_METHODS.DAEMON_MEMORY_SEARCH,
             payload: expect.objectContaining({ eligibleSessionIds: ['archived-session'] }),
         }));
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-a:archived-session']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'archived-session')]);
     });
 
     it('publishes every valid daemon hit, including sessions outside the rendered list', async () => {
@@ -565,8 +540,8 @@ describe('useSessionListMemorySearchAugmentation', () => {
         expect(scopedSessionRequestMock).toHaveBeenCalledWith('/v2/sessions/session-1', expect.any(Object));
         expect(scopedSessionRequestMock).toHaveBeenCalledWith('/v2/sessions/session-2', expect.any(Object));
         expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([
-            'server-a:session-1',
-            'server-a:session-2',
+            sessionTagKey('server-a', 'session-1'),
+            sessionTagKey('server-a', 'session-2'),
         ]);
         expect(hook.getCurrent().memoryMatchedSessionTargets.map((target) => target.sessionId)).toEqual([
             'session-1',
@@ -641,7 +616,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         });
         await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
 
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-a:session-1']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'session-1')]);
         expect(searchCallCount).toBe(1);
 
         await hook.rerender({
@@ -649,7 +624,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         });
         await flushHookEffects({ advanceTimersMs: 500, cycles: 4 });
 
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-a:session-1']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'session-1')]);
         expect(searchCallCount).toBe(1);
 
         // Rerenders that do not change the query, target, or provider decision never
@@ -659,7 +634,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         });
         await flushHookEffects({ advanceTimersMs: 500, cycles: 4 });
 
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-a:session-1']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'session-1')]);
         expect(searchCallCount).toBe(1);
     });
 
@@ -701,7 +676,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         });
         await flushHookEffects({ cycles: 3 });
 
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-a:session-2']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'session-2')]);
         expect(hook.getCurrent().lastSuccessfulQuery).toBe('parser');
     });
 
@@ -709,22 +684,29 @@ describe('useSessionListMemorySearchAugmentation', () => {
         vi.useFakeTimers();
         storageState.sessions = { 'same-session': { id: 'same-session', serverId: 'server-a' } };
         const accountASearch = createDeferred<unknown>();
-        machineRpcWithServerScopeMock.mockImplementation((params: { method?: string }) => {
+        machineRpcWithServerScopeMock.mockImplementation((params: { method?: string; accountId?: string }) => {
             if (params.method !== RPC_METHODS.DAEMON_MEMORY_SEARCH) throw new Error('unexpected rpc');
-            return accountASearch.promise;
+            if (params.accountId === 'account-a') return accountASearch.promise;
+            if (params.accountId === 'account-b') {
+                return Promise.resolve({ v: 1, ok: true, hits: [] });
+            }
+            throw new Error(`unexpected Account: ${String(params.accountId)}`);
         });
 
         const hook = await renderMemoryAugmentationHook({ searchQuery: 'vector' });
         await flushHookEffects({ advanceTimersMs: 300, cycles: 3 });
+        const accountARequest = machineRpcWithServerScopeMock.mock.calls.find(([call]) => call.accountId === 'account-a')?.[0];
+        expect(accountARequest).toBeDefined();
 
         credentialAccounts.set('server-a', 'account-b');
-        await act(async () => {
+        act(() => {
             for (const listener of credentialMutationListeners) {
                 listener({ kind: 'credentials_set', serverId: 'server-a', serverUrl: 'https://server-a.example.test' });
             }
         });
         const switched = hook.getCurrent();
 
+        expect(accountARequest.signal?.aborted).toBe(true);
         expect([...switched.memoryMatchedSessionKeys]).toEqual([]);
         expect(switched.lastSuccessfulQuery).toBeUndefined();
 
@@ -737,6 +719,15 @@ describe('useSessionListMemorySearchAugmentation', () => {
 
         expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([]);
         expect(hook.getCurrent().lastSuccessfulQuery).toBeUndefined();
+
+        await flushHookEffects({ advanceTimersMs: 300, cycles: 3 });
+
+        expect(machineRpcWithServerScopeMock.mock.calls.map(([call]) => call.accountId)).toEqual([
+            'account-a',
+            'account-b',
+        ]);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([]);
+        expect(hook.getCurrent().lastSuccessfulQuery).toBe('vector');
     });
 
     it('cancels the superseded query through the machine RPC cancellation path', async () => {
@@ -774,7 +765,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         await flushHookEffects({ cycles: 3 });
 
         expect(hook.getCurrent().memorySearchUnavailableReason).toBeUndefined();
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-a:session-2']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'session-2')]);
     });
 
     it('never queries a daemon without an explicitly selected usable machine', async () => {
@@ -837,7 +828,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
             serverId: 'server-a',
         }));
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-a:session-1']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'session-1')]);
         expect(hook.getCurrent().memoryMatchedSessionTargets).toEqual([
             expect.objectContaining({
                 serverId: 'server-a',
@@ -915,7 +906,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
 
         expect(homeSearchMock).not.toHaveBeenCalled();
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-a:session-1']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-a', 'session-1')]);
     });
 
     it('ignores stale Home results after a server switch', async () => {
@@ -952,7 +943,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
 
         expect(homeSearchCallCount).toBe(2);
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-b:session-2']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-b', 'session-2')]);
 
         staleSearch.resolve({
             v: 1,
@@ -961,7 +952,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         });
         await flushHookEffects({ cycles: 3 });
 
-        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-b:session-2']);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([sessionTagKey('server-b', 'session-2')]);
         expect(hook.getCurrent().lastSuccessfulQuery).toBe('vector');
     });
 });

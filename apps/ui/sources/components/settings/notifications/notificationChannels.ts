@@ -4,6 +4,7 @@ import {
     WebhookNotificationChannelV1Schema,
     AttentionDeliveryPolicyV1Schema,
     deriveAttentionDeliveryPolicyFromLegacySettings,
+    resolveAttentionDeliveryPolicyDecision,
     type AttentionDeliveryPolicyV1,
     type NotificationChannelV1,
     type NotificationChannelsV1,
@@ -42,6 +43,9 @@ function buildLegacyNotificationsMirrorFromPolicy(policy: AttentionDeliveryPolic
         pushEnabled: policy.channels.expo_push.enabled !== false,
         ready: isLegacyNotificationEventEnabled(policy, 'ready'),
         readyIncludeMessageText: readyPreviewBehavior === 'include_preview',
+        requestIncludeMessageText: ['permission_request', 'user_action_request'].every((event) => (
+            resolveAttentionDeliveryPolicyDecision({ policy, event, channel: 'expo_push', now: new Date(0) }).previewBehavior === 'include_preview'
+        )),
         permissionRequest: isLegacyNotificationEventEnabled(policy, 'permission_request'),
         userActionRequest: isLegacyNotificationEventEnabled(policy, 'user_action_request'),
         connectedServiceAccountSwitch: policy.events.connected_service_account_switch?.enabled !== false
@@ -98,6 +102,7 @@ export function addWebhookNotificationChannel({
             userActionRequest: true,
         },
         readyIncludeMessageText: false,
+        requestIncludeMessageText: true,
     });
 
     return NotificationChannelsV1Schema.parse([
@@ -163,6 +168,7 @@ export function buildWebhookNotificationSettingsDelta({
             userActionRequest: notifications.userActionRequest,
         },
         readyIncludeMessageText: notifications.readyIncludeMessageText,
+        requestIncludeMessageText: notifications.requestIncludeMessageText,
     };
     const notificationChannels = NotificationChannelsV1Schema.parse([
         expoChannel,
@@ -197,10 +203,14 @@ function mergeLegacyEventEnabled(
 function mergeLegacyChannelMirror(
     base: AttentionDeliveryChannelConfig,
     derived: AttentionDeliveryChannelConfig,
+    syncRequestPreview = false,
 ): AttentionDeliveryChannelConfig {
     const events = { ...base.events };
     for (const eventId of LEGACY_NOTIFICATION_EVENT_IDS) {
-        events[eventId] = mergeLegacyEventEnabled(base.events[eventId], derived.events[eventId]);
+        events[eventId] = {
+            ...mergeLegacyEventEnabled(base.events[eventId], derived.events[eventId]),
+            ...(!syncRequestPreview || eventId === 'ready' ? {} : { previewBehavior: derived.events[eventId].previewBehavior }),
+        };
     }
 
     return {
@@ -228,7 +238,7 @@ function mergeLegacyNotificationMirrorIntoPolicy(params: Readonly<{
         channels: {
             ...basePolicy.channels,
             expo_push: mergeLegacyChannelMirror(basePolicy.channels.expo_push, derivedPolicy.channels.expo_push),
-            webhook: mergeLegacyChannelMirror(basePolicy.channels.webhook, derivedPolicy.channels.webhook),
+            webhook: mergeLegacyChannelMirror(basePolicy.channels.webhook, derivedPolicy.channels.webhook, true),
         },
     });
 }

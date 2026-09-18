@@ -32,6 +32,7 @@ export type AccountPluginDataEraseActionDependencies = Readonly<{
     eraseSettings(input: Readonly<{
         pluginId: string;
         target: ScopedPluginSettingsAccountTarget;
+        signal?: AbortSignal;
     }>): Promise<AccountPluginSecretSettingsEraseResult>;
     eraseData(
         input: PluginAccountDataEraseActionInputV1,
@@ -78,6 +79,7 @@ function mapSettingsResult(
     result: AccountPluginSecretSettingsEraseResult,
 ): PluginAccountDataEraseSettingsArmResultV1 {
     if (result.status === 'completed') return result;
+    if (result.status === 'outcomeUnknown') return { status: 'pending', reason: 'outcome-unknown' };
     return result.status === 'conflict'
         ? { status: 'pending', reason: 'conflict' }
         : pendingSettingsUnavailable();
@@ -109,7 +111,8 @@ const defaultDependencies: AccountPluginDataEraseActionDependencies = Object.fre
  * Coordinates only the two incumbent Account erase arms behind the canonical
  * Action dependency. Both owners are idempotent, so every retry revisits both
  * destinations instead of caching a completion fact that later writes could
- * invalidate. The captured Account lifetime prevents cross-Account settlement.
+ * invalidate. The captured Account lifetime prevents cross-Account issuance;
+ * content-free settlement from an already-issued arm is retained.
  */
 export function createAccountPluginDataEraseAction(
     dependencies: AccountPluginDataEraseActionDependencies = defaultDependencies,
@@ -146,22 +149,22 @@ export function createAccountPluginDataEraseAction(
                         settings = mapSettingsResult(await dependencies.eraseSettings({
                             pluginId: request.pluginId,
                             target,
+                            signal: controller.signal,
                         }));
                     } catch {
                         settings = failedSettingsUnexpected();
                     }
-                    if (!isCurrent(lifetime, controller.signal)) return unavailableOutput();
                 }
 
-                if (!isCurrent(lifetime, controller.signal)) return unavailableOutput();
+                if (!isCurrent(lifetime, controller.signal)) {
+                    return outputForArms({ settings, data: pendingDataUnavailable() });
+                }
                 let data = pendingDataUnavailable();
                 try {
                     data = await dependencies.eraseData(request, { signal: controller.signal });
                 } catch {
                     data = pendingDataUnavailable();
                 }
-                if (!isCurrent(lifetime, controller.signal)) return unavailableOutput();
-
                 return outputForArms({ settings, data });
             } finally {
                 options?.signal?.removeEventListener('abort', abort);

@@ -161,6 +161,42 @@ describe('DetailsTabStrip chrome absorption for browser-view tabs', () => {
             accessibilityState: { selected: false },
             'aria-selected': false,
         });
+        expect(screen.findByTestId('tab-browser-view_bs_bv')?.props).toMatchObject({
+            tabIndex: 0,
+            nativeID: 'details-group_1-tab-browser-view_bs_bv',
+            'aria-controls': 'details-group_1-panel-browser-view_bs_bv',
+        });
+        expect(screen.findByTestId('tab-file_readme')?.props.tabIndex).toBe(-1);
+    });
+
+    it('uses the shared RTL-aware roving keyboard contract for outer Details tabs', async () => {
+        const { DetailsTabStrip } = await import('./DetailsTabStrip');
+        const pane = createPane();
+        const activeTab = browserViewTab();
+        const inactiveTab: DetailsTabState = {
+            key: 'file:readme',
+            kind: 'file',
+            title: 'README.md',
+            isPinned: false,
+            isPreview: false,
+            resource: { kind: 'file', path: 'README.md' },
+        };
+        const screen = await renderScreen(
+            <DetailsTabStrip
+                pane={pane}
+                group={{
+                    ...group(activeTab),
+                    tabKeys: [activeTab.key, inactiveTab.key],
+                    tabs: [activeTab, inactiveTab],
+                }}
+                testIds={testIds}
+            />,
+        );
+
+        const event = { key: 'ArrowRight', preventDefault: vi.fn() };
+        screen.findByTestId('tab-browser-view_bs_bv')?.props.onKeyDown?.(event);
+        expect(event.preventDefault).toHaveBeenCalledTimes(1);
+        expect(pane.setActiveDetailsTab).toHaveBeenCalledWith(inactiveTab.key);
     });
 
     it('uses the shared platform target size for the tab and its pin and close controls', async () => {

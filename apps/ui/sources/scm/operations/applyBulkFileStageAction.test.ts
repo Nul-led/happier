@@ -96,6 +96,24 @@ describe('applyBulkFileStageAction', () => {
         expect(sessionScmChangeExclude).not.toHaveBeenCalled();
     });
 
+    it('keeps atomic selection on the requested Home when Session IDs collide', async () => {
+        const { applyBulkFileStageAction } = await import('./applyBulkFileStageAction');
+        type StoredSession = Parameters<ReturnType<typeof storage.getState>['applySessions']>[0][number];
+        const a = { ...createSession('same', '/repo'), serverId: 'a' } as unknown as StoredSession;
+        const b = { ...createSession('same', '/repo'), serverId: 'b' } as unknown as StoredSession;
+        storage.setState({
+            sessions: { same: a },
+            sessionListRowsByServerId: { a: { same: a }, b: { same: b } },
+        });
+        await applyBulkFileStageAction({
+            sessionId: 'same', serverId: 'b', sessionPath: '/repo', snapshot: null,
+            scmWriteEnabled: true, commitStrategy: 'atomic', stage: true,
+            paths: ['b.txt'], surface: 'files',
+        });
+        expect(storage.getState().getSessionProjectScmCommitSelectionPaths('same', 'b')).toEqual(['b.txt']);
+        expect(storage.getState().getSessionProjectScmCommitSelectionPaths('same', 'a')).toEqual([]);
+    });
+
     it('invokes a single include/exclude RPC for non-atomic strategies', async () => {
         sessionScmChangeInclude.mockResolvedValueOnce({ success: true });
 

@@ -167,6 +167,9 @@ function ResumeBrowsePickerScreenContent(props: Readonly<{
             agentId: operationalAgentId,
             projection: daemonMergedProjectionInputs?.pluginProjectionV2,
             machineId: effectiveMachineId,
+            // This route renders the `pickRemoteSessionId` browse screen below,
+            // so capability and lock resolution must ask the same interaction.
+            interaction: 'pickRemoteSessionId',
         })) return null;
         const source = resolveExternalSessionBrowseLockedSource({
             providerId: operationalAgentId,
@@ -175,6 +178,7 @@ function ResumeBrowsePickerScreenContent(props: Readonly<{
             profile: accountProfile,
             settings,
             projection: daemonMergedProjectionInputs?.pluginProjectionV2,
+            interaction: 'pickRemoteSessionId',
         });
         if (!source) return null;
         return {

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { act } from 'react-test-renderer';
+import { createSessionAccessFixture, createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import type { Session } from '@/sync/domains/state/storageTypes';
 
 import { renderHook, standardCleanup } from '@/dev/testkit';
 import { getStorage, storage } from '@/sync/domains/state/storageStore';
@@ -7,31 +9,18 @@ import { deriveTranscriptInteractionFromSession } from '@/utils/sessions/deriveT
 
 import { useSession, useSessionInteractionSource } from './hooks';
 
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const SESSION_ID = 'interaction-source-session';
+const ACCESS = createSessionAccessFixture('admin', { approveRuntimePermissions: true });
 
-function seedSession(patch: Record<string, unknown>): void {
+function seedSession(patch: Partial<Session>): void {
     storage.setState((state) => ({
         ...state,
         isDataReady: true,
         sessions: {
             ...state.sessions,
-            [SESSION_ID]: {
-                id: SESSION_ID,
-                seq: 1,
-                createdAt: 0,
-                updatedAt: 0,
-                active: true,
-                thinking: false,
-                presence: 'online',
-                accessLevel: 'admin',
-                canApprovePermissions: true,
-                metadata: { path: '', host: '' },
-                agentState: null,
-                agentStateVersion: 0,
-                ...patch,
-            } as any,
+            [SESSION_ID]: createSessionFixture({ id: SESSION_ID, active: true, access: ACCESS, ...patch }),
         },
     }));
 }
@@ -89,7 +78,7 @@ describe('useSessionInteractionSource subscription width', () => {
         expect(deriveTranscriptInteractionFromSession(before!).canApprovePermissions).toBe(true);
 
         await act(async () => {
-            seedSession({ canApprovePermissions: false });
+            seedSession({ access: createSessionAccessFixture('admin', { approveRuntimePermissions: false }) });
         });
 
         const after = hook.getCurrent();
@@ -101,5 +90,33 @@ describe('useSessionInteractionSource subscription width', () => {
         const hook = await renderHook(() => useSessionInteractionSource(SESSION_ID));
         expect(hook.getCurrent()).toBeNull();
         expect(getStorage().getState().sessions[SESSION_ID]).toBeUndefined();
+    });
+
+    it('reads interaction rights from the requested Home when Session IDs collide', async () => {
+        const activeHomeSession = createSessionFixture({
+            id: SESSION_ID,
+            active: true,
+            access: ACCESS,
+        });
+        const requestedHomeSession = createSessionFixture({
+            id: SESSION_ID,
+            active: false,
+            access: createSessionAccessFixture('view'),
+        });
+        storage.setState({
+            isDataReady: true,
+            sessions: { [SESSION_ID]: activeHomeSession },
+            sessionListRowsByServerId: {
+                'home-a': { [SESSION_ID]: activeHomeSession },
+                'home-b': { [SESSION_ID]: requestedHomeSession },
+            },
+        });
+
+        const hook = await renderHook(() => useSessionInteractionSource(SESSION_ID, 'home-b'));
+
+        expect(hook.getCurrent()).toEqual({
+            access: requestedHomeSession.access,
+            active: false,
+        });
     });
 });

@@ -40,6 +40,7 @@ import {
     type PluginSurfaceHostPresentedActionInvocation,
 } from '@/components/plugins/surfaces/pluginSurfaceActionDispatch';
 import { launchPluginSurfaceAction } from '@/components/plugins/surfaces/launchPluginSurfaceAction';
+import type { PluginSurfaceOpenHandler } from '@/components/plugins/surfaces/openPluginSurface';
 import {
     createPluginActionCurrentIntentHandler,
 } from '@/components/plugins/surfaces/pluginSurfaceFeedback';
@@ -121,6 +122,8 @@ export type PluginContributedActionHostFacts = Readonly<{
      * second context owner or retained snapshot.
      */
     readCurrentUiContext?: () => CurrentUiContextSnapshotV1 | null | undefined;
+    /** The incumbent target-scoped destination owner; never caller-built navigation. */
+    openSurface?: PluginSurfaceOpenHandler;
     signal?: AbortSignal;
     /** Placement-local currentness (route/session/composer/unmount/account). */
     isCurrent?: () => boolean;
@@ -1079,6 +1082,9 @@ export function createPluginContributedActionController(params: Readonly<{
                     ? {
                         clientAction: {
                             projectionGeneration,
+                            ...(resolved.snapshot.host.openSurface
+                                ? { openSurface: resolved.snapshot.host.openSurface }
+                                : {}),
                             ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
                             ...(resolved.snapshot.host.readCurrentUiContext
                                 ? { currentUiContext: resolved.snapshot.host.readCurrentUiContext }

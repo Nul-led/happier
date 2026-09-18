@@ -59,7 +59,8 @@ describe('apiSocket reachability supervision', () => {
                 },
             };
         });
-        vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+        vi.doMock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/sync/domains/server/serverRuntime')>(),
             getActiveServerSnapshot: () => ({
                 serverId: 'server-b',
                 serverUrl: 'https://b.example.test',
@@ -389,7 +390,8 @@ describe('apiSocket reachability supervision', () => {
     it('gates apiSocket.request when server reachability cannot be established', async () => {
         process.env.EXPO_PUBLIC_HAPPIER_SERVER_REACHABILITY_WAIT_TIMEOUT_MS = '5';
 
-        vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+        vi.doMock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/sync/domains/server/serverRuntime')>(),
             getActiveServerSnapshot: () => ({
                 serverId: 'server-a',
                 serverUrl: 'https://api.example.test',
@@ -398,7 +400,8 @@ describe('apiSocket reachability supervision', () => {
             }),
         }));
 
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
+        vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/auth/storage/tokenStorage')>(),
             TokenStorage: {
                 getCredentialsForServerUrl: vi.fn(async () => ({ token: 'token-a', secret: 'secret-a' })),
                 getCredentials: vi.fn(async () => ({ token: 'token-a', secret: 'secret-a' })),
@@ -536,13 +539,19 @@ describe('apiSocket reachability supervision', () => {
             serverUrl: 'https://api.example.test',
             canonicalServerUrl: 'https://api.example.test',
             serverIdentityId: 'srv_home',
-            irohEndpoint: { endpointId: 'ep-home', relayUrls: ['https://relay.example.test'] },
-            connectionDescriptorRevision: 1,
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_home',
+                canonicalServerUrl: 'https://api.example.test',
+                revision: 1,
+                endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test'] }],
+            },
             publicServerUrl: null,
         };
 
         function mockFocusedHomeRuntimeContext(params: Readonly<{ profile: Record<string, unknown> | null }> = { profile: irohProfile }): void {
-            vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+            vi.doMock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
+                ...await importOriginal<typeof import('@/sync/domains/server/serverRuntime')>(),
                 getActiveServerSnapshot: () => currentSnapshot,
             }));
             vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
@@ -617,7 +626,8 @@ describe('apiSocket reachability supervision', () => {
                     },
                 };
             });
-            vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+            vi.doMock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
+                ...await importOriginal<typeof import('@/sync/domains/server/serverRuntime')>(),
                 getActiveServerSnapshot: () => currentSnapshot,
             }));
             vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
@@ -674,6 +684,7 @@ describe('apiSocket reachability supervision', () => {
                 ...irohProfile,
                 serverUrl: 'http://127.0.0.1:3010',
                 canonicalServerUrl: 'http://127.0.0.1:3010',
+                homeConnectionDescriptor: { ...irohProfile.homeConnectionDescriptor, canonicalServerUrl: 'http://127.0.0.1:3010' },
                 publicServerUrl: null,
             };
             const startParams: Array<Record<string, unknown>> = [];
@@ -688,7 +699,8 @@ describe('apiSocket reachability supervision', () => {
                     },
                 };
             });
-            vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+            vi.doMock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
+                ...await importOriginal<typeof import('@/sync/domains/server/serverRuntime')>(),
                 getActiveServerSnapshot: () => currentSnapshot,
             }));
             vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {

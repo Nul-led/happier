@@ -52,6 +52,32 @@ function deriveStatus(messages: readonly Message[], runId: string): string | und
 }
 
 describe('deriveExecutionRunSubagents status derivation', () => {
+    it('carries the canonical parsed launch origin into the execution-run roster row', () => {
+        const messages = [createRunToolMessage({
+            id: 'msg-origin',
+            runId: 'run_origin1111',
+            state: 'running',
+            input: {
+                launchOrigin: {
+                    kind: 'session_discussion',
+                    sessionId: 'session-1',
+                    discussionId: 'discussion-1',
+                    messageIds: ['message-1'],
+                },
+            },
+        })];
+
+        expect(deriveExecutionRunSubagents({ messages })[0]?.runRef).toMatchObject({
+            runId: 'run_origin1111',
+            launchOrigin: {
+                kind: 'session_discussion',
+                sessionId: 'session-1',
+                discussionId: 'discussion-1',
+                messageIds: ['message-1'],
+            },
+        });
+    });
+
     it('reports a timed-out run as timed out rather than succeeded', () => {
         const messages = [createRunToolMessage({
             id: 'msg-1',

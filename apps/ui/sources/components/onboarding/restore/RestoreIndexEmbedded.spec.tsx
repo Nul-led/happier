@@ -24,6 +24,11 @@ vi.mock('@/utils/platform/qrScannerSupport', () => ({
     canUseCurrentDeviceQrScanner: () => true,
 }));
 
+const processAuthUrl = vi.fn(async () => true);
+vi.mock('@/hooks/auth/useScannedAuthUrlProcessor', () => ({
+    useScannedAuthUrlProcessor: () => ({ processAuthUrl, isLoading: false }),
+}));
+
 let lastScanProps: any = null;
 vi.mock('@/components/account/restore/RestoreScanComputerQrView', () => ({
     RestoreScanComputerQrView: (props: any) => {
@@ -95,6 +100,37 @@ describe('RestoreIndexEmbedded', () => {
 
             expect(tree.root.findByType('scan')).toBeTruthy();
             expect(lastScanProps?.initialPairingLink).toBe(initialPairingLink);
+        } finally {
+            act(() => {
+                tree?.unmount();
+            });
+        }
+    });
+
+    it('opens full-screen paste entry and sends the link through the canonical processor', async () => {
+        vi.resetModules();
+        lastScanProps = null;
+        processAuthUrl.mockClear();
+        const { RestoreIndexEmbedded } = await import('./RestoreIndexEmbedded');
+
+        let tree!: renderer.ReactTestRenderer;
+        try {
+            await act(async () => {
+                tree = renderer.create(<RestoreIndexEmbedded entryIntent="enter_home" onBack={vi.fn()} />);
+            });
+            await act(async () => {
+                lastScanProps.onOpenPairingLinkEntry();
+            });
+
+            const input = tree.root.findByProps({ testID: 'restore-pairing-link-input' });
+            await act(async () => {
+                input.props.onChangeText('happier:///pair?v=2&payload=opaque');
+            });
+            await act(async () => {
+                await tree.root.findByProps({ testID: 'restore-pairing-link-submit' }).props.action();
+            });
+
+            expect(processAuthUrl).toHaveBeenCalledWith('happier:///pair?v=2&payload=opaque');
         } finally {
             act(() => {
                 tree?.unmount();

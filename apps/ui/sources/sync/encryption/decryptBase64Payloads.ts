@@ -1,7 +1,7 @@
 import { decodeBase64 } from '@/encryption/base64';
 
 import { syncPerformanceTelemetry } from '../runtime/syncPerformanceTelemetry';
-import { type Decryptor, hasBase64Decryptor } from './encryptor';
+import { type Decryptor, type DecryptOptions, hasBase64Decryptor } from './encryptor';
 
 export type Base64PayloadDecryptTelemetry = Readonly<{
     decryptName: string;
@@ -27,6 +27,7 @@ export async function decryptBase64Payloads(
     decryptor: Decryptor,
     values: readonly string[],
     telemetry: Base64PayloadDecryptTelemetry,
+    options: DecryptOptions = {},
 ): Promise<(any | null)[]> {
     if (
         hasBase64Decryptor(decryptor)
@@ -35,13 +36,13 @@ export async function decryptBase64Payloads(
         return await syncPerformanceTelemetry.measureAsync(
             telemetry.decryptName,
             telemetry.decryptFields,
-            async () => decryptor.decryptBase64(values),
+            async () => decryptor.decryptBase64(values, options),
         );
     }
     const encrypted = decodeCiphertexts(values, telemetry.decode);
     return await syncPerformanceTelemetry.measureAsync(
         telemetry.decryptName,
         telemetry.decryptFields,
-        async () => decryptor.decrypt(encrypted),
+        async () => decryptor.decrypt(encrypted, options),
     );
 }

@@ -248,8 +248,8 @@ export function NewSessionEngineOptionDetail(props: NewSessionEngineOptionDetail
     const providerId = operationalBackendTarget.configuredBackendId ?? operationalBackendTarget.backendId;
     const providerSupportsFreeform = React.useMemo(() => {
         if (operationalBackendTarget.configuredBackendId) return true;
-        return providerCore?.model.supportsFreeform === true;
-    }, [operationalBackendTarget.configuredBackendId, providerCore?.model.supportsFreeform]);
+        return providerCore?.model?.supportsFreeform === true;
+    }, [operationalBackendTarget.configuredBackendId, providerCore?.model?.supportsFreeform]);
     const canEnterCustomModel = preflightModels?.unavailable === true
         ? false
         : preflightModels?.supportsFreeform === true || providerSupportsFreeform;

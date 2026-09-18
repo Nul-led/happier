@@ -1,10 +1,14 @@
+import { z } from 'zod';
+
 import {
     AutomationStoredDefinitionExecutionRecipeV1Schema,
+    AutomationStoredWorkflowDefinitionRecipeV2Schema,
     AutomationSourceSelectorIdV1Schema,
     type AutomationAssignmentInput,
     type AutomationDefinitionDetail,
     type AutomationEventTriggerDefinitionStoredPayloadV1,
     type AutomationStoredDefinitionExecutionRecipeV1,
+    type AutomationStoredWorkflowDefinitionRecipeV2,
     type AutomationSourceSelectorIdV1,
     type AutomationTriggerDefinitionInput,
     type AutomationTriggerId,
@@ -99,6 +103,28 @@ export type AutomationTriggerEditorValue = Readonly<{
     triggers: ReadonlyArray<AutomationEditorTriggerDraft>;
 }>;
 
+/**
+ * What an Automation may execute: the incumbent one-shot recipe, or a frozen
+ * workflow copy. Both arms are already accepted by the canonical Automation API
+ * union, so the editor carries the same union rather than a second draft store
+ * for workflows.
+ */
+export type AutomationEditorExecutionRecipe =
+    | AutomationStoredDefinitionExecutionRecipeV1
+    | AutomationStoredWorkflowDefinitionRecipeV2;
+
+/** The one parser for either arm, so no caller re-derives which shape it holds. */
+export const AutomationEditorExecutionRecipeSchema = z.union([
+    AutomationStoredDefinitionExecutionRecipeV1Schema,
+    AutomationStoredWorkflowDefinitionRecipeV2Schema,
+]);
+
+export function isAutomationWorkflowRecipe(
+    recipe: AutomationEditorExecutionRecipe,
+): recipe is AutomationStoredWorkflowDefinitionRecipeV2 {
+    return recipe.v === 2;
+}
+
 export type AutomationEditorDraft = AutomationTriggerEditorValue & Readonly<{
     automationId: string | null;
     /** Client-stable identity used only by a not-yet-persisted definition. */
@@ -106,7 +132,7 @@ export type AutomationEditorDraft = AutomationTriggerEditorValue & Readonly<{
     expectedTemplateVersion: number | null;
     /** True only after the canonical recipe composer reseals a next-version recipe. */
     recipeDirty?: boolean;
-    executionRecipe: AutomationStoredDefinitionExecutionRecipeV1;
+    executionRecipe: AutomationEditorExecutionRecipe;
     assignments: ReadonlyArray<AutomationAssignmentInput>;
 }>;
 
@@ -156,9 +182,9 @@ export function createAutomationEditorTriggerClientId(): string {
 /** The sole editor transition for a semantic recipe mutation. */
 export function replaceAutomationEditorExecutionRecipe(
     draft: AutomationEditorDraft,
-    executionRecipe: AutomationStoredDefinitionExecutionRecipeV1,
+    executionRecipe: AutomationEditorExecutionRecipe,
 ): AutomationEditorDraft {
-    const recipe = AutomationStoredDefinitionExecutionRecipeV1Schema.parse(executionRecipe);
+    const recipe = AutomationEditorExecutionRecipeSchema.parse(executionRecipe);
     const expectedVersion = draft.expectedTemplateVersion === null
         ? draft.executionRecipe.templateVersion
         : draft.expectedTemplateVersion + 1;
@@ -178,7 +204,7 @@ export function automationEditorDraftFromDetail(
     detail: AutomationDefinitionDetail,
     triggerDefinitions: ReadonlyMap<string, AutomationEditorTriggerDefinitionSeed>,
 ): AutomationEditorDraft | null {
-    const executionRecipe = AutomationStoredDefinitionExecutionRecipeV1Schema.safeParse(detail.executionRecipe);
+    const executionRecipe = AutomationEditorExecutionRecipeSchema.safeParse(detail.executionRecipe);
     if (!executionRecipe.success || executionRecipe.data.templateVersion !== detail.templateVersion) return null;
     const triggers: AutomationEditorTriggerDraft[] = [];
     for (const trigger of detail.triggers) {

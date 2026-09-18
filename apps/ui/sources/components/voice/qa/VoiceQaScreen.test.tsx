@@ -1,3 +1,4 @@
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,7 +19,6 @@ import {
   renderScreen as renderTestScreen,
   standardCleanup,
 } from '@/dev/testkit';
-import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 import { installVoiceQaCommonModuleMocks } from './voiceQaScreenTestHelpers';
 import {
   beginVoiceQaOutputTap,
@@ -31,14 +31,14 @@ import {
   recordMachineRpcPeerMediationReceipt,
 } from '@/sync/domains/machines/peer/mediation/rpc/receiptLog';
 
-const voiceQaControllerMocks = {
+const voiceQaControllerMocks = vi.hoisted(() => ({
   start: vi.fn(async () => {}),
   stop: vi.fn(async () => {}),
   clear: vi.fn(() => {}),
   sendPrompt: vi.fn(async () => {}),
   sendContextUpdate: vi.fn(async () => {}),
-};
-const recordedAudioTranscriptionControllerMocks = {
+}));
+const recordedAudioTranscriptionControllerMocks = vi.hoisted(() => ({
   transcribe: vi.fn<(
     params: Readonly<{
       sessionId?: string | null;
@@ -47,12 +47,12 @@ const recordedAudioTranscriptionControllerMocks = {
       decryptSecretValue?: (value: unknown) => string | null;
     }>,
   ) => Promise<string | null>>(async () => null),
-};
-const outputFixturePlaybackMocks = {
+}));
+const outputFixturePlaybackMocks = vi.hoisted(() => ({
   play: vi.fn(async () => {}),
   stop: vi.fn(() => {}),
-};
-const daemonRecordedAudioFallbackMocks = {
+}));
+const daemonRecordedAudioFallbackMocks = vi.hoisted(() => ({
   transcribeRecordedAudio: vi.fn<(
     params: Readonly<{
       sessionId?: string | null;
@@ -67,8 +67,8 @@ const daemonRecordedAudioFallbackMocks = {
     language: 'en',
     modelPackId: 'daemon-pack',
   })),
-};
-const daemonVoiceInferenceClientConstructorMock = vi.fn<(deps?: Record<string, unknown>) => void>();
+}));
+const daemonVoiceInferenceClientConstructorMock = vi.hoisted(() => vi.fn<(deps?: Record<string, unknown>) => void>());
 
 type PassthroughComponentProps = Readonly<Record<string, unknown> & { children?: React.ReactNode }>;
 
@@ -76,7 +76,10 @@ function createPassthroughComponentMock(typeName: string) {
     return (props: PassthroughComponentProps) => React.createElement(typeName, props, props.children);
 }
 
-const expoRouterMock = createExpoRouterMock();
+const expoRouterMock = await vi.hoisted(async () => {
+  const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+  return createExpoRouterMock();
+});
 
 async function renderScreen(element: React.ReactElement) {
   const { AuthProvider } = await import('@/auth/context/AuthContext');
@@ -219,8 +222,8 @@ describe('VoiceQaScreen', () => {
     });
     daemonVoiceInferenceClientConstructorMock.mockReset();
     resetVoiceQaStoreForTests();
-    useVoiceTargetStore.getState().setPrimaryActionSessionId(null);
-    useVoiceTargetStore.getState().setLastFocusedSessionId(null);
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress(null);
+    useVoiceTargetStore.getState().setLastFocusedSessionAddress(null);
     voiceSessionBindingStore.setState({
       ...voiceSessionBindingStore.getState(),
       runtimeBindingsByConversationSessionId: {},
@@ -361,8 +364,9 @@ describe('VoiceQaScreen', () => {
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice_session_1',
+        conversationSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'voice_session_1' },
         lifetime: 'runtime_attempt',
-        targetSessionId: null,
+        targetSessionAddress: null,
         transcriptMode: 'synthetic',
         updatedAt: Date.now(),
       });
@@ -400,6 +404,7 @@ describe('VoiceQaScreen', () => {
           },
           voice_session_1: {
             id: 'voice_session_1',
+            serverId: getActiveServerSnapshot().serverId,
             updatedAt: 10,
             metadata: {
               systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true },
@@ -409,6 +414,7 @@ describe('VoiceQaScreen', () => {
                 controlSessionId: '__voice_agent__',
                 transcriptMode: 'native_session',
                 targetSessionId: 'target_s1',
+                targetServerId: getActiveServerSnapshot().serverId,
                 updatedAt: 100,
               },
             },
@@ -435,7 +441,8 @@ describe('VoiceQaScreen', () => {
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice_session_1',
-        targetSessionId: 'target_s1',
+        conversationSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'voice_session_1' },
+        targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'target_s1' },
         transcriptMode: 'native_session',
         updatedAt: Date.now(),
     });
@@ -476,7 +483,8 @@ describe('VoiceQaScreen', () => {
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice_session_1',
-        targetSessionId: 'target_s1',
+        conversationSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'voice_session_1' },
+        targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'target_s1' },
         transcriptMode: 'native_session',
         updatedAt: Date.now(),
     });
@@ -499,15 +507,16 @@ describe('VoiceQaScreen', () => {
         provider: 'local_voice_agent',
         sessionId: '__voice_agent__',
         status: 'running',
-        targetSessionId: 'target_s1',
+        targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'target_s1' },
         runtimeSessionId: 'voice_session_1',
     }));
-    useVoiceTargetStore.getState().setPrimaryActionSessionId('voice_session_2');
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: getActiveServerSnapshot().serverId, sessionId: 'voice_session_2' });
     voiceSessionBindingStore.getState().bind({
         adapterId: 'local_conversation',
         controlSessionId: '__voice_agent__',
         conversationSessionId: 'voice_session_2',
-        targetSessionId: 'voice_session_2',
+        conversationSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'voice_session_2' },
+        targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'voice_session_2' },
         transcriptMode: 'native_session',
         updatedAt: Date.now(),
     });
@@ -536,7 +545,7 @@ describe('VoiceQaScreen', () => {
         ...state,
         provider: 'local_voice_agent',
         sessionId: '__voice_agent__',
-        targetSessionId: '__voice_agent__',
+        targetSessionAddress: null,
         status: 'running',
     }));
     tree = (await renderScreen(<VoiceQaScreen />)).tree;
@@ -582,11 +591,11 @@ describe('VoiceQaScreen', () => {
         ...state,
         provider: 'local_voice_agent',
         sessionId: '__voice_agent__',
-        targetSessionId: '__voice_agent__',
+        targetSessionAddress: null,
         runtimeSessionId: 'hidden_voice_conversation',
         status: 'running',
     }));
-    useVoiceTargetStore.getState().setPrimaryActionSessionId('s_current');
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: getActiveServerSnapshot().serverId, sessionId: 's_current' });
     tree = (await renderScreen(<VoiceQaScreen />)).tree;
 
     const items = tree.findAll((node) => String(node.type) === 'Item');
@@ -602,6 +611,7 @@ describe('VoiceQaScreen', () => {
     const targetSessionId = 'stable_target';
     const runtimeSessionId = 'stable_runtime';
     const serverId = 'voice-qa-label-server';
+    const runtimeServerId = getActiveServerSnapshot().serverId;
 
     storage.setState((state: any) => ({
       settings: {
@@ -628,15 +638,15 @@ describe('VoiceQaScreen', () => {
         },
         [runtimeSessionId]: {
           id: runtimeSessionId,
-          serverId,
+          serverId: runtimeServerId,
           presence: 1,
           metadata: {
             name: runtimeSessionId,
           },
         },
       },
-      sessionListRenderables: {
-        ...(state.sessionListRenderables ?? {}),
+      sessionListRowsByServerId: { [serverId]: {
+        ...(state.sessionListRowsByServerId?.[serverId] ?? {}),
         [targetSessionId]: {
           id: targetSessionId,
           metadata: {
@@ -644,6 +654,7 @@ describe('VoiceQaScreen', () => {
             path: '/Users/alice/preferred-private-target',
           },
         },
+      }, [runtimeServerId]: {
         [runtimeSessionId]: {
           id: runtimeSessionId,
           metadata: {
@@ -651,11 +662,14 @@ describe('VoiceQaScreen', () => {
           },
         },
       },
+      },
       sessionListIndexByServerId: {
         ...(state.sessionListIndexByServerId ?? {}),
         [serverId]: [
           { type: 'session', sessionId: targetSessionId, serverId, serverName: 'Voice QA labels' },
-          { type: 'session', sessionId: runtimeSessionId, serverId, serverName: 'Voice QA labels' },
+        ],
+        [runtimeServerId]: [
+          { type: 'session', sessionId: runtimeSessionId, serverId: runtimeServerId, serverName: 'Voice runtime' },
         ],
       },
       concurrentSessionListCacheByServerId: {},
@@ -664,7 +678,7 @@ describe('VoiceQaScreen', () => {
       ...state,
       provider: 'local_voice_agent',
       sessionId: '__voice_agent__',
-      targetSessionId,
+      targetSessionAddress: { serverId, sessionId: targetSessionId },
       runtimeSessionId,
       status: 'running',
     }));
@@ -680,24 +694,25 @@ describe('VoiceQaScreen', () => {
 
     await act(async () => {
       storage.setState((state: any) => ({
-        sessionListRenderables: {
-          ...state.sessionListRenderables,
+        sessionListRowsByServerId: { [serverId]: {
+          ...state.sessionListRowsByServerId?.[serverId],
           [targetSessionId]: {
-            ...state.sessionListRenderables[targetSessionId],
+            ...state.sessionListRowsByServerId?.[serverId]?.[targetSessionId],
             metadata: {
               name: 'Updated offline target label',
               summaryText: 'Updated preferred target summary',
               path: '/Users/alice/updated-private-target',
             },
           },
+        }, [runtimeServerId]: {
           [runtimeSessionId]: {
-            ...state.sessionListRenderables[runtimeSessionId],
+            ...state.sessionListRowsByServerId?.[runtimeServerId]?.[runtimeSessionId],
             metadata: {
               name: 'Updated runtime label',
               summaryText: 'Updated preferred runtime summary',
             },
           },
-        },
+        } },
       } as any));
     });
     expect(readLabel('devVoiceQa.targetSession')).toBe('devVoiceQa.targetSession');
@@ -723,9 +738,9 @@ describe('VoiceQaScreen', () => {
 
     await act(async () => {
       storage.setState((state: any) => {
-        const sessionListRenderables = { ...state.sessionListRenderables };
-        delete sessionListRenderables[targetSessionId];
-        delete sessionListRenderables[runtimeSessionId];
+        const serverRows = { ...state.sessionListRowsByServerId?.[serverId] };
+        delete serverRows[targetSessionId];
+        delete serverRows[runtimeSessionId];
         return {
           sessions: {
             ...state.sessions,
@@ -740,7 +755,7 @@ describe('VoiceQaScreen', () => {
               metadata: { name: 'Raw offline runtime label' },
             },
           },
-          sessionListRenderables,
+          sessionListRowsByServerId: { ...state.sessionListRowsByServerId, [serverId]: serverRows, [runtimeServerId]: {} },
         } as any;
       });
     });
@@ -991,7 +1006,8 @@ describe('VoiceQaScreen', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice_session_qa_open',
-      targetSessionId: 'target_s1',
+      conversationSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'voice_session_qa_open' },
+      targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'target_s1' },
       transcriptMode: 'native_session',
       updatedAt: Date.now(),
     });
@@ -1041,7 +1057,8 @@ describe('VoiceQaScreen', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice_hidden_runtime',
-      targetSessionId: 'target_s1',
+      conversationSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'voice_hidden_runtime' },
+      targetSessionAddress: { serverId: getActiveServerSnapshot().serverId, sessionId: 'target_s1' },
       transcriptMode: 'native_session',
       updatedAt: Date.now(),
     });
@@ -1105,7 +1122,7 @@ describe('VoiceQaScreen', () => {
     expect(String(resultText.props.children)).toContain('hello explicit daemon stt');
     expect(storage.getState().settings.voice).toEqual(configuredVoiceBeforeTranscription);
     expect((storage.getState() as any).sessions?.['session-daemon-stt']).toBeUndefined();
-    expect((storage.getState() as any).sessionListRenderables?.['session-daemon-stt']).toBeUndefined();
+    expect(Object.hasOwn(storage.getState(), 'sessionListRenderables')).toBe(false);
     expect((storage.getState() as any).machines?.['machine-daemon-stt']).toBeUndefined();
   });
 

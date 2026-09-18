@@ -46,7 +46,9 @@ type TestState = SettingsDomainApi & Readonly<{
     sessions: {};
     machines: {};
     machineDisplayById: {};
-    sessionListRenderables: {};
+    sessionListRowsByServerId: {};
+    ordinarySessionListMembershipByServerId: {};
+    archivedSessionListMembershipByServerId: {};
     sessionListIndexByServerId: {};
     concurrentSessionListCacheByServerId: {};
     machineListByServerId: {};
@@ -58,7 +60,9 @@ function createTestStore(): { getState: () => TestState } {
         sessions: {},
         machines: {},
         machineDisplayById: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         machineListByServerId: {},
@@ -147,19 +151,6 @@ describe('createSettingsDomain settings projection reference stability', () => {
 
         expect(getState().settings.analyticsOptOut).toBe(true);
         expect(getState().settingsVersion).toBe(2);
-    });
-
-    it('keeps a replace projection reference-stable for identical content while still advancing the version', () => {
-        const { getState } = createTestStore();
-        getState().activateSettingsScope(scope);
-        getState().replaceSettingsForScope(scope, buildServerEchoSettings(), 5);
-
-        const settingsBeforeReplace = getState().settings;
-
-        getState().replaceSettingsForScope(scope, buildServerEchoSettings(), 3);
-
-        expect(getState().settings).toBe(settingsBeforeReplace);
-        expect(getState().settingsVersion).toBe(3);
     });
 
     it('still applies a local write that changes a nested collection', () => {

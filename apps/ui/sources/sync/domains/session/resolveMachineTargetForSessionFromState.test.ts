@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
 import {
     resolveMachineControlTargetForSessionFromState,
@@ -40,7 +43,7 @@ describe('resolveMachineTargetForSessionFromState', () => {
                     metadata: { machineId: 'machine-a', path: '/repo/a' },
                 },
             },
-            sessionListRowStateByServerId: {
+            sessionListRowsByServerId: {
                 'home-a': { 'same-session': row('machine-a', '/repo/a') },
                 'home-b': { 'same-session': row('machine-b', '/repo/b') },
             },
@@ -48,6 +51,7 @@ describe('resolveMachineTargetForSessionFromState', () => {
                 'machine-a': activeMachine('machine-a', 'a.local'),
                 'machine-b': activeMachine('machine-b', 'b.local'),
             },
+            machineListByServerId: { 'home-b': [activeMachine('machine-b', 'b.local')] },
             getProjectForSession: () => ({ key: { machineId: 'machine-a', rootPath: '/repo/a' } }),
         } as any;
 
@@ -60,6 +64,23 @@ describe('resolveMachineTargetForSessionFromState', () => {
             basePath: '/repo/b',
             confidence: 'reachable',
         });
+    });
+
+    it('resolves a Home-qualified terminal target from that Home machine inventory', () => {
+        const activeMachine = createMachineFixture({ id: 'same-machine', active: false });
+        const foreignMachine = createMachineFixture({ id: 'same-machine', active: true });
+        const foreignSession = createSessionFixture({
+            id: 'same-session', serverId: 'home-b', active: true,
+            metadata: { path: '/home-b/project', host: 'home-b', machineId: 'same-machine' },
+        });
+        const state = {
+            sessions: { 'same-session': createSessionFixture({ id: 'same-session', serverId: 'home-a' }) },
+            machines: { 'same-machine': activeMachine },
+            machineListByServerId: { 'home-b': [foreignMachine] },
+            sessionListRowsByServerId: { 'home-b': { 'same-session': buildSessionListRenderableFromSession(foreignSession) } },
+        };
+        expect(resolveMachineTargetForSessionFromState(state, { serverId: 'home-b', sessionId: 'same-session' }))
+            .toEqual({ machineId: 'same-machine', basePath: '/home-b/project' });
     });
 
     it('does not use layout-v1 shared metadata as a private machine control fallback', () => {

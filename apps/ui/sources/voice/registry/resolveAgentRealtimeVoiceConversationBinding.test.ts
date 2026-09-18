@@ -14,7 +14,7 @@ const declined = (
 ): AgentRealtimeSessionAvailability => Object.freeze({ available: false, code });
 
 describe('resolveAgentRealtimeVoiceConversationBinding', () => {
-  it('keeps direct control on the visible session while preserving only the requested target', async () => {
+  it('keeps direct control on the exact visible-session address', async () => {
     const inspect = vi.fn(async () => available);
     const ensureGlobalConversation = vi.fn();
 
@@ -23,25 +23,26 @@ describe('resolveAgentRealtimeVoiceConversationBinding', () => {
       agent,
       controlSessionId: 'visible-control',
       globalSessionId: 'global-voice-home',
-      requestedTargetSessionId: 'requested-target',
+      requestedTargetSessionAddress: { serverId: 'home-b', sessionId: 'visible-control' },
+      globalConversationServerId: 'home-b',
       inspect,
       ensureGlobalConversation,
     })).resolves.toEqual({
-      conversationSessionId: 'visible-control',
+      conversationSessionAddress: { serverId: 'home-b', sessionId: 'visible-control' },
       transcriptMode: 'native_session',
-      targetSessionId: 'requested-target',
+      targetSessionAddress: { serverId: 'home-b', sessionId: 'visible-control' },
     });
     expect(inspect).toHaveBeenCalledWith({
-      sessionId: 'visible-control',
+      sessionAddress: { serverId: 'home-b', sessionId: 'visible-control' },
       provider,
       agent,
     });
     expect(ensureGlobalConversation).not.toHaveBeenCalled();
   });
 
-  it('always obtains and verifies a hidden global conversation without attaching the requested target', async () => {
-    const inspect = vi.fn(async (input: Readonly<{ sessionId: string }>) =>
-      input.sessionId === 'hidden-conversation' ? available : declined('session_unavailable'));
+  it('obtains and verifies a hidden global conversation on the requested target Home', async () => {
+    const inspect = vi.fn(async (input: Readonly<{ sessionAddress: Readonly<{ sessionId: string }> }>) =>
+      input.sessionAddress.sessionId === 'hidden-conversation' ? available : declined('session_unavailable'));
     const ensureGlobalConversation = vi.fn(async (input: Readonly<{
       agent: typeof agent;
       isReusableSession(input: Readonly<{ sessionId: string }>): Promise<boolean>;
@@ -56,17 +57,18 @@ describe('resolveAgentRealtimeVoiceConversationBinding', () => {
       agent,
       controlSessionId: 'global-voice-home',
       globalSessionId: 'global-voice-home',
-      requestedTargetSessionId: 'visible-target',
+      requestedTargetSessionAddress: { serverId: 'home-b', sessionId: 'visible-target' },
+      globalConversationServerId: 'home-b',
       inspect,
       ensureGlobalConversation,
     })).resolves.toEqual({
-      conversationSessionId: 'hidden-conversation',
+      conversationSessionAddress: { serverId: 'home-b', sessionId: 'hidden-conversation' },
       transcriptMode: 'native_session',
-      targetSessionId: 'visible-target',
+      targetSessionAddress: { serverId: 'home-b', sessionId: 'visible-target' },
     });
     expect(ensureGlobalConversation).toHaveBeenCalledOnce();
     expect(inspect).not.toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 'visible-target',
+      sessionAddress: { serverId: 'home-b', sessionId: 'visible-target' },
     }));
   });
 
@@ -76,7 +78,8 @@ describe('resolveAgentRealtimeVoiceConversationBinding', () => {
       agent,
       controlSessionId: 'inactive-control',
       globalSessionId: 'global-voice-home',
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: { serverId: 'home-a', sessionId: 'inactive-control' },
+      globalConversationServerId: 'home-a',
       inspect: async () => declined('session_unavailable'),
       ensureGlobalConversation: vi.fn(),
     })).rejects.toMatchObject({
@@ -91,7 +94,8 @@ describe('resolveAgentRealtimeVoiceConversationBinding', () => {
       agent,
       controlSessionId: 'global-voice-home',
       globalSessionId: 'global-voice-home',
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: null,
+      globalConversationServerId: 'home-a',
       inspect: async () => declined('update_required'),
       ensureGlobalConversation: async () => 'hidden-conversation',
     })).rejects.toMatchObject({ code: 'update_required' });
@@ -106,7 +110,8 @@ describe('resolveAgentRealtimeVoiceConversationBinding', () => {
       agent,
       controlSessionId: 'visible-control',
       globalSessionId: 'global-voice-home',
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: { serverId: 'home-a', sessionId: 'visible-control' },
+      globalConversationServerId: 'home-a',
       inspect: async () => declined(null),
       ensureGlobalConversation: vi.fn(),
     })).resolves.toBeNull();

@@ -1,10 +1,17 @@
 import * as React from 'react';
 import { View } from 'react-native';
 
+import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
+
 import { PersonalHomeSetupSurface } from '../setup/PersonalHomeSetupSurface';
 import { PersonalHomeRecoveryStrip } from './PersonalHomeRecoveryStrip';
+import { PersonalHomeSetupReveal } from './PersonalHomeSetupReveal';
 import { isPersonalHomeBootstrapRuntimeHost } from './personalHomeBootstrapHost';
-import type { PersonalHomeBootstrapOperation, PersonalHomeFacts } from './personalHomeBootstrapTypes';
+import type {
+    PersonalHomeBootstrapOperation,
+    PersonalHomeBootstrapSnapshot,
+    PersonalHomeFacts,
+} from './personalHomeBootstrapTypes';
 import {
     usePersonalHomeBootstrapController,
     type PersonalHomeBootstrapOperationRunner,
@@ -68,7 +75,43 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
         props.onUseExisting?.();
     }, [controller.execute, props.onUseExisting, props.useExistingRuntimeOperation]);
 
-    if (!enabled || !controller.snapshot.shouldGateShell) {
+    const gating = enabled && controller.snapshot.shouldGateShell;
+    const reducedMotion = useReducedMotionPreference();
+    const departingSnapshotRef = React.useRef<PersonalHomeBootstrapSnapshot | null>(null);
+    const [revealSnapshot, setRevealSnapshot] = React.useState<PersonalHomeBootstrapSnapshot | null>(null);
+    const handleRevealSettled = React.useCallback(() => setRevealSnapshot(null), []);
+
+    React.useEffect(() => {
+        if (gating) {
+            // Only a frame the user could actually read is worth revealing from. The momentary
+            // `checking` pass before the first authoritative facts arrive is not one.
+            if (controller.snapshot.phase !== 'checking') departingSnapshotRef.current = controller.snapshot;
+            // Re-gating (an existing-runtime decision, say) cancels a settle already in flight;
+            // the live surface owns the frame again.
+            setRevealSnapshot((current) => current === null ? current : null);
+            return;
+        }
+        const departing = departingSnapshotRef.current;
+        departingSnapshotRef.current = null;
+        if (!departing || reducedMotion) return;
+        setRevealSnapshot(departing);
+    }, [controller.snapshot, gating, reducedMotion]);
+
+    const setupProps: React.ComponentProps<typeof PersonalHomeSetupSurface> = {
+        snapshot: gating ? controller.snapshot : revealSnapshot ?? controller.snapshot,
+        activeTask: controller.facts?.activeTask ?? null,
+        onRetry: controller.retry,
+        onOpenDetails: props.onOpenDetails,
+        onUseExisting: props.useExistingRuntimeOperation || props.onUseExisting
+            ? handleUseExisting
+            : undefined,
+        onUseAnotherHome: props.onUseAnotherHome,
+    };
+    const setupSurface = gating || revealSnapshot !== null
+        ? props.setupSurface ? props.setupSurface(setupProps) : <PersonalHomeSetupSurface {...setupProps} />
+        : null;
+
+    if (!gating) {
         // The shell is released once Home readiness is derived from facts. A post-shell daemon
         // failure stays scoped to a recovery strip in the same frame; the first-run gate never
         // reopens for it.
@@ -99,23 +142,18 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
                         onRetry={controller.retry}
                     />
                 ) : null}
+                {revealSnapshot ? (
+                    <PersonalHomeSetupReveal onSettled={handleRevealSettled}>
+                        {setupSurface}
+                    </PersonalHomeSetupReveal>
+                ) : null}
             </View>
         );
     }
 
-    const setupProps: React.ComponentProps<typeof PersonalHomeSetupSurface> = {
-        snapshot: controller.snapshot,
-        activeTask: controller.facts?.activeTask ?? null,
-        onRetry: controller.retry,
-        onOpenDetails: props.onOpenDetails,
-        onUseExisting: props.useExistingRuntimeOperation || props.onUseExisting
-            ? handleUseExisting
-            : undefined,
-        onUseAnotherHome: props.onUseAnotherHome,
-    };
     return (
         <>
-            {props.setupSurface ? props.setupSurface(setupProps) : <PersonalHomeSetupSurface {...setupProps} />}
+            {setupSurface}
         </>
     );
 }

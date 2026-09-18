@@ -10,7 +10,7 @@ import { profileDefaults } from '@/sync/domains/profiles/profile';
 import { coerceExecutionRunsGuidanceEntries } from '@/sync/domains/settings/executionRunsGuidance';
 import { readSessionWorkspaceContext } from '@/sync/domains/session/readSessionWorkspaceContext';
 import { ThemeProfilesLocalStateSchema } from '@/theme/profiles/themeProfilePersistence';
-import { deriveSessionRuntimePresentationState } from '@/sync/domains/session/attention/runtimePresentation';
+import { projectUiSessionRuntimeAwareness } from '@/sync/domains/session/attention/runtimePresentation';
 import { getSessionStorageKind } from '@/sync/domains/session/sessionStorageKind';
 import {
     buildDemoWorld,
@@ -100,7 +100,7 @@ describe('buildDemoWorld', () => {
 
         const workingSessions = world.sessions.filter((session) => session.active || session.thinking);
         const visiblyWorkingSessions = world.sessions.filter((session) => (
-            deriveSessionRuntimePresentationState({ ...session, nowMs: Date.now() }).working
+            projectUiSessionRuntimeAwareness({ ...session, nowMs: Date.now() }).working
         ));
         const needsAttentionSessions = world.sessions.filter((session) => (session.pendingBlockedCount ?? 0) > 0);
         expect(workingSessions.length).toBeGreaterThanOrEqual(2);

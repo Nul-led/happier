@@ -3,9 +3,9 @@ import {
   resolveSessionListPreferredSessionMetadataFromState,
   type SessionMetadataLike,
 } from '@/sync/domains/session/listing/sessionListLookupState';
-import type { Session } from '@/sync/domains/state/storageTypes';
 import type { ResolvedVoiceContextFormatterPrefs } from '@/voice/context/contextFormatters';
 import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoiceSessionOwnerMetadata';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { redactVoicePathLikeString } from '@/voice/shared/redactVoicePathLikeData';
 
@@ -54,22 +54,22 @@ function ownerLabelFromMetadata(
 }
 
 export function resolveVoiceSessionLabel(
-  sessionId: string,
+  target: SessionAddress | string,
   prefs: VoiceSessionLabelPrefs,
   options?: Readonly<{
     metadata?: SessionMetadataLike;
     fallbackLabel?: string;
   }>,
 ): string {
-  const state: any = storage.getState();
-  const session = (state?.sessions?.[sessionId] ?? null) as Session | null;
-  const lookupMetadata = resolveSessionListPreferredSessionMetadataFromState(state, sessionId);
-  const ownerMetadata = readVoiceSessionOwnerMetadataFromState(state, sessionId);
+  const state = storage.getState();
+  const sessionId = typeof target === 'string' ? target : target.sessionId;
+  const lookupMetadata = resolveSessionListPreferredSessionMetadataFromState(state, target);
+  const ownerMetadata = readVoiceSessionOwnerMetadataFromState(state, target);
   const label =
-    summaryLabelFromMetadata(lookupMetadata ?? session?.metadata ?? null, prefs)
+    summaryLabelFromMetadata(lookupMetadata, prefs)
     ?? summaryLabelFromMetadata(options?.metadata, prefs)
     ?? ownerLabelFromMetadata(ownerMetadata, prefs)
-    ?? (!session ? ownerLabelFromMetadata(options?.metadata, prefs) : null);
+    ?? (!lookupMetadata ? ownerLabelFromMetadata(options?.metadata, prefs) : null);
 
   if (label === sessionId) {
     return options?.fallbackLabel ?? 'the current session';

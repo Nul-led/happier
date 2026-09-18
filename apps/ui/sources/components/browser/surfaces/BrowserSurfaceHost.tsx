@@ -724,6 +724,7 @@ export function BrowserSurfaceHost(props: Readonly<{
                 state={surfaceState.browserState}
                 onCommand={onCommand}
                 onViewLifecycle={applyViewLifecycleSignal}
+                lifecycleState={lifecycleSlot ? lifecycleSnapshot.lifecycleState : undefined}
                 launchpadRows={props.launchpadRows}
                 launchpadRefreshStatus={props.launchpadRefreshStatus}
                 launchpadRefreshError={props.launchpadRefreshError}

@@ -8,9 +8,9 @@ import type { Machine } from '@/sync/domains/state/storageTypes';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import { t } from '@/text';
 import { MachineCliGlyphs } from '@/components/sessions/new/components/MachineCliGlyphs';
-import { isMachineVisibleForLaunchSelection } from '@/sync/domains/machines/identity/filterVisibleMachines';
 import { resolveMachinePickerPresence } from './resolveMachinePickerPresence';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { buildMachineSelectionBuckets } from './machineSelection/buildMachineSelectionBuckets';
 
 export interface MachineSelectorProps {
     machines: ReadonlyArray<Machine>;
@@ -58,20 +58,6 @@ export interface MachineSelectorProps {
     dropdownSubtitle?: string | null;
     dropdownTestID?: string;
     popoverBoundaryRef?: React.RefObject<RNView> | null;
-}
-
-function isMachineSelectableForLaunch(machine: Machine): boolean {
-    return resolveMachinePickerPresence(machine).selectable;
-}
-
-function prioritizeSelectableMachines<T extends Machine>(machines: ReadonlyArray<T>): T[] {
-    return machines
-        .map((machine, index) => ({ machine, index, selectable: isMachineSelectableForLaunch(machine) }))
-        .sort((left, right) => {
-            if (left.selectable !== right.selectable) return left.selectable ? -1 : 1;
-            return left.index - right.index;
-        })
-        .map((entry) => entry.machine);
 }
 
 export function MachineSelector({
@@ -124,62 +110,31 @@ export function MachineSelector({
         return machineReadinessTestIdPrefix ? `${machineReadinessTestIdPrefix}:${machine.id}` : undefined;
     }, [machineReadinessTestIdPrefix]);
     const selectedMachineId = selectedMachine?.id ?? null;
-    const isVisibleForPicker = React.useCallback((machine: Machine) => {
-        return isMachineVisibleForLaunchSelection(machine)
-            || (includeSelectedUnavailableMachine && machine.id === selectedMachineId);
-    }, [includeSelectedUnavailableMachine, selectedMachineId]);
-
-    const visibleMachines = React.useMemo(
-        () => machines.filter(isVisibleForPicker),
-        [isVisibleForPicker, machines],
-    );
-    const visibleRecentMachines = React.useMemo(
-        () => recentMachines.filter(isVisibleForPicker),
-        [isVisibleForPicker, recentMachines],
-    );
-    const visibleFavoriteMachines = React.useMemo(
-        () => favoriteMachines.filter(isVisibleForPicker),
-        [favoriteMachines, isVisibleForPicker],
-    );
-    const launchPinnedRecentMachines = React.useMemo(
-        () => disableOfflineMachines
-            ? visibleRecentMachines.filter(isMachineSelectableForLaunch)
-            : visibleRecentMachines,
-        [disableOfflineMachines, visibleRecentMachines],
-    );
-    const launchPinnedFavoriteMachines = React.useMemo(
-        () => disableOfflineMachines
-            ? visibleFavoriteMachines.filter(isMachineSelectableForLaunch)
-            : visibleFavoriteMachines,
-        [disableOfflineMachines, visibleFavoriteMachines],
-    );
-    const favoriteMachineIdSet = React.useMemo(() => {
-        if (!showFavorites) return new Set<string>();
-        return new Set<string>(launchPinnedFavoriteMachines.map((machine) => machine.id));
-    }, [launchPinnedFavoriteMachines, showFavorites]);
-    const visibleRecentMachinesWithoutFavorites = React.useMemo(() => {
-        if (!showRecent) return launchPinnedRecentMachines;
-        if (favoriteMachineIdSet.size === 0) return launchPinnedRecentMachines;
-        return launchPinnedRecentMachines.filter((machine) => !favoriteMachineIdSet.has(machine.id));
-    }, [favoriteMachineIdSet, launchPinnedRecentMachines, showRecent]);
-    const visibleAllMachines = React.useMemo(() => {
-        const pinnedIds = new Set<string>();
-        if (showFavorites) for (const machine of launchPinnedFavoriteMachines) pinnedIds.add(machine.id);
-        if (showRecent) for (const machine of visibleRecentMachinesWithoutFavorites) pinnedIds.add(machine.id);
-        const unpinnedMachines = pinnedIds.size === 0
-            ? visibleMachines
-            : visibleMachines.filter((machine) => !pinnedIds.has(machine.id));
-        return disableOfflineMachines
-            ? prioritizeSelectableMachines(unpinnedMachines)
-            : unpinnedMachines;
-    }, [
-        disableOfflineMachines,
-        launchPinnedFavoriteMachines,
+    const bucketModel = React.useMemo(() => buildMachineSelectionBuckets({
+        machines,
+        recentMachines,
+        favoriteMachines,
         showFavorites,
         showRecent,
-        visibleMachines,
-        visibleRecentMachinesWithoutFavorites,
+        disableOfflineMachines,
+        favoriteGroupPlacement,
+        includeSelectedUnavailableMachineId: includeSelectedUnavailableMachine ? selectedMachineId : null,
+    }), [
+        disableOfflineMachines,
+        favoriteGroupPlacement,
+        favoriteMachines,
+        includeSelectedUnavailableMachine,
+        machines,
+        recentMachines,
+        selectedMachineId,
+        showFavorites,
+        showRecent,
     ]);
+    const visibleMachines = bucketModel.visibleMachines;
+    const launchPinnedFavoriteMachines = bucketModel.favoriteMachines;
+    const favoriteMachineIdSet = bucketModel.favoriteMachineIdSet;
+    const visibleRecentMachinesWithoutFavorites = bucketModel.recentMachinesWithoutFavorites;
+    const visibleAllMachines = bucketModel.allMachines;
     const machineById = React.useMemo(() => {
         return new Map([
             ...visibleMachines,

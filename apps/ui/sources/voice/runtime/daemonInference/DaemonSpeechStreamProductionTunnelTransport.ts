@@ -658,7 +658,6 @@ function createBinaryOpenBase(input: Readonly<{
     destination: input.destination,
     supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
     selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-    allowV1Fallback: false,
   };
 }
 
@@ -781,11 +780,16 @@ async function tryOpenDirectTunnel(
   });
   const open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpenV2 = params.direct.version === 2
     ? {
-        ...base,
         v: 2,
+        kind: 'open',
+        tunnelId: params.tunnelId,
+        targetMachineId: params.input.machineTarget.machineId,
         routeKind: 'loopback_direct',
+        destination: params.destination,
         grant: params.direct.grant,
         proof: params.direct.proof,
+        supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
+        selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
       }
     : {
         ...base,

@@ -172,4 +172,32 @@ describe('Iroh Home transport diagnostics materializer', () => {
         }
         expect(readIrohHomeTransportDiagnostics()).toHaveLength(135);
     });
+
+    it('retires only the explicitly forgotten Home while preserving saved offline Homes', async () => {
+        const {
+            createIrohHomeTransportDiagnosticsPublisher,
+            readIrohHomeTransportDiagnostics,
+            retireIrohHomeTransportDiagnostics,
+        } = await import('./irohHomeTransportDiagnostics');
+        for (const homeServerIdentityId of ['forgotten-home', 'saved-offline-home']) {
+            const publisher = createIrohHomeTransportDiagnosticsPublisher({
+                producerId: 'retirement-test', leaseId: homeServerIdentityId, homeServerIdentityId,
+            });
+            publisher.publish(diagnostics({
+                homeServerIdentityId, state: 'connected', atMs: 10, observedPath: 'relay',
+            }));
+            publisher.release(diagnostics({
+                homeServerIdentityId, state: 'disconnected', atMs: 20, observedPath: 'relay',
+            }));
+        }
+
+        retireIrohHomeTransportDiagnostics('forgotten-home');
+
+        expect(readIrohHomeTransportDiagnostics().map((entry) => entry.homeServerIdentityId))
+            .toEqual(['saved-offline-home']);
+        expect(readIrohHomeTransportDiagnostics()[0]).toMatchObject({
+            state: 'disconnected',
+            lastKnown: { carrier: 'iroh', observedPath: 'relay' },
+        });
+    });
 });

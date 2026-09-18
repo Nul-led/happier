@@ -1,30 +1,30 @@
 import { storage } from '@/sync/domains/state/storage';
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
 import { readDisplayMachineIdForSession, readDisplayPathForSession } from '@/sync/ops/sessionMachineTarget';
-import { resolveVoiceActionTargetSessionId, useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
+import { resolveVoiceActionTargetAddress, useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
 import { getRecentPathsForMachine } from '@/utils/sessions/recentPaths';
 import { buildSafeWorkspaceLabel, buildSafeWorkspaceLabels } from '@/utils/worktree/workspaceHandles';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { resolveCanonicalMachineId } from '@/sync/domains/machines/identity/resolveCanonicalMachineId';
 import { normalizeNonEmptyString, resolveVoiceMachineLabel } from './shared';
 import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoiceSessionOwnerMetadata';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 function resolveDefaultMachineId(state: any): string | null {
   const machines = Object.values(state?.machines ?? {}) as Array<{ id: string; replacedByMachineId?: string | null; replacedAt?: unknown }>;
-  const sessionsObj = state?.sessions ?? {};
   const voiceTarget = useVoiceTargetStore.getState();
-  const targetSessionId = resolveVoiceActionTargetSessionId({
+  const targetSessionAddress = resolveVoiceActionTargetAddress({
     scope: voiceTarget.scope,
-    primaryActionSessionId: voiceTarget.primaryActionSessionId,
-    lastFocusedSessionId: voiceTarget.lastFocusedSessionId,
+    primaryActionSessionAddress: voiceTarget.primaryActionSessionAddress,
+    lastFocusedSessionAddress: voiceTarget.lastFocusedSessionAddress,
   });
-  const candidates = targetSessionId ? [targetSessionId] : [];
+  const candidates = targetSessionAddress ? [targetSessionAddress] : [];
 
-  for (const sid of candidates) {
-    const s = sessionsObj?.[sid] ?? null;
-    const ownerMetadata = readVoiceSessionOwnerMetadataFromState(state, sid);
+  for (const address of candidates) {
+    const ownerMetadata = readVoiceSessionOwnerMetadataFromState(state, address);
     const machineId = readDisplayMachineIdForSession({
-      sessionId: sid,
+      sessionId: address.sessionId,
       metadata: ownerMetadata,
     }) || normalizeNonEmptyString(ownerMetadata?.machineId);
     if (machineId) return machineId;
@@ -44,9 +44,13 @@ export async function listRecentPathsForVoiceTool(params: Readonly<{ machineId?:
   }
   const shareFilePaths = voicePrivacy.shareFilePaths;
   const sessionsById: Record<string, Session> = state?.sessions ?? {};
+  const activeServerId = getActiveServerSnapshot().serverId;
   const sessions = Object.values(sessionsById).map((session) => ({
     ...session,
-    metadata: readVoiceSessionOwnerMetadataFromState(state, session.id),
+    metadata: readVoiceSessionOwnerMetadataFromState(
+      state,
+      normalizeSessionAddress(session.serverId ?? activeServerId, session.id) ?? session.id,
+    ),
   }));
   const recentMachinePaths = Array.isArray(state?.settings?.recentMachinePaths)
     ? (state.settings.recentMachinePaths as any[])
@@ -63,6 +67,7 @@ export async function listRecentPathsForVoiceTool(params: Readonly<{ machineId?:
     machineId: targetMachineId,
     recentMachinePaths,
     sessions,
+    preferProvidedSessionMetadata: true,
   });
 
   const limit = typeof params.limit === 'number' && Number.isFinite(params.limit) ? Math.max(1, Math.min(50, Math.floor(params.limit))) : 10;
@@ -77,7 +82,10 @@ export async function listRecentPathsForVoiceTool(params: Readonly<{ machineId?:
       for (const s of sessions as any[]) {
         if (!s || typeof s !== 'object') continue;
         const sessionId = typeof s.id === 'string' ? s.id : '';
-        const ownerMetadata = readVoiceSessionOwnerMetadataFromState(state, sessionId);
+        const ownerMetadata = readVoiceSessionOwnerMetadataFromState(
+          state,
+          normalizeSessionAddress(s.serverId ?? activeServerId, sessionId) ?? sessionId,
+        );
         const sessionMachineId =
           readDisplayMachineIdForSession({
             sessionId,

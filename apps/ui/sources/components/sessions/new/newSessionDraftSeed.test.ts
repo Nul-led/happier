@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { NewSessionDraft } from '@/sync/domains/state/persistence';
 
-import { applyNewSessionDraftSeedV1, seedNewSessionDraftV1 } from './newSessionDraftSeed';
+import {
+    applyNewSessionDraftSeedV1,
+    seedNewSessionDraftV1,
+    type NewSessionDraftSeedV1,
+} from './newSessionDraftSeed';
 
 function existingDraft(overrides: Partial<NewSessionDraft> = {}): NewSessionDraft {
     return {
@@ -43,7 +47,7 @@ describe('applyNewSessionDraftSeedV1', () => {
             targetServerId: 'server-b',
             selectedMachineId: 'machine-b',
             selectedPath: '/work/repo',
-            executionTarget: { serverId: 'server-b', machineId: 'machine-b' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-b', machineId: 'machine-b' } },
             // A seeded New Session is a Session: an Automation draft left in the
             // scope must not swallow the seed into an Automation definition.
             entryIntent: 'session',
@@ -109,7 +113,7 @@ describe('applyNewSessionDraftSeedV1', () => {
                 targetServerId: 'server-a',
                 selectedMachineId: 'machine-a',
                 selectedPath: '/repo-a',
-                executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+                executionTarget: { kind: 'machine', target: { serverId: 'server-a', machineId: 'machine-a' } },
             }),
             updatedAt: 5,
         });
@@ -117,20 +121,20 @@ describe('applyNewSessionDraftSeedV1', () => {
         expect(seeded).toMatchObject({
             targetServerId: 'server-b',
             selectedMachineId: 'machine-b',
-            executionTarget: { serverId: 'server-b', machineId: 'machine-b' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-b', machineId: 'machine-b' } },
             selectedPath: '/repo-a',
         });
     });
 
     it('keeps unresolved placement choices on the same draft owner', () => {
-        const candidates = [{
+        const candidates: NonNullable<NewSessionDraftSeedV1['candidates']> = [{
             projectKey: { id: 'project-b' },
             serverId: 'server-b',
             machineId: 'machine-b',
             rootPath: '/repo-b',
             reachable: true,
             worktrees: [],
-        }] as const;
+        }];
 
         const seeded = applyNewSessionDraftSeedV1({
             seed: { candidates },

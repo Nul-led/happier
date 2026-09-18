@@ -14,7 +14,9 @@ export function BrowserViewFrame(props: Readonly<{
             return (
                 <WebIframeEngine
                     title={props.engine.title}
-                    url={props.engine.url}
+                    {...(props.engine.html === undefined
+                        ? { url: props.engine.url }
+                        : { html: props.engine.html })}
                     sandbox={props.engine.sandbox}
                     testID={props.engine.testID}
                     navigationKey={props.engine.navigationKey}

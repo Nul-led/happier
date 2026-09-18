@@ -5,9 +5,9 @@ import { useSavedSecretsMutable } from '@/components/secrets/useSavedSecretsMuta
 import { Modal } from '@/modal';
 import { useSetting } from '@/sync/domains/state/storage';
 import { type AIBackendProfile } from '@/sync/domains/profiles/profileCompatibility';
-import { type SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
 import { t } from '@/text';
 import { parseEnvVarTemplate } from '@/utils/profiles/envVarTemplate';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 
 type EnvironmentVariable = { name: string; value: string; isSecret?: boolean };
 type RequirementState = { required: boolean; useSecretVault: boolean };
@@ -19,6 +19,7 @@ export function useLegacyProfileSecretRequirements(params: Readonly<{
 }>) {
     const { profile, profileName, environmentVariables } = params;
     const [secrets, setSecrets] = useSavedSecretsMutable();
+    const savedSecretCatalog = useSavedSecretCatalog();
     const bindingsByProfileId = useSetting('currentSecretBindingsByProfileId');
     const [profileSecretBindings, setProfileSecretBindings] = React.useState<Record<string, string>>(() => ({
         ...(bindingsByProfileId[profile.id] ?? {}),
@@ -73,8 +74,10 @@ export function useLegacyProfileSecretRequirements(params: Readonly<{
 
     const getDefaultSecretNameForSourceVar = React.useCallback((sourceVarName: string): string | null => {
         const secretId = profileSecretBindings[sourceVarName] ?? null;
-        return secretId ? secrets.find((secret: SavedSecret) => secret.id === secretId)?.name ?? null : null;
-    }, [profileSecretBindings, secrets]);
+        return secretId
+            ? savedSecretCatalog.entries.find((entry) => entry.ref === secretId)?.name ?? null
+            : null;
+    }, [profileSecretBindings, savedSecretCatalog.entries]);
 
     const openDefaultSecretModalForSourceVar = React.useCallback((sourceVarName: string) => {
         const normalized = sourceVarName.trim().toUpperCase();

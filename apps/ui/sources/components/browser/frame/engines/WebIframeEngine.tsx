@@ -5,8 +5,10 @@ import { browserFrameStyles } from '../styles';
 import type {
     BrowserAutomationEngineBridgeConfig,
     BrowserDiagnosticsEngineBridgeConfig,
+    BrowserFrameMessageReceipt,
     BrowserFrameNavigationCommand,
     BrowserWebFrameMessageBridgeConfig,
+    WebIframeSource,
 } from '../types';
 import {
     buildInjectedBrowserDiagnosticsElementPickerCommandMessage,
@@ -75,7 +77,6 @@ function applyWebIframeNavigationCommand(
 
 export function WebIframeEngine(props: Readonly<{
     title: string;
-    url: string;
     sandbox: string;
     testID: string;
     navigationKey?: string;
@@ -89,13 +90,23 @@ export function WebIframeEngine(props: Readonly<{
     diagnostics?: BrowserDiagnosticsEngineBridgeConfig;
     automation?: BrowserAutomationEngineBridgeConfig;
     webMessageBridge?: BrowserWebFrameMessageBridgeConfig;
-}>): React.ReactElement {
+}> & WebIframeSource): React.ReactElement {
     const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
     const hasLoadedCurrentNavigationRef = React.useRef(false);
+    const bridgeDocumentRetiredRef = React.useRef(false);
+    const bridgeSendRef = React.useRef<((message: unknown) => void) | null>(null);
+    const webMessageBridgeRef = React.useRef(props.webMessageBridge);
+    webMessageBridgeRef.current = props.webMessageBridge;
+    const bridgeEnabled = props.webMessageBridge !== undefined;
+    const bridgeExactDocumentChannel = props.webMessageBridge?.exactDocumentChannel === true;
+    const bridgeTargetOrigin = props.webMessageBridge?.targetOrigin;
+    const bridgeAllowsWildcardTargetOrigin = props.webMessageBridge?.allowWildcardTargetOrigin === true;
+    const bridgeAttachHostMessages = props.webMessageBridge?.attachHostMessages;
 
     React.useLayoutEffect(() => {
         hasLoadedCurrentNavigationRef.current = false;
-    }, [props.navigationKey, props.url]);
+        bridgeDocumentRetiredRef.current = false;
+    }, [props.navigationKey, props.url, props.html]);
 
     React.useEffect(() => {
         const diagnostics = props.diagnostics;
@@ -316,46 +327,130 @@ export function WebIframeEngine(props: Readonly<{
         }
     }, [props.diagnostics]);
 
-    React.useEffect(() => {
-        const bridge = props.webMessageBridge;
-        if (!bridge) return;
+    // EU-8: the host->frame push direction. The engine owns only the delivery
+    // primitive and lends it to the bridge owner while the frame is mounted.
+    // Opaque hosted documents use their transferred, document-bound port;
+    // ordinary frames use the admitted exact target origin. A missing or
+    // inadmissible transport fails closed instead of broadcasting host facts.
+    //
+    // This attachment and the transport below are ONE ordered lifecycle, and
+    // the attachment is declared first on purpose. React retires layout effects
+    // in declaration order, so the bridge owner's disposer runs while `active`,
+    // the installed `send` and the incumbent MessagePort are all still live —
+    // which is the only moment its one terminal packet can still reach the
+    // incumbent guest. It must also be a LAYOUT effect: passive cleanup happens
+    // after React has cleared `iframeRef`, which is already too late to address
+    // an ordinary-origin document.
+    React.useLayoutEffect(() => {
+        if (!bridgeAttachHostMessages || !isPermittedPostMessageTargetOrigin(bridgeTargetOrigin, bridgeAllowsWildcardTargetOrigin)) return;
+        return bridgeAttachHostMessages((message: unknown) => {
+            bridgeSendRef.current?.(message);
+        });
+    }, [
+        bridgeAttachHostMessages,
+        bridgeAllowsWildcardTargetOrigin,
+        bridgeTargetOrigin,
+    ]);
+
+    React.useLayoutEffect(() => {
+        if (!bridgeEnabled) return;
         if (typeof window === 'undefined') return;
+        let active = true;
+        let documentPort: MessagePort | null = null;
+        let transientActivationConsumed = false;
+
+        const createMessageReceipt = (): BrowserFrameMessageReceipt => {
+            const iframe = iframeRef.current;
+            const hostNavigator = Reflect.get(globalThis, 'navigator');
+            const userActivation = hostNavigator && typeof hostNavigator === 'object'
+                ? Reflect.get(hostNavigator, 'userActivation')
+                : null;
+            const isActive = Boolean(
+                userActivation
+                && typeof userActivation === 'object'
+                && Reflect.get(userActivation, 'isActive') === true,
+            );
+            const hostDocument = Reflect.get(globalThis, 'document');
+            const exactFrameFocused = Boolean(
+                iframe
+                && hostDocument
+                && typeof hostDocument === 'object'
+                && Reflect.get(hostDocument, 'activeElement') === iframe,
+            );
+            // Browser activation has no author-readable host token. Observe its
+            // inactive transition to arm the next epoch without a timer.
+            if (!isActive) transientActivationConsumed = false;
+            let receiptConsumed = false;
+            return Object.freeze({
+                consumeTransientActivation(): boolean {
+                    if (!isActive || !exactFrameFocused || receiptConsumed || transientActivationConsumed) {
+                        return false;
+                    }
+                    receiptConsumed = true;
+                    transientActivationConsumed = true;
+                    return true;
+                },
+            });
+        };
+
+        const send = (message: unknown): void => {
+            if (!active || bridgeDocumentRetiredRef.current) return;
+            if (documentPort) {
+                documentPort.postMessage(message);
+                return;
+            }
+            if (bridgeExactDocumentChannel) return;
+            if (!isPermittedPostMessageTargetOrigin(bridgeTargetOrigin, bridgeAllowsWildcardTargetOrigin)) return;
+            iframeRef.current?.contentWindow?.postMessage(message, bridgeTargetOrigin);
+        };
+        bridgeSendRef.current = send;
+
+        const dispatch = (data: unknown, origin: string, expectedSource: WindowProxy): void => {
+            const event = { data, origin, source: expectedSource } as MessageEvent;
+            const receipt = createMessageReceipt();
+            const bridge = webMessageBridgeRef.current;
+            if (!bridge) return;
+            Promise.resolve(bridge.onMessage(event, receipt)).then((response) => {
+                if (!active || bridgeDocumentRetiredRef.current || iframeRef.current?.contentWindow !== expectedSource) return;
+                if (response === undefined || response === null) return;
+                send(response);
+            }).catch(() => undefined);
+        };
 
         const listener = (event: MessageEvent) => {
             const expectedSource = iframeRef.current?.contentWindow ?? null;
-            if (!expectedSource || event.source !== expectedSource) return;
-            Promise.resolve(bridge.onMessage(event)).then((response) => {
-                if (response === undefined || response === null) return;
-                const targetOrigin = bridge.targetOrigin ?? event.origin;
-                if (!isPermittedPostMessageTargetOrigin(targetOrigin, bridge.allowWildcardTargetOrigin)) return;
-                expectedSource.postMessage(response, targetOrigin);
-            }).catch(() => undefined);
+            if (!active || bridgeDocumentRetiredRef.current || !expectedSource || event.source !== expectedSource) return;
+            if (bridgeExactDocumentChannel) {
+                if (documentPort) return;
+                const transferredPort = event.ports?.[0];
+                if (!transferredPort) return;
+                documentPort = transferredPort;
+                documentPort.onmessage = (portEvent) => {
+                    if (!active || bridgeDocumentRetiredRef.current) return;
+                    dispatch(portEvent.data, event.origin, expectedSource);
+                };
+                documentPort.start();
+            }
+            dispatch(event.data, event.origin, expectedSource);
         };
 
         window.addEventListener('message', listener);
         return () => {
+            active = false;
+            if (bridgeSendRef.current === send) bridgeSendRef.current = null;
+            documentPort?.close();
+            documentPort = null;
             window.removeEventListener('message', listener);
         };
-    }, [props.webMessageBridge]);
-
-    // EU-8: the host->frame push direction. The engine owns only the delivery
-    // primitive — an exact-origin post into THIS iframe's window — and lends it
-    // to the bridge owner while the frame is mounted. A wildcard target origin
-    // is deliberately impossible: without an explicit one nothing is attached,
-    // so a missing origin fails closed instead of broadcasting host facts.
-    // This attachment must retire in the layout phase: on an iframe remount,
-    // passive cleanup happens after React has cleared `iframeRef`, which is too
-    // late for the bridge owner to deliver its one terminal message to the
-    // incumbent guest before surrendering the frame-owned primitive.
-    React.useLayoutEffect(() => {
-        const bridge = props.webMessageBridge;
-        const attach = bridge?.attachHostMessages;
-        const targetOrigin = bridge?.targetOrigin;
-        if (!bridge || !attach || !isPermittedPostMessageTargetOrigin(targetOrigin, bridge.allowWildcardTargetOrigin)) return;
-        return attach((message: unknown) => {
-            iframeRef.current?.contentWindow?.postMessage(message, targetOrigin);
-        });
-    }, [props.webMessageBridge]);
+    }, [
+        bridgeAllowsWildcardTargetOrigin,
+        bridgeEnabled,
+        bridgeExactDocumentChannel,
+        bridgeTargetOrigin,
+        props.navigationKey,
+        props.url,
+        props.html,
+    ]);
 
     React.useEffect(() => {
         applyWebIframeNavigationCommand(iframeRef.current, props.navigationCommand);
@@ -363,6 +458,7 @@ export function WebIframeEngine(props: Readonly<{
 
     const handleLoad = React.useCallback(() => {
         if (props.revokeOnUnexpectedNavigation && hasLoadedCurrentNavigationRef.current) {
+            bridgeDocumentRetiredRef.current = true;
             props.onUnexpectedNavigation?.();
             return;
         }
@@ -382,7 +478,7 @@ export function WebIframeEngine(props: Readonly<{
                 referrerPolicy: props.referrerPolicy ?? 'no-referrer',
                 ...(props.csp ? { csp: props.csp } : {}),
                 sandbox: props.sandbox,
-                src: props.url,
+                ...(props.html === undefined ? { src: props.url } : { srcDoc: props.html }),
                 style: iframeStyle,
                 title: props.title,
             })}

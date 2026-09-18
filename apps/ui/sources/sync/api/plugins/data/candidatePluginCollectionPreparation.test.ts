@@ -11,6 +11,7 @@ import {
 import type { PluginAccountCollectionMigrationRuntimeProjection } from '@happier-dev/plugin-sdk';
 
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit';
 
 const pluginId = 'example.tasks';
 
@@ -168,13 +169,7 @@ async function loadPreparationHarness(options: PreparationHarnessOptions = {}) {
         : null);
     const request = vi.fn(async (path: string, init?: RequestInit): Promise<Response> => {
         if (path === '/v1/account/encryption/currentness') {
-            return jsonResponse({
-                mode: 'plain',
-                version: 1,
-                signingKeyFingerprint: null,
-                contentKeyFingerprint: null,
-                updatedAt: 1,
-            });
+            return jsonResponse(createPlainAccountEncryptionCurrentnessFixture());
         }
         if (path === '/v1/plugins/data/candidate-preparation/source-page') {
             return options.sourcePage
@@ -203,8 +198,8 @@ async function loadPreparationHarness(options: PreparationHarnessOptions = {}) {
         getCachedServerFeaturesSnapshot,
     }));
     vi.doMock('@/sync/api/session/apiSocket', () => ({ apiSocket: { request: vi.fn() } }));
-    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-        captureSessionRequestAuthorityForServerAccountScope: async () => ({
+    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+        captureServerRequestAuthorityForServerAccountScope: async () => ({
             scope: account.lifetime.scope,
             context: { token: 'account-token' },
             request,

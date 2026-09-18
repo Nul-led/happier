@@ -513,7 +513,7 @@ describe('React Native bundle loader adapter', () => {
         expect(scriptManager.removeResolver).toHaveBeenCalledWith(resolverOptions.key);
     });
 
-    it('resolves sibling chunk files through the installed-artifact resolver using the Re.Pack chunk id and caller', async () => {
+    it('resolves sibling chunk files only for the admitted Re.Pack container caller', async () => {
         const module = {
             renderSurface: () => React.createElement('PluginNativeSurface', { testID: 'plugin-native-surface' }),
         };
@@ -526,9 +526,16 @@ describe('React Native bundle loader adapter', () => {
             loadScript: vi.fn(async (scriptId: string) => {
                 const entryLocator = await registeredResolver?.(scriptId);
                 expect(entryLocator).toMatchObject({ url: 'file:///cache/entry.bundle', absolute: true });
+                await expect(registeredResolver?.(
+                    'src_ui_renderSurface_tsx',
+                )).resolves.toBeUndefined();
+                await expect(registeredResolver?.(
+                    'src_ui_renderSurface_tsx',
+                    'another_container',
+                )).resolves.toBeUndefined();
                 const chunkLocator = await registeredResolver?.(
                     'src_ui_renderSurface_tsx',
-                    'happier_inspector_inspector_app_native',
+                    'acmeNativePreview',
                 );
                 expect(chunkLocator).toMatchObject({ url: 'file:///cache/src_ui_renderSurface_tsx.chunk.bundle', absolute: true });
             }),
@@ -560,6 +567,11 @@ describe('React Native bundle loader adapter', () => {
         await expect(backend.loadInstalledBundle?.({
             identity: legacyIdentity,
             bytes: entryBytes,
+            moduleReference: {
+                containerName: 'acmeNativePreview',
+                modulePath: './renderSurface',
+                exportName: 'renderSurface',
+            },
             files: [{
                 relativePath: 'react-native/inspector-app-native/ios.bundle',
                 digest: computePluginUiArtifactSha256DigestV1(entryBytes),
@@ -645,6 +657,11 @@ describe('React Native bundle loader adapter', () => {
             cache,
             identity,
             backend,
+            moduleReference: {
+                containerName: 'happier_native_preview',
+                modulePath: './renderSurface',
+                exportName: 'renderSurface',
+            },
         })).resolves.toEqual({
             ok: true,
             module: { renderSurface },

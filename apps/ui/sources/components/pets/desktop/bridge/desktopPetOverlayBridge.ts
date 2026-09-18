@@ -136,6 +136,7 @@ type DesktopPetOverlayMomentumPlan = Readonly<{
 
 export type DesktopPetOverlayShowMainWindow = Readonly<{
     reason: 'mascot-click' | 'tray-action';
+    targetServerId?: string;
     targetSessionId?: string;
     targetThreadId?: string;
 }>;

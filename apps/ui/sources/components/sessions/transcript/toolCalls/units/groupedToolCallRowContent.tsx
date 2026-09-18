@@ -46,6 +46,7 @@ export function renderGroupedToolCallRowContent(params: Readonly<{
                 message={params.message}
                 metadata={params.metadata}
                 sessionId={params.sessionId}
+                serverId={params.toolChromeCommon.serverId}
                 layoutContext="tool_calls_group"
                 forcePermissionPromptsInTranscript={params.forcePermissionPromptsInTranscript}
                 approvalRequests={params.approvalRequests}
@@ -67,6 +68,7 @@ export function renderGroupedToolCallRowContent(params: Readonly<{
                 metadata={params.metadata}
                 messages={params.message.children}
                 sessionId={params.sessionId}
+                serverId={params.toolChromeCommon.serverId ?? undefined}
                 messageId={params.nestedMessageId}
                 jumpHighlightSeq={params.message.seq ?? null}
                 headerAction={params.toolPinAction}
@@ -83,6 +85,7 @@ export function renderGroupedToolCallRowContent(params: Readonly<{
             metadata={params.metadata}
             messages={params.message.children}
             sessionId={params.sessionId}
+            serverId={params.toolChromeCommon.serverId ?? undefined}
             messageId={params.nestedMessageId}
             jumpHighlightSeq={params.message.seq ?? null}
             headerAction={params.toolPinAction}

@@ -111,11 +111,17 @@ export type ScmChangeRowProps = Readonly<{
     showDivider?: boolean;
     highlighted?: boolean;
     statsColumnWidth?: number;
+    accessibilityQualification?: string;
 }>;
 
 export const ScmChangeRow = React.memo((props: ScmChangeRowProps) => {
     const { theme, file, density = 'comfortable' } = props;
     const descriptor = describeChange(file, theme);
+    const accessibilityLabel = [
+        descriptor.label,
+        t('files.changeRow.viewDiffA11y', { file: file.fullPath }),
+        props.accessibilityQualification?.trim() || null,
+    ].filter((value): value is string => typeof value === 'string' && value.length > 0).join('. ');
     const testIdSafePath = React.useMemo(() => toTestIdSafeValue(file.fullPath), [file.fullPath]);
     const isWeb = Platform.OS === 'web';
 
@@ -190,7 +196,11 @@ export const ScmChangeRow = React.memo((props: ScmChangeRowProps) => {
                 filePath={file.filePath}
                 fullPath={file.fullPath}
                 preferNameOverPath
+                alignForRootFiles={false}
                 pathTextStyle={{
+                    flex: 0,
+                    flexBasis: 'auto',
+                    flexShrink: 1,
                     fontSize: 13,
                     color: theme.colors.text.secondary,
                     ...Typography.default(),
@@ -213,15 +223,21 @@ export const ScmChangeRow = React.memo((props: ScmChangeRowProps) => {
                     gap: 2,
                 }}
             >
-                <Text style={{ fontSize: 11, fontVariant: ['tabular-nums'], color: theme.colors.state.success.foreground ?? theme.colors.text.secondary, ...Typography.default('semiBold') }}>
-                    {`+${file.linesAdded}`}
-                </Text>
-                <Text style={{ fontSize: 11, fontVariant: ['tabular-nums'], color: theme.colors.text.secondary, ...Typography.default() }}>
-                    {PATH_SEPARATOR}
-                </Text>
-                <Text style={{ fontSize: 11, fontVariant: ['tabular-nums'], color: theme.colors.state.danger.foreground ?? theme.colors.text.secondary, ...Typography.default('semiBold') }}>
-                    {`-${file.linesRemoved}`}
-                </Text>
+                {file.isComplete === false ? (
+                    <Text accessibilityLabel={t('common.unavailable')} style={{ color: theme.colors.text.secondary }}>—</Text>
+                ) : (
+                    <>
+                        <Text style={{ fontSize: 11, fontVariant: ['tabular-nums'], color: theme.colors.state.success.foreground ?? theme.colors.text.secondary, ...Typography.default('semiBold') }}>
+                            {`+${file.linesAdded}`}
+                        </Text>
+                        <Text style={{ fontSize: 11, fontVariant: ['tabular-nums'], color: theme.colors.text.secondary, ...Typography.default() }}>
+                            {PATH_SEPARATOR}
+                        </Text>
+                        <Text style={{ fontSize: 11, fontVariant: ['tabular-nums'], color: theme.colors.state.danger.foreground ?? theme.colors.text.secondary, ...Typography.default('semiBold') }}>
+                            {`-${file.linesRemoved}`}
+                        </Text>
+                    </>
+                )}
             </View>
         </>
     );
@@ -238,7 +254,7 @@ export const ScmChangeRow = React.memo((props: ScmChangeRowProps) => {
                 <ViewWithClick
                     testID={`scm-change-row-${testIdSafePath}`}
                     accessibilityRole="button"
-                    accessibilityLabel={t('files.changeRow.viewDiffA11y', { file: file.fullPath })}
+                    accessibilityLabel={accessibilityLabel}
                     onClick={onClick as any}
                     onDoubleClick={
                         props.onPressPinned
@@ -259,7 +275,7 @@ export const ScmChangeRow = React.memo((props: ScmChangeRowProps) => {
                 <Pressable
                     testID={`scm-change-row-${testIdSafePath}`}
                     accessibilityRole="button"
-                    accessibilityLabel={t('files.changeRow.viewDiffA11y', { file: file.fullPath })}
+                    accessibilityLabel={accessibilityLabel}
                     onPress={props.onPress}
                     style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10 }}
                 >

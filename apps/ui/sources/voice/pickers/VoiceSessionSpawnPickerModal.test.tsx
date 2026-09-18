@@ -140,6 +140,16 @@ describe('VoiceSessionSpawnPickerModal', () => {
     });
   });
 
+    it('returns keyboard close requests from the directory picker to machine selection', async () => {
+        const { VoiceSessionSpawnPickerModal } = await import('./VoiceSessionSpawnPickerModal');
+        const screen = await renderScreen(<VoiceSessionSpawnPickerModal onClose={() => {}} onResolve={() => {}} />);
+
+        await act(async () => { screen.findByType('MachineSelector').props.onSelect(machinesState[0]); });
+        expect(screen.findByType('PathSelectionList')).toBeTruthy();
+        await act(async () => { pathSelectionListPropsRef.current?.onRequestClose(); });
+        expect(screen.findByType('MachineSelector')).toBeTruthy();
+    });
+
     it('passes the selected machine platform to PathSelectionList after choosing a Windows machine', async () => {
         machinesState = [createMachine({
             id: 'machine-win',

@@ -652,7 +652,6 @@ describe('buildSessionListIndexWithServerScope', () => {
                 },
             },
         } as any,
-        groupInactiveSessionsByProject: false,
         activeGroupingV1: 'date' as const,
         inactiveGroupingV1: 'date' as const,
     };

@@ -53,7 +53,6 @@ type ScopedSettingsDomain = ReturnType<typeof createSettingsDomain> & Readonly<{
     settingsScope: AccountSettingsScope | null;
     activateSettingsScope?: (scope: AccountSettingsScope, legacyScopes?: readonly AccountSettingsScope[]) => void;
     applySettingsForScope?: (scope: AccountSettingsScope, settings: Settings, version: number) => void;
-    replaceSettingsForScope?: (scope: AccountSettingsScope, settings: Settings, version: number) => void;
     clearSettingsScope?: () => void;
 }>;
 
@@ -61,7 +60,9 @@ type TestState = ScopedSettingsDomain & Readonly<{
     sessions: {};
     machines: {};
     machineDisplayById: {};
-    sessionListRenderables: {};
+    sessionListRowsByServerId: {};
+    ordinarySessionListMembershipByServerId: {};
+    archivedSessionListMembershipByServerId: {};
     sessionListIndexByServerId: {};
     concurrentSessionListCacheByServerId: {};
     machineListByServerId: {};
@@ -73,7 +74,9 @@ function createTestStore(): { getState: () => TestState; state: TestState } {
         sessions: {},
         machines: {},
         machineDisplayById: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         machineListByServerId: {},
@@ -96,11 +99,10 @@ function createTestStore(): { getState: () => TestState; state: TestState } {
 
 function requireScopedMethods(state: ScopedSettingsDomain): asserts state is ScopedSettingsDomain & Required<Pick<
     ScopedSettingsDomain,
-    'activateSettingsScope' | 'applySettingsForScope' | 'replaceSettingsForScope' | 'clearSettingsScope'
+    'activateSettingsScope' | 'applySettingsForScope' | 'clearSettingsScope'
 >> {
     expect(state.activateSettingsScope, 'settings domain should expose activateSettingsScope').toBeTypeOf('function');
     expect(state.applySettingsForScope, 'settings domain should expose applySettingsForScope').toBeTypeOf('function');
-    expect(state.replaceSettingsForScope, 'settings domain should expose replaceSettingsForScope').toBeTypeOf('function');
     expect(state.clearSettingsScope, 'settings domain should expose clearSettingsScope').toBeTypeOf('function');
 }
 

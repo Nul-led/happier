@@ -6,7 +6,7 @@ import {
 } from '@/sync/domains/server/serverProfiles';
 
 import { IROH_HOME_TUNNEL_INVALID_ENDPOINT_ERROR, IROH_HOME_TUNNEL_STALE_FOCUS_ERROR } from './fallback';
-import { releaseRetainedIrohMachineHttpLeases } from './machineHttpLifecycle';
+import { releaseRetainedIrohMachineTransferLeases } from './machineTransferLifecycle';
 import { createIrohHomeTunnelSupervisor, IROH_HOME_TUNNEL_DISPOSED_ERROR, type IrohHomeTunnelSupervisor, type IrohNativeLifecycleModule } from './supervisor';
 import type {
     IrohHomeTunnelAcquireInput,
@@ -344,7 +344,7 @@ export async function disposeIrohHomeTunnelRuntime(): Promise<void> {
     // This is the existing application-level Iroh disposal hook. Retained
     // machine HTTP stops must succeed before the shared endpoint owner is
     // considered disposable, and a failure remains retryable on the next call.
-    await releaseRetainedIrohMachineHttpLeases();
+    await releaseRetainedIrohMachineTransferLeases();
     const runtime = singletonRuntime;
     if (!runtime) return;
     if (singletonDisposePromise) return await singletonDisposePromise;

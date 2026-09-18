@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createProviderErrorV1, ProviderConnectionIdSchema, serializeModelVisibilityRefV1 } from '@happier-dev/protocol';
 
 import {
@@ -8,6 +8,7 @@ import {
 import { presentProviderError } from '@/providers/connection/errorPresentation';
 import { t } from '@/text';
 import { sessionModelSelectionKey } from './sessionModelSelectionKey';
+import { TeamCredentialResourceCatalogEntryV1Schema } from '@happier-dev/protocol/teams';
 
 function providerGroup(input: Readonly<{
     connectionId: string;
@@ -55,6 +56,167 @@ function providerGroup(input: Readonly<{
 }
 
 describe('buildSessionModelPickerSections', () => {
+    it('projects an entitled direct Team resource into the canonical picker without exposing source authority', () => {
+        const resource = TeamCredentialResourceCatalogEntryV1Schema.parse({
+            id: 'resource-1', teamId: 'team-1', displayName: 'Claude Enterprise',
+            resourceRevision: 7,
+            readiness: { kind: 'available' }, recoveryAction: null,
+            mayBroker: false, mayReceiveDirect: true,
+            directMaterialState: 'current', sessionUsePolicy: 'personal_allowed',
+            providerModels: [{
+                selection: {
+                    kind: 'team_credential_provider_model', resourceId: 'resource-1', teamId: 'team-1',
+                    expectedResourceRevision: 7, deliveryMode: 'direct', agentTargetKey: 'backend:codex', modelId: 'claude-sonnet',
+                },
+                descriptor: { id: 'claude-sonnet', name: 'Claude Sonnet' },
+                application: {
+                    agentTargetKey: 'backend:codex',
+                    implementationIdentity: { pluginId: 'provider.anthropic', localId: 'anthropic' },
+                    endpointTemplateId: 'messages',
+                    protocol: 'anthropic-messages',
+                },
+                sourceRevision: 'direct-source-v1',
+                direct: {
+                    sourceMemberKey: 'provider-slot',
+                    sourceVersion: 'direct-source-v1',
+                },
+                availability: 'available',
+            }],
+            sourcePresentation: {
+                kind: 'provider',
+                provider: { identity: { pluginId: 'provider.anthropic', localId: 'anthropic' }, definitionRevision: 1 },
+            },
+        });
+        const sections = buildSessionModelPickerSections({
+            agentTargetKey: 'backend:codex',
+            nativeModels: [], providerGroups: [], hiddenNativeModelKeys: new Set(),
+            providerProjectionAuthoritative: true,
+            teamCredentialResources: [resource],
+            teamNameById: { 'team-1': 'Acme' },
+            homeNameByTeamId: { 'team-1': 'Work Home' },
+        });
+
+        expect(sections).toHaveLength(1);
+        expect(sections[0]).toMatchObject({
+            id: 'team-resource:team-1:resource-1',
+            title: 'Shared credentials · Acme · Work Home',
+            options: [{
+                value: resource.providerModels[0]?.selection,
+                label: 'Claude Sonnet',
+                disabled: false,
+            }],
+        });
+        expect(JSON.stringify(sections)).not.toContain('custodianAccountId');
+        expect(JSON.stringify(sections)).not.toContain('brokerMachineId');
+
+        const recover = vi.fn();
+        const staleSections = buildSessionModelPickerSections({
+            agentTargetKey: 'backend:codex',
+            nativeModels: [], providerGroups: [], hiddenNativeModelKeys: new Set(),
+            providerProjectionAuthoritative: true,
+            teamCredentialResources: [resource],
+            currentTeamCredentialResourceKeys: new Set(),
+            onRecoverTeamCredentialResource: recover,
+        });
+        expect(staleSections[0]?.options[0]).toMatchObject({
+            disabled: false,
+            description: expect.stringContaining(t('teams.unavailable.offline')),
+        });
+        staleSections[0]?.options[0]?.onActivate?.();
+        expect(recover).toHaveBeenCalledWith(resource);
+    });
+
+    it('keeps an unavailable selected Team model named with its resource, Team, Home, route, and recovery', () => {
+        const selection = {
+            kind: 'team_credential_provider_model' as const,
+            resourceId: 'resource-1',
+            teamId: 'team-1',
+            expectedResourceRevision: 7,
+            deliveryMode: 'direct' as const,
+            agentTargetKey: 'backend:codex',
+            modelId: 'claude-sonnet',
+        };
+        const resource = TeamCredentialResourceCatalogEntryV1Schema.parse({
+            id: 'resource-1', teamId: 'team-1', displayName: 'Acme Claude access',
+            resourceRevision: 8,
+            readiness: { kind: 'source_unavailable' }, recoveryAction: 'source_owner_action',
+            mayBroker: false, mayReceiveDirect: true,
+            directMaterialState: 'source_changed', sessionUsePolicy: 'personal_allowed',
+            providerModels: [],
+            sourcePresentation: {
+                kind: 'provider',
+                provider: { identity: { pluginId: 'provider.anthropic', localId: 'anthropic' }, definitionRevision: 1 },
+            },
+        });
+        const recover = vi.fn();
+
+        const sections = buildSessionModelPickerSections({
+            agentTargetKey: 'backend:codex',
+            nativeModels: [], providerGroups: [], hiddenNativeModelKeys: new Set(),
+            providerProjectionAuthoritative: true,
+            selectedTeamCredentialModel: selection,
+            teamCredentialResources: [resource],
+            teamNameById: { 'team-1': 'Acme' },
+            homeNameByTeamId: { 'team-1': 'Work Home' },
+            currentTeamCredentialResourceKeys: new Set(),
+            onRecoverTeamCredentialResource: recover,
+        });
+
+        expect(sections[0]?.options[0]).toMatchObject({
+            value: selection,
+            label: 'claude-sonnet',
+            disabled: false,
+            description: expect.stringContaining('Acme Claude access'),
+            accessibilityLabel: expect.stringContaining('Acme'),
+        });
+        expect(sections[0]?.options[0]?.description).toContain('Work Home');
+        expect(sections[0]?.options[0]?.description).toContain(t('teams.credentials.delivery.direct'));
+        expect(sections[0]?.options[0]?.description).toContain(t('teams.credentials.recovery.ownerHandoff'));
+        expect(sections[0]?.options[0]?.description).not.toContain('source_unavailable');
+        sections[0]?.options[0]?.onActivate?.();
+        expect(recover).toHaveBeenCalledWith(resource);
+    });
+
+    it('never presents source-owner-required Team models as available or as a raw status code', () => {
+        const resource = TeamCredentialResourceCatalogEntryV1Schema.parse({
+            id: 'resource-1', teamId: 'team-1', displayName: 'Acme Claude access',
+            resourceRevision: 7,
+            readiness: { kind: 'available' }, recoveryAction: 'source_owner_action',
+            mayBroker: true, mayReceiveDirect: false,
+            directMaterialState: 'not_permitted', sessionUsePolicy: 'personal_allowed',
+            providerModels: [{
+                selection: {
+                    kind: 'team_credential_provider_model', resourceId: 'resource-1', teamId: 'team-1',
+                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'backend:codex', modelId: 'claude-sonnet',
+                },
+                descriptor: { id: 'claude-sonnet', name: 'Claude Sonnet' },
+                application: {
+                    agentTargetKey: 'backend:codex',
+                    implementationIdentity: { pluginId: 'provider.anthropic', localId: 'anthropic' },
+                    endpointTemplateId: 'messages', protocol: 'anthropic-messages',
+                },
+                sourceRevision: 'source-v1',
+                availability: 'source_owner_required',
+            }],
+            sourcePresentation: {
+                kind: 'provider',
+                provider: { identity: { pluginId: 'provider.anthropic', localId: 'anthropic' }, definitionRevision: 1 },
+            },
+        });
+
+        const sections = buildSessionModelPickerSections({
+            agentTargetKey: 'backend:codex',
+            nativeModels: [], providerGroups: [], hiddenNativeModelKeys: new Set(),
+            providerProjectionAuthoritative: true,
+            teamCredentialResources: [resource],
+            currentTeamCredentialResourceKeys: new Set(['team-1:resource-1']),
+        });
+
+        expect(sections[0]?.options[0]).toMatchObject({ disabled: true });
+        expect(sections[0]?.options[0]?.description).toContain(t('teams.credentials.errors.sourceOwnerRequired'));
+        expect(sections[0]?.options[0]?.accessibilityLabel).not.toContain('source_owner_required');
+    });
+
     it('fails closed to native parity when the Providers feature decision is not enabled', () => {
         const hiddenKey = serializeModelVisibilityRefV1({
             scope: 'agent',

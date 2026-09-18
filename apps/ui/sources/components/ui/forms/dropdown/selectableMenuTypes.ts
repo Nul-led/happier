@@ -27,6 +27,8 @@ export type SelectableMenuItem = Readonly<{
     right?: React.ReactNode;
     hasSubmenu?: boolean;
     disabled?: boolean;
+    /** Current choice state, independent of keyboard highlight. */
+    checked?: boolean;
 }>;
 
 export type SelectableMenuCategory = Readonly<{

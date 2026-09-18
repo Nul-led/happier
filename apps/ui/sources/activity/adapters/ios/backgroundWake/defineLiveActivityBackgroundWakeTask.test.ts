@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Platform } from 'react-native';
 
+import {
+    buildHappierFocusLiveActivityIdentity,
+    buildLiveActivityInstanceKey,
+} from '../liveActivities/liveActivityIdentity';
+
+/** The production Activity identity encoder, so fixtures cannot drift from real keys. */
+function liveActivityKey(serverId: string, sessionId: string): string {
+    return buildLiveActivityInstanceKey(buildHappierFocusLiveActivityIdentity({ serverId, sessionId }));
+}
+
+
 function createMemoryStorage() {
     const values = new Map<string, string>();
     return {
@@ -145,7 +156,7 @@ describe('defineLiveActivityBackgroundWakeTask', () => {
 
         const storage = mod.createLiveActivityBackgroundWakeStateStore(createMemoryStorage());
         storage.remember({
-            activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+            activityInstanceKey: liveActivityKey('server-a', 'session-1'),
             generatedAt: 2_000,
             snapshotFingerprint: 'fingerprint-newer-local',
         });
@@ -174,7 +185,7 @@ describe('defineLiveActivityBackgroundWakeTask', () => {
 
         const storage = mod.createLiveActivityBackgroundWakeStateStore(createMemoryStorage());
         storage.remember({
-            activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+            activityInstanceKey: liveActivityKey('server-a', 'session-1'),
             generatedAt: 500,
             snapshotFingerprint: 'fingerprint-current',
         });
@@ -199,8 +210,8 @@ describe('defineLiveActivityBackgroundWakeTask', () => {
         expect(updateB).not.toHaveBeenCalled();
         expect(endA).not.toHaveBeenCalled();
         expect(endB).not.toHaveBeenCalled();
-        expect(storage.read('server-a:HappierFocusLiveActivity:session-1')).toEqual({
-            activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+        expect(storage.read(liveActivityKey('server-a', 'session-1'))).toEqual({
+            activityInstanceKey: liveActivityKey('server-a', 'session-1'),
             generatedAt: 500,
             snapshotFingerprint: 'fingerprint-current',
         });
@@ -226,7 +237,7 @@ describe('defineLiveActivityBackgroundWakeTask', () => {
         expect(result).toEqual({ action: 'ignore', reason: 'activity_state_not_found' });
         expect(update).not.toHaveBeenCalled();
         expect(end).not.toHaveBeenCalled();
-        expect(storage.read('server-a:HappierFocusLiveActivity:session-1')).toBeNull();
+        expect(storage.read(liveActivityKey('server-a', 'session-1'))).toBeNull();
     });
 
     it('does not mark a background wake update applied when no native activity exists', async () => {
@@ -236,7 +247,7 @@ describe('defineLiveActivityBackgroundWakeTask', () => {
 
         const storage = mod.createLiveActivityBackgroundWakeStateStore(createMemoryStorage());
         storage.remember({
-            activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+            activityInstanceKey: liveActivityKey('server-a', 'session-1'),
             generatedAt: 500,
             snapshotFingerprint: 'fingerprint-current',
         });
@@ -249,8 +260,8 @@ describe('defineLiveActivityBackgroundWakeTask', () => {
         });
 
         expect(result).toEqual({ action: 'ignore', reason: 'activity_not_found' });
-        expect(storage.read('server-a:HappierFocusLiveActivity:session-1')).toEqual({
-            activityInstanceKey: 'server-a:HappierFocusLiveActivity:session-1',
+        expect(storage.read(liveActivityKey('server-a', 'session-1'))).toEqual({
+            activityInstanceKey: liveActivityKey('server-a', 'session-1'),
             generatedAt: 500,
             snapshotFingerprint: 'fingerprint-current',
         });

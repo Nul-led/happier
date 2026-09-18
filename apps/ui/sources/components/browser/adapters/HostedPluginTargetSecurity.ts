@@ -17,6 +17,26 @@ export const DEFAULT_HOSTED_PLUGIN_SECURITY: PluginHostedWebSecurityPolicyV1 = {
     mixedContent: 'deny',
 };
 
+/** Security metadata matching the CSP emitted for an installed inline HTML document. */
+export function createInlineHostedHtmlSecurityPolicy(
+    networkOrigins: readonly string[],
+): PluginHostedWebSecurityPolicyV1 {
+    return {
+        allowedNavigationOrigins: [],
+        allowedCallbackOrigins: [],
+        allowedConnectOrigins: [...networkOrigins],
+        csp: {
+            connectSrc: networkOrigins.length > 0 ? 'declaredOrigins' : 'none',
+            allowDataUrls: true,
+            allowBlobUrls: false,
+            allowInlineStyles: true,
+            allowEval: false,
+        },
+        sourceMaps: 'disabled',
+        mixedContent: 'deny',
+    };
+}
+
 function parseHostedPluginTargetUrl(url: string): URL | null {
     try {
         const parsed = new URL(url);

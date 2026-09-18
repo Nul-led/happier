@@ -1,5 +1,6 @@
 import React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IDBFactory } from 'fake-indexeddb';
 import { PUSH_NOTIFICATION_ANDROID_CHANNEL_IDS } from '@happier-dev/protocol';
 import type { RenderScreenResult } from '@/dev/testkit';
 import { createUseLocalSettingMock } from '@/dev/testkit/mocks/storage';
@@ -452,6 +453,7 @@ vi.mock('@/utils/system/remoteLogger', () => ({
 }));
 
 describe('app/_layout init resilience', () => {
+    beforeEach(() => { vi.stubGlobal('indexedDB', new IDBFactory()); });
     const previousSentryDsn = process.env.EXPO_PUBLIC_SENTRY_DSN;
     const previousSentryLogs = process.env.EXPO_PUBLIC_SENTRY_ENABLE_LOGS;
     const previousSentryReplay = process.env.EXPO_PUBLIC_SENTRY_ENABLE_REPLAY;
@@ -519,6 +521,8 @@ describe('app/_layout init resilience', () => {
 
     async function renderSettledRootLayout(): Promise<RenderScreenResult> {
         const screen = await renderRootLayout();
+        const { prepareSessionDraftPersistenceStorage } = await import('@/sync/ops/sessionDrafts/sessionDraftPersistenceStorage');
+        await React.act(async () => { await prepareSessionDraftPersistenceStorage(); });
         const { flushHookEffects } = await import('@/dev/testkit');
         await flushHookEffects();
         return screen;
@@ -774,6 +778,19 @@ describe('app/_layout init resilience', () => {
         expect(dragSurface?.props.leftOffsetPx).toBe(0);
     });
 
+    it('preserves the navigation subtree when desktop chrome moves between wide and narrow hosts', async () => {
+        bootCredentialsState.value = { token: 'token', secret: 'secret' };
+        shellChromeState.isDesktopHost = true;
+        const screen = await renderSettledRootLayout();
+        const navigator = screen.tree.findByType('SidebarNavigator' as any);
+        const RootLayout = (await import('@/app/_layout')).default;
+        for (const isTablet of [false, true]) {
+            shellChromeState.isTablet = isTablet;
+            await screen.update(React.createElement(RootLayout));
+            expect(screen.tree.findByType('SidebarNavigator' as any) === navigator).toBe(true);
+        }
+    });
+
     it('keeps desktop shell chrome inside the sidebar host for authenticated wide desktop flows', async () => {
         mockedPathname = '/';
         bootCredentialsState.value = { token: 'token', secret: 'secret' };
@@ -785,7 +802,7 @@ describe('app/_layout init resilience', () => {
 
         expect(screen.findAllByTestId('desktop-focus-mode-shell-chrome')).toHaveLength(0);
         expect(screen.findAllByTestId('desktop-narrow-shell-chrome')).toHaveLength(0);
-        expect(screen.findAllByTestId('desktop-main-content-drag-surface')).toHaveLength(0);
+        expect(screen.findByTestId('desktop-main-content-drag-surface')?.props.enabled).toBe(false);
         expect(screen.findAllByType('SidebarNavigator' as any)).toHaveLength(1);
     });
 

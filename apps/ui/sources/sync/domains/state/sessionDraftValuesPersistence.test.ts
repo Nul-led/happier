@@ -47,8 +47,8 @@ const scopeA: ServerAccountScope = { serverId: 'server-a', accountId: 'account-a
 const scopeB: ServerAccountScope = { serverId: 'server-a', accountId: 'account-b' };
 
 describe('session local state key helpers', () => {
-    beforeEach(() => {
-        clearPersistence();
+    beforeEach(async () => {
+        await clearPersistence();
     });
 
     it('scopes session-local keys by server account without changing legacy unscoped keys', () => {

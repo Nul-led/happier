@@ -32,7 +32,7 @@ describe('API-token Settings presentation', () => {
         })).toBe('emptyWithRetry');
     });
 
-    it('renders summaries only and gives expiring/expired tokens truthful non-color status', () => {
+    it('renders required token metadata and derives only active or expired status', () => {
         const expiring = buildApiTokenRowPresentation({
             token: {
                 tokenId: '11111111-1111-4111-8111-111111111111',
@@ -41,14 +41,19 @@ describe('API-token Settings presentation', () => {
                 createdAt: '2026-08-20T12:00:00.000Z',
                 lastUsedAt: null,
                 expiresAt: '2026-08-27T12:00:00.000Z',
+                hasEncryptionAccess: false,
+                hasUnattendedTeamAccess: true,
             },
             nowMs: NOW,
         });
         expect(expiring).toMatchObject({
             displayPrefix: 'hap_v1_11111111…',
-            status: 'expiring',
-            statusVariant: 'warning',
+            status: 'active',
+            statusVariant: 'success',
+            encryptionAccess: 'bearerOnly',
+            unattendedTeamAccess: 'authorized',
         });
+        expect(buildApiTokenRowPresentation({ token: { ...expiring.token, hasEncryptionAccess: true }, nowMs: NOW }).encryptionAccess).toBe('enabled');
         expect(JSON.stringify(expiring)).not.toContain(
             `hap_v1_${expiring.token.tokenId}_`,
         );
@@ -61,6 +66,11 @@ describe('API-token Settings presentation', () => {
     });
 
     it('maps typed auth and transport failures to designed states', () => {
+        expect(resolveApiTokenOperationErrorMessageKey('unsupported')).toBe('settingsApiTokens.encryption.unsupported');
+        expect(resolveApiTokenOperationErrorMessageKey('api_token_encryption_not_ready')).toBe('settingsApiTokens.encryption.notReady');
+        expect(resolveApiTokenOperationErrorMessageKey('api_token_encryption_stale')).toBe('settingsApiTokens.encryption.stale');
+        expect(resolveApiTokenOperationErrorMessageKey('api_token_id_conflict')).toBe('settingsApiTokens.encryption.idConflict');
+        expect(resolveApiTokenOperationErrorMessageKey('outcome_unknown')).toBe('settingsApiTokens.encryption.outcomeUnknown');
         expect(resolveApiTokenOperationErrorMessageKey('present_user_required')).toBe('settingsApiTokens.errors.presentUserRequired');
         expect(resolveApiTokenOperationErrorMessageKey('invalid_request')).toBe('settingsApiTokens.errors.unavailable');
         expect(resolveApiTokenOperationErrorMessageKey('auth_unavailable')).toBe('settingsApiTokens.errors.unavailable');

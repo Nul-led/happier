@@ -31,6 +31,7 @@ describe('desktopPetOverlayBridge', () => {
             activity: {
                 state: 'waiting',
                 reason: 'waiting',
+                address: { serverId: 'server-a', sessionId: 'session-native' },
                 sessionId: 'session-native',
                 trayItems: [],
             },

@@ -1,6 +1,7 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
-import { getActionSpec, type ApprovalRequestV1 } from '@happier-dev/protocol';
+import { Platform, Pressable, View } from 'react-native';
+import type { ApprovalRequest } from '@happier-dev/protocol';
+import { getActionSpec, resolveApprovalRequestApproveAdmission } from '@happier-dev/protocol/actions';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useRouter } from 'expo-router';
 
@@ -13,8 +14,9 @@ import { Modal } from '@/modal';
 import { buildPermissionToolCallRoute, canOpenPermissionToolCallRoute } from '@/utils/sessions/permissions/buildPermissionToolCallRoute';
 import { navigateWithBlurOnWeb } from '@/utils/platform/navigateWithBlurOnWeb';
 import { ApprovalDecisionFooter } from './ApprovalDecisionFooter';
-import { useApprovalDecisionHandler } from './useApprovalDecisionHandler';
+import { isApprovalReplayRouteUnavailable, useApprovalDecisionHandler } from './useApprovalDecisionHandler';
 import { Icon } from '@/components/ui/icons/Icon';
+import { ActionApprovalFieldsCard } from '@/components/approvals/ActionApprovalFieldsCard';
 
 const PROMPT_CARD_HORIZONTAL_PADDING = 12;
 const PROMPT_CARD_ICON_SIZE = 18;
@@ -32,7 +34,7 @@ function getPreviewSummary(preview: unknown): string | null {
     return summary || null;
 }
 
-function resolveActionTitle(approval: ApprovalRequestV1): string {
+function resolveActionTitle(approval: ApprovalRequest): string {
     try {
         return getActionSpec(approval.actionId).title || approval.actionId;
     } catch {
@@ -42,7 +44,7 @@ function resolveActionTitle(approval: ApprovalRequestV1): string {
 
 export const ApprovalPromptCard = React.memo(function ApprovalPromptCard(props: Readonly<{
     artifact: ApprovalPromptCardArtifact;
-    approval: ApprovalRequestV1;
+    approval: ApprovalRequest;
     sessionId: string;
     metadata?: Metadata | null;
     location?: PermissionToolCallMessageLocation | null;
@@ -53,13 +55,21 @@ export const ApprovalPromptCard = React.memo(function ApprovalPromptCard(props: 
 }>) {
     const { theme } = useUnistyles();
     const router = useRouter();
-    const decide = useApprovalDecisionHandler(props.artifact, props.sessionId);
+    const decide = useApprovalDecisionHandler(props.artifact, props.approval, props.sessionId);
     const [isDeciding, setIsDeciding] = React.useState(false);
     const chrome = props.chrome ?? 'card';
     const actionTitle = React.useMemo(() => resolveActionTitle(props.approval), [props.approval]);
     const previewSummary = React.useMemo(() => getPreviewSummary(props.approval.preview), [props.approval.preview]);
+    const approveAdmission = React.useMemo(
+        () => resolveApprovalRequestApproveAdmission(props.approval),
+        [props.approval],
+    );
+    const actionFields = approveAdmission.presentation;
+    const approvalWithheld = approveAdmission.status === 'unavailable';
     const canApprove = props.canApprovePermissions ?? props.canApprove ?? true;
-    const approvalDisabled = !canApprove || Boolean(props.disabledReason);
+    const approvalRouteUnavailable = isApprovalReplayRouteUnavailable(props.approval);
+    const accessDisabled = !canApprove || Boolean(props.disabledReason);
+    const decisionDisabled = accessDisabled || approvalRouteUnavailable;
     const canOpenToolRoute = canOpenPermissionToolCallRoute(props.location ?? null);
 
     const onViewTool = React.useCallback(() => {
@@ -69,7 +79,7 @@ export const ApprovalPromptCard = React.memo(function ApprovalPromptCard(props: 
     }, [props.location, props.sessionId, router]);
 
     const onDecision = React.useCallback(async (decision: 'approve' | 'reject') => {
-        if (approvalDisabled || isDeciding) return;
+        if (decisionDisabled || isDeciding || (decision === 'approve' && approvalWithheld)) return;
         try {
             setIsDeciding(true);
             const ok = await decide(decision);
@@ -81,7 +91,7 @@ export const ApprovalPromptCard = React.memo(function ApprovalPromptCard(props: 
         } finally {
             setIsDeciding(false);
         }
-    }, [approvalDisabled, decide, isDeciding]);
+    }, [approvalWithheld, decisionDisabled, decide, isDeciding]);
 
     if (props.disabledReason === 'inactive') {
         return null;
@@ -119,10 +129,23 @@ export const ApprovalPromptCard = React.memo(function ApprovalPromptCard(props: 
                     <Text style={styles.previewText}>{previewSummary}</Text>
                 </View>
             ) : null}
+            {actionFields.rows.length > 0 ? (
+                <View style={styles.fields}>
+                    <ActionApprovalFieldsCard presentation={actionFields} />
+                </View>
+            ) : null}
+            {approvalRouteUnavailable ? (
+                <View style={styles.preview}>
+                    <Text style={styles.previewText}>{t('actionConfirmations.homeUnavailable')}</Text>
+                </View>
+            ) : null}
 
             <View style={styles.actions}>
                 <ApprovalDecisionFooter
-                    disabled={approvalDisabled}
+                    disabled={accessDisabled}
+                    decisionDisabled={approvalRouteUnavailable}
+                    approveDisabled={approvalWithheld}
+                    approveAccessibilityHint={approvalWithheld ? t('approvals.approveUnavailableHint') : undefined}
                     disabledReason={props.disabledReason}
                     isDeciding={isDeciding}
                     onApprove={() => { void onDecision('approve'); }}
@@ -177,7 +200,10 @@ const styles = StyleSheet.create((theme) => ({
         color: theme.colors.text.secondary,
     },
     viewButton: {
-        padding: 6,
+        minWidth: Platform.select({ ios: 44, default: 48 }),
+        minHeight: Platform.select({ ios: 44, default: 48 }),
+        alignItems: 'center',
+        justifyContent: 'center',
         borderRadius: 8,
     },
     viewButtonPressed: {
@@ -192,6 +218,11 @@ const styles = StyleSheet.create((theme) => ({
         fontSize: 12,
         lineHeight: 17,
         color: theme.colors.text.secondary,
+    },
+    fields: {
+        paddingLeft: PROMPT_CARD_TEXT_COLUMN_START,
+        paddingRight: PROMPT_CARD_HORIZONTAL_PADDING,
+        paddingBottom: 10,
     },
     actions: {
         paddingLeft: PROMPT_CARD_TEXT_COLUMN_START,

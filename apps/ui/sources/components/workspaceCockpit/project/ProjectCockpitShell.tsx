@@ -87,6 +87,7 @@ export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) 
             <View testID="project-files-screen" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
                 <React.Suspense fallback={<ProjectCockpitLoadingFallback color={theme.colors.text.secondary} />}>
                     <ProjectBrowseFilesSurface
+                        scopeId={props.scopeId}
                         scope={workspaceScope}
                         onOpenFile={openFileInDetails}
                         onOpenFilePinned={openFileInDetailsPinned}
@@ -101,6 +102,7 @@ export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) 
             <View testID="project-git-screen" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
                 <React.Suspense fallback={<ProjectCockpitLoadingFallback color={theme.colors.text.secondary} />}>
                     <ProjectGitSurface
+                        scopeId={props.scopeId}
                         serverId={props.workspaceRef.serverId}
                         machineId={props.workspaceRef.machineId}
                         rootPath={props.activeRootPath}

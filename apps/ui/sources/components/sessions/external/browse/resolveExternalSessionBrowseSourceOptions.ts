@@ -17,6 +17,7 @@ import type {
     ExternalSessionBrowseSourceOption,
 } from '@/agents/registry/registryUiBehavior';
 import type { Settings } from '@/sync/domains/settings/settings';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { resolveCompatibleExternalSessionBrowseLinkSource } from './resolveCompatibleExternalSessionBrowseLinkSource';
 
 function resolveProjectedExternalSessionsAgent(params: Readonly<{
@@ -52,6 +53,7 @@ function resolveProjectedExternalSessionsAgent(params: Readonly<{
 function resolveProjectedExternalSessionBrowseAgent(params: Readonly<{
     providerId: string;
     projection: PluginProjectionV2 | null | undefined;
+    interaction?: 'openSession' | 'pickRemoteSessionId';
 }>): Readonly<{
     agent: PluginProjectedAgentV2;
     externalSessions: NonNullable<PluginProjectedAgentV2['externalSessions']>;
@@ -60,8 +62,11 @@ function resolveProjectedExternalSessionBrowseAgent(params: Readonly<{
     if (
         !projected
         || projected.externalSessions.operations.listCandidates !== true
-        || projected.externalSessions.operations.resolveLinkIdentity !== true
-        || projected.externalSessions.sources.length === 0
+        || (params.interaction !== 'pickRemoteSessionId'
+            && projected.externalSessions.operations.resolveLinkIdentity !== true)
+        || !projected.externalSessions.sources.some((source) => (
+            params.interaction === 'pickRemoteSessionId' || source.resumeOnly !== true
+        ))
     ) {
         return null;
     }
@@ -75,12 +80,14 @@ function materializeProjectedSourceOptions(params: Readonly<{
     profile: Pick<AccountProfile, 'connectedServicesV2'> | null | undefined;
     settings: Pick<Settings, 'connectedServicesProfileLabelByKey'>;
     activeServerId?: string | null;
+    interaction?: 'openSession' | 'pickRemoteSessionId';
 }>): ExternalSessionBrowseSourceOption[] {
     const options: ExternalSessionBrowseSourceOption[] = [];
     const label = params.agent.title ?? resolveAgentCatalogProjection(params.providerId, {
         enabledAgentIds: [params.providerId],
     }).title;
     for (const declaration of params.declarations) {
+        if (declaration.resumeOnly === true && params.interaction !== 'pickRemoteSessionId') continue;
         // The daemon admits exactly what this owner materializes; a browsable
         // option that the daemon would reject is a defect, not a presentation
         // difference, so both sides share one materializer.
@@ -125,6 +132,7 @@ function materializeProjectedSourceOptions(params: Readonly<{
 }
 
 function enrichProjectedSourceOptions(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     providerId: string;
     machineId?: string | null;
     projectedOptions: readonly ExternalSessionBrowseSourceOption[];
@@ -132,7 +140,7 @@ function enrichProjectedSourceOptions(params: Readonly<{
     profile: Pick<AccountProfile, 'connectedServicesV2'> | null | undefined;
     settings: Pick<Settings, 'connectedServicesProfileLabelByKey'>;
 }>): ExternalSessionBrowseSourceOption[] {
-    const getSourceOptions = resolveAgentUiBehavior(params.providerId, params.machineId)
+    const getSourceOptions = resolveAgentUiBehavior(params.providerId, params.machineId, params.accountScope)
         .externalSessions?.browse?.getSourceOptions;
     if (!getSourceOptions) return [...params.projectedOptions];
     const presentationBySourceKey = new Map<string, ExternalSessionBrowseSourceOption>();
@@ -158,6 +166,7 @@ function enrichProjectedSourceOptions(params: Readonly<{
 }
 
 export function resolveExternalSessionBrowseSourceOptions(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     providerId: ExternalSessionsAgentId;
     /**
      * The machine being browsed. An installed Agent's UI declaration is a fact
@@ -170,6 +179,7 @@ export function resolveExternalSessionBrowseSourceOptions(params: Readonly<{
     settings: Pick<Settings, 'connectedServicesProfileLabelByKey'>;
     projection: PluginProjectionV2 | null | undefined;
     activeServerId?: string | null;
+    interaction?: 'openSession' | 'pickRemoteSessionId';
 }>): ExternalSessionBrowseSourceOption[] {
     const projected = resolveProjectedExternalSessionBrowseAgent(params);
     if (!projected) return [];
@@ -185,6 +195,7 @@ export function resolveExternalSessionBrowseSourceOptions(params: Readonly<{
 }
 
 export function resolveExternalSessionBrowseSourceOption(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     providerId: ExternalSessionsAgentId;
     /** See `resolveExternalSessionBrowseSourceOptions`. */
     machineId?: string | null;
@@ -193,6 +204,7 @@ export function resolveExternalSessionBrowseSourceOption(params: Readonly<{
     projection: PluginProjectionV2 | null | undefined;
     source: ExternalSessionsSource;
     activeServerId?: string | null;
+    interaction?: 'openSession' | 'pickRemoteSessionId';
 }>): ExternalSessionBrowseSourceOption | null {
     const projected = resolveProjectedExternalSessionBrowseAgent(params);
     const declaration = projected?.externalSessions.sources.find(
@@ -210,17 +222,23 @@ export function resolveExternalSessionBrowseSourceOption(params: Readonly<{
 }
 
 export function listExternalSessionBrowseProviderIds(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     projection: PluginProjectionV2 | null | undefined;
     /** See `resolveExternalSessionBrowseSourceOptions`. */
     machineId?: string | null;
+    interaction?: 'openSession' | 'pickRemoteSessionId';
 }>): ExternalSessionsAgentId[] {
     const projection = params.projection;
     if (!projection) return [];
     return Object.keys(projection.agentsById)
-        .filter((providerId) => resolveProjectedExternalSessionBrowseAgent({ providerId, projection }) !== null)
+        .filter((providerId) => resolveProjectedExternalSessionBrowseAgent({
+            providerId,
+            projection,
+            interaction: params.interaction,
+        }) !== null)
         .sort((a, b) => {
-            const orderA = resolveAgentUiBehavior(a, params.machineId).externalSessions?.browse?.order ?? Number.MAX_SAFE_INTEGER;
-            const orderB = resolveAgentUiBehavior(b, params.machineId).externalSessions?.browse?.order ?? Number.MAX_SAFE_INTEGER;
+            const orderA = resolveAgentUiBehavior(a, params.machineId, params.accountScope).externalSessions?.browse?.order ?? Number.MAX_SAFE_INTEGER;
+            const orderB = resolveAgentUiBehavior(b, params.machineId, params.accountScope).externalSessions?.browse?.order ?? Number.MAX_SAFE_INTEGER;
             if (orderA !== orderB) return orderA - orderB;
             const titleA = projection.agentsById[a]?.title ?? a;
             const titleB = projection.agentsById[b]?.title ?? b;
@@ -253,18 +271,22 @@ export function supportsExternalSessionBackgroundFollow(params: Readonly<{
     const declaration = projected?.externalSessions.sources.find(
         (candidate) => candidate.sourceKind === params.source.kind,
     );
-    if (!declaration) return false;
+    // A resume-only source declares listing plus "resume in Happier" and
+    // nothing else, so a retained link to one must never expose background
+    // follow even though its source kind still parses.
+    if (!declaration || declaration.resumeOnly === true) return false;
     return parseExternalSessionsSourceForDeclaration(declaration, params.source) !== null;
 }
 
 export function resolveExternalSessionBrowseLinkEnsureRequestExtras(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     providerId: ExternalSessionsAgentId;
     /** See `resolveExternalSessionBrowseSourceOptions`. */
     machineId?: string | null;
     source: ExternalSessionsSource;
     candidate: Readonly<{ details?: Record<string, unknown> }>;
 }>): ExternalSessionBrowseLinkEnsureRequestExtras {
-    const buildExtras = resolveAgentUiBehavior(params.providerId, params.machineId)
+    const buildExtras = resolveAgentUiBehavior(params.providerId, params.machineId, params.accountScope)
         .externalSessions?.browse?.buildLinkEnsureRequestExtras;
     if (!buildExtras) return {};
     return buildExtras({
@@ -275,13 +297,14 @@ export function resolveExternalSessionBrowseLinkEnsureRequestExtras(params: Read
 }
 
 export function resolveExternalSessionBrowseCompatibleLinkSource(params: Readonly<{
+    accountScope?: ServerAccountScope | null;
     providerId: ExternalSessionsAgentId;
     /** See `resolveExternalSessionBrowseSourceOptions`. */
     machineId?: string | null;
     selectedSource: ExternalSessionsSource;
     candidateSource?: ExternalSessionsSource | null;
 }>): ExternalSessionsSource {
-    const resolveCompatibleLinkSource = resolveAgentUiBehavior(params.providerId, params.machineId)
+    const resolveCompatibleLinkSource = resolveAgentUiBehavior(params.providerId, params.machineId, params.accountScope)
         .externalSessions?.browse?.resolveCompatibleLinkSource;
     return resolveCompatibleExternalSessionBrowseLinkSource({
         selectedSource: params.selectedSource,

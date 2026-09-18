@@ -444,4 +444,92 @@ describe('resolveExternalSessionTranscriptAuthority', () => {
             },
         })).toBeNull();
     });
+
+    it('keeps provider remote-session ids byte-exact in live-source and lease scope keys', () => {
+        // Provider remote/session identifiers are opaque: leading/trailing
+        // whitespace and newlines are part of the identity, so a padded id must
+        // never collide with its stripped sibling in either key namespace.
+        const paddedIdentity = {
+            machineId: 'machine-1',
+            agentId: 'claude',
+            remoteSessionId: ' native-thread-1 ',
+            linkGeneration: '17',
+            pluginId: 'happier.claude',
+            pluginAgentLocalId: 'claude',
+            sourceKind: 'claudeConfig',
+            sourceContractVersion: 1,
+        } as const;
+        const strippedIdentity = { ...paddedIdentity, remoteSessionId: 'native-thread-1' };
+
+        const paddedLive = createExternalSessionTranscriptLiveSourceKey(paddedIdentity);
+        const strippedLive = createExternalSessionTranscriptLiveSourceKey(strippedIdentity);
+        expect(paddedLive).not.toBeNull();
+        expect(strippedLive).not.toBeNull();
+        expect(paddedLive).not.toBe(strippedLive);
+        // Exact bytes, not a normalized copy, are encoded into the key.
+        expect(paddedLive).toContain(JSON.stringify(' native-thread-1 '));
+
+        const newlineLive = createExternalSessionTranscriptLiveSourceKey({
+            ...paddedIdentity,
+            remoteSessionId: '\nnative-thread-1\n',
+        });
+        expect(newlineLive).not.toBeNull();
+        expect(newlineLive).not.toBe(strippedLive);
+        expect(newlineLive).not.toBe(paddedLive);
+
+        const paddedLinkLive = createExternalSessionTranscriptLiveSourceKeyFromLink({
+            machineId: 'machine-1',
+            agentId: 'claude',
+            remoteSessionId: ' native-thread-1 ',
+            linkedAtMs: 17,
+            source: { kind: 'claudeConfig' },
+        });
+        const strippedLinkLive = createExternalSessionTranscriptLiveSourceKeyFromLink({
+            machineId: 'machine-1',
+            agentId: 'claude',
+            remoteSessionId: 'native-thread-1',
+            linkedAtMs: 17,
+            source: { kind: 'claudeConfig' },
+        });
+        expect(paddedLinkLive).not.toBeNull();
+        expect(paddedLinkLive).not.toBe(strippedLinkLive);
+
+        const paddedLease = createExternalSessionTranscriptLeaseScopeKeyFromLink({
+            machineId: 'machine-legacy',
+            agentId: 'opencode',
+            remoteSessionId: ' native-thread-1 ',
+            source: {
+                kind: 'opencodeServer',
+                directory: '/workspace/a',
+            },
+        });
+        const strippedLease = createExternalSessionTranscriptLeaseScopeKeyFromLink({
+            machineId: 'machine-legacy',
+            agentId: 'opencode',
+            remoteSessionId: 'native-thread-1',
+            source: {
+                kind: 'opencodeServer',
+                directory: '/workspace/a',
+            },
+        });
+        expect(paddedLease).not.toBeNull();
+        expect(strippedLease).not.toBeNull();
+        expect(paddedLease).not.toBe(strippedLease);
+
+        // An all-whitespace id is still "no identity": fail closed instead of
+        // minting a key for it.
+        expect(createExternalSessionTranscriptLiveSourceKey({
+            ...paddedIdentity,
+            remoteSessionId: '   ',
+        })).toBeNull();
+        expect(createExternalSessionTranscriptLeaseScopeKeyFromLink({
+            machineId: 'machine-legacy',
+            agentId: 'opencode',
+            remoteSessionId: '\t',
+            source: {
+                kind: 'opencodeServer',
+                directory: '/workspace/a',
+            },
+        })).toBeNull();
+    });
 });

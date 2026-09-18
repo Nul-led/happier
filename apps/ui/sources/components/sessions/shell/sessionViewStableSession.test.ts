@@ -44,6 +44,7 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
 function createSession(overrides: Partial<Session> = {}): Session {
     return {
         id: 's1',
+        encryptionMode: 'plain',
         seq: 25,
         createdAt: 1,
         updatedAt: 100,
@@ -491,7 +492,59 @@ describe('buildSessionViewShellSessionSignature', () => {
 });
 
 describe('useSessionViewShellSession', () => {
-    it('replaces the cached shell session only when normalized rollback eligibility changes', () => {
+    it('does not reuse Account A detail after the same Home is cleared and Account B publishes the same session id', () => {
+        const accountA = {
+            ...createSession({
+                id: 'same-session',
+                responsibleAccountId: 'account-a',
+                responsibleAccount: {
+                    kind: 'human',
+                    accountId: 'account-a',
+                    firstName: 'Alice',
+                    lastName: 'Private',
+                    username: 'alice-private',
+                },
+            }),
+            serverId: 'same-home',
+        };
+        const accountB = {
+            ...createSession({
+                id: 'same-session',
+                responsibleAccountId: 'account-b',
+                responsibleAccount: {
+                    kind: 'human',
+                    accountId: 'account-b',
+                    firstName: 'Bob',
+                    lastName: 'Current',
+                    username: 'bob-current',
+                },
+            }),
+            serverId: 'same-home',
+        };
+        const routeState = {
+            sessionListIndexByServerId: {},
+            sessionListRowsByServerId: {},
+        };
+
+        expect(selectSessionViewShellSessionForRouteState({
+            ...routeState,
+            sessions: { [accountA.id]: accountA },
+        }, accountA.id, 'same-home')).toBe(accountA);
+        expect(selectSessionViewShellSessionForRouteState({
+            ...routeState,
+            sessions: {},
+        }, accountA.id, 'same-home')).toBeNull();
+
+        const selectedForB = selectSessionViewShellSessionForRouteState({
+            ...routeState,
+            sessions: { [accountB.id]: accountB },
+        }, accountB.id, 'same-home');
+        expect(selectedForB).toBe(accountB);
+        expect(selectedForB?.responsibleAccountId).toBe('account-b');
+        expect(selectedForB?.responsibleAccount?.username).toBe('bob-current');
+    });
+
+    it('returns the current store entity while the hook owns render-level stability', () => {
         const base = createSession({ id: 'session-rollback', rollbackEligibleTurnStarts: [3, 1] });
         const equivalentRefresh = createSession({
             id: 'session-rollback',
@@ -503,7 +556,7 @@ describe('useSessionViewShellSession', () => {
         });
         const routeState = {
             sessionListIndexByServerId: {},
-            concurrentSessionListCacheByServerId: {},
+            sessionListRowsByServerId: {},
         };
 
         const first = selectSessionViewShellSessionForRouteState({
@@ -520,7 +573,8 @@ describe('useSessionViewShellSession', () => {
         }, changed.id);
 
         expect(first).toBe(base);
-        expect(equivalent).toBe(first);
+        expect(equivalent).toBe(equivalentRefresh);
+        expect(equivalent).not.toBe(first);
         expect(replacement).toBe(changed);
         expect(replacement).not.toBe(first);
     });
@@ -542,7 +596,7 @@ describe('useSessionViewShellSession', () => {
         });
         const routeState = {
             sessionListIndexByServerId: {},
-            concurrentSessionListCacheByServerId: {},
+            sessionListRowsByServerId: {},
         };
 
         const first = selectSessionViewShellSessionForRouteState({
@@ -572,18 +626,84 @@ describe('useSessionViewShellSession', () => {
         const first = selectSessionViewShellSessionForRouteState({
             sessions: { 'session-1': serverASession },
             sessionListIndexByServerId: {},
-            concurrentSessionListCacheByServerId: {},
+            sessionListRowsByServerId: {},
         }, 'session-1', 'server-a');
         const second = selectSessionViewShellSessionForRouteState({
             sessions: { 'session-1': serverBSession },
             sessionListIndexByServerId: {},
-            concurrentSessionListCacheByServerId: {},
+            sessionListRowsByServerId: {},
         }, 'session-1', 'server-b');
 
         expect(first?.serverId).toBe('server-a');
         expect(second?.serverId).toBe('server-b');
         expect(second).toBe(serverBSession);
         expect(second).not.toBe(first);
+    });
+
+    it('keeps delimiter-colliding addresses distinct without a module-global entity cache', () => {
+        const firstAddressSession = { ...createSession({ id: 'b\u0000c' }), serverId: 'a' };
+        const collidingAddressSession = { ...createSession({ id: 'c' }), serverId: 'a\u0000b' };
+        const equivalentFirstAddressSession = { ...createSession({ id: 'b\u0000c' }), serverId: 'a' };
+        const routeState = { sessionListRowsByServerId: {} };
+
+        const first = selectSessionViewShellSessionForRouteState({
+            ...routeState,
+            sessions: { [firstAddressSession.id]: firstAddressSession },
+            sessionListIndexByServerId: {
+                a: [{ type: 'session' as const, sessionId: firstAddressSession.id, serverId: 'a' }],
+            },
+        }, firstAddressSession.id, 'a');
+        selectSessionViewShellSessionForRouteState({
+            ...routeState,
+            sessions: { [collidingAddressSession.id]: collidingAddressSession },
+            sessionListIndexByServerId: {
+                ['a\u0000b']: [{
+                    type: 'session' as const,
+                    sessionId: collidingAddressSession.id,
+                    serverId: 'a\u0000b',
+                }],
+            },
+        }, collidingAddressSession.id, 'a\u0000b');
+        const equivalent = selectSessionViewShellSessionForRouteState({
+            ...routeState,
+            sessions: { [equivalentFirstAddressSession.id]: equivalentFirstAddressSession },
+            sessionListIndexByServerId: {
+                a: [{ type: 'session' as const, sessionId: equivalentFirstAddressSession.id, serverId: 'a' }],
+            },
+        }, equivalentFirstAddressSession.id, 'a');
+
+        expect(first).toBe(firstAddressSession);
+        expect(equivalent).toBe(equivalentFirstAddressSession);
+        expect(equivalent).not.toBe(first);
+    });
+
+    it('does not infer an unqualified hydrated entity from one Home when canonical rows contain two Homes', () => {
+        const session = createSession({ id: 'same-id' });
+        const state = {
+            sessions: { 'same-id': session },
+            sessionListIndexByServerId: {
+                'server-a': [{ type: 'session' as const, sessionId: 'same-id', serverId: 'server-a' }],
+            },
+            sessionListRowsByServerId: {
+                'server-b': { 'same-id': session },
+            },
+        };
+
+        expect(selectSessionViewShellSessionForRouteState(state, 'same-id', 'server-a')).toBeNull();
+    });
+
+    it('keeps a qualified hydrated entity when another Home contains the same session id', () => {
+        const session = { ...createSession({ id: 'same-id' }), serverId: 'server-a' };
+        const state = {
+            sessions: { 'same-id': session },
+            sessionListIndexByServerId: {},
+            sessionListRowsByServerId: {
+                'server-b': { 'same-id': createSession({ id: 'same-id' }) },
+            },
+        };
+
+        expect(selectSessionViewShellSessionForRouteState(state, 'same-id', 'server-a')).toBe(session);
+        expect(selectSessionViewShellSessionForRouteState(state, 'same-id', 'server-b')).toBeNull();
     });
 
     it('accepts explicit server routes that alias the resolved local session scope', () => {
@@ -595,7 +715,7 @@ describe('useSessionViewShellSession', () => {
         const selected = selectSessionViewShellSessionForRouteState({
             sessions: { 'session-1': scopedSession },
             sessionListIndexByServerId: {},
-            concurrentSessionListCacheByServerId: {},
+            sessionListRowsByServerId: {},
         }, 'session-1', 'server-alias');
 
         expect(selected?.serverId).toBe('server-actual');
@@ -611,7 +731,7 @@ describe('useSessionViewShellSession', () => {
                     'session-1': createSession({ id: 'session-1' }),
                 },
                 sessionListIndexByServerId: {},
-                concurrentSessionListCacheByServerId: {},
+                sessionListRowsByServerId: {},
             }));
 
             const hook = await renderHook(() => ({
@@ -661,11 +781,11 @@ describe('useSessionViewShellSession', () => {
             id: 'session-1',
             seq: 25,
             active: true,
-            activeAt: 1,
+            activeAt: 999_900,
             thinking: true,
-            thinkingAt: 1,
+            thinkingAt: 999_900,
             latestTurnStatus: 'in_progress',
-            latestTurnStatusObservedAt: 1,
+            latestTurnStatusObservedAt: 999_900,
             presence: 'online',
         });
         try {
@@ -816,7 +936,8 @@ describe('useSessionViewShellSession', () => {
             const nextStatus = getSessionStatus(nextRuntimeStatusSource, 1_000_100, 0);
             expect(shellSession.latestTurnStatus).toBe('in_progress');
             expect(nextRuntimeStatusSource.latestTurnStatus).toBe('completed');
-            expect(nextStatus.state).toBe('waiting');
+            expect(nextStatus.state).toBe('ready');
+            expect(nextStatus.awareness.operational.primary).toBe('ready');
             expect(shouldShowAbortButtonForSessionState(nextStatus.state)).toBe(false);
             await hook.unmount();
         } finally {
@@ -829,7 +950,8 @@ describe('useSessionViewShellSession', () => {
         const shellSession = createSession({
             id: 'session-1',
             thinking: false,
-            latestTurnStatus: 'completed',
+            // No foreground result competes with the background-runtime status in this case.
+            latestTurnStatus: null,
             runtimeActivityState: 'idle',
             runtimeActivityActiveCount: 0,
             runtimeActivityObservedAt: 1_000,

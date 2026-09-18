@@ -4,16 +4,25 @@ import { SelectionList, resolvePopoverSelectionListHeightBehavior } from '@/comp
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
 import type { ServerScopedMachine, ServerScopedMachineGroup } from '@/components/sessions/new/hooks/machines/useServerScopedMachineOptions';
-import { useMachineSelectionListModel } from './machineSelection/useMachineSelectionListModel';
+import { useMachineSelectionListModel, type ServerScopedMachinePoolGroup, type ServerScopedMachinePoolSelection, type TemporaryComputerSelection } from './machineSelection/useMachineSelectionListModel';
+import type { MachinePoolSelectionStatus } from '@/components/sessions/new/hooks/machines/useMachinePoolSelection';
 
 export type NewSessionMachineSelectionContentProps = Readonly<{
     groups: ReadonlyArray<ServerScopedMachineGroup>;
+    poolGroups?: ReadonlyArray<ServerScopedMachinePoolGroup>;
     selectedMachine: Machine | null;
     selectedServerId: string | null;
     recentMachines: ReadonlyArray<Machine>;
     favoriteMachines: ReadonlyArray<Machine>;
     onSelectMachine: (machine: Machine) => void;
     onSelectScopedMachine: (machine: ServerScopedMachine) => void;
+    onSelectPool?: (selection: ServerScopedMachinePoolSelection) => void;
+    temporaryComputers?: readonly TemporaryComputerSelection[];
+    poolSelectionStatus?: MachinePoolSelectionStatus;
+    onRefreshMachines?: () => void;
+    onRefreshPools?: (serverId: string) => void;
+    onOpenPoolSettings?: (target: Readonly<{ serverId: string; poolId: string }>) => void;
+    onDismissPoolSelection?: () => void;
     serverId?: string | null;
     onToggleFavorite?: (machine: Machine) => void;
     showFavorites?: boolean;
@@ -29,12 +38,20 @@ export type NewSessionMachineSelectionContentProps = Readonly<{
 export function NewSessionMachineSelectionContent(props: NewSessionMachineSelectionContentProps) {
     const listModel = useMachineSelectionListModel({
         groups: props.groups,
+        poolGroups: props.poolGroups,
         selectedMachine: props.selectedMachine,
         selectedServerId: props.selectedServerId,
         recentMachines: props.recentMachines,
         favoriteMachines: props.favoriteMachines,
         onSelectMachine: props.onSelectMachine,
         onSelectScopedMachine: props.onSelectScopedMachine,
+        onSelectPool: props.onSelectPool,
+        temporaryComputers: props.temporaryComputers,
+        poolSelectionStatus: props.poolSelectionStatus,
+        onRefreshMachines: props.onRefreshMachines,
+        onRefreshPools: props.onRefreshPools,
+        onOpenPoolSettings: props.onOpenPoolSettings,
+        onDismissPoolSelection: props.onDismissPoolSelection,
         serverId: props.serverId,
         onToggleFavorite: props.onToggleFavorite,
         showFavorites: props.showFavorites ?? true,

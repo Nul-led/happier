@@ -47,6 +47,9 @@ import {
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { OtaUpdateStatusSection } from './OtaUpdateStatusSection';
 import { Icon } from '@/components/ui/icons/Icon';
+import { sanitizeActiveServerSnapshotForDiagnostics } from './systemStatusDiagnostics';
+import { useActiveHomeConnectionHealth } from '@/components/navigation/connectionStatus/useConnectionHealth';
+import { formatIrohRelayConfiguration } from '@/components/navigation/connectionStatus/formatIrohRelayConfiguration';
 
 function formatRelativeTimeMs(ms: number | null | undefined): string {
   if (!ms) return t('status.unknown');
@@ -105,6 +108,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
   const voiceStatus = useVoiceSessionSnapshot().status;
   const socket = useSocketStatus();
   const lastSyncAt = useLastSyncAt();
+  const activeHomeHealth = useActiveHomeConnectionHealth();
   const appRuntimeInfo = React.useMemo(() => readCurrentAppRuntimeInfo(), []);
 
   const machineListByServerId = useMachineListByServerId();
@@ -193,10 +197,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
         socketLastErrorAt: socket.lastErrorAt,
         lastSyncAt,
       },
-      activeServer: {
-        ...activeServerSnapshot,
-        serverUrl: activeServerUrl,
-      },
+      activeServer: sanitizeActiveServerSnapshotForDiagnostics(activeServerSnapshot),
       profile: profile
         ? {
           id: profile.id,
@@ -296,6 +297,17 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
       ? t('connectionStatus.values.pathRelay')
       : t('status.unknown');
   const appliedIrohConfiguration = activeTransportDiagnostics?.effectiveConfiguration;
+  const transportStateLabel = activeTransportDiagnostics?.state === 'connected'
+    ? t('status.connected')
+    : activeTransportDiagnostics?.state === 'connecting'
+      ? t('status.connecting')
+      : activeTransportDiagnostics?.state === 'reconnecting'
+        ? t('connectionStatus.summary.reconnecting')
+        : activeTransportDiagnostics?.state === 'unavailable'
+          ? t('connectionStatus.summary.unavailable')
+          : activeTransportDiagnostics?.state === 'disconnected'
+            ? t('status.disconnected')
+            : t('status.unknown');
 
   const openDiagnosis = React.useCallback(() => {
     router.push('/settings/diagnosis');
@@ -348,9 +360,9 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
 
         <ItemGroup title={t('systemStatus.sections.currentServer')}>
           <Item
-            title={t('systemStatus.server.activeServer')}
+            title={t('systemStatus.server.activeHomeHealth')}
             subtitle={<Text style={{ color: theme.colors.text.secondary }}>{activeServerUrl || t('status.unknown')}</Text>}
-            detail={activeServerSnapshot.serverId}
+            detail={t(activeHomeHealth.statusLabelKey)}
             icon={<Icon name="hard-drives" size={24} color={theme.colors.accent.blue} />}
             onPress={() => router.push('/settings/server')}
           />
@@ -385,6 +397,15 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
                 : t('status.unknown')}
             icon={<Icon name="wifi-high" size={24} color={theme.colors.accent.blue} />}
           />
+          {activeTransportDiagnostics ? (
+            <Item
+              title={t(currentTransportPath || effectiveCarrier === 'iroh'
+                ? 'systemStatus.transport.irohCurrent'
+                : 'systemStatus.transport.irohHistory')}
+              detail={transportStateLabel}
+              icon={<Icon name="pulse" size={24} color={theme.colors.accent.blue} />}
+            />
+          ) : null}
           {currentTransportPath || lastKnownTransportPath ? (
             <Item
               title={currentTransportPath
@@ -399,12 +420,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
           {appliedIrohConfiguration ? (
             <Item
               title={t('connectionStatus.labels.relayConfiguration')}
-              detail={appliedIrohConfiguration.policy === 'disabled'
-                ? t('connectionStatus.values.relayDisabled')
-                : t('connectionStatus.values.relayAutomatic', {
-                  relays: appliedIrohConfiguration.relayUrls.join(', ') || t('status.unknown'),
-                  direct: appliedIrohConfiguration.directAddressCount,
-                })}
+              detail={formatIrohRelayConfiguration(appliedIrohConfiguration)}
               icon={<Icon name="wifi-high" size={24} color={theme.colors.accent.blue} />}
             />
           ) : null}

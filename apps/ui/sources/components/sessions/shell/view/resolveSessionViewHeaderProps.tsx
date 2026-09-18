@@ -21,7 +21,9 @@ import { isSessionRouteHydrationPending } from '@/sync/domains/session/sessionRo
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
-import { formatPathRelativeToHome, getSessionAvatarId, getSessionName } from '@/utils/sessions/sessionUtils';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
+import { formatPathRelativeToHome, getSessionAvatarId, getSessionName, getSessionStatus, resolveLockedSessionTitle } from '@/utils/sessions/sessionUtils';
 import { LruMap } from '@/utils/cache/lruMap';
 
 import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
@@ -42,6 +44,14 @@ import { resolveAgentIdFromFlavor, resolveAgentIdFromSessionMetadata } from '@ha
 import { Icon } from '@/components/ui/icons/Icon';
 import { ActionOperationActivityButton } from '@/components/inbox/actionOperations/ActionOperationActivityButton';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { resolveSessionCompanionHeaderPlacement } from '@/components/sessions/companion/sessionCompanionHeaderPlacement';
+import { resolveSessionCompanionHeaderIntent } from '@/components/sessions/companion/sessionCompanionHeaderIntent';
+import type { SessionCompanionPlacement } from '@/components/sessions/companion/layout/resolveSessionCompanionPlacement';
+import type { SessionCompanionAvailability } from '@/components/sessions/companion/state/useSessionCompanionPreference';
+import {
+    SESSION_BOARD_DESTINATION,
+    SESSION_BOARD_HEADER_MENU_ACTION_ID,
+} from '@/components/sessions/board/sessionBoardDestination';
 
 const WORKSPACE_SYNC_CONFLICT_TARGET_SIZE = Math.max(
     SESSION_HEADER_ACTION_TAP_TARGET_PX,
@@ -70,9 +80,17 @@ export type SessionViewHeaderProps = Readonly<{
     constrainWidth?: boolean;
 }>;
 
+/**
+ * Which settled blocked surface owns the body right now. A blocked Session keeps its safe title and
+ * Home context but drops every content-derived action, because none of them can act on a transcript
+ * this viewer cannot read.
+ */
+export type SessionViewHeaderBlockedSurface = 'access_denied' | 'content_blocked';
+
 type ResolveSessionViewHeaderPropsInput = Readonly<{
     isDataReady: boolean;
     routeHydrationState?: SessionRouteHydrationState | null;
+    blockedSurface?: SessionViewHeaderBlockedSurface | null;
     session: Session | null;
     currentMachineId?: unknown;
     sessionId: string;
@@ -89,6 +107,10 @@ type ResolveSessionViewHeaderPropsInput = Readonly<{
     navigateWithBlurOnWeb: (action: () => void) => void;
     handleHeaderExtraItemSelect: (actionId: string) => boolean;
     headerMenuExtraItems?: ReadonlyArray<DropdownMenuItem>;
+    collaborationHeader?: Readonly<{
+        target: SessionAddress;
+        compact: boolean;
+    }>;
     router: Readonly<{
         push: (path: string) => void;
         navigate: (path: string, options: { dangerouslySingular: () => string }) => void;
@@ -110,9 +132,25 @@ type ResolveSessionViewHeaderPropsInput = Readonly<{
     pluginUiScopedLaunchFacts?: PluginSurfaceScopedLaunchFacts | null;
     /** Existing Session Account-lifetime predicate for action execution. */
     pluginUiScopeIsCurrent?: (() => boolean) | null;
+    actionAccountLifetime?: ServerAccountScopeLifetime | null;
     onOpenPluginSurface?: PluginSurfaceOpenHandler;
     workspaceSyncConflictCount?: number;
     onOpenWorkspaceSyncConflicts?: () => void;
+    /** Board is direct only when the shell's existing width budget admits it. */
+    boardHeaderAction?: Readonly<{
+        onPress: () => void;
+        /** Existing content or an already-open Board may claim the one optional direct slot. */
+        preferDirect: boolean;
+    }>;
+    /** Current exact-realm facts used by the one optional-action selector. */
+    companionHeaderAction?: Readonly<{
+        availability: SessionCompanionAvailability;
+        preferenceExists: boolean;
+        visible: boolean;
+        itemCount: number;
+        placement: SessionCompanionPlacement;
+        isPhone: boolean;
+    }>;
 }>;
 
 const LOADING_HEADER_PROPS: SessionViewHeaderProps = {
@@ -137,21 +175,19 @@ const SESSION_VIEW_HEADER_PROPS_CACHE = new LruMap<string, SessionViewHeaderProp
     maxEntries: readSessionListShellCacheMaxEntriesFromEnv(),
 });
 
-// The compact breakpoint already owns when header chrome must fold. Outside it,
-// reserve exactly one existing direct-action hit target for plugin chrome. The
-// trailing row has no remaining-width callback and each additional direct action
-// consumes another fixed target, so more actions use the incumbent overflow menu
-// rather than competing with the session title or adding a plugin layout engine.
-const DIRECT_PLUGIN_HEADER_ACTION_WIDTH_BUDGET_PX = SESSION_HEADER_ACTION_TAP_TARGET_PX;
+type OptionalHeaderActionOwner = 'board' | 'companion' | 'plugin';
 
-function resolvePluginHeaderActionPlacement(input: Readonly<{
+/** The incumbent header owns exactly one optional direct action. */
+function resolveOptionalHeaderActionOwner(input: Readonly<{
     shouldFoldHeaderIconActions: boolean;
-    actionCount: number;
-}>): 'direct' | 'overflow' {
-    const directActionWidth = Math.max(0, input.actionCount) * SESSION_HEADER_ACTION_TAP_TARGET_PX;
-    return input.shouldFoldHeaderIconActions || directActionWidth > DIRECT_PLUGIN_HEADER_ACTION_WIDTH_BUDGET_PX
-        ? 'overflow'
-        : 'direct';
+    boardPrefersDirect: boolean;
+    companionPrefersDirect: boolean;
+    pluginActionCount: number;
+}>): OptionalHeaderActionOwner | null {
+    if (input.shouldFoldHeaderIconActions) return null;
+    if (input.boardPrefersDirect) return 'board';
+    if (input.companionPrefersDirect) return 'companion';
+    return input.pluginActionCount === 1 ? 'plugin' : null;
 }
 
 function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
@@ -191,6 +227,12 @@ function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
     pluginUiInteractionEnabled: boolean;
     externalAgentState: ExternalSessionRuntimePresentation['externalAgent']['state'] | null;
     workspaceSyncConflictCount: number;
+    hasBoardHeaderAction: boolean;
+    companionAvailability: SessionCompanionAvailability | null;
+    companionPreferenceExists: boolean;
+    companionVisible: boolean;
+    companionItemCount: number;
+    hasCollaborationHeader: boolean;
 }>): string {
     return JSON.stringify([
         input.sessionId,
@@ -227,10 +269,33 @@ function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
         input.pluginUiInteractionEnabled,
         input.externalAgentState ?? '',
         input.workspaceSyncConflictCount,
+        input.hasBoardHeaderAction,
+        input.companionAvailability ?? '',
+        input.companionPreferenceExists,
+        input.companionVisible,
+        input.companionItemCount,
+        input.hasCollaborationHeader,
     ]);
 }
 
+export function shouldFoldSessionHeaderIconActions(windowWidth: number): boolean {
+    return windowWidth < 520;
+}
+
 export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPropsInput): SessionViewHeaderProps {
+    // Explicit denial outranks hydration progress and the deleted shell: a revoked Session is not
+    // missing, and its cached title is no longer ours to display.
+    if (input.blockedSurface === 'access_denied') {
+        return {
+            title: t('session.access.removedTitle'),
+            subtitle: undefined,
+            avatarId: undefined,
+            rightElement: undefined,
+            isConnected: false,
+            flavor: null,
+        };
+    }
+
     if (!input.session && input.routeHydrationState && isSessionRouteHydrationPending(input.routeHydrationState)) {
         return LOADING_HEADER_PROPS;
     }
@@ -249,7 +314,7 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         ownerMetadata,
         input.currentMachineId,
     );
-    const shouldFoldHeaderIconActions = input.windowWidth < 520;
+    const shouldFoldHeaderIconActions = shouldFoldSessionHeaderIconActions(input.windowWidth);
     const badgeLabel = input.sessionAutomationsEnabledCount > 99 ? '99+' : String(input.sessionAutomationsEnabledCount);
     const title = getSessionName(session);
     const fallbackSubtitle = ownerMetadata?.path
@@ -265,10 +330,31 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
     const avatarId = getSessionAvatarId(session);
     const agentId = resolveAgentIdFromSessionMetadata(session.metadata)
         ?? resolveAgentIdFromFlavor(session.metadata?.flavor ?? null);
-    const isConnected = session.presence === 'online';
+    const isConnected = getSessionStatus(session).isConnected;
     const flavor = readSessionPresentationAgentId(session) ?? ownerMetadata?.flavor ?? null;
     const resolvedStorageBadge = externalSessionIdentity.storageLabel;
     const resolvedProviderBadge = externalSessionIdentity.identityLabel;
+
+    if (input.blockedSurface === 'content_blocked') {
+        // Keep the safe identity a locked Session may still show, and drop the action row: every
+        // one of those controls acts on transcript-derived state this viewer cannot read yet.
+        // The locked-title rule lives with the list row's owner so both surfaces name a
+        // locked Session identically.
+        return {
+            title: resolveLockedSessionTitle(title),
+            subtitle,
+            subtitleEllipsizeMode,
+            avatarId,
+            agentId,
+            badges: resolveSessionViewBadges({
+                storageBadge: resolvedStorageBadge,
+                providerBadge: resolvedProviderBadge,
+            }),
+            rightElement: undefined,
+            isConnected,
+            flavor,
+        };
+    }
     const cacheKey = buildSessionViewHeaderPropsCacheKey({
         sessionId: session.id,
         sessionServerId: session.serverId,
@@ -304,6 +390,12 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         pluginUiInteractionEnabled: input.pluginUiScopedLaunchFacts?.interactionEnabled === true,
         externalAgentState: input.externalSessionRuntime?.externalAgent.state ?? null,
         workspaceSyncConflictCount: input.workspaceSyncConflictCount ?? 0,
+        hasBoardHeaderAction: input.boardHeaderAction !== undefined,
+        companionAvailability: input.companionHeaderAction?.availability ?? null,
+        companionPreferenceExists: input.companionHeaderAction?.preferenceExists === true,
+        companionVisible: input.companionHeaderAction?.visible === true,
+        companionItemCount: input.companionHeaderAction?.itemCount ?? 0,
+        hasCollaborationHeader: input.collaborationHeader !== undefined,
     });
 
     // Plugin actions and workspace-conflict navigation carry live authority.
@@ -311,7 +403,9 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
     // same-count conflict moving between relationships, so retain the LRU only
     // for authority-free headers rather than caching stale action closures.
     const hasLiveUiAuthority = input.pluginUiProjection != null
-        || (input.workspaceSyncConflictCount ?? 0) > 0;
+        || (input.workspaceSyncConflictCount ?? 0) > 0
+        || input.boardHeaderAction !== undefined
+        || input.companionHeaderAction !== undefined;
     if (!hasLiveUiAuthority) {
         const cached = SESSION_VIEW_HEADER_PROPS_CACHE.get(cacheKey);
         if (cached) {
@@ -344,10 +438,46 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
             channel: 'internal',
         }),
     });
-    const pluginHeaderActionPlacement = resolvePluginHeaderActionPlacement({
+    const preferredCompanionPlacement = input.companionHeaderAction
+        ? resolveSessionCompanionHeaderPlacement({
+            ...input.companionHeaderAction,
+            headerActionsFolded: shouldFoldHeaderIconActions,
+        })
+        : null;
+    // Board content/open state has the established first claim. A deliberate
+    // Companion preference follows, then a sole plugin action. Every unselected
+    // candidate remains in the incumbent overflow menu.
+    const optionalDirectActionOwner = resolveOptionalHeaderActionOwner({
         shouldFoldHeaderIconActions,
-        actionCount: pluginHeaderActions.length,
+        boardPrefersDirect: input.boardHeaderAction?.preferDirect === true,
+        companionPrefersDirect: preferredCompanionPlacement === 'direct',
+        pluginActionCount: pluginHeaderActions.length,
     });
+    const boardHeaderActionPlacement = optionalDirectActionOwner === 'board' ? 'direct' : 'overflow';
+    const companionHeaderActionPlacement = preferredCompanionPlacement === null
+        ? null
+        : optionalDirectActionOwner === 'companion'
+            ? 'direct'
+            : 'overflow';
+    const companionHeaderIntent = input.companionHeaderAction
+        ? resolveSessionCompanionHeaderIntent(input.companionHeaderAction)
+        : null;
+    if (input.boardHeaderAction && boardHeaderActionPlacement === 'overflow') {
+        resolvedHeaderMenuExtraItems.push({
+            id: SESSION_BOARD_HEADER_MENU_ACTION_ID,
+            title: t(SESSION_BOARD_DESTINATION.labelKey),
+            icon: <Icon
+                name={SESSION_BOARD_DESTINATION.icon}
+                size={16}
+                color={input.actionIconColor}
+            />,
+        });
+    }
+    const pluginHeaderActionPlacement = optionalDirectActionOwner === 'plugin' ? 'direct' : 'overflow';
+    const headerInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
+    const headerInteractiveHitSlop = headerInteractiveTargetSize > SESSION_HEADER_ACTION_TAP_TARGET_PX
+        ? undefined
+        : 15;
 
     // Keeps dev's web-blur wrapper: navigating away from a focused web control without blurring it
     // leaves the caret behind on the outgoing screen.
@@ -369,11 +499,33 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         rightElement: (
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <ActionOperationActivityButton
-                    preferredSessionId={input.sessionId}
+                    preferredSessionAddress={normalizeSessionAddress(session.serverId, input.sessionId)}
                     testID="session-header-action-operations"
                     buttonSize={SESSION_HEADER_ACTION_TAP_TARGET_PX}
                     iconSize={SESSION_HEADER_ICON_SIZE_PX}
                 />
+                {boardHeaderActionPlacement === 'direct' && input.boardHeaderAction ? (
+                    <Pressable
+                        testID="session-header-board-button"
+                        onPress={input.boardHeaderAction.onPress}
+                        hitSlop={headerInteractiveHitSlop}
+                        style={({ pressed }) => ({
+                            width: headerInteractiveTargetSize,
+                            height: headerInteractiveTargetSize,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            opacity: pressed ? 0.7 : 1,
+                        })}
+                        accessibilityRole="button"
+                        accessibilityLabel={t(SESSION_BOARD_DESTINATION.labelKey)}
+                    >
+                        <Icon
+                            name={SESSION_BOARD_DESTINATION.icon}
+                            size={SESSION_HEADER_ICON_SIZE_PX}
+                            color={input.headerTintColor}
+                        />
+                    </Pressable>
+                ) : null}
                 {input.externalSessionRuntime ? (
                     <View
                         testID={`session-header-external-agent-status-${input.externalSessionRuntime.externalAgent.state}`}
@@ -401,7 +553,6 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
                                             ? 'ready'
                                             : 'quiet'
                             }
-                            accessibilityLabel={t(input.externalSessionRuntime.externalAgent.labelKey)}
                             workingMode="spinner"
                         />
                         <Text
@@ -425,9 +576,13 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
                     pluginUiProjection={input.pluginUiProjection}
                     pluginUiScopedLaunchFacts={input.pluginUiScopedLaunchFacts}
                     pluginUiScopeIsCurrent={input.pluginUiScopeIsCurrent}
+                    actionAccountLifetime={input.actionAccountLifetime}
                     onOpenPluginSurface={input.onOpenPluginSurface}
                     pluginHeaderActions={pluginHeaderActions}
                     pluginHeaderActionPlacement={pluginHeaderActionPlacement}
+                    companionHeaderActionPlacement={companionHeaderActionPlacement}
+                    companionHeaderIntent={companionHeaderIntent}
+                    collaborationHeader={input.collaborationHeader}
                 />
                 {!shouldFoldHeaderIconActions ? (
                     <SessionHeaderSubagentsButton

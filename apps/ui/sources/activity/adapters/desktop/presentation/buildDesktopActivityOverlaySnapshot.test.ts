@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { resolveActivitySurfacePolicy } from '@/activity/attention/resolveActivitySurfacePolicy';
+import { buildSessionActivityAttention } from '@/activity/attention/buildSessionActivityAttention';
 import { buildDesktopActivityOverlayModel } from '@/activity/adapters/desktop/presentation/buildDesktopActivityOverlayModel';
 import type { DesktopOverlayPolicy } from '@/activity/adapters/desktop/runtime/resolveDesktopOverlayPolicy';
+import { activityInstanceKey } from '@/sync/domains/session/sessionAddress';
 import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { ConnectedServiceQuotaSummary } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries';
 
@@ -44,30 +46,103 @@ function createOverlaySource(params: Readonly<{
     sessions: ReadonlyArray<ReturnType<typeof createSessionFixture>>;
     quotaSummaries?: ReadonlyArray<ConnectedServiceQuotaSummary>;
 }>): DesktopActivityOverlaySource {
+    const sessions = params.sessions.map((session) => ({
+        ...session,
+        serverId: session.serverId ?? 'server-1',
+    }));
     return {
         isDataReady: true,
-        sessionsById: Object.fromEntries(params.sessions.map((session) => [session.id, session])),
-        sessionListRenderablesById: Object.fromEntries(
-            params.sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)]),
-        ),
+        sessionsById: Object.fromEntries(sessions.map((session) => [session.id, session])),
+        sessionListRowsByServerId: {
+            'server-1': Object.fromEntries(
+                sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)]),
+            ),
+        },
+        ordinarySessionListMembershipByServerId: {
+            'server-1': sessions.map((session) => session.id),
+        },
         sessionListIndexByServerId: {
-            'server-1': params.sessions.map((session) => ({
+            'server-1': sessions.map((session) => ({
                 type: 'session' as const,
                 sessionId: session.id,
                 serverId: 'server-1',
             })),
         },
         concurrentSessionListCacheByServerId: {},
+        activeServerId: 'server-1',
+        activeServer: {
+            serverId: 'server-1',
+            serverUrl: 'https://server-1.example.test',
+            generation: 1,
+        },
         quotaSummaries: params.quotaSummaries ?? [],
     };
 }
 
 describe('buildDesktopActivityOverlaySnapshot', () => {
+    it('carries the shared safe structural context independently of locked private content', () => {
+        const session = createSessionFixture({
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: 'encrypted_access_pending',
+            id: 'locked-context',
+            serverId: 'server-1',
+            active: true,
+            presence: 'online',
+            pendingPermissionRequestCount: 1,
+            pendingRequestObservedAt: 950,
+            agentState: {
+                controlledByUser: null,
+                requests: {
+                    request_1: {
+                        tool: 'Bash',
+                        kind: 'permission',
+                        arguments: {},
+                        createdAt: 950,
+                    },
+                },
+            },
+            metadata: {
+                path: '/private/PRIVATE-WORKSPACE-SENTINEL',
+                host: 'PRIVATE-HOST-SENTINEL',
+                summary: { text: 'PRIVATE-TITLE-SENTINEL', updatedAt: 3 },
+            },
+        });
+        const contextLine = 'Home B · Offline · Last updated 18m ago · Developers · Assigned to you · Encrypted access pending';
+        const candidate = {
+            ...buildSessionActivityAttention({ session, nowMs: 1_000 }),
+            context: {
+                address: { serverId: 'server-1', sessionId: session.id },
+                segments: contextLine.split(' · ').map((label, index) => ({
+                    kind: (['home', 'freshness', 'freshness', 'audience', 'responsibility', 'content_availability'] as const)[index]!,
+                    label,
+                })),
+                contextLine,
+                accessibilityContext: contextLine,
+                workspace: null,
+                mayShowDecryptedContent: false,
+            },
+        };
+        const snapshot = buildDesktopActivityOverlaySnapshot({
+            source: createOverlaySource({ sessions: [session] }),
+            sourceOverview: {
+                candidates: [candidate],
+                counts: { unread: 0, permissionRequired: 1, actionRequired: 0, thinking: 0, totalAttention: 1 },
+            },
+            activityPolicy: resolveActivitySurfacePolicy({ activitySurfacePrivacyMode: 'status_only' }),
+            desktopPolicy: createDesktopPolicy(),
+            nowMs: 1_000,
+        });
+
+        expect(snapshot.primary?.subtitle).toBe(contextLine);
+        expect(JSON.stringify(snapshot.primary)).not.toContain('PRIVATE-');
+    });
+
     it('keeps the activity snapshot focused on the selected desktop activity session', () => {
         const snapshot = buildDesktopActivityOverlaySnapshot({
             source: createOverlaySource({
                 sessions: [
                     createSessionFixture({
+                        encryptionMode: 'plain',
                         id: 'permission-without-companion-policy',
                         active: true,
                         presence: 'online',
@@ -91,6 +166,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
             source: createOverlaySource({
                 sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'permission',
                     active: true,
                     presence: 'online',
@@ -104,6 +180,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'thinking',
                     seq: 2,
                     lastViewedSessionSeq: 2,
@@ -119,6 +196,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'quiet-active',
                     seq: 3,
                     lastViewedSessionSeq: 3,
@@ -132,6 +210,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'inactive-unread',
                     seq: 10,
                     lastViewedSessionSeq: 1,
@@ -180,6 +259,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
             source: createOverlaySource({
                 sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'preview-session',
                     active: true,
                     presence: 'online',
@@ -211,6 +291,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
             source: createOverlaySource({
                 sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'quiet-inactive',
                     active: false,
                     presence: 'online',
@@ -248,8 +329,9 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
         expect(snapshot.defaultTarget).toBe('open-inbox');
     });
 
-    it('includes hydrated user-facing sessions and their requests when the session-list lookup lags', () => {
+    it('does not admit a hydrated Session while canonical ordinary membership lags', () => {
         const visibleSession = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'visible-session',
             active: true,
             presence: 'online',
@@ -261,6 +343,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
             },
         });
         const detachedSession = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'detached-session',
             active: true,
             presence: 'online',
@@ -290,8 +373,13 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
         const snapshot = buildDesktopActivityOverlaySnapshot({
             source: {
                 ...source,
-                sessionListRenderablesById: {
-                    [visibleSession.id]: source.sessionListRenderablesById[visibleSession.id]!,
+                sessionListRowsByServerId: {
+                    'server-1': {
+                        [visibleSession.id]: source.sessionListRowsByServerId?.['server-1']?.[visibleSession.id]!,
+                    },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    'server-1': [visibleSession.id],
                 },
                 sessionListIndexByServerId: {
                     'server-1': [
@@ -311,16 +399,30 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
         });
 
         expect(snapshot.sessions.map((session) => session.sessionId)).toEqual([
-            'detached-session',
             'visible-session',
         ]);
-        expect(snapshot.permissionRequests).toEqual([
-            expect.objectContaining({
-                kind: 'permission_request',
-                requestId: 'detached-permission',
-                sessionId: 'detached-session',
-            }),
-        ]);
+        expect(snapshot.permissionRequests).toEqual([]);
+    });
+
+    it('does not expose retained request copy or direct answers when selected content availability is unknown', () => {
+        const snapshot = buildDesktopActivityOverlaySnapshot({
+            source: createOverlaySource({ sessions: [createSessionFixture({
+                id: 'locked-requests', encryptionMode: 'e2ee', encryptedContentAvailability: undefined,
+                active: true, presence: 'online', pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 1,
+                agentState: { requests: {
+                    permission: { tool: 'Bash', arguments: { command: 'private-command' }, createdAt: 100 },
+                    question: { tool: 'AskUserQuestion', kind: 'user_action', createdAt: 100,
+                        arguments: { questions: [{ question: 'Private question?', options: [{ label: 'Private answer' }], multiSelect: false }] } },
+                } },
+            })] }),
+            activityPolicy: resolveActivitySurfacePolicy({ activitySurfacePrivacyMode: 'include_preview' }),
+            desktopPolicy: createDesktopPolicy({ visibilityMode: 'active_sessions', showPreviewText: true }),
+            nowMs: 1_000,
+        });
+        expect(snapshot.primary?.sessionId).toBe('locked-requests');
+        expect(snapshot.permissionRequests).toEqual([]);
+        expect(snapshot.userQuestions).toEqual([]);
+        expect(snapshot.defaultTarget).toContain('locked-requests');
     });
 
     it('derives permission-request and user-question snapshots for selected overlay sessions', () => {
@@ -328,6 +430,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
             source: createOverlaySource({
                 sessions: [
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'session-permission',
                     active: true,
                     presence: 'online',
@@ -351,6 +454,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
                     },
                 }),
                 createSessionFixture({
+                    encryptionMode: 'plain',
                     id: 'session-question',
                     active: true,
                     presence: 'online',
@@ -393,12 +497,18 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
         });
 
         expect(snapshot.state).toBe('content');
+        expect(snapshot.primary).toEqual(expect.objectContaining({
+            serverId: 'server-1',
+            sessionId: 'session-permission',
+            attentionState: 'permission_required',
+        }));
         expect(snapshot.permissionRequests).toEqual([
             expect.objectContaining({
                 serverId: 'server-1',
                 sessionId: 'session-permission',
                 requestId: 'perm-1',
                 kind: 'permission_request',
+                openActionIdentifier: 'open-session:session-permission?serverId=server-1',
                 allowActionIdentifier: 'session.permission.respond',
                 denyActionIdentifier: 'session.permission.respond',
             }),
@@ -409,6 +519,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
                 sessionId: 'session-question',
                 requestId: 'question-1',
                 kind: 'user_question',
+                openActionIdentifier: 'open-session:session-question?serverId=server-1',
                 questionText: 'Which deployment target?',
                 directOptions: [
                     expect.objectContaining({
@@ -428,10 +539,12 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
                 ],
             }),
         ]);
+        expect(snapshot.defaultTarget).toBe('open-session:session-permission?serverId=server-1');
     });
 
     it('preserves canonical permission identity when a newer unread renderable supplies attention', () => {
         const canonicalSession = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'hidden-global-permission',
             serverId: 'server-1',
             seq: 3,
@@ -468,7 +581,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
             sessions: [canonicalSession],
         });
         const newerUnreadRenderable = {
-            ...source.sessionListRenderablesById[canonicalSession.id]!,
+            ...source.sessionListRowsByServerId?.['server-1']?.[canonicalSession.id]!,
             seq: 4,
             updatedAt: 950,
             latestReadyEventSeq: 4,
@@ -481,8 +594,8 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
         const snapshot = buildDesktopActivityOverlaySnapshot({
             source: {
                 ...source,
-                sessionListRenderablesById: {
-                    [canonicalSession.id]: newerUnreadRenderable,
+                sessionListRowsByServerId: {
+                    'server-1': { [canonicalSession.id]: newerUnreadRenderable },
                 },
             },
             activityPolicy: resolveActivitySurfacePolicy({}),
@@ -507,6 +620,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
 
     it('keeps renderable-only request summaries openable without fabricating response actions', () => {
         const canonicalSession = createSessionFixture({
+            encryptionMode: 'plain',
             id: 'hidden-summary-requests',
             serverId: 'server-1',
             seq: 4,
@@ -533,14 +647,14 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
         const snapshot = buildDesktopActivityOverlaySnapshot({
             source: {
                 ...source,
-                sessionListRenderablesById: {
-                    [canonicalSession.id]: {
-                        ...source.sessionListRenderablesById[canonicalSession.id]!,
+                sessionListRowsByServerId: {
+                    'server-1': { [canonicalSession.id]: {
+                        ...source.sessionListRowsByServerId?.['server-1']?.[canonicalSession.id]!,
                         agentStateVersion: 7,
                         hasPendingPermissionRequests: true,
                         hasPendingUserActionRequests: true,
                         pendingRequestObservedAt: 950,
-                    },
+                    } },
                 },
             },
             activityPolicy: resolveActivitySurfacePolicy({}),
@@ -563,6 +677,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
             source: createOverlaySource({
                 sessions: [
                     createSessionFixture({
+                        encryptionMode: 'plain',
                         id: 'session-edit',
                         active: true,
                         presence: 'online',
@@ -580,6 +695,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
                         },
                     }),
                     createSessionFixture({
+                        encryptionMode: 'plain',
                         id: 'session-bash',
                         active: true,
                         presence: 'online',
@@ -622,8 +738,14 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
         ]));
 
         const cards = model.expanded.cards ?? [];
-        const editCard = cards.find((card) => card.id === 'permission:perm-edit');
-        const bashCard = cards.find((card) => card.id === 'permission:perm-bash');
+        const editCard = cards.find((card) => card.id === activityInstanceKey(
+            { serverId: 'server-1', sessionId: 'session-edit' },
+            JSON.stringify(['permission_request', 'perm-edit']),
+        ));
+        const bashCard = cards.find((card) => card.id === activityInstanceKey(
+            { serverId: 'server-1', sessionId: 'session-bash' },
+            JSON.stringify(['permission_request', 'perm-bash']),
+        ));
 
         expect(editCard).toEqual(expect.objectContaining({
             kind: 'permission_request',
@@ -654,6 +776,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
             source: createOverlaySource({
                 sessions: [
                     Object.assign(createSessionFixture({
+                        encryptionMode: 'plain',
                         id: 'session-ready',
                         active: true,
                         presence: 'online',
@@ -717,6 +840,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
                 serverId: 'server-1',
                 title: 'Ready session',
                 summary: expect.any(String),
+                openActionIdentifier: 'open-session:session-ready?serverId=server-1',
                 variant: 'turn_complete',
                 autoDismissMs: 15000,
                 sticky: false,
@@ -729,6 +853,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
             source: createOverlaySource({
                 sessions: [
                     Object.assign(createSessionFixture({
+                        encryptionMode: 'plain',
                         id: 'stale-ready',
                         active: true,
                         presence: 'online',

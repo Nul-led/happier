@@ -2,7 +2,6 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { SessionExecutionRunDetailsView } from '@/components/sessions/runs/details/SessionExecutionRunDetailsView';
 import { SessionMessageDetailsView } from '@/components/sessions/transcript/details/SessionMessageDetailsView';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
@@ -25,25 +24,17 @@ const stylesheet = StyleSheet.create((theme) => ({
 }));
 
 export const SessionSubagentTranscriptBody = React.memo((props: SessionSubagentTranscriptBodyProps) => {
+    // Body composition for Agent-team and tool participants only. An execution-run
+    // participant is delegated by its host to the canonical Run Details surface before
+    // reaching here, because nesting that surface inside this body's overview +
+    // composer shell put two independent composers on one run.
     const styles = stylesheet;
     const descriptor = resolveSessionSubagentDetailsDescriptor({
         subagent: props.subagent,
         message: props.message,
     });
 
-    if (descriptor.id === 'execution_run' && props.subagent.runRef?.runId) {
-        return (
-            <SessionExecutionRunDetailsView
-                sessionId={props.sessionId}
-                runId={props.subagent.runRef.runId}
-                presentation="panel"
-                showInfoCard={false}
-                showSendComposer={false}
-            />
-        );
-    }
-
-    if (props.message?.kind === 'tool-call') {
+    if (descriptor.id === 'tool_transcript' && props.message?.kind === 'tool-call') {
         return (
             <SessionMessageDetailsView
                 sessionId={props.sessionId}

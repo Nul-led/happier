@@ -19,6 +19,8 @@ import { DesktopSidebarChrome } from './desktopChrome/DesktopSidebarChrome';
 import { useResolvedDesktopWindowControls } from './desktopChrome/useResolvedDesktopWindowControls';
 import { useDesktopSidebarHistoryNavigationAvailability } from './desktopChrome/useDesktopSidebarHistoryNavigationAvailability';
 import { useSidebarHeaderActions } from './desktopChrome/useSidebarHeaderActions';
+import { useInboxAvailable } from '@/hooks/inbox/useInboxAvailable';
+import { useInboxModel } from '@/hooks/inbox/useInboxModel';
 
 export type SidebarViewProps = Readonly<{
     sidebarWidthPx?: number | null;
@@ -48,6 +50,8 @@ export const SidebarView = React.memo((props: SidebarViewProps) => {
     const [, setSidebarCollapsed] = useLocalSettingMutable('sidebarCollapsed');
     const voiceEnabled = useFeatureEnabled('voice');
     const { headerActions, topUtilityActions, renderHeaderOverflowVisual } = useSidebarHeaderActions();
+    const inboxEnabled = useInboxAvailable();
+    const inboxModel = useInboxModel();
     const navigationAvailability = useDesktopSidebarHistoryNavigationAvailability();
     const resolvedDesktopWindowControls = useResolvedDesktopWindowControls({
         variant: 'expanded',
@@ -111,6 +115,8 @@ export const SidebarView = React.memo((props: SidebarViewProps) => {
                         popoverBoundaryRef={popoverBoundaryRef}
                         desktopWindowControls={resolvedDesktopWindowControls}
                         desktopUpdateIndicator={props.desktopUpdateIndicator}
+                        inboxModel={inboxModel}
+                        inboxEnabled={inboxEnabled}
                     />
                     {voiceEnabled ? <VoiceSurface variant="sidebar" /> : null}
                     <MainView variant="sidebar" />

@@ -58,12 +58,13 @@ function makeMachine(overrides?: Partial<Machine>): Machine {
 function createHarness(createMachinesDomain: any) {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         machines: {},
         profile: { id: 'account-1' },
         settings: {
-            groupInactiveSessionsByProject: false,
             sessionListActiveGroupingV1: undefined,
             sessionListInactiveGroupingV1: undefined,
             sessionListSectionModeV1: undefined,

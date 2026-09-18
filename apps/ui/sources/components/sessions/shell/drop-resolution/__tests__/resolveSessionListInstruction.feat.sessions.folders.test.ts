@@ -125,13 +125,13 @@ function pinnedItems(): SessionListIndexItem[] {
 function buildTree(items = mixedWorkspaceItems()) {
     const rowBoundsById = new Map<string, WindowBounds>([
         [treeRowId.workspaceRoot('project-a'), bounds(0)],
-        [treeRowId.folder('folder-a'), bounds(40)],
+        [treeRowId.folder('server-a', 'folder-a'), bounds(40)],
         [treeRowId.session('server-a', 'inside-a'), bounds(80)],
-        [treeRowId.folder('child-a'), bounds(120)],
-        [treeRowId.folder('folder-b'), bounds(160)],
+        [treeRowId.folder('server-a', 'child-a'), bounds(120)],
+        [treeRowId.folder('server-a', 'folder-b'), bounds(160)],
         [treeRowId.session('server-a', 'root-a'), bounds(200)],
         [treeRowId.workspaceRoot('project-b'), bounds(300)],
-        [treeRowId.folder('folder-c'), bounds(340)],
+        [treeRowId.folder('server-a', 'folder-c'), bounds(340)],
     ]);
     return buildSessionListTreeRows({
         items,
@@ -147,6 +147,39 @@ function buildTree(items = mixedWorkspaceItems()) {
 }
 
 describe('resolveSessionListInstruction', () => {
+    it('keeps delimiter-bearing qualified Session tree rows distinct', () => {
+        const first = treeRowId.session('https://home.example/a', 'b:c');
+        const second = treeRowId.session('https://home.example/a:b', 'c');
+
+        expect(first).not.toBe(second);
+    });
+
+    it('keeps equal Home-local folder ids distinct across Homes in the live drag tree', () => {
+        const workspaceB = {
+            ...workspaceA,
+            serverId: 'server-b',
+            rootPath: '/repo-b',
+        } as const;
+        const tree = buildSessionListTreeRows({
+            items: [
+                projectHeader('project-a', workspaceA),
+                folderHeader({ id: 'same-folder', groupKey: 'project-a:folder:same-folder', depth: 0, workspace: workspaceA }),
+                projectHeader('project-b', workspaceB),
+                {
+                    ...folderHeader({ id: 'same-folder', groupKey: 'project-b:folder:same-folder', depth: 0, workspace: workspaceB }),
+                    serverId: 'server-b',
+                },
+            ],
+        });
+        const folderRows = [...tree.rowMetadataById.values()]
+            .filter((metadata) => metadata.kind === 'folder');
+
+        expect(folderRows).toHaveLength(2);
+        expect(new Set(folderRows.map((metadata) => metadata.rowId)).size).toBe(2);
+        expect(folderRows.map((metadata) => metadata.serverId)).toEqual(['server-a', 'server-b']);
+        expect(new Set(folderRows.map((metadata) => metadata.orderKey)).size).toBe(2);
+    });
+
     it('moves external and persisted sessions through the same folder instruction owner', () => {
         const items = [
             projectHeader('project-a', workspaceA),
@@ -165,7 +198,7 @@ describe('resolveSessionListInstruction', () => {
             rowBoundsById: new Map([
                 [treeRowId.workspaceRoot('project-a'), bounds(0)],
                 [treeRowId.session('server-a', 'direct-a'), bounds(40)],
-                [treeRowId.folder('folder-a'), bounds(80)],
+                [treeRowId.folder('server-a', 'folder-a'), bounds(80)],
             ]),
         });
 
@@ -178,7 +211,7 @@ describe('resolveSessionListInstruction', () => {
 
         expect(result.instruction).toMatchObject({
             kind: 'nest-into',
-            targetId: treeRowId.folder('folder-a'),
+            targetId: treeRowId.folder('server-a', 'folder-a'),
         });
         expect(result.sessionListBlockReason).toBeUndefined();
     });
@@ -270,6 +303,65 @@ describe('resolveSessionListInstruction', () => {
         expect(result.sessionListBlockReason).toBeUndefined();
     });
 
+    it('blocks an ineligible sibling reorder without blocking valid folder containment', () => {
+        const pinnedTree = buildSessionListTreeRows({
+            items: pinnedItems(),
+            rowBoundsById: new Map([
+                [treeRowId.session('server-a', 'pinned-a'), bounds(40)],
+                [treeRowId.session('server-a', 'pinned-b'), bounds(80)],
+            ]),
+        });
+
+        const reorder = resolveSessionListInstruction({
+            tree: pinnedTree,
+            source: buildSessionListDragSource({
+                tree: pinnedTree,
+                sourceRowId: treeRowId.session('server-a', 'pinned-a'),
+            }),
+            pointer: pointer(90),
+            foldersFeatureEnabled: true,
+            canReorderSessionSiblings: false,
+        });
+
+        expect(reorder.instruction.kind).toBe('blocked');
+        expect(reorder.visual).toEqual({ kind: 'none' });
+        expect(reorder.sessionListBlockReason).toBe('ordering-mode');
+
+        const mixedTree = buildTree();
+        const reorderAroundFolder = resolveSessionListInstruction({
+            tree: mixedTree,
+            source: buildSessionListDragSource({
+                tree: mixedTree,
+                sourceRowId: treeRowId.session('server-a', 'root-a'),
+            }),
+            pointer: pointer(42),
+            foldersFeatureEnabled: true,
+            canReorderSessionSiblings: false,
+        });
+
+        expect(reorderAroundFolder.instruction.kind).toBe('blocked');
+        expect(reorderAroundFolder.visual).toEqual({ kind: 'none' });
+        expect(reorderAroundFolder.sessionListBlockReason).toBe('ordering-mode');
+
+        const folderTree = buildTree();
+        const containment = resolveSessionListInstruction({
+            tree: folderTree,
+            source: buildSessionListDragSource({
+                tree: folderTree,
+                sourceRowId: treeRowId.session('server-a', 'inside-a'),
+            }),
+            pointer: pointer(180),
+            foldersFeatureEnabled: true,
+            canReorderSessionSiblings: false,
+        });
+
+        expect(containment.instruction).toMatchObject({
+            kind: 'nest-into',
+            targetId: treeRowId.folder('server-a', 'folder-b'),
+        });
+        expect(containment.sessionListBlockReason).toBeUndefined();
+    });
+
     it('blocks folder nesting for a session without a durable workspace scope', () => {
         const items: SessionListIndexItem[] = [
             projectHeader('project-a', workspaceA),
@@ -293,7 +385,7 @@ describe('resolveSessionListInstruction', () => {
             rowBoundsById: new Map([
                 [treeRowId.workspaceRoot('project-a'), bounds(0)],
                 [treeRowId.session('server-a', 'unscoped'), bounds(40)],
-                [treeRowId.folder('folder-a'), bounds(80)],
+                [treeRowId.folder('server-a', 'folder-a'), bounds(80)],
             ]),
         });
 
@@ -324,7 +416,7 @@ describe('resolveSessionListInstruction', () => {
         expect(result.instruction).toEqual({
             kind: 'blocked',
             reason: 'workspace-scope-mismatch',
-            hintTargetId: treeRowId.folder('folder-c'),
+            hintTargetId: treeRowId.folder('server-a', 'folder-c'),
         });
     });
 
@@ -340,12 +432,12 @@ describe('resolveSessionListInstruction', () => {
 
         expect(result.instruction).toEqual({
             kind: 'nest-into',
-            targetId: treeRowId.folder('folder-b'),
-            containerId: treeRowId.folder('folder-b'),
-            parentId: treeRowId.folder('folder-b'),
+            targetId: treeRowId.folder('server-a', 'folder-b'),
+            containerId: treeRowId.folder('server-a', 'folder-b'),
+            parentId: treeRowId.folder('server-a', 'folder-b'),
             depth: 1,
         });
-        expect(result.visual).toEqual({ kind: 'outline', targetId: treeRowId.folder('folder-b') });
+        expect(result.visual).toEqual({ kind: 'outline', targetId: treeRowId.folder('server-a', 'folder-b') });
     });
 
     it('resolves a session drop onto workspace-root whitespace as a scoped root move', () => {
@@ -372,13 +464,13 @@ describe('resolveSessionListInstruction', () => {
             items,
             rowBoundsById: new Map<string, WindowBounds>([
                 [treeRowId.workspaceRoot('project-a'), bounds(0)],
-                [treeRowId.folder('folder-a'), bounds(40)],
+                [treeRowId.folder('server-a', 'folder-a'), bounds(40)],
                 [treeRowId.session('server-a', 'inside-a'), bounds(80)],
-                [treeRowId.folder('child-a'), bounds(120)],
-                [treeRowId.folder('folder-b'), bounds(160)],
+                [treeRowId.folder('server-a', 'child-a'), bounds(120)],
+                [treeRowId.folder('server-a', 'folder-b'), bounds(160)],
                 [treeRowId.session('server-a', 'root-a'), bounds(200)],
                 [treeRowId.workspaceRoot('project-b'), bounds(300)],
-                [treeRowId.folder('folder-c'), bounds(340)],
+                [treeRowId.folder('server-a', 'folder-c'), bounds(340)],
             ]),
         });
 
@@ -440,13 +532,13 @@ describe('resolveSessionListInstruction', () => {
             items: mixedWorkspaceItems(),
             rowBoundsById: new Map<string, WindowBounds>([
                 [treeRowId.workspaceRoot('project-a'), bounds(0)],
-                [treeRowId.folder('folder-a'), bounds(40)],
+                [treeRowId.folder('server-a', 'folder-a'), bounds(40)],
                 [treeRowId.session('server-a', 'inside-a'), bounds(80)],
-                [treeRowId.folder('child-a'), bounds(120)],
-                [treeRowId.folder('folder-b'), bounds(170)],
+                [treeRowId.folder('server-a', 'child-a'), bounds(120)],
+                [treeRowId.folder('server-a', 'folder-b'), bounds(170)],
                 [treeRowId.session('server-a', 'root-a'), bounds(210)],
                 [treeRowId.workspaceRoot('project-b'), bounds(300)],
-                [treeRowId.folder('folder-c'), bounds(340)],
+                [treeRowId.folder('server-a', 'folder-c'), bounds(340)],
             ]),
         });
 
@@ -459,14 +551,14 @@ describe('resolveSessionListInstruction', () => {
 
         expect(result.instruction).toEqual({
             kind: 'reorder-before',
-            targetId: treeRowId.folder('folder-b'),
+            targetId: treeRowId.folder('server-a', 'folder-b'),
             containerId: treeRowId.workspaceRoot('project-a'),
             parentId: null,
             depth: 0,
         });
         expect(result.visual).toEqual({
             kind: 'line',
-            targetId: treeRowId.folder('folder-b'),
+            targetId: treeRowId.folder('server-a', 'folder-b'),
             edge: 'top',
             depth: 0,
         });
@@ -475,8 +567,8 @@ describe('resolveSessionListInstruction', () => {
     it('blocks folder drops into descendants', () => {
         const tree = buildTree();
 
-        const source = buildSessionListDragSource({ tree, sourceRowId: treeRowId.folder('folder-a') });
-        expect(source.excludedDescendantIds.has(treeRowId.folder('child-a'))).toBe(true);
+        const source = buildSessionListDragSource({ tree, sourceRowId: treeRowId.folder('server-a', 'folder-a') });
+        expect(source.excludedDescendantIds.has(treeRowId.folder('server-a', 'child-a'))).toBe(true);
 
         const result = resolveSessionListInstruction({
             tree,
@@ -488,7 +580,7 @@ describe('resolveSessionListInstruction', () => {
         expect(result.instruction).toEqual({
             kind: 'blocked',
             reason: 'descendant-cycle',
-            hintTargetId: treeRowId.folder('child-a'),
+            hintTargetId: treeRowId.folder('server-a', 'child-a'),
         });
     });
 });

@@ -1,3 +1,4 @@
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { storage } from '@/sync/domains/state/storage';
@@ -24,6 +25,9 @@ function createSession(path: string | null, summaryText = 'Hello'): Session {
     updatedAt: 0,
     active: true,
     activeAt: 0,
+    // Readability is evidence, never inference: without a declared mode the awareness owner
+    // reports `locked`, and every privacy case below would pass by withholding everything.
+    encryptionMode: 'plain',
     metadata: {
       path: path ?? '',
       host: 'localhost',
@@ -82,11 +86,19 @@ function prefs(overrides: Partial<VoiceContextFormatterPrefs>): VoiceContextForm
 }
 
 describe('voice context privacy (opt-out defaults)', () => {
+  it('withholds retained transcript content when Session details are locked', () => {
+    const session: Session = { ...createSession('/private'), metadata: null, encryptionMode: 'e2ee' };
+    const formatted = formatSessionFull(session, [createUserMessage('secret', 'RETAINED PRIVATE CONTENT', 1)], prefs({}));
+    expect(formatted).not.toContain('RETAINED PRIVATE CONTENT');
+    expect(formatted).toContain('Encrypted details unavailable');
+  });
+
   beforeEach(() => {
     storage.setState((state: any) => ({
       ...state,
       sessions: {},
-      sessionListRenderables: {},
+      sessionListRowsByServerId: {},
+      ordinarySessionListMembershipByServerId: {},
       sessionListIndexByServerId: {},
       concurrentSessionListCacheByServerId: {},
     }));
@@ -158,23 +170,28 @@ describe('voice context privacy (opt-out defaults)', () => {
           presence: 'online',
         },
       },
-      sessionListRenderables: {
-        s1: {
-          id: 's1',
-          updatedAt: 99,
-          metadata: {
-            path: '/Users/alice/Company/LookupRepo',
-            host: 'localhost',
-            summary: { text: 'Lookup session summary', updatedAt: 0 },
+      sessionListRowsByServerId: {
+        [getActiveServerSnapshot().serverId]: {
+          s1: {
+            id: 's1',
+            updatedAt: 99,
+            metadata: {
+              path: '/Users/alice/Company/LookupRepo',
+              host: 'localhost',
+              summary: { text: 'Lookup session summary', updatedAt: 0 },
+            },
           },
         },
       },
+      ordinarySessionListMembershipByServerId: {
+        [getActiveServerSnapshot().serverId]: ['s1'],
+      },
       sessionListIndexByServerId: {
-        'active-server': [
+        [getActiveServerSnapshot().serverId]: [
           {
             type: 'session',
             sessionId: 's1',
-            serverId: 'active-server',
+            serverId: getActiveServerSnapshot().serverId,
             serverName: 'Active',
           },
         ],
@@ -189,6 +206,7 @@ describe('voice context privacy (opt-out defaults)', () => {
         updatedAt: 1,
         active: true,
         activeAt: 0,
+        encryptionMode: 'plain',
         metadata: {
           path: '/Users/alice/Company/RawRepo',
           host: 'localhost',

@@ -1,6 +1,7 @@
 import * as React from 'react';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { PaneDriver } from '@/components/appShell/panes/types';
 import { renderScreen } from '@/dev/testkit';
 
 
@@ -9,15 +10,34 @@ import { renderScreen } from '@/dev/testkit';
 const rightPanelModuleLoaded = vi.fn();
 const detailsPanelModuleLoaded = vi.fn();
 const bottomPanelModuleLoaded = vi.fn();
+const registerDriverSpy = vi.hoisted(() => vi.fn<(driver: PaneDriver) => () => void>(() => () => {}));
 
 vi.mock('@/components/appShell/panes/AppPaneProvider', () => {
     const ctx = {
-        registerDriver: () => () => {},
+        registerDriver: registerDriverSpy,
     };
     return {
         useAppPaneContext: () => ctx,
         useOptionalAppPaneContext: () => ctx,
     };
+});
+
+vi.mock('@/components/sessions/model/useSessionMachineTarget', () => ({
+    useSessionMachineTarget: () => null,
+}));
+
+vi.mock('@/components/plugins/projection/useScopedPluginUiProjection', () => ({
+    useScopedPluginUiProjection: () => ({
+        pluginUiProjection: null,
+        pluginBrowserProjection: null,
+        phase: 'ready',
+        interactionEnabled: true,
+        platform: 'web',
+    }),
+}));
+
+afterEach(() => {
+    registerDriverSpy.mockClear();
 });
 
 vi.mock('./SessionRightPanel', () => {
@@ -42,6 +62,41 @@ vi.mock('./bottom/SessionBottomPanel', () => {
 });
 
 describe('useRegisterSessionPaneDriver (module prefetch)', () => {
+    it('registers distinct pane scopes for the same session id on two Homes', async () => {
+        const { useRegisterSessionPaneDriver } = await import('./useRegisterSessionPaneDriver');
+        const scopeIds: string[] = [];
+        const Probe = () => {
+            scopeIds.push(
+                useRegisterSessionPaneDriver('same-session', 'server-a'),
+                useRegisterSessionPaneDriver('same-session', 'server-b'),
+            );
+            return React.createElement('Probe');
+        };
+
+        await renderScreen(<Probe />);
+
+        expect(scopeIds[0]).not.toBe(scopeIds[1]);
+        expect(registerDriverSpy.mock.calls.map(([driver]) => {
+            const surfaceScope = driver.surfaceScope;
+            return {
+                scopeId: driver.scopeId,
+                serverId: surfaceScope?.targetKind === 'session' ? surfaceScope.serverId : null,
+                sessionId: surfaceScope?.targetKind === 'session' ? surfaceScope.sessionId : null,
+            };
+        })).toEqual(expect.arrayContaining([
+            {
+                scopeId: scopeIds[0],
+                serverId: 'server-a',
+                sessionId: 'same-session',
+            },
+            {
+                scopeId: scopeIds[1],
+                serverId: 'server-b',
+                sessionId: 'same-session',
+            },
+        ]));
+    });
+
     it('defers pane module prefetch until after the initial session open window', async () => {
         vi.useFakeTimers();
         try {
@@ -88,6 +143,23 @@ describe('useRegisterSessionPaneDriver (module prefetch)', () => {
         expect(rightPanelModuleLoaded).not.toHaveBeenCalled();
         expect(detailsPanelModuleLoaded).not.toHaveBeenCalled();
         expect(bottomPanelModuleLoaded).not.toHaveBeenCalled();
+    });
+
+    it('settles and reports a failed speculative module fetch', async () => {
+        const mod = await import('./useRegisterSessionPaneDriver');
+        const originalLoaders = [...mod.sessionPaneModulePrefetchLoaders];
+        const failure = new TypeError('Failed to fetch');
+        // The browser chunk fetch is an external boundary; preserve the real prefetch owner.
+        const fetchModule = vi.fn<() => Promise<void>>().mockRejectedValue(failure);
+        const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        mod.sessionPaneModulePrefetchLoaders.splice(0, originalLoaders.length, fetchModule);
+        try {
+            await expect(mod.prefetchSessionPaneModules()).resolves.toBeUndefined();
+            expect(warning).toHaveBeenCalledWith(expect.any(String), failure);
+        } finally {
+            mod.sessionPaneModulePrefetchLoaders.splice(0, mod.sessionPaneModulePrefetchLoaders.length, ...originalLoaders);
+            warning.mockRestore();
+        }
     });
 
     it('prefetches lazily opened session pane views', async () => {

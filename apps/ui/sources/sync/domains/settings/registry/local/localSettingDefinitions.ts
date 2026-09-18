@@ -174,6 +174,12 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         storageScope: 'local',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'device_user' },
     },
+    uiSurfaceExecutableApprovalsV1: {
+        schema: z.record(z.string().min(1), z.literal(true)),
+        default: {},
+        description: 'Viewer-local approvals for exact executable UI surface fingerprints',
+        storageScope: 'local',
+    },
     sessionsRightPaneDefaultOpen: {
         schema: z.boolean(),
         default: false,
@@ -237,6 +243,12 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         description: 'Allow desktop dock dots for non-numeric inbox attention',
         storageScope: 'local',
     },
+    deviceRemoteAlertsEnabled: {
+        schema: z.boolean(),
+        default: true,
+        description: 'Receive enrolled remote session alerts on this device when the Account opts in',
+        storageScope: 'local',
+    },
     localNotificationsEnabled: {
         schema: z.boolean(),
         default: true,
@@ -254,6 +266,12 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         schema: z.boolean(),
         default: true,
         description: 'Include assistant message text in local ready notifications on this device',
+        storageScope: 'local',
+    },
+    localNotificationsShowRequestMessageText: {
+        schema: z.boolean(),
+        default: true,
+        description: 'Include permission commands and questions in local request notifications on this device',
         storageScope: 'local',
     },
     localNotificationsShowPendingPermissionRequests: {

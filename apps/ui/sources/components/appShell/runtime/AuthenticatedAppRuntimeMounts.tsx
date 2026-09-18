@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Platform } from 'react-native';
 
 import { ActivityBadgeRuntime } from '@/activity/badges/ActivityBadgeRuntime';
+import { SessionAttentionReminderRuntime } from '@/activity/attention/runtime/SessionAttentionReminderRuntime';
 import { ActivityLocalNotificationRuntime } from '@/activity/notifications/runtime/ActivityLocalNotificationRuntime';
 import { PushNotificationPermissionPrimingRuntime } from '@/activity/notifications/permission/PushNotificationPermissionPrimingRuntime';
 import { DesktopActivityOverlayRuntime } from '@/activity/adapters/desktop/runtime/DesktopActivityOverlayRuntime';
@@ -88,6 +89,7 @@ export const AuthenticatedAppRuntimeMounts = React.memo(function AuthenticatedAp
     return (
         <>
             <ActivityBadgeRuntime />
+            {props.isAuthenticated ? <SessionAttentionReminderRuntime /> : null}
             <IosActivitySurfacesRuntimeMount />
             <ActivityLocalNotificationRuntime />
             <OnboardingShowcaseAutoShowMount />

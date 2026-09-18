@@ -2,26 +2,39 @@ import {
     normalizeAccountDirectoryEndpoint,
     isTokenOnlyAuthCredentials,
     TokenStorage,
-    type AccountServiceEntryIntent,
+    parseAccountContinuationIntent,
     type TokenOnlyAuthCredentials,
+    type PendingAccountDirectoryAuth,
 } from '@/auth/storage/tokenStorage';
 import { getAuthProvider } from '@/auth/providers/registry';
 import { createServerFetchAtEndpoint } from '@/sync/http/client';
 import { getRandomBytesAsync } from '@/platform/cryptoRandom';
 import { digest } from '@/platform/digest';
-import { encodeBase64 } from '@/encryption/base64';
+import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { encodeHex } from '@/encryption/hex';
-import { deriveAccountSigningPublicKey } from '@/auth/flows/challenge';
+import { authChallenge, deriveAccountSigningPublicKey } from '@/auth/flows/challenge';
+import { createAccountServiceReturn } from './accountDirectoryNavigation';
+import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
+import { HappyError } from '@/utils/errors/errors';
+import { AccountDirectoryRequestError, isAccountDirectoryRelinkConflict } from '@/sync/api/accountDirectory/accountDirectoryClient';
+import { AccountDirectoryRouteErrorResponseV1Schema } from '@happier-dev/protocol';
 import { authGetTokenAtEndpoint } from '@/auth/flows/getToken';
-import { probeServerFeaturesAtUrl, type ServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
+import { isServerFeaturesProbeRetryable, probeServerFeaturesAtUrl, type ServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
 import { AccountDirectoryCapabilitiesSchema, type AccountDirectoryCapabilities } from '@happier-dev/protocol';
 import {
-    normalizeAuthenticationProviderId,
-    projectAuthenticationMethodCapabilities,
-} from '@/auth/capabilities/authMethodCapabilities';
+    type ProjectedAuthenticationAction,
+    type ProjectedAuthenticationCatalog,
+    type ProjectedAuthenticationMethod,
+} from '@happier-dev/cli-common/authentication/authMethodCatalog';
+import { fetchHomeAuthEntry } from '@/auth/entry/authEntryClient';
+import { projectAuthEntryMethodCapabilities, projectAuthenticationMethodCapabilities } from '@/auth/capabilities/authMethodCapabilities';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
+import { buildHomeConnectionDescriptorForProfile, resolveServerProfileForPortableIdentity } from '@/sync/domains/server/serverProfiles';
+import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 import {
     selectAccountServiceAuthenticationMethod,
     type AccountServiceRequestedAuthenticationMethod,
+    type AccountContinuationIntent,
 } from '@happier-dev/cli-common/accountService';
 
 export type AccountDirectoryOAuthStartInput = Readonly<{
@@ -30,14 +43,24 @@ export type AccountDirectoryOAuthStartInput = Readonly<{
     canonicalServerUrl: string;
     providerId: string;
     mode: 'keyed' | 'keyless';
-    entryIntent: AccountServiceEntryIntent;
-    returnTo?: string;
+    entryIntent: AccountContinuationIntent;
+    returnTo: string;
+    accountEntryReturnTo?: string;
     /**
      * Optional stable identity of the currently authenticated Home, captured at login action
      * time. Only the identity is persisted on the continuation — never credentials or a
      * descriptor. Absent for fresh-device logins.
      */
-    homeServerIdentityId?: string;
+    linkHomeServerIdentityId?: string;
+    explicitHomeServerIdentityId?: string;
+    transport?: AccountDirectoryAuthTransport;
+    signal?: AbortSignal;
+}>;
+
+export type AccountDirectoryOAuthStartResult = Readonly<{
+    url: string;
+    /** Exact persisted custody created by this start, used for compare-and-remove cleanup. */
+    pending: PendingAccountDirectoryAuth;
 }>;
 
 export type AccountDirectoryKeyLoginInput = Readonly<{
@@ -45,10 +68,39 @@ export type AccountDirectoryKeyLoginInput = Readonly<{
     endpointServerIdentityId: string;
     canonicalServerUrl: string;
     secret: Uint8Array;
+    signal?: AbortSignal;
     verifiedServerFeaturesSnapshot: ServerFeaturesSnapshot & { status: 'ready' };
-}>;
+}> & AccountDirectoryAuthTransport;
 
 export type AccountDirectoryRequestedAuthMethod = AccountServiceRequestedAuthenticationMethod;
+
+export type AccountDirectoryOAuthExchangeInput = Readonly<{
+    providerId: string;
+    purpose: string | null;
+    credentialTarget: string | null;
+    endpointUrl: string | null;
+    serverIdentityId: string | null;
+    canonicalServerUrl: string | null;
+    pendingKey: string;
+    mode: string | null;
+    pending: PendingAccountDirectoryAuth | null;
+    /** Non-secret presentation boundary: cancellation is no longer clean once credential persistence starts. */
+    onCredentialCommitStarted?: () => void;
+    signal?: AbortSignal;
+    transport?: AccountDirectoryAuthTransport;
+}>;
+
+export type AccountDirectoryOAuthExchangeResult =
+    | Readonly<{ kind: 'authenticated'; destination: NonNullable<ReturnType<typeof createAccountServiceReturn>> }>
+    | Readonly<{ kind: 'cancelled'; accountCredentialCommitted: boolean }>
+    | Readonly<{ kind: 'relink_required'; error: AccountDirectoryRequestError }>
+    | Readonly<{
+        kind: 'failed';
+        code: string;
+        retryable: boolean;
+        accountCredentialCommitted: boolean;
+        error?: unknown;
+    }>;
 
 export type AccountDirectoryAuthMethodDiscovery = Readonly<{
     endpointUrl: string;
@@ -58,9 +110,43 @@ export type AccountDirectoryAuthMethodDiscovery = Readonly<{
     keyLoginAvailable: boolean;
     oauthProviderIds: readonly string[];
     preferredProvisionProviderId: string | null;
+    authenticationCatalog: ProjectedAuthenticationCatalog;
+    authenticationActions: readonly AccountDirectoryAuthenticationAction[];
+    accountServiceDisplayName: string | null;
     /** Exact endpoint observation reused by key authentication to avoid a second discovery probe. */
     snapshot: ServerFeaturesSnapshot & { status: 'ready' };
 }>;
+
+export type AccountDirectoryAuthenticationAction = Readonly<{
+    method: ProjectedAuthenticationMethod;
+    action: ProjectedAuthenticationAction;
+    execution:
+        | Readonly<{ kind: 'generated_key' }>
+        | Readonly<{ kind: 'key_entry' }>
+        | Readonly<{ kind: 'oauth'; providerId: string; mode: 'keyed' | 'keyless' }>;
+}>;
+
+export type VerifiedAccountServiceAuthority = Pick<
+    AccountDirectoryAuthMethodDiscovery,
+    'endpointUrl' | 'serverIdentityId' | 'canonicalServerUrl' | 'capability' | 'snapshot'
+>;
+
+export type AccountDirectoryAuthTransport = Readonly<{
+    runtimeOrigin?: string | null;
+    homeCarrier?: HomeCarrier;
+}>;
+
+export function createVerifiedAccountServiceAuthority(
+    discovery: AccountDirectoryAuthMethodDiscovery,
+): VerifiedAccountServiceAuthority {
+    return Object.freeze({
+        endpointUrl: discovery.endpointUrl,
+        serverIdentityId: discovery.serverIdentityId,
+        canonicalServerUrl: discovery.canonicalServerUrl,
+        capability: discovery.capability,
+        snapshot: discovery.snapshot,
+    });
+}
 
 export type AccountDirectoryAuthMethodDiscoveryResult =
     | Readonly<{
@@ -86,6 +172,13 @@ export type AccountDirectoryAuthMethodDiscoveryResult =
         endpointUrl: string;
         expectedServerIdentityId: string;
         observedServerIdentityId: string | null;
+        snapshot: ServerFeaturesSnapshot & { status: 'ready' };
+    }>
+    | Readonly<{
+        kind: 'authentication_unavailable';
+        endpointUrl: string;
+        serverIdentityId: string;
+        reason: 'unavailable' | 'incompatible';
         snapshot: ServerFeaturesSnapshot & { status: 'ready' };
     }>
     | (Readonly<{ kind: 'supported_account_service' }> & AccountDirectoryAuthMethodDiscovery)
@@ -126,18 +219,84 @@ function buildSupportedDiscovery(
         snapshot.features.capabilities.server.canonicalServerUrl ?? '',
     );
     if (!serverIdentityId || !canonicalServerUrl) return null;
-    const authMethods = projectAuthenticationMethodCapabilities(snapshot.features);
-    const oauthProviderIds = authMethods.usesStructuredMethods
-        ? authMethods.configuredEnabledKeyedProvisionProviderIds
-        : [];
+    const projected = projectAuthenticationMethodCapabilities(snapshot.features);
+    const authenticationCatalog = projected.catalog;
+    const authenticationActions: readonly AccountDirectoryAuthenticationAction[] = projected.authenticationActions.flatMap(
+        ({ method, action, execution }): AccountDirectoryAuthenticationAction[] => {
+            if (execution.kind === 'mtls' || execution.kind === 'email_password') return [];
+            if (execution.kind === 'generated_key' || execution.kind === 'key_entry') {
+                return snapshot.features.capabilities.auth.keyChallenge.v2 === true
+                    ? [{ method, action, execution }]
+                    : [];
+            }
+            return [{ method, action, execution }];
+        },
+    );
+    const oauthProviderIds = [...new Set(authenticationActions.flatMap(({ execution }) => (
+        execution.kind === 'oauth' ? [execution.providerId] : []
+    )))];
+    const preferredProvisionProviderId = authenticationActions.find(({ action, execution }) => (
+        action.id === 'provision' && execution.kind === 'oauth'
+    ))?.execution;
     return {
         endpointUrl,
         serverIdentityId,
         canonicalServerUrl,
         capability,
-        keyLoginAvailable: authMethods.keyChallengeV2Available,
+        keyLoginAvailable: authenticationActions.some(({ execution }) => execution.kind === 'key_entry'),
         oauthProviderIds,
-        preferredProvisionProviderId: oauthProviderIds[0] ?? null,
+        preferredProvisionProviderId: preferredProvisionProviderId?.kind === 'oauth'
+            ? preferredProvisionProviderId.providerId
+            : null,
+        authenticationCatalog,
+        authenticationActions,
+        accountServiceDisplayName: snapshot.features.accountServicePresentation?.displayName ?? null,
+        snapshot,
+    };
+}
+
+function buildSupportedDiscoveryFromAuthEntry(
+    endpointUrl: string,
+    snapshot: ServerFeaturesSnapshot & { status: 'ready' },
+    capability: AccountDirectoryCapabilities,
+    projection: Parameters<typeof projectAuthEntryMethodCapabilities>[0],
+): AccountDirectoryAuthMethodDiscovery | null {
+    const serverIdentityId = String(snapshot.serverIdentityId ?? snapshot.features.capabilities.serverIdentity.serverIdentityId ?? '').trim();
+    const canonicalServerUrl = normalizeAccountDirectoryEndpoint(
+        snapshot.features.capabilities.server.canonicalServerUrl ?? '',
+    );
+    if (!serverIdentityId || !canonicalServerUrl) return null;
+    const projected = projectAuthEntryMethodCapabilities(projection);
+    const authenticationActions: readonly AccountDirectoryAuthenticationAction[] = projected.authenticationActions.flatMap(
+        ({ method, action, execution }): AccountDirectoryAuthenticationAction[] => {
+            if (execution.kind === 'generated_key' || execution.kind === 'key_entry') {
+                return snapshot.features.capabilities.auth.keyChallenge.v2 === true
+                    ? [{ method, action, execution }]
+                    : [];
+            }
+            if (execution.kind !== 'oauth') return [];
+            return [{ method, action, execution }];
+        },
+    );
+    const oauthProviderIds = [...new Set(authenticationActions.flatMap(({ execution }) => (
+        execution.kind === 'oauth' ? [execution.providerId] : []
+    )))];
+    const preferredProvision = authenticationActions.find(({ action, execution }) => (
+        action.id === 'provision' && execution.kind === 'oauth'
+    ))?.execution;
+    return {
+        endpointUrl,
+        serverIdentityId,
+        canonicalServerUrl,
+        capability,
+        keyLoginAvailable: authenticationActions.some(({ execution }) => execution.kind === 'key_entry'),
+        oauthProviderIds,
+        preferredProvisionProviderId: preferredProvision?.kind === 'oauth'
+            ? preferredProvision.providerId
+            : null,
+        authenticationCatalog: projected.catalog,
+        authenticationActions,
+        accountServiceDisplayName: snapshot.features.accountServicePresentation?.displayName ?? null,
         snapshot,
     };
 }
@@ -145,7 +304,8 @@ function buildSupportedDiscovery(
 async function verifyAccountDirectoryEndpoint(input: Readonly<{
     endpointUrl: string;
     expectedServerIdentityId?: string | null;
-}>): Promise<AccountDirectoryEndpointVerificationResult> {
+    signal?: AbortSignal;
+}> & AccountDirectoryAuthTransport): Promise<AccountDirectoryEndpointVerificationResult> {
     const endpointUrl = normalizeAccountDirectoryEndpoint(input.endpointUrl) ?? '';
     if (!endpointUrl) {
         return { kind: 'endpoint_unavailable', endpointUrl, reason: 'invalid_endpoint' };
@@ -154,6 +314,9 @@ async function verifyAccountDirectoryEndpoint(input: Readonly<{
     const snapshot = await probeServerFeaturesAtUrl({
         endpointUrl,
         ...(expectedServerIdentityId ? { serverId: expectedServerIdentityId } : {}),
+        ...(input.runtimeOrigin ? { runtimeOrigin: input.runtimeOrigin } : {}),
+        ...(input.homeCarrier ? { homeCarrier: input.homeCarrier } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
         force: true,
     });
     if (snapshot.status !== 'ready') {
@@ -199,6 +362,24 @@ async function verifyAccountDirectoryEndpoint(input: Readonly<{
  * consult or mutate the focused Home runtime; callers decide when/where a discovered Home is
  * adopted.
  */
+export async function acquireAccountServiceAuthTransport(target: Readonly<{ serverIdentityId: string; canonicalServerUrl: string }>, transport?: AccountDirectoryAuthTransport) {
+    if (transport?.runtimeOrigin || transport?.homeCarrier) return { transport, close: async () => {} };
+    const profile = resolveServerProfileForPortableIdentity(target.serverIdentityId);
+    const descriptor = profile.kind === 'resolved' ? buildHomeConnectionDescriptorForProfile(profile.profile) : null;
+    if (!descriptor || normalizeAccountDirectoryEndpoint(descriptor.canonicalServerUrl) !== normalizeAccountDirectoryEndpoint(target.canonicalServerUrl)) {
+        return { transport: {}, close: async () => {} };
+    }
+    const resolved = await resolveHomeEnrollmentTransport(descriptor);
+    if (!resolved.ok) throw new HappyError('Account Service transport unavailable', resolved.reason === 'iroh_transport_unavailable', {
+        kind: resolved.reason === 'iroh_transport_unavailable' ? 'network' : 'config',
+        code: resolved.reason,
+    });
+    return { transport: {
+        ...(resolved.transport.runtimeOrigin ? { runtimeOrigin: resolved.transport.runtimeOrigin } : {}),
+        ...(resolved.transport.homeCarrier ? { homeCarrier: resolved.transport.homeCarrier } : {}),
+    }, close: resolved.transport.close };
+}
+
 export const accountDirectoryAuthClient = {
     verifyEndpoint: verifyAccountDirectoryEndpoint,
 
@@ -206,7 +387,8 @@ export const accountDirectoryAuthClient = {
         endpointUrl: string;
         expectedServerIdentityId?: string | null;
         requestedMethod?: AccountDirectoryRequestedAuthMethod;
-    }>): Promise<AccountDirectoryAuthMethodDiscoveryResult> {
+        signal?: AbortSignal;
+    }> & AccountDirectoryAuthTransport): Promise<AccountDirectoryAuthMethodDiscoveryResult> {
         const verified = await verifyAccountDirectoryEndpoint(input);
         if (verified.kind === 'invalid_endpoint_metadata') {
             return {
@@ -221,7 +403,38 @@ export const accountDirectoryAuthClient = {
         if (capability?.homeDirectory !== true) {
             return { kind: 'not_account_service', endpointUrl, serverIdentityId, snapshot };
         }
-        const discovery = buildSupportedDiscovery(endpointUrl, snapshot, capability);
+        const authEntry = await fetchHomeAuthEntry({
+            purpose: 'account_service',
+            endpointUrl,
+            serverId: serverIdentityId,
+            ...(input.runtimeOrigin ? { runtimeOrigin: input.runtimeOrigin } : {}),
+            ...(input.homeCarrier ? { homeCarrier: input.homeCarrier } : {}),
+            ...(input.signal ? { signal: input.signal } : {}),
+        });
+        if (authEntry.kind === 'incompatible' || authEntry.kind === 'unavailable') {
+            return {
+                kind: 'authentication_unavailable',
+                endpointUrl,
+                serverIdentityId,
+                reason: authEntry.kind === 'incompatible' ? 'incompatible' : 'unavailable',
+                snapshot,
+            };
+        }
+        let discovery: AccountDirectoryAuthMethodDiscovery | null;
+        if (authEntry.kind === 'ready') {
+            if (authEntry.projection.state !== 'ready') {
+                return {
+                    kind: 'authentication_unavailable',
+                    endpointUrl,
+                    serverIdentityId,
+                    reason: 'unavailable',
+                    snapshot,
+                };
+            }
+            discovery = buildSupportedDiscoveryFromAuthEntry(endpointUrl, snapshot, capability, authEntry.projection);
+        } else {
+            discovery = buildSupportedDiscovery(endpointUrl, snapshot, capability);
+        }
         if (!discovery) {
             return { kind: 'not_account_service', endpointUrl, serverIdentityId, snapshot };
         }
@@ -245,6 +458,7 @@ export const accountDirectoryAuthClient = {
     },
 
     async loginWithKey(input: AccountDirectoryKeyLoginInput): Promise<TokenOnlyAuthCredentials> {
+        input.signal?.throwIfAborted();
         const endpointUrl = normalizeAccountDirectoryEndpoint(input.endpointUrl);
         const endpointServerIdentityId = input.endpointServerIdentityId.trim();
         const canonicalServerUrl = normalizeAccountDirectoryEndpoint(input.canonicalServerUrl);
@@ -264,10 +478,20 @@ export const accountDirectoryAuthClient = {
             requireKeyChallengeV2: true,
             credentialTarget: 'account_directory',
             verifiedServerFeaturesSnapshot: input.verifiedServerFeaturesSnapshot,
+            signal: input.signal,
+            ...(input.runtimeOrigin ? { runtimeOrigin: input.runtimeOrigin } : {}),
+            ...(input.homeCarrier ? { homeCarrier: input.homeCarrier } : {}),
+        }).catch((error: unknown) => {
+            if (error instanceof HappyError && error.status !== undefined) {
+                const parsed = AccountDirectoryRouteErrorResponseV1Schema.safeParse({ error: error.code });
+                if (parsed.success) throw new AccountDirectoryRequestError(error.status, parsed.data.error);
+            }
+            throw error;
         });
         if (!isTokenOnlyAuthCredentials(credentials)) {
             throw new Error('Account Service returned non-Directory credentials');
         }
+        input.signal?.throwIfAborted();
         const stored = await TokenStorage.accountDirectoryAuthCredentials.set(
             {
                 endpoint: endpointUrl,
@@ -281,7 +505,154 @@ export const accountDirectoryAuthClient = {
         return credentials;
     },
 
-    async startOAuth(input: AccountDirectoryOAuthStartInput): Promise<string> {
+    async exchangeOAuth(input: AccountDirectoryOAuthExchangeInput): Promise<AccountDirectoryOAuthExchangeResult> {
+        const pending = input.pending;
+        const failed = (
+            code: string,
+            retryable = false,
+            error?: unknown,
+            accountCredentialCommitted = false,
+        ): AccountDirectoryOAuthExchangeResult => ({
+            kind: 'failed',
+            code,
+            retryable,
+            accountCredentialCommitted,
+            ...(error === undefined ? {} : { error }),
+        });
+        if (input.signal?.aborted) return { kind: 'cancelled', accountCredentialCommitted: false };
+        const endpoint = normalizeAccountDirectoryEndpoint(input.endpointUrl ?? '');
+        const canonicalServerUrl = normalizeAccountDirectoryEndpoint(input.canonicalServerUrl ?? '');
+        const destination = pending ? createAccountServiceReturn(pending) : null;
+        if (!pending || !destination || !endpoint || !canonicalServerUrl
+            || endpoint !== normalizeAccountDirectoryEndpoint(pending.endpoint)
+            || canonicalServerUrl !== normalizeAccountDirectoryEndpoint(pending.canonicalServerUrl)
+            || input.serverIdentityId !== pending.serverIdentityId
+            || input.purpose !== 'account_directory' || input.credentialTarget !== 'account_directory'
+            || input.providerId !== pending.provider || input.mode !== pending.mode
+            || !input.pendingKey.trim() || (pending.pending && pending.pending !== input.pendingKey)) {
+            return failed('invalid-pending');
+        }
+        if (Date.now() >= pending.expiresAt) return failed('request-expired');
+        const target = { endpoint, serverIdentityId: pending.serverIdentityId };
+        const ownsCustody = async () => {
+            const current = await TokenStorage.getPendingAccountDirectoryAuth(target);
+            return current !== null && current.provider === pending.provider && current.mode === pending.mode
+                && current.createdAt === pending.createdAt && current.expiresAt === pending.expiresAt
+                && current.proof === pending.proof && current.secret === pending.secret
+                && current.pending === pending.pending && current.returnTo === pending.returnTo
+                && current.accountEntryReturnTo === pending.accountEntryReturnTo
+                && current.canonicalServerUrl === pending.canonicalServerUrl
+                && JSON.stringify(current.entryIntent) === JSON.stringify(pending.entryIntent);
+        };
+        if (!await ownsCustody()) return failed('invalid-pending');
+        let committed = false;
+        let closeTransport = async () => {};
+        try {
+            const acquired = await acquireAccountServiceAuthTransport(pending, input.transport);
+            closeTransport = acquired.close;
+            const transport = acquired.transport;
+            const verified = await accountDirectoryAuthClient.verifyEndpoint({
+                endpointUrl: endpoint, expectedServerIdentityId: pending.serverIdentityId, signal: input.signal,
+                ...transport,
+                runtimeOrigin: transport.runtimeOrigin ?? undefined,
+            });
+            if (verified.kind !== 'verified_endpoint') return failed(
+                verified.kind === 'identity_mismatch' ? 'identity-changed' : 'service-unavailable',
+                verified.snapshot !== undefined && isServerFeaturesProbeRetryable(verified.snapshot),
+            );
+            if (verified.canonicalServerUrl !== canonicalServerUrl) return failed('canonical-url-changed');
+            if (verified.capability?.homeDirectory !== true) return failed('service-unavailable');
+            input.signal?.throwIfAborted();
+            let payload: Record<string, string>;
+            if (pending.mode === 'keyless') {
+                if (!pending.proof) return failed('invalid-pending');
+                payload = { pending: input.pendingKey, proof: pending.proof };
+            } else {
+                if (!pending.secret) return failed('invalid-pending');
+                const secret = decodeBase64(pending.secret, 'base64url');
+                try {
+                    if (secret.length !== 32) return failed('invalid-pending');
+                    const challenge = authChallenge(secret);
+                    payload = {
+                        pending: input.pendingKey,
+                        publicKey: encodeBase64(challenge.publicKey),
+                        challenge: encodeBase64(challenge.challenge),
+                        signature: encodeBase64(challenge.signature),
+                        ...(pending.proof ? { proof: pending.proof } : {}),
+                    };
+                } finally {
+                    secret.fill(0);
+                }
+            }
+            const request = createServerFetchAtEndpoint({
+                endpointUrl: endpoint, serverId: pending.serverIdentityId, credentials: null, signal: input.signal,
+                ...(transport.runtimeOrigin ? { runtimeOrigin: transport.runtimeOrigin } : {}),
+                ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
+            });
+            const response = await request(
+                `/v1/auth/external/${encodeURIComponent(input.providerId)}/${pending.mode === 'keyless' ? 'finalize-keyless' : 'finalize'}`,
+                { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: input.signal },
+                { includeAuth: false, retry: 'none' },
+            );
+            const body: unknown = await response.json();
+            input.signal?.throwIfAborted();
+            if (!response.ok) {
+                const parsed = AccountDirectoryRouteErrorResponseV1Schema.safeParse(body);
+                const error = new AccountDirectoryRequestError(response.status, parsed.success ? parsed.data.error : undefined);
+                if (isAccountDirectoryRelinkConflict(error)) return { kind: 'relink_required', error };
+                const code = body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+                    ? body.error : 'token-exchange-failed';
+                return failed(code, error.transient, error);
+            }
+            if (!body || typeof body !== 'object' || !('token' in body) || typeof body.token !== 'string' || !body.token.trim()) {
+                return failed('invalid-response');
+            }
+            input.signal?.throwIfAborted();
+            input.onCredentialCommitStarted?.();
+            const credentialCommit = await TokenStorage.commitAccountDirectoryOAuthCredential({
+                expectedPending: pending,
+                credentials: { token: body.token.trim() },
+            });
+            if (credentialCommit.kind === 'custody_lost') return failed('invalid-pending');
+            if (credentialCommit.kind === 'storage_failed') {
+                committed = credentialCommit.accountCredentialCommitted;
+                return failed(
+                    'credential-storage-failed',
+                    false,
+                    undefined,
+                    credentialCommit.accountCredentialCommitted,
+                );
+            }
+            committed = true;
+            const keyAuthSecret = pending.mode === 'keyed' && pending.secret ? decodeBase64(pending.secret, 'base64url') : undefined;
+            try {
+                const recorded = await TokenStorage.recordAccountDirectoryOAuthReturn({
+                endpoint, serverIdentityId: pending.serverIdentityId, canonicalServerUrl,
+                entryIntent: pending.entryIntent, returnTo: destination.pathname,
+                ...(pending.accountEntryReturnTo ? { accountEntryReturnTo: pending.accountEntryReturnTo } : {}),
+                ...(keyAuthSecret ? { keyAuthSecret } : {}),
+                }, { expectedCredentialToken: body.token.trim() });
+                if (!recorded) return failed('invalid-pending', false, undefined, true);
+            } finally {
+                keyAuthSecret?.fill(0);
+            }
+            if (input.signal?.aborted) return { kind: 'cancelled', accountCredentialCommitted: true };
+            return { kind: 'authenticated', destination };
+        } catch (error) {
+            if (input.signal?.aborted) return { kind: 'cancelled', accountCredentialCommitted: committed };
+            return failed('token-exchange-failed', error instanceof TypeError || error instanceof HappyError && error.canTryAgain, error);
+        } finally {
+            await closeTransport().catch(() => {});
+        }
+    },
+
+    async startOAuth(input: AccountDirectoryOAuthStartInput): Promise<AccountDirectoryOAuthStartResult> {
+        input.signal?.throwIfAborted();
+        const intent = parseAccountContinuationIntent(input.entryIntent);
+        const returnTo = normalizeInternalReturnPath(input.returnTo);
+        const accountEntryReturnTo = normalizeInternalReturnPath(input.accountEntryReturnTo);
+        if (input.accountEntryReturnTo !== undefined && !accountEntryReturnTo) throw new Error('Invalid Account entry return destination');
+        if (!intent || !returnTo) throw new Error('Account Service OAuth requires a recorded intent and invoking surface');
         const endpointUrl = normalizeAccountDirectoryEndpoint(input.endpointUrl);
         const endpointServerIdentityId = input.endpointServerIdentityId.trim();
         const canonicalServerUrl = normalizeAccountDirectoryEndpoint(input.canonicalServerUrl);
@@ -307,12 +678,19 @@ export const accountDirectoryAuthClient = {
         const publicKey = secretBytes
             ? encodeBase64(deriveAccountSigningPublicKey(secretBytes))
             : null;
+        let closeTransport = async () => {};
+        try {
+        const acquired = await acquireAccountServiceAuthTransport({ serverIdentityId: endpointServerIdentityId, canonicalServerUrl }, input.transport);
+        closeTransport = acquired.close;
+        input.signal?.throwIfAborted();
         const request = createServerFetchAtEndpoint({
             endpointUrl,
             serverId: endpointServerIdentityId,
             credentials: null,
+            ...(acquired.transport.runtimeOrigin ? { runtimeOrigin: acquired.transport.runtimeOrigin } : {}),
+            ...(acquired.transport.homeCarrier ? { homeCarrier: acquired.transport.homeCarrier } : {}),
+            signal: input.signal,
         });
-        const homeServerIdentityId = input.homeServerIdentityId?.trim() ?? '';
         const start = await provider.getExternalAuthUrl(
             input.mode === 'keyed'
                 ? { mode: 'keyed', publicKey: publicKey! }
@@ -325,12 +703,13 @@ export const accountDirectoryAuthClient = {
                 canonicalServerUrl,
             },
         );
-        const stored = await TokenStorage.setPendingAccountDirectoryAuth({
+        input.signal?.throwIfAborted();
+        const pending: PendingAccountDirectoryAuth = {
             endpoint: endpointUrl,
             serverIdentityId: endpointServerIdentityId,
             canonicalServerUrl,
             credentialTarget: start.credentialTarget,
-            entryIntent: input.entryIntent,
+            entryIntent: intent,
             provider: providerId,
             purpose: start.purpose,
             createdAt: Date.now(),
@@ -338,12 +717,19 @@ export const accountDirectoryAuthClient = {
             mode: input.mode,
             ...(proof ? { proof } : {}),
             ...(secret ? { secret } : {}),
-            ...(input.returnTo ? { returnTo: input.returnTo } : {}),
-            ...(homeServerIdentityId ? { homeServerIdentityId } : {}),
-        });
+            returnTo,
+            ...(accountEntryReturnTo ? { accountEntryReturnTo } : {}),
+            ...(intent.kind === 'link' ? { linkHomeServerIdentityId: intent.homeServerIdentityId } : {}),
+            ...(intent.kind === 'enter' && intent.target.kind === 'explicit' ? { explicitHomeServerIdentityId: intent.target.homeServerIdentityId } : {}),
+        };
+        const stored = await TokenStorage.setPendingAccountDirectoryAuth(pending);
         if (!stored) {
             throw new Error('Failed to persist Account Service OAuth continuation');
         }
-        return start.url;
+        return { url: start.url, pending };
+        } finally {
+            secretBytes?.fill(0);
+            await closeTransport().catch(() => {});
+        }
     },
 };

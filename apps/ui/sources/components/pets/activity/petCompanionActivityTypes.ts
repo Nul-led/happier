@@ -1,6 +1,8 @@
 import type { PetAnimationStateV1 } from '@happier-dev/protocol';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+import type { SessionContextPresentation } from '@/sync/domains/session/presentation/sessionContextPresentation';
 
 export type PetCompanionActivityStatus =
     Extract<PetAnimationStateV1, 'waiting' | 'failed' | 'review' | 'running' | 'idle'>;
@@ -21,7 +23,9 @@ export type PetCompanionSessionSignals = Readonly<{
 export type PetCompanionTrayItem = Readonly<{
     id: string;
     dismissKey: string;
+    address: SessionAddress;
     sessionId: string;
+    contextLine: string | null;
     status: Exclude<PetCompanionActivityStatus, 'idle'>;
     priority: number;
     title: string;
@@ -38,13 +42,17 @@ export type PetCompanionTrayItem = Readonly<{
 export type PetCompanionActivityModel = Readonly<{
     state: PetCompanionActivityStatus;
     reason: PetCompanionActivityReason;
+    address: SessionAddress | null;
     sessionId: string | null;
     trayItems: readonly PetCompanionTrayItem[];
 }>;
 
 export type BuildPetCompanionActivityModelInput = Readonly<{
     sessions: readonly Session[];
+    contextsByAddressKey?: Readonly<Record<string, SessionContextPresentation | null | undefined>>;
+    selectedAddress?: SessionAddress | null;
     selectedSessionId?: string | null;
+    signalsByAddressKey?: Readonly<Record<string, PetCompanionSessionSignals | undefined>>;
     signalsBySessionId?: Readonly<Record<string, PetCompanionSessionSignals | undefined>>;
     dismissedTrayItemKeys?: ReadonlySet<string> | readonly string[];
     nowMs?: number;

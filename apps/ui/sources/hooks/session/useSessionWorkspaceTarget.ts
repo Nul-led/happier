@@ -8,7 +8,10 @@ import { readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
-export function useSessionWorkspaceTarget(sessionId: string | null): WorkspaceTargetForSession | null {
+export function useSessionWorkspaceTarget(
+    sessionId: string | null,
+    sessionServerId?: string | null,
+): WorkspaceTargetForSession | null {
     const resolvedSessionId = normalizeSessionId(sessionId);
     const session = useSession(resolvedSessionId);
     const ownerMetadata = session
@@ -18,15 +21,23 @@ export function useSessionWorkspaceTarget(sessionId: string | null): WorkspaceTa
     const allMachines = useAllMachines();
     const allSessions = useAllSessions();
     const fallbackServerId = React.useMemo(() => {
-        const direct = (session as { serverId?: unknown } | null)?.serverId ?? project?.key?.serverId ?? null;
+        const direct = sessionServerId
+            ?? (session as { serverId?: unknown } | null)?.serverId
+            ?? project?.key?.serverId
+            ?? null;
         return typeof direct === 'string' && direct.trim().length > 0 ? direct : null;
-    }, [project?.key?.serverId, (session as { serverId?: unknown } | null)?.serverId]);
-    const preferredServerId = usePreferredServerIdForSession(resolvedSessionId ?? '__none__', fallbackServerId);
+    }, [project?.key?.serverId, (session as { serverId?: unknown } | null)?.serverId, sessionServerId]);
+    const preferredServerId = usePreferredServerIdForSession({
+        serverId: fallbackServerId,
+        sessionId: resolvedSessionId ?? '__none__',
+    });
 
     return React.useMemo(() => {
         if (!resolvedSessionId) return null;
 
-        const machineTarget = readMachineTargetForSession(resolvedSessionId);
+        const machineTarget = readMachineTargetForSession(preferredServerId
+            ? { serverId: preferredServerId, sessionId: resolvedSessionId }
+            : resolvedSessionId);
         if (!machineTarget) return null;
 
         const machineId = String(machineTarget.machineId ?? '').trim();

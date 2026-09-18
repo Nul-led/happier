@@ -16,7 +16,6 @@ describe('buildOrderMapAfterMove', () => {
             movedKey: 'server-a:older-a',
             directKeys: ['server-a:new-session', 'server-a:older-b', 'server-a:older-a'],
             afterKey: 'server-a:older-b',
-            maxKeys: 100,
         });
 
         expect(result).toEqual({
@@ -35,11 +34,26 @@ describe('buildOrderMapAfterMove', () => {
             movedKey: 'server-a:inside-a',
             directKeys: ['server-a:root-a', 'server-a:root-b', 'server-a:inside-a'],
             afterKey: 'server-a:root-a',
-            maxKeys: 100,
         });
 
         expect(result).toEqual({
             project: ['server-a:root-b', 'server-a:root-a', 'server-a:inside-a'],
         });
+    });
+
+    it('preserves every valid sibling when committing an order with more than 100 entries', () => {
+        const directKeys = Array.from({ length: 111 }, (_, index) => `item-${index}`);
+
+        const result = buildOrderMapAfterMove({
+            currentMap: {},
+            scopeKey: 'project',
+            movedKey: 'item-110',
+            directKeys,
+            afterKey: 'item-109',
+        });
+
+        expect(result.project).toHaveLength(111);
+        expect(result.project?.[109]).toBe('item-109');
+        expect(result.project?.[110]).toBe('item-110');
     });
 });

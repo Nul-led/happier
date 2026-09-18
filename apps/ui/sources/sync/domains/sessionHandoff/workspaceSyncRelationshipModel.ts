@@ -9,6 +9,7 @@ import {
     normalizeWorkspaceScopeBase,
     type WorkspaceScopeBase,
 } from '@/sync/domains/workspaces/workspaceScope';
+import { resolvePathRelativeToRoot } from '@/utils/path/resolvePathRelativeToRoot';
 
 export type WorkspaceSyncRelationshipModel = Readonly<{
     all: readonly WorkspaceSyncRelationshipV1[];
@@ -105,6 +106,7 @@ export function projectWorkspaceSyncRelationshipSummaries(input: Readonly<{
 function endpointMatchesScope(
     endpoint: WorkspaceSyncRelationshipEndpoint,
     scope: WorkspaceScopeBase,
+    options?: Readonly<{ allowScopeDescendantOfEndpointRoot?: boolean }>,
 ): boolean {
     const endpointScope = endpoint.workspaceRef
         ? normalizeWorkspaceScopeBase(endpoint.workspaceRef)
@@ -112,13 +114,18 @@ function endpointMatchesScope(
     return endpointScope !== null
         && endpointScope.serverId === scope.serverId
         && endpointScope.machineId === scope.machineId
-        && endpointScope.rootPath === scope.rootPath;
+        && (
+            options?.allowScopeDescendantOfEndpointRoot
+                ? resolvePathRelativeToRoot({ path: scope.rootPath, root: endpointScope.rootPath }) !== null
+                : endpointScope.rootPath === scope.rootPath
+        );
 }
 
 /**
- * Existing handoff choices must match both concrete endpoints. One-way modes
- * preserve their alpha-to-beta direction; only the bidirectional mode can be
- * selected with the current handoff source and target reversed.
+ * Existing handoff choices must match both concrete endpoints. A Git worktree
+ * source session may run below its WorkspaceRef root; all-files sources and the
+ * requested target root remain exact. One-way modes preserve their alpha-to-beta
+ * direction; only the bidirectional mode can be selected with source and target reversed.
  */
 export function selectWorkspaceSyncRelationshipSummariesForHandoff(
     summaries: readonly WorkspaceSyncRelationshipSummary[],
@@ -131,13 +138,14 @@ export function selectWorkspaceSyncRelationshipSummariesForHandoff(
     return summaries.filter((summary) => {
         if (!summary.relationship.enabled) return false;
         if (!summary.alpha.workspaceRef || !summary.beta.workspaceRef) return false;
+        const allowSourceDescendant = summary.relationship.contentPolicy.selection === 'git_worktree';
 
-        const forward = endpointMatchesScope(summary.alpha, source)
+        const forward = endpointMatchesScope(summary.alpha, source, { allowScopeDescendantOfEndpointRoot: allowSourceDescendant })
             && endpointMatchesScope(summary.beta, target);
         if (forward) return true;
 
         return summary.relationship.mode === 'keep_both_in_sync'
-            && endpointMatchesScope(summary.beta, source)
+            && endpointMatchesScope(summary.beta, source, { allowScopeDescendantOfEndpointRoot: allowSourceDescendant })
             && endpointMatchesScope(summary.alpha, target);
     });
 }

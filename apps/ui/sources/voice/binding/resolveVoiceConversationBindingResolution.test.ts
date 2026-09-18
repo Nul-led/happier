@@ -20,11 +20,18 @@ vi.mock('@/voice/agent/voiceAgentRecoveryReplayState', () => ({
   readVoiceAgentRecoveryReplaySource: vi.fn(),
 }));
 
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { registerVoiceAdapters, resetVoiceAdapterRegistryForTests } from '@/voice/session/voiceAdapterRegistry';
 import {
   createBuiltinVoiceAdapterAssembly,
   type BuiltinVoiceAdapterAssembly,
 } from '@/voice/adapters/registerBuiltinVoiceAdapters';
+
+/** Requests without an explicit Home resolve against the Home this client has mounted. */
+const activeSessionAddress = (sessionId: string) => ({
+  serverId: getActiveServerSnapshot().serverId,
+  sessionId,
+});
 
 describe('ensureVoiceConversationBindingResolution', () => {
   let adapterAssembly: BuiltinVoiceAdapterAssembly;
@@ -83,9 +90,10 @@ describe('ensureVoiceConversationBindingResolution', () => {
 
     expect(resolution).toEqual({
       conversationSessionId: 'voice-home',
+      conversationSessionAddress: activeSessionAddress('voice-home'),
       controlSessionId: '__voice_agent__',
       transcriptMode: 'native_session',
-      targetSessionId: null,
+      targetSessionAddress: null,
     });
     expect(ensureVoiceConversationSessionForVoiceHome).toHaveBeenCalledTimes(1);
     expect(ensureVoiceConversationSessionForSessionRoot).not.toHaveBeenCalled();
@@ -113,9 +121,10 @@ describe('ensureVoiceConversationBindingResolution', () => {
 
     expect(resolution).toEqual({
       conversationSessionId: 'voice-home',
+      conversationSessionAddress: activeSessionAddress('voice-home'),
       controlSessionId: '__voice_agent__',
       transcriptMode: 'native_session',
-      targetSessionId: null,
+      targetSessionAddress: null,
     });
     expect(ensureVoiceConversationSessionForVoiceHome).toHaveBeenCalledTimes(1);
     expect(ensureVoiceConversationSessionForSessionRoot).not.toHaveBeenCalled();
@@ -143,11 +152,12 @@ describe('ensureVoiceConversationBindingResolution', () => {
 
     expect(resolution).toEqual({
       conversationSessionId: 'voice-root-s1',
+      conversationSessionAddress: activeSessionAddress('voice-root-s1'),
       controlSessionId: '__voice_agent__',
       transcriptMode: 'native_session',
-      targetSessionId: 's1',
+      targetSessionAddress: activeSessionAddress('s1'),
     });
-    expect(ensureVoiceConversationSessionForSessionRoot).toHaveBeenCalledWith({ sessionId: 's1' });
+    expect(ensureVoiceConversationSessionForSessionRoot).toHaveBeenCalledWith({ sessionRootAddress: activeSessionAddress('s1') });
     expect(ensureVoiceConversationSessionForVoiceHome).not.toHaveBeenCalled();
   });
 
@@ -173,9 +183,10 @@ describe('ensureVoiceConversationBindingResolution', () => {
 
     expect(resolution).toEqual({
       conversationSessionId: 'voice-home',
+      conversationSessionAddress: activeSessionAddress('voice-home'),
       controlSessionId: '__voice_agent__',
       transcriptMode: 'native_session',
-      targetSessionId: 's1',
+      targetSessionAddress: activeSessionAddress('s1'),
     });
     expect(ensureVoiceConversationSessionForVoiceHome).toHaveBeenCalledTimes(1);
     expect(ensureVoiceConversationSessionForSessionRoot).not.toHaveBeenCalled();
@@ -216,9 +227,10 @@ describe('ensureVoiceConversationBindingResolution', () => {
     expect(ensureVoiceConversationSessionForVoiceHome).toHaveBeenCalledTimes(2);
     expect(resolution).toEqual({
       conversationSessionId: 'voice-home-new-machine',
+      conversationSessionAddress: activeSessionAddress('voice-home-new-machine'),
       controlSessionId: '__voice_agent__',
       transcriptMode: 'native_session',
-      targetSessionId: null,
+      targetSessionAddress: null,
     });
   });
 
@@ -253,7 +265,7 @@ describe('ensureVoiceConversationBindingResolution', () => {
 
     expect(resolution?.transcriptMode).toBe('native_session');
     expect(resolution?.conversationSessionId).toBe('voice-root-s2');
-    expect(ensureVoiceConversationSessionForSessionRoot).toHaveBeenCalledWith({ sessionId: 's2' });
+    expect(ensureVoiceConversationSessionForSessionRoot).toHaveBeenCalledWith({ sessionRootAddress: activeSessionAddress('s2') });
     expect(ensureVoiceConversationSessionForVoiceHome).not.toHaveBeenCalled();
   });
 
@@ -286,9 +298,10 @@ describe('ensureVoiceConversationBindingResolution', () => {
 
     expect(resolution).toEqual({
       conversationSessionId: 'voice-root-custom',
+      conversationSessionAddress: activeSessionAddress('voice-root-custom'),
       controlSessionId: 's9',
       transcriptMode: 'synthetic',
-      targetSessionId: 's9',
+      targetSessionAddress: activeSessionAddress('s9'),
     });
   });
 
@@ -305,10 +318,10 @@ describe('ensureVoiceConversationBindingResolution', () => {
         setMuted: vi.fn(),
         sendContextUpdate: vi.fn(),
         getSnapshot: vi.fn(),
-        resolveConversationBinding: vi.fn(async ({ controlSessionId, requestedTargetSessionId }) => ({
-          conversationSessionId: controlSessionId,
+        resolveConversationBinding: vi.fn(async ({ controlSessionId, requestedTargetSessionAddress }) => ({
+          conversationSessionAddress: activeSessionAddress(controlSessionId),
           transcriptMode: 'native_session' as const,
-          targetSessionId: requestedTargetSessionId,
+          targetSessionAddress: requestedTargetSessionAddress,
         })),
       },
     ]);
@@ -323,9 +336,10 @@ describe('ensureVoiceConversationBindingResolution', () => {
 
     expect(resolution).toEqual({
       conversationSessionId: 'codex-session-1',
+      conversationSessionAddress: activeSessionAddress('codex-session-1'),
       controlSessionId: 'codex-session-1',
       transcriptMode: 'native_session',
-      targetSessionId: 'codex-session-1',
+      targetSessionAddress: activeSessionAddress('codex-session-1'),
     });
     expect(ensureVoiceConversationSessionForSessionRoot).not.toHaveBeenCalled();
     expect(ensureVoiceConversationSessionForVoiceHome).not.toHaveBeenCalled();

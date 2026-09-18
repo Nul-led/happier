@@ -4,7 +4,7 @@ import renderer from 'react-test-renderer';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createProviderErrorV1 } from '@happier-dev/protocol';
 
-import { collectUnexpectedRawTextNodes, renderScreen } from '@/dev/testkit';
+import { collectRenderedTestIds, collectUnexpectedRawTextNodes, renderScreen } from '@/dev/testkit';
 import type { NewSessionLaunchAttempt } from '@/components/sessions/new/modules/newSessionLaunchAttempt';
 import { installNewSessionComponentsCommonModuleMocks, resetNewSessionComponentsCommonModuleMocks } from './newSessionComponentsTestHelpers';
 
@@ -16,7 +16,6 @@ const mockEnv = vi.hoisted(() => ({
 }));
 
 const pathSelectorPropsRef: { current: Record<string, unknown> | null } = { current: null };
-const machineSelectorPropsRef: { current: Record<string, unknown> | null } = { current: null };
 const modelSelectionPropsRef: { current: Record<string, unknown> | null } = { current: null };
 const dropdownPropsRef: { current: Record<string, unknown> | null } = { current: null };
 const agentInputPropsRef: { current: Record<string, unknown> | null } = { current: null };
@@ -74,13 +73,6 @@ vi.mock('@/components/sessions/agentInput', () => ({
 }));
 vi.mock('@/components/machines/InstallableDepInstaller', () => ({
     InstallableDepInstaller: () => null,
-}));
-vi.mock('@/components/sessions/new/components/MachineSelector', () => ({
-    MachineSelector: (props: Record<string, unknown>) => {
-        machineSelectorRenderCount += 1;
-        machineSelectorPropsRef.current = props;
-        return null;
-    },
 }));
 vi.mock('@/components/sessions/new/components/PathSelectionList', () => ({
     PathSelectionList: (props: Record<string, unknown>) => {
@@ -140,7 +132,6 @@ vi.mock('@/hooks/ui/useKeyboardHeight', () => ({
 describe('NewSessionWizard', () => {
     beforeEach(() => {
         vi.useRealTimers();
-        vi.resetModules();
         // Other suites in the same shard can update the shared mock override state in
         // `newSessionComponentsTestHelpers`. Re-apply the overrides here so this suite
         // stays deterministic regardless of file execution order.
@@ -156,7 +147,6 @@ describe('NewSessionWizard', () => {
         mockEnv.windowWidth = 800;
         mockEnv.keyboardHeight = 0;
         pathSelectorPropsRef.current = null;
-        machineSelectorPropsRef.current = null;
         modelSelectionPropsRef.current = null;
         dropdownPropsRef.current = null;
         agentInputPropsRef.current = null;
@@ -180,6 +170,7 @@ describe('NewSessionWizard', () => {
     async function renderWizardForModelRefresh(
         agentOverrides: Record<string, unknown> = {},
         footerOverrides: Record<string, unknown> = {},
+        machineOverrides: Record<string, unknown> = {},
     ) {
         const { NewSessionWizard } = await import('./NewSessionWizard');
         return renderScreen(<NewSessionWizard
@@ -285,6 +276,7 @@ describe('NewSessionWizard', () => {
                 usePathPickerSearch: false,
                 favoriteDirectories: [],
                 setFavoriteDirectories: () => {},
+                ...machineOverrides,
             } as any}
             footer={{
                 promptStore: createNewSessionPromptStore(''),
@@ -318,6 +310,30 @@ describe('NewSessionWizard', () => {
         }));
     });
 
+    it('uses the shared Machine selection surface in the expanded wizard', async () => {
+        const selectMachine = vi.fn();
+        const screen = await renderWizardForModelRefresh({}, {
+            machinePopover: {
+                renderContent: () => React.createElement('Pressable', {
+                    testID: 'shared-machine-selection',
+                    onPress: selectMachine,
+                }),
+            },
+        });
+        await screen.pressByTestIdAsync('shared-machine-selection');
+        expect(selectMachine).toHaveBeenCalledOnce();
+    });
+
+    it('uses the shared Temporary-computer destination count for adaptive Machine presentation', async () => {
+        const screen = await renderWizardForModelRefresh({}, {
+            machinePopover: { renderContent: () => null },
+        }, {
+            temporaryComputerProjection: { state: 'available', rowCount: 5 },
+        });
+
+        expect(screen.findByTestId('new-session-machine-dropdown-trigger')).toBeTruthy();
+    });
+
     it('passes launch status badges through to the wizard composer input', async () => {
         const statusBadges = [{
             key: 'new-session-launch-starting',
@@ -336,8 +352,12 @@ describe('NewSessionWizard', () => {
 
     it('updates prompt presentation without re-rendering wizard selection sections', async () => {
         const promptStore = createNewSessionPromptStore('Initial prompt');
-        const screen = await renderWizardForModelRefresh({}, { promptStore });
+        const screen = await renderWizardForModelRefresh({}, {
+            promptStore,
+            machinePopover: { renderContent: () => { machineSelectorRenderCount += 1; return null; } },
+        });
         const selectionRenderCount = machineSelectorRenderCount;
+        expect(selectionRenderCount).toBeGreaterThan(0);
 
         await renderer.act(async () => {
             promptStore.setPrompt('Updated prompt');
@@ -348,7 +368,7 @@ describe('NewSessionWizard', () => {
         await screen.unmount();
     });
 
-    it('places host notice content immediately before the composer and passes trailing status actions through', async () => {
+    it('renders host notice content before the composer and passes trailing status actions through', async () => {
         const composerTopContent = React.createElement('ComposerNotice', { testID: 'composer-notice' });
         const statusTrailingActions = React.createElement('StatusActions', { testID: 'status-actions' });
         const screen = await renderWizardForModelRefresh({}, {
@@ -356,12 +376,10 @@ describe('NewSessionWizard', () => {
             statusTrailingActions,
         });
 
-        const notice = screen.findByTestId('composer-notice');
-        const composer = screen.findByType('AgentInput' as React.ElementType);
-        if (!notice) throw new Error('Expected composer notice');
-        const siblings = notice.parent?.children.filter((child) => typeof child === 'object') ?? [];
-        expect(notice.parent).toBe(composer.parent);
-        expect(siblings.indexOf(composer)).toBe(siblings.indexOf(notice) + 1);
+        const relevantRenderedOrder = collectRenderedTestIds(screen.tree.toJSON()).filter(
+            (testID) => testID === 'composer-notice' || testID === 'actual-composer',
+        );
+        expect(relevantRenderedOrder).toEqual(['composer-notice', 'actual-composer']);
         expect(agentInputPropsRef.current?.statusTrailingActions).toBe(statusTrailingActions);
         await screen.unmount();
     });
@@ -387,11 +405,71 @@ describe('NewSessionWizard', () => {
             promptStore: createNewSessionPromptStore('Build the wizard pending launch state'),
             isCreating: true,
             pendingLaunchAttempt,
+            launchPendingPreviewVisible: true,
         });
 
         expect(screen.findByProps({ testID: 'new-session-launch-pending-preview' })).toBeTruthy();
         expect(screen.findByProps({ testID: 'new-session-launch-pending-preview-prompt' }).props.children)
             .toBe('Build the wizard pending launch state');
+    });
+
+    // `resolveNewSessionLaunchPresentation` already decided that this compact card
+    // is the active presentation. The Wizard places it and forms no second opinion
+    // — the two independent opinions are exactly how a Temporary-computer request
+    // ended up with a pending card behind its own blocking waiting surface.
+    it('places the resolved pending launch card without re-deciding whether a launch is pending', async () => {
+        const pendingLaunchAttempt: NewSessionLaunchAttempt = {
+            attemptId: 'attempt-2',
+            spawnNonce: 'spawn-2',
+            scopeKey: 'scope-2',
+            createdSessionId: null,
+            firstTurnLocalId: 'first-turn-2',
+            attachmentMessageLocalId: 'attachment-2',
+            status: 'idle',
+            prompt: {
+                prompt: 'Resolved upstream',
+                displayText: 'Resolved upstream',
+                meta: null,
+            },
+            phaseErrors: {},
+        };
+
+        const screen = await renderWizardForModelRefresh({}, {
+            promptStore: createNewSessionPromptStore('Resolved upstream'),
+            // Deliberately not "creating": the layout must trust the resolved
+            // presentation instead of re-deriving it from its own props.
+            isCreating: false,
+            pendingLaunchAttempt,
+            launchPendingPreviewVisible: true,
+        });
+
+        expect(screen.findByProps({ testID: 'new-session-launch-pending-preview-prompt' }).props.children)
+            .toBe('Resolved upstream');
+    });
+
+    it('renders no pending launch card when the resolved presentation is not the machine card', async () => {
+        const pendingLaunchAttempt: NewSessionLaunchAttempt = {
+            attemptId: 'attempt-3',
+            spawnNonce: 'spawn-3',
+            scopeKey: 'scope-3',
+            createdSessionId: null,
+            firstTurnLocalId: 'first-turn-3',
+            attachmentMessageLocalId: 'attachment-3',
+            status: 'spawning',
+            prompt: { prompt: 'Still editing', displayText: 'Still editing', meta: null },
+            phaseErrors: {},
+        };
+
+        const screen = await renderWizardForModelRefresh({}, {
+            promptStore: createNewSessionPromptStore('Still editing'),
+            // A Temporary-computer launch looks exactly like this: creating, with a
+            // real pending attempt, while its own blocking surface owns the screen.
+            isCreating: true,
+            pendingLaunchAttempt,
+            launchPendingPreviewVisible: false,
+        });
+
+        expect(screen.findByTestId('new-session-launch-pending-preview')).toBeNull();
     });
 
     it('renders the canonical typed Provider launch recovery above the primary wizard composer', async () => {
@@ -1384,7 +1462,7 @@ describe('NewSessionWizard', () => {
         mockEnv.windowWidth = 1200;
         const { NewSessionWizard } = await import('./NewSessionWizard');
 
-        await renderScreen(<NewSessionWizard
+        const screen = await renderScreen(<NewSessionWizard
             popoverBoundaryRef={{ current: null } as any}
             sectionPresentation={{
                 backends: 'dropdown',
@@ -1526,10 +1604,7 @@ describe('NewSessionWizard', () => {
             }}
         />);
 
-        expect(machineSelectorPropsRef.current).toMatchObject({
-            presentation: 'dropdown',
-            dropdownTestID: 'new-session-machine-dropdown-trigger',
-        });
+        expect(screen.findByTestId('new-session-machine-dropdown-trigger')).toBeTruthy();
         expect(pathSelectorPropsRef.current).toMatchObject({
             initialValue: '/tmp',
             maxHeight: 320,

@@ -12,6 +12,7 @@ export type SessionListTreeRowKind = 'workspace-root' | 'folder' | 'session';
 
 export type SessionListInstructionBlockReason =
     | 'feature-disabled'
+    | 'ordering-mode'
     | 'scope-unavailable'
     | 'unsupported-item';
 

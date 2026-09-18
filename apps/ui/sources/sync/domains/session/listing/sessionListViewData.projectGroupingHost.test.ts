@@ -99,7 +99,6 @@ describe('buildSessionListViewData (project grouping)', () => {
         };
 
         const list = buildSessionListViewData(sessions, machines, {
-            groupInactiveSessionsByProject: true,
             activeGroupingV1: 'project',
             inactiveGroupingV1: 'project',
         });
@@ -152,7 +151,6 @@ describe('buildSessionListViewData (project grouping)', () => {
         };
 
         const list = buildSessionListViewData(sessions, machines, {
-            groupInactiveSessionsByProject: true,
             activeGroupingV1: 'project',
             inactiveGroupingV1: 'project',
         });

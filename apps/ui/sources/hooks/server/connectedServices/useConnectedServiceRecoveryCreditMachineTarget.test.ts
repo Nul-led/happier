@@ -37,6 +37,8 @@ function session(params: Readonly<{
     machineId: string;
     serviceId: string;
     binding: unknown;
+    /** Canonical current writers emit `2`; released sessions still carry `1`. */
+    bindingsVersion?: 1 | 2;
 }>): Session {
     return {
         id: params.id,
@@ -52,7 +54,7 @@ function session(params: Readonly<{
             machineId: params.machineId,
             path: '/repo',
             connectedServices: {
-                v: 1,
+                v: params.bindingsVersion ?? 1,
                 bindingsByServiceId: {
                     [params.serviceId]: params.binding,
                 },
@@ -138,6 +140,35 @@ describe('connected-service machine targeting', () => {
                 }),
             ],
             machines: [machine('machine-owner')],
+            connectedServicesV2: [],
+        })).toBeNull();
+    });
+
+    it('does not treat a Team resource selection as a personal profile binding', () => {
+        expect(resolveConnectedServiceRecoveryCreditMachineTarget({
+            serviceId: CODEX_LEGACY_SERVICE_ID,
+            profileId: 'work',
+            sessions: [
+                session({
+                    id: 'team-bound',
+                    machineId: 'machine-team',
+                    serviceId: CODEX_SERVICE_KEY,
+                    bindingsVersion: 2,
+                    binding: {
+                        source: 'team_resource',
+                        resourceId: 'pool-resource',
+                        deliveryMode: 'direct',
+                        // Same spelling as the personal profile id above: the
+                        // disclosed member is a Team account ref, so matching on
+                        // it would credit another Account's resource.
+                        disclosedMember: {
+                            service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+                            accountId: 'work',
+                        },
+                    },
+                }),
+            ],
+            machines: [machine('machine-team')],
             connectedServicesV2: [],
         })).toBeNull();
     });

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HappyError } from '@/utils/errors/errors';
+import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
 
 const apiMocks = vi.hoisted(() => ({
     fetchAccountEncryptionMode: vi.fn(),
@@ -41,7 +42,7 @@ describe('setSessionPin op', () => {
         })).rejects.toThrow('You can pin up to 1,000 sessions. Unpin another session and try again.');
 
         const state = getStorage().getState();
-        expect(state.sessionOrganizationPinsBySessionKey['server-a:s1001']).toBeUndefined();
+        expect(state.sessionOrganizationPinsBySessionKey[buildSessionOrganizationSessionKey('server-a', 's1001')]).toBeUndefined();
         expect(state.sessionOrganizationOptimisticRecords).toEqual({});
     });
 });

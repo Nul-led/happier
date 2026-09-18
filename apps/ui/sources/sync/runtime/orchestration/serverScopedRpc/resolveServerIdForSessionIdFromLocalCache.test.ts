@@ -1,42 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
-import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
-import type { ConcurrentSessionListCacheByServerId } from '@/sync/domains/session/listing/concurrentSessionListCache';
+import { resolveServerIdForSessionIdFromLocalState } from '@/sync/domains/session/resolveSessionAddressFromLocalState';
 
-import {
-    resolveServerIdForSessionIdFromLocalState,
-    resolveServerIdForSessionIdFromSessionListCache,
-} from './resolveServerIdForSessionIdFromLocalCache';
-
-function createSession(id: string, serverId?: string) {
-    return {
-        id,
-        serverId,
-        seq: 1,
-        createdAt: 1,
-        updatedAt: 1,
-        active: true,
-        activeAt: 1,
-        archivedAt: null,
-        pendingVersion: 1,
-        pendingCount: 0,
-        metadata: null,
-        metadataVersion: 0,
-        agentState: null,
-        agentStateVersion: 0,
-        thinking: false,
-        thinkingAt: 0,
-        presence: 'online' as const,
-    };
+function createRenderableSession(id: string) {
+    return createSessionListRenderableSessionFixture({ id });
 }
 
-function createRenderableSession(id: string, serverId: string) {
-    return buildSessionListRenderableFromSession(createSession(id, serverId));
-}
-
-describe('resolveServerIdForSessionIdFromSessionListCache', () => {
+describe('resolveServerIdForSessionIdFromLocalState', () => {
     const makeIndexSessionItem = (sessionId: string, serverId: string): SessionListIndexItem => ({
         type: 'session',
         sessionId,
@@ -44,65 +17,70 @@ describe('resolveServerIdForSessionIdFromSessionListCache', () => {
         serverName: serverId,
     });
 
-    it('returns the matching serverId when the session appears in the cached index', () => {
-        const indexByServerId: Record<string, SessionListIndexItem[] | null> = {
-            'server-a': [makeIndexSessionItem('s1', 'server-a')],
-            'server-b': [makeIndexSessionItem('s2', 'server-b')],
-        };
-
-        expect(resolveServerIdForSessionIdFromSessionListCache(indexByServerId, 's1')).toBe('server-a');
-        expect(resolveServerIdForSessionIdFromSessionListCache(indexByServerId, 's2')).toBe('server-b');
-    });
-
-    it('returns null when the cache is empty or the session id is not found', () => {
-        expect(resolveServerIdForSessionIdFromSessionListCache({}, 's1')).toBeNull();
-        expect(resolveServerIdForSessionIdFromSessionListCache({ 'server-a': null }, 's1')).toBeNull();
-    });
-});
-
-describe('resolveServerIdForSessionIdFromLocalState', () => {
-    it('prefers the session map serverId when available', () => {
+    it('uses the active entity captured Home as an authoritative bare-id candidate', () => {
         const state = {
             sessions: {
                 s1: { serverId: 'server-a' },
             },
-            sessionListIndexByServerId: {
-                'server-b': [{ type: 'session', sessionId: 's1', serverId: 'server-b', serverName: 'B' }],
+            sessionListRowsByServerId: {
+                'server-b': { s1: createRenderableSession('s1') },
             },
-            concurrentSessionListCacheByServerId: null,
+            sessionListIndexByServerId: {
+                'server-c': [makeIndexSessionItem('s1', 'server-c')],
+            },
+            ordinarySessionListMembershipByServerId: {},
         } satisfies Parameters<typeof resolveServerIdForSessionIdFromLocalState>[0];
 
         expect(resolveServerIdForSessionIdFromLocalState(state, 's1')).toBe('server-a');
     });
 
-    it('falls back to the concurrent session cache when the session map is missing', () => {
-        const concurrentSessionListCacheByServerId: ConcurrentSessionListCacheByServerId = {
-            'server-c': {
-                serverName: 'C',
-                sessions: {
-                    s3: createRenderableSession('s3', 'server-c'),
-                },
-            },
-        };
-
+    it('uses ordinary list membership as an authoritative bare-id candidate', () => {
         const state = {
             sessions: {},
+            sessionListRowsByServerId: {},
             sessionListIndexByServerId: {},
-            concurrentSessionListCacheByServerId,
+            ordinarySessionListMembershipByServerId: { 'server-c': ['s3'] },
         } satisfies Parameters<typeof resolveServerIdForSessionIdFromLocalState>[0];
 
         expect(resolveServerIdForSessionIdFromLocalState(state, 's3')).toBe('server-c');
     });
 
-    it('falls back to the session list index when both the session map and concurrent cache are missing', () => {
+    it('ignores stale row and index caches when no active entity or ordinary membership remains', () => {
         const state = {
             sessions: {},
             sessionListIndexByServerId: {
-                'server-d': [{ type: 'session', sessionId: 's4', serverId: 'server-d', serverName: 'D' }],
+                'https://home.example/a:b': [makeIndexSessionItem('c', 'https://home.example/a:b')],
             },
-            concurrentSessionListCacheByServerId: {},
+            sessionListRowsByServerId: {
+                'https://home.example/a': { 'b:c': createRenderableSession('b:c') },
+            },
+            ordinarySessionListMembershipByServerId: {},
         } satisfies Parameters<typeof resolveServerIdForSessionIdFromLocalState>[0];
 
-        expect(resolveServerIdForSessionIdFromLocalState(state, 's4')).toBe('server-d');
+        expect(resolveServerIdForSessionIdFromLocalState(state, 'b:c')).toBeNull();
+        expect(resolveServerIdForSessionIdFromLocalState(state, 'c')).toBeNull();
+    });
+
+    it('does not pick the first Home when an unqualified id occurs in two authoritative memberships', () => {
+        const state = {
+            sessions: {},
+            ordinarySessionListMembershipByServerId: {
+                'https://a.example:8443': ['same'],
+                'home-b': ['same'],
+            },
+        } satisfies Parameters<typeof resolveServerIdForSessionIdFromLocalState>[0];
+
+        expect(resolveServerIdForSessionIdFromLocalState(state, 'same')).toBeNull();
+    });
+
+    it('does not use the current active Home for an active entity with no captured Home', () => {
+        const state = {
+            sessions: {
+                s1: {},
+            },
+            ordinarySessionListMembershipByServerId: {},
+        } satisfies Parameters<typeof resolveServerIdForSessionIdFromLocalState>[0];
+
+        expect(resolveServerIdForSessionIdFromLocalState(state, 's1')).toBeNull();
     });
 });

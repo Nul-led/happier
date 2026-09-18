@@ -51,6 +51,7 @@ import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { buildCommandPaletteCommands, type PetCommandControls } from './buildCommandPaletteCommands';
 import { KeyboardShortcutProvider, buildKeyboardShortcutLabels, resolveKeyboardPlatform, type KeyboardShortcutHandlers } from '@/keyboard';
 import { useOptionalCurrentUiContextReader } from '@/components/appShell/currentUiContext/CurrentUiContextProvider';
+import { usePluginSurfaceDestinationNavigationBinding } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { projectParameterFreeRoute } from '@/track/parameterFreeRouteProjection';
 import { useResolveNewSessionOrdinaryEntryRoute } from '@/components/sessions/new/navigation/newSessionOrdinaryEntryRoute';
@@ -76,6 +77,7 @@ export function readActiveSessionIdFromRoute(
 function useCommandPalettePluginActionPresentation(activeSessionId: string | null) {
     const appShellProjection = useAppShellPluginUiProjection();
     const currentUiContextReader = useOptionalCurrentUiContextReader();
+    const destinationNavigation = usePluginSurfaceDestinationNavigationBinding();
     const clientExecutableRegistrationRevision = usePluginUiClientExecutableRegistrationRevision();
     const sessionMachineTarget = useSessionMachineControlTarget(activeSessionId ?? '');
     const scope = activeSessionId ? 'session' as const : 'global' as const;
@@ -133,6 +135,7 @@ function useCommandPalettePluginActionPresentation(activeSessionId: string | nul
                 ...(activeSessionId ? { sessionId: activeSessionId } : {}),
                 signal: actionScope.signal,
                 accountLifetime,
+                ...(destinationNavigation ? { openSurface: destinationNavigation.openSurface } : {}),
                 ...(currentUiContextReader
                     ? { readCurrentUiContext: currentUiContextReader.readCurrentUiContext }
                     : {}),
@@ -169,6 +172,7 @@ function useCommandPalettePluginActionPresentation(activeSessionId: string | nul
         actionScope,
         activeSessionId,
         currentUiContextReader,
+        destinationNavigation,
         machineId,
         projection.inputs,
         projection.phase,
@@ -208,7 +212,11 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
     })));
     const navigateToSession = useNavigateToSession();
     const segments = useSegments();
-    const routeParams = useGlobalSearchParams<{ id?: string | string[]; sessionId?: string | string[] }>();
+    const routeParams = useGlobalSearchParams<{
+        id?: string | string[];
+        sessionId?: string | string[];
+        serverId?: string | string[];
+    }>();
     const activeSessionId = useMemo(
         () => readActiveSessionIdFromRoute(segments, routeParams.id),
         [routeParams.id, segments],
@@ -220,6 +228,7 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
     const commandContextSessionId = universalSearchRouteActive
         ? normalizeSessionId(routeParams.sessionId)
         : activeSessionId;
+    const commandContextServerId = normalizeSessionId(routeParams.serverId);
     const universalSearchRouteOpenRequestedRef = React.useRef(universalSearchRouteActive);
     React.useEffect(() => {
         if (!universalSearchRouteActive) {
@@ -358,6 +367,8 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
             sessionsById: storage.getState().sessions,
             isDev: __DEV__ === true,
             activeSessionId: requestedActiveSessionId,
+            activeSessionServerId: requestedScope?.serverId
+                ?? (requestedActiveSessionId === commandContextSessionId ? commandContextServerId : null),
             features: { executionRunsEnabled, voiceEnabled, petsCompanionEnabled },
             shortcutLabels,
             petControls,
@@ -376,7 +387,7 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
                 await Modal.alertAsync(title, message);
             },
         });
-    }, [sessionsById, commandContextSessionId, executionRunsEnabled, voiceEnabled, petsCompanionEnabled, compactAppDestinations, activateCompactAppDestination, shortcutLabels, petControls, pluginActionPresentation, router, openNewSession, navigateToSession, actionExecutor]);
+    }, [sessionsById, commandContextSessionId, commandContextServerId, executionRunsEnabled, voiceEnabled, petsCompanionEnabled, compactAppDestinations, activateCompactAppDestination, shortcutLabels, petControls, pluginActionPresentation, router, openNewSession, navigateToSession, actionExecutor]);
 
     const openUniversalSearchModalRef = React.useRef<Readonly<{
         id: string;

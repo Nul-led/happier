@@ -12,9 +12,13 @@ import { registerSessionRealtimeTranscriptConsumer } from '@/sync/runtime/sessio
  * defers hidden durable messages and the open pane would show stale transcript content while the
  * session streams.
  */
-export function useSessionRealtimeTranscriptConsumer(sessionId: string | null | undefined): void {
+export function useSessionRealtimeTranscriptConsumer(
+  sessionId: string | null | undefined,
+  explicitServerId?: string | null,
+): void {
   const normalizedSessionId = String(sessionId ?? '').trim();
-  const serverId = useSessionServerId(normalizedSessionId);
+  const inferredServerId = useSessionServerId(normalizedSessionId);
+  const serverId = String(explicitServerId ?? '').trim() || inferredServerId;
 
   React.useEffect(() => {
     if (!normalizedSessionId) return;

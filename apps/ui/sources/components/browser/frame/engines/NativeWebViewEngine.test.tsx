@@ -16,10 +16,11 @@ let clearWebViewRefOnUnmount = false;
 vi.mock('react-native-webview', () => ({
     WebView: React.forwardRef((props: Readonly<Record<string, unknown>>, ref: React.ForwardedRef<unknown>) => {
         lastWebViewProps = props;
+        const instance = React.useMemo(() => ({ injectJavaScript: injectJavaScriptSpy }), []);
         if (typeof ref === 'function') {
-            ref({ injectJavaScript: injectJavaScriptSpy });
+            ref(instance);
         } else if (ref) {
-            ref.current = { injectJavaScript: injectJavaScriptSpy };
+            ref.current = instance;
         }
         React.useLayoutEffect(() => () => {
             if (!clearWebViewRefOnUnmount) return;
@@ -31,6 +32,74 @@ vi.mock('react-native-webview', () => ({
 }));
 
 describe('NativeWebViewEngine', () => {
+    it.each(['unmount', 'source replacement', 'navigation'] as const)('does not inject a pending reply after %s', async (retirement) => {
+        clearWebViewRefOnUnmount = true;
+        const { NativeWebViewEngine } = await import('./NativeWebViewEngine');
+        let finish!: (value: unknown) => void;
+        const pending = new Promise((resolve) => { finish = resolve; });
+        const bridge = { onMessage: () => pending };
+        const render = (html: string) => <NativeWebViewEngine title="Inline" html={html} testID="inline-frame" originWhitelist={[]} nativeMessageBridge={bridge} />;
+        const screen = await renderScreen(render('<p>First</p>'));
+        const message = lastWebViewProps?.onMessage as (event: unknown) => void;
+        await act(async () => message({ nativeEvent: { data: 'request', url: 'about:blank' } }));
+        if (retirement === 'unmount') {
+            await screen.unmount();
+        } else if (retirement === 'source replacement') {
+            await screen.update(render('<p>Replacement</p>'));
+        } else {
+            const loadEnd = lastWebViewProps?.onLoadEnd as (event: unknown) => void;
+            const loadStart = lastWebViewProps?.onLoadStart as (event: unknown) => void;
+            await act(async () => {
+                loadEnd({ nativeEvent: { url: 'about:blank' } });
+                loadStart({ nativeEvent: { url: 'about:blank' } });
+            });
+        }
+        await act(async () => { finish({ result: 'retired-data' }); });
+        expect(injectJavaScriptSpy).not.toHaveBeenCalled();
+    });
+
+    it('loads inline documents without permitting external navigation or file access', async () => {
+        const { NativeWebViewEngine } = await import('./NativeWebViewEngine');
+        await renderScreen(<NativeWebViewEngine title="Inline" html="<p>Hello</p>" testID="inline-frame" originWhitelist={[]} />);
+        expect(lastWebViewProps?.source).toEqual({ html: '<p>Hello</p>', baseUrl: 'about:blank' });
+        // RNWebView otherwise invokes Linking.openURL before the custom guard.
+        expect(lastWebViewProps?.originWhitelist).toEqual(['*']);
+        const guard = lastWebViewProps?.onShouldStartLoadWithRequest as (request: { url: string }) => boolean;
+        expect(guard({ url: 'about:blank' })).toBe(true);
+        expect(guard({ url: 'about:blank#section' })).toBe(true);
+        for (const url of ['about:blank?query', 'about:srcdoc', 'https://external.example', 'file:///private/item', 'javascript:alert(1)', 'data:text/html,unsafe']) {
+            expect(guard({ url })).toBe(false);
+        }
+        expect(lastWebViewProps).toMatchObject({ allowFileAccess: false, allowFileAccessFromFileURLs: false, allowUniversalAccessFromFileURLs: false, domStorageEnabled: false, cacheEnabled: false });
+    });
+    it('retires an inline guest on replacement navigation after its initial load completes', async () => {
+        const { NativeWebViewEngine } = await import('./NativeWebViewEngine');
+        const onUnexpectedNavigation = vi.fn();
+        await renderScreen(<NativeWebViewEngine title="Inline" html="<p>Hello</p>" testID="inline-frame" originWhitelist={[]} onUnexpectedNavigation={onUnexpectedNavigation} />);
+        const loadStart = lastWebViewProps?.onLoadStart as (event: unknown) => void;
+        const loadEnd = lastWebViewProps?.onLoadEnd as (event: unknown) => void;
+        const event = { nativeEvent: { url: 'about:blank' } };
+        loadStart(event);
+        loadEnd(event);
+        expect(onUnexpectedNavigation).not.toHaveBeenCalled();
+        loadStart(event);
+        expect(onUnexpectedNavigation).toHaveBeenCalledTimes(1);
+    });
+    it('preserves inline fragment navigation but retires a reload after a fragment change', async () => {
+        const { NativeWebViewEngine } = await import('./NativeWebViewEngine');
+        const onUnexpectedNavigation = vi.fn();
+        await renderScreen(<NativeWebViewEngine title="Inline" html="<p id=section>Hello</p>" testID="inline-frame" originWhitelist={[]} onUnexpectedNavigation={onUnexpectedNavigation} />);
+        const loadStart = lastWebViewProps?.onLoadStart as (event: unknown) => void;
+        const loadEnd = lastWebViewProps?.onLoadEnd as (event: unknown) => void;
+        loadEnd({ nativeEvent: { url: 'about:blank' } });
+        for (const url of ['about:blank#section', 'about:blank', 'about:blank#section']) {
+            loadStart({ nativeEvent: { url } });
+            loadEnd({ nativeEvent: { url } });
+            expect(onUnexpectedNavigation).not.toHaveBeenCalled();
+        }
+        loadStart({ nativeEvent: { url: 'about:blank#section' } });
+        expect(onUnexpectedNavigation).toHaveBeenCalledTimes(1);
+    });
     beforeEach(() => {
         lastWebViewProps = null;
         injectJavaScriptSpy = vi.fn();
@@ -102,7 +171,46 @@ describe('NativeWebViewEngine', () => {
         expect(injectJavaScriptSpy).toHaveBeenCalledWith(expect.stringContaining('\\\"accepted\\\":true'));
     });
 
-    it('keeps the host-message attachment live through native view teardown', async () => {
+    it('issues one activation only after a touch on the exact mounted WebView', async () => {
+        const { NativeWebViewEngine } = await import('./NativeWebViewEngine');
+        const receipts: Array<Readonly<{ consumeTransientActivation(): boolean }>> = [];
+
+        await renderScreen(
+            <NativeWebViewEngine
+                title="Inline"
+                html="<button>Send</button>"
+                testID="inline-frame"
+                originWhitelist={[]}
+                nativeMessageBridge={{
+                    onMessage: (...args: unknown[]) => {
+                        receipts.push(args[1] as Readonly<{ consumeTransientActivation(): boolean }>);
+                    },
+                }}
+            />,
+        );
+        const onMessage = lastWebViewProps?.onMessage as (event: unknown) => void;
+        const onFocus = lastWebViewProps?.onFocus as (() => void) | undefined;
+        const onTouchStart = lastWebViewProps?.onTouchStart as (() => void) | undefined;
+        const onBlur = lastWebViewProps?.onBlur as (() => void) | undefined;
+
+        onFocus?.();
+        await act(async () => onMessage({ nativeEvent: { data: 'programmatic-focus', url: 'about:blank' } }));
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(false);
+
+        onTouchStart?.();
+        await act(async () => onMessage({ nativeEvent: { data: 'genuine-touch', url: 'about:blank' } }));
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(true);
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(false);
+        await act(async () => onMessage({ nativeEvent: { data: 'replay', url: 'about:blank' } }));
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(false);
+
+        onBlur?.();
+        onTouchStart?.();
+        await act(async () => onMessage({ nativeEvent: { data: 'next-genuine-touch', url: 'about:blank' } }));
+        expect(receipts.at(-1)?.consumeTransientActivation()).toBe(true);
+    });
+
+    it.each(['url', 'html'] as const)('keeps the host-message attachment live through native %s view teardown', async (sourceKind) => {
         const { NativeWebViewEngine } = await import('./NativeWebViewEngine');
         const attachHostMessages = vi.fn<(send: (message: unknown) => void) => () => void>();
         attachHostMessages.mockImplementation((send) => () => {
@@ -113,7 +221,7 @@ describe('NativeWebViewEngine', () => {
         const screen = await renderScreen(
             <NativeWebViewEngine
                 title="Preview"
-                url="https://preview.example.test/app"
+                {...(sourceKind === 'html' ? { html: '<p>Hello</p>' } : { url: 'https://preview.example.test/app' })}
                 testID="browser-native-frame"
                 originWhitelist={['https://preview.example.test']}
                 nativeMessageBridge={{

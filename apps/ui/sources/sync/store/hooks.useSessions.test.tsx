@@ -17,7 +17,7 @@ import {
     useSessionListIndexByServerId,
     useSessionListReachabilityRenderablesForItems,
     useSessionListRowRenderablesForItems,
-    useSessionListRowStateByServerId,
+    useSessionListRowsByServerId,
     useSessionServerId,
     useMachine,
     useSessions,
@@ -113,7 +113,7 @@ describe('useSessions', () => {
 });
 
 describe('useAllSessionListRenderables', () => {
-    it('returns renderables from the canonical renderables map instead of full sessions', async () => {
+    it('returns renderables from the active Home row map instead of full sessions', async () => {
         const previousState = storage.getState();
         try {
             const renderable: SessionListRenderableSession = {
@@ -132,7 +132,9 @@ describe('useAllSessionListRenderables', () => {
                 ...state,
                 isDataReady: true,
                 sessions: {},
-                sessionListRenderables: { 's-1': renderable },
+                sessionListRowsByServerId: {
+                    'active-server': { 's-1': renderable },
+                },
             }));
 
             const hook = await renderHook(() => useAllSessionListRenderables(), {
@@ -149,14 +151,9 @@ describe('useAllSessionListRenderables', () => {
 });
 
 describe('useAllSessionListAttentionRows', () => {
-    it('prefers scoped row state over active-list renderables for the active server', async () => {
+    it('reads ordinary membership from canonical Home-scoped rows', async () => {
         const previousState = storage.getState();
         try {
-            const staleActiveRenderable: SessionListRenderableSession = {
-                ...makeRenderable('session-1'),
-                updatedAt: 1,
-                hasUnreadMessages: false,
-            };
             const scopedRenderable: SessionListRenderableSession = {
                 ...makeRenderable('session-1'),
                 updatedAt: 2,
@@ -166,13 +163,13 @@ describe('useAllSessionListAttentionRows', () => {
             storage.setState((state) => ({
                 ...state,
                 isDataReady: true,
-                sessionListRenderables: {
-                    'session-1': staleActiveRenderable,
-                },
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'active-server': {
                         'session-1': scopedRenderable,
                     },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    'active-server': ['session-1'],
                 },
             }));
 
@@ -218,15 +215,17 @@ describe('useSessionServerId', () => {
         }
     });
 
-    it('falls back to the active-list cache when the canonical sessions map has not hydrated yet', async () => {
+    it('uses a canonical Home-scoped row when the full sessions map has not hydrated yet', async () => {
         const previousState = storage.getState();
         try {
             const renderable = makeRenderable('session-1');
             storage.setState((state) => ({
                 ...state,
                 sessions: {},
-                sessionListRenderables: {
-                    'session-1': renderable,
+                sessionListRowsByServerId: {
+                    'active-server': {
+                        'session-1': renderable,
+                    },
                 },
                 sessionListIndexByServerId: {
                     'active-server': [
@@ -241,9 +240,6 @@ describe('useSessionServerId', () => {
                 concurrentSessionListCacheByServerId: {
                     'side-server': {
                         serverName: 'Background server',
-                        sessions: {
-                            'session-1': makeRenderable('session-1'),
-                        },
                     },
                 },
             }));
@@ -267,8 +263,10 @@ describe('useSessionServerId', () => {
             storage.setState((state) => ({
                 ...state,
                 sessions: {},
-                sessionListRenderables: {
-                    'session-1': renderable,
+                sessionListRowsByServerId: {
+                    'active-server': {
+                        'session-1': renderable,
+                    },
                 },
                 sessionListIndexByServerId: {
                     'active-server': [
@@ -358,12 +356,12 @@ describe('useSessionListIndexByServerId', () => {
     it('returns canonical index rows when requested by an equivalent server identity alias', async () => {
         const previousState = storage.getState();
         try {
-            const profile = upsertServerProfile({
+            const profile = await upsertServerProfile({
                 serverUrl: 'https://session-index.example.test',
                 name: 'Session Index',
                 source: 'manual',
             });
-            setServerProfileIdentityForUrl(profile.serverUrl, 'srv_session_index');
+            await setServerProfileIdentityForUrl(profile.serverUrl, 'srv_session_index');
             const indexItem: SessionListIndexItem = {
                 type: 'session',
                 sessionId: 'session-1',
@@ -409,16 +407,20 @@ describe('useSessionListIndexByServerId', () => {
                 ...state,
                 isDataReady: true,
                 sessions: {},
-                sessionListRenderables: {},
-                sessionListRowStateByServerId: {},
+                sessionListRowsByServerId: {},
+                ordinarySessionListMembershipByServerId: {},
+                archivedSessionListMembershipByServerId: {},
                 sessionListIndexByServerId: {},
                 concurrentSessionListCacheByServerId: {},
             }));
-            storage.getState().replaceSessionListRenderables([olderRenderable]);
+            storage.getState().applyServerScopedSessionListRows('active-server', [olderRenderable], {
+                source: 'ordinary',
+                mode: 'replace',
+            });
 
             const hook = await renderHook(() => ({
                 indexByServerId: useSessionListIndexByServerId(['active-server']),
-                rowsByServerId: useSessionListRowStateByServerId(),
+                rowsByServerId: useSessionListRowsByServerId(),
             }), {
                 flushOptions: { cycles: 1, turns: 4 },
             });
@@ -429,7 +431,7 @@ describe('useSessionListIndexByServerId', () => {
             expect(hook.getCurrent().rowsByServerId['active-server']?.['socket-created-session']).toBeUndefined();
 
             await act(async () => {
-                storage.getState().mergeSessionListRenderables([socketRenderable]);
+                storage.getState().mergeSessionListRowsForServerScope('active-server', [socketRenderable]);
             });
 
             expect(hook.getCurrent().indexByServerId['active-server']?.some((item) => (
@@ -758,8 +760,7 @@ describe('useSessionListRenderableWithServerScope', () => {
 
             storage.setState((state) => ({
                 ...state,
-                sessionListRenderables: {},
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'side-server': {
                         'session-1': renderable,
                     },
@@ -782,7 +783,7 @@ describe('useSessionListRenderableWithServerScope', () => {
         }
     });
 
-    it('falls back to the active renderables map when serverId is missing', async () => {
+    it('uses the active Home row map when serverId is missing', async () => {
         const previousState = storage.getState();
         try {
             const renderable: SessionListRenderableSession = {
@@ -799,10 +800,11 @@ describe('useSessionListRenderableWithServerScope', () => {
 
             storage.setState((state) => ({
                 ...state,
-                sessionListRenderables: {
-                    'session-1': renderable,
+                sessionListRowsByServerId: {
+                    'active-server': {
+                        'session-1': renderable,
+                    },
                 },
-                sessionListRowStateByServerId: {},
             }));
 
             const hook = await renderHook(
@@ -839,10 +841,11 @@ describe('useSessionListRenderableWithServerScope', () => {
 
             storage.setState((state) => ({
                 ...state,
-                sessionListRenderables: {
-                    'session-1': renderable,
+                sessionListRowsByServerId: {
+                    'active-server': {
+                        'session-1': renderable,
+                    },
                 },
-                sessionListRowStateByServerId: {},
             }));
 
             const hook = await renderHook(
@@ -883,10 +886,11 @@ describe('useSessionListRenderableWithServerScope', () => {
 
             storage.setState((state) => ({
                 ...state,
-                sessionListRenderables: {
-                    'session-1': renderable,
+                sessionListRowsByServerId: {
+                    'active-server': {
+                        'session-1': renderable,
+                    },
                 },
-                sessionListRowStateByServerId: {},
             }));
 
             let renderCount = 0;
@@ -902,14 +906,16 @@ describe('useSessionListRenderableWithServerScope', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRenderables: {
-                        'session-1': {
-                            ...renderable,
-                            updatedAt: 3,
-                            pendingVersion: 2,
-                            metadataVersion: 2,
-                            agentStateVersion: 2,
-                            thinkingAt: 3,
+                    sessionListRowsByServerId: {
+                        'active-server': {
+                            'session-1': {
+                                ...renderable,
+                                updatedAt: 3,
+                                pendingVersion: 2,
+                                metadataVersion: 2,
+                                agentStateVersion: 2,
+                                thinkingAt: 3,
+                            },
                         },
                     },
                 }));
@@ -941,10 +947,11 @@ describe('useSessionListRenderableWithServerScope', () => {
 
             storage.setState((state) => ({
                 ...state,
-                sessionListRenderables: {
-                    'session-1': renderable,
+                sessionListRowsByServerId: {
+                    'active-server': {
+                        'session-1': renderable,
+                    },
                 },
-                sessionListRowStateByServerId: {},
             }));
 
             let renderCount = 0;
@@ -960,10 +967,12 @@ describe('useSessionListRenderableWithServerScope', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRenderables: {
-                        'session-1': {
-                            ...renderable,
-                            activeAt: 3,
+                    sessionListRowsByServerId: {
+                        'active-server': {
+                            'session-1': {
+                                ...renderable,
+                                activeAt: 3,
+                            },
                         },
                     },
                 }));
@@ -1009,8 +1018,7 @@ describe('useSessionListRenderableWithServerScope', () => {
 
             storage.setState((state) => ({
                 ...state,
-                sessionListRenderables: {},
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'server-1': {
                         'session-1': renderable,
                     },
@@ -1033,7 +1041,7 @@ describe('useSessionListRenderableWithServerScope', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
+                    sessionListRowsByServerId: {
                         'server-1': {
                             'session-1': {
                                 ...renderable,
@@ -1053,7 +1061,7 @@ describe('useSessionListRenderableWithServerScope', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
+                    sessionListRowsByServerId: {
                         'server-1': {
                             'session-1': {
                                 ...renderable,
@@ -1120,8 +1128,7 @@ describe('useSessionListRenderableWithServerScope', () => {
 
             storage.setState((state) => ({
                 ...state,
-                sessionListRenderables: {},
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     'server-1': {
                         'session-1': serverOneRenderable,
                     },
@@ -1150,7 +1157,7 @@ describe('useSessionListRenderableWithServerScope', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
+                    sessionListRowsByServerId: {
                         'server-1': {
                             'session-1': {
                                 ...serverOneRenderable,
@@ -1181,12 +1188,12 @@ describe('useSessionListRenderableWithServerScope', () => {
     it('resolves row renderables through equivalent server identity aliases', async () => {
         const previousState = storage.getState();
         try {
-            const profile = upsertServerProfile({
+            const profile = await upsertServerProfile({
                 serverUrl: 'https://row-alias.example.test',
                 name: 'Row Alias',
                 source: 'manual',
             });
-            setServerProfileIdentityForUrl(profile.serverUrl, 'srv_row_alias');
+            await setServerProfileIdentityForUrl(profile.serverUrl, 'srv_row_alias');
             const rowItems: SessionListIndexItem[] = [{
                 type: 'session',
                 sessionId: 'session-1',
@@ -1208,8 +1215,7 @@ describe('useSessionListRenderableWithServerScope', () => {
 
             storage.setState((state) => ({
                 ...state,
-                sessionListRenderables: {},
-                sessionListRowStateByServerId: {
+                sessionListRowsByServerId: {
                     [profile.id]: {
                         'session-1': renderable,
                     },
@@ -1232,7 +1238,7 @@ describe('useSessionListRenderableWithServerScope', () => {
                 id: 'session-1',
                 metadata: renderable.metadata,
             }));
-            expect(reachabilityHook.getCurrent().get('srv_row_alias\u0000session-1')).toEqual(expect.objectContaining({
+            expect(reachabilityHook.getCurrent().get(rowKey!)).toEqual(expect.objectContaining({
                 id: 'session-1',
                 metadata: renderable.metadata,
             }));
@@ -1244,7 +1250,7 @@ describe('useSessionListRenderableWithServerScope', () => {
         }
     });
 
-    it('drops the active-renderables fallback when the requested server is no longer active', async () => {
+    it('keeps an exactly scoped row when the active Home changes', async () => {
         const previousState = storage.getState();
         try {
             const renderable: SessionListRenderableSession = {
@@ -1267,10 +1273,11 @@ describe('useSessionListRenderableWithServerScope', () => {
 
             storage.setState((state) => ({
                 ...state,
-                sessionListRenderables: {
-                    'session-1': renderable,
+                sessionListRowsByServerId: {
+                    'side-server': {
+                        'session-1': renderable,
+                    },
                 },
-                sessionListRowStateByServerId: {},
             }));
 
             const hook = await renderHook(
@@ -1292,7 +1299,10 @@ describe('useSessionListRenderableWithServerScope', () => {
                 activeServerRuntimeState.listener?.(activeServerRuntimeState.snapshot);
             });
 
-            expect(hook.getCurrent()).toBeNull();
+            expect(hook.getCurrent()).toEqual(expect.objectContaining({
+                id: renderable.id,
+                metadata: renderable.metadata,
+            }));
 
             await hook.unmount();
         } finally {

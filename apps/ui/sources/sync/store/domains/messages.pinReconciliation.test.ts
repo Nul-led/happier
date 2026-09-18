@@ -33,7 +33,9 @@ const scopeA: ServerAccountScope = { serverId: 'server-a', accountId: 'account-a
 function createHarness(initial: any) {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionListViewData: null,
         sessionListViewDataByServerId: {},
         machines: {},

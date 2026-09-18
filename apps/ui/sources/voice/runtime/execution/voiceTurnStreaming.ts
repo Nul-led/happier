@@ -22,7 +22,7 @@ export function createVoiceTurnStreaming(args: Readonly<{
     interruptActiveTurn: (sessionId: string) => void;
     resetCachedHandle: (sessionId: string) => void;
     trackActiveTurn: <T>(sessionId: string, task: () => Promise<T>) => Promise<T>;
-    voiceAgentPendingSessionContextBySessionId: Map<string, string[]>;
+    voiceAttemptExplicitContextBySessionId: Map<string, string[]>;
     deferredTargetSessionContextBySessionId: Map<string, string | null>;
     latestAutomaticUiContextBySessionId: Map<string, string>;
     voiceAgentTurnAbortControllerBySessionId: Map<string, AbortController>;
@@ -73,10 +73,11 @@ export function createVoiceTurnStreaming(args: Readonly<{
     ): Promise<Readonly<{ assistantText: string; actions: VoiceAssistantAction[] }>> => {
         let lastHandle: VoiceAgentHandle | null = null;
         let preparedPayloadText: string | null = null;
+        let preparedAttemptContext: readonly string[] = [];
         const preparePayloadText = (): string => {
             if (preparedPayloadText !== null) return preparedPayloadText;
 
-            const pendingSessionContext = args.voiceAgentPendingSessionContextBySessionId.get(sessionId) ?? [];
+            preparedAttemptContext = args.voiceAttemptExplicitContextBySessionId.get(sessionId) ?? [];
             const deferredTargetSessionContext = args.deferredTargetSessionContextBySessionId.get(sessionId);
             const latestAutomaticUiContext = args.latestAutomaticUiContextBySessionId.get(sessionId);
             const automaticUiContext =
@@ -86,13 +87,10 @@ export function createVoiceTurnStreaming(args: Readonly<{
                     : null;
             const pendingContext = [
                 ...(deferredTargetSessionContext ? [deferredTargetSessionContext] : []),
-                ...pendingSessionContext,
+                ...preparedAttemptContext,
                 ...(automaticUiContext ? [automaticUiContext] : []),
             ];
             const nextPayloadText = userText;
-            if (pendingSessionContext.length > 0) {
-                args.voiceAgentPendingSessionContextBySessionId.delete(sessionId);
-            }
             if (deferredTargetSessionContext) {
                 args.deferredTargetSessionContextBySessionId.set(sessionId, null);
             }
@@ -106,6 +104,20 @@ export function createVoiceTurnStreaming(args: Readonly<{
             });
             preparedPayloadText = payload.payloadText;
             return preparedPayloadText;
+        };
+
+        const retireAcceptedAttemptContext = (): void => {
+            if (preparedAttemptContext.length === 0) return;
+            const current = args.voiceAttemptExplicitContextBySessionId.get(sessionId) ?? [];
+            const stillHasPreparedPrefix = current.length >= preparedAttemptContext.length
+                && preparedAttemptContext.every((value, index) => current[index] === value);
+            if (!stillHasPreparedPrefix) return;
+            const remaining = current.slice(preparedAttemptContext.length);
+            if (remaining.length === 0) {
+                args.voiceAttemptExplicitContextBySessionId.delete(sessionId);
+                return;
+            }
+            args.voiceAttemptExplicitContextBySessionId.set(sessionId, remaining);
         };
 
         const sendWithHandle = async (displayUserText: string) => {
@@ -162,12 +174,14 @@ export function createVoiceTurnStreaming(args: Readonly<{
                 );
                 const recoveredAssistantText = recoveredAssistantTexts.at(-1)?.trim() ?? '';
                 if (recoveredAssistantText) {
+                    retireAcceptedAttemptContext();
                     return {
                         assistantText: recoveredAssistantText,
                         actions: normalizedResponse.actions,
                     };
                 }
             }
+            retireAcceptedAttemptContext();
             return normalizedResponse;
         };
 

@@ -61,10 +61,12 @@ vi.mock('@/utils/system/runtimeFetch', () => ({
     runtimeFetch: vi.fn(),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/auth/storage/tokenStorage')>()),
     TokenStorage: {
         getCredentialsForServerUrl: vi.fn(),
     },
+    subscribeHomeCredentialMutations: vi.fn(() => () => undefined),
 }));
 
 vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', () => ({
@@ -95,15 +97,16 @@ import type { NormalizedMessage } from './typesRaw';
 const initialStorageState = storage.getState();
 
 type SyncReadyNotificationTestAccess = Readonly<{
-    notifyReadyProjectionAdvance: (sessionId: string, seq: number) => void;
+    notifyReadyProjectionAdvance: (sessionId: string, seq: number, serverId: string | null) => void;
     applyMessages: (sessionId: string, messages: NormalizedMessage[]) => unknown;
     disconnectServer: () => void;
 }>;
 
-function createSession(sessionId: string): Session {
+function createSession(sessionId: string, serverId = 'server-a'): Session {
     const now = Date.now();
     return {
         id: sessionId,
+        serverId,
         seq: 0,
         createdAt: now,
         updatedAt: now,
@@ -148,15 +151,58 @@ describe('Sync ready notification dedupe', () => {
         const syncForTest = sync as unknown as SyncReadyNotificationTestAccess;
         storage.getState().applySessions([createSession('s1')]);
 
-        syncForTest.notifyReadyProjectionAdvance('s1', 2);
+        syncForTest.notifyReadyProjectionAdvance('s1', 2, 'server-a');
         syncForTest.applyMessages('s1', [readyMessage(2)]);
         syncForTest.applyMessages('s1', [readyMessage(3)]);
 
         expect(voiceOnReadyMock).toHaveBeenCalledTimes(2);
         expect(notifyActivityReadyMock).toHaveBeenCalledTimes(2);
-        expect(voiceOnReadyMock).toHaveBeenNthCalledWith(1, 's1', []);
-        expect(notifyActivityReadyMock).toHaveBeenNthCalledWith(1, 's1', []);
-        expect(voiceOnReadyMock).toHaveBeenNthCalledWith(2, 's1', []);
-        expect(notifyActivityReadyMock).toHaveBeenNthCalledWith(2, 's1', []);
+        expect(voiceOnReadyMock).toHaveBeenNthCalledWith(1, {
+            serverId: 'server-a',
+            sessionId: 's1',
+        }, []);
+        expect(notifyActivityReadyMock).toHaveBeenNthCalledWith(
+            1,
+            expect.objectContaining({ sessionId: 's1' }),
+            [],
+            { sequenceDomain: 'session_transcript', sequence: 2 },
+        );
+        expect(voiceOnReadyMock).toHaveBeenNthCalledWith(2, {
+            serverId: 'server-a',
+            sessionId: 's1',
+        }, []);
+        expect(notifyActivityReadyMock).toHaveBeenNthCalledWith(
+            2,
+            expect.objectContaining({ sessionId: 's1' }),
+            [],
+            { sequenceDomain: 'session_transcript', sequence: 3 },
+        );
+    });
+
+    it('keeps equal Session ids on different Homes in separate ready frontiers', async () => {
+        const { sync } = await import('./sync');
+        const syncForTest = sync as unknown as SyncReadyNotificationTestAccess;
+
+        syncForTest.notifyReadyProjectionAdvance('same-session', 2, 'server-a');
+        syncForTest.notifyReadyProjectionAdvance('same-session', 2, 'server-b');
+
+        expect(voiceOnReadyMock).toHaveBeenCalledTimes(2);
+        expect(voiceOnReadyMock).toHaveBeenNthCalledWith(1, {
+            serverId: 'server-a',
+            sessionId: 'same-session',
+        }, []);
+        expect(voiceOnReadyMock).toHaveBeenNthCalledWith(2, {
+            serverId: 'server-b',
+            sessionId: 'same-session',
+        }, []);
+        expect(notifyActivityReadyMock).toHaveBeenCalledTimes(2);
+        expect(notifyActivityReadyMock).toHaveBeenNthCalledWith(1, {
+            serverId: 'server-a',
+            sessionId: 'same-session',
+        }, [], { sequenceDomain: 'session_transcript', sequence: 2 });
+        expect(notifyActivityReadyMock).toHaveBeenNthCalledWith(2, {
+            serverId: 'server-b',
+            sessionId: 'same-session',
+        }, [], { sequenceDomain: 'session_transcript', sequence: 2 });
     });
 });

@@ -105,4 +105,24 @@ describe('sessionPaneHistoryState', () => {
         expect(readStoredSessionPaneUrlState('session:history-pane')).toEqual({ bottomTabId: 'terminal' });
         expect(consumeSessionPaneHistoryTraversalForCurrentLocation()).toBe(true);
     });
+
+    it('clears only the exact Home pane state for a qualified session popstate', async () => {
+        installSessionStorage();
+        const windowStub = installWindow('http://localhost:19364/session/same-session?serverId=server-a');
+
+        const { primeSessionPaneHistoryTraversalTracking } = await import('./sessionPaneHistoryState');
+        const { createSessionPaneScopeId } = await import('../sessionPaneScopeId');
+        const { readStoredSessionPaneUrlState, writeStoredSessionPaneUrlState } = await import('./sessionPaneStoredState');
+        const firstScope = createSessionPaneScopeId('same-session', 'server-a');
+        const secondScope = createSessionPaneScopeId('same-session', 'server-b');
+
+        writeStoredSessionPaneUrlState(firstScope, { bottomTabId: 'terminal' });
+        writeStoredSessionPaneUrlState(secondScope, { bottomTabId: 'terminal' });
+        primeSessionPaneHistoryTraversalTracking();
+
+        windowStub.dispatchEvent({ type: 'popstate' });
+
+        expect(readStoredSessionPaneUrlState(firstScope)).toBeNull();
+        expect(readStoredSessionPaneUrlState(secondScope)).toEqual({ bottomTabId: 'terminal' });
+    });
 });

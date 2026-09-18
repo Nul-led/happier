@@ -67,7 +67,7 @@ describe('serverProfiles adoption authority', () => {
             observedServerIdentityId: 'srv_equal_revision_owner_1',
             descriptor: conflictingDescriptor,
         })).resolves.toMatchObject({ kind: 'conflict', code: 'equal_revision_conflict' });
-        expect(profiles.getServerProfileById(original.id)?.irohEndpoint?.endpointId).toBe('a'.repeat(64));
+        expect(profiles.getServerProfileById(original.id)?.homeConnectionDescriptor?.endpoints.find((endpoint) => endpoint.kind === 'iroh')?.endpointId).toBe('a'.repeat(64));
     });
 
     it('prefers established Home facts over advisory Directory facts before revision comparison during persisted dedupe', async () => {
@@ -83,8 +83,13 @@ describe('serverProfiles adoption authority', () => {
                     serverUrl: 'https://home-authored.example.test',
                     serverIdentityId: 'srv_persisted_authority_1',
                     source: 'qr',
-                    connectionDescriptorRevision: 2,
-                    irohEndpoint: { endpointId: 'a'.repeat(64) },
+                    homeConnectionDescriptor: {
+                        v: 1,
+                        homeServerIdentityId: 'srv_persisted_authority_1',
+                        canonicalServerUrl: 'https://home-authored.example.test',
+                        revision: 2,
+                        endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+                    },
                     createdAt: 1,
                     updatedAt: 2,
                     lastUsedAt: 2,
@@ -96,8 +101,13 @@ describe('serverProfiles adoption authority', () => {
                     serverIdentityId: 'srv_persisted_authority_1',
                     source: 'account-directory',
                     descriptorProvenance: 'advisory-only',
-                    connectionDescriptorRevision: 99,
-                    irohEndpoint: { endpointId: 'b'.repeat(64) },
+                    homeConnectionDescriptor: {
+                        v: 1,
+                        homeServerIdentityId: 'srv_persisted_authority_1',
+                        canonicalServerUrl: 'https://directory.example.test',
+                        revision: 99,
+                        endpoints: [{ kind: 'iroh', endpointId: 'b'.repeat(64) }],
+                    },
                     createdAt: 3,
                     updatedAt: 99,
                     lastUsedAt: 99,
@@ -111,14 +121,71 @@ describe('serverProfiles adoption authority', () => {
         expect(profile).toMatchObject({
             id: 'established-home',
             serverIdentityId: 'srv_persisted_authority_1',
-            connectionDescriptorRevision: 2,
-            irohEndpoint: { endpointId: 'a'.repeat(64) },
+            homeConnectionDescriptor: {
+                revision: 2,
+                endpoints: expect.arrayContaining([{ kind: 'iroh', endpointId: 'a'.repeat(64) }]),
+            },
         });
         expect(profile?.descriptorProvenance).toBeUndefined();
         expect(profiles.listServerProfiles()).toHaveLength(1);
         // The retired id remains a lookup alias for continuity, but does not
         // survive as a second persisted profile.
         expect(profiles.getServerProfileById('directory-placeholder')?.id).toBe('established-home');
+    });
+
+    it('does not promote advisory stable identity or aliases into an identity-less established profile during persisted URL dedupe', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        const storage = new MMKV({ id: scopedStorageId('server-profiles', scope) });
+        storage.set('server-state-v1', JSON.stringify({
+            activeServerId: 'directory-placeholder',
+            servers: {
+                'established-home': {
+                    id: 'established-home',
+                    name: 'Established Home',
+                    serverUrl: 'https://same-home.example.test',
+                    source: 'manual',
+                    createdAt: 1,
+                    updatedAt: 2,
+                    lastUsedAt: 2,
+                },
+                'directory-placeholder': {
+                    id: 'directory-placeholder',
+                    name: 'Directory Placeholder',
+                    serverUrl: 'https://same-home.example.test',
+                    serverIdentityId: 'srv_advisory_identity',
+                    legacyServerIds: ['srv_advisory_alias'],
+                    source: 'account-directory',
+                    descriptorProvenance: 'advisory-only',
+                    homeConnectionDescriptor: {
+                        v: 1,
+                        homeServerIdentityId: 'srv_advisory_identity',
+                        canonicalServerUrl: 'https://same-home.example.test',
+                        revision: 99,
+                        endpoints: [{ kind: 'https', url: 'https://same-home.example.test' }],
+                    },
+                    createdAt: 3,
+                    updatedAt: 99,
+                    lastUsedAt: 99,
+                },
+            },
+        }));
+
+        const profiles = await importFresh();
+        const [profile] = profiles.listServerProfiles();
+
+        expect(profiles.listServerProfiles()).toHaveLength(1);
+        expect(profile).toMatchObject({ id: 'established-home', serverUrl: 'https://same-home.example.test' });
+        expect(profile).not.toHaveProperty('serverIdentityId');
+        expect(profile?.legacyServerIds).toContain('directory-placeholder');
+        expect(profile?.legacyServerIds).not.toContain('srv_advisory_identity');
+        expect(profile?.legacyServerIds).not.toContain('srv_advisory_alias');
+        expect(profiles.getServerProfileById('directory-placeholder')?.id).toBe('established-home');
+        expect(profiles.resolveServerProfileForPortableIdentity('srv_advisory_identity')).toEqual({
+            kind: 'missing',
+            serverIdentityId: 'srv_advisory_identity',
+        });
+        expect(profiles.resolveServerProfileScopeIdForIdentifier('directory-placeholder')).toBe('established-home');
     });
 
     it('does not let a newer advisory Directory descriptor retarget an existing Home or focus', async () => {
@@ -137,7 +204,7 @@ describe('serverProfiles adoption authority', () => {
                 ],
             },
         });
-        profiles.setActiveServerId(original.id);
+        await profiles.setActiveServerId(original.id);
         const focusBefore = profiles.getActiveServerSnapshot();
         // Focus updates usage timestamps; compare against the post-focus stored profile
         // so the assertion isolates advisory retargeting (routing facts), not focus.
@@ -227,11 +294,44 @@ describe('serverProfiles adoption authority', () => {
         });
 
         expect(result.kind).toBe('stale');
-        expect(profiles.getServerProfileById(placeholder.id)?.irohEndpoint).toEqual({
+        expect(profiles.getServerProfileById(placeholder.id)?.homeConnectionDescriptor?.endpoints.find((endpoint) => endpoint.kind === 'iroh')).toEqual({ kind: 'iroh',
             endpointId: 'a'.repeat(64),
             relayUrls: ['https://relay-directory.example.test'],
             directAddresses: ['192.0.2.200:443'],
         });
+    });
+
+    it('preserves advisory descriptor provenance through ordinary same-URL profile upserts', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await importFresh();
+        const descriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_advisory_upsert_1',
+            canonicalServerUrl: 'https://advisory-upsert.example.test',
+            revision: 7,
+            endpoints: [{ kind: 'https' as const, url: 'https://advisory-upsert.example.test' }],
+        };
+        const placeholder = await profiles.adoptHomeProfile({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor,
+        });
+
+        const updated = await profiles.upsertServerProfile({
+            serverUrl: descriptor.canonicalServerUrl,
+            name: 'Ordinary local label',
+            source: 'manual',
+        });
+
+        expect(updated.id).toBe(placeholder.id);
+        expect(updated.homeConnectionDescriptor).toEqual(descriptor);
+        expect(updated.descriptorProvenance).toBe('advisory-only');
+        expect(profiles.buildHomeConnectionDescriptorForProfile(updated)).toBeNull();
+        expect(profiles.preflightHomeProfileAdoption({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor,
+        })).toMatchObject({ credentialWrite: 'requiresCurrentObservation' });
     });
 
     it('keeps an established private descriptor generation unchanged across a reduced public observation', async () => {
@@ -272,11 +372,13 @@ describe('serverProfiles adoption authority', () => {
 
         expect(result.kind).toBe('unchanged');
         expect(profiles.getServerProfileById(established.id)).toMatchObject({
-            connectionDescriptorRevision: 4,
-            irohEndpoint: {
+            homeConnectionDescriptor: {
+                revision: 4,
+                endpoints: expect.arrayContaining([{ kind: 'iroh',
                 endpointId: 'b'.repeat(64),
                 relayUrls: ['https://relay-old.example.test'],
                 directAddresses: ['192.0.2.201:443'],
+            }]),
             },
         });
     });
@@ -333,40 +435,7 @@ describe('serverProfiles adoption authority', () => {
         const upgraded = profiles.getServerProfileById(placeholder.id);
         expect(upgraded?.descriptorProvenance).toBeUndefined();
         expect(upgraded?.canonicalServerUrl ?? upgraded?.serverUrl).toBe('https://observed-real.example.test');
-        expect(upgraded?.connectionDescriptorRevision).toBe(2);
-    });
-
-    it('treats durable adoption as committed even when independent observers throw', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
-        const laterProfileObserver = vi.fn();
-        const laterActiveObserver = vi.fn();
-        const reported = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-        const unsubscribers = [
-            profiles.subscribeServerProfiles(() => { throw new Error('profile observer failed'); }),
-            profiles.subscribeServerProfiles(laterProfileObserver),
-            profiles.subscribeActiveServer(() => { throw new Error('active observer failed'); }),
-            profiles.subscribeActiveServer(laterActiveObserver),
-        ];
-
-        try {
-            const adopted = await profiles.adoptHomeProfile({
-                source: 'qr',
-                descriptor: {
-                    v: 1,
-                    homeServerIdentityId: 'srv_observer_owner_1',
-                    canonicalServerUrl: 'https://observer-owner.example.test',
-                    revision: 1,
-                    endpoints: [{ kind: 'https', url: 'https://observer-owner.example.test' }],
-                },
-            });
-            expect(profiles.getServerProfileById(adopted.id)?.serverIdentityId).toBe('srv_observer_owner_1');
-            expect(laterProfileObserver).toHaveBeenCalledOnce();
-            expect(laterActiveObserver).toHaveBeenCalledOnce();
-            expect(reported).toHaveBeenCalledTimes(2);
-        } finally {
-            for (const unsubscribe of unsubscribers) unsubscribe();
-        }
+        expect(upgraded?.homeConnectionDescriptor?.revision).toBe(2);
     });
 
     it('preserves the exact unknown source through a same-profile strict adoption', async () => {

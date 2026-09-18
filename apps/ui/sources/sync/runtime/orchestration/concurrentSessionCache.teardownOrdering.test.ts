@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createServerProfilesModuleMock } from '@/dev/testkit';
+import { createServerProfilesModuleMock, createTokenStorageModuleMock } from '@/dev/testkit';
 
 const reportServerUnreachableSpy = vi.fn<(...args: any[]) => void>();
 const releaseServerReachabilitySupervisorSpy = vi.fn(async () => {});
@@ -89,14 +89,12 @@ describe('concurrentSessionCache teardown ordering', () => {
             token: serverUrl.includes('stack-a') ? 'token-a' : 'token-b',
             secret: serverUrl.includes('stack-a') ? 'secret-a' : 'secret-b',
         }));
-        vi.doMock('@/auth/storage/tokenStorage', () => ({
-            TokenStorage: {
+        vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => createTokenStorageModuleMock({
+            importOriginal,
+            tokenStorage: {
                 getCredentialsForServerUrl: getCredentialsForServerUrlSpy,
             },
             subscribeHomeCredentialMutations: () => () => {},
-            isLegacyAuthCredentials: () => true,
-            isDataKeyAuthCredentials: () => false,
-            isTokenOnlyAuthCredentials: () => false,
         }));
 
         vi.doMock('@/sync/domains/server/serverProfiles', () => createServerProfilesModuleMock({
@@ -236,10 +234,17 @@ describe('concurrentSessionCache teardown ordering', () => {
                 ...state.concurrentSessionListCacheByServerId,
                 'server-b': {
                     serverName: 'Server B',
-                    sessions: {
-                        'session-b': { id: 'session-b' } as never,
-                    },
                 },
+            },
+            sessionListRowsByServerId: {
+                ...state.sessionListRowsByServerId,
+                'server-b': {
+                    'session-b': { id: 'session-b' } as never,
+                },
+            },
+            ordinarySessionListMembershipByServerId: {
+                ...state.ordinarySessionListMembershipByServerId,
+                'server-b': ['session-b'],
             },
             machineListByServerId: {
                 ...state.machineListByServerId,
@@ -261,7 +266,7 @@ describe('concurrentSessionCache teardown ordering', () => {
         expect(getCredentialsForServerUrlSpy.mock.calls.filter(([serverUrl]) => (
             serverUrl === 'https://stack-b.example.test'
         ))).toHaveLength(1);
-        expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.sessions?.['session-b']).toBeDefined();
+        expect(storage.getState().sessionListRowsByServerId['server-b']?.['session-b']).toBeDefined();
         expect(storage.getState().machineListByServerId['server-b']?.map((machine) => machine.id)).toEqual(['machine-b']);
         expect(getCredentialsForServerUrlSpy).not.toHaveBeenCalledWith(
             'https://stack-a.example.test',

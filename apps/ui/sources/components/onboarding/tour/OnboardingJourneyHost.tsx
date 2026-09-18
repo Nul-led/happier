@@ -369,7 +369,9 @@ function resolveUpcomingStageFrameIds(
 function restoreExactSnapshot(snapshot: StoreSnapshot): void {
     storage.setState((current) => ({
         sessions: snapshot.sessions,
-        sessionListRenderables: snapshot.sessionListRenderables,
+        sessionListRowsByServerId: snapshot.sessionListRowsByServerId,
+        ordinarySessionListMembershipByServerId: snapshot.ordinarySessionListMembershipByServerId,
+        archivedSessionListMembershipByServerId: snapshot.archivedSessionListMembershipByServerId,
         sessionListIndexByServerId: snapshot.sessionListIndexByServerId,
         machines: snapshot.machines,
         machineDisplayById: snapshot.machineDisplayById,

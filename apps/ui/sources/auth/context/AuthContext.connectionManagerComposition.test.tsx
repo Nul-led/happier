@@ -4,18 +4,28 @@ import { act } from 'react-test-renderer';
 
 import { createDeferred, renderScreen } from '@/dev/testkit';
 
+vi.mock('@legendapp/list/react-native', async () => {
+    const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
+    return createCapturingLegendListMock().module;
+});
+
 const mocks = vi.hoisted(() => ({
     getCredentials: vi.fn(async () => null),
     getCredentialsForServerUrl: vi.fn(),
     syncSwitchServer: vi.fn(async () => undefined),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentials: mocks.getCredentials,
-        getCredentialsForServerUrl: mocks.getCredentialsForServerUrl,
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+    return {
+        ...actual,
+        TokenStorage: {
+            ...actual.TokenStorage,
+            getCredentials: mocks.getCredentials,
+            getCredentialsForServerUrl: mocks.getCredentialsForServerUrl,
+        },
+    };
+});
 
 vi.mock('@/sync/sync', () => ({
     sync: { retryNow: vi.fn() },
@@ -23,7 +33,8 @@ vi.mock('@/sync/sync', () => ({
     syncSwitchServer: mocks.syncSwitchServer,
 }));
 
-vi.mock('@/sync/http/client', () => ({
+vi.mock('@/sync/http/client', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/http/client')>(),
     abortServerFetches: vi.fn(),
 }));
 
@@ -73,15 +84,15 @@ describe('AuthContext with the production connection manager', () => {
         vi.stubGlobal('document', {});
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const homeA = profiles.upsertServerProfile({
+        const homeA = await profiles.upsertServerProfile({
             serverUrl: 'https://a.example.test',
             name: 'Home A',
         });
-        const homeB = profiles.upsertServerProfile({
+        const homeB = await profiles.upsertServerProfile({
             serverUrl: 'https://b.example.test',
             name: 'Home B',
         });
-        profiles.setActiveServerId(homeA.id, { scope: 'device' });
+        await profiles.setActiveServerId(homeA.id, { scope: 'device' });
 
         const homeACredentials = { token: 'token-a', secret: 'secret-a' };
         const homeBCredentials = { token: 'token-b', secret: 'secret-b' };
@@ -114,7 +125,7 @@ describe('AuthContext with the production connection manager', () => {
             const staleRefresh = auth.refreshFromActiveServer();
             await staleCredentialReadStarted.promise;
 
-            profiles.setActiveServerId(homeB.id, { scope: 'device' });
+            await profiles.setActiveServerId(homeB.id, { scope: 'device' });
             const newerRefresh = auth.refreshFromActiveServer();
             releaseStaleCredentialRead.resolve();
 
@@ -126,7 +137,13 @@ describe('AuthContext with the production connection manager', () => {
                 isAuthenticated: true,
                 credentials: homeBCredentials,
             });
-            expect(mocks.syncSwitchServer).toHaveBeenLastCalledWith(homeBCredentials);
+            expect(mocks.syncSwitchServer).toHaveBeenLastCalledWith(
+                homeBCredentials,
+                expect.objectContaining({
+                    serverId: homeB.id,
+                    serverUrl: homeB.serverUrl,
+                }),
+            );
         } finally {
             releaseStaleCredentialRead.resolve();
             await screen.unmount();

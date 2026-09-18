@@ -25,6 +25,7 @@ import {
 } from '@/sync/store/hooks';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 
 import {
     clearMachineAdministrationTargetPreference,
@@ -184,6 +185,15 @@ export type MachineAdministrationTargetSelectionOptions = Readonly<{
     allowSoleCandidate?: boolean;
 }>;
 
+/** Presentation-only canonical Administration rows, without creating a persisted selection. */
+export function useMachineAdministrationTargetPickerRows(): readonly MachineAdministrationTargetPickerRowV1[] {
+    const snapshots = useAllProfileMachineInventorySnapshots();
+    return React.useMemo(
+        () => buildMachineAdministrationCandidateInventoryRowsFromSnapshots({ snapshots }),
+        [snapshots],
+    );
+}
+
 /**
  * Administration's Account-level exact target controller. It consumes the raw
  * all-profile machine producer plus its presentation-only warm fallback; it
@@ -196,6 +206,7 @@ export function useMachineAdministrationTargetSelection(
 ): MachineAdministrationTargetSelectionV1 {
     const selections = useSetting('machineAdministrationSelectionsV1');
     const settingsVersion = useSettingsVersion();
+    const expectedSettingsScope = useAccountSettingsScope();
     const activeAccountScope = useActiveServerAccountScope();
     const storedTarget = selections.targetsByKey[selectionKey] ?? null;
     const selectionRevisionRef = React.useRef<MachineAdministrationSelectionRevisionState>({
@@ -233,12 +244,12 @@ export function useMachineAdministrationTargetSelection(
         if (storedTarget || !allowSoleCandidate || targetState.kind !== 'online') return;
         if (settingsVersion === null) return;
         fireAndForget(
-            persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
+            persistMachineAdministrationSelectionMutation(expectedSettingsScope, settingsVersion, (current) => (
                 setMachineAdministrationTargetPreference(current, selectionKey, targetState.target)
             )).then(requireOneShotAccountSettingsMutationApplied),
             { tag: 'useMachineAdministrationTargetSelection.initialize' },
         );
-    }, [allowSoleCandidate, selectionKey, settingsVersion, storedTarget, targetState]);
+    }, [allowSoleCandidate, expectedSettingsScope, selectionKey, settingsVersion, storedTarget, targetState]);
 
     const selectTarget = React.useCallback((target: MachineAdministrationTargetV1) => {
         const candidate = candidates.find((item) => (
@@ -248,22 +259,22 @@ export function useMachineAdministrationTargetSelection(
         if (!candidate || !isMachineAdministrationCandidateSelectable(candidate)) return;
         if (settingsVersion === null) return;
         fireAndForget(
-            persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
+            persistMachineAdministrationSelectionMutation(expectedSettingsScope, settingsVersion, (current) => (
                 setMachineAdministrationTargetPreference(current, selectionKey, candidate.target)
             )).then(requireOneShotAccountSettingsMutationApplied),
             { tag: 'useMachineAdministrationTargetSelection.select' },
         );
-    }, [candidates, selectionKey, settingsVersion]);
+    }, [candidates, expectedSettingsScope, selectionKey, settingsVersion]);
 
     const clearTarget = React.useCallback(() => {
         if (settingsVersion === null) return;
         fireAndForget(
-            persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
+            persistMachineAdministrationSelectionMutation(expectedSettingsScope, settingsVersion, (current) => (
                 clearMachineAdministrationTargetPreference(current, selectionKey)
             )).then(requireOneShotAccountSettingsMutationApplied),
             { tag: 'useMachineAdministrationTargetSelection.clear' },
         );
-    }, [selectionKey, settingsVersion]);
+    }, [expectedSettingsScope, selectionKey, settingsVersion]);
 
     const resolveExecutionTarget = React.useCallback(() => {
         const target = storage.getState().settings.machineAdministrationSelectionsV1.targetsByKey[selectionKey] ?? null;

@@ -1,8 +1,60 @@
 import { createSessionDetailsTerminalTab } from '@/components/sessions/terminal/embeddedTerminalDocking';
+import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { t } from '@/text';
 
 export const SESSION_DETAILS_SCM_REVIEW_TAB_KEY = 'scmReview:working';
 export const SESSION_DETAILS_SCM_STASH_TAB_KEY = 'scmStash';
+export const SESSION_DETAILS_BOARD_TAB_KEY = 'board';
+
+export type SessionBoardDetailsFocusTarget = Readonly<{
+    kind: 'item';
+    itemId: string;
+}>;
+
+export type SessionDiscussionDetailsTarget =
+    | Readonly<{ kind: 'new'; address: SessionAddress }>
+    | Readonly<{ kind: 'discussion'; address: SessionAddress; discussionId: string }>;
+
+export function createSessionDiscussionDetailsTab(
+    target: SessionDiscussionDetailsTarget & Readonly<{ title?: string | null }>,
+) {
+    const targetKey = target.kind === 'new' ? 'new' : target.discussionId;
+    return {
+        key: `discussion:${sessionAddressKey(target.address)}:${targetKey}`,
+        kind: 'discussion' as const,
+        title: target.kind === 'new'
+            ? t('session.collaboration.discussion.newDiscussion')
+            : target.title?.trim() || t('session.collaboration.discussion.title'),
+        resource: {
+            kind: 'discussion' as const,
+            target: target.kind === 'new'
+                ? { kind: 'new' as const, address: target.address }
+                : {
+                    kind: 'discussion' as const,
+                    address: target.address,
+                    discussionId: target.discussionId,
+                },
+        },
+    };
+}
+
+/**
+ * The Board destination, and — with an item — that item's own expanded
+ * destination. They must not share a key: a single `board` tab instance would make
+ * the second "Open in Details" reuse the first tab and silently drop its itemId.
+ */
+export function createSessionBoardDetailsTab(focusTarget?: SessionBoardDetailsFocusTarget) {
+    const itemId = focusTarget?.kind === 'item' ? focusTarget.itemId.trim() : '';
+    return {
+        key: itemId ? `${SESSION_DETAILS_BOARD_TAB_KEY}:${itemId}` : SESSION_DETAILS_BOARD_TAB_KEY,
+        kind: 'board' as const,
+        title: t('sessionBoard.title'),
+        resource: {
+            kind: 'board' as const,
+            ...(itemId ? { focusTarget: { kind: 'item' as const, itemId } } : {}),
+        },
+    };
+}
 
 export function createSessionFileDetailsTab(fullPath: string) {
     const fileName = fullPath.split('/').pop() ?? fullPath;

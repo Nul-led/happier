@@ -31,8 +31,11 @@ describe('createArtifactsDomain retention', () => {
         const { get } = createHarness();
         const max = loadSyncTuning().artifactHeadsMaxEntries;
 
+        expect(get().artifactsLoaded).toBe(false);
+
         get().applyArtifacts(Array.from({ length: max + 5 }, (_, index) => artifact(index + 1)));
 
+        expect(get().artifactsLoaded).toBe(true);
         expect(Object.keys(get().artifacts)).toHaveLength(max);
         expect(get().artifacts['artifact-1']).toBeUndefined();
         expect(get().artifacts[`artifact-${max + 5}`]).toBeDefined();

@@ -118,7 +118,10 @@ function createPersistentStore() {
     );
     const store: PluginUiPersistentArtifactStore = {
         read: async (identity) => records.get(keyFor(identity)) ?? null,
-        write: async (record) => { records.set(keyFor(record.persistentIdentity), record); },
+        write: async (record) => {
+            records.set(keyFor(record.persistentIdentity), record);
+            return 'persisted';
+        },
         remove: async (identity) => { records.delete(keyFor(identity)); },
         removeAccount: async () => undefined,
     };
@@ -172,6 +175,7 @@ function fixture() {
             pluginId: materialization.pluginId,
             response: PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
                 availabilityCursor: 7,
+                packageAssets: [],
                 hostingCapability: { enabled: false },
                 intent: {
                     pluginId: materialization.pluginId, desiredVersion: materialization.version, enabled: true,
@@ -278,7 +282,7 @@ describe('U6 cold-mount integrity probe', () => {
                 const record = await persistent.store.read(identity);
                 return record ? { ...record, persistentIdentity: identity } as never : null;
             },
-            write: async (record) => { await persistent.store.write(record); },
+            write: async (record) => persistent.store.write(record),
             remove: async (identity) => { await persistent.store.remove(identity); },
             removeAccount: async () => undefined,
         } });
@@ -307,7 +311,7 @@ describe('U6 cold-mount integrity probe', () => {
                 const record = await persistent.store.read(identity);
                 return record ? { ...record, persistentIdentity: identity } as never : null;
             },
-            write: async (record) => { await persistent.store.write(record); },
+            write: async (record) => persistent.store.write(record),
             remove: async (identity) => { await persistent.store.remove(identity); },
             removeAccount: async () => undefined,
         } });

@@ -59,7 +59,7 @@ type NativeTextInputContentSizeChangeEvent = NativeSyntheticEvent<Readonly<{
     }>;
 }>>;
 
-interface MultiTextInputProps {
+export interface MultiTextInputProps {
     textStyle?: TextStyle;
     value: string;
     onChangeText: (text: string) => void;
@@ -84,6 +84,7 @@ interface MultiTextInputProps {
     onBlur?: () => void;
     submitBehavior?: MultiTextInputSubmitBehavior;
     onSubmitEditing?: () => void;
+    accessibilityLabel?: string;
     // Web-only: file attachments via paste or drag-and-drop.
     onFilesPasted?: (files: readonly File[]) => void;
     onFilesDropped?: (files: readonly File[]) => void;
@@ -459,6 +460,7 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
                 onSubmitEditing={props.onSubmitEditing ? () => props.onSubmitEditing?.() : undefined}
                 onFocus={props.onFocus}
                 onBlur={props.onBlur}
+                accessibilityLabel={props.accessibilityLabel}
                 accessibilityRole={props.accessibilityRole}
                 accessibilityState={props.accessibilityState}
             />

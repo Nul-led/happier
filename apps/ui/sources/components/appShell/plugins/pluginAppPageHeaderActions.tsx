@@ -135,6 +135,7 @@ export async function dispatchPluginAppPageHeaderAction(input: Readonly<{
             ? {
                 clientAction: {
                     projectionGeneration: generation,
+                    ...(input.execute ? { execute: input.execute } : {}),
                     openSurface: input.openSurface,
                     ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
                     ...(input.readCurrentUiContext

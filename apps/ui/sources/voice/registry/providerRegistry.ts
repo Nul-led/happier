@@ -135,6 +135,7 @@ export type VoiceUiRuntimeContribution =
     }>);
 
 export type VoiceProviderRegistryEntry = VoiceUiRuntimeContribution & Readonly<{
+  supportedPlatforms: readonly VoiceRuntimePlatform[];
   source:
     | Readonly<{ kind: 'built_in' }>
     | Readonly<{ kind: 'bundled'; pluginId: string }>
@@ -408,7 +409,7 @@ export function createDeclaredSettingsProjector(
         ? projectDeclaredSettingsReadiness(declaration, parsedConfigObject.data)
         : projection.status,
       modeId: selectedMode,
-      ...(settingsRequirements ? { requirements: settingsRequirements } : {}),
+      ...(settingsRequirements ? { requirements: [...settingsRequirements] } : {}),
     });
   };
 }
@@ -417,7 +418,14 @@ function normalizeBuiltInContribution(raw: VoiceUiRuntimeContribution): VoicePro
   const providerId = normalizeNonEmptyString(raw.providerId);
   const pluginId = normalizeNonEmptyString(raw.pluginId);
   const settingsSectionId = normalizeNonEmptyString(raw.settingsSectionId);
-  if (!providerId || !pluginId || !settingsSectionId || raw.roles.length === 0) {
+  if (
+    !providerId
+    || !pluginId
+    || !settingsSectionId
+    || raw.roles.length === 0
+    || !raw.supportedPlatforms
+    || raw.supportedPlatforms.length === 0
+  ) {
     throw Object.assign(new Error('invalid_voice_provider_descriptor'), {
       code: 'invalid_voice_provider_descriptor',
     });

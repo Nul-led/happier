@@ -21,6 +21,8 @@ export function getRecentPathsForMachine(params: {
     machineId: string;
     recentMachinePaths: ReadonlyArray<Readonly<{ machineId: string; path: string }>>;
     sessions: ReadonlyArray<RecentPathSessionSource | string> | null | undefined;
+    /** The caller already projected exact-owner metadata; do not replace it through a bare-id store lookup. */
+    preferProvidedSessionMetadata?: boolean;
 }): string[] {
     const paths: string[] = [];
     const pathSet = new Set<string>();
@@ -51,12 +53,18 @@ export function getRecentPathsForMachine(params: {
                 ownerMetadataView: 'ownerMetadataView' in session ? session.ownerMetadataView : undefined,
             });
             if (!metadata) return;
-            const reachableTarget = readMachineTargetForSession(session.id);
+            const reachableTarget = params.preferProvidedSessionMetadata
+                ? null
+                : readMachineTargetForSession(session.id);
             // One display resolution per session: reading the machine id and the path separately
             // resolved the same target, and re-read the same project, twice per session.
             const displayIdentity = reachableTarget
                 ? null
-                : readDisplayIdentityForSession({ sessionId: null, metadata });
+                : readDisplayIdentityForSession({
+                    sessionId: params.preferProvidedSessionMetadata ? session.id : null,
+                    metadata,
+                    preferProvidedMetadata: params.preferProvidedSessionMetadata === true,
+                });
             const sessionMachineId = reachableTarget?.machineId ?? displayIdentity?.machineId ?? '';
             const path = reachableTarget?.basePath ?? displayIdentity?.basePath ?? '';
             if (sessionMachineId === params.machineId && path) {

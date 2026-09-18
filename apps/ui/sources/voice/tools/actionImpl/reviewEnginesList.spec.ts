@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildBackendTargetKey } from '@happier-dev/protocol';
 import { installVoiceToolActionImplCommonModuleMocks } from './voiceToolActionImplTestHelpers';
+import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 
 vi.mock('@/text', async () => {
   const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -23,7 +24,8 @@ const state: any = {
         },
       },
     },
-  sessionListRenderables: {},
+  sessionListRowsByServerId: {},
+  ordinarySessionListMembershipByServerId: {},
   sessionListIndexByServerId: {},
   concurrentSessionListCacheByServerId: {},
 };
@@ -71,7 +73,8 @@ describe('review engine voice tool', () => {
       },
     };
     state.machines = {};
-    state.sessionListRenderables = {};
+    state.sessionListRowsByServerId = {};
+    state.ordinarySessionListMembershipByServerId = {};
     state.sessionListIndexByServerId = {};
     state.concurrentSessionListCacheByServerId = {};
     state.getProjectForSession = undefined;
@@ -149,8 +152,10 @@ describe('review engine voice tool', () => {
   });
 
   it('uses canonical backend keys when evaluating enabled state for discovered plugin review engines', async () => {
+    // The canonical formatter rekeys a bundled `backend:<id>` selection onto its qualified
+    // Agent contribution identity, so the disabled selection must be spelled by that owner.
     state.settings.backendEnabledByTargetKey = {
-      'backend:coderabbit': false,
+      [resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'coderabbit' })]: false,
     };
     machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
       supported: true,
@@ -197,16 +202,19 @@ describe('review engine voice tool', () => {
 
   it('prefers visible lookup session metadata over stale raw session metadata when resolving review engines', async () => {
     state.sessions.s1.metadata.machineId = 'raw-machine';
-    state.sessionListRenderables = {
-      s1: {
-        id: 's1',
-        updatedAt: 321,
-        metadata: {
-          machineId: 'lookup-machine',
-          path: '/tmp/lookup',
+    state.sessionListRowsByServerId = {
+      'server-a': {
+        s1: {
+          id: 's1',
+          updatedAt: 321,
+          metadata: {
+            machineId: 'lookup-machine',
+            path: '/tmp/lookup',
+          },
         },
       },
     };
+    state.ordinarySessionListMembershipByServerId = { 'server-a': ['s1'] };
     state.sessionListIndexByServerId = {
       'server-a': [
         { type: 'session', sessionId: 's1', serverId: 'server-a', serverName: 'Server A' },
@@ -228,16 +236,19 @@ describe('review engine voice tool', () => {
         path: '/workspace/stale-repo',
       },
     };
-    state.sessionListRenderables = {
-      s1: {
-        id: 's1',
-        updatedAt: 321,
-        metadata: {
-          machineId: 'lookup-machine',
-          path: '/tmp/lookup',
+    state.sessionListRowsByServerId = {
+      'server-a': {
+        s1: {
+          id: 's1',
+          updatedAt: 321,
+          metadata: {
+            machineId: 'lookup-machine',
+            path: '/tmp/lookup',
+          },
         },
       },
     };
+    state.ordinarySessionListMembershipByServerId = { 'server-a': ['s1'] };
     state.sessionListIndexByServerId = {
       'server-a': [
         { type: 'session', sessionId: 's1', serverId: 'server-a', serverName: 'Server A' },
@@ -277,16 +288,19 @@ describe('review engine voice tool', () => {
         machineId: 'raw-machine',
       },
     };
-    state.sessionListRenderables = {
-      s_owned: {
-        id: 's_owned',
-        updatedAt: 321,
-        metadata: {
-          machineId: 'lookup-machine',
-          path: '/tmp/lookup',
+    state.sessionListRowsByServerId = {
+      'server-owned': {
+        s_owned: {
+          id: 's_owned',
+          updatedAt: 321,
+          metadata: {
+            machineId: 'lookup-machine',
+            path: '/tmp/lookup',
+          },
         },
       },
     };
+    state.ordinarySessionListMembershipByServerId = { 'server-owned': ['s_owned'] };
     state.sessionListIndexByServerId = {
       'server-owned': [
         { type: 'session', sessionId: 's_owned', serverId: 'server-owned', serverName: 'Server Owned' },

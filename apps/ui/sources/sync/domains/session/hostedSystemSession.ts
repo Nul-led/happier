@@ -17,8 +17,8 @@ import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domain
 import type { EnsureSessionVisibleForRouteResult } from '@/sync/domains/session/sessionRouteHydrationState';
 import type { Encryptor } from '@/sync/encryption/encryptor';
 import type {
-    ServerAccountSessionRequestAuthority,
-} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+    ServerAccountRequestAuthority,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
 type HostedSystemSessionEncryption = Readonly<{
     openEncryption(dataEncryptionKey: Uint8Array | null): Promise<Encryptor>;
@@ -33,7 +33,7 @@ export type EnsureHostedSystemSessionInput = Readonly<{
         serverId: string;
         generation: number;
     }>;
-    authority: ServerAccountSessionRequestAuthority;
+    authority: ServerAccountRequestAuthority;
     tag: string;
     metadata: Readonly<Record<string, unknown>>;
 }>;
@@ -41,7 +41,7 @@ export type EnsureHostedSystemSessionInput = Readonly<{
 type HostedSystemSessionEnsurerDeps = Readonly<{
     fetchAccountEncryptionCurrentness(
         credentials: AuthCredentials,
-        request: ServerAccountSessionRequestAuthority['request'],
+        request: ServerAccountRequestAuthority['request'],
     ): Promise<Readonly<{ mode: 'plain' | 'e2ee' }>>;
     randomBytes(length: number): Uint8Array;
     request(
@@ -53,7 +53,7 @@ type HostedSystemSessionEnsurerDeps = Readonly<{
     ): Promise<Response>;
     hydrate(
         sessionId: string,
-        authority: ServerAccountSessionRequestAuthority,
+        authority: ServerAccountRequestAuthority,
     ): Promise<EnsureSessionVisibleForRouteResult>;
     isScopeCurrent(scopeKey: string): boolean;
 }>;

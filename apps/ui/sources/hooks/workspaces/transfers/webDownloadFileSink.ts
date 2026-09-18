@@ -14,8 +14,13 @@ type OpfsFileHandle = Readonly<{
 }>;
 
 type OpfsRoot = Readonly<{
-    getFileHandle: (name: string, options: Readonly<{ create: true }>) => Promise<OpfsFileHandle>;
+    getFileHandle: (name: string, options?: Readonly<{ create?: boolean }>) => Promise<OpfsFileHandle>;
     removeEntry: (name: string) => Promise<void>;
+}>;
+
+export type WebDownloadFileCustody = Readonly<{
+    kind: 'web_opfs';
+    entryName: string;
 }>;
 
 function isOpfsRoot(value: unknown): value is OpfsRoot {
@@ -32,6 +37,8 @@ export type WebDownloadFileSink = Readonly<{
     close: () => Promise<void>;
     getFile: () => Promise<File | Blob>;
     cleanup: () => Promise<void>;
+    /** Present only when the bytes can be reopened after the creating component remounts. */
+    fileCustody: WebDownloadFileCustody | null;
 }>;
 
 function normalizeByteLimit(value: number): number {
@@ -70,9 +77,38 @@ function createTempFileName(): string {
     return `.happier-download-${suffix}.partial`;
 }
 
+function assertWebDownloadFileCustody(value: WebDownloadFileCustody): void {
+    if (value.kind !== 'web_opfs' || !value.entryName.startsWith('.happier-download-') || !value.entryName.endsWith('.partial')) {
+        throw new Error('Invalid web file custody');
+    }
+}
+
+export async function openWebDownloadFileCustody(custody: WebDownloadFileCustody): Promise<File> {
+    assertWebDownloadFileCustody(custody);
+    const root = await tryGetOpfsRoot();
+    if (!root) throw new Error('File-backed web download is unavailable');
+    const handle = await root.getFileHandle(custody.entryName);
+    return await handle.getFile();
+}
+
+export async function removeWebDownloadFileCustody(custody: WebDownloadFileCustody): Promise<void> {
+    assertWebDownloadFileCustody(custody);
+    const root = await tryGetOpfsRoot();
+    if (!root) throw new Error('File-backed web download is unavailable');
+    try {
+        await root.removeEntry(custody.entryName);
+    } catch (error) {
+        // OPFS uses the DOM NotFoundError contract for idempotent removal.
+        if (error instanceof DOMException && error.name === 'NotFoundError') return;
+        throw error;
+    }
+}
+
 export async function createWebDownloadFileSink(input: Readonly<{
     expectedSizeBytes: number;
     maxBytes: number;
+    /** Sensitive executable packages must not fall back to whole-file memory custody. */
+    requireFileBacked?: boolean;
 }>): Promise<WebDownloadFileSink> {
     const expectedSizeBytes = normalizeByteLimit(input.expectedSizeBytes);
     const maxBytes = normalizeByteLimit(input.maxBytes);
@@ -125,9 +161,13 @@ export async function createWebDownloadFileSink(input: Readonly<{
                 return await fileHandle.getFile();
             },
             cleanup,
+            fileCustody: { kind: 'web_opfs', entryName: tempFileName },
         };
     }
 
+    if (input.requireFileBacked) {
+        throw new Error('File-backed web download is unavailable');
+    }
     const fallbackMaxBytes = Math.min(maxBytes, WEB_DOWNLOAD_MEMORY_FALLBACK_MAX_BYTES);
     assertWithinLimit(expectedSizeBytes, fallbackMaxBytes);
     const chunks: Uint8Array[] = [];
@@ -166,5 +206,6 @@ export async function createWebDownloadFileSink(input: Readonly<{
             chunks.length = 0;
             writtenBytes = 0;
         },
+        fileCustody: null,
     };
 }

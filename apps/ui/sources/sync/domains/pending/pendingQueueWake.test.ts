@@ -679,7 +679,26 @@ describe('getPendingQueueWakeResumeOptions', () => {
         expect(getPendingQueueWakeResumeOptions({
             sessionId: 's1',
             session,
-            resumeCapabilityOptions: { accountSettings: {} },
+            resumeCapabilityOptions: {
+                // Configured ACP resume requires the Account's own declaration
+                // that this exact backend supports `session/load`.
+                accountSettings: {
+                    acpCatalogSettingsV1: {
+                        v: 2,
+                        backends: [{
+                            id: 'custom-kiro',
+                            name: 'custom-kiro',
+                            title: 'Custom Kiro',
+                            command: 'custom-acp',
+                            args: [],
+                            env: {},
+                            capabilities: { supportsLoadSession: true },
+                            createdAt: 1,
+                            updatedAt: 2,
+                        }],
+                    },
+                },
+            },
         })).toEqual({
             sessionId: 's1',
             machineId: 'm1',

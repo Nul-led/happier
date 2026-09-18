@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { PluginProjectionV2 } from '@happier-dev/protocol';
 import {
     normalizePluginUiDestinationBindingV1,
+    normalizePluginUiInlineSurfaceBindingV1,
     PluginUiDestinationBindingV1Schema,
     type PluginUiDestinationBindingInputV1,
 } from '@happier-dev/protocol/plugins/ui';
@@ -10,6 +11,9 @@ import {
 import { normalizePluginUiProjection } from './projection';
 import {
     selectPluginRightSidebarTabPlacements,
+    selectPluginInlineSurfacePlacementsBySurface,
+    selectPluginInlineSurfacePlacementsForRole,
+    selectRenderablePluginInlineSurfacePlacementsForRole,
     selectPluginSessionDetailsTabPlacement,
     selectPluginSurfacePlacementsForBinding,
     selectRenderablePluginRightSidebarTabPlacements,
@@ -205,5 +209,92 @@ describe('plugin surface placement selectors', () => {
         expect(selectRenderablePluginSurfacePlacementsForBinding(model, {
             container: 'servicesPanel', targetKind: 'services',
         }).map((entry) => entry.descriptorId)).toEqual(['service-inspector']);
+    });
+});
+
+describe('embedded Session widget picker inventory', () => {
+    function inlinePlacement(input: Readonly<{
+        pluginId: string;
+        localId: string;
+        role: 'sessionWidget' | 'sessionSubagentDetails';
+        availability?: Readonly<{ state: 'available' | 'fallback' | 'blocked' | 'disabled'; reason: string; diagnostics: readonly string[] }>;
+    }>): PluginUiProjectedEntry {
+        const normalized = normalizePluginUiInlineSurfaceBindingV1({
+            pluginId: input.pluginId,
+            surfaceId: input.localId,
+            rendererId: 'review-native',
+            role: input.role,
+            target: { kind: 'session' },
+        });
+        if (!normalized) throw new Error('test fixture must use an admitted inline binding');
+        return {
+            id: `surfacePlacement:${input.pluginId}:${input.localId}`,
+            pluginId: input.pluginId,
+            contributionKind: 'surfacePlacement',
+            descriptorId: input.localId,
+            binding: normalized,
+            target: normalized.target,
+            renderer: { kind: 'declarative', contributionId: 'review-native' },
+            display: { title: input.localId },
+            availability: input.availability ?? { state: 'available', reason: 'available', diagnostics: [] },
+        } as unknown as PluginUiProjectedEntry;
+    }
+
+    const model = normalizePluginUiProjection({
+        v: 2,
+        generation: 1,
+        installedPackagesById: {},
+        actionsById: {},
+        familiesById: {
+            pluginUi: {
+                entriesById: {
+                    'surfacePlacement:acme.review:review-status-widget':
+                        inlinePlacement({ pluginId: 'acme.review', localId: 'review-status-widget', role: 'sessionWidget' }),
+                    'surfacePlacement:acme.ci:build-health':
+                        inlinePlacement({ pluginId: 'acme.ci', localId: 'build-health', role: 'sessionWidget' }),
+                    'surfacePlacement:acme.ci:blocked-widget': inlinePlacement({
+                        pluginId: 'acme.ci',
+                        localId: 'blocked-widget',
+                        role: 'sessionWidget',
+                        availability: { state: 'blocked', reason: 'entry_missing', diagnostics: ['entry_missing'] },
+                    }),
+                    'surfacePlacement:acme.review:review-subagent-details':
+                        inlinePlacement({ pluginId: 'acme.review', localId: 'review-subagent-details', role: 'sessionSubagentDetails' }),
+                    'surfacePlacement:acme.preview:details': placement({
+                        localId: 'details', rendererId: 'r', container: 'detailsTab', target: { kind: 'session' },
+                    }),
+                },
+            },
+        },
+    } as unknown as PluginProjectionV2);
+
+    it('inventories every projected sessionWidget placement and excludes other roles and destinations', () => {
+        expect(selectPluginInlineSurfacePlacementsForRole(model, 'sessionWidget')
+            .map((entry) => `${entry.pluginId}:${entry.descriptorId}`)).toEqual([
+            'acme.ci:blocked-widget',
+            'acme.ci:build-health',
+            'acme.review:review-status-widget',
+        ]);
+    });
+
+    it('offers only currently renderable widgets as new-creation candidates', () => {
+        expect(selectRenderablePluginInlineSurfacePlacementsForRole(model, 'sessionWidget')
+            .map((entry) => `${entry.pluginId}:${entry.descriptorId}`)).toEqual([
+            'acme.ci:build-health',
+            'acme.review:review-status-widget',
+        ]);
+    });
+
+    it('resolves one exact stored reference and fails closed on a role mismatch', () => {
+        expect(selectPluginInlineSurfacePlacementsBySurface(
+            model,
+            { pluginId: 'acme.review', localId: 'review-status-widget' },
+            'sessionWidget',
+        ).map((entry) => entry.descriptorId)).toEqual(['review-status-widget']);
+        expect(selectPluginInlineSurfacePlacementsBySurface(
+            model,
+            { pluginId: 'acme.review', localId: 'review-subagent-details' },
+            'sessionWidget',
+        )).toEqual([]);
     });
 });

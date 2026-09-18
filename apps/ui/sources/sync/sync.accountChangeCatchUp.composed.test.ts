@@ -36,6 +36,10 @@ type ResumeSyncUnit = {
     awaitQueue(options?: { timeoutMs?: number }): Promise<void>;
 };
 
+type AwaitedInvalidationSyncUnit = {
+    invalidateAndAwait(): Promise<void>;
+};
+
 type SyncAccountChangeWakeSchedulingHarness = SyncAccountChangeCatchUpHarness & {
     isForeground: boolean;
     resumeInFlight: Promise<void> | null;
@@ -43,6 +47,8 @@ type SyncAccountChangeWakeSchedulingHarness = SyncAccountChangeCatchUpHarness & 
     nativeUpdateSync: ResumeSyncUnit;
     sessionsSync: ResumeSyncUnit;
     machinesSync: ResumeSyncUnit;
+    settingsSync: AwaitedInvalidationSyncUnit;
+    profileSync: AwaitedInvalidationSyncUnit;
     rearmPendingOutboxForActiveScope(): Promise<void>;
     resumeViaChanges(options: { accountId: string; shouldContinue?: () => boolean }): Promise<unknown>;
     catchUpLoadedExternalSessionsOnResume(): Promise<void>;
@@ -69,6 +75,12 @@ const descriptor: NormalizedPluginCollectionUiQueryDescriptorV1 = {
 const queryRequest: PluginCollectionUiQueryRequestV1 = {
     pluginId: DATA_PLUGIN_ID,
     collectionId: 'tasks',
+    readerContext: {
+        pluginId: DATA_PLUGIN_ID,
+        collectionId: 'tasks',
+        schemaVersion: 1,
+        contractDigest: 'a'.repeat(43),
+    },
     uiQueryId: 'open',
     parameters: { status: 'open' },
 };
@@ -188,6 +200,7 @@ function availabilityIntentDiscoveryResponse(): Response {
 function availabilityIntentResponse(pluginId: string): Response {
     return jsonResponse({
         availabilityCursor: 9,
+        packageAssets: [],
         hostingCapability: { enabled: false },
         intent: {
             pluginId,
@@ -448,8 +461,70 @@ describe('sync AccountChange catch-up projection', () => {
         syncHarness.disconnectServer();
     }, 30_000);
 
+    it('publishes a fetched AccountChange to the Home whose cursor was read when focus changes in flight', async () => {
+        const harness = await prepareAccountChangeWakeSchedulingHarness();
+        const { subscribeHomeAccountChange } = await import('./runtime/orchestration/homeAccountChange');
+        const { getActiveServerSnapshot, upsertAndActivateServer } = await import('./domains/server/serverRuntime');
+        const sourceServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+        harness.changesCursor = '0';
+        harness.settingsSync = { invalidateAndAwait: vi.fn(async () => undefined) };
+        harness.profileSync = { invalidateAndAwait: vi.fn(async () => undefined) };
+
+        let releaseChanges!: () => void;
+        const changesReleased = new Promise<void>((resolve) => {
+            releaseChanges = resolve;
+        });
+        let markChangesStarted!: () => void;
+        const changesStarted = new Promise<void>((resolve) => {
+            markChangesStarted = resolve;
+        });
+        fetchChanges.mockImplementationOnce(async () => {
+            markChangesStarted();
+            await changesReleased;
+            return {
+                status: 'ok' as const,
+                changes: [{
+                    cursor: 1,
+                    kind: 'account' as const,
+                    entityId: 'self',
+                    changedAt: 1,
+                    hint: null,
+                }],
+                nextCursor: '1',
+            };
+        });
+
+        const observedWakes: Array<{
+            serverId: string;
+            entityIds?: readonly string[];
+            sessionListQueryAffects?: boolean;
+        }> = [];
+        const dispose = subscribeHomeAccountChange((event) => observedWakes.push(event));
+        const catchUp = harness.resumeViaChanges({ accountId: ACCOUNT_ID });
+        await changesStarted;
+        const focusedServer = upsertAndActivateServer({
+            serverUrl: 'http://localhost:53289',
+            scope: 'tab',
+        });
+        expect(focusedServer.id).not.toBe(sourceServerId);
+        releaseChanges();
+
+        await expect(catchUp).resolves.toMatchObject({ status: 'ok' });
+        expect(observedWakes).toEqual([{
+            serverId: sourceServerId,
+            entityIds: ['self'],
+            sessionListQueryAffects: false,
+        }]);
+        dispose();
+        harness.disconnectServer();
+    });
+
     it('coalesces wakes received after a changes response into one trailing canonical catch-up', async () => {
         const harness = await prepareAccountChangeWakeSchedulingHarness();
+        const { subscribeHomeAccountChange } = await import('./runtime/orchestration/homeAccountChange');
+        const { getActiveServerSnapshot } = await import('./domains/server/serverRuntime');
+        const observedHomes: string[] = [];
+        const disposeHomeAccountChanged = subscribeHomeAccountChange(({ serverId }) => observedHomes.push(serverId));
         const resumeUnit: ResumeSyncUnit = {
             invalidateCoalesced: vi.fn(),
             awaitQueue: vi.fn(async () => {}),
@@ -494,6 +569,8 @@ describe('sync AccountChange catch-up projection', () => {
             harness.handleUpdate(accountChangeWake('account-change-2')),
             harness.handleUpdate(accountChangeWake('account-change-3')),
         ]);
+        const observedBeforeResume = [...observedHomes];
+        disposeHomeAccountChanged();
         expect(resumeViaChanges).toHaveBeenCalledTimes(1);
 
         releaseFirstResume();
@@ -506,6 +583,7 @@ describe('sync AccountChange catch-up projection', () => {
         expect(rearmPendingOutbox).toHaveBeenCalledTimes(1);
         expect(catchUpCalls).toBe(1);
         expect(resumeUnit.invalidateCoalesced).toHaveBeenCalledTimes(2);
+        expect(observedBeforeResume).toContain(getActiveServerSnapshot().serverId);
     });
 
     it('drops a queued AccountChange wake when its server/account lifetime resets', async () => {

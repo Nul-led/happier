@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { renderHook, standardCleanup } from '@/dev/testkit';
 
 const paneState = vi.hoisted(() => ({
@@ -9,14 +10,17 @@ const paneState = vi.hoisted(() => ({
 const cockpitState = vi.hoisted(() => ({
     registration: null as null | Readonly<{
         sessionId: string;
+        serverId?: string | null;
         terminalTabAvailable: boolean;
         switchSurface: (surface: string) => void;
     }>,
 }));
 const machineState = vi.hoisted(() => ({
     sessionAttachSupported: true as boolean | undefined,
+    scopedSessionAttachSupported: false,
 }));
 const sessionState = vi.hoisted(() => ({
+    scopedSession: null as Record<string, unknown> | null,
     session: {
         id: 'session-1',
         active: true,
@@ -59,17 +63,20 @@ vi.mock('@/sync/domains/state/storage', async () => {
             (selector?: (state: any) => unknown) => {
                 const state = {
                     sessions: sessionState.session ? { 'session-1': sessionState.session } : {},
+                    sessionListRowsByServerId: { 'server-b': sessionState.scopedSession ? { 'session-1': sessionState.scopedSession } : {} },
                 };
                 return typeof selector === 'function' ? selector(state) : state;
             },
             {
                 getState: () => ({
                     sessions: sessionState.session ? { 'session-1': sessionState.session } : {},
+                    sessionListRowsByServerId: { 'server-b': sessionState.scopedSession ? { 'session-1': sessionState.scopedSession } : {} },
                 }),
                 setState: () => undefined,
                 subscribe: () => () => undefined,
             },
         ),
+        useServerScopedMachine: () => ({ metadata: { daemonTerminalSessionAttachSupported: machineState.scopedSessionAttachSupported } }),
         useMachine: () => ({
             metadata: {
                 daemonTerminalSessionAttachSupported: machineState.sessionAttachSupported,
@@ -94,6 +101,8 @@ describe('useOpenAttachedSessionTerminal', () => {
         paneState.openRight.mockReset();
         paneState.setRightTab.mockReset();
         cockpitState.registration = null;
+        sessionState.scopedSession = null;
+        machineState.scopedSessionAttachSupported = false;
         machineState.sessionAttachSupported = true;
         sessionState.session = {
             id: 'session-1',
@@ -114,6 +123,20 @@ describe('useOpenAttachedSessionTerminal', () => {
         };
     });
 
+    it('uses foreign Home session attachability and daemon capability despite a same-id active session', async () => {
+        const scopedSession = createSessionFixture({
+            id: 'session-1', serverId: 'server-b', active: true,
+            metadata: {
+                machineId: 'machine-b', path: '/project', host: 'home-b', flavor: 'claude',
+                terminal: { mode: 'zellij', controlServiceabilityV1: { v: 1, attachmentId: 'b-attachment', state: 'servable', observedAt: 1 } },
+            },
+        });
+        sessionState.session = { ...sessionState.session, active: false };
+        const { useOpenAttachedSessionTerminal } = await import('./openAttachedSessionTerminal');
+        const hook = await renderHook(() => useOpenAttachedSessionTerminal('session-1', 'server-b', scopedSession));
+        expect(hook.getCurrent().unavailableReason).toBe('cli_update_required');
+    });
+
     it('switches the matching cockpit session to its terminal surface', async () => {
         const switchSurface = vi.fn();
         cockpitState.registration = {
@@ -129,6 +152,21 @@ describe('useOpenAttachedSessionTerminal', () => {
         expect(switchSurface).toHaveBeenCalledWith('terminal');
         expect(paneState.openRight).not.toHaveBeenCalled();
         expect(paneState.setRightTab).not.toHaveBeenCalled();
+    });
+
+    it('does not switch a different Home cockpit with the same session id', async () => {
+        const switchSurface = vi.fn();
+        cockpitState.registration = { sessionId: 'session-1', serverId: 'server-a', terminalTabAvailable: true, switchSurface };
+        const scopedSession = createSessionFixture({
+            id: 'session-1', serverId: 'server-b', active: true,
+            metadata: { path: '/project', host: 'home-b', flavor: 'claude', terminal: { mode: 'zellij', controlServiceabilityV1: { v: 1, attachmentId: 'b-attachment', state: 'servable', observedAt: 1 } } },
+        });
+        machineState.scopedSessionAttachSupported = true;
+        const { useOpenAttachedSessionTerminal } = await import('./openAttachedSessionTerminal');
+        const hook = await renderHook(() => useOpenAttachedSessionTerminal('session-1', 'server-b', scopedSession));
+        hook.getCurrent().open();
+        expect(switchSurface).not.toHaveBeenCalled();
+        expect(paneState.openRight).toHaveBeenCalledWith({ tabId: 'terminal' });
     });
 
     it('keeps configured pane docking outside the matching cockpit session', async () => {

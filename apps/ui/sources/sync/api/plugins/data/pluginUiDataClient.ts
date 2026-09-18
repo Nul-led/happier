@@ -89,6 +89,8 @@ function assertCurrent(
 
 function unavailableError(reason: ActivePluginCollectionUnavailableReasonV1): PluginError {
     switch (reason) {
+        case 'mutation-outcome-unknown':
+            return dataError('plugin_collection_outcome_unknown', 'Collection mutation outcome is unknown');
         case 'operation-cancelled':
             return dataError(COLLECTION_CANCELLED_CODE, 'Plugin Account Collection operation was cancelled');
         case 'collection-unavailable':
@@ -252,7 +254,6 @@ export function createPluginUiDataClient(input: Readonly<{
                     value,
                     expectedRevision: options.expectedRevision,
                 }], options);
-                assertCurrent(input.accountLifetime, options.signal);
                 if (outcome.status === 'conflict') {
                     throw dataError(COLLECTION_CONFLICT_CODE, 'Collection mutation conflicted with a newer row revision');
                 }
@@ -281,7 +282,6 @@ export function createPluginUiDataClient(input: Readonly<{
                     rowId,
                     expectedRevision: options.expectedRevision,
                 }], options);
-                assertCurrent(input.accountLifetime, options.signal);
                 if (outcome.status === 'conflict') {
                     throw dataError(COLLECTION_CONFLICT_CODE, 'Collection mutation conflicted with a newer row revision');
                 }
@@ -305,7 +305,6 @@ export function createPluginUiDataClient(input: Readonly<{
             async forget(rowId, options) {
                 const active = await resolve<PluginAccountCollectionValue<TDefinition>>(requested, options.signal);
                 const outcome = await active.client.forget(rowId, options.expectedRevision, options);
-                assertCurrent(input.accountLifetime, options.signal);
                 if (outcome.status === 'forgotten') return Object.freeze({ rowId, forgotten: true as const });
                 if (outcome.status === 'conflict') {
                     throw dataError(COLLECTION_CONFLICT_CODE, 'Collection forget conflicted with a newer row revision');
@@ -343,7 +342,6 @@ export function createPluginUiDataClient(input: Readonly<{
             async batch(operations, options) {
                 const active = await resolve<PluginAccountCollectionValue<TDefinition>>(requested, options?.signal);
                 const outcome = await active.client.mutate(operations, options);
-                assertCurrent(input.accountLifetime, options?.signal);
                 if (outcome.status === 'updated' || outcome.status === 'conflict') return outcome;
                 if (outcome.status === 'rejected') {
                     throw rejectedError(outcome);
@@ -391,6 +389,7 @@ export function createPluginUiDataClient(input: Readonly<{
         assertCurrent(input.accountLifetime, query.signal);
         return createActivePluginCollectionUiQueryPager({
             descriptor: descriptors[0]!,
+            contract: active.contract,
             request: {
                 pluginId: input.pluginId,
                 collectionId: query.collectionId,

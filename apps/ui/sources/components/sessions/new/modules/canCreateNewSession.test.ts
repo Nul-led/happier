@@ -3,6 +3,19 @@ import { describe, expect, it } from 'vitest';
 import { canCreateNewSession } from '@/components/sessions/new/modules/canCreateNewSession';
 
 describe('canCreateNewSession', () => {
+    it('allows an interactive temporary-computer target without inventing a selected machine', () => {
+        expect(canCreateNewSession({
+            selectedMachineId: null,
+            selectedMachine: null,
+            selectedPath: '',
+            executionTarget: {
+                kind: 'temporary_computer',
+                serverId: 'home-1',
+                workspace: { kind: 'choose_on_endpoint' },
+                artifactTarget: 'linux-x64',
+            },
+        })).toBe(true);
+    });
     it('fails closed when machine is missing', () => {
         expect(canCreateNewSession({
             selectedMachineId: 'm1',

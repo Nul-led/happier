@@ -5,9 +5,10 @@ type SessionPaneUrlParamShape = Readonly<{
     path?: unknown;
     sha?: unknown;
     terminalInstanceId?: unknown;
+    discussionId?: unknown;
 }>;
 
-const SESSION_PANE_URL_PARAM_KEYS = ['right', 'bottom', 'details', 'path', 'sha', 'terminalInstanceId'] as const;
+const SESSION_PANE_URL_PARAM_KEYS = ['right', 'bottom', 'details', 'path', 'sha', 'terminalInstanceId', 'discussionId'] as const;
 
 function normalizeSessionPaneUrlParamValue(value: unknown): string | null {
     return typeof value === 'string' && value.length > 0 ? value : null;

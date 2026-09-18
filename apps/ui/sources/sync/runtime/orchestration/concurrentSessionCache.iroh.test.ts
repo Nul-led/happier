@@ -5,6 +5,7 @@ import {
     createServerProfilesModuleMock,
     createSessionFixture,
     createSessionListRenderableSessionFixture,
+    createTokenStorageModuleMock,
 } from '@/dev/testkit';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 
@@ -214,14 +215,11 @@ async function configureHarness(params: Readonly<{
     vi.doMock('socket.io-client', () => ({
         io: (endpoint: string, options?: unknown) => ioSpy(endpoint, options),
     }));
-    vi.doMock('@/auth/storage/tokenStorage', () => ({
-        TokenStorage: {
+    vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => await createTokenStorageModuleMock({
+        importOriginal: async () => await importOriginal<typeof import('@/auth/storage/tokenStorage')>(),
+        tokenStorage: {
             getCredentialsForServerUrl: vi.fn(async () => ({ token: 'token-b', secret: 'secret-b' })),
         },
-        subscribeHomeCredentialMutations: () => () => {},
-        isLegacyAuthCredentials: () => true,
-        isDataKeyAuthCredentials: () => false,
-        isTokenOnlyAuthCredentials: () => false,
     }));
     vi.doMock('@/sync/domains/server/serverProfiles', () => createServerProfilesModuleMock({
         // Supply the canonical testkit lookup owner as well as the raw list
@@ -332,6 +330,91 @@ afterEach(async () => {
 });
 
 describe('concurrent session cache Iroh Home routing', () => {
+    it('starts an independent secondary Home while another Home transport acquisition is held', async () => {
+        await configureHarness({
+            additionalProfiles: [{
+                id: 'server-c',
+                name: 'Home C',
+                serverUrl: 'https://home-c.example.test',
+            }],
+        });
+        let releaseHeldAcquire!: () => void;
+        acquireIrohHomeRuntimeOriginSpy.mockImplementationOnce(() => new Promise((resolve) => {
+            releaseHeldAcquire = () => resolve({
+                leaseId: 'lease-home-b-held',
+                key: 'home-b-key',
+                remoteHostId: 'srv_home_b',
+                localUrl: 'http://127.0.0.1:45991',
+                runtimeOrigin: 'http://127.0.0.1:45991',
+                channelMode: 'loopback-port',
+                purpose: 'home',
+                status: 'ready',
+                startedAt: '2026-08-30T00:00:00.000Z',
+                homeServerIdentityId: 'srv_home_b',
+                endpointId: 'b'.repeat(64),
+                carrier: 'iroh',
+                observedPath: 'relay',
+                release: releaseIrohHomeRuntimeOriginSpy,
+            });
+        }));
+        const cache = await import('./concurrentSessionCache');
+        stopCache = cache.stopConcurrentSessionCacheSync;
+        cache.startConcurrentSessionCacheSync();
+
+        await vi.advanceTimersByTimeAsync(1);
+        for (let index = 0; index < 8; index += 1) await Promise.resolve();
+        expect(releaseHeldAcquire).toBeTypeOf('function');
+        expect(startReachabilitySpy.mock.calls.map(([input]) => input.serverUrl))
+            .toContain('https://home-c.example.test');
+        releaseHeldAcquire();
+    });
+
+    it('does not stop a retained secondary Home when an older feature refresh settles after a newer reconcile', async () => {
+        await configureHarness();
+        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
+        let finishFirstFeatureRefresh: ((response: Response) => void) | null = null;
+        let authenticatedFeatureRequests = 0;
+        setRuntimeFetch(async (input) => {
+            const pathname = new URL(String(input)).pathname;
+            if (pathname === '/v1/features/authenticated') {
+                authenticatedFeatureRequests += 1;
+                if (authenticatedFeatureRequests === 1) {
+                    return await new Promise<Response>((resolve) => {
+                        finishFirstFeatureRefresh = resolve;
+                    });
+                }
+                return Response.json({ features: {}, capabilities: {} });
+            }
+            if (pathname === '/v1/sessions') {
+                return Response.json({ sessions: [] });
+            }
+            throw new Error(`Unexpected request: ${pathname}`);
+        });
+
+        const cache = await import('./concurrentSessionCache');
+        stopCache = cache.stopConcurrentSessionCacheSync;
+        cache.startConcurrentSessionCacheSync();
+
+        await vi.advanceTimersByTimeAsync(1);
+        await vi.waitFor(() => expect(finishFirstFeatureRefresh).not.toBeNull());
+
+        for (const listener of profileListeners) listener(2);
+        await vi.advanceTimersByTimeAsync(1);
+        for (let index = 0; index < 8; index += 1) await Promise.resolve();
+
+        finishFirstFeatureRefresh!(Response.json({ features: {}, capabilities: {} }));
+        for (let index = 0; index < 8; index += 1) await Promise.resolve();
+
+        // A third reconciliation discriminates a retained entry from one the
+        // stale first request incorrectly stopped by server id.
+        for (const listener of profileListeners) listener(3);
+        await vi.advanceTimersByTimeAsync(1);
+        for (let index = 0; index < 8; index += 1) await Promise.resolve();
+
+        expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalledTimes(1);
+        expect(releaseIrohHomeRuntimeOriginSpy).not.toHaveBeenCalled();
+    });
+
     it('acquires before use and routes reachability, HTTP, and WebSocket-only Socket.IO through one runtime origin', async () => {
         const { events, fetchedUrls } = await configureHarness();
         const cache = await import('./concurrentSessionCache');
@@ -446,16 +529,26 @@ describe('concurrent session cache Iroh Home transport acquisition failure', () 
 
     async function seedLastKnownHomeBProjection(): Promise<void> {
         const { storage } = await import('@/sync/domains/state/storageStore');
+        const staleSession = createSessionListRenderableSessionFixture({ id: 'session-stale' });
         storage.setState((state) => ({
             ...state,
             concurrentSessionListCacheByServerId: {
                 ...state.concurrentSessionListCacheByServerId,
                 [homeBScopeId]: {
                     serverName: 'Home B',
-                    sessions: {
-                        'session-stale': createSessionListRenderableSessionFixture({ id: 'session-stale' }),
+                    listObservation: {
+                        phase: 'ready',
+                        lastSuccessAt: Date.now(),
                     },
                 },
+            },
+            sessionListRowsByServerId: {
+                ...state.sessionListRowsByServerId,
+                [homeBScopeId]: { [staleSession.id]: staleSession },
+            },
+            ordinarySessionListMembershipByServerId: {
+                ...state.ordinarySessionListMembershipByServerId,
+                [homeBScopeId]: [staleSession.id],
             },
             machineListByServerId: {
                 ...state.machineListByServerId,
@@ -471,10 +564,15 @@ describe('concurrent session cache Iroh Home transport acquisition failure', () 
     async function readHomeBProjection() {
         const { storage } = await import('@/sync/domains/state/storageStore');
         const state = storage.getState();
+        const ordinarySessionIds = state.ordinarySessionListMembershipByServerId?.[homeBScopeId] ?? [];
         return {
             status: state.machineListStatusByServerId?.[homeBScopeId],
             machines: state.machineListByServerId?.[homeBScopeId],
-            sessionEntry: state.concurrentSessionListCacheByServerId?.[homeBScopeId],
+            ordinarySessionRows: Object.fromEntries(ordinarySessionIds.flatMap((sessionId) => {
+                const row = state.sessionListRowsByServerId?.[homeBScopeId]?.[sessionId];
+                return row ? [[sessionId, row] as const] : [];
+            })),
+            ordinarySessionIds,
         };
     }
 
@@ -531,7 +629,8 @@ describe('concurrent session cache Iroh Home transport acquisition failure', () 
 
         const projection = await readHomeBProjection();
         expect(projection.status).toBe('error');
-        expect(Object.keys(projection.sessionEntry?.sessions ?? {})).toEqual(['session-stale']);
+        expect(Object.keys(projection.ordinarySessionRows)).toEqual(['session-stale']);
+        expect(projection.ordinarySessionIds).toEqual(['session-stale']);
         expect(projection.machines?.map((machine) => machine.id)).toEqual(['machine-stale']);
     });
 
@@ -590,7 +689,8 @@ describe('concurrent session cache Iroh Home transport acquisition failure', () 
             const projection = await readHomeBProjection();
             expect(projection.status).toBe('idle');
             expect(projection.machines?.map((machine) => machine.id)).toEqual(['machine-fresh']);
-            expect(Object.keys(projection.sessionEntry?.sessions ?? {})).toEqual(['session-fresh']);
+            expect(Object.keys(projection.ordinarySessionRows)).toEqual(['session-fresh']);
+            expect(projection.ordinarySessionIds).toEqual(['session-fresh']);
         });
     });
 });

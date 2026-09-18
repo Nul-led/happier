@@ -31,9 +31,9 @@ export default function ScanAccountQrScreen() {
                 title={t('connect.linkNewDeviceTitle')}
                 subtitle={t('connect.linkNewDeviceSubtitle')}
                 permissionRequiredMessage={t('modals.cameraPermissionsRequiredToScanQr')}
-                manualEntryPromptTitle={t('connect.enterUrlManually')}
+                manualEntryTitle={t('connect.enterUrlManually')}
                 manualEntryPlaceholder={t('connect.accountUrlPlaceholder')}
-                manualEntryConfirmText={t('common.continue')}
+                manualEntrySubmitText={t('common.continue')}
             />
         </WizardModalShell>
     );

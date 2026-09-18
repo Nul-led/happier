@@ -1,14 +1,21 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
-import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import {
-    collectRenderedTestIds,
-    createMachineFixture,
-    createSessionFixture,
-    renderScreen,
-} from '@/dev/testkit';
+    TargetActionApprovalRequestV1Schema,
+    ApprovalRequestV2Schema,
+    buildApprovalRequestArtifactHeaderV1,
+    buildTargetActionApprovalArtifactHeaderV1,
+    computeWorkspaceSyncPolicyDigest,
+    type ApprovalRequestV1,
+    type ApprovalRequestV2,
+    type HandoffTargetApprovalConsequenceV1,
+} from '@happier-dev/protocol';
+import type { Machine, Session } from '@/sync/domains/state/storageTypes';
+import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { installApprovalCommonModuleMocks } from './approvalsTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -17,10 +24,27 @@ const backSpy = vi.fn();
 const pushSpy = vi.fn();
 const executeSpy = vi.fn(async () => ({ ok: true as const, result: {} }));
 const createDefaultActionExecutorSpy = vi.fn();
-const replayApprovalRequestAtExactDaemonSpy = vi.fn(async (_args: unknown) => ({ ok: true as const, result: {} }));
+const replayApprovalRequestAtExactDaemonSpy = vi.fn(async (_args: unknown): Promise<unknown> => ({ ok: true, result: {} }));
 const fetchArtifactWithBodySpy = vi.fn(async (): Promise<unknown> => null);
 const updateArtifactWithHeaderSpy = vi.fn(async (_artifactId: string, _header: unknown, _body: string) => {});
-const resolvePreferredServerIdForSessionIdSpy = vi.fn((_: string) => 'server-cache');
+const resolvePreferredServerIdForSessionIdSpy = vi.fn((_: string): string | undefined => 'server-cache');
+let portableProfileResolution: any = {
+    kind: 'resolved',
+    serverIdentityId: 'stable-home-a',
+    profile: { id: 'ui-A', serverIdentityId: 'stable-home-a' },
+};
+const approvalScopeResolutionByServerId = new Map<string, Readonly<{
+    kind: 'bound';
+    scope: Readonly<{ serverId: string; accountId: string }>;
+}>>();
+const unknownApprovalScopeResolution = { kind: 'unknown_home' as const };
+function getApprovalScopeResolution(serverId: string) {
+    const existing = approvalScopeResolutionByServerId.get(serverId);
+    if (existing) return existing;
+    const resolution = { kind: 'bound' as const, scope: { serverId, accountId: 'account-1' } };
+    approvalScopeResolutionByServerId.set(serverId, resolution);
+    return resolution;
+}
 let modalConfirmResult = true;
 const defaultApprovalArtifactBody = {
     v: 1,
@@ -49,16 +73,101 @@ function createApprovalArtifact(serverId?: string) {
     return {
         id: 'artifact-1',
         header: {
+            v: 1,
             kind: 'approval_request.v1',
             title: 'Approve answering the user',
             approvalStatus: 'open',
             actionId: 'session.user_action.answer',
             sessionId: 'session-1',
+            sessions: ['session-1'],
         },
         body: JSON.stringify({
             ...defaultApprovalArtifactBody,
             ...(serverId ? { serverId } : {}),
         }),
+    };
+}
+
+function createBuiltInApprovalArtifact(input: Readonly<{
+    actionId: ApprovalRequestV2['actionId'];
+    actionArgs: ApprovalRequestV2['actionArgs'];
+    summary: string;
+    preview?: unknown;
+    serverId?: string;
+}>) {
+    const request: ApprovalRequestV2 = {
+        v: 2,
+        status: 'open',
+        createdAtMs: 1,
+        updatedAtMs: 1,
+        createdBy: { surface: 'system', sessionId: 'session-1' },
+        requestedSurface: 'ui',
+        executionOriginV1: {
+            v: 1,
+            authority: 'present_user',
+            surface: 'ui',
+            caller: { kind: 'host' },
+            serverId: input.serverId ?? 'server-cache',
+            serverIdentityId: 'stable-home-a',
+            sessionId: 'session-1',
+            target: { kind: 'session', sessionId: 'session-1' },
+            actionId: input.actionId,
+            requestId: 'request-built-in-1',
+        },
+        actionId: input.actionId,
+        actionArgs: input.actionArgs,
+        summary: input.summary,
+        ...(input.preview === undefined ? {} : { preview: input.preview }),
+    };
+    return {
+        id: 'artifact-1',
+        header: buildApprovalRequestArtifactHeaderV1(request),
+        body: JSON.stringify(request),
+    };
+}
+
+function createCurrentApprovalArtifact(serverId = 'server-approval') {
+    return createBuiltInApprovalArtifact({
+        actionId: 'session.user_action.answer',
+        actionArgs: defaultApprovalArtifactBody.actionArgs,
+        summary: defaultApprovalArtifactBody.summary,
+        preview: defaultApprovalArtifactBody.preview,
+        serverId,
+    });
+}
+
+function createDaemonRoutedApprovalArtifact() {
+    const request = {
+            v: 2,
+            status: 'open',
+            createdAtMs: 1,
+            updatedAtMs: 1,
+            createdBy: { surface: 'system', sessionId: 'session-1' },
+            requestedSurface: 'api',
+            executionOriginV1: {
+                v: 1,
+                authority: 'account_automation',
+                surface: 'api',
+                caller: { kind: 'host' },
+                serverId: 'local-A',
+                serverIdentityId: 'stable-home-a',
+                accountId: 'account-1',
+                principalId: 'principal-1',
+                credentialId: 'credential-1',
+                sessionId: 'session-1',
+                machineId: 'machine-exact',
+                target: { kind: 'session', sessionId: 'session-1' },
+                actionId: 'session.title.set',
+                requestId: 'request-1',
+            },
+            actionId: 'session.title.set',
+            actionArgs: { sessionId: 'session-1', title: 'Current title' },
+            summary: 'Set session title',
+        } satisfies ApprovalRequestV2;
+    return {
+        id: 'daemon-approval-1',
+        header: buildApprovalRequestArtifactHeaderV1(request),
+        body: JSON.stringify(request),
     };
 }
 
@@ -72,6 +181,8 @@ function createTargetActionApprovalArtifact() {
             approvalStatus: 'open',
             qualifiedActionId: 'acme.publisher/actions/releases/publish',
             subjectFingerprint: 'b'.repeat(64),
+            sessionId: 'session-1',
+            sessions: ['session-1'],
         },
         body: JSON.stringify({
             v: 1,
@@ -108,7 +219,27 @@ function createApiTargetActionApprovalArtifact() {
                 machineId: 'machine-exact',
                 defaultSessionId: 'session-1',
             },
+            executionOriginV1: {
+                v: 1,
+                authority: 'account_automation',
+                surface: 'api',
+                caller: { kind: 'host' },
+                serverId: 'server-exact',
+                accountId: 'account-1',
+                principalId: 'principal-1',
+                credentialId: 'credential-1',
+                sessionId: 'session-1',
+                machineId: 'machine-exact',
+                target: { kind: 'session', sessionId: 'session-1' },
+                actionId: 'action.invoke',
+                requestId: 'request-1',
+            },
         }),
+        header: {
+            ...targetApproval.header,
+            serverId: 'server-exact',
+            machineId: 'machine-exact',
+        },
     };
 }
 
@@ -124,6 +255,7 @@ function createExecutionRunHostActionApprovalArtifact() {
             sessionId: 'session-1',
             sessions: ['session-1'],
             runId: 'run-1',
+            profileId: 'acme.review/review',
             subjectFingerprint: 'c'.repeat(64),
             serverId: 'server-1',
         },
@@ -147,11 +279,13 @@ function createSessionTitleApprovalArtifact(serverId?: string) {
     return {
         id: 'artifact-1',
         header: {
+            v: 1,
             kind: 'approval_request.v1',
             title: 'Set session title',
             approvalStatus: 'open',
             actionId: 'session.title.set',
             sessionId: 'session-1',
+            sessions: ['session-1'],
         },
         body: JSON.stringify({
             v: 1,
@@ -180,7 +314,7 @@ function createSessionTitleApprovalArtifact(serverId?: string) {
 
 function createHandoffApprovalArtifact(input: Readonly<{
     mode: 'keep_synced' | 'mirror_exactly' | 'copy_once';
-    consequences: readonly string[];
+    consequences: readonly HandoffTargetApprovalConsequenceV1[];
 }>) {
     const contentPolicyFields = {
         v: 1 as const,
@@ -192,9 +326,7 @@ function createHandoffApprovalArtifact(input: Readonly<{
         ...contentPolicyFields,
         policyDigest: computeWorkspaceSyncPolicyDigest(contentPolicyFields),
     };
-    return {
-        ...createApprovalArtifact(),
-        body: JSON.stringify({
+    const request = {
             ...defaultApprovalArtifactBody,
             actionId: 'session.handoff',
             actionArgs: {
@@ -213,14 +345,18 @@ function createHandoffApprovalArtifact(input: Readonly<{
             summary: 'Move session and mirror workspace',
             handoffTargetReplacementApproval: {
                 v: 1,
-                consequences: input.consequences,
+                consequences: [...input.consequences],
                 serverId: 'server-cache',
                 machineId: 'machine-2',
                 canonicalRoot: '/workspace/target',
                 rootFingerprint: 'a'.repeat(64),
                 operationId: 'handoff-action-1',
             },
-        }),
+        } satisfies ApprovalRequestV1;
+    return {
+        id: 'artifact-1',
+        header: buildApprovalRequestArtifactHeaderV1(request),
+        body: JSON.stringify(request),
     };
 }
 
@@ -422,10 +558,42 @@ vi.mock('@/sync/ops/actions/defaultActionExecutor', () => ({
         return { execute: executeSpy };
     },
     replayApprovalRequestAtExactDaemon: (args: unknown) => replayApprovalRequestAtExactDaemonSpy(args),
+    requiresExactDaemonApprovalReplay: (approval: ApprovalRequestV2 | ApprovalRequestV1) => approval.v === 2
+        && approval.executionOriginV1.surface !== 'ui',
+    resolveApprovalReplayRoute: (approval: ApprovalRequestV2 | ApprovalRequestV1 | null) => approval?.v === 2
+        && portableProfileResolution.kind === 'resolved'
+        && portableProfileResolution.profile.serverIdentityId === approval.executionOriginV1.serverIdentityId
+        ? {
+            serverId: portableProfileResolution.profile.id,
+            serverIdentityId: approval.executionOriginV1.serverIdentityId,
+            originServerId: approval.executionOriginV1.serverId,
+        }
+        : null,
 }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId', () => ({
     resolvePreferredServerIdForSessionId: (sessionId: string) => resolvePreferredServerIdForSessionIdSpy(sessionId),
+}));
+
+vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
+    useServerCredentialAccountScopeResolution: (serverId: string | null | undefined) => serverId
+        ? getApprovalScopeResolution(serverId)
+        : unknownApprovalScopeResolution,
+}));
+
+vi.mock('@/sync/store/hooks', () => ({
+    useActiveServerAccountScope: () => ({ serverId: 'ui-A', accountId: 'account-1' }),
+    useSessionListHomeObservations: () => ({}),
+}));
+
+vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    resolveServerProfileForPortableIdentity: () => portableProfileResolution,
+    listServerProfiles: () => [portableProfileResolution.profile].filter(Boolean),
+    getServerProfileById: (serverId: string) => portableProfileResolution.profile?.id === serverId
+        ? portableProfileResolution.profile
+        : null,
+    getServerProfilesGeneration: () => 0,
+    subscribeServerProfiles: () => () => {},
 }));
 
 vi.mock('@/components/ui/layout/layout', () => ({
@@ -445,6 +613,11 @@ describe('ApprovalDetailScreen', () => {
         updateArtifactWithHeaderSpy.mockClear();
         resolvePreferredServerIdForSessionIdSpy.mockReset();
         resolvePreferredServerIdForSessionIdSpy.mockReturnValue('server-cache');
+        portableProfileResolution = {
+            kind: 'resolved',
+            serverIdentityId: 'stable-home-a',
+            profile: { id: 'ui-A', serverIdentityId: 'stable-home-a' },
+        };
         modalConfirmResult = true;
         sessionFixtures = createSessionFixtures();
         machineFixtures = createMachineFixtures();
@@ -452,6 +625,48 @@ describe('ApprovalDetailScreen', () => {
         machineFixturesByServerId = { 'server-cache': machineFixtures };
         storageState = createStorageState();
         currentArtifact = createApprovalArtifact();
+    });
+
+    it('renders an executing approval truthfully without decision controls', async () => {
+        const artifact = createDaemonRoutedApprovalArtifact();
+        const request = ApprovalRequestV2Schema.parse({
+            ...JSON.parse(artifact.body),
+            status: 'executing',
+            updatedAtMs: 2,
+            decision: { kind: 'approve', decidedAtMs: 2 },
+        });
+        currentArtifact = {
+            ...artifact,
+            header: buildApprovalRequestArtifactHeaderV1(request),
+            body: JSON.stringify(request),
+        };
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId={currentArtifact.id} />);
+
+        expect(screen.getTextContent()).toContain('approvals.status.executing');
+        expect(screen.findByTestId('approvals.actions')).toBeNull();
+        expect(screen.findByTestId('approvals.approve')).toBeNull();
+    });
+
+    it('renders an executing target Action approval without decision controls', async () => {
+        const artifact = createTargetActionApprovalArtifact();
+        const request = TargetActionApprovalRequestV1Schema.parse({
+            ...JSON.parse(artifact.body),
+            status: 'executing',
+            updatedAtMs: 2,
+            decision: { kind: 'approve', decidedAtMs: 2 },
+        });
+        currentArtifact = {
+            ...artifact,
+            header: buildTargetActionApprovalArtifactHeaderV1(request),
+            body: JSON.stringify(request),
+        };
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId={currentArtifact.id} />);
+
+        expect(screen.getTextContent()).toContain('approvals.status.executing');
+        expect(screen.findByTestId('approvals.actions')).toBeNull();
+        expect(screen.findByTestId('approvals.approve')).toBeNull();
     });
 
     it('renders a redacted plugin target action and updates only that artifact', async () => {
@@ -523,6 +738,96 @@ describe('ApprovalDetailScreen', () => {
         });
         expect(updateArtifactWithHeaderSpy).not.toHaveBeenCalled();
         expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it('routes a current durable Action approval through this device profile while preserving its immutable origin', async () => {
+        currentArtifact = createDaemonRoutedApprovalArtifact();
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="daemon-approval-1" />);
+
+        await screen.pressByTestIdAsync('approvals.approve');
+
+        expect(executeSpy).toHaveBeenCalledExactlyOnceWith(
+            'approval.request.decide',
+            { artifactId: 'daemon-approval-1', decision: 'approve' },
+            { surface: 'ui', serverId: 'ui-A' },
+        );
+        expect(updateArtifactWithHeaderSpy).not.toHaveBeenCalled();
+    });
+
+    it('shows the original execution surface and exact Home without exposing principal credentials', async () => {
+        currentArtifact = createDaemonRoutedApprovalArtifact();
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="daemon-approval-1" />);
+
+        expect(screen.getTextContent()).toContain('api');
+        expect(screen.getTextContent()).toContain('actionConfirmations.homeTarget');
+        expect(screen.getTextContent()).not.toContain('principal-1');
+        expect(screen.getTextContent()).not.toContain('credential-1');
+    });
+
+    it('fails closed when the current route profile does not match the persisted stable Home identity', async () => {
+        currentArtifact = createDaemonRoutedApprovalArtifact();
+        portableProfileResolution = {
+            kind: 'resolved',
+            serverIdentityId: 'stable-home-a',
+            profile: { id: 'ui-wrong', serverIdentityId: 'stable-home-b' },
+        };
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="daemon-approval-1" />);
+
+        expect(replayApprovalRequestAtExactDaemonSpy).not.toHaveBeenCalled();
+        expect(executeSpy).not.toHaveBeenCalled();
+        expect(updateArtifactWithHeaderSpy).not.toHaveBeenCalled();
+        expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('approvals.reject')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('approvals.home-unavailable')).not.toBeNull();
+    });
+
+    it('explains how to recover when the deep-linked Home is unavailable before the Artifact can load', async () => {
+        currentArtifact = createDaemonRoutedApprovalArtifact();
+        portableProfileResolution = {
+            kind: 'missing',
+            serverIdentityId: 'stable-home-a',
+        };
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(
+            <ApprovalDetailScreen artifactId="daemon-approval-1" serverId="stable-home-a" />,
+        );
+
+        expect(screen.getTextContent()).toContain('actionConfirmations.homeUnavailable');
+        expect(screen.findByTestId('approvals.approve')).toBeNull();
+        expect(screen.findByTestId('approvals.reject')).toBeNull();
+    });
+
+    it('refreshes the durable result without local fallback when exact-daemon replay records approval_stale', async () => {
+        currentArtifact = createDaemonRoutedApprovalArtifact();
+        executeSpy.mockResolvedValueOnce({
+            ok: true,
+            result: { ok: true, status: 'failed', execution: { ok: false, errorCode: 'approval_stale' } },
+        });
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="daemon-approval-1" />);
+
+        await screen.pressByTestIdAsync('approvals.approve');
+
+        expect(executeSpy).toHaveBeenCalledTimes(1);
+        expect(updateArtifactWithHeaderSpy).not.toHaveBeenCalled();
+        expect(fetchArtifactWithBodySpy).toHaveBeenCalledWith('daemon-approval-1');
+    });
+
+    it('does not fall back to the UI executor when the exact approval daemon is unavailable', async () => {
+        currentArtifact = createDaemonRoutedApprovalArtifact();
+        executeSpy.mockRejectedValueOnce(
+            Object.assign(new Error('Machine RPC target unavailable'), { code: 'MACHINE_RPC_TARGET_UNAVAILABLE' }),
+        );
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="daemon-approval-1" />);
+
+        await screen.pressByTestIdAsync('approvals.approve');
+
+        expect(executeSpy).toHaveBeenCalledTimes(1);
+        expect(updateArtifactWithHeaderSpy).not.toHaveBeenCalled();
     });
 
     it('renders and updates only the execution-run host-action approval artifact', async () => {
@@ -774,7 +1079,58 @@ describe('ApprovalDetailScreen', () => {
         expect(text).toContain('Yes');
     });
 
-    it('renders the released scalar structured-answer shape and keeps it approvable', async () => {
+    it('shows the exact Team and member targets before approving deferred governance', async () => {
+        currentArtifact = createBuiltInApprovalArtifact({
+            actionId: 'teams.members.remove',
+            actionArgs: { v: 1, teamId: 'team-acme', membershipId: 'membership-alice' },
+            summary: 'Remove Team member',
+        });
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+        const text = screen.getTextContent();
+
+        expect(text).toContain('Team ID');
+        expect(text).toContain('team-acme');
+        expect(text).toContain('Membership ID');
+        expect(text).toContain('membership-alice');
+        expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(false);
+    });
+
+    it('shows canonical invitation context and permits approval without revealing the bearer', async () => {
+        const bearer = 'a'.repeat(43);
+        currentArtifact = createBuiltInApprovalArtifact({
+            actionId: 'teams.invitations.accept',
+            actionArgs: { v: 1, token: bearer },
+            summary: 'Accept Team invitation',
+            preview: {
+                actionId: 'teams.invitations.accept',
+                actionArgs: {
+                    homeServerId: 'srv-home-acme',
+                    continuation: { teamId: 'team-acme' },
+                    teamName: 'Acme Platform',
+                    role: 'member',
+                    historyAccess: 'from_membership',
+                },
+            },
+        });
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+
+        const text = screen.getTextContent();
+        expect(text).not.toContain(bearer);
+        expect(text).toContain('srv-home-acme');
+        expect(text).toContain('team-acme');
+        expect(text).toContain('Acme Platform');
+        expect(text).toContain('member');
+        expect(text).toContain('from_membership');
+        expect(screen.findByTestId('approvals.unrepresentable-details')).toBeNull();
+        expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(false);
+        expect(screen.findByTestId('approvals.reject')?.props.disabled).toBe(false);
+    });
+
+    it('renders the released scalar structured-answer shape while withholding legacy approval', async () => {
         currentArtifact = {
             ...createApprovalArtifact(),
             body: JSON.stringify({
@@ -798,7 +1154,8 @@ describe('ApprovalDetailScreen', () => {
         expect(text).toContain('Use the compatibility path?');
         expect(text).toContain('Yes, once');
         expect(screen.findByTestId('approvals.unrepresentable-details')).toBeNull();
-        expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(false);
+        expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('approvals.reject')?.props.disabled).toBe(false);
     });
 
     it('withholds approval and shows a bounded safety error when one structured answer is malformed', async () => {
@@ -893,11 +1250,11 @@ describe('ApprovalDetailScreen', () => {
     });
 
     it('uses the approval Home for duplicate session ids and opens the scoped session route', async () => {
-        currentArtifact = createApprovalArtifact('server-approval');
+        currentArtifact = createCurrentApprovalArtifact('server-approval');
         sessionFixtures = {
             'session-1': createSessionFixture({
                 id: 'session-1',
-                metadata: { name: 'Active Home session', path: '/active', machineId: 'machine-active' },
+                metadata: { name: 'Active Home session', host: 'tester.local', path: '/active', machineId: 'machine-active' },
             }),
         };
         sessionFixturesByServerId = {
@@ -905,7 +1262,7 @@ describe('ApprovalDetailScreen', () => {
             'server-approval': {
                 'session-1': createSessionFixture({
                     id: 'session-1',
-                    metadata: { name: 'Approval Home session', path: '/approval', machineId: 'machine-approval' },
+                    metadata: { name: 'Approval Home session', host: 'tester.local', path: '/approval', machineId: 'machine-approval' },
                 }),
             },
         };
@@ -940,12 +1297,46 @@ describe('ApprovalDetailScreen', () => {
         expect(pushSpy).toHaveBeenCalledWith('/session/session-1?serverId=server-approval');
     });
 
+    it('keeps approval actions available for an authorized locked Session without exposing cached title or path', async () => {
+        currentArtifact = createCurrentApprovalArtifact('server-approval');
+        sessionFixturesByServerId = {
+            'server-approval': {
+                'session-1': createSessionFixture({
+                    id: 'session-1',
+                    encryptionMode: 'e2ee',
+                    encryptedContentAvailability: 'encrypted_access_pending',
+                    metadata: {
+                        name: 'Private cached title',
+                        host: 'tester.local',
+                        path: '/Users/private/secret-project',
+                        homeDir: '/Users/private',
+                        machineId: 'machine-approval',
+                    },
+                }),
+            },
+        };
+        machineFixturesByServerId = {
+            'server-approval': {
+                'machine-approval': createMachineFixture({ id: 'machine-approval' }),
+            },
+        };
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+
+        expect(screen.getTextContent()).not.toContain('Private cached title');
+        expect(screen.getTextContent()).not.toContain('secret-project');
+        expect(screen.getTextContent()).toContain('actionConfirmations.homeTarget');
+        expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(false);
+        expect(screen.findByTestId('approvals.reject')?.props.disabled).toBe(false);
+    });
+
     it('does not read the active Home session when a bare approval session id is ambiguous', async () => {
         resolvePreferredServerIdForSessionIdSpy.mockReturnValue(undefined);
         sessionFixtures = {
             'session-1': createSessionFixture({
                 id: 'session-1',
-                metadata: { name: 'Wrong active Home session', path: '/active', machineId: 'machine-target' },
+                metadata: { name: 'Wrong active Home session', host: 'tester.local', path: '/active', machineId: 'machine-target' },
             }),
         };
         sessionFixturesByServerId = {
@@ -953,7 +1344,7 @@ describe('ApprovalDetailScreen', () => {
             'server-other': {
                 'session-1': createSessionFixture({
                     id: 'session-1',
-                    metadata: { name: 'Other Home session', path: '/other', machineId: 'machine-target' },
+                    metadata: { name: 'Other Home session', host: 'tester.local', path: '/other', machineId: 'machine-target' },
                 }),
             },
         };
@@ -1012,6 +1403,11 @@ describe('ApprovalDetailScreen', () => {
         expect(fetchArtifactWithBodySpy).toHaveBeenCalledWith('artifact-1');
         expect(text).toContain('approvals.loadError');
         expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(screen.findByTestId('approvals.retry')).not.toBeNull();
+
+        fetchArtifactWithBodySpy.mockClear();
+        await screen.pressByTestIdAsync('approvals.retry');
+        expect(fetchArtifactWithBodySpy).toHaveBeenCalledWith('artifact-1');
     });
 
     it('shows retained encrypted approvals as locked without refetching them as missing bodies', async () => {
@@ -1042,7 +1438,7 @@ describe('ApprovalDetailScreen', () => {
     });
 
     it('creates the action executor with the session-to-server resolver and routes approval decisions with a server hint', async () => {
-        currentArtifact = createApprovalArtifact('server-approval');
+        currentArtifact = createCurrentApprovalArtifact('server-approval');
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
@@ -1070,7 +1466,7 @@ describe('ApprovalDetailScreen', () => {
 
     it('executes approval decisions even when the web confirm modal resolves false (ModalProvider unavailable)', async () => {
         modalConfirmResult = false;
-        currentArtifact = createApprovalArtifact('server-approval');
+        currentArtifact = createCurrentApprovalArtifact('server-approval');
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);

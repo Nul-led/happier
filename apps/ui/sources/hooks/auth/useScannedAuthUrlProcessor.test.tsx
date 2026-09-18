@@ -75,9 +75,10 @@ describe('useScannedAuthUrlProcessor', () => {
         });
 
         expect(result).toBe(true);
-        expect(processorTestState.routerPush).toHaveBeenCalledWith(
-            `/restore?pairingLink=${encodeURIComponent(rawLink)}&entryIntent=add_home`,
-        );
+        const routed = String(processorTestState.routerPush.mock.calls[0]?.[0] ?? '');
+        expect(routed).toMatch(/^\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=add_home$/u);
+        expect(routed).not.toContain(encodeURIComponent(rawLink));
+        expect(routed).not.toContain('pairingLink=');
         expect(processorTestState.accountProcess).not.toHaveBeenCalled();
         expect(processorTestState.terminalProcess).not.toHaveBeenCalled();
     });
@@ -94,9 +95,9 @@ describe('useScannedAuthUrlProcessor', () => {
             await hook.getCurrent().processAuthUrl(rawLink);
         });
 
-        expect(processorTestState.routerPush).toHaveBeenCalledWith(
-            `/restore?pairingLink=${encodeURIComponent(rawLink)}&entryIntent=enter_home`,
-        );
+        const routed = String(processorTestState.routerPush.mock.calls[0]?.[0] ?? '');
+        expect(routed).toMatch(/^\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=enter_home$/u);
+        expect(routed).not.toContain(encodeURIComponent(rawLink));
     });
 
     it('leaves a terminal-only scanner unable to route a Home invite', async () => {

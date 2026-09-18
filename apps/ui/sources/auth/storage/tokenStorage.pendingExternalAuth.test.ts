@@ -1,4 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import {
+    createPasswordCredentialMutationDigestV1,
+    createPasswordCredentialTargetDigestV1,
+    encodePasswordCredentialFieldV1,
+} from '@happier-dev/protocol';
 import { installLocalStorageMock, type LocalStorageMockHandle } from './tokenStorage.web.testHelpers';
 import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
 
@@ -76,6 +81,70 @@ describe('TokenStorage pending external auth (web)', () => {
         const cleared = await TokenStorage.clearPendingExternalAuth();
         expect(cleared).toBe(true);
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
+        vi.doUnmock('@/sync/domains/server/serverProfiles');
+    });
+
+    it('rejects password-enrollment custody without writing its verifier, proof, or digest to browser storage', async () => {
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+            return {
+                ...actual,
+                getActiveServerId: () => 'home-a',
+                getActiveServerUrl: () => 'https://home-a.example.test',
+                listServerProfiles: () => [{ id: 'home-a', serverUrl: 'https://home-a.example.test' }],
+            };
+        });
+        const { TokenStorage } = await import('./tokenStorage');
+        const createdAt = Date.now();
+        const targetCredential = {
+            v: 1 as const,
+            kind: 'plain_password_hash' as const,
+            hash: {
+                v: 1 as const,
+                algorithm: 'scrypt' as const,
+                parameters: { n: 2 ** 14, r: 8 as const, p: 5, keyLength: 32 as const },
+                salt: encodePasswordCredentialFieldV1(new Uint8Array(16).fill(3)),
+                digest: encodePasswordCredentialFieldV1(new Uint8Array(32).fill(5)),
+            },
+        };
+        const normalizedNativeEmail = 'person@example.test';
+        const requestDigest = createPasswordCredentialMutationDigestV1({
+            v: 1,
+            action: 'connect',
+            accountId: 'account-a',
+            expectedCredentialRevision: null,
+            normalizedNativeEmail,
+            newCredentialDigest: createPasswordCredentialTargetDigestV1(targetCredential),
+        });
+        const pending = {
+            provider: 'github',
+            proof: 'local-proof',
+            serverId: 'home-a',
+            serverUrl: 'https://home-a.example.test',
+            returnTo: '/settings/account/security?verificationToken=mailbox-proof',
+            accountPasswordEnrollment: {
+                v: 1 as const,
+                accountId: 'account-a',
+                normalizedNativeEmail,
+                targetCredential,
+                requestDigest,
+                createdAt,
+                expiresAt: createdAt + 60_000,
+                pending: 'server-pending',
+            },
+        };
+
+        await expect(TokenStorage.setPendingExternalAuth(pending)).resolves.toBe(false);
+        await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
+
+        if (!localStorageHandle) {
+            throw new Error('Expected localStorage mock handle');
+        }
+        const storedBytes = [...localStorageHandle.store.values()].join('\n');
+        expect(storedBytes).not.toContain('local-proof');
+        expect(storedBytes).not.toContain(targetCredential.hash.salt);
+        expect(storedBytes).not.toContain(targetCredential.hash.digest);
+        expect(storedBytes).not.toContain(requestDigest);
         vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
@@ -949,6 +1018,126 @@ describe('TokenStorage pending external auth (web)', () => {
             throw new Error('Expected localStorage mock handle');
         }
         localStorageHandle.getItemMock.mockReturnValueOnce(JSON.stringify({ provider: 123, secret: true }));
+
+        await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
+    });
+
+    it('retains only the strict Team-purpose continuation without a generic return destination', async () => {
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+            return {
+                ...actual,
+                getActiveServerId: () => 'home-team',
+                getActiveServerUrl: () => 'https://home.example.test',
+                listServerProfiles: () => [{ id: 'home-team', serverUrl: 'https://home.example.test' }],
+            };
+        });
+        const { TokenStorage } = await import('./tokenStorage');
+        const pending = {
+            provider: 'github',
+            proof: 'proof',
+            serverId: 'home-team',
+            serverUrl: 'https://home.example.test',
+            teamContinuation: {
+                v: 1 as const,
+                purpose: 'team_admission' as const,
+                admissionReference: 'oauth-attempt-1',
+                teamId: 'team-1',
+                homeServerIdentityId: 'home-team',
+                destination: { kind: 'team_sign_in' as const, teamId: 'team-1' },
+            },
+        };
+
+        await expect(TokenStorage.setPendingExternalAuth(pending)).resolves.toBe(true);
+        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual(pending);
+        vi.doUnmock('@/sync/domains/server/serverProfiles');
+    });
+
+    it('round-trips native mTLS Team custody without an OAuth proof or secret', async () => {
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+            return {
+                ...actual,
+                getActiveServerId: () => 'home-team',
+                getActiveServerUrl: () => 'https://home.example.test',
+                listServerProfiles: () => [{ id: 'home-team', serverUrl: 'https://home.example.test' }],
+            };
+        });
+        const { TokenStorage } = await import('./tokenStorage');
+        const pending = {
+            provider: 'mtls',
+            serverId: 'home-team',
+            serverUrl: 'https://home.example.test',
+            teamContinuation: {
+                v: 1 as const,
+                purpose: 'team_admission' as const,
+                admissionReference: 'mtls-admission-1',
+                teamId: 'team-1',
+                homeServerIdentityId: 'home-team',
+                destination: { kind: 'team_sign_in' as const, teamId: 'team-1' },
+            },
+        };
+
+        await expect(TokenStorage.setPendingExternalAuth(pending)).resolves.toBe(true);
+        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual(pending);
+        vi.doUnmock('@/sync/domains/server/serverProfiles');
+    });
+
+    it.each([
+        { name: 'missing exact server identity', change: { serverId: undefined } },
+        { name: 'missing exact server URL', change: { serverUrl: undefined } },
+        { name: 'no safe continuation', change: { teamContinuation: undefined } },
+        { name: 'mismatched Team destination', change: { teamContinuation: {
+            v: 1, purpose: 'team_admission', admissionReference: 'mtls-admission-1', teamId: 'team-1',
+            homeServerIdentityId: 'home-team', destination: { kind: 'team_sign_in', teamId: 'team-other' },
+        } } },
+    ])('rejects native mTLS custody with $name', async ({ change }) => {
+        const { TokenStorage } = await import('./tokenStorage');
+        const written = await TokenStorage.setPendingExternalAuth({
+            provider: 'mtls',
+            serverId: 'home-team',
+            serverUrl: 'https://home.example.test',
+            teamContinuation: {
+                v: 1,
+                purpose: 'team_admission',
+                admissionReference: 'mtls-admission-1',
+                teamId: 'team-1',
+                homeServerIdentityId: 'home-team',
+                destination: { kind: 'team_sign_in', teamId: 'team-1' },
+            },
+            ...change,
+        } as never);
+
+        expect(written).toBe(false);
+    });
+
+    it.each([
+        { name: 'generic return destination', change: { returnTo: '/teams/team-1/join/invitation-secret' } },
+        { name: 'wrong Home identity', change: { teamContinuation: {
+            v: 1, purpose: 'team_admission', admissionReference: 'oauth-attempt-1', teamId: 'team-1',
+            homeServerIdentityId: 'home-other', destination: { kind: 'team_sign_in', teamId: 'team-1' },
+        } } },
+        { name: 'extra destination field', change: { teamContinuation: {
+            v: 1, purpose: 'team_admission', admissionReference: 'oauth-attempt-1', teamId: 'team-1',
+            homeServerIdentityId: 'home-team', destination: { kind: 'team_sign_in', teamId: 'team-1', token: 'secret' },
+        } } },
+    ])('rejects a Team continuation with a $name', async ({ change }) => {
+        const { TokenStorage } = await import('./tokenStorage');
+        await TokenStorage.setPendingExternalAuth({
+            provider: 'github',
+            proof: 'proof',
+            serverId: 'home-team',
+            serverUrl: 'https://home.example.test',
+            teamContinuation: {
+                v: 1,
+                purpose: 'team_admission',
+                admissionReference: 'oauth-attempt-1',
+                teamId: 'team-1',
+                homeServerIdentityId: 'home-team',
+                destination: { kind: 'team_sign_in', teamId: 'team-1' },
+            },
+            ...change,
+        } as never);
 
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
     });

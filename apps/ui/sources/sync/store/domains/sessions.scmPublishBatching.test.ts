@@ -30,12 +30,12 @@ function createHarness() {
     sessionLastViewed: {},
     sessionRepositoryTreeExpandedPathsBySessionId: {},
     reviewCommentsDraftsBySessionId: {},
-    actionDraftsBySessionId: {},
+    sessionActionDraftsByAddressKey: {},
     isDataReady: false,
     machines: { m1: { id: 'm1', metadata: { homeDir: '/home/u' } } },
     machineDisplayById: {},
     sessionMessages: {},
-    settings: { groupInactiveSessionsByProject: false },
+    settings: {},
   };
   let setCount = 0;
 
@@ -146,12 +146,48 @@ describe('sessions domain: batched project SCM snapshot publish', () => {
     projectManager.clear();
   });
 
+  it('isolates duplicate Session SCM snapshots, selections and operation locks by Home', () => {
+    const { get, domain } = createHarness();
+    const session = makeSession('same');
+    get().sessions = { same: { ...session, serverId: 'a' } };
+    get().sessionListRowsByServerId = {
+      a: { same: { ...session, serverId: 'a' } },
+      b: { same: { ...session, serverId: 'b' } },
+    };
+    const machine = { ...get().machines.m1, active: true };
+    get().machineListByServerId = { a: [machine], b: [machine] };
+    const a = makeSnapshot(100);
+    const b = { ...makeSnapshot(200), branch: { ...a.branch, head: 'other' } };
+    domain.publishSessionProjectScmSnapshots([
+      { sessionId: 'same', serverId: 'a', snapshot: a, status: makeStatus(100) },
+      { sessionId: 'same', serverId: 'b', snapshot: b, status: makeStatus(200) },
+    ]);
+    expect(domain.getSessionProjectScmSnapshot('same', 'a')).toBe(a);
+    expect(domain.getSessionProjectScmSnapshot('same', 'b')).toBe(b);
+    domain.markSessionProjectScmCommitSelectionPaths('same', ['a.ts'], 'a');
+    domain.markSessionProjectScmCommitSelectionPaths('same', ['b.ts'], 'b');
+    expect(domain.getSessionProjectScmCommitSelectionPaths('same', 'a')).toEqual(['a.ts']);
+    expect(domain.getSessionProjectScmCommitSelectionPaths('same', 'b')).toEqual(['b.ts']);
+    const lockA = domain.beginSessionProjectScmOperation('same', 'commit', 'a');
+    const lockB = domain.beginSessionProjectScmOperation('same', 'commit', 'b');
+    expect(lockA.started).toBe(true);
+    expect(lockB.started).toBe(true);
+    if (!lockA.started || !lockB.started) throw new Error('Expected independent locks');
+    expect(domain.finishSessionProjectScmOperation('same', lockA.operation.id, 'b')).toBe(false);
+    expect(domain.getSessionProjectScmInFlightOperation('same', 'b')).toEqual(lockB.operation);
+    delete get().sessionListRowsByServerId.b.same;
+    expect(domain.getSessionProjectScmSnapshot('same', 'b')).toBeNull();
+    domain.clearSessionProjectScmCommitSelectionPaths('same', 'b');
+    expect(domain.getSessionProjectScmCommitSelectionPaths('same', 'a')).toEqual(['a.ts']);
+    expect(domain.beginSessionProjectScmOperation('same', 'commit', 'b')).toEqual({ started: false, reason: 'missing_project', inFlight: null });
+  });
+
   it('publishes snapshots to multiple sessions with a single store notification', () => {
     const { get, domain, getSetCount } = createHarness();
     domain.applySessions([makeSession('s1'), makeSession('s2'), makeSession('s3')]);
 
     // A stale touched path that the publish prune must drop.
-    domain.markSessionProjectScmTouchedPaths('s1', ['gone.ts', 'src/a.ts']);
+    domain.markWorkspaceScmTouchedPathsForSession('s1', ['gone.ts', 'src/a.ts']);
     const setCountBeforePublish = getSetCount();
 
     const snapshot = makeSnapshot(100);
@@ -168,7 +204,7 @@ describe('sessions domain: batched project SCM snapshot publish', () => {
     expect(get().sessionScmStatus.s3).toBe(status);
     expect(domain.getSessionProjectScmSnapshot('s1')).toBe(snapshot);
     expect(domain.getSessionProjectScmSnapshot('s3')).toBe(snapshot);
-    expect(domain.getSessionProjectScmTouchedPaths('s1')).toEqual(['src/a.ts']);
+    expect(domain.getWorkspaceScmTouchedPathsForSession('s1')).toEqual(['src/a.ts']);
   });
 
   it('keeps the equivalent-snapshot identity when only fetchedAt changes and still notifies once', () => {

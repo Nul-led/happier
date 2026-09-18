@@ -1,73 +1,30 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { TokenStorage } from '@/auth/storage/tokenStorage';
 import {
-    createHomeCredentialDestinationDigestV1,
-    createHomeCredentialDestinationV1,
-    HomeConnectionDescriptorV1Schema,
-    isHomeCredentialDestinationAllowedV1,
-    type HomeConnectionDescriptorV1,
-    type HomeCredentialDestinationSelectionV1,
-} from '@happier-dev/protocol';
+    getHomeCredentialsUnderMutationAuthority,
+    removeHomeCredentialsUnderMutationAuthority,
+    setHomeCredentialsWithRollbackUnderMutationAuthority,
+} from '@/auth/storage/tokenStorage';
 import {
     adoptHomeProfile,
+    adoptHomeProfileUnderMutationAuthority,
     getServerProfileById,
     listServerProfiles,
     preflightHomeProfileAdoption,
     type ServerProfile,
 } from './serverProfiles';
+import { withHomeMutationAuthority, type HomeMutationAuthority } from './homeMutationLock';
 
 type HomeProfileAdoptionInput = Parameters<typeof adoptHomeProfile>[0];
+
+export type HomeProfileCanonicalUrlMigrationInput = HomeProfileAdoptionInput & Readonly<{
+    /** Newly issued credential that must commit in the same owner transaction as the profile move. */
+    credentials?: AuthCredentials;
+}>;
 
 export type AdoptHomeProfileWithCredentialsInput = HomeProfileAdoptionInput & Readonly<{
     credentials: AuthCredentials;
     shouldCancel?: () => boolean;
-    credentialWriteAuthorization?: HomeProfileCredentialWriteAuthorizationV1;
 }>;
-
-/**
- * Short-lived proof that Account-Service enrollment redeemed a Home assertion through one
- * destination covered by the assertion's signed Directory descriptor. It authorizes only the
- * credential write; the profile remains advisory until authenticated Home features establish it.
- */
-export type HomeProfileCredentialWriteAuthorizationV1 = Readonly<{
-    kind: 'assertion_destination_binding_v1';
-    descriptor: HomeConnectionDescriptorV1;
-    credentialDestinationDigestBase64Url: string;
-    selectedDestination: HomeCredentialDestinationSelectionV1;
-}>;
-
-const issuedCredentialWriteAuthorizations = new WeakSet<object>();
-
-/**
- * Issues an owner-custodied, one-shot authorization after validating the assertion's canonical
- * destination projection. Structural lookalikes are rejected by the adoption owner at runtime.
- */
-export function createHomeProfileCredentialWriteAuthorization(
-    input: Omit<HomeProfileCredentialWriteAuthorizationV1, 'kind'>,
-): HomeProfileCredentialWriteAuthorizationV1 | null {
-    const descriptor = HomeConnectionDescriptorV1Schema.safeParse(input.descriptor);
-    if (!descriptor.success) return null;
-    try {
-        if (
-            createHomeCredentialDestinationDigestV1(descriptor.data)
-            !== input.credentialDestinationDigestBase64Url
-            || !isHomeCredentialDestinationAllowedV1(
-                createHomeCredentialDestinationV1(descriptor.data),
-                input.selectedDestination,
-            )
-        ) return null;
-    } catch {
-        return null;
-    }
-    const authorization = Object.freeze({
-        kind: 'assertion_destination_binding_v1' as const,
-        descriptor: descriptor.data,
-        credentialDestinationDigestBase64Url: input.credentialDestinationDigestBase64Url,
-        selectedDestination: input.selectedDestination,
-    });
-    issuedCredentialWriteAuthorizations.add(authorization);
-    return authorization;
-}
 
 export type HomeProfileCredentialRollbackOutcome =
     | Readonly<{ kind: 'succeeded' }>
@@ -96,7 +53,7 @@ export class HomeProfileAdoptionPartialCommitError extends Error {
 /**
  * Directory descriptors are discovery hints, not credential-routing authority. A credential can
  * be stored only after this exact Home has been observed through a current identity-bound Home
- * connection, or through the one-shot assertion-destination authorization issued by this owner.
+ * connection.
  */
 export class HomeProfileAdoptionRequiresCurrentObservationError extends Error {
     readonly code = 'home_profile_adoption_requires_current_observation' as const;
@@ -107,30 +64,6 @@ export class HomeProfileAdoptionRequiresCurrentObservationError extends Error {
     ) {
         super('Home credentials require a current identity-bound Home observation');
         this.name = 'HomeProfileAdoptionRequiresCurrentObservationError';
-    }
-}
-
-function authorizesAdvisoryCredentialWrite(
-    input: AdoptHomeProfileWithCredentialsInput,
-): boolean {
-    const authorization = input.credentialWriteAuthorization;
-    if (!authorization || authorization.kind !== 'assertion_destination_binding_v1') return false;
-    if (!issuedCredentialWriteAuthorizations.delete(authorization)) return false;
-    const inputDescriptor = HomeConnectionDescriptorV1Schema.safeParse(input.descriptor);
-    const authorizedDescriptor = HomeConnectionDescriptorV1Schema.safeParse(authorization.descriptor);
-    if (!inputDescriptor.success || !authorizedDescriptor.success) return false;
-    if (JSON.stringify(inputDescriptor.data) !== JSON.stringify(authorizedDescriptor.data)) return false;
-    try {
-        if (
-            createHomeCredentialDestinationDigestV1(authorizedDescriptor.data)
-            !== authorization.credentialDestinationDigestBase64Url
-        ) return false;
-        return isHomeCredentialDestinationAllowedV1(
-            createHomeCredentialDestinationV1(authorizedDescriptor.data),
-            authorization.selectedDestination,
-        );
-    } catch {
-        return false;
     }
 }
 
@@ -174,9 +107,30 @@ export class HomeProfileCanonicalUrlMigrationPartialCommitError extends Error {
  * owner keeps their target pinned to the established URL.
  */
 export async function adoptHomeProfileWithCanonicalUrlMigration(
-    input: HomeProfileAdoptionInput,
+    input: HomeProfileCanonicalUrlMigrationInput,
 ): Promise<HomeProfileCanonicalUrlMigrationResult> {
-    const target = preflightHomeProfileAdoption(input);
+    return await withHomeMutationAuthority(
+        undefined,
+        async (authority) => await adoptHomeProfileWithCanonicalUrlMigrationUnderAuthority(input, authority),
+    );
+}
+
+async function adoptHomeProfileWithCanonicalUrlMigrationUnderAuthority(
+    input: HomeProfileCanonicalUrlMigrationInput,
+    authority: HomeMutationAuthority,
+): Promise<HomeProfileCanonicalUrlMigrationResult> {
+    const adoption: HomeProfileAdoptionInput = {
+        descriptor: input.descriptor,
+        source: input.source,
+        ...(input.preserveUserLabel !== undefined
+            ? { preserveUserLabel: input.preserveUserLabel }
+            : {}),
+        ...(input.suggestedName !== undefined ? { suggestedName: input.suggestedName } : {}),
+        ...(input.descriptorAuthority !== undefined
+            ? { descriptorAuthority: input.descriptorAuthority }
+            : {}),
+    };
+    const target = preflightHomeProfileAdoption(adoption);
     const identity = target.serverIdentityId;
     const existing = identity ? getServerProfileById(identity) : null;
     const fromCanonicalServerUrl = existing
@@ -190,26 +144,93 @@ export async function adoptHomeProfileWithCanonicalUrlMigration(
         || !fromCanonicalServerUrl
         || fromCanonicalServerUrl === toCanonicalServerUrl
     ) {
-        return { kind: 'adopted', profile: await adoptHomeProfile(input) };
+        const profile = input.credentials
+            ? await adoptHomeProfileWithCredentialsUnderAuthority({ ...adoption, credentials: input.credentials }, authority)
+            : await adoptHomeProfileUnderMutationAuthority(adoption, authority);
+        return { kind: 'adopted', profile };
     }
 
-    const credentials = await TokenStorage.getCredentialsForServerUrl(
-        fromCanonicalServerUrl,
-        { serverId: identity },
-    );
-    // Credentials are canonically keyed by stable Home identity, not URL. The
-    // old-URL read above also migrates a supported legacy URL-hash credential
-    // into that identity scope. Rewriting it at the destination before the
-    // profile moves would correctly be rejected as an identity/URL conflict.
-    const profile = await adoptHomeProfile(input);
+    let credentialWrite: Awaited<ReturnType<typeof setHomeCredentialsWithRollbackUnderMutationAuthority>> = null;
+    let credentials = input.credentials;
+    if (credentials) {
+        // Until the profile moves, the old canonical URL is the only URL that
+        // the identity owner accepts. Write the newly issued credential there;
+        // its stable-identity primary key remains valid after the URL changes.
+        credentialWrite = await setHomeCredentialsWithRollbackUnderMutationAuthority(
+            authority,
+            fromCanonicalServerUrl,
+            { serverId: identity },
+            credentials,
+        );
+        if (!credentialWrite) throw new Error('Unable to store Home credentials');
+    } else {
+        credentials = await getHomeCredentialsUnderMutationAuthority(
+            authority,
+            fromCanonicalServerUrl,
+            { serverId: identity },
+        ) ?? undefined;
+    }
+
+    let profile: ServerProfile;
+    try {
+        profile = await adoptHomeProfileUnderMutationAuthority(adoption, authority);
+    } catch (adoptionError) {
+        if (!credentialWrite) throw adoptionError;
+        try {
+            const rollbackApplied = await credentialWrite.rollback();
+            if (!rollbackApplied) {
+                throw new HomeProfileAdoptionPartialCommitError(
+                    adoptionError,
+                    fromCanonicalServerUrl,
+                    identity,
+                    { kind: 'not_applied', reason: 'ownership_changed' },
+                );
+            }
+        } catch (rollbackError) {
+            if (rollbackError instanceof HomeProfileAdoptionPartialCommitError) throw rollbackError;
+            throw new HomeProfileAdoptionPartialCommitError(
+                adoptionError,
+                fromCanonicalServerUrl,
+                identity,
+                { kind: 'failed', error: rollbackError },
+            );
+        }
+        throw adoptionError;
+    }
     // Revision adjudication may legitimately decline the move. The identity-keyed
-    // credential was never rewritten, so the unchanged profile remains coherent.
+    // incumbent credential remains coherent for legacy callers. A caller that
+    // supplied a new destination-issued credential must not report success; undo
+    // that pre-profile write before surfacing the declined migration.
     if ((profile.canonicalServerUrl ?? profile.serverUrl) !== toCanonicalServerUrl) {
+        if (credentialWrite) {
+            const declinedMigration = new Error('Home canonical URL migration was not applied');
+            try {
+                const rollbackApplied = await credentialWrite.rollback();
+                if (!rollbackApplied) {
+                    throw new HomeProfileAdoptionPartialCommitError(
+                        declinedMigration,
+                        fromCanonicalServerUrl,
+                        identity,
+                        { kind: 'not_applied', reason: 'ownership_changed' },
+                    );
+                }
+            } catch (rollbackError) {
+                if (rollbackError instanceof HomeProfileAdoptionPartialCommitError) throw rollbackError;
+                throw new HomeProfileAdoptionPartialCommitError(
+                    declinedMigration,
+                    fromCanonicalServerUrl,
+                    identity,
+                    { kind: 'failed', error: rollbackError },
+                );
+            }
+            throw declinedMigration;
+        }
         return { kind: 'adopted', profile };
     }
 
     if (credentials) {
-        const destinationCredentials = await TokenStorage.getCredentialsForServerUrl(
+        const destinationCredentials = await getHomeCredentialsUnderMutationAuthority(
+            authority,
             toCanonicalServerUrl,
             { serverId: identity },
         );
@@ -234,7 +255,7 @@ export async function adoptHomeProfileWithCanonicalUrlMigration(
     if (
         credentials
         && !obsoleteUrlReassigned
-        && !await TokenStorage.removeCredentialsForServerUrl(fromCanonicalServerUrl)
+        && !await removeHomeCredentialsUnderMutationAuthority(authority, fromCanonicalServerUrl)
     ) {
         throw new HomeProfileCanonicalUrlMigrationPartialCommitError(
             'obsolete_credential_cleanup',
@@ -256,6 +277,16 @@ export async function adoptHomeProfileWithCanonicalUrlMigration(
 export async function adoptHomeProfileWithCredentials(
     input: AdoptHomeProfileWithCredentialsInput,
 ): Promise<ServerProfile> {
+    return await withHomeMutationAuthority(
+        undefined,
+        async (authority) => await adoptHomeProfileWithCredentialsUnderAuthority(input, authority),
+    );
+}
+
+async function adoptHomeProfileWithCredentialsUnderAuthority(
+    input: AdoptHomeProfileWithCredentialsInput,
+    authority: HomeMutationAuthority,
+): Promise<ServerProfile> {
     const adoption = {
         descriptor: input.descriptor,
         source: input.source,
@@ -269,10 +300,7 @@ export async function adoptHomeProfileWithCredentials(
     } satisfies Parameters<typeof preflightHomeProfileAdoption>[0];
     const target = preflightHomeProfileAdoption(adoption);
     if (!target.serverIdentityId) throw new Error('Credentialed Home adoption requires a stable identity');
-    if (
-        target.credentialWrite === 'requiresCurrentObservation'
-        && !authorizesAdvisoryCredentialWrite(input)
-    ) {
+    if (target.credentialWrite === 'requiresCurrentObservation') {
         throw new HomeProfileAdoptionRequiresCurrentObservationError(
             target.canonicalServerUrl,
             target.serverIdentityId,
@@ -283,16 +311,18 @@ export async function adoptHomeProfileWithCredentials(
     // established Home still accepts the newly issued credential in its canonical
     // slot, while its established descriptor facts remain unchanged.
     if (target.credentialWrite === 'preserveExisting') {
-        const established = await TokenStorage.getCredentialsForServerUrl(
+        const established = await getHomeCredentialsUnderMutationAuthority(
+            authority,
             target.canonicalServerUrl,
             { serverId: target.serverIdentityId },
         );
         if (established) {
             if (input.shouldCancel?.()) throw new Error('Home credential adoption cancelled');
-            return await adoptHomeProfile(adoption);
+            return await adoptHomeProfileUnderMutationAuthority(adoption, authority);
         }
     }
-    const credentialWrite = await TokenStorage.setCredentialsForServerUrlWithRollback(
+    const credentialWrite = await setHomeCredentialsWithRollbackUnderMutationAuthority(
+        authority,
         target.canonicalServerUrl,
         { serverId: target.serverIdentityId },
         input.credentials,
@@ -303,7 +333,7 @@ export async function adoptHomeProfileWithCredentials(
 
     try {
         if (input.shouldCancel?.()) throw new Error('Home credential adoption cancelled');
-        return await adoptHomeProfile(adoption);
+        return await adoptHomeProfileUnderMutationAuthority(adoption, authority);
     } catch (adoptionError) {
         let rollbackApplied: boolean;
         try {

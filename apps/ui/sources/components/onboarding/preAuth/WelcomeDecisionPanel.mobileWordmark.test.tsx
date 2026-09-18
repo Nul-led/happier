@@ -13,6 +13,7 @@ vi.mock('../unauthShell/WelcomeFooterLinks', () => ({
 
 const baseOptions: AuthEntryOptions = {
     serverAvailability: 'ready',
+    authEntryUnavailable: false,
     serverUrlForCopy: 'https://relay.example.test',
     showAuthActions: true,
     showProviderSignup: false,
@@ -53,10 +54,6 @@ function renderPanel(variant: 'desktop' | 'mobile') {
         >
             <WelcomeDecisionPanel
                 authEntryOptions={baseOptions}
-                onCreateAccount={vi.fn()}
-                onCreateAccountViaProvider={vi.fn()}
-                onLoginWithKeylessProvider={vi.fn()}
-                onLoginWithMtls={vi.fn()}
                 onOpenRestore={vi.fn()}
                 onChangeRelay={vi.fn()}
             />

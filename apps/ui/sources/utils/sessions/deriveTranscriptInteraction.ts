@@ -1,3 +1,5 @@
+import type { Session } from '@/sync/domains/state/storageTypes';
+
 export type TranscriptInteraction = Readonly<{
     canSendMessages: boolean;
     canApprovePermissions: boolean;
@@ -13,8 +15,7 @@ export type TranscriptInteraction = Readonly<{
 
 export function deriveTranscriptInteractionFromSession(
     session: Readonly<{
-        accessLevel: 'view' | 'edit' | 'admin' | null | undefined;
-        canApprovePermissions: boolean | null | undefined;
+        access?: Session['access'];
         active?: boolean | null | undefined;
         presence?: 'online' | number | null | undefined;
         disableToolNavigation?: boolean;
@@ -26,8 +27,7 @@ export function deriveTranscriptInteractionFromSession(
 
     return deriveTranscriptInteraction({
         kind: 'session',
-        accessLevel: session.accessLevel,
-        canApprovePermissions: session.canApprovePermissions,
+        access: session.access,
         isSessionActive,
         disableToolNavigation: session.disableToolNavigation,
     });
@@ -37,8 +37,7 @@ export function deriveTranscriptInteraction(
     input:
         | Readonly<{
               kind: 'session';
-              accessLevel: 'view' | 'edit' | 'admin' | null | undefined;
-              canApprovePermissions: boolean | null | undefined;
+              access?: Session['access'];
               isSessionActive?: boolean | null | undefined;
               disableToolNavigation?: boolean;
           }>
@@ -59,27 +58,24 @@ export function deriveTranscriptInteraction(
         };
     }
 
-    const isOwner = !input.accessLevel;
-    const canSendMessages = isOwner || input.accessLevel === 'edit' || input.accessLevel === 'admin';
-    const baseCanApprovePermissions = isOwner || input.canApprovePermissions === true;
+    const canSendMessages = input.access?.capabilities.submitAgentInput === true;
+    const baseCanApprovePermissions = input.access?.capabilities.approveRuntimePermissions === true;
     const isSessionActive = input.isSessionActive !== false;
     const canApprovePermissions = baseCanApprovePermissions && isSessionActive;
     const permissionDisabledReason: TranscriptInteraction['permissionDisabledReason'] = !isSessionActive
         ? 'inactive'
-        : isOwner
-            ? (canApprovePermissions ? undefined : 'inactive')
-            : input.accessLevel === 'view'
+        : canApprovePermissions
+            ? undefined
+            : input.access?.level === 'view'
                 ? 'readOnly'
-                : canApprovePermissions
-                    ? undefined
-                    : (baseCanApprovePermissions ? 'inactive' : 'notGranted');
+                : 'notGranted';
 
     return {
         canSendMessages,
         canApprovePermissions,
         canFork: canSendMessages,
-        canOpenFiles: true,
-        canPreviewMedia: true,
+        canOpenFiles: input.access?.capabilities.readTranscript === true,
+        canPreviewMedia: input.access?.capabilities.readTranscript === true,
         permissionDisabledReason,
         disableToolNavigation: input.disableToolNavigation,
     };

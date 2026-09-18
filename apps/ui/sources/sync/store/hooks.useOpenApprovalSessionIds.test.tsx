@@ -7,7 +7,7 @@ import type { AutomationDefinition } from '@/sync/domains/automations/automation
 import {
     useEnabledAutomationsCountForSession,
     useOpenApprovalArtifactsForSession,
-    useOpenApprovalSessionIds,
+    useOpenApprovalSessionReferences,
 } from '@/sync/domains/state/storage';
 import { storage } from '@/sync/domains/state/storageStore';
 
@@ -29,6 +29,20 @@ function artifact(
         createdAt: 1,
         updatedAt: 1,
         isDecrypted: true,
+    };
+}
+
+function approvalBody(sessionId: string, actionId: string) {
+    return {
+        v: 1,
+        status: 'open',
+        createdAtMs: 1,
+        updatedAtMs: 1,
+        createdBy: { surface: 'agent', sessionId },
+        requestedSurface: 'agent',
+        actionId,
+        actionArgs: {},
+        summary: 'Approve',
     };
 }
 
@@ -70,13 +84,17 @@ afterEach(() => {
     standardCleanup();
 });
 
-describe('useOpenApprovalSessionIds', () => {
+describe('useOpenApprovalSessionReferences', () => {
     it('projects only non-draft open approval session ids and ignores unrelated artifact churn', async () => {
         const previousState = storage.getState();
         try {
             storage.setState((state) => ({
                 ...state,
                 isDataReady: true,
+                ordinarySessionListMembershipByServerId: {
+                    ...state.ordinarySessionListMembershipByServerId,
+                    'server-a': ['session-a'],
+                },
                 artifacts: {
                     open: artifact('open', {
                         v: 1,
@@ -84,6 +102,7 @@ describe('useOpenApprovalSessionIds', () => {
                         title: 'Approve',
                         approvalStatus: 'open',
                         sessionId: 'session-a',
+                        sessions: ['session-a'],
                     }),
                     draft: artifact('draft', {
                         v: 1,
@@ -105,13 +124,13 @@ describe('useOpenApprovalSessionIds', () => {
             let renderCount = 0;
             const hook = await renderHook(() => {
                 renderCount += 1;
-                return useOpenApprovalSessionIds();
+                return useOpenApprovalSessionReferences();
             }, {
                 flushOptions: { cycles: 1, turns: 4 },
             });
             const first = hook.getCurrent();
 
-            expect(first).toEqual(['session-a']);
+            expect(first).toEqual([{ kind: 'legacy_unscoped', sessionId: 'session-a' }]);
             expect(renderCount).toBe(1);
 
             await act(async () => {
@@ -149,16 +168,20 @@ describe('useOpenApprovalSessionIds', () => {
                         title: 'Approve',
                         approvalStatus: 'open',
                         sessionId: 'session-a',
+                        sessions: ['session-a'],
                         serverId: 'server-a',
                     }),
                 },
             }));
 
-            const hook = await renderHook(() => useOpenApprovalSessionIds(), {
+            const hook = await renderHook(() => useOpenApprovalSessionReferences(), {
                 flushOptions: { cycles: 1, turns: 4 },
             });
 
-            expect(hook.getCurrent()).toEqual(['server-a:session-a']);
+            expect(hook.getCurrent()).toEqual([{
+                kind: 'exact',
+                address: { serverId: 'server-a', sessionId: 'session-a' },
+            }]);
 
             await hook.unmount();
         } finally {
@@ -174,6 +197,10 @@ describe('session detail scoped projections', () => {
             storage.setState((state) => ({
                 ...state,
                 isDataReady: true,
+                ordinarySessionListMembershipByServerId: {
+                    ...state.ordinarySessionListMembershipByServerId,
+                    'server-a': ['session-a'],
+                },
                 artifacts: {
                     open: artifact('open', {
                         v: 1,
@@ -182,7 +209,8 @@ describe('session detail scoped projections', () => {
                         approvalStatus: 'open',
                         sessionId: 'session-a',
                         actionId: 'session.list',
-                    }),
+                        approvalSummary: 'Approve',
+                    }, approvalBody('session-a', 'session.list')),
                     draft: artifact('draft', {
                         v: 1,
                         kind: 'approval_request.v1',
@@ -190,23 +218,26 @@ describe('session detail scoped projections', () => {
                         approvalStatus: 'open',
                         sessionId: 'session-a',
                         actionId: 'session.status.get',
+                        approvalSummary: 'Approve',
                         draft: true,
-                    }),
+                    }, approvalBody('session-a', 'session.status.get')),
                     other: artifact('other', {
                         v: 1,
                         kind: 'approval_request.v1',
                         title: 'Other approve',
                         approvalStatus: 'open',
                         sessionId: 'session-b',
+                        sessions: ['session-b'],
                         actionId: 'session.status.get',
-                    }),
+                        approvalSummary: 'Approve',
+                    }, approvalBody('session-b', 'session.status.get')),
                 },
             }));
 
             let renderCount = 0;
             const hook = await renderHook(() => {
                 renderCount += 1;
-                return useOpenApprovalArtifactsForSession('session-a');
+                return useOpenApprovalArtifactsForSession({ serverId: 'server-a', sessionId: 'session-a' });
             }, {
                 flushOptions: { cycles: 1, turns: 4 },
             });

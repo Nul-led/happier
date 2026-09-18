@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { resolveVerticalScrollEdgeMaskStyle } from '@/components/ui/scroll/resolveScrollEdgeMaskStyle';
@@ -17,6 +17,15 @@ import {
 } from './DesktopActivityOverlayVisualMode';
 import { useDesktopActivityOverlayMotionProgress } from './DesktopActivityOverlayMotionFrame';
 import { DesktopActivityOverlayExpandedCards } from './cards/DesktopActivityOverlayExpandedCards';
+import {
+    isDesktopActivityOverlayDismissKey,
+    readDesktopActivityOverlayEventKey,
+    type DesktopActivityOverlayKeyEvent,
+} from './desktopActivityOverlayKeyboard';
+import {
+    resolveDesktopActivityOverlayInitialFocusTarget,
+    type DesktopActivityOverlayFocusTargetRef,
+} from './resolveDesktopActivityOverlayInitialFocusTarget';
 import type {
     DesktopActivityOverlayActionDescriptor,
     DesktopActivityOverlayUiModel,
@@ -26,15 +35,18 @@ import { DesktopActivityOverlayQuickReplyComposer } from './quickReply/DesktopAc
 export function DesktopActivityOverlayExpanded(props: Readonly<{
     model: DesktopActivityOverlayUiModel;
     visualMode: DesktopActivityOverlayVisualMode;
+    surfaceRef?: React.Ref<View>;
+    initialFocusRef?: DesktopActivityOverlayFocusTargetRef;
     onHoverIn?: () => void;
     onHoverOut?: () => void;
+    onFocusWithinChange?: (focusWithin: boolean) => void;
+    onDismissKey?: () => void;
     onOpenSession: (sessionId: string, serverId?: string | null) => void;
     onAction?: (action: DesktopActivityOverlayActionDescriptor) => void;
     quickReplyDraft?: string;
     onQuickReplyDraftChange?: (draft: string) => void;
     onQuickReplySend?: (params: { sessionId: string; serverId?: string | null; message: string }) => boolean | Promise<boolean>;
     onQuickReplyInputLockChange?: (locked: boolean) => void;
-    onQuickReplyCleanEscape?: () => void;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
     const openProgress = useDesktopActivityOverlayMotionProgress();
@@ -62,13 +74,38 @@ export function DesktopActivityOverlayExpanded(props: Readonly<{
         setCompletionAutoDismissPaused(false);
         props.onHoverOut?.();
     }, [props.onHoverOut]);
+    const { onDismissKey, onFocusWithinChange } = props;
+    const handleFocusIn = React.useCallback(() => onFocusWithinChange?.(true), [onFocusWithinChange]);
+    const handleFocusOut = React.useCallback(() => onFocusWithinChange?.(false), [onFocusWithinChange]);
+    const handleKeyDown = React.useCallback((event: DesktopActivityOverlayKeyEvent) => {
+        if (!isDesktopActivityOverlayDismissKey(readDesktopActivityOverlayEventKey(event))) {
+            return;
+        }
+        onDismissKey?.();
+    }, [onDismissKey]);
+    const initialFocusTarget = React.useMemo(
+        () => resolveDesktopActivityOverlayInitialFocusTarget(props.model, {
+            quickReplyVisible: shouldRenderQuickReply,
+        }),
+        [props.model, shouldRenderQuickReply],
+    );
 
     return (
-        <Pressable
+        // The shell only tracks hover to pause completion auto-dismiss. A `Pressable` would make it
+        // a react-native-web focus stop with no action, so hover rides on pointer events instead.
+        //
+        // React delivers `onFocus`/`onBlur` as delegated `focusin`/`focusout`, and `keydown` bubbles,
+        // so the shell sees descendant focus and keys without a focus manager. `tabIndex={-1}` keeps
+        // it programmatically focusable — the last-resort Escape owner — without adding a tab stop.
+        <View
+            ref={props.surfaceRef}
             testID="desktop-activity-overlay-expanded"
-            onHoverIn={handleHoverIn}
-            onHoverOut={handleHoverOut}
-            onPress={() => {}}
+            tabIndex={-1}
+            onPointerEnter={handleHoverIn}
+            onPointerLeave={handleHoverOut}
+            onFocus={handleFocusIn}
+            onBlur={handleFocusOut}
+            {...({ onKeyDown: handleKeyDown } as Record<string, unknown>)}
             style={[
                 styles.container,
                 props.visualMode === 'notch_integrated'
@@ -117,6 +154,9 @@ export function DesktopActivityOverlayExpanded(props: Readonly<{
                     onOpenSession={props.onOpenSession}
                     onAction={props.onAction}
                     completionAutoDismissPaused={completionAutoDismissPaused}
+                    initialFocusTarget={initialFocusTarget}
+                    initialFocusRef={props.initialFocusRef}
+                    onDismissKey={props.onDismissKey}
                 />
                 {shouldRenderQuickReply ? (
                     <DesktopActivityOverlayQuickReplyComposer
@@ -124,6 +164,7 @@ export function DesktopActivityOverlayExpanded(props: Readonly<{
                         phrases={quickReply?.phrases ?? []}
                         draft={quickReplyDraft}
                         targetAvailable={quickReplyTargetAvailable}
+                        inputRef={initialFocusTarget.kind === 'quick_reply_input' ? props.initialFocusRef : undefined}
                         onDraftChange={props.onQuickReplyDraftChange}
                         onSend={(message) => {
                             if (!quickReply || quickReplyServerId.length === 0) {
@@ -136,11 +177,11 @@ export function DesktopActivityOverlayExpanded(props: Readonly<{
                             }) ?? false;
                         }}
                         onInputLockChange={props.onQuickReplyInputLockChange}
-                        onCleanEscape={props.onQuickReplyCleanEscape}
+                        onDismissKey={props.onDismissKey}
                     />
                 ) : null}
             </ScrollView>
-        </Pressable>
+        </View>
     );
 }
 

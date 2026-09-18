@@ -3,18 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
 
 describe('VoiceTranscriptProjector', () => {
-    it('uses canonical transcript provenance without writing the retired source arm', async () => {
+    it('keeps the exact realtime provider source on the canonical turn origin', async () => {
         const { buildRealtimeConversationTurnMeta } = await import('./VoiceTranscriptProjector');
 
         expect(buildRealtimeConversationTurnMeta({
             pluginId: 'happier.agent.codex',
             contributionId: 'realtime-codex',
         })).toEqual({
-            happierProvenanceV1: {
-                v: 1,
-                kind: 'host',
-                producer: 'executionRunVoice',
-            },
             happier: {
                 kind: 'conversation_turn.v1',
                 payload: { v: 1 },
@@ -22,6 +17,10 @@ describe('VoiceTranscriptProjector', () => {
                     v: 1,
                     channel: 'realtime_conversation',
                     modality: 'voice',
+                    source: {
+                        pluginId: 'happier.agent.codex',
+                        contributionId: 'realtime-codex',
+                    },
                 },
             },
         });
@@ -63,11 +62,6 @@ describe('VoiceTranscriptProjector', () => {
 
         expect(first?.id).toBe(second?.id);
         expect(first?.meta).toEqual({
-            happierProvenanceV1: {
-                v: 1,
-                kind: 'host',
-                producer: 'executionRunVoice',
-            },
             happier: {
                 kind: 'voice_agent_turn.v1',
                 payload: {

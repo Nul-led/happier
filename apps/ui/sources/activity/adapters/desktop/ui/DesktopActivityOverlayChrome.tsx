@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import type { UnistylesThemes } from 'react-native-unistyles';
 import Svg, { Path } from 'react-native-svg';
@@ -264,6 +264,23 @@ export function createDesktopActivityOverlayInteriorSurfaceStyle(
         ),
         borderRadius: params.kind === 'badge' ? 999 : (params.kind === 'card' ? 18 : 10),
     };
+}
+
+/**
+ * The canonical keyboard focus ring, matching `components/ui/lists/ItemRowActions`: an inset web
+ * outline in `border.focus`. The island chrome is a fixed near-black surface in both themes, and the
+ * light (`#007AFF`) and dark (`#9EB9FF`) rings both clear the 3:1 non-text contrast ratio against it.
+ */
+export function createDesktopActivityOverlayFocusRingStyle(theme: Theme): Record<string, unknown> {
+    return Platform.select({
+        web: {
+            outlineStyle: 'solid',
+            outlineWidth: 2,
+            outlineColor: theme.colors.border.focus,
+            outlineOffset: -2,
+        },
+        default: {},
+    }) as Record<string, unknown>;
 }
 
 export function DesktopActivityOverlayChromeHighlights(props: Readonly<{

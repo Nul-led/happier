@@ -13,7 +13,10 @@ import {
 import { resolvePluginDisplayString } from '@/components/plugins/surfaces/resolvePluginDisplayString';
 import type { PluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
 import { canRenderPluginUiProjectionEntry, type PluginUiPolicyEvaluationContext } from '@/sync/domains/plugins/ui/policy';
-import type { PluginUiSurfacePlacementProjection } from '@/sync/domains/plugins/ui/projection';
+import type {
+    PluginUiPhysicalSurfacePlacementProjection,
+    PluginUiSurfacePlacementProjection,
+} from '@/sync/domains/plugins/ui/projection';
 import type { IconName } from '@/components/ui/icons/Icon';
 
 /**
@@ -119,8 +122,17 @@ export function normalizePluginSurfaceDestinationSlug(value: string): string {
     return normalized.length > 0 ? normalized : 'surface';
 }
 
+/**
+ * The one projected-placement display label.
+ *
+ * It reads only fields every physical placement carries, so an embedded inline
+ * surface (a Session widget) names itself through exactly the same authored
+ * literal/key/developer-fallback precedence as a navigable destination. A second
+ * label resolver for inline roles would let the same contribution be called two
+ * different things in the picker and in its mounted frame.
+ */
 export function resolvePluginSurfaceDestinationLabel(
-    placement: PluginUiSurfacePlacementProjection,
+    placement: PluginUiPhysicalSurfacePlacementProjection,
     localize?: PluginLocalizedTextResolver,
 ): string {
     // `labelKey`/`titleKey` are translation KEYS, `label`/`title` are authored
@@ -143,7 +155,7 @@ export function resolvePluginSurfaceDestinationLabel(
 }
 
 export function resolvePluginSurfaceDestinationIcon(
-    placement: PluginUiSurfacePlacementProjection,
+    placement: PluginUiPhysicalSurfacePlacementProjection,
     direction?: PluginUiIconDirection,
 ): IconName {
     const token = readPluginSurfaceString(placement.display.iconToken)

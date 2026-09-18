@@ -7,7 +7,7 @@ export type SessionMessagesStateLike<TMessage = Message> = Readonly<{
     messagesMap?: Readonly<Record<string, TMessage>>;
 }>;
 
-type StoredMessageFromStateLike<TState, TFallback = Message> =
+export type StoredMessageFromStateLike<TState, TFallback = Message> =
     TState extends Readonly<{ messagesById?: Readonly<Record<string, infer TMessage>> }>
         ? TMessage
         : TState extends Readonly<{ messagesMap?: Readonly<Record<string, infer TMessage>> }>

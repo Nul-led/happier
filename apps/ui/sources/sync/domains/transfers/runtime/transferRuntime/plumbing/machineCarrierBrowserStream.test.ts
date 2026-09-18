@@ -60,9 +60,15 @@ const targetToken = 'header.eyJzdWIiOiJhY2NvdW50LWIifQ.signature';
 const BROWSER_ENDPOINT_ID = 'b'.repeat(64);
 const TARGET_ENDPOINT_ID = 'a'.repeat(64);
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: { getCredentialsForServerUrl: (...args: unknown[]) => boundaries.getCredentials(...args) },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal: importOriginal as () => Promise<typeof import('@/auth/storage/tokenStorage')>,
+        tokenStorage: {
+            getCredentialsForServerUrl: (...args: unknown[]) => boundaries.getCredentials(...args),
+        },
+    });
+});
 vi.mock('@/sync/domains/machines/peer/mediation/stream/productionRouteHttp', () => ({
     resolveTargetServer: (requestedServerId?: string | null) => boundaries.resolveTargetServer(requestedServerId),
     requestPeerRouteGrantV2: (...args: unknown[]) => boundaries.requestGrant(...args),
@@ -70,8 +76,8 @@ vi.mock('@/sync/domains/machines/peer/mediation/stream/productionRouteHttp', () 
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
     getReadyServerFeatures: async () => ({ features: {} }),
 }));
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-    captureSessionRequestAuthorityForServerAccountScope: (...args: unknown[]) => boundaries.captureAuthority(...args),
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+    captureServerRequestAuthorityForServerAccountScope: (...args: unknown[]) => boundaries.captureAuthority(...args),
 }));
 vi.mock('@/sync/domains/state/storage', () => ({
     storage: {
@@ -94,11 +100,11 @@ vi.mock('@/sync/domains/state/storage', () => ({
         }),
     },
 }));
-vi.mock('@/sync/runtime/nativeIrohTunnels/machineHttpLifecycle', () => ({
+vi.mock('@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle', () => ({
     getIrohApplicationEndpoint: async () => ({ endpointId: 'e'.repeat(64) }),
-    isIrohMachineHttpLifecycleAvailable: () => true,
-    probeIrohMachineHttpLifecycleAvailability: async () => true,
-    startIrohMachineHttpTunnel: vi.fn(),
+    isIrohMachineTransferLifecycleAvailable: () => true,
+    probeIrohMachineTransferLifecycleAvailability: async () => true,
+    startIrohMachineTransferTunnel: vi.fn(),
 }));
 
 function grantedResponse(request: Readonly<{
@@ -241,8 +247,6 @@ async function acquireWith(
         operationId: 'prepared-browser-1',
         machineId: 'machine-1',
         serverId: 'server-1',
-        flow: 'file_transfer',
-        maxBytes: 5,
         acquireEndpointLease: endpointLease.acquireEndpointLease,
         openMachineCarrierStream: machineStream.open,
         ...overrides,
@@ -330,8 +334,6 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
             operationId: 'prepared-browser-mismatch',
             machineId: 'machine-1',
             serverId: 'server-1',
-            flow: 'file_transfer',
-            maxBytes: 5,
             acquireEndpointLease: endpointLease.acquireEndpointLease,
             openMachineCarrierStream: mismatched.open,
         })).rejects.toMatchObject({ errorCode: 'machine_carrier_transport_failed' });
@@ -351,8 +353,6 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
             operationId: 'prepared-browser-reject',
             machineId: 'machine-1',
             serverId: 'server-1',
-            flow: 'file_transfer',
-            maxBytes: 5,
             acquireEndpointLease: endpointLease.acquireEndpointLease,
             openMachineCarrierStream: rejected.open,
         })).rejects.toMatchObject({
@@ -369,7 +369,6 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
         const responseChunk = new Uint8Array([9, 8, 7]);
         const { lease, machineStream } = await acquireWith({
             operationId: 'prepared-browser-bytes',
-            maxBytes: payload.byteLength,
         }, { inboundChunks: [responseChunk] });
 
         await lease.duplex.write(payload);
@@ -392,8 +391,6 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
             operationId: 'prepared-browser-abort',
             machineId: 'machine-1',
             serverId: 'server-1',
-            flow: 'file_transfer',
-            maxBytes: 5,
             signal: controller.signal,
             acquireEndpointLease: endpointLease.acquireEndpointLease,
             openMachineCarrierStream: hanging.open,
@@ -428,8 +425,6 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
             operationId: 'prepared-browser-release-retry',
             machineId: 'machine-1',
             serverId: 'server-1',
-            flow: 'file_transfer',
-            maxBytes: 5,
             acquireEndpointLease: endpointLease.acquireEndpointLease,
             openMachineCarrierStream: failingClose.open,
         });
@@ -461,8 +456,6 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
             operationId: 'prepared-browser-lease-retry',
             machineId: 'machine-1',
             serverId: 'server-1',
-            flow: 'file_transfer',
-            maxBytes: 5,
             acquireEndpointLease: endpointLease.acquireEndpointLease,
             openMachineCarrierStream: machineStream.open,
         });
@@ -494,8 +487,6 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
             operationId: 'prepared-browser-coalesce',
             machineId: 'machine-1',
             serverId: 'server-1',
-            flow: 'file_transfer',
-            maxBytes: 5,
             acquireEndpointLease: endpointLease.acquireEndpointLease,
             openMachineCarrierStream: machineStream.open,
         });
@@ -530,8 +521,6 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
             operationId: 'prepared-browser-custody',
             machineId: 'machine-1',
             serverId: 'server-1',
-            flow: 'file_transfer',
-            maxBytes: 5,
             acquireEndpointLease: endpointLease.acquireEndpointLease,
             openMachineCarrierStream: refusedOpen,
         });
@@ -555,8 +544,6 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
             operationId: 'prepared-browser-missing-target',
             machineId: 'machine-1',
             serverId: 'server-1',
-            flow: 'file_transfer',
-            maxBytes: 5,
             acquireEndpointLease: endpointLease.acquireEndpointLease,
             openMachineCarrierStream: missing.open,
         })).rejects.toThrow('A direct machine connection is required for this transfer.');

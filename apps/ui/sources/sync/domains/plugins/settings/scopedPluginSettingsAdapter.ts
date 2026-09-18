@@ -159,7 +159,7 @@ export type ScopedPluginSettingsReadResult =
  */
 export type ScopedPluginSettingsConflictResult = Readonly<{
     status: 'conflict';
-    snapshot: ScopedPluginSettingsSnapshot;
+    snapshot?: ScopedPluginSettingsSnapshot;
 }>;
 
 /**
@@ -174,8 +174,20 @@ export type ScopedPluginSettingsOutcomeUnknownResult = Readonly<{
 
 export type ScopedPluginSettingsWriteResult =
     | ScopedPluginSettingsReadResult
+    /** Exact write settlement after its presentation lifetime has retired. */
+    | Readonly<{ status: 'applied'; revision: ScopedPluginSettingsRevision }>
     | ScopedPluginSettingsConflictResult
     | ScopedPluginSettingsOutcomeUnknownResult;
+
+/** Preserve issued-write truth without disclosing a retired presentation. */
+export function withoutScopedPluginSettingsWriteSnapshot(
+    result: ScopedPluginSettingsWriteResult,
+): ScopedPluginSettingsWriteResult {
+    if (result.status === 'ready') return { status: 'applied', revision: result.snapshot.revision };
+    if (result.status === 'conflict') return { status: 'conflict' };
+    if (result.status === 'outcomeUnknown') return { status: 'outcomeUnknown' };
+    return result;
+}
 
 /**
  * A host-private SavedSecret selection is a one-shot Account-secret intent.
@@ -646,7 +658,7 @@ export function createAccountScopedPluginSettingsTransport(
                     const refreshed = await read(input);
                     return refreshed.status === 'ready'
                         ? { status: 'conflict', snapshot: refreshed.snapshot }
-                        : refreshed;
+                        : { status: 'conflict' };
                 }
                 if (result.status === 'outcomeUnknown') {
                     // The transport owner established possible dispatch. It

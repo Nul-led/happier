@@ -9,14 +9,17 @@ describe('formatAutomationError', () => {
             new AutomationApiError({ code: 'sourceTurnNotCurrent', status: 409, message: 'secret server detail' }),
             'Fallback',
         );
-        expect(result.action).toBe('automations.exactTurn.useCurrentTurn');
-        expect(result.message).toBe('automations.exactTurn.staleBody');
+        expect(result.action).toBe('Use current turn');
+        expect(result.message).toBe(
+            'The selected turn is no longer the active parent turn. Refresh and choose the current turn explicitly.',
+        );
+        expect(result.message).not.toContain('secret server detail');
     });
 
     it('does not expose unknown server messages', () => {
         expect(formatAutomationError(
             new AutomationApiError({ code: 'unknown', status: 500, message: 'internal secret' }),
             'Fallback',
-        )).toEqual({ message: 'Fallback', action: 'Try again.' });
+        )).toEqual({ message: 'Fallback', action: 'Please try again' });
     });
 });

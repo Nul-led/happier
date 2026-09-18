@@ -7,8 +7,6 @@ import {
 import {
     decodePeerTcpTunnelBinaryFrameForSession,
     decodePeerTcpTunnelBinarySubstreamFrame,
-    decodeLegacyJsonPeerTcpTunnelFrame,
-    encodeLegacyJsonPeerTcpTunnelFrame,
     encodePeerTcpTunnelBinaryFrameForSession,
     encodePeerTcpTunnelBinaryFrameForSubstream,
     encodePeerTcpTunnelBinarySubstreamOpen,
@@ -159,16 +157,14 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
     }
 
     socket.onmessage = (event) => {
-        const decodedSubstream = input.response.encoding === 'binary_frame_v2'
-            ? (() => {
+        const decodedSubstream = (() => {
                 const bytes = toWebSocketBytes(event.data);
                 return bytes ? decodePeerTcpTunnelBinarySubstreamFrame({
                     frame: bytes,
                     maxBinaryHeaderBytes: input.response.maxFrameBytes,
                     maxRawPayloadBytes: input.response.maxFrameBytes,
                 }) : null;
-            })()
-            : null;
+            })();
         if (decodedSubstream?.ok && decodedSubstream.frame.tunnelId === input.open.tunnelId) {
             for (const handler of substreamHandlers) handler({
                 substreamId: decodedSubstream.substreamId,
@@ -176,8 +172,7 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
             });
             return;
         }
-        const frame = input.response.encoding === 'binary_frame_v2'
-            ? (() => {
+        const frame = (() => {
                 const bytes = toWebSocketBytes(event.data);
                 if (!bytes) return null;
                 const decoded = decodePeerTcpTunnelBinaryFrameForSession({
@@ -186,8 +181,7 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
                     maxRawPayloadBytes: input.response.maxFrameBytes,
                 });
                 return decoded.ok ? decoded.frame : null;
-            })()
-            : decodeLegacyJsonPeerTcpTunnelFrame(event.data);
+            })();
         if (!frame || frame.tunnelId !== input.open.tunnelId) return;
         for (const handler of handlers) handler(frame);
     };
@@ -197,9 +191,7 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
     return {
         sendFrame: (frame) => {
             assertPeerTcpTunnelStreamWritable(closed);
-            socket.send(input.response.encoding === 'binary_frame_v2'
-                ? encodePeerTcpTunnelBinaryFrameForSession(frame)
-                : encodeLegacyJsonPeerTcpTunnelFrame(frame));
+            socket.send(encodePeerTcpTunnelBinaryFrameForSession(frame));
         },
         onFrame: (handler) => {
             handlers.add(handler);
@@ -209,7 +201,6 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
         },
         sendSubstreamOpen: (substreamId) => {
             assertPeerTcpTunnelStreamWritable(closed);
-            if (input.response.encoding !== 'binary_frame_v2') return;
             socket.send(encodePeerTcpTunnelBinarySubstreamOpen({
                 tunnelId: input.open.tunnelId,
                 substreamId,
@@ -217,7 +208,6 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
         },
         sendSubstreamDataFrame: (substreamId, frame) => {
             assertPeerTcpTunnelStreamWritable(closed);
-            if (input.response.encoding !== 'binary_frame_v2') return;
             socket.send(encodePeerTcpTunnelBinaryFrameForSubstream({ substreamId, frame: {
                 v: 1,
                 kind: 'data',
@@ -229,7 +219,6 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
         },
         sendSubstreamFrame: (substreamId, frame) => {
             assertPeerTcpTunnelStreamWritable(closed);
-            if (input.response.encoding !== 'binary_frame_v2') return;
             socket.send(encodePeerTcpTunnelBinaryFrameForSubstream({
                 substreamId,
                 frame,

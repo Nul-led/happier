@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { ServerCredentialLookupOptions } from '@/auth/storage/tokenStorage';
+
 import { flushHookEffects, renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
 import type { PersonalHomeFacts } from './personalHomeBootstrapTypes';
 
@@ -102,7 +104,7 @@ const harness = vi.hoisted(() => {
     let lastPersistedSeed: Uint8Array | null = null;
     const authCallSecrets: Uint8Array[] = [];
 
-    function seedCustodyKey(serverUrl: string, options: Readonly<{ serverId?: string }> | undefined): string {
+    function seedCustodyKey(serverUrl: string, options: ServerCredentialLookupOptions | undefined): string {
         return `${serverUrl}|${options?.serverId ?? ''}`;
     }
 
@@ -184,16 +186,16 @@ const harness = vi.hoisted(() => {
         },
         pendingSeedStore: () => [...pendingSeedStore.entries()].map(([key, seed]) => ({ key, seed })),
         authCallSecrets: () => authCallSecrets.map((seed) => new Uint8Array(seed)),
-        readPendingSeed: (serverUrl: string, options?: Readonly<{ serverId?: string }>) => {
+        readPendingSeed: (serverUrl: string, options?: ServerCredentialLookupOptions) => {
             const seed = pendingSeedStore.get(seedCustodyKey(serverUrl, options));
             return seed ? new Uint8Array(seed) : null;
         },
-        setPendingSeed: (serverUrl: string, options: Readonly<{ serverId?: string }> | undefined, seed: Uint8Array) => {
+        setPendingSeed: (serverUrl: string, options: ServerCredentialLookupOptions | undefined, seed: Uint8Array) => {
             pendingSeedStore.set(seedCustodyKey(serverUrl, options), new Uint8Array(seed));
             lastPersistedSeed = new Uint8Array(seed);
             return Promise.resolve(true);
         },
-        clearPendingSeed: (serverUrl: string, options?: Readonly<{ serverId?: string }>) => {
+        clearPendingSeed: (serverUrl: string, options?: ServerCredentialLookupOptions) => {
             pendingSeedStore.delete(seedCustodyKey(serverUrl, options));
             return Promise.resolve(true);
         },
@@ -227,6 +229,14 @@ const harness = vi.hoisted(() => {
             currentWindowLabel.mockReturnValue('main');
         },
     };
+});
+
+// The shell reveal keeps the departing setup frame mounted for ONE settle after the gate releases
+// (`PersonalHomeSetupReveal`), so this suite — which asserts the state the user is left in, not the
+// transition — opts the canonical reanimated mock into settling `withTiming` completion callbacks.
+vi.mock('react-native-reanimated', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock({ settleTimingCallbacks: true });
 });
 
 vi.mock('expo-router', async () => {
@@ -269,12 +279,15 @@ vi.mock('@/auth/flows/getToken', () => ({
     authGetTokenAtEndpoint: harness.authGetTokenAtEndpoint,
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
         getCredentialsForServerUrl: vi.fn(async () => harness.getCredentials()),
         setCredentialsForServerUrl: vi.fn(async (
             _url: string,
-            _options: Readonly<{ serverId?: string }>,
+            _options: ServerCredentialLookupOptions,
             credentials: Readonly<{ token: string }>,
         ) => {
             harness.setCredentials(credentials);
@@ -282,19 +295,20 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
         }),
         getPendingPersonalHomeBootstrapSeed: vi.fn(async (
             serverUrl: string,
-            options?: Readonly<{ serverId?: string }>,
+            options?: ServerCredentialLookupOptions,
         ) => harness.readPendingSeed(serverUrl, options)),
         setPendingPersonalHomeBootstrapSeed: vi.fn(async (
             serverUrl: string,
-            options: Readonly<{ serverId?: string }> | undefined,
+            options: ServerCredentialLookupOptions | undefined,
             seed: Uint8Array,
         ) => harness.setPendingSeed(serverUrl, options, seed)),
         clearPendingPersonalHomeBootstrapSeed: vi.fn(async (
             serverUrl: string,
-            options?: Readonly<{ serverId?: string }>,
+            options?: ServerCredentialLookupOptions,
         ) => harness.clearPendingSeed(serverUrl, options)),
-    },
-}));
+        },
+    });
+});
 
 vi.mock('@/platform/cryptoRandom', () => ({
     getRandomBytes: vi.fn(() => new Uint8Array(32).fill(7)),
@@ -349,21 +363,21 @@ const initialFacts: PersonalHomeFacts = {
 describe('usePersonalHomeBootstrapRuntime production composition', () => {
     afterEach(async () => {
         standardCleanup();
-        harness.reset();
+        await harness.reset();
         const profiles = await import('@/sync/domains/server/serverProfiles');
         profiles.clearTabActiveServerId();
-        for (const profile of profiles.listServerProfiles()) profiles.removeServerProfile(profile.id);
+        for (const profile of profiles.listServerProfiles()) await profiles.removeServerProfile(profile.id);
     });
 
     it('runs the canonical bootstrap through system tasks, persists token-only credentials, adopts only after verification, and preserves focus', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        for (const profile of profiles.listServerProfiles()) profiles.removeServerProfile(profile.id);
-        const focusedHome = profiles.upsertServerProfile({
+        for (const profile of profiles.listServerProfiles()) await profiles.removeServerProfile(profile.id);
+        const focusedHome = await profiles.upsertServerProfile({
             serverUrl: 'https://home-a.example',
             name: 'Focused Home A',
             source: 'manual',
         });
-        profiles.setActiveServerId(focusedHome.id);
+        await profiles.setActiveServerId(focusedHome.id);
 
         const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
         const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
@@ -632,11 +646,11 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
 
         // The server picker owns the actual decision. Once it records an explicit unrelated
         // Home, the same durable selection releases this first-run gate on a later read/remount.
-        const otherHome = profiles.upsertServerProfile({
+        const otherHome = await profiles.upsertServerProfile({
             serverUrl: 'https://chosen-home.example',
             source: 'manual',
         });
-        profiles.setActiveServerId(otherHome.id);
+        await profiles.setActiveServerId(otherHome.id);
         const runtimeHook = await renderHook(() => usePersonalHomeBootstrapRuntime());
         const facts = await runtimeHook.getCurrent().readFacts();
         expect(facts.explicitlySelectedOtherHome).toBe(true);
@@ -726,7 +740,7 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         expect(harness.useLocalDaemonControl).not.toHaveBeenCalled();
 
         standardCleanup();
-        harness.reset();
+        await harness.reset();
 
         harness.isDesktopOverlayWindowContext.mockReturnValue(true);
         harness.currentWindowLabel.mockReturnValue('activity_overlay');

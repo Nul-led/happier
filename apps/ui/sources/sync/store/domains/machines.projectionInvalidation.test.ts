@@ -49,12 +49,13 @@ function makeMachine(overrides?: Partial<Machine>): Machine {
 function createHarness(createMachinesDomain: any) {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         machines: {},
         profile: { id: 'account-1' },
         settings: {
-            groupInactiveSessionsByProject: false,
             sessionListActiveGroupingV1: undefined,
             sessionListInactiveGroupingV1: undefined,
             sessionListSectionModeV1: undefined,
@@ -89,6 +90,19 @@ async function loadMachinesDomain() {
 }
 
 describe('machines domain: contribution projection currentness', () => {
+    it('preserves an exact temporary Machine when ordinary inventory is refreshed', async () => {
+        const { createMachinesDomain } = await loadMachinesDomain();
+        const { domain, get } = createHarness(createMachinesDomain);
+        const temporary = makeMachine({ id: 'temporary', kind: 'ephemeral_session_runner' });
+        domain.applyMachines([temporary], false, { sourceServerId: 'server_a' });
+        domain.replaceMachineDisplays([], { sourceServerId: 'server_a' });
+        expect(get().machineDisplayById.temporary).toMatchObject({ id: 'temporary', kind: 'ephemeral_session_runner' });
+        domain.applyMachines([makeMachine({ id: 'persistent' })], true, { sourceServerId: 'server_a' });
+
+        expect(get().machines.temporary).toEqual(temporary);
+        expect(get().machineListByServerId.server_a.map((machine: Machine) => machine.id)).toContain('temporary');
+    });
+
     it('advances the projection revision for exactly the scopes whose daemon state advanced', async () => {
         const { createMachinesDomain, revision } = await loadMachinesDomain();
         const { domain } = createHarness(createMachinesDomain);

@@ -3,11 +3,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MessageActionReferenceV1 } from '@happier-dev/protocol';
 import type { ApiMessage } from '@/sync/api/types/apiTypes';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { storage } from '@/sync/domains/state/storage';
+import { createSessionFixture } from '@/dev/testkit';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import type { NormalizedMessage } from '@/sync/typesRaw';
 
-import { runSessionMessagesPagePipeline } from './sessionMessagesPagePipeline';
+import { runSessionMessagesPagePipeline, type SessionMessagesEncryption } from './sessionMessagesPagePipeline';
 import { handleMessageUpdatedSocketUpdate } from './sessionSocketUpdate';
+
+// Match the production encryption owner's stable cipher identity until replacement.
+function sessionEncryptionGetter(encryption: SessionMessagesEncryption) {
+    return () => encryption;
+}
 
 function buildEncryptedApiMessage(params: {
     id: string;
@@ -75,7 +82,146 @@ function buildLifecycleContent(message: ApiMessage) {
 }
 
 describe('runSessionMessagesPagePipeline', () => {
+    it('drops a held page after the Session cipher is replaced without applying rows or advancing currentness', async () => {
+        const { Encryption } = await import('@/sync/encryption/encryption');
+        const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+        await encryption.initializeSessions(new Map([['s1', new Uint8Array(32).fill(8)]]));
+        const reader = encryption.getSessionEncryption('s1')!;
+        const ciphertext = await reader.encryptRaw({ role: 'user', content: { type: 'text', text: 'stale' } });
+        const messages = [{ ...buildEncryptedApiMessage({ id: 'stale-cipher', seq: 1 }), content: { t: 'encrypted', c: ciphertext } }];
+        storage.getState().applySessions([createSessionFixture({ id: 's1' })]);
+        const sessionReceivedMessages = new Map<string, Map<string, number>>();
+        let publishedPage = false;
+        let failed = false;
+        const result = await runSessionMessagesPagePipeline({
+            sessionId: 's1', purpose: 'initial',
+            page: { direction: 'initial', requestPath: '/messages', scope: 'main' },
+            lifecyclePolicy: 'suppress', sessionEncryptionMode: 'e2ee',
+            getSessionEncryption: () => encryption.getSessionEncryption('s1'),
+            request: async () => {
+                await encryption.initializeSessions(new Map([['s1', new Uint8Array(32).fill(9)]]));
+                return Response.json({ messages });
+            },
+            sessionReceivedMessages,
+            applyMessages: (id, rows) => storage.getState().applyMessages(id, rows),
+            onMessagesPage: () => { publishedPage = true; },
+            onContentAuthenticationFailure: () => { failed = true; },
+            log: { log: () => {} },
+        });
+        expect(result.applied).toBe(0);
+        expect(publishedPage).toBe(false);
+        expect(failed).toBe(false);
+        expect(sessionReceivedMessages.size).toBe(0);
+        expect(Object.keys(storage.getState().sessionMessages.s1?.messagesById ?? {})).toEqual([]);
+    });
+
+    it.each(['authentication_failure', 'unsupported_content', 'authenticated_false', 'authenticated_zero', 'authenticated_empty_string', 'authenticated_null'] as const)(
+        'reports only cryptographic unreadability while preserving valid page rows (%s)',
+        async (failure) => {
+            const { Encryption } = await import('@/sync/encryption/encryption');
+            const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+            const wrongWriter = await Encryption.create(new Uint8Array(32).fill(7));
+            await encryption.initializeSessions(new Map([['s1', new Uint8Array(32).fill(8)]]));
+            await wrongWriter.initializeSessions(new Map([['s1', new Uint8Array(32).fill(9)]]));
+            const reader = encryption.getSessionEncryption('s1')!;
+            const text = { role: 'user', content: { type: 'text', text: 'kept content' } };
+            const goodCiphertext = await reader.encryptRaw(text);
+            const otherCiphertext = failure === 'authentication_failure'
+                ? await wrongWriter.getSessionEncryption('s1')!.encryptRaw(text)
+                : await reader.encryptRaw({
+                    unsupported_content: { unsupportedFutureRecord: true },
+                    authenticated_false: false,
+                    authenticated_zero: 0,
+                    authenticated_empty_string: '',
+                    authenticated_null: null,
+                }[failure]);
+            const messages = [goodCiphertext, otherCiphertext].map((ciphertext, index) => ({
+                ...buildEncryptedApiMessage({ id: `crypto-row-${index}`, seq: index + 1 }),
+                content: { t: 'encrypted' as const, c: ciphertext },
+            }));
+            const applied: NormalizedMessage[] = [];
+            const sessionReceivedMessages = new Map<string, Map<string, number>>();
+            let contentFailure = false;
+            storage.getState().applySessions([createSessionFixture({
+                id: 's1', encryptionMode: 'e2ee', encryptedContentAvailability: 'ready',
+            })]);
+
+            const result = await runSessionMessagesPagePipeline({
+                sessionId: 's1', purpose: 'initial',
+                page: { direction: 'initial', requestPath: '/messages', scope: 'main' },
+                lifecyclePolicy: 'suppress', sessionEncryptionMode: 'e2ee',
+                getSessionEncryption: () => reader,
+                request: async () => new Response(JSON.stringify({ messages })),
+                sessionReceivedMessages,
+                applyMessages: (id, rows) => {
+                    applied.push(...rows);
+                    storage.getState().applyMessages(id, rows);
+                },
+                onContentAuthenticationFailure: () => { contentFailure = true; },
+                log: { log: () => {} },
+            });
+
+            expect(result.appliedMessageIds).toEqual(['crypto-row-0']);
+            expect(applied).toEqual([expect.objectContaining({ id: 'crypto-row-0' })]);
+            expect(Object.values(storage.getState().sessionMessages.s1?.messagesById ?? {})).toEqual([
+                expect.objectContaining({ realID: 'crypto-row-0', kind: 'user-text', text: 'kept content' }),
+            ]);
+            expect(contentFailure).toBe(failure === 'authentication_failure');
+            expect(sessionReceivedMessages.get('s1')?.has('crypto-row-0')).toBe(true);
+            expect(sessionReceivedMessages.get('s1')?.has('crypto-row-1')).not.toBe(true);
+        },
+    );
+
+    it.each(['home-a', 'home-b', undefined])('qualifies actor metadata from the page request Home outside encrypted content (%s)', async (serverId) => {
+        const actor = { v: 1, accountId: 'alice', profile: null };
+        const row = { ...buildEncryptedApiMessage({ id: 'actor-row', seq: 1 }), accountActor: actor };
+        const result = await runSessionMessagesPagePipeline({
+            sessionId: 's1', serverId, purpose: 'initial',
+            page: { direction: 'initial', requestPath: '/messages', scope: 'main' },
+            lifecyclePolicy: 'suppress',
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: async (rows) => rows.map((item) => buildTextContent(item)) }),
+            request: async () => new Response(JSON.stringify({ messages: [row] })),
+            sessionReceivedMessages: new Map(), applyMessages: () => {}, log: { log: () => {} },
+        });
+        expect(result.normalizedMessages[0]).toMatchObject({ accountActor: serverId ? { ...actor, serverId } : null });
+    });
+
+    it('refreshes actor presentation when the durable row timestamp has not changed', async () => {
+        const row = buildEncryptedApiMessage({ id: 'actor-refresh', seq: 1 });
+        const sessionReceivedMessages = new Map<string, Map<string, number>>();
+        const profile = { firstName: 'Alice', lastName: null, username: null, avatarUrl: null };
+        const refresh = (accountActor: { v: 1; accountId: string; profile: typeof profile | null } | null) =>
+            runSessionMessagesPagePipeline({
+                sessionId: 's1', serverId: 'home-a', purpose: 'initial',
+                page: { direction: 'initial', requestPath: '/messages', scope: 'main' },
+                lifecyclePolicy: 'suppress',
+                getSessionEncryption: sessionEncryptionGetter({ decryptMessages: async (rows) => rows.map((item) => buildTextContent(item)) }),
+                request: async () => Response.json({ messages: [{ ...row, accountActor }] }),
+                sessionReceivedMessages,
+                applyMessages: (sessionId, messages) => storage.getState().applyMessages(sessionId, messages),
+                log: { log: () => {} },
+            });
+        storage.getState().applySessions([createSessionFixture({ id: 's1' })]);
+        await refresh({ v: 1, accountId: 'alice', profile });
+        const initial = Object.values(storage.getState().sessionMessages.s1?.messagesById ?? {});
+        expect(initial).toHaveLength(1);
+
+        await refresh({ v: 1, accountId: 'alice', profile: null });
+        expect(Object.values(storage.getState().sessionMessages.s1?.messagesById ?? {})).toEqual([
+            expect.objectContaining({
+                id: initial[0].id, realID: row.id, seq: row.seq,
+                text: `hello-${row.id}`,
+                accountActor: { v: 1, accountId: 'alice', serverId: 'home-a', profile: null },
+            }),
+        ]);
+        await refresh(null);
+        expect(Object.values(storage.getState().sessionMessages.s1?.messagesById ?? {})).toEqual([
+            expect.objectContaining({ id: initial[0].id, realID: row.id, accountActor: null }),
+        ]);
+    });
+
     afterEach(() => {
+        storage.setState(storage.getInitialState(), true);
         syncPerformanceTelemetry.configure({ enabled: false });
         syncPerformanceTelemetry.reset();
     });
@@ -106,7 +252,7 @@ describe('runSessionMessagesPagePipeline', () => {
             },
             lifecyclePolicy: 'emit',
             authoritativeUpdateMessageIds,
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
             request,
             sessionReceivedMessages,
             applyMessages,
@@ -195,7 +341,7 @@ describe('runSessionMessagesPagePipeline', () => {
             },
             lifecyclePolicy: 'emit',
             authoritativeUpdateMessageIds: new Set(['stale-row']),
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
             request,
             sessionReceivedMessages,
             applyMessages,
@@ -207,7 +353,7 @@ describe('runSessionMessagesPagePipeline', () => {
             log: { log: () => {} },
         });
 
-        await vi.waitFor(() => expect(decryptMessages).toHaveBeenCalledWith([stalePageMessage]));
+        await vi.waitFor(() => expect(decryptMessages.mock.calls[0]?.[0]).toEqual([stalePageMessage]));
 
         // A newer same-row socket correction lands while the marked HTTP page
         // is still decrypting. The targeted refetch must not regress either
@@ -273,7 +419,7 @@ describe('runSessionMessagesPagePipeline', () => {
                 limit: 1,
             },
             lifecyclePolicy: 'emit',
-            getSessionEncryption: () => ({
+            getSessionEncryption: sessionEncryptionGetter({
                 decryptMessages: async () => [buildTextContent(message)],
             }),
             request: async () => new Response(
@@ -316,7 +462,7 @@ describe('runSessionMessagesPagePipeline', () => {
             },
             lifecyclePolicy: 'emit',
             isSessionKnown: () => sessionKnown,
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
             request: async () => {
                 markRequestStarted();
                 return await heldResponse;
@@ -365,7 +511,7 @@ describe('runSessionMessagesPagePipeline', () => {
                 limit: 1,
             },
             lifecyclePolicy: 'emit',
-            getSessionEncryption: () => ({
+            getSessionEncryption: sessionEncryptionGetter({
                 decryptMessages: async () => [{
                     id: message.id,
                     seq: message.seq,
@@ -474,7 +620,7 @@ describe('runSessionMessagesPagePipeline', () => {
                 limit: 1,
             },
             lifecyclePolicy: 'emit',
-            getSessionEncryption: () => ({
+            getSessionEncryption: sessionEncryptionGetter({
                 decryptMessages: async () => [{
                     id: message.id,
                     seq: message.seq,
@@ -559,7 +705,7 @@ describe('runSessionMessagesPagePipeline', () => {
                     limit: 1,
                 },
                 lifecyclePolicy: 'emit',
-                getSessionEncryption: () => ({
+                getSessionEncryption: sessionEncryptionGetter({
                     decryptMessages: async () => [{
                         id: message.id,
                         seq: message.seq,
@@ -617,7 +763,7 @@ describe('runSessionMessagesPagePipeline', () => {
                 limit: 2,
             },
             lifecyclePolicy: 'suppress',
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages,
@@ -678,7 +824,7 @@ describe('runSessionMessagesPagePipeline', () => {
                 limit: 1,
             },
             lifecyclePolicy: 'suppress',
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages,
@@ -740,7 +886,7 @@ describe('runSessionMessagesPagePipeline', () => {
                 limit: 1,
             },
             lifecyclePolicy: 'emit',
-            getSessionEncryption: () => ({
+            getSessionEncryption: sessionEncryptionGetter({
                 decryptMessages: async (messages: ApiMessage[]) => messages.map((message) => (
                     message.id === recoveredLifecycle.id
                         ? buildLifecycleContent(message)
@@ -798,7 +944,7 @@ describe('runSessionMessagesPagePipeline', () => {
                 limit: 1,
             },
             lifecyclePolicy: 'suppress',
-            getSessionEncryption: () => ({
+            getSessionEncryption: sessionEncryptionGetter({
                 decryptMessages: async (messages: ApiMessage[]) => messages.map((message) => buildTextContent(message)),
             }),
             request,

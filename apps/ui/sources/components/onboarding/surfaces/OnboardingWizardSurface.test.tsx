@@ -3,13 +3,13 @@ import { act, type ReactTestInstance } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects, renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
-import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
-import { createModalModuleMock } from '@/dev/testkit/mocks/modal';
+import type { IModal } from '@/modal';
 import type { AuthCredentialLifecycleResult } from '@/auth/context/AuthContext';
 import type { AccountEncryptionFirstKeyRecoveryHandle } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
 import type { PendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent.shared';
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
-import { buildHomeQrInviteDeepLink } from '@/auth/pairing/pairingUrl';
+import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
+import type { HomeAuthenticationAction } from '@/auth/capabilities/authMethodCapabilities';
 
 import { WizardModalShell } from '../ui/WizardModalShell';
 import { WizardChoiceRow } from '../ui/WizardChoiceRow';
@@ -24,6 +24,10 @@ const configuredServerUrlEnvMockState = vi.hoisted(() => ({
 
 const runtimeActiveMockState = vi.hoisted(() => ({
     value: true,
+}));
+
+const desktopHostMockState = vi.hoisted(() => ({
+    kind: 'tauri' as 'tauri' | 'electron' | null,
 }));
 
 const syncStoreHooksMockState = vi.hoisted(() => ({
@@ -87,13 +91,10 @@ vi.mock('@/components/onboarding/steps/relayAccess/RelayAccessTailscalePrerequis
     },
 }));
 
-const expoRouterMock = createExpoRouterMock({
-    params: {},
-    router: {
-        push: vi.fn(),
-        replace: vi.fn(),
-    },
-});
+const expoRouterSpies = vi.hoisted(() => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+}));
 
 const setPendingSetupIntentMock = vi.hoisted(() => vi.fn<(value: PendingSetupIntent) => void>());
 const getPendingSetupIntentMock = vi.hoisted(() => vi.fn<() => PendingSetupIntent | null>(() => null));
@@ -273,7 +274,10 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
-vi.mock('expo-router', () => expoRouterMock.module);
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ params: {}, router: expoRouterSpies }).module;
+});
 vi.mock('@/sync/domains/server/readConfiguredServerUrlEnv', () => ({
     readConfiguredServerUrlEnv: () => configuredServerUrlEnvMockState.value,
 }));
@@ -283,6 +287,7 @@ vi.mock('@/sync/domains/pending/pendingSetupIntent', () => ({
     clearPendingSetupIntent: () => clearPendingSetupIntentMock(),
 }));
 vi.mock('@/utils/platform/desktopHost', () => ({
+    desktopHostKind: () => desktopHostMockState.kind,
     isDesktopHost: () => false,
 }));
 vi.mock('@/utils/platform/platform', () => ({
@@ -434,9 +439,6 @@ vi.mock('@/components/onboarding/steps/webDesktop/WebDesktopRelayHostHandoffCont
 vi.mock('@/components/onboarding/steps/webDesktop/WebDesktopBackgroundServiceHandoffContent', () => ({
     WebDesktopBackgroundServiceHandoffContent: (props: Record<string, unknown>) => React.createElement('WebDesktopBackgroundServiceHandoffContent', props),
 }));
-vi.mock('@/components/account/auth/AuthEntryView', () => ({
-    AuthEntryView: (props: Record<string, unknown>) => React.createElement('AuthEntryView', props),
-}));
 vi.mock('../checklists/relayHostLocal/RelayHostLocalChecklistStep', () => ({
     RelayHostLocalChecklistStep: (props: Record<string, unknown>) => {
         React.useEffect(() => {
@@ -474,17 +476,18 @@ vi.mock('@expo/vector-icons/Ionicons', () => ({
     default: 'Ionicons',
     Ionicons: 'Ionicons',
 }));
-vi.mock('@/components/qr/QrCodeScannerView', () => ({
-    QrCodeScannerView: (props: Record<string, unknown>) => React.createElement('QrCodeScannerView', props),
-}));
-const modalMock = createModalModuleMock({
-    spies: {
-        confirm: (title: string, message?: string, options?: unknown) => modalConfirmMock(title, message, options),
-        alert: () => undefined,
-    },
-});
+const modalAlertAsyncMock = vi.hoisted(() => vi.fn<IModal['alertAsync']>());
 
-vi.mock('@/modal', () => modalMock.module);
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({
+        spies: {
+            confirm: (title, message, options) => modalConfirmMock(title, message, options),
+            alert: () => undefined,
+            alertAsync: modalAlertAsyncMock,
+        },
+    }).module;
+});
 vi.mock('@/components/serverProfiles/removeServerProfileUiAction', () => ({
     removeServerProfileUiAction: (params: unknown) => removeServerProfileUiActionMock(params),
 }));
@@ -524,7 +527,22 @@ vi.mock('@/text/i18n', () => ({
     tLoose: (key: string) => key,
 }));
 
+const baseHomeTarget = { kind: 'saved_profile', profileRef: 'relay-profile' } as const;
+const generatedKeyAuthenticationAction = {
+    method: { id: 'key_challenge', enabledActions: [{ id: 'provision', mode: 'keyed' }] },
+    action: { id: 'provision', mode: 'keyed' },
+    execution: { kind: 'generated_key' },
+} satisfies HomeAuthenticationAction;
 const baseAuthOptions = {
+    authenticationCatalog: {
+        provenance: 'structured',
+        methods: [generatedKeyAuthenticationAction.method],
+    },
+    authenticationActions: [generatedKeyAuthenticationAction],
+    keyChallengeV2Available: true,
+    homeTarget: baseHomeTarget,
+    homeLabel: 'Relay Home',
+    observedHomeServerIdentityId: 'relay-profile',
     serverAvailability: 'ready' as const,
     serverUrlForCopy: 'https://relay.example.test',
     showAuthActions: true,
@@ -553,7 +571,7 @@ const baseAuthOptions = {
         toLegacySignupProvider: false,
     },
     retryServerCheck: vi.fn(),
-};
+} satisfies AuthEntryOptions;
 
 describe('OnboardingWizardSurface', () => {
     beforeEach(() => {
@@ -574,14 +592,15 @@ describe('OnboardingWizardSurface', () => {
         systemTaskRunnerState.getSnapshotMock.mockReset();
         systemTaskRunnerState.subscribeMock.mockReset();
         getOrCreateHappierCloudServerProfileMock.mockReset();
-        expoRouterMock.spies.push.mockReset();
-        expoRouterMock.spies.replace.mockReset();
+        expoRouterSpies.push.mockReset();
+        expoRouterSpies.replace.mockReset();
         webQrScannerSupportedMock.value = false;
         webMobileLikeQrScannerHostMock.value = false;
         webMobileLikeQrScannerHostMock.lastArgs = null;
         reactNativeMockState.os = 'web';
         configuredServerUrlEnvMockState.value = null;
         runtimeActiveMockState.value = true;
+        desktopHostMockState.kind = 'tauri';
         activeServerSnapshotMock.serverId = 'relay-profile';
         activeServerSnapshotMock.serverUrl = '';
         activeServerSnapshotMock.activeLocalRelayUrl = null;
@@ -606,10 +625,8 @@ describe('OnboardingWizardSurface', () => {
             layout: 'portrait',
             isDesktopShell: true,
             authEntryOptions: baseAuthOptions,
-            onCreateAccount: vi.fn(),
-            onCreateAccountViaProvider: vi.fn(),
-            onLoginWithKeylessProvider: vi.fn(),
-            onLoginWithMtls: vi.fn(),
+            accountContinuationIntent: { kind: 'enter', target: { kind: 'automatic' } },
+            onAccountDirectoryKeyResult: vi.fn(),
         }));
 
         let controller = hook.getCurrent();
@@ -651,10 +668,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -677,10 +690,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -709,10 +718,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
                 shellChrome: React.createElement('ShellChrome'),
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -727,10 +732,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 wizardChromeMode: 'bare',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -747,10 +748,6 @@ describe('OnboardingWizardSurface', () => {
                 wizardChromeMode: 'bare',
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -769,10 +766,6 @@ describe('OnboardingWizardSurface', () => {
                 wizardChromeMode: 'bare',
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -796,10 +789,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'auth',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -829,10 +818,6 @@ describe('OnboardingWizardSurface', () => {
                     isDesktopShell: true,
                     initialStepId: 'relay_access',
                     authEntryOptions: baseAuthOptions,
-                    onCreateAccount: vi.fn(),
-                    onCreateAccountViaProvider: vi.fn(),
-                    onLoginWithKeylessProvider: vi.fn(),
-                    onLoginWithMtls: vi.fn(),
                 }),
             );
 
@@ -864,10 +849,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
         await flushHookEffects({ cycles: 2, turns: 2 });
@@ -930,10 +911,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
         await flushHookEffects({ cycles: 2, turns: 2 });
@@ -985,10 +962,6 @@ describe('OnboardingWizardSurface', () => {
                     isDesktopShell: true,
                     initialStepId: 'relay_access',
                     authEntryOptions: baseAuthOptions,
-                    onCreateAccount: vi.fn(),
-                    onCreateAccountViaProvider: vi.fn(),
-                    onLoginWithKeylessProvider: vi.fn(),
-                    onLoginWithMtls: vi.fn(),
                 }),
             );
 
@@ -1033,10 +1006,6 @@ describe('OnboardingWizardSurface', () => {
                     isDesktopShell: true,
                     initialStepId: 'relay_access',
                     authEntryOptions: baseAuthOptions,
-                    onCreateAccount: vi.fn(),
-                    onCreateAccountViaProvider: vi.fn(),
-                    onLoginWithKeylessProvider: vi.fn(),
-                    onLoginWithMtls: vi.fn(),
                 }),
             );
 
@@ -1064,10 +1033,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1097,10 +1062,6 @@ describe('OnboardingWizardSurface', () => {
                     isDesktopShell: true,
                     initialStepId: 'relay_select',
                     authEntryOptions: baseAuthOptions,
-                    onCreateAccount: vi.fn(),
-                    onCreateAccountViaProvider: vi.fn(),
-                    onLoginWithKeylessProvider: vi.fn(),
-                    onLoginWithMtls: vi.fn(),
                 }),
             );
 
@@ -1120,10 +1081,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1141,10 +1098,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1191,10 +1144,6 @@ describe('OnboardingWizardSurface', () => {
                     isDesktopShell: true,
                     initialStepId: 'relay_select',
                     authEntryOptions: baseAuthOptions,
-                    onCreateAccount: vi.fn(),
-                    onCreateAccountViaProvider: vi.fn(),
-                    onLoginWithKeylessProvider: vi.fn(),
-                    onLoginWithMtls: vi.fn(),
                 }),
             );
 
@@ -1216,14 +1165,20 @@ describe('OnboardingWizardSurface', () => {
                     isDesktopShell: true,
                     initialStepId: 'relay_select',
                     authEntryOptions: baseAuthOptions,
-                    onCreateAccount: vi.fn(),
-                    onCreateAccountViaProvider: vi.fn(),
-                    onLoginWithKeylessProvider: vi.fn(),
-                    onLoginWithMtls: vi.fn(),
                 }),
             );
 
             expect(screen.findByTestId('onboarding-wizard-relay:thisComputer')).toBeNull();
+
+            const authScreen = await renderScreen(
+                React.createElement(OnboardingWizardSurface, {
+                    layout: 'portrait',
+                    isDesktopShell: true,
+                    initialStepId: 'auth',
+                    authEntryOptions: baseAuthOptions,
+                }),
+            );
+            expect(authScreen.findByTestId('welcome-create-personal-home')).toBeNull();
         } finally {
             if (previousDeny === undefined) delete process.env.EXPO_PUBLIC_HAPPIER_BUILD_FEATURES_DENY;
             else process.env.EXPO_PUBLIC_HAPPIER_BUILD_FEATURES_DENY = previousDeny;
@@ -1238,10 +1193,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'auth_restore',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1262,10 +1213,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'auth_restore',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1279,7 +1226,7 @@ describe('OnboardingWizardSurface', () => {
 
         expect(findAllInCurrentWizardBodyByType(screen, 'RestoreIndexEmbedded' as never)).toHaveLength(0);
         expect(screen.findAllByTestId('onboarding-wizard-welcome-auth')).toHaveLength(0);
-        expect(screen.findByType('AuthEntryView' as never)).toBeTruthy();
+        expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
         expect(screen.findByTestId('onboarding-wizard-lost-access')).toBeTruthy();
     });
 
@@ -1291,10 +1238,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'auth_restore',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1315,10 +1258,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'auth_restore',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1332,12 +1271,13 @@ describe('OnboardingWizardSurface', () => {
 
         expect(findAllInCurrentWizardBodyByType(screen, 'RestoreIndexEmbedded' as never)).toHaveLength(0);
         expect(findAllInCurrentWizardBodyByType(screen, 'SecretKeyLoginEmbedded' as never)).toHaveLength(0);
-        expect(screen.findByType('AuthEntryView' as never)).toBeTruthy();
+        expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
     });
 
-    it('activates the selected relay before running auth actions from the welcome screen', async () => {
+    it('dispatches the exact selected Home authority without switching ambient focus', async () => {
         activeServerSnapshotMock.serverUrl = 'https://api.happier.dev';
         getResetToDefaultServerIdMock.mockReturnValue('cloud-profile');
+        const selectedHomeTarget = { kind: 'saved_profile', profileRef: 'relay-b' } as const;
         listServerProfilesMock.mockReturnValue([
             {
                 id: 'relay-b',
@@ -1350,26 +1290,19 @@ describe('OnboardingWizardSurface', () => {
             },
         ]);
 
-        const callTrace: string[] = [];
-        upsertActivateAndSwitchServerMock.mockImplementation(async () => {
-            callTrace.push('switch');
-            activeServerSnapshotMock.serverUrl = 'https://relay-b.example.test';
-            return true;
-        });
-        const onCreateAccount = vi.fn(async () => {
-            callTrace.push('create');
-        });
+        const onContinueWithHomeAuthentication = vi.fn(async () => undefined);
 
         const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
         const screen = await renderScreen(
             React.createElement(OnboardingWizardSurface, {
                 layout: 'portrait',
                 isDesktopShell: true,
-                authEntryOptions: baseAuthOptions,
-                onCreateAccount,
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
+                authEntryOptions: {
+                    ...baseAuthOptions,
+                    homeTarget: selectedHomeTarget,
+                    observedHomeServerIdentityId: 'relay-b',
+                },
+                onContinueWithHomeAuthentication,
             }),
         );
 
@@ -1393,16 +1326,21 @@ describe('OnboardingWizardSurface', () => {
 
         expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
 
-        await act(async () => {
-            await screen.findByTestId('welcome-primary-start')?.props.onPress?.();
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
+        await pressOnboarding(screen, 'welcome-primary-start');
 
-        expect(upsertActivateAndSwitchServerMock).toHaveBeenCalledWith(expect.objectContaining({
-            serverUrl: 'https://relay-b.example.test',
-        }));
-        expect(onCreateAccount).toHaveBeenCalledTimes(1);
-        expect(callTrace).toEqual(['switch', 'create']);
+        expect(upsertActivateAndSwitchServerMock).not.toHaveBeenCalled();
+        expect(onContinueWithHomeAuthentication).toHaveBeenCalledWith(
+            expect.objectContaining({
+                method: generatedKeyAuthenticationAction.method,
+                action: generatedKeyAuthenticationAction.action,
+                execution: generatedKeyAuthenticationAction.execution,
+                authority: { purpose: 'home', target: selectedHomeTarget },
+                intendedHome: selectedHomeTarget,
+            }),
+            expect.objectContaining({
+                signal: expect.objectContaining({ aborted: false }),
+            }),
+        );
     });
 
     it('keeps welcome auth actions pinned to the explicit active relay instead of the configured default relay', async () => {
@@ -1412,7 +1350,7 @@ describe('OnboardingWizardSurface', () => {
         activeServerSnapshotMock.serverUrl = 'https://relay-override.example.test';
         activeServerSnapshotMock.activeLocalRelayUrl = null;
 
-        const onCreateAccount = vi.fn(async () => undefined);
+        const onContinueWithHomeAuthentication = vi.fn(async () => undefined);
 
         const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
         const screen = await renderScreen(
@@ -1420,10 +1358,7 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount,
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
+                onContinueWithHomeAuthentication,
             }),
         );
 
@@ -1439,7 +1374,15 @@ describe('OnboardingWizardSurface', () => {
         expect(upsertActivateAndSwitchServerMock).not.toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'http://127.0.0.1:3009',
         }));
-        expect(onCreateAccount).toHaveBeenCalledTimes(1);
+        expect(onContinueWithHomeAuthentication).toHaveBeenCalledWith(
+            expect.objectContaining({
+                execution: { kind: 'generated_key' },
+                authority: { purpose: 'home', target: baseHomeTarget },
+            }),
+            expect.objectContaining({
+                signal: expect.objectContaining({ aborted: false }),
+            }),
+        );
     });
 
     it('keeps the welcome relay hint visible when the active relay supplies the URL', async () => {
@@ -1451,10 +1394,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1470,10 +1409,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
         await flushHookEffects({ cycles: 1, turns: 1 });
@@ -1501,10 +1436,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1524,10 +1455,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1544,10 +1471,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1571,10 +1494,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1604,10 +1523,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1630,10 +1545,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1677,10 +1588,6 @@ describe('OnboardingWizardSurface', () => {
                     serverAvailability: 'unavailable',
                     serverUrlForCopy: 'https://relay.example.test',
                 },
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1698,10 +1605,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1734,7 +1637,7 @@ describe('OnboardingWizardSurface', () => {
 
     it('runs anonymous account creation from the welcome decision primary action', async () => {
         activeServerSnapshotMock.serverUrl = 'https://relay.example.test';
-        const onCreateAccount = vi.fn();
+        const onContinueWithHomeAuthentication = vi.fn();
 
         const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
         const screen = await renderScreen(
@@ -1742,10 +1645,7 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount,
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
+                onContinueWithHomeAuthentication,
             }),
         );
 
@@ -1754,12 +1654,49 @@ describe('OnboardingWizardSurface', () => {
         });
         await flushHookEffects({ cycles: 1, turns: 1 });
 
-        expect(onCreateAccount).toHaveBeenCalledTimes(1);
+        expect(onContinueWithHomeAuthentication).toHaveBeenCalledWith(
+            expect.objectContaining({
+                execution: { kind: 'generated_key' },
+                authority: { purpose: 'home', target: baseHomeTarget },
+            }),
+            expect.objectContaining({
+                signal: expect.objectContaining({ aborted: false }),
+            }),
+        );
     });
 
-    it('uses a provider-specific primary action when anonymous signup is unavailable', async () => {
+    it('aborts an admitted Welcome authentication action when the journey leaves', async () => {
+        const onContinueWithHomeAuthentication = vi.fn((_request, context: { signal: AbortSignal }) => {
+            return new Promise<void>(() => {});
+        });
+        const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
+        const screen = await renderScreen(React.createElement(OnboardingWizardSurface, {
+            layout: 'portrait',
+            isDesktopShell: true,
+            authEntryOptions: baseAuthOptions,
+            onContinueWithHomeAuthentication,
+        }));
+
+        await act(async () => {
+            void screen.findByTestId('welcome-primary-start')?.props.onPress?.();
+            await Promise.resolve();
+        });
+        const actionSignal = onContinueWithHomeAuthentication.mock.calls[0]?.[1].signal;
+        expect(actionSignal?.aborted).toBe(false);
+
+        await screen.unmount();
+
+        expect(actionSignal?.aborted).toBe(true);
+    });
+
+    it('uses the provider execution tuple for the New here primary action', async () => {
         activeServerSnapshotMock.serverUrl = 'https://relay.example.test';
-        const onCreateAccountViaProvider = vi.fn();
+        const onContinueWithHomeAuthentication = vi.fn();
+        const providerAction = {
+            method: { id: 'github', enabledActions: [{ id: 'provision', mode: 'keyed' }] },
+            action: { id: 'provision', mode: 'keyed' },
+            execution: { kind: 'oauth', providerId: 'github', mode: 'keyed' },
+        } satisfies HomeAuthenticationAction;
 
         const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
         const screen = await renderScreen(
@@ -1768,6 +1705,8 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: {
                     ...baseAuthOptions,
+                    authenticationCatalog: { provenance: 'structured', methods: [providerAction.method] },
+                    authenticationActions: [providerAction],
                     showAnonymousSignup: false,
                     showProviderSignup: true,
                     providerId: 'github',
@@ -1777,25 +1716,33 @@ describe('OnboardingWizardSurface', () => {
                         title: 'Continue with GitHub',
                     },
                 },
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider,
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
+                onContinueWithHomeAuthentication,
             }),
         );
 
-        expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
-        await act(async () => {
-            await screen.findByTestId('welcome-provider-primary')?.props.onPress?.();
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
+        await pressOnboarding(screen, 'welcome-primary-start');
 
-        expect(onCreateAccountViaProvider).toHaveBeenCalledWith('github');
+        expect(onContinueWithHomeAuthentication).toHaveBeenCalledWith(
+            expect.objectContaining({
+                method: providerAction.method,
+                action: providerAction.action,
+                execution: providerAction.execution,
+                authority: { purpose: 'home', target: baseHomeTarget },
+            }),
+            expect.objectContaining({
+                signal: expect.objectContaining({ aborted: false }),
+            }),
+        );
     });
 
     it('uses the mTLS primary action for managed certificate login states', async () => {
         activeServerSnapshotMock.serverUrl = 'https://relay.example.test';
-        const onLoginWithMtls = vi.fn();
+        const onContinueWithHomeAuthentication = vi.fn();
+        const mtlsAction = {
+            method: { id: 'mtls', enabledActions: [{ id: 'login', mode: 'keyless' }] },
+            action: { id: 'login', mode: 'keyless' },
+            execution: { kind: 'mtls' },
+        } satisfies HomeAuthenticationAction;
 
         const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
         const screen = await renderScreen(
@@ -1804,6 +1751,8 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: {
                     ...baseAuthOptions,
+                    authenticationCatalog: { provenance: 'structured', methods: [mtlsAction.method] },
+                    authenticationActions: [mtlsAction],
                     showAnonymousSignup: false,
                     showMtlsLogin: true,
                     mtlsPrimary: true,
@@ -1812,10 +1761,7 @@ describe('OnboardingWizardSurface', () => {
                         title: 'Sign in with certificate',
                     },
                 },
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls,
+                onContinueWithHomeAuthentication,
             }),
         );
 
@@ -1825,10 +1771,20 @@ describe('OnboardingWizardSurface', () => {
         });
         await flushHookEffects({ cycles: 1, turns: 1 });
 
-        expect(onLoginWithMtls).toHaveBeenCalledTimes(1);
+        expect(onContinueWithHomeAuthentication).toHaveBeenCalledWith(
+            expect.objectContaining({
+                method: mtlsAction.method,
+                action: mtlsAction.action,
+                execution: mtlsAction.execution,
+                authority: { purpose: 'home', target: baseHomeTarget },
+            }),
+            expect.objectContaining({
+                signal: expect.objectContaining({ aborted: false }),
+            }),
+        );
     });
 
-    it('does not render welcome decision actions while auth capability loading is unresolved', async () => {
+    it('keeps restore navigation available while auth capability loading is unresolved', async () => {
         activeServerSnapshotMock.serverUrl = 'https://relay.example.test';
 
         const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
@@ -1842,16 +1798,12 @@ describe('OnboardingWizardSurface', () => {
                     showAuthActions: false,
                     showAnonymousSignup: false,
                 },
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
         expect(screen.findByTestId('welcome-auth-loading')).toBeTruthy();
         expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
-        expect(screen.findAllByTestId('welcome-scan-existing-home')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-scan-existing-home').length).toBeGreaterThan(0);
     });
 
     it('shows welcome decision actions when the relay is already known', async () => {
@@ -1874,10 +1826,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1908,10 +1856,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1940,10 +1884,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -1997,10 +1937,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2081,10 +2017,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2115,10 +2047,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
         await flushHookEffects({ cycles: 1, turns: 1 });
@@ -2151,10 +2079,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
         await flushHookEffects({ cycles: 1, turns: 1 });
@@ -2190,26 +2114,15 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'auth',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
-        const authEntry = screen.findByType('AuthEntryView' as never) as unknown as {
-            props: { onChangeRelay?: () => void };
-        };
-
-        await act(async () => {
-            await authEntry.props.onChangeRelay?.();
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
+        await pressOnboarding(screen, 'welcome-use-different-home');
 
         expect(screen.findByTestId('onboarding-wizard-relay:cloud')).toBeTruthy();
     });
 
-    it('threads desktop shell status to auth but suppresses the setup affordance before auth', async () => {
+    it('threads Tauri Personal Home hosting capability to auth without opening setup', async () => {
         activeServerSnapshotMock.serverUrl = 'https://relay.example.test';
 
         const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
@@ -2219,21 +2132,29 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'auth',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
-        const authEntry = screen.findByType('AuthEntryView' as never) as unknown as {
-            props: { isDesktopShell?: boolean; showOpenSetupAction?: boolean; onOpenSetup?: () => void };
-        };
-        expect(authEntry.props.isDesktopShell).toBe(true);
-        expect(authEntry.props.showOpenSetupAction).toBe(false);
-        expect(authEntry.props.onOpenSetup).toEqual(expect.any(Function));
+        expect(screen.findByTestId('welcome-create-personal-home')).toBeTruthy();
 
-        expect(expoRouterMock.spies.push).not.toHaveBeenCalledWith('/setup');
+        expect(expoRouterSpies.push).not.toHaveBeenCalledWith('/setup');
+    });
+
+    it('does not advertise Personal Home hosting in the non-hosting Electron desktop shell', async () => {
+        desktopHostMockState.kind = 'electron';
+        activeServerSnapshotMock.serverUrl = 'https://relay.example.test';
+
+        const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
+        const screen = await renderScreen(
+            React.createElement(OnboardingWizardSurface, {
+                layout: 'portrait',
+                isDesktopShell: true,
+                initialStepId: 'auth',
+                authEntryOptions: baseAuthOptions,
+            }),
+        );
+
+        expect(screen.findByTestId('welcome-create-personal-home')).toBeNull();
     });
 
     type PreAuthMatrixPlatform = 'desktop' | 'web' | 'native';
@@ -2254,10 +2175,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: platform === 'desktop',
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
     };
@@ -2380,10 +2297,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell={false}
                 authEntryOptions={baseAuthOptions}
                 initialStepId="relay_select"
-                onCreateAccount={vi.fn()}
-                onCreateAccountViaProvider={vi.fn()}
-                onLoginWithKeylessProvider={vi.fn()}
-                onLoginWithMtls={vi.fn()}
             />,
         );
 
@@ -2430,10 +2343,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: false,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2485,10 +2394,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2522,10 +2427,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2558,10 +2459,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2596,10 +2493,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: false,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2638,10 +2531,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: false,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2707,10 +2596,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
         await flushHookEffects({ cycles: 1, turns: 1 });
@@ -2769,10 +2654,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2803,10 +2684,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2870,10 +2747,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2922,10 +2795,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: false,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2959,10 +2828,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -2982,10 +2847,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3017,10 +2878,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3074,10 +2931,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3165,10 +3018,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3291,10 +3140,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3392,10 +3237,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3450,10 +3291,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
         await flushHookEffects({ cycles: 1, turns: 1 });
@@ -3488,10 +3325,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
         await flushHookEffects({ cycles: 1, turns: 1 });
@@ -3502,7 +3335,7 @@ describe('OnboardingWizardSurface', () => {
 
         await pressOnboarding(screen, 'onboarding-wizard-primary');
 
-        expect(screen.findByType('AuthEntryView' as never)).toBeTruthy();
+        expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
         expect(screen.findByTestId('onboarding-wizard-relay-url-input')).toBeNull();
         expect(upsertActivateAndSwitchServerMock).not.toHaveBeenCalled();
     });
@@ -3527,10 +3360,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3586,10 +3415,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3638,10 +3463,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3703,10 +3524,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3751,10 +3568,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3792,10 +3605,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3842,10 +3651,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3897,10 +3702,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -3929,13 +3730,7 @@ describe('OnboardingWizardSurface', () => {
         });
         await flushHookEffects({ cycles: 2, turns: 2 });
 
-        const authEntry = screen.findByType('AuthEntryView' as never) as unknown as {
-            props: { onChangeRelay?: () => void };
-        };
-        await act(async () => {
-            await authEntry.props.onChangeRelay?.();
-        });
-        await flushHookEffects({ cycles: 2, turns: 2 });
+        await pressOnboarding(screen, 'welcome-use-different-home');
 
         const typedRelayRow = screen.findByProps({ testID: 'onboarding-wizard-relay:profile:active' } as never);
         expect(typedRelayRow?.props.selected).toBe(true);
@@ -3969,10 +3764,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -4028,10 +3819,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: false,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -4088,10 +3875,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: false,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -4164,10 +3947,6 @@ describe('OnboardingWizardSurface', () => {
                     isDesktopShell: true,
                     initialStepId: 'relay_select',
                     authEntryOptions: baseAuthOptions,
-                    onCreateAccount: vi.fn(),
-                    onCreateAccountViaProvider: vi.fn(),
-                    onLoginWithKeylessProvider: vi.fn(),
-                    onLoginWithMtls: vi.fn(),
                 }),
             );
 
@@ -4214,10 +3993,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -4264,10 +4039,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -4309,10 +4080,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -4350,10 +4117,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -4407,10 +4170,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 initialStepId: 'relay_select',
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -4435,10 +4194,6 @@ describe('OnboardingWizardSurface', () => {
                 layout: 'portrait',
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
 
@@ -4502,10 +4257,6 @@ describe('OnboardingWizardSurface', () => {
                 isDesktopShell: true,
                 authEntryOptions: baseAuthOptions,
                 initialStepId: 'relay_select',
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
             }),
         );
         await flushHookEffects({ cycles: 1, turns: 1 });
@@ -4528,186 +4279,4 @@ describe('OnboardingWizardSurface', () => {
         });
     });
 
-    it('refuses a released V1 QR in place without putting its secret into wizard navigation state', async () => {
-        webQrScannerSupportedMock.value = true;
-        webMobileLikeQrScannerHostMock.value = true;
-        modalMock.spies.alertAsync.mockImplementationOnce(async (_title, _message, buttons) => {
-            buttons?.find((button) => button.style !== 'cancel')?.onPress?.();
-        });
-
-        const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
-        const screen = await renderScreen(
-            React.createElement(OnboardingWizardSurface, {
-                layout: 'portrait',
-                isDesktopShell: true,
-                authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
-            }),
-        );
-
-        const loginButton = screen.findByTestId('welcome-scan-existing-home')!;
-        await act(async () => {
-            await loginButton.props.onPress?.();
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        const scanner = screen.findByType('QrCodeScannerView')!;
-
-        await act(async () => {
-            await scanner.props.onScan?.('happier:///pair?v=1&pairId=pair_1&secret=sec_1');
-        });
-        await flushHookEffects({ cycles: 2, turns: 2 });
-
-        expect(modalMock.spies.alertAsync).toHaveBeenCalledWith(
-            'connect.updateRequiredTitle',
-            'connect.legacyPairingUpdateRequiredBody',
-            [
-                expect.objectContaining({ text: 'connect.scanNewQr' }),
-                expect.objectContaining({ text: 'common.cancel', style: 'cancel' }),
-            ],
-        );
-        expect(screen.findAllByType('QrCodeScannerView')).toHaveLength(1);
-        expect(screen.findByTestId('onboarding-wizard-relay-url-input')).toBeNull();
-    });
-
-    it('forwards a scanned V2 Home invite to the restore owner without switching the active server', async () => {
-        webQrScannerSupportedMock.value = true;
-        webMobileLikeQrScannerHostMock.value = true;
-        const rawLink = buildHomeQrInviteDeepLink({
-            invite: {
-                v: 2,
-                intent: 'home_device',
-                direction: 'trusted_home_displays',
-                pairId: 'pair-onboarding-v2',
-                home: {
-                    v: 1,
-                    homeServerIdentityId: 'srv_home_b',
-                    canonicalServerUrl: 'https://home-b.test',
-                    revision: 1,
-                    endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
-                },
-                qrSecretBase64Url: 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk',
-                issuedAtMs: Date.now(),
-                expiresAtMs: Date.now() + 60_000,
-            },
-        });
-
-        const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
-        const screen = await renderScreen(
-            React.createElement(OnboardingWizardSurface, {
-                layout: 'portrait',
-                isDesktopShell: true,
-                authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
-            }),
-        );
-
-        await act(async () => {
-            await screen.findByTestId('welcome-scan-existing-home')?.props.onPress?.();
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-        const scanner = screen.findByType('QrCodeScannerView')!;
-        setActiveServerAndSwitchMock.mockClear();
-        upsertActivateAndSwitchServerMock.mockClear();
-
-        await act(async () => {
-            await scanner.props.onScan?.(rawLink);
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        const restore = findAllInCurrentWizardBodyByType(screen, 'RestoreIndexEmbedded' as never)[0] as unknown as ReactTestInstance;
-        expect(restore.props.initialPairingLink).toBe(rawLink);
-        expect(setActiveServerAndSwitchMock).not.toHaveBeenCalled();
-        expect(upsertActivateAndSwitchServerMock).not.toHaveBeenCalled();
-    });
-
-    it('clears scan-step opt-in after backing out of the QR scanner', async () => {
-        webQrScannerSupportedMock.value = true;
-        webMobileLikeQrScannerHostMock.value = true;
-
-        const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
-        const screen = await renderScreen(
-            React.createElement(OnboardingWizardSurface, {
-                layout: 'portrait',
-                isDesktopShell: true,
-                authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
-            }),
-        );
-
-        const loginButton = screen.findByTestId('welcome-scan-existing-home')!;
-        await act(async () => {
-            await loginButton.props.onPress?.();
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        expect(screen.findByType('QrCodeScannerView')).toBeTruthy();
-
-        const backButton = screen.findByTestId('onboarding-wizard-back')!;
-        await act(async () => {
-            await backButton.props.onPress?.();
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
-
-        const startButton = screen.findByTestId('onboarding-wizard-primary')!;
-        await act(async () => {
-            await startButton.props.onPress?.();
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        expect(screen.findByTestId('onboarding-wizard-relay:cloud')).toBeTruthy();
-        expect(screen.findAllByType('QrCodeScannerView')).toHaveLength(0);
-    });
-
-    it('requires explicit confirmation before locking in a scanned relay url', async () => {
-        webQrScannerSupportedMock.value = true;
-        webMobileLikeQrScannerHostMock.value = true;
-
-        const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
-        const screen = await renderScreen(
-            React.createElement(OnboardingWizardSurface, {
-                layout: 'portrait',
-                isDesktopShell: true,
-                authEntryOptions: baseAuthOptions,
-                onCreateAccount: vi.fn(),
-                onCreateAccountViaProvider: vi.fn(),
-                onLoginWithKeylessProvider: vi.fn(),
-                onLoginWithMtls: vi.fn(),
-            }),
-        );
-
-        const loginButton = screen.findByTestId('welcome-scan-existing-home')!;
-        await act(async () => {
-            await loginButton.props.onPress?.();
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        const scanner = screen.findByType('QrCodeScannerView')!;
-
-        await act(async () => {
-            await scanner.props.onScan?.('https://relay.example.com');
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        expect(screen.findByTestId('onboarding-wizard-confirm-relay-lock')).not.toBeNull();
-
-        const confirmButton = screen.findByTestId('onboarding-wizard-primary')!;
-        await act(async () => {
-            await confirmButton.props.onPress?.();
-        });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        expect(screen.findByTestId('onboarding-wizard-lost-access')).not.toBeNull();
-    });
 });

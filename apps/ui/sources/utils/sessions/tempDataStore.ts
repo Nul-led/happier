@@ -9,8 +9,10 @@ import type {
     SessionMcpSelectionV1,
     SessionModelSelectionV1,
     SessionSpawnSourceContextV1,
-    SessionExecutionTargetV1,
+    SessionAuthoringExecutionTargetV2,
+    TemporaryComputerActivationRefV1,
     SessionOrganizationPlacementV1,
+    SessionInitialAccessDraftV1,
 } from '@happier-dev/protocol';
 import type { PluginUiSessionPlacementCandidateV1 } from '@happier-dev/protocol/plugins/ui';
 import type { PermissionMode, ModelMode } from '@/sync/domains/permissions/permissionTypes';
@@ -31,8 +33,11 @@ export interface NewSessionData {
     machineId?: string;
     directory?: string;
     path?: string;
-    executionTarget?: SessionExecutionTargetV1 | null;
+    executionTarget?: SessionAuthoringExecutionTargetV2 | null;
+    temporaryComputerActivationRef?: TemporaryComputerActivationRefV1 | null;
     organizationPlacement?: SessionOrganizationPlacementV1;
+    access?: SessionInitialAccessDraftV1 | null;
+    primaryTeamId?: string | null;
     replacePersistedDraftSelections?: boolean;
     checkoutCreationDraft?: NewSessionCheckoutCreationDraft | null;
     agentType?: AgentId;

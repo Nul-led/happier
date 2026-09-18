@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+    RPC_ERROR_CODES,
     SessionCreationKeyV1Schema,
     type SessionSpawnNewResultV1,
 } from '@happier-dev/protocol';
@@ -28,7 +29,10 @@ const input: StrictSessionSpawnNewInput = {
     executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
     directory: '/work/project',
     organizationPlacement: { folderId: null, tagIds: [] },
-    agentTarget: { kind: 'agent', identity: { pluginId: 'happier', localId: 'codex' } },
+    agentTarget: {
+        kind: 'agent',
+        identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+    },
 };
 
 const result: SessionSpawnNewResultV1 = {

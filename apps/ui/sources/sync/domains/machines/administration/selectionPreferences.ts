@@ -7,6 +7,7 @@ import {
 
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import type { OneShotAccountSettingsMutationResult } from '@/sync/engine/settings/syncSettings';
+import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 
 export const MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 = Object.freeze({
     plugins: 'plugins.home',
@@ -99,10 +100,12 @@ export function applyMachineAdministrationSelectionMutationToAccountSettings(
 }
 
 export async function persistMachineAdministrationSelectionMutation(
+    expectedSettingsScope: AccountSettingsScope | null,
     expectedSettingsVersion: number,
     mutate: (current: MachineAdministrationSelectionsV1) => MachineAdministrationSelectionsV1,
 ): Promise<OneShotAccountSettingsMutationResult<void>> {
     return await getSyncSingleton().mutateAccountSettingsOnce({
+        expectedSettingsScope,
         expectedSettingsVersion,
         mutate: (raw) => ({
             settings: applyMachineAdministrationSelectionMutationToAccountSettings(raw, mutate),

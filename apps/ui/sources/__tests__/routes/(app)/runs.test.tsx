@@ -35,6 +35,10 @@ const routerReplaceSpy = vi.fn();
 const routerNavigateSpy = vi.fn();
 const sessionExecutionRunStopSpy = vi.fn(async (..._args: [string, { runId: string }, { serverId: string }]) => ({ ok: true as const }));
 const stackOptionsCapture = createStackOptionsCapture();
+const machineListState = vi.hoisted(() => ({
+    byServerId: {} as Record<string, any[]>,
+    statusByServerId: {} as Record<string, 'idle' | 'loading' | 'ready' | 'error' | 'signedOut'>,
+}));
 const routerMock = createExpoRouterMock({
     router: {
         push: routerPushSpy,
@@ -46,6 +50,7 @@ const routerMock = createExpoRouterMock({
 });
 
 installRouteRootCommonModuleMocks({
+    modal: async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock().module,
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock();
@@ -72,8 +77,8 @@ installRouteRootCommonModuleMocks({
             },
         });
     },
-    storage: async (importOriginal) => {
-        const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+    storage: async () => {
+        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         const machines = [
             {
                 id: 'machine-1',
@@ -88,11 +93,11 @@ installRouteRootCommonModuleMocks({
                 seq: 0,
             },
         ];
-        const machineListByServerId = { 'server-a': machines as any };
-        const machineListStatusByServerId = { 'server-a': 'idle' as const };
-        return createPartialStorageModuleMock(importOriginal, {
-            useMachineListByServerId: () => machineListByServerId,
-            useMachineListStatusByServerId: () => machineListStatusByServerId,
+        machineListState.byServerId = { 'server-a': machines as any };
+        machineListState.statusByServerId = { 'server-a': 'idle' as const };
+        return createStorageModuleStub({
+            useMachineListByServerId: () => machineListState.byServerId,
+            useMachineListStatusByServerId: () => machineListState.statusByServerId,
             useSetting: () => false,
         });
     },
@@ -124,6 +129,10 @@ vi.mock('@/sync/ops/machines', () => ({
     machineStopSession: (...args: [string, string, { serverId: string }]) => machineStopSessionSpy(...args),
 }));
 
+vi.mock('@/utils/errors/daemonUnavailableAlert', () => ({
+    tryShowDaemonUnavailableAlertForRpcFailure: () => false,
+}));
+
 vi.mock('@/utils/sessions/machineUtils', () => ({ isMachineOnline: () => true }));
 
 describe('Runs screen', () => {
@@ -151,8 +160,24 @@ describe('Runs screen', () => {
     }
 
     beforeEach(async () => {
+        const machine = {
+            id: 'machine-1',
+            active: true,
+            createdAt: 1,
+            updatedAt: 1,
+            activeAt: Date.now(),
+            metadata: { host: 'a.local', happyCliVersion: '1.0.0', happyHomeDir: '/tmp', homeDir: '/tmp' },
+            metadataVersion: 1,
+            daemonState: null,
+            daemonStateVersion: 1,
+            seq: 0,
+        };
+        machineListState.byServerId = { 'server-a': [machine] };
+        machineListState.statusByServerId = { 'server-a': 'idle' };
+        routerMock.state.params = {};
         Screen = (await import('@/app/(app)/runs')).default;
-        machineExecutionRunsListSpy.mockClear();
+        machineExecutionRunsListSpy.mockReset();
+        machineExecutionRunsListSpy.mockResolvedValue({ ok: true, runs: [] });
         machineStopSessionSpy.mockClear();
         routerPushSpy.mockClear();
         routerBackSpy.mockClear();
@@ -199,6 +224,60 @@ describe('Runs screen', () => {
         expect(machineExecutionRunsListSpy).toHaveBeenCalledWith('machine-1', { serverId: 'server-a' });
     });
 
+    it('keeps daemon Run rows isolated when two Homes expose the same machine id', async () => {
+        const duplicateMachine = {
+            ...machineListState.byServerId['server-a']![0],
+            metadata: { ...machineListState.byServerId['server-a']![0]!.metadata, host: 'duplicate.local' },
+        };
+        machineListState.byServerId = {
+            'server-a': machineListState.byServerId['server-a']!,
+            'server-b': [duplicateMachine],
+        };
+        machineListState.statusByServerId = { 'server-a': 'idle', 'server-b': 'idle' };
+        machineExecutionRunsListSpy.mockImplementation(async (_machineId, options) => ({
+            ok: true,
+            runs: [createExecutionRun({
+                runId: options?.serverId === 'server-a' ? 'run-home-a' : 'run-home-b',
+            })],
+        }));
+
+        const screen = await renderRunsScreen();
+        const rows = screen.findAllByType('ExecutionRunRow' as any);
+
+        expect(rows.map((row) => row.props.run.runId)).toEqual(['run-home-a', 'run-home-b']);
+        rows[0]!.props.onPress();
+        rows[1]!.props.onPress();
+        expect(routerPushSpy.mock.calls.map(([href]) => href)).toEqual([
+            '/session/sess-1/runs/run-home-a?serverId=server-a',
+            '/session/sess-1/runs/run-home-b?serverId=server-b',
+        ]);
+    });
+
+    it('limits a scoped detached-Run route intent to its exact Home', async () => {
+        const duplicateMachine = {
+            ...machineListState.byServerId['server-a']![0],
+            metadata: { ...machineListState.byServerId['server-a']![0]!.metadata, host: 'duplicate.local' },
+        };
+        machineListState.byServerId = {
+            'server-a': machineListState.byServerId['server-a']!,
+            'server-b': [duplicateMachine],
+        };
+        machineListState.statusByServerId = { 'server-a': 'idle', 'server-b': 'idle' };
+        routerMock.state.router.setParams({ serverId: 'server-b', machineId: 'machine-1', runId: 'same-run' });
+        machineExecutionRunsListSpy.mockResolvedValue({
+            ok: true,
+            runs: [createExecutionRun({ runId: 'same-run', happySessionId: null, status: 'succeeded' })],
+        });
+
+        const screen = await renderRunsScreen();
+        const rows = screen.findAllByType('ExecutionRunRow' as any);
+
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.props.run.runId).toBe('same-run');
+        expect(machineExecutionRunsListSpy).toHaveBeenCalledTimes(1);
+        expect(machineExecutionRunsListSpy).toHaveBeenCalledWith('machine-1', { serverId: 'server-b' });
+    });
+
     it('keeps Session-associated daemon runs navigable and stoppable', async () => {
         machineExecutionRunsListSpy.mockResolvedValueOnce({
             ok: true,
@@ -212,7 +291,7 @@ describe('Runs screen', () => {
         expect(row.props.onPress).toEqual(expect.any(Function));
         expect(row.props.rightAccessory).toBeTruthy();
         row.props.onPress();
-        expect(routerPushSpy).toHaveBeenCalledWith('/session/sess-1/runs/run-associated');
+        expect(routerPushSpy).toHaveBeenCalledWith('/session/sess-1/runs/run-associated?serverId=server-a');
 
         await act(async () => {
             await row.props.rightAccessory.props.onPress();
@@ -237,5 +316,74 @@ describe('Runs screen', () => {
         expect(row.props.rightAccessory).toBeNull();
         expect(sessionExecutionRunStopSpy).not.toHaveBeenCalled();
         expect(machineStopSessionSpy).not.toHaveBeenCalled();
+    });
+
+    it('selects an exact detached execution Run from fully qualified route intent, including a finished Run', async () => {
+        routerMock.state.router.setParams({ serverId: 'server-a', machineId: 'machine-1', runId: 'run/detached 1' });
+        machineExecutionRunsListSpy.mockResolvedValueOnce({
+            ok: true,
+            runs: [
+                createExecutionRun({ runId: 'other-run' }),
+                createExecutionRun({ runId: 'run/detached 1', happySessionId: null, status: 'succeeded' }),
+            ],
+        });
+
+        const screen = await renderRunsScreen();
+        const rows = screen.findAllByType('ExecutionRunRow' as any);
+
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.props.run.runId).toBe('run/detached 1');
+        expect(rows[0]?.props.selected).toBe(true);
+    });
+
+    it('does not treat a bare machine and Run id as an exact cross-Home target', async () => {
+        routerMock.state.router.setParams({ machineId: 'machine-1', runId: 'run/detached 1' });
+        machineExecutionRunsListSpy.mockResolvedValueOnce({
+            ok: true,
+            runs: [
+                createExecutionRun({ runId: 'running-run' }),
+                createExecutionRun({ runId: 'run/detached 1', happySessionId: null, status: 'succeeded' }),
+            ],
+        });
+
+        const screen = await renderRunsScreen();
+        const rows = screen.findAllByType('ExecutionRunRow' as any);
+
+        expect(rows.map((row) => row.props.run.runId)).toEqual(['running-run']);
+        expect(rows[0]?.props.selected).toBe(false);
+    });
+
+    it('does not trim malformed opaque route identities into an exact target', async () => {
+        routerMock.state.router.setParams({ serverId: ' server-a ', machineId: 'machine-1', runId: 'run/detached 1' });
+        machineExecutionRunsListSpy.mockResolvedValueOnce({
+            ok: true,
+            runs: [
+                createExecutionRun({ runId: 'running-run' }),
+                createExecutionRun({ runId: 'run/detached 1', happySessionId: null, status: 'succeeded' }),
+            ],
+        });
+
+        const screen = await renderRunsScreen();
+        const rows = screen.findAllByType('ExecutionRunRow' as any);
+
+        expect(rows.map((row) => row.props.run.runId)).toEqual(['running-run']);
+        expect(rows[0]?.props.selected).toBe(false);
+    });
+
+    it('does not select a Run from an ambiguous repeated route identity', async () => {
+        routerMock.state.router.setParams({ serverId: 'server-a', machineId: 'machine-1', runId: ['run/detached 1', 'run/detached 1'] });
+        machineExecutionRunsListSpy.mockResolvedValueOnce({
+            ok: true,
+            runs: [
+                createExecutionRun({ runId: 'running-run' }),
+                createExecutionRun({ runId: 'run/detached 1', happySessionId: null, status: 'succeeded' }),
+            ],
+        });
+
+        const screen = await renderRunsScreen();
+        const rows = screen.findAllByType('ExecutionRunRow' as any);
+
+        expect(rows.map((row) => row.props.run.runId)).toEqual(['running-run']);
+        expect(rows[0]?.props.selected).toBe(false);
     });
 });

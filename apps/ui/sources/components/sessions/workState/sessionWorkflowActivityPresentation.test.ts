@@ -13,18 +13,32 @@ import {
     computeWorkflowRunRollup,
     formatWorkflowAgentFraction,
     groupWorkflowAgentsByPhase,
+    projectWorkflowRunDetail,
     readSessionWorkflowActivityHeadlineFromMetadata,
     resolveActiveWorkflowPhasePosition,
     resolveActiveWorkflowRunHeadlines,
     resolvePrimaryWorkflowRunHeadline,
+} from './sessionWorkflowActivityPresentation';
+import {
     resolveWorkflowMeterTone,
     resolveWorkflowProgressFraction,
     resolveWorkflowRollupTone,
     resolveWorkflowRunTone,
-} from './sessionWorkflowActivityPresentation';
+} from '@/components/workflows/presentation/workflowPresentation';
 
 const headlineRun = makeSessionWorkflowRunHeadline;
 const headline = makeSessionWorkflowActivityHeadline;
+
+describe('workflow record failure presentation', () => {
+    it('retains last-known detail offline but retires it on access denial or mode mismatch', () => {
+        const snapshot = makeSessionWorkflowRunSnapshot({ runId: 'run-one' });
+        const loaded = projectWorkflowRunDetail('run-one', { status: 'ready', value: snapshot, freshness: 'fresh', lastError: null });
+        expect(projectWorkflowRunDetail('run-one', { status: 'offline' }, loaded)).toMatchObject({ state: 'loaded', snapshot, stale: true, lastError: 'offline' });
+        expect(projectWorkflowRunDetail('run-one', { status: 'forbidden' }, loaded)).toEqual({ state: 'missing', runId: 'run-one', reason: 'forbidden' });
+        expect(projectWorkflowRunDetail('run-one', { status: 'mode_mismatch' }, loaded)).toEqual({ state: 'missing', runId: 'run-one', reason: 'mode_mismatch' });
+        expect(projectWorkflowRunDetail('different-run', { status: 'offline' }, loaded)).toEqual({ state: 'missing', runId: 'different-run', reason: 'offline' });
+    });
+});
 
 describe('readSessionWorkflowActivityHeadlineFromMetadata', () => {
     it('reads a valid headline from metadata.sessionWorkflowActivityHeadlineV1', () => {

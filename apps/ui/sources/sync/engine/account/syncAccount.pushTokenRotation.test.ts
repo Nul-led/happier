@@ -10,7 +10,6 @@ const mocks = vi.hoisted(() => {
         listServerProfiles: vi.fn(),
         getActiveServerSnapshot: vi.fn(),
         getExpoPushTokenAsync: vi.fn(),
-        acquireIrohHomeRuntimeOrigin: vi.fn(),
         runtimeFetchCalls: [] as Array<{ url: string; serverUrl: string; runtimeOrigin?: string }>,
     };
 });
@@ -39,21 +38,13 @@ vi.mock('@/sync/api/session/apiPush', () => ({
     deletePushToken: (...args: unknown[]) => mocks.deletePushToken(...args),
 }));
 
-// The canonical registration path reads each Home's notification settings through an
-// explicit Home-targeted request. Resolve it as an offline Home (no settings payload)
-// so per-Home consent falls back to the last-known/product-default semantics.
+// Transport remains a genuine system boundary in this suite. Registration cases
+// provide exact-Home consent explicitly below; an unreadable live response with no
+// scoped cached projection must remain fail-closed.
 vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
     runtimeFetchWithServerReachability: vi.fn(async (params: { url: string; serverUrl: string; runtimeOrigin?: string }) => {
         mocks.runtimeFetchCalls.push({ url: params.url, serverUrl: params.serverUrl, runtimeOrigin: params.runtimeOrigin });
         return Response.json({ success: true });
-    }),
-}));
-
-vi.mock('@/sync/runtime/nativeIrohTunnels', () => ({
-    acquireIrohHomeRuntimeOrigin: (...args: unknown[]) => mocks.acquireIrohHomeRuntimeOrigin(...args),
-    classifyIrohHomeTunnelSwitchFailure: (error: unknown) => ({
-        fallbackAllowed: error instanceof Error && error.message.includes('fallback-allowed'),
-        failureClass: 'carrier-unavailable',
     }),
 }));
 
@@ -69,6 +60,7 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 }));
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
+    subscribeHomeCredentialMutations: () => () => undefined,
     TokenStorage: {
         getCredentialsForServerUrl: (
             serverUrl: string,
@@ -86,8 +78,6 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         mocks.getActiveServerSnapshot.mockReset();
         mocks.getExpoPushTokenAsync.mockReset();
         mocks.getExpoPushTokenAsync.mockResolvedValue({ data: 'ExponentPushToken[new]' });
-        mocks.acquireIrohHomeRuntimeOrigin.mockReset();
-        mocks.acquireIrohHomeRuntimeOrigin.mockRejectedValue(new Error('no iroh endpoint configured'));
         mocks.runtimeFetchCalls.length = 0;
         const tokenRegistration = await import('@/sync/domains/state/pushTokenRegistration');
         tokenRegistration.clearLastRegisteredExpoPushToken();
@@ -111,6 +101,7 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
             credentials: { token: 't:active', secret: 's' } satisfies AuthCredentials,
             log: { log: () => {} },
             getAccountSettings: () => ({}),
+            getHomeAccountSettings: async () => ({}),
         });
 
         expect(loadLastRegisteredExpoPushToken()).toBe('ExponentPushToken[new]');
@@ -149,6 +140,7 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
             credentials: { token: 'token-b', secret: 'secret-b' } satisfies AuthCredentials,
             log: { log: () => {} },
             getAccountSettings: () => ({}),
+            getHomeAccountSettings: async () => ({}),
         });
 
         expect(loadLastRegisteredExpoPushToken()).toBe('ExponentPushToken[new]');
@@ -202,6 +194,7 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
             credentials: { token: 't:caller-context', secret: 's' } satisfies AuthCredentials,
             log: { log: () => {} },
             getAccountSettings: () => ({}),
+            getHomeAccountSettings: async () => ({}),
         });
 
         expect(mocks.deletePushToken).toHaveBeenCalledTimes(2);
@@ -380,7 +373,7 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         });
     });
 
-    it('removes both current and previous tokens when the absent focused profile is disabled', async () => {
+    it('does not send current or previous tokens to an absent focused profile', async () => {
         const { saveLastRegisteredExpoPushToken } = await import('@/sync/domains/state/pushTokenRegistration');
         saveLastRegisteredExpoPushToken('ExponentPushToken[old]');
         mocks.listServerProfiles.mockReturnValue([]);
@@ -402,71 +395,7 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         });
 
         expect(mocks.registerPushToken).not.toHaveBeenCalled();
-        expect(mocks.deletePushToken.mock.calls).toEqual([
-            [credentials, 'ExponentPushToken[new]', { apiEndpoint: 'https://focused-absent.example.test', runtimeOrigin: 'https://focused-absent.example.test' }],
-            [credentials, 'ExponentPushToken[old]', { apiEndpoint: 'https://focused-absent.example.test', runtimeOrigin: 'https://focused-absent.example.test' }],
-        ]);
+        expect(mocks.deletePushToken).not.toHaveBeenCalled();
     });
 
-    it('registers and unregisters Iroh-only Homes through the verified runtime origin, never the canonical URL', async () => {
-        const irohLeaseFor = (origin: string) => ({
-            leaseId: `lease-${origin}`,
-            runtimeOrigin: origin,
-            release: vi.fn(async () => undefined),
-        });
-        mocks.acquireIrohHomeRuntimeOrigin.mockImplementation(async (params: { homeServerIdentityId: string }) => {
-            if (params.homeServerIdentityId === 'srv_iroh_a') return irohLeaseFor('http://127.0.0.1:45991');
-            return irohLeaseFor('http://127.0.0.1:46111');
-        });
-        mocks.listServerProfiles.mockReturnValue([
-            {
-                id: 'iroh-enabled',
-                serverUrl: 'https://iroh-only.example.test',
-                serverIdentityId: 'srv_iroh_a',
-                irohEndpoint: { endpointId: 'a'.repeat(64) },
-                connectionDescriptorRevision: 3,
-            },
-            {
-                id: 'iroh-disabled',
-                serverUrl: 'https://iroh-disabled.example.test',
-                serverIdentityId: 'srv_iroh_b',
-                irohEndpoint: { endpointId: 'b'.repeat(64) },
-                connectionDescriptorRevision: 4,
-            },
-        ]);
-        mocks.getActiveServerSnapshot.mockReturnValue({ serverId: '', serverUrl: '', generation: 0 });
-        mocks.getCredentialsForServerUrl.mockImplementation(async (url: string) => ({ token: `t:${url}`, secret: 's' }));
-        mocks.registerPushToken.mockResolvedValue(undefined);
-        mocks.deletePushToken.mockResolvedValue(undefined);
-
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
-        await registerPushTokenIfAvailable({
-            credentials: null,
-            log: { log: () => {} },
-            getHomeAccountSettings: async (home) => home.serverUrl.includes('iroh-disabled')
-                ? { attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } } }
-                : {},
-        });
-
-        // Register and delete both ride the verified Iroh runtime origin; the
-        // canonical URL is only the reachability/auth audience and is never fetched.
-        expect(mocks.registerPushToken).toHaveBeenCalledWith(
-            { token: 't:https://iroh-only.example.test', secret: 's' },
-            'ExponentPushToken[new]',
-            expect.objectContaining({
-                apiEndpoint: 'https://iroh-only.example.test',
-                runtimeOrigin: 'http://127.0.0.1:45991',
-                clientServerUrl: 'https://iroh-only.example.test',
-            }),
-        );
-        expect(mocks.deletePushToken).toHaveBeenCalledWith(
-            { token: 't:https://iroh-disabled.example.test', secret: 's' },
-            'ExponentPushToken[new]',
-            { apiEndpoint: 'https://iroh-disabled.example.test', runtimeOrigin: 'http://127.0.0.1:46111' },
-        );
-        // The API adapter's runtime-origin behavior is tested at its own network
-        // boundary; this policy test proves every Home decision receives that
-        // verified origin rather than the canonical URL.
-        expect(mocks.acquireIrohHomeRuntimeOrigin).toHaveBeenCalledTimes(2);
-    });
 });

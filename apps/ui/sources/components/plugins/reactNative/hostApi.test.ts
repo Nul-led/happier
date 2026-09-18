@@ -1256,6 +1256,7 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                 contributor: operation.contributor,
             },
             connectedAccount: { kind: 'none' as const },
+            presentation: { connectedAccountLabel: null, machineDisplayName: null },
         };
         const adapter = createAdapterOverHost({
             selectActionInput: async () => result,
@@ -1310,6 +1311,7 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                     contributor: operation.contributor,
                 },
                 connectedAccount: { kind: 'none' },
+                presentation: { connectedAccountLabel: null, machineDisplayName: null },
             }),
             executeAction: async (_request, options) => {
                 seenTargetedOperation = options?.targetedOperation;
@@ -1379,6 +1381,7 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                         contributor: retainedOperation.contributor,
                     },
                     connectedAccount: { kind: 'none' },
+                    presentation: { connectedAccountLabel: null, machineDisplayName: null },
                 }),
                 executeAction: async (_request, options) => {
                     seenTargetedOperation = options?.targetedOperation;
@@ -1453,6 +1456,7 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                         contributor: operation.contributor,
                     },
                     connectedAccount: { kind: 'none' },
+                    presentation: { connectedAccountLabel: null, machineDisplayName: null },
                 };
             }
             if (request.method === 'executeAction') return { applied: true };
@@ -1512,6 +1516,7 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                         contributor: operation.contributor,
                     },
                     connectedAccount: { kind: 'none' },
+                    presentation: { connectedAccountLabel: null, machineDisplayName: null },
                 };
             }
             if (request.method !== 'executeAction') throw new Error('unexpected_request');

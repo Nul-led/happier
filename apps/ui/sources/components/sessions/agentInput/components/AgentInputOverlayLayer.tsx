@@ -30,6 +30,7 @@ type SimpleOption = Readonly<{
 
 type SharedContentPopoverLike = Readonly<{
     renderContent: AgentInputContentPopoverConfig['renderContent'];
+    onRequestClose?: AgentInputContentPopoverConfig['onRequestClose'];
     boundaryRef?: AgentInputContentPopoverConfig['boundaryRef'];
     maxHeightCap?: AgentInputContentPopoverConfig['maxHeightCap'];
     maxWidthCap?: AgentInputContentPopoverConfig['maxWidthCap'];

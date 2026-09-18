@@ -32,8 +32,8 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
     }),
 }));
 
-vi.mock('../families/uploadSessionAttachmentFromReaderWithCarrierFallbacks', () => ({
-    uploadSessionAttachmentFromReaderWithCarrierFallbacks: async (params: any) => {
+vi.mock('../families/uploadSessionAttachmentFromReaderViaMachineCarrier', () => ({
+    uploadSessionAttachmentFromReaderViaMachineCarrier: async (params: any) => {
         state.directImportUploadCalls.push(params);
         return { success: true, path: '/repo/file', sizeBytes: params.fileReader.sizeBytes, sha256: 'h' };
     },
@@ -100,6 +100,34 @@ describe('daemonSessionAttachments', () => {
         expect(result.success).toBe(true);
         expect(state.directImportUploadCalls).toHaveLength(1);
         expect(state.directImportUploadCalls[0]?.serverId).toBe('owner-server');
+    });
+
+    it('uses an exact qualified Session target instead of a colliding preferred row', async () => {
+        state.directImportUploadCalls = [];
+        state.preferredServerId = 'wrong-server';
+        state.activeServerId = 'active-server-1';
+
+        const { uploadDaemonSessionAttachmentFromReader } = await import('../families/sessionAttachmentTransfers');
+        const result = await uploadDaemonSessionAttachmentFromReader({
+            session: { serverId: 'server-b', accountId: 'account-b', sessionId: 's1' },
+            fileReader: {
+                sizeBytes: 2,
+                readBytes: async () => new Uint8Array(),
+                close: async () => {},
+            },
+            request: {
+                messageLocalId: 'm-qualified',
+                fileName: 'qualified.txt',
+                sizeBytes: 2,
+                uploadLocation: 'workspace',
+                workspaceRelativeDir: '.',
+                vcsIgnoreStrategy: 'none',
+                vcsIgnoreWritesEnabled: false,
+            },
+        });
+
+        expect(result.success).toBe(true);
+        expect(state.directImportUploadCalls[0]?.serverId).toBe('server-b');
     });
 
     it('routes workspace attachments through the shared workspace transfer caller', async () => {

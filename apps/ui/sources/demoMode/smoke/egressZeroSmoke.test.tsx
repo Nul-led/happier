@@ -35,11 +35,15 @@ vi.mock('@/auth/context/AuthContext', () => ({
     }),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentials: vi.fn(async () => null),
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentials: vi.fn(async () => null),
+        },
+    });
+});
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -79,7 +83,8 @@ vi.mock('@/text', async () => {
     return createTextModuleMock({ translate: (key) => key });
 });
 
-vi.mock('@/text/i18n', () => ({
+vi.mock('@/text/i18n', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/text/i18n')>(),
     setPreferredLanguageFromSettings: vi.fn(),
 }));
 
@@ -158,7 +163,25 @@ vi.mock('expo-constants', () => ({
 }));
 
 vi.mock('expo-updates', () => ({
+    channel: null,
+    createdAt: null,
+    isEmbeddedLaunch: true,
     isEnabled: false,
+    runtimeVersion: null,
+    updateId: null,
+    useUpdates: () => ({
+        currentlyRunning: {},
+        isChecking: false,
+        isDownloading: false,
+        isRestarting: false,
+        isStartupProcedureRunning: false,
+        isUpdateAvailable: false,
+        isUpdatePending: false,
+        restartCount: 0,
+    }),
+    checkForUpdateAsync: vi.fn(async () => ({ isAvailable: false })),
+    fetchUpdateAsync: vi.fn(async () => undefined),
+    reloadAsync: vi.fn(async () => undefined),
 }));
 
 vi.mock('expo-haptics', () => ({
@@ -245,7 +268,8 @@ vi.mock('@/track', () => ({
     tracking: false,
 }));
 
-vi.mock('@/utils/platform/desktopHost', () => ({
+vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/desktopHost')>(),
     isDesktopHost: () => false,
 }));
 
@@ -338,6 +362,11 @@ function createJourneyWizardSurfaceProps(): OnboardingWizardSurfaceProps {
         layout: 'landscape',
         isDesktopShell: true,
         authEntryOptions: {
+            authenticationCatalog: { provenance: 'legacy', methods: [] },
+            authenticationActions: [],
+            keyChallengeV2Available: false,
+            homeTarget: { kind: 'saved_profile', profileRef: 'relay-profile' },
+            homeLabel: 'Relay Home',
             serverAvailability: 'ready',
             serverUrlForCopy: 'https://relay.example.test',
             showAuthActions: true,
@@ -364,10 +393,8 @@ function createJourneyWizardSurfaceProps(): OnboardingWizardSurfaceProps {
             },
             retryServerCheck: () => undefined,
         },
-        onCreateAccount: vi.fn(),
-        onCreateAccountViaProvider: vi.fn(),
-        onLoginWithKeylessProvider: vi.fn(),
-        onLoginWithMtls: vi.fn(),
+        accountContinuationIntent: { kind: 'enter', target: { kind: 'automatic' } },
+        onAccountDirectoryKeyResult: vi.fn(),
     };
 }
 

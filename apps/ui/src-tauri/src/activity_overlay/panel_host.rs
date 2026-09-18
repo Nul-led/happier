@@ -236,7 +236,7 @@ pub(crate) fn apply_macos_overlay_panel_position<R: tauri::Runtime>(
     Err("Panel positioning is unavailable outside macOS".to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
     use crate::activity_overlay::host_mode::DesktopActivityOverlayDisplayContext;

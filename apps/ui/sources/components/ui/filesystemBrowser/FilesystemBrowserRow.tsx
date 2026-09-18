@@ -9,6 +9,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 
 export type FilesystemBrowserRowProps = Readonly<{
     node: FilesystemBrowserNode;
+    treeItemProps?: Pick<ItemProps, 'webRole' | 'webTabIndex' | 'accessibilityLevel' | 'webKeyShortcuts' | 'accessibilityExpanded' | 'pressableRef' | 'onFocus' | 'onKeyDown'>;
     title: string;
     subtitle?: React.ReactNode;
     icon: React.ReactNode;
@@ -60,6 +61,7 @@ export function FilesystemBrowserRow(props: FilesystemBrowserRowProps): React.Re
             ? (
                 <Item
                     testID={props.testID}
+                {...props.treeItemProps}
                     title={props.title}
                     subtitle={props.subtitle}
                     icon={<Icon name="info" size={16} color={theme.colors.text.secondary} />}
@@ -78,6 +80,7 @@ export function FilesystemBrowserRow(props: FilesystemBrowserRowProps): React.Re
         : (
             <Item
                 testID={props.testID}
+                {...props.treeItemProps}
                 title={props.title}
                 subtitle={props.subtitle}
                 icon={props.icon}

@@ -1,5 +1,9 @@
 type VoiceReadinessCopy = {
   ready: string;
+  permissionAnnouncement: (params: { summary: string }) => string;
+  userActionAnnouncement: (params: { question: string }) => string;
+  userActionFallback: string;
+  requestedTool: string;
   provider_unselected: string;
   contribution_unavailable: string;
   role_unsupported: string;
@@ -59,6 +63,10 @@ function defineVoiceReadinessTranslation(readiness: VoiceReadinessCopy) {
 export const voiceReadinessTranslations = {
   en: defineVoiceReadinessTranslation({
     ready: 'Ready for Voice.',
+    permissionAnnouncement: ({ summary }) => `The coding session needs permission for ${summary}. Review it in the session UI to approve or deny.`,
+    userActionAnnouncement: ({ question }) => `The coding session needs your input. ${question}`,
+    userActionFallback: 'The coding session needs your input. Answer the question so I can continue.',
+    requestedTool: 'the requested tool',
     provider_unselected: 'Choose a Voice provider.',
     contribution_unavailable: 'This Voice provider is no longer available.',
     role_unsupported: 'This provider does not support the selected Voice mode.',
@@ -112,6 +120,10 @@ export const voiceReadinessTranslations = {
   }),
   de: defineVoiceReadinessTranslation({
     ready: 'Bereit für Voice.',
+    permissionAnnouncement: ({ summary }) => `Die Coding-Session benötigt eine Berechtigung für ${summary}. Prüfe sie in der Session-Oberfläche, um sie zu genehmigen oder abzulehnen.`,
+    userActionAnnouncement: ({ question }) => `Die Coding-Session benötigt deine Antwort. ${question}`,
+    userActionFallback: 'Die Coding-Session benötigt deine Antwort. Beantworte die Frage, damit ich fortfahren kann.',
+    requestedTool: 'das angeforderte Werkzeug',
     provider_unselected: 'Wähl einen Voice-Provider.',
     contribution_unavailable: 'Dieser Voice-Provider ist nicht mehr verfügbar.',
     role_unsupported: 'Dieser Provider unterstützt den gewählten Voice-Modus nicht.',
@@ -165,6 +177,10 @@ export const voiceReadinessTranslations = {
   }),
   fr: defineVoiceReadinessTranslation({
     ready: 'Prêt pour Voice.',
+    permissionAnnouncement: ({ summary }) => `La session de code a besoin d’une autorisation pour ${summary}. Vérifie-la dans l’interface de la session pour l’approuver ou la refuser.`,
+    userActionAnnouncement: ({ question }) => `La session de code a besoin de ta réponse. ${question}`,
+    userActionFallback: 'La session de code a besoin de ta réponse. Réponds à la question pour que je puisse continuer.',
+    requestedTool: 'l’outil demandé',
     provider_unselected: 'Choisis un provider Voice.',
     contribution_unavailable: 'Ce provider Voice n’est plus disponible.',
     role_unsupported: 'Ce provider ne prend pas en charge le mode Voice sélectionné.',
@@ -218,6 +234,10 @@ export const voiceReadinessTranslations = {
   }),
   ru: defineVoiceReadinessTranslation({
     ready: 'Голосовой режим готов.',
+    permissionAnnouncement: ({ summary }) => `Сеансу разработки требуется разрешение для ${summary}. Проверьте его в интерфейсе сеанса, чтобы разрешить или отклонить.`,
+    userActionAnnouncement: ({ question }) => `Сеансу разработки нужен ваш ответ. ${question}`,
+    userActionFallback: 'Сеансу разработки нужен ваш ответ. Ответьте на вопрос, чтобы я мог продолжить.',
+    requestedTool: 'запрошенный инструмент',
     provider_unselected: 'Выберите голосового провайдера.',
     contribution_unavailable: 'Этот голосовой провайдер больше недоступен.',
     role_unsupported: 'Этот провайдер не поддерживает выбранный голосовой режим.',
@@ -271,6 +291,10 @@ export const voiceReadinessTranslations = {
   }),
   pl: defineVoiceReadinessTranslation({
     ready: 'Tryb głosowy jest gotowy.',
+    permissionAnnouncement: ({ summary }) => `Sesja kodowania potrzebuje uprawnienia do ${summary}. Sprawdź je w interfejsie sesji, aby zatwierdzić lub odrzucić.`,
+    userActionAnnouncement: ({ question }) => `Sesja kodowania potrzebuje Twojej odpowiedzi. ${question}`,
+    userActionFallback: 'Sesja kodowania potrzebuje Twojej odpowiedzi. Odpowiedz na pytanie, abym mógł kontynuować.',
+    requestedTool: 'żądane narzędzie',
     provider_unselected: 'Wybierz dostawcę obsługi głosowej.',
     contribution_unavailable: 'Ten dostawca obsługi głosowej nie jest już dostępny.',
     role_unsupported: 'Ten dostawca nie obsługuje wybranego trybu głosowego.',
@@ -324,6 +348,10 @@ export const voiceReadinessTranslations = {
   }),
   es: defineVoiceReadinessTranslation({
     ready: 'La función de voz está lista.',
+    permissionAnnouncement: ({ summary }) => `La sesión de código necesita permiso para ${summary}. Revísalo en la interfaz de la sesión para aprobarlo o denegarlo.`,
+    userActionAnnouncement: ({ question }) => `La sesión de código necesita tu respuesta. ${question}`,
+    userActionFallback: 'La sesión de código necesita tu respuesta. Responde la pregunta para que pueda continuar.',
+    requestedTool: 'la herramienta solicitada',
     provider_unselected: 'Elige un proveedor de voz.',
     contribution_unavailable: 'Este proveedor de voz ya no está disponible.',
     role_unsupported: 'Este proveedor no admite el modo de voz seleccionado.',
@@ -377,6 +405,10 @@ export const voiceReadinessTranslations = {
   }),
   it: defineVoiceReadinessTranslation({
     ready: 'La funzione Voce è pronta.',
+    permissionAnnouncement: ({ summary }) => `La sessione di codice richiede l’autorizzazione per ${summary}. Controllala nell’interfaccia della sessione per approvare o rifiutare.`,
+    userActionAnnouncement: ({ question }) => `La sessione di codice ha bisogno della tua risposta. ${question}`,
+    userActionFallback: 'La sessione di codice ha bisogno della tua risposta. Rispondi alla domanda per permettermi di continuare.',
+    requestedTool: 'lo strumento richiesto',
     provider_unselected: 'Scegli un provider vocale.',
     contribution_unavailable: 'Questo provider vocale non è più disponibile.',
     role_unsupported: 'Questo provider non supporta la modalità Voce selezionata.',
@@ -430,6 +462,10 @@ export const voiceReadinessTranslations = {
   }),
   pt: defineVoiceReadinessTranslation({
     ready: 'A função de Voz está pronta.',
+    permissionAnnouncement: ({ summary }) => `A sessão de código precisa de permissão para ${summary}. Revê-a na interface da sessão para aprovar ou recusar.`,
+    userActionAnnouncement: ({ question }) => `A sessão de código precisa da tua resposta. ${question}`,
+    userActionFallback: 'A sessão de código precisa da tua resposta. Responde à pergunta para eu poder continuar.',
+    requestedTool: 'a ferramenta pedida',
     provider_unselected: 'Escolha um provedor de Voz.',
     contribution_unavailable: 'Este provedor de Voz não está mais disponível.',
     role_unsupported: 'Este provedor não é compatível com o modo de Voz selecionado.',
@@ -483,6 +519,10 @@ export const voiceReadinessTranslations = {
   }),
   ca: defineVoiceReadinessTranslation({
     ready: 'La funció de veu està a punt.',
+    permissionAnnouncement: ({ summary }) => `La sessió de codi necessita permís per a ${summary}. Revisa-ho a la interfície de la sessió per aprovar-ho o denegar-ho.`,
+    userActionAnnouncement: ({ question }) => `La sessió de codi necessita la teva resposta. ${question}`,
+    userActionFallback: 'La sessió de codi necessita la teva resposta. Respon la pregunta perquè pugui continuar.',
+    requestedTool: 'l’eina sol·licitada',
     provider_unselected: 'Tria un proveïdor de veu.',
     contribution_unavailable: 'Aquest proveïdor de veu ja no està disponible.',
     role_unsupported: 'Aquest proveïdor no admet el mode de veu seleccionat.',
@@ -536,6 +576,10 @@ export const voiceReadinessTranslations = {
   }),
   'zh-Hans': defineVoiceReadinessTranslation({
     ready: '语音功能已就绪。',
+    permissionAnnouncement: ({ summary }) => `编码会话需要获得以下权限：${summary}。请在会话界面中审核并批准或拒绝。`,
+    userActionAnnouncement: ({ question }) => `编码会话需要你的回答。${question}`,
+    userActionFallback: '编码会话需要你的回答。请回答问题，以便我继续。',
+    requestedTool: '请求的工具',
     provider_unselected: '请选择语音提供商。',
     contribution_unavailable: '此语音提供商已不可用。',
     role_unsupported: '此提供商不支持所选语音模式。',
@@ -589,6 +633,10 @@ export const voiceReadinessTranslations = {
   }),
   'zh-Hant': defineVoiceReadinessTranslation({
     ready: '語音功能已就緒。',
+    permissionAnnouncement: ({ summary }) => `編碼工作階段需要以下權限：${summary}。請在工作階段介面中審核並核准或拒絕。`,
+    userActionAnnouncement: ({ question }) => `編碼工作階段需要你的回答。${question}`,
+    userActionFallback: '編碼工作階段需要你的回答。請回答問題，以便我繼續。',
+    requestedTool: '要求的工具',
     provider_unselected: '請選擇語音提供者。',
     contribution_unavailable: '此語音提供者已無法使用。',
     role_unsupported: '此提供者不支援所選語音模式。',
@@ -642,6 +690,10 @@ export const voiceReadinessTranslations = {
   }),
   ja: defineVoiceReadinessTranslation({
     ready: '音声機能を利用できます。',
+    permissionAnnouncement: ({ summary }) => `コーディングセッションには${summary}の許可が必要です。セッション画面で確認し、許可または拒否してください。`,
+    userActionAnnouncement: ({ question }) => `コーディングセッションにはあなたの回答が必要です。${question}`,
+    userActionFallback: 'コーディングセッションにはあなたの回答が必要です。続行できるよう質問に回答してください。',
+    requestedTool: '要求されたツール',
     provider_unselected: '音声プロバイダーを選択してください。',
     contribution_unavailable: 'この音声プロバイダーは利用できなくなりました。',
     role_unsupported: 'このプロバイダーは選択した音声モードに対応していません。',

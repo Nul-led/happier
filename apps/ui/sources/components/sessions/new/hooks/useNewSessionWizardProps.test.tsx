@@ -19,7 +19,7 @@ installNewSessionScreenModelCommonModuleMocks({
 });
 
 describe('useNewSessionWizardProps', () => {
-    it('preserves projected installable presentation in the shared installer props', async () => {
+    it('preserves destination projections and installable presentation in the shared Wizard props', async () => {
         let observed: ReturnType<typeof useNewSessionWizardProps> | null = null;
 
         function Probe() {
@@ -89,6 +89,21 @@ describe('useNewSessionWizardProps', () => {
                 permissionMode: 'default',
                 handlePermissionModeChange: () => {},
                 machines: [],
+                machineGroups: [{
+                    serverId: 'server-a',
+                    loading: false,
+                    signedOut: false,
+                    machines: [],
+                }],
+                machinePoolGroups: [{
+                    serverId: 'server-a',
+                    accountId: 'account-a',
+                    serverName: 'Server A',
+                    pools: [],
+                    status: 'idle',
+                    projectionReady: true,
+                }],
+                temporaryComputerProjection: { state: 'available', rowCount: 2 },
                 targetServerId: null,
                 selectedMachine: null,
                 recentMachines: [],
@@ -128,6 +143,11 @@ describe('useNewSessionWizardProps', () => {
                 setupUrl: 'https://docs.acme.test/setup',
             }),
         ]);
+        expect((observed as ReturnType<typeof useNewSessionWizardProps> | null)?.machine).toEqual(expect.objectContaining({
+            machineGroups: [expect.objectContaining({ serverId: 'server-a' })],
+            machinePoolGroups: [expect.objectContaining({ serverId: 'server-a', accountId: 'account-a' })],
+            temporaryComputerProjection: { state: 'available', rowCount: 2 },
+        }));
     });
 
     it('updates memoized agent and typed Provider launch recovery fields', async () => {

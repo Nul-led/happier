@@ -48,7 +48,9 @@ export type KeyboardCommandId =
     | 'transcript.scroll.bottom'
     | 'transcript.scroll.pageDown'
     | 'transcript.scroll.pageUp'
-    | 'transcript.scroll.top';
+    | 'transcript.scroll.top'
+    | 'workflow.run'
+    | 'workflow.save';
 
 export type KeyboardCommandSettingsTitleKey = Extract<
     TranslationKeyNoParams,
@@ -98,6 +100,8 @@ export type KeyboardCommandSettingsTitleKey = Extract<
     | 'settingsKeyboard.commands.transcriptScrollPageDown'
     | 'settingsKeyboard.commands.transcriptScrollPageUp'
     | 'settingsKeyboard.commands.transcriptScrollTop'
+    | 'settingsKeyboard.commands.workflowRun'
+    | 'settingsKeyboard.commands.workflowSave'
 >;
 
 export type KeyboardContext = Readonly<{

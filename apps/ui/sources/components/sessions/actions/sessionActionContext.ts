@@ -24,7 +24,7 @@ export function resolveSessionAttentionStandingAction(params: Readonly<{
     if (!params.enabled) {
         return { kind: 'none', visible: false };
     }
-    if (params.session.accessLevel === 'view') {
+    if (params.session.access?.capabilities.editSessionRecords !== true) {
         return { kind: 'none', visible: false };
     }
     return params.standing
@@ -40,20 +40,15 @@ export function createSessionActionTarget(params: Readonly<{
     isPinned?: boolean;
     attentionStandingEnabled?: boolean;
     attentionStanding?: boolean;
+    followEnabled?: boolean;
     resumeCapabilityOptions?: ResumeCapabilityOptions;
 }>): SessionActionTarget {
     const session = params.session;
-    const sessionOwnerId = typeof session.owner === 'string' ? session.owner : null;
-    const currentUserOwnsSession = (
-        typeof params.currentUserId === 'string'
-        && params.currentUserId.length > 0
-        && sessionOwnerId === params.currentUserId
-    );
-    const isOwnedByCurrentUser = currentUserOwnsSession || (
-        session.accessLevel == null
-        && !sessionOwnerId
-    );
-    const hasAdminAccess = isOwnedByCurrentUser || session.accessLevel === 'admin';
+    const serverId = typeof params.serverId === 'string' && params.serverId.trim()
+        ? params.serverId.trim()
+        : null;
+    const isOwnedByCurrentUser = session.access?.role === 'owner';
+    const canUnarchive = session.access?.capabilities.archiveSession === true;
     const isActive = session.active === true;
     const isArchived = session.archivedAt != null;
     const terminalControlServiceability = 'agentState' in session
@@ -63,36 +58,39 @@ export function createSessionActionTarget(params: Readonly<{
         terminalControlServiceability?.v === 1
         && terminalControlServiceability.state === 'recoverable_unservable'
     );
-    const canStop = isOwnedByCurrentUser;
-    const canArchive = hasAdminAccess && !isArchived && (!isActive || canStop);
+    const canStop = session.access?.capabilities.stopSession === true;
+    const canArchive = session.access?.capabilities.archiveSession === true && !isArchived && (!isActive || canStop);
     const ownerMetadata = 'agentState' in session
         ? readSessionOwnerMetadataView(session)
         : null;
-    const hasWriteAccess = !session.accessLevel || session.accessLevel === 'edit' || session.accessLevel === 'admin';
+    const hasWriteAccess = session.access?.capabilities.submitAgentInput === true;
     const canResume = !isActive
         && hasWriteAccess
         && (
             canResumeSessionWithOptions(ownerMetadata, params.resumeCapabilityOptions)
             || canContinueSessionWithFreshSpawn(ownerMetadata, params.resumeCapabilityOptions)
         );
+    const canUsePersonalReminder = serverId !== null
+        && session.access?.capabilities.readTranscript === true;
 
     return {
         session,
         sessionId: session.id,
-        serverId: params.serverId ?? null,
+        serverId,
         isActive,
         isArchived,
         isConnected: params.isConnected ?? isActive,
         hasRecoverableTerminalHost,
         isPinned: params.isPinned === true,
         isOwnedByCurrentUser,
-        hasAdminAccess,
+        canUnarchive,
         canStop,
+        followEnabled: params.followEnabled === true,
         canArchive,
-        canRename: hasAdminAccess,
+        canRename: session.access?.capabilities.renameSession === true,
         canResume,
         canDelete:
-            isOwnedByCurrentUser
+            session.access?.capabilities.deleteSession === true
             && !isActive
             && params.isConnected !== true
             && isSessionTerminalPermanentlyAbsent(terminalControlServiceability),
@@ -106,5 +104,9 @@ export function createSessionActionTarget(params: Readonly<{
                 enabled: params.attentionStandingEnabled === true,
                 standing: params.attentionStanding === true,
             }),
+        reminderAction: {
+            canSchedule: canUsePersonalReminder && !isArchived,
+            canClear: canUsePersonalReminder,
+        },
     };
 }

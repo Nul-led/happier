@@ -1,7 +1,14 @@
-import { parseQualifiedPluginContributionKey } from '@happier-dev/protocol';
+import {
+    parseQualifiedPluginContributionKey,
+    type AgentUiSettingReferenceV1,
+    type PluginLocalizedStringV2,
+} from '@happier-dev/protocol';
 
 import type { DaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
-import type { PluginProjectionEditableSettingField } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
+import {
+    resolvePluginProjectionEditableSettingsGroup,
+    type PluginProjectionEditableSettingField,
+} from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 
 export type AgentScopedPluginSettingsDeclaration = Readonly<{
     pluginId: string;
@@ -19,6 +26,55 @@ const EMPTY_DECLARATIONS: AgentScopedPluginSettingsDeclarations = Object.freeze(
     account: null,
     daemon: null,
 });
+
+export type AgentScopedPluginSettingPresentation = Readonly<{
+    title: string;
+    options: readonly Readonly<{
+        value: unknown;
+        title: string;
+        description?: string;
+    }>[];
+}>;
+
+/**
+ * Reads one exact Agent-owned setting through the same qualified declaration
+ * and localization owners used by the Agent Settings screen. This is a
+ * read-only catalog projection: it neither reads nor writes the setting value.
+ */
+export function resolveAgentScopedPluginSettingPresentation(params: Readonly<{
+    agentId: string | null | undefined;
+    setting: AgentUiSettingReferenceV1;
+    projectionInputs: DaemonMergedProjectionInputs | null | undefined;
+    localize: (pluginId: string, value: PluginLocalizedStringV2) => string;
+}>): AgentScopedPluginSettingPresentation | null {
+    const declarations = resolveAgentScopedPluginSettingsDeclarations(params);
+    const declaration = params.setting.scope === 'account'
+        ? declarations.account
+        : params.setting.scope === 'daemon'
+            ? declarations.daemon
+            : null;
+    if (!declaration) return null;
+
+    const group = params.projectionInputs?.pluginProjectionById[declaration.pluginId]
+        ?.editableSettingsGroups.find((candidate) => (
+            candidate.scope.kind === params.setting.scope
+            && candidate.target.kind === 'agent'
+            && candidate.fields.some((field) => field.key === params.setting.localId)
+        ));
+    if (!group) return null;
+    const field = resolvePluginProjectionEditableSettingsGroup(group, params.localize)
+        .fields.find((candidate) => candidate.key === params.setting.localId);
+    const options = field?.presentation?.options;
+    if (!field || !options) return null;
+    return Object.freeze({
+        title: field.title,
+        options: Object.freeze(options.map((option) => Object.freeze({
+            value: option.value,
+            title: option.title,
+            ...(option.description === undefined ? {} : { description: option.description }),
+        }))),
+    });
+}
 
 /** Select the exact Settings declarations owned by one qualified Agent entry. */
 export function resolveAgentScopedPluginSettingsDeclarations(params: Readonly<{

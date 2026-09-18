@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { isSessionListRuntimePriorityRow } from './sessionListRuntimePriorityRows';
+import {
+    isSessionListRuntimePriorityRow,
+    resolveSessionListRuntimePriorityRowNextFreshnessAtMs,
+} from './sessionListRuntimePriorityRows';
 
 describe('isSessionListRuntimePriorityRow', () => {
     it('prioritizes canonical background activity without sourceClass or timestamp freshness inference', () => {
@@ -37,5 +40,15 @@ describe('isSessionListRuntimePriorityRow', () => {
         };
 
         expect(isSessionListRuntimePriorityRow(row, 1_000_000)).toBe(false);
+    });
+
+    it('does not fabricate online presence to schedule thinking freshness', () => {
+        const nowMs = 1_000_000;
+        expect(resolveSessionListRuntimePriorityRowNextFreshnessAtMs({
+            active: true,
+            activeAt: nowMs,
+            thinking: true,
+            thinkingAt: nowMs,
+        }, nowMs)).toBeNull();
     });
 });

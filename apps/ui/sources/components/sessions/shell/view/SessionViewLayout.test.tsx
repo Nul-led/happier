@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { View } from 'react-native';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -166,6 +167,40 @@ describe('SessionViewLayout', () => {
         });
 
         expect(findContentWrapperPaddingBottom(screen)).toBe(19);
+    });
+
+    it('seats the Companion on the side the viewer chose, on every platform', async () => {
+        // The rail is a flex sibling of Chat, and Yoga has no `order`: a CSS-only
+        // reorder silently does nothing on iOS and Android, which turns "Move to
+        // the left side" into a control with no observable effect there.
+        const { SessionViewLayout } = await import('./SessionViewLayout');
+        const row = async (companionEdge?: 'leading' | 'trailing') => {
+            const screen = await renderScreen(
+                <SessionViewLayout
+                    content={null}
+                    input={null}
+                    placeholder={null}
+                    shouldShowCliWarning={false}
+                    onDismissCliWarning={() => {}}
+                    isLandscape={false}
+                    deviceType="tablet"
+                    onBackPress={() => {}}
+                    companion={<View testID="companion-slot" />}
+                    {...(companionEdge ? { companionEdge } : {})}
+                />,
+            );
+            const node = screen.tree.root.findAll((candidate) =>
+                readStyleValue(candidate.props.style, 'flexDirection') === 'row'
+                || readStyleValue(candidate.props.style, 'flexDirection') === 'row-reverse',
+            )[0];
+            return readStyleValue(node?.props.style, 'flexDirection');
+        };
+
+        expect(await row()).toBe('row');
+        expect(await row('trailing')).toBe('row');
+        // Reversing the one row that owns Chat and the rail moves the rail to the
+        // leading side without a web-only style and without a second slot.
+        expect(await row('leading')).toBe('row-reverse');
     });
 });
 

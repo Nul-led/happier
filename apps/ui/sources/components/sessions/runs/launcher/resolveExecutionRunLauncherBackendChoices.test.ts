@@ -144,7 +144,10 @@ describe('resolveExecutionRunLauncherBackendChoices', () => {
         });
 
         expect(choices).toContainEqual(expect.objectContaining({
-            backendTarget: { kind: 'backend', backendId: 'claude' },
+            backendTarget: {
+                kind: 'agent',
+                identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
+            },
             targetKey: 'agent:claude',
             backendId: 'claude',
             title: 't:agentInput.agent.claude',
@@ -174,6 +177,8 @@ describe('resolveExecutionRunLauncherBackendChoices', () => {
             mergedProviderProjectionById: {
                 'acme.plugin.provider1': {
                     agentId: 'acme.plugin.provider1',
+                    qualifiedId: 'acme.plugin.provider1',
+                    identity: { pluginId: 'acme.plugin', localId: 'provider1' },
                     title: 'Acme Plugin Provider',
                     subtitle: 'acme.plugin.provider1',
                     channel: 'plugin',
@@ -184,8 +189,11 @@ describe('resolveExecutionRunLauncherBackendChoices', () => {
         } as any);
 
         expect(choices).toContainEqual(expect.objectContaining({
-            backendTarget: { kind: 'backend', backendId: 'acme.plugin.backend1' },
-            targetKey: 'agent:acme.plugin.backend1',
+            backendTarget: {
+                kind: 'agent',
+                identity: { pluginId: 'acme.plugin', localId: 'provider1' },
+            },
+            targetKey: 'agent:acme.plugin.provider1',
             backendId: 'acme.plugin.backend1',
             title: 'Acme Plugin Backend',
             disabled: false,

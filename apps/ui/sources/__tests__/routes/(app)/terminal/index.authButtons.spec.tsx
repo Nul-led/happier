@@ -20,7 +20,7 @@ installTerminalRouteCommonModuleMocks({
 });
 
 vi.mock('@/hooks/session/useConnectTerminal', () => ({
-    useConnectTerminal: () => ({ processAuthUrl: vi.fn(async () => {}), isLoading: false }),
+    useConnectTerminal: () => ({ processParsedAuthUrl: vi.fn(async () => {}), isLoading: false }),
 }));
 
 vi.mock('@/auth/context/AuthContext', () => ({

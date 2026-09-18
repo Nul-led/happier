@@ -44,9 +44,8 @@ describe('useNewSessionAgentInputExtraActionChips', () => {
                 setAgentOptionState: vi.fn(),
                 selectedMachineId: 'machine-a',
                 showAutomationActionChips: true,
-                automationDraft: { enabled: false, name: '', description: '', triggers: [] },
                 automationLabel: 'Automate',
-                onAutomationChange: vi.fn(),
+                onOpenAutomationEditor: vi.fn(),
                 checkoutActionChip: chip('checkout'),
                 organizationPlacementActionChips: [chip('organization-folder'), chip('organization-tags')],
                 showServerPickerChip: false,
@@ -74,7 +73,44 @@ describe('useNewSessionAgentInputExtraActionChips', () => {
         ]);
     });
 
-    it('creates the automation chip as a shared content popover instead of a collapsed toggle action', async () => {
+    it('composes the one Session access chip so New Session and in-Session share the factory', async () => {
+        const { useNewSessionAgentInputExtraActionChips } = await import('./useNewSessionAgentInputExtraActionChips');
+        let chips: ReadonlyArray<AgentInputExtraActionChip> = [];
+
+        function Probe() {
+            chips = useNewSessionAgentInputExtraActionChips({
+                agentId: 'claude',
+                agentOptionState: null,
+                setAgentOptionState: vi.fn(),
+                selectedMachineId: 'machine-a',
+                showAutomationActionChips: false,
+                automationLabel: 'Automate',
+                onOpenAutomationEditor: vi.fn(),
+                showServerPickerChip: false,
+                targetServerId: null,
+                targetServerName: 'Server A',
+                externalSessionsFeatureEnabled: false,
+                supportsDirectTranscriptStorage: false,
+                transcriptStorage: 'persisted',
+                onTranscriptStorageChange: vi.fn(),
+                selectedMachineIsWindows: false,
+                windowsRemoteSessionLaunchMode: null,
+                windowsTerminalAvailable: false,
+                onWindowsRemoteSessionLaunchModeChange: vi.fn(),
+                onActionShortcutPress: vi.fn(),
+                sessionAccess: { label: 'Private', accessibilityLabel: 'Session access', popoverContent: null },
+            });
+            return null;
+        }
+
+        await renderScreen(<Probe />);
+        const access = chips.find((item) => item.key === 'session-access');
+        expect(access?.controlId).toBe('sessionAccess');
+        // Session access is never the per-message recipient control.
+        expect(chips.some((item) => item.controlId === 'recipient')).toBe(false);
+    });
+
+    it('creates the automation chip as draft-preserving navigation instead of a second settings editor', async () => {
         const { useNewSessionAgentInputExtraActionChips } = await import('./useNewSessionAgentInputExtraActionChips');
 
         let chips: ReadonlyArray<AgentInputExtraActionChip> = [];
@@ -86,21 +122,8 @@ describe('useNewSessionAgentInputExtraActionChips', () => {
                 setAgentOptionState: vi.fn(),
                 selectedMachineId: 'machine-a',
                 showAutomationActionChips: true,
-                automationDraft: {
-                    enabled: false,
-                    name: '',
-                    description: '',
-                    triggers: [{
-                        clientId: 'schedule-hourly',
-                        definition: {
-                            kind: 'schedule',
-                            enabled: true,
-                            schedule: { kind: 'interval', everyMs: 60 * 60_000 },
-                        },
-                    }],
-                },
                 automationLabel: 'Automate',
-                onAutomationChange: vi.fn(),
+                onOpenAutomationEditor: vi.fn(),
                 showServerPickerChip: false,
                 targetServerId: null,
                 targetServerName: 'Server A',
@@ -121,11 +144,9 @@ describe('useNewSessionAgentInputExtraActionChips', () => {
 
         const automationChip = chips.find((chip) => chip.key === 'new-session-automate');
         expect(automationChip?.controlId).toBe('automation');
-        expect(automationChip?.collapsedContentPopover).toEqual(expect.objectContaining({
-            renderContent: expect.any(Function),
-            scrollEnabled: true,
-        }));
-        expect(automationChip?.collapsedContentPopover?.boundaryRef).toBeUndefined();
+        // The chip hands the composed draft to the shared Automation editor; it
+        // no longer embeds a full trigger/settings popover of its own.
+        expect(automationChip?.collapsedContentPopover).toBeUndefined();
         expect(automationChip?.collapsedAction).toBeUndefined();
     });
 
@@ -142,21 +163,8 @@ describe('useNewSessionAgentInputExtraActionChips', () => {
                 setAgentOptionState: vi.fn(),
                 selectedMachineId: 'machine-a',
                 showAutomationActionChips: false,
-                automationDraft: {
-                    enabled: false,
-                    name: '',
-                    description: '',
-                    triggers: [{
-                        clientId: 'schedule-hourly',
-                        definition: {
-                            kind: 'schedule',
-                            enabled: true,
-                            schedule: { kind: 'interval', everyMs: 60 * 60_000 },
-                        },
-                    }],
-                },
                 automationLabel: 'Automate',
-                onAutomationChange: vi.fn(),
+                onOpenAutomationEditor: vi.fn(),
                 showServerPickerChip: false,
                 targetServerId: null,
                 targetServerName: 'Server A',
@@ -206,21 +214,8 @@ describe('useNewSessionAgentInputExtraActionChips', () => {
                 setAgentOptionState: vi.fn(),
                 selectedMachineId: 'machine-a',
                 showAutomationActionChips: false,
-                automationDraft: {
-                    enabled: false,
-                    name: '',
-                    description: '',
-                    triggers: [{
-                        clientId: 'schedule-hourly',
-                        definition: {
-                            kind: 'schedule',
-                            enabled: true,
-                            schedule: { kind: 'interval', everyMs: 60 * 60_000 },
-                        },
-                    }],
-                },
                 automationLabel: 'Automate',
-                onAutomationChange: vi.fn(),
+                onOpenAutomationEditor: vi.fn(),
                 showServerPickerChip: true,
                 targetServerId: 'server-a',
                 targetServerName: 'Server A',

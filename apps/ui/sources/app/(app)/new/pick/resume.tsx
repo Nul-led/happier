@@ -169,6 +169,9 @@ export default function ResumePickerScreen() {
             agentId: operationalAgentId,
             projection: daemonMergedProjectionInputs?.pluginProjectionV2,
             machineId: effectiveMachineId,
+            // This screen only ever picks a remote session id to resume, so it
+            // must also admit resume-only listing sources.
+            interaction: 'pickRemoteSessionId',
         });
     const roundTripBackendParams = React.useMemo(() => {
         return buildBackendTargetRouteParams({
@@ -261,6 +264,7 @@ export default function ResumePickerScreen() {
                             profile: accountProfile,
                             settings,
                             projection: daemonMergedProjectionInputs?.pluginProjectionV2,
+                            interaction: 'pickRemoteSessionId',
                         });
                         if (!source) return null;
                         return await openExternalSessionsResumeIdPickerModal({

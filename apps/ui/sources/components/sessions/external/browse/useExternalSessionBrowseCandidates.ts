@@ -237,6 +237,12 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
      */
     const [candidatesAuthoritative, setCandidatesAuthoritative] = React.useState(false);
     /**
+     * Whether the listing that published the rows on screen advertised
+     * Agent-side candidate deletion. Absence is never inverted into an offer:
+     * a failed, superseded or capability-free listing leaves this false.
+     */
+    const [candidateDeleteSupported, setCandidateDeleteSupported] = React.useState(false);
+    /**
      * Whether the rows on screen come from a candidate-index build that stopped
      * before it completed — a crawl that stopped advancing, or one that exhausted the
      * bounded request budget. The rows stay live and actionable, but the listing is a
@@ -290,6 +296,7 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
                 activeScopeAccountRetirementRef.current = null;
                 activePageRequestKeysRef.current.clear();
                 setCandidatesAuthoritative(false);
+                setCandidateDeleteSupported(false);
                 setLoading(false);
                 setLoadingMore(false);
                 setSearchAugmenting(false);
@@ -311,6 +318,9 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
             // Rows already on screen belong to the superseded request until this one
             // publishes; a paging (`append`) request never revokes that authority.
             setCandidatesAuthoritative(false);
+            // A destructive affordance belongs to the listing that advertised it,
+            // so it is withdrawn until the new request publishes its own answer.
+            setCandidateDeleteSupported(false);
             if (!hasValidScope) {
                 activeScopeAccountRetirementRef.current?.dispose();
                 activeScopeAccountRetirementRef.current = null;
@@ -416,6 +426,7 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
                 if (mode === 'merge') {
                     return false;
                 }
+                if (!append) setCandidateDeleteSupported(false);
                 setPreparation(null);
                 if (!append) setAutoLinkPolicyScope(null);
                 setError(resolveExternalSessionBrowseRpcErrorMessage(result.errorCode, 'list'));
@@ -451,6 +462,9 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
              * request never served.
              */
             if (mode !== 'merge' || nextItems.length > 0) setCandidatesAuthoritative(true);
+            if (mode !== 'append') {
+                setCandidateDeleteSupported(result.capabilities?.deleteCandidate === true);
+            }
             setPreparation(null);
             if (mode !== 'append') {
                 setAutoLinkPolicyScope(result.autoLinkPolicyScopeV1 ?? null);
@@ -758,9 +772,24 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
         ? `${currentScopeKey}\u0000${readCandidateContinuationKey(nextPage)}`
         : null;
 
+    /**
+     * Drop one row after its Agent-side deletion is committed. Removal follows
+     * the confirmed outcome; a failed deletion leaves the row exactly as it was
+     * so the user can retry it.
+     */
+    const removeCandidate = React.useCallback((candidateKey: string) => {
+        setCandidates((current) => {
+            const next = current.filter(
+                (candidate) => readExternalSessionBrowseCandidateKey(candidate) !== candidateKey,
+            );
+            return next.length === current.length ? current : next;
+        });
+    }, []);
+
     return {
         candidates: scopeMatches ? candidates : [],
         candidatesAuthoritative: scopeMatches && candidatesAuthoritative,
+        candidateDeleteSupported: scopeMatches && candidateDeleteSupported,
         /**
          * The normalized query the rows on screen actually answer, or `null` while no
          * request owning the current scope has published. A surface whose visible
@@ -784,5 +813,6 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
         loadMore,
         cancelPreparation,
         reload,
+        removeCandidate,
     } as const;
 }

@@ -1,4 +1,5 @@
 import {
+    buildBackendTargetKeyV2,
     buildBackendTargetKey,
     convertBackendTargetRefV2ToV1,
     readLegacyConfiguredAcpBackendId,
@@ -30,6 +31,18 @@ export type ExecutionRunLauncherBackendChoice = Readonly<{
     title: string;
     disabled: boolean;
 }>;
+
+export function resolveInitialExecutionRunBackendTargetKey(
+    initialTarget: PersistedBackendTargetRefV2 | null,
+    choices: readonly ExecutionRunLauncherBackendChoice[],
+): string | null {
+    if (!initialTarget) return null;
+    const canonicalTargetKey = buildBackendTargetKeyV2(initialTarget);
+    return choices.find((choice) => (
+        choice.disabled !== true
+        && buildBackendTargetKeyV2(choice.backendTarget) === canonicalTargetKey
+    ))?.targetKey ?? null;
+}
 
 type ResolvedBackendCatalogEntry = ReturnType<typeof getResolvedBackendCatalogEntries>[number];
 

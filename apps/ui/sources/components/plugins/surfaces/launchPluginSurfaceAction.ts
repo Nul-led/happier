@@ -1,6 +1,7 @@
 import { actionOperationPresentationCoordinator } from '@/components/inbox/actionOperations/actionOperationPresentationRuntime';
 import type { ActionOperationReentryOrigin } from '@/components/inbox/actionOperations/actionOperationPresentationCoordinator';
 import { randomUUID } from '@/platform/randomUUID';
+import { getStorage } from '@/sync/domains/state/storageStore';
 
 import {
     dispatchPluginSurfaceAction,
@@ -29,11 +30,17 @@ export async function launchPluginSurfaceAction(
 ): Promise<PluginSurfaceActionLaunchOutcome> {
     const { operationOrigin, ...dispatchInput } = input;
     const requestId = dispatchInput.actionRequestId ?? randomUUID();
+    const targetServerId = dispatchInput.contributedAction?.serverId
+        ?? dispatchInput.hostAction?.context?.serverId
+        ?? null;
+    const profileScope = getStorage().getState().profileScope;
     const outcome = await dispatchPluginSurfaceAction({
         ...dispatchInput,
         actionRequestId: requestId,
         onDaemonActionOperationAdmitted: (operation) => {
             actionOperationPresentationCoordinator.register({
+                serverId: targetServerId,
+                accountId: profileScope?.serverId === targetServerId ? profileScope.accountId : '',
                 requestId,
                 onStart: operation.presentation.onStart,
                 ...(operationOrigin ? { origin: operationOrigin } : {}),

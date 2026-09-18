@@ -90,6 +90,11 @@ installValueRefsCommonModuleMocks({
 
 vi.mock('@/sync/store/hooks', () => ({
     useSetting: useLiveSecretsSetting,
+    useSettingsVersion: () => 1,
+}));
+
+vi.mock('@/hooks/server/useFeatureEnabled', () => ({
+    useFeatureEnabled: () => false,
 }));
 
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
@@ -146,7 +151,8 @@ vi.mock('@/components/ui/forms/InlineAddExpander', () => ({
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => createPassThroughModule(['DropdownMenu']));
 
 vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
+    Typography: new Proxy({}, { get: () => () => ({}) }),
+    FontWeights: { regular: '400' },
 }));
 
 describe('value ref saved secrets live updates', () => {

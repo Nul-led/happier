@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { buildPermissionToolCallRoute } from './buildPermissionToolCallRoute';
 
 describe('buildPermissionToolCallRoute', () => {
+    it('keeps the originating Home on a tool jump', () => {
+        expect(buildPermissionToolCallRoute({
+            sessionId: 'same-session', serverId: 'home-b',
+            location: { kind: 'top', messageId: 'tool:call:1', seq: 42 },
+        })).toBe('/session/same-session?jumpSeq=42&serverId=home-b');
+    });
     it('builds an encoded nested tool route with a stable child jump id', () => {
         expect(
             buildPermissionToolCallRoute({

@@ -63,6 +63,54 @@ describe('filterCollapsedSessionListItems', () => {
         ]);
     });
 
+    it('keeps the one-section corpus visible when only the Pinned section is collapsed', () => {
+        const pinnedGroupKey = 'pinned';
+        const sessionsSectionKey = 'sessions:server-a';
+        const projectGroupKey = 'server:server-a:project:repo';
+
+        // Projects and Recent activity are one-section layouts: the corpus below
+        // Pinned is headed by `sessions`, never by `active`/`inactive`.
+        const items: SessionListIndexItem[] = [
+            { type: 'header', title: 'Pinned', headerKind: 'pinned', groupKey: pinnedGroupKey },
+            makeSession('pinned-session', pinnedGroupKey),
+            { type: 'header', title: 'Sessions', headerKind: 'sessions', groupKey: sessionsSectionKey, serverId: 'server-a', serverName: 'Server A' },
+            { type: 'header', title: 'Repo', headerKind: 'project', groupKey: projectGroupKey, serverId: 'server-a', serverName: 'Server A' },
+            makeSession('visible-session', projectGroupKey),
+        ];
+
+        const result = filterCollapsedSessionListItems(items, { [pinnedGroupKey]: true });
+
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+            'Pinned',
+            'Sessions',
+            'Repo',
+            'visible-session',
+        ]);
+    });
+
+    it('collapses a promoted attention section without hiding the corpus beneath it', () => {
+        const attentionGroupKey = 'attention';
+        const sessionsSectionKey = 'sessions:server-a';
+        const dateGroupKey = 'server:server-a:day:2026-02-17';
+
+        const items: SessionListIndexItem[] = [
+            { type: 'header', title: 'Needs attention', headerKind: 'attention', groupKey: attentionGroupKey },
+            makeSession('attention-session', dateGroupKey),
+            { type: 'header', title: 'Sessions', headerKind: 'sessions', groupKey: sessionsSectionKey, serverId: 'server-a', serverName: 'Server A' },
+            { type: 'header', title: 'Today', headerKind: 'date', groupKey: dateGroupKey, serverId: 'server-a', serverName: 'Server A' },
+            makeSession('visible-session', dateGroupKey),
+        ];
+
+        const result = filterCollapsedSessionListItems(items, { [attentionGroupKey]: true });
+
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+            'Needs attention',
+            'Sessions',
+            'Today',
+            'visible-session',
+        ]);
+    });
+
     it('drops only the rows from individually collapsed groups when the parent section remains expanded', () => {
         const collapsedGroupKey = 'server:server-a:day:2026-02-17';
         const openGroupKey = 'server:server-a:day:2026-02-18';

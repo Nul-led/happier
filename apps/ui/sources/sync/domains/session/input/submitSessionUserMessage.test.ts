@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import type { DirectMessageSubmitResult, SessionSubmitPort } from './types';
 import { submitSessionUserMessage } from './submitSessionUserMessage';
 
@@ -60,7 +61,47 @@ function submitOptions(session: Session) {
     };
 }
 
+function createAccountLifetime(scope = { serverId: 'server-1', accountId: 'account-1' }) {
+    let current = true;
+    const lifetime: ServerAccountScopeLifetime = {
+        scope,
+        isCurrent: () => current,
+        onRetire: (cancel) => {
+            if (!current) cancel();
+            return { dispose() {} };
+        },
+    };
+    return {
+        lifetime,
+        retire: () => { current = false; },
+    };
+}
+
 describe('submitSessionUserMessage Pending action ownership', () => {
+    it.each([undefined, { v: 1 as const, kind: 'send_now' as const }])('preserves exact Run input and action %j without consulting parent delivery or waking it', async (requestedAction) => {
+        const harness = createPort();
+        const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+        const metaOverrides = { attachments: [{ name: 'context.txt' }] };
+        const result = await submitSessionUserMessage(harness.port, {
+            ...submitOptions(createSession({ active: false, presence: 0 })),
+            serverId: 'server-exact',
+            recipient,
+            metaOverrides,
+            requestedAction,
+        });
+        expect(result).toMatchObject({ persistence: 'pending', wake: { attempted: false, state: 'not_needed' } });
+        expect(harness.enqueuePendingMessage).toHaveBeenCalledWith(
+            's1', 'hello', undefined, metaOverrides,
+            expect.objectContaining({
+                serverId: 'server-exact',
+                recipient,
+                requestedAction: requestedAction ?? { v: 1, kind: 'enqueue' },
+            }),
+        );
+        expect(harness.ensureSessionRuntimeForPendingInput).not.toHaveBeenCalled();
+        expect(harness.sendMessage).not.toHaveBeenCalled();
+    });
+
     it('does not authorize daemon or UI activation for a new queue-only row', async () => {
         const session = createSession({ active: false, presence: 0 });
         const harness = createPort();
@@ -119,7 +160,10 @@ describe('submitSessionUserMessage Pending action ownership', () => {
         });
         expect(harness.enqueuePendingMessage).toHaveBeenCalledWith(
             's1', 'hello', undefined, expect.any(Object),
-            expect.objectContaining({ requestedAction: { v: 1, kind: 'send_now' } }),
+            expect.objectContaining({
+                requestedAction: { v: 1, kind: 'enqueue' },
+                resumeWhenAvailable: true,
+            }),
         );
         expect(harness.shouldDelegatePendingActivationToDaemon).toHaveBeenCalledTimes(1);
         expect(harness.ensureSessionRuntimeForPendingInput).not.toHaveBeenCalled();
@@ -330,6 +374,98 @@ describe('submitSessionUserMessage Pending action ownership', () => {
         expect(onOutboundHandoff).not.toHaveBeenCalled();
     });
 
+    it('does not enqueue or hand off Composer custody when exact Account authority retires during an awaited pending decision', async () => {
+        const session = createSession({ active: false, presence: 0 });
+        const harness = createPort();
+        const account = createAccountLifetime();
+        const onOutboundHandoff = vi.fn();
+        let resolveDelegation!: (delegated: boolean) => void;
+        harness.shouldDelegatePendingActivationToDaemon.mockImplementationOnce(async () => (
+            await new Promise<boolean>((resolve) => { resolveDelegation = resolve; })
+        ));
+
+        const pending = submitSessionUserMessage(harness.port, {
+            ...submitOptions(session),
+            accountLifetime: account.lifetime,
+            serverId: account.lifetime.scope.serverId,
+            sessionInactiveResumePolicy: 'when_available',
+            resumeTargetOverride: { machineId: 'm1', directory: '/tmp/project' },
+            onOutboundHandoff,
+        });
+        await vi.waitFor(() => expect(harness.shouldDelegatePendingActivationToDaemon).toHaveBeenCalledOnce());
+
+        account.retire();
+        resolveDelegation(false);
+
+        await expect(pending).resolves.toMatchObject({
+            type: 'rejected',
+            persistence: 'none',
+        });
+        expect(harness.enqueuePendingMessage).not.toHaveBeenCalled();
+        expect(harness.sendMessage).not.toHaveBeenCalled();
+        expect(onOutboundHandoff).not.toHaveBeenCalled();
+    });
+
+    it('retires an exact submit paused in support refresh without any delivery or Composer handoff', async () => {
+        const session = createSession({ pendingVersion: undefined });
+        const harness = createPort();
+        const account = createAccountLifetime();
+        const onOutboundHandoff = vi.fn();
+        let resolveRefresh!: (session: Session) => void;
+        harness.port.refreshSessionForSubmit = vi.fn(async () => (
+            await new Promise<Session>((resolve) => { resolveRefresh = resolve; })
+        ));
+
+        const pending = submitSessionUserMessage(harness.port, {
+            ...submitOptions(session),
+            accountLifetime: account.lifetime,
+            serverId: account.lifetime.scope.serverId,
+            onOutboundHandoff,
+        });
+        await vi.waitFor(() => expect(harness.port.refreshSessionForSubmit).toHaveBeenCalledWith('s1', {
+            serverId: account.lifetime.scope.serverId,
+            accountLifetime: account.lifetime,
+        }));
+
+        account.retire();
+        resolveRefresh(createSession());
+
+        await expect(pending).resolves.toMatchObject({
+            type: 'rejected',
+            persistence: 'none',
+            errorCode: 'session_account_scope_retired',
+        });
+        expect(harness.enqueuePendingMessage).not.toHaveBeenCalled();
+        expect(harness.sendMessage).not.toHaveBeenCalled();
+        expect(onOutboundHandoff).not.toHaveBeenCalled();
+    });
+
+    it('carries exact Account authority through pending wake and remote-control admission', async () => {
+        const session = createSession({ active: false, presence: 0 });
+        const harness = createPort();
+        const account = createAccountLifetime();
+        const switchSessionControlToRemote = vi.fn(async () => undefined);
+        harness.port.switchSessionControlToRemote = switchSessionControlToRemote;
+
+        await submitSessionUserMessage(harness.port, {
+            ...submitOptions(session),
+            accountLifetime: account.lifetime,
+            serverId: account.lifetime.scope.serverId,
+            requestedAction: { v: 1, kind: 'send_now' },
+            resumeTargetOverride: { machineId: 'm1', directory: '/tmp/project' },
+            requestRemoteControlAfterPendingEnqueue: true,
+        });
+
+        expect(harness.ensureSessionRuntimeForPendingInput).toHaveBeenCalledWith(expect.objectContaining({
+            serverId: account.lifetime.scope.serverId,
+            accountLifetime: account.lifetime,
+        }));
+        expect(switchSessionControlToRemote).toHaveBeenCalledWith('s1', {
+            serverId: account.lifetime.scope.serverId,
+            accountLifetime: account.lifetime,
+        });
+    });
+
     it('hands off Composer custody when direct send creates the local pending projection', async () => {
         const session = createSession({
             metadata: {
@@ -422,6 +558,55 @@ describe('submitSessionUserMessage Pending action ownership', () => {
             localId: 'direct-after-admission',
         });
         expect(onOutboundHandoff).toHaveBeenCalledOnce();
+    });
+
+    it('preserves accepted direct custody while retaining Composer ownership when exact Account authority retires after admission', async () => {
+        const session = createSession({
+            metadata: {
+                machineId: 'm1',
+                path: '/tmp/project',
+                host: 'host',
+                flavor: 'unknown-agent',
+                version: '0.0.1',
+            },
+        });
+        const harness = createPort();
+        const account = createAccountLifetime();
+        const onOutboundHandoff = vi.fn();
+        let acceptAdmission!: (result: DirectMessageSubmitResult) => void;
+        harness.sendMessage.mockImplementationOnce(async (...args: unknown[]) => {
+            const options = args[4] as Readonly<{
+                onLocalPendingProjectionCreated?: (event: Readonly<{ localId: string }>) => void;
+            }>;
+            options.onLocalPendingProjectionCreated?.({ localId: 'exact-direct-local' });
+            return await new Promise<DirectMessageSubmitResult>((resolve) => {
+                acceptAdmission = resolve;
+            });
+        });
+
+        const pending = submitSessionUserMessage(harness.port, {
+            ...submitOptions(session),
+            accountLifetime: account.lifetime,
+            serverId: account.lifetime.scope.serverId,
+            forceImmediate: true,
+            onOutboundHandoff,
+        });
+        await vi.waitFor(() => expect(harness.sendMessage).toHaveBeenCalledOnce());
+
+        account.retire();
+        acceptAdmission({
+            localId: 'exact-direct-local',
+            persistence: 'provider_direct',
+            providerAcceptancePending: true,
+        });
+
+        await expect(pending).resolves.toMatchObject({
+            type: 'success',
+            persistence: 'provider_direct',
+            providerAcceptancePending: true,
+        });
+        expect(onOutboundHandoff).not.toHaveBeenCalled();
+        expect(harness.enqueuePendingMessage).not.toHaveBeenCalled();
     });
 
     it('persists steer_if_active only for a currently steerable turn', async () => {

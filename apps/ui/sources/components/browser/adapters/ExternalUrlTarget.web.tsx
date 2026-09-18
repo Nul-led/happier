@@ -23,6 +23,7 @@ import type {
     BrowserDiagnosticsEngineBridgeConfig,
     BrowserFrameNavigationCommand,
 } from '../frame/types';
+import type { BrowserSurfaceLifecycleState } from '../surfaces/browserSurfaceLifecycle';
 
 function resolveExternalUrl(view: BrowserControlViewState): string | null {
     if (view.target.kind !== 'externalUrl') {
@@ -49,6 +50,7 @@ export function ExternalUrlTarget(props: Readonly<{
     navigationKey?: string;
     navigationCommand?: BrowserFrameNavigationCommand;
     onLifecycle?: BrowserViewLifecycleEmitter;
+    lifecycleState?: BrowserSurfaceLifecycleState;
     nowMs?: () => number;
     reasonCode?: string;
 }>): React.ReactElement {
@@ -92,6 +94,7 @@ export function ExternalUrlTarget(props: Readonly<{
                 // desktop toolbar's reload/stop reached no engine at all.
                 navigationCommand={props.navigationCommand}
                 onLifecycle={onLifecycle}
+                lifecycleState={props.lifecycleState}
                 onOpenInSystemBrowser={escapeAction}
                 nowMs={props.nowMs}
             />

@@ -11,6 +11,8 @@ import { useAutomationsSupport } from '@/hooks/server/useAutomationsSupport';
 import { useActiveServerAccountScope, useAutomations, useSession } from '@/sync/domains/state/storage';
 import { storage } from '@/sync/domains/state/storage';
 import { captureSessionAutomationAuthority } from '@/sync/domains/automations/sessionAutomationAuthority';
+import { tryGetAutomationDefinitionLinkedExistingSessionId } from '@/sync/domains/automations/automationSessionLink';
+import type { AutomationDefinition } from '@/sync/domains/automations/automationTypes';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
@@ -48,15 +50,14 @@ function lifecycleEventLabel(event: AutomationSessionLifecycleEvent): string {
 }
 
 function isCompatibleExistingAutomation(
-    automation: Readonly<{ targetType: string; linkedExistingSessionId?: string | null }>,
+    automation: Pick<AutomationDefinition, 'targetType' | 'linkedExistingSessionId'>,
     sourceSessionId: string,
 ): boolean {
-    return automation.targetType !== 'existingSession'
-        || (
-            typeof automation.linkedExistingSessionId === 'string'
-            && automation.linkedExistingSessionId.length > 0
-            && automation.linkedExistingSessionId !== sourceSessionId
-        );
+    if (automation.targetType !== 'existingSession') return true;
+    // The canonical link owner is the only reader of a proven existing-Session
+    // target; an unproven link can never be offered as a destination.
+    const linkedSessionId = tryGetAutomationDefinitionLinkedExistingSessionId(automation);
+    return linkedSessionId !== null && linkedSessionId !== sourceSessionId;
 }
 
 export function ExactTurnAutomationDestinationScreen(props: Readonly<{

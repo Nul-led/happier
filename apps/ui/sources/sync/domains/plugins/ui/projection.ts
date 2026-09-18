@@ -1,6 +1,8 @@
 import type {
     DaemonContributionRegistryProjection,
 } from '@/sync/api/daemon/daemonContributionRegistryProjectionProtocol';
+import { resolveLocalServicePreviewPlatform } from '@/sync/domains/local/services/preview/platform';
+import type { LocalServicePreviewPlatform } from '@/sync/domains/local/services/preview/url';
 import {
     PluginLocalizedStringV2Schema,
     PluginContributionLocalIdSchema,
@@ -17,6 +19,7 @@ import {
     type PluginContributionIdentityV1,
     type PluginProjectionInstalledPackageV2,
     type PluginProjectedActionV2,
+    type PluginProjectedResourceV2,
     type PluginJsonSchemaValidator,
     type PluginProjectedComposerAttachmentEntryV1,
     type PluginProjectedComposerControlEntryV1,
@@ -26,6 +29,7 @@ import {
 } from '@happier-dev/protocol';
 import {
     createPluginSessionInfoSectionRendererIdV1,
+    isPluginUiSurfaceBindingPotentiallySupportedOnPlatformV1,
     PluginUiResolvedSemanticCommandV1Schema,
     PluginUiDestinationBindingV1Schema,
     PluginUiInlineSurfaceBindingV1Schema,
@@ -34,12 +38,25 @@ import {
     PluginUiDestinationReferenceV1Schema,
     type PluginUiDestinationBindingV1,
     type PluginUiInlineSurfaceBindingV1,
+    type PluginUiPlatformV1,
     type PluginUiSurfaceBindingV1,
     type PluginUiDestinationReferenceV1,
     type PluginUiResolvedSemanticCommandV1,
 } from '@happier-dev/protocol/plugins/ui';
 
 type UnknownRecord = Readonly<Record<string, unknown>>;
+
+/**
+ * The OS-level platform every plugin UI projection is normalized for.
+ *
+ * It lives with the projection because admission is a projection decision, and
+ * because a second `Platform.OS` mapping beside the canonical local-service
+ * resolver would be exactly the split brain the constitution forbids. The
+ * currentness owner re-exports this so its consumers keep one spelling.
+ */
+export function resolvePluginUiProjectionPlatform(): LocalServicePreviewPlatform {
+    return resolveLocalServicePreviewPlatform();
+}
 
 export type PluginUiTranslationsProjection = UnknownRecord & Readonly<{
     id: string;
@@ -259,6 +276,9 @@ export type PluginVoiceProviderProjection = UnknownRecord & Readonly<{
  */
 export type PluginUiActionProjection = UnknownRecord & PluginProjectedActionV2;
 
+/** One daemon-admitted Resource declaration carried without reinterpretation. */
+export type PluginUiResourceProjection = UnknownRecord & PluginProjectedResourceV2;
+
 /**
  * One exact lookup over the daemon-admitted raw Action projection. Consumers
  * receive no reconstructed target or availability decision: identity, key, and
@@ -330,6 +350,8 @@ export type PluginUiProjectionModel = Readonly<{
     composerControlsById: Readonly<Record<string, PluginProjectedComposerControlEntryV1>>;
     composerRegionsById: Readonly<Record<string, PluginProjectedComposerRegionEntryV1>>;
     actionsById: Readonly<Record<string, PluginUiActionProjection>>;
+    /** Exact current Resource declarations for host-owned qualified consumers. */
+    resourcesById: Readonly<Record<string, PluginUiResourceProjection>>;
     voiceProvidersById: Readonly<Record<string, PluginVoiceProviderProjection>>;
     unknownEntriesById: Readonly<Record<string, UnknownRecord>>;
 }>;
@@ -352,6 +374,7 @@ export const EMPTY_PLUGIN_UI_PROJECTION: PluginUiProjectionModel = Object.freeze
     composerControlsById: Object.freeze({}),
     composerRegionsById: Object.freeze({}),
     actionsById: Object.freeze({}),
+    resourcesById: Object.freeze({}),
     voiceProvidersById: Object.freeze({}),
     unknownEntriesById: Object.freeze({}),
 });
@@ -456,6 +479,11 @@ function resolveSearchProvider(entry: UnknownRecord): PluginUiSearchProviderProj
         || action.data.pluginId !== pluginId
     ) return null;
     return Object.freeze({
+        // Preserve the producer-owned execution origin. The app projection
+        // union uses these exact stamps to admit the Administration-selected
+        // materialization; reconstructing the descriptor without them makes a
+        // valid selected Search provider look originless and drops it.
+        ...entry,
         id,
         pluginId,
         contributionKind: 'searchProvider' as const,
@@ -732,8 +760,17 @@ function normalizeComposerAttachmentEntriesById(
     return Object.freeze(normalized);
 }
 
+/**
+ * Normalize one daemon projection for exactly one client platform.
+ *
+ * The platform is a parameter rather than a caller-side filter so every
+ * projection consumer — live describe, warm-cache rehydration, app union,
+ * catalogs and pickers — sees the same admitted set. It defaults to this
+ * client's own platform so a caller cannot opt out of the gate by omission.
+ */
 export function normalizePluginUiProjection(
     projection: DaemonContributionRegistryProjection | null,
+    platform: PluginUiPlatformV1 = resolvePluginUiProjectionPlatform(),
 ): PluginUiProjectionModel {
     if (!projection || projection.v !== 2) {
         return EMPTY_PLUGIN_UI_PROJECTION;
@@ -758,6 +795,7 @@ export function normalizePluginUiProjection(
     // owner consumes one canonical projection rather than rebuilding Actions
     // from a feature-local declaration family.
     const actionsById = Object.freeze({ ...projection.actionsById });
+    const resourcesById = Object.freeze({ ...projection.resourcesById });
 
     const voiceProvidersById: Record<string, PluginVoiceProviderProjection> = {};
     const voiceProviderFamily = projection.familiesById.voiceProviders;
@@ -820,6 +858,7 @@ export function normalizePluginUiProjection(
             composerControlsById,
             composerRegionsById,
             actionsById,
+            resourcesById,
             voiceProvidersById: Object.freeze(voiceProvidersById),
         });
     }
@@ -863,8 +902,18 @@ export function normalizePluginUiProjection(
             reactNativeBundlesById[entry.id] = Object.freeze(entry);
         } else if (isSurfacePlacement(entry)) {
             const availability = readSurfaceAvailability(entry.availability);
-            if (availability) {
-                const binding = entry.binding as PluginUiSurfaceBindingV1;
+            const placementBinding = entry.binding as PluginUiSurfaceBindingV1;
+            // Projection knows only the OS-level platform, so this is the
+            // canonical Protocol predicate and not a second policy: a
+            // desktop/tablet destination row survives on native and the mounted
+            // host still applies the phone/tablet form factor it alone observes.
+            // A row this client can never mount must not reach any catalog,
+            // picker, deep link or app union.
+            if (availability && isPluginUiSurfaceBindingPotentiallySupportedOnPlatformV1(
+                placementBinding,
+                platform,
+            )) {
+                const binding = placementBinding;
                 const target = asRecord(entry.target) ?? {};
                 const renderer = asRecord(entry.renderer) ?? {};
                 const display = asRecord(entry.display) ?? {};
@@ -952,6 +1001,7 @@ export function normalizePluginUiProjection(
         composerControlsById,
         composerRegionsById,
         actionsById,
+        resourcesById,
         voiceProvidersById: Object.freeze(voiceProvidersById),
         unknownEntriesById: Object.freeze(unknownEntriesById),
     });
@@ -960,7 +1010,11 @@ export function normalizePluginUiProjection(
 export function resolvePluginUiProjectionState(
     previous: PluginUiProjectionModel,
     projection: DaemonContributionRegistryProjection | null,
-    options?: Readonly<{ reuseSameGeneration?: boolean }>,
+    options?: Readonly<{
+        reuseSameGeneration?: boolean;
+        /** The currentness owner's already-resolved client platform. */
+        platform?: PluginUiPlatformV1;
+    }>,
 ): PluginUiProjectionModel {
     if (projection === null) {
         return previous;
@@ -975,5 +1029,5 @@ export function resolvePluginUiProjectionState(
     ) {
         return previous;
     }
-    return normalizePluginUiProjection(projection);
+    return normalizePluginUiProjection(projection, options?.platform);
 }

@@ -1,3 +1,4 @@
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { describe, expect, it } from 'vitest';
 
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
@@ -21,7 +22,7 @@ function createOwnedRawSession(overrides: Partial<Session> = {}): Session {
         active: false,
         archivedAt: null,
         owner: 'current_user',
-        accessLevel: undefined,
+        access: createSessionAccessFixture(),
         seq: 4,
         lastViewedSessionSeq: 4,
         latestTurnStatus: 'completed',
@@ -42,6 +43,28 @@ function createOwnedRawSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('session action availability', () => {
+    it('fails unavailable projections closed despite a matching legacy owner id', () => {
+        const target = createSessionActionTarget({ session: createOwnedRawSession({ access: null }), currentUserId: 'current_user' });
+        expect(target).toMatchObject({ isOwnedByCurrentUser: false, canUnarchive: false, canStop: false, canArchive: false, canRename: false, canResume: false, canDelete: false });
+    });
+    it('uses each capability independently of owner role and access level', () => {
+        const target = createSessionActionTarget({ session: createOwnedRawSession({ access: createSessionAccessFixture('admin', { manageAccess: false, archiveSession: false, renameSession: true }) }) });
+        expect(target).toMatchObject({ canUnarchive: false, canArchive: false, canRename: true });
+    });
+    it('offers personal Follow to a view-only reader on every single-session host only with exact Home availability', () => {
+        const base = createSessionActionTarget({
+            session: createOwnedRawSession({ owner: 'someone_else', access: createSessionAccessFixture('view') }),
+            serverId: 'home_b',
+            currentUserId: 'current_user',
+        });
+        for (const surface of ['rowMenu', 'nativeContextMenu', 'sessionHeader', 'sessionInfo'] as const) {
+            expect(listVisibleSessionActionIds({ target: { ...base, followEnabled: true }, surface }))
+                .toContain('ui.session.follow');
+            expect(listVisibleSessionActionIds({ target: base, surface })).not.toContain('ui.session.follow');
+            expect(listVisibleSessionActionIds({ target: { ...base, serverId: null, followEnabled: true }, surface }))
+                .not.toContain('ui.session.follow');
+        }
+    });
     it('offers standalone Resume only for an inactive resumable owner metadata view', () => {
         const createTarget = (overrides: Partial<Session>) => createSessionActionTarget({
             session: createOwnedRawSession(overrides),
@@ -83,10 +106,17 @@ describe('session action availability', () => {
     it('keeps session-info shared actions as a superset of row lifecycle actions', () => {
         const session: SessionListRenderableSession = {
             id: 'session_1',
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 4, unreadSince: null },
+                relevance: { relevant: true, reasons: ['owned_by_me'] },
+                attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+                follow: { follows: false, notificationLevel: null },
+                notification: { level: 'important', source: 'owner' },
+            },
             active: true,
             archivedAt: null,
             owner: 'user_1',
-            accessLevel: undefined,
+            access: createSessionAccessFixture(),
             seq: 4,
             lastViewedSessionSeq: 4,
             latestTurnStatus: 'completed',
@@ -132,7 +162,7 @@ describe('session action availability', () => {
             active: false,
             archivedAt: null,
             owner: 'owner_user',
-            accessLevel: 'admin',
+            access: createSessionAccessFixture('admin'),
             seq: 4,
             lastViewedSessionSeq: 4,
             latestTurnStatus: 'completed',
@@ -155,7 +185,7 @@ describe('session action availability', () => {
             isPinned: false,
         });
 
-        expect(target.hasAdminAccess).toBe(true);
+        expect(target.canUnarchive).toBe(true);
         expect(target.isOwnedByCurrentUser).toBe(false);
         expect(target.canDelete).toBe(false);
         expect(listVisibleSessionActionIds({ target, surface: 'sessionInfo' })).not.toContain(SESSION_ACTION_DELETE_ID);
@@ -167,7 +197,7 @@ describe('session action availability', () => {
             active: false,
             archivedAt: null,
             owner: 'current_user',
-            accessLevel: undefined,
+            access: createSessionAccessFixture(),
             seq: 4,
             lastViewedSessionSeq: 4,
             latestTurnStatus: 'completed',
@@ -210,7 +240,7 @@ describe('session action availability', () => {
             active: false,
             archivedAt: null,
             owner: 'current_user',
-            accessLevel: undefined,
+            access: createSessionAccessFixture(),
             seq: 4,
             lastViewedSessionSeq: 4,
             latestTurnStatus: 'completed',
@@ -237,7 +267,7 @@ describe('session action availability', () => {
             active: false,
             archivedAt: null,
             owner: 'current_user',
-            accessLevel: undefined,
+            access: createSessionAccessFixture(),
             seq: 4,
             lastViewedSessionSeq: 4,
             latestTurnStatus: 'completed',
@@ -272,7 +302,7 @@ describe('session action availability', () => {
             active: false,
             archivedAt: null,
             owner: 'current_user',
-            accessLevel: undefined,
+            access: createSessionAccessFixture(),
             seq: 4,
             lastViewedSessionSeq: 4,
             latestTurnStatus: 'completed',

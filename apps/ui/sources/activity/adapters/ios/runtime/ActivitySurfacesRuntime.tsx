@@ -1,3 +1,7 @@
+import {
+    buildActivityOverviewFromCandidates,
+    buildStableActivityOverviewFingerprint,
+} from '@/activity/attention/buildActivityOverviewSnapshot';
 import * as React from 'react';
 import { AppState, Platform } from 'react-native';
 import { router } from 'expo-router';
@@ -20,20 +24,21 @@ import {
 import { buildActivitySurfaceSnapshot, type ActivitySurfaceSnapshot } from '@/activity/presentation/activitySurfaceSnapshot';
 import {
     buildActivityOverviewFromSource,
-    buildStableActivityOverviewFingerprint,
 } from '@/activity/source/buildActivityOverviewFromSource';
 import { useActivityAttentionSource } from '@/activity/source/useActivityAttentionSource';
+import { resolveActivitySurfaceDeliveryAdmission } from '@/activity/delivery/resolveActivitySurfaceDeliveryAdmission';
+import { useExactHomeAccountSettings } from '@/activity/delivery/useExactHomeAccountSettings';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 import { getFeatureBuildPolicyDecision } from '@/sync/domains/features/featureBuildPolicy';
 import { resolveLocalFeaturePolicyEnabled } from '@/sync/domains/features/featureLocalPolicy';
 import { useServerFeaturesMainSelectionSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
 import { useLocalSettings, useSettings } from '@/sync/domains/state/storage';
+import { activityInstanceKey, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 import {
     buildStableLiveActivitySnapshotFingerprint,
     type LiveActivitySnapshot,
 } from '../liveActivities/buildLiveActivitySnapshots';
-import { LOCAL_LIVE_ACTIVITY_SERVER_ID } from '../liveActivities/liveActivityIdentity';
 import {
     readLiveActivityAuthorizationDiagnostics,
     type LiveActivityAuthorizationDiagnostics,
@@ -99,7 +104,6 @@ function createEmptyWidgetSnapshot(snapshot: ActivitySurfaceSnapshot): ActivityS
             unread: 0,
             permissionRequired: 0,
             actionRequired: 0,
-            queuedInput: 0,
             thinking: 0,
             totalAttention: 0,
         },
@@ -162,22 +166,31 @@ async function endAllLiveActivities(
     remoteTargetRegistry: ReturnType<typeof createLiveActivityRemoteTargetRegistry>,
     contentDate: Date,
 ): Promise<void> {
-    const activeEntries = Array.from(handles.entries());
-    await Promise.all(activeEntries.map(async ([activityKey, handle]) => {
+    const activityKeys = new Set([
+        ...handles.keys(),
+        ...snapshots.keys(),
+        ...remoteTargetRegistry.listTargets().map((target) => target.activityInstanceKey),
+    ]);
+    await Promise.all(Array.from(activityKeys).map(async (activityKey) => {
+        const handle = handles.get(activityKey);
         const snapshot = snapshots.get(activityKey);
-        await endLiveActivityHandle(handle, resolveLiveActivityDismissalPolicy(snapshot, contentDate), contentDate);
+        if (handle) {
+            await endLiveActivityHandle(handle, resolveLiveActivityDismissalPolicy(snapshot, contentDate), contentDate);
+        }
         removeLiveActivityPushTokenSubscription(pushTokenSubscriptions, activityKey);
         forgetLiveActivityBackgroundWakeCurrentState(activityKey);
+        const retainedTarget = remoteTargetRegistry.listTargets()
+            .find((target) => target.activityInstanceKey === activityKey);
         await markLiveActivityRemoteTargetEnded({
             registry: remoteTargetRegistry,
             activityInstanceKey: activityKey,
-            serverId: snapshot?.serverId,
-        });
+            serverId: snapshot?.serverId ?? retainedTarget?.serverId,
+        }).catch(() => undefined);
+        handles.delete(activityKey);
+        snapshots.delete(activityKey);
+        lastAppliedAt.delete(activityKey);
+        startedAt.delete(activityKey);
     }));
-    handles.clear();
-    snapshots.clear();
-    lastAppliedAt.clear();
-    startedAt.clear();
     pushTokenSubscriptions.clear();
 }
 
@@ -212,12 +225,13 @@ function buildActivityInteractionData(params: Readonly<{
     }
 
     const targetIdentity = parseActivitySurfaceSessionTarget(params.target);
-    const targetedSession = targetIdentity
-        ? params.widgetSnapshot.sessions.find((session) =>
+    const targetedSessions = targetIdentity
+        ? params.widgetSnapshot.sessions.filter((session) =>
             session.sessionId === targetIdentity.sessionId
                 && (!targetIdentity.serverId || session.serverId === targetIdentity.serverId)
-        ) ?? null
-        : null;
+        )
+        : [];
+    const targetedSession = targetedSessions.length === 1 ? targetedSessions[0] ?? null : null;
     const primarySession = targetedSession ?? params.widgetSnapshot.primary;
 
     return {
@@ -240,15 +254,22 @@ function buildKnownActivityInteractionIdentities(params: Readonly<{
 }>): readonly ActivityInteractionIdentity[] {
     const identities = new Map<string, ActivityInteractionIdentity>();
     for (const candidate of params.sourceOverview.candidates) {
-        const serverId = (typeof candidate.serverId === 'string' ? candidate.serverId.trim() : '')
-            || LOCAL_LIVE_ACTIVITY_SERVER_ID;
+        const serverId = (typeof candidate.serverId === 'string' ? candidate.serverId.trim() : '') || null;
         const identity = {
             serverId,
             sessionId: candidate.sessionId,
             activityName: candidate.activityName ?? undefined,
             activityInstanceKey: candidate.activityInstanceKey ?? undefined,
         };
-        identities.set(`${identity.serverId}:source:${identity.sessionId}`, identity);
+        identities.set(JSON.stringify([
+            activityInstanceKey(
+                { serverId: identity.serverId, sessionId: identity.sessionId },
+                identity.activityName ?? 'source',
+            ),
+            'source',
+            identity.activityName ?? null,
+            identity.activityInstanceKey ?? null,
+        ]), identity);
     }
     for (const snapshot of params.liveSnapshots) {
         const identity = {
@@ -257,32 +278,48 @@ function buildKnownActivityInteractionIdentities(params: Readonly<{
             activityName: snapshot.activityName,
             activityInstanceKey: snapshot.activityInstanceKey,
         };
-        identities.set(`${identity.serverId}:${identity.activityName}:${identity.sessionId}`, identity);
+        identities.set(JSON.stringify([
+            activityInstanceKey(
+                { serverId: identity.serverId, sessionId: identity.sessionId },
+                identity.activityName,
+            ),
+            'live',
+            identity.activityName,
+            identity.activityInstanceKey,
+        ]), identity);
     }
     for (const session of params.widgetSnapshot.sessions) {
-        const serverId = (typeof session.serverId === 'string' ? session.serverId.trim() : '')
-            || LOCAL_LIVE_ACTIVITY_SERVER_ID;
+        const serverId = (typeof session.serverId === 'string' ? session.serverId.trim() : '') || null;
         const identity = {
             serverId,
             sessionId: session.sessionId,
         };
-        identities.set(`${identity.serverId}:widget:${identity.sessionId}`, identity);
+        identities.set(JSON.stringify([
+            activityInstanceKey(
+                { serverId: identity.serverId, sessionId: identity.sessionId },
+                'widget',
+            ),
+            'widget',
+        ]), identity);
     }
     return Array.from(identities.values());
 }
 
 function resolveRouteServerId(serverId: string | null | undefined): string | null {
     const normalized = typeof serverId === 'string' ? serverId.trim() : '';
-    if (!normalized || normalized === 'local') return null;
-    return normalized;
+    return normalized || null;
 }
 
 function buildWidgetBridgeFingerprint(params: Readonly<{
     sourceOverview: ReturnType<typeof buildActivityOverviewFromSource>;
     widgetPolicy: ReturnType<typeof resolveIosActivitySurfacePolicies>['widgetPolicy'];
+    deliveryFingerprint: string;
 }>): string {
     return JSON.stringify({
         source: buildStableActivityOverviewFingerprint(params.sourceOverview),
+        // An exact-Home Account policy mutation changes admission or privacy without
+        // changing the attention source, so the bridge must resync on it too.
+        delivery: params.deliveryFingerprint,
         enabled: params.widgetPolicy.widgets.enabled,
         privacyMode: params.widgetPolicy.privacyMode,
         showPreviewText: params.widgetPolicy.widgets.showPreviewText,
@@ -290,9 +327,16 @@ function buildWidgetBridgeFingerprint(params: Readonly<{
     });
 }
 
+/** Opaque exact-address key shared by the widget admission and interaction gates. */
+function activitySurfaceAddressKey(serverId: string | null | undefined, sessionId: string): string {
+    const normalized = typeof serverId === 'string' ? serverId.trim() : '';
+    return sessionAddressKey({ serverId: normalized, sessionId });
+}
+
 function hasVerifiedLiveActivityIdentity(params: Readonly<{
     identity: ActivityInteractionIdentity | null;
     liveSnapshots: readonly LiveActivitySnapshot[];
+    previewableLiveActivityKeys: ReadonlySet<string>;
 }>): boolean {
     if (!params.identity) return false;
     return params.liveSnapshots.some((snapshot) =>
@@ -301,18 +345,24 @@ function hasVerifiedLiveActivityIdentity(params: Readonly<{
             && (!params.identity!.activityName || snapshot.activityName === params.identity!.activityName)
             && (!params.identity!.activityInstanceKey || snapshot.activityInstanceKey === params.identity!.activityInstanceKey)
             && snapshot.allowActionButtons
+            // A card its own Home only permits as status or title never carries an action.
+            && params.previewableLiveActivityKeys.has(snapshot.activityInstanceKey)
     );
 }
 
 function hasVerifiedWidgetIdentity(params: Readonly<{
     identity: ActivityInteractionIdentity | null;
     widgetSnapshot: ActivitySurfaceSnapshot;
+    previewableWidgetAddressKeys: ReadonlySet<string>;
 }>): boolean {
     if (!params.identity) return false;
     return params.widgetSnapshot.sessions.some((session) => {
-        const serverId = (typeof session.serverId === 'string' ? session.serverId.trim() : '')
-            || LOCAL_LIVE_ACTIVITY_SERVER_ID;
-        return serverId === params.identity!.serverId && session.sessionId === params.identity!.sessionId;
+        const serverId = (typeof session.serverId === 'string' ? session.serverId.trim() : '') || null;
+        return serverId === params.identity!.serverId
+            && session.sessionId === params.identity!.sessionId
+            && params.previewableWidgetAddressKeys.has(
+                activitySurfaceAddressKey(session.serverId, session.sessionId),
+            );
     });
 }
 
@@ -336,6 +386,8 @@ function canExecuteIosDirectAction(params: Readonly<{
     sourceOverview: ReturnType<typeof buildActivityOverviewFromSource>;
     widgetSnapshot: ActivitySurfaceSnapshot;
     liveSnapshots: readonly LiveActivitySnapshot[];
+    previewableLiveActivityKeys: ReadonlySet<string>;
+    previewableWidgetAddressKeys: ReadonlySet<string>;
 }>): boolean {
     if (!hasExecutableSourceIdentity({
         identity: params.identity,
@@ -348,12 +400,14 @@ function canExecuteIosDirectAction(params: Readonly<{
         return hasVerifiedLiveActivityIdentity({
             identity: params.identity,
             liveSnapshots: params.liveSnapshots,
+            previewableLiveActivityKeys: params.previewableLiveActivityKeys,
         });
     }
 
     return hasVerifiedWidgetIdentity({
         identity: params.identity,
         widgetSnapshot: params.widgetSnapshot,
+        previewableWidgetAddressKeys: params.previewableWidgetAddressKeys,
     });
 }
 
@@ -361,14 +415,16 @@ function canAttemptIosDirectActionFromSurface(params: Readonly<{
     event: IosActivityInteractionEvent;
     liveSnapshots: readonly LiveActivitySnapshot[];
     liveActivityPolicy: ReturnType<typeof resolveIosActivitySurfacePolicies>['liveActivityPolicy'];
-    widgetPolicy: ReturnType<typeof resolveIosActivitySurfacePolicies>['widgetPolicy'];
+    previewableLiveActivityKeys: ReadonlySet<string>;
+    previewableWidgetAddressKeys: ReadonlySet<string>;
 }>): boolean {
     if (params.event.source === 'HappierFocusLiveActivity') {
-        return params.liveActivityPolicy.privacyMode === 'include_preview'
-            && params.liveSnapshots.some((snapshot) => snapshot.allowActionButtons);
+        return params.liveSnapshots.some((snapshot) =>
+            snapshot.allowActionButtons
+                && params.previewableLiveActivityKeys.has(snapshot.activityInstanceKey));
     }
 
-    return params.widgetPolicy.privacyMode === 'include_preview'
+    return params.previewableWidgetAddressKeys.size > 0
         && params.liveActivityPolicy.liveActivities.allowActionButtons;
 }
 
@@ -417,6 +473,7 @@ function createInitialLiveActivityAuthorizationCheckState(): LiveActivityAuthori
 
 export function ActivitySurfacesRuntime(): React.ReactElement | null {
     const activitySource = useActivityAttentionSource();
+    const resolveAccountSettings = useExactHomeAccountSettings(activitySource.audienceScopes);
     const isDataReady = activitySource.isDataReady;
     const settings = useSettings();
     const localSettings = useLocalSettings();
@@ -464,36 +521,86 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
             directActionsEnabled: liveActivityPolicy.liveActivities.allowActionButtons,
         });
     }, [activityNowMs, activitySource, liveActivityPolicy.liveActivities.allowActionButtons]);
-    const liveActivityTiming = sourceOverview.candidates[0]?.surfaceTiming?.liveActivity ?? null;
-    const sourceSessions = React.useMemo(() => {
-        return sourceOverview.candidates.map((candidate) => candidate.session);
-    }, [sourceOverview]);
+
+    // Each candidate is admitted and privacy-projected by its own Home's Account
+    // delivery plan before any surface selects or presents it. A Home whose exact
+    // Account policy is unavailable is absent from both surfaces.
+    const deliveryNow = React.useMemo(() => new Date(activityNowMs), [activityNowMs]);
+    const liveActivityAdmission = React.useMemo(() => resolveActivitySurfaceDeliveryAdmission({
+        candidates: sourceOverview.candidates,
+        surface: 'live_activity',
+        resolveAccountSettings,
+        localSettings,
+        now: deliveryNow,
+    }), [deliveryNow, localSettings, resolveAccountSettings, sourceOverview]);
+    const widgetAdmission = React.useMemo(() => resolveActivitySurfaceDeliveryAdmission({
+        candidates: sourceOverview.candidates,
+        surface: 'home_widget',
+        resolveAccountSettings,
+        localSettings,
+        now: deliveryNow,
+    }), [deliveryNow, localSettings, resolveAccountSettings, sourceOverview]);
+    const liveActivityOverview = React.useMemo(
+        () => buildActivityOverviewFromCandidates(liveActivityAdmission.candidates),
+        [liveActivityAdmission],
+    );
+    const widgetOverview = React.useMemo(
+        () => buildActivityOverviewFromCandidates(widgetAdmission.candidates),
+        [widgetAdmission],
+    );
+    const previewableLiveActivityKeys = React.useMemo(() => new Set(liveActivityAdmission.candidates
+        .filter((candidate) => liveActivityAdmission.privacyModeFor(candidate) === 'include_preview')
+        .flatMap((candidate) => (candidate.activityInstanceKey ? [candidate.activityInstanceKey] : []))),
+    [liveActivityAdmission]);
+    const previewableWidgetAddressKeys = React.useMemo(() => new Set(widgetAdmission.candidates
+        .filter((candidate) => widgetAdmission.privacyModeFor(candidate) === 'include_preview')
+        .map((candidate) => activitySurfaceAddressKey(candidate.serverId, candidate.sessionId))),
+    [widgetAdmission]);
+    const liveActivityTiming = liveActivityOverview.candidates[0]?.surfaceTiming?.liveActivity ?? null;
+    const liveActivitySessions = React.useMemo(() => {
+        return liveActivityOverview.candidates.map((candidate) => candidate.session);
+    }, [liveActivityOverview]);
+    const widgetSessions = React.useMemo(() => {
+        return widgetOverview.candidates.map((candidate) => candidate.session);
+    }, [widgetOverview]);
 
     const widgetSnapshot = React.useMemo(() => {
         return buildActivitySurfaceSnapshot({
-            sessions: sourceSessions,
-            overview: sourceOverview,
+            sessions: widgetSessions,
+            overview: widgetOverview,
             policy: widgetPolicy,
             nowMs: activityNowMs,
+            resolveCandidatePrivacyMode: widgetAdmission.privacyModeFor,
         });
-    }, [activityNowMs, sourceOverview, sourceSessions, widgetPolicy]);
+    }, [activityNowMs, widgetAdmission, widgetOverview, widgetSessions, widgetPolicy]);
 
-    const preferredLiveActivityPrimarySessionIdRef = React.useRef<string | null>(null);
+    const preferredLiveActivityPrimaryAddressRef = React.useRef<Readonly<{
+        serverId: string;
+        sessionId: string;
+    }> | null>(null);
     const preferredLiveActivityPrimaryActivityInstanceKeyRef = React.useRef<string | null>(null);
     const preferredLiveActivityPrimaryChangedAtMsRef = React.useRef<number | null>(null);
     const liveActivityReconciliationState = React.useMemo(() => {
         return resolveLiveActivityReconciliationState({
-            sessions: sourceSessions,
-            overview: sourceOverview,
+            sessions: liveActivitySessions,
+            overview: liveActivityOverview,
             policy: liveActivityPolicy,
-            currentPreferredPrimarySessionId: preferredLiveActivityPrimarySessionIdRef.current,
+            resolveCandidatePrivacyMode: liveActivityAdmission.privacyModeFor,
+            currentPreferredPrimaryAddress: preferredLiveActivityPrimaryAddressRef.current,
             currentPreferredPrimaryActivityInstanceKey: preferredLiveActivityPrimaryActivityInstanceKeyRef.current,
             currentPreferredPrimaryChangedAtMs: preferredLiveActivityPrimaryChangedAtMsRef.current,
             dwellMs: liveActivityTiming?.dwellMs,
             staleAfterMs: liveActivityTiming?.staleAfterMs,
             nowMs: activityNowMs,
         });
-    }, [activityNowMs, liveActivityPolicy, liveActivityTiming, sourceOverview, sourceSessions]);
+    }, [
+        activityNowMs,
+        liveActivityAdmission,
+        liveActivityOverview,
+        liveActivityPolicy,
+        liveActivitySessions,
+        liveActivityTiming,
+    ]);
     const liveSnapshots = liveActivityReconciliationState.snapshots;
 
     const widgetSnapshotRef = React.useRef(widgetSnapshot);
@@ -512,7 +619,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
     const reconcileRunIdRef = React.useRef(0);
     const liveActivityServerIdKey = React.useMemo(() => {
         return Array.from(new Set(liveSnapshots.map((snapshot) => snapshot.serverId)))
-            .filter((serverId) => serverId !== LOCAL_LIVE_ACTIVITY_SERVER_ID)
+            .filter((serverId): serverId is string => typeof serverId === 'string' && serverId.length > 0)
             .sort()
             .join('\0');
     }, [liveSnapshots]);
@@ -527,7 +634,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
         return liveSnapshots.some((snapshot) => {
             const plan = resolveLiveActivityRemoteRegistrationPlan({
                 snapshot,
-                settings,
+                accountSettings: resolveAccountSettings(snapshot.serverId),
                 localSettings,
                 serverFeaturesSnapshot,
             });
@@ -537,8 +644,8 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
         liveActivityPolicy.liveActivities.enabled,
         liveSnapshots,
         localSettings,
+        resolveAccountSettings,
         serverFeaturesSnapshot,
-        settings,
     ]);
 
     React.useEffect(() => {
@@ -550,7 +657,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
     }, [liveSnapshots]);
 
     React.useLayoutEffect(() => {
-        preferredLiveActivityPrimarySessionIdRef.current = liveActivityReconciliationState.preferredPrimarySessionId;
+        preferredLiveActivityPrimaryAddressRef.current = liveActivityReconciliationState.preferredPrimaryAddress;
         preferredLiveActivityPrimaryActivityInstanceKeyRef.current =
             liveActivityReconciliationState.preferredPrimaryActivityInstanceKey;
         preferredLiveActivityPrimaryChangedAtMsRef.current =
@@ -558,7 +665,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
     }, [
         liveActivityReconciliationState.preferredPrimaryActivityInstanceKey,
         liveActivityReconciliationState.preferredPrimaryChangedAtMs,
-        liveActivityReconciliationState.preferredPrimarySessionId,
+        liveActivityReconciliationState.preferredPrimaryAddress,
     ]);
 
     React.useEffect(() => {
@@ -616,8 +723,9 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
                 ? widgetSnapshotRef.current
                 : createEmptyWidgetSnapshot(widgetSnapshotRef.current);
             const widgetBridgeFingerprint = buildWidgetBridgeFingerprint({
-                sourceOverview,
+                sourceOverview: widgetOverview,
                 widgetPolicy,
+                deliveryFingerprint: widgetAdmission.fingerprint,
             });
 
             if (widgetBridgeFingerprintRef.current !== widgetBridgeFingerprint) {
@@ -686,28 +794,40 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
             }
 
             const desiredActivityKeys = new Set(authorizedLiveSnapshotsToApply.map((snapshot) => snapshot.activityInstanceKey));
-            const staleActivityKeys = Array.from(liveActivityHandles.keys()).filter((activityKey) => !desiredActivityKeys.has(activityKey));
+            const staleActivityKeys = Array.from(new Set([
+                ...liveActivityHandles.keys(),
+                ...liveActivityLastSnapshots.keys(),
+            ])).filter((activityKey) => !desiredActivityKeys.has(activityKey));
 
             await Promise.all(staleActivityKeys.map(async (activityKey) => {
                 const handle = liveActivityHandles.get(activityKey);
-                if (!handle) return;
-                await endLiveActivityHandle(
-                    handle,
-                    resolveLiveActivityDismissalPolicy(liveActivityLastSnapshots.get(activityKey), contentDate),
-                    contentDate,
-                );
+                if (handle) {
+                    await endLiveActivityHandle(
+                        handle,
+                        resolveLiveActivityDismissalPolicy(liveActivityLastSnapshots.get(activityKey), contentDate),
+                        contentDate,
+                    );
+                }
                 removeLiveActivityPushTokenSubscription(liveActivityPushTokenSubscriptions, activityKey);
-                await markLiveActivityRemoteTargetEnded({
-                    registry: liveActivityRemoteTargetRegistry,
-                    activityInstanceKey: activityKey,
-                    serverId: liveActivityLastSnapshots.get(activityKey)?.serverId,
-                });
                 liveActivityHandles.delete(activityKey);
                 liveActivityLastSnapshots.delete(activityKey);
                 liveActivityLastAppliedAt.delete(activityKey);
                 liveActivityStartedAt.delete(activityKey);
                 forgetLiveActivityBackgroundWakeCurrentState(activityKey);
             }));
+            // Remote cleanup is deliberately separate from native/local teardown. A failed call
+            // leaves the exact target in this same registry and every later reconciliation retries
+            // it. There is no timer, outbox, second registry or synthetic lifecycle.
+            const undesiredRemoteActivityKeys = new Set(liveActivityRemoteTargetRegistry.listTargets()
+                .map((target) => target.activityInstanceKey)
+                .filter((activityKey) => !desiredActivityKeys.has(activityKey)));
+            await Promise.all([...undesiredRemoteActivityKeys]
+                .map((activityInstanceKey) => markLiveActivityRemoteTargetEnded({
+                    registry: liveActivityRemoteTargetRegistry,
+                    activityInstanceKey,
+                    serverId: liveActivityRemoteTargetRegistry.listTargets()
+                        .find((target) => target.activityInstanceKey === activityInstanceKey)?.serverId,
+                }).catch(() => undefined)));
             if (isStale()) return;
 
             for (const candidateSnapshot of authorizedLiveSnapshotsToApply) {
@@ -732,7 +852,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
                         registry: liveActivityRemoteTargetRegistry,
                         activityInstanceKey: activityKey,
                         serverId: liveActivityLastSnapshots.get(activityKey)?.serverId,
-                    });
+                    }).catch(() => undefined);
                     liveActivityHandles.delete(activityKey);
                     liveActivityLastSnapshots.delete(activityKey);
                     liveActivityLastAppliedAt.delete(activityKey);
@@ -744,7 +864,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
                     reconcileLiveActivityRemoteTargetRegistration({
                         handle: existingHandle,
                         snapshot,
-                        settings,
+                        accountSettings: resolveAccountSettings(snapshot.serverId),
                         localSettings,
                         serverFeaturesSnapshot,
                         pushTokenSubscriptions: liveActivityPushTokenSubscriptions,
@@ -813,7 +933,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
                     reconcileLiveActivityRemoteTargetRegistration({
                         handle: nextHandle,
                         snapshot,
-                        settings,
+                        accountSettings: resolveAccountSettings(snapshot.serverId),
                         localSettings,
                         serverFeaturesSnapshot,
                         pushTokenSubscriptions: liveActivityPushTokenSubscriptions,
@@ -838,10 +958,11 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
         widgetPolicy.widgets.enabled,
         liveSnapshots,
         localSettings,
+        resolveAccountSettings,
         runtimeVisibility,
         serverFeaturesSnapshot,
-        sourceOverview,
-        settings,
+        widgetAdmission,
+        widgetOverview,
         widgetSnapshot,
         widgetPolicy,
     ]);
@@ -870,12 +991,14 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
                 await Promise.all(Array.from(activityHandles).map((handle) =>
                     endLiveActivityHandle(handle, 'immediate', contentDate)
                 ));
+                // A failed remote end keeps its exact target in the registry for the incumbent
+                // reconnect lifecycle to retry; it must never strand this device's local teardown.
                 await Promise.all(Array.from(liveActivityLastSnapshotsRef.current.values()).map((snapshot) =>
                     markLiveActivityRemoteTargetEnded({
                         registry: liveActivityRemoteTargetRegistry,
                         activityInstanceKey: snapshot.activityInstanceKey,
                         serverId: snapshot.serverId,
-                    })
+                    }).catch(() => undefined)
                 ));
                 clearLiveActivityBackgroundWakeCurrentStates();
                 liveActivityPushTokenSubscriptions.forEach((subscription) => subscription.remove());
@@ -905,7 +1028,8 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
                     event,
                     liveSnapshots: liveSnapshotsRef.current,
                     liveActivityPolicy,
-                    widgetPolicy,
+                    previewableLiveActivityKeys,
+                    previewableWidgetAddressKeys,
                 });
                 const command = resolveActivityInteractionCommand({
                     actionIdentifier: event.target,
@@ -926,6 +1050,8 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
                         sourceOverview,
                         widgetSnapshot: widgetSnapshotRef.current,
                         liveSnapshots: liveSnapshotsRef.current,
+                        previewableLiveActivityKeys,
+                        previewableWidgetAddressKeys,
                     })) {
                         const serverId = resolveRouteServerId(command.identity?.serverId ?? command.target.serverId);
                         void actionExecutorRef.current.execute(command.actionId as ActionId, command.payload, {
@@ -958,7 +1084,12 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
         return () => {
             subscription.remove();
         };
-    }, [liveActivityPolicy, sourceOverview, widgetPolicy]);
+    }, [
+        liveActivityPolicy,
+        previewableLiveActivityKeys,
+        previewableWidgetAddressKeys,
+        sourceOverview,
+    ]);
 
     return null;
 }

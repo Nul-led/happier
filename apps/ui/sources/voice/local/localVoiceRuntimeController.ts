@@ -1,8 +1,8 @@
 import {
   abortLocalVoiceTurn,
   announceLocalVoiceAgentAssistantText,
+  appendLocalVoiceAgentAttemptContextUpdate,
   appendLocalVoiceAgentAutomaticUiContextUpdate,
-  appendLocalVoiceAgentContextUpdate,
   isLocalVoiceAgentActive,
   sendLocalVoiceAgentTextTurn,
   sendLocalVoiceAgentTextUpdate,
@@ -11,10 +11,12 @@ import {
   toggleLocalVoiceTurn,
 } from './localVoiceEngine';
 import type { VoiceCurrentUiToolPort } from '@/voice/tools/currentUiContextToolPort';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export type LocalVoiceRuntimeController = Readonly<{
   abortTurn: (sessionId: string) => Promise<void>;
   announceAgentAssistantText: (sessionId: string, text: string) => void;
+  /** Explicit current-attempt context; synchronized Session updates do not use this seam. */
   appendAgentContextUpdate: (sessionId: string, update: string) => void;
   appendAgentAutomaticUiContextUpdate: (sessionId: string, update: string) => void;
   isAgentActive: (sessionId: string) => boolean;
@@ -30,14 +32,18 @@ export type LocalVoiceRuntimeController = Readonly<{
   }>) => Promise<void>;
   sendAgentTextUpdate: (sessionId: string, update: string) => Promise<void>;
   stopSession: () => Promise<void>;
-  toggleTurn: (sessionId: string, currentUiContext?: VoiceCurrentUiToolPort) => Promise<void>;
+  toggleTurn: (
+    sessionId: string,
+    currentUiContext?: VoiceCurrentUiToolPort,
+    requestedTargetSessionAddress?: SessionAddress | null,
+  ) => Promise<void>;
 }>;
 
 export function createLocalVoiceRuntimeController(): LocalVoiceRuntimeController {
   return {
     abortTurn: async (sessionId) => await abortLocalVoiceTurn(sessionId),
     announceAgentAssistantText: (sessionId, text) => announceLocalVoiceAgentAssistantText(sessionId, text),
-    appendAgentContextUpdate: (sessionId, update) => appendLocalVoiceAgentContextUpdate(sessionId, update),
+    appendAgentContextUpdate: (sessionId, update) => appendLocalVoiceAgentAttemptContextUpdate(sessionId, update),
     appendAgentAutomaticUiContextUpdate: (sessionId, update) => appendLocalVoiceAgentAutomaticUiContextUpdate(sessionId, update),
     isAgentActive: (sessionId) => isLocalVoiceAgentActive(sessionId),
     setMuted: async (sessionId, muted) => await setLocalVoiceMuted(sessionId, muted),
@@ -45,7 +51,8 @@ export function createLocalVoiceRuntimeController(): LocalVoiceRuntimeController
       await sendLocalVoiceAgentTextTurn(controlSessionId, text, durableDispatch, onAccepted),
     sendAgentTextUpdate: async (sessionId, update) => await sendLocalVoiceAgentTextUpdate(sessionId, update),
     stopSession: async () => await stopLocalVoiceSession(),
-    toggleTurn: async (sessionId, currentUiContext) => await toggleLocalVoiceTurn(sessionId, currentUiContext),
+    toggleTurn: async (sessionId, currentUiContext, requestedTargetSessionAddress) =>
+      await toggleLocalVoiceTurn(sessionId, currentUiContext, requestedTargetSessionAddress),
   };
 }
 

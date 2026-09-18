@@ -1,8 +1,8 @@
 import {
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-    PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
 } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
+import { MACHINE_RPC_JSON_BASE64_ENCODING } from './carrier';
 
 describe('machine stream carrier contract', () => {
     it('selects the existing binary tunnel frame encoding for direct binary-capable audio', async () => {
@@ -70,7 +70,7 @@ describe('machine stream carrier contract', () => {
             deliveryMode: 'push_event',
             streamKind: 'audio_pcm',
             binaryCapable: false,
-            frameEncoding: PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
+            frameEncoding: MACHINE_RPC_JSON_BASE64_ENCODING,
             payloadShape: 'json_base64_envelope',
             pushEventSubscription: {
                 deliveryTrigger: 'subscription',
@@ -94,7 +94,7 @@ describe('machine stream carrier contract', () => {
             routeKinds: ['loopback_direct', 'server_relay'],
             deliveryMode: 'demand_pull',
             binaryCapable: false,
-            frameEncoding: PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
+            frameEncoding: MACHINE_RPC_JSON_BASE64_ENCODING,
             payloadShape: 'json_base64_envelope',
             migrationRequiredForB0: false,
             terminalCapabilities: {

@@ -1,3 +1,4 @@
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { describe, expect, it } from 'vitest';
 
 import { deriveTranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
@@ -7,8 +8,7 @@ describe('deriveReadOnlyTranscriptInteraction', () => {
     it('revokes every mutating or navigating capability, including fork, for fork-ancestor rows', () => {
         const localInteraction = deriveTranscriptInteraction({
             kind: 'session',
-            accessLevel: 'edit',
-            canApprovePermissions: true,
+            access: createSessionAccessFixture('edit'),
         });
 
         expect(deriveReadOnlyTranscriptInteraction(localInteraction, true)).toEqual({

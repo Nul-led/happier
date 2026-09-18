@@ -7,19 +7,20 @@ import { fetchAndApplySessions } from '@/sync/engine/sessions/syncSessions';
 import { exhaustSessionListPages } from '@/sync/engine/sessions/exhaustSessionListPages';
 import { serverFetch } from '@/sync/http/client';
 import {
-    captureSessionRequestAuthorityForServerAccountScope,
-    type ServerAccountSessionRequestAuthority,
-} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+    captureServerRequestAuthorityForServerAccountScope,
+    type ServerAccountRequestAuthority,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { resolveUiClientEncryptionRequirement } from '@/sync/domains/settings/clientEncryptionRequirement';
 
 export type SessionMetadataInventoryAccountLifetime = Readonly<{
     isCurrent(): boolean;
     onRetire(cancel: () => void): Readonly<{ dispose(): void }>;
 }>;
 
-type SessionMetadataInventoryAuthority = ServerAccountSessionRequestAuthority;
+type SessionMetadataInventoryAuthority = ServerAccountRequestAuthority;
 
 async function fetchSessionMetadataInventoryWithAuthority(params: Readonly<{
     scope: ServerAccountScope;
@@ -45,6 +46,10 @@ async function fetchSessionMetadataInventoryWithAuthority(params: Readonly<{
         let cursor: string | null = null;
         let hasNext = false;
         const fetchPage = async (pageCursor: string | null) => await fetchAndApplySessions({
+            clientEncryptionRequirement: resolveUiClientEncryptionRequirement({
+                syncedSettings: storage.getState().settings,
+                localSettings: storage.getState().settings,
+            }),
             ...(sessionListPath
                 ? { sessionListPath }
                 : pageCursor === null
@@ -65,7 +70,6 @@ async function fetchSessionMetadataInventoryWithAuthority(params: Readonly<{
                 if (!shouldContinue()) return;
                 for (const session of sessions) renderablesBySessionId.set(session.id, session);
             },
-            repairInvalidReadStateV1: async () => {},
             sessionListHydrationConcurrencyLimit: tuning.sessionListHydrationConcurrencyLimit,
             log: { log: () => {} },
         });
@@ -118,10 +122,10 @@ async function runSessionMetadataInventory(params: Readonly<{
     signal: AbortSignal;
 }>): Promise<void> {
     let authority: SessionMetadataInventoryAuthority | null = null;
-    const baseline = storage.getState().sessionListRowStateByServerId[params.scope.serverId] ?? {};
+    const baseline = storage.getState().sessionListRowsByServerId[params.scope.serverId] ?? {};
     try {
         if (params.signal.aborted) throw createAbortError();
-        authority = await captureSessionRequestAuthorityForServerAccountScope({
+        authority = await captureServerRequestAuthorityForServerAccountScope({
             scope: params.scope,
             activeRequest: (path, init) => serverFetch(path, init),
         });
@@ -191,7 +195,7 @@ export async function ensureSessionMetadataInventoryForServerAccountScope(params
         inventoryEnsures.delete(key);
         entry = undefined;
     }
-    const projectionExists = params.scope.serverId in storage.getState().sessionListRowStateByServerId;
+    const projectionExists = params.scope.serverId in storage.getState().sessionListRowsByServerId;
     if (params.refresh || (entry?.status === 'ready' && !projectionExists)) {
         entry?.controller.abort();
         entry?.disposeCredentialWatch();

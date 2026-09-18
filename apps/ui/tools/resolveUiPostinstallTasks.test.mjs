@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 
 import { resolveUiPostinstallTasks } from './resolveUiPostinstallTasks.mjs';
 
+test('UI postinstall prepares the password worker for web and desktop assets', () => {
+    assert.ok(resolveUiPostinstallTasks({ env: {} }).includes('vendor-password-kdf-worker'));
+    assert.ok(!resolveUiPostinstallTasks({ env: { HAPPIER_UI_VENDOR_WEB_ASSETS: '0' } }).includes('vendor-password-kdf-worker'));
+});
+
 test('UI postinstall installs enriched-markdown web WASM before verifying the patch', () => {
     const tasks = resolveUiPostinstallTasks({ env: { HAPPIER_UI_VENDOR_WEB_ASSETS: '0' } });
 

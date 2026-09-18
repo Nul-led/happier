@@ -9,7 +9,6 @@ import { DEFAULT_AGENT_ID } from '@/agents/catalog/catalog';
 import type { SessionAuthoringDraft } from '@/components/sessions/authoring/draft/sessionAuthoringDraft';
 import {
     buildAutomationTemplateFromSessionAuthoringDraft,
-    buildExistingSessionAutomationFallbackDraft,
     buildExistingSessionAuthoringDraftFromSessionSnapshot,
     buildNewSessionAuthoringDraft as buildCanonicalNewSessionAuthoringDraft,
     buildNewSessionAuthoringDraftFromResolvedInputs,
@@ -19,11 +18,8 @@ import {
     buildSessionServerStartSpawnDraftV1FromAuthoringDraft,
     buildPersistedNewSessionDraftFromAuthoringDraft,
     buildSessionSpawnNewInputV2FromAuthoringDraft,
-    buildSpawnSessionOptionsFromAuthoringDraft,
     buildNewSessionTempDataFromAuthoringDraft,
     hydrateSessionAuthoringDraftFromAutomationTemplate,
-    mergeExistingSessionAutomationTemplateDraft,
-    refreshExistingSessionAuthoringDraftFromSessionSnapshot,
 } from '@/components/sessions/authoring/draft/sessionAuthoringDraftAdapters';
 import { decodeAutomationTemplate } from '@/sync/domains/automations/automationTemplateCodec';
 import type { NewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
@@ -54,7 +50,7 @@ function buildNewSessionAuthoringDraft(
 ): SessionAuthoringDraft {
     return buildCanonicalNewSessionAuthoringDraft({
         ...input,
-        executionTarget: input.executionTarget ?? { serverId: 'server-1', machineId: 'machine-1' },
+        executionTarget: input.executionTarget ?? { kind: 'machine', target: { serverId: 'server-1', machineId: 'machine-1' } },
         organizationPlacement: input.organizationPlacement ?? { folderId: null, tagIds: [] },
     });
 }
@@ -89,7 +85,7 @@ function intervalAutomationDraft(params: Readonly<{
 describe('sessionAuthoringDraftAdapters', () => {
     it('keeps execution, organization, and Agent selection in the canonical authoring draft', () => {
         const draft = buildNewSessionAuthoringDraft({
-            executionTarget: { serverId: ' server-1 ', machineId: ' machine-1 ' },
+            executionTarget: { kind: 'machine', target: { serverId: ' server-1 ', machineId: ' machine-1 ' } },
             organizationPlacement: { folderId: 'folder-1', tagIds: ['tag-1', 'tag-1', 'tag-2'] },
             agentTarget: {
                 kind: 'agent',
@@ -119,7 +115,7 @@ describe('sessionAuthoringDraftAdapters', () => {
         });
 
         expect(draft).toMatchObject({
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-1', machineId: 'machine-1' } },
             organizationPlacement: { folderId: 'folder-1', tagIds: ['tag-1', 'tag-2'] },
             agentTarget: {
                 kind: 'agent',
@@ -130,9 +126,34 @@ describe('sessionAuthoringDraftAdapters', () => {
         expect(draft).not.toHaveProperty('backendTarget');
     });
 
+    it('requires interactive consent before projecting a Temporary computer draft into executable Machine payloads', () => {
+        const draft = buildNewSessionAuthoringDraftFromTempData({
+            executionTarget: {
+                kind: 'temporary_computer',
+                serverId: 'server-1',
+                artifactTarget: 'darwin-arm64',
+                workspace: { kind: 'endpoint_home' },
+            },
+            directory: '/retained-directory',
+            agentType: 'codex',
+            agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+            prompt: 'Keep this request',
+        });
+        expect(() => buildSessionServerStartSpawnDraftV1FromAuthoringDraft({
+            draft,
+            permissionMode: 'default',
+            configurationUpdatedAtMs: 1,
+        })).toThrowError(expect.objectContaining({ code: 'interactive_consent_required' }));
+        expect(() => buildAutomationTemplateFromSessionAuthoringDraft(draft))
+            .toThrowError(expect.objectContaining({ code: 'interactive_consent_required' }));
+        expect(draft.executionTarget).toMatchObject({ kind: 'temporary_computer', serverId: 'server-1' });
+    });
+
     it('hydrates every representable strict server-start field through an exact catalog Agent target', () => {
+        const placementOrigin = { kind: 'machine_pool' as const, poolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f' };
         const spawn = SessionServerStartSpawnDraftV1Schema.parse({
             executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            placementOrigin,
             directory: '/workspace/project',
             organizationPlacement: { folderId: 'folder-1', tagIds: ['tag-1'] },
             agentTarget: {
@@ -195,7 +216,7 @@ describe('sessionAuthoringDraftAdapters', () => {
             kind: 'available',
             draft: expect.objectContaining({
                 targetType: 'new_session',
-                executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+                executionTarget: { kind: 'machine', target: { serverId: 'server-1', machineId: 'machine-1' }, selectionOrigin: placementOrigin },
                 directory: '/workspace/project',
                 organizationPlacement: { folderId: 'folder-1', tagIds: ['tag-1'] },
                 prompt: 'Review the changed files',
@@ -216,7 +237,7 @@ describe('sessionAuthoringDraftAdapters', () => {
                 },
                 resumeSessionId: 'provider-session-1',
                 connectedServices: {
-                    v: 1,
+                    v: 2,
                     bindingsByServiceId: {
                         'happier.service.github/github': { source: 'connected', selection: 'profile', profileId: 'github-1' },
                     },
@@ -243,6 +264,13 @@ describe('sessionAuthoringDraftAdapters', () => {
                 },
             }),
         });
+        if (result.kind !== 'available') throw new Error('Expected representable server-start draft');
+        if (!spawn.permissionMode) throw new Error('Expected the authored permission mode');
+        expect(buildSessionServerStartSpawnDraftV1FromAuthoringDraft({
+            draft: result.draft,
+            permissionMode: spawn.permissionMode,
+            configurationUpdatedAtMs: 41,
+        })).toMatchObject({ executionTarget: spawn.executionTarget, placementOrigin });
     });
 
     it('fails closed instead of selecting a fallback Agent when the strict target is absent from the current catalog', () => {
@@ -313,8 +341,17 @@ describe('sessionAuthoringDraftAdapters', () => {
 
     it('builds the reserved server-start draft without caller-selected creation or initial-input facts', () => {
         const draft = buildNewSessionAuthoringDraft({
+            executionTarget: {
+                kind: 'machine',
+                target: { serverId: 'server-1', machineId: 'machine-1' },
+                selectionOrigin: {
+                    kind: 'machine_pool',
+                    poolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+                },
+            },
             directory: '/tmp/project',
             checkoutCreationDraft: null,
+            organizationPlacement: { folderId: null, tagIds: [] },
             prompt: 'Review this',
             displayText: 'Review this',
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
@@ -339,18 +376,16 @@ describe('sessionAuthoringDraftAdapters', () => {
 
         const spawn = buildSessionServerStartSpawnDraftV1FromAuthoringDraft({
             draft,
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-            organizationPlacement: { folderId: null, tagIds: [] },
-            agentTarget: {
-                kind: 'agent',
-                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
-            },
             permissionMode: 'default',
             configurationUpdatedAtMs: 999,
         });
 
         expect(spawn).toMatchObject({
             executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            placementOrigin: {
+                kind: 'machine_pool',
+                poolId: '3a948f0c-bc30-491c-b764-37f0e6744d1f',
+            },
             configuration: {
                 providerSessionResume: {
                     kind: 'provider_session.v1',
@@ -394,24 +429,41 @@ describe('sessionAuthoringDraftAdapters', () => {
         });
 
         expect(buildSessionSpawnNewInputV2FromAuthoringDraft({
-            draft,
+            draft: { ...draft, access: { grants: [{ subject: { kind: 'account', accountId: 'recipient-a' }, accessLevel: 'view', canApprovePermissions: false }] } },
             creationKey: 'attempt-external-1',
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-            organizationPlacement: { folderId: null, tagIds: [] },
-            agentTarget: {
-                kind: 'agent',
-                identity: { pluginId: 'com.acme.mercury', localId: 'mercury' },
-            },
             permissionMode: 'default',
             configurationUpdatedAtMs: 999,
             initialMessage: 'Review this',
         })).toMatchObject({
+            initialAccess: { grants: [{ subject: { kind: 'account', accountId: 'recipient-a' }, accessLevel: 'view', canApprovePermissions: false }] },
             initialInput: { text: 'Review this' },
-                modelSelection: modelSelection('agent:com.acme.mercury/mercury', 'mercury-pro', 789),
+            modelSelection: modelSelection('agent:com.acme.mercury/mercury', 'mercury-pro', 789),
             configuration: {
                 model: { value: 'mercury-pro', updatedAtMs: 789 },
             },
         });
+    });
+
+    it('carries the exact revision-bound Team credential intent onto the strict spawn input', () => {
+        const draft = buildNewSessionAuthoringDraft({
+            directory: '/tmp/project', checkoutCreationDraft: null, prompt: '', displayText: '',
+            agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+            transcriptStorage: 'persisted', profileId: null, environmentVariables: null, resumeSessionId: null,
+            permissionMode: 'default', permissionModeUpdatedAt: 123,
+            modelSelection: modelSelection('agent:happier.agent.codex/codex'),
+            mcpSelection: null, connectedServices: null, terminal: null, windowsRemoteSessionLaunchMode: null,
+            windowsRemoteSessionConsole: null, windowsTerminalWindowName: null, runtimeDescriptorV1: null,
+            acpSessionModeId: null, sessionConfigOptionOverrides: null, automation: null,
+            teamCredentialBindings: [{
+                v: 1, slot: { kind: 'provider_model' }, resourceId: 'resource-1', expectedResourceRevision: 7,
+            }],
+        });
+
+        expect(buildSessionSpawnNewInputV2FromAuthoringDraft({
+            draft, creationKey: 'attempt-team-resource', permissionMode: 'default', configurationUpdatedAtMs: 999,
+        }).teamCredentialBindings).toEqual([{
+            v: 1, slot: { kind: 'provider_model' }, resourceId: 'resource-1', expectedResourceRevision: 7,
+        }]);
     });
 
     it('maps authored resume and Windows launch intent through the strict V2 nested owners', () => {
@@ -443,12 +495,6 @@ describe('sessionAuthoringDraftAdapters', () => {
         expect(buildSessionSpawnNewInputV2FromAuthoringDraft({
             draft,
             creationKey: 'attempt-1',
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-            organizationPlacement: { folderId: null, tagIds: [] },
-            agentTarget: {
-                kind: 'agent',
-                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
-            },
             permissionMode: 'default',
             configurationUpdatedAtMs: 999,
         })).toMatchObject({
@@ -472,7 +518,7 @@ describe('sessionAuthoringDraftAdapters', () => {
     it('carries a source-context continuation recipe onto the strict spawn input, and omits it otherwise', () => {
         const draft = buildNewSessionAuthoringDraftFromTempData({
             machineId: 'machine-1',
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-1', machineId: 'machine-1' } },
             directory: '/repo',
             organizationPlacement: { folderId: null, tagIds: [] },
             agentType: 'codex',
@@ -484,12 +530,6 @@ describe('sessionAuthoringDraftAdapters', () => {
         const base = {
             draft,
             creationKey: 'attempt-1',
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-            organizationPlacement: { folderId: null, tagIds: [] },
-            agentTarget: {
-                kind: 'agent' as const,
-                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
-            },
             permissionMode: 'default' as const,
             configurationUpdatedAtMs: 999,
         };
@@ -571,6 +611,8 @@ describe('sessionAuthoringDraftAdapters', () => {
 
         expect(draft).toEqual(expect.objectContaining({
             targetType: 'existing_session',
+            executionTarget: null,
+            organizationPlacement: { folderId: null, tagIds: [] },
             directory: '/tmp/project',
             prompt: 'Summarize the latest changes',
             displayText: 'Summarize the latest changes',
@@ -610,7 +652,7 @@ describe('sessionAuthoringDraftAdapters', () => {
     it('builds a new-session automation template from the shared draft without leaking existing-session-only fields', () => {
         const template = buildAutomationTemplateFromSessionAuthoringDraft({
             targetType: 'new_session',
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-1', machineId: 'machine-1' } },
             directory: '/tmp/project',
             checkoutCreationDraft: {
                 kind: 'git_worktree',
@@ -683,8 +725,8 @@ describe('sessionAuthoringDraftAdapters', () => {
             },
             agentModeId: 'plan',
         }));
-        expect(template.experimentalCodexAcp).toBeUndefined();
-        expect((template as any).sessionConfigOptionOverrides).toBeUndefined();
+        expect(template).not.toHaveProperty('experimentalCodexAcp');
+        expect(template.sessionConfigOptionOverrides).toBeUndefined();
         expect(template.existingSessionId).toBeUndefined();
         expect(template.sessionEncryptionKeyBase64).toBeUndefined();
         expect(template.sessionEncryptionVariant).toBeUndefined();
@@ -693,6 +735,8 @@ describe('sessionAuthoringDraftAdapters', () => {
     it('preserves an authored existing-branch checkout choice in the automation template', () => {
         const template = buildAutomationTemplateFromSessionAuthoringDraft({
             targetType: 'new_session',
+            executionTarget: null,
+            organizationPlacement: { folderId: null, tagIds: [] },
             directory: '/tmp/project',
             checkoutCreationDraft: {
                 kind: 'git_worktree',
@@ -732,7 +776,7 @@ describe('sessionAuthoringDraftAdapters', () => {
         });
     });
 
-    it('builds a new-session authoring draft and launch payload from the shared adapter layer', () => {
+    it('builds a new-session authoring draft through the shared adapter layer', () => {
         const draft = buildNewSessionAuthoringDraft({
             directory: '/tmp/project',
             checkoutCreationDraft: {
@@ -781,7 +825,7 @@ describe('sessionAuthoringDraftAdapters', () => {
 
         expect(draft).toEqual(expect.objectContaining({
             targetType: 'new_session',
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-1', machineId: 'machine-1' } },
             directory: '/tmp/project',
             organizationPlacement: { folderId: null, tagIds: [] },
             agentTarget: {
@@ -807,105 +851,6 @@ describe('sessionAuthoringDraftAdapters', () => {
             },
         }));
 
-        const spawnOptions = buildSpawnSessionOptionsFromAuthoringDraft({
-            draft,
-            machineId: 'machine-1',
-            serverId: 'server-a',
-            approvedNewDirectoryCreation: true,
-            agentModeUpdatedAt: 123,
-            spawnBackendTarget: { kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' },
-        });
-
-        expect(spawnOptions).toEqual(expect.objectContaining({
-            machineId: 'machine-1',
-            serverId: 'server-a',
-            directory: '/tmp/project',
-            approvedNewDirectoryCreation: true,
-            backendTarget: {
-                kind: 'backend',
-                backendId: 'review-bot',
-                configuredBackendId: 'review-bot',
-            },
-            transcriptStorage: 'direct',
-            profileId: 'profile-1',
-            environmentVariables: { FOO: 'bar' },
-            resume: 'resume-1',
-            permissionMode: 'acceptEdits',
-            permissionModeUpdatedAt: 123,
-            agentModeId: 'plan',
-            agentModeUpdatedAt: 123,
-            modelSelection: modelSelection('agent:happier.agent.codex/codex'),
-            sessionConfigOptionOverrides: {
-                v: 1,
-                updatedAt: 789,
-                overrides: {
-                    speed: { updatedAt: 789, value: 'fast' },
-                },
-            },
-            mcpSelection: {
-                v: 1,
-                managedServersEnabled: false,
-                forceIncludeServerIds: ['portable'],
-                forceExcludeServerIds: ['disabled'],
-            },
-            connectedServices: { github: { installationId: '123' } },
-            terminal: { mode: 'integrated' },
-            windowsRemoteSessionLaunchMode: 'console',
-            windowsRemoteSessionConsole: 'visible',
-            windowsTerminalWindowName: 'happier-qa',
-            runtimeDescriptorV1: {
-                v: 1,
-                agentId: 'codex',
-                agent: { backendMode: 'appServer' },
-            },
-        }));
-        expect(spawnOptions).not.toHaveProperty('workspaceId');
-        expect(spawnOptions).not.toHaveProperty('workspaceLocationId');
-        expect(spawnOptions).not.toHaveProperty('workspaceCheckoutId');
-    });
-
-    it('omits legacy spawn token passthrough from authoring draft spawn options', () => {
-        const spawnOptions = buildSpawnSessionOptionsFromAuthoringDraft({
-            draft: {
-                targetType: 'new_session',
-                executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-                directory: '/tmp/project',
-                checkoutCreationDraft: null,
-                organizationPlacement: { folderId: null, tagIds: [] },
-                prompt: 'Prompt',
-                displayText: 'Prompt',
-                agentTarget: {
-                    kind: 'agent',
-                    identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
-                },
-                transcriptStorage: 'persisted',
-                profileId: '',
-                environmentVariables: null,
-                resumeSessionId: null,
-                permissionMode: null,
-                permissionModeUpdatedAt: null,
-                modelSelection: null,
-                mcpSelection: null,
-                connectedServices: null,
-                terminal: null,
-                windowsRemoteSessionLaunchMode: null,
-                windowsRemoteSessionConsole: null,
-                windowsTerminalWindowName: null,
-                runtimeDescriptorV1: null,
-                acpSessionModeId: null,
-                sessionConfigOptionOverrides: null,
-                existingSessionId: null,
-                sessionEncryptionMode: null,
-                sessionEncryptionKeyBase64: null,
-                sessionEncryptionVariant: null,
-                automation: null,
-            },
-            machineId: 'machine-1',
-            token: 'legacy-spawn-token',
-        } as any);
-
-        expect(spawnOptions).not.toHaveProperty('token');
-        expect(spawnOptions).not.toHaveProperty('profileId');
     });
 
     it('round-trips an existing-session authoring draft through the shared automation template adapter', () => {
@@ -990,10 +935,11 @@ describe('sessionAuthoringDraftAdapters', () => {
             targetType: 'new_session',
             template,
         });
-        const spawnOptions = buildSpawnSessionOptionsFromAuthoringDraft({
+        const spawnInput = buildSessionSpawnNewInputV2FromAuthoringDraft({
             draft: hydrated,
-            machineId: 'machine-1',
-            spawnBackendTarget: { kind: 'backend', backendId: 'codex' },
+            creationKey: 'attempt-default-model',
+            permissionMode: 'default',
+            configurationUpdatedAtMs: 987,
         });
         const persistedDraft = buildPersistedNewSessionDraftFromAuthoringDraft({
             draft: hydrated,
@@ -1008,8 +954,8 @@ describe('sessionAuthoringDraftAdapters', () => {
         expect(template.modelSelection).toEqual(explicitDefault);
         expect(template).not.toHaveProperty('modelId');
         expect(hydrated.modelSelection).toEqual(explicitDefault);
-        expect(spawnOptions.modelSelection).toEqual(explicitDefault);
-        expect(spawnOptions).not.toHaveProperty('modelId');
+        expect(spawnInput.modelSelection).toEqual(explicitDefault);
+        expect(spawnInput).not.toHaveProperty('modelId');
         expect(persistedDraft.modelSelection).toEqual(explicitDefault);
         expect(persistedDraft).not.toHaveProperty('modelMode');
     });
@@ -1055,6 +1001,8 @@ describe('sessionAuthoringDraftAdapters', () => {
 
         expect(draft).toEqual(expect.objectContaining({
             targetType: 'existing_session',
+            executionTarget: null,
+            organizationPlacement: { folderId: null, tagIds: [] },
             directory: '/tmp/project',
             prompt: 'Send the daily summary',
             displayText: 'Send the daily summary',
@@ -1073,414 +1021,6 @@ describe('sessionAuthoringDraftAdapters', () => {
             sessionEncryptionMode: 'e2ee',
             sessionEncryptionKeyBase64: 'dek-base64',
             sessionEncryptionVariant: 'dataKey',
-        }));
-    });
-
-    it('refreshes an existing-session draft from the live snapshot while preserving editable fields', () => {
-        const refreshed = refreshExistingSessionAuthoringDraftFromSessionSnapshot({
-            session: {
-                id: 'session-1',
-                encryptionMode: 'e2ee',
-                metadata: {
-                    path: '/tmp/project-next',
-                    host: 'qa-host',
-                    homeDir: '/tmp',
-                    profileId: 'profile-2',
-                    flavor: 'codex',
-                    codexSessionId: 'codex-session-2',
-                },
-                permissionMode: 'default',
-                permissionModeUpdatedAt: 999,
-                modelMode: 'default',
-                modelModeUpdatedAt: 111,
-            },
-            currentDraft: {
-                targetType: 'existing_session',
-                directory: '/tmp/project-old',
-                checkoutCreationDraft: null,
-                prompt: 'Keep this message',
-                displayText: 'Keep this message',
-                agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
-                transcriptStorage: null,
-                profileId: 'profile-1',
-                environmentVariables: null,
-                resumeSessionId: null,
-                permissionMode: 'acceptEdits',
-                permissionModeUpdatedAt: 123,
-                modelSelection: modelSelection('agent:happier.agent.codex/codex'),
-                mcpSelection: null,
-                connectedServices: null,
-                terminal: null,
-                windowsRemoteSessionLaunchMode: null,
-                windowsRemoteSessionConsole: null,
-                windowsTerminalWindowName: null,
-                runtimeDescriptorV1: null,
-                acpSessionModeId: null,
-                sessionConfigOptionOverrides: null,
-                existingSessionId: 'session-1',
-                sessionEncryptionMode: 'e2ee',
-                sessionEncryptionKeyBase64: 'old-dek',
-                sessionEncryptionVariant: 'dataKey',
-                automation: {
-                    pendingAutomationId: 'automation-current',
-                    enabled: true,
-                    name: 'Scheduled message',
-                    description: '',
-                    triggers: [{
-                        clientId: 'trigger-current',
-                        definition: {
-                            kind: 'schedule',
-                            enabled: true,
-                            schedule: {
-                                kind: 'interval',
-                                everyMs: 60 * 60_000,
-                                scheduleExpr: null,
-                                timezone: null,
-                            },
-                        },
-                    }],
-                },
-            },
-            sessionDekBase64: 'new-dek',
-            fallbackAutomationDraft: {
-                pendingAutomationId: 'automation-fallback',
-                enabled: true,
-                name: 'Default automation',
-                description: '',
-                triggers: [{
-                    clientId: 'trigger-fallback',
-                    definition: {
-                        kind: 'schedule',
-                        enabled: true,
-                        schedule: {
-                            kind: 'interval',
-                            everyMs: 30 * 60_000,
-                            scheduleExpr: null,
-                            timezone: null,
-                        },
-                    },
-                }],
-            },
-        });
-
-        expect(refreshed).toEqual(expect.objectContaining({
-            directory: '/tmp/project-next',
-            profileId: 'profile-2',
-            prompt: 'Keep this message',
-            displayText: 'Keep this message',
-            permissionMode: 'acceptEdits',
-            permissionModeUpdatedAt: 123,
-            modelSelection: modelSelection('agent:happier.agent.codex/codex'),
-            existingSessionId: 'session-1',
-            sessionEncryptionKeyBase64: 'new-dek',
-            automation: expect.objectContaining({
-                name: 'Scheduled message',
-                triggers: [expect.objectContaining({
-                    definition: expect.objectContaining({
-                        schedule: expect.objectContaining({ everyMs: 60 * 60_000 }),
-                    }),
-                })],
-            }),
-        }));
-    });
-
-    it('builds an existing-session automation fallback draft from the live snapshot and message', () => {
-        const fallbackDraft = buildExistingSessionAutomationFallbackDraft({
-            targetSession: {
-                id: 'session-1',
-                encryptionMode: 'e2ee',
-                metadata: {
-                    path: '/tmp/project-live',
-                    host: 'qa-host',
-                    homeDir: '/tmp',
-                    profileId: 'profile-live',
-                    flavor: 'codex',
-                    codexSessionId: 'codex-session-3',
-                    runtimeDescriptorV1: {
-                        v: 1,
-                        agentId: 'codex',
-                        agent: { backendMode: 'acp' },
-                    },
-                    acpConfiguredBackendV1: {
-                        v: 1,
-                        updatedAt: 20,
-                        backendId: 'review-bot',
-                        title: 'Review Bot',
-                    },
-                },
-                permissionMode: 'acceptEdits',
-                permissionModeUpdatedAt: 123,
-                modelMode: 'gpt-5',
-                modelModeUpdatedAt: 456,
-            },
-            message: 'Keep the latest review summary',
-            sessionDekBase64: 'dek-live',
-        });
-
-        expect(fallbackDraft).toEqual(expect.objectContaining({
-            targetType: 'existing_session',
-            directory: '/tmp/project-live',
-            prompt: 'Keep the latest review summary',
-            displayText: 'Keep the latest review summary',
-            agentTarget: null,
-            profileId: 'profile-live',
-            permissionMode: 'safe-yolo',
-            permissionModeUpdatedAt: 123,
-            modelSelection: modelSelection('backend:review-bot:configured:review-bot'),
-            runtimeDescriptorV1: {
-                v: 1,
-                agentId: 'codex',
-                agent: { backendMode: 'acp' },
-            },
-            existingSessionId: 'session-1',
-            sessionEncryptionKeyBase64: 'dek-live',
-        }));
-    });
-
-    it('merges an existing-session automation template draft with the live snapshot while preserving current editable fields', () => {
-        const merged = mergeExistingSessionAutomationTemplateDraft({
-            hydratedTemplateDraft: {
-                targetType: 'existing_session',
-                directory: '/template/project',
-                checkoutCreationDraft: null,
-                prompt: 'Template prompt',
-                displayText: '',
-                agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
-                transcriptStorage: 'persisted',
-                profileId: 'template-profile',
-                environmentVariables: null,
-                resumeSessionId: null,
-                permissionMode: 'read-only',
-                permissionModeUpdatedAt: 12,
-                modelSelection: modelSelection('agent:happier.agent.codex/codex', 'template-model', 34),
-                mcpSelection: null,
-                connectedServices: null,
-                terminal: null,
-                windowsRemoteSessionLaunchMode: null,
-                windowsRemoteSessionConsole: null,
-                windowsTerminalWindowName: null,
-                runtimeDescriptorV1: null,
-                acpSessionModeId: null,
-                sessionConfigOptionOverrides: null,
-                existingSessionId: 'session-1',
-                sessionEncryptionMode: 'e2ee',
-                sessionEncryptionKeyBase64: null,
-                sessionEncryptionVariant: null,
-                automation: null,
-            },
-            targetSession: {
-                id: 'session-1',
-                encryptionMode: 'e2ee',
-                metadata: {
-                    path: '/live/project',
-                    host: 'qa-host',
-                    homeDir: '/tmp',
-                    profileId: 'live-profile',
-                    flavor: 'codex',
-                    codexSessionId: 'codex-session-9',
-                    acpConfiguredBackendV1: {
-                        v: 1,
-                        updatedAt: 20,
-                        backendId: 'review-bot',
-                        title: 'Review Bot',
-                    },
-                },
-                permissionMode: 'default',
-                permissionModeUpdatedAt: 999,
-                modelMode: 'default',
-                modelModeUpdatedAt: 111,
-            },
-            currentDraft: {
-                targetType: 'existing_session',
-                directory: '/old/project',
-                checkoutCreationDraft: null,
-                prompt: 'Keep my edited message',
-                displayText: 'Keep my edited message',
-                agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
-                transcriptStorage: 'persisted',
-                profileId: 'old-profile',
-                environmentVariables: null,
-                resumeSessionId: null,
-                permissionMode: 'acceptEdits',
-                permissionModeUpdatedAt: 123,
-                modelSelection: modelSelection('agent:happier.agent.codex/codex'),
-                mcpSelection: null,
-                connectedServices: null,
-                terminal: null,
-                windowsRemoteSessionLaunchMode: null,
-                windowsRemoteSessionConsole: null,
-                windowsTerminalWindowName: null,
-                runtimeDescriptorV1: null,
-                acpSessionModeId: null,
-                sessionConfigOptionOverrides: null,
-                existingSessionId: 'session-1',
-                sessionEncryptionMode: 'e2ee',
-                sessionEncryptionKeyBase64: 'old-dek',
-                sessionEncryptionVariant: 'dataKey',
-                automation: {
-                    pendingAutomationId: 'automation-current',
-                    enabled: true,
-                    name: 'Current automation',
-                    description: '',
-                    triggers: [{
-                        clientId: 'trigger-current',
-                        definition: {
-                            kind: 'schedule',
-                            enabled: true,
-                            schedule: {
-                                kind: 'interval',
-                                everyMs: 60 * 60_000,
-                                scheduleExpr: null,
-                                timezone: null,
-                            },
-                        },
-                    }],
-                },
-            },
-            sessionDekBase64: 'new-dek',
-            seededAutomationDraft: {
-                pendingAutomationId: 'automation-seeded',
-                enabled: true,
-                name: 'Seeded automation',
-                description: '',
-                triggers: [{
-                    clientId: 'trigger-seeded',
-                    definition: {
-                        kind: 'schedule',
-                        enabled: true,
-                        schedule: {
-                            kind: 'interval',
-                            everyMs: 30 * 60_000,
-                            scheduleExpr: null,
-                            timezone: null,
-                        },
-                    },
-                }],
-            },
-        });
-
-        expect(merged).toEqual(expect.objectContaining({
-            directory: '/live/project',
-            agentTarget: null,
-            profileId: 'live-profile',
-            prompt: 'Keep my edited message',
-            displayText: 'Keep my edited message',
-            permissionMode: 'acceptEdits',
-            permissionModeUpdatedAt: 123,
-            modelSelection: modelSelection('agent:happier.agent.codex/codex'),
-            sessionEncryptionKeyBase64: 'new-dek',
-            automation: expect.objectContaining({
-                name: 'Current automation',
-                triggers: [expect.objectContaining({
-                    definition: expect.objectContaining({
-                        schedule: expect.objectContaining({ everyMs: 60 * 60_000 }),
-                    }),
-                })],
-            }),
-        }));
-    });
-
-    it('preserves an explicit Automatic model choice instead of inheriting a fallback selection', () => {
-        const merged = mergeExistingSessionAutomationTemplateDraft({
-            hydratedTemplateDraft: {
-                targetType: 'existing_session', directory: '/template', checkoutCreationDraft: null,
-                prompt: 'Template', displayText: 'Template',
-                agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } }, transcriptStorage: 'persisted',
-                profileId: null, environmentVariables: null, resumeSessionId: null,
-                permissionMode: 'default', permissionModeUpdatedAt: 1, modelSelection: null,
-                mcpSelection: null, connectedServices: null, terminal: null,
-                windowsRemoteSessionLaunchMode: null, windowsRemoteSessionConsole: null,
-                windowsTerminalWindowName: null, runtimeDescriptorV1: null,
-                acpSessionModeId: null, sessionConfigOptionOverrides: null, existingSessionId: 'session-1',
-                sessionEncryptionMode: 'e2ee', sessionEncryptionKeyBase64: null,
-                sessionEncryptionVariant: null, automation: null,
-            },
-            targetSession: {
-                id: 'session-1', encryptionMode: 'e2ee',
-                metadata: {
-                    path: '/live', host: 'host', flavor: 'codex',
-                    modelSelectionIntentV1: {
-                        v: 1, updatedAt: 20,
-                        selection: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-5.5' },
-                    },
-                },
-                permissionMode: 'default', permissionModeUpdatedAt: 1,
-                modelMode: 'gpt-5.5', modelModeUpdatedAt: 20,
-            },
-            currentDraft: null,
-            sessionDekBase64: null,
-            seededAutomationDraft: null,
-        });
-
-        expect(merged.modelSelection).toBeNull();
-    });
-
-    it('preserves persisted template permission and model overrides when hydrating against a live session snapshot', () => {
-        const merged = mergeExistingSessionAutomationTemplateDraft({
-            hydratedTemplateDraft: {
-                targetType: 'existing_session',
-                directory: '/template/project',
-                checkoutCreationDraft: null,
-                prompt: 'Template prompt',
-                displayText: 'Template prompt',
-                agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
-                transcriptStorage: 'persisted',
-                profileId: 'template-profile',
-                environmentVariables: null,
-                resumeSessionId: null,
-                permissionMode: 'readOnly',
-                permissionModeUpdatedAt: 12,
-                modelSelection: modelSelection('agent:happier.agent.claude/claude', 'claude-sonnet-4-6', 34),
-                mcpSelection: null,
-                connectedServices: null,
-                terminal: null,
-                windowsRemoteSessionLaunchMode: null,
-                windowsRemoteSessionConsole: null,
-                windowsTerminalWindowName: null,
-                runtimeDescriptorV1: null,
-                acpSessionModeId: null,
-                sessionConfigOptionOverrides: null,
-                existingSessionId: 'session-1',
-                sessionEncryptionMode: 'e2ee',
-                sessionEncryptionKeyBase64: 'template-dek',
-                sessionEncryptionVariant: 'dataKey',
-                automation: null,
-            },
-            targetSession: {
-                id: 'session-1',
-                encryptionMode: 'e2ee',
-                metadata: {
-                    path: '/live/project',
-                    host: 'qa-host',
-                    homeDir: '/Users/leeroy',
-                    flavor: 'claude',
-                    claudeSessionId: 'claude-session-1',
-                },
-                permissionMode: 'default',
-                permissionModeUpdatedAt: 999,
-                modelMode: 'default',
-                modelModeUpdatedAt: 111,
-            },
-            currentDraft: null,
-            sessionDekBase64: 'live-dek',
-            seededAutomationDraft: intervalAutomationDraft({
-                name: 'Scheduled message',
-                cadenceMinutes: 60,
-            }),
-        });
-
-        expect(merged).toEqual(expect.objectContaining({
-            directory: '/live/project',
-            prompt: 'Template prompt',
-            displayText: 'Template prompt',
-            permissionMode: 'readOnly',
-            permissionModeUpdatedAt: 12,
-            modelSelection: modelSelection('agent:happier.agent.claude/claude', 'claude-sonnet-4-6', 34),
-            sessionEncryptionKeyBase64: 'live-dek',
-            automation: intervalAutomationDraft({
-                name: 'Scheduled message',
-                cadenceMinutes: 60,
-            }),
         }));
     });
 
@@ -1528,7 +1068,7 @@ describe('sessionAuthoringDraftAdapters', () => {
     it('round-trips new-session worktree intent through the shared automation template adapter into temp data', () => {
         const draft = {
             targetType: 'new_session',
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            executionTarget: { kind: 'machine' as const, target: { serverId: 'server-1', machineId: 'machine-1' } },
             directory: '/tmp/project',
             checkoutCreationDraft: {
                 kind: 'git_worktree' as const,
@@ -1612,6 +1152,8 @@ describe('sessionAuthoringDraftAdapters', () => {
         const tempData = buildNewSessionTempDataFromAuthoringDraft({
             draft: {
                 targetType: 'new_session',
+                executionTarget: null,
+                organizationPlacement: { folderId: null, tagIds: [] },
                 directory: '/tmp/project',
                 checkoutCreationDraft: null,
                 prompt: 'Run the review',
@@ -1653,7 +1195,7 @@ describe('sessionAuthoringDraftAdapters', () => {
 
     it('builds a new-session authoring draft from resolved inputs', () => {
         const draft = buildNewSessionAuthoringDraftFromResolvedInputs({
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-1', machineId: 'machine-1' } },
             directory: '/tmp/project',
             checkoutCreationDraft: {
                 kind: 'git_worktree',
@@ -1707,7 +1249,7 @@ describe('sessionAuthoringDraftAdapters', () => {
 
         expect(draft).toEqual(expect.objectContaining({
             targetType: 'new_session',
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-1', machineId: 'machine-1' } },
             directory: '/tmp/project',
             checkoutCreationDraft: {
                 kind: 'git_worktree',
@@ -1838,8 +1380,9 @@ describe('sessionAuthoringDraftAdapters', () => {
 
         expect(persistedDraft).toEqual({
             input: 'Review the queued invoices',
+            targetServerId: 'server-1',
             selectedMachineId: 'machine-1',
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            executionTarget: { kind: 'machine', target: { serverId: 'server-1', machineId: 'machine-1' } },
             selectedPath: '/tmp/project',
             organizationPlacement: { folderId: null, tagIds: [] },
             composerAttachments,
@@ -1896,7 +1439,7 @@ describe('sessionAuthoringDraftAdapters', () => {
         });
     });
 
-    it('persists new-session target server and Windows launch override alongside authoring state', () => {
+    it('preserves the canonical target Home over a stale routing value while retaining the Windows launch override', () => {
         const draft = buildNewSessionAuthoringDraft({
             directory: '/tmp/project',
             checkoutCreationDraft: null,
@@ -1939,7 +1482,7 @@ describe('sessionAuthoringDraftAdapters', () => {
         });
 
         expect(persistedDraft).toEqual(expect.objectContaining({
-            targetServerId: 'server-b',
+            targetServerId: 'server-1',
             windowsRemoteSessionLaunchModeOverride: {
                 machineId: 'machine-1',
                 mode: 'console',
@@ -1947,7 +1490,7 @@ describe('sessionAuthoringDraftAdapters', () => {
         }));
     });
 
-    it('omits blank new-session target server and Windows launch override payloads', () => {
+    it('retains the canonical target Home when routing is blank and omits a blank Windows override', () => {
         const draft = buildNewSessionAuthoringDraft({
             directory: '/tmp/project',
             checkoutCreationDraft: null,
@@ -1989,9 +1532,7 @@ describe('sessionAuthoringDraftAdapters', () => {
             updatedAt: 987,
         });
 
-        expect(persistedDraft).not.toEqual(expect.objectContaining({
-            targetServerId: expect.anything(),
-        }));
+        expect(persistedDraft.targetServerId).toBe('server-1');
         expect(persistedDraft).not.toEqual(expect.objectContaining({
             windowsRemoteSessionLaunchModeOverride: expect.anything(),
         }));
@@ -2414,50 +1955,10 @@ describe('sessionAuthoringDraftAdapters', () => {
         expect(persistedDraft).not.toHaveProperty('backendTarget');
     });
 
-    it('builds plugin backend spawn options with the canonical V2 backend target', () => {
-        const draft = buildNewSessionAuthoringDraft({
-            directory: '/tmp/project',
-            checkoutCreationDraft: null,
-            prompt: 'Run the plugin backend',
-            displayText: 'Run the plugin backend',
-            agentTarget: {
-                kind: 'agent',
-                identity: { pluginId: 'acme.review', localId: 'review' },
-            },
-            transcriptStorage: 'direct',
-            profileId: null,
-            environmentVariables: null,
-            resumeSessionId: null,
-            permissionMode: 'acceptEdits',
-            permissionModeUpdatedAt: 123,
-            modelId: null,
-            modelUpdatedAt: null,
-            mcpSelection: null,
-            connectedServices: null,
-            terminal: null,
-            windowsRemoteSessionLaunchMode: null,
-            windowsRemoteSessionConsole: null,
-            windowsTerminalWindowName: null,
-            runtimeDescriptorV1: null,
-            acpSessionModeId: null,
-            sessionConfigOptionOverrides: null,
-            automation: null,
-        });
-
-        expect(buildSpawnSessionOptionsFromAuthoringDraft({
-            draft,
-            machineId: 'machine-1',
-            spawnBackendTarget: { kind: 'backend', backendId: 'acme.review.backend' },
-        }).backendTarget).toEqual({
-            kind: 'backend',
-            backendId: 'acme.review.backend',
-        });
-    });
-
     it('round-trips configured ACP backend targets and session config overrides through the shared new-session authoring draft', () => {
         const draft = {
             targetType: 'new_session',
-            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            executionTarget: { kind: 'machine' as const, target: { serverId: 'server-1', machineId: 'machine-1' } },
             directory: '/tmp/project',
             checkoutCreationDraft: null,
             organizationPlacement: { folderId: null, tagIds: [] },
@@ -2542,5 +2043,103 @@ describe('sessionAuthoringDraftAdapters', () => {
             },
         }));
         expect(tempData.automationDraft).toBeUndefined();
+    });
+});
+
+/**
+ * An Agent-issued resume id is opaque. Every authoring projection hands the id
+ * back to the Agent that minted it, so whitespace, newlines and encoding bytes
+ * are part of the identity rather than formatting Happier may canonicalize.
+ */
+describe('opaque Agent resume id preservation', () => {
+    const OPAQUE_RESUME_ID = ' provider\nsession ';
+
+    function opaqueResumeDraft(): SessionAuthoringDraft {
+        return buildNewSessionAuthoringDraft({
+            directory: '/tmp/project',
+            checkoutCreationDraft: null,
+            prompt: 'Continue',
+            displayText: 'Continue',
+            agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+            transcriptStorage: 'persisted',
+            profileId: null,
+            environmentVariables: null,
+            resumeSessionId: OPAQUE_RESUME_ID,
+            permissionMode: 'default',
+            permissionModeUpdatedAt: 123,
+            modelSelection: null,
+            mcpSelection: null,
+            connectedServices: null,
+            terminal: null,
+            windowsRemoteSessionLaunchMode: null,
+            windowsRemoteSessionConsole: null,
+            windowsTerminalWindowName: null,
+            runtimeDescriptorV1: null,
+            acpSessionModeId: null,
+            sessionConfigOptionOverrides: null,
+            automation: null,
+        });
+    }
+
+    it('preserves the exact bytes through the new-session authoring draft', () => {
+        expect(opaqueResumeDraft().resumeSessionId).toBe(OPAQUE_RESUME_ID);
+    });
+
+    it('preserves the exact bytes through the automation template round trip', () => {
+        const template = buildAutomationTemplateFromSessionAuthoringDraft(opaqueResumeDraft());
+        expect(template.resume).toBe(OPAQUE_RESUME_ID);
+
+        const decoded = decodeAutomationTemplate(JSON.stringify(template));
+        expect(decoded).not.toBeNull();
+        if (!decoded) return;
+        expect(hydrateSessionAuthoringDraftFromAutomationTemplate({
+            targetType: 'new_session',
+            template: decoded,
+        }).resumeSessionId).toBe(OPAQUE_RESUME_ID);
+    });
+
+    it('preserves the exact bytes through the shared strict V2 spawn projection', () => {
+        expect(buildSessionSpawnNewInputV2FromAuthoringDraft({
+            draft: opaqueResumeDraft(),
+            creationKey: 'attempt-opaque-resume',
+            permissionMode: 'default',
+            configurationUpdatedAtMs: 999,
+        }).configuration?.providerSessionResume).toEqual({
+            kind: 'provider_session.v1',
+            providerSessionId: OPAQUE_RESUME_ID,
+        });
+    });
+
+    it('preserves the exact bytes through the persisted new-session draft projection', () => {
+        expect(buildPersistedNewSessionDraftFromAuthoringDraft({
+            draft: opaqueResumeDraft(),
+            machineId: 'machine-1',
+            selectedSecretId: null,
+            selectedSecretIdByProfileIdByEnvVarName: null,
+            sessionOnlySecretValueEncByProfileIdByEnvVarName: null,
+            backendNewSessionOptionStateByTargetKey: null,
+            updatedAt: 987,
+        }).resumeSessionId).toBe(OPAQUE_RESUME_ID);
+    });
+
+    it('still treats a blank-only resume id as absent in every projection', () => {
+        const blank = { ...opaqueResumeDraft(), resumeSessionId: '   ' };
+
+        expect(buildAutomationTemplateFromSessionAuthoringDraft(blank)).not.toHaveProperty('resume');
+        expect(buildSessionSpawnNewInputV2FromAuthoringDraft({
+            draft: blank,
+            creationKey: 'attempt-blank-resume',
+            permissionMode: 'default',
+            configurationUpdatedAtMs: 999,
+        }).configuration?.providerSessionResume).toBeUndefined();
+        expect(buildPersistedNewSessionDraftFromAuthoringDraft({
+            draft: blank,
+            machineId: 'machine-1',
+            selectedSecretId: null,
+            selectedSecretIdByProfileIdByEnvVarName: null,
+            sessionOnlySecretValueEncByProfileIdByEnvVarName: null,
+            backendNewSessionOptionStateByTargetKey: null,
+            updatedAt: 987,
+        })).not.toHaveProperty('resumeSessionId');
     });
 });

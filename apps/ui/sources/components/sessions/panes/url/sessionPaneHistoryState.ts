@@ -1,4 +1,5 @@
 import { writeStoredSessionPaneUrlState } from './sessionPaneStoredState';
+import { createSessionPaneScopeId } from '../sessionPaneScopeId';
 
 const SESSION_PANE_HISTORY_STATE_KEY = 'happierSessionPane';
 let pendingHistoryStateWriteTimer: ReturnType<typeof setTimeout> | null = null;
@@ -61,10 +62,11 @@ function readSessionScopeKeyFromCurrentLocation(): string | null {
         return null;
     }
 
+    const serverId = url?.searchParams.get('serverId') ?? null;
     try {
-        return `session:${decodeURIComponent(sessionId)}`;
+        return createSessionPaneScopeId(decodeURIComponent(sessionId), serverId);
     } catch {
-        return `session:${sessionId}`;
+        return createSessionPaneScopeId(sessionId, serverId);
     }
 }
 

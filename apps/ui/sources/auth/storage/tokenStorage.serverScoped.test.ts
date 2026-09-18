@@ -1,31 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
-import { installLocalStorageMock } from './tokenStorage.web.testHelpers';
+import { installLocalStorageMock, installWebLockManagerMock } from './tokenStorage.web.testHelpers';
 import type { HomeCredentialMutationEvent } from './tokenStorage';
 
 installTokenStorageWebPlatformMocks();
 
 describe('TokenStorage (web) server-scoped credentials', () => {
     let restoreLocalStorage: (() => void) | null = null;
+    let restoreWebLocks: (() => void) | null = null;
+    let storageScopeSequence = 0;
     const previousStorageScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
 
     beforeEach(() => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `token_storage_server_scoped_${storageScopeSequence++}`;
+        restoreWebLocks = installWebLockManagerMock().restore;
         vi.resetModules();
         vi.spyOn(console, 'error').mockImplementation(() => {});
     });
 
     afterEach(async () => {
-        vi.restoreAllMocks();
-        restoreLocalStorage?.();
-        restoreLocalStorage = null;
-        if (previousStorageScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
-        else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousStorageScope;
         try {
             const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
-            setServerUrl(null);
+            await setServerUrl(null);
         } catch {
             // ignore
         }
+        vi.restoreAllMocks();
+        restoreLocalStorage?.();
+        restoreLocalStorage = null;
+        restoreWebLocks?.();
+        restoreWebLocks = null;
+        if (previousStorageScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+        else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousStorageScope;
     });
 
     it('keeps credentials separate per server URL', async () => {
@@ -34,17 +40,17 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
         const { TokenStorage } = await import('./tokenStorage');
 
-        setServerUrl('https://server-a.example.test');
+        await setServerUrl('https://server-a.example.test');
         await expect(TokenStorage.setCredentials({ token: 'token-a', secret: 'secret-a' })).resolves.toBe(true);
 
-        setServerUrl('https://server-b.example.test');
+        await setServerUrl('https://server-b.example.test');
         await expect(TokenStorage.getCredentials()).resolves.toBeNull();
         await expect(TokenStorage.setCredentials({ token: 'token-b', secret: 'secret-b' })).resolves.toBe(true);
 
-        setServerUrl('https://server-a.example.test');
+        await setServerUrl('https://server-a.example.test');
         await expect(TokenStorage.getCredentials()).resolves.toEqual({ token: 'token-a', secret: 'secret-a' });
 
-        setServerUrl('https://server-b.example.test');
+        await setServerUrl('https://server-b.example.test');
         await expect(TokenStorage.getCredentials()).resolves.toEqual({ token: 'token-b', secret: 'secret-b' });
     });
 
@@ -54,7 +60,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
         const { TokenStorage } = await import('./tokenStorage');
 
-        setServerUrl('https://server-a.example.test');
+        await setServerUrl('https://server-a.example.test');
 
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = 'scope-a';
         await expect(TokenStorage.setCredentials({ token: 'token-a', secret: 'secret-a' })).resolves.toBe(true);
@@ -76,10 +82,10 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
         const { TokenStorage } = await import('./tokenStorage');
 
-        setServerUrl('https://server-a.example.test');
+        await setServerUrl('https://server-a.example.test');
         await expect(TokenStorage.setCredentials({ token: 'token-a', secret: 'secret-a' })).resolves.toBe(true);
 
-        setServerUrl('https://server-b.example.test');
+        await setServerUrl('https://server-b.example.test');
         await expect(TokenStorage.setCredentials({ token: 'token-b', secret: 'secret-b' })).resolves.toBe(true);
 
         await expect(TokenStorage.getCredentialsForServerUrl('https://server-a.example.test')).resolves.toEqual({
@@ -103,7 +109,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
         const { TokenStorage } = await import('./tokenStorage');
 
-        setServerUrl('http://127.0.0.1:3010');
+        await setServerUrl('http://127.0.0.1:3010');
         await expect(TokenStorage.setCredentials({ token: 'token-loopback', secret: 'secret-loopback' })).resolves.toBe(true);
 
         await expect(TokenStorage.getCredentialsForServerUrl('http://localhost:3010')).resolves.toEqual({
@@ -116,7 +122,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
             secret: 'secret-loopback',
         });
 
-        setServerUrl('http://localhost:3010');
+        await setServerUrl('http://localhost:3010');
         await expect(TokenStorage.getCredentials()).resolves.toEqual({
             token: 'token-loopback',
             secret: 'secret-loopback',
@@ -268,8 +274,11 @@ describe('TokenStorage (web) server-scoped credentials', () => {
             };
         });
 
-        const primaryKey = 'auth_credentials__srv_srv_identity_relay';
-        const legacyKey = 'auth_credentials__srv_relay-profile';
+        const { scopedStorageId } = await import('@/utils/system/storageScope');
+        const storageScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE ?? null;
+        const primaryKey = scopedStorageId('auth_credentials__srv_srv_identity_relay', storageScope);
+        const legacyKey = scopedStorageId('auth_credentials__srv_relay-profile', storageScope);
+        const globalKey = scopedStorageId('auth_credentials', storageScope);
         const primaryRaw = JSON.stringify({
             token: 'target-token',
             secret: 'target-secret',
@@ -284,7 +293,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         });
         localStorageHandle.store.set(primaryKey, primaryRaw);
         localStorageHandle.store.set(legacyKey, legacyRaw);
-        localStorageHandle.store.set('auth_credentials', unrelatedGlobalRaw);
+        localStorageHandle.store.set(globalKey, unrelatedGlobalRaw);
         localStorageHandle.removeItemMock.mockImplementation((key: string) => {
             if (key === legacyKey) {
                 throw new Error('legacy delete failed');
@@ -302,7 +311,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
 
             expect(localStorageHandle.store.get(primaryKey)).toBe(primaryRaw);
             expect(localStorageHandle.store.get(legacyKey)).toBe(legacyRaw);
-            expect(localStorageHandle.store.get('auth_credentials')).toBe(
+            expect(localStorageHandle.store.get(globalKey)).toBe(
                 unrelatedGlobalRaw,
             );
         } finally {
@@ -316,12 +325,12 @@ describe('TokenStorage (web) server-scoped credentials', () => {
 
         const { digest } = await import('@/platform/digest');
         const { encodeBase64 } = await import('@/encryption/base64');
-        const { scopedStorageId } = await import('@/utils/system/storageScope');
+        const { readStorageScopeFromEnv, scopedStorageId } = await import('@/utils/system/storageScope');
 
         const legacyNormalized = 'http://127.0.0.1:3010';
         const legacyHash = await digest('SHA-256', new TextEncoder().encode(legacyNormalized));
         const legacyScopeToken = encodeBase64(legacyHash, 'base64url');
-        const legacyKey = scopedStorageId(`auth_credentials__srv_${legacyScopeToken}`, null);
+        const legacyKey = scopedStorageId(`auth_credentials__srv_${legacyScopeToken}`, readStorageScopeFromEnv());
 
         localStorageHandle.store.set(
             legacyKey,
@@ -330,7 +339,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
 
         const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
         const normalized = 'http://localhost:3010';
-        setServerUrl(normalized);
+        await setServerUrl(normalized);
 
         const { TokenStorage } = await import('./tokenStorage');
 
@@ -448,7 +457,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
         const { getActiveServerUrl } = await import('@/sync/domains/server/serverProfiles');
         const { TokenStorage } = await import('./tokenStorage');
-        setServerUrl('https://focused.example.test');
+        await setServerUrl('https://focused.example.test');
         const before = getActiveServerUrl();
         await expect(TokenStorage.setCredentialsForServerUrl(
             'https://secondary.example.test',
@@ -490,7 +499,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         try {
             const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
             const { TokenStorage, subscribeHomeCredentialMutations } = await import('./tokenStorage');
-            setServerUrl('https://focused.example.test');
+            await setServerUrl('https://focused.example.test');
 
             const events: HomeCredentialMutationEvent[] = [];
             unsubscribe = subscribeHomeCredentialMutations((event) => {
@@ -646,7 +655,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         try {
             const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
             const { TokenStorage } = await import('./tokenStorage');
-            setServerUrl('https://focused.example.test');
+            await setServerUrl('https://focused.example.test');
 
             // Home A preflights identity A at the shared URL and persists its
             // credential before any profile exists.
@@ -703,7 +712,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         try {
             const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
             const { TokenStorage } = await import('./tokenStorage');
-            setServerUrl('https://focused.example.test');
+            await setServerUrl('https://focused.example.test');
 
             await expect(TokenStorage.setCredentialsForServerUrl(
                 'https://shared.example.test',
@@ -752,7 +761,7 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         try {
             const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
             const { TokenStorage } = await import('./tokenStorage');
-            setServerUrl('https://focused.example.test');
+            await setServerUrl('https://focused.example.test');
 
             const receipt = await TokenStorage.setCredentialsForServerUrlWithRollback(
                 'https://shared.example.test',
@@ -789,21 +798,32 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         }
     });
 
-    it('restores reader-only URL scopes on rollback and never clobbers a concurrent URL-scope writer', async () => {
+    it('never resurrects reader-only aliases emptied by a newer URL-scope writer', async () => {
         const localStorageHandle = installLocalStorageMock();
         restoreLocalStorage = localStorageHandle.restore;
 
-        // Seed a legacy URL-hash credential at the shared URL (pre-identity shape).
+        // Seed both URL-hash aliases with an older pre-identity credential. The
+        // identity-scoped write will clear both as reader-only migration inputs.
         const { digest } = await import('@/platform/digest');
         const { encodeBase64 } = await import('@/encryption/base64');
-        const { scopedStorageId } = await import('@/utils/system/storageScope');
-        const legacyHash = await digest('SHA-256', new TextEncoder().encode('https://shared.example.test'));
-        const legacyScopeToken = encodeBase64(legacyHash, 'base64url');
-        const legacyKey = scopedStorageId(`auth_credentials__srv_${legacyScopeToken}`, null);
-        localStorageHandle.store.set(legacyKey, JSON.stringify({ token: 'legacy-url-token' }));
+        const { readStorageScopeFromEnv, scopedStorageId } = await import('@/utils/system/storageScope');
+        const endpoint = 'http://localhost:3010';
+        const canonicalHash = await digest('SHA-256', new TextEncoder().encode(endpoint));
+        const legacyHash = await digest('SHA-256', new TextEncoder().encode('http://127.0.0.1:3010'));
+        const storageScope = readStorageScopeFromEnv();
+        const canonicalKey = scopedStorageId(`auth_credentials__srv_${encodeBase64(canonicalHash, 'base64url')}`, storageScope);
+        const legacyKey = scopedStorageId(`auth_credentials__srv_${encodeBase64(legacyHash, 'base64url')}`, storageScope);
+        const olderRaw = JSON.stringify({ token: 'older-url-token' });
+        localStorageHandle.store.set(canonicalKey, olderRaw);
+        localStorageHandle.store.set(legacyKey, olderRaw);
 
         const state = {
-            profiles: [] as Array<{ id: string; serverIdentityId?: string; serverUrl: string; name: string }>,
+            profiles: [{
+                id: 'server-a',
+                serverIdentityId: 'srv_home_a',
+                serverUrl: endpoint,
+                name: 'Home A',
+            }] as Array<{ id: string; serverIdentityId?: string; serverUrl: string; name: string }>,
         };
         vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
             ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
@@ -815,39 +835,214 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         try {
             const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
             const { TokenStorage } = await import('./tokenStorage');
-            setServerUrl('https://focused.example.test');
+            await setServerUrl('https://focused.example.test');
 
             const receipt = await TokenStorage.setCredentialsForServerUrlWithRollback(
-                'https://shared.example.test',
+                endpoint,
                 { serverId: 'srv_home_a' },
                 { token: 'home-a-token' },
             );
             expect(receipt).not.toBeNull();
 
-            // A concurrent manual URL-only writer (no stable identity) claims the
-            // URL scope while A's adoption is in flight.
+            // The profile disappears when adoption loses. A newer manual writer
+            // now owns the canonical URL slot and intentionally empties the
+            // alternate loopback alias.
+            state.profiles = [];
             await expect(TokenStorage.setCredentialsForServerUrl(
-                'https://shared.example.test',
+                endpoint,
                 {},
                 { token: 'manual-url-token' },
             )).resolves.toBe(true);
 
             await expect(receipt!.rollback()).resolves.toBe(true);
 
-            // The attempted identity write is gone...
+            // The attempted identity write is gone, but no older URL bytes were
+            // resurrected into any alias that the newer writer had emptied.
             await expect(TokenStorage.getCredentialsForServerUrl(
-                'https://shared.example.test',
+                endpoint,
                 { serverId: 'srv_home_a' },
             )).resolves.toBeNull();
             for (const [, value] of localStorageHandle.store) {
                 expect(value).not.toContain('home-a-token');
+                expect(value).not.toContain('older-url-token');
             }
-            // ...the concurrent manual URL-scope writer keeps its credential...
-            await expect(TokenStorage.getCredentialsForServerUrl('https://shared.example.test')).resolves.toEqual({ token: 'manual-url-token' });
-            // ...and rollback did not clobber it with the restored legacy value.
-            expect(localStorageHandle.store.get(legacyKey)).toBe(JSON.stringify({ token: 'manual-url-token' }));
+            await expect(TokenStorage.getCredentialsForServerUrl(endpoint)).resolves.toEqual({ token: 'manual-url-token' });
+
+            // Removing the newer token must not uncover and migrate the older
+            // credential from an alternate alias on a later read.
+            await expect(TokenStorage.invalidateCredentialsTokenForServerUrl(
+                endpoint,
+                'manual-url-token',
+            )).resolves.toBe(true);
+            await expect(TokenStorage.getCredentialsForServerUrl(endpoint)).resolves.toBeNull();
+            expect(localStorageHandle.store.get(canonicalKey)).toBeUndefined();
+            expect(localStorageHandle.store.get(legacyKey)).toBeUndefined();
         } finally {
             vi.doUnmock('@/sync/domains/server/serverProfiles');
         }
+    });
+
+    it('never restores seeded aliases after a newer same-identity writer owns primary', async () => {
+        const localStorageHandle = installLocalStorageMock();
+        restoreLocalStorage = localStorageHandle.restore;
+
+        const { digest } = await import('@/platform/digest');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { readStorageScopeFromEnv, scopedStorageId } = await import('@/utils/system/storageScope');
+        const endpoint = 'http://localhost:3010';
+        const canonicalHash = await digest('SHA-256', new TextEncoder().encode(endpoint));
+        const legacyHash = await digest('SHA-256', new TextEncoder().encode('http://127.0.0.1:3010'));
+        const storageScope = readStorageScopeFromEnv();
+        const canonicalKey = scopedStorageId(`auth_credentials__srv_${encodeBase64(canonicalHash, 'base64url')}`, storageScope);
+        const legacyKey = scopedStorageId(`auth_credentials__srv_${encodeBase64(legacyHash, 'base64url')}`, storageScope);
+        const olderRaw = JSON.stringify({ token: 'older-url-token' });
+        localStorageHandle.store.set(canonicalKey, olderRaw);
+        localStorageHandle.store.set(legacyKey, olderRaw);
+
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+            getActiveServerId: () => 'focused',
+            getActiveServerUrl: () => 'https://focused.example.test',
+            listServerProfiles: () => [{
+                id: 'server-a',
+                serverIdentityId: 'srv_home_a',
+                serverUrl: endpoint,
+                name: 'Home A',
+            }],
+        }));
+
+        try {
+            const { TokenStorage } = await import('./tokenStorage');
+            const target = { serverId: 'srv_home_a' } as const;
+            const receipt = await TokenStorage.setCredentialsForServerUrlWithRollback(
+                endpoint,
+                target,
+                { token: 'rollback-candidate' },
+            );
+            expect(receipt).not.toBeNull();
+
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                endpoint,
+                target,
+                { token: 'newer-same-identity-token' },
+            )).resolves.toBe(true);
+            await expect(receipt!.rollback()).resolves.toBe(true);
+
+            await expect(TokenStorage.getCredentialsForServerUrl(endpoint, target))
+                .resolves.toEqual({ token: 'newer-same-identity-token' });
+            expect(localStorageHandle.store.get(canonicalKey)).toBeUndefined();
+            expect(localStorageHandle.store.get(legacyKey)).toBeUndefined();
+
+            await expect(TokenStorage.invalidateCredentialsTokenForServerUrl(
+                endpoint,
+                'newer-same-identity-token',
+                target,
+            )).resolves.toBe(true);
+            await expect(TokenStorage.getCredentialsForServerUrl(endpoint, target)).resolves.toBeNull();
+        } finally {
+            vi.doUnmock('@/sync/domains/server/serverProfiles');
+        }
+    });
+
+    it('does not sweep a browser orphan whose exact bytes changed after enumeration', async () => {
+        const localStorageHandle = installLocalStorageMock();
+        restoreLocalStorage = localStorageHandle.restore;
+        const { readStorageScopeFromEnv, scopedStorageId } = await import('@/utils/system/storageScope');
+        const orphanKey = scopedStorageId('auth_credentials__srv_orphaned-browser-scope', readStorageScopeFromEnv());
+        const olderRaw = JSON.stringify({ token: 'orphaned-token' });
+        const newerRaw = JSON.stringify({ token: 'newer-orphaned-token' });
+        localStorageHandle.store.set(orphanKey, olderRaw);
+
+        let replaceAfterEnumeration = true;
+        vi.mocked(globalThis.localStorage.key).mockImplementation((index: number) => {
+            const key = [...localStorageHandle.store.keys()][index] ?? null;
+            if (replaceAfterEnumeration && key === orphanKey) {
+                replaceAfterEnumeration = false;
+                queueMicrotask(() => localStorageHandle.store.set(orphanKey, newerRaw));
+            }
+            return key;
+        });
+
+        const { TokenStorage } = await import('./tokenStorage');
+        await expect(TokenStorage.removeCredentials()).resolves.toBe(true);
+        expect(localStorageHandle.store.get(orphanKey)).toBe(newerRaw);
+    });
+
+    it('serializes deferred rollback with a newer same-scope credential commit', async () => {
+        const localStorageHandle = installLocalStorageMock();
+        restoreLocalStorage = localStorageHandle.restore;
+        const { TokenStorage } = await import('./tokenStorage');
+        const target = { serverId: 'srv_rollback_serialized' } as const;
+        const endpoint = 'https://rollback-serialized.example.test';
+        const receipt = await TokenStorage.setCredentialsForServerUrlWithRollback(
+            endpoint,
+            target,
+            { token: 'rollback-candidate' },
+        );
+        expect(receipt).not.toBeNull();
+
+        let replacement: Promise<boolean> | null = null;
+        let injectReplacement = true;
+        localStorageHandle.getItemMock.mockImplementation((key: string) => {
+            const raw = localStorageHandle.store.get(key) ?? null;
+            if (injectReplacement && raw?.includes('rollback-candidate')) {
+                injectReplacement = false;
+                queueMicrotask(() => {
+                    replacement = TokenStorage.setCredentialsForServerUrl(
+                        endpoint,
+                        target,
+                        { token: 'newer-credential' },
+                    );
+                });
+            }
+            return raw;
+        });
+
+        await expect(receipt!.rollback()).resolves.toBe(true);
+        await vi.waitFor(() => expect(replacement).not.toBeNull());
+        await expect(replacement!).resolves.toBe(true);
+        await expect(TokenStorage.getCredentialsForServerUrl(endpoint, target))
+            .resolves.toEqual({ token: 'newer-credential' });
+    });
+
+    it.each([
+        ['logout', (storage: typeof import('./tokenStorage').TokenStorage, endpoint: string, target: { serverId: string }) =>
+            storage.removeCredentialsForServerUrl(endpoint, target)],
+        ['401 invalidation', (storage: typeof import('./tokenStorage').TokenStorage, endpoint: string, target: { serverId: string }) =>
+            storage.invalidateCredentialsTokenForServerUrl(endpoint, 'credential-being-invalidated', target)],
+    ])('serializes %s deletion with a newer same-scope credential commit', async (_label, remove) => {
+        const localStorageHandle = installLocalStorageMock();
+        restoreLocalStorage = localStorageHandle.restore;
+        const { TokenStorage } = await import('./tokenStorage');
+        const target = { serverId: 'srv_remove_serialized' } as const;
+        const endpoint = 'https://remove-serialized.example.test';
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            endpoint,
+            target,
+            { token: 'credential-being-invalidated' },
+        )).resolves.toBe(true);
+
+        let replacement: Promise<boolean> | null = null;
+        let injectReplacement = true;
+        localStorageHandle.getItemMock.mockImplementation((key: string) => {
+            const raw = localStorageHandle.store.get(key) ?? null;
+            if (injectReplacement && raw?.includes('credential-being-invalidated')) {
+                injectReplacement = false;
+                queueMicrotask(() => {
+                    replacement = TokenStorage.setCredentialsForServerUrl(
+                        endpoint,
+                        target,
+                        { token: 'newer-credential' },
+                    );
+                });
+            }
+            return raw;
+        });
+
+        await expect(remove(TokenStorage, endpoint, target)).resolves.toBe(true);
+        await vi.waitFor(() => expect(replacement).not.toBeNull());
+        await expect(replacement!).resolves.toBe(true);
+        await expect(TokenStorage.getCredentialsForServerUrl(endpoint, target))
+            .resolves.toEqual({ token: 'newer-credential' });
     });
 });

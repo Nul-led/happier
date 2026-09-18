@@ -3,6 +3,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
 import {
+    deriveAccountMachineKeyFromRecoverySecret,
     encodeTerminalConnectLinkV4Payload,
     openTerminalProvisioningV3Response,
     openTerminalProvisioningV3Payload,
@@ -21,6 +22,7 @@ const setPendingTerminalConnectSpy = vi.fn((_pending: {
     serverUrl: string;
     serverIdentityId: string;
 }) => {});
+const clearPendingTerminalConnectSpy = vi.fn(() => {});
 const modalAlertSpy = vi.fn((..._args: unknown[]) => {});
 const modalAlertAsyncSpy = vi.fn(async (...args: unknown[]) => {
     modalAlertSpy(...args);
@@ -38,7 +40,9 @@ const fetchAccountEncryptionModeSpy = vi.fn(
     async (): Promise<{ mode: 'plain' | 'e2ee'; updatedAt: number }> => ({ mode: 'plain', updatedAt: 0 }),
 );
 const isRuntimeFeatureEnabledSpy = vi.fn(async (_params: { featureId: string }) => true);
-const promptLegacyPairingUpdateRequiredSpy = vi.fn(async () => 'cancel' as const);
+const promptLegacyPairingUpdateRequiredSpy = vi.fn(
+    async (): Promise<'cancel' | 'scan_new_qr'> => 'cancel',
+);
 
 let authCredentials: any = null;
 let storedCredentials: any = undefined;
@@ -88,6 +92,7 @@ afterEach(() => {
     routerReplaceSpy.mockClear();
     routerPushSpy.mockClear();
     setPendingTerminalConnectSpy.mockClear();
+    clearPendingTerminalConnectSpy.mockClear();
     modalAlertSpy.mockClear();
     modalAlertAsyncSpy.mockClear();
     modalConfirmSpy.mockClear();
@@ -153,7 +158,10 @@ vi.mock('@/auth/context/AuthContext', () => ({
 vi.mock('@/auth/storage/tokenStorage', () => ({
     TokenStorage: {
         getCredentials: vi.fn(async () => (storedCredentials === undefined ? authCredentials : storedCredentials)),
-        getCredentialsForServerUrl: getCredentialsForServerUrlSpy,
+        // Reached lazily: `@/dev/testkit` now imports this module during the test file's own
+        // import phase, before the top-level spy bindings initialize.
+        getCredentialsForServerUrl: (url: string, options?: { serverId?: string }) =>
+            getCredentialsForServerUrlSpy(url, options),
     },
     isDataKeyAuthCredentials: (creds: { encryption?: { machineKey?: string } } | null) =>
         typeof creds?.encryption?.machineKey === 'string',
@@ -168,6 +176,16 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
         ...actual,
         getActiveServerUrl: () => activeServerUrl,
         listServerProfiles: () => serverProfiles,
+        // Mirrors the canonical persisted-profile identity resolution over this fixture's
+        // profile set, so the hook consumes the same owner production uses.
+        resolveServerProfileForPortableIdentity: (idRaw: string | null | undefined) => {
+            const serverIdentityId = String(idRaw ?? '').trim();
+            if (!serverIdentityId) return { kind: 'missing', serverIdentityId: '' };
+            const profiles = serverProfiles.filter((profile) => profile.serverIdentityId === serverIdentityId);
+            if (profiles.length === 1) return { kind: 'resolved', serverIdentityId, profile: profiles[0] };
+            if (profiles.length > 1) return { kind: 'ambiguous', serverIdentityId, profiles };
+            return { kind: 'missing', serverIdentityId };
+        },
     };
 });
 
@@ -199,7 +217,7 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
 vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
     setPendingTerminalConnect: setPendingTerminalConnectSpy,
     getPendingTerminalConnect: () => null,
-    clearPendingTerminalConnect: vi.fn(),
+    clearPendingTerminalConnect: clearPendingTerminalConnectSpy,
 }));
 
 vi.mock('@/auth/pairing/legacyPairingUpdateRequired', () => ({
@@ -410,6 +428,53 @@ describe('useConnectTerminal unauthenticated flow', () => {
             serverIdentityId: descriptor.homeServerIdentityId,
             homeConnectionDescriptor: descriptor,
         }));
+    });
+
+    it('keeps a declined strict V4 target bound without redirecting auth through the active Home', async () => {
+        storedCredentials = null;
+        activeServerUrl = 'https://lan.example.test:53288';
+        const descriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_loopback_target',
+            canonicalServerUrl: 'http://127.0.0.1:3005',
+            revision: 1,
+            endpoints: [{ kind: 'iroh' as const, endpointId: 'b'.repeat(64) }],
+        };
+        const payload = encodeTerminalConnectLinkV4Payload({
+            v: 4,
+            publicKeyB64Url: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            pairing: {
+                v: 3,
+                secretB64Url: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
+                createdAtMs: 1_900_000_000_000,
+                expiresAtMs: 1_900_000_060_000,
+                homeServerIdentityId: descriptor.homeServerIdentityId,
+                supportsTokenOnly: false,
+            },
+            homeConnectionDescriptor: descriptor,
+        });
+        const { useConnectTerminal } = await import('./useConnectTerminal');
+        let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
+        function Probe() {
+            hookApi = useConnectTerminal({ allowLoopbackServerOverride: true });
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        await act(async () => {
+            await hookApi!.processAuthUrl(`happier://terminal?v4=${payload}`);
+        });
+
+        expect(setPendingTerminalConnectSpy).toHaveBeenCalledWith(expect.objectContaining({
+            serverUrl: descriptor.canonicalServerUrl,
+            homeConnectionDescriptor: descriptor,
+        }));
+        expect(routerReplaceSpy).not.toHaveBeenCalled();
+        expect(modalAlertSpy).toHaveBeenCalledWith(
+            'welcome.serverUnavailableTitle',
+            'welcome.serverUnavailableBody',
+            expect.any(Array),
+        );
     });
 
     it('stores pending connect intent and routes to sign-in', async () => {
@@ -997,17 +1062,30 @@ describe('useConnectTerminal unauthenticated flow', () => {
         expect(getCredentialsForServerUrlSpy).not.toHaveBeenCalled();
     });
 
-    it('fails closed for legacy credentials without posting secret-derived material', async () => {
+    // Credential shape is the material authority, and the CLI owns that policy for every
+    // authenticated approver: `apps/cli/src/auth/terminalProvisioningMaterial.ts`
+    // resolves keyed credentials — data-key or legacy recovery-secret — to the same Account
+    // content private key, deriving the legacy one through the protocol derivation owner
+    // (`deriveAccountMachineKeyFromRecoverySecret`) instead of a second formula. The UI
+    // resolver (`auth/terminal/resolveProvisioningMaterial.ts`) follows that one policy, so a
+    // legacy-credential approval provisions a dataKey response. What must never happen is the
+    // raw recovery secret itself reaching the terminal, which is what this test pins.
+    it('provisions the derived Account content key for legacy credentials and never posts the recovery secret', async () => {
         authApproveSpy.mockClear();
         authApproveSpy.mockResolvedValue('approved');
         modalAlertSpy.mockClear();
 
+        const recoverySecret = new Uint8Array(32).fill(6);
         authCredentials = createLegacyCredentials({ token: 'token-legacy', secretByte: 6 });
+        // Deliberately distinct from the derived key: the ambient sync encryption must not be
+        // the material source for a credential-scoped approval.
         contentPrivateKey = new Uint8Array(32).fill(7);
         contentPublicKey = new Uint8Array([9, 9, 9]);
         const terminalSecretKey = new Uint8Array(32).fill(6);
         const terminalPublicKey = tweetnacl.box.keyPair.fromSecretKey(terminalSecretKey).publicKey;
         const pairingSecret = new Uint8Array(32).fill(12);
+        const createdAtMs = 1_800_000_000_000;
+        const expiresAtMs = 1_800_060_000_000;
 
         const { useConnectTerminal } = await import('./useConnectTerminal');
 
@@ -1019,16 +1097,213 @@ describe('useConnectTerminal unauthenticated flow', () => {
 
         await renderScreen(React.createElement(Probe));
 
-        let result = true;
+        let result = false;
         await act(async () => {
             result = await hookApi!.processAuthUrl(buildTerminalConnectUrl({
                 terminalPublicKey,
-                pairing: { secret: pairingSecret, createdAtMs: 1_800_000_000_000, expiresAtMs: 1_800_060_000_000 },
+                pairing: { secret: pairingSecret, createdAtMs, expiresAtMs },
+                supportsTokenOnly: true,
+            }));
+        });
+
+        expect(result).toBe(true);
+        expect(authApproveSpy).toHaveBeenCalledTimes(1);
+        expect(authApproveSpy).toHaveBeenCalledWith(expect.objectContaining({
+            token: 'token-legacy',
+            responseKind: 'dataKey',
+        }));
+        const approveParams = authApproveSpy.mock.calls[0]?.[0] as { responseBase64: string } | undefined;
+        const opened = openTerminalProvisioningV3Payload({
+            payload: new Uint8Array(Buffer.from(approveParams!.responseBase64, 'base64')),
+            recipientSecretKeyOrSeed: terminalSecretKey,
+            pairingSecret,
+            terminalEphemeralPublicKey: terminalPublicKey,
+            createdAtMs,
+            expiresAtMs,
+            nowMs: createdAtMs + 1,
+        });
+        expect(opened).toEqual(deriveAccountMachineKeyFromRecoverySecret(recoverySecret));
+        expect(opened).not.toEqual(recoverySecret);
+        expect(opened).not.toEqual(contentPrivateKey);
+    });
+
+    it('approves a loopback pairing link whose Home identity matches the signed-in profile at another host', async () => {
+        authApproveSpy.mockClear();
+        authApproveSpy.mockResolvedValue('approved');
+        modalAlertSpy.mockClear();
+        modalConfirmSpy.mockClear();
+        upsertActivateAndSwitchServerSpy.mockClear();
+
+        // The daemon runs on this machine and advertises its loopback address, while the app
+        // knows the same Home by its stack hostname. Identity is what makes them one Home.
+        activeServerUrl = 'https://stack-host.example.test:53288';
+        const descriptor: HomeConnectionDescriptorV1 = {
+            v: 1,
+            homeServerIdentityId: 'srv_stack_home',
+            canonicalServerUrl: 'https://stack-host.example.test:53288',
+            revision: 1,
+            endpoints: [{ kind: 'https', url: 'https://stack-host.example.test:53288' }],
+        };
+        serverProfiles = [{
+            id: 'stack-profile',
+            serverUrl: 'https://stack-host.example.test:53288',
+            serverIdentityId: 'srv_stack_home',
+            canonicalServerUrl: descriptor.canonicalServerUrl,
+            homeConnectionDescriptor: descriptor,
+        }];
+        authCredentials = createDataKeyCredentials({ token: 'stack-token', machineKeyByte: 11 });
+        contentPrivateKey = new Uint8Array(32).fill(7);
+
+        const terminalSecretKey = new Uint8Array(32).fill(4);
+        const terminalPublicKey = tweetnacl.box.keyPair.fromSecretKey(terminalSecretKey).publicKey;
+
+        const { useConnectTerminal } = await import('./useConnectTerminal');
+        let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
+        function Probe() {
+            // The `/terminal/connect` route allows loopback link targets, which is the exact
+            // configuration in which URL comparison rejected the signed-in Home.
+            hookApi = useConnectTerminal({ allowLoopbackServerOverride: true });
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        let result = false;
+        await act(async () => {
+            result = await hookApi!.processAuthUrl(buildIdentityBearingV3TerminalConnectUrl({
+                terminalPublicKey,
+                serverUrl: 'http://localhost:53288',
+                serverIdentityId: 'srv_stack_home',
+                pairing: {
+                    secret: new Uint8Array(32).fill(12),
+                    createdAtMs: 1_800_000_000_000,
+                    expiresAtMs: 1_800_060_000_000,
+                },
+                supportsTokenOnly: true,
+            }));
+        });
+
+        expect(result).toBe(true);
+        expect(modalAlertSpy).not.toHaveBeenCalledWith(
+            expect.anything(),
+            'modals.pleaseSignInFirst',
+            expect.anything(),
+        );
+        expect(getCredentialsForServerUrlSpy).toHaveBeenCalledWith(
+            'https://stack-host.example.test:53288',
+            { serverId: 'srv_stack_home' },
+        );
+        expect(authApproveSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('approves an identity-bearing URL-only link for a Home that publishes no connection descriptor', async () => {
+        authApproveSpy.mockClear();
+        authApproveSpy.mockResolvedValue('approved');
+        modalAlertSpy.mockClear();
+        modalConfirmSpy.mockClear();
+
+        // Exact live state of the reproduced defect: a loopback-HTTP Home publishes no
+        // `homeConnectionDescriptor` at all (`/v1/features` carries only `serverIdentity`), its
+        // profile id was derived from a different address than its serverUrl, and the CLI still
+        // issues an identity-bearing URL-only pairing link naming `127.0.0.1`.
+        activeServerUrl = 'http://happier-repo-dev-a1cc5e0671.localhost:53288';
+        serverProfiles = [{
+            id: '192.168.5.15-53288',
+            serverUrl: 'http://happier-repo-dev-a1cc5e0671.localhost:53288',
+            serverIdentityId: 'srv_niq7wbpMyJviL4EtO5YlTEd0Us0Ou0nN',
+        }];
+        authCredentials = createDataKeyCredentials({ token: 'home-token', machineKeyByte: 13 });
+        contentPrivateKey = new Uint8Array(32).fill(7);
+
+        const terminalSecretKey = new Uint8Array(32).fill(2);
+        const terminalPublicKey = tweetnacl.box.keyPair.fromSecretKey(terminalSecretKey).publicKey;
+
+        const { useConnectTerminal } = await import('./useConnectTerminal');
+        let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
+        function Probe() {
+            hookApi = useConnectTerminal({ allowLoopbackServerOverride: true });
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        let result = false;
+        await act(async () => {
+            result = await hookApi!.processAuthUrl(buildIdentityBearingV3TerminalConnectUrl({
+                terminalPublicKey,
+                serverUrl: 'http://127.0.0.1:53288',
+                serverIdentityId: 'srv_niq7wbpMyJviL4EtO5YlTEd0Us0Ou0nN',
+                pairing: {
+                    secret: new Uint8Array(32).fill(12),
+                    createdAtMs: 1_800_000_000_000,
+                    expiresAtMs: 1_800_060_000_000,
+                },
+                supportsTokenOnly: true,
+            }));
+        });
+
+        expect(result).toBe(true);
+        expect(modalConfirmSpy).not.toHaveBeenCalled();
+        expect(getCredentialsForServerUrlSpy).toHaveBeenCalledWith(
+            'http://happier-repo-dev-a1cc5e0671.localhost:53288',
+            { serverId: 'srv_niq7wbpMyJviL4EtO5YlTEd0Us0Ou0nN' },
+        );
+        // The approval is posted to this device's established Home address, bound to its identity.
+        expect(authApproveSpy).toHaveBeenCalledWith(expect.objectContaining({
+            transport: expect.objectContaining({
+                canonicalServerUrl: 'http://happier-repo-dev-a1cc5e0671.localhost:53288',
+                homeServerIdentityId: 'srv_niq7wbpMyJviL4EtO5YlTEd0Us0Ou0nN',
+            }),
+            token: 'home-token',
+        }));
+    });
+
+    it('names both Homes and leaves nothing pending when an authenticated user declines the Home switch', async () => {
+        authApproveSpy.mockClear();
+        modalAlertSpy.mockClear();
+        modalConfirmSpy.mockClear();
+        routerReplaceSpy.mockClear();
+        setPendingTerminalConnectSpy.mockClear();
+        clearPendingTerminalConnectSpy.mockClear();
+
+        activeServerUrl = 'https://api.happier.dev';
+        authCredentials = createDataKeyCredentials({ token: 'focused-token', machineKeyByte: 7 });
+        modalConfirmSpy.mockResolvedValueOnce(false);
+
+        const terminalSecretKey = new Uint8Array(32).fill(3);
+        const terminalPublicKey = tweetnacl.box.keyPair.fromSecretKey(terminalSecretKey).publicKey;
+
+        const { useConnectTerminal } = await import('./useConnectTerminal');
+        let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
+        function Probe() {
+            hookApi = useConnectTerminal({ allowLoopbackServerOverride: true });
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        let result = true;
+        await act(async () => {
+            result = await hookApi!.processAuthUrl(buildIdentityBearingV3TerminalConnectUrl({
+                terminalPublicKey,
+                serverUrl: 'https://other-home.example.test',
+                serverIdentityId: 'srv_other_home',
+                pairing: {
+                    secret: new Uint8Array(32).fill(12),
+                    createdAtMs: 1_800_000_000_000,
+                    expiresAtMs: 1_800_060_000_000,
+                },
                 supportsTokenOnly: true,
             }));
         });
 
         expect(result).toBe(false);
+        expect(modalConfirmSpy).toHaveBeenCalledWith(
+            'terminal.connectTerminal',
+            'terminal.switchServerToConnectTerminal',
+            expect.objectContaining({ confirmText: 'server.switchToServer' }),
+        );
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+        expect(setPendingTerminalConnectSpy).not.toHaveBeenCalled();
+        expect(clearPendingTerminalConnectSpy).toHaveBeenCalled();
+        expect(routerReplaceSpy).not.toHaveBeenCalled();
         expect(authApproveSpy).not.toHaveBeenCalled();
     });
 });

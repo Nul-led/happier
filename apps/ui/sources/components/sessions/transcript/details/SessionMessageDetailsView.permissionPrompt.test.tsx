@@ -24,9 +24,9 @@ const autoRecipientState = vi.hoisted(() => ({
 const recipientStateState = vi.hoisted(() => ({
     value: {
         recipient: null as any,
-        executionRunDelivery: 'prompt',
+        executionRunRequestedAction: { v: 1, kind: 'enqueue' },
         setManualRecipient: vi.fn(),
-        setExecutionRunDelivery: vi.fn(),
+        setExecutionRunRequestedAction: vi.fn(),
     },
 }));
 
@@ -91,8 +91,8 @@ vi.mock('@/components/sessions/agentInput/routing/RecipientChip', () => ({
     RecipientChip: () => React.createElement('RecipientChip'),
 }));
 
-vi.mock('@/components/sessions/agentInput/routing/ExecutionRunDeliveryChip', () => ({
-    ExecutionRunDeliveryChip: () => React.createElement('ExecutionRunDeliveryChip'),
+vi.mock('@/components/sessions/agentInput/routing/ExecutionRunRequestedActionChip', () => ({
+    ExecutionRunRequestedActionChip: () => React.createElement('ExecutionRunRequestedActionChip'),
 }));
 
 vi.mock('@/components/tools/shell/views/ToolFullView', () => ({
@@ -110,6 +110,7 @@ vi.mock('@/text', async () => {
 describe('SessionMessageDetailsView permission prompt fallback', () => {
     const session: Session = {
         id: 'session-1',
+        serverId: 'home-b',
         seq: 0,
         createdAt: 1,
         updatedAt: 1,
@@ -172,9 +173,9 @@ describe('SessionMessageDetailsView permission prompt fallback', () => {
         autoRecipientState.value = null;
         recipientStateState.value = {
             recipient: null,
-            executionRunDelivery: 'prompt',
+            executionRunRequestedAction: { v: 1, kind: 'enqueue' },
             setManualRecipient: vi.fn(),
-            setExecutionRunDelivery: vi.fn(),
+            setExecutionRunRequestedAction: vi.fn(),
         };
         participantComposerSpy.mockClear();
 
@@ -189,6 +190,7 @@ describe('SessionMessageDetailsView permission prompt fallback', () => {
         expect(toolFullViewSpy).toHaveBeenCalledWith(expect.objectContaining({
             forcePermissionFooterInTranscript: true,
             owningMessageId: 'message-1',
+            serverId: 'home-b',
         }));
     });
 
@@ -209,9 +211,9 @@ describe('SessionMessageDetailsView permission prompt fallback', () => {
         autoRecipientState.value = { kind: 'execution_run', runId: 'run-1' };
         recipientStateState.value = {
             recipient: { kind: 'execution_run', runId: 'run-1' },
-            executionRunDelivery: 'interrupt',
+            executionRunRequestedAction: { v: 1, kind: 'send_now' },
             setManualRecipient: vi.fn(),
-            setExecutionRunDelivery: vi.fn(),
+            setExecutionRunRequestedAction: vi.fn(),
         };
         participantComposerSpy.mockClear();
 

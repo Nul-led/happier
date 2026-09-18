@@ -70,12 +70,14 @@ export function captureNewSessionDraftLaunchCurrentness(params: Readonly<{
     scope: ServerAccountScope;
     draftId: string;
     launchUserAttemptId: string;
+    currentness?: SessionDraftCurrentness;
 }>): SessionDraftCurrentness | null {
     const address = addressFor(params.draftId);
     return captureSessionDraftLaunchCurrentness({
         scope: params.scope,
         address,
         userAttemptId: params.launchUserAttemptId,
+        ...(params.currentness ? { currentness: params.currentness } : {}),
     });
 }
 
@@ -123,6 +125,9 @@ export async function clearCapturedNewSessionDraftAfterLaunch(params: Readonly<{
         params.draftId,
     );
     if (pointerDelta) {
-        getSyncSingleton().applySettings(pointerDelta, { source: 'ui' });
+        getSyncSingleton().applySettings(pointerDelta, {
+            expectedSettingsScope: params.scope,
+            source: 'ui',
+        });
     }
 }

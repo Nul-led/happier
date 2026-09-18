@@ -1,67 +1,27 @@
-import type { ScmDiffArea } from '@happier-dev/protocol';
-
-import type { ScmFileStatus } from '@/scm/scmStatusFiles';
-import { isBinaryContent, isKnownBinaryPath } from '@/scm/utils/filePresentation';
-import { buildAddedFileUnifiedDiff, decodeUtf8Base64 } from '@/scm/diff/fallbackUnifiedDiff';
-import { looksLikeUnifiedDiff } from '@/scm/diff/looksLikeUnifiedDiff';
-import { extractUnifiedDiffForSingleFile } from '@/scm/diff/extractUnifiedDiffForSingleFile';
-import { resolveWorkspaceTargetForSession } from '@/sync/domains/session/resolveWorkspaceTargetForSession';
 import { sessionScmDiffFile } from '@/sync/ops';
-import { workspaceReadFile } from '@/sync/ops/workspaceFileSystem';
+import { resolveWorkspaceTargetForSession } from '@/sync/domains/session/resolveWorkspaceTargetForSession';
+import { fetchWorkspaceUnifiedDiffForPath, invalidateWorkspaceUnifiedDiffPath } from './fetchWorkspaceUnifiedDiffForPath';
+import { fetchUnifiedDiffForPath, type UnifiedDiffInput } from './fetchUnifiedDiffForPath';
 
-export async function fetchSessionUnifiedDiffForPath(input: Readonly<{
+type Input = Omit<UnifiedDiffInput, 'cacheKey' | 'loadDiff' | 'readFileForFallback'> & Readonly<{
     sessionId: string;
-    diffArea: ScmDiffArea;
-    path: string;
-    file: ScmFileStatus | null;
-    normalizeError: (input: unknown) => string;
-    fallbackError: string;
-}>): Promise<Readonly<{ success: true; diff: string }> | Readonly<{ success: false; error: string }>> {
-    const response = await sessionScmDiffFile(input.sessionId, { path: input.path, area: input.diffArea });
-    if (!response.success) {
-        const rawError = typeof response.error === 'string' ? response.error : '';
-        const normalized = rawError.trim() ? input.normalizeError(rawError) : '';
-        return {
-            success: false,
-            error: (typeof normalized === 'string' && normalized.trim()) ? normalized : input.fallbackError,
-        };
-    }
+    snapshotSignature?: string | null;
+    readFileForFallback?: () => Promise<string | null>;
+}>;
 
-    let resolvedDiff = response.diff ?? '';
-    // Defensive: some SCM backends return a combined patch for multiple files even when a single file is requested.
-    // Pierre (and other diff renderers) assume one file diff at a time.
-    if (resolvedDiff.includes('diff --git ') && (resolvedDiff.match(/^diff --git /gm) ?? []).length > 1) {
-        resolvedDiff = extractUnifiedDiffForSingleFile({ patch: resolvedDiff, path: input.path });
-    }
-    if (resolvedDiff && !looksLikeUnifiedDiff(resolvedDiff)) {
-        // SCM backends sometimes return a non-unified placeholder for binary files.
-        // Treat it as "no diff" so the UI renders a stable fallback state.
-        resolvedDiff = '';
-    }
+export function fetchSessionUnifiedDiffForPath(input: Input): ReturnType<typeof fetchUnifiedDiffForPath> {
+    const scope = resolveWorkspaceTargetForSession(input.sessionId);
+    if (scope) return fetchWorkspaceUnifiedDiffForPath({ ...input, scope });
+    // Session-only transport remains reachable without workspace metadata. It cannot
+    // share workspace authority or perform the workspace-backed file fallback.
+    return fetchUnifiedDiffForPath({
+        ...input,
+        loadDiff: () => sessionScmDiffFile(input.sessionId, { path: input.path, area: input.diffArea }),
+        readFileForFallback: input.readFileForFallback ?? (async () => null),
+    });
+}
 
-    const file = input.file;
-    const shouldTryNewFileFallback =
-        !resolvedDiff
-        && file
-        && (file.status === 'untracked' || file.status === 'added')
-        && !isKnownBinaryPath(input.path);
-
-    if (shouldTryNewFileFallback) {
-        const target = resolveWorkspaceTargetForSession(input.sessionId);
-        if (target) {
-            const readRes = await workspaceReadFile({
-                machineId: target.machineId,
-                rootPath: target.rootPath,
-                serverId: target.serverId,
-            }, input.path);
-            if (readRes?.success && typeof readRes.content === 'string') {
-                const decoded = decodeUtf8Base64(readRes.content);
-                if (!isBinaryContent(decoded)) {
-                    resolvedDiff = buildAddedFileUnifiedDiff({ filePath: input.path, newText: decoded });
-                }
-            }
-        }
-    }
-
-    return { success: true, diff: resolvedDiff };
+export function invalidateSessionUnifiedDiffPath(input: Readonly<{ sessionId: string; path: string }>): void {
+    const scope = resolveWorkspaceTargetForSession(input.sessionId);
+    if (scope) invalidateWorkspaceUnifiedDiffPath({ scope, path: input.path });
 }

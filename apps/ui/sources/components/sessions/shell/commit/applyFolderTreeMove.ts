@@ -7,6 +7,7 @@ export type ApplyFolderTreeMoveResult = Readonly<{
 
 export function applyFolderTreeMove(params: Readonly<{
     current: SessionFoldersV1;
+    serverId: string;
     folderId: string;
     parentId: string | null;
     beforeFolderId?: string | null;
@@ -16,6 +17,7 @@ export function applyFolderTreeMove(params: Readonly<{
 }>): ApplyFolderTreeMoveResult {
     const moved = moveSessionFolder({
         current: params.current,
+        serverId: params.serverId,
         folderId: params.folderId,
         parentId: params.parentId,
         beforeFolderId: params.beforeFolderId,

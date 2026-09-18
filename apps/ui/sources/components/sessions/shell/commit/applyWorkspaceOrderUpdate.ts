@@ -1,5 +1,3 @@
-import { SESSION_WORKSPACE_ORDER_MAX_KEYS_PER_SCOPE } from '@/sync/domains/session/listing/sessionWorkspaceOrderStateV1';
-
 import type { SessionListTreeModel } from '../drop-resolution/sessionListTreeTypes';
 import { buildOrderMapAfterMove } from './orderMapUpdate';
 
@@ -43,7 +41,6 @@ export function buildSessionWorkspaceOrderAfterTreeDrop(params: Readonly<{
         directKeys: directWorkspaceKeys,
         beforeKey,
         afterKey,
-        maxKeys: SESSION_WORKSPACE_ORDER_MAX_KEYS_PER_SCOPE,
     });
 }
 

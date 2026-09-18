@@ -1,22 +1,28 @@
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { voiceSessionBindingManager } from './voiceConversationBindingRuntime';
 
 export async function applyVoiceSessionTargetSelection(params: Readonly<{
     controlSessionId: string;
-    targetSessionId: string | null | undefined;
+    targetSessionAddress: SessionAddress | null | undefined;
     updateLastFocused: boolean;
 }>): Promise<void> {
     const controlSessionId = normalizeNonEmptyString(params.controlSessionId);
-    const targetSessionId = normalizeNonEmptyString(params.targetSessionId);
+    const targetSessionAddress = params.targetSessionAddress
+        ? normalizeSessionAddress(
+            params.targetSessionAddress.serverId,
+            params.targetSessionAddress.sessionId,
+        )
+        : null;
     if (!controlSessionId) return;
     await voiceSessionBindingManager.syncTargetSession({
         controlSessionId,
-        targetSessionId,
+        targetSessionAddress,
     });
     if (params.updateLastFocused) {
-        useVoiceTargetStore.getState().setLastFocusedSessionId(targetSessionId);
+        useVoiceTargetStore.getState().setLastFocusedSessionAddress(targetSessionAddress);
     }
-    useVoiceTargetStore.getState().setPrimaryActionSessionId(targetSessionId);
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress(targetSessionAddress);
 }

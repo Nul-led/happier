@@ -39,7 +39,7 @@ vi.mock('@expo/vector-icons', async () => {
 
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
     useAppPaneScope: () => ({
-        scopeState: { details: { tabState: {} } },
+        scopeState: { right: { isOpen: false, activeTabId: null, tabState: {} }, details: { tabState: {} } },
         closeDetails: vi.fn(),
         openDetailsTab: openDetailsTabSpy,
         pinDetailsTab: vi.fn(),

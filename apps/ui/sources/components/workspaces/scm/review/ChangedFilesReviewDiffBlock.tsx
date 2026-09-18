@@ -1,3 +1,4 @@
+import type { CodeLinesExternalScrollView } from '@/components/ui/code/view/CodeLinesViewCore';
 import * as React from 'react';
 import { Image, Platform, View, useWindowDimensions } from 'react-native';
 
@@ -40,6 +41,9 @@ export type ChangedFilesReviewDiffBlockProps = Readonly<{
     onUpsertReviewCommentDraft?: (draft: ReviewCommentDraft) => void;
     onDeleteReviewCommentDraft?: (commentId: string) => void;
     onReviewCommentError?: (message: string) => void;
+    onScrollToLine?: (windowY: number) => void;
+    externalScrollView?: CodeLinesExternalScrollView;
+    scrollToLineId?: string;
 }>;
 
 function buildDiffDraftsSignature(filePath: string, drafts: readonly ReviewCommentDraft[]): string {
@@ -67,6 +71,9 @@ function areChangedFilesReviewDiffBlockPropsEqual(
         || prev.reviewCommentsEnabled !== next.reviewCommentsEnabled
         || prev.onUpsertReviewCommentDraft !== next.onUpsertReviewCommentDraft
         || prev.onDeleteReviewCommentDraft !== next.onDeleteReviewCommentDraft
+        || prev.scrollToLineId !== next.scrollToLineId
+        || prev.onScrollToLine !== next.onScrollToLine
+        || prev.externalScrollView !== next.externalScrollView
         || prev.onReviewCommentError !== next.onReviewCommentError
     ) {
         return false;
@@ -245,6 +252,10 @@ export const ChangedFilesReviewDiffBlock = React.memo((props: ChangedFilesReview
         return (
             <View testID={blockTestId} style={[{ paddingHorizontal: 16, paddingVertical: 8 }, noOverflowAnchor]}>
                 <DiffReviewCommentsViewer
+                    scrollToLineId={props.scrollToLineId}
+                    highlightLineId={props.scrollToLineId}
+                    onScrollToLine={props.onScrollToLine}
+                    externalScrollView={props.externalScrollView}
                     filePath={filePath}
                     unifiedDiff={state.diff}
                     reviewCommentsEnabled={true}
@@ -263,6 +274,10 @@ export const ChangedFilesReviewDiffBlock = React.memo((props: ChangedFilesReview
             <View testID={blockTestId} style={[{ paddingHorizontal: 16, paddingVertical: 8 }, noOverflowAnchor]}>
             <View style={[{ borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: theme.colors.border.default }, diffContainerStyle]}>
                 <DiffViewer
+                    scrollToLineId={props.scrollToLineId}
+                    highlightLineId={props.scrollToLineId}
+                    onScrollToLine={props.onScrollToLine}
+                    externalScrollView={props.externalScrollView}
                     mode="unified"
                     unifiedDiff={state.diff}
                     filePath={filePath}

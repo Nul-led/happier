@@ -1,5 +1,5 @@
 import React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
@@ -8,6 +8,7 @@ import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers'
 
 const sessionListState = vi.hoisted(() => ({
     calls: 0,
+    callOptions: [] as Array<Record<string, unknown> | undefined>,
     paneState: {
         summary: {
             sessionsReady: false,
@@ -17,6 +18,27 @@ const sessionListState = vi.hoisted(() => ({
         hasHiddenInactiveSessions: false,
         showLoading: true,
         showEmptyState: false,
+    },
+}));
+
+const filterControllerState = vi.hoisted(() => ({
+    controller: {
+        filters: {
+            scope: 'my_work',
+            attention: 'any',
+            homeServerIds: ['home-a'],
+            audiences: [],
+            tagIds: [],
+            source: 'all',
+            searchQuery: '',
+        },
+        queryEnabled: true,
+        queryHomes: [{ serverId: 'home-a', queryKey: 'query-a', query: {} }],
+        // The canonical controller exposes one paging-homes decision; the pane no
+        // longer re-derives it from `queryEnabled`.
+        pagingHomes: [{ serverId: 'home-a', queryKey: 'query-a', query: {} }],
+        sourceAvailable: true,
+        retentionScopeKey: 'global:home-a',
     },
 }));
 
@@ -40,10 +62,15 @@ installSessionShellCommonModuleMocks({
 });
 
 vi.mock('@/hooks/session/useVisibleSessionListPaneState', () => ({
-    useVisibleSessionListPaneState: () => {
+    useVisibleSessionListPaneState: (_storageKind: string, options?: Record<string, unknown>) => {
         sessionListState.calls += 1;
+        sessionListState.callOptions.push(options);
         return sessionListState.paneState;
     },
+}));
+
+vi.mock('./search/useSessionListViewFilterController', () => ({
+    useSessionListViewFilterController: () => filterControllerState.controller,
 }));
 
 vi.mock('@/components/sessions/guidance/useSessionGettingStartedGuidanceBaseModel', () => ({
@@ -58,6 +85,7 @@ vi.mock('@/components/sessions/guidance/useSessionGettingStartedGuidanceBaseMode
 
 vi.mock('@/components/sessions/shell/SessionsList', () => ({
     SessionsListView: (props: any) => React.createElement('SessionsListView', props),
+    SessionsListViewWithFilterController: (props: any) => React.createElement('SessionsListViewWithFilterController', props),
 }));
 
 vi.mock('@/components/sessions/shell/SessionsListEmptyState', () => ({
@@ -75,8 +103,14 @@ vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({
 }));
 
 describe('SessionsListPaneContent (loading)', () => {
-    it('passes the already resolved pane state into the rendered session list', async () => {
+    beforeEach(() => {
         sessionListState.calls = 0;
+        sessionListState.callOptions = [];
+        filterControllerState.controller.filters.source = 'all';
+        filterControllerState.controller.queryEnabled = true;
+    });
+
+    it('passes the already resolved pane state into the rendered session list', async () => {
         sessionListState.paneState = {
             summary: {
                 sessionsReady: true,
@@ -96,9 +130,25 @@ describe('SessionsListPaneContent (loading)', () => {
             },
         );
 
-        const list = screen.findByType('SessionsListView' as any);
+        const list = screen.findByType('SessionsListViewWithFilterController' as any);
         expect(list.props.paneState).toBe(sessionListState.paneState);
         expect(sessionListState.calls).toBe(1);
+    });
+
+    it('uses the retained filter controller query when resolving the global pane', async () => {
+        const { SessionsListPaneContent } = await import('./SessionsListPaneContent');
+        const screen = await renderScreen(
+            <SessionsListPaneContent storageKind="all" fallbackGuidanceVariant="sidebar" />,
+            { flushOptions: { cycles: 0 } },
+        );
+
+        expect(sessionListState.callOptions).toEqual([
+            expect.objectContaining({
+                queryHomes: filterControllerState.controller.pagingHomes,
+            }),
+        ]);
+        expect(screen.findByType('SessionsListViewWithFilterController' as any).props.filterController)
+            .toBe(filterControllerState.controller);
     });
 
     it('shows the loading indicator while the canonical session summary is not ready', async () => {
@@ -123,10 +173,12 @@ describe('SessionsListPaneContent (loading)', () => {
         );
 
         expect(screen.findByType('ActivitySpinner' as any)).toBeTruthy();
-        expect(screen.findAllByType('SessionsListView' as any)).toHaveLength(0);
+        expect(screen.findAllByType('SessionsListViewWithFilterController' as any)).toHaveLength(0);
     });
 
     it('uses the canonical session summary to decide empty state even when raw visible rows are still present', async () => {
+        filterControllerState.controller.filters.source = 'direct';
+        filterControllerState.controller.queryEnabled = false;
         sessionListState.paneState = {
             summary: {
                 sessionsReady: true,
@@ -144,10 +196,12 @@ describe('SessionsListPaneContent (loading)', () => {
         );
 
         expect(screen.findByType('ExternalSessionsEmptyState' as any)).toBeTruthy();
-        expect(screen.findAllByType('SessionsListView' as any)).toHaveLength(0);
+        expect(screen.findAllByType('SessionsListViewWithFilterController' as any)).toHaveLength(0);
     });
 
     it('shows the hidden inactive sessions empty state when the inactive filter hides every persisted session', async () => {
+        filterControllerState.controller.filters.source = 'persisted';
+        filterControllerState.controller.queryEnabled = false;
         sessionListState.paneState = {
             summary: {
                 sessionsReady: true,
@@ -165,6 +219,6 @@ describe('SessionsListPaneContent (loading)', () => {
         );
 
         expect(screen.findByType('HiddenInactiveSessionsEmptyState' as any)).toBeTruthy();
-        expect(screen.findAllByType('SessionsListView' as any)).toHaveLength(0);
+        expect(screen.findAllByType('SessionsListViewWithFilterController' as any)).toHaveLength(0);
     });
 });

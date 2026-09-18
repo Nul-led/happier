@@ -66,7 +66,8 @@ const activitySourceState = vi.hoisted(() => ({
     source: {
         isDataReady: true,
         sessionsById: {},
-        sessionListRenderablesById: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         serverProfilesById: {},
@@ -88,9 +89,14 @@ function createActivitySource(sessions: readonly ReturnType<typeof createSession
     return {
         isDataReady: true,
         sessionsById: Object.fromEntries(sessions.map((session) => [session.id, session])),
-        sessionListRenderablesById: Object.fromEntries(
-            sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)]),
-        ),
+        sessionListRowsByServerId: {
+            'server-a': Object.fromEntries(
+                sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)]),
+            ),
+        },
+        ordinarySessionListMembershipByServerId: {
+            'server-a': sessions.map((session) => session.id),
+        },
         sessionListIndexByServerId: {
             'server-a': sessions.map((session) => ({
                 type: 'session' as const,
@@ -137,7 +143,8 @@ vi.mock('react-native', async () => {
     });
 });
 
-vi.mock('react-native-safe-area-context', () => ({
+vi.mock('react-native-safe-area-context', async (importOriginal) => ({
+    ...await importOriginal<typeof import('react-native-safe-area-context')>(),
     useSafeAreaInsets: () => safeAreaState,
 }));
 
@@ -342,24 +349,75 @@ describe('PetAppShellCompanionMount.native', () => {
 
     it('renders shared activity bubbles and keeps quick reply input taps out of session open handling', async () => {
         vi.spyOn(Date, 'now').mockReturnValue(12_000);
-        sessionsState.current = [
-            createSessionFixture({
-                id: 'native-pet-session',
+        const activeHomeSession = createSessionFixture({
+            id: 'native-pet-session',
+            serverId: 'server-a',
+            active: true,
+            updatedAt: 10_000,
+            activeAt: 10_000,
+        });
+        const secondaryHomeSession = createSessionFixture({
+            id: 'native-pet-session',
+            serverId: 'home-b',
+            active: true,
+            pendingPermissionRequestCount: 1,
+            pendingRequestObservedAt: 11_000,
+            updatedAt: 11_000,
+            activeAt: 11_000,
+        });
+        sessionsState.current = [activeHomeSession];
+        activitySourceState.source = {
+            ...createActivitySource([activeHomeSession]),
+            sessionsById: {
+                [secondaryHomeSession.id]: secondaryHomeSession,
+            },
+            sessionListRowsByServerId: {
+                'server-a': {
+                    [activeHomeSession.id]: buildSessionListRenderableFromSession(activeHomeSession),
+                },
+                'home-b': {
+                    [secondaryHomeSession.id]: buildSessionListRenderableFromSession(secondaryHomeSession),
+                },
+            },
+            ordinarySessionListMembershipByServerId: {
+                'server-a': [activeHomeSession.id],
+                'home-b': [secondaryHomeSession.id],
+            },
+            sessionListIndexByServerId: {
+                'server-a': [{
+                    type: 'session',
+                    sessionId: activeHomeSession.id,
+                    serverId: 'server-a',
+                    serverName: 'Home A',
+                }],
+                'home-b': [{
+                    type: 'session',
+                    sessionId: secondaryHomeSession.id,
+                    serverId: 'home-b',
+                    serverName: 'Home B',
+                }],
+            },
+            activeServer: {
                 serverId: 'server-a',
-                active: true,
-                pendingPermissionRequestCount: 1,
-                pendingRequestObservedAt: 11_000,
-                updatedAt: 11_000,
-                activeAt: 11_000,
-            }),
-        ];
-        activitySourceState.source = createActivitySource(sessionsState.current);
+                serverUrl: 'https://home-a.example.test',
+                generation: 1,
+            },
+        };
         const { PetAppShellCompanionMount } = await import('./PetAppShellCompanionMount.native');
 
         const screen = await renderScreen(<PetAppShellCompanionMount />);
 
         expect(screen.findByTestId('desktop-pet-overlay-tray')).not.toBeNull();
         expect(screen.findByTestId('desktop-pet-overlay-tray-item-native-pet-session')).not.toBeNull();
+
+        await screen.pressByTestIdAsync('desktop-pet-overlay-tray-item-native-pet-session');
+
+        expect(executePetCompanionActionSpy).toHaveBeenCalledWith(
+            'session.open',
+            { sessionId: 'native-pet-session' },
+            { defaultSessionId: 'native-pet-session', serverId: 'home-b' },
+        );
+        executePetCompanionActionSpy.mockClear();
 
         await act(async () => {
             invokeTestInstanceHandler(
@@ -433,8 +491,9 @@ describe('PetAppShellCompanionMount.native', () => {
         expect(executePetCompanionActionSpy).toHaveBeenCalledWith(
             'session.message.send',
             { sessionId: 'native-pet-session', message: 'Reply from native\nwith detail' },
-            expect.objectContaining({ defaultSessionId: 'native-pet-session' }),
+            { defaultSessionId: 'native-pet-session', serverId: 'home-b' },
         );
+        expect(screen.findByTestId('desktop-pet-overlay-tray-reply-input-native-pet-session')?.props.value).toBe('');
         executePetCompanionActionSpy.mockClear();
 
         await act(async () => {
@@ -455,8 +514,9 @@ describe('PetAppShellCompanionMount.native', () => {
         expect(executePetCompanionActionSpy).toHaveBeenCalledWith(
             'session.message.send',
             { sessionId: 'native-pet-session', message: 'Reply from native' },
-            expect.objectContaining({ defaultSessionId: 'native-pet-session' }),
+            { defaultSessionId: 'native-pet-session', serverId: 'home-b' },
         );
+        expect(screen.findByTestId('desktop-pet-overlay-tray-reply-input-native-pet-session')?.props.value).toBe('');
     });
 
     it('closes native quick reply before dismissing the activity bubble', async () => {

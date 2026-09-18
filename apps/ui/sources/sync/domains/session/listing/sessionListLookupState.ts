@@ -1,33 +1,24 @@
-import {
-    findConcurrentSessionListCacheSession,
-    listConcurrentSessionListCacheServers,
-    listConcurrentSessionListCacheSessions,
-    type ConcurrentSessionListCacheByServerId,
-} from './concurrentSessionListCache';
 import type { SessionListRenderableSession } from './sessionListRenderable';
-import type { SessionListIndexItem } from '../../sessionList/sessionListIndex';
 import { normalizeTrimmedString } from './normalizeTrimmedString';
-import { normalizeSessionListServerScope } from './normalizeSessionListServerScope';
 import { getActiveServerSnapshot } from '../../server/serverRuntime';
 import { resolveSessionMachineId } from '../external/resolveSessionMachineId';
+import { normalizeSessionAddress, type SessionAddress } from '../sessionAddress';
+import {
+    resolveSessionAddressFromLocalState,
+    resolveServerIdForSessionIdFromLocalState,
+    type SessionAddressLookupState,
+} from '../resolveSessionAddressFromLocalState';
+import { readSessionListRowForServerId } from './sessionListRowStateLookup';
+import type { ConcurrentSessionListCacheByServerId } from './concurrentSessionListCache';
 
-export type SessionListLookupStateLike = Readonly<{
-    sessionListIndexByServerId?: Readonly<Record<string, ReadonlyArray<SessionListIndexItem> | null | undefined>> | null | undefined;
-    sessionListRenderables?: Readonly<Record<string, SessionListRenderableSession>> | null | undefined;
-    concurrentSessionListCacheByServerId?: ConcurrentSessionListCacheByServerId | null | undefined;
-}> | null | undefined;
-
-type SessionServerLookupStateBase = Readonly<{
-    sessionListIndexByServerId?: Readonly<Record<string, ReadonlyArray<SessionListIndexItem> | null | undefined>> | null | undefined;
-    sessionListRenderables?: Readonly<Record<string, SessionListRenderableSession>> | null | undefined;
-    concurrentSessionListCacheByServerId?: ConcurrentSessionListCacheByServerId | null | undefined;
-    sessions?: Readonly<Record<string, { serverId?: unknown; metadata?: unknown } | null>> | null | undefined;
-}>;
-
-export type SessionServerLookupStateLike = SessionServerLookupStateBase | null | undefined;
+export type SessionServerLookupStateLike = (SessionAddressLookupState & Readonly<{
+    sessions?: Readonly<Record<string, { serverId?: unknown; metadata?: unknown } | null>> | null;
+    concurrentSessionListCacheByServerId?: ConcurrentSessionListCacheByServerId | null;
+}>) | null | undefined;
+export type SessionListLookupStateLike = SessionServerLookupStateLike;
 
 export type SessionMetadataLike = Readonly<{
-    summary?: Readonly<{ text?: unknown }> | null | undefined;
+    summary?: Readonly<{ text?: unknown }> | null;
     summaryText?: unknown;
     name?: unknown;
     path?: unknown;
@@ -49,601 +40,161 @@ export type SessionListLookupSessionEntry = Readonly<{
     session: SessionListRenderableSession;
 }>;
 
-const PREFERRED_SESSION_LIST_SERVER_ID_MEMO_BY_STATE = new WeakMap<
-    object,
-    Map<string, Map<string, string | null>>
->();
-const SESSION_LIST_LOOKUP_SESSION_MEMO_BY_STATE = new WeakMap<
-    object,
-    Map<string, SessionListLookupSessionEntry | null>
->();
-const SESSION_LIST_LOOKUP_SESSION_SERVER_ID_MEMO_BY_STATE = new WeakMap<
-    object,
-    Map<string, string | null>
->();
-const PREFERRED_SESSION_LIST_METADATA_MEMO_BY_STATE = new WeakMap<
-    object,
-    Map<string, SessionMetadataLike>
->();
-const SESSION_LIST_LOOKUP_SESSION_SERVER_SCOPE_MEMO_BY_STATE = new WeakMap<
-    object,
-    Map<string, SessionListLookupSessionServerScope | null>
->();
-
 const EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSIONS: SessionListLookupSessionEntry[] = [];
 const EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSION_IDS: string[] = [];
 
-function resolvePreferredSessionListIndexServerIdFromIndex(
-    indexByServerId: Readonly<Record<string, ReadonlyArray<SessionListIndexItem> | null | undefined>>,
-): string | null {
-    const activeServerId = normalizeTrimmedString(getActiveServerSnapshot().serverId);
-    if (activeServerId && Array.isArray(indexByServerId[activeServerId]) && (indexByServerId[activeServerId]?.length ?? 0) > 0) {
-        return activeServerId;
-    }
-
-    const nonEmptyServerIds: string[] = [];
-    for (const serverIdRaw in indexByServerId) {
-        const serverId = normalizeTrimmedString(serverIdRaw);
-        const items = indexByServerId[serverIdRaw];
-        if (!serverId || !Array.isArray(items) || items.length === 0) continue;
-        nonEmptyServerIds.push(serverId);
-    }
-
-    if (nonEmptyServerIds.length === 1) {
-        return nonEmptyServerIds[0] ?? null;
-    }
-
-    if (activeServerId && activeServerId in indexByServerId) {
-        return activeServerId;
-    }
-
-    return nonEmptyServerIds[0] || null;
-}
-
-function resolvePreferredSessionListIndexServerIdFromState(
-    state: SessionListLookupStateLike,
-): string | null {
-    if (!state || typeof state !== 'object') return null;
-
-    return resolvePreferredSessionListIndexServerIdFromIndex(state.sessionListIndexByServerId ?? {});
-}
-
-function findSessionListIndexSessionScopeFromState(
+/** String input is the legacy boundary; it delegates all ambiguity decisions to one owner. */
+function resolveLookupAddress(
     state: SessionServerLookupStateLike,
-    sessionId: string,
-): SessionListLookupSessionServerScope | null {
-    if (!state || typeof state !== 'object') return null;
-
-    const normalizedSessionId = normalizeTrimmedString(sessionId);
-    if (!normalizedSessionId) return null;
-
-    const directServerId = normalizeTrimmedString(state.sessions?.[normalizedSessionId]?.serverId);
-    if (directServerId) {
-        const directIndex = state.sessionListIndexByServerId?.[directServerId];
-        if (Array.isArray(directIndex)) {
-            for (const item of directIndex) {
-                if (item.type !== 'session') continue;
-                if (normalizeTrimmedString(item.sessionId) !== normalizedSessionId) continue;
-                return normalizeSessionListServerScope(
-                    directServerId || normalizeTrimmedString(item.serverId) || null,
-                    normalizeTrimmedString(item.serverName) || null,
-                );
-            }
-        }
-    }
-
-    const indexByServerId = state.sessionListIndexByServerId ?? {};
-    const preferredServerId = resolvePreferredSessionListIndexServerIdFromIndex(indexByServerId);
-    const serverIdsToCheck: string[] = [];
-    const pushServerId = (serverIdRaw: string | null | undefined) => {
-        const serverId = normalizeTrimmedString(serverIdRaw);
-        if (!serverId || serverIdsToCheck.includes(serverId)) return;
-        serverIdsToCheck.push(serverId);
-    };
-
-    pushServerId(preferredServerId);
-    pushServerId(directServerId);
-
-    for (const serverIdRaw in indexByServerId) {
-        pushServerId(serverIdRaw);
-    }
-
-    for (const serverId of serverIdsToCheck) {
-        const items = indexByServerId[serverId];
-        if (!Array.isArray(items)) continue;
-        for (const item of items) {
-            if (item.type !== 'session') continue;
-            if (normalizeTrimmedString(item.sessionId) !== normalizedSessionId) continue;
-            return normalizeSessionListServerScope(
-                normalizeTrimmedString(item.serverId) || serverId,
-                normalizeTrimmedString(item.serverName) || null,
-            );
-        }
-    }
-
-    const concurrentMatch = findConcurrentSessionListCacheSession(state.concurrentSessionListCacheByServerId, normalizedSessionId);
-    if (concurrentMatch) {
-        return normalizeSessionListServerScope(concurrentMatch.serverId, concurrentMatch.serverName);
-    }
-
-    if (directServerId) {
-        return normalizeSessionListServerScope(directServerId, null);
-    }
-
-    return null;
-}
-
-function resolveSessionListLookupSessionEntryFromState(
-    state: SessionServerLookupStateLike,
-    sessionId: string,
-): SessionListLookupSessionEntry | null {
-    const normalizedSessionId = normalizeTrimmedString(sessionId);
-    if (!normalizedSessionId) return null;
-
-    const serverScope = findSessionListIndexSessionScopeFromState(state, normalizedSessionId);
-    if (!serverScope) return null;
-
-    const renderableSession = state?.sessionListRenderables?.[normalizedSessionId];
-    if (renderableSession) {
-        return {
-            serverId: serverScope.serverId ?? '',
-            serverName: serverScope.serverName,
-            session: renderableSession,
-        };
-    }
-
-    const externalSession = state?.sessions?.[normalizedSessionId];
-    if (externalSession) {
-        const directServerId = normalizeTrimmedString(externalSession.serverId);
-        return {
-            serverId: serverScope.serverId ?? directServerId ?? '',
-            serverName: serverScope.serverName,
-            session: externalSession as unknown as SessionListRenderableSession,
-        };
-    }
-
-    const concurrentMatch = findConcurrentSessionListCacheSession(state?.concurrentSessionListCacheByServerId, normalizedSessionId);
-    if (concurrentMatch) {
-        return {
-            serverId: serverScope.serverId ?? concurrentMatch.serverId ?? '',
-            serverName: serverScope.serverName ?? concurrentMatch.serverName ?? null,
-            session: concurrentMatch.session,
-        };
-    }
-
-    return null;
-}
-
-function readMemoizedPreferredSessionListServerIdFromState(
-    state: SessionServerLookupStateLike,
-    sessionId: string,
-    fallbackServerId: string | null,
-): string | null | undefined {
-    if (!state || typeof state !== 'object') return undefined;
-
-    const cachedBySessionId = PREFERRED_SESSION_LIST_SERVER_ID_MEMO_BY_STATE.get(state);
-    const cachedByFallback = cachedBySessionId?.get(sessionId);
-    if (!cachedByFallback) return undefined;
-
-    return cachedByFallback.get(fallbackServerId ?? '') as string | null | undefined;
-}
-
-function writeMemoizedPreferredSessionListServerIdToState(
-    state: SessionServerLookupStateLike,
-    sessionId: string,
-    fallbackServerId: string | null,
-    resolvedServerId: string | null,
-): string | null {
-    if (!state || typeof state !== 'object') return resolvedServerId;
-
-    let cachedBySessionId = PREFERRED_SESSION_LIST_SERVER_ID_MEMO_BY_STATE.get(state);
-    if (!cachedBySessionId) {
-        cachedBySessionId = new Map();
-        PREFERRED_SESSION_LIST_SERVER_ID_MEMO_BY_STATE.set(state, cachedBySessionId);
-    }
-
-    let cachedByFallback = cachedBySessionId.get(sessionId);
-    if (!cachedByFallback) {
-        cachedByFallback = new Map();
-        cachedBySessionId.set(sessionId, cachedByFallback);
-    }
-
-    cachedByFallback.set(fallbackServerId ?? '', resolvedServerId);
-    return resolvedServerId;
-}
-
-function readMemoizedPreferredSessionListMetadataFromState(
-    state: SessionServerLookupStateLike,
-    sessionId: string,
-): SessionMetadataLike | undefined {
-    if (!state || typeof state !== 'object') return undefined;
-    return PREFERRED_SESSION_LIST_METADATA_MEMO_BY_STATE.get(state)?.get(sessionId);
-}
-
-function writeMemoizedPreferredSessionListMetadataToState(
-    state: SessionServerLookupStateLike,
-    sessionId: string,
-    metadata: SessionMetadataLike,
-): SessionMetadataLike {
-    if (!state || typeof state !== 'object') return metadata;
-
-    let cachedBySessionId = PREFERRED_SESSION_LIST_METADATA_MEMO_BY_STATE.get(state);
-    if (!cachedBySessionId) {
-        cachedBySessionId = new Map();
-        PREFERRED_SESSION_LIST_METADATA_MEMO_BY_STATE.set(state, cachedBySessionId);
-    }
-
-    cachedBySessionId.set(sessionId, metadata);
-    return metadata;
-}
-
-function mergeCachedSessionMetadataWithCanonicalMachineId(
-    cachedMetadata: SessionMetadataLike,
-    directMetadata: SessionMetadataLike,
-): SessionMetadataLike {
-    if (!cachedMetadata || typeof cachedMetadata !== 'object') {
-        return cachedMetadata;
-    }
-
-    if (resolveSessionMachineId(cachedMetadata)) {
-        return cachedMetadata;
-    }
-
-    const canonicalMachineId = resolveSessionMachineId(directMetadata);
-    if (!canonicalMachineId) {
-        return cachedMetadata;
-    }
-
-    return {
-        ...cachedMetadata,
-        machineId: canonicalMachineId,
-    };
-}
-
-function readCachedSessionListLookupSessionServerScopeFromState(
-    state: SessionServerLookupStateLike,
-    sessionId: string,
-): SessionListLookupSessionServerScope | null | undefined {
-    if (!state || typeof state !== 'object') return undefined;
-    return SESSION_LIST_LOOKUP_SESSION_SERVER_SCOPE_MEMO_BY_STATE.get(state)?.get(sessionId);
-}
-
-function writeCachedSessionListLookupSessionServerScopeToState(
-    state: SessionServerLookupStateLike,
-    sessionId: string,
-    serverScope: SessionListLookupSessionServerScope | null,
-): SessionListLookupSessionServerScope | null {
-    if (!state || typeof state !== 'object') return serverScope;
-
-    let cachedBySessionId = SESSION_LIST_LOOKUP_SESSION_SERVER_SCOPE_MEMO_BY_STATE.get(state);
-    if (!cachedBySessionId) {
-        cachedBySessionId = new Map();
-        SESSION_LIST_LOOKUP_SESSION_SERVER_SCOPE_MEMO_BY_STATE.set(state, cachedBySessionId);
-    }
-
-    cachedBySessionId.set(sessionId, serverScope);
-    return serverScope;
-}
-
-function readCachedSessionListLookupSessionFromState(
-    state: SessionListLookupStateLike,
-    sessionId: string,
-): SessionListLookupSessionEntry | null | undefined {
-    if (!state || typeof state !== 'object') return undefined;
-    return SESSION_LIST_LOOKUP_SESSION_MEMO_BY_STATE.get(state)?.get(sessionId);
-}
-
-function writeCachedSessionListLookupSessionToState(
-    state: SessionListLookupStateLike,
-    sessionId: string,
-    lookupSession: SessionListLookupSessionEntry | null,
-): SessionListLookupSessionEntry | null {
-    if (!state || typeof state !== 'object') return lookupSession;
-
-    let cachedBySessionId = SESSION_LIST_LOOKUP_SESSION_MEMO_BY_STATE.get(state);
-    if (!cachedBySessionId) {
-        if (!lookupSession) {
-            return lookupSession;
-        }
-
-        cachedBySessionId = new Map();
-        SESSION_LIST_LOOKUP_SESSION_MEMO_BY_STATE.set(state, cachedBySessionId);
-    }
-
-    if (!lookupSession) {
-        cachedBySessionId.delete(sessionId);
-        return lookupSession;
-    }
-
-    cachedBySessionId.set(sessionId, lookupSession);
-    return lookupSession;
-}
-
-function readCachedSessionListLookupSessionServerIdFromState(
-    state: SessionListLookupStateLike,
-    sessionId: string,
-): string | null | undefined {
-    if (!state || typeof state !== 'object') return undefined;
-    return SESSION_LIST_LOOKUP_SESSION_SERVER_ID_MEMO_BY_STATE.get(state)?.get(sessionId);
-}
-
-function writeCachedSessionListLookupSessionServerIdToState(
-    state: SessionListLookupStateLike,
-    sessionId: string,
-    serverId: string | null,
-): string | null {
-    if (!state || typeof state !== 'object') return serverId;
-
-    let cachedBySessionId = SESSION_LIST_LOOKUP_SESSION_SERVER_ID_MEMO_BY_STATE.get(state);
-    if (!cachedBySessionId) {
-        cachedBySessionId = new Map();
-        SESSION_LIST_LOOKUP_SESSION_SERVER_ID_MEMO_BY_STATE.set(state, cachedBySessionId);
-    }
-
-    cachedBySessionId.set(sessionId, serverId);
-    return serverId;
+    target: SessionAddress | string,
+): SessionAddress | null {
+    return typeof target === 'string'
+        ? resolveSessionAddressFromLocalState(state, target)
+        : normalizeSessionAddress(target.serverId, target.sessionId);
 }
 
 export function resolveSessionListLookupSessionServerScopeFromState(
     state: SessionServerLookupStateLike,
-    sessionId: string,
+    target: SessionAddress | string,
 ): SessionListLookupSessionServerScope | null {
-    const normalizedSessionId = normalizeTrimmedString(sessionId);
-    if (!normalizedSessionId) return null;
-
-    const cached = readCachedSessionListLookupSessionServerScopeFromState(state, normalizedSessionId);
-    if (cached !== undefined) {
-        return cached;
-    }
-
-    const indexedScope = findSessionListIndexSessionScopeFromState(state, normalizedSessionId);
-    if (indexedScope) {
-        return writeCachedSessionListLookupSessionServerScopeToState(
-            state,
-            normalizedSessionId,
-            indexedScope.serverId === null && indexedScope.serverName === null ? null : indexedScope,
-        );
-    }
-
-    const directServerId = normalizeTrimmedString(state?.sessions?.[normalizedSessionId]?.serverId);
-    if (!directServerId) return null;
-
-    const serverScope = normalizeSessionListServerScope(directServerId, null);
-
-    return writeCachedSessionListLookupSessionServerScopeToState(
-        state,
-        normalizedSessionId,
-        serverScope.serverId === null && serverScope.serverName === null ? null : serverScope,
+    const address = resolveLookupAddress(state, target);
+    if (!address) return null;
+    const item = state?.sessionListIndexByServerId?.[address.serverId]?.find(
+        (candidate) => candidate.type === 'session' && candidate.sessionId === address.sessionId,
     );
+    return {
+        serverId: address.serverId,
+        serverName: normalizeTrimmedString(item?.serverName)
+            || normalizeTrimmedString(state?.concurrentSessionListCacheByServerId?.[address.serverId]?.serverName)
+            || null,
+    };
 }
 
 export function findSessionListLookupSession(
     state: SessionListLookupStateLike,
-    sessionId: string,
+    target: SessionAddress | string,
+    _options?: Readonly<{ activeServerId?: string | null }>,
 ): SessionListLookupSessionEntry | null {
-    const normalizedSessionId = normalizeTrimmedString(sessionId);
-    if (!normalizedSessionId) return null;
-
-    const cached = readCachedSessionListLookupSessionFromState(state, normalizedSessionId);
-    if (cached !== undefined) {
-        return cached;
-    }
-
-    const entry = resolveSessionListLookupSessionEntryFromState(state, normalizedSessionId);
-    return writeCachedSessionListLookupSessionToState(state, normalizedSessionId, entry);
+    const address = resolveLookupAddress(state, target);
+    if (!address) return null;
+    const scopedRow = readSessionListRowForServerId(
+        state?.sessionListRowsByServerId,
+        address.serverId,
+        address.sessionId,
+    );
+    if (!scopedRow) return null;
+    return {
+        serverId: address.serverId,
+        serverName: resolveSessionListLookupSessionServerScopeFromState(state, address)?.serverName ?? null,
+        session: scopedRow,
+    };
 }
 
 export function listSessionListLookupActiveSessions(
     state: SessionListLookupStateLike,
+    options?: Readonly<{ activeServerId?: string | null }>,
 ): SessionListLookupSessionEntry[] {
-    const indexByServerId = state?.sessionListIndexByServerId ?? {};
-    const activeServerId = resolvePreferredSessionListIndexServerIdFromIndex(indexByServerId);
-    if (!activeServerId) return EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSIONS;
-
-    const items = indexByServerId[activeServerId];
-    if (!Array.isArray(items) || items.length === 0) return EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSIONS;
-
+    const serverId = normalizeTrimmedString(options?.activeServerId) || getActiveServerSnapshot().serverId;
+    const membership = state?.ordinarySessionListMembershipByServerId?.[serverId];
+    if (!membership?.length) return EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSIONS;
     const out: SessionListLookupSessionEntry[] = [];
-    for (const item of items) {
-        if (item.type !== 'session') continue;
-        const sessionId = normalizeTrimmedString(item.sessionId);
-        if (!sessionId) continue;
-        const session = state?.sessionListRenderables?.[sessionId]
-            ?? findConcurrentSessionListCacheSession(state?.concurrentSessionListCacheByServerId, sessionId)?.session
-            ?? null;
-        if (!session) continue;
-        out.push({
-            serverId: normalizeTrimmedString(item.serverId) || activeServerId,
-            serverName: normalizeTrimmedString(item.serverName) || null,
-            session,
-        });
+    for (const sessionId of membership) {
+        const address = normalizeSessionAddress(serverId, sessionId);
+        if (!address) continue;
+        const entry = findSessionListLookupSession(state, address, { activeServerId: serverId });
+        if (entry) out.push(entry);
     }
-
-    return out.length === 0 ? EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSIONS : out;
-}
-
-export function listSessionListLookupServerSessions(
-    state: SessionListLookupStateLike,
-): ReturnType<typeof listConcurrentSessionListCacheSessions> {
-    return listConcurrentSessionListCacheSessions(state?.concurrentSessionListCacheByServerId);
-}
-
-export function listSessionListLookupServers(
-    state: SessionListLookupStateLike,
-): ReturnType<typeof listConcurrentSessionListCacheServers> {
-    return listConcurrentSessionListCacheServers(state?.concurrentSessionListCacheByServerId);
+    return out.length ? out : EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSIONS;
 }
 
 export function listSessionListLookupActiveSessionIds(
     state: SessionListLookupStateLike,
     limit?: number,
 ): string[] {
-    const indexByServerId = state?.sessionListIndexByServerId ?? {};
-    const activeServerId = resolvePreferredSessionListIndexServerIdFromIndex(indexByServerId);
-    if (!activeServerId) return EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSION_IDS;
-
-    const items = indexByServerId[activeServerId];
-    if (!Array.isArray(items) || items.length === 0) return EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSION_IDS;
-
+    const membership = state?.ordinarySessionListMembershipByServerId?.[getActiveServerSnapshot().serverId];
+    if (!membership?.length || limit === 0) return EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSION_IDS;
     const ids: string[] = [];
-    for (const item of items) {
-        if (item.type !== 'session') continue;
-        const sessionId = normalizeTrimmedString(item.sessionId);
+    for (const member of membership) {
+        const sessionId = normalizeTrimmedString(member);
         if (!sessionId) continue;
         ids.push(sessionId);
-        if (typeof limit === 'number' && limit >= 0 && ids.length >= limit) {
-            break;
+        if (typeof limit === 'number' && limit > 0 && ids.length >= limit) break;
+    }
+    return ids.length ? ids : EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSION_IDS;
+}
+
+export function listSessionListLookupServerSessions(
+    state: SessionListLookupStateLike,
+): SessionListLookupSessionEntry[] {
+    let entries: SessionListLookupSessionEntry[] | null = null;
+    for (const [serverIdRaw, membership] of Object.entries(state?.ordinarySessionListMembershipByServerId ?? {})) {
+        const serverId = normalizeTrimmedString(serverIdRaw);
+        if (!serverId || !membership?.length) continue;
+        const serverName = normalizeTrimmedString(state?.concurrentSessionListCacheByServerId?.[serverId]?.serverName)
+            || null;
+        for (const member of membership) {
+            const sessionId = normalizeTrimmedString(member);
+            const session = sessionId ? state?.sessionListRowsByServerId?.[serverId]?.[sessionId] : null;
+            if (!session) continue;
+            entries ??= [];
+            entries.push({ serverId, serverName, session });
         }
     }
+    return entries ?? EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSIONS;
+}
 
-    return ids.length === 0 ? EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSION_IDS : ids;
+export function listSessionListLookupServers(
+    state: SessionListLookupStateLike,
+): SessionListLookupSessionServerScope[] {
+    let entries: SessionListLookupSessionServerScope[] | null = null;
+    for (const [serverIdRaw, membership] of Object.entries(state?.ordinarySessionListMembershipByServerId ?? {})) {
+        const serverId = normalizeTrimmedString(serverIdRaw);
+        if (!serverId || !membership?.some((sessionId) => Boolean(state?.sessionListRowsByServerId?.[serverId]?.[sessionId]))) {
+            continue;
+        }
+        entries ??= [];
+        entries.push({
+            serverId,
+            serverName: normalizeTrimmedString(state?.concurrentSessionListCacheByServerId?.[serverId]?.serverName) || null,
+        });
+    }
+    return entries ?? EMPTY_SESSION_LIST_LOOKUP_ACTIVE_SESSIONS;
 }
 
 export function resolveSessionListLookupSessionServerId(
     state: SessionListLookupStateLike,
-    sessionId: string,
+    target: SessionAddress | string,
 ): string | null {
-    const normalizedSessionId = normalizeTrimmedString(sessionId);
-    if (!normalizedSessionId) return null;
-
-    const cached = readCachedSessionListLookupSessionServerIdFromState(state, normalizedSessionId);
-    if (cached !== undefined) {
-        return cached;
-    }
-
-    const directServerId = normalizeTrimmedString((state as SessionServerLookupStateLike)?.sessions?.[normalizedSessionId]?.serverId);
-    if (directServerId) {
-        return writeCachedSessionListLookupSessionServerIdToState(state, normalizedSessionId, directServerId);
-    }
-
-    const scopedServerId = resolveSessionListLookupSessionServerScopeFromState(state, normalizedSessionId)?.serverId ?? null;
-    return writeCachedSessionListLookupSessionServerIdToState(state, normalizedSessionId, scopedServerId);
+    return resolveLookupAddress(state, target)?.serverId ?? null;
 }
 
 export function resolveSessionListPreferredServerIdFromState(
     state: SessionServerLookupStateLike,
     sessionId: string,
-    fallbackServerId?: string | null | undefined,
+    _fallbackServerId?: string | null,
 ): string | null {
-    const normalizedFallbackServerId = normalizeTrimmedString(fallbackServerId);
-    const normalizedSessionId = normalizeTrimmedString(sessionId);
-    if (!normalizedSessionId) return null;
-
-    // A bare session id is a compatibility boundary, not a globally unique
-    // identity. When more than one Home currently projects the id, callers
-    // must retain/provide the selected Home instead of choosing by cache order.
-    const candidateServerIds = new Set<string>();
-    const directCandidate = normalizeTrimmedString(state?.sessions?.[normalizedSessionId]?.serverId);
-    if (directCandidate) candidateServerIds.add(directCandidate);
-    for (const [serverId, entry] of Object.entries(state?.concurrentSessionListCacheByServerId ?? {})) {
-        if (entry?.sessions?.[normalizedSessionId]) {
-            const normalized = normalizeTrimmedString(serverId);
-            if (normalized) candidateServerIds.add(normalized);
-        }
-    }
-    if (!directCandidate && candidateServerIds.size === 0) {
-        for (const [serverId, items] of Object.entries(state?.sessionListIndexByServerId ?? {})) {
-            if (items?.some((item) => item.type === 'session' && item.sessionId === normalizedSessionId)) {
-                const normalized = normalizeTrimmedString(serverId);
-                if (normalized) candidateServerIds.add(normalized);
-            }
-        }
-    }
-    if (candidateServerIds.size > 1) return null;
-
-    const cached = readMemoizedPreferredSessionListServerIdFromState(state, normalizedSessionId, normalizedFallbackServerId);
-    if (cached !== undefined) {
-        return cached;
-    }
-
-    const concurrentCachedServerId = normalizeTrimmedString(findConcurrentSessionListCacheSession(
-        state?.concurrentSessionListCacheByServerId,
-        normalizedSessionId,
-    )?.serverId);
-    const directServerId = normalizeTrimmedString(state?.sessions?.[normalizedSessionId]?.serverId);
-    if (directServerId) {
-        const directMatchesFallbackServer = directServerId !== null && directServerId === normalizedFallbackServerId;
-        if (
-            concurrentCachedServerId
-            && normalizedFallbackServerId
-            && concurrentCachedServerId !== normalizedFallbackServerId
-            && directMatchesFallbackServer
-        ) {
-            return concurrentCachedServerId;
-        }
-
-        return writeMemoizedPreferredSessionListServerIdToState(
-            state,
-            normalizedSessionId,
-            normalizedFallbackServerId,
-            directServerId,
-        );
-    }
-
-    const cachedScope = resolveSessionListLookupSessionServerScopeFromState(state, normalizedSessionId);
-    const activeCachedServerId = normalizeTrimmedString(cachedScope?.serverId);
-
-    // If the active session record still mirrors the active server but a server-scoped cache row
-    // has already converged on a different owner, prefer the owner so route hydration can fetch
-    // the exact server-scoped session state that exposes the session page affordances.
-    const activeMatchesFallbackServer = activeCachedServerId !== null && activeCachedServerId === normalizedFallbackServerId;
-    if (
-        concurrentCachedServerId
-        && normalizedFallbackServerId
-        && concurrentCachedServerId !== normalizedFallbackServerId
-        && (!directServerId && activeMatchesFallbackServer)
-    ) {
-        return concurrentCachedServerId;
-    }
-
-    const resolvedServerId = directServerId
-        || activeCachedServerId
-        || concurrentCachedServerId
-        || normalizedFallbackServerId;
-    return writeMemoizedPreferredSessionListServerIdToState(
-        state,
-        normalizedSessionId,
-        normalizedFallbackServerId,
-        resolvedServerId || null,
-    );
+    // Historical callers passed focus as a fallback. It cannot establish a Session's origin.
+    return resolveServerIdForSessionIdFromLocalState(state, sessionId);
 }
 
 export function resolveSessionListPreferredSessionMetadataFromState(
     state: SessionServerLookupStateLike,
-    sessionId: string,
+    target: SessionAddress | string,
+    options?: Readonly<{ activeServerId?: string | null }>,
 ): SessionMetadataLike {
-    const normalizedSessionId = normalizeTrimmedString(sessionId);
-    if (!normalizedSessionId) return null;
-
-    const cached = readMemoizedPreferredSessionListMetadataFromState(state, normalizedSessionId);
-    if (cached !== undefined) {
-        return cached;
-    }
-
-    const externalSession = state?.sessions?.[normalizedSessionId];
-    const directMetadataValue = externalSession && typeof externalSession === 'object'
-        ? externalSession.metadata
+    const address = resolveLookupAddress(state, target);
+    if (!address) return null;
+    const directSession = state?.sessions?.[address.sessionId];
+    const directServerId = normalizeTrimmedString(directSession?.serverId)
+        || normalizeTrimmedString(options?.activeServerId)
+        || getActiveServerSnapshot().serverId;
+    const directMetadata = directServerId === address.serverId
+        && directSession?.metadata && typeof directSession.metadata === 'object'
+        ? directSession.metadata as SessionMetadataLike
         : null;
-    const directMetadata = directMetadataValue && typeof directMetadataValue === 'object'
-        ? directMetadataValue
-        : null;
-    const cachedSession = findSessionListLookupSession(state, normalizedSessionId);
-
-    const cachedMetadata = cachedSession?.session?.metadata;
-    if (cachedMetadata && typeof cachedMetadata === 'object') {
-        return writeMemoizedPreferredSessionListMetadataToState(
-            state,
-            normalizedSessionId,
-            mergeCachedSessionMetadataWithCanonicalMachineId(
-                cachedMetadata as SessionMetadataLike,
-                directMetadata as SessionMetadataLike,
-            ),
-        );
-    }
-
-    return writeMemoizedPreferredSessionListMetadataToState(
-        state,
-        normalizedSessionId,
-        directMetadata as SessionMetadataLike,
-    );
+    const cachedMetadata = findSessionListLookupSession(state, address, options)?.session.metadata;
+    if (!cachedMetadata) return directMetadata;
+    if (resolveSessionMachineId(cachedMetadata)) return cachedMetadata;
+    const machineId = resolveSessionMachineId(directMetadata);
+    return machineId ? { ...cachedMetadata, machineId } : cachedMetadata;
 }

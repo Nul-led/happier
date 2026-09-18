@@ -1,9 +1,9 @@
 import { serverFetch } from '@/sync/http/client';
 import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import {
-    captureSessionRequestAuthorityForServerAccountScope,
-    createSessionRequestWithServerScope,
-} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+    captureServerRequestAuthorityForServerAccountScope,
+    createServerRequestWithServerScope,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { parseToken } from '@/utils/auth/parseToken';
 
 type PeerMediationServerRequestTarget =
@@ -15,7 +15,7 @@ export async function requestPeerMediationServerJson(params: PeerMediationServer
     init: RequestInit;
     timeoutMs?: number;
 }>): Promise<Readonly<{ ok: boolean; status: number; body: unknown }>> {
-    const request = params.authorityRequest ?? createSessionRequestWithServerScope({
+    const request = params.authorityRequest ?? createServerRequestWithServerScope({
         serverId: params.serverId,
         ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
         activeRequest: async (path, init) => await serverFetch(path, init, {
@@ -40,7 +40,7 @@ export async function requestPeerMediationServerJsonForCredential(params: Readon
 }>): Promise<Readonly<{ ok: boolean; status: number; body: unknown }>> {
     const scope = createServerAccountScope(params.serverId, parseToken(params.token));
     if (!scope) throw new Error('Peer mediation request is missing a target Account scope');
-    const authority = await captureSessionRequestAuthorityForServerAccountScope({
+    const authority = await captureServerRequestAuthorityForServerAccountScope({
         scope,
         activeRequest: async (path, init) => await serverFetch(path, init, {
             ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),

@@ -25,8 +25,8 @@ export function createSyncBackedSubmitPort(syncRuntime: SyncSubmitRuntime = defa
         sendMessage: (sessionId, text, displayText, metaOverrides, options) =>
             syncRuntime.sendMessage(sessionId, text, displayText, metaOverrides, options),
         abortSession: (sessionId) => syncRuntime.abortSession(sessionId),
-        updatePendingRequestedAction: (sessionId, localId, requestedAction) =>
-            syncRuntime.updatePendingRequestedAction(sessionId, localId, requestedAction),
+        updatePendingRequestedAction: (sessionId, localId, requestedAction, options) =>
+            syncRuntime.updatePendingRequestedAction(sessionId, localId, requestedAction, options),
         ensureSessionRuntimeForPendingInput: (options) => ensureSessionRuntimeForPendingInput(options),
         shouldDelegatePendingActivationToDaemon: (session, serverId, machineId) =>
             shouldDelegatePendingActivationToDaemon({
@@ -44,8 +44,8 @@ export function createSyncBackedSubmitPort(syncRuntime: SyncSubmitRuntime = defa
             syncRuntime.refreshSessionForSubmit(sessionId, options),
         isSessionTargetRemoteToActiveServer: (sessionId) =>
             syncRuntime.isSessionTargetRemoteToActiveServer(sessionId),
-        switchSessionControlToRemote: async (sessionId) => {
-            await sessionSwitch(sessionId, 'remote');
+        switchSessionControlToRemote: async (sessionId, options) => {
+            await sessionSwitch(sessionId, 'remote', options);
         },
         canWakeMachineId: (machineId) => Boolean(
             syncRuntime.encryption?.getMachineEncryption(machineId)

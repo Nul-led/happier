@@ -17,8 +17,13 @@ import type {
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 
 import { createAutomationsDomain } from './automations';
+import {
+    createWorkflowRunsDomain,
+    resolveAutomationRunProjections,
+    workflowRunRowFromAutomationRun,
+} from './workflowRuns';
 
-type State = ReturnType<typeof createAutomationsDomain>;
+type State = ReturnType<typeof createAutomationsDomain> & ReturnType<typeof createWorkflowRunsDomain>;
 
 type PaginatedRunsState = State;
 
@@ -88,8 +93,22 @@ function createHarness(): {
     const set = (updater: (draft: State) => State) => {
         state = updater(state);
     };
-    state = createAutomationsDomain({ get, set } as any);
+    state = {
+        ...createWorkflowRunsDomain({ get, set } as any),
+        ...createAutomationsDomain({ get, set } as any),
+    };
     return { state, get, set };
+}
+
+/**
+ * What the reader actually sees: an Automation's ordered id window resolved
+ * against the one shared map of Run bodies.
+ */
+function runsOf(state: State, automationId: string): AutomationDefinitionRun[] {
+    return resolveAutomationRunProjections(
+        state.workflowRunsById,
+        state.automationRunIdsByAutomationId[automationId] ?? [],
+    );
 }
 
 function automation(input: Readonly<{
@@ -110,6 +129,12 @@ function automation(input: Readonly<{
 function run(input: Readonly<{
     id: string;
     automationId: string;
+    /**
+     * The Run's exact persisted currentness counter. Every server-side Run
+     * mutation increments it, so a restated row carrying new facts must carry
+     * a newer revision too.
+     */
+    revision?: number;
     state?: AutomationDefinitionRun['state'];
     dueAt?: number;
     updatedAt?: number;
@@ -118,7 +143,7 @@ function run(input: Readonly<{
     return AutomationV3RunListItemSchema.parse({
         id: input.id,
         automationId: input.automationId,
-        revision: 1,
+        revision: input.revision ?? 1,
         triggerId: null,
         triggerRetired: false,
         state: input.state ?? 'queued',
@@ -175,7 +200,8 @@ describe('createAutomationsDomain', () => {
         const harness = createHarness();
         expect(harness.get().automations).toEqual({});
         expect(harness.get().automationDefinitionNextCursor).toBeNull();
-        expect(harness.get().automationRunsByAutomationId).toEqual({});
+        expect(harness.get().automationRunIdsByAutomationId).toEqual({});
+        expect(harness.get().workflowRunsById).toEqual({});
     });
 
     it('replaces automations map when applying a snapshot', () => {
@@ -271,7 +297,7 @@ describe('createAutomationsDomain', () => {
         harness.get().appendAutomations('fresh-page-2', token, [automation({ id: 'a2', updatedAt: 2 })], null);
         expect(Object.keys(harness.get().automations).sort()).toEqual(['a1', 'a2']);
         expect(harness.get().automationDefinitionNextCursor).toBeNull();
-        expect(harness.get().automationRunsByAutomationId.a3).toBeUndefined();
+        expect(harness.get().automationRunIdsByAutomationId.a3).toBeUndefined();
     });
 
     it('retains current private definition content across a same-version summary refresh and drops it on a revision change', () => {
@@ -406,18 +432,72 @@ describe('createAutomationsDomain', () => {
             run({ id: 'r2', automationId: 'a1', dueAt: 20 }),
         ], null);
 
-        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id)).toEqual(['r2', 'r1']);
+        expect(runsOf(harness.get(), 'a1').map((entry) => entry.id)).toEqual(['r2', 'r1']);
 
         harness.get().upsertAutomationRun(
             run({ id: 'r3', automationId: 'a1', dueAt: 30, state: 'running' }),
         );
-        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id)).toEqual(['r3', 'r2', 'r1']);
+        expect(runsOf(harness.get(), 'a1').map((entry) => entry.id)).toEqual(['r3', 'r2', 'r1']);
 
         harness.get().upsertAutomationRun(
-            run({ id: 'r2', automationId: 'a1', dueAt: 40, state: 'succeeded' }),
+            run({ id: 'r2', automationId: 'a1', revision: 2, dueAt: 40, state: 'succeeded' }),
         );
-        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id)).toEqual(['r2', 'r3', 'r1']);
-        expect(harness.get().automationRunsByAutomationId.a1?.[0]?.state).toBe('succeeded');
+        expect(runsOf(harness.get(), 'a1').map((entry) => entry.id)).toEqual(['r2', 'r3', 'r1']);
+        expect(runsOf(harness.get(), 'a1')[0]?.state).toBe('succeeded');
+    });
+
+    it('keeps the committed body when an update restates a Run at its current revision', () => {
+        const harness = createHarness();
+        const committed = run({ id: 'r1', automationId: 'a1', revision: 3, state: 'running', dueAt: 10 });
+        harness.get().setAutomationRuns('a1', [committed], null);
+
+        // The server increments `revision` on every Run mutation, so a row at
+        // the same revision is the same committed state restated. Keeping the
+        // stored body is what stops an idle refresh from invalidating every
+        // subscriber of an unchanged history.
+        harness.get().upsertAutomationRun(run({ id: 'r1', automationId: 'a1', revision: 3, state: 'running', dueAt: 10 }));
+
+        expect(harness.get().workflowRunsById.r1?.automation).toBe(committed);
+    });
+
+    it('refuses a delayed page that restates an older revision of a Run', () => {
+        const harness = createHarness();
+        const current = run({ id: 'r1', automationId: 'a1', revision: 5, state: 'succeeded', dueAt: 10 });
+        harness.get().setAutomationRuns('a1', [current], null);
+
+        harness.get().setAutomationRuns('a1', [
+            run({ id: 'r1', automationId: 'a1', revision: 4, state: 'running', dueAt: 10 }),
+        ], null);
+
+        expect(runsOf(harness.get(), 'a1')[0]?.state).toBe('succeeded');
+    });
+
+    it('resolves an Automation Run and an exact Run read from one shared body', () => {
+        const harness = createHarness();
+        harness.get().setAutomationRuns('a1', [
+            run({ id: 'r1', automationId: 'a1', revision: 1, state: 'running', dueAt: 10 }),
+        ], null);
+
+        // An exact read arriving with no Automation context still lands on the
+        // row the Automation list is rendering, so the two cannot diverge.
+        harness.get().upsertWorkflowRuns([
+            workflowRunRowFromAutomationRun(run({ id: 'r1', automationId: 'a1', revision: 2, state: 'succeeded', dueAt: 10, updatedAt: 2 })),
+        ]);
+
+        expect(runsOf(harness.get(), 'a1')[0]).toBe(harness.get().workflowRunsById.r1?.automation);
+        expect(runsOf(harness.get(), 'a1')[0]?.state).toBe('succeeded');
+    });
+
+    it('retires Automation membership without evicting an exact Run body', () => {
+        const harness = createHarness();
+        harness.get().applyAutomations([automation({ id: 'a1' })], null);
+        harness.get().setAutomationRuns('a1', [run({ id: 'r1', automationId: 'a1' })], null);
+        expect(harness.get().workflowRunsById.r1).toBeDefined();
+
+        harness.get().removeAutomation('a1');
+
+        expect(harness.get().automationRunIdsByAutomationId.a1).toBeUndefined();
+        expect(harness.get().workflowRunsById.r1).toBeDefined();
     });
 
     it('orders Event runs by their safe occurrence time instead of incidental update churn', () => {
@@ -427,7 +507,7 @@ describe('createAutomationsDomain', () => {
             pluginEventRun({ id: 'newer-occurrence', occurredAt: 200, updatedAt: 1 }),
         ], null);
 
-        expect(harness.get().automationRunsByAutomationId['event-1']?.map((entry) => entry.id)).toEqual([
+        expect(runsOf(harness.get(), 'event-1').map((entry) => entry.id)).toEqual([
             'newer-occurrence',
             'older-occurrence',
         ]);
@@ -444,7 +524,7 @@ describe('createAutomationsDomain', () => {
         domain.appendAutomationRuns('a1', 'stale-cursor', token, [
             run({ id: 'r1', automationId: 'a1', dueAt: 10 }),
         ], 'cursor-2');
-        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id)).toEqual(['r3', 'r2']);
+        expect(runsOf(harness.get(), 'a1').map((entry) => entry.id)).toEqual(['r3', 'r2']);
         expect((harness.get() as PaginatedRunsState).automationRunNextCursorByAutomationId.a1).toBe('cursor-1');
 
         domain.appendAutomationRuns('a1', 'cursor-1', token, [
@@ -452,8 +532,8 @@ describe('createAutomationsDomain', () => {
             run({ id: 'r1', automationId: 'a1', dueAt: 10 }),
         ], null);
 
-        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id)).toEqual(['r3', 'r2', 'r1']);
-        expect(harness.get().automationRunsByAutomationId.a1?.[1]?.state).toBe('succeeded');
+        expect(runsOf(harness.get(), 'a1').map((entry) => entry.id)).toEqual(['r3', 'r2', 'r1']);
+        expect(runsOf(harness.get(), 'a1')[1]?.state).toBe('succeeded');
         expect((harness.get() as PaginatedRunsState).automationRunNextCursorByAutomationId.a1).toBeNull();
     });
 
@@ -479,7 +559,7 @@ describe('createAutomationsDomain', () => {
             [run({ id: 'older-tail', automationId: 'a1', dueAt: 10 })],
             null,
         )).toBe(false);
-        expect(harness.get().automationRunsByAutomationId.a1?.some((entry) => entry.id === 'older-tail')).toBe(false);
+        expect(runsOf(harness.get(), 'a1').some((entry) => entry.id === 'older-tail')).toBe(false);
         expect(harness.get().automationRunNextCursorByAutomationId.a1).toBe('shared-page-2');
 
         expect(domain.appendAutomationRuns(
@@ -489,7 +569,7 @@ describe('createAutomationsDomain', () => {
             [run({ id: 'fresh-tail', automationId: 'a1', dueAt: 10 })],
             null,
         )).toBe(true);
-        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id))
+        expect(runsOf(harness.get(), 'a1').map((entry) => entry.id))
             .toEqual(['fresh-first-page', 'fresh-tail']);
     });
 
@@ -500,7 +580,7 @@ describe('createAutomationsDomain', () => {
         domain.setAutomationRuns('a1', [run({ id: 'r1', automationId: 'a1' })], 'cursor-1');
 
         harness.get().removeAutomation('a1');
-        expect(harness.get().automationRunsByAutomationId.a1).toBeUndefined();
+        expect(harness.get().automationRunIdsByAutomationId.a1).toBeUndefined();
         expect((harness.get() as PaginatedRunsState).automationRunNextCursorByAutomationId.a1).toBeUndefined();
     });
 
@@ -527,9 +607,9 @@ describe('createAutomationsDomain', () => {
             'cursor-2',
         );
 
-        expect(harness.get().automationRunsByAutomationId.a1?.some((entry) => entry.id === 'older-1'))
+        expect(runsOf(harness.get(), 'a1').some((entry) => entry.id === 'older-1'))
             .toBe(true);
-        expect(harness.get().automationRunsByAutomationId.a1?.at(-1)?.id).toBe('older-1');
+        expect(runsOf(harness.get(), 'a1').at(-1)?.id).toBe('older-1');
         expect((harness.get() as PaginatedRunsState).automationRunNextCursorByAutomationId.a1)
             .toBe('cursor-2');
         // A server that really is exhausted still terminates the traversal.
@@ -562,16 +642,16 @@ describe('createAutomationsDomain', () => {
             [run({ id: 'older-1', automationId: 'a1', dueAt: 0 })],
             'cursor-2',
         );
-        expect(harness.get().automationRunsByAutomationId.a1).toHaveLength(max + 1);
+        expect(runsOf(harness.get(), 'a1')).toHaveLength(max + 1);
 
         harness.get().upsertAutomationRun(
             run({ id: 'r1', automationId: 'a1', dueAt: max, state: 'succeeded', updatedAt: 99 }),
         );
 
-        expect(harness.get().automationRunsByAutomationId.a1).toHaveLength(max + 1);
-        expect(harness.get().automationRunsByAutomationId.a1?.some((entry) => entry.id === 'older-1'))
+        expect(runsOf(harness.get(), 'a1')).toHaveLength(max + 1);
+        expect(runsOf(harness.get(), 'a1').some((entry) => entry.id === 'older-1'))
             .toBe(true);
-        expect(harness.get().automationRunsByAutomationId.a1?.[0]?.state).toBe('succeeded');
+        expect(runsOf(harness.get(), 'a1')[0]?.state).toBe('succeeded');
     });
 
     it('keeps advancing the run cursor while fetched older pages stay inside the bounded window', () => {
@@ -591,7 +671,7 @@ describe('createAutomationsDomain', () => {
             'cursor-2',
         );
 
-        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id))
+        expect(runsOf(harness.get(), 'a1').map((entry) => entry.id))
             .toEqual(['r1', 'older-1']);
         expect((harness.get() as PaginatedRunsState).automationRunNextCursorByAutomationId.a1)
             .toBe('cursor-2');
@@ -618,7 +698,7 @@ describe('createAutomationsDomain', () => {
             ),
             'cursor-page-2',
         );
-        expect(harness.get().automationRunsByAutomationId.a1).toHaveLength(40);
+        expect(runsOf(harness.get(), 'a1')).toHaveLength(40);
 
         // Any Automation socket update refreshes every cached run list with the
         // newest page and that page's continuation.
@@ -633,7 +713,7 @@ describe('createAutomationsDomain', () => {
             'cursor-page-1-refreshed',
         );
 
-        const traversed = harness.get().automationRunsByAutomationId.a1 ?? [];
+        const traversed = runsOf(harness.get(), 'a1') ?? [];
         expect(traversed).toHaveLength(41);
         expect(traversed[0]?.id).toBe('r-new');
         expect(traversed.at(-1)?.id).toBe('r40');
@@ -652,7 +732,7 @@ describe('createAutomationsDomain', () => {
         domain.appendAutomationRuns('a1', 'old-page-2', token, [
             run({ id: 'r3', automationId: 'a1', dueAt: 10 }),
         ], null);
-        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id))
+        expect(runsOf(harness.get(), 'a1').map((entry) => entry.id))
             .toEqual(['r1', 'r2', 'r3']);
 
         // Clearing history remotely removed r3. A partial fresh traversal is
@@ -660,13 +740,13 @@ describe('createAutomationsDomain', () => {
         token = traversalToken(domain.setAutomationRuns('a1', [
             run({ id: 'r1', automationId: 'a1', dueAt: 30, updatedAt: 2 }),
         ], 'fresh-page-2'));
-        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id))
+        expect(runsOf(harness.get(), 'a1').map((entry) => entry.id))
             .toEqual(['r1', 'r2', 'r3']);
 
         domain.appendAutomationRuns('a1', 'fresh-page-2', token, [
             run({ id: 'r2', automationId: 'a1', dueAt: 20, updatedAt: 2 }),
         ], null);
-        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id))
+        expect(runsOf(harness.get(), 'a1').map((entry) => entry.id))
             .toEqual(['r1', 'r2']);
         expect((harness.get() as PaginatedRunsState).automationRunNextCursorByAutomationId.a1).toBeNull();
     });
@@ -704,7 +784,7 @@ describe('createAutomationsDomain', () => {
             'cursor-page-1-refreshed',
         );
 
-        const seeded = harness.get().automationRunsByAutomationId.a1 ?? [];
+        const seeded = runsOf(harness.get(), 'a1') ?? [];
         expect(seeded).toHaveLength(20);
         expect(seeded[0]?.id).toBe('r-new');
         expect(seeded.at(-1)?.id).toBe('r19');
@@ -724,8 +804,8 @@ describe('createAutomationsDomain', () => {
             null,
         );
 
-        expect(harness.get().automationRunsByAutomationId.a1).toHaveLength(max);
-        expect(harness.get().automationRunsByAutomationId.a1?.[0]?.id).toBe(`r${max + 5}`);
-        expect(harness.get().automationRunsByAutomationId.a1?.at(-1)?.id).toBe('r6');
+        expect(runsOf(harness.get(), 'a1')).toHaveLength(max);
+        expect(runsOf(harness.get(), 'a1')[0]?.id).toBe(`r${max + 5}`);
+        expect(runsOf(harness.get(), 'a1').at(-1)?.id).toBe('r6');
     });
 });

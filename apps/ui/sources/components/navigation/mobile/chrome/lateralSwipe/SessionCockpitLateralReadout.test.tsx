@@ -19,6 +19,7 @@ const sessionNamesState = vi.hoisted(() => ({
     // Full-record overrides for sessions whose layout fields the synthesized
     // record cannot express (e.g. layout-1 shared metadata + owner view).
     recordOverridesBySessionId: {} as Record<string, Record<string, unknown>>,
+    rowsByServerId: {} as Record<string, Record<string, Record<string, unknown>>>,
 }));
 
 vi.mock('react-native', async () => {
@@ -65,14 +66,19 @@ vi.mock('@/sync/domains/state/storage', () => createStorageModuleStub({
                     },
                 ]),
             ),
+            sessionListRowsByServerId: sessionNamesState.rowsByServerId,
         }),
     },
 }));
 
-function publishVisibleSessionOrder(sessionIds: readonly string[]): void {
+type VisibleTestSession = string | Readonly<{ sessionId: string; serverId: string }>;
+
+function publishVisibleSessionOrder(sessions: readonly VisibleTestSession[]): void {
     const cursor = buildSessionNavigationCursor({
         identity: { origin: 'session-list', sourceScopeKey: 'all', storageKind: 'all' },
-        items: sessionIds.map((sessionId) => ({ type: 'session', sessionId })),
+        items: sessions.map((session) => typeof session === 'string'
+            ? { type: 'session', sessionId: session }
+            : { type: 'session', sessionId: session.sessionId, serverId: session.serverId }),
         nowMs: 1_000,
     });
     if (!cursor) throw new Error('test setup: cursor needs at least two sessions');
@@ -103,7 +109,7 @@ function steerTo(harness: Harness, direction: 'previous' | 'next', progress: num
     harness.rerender!();
 }
 
-async function renderReadout(sessionId: string) {
+async function renderReadout(sessionId: string, serverId?: string) {
     const harness: Harness = {};
     const { SessionCockpitLateralReadout } = await import('./SessionCockpitLateralReadout');
     const { SessionCockpitChromeRegistryProvider, useSessionLateralSwipe } = await import(
@@ -118,7 +124,7 @@ async function renderReadout(sessionId: string) {
         harness.progress = swipe.progress;
         harness.picker = swipe.picker as Harness['picker'];
         harness.rerender = force;
-        return <SessionCockpitLateralReadout key={tick} sessionId={sessionId} />;
+        return <SessionCockpitLateralReadout key={tick} sessionId={sessionId} serverId={serverId} />;
     }
 
     const screen = await renderScreen(
@@ -136,6 +142,7 @@ describe('SessionCockpitLateralReadout', () => {
         sessionNamesState.bySessionId = {};
         sessionNamesState.metadataBySessionId = {};
         sessionNamesState.recordOverridesBySessionId = {};
+        sessionNamesState.rowsByServerId = {};
     });
 
     it('adds no resting pixels to the capsule', async () => {
@@ -183,6 +190,59 @@ describe('SessionCockpitLateralReadout', () => {
             machineId: 'machine_external',
             serverId: null,
             size: 18,
+        });
+    });
+
+    it('reads the exact Home row when another Home has the same session id', async () => {
+        sessionNamesState.bySessionId = { 'same-session': 'Wrong Home title' };
+        sessionNamesState.metadataBySessionId['same-session'] = {
+            machineId: 'machine-a',
+            runtimeDescriptorV1: {
+                v: 1,
+                agentId: 'acme.plugin/agent-a',
+                agent: {},
+            },
+        };
+        sessionNamesState.recordOverridesBySessionId['same-session'] = { serverId: 'server-a' };
+        sessionNamesState.rowsByServerId = {
+            'server-a': {
+                'same-session': {
+                    id: 'same-session',
+                    metadata: { name: 'Wrong Home row', path: '/a' },
+                },
+            },
+            'server-b': {
+                'same-session': {
+                    id: 'same-session',
+                    metadata: {
+                        name: 'Exact Home title',
+                        path: '/b',
+                        machineId: 'machine-b',
+                        runtimeDescriptorV1: {
+                            v: 1,
+                            agentId: 'acme.plugin/agent-b',
+                            agent: {},
+                        },
+                    },
+                },
+            },
+        };
+        publishVisibleSessionOrder([
+            { sessionId: 'anchor', serverId: 'server-a' },
+            { sessionId: 'same-session', serverId: 'server-b' },
+        ]);
+        const { harness, screen } = await renderReadout('anchor', 'server-a');
+
+        act(() => {
+            steerTo(harness, 'next', -0.6);
+        });
+
+        expect(screen.findByTestId('session-cockpit-lateral-readout-title')?.props.children)
+            .toBe('Exact Home title');
+        expect(screen.findByType('SessionAgentCatalogIdentityIcon' as never)?.props).toMatchObject({
+            agentId: 'acme.plugin/agent-b',
+            machineId: 'machine-b',
+            serverId: 'server-b',
         });
     });
 

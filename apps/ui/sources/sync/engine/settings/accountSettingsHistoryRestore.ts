@@ -7,7 +7,8 @@ import {
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import type { Encryption } from '@/sync/encryption/encryption';
 import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
-import { serverFetch } from '@/sync/http/client';
+import { captureAccountSettingsRequest } from '@/sync/api/account/accountSettingsRequest';
+import type { ServerFetch } from '@/sync/http/client';
 import {
     openAccountSettingsStoredContent,
     type OpenedAccountSettingsStoredContent,
@@ -63,13 +64,25 @@ export class AccountSettingsHistoryRestoreInvalidError extends Error {
     }
 }
 
-async function fetchHistorySnapshot(credentials: AuthCredentials, version: number) {
-    const response = await serverFetch(`/v2/account/settings/history/${version}`, {
+function throwStaleRestoreScope(): never {
+    throw new AccountSettingsHistoryRestoreUnavailableError(
+        0,
+        'Account Settings scope changed while restoring history',
+    );
+}
+
+async function fetchHistorySnapshot(
+    request: ServerFetch,
+    version: number,
+    isCurrent: () => boolean,
+) {
+    if (!isCurrent()) throwStaleRestoreScope();
+    const response = await request(`/v2/account/settings/history/${version}`, {
         headers: {
-            'Authorization': `Bearer ${credentials.token}`,
             'Content-Type': 'application/json',
         },
-    }, { includeAuth: false });
+    });
+    if (!isCurrent()) throwStaleRestoreScope();
     if (!response.ok) {
         throw new AccountSettingsHistoryRestoreUnavailableError(
             response.status,
@@ -77,6 +90,7 @@ async function fetchHistorySnapshot(credentials: AuthCredentials, version: numbe
         );
     }
     const data: unknown = await response.json();
+    if (!isCurrent()) throwStaleRestoreScope();
     const parsed = AccountSettingsV2HistoryDetailResponseSchema.safeParse(data);
     if (!parsed.success) {
         throw new AccountSettingsHistoryRestoreUnavailableError(
@@ -97,7 +111,8 @@ export type RestoreAccountSettingsFromHistorySnapshotParams = Readonly<{
      * a moved version returns `conflict` with the current version.
      */
     expectedSettingsVersion: number;
-    settingsScope?: AccountSettingsScope | null;
+    /** The rendered Account Settings scope that owns this restore gesture. */
+    settingsScope: AccountSettingsScope;
     settingsSecretsKey?: Uint8Array | null;
     settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
 }>;
@@ -105,75 +120,89 @@ export type RestoreAccountSettingsFromHistorySnapshotParams = Readonly<{
 export async function restoreAccountSettingsFromHistorySnapshot(
     params: RestoreAccountSettingsFromHistorySnapshotParams,
 ): Promise<AccountSettingsHistoryRestoreResult> {
-    const detail = await fetchHistorySnapshot(params.credentials, params.historyVersion);
+    const captured = await captureAccountSettingsRequest(params);
+    if (!captured) return throwStaleRestoreScope();
+    const { request, isCurrent } = captured;
 
-    // Open in the RECORDED mode — no expected mode is asserted — so a snapshot
-    // recorded before an Account encryption-mode transition still opens. The
-    // ordinary writer below reseals the merged document to the CURRENT mode.
-    let opened: OpenedAccountSettingsStoredContent;
     try {
-        opened = openAccountSettingsStoredContent({
-            content: detail.content,
+        const detail = await fetchHistorySnapshot(request, params.historyVersion, isCurrent);
+
+        // Open in the RECORDED mode — no expected mode is asserted — so a snapshot
+        // recorded before an Account encryption-mode transition still opens. The
+        // ordinary writer below reseals the merged document to the CURRENT mode.
+        let opened: OpenedAccountSettingsStoredContent;
+        try {
+            opened = openAccountSettingsStoredContent({
+                content: detail.content,
+                encryption: params.encryption,
+            });
+        } catch (error) {
+            throw new AccountSettingsHistoryRestoreUnavailableError(
+                0,
+                error instanceof Error ? error.message : 'Historical snapshot cannot be opened',
+            );
+        }
+        const historicalRaw = opened.raw ?? {};
+        if (!isCurrent()) throwStaleRestoreScope();
+
+        const result = await syncSettings({
+            credentials: params.credentials,
             encryption: params.encryption,
+            settingsScope: params.settingsScope,
+            requestContext: captured,
+            settingsSecretsKey: params.settingsSecretsKey ?? null,
+            settingsSecretsReadKeys: params.settingsSecretsReadKeys,
+            // Restore never carries pending deltas: unflushed pending settings make
+            // the one-shot path fail closed instead of mixing into history restore.
+            pendingSettings: {},
+            clearPendingSettings: () => {},
+            oneShotServerSettingsMutation: {
+                expectedSettingsVersion: params.expectedSettingsVersion,
+                mutate: (latestRaw) => {
+                    if (!isCurrent()) throwStaleRestoreScope();
+                    const application = applyAccountSettingsHistoryRestoreV1(latestRaw, historicalRaw);
+                    if (application.status === 'invalid') {
+                        throw new AccountSettingsHistoryRestoreInvalidError(application.reason);
+                    }
+                    return {
+                        settings: application.raw as Record<string, unknown>,
+                        value: {
+                            restoredFromHistoryVersion: detail.version,
+                            mergeStatus: application.status,
+                        } as const,
+                    };
+                },
+            },
+        });
+        // The one-shot mutation path always settles with a typed result.
+        if (!result) {
+            throw new AccountSettingsHistoryRestoreUnavailableError(0, 'Restore produced no result');
+        }
+
+        if (result.status === 'conflict') {
+            return Object.freeze({
+                status: 'conflict',
+                currentSettingsVersion: result.currentSettingsVersion,
+            });
+        }
+        if (result.status === 'outcomeUnknown') {
+            return Object.freeze({
+                status: 'outcomeUnknown',
+                lastKnownSettingsVersion: result.lastKnownSettingsVersion,
+            });
+        }
+        // The pure classification merge owns unchanged/applied. The one-shot
+        // writer skips the POST for `unchanged`, so it never creates a history
+        // entry merely because a server happened to reuse or alter version rules.
+        const unchanged = result.value.mergeStatus === 'unchanged';
+        return Object.freeze({
+            status: unchanged ? 'unchanged' : 'applied',
+            settingsVersion: result.settingsVersion,
         });
     } catch (error) {
-        throw new AccountSettingsHistoryRestoreUnavailableError(
-            0,
-            error instanceof Error ? error.message : 'Historical snapshot cannot be opened',
-        );
+        if (!isCurrent()) return throwStaleRestoreScope();
+        throw error;
+    } finally {
+        captured.dispose();
     }
-    const historicalRaw = opened.raw ?? {};
-
-    const result = await syncSettings({
-        credentials: params.credentials,
-        encryption: params.encryption,
-        settingsScope: params.settingsScope ?? null,
-        settingsSecretsKey: params.settingsSecretsKey ?? null,
-        settingsSecretsReadKeys: params.settingsSecretsReadKeys,
-        // Restore never carries pending deltas: unflushed pending settings make
-        // the one-shot path fail closed instead of mixing into history restore.
-        pendingSettings: {},
-        clearPendingSettings: () => {},
-        oneShotServerSettingsMutation: {
-            expectedSettingsVersion: params.expectedSettingsVersion,
-            mutate: (latestRaw) => {
-                const application = applyAccountSettingsHistoryRestoreV1(latestRaw, historicalRaw);
-                if (application.status === 'invalid') {
-                    throw new AccountSettingsHistoryRestoreInvalidError(application.reason);
-                }
-                return {
-                    settings: application.raw as Record<string, unknown>,
-                    value: {
-                        restoredFromHistoryVersion: detail.version,
-                        mergeStatus: application.status,
-                    } as const,
-                };
-            },
-        },
-    });
-    // The one-shot mutation path always settles with a typed result.
-    if (!result) {
-        throw new AccountSettingsHistoryRestoreUnavailableError(0, 'Restore produced no result');
-    }
-
-    if (result.status === 'conflict') {
-        return Object.freeze({
-            status: 'conflict',
-            currentSettingsVersion: result.currentSettingsVersion,
-        });
-    }
-    if (result.status === 'outcomeUnknown') {
-        return Object.freeze({
-            status: 'outcomeUnknown',
-            lastKnownSettingsVersion: result.lastKnownSettingsVersion,
-        });
-    }
-    // The pure classification merge owns unchanged/applied. The one-shot
-    // writer skips the POST for `unchanged`, so it never creates a history
-    // entry merely because a server happened to reuse or alter version rules.
-    const unchanged = result.value.mergeStatus === 'unchanged';
-    return Object.freeze({
-        status: unchanged ? 'unchanged' : 'applied',
-        settingsVersion: result.settingsVersion,
-    });
 }

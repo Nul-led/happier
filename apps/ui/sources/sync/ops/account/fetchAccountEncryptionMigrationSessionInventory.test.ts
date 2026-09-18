@@ -158,24 +158,24 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
         ).rejects.toThrow('pagination is incomplete');
     });
 
-    it('fails locally when the owned layout-1 inventory exceeds 500 items', async () => {
-        const request = vi.fn(async () => jsonResponse({
-            sessions: Array.from(
-                { length: 501 },
-                (_, index) =>
-                    buildSessionRow({ id: `session-${index}` }),
-            ),
+    it('returns a complete owner inventory beyond the former 500-item ceiling', async () => {
+        const request = vi.fn(async (path: string) => jsonResponse({
+            sessions: path.startsWith('/v2/sessions/archived')
+                ? []
+                : Array.from(
+                    { length: 501 },
+                    (_, index) =>
+                        buildSessionRow({ id: `session-${index}` }),
+                ),
             hasNext: false,
             nextCursor: null,
         }));
 
-        await expect(
-            fetchAccountEncryptionMigrationSessionInventory({
-                token: 'token',
-                request,
-            }),
-        ).rejects.toThrow('exceeds the supported bound');
-        expect(request).toHaveBeenCalledTimes(1);
+        await expect(fetchAccountEncryptionMigrationSessionInventory({
+            token: 'token',
+            request,
+        })).resolves.toHaveLength(501);
+        expect(request).toHaveBeenCalledTimes(2);
     });
 
     it('fails closed on a duplicate Session across active and archived inventory', async () => {
@@ -192,5 +192,53 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             }),
         ).rejects.toThrow('Duplicate Session migration inventory row');
         expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips a current Team recipient whose released shape has no direct share', async () => {
+        const row = buildSessionRow({ id: 'team-recipient', owner: false });
+        const { share: _releasedShare, ...teamRecipientRow } = row;
+        const request = vi.fn(async (path: string) => jsonResponse({
+            sessions: path.startsWith('/v2/sessions/archived') ? [] : [{
+                ...teamRecipientRow,
+                effectiveAccess: {
+                    v: 1,
+                    level: 'view',
+                    sources: [{ kind: 'team', teamId: 'team-1', requiredByTeamPolicy: false }],
+                    capabilities: {
+                        readTranscript: true,
+                        submitAgentInput: false,
+                        editSessionRecords: false,
+                        approveRuntimePermissions: false,
+                        manageAccess: false,
+                        managePermissionDelegation: false,
+                        managePublicLink: false,
+                        archiveSession: false,
+                        renameSession: false,
+                        assignResponsibility: false,
+                        stopSession: false,
+                        deleteSession: false,
+                    },
+                    audienceContext: { kind: 'team', teamId: 'team-1' },
+                    primaryTeamId: 'team-1',
+                },
+            }],
+            hasNext: false,
+            nextCursor: null,
+        }));
+
+        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', request }))
+            .resolves.toEqual([]);
+    });
+
+    it('fails closed instead of using released owner fallback for malformed current access', async () => {
+        const row = buildSessionRow({ id: 'malformed-current' });
+        const request = vi.fn(async () => jsonResponse({
+            sessions: [{ ...row, share: null, effectiveAccess: { v: 1, level: 'owner' } }],
+            hasNext: false,
+            nextCursor: null,
+        }));
+
+        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', request }))
+            .rejects.toThrow();
     });
 });

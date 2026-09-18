@@ -16,6 +16,7 @@ import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForRoute';
 import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from '@/sync/domains/session/sessionRouteHydrationState';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 
 export default function FileScreen() {
     const router = useRouter();
@@ -45,7 +46,8 @@ export default function FileScreen() {
         && sessionHydrated
         && shouldRedirectDetailsRouteToPanes({ containerWidthPx, deviceType, multiPaneEnabled });
 
-    const pane = useAppPaneScope(`session:${sessionId}`);
+    const scopeId = createSessionPaneScopeId(sessionId, routeScope.serverId);
+    const pane = useAppPaneScope(scopeId);
 
     const shouldUseDetailsScreen = Platform.OS !== 'web';
     const hasRedirectedToDetailsRef = React.useRef(false);
@@ -113,5 +115,5 @@ export default function FileScreen() {
     }
     if (shouldRedirect) return null;
     if (shouldUseDetailsScreen) return null;
-    return <SessionFileDetailsView sessionId={sessionId} scopeId={`session:${sessionId}`} filePath={filePath} deepLinkAnchor={deepLinkAnchor} />;
+    return <SessionFileDetailsView sessionId={sessionId} serverId={routeScope.serverId} scopeId={scopeId} filePath={filePath} deepLinkAnchor={deepLinkAnchor} />;
 }

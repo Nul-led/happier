@@ -145,6 +145,9 @@ export function bindCurrentUiContextVoiceToolPortToAdmission(
     return Object.freeze({
         ...port,
         readCurrentUiContext: () => isCurrent() ? port.readCurrentUiContext() : null,
+        ...(port.readCurrentSessionId ? {
+            readCurrentSessionId: () => isCurrent() ? port.readCurrentSessionId!() : null,
+        } : {}),
         resolveCurrentUiCommand: (commandId) => isCurrent()
             ? port.resolveCurrentUiCommand(commandId)
             : null,
@@ -378,12 +381,27 @@ export function createCurrentUiContextVoiceToolPort(
         if (request.signal?.aborted) return unavailable();
         const resolved = resolveCurrentAction(input.readProjection, request.action);
         if (!resolved || !hasCurrentClientActionRegistration(resolved)) return unavailable();
+        const sessionId = input.reader.readCurrentSessionId?.() ?? null;
+        // Observe this invocation through the existing committed-context owner.
+        // Equality alone would revive an old binding after Session A → B → A.
+        const sessionRetirement = new AbortController();
+        const checkSession = () => {
+            if ((input.reader.readCurrentSessionId?.() ?? null) !== sessionId) sessionRetirement.abort();
+        };
+        const unsubscribe = input.reader.subscribe(checkSession);
+        const mergedSignal = mergeAbortSignals([sessionRetirement.signal, request.signal]);
+        checkSession();
         const isCurrent = (): boolean => (
-            request.signal?.aborted !== true
+            !mergedSignal.signal.aborted
+            && (input.reader.readCurrentSessionId?.() ?? null) === sessionId
             && isCallerCurrent()
             && isResolvedActionCurrent(input.readProjection, request.action, resolved)
         );
-        if (!isCurrent()) return stale();
+        if (!isCurrent()) {
+            unsubscribe();
+            mergedSignal.dispose();
+            return stale();
+        }
         const requestCurrentIntent = resolved.action.execution.target === 'client'
             ? createPluginActionCurrentIntentHandler({
                 requester: {
@@ -392,7 +410,7 @@ export function createCurrentUiContextVoiceToolPort(
                     generationId: String(resolved.origin.generation),
                     invocationId: `voice-action:${resolved.origin.generation}`,
                 },
-                signal: request.signal ?? new AbortController().signal,
+                signal: mergedSignal.signal,
                 isCurrent,
                 pluginUiProjection: input.readProjection(),
             })
@@ -428,6 +446,7 @@ export function createCurrentUiContextVoiceToolPort(
                 invocationSurface: 'voice',
                 clientAction: {
                     projectionGeneration: resolved.origin.generation,
+                    ...(sessionId ? { sessionId } : {}),
                     openSurface,
                     ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
                     ...(includeCurrentUiContext
@@ -441,13 +460,14 @@ export function createCurrentUiContextVoiceToolPort(
                 ...(resolved.action.execution.target === 'daemon'
                     ? {
                         contributedAction: {
+                            ...(sessionId ? { sessionId } : {}),
                             machineId: resolved.origin.machineId,
                             serverId: resolved.origin.serverId,
                             expectedGeneration: String(resolved.origin.generation),
                         },
                     }
                     : {}),
-                signal: request.signal,
+                signal: mergedSignal.signal,
                 isCurrent,
             });
             if (outcome.ok) return { ok: true, result: outcome.result };
@@ -460,6 +480,9 @@ export function createCurrentUiContextVoiceToolPort(
             return { ok: false, code: outcome.code };
         } catch {
             return isCurrent() ? internalError() : stale();
+        } finally {
+            unsubscribe();
+            mergedSignal.dispose();
         }
     };
 

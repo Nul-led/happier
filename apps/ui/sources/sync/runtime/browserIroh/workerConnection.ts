@@ -125,11 +125,22 @@ export function createBrowserIrohWorkerConnectionHandler(
 ): (port: BrowserIrohMessagePort) => void {
     return (port) => {
         const clientId = newClientId();
-        type OpenRequest = Readonly<{
-            controller: AbortController;
-            isCancelled: () => boolean;
-        }>;
+        type OpenRequest = {
+            readonly leaseId: string;
+            readonly controller: AbortController;
+            readonly isCancelled: () => boolean;
+            /** Settles after this open's own late-stream cleanup ran. */
+            settled: Promise<void>;
+        };
         const openRequests = new Map<string, OpenRequest>();
+        /** The opens an explicit release has to cancel and join before answering. */
+        const openRequestsReleasedBy = (command: BrowserIrohClientCommand): OpenRequest[] => {
+            if (command.kind === 'releaseClient') return [...openRequests.values()];
+            if (command.kind === 'releaseLease') {
+                return [...openRequests.values()].filter((open) => open.leaseId === command.leaseId);
+            }
+            return [];
+        };
         port.addEventListener('message', (event) => {
             const command = parseBrowserIrohClientCommand(event.data);
             if (command === null) {
@@ -161,20 +172,53 @@ export function createBrowserIrohWorkerConnectionHandler(
                 controller.signal.addEventListener('abort', () => {
                     cancelled = true;
                 }, { once: true });
-                openRequest = { controller, isCancelled: () => cancelled };
+                openRequest = {
+                    leaseId: command.leaseId,
+                    controller,
+                    isCancelled: () => cancelled,
+                    settled: Promise.resolve(),
+                };
                 openRequests.set(command.requestId, openRequest);
             }
-            const running = runCommand(owner, clientId, command, openRequest?.controller.signal);
-            void running.then((reply) => {
-                if (command.kind === 'openStream') openRequests.delete(command.requestId);
-                if (command.kind === 'openStream' && openRequest?.isCancelled()) {
-                    if (reply.kind === 'streamOpened') {
-                        void owner.closeStream({ clientId, streamId: reply.streamId }).catch(() => undefined);
-                    }
+
+            // An explicit release must not answer while this port still has a
+            // dial in flight for what it releases: a cold open can still be
+            // about to hold a connection the caller was just told is gone.
+            // Cancelling and joining those opens first makes the acknowledgement
+            // true, and leaves the owner's late-stream custody as the backstop
+            // for an abrupt teardown rather than the only owner.
+            const releasedOpens = openRequestsReleasedBy(command);
+            for (const open of releasedOpens) open.controller.abort();
+
+            const running = releasedOpens.length === 0
+                ? runCommand(owner, clientId, command, openRequest?.controller.signal)
+                : Promise.allSettled(releasedOpens.map((open) => open.settled))
+                    .then(async () => await runCommand(owner, clientId, command, openRequest?.controller.signal));
+
+            const completed = running.then(async (reply) => {
+                if (command.kind !== 'openStream') {
+                    port.postMessage(reply);
+                    return;
+                }
+                openRequests.delete(command.requestId);
+                if (openRequest?.isCancelled() && reply.kind === 'streamOpened') {
+                    // The open won the cancellation race. Close the handle the
+                    // caller can no longer be given and answer the cancellation
+                    // instead, so a release-driven abort never strands a caller.
+                    await owner.closeStream({ clientId, streamId: reply.streamId }).catch(() => undefined);
+                    port.postMessage({
+                        v: 1,
+                        kind: 'error',
+                        requestId: command.requestId,
+                        code: 'cancelled',
+                        message: 'Browser Iroh stream open was cancelled',
+                    } satisfies BrowserIrohWorkerReply);
                     return;
                 }
                 port.postMessage(reply);
             });
+            if (openRequest) openRequest.settled = completed;
+            void completed;
         });
         port.start?.();
     };

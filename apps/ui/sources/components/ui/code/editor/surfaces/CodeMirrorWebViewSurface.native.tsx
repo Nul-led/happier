@@ -108,6 +108,7 @@ export const CodeMirrorWebViewSurface = React.forwardRef<CodeEditorHandle, CodeE
         () => ({
             getValue: () => lastDocRef.current,
             flushPendingChange,
+            focus: () => webViewRef.current?.requestFocus?.(),
         }),
         [flushPendingChange],
     );

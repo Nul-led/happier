@@ -31,7 +31,6 @@ import {
     placePositionlessComposerReferences,
     type ComposerAttachmentAvailabilityCatalog,
 } from '@/components/sessions/composer/composerScopeAdapters';
-import type { ComposerSubmissionSnapshot } from '@/components/sessions/composer/composerSubmissionCoordinator';
 import type { ComposerDraftFieldCurrentness } from '@/components/sessions/composer/composerDocumentOwner';
 import {
     applyComposerPresentationTransaction,
@@ -115,7 +114,7 @@ export type NewSessionComposerDocument = Readonly<{
     /** Reads the live target only while this exact projection scope remains current. */
     readCurrentExecutionTarget?: () => Readonly<{ serverId: string; machineId: string }> | null;
     captureSubmissionSnapshot: (inputTextOverride?: string) => ComposerSnapshotV1 | null;
-    clearAcceptedSnapshot: (snapshot: ComposerSubmissionSnapshot) => boolean;
+    clearAcceptedSnapshot: (snapshot: ComposerSnapshotV1) => boolean;
 }>;
 
 function sameDocumentState(
@@ -702,7 +701,7 @@ export function useNewSessionComposerDocument(params: Readonly<{
         return snapshot;
     }, [documentOwner, params.promptStore, readSnapshot, updateDocument]);
 
-    const clearAcceptedSnapshot = React.useCallback((snapshot: ComposerSubmissionSnapshot): boolean => {
+    const clearAcceptedSnapshot = React.useCallback((snapshot: ComposerSnapshotV1): boolean => {
         if (!mountedRef.current || !composerRefsV1Equal(refRef.current, snapshot.ref)) return false;
         const currentness = submissionCurrentnessRef.current.get(snapshot);
         if (!currentness || !documentOwner.clearAccepted(currentness).changed) return false;

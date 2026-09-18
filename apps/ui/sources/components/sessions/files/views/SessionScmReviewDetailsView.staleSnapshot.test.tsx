@@ -33,7 +33,7 @@ installSessionFilesViewCommonModuleMocks({
             useSessionProjectScmSnapshot: () => mockSnapshot,
             useSessionProjectScmSnapshotError: () => mockSnapshotError,
             useSessionRealtimeScmTranscriptConsumer: () => {},
-            useSessionProjectScmTouchedPaths: () => [],
+            useWorkspaceScmTouchedPathsForSession: () => [],
             useSessionProjectScmOperationLog: () => [],
             useProjectForSession: () => null,
             useProjectSessions: () => [],
@@ -57,13 +57,14 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 
 vi.mock('@/hooks/session/files/useChangedFilesData', () => ({
     useChangedFilesData: () => ({
-        attributionReliability: 'high',
+        sessionAttribution: { confidence: 'unknown', reason: 'unavailable' },
+        sessionCheckpointOverlap: 'unknown',
         allRepositoryChangedFiles: [],
         turnAttributedFiles: [],
         turnRepositoryOnlyFiles: [],
         sessionAttributedFiles: [],
         repositoryOnlyFiles: [],
-        suppressedInferredCount: 0,
+
         showTurnViewToggle: false,
         showSessionViewToggle: false,
     }),

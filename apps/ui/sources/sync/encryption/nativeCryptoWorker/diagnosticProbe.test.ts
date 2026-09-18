@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import { encodeBase64 } from '@/encryption/base64';
+import { decodeHex } from '@/encryption/hex';
+import { CRYPTO_GOLDEN_VECTORS } from '@happier-dev/protocol';
+
 import { createFakeCryptoWorker } from './fakeCryptoWorker';
 import {
     NATIVE_CRYPTO_WORKER_PROBE_FAILURE_REASON,
@@ -7,6 +11,42 @@ import {
 } from './types';
 
 import { runNativeCryptoWorkerProbe } from './diagnosticProbe';
+
+const undersized = CRYPTO_GOLDEN_VECTORS.encryptedDataKeyEnvelopeV1.undersizedDataKeyEnvelope;
+const oversized = CRYPTO_GOLDEN_VECTORS.encryptedDataKeyEnvelopeV1.oversizedDataKeyEnvelope;
+
+function base64FromHex(hex: string): string {
+    return encodeBase64(decodeHex(hex));
+}
+
+/**
+ * Stands in for a native runtime that opens the sealed box but never enforces
+ * the fixed 32-byte data-key contract: it hands back whatever plaintext the
+ * box carried. Only a probe that ships wrong-length vectors can catch it.
+ */
+function createUnboundedLengthWorker(): NativeCryptoWorker {
+    const inner = createFakeCryptoWorker();
+    const leaked = new Map<string, string>([
+        [base64FromHex(undersized.envelope.hex), base64FromHex(undersized.dataKey.hex)],
+        [base64FromHex(oversized.envelope.hex), base64FromHex(oversized.dataKey.hex)],
+    ]);
+    return {
+        probe: inner.probe,
+        async decryptDataKeyEnvelopeV1(request) {
+            const result = await inner.decryptDataKeyEnvelopeV1(request);
+            if (result.status !== 'ok') return result;
+            return {
+                ...result,
+                items: result.items.map((item, index) => {
+                    const requested = request.items[index];
+                    return item ?? leaked.get(requested?.envelopeBase64 ?? '') ?? null;
+                }),
+            };
+        },
+        decryptSecretboxJson: inner.decryptSecretboxJson,
+        decryptAesGcmJson: inner.decryptAesGcmJson,
+    };
+}
 
 describe('runNativeCryptoWorkerProbe', () => {
     it('proves vector parity and invalid item isolation through the worker boundary', async () => {
@@ -22,12 +62,55 @@ describe('runNativeCryptoWorkerProbe', () => {
         expect(report.checks.secretbox.status).toBe('pass');
         expect(report.checks.aesGcm.status).toBe('pass');
         expect(report.checks.invalidItems.status).toBe('pass');
+        expect(report.checks.fixedLengthDataKey.status).toBe('pass');
         expect(report.checks.jsResponsive.status).toBe('skipped');
         expect(report.status).toBe('pass');
-        expect(report.evidence.dataKey).toMatchObject({ validItems: 5, nullItems: 2 });
+        expect(report.evidence.dataKey).toMatchObject({ validItems: 5, nullItems: 4 });
         expect(report.evidence.secretbox).toMatchObject({ validItems: 9, nullItems: 2 });
         expect(report.evidence.aesGcm).toMatchObject({ validItems: 9, nullItems: 2 });
-        expect(report.evidence.invalidItems).toMatchObject({ nullItems: 6, validItemsAfterInvalid: 3 });
+        expect(report.evidence.invalidItems).toMatchObject({ nullItems: 8, validItemsAfterInvalid: 3 });
+        expect(report.evidence.fixedLengthDataKey).toEqual({ rejectedItems: 2, expectedItems: 2 });
+    });
+
+    it('ships cryptographically valid wrong-length data-key envelopes through the probe batch', async () => {
+        const inner = createFakeCryptoWorker();
+        let dataKeyItems: readonly { envelopeBase64: string }[] = [];
+        const worker: NativeCryptoWorker = {
+            probe: inner.probe,
+            async decryptDataKeyEnvelopeV1(request) {
+                dataKeyItems = request.items;
+                return inner.decryptDataKeyEnvelopeV1(request);
+            },
+            decryptSecretboxJson: inner.decryptSecretboxJson,
+            decryptAesGcmJson: inner.decryptAesGcmJson,
+        };
+
+        await runNativeCryptoWorkerProbe({
+            worker,
+            expectedBatchSource: 'reference',
+            requireJsResponsiveness: false,
+        });
+
+        const envelopes = dataKeyItems.map((item) => item.envelopeBase64);
+        expect(envelopes).toContain(base64FromHex(undersized.envelope.hex));
+        expect(envelopes).toContain(base64FromHex(oversized.envelope.hex));
+        // The wrong-length envelopes must differ from the fixed-size envelope
+        // only in payload length, so nothing but the length contract rejects them.
+        expect(decodeHex(undersized.envelope.hex)).toHaveLength(104);
+        expect(decodeHex(oversized.envelope.hex)).toHaveLength(106);
+    });
+
+    it('fails when a runtime returns a 31- or 33-byte key instead of rejecting it', async () => {
+        const report = await runNativeCryptoWorkerProbe({
+            worker: createUnboundedLengthWorker(),
+            expectedBatchSource: 'reference',
+            requireJsResponsiveness: false,
+        });
+
+        expect(report.checks.fixedLengthDataKey.status).toBe('fail');
+        expect(report.evidence.fixedLengthDataKey).toEqual({ rejectedItems: 0, expectedItems: 2 });
+        expect(report.checks.dataKey.status).toBe('fail');
+        expect(report.status).toBe('fail');
     });
 
     it('includes lenient-valid base64 vectors in the runtime probe batches', async () => {

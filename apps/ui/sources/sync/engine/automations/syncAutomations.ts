@@ -6,7 +6,7 @@ import type {
 import { createAutomationDefinitionSummary } from '@/sync/domains/automations/automationDefinitionProjection';
 import { listAutomationDefinitions } from '@/sync/api/automations/apiAutomations';
 import { listAutomationDefinitionRuns } from '@/sync/api/automations/apiAutomationRuns';
-import { isRuntimeFeatureEnabled } from '@/sync/domains/features/featureDecisionInputs';
+import { resolveRuntimeFeatureDecisionOrThrow } from '@/sync/domains/features/featureDecisionInputs';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
@@ -43,12 +43,11 @@ export async function fetchAndApplyAutomations(params: {
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
 
     const { serverId } = getActiveServerSnapshot();
-    const automationsEnabled = await isRuntimeFeatureEnabled({
+    const automationsDecision = await resolveRuntimeFeatureDecisionOrThrow({
         featureId: 'automations',
         serverId,
-        timeoutMs: 400,
     });
-    if (!automationsEnabled) {
+    if (automationsDecision.state !== 'enabled') {
         return { nextCursor: null, traversalToken: null };
     }
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
@@ -140,12 +139,11 @@ export async function fetchAndApplyAutomationRuns(params: {
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
 
     const { serverId } = getActiveServerSnapshot();
-    const automationsEnabled = await isRuntimeFeatureEnabled({
+    const automationsDecision = await resolveRuntimeFeatureDecisionOrThrow({
         featureId: 'automations',
         serverId,
-        timeoutMs: 400,
     });
-    if (!automationsEnabled) {
+    if (automationsDecision.state !== 'enabled') {
         return { nextCursor: null, traversalToken: null };
     }
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };

@@ -5,6 +5,13 @@ import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetr
 
 import type { SessionListRenderableSession } from './sessionListRenderable';
 import { computeVisibleSessionListIndex } from './computeVisibleSessionListIndex';
+import { buildSessionListFolderOrderItemKey } from '@/sync/domains/session/listing/sessionListOrderingStateV1';
+import { buildSessionWorkspaceOrderScopeKey } from '@/sync/domains/session/listing/sessionWorkspaceOrderStateV1';
+
+function folderOrderKey(folderId: string): string {
+    return buildSessionListFolderOrderItemKey({ serverId: 's1', folderId })!;
+}
+
 
 type OrderingMode = 'custom' | 'created' | 'updated';
 type FolderSortMode = 'foldersFirst' | 'mixed';
@@ -61,6 +68,67 @@ describe('computeVisibleSessionListIndex', () => {
     afterEach(() => {
         syncPerformanceTelemetry.configure({ enabled: false });
         syncPerformanceTelemetry.reset();
+    });
+
+    it('uses the canonical Projects section default when the section mode is absent', () => {
+        const groupKey = 'server:s1:sessions:project:repo';
+        const source: SessionListIndexItem[] = [
+            { type: 'header', headerKind: 'sessions', title: 'Sessions', serverId: 's1', groupKey: 'sessions:s1' },
+            { type: 'header', headerKind: 'project', title: 'Repo', serverId: 's1', groupKey },
+            { type: 'session', sessionId: 'active', serverId: 's1', section: 'active', groupKey, groupKind: 'project' },
+            { type: 'session', sessionId: 'inactive', serverId: 's1', section: 'inactive', groupKey, groupKind: 'project' },
+        ];
+
+        const result = computeVisibleSessionListIndex({
+            source,
+            resolveSessionRow: makeResolver({
+                's1:active': makeSessionRow('active', { active: true }),
+                's1:inactive': makeSessionRow('inactive'),
+            }),
+            hideInactiveSessions: false,
+            pinnedSessionKeysV1: [],
+            sessionListGroupOrderV1: { [groupKey]: ['s1:inactive', 's1:active'] },
+            sessionListOrderingModeV1: 'custom',
+            presentation: { enabled: false, presentation: 'grouped', selectedServerIds: [] },
+        })!;
+
+        expect(result.filter((item) => item.type === 'session').map((item) => item.sessionId)).toEqual([
+            'inactive',
+            'active',
+        ]);
+    });
+
+    it('keeps inactive rows for Homes whose strict query already applied the inactive rule', () => {
+        const groupA = 'server:s1:sessions:project:repo';
+        const groupB = 'server:s2:sessions:project:repo';
+        const source: SessionListIndexItem[] = [
+            { type: 'header', headerKind: 'sessions', title: 'Sessions', serverId: 's1', groupKey: 'sessions:s1' },
+            { type: 'header', headerKind: 'project', title: 'Repo', serverId: 's1', groupKey: groupA },
+            { type: 'session', sessionId: 'served-inactive', serverId: 's1', section: 'inactive', groupKey: groupA, groupKind: 'project' },
+            { type: 'header', headerKind: 'sessions', title: 'Sessions', serverId: 's2', groupKey: 'sessions:s2' },
+            { type: 'header', headerKind: 'project', title: 'Repo', serverId: 's2', groupKey: groupB },
+            { type: 'session', sessionId: 'local-inactive', serverId: 's2', section: 'inactive', groupKey: groupB, groupKind: 'project' },
+        ];
+        const resolveSessionRow = makeResolver({
+            's1:served-inactive': makeSessionRow('served-inactive'),
+            's2:local-inactive': makeSessionRow('local-inactive'),
+        });
+        const compute = (serverFilteredInactiveServerIds?: ReadonlySet<string>) => computeVisibleSessionListIndex({
+            source,
+            resolveSessionRow,
+            hideInactiveSessions: true,
+            ...(serverFilteredInactiveServerIds ? { serverFilteredInactiveServerIds } : {}),
+            pinnedSessionKeysV1: [],
+            sessionListGroupOrderV1: {},
+            sessionListOrderingModeV1: 'updated',
+            presentation: { enabled: false, presentation: 'grouped', selectedServerIds: [] },
+        })!;
+
+        // The Home that answered the strict query already decided which inactive
+        // rows its corpus keeps; the released GET corpus still needs the local rule.
+        expect(compute(new Set(['s1'])).filter((item) => item.type === 'session').map((item) => item.sessionId))
+            .toEqual(['served-inactive']);
+        expect(compute().filter((item) => item.type === 'session')).toEqual([]);
     });
 
     it('returns the original array when custom ordering inputs are no-ops', () => {
@@ -933,7 +1001,7 @@ describe('computeVisibleSessionListIndex', () => {
         ]);
     });
 
-    it('orders pending attention rows by pendingRequestObservedAt instead of updatedAt', () => {
+    it('orders pending attention by canonical reason precedence, then pendingRequestObservedAt instead of updatedAt', () => {
         const now = Date.now();
         const activeGroup = 'server:s1:active:project:repo';
         const source: SessionListIndexItem[] = [
@@ -981,9 +1049,9 @@ describe('computeVisibleSessionListIndex', () => {
 
         expect(describeItems(result)).toEqual([
             'h:attention',
-            's:blocked-pending:attention:attention-promotion-v1',
             's:newer-request:attention:attention-promotion-v1',
             's:older-request:attention:attention-promotion-v1',
+            's:blocked-pending:attention:attention-promotion-v1',
         ]);
     });
 
@@ -1490,7 +1558,7 @@ describe('computeVisibleSessionListIndex', () => {
         expect(sessions.map((session) => session.sessionId)).toEqual(['newer', 'older']);
     });
 
-    it('uses custom order for inactive date rows when section mode is single', () => {
+    it('uses meaningful activity order for date rows when section mode is single', () => {
         const groupKey = 'server:s1:sessions:day:2026-02-17';
         const source: SessionListIndexItem[] = [
             { type: 'header', headerKind: 'sessions', title: 'Sessions', serverId: 's1', groupKey: 'sessions:s1' },
@@ -1514,7 +1582,141 @@ describe('computeVisibleSessionListIndex', () => {
         })!;
 
         const sessions = result.filter((item): item is Extract<SessionListIndexItem, { type: 'session' }> => item.type === 'session');
-        expect(sessions.map((session) => session.sessionId)).toEqual(['older', 'newer']);
+        expect(sessions.map((session) => session.sessionId)).toEqual(['newer', 'older']);
+    });
+
+    it('builds one cross-Home Recent activity timeline after attention and working precedence', () => {
+        const nowMs = 1_000_000;
+        const source: SessionListIndexItem[] = [
+            { type: 'header', headerKind: 'server', title: 'Home A', serverId: 'home-a' },
+            { type: 'header', headerKind: 'sessions', title: 'Sessions', serverId: 'home-a' },
+            { type: 'header', headerKind: 'project', title: 'Project A', serverId: 'home-a', groupKey: 'project-a' },
+            { type: 'session', sessionId: 'same', serverId: 'home-a', serverName: 'Home A', section: 'active', groupKey: 'project-a', groupKind: 'project' },
+            { type: 'header', headerKind: 'server', title: 'Home B', serverId: 'home-b' },
+            { type: 'header', headerKind: 'project', title: 'Project B', serverId: 'home-b', groupKey: 'project-b' },
+            { type: 'session', sessionId: 'same', serverId: 'home-b', serverName: 'Home B', section: 'inactive', groupKey: 'project-b', groupKind: 'project' },
+            { type: 'header', headerKind: 'folder', title: 'Team work', serverId: 'home-c', groupKey: 'folder-c' },
+            { type: 'session', sessionId: 'working', serverId: 'home-c', serverName: 'Home C', section: 'active', groupKey: 'folder-c', groupKind: 'folder' },
+            { type: 'header', headerKind: 'project', title: 'Group work', serverId: 'home-d', groupKey: 'project-d' },
+            { type: 'session', sessionId: 'ready', serverId: 'home-d', serverName: 'Home D', section: 'inactive', groupKey: 'project-d', groupKind: 'project' },
+        ];
+
+        const result = computeVisibleSessionListIndex({
+            source,
+            resolveSessionRow: makeResolver({
+                'home-a:same': makeSessionRow('same', {
+                    active: true,
+                    createdAt: 10,
+                    meaningfulActivityAt: 610_000,
+                    updatedAt: 999_000,
+                }),
+                'home-b:same': makeSessionRow('same', {
+                    createdAt: 20,
+                    meaningfulActivityAt: 910_000,
+                    updatedAt: 100,
+                }),
+                'home-c:working': makeSessionRow('working', {
+                    active: true,
+                    presence: 'online',
+                    latestTurnStatus: 'in_progress',
+                    latestTurnStatusObservedAt: nowMs - 1_000,
+                    meaningfulActivityAt: 710_000,
+                    updatedAt: 710_000,
+                }),
+                'home-d:ready': makeSessionRow('ready', {
+                    seq: 2,
+                    latestTurnStatus: 'completed',
+                    latestTurnStatusObservedAt: 810_000,
+                    latestReadyEventSeq: 2,
+                    latestReadyEventAt: 810_000,
+                    lastViewedSessionSeq: 1,
+                    meaningfulActivityAt: 810_000,
+                    updatedAt: 810_000,
+                }),
+            }),
+            hideInactiveSessions: false,
+            pinnedSessionKeysV1: ['home-d:ready'],
+            sessionListGroupOrderV1: {
+                'project-a': ['home-a:same'],
+                'project-b': ['home-b:same'],
+            },
+            sessionListOrderingModeV1: 'custom',
+            sessionListSectionModeV1: 'single',
+            sessionListLayoutChoice: 'recent_activity',
+            attentionPlacement: { mode: 'global' },
+            workingPlacement: { mode: 'global' },
+            presentation: {
+                enabled: true,
+                presentation: 'grouped',
+                selectedServerIds: ['home-a', 'home-b', 'home-c', 'home-d'],
+            },
+            nowMs,
+        })!;
+
+        expect(describeItems(result)).toEqual([
+            'h:attention',
+            's:ready:attention:attention-promotion-v1',
+            'h:working',
+            's:working:working:working-placement-v1',
+            'h:date:Today',
+            's:same:date:recent:day:1970-01-01',
+            's:same:date:recent:day:1970-01-01',
+        ]);
+        expect(result.filter((item) => item.type === 'header').every((item) => (
+            item.headerKind === 'attention'
+            || item.headerKind === 'working'
+            || item.headerKind === 'date'
+        ))).toBe(true);
+        expect(result.filter((item) => item.type === 'session' && item.sessionId === 'ready')).toEqual([
+            expect.objectContaining({
+                serverId: 'home-d',
+                groupKind: 'attention',
+                pinned: true,
+            }),
+        ]);
+        expect(result.filter((item) => item.type === 'session' && item.sessionId === 'same').map((item) => item.serverId)).toEqual([
+            'home-b',
+            'home-a',
+        ]);
+    });
+
+    it('keeps unresolved qualified Recent activity members in one Loading group', () => {
+        const source: SessionListIndexItem[] = [
+            { type: 'header', headerKind: 'project', title: 'Project A', serverId: 'home-a', groupKey: 'project-a' },
+            { type: 'session', sessionId: 'hydrated', serverId: 'home-a', section: 'active', groupKey: 'project-a', groupKind: 'project' },
+            { type: 'header', headerKind: 'project', title: 'Project B', serverId: 'home-b', groupKey: 'project-b' },
+            { type: 'session', sessionId: 'pending', serverId: 'home-b', section: 'active', groupKey: 'project-b', groupKind: 'project' },
+        ];
+
+        const result = computeVisibleSessionListIndex({
+            source,
+            resolveSessionRow: makeResolver({
+                'home-a:hydrated': makeSessionRow('hydrated', {
+                    active: true,
+                    createdAt: 100,
+                    meaningfulActivityAt: 900_000,
+                    updatedAt: 900_000,
+                }),
+            }),
+            hideInactiveSessions: true,
+            pinnedSessionKeysV1: [],
+            sessionListGroupOrderV1: {},
+            sessionListOrderingModeV1: 'updated',
+            sessionListLayoutChoice: 'recent_activity',
+            presentation: {
+                enabled: true,
+                presentation: 'grouped',
+                selectedServerIds: ['home-a', 'home-b'],
+            },
+            nowMs: 1_000_000,
+        })!;
+
+        expect(describeItems(result)).toEqual([
+            'h:date:Today',
+            's:hydrated:date:recent:day:1970-01-01',
+            'h:loading:Loading',
+            's:pending:loading:recent:loading',
+        ]);
     });
 
     it('keeps inactive date groups in source order when custom group order is stale', () => {
@@ -1620,7 +1822,7 @@ describe('computeVisibleSessionListIndex', () => {
             }),
             hideInactiveSessions: false,
             pinnedSessionKeysV1: [],
-            sessionListGroupOrderV1: { [rootFolderGroupKey]: ['s1:at-root', 'folder:planning'] },
+            sessionListGroupOrderV1: { [rootFolderGroupKey]: ['s1:at-root', folderOrderKey('planning')] },
             sessionListOrderingModeV1: 'custom' as OrderingMode,
             presentation: { enabled: false, presentation: 'grouped', selectedServerIds: [] },
         })!;
@@ -1685,7 +1887,7 @@ describe('computeVisibleSessionListIndex', () => {
             }),
             hideInactiveSessions: false,
             pinnedSessionKeysV1: [],
-            sessionListGroupOrderV1: { [rootFolderGroupKey]: ['s1:at-root', 'folder:planning'] },
+            sessionListGroupOrderV1: { [rootFolderGroupKey]: ['s1:at-root', folderOrderKey('planning')] },
             sessionListOrderingModeV1: 'custom' as OrderingMode,
             sessionListFolderSortModeV1: 'mixed' as FolderSortMode,
             presentation: { enabled: false, presentation: 'grouped', selectedServerIds: [] },
@@ -1724,7 +1926,7 @@ describe('computeVisibleSessionListIndex', () => {
             pinnedSessionKeysV1: [],
             sessionListGroupOrderV1: {},
             sessionWorkspaceOrderV1: {
-                'server:s1:workspaces': ['workspace:repo-b', 'workspace:repo-a'],
+                [buildSessionWorkspaceOrderScopeKey('s1')]: ['repo-b', 'repo-a'],
             },
             sessionListOrderingModeV1: 'updated' as OrderingMode,
             presentation: { enabled: false, presentation: 'grouped', selectedServerIds: [] },
@@ -1912,7 +2114,7 @@ describe('computeVisibleSessionListIndex', () => {
             }),
             hideInactiveSessions: false,
             pinnedSessionKeysV1: [],
-            sessionListGroupOrderV1: { [rootFolderGroupKey]: ['s1:root-session', 'folder:review', 'folder:planning'] },
+            sessionListGroupOrderV1: { [rootFolderGroupKey]: ['s1:root-session', folderOrderKey('review'), folderOrderKey('planning')] },
             sessionListOrderingModeV1: 'updated' as OrderingMode,
             sessionListFolderSortModeV1: 'mixed' as FolderSortMode,
             presentation: { enabled: false, presentation: 'grouped', selectedServerIds: [] },
@@ -2060,7 +2262,7 @@ describe('computeVisibleSessionListIndex', () => {
             pinnedSessionKeysV1: [],
             sessionListGroupOrderV1: {},
             sessionWorkspaceOrderV1: {
-                'server:s1:workspaces': ['workspace:repo-b', 'workspace:repo-a'],
+                [buildSessionWorkspaceOrderScopeKey('s1')]: ['repo-b', 'repo-a'],
             },
             sessionListOrderingModeV1: 'custom' as OrderingMode,
             presentation: { enabled: false, presentation: 'grouped', selectedServerIds: [] },
@@ -2147,7 +2349,7 @@ describe('computeVisibleSessionListIndex', () => {
             }),
             hideInactiveSessions: false,
             pinnedSessionKeysV1: [],
-            sessionListGroupOrderV1: { [rootFolderGroupKey]: ['folder:review', 'folder:planning'] },
+            sessionListGroupOrderV1: { [rootFolderGroupKey]: [folderOrderKey('review'), folderOrderKey('planning')] },
             sessionListOrderingModeV1: 'updated' as OrderingMode,
             sessionListFolderSortModeV1: 'foldersFirst' as FolderSortMode,
             presentation: { enabled: false, presentation: 'grouped', selectedServerIds: [] },
@@ -2197,6 +2399,7 @@ describe('computeVisibleSessionListIndex', () => {
             pinnedSessionKeysV1: [],
             sessionListGroupOrderV1: {},
             sessionListOrderingModeV1: 'updated' as OrderingMode,
+            sessionListSectionModeV1: 'activity',
             presentation: { enabled: false, presentation: 'grouped', selectedServerIds: [] },
         })!;
 
@@ -2209,6 +2412,43 @@ describe('computeVisibleSessionListIndex', () => {
             'h:project:Repo',
             `s:inactive-newer:project:${repoGroup}`,
             `s:inactive-older:project:${repoGroup}`,
+        ]);
+    });
+
+    it('keeps archived inactive rows and composes their attention placement', () => {
+        const groupKey = 'server:s1:inactive:project:repo';
+        const source: SessionListIndexItem[] = [
+            { type: 'header', headerKind: 'inactive', title: 'Inactive', serverId: 's1' },
+            { type: 'header', headerKind: 'project', title: 'Repo', serverId: 's1', groupKey },
+            { type: 'session', sessionId: 'archived-action', serverId: 's1', section: 'inactive', groupKey, groupKind: 'project' },
+        ];
+
+        const result = computeVisibleSessionListIndex({
+            source,
+            corpusStorage: 'archived',
+            resolveSessionRow: makeResolver({
+                's1:archived-action': makeSessionRow('archived-action', {
+                    archivedAt: 1,
+                    seq: 2,
+                    latestTurnStatus: 'completed',
+                    latestTurnStatusObservedAt: 50,
+                    meaningfulActivityAt: 50,
+                    lastTurnCompletedAt: 50,
+                    lastViewedSessionSeq: 1,
+                    updatedAt: 100,
+                }),
+            }),
+            hideInactiveSessions: true,
+            pinnedSessionKeysV1: [],
+            sessionListGroupOrderV1: {},
+            sessionListOrderingModeV1: 'updated' as OrderingMode,
+            presentation: { enabled: false, presentation: 'grouped', selectedServerIds: [] },
+            attentionPlacement: { mode: 'global' },
+        })!;
+
+        expect(describeItems(result)).toEqual([
+            'h:attention',
+            's:archived-action:attention:attention-promotion-v1',
         ]);
     });
 });

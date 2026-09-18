@@ -31,7 +31,7 @@ installSessionDetailsPanelCommonModuleMocks({
             useMachine: () => null,
             useSessionProjectScmSnapshot: () => scmSnapshotMock,
             useSessionProjectScmSnapshotError: () => null,
-            useSessionProjectScmTouchedPaths: () => [],
+            useWorkspaceScmTouchedPathsForSession: () => [],
             useSessionProjectScmOperationLog: () => [],
             useSessionProjectScmInFlightOperation: () => null,
             useSessionProjectScmCommitSelectionPaths: () => [],
@@ -55,8 +55,13 @@ installSessionDetailsPanelCommonModuleMocks({
     },
 });
 
-const invalidateFromUserAndAwaitSpy = vi.fn();
-const invalidateFromAutoRefreshAndAwaitSpy = vi.fn(async () => {});
+// Hoisted with the `vi.mock` factories below: `@/sync/sync` reaches `@/scm/scmStatusSync` while an
+// earlier mock factory is still evaluating, so a plain module-scope `const` is still in its TDZ
+// when the factory runs.
+const { invalidateFromUserAndAwaitSpy, invalidateFromAutoRefreshAndAwaitSpy } = vi.hoisted(() => ({
+    invalidateFromUserAndAwaitSpy: vi.fn(),
+    invalidateFromAutoRefreshAndAwaitSpy: vi.fn(async () => {}),
+}));
 const loadCommitHistorySpy = vi.fn();
 const useChangedFilesDataSpy = vi.fn();
 let sessionPathMock: string | null = '/workspace';
@@ -65,7 +70,8 @@ let scmWriteEnabledMock = true;
 
 function buildChangedFilesDataMock(overrides: Record<string, unknown> = {}) {
     return {
-        attributionReliability: 'explicit',
+        sessionAttribution: { confidence: 'unknown', reason: 'unavailable' },
+        sessionCheckpointOverlap: 'unknown',
         showTurnViewToggle: false,
         showTurnAgentReportedViewToggle: false,
         showTurnCheckpointViewToggle: false,
@@ -81,7 +87,7 @@ function buildChangedFilesDataMock(overrides: Record<string, unknown> = {}) {
         turnRepositoryOnlyFiles: [],
         sessionAttributedFiles: [],
         repositoryOnlyFiles: [],
-        suppressedInferredCount: 0,
+
         ...overrides,
     };
 }

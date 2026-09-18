@@ -84,6 +84,14 @@ const sessionOptimisticThinkingAt = vi.hoisted(() => ({
 const sessionResumingAt = vi.hoisted(() => ({
     current: null as number | null,
 }));
+const sessionMachineReachability = vi.hoisted(() => ({
+    current: {
+        machineReachable: true,
+        machineOnline: true,
+        machineRpcTargetAvailable: true,
+        machineReachability: 'reachable' as 'reachable' | 'unreachable' | 'unknown',
+    },
+}));
 const storageStoreRef = vi.hoisted(() => ({
     current: null as any,
 }));
@@ -582,14 +590,11 @@ vi.mock('@/components/sessions/model/resolveSessionMachineReachability', () => (
 vi.mock(
     '@/components/sessions/model/useSessionMachineReachability',
     async (importOriginal) => {
-        const {
-            createReachableSessionMachineReachability,
-            createSessionMachineReachabilityModuleMock,
-        } = await import('@/dev/testkit/mocks/sessionMachineReachability');
+        const { createSessionMachineReachabilityModuleMock } = await import('@/dev/testkit/mocks/sessionMachineReachability');
         return createSessionMachineReachabilityModuleMock({
             importOriginal,
             overrides: {
-                useSessionMachineReachability: createReachableSessionMachineReachability,
+                useSessionMachineReachability: () => sessionMachineReachability.current,
                 useSessionReachableMachineTarget: () => ({ machineId: 'm-target', basePath: '/tmp/target' }),
             },
         });
@@ -829,6 +834,12 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
         machineEncryptionAvailable.current = false;
         sessionOptimisticThinkingAt.current = null;
         sessionResumingAt.current = null;
+        sessionMachineReachability.current = {
+            machineReachable: true,
+            machineOnline: true,
+            machineRpcTargetAvailable: true,
+            machineReachability: 'reachable',
+        };
         if (storageStoreRef.current && sessionFixtureRef.current) {
             storageStoreRef.current.setState((state: any) => ({
                 sessions: { ...state.sessions, s1: sessionFixtureRef.current },
@@ -1080,7 +1091,7 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
         }
     });
 
-    it('shows the durable failed-activation banner after the canonical row and authorization arrive', async () => {
+    it('retries the durable failed-activation banner through the canonical resume action', async () => {
         machineEncryptionAvailable.current = true;
         const screen = await renderSessionView();
 
@@ -1114,7 +1125,7 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
         );
         expect(modalMockState.current?.spies.alert).not.toHaveBeenCalled();
         await publishDurablePendingState({
-            row: durablePendingRow('pending-1'),
+            row: durablePendingRow('pending-1', 'enqueue'),
             authorization: {
                 requestId: 'pending-1',
                 requestedAt: 200,
@@ -1128,12 +1139,24 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
         expect(screen.getTextContent()).toContain('session.pendingActivation.failed.title');
         expect(screen.findByTestId('session-pendingActivation-retry')).toBeTruthy();
 
+        resumeSessionSpy.mockImplementationOnce(async () => {
+            sessionResumingAt.current = Date.now();
+            storageStoreRef.current?.setState((state: any) => ({
+                sessions: {
+                    ...state.sessions,
+                    s1: { ...sessionFixtureRef.current, resumingAt: sessionResumingAt.current },
+                },
+            }));
+            return { type: 'success' as const };
+        });
+
         await screen.pressByTestIdAsync('session-pendingActivation-retry');
 
-        expect(sendPendingMessageNowSpy).toHaveBeenCalledWith('s1', expect.objectContaining({
-            localId: 'pending-1',
-            createdAt: 200,
-        }));
+        expect(resumeSessionSpy).toHaveBeenCalledTimes(2);
+        expect(updatePendingRequestedActionSpy).not.toHaveBeenCalled();
+        expect(sendPendingMessageNowSpy).not.toHaveBeenCalled();
+        expect(findAgentInput(screen).props.connectionStatus?.text).toBe('session.resuming');
+        expect(screen.findAllByTestId('session-pendingActivation')).toHaveLength(0);
 
         await screen.unmount();
     });
@@ -1429,10 +1452,16 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
         await screen.unmount();
     });
 
-    it('shows an offline queued banner and resumes the exact durable row', async () => {
+    it('shows an offline queued banner and authorizes the exact durable row for processing when online', async () => {
         const row = durablePendingRow('queued-row', 'enqueue');
         pendingMessagesState.current = { messages: [row], discarded: [], isLoaded: true };
         sessionStateOverrides.current = { active: false, activeAt: 100, presence: 0 };
+        sessionMachineReachability.current = {
+            machineReachable: false,
+            machineOnline: false,
+            machineRpcTargetAvailable: true,
+            machineReachability: 'unreachable',
+        };
 
         const screen = await renderSessionView();
         const banner = screen.findByTestId('session-pendingActivation');
@@ -1444,13 +1473,41 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
 
         await screen.pressByTestIdAsync('session-pendingActivation-process_when_online');
 
-        expect(sendPendingMessageNowSpy).toHaveBeenCalledWith('s1', {
-            localId: 'queued-row',
-            createdAt: 200,
-            rawRecord: row.rawRecord,
-            text: 'parked input',
-            displayText: undefined,
+        expect(updatePendingRequestedActionSpy).toHaveBeenCalledWith(
+            's1',
+            'queued-row',
+            { v: 1, kind: 'enqueue' },
+            { resumeWhenAvailable: true },
+        );
+        expect(sendPendingMessageNowSpy).not.toHaveBeenCalled();
+
+        await screen.unmount();
+    });
+
+    it('resumes through the canonical session action from the online queued banner', async () => {
+        const row = durablePendingRow('queued-row', 'enqueue');
+        pendingMessagesState.current = { messages: [row], discarded: [], isLoaded: true };
+        sessionStateOverrides.current = { active: false, activeAt: 100, presence: 0 };
+        resumeSessionSpy.mockImplementationOnce(async () => {
+            sessionResumingAt.current = Date.now();
+            storageStoreRef.current?.setState((state: any) => ({
+                sessions: {
+                    ...state.sessions,
+                    s1: { ...sessionFixtureRef.current, resumingAt: sessionResumingAt.current },
+                },
+            }));
+            return { type: 'success' as const };
         });
+
+        const screen = await renderSessionView();
+
+        expect(screen.findByTestId('session-pendingActivation-resume')).toBeTruthy();
+        await screen.pressByTestIdAsync('session-pendingActivation-resume');
+
+        expect(resumeSessionSpy).toHaveBeenCalledTimes(1);
+        expect(sendPendingMessageNowSpy).not.toHaveBeenCalled();
+        expect(findAgentInput(screen).props.connectionStatus?.text).toBe('session.resuming');
+        expect(screen.findAllByTestId('session-pendingActivation')).toHaveLength(0);
 
         await screen.unmount();
     });
@@ -1458,6 +1515,12 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
     it('shows waiting while offline and keeps the exact durable row queued', async () => {
         const row = durablePendingRow('waiting-row');
         pendingMessagesState.current = { messages: [row], discarded: [], isLoaded: true };
+        sessionMachineReachability.current = {
+            machineReachable: false,
+            machineOnline: false,
+            machineRpcTargetAvailable: true,
+            machineReachability: 'unreachable',
+        };
         sessionStateOverrides.current = {
             active: false,
             activeAt: 100,
@@ -1482,6 +1545,7 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
             's1',
             'waiting-row',
             { v: 1, kind: 'enqueue' },
+            { resumeWhenAvailable: false },
         );
 
         await screen.unmount();

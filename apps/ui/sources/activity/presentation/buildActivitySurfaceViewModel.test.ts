@@ -7,9 +7,115 @@ import { resolveActivitySurfacePolicy } from '@/activity/attention/resolveActivi
 import { buildActivitySurfaceViewModel } from './buildActivitySurfaceViewModel';
 
 describe('buildActivitySurfaceViewModel', () => {
+    it('carries privacy-safe structural context through status-only locked presentation', () => {
+        const session = createSessionFixture({
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: 'encrypted_access_pending',
+            metadata: {
+                path: '/private/PRIVATE-WORKSPACE-SENTINEL',
+                host: 'PRIVATE-HOST-SENTINEL',
+                summary: { text: 'PRIVATE-TITLE-SENTINEL', updatedAt: 1 },
+            },
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 0, unreadSince: 1 },
+                relevance: { relevant: true, reasons: ['responsible_for_me'] },
+                follow: { follows: true, notificationLevel: 'important' },
+                notification: { level: 'important', source: 'preference' },
+                attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'status_only' },
+            },
+        });
+        const safeContext = 'Home B · Offline · Last updated 18m ago · Developers · Assigned to you · Encrypted access pending';
+        const candidate = {
+            ...buildSessionActivityAttention({ session, nowMs: 1_000 }),
+            context: {
+                address: { serverId: 'home-b', sessionId: session.id },
+                segments: [
+                    { kind: 'home' as const, label: 'Home B' },
+                    { kind: 'freshness' as const, label: 'Offline' },
+                    { kind: 'freshness' as const, label: 'Last updated 18m ago' },
+                    { kind: 'audience' as const, label: 'Developers' },
+                    { kind: 'responsibility' as const, label: 'Assigned to you' },
+                    { kind: 'content_availability' as const, label: 'Encrypted access pending' },
+                    { kind: 'workspace' as const, label: '~/PRIVATE-WORKSPACE-SENTINEL' },
+                ],
+                contextLine: `${safeContext} · ~/PRIVATE-WORKSPACE-SENTINEL`,
+                accessibilityContext: `${safeContext} · ~/PRIVATE-WORKSPACE-SENTINEL`,
+                workspace: { label: '~/PRIVATE-WORKSPACE-SENTINEL' },
+                mayShowDecryptedContent: false,
+            },
+        };
+
+        const view = buildActivitySurfaceViewModel({
+            candidate,
+            policy: resolveActivitySurfacePolicy({ activitySurfacePrivacyMode: 'title_only' }),
+            showMachinePath: false,
+            showPreviewText: true,
+            isPrimary: true,
+            nowMs: 1_000,
+        });
+
+        expect(view.contextLine).toBe(safeContext);
+        expect(JSON.stringify(view)).not.toContain('PRIVATE-WORKSPACE-SENTINEL');
+        expect(JSON.stringify(view)).not.toContain('PRIVATE-TITLE-SENTINEL');
+        expect(JSON.stringify(view)).not.toContain('PRIVATE-HOST-SENTINEL');
+    });
+
+    it('does not re-read retained metadata after an unknown E2EE candidate is sanitized', () => {
+        const session = createSessionFixture({
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: undefined,
+            metadata: {
+                path: '/private/retained/path',
+                host: 'private-host',
+                summary: { text: 'Private retained title', updatedAt: 1 },
+            },
+        });
+        const candidate = {
+            ...buildSessionActivityAttention({ session, nowMs: 1_000 }),
+            title: 'Session',
+            subtitle: '',
+        };
+
+        const view = buildActivitySurfaceViewModel({
+            candidate,
+            policy: resolveActivitySurfacePolicy({ activitySurfacePrivacyMode: 'include_preview' }),
+            showMachinePath: true,
+            showPreviewText: true,
+            isPrimary: true,
+            nowMs: 1_000,
+        });
+
+        expect(view.title).toBe('Session');
+        expect(view.subtitle).toBeNull();
+        expect(view.previewText).toBeNull();
+    });
+
+    it('never upgrades a locked viewer to content previews through device policy', () => {
+        const session = createSessionFixture({
+            encryptionMode: 'plain',
+            metadata: { path: '/private/path', host: 'private-host', summary: { text: 'Private title', updatedAt: 1 } },
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 0, unreadSince: 1 },
+                relevance: { relevant: true, reasons: ['owned_by_me'] },
+                follow: { follows: false, notificationLevel: null },
+                notification: { level: 'important', source: 'owner' },
+                attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'status_only' },
+            },
+        });
+        const view = buildActivitySurfaceViewModel({
+            candidate: buildSessionActivityAttention({ session, nowMs: 1_000 }),
+            policy: resolveActivitySurfacePolicy({ activitySurfacePrivacyMode: 'include_preview' }),
+            showMachinePath: true, showPreviewText: true, isPrimary: true, nowMs: 1_000,
+        });
+        expect(view.title).not.toContain('Private');
+        expect(view.subtitle).toBeNull();
+        expect(view.previewText).toBeNull();
+    });
+
     it('uses the status text as the title in status-only privacy mode', () => {
         const candidate = buildSessionActivityAttention({
             session: createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'permission',
                 active: true,
                 presence: 'online',
@@ -43,6 +149,7 @@ describe('buildActivitySurfaceViewModel', () => {
     it('exposes preview text and session default targets from the canonical shared view model', () => {
         const candidate = buildSessionActivityAttention({
             session: createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'permission',
                 updatedAt: 1_234,
                 active: true,
@@ -77,6 +184,7 @@ describe('buildActivitySurfaceViewModel', () => {
     it('hides preview text without stripping non-sensitive status text when previews are disabled', () => {
         const candidate = buildSessionActivityAttention({
             session: createSessionFixture({
+                encryptionMode: 'plain',
                 id: 'permission',
                 active: true,
                 presence: 'online',

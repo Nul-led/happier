@@ -14,6 +14,6 @@ export function formatSelectedMessagesForClipboard(
     }
 
     return entries
-        .map((entry) => `**${opts.roleLabels[entry.role]}:**\n\n${entry.text}`)
+        .map((entry) => `**${entry.label ?? opts.roleLabels[entry.role]}:**\n\n${entry.text}`)
         .join('\n\n');
 }

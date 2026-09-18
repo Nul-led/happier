@@ -16,14 +16,14 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Text } from '@/components/ui/text/Text';
-import { Modal } from '@/modal';
 import { t } from '@/text';
 import {
-    deleteWorkspaceSyncConflictLoser,
     readWorkspaceSyncFile,
+    resolveWorkspaceSyncConflict,
 } from '@/sync/ops/workspaceSync';
 import {
     getWorkspaceSyncConflictSnapshot,
+    loadMoreWorkspaceSyncConflicts,
     refreshWorkspaceSyncConflicts,
     subscribeWorkspaceSyncConflicts,
 } from '@/sync/domains/sessionHandoff/workspaceSyncConflictStore';
@@ -95,13 +95,21 @@ function readErrorCode(error: unknown): string | null {
 
 function workspaceSyncConflictKindTranslationKey(
     kind: WorkspaceSyncConflictV1['alpha']['kind'],
-): 'workspaceSync.conflictKind.file' | 'workspaceSync.conflictKind.directory' | 'workspaceSync.conflictKind.symlink' | 'workspaceSync.conflictKind.missing' {
+): 'workspaceSync.conflictKind.file' | 'workspaceSync.conflictKind.directory' | 'workspaceSync.conflictKind.symlink' | 'workspaceSync.conflictKind.missing' | 'workspaceSync.conflictKind.unsupported' {
     switch (kind) {
         case 'file': return 'workspaceSync.conflictKind.file';
         case 'directory': return 'workspaceSync.conflictKind.directory';
         case 'symlink': return 'workspaceSync.conflictKind.symlink';
         case 'missing': return 'workspaceSync.conflictKind.missing';
+        case 'unsupported': return 'workspaceSync.conflictKind.unsupported';
     }
+}
+
+function workspaceSyncConflictKindLabel(
+    endpoint: WorkspaceSyncConflictV1['alpha'] | WorkspaceSyncConflictV1['beta'],
+): string {
+    const label = t(workspaceSyncConflictKindTranslationKey(endpoint.kind));
+    return endpoint.kind === 'unsupported' ? `${label} (${endpoint.sourceKind})` : label;
 }
 
 function fileStateLabel(result: ReadWorkspaceSyncFileResultV1): string {
@@ -164,7 +172,7 @@ function EndpointIdentity(props: Readonly<{ identity: WorkspaceSyncConflictEndpo
 function canDeleteConflictEndpoint(
     endpoint: WorkspaceSyncConflictV1['alpha'] | WorkspaceSyncConflictV1['beta'],
 ): boolean {
-    return endpoint.kind !== 'file' || typeof endpoint.digest === 'string';
+    return endpoint.kind !== 'unsupported' && (endpoint.kind !== 'file' || typeof endpoint.digest === 'string');
 }
 
 export const WorkspaceSyncConflictDetailsView = React.memo(function WorkspaceSyncConflictDetailsView(props: Readonly<{
@@ -265,27 +273,13 @@ export const WorkspaceSyncConflictDetailsView = React.memo(function WorkspaceSyn
 
     const keepSide = React.useCallback(async (keep: 'alpha' | 'beta') => {
         if (!selected || resolvingSide) return;
+        if (selected.alpha.kind === 'unsupported' || selected.beta.kind === 'unsupported') return;
         const losingEndpoint = keep === 'alpha' ? selected.beta : selected.alpha;
-        if (losingEndpoint.kind === 'directory') {
-            const keptIdentity = keep === 'alpha' ? props.resource.alpha : props.resource.beta;
-            const confirmed = await Modal.confirm(
-                t('workspaceSync.resolve.title'),
-                t('workspaceSync.resolve.body', { path: selected.path, side: keptIdentity.label }),
-                {
-                    confirmText: keep === localSide
-                        ? localActionTitle
-                        : keep === remoteSide
-                            ? remoteActionTitle
-                            : t('workspaceSync.actions.keepNamed', { side: keptIdentity.label }),
-                    cancelText: t('common.cancel'),
-                },
-            );
-            if (!confirmed) return;
-        }
+        if (losingEndpoint.kind === 'unsupported') return;
         setResolutionError(null);
         setResolvingSide(keep);
         try {
-            const status = await deleteWorkspaceSyncConflictLoser({
+            const status = await resolveWorkspaceSyncConflict({
                 ...scope,
                 request: {
                     relationshipId: scope.relationshipId,
@@ -317,11 +311,12 @@ export const WorkspaceSyncConflictDetailsView = React.memo(function WorkspaceSyn
         } finally {
             setResolvingSide(null);
         }
-    }, [localActionTitle, localSide, props.resource.alpha, props.resource.beta, remoteActionTitle, remoteSide, resolvingSide, scope, selected]);
+    }, [resolvingSide, scope, selected]);
 
     if (selected) {
-        const canKeepAlpha = canDeleteConflictEndpoint(selected.beta);
-        const canKeepBeta = canDeleteConflictEndpoint(selected.alpha);
+        const hasUnsupportedEndpoint = selected.alpha.kind === 'unsupported' || selected.beta.kind === 'unsupported';
+        const canKeepAlpha = !hasUnsupportedEndpoint && canDeleteConflictEndpoint(selected.beta);
+        const canKeepBeta = !hasUnsupportedEndpoint && canDeleteConflictEndpoint(selected.alpha);
         return (
             <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, gap: 8 }}>
@@ -373,7 +368,9 @@ export const WorkspaceSyncConflictDetailsView = React.memo(function WorkspaceSyn
                             ) : null}
                         </View>
                         {!canKeepAlpha || !canKeepBeta ? (
-                            <Text accessibilityLiveRegion="polite">{t('workspaceSync.resolve.unverifiedFile')}</Text>
+                            <Text accessibilityLiveRegion="polite">{t(hasUnsupportedEndpoint
+                                ? 'workspaceSync.resolve.unsupported'
+                                : 'workspaceSync.resolve.unverifiedFile')}</Text>
                         ) : null}
                     </View>
                 </ScrollView>
@@ -434,17 +431,26 @@ export const WorkspaceSyncConflictDetailsView = React.memo(function WorkspaceSyn
             </ItemGroup>
             <ItemGroup title={t('workspaceSync.conflictsTitle')}>
                 {snapshot.phase === 'error' ? <Item title={t('workspaceSync.state.controllerUnavailable')} mode="info" /> : null}
+                {snapshot.invalidated ? <Item title={t('workspaceSync.error.conflictNeedsAttention')} mode="info" /> : null}
                 {snapshot.list?.totalCount === 0 ? <Item title={t('workspaceSync.noConflicts')} mode="info" /> : null}
                 {snapshot.list?.conflicts.map((conflict) => (
                     <Item
                         key={conflict.path}
                         title={conflict.path}
-                        subtitle={`${props.resource.alpha.label}: ${t(workspaceSyncConflictKindTranslationKey(conflict.alpha.kind))} · ${props.resource.beta.label}: ${t(workspaceSyncConflictKindTranslationKey(conflict.beta.kind))}`}
+                        subtitle={`${props.resource.alpha.label}: ${workspaceSyncConflictKindLabel(conflict.alpha)} · ${props.resource.beta.label}: ${workspaceSyncConflictKindLabel(conflict.beta)}`}
                         onPress={() => setSelected(conflict)}
                     />
                 ))}
                 {snapshot.list && snapshot.list.truncatedCount > 0 ? (
-                    <Item title={t('workspaceSync.truncated', { count: snapshot.list.truncatedCount })} mode="info" />
+                    <Item
+                        title={t('workspaceSync.truncated', { count: snapshot.list.truncatedCount })}
+                        mode={snapshot.hasMore ? undefined : 'info'}
+                        loading={snapshot.phase === 'loading_more'}
+                        disabled={!snapshot.hasMore || snapshot.phase === 'loading_more'}
+                        onPress={snapshot.hasMore
+                            ? () => void loadMoreWorkspaceSyncConflicts(scope).catch(() => undefined)
+                            : undefined}
+                    />
                 ) : null}
                 {snapshot.phase === 'loading' ? <Item title={t('common.loading')} mode="info" /> : null}
                 <Item title={t('workspaceSync.actions.refresh')} onPress={() => void refreshWorkspaceSyncConflicts(scope).catch(() => undefined)} />

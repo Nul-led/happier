@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { isPendingMessageForRecipient } from '@/sync/domains/pending/pendingMessageRecipient';
 import { Platform, Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Typography } from '@/constants/Typography';
@@ -17,7 +18,7 @@ import { ScrollEdgeIndicators } from '@/components/ui/scroll/ScrollEdgeIndicator
 import { useScrollEdgeFades } from '@/components/ui/scroll/useScrollEdgeFades';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { readLatestLocalOutboundPendingUserMessageAt } from '@/sync/domains/messages/outgoingUserMessage';
-import { deriveSessionRuntimePresentationState } from '@/sync/domains/session/attention/runtimePresentation';
+import { projectUiSessionRuntimeAwareness } from '@/sync/domains/session/attention/runtimePresentation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { TranscriptSeparatorRow } from '@/components/sessions/transcript/separators/TranscriptSeparatorRow';
 import { transcriptMarkdownTextStyle } from '@/components/sessions/transcript/transcriptMarkdownTypography';
@@ -44,9 +45,12 @@ import {
 import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
 import { resolvePendingInputServerWireMode } from '@/sync/engine/pending/pendingInputServerWireContract';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+import { SessionMessageAccountByline } from '@/components/sessions/transcript/SessionMessageAccountByline';
+import { useSessionMessageAuthorshipScope } from '@/components/sessions/transcript/useSessionMessageAuthorshipScope';
 
 function getPendingText(message: PendingMessage | DiscardedPendingMessage): string {
     const raw = (message.displayText ?? message.text) ?? '';
@@ -121,7 +125,7 @@ function derivePendingMessagesRuntimePresentation(
     session: ReturnType<typeof useSession>,
     pendingMessages: ReadonlyArray<PendingMessage> = [],
 ) {
-    return deriveSessionRuntimePresentationState({
+    return projectUiSessionRuntimeAwareness({
         active: session?.active,
         activeAt: session?.activeAt,
         presence: session?.presence,
@@ -159,6 +163,15 @@ export type PendingMessageEditRequest = Readonly<{
 
 export function PendingMessagesTranscriptBlock(props: Readonly<{
     sessionId: string;
+    /**
+     * The exact Home this queue belongs to, carried by the mounted transcript
+     * host. Raw Session IDs repeat across Homes, so authorship bylines and the
+     * pending wire-mode decision must be resolved against this Home rather than
+     * whichever one happens to be active. Omitted only by a host that has no
+     * qualified target yet, which keeps the historical active-Home behavior.
+     */
+    serverId?: string | null;
+    recipient?: PendingMessage['recipient'];
     pendingMessages: PendingMessage[];
     discardedMessages: DiscardedPendingMessage[];
     onEditPendingMessage?: (request: PendingMessageEditRequest) => void | Promise<void>;
@@ -170,24 +183,45 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
      */
     onPaintedUtteranceBubbleMeasured?: (measurement: Readonly<{ localId: string; bubbleHeightPx: number }>) => void;
 }>) {
+    // One exact-Home authorship owner, shared with the committed transcript rows,
+    // so a queued utterance and the committed message it becomes cannot disagree
+    // about who authored it or whether this Session has another named collaborator.
+    const authorship = useSessionMessageAuthorshipScope(props.sessionId, props.serverId);
+    const accountActorViewerScope = authorship.viewerScope;
+    const pendingMessages = React.useMemo(() => props.pendingMessages.filter((message) =>
+        isPendingMessageForRecipient(message, props.recipient)
+    ), [props.pendingMessages, props.recipient]);
+    const discardedMessages = React.useMemo(() => props.discardedMessages.filter((message) =>
+        isPendingMessageForRecipient(message, props.recipient)
+    ), [props.discardedMessages, props.recipient]);
     const { theme } = useUnistyles();
     const session = useSession(props.sessionId);
-    const terminalComposerClear = useTerminalComposerClearAction(props.sessionId);
-    const pendingInputInterruptAndRun = usePendingInputInterruptAndRunAction(props.sessionId);
-    const pendingInputServerId = session?.serverId ?? resolvePreferredServerIdForSessionId(props.sessionId);
+    const exactSessionAddress = React.useMemo(
+        () => normalizeSessionAddress(props.serverId, props.sessionId),
+        [props.serverId, props.sessionId],
+    );
+    const exactPendingQueueOwner = React.useMemo(
+        () => exactSessionAddress ? { serverId: exactSessionAddress.serverId } : undefined,
+        [exactSessionAddress],
+    );
+    const terminalComposerClear = useTerminalComposerClearAction(props.sessionId, exactSessionAddress?.serverId);
+    const pendingInputInterruptAndRun = usePendingInputInterruptAndRunAction(props.sessionId, exactSessionAddress?.serverId);
+    const pendingInputServerId = props.serverId?.trim()
+        || session?.serverId
+        || resolvePreferredServerIdForSessionId(props.sessionId);
     const serverFeaturesSnapshot = useServerFeaturesSnapshotForServerId(pendingInputServerId ?? null, {
         enabled: Boolean(pendingInputServerId),
     });
     const pendingInputServerWireMode = resolvePendingInputServerWireMode(serverFeaturesSnapshot);
 
-    const runtimePresentation = derivePendingMessagesRuntimePresentation(session, props.pendingMessages);
+    const runtimePresentation = derivePendingMessagesRuntimePresentation(session, pendingMessages);
     const runtimeWorking = runtimePresentation.working;
     const canSteerNow = canSteerNowForSession(session, runtimeWorking);
     const supportsInFlightSteer = supportsInFlightSteerForSession(session);
     const capabilities = session?.agentState?.capabilities;
-    const pendingCount = props.pendingMessages.length;
-    const discardedCount = props.discardedMessages.length;
-    const hasProviderDeliveryInFlight = props.pendingMessages.some(isPendingMessageProviderDeliveryInFlight);
+    const pendingCount = pendingMessages.length;
+    const discardedCount = discardedMessages.length;
+    const hasProviderDeliveryInFlight = pendingMessages.some(isPendingMessageProviderDeliveryInFlight);
     // A terminal-composer-draft capability is meaningful only while a runtime (TUI) is live;
     // after a stop the sticky capability must not present a ghost draft for the next send.
     const hasActiveRuntime = session?.active === true;
@@ -301,10 +335,10 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
     );
 
     React.useEffect(() => {
-        if (props.pendingMessages.length <= 0) {
+        if (pendingMessages.length <= 0) {
             setIsPendingQueueExpanded(false);
         }
-    }, [props.pendingMessages.length]);
+    }, [pendingMessages.length]);
 
     const toggleMessageExpanded = React.useCallback((id: string) => {
         setExpandedMessageIds((prev) => {
@@ -333,16 +367,20 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
 
     const handleReorderIds = React.useCallback(async (ids: string[]) => {
         if (ids.length <= 1) return;
-        const current = props.pendingMessages.map((m) => m.id);
+        const current = pendingMessages.map((m) => m.id);
         if (ids.length === current.length && ids.every((id, idx) => id === current[idx])) {
             return;
         }
         try {
-            await sync.reorderPendingMessages(props.sessionId, ids);
+            if (exactPendingQueueOwner) {
+                await sync.reorderPendingMessages(props.sessionId, ids, props.recipient, exactPendingQueueOwner);
+            } else {
+                await sync.reorderPendingMessages(props.sessionId, ids, ...(props.recipient ? [props.recipient] : []));
+            }
         } catch (e) {
             Modal.alert(t('common.error'), e instanceof Error ? e.message : t('session.pendingMessages.errors.reorderFailed'));
         }
-    }, [props.pendingMessages, props.sessionId]);
+    }, [exactPendingQueueOwner, pendingMessages, props.sessionId, props.recipient]);
 
     const handleRemove = React.useCallback(async (pendingId: string) => {
         const confirmed = await Modal.confirm(
@@ -352,23 +390,35 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
         );
         if (!confirmed) return;
         try {
-            await sync.deletePendingMessage(props.sessionId, pendingId);
+            await sync.deletePendingMessage(
+                props.sessionId,
+                pendingId,
+                ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+            );
         } catch (e) {
             Modal.alert(t('common.error'), e instanceof Error ? e.message : t('session.pendingMessages.errors.deleteFailed'));
         }
-    }, [props.sessionId]);
+    }, [exactPendingQueueOwner, props.sessionId]);
 
     const deleteOrDiscardAfterSend = React.useCallback(async (pendingId: string) => {
         try {
-            await sync.deletePendingMessage(props.sessionId, pendingId);
+            await sync.deletePendingMessage(
+                props.sessionId,
+                pendingId,
+                ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+            );
         } catch (deleteError) {
             try {
-                await sync.discardPendingMessage(props.sessionId, pendingId);
+                await sync.discardPendingMessage(
+                    props.sessionId,
+                    pendingId,
+                    ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+                );
             } catch {
                 throw deleteError;
             }
         }
-    }, [props.sessionId]);
+    }, [exactPendingQueueOwner, props.sessionId]);
 
     const shouldRemoveDurableRowAfterSend = React.useCallback((result: Awaited<ReturnType<typeof sync.sendPendingMessageNow>>) => (
         result.type === 'committed'
@@ -411,32 +461,44 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
     const handleDismissDelivery = React.useCallback(async (message: PendingMessage) => {
         await runPendingDeliveryAction(message, async () => {
             try {
-                await sync.dismissPendingDelivery(props.sessionId, message.id);
+                await sync.dismissPendingDelivery(
+                    props.sessionId,
+                    message.id,
+                    ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+                );
             } catch (e) {
                 Modal.alert(t('common.error'), e instanceof Error ? e.message : t('session.pendingMessages.errors.discardFailed'));
             }
         });
-    }, [props.sessionId, runPendingDeliveryAction]);
+    }, [exactPendingQueueOwner, props.sessionId, runPendingDeliveryAction]);
 
     const handleSendAsNew = React.useCallback(async (message: PendingMessage) => {
         await runPendingDeliveryAction(message, async () => {
             try {
-                await sync.sendPendingDeliveryAsNew(props.sessionId, message.id);
+                await sync.sendPendingDeliveryAsNew(
+                    props.sessionId,
+                    message.id,
+                    ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+                );
             } catch (e) {
                 Modal.alert(t('common.error'), e instanceof Error ? e.message : t('session.pendingMessages.errors.sendFailed'));
             }
         });
-    }, [props.sessionId, runPendingDeliveryAction]);
+    }, [exactPendingQueueOwner, props.sessionId, runPendingDeliveryAction]);
 
     const handleRetrySend = React.useCallback(async (message: PendingMessage) => {
         await runPendingDeliveryAction(message, async () => {
             try {
-                await sync.retryPendingMessageSend(props.sessionId, message.localId ?? message.id);
+                await sync.retryPendingMessageSend(
+                    props.sessionId,
+                    message.localId ?? message.id,
+                    ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+                );
             } catch (e) {
                 Modal.alert(t('common.error'), e instanceof Error ? e.message : t('session.pendingMessages.errors.sendFailed'));
             }
         });
-    }, [props.sessionId, runPendingDeliveryAction]);
+    }, [exactPendingQueueOwner, props.sessionId, runPendingDeliveryAction]);
 
     const handleRemoveDelivery = React.useCallback(async (message: PendingMessage) => {
         await runPendingDeliveryAction(message, () => handleRemove(message.id));
@@ -452,12 +514,16 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
             if (!confirmed) return;
 
             try {
-                await sync.markPendingDeliveryHandled(props.sessionId, message.id);
+                await sync.markPendingDeliveryHandled(
+                    props.sessionId,
+                    message.id,
+                    ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+                );
             } catch (e) {
                 Modal.alert(t('common.error'), e instanceof Error ? e.message : t('session.pendingMessages.errors.markHandledFailed'));
             }
         });
-    }, [props.sessionId, runPendingDeliveryAction]);
+    }, [exactPendingQueueOwner, props.sessionId, runPendingDeliveryAction]);
 
     const handleInterruptAndRun = React.useCallback(async (
         message: PendingMessage,
@@ -484,7 +550,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                 text: message.text,
                 displayText: message.displayText,
                 deliveryIntent: 'steer_now',
-            });
+            }, ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const));
             if (shouldRemoveDurableRowAfterSend(result)) {
                 await deleteOrDiscardAfterSend(message.id);
             }
@@ -493,7 +559,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
         } finally {
             setPendingMaterializing(message, false);
         }
-    }, [deleteOrDiscardAfterSend, props.sessionId, setPendingMaterializing, shouldRemoveDurableRowAfterSend]);
+    }, [deleteOrDiscardAfterSend, exactPendingQueueOwner, props.sessionId, setPendingMaterializing, shouldRemoveDurableRowAfterSend]);
 
     const handleSendNow = React.useCallback(async (message: PendingMessage) => {
         const localId = message.localId ?? message.id;
@@ -513,7 +579,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                 text: message.text,
                 displayText: message.displayText,
                 deliveryIntent: 'interrupt_and_send',
-            });
+            }, ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const));
             if (shouldRemoveDurableRowAfterSend(result)) {
                 await deleteOrDiscardAfterSend(message.id);
             }
@@ -522,15 +588,19 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
         } finally {
             setPendingMaterializing(message, false);
         }
-    }, [deleteOrDiscardAfterSend, props.sessionId, sendNowActionLabel, sendNowConfirmationBody, sendNowConfirmationTitle, setPendingMaterializing, shouldRemoveDurableRowAfterSend]);
+    }, [deleteOrDiscardAfterSend, exactPendingQueueOwner, props.sessionId, sendNowActionLabel, sendNowConfirmationBody, sendNowConfirmationTitle, setPendingMaterializing, shouldRemoveDurableRowAfterSend]);
 
     const handleRequeueDiscarded = React.useCallback(async (pendingId: string) => {
         try {
-            await sync.restoreDiscardedPendingMessage(props.sessionId, pendingId);
+            await sync.restoreDiscardedPendingMessage(
+                props.sessionId,
+                pendingId,
+                ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+            );
         } catch (e) {
             Modal.alert(t('common.error'), e instanceof Error ? e.message : t('session.pendingMessages.errors.restoreFailed'));
         }
-    }, [props.sessionId]);
+    }, [exactPendingQueueOwner, props.sessionId]);
 
     const handleRemoveDiscarded = React.useCallback(async (pendingId: string) => {
         const confirmed = await Modal.confirm(
@@ -540,11 +610,15 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
         );
         if (!confirmed) return;
         try {
-            await sync.deleteDiscardedPendingMessage(props.sessionId, pendingId);
+            await sync.deleteDiscardedPendingMessage(
+                props.sessionId,
+                pendingId,
+                ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+            );
         } catch (e) {
             Modal.alert(t('common.error'), e instanceof Error ? e.message : t('session.pendingMessages.errors.deleteDiscardedFailed'));
         }
-    }, [props.sessionId]);
+    }, [exactPendingQueueOwner, props.sessionId]);
 
     const handleSteerDiscardedNow = React.useCallback(async (message: DiscardedPendingMessage) => {
         try {
@@ -555,14 +629,18 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                 text: message.text,
                 displayText: message.displayText,
                 deliveryIntent: 'steer_now',
-            });
+            }, ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const));
             if (shouldRemoveDurableRowAfterSend(result)) {
-                await sync.deleteDiscardedPendingMessage(props.sessionId, message.id);
+                await sync.deleteDiscardedPendingMessage(
+                    props.sessionId,
+                    message.id,
+                    ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+                );
             }
         } catch (e) {
             Modal.alert(t('common.error'), e instanceof Error ? e.message : t('session.pendingMessages.errors.sendDiscardedFailed'));
         }
-    }, [props.sessionId, shouldRemoveDurableRowAfterSend]);
+    }, [exactPendingQueueOwner, props.sessionId, shouldRemoveDurableRowAfterSend]);
 
     const handleSendDiscardedNow = React.useCallback(async (message: DiscardedPendingMessage) => {
         const confirmed = await Modal.confirm(
@@ -580,14 +658,18 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                 text: message.text,
                 displayText: message.displayText,
                 deliveryIntent: 'interrupt_and_send',
-            });
+            }, ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const));
             if (shouldRemoveDurableRowAfterSend(result)) {
-                await sync.deleteDiscardedPendingMessage(props.sessionId, message.id);
+                await sync.deleteDiscardedPendingMessage(
+                    props.sessionId,
+                    message.id,
+                    ...(exactPendingQueueOwner ? [exactPendingQueueOwner] as const : [] as const),
+                );
             }
         } catch (e) {
             Modal.alert(t('common.error'), e instanceof Error ? e.message : t('session.pendingMessages.errors.sendDiscardedFailed'));
         }
-    }, [props.sessionId, sendNowActionLabel, sendNowConfirmationBody, sendNowConfirmationTitle, shouldRemoveDurableRowAfterSend]);
+    }, [exactPendingQueueOwner, props.sessionId, sendNowActionLabel, sendNowConfirmationBody, sendNowConfirmationTitle, shouldRemoveDurableRowAfterSend]);
 
     const renderMessage = React.useCallback((args: {
         message: PendingMessage;
@@ -614,7 +696,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
 	        const hasDecryptFailure = message.pendingDecryptFailure?.kind === 'decrypt_failed';
         const visualState = getPendingMessageVisualState(message, {
             materializingLocalIds,
-            hasEarlierRow: props.pendingMessages.slice(0, index).some((candidate) =>
+            hasEarlierRow: pendingMessages.slice(0, index).some((candidate) =>
                 candidate.source !== 'local_outbound' || candidate.deliveryStatus === 'accepted',
             ),
             hasProviderDeliveryInFlight,
@@ -628,7 +710,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
         // Height-bearing, so the size estimate reads this same predicate rather than restating it.
         const paintsMessageActionRow = paintsPendingMessageActionRow({
             platformIsWeb: isWeb,
-            canReorderPendingMessages: props.pendingMessages.length > 1 && !hasEffectPossibleDelivery,
+            canReorderPendingMessages: pendingMessages.length > 1 && !hasEffectPossibleDelivery,
         });
         const isUncertainDelivery = hasEffectPossibleDelivery && visualState.kind === 'blocked';
         const isServerDeliveryInProgress = isPendingMessageProviderDeliveryInFlight(message)
@@ -807,6 +889,12 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                             }
                             : null)}
                     >
+                        <SessionMessageAccountByline
+                            messageId={message.id}
+                            actor={message.accountActor}
+                            viewerScope={accountActorViewerScope}
+                            hasOtherNamedCollaborator={authorship.hasOtherNamedCollaborator}
+                        />
                         <Pressable
                             onPress={(event) => {
                                 if (menuOpen) {
@@ -934,7 +1022,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                                         message={message}
                                     />
                                 ) : null}
-                                {paintsMessageActionRow && props.pendingMessages.length > 1 && !hasEffectPossibleDelivery ? (
+                                {paintsMessageActionRow && pendingMessages.length > 1 && !hasEffectPossibleDelivery ? (
                                     renderDragHandle({
                                         children: (
                                             <ReorderDragHandleAffordance
@@ -1071,6 +1159,8 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
             />
         );
     }, [
+        accountActorViewerScope,
+        authorship.hasOtherNamedCollaborator,
         canSteerNow,
         discardedCount,
         pendingCount,
@@ -1099,7 +1189,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
         pendingQueueRuntimeReachable,
         pendingInputInterruptAndRun.busy,
         pendingInputServerWireMode,
-        props.pendingMessages.length,
+        pendingMessages.length,
         sendNowActionLabel,
         session,
         theme.colors.border.default,
@@ -1174,6 +1264,12 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                             }
                             : null)}
                     >
+                        <SessionMessageAccountByline
+                            messageId={message.id}
+                            actor={message.accountActor}
+                            viewerScope={accountActorViewerScope}
+                            hasOtherNamedCollaborator={authorship.hasOtherNamedCollaborator}
+                        />
                         <Pressable
                             onPress={(event) => {
                                 if (menuOpen) {
@@ -1250,6 +1346,8 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
             />
         );
     }, [
+        accountActorViewerScope,
+        authorship.hasOtherNamedCollaborator,
         canSteerNow,
         collapsedLines,
         hoveredMessageId,
@@ -1267,8 +1365,8 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
     ]);
 
     const displayedDiscarded = React.useMemo(() => {
-        return props.discardedMessages.slice().sort((a, b) => a.discardedAt - b.discardedAt);
-    }, [props.discardedMessages]);
+        return discardedMessages.slice().sort((a, b) => a.discardedAt - b.discardedAt);
+    }, [discardedMessages]);
 
     const scrollEdge = useScrollEdgeFades({
         enabledEdges: { top: true, bottom: true },
@@ -1432,7 +1530,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                                 }}
                             >
                                 <PendingMessagesDragReorderList
-                                    messages={props.pendingMessages}
+                                    messages={pendingMessages}
                                     longPressMs={200}
                                     scrollRef={scrollRef}
                                     viewportHeightPx={scrollViewportHeightPx}

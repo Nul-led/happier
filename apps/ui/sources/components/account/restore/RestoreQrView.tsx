@@ -232,7 +232,7 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
     useEffect(() => {
         let mounted = true;
         fireAndForget((async () => {
-            const features = await getReadyServerFeatures({ timeoutMs: 800 });
+            const features = await getReadyServerFeatures();
             const enabled = features?.features?.auth?.recovery?.providerReset?.enabled === true;
             if (mounted) setProviderResetEnabled(enabled);
         })(), { tag: 'RestoreQrView.loadProviderResetEnabled' });

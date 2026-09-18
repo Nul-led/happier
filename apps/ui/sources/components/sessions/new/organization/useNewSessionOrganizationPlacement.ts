@@ -13,11 +13,12 @@ import {
 } from '@/sync/domains/session/folders';
 import {
     createSessionOrganizationTagWithLabel,
-    resolveSessionOrganizationMutationScope,
+    requireSessionOrganizationMutationScope,
 } from '@/sync/ops/sessionOrganization';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import type { AgentInputExtraActionChip } from '@/components/sessions/agentInput/agentInputContracts';
+import { HappyError } from '@/utils/errors/errors';
 
 import {
     isNewSessionOrganizationPlacementAvailable,
@@ -39,8 +40,10 @@ export function useNewSessionOrganizationPlacement(params: Readonly<{
     setTagIds: (tagIds: readonly string[]) => void;
 }> {
     const { theme } = useUnistyles();
-    const enabled = useFeatureEnabled('sessions.folders');
     const serverId = params.executionTarget?.serverId ?? '';
+    const enabled = useFeatureEnabled('sessions.folders', serverId
+        ? { scopeKind: 'spawn', serverId }
+        : { scopeKind: 'main_selection' });
     const projection = useSessionOrganizationProjection(serverId);
     const viewState = React.useMemo(() => buildSessionOrganizationListViewState({ serverId, projection }), [projection, serverId]);
     const folders = viewState.sessionFoldersV1.folders;
@@ -96,20 +99,22 @@ export function useNewSessionOrganizationPlacement(params: Readonly<{
     }, []);
     const createTag = React.useCallback((label: string) => {
         void (async () => {
-            const scopeResult = await resolveSessionOrganizationMutationScope(serverId);
-            if (!scopeResult.ok) throw new Error(scopeResult.reason);
+            const scope = await requireSessionOrganizationMutationScope(serverId);
             const tag = await createSessionOrganizationTagWithLabel({
-                credentials: scopeResult.scope.credentials,
-                serverId: scopeResult.scope.serverId,
-                serverUrl: scopeResult.scope.serverUrl,
+                credentials: scope.credentials,
+                serverId: scope.serverId,
+                serverUrl: scope.serverUrl,
                 label,
             });
             setPlacement((current) => normalizeNewSessionOrganizationPlacement({
                 ...current,
                 tagIds: [...current.tagIds, tag.tagId],
             }));
-        })().catch(() => {
-            Modal.alert(t('common.error'), t('errors.unknownError'));
+        })().catch((error: unknown) => {
+            Modal.alert(
+                t('common.error'),
+                error instanceof HappyError ? error.message : t('errors.unknownError'),
+            );
         });
     }, [serverId]);
     const actionChips = React.useMemo(() => createNewSessionOrganizationPlacementActionChips({

@@ -18,6 +18,7 @@ import {
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import type { releaseComposerContent, claimComposerContent } from '@/sync/domains/transfers/runtime/transferRuntime';
 import type { PluginUiComposerAttachmentProjection } from '@/sync/domains/plugins/ui/projection';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 const persistentValues = vi.hoisted(() => new Map<string, string>());
 const activeScopeState = vi.hoisted(() => ({
@@ -66,8 +67,10 @@ import {
     notifyComposerPresentationTargetChanged,
     readComposerPresentationSnapshot,
     readComposerPresentationTarget,
-    readSessionComposerPresentationTarget,
+    readSessionComposerPresentationTargetAtAddress,
     registerComposerPresentationTarget,
+    registerSessionComposerPresentationTarget,
+    requestRegisteredSessionComposerFocus,
     subscribeComposerPresentationTarget,
     type ComposerPresentationDocumentMutation,
     type ComposerPresentationTarget,
@@ -161,7 +164,10 @@ function createSnapshot(overrides: Partial<ComposerSnapshotV1> = {}): ComposerSn
 function createDocumentTarget(
     initial: ComposerSnapshotV1,
     createAttachmentInstanceId: () => string = () => 'host-created-issue-42',
-): ComposerPresentationTarget & Readonly<{
+): ComposerPresentationTarget & Required<Pick<
+    ComposerPresentationTarget,
+    'readSnapshot' | 'commitDocument'
+>> & Readonly<{
     readCurrent: () => ComposerSnapshotV1;
 }> {
     let current = initial;
@@ -173,7 +179,7 @@ function createDocumentTarget(
             return current.revision;
         },
         readSnapshot: () => current,
-        commitDocument: (input: Readonly<{
+        commitDocument: vi.fn((input: Readonly<{
             expectedRevision: number;
             mutation: ComposerPresentationDocumentMutation;
         }>): ComposerTransactionResultV1 => {
@@ -188,7 +194,7 @@ function createDocumentTarget(
                 revision: current.revision + 1,
             };
             return { status: 'applied', revision: current.revision };
-        },
+        }),
         createAttachmentInstanceId,
         readCurrent: () => current,
     };
@@ -205,6 +211,162 @@ describe('composer presentation targets', () => {
         claimComposerContentSpy
             .mockReset()
             .mockImplementation(async () => ({ status: 'claimed', newlyAcquired: true } as const));
+    });
+
+    it('delivers a pending focus intent once when the exact qualified Session composer registers', () => {
+        const address = { serverId: 'https://home.example.test:8443', sessionId: 'shared-id' } as const;
+        const otherAddress = { serverId: 'https://other.example.test', sessionId: 'shared-id' } as const;
+        const focus = vi.fn(() => true);
+        const otherFocus = vi.fn(() => true);
+
+        expect(requestRegisteredSessionComposerFocus(address)).toBe(false);
+        cleanups.push(registerSessionComposerPresentationTarget(otherAddress, {
+            ...createDocumentTarget(createSnapshot({ ref: { kind: 'session', sessionId: 'shared-id' } })),
+            focusComposer: otherFocus,
+        }));
+        expect(otherFocus).not.toHaveBeenCalled();
+
+        cleanups.push(registerSessionComposerPresentationTarget(address, {
+            ...createDocumentTarget(createSnapshot({ ref: { kind: 'session', sessionId: 'shared-id' } })),
+            focusComposer: focus,
+        }));
+        expect(focus).toHaveBeenCalledTimes(1);
+
+        cleanups.pop()?.();
+        cleanups.push(registerSessionComposerPresentationTarget(address, {
+            ...createDocumentTarget(createSnapshot({ ref: { kind: 'session', sessionId: 'shared-id' } })),
+            focusComposer: focus,
+        }));
+        expect(focus).toHaveBeenCalledTimes(1);
+    });
+
+    it('focuses the requested Home when same-ID Session composers are mounted together', () => {
+        const address = { serverId: 'https://home.example.test', sessionId: 'shared-id' } as const;
+        const otherAddress = { serverId: 'https://other.example.test', sessionId: 'shared-id' } as const;
+        const focus = vi.fn(() => true);
+        const otherFocus = vi.fn(() => true);
+        cleanups.push(registerSessionComposerPresentationTarget(address, {
+            ...createDocumentTarget(createSnapshot({ ref: { kind: 'session', sessionId: 'shared-id' } })),
+            focusComposer: focus,
+        }));
+        cleanups.push(registerSessionComposerPresentationTarget(otherAddress, {
+            ...createDocumentTarget(createSnapshot({ ref: { kind: 'session', sessionId: 'shared-id' } })),
+            focusComposer: otherFocus,
+        }));
+
+        expect(requestRegisteredSessionComposerFocus(address)).toBe(true);
+        expect(focus).toHaveBeenCalledTimes(1);
+        expect(otherFocus).not.toHaveBeenCalled();
+    });
+
+    it('reads presentation effects from the exact Home when same-ID Sessions are mounted together', () => {
+        const address = { serverId: 'https://home.example.test', sessionId: 'shared-id' } as const;
+        const otherAddress = { serverId: 'https://other.example.test', sessionId: 'shared-id' } as const;
+        const apply = vi.fn(() => ({ status: 'applied' as const }));
+        const otherApply = vi.fn(() => ({ status: 'applied' as const }));
+        cleanups.push(registerSessionComposerPresentationTarget(address, {
+            ...createDocumentTarget(createSnapshot({ ref: { kind: 'session', sessionId: 'shared-id' } })),
+            applySessionPresentationIntent: apply,
+        }));
+        cleanups.push(registerSessionComposerPresentationTarget(otherAddress, {
+            ...createDocumentTarget(createSnapshot({ ref: { kind: 'session', sessionId: 'shared-id' } })),
+            applySessionPresentationIntent: otherApply,
+        }));
+
+        readSessionComposerPresentationTargetAtAddress(address)?.applySessionPresentationIntent?.({
+            kind: 'companion.show',
+        });
+
+        expect(apply).toHaveBeenCalledTimes(1);
+        expect(otherApply).not.toHaveBeenCalled();
+        expect(readSessionComposerPresentationTargetAtAddress({
+            serverId: '',
+            sessionId: 'shared-id',
+        })).toBeNull();
+        expect(readSessionComposerPresentationTargetAtAddress({
+            serverId: 'https://missing.example.test',
+            sessionId: 'shared-id',
+        })).toBeNull();
+    });
+
+    it('binds a Session plugin transaction applier to the exact Home', () => {
+        const address = { serverId: 'https://home.example.test', sessionId: 'shared-id' } as const;
+        const otherAddress = { serverId: 'https://other.example.test', sessionId: 'shared-id' } as const;
+        const target = createDocumentTarget(createSnapshot({
+            ref: { kind: 'session', sessionId: address.sessionId },
+        }));
+        const otherTarget = createDocumentTarget(createSnapshot({
+            ref: { kind: 'session', sessionId: address.sessionId },
+        }));
+        cleanups.push(registerSessionComposerPresentationTarget(address, target));
+        cleanups.push(registerSessionComposerPresentationTarget(otherAddress, otherTarget));
+        const applier = createComposerPresentationTransactionApplier({
+            composerAttachmentsById: {},
+            sessionAddress: address,
+        });
+
+        expect(applier.apply({
+            ref: { kind: 'session', sessionId: address.sessionId },
+            admittedContributor: admittedContributor({ pluginId: 'acme.issues' }),
+            transaction: {
+                expectedRevision: 1,
+                operations: [{ kind: 'text.set', text: 'Home A only' }],
+            },
+        })).toEqual({ status: 'applied', revision: 2 });
+        expect(target.commitDocument).toHaveBeenCalledTimes(1);
+        expect(otherTarget.commitDocument).not.toHaveBeenCalled();
+    });
+
+    it('refuses a transaction through a retired exact target after that address is replaced', () => {
+        const address = { serverId: 'https://home.example.test', sessionId: 'shared-id' } as const;
+        const first = createDocumentTarget(createSnapshot({
+            ref: { kind: 'session', sessionId: address.sessionId },
+        }));
+        const replacement = createDocumentTarget(createSnapshot({
+            ref: { kind: 'session', sessionId: address.sessionId },
+        }));
+        const unregisterFirst = registerSessionComposerPresentationTarget(address, first);
+        const resolved = readSessionComposerPresentationTargetAtAddress(address);
+        expect(resolved).not.toBeNull();
+
+        unregisterFirst();
+        cleanups.push(registerSessionComposerPresentationTarget(address, replacement));
+
+        expect(resolved?.applyTransaction({
+            expectedRevision: 1,
+            operations: [{ kind: 'text.set', text: 'must not apply' }],
+        })).toEqual({ status: 'composerUnavailable' });
+        expect(first.commitDocument).not.toHaveBeenCalled();
+        expect(replacement.commitDocument).not.toHaveBeenCalled();
+    });
+
+    it('refuses a presentation effect through a retired exact target after that address is replaced', () => {
+        const address = { serverId: 'https://home.example.test', sessionId: 'shared-id' } as const;
+        const firstApply = vi.fn(() => ({ status: 'applied' as const }));
+        const replacementApply = vi.fn(() => ({ status: 'applied' as const }));
+        const first = {
+            ...createDocumentTarget(createSnapshot({
+                ref: { kind: 'session', sessionId: address.sessionId },
+            })),
+            applySessionPresentationIntent: firstApply,
+        };
+        const replacement = {
+            ...createDocumentTarget(createSnapshot({
+                ref: { kind: 'session', sessionId: address.sessionId },
+            })),
+            applySessionPresentationIntent: replacementApply,
+        };
+        const unregisterFirst = registerSessionComposerPresentationTarget(address, first);
+        const resolved = readSessionComposerPresentationTargetAtAddress(address);
+        expect(resolved).not.toBeNull();
+
+        unregisterFirst();
+        cleanups.push(registerSessionComposerPresentationTarget(address, replacement));
+
+        expect(resolved?.applySessionPresentationIntent?.({ kind: 'companion.show' }))
+            .toEqual({ status: 'notCurrent' });
+        expect(firstApply).not.toHaveBeenCalled();
+        expect(replacementApply).not.toHaveBeenCalled();
     });
 
     it('refuses a new staged attachment through the synchronous owner instead of publishing unclaimed', () => {
@@ -570,6 +732,83 @@ describe('composer presentation targets', () => {
             content: stagedMedia,
         }]);
         expect(releaseComposerContentSpy).not.toHaveBeenCalled();
+    });
+
+    it('releases a newly claimed stage when a different target publishes the same opaque handle id', async () => {
+        const stagedMedia = createStagedMediaContent();
+        const differentTargetStage: ComposerStagedMediaContentV1 = {
+            ...stagedMedia,
+            handle: {
+                ...stagedMedia.handle,
+                executionTarget: { serverId: 'server-1', machineId: 'machine-2' },
+            },
+        };
+        const baseTarget = createDocumentTarget(createSnapshot());
+        let snapshotReads = 0;
+        const target = {
+            ...baseTarget,
+            readSnapshot: () => {
+                snapshotReads += 1;
+                if (snapshotReads === 1) return baseTarget.readCurrent();
+                return createSnapshot({
+                    revision: 2,
+                    attachments: [{
+                        v: 1,
+                        instanceId: 'host-created-issue-42',
+                        attachment: { pluginId: 'acme.issues', localId: 'issue' },
+                        key: '42',
+                        value: { issueId: 42 },
+                        presentation: { label: 'Issue #42', typeLabel: 'Issue' },
+                        availability: { status: 'ready' },
+                        content: differentTargetStage,
+                    }],
+                });
+            },
+            commitDocument: vi.fn((): ComposerTransactionResultV1 => {
+                throw new Error('currentness loss should stop before commit');
+            }),
+        };
+        cleanups.push(registerComposerPresentationTarget(
+            { kind: 'session', sessionId: 'session-1' },
+            target,
+        ));
+        const applier = createAttachmentTransactionApplier(createAttachmentProjectionEntry({
+            pluginId: 'acme.issues',
+            localId: 'issue',
+            typeLabel: 'Issue',
+        }));
+        let currentnessChecks = 0;
+
+        await expect(applier.applyWithAttachmentCustody({
+            ref: { kind: 'session', sessionId: 'session-1' },
+            admittedContributor: admittedContributor({ pluginId: 'acme.issues' }),
+            executionTarget: stagedMedia.handle.executionTarget,
+            isCurrent: () => {
+                currentnessChecks += 1;
+                return currentnessChecks === 1;
+            },
+            transaction: {
+                expectedRevision: 1,
+                operations: [{
+                    kind: 'attachment.add',
+                    attachmentLocalId: 'issue',
+                    value: {
+                        key: '42',
+                        value: { issueId: 42 },
+                        presentation: { label: 'Issue #42' },
+                    },
+                    content: stagedMedia,
+                }],
+            },
+        })).resolves.toEqual({ status: 'composerUnavailable' });
+
+        expect(releaseComposerContentSpy).toHaveBeenCalledWith(stagedMedia.handle, {
+            claimant: {
+                composer: { kind: 'session', sessionId: 'session-1' },
+                attachmentInstanceId: 'host-created-issue-42',
+            },
+        });
+        expect(target.commitDocument).not.toHaveBeenCalled();
     });
 
     it('rejects an attachment value before allocating an instance id or mutating the document', () => {
@@ -1307,6 +1546,12 @@ function activatePersistentSessionDraft(sessionId: string, text: string): void {
     storage.setState((state) => ({
         ...state,
         deletedSessionIds: {},
+        sessions: {
+            ...state.sessions,
+            [sessionId]: createSessionFixture({
+                id: sessionId,
+            }),
+        },
     }));
 }
 
@@ -1596,14 +1841,16 @@ describe('persistent Session composer fallback', () => {
             ref: sessionRef,
             transaction,
         }));
-        const visualSessionTarget = readSessionComposerPresentationTarget(sessionId);
+        const visualSessionTarget = readSessionComposerPresentationTargetAtAddress({
+            serverId: persistentSessionScope.serverId,
+            sessionId,
+        });
         try {
             expect(visualSessionTarget).toBeNull();
             const application = applyCurrentSessionPresentationCommand({
-                sessionId,
                 hostNonce: 'host-1',
                 clientId: 'client-1',
-                focusedSessionId: sessionId,
+                isCurrentSession: true,
                 state: {
                     v: 1,
                     hostNonce: 'host-1',
@@ -1648,4 +1895,5 @@ describe('persistent Session composer fallback', () => {
             unregister();
         }
     });
+
 });

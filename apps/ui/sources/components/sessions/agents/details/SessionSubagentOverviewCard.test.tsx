@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { toLocalAgentActivityEntry } from '@/sync/domains/session/agentActivity';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import { renderScreen } from '@/dev/testkit';
 import { installSessionSubagentCommonModuleMocks } from '../sessionSubagentTestHelpers';
@@ -46,7 +47,7 @@ installSessionSubagentCommonModuleMocks({
 });
 
 describe('SessionSubagentOverviewCard', () => {
-    it('renders the shared compact fact pills for execution runs', async () => {
+    it('presents the merged status even when the local execution run is still running', async () => {
         const { SessionSubagentOverviewCard } = await import('./SessionSubagentOverviewCard');
 
         const subagent: SessionSubagent = {
@@ -61,11 +62,12 @@ describe('SessionSubagentOverviewCard', () => {
             timestamps: {},
         };
 
-        const screen = await renderScreen(<SessionSubagentOverviewCard subagent={subagent} />);
+        const entry = { ...toLocalAgentActivityEntry({ subagent }), provenance: 'merged' as const, detailState: 'loaded' as const, parentId: null, status: 'succeeded' as const };
+        const screen = await renderScreen(<SessionSubagentOverviewCard subagent={subagent} entry={entry} />);
         const textContent = screen.getTextContent();
 
-        expect(textContent).toContain('Type: Subagent');
-        expect(textContent).toContain('Backend: codex');
-        expect(textContent).toContain('Intent: Review');
+        expect(textContent).toContain('sessionAgentActivity.status.succeeded');
+        expect(textContent).not.toContain('running');
+        expect(textContent).toContain('codex');
     });
 });

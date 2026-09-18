@@ -1,5 +1,6 @@
 import {
     BackendTargetKeyV2Schema,
+    ClientEncryptionRequirementSchema,
     BackendTargetRefV2InputSchema,
     PersistedAgentTargetRefV1Schema,
     PersistedBackendTargetRefV2Schema,
@@ -127,6 +128,12 @@ export const LOCAL_ACCOUNT_SETTING_DEFINITIONS = defineSettingDefinitions({
         description: 'Retired terminal-connect field retained only to read and isolate existing local settings',
         storageScope: 'local',
     },
+    clientEncryptionRequirementLocalV1: {
+        schema: ClientEncryptionRequirementSchema,
+        default: 'follow_account',
+        description: 'Trusted device-local minimum Account and Session encryption policy',
+        storageScope: 'local',
+    },
 });
 
 export const LOCAL_ACCOUNT_SETTING_ARTIFACTS = buildSettingArtifacts(LOCAL_ACCOUNT_SETTING_DEFINITIONS);
@@ -140,6 +147,7 @@ export const LOCAL_ACCOUNT_SETTING_KEYS = [
     'serverSelectionActiveTargetKind',
     'serverSelectionActiveTargetId',
     'terminalConnectLegacySecretExportEnabled',
+    'clientEncryptionRequirementLocalV1',
 ] as const satisfies readonly (keyof typeof LOCAL_ACCOUNT_SETTING_DEFINITIONS)[];
 
 export type LocalAccountSettingKey = typeof LOCAL_ACCOUNT_SETTING_KEYS[number];
@@ -168,6 +176,7 @@ export function parseLocalAccountSettings(input: unknown): LocalAccountSettings 
         serverSelectionActiveTargetKind: parseLocalSetting(definitions.serverSelectionActiveTargetKind, record.serverSelectionActiveTargetKind),
         serverSelectionActiveTargetId: parseLocalSetting(definitions.serverSelectionActiveTargetId, record.serverSelectionActiveTargetId),
         terminalConnectLegacySecretExportEnabled: parseLocalSetting(definitions.terminalConnectLegacySecretExportEnabled, record.terminalConnectLegacySecretExportEnabled),
+        clientEncryptionRequirementLocalV1: parseLocalSetting(definitions.clientEncryptionRequirementLocalV1, record.clientEncryptionRequirementLocalV1),
     };
     return normalizeAccountSettingsServerSelection(parsed);
 }

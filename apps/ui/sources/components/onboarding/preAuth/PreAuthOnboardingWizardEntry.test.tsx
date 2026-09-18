@@ -8,6 +8,7 @@ import type {
     DesktopWindowChromePolicy,
     DesktopWindowState,
 } from '@/utils/platform/desktopWindowBridge';
+import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
 
 const reactNativeState = vi.hoisted(() => ({
     windowWidth: 390,
@@ -62,7 +63,13 @@ const wizardControllerMock = vi.hoisted(() => {
         goToStep,
         lastProps: null as (Record<string, unknown> & {
             initialStepId?: unknown;
-            onLoginWithMtls?: () => Promise<void> | void;
+            onContinueWithHomeAuthentication?: (request: Readonly<{
+                method: Readonly<{ id: string; enabledActions: readonly Readonly<{ id: 'login'; mode: 'keyless' }>[] }>;
+                action: Readonly<{ id: 'login'; mode: 'keyless' }>;
+                execution: Readonly<{ kind: 'mtls' }>;
+                authority: Readonly<{ purpose: 'home'; target: typeof authEntryOptionsState.current.homeTarget }>;
+                intendedHome: typeof authEntryOptionsState.current.homeTarget;
+            }>, context: Readonly<{ signal: AbortSignal }>) => Promise<void> | void;
         }) | null,
         current: {
             stepId: 'welcome',
@@ -88,6 +95,11 @@ const wizardControllerMock = vi.hoisted(() => {
 });
 const authEntryOptionsState = vi.hoisted(() => ({
     current: {
+        homeTarget: { kind: 'descriptor' as const, authority: 'current_connection' as const, descriptor: {
+            homeServerIdentityId: 'server-a', canonicalServerUrl: 'https://api.example.test',
+            endpoints: [{ kind: 'https' as const, url: 'https://api.example.test' }],
+        } },
+        authenticationActions: [] as NonNullable<AuthEntryOptions['authenticationActions']>,
         serverAvailability: 'ready',
         serverUrlForCopy: 'https://relay.example.test',
         showAuthActions: true,
@@ -316,6 +328,11 @@ describe('PreAuthOnboardingWizardEntry', () => {
         tauriDesktopState.value = false;
         serverRuntimeState.serverUrl = null;
         authEntryOptionsState.current = {
+            homeTarget: { kind: 'descriptor' as const, authority: 'current_connection' as const, descriptor: {
+                homeServerIdentityId: 'server-a', canonicalServerUrl: 'https://api.example.test',
+                endpoints: [{ kind: 'https' as const, url: 'https://api.example.test' }],
+            } },
+            authenticationActions: [] as NonNullable<AuthEntryOptions['authenticationActions']>,
             serverAvailability: 'ready',
             serverUrlForCopy: 'https://relay.example.test',
             showAuthActions: true,
@@ -686,6 +703,14 @@ describe('PreAuthOnboardingWizardEntry', () => {
 
     it('uses runtimeFetch instead of global fetch for web mtls login', async () => {
         serverRuntimeState.serverUrl = 'https://api.example.test';
+        authEntryOptionsState.current = {
+            ...authEntryOptionsState.current,
+            authenticationActions: [{
+                method: { id: 'mtls', enabledActions: [{ id: 'login' as const, mode: 'keyless' as const }] },
+                action: { id: 'login' as const, mode: 'keyless' as const },
+                execution: { kind: 'mtls' as const },
+            }],
+        };
 
         const fetchMock = vi.fn(async () => {
             throw new Error('Unexpected global fetch call');
@@ -702,8 +727,16 @@ describe('PreAuthOnboardingWizardEntry', () => {
         const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
         const screen = await renderScreen(React.createElement(PreAuthOnboardingWizardEntry));
 
-        const login = wizardControllerMock.lastProps?.onLoginWithMtls?.();
+        const homeTarget = authEntryOptionsState.current.homeTarget;
+        const login = wizardControllerMock.lastProps?.onContinueWithHomeAuthentication?.({
+            method: { id: 'mtls', enabledActions: [{ id: 'login', mode: 'keyless' }] },
+            action: { id: 'login', mode: 'keyless' },
+            execution: { kind: 'mtls' },
+            authority: { purpose: 'home', target: homeTarget },
+            intendedHome: homeTarget,
+        }, { signal: new AbortController().signal });
         serverRuntimeState.serverUrl = 'https://other.example.test';
+        await vi.waitFor(() => expect(finishRequest).toEqual(expect.any(Function)));
         finishRequest(new Response(JSON.stringify({ token: 'mtls-token' }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -711,47 +744,14 @@ describe('PreAuthOnboardingWizardEntry', () => {
         await act(async () => { await login; });
 
         expect(fetchMock).not.toHaveBeenCalled();
-        expect(runtimeFetchMock).toHaveBeenCalledWith('https://api.example.test/v1/auth/mtls', {
+        expect(runtimeFetchMock).toHaveBeenCalledWith('https://api.example.test/v1/auth/mtls', expect.objectContaining({
             method: 'POST',
             signal: expect.any(AbortSignal),
-        });
-        expect(loginWithCredentialsMock).toHaveBeenCalledWith(
-            { token: 'mtls-token' },
-            { target: { serverId: 'server-a', serverUrl: 'https://api.example.test' } },
-        );
-    });
-
-    it('auto-starts web mtls login when auth auto-redirect targets mtls', async () => {
-        serverRuntimeState.serverUrl = 'https://api.example.test';
-        authEntryOptionsState.current = {
-            ...authEntryOptionsState.current,
-            showMtlsLogin: true,
-            autoRedirect: {
-                enabled: true,
-                providerId: null,
-                toKeyedProvision: false,
-                toKeylessLogin: false,
-                toMtls: true,
-                toLegacySignupProvider: false,
-            },
-        };
-        runtimeFetchMock.mockImplementation(async () => new Response(JSON.stringify({ token: 'mtls-token' }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
         }));
-
-        const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
-        await renderScreen(React.createElement(PreAuthOnboardingWizardEntry));
-
-        await vi.waitFor(() => expect(loginWithCredentialsMock).toHaveBeenCalled());
-
-        expect(runtimeFetchMock).toHaveBeenCalledWith('https://api.example.test/v1/auth/mtls', {
-            method: 'POST',
-            signal: expect.any(AbortSignal),
-        });
         expect(loginWithCredentialsMock).toHaveBeenCalledWith(
             { token: 'mtls-token' },
             { target: { serverId: 'server-a', serverUrl: 'https://api.example.test' } },
         );
     });
+
 });

@@ -131,17 +131,17 @@ const model = Object.freeze({
 const dispatchAction: BoundPluginSurfaceController['dispatchAction'] = async () => null;
 const openSurface: BoundPluginSurfaceController['openSurface'] = async () => null;
 
-beforeEach(() => {
+beforeEach(async () => {
     accountSecretSettingsBoundary.read.mockReset();
     accountSecretSettingsBoundary.write.mockReset();
     ordinarySettingsBoundary.read.mockReset();
     ordinarySettingsBoundary.write.mockReset();
-    const profile = upsertServerProfile({
+    const profile = await upsertServerProfile({
         serverUrl: 'https://account-secret-surface',
         name: 'Account secret surface',
     });
     expect(profile.id).toBe('account-secret-surface');
-    expect(setServerProfileIdentityForUrl(
+    expect(await setServerProfileIdentityForUrl(
         profile.serverUrl,
         ACCOUNT_TARGET.serverIdentityId,
     )).toMatchObject({ serverIdentityId: ACCOUNT_TARGET.serverIdentityId });

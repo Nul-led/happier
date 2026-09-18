@@ -35,6 +35,9 @@ export function useNewSessionConnectedServicesAgentOptions(params: Readonly<{
      * selection keys are the canonical qualified keys of these declarations.
      */
     connectedAccounts?: ResolvedAgentCatalogEntry['connectedAccounts'];
+    teamCredentialResources?: ConnectedServicesParams['teamCredentialResources'];
+    teamNameById?: ConnectedServicesParams['teamNameById'];
+    applyTeamCredentialPolicy?: ConnectedServicesParams['applyTeamCredentialPolicy'];
     setBackendNewSessionOptionStateByTargetKey: React.Dispatch<React.SetStateAction<BackendNewSessionOptionStateByTargetKey>>;
     agentOptionState: Record<string, unknown> | null;
     settings: ConnectedServicesParams['settings'];
@@ -67,12 +70,16 @@ export function useNewSessionConnectedServicesAgentOptions(params: Readonly<{
 
     const { connectedServicesBindingsPayload, connectedServicesModelProbeCacheIdentity, connectedServicesAuthChip } = useNewSessionConnectedServices({
         agentCore,
+        defaultAuthAgentId: behaviorAgentId,
         connectedAccounts: params.connectedAccounts ?? [],
         agentOptionState: params.agentOptionState,
         settings: params.settings,
         targetServerId: params.targetServerId,
+        teamCredentialResources: params.teamCredentialResources,
+        teamNameById: params.teamNameById,
         router: params.router,
         setAgentOptionStateForCurrentAgent,
+        applyTeamCredentialPolicy: params.applyTeamCredentialPolicy,
     });
 
     const agentNewSessionOptions = React.useMemo(() => {

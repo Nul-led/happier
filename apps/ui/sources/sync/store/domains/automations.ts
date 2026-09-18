@@ -11,6 +11,13 @@ import { getAutomationDefinitionRunCauseAt } from '@/sync/domains/automations/au
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 
 import type { StoreGet, StoreSet } from './_shared';
+import {
+    mergeWorkflowRunBodies,
+    releaseWorkflowRunBodies,
+    workflowRunRowFromAutomationRun,
+    type WorkflowRunsById,
+    type WorkflowRunsDomain,
+} from './workflowRuns';
 
 const AUTOMATION_RUNS_MAX_ENTRIES_PER_AUTOMATION = loadSyncTuning().automationRunsMaxEntriesPerAutomation;
 
@@ -21,8 +28,16 @@ type AutomationDefinitionTraversal = Readonly<{
 
 type AutomationRunTraversal = Readonly<{
     nextCursor: string;
-    runs: AutomationDefinitionRun[];
+    runIds: string[];
 }>;
+
+/**
+ * The Run state this domain owns is membership, not content: which Runs belong
+ * to an Automation's query, in what order, and where its continuation is. The
+ * bodies live once in `workflowRunsById`, so an exact read and an Automation
+ * list cannot render two versions of the same Run.
+ */
+type AutomationRunsSlice = WorkflowRunsDomain;
 
 function retainCurrentDefinitionDetail(params: Readonly<{
     previous: AutomationDefinition | undefined;
@@ -59,7 +74,8 @@ export type AutomationsDomain = {
     automationDefinitionNextCursor: string | null;
     automationDefinitionWindowExtended: boolean;
     automationDefinitionTraversal: AutomationDefinitionTraversal | null;
-    automationRunsByAutomationId: Record<string, AutomationDefinitionRun[]>;
+    /** Ordered newest-first Run membership. Bodies live in `workflowRunsById`. */
+    automationRunIdsByAutomationId: Record<string, string[]>;
     automationRunNextCursorByAutomationId: Record<string, string | null>;
     automationRunTraversalsByAutomationId: Record<string, AutomationRunTraversal>;
     applyAutomations: (automations: AutomationDefinition[], nextCursor?: string | null) => number | null;
@@ -91,23 +107,31 @@ export type AutomationsDomain = {
     upsertAutomationRun: (run: AutomationDefinitionRun) => void;
 };
 
-function mergeRunsNewestFirst(runs: AutomationDefinitionRun[]): AutomationDefinitionRun[] {
-    const uniqueRuns = new Map<string, AutomationDefinitionRun>();
-    for (const run of runs) {
-        const existing = uniqueRuns.get(run.id);
-        if (!existing || run.updatedAt >= existing.updatedAt) {
-            uniqueRuns.set(run.id, run);
+/**
+ * The Automation query's own ordering: newest cause first, then newest commit.
+ * It reads the shared bodies but stays here, because "newest" for an Automation
+ * history means the trigger occurrence, which is an Automation fact.
+ */
+function orderRunIdsNewestFirst(
+    runsById: WorkflowRunsById,
+    runIds: Iterable<string>,
+): string[] {
+    const unique = Array.from(new Set(runIds)).filter((runId) => runsById[runId]?.automation !== undefined
+        && runsById[runId]?.automation !== null);
+    return unique.sort((leftId, rightId) => {
+        const left = runsById[leftId]!.automation!;
+        const right = runsById[rightId]!.automation!;
+        const rightCauseAt = getAutomationDefinitionRunCauseAt(right);
+        const leftCauseAt = getAutomationDefinitionRunCauseAt(left);
+        if (rightCauseAt !== leftCauseAt) {
+            return rightCauseAt - leftCauseAt;
         }
-    }
-    return Array.from(uniqueRuns.values())
-        .sort((left, right) => {
-            const rightCauseAt = getAutomationDefinitionRunCauseAt(right);
-            const leftCauseAt = getAutomationDefinitionRunCauseAt(left);
-            if (rightCauseAt !== leftCauseAt) {
-                return rightCauseAt - leftCauseAt;
-            }
-            return right.updatedAt - left.updatedAt;
-        });
+        return right.updatedAt - left.updatedAt;
+    });
+}
+
+function toRunIds(runs: readonly AutomationDefinitionRun[]): string[] {
+    return runs.map((run) => run.id);
 }
 
 function indexAutomations(automations: AutomationDefinition[]): Record<string, AutomationDefinition> {
@@ -142,15 +166,19 @@ function replaceAutomationDefinitions(
     return next;
 }
 
+/**
+ * Drop the Run membership of Automations a terminal traversal proved are gone.
+ * The bodies they were holding are retired by `commitAutomationRunWindows`.
+ */
 function retainAutomationRunMembership(
     automationIds: ReadonlySet<string>,
-    runsByAutomationId: Record<string, AutomationDefinitionRun[]>,
+    runIdsByAutomationId: Record<string, string[]>,
     cursorsByAutomationId: Record<string, string | null>,
     traversalsByAutomationId: Record<string, AutomationRunTraversal>,
 ) {
     return {
-        automationRunsByAutomationId: Object.fromEntries(
-            Object.entries(runsByAutomationId).filter(([automationId]) => automationIds.has(automationId)),
+        automationRunIdsByAutomationId: Object.fromEntries(
+            Object.entries(runIdsByAutomationId).filter(([automationId]) => automationIds.has(automationId)),
         ),
         automationRunNextCursorByAutomationId: Object.fromEntries(
             Object.entries(cursorsByAutomationId).filter(([automationId]) => automationIds.has(automationId)),
@@ -159,6 +187,47 @@ function retainAutomationRunMembership(
             Object.entries(traversalsByAutomationId).filter(([automationId]) => automationIds.has(automationId)),
         ),
     };
+}
+
+function collectReferencedRunIds(
+    runIdsByAutomationId: Record<string, string[]>,
+    traversalsByAutomationId: Record<string, AutomationRunTraversal>,
+): Set<string> {
+    const referenced = new Set<string>();
+    for (const runIds of Object.values(runIdsByAutomationId)) {
+        for (const runId of runIds) referenced.add(runId);
+    }
+    for (const traversal of Object.values(traversalsByAutomationId)) {
+        for (const runId of traversal.runIds) referenced.add(runId);
+    }
+    return referenced;
+}
+
+/**
+ * Commit a window change and retire the bodies this domain stopped holding.
+ *
+ * The release candidates are exactly the ids this domain's windows referenced
+ * before the change. A body reached by identity instead — an exact read, a
+ * deep link, a Run whose Automation list was never opened — is in neither set
+ * and is therefore untouched.
+ */
+function commitAutomationRunWindows<S extends AutomationsDomain & AutomationRunsSlice>(
+    previous: S,
+    next: S,
+): S {
+    const retainedRunIds = collectReferencedRunIds(
+        next.automationRunIdsByAutomationId,
+        next.automationRunTraversalsByAutomationId,
+    );
+    const workflowRunsById = releaseWorkflowRunBodies({
+        runsById: next.workflowRunsById,
+        releasedRunIds: collectReferencedRunIds(
+            previous.automationRunIdsByAutomationId,
+            previous.automationRunTraversalsByAutomationId,
+        ),
+        retainedRunIds,
+    });
+    return workflowRunsById === next.workflowRunsById ? next : { ...next, workflowRunsById };
 }
 
 /**
@@ -173,11 +242,10 @@ function retainAutomationRunMembership(
  * full re-seed collapses it back to this bound.
  */
 function retainPassiveRunWindow(
-    runs: AutomationDefinitionRun[],
+    runIds: readonly string[],
     retainedFloor = 0,
-): AutomationDefinitionRun[] {
-    const merged = mergeRunsNewestFirst(runs);
-    return merged.slice(0, Math.max(AUTOMATION_RUNS_MAX_ENTRIES_PER_AUTOMATION, retainedFloor));
+): string[] {
+    return runIds.slice(0, Math.max(AUTOMATION_RUNS_MAX_ENTRIES_PER_AUTOMATION, retainedFloor));
 }
 
 /**
@@ -185,27 +253,32 @@ function retainPassiveRunWindow(
  * bounded newest-first window together with the server continuation that
  * belongs to it. Both facts come from the same response, so nothing here may
  * be updated without the other.
+ *
  */
-function seedAutomationRunWindow<S extends AutomationsDomain>(
+function seedAutomationRunWindow<S extends AutomationsDomain & AutomationRunsSlice>(
     state: S,
     automationId: string,
-    runs: AutomationDefinitionRun[],
+    runsById: WorkflowRunsById,
+    runIds: readonly string[],
     nextCursor: string | null,
+    traversals: Record<string, AutomationRunTraversal>,
 ): S {
     return {
         ...state,
-        automationRunsByAutomationId: {
-            ...state.automationRunsByAutomationId,
-            [automationId]: retainPassiveRunWindow(runs),
+        workflowRunsById: runsById,
+        automationRunIdsByAutomationId: {
+            ...state.automationRunIdsByAutomationId,
+            [automationId]: retainPassiveRunWindow(orderRunIdsNewestFirst(runsById, runIds)),
         },
         automationRunNextCursorByAutomationId: {
             ...state.automationRunNextCursorByAutomationId,
             [automationId]: nextCursor,
         },
+        automationRunTraversalsByAutomationId: traversals,
     };
 }
 
-export function createAutomationsDomain<S extends AutomationsDomain>({
+export function createAutomationsDomain<S extends AutomationsDomain & AutomationRunsSlice>({
     set,
 }: {
     set: StoreSet<S>;
@@ -220,7 +293,7 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
         automationDefinitionNextCursor: null,
         automationDefinitionWindowExtended: false,
         automationDefinitionTraversal: null,
-        automationRunsByAutomationId: {},
+        automationRunIdsByAutomationId: {},
         automationRunNextCursorByAutomationId: {},
         automationRunTraversalsByAutomationId: {},
         applyAutomations: (automations, nextCursor) => {
@@ -243,7 +316,7 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                     };
                 }
                 const replacement = replaceAutomationDefinitions(state.automations, automations);
-                return {
+                return commitAutomationRunWindows(state, {
                     ...state,
                     automations: replacement,
                     automationDefinitionNextCursor: null,
@@ -251,11 +324,11 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                     automationDefinitionTraversal: null,
                     ...retainAutomationRunMembership(
                         new Set(Object.keys(replacement)),
-                        state.automationRunsByAutomationId,
+                        state.automationRunIdsByAutomationId,
                         state.automationRunNextCursorByAutomationId,
                         state.automationRunTraversalsByAutomationId,
                     ),
-                };
+                });
             });
             return traversalToken;
         },
@@ -276,7 +349,7 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                         state.automations,
                         Object.values(traversedAutomations),
                     );
-                    return {
+                    return commitAutomationRunWindows(state, {
                         ...state,
                         automations: replacement,
                         automationDefinitionNextCursor: null,
@@ -284,11 +357,11 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                         automationDefinitionTraversal: null,
                         ...retainAutomationRunMembership(
                             new Set(Object.keys(replacement)),
-                            state.automationRunsByAutomationId,
+                            state.automationRunIdsByAutomationId,
                             state.automationRunNextCursorByAutomationId,
                             state.automationRunTraversalsByAutomationId,
                         ),
-                    };
+                    });
                 }
                 return {
                     ...state,
@@ -324,11 +397,11 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
             runTraversalTokensByAutomationId.delete(automationId);
             set((state) => {
                 const nextAutomations = { ...state.automations };
-                const nextRunsByAutomationId = { ...state.automationRunsByAutomationId };
+                const nextRunIdsByAutomationId = { ...state.automationRunIdsByAutomationId };
                 const nextRunCursorsByAutomationId = { ...state.automationRunNextCursorByAutomationId };
                 const nextRunTraversalsByAutomationId = { ...state.automationRunTraversalsByAutomationId };
                 delete nextAutomations[automationId];
-                delete nextRunsByAutomationId[automationId];
+                delete nextRunIdsByAutomationId[automationId];
                 delete nextRunCursorsByAutomationId[automationId];
                 delete nextRunTraversalsByAutomationId[automationId];
                 const nextDefinitionTraversal = state.automationDefinitionTraversal
@@ -338,14 +411,14 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                     }
                     : null;
                 if (nextDefinitionTraversal) delete nextDefinitionTraversal.automations[automationId];
-                return {
+                return commitAutomationRunWindows(state, {
                     ...state,
                     automations: nextAutomations,
-                    automationRunsByAutomationId: nextRunsByAutomationId,
+                    automationRunIdsByAutomationId: nextRunIdsByAutomationId,
                     automationRunNextCursorByAutomationId: nextRunCursorsByAutomationId,
                     automationRunTraversalsByAutomationId: nextRunTraversalsByAutomationId,
                     automationDefinitionTraversal: nextDefinitionTraversal,
-                };
+                });
             });
         },
         setAutomationRuns: (automationId, runs, nextCursor) => {
@@ -353,22 +426,29 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
             if (traversalToken === null) runTraversalTokensByAutomationId.delete(automationId);
             else runTraversalTokensByAutomationId.set(automationId, traversalToken);
             set((state) => {
+                const workflowRunsById = mergeWorkflowRunBodies(state.workflowRunsById, runs.map(workflowRunRowFromAutomationRun));
                 const nextTraversals = { ...state.automationRunTraversalsByAutomationId };
                 if (nextCursor === null) {
                     delete nextTraversals[automationId];
-                    return {
-                        ...seedAutomationRunWindow(state, automationId, runs, nextCursor),
-                        automationRunTraversalsByAutomationId: nextTraversals,
-                    };
+                    return commitAutomationRunWindows(state, seedAutomationRunWindow(
+                        state,
+                        automationId,
+                        workflowRunsById,
+                        toRunIds(runs),
+                        nextCursor,
+                        nextTraversals,
+                    ));
                 }
-                const existing = state.automationRunsByAutomationId[automationId] ?? [];
-                return {
+                const existing = state.automationRunIdsByAutomationId[automationId] ?? [];
+                const runIds = toRunIds(runs);
+                return commitAutomationRunWindows(state, {
                     ...state,
-                    automationRunsByAutomationId: {
-                        ...state.automationRunsByAutomationId,
+                    workflowRunsById,
+                    automationRunIdsByAutomationId: {
+                        ...state.automationRunIdsByAutomationId,
                         [automationId]: existing.length === 0
-                            ? retainPassiveRunWindow(runs)
-                            : mergeRunsNewestFirst([...existing, ...runs]),
+                            ? retainPassiveRunWindow(orderRunIdsNewestFirst(workflowRunsById, runIds))
+                            : orderRunIdsNewestFirst(workflowRunsById, [...existing, ...runIds]),
                     },
                     automationRunNextCursorByAutomationId: {
                         ...state.automationRunNextCursorByAutomationId,
@@ -376,22 +456,27 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                     },
                     automationRunTraversalsByAutomationId: {
                         ...nextTraversals,
-                        [automationId]: { nextCursor, runs },
+                        [automationId]: { nextCursor, runIds },
                     },
-                };
+                });
             });
             return traversalToken;
         },
         refreshAutomationRunsWindow: (automationId, runs, nextCursor) =>
             set((state) => {
-                const existing = state.automationRunsByAutomationId[automationId] ?? [];
+                const workflowRunsById = mergeWorkflowRunBodies(state.workflowRunsById, runs.map(workflowRunRowFromAutomationRun));
+                const runIds = toRunIds(runs);
+                const existing = state.automationRunIdsByAutomationId[automationId] ?? [];
                 const traversal = state.automationRunTraversalsByAutomationId[automationId];
                 const nextTraversals = traversal
                     ? {
                         ...state.automationRunTraversalsByAutomationId,
                         [automationId]: {
                             ...traversal,
-                            runs: mergeRunsNewestFirst([...traversal.runs, ...runs]),
+                            runIds: orderRunIdsNewestFirst(
+                                workflowRunsById,
+                                [...traversal.runIds, ...runIds],
+                            ),
                         },
                     }
                     : state.automationRunTraversalsByAutomationId;
@@ -399,11 +484,15 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                 // the passive projection: re-seeding it is exactly what the
                 // reader would see by reopening the Automation, and everything
                 // it drops is still reachable through the fresh continuation.
-                if (existing.length <= runs.length) {
-                    return {
-                        ...seedAutomationRunWindow(state, automationId, runs, nextCursor),
-                        automationRunTraversalsByAutomationId: nextTraversals,
-                    };
+                if (existing.length <= runIds.length) {
+                    return commitAutomationRunWindows(state, seedAutomationRunWindow(
+                        state,
+                        automationId,
+                        workflowRunsById,
+                        runIds,
+                        nextCursor,
+                        nextTraversals,
+                    ));
                 }
                 // A larger window is a traversal the reader paid for page by
                 // page, and the cursor it holds is the authoritative server
@@ -411,14 +500,18 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                 // restates the newest page into it: replacing the window would
                 // discard Runs the reader is looking at, and replacing the
                 // continuation would rewind the traversal to the first page.
-                return {
+                return commitAutomationRunWindows(state, {
                     ...state,
-                    automationRunsByAutomationId: {
-                        ...state.automationRunsByAutomationId,
-                        [automationId]: mergeRunsNewestFirst([...existing, ...runs]),
+                    workflowRunsById,
+                    automationRunIdsByAutomationId: {
+                        ...state.automationRunIdsByAutomationId,
+                        [automationId]: orderRunIdsNewestFirst(
+                            workflowRunsById,
+                            [...existing, ...runIds],
+                        ),
                     },
                     automationRunTraversalsByAutomationId: nextTraversals,
-                };
+                });
             }),
         appendAutomationRuns: (automationId, expectedCursor, expectedTraversalToken, runs, nextCursor) => {
             let accepted = false;
@@ -431,25 +524,31 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                 }
                 const traversal = state.automationRunTraversalsByAutomationId[automationId];
                 if (!traversal || traversal.nextCursor !== expectedCursor) return state;
-                const existing = state.automationRunsByAutomationId[automationId] ?? [];
-                const traversedRuns = mergeRunsNewestFirst([...traversal.runs, ...runs]);
+                const workflowRunsById = mergeWorkflowRunBodies(state.workflowRunsById, runs.map(workflowRunRowFromAutomationRun));
+                const runIds = toRunIds(runs);
+                const existing = state.automationRunIdsByAutomationId[automationId] ?? [];
+                const traversedRunIds = orderRunIdsNewestFirst(
+                    workflowRunsById,
+                    [...traversal.runIds, ...runIds],
+                );
                 const nextTraversals = { ...state.automationRunTraversalsByAutomationId };
                 accepted = true;
                 if (nextCursor === null) {
                     runTraversalTokensByAutomationId.delete(automationId);
                     delete nextTraversals[automationId];
-                    return {
+                    return commitAutomationRunWindows(state, {
                         ...state,
-                        automationRunsByAutomationId: {
-                            ...state.automationRunsByAutomationId,
-                            [automationId]: traversedRuns,
+                        workflowRunsById,
+                        automationRunIdsByAutomationId: {
+                            ...state.automationRunIdsByAutomationId,
+                            [automationId]: traversedRunIds,
                         },
                         automationRunNextCursorByAutomationId: {
                             ...state.automationRunNextCursorByAutomationId,
                             [automationId]: null,
                         },
                         automationRunTraversalsByAutomationId: nextTraversals,
-                    };
+                    });
                 }
                 // An explicit page is what the reader asked to see, so it is
                 // retained in full and the server's continuation is recorded
@@ -459,11 +558,15 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                 // nothing said about it. The window this grows is bounded by
                 // the pages the reader actually requested and collapses back
                 // to the passive ceiling on the next full re-seed.
-                return {
+                return commitAutomationRunWindows(state, {
                     ...state,
-                    automationRunsByAutomationId: {
-                        ...state.automationRunsByAutomationId,
-                        [automationId]: mergeRunsNewestFirst([...existing, ...runs]),
+                    workflowRunsById,
+                    automationRunIdsByAutomationId: {
+                        ...state.automationRunIdsByAutomationId,
+                        [automationId]: orderRunIdsNewestFirst(
+                            workflowRunsById,
+                            [...existing, ...runIds],
+                        ),
                     },
                     automationRunNextCursorByAutomationId: {
                         ...state.automationRunNextCursorByAutomationId,
@@ -471,22 +574,27 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                     },
                     automationRunTraversalsByAutomationId: {
                         ...nextTraversals,
-                        [automationId]: { nextCursor, runs: traversedRuns },
+                        [automationId]: { nextCursor, runIds: traversedRunIds },
                     },
-                };
+                });
             });
             return accepted;
         },
         upsertAutomationRun: (run) =>
             set((state) => {
-                const existing = state.automationRunsByAutomationId[run.automationId] ?? [];
-                const filtered = existing.filter((entry) => entry.id !== run.id);
-                const next = retainPassiveRunWindow([run, ...filtered], existing.length);
+                const workflowRunsById = mergeWorkflowRunBodies(state.workflowRunsById, [workflowRunRowFromAutomationRun(run)]);
+                const existing = state.automationRunIdsByAutomationId[run.automationId] ?? [];
+                const filtered = existing.filter((runId) => runId !== run.id);
+                const next = retainPassiveRunWindow(
+                    orderRunIdsNewestFirst(workflowRunsById, [run.id, ...filtered]),
+                    existing.length,
+                );
                 const traversal = state.automationRunTraversalsByAutomationId[run.automationId];
-                return {
+                return commitAutomationRunWindows(state, {
                     ...state,
-                    automationRunsByAutomationId: {
-                        ...state.automationRunsByAutomationId,
+                    workflowRunsById,
+                    automationRunIdsByAutomationId: {
+                        ...state.automationRunIdsByAutomationId,
                         [run.automationId]: next,
                     },
                     automationRunTraversalsByAutomationId: traversal
@@ -494,11 +602,14 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                             ...state.automationRunTraversalsByAutomationId,
                             [run.automationId]: {
                                 ...traversal,
-                                runs: mergeRunsNewestFirst([...traversal.runs, run]),
+                                runIds: orderRunIdsNewestFirst(
+                                    workflowRunsById,
+                                    [...traversal.runIds, run.id],
+                                ),
                             },
                         }
                         : state.automationRunTraversalsByAutomationId,
-                };
+                });
             }),
     };
 }

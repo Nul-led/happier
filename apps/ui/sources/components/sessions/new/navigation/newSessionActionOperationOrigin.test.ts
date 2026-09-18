@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
+import { actionOperationRequestAddressKey } from '@/sync/domains/actionOperations/qualifiedActionOperation';
 
 const getSessionDraftSnapshotMock = vi.hoisted(() => vi.fn());
 const routerPushMock = vi.hoisted(() => vi.fn());
 const actionOperationStoreSnapshot = vi.hoisted(() => ({
-    followUpAttentionByRequestId: new Map<string, string>(),
+    followUpAttentionByRequestKey: new Map<string, string>(),
 }));
 
 vi.mock('expo-router', () => ({
@@ -46,7 +47,7 @@ beforeEach(() => {
     getSessionDraftSnapshotMock.mockReset();
     getSessionDraftSnapshotMock.mockReturnValue({ document: { v: 1 } });
     routerPushMock.mockReset();
-    actionOperationStoreSnapshot.followUpAttentionByRequestId.clear();
+    actionOperationStoreSnapshot.followUpAttentionByRequestKey.clear();
 });
 
 describe('createNewSessionActionOperationOrigin', () => {
@@ -72,7 +73,10 @@ describe('createNewSessionActionOperationOrigin', () => {
     );
 
     it('reopens daemon success whose client-side setup still needs attention', () => {
-        actionOperationStoreSnapshot.followUpAttentionByRequestId.set('request-1', 'Setup needs attention');
+        actionOperationStoreSnapshot.followUpAttentionByRequestKey.set(
+            actionOperationRequestAddressKey({ serverId: 'server-a', accountId: 'account-a', requestId: 'request-1' }),
+            'Setup needs attention',
+        );
         const origin = createNewSessionActionOperationOrigin({ serverId: 'server-a', accountId: 'account-a' }, 'draft-id');
 
         const reopen = origin.resolve(operation({

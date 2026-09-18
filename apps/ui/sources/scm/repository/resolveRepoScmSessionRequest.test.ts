@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installRepositoryScmCommonModuleMocks } from './repositoryScmTestHelpers';
-import { createPartialStorageModuleMock } from '@/dev/testkit/mocks/storage';
+import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
 const storageGetStateMock = vi.hoisted(() => vi.fn());
 
 installRepositoryScmCommonModuleMocks({
-    storage: async (importOriginal) => createPartialStorageModuleMock(importOriginal, {
+    storage: async () => createStorageModuleStub({
         storage: {
             getState: storageGetStateMock,
         },
@@ -14,6 +17,22 @@ installRepositoryScmCommonModuleMocks({
 });
 
 describe('resolveRepoScmSessionRequest', () => {
+    it('qualifies repository identity and resolves the selected Home path without active-Home project fallback', async () => {
+        const session = createSessionFixture({
+            id: 'same-session', serverId: 'home-b', active: true,
+            metadata: { machineId: 'same-machine', path: '~/repo', homeDir: '/home/b', host: 'b' },
+        });
+        storageGetStateMock.mockReturnValue({
+            sessions: { 'same-session': createSessionFixture({ id: 'same-session', serverId: 'home-a' }) },
+            machines: { 'same-machine': createMachineFixture({ id: 'same-machine', active: true, metadata: { homeDir: '/home/a' } }) },
+            sessionListRowsByServerId: { 'home-b': { 'same-session': buildSessionListRenderableFromSession(session) } },
+            machineListByServerId: { 'home-b': [createMachineFixture({ id: 'same-machine', active: true })] },
+        });
+        const { resolveRepoScmSessionRequest } = await import('./resolveRepoScmSessionRequest');
+        expect(resolveRepoScmSessionRequest({ sessionId: 'same-session', serverId: 'home-b' }))
+            .toMatchObject({ machineId: 'same-machine', resolvedPath: '/home/b/repo', repoIdentityKey: 'server:"home-b":machine:"same-machine":/home/b/repo' });
+        expect(resolveRepoScmSessionRequest({ sessionId: 'same-session', serverId: 'missing-home' })).toBeNull();
+    });
     afterEach(() => {
         storageGetStateMock.mockReset();
         storageGetStateMock.mockReturnValue({});

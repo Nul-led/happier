@@ -8,6 +8,7 @@ import {
 import { listUiFeatureToggleDefinitions } from './uiFeatureToggles';
 
 const SHARING_RUNTIME_FEATURE_IDS = [
+    'sessions.conversations',
     'sharing.session',
     'sharing.public',
     'sharing.contentKeys',

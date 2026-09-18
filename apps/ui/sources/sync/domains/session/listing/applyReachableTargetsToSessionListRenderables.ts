@@ -15,6 +15,7 @@ import {
 } from './buildComparableBasePathPeerSessions';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { isSessionAccessRecipient } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 
 type ProjectLookupResult = {
     key?: {
@@ -249,11 +250,7 @@ export function applyReachableTargetsToSessionListRenderables(
             : session.metadataLayoutVersion;
         const isLayout1Participant =
             readSessionMetadataLayoutVersion(rawMetadataLayoutVersion) === 1
-            && (
-                session.accessLevel === 'view'
-                || session.accessLevel === 'edit'
-                || session.accessLevel === 'admin'
-            );
+            && isSessionAccessRecipient(session.access, session.accessLevel);
         if (isLayout1Participant) {
             continue;
         }

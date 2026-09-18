@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveAgentScopedPluginSettingsDeclarations } from './agentScopedPluginSettingsDeclarations';
+import {
+    resolveAgentScopedPluginSettingPresentation,
+    resolveAgentScopedPluginSettingsDeclarations,
+} from './agentScopedPluginSettingsDeclarations';
 import { attachAgentPluginSettings, readAgentUiSetting } from './agentUiSettingLookup';
 
 function field(key: string) {
@@ -16,6 +19,60 @@ function field(key: string) {
 }
 
 describe('resolveAgentScopedPluginSettingsDeclarations', () => {
+    it('resolves one Agent-owned select from its existing localized Settings presentation', () => {
+        const inputs = {
+            pluginProjectionV2: {
+                generation: 7,
+                agentsById: {
+                    opencode: { identity: { pluginId: 'opencode', localId: 'opencode' } },
+                },
+            },
+            pluginProjectionById: {
+                opencode: {
+                    editableSettingsGroups: [{
+                        id: 'agent-settings',
+                        pluginId: 'opencode',
+                        version: 1,
+                        title: 'OpenCode',
+                        scope: { kind: 'account' },
+                        target: { kind: 'agent', agent: { pluginId: 'opencode', localId: 'opencode' } },
+                        presentation: { sections: [], subagentSections: [] },
+                        fields: [{
+                            ...field('opencodeBackendMode'),
+                            title: { key: 'mode.title', fallback: 'Backend mode' },
+                            presentation: {
+                                control: 'select',
+                                options: [
+                                    { value: 'server', title: { key: 'mode.server', fallback: 'Server fallback' } },
+                                    { value: 'acp', title: { key: 'mode.acp', fallback: 'ACP fallback' } },
+                                ],
+                            },
+                        }],
+                    }],
+                },
+            },
+        } as any;
+
+        expect(resolveAgentScopedPluginSettingPresentation({
+            agentId: 'opencode',
+            setting: { scope: 'account', localId: 'opencodeBackendMode' },
+            projectionInputs: inputs,
+            localize: (_pluginId, value) => typeof value === 'string'
+                ? value
+                : ({
+                    'mode.title': 'Mode du moteur',
+                    'mode.server': 'Serveur',
+                    'mode.acp': 'ACP historique',
+                } as Record<string, string>)[value.key] ?? value.fallback,
+        })).toEqual({
+            title: 'Mode du moteur',
+            options: [
+                { value: 'server', title: 'Serveur' },
+                { value: 'acp', title: 'ACP historique' },
+            ],
+        });
+    });
+
     it('does not fall back from a qualified plugin setting to a same-named host setting', () => {
         const reference = { scope: 'account', localId: 'shared-local-id' } as const;
         expect(readAgentUiSetting({ sharedLocalId: 'host' }, reference)).toBeUndefined();

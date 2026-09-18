@@ -19,8 +19,6 @@ import { t } from '@/text';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { Icon } from '@/components/ui/icons/Icon';
-import { resolveNewSessionDraftRouteIdentity } from '@/components/sessions/new/navigation/newSessionDraftRouteIdentity';
-import { buildNewSessionLaunchRouteParams } from '@/components/sessions/new/navigation/newSessionRouteParams';
 import {
     buildAutomationListSegments,
     type AutomationListSegment,
@@ -125,6 +123,18 @@ export function AutomationsScreen() {
 
     const automationSettingsEntry = (
         <ItemGroup>
+            {/*
+             * The Workflows collection is reached from an explicit labelled
+             * action here rather than a new global tab. Its Saved and Runs views
+             * stay independently reachable, so admitted runs remain findable
+             * even with no saved definitions.
+             */}
+            <Item
+                testID="automations-open-workflows"
+                title={t('workflows.title')}
+                subtitle={t('workflows.empty.runsBody')}
+                onPress={() => router.push('/workflows')}
+            />
             <Item
                 testID="automations-open-settings"
                 title={t('automations.settings.title')}
@@ -259,16 +269,10 @@ export function AutomationsScreen() {
             )}
             {machines.length > 0 ? (
                 <FAB
-                    onPress={() => {
-                        const draftId = resolveNewSessionDraftRouteIdentity({ routeDraftId: undefined }).draftId;
-                        router.push({
-                            pathname: '/new',
-                            params: {
-                                ...buildNewSessionLaunchRouteParams({ draftId }),
-                                automation: '1',
-                            },
-                        } as any);
-                    }}
+                    // Creation opens the one shared Automation editor. The
+                    // previous `/new?automation=1` entry mounted the New Session
+                    // screen as a second authoring surface.
+                    onPress={() => { router.push('/automations/new' as any); }}
                     accessibilityLabel={t('automations.screen.createAutomationA11y')}
                 />
             ) : null}

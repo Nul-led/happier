@@ -35,6 +35,7 @@ describe('resumeActionOperationHandoff', () => {
         });
 
         await expect(resumeActionOperationHandoff({
+            serverId: 'home-a',
             handoffId: 'handoff-1',
             sessionId: 'session-1',
             targetMachineId: 'machine-target',
@@ -42,11 +43,11 @@ describe('resumeActionOperationHandoff', () => {
         })).resolves.toEqual({ kind: 'requested' });
 
         expect(machineRpcWithServerScope).toHaveBeenNthCalledWith(1, {
-            machineId: 'machine-target', method: RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET_V3,
+            machineId: 'machine-target', serverId: 'home-a', method: RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET_V3,
             payload: { handoffId: 'handoff-1' },
         });
         expect(machineRpcWithServerScope).toHaveBeenNthCalledWith(2, {
-            machineId: 'machine-target', method: RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESUME_V3,
+            machineId: 'machine-target', serverId: 'home-a', method: RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESUME_V3,
             payload: {
                 handoffId: 'handoff-1',
                 jobId: 'job-1',
@@ -69,11 +70,23 @@ describe('resumeActionOperationHandoff', () => {
         });
 
         await expect(resumeActionOperationHandoff({
+            serverId: 'home-a',
             handoffId: 'handoff-1',
             sessionId: 'session-1',
             targetMachineId: 'machine-target',
             createAttemptId: () => 'attempt-1',
         })).resolves.toEqual({ kind: 'not_available' });
         expect(machineRpcWithServerScope).toHaveBeenCalledOnce();
+    });
+
+    it('does not issue ambient RPC without exact Home evidence', async () => {
+        await expect(resumeActionOperationHandoff({
+            serverId: null,
+            handoffId: 'handoff-1',
+            sessionId: 'session-1',
+            targetMachineId: 'machine-target',
+        })).resolves.toEqual({ kind: 'not_available' });
+
+        expect(machineRpcWithServerScope).not.toHaveBeenCalled();
     });
 });

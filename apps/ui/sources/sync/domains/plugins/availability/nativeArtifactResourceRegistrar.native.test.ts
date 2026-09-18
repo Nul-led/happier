@@ -23,14 +23,24 @@ vi.mock('react-native', () => ({
 const registration = {
     token: 'hpat_test_token',
     storagePartitionId: `hpa_${'a'.repeat(64)}`,
-    storageLocator: {
-        namespace: 'happier-plugin-ui-artifacts-v1',
-        accountKeyHash: 'b'.repeat(64),
-        artifactKeyHash: 'c'.repeat(64),
+    storage: {
+        kind: 'persistent' as const,
+        locator: {
+            namespace: 'happier-plugin-ui-artifacts-v1' as const,
+            accountKeyHash: 'b'.repeat(64),
+            artifactKeyHash: 'c'.repeat(64),
+        },
+        resources: [],
     },
-    resources: [],
     policyTable: { version: 1, routes: [] },
 } satisfies Parameters<PluginNativeArtifactResourceRegistrar['register']>[0];
+
+const nativeRegistration = Object.freeze({
+    token: registration.token,
+    storagePartitionId: registration.storagePartitionId,
+    storage: registration.storage,
+    policyTable: registration.policyTable,
+});
 
 const registered = Object.freeze({ kind: 'registered' as const });
 const registrationFailed = Object.freeze({
@@ -71,6 +81,46 @@ describe('Expo native Artifact registrar', () => {
         expect(registrar.unregister(registration.token)).toBe(false);
     });
 
+    it('projects verified current-load bytes through the existing Expo native token registration', async () => {
+        const registerArtifact = vi.fn(async () => ({ kind: 'registered' }));
+        nativeModuleMock.requireNativeModule.mockReturnValueOnce({
+            registerArtifact,
+            unregisterArtifact: vi.fn(() => true),
+        });
+        const { createExpoPluginNativeArtifactResourceRegistrar } = await import('./nativeArtifactResourceRegistrar.native');
+        const registrar = createExpoPluginNativeArtifactResourceRegistrar();
+
+        const currentLoadRegistration = {
+            token: registration.token,
+            storagePartitionId: registration.storagePartitionId,
+            storage: {
+                kind: 'currentLoad' as const,
+                resources: [{
+                    resourceId: 'r0',
+                    digest: `sha256:${'d'.repeat(64)}`,
+                    byteSize: 1,
+                    bytes: new Uint8Array([1]),
+                }],
+            },
+            policyTable: registration.policyTable,
+        };
+        await expect(registrar.register(currentLoadRegistration)).resolves.toEqual(registered);
+        expect(registerArtifact).toHaveBeenCalledExactlyOnceWith({
+            token: currentLoadRegistration.token,
+            storagePartitionId: currentLoadRegistration.storagePartitionId,
+            storage: {
+                kind: 'currentLoad',
+                resources: [{
+                    resourceId: 'r0',
+                    digest: `sha256:${'d'.repeat(64)}`,
+                    byteSize: 1,
+                    bytesBase64: 'AQ==',
+                }],
+            },
+            policyTable: currentLoadRegistration.policyTable,
+        });
+    });
+
     it('admits the one strict registration result and its synchronous tombstone acknowledgement', async () => {
         const registerArtifact = vi.fn(async () => ({ kind: 'registered' }));
         const unregisterArtifact = vi.fn(() => true);
@@ -79,7 +129,7 @@ describe('Expo native Artifact registrar', () => {
         const registrar = createExpoPluginNativeArtifactResourceRegistrar();
 
         await expect(registrar.register(registration)).resolves.toEqual(registered);
-        expect(registerArtifact).toHaveBeenCalledExactlyOnceWith(registration);
+        expect(registerArtifact).toHaveBeenCalledExactlyOnceWith(nativeRegistration);
         expect(registrar.unregister(registration.token)).toBe(true);
         expect(unregisterArtifact).toHaveBeenCalledExactlyOnceWith(registration.token);
     });
@@ -124,9 +174,9 @@ describe('Expo native Artifact registrar', () => {
         await expect(registrar.register(registration)).resolves.toEqual(documentStartScriptUnavailable);
         await expect(registrar.register(registration)).resolves.toEqual(webMessageListenerUnavailable);
         expect(registerArtifact).toHaveBeenCalledTimes(3);
-        expect(registerArtifact).toHaveBeenNthCalledWith(1, registration);
-        expect(registerArtifact).toHaveBeenNthCalledWith(2, registration);
-        expect(registerArtifact).toHaveBeenNthCalledWith(3, registration);
+        expect(registerArtifact).toHaveBeenNthCalledWith(1, nativeRegistration);
+        expect(registerArtifact).toHaveBeenNthCalledWith(2, nativeRegistration);
+        expect(registerArtifact).toHaveBeenNthCalledWith(3, nativeRegistration);
     });
 
     it('rejects an Android profile-isolation map that omits the factual capability', async () => {

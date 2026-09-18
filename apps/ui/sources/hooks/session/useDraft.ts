@@ -1,6 +1,5 @@
 import { useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
-import { storage } from '@/sync/domains/state/storage';
 import { useIsFocused } from '@react-navigation/native';
 import { sync } from '@/sync/sync';
 import { fireAndForget } from '@/utils/system/fireAndForget';
@@ -13,7 +12,8 @@ import {
 import { containsLikelyNonWhitespace, isLargeTextInputValueLength } from '@/components/ui/forms/largeTextInputPolicy';
 import { useWebLifecycleFlush } from './useWebLifecycleFlush';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
-import { useActiveServerAccountScope } from '@/sync/store/hooks';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
+import type { Session } from '@/sync/domains/state/storageTypes';
 import {
     flushSessionDraft,
     getSessionDraftSnapshot,
@@ -22,6 +22,10 @@ import {
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 
 interface UseDraftOptions {
+    /** Exact route credential authority. A missing or retired lifetime is local-only. */
+    accountLifetime: ServerAccountScopeLifetime | null;
+    /** Exact Session projection selected by the route owner. */
+    session: Session | null;
     autoSaveInterval?: number; // in milliseconds, default 2000
     active?: boolean;
     /**
@@ -49,7 +53,7 @@ export function useDraft(
     sessionId: string | null | undefined,
     value: string,
     onChange: (value: string) => void,
-    options: UseDraftOptions = {}
+    options: UseDraftOptions,
 ) {
     const { autoSaveInterval = 2000 } = options;
     const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -59,9 +63,13 @@ export function useDraft(
     const autosaveSkip = useRef<Readonly<{ sessionId: string; value: string }> | null>(null);
     const routeFocused = useIsFocused();
     const active = options.active ?? routeFocused;
-    const draftScope = useActiveServerAccountScope();
+    const accountLifetime = options.accountLifetime;
+    const draftScope = accountLifetime?.isCurrent() === true ? accountLifetime.scope : null;
+    const isDraftOwnerCurrent = useCallback(() => (
+        accountLifetime !== null && accountLifetime.isCurrent()
+    ), [accountLifetime]);
     const resolvedSessionId = normalizeSessionId(sessionId);
-    const session = resolvedSessionId ? storage.getState().sessions[resolvedSessionId] : null;
+    const session = resolvedSessionId ? options.session : null;
     const repositoryDraft = resolvedSessionId && draftScope
         ? getSessionDraftSnapshot(draftScope, { kind: 'session', sessionId: resolvedSessionId })
         : null;
@@ -81,6 +89,7 @@ export function useDraft(
             String(sessionInitialPrompt.createdAtMs),
             sessionInitialPrompt.sourceSessionId ?? '',
             (sessionInitialPrompt.sourceMessageIds ?? []).join(','),
+            sessionInitialPrompt.source ? JSON.stringify(sessionInitialPrompt.source) : '',
             sessionInitialPrompt.text,
         ].join('\u0000');
     }, [resolvedSessionId, sessionInitialPrompt]);
@@ -92,11 +101,11 @@ export function useDraft(
     // callback. That makes a warm session retry as soon as its account scope becomes available,
     // while Sync remains the only owner of transport readiness, decryption, and reconciliation.
     useEffect(() => {
-        if (!active || !draftScope || !resolvedSessionId) return;
-        fireAndForget(sync.materializeExistingSessionDraft(resolvedSessionId), {
+        if (!active || !draftScope || !accountLifetime || !resolvedSessionId || !isDraftOwnerCurrent()) return;
+        fireAndForget(sync.materializeExistingSessionDraft(resolvedSessionId, accountLifetime), {
             tag: 'useDraft.materializeExistingSessionDraft',
         });
-    }, [active, draftScope, resolvedSessionId]);
+    }, [accountLifetime, active, draftScope, isDraftOwnerCurrent, resolvedSessionId]);
 
     // Do not let a render that React later abandons become the imperative draft authority.
     // Input handlers and draft lifecycle operations update this ref synchronously; controlled
@@ -105,8 +114,27 @@ export function useDraft(
         latestValue.current = value;
     }, [value]);
 
+    // Credential replacement retires the mounted repository owner synchronously. Clear only
+    // the controlled projection; subsequent edits remain ephemeral until a replacement exact
+    // binding is published and must never reach the retired Account replica.
+    useLayoutEffect(() => {
+        if (!accountLifetime) return;
+        const retirement = accountLifetime.onRetire(() => {
+            if (saveTimeoutRef.current) {
+                clearTimeout(saveTimeoutRef.current);
+                saveTimeoutRef.current = null;
+            }
+            latestValue.current = '';
+            lastSavedValue.current = '';
+            lastSessionId.current = null;
+            autosaveSkip.current = null;
+            onChange('');
+        });
+        return () => retirement.dispose();
+    }, [accountLifetime, onChange]);
+
     const saveDraftForSession = useCallback((targetSessionId: string, draft: string) => {
-        if (!draftScope) return;
+        if (!draftScope || !isDraftOwnerCurrent()) return;
         writeExistingSessionDraft({
             scope: draftScope,
             sessionId: targetSessionId,
@@ -116,7 +144,7 @@ export function useDraft(
         if (lastSessionId.current === targetSessionId) {
             lastSavedValue.current = draft;
         }
-    }, [draftScope]);
+    }, [draftScope, isDraftOwnerCurrent]);
 
     // Save draft to storage
     const saveDraft = useCallback((draft: string) => {
@@ -125,7 +153,7 @@ export function useDraft(
     }, [resolvedSessionId, saveDraftForSession]);
 
     const flushDraftForSession = useCallback((targetSessionId: string) => {
-        if (!draftScope) return;
+        if (!draftScope || !isDraftOwnerCurrent()) return;
         fireAndForget(
             flushSessionDraft({
                 scope: draftScope,
@@ -133,7 +161,7 @@ export function useDraft(
             }),
             { tag: 'useDraft.flushSessionDraft' },
         );
-    }, [draftScope]);
+    }, [draftScope, isDraftOwnerCurrent]);
 
     const flushLatestDraftIfChanged = useCallback(() => {
         if (!resolvedSessionId) return;
@@ -185,25 +213,33 @@ export function useDraft(
     }, [onChange, saveDraft, scheduleDraftFlush]);
 
     const clearForkInitialPrompt = useCallback((tag: string) => {
-        if (!resolvedSessionId || !forkInitialPromptText) return;
+        if (!resolvedSessionId || !forkInitialPromptText || !draftScope || !isDraftOwnerCurrent()) return;
         fireAndForget(
             sync.patchSessionMetadataWithRetry(resolvedSessionId, (metadata) =>
                 clearForkInitialPromptV1({ metadata }),
+                {
+                    serverId: draftScope.serverId,
+                    ...(accountLifetime ? { accountLifetime } : {}),
+                },
             ),
             { tag },
         );
-    }, [forkInitialPromptText, resolvedSessionId]);
+    }, [accountLifetime, draftScope, forkInitialPromptText, isDraftOwnerCurrent, resolvedSessionId]);
 
     const clearSessionInitialPrompt = useCallback((tag: string) => {
-        if (!resolvedSessionId || !sessionInitialPromptKey) return;
+        if (!resolvedSessionId || !sessionInitialPromptKey || !draftScope || !isDraftOwnerCurrent()) return;
         consumedSessionInitialPromptKeyRef.current = sessionInitialPromptKey;
         fireAndForget(
             sync.patchSessionMetadataWithRetry(resolvedSessionId, (metadata) =>
                 clearSessionInitialPromptV1({ metadata }),
+                {
+                    serverId: draftScope.serverId,
+                    ...(accountLifetime ? { accountLifetime } : {}),
+                },
             ),
             { tag },
         );
-    }, [resolvedSessionId, sessionInitialPromptKey]);
+    }, [accountLifetime, draftScope, isDraftOwnerCurrent, resolvedSessionId, sessionInitialPromptKey]);
 
     const composeSessionInitialPromptText = useCallback((baseText: string, prompt: SessionInitialPromptV1): string => {
         if (prompt.mode === 'replace') return prompt.text;
@@ -213,28 +249,45 @@ export function useDraft(
     }, []);
 
     const adoptPersistedDraftText = useCallback((draft: string) => {
+        if (saveTimeoutRef.current) {
+            clearTimeout(saveTimeoutRef.current);
+            saveTimeoutRef.current = null;
+        }
         if (latestValue.current !== draft) {
             latestValue.current = draft;
             onChange(draft);
         }
         lastSavedValue.current = draft;
-    }, [onChange]);
+        if (resolvedSessionId) autosaveSkip.current = { sessionId: resolvedSessionId, value: draft };
+    }, [onChange, resolvedSessionId]);
 
-    const persistSeededDraftText = useCallback((draft: string) => {
+    const persistSeededDraftText = useCallback((draft: string, prompt?: SessionInitialPromptV1 | null) => {
         if (latestValue.current !== draft) {
             latestValue.current = draft;
             onChange(draft);
         }
-        saveDraft(draft);
+        if (draftScope && resolvedSessionId && isDraftOwnerCurrent()) {
+            writeExistingSessionDraft({
+                scope: draftScope,
+                sessionId: resolvedSessionId,
+                patch: {
+                    text: draft,
+                    ...(prompt?.source ? { sessionDiscussionSelectionSourceV1: prompt.source } : {}),
+                },
+                materializationIntent: 'seeded',
+            });
+        } else {
+            saveDraft(draft);
+        }
         lastSavedValue.current = draft;
-    }, [onChange, saveDraft]);
+    }, [draftScope, isDraftOwnerCurrent, onChange, resolvedSessionId, saveDraft]);
 
     // Load draft on mount and when focused. When switching sessions, always sync the composer
     // to the target session (draft or empty) to avoid leaking the previous session's text.
     useEffect(() => {
         if (!resolvedSessionId) return;
 
-        const currentStoredDraft = draftScope
+        const currentStoredDraft = draftScope && isDraftOwnerCurrent()
             ? getSessionDraftSnapshot(draftScope, { kind: 'session', sessionId: resolvedSessionId })
                 ?.document.composer.text.value ?? null
             : null;
@@ -261,7 +314,7 @@ export function useDraft(
 
             if (nextDraft !== null) {
                 if (activeSessionInitialPrompt || baseStoredDraft === null) {
-                    persistSeededDraftText(nextDraft);
+                    persistSeededDraftText(nextDraft, activeSessionInitialPrompt);
                 } else {
                     adoptPersistedDraftText(nextDraft);
                 }
@@ -299,7 +352,7 @@ export function useDraft(
                 ? composeSessionInitialPromptText(externalDraft, activeSessionInitialPrompt)
                 : externalDraft;
             if (activeSessionInitialPrompt) {
-                persistSeededDraftText(nextDraft);
+                persistSeededDraftText(nextDraft, activeSessionInitialPrompt);
             } else {
                 adoptPersistedDraftText(nextDraft);
             }
@@ -309,30 +362,46 @@ export function useDraft(
             const nextDraft = activeSessionInitialPrompt
                 ? composeSessionInitialPromptText(forkInitialPromptText, activeSessionInitialPrompt)
                 : forkInitialPromptText;
-            persistSeededDraftText(nextDraft);
+            persistSeededDraftText(nextDraft, activeSessionInitialPrompt);
             clearForkInitialPrompt('useDraft.consumeForkInitialPrompt.focus');
             clearSessionInitialPrompt('useDraft.consumeSessionInitialPrompt.focus.forkPrompt');
         } else if (activeSessionInitialPrompt && canAdoptWithoutExternalDraft) {
             const nextDraft = composeSessionInitialPromptText(currentValue, activeSessionInitialPrompt);
-            persistSeededDraftText(nextDraft);
+            persistSeededDraftText(nextDraft, activeSessionInitialPrompt);
             clearSessionInitialPrompt('useDraft.consumeSessionInitialPrompt.focus');
         } else if (!currentStoredDraft) {
             // Ensure lastSavedValue is empty if there's no draft
             lastSavedValue.current = '';
         }
-    }, [active, activeSessionInitialPrompt, adoptPersistedDraftText, clearForkInitialPrompt, clearSessionInitialPrompt, composeSessionInitialPromptText, draftScope, flushDraftForSession, forkInitialPromptText, onChange, persistSeededDraftText, resolvedSessionId, saveDraftForSession, storedDraft]);
+    }, [active, activeSessionInitialPrompt, adoptPersistedDraftText, clearForkInitialPrompt, clearSessionInitialPrompt, composeSessionInitialPromptText, draftScope, flushDraftForSession, forkInitialPromptText, isDraftOwnerCurrent, onChange, persistSeededDraftText, resolvedSessionId, saveDraftForSession, storedDraft]);
 
     useEffect(() => {
-        if (!draftScope || !resolvedSessionId) return;
+        if (!draftScope || !resolvedSessionId || !isDraftOwnerCurrent()) return;
+        let previousSnapshot = getSessionDraftSnapshot(
+            draftScope,
+            { kind: 'session', sessionId: resolvedSessionId },
+        );
         return subscribeSessionDraft(draftScope, { kind: 'session', sessionId: resolvedSessionId }, () => {
-            const next = getSessionDraftSnapshot(draftScope, { kind: 'session', sessionId: resolvedSessionId })
-                ?.document.composer.text.value;
-            if (typeof next !== 'string' || next === latestValue.current) return;
-            latestValue.current = next;
-            lastSavedValue.current = next;
-            onChange(next);
+            if (!isDraftOwnerCurrent()) return;
+            const nextSnapshot = getSessionDraftSnapshot(
+                draftScope,
+                { kind: 'session', sessionId: resolvedSessionId },
+            );
+            const repositoryDraftWasRemoved = previousSnapshot !== null && nextSnapshot === null;
+            previousSnapshot = nextSnapshot;
+            if (nextSnapshot === null && !repositoryDraftWasRemoved) return;
+
+            const next = nextSnapshot?.document.composer.text.value ?? '';
+            if (next === latestValue.current) {
+                lastSavedValue.current = next;
+                return;
+            }
+            // Pending/conflicted edits stay materialized in the repository. This guard only
+            // protects a caller-owned edit that has not yet reached that canonical replica.
+            if (repositoryDraftWasRemoved && latestValue.current !== lastSavedValue.current) return;
+            adoptPersistedDraftText(next);
         });
-    }, [draftScope, onChange, resolvedSessionId]);
+    }, [adoptPersistedDraftText, draftScope, isDraftOwnerCurrent, resolvedSessionId]);
 
     // Auto-save with smart debouncing
     useEffect(() => {
@@ -415,7 +484,7 @@ export function useDraft(
         if (!targetSessionId) return false;
 
         if (lastSessionId.current !== targetSessionId) {
-            const targetDraft = draftScope
+            const targetDraft = draftScope && isDraftOwnerCurrent()
                 ? getSessionDraftSnapshot(draftScope, { kind: 'session', sessionId: targetSessionId })
                     ?.document.composer.text.value
                 : undefined;
@@ -444,7 +513,7 @@ export function useDraft(
         lastSavedValue.current = '';
         autosaveSkip.current = { sessionId: targetSessionId, value: '' };
         return true;
-    }, [draftScope, flushDraftForSession, onChange, saveDraftForSession]);
+    }, [draftScope, flushDraftForSession, isDraftOwnerCurrent, onChange, saveDraftForSession]);
 
     const clearDraftIfCurrentValueMatches = useCallback((expectedValue: string) => {
         if (!resolvedSessionId) return false;
@@ -503,7 +572,7 @@ export function useDraft(
         if (!targetSessionId) return false;
 
         if (lastSessionId.current !== targetSessionId) {
-            const targetDraft = draftScope
+            const targetDraft = draftScope && isDraftOwnerCurrent()
                 ? getSessionDraftSnapshot(draftScope, { kind: 'session', sessionId: targetSessionId })
                     ?.document.composer.text.value
                 : undefined;
@@ -531,7 +600,7 @@ export function useDraft(
         lastSavedValue.current = snapshot.text;
         autosaveSkip.current = { sessionId: targetSessionId, value: snapshot.text };
         return true;
-    }, [draftScope, onChange, saveDraftForSession]);
+    }, [draftScope, isDraftOwnerCurrent, onChange, saveDraftForSession]);
 
     return {
         clearDraft,

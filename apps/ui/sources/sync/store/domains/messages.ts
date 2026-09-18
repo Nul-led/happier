@@ -46,6 +46,7 @@ import { shouldPreservePendingProjectionAfterCommittedUserLocalId } from '@/sync
 import { isRecoveredHistoryTranscriptObservation } from '@/sync/domains/messages/transcriptObservationProvenance';
 import { clearSessionTranscriptDerivedCachesForSession } from '../../runtime/sessionTranscriptDerivedCaches';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 
 import { persistSessionPermissionData } from './sessionPermissionPersistence';
 import type { SessionPending } from './pending';
@@ -94,6 +95,9 @@ export type SessionMessages = {
 
 export type MessagesDomain = {
     sessionMessages: Record<string, SessionMessages>;
+    /** Transient materialized coverage, including final pages with no renderable messages. */
+    sessionMessagesHistoryStartLoaded: Record<string, true>;
+    markSessionMessagesHistoryStartLoaded: (sessionId: string) => void;
     isMutableToolCall: (sessionId: string, callId: string) => boolean;
     applyMessages: (
         sessionId: string,
@@ -121,15 +125,13 @@ export type MessagesDomain = {
 type MessagesDomainDependencies = {
     sessions: Record<string, Session>;
     sessionLocalStateScope?: ServerAccountScope | null;
-    sessionListRenderables: Record<string, SessionListRenderableSession>;
-    sessionListRowStateByServerId: Readonly<Record<string, Readonly<Record<string, SessionListRenderableSession>>>>;
+    sessionListRowsByServerId: Readonly<Record<string, Readonly<Record<string, SessionListRenderableSession>>>>;
+    ordinarySessionListMembershipByServerId?: Readonly<Record<string, readonly string[] | undefined>>;
     sessionListIndexByServerId: Readonly<Record<string, import('../../domains/sessionList/sessionListIndex').SessionListIndexItem[] | null | undefined>>;
-    concurrentSessionListCacheByServerId: import('../../domains/session/listing/concurrentSessionListCache').ConcurrentSessionListCacheByServerId;
     machines: Record<string, import('../../domains/state/storageTypes').Machine>;
     machineDisplayById: Record<string, import('../../domains/machines/machineDisplayRenderable').MachineDisplayRenderable>;
     profile: { id?: string | null } | null;
     settings: {
-        groupInactiveSessionsByProject?: boolean;
         sessionListActiveGroupingV1?: 'project' | 'date';
         sessionListInactiveGroupingV1?: 'project' | 'date';
         sessionListSectionModeV1?: 'activity' | 'single';
@@ -517,6 +519,12 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
 }): MessagesDomain {
     return {
         sessionMessages: {},
+        sessionMessagesHistoryStartLoaded: {},
+        markSessionMessagesHistoryStartLoaded: (sessionId) => set((state) => {
+            const previous = state.sessionMessagesHistoryStartLoaded ?? {};
+            if (previous[sessionId] === true) return state;
+            return { ...state, sessionMessagesHistoryStartLoaded: { ...previous, [sessionId]: true as const } };
+        }),
         isMutableToolCall: (sessionId: string, callId: string) => {
             const rawSessionMessages = get().sessionMessages[sessionId];
             if (!rawSessionMessages) {
@@ -821,7 +829,7 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                 // IMPORTANT: We extract latestUsage from the mutable reducerState and copy it to the Session object
                 // This ensures latestUsage is available immediately on load, even before messages are fully loaded
                 let updatedSessions = state.sessions;
-                let updatedSessionListRenderables = state.sessionListRenderables;
+                let updatedSessionListRowsByServerId = state.sessionListRowsByServerId;
                 let needsSessionListIndexRebuild = false;
                 let didAnyImmediateWarmCacheRelevantRenderableChange = false;
                 const latestCommittedMessageSeq = deriveLatestCommittedMessageSeq(processedMessages);
@@ -919,7 +927,9 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                     }
                 }
 
-                const previousRenderable = state.sessionListRenderables?.[sessionId];
+                const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+                const activeRows = activeServerId ? state.sessionListRowsByServerId[activeServerId] ?? {} : {};
+                const previousRenderable = activeRows[sessionId];
                 const shouldRefreshSessionListRenderable = Boolean(
                     previousRenderable
                     && nextSessionForRenderable
@@ -958,7 +968,6 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                     if (nextRenderable !== previousRenderable) {
                         const renderableChangeImpact = resolveSessionListRenderableChangeImpact(previousRenderable, nextRenderable, {
                             sessionListIndexSettings: {
-                                groupInactiveSessionsByProject: state.settings.groupInactiveSessionsByProject === true,
                                 activeGroupingV1: state.settings.sessionListActiveGroupingV1,
                                 inactiveGroupingV1: state.settings.sessionListInactiveGroupingV1,
                                 sectionModeV1: state.settings.sessionListSectionModeV1,
@@ -968,9 +977,9 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                         didAnyImmediateWarmCacheRelevantRenderableChange =
                             didAnyImmediateWarmCacheRelevantRenderableChange
                             || renderableChangeImpact.didWarmCacheRelevantRenderableChange;
-                        updatedSessionListRenderables = {
-                            ...updatedSessionListRenderables,
-                            [sessionId]: nextRenderable,
+                        updatedSessionListRowsByServerId = {
+                            ...state.sessionListRowsByServerId,
+                            [activeServerId]: { ...activeRows, [sessionId]: nextRenderable },
                         };
                     }
                 }
@@ -985,12 +994,12 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                 telemetryFields.agentStateVersionChanged = didApplyNewAgentStateVersion ? 1 : 0;
                 telemetryFields.messageStateChanged = didSessionMessagesChange ? 1 : 0;
                 telemetryFields.sessionChanged = updatedSessions === state.sessions ? 0 : 1;
-                telemetryFields.renderableChanged = updatedSessionListRenderables === state.sessionListRenderables ? 0 : 1;
+                telemetryFields.renderableChanged = updatedSessionListRowsByServerId === state.sessionListRowsByServerId ? 0 : 1;
                 telemetryFields.pendingChanged = updatedSessionPending === state.sessionPending ? 0 : 1;
                 if (
                     !didSessionMessagesChange
                     && updatedSessions === state.sessions
-                    && updatedSessionListRenderables === state.sessionListRenderables
+                    && updatedSessionListRowsByServerId === state.sessionListRowsByServerId
                     && updatedSessionPending === state.sessionPending
                 ) {
                     telemetryFields.noop = 1;
@@ -1000,10 +1009,16 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                 telemetryFields.noop = 0;
                 telemetryFields.stateChanged = 1;
 
+                let nextHistoryStartLoaded = state.sessionMessagesHistoryStartLoaded;
+                if (options?.replaceExisting === true && nextHistoryStartLoaded?.[sessionId] === true) {
+                    const { [sessionId]: _coverage, ...remainingHistoryStartLoaded } = nextHistoryStartLoaded;
+                    nextHistoryStartLoaded = remainingHistoryStartLoaded;
+                }
                 const nextStateBase = {
                     ...state,
+                    sessionMessagesHistoryStartLoaded: nextHistoryStartLoaded,
                     sessions: updatedSessions,
-                    sessionListRenderables: updatedSessionListRenderables,
+                    sessionListRowsByServerId: updatedSessionListRowsByServerId,
                     sessionMessages: {
                         ...state.sessionMessages,
                         [sessionId]: {
@@ -1019,8 +1034,14 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                             latestThinkingMessageActivityAtMs,
                             latestReadyEventSeq: nextLatestReadyEventSeq,
                             latestReadyEventAt: nextLatestReadyEventAt,
-                            messagesVersion: existingSession.messagesVersion + (processedMessages.length > 0 ? 1 : 0),
-                            subagentSourceVersion: (existingSession.subagentSourceVersion ?? existingSession.messagesVersion) + (didSubagentSourceChange ? 1 : 0),
+                            // Replacements start a fresh reducer, but not a fresh subscription
+                            // version: equal-width authority swaps must invalidate cached views.
+                            messagesVersion: options?.replaceExisting === true
+                                ? (state.sessionMessages[sessionId]?.messagesVersion ?? 0) + 1
+                                : existingSession.messagesVersion + (processedMessages.length > 0 ? 1 : 0),
+                            subagentSourceVersion: options?.replaceExisting === true
+                                ? (state.sessionMessages[sessionId]?.subagentSourceVersion ?? state.sessionMessages[sessionId]?.messagesVersion ?? 0) + 1
+                                : (existingSession.subagentSourceVersion ?? existingSession.messagesVersion) + (didSubagentSourceChange ? 1 : 0),
                             lastAppliedAgentStateVersion: shouldApplyAgentState
                                 ? agentStateVersion
                                 : existingSession.lastAppliedAgentStateVersion,
@@ -1029,7 +1050,7 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                     },
                     sessionPending: updatedSessionPending
                 };
-                if (updatedSessionListRenderables === state.sessionListRenderables) {
+                if (updatedSessionListRowsByServerId === state.sessionListRowsByServerId) {
                     return nextStateBase;
                 }
                 return finalizeSessionListIndexUpdate(
@@ -1159,7 +1180,8 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
         }),
         evictSessionMessages: (sessionId: string) => set((state) => {
             const existingSession = state.sessionMessages[sessionId];
-            if (!existingSession) {
+            const { [sessionId]: _coverage, ...remainingHistoryStartLoaded } = state.sessionMessagesHistoryStartLoaded ?? {};
+            if (!existingSession && !_coverage) {
                 return state;
             }
 
@@ -1175,17 +1197,20 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
             return {
                 ...state,
                 sessionMessages: remainingSessionMessages,
+                sessionMessagesHistoryStartLoaded: remainingHistoryStartLoaded,
             };
         }),
         resetSessionMessages: (sessionId: string) => set((state) => {
             const existingSession = state.sessionMessages[sessionId];
+            const { [sessionId]: _coverage, ...remainingHistoryStartLoaded } = state.sessionMessagesHistoryStartLoaded ?? {};
             if (!existingSession) {
-                return state;
+                return _coverage ? { ...state, sessionMessagesHistoryStartLoaded: remainingHistoryStartLoaded } : state;
             }
 
             const messagesById: Record<string, Message> = {};
             return {
                 ...state,
+                sessionMessagesHistoryStartLoaded: remainingHistoryStartLoaded,
                 sessionMessages: {
                     ...state.sessionMessages,
                     [sessionId]: {

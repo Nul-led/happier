@@ -50,6 +50,18 @@ const IGNORED_UNTRANSLATED_KEYS = new Set([
     'settingsSession.sessionList.narrowWorkingIndicatorSpinnerTitle',
     'settingsSession.sessionList.workingIndicatorSpinnerTitle',
     'settingsSession.sessionList.identityDisplayAvatarTitle',
+    // Runner artifact platform vocabulary. "Windows", "macOS", "Linux", "x64",
+    // "ARM64" and "Intel" are the vendors' own product names for the exact bytes
+    // that will run; translating them would name something that does not exist.
+    'newSession.temporaryComputer.platform.windows-x64',
+    'newSession.temporaryComputer.platform.darwin-arm64',
+    'newSession.temporaryComputer.platform.darwin-x64',
+    'newSession.temporaryComputer.platform.linux-x64',
+    'newSession.temporaryComputer.platform.linux-arm64',
+    // "Token" is the word developers use unchanged in Polish, Spanish, French,
+    // Italian, Portuguese, Catalan and German. Translating the Saved Secret kind
+    // would name something none of those ecosystems calls it.
+    'secrets.catalog.kinds.token',
 ]);
 // French is the only locale that needs per-(locale, key) exemptions: it shares a large amount of
 // vocabulary with English, so a literal match is frequently the correct French rather than a gap.
@@ -63,6 +75,10 @@ const IGNORED_UNTRANSLATED_KEYS = new Set([
 // Consulted by the whole-app untranslated budget AND by the zero-tolerance namespace assertions
 // below, so there is a single owner for "identical to English on purpose".
 const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<string>>> = {
+    // Team is the canonical product noun in German and Italian as well.
+    // "password" is the ordinary Italian word for it; "parola d'ordine" is not
+    // what anyone types into a credential form.
+    it: new Set(['session.access.team', 'secrets.catalog.kinds.password']),
     fr: new Set([
         'agentInput.acp.modeSectionTitle',
         'agentInput.acp.optionsSectionTitle',
@@ -193,6 +209,7 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'newSession.ghCliBanner.title',
         'newSession.sessionType.simple',
         'newSession.sessionType.worktree',
+        'newSession.temporaryComputer.expiry.dateLabel',
         'newSession.worktree.nameStep.backLabel',
         'notifications.activity.defaultSessionTitle',
         'pluginPermissions.identifiers.installation',
@@ -389,6 +406,14 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
     // German noun is spelled. A key here is a decision, not a gap — translating one would make
     // the UI read worse, not better.
     de: new Set([
+        // "Workflow" is the German noun for this concept, exactly as already ratified for
+        // `tools.workflowActivityView.untitled`. Only the bare plural collides; every other
+        // string in the Workflows namespace is translated.
+        'workflows.title',
+        // "Person" is the ordinary German noun for the individual-access kind, exactly like Team.
+        'session.access.account',
+        'session.access.team',
+        'session.access.teams',
         'agentInput.mode.build',
         'agentInput.mode.plan',
         'agentInput.suggestionGroups.plugins',
@@ -1255,6 +1280,50 @@ describe('i18n integrity', () => {
         expect(compatTts).not.toMatch(/audio for transcription/iu);
     });
 
+    it('keeps every shipped plugin bundle complete across supported locales', () => {
+        const englishBundle = BUNDLED_PLUGIN_TRANSLATIONS.en as Readonly<Record<string, string>>;
+        const missing = SUPPORTED_LANGUAGE_CODES.flatMap((code) => {
+            const bundle = BUNDLED_PLUGIN_TRANSLATIONS[
+                code as keyof typeof BUNDLED_PLUGIN_TRANSLATIONS
+            ] as Readonly<Record<string, string>> | undefined;
+            return Object.keys(englishBundle).flatMap((key) => {
+                const value = bundle?.[key];
+                return typeof value === 'string' && value.trim().length > 0
+                    ? []
+                    : [`${code}: ${key}`];
+            });
+        });
+
+        expect(missing).toEqual([]);
+    });
+
+    it('actually localizes shipped plugin Agent subtitles instead of repeating English', () => {
+        // FX, Droid and Kimi each shipped one English `messages` object mapped over
+        // every locale. That passes a completeness check while showing English to
+        // every non-English user, so completeness alone cannot be the only gate.
+        //
+        // Agent display names are product names and legitimately repeat, so this
+        // asserts the one key family that always carries translatable prose: the
+        // experimental subtitle. A bundle that is genuinely localized produces more
+        // than one distinct value across the supported locales.
+        const englishBundle = BUNDLED_PLUGIN_TRANSLATIONS.en as Readonly<Record<string, string>>;
+        const subtitleKeys = Object.keys(englishBundle)
+            .filter((key) => /^profiles\.aiBackend\..*SubtitleExperimental$/u.test(key));
+
+        expect(subtitleKeys.length).toBeGreaterThan(0);
+
+        const untranslated = subtitleKeys.flatMap((key) => {
+            const values = new Set(SUPPORTED_LANGUAGE_CODES.map((code) => (
+                (BUNDLED_PLUGIN_TRANSLATIONS[
+                    code as keyof typeof BUNDLED_PLUGIN_TRANSLATIONS
+                ] as Readonly<Record<string, string>> | undefined)?.[key]
+            )));
+            return values.size > 1 ? [] : [key];
+        });
+
+        expect(untranslated).toEqual([]);
+    });
+
     it('keeps the provider settings namespace complete in every supported locale', () => {
         const expected = flattenTranslationLeaves(en.settingsProviders)
             .map((leaf) => ({ key: leaf.key, kind: leaf.kind }))
@@ -1313,6 +1382,53 @@ describe('i18n integrity', () => {
         });
 
         expect(mismatches).toEqual([]);
+    });
+
+    // Saved Secrets are the one catalog a person reaches from Profiles, MCP, Voice, providers and
+    // Team sharing, so a locale gap here renders English in the middle of an otherwise localized
+    // credential flow — and worse, in the destructive share disclosure that explains who will be
+    // able to read the secret. `secrets` lives in the per-locale files rather than a typed shared
+    // module, so nothing but this assertion can notice a leaf that exists only in `en`. Shape
+    // parity, not key presence: a leaf that becomes a formatter in `en` breaks `t(...)` at runtime
+    // in every locale that still carries a plain string.
+    it('keeps the Saved Secret namespace complete in every supported locale', () => {
+        const locales = [
+            { code: 'ru', root: ru }, { code: 'pl', root: pl }, { code: 'es', root: es },
+            { code: 'fr', root: fr }, { code: 'it', root: itLocale }, { code: 'pt', root: pt },
+            { code: 'ca', root: ca }, { code: 'de', root: de }, { code: 'zh-Hans', root: zhHans },
+            { code: 'zh-Hant', root: zhHant }, { code: 'ja', root: ja },
+        ];
+        const expected = flattenTranslationLeaves(en.secrets).map((leaf) => `${leaf.key}:${leaf.kind}`).sort();
+        const shapeMismatches = locales.flatMap(({ code, root }) => {
+            const actual = new Set(flattenTranslationLeaves(root.secrets).map((leaf) => `${leaf.key}:${leaf.kind}`));
+            const missing = expected.filter((leaf) => !actual.has(leaf));
+            return missing.length === 0 ? [] : [`${code}: secrets missing ${missing.join(', ')}`];
+        });
+
+        expect(shapeMismatches).toEqual([]);
+
+        const untranslated = Object.values(auditTranslations({ en, locales }))
+            .flatMap((report) => report.untranslatedStrings)
+            .filter((entry) => entry.key.startsWith('secrets.catalog.'))
+            .filter((entry) => !IGNORED_UNTRANSLATED_KEYS_BY_LOCALE[entry.locale]?.has(entry.key));
+        expect(untranslated).toEqual([]);
+    });
+
+    it('keeps Session access translations complete without unintended English fallback', () => {
+        const locales = [
+            { code: 'ru', root: ru }, { code: 'pl', root: pl }, { code: 'es', root: es },
+            { code: 'fr', root: fr }, { code: 'it', root: itLocale }, { code: 'pt', root: pt },
+            { code: 'ca', root: ca }, { code: 'de', root: de }, { code: 'zh-Hans', root: zhHans },
+            { code: 'zh-Hant', root: zhHant }, { code: 'ja', root: ja },
+        ];
+        const expected = flattenTranslationLeaves(en.session.access).map(({ key, kind }) => ({ key, kind }));
+        for (const { root } of locales) {
+            expect(flattenTranslationLeaves(root.session.access).map(({ key, kind }) => ({ key, kind }))).toEqual(expected);
+        }
+        expect(Object.values(auditTranslations({ en, locales }))
+            .flatMap((report) => report.untranslatedStrings)
+            .filter((entry) => entry.key.startsWith('session.access.'))
+            .filter((entry) => !IGNORED_UNTRANSLATED_KEYS_BY_LOCALE[entry.locale]?.has(entry.key))).toEqual([]);
     });
 
     it('keeps plugin-management translations complete without English fallback copy', () => {

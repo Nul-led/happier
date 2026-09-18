@@ -30,6 +30,7 @@ import { generateIrohNativeReleaseEvidence } from '../../../../packages/iroh-nat
 import { buildBrowserIrohWasm } from '../../../../packages/iroh-native/scripts/verify-browser-iroh-wasm.mjs';
 import {
   BROWSER_IROH_NOTICES_ASSET,
+  BROWSER_IROH_SBOM_ASSET,
   BROWSER_IROH_WORKER_ASSET,
   formatBrowserIrohAssetVerification,
   materializeBrowserIrohAssets,
@@ -95,18 +96,21 @@ export async function buildBrowserIrohAssets({ outputRoot }) {
     await bundleBrowserIrohWorker({ outFile: workerBundlePath });
 
     // The WASM this build just produced redistributes the same locked Cargo
-    // graph as the native carriers, so it carries the same licence and NOTICE
-    // obligations. They come from the one evidence owner rather than a
+    // graph as the native carriers, so it carries the same SBOM, licence, and
+    // NOTICE evidence. They come from the one evidence owner rather than a
     // browser-specific inventory of the same dependencies.
     const noticesPath = join(stagingDir, BROWSER_IROH_NOTICES_ASSET);
+    const sbomPath = join(stagingDir, BROWSER_IROH_SBOM_ASSET);
     const evidence = await generateIrohNativeReleaseEvidence({});
     writeFileSync(noticesPath, evidence.notices, 'utf8');
+    writeFileSync(sbomPath, evidence.sbom, 'utf8');
 
     const packaged = materializeBrowserIrohAssets({
       outputRoot,
       generatedDir: built.outDir,
       workerBundlePath,
       noticesPath,
+      sbomPath,
     });
     return { ...packaged, measurements: built.measurements };
   } finally {

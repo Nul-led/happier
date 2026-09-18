@@ -93,9 +93,9 @@ describe('useFriendsEnabled', () => {
         const { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } = await import('@/sync/api/capabilities/serverFeaturesClient');
         resetServerFeaturesClientForTests();
 
-        const primary = profiles.upsertServerProfile({ serverUrl: 'http://primary.example.test', name: 'Primary' });
-        const legacy = profiles.upsertServerProfile({ serverUrl: 'http://legacy.example.test', name: 'Legacy' });
-        profiles.setActiveServerId(primary.id, { scope: 'device' });
+        const primary = await profiles.upsertServerProfile({ serverUrl: 'http://primary.example.test', name: 'Primary' });
+        const legacy = await profiles.upsertServerProfile({ serverUrl: 'http://legacy.example.test', name: 'Legacy' });
+        await profiles.setActiveServerId(primary.id, { scope: 'device' });
 
         const okPayload = buildServerFeaturesResponse({ friendsEnabled: true });
         vi.stubGlobal(

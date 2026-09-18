@@ -15,6 +15,7 @@ import { resolveExecutionRunActionDefaultPermissionMode } from '@/sync/domains/a
 import { resolveActionExecutionFailureMessage } from '@/sync/ops/actions/resolveActionExecutionFailureMessage';
 import { resolveSessionGoalFailurePresentation } from '@/sync/ops/sessionGoalOperationFailure';
 import { t } from '@/text';
+import type { ServerAccountScope, ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 
 export type SessionComposerActionExecutor = Readonly<{
   execute: (actionId: ActionId, input: unknown, ctx?: ActionExecutorContext) => Promise<ActionExecuteResult>;
@@ -33,6 +34,7 @@ type ClearSessionGoal = (sessionId: string) => Promise<SessionGoalOperationResul
 
 type SessionComposerTextSnapshot = Readonly<{
   sessionId: string;
+  accountScope?: ServerAccountScope | null;
   text: string;
 }>;
 
@@ -95,6 +97,8 @@ function clearAcceptedComposer(args: Readonly<{
 export async function executeSessionComposerResolution(args: Readonly<{
   resolved: SessionComposerSendResolution;
   sessionId: string;
+  accountLifetime?: ServerAccountScopeLifetime | null;
+  accountScope?: ServerAccountScope | null;
   agentId: string;
   backendTarget?: BackendTargetRefV2Input | null;
   permissionMode: string | null;
@@ -119,10 +123,20 @@ export async function executeSessionComposerResolution(args: Readonly<{
   clearSessionGoal?: ClearSessionGoal;
   modalAlert: (title: string, message: string) => void;
 }>): Promise<boolean> {
+  const accountScope = args.accountLifetime
+    ? (args.accountLifetime.isCurrent() ? args.accountLifetime.scope : null)
+    : args.accountScope ?? null;
+  const isAccountCurrent = () => args.accountLifetime
+    ? args.accountLifetime.isCurrent()
+    : accountScope !== null;
   const ctx: ActionExecutorContext = {
     defaultSessionId: args.sessionId,
     surface: 'ui',
     placement: 'slash_command',
+    ...(accountScope ? {
+      serverId: accountScope.serverId,
+      expectedAccountId: accountScope.accountId,
+    } : {}),
   };
 
   if (args.resolved.kind === 'goal') {
@@ -233,9 +247,13 @@ export async function executeSessionComposerResolution(args: Readonly<{
   if (actionId === 'review.start') {
     const instructions = rest.trim();
     if (instructions.length === 0) {
+      if (!accountScope || !isAccountCurrent()) return false;
       clearAcceptedComposer(args);
       // Insert a local-only draft card instead of sending a transcript message.
-      storage.getState().createSessionActionDraft(args.sessionId, {
+      storage.getState().createSessionActionDraft(accountScope, {
+        serverId: accountScope.serverId,
+        sessionId: args.sessionId,
+      }, {
         actionId: 'review.start',
         input: buildExecutionRunActionDraftInputForUi({
           actionId: 'review.start' as any,
@@ -284,8 +302,12 @@ export async function executeSessionComposerResolution(args: Readonly<{
     const permissionMode = resolveExecutionRunActionDefaultPermissionMode(actionId) ?? 'read_only';
     const instructions = rest.trim();
     if (instructions.length === 0) {
+      if (!accountScope || !isAccountCurrent()) return false;
       clearAcceptedComposer(args);
-      storage.getState().createSessionActionDraft(args.sessionId, {
+      storage.getState().createSessionActionDraft(accountScope, {
+        serverId: accountScope.serverId,
+        sessionId: args.sessionId,
+      }, {
         actionId,
         input: buildExecutionRunActionDraftInputForUi({
           actionId: actionId as any,

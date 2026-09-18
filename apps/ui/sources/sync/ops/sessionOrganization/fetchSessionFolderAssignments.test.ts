@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
+
+const assignmentKey = (sessionId: string) => buildSessionOrganizationSessionKey('server-a', sessionId);
 
 const mocks = vi.hoisted(() => ({
     serverFetch: vi.fn(),
@@ -56,7 +59,7 @@ describe('fetchAndApplySessionFolderAssignments', () => {
             sessionIds: ['s1'],
         });
 
-        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey['server-a:s1']).toBe('folder-a');
+        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey[assignmentKey('s1')]?.folderId).toBe('folder-a');
         expect(getStorage().getState().sessionOrganizationLoadingByServerId['server-a']).toBe(false);
     });
 
@@ -80,8 +83,8 @@ describe('fetchAndApplySessionFolderAssignments', () => {
             expect.anything(),
             expect.anything(),
         );
-        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey['server-a:s1']).toBe('folder-a');
-        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey['server-a:s2']).toBe('folder-b');
+        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey[assignmentKey('s1')]?.folderId).toBe('folder-a');
+        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey[assignmentKey('s2')]?.folderId).toBe('folder-b');
     });
 
     it('marks requested sessions without returned assignments as unassigned', async () => {
@@ -97,9 +100,9 @@ describe('fetchAndApplySessionFolderAssignments', () => {
         });
 
         expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey).toMatchObject({
-            'server-a:s1': null,
-            'server-a:s2': 'folder-b',
-            'server-a:s3': null,
+            [assignmentKey('s1')]: { sessionId: 's1', folderId: null },
+            [assignmentKey('s2')]: { sessionId: 's2', folderId: 'folder-b' },
+            [assignmentKey('s3')]: { sessionId: 's3', folderId: null },
         });
     });
 
@@ -123,7 +126,7 @@ describe('fetchAndApplySessionFolderAssignments', () => {
         resolveResponse?.(snapshotResponse([]));
         await fetchPromise;
 
-        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey['server-a:s1']).toBe('folder-local');
+        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey[assignmentKey('s1')]?.folderId).toBe('folder-local');
     });
 
     it('does not duplicate missing-only assignment requests that are already in flight', async () => {
@@ -156,8 +159,8 @@ describe('fetchAndApplySessionFolderAssignments', () => {
 
         expect(mocks.serverFetch).toHaveBeenCalledTimes(1);
         expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey).toMatchObject({
-            'server-a:s1': 'folder-a',
-            'server-a:s2': null,
+            [assignmentKey('s1')]: { sessionId: 's1', folderId: 'folder-a' },
+            [assignmentKey('s2')]: { sessionId: 's2', folderId: null },
         });
     });
 
@@ -183,7 +186,9 @@ describe('fetchAndApplySessionFolderAssignments', () => {
         const { getStorage } = await import('@/sync/domains/state/storageStore');
         const { fetchAndApplySessionFolderAssignments } = await import('./fetchSessionFolderAssignments');
         getStorage().setState({
-            sessionOrganizationFolderAssignmentsBySessionKey: { 'server-a:s1': 'folder-a' },
+            sessionOrganizationFolderAssignmentsBySessionKey: {
+                [assignmentKey('s1')]: { sessionId: 's1', folderId: 'folder-a' },
+            },
         });
 
         await fetchAndApplySessionFolderAssignments({
@@ -295,7 +300,7 @@ describe('fetchAndApplySessionFolderAssignments', () => {
             shouldContinue: () => false,
         });
 
-        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey['server-a:s1']).toBeUndefined();
+        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey[assignmentKey('s1')]).toBeUndefined();
     });
 
     it('treats a missing folder assignment route as requested sessions being unassigned', async () => {
@@ -311,7 +316,7 @@ describe('fetchAndApplySessionFolderAssignments', () => {
             sessionIds: ['s1'],
         })).resolves.toBeUndefined();
 
-        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey['server-a:s1']).toBeNull();
+        expect(getStorage().getState().sessionOrganizationFolderAssignmentsBySessionKey[assignmentKey('s1')]?.folderId).toBeNull();
         expect(getStorage().getState().sessionOrganizationLoadingByServerId['server-a']).toBe(false);
     });
 });

@@ -24,6 +24,10 @@ import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import { sync } from '@/sync/sync';
 import { upsertAutomationAssignmentToggle } from '@/components/automations/screens/automationAssignmentsModel';
 import {
+    isAutomationWorkflowRecipe,
+    type AutomationEditorExecutionRecipe,
+} from '@/sync/domains/automations/automationEditorDraft';
+import {
     formatAutomationRunStateLabel,
     formatAutomationRunCauseLabel,
     formatAutomationTriggerLabel,
@@ -40,6 +44,10 @@ import { Text } from '@/components/ui/text/Text';
 import { layout } from '@/components/ui/layout/layout';
 import { t } from '@/text';
 import { navigateWithBlurOnWeb } from '@/utils/platform/deferOnWeb';
+import {
+    createAdmittedWorkflowRunRoute,
+    createAutomationRunDetailRoute,
+} from '@/sync/domains/workflows/workflowRunRoute';
 import { getMachineDisplayName, isMachineOnline } from '@/utils/sessions/machineUtils';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
@@ -98,12 +106,25 @@ function formatDate(ms: number, unknownLabel: string): string {
  * permission mode; a fact only it can supply is reported as unavailable rather
  * than omitted, so an unreadable definition never reads as a complete summary.
  */
+/**
+ * The one-shot target a recipe records, or `null` for a managed workflow
+ * recipe — which has no one-shot target at all.
+ */
+function automationRecipeOneShotTarget(
+    recipe: AutomationEditorExecutionRecipe | null | undefined,
+): AutomationRunExecutionTargetV1 | null {
+    if (!recipe || isAutomationWorkflowRecipe(recipe)) return null;
+    return recipe.target;
+}
+
 function formatAutomationTargetSummary(params: Readonly<{
-    targetType: AutomationTargetTypeV3;
+    /** `null` is the definition owner's managed-workflow discriminator. */
+    targetType: AutomationTargetTypeV3 | null;
     recipeTarget: AutomationRunExecutionTargetV1 | null;
     existingSessionId: string | null;
     sessions: readonly Session[];
 }>): string {
+    if (params.targetType === null) return t('workflows.conversion.automationTarget');
     switch (params.targetType) {
         case 'newSession':
             return t('automations.form.trigger.targetNewSession');
@@ -737,11 +758,11 @@ export function AutomationDetailScreen() {
                 request.cursor,
             );
             if (!isCurrentRoute(request.automationId, request.generation)) return;
-            const latestRuns = storage.getState().automationRunsByAutomationId[request.automationId] ?? [];
+            const latestRunIds = storage.getState().automationRunIdsByAutomationId[request.automationId] ?? [];
             const currentLastIndex = request.currentPageLastRunId === null
                 ? -1
-                : latestRuns.findIndex((run) => run.id === request.currentPageLastRunId);
-            const nextAnchorId = currentLastIndex < 0 ? undefined : latestRuns[currentLastIndex + 1]?.id;
+                : latestRunIds.indexOf(request.currentPageLastRunId);
+            const nextAnchorId = currentLastIndex < 0 ? undefined : latestRunIds[currentLastIndex + 1];
             if (nextAnchorId) {
                 setRunHistoryAnchorState({
                     generation: request.generation,
@@ -789,18 +810,27 @@ export function AutomationDetailScreen() {
 
     const handleRunNow = React.useCallback(async () => {
         if (!automationId || !mutationsEnabled) return;
-        await runNowController.runNow(automationId, {
+        const admitted = await runNowController.runNow(automationId, {
             isInvocationCurrent: () => isCurrentRoute(automationId, routeGeneration),
         });
-    }, [automationId, isCurrentRoute, mutationsEnabled, routeGeneration, runNowController]);
+        // Navigation follows the receipt's declared correspondence, never the
+        // newest history row. A legacy receipt navigates nowhere, as before.
+        const route = createAdmittedWorkflowRunRoute(admitted?.workflowRun);
+        if (route === null || !isCurrentRoute(automationId, routeGeneration)) return;
+        navigateWithBlurOnWeb(() => router.push(route as never));
+    }, [automationId, isCurrentRoute, mutationsEnabled, routeGeneration, router, runNowController]);
 
     const handleOpenRun = React.useCallback((runId: string) => {
-        if (!automationId) return;
-        navigateWithBlurOnWeb(() => router.push({
-            pathname: '/automations/[id]/runs/[runId]',
-            params: { id: automationId, runId },
-        }));
-    }, [automationId, router]);
+        if (!automationId || !automation) return;
+        // A managed-workflow Automation's history rows open the one shared Run
+        // body; every other target keeps the incumbent Automation Run detail.
+        const route = createAutomationRunDetailRoute({
+            automationId,
+            runId,
+            targetType: automation.targetType,
+        });
+        navigateWithBlurOnWeb(() => router.push(route as never));
+    }, [automation, automationId, router]);
 
     const handleToggleEnabled = React.useCallback(async () => {
         if (!automationId || !automation || !mutationsEnabled || enabledMutationPendingRef.current) return;
@@ -1083,7 +1113,7 @@ export function AutomationDetailScreen() {
     const targetSummary = formatAutomationTargetSummary({
         targetType: automation.targetType,
         recipeTarget: automation.detail.kind === 'available'
-            ? automation.detail.value.executionRecipe?.target ?? null
+            ? automationRecipeOneShotTarget(automation.detail.value.executionRecipe)
             : null,
         existingSessionId: automation.existingSessionId,
         sessions,

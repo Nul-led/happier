@@ -1,5 +1,6 @@
 import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
 import { resolveSessionListItemOrganizationEligibility } from '@/sync/domains/sessionList/sessionListIndex';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import {
     createSessionBulkActionProgressTracker,
@@ -390,9 +391,17 @@ async function executeArchiveAction(params: Readonly<{
                     });
                 }
 
+                const address = normalizeSessionAddress(target.serverId, target.sessionId);
+                if (!address) {
+                    return createTargetResult(target, 'failed', {
+                        reasonCode: 'missing_session_address',
+                        reason: 'Active archive requires an exact Home-qualified Session target',
+                    });
+                }
+
                 await stopSessionAndMaybeArchive({
                     target,
-                    sessionId: target.sessionId,
+                    address,
                     hideInactiveSessions: params.context.hideInactiveSessions === true,
                     isPinned: target.pinned === true,
                     archiveAfterStop: 'always',
@@ -429,7 +438,7 @@ async function executeUnarchiveAction(params: Readonly<{
                     reason: 'Session is not archived',
                 });
             }
-            if (target.hasAdminAccess !== true) {
+            if (target.canUnarchive !== true) {
                 return createPermissionDeniedResult(target);
             }
             return resultFromMutation(

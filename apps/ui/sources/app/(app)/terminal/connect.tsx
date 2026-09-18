@@ -9,12 +9,13 @@ import { t } from '@/text';
 import { clearPendingTerminalConnect, getPendingTerminalConnect, setPendingTerminalConnect } from '@/sync/domains/pending/pendingTerminalConnect';
 import { normalizeServerUrl, upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServerSwitch';
 import { getActiveServerUrl } from '@/sync/domains/server/serverProfiles';
-import { resolveEffectiveServerUrlOverride, shouldSwitchToServerUrl } from '@/sync/domains/server/url/serverUrlOverridePolicy';
+import { shouldSwitchToServerUrl } from '@/sync/domains/server/url/serverUrlOverridePolicy';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import {
     buildTerminalConnectAuthRedirectHref,
     buildTerminalConnectDeepLink,
     parseTerminalConnectUrl,
+    resolveTerminalConnectPreAuthTarget,
     type ParsedTerminalConnectUrl,
 } from '@/utils/path/terminalConnectUrl';
 import { consumeTerminalConnectWebBootstrapHash } from '@/utils/path/terminalConnectWebBootstrap';
@@ -32,15 +33,21 @@ export default function TerminalConnectScreen() {
     const [supportsTokenOnly, setSupportsTokenOnly] = React.useState(false);
     const [strictAuthUrl, setStrictAuthUrl] = React.useState<string | null>(null);
     const [homeConnectionDescriptor, setHomeConnectionDescriptor] = React.useState<HomeConnectionDescriptorV1 | undefined>();
+    const [requiresUpdate, setRequiresUpdate] = React.useState(false);
     const [hashProcessed, setHashProcessed] = React.useState(false);
     const auth = useAuth();
     const authRedirectTriggeredRef = React.useRef(false);
+    const preAuthTarget = resolveTerminalConnectPreAuthTarget({
+        requestedServerUrl: serverUrlFromHash,
+        activeServerUrl: normalizeServerUrl(getActiveServerUrl()),
+        ...(homeConnectionDescriptor ? { homeConnectionDescriptor } : {}),
+    });
 
     const navigateBackOrToHome = React.useCallback(() => {
         safeRouterBack({ router, fallbackHref: '/' });
     }, [router]);
 
-    const { processAuthUrl, isLoading } = useConnectTerminal({
+    const { processAuthUrl, processParsedAuthUrl, isLoading } = useConnectTerminal({
         allowLoopbackServerOverride: true,
         onSuccess: () => {
             router.replace('/');
@@ -54,16 +61,29 @@ export default function TerminalConnectScreen() {
 
         let sourceUrl = window.location.href;
         let parsed = parseTerminalConnectUrl(sourceUrl);
-        if (!parsed && window.sessionStorage) {
-            const bootstrappedHash = consumeTerminalConnectWebBootstrapHash(window.sessionStorage);
-            if (bootstrappedHash) {
-                const suffix = bootstrappedHash.startsWith('#') ? bootstrappedHash : `#${bootstrappedHash}`;
-                sourceUrl = `${window.location.href}${suffix}`;
-                parsed = parseTerminalConnectUrl(sourceUrl);
+        if (!parsed) {
+            try {
+                const bootstrappedHash = window.sessionStorage
+                    ? consumeTerminalConnectWebBootstrapHash(window.sessionStorage)
+                    : null;
+                if (bootstrappedHash) {
+                    const suffix = bootstrappedHash.startsWith('#') ? bootstrappedHash : `#${bootstrappedHash}`;
+                    sourceUrl = `${window.location.href}${suffix}`;
+                    parsed = parseTerminalConnectUrl(sourceUrl);
+                }
+            } catch {
+                // The visible URL remains authoritative when bootstrap storage is unavailable.
             }
         }
 
         if (parsed?.publicKeyB64Url) {
+            if (parsed.compatibility?.admission === 'update_required') {
+                window.history.replaceState(null, '', window.location.pathname);
+                setRequiresUpdate(true);
+                setHashProcessed(true);
+                fireAndForget(processParsedAuthUrl(parsed), { tag: 'TerminalConnectScreen.updateRequired' });
+                return;
+            }
             setPublicKey(parsed.publicKeyB64Url);
             setPairing(parsed.pairing);
             setServerIdentityId(parsed.serverIdentityId ?? null);
@@ -72,13 +92,16 @@ export default function TerminalConnectScreen() {
             setHomeConnectionDescriptor(parsed.homeConnectionDescriptor);
 
             const activeServerUrl = normalizeServerUrl(getActiveServerUrl());
-            const requestedServerUrl = normalizeServerUrl(parsed.serverUrl ?? '');
-            const effectiveTarget = resolveEffectiveServerUrlOverride({
+            const requestedServerUrl = normalizeServerUrl(
+                parsed.serverUrl ?? parsed.homeConnectionDescriptor?.canonicalServerUrl ?? '',
+            );
+            const preAuthTarget = resolveTerminalConnectPreAuthTarget({
                 requestedServerUrl,
                 activeServerUrl,
-                allowLoopbackOverride: auth.isAuthenticated,
+                ...(parsed.homeConnectionDescriptor ? { homeConnectionDescriptor: parsed.homeConnectionDescriptor } : {}),
+                allowLegacyLoopbackOverride: auth.isAuthenticated,
             });
-            const desiredServerUrl = effectiveTarget || activeServerUrl || getActiveServerUrl();
+            const desiredServerUrl = preAuthTarget?.pendingServerUrl ?? '';
             if (desiredServerUrl) {
                 setPendingTerminalConnect({
                     publicKeyB64Url: parsed.publicKeyB64Url,
@@ -107,20 +130,21 @@ export default function TerminalConnectScreen() {
         }
 
         setHashProcessed(true);
-    }, [auth.isAuthenticated, hashProcessed]);
+    }, [auth.isAuthenticated, hashProcessed, processParsedAuthUrl]);
 
     React.useEffect(() => {
         if (auth.isAuthenticated || !hashProcessed || !publicKey || authRedirectTriggeredRef.current) {
             return;
         }
 
-        authRedirectTriggeredRef.current = true;
         const activeServerUrl = normalizeServerUrl(getActiveServerUrl());
-        const effectiveTarget = resolveEffectiveServerUrlOverride({
-            requestedServerUrl: serverUrlFromHash,
-            activeServerUrl,
-        });
-        const desiredServerUrl = effectiveTarget || activeServerUrl || getActiveServerUrl();
+        if (!preAuthTarget) return;
+        if (!preAuthTarget.canNavigateToAuth) {
+            return;
+        }
+        authRedirectTriggeredRef.current = true;
+        const effectiveTarget = preAuthTarget.pendingServerUrl;
+        const desiredServerUrl = preAuthTarget.pendingServerUrl;
         setPendingTerminalConnect({
             publicKeyB64Url: publicKey,
             serverUrl: desiredServerUrl,
@@ -145,7 +169,7 @@ export default function TerminalConnectScreen() {
             }
             router.replace(buildTerminalConnectAuthRedirectHref({ serverUrl: desiredServerUrl }));
         })(), { tag: 'TerminalConnectScreen.redirectToAuth' });
-    }, [auth.isAuthenticated, auth.refreshFromActiveServer, hashProcessed, homeConnectionDescriptor, pairing, publicKey, router, serverIdentityId, serverUrlFromHash, supportsTokenOnly]);
+    }, [auth.isAuthenticated, auth.refreshFromActiveServer, hashProcessed, homeConnectionDescriptor, pairing, preAuthTarget, publicKey, router, serverIdentityId, supportsTokenOnly]);
 
     const handleConnect = React.useCallback(async () => {
         if (!publicKey) {
@@ -195,6 +219,21 @@ export default function TerminalConnectScreen() {
     }
 
     if (!auth.isAuthenticated && publicKey) {
+        if (preAuthTarget?.canNavigateToAuth === false) {
+            return (
+                <TerminalConnectSurface
+                    testID="terminal-connect-surface"
+                    state={{
+                        kind: 'message',
+                        title: t('welcome.serverUnavailableTitle'),
+                        description: t('welcome.serverUnavailableBody', {
+                            serverUrl: homeConnectionDescriptor?.canonicalServerUrl ?? serverUrlFromHash ?? '',
+                        }),
+                        tone: 'critical',
+                    }}
+                />
+            );
+        }
         return (
             <TerminalConnectSurface
                 testID="terminal-connect-surface"
@@ -207,6 +246,19 @@ export default function TerminalConnectScreen() {
     }
 
     if (!publicKey) {
+        if (requiresUpdate) {
+            return (
+                <TerminalConnectSurface
+                    testID="terminal-connect-surface"
+                    state={{
+                        kind: 'message',
+                        title: t('connect.updateRequiredTitle'),
+                        description: t('connect.legacyPairingUpdateRequiredBody'),
+                        tone: 'critical',
+                    }}
+                />
+            );
+        }
         return (
             <TerminalConnectSurface
                 testID="terminal-connect-surface"

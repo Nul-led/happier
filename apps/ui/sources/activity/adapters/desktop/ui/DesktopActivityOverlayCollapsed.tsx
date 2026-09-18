@@ -17,9 +17,16 @@ import { useScreenReaderEnabled } from '@/hooks/ui/useScreenReaderEnabled';
 import {
     DesktopActivityOverlayChromeBackdrop,
     createDesktopActivityOverlayChromeStyle,
+    createDesktopActivityOverlayFocusRingStyle,
     createDesktopActivityOverlayInteriorSurfaceStyle,
     DesktopActivityOverlayChromeHighlights,
 } from './DesktopActivityOverlayChrome';
+import {
+    isDesktopActivityOverlayActivationKey,
+    readDesktopActivityOverlayEventKey,
+    type DesktopActivityOverlayKeyEvent,
+} from './desktopActivityOverlayKeyboard';
+import { composeDesktopActivityOverlayAccessibilityLabel } from './desktopActivityOverlayAccessibilityLabel';
 import { DesktopActivityOverlayBrandMark } from './DesktopActivityOverlayBrandMark';
 import { desktopActivityOverlayChromeMetrics } from './DesktopActivityOverlayChromeMetrics';
 import { useDesktopActivityOverlayMotionProgress } from './DesktopActivityOverlayMotionFrame';
@@ -27,7 +34,7 @@ import {
     resolveDesktopActivityOverlaySurfaceTestID,
     type DesktopActivityOverlayVisualMode,
 } from './DesktopActivityOverlayVisualMode';
-import type { DesktopActivityOverlayHoverablePressableState } from './DesktopActivityOverlayHoverablePressableState';
+import type { DesktopActivityOverlayPressableInteractionState } from './DesktopActivityOverlayPressableInteractionState';
 import type { DesktopActivityOverlayUiModel } from './shared/desktopActivityOverlayUiModel';
 import { DESKTOP_OVERLAY_BOUNCE_SPRING } from '../motion/desktopOverlaySprings';
 import {
@@ -110,16 +117,23 @@ function resolveRenderedUrgencyLevel(params: Readonly<{
     return params.level;
 }
 
+export type DesktopActivityOverlayCollapsedPressOrigin = 'pointer' | 'keyboard';
+
 export function DesktopActivityOverlayCollapsed(props: Readonly<{
     model: DesktopActivityOverlayUiModel;
     visualMode: DesktopActivityOverlayVisualMode;
     physicalNotchWidth?: number | null;
     dragHandlers: Readonly<Record<string, unknown>>;
-    onPress: () => void;
+    pressableRef?: React.Ref<View>;
+    onPress: (origin: DesktopActivityOverlayCollapsedPressOrigin) => void;
     onHoverIn?: () => void;
     onHoverOut?: () => void;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
+    // `react-native-web` turns Enter/Space into `onPress` from its own bubble-phase `onKeyDown`
+    // handler, so the capture phase is the only place that still knows the press came from the
+    // keyboard — and only a keyboard press should move focus into the expanded island.
+    const keyboardActivationRef = React.useRef(false);
     const openProgress = useDesktopActivityOverlayMotionProgress();
     const reduceMotion = useReducedMotionPreference();
     const screenReaderEnabled = useScreenReaderEnabled();
@@ -168,13 +182,11 @@ export function DesktopActivityOverlayCollapsed(props: Readonly<{
             openProgress,
         }),
     ];
-    const accessibilityLabel = [
+    const accessibilityLabel = composeDesktopActivityOverlayAccessibilityLabel([
         activeSlide.title,
         activeSlide.subtitle,
-        typeof props.model.collapsed.sessionCount === 'number' ? String(props.model.collapsed.sessionCount) : null,
-    ]
-        .filter((value) => typeof value === 'string' && value.trim().length > 0)
-        .join('. ');
+        props.model.collapsed.sessionCount,
+    ]);
 
     React.useEffect(() => {
         setActiveSlideIndex(0);
@@ -230,7 +242,11 @@ export function DesktopActivityOverlayCollapsed(props: Readonly<{
         : null;
     const standbyIdle = urgencyLevel === 'idle';
     const readyBounceKey = readyBounceCue?.key ?? null;
-    const slideIdentityKey = `${activeSlide.id}:${activeSlide.title}:${activeSlide.subtitle ?? ''}`;
+    const slideIdentityKey = JSON.stringify([
+        activeSlide.id,
+        activeSlide.title,
+        activeSlide.subtitle,
+    ]);
     const urgencyPulseStyle = useAnimatedStyle(() => ({
         opacity: urgencyPulseOpacity.value,
     }));
@@ -296,21 +312,36 @@ export function DesktopActivityOverlayCollapsed(props: Readonly<{
 
     return (
         <Pressable
+            ref={props.pressableRef}
             testID="desktop-activity-overlay-collapsed"
-            accessibilityLabel={accessibilityLabel || undefined}
-            onPress={props.onPress}
+            accessibilityRole="button"
+            accessibilityLabel={accessibilityLabel}
+            onPress={() => {
+                const keyboardOrigin = keyboardActivationRef.current;
+                keyboardActivationRef.current = false;
+                props.onPress(keyboardOrigin ? 'keyboard' : 'pointer');
+            }}
             onHoverIn={props.onHoverIn}
             onHoverOut={props.onHoverOut}
             style={(state) => {
                 const { pressed } = state;
-                const hovered = (state as DesktopActivityOverlayHoverablePressableState).hovered === true;
+                const interaction = state as DesktopActivityOverlayPressableInteractionState;
+                const hovered = interaction.hovered === true;
 
                 return [
                     containerStyle,
                     hovered ? { opacity: 0.985 } : null,
                     pressed ? { opacity: 0.92 } : null,
+                    interaction.focused === true ? createDesktopActivityOverlayFocusRingStyle(theme) : null,
                 ];
             }}
+            {...({
+                onKeyDownCapture: (event: DesktopActivityOverlayKeyEvent) => {
+                    keyboardActivationRef.current = isDesktopActivityOverlayActivationKey(
+                        readDesktopActivityOverlayEventKey(event),
+                    );
+                },
+            } as Record<string, unknown>)}
             {...props.dragHandlers}
         >
             {readyBounceCue ? (

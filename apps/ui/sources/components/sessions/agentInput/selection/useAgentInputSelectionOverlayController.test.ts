@@ -9,6 +9,40 @@ import { useAgentInputSelectionOverlayController } from './useAgentInputSelectio
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('useAgentInputSelectionOverlayController', () => {
+    it('dismisses active overlay work when a chip toggles closed or another overlay replaces it', async () => {
+        const onSelectionOverlayDismiss = vi.fn();
+        const hook = await renderHook(() => useAgentInputSelectionOverlayController({
+            shouldRenderSessionModeChip: true,
+            canChangePermission: true,
+            hasMachinePopover: true,
+            hasPathPopover: true,
+            hasResumePopover: true,
+            hasProfilePopover: true,
+            hasEnvVarsPopover: true,
+            hasAgentPickerOptions: true,
+            extraActionChips: [],
+            onSelectionOverlayDismiss,
+        }));
+
+        await act(async () => {
+            hook.getCurrent().openSelectionOverlay('machine', 'chip');
+            hook.getCurrent().toggleSelectionOverlay('machine', 'chip');
+        });
+        expect(hook.getCurrent().activeSelectionOverlay).toBeNull();
+        expect(onSelectionOverlayDismiss).toHaveBeenCalledWith('machine');
+
+        onSelectionOverlayDismiss.mockClear();
+        await act(async () => {
+            hook.getCurrent().openSelectionOverlay('machine', 'chip');
+            hook.getCurrent().openSelectionOverlay('path', 'chip');
+        });
+        expect(hook.getCurrent().activeSelectionOverlay).toEqual({ id: 'path', anchor: 'chip' });
+        expect(onSelectionOverlayDismiss).toHaveBeenCalledTimes(1);
+        expect(onSelectionOverlayDismiss).toHaveBeenCalledWith('machine');
+
+        await hook.unmount();
+    });
+
     it('toggles the active selection overlay and switches anchors when another overlay opens', async () => {
         const hook = await renderHook(() => useAgentInputSelectionOverlayController({
             shouldRenderSessionModeChip: true,

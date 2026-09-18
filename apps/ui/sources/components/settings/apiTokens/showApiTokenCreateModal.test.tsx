@@ -9,6 +9,7 @@ import { showApiTokenCreateModal } from './showApiTokenCreateModal';
 describe('showApiTokenCreateModal', () => {
     it('routes shared/action dismissal and host teardown through the secret lifecycle owner', async () => {
         const controller = {
+            refreshEncryptionAvailability: vi.fn(async () => {}),
             requestRevealDismiss: vi.fn(async (confirm: () => Promise<boolean>) => await confirm()),
             clearReveal: vi.fn(),
         } as unknown as ApiTokenSettingsController;
@@ -19,6 +20,7 @@ describe('showApiTokenCreateModal', () => {
         };
 
         showApiTokenCreateModal(controller, modal as Pick<IModal, 'show' | 'confirm'>);
+        expect(controller.refreshEncryptionAvailability).toHaveBeenCalledOnce();
         const config = show.mock.calls[0]![0];
         expect(config).toMatchObject({
             closeOnBackdrop: true,
@@ -32,6 +34,7 @@ describe('showApiTokenCreateModal', () => {
 
     it('fails open when the warning host cannot present, so a one-time secret never traps the user', async () => {
         const controller = {
+            refreshEncryptionAvailability: vi.fn(async () => {}),
             requestRevealDismiss: vi.fn(async (confirm: () => Promise<boolean>) => await confirm()),
             clearReveal: vi.fn(),
         } as unknown as ApiTokenSettingsController;

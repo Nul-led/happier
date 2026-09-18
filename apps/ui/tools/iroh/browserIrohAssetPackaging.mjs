@@ -47,11 +47,13 @@ export const BROWSER_IROH_PACKAGED_ASSETS = [
  * recorded, and verified so a web output cannot be published without it.
  */
 export const BROWSER_IROH_NOTICES_ASSET = 'THIRD-PARTY-NOTICES.txt';
+export const BROWSER_IROH_SBOM_ASSET = 'sbom.cdx.json';
 
-/** Everything a complete browser Iroh carrier contains: runtime bytes plus their licence evidence. */
+/** Everything a complete browser Iroh carrier contains: runtime bytes plus their release evidence. */
 export const BROWSER_IROH_STAGED_FILES = [
   ...BROWSER_IROH_PACKAGED_ASSETS,
   BROWSER_IROH_NOTICES_ASSET,
+  BROWSER_IROH_SBOM_ASSET,
 ];
 
 /** The wasm-bindgen runtime outputs copied straight through, keyed by their generated name. */
@@ -94,20 +96,23 @@ function sha256(bytes) {
  * or an isolated temporary root. `generatedDir` is a wasm-bindgen `--target web`
  * output directory; `workerBundlePath` is the bundled SharedWorker entry;
  * `noticesPath` is the locked-Cargo licence evidence for the graph that WASM was
- * built from. The asset directory is replaced rather than merged, so a renamed
- * or removed asset cannot linger and be served next to a newer one.
+ * built from; `sbomPath` is the CycloneDX inventory from that same evidence
+ * owner. The asset directory is replaced rather than merged, so a renamed or
+ * removed asset cannot linger and be served next to a newer one.
  */
 export function materializeBrowserIrohAssets({
   outputRoot,
   generatedDir,
   workerBundlePath,
   noticesPath,
+  sbomPath,
 }) {
   const assetDir = resolveBrowserIrohAssetDir(outputRoot);
 
   const sources = new Map([
     [BROWSER_IROH_WORKER_ASSET, workerBundlePath],
     [BROWSER_IROH_NOTICES_ASSET, noticesPath],
+    [BROWSER_IROH_SBOM_ASSET, sbomPath],
   ]);
   for (const name of GENERATED_ASSETS) {
     sources.set(name, join(generatedDir, name));

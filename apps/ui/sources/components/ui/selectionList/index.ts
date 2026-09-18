@@ -23,6 +23,7 @@ export {
     type SelectionListQuickActionShortcut,
     type SelectionListSection,
     type SelectionListSectionDescriptor,
+    type SelectionListSelection,
     type SelectionListStatusVariant,
     type SelectionListStep,
     type SelectionListTextEllipsizeMode,

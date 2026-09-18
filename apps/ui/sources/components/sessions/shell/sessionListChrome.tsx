@@ -1,14 +1,14 @@
 import React from 'react';
-import { View, Pressable, Platform, Image as ReactNativeImage, type StyleProp, type ViewProps, type ViewStyle } from 'react-native';
+import { View, Pressable, Platform, I18nManager, Image as ReactNativeImage, type StyleProp, type ViewProps, type ViewStyle } from 'react-native';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
-import { useLocalSettingMutable, useSettingMutable } from '@/sync/domains/state/storage';
+import { useSettingMutable } from '@/sync/domains/state/storage';
 import { useUnistyles } from 'react-native-unistyles';
 import { RecoveryKeyReminderBanner } from '@/components/account/RecoveryKeyReminderBanner';
 import { UpdateBanner } from '@/components/ui/feedback/UpdateBanner';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Text } from '@/components/ui/text/Text';
 import { Eyebrow } from '@/components/ui/text/Eyebrow';
-import { TabBadge } from '@/components/ui/navigation/tabBadge/TabBadge';
 import { t } from '@/text';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import {
@@ -19,31 +19,18 @@ import {
 
 import { sessionListStyles } from './sessionListStyles';
 import { resolveProjectGroupHeaderMenuItems } from './resolveProjectGroupHeaderMenuItems';
-import { resolveSessionsListHeaderMenuItems } from './resolveSessionsListHeaderMenuItems';
+import {
+    resolveSessionListViewOptionSelectionDelta,
+    resolveSessionListViewOptionsPresentation,
+    type SessionListViewOptionDescriptor,
+} from './sessionListViewOptionsPresentation';
 import type { RegisterSessionFolderDropTarget } from './useSessionListViewState';
 import { useWorkspaceFavicon } from './useWorkspaceFavicon';
-import { resolveWorkspaceRootTreeRowId } from './drop-resolution/treeRowId';
+import { resolveWorkspaceRootTreeRowId, treeRowId } from './drop-resolution/treeRowId';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { useApplySettings } from '@/sync/store/settingsWriters';
 
-const ORDERING_MENU_IDS = {
-    custom: 'custom',
-    created: 'created',
-    updated: 'updated',
-    activeGroupingProject: 'activeGroupingProject',
-    activeGroupingDate: 'activeGroupingDate',
-    inactiveGroupingProject: 'inactiveGroupingProject',
-    inactiveGroupingDate: 'inactiveGroupingDate',
-    sectionModeActivity: 'sectionModeActivity',
-    sectionModeSingle: 'sectionModeSingle',
-    hideInactiveSessions: 'hideInactiveSessions',
-    sessionFolderViewModeTree: 'sessionFolderViewModeTree',
-    sessionListFolderSortModeFoldersFirst: 'sessionListFolderSortModeFoldersFirst',
-    sessionListFolderSortModeMixed: 'sessionListFolderSortModeMixed',
-    sessionListStorageFilterAll: 'sessionListStorageFilterAll',
-    sessionListStorageFilterPersisted: 'sessionListStorageFilterPersisted',
-    sessionListStorageFilterDirect: 'sessionListStorageFilterDirect',
-} as const;
 const HEADER_ACTION_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
 const HEADER_ACTION_TARGET_STYLE = {
     minWidth: HEADER_ACTION_TARGET_SIZE,
@@ -125,118 +112,168 @@ function useMeasuredDropTargetRegistration(params: Readonly<{
     return { ref, onLayout };
 }
 
-export const SessionListOrderingMenuButton = React.memo(function SessionListOrderingMenuButton(props: Readonly<{
+export const SessionListViewOptionsButton = React.memo(function SessionListViewOptionsButton(props: Readonly<{
     placement?: 'top' | 'bottom' | 'left' | 'right';
     onMenuOpenChange?: (open: boolean) => void;
+    serverId?: string | null;
 }>) {
     const styles = sessionListStyles;
     const { theme } = useUnistyles();
-    const [orderingMode, setOrderingMode] = useSettingMutable('sessionListOrderingModeV1');
-    const [sessionListSectionModeV1, setSessionListSectionModeV1] = useSettingMutable('sessionListSectionModeV1');
-    const [sessionListActiveGroupingV1, setSessionListActiveGroupingV1] = useSettingMutable('sessionListActiveGroupingV1');
-    const [sessionListInactiveGroupingV1, setSessionListInactiveGroupingV1] = useSettingMutable('sessionListInactiveGroupingV1');
-    const [hideInactiveSessions, setHideInactiveSessions] = useSettingMutable('hideInactiveSessions');
-    const [sessionFolderViewModeV1, setSessionFolderViewModeV1] = useSettingMutable('sessionFolderViewModeV1');
-    const [sessionListFolderSortModeV1, setSessionListFolderSortModeV1] = useSettingMutable('sessionListFolderSortModeV1');
-    const [sessionsListStorageFilter, setSessionsListStorageFilter] = useLocalSettingMutable('sessionsListStorageFilter');
-    const sessionFoldersFeatureEnabled = useFeatureEnabled('sessions.folders');
-    const externalSessionsEnabled = useFeatureEnabled('sessions.direct');
+    const [sessionListOrderingModeV1] = useSettingMutable('sessionListOrderingModeV1');
+    const [sessionListSectionModeV1] = useSettingMutable('sessionListSectionModeV1');
+    const [sessionListActiveGroupingV1] = useSettingMutable('sessionListActiveGroupingV1');
+    const [sessionListInactiveGroupingV1] = useSettingMutable('sessionListInactiveGroupingV1');
+    const [sessionListAttentionPromotionModeV1] = useSettingMutable('sessionListAttentionPromotionModeV1');
+    const [sessionListWorkingPlacementModeV1] = useSettingMutable('sessionListWorkingPlacementModeV1');
+    const [sessionFolderViewModeV1] = useSettingMutable('sessionFolderViewModeV1');
+    const [sessionListFolderSortModeV1] = useSettingMutable('sessionListFolderSortModeV1');
+    const settings = {
+        sessionListOrderingModeV1,
+        sessionListSectionModeV1,
+        sessionListActiveGroupingV1,
+        sessionListInactiveGroupingV1,
+        sessionListAttentionPromotionModeV1,
+        sessionListWorkingPlacementModeV1,
+        sessionFolderViewModeV1,
+        sessionListFolderSortModeV1,
+    };
+    const applySettings = useApplySettings();
+    const sessionFoldersFeatureEnabled = useFeatureEnabled('sessions.folders', props.serverId
+        ? { scopeKind: 'spawn', serverId: props.serverId }
+        : { scopeKind: 'main_selection' });
     const [menuOpen, setMenuOpen] = React.useState(false);
     const actionIconColor = theme.colors.text.secondary;
-    const sectionMode = sessionListSectionModeV1 === 'single' ? 'single' : 'activity';
-    const activeGrouping = sessionListActiveGroupingV1 === 'date' ? 'date' : 'project';
-    const inactiveGrouping = sessionListInactiveGroupingV1 === 'date' ? 'date' : 'project';
-    const isHideInactiveSessionsEnabled = hideInactiveSessions === true;
-    const hasActiveStorageFilter = externalSessionsEnabled && sessionsListStorageFilter !== 'all';
-
-    const menuItems = resolveSessionsListHeaderMenuItems({
-        orderingMode,
-        sectionMode,
-        activeGrouping,
-        inactiveGrouping,
-        isHideInactiveSessionsEnabled,
-        showFolderViewMode: sessionFoldersFeatureEnabled,
-        folderViewMode: sessionFolderViewModeV1 === 'tree' ? 'tree' : 'off',
-        folderSortMode: sessionListFolderSortModeV1 === 'mixed' ? 'mixed' : 'foldersFirst',
-        showStorageFilter: externalSessionsEnabled,
-        storageFilter: sessionsListStorageFilter,
-        actionIconColor,
+    const presentation = resolveSessionListViewOptionsPresentation({
+        ...settings,
+        foldersFeatureEnabled: sessionFoldersFeatureEnabled,
     });
+    const withSelection = React.useCallback((
+        items: ReadonlyArray<SessionListViewOptionDescriptor>,
+        selectedId: string,
+    ): ReadonlyArray<DropdownMenuItem> => items.map((item) => ({
+        ...item,
+        checked: item.id === selectedId,
+        rightElement: item.id === selectedId
+            ? <Icon name="check" size={16} color={actionIconColor} />
+            : undefined,
+    })), [actionIconColor]);
+    const selectedTitle = React.useCallback((
+        items: ReadonlyArray<SessionListViewOptionDescriptor>,
+        selectedId: string,
+    ) => items.find((item) => item.id === selectedId)?.title, []);
+    const menuItems = React.useMemo<ReadonlyArray<DropdownMenuItem>>(() => [
+        ...withSelection(presentation.layoutItems, `layout:${presentation.selectedLayout}`).map((item) => ({
+            ...item,
+            category: t('settingsSession.sessionList.layoutTitle'),
+        })),
+        ...(presentation.showSectionGrouping ? [{
+            id: 'activeGrouping',
+            title: t('settingsFeatures.sessionListActiveGrouping'),
+            category: t('settingsSession.sessionList.sectionsTitle'),
+            rightElement: <Text style={{ color: theme.colors.text.secondary }}>{selectedTitle(
+                presentation.activeGroupingItems,
+                presentation.selectedActiveGroupingId,
+            )}</Text>,
+            submenu: {
+                items: withSelection(presentation.activeGroupingItems, presentation.selectedActiveGroupingId),
+                search: false,
+                maxWidthCap: 320,
+            },
+        }, {
+            id: 'inactiveGrouping',
+            title: t('settingsFeatures.sessionListInactiveGrouping'),
+            category: t('settingsSession.sessionList.sectionsTitle'),
+            rightElement: <Text style={{ color: theme.colors.text.secondary }}>{selectedTitle(
+                presentation.inactiveGroupingItems,
+                presentation.selectedInactiveGroupingId,
+            )}</Text>,
+            submenu: {
+                items: withSelection(presentation.inactiveGroupingItems, presentation.selectedInactiveGroupingId),
+                search: false,
+                maxWidthCap: 320,
+            },
+        } satisfies DropdownMenuItem] : []),
+        {
+            id: 'attentionPlacement',
+            title: t('sessionsList.attentionSectionTitle'),
+            category: t('settingsSession.sessionList.attentionPlacementTitle'),
+            rightElement: <Text style={{ color: theme.colors.text.secondary }}>{selectedTitle(
+                presentation.attentionItems,
+                `attention:${presentation.selectedAttentionPlacement}`,
+            )}</Text>,
+            submenu: {
+                items: withSelection(
+                    presentation.attentionItems,
+                    `attention:${presentation.selectedAttentionPlacement}`,
+                ),
+                search: false,
+                maxWidthCap: 320,
+            },
+        },
+        {
+            id: 'workingPlacement',
+            title: t('sessionsList.workingSectionTitle'),
+            category: t('settingsSession.sessionList.attentionPlacementTitle'),
+            rightElement: <Text style={{ color: theme.colors.text.secondary }}>{selectedTitle(
+                presentation.workingItems,
+                `working:${presentation.selectedWorkingPlacement}`,
+            )}</Text>,
+            submenu: {
+                items: withSelection(
+                    presentation.workingItems,
+                    `working:${presentation.selectedWorkingPlacement}`,
+                ),
+                search: false,
+                maxWidthCap: 320,
+            },
+        },
+        ...(presentation.showProjectOrdering
+            ? withSelection(presentation.orderingItems, `ordering:${presentation.selectedOrdering}`).map((item) => ({
+                ...item,
+                category: t('settingsSession.sessionList.sortWithinProjectsTitle'),
+            }))
+            : []),
+        ...(presentation.showFolderOptions ? [{
+            id: 'folderDisplay',
+            title: t('settingsSession.sessionList.folderTreeView'),
+            category: t('settingsSession.sessionList.menuSections.show'),
+            rightElement: <Text style={{ color: theme.colors.text.secondary }}>{selectedTitle(
+                presentation.folderDisplayItems,
+                `folderDisplay:${presentation.selectedFolderDisplay}`,
+            )}</Text>,
+            submenu: {
+                items: withSelection(
+                    presentation.folderDisplayItems,
+                    `folderDisplay:${presentation.selectedFolderDisplay}`,
+                ),
+                search: false,
+                maxWidthCap: 320,
+            },
+        }, {
+            id: 'folderSort',
+            title: t('settingsSession.sessionList.folderSortModeTitle'),
+            category: t('settingsSession.sessionList.menuSections.show'),
+            rightElement: <Text style={{ color: theme.colors.text.secondary }}>{selectedTitle(
+                presentation.folderSortItems,
+                `folderSort:${presentation.selectedFolderSort}`,
+            )}</Text>,
+            submenu: {
+                items: withSelection(
+                    presentation.folderSortItems,
+                    `folderSort:${presentation.selectedFolderSort}`,
+                ),
+                search: false,
+                maxWidthCap: 320,
+            },
+        } satisfies DropdownMenuItem] : []),
+    ], [presentation, selectedTitle, theme.colors.text.secondary, withSelection]);
 
     const handleMenuSelect = React.useCallback((itemId: string) => {
-        if (itemId === ORDERING_MENU_IDS.custom
-            || itemId === ORDERING_MENU_IDS.created
-            || itemId === ORDERING_MENU_IDS.updated
-        ) {
-            setOrderingMode(itemId);
-            setMenuOpen(false);
-            return;
-        }
-        if (itemId === ORDERING_MENU_IDS.activeGroupingProject) {
-            setSessionListActiveGroupingV1('project');
-            return;
-        }
-        if (itemId === ORDERING_MENU_IDS.activeGroupingDate) {
-            setSessionListActiveGroupingV1('date');
-            return;
-        }
-        if (itemId === ORDERING_MENU_IDS.inactiveGroupingProject) {
-            setSessionListInactiveGroupingV1('project');
-            return;
-        }
-        if (itemId === ORDERING_MENU_IDS.inactiveGroupingDate) {
-            setSessionListInactiveGroupingV1('date');
-            return;
-        }
-        if (itemId === ORDERING_MENU_IDS.sectionModeActivity) {
-            setSessionListSectionModeV1('activity');
-            return;
-        }
-        if (itemId === ORDERING_MENU_IDS.sectionModeSingle) {
-            setSessionListSectionModeV1('single');
-            return;
-        }
-        if (itemId === ORDERING_MENU_IDS.hideInactiveSessions) {
-            setHideInactiveSessions(!isHideInactiveSessionsEnabled);
-        }
-        if (externalSessionsEnabled && itemId === ORDERING_MENU_IDS.sessionListStorageFilterAll) {
-            setSessionsListStorageFilter('all');
-        }
-        if (externalSessionsEnabled && itemId === ORDERING_MENU_IDS.sessionListStorageFilterPersisted) {
-            setSessionsListStorageFilter('persisted');
-        }
-        if (externalSessionsEnabled && itemId === ORDERING_MENU_IDS.sessionListStorageFilterDirect) {
-            setSessionsListStorageFilter('direct');
-        }
-        if (sessionFoldersFeatureEnabled && itemId === ORDERING_MENU_IDS.sessionFolderViewModeTree) {
-            setSessionFolderViewModeV1(sessionFolderViewModeV1 === 'tree' ? 'off' : 'tree');
-        }
-        if (sessionFoldersFeatureEnabled && itemId === ORDERING_MENU_IDS.sessionListFolderSortModeFoldersFirst) {
-            setSessionListFolderSortModeV1('foldersFirst');
-        }
-        if (
-            sessionFoldersFeatureEnabled
-            && itemId === ORDERING_MENU_IDS.sessionListFolderSortModeMixed
-            && orderingMode === 'custom'
-        ) {
-            setSessionListFolderSortModeV1('mixed');
-        }
+        const delta = resolveSessionListViewOptionSelectionDelta(itemId, settings);
+        if (!delta) return;
+        applySettings(delta);
         setMenuOpen(false);
-    }, [
-        isHideInactiveSessionsEnabled,
-        setHideInactiveSessions,
-        setOrderingMode,
-        setSessionListActiveGroupingV1,
-        setSessionListInactiveGroupingV1,
-        setSessionListSectionModeV1,
-        sessionFoldersFeatureEnabled,
-        sessionFolderViewModeV1,
-        setSessionFolderViewModeV1,
-        setSessionListFolderSortModeV1,
-        orderingMode,
-        externalSessionsEnabled,
-        setSessionsListStorageFilter,
-    ]);
+    }, [applySettings, settings]);
 
     return (
         <DropdownMenu
@@ -247,37 +284,27 @@ export const SessionListOrderingMenuButton = React.memo(function SessionListOrde
             }}
             items={menuItems}
             onSelect={handleMenuSelect}
-            selectedId={orderingMode}
             variant="slim"
             search={false}
             showCategoryTitles={true}
             matchTriggerWidth={false}
-            maxWidthCap={220}
+            maxWidthCap={320}
             popoverPortalWebTarget="body"
             placement={props.placement ?? 'bottom'}
             popoverAnchorAlign="end"
             trigger={({ toggle }) => (
                 <Pressable
-                    testID="session-list-ordering-menu-trigger"
+                    testID="session-list-view-options-trigger"
                     style={[styles.headerActionButton, HEADER_ACTION_TARGET_STYLE]}
                     onPress={(event) => {
                         stopPressEventPropagation(event);
                         toggle();
                     }}
                     accessibilityRole="button"
-                    accessibilityLabel={t('settingsSession.sessionList.orderingTitle')}
-                    accessibilityState={{ selected: hasActiveStorageFilter }}
+                    accessibilityLabel={t('sessionsList.viewOptions')}
+                    accessibilityState={{ expanded: menuOpen }}
                 >
-                    <View>
-                        <Icon name="funnel-simple" size={16} color={actionIconColor} />
-                        {hasActiveStorageFilter ? (
-                            <TabBadge
-                                variant="dot"
-                                testID="session-list-active-filter-indicator"
-                                style={styles.headerActiveFilterBadge}
-                            />
-                        ) : null}
-                    </View>
+                    <Icon name="sliders-horizontal" size={16} color={actionIconColor} />
                 </Pressable>
             )}
         />
@@ -306,28 +333,60 @@ export const SessionFolderFocusBreadcrumbs = React.memo(function SessionFolderFo
     if (props.breadcrumbs.length === 0) return null;
     return (
         <View style={styles.groupHeaderSection} testID="session-folder-focused-breadcrumbs">
-            <View style={styles.headerLabelRow}>
-                <Pressable
+            <View
+                testID="session-folder-breadcrumb-targets"
+                role="navigation"
+                accessibilityLabel={t('sessionsList.workspaceRoot')}
+                style={[styles.headerLabelRow, { flexWrap: 'wrap', rowGap: 4 }]}
+            >
+                <HappierPressable
                     testID="session-folder-breadcrumb-root"
                     onPress={props.onClear}
                     accessibilityRole="button"
                     accessibilityLabel={props.rootTitle ?? t('sessionsList.workspaceRoot')}
-                    hitSlop={8}
+                    style={({ focused, pressed }) => [{
+                        minWidth: HEADER_ACTION_TARGET_SIZE,
+                        minHeight: HEADER_ACTION_TARGET_SIZE,
+                        maxWidth: '100%',
+                        paddingHorizontal: 8,
+                        justifyContent: 'center',
+                        borderRadius: 6,
+                        borderWidth: 1,
+                        borderColor: focused ? theme.colors.border.focus : 'transparent',
+                        opacity: pressed ? 0.8 : 1,
+                    }]}
                 >
                     <Text style={styles.groupHeaderSubtitle}>{props.rootTitle ?? t('sessionsList.workspaceRoot')}</Text>
-                </Pressable>
+                </HappierPressable>
                 {props.breadcrumbs.map((breadcrumb) => (
                     <React.Fragment key={breadcrumb.id}>
-                        <Icon name="caret-right" size={14} color={theme.colors.text.tertiary} />
-                        <Pressable
+                        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+                            <Icon
+                                name="caret-right"
+                                size={14}
+                                color={theme.colors.text.tertiary}
+                                style={I18nManager?.isRTL ? { transform: [{ scaleX: -1 }] } : undefined}
+                            />
+                        </View>
+                        <HappierPressable
                             testID={`session-folder-breadcrumb-folder-${breadcrumb.id}`}
                             onPress={() => props.onSelectFolder(breadcrumb.id)}
                             accessibilityRole="button"
                             accessibilityLabel={breadcrumb.name}
-                            hitSlop={8}
+                            style={({ focused, pressed }) => [{
+                                minWidth: HEADER_ACTION_TARGET_SIZE,
+                                minHeight: HEADER_ACTION_TARGET_SIZE,
+                                maxWidth: '100%',
+                                paddingHorizontal: 8,
+                                justifyContent: 'center',
+                                borderRadius: 6,
+                                borderWidth: 1,
+                                borderColor: focused ? theme.colors.border.focus : 'transparent',
+                                opacity: pressed ? 0.8 : 1,
+                            }]}
                         >
                             <Text style={styles.groupHeaderSubtitle}>{breadcrumb.name}</Text>
-                        </Pressable>
+                        </HappierPressable>
                     </React.Fragment>
                 ))}
             </View>
@@ -359,7 +418,10 @@ export const ProjectGroupHeader = React.memo(function ProjectGroupHeader(props: 
     const [isActionsHovered, setIsActionsHovered] = React.useState(false);
     const [menuOpen, setMenuOpen] = React.useState(false);
     const isWeb = Platform.OS === 'web';
-    const sessionFoldersFeatureEnabled = useFeatureEnabled('sessions.folders');
+    const projectServerId = item.workspaceScopeHint?.serverId ?? item.serverId ?? null;
+    const sessionFoldersFeatureEnabled = useFeatureEnabled('sessions.folders', projectServerId
+        ? { scopeKind: 'spawn', serverId: projectServerId }
+        : { scopeKind: 'main_selection' });
     const showHoverActions = !isWeb || isRowHovered || isActionsHovered || menuOpen;
     const showChevron = !isWeb || collapsed || showHoverActions;
     const menuEnabled = Boolean(item.workspaceScopeHint);
@@ -632,7 +694,9 @@ export const FolderGroupHeader = React.memo(function FolderGroupHeader(props: Re
         };
     }, [props.item.folderId, props.item.serverId, props.item.workspace]);
     const dropRegistration = useMeasuredDropTargetRegistration({
-        id: dropTarget ? `folder:${dropTarget.folderId}` : null,
+        id: dropTarget && dropTarget.serverId
+            ? treeRowId.folder(dropTarget.serverId, dropTarget.folderId)
+            : null,
         target: dropTarget,
         onRegister: props.onRegisterDropTarget,
     });

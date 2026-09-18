@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 
-const sessionAttachmentsUploadFileSpy = vi.fn();
+const sessionAttachmentsUploadFileSpy = vi.hoisted(() => vi.fn());
 const runTransferFinalizeRecoveryMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/domains/transfers/ops/uploadSessionAttachment', () => ({
@@ -16,6 +16,11 @@ describe('uploadAttachmentDraftsToSession', () => {
     beforeEach(() => {
         sessionAttachmentsUploadFileSpy.mockReset();
         runTransferFinalizeRecoveryMock.mockReset();
+    });
+
+    it('does not manufacture an empty attachment prompt block', async () => {
+        const { formatAttachmentsBlock } = await import('./uploadAttachmentDraftsToSession');
+        expect(formatAttachmentsBlock([])).toBe('');
     });
     it('updates draft progress and preserves the uploaded attachment result contract', async () => {
         const { uploadAttachmentDraftsToSession } = await import('./uploadAttachmentDraftsToSession');
@@ -312,6 +317,69 @@ describe('uploadAttachmentDraftsToSession', () => {
         expect(result.uploaded).toHaveLength(1);
         expect(sessionAttachmentsUploadFileSpy).toHaveBeenCalledTimes(1);
         expect(runTransferFinalizeRecoveryMock).toHaveBeenCalledWith(expect.objectContaining({ recovery }));
+    });
+
+    it('awaits the owner checkpoint for each uploaded draft before starting the next file', async () => {
+        const { uploadAttachmentDraftsToSession } = await import('./uploadAttachmentDraftsToSession');
+        let releaseCheckpoint!: () => void;
+        const checkpoint = vi.fn()
+            .mockImplementationOnce(() => new Promise<void>((resolve) => {
+                releaseCheckpoint = resolve;
+            }))
+            .mockResolvedValue(undefined);
+        sessionAttachmentsUploadFileSpy
+            .mockResolvedValueOnce({
+                success: true,
+                path: '.happier/uploads/messages/m1/first.txt',
+                sizeBytes: 5,
+                sha256: 'a'.repeat(64),
+            })
+            .mockResolvedValueOnce({
+                success: true,
+                path: '.happier/uploads/messages/m1/second.txt',
+                sizeBytes: 6,
+                sha256: 'b'.repeat(64),
+            });
+
+        const pending = uploadAttachmentDraftsToSession({
+            sessionId: 's1',
+            drafts: [
+                {
+                    id: 'first',
+                    source: { kind: 'memory', name: 'first.txt', bytes: new Uint8Array(5) },
+                    status: 'pending',
+                },
+                {
+                    id: 'second',
+                    source: { kind: 'memory', name: 'second.txt', bytes: new Uint8Array(6) },
+                    status: 'pending',
+                },
+            ],
+            messageLocalId: 'm1',
+            config: {
+                uploadLocation: 'workspace',
+                workspaceRelativeDir: '.happier/uploads',
+                vcsIgnoreStrategy: 'git_info_exclude',
+                vcsIgnoreWritesEnabled: true,
+                maxFileBytes: 25 * 1024 * 1024,
+            },
+            applyDraftPatch: () => {},
+            onUploadedDraftCheckpoint: checkpoint,
+        });
+
+        await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledOnce());
+        expect(checkpoint).toHaveBeenCalledWith(expect.objectContaining({
+            id: 'first',
+            uploadedPath: '.happier/uploads/messages/m1/first.txt',
+            uploadedSizeBytes: 5,
+            sha256: 'a'.repeat(64),
+        }));
+        expect(sessionAttachmentsUploadFileSpy).toHaveBeenCalledTimes(1);
+
+        releaseCheckpoint();
+        await pending;
+        expect(sessionAttachmentsUploadFileSpy).toHaveBeenCalledTimes(2);
+        expect(checkpoint).toHaveBeenCalledTimes(2);
     });
 
 });

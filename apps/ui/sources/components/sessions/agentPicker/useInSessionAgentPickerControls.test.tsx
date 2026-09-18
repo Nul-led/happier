@@ -97,6 +97,10 @@ const CURRENT_AGENT_ROW: AgentInputChipPickerOption = {
     label: 'Claude Code',
     renderDetailContent: () => null,
 };
+const DEFAULT_DRAFT_SCOPE: ServerAccountScope = Object.freeze({
+    serverId: 'legacy-test',
+    accountId: 'legacy-test',
+});
 
 const supportedSource: SessionAgentContinuationSourceState = {
     currentBackendTargetKey: 'backend:claude',
@@ -139,7 +143,7 @@ type HookProps = Readonly<{
 async function renderControls(props: HookProps = {}) {
     return renderHook((hookProps: HookProps) => useInSessionAgentPickerControls({
         sessionId: hookProps.sessionId ?? 'session-1',
-        accountScope: hookProps.accountScope ?? null,
+        accountScope: hookProps.accountScope === undefined ? DEFAULT_DRAFT_SCOPE : hookProps.accountScope,
         currentAgentId: 'claude',
         currentAgentLabel: 'Claude Code',
         currentAgentSessionActive: hookProps.sessionActive ?? true,
@@ -149,6 +153,7 @@ async function renderControls(props: HookProps = {}) {
             : hookProps.featureDecision,
         source: hookProps.source ?? supportedSource,
         machine: hookProps.machine ?? onlineMachine,
+        projectionCurrent: true,
         detail: detailContext,
     }), { initialProps: props });
 }
@@ -703,7 +708,7 @@ describe('useInSessionAgentPickerControls', () => {
         // The submit path reads exactly this value, so a stale arm surviving a
         // closing gate is the whole gate bypassed.
         expect(hook.getCurrent().armedContinuation).toBeNull();
-        expect(readSessionDraftValue(null, 'session-1', 'routing.agentContinuation')).toBeUndefined();
+        expect(readSessionDraftValue(null, 'session-1', 'routing.agentContinuation')).toBeNull();
 
         // A definite disable is a destructive policy decision, not a temporary
         // presentation state: turning the bit back on must not resurrect an arm
@@ -749,7 +754,7 @@ describe('useInSessionAgentPickerControls', () => {
 
         expect(hook.getCurrent().armedContinuation).toBeNull();
         expect(readSessionDraftValue(accountB, 'session-1', 'routing.agentContinuation')).toBeUndefined();
-        expect(readSessionDraftValue(accountA, 'session-1', 'routing.agentContinuation')).toBeUndefined();
+        expect(readSessionDraftValue(accountA, 'session-1', 'routing.agentContinuation')).toBeNull();
 
         await hook.rerender({ accountScope: accountA });
         await act(async () => { await Promise.resolve(); });

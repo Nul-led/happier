@@ -5,7 +5,7 @@ import { ToolCall } from '@/sync/domains/messages/messageTypes';
 import { ToolSectionView } from '../../shell/presentation/ToolSectionView';
 import { CommandView } from '@/components/sessions/transcript/CommandView';
 import { Metadata } from '@/sync/domains/state/storageTypes';
-import { maybeParseJson } from '../../normalization/parse/parseJson';
+import { maybeParseJson } from '@happier-dev/protocol';
 import { extractStdStreams, tailTextWithEllipsis } from '../../normalization/parse/stdStreams';
 import { CodeView } from '@/components/ui/media/CodeView';
 import { Text } from '@/components/ui/text/Text';

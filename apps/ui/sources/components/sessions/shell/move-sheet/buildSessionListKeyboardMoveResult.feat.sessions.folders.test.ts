@@ -73,10 +73,10 @@ function buildTree() {
         items,
         rowBoundsById: new Map([
             [treeRowId.workspaceRoot('project-a'), bounds(0)],
-            [treeRowId.folder('folder-a'), bounds(40)],
+            [treeRowId.folder('server-a', 'folder-a'), bounds(40)],
             [treeRowId.session('server-a', 'inside-a'), bounds(80)],
             [treeRowId.session('server-a', 'inside-b'), bounds(120)],
-            [treeRowId.folder('folder-b'), bounds(160)],
+            [treeRowId.folder('server-a', 'folder-b'), bounds(160)],
             [treeRowId.session('server-a', 'root-a'), bounds(200)],
         ]),
     });
@@ -96,8 +96,8 @@ describe('buildSessionListKeyboardMoveResult', () => {
             instruction: {
                 kind: 'reorder-before',
                 targetId: treeRowId.session('server-a', 'inside-a'),
-                containerId: treeRowId.folder('folder-a'),
-                parentId: treeRowId.folder('folder-a'),
+                containerId: treeRowId.folder('server-a', 'folder-a'),
+                parentId: treeRowId.folder('server-a', 'folder-a'),
                 depth: 1,
             },
             visual: {
@@ -113,7 +113,7 @@ describe('buildSessionListKeyboardMoveResult', () => {
         const tree = buildTree();
         const source = buildSessionListDragSource({
             tree,
-            sourceRowId: treeRowId.folder('folder-a'),
+            sourceRowId: treeRowId.folder('server-a', 'folder-a'),
         });
 
         const result = buildSessionListKeyboardMoveResult({ tree, source, direction: 'down' });
@@ -121,14 +121,14 @@ describe('buildSessionListKeyboardMoveResult', () => {
         expect(result).toMatchObject({
             instruction: {
                 kind: 'reorder-after',
-                targetId: treeRowId.folder('folder-b'),
+                targetId: treeRowId.folder('server-a', 'folder-b'),
                 containerId: treeRowId.workspaceRoot('project-a'),
                 parentId: null,
                 depth: 0,
             },
             visual: {
                 kind: 'line',
-                targetId: treeRowId.folder('folder-b'),
+                targetId: treeRowId.folder('server-a', 'folder-b'),
                 edge: 'bottom',
                 depth: 0,
             },

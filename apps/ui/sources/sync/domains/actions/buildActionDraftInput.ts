@@ -1,6 +1,4 @@
 import {
-  convertBackendTargetRefV2ToV1,
-  readBackendTargetRefV2,
   type BackendTargetRefV2Input,
 } from '@happier-dev/protocol';
 import type { ActionId } from '@happier-dev/protocol';
@@ -15,11 +13,8 @@ export function buildActionDraftInput(args: Readonly<{
   extra?: Record<string, unknown> | null;
 }>): Record<string, unknown> {
   const spec = getActionSpec(args.actionId as any);
-  const defaultBackendTargetV1 = args.defaultBackendTarget
-    ? convertBackendTargetRefV2ToV1(readBackendTargetRefV2(args.defaultBackendTarget))
-    : null;
   const seed = buildActionDraftSeedInput(spec as any, {
-    defaultBackendTarget: defaultBackendTargetV1,
+    defaultBackendTarget: args.defaultBackendTarget,
     defaultBackendId: args.defaultBackendId ?? null,
     instructions: args.instructions ?? null,
   });

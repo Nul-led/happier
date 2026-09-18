@@ -276,7 +276,7 @@ describe('ChatList Legend-primary host axis', () => {
                 }),
                 experience: 'classic',
                 mountToken: outgoingMountToken,
-                sessionId: 'session-1',
+                sessionKey: '["server-a","session-1"]',
             }), [route]);
             return null;
         }
@@ -285,11 +285,11 @@ describe('ChatList Legend-primary host axis', () => {
             return (
                 <TranscriptSameSessionHandoffProvider
                     desiredExperience={props.experience}
-                    sessionId="session-1"
+                    sessionAddressKey='["server-a","session-1"]'
                 >
                     {(experience) => experience === 'classic'
                         ? <OutgoingTranscript />
-                        : <ChatList session={{ ...chatListHarnessState.sessionState }} />}
+                        : <ChatList session={{ ...chatListHarnessState.sessionState }} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />}
                 </TranscriptSameSessionHandoffProvider>
             );
         }

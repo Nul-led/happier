@@ -45,7 +45,7 @@ function buildExecutionRunPublicState(
     callId: 'call_1',
     sidechainId: 'sidechain_1',
     intent: 'voice_agent',
-    backendTarget: { kind: 'backend', backendId: 'claude' },
+    backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
     permissionMode: 'read_only',
     retentionPolicy: 'resumable',
     runClass: 'long_lived',
@@ -141,10 +141,13 @@ const createVoiceAgentPersistenceTestState = (): any => {
         { type: 'session', sessionId: 's1', serverId: 'server-a', serverName: null },
       ],
     },
-    sessionListRenderables: {
-      sys_voice: sessions.sys_voice,
-      s1: sessions.s1,
+    sessionListRowsByServerId: {
+      'server-a': {
+        sys_voice: sessions.sys_voice,
+        s1: sessions.s1,
+      },
     },
+    ordinarySessionListMembershipByServerId: { 'server-a': ['sys_voice', 's1'] },
     sessions,
     machines: {},
     machineListByServerId: {},
@@ -239,11 +242,14 @@ const patchSessionMetadataWithRetry = vi.fn<(sessionId: string, updater: (m: any
         metadata: nextMetadata,
       },
     },
-    sessionListRenderables: {
-      ...(state.sessionListRenderables ?? {}),
-      [sessionId]: {
-        ...(state.sessionListRenderables?.[sessionId] ?? existing),
-        metadata: nextMetadata,
+    sessionListRowsByServerId: {
+      ...(state.sessionListRowsByServerId ?? {}),
+      'server-a': {
+        ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+        [sessionId]: {
+          ...(state.sessionListRowsByServerId?.['server-a']?.[sessionId] ?? existing),
+          metadata: nextMetadata,
+        },
       },
     },
   };
@@ -288,9 +294,9 @@ async function loadVoiceAgentPersistenceHarness() {
 
   useVoiceTargetStore.setState({
     scope: 'global',
-    primaryActionSessionId: 's1',
-    trackedSessionIds: [],
-    lastFocusedSessionId: null,
+    primaryActionSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+    voiceLiveContextSessionAddresses: [],
+    lastFocusedSessionAddress: null,
   } as any);
 
   return {
@@ -564,7 +570,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
         }),
         buildExecutionRunPublicState({
           runId: 'run_other_backend',
-          backendTarget: { kind: 'backend', backendId: 'codex' },
+          backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
           startedAtMs: 30,
         }),
       ],
@@ -1163,8 +1169,9 @@ describe('VoiceExecutionTransport (persistence)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionId: 's_inactive',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's_inactive' },
       updatedAt: 1,
     });
     const controller = createVoiceExecutionTransport();
@@ -1193,8 +1200,9 @@ describe('VoiceExecutionTransport (persistence)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionId: 's_offline',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's_offline' },
       updatedAt: 1,
     });
     const controller = createVoiceExecutionTransport();
@@ -1236,8 +1244,9 @@ describe('VoiceExecutionTransport (persistence)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionId: 's_machine_offline',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's_machine_offline' },
       updatedAt: 1,
     });
     const controller = createVoiceExecutionTransport();
@@ -1266,8 +1275,9 @@ describe('VoiceExecutionTransport (persistence)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionId: 's_kimi',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's_kimi' },
       updatedAt: 1,
     });
     const controller = createVoiceExecutionTransport();
@@ -1299,19 +1309,26 @@ describe('VoiceExecutionTransport (persistence)', () => {
         { type: 'session', sessionId: 's_cached_target', serverId: 'server-a', serverName: null },
       ],
     };
-    state.sessionListRenderables = {
-      ...(state.sessionListRenderables ?? {}),
-      s_cached_target: {
-        id: 's_cached_target',
-        updatedAt: 1,
-        active: true,
-        presence: 'online',
-        modelMode: 'default',
-        metadata: {
-          flavor: 'claude',
-          machineId: 'm_live',
+    state.sessionListRowsByServerId = {
+      ...(state.sessionListRowsByServerId ?? {}),
+      'server-a': {
+        ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+        s_cached_target: {
+          id: 's_cached_target',
+          updatedAt: 1,
+          active: true,
+          presence: 'online',
+          modelMode: 'default',
+          metadata: {
+            flavor: 'claude',
+            machineId: 'm_live',
+          },
         },
       },
+    };
+    state.ordinarySessionListMembershipByServerId = {
+      ...(state.ordinarySessionListMembershipByServerId ?? {}),
+      'server-a': [...(state.ordinarySessionListMembershipByServerId?.['server-a'] ?? []), 's_cached_target'],
     };
     state.machines.m_live = {
       id: 'm_live',
@@ -1333,8 +1350,9 @@ describe('VoiceExecutionTransport (persistence)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionId: 's_cached_target',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's_cached_target' },
       updatedAt: 1,
     });
     const controller = createVoiceExecutionTransport();
@@ -1368,9 +1386,12 @@ describe('VoiceExecutionTransport (persistence)', () => {
         ...state.sessions,
         sys_voice: nextSysVoice,
       },
-      sessionListRenderables: {
-        ...(state.sessionListRenderables ?? {}),
-        sys_voice: nextSysVoice,
+      sessionListRowsByServerId: {
+        ...(state.sessionListRowsByServerId ?? {}),
+        'server-a': {
+          ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+          sys_voice: nextSysVoice,
+        },
       },
     };
     state.sessionMessages.sys_voice = {
@@ -1455,9 +1476,16 @@ describe('VoiceExecutionTransport (persistence)', () => {
             { type: 'session', sessionId: 'sys_voice_new', serverId: 'server-a', serverName: null },
           ],
         },
-        sessionListRenderables: {
-          ...(state.sessionListRenderables ?? {}),
-          sys_voice_new: sysVoiceNew,
+        sessionListRowsByServerId: {
+          ...(state.sessionListRowsByServerId ?? {}),
+          'server-a': {
+            ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+            sys_voice_new: sysVoiceNew,
+          },
+        },
+        ordinarySessionListMembershipByServerId: {
+          ...(state.ordinarySessionListMembershipByServerId ?? {}),
+          'server-a': [...(state.ordinarySessionListMembershipByServerId?.['server-a'] ?? []), 'sys_voice_new'],
         },
       };
     });
@@ -1505,9 +1533,12 @@ describe('VoiceExecutionTransport (persistence)', () => {
         ...state.sessions,
         sys_voice: nextSysVoice,
       },
-      sessionListRenderables: {
-        ...(state.sessionListRenderables ?? {}),
-        sys_voice: nextSysVoice,
+      sessionListRowsByServerId: {
+        ...(state.sessionListRowsByServerId ?? {}),
+        'server-a': {
+          ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+          sys_voice: nextSysVoice,
+        },
       },
     };
     state.sessionMessages.sys_voice = {
@@ -1615,9 +1646,16 @@ describe('VoiceExecutionTransport (persistence)', () => {
             { type: 'session', sessionId: 'sys_voice_new', serverId: 'server-a', serverName: null },
           ],
         },
-        sessionListRenderables: {
-          ...(state.sessionListRenderables ?? {}),
-          sys_voice_new: sysVoiceNew,
+        sessionListRowsByServerId: {
+          ...(state.sessionListRowsByServerId ?? {}),
+          'server-a': {
+            ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+            sys_voice_new: sysVoiceNew,
+          },
+        },
+        ordinarySessionListMembershipByServerId: {
+          ...(state.ordinarySessionListMembershipByServerId ?? {}),
+          'server-a': [...(state.ordinarySessionListMembershipByServerId?.['server-a'] ?? []), 'sys_voice_new'],
         },
       };
     });

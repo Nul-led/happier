@@ -25,6 +25,7 @@ import {
   resolvePluginContributedActionIconName,
 } from '@/components/plugins/actions/pluginContributedActionPresentation';
 import type { PluginContributedActionController } from '@/components/plugins/actions/pluginContributedActionController';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 
 function normalizeId(value: unknown): string {
   return String(value ?? '').trim();
@@ -72,6 +73,8 @@ type BuildCommandPaletteCommandsBaseParams = Readonly<{
   sessionsById: Record<string, any>;
   isDev: boolean;
   activeSessionId: string | null;
+  /** Exact Home authority for the active Session; missing scope fails closed. */
+  activeSessionServerId?: string | null;
   features: Readonly<{
     executionRunsEnabled: boolean;
     voiceEnabled: boolean;
@@ -140,10 +143,12 @@ export function buildCommandPaletteCommands(
     & CompactAppDestinationCommandParams
     & PluginActionPresentationCommandParams,
 ): Command[] {
+  const actionDraftAccountScope = storage.getState().profileScope ?? null;
   const {
     sessionsById,
     isDev,
     activeSessionId,
+    activeSessionServerId,
     features,
     nav,
     actions,
@@ -341,7 +346,9 @@ export function buildCommandPaletteCommands(
             }),
           });
 
-          storage.getState().createSessionActionDraft(sessionId, {
+          const serverId = typeof session?.serverId === 'string' ? session.serverId.trim() : '';
+          if (!actionDraftAccountScope || !serverId || actionDraftAccountScope.serverId !== serverId) return;
+          storage.getState().createSessionActionDraft(actionDraftAccountScope, { serverId, sessionId }, {
             actionId: entry.spec.id as any,
             input: buildExecutionRunActionDraftInputForUi({
               actionId: entry.spec.id as any,
@@ -366,7 +373,13 @@ export function buildCommandPaletteCommands(
         category: t('commandPalette.commands.runsCategory'),
         action: async () => {
           if (activeSessionId) {
-            nav.push(`/session/${encodeURIComponent(activeSessionId)}/runs`);
+            const serverId = normalizeId(activeSessionServerId);
+            if (!serverId) return;
+            nav.push(buildScopedSessionRouteHref({
+              sessionId: activeSessionId,
+              serverId,
+              suffix: '/runs',
+            }));
             return;
           }
           nav.push('/runs');

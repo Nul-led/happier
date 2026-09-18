@@ -82,6 +82,20 @@ export function isPluginEventAutomationTrigger(
 /** Bounded V3 Run projection held by the incumbent Automation run cache. */
 export type AutomationDefinitionRun = AutomationV3RunListItem;
 
+/**
+ * One admission receipt: the exact Run the server accepted, plus the workflow
+ * correspondence it declared for that same Run.
+ *
+ * `workflowRun` is present only when the server says this admitted Run is a
+ * managed workflow, so navigation can open the exact managed Run. Its absence
+ * is the legacy one-shot Automation contract and must never be replaced by an
+ * inferred correspondence or a newest-history lookup.
+ */
+export type AutomationRunNowAdmission = Readonly<{
+    run: AutomationDefinitionRun;
+    workflowRun?: Readonly<{ recipeKind: 'workflow-v2'; workflowRunId: string }>;
+}>;
+
 export type AutomationTemplate = Readonly<{
     executionTarget?: SessionExecutionTargetV1;
     directory: string;

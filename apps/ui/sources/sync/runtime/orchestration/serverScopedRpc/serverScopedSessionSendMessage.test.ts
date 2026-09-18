@@ -1,15 +1,22 @@
 import {
   FeaturesResponseSchema,
   HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1,
+  buildBackendTargetKeyV2,
 } from '@happier-dev/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { parseReleasedServerV021Features } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { saveAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
 import { loadPendingOutboxForSession } from '@/sync/domains/state/pendingOutboxPersistence';
 import { buildSession, resetPendingQueueState } from '@/sync/engine/pending/pendingQueueV2.testHelpers';
 import { createServerScopedSessionSendMessage } from './serverScopedSessionSendMessage';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
+import { sync } from '@/sync/sync';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 
 const serverFeaturesSnapshotMock = vi.hoisted(() => vi.fn());
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
@@ -40,6 +47,7 @@ vi.mock('react-native-mmkv', () => {
 
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
   getServerFeaturesSnapshot: serverFeaturesSnapshotMock,
+  getCachedServerFeaturesSnapshot: () => null,
 }));
 
 vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
@@ -99,8 +107,100 @@ function composerAttachmentOnlyMeta(): Record<string, unknown> {
 }
 
 describe('sendSessionMessageWithServerScope', () => {
+  it.each(['sender', 'voice_handler', 'cancelled_voice_handler'] as const)('uses the exact remote Session and Voice origin when the active Home has an encrypted duplicate id through %s', async (entryPoint) => {
+    const active = await upsertServerProfile({ serverUrl: 'https://active-send.example.test', name: 'Active' });
+    const remote = await upsertServerProfile({ serverUrl: 'https://remote-send.example.test', name: 'Remote' });
+    await setActiveServerId(active.id, { scope: 'device' });
+    storage.setState((state) => ({ settings: {
+      ...state.settings,
+      claudeRemoteMaxThinkingTokens: 777,
+      experiments: true,
+      featureToggles: { ...state.settings.featureToggles, voice: true },
+    } }));
+    const token = `e30.${btoa(JSON.stringify({ sub: 'remote-account' })).replaceAll('=', '')}.signature`;
+    vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({ token });
+    storage.getState().applySessions([createSession({ id: 'same', serverId: active.id, encryptionMode: 'e2ee', modelMode: 'active-private-model' })]);
+    const activeSession = storage.getState().sessions.same;
+    serverFeaturesSnapshotMock.mockResolvedValue({
+      status: 'ready', features: FeaturesResponseSchema.parse({ features: {}, capabilities: { session: { pendingInput: { protocolVersion: 1 } } } }),
+    });
+    saveAccountSettings({ serverId: remote.id, accountId: 'remote-account' }, {
+      ...storage.getState().settings, claudeRemoteMaxThinkingTokens: 1337,
+    }, 1);
+    const cancellation = new AbortController();
+    const writes: Array<Readonly<{ url: string; body: Record<string, unknown> }>> = [];
+    runtimeFetchMock.mockImplementation(async (request: Readonly<{ url: string; init?: RequestInit }>) => {
+      if (request.init?.method === 'GET' && request.url.endsWith('/v1/account/encryption')) {
+        return Response.json({ mode: 'plain', updatedAt: 1 });
+      }
+      if (request.init?.method === 'GET' && request.url.endsWith('/v2/account/settings')) {
+        return Response.json({ content: { t: 'plain', v: {} }, version: 1 });
+      }
+      if (request.init?.method === 'GET' && request.url.endsWith('/v2/sessions/same')) {
+        if (entryPoint === 'cancelled_voice_handler') cancellation.abort();
+        return Response.json({ session: {
+          id: 'same', seq: 1, createdAt: 1, updatedAt: 1, active: false, activeAt: 1,
+          encryptionMode: 'plain', dataEncryptionKey: null,
+          metadataVersion: 1, metadata: JSON.stringify({
+            path: '/remote', host: 'remote', flavor: 'claude',
+            permissionMode: 'yolo', permissionModeUpdatedAt: 10,
+            modelSelectionIntentV1: { v: 1, updatedAt: 10, selection: {
+              agentTargetKey: buildBackendTargetKeyV2({ kind: 'agent', identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude }), providerConnectionId: 'pc_01J00000000000000000000000', modelId: 'provider/claude-sonnet',
+            } },
+          }),
+          agentStateVersion: 1, agentState: null, share: null,
+        } });
+      }
+      if (request.init?.method === 'POST') {
+        const body = JSON.parse(String(request.init.body)) as Record<string, unknown>;
+        writes.push({ url: request.url, body });
+        return Response.json({ requestedAction: body.requestedAction, pending: { localId: body.localId } });
+      }
+      throw new Error(`Unexpected network request: ${request.init?.method} ${request.url}`);
+    });
+    // Voice enters through the Account-qualified Action owner before it reaches
+    // the same scoped Pending sender. That owner uses the canonical runtimeFetch
+    // boundary directly for settings/encryption reads, while the sender uses the
+    // reachability wrapper mocked above. Feed both transport adapters into this
+    // one external-network fixture so the test still exercises the real Action
+    // policy and exact-Home send path.
+    setRuntimeFetch(async (input, init) => await runtimeFetchMock({ url: String(input), init }));
+    const { sendSessionMessageWithServerScope } = createServerScopedSessionSendMessage({
+      markSessionLiveTailIntent: (sessionId) => sync.markSessionLiveTailIntent(sessionId),
+      schedulePendingOutboxRetry: (params) => sync.schedulePendingOutboxOperationRetry(params),
+      enqueuePendingMessageActive: (...args) => sync.enqueuePendingMessage(...args),
+    });
+    const result = entryPoint !== 'sender'
+      ? (await import('@/voice/tools/handlers')).createVoiceToolHandlers({
+        resolveSessionId: () => 'same', currentSessionAddress: { serverId: remote.id, sessionId: 'same' },
+      }).sendSessionMessage({ message: 'Remote Voice input' }, { signal: cancellation.signal }).then((value) => JSON.parse(value))
+      : sendSessionMessageWithServerScope({
+      sessionId: 'same', serverId: remote.id, message: 'Remote Voice input', messageLocalId: 'qualified-voice-input',
+      requestedAction: { v: 1, kind: 'send_now' }, hostAdmissionOrigin: 'voice',
+    });
+    const outcome = await result;
+    if (entryPoint === 'cancelled_voice_handler') {
+      expect(outcome).toMatchObject({ ok: false, errorCode: 'tool_cancelled' });
+      expect(writes).toEqual([]);
+      expect(storage.getState().sessions.same).toEqual(activeSession);
+      expect(await loadPendingOutboxForSession('same', { serverId: remote.id, accountId: 'remote-account' })).toEqual([]);
+      return;
+    }
+    expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.url).toContain('https://remote-send.example.test/');
+    expect(writes[0]?.body).toMatchObject({ content: { t: 'plain', v: { meta: {
+      happierProvenanceV1: { v: 1, kind: 'voice' },
+      happierInputRequestV1: { v: 1, producer: 'voiceInput' },
+      permissionMode: 'yolo',
+      claudeRemoteMaxThinkingTokens: 1337,
+    } } } });
+    expect(JSON.stringify(writes)).not.toContain('active-private-model');
+    expect(JSON.stringify(writes)).toContain('provider/claude-sonnet');
+    expect(storage.getState().sessions.same).toEqual(activeSession);
+  });
   beforeEach(() => {
-    resetPendingQueueState();
+    await resetPendingQueueState();
     kvStore.clear();
     serverFeaturesSnapshotMock.mockReset();
     runtimeFetchMock.mockReset();
@@ -108,8 +208,18 @@ describe('sendSessionMessageWithServerScope', () => {
   });
 
   afterEach(() => {
+    resetRuntimeFetch();
     vi.restoreAllMocks();
   });
+
+  function plainScopedSessionResponse(): Response {
+    return Response.json({ session: {
+      id: 's1', seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+      encryptionMode: 'plain', dataEncryptionKey: null,
+      metadataVersion: 1, metadata: JSON.stringify({ machineId: 'remote-machine', path: '/remote', host: 'remote', flavor: 'claude' }),
+      agentStateVersion: 1, agentState: null, share: null,
+    } });
+  }
 
   it('writes active ordinary input with an explicit enqueue action', async () => {
     const enqueuePendingMessageActive = vi.fn(async () => ({ localId: 'local-1', accepted: true }));
@@ -127,6 +237,93 @@ describe('sendSessionMessageWithServerScope', () => {
       's1', 'hello', undefined, undefined,
       { localId: 'local-1', requestedAction: { v: 1, kind: 'enqueue' } },
     );
+  });
+
+  it('uses the fetched exact-Home Session machine for a scoped Run Pending mutation', async () => {
+    serverFeaturesSnapshotMock.mockResolvedValue({
+      status: 'ready',
+      features: FeaturesResponseSchema.parse({
+        features: {},
+        capabilities: { session: { pendingInput: { protocolVersion: 3 } } },
+      }),
+    });
+    runtimeFetchMock.mockImplementation(async (request: Readonly<{ init?: RequestInit }>) => {
+      if (request.init?.method === 'GET') return plainScopedSessionResponse();
+      const body = JSON.parse(String(request.init?.body ?? 'null')) as Record<string, unknown>;
+      return Response.json({ requestedAction: body.requestedAction, pending: { localId: body.localId } });
+    });
+    const { sendSessionMessageWithServerScope } = createServerScopedSessionSendMessage({
+      schedulePendingOutboxRetry: vi.fn(),
+      resolveContext: vi.fn(async () => ({
+        scope: 'scoped' as const,
+        timeoutMs: 1_000,
+        targetServerId: 'server-remote',
+        targetServerUrl: 'https://remote.example.test',
+        targetAccountId: 'account-remote',
+        token: 'token-remote',
+        credentials: { token: 'token-remote' },
+        encryption: {
+          decryptEncryptionKey: async () => null,
+          initializeSessions: async () => {},
+          getSessionEncryption: () => null,
+        },
+      })),
+    });
+    const recipient = { kind: 'execution_run' as const, runId: 'run-remote' };
+
+    await expect(sendSessionMessageWithServerScope({
+      sessionId: 's1', serverId: 'server-remote', message: 'continue remote Run',
+      messageLocalId: 'run-remote-local', recipient,
+    })).resolves.toMatchObject({ ok: true });
+
+    const write = runtimeFetchMock.mock.calls.find(([request]) => request.init?.method === 'POST')?.[0];
+    expect(write?.url).toContain('/v2/sessions/s1/execution-runs/run-remote/pending');
+    expect(JSON.parse(String(write?.init?.body ?? 'null'))).toMatchObject({
+      localId: 'run-remote-local', targetMachineId: 'remote-machine', requestedAction: { v: 1, kind: 'enqueue' },
+    });
+  });
+
+  it('keeps the exact Run recipient on the active Home Pending mutation', async () => {
+    const enqueuePendingMessageActive = vi.fn(async () => ({ localId: 'run-local-1', accepted: true }));
+    const { sendSessionMessageWithServerScope } = createServerScopedSessionSendMessage({
+      getSession: () => createSession({ serverId: 'server-exact' }),
+      resolveContext: vi.fn(async () => ({ scope: 'active' as const, timeoutMs: 1_000 })),
+      enqueuePendingMessageActive,
+    });
+    const recipient = { kind: 'execution_run' as const, runId: 'run-1' };
+
+    await expect(sendSessionMessageWithServerScope({
+      sessionId: 's1',
+      serverId: 'server-exact',
+      message: 'continue',
+      messageLocalId: 'run-local-1',
+      recipient,
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(enqueuePendingMessageActive).toHaveBeenCalledWith(
+      's1', 'continue', undefined, undefined,
+      { localId: 'run-local-1', recipient, requestedAction: { v: 1, kind: 'enqueue' } },
+    );
+  });
+
+  it('projects a canonical Pending admission rejection instead of throwing through the Action boundary', async () => {
+    const enqueuePendingMessageActive = vi.fn(async () => {
+      throw Object.assign(new Error('target unavailable'), { code: 'session_input_target_unavailable' });
+    });
+    const { sendSessionMessageWithServerScope } = createServerScopedSessionSendMessage({
+      getSession: () => createSession({ serverId: 'server-exact' }),
+      resolveContext: vi.fn(async () => ({ scope: 'active' as const, timeoutMs: 1_000 })),
+      enqueuePendingMessageActive,
+    });
+
+    await expect(sendSessionMessageWithServerScope({
+      sessionId: 's1', serverId: 'server-exact', message: 'continue',
+      messageLocalId: 'run-rejected', recipient: { kind: 'execution_run', runId: 'run-1' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'session_input_target_unavailable',
+      error: 'session_input_target_unavailable',
+    });
   });
 
   it('admits an attachment-only active first turn with the stable local id', async () => {
@@ -355,6 +552,7 @@ describe('sendSessionMessageWithServerScope', () => {
     storage.getState().applySessions([session]);
     serverFeaturesSnapshotMock.mockResolvedValue({ status: 'ready', features });
     runtimeFetchMock.mockImplementation(async (request: Readonly<{ init?: RequestInit }>) => {
+      if (request.init?.method === 'GET') return plainScopedSessionResponse();
       const body = JSON.parse(String(request.init?.body ?? 'null')) as Record<string, unknown>;
       if (!released) {
         return Response.json({ requestedAction: body.requestedAction, pending: { localId: body.localId } });
@@ -386,6 +584,7 @@ describe('sendSessionMessageWithServerScope', () => {
         targetServerUrl: 'https://server.example.test',
         targetAccountId: 'account-1',
         token: 'token-1',
+        credentials: { token: 'token-1' },
         encryption: {
           decryptEncryptionKey: async () => null,
           initializeSessions: async () => {},
@@ -402,8 +601,9 @@ describe('sendSessionMessageWithServerScope', () => {
       providerDeliveryIntent: 'first_turn',
     })).resolves.toMatchObject({ ok: true, ack: { localId: 'first-turn-1', accepted: true } });
 
-    expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
-    const request = runtimeFetchMock.mock.calls[0]?.[0] as Readonly<{ init?: RequestInit }>;
+    const writes = runtimeFetchMock.mock.calls.filter(([request]) => request.init?.method === 'POST');
+    expect(writes).toHaveLength(1);
+    const request = writes[0]?.[0] as Readonly<{ init?: RequestInit }>;
     const body = JSON.parse(String(request.init?.body ?? 'null')) as Record<string, unknown>;
     expect(body).toEqual(expectedBody);
     if (released) {
@@ -450,9 +650,13 @@ describe('sendSessionMessageWithServerScope', () => {
       return Response.json({ requestedAction: body.requestedAction, pending: { localId: body.localId } });
     });
     const release = vi.fn(async () => {});
-    const sessionEncryption = { encryptRawRecord: vi.fn(async () => 'encrypted-record') };
+    const sessionEncryption = {
+      encryptRawRecord: vi.fn(async () => 'encrypted-record'),
+      decryptMetadata: async () => ({ path: '/remote', host: 'remote', flavor: 'claude' }),
+      decryptAgentState: async () => null,
+    };
     const encryption = {
-      decryptEncryptionKey: vi.fn(async () => new Uint8Array([4, 2])),
+      decryptEncryptionKey: vi.fn(async () => new Uint8Array(32).fill(4)),
       initializeSessions: vi.fn(async () => {}),
       getSessionEncryption: vi.fn(() => sessionEncryption),
     };
@@ -468,6 +672,7 @@ describe('sendSessionMessageWithServerScope', () => {
         runtimeOrigin: 'http://127.0.0.1:43111',
         carrier: 'iroh' as const,
         token: 'token-1',
+        credentials: { token: 'token-1' },
         encryption,
         release,
       })),
@@ -487,11 +692,14 @@ describe('sendSessionMessageWithServerScope', () => {
     expect(runtimeFetchMock.mock.calls.some(([request]) =>
       (request as { url?: string }).url === 'http://127.0.0.1:3010/v2/sessions/s1',
     )).toBe(false);
-    expect(encryption.initializeSessions).toHaveBeenCalledWith(new Map([['s1', new Uint8Array([4, 2])]]));
+    expect(encryption.initializeSessions).toHaveBeenCalledWith(
+      new Map([['s1', new Uint8Array(32).fill(4)]]),
+      { serverId: 'server-1', shouldContinue: expect.any(Function) },
+    );
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it('establishes live-tail intent before a scoped first-turn pending projection', async () => {
+  it('preserves the active viewport and pending bag when sending to a different Home', async () => {
     const session = buildSession({
       sessionId: 's1',
       overrides: { serverId: 'server-1', encryptionMode: 'plain' },
@@ -517,19 +725,7 @@ describe('sendSessionMessageWithServerScope', () => {
       source: 'observed',
     });
 
-    const originalMarkOptimisticThinking = storage.getState().markSessionOptimisticThinking;
-    const markOptimisticThinking = vi
-      .spyOn(storage.getState(), 'markSessionOptimisticThinking')
-      .mockImplementation((sessionId) => {
-        expect(sessionId).toBe('s1');
-        expect(sync.getSessionViewport('s1')).toMatchObject({
-          isPinned: true,
-          offsetY: 0,
-          source: 'default',
-          anchor: null,
-        });
-        originalMarkOptimisticThinking(sessionId);
-      });
+    const activeViewport = sync.getSessionViewport('s1');
     serverFeaturesSnapshotMock.mockResolvedValue({
       status: 'ready',
       features: FeaturesResponseSchema.parse({
@@ -541,10 +737,11 @@ describe('sendSessionMessageWithServerScope', () => {
         },
       }),
     });
-    runtimeFetchMock.mockResolvedValue(Response.json({
-      requestedAction: { v: 1, kind: 'send_now' },
-      pending: { localId: 'scoped-cross-mount-first-turn' },
-    }));
+    runtimeFetchMock.mockImplementation(async (request: Readonly<{ init?: RequestInit }>) =>
+      request.init?.method === 'GET' ? plainScopedSessionResponse() : Response.json({
+        requestedAction: { v: 1, kind: 'send_now' },
+        pending: { localId: 'scoped-cross-mount-first-turn' },
+      }));
     const { sendSessionMessageWithServerScope } = createServerScopedSessionSendMessage({
       schedulePendingOutboxRetry: vi.fn(),
       markSessionLiveTailIntent: (sessionId) => sync.markSessionLiveTailIntent(sessionId),
@@ -555,6 +752,7 @@ describe('sendSessionMessageWithServerScope', () => {
         targetServerUrl: 'https://server.example.test',
         targetAccountId: 'account-1',
         token: 'token-1',
+        credentials: { token: 'token-1' },
         encryption: {
           decryptEncryptionKey: async () => null,
           initializeSessions: async () => {},
@@ -571,7 +769,8 @@ describe('sendSessionMessageWithServerScope', () => {
       providerDeliveryIntent: 'first_turn',
     })).resolves.toMatchObject({ ok: true });
 
-    expect(markOptimisticThinking).toHaveBeenCalled();
+    expect(sync.getSessionViewport('s1')).toEqual(activeViewport);
+    expect(storage.getState().sessionPending.s1?.messages ?? []).toEqual([]);
   });
 
   it('persists scoped first-turn custody as enqueue while the server wire mode is indeterminate', async () => {
@@ -581,6 +780,10 @@ describe('sendSessionMessageWithServerScope', () => {
     });
     storage.getState().applySessions([session]);
     serverFeaturesSnapshotMock.mockResolvedValue({ status: 'error', reason: 'network' });
+    runtimeFetchMock.mockImplementation(async (request: Readonly<{ init?: RequestInit }>) => {
+      if (request.init?.method === 'GET') return plainScopedSessionResponse();
+      throw new Error('Indeterminate Pending contract cannot submit input');
+    });
     const schedulePendingOutboxRetry = vi.fn();
     const { sendSessionMessageWithServerScope } = createServerScopedSessionSendMessage({
       schedulePendingOutboxRetry,
@@ -592,6 +795,7 @@ describe('sendSessionMessageWithServerScope', () => {
         targetServerUrl: 'https://server.example.test',
         targetAccountId: 'account-1',
         token: 'token-1',
+        credentials: { token: 'token-1' },
         encryption: {
           decryptEncryptionKey: async () => null,
           initializeSessions: async () => {},
@@ -611,12 +815,12 @@ describe('sendSessionMessageWithServerScope', () => {
       ack: { localId: 'first-turn-indeterminate', accepted: false },
     });
 
-    expect(runtimeFetchMock).not.toHaveBeenCalled();
+    expect(runtimeFetchMock.mock.calls.filter(([request]) => request.init?.method === 'POST')).toEqual([]);
     expect(schedulePendingOutboxRetry).not.toHaveBeenCalled();
-    const [outboxRow] = loadPendingOutboxForSession('s1', {
+    const [outboxRow] = (await loadPendingOutboxForSession('s1', {
       serverId: 'server-1',
       accountId: 'account-1',
-    });
+    }));
     expect(JSON.parse(String(outboxRow?.request.body ?? 'null'))).toMatchObject({
       localId: 'first-turn-indeterminate',
       requestedAction: { v: 1, kind: 'enqueue' },
@@ -629,6 +833,10 @@ describe('sendSessionMessageWithServerScope', () => {
       overrides: { serverId: 'server-1', encryptionMode: 'plain' },
     });
     storage.getState().applySessions([session]);
+    runtimeFetchMock.mockImplementation(async (request: Readonly<{ init?: RequestInit }>) => {
+      if (request.init?.method === 'GET') return plainScopedSessionResponse();
+      throw new Error('Unsupported immediate delivery cannot submit input');
+    });
     serverFeaturesSnapshotMock.mockResolvedValue({
       status: 'ready',
       features: parseReleasedServerV021Features(),
@@ -644,6 +852,7 @@ describe('sendSessionMessageWithServerScope', () => {
         targetServerUrl: 'https://server.example.test',
         targetAccountId: 'account-1',
         token: 'token-1',
+        credentials: { token: 'token-1' },
         encryption: {
           decryptEncryptionKey: async () => null,
           initializeSessions: async () => {},
@@ -660,11 +869,11 @@ describe('sendSessionMessageWithServerScope', () => {
       providerDeliveryIntent: 'immediate',
     })).rejects.toMatchObject({ code: 'server-upgrade-required' });
 
-    expect(runtimeFetchMock).not.toHaveBeenCalled();
+    expect(runtimeFetchMock.mock.calls.filter(([request]) => request.init?.method === 'POST')).toEqual([]);
     expect(schedulePendingOutboxRetry).not.toHaveBeenCalled();
-    expect(loadPendingOutboxForSession('s1', {
+    expect((await loadPendingOutboxForSession('s1', {
       serverId: 'server-1',
       accountId: 'account-1',
-    })).toEqual([]);
+    }))).toEqual([]);
   });
 });

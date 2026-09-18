@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Platform } from 'react-native';
 
+import { downloadWebFile } from '@/sync/runtime/files/downloadWebFile';
 import { openLocalUploadSourceReader } from '@/sync/runtime/files/localUploadSourceReader';
 import { resolveKeepBothTargetPath } from '@/sync/domains/files/resolveKeepBothTargetPath';
 import {
@@ -744,28 +745,8 @@ export function useWorkspaceFileTransfers(params: Readonly<{
                     await cleanupWebSinkOnce();
                     return { ok: false, error: 'Download canceled', canceled: true };
                 }
-                const url = URL.createObjectURL(file);
-                try {
-                    const anchor = document.createElement('a');
-                    anchor.href = url;
-                    anchor.download = res.name || 'download';
-                    anchor.rel = 'noopener noreferrer';
-                    try { anchor.style.display = 'none'; } catch {}
-                    try { document.body?.appendChild(anchor); } catch {}
-                    anchor.click();
-
-                    // Defer DOM cleanup to the next task so browser download observers still see
-                    // the synthetic anchor click as a real download navigation.
-                    setTimeout(() => {
-                        try { anchor.remove(); } catch { }
-                    }, 0);
-                } finally {
-                    webSinkCleanupScheduled = true;
-                    setTimeout(() => {
-                        try { URL.revokeObjectURL(url); } catch { }
-                        void cleanupWebSinkOnce();
-                    }, 1_000);
-                }
+                webSinkCleanupScheduled = true;
+                downloadWebFile(file, res.name || 'download', cleanupWebSinkOnce);
             } else if (nativeSinkRef.current) {
                 try {
                     const Sharing: any = await import('expo-sharing');

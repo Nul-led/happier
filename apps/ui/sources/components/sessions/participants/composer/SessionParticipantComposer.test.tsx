@@ -27,11 +27,16 @@ import type {
     PluginProjectedComposerAttachmentEntryV1,
     PluginProjectedComposerRegionEntryV1,
 } from '@happier-dev/protocol';
+
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
     installSessionActionsCommonModuleMocks,
     resetSessionActionsCommonModuleMockState,
 } from '../../actions/sessionActionsTestHelpers';
+import {
+    clearSessionAttachmentDrafts,
+    readSessionAttachmentDrafts,
+} from '@/components/sessions/attachments/sessionAttachmentDraftStore';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -47,8 +52,12 @@ const randomUUIDSpy = vi.hoisted(() => vi.fn(() => 'participant-composer-scope')
 const machineRpcWithServerScopeSpy = vi.hoisted(() => vi.fn<
     (params: unknown) => Promise<unknown>
 >(async () => ({})));
+const sessionAttachmentsUploadFileSpy = vi.hoisted(() => vi.fn());
 const participantDaemonProjectionState = vi.hoisted(() => ({
     current: null as unknown,
+}));
+const participantAccountBindingState = vi.hoisted(() => ({
+    accountId: 'account-1',
 }));
 const pluginSurfaceHostSpy = vi.hoisted(() => vi.fn());
 
@@ -397,6 +406,27 @@ vi.mock('@/components/plugins/surfaces/PluginContextualResourceStoreProvider', (
 vi.mock('@/components/sessions/model/useSessionMachineTarget', () => ({
     useSessionMachineTarget: () => ({ machineId: 'machine-1' }),
 }));
+vi.mock('@/hooks/server/useFeatureEnabled', () => ({
+    useFeatureEnabled: (featureId: string) => featureId === 'attachments.uploads',
+}));
+vi.mock('@/components/sessions/files/useSessionFileUploadAvailability', () => ({
+    useSessionFileUploadAvailability: () => true,
+}));
+vi.mock('@/components/sessions/attachments/AttachmentFilePicker', () => ({
+    AttachmentFilePicker: () => null,
+}));
+vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
+    useServerCredentialAccountScopeBindings: (serverIds: readonly string[]) => new Map(serverIds.map((serverId) => [serverId, {
+        serverId,
+        accountId: participantAccountBindingState.accountId,
+        scope: { serverId, accountId: participantAccountBindingState.accountId },
+        isCurrent: () => true,
+        onRetire: () => ({ dispose: () => undefined }),
+    }])),
+}));
+vi.mock('@/sync/domains/transfers/ops/uploadSessionAttachment', () => ({
+    sessionAttachmentsUploadFile: (args: unknown) => sessionAttachmentsUploadFileSpy(args),
+}));
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession', () => ({
     usePreferredServerIdForSession: () => 'server-1',
 }));
@@ -429,22 +459,31 @@ describe('SessionParticipantComposer', () => {
         sessionExecutionRunSendSpy.mockClear();
         isExecutionRunNotRunningSendErrorSpy.mockClear();
         randomUUIDSpy.mockClear();
+        sessionAttachmentsUploadFileSpy.mockReset();
+        sessionAttachmentsUploadFileSpy.mockResolvedValue({
+            success: true,
+            path: '.happier/uploads/messages/first-input-1/notes.txt',
+            sizeBytes: 5,
+            sha256: 'sha-notes',
+        });
         machineRpcWithServerScopeSpy.mockReset();
         machineRpcWithServerScopeSpy.mockResolvedValue({});
         pluginSurfaceHostSpy.mockClear();
+        participantAccountBindingState.accountId = 'account-1';
         participantDaemonProjectionState.current = currentParticipantDaemonProjection({
             [issueAttachmentCatalogEntry.id]: issueAttachmentCatalogEntry,
         });
     });
 
-    it('routes execution-run sends through sessionExecutionRunSend', async () => {
+    it('admits execution-run sends through canonical Session input with the exact target and delivery', async () => {
         const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
 
         await renderScreen(<SessionParticipantComposer
             sessionId="s1"
             canSendMessages
             recipient={{ kind: 'execution_run', runId: 'run_1' }}
-            executionRunDelivery="interrupt"
+            executionRunRequestedAction={{ v: 1, kind: 'send_now' }}
+            initialLocalId="first-input-1"
         />);
 
         let agentInputProps = agentInputSpy.mock.lastCall?.[0] as {
@@ -463,12 +502,208 @@ describe('SessionParticipantComposer', () => {
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
-        expect(sessionExecutionRunSendSpy).toHaveBeenCalledWith('s1', {
-            runId: 'run_1',
-            message: 'Refine the current review',
-            delivery: 'interrupt',
+        // The composer's persisted delivery selection is normalized into the one
+        // canonical pending vocabulary; `interrupt` means cancel-then-send, which is
+        // `send_now`, not a Run-only delivery word.
+        expect(syncSubmitMessageSpy).toHaveBeenCalledWith(
+            's1',
+            'Refine the current review',
+            undefined,
+            expect.objectContaining({
+                happier: expect.objectContaining({
+                    kind: 'participant_message.v1',
+                }),
+            }),
+            expect.objectContaining({
+                recipient: { kind: 'execution_run', runId: 'run_1' },
+                requestedAction: { v: 1, kind: 'send_now' },
+                callerSurface: 'participant_composer',
+                localId: 'first-input-1',
+            }),
+        );
+        expect(sessionExecutionRunSendSpy).not.toHaveBeenCalled();
+    });
+
+    it('uploads an immediately attached file through the ordinary Session transfer owner before admitting the exact Run input', async () => {
+        const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
+        syncSubmitMessageSpy.mockImplementation(async (...args) => {
+            args[4]?.onOutboundHandoff?.();
+            return undefined;
         });
-        expect(syncSubmitMessageSpy).not.toHaveBeenCalled();
+
+        await renderScreen(<SessionParticipantComposer
+            sessionId="s1"
+            serverId="server-1"
+            canSendMessages
+            recipient={{ kind: 'execution_run', runId: 'run_1' }}
+            initialLocalId="first-input-1"
+            draftOccurrenceId="run-draft-1"
+        />);
+
+        const props = agentInputSpy.mock.lastCall?.[0] as {
+            onAttachmentsAdded: (files: readonly File[]) => void;
+            onSend: (options?: { inputTextOverride?: string }) => void;
+        };
+        const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+        await act(async () => {
+            props.onAttachmentsAdded([file]);
+            // Sending in the same turn proves the process-local attachment
+            // owner, rather than a later React render, owns admission state.
+            props.onSend({ inputTextOverride: 'Inspect the final edit' });
+            await flushHookEffects({ cycles: 4, turns: 2 });
+        });
+
+        expect(sessionAttachmentsUploadFileSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 's1',
+            sessionTarget: {
+                serverId: 'server-1',
+                accountId: 'account-1',
+                sessionId: 's1',
+            },
+            messageLocalId: 'first-input-1',
+            file: expect.objectContaining({ kind: 'web', file }),
+        }));
+        expect(syncSubmitMessageSpy).toHaveBeenCalledWith(
+            's1',
+            expect.stringContaining('.happier/uploads/messages/first-input-1/notes.txt'),
+            'Inspect the final edit',
+            expect.objectContaining({
+                happier: expect.objectContaining({ kind: 'attachments.v1' }),
+            }),
+            expect.objectContaining({
+                serverId: 'server-1',
+                localId: 'first-input-1',
+                recipient: { kind: 'execution_run', runId: 'run_1' },
+            }),
+        );
+    });
+
+    it('rehydrates process-local file drafts instead of carrying them across an Account switch', async () => {
+        const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
+        const accountOneScope = {
+            serverId: 'server-1',
+            accountId: 'account-1',
+            sessionId: 's1',
+            occurrenceId: 'run-draft-1',
+        } as const;
+        const accountTwoScope = { ...accountOneScope, accountId: 'account-2' } as const;
+        clearSessionAttachmentDrafts(accountOneScope);
+        clearSessionAttachmentDrafts(accountTwoScope);
+
+        const screen = await renderScreen(<SessionParticipantComposer
+            sessionId="s1"
+            serverId="server-1"
+            canSendMessages
+            recipient={{ kind: 'execution_run', runId: 'run_1' }}
+            initialLocalId="first-input-1"
+            draftOccurrenceId="run-draft-1"
+        />);
+        const firstProps = agentInputSpy.mock.lastCall?.[0] as {
+            onAttachmentsAdded: (files: readonly File[]) => void;
+        };
+        const file = new File(['private account bytes'], 'private.txt', { type: 'text/plain' });
+        await act(async () => {
+            firstProps.onAttachmentsAdded([file]);
+            await flushHookEffects({ cycles: 3, turns: 1 });
+        });
+        expect(readSessionAttachmentDrafts(accountOneScope)).toHaveLength(1);
+
+        participantAccountBindingState.accountId = 'account-2';
+        await screen.update(<SessionParticipantComposer
+            sessionId="s1"
+            serverId="server-1"
+            canSendMessages
+            recipient={{ kind: 'execution_run', runId: 'run_1' }}
+            initialLocalId="first-input-1"
+            draftOccurrenceId="run-draft-1"
+        />);
+        await flushHookEffects({ cycles: 3, turns: 1 });
+
+        expect(readSessionAttachmentDrafts(accountOneScope)).toHaveLength(1);
+        expect(readSessionAttachmentDrafts(accountTwoScope)).toEqual([]);
+        const secondProps = agentInputSpy.mock.lastCall?.[0] as {
+            attachmentRowItems?: readonly unknown[];
+        };
+        expect(secondProps.attachmentRowItems ?? []).toEqual([]);
+        clearSessionAttachmentDrafts(accountOneScope);
+        clearSessionAttachmentDrafts(accountTwoScope);
+    });
+
+    it('reuses the mounted draft identity across an outcome-unknown retry', async () => {
+        syncSubmitMessageSpy
+            .mockRejectedValueOnce(new Error('admission outcome unknown'))
+            .mockImplementationOnce(async (_sessionId, _text, _displayText, _meta, options) => {
+                options?.onOutboundHandoff?.({ persistence: 'pending', localId: 'first-input-1' });
+            });
+        const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
+
+        await renderScreen(<SessionParticipantComposer
+            sessionId="s1"
+            canSendMessages
+            recipient={{ kind: 'execution_run', runId: 'run_1' }}
+            initialLocalId="first-input-1"
+        />);
+
+        let agentInputProps = agentInputSpy.mock.lastCall?.[0] as {
+            onChangeText: (text: string) => void;
+            onSend: () => void;
+        };
+        await act(async () => {
+            agentInputProps.onChangeText('Retry this exact input');
+        });
+        agentInputProps = agentInputSpy.mock.lastCall?.[0] as typeof agentInputProps;
+        await act(async () => {
+            agentInputProps.onSend();
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+        agentInputProps = agentInputSpy.mock.lastCall?.[0] as typeof agentInputProps;
+        await act(async () => {
+            agentInputProps.onSend();
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+
+        expect(syncSubmitMessageSpy).toHaveBeenCalledTimes(2);
+        expect(syncSubmitMessageSpy.mock.calls.map((call) => call[4]?.localId)).toEqual([
+            'first-input-1',
+            'first-input-1',
+        ]);
+    });
+
+    it('normalizes the legacy steer_if_supported selection to the canonical steer_if_active action', async () => {
+        const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
+
+        await renderScreen(<SessionParticipantComposer
+            sessionId="s1"
+            canSendMessages
+            recipient={{ kind: 'execution_run', runId: 'run_1' }}
+            executionRunRequestedAction={{ v: 1, kind: 'steer_if_active' }}
+        />);
+
+        let agentInputProps = agentInputSpy.mock.lastCall?.[0] as {
+            onChangeText: (text: string) => void;
+            onSend: () => void;
+        };
+        await act(async () => {
+            agentInputProps.onChangeText('Steer the run');
+        });
+        agentInputProps = agentInputSpy.mock.lastCall?.[0] as {
+            onChangeText: (text: string) => void;
+            onSend: () => void;
+        };
+        await act(async () => {
+            agentInputProps.onSend();
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+
+        expect(syncSubmitMessageSpy).toHaveBeenCalledWith(
+            's1',
+            'Steer the run',
+            undefined,
+            expect.anything(),
+            expect.objectContaining({
+                requestedAction: { v: 1, kind: 'steer_if_active' },
+            }),
+        );
     });
 
     it('projects the mounted action-bar layout through the participant Composer snapshot', async () => {
@@ -1081,6 +1316,30 @@ describe('SessionParticipantComposer', () => {
         expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'participant send rejected');
     });
 
+    it('presents a coded target-admission rejection as localized copy, never as the raw protocol code', async () => {
+        syncSubmitMessageSpy.mockRejectedValueOnce(Object.assign(
+            new Error('session_input_target_unavailable'),
+            { code: 'session_input_target_unavailable' },
+        ));
+        const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
+
+        await renderScreen(<SessionParticipantComposer
+            sessionId="s1"
+            canSendMessages
+            recipient={{ kind: 'execution_run', runId: 'run_1' }}
+        />);
+
+        await seedParticipantComposerSemanticSnapshot();
+        const agentInputProps = agentInputSpy.mock.lastCall?.[0] as { onSend: () => void };
+        await act(async () => {
+            agentInputProps.onSend();
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+
+        expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'session.pendingMessages.admissionRejected.targetUnavailable');
+        expect(modalAlertSpy).not.toHaveBeenCalledWith('common.error', 'session_input_target_unavailable');
+    });
+
     it('preserves a participant reference whose exact token remains in newer text after acceptance', async () => {
         const submission = createDeferred<void>();
         syncSubmitMessageSpy.mockImplementationOnce(() => submission.promise);
@@ -1338,7 +1597,7 @@ describe('SessionParticipantComposer', () => {
         expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'participant wake failed');
     });
 
-    it('rejects generic attachments for execution-run delivery without losing the participant draft', async () => {
+    it('carries composer attachments into an execution-run send instead of rejecting them', async () => {
         const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
 
         await renderScreen(<SessionParticipantComposer
@@ -1387,15 +1646,27 @@ describe('SessionParticipantComposer', () => {
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
+        // A Run attachment belongs to the parent Session's media domain exactly like a
+        // main-Session one; only the destination differs. The old direct send had no
+        // metadata channel and had to refuse it.
         expect(sessionExecutionRunSendSpy).not.toHaveBeenCalled();
-        expect(syncSubmitMessageSpy).not.toHaveBeenCalled();
-        expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'runs.send.failedToSend');
-        expect(readComposerPresentationSnapshot(ref)?.attachments).toEqual([
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+        expect(syncSubmitMessageSpy).toHaveBeenCalledWith(
+            's1',
+            expect.any(String),
+            undefined,
             expect.objectContaining({
-                attachment: { pluginId: 'acme.issues', localId: 'issue' },
-                key: '42',
+                happierStructuredInputV1: expect.objectContaining({
+                    composerAttachments: [expect.objectContaining({
+                        attachment: { pluginId: 'acme.issues', localId: 'issue' },
+                        key: '42',
+                    })],
+                }),
             }),
-        ]);
+            expect.objectContaining({
+                recipient: { kind: 'execution_run', runId: 'run_1' },
+            }),
+        );
     });
 
     it('routes agent-team sends through sync.submitMessage with participant meta', async () => {
@@ -1612,7 +1883,7 @@ describe('SessionParticipantComposer', () => {
         expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'browserContext.composer.contextUnavailable');
     });
 
-    it('blocks execution-run sends when browser context is attached because execution-run messages have no metadata channel', async () => {
+    it('carries attached browser context into an execution-run send through the same metadata channel as the main Session', async () => {
         const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
 
         await renderScreen(<SessionParticipantComposer
@@ -1639,22 +1910,30 @@ describe('SessionParticipantComposer', () => {
         });
 
         expect(sessionExecutionRunSendSpy).not.toHaveBeenCalled();
-        expect(syncSubmitMessageSpy).not.toHaveBeenCalled();
-        expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'browserContext.composer.contextUnavailable');
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+        expect(syncSubmitMessageSpy).toHaveBeenCalledWith(
+            's1',
+            'Use the browser page',
+            undefined,
+            expect.objectContaining({
+                happierBrowserContext: expect.objectContaining({
+                    kind: 'browser_context.v1',
+                }),
+            }),
+            expect.objectContaining({
+                recipient: { kind: 'execution_run', runId: 'run_1' },
+            }),
+        );
     });
 
-    it('clears the focused execution-run recipient when the run is no longer running', async () => {
-        sessionExecutionRunSendSpy.mockResolvedValueOnce({ ok: false, error: 'execution_run_not_running' });
-        isExecutionRunNotRunningSendErrorSpy.mockReturnValueOnce(true);
-
+    it('still refuses an execution-run send whose attached browser context has gone stale', async () => {
         const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
-        const onExecutionRunUnavailable = vi.fn();
 
         await renderScreen(<SessionParticipantComposer
             sessionId="s1"
             canSendMessages
             recipient={{ kind: 'execution_run', runId: 'run_1' }}
-            onExecutionRunUnavailable={onExecutionRunUnavailable}
+            browserContextState={createAttachedBrowserContextState({ stale: true })}
         />);
 
         let agentInputProps = agentInputSpy.mock.lastCall?.[0] as {
@@ -1662,7 +1941,7 @@ describe('SessionParticipantComposer', () => {
             onSend: () => void;
         };
         await act(async () => {
-            agentInputProps.onChangeText('Ping');
+            agentInputProps.onChangeText('Use the browser page');
         });
         agentInputProps = agentInputSpy.mock.lastCall?.[0] as {
             onChangeText: (text: string) => void;
@@ -1673,8 +1952,8 @@ describe('SessionParticipantComposer', () => {
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
-        expect(onExecutionRunUnavailable).toHaveBeenCalledTimes(1);
-        expect(modalAlertSpy).toHaveBeenCalled();
+        expect(syncSubmitMessageSpy).not.toHaveBeenCalled();
+        expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'browserContext.composer.contextUnavailable');
     });
 
     it('passes extra action chips through to AgentInput', async () => {
@@ -1692,7 +1971,22 @@ describe('SessionParticipantComposer', () => {
         />);
 
         expect(agentInputSpy).toHaveBeenCalledWith(expect.objectContaining({
-            extraActionChips,
+            extraActionChips: expect.arrayContaining(extraActionChips),
+        }));
+    });
+
+    it('passes the participant Session exact qualified address to Voice authoring', async () => {
+        const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
+
+        await renderScreen(<SessionParticipantComposer
+            sessionId="shared-session"
+            serverId="server-b"
+            canSendMessages
+            recipient={{ kind: 'execution_run', runId: 'run_1' }}
+        />);
+
+        expect(agentInputSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionAddress: { serverId: 'server-b', sessionId: 'shared-session' },
         }));
     });
 });

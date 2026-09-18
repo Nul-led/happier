@@ -5,6 +5,7 @@ import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { renderScreen } from '@/dev/testkit';
 import { installServerSettingsHooksCommonModuleMocks } from './serverSettingsHooksTestHelpers';
 import type { HomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
+import { installWebLockManagerMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 
 
 installServerSettingsHooksCommonModuleMocks({
@@ -83,19 +84,24 @@ function makeServerProfile(id: string, name: string, serverUrl: string): ServerP
 
 function createHomeViewSetter(initial: HomeViewSelectionSettings) {
     let current = initial;
-    const setHomeViewSelectionSettings = vi.fn((
+    const setHomeViewSelectionSettings = vi.fn(async (
         update: (value: HomeViewSelectionSettings) => HomeViewSelectionSettings,
-    ) => {
-        current = update(current);
+    ): Promise<void> => {
+        await navigator.locks.request('server-settings-group-actions:home-view-selection', () => {
+            current = update(current);
+        });
     });
     return {
         setHomeViewSelectionSettings,
         getCurrent: () => current,
         // Simulates another writer (another surface/tab) landing a change while an
         // action is awaiting a modal, auth probe or focus switch.
-        applyConcurrentChange: (update: (value: HomeViewSelectionSettings) => HomeViewSelectionSettings) => {
-            current = update(current);
-        },
+        applyConcurrentChange: async (
+            update: (value: HomeViewSelectionSettings) => HomeViewSelectionSettings,
+        ): Promise<void> => await navigator.locks.request(
+            'server-settings-group-actions:home-view-selection',
+            () => { current = update(current); },
+        ),
     };
 }
 
@@ -109,10 +115,12 @@ function createDeferred<T>() {
 
 describe('useServerSettingsGroupActions', () => {
     const mountedHookCleanups: Array<() => Promise<void>> = [];
+    let restoreWebLockManager: (() => void) | null = null;
 
     beforeEach(() => {
         mountedHookCleanups.length = 0;
         vi.clearAllMocks();
+        restoreWebLockManager = installWebLockManagerMock().restore;
     });
 
     afterEach(async () => {
@@ -123,29 +131,39 @@ describe('useServerSettingsGroupActions', () => {
             }
             await cleanup();
         }
+        restoreWebLockManager?.();
+        restoreWebLockManager = null;
         vi.resetModules();
     });
 
     it('seeds default selection without issuing push unregister when deleting the active server group', async () => {
         const networkBoundary = vi.spyOn(globalThis, 'fetch');
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const serverA = await profiles.upsertServerProfile({
+            serverUrl: 'http://localhost:3013',
+            name: 'Server A',
+        });
+        const serverB = await profiles.upsertServerProfile({
+            serverUrl: 'http://localhost:3012',
+            name: 'Server B',
+        });
+        await profiles.setActiveServerId(serverA.id, { scope: 'device' });
         const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
-        const activeServerId = 'server-a';
+        const activeServerId = serverA.id;
         const homeView = createHomeViewSetter({
-            serverSelectionGroups: [{ id: 'grp', name: 'Group', serverIds: ['server-a', 'server-b'], presentation: 'grouped' }],
+            serverSelectionGroups: [{ id: 'grp', name: 'Group', serverIds: [serverA.id, serverB.id], presentation: 'grouped' }],
             serverSelectionActiveTargetKind: 'group',
             serverSelectionActiveTargetId: 'grp',
         });
         const setRevision = vi.fn();
-        const serverA = makeServerProfile('server-a', 'Server A', 'http://localhost:3013');
-        const serverB = makeServerProfile('server-b', 'Server B', 'http://localhost:3012');
 
         const actions = await renderHook(() => useServerSettingsGroupActions({
             servers: [serverA, serverB],
             activeServerId,
-            validServerIds: new Set(['server-a', 'server-b']),
-            authStatusByServerId: { 'server-a': 'signedIn' },
+            validServerIds: new Set([serverA.id, serverB.id]),
+            authStatusByServerId: { [serverA.id]: 'signedIn' },
             normalizedGroupProfiles: [
-                { id: 'grp', name: 'Group', serverIds: ['server-a', 'server-b'], presentation: 'grouped' } as const,
+                { id: 'grp', name: 'Group', serverIds: [serverA.id, serverB.id], presentation: 'grouped' } as const,
             ],
             activeGroupId: 'grp',
             groupPresentation: 'grouped',
@@ -157,7 +175,7 @@ describe('useServerSettingsGroupActions', () => {
         }));
         mountedHookCleanups.push(actions.__cleanup);
 
-        await actions.onRemoveGroup({ id: 'grp', name: 'Group', serverIds: ['server-a', 'server-b'], presentation: 'grouped' });
+        await actions.onRemoveGroup({ id: 'grp', name: 'Group', serverIds: [serverA.id, serverB.id], presentation: 'grouped' });
 
         expect(homeView.setHomeViewSelectionSettings).toHaveBeenCalledTimes(1);
         expect(homeView.getCurrent()).toMatchObject({
@@ -245,7 +263,7 @@ describe('useServerSettingsGroupActions', () => {
         mountedHookCleanups.push(actions.__cleanup);
 
         const pending = actions.onRenameGroup({ id: 'grp', name: 'Group', serverIds: ['server-a'], presentation: 'grouped' });
-        homeView.applyConcurrentChange((current) => ({
+        await homeView.applyConcurrentChange((current) => ({
             ...current,
             serverSelectionGroups: [
                 ...current.serverSelectionGroups,
@@ -292,7 +310,7 @@ describe('useServerSettingsGroupActions', () => {
         mountedHookCleanups.push(actions.__cleanup);
 
         const pending = actions.onRemoveGroup({ id: 'grp', name: 'Group', serverIds: ['server-a'], presentation: 'grouped' });
-        homeView.applyConcurrentChange((current) => ({
+        await homeView.applyConcurrentChange((current) => ({
             serverSelectionGroups: [
                 ...current.serverSelectionGroups,
                 { id: 'other', name: 'Other', serverIds: ['server-a'], presentation: 'grouped' },
@@ -339,7 +357,7 @@ describe('useServerSettingsGroupActions', () => {
         mountedHookCleanups.push(actions.__cleanup);
 
         const pending = actions.onCreateServerGroup({ name: 'My Group', serverIds: ['server-b'] });
-        homeView.applyConcurrentChange((current) => ({
+        await homeView.applyConcurrentChange((current) => ({
             ...current,
             serverSelectionGroups: [
                 { id: 'my-group', name: 'Someone Else', serverIds: ['server-a'], presentation: 'grouped' },
@@ -359,24 +377,32 @@ describe('useServerSettingsGroupActions', () => {
     });
 
     it('switching to a server selects an explicit server target and disables group mode', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const serverA = await profiles.upsertServerProfile({
+            serverUrl: 'http://localhost:3013',
+            name: 'Server A',
+        });
+        const serverB = await profiles.upsertServerProfile({
+            serverUrl: 'http://localhost:3012',
+            name: 'Server B',
+        });
+        await profiles.setActiveServerId(serverA.id, { scope: 'device' });
         const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
         const homeView = createHomeViewSetter({
             serverSelectionGroups: [],
             serverSelectionActiveTargetKind: 'server',
-            serverSelectionActiveTargetId: 'server-a',
+            serverSelectionActiveTargetId: serverA.id,
         });
         const onSwitchServerById = vi.fn(async () => 'switched' as const);
         const setRevision = vi.fn();
-        const serverA = makeServerProfile('server-a', 'Server A', 'http://localhost:3013');
-        const serverB = makeServerProfile('server-b', 'Server B', 'http://localhost:3012');
 
         const actions = await renderHook(() => useServerSettingsGroupActions({
             servers: [serverA, serverB],
-            activeServerId: 'server-a',
-            validServerIds: new Set(['server-a', 'server-b']),
-            authStatusByServerId: { 'server-b': 'signedIn' },
+            activeServerId: serverA.id,
+            validServerIds: new Set([serverA.id, serverB.id]),
+            authStatusByServerId: { [serverB.id]: 'signedIn' },
             normalizedGroupProfiles: [
-                { id: 'grp', name: 'Group', serverIds: ['server-a', 'server-b'], presentation: 'grouped' } as const,
+                { id: 'grp', name: 'Group', serverIds: [serverA.id, serverB.id], presentation: 'grouped' } as const,
             ],
             activeGroupId: 'grp',
             groupPresentation: 'grouped',
@@ -388,7 +414,7 @@ describe('useServerSettingsGroupActions', () => {
         }));
         mountedHookCleanups.push(actions.__cleanup);
 
-        await actions.onSwitchGroup({ id: 'grp', name: 'Group', serverIds: ['server-a', 'server-b'], presentation: 'grouped' });
+        await actions.onSwitchGroup({ id: 'grp', name: 'Group', serverIds: [serverA.id, serverB.id], presentation: 'grouped' });
 
         expect(homeView.setHomeViewSelectionSettings).toHaveBeenCalledTimes(1);
         expect(homeView.getCurrent()).toMatchObject({
@@ -444,6 +470,56 @@ describe('useServerSettingsGroupActions', () => {
         });
         expect(onSwitchServerById).toHaveBeenCalledWith('srv-b');
         expect(onAfterSignedOutSwitch).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-reads the applied Home after group authentication resolves', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const activeServer = vi.spyOn(profiles, 'getActiveServerId').mockReturnValue('server-a');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const credentials = createDeferred<{ token: string } | null>();
+        vi.mocked(TokenStorage.getCredentialsForServerUrl).mockImplementationOnce(async () => await credentials.promise);
+        const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
+        const homeView = createHomeViewSetter({
+            serverSelectionGroups: [],
+            serverSelectionActiveTargetKind: 'server',
+            serverSelectionActiveTargetId: 'server-a',
+        });
+        const onSwitchServerById = vi.fn(async () => 'switched' as const);
+        const serverA = makeServerProfile('server-a', 'Server A', 'http://localhost:3013');
+        const serverB = makeServerProfile('server-b', 'Server B', 'http://localhost:3012');
+        const actions = await renderHook(() => useServerSettingsGroupActions({
+            servers: [serverA, serverB],
+            activeServerId: 'server-a',
+            validServerIds: new Set(['server-a', 'server-b']),
+            authStatusByServerId: {},
+            normalizedGroupProfiles: [
+                { id: 'grp-a', name: 'Group A', serverIds: ['server-a'], presentation: 'grouped' } as const,
+            ],
+            activeGroupId: null,
+            groupPresentation: 'grouped',
+            selectionScope: 'device',
+            setRevision: vi.fn() as unknown as React.Dispatch<React.SetStateAction<number>>,
+            onSwitchServerById,
+            onAfterSignedOutSwitch: vi.fn(),
+            setHomeViewSelectionSettings: homeView.setHomeViewSelectionSettings,
+        }));
+        mountedHookCleanups.push(actions.__cleanup);
+
+        const switching = actions.onSwitchGroup({
+            id: 'grp-a',
+            name: 'Group A',
+            serverIds: ['server-a'],
+            presentation: 'grouped',
+        });
+        activeServer.mockReturnValue('server-b');
+        credentials.resolve({ token: 'home-a-token' });
+        await switching;
+
+        expect(onSwitchServerById).toHaveBeenCalledWith('server-a');
+        expect(homeView.getCurrent()).toMatchObject({
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: 'grp-a',
+        });
     });
 
     it('chooses the first credentialed group member when the current Home is outside the group', async () => {

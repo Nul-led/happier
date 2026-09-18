@@ -190,7 +190,7 @@ describe('resolveSessionListRenderableChangeImpact', () => {
         });
 
         expect(resolveSessionListRenderableChangeImpact(previous, next, {
-            sessionListIndexSettings: { groupInactiveSessionsByProject: false },
+            sessionListIndexSettings: {},
         })).toEqual({
             didWarmCacheRelevantRenderableChange: true,
             isWarmCacheProgressOnlyChange: false,

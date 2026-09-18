@@ -15,9 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-#[cfg(unix)]
-use std::io::Read;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, Runtime, State, Window};
@@ -47,11 +45,12 @@ use url::Url;
 
 const CACHE_NAMESPACE: &str = "happier-plugin-ui-artifacts-v1";
 const CACHE_DIRECTORY: &str = "hosted-artifacts-v1";
+const DESKTOP_CACHE_BUDGET_BYTES: usize = 192 * 1024 * 1024;
 const ARTIFACT_SCHEME: &str = "happier-hosted-artifact";
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const HOST_EVENT: &str = "desktop-hosted-artifact-event";
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StorageLocator {
     namespace: String,
@@ -90,11 +89,20 @@ struct CachedFileMetadata {
 struct CacheManifest {
     version: u8,
     identity_key_hash: String,
+    last_accessed_order: u64,
     /// One persisted record is always the Artifact-owned exact file graph plus
     /// its declared entry. There is deliberately no entry-less variant beside
     /// that contract: no producer has ever written one.
     entry_relative_path: String,
     files: Vec<CachedFileMetadata>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CacheWriteDisposition {
+    Persisted,
+    NotPersistedOversize,
+    NotPersistedCapacity,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,6 +185,15 @@ struct HostedArtifactResource {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HostedArtifactCurrentLoadResource {
+    resource_id: String,
+    digest: String,
+    byte_size: usize,
+    bytes_base64: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PolicyHeadersWire {
     #[serde(rename = "Cache-Control")]
     cache_control: String,
@@ -254,16 +271,49 @@ struct PolicyTable {
 pub struct HostedArtifactRegistrationInput {
     token: String,
     storage_partition_id: String,
-    storage_locator: StorageLocator,
-    resources: Vec<HostedArtifactResource>,
+    storage: HostedArtifactRegistrationStorageInput,
     policy_table: PolicyTableWire,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum HostedArtifactRegistrationStorageInput {
+    Persistent {
+        locator: StorageLocator,
+        resources: Vec<HostedArtifactResource>,
+    },
+    CurrentLoad {
+        resources: Vec<HostedArtifactCurrentLoadResource>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct HostedArtifactCurrentLoadFile {
+    digest: String,
+    byte_size: usize,
+    file: Arc<Mutex<fs::File>>,
+}
+
+#[derive(Clone, Debug)]
+enum RegisteredArtifactStorage {
+    Persistent {
+        locator: StorageLocator,
+        resources: HashMap<String, HostedArtifactResource>,
+    },
+    CurrentLoad {
+        resources: HashMap<String, HostedArtifactCurrentLoadFile>,
+    },
 }
 
 #[derive(Clone, Debug)]
 struct RegisteredArtifact {
     storage_partition_id: String,
-    storage_locator: StorageLocator,
-    resources: HashMap<String, HostedArtifactResource>,
+    storage: RegisteredArtifactStorage,
     policy_table: PolicyTable,
 }
 
@@ -829,6 +879,7 @@ fn resolve_existing_cache_directory_within(
     let canonical_root = resolve_existing_cache_root(root)?;
     let relative_directory = directory
         .strip_prefix(root)
+        .or_else(|_| directory.strip_prefix(&canonical_root))
         .map_err(|_| "hosted Artifact cache directory is outside its root".to_string())?;
     if relative_directory.as_os_str().is_empty()
         || relative_directory
@@ -885,8 +936,9 @@ fn resolve_confined_cache_file(directory: &Path, file_name: &str) -> Result<Path
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err("hosted Artifact cache file is not a direct file".to_string());
     }
+    let canonical_directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
     let canonical_file = fs::canonicalize(&candidate).map_err(|error| error.to_string())?;
-    if canonical_file.parent() != Some(directory) {
+    if canonical_file.parent() != Some(canonical_directory.as_path()) {
         return Err("hosted Artifact cache file escapes its directory".to_string());
     }
     Ok(canonical_file)
@@ -939,6 +991,7 @@ fn validate_manifest(manifest: &CacheManifest, locator: &StorageLocator) -> Resu
     if manifest.version != 1
         || manifest.identity_key_hash != locator.artifact_key_hash
         || !is_lower_hex(&manifest.identity_key_hash, 64)
+        || manifest.last_accessed_order == 0
         || manifest.files.is_empty()
     {
         return Err("invalid hosted Artifact cache manifest".to_string());
@@ -977,6 +1030,311 @@ fn read_file_bytes(directory: &Path, file: &CachedFileMetadata) -> Result<Vec<u8
         return Err("hosted Artifact cache file integrity mismatch".to_string());
     }
     Ok(bytes)
+}
+
+#[derive(Debug)]
+struct CacheEntryOnDisk {
+    locator: StorageLocator,
+    directory: PathBuf,
+    last_accessed_order: u64,
+    charge: usize,
+}
+
+fn cache_entry_charge(
+    manifest: &CacheManifest,
+    manifest_byte_size: usize,
+) -> Result<usize, String> {
+    manifest
+        .files
+        .iter()
+        .try_fold(manifest_byte_size, |total, file| {
+            total
+                .checked_add(file.byte_size)
+                .ok_or_else(|| "hosted Artifact cache byte accounting overflow".to_string())
+        })
+}
+
+#[cfg(test)]
+fn projected_cache_entry_charge(
+    input: &CacheWriteRequest,
+    last_accessed_order: u64,
+) -> Result<usize, String> {
+    let manifest = CacheManifest {
+        version: 1,
+        identity_key_hash: input.identity_key_hash.clone(),
+        last_accessed_order,
+        entry_relative_path: input.entry_relative_path.clone(),
+        files: input
+            .files
+            .iter()
+            .map(|file| CachedFileMetadata {
+                relative_path: file.relative_path.clone(),
+                digest: file.digest.clone(),
+                byte_size: file.byte_size,
+                stored_file_name: file_name_for(&file.relative_path, &file.digest),
+            })
+            .collect(),
+    };
+    let manifest_bytes = serde_json::to_vec(&manifest).map_err(|error| error.to_string())?;
+    cache_entry_charge(&manifest, manifest_bytes.len())
+}
+
+#[cfg(test)]
+fn cache_entry_charge_on_disk(root: &Path, locator: &StorageLocator) -> Result<usize, String> {
+    let directory = resolve_existing_artifact_directory(root, locator)?;
+    let manifest_bytes = read_confined_cache_file(&directory, "manifest.json")?;
+    let manifest = serde_json::from_slice::<CacheManifest>(&manifest_bytes)
+        .map_err(|error| error.to_string())?;
+    validate_manifest(&manifest, locator)?;
+    cache_entry_charge(&manifest, manifest_bytes.len())
+}
+
+fn remove_cache_path_if_present_within(root: &Path, path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+            fs::remove_file(path).map_err(|error| error.to_string())
+        }
+        Ok(metadata) if metadata.is_dir() => remove_cache_directory_if_present_within(root, path),
+        Ok(_) => Err("hosted Artifact cache contains an unsupported filesystem entry".to_string()),
+    }
+}
+
+fn scan_cache_entries(root: &Path) -> Result<Vec<CacheEntryOnDisk>, String> {
+    match fs::symlink_metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    resolve_existing_cache_root(root)?;
+    let namespace_directory = root.join(CACHE_NAMESPACE);
+    match fs::symlink_metadata(&namespace_directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {
+            resolve_existing_cache_directory_within(root, &namespace_directory)?;
+        }
+    }
+
+    let mut entries = Vec::new();
+    for account_entry in fs::read_dir(&namespace_directory).map_err(|error| error.to_string())? {
+        let account_entry = account_entry.map_err(|error| error.to_string())?;
+        let account_path = account_entry.path();
+        let account_name = account_entry.file_name();
+        let Some(account_key_hash) = account_name.to_str() else {
+            remove_cache_path_if_present_within(root, &account_path)?;
+            continue;
+        };
+        if !is_lower_hex(account_key_hash, 64)
+            || !account_entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+        {
+            remove_cache_path_if_present_within(root, &account_path)?;
+            continue;
+        }
+        if resolve_existing_cache_directory_within(root, &account_path).is_err() {
+            remove_cache_path_if_present_within(root, &account_path)?;
+            continue;
+        }
+        for artifact_entry in fs::read_dir(&account_path).map_err(|error| error.to_string())? {
+            let artifact_entry = artifact_entry.map_err(|error| error.to_string())?;
+            let artifact_path = artifact_entry.path();
+            let artifact_name = artifact_entry.file_name();
+            let artifact_key_hash = artifact_name.to_string_lossy();
+            if !artifact_entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+                || !is_lower_hex(&artifact_key_hash, 64)
+            {
+                remove_cache_path_if_present_within(root, &artifact_path)?;
+                continue;
+            }
+            let locator = StorageLocator {
+                namespace: CACHE_NAMESPACE.to_string(),
+                account_key_hash: account_key_hash.to_string(),
+                artifact_key_hash: artifact_key_hash.into_owned(),
+            };
+            let directory = match resolve_existing_artifact_directory(root, &locator) {
+                Ok(directory) => directory,
+                Err(_) => {
+                    remove_cache_path_if_present_within(root, &artifact_path)?;
+                    continue;
+                }
+            };
+            let manifest_bytes = match read_confined_cache_file(&directory, "manifest.json") {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    remove_cache_directory_if_present_within(root, &directory)?;
+                    continue;
+                }
+            };
+            let manifest = match serde_json::from_slice::<CacheManifest>(&manifest_bytes)
+                .map_err(|error| error.to_string())
+                .and_then(|manifest| {
+                    validate_manifest(&manifest, &locator)?;
+                    Ok(manifest)
+                }) {
+                Ok(manifest) => manifest,
+                Err(_) => {
+                    remove_cache_directory_if_present_within(root, &directory)?;
+                    continue;
+                }
+            };
+            let expected_sizes = manifest
+                .files
+                .iter()
+                .map(|file| (file.stored_file_name.as_str(), file.byte_size))
+                .chain(std::iter::once(("manifest.json", manifest_bytes.len())))
+                .collect::<HashMap<_, _>>();
+            let mut actual_names = HashSet::new();
+            let mut valid_files = true;
+            for file_entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
+                let file_entry = file_entry.map_err(|error| error.to_string())?;
+                let file_type = file_entry.file_type().map_err(|error| error.to_string())?;
+                let Some(file_name) = file_entry.file_name().to_str().map(str::to_string) else {
+                    valid_files = false;
+                    break;
+                };
+                let actual_size = file_entry
+                    .metadata()
+                    .ok()
+                    .and_then(|metadata| usize::try_from(metadata.len()).ok());
+                if !file_type.is_file()
+                    || actual_size != expected_sizes.get(file_name.as_str()).copied()
+                {
+                    valid_files = false;
+                    break;
+                }
+                actual_names.insert(file_name);
+            }
+            if !valid_files
+                || actual_names.len() != expected_sizes.len()
+                || !expected_sizes
+                    .keys()
+                    .all(|name| actual_names.contains(*name))
+            {
+                remove_cache_directory_if_present_within(root, &directory)?;
+                continue;
+            }
+            entries.push(CacheEntryOnDisk {
+                locator,
+                directory,
+                last_accessed_order: manifest.last_accessed_order,
+                charge: cache_entry_charge(&manifest, manifest_bytes.len())?,
+            });
+        }
+    }
+    Ok(entries)
+}
+
+fn next_cache_access_order(root: &Path) -> Result<u64, String> {
+    scan_cache_entries(root)?
+        .into_iter()
+        .map(|entry| entry.last_accessed_order)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| "hosted Artifact cache access order exhausted".to_string())
+}
+
+fn replace_manifest(directory: &Path, manifest: &CacheManifest) -> Result<(), String> {
+    let manifest_bytes = serde_json::to_vec(manifest).map_err(|error| error.to_string())?;
+    let pending = directory.join("manifest.access.partial");
+    match fs::remove_file(&pending) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    let mut pending_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pending)
+        .map_err(|error| error.to_string())?;
+    pending_file
+        .write_all(&manifest_bytes)
+        .map_err(|error| error.to_string())?;
+    pending_file.sync_all().map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    fs::remove_file(directory.join("manifest.json")).map_err(|error| error.to_string())?;
+    fs::rename(pending, directory.join("manifest.json")).map_err(|error| error.to_string())
+}
+
+fn refresh_cache_entry_access(
+    directory: &Path,
+    locator: &StorageLocator,
+    mut manifest: CacheManifest,
+    last_accessed_order: u64,
+) -> Result<CacheManifest, String> {
+    manifest.last_accessed_order = last_accessed_order;
+    validate_manifest(&manifest, locator)?;
+    replace_manifest(directory, &manifest)?;
+    Ok(manifest)
+}
+
+fn refresh_cache_entry_access_preserving_committed_record(
+    directory: &Path,
+    locator: &StorageLocator,
+    manifest: CacheManifest,
+    last_accessed_order: u64,
+) -> Result<CacheManifest, String> {
+    match refresh_cache_entry_access(
+        directory,
+        locator,
+        manifest,
+        last_accessed_order,
+    ) {
+        Ok(refreshed) => Ok(refreshed),
+        Err(refresh_error) => {
+            // The access stamp is eviction ordering, not cache authority. If
+            // the previously committed manifest is still intact, keep serving
+            // its already-verified bytes at the older order. If replacement
+            // disturbed the commit marker (notably on Windows), fail closed.
+            read_manifest(directory, locator).map_err(|_| refresh_error)
+        }
+    }
+}
+
+fn cache_evictions_for_write(
+    root: &Path,
+    incoming_locator: &StorageLocator,
+    incoming_charge: usize,
+    budget: usize,
+    protected_locators: &HashSet<StorageLocator>,
+) -> Result<Option<Vec<PathBuf>>, String> {
+    if protected_locators.contains(incoming_locator) {
+        return Ok(None);
+    }
+    let mut entries = scan_cache_entries(root)?;
+    entries.retain(|entry| &entry.locator != incoming_locator);
+    let mut total = entries.iter().try_fold(incoming_charge, |total, entry| {
+        total
+            .checked_add(entry.charge)
+            .ok_or_else(|| "hosted Artifact cache byte accounting overflow".to_string())
+    })?;
+    entries.sort_by(|left, right| {
+        left.last_accessed_order
+            .cmp(&right.last_accessed_order)
+            .then_with(|| left.directory.cmp(&right.directory))
+    });
+    let mut evictions = Vec::new();
+    for entry in entries {
+        if total <= budget {
+            break;
+        }
+        if protected_locators.contains(&entry.locator) {
+            continue;
+        }
+        total = total.saturating_sub(entry.charge);
+        evictions.push(entry.directory);
+    }
+    if total > budget {
+        return Ok(None);
+    }
+    Ok(Some(evictions))
 }
 
 fn remove_cache_directory_if_present_within(root: &Path, path: &Path) -> Result<(), String> {
@@ -1075,29 +1433,35 @@ where
     physical_delete(root, account_directory)
 }
 
-#[tauri::command]
-pub fn desktop_hosted_artifact_cache_read(
-    app: AppHandle,
-    input: CacheReadRequest,
+fn read_cache_record_with_access(
+    root: &Path,
+    locator: &StorageLocator,
+    identity_key_hash: &str,
+    last_accessed_order: u64,
 ) -> Result<Option<CacheReadResult>, String> {
-    validate_locator(&input.locator)?;
-    if input.identity_key_hash != input.locator.artifact_key_hash {
+    validate_locator(locator)?;
+    if identity_key_hash != locator.artifact_key_hash {
         return Ok(None);
     }
-    let root = cache_root(&app)?;
-    let directory = match resolve_existing_artifact_directory(&root, &input.locator) {
+    let directory = match resolve_existing_artifact_directory(root, locator) {
         Ok(directory) => directory,
         Err(_) => return Ok(None),
     };
-    let manifest = match read_manifest(&directory, &input.locator) {
+    let manifest = match read_manifest(&directory, locator) {
         Ok(manifest) => manifest,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            remove_cache_directory_if_present_within(root, &directory)?;
+            return Ok(None);
+        }
     };
     let mut files = Vec::with_capacity(manifest.files.len());
     for file in &manifest.files {
         let bytes = match read_file_bytes(&directory, file) {
             Ok(bytes) => bytes,
-            Err(_) => return Ok(None),
+            Err(_) => {
+                remove_cache_directory_if_present_within(root, &directory)?;
+                return Ok(None);
+            }
         };
         files.push(CacheReadFile {
             relative_path: file.relative_path.clone(),
@@ -1106,6 +1470,12 @@ pub fn desktop_hosted_artifact_cache_read(
             bytes_base64: BASE64_STANDARD.encode(bytes),
         });
     }
+    let manifest = refresh_cache_entry_access_preserving_committed_record(
+        &directory,
+        locator,
+        manifest,
+        last_accessed_order,
+    )?;
     Ok(Some(CacheReadResult {
         identity_key_hash: manifest.identity_key_hash,
         entry_relative_path: manifest.entry_relative_path,
@@ -1113,79 +1483,117 @@ pub fn desktop_hosted_artifact_cache_read(
     }))
 }
 
-#[tauri::command]
-pub fn desktop_hosted_artifact_cache_write(
-    app: AppHandle,
-    state: State<'_, DesktopHostedArtifactState>,
-    input: CacheWriteRequest,
-) -> Result<(), String> {
+fn write_cache_record_with_budget(
+    root: &Path,
+    input: &CacheWriteRequest,
+    budget: usize,
+    last_accessed_order: u64,
+) -> Result<CacheWriteDisposition, String> {
+    write_cache_record_with_budget_protecting(
+        root,
+        input,
+        budget,
+        last_accessed_order,
+        &HashSet::new(),
+    )
+}
+
+fn write_cache_record_with_budget_protecting(
+    root: &Path,
+    input: &CacheWriteRequest,
+    budget: usize,
+    last_accessed_order: u64,
+    protected_locators: &HashSet<StorageLocator>,
+) -> Result<CacheWriteDisposition, String> {
     validate_locator(&input.locator)?;
     if input.identity_key_hash != input.locator.artifact_key_hash || input.files.is_empty() {
         return Err("invalid hosted Artifact cache write".to_string());
     }
-    let _write_guard = state
-        .cache_write_lock
-        .lock()
-        .map_err(|_| "hosted Artifact cache write lock poisoned".to_string())?;
-    let root = cache_root(&app)?;
-    prepare_cache_root_for_write(&root)?;
-    let directory = prepare_artifact_parent_for_write(&root, &input.locator)?;
+
+    // Verify and account before touching the filesystem. In particular, a
+    // valid record that cannot fit this cache must reach the current-load
+    // disposition even when persistent storage is full or unavailable.
+    let mut paths = HashSet::new();
+    let mut names = HashSet::new();
+    let mut verified_files = Vec::with_capacity(input.files.len());
+    for file in &input.files {
+        if normalize_artifact_path(&file.relative_path).as_deref()
+            != Some(file.relative_path.as_str())
+            || !is_digest(&file.digest)
+            || !paths.insert(file.relative_path.as_str())
+        {
+            return Err("invalid hosted Artifact cache file".to_string());
+        }
+        let bytes = BASE64_STANDARD
+            .decode(file.bytes_base64.as_bytes())
+            .map_err(|_| "invalid hosted Artifact cache file encoding".to_string())?;
+        if bytes.len() != file.byte_size || format!("sha256:{}", sha256_hex(&bytes)) != file.digest
+        {
+            return Err("invalid hosted Artifact cache file integrity".to_string());
+        }
+        let stored_file_name = file_name_for(&file.relative_path, &file.digest);
+        if !names.insert(stored_file_name.clone()) {
+            return Err("duplicate hosted Artifact cache stored file".to_string());
+        }
+        verified_files.push((
+            CachedFileMetadata {
+                relative_path: file.relative_path.clone(),
+                digest: file.digest.clone(),
+                byte_size: file.byte_size,
+                stored_file_name,
+            },
+            bytes,
+        ));
+    }
+    if !paths.contains(input.entry_relative_path.as_str()) {
+        return Err("hosted Artifact cache entry is not declared".to_string());
+    }
+    let manifest = CacheManifest {
+        version: 1,
+        identity_key_hash: input.identity_key_hash.clone(),
+        last_accessed_order,
+        entry_relative_path: input.entry_relative_path.clone(),
+        files: verified_files
+            .iter()
+            .map(|(metadata, _)| metadata.clone())
+            .collect(),
+    };
+    validate_manifest(&manifest, &input.locator)?;
+    let manifest_bytes = serde_json::to_vec(&manifest).map_err(|error| error.to_string())?;
+    let incoming_charge = cache_entry_charge(&manifest, manifest_bytes.len())?;
+    if incoming_charge > budget {
+        return Ok(CacheWriteDisposition::NotPersistedOversize);
+    }
+
+    prepare_cache_root_for_write(root)?;
+    // A write is the cache's natural reconciliation point. Incomplete
+    // directories have no commit marker and are removed here instead of
+    // requiring a timer or a separate cleanup service.
+    let Some(evictions) = cache_evictions_for_write(
+        root,
+        &input.locator,
+        incoming_charge,
+        budget,
+        protected_locators,
+    )? else {
+        return Ok(CacheWriteDisposition::NotPersistedCapacity);
+    };
+    let directory = prepare_artifact_parent_for_write(root, &input.locator)?;
     let partial = directory.with_extension("partial");
-    remove_cache_directory_if_present_within(&root, &partial)?;
+    remove_cache_directory_if_present_within(root, &partial)?;
     fs::create_dir(&partial).map_err(|error| error.to_string())?;
 
-    let write_result = (|| -> Result<CacheManifest, String> {
-        let mut paths = HashSet::new();
-        let mut names = HashSet::new();
-        let mut files = Vec::with_capacity(input.files.len());
-        for file in &input.files {
-            if normalize_artifact_path(&file.relative_path).as_deref()
-                != Some(file.relative_path.as_str())
-                || !is_digest(&file.digest)
-                || !paths.insert(file.relative_path.as_str())
-            {
-                return Err("invalid hosted Artifact cache file".to_string());
-            }
-            let bytes = BASE64_STANDARD
-                .decode(file.bytes_base64.as_bytes())
-                .map_err(|_| "invalid hosted Artifact cache file encoding".to_string())?;
-            if bytes.len() != file.byte_size
-                || format!("sha256:{}", sha256_hex(&bytes)) != file.digest
-            {
-                return Err("invalid hosted Artifact cache file integrity".to_string());
-            }
-            let stored_file_name = file_name_for(&file.relative_path, &file.digest);
-            if !names.insert(stored_file_name.clone()) {
-                return Err("duplicate hosted Artifact cache stored file".to_string());
-            }
-            let path = partial.join(&stored_file_name);
+    let write_result = (|| -> Result<(), String> {
+        for (file, bytes) in &verified_files {
+            let path = partial.join(&file.stored_file_name);
             let mut output = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(path)
                 .map_err(|error| error.to_string())?;
-            output
-                .write_all(&bytes)
-                .map_err(|error| error.to_string())?;
+            output.write_all(bytes).map_err(|error| error.to_string())?;
             output.sync_all().map_err(|error| error.to_string())?;
-            files.push(CachedFileMetadata {
-                relative_path: file.relative_path.clone(),
-                digest: file.digest.clone(),
-                byte_size: file.byte_size,
-                stored_file_name,
-            });
         }
-        if !paths.contains(input.entry_relative_path.as_str()) {
-            return Err("hosted Artifact cache entry is not declared".to_string());
-        }
-        let manifest = CacheManifest {
-            version: 1,
-            identity_key_hash: input.identity_key_hash.clone(),
-            entry_relative_path: input.entry_relative_path.clone(),
-            files,
-        };
-        validate_manifest(&manifest, &input.locator)?;
-        let manifest_bytes = serde_json::to_vec(&manifest).map_err(|error| error.to_string())?;
         let mut manifest_file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -1200,33 +1608,42 @@ pub fn desktop_hosted_artifact_cache_write(
         manifest_file
             .sync_all()
             .map_err(|error| error.to_string())?;
-        Ok(manifest)
+        Ok(())
     })();
     if let Err(error) = write_result {
-        let _ = remove_cache_directory_if_present_within(&root, &partial);
+        let _ = remove_cache_directory_if_present_within(root, &partial);
         return Err(error);
     }
-    remove_cache_directory_if_present_within(&root, &directory)?;
-    fs::rename(&partial, &directory).map_err(|error| error.to_string())
+    for eviction in evictions {
+        if let Err(error) = remove_cache_directory_if_present_within(root, &eviction) {
+            let _ = remove_cache_directory_if_present_within(root, &partial);
+            return Err(error);
+        }
+    }
+    remove_cache_directory_if_present_within(root, &directory)?;
+    fs::rename(&partial, &directory).map_err(|error| error.to_string())?;
+    Ok(CacheWriteDisposition::Persisted)
 }
 
-#[tauri::command]
-pub fn desktop_hosted_artifact_cache_describe(
-    app: AppHandle,
-    input: CacheDescribeRequest,
+fn describe_cache_resource_with_access(
+    root: &Path,
+    input: &CacheDescribeRequest,
+    last_accessed_order: u64,
 ) -> Result<Option<CacheResourceDescription>, String> {
     validate_locator(&input.locator)?;
     if input.identity_key_hash != input.locator.artifact_key_hash || input.files.is_empty() {
         return Ok(None);
     }
-    let root = cache_root(&app)?;
-    let directory = match resolve_existing_artifact_directory(&root, &input.locator) {
+    let directory = match resolve_existing_artifact_directory(root, &input.locator) {
         Ok(directory) => directory,
         Err(_) => return Ok(None),
     };
     let manifest = match read_manifest(&directory, &input.locator) {
         Ok(manifest) if manifest.identity_key_hash == input.identity_key_hash => manifest,
-        _ => return Ok(None),
+        _ => {
+            remove_cache_directory_if_present_within(root, &directory)?;
+            return Ok(None);
+        }
     };
     let metadata_by_path = manifest
         .files
@@ -1246,10 +1663,11 @@ pub fn desktop_hosted_artifact_cache_describe(
         let Some(file) = metadata_by_path.get(expected.relative_path.as_str()) else {
             return Ok(None);
         };
-        if file.digest != expected.digest || file.byte_size != expected.byte_size {
-            return Ok(None);
-        }
-        if read_file_bytes(&directory, file).is_err() {
+        if file.digest != expected.digest
+            || file.byte_size != expected.byte_size
+            || read_file_bytes(&directory, file).is_err()
+        {
+            remove_cache_directory_if_present_within(root, &directory)?;
             return Ok(None);
         }
         resources.push(CachedResourceDescription {
@@ -1258,10 +1676,83 @@ pub fn desktop_hosted_artifact_cache_describe(
             byte_size: file.byte_size,
         });
     }
+    refresh_cache_entry_access_preserving_committed_record(
+        &directory,
+        &input.locator,
+        manifest,
+        last_accessed_order,
+    )?;
     Ok(Some(CacheResourceDescription {
-        locator: input.locator,
+        locator: input.locator.clone(),
         resources,
     }))
+}
+
+#[tauri::command]
+pub fn desktop_hosted_artifact_cache_read(
+    app: AppHandle,
+    state: State<'_, DesktopHostedArtifactState>,
+    input: CacheReadRequest,
+) -> Result<Option<CacheReadResult>, String> {
+    let _write_guard = state
+        .cache_write_lock
+        .lock()
+        .map_err(|_| "hosted Artifact cache write lock poisoned".to_string())?;
+    let root = cache_root(&app)?;
+    let access_order = next_cache_access_order(&root)?;
+    read_cache_record_with_access(
+        &root,
+        &input.locator,
+        &input.identity_key_hash,
+        access_order,
+    )
+}
+
+#[tauri::command]
+pub fn desktop_hosted_artifact_cache_write(
+    app: AppHandle,
+    state: State<'_, DesktopHostedArtifactState>,
+    input: CacheWriteRequest,
+) -> Result<CacheWriteDisposition, String> {
+    let _write_guard = state
+        .cache_write_lock
+        .lock()
+        .map_err(|_| "hosted Artifact cache write lock poisoned".to_string())?;
+    let root = cache_root(&app)?;
+    let access_order = next_cache_access_order(&root)?;
+    let protected_locators = state
+        .inner
+        .lock()
+        .map_err(|_| "hosted Artifact registry lock poisoned".to_string())?
+        .registrations
+        .values()
+        .filter_map(|registration| match &registration.storage {
+            RegisteredArtifactStorage::Persistent { locator, .. } => Some(locator.clone()),
+            RegisteredArtifactStorage::CurrentLoad { .. } => None,
+        })
+        .collect::<HashSet<_>>();
+    write_cache_record_with_budget_protecting(
+        &root,
+        &input,
+        DESKTOP_CACHE_BUDGET_BYTES,
+        access_order,
+        &protected_locators,
+    )
+}
+
+#[tauri::command]
+pub fn desktop_hosted_artifact_cache_describe(
+    app: AppHandle,
+    state: State<'_, DesktopHostedArtifactState>,
+    input: CacheDescribeRequest,
+) -> Result<Option<CacheResourceDescription>, String> {
+    let _write_guard = state
+        .cache_write_lock
+        .lock()
+        .map_err(|_| "hosted Artifact cache write lock poisoned".to_string())?;
+    let root = cache_root(&app)?;
+    let access_order = next_cache_access_order(&root)?;
+    describe_cache_resource_with_access(&root, &input, access_order)
 }
 
 #[tauri::command]
@@ -1304,36 +1795,98 @@ fn registered_artifact_from_input(
     if !is_opaque_id(&input.token) || !is_partition_id(&input.storage_partition_id) {
         return Err("invalid hosted Artifact registration identity".to_string());
     }
-    validate_locator(&input.storage_locator)?;
     let policy_table = parse_policy_table(input.policy_table)?;
-    let mut resources = HashMap::new();
-    let mut stored_file_names = HashSet::new();
-    for resource in input.resources {
-        if !is_resource_id(&resource.resource_id)
-            || !is_stored_file_name(&resource.stored_file_name)
-            || !is_digest(&resource.digest)
-            || resources.contains_key(&resource.resource_id)
-            || !stored_file_names.insert(resource.stored_file_name.clone())
-        {
-            return Err("invalid hosted Artifact registration resource".to_string());
+    let storage = match input.storage {
+        HostedArtifactRegistrationStorageInput::Persistent { locator, resources } => {
+            validate_locator(&locator)?;
+            let mut admitted = HashMap::new();
+            let mut stored_file_names = HashSet::new();
+            for resource in resources {
+                if !is_resource_id(&resource.resource_id)
+                    || !is_stored_file_name(&resource.stored_file_name)
+                    || !is_digest(&resource.digest)
+                    || admitted.contains_key(&resource.resource_id)
+                    || !stored_file_names.insert(resource.stored_file_name.clone())
+                {
+                    return Err("invalid hosted Artifact registration resource".to_string());
+                }
+                admitted.insert(resource.resource_id.clone(), resource);
+            }
+            if admitted.is_empty()
+                || policy_content_resource_ids(&policy_table)
+                    .any(|resource_id| !admitted.contains_key(resource_id))
+            {
+                return Err("hosted Artifact policy resource is unavailable".to_string());
+            }
+            RegisteredArtifactStorage::Persistent {
+                locator,
+                resources: admitted,
+            }
         }
-        resources.insert(resource.resource_id.clone(), resource);
-    }
-    if resources.is_empty()
-        || policy_content_resource_ids(&policy_table)
-            .any(|resource_id| !resources.contains_key(resource_id))
-    {
-        return Err("hosted Artifact policy resource is unavailable".to_string());
-    }
+        HostedArtifactRegistrationStorageInput::CurrentLoad { resources } => {
+            let mut admitted = HashMap::new();
+            for resource in resources {
+                if !is_resource_id(&resource.resource_id)
+                    || !is_digest(&resource.digest)
+                    || admitted.contains_key(&resource.resource_id)
+                {
+                    return Err("invalid hosted Artifact registration resource".to_string());
+                }
+                let bytes = BASE64_STANDARD
+                    .decode(resource.bytes_base64.as_bytes())
+                    .map_err(|_| "invalid hosted Artifact current-load encoding".to_string())?;
+                if bytes.len() != resource.byte_size
+                    || format!("sha256:{}", sha256_hex(&bytes)) != resource.digest
+                {
+                    return Err("invalid hosted Artifact current-load integrity".to_string());
+                }
+                let mut file = tempfile::tempfile().map_err(|error| error.to_string())?;
+                file.write_all(&bytes).map_err(|error| error.to_string())?;
+                file.flush().map_err(|error| error.to_string())?;
+                file.seek(SeekFrom::Start(0))
+                    .map_err(|error| error.to_string())?;
+                admitted.insert(
+                    resource.resource_id,
+                    HostedArtifactCurrentLoadFile {
+                        digest: resource.digest,
+                        byte_size: resource.byte_size,
+                        file: Arc::new(Mutex::new(file)),
+                    },
+                );
+            }
+            if admitted.is_empty()
+                || policy_content_resource_ids(&policy_table)
+                    .any(|resource_id| !admitted.contains_key(resource_id))
+            {
+                return Err("hosted Artifact policy resource is unavailable".to_string());
+            }
+            RegisteredArtifactStorage::CurrentLoad {
+                resources: admitted,
+            }
+        }
+    };
     Ok((
         input.token,
         RegisteredArtifact {
             storage_partition_id: input.storage_partition_id,
-            storage_locator: input.storage_locator,
-            resources,
+            storage,
             policy_table,
         },
     ))
+}
+
+fn insert_hosted_artifact_registration(
+    inner: &mut HostedArtifactInner,
+    token: String,
+    registration: RegisteredArtifact,
+) -> bool {
+    match inner.registrations.entry(token) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(registration);
+            true
+        }
+        std::collections::hash_map::Entry::Occupied(_) => false,
+    }
 }
 
 #[tauri::command]
@@ -1343,6 +1896,7 @@ pub fn desktop_hosted_artifact_get_frame_capability() -> HostedArtifactFrameCapa
 
 #[tauri::command]
 pub fn desktop_hosted_artifact_register(
+    app: AppHandle,
     state: State<'_, DesktopHostedArtifactState>,
     input: HostedArtifactRegistrationInput,
 ) -> HostedArtifactRegistrationResult {
@@ -1360,6 +1914,31 @@ pub fn desktop_hosted_artifact_register(
         };
     };
     let frame_origin = transport.registration_frame_origin(&registration.storage_partition_id);
+    let _write_guard = match state.cache_write_lock.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return HostedArtifactRegistrationResult::Unavailable {
+                code: "native_artifact_resource_registration_failed",
+                capability: None,
+            }
+        }
+    };
+    if let RegisteredArtifactStorage::Persistent { resources, .. } = &registration.storage {
+        let Ok(root) = cache_root(&app) else {
+            return HostedArtifactRegistrationResult::Unavailable {
+                code: "native_artifact_resource_registration_failed",
+                capability: None,
+            };
+        };
+        if resources.keys().any(|resource_id| {
+            read_registered_artifact_resource(&registration, &root, resource_id).is_none()
+        }) {
+            return HostedArtifactRegistrationResult::Unavailable {
+                code: "native_artifact_resource_registration_failed",
+                capability: None,
+            };
+        }
+    }
     let mut inner = match state.inner.lock() {
         Ok(inner) => inner,
         Err(_) => {
@@ -1369,13 +1948,12 @@ pub fn desktop_hosted_artifact_register(
             };
         }
     };
-    if inner.registrations.contains_key(&token) {
+    if !insert_hosted_artifact_registration(&mut inner, token, registration) {
         return HostedArtifactRegistrationResult::Unavailable {
             code: "native_artifact_resource_registration_failed",
             capability: None,
         };
     }
-    inner.registrations.insert(token, registration);
     HostedArtifactRegistrationResult::Registered { frame_origin }
 }
 
@@ -1514,6 +2092,34 @@ fn protocol_response(
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn read_registered_artifact_resource(
+    registration: &RegisteredArtifact,
+    cache_root: &Path,
+    resource_id: &str,
+) -> Option<Vec<u8>> {
+    match &registration.storage {
+        RegisteredArtifactStorage::Persistent { locator, resources } => {
+            let resource = resources.get(resource_id)?;
+            let directory = resolve_existing_artifact_directory(cache_root, locator).ok()?;
+            let bytes = read_confined_cache_file(&directory, &resource.stored_file_name).ok()?;
+            (bytes.len() == resource.byte_size
+                && format!("sha256:{}", sha256_hex(&bytes)) == resource.digest)
+                .then_some(bytes)
+        }
+        RegisteredArtifactStorage::CurrentLoad { resources } => {
+            let resource = resources.get(resource_id)?;
+            let mut file = resource.file.lock().ok()?;
+            file.seek(SeekFrom::Start(0)).ok()?;
+            let mut bytes = Vec::with_capacity(resource.byte_size);
+            file.read_to_end(&mut bytes).ok()?;
+            (bytes.len() == resource.byte_size
+                && format!("sha256:{}", sha256_hex(&bytes)) == resource.digest)
+                .then_some(bytes)
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn serve_artifact_protocol_request(
     inner: &Arc<Mutex<HostedArtifactInner>>,
     cache_root: &Path,
@@ -1531,39 +2137,34 @@ fn serve_artifact_protocol_request(
     if !is_allowed_artifact_protocol_request(&request_url, partition_id) {
         return protocol_response(404, None, None, Vec::new());
     }
-    let registration = match inner.lock() {
-        Ok(inner) => inner
+    // Keep the incumbent registration mutex through the byte copy. Native
+    // unregistration and cache eviction can then observe one linear order:
+    // an already-admitted request finishes, or token denial completes before
+    // the physical LRU may regard these bytes as unmounted.
+    let (content, bytes) = {
+        let registry = match inner.lock() {
+            Ok(registry) => registry,
+            Err(_) => return protocol_response(404, None, None, Vec::new()),
+        };
+        let Some(registration) = registry
             .registrations
             .get(token)
             .filter(|registration| registration.storage_partition_id == partition_id)
-            .cloned(),
-        Err(_) => None,
-    };
-    let Some(registration) = registration else {
-        return protocol_response(404, None, None, Vec::new());
-    };
-    let content = match resolve_policy_request(&registration.policy_table, request.uri().path()) {
-        PolicyOutcome::Content(content) => content,
-        PolicyOutcome::Rejected { status } => {
-            return protocol_response(status, None, None, Vec::new());
-        }
-    };
-    let Some(resource) = registration.resources.get(&content.resource_id) else {
-        return protocol_response(404, None, None, Vec::new());
-    };
-    let directory =
-        match resolve_existing_artifact_directory(cache_root, &registration.storage_locator) {
-            Ok(directory) => directory,
-            Err(_) => return protocol_response(404, None, None, Vec::new()),
+        else {
+            return protocol_response(404, None, None, Vec::new());
         };
-    let bytes = match read_confined_cache_file(&directory, &resource.stored_file_name) {
-        Ok(bytes)
-            if bytes.len() == resource.byte_size
-                && format!("sha256:{}", sha256_hex(&bytes)) == resource.digest =>
-        {
-            bytes
-        }
-        _ => return protocol_response(404, None, None, Vec::new()),
+        let content = match resolve_policy_request(&registration.policy_table, request.uri().path()) {
+            PolicyOutcome::Content(content) => content,
+            PolicyOutcome::Rejected { status } => {
+                return protocol_response(status, None, None, Vec::new());
+            }
+        };
+        let Some(bytes) =
+            read_registered_artifact_resource(registration, cache_root, &content.resource_id)
+        else {
+            return protocol_response(404, None, None, Vec::new());
+        };
+        (content, bytes)
     };
     protocol_response(
         200,
@@ -2662,17 +3263,20 @@ mod tests {
         let input = serde_json::from_value::<HostedArtifactRegistrationInput>(json!({
             "token": "hpat_test_token",
             "storagePartitionId": format!("hpa_{}", "a".repeat(64)),
-            "storageLocator": {
-                "namespace": CACHE_NAMESPACE,
-                "accountKeyHash": "b".repeat(64),
-                "artifactKeyHash": "c".repeat(64)
+            "storage": {
+                "kind": "persistent",
+                "locator": {
+                    "namespace": CACHE_NAMESPACE,
+                    "accountKeyHash": "b".repeat(64),
+                    "artifactKeyHash": "c".repeat(64)
+                },
+                "resources": [{
+                    "resourceId": "r0",
+                    "storedFileName": format!("{}.bin", "d".repeat(64)),
+                    "digest": format!("sha256:{}", "e".repeat(64)),
+                    "byteSize": 1
+                }]
             },
-            "resources": [{
-                "resourceId": "r0",
-                "storedFileName": format!("{}.bin", "d".repeat(64)),
-                "digest": format!("sha256:{}", "e".repeat(64)),
-                "byteSize": 1
-            }],
             "policyTable": {
                 "version": 1,
                 "routes": [{ "path": "", "outcome": valid_content("r1") }]
@@ -3023,6 +3627,394 @@ mod tests {
         ));
     }
 
+    fn cache_write_fixture(
+        account_digit: char,
+        artifact_digit: char,
+        payload: &[u8],
+    ) -> CacheWriteRequest {
+        let relative_path = "index.html".to_string();
+        let digest = format!("sha256:{}", sha256_hex(payload));
+        CacheWriteRequest {
+            locator: StorageLocator {
+                namespace: CACHE_NAMESPACE.to_string(),
+                account_key_hash: account_digit.to_string().repeat(64),
+                artifact_key_hash: artifact_digit.to_string().repeat(64),
+            },
+            identity_key_hash: artifact_digit.to_string().repeat(64),
+            entry_relative_path: relative_path.clone(),
+            files: vec![CacheFileInput {
+                relative_path,
+                digest,
+                byte_size: payload.len(),
+                bytes_base64: BASE64_STANDARD.encode(payload),
+            }],
+        }
+    }
+
+    #[test]
+    fn cache_budget_charges_payload_and_the_exact_persisted_manifest_bytes() {
+        let temporary = tempfile::tempdir().expect("temporary cache root should exist");
+        let root = temporary.path().join("cache");
+        let payload = b"metadata must count too";
+        let input = cache_write_fixture('a', 'b', payload);
+
+        assert_eq!(
+            write_cache_record_with_budget(&root, &input, usize::MAX, 1)
+                .expect("cache write should succeed"),
+            CacheWriteDisposition::Persisted,
+        );
+        let directory =
+            artifact_directory(&root, &input.locator).expect("cache directory should resolve");
+        let manifest_bytes =
+            fs::read(directory.join("manifest.json")).expect("manifest should be persisted");
+        let manifest =
+            read_manifest(&directory, &input.locator).expect("manifest should remain valid");
+
+        assert_eq!(
+            cache_entry_charge(&manifest, manifest_bytes.len())
+                .expect("entry charge should be representable"),
+            payload.len() + manifest_bytes.len(),
+        );
+    }
+
+    #[test]
+    fn cache_budget_evicts_globally_across_accounts_and_read_refreshes_lru_order() {
+        let temporary = tempfile::tempdir().expect("temporary cache root should exist");
+        let root = temporary.path().join("cache");
+        let first = cache_write_fixture('a', 'a', b"first");
+        let second = cache_write_fixture('b', 'b', b"second");
+        let third = cache_write_fixture('c', 'c', b"third");
+
+        write_cache_record_with_budget(&root, &first, usize::MAX, 1)
+            .expect("first cache write should succeed");
+        write_cache_record_with_budget(&root, &second, usize::MAX, 2)
+            .expect("second cache write should succeed");
+        read_cache_record_with_access(&root, &first.locator, &first.identity_key_hash, 3)
+            .expect("cache read should succeed")
+            .expect("first entry should exist");
+        let two_entry_budget = cache_entry_charge_on_disk(&root, &first.locator)
+            .expect("refreshed first charge should exist")
+            + projected_cache_entry_charge(&third, 4)
+                .expect("third charge should be representable");
+        write_cache_record_with_budget(&root, &third, two_entry_budget, 4)
+            .expect("third cache write should succeed");
+
+        assert!(resolve_existing_artifact_directory(&root, &first.locator).is_ok());
+        assert!(resolve_existing_artifact_directory(&root, &second.locator).is_err());
+        assert!(resolve_existing_artifact_directory(&root, &third.locator).is_ok());
+    }
+
+    #[test]
+    fn cache_read_keeps_verified_bytes_when_only_access_order_refresh_fails() {
+        let temporary = tempfile::tempdir().expect("temporary cache root should exist");
+        let root = temporary.path().join("cache");
+        let input = cache_write_fixture('a', 'b', b"still readable");
+        write_cache_record_with_budget(&root, &input, usize::MAX, 1)
+            .expect("cache write should succeed");
+        let directory = resolve_existing_artifact_directory(&root, &input.locator)
+            .expect("cache directory should exist");
+        fs::create_dir(directory.join("manifest.access.partial"))
+            .expect("refresh blocker should exist");
+
+        let record = read_cache_record_with_access(
+            &root,
+            &input.locator,
+            &input.identity_key_hash,
+            2,
+        )
+        .expect("ordering-only metadata failure must not hide verified bytes")
+        .expect("verified cache record should remain available");
+
+        assert_eq!(record.files[0].bytes_base64, BASE64_STANDARD.encode(b"still readable"));
+        let manifest = read_manifest(&directory, &input.locator)
+            .expect("the previous committed manifest should remain authoritative");
+        assert_eq!(manifest.last_accessed_order, 1);
+    }
+
+    #[test]
+    fn native_cache_description_refreshes_the_same_persisted_lru_order() {
+        let temporary = tempfile::tempdir().expect("temporary cache root should exist");
+        let root = temporary.path().join("cache");
+        let input = cache_write_fixture('a', 'b', b"native descriptor");
+        write_cache_record_with_budget(&root, &input, usize::MAX, 1)
+            .expect("cache write should succeed");
+        let description = CacheDescribeRequest {
+            locator: input.locator.clone(),
+            identity_key_hash: input.identity_key_hash.clone(),
+            files: input
+                .files
+                .iter()
+                .map(|file| CacheFileExpectation {
+                    relative_path: file.relative_path.clone(),
+                    digest: file.digest.clone(),
+                    byte_size: file.byte_size,
+                })
+                .collect(),
+        };
+
+        describe_cache_resource_with_access(&root, &description, 2)
+            .expect("native cache description should succeed")
+            .expect("native cache description should exist");
+
+        let directory = resolve_existing_artifact_directory(&root, &input.locator)
+            .expect("cache directory should remain available");
+        let manifest = read_manifest(&directory, &input.locator)
+            .expect("refreshed manifest should remain valid");
+        assert_eq!(manifest.last_accessed_order, 2);
+    }
+
+    #[test]
+    fn cache_budget_replacement_accounts_only_the_current_record() {
+        let temporary = tempfile::tempdir().expect("temporary cache root should exist");
+        let root = temporary.path().join("cache");
+        let original = cache_write_fixture('a', 'a', &vec![7; 512]);
+        let replacement = cache_write_fixture('a', 'a', b"small replacement");
+        let peer = cache_write_fixture('b', 'b', b"peer");
+
+        write_cache_record_with_budget(&root, &original, usize::MAX, 1)
+            .expect("original cache write should succeed");
+        write_cache_record_with_budget(&root, &replacement, usize::MAX, 2)
+            .expect("replacement cache write should succeed");
+        let budget = cache_entry_charge_on_disk(&root, &replacement.locator)
+            .expect("replacement charge should exist")
+            + projected_cache_entry_charge(&peer, 3).expect("peer charge should be representable");
+
+        write_cache_record_with_budget(&root, &peer, budget, 3)
+            .expect("peer cache write should succeed");
+
+        assert!(resolve_existing_artifact_directory(&root, &replacement.locator).is_ok());
+        assert!(resolve_existing_artifact_directory(&root, &peer.locator).is_ok());
+    }
+
+    #[test]
+    fn oversized_verified_cache_record_is_not_persisted() {
+        let temporary = tempfile::tempdir().expect("temporary cache root should exist");
+        let root = temporary.path().join("cache");
+        let input = cache_write_fixture('a', 'b', b"verified current-load bytes");
+        let payload_only_budget = input.files[0].byte_size;
+
+        assert_eq!(
+            write_cache_record_with_budget(&root, &input, payload_only_budget, 1)
+                .expect("oversized verified write should not fail"),
+            CacheWriteDisposition::NotPersistedOversize,
+        );
+        assert!(!root.exists());
+        assert!(resolve_existing_artifact_directory(&root, &input.locator).is_err());
+    }
+
+    #[test]
+    fn cache_budget_never_evicts_bytes_used_by_a_registered_native_token() {
+        let temporary = tempfile::tempdir().expect("temporary cache root should exist");
+        let root = temporary.path().join("cache");
+        let mounted = cache_write_fixture('a', 'a', b"mounted native bytes");
+        let incoming = cache_write_fixture('b', 'b', b"incoming current-load bytes");
+        write_cache_record_with_budget(&root, &mounted, usize::MAX, 1)
+            .expect("mounted record should persist");
+        let budget = cache_entry_charge_on_disk(&root, &mounted.locator)
+            .expect("mounted charge should exist")
+            .max(
+                projected_cache_entry_charge(&incoming, 2)
+                    .expect("incoming charge should be representable"),
+            );
+        let protected = HashSet::from([mounted.locator.clone()]);
+
+        assert_eq!(
+            write_cache_record_with_budget_protecting(
+                &root,
+                &incoming,
+                budget,
+                2,
+                &protected,
+            )
+            .expect("capacity fallback should not fail"),
+            CacheWriteDisposition::NotPersistedCapacity,
+        );
+        assert!(resolve_existing_artifact_directory(&root, &mounted.locator).is_ok());
+        assert!(resolve_existing_artifact_directory(&root, &incoming.locator).is_err());
+    }
+
+    fn current_load_registration_input(
+        token: &str,
+        partition_id: &str,
+        bytes: &[u8],
+        digest: String,
+    ) -> HostedArtifactRegistrationInput {
+        HostedArtifactRegistrationInput {
+            token: token.to_string(),
+            storage_partition_id: partition_id.to_string(),
+            storage: HostedArtifactRegistrationStorageInput::CurrentLoad {
+                resources: vec![HostedArtifactCurrentLoadResource {
+                    resource_id: "r0".to_string(),
+                    digest: digest.clone(),
+                    byte_size: bytes.len(),
+                    bytes_base64: BASE64_STANDARD.encode(bytes),
+                }],
+            },
+            policy_table: PolicyTableWire {
+                version: 1,
+                routes: vec![PolicyRouteWire {
+                    path: "".to_string(),
+                    outcome: PolicyOutcomeWire::Content {
+                        resource_id: "r0".to_string(),
+                        content_type: "text/html; charset=utf-8".to_string(),
+                        headers: PolicyHeadersWire {
+                            cache_control: "no-store".to_string(),
+                            content_security_policy: "default-src 'none'".to_string(),
+                            etag: format!("\"{digest}\""),
+                            x_content_type_options: "nosniff".to_string(),
+                        },
+                    },
+                }],
+                path_fallback: None,
+            },
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn current_load_registration_serves_without_a_cache_record_until_token_retirement() {
+        let temporary = tempfile::tempdir().expect("temporary cache root should exist");
+        let root = temporary.path().join("cache");
+        let bytes = b"oversized current-load resource".to_vec();
+        let digest = format!("sha256:{}", sha256_hex(&bytes));
+        let token = "hpat_current_load".to_string();
+        let partition_id = format!("hpa_{}", "c".repeat(64));
+        let (_, registration) = registered_artifact_from_input(current_load_registration_input(
+            &token,
+            &partition_id,
+            &bytes,
+            digest,
+        ))
+        .expect("verified current-load registration should be admitted");
+        let inner = Arc::new(Mutex::new(HostedArtifactInner {
+            registrations: HashMap::from([(token.clone(), registration)]),
+            views: HashMap::new(),
+        }));
+        let request = || {
+            wry::http::Request::builder()
+                .method("GET")
+                .uri(format!("{ARTIFACT_SCHEME}://{partition_id}/"))
+                .body(Vec::new())
+                .expect("protocol request should be valid")
+        };
+
+        let response =
+            serve_artifact_protocol_request(&inner, &root, &token, &partition_id, request());
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(response.body().as_ref(), bytes.as_slice());
+        assert!(!root.exists());
+
+        let in_flight = inner
+            .lock()
+            .expect("registration lock should be available")
+            .registrations
+            .get(&token)
+            .expect("registration should exist")
+            .clone();
+        retire_hosted_artifact_registration(
+            &mut inner.lock().expect("registration lock should be available"),
+            &token,
+        );
+        let retired =
+            serve_artifact_protocol_request(&inner, &root, &token, &partition_id, request());
+        assert_eq!(retired.status().as_u16(), 404);
+        assert_eq!(
+            read_registered_artifact_resource(&in_flight, &root, "r0"),
+            Some(bytes),
+        );
+    }
+
+    #[test]
+    fn current_load_registration_rejects_a_digest_mismatch() {
+        let bytes = b"verified current-load resource";
+        let result = registered_artifact_from_input(current_load_registration_input(
+            "hpat_current_load",
+            &format!("hpa_{}", "c".repeat(64)),
+            bytes,
+            format!("sha256:{}", "d".repeat(64)),
+        ));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn duplicate_token_rejection_drops_uncommitted_current_load_files() {
+        let token = "hpat_duplicate_current_load";
+        let partition_id = format!("hpa_{}", "c".repeat(64));
+        let first_bytes = b"first current load";
+        let candidate_bytes = b"uncommitted current load";
+        let (_, first) = registered_artifact_from_input(current_load_registration_input(
+            token,
+            &partition_id,
+            first_bytes,
+            format!("sha256:{}", sha256_hex(first_bytes)),
+        ))
+        .expect("first current-load registration should be valid");
+        let (_, candidate) = registered_artifact_from_input(current_load_registration_input(
+            token,
+            &partition_id,
+            candidate_bytes,
+            format!("sha256:{}", sha256_hex(candidate_bytes)),
+        ))
+        .expect("candidate current-load registration should be valid");
+        let candidate_file = match &candidate.storage {
+            RegisteredArtifactStorage::CurrentLoad { resources } => Arc::downgrade(
+                &resources
+                    .get("r0")
+                    .expect("candidate resource should exist")
+                    .file,
+            ),
+            RegisteredArtifactStorage::Persistent { .. } => {
+                panic!("candidate should use current-load storage")
+            }
+        };
+        let mut inner = HostedArtifactInner {
+            registrations: HashMap::new(),
+            views: HashMap::new(),
+        };
+
+        assert!(insert_hosted_artifact_registration(
+            &mut inner,
+            token.to_string(),
+            first,
+        ));
+        assert!(!insert_hosted_artifact_registration(
+            &mut inner,
+            token.to_string(),
+            candidate,
+        ));
+        assert!(candidate_file.upgrade().is_none());
+    }
+
+    #[test]
+    fn cache_budget_reclaims_partial_and_manifestless_orphan_directories() {
+        let temporary = tempfile::tempdir().expect("temporary cache root should exist");
+        let root = temporary.path().join("cache");
+        let input = cache_write_fixture('a', 'b', b"valid record");
+        let orphan_locator = StorageLocator {
+            namespace: CACHE_NAMESPACE.to_string(),
+            account_key_hash: "c".repeat(64),
+            artifact_key_hash: "d".repeat(64),
+        };
+        prepare_cache_root_for_write(&root).expect("cache root should exist");
+        let orphan =
+            artifact_directory(&root, &orphan_locator).expect("orphan directory should resolve");
+        fs::create_dir_all(&orphan).expect("orphan directory should exist");
+        fs::write(orphan.join("uncommitted.bin"), b"orphan").expect("orphan bytes should exist");
+        let partial = artifact_directory(&root, &input.locator)
+            .expect("partial directory should resolve")
+            .with_extension("partial");
+        fs::create_dir_all(&partial).expect("partial directory should exist");
+        fs::write(partial.join("partial.bin"), b"partial").expect("partial bytes should exist");
+
+        write_cache_record_with_budget(&root, &input, usize::MAX, 1)
+            .expect("valid cache write should succeed");
+
+        assert!(!orphan.exists());
+        assert!(!partial.exists());
+        assert!(resolve_existing_artifact_directory(&root, &input.locator).is_ok());
+    }
+
     #[test]
     fn protocol_serves_registered_artifact_bytes_only_to_get_requests() {
         let temporary = tempfile::tempdir().expect("temporary cache root should exist");
@@ -3046,16 +4038,18 @@ mod tests {
         let partition_id = format!("hpa_{}", "c".repeat(64));
         let registration = RegisteredArtifact {
             storage_partition_id: partition_id.clone(),
-            storage_locator: locator,
-            resources: HashMap::from([(
-                "r0".to_string(),
-                HostedArtifactResource {
-                    resource_id: "r0".to_string(),
-                    stored_file_name,
-                    digest,
-                    byte_size: bytes.len(),
-                },
-            )]),
+            storage: RegisteredArtifactStorage::Persistent {
+                locator,
+                resources: HashMap::from([(
+                    "r0".to_string(),
+                    HostedArtifactResource {
+                        resource_id: "r0".to_string(),
+                        stored_file_name,
+                        digest,
+                        byte_size: bytes.len(),
+                    },
+                )]),
+            },
             policy_table: PolicyTable {
                 routes: HashMap::from([(
                     "".to_string(),
@@ -3225,8 +4219,7 @@ mod tests {
         let partition_id = format!("hpa_{}", "c".repeat(64));
         let registration = RegisteredArtifact {
             storage_partition_id: partition_id.clone(),
-            storage_locator: locator,
-            resources,
+            storage: RegisteredArtifactStorage::Persistent { locator, resources },
             policy_table: PolicyTable {
                 routes,
                 path_fallback: None,
@@ -3291,6 +4284,7 @@ mod tests {
         let complete = serde_json::json!({
             "version": 1,
             "identityKeyHash": locator.artifact_key_hash,
+            "lastAccessedOrder": 1,
             "entryRelativePath": "index.html",
             "files": [{
                 "relativePath": "index.html",
@@ -3368,16 +4362,18 @@ mod tests {
         let partition_id = format!("hpa_{}", "c".repeat(64));
         let registration = RegisteredArtifact {
             storage_partition_id: partition_id.clone(),
-            storage_locator: locator,
-            resources: HashMap::from([(
-                "r0".to_string(),
-                HostedArtifactResource {
-                    resource_id: "r0".to_string(),
-                    stored_file_name,
-                    digest,
-                    byte_size: bytes.len(),
-                },
-            )]),
+            storage: RegisteredArtifactStorage::Persistent {
+                locator,
+                resources: HashMap::from([(
+                    "r0".to_string(),
+                    HostedArtifactResource {
+                        resource_id: "r0".to_string(),
+                        stored_file_name,
+                        digest,
+                        byte_size: bytes.len(),
+                    },
+                )]),
+            },
             policy_table: PolicyTable {
                 routes: HashMap::from([(
                     "".to_string(),
@@ -3449,16 +4445,18 @@ mod tests {
         let partition_id = format!("hpa_{}", "d".repeat(64));
         let registration = RegisteredArtifact {
             storage_partition_id: partition_id.clone(),
-            storage_locator: locator.clone(),
-            resources: HashMap::from([(
-                "r0".to_string(),
-                HostedArtifactResource {
-                    resource_id: "r0".to_string(),
-                    stored_file_name,
-                    digest,
-                    byte_size: bytes.len(),
-                },
-            )]),
+            storage: RegisteredArtifactStorage::Persistent {
+                locator: locator.clone(),
+                resources: HashMap::from([(
+                    "r0".to_string(),
+                    HostedArtifactResource {
+                        resource_id: "r0".to_string(),
+                        stored_file_name,
+                        digest,
+                        byte_size: bytes.len(),
+                    },
+                )]),
+            },
             policy_table: PolicyTable {
                 routes: HashMap::from([(
                     "".to_string(),

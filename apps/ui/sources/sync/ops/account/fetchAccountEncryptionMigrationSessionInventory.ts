@@ -1,7 +1,4 @@
-import {
-    ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS,
-    SessionOwnerMetadataEnvelopeV1Schema,
-} from '@happier-dev/protocol';
+import { SessionOwnerMetadataEnvelopeV1Schema } from '@happier-dev/protocol';
 
 import { serverFetch } from '@/sync/http/client';
 import {
@@ -11,6 +8,7 @@ import type {
     AccountEncryptionMigrationSessionRow,
 } from './buildAccountEncryptionMigrationStorageDirectives';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
+import { normalizeSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 
 type SessionInventoryRequest = (
     path: string,
@@ -60,12 +58,13 @@ export async function fetchAccountEncryptionMigrationSessionInventory(
                         `Unsupported Session metadata layout (${row.id})`,
                     );
                 }
-                if (row.share === undefined) {
+                const access = normalizeSessionAccessProjection(row, { allowLegacy: true });
+                if (!access) {
                     throw new Error(
                         `Session ownership is unavailable (${row.id})`,
                     );
                 }
-                if (row.share !== null) continue;
+                if (access.role !== 'owner') continue;
                 const ownerMetadata =
                     SessionOwnerMetadataEnvelopeV1Schema.safeParse(
                         row.ownerMetadata,
@@ -86,14 +85,6 @@ export async function fetchAccountEncryptionMigrationSessionInventory(
                     agentStateVersion: row.agentStateVersion!,
                     ownerMetadata: ownerMetadata.data,
                 });
-                if (
-                    rows.length
-                    > ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS
-                ) {
-                    throw new Error(
-                        'Session migration inventory exceeds the supported bound',
-                    );
-                }
             }
             if (!page.hasNext) break;
             if (!page.nextCursor) {

@@ -47,7 +47,7 @@ function buildExistingPatch(
         routing?: {
             recipient?: StrictJsonValue;
             agentContinuation?: StrictJsonValue;
-            executionRunDelivery?: StrictJsonValue;
+            executionRunRequestedAction?: StrictJsonValue;
         };
     } = {};
     if (text !== undefined) patch.text = text;
@@ -81,7 +81,7 @@ function buildExistingPatch(
         } else if (typedFieldId === 'routing.agentContinuation') {
             routing.agentContinuation = asStrictJsonValue(parsed.data);
         } else {
-            routing.executionRunDelivery = asStrictJsonValue(parsed.data);
+            routing.executionRunRequestedAction = asStrictJsonValue(parsed.data);
         }
     }
     if (Object.keys(routing).length > 0) patch.routing = routing;

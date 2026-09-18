@@ -18,6 +18,10 @@ import {
     type SessionExecutionTargetV1,
 } from '@happier-dev/protocol';
 import { composerRefV1Key } from '@happier-dev/protocol/plugins/ui/composerRef';
+import type {
+    CurrentSessionPresentationIntentResultV1,
+    CurrentSessionPresentationIntentV1,
+} from '@happier-dev/protocol/sessions';
 import {
     PluginUiApplyComposerRequestV1Schema,
     PluginUiAcquireComposerInputLockRequestV1Schema,
@@ -61,6 +65,7 @@ import { storage } from '@/sync/domains/state/storage';
 import { subscribeSessionDraft } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import type { PluginUiComposerAttachmentProjection } from '@/sync/domains/plugins/ui/projection';
 import type { PluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
+import { normalizeSessionAddress, sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 type ComposerMentionRef = ComposerSnapshotV1['references'][number];
 
@@ -197,7 +202,27 @@ export type ComposerPresentationTarget = Readonly<{
      * release another mount's generic transport id.
      */
     acquireComposerInputLock?: (input: ComposerPresentationInputLockLease) => () => void;
+    /**
+     * Optional viewer-local Board/Companion adapter carried by the same exact
+     * mounted Session registration. It does not mutate the Composer document.
+     */
+    applySessionPresentationIntent?: (
+        intent: CurrentSessionPresentationIntentV1,
+    ) => CurrentSessionPresentationIntentResultV1;
 }>;
+
+type CommittableComposerPresentationTarget = ComposerPresentationTarget & Required<Pick<
+    ComposerPresentationTarget,
+    'readSnapshot' | 'commitDocument'
+>>;
+
+function isCommittableComposerPresentationTarget(
+    target: ComposerPresentationTarget | null,
+): target is CommittableComposerPresentationTarget {
+    return target !== null
+        && typeof target.readSnapshot === 'function'
+        && typeof target.commitDocument === 'function';
+}
 
 /**
  * Keeps the registered adapter identity scoped to one exact Composer ref while
@@ -248,6 +273,9 @@ export function useStableComposerPresentationTarget(
                 ...(target.acquireComposerInputLock ? {
                     acquireComposerInputLock: (input) => readCurrent().acquireComposerInputLock!(input),
                 } : {}),
+                ...(target.applySessionPresentationIntent ? {
+                    applySessionPresentationIntent: (intent) => readCurrent().applySessionPresentationIntent!(intent),
+                } : {}),
             },
         };
     }
@@ -258,9 +286,23 @@ export function useStableComposerPresentationTarget(
 export type ComposerPresentationTargetRead = Readonly<{
     revision: number;
     replace: ComposerPresentationTarget['replace'];
+    /**
+     * The adapter's own current document view, when it publishes one. A viewer-local
+     * caller that must APPEND rather than overwrite needs the text it is appending
+     * to, and it must read that text from the same exact-address target it is about
+     * to write — not from the Session-id-keyed registry, which another Home holding
+     * the same raw Session id can also occupy.
+     */
+    readSnapshot?: NonNullable<ComposerPresentationTarget['readSnapshot']>;
+    applySessionPresentationIntent?: NonNullable<ComposerPresentationTarget['applySessionPresentationIntent']>;
 }>;
 
 const targets = new Map<string, ComposerPresentationTarget>();
+// Exact-address index over the same mounted targets. ComposerRefV1 remains the
+// public document identity, while navigation focus must distinguish Homes that
+// contain the same raw Session id.
+const qualifiedSessionTargetByAddress = new Map<string, ComposerPresentationTarget>();
+let pendingSessionComposerFocusAddressKey: string | null = null;
 const listeners = new Set<() => void>();
 const listenersByTargetKey = new Map<string, Set<() => void>>();
 
@@ -319,8 +361,8 @@ function persistentSessionDraftStateSignature(
 ): string {
     const state = storage.getState();
     if (!isPersistentSessionDraftCurrent(scope, sessionId)) return 'unavailable';
-    const accessLevel = state.sessions[sessionId]?.accessLevel ?? 'unknown';
-    return `available:${accessLevel}`;
+    const editable = state.sessions[sessionId]?.access?.capabilities.submitAgentInput === true;
+    return `available:${editable}`;
 }
 
 function createPersistentSessionComposerTarget(
@@ -334,7 +376,7 @@ function createPersistentSessionComposerTarget(
     const owner = createExistingSessionComposerDocumentOwner({ scope, ref, isCurrent });
     const readSnapshot = (): ComposerSnapshotV1 => {
     const state = storage.getState();
-        const editable = state.sessions[sessionId]?.accessLevel !== 'view';
+        const editable = state.sessions[sessionId]?.access?.capabilities.submitAgentInput === true;
         return projectComposerDocumentSnapshot({
             owner,
             attachmentCatalog: { entriesById: null },
@@ -968,7 +1010,7 @@ function releaseComposerStagedMedia(
 
 /** One validated, not-yet-committed transaction application. */
 type PreparedComposerPresentationTransactionApply = Readonly<{
-    target: ComposerPresentationTarget;
+    target: CommittableComposerPresentationTarget;
     requiresRegisteredTargetCurrent: boolean;
     snapshot: ComposerSnapshotV1;
     expectedRevision: number;
@@ -1011,7 +1053,7 @@ function prepareComposerPresentationTransactionApply(input: Readonly<{
     const targetKey = composerRefV1Key(request.ref);
     const registeredTarget = targets.get(targetKey) ?? null;
     const target = input.target === undefined ? readTarget(request.ref) : input.target;
-    if (!target?.readSnapshot || !target.commitDocument) {
+    if (!isCommittableComposerPresentationTarget(target)) {
         return { ok: false, result: { status: 'composerUnavailable' } };
     }
     const transaction = ComposerTransactionV1Schema.safeParse(request.transaction);
@@ -1122,9 +1164,16 @@ function applyComposerPresentationTransactionAtOwner(input: Readonly<{
     admittedContributor: ComposerPresentationAdmittedContributor | null;
     executionTarget?: SessionExecutionTargetV1;
     target?: ComposerPresentationTarget | null;
+    isTargetCurrent?: (target: ComposerPresentationTarget) => boolean;
 }>): ComposerTransactionResultV1 {
+    if (input.target && input.isTargetCurrent?.(input.target) === false) {
+        return { status: 'composerUnavailable' };
+    }
     const prepared = prepareComposerPresentationTransactionApply(input);
     if (!prepared.ok) return prepared.result;
+    if (input.isTargetCurrent?.(prepared.prepared.target) === false) {
+        return { status: 'composerUnavailable' };
+    }
     if (prepared.prepared.stagedMediaClaims.length > 0) {
         return invalidOperation(prepared.prepared.stagedMediaClaims[0]!.operationIndex, 'staged_media_custody_required');
     }
@@ -1158,7 +1207,7 @@ async function releaseUnpublishedStagedMediaClaims(
         const published = currentAttachments?.some((attachment) => (
             attachment.instanceId === claim.claimant.attachmentInstanceId
             && attachment.content?.kind === 'stagedMedia'
-            && attachment.content.handle.id === claim.handle.id
+            && composerStagedMediaHandleKey(attachment.content.handle) === composerStagedMediaHandleKey(claim.handle)
         ));
         if (!published) {
             await releaseComposerContent(claim.handle, { claimant: claim.claimant }).catch(() => undefined);
@@ -1178,9 +1227,11 @@ function isCustodyAttemptCurrent(input: Readonly<{
     ref: ComposerRefV1;
     signal?: AbortSignal;
     isCurrent?: () => boolean;
+    isTargetCurrent?: (target: ComposerPresentationTarget) => boolean;
 }>): boolean {
     if (input.signal?.aborted) return false;
     if (input.isCurrent?.() === false) return false;
+    if (input.isTargetCurrent?.(input.plan.target) === false) return false;
     if (!isComposerPresentationTargetCurrent(input.plan.target)) return false;
     return !input.plan.requiresRegisteredTargetCurrent
         || targets.get(composerRefV1Key(input.ref)) === input.plan.target;
@@ -1193,17 +1244,26 @@ async function applyComposerPresentationTransactionWithAttachmentCustody(input: 
     executionTarget?: SessionExecutionTargetV1;
     signal?: AbortSignal;
     isCurrent?: () => boolean;
+    target?: ComposerPresentationTarget | null;
+    isTargetCurrent?: (target: ComposerPresentationTarget) => boolean;
 }>): Promise<ComposerTransactionResultV1> {
     const prepared = prepareComposerPresentationTransactionApply(input);
     if (!prepared.ok) return prepared.result;
     const plan = prepared.prepared;
+    const remainsCurrent = (): boolean => isCustodyAttemptCurrent({
+        plan,
+        ref: input.request.ref,
+        signal: input.signal,
+        isCurrent: input.isCurrent,
+        isTargetCurrent: input.isTargetCurrent,
+    });
     if (plan.stagedMediaClaims.length === 0) {
-        if (!isCustodyAttemptCurrent({ plan, ref: input.request.ref, signal: input.signal, isCurrent: input.isCurrent })) {
+        if (!remainsCurrent()) {
             return { status: 'composerUnavailable' };
         }
         return commitComposerPresentationTransactionApply(plan, input.request.ref);
     }
-    if (!isCustodyAttemptCurrent({ plan, ref: input.request.ref, signal: input.signal, isCurrent: input.isCurrent })) {
+    if (!remainsCurrent()) {
         return { status: 'composerUnavailable' };
     }
     const admittedClaims: Array<Readonly<{
@@ -1214,7 +1274,7 @@ async function applyComposerPresentationTransactionWithAttachmentCustody(input: 
         const outcome = input.signal
             ? await claimComposerContent(claim.handle, claim.claimant, { signal: input.signal })
             : await claimComposerContent(claim.handle, claim.claimant);
-        if (!isCustodyAttemptCurrent({ plan, ref: input.request.ref, signal: input.signal, isCurrent: input.isCurrent })) {
+        if (!remainsCurrent()) {
             if (outcome.status === 'claimed' && outcome.newlyAcquired) {
                 admittedClaims.push(claim);
             }
@@ -1236,7 +1296,7 @@ async function applyComposerPresentationTransactionWithAttachmentCustody(input: 
             ? invalidOperation(claim.operationIndex, 'staged_media_custody_conflict')
             : { status: 'composerUnavailable' };
     }
-    if (!isCustodyAttemptCurrent({ plan, ref: input.request.ref, signal: input.signal, isCurrent: input.isCurrent })) {
+    if (!remainsCurrent()) {
         await releaseUnpublishedStagedMediaClaims(plan, admittedClaims);
         return { status: 'composerUnavailable' };
     }
@@ -1256,6 +1316,12 @@ async function applyComposerPresentationTransactionWithAttachmentCustody(input: 
 export function createComposerPresentationTransactionApplier(input: Readonly<{
     composerAttachmentsById: Readonly<Record<string, PluginUiComposerAttachmentProjection>>;
     /**
+     * Binds a mounted Session composition to its exact Home. When supplied,
+     * every commit refuses rather than falling back to the Session-id-only
+     * generic Composer registry.
+     */
+    sessionAddress?: SessionAddress | null;
+    /**
      * Resolves declared attachment titles for the current locale before they are
      * frozen into the persisted record. A composition that cannot reach the
      * translation projection keeps the author's declared fallback.
@@ -1263,21 +1329,62 @@ export function createComposerPresentationTransactionApplier(input: Readonly<{
     localize?: PluginLocalizedTextResolver;
 }>): ComposerPresentationTransactionApplier {
     const attachmentAuthorityResolver = createAttachmentAuthorityResolver(input);
+    const address = input.sessionAddress
+        ? normalizeSessionAddress(input.sessionAddress.serverId, input.sessionAddress.sessionId)
+        : null;
+    const resolveExactOwner = (ref: ComposerRefV1): Readonly<{
+        target: ComposerPresentationTarget | null;
+        isTargetCurrent: (target: ComposerPresentationTarget) => boolean;
+    }> | undefined => {
+        if (input.sessionAddress === undefined) return undefined;
+        if (!address || ref.kind !== 'session' || ref.sessionId !== address.sessionId) {
+            return Object.freeze({ target: null, isTargetCurrent: () => false });
+        }
+        const addressKey = sessionAddressKey(address);
+        const target = qualifiedSessionTargetByAddress.get(addressKey) ?? null;
+        return Object.freeze({
+            target,
+            isTargetCurrent: (candidate) => (
+                target !== null
+                && candidate === target
+                && qualifiedSessionTargetByAddress.get(addressKey) === target
+                && isComposerPresentationTargetCurrent(target)
+            ),
+        });
+    };
     return Object.freeze({
-        apply: (request) => applyComposerPresentationTransactionAtOwner({
-            request,
-            attachmentAuthorityResolver,
-            admittedContributor: request.admittedContributor,
-            ...(request.executionTarget ? { executionTarget: request.executionTarget } : {}),
-        }),
-        applyWithAttachmentCustody: (request) => applyComposerPresentationTransactionWithAttachmentCustody({
-            request,
-            attachmentAuthorityResolver,
-            admittedContributor: request.admittedContributor,
-            ...(request.executionTarget ? { executionTarget: request.executionTarget } : {}),
-            ...(request.signal ? { signal: request.signal } : {}),
-            ...(request.isCurrent ? { isCurrent: request.isCurrent } : {}),
-        }),
+        apply: (request) => {
+            const exactOwner = resolveExactOwner(request.ref);
+            return applyComposerPresentationTransactionAtOwner({
+                request,
+                attachmentAuthorityResolver,
+                admittedContributor: request.admittedContributor,
+                ...(request.executionTarget ? { executionTarget: request.executionTarget } : {}),
+                ...(exactOwner === undefined
+                    ? {}
+                    : {
+                        target: exactOwner.target,
+                        isTargetCurrent: exactOwner.isTargetCurrent,
+                    }),
+            });
+        },
+        applyWithAttachmentCustody: (request) => {
+            const exactOwner = resolveExactOwner(request.ref);
+            return applyComposerPresentationTransactionWithAttachmentCustody({
+                request,
+                attachmentAuthorityResolver,
+                admittedContributor: request.admittedContributor,
+                ...(request.executionTarget ? { executionTarget: request.executionTarget } : {}),
+                ...(request.signal ? { signal: request.signal } : {}),
+                ...(request.isCurrent ? { isCurrent: request.isCurrent } : {}),
+                ...(exactOwner === undefined
+                    ? {}
+                    : {
+                        target: exactOwner.target,
+                        isTargetCurrent: exactOwner.isTargetCurrent,
+                    }),
+            });
+        },
         resolveAttachmentIdentity: (request) => (
             attachmentAuthorityResolver(request)?.identity ?? null
         ),
@@ -1296,24 +1403,6 @@ export function applyComposerPresentationTransaction(
         request,
         attachmentAuthorityResolver: null,
         admittedContributor: null,
-    });
-}
-
-/**
- * The daemon current-Session command is actionable only against the mounted
- * Session editor. Unlike the generic Composer Host API, it must not fall back
- * to an offscreen persisted draft when that visual target is absent.
- */
-export function applyRegisteredSessionComposerPresentationTransaction(input: Readonly<{
-    sessionId: string;
-    transaction: unknown;
-}>): ComposerTransactionResultV1 {
-    const ref: ComposerRefV1 = { kind: 'session', sessionId: input.sessionId.trim() };
-    return applyComposerPresentationTransactionAtOwner({
-        request: { ref, transaction: input.transaction },
-        attachmentAuthorityResolver: null,
-        admittedContributor: null,
-        target: readRegisteredTarget(ref),
     });
 }
 
@@ -2166,23 +2255,131 @@ export function createComposerPresentationHostHandlers(
 }
 
 /**
- * Compatibility wrappers for the incumbent daemon presentation channel. They
- * delegate into the exact-ref registry; no Session-only map remains active.
+ * Registers the exact mounted Session target used by qualified viewer effects.
+ * The generic ComposerRef registration remains available to generic host APIs,
+ * but it is never the authority for a current-Session presentation command.
  */
 export function registerSessionComposerPresentationTarget(
-    sessionIdRaw: string,
+    addressRaw: SessionAddress,
     target: ComposerPresentationTarget,
 ): () => void {
-    return registerComposerPresentationTarget({ kind: 'session', sessionId: sessionIdRaw.trim() }, target);
+    const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
+    if (!address) return () => undefined;
+    const addressKey = sessionAddressKey(address);
+    qualifiedSessionTargetByAddress.set(addressKey, target);
+    const unregister = registerComposerPresentationTarget({ kind: 'session', sessionId: address.sessionId }, target);
+    deliverPendingSessionComposerFocus(addressKey, target);
+    return () => {
+        unregister();
+        if (qualifiedSessionTargetByAddress.get(addressKey) === target) {
+            qualifiedSessionTargetByAddress.delete(addressKey);
+        }
+    };
 }
 
-export function readSessionComposerPresentationTarget(sessionIdRaw: string): ComposerPresentationTargetRead | null {
-    const ref: ComposerRefV1 = { kind: 'session', sessionId: sessionIdRaw.trim() };
-    const target = readRegisteredTarget(ref);
-    return target ? Object.freeze({ revision: target.readRevision(), replace: target.replace }) : null;
+/**
+ * Reads the mounted visual target for one exact Home/Session address.
+ *
+ * The daemon command runtime must use this qualified form: the legacy
+ * Session-id-only registry can be replaced by another Home mounting the same
+ * Session id, and therefore is not an authority boundary for viewer-local
+ * presentation effects.
+ */
+export function readSessionComposerPresentationTargetAtAddress(
+    addressRaw: SessionAddress,
+): (ComposerPresentationTargetRead & Readonly<{
+    applyTransaction: (transaction: unknown) => ComposerTransactionResultV1;
+}>) | null {
+    const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
+    if (!address) return null;
+    const addressKey = sessionAddressKey(address);
+    const target = qualifiedSessionTargetByAddress.get(addressKey) ?? null;
+    if (!target || !isComposerPresentationTargetCurrent(target)) return null;
+    const isExactTargetCurrent = (candidate: ComposerPresentationTarget = target): boolean => (
+        candidate === target
+        && qualifiedSessionTargetByAddress.get(addressKey) === target
+        && isComposerPresentationTargetCurrent(target)
+    );
+    return Object.freeze({
+        revision: target.readRevision(),
+        replace: (text: string, expectedRevision: number) => (
+            isExactTargetCurrent()
+                ? target.replace(text, expectedRevision)
+                : expectedRevision
+        ),
+        ...(target.readSnapshot ? { readSnapshot: target.readSnapshot } : {}),
+        ...(target.applySessionPresentationIntent
+            ? {
+                applySessionPresentationIntent: (intent: CurrentSessionPresentationIntentV1) => (
+                    isExactTargetCurrent()
+                        ? target.applySessionPresentationIntent!(intent)
+                        : { status: 'notCurrent' as const }
+                ),
+            }
+            : {}),
+        applyTransaction: (transaction: unknown) => applyComposerPresentationTransactionAtOwner({
+            request: {
+                ref: { kind: 'session', sessionId: address.sessionId },
+                transaction,
+            },
+            attachmentAuthorityResolver: null,
+            admittedContributor: null,
+            target,
+            isTargetCurrent: isExactTargetCurrent,
+        }),
+    });
+}
+
+function tryFocusVisualSessionComposer(target: ComposerPresentationTarget | null): boolean {
+    if (!target?.focusComposer || target.isCurrent?.() === false || target.readSnapshot?.().state.editable === false) return false;
+    try {
+        return target.focusComposer() !== false;
+    } catch {
+        return false;
+    }
+}
+
+function deliverPendingSessionComposerFocus(addressKey: string, target: ComposerPresentationTarget): boolean {
+    if (pendingSessionComposerFocusAddressKey !== addressKey) return false;
+    if (qualifiedSessionTargetByAddress.get(addressKey) !== target) return false;
+    if (!tryFocusVisualSessionComposer(target)) return false;
+    pendingSessionComposerFocusAddressKey = null;
+    return true;
+}
+
+/**
+ * Focuses the exact mounted visual Session composer, or retains one qualified
+ * intent until that same Home/Session surface registers. This is presentation
+ * state only: it neither persists a draft nor creates a navigation owner.
+ */
+export function requestRegisteredSessionComposerFocus(addressRaw: SessionAddress): boolean {
+    const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
+    if (!address) return false;
+    const addressKey = sessionAddressKey(address);
+    const target = qualifiedSessionTargetByAddress.get(addressKey) ?? null;
+    if (target && tryFocusVisualSessionComposer(target)) {
+        pendingSessionComposerFocusAddressKey = null;
+        return true;
+    }
+    pendingSessionComposerFocusAddressKey = addressKey;
+    return false;
+}
+
+/** Retries only an already-pending exact-address intent as its visual surface becomes ready. */
+export function flushPendingRegisteredSessionComposerFocus(addressRaw: SessionAddress): boolean {
+    const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
+    if (!address) return false;
+    const addressKey = sessionAddressKey(address);
+    if (pendingSessionComposerFocusAddressKey !== addressKey) return false;
+    const target = qualifiedSessionTargetByAddress.get(addressKey) ?? null;
+    return target ? deliverPendingSessionComposerFocus(addressKey, target) : false;
 }
 
 export function notifySessionComposerPresentationTargetChanged(sessionIdRaw?: string): void {
+    // This compatibility invalidation carries no mutation/effect authority. It
+    // wakes generic ComposerRef observers only; every current-Session read,
+    // focus, document mutation, and presentation effect resolves through the
+    // qualified SessionAddress index above.
     const sessionId = sessionIdRaw?.trim();
     notifyComposerPresentationTargetChanged(sessionId ? { kind: 'session', sessionId } : undefined);
 }

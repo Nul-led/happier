@@ -2,6 +2,7 @@ import type { ServerSelectionPresentation } from '@/sync/domains/server/selectio
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListStorageFilter } from '@/sync/domains/session/sessionStorageKind';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import type { SessionListQueryHomeState } from './sessionListQueryController';
 
 import { normalizeTrimmedStringArrayWithSharedEmpty } from './normalizeTrimmedStringArrayWithSharedEmpty';
 import { normalizeTrimmedString } from './normalizeTrimmedString';
@@ -20,6 +21,79 @@ export type VisibleSessionListSummary = Readonly<{
     sessionsReady: boolean;
     sessionCount: number;
 }>;
+
+export type SessionListQueryPresentation =
+    | Readonly<{ kind: 'initial_loading' }>
+    | Readonly<{ kind: 'ready'; complete: boolean }>
+    | Readonly<{ kind: 'refreshing'; retainedRows: true }>
+    | Readonly<{
+        kind: 'partial';
+        unavailableHomes: readonly Readonly<{
+            serverId: string;
+            reason: 'not_selected' | 'offline' | 'error' | 'unsupported';
+        }>[];
+    }>
+    | Readonly<{ kind: 'error'; retainedRows: boolean }>;
+
+/**
+ * Projects the query repository's per-Home lifecycle into the one presentation
+ * contract consumed by the Sessions surface. This is the only place where a
+ * zero-row query can become authoritative.
+ */
+export function resolveSessionListQueryPresentation(input: Readonly<{
+    selectedServerIds: readonly string[];
+    statesByServerId: Readonly<Record<string, SessionListQueryHomeState | undefined>>;
+    coverageComplete: boolean;
+    retainedRowCount: number;
+}>): SessionListQueryPresentation {
+    const selectedServerIds = normalizeTrimmedStringArrayWithSharedEmpty(input.selectedServerIds);
+    if (selectedServerIds.length === 0) {
+        return input.coverageComplete
+            ? { kind: 'ready', complete: true }
+            : { kind: 'initial_loading' };
+    }
+
+    const unavailableHomes: Array<Extract<SessionListQueryPresentation, { kind: 'partial' }>['unavailableHomes'][number]> = [];
+    let hasReadyHome = false;
+    let hasPendingHome = false;
+    let hasTerminalError = false;
+
+    for (const serverId of selectedServerIds) {
+        const state = input.statesByServerId[serverId];
+        if (!state || state.phase === 'idle' || state.phase === 'loading' || state.phase === 'refreshing') {
+            hasPendingHome = true;
+            continue;
+        }
+        if (state.phase === 'ready') {
+            hasReadyHome = true;
+            continue;
+        }
+        if (state.phase === 'not_selected') {
+            unavailableHomes.push({ serverId, reason: 'not_selected' });
+            continue;
+        }
+        if (state.phase === 'offline') {
+            unavailableHomes.push({ serverId, reason: 'offline' });
+            continue;
+        }
+        const reason = state.failureReason === 'unsupported' ? 'unsupported' : 'error';
+        unavailableHomes.push({ serverId, reason });
+        if (reason === 'error') hasTerminalError = true;
+    }
+
+    if (hasPendingHome) {
+        return input.retainedRowCount > 0
+            ? { kind: 'refreshing', retainedRows: true }
+            : { kind: 'initial_loading' };
+    }
+    if (unavailableHomes.length > 0) {
+        if (!hasReadyHome && hasTerminalError) {
+            return { kind: 'error', retainedRows: input.retainedRowCount > 0 };
+        }
+        return { kind: 'partial', unavailableHomes };
+    }
+    return { kind: 'ready', complete: input.coverageComplete };
+}
 
 type ResolveSessionListSourceIndexParams = Readonly<{
     enabled: boolean;

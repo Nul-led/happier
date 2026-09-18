@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { readSessionWorkStatePrimaryItemV1 } from '@happier-dev/protocol';
 
 import {
     readSessionWorkStateFromMetadata,
-    resolvePrimarySessionWorkStateItem,
 } from './readSessionWorkState';
 
 describe('readSessionWorkStateFromMetadata', () => {
@@ -20,7 +20,7 @@ describe('readSessionWorkStateFromMetadata', () => {
             },
         });
 
-        expect(resolvePrimarySessionWorkStateItem(snapshot)?.id).toBe('goal:codex');
+        expect(readSessionWorkStatePrimaryItemV1(snapshot?.items ?? [], snapshot?.primaryItemId)?.id).toBe('goal:codex');
     });
 
     it('falls back defensively when primaryItemId is stale', () => {
@@ -37,10 +37,10 @@ describe('readSessionWorkStateFromMetadata', () => {
             },
         });
 
-        expect(resolvePrimarySessionWorkStateItem(snapshot)?.id).toBe('todo:1');
+        expect(readSessionWorkStatePrimaryItemV1(snapshot?.items ?? [], snapshot?.primaryItemId)?.id).toBe('todo:1');
     });
 
-    it('does not pick paused or completed items as compact fallback badges', () => {
+    it.each(['paused', 'complete'] as const)('preserves %s work when primary identity is stale', (status) => {
         const snapshot = readSessionWorkStateFromMetadata({
             sessionWorkStateV1: {
                 v: 1,
@@ -48,14 +48,14 @@ describe('readSessionWorkStateFromMetadata', () => {
                 updatedAt: 10,
                 primaryItemId: 'missing',
                 items: [
-                    { id: 'task:paused', kind: 'task', origin: 'vendor', status: 'paused', title: 'Paused work', updatedAt: 9 },
+                    { id: 'task:fallback', kind: 'task', origin: 'vendor', status, title: 'Fallback work', updatedAt: 9 },
                     { id: 'todo:done', kind: 'todo', origin: 'vendor', status: 'complete', title: 'Done work', updatedAt: 8 },
                     { id: 'goal:cancelled', kind: 'goal', origin: 'vendor', status: 'cancelled', title: 'Cancelled goal', updatedAt: 7 },
                 ],
             },
         });
 
-        expect(resolvePrimarySessionWorkStateItem(snapshot)).toBeNull();
+        expect(readSessionWorkStatePrimaryItemV1(snapshot?.items ?? [], snapshot?.primaryItemId)?.id).toBe('task:fallback');
     });
 
     it('ignores malformed canonical metadata safely', () => {
@@ -104,7 +104,7 @@ describe('readSessionWorkStateFromMetadata', () => {
             },
         });
 
-        expect(resolvePrimarySessionWorkStateItem(snapshot)?.id).toBe('goal:thread-1');
+        expect(readSessionWorkStatePrimaryItemV1(snapshot?.items ?? [], snapshot?.primaryItemId)?.id).toBe('goal:thread-1');
     });
 
     it('keeps displayable canonical items when future items use a different item shape', () => {
@@ -121,7 +121,7 @@ describe('readSessionWorkStateFromMetadata', () => {
             },
         });
 
-        expect(resolvePrimarySessionWorkStateItem(snapshot)?.id).toBe('goal:thread-1');
+        expect(readSessionWorkStatePrimaryItemV1(snapshot?.items ?? [], snapshot?.primaryItemId)?.id).toBe('goal:thread-1');
     });
 
     it('ignores canonical metadata with invalid root timestamps', () => {

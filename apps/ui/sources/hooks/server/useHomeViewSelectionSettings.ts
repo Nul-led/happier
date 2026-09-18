@@ -54,14 +54,14 @@ export function useHomeViewSelectionSettingsMutable(): HomeViewSelectionSettings
     setHomeViewSelectionSettings: (
         update: HomeViewSelectionSettings | ((current: HomeViewSelectionSettings) => HomeViewSelectionSettings),
         options?: Readonly<{ targetScope?: 'tab' | 'device' }>,
-    ) => void;
+    ) => Promise<void>;
 }> {
     const settings = useHomeViewSelectionSettings();
-    const setHomeViewSelectionSettings = React.useCallback((
+    const setHomeViewSelectionSettings = React.useCallback(async (
         update: HomeViewSelectionSettings | ((current: HomeViewSelectionSettings) => HomeViewSelectionSettings),
         options?: Readonly<{ targetScope?: 'tab' | 'device' }>,
     ) => {
-        const saved = updateEffectiveHomeViewState((current) => {
+        const saved = await updateEffectiveHomeViewState((current) => {
             const currentSettings: HomeViewSelectionSettings = {
                 serverSelectionGroups: normalizeServerSelectionGroupsForSettings(current.groups),
                 serverSelectionActiveTargetKind: current.activeTargetKind,

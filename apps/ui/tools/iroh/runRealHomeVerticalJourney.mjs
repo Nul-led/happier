@@ -258,6 +258,19 @@ export function evaluateRealHomeVerticalJourney({ observations = {}, failures = 
 }
 
 /**
+ * Preserve useful authentication evidence without copying Home bearer values
+ * or Socket.IO authentication payloads into CI and terminal artifacts.
+ */
+export function summarizeHomeAuthenticationEvidence({ authorizations, handshakePackets }) {
+  return {
+    authenticatedHttpRequestCount: authorizations.length,
+    socketHandshakePacketCount: handshakePackets.length,
+    socketConnectPacketCount: handshakePackets.filter((packet) => packet.startsWith('0')).length,
+    socketEventPacketCount: handshakePackets.filter((packet) => packet.startsWith('2')).length,
+  };
+}
+
+/**
  * Runs the A7.3 journey.
  *
  * `openJourneyPage` is supplied by the harness and returns a real Chromium page
@@ -355,7 +368,10 @@ export async function runRealHomeVerticalJourney({ webOutputRoot, openJourneyPag
         bodyText: httpReply.bodyText,
         observedPath: httpReply.observedPath,
         homeRequests: home.requests,
-        homeAuthorizations: home.authorizations,
+        authenticationEvidence: summarizeHomeAuthenticationEvidence({
+          authorizations: home.authorizations,
+          handshakePackets: home.handshakePackets,
+        }),
       },
     );
 
@@ -395,7 +411,10 @@ export async function runRealHomeVerticalJourney({ webOutputRoot, openJourneyPag
         socket: liveSocket,
         expectedSocketUri,
         homeEngineConnections: home.engineConnections,
-        homeHandshakePackets: home.handshakePackets,
+        authenticationEvidence: summarizeHomeAuthenticationEvidence({
+          authorizations: home.authorizations,
+          handshakePackets: home.handshakePackets,
+        }),
       },
     );
 

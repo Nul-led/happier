@@ -611,6 +611,10 @@ export type SelectionListColumnsLayout = Readonly<{
  */
 export type SelectionListOptionPresentation = 'row' | 'card';
 
+export type SelectionListSelection =
+    | Readonly<{ kind: 'single'; selectedId: string | null }>
+    | Readonly<{ kind: 'multiple'; selectedIds: ReadonlySet<string> }>;
+
 export type SelectionListProps = Readonly<{
     /** Root step. Pushes accumulate above this. */
     rootStep: SelectionListStep;
@@ -635,6 +639,13 @@ export type SelectionListProps = Readonly<{
     listAccessibilityLabel?: string;
     /** Currently-selected option id (rendered with selected style). Optional. */
     selectedOptionId?: string | null;
+    /**
+     * Controlled selection state. Existing single-select callers may keep using
+     * `selectedOptionId`; it is normalized to the single branch once inside the
+     * orchestrator. Multiple selection never owns keyboard focus and never
+     * closes the list when a row is toggled.
+     */
+    selection?: SelectionListSelection;
     /**
      * Optional externally-owned active row for scroll-into-view. Most
      * SelectionList surfaces use internal keyboard focus; externally-keyed

@@ -58,6 +58,10 @@ installPickerCommonModuleMocks({
                 useSettingMutable: createUseSettingMutableMockFromReader(() => [[], vi.fn()]),
             },
         }),
+    tempDataStore: {
+        storeTempData: () => 'temp',
+        getTempData: () => null,
+    },
 });
 
 vi.mock('@expo/vector-icons', async () => {
@@ -104,11 +108,6 @@ vi.mock('@/sync/domains/profiles/profileCompatibility', async (importOriginal) =
         getProfileEnvironmentVariables: () => ({}),
     };
 });
-
-vi.mock('@/utils/sessions/tempDataStore', () => ({
-    storeTempData: () => 'temp',
-    getTempData: () => null,
-}));
 
 describe('ProfilePickerScreen (iOS presentation)', () => {
     afterEach(() => {

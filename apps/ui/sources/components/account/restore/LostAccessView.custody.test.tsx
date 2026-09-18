@@ -79,12 +79,16 @@ vi.mock('@/auth/providers/registry', () => ({
     }),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        setPendingExternalAuth: setPendingExternalAuthSpy,
-        clearPendingExternalAuth: vi.fn(async () => true),
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            setPendingExternalAuth: setPendingExternalAuthSpy,
+            clearPendingExternalAuth: vi.fn(async () => true),
+        },
+    });
+});
 
 vi.mock(
     '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth',

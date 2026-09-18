@@ -11,6 +11,7 @@ import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope
 import { createReducer } from '@/sync/reducer/reducer';
 import { createInactiveSessionMessagesWindowState } from '@/sync/runtime/sessionMessagesWindowState';
 import { loadSyncTuning, type SyncTuning } from '@/sync/runtime/syncTuning';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 export type ChatListHarness = RenderScreenResult & Readonly<{
     findMessageRow: (testID: string) => ReactTestInstance | null;
@@ -248,6 +249,7 @@ export function resetChatListHarness(
     chatListHarnessState.activeServerAccountScope = null;
     chatListHarnessState.sessionState = {
         id: 'session-1',
+        serverId: 'test-server',
         seq: 0,
         metadata: null,
         accessLevel: null,
@@ -652,6 +654,10 @@ export async function renderChatListHarnessSession(
     return renderChatList(
         React.createElement(ChatList, {
             session: { ...chatListHarnessState.sessionState },
+            sessionSurfaceKey: sessionAddressKey({
+                serverId: chatListHarnessState.sessionState.serverId,
+                sessionId: chatListHarnessState.sessionState.id,
+            }),
         }),
         options,
     );

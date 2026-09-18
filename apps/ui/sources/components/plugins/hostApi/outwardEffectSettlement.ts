@@ -77,7 +77,7 @@ export function isPluginSurfaceOutwardEffectHostMethod(method: PluginUiHostMetho
  */
 export function pluginSurfaceSettlementSurvivesRetirement(input: Readonly<{
     method: PluginUiHostMethodV1;
-    response: PluginUiHostApiResponseEnvelopeV1;
+    response: Readonly<{ kind: PluginUiHostApiResponseEnvelopeV1['kind'] }>;
 }>): boolean {
     return input.response.kind === 'result'
         && isPluginSurfaceOutwardEffectHostMethod(input.method);

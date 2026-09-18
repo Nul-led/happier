@@ -53,6 +53,13 @@ export function flattenTestStyle(style: unknown): Record<string, unknown> {
     if (!style) {
         return {};
     }
+    // `Pressable` accepts a style callback, and the react-native stub forwards it
+    // to the host node unresolved. Resolve it in the rest state so a control that
+    // styles itself through the press state is still measurable here instead of
+    // needing a second flattener per test file.
+    if (typeof style === 'function') {
+        return flattenTestStyle((style as (state: { pressed: boolean }) => unknown)({ pressed: false }));
+    }
     if (Array.isArray(style)) {
         return style.reduce<Record<string, unknown>>(
             (accumulator, entry) => ({ ...accumulator, ...flattenTestStyle(entry) }),

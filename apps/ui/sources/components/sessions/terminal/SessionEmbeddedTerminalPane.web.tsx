@@ -18,7 +18,7 @@ import {
 } from './embeddedTerminalDocking';
 import type { EmbeddedTerminalRendererHandle } from '@/components/terminal/embedded/embeddedTerminalRendererHandle';
 import { useSessionEmbeddedTerminalPty } from './useSessionEmbeddedTerminalPty';
-import { useSessionTerminalMode, type SessionTerminalMode } from './sessionTerminalMode';
+import { useSessionTerminalIdentity, type SessionTerminalIdentity, type SessionTerminalMode } from './sessionTerminalMode';
 import { Icon } from '@/components/ui/icons/Icon';
 
 export type SessionEmbeddedTerminalPaneProps = Readonly<{
@@ -33,6 +33,16 @@ export type SessionEmbeddedTerminalPaneProps = Readonly<{
 }>;
 
 export const SessionEmbeddedTerminalPane = React.memo(function SessionEmbeddedTerminalPaneWeb(props: SessionEmbeddedTerminalPaneProps) {
+    const terminalIdentity = useSessionTerminalIdentity({
+        ...props,
+        terminalInstanceId: props.currentDockLocation === 'details'
+            ? props.terminalInstanceId ?? SESSION_PRIMARY_TERMINAL_INSTANCE_ID
+            : props.terminalInstanceId,
+    });
+    return <SessionEmbeddedTerminalPaneContent key={terminalIdentity.terminalKey} {...props} terminalIdentity={terminalIdentity} />;
+});
+
+const SessionEmbeddedTerminalPaneContent = React.memo(function SessionEmbeddedTerminalPaneContent(props: SessionEmbeddedTerminalPaneProps & Readonly<{ terminalIdentity: SessionTerminalIdentity }>) {
     const { theme } = useUnistyles();
     const pane = useAppPaneScope(props.scopeId);
     const deviceType = useDeviceType();
@@ -48,22 +58,11 @@ export const SessionEmbeddedTerminalPane = React.memo(function SessionEmbeddedTe
     );
 
     const terminalRendererRef = React.useRef<EmbeddedTerminalRendererHandle | null>(null);
-    const storedTerminalMode = useSessionTerminalMode(props.sessionId);
-    const terminalMode = props.terminalMode ?? storedTerminalMode;
-    const resolvedTerminalInstanceId = props.currentDockLocation === 'details'
-        ? (props.terminalInstanceId ?? SESSION_PRIMARY_TERMINAL_INSTANCE_ID)
-        : props.terminalInstanceId;
-    const terminalKey = React.useMemo(
-        () => terminalMode === 'session_attach'
-            ? `session-attach:${props.sessionId}`
-            : resolvedTerminalInstanceId
-            ? `session:${props.sessionId}:terminal:${resolvedTerminalInstanceId}`
-            : `session:${props.sessionId}:terminal`,
-        [props.sessionId, resolvedTerminalInstanceId, terminalMode],
-    );
+    const { serverId, terminalMode, terminalKey } = props.terminalIdentity;
 
     const controller = useSessionEmbeddedTerminalPty({
         sessionId: props.sessionId,
+        serverId,
         terminalKey,
         terminalMode,
         terminalRef: terminalRendererRef,

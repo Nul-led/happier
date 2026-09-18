@@ -43,7 +43,7 @@ export const SESSION_DRAFT_VALUE_FIELD_CATALOG = {
             ttlDays: SESSION_DRAFT_VALUE_DEFAULT_TTL_DAYS,
         },
     },
-    'routing.executionRunDelivery': {
+    'routing.executionRunRequestedAction': {
         lifecycle: {
             send: 'outboundHandoff',
             composerClear: true,
@@ -60,6 +60,14 @@ export const SESSION_DRAFT_VALUE_FIELD_CATALOG = {
         },
     },
     'structuredInput.mentions': {
+        lifecycle: {
+            send: 'outboundHandoff',
+            composerClear: true,
+            sessionDelete: true,
+            ttlDays: SESSION_DRAFT_VALUE_DEFAULT_TTL_DAYS,
+        },
+    },
+    'structuredInput.sessionDiscussionSelectionSourceV1': {
         lifecycle: {
             send: 'outboundHandoff',
             composerClear: true,

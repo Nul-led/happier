@@ -146,6 +146,13 @@ const ALLOW_SAME_STRING_KEYS = new Set<string>([
     'settings.machineSetupRemoteSshTargetPlaceholder',
     'settings.machineSetupRemoteSshUsernamePlaceholder',
     'settings.machineSetupRemoteSshHostPlaceholder',
+    // "Home" is the Happier product term, "Logo" is shared across locales, and the
+    // Team name placeholder is a sample company name rather than UI copy.
+    'teams.homeLabel',
+    'teams.settings.logoSection',
+    'teams.create.namePlaceholder',
+    // Literal sample address; some locales keep the example.com domain verbatim.
+    'teams.invitations.emailPlaceholder',
     // Debug category identifiers are provider-owned technical names.
     'settingsAgents.plugins.claude.fields.claudeRemoteDebugCategories.options.hooks.title',
     'settingsAgents.plugins.claude.fields.claudeRemoteDebugCategories.options.1p.title',

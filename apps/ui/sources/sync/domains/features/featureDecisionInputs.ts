@@ -37,6 +37,15 @@ export type ResolveRuntimeFeatureDecisionParams = Readonly<{
     force?: boolean;
 }>;
 
+export class RuntimeFeatureDecisionUnavailableError extends Error {
+    readonly retryable = true;
+
+    constructor(readonly decision: FeatureDecision) {
+        super(`Runtime feature decision is temporarily unavailable for ${decision.featureId}`);
+        this.name = 'RuntimeFeatureDecisionUnavailableError';
+    }
+}
+
 function resolveRuntimeFeatureDecisionRequestContext(
     params: ResolveRuntimeFeatureDecisionParams,
 ): Readonly<{ scope: FeatureDecisionScope; serverId?: string }> {
@@ -103,4 +112,19 @@ export async function isRuntimeFeatureEnabled(
 ): Promise<boolean> {
     const decision = await resolveRuntimeFeatureDecision(params);
     return decision.state === 'enabled';
+}
+
+/**
+ * State-loading paths must preserve a transient observation instead of
+ * materializing it as a durable disabled/empty result. Unknown decisions use
+ * the sync owner's existing retry and backoff lifecycle.
+ */
+export async function resolveRuntimeFeatureDecisionOrThrow(
+    params: ResolveRuntimeFeatureDecisionParams,
+): Promise<FeatureDecision> {
+    const decision = await resolveRuntimeFeatureDecision(params);
+    if (decision.state === 'unknown') {
+        throw new RuntimeFeatureDecisionUnavailableError(decision);
+    }
+    return decision;
 }

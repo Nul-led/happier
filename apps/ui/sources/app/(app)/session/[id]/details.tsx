@@ -25,12 +25,15 @@ import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { SessionFullscreenPaneSafeAreaView } from '@/components/sessions/panes/SessionFullscreenPaneSafeAreaView';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 type SessionDetailsRouteParamsShape = Readonly<{
     details?: string;
     path?: string;
     sha?: string;
     terminalInstanceId?: string;
+    discussionId?: string;
     sourceSurface?: string;
 }>;
 
@@ -40,6 +43,7 @@ function createDetailsRouteParamsSignature(params: SessionDetailsRouteParamsShap
         params.path ?? '',
         params.sha ?? '',
         params.terminalInstanceId ?? '',
+        params.discussionId ?? '',
         params.sourceSurface ?? '',
     ].join('|');
 }
@@ -55,6 +59,7 @@ export default function SessionDetailsScreenRoute() {
         path?: string;
         sha?: string;
         terminalInstanceId?: string;
+        discussionId?: string;
         sourceSurface?: string;
     }>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params), [params]);
@@ -67,7 +72,7 @@ export default function SessionDetailsScreenRoute() {
     );
     const sessionHydrated = isSessionRouteHydrationAvailable(routeHydrationState);
     const { cockpitEnabled } = useMobileWorkspaceExperienceState();
-    const scopeId = `session:${sessionId}`;
+    const scopeId = createSessionPaneScopeId(sessionId, routeScope.serverId);
     const pane = useAppPaneScope(scopeId);
     const detailsState = pane.scopeState?.details ?? null;
     const detailsSelection = React.useMemo(() => resolveFullscreenDetailsRouteSelection({
@@ -77,6 +82,7 @@ export default function SessionDetailsScreenRoute() {
     }), [detailsState?.activeTabKey, detailsState?.groups, detailsState?.tabs]);
     const parsedRouteDetailsState = parseSessionPaneUrlState(params as Record<string, unknown>);
     const routeDetailsState = parsedRouteDetailsState?.details ? { details: parsedRouteDetailsState.details } : null;
+    const sessionAddress = normalizeSessionAddress(routeScope.serverId, sessionId);
     const hasDetails = detailsSelection.hasAnyDetails;
     const detailsIsOpen = detailsState?.isOpen ?? false;
     const routeDetailsParams = React.useMemo<SessionDetailsRouteParamsShape>(() => ({
@@ -84,6 +90,7 @@ export default function SessionDetailsScreenRoute() {
         path: typeof params.path === 'string' ? params.path : undefined,
         sha: typeof params.sha === 'string' ? params.sha : undefined,
         terminalInstanceId: typeof params.terminalInstanceId === 'string' ? params.terminalInstanceId : undefined,
+        discussionId: typeof params.discussionId === 'string' ? params.discussionId : undefined,
         sourceSurface: typeof params.sourceSurface === 'string' ? params.sourceSurface : undefined,
     }), [params]);
     const selectedDetailsParams = React.useMemo<SessionDetailsRouteParamsShape>(() => {
@@ -93,6 +100,7 @@ export default function SessionDetailsScreenRoute() {
             path: next.path,
             sha: next.sha,
             terminalInstanceId: next.terminalInstanceId,
+            discussionId: next.discussionId,
             sourceSurface: typeof params.sourceSurface === 'string' ? params.sourceSurface : undefined,
         };
     }, [detailsSelection.activeKey, detailsSelection.tabs, params.sourceSurface]);
@@ -127,20 +135,22 @@ export default function SessionDetailsScreenRoute() {
             if (!routeDetailsState) {
                 return;
             }
-            applySessionPaneUrlState(pane, routeDetailsState);
-        }, [pane, routeDetailsState]),
+            applySessionPaneUrlState(pane, routeDetailsState, sessionAddress);
+        }, [pane, routeDetailsState, sessionAddress]),
         onWriteSelectedSelection: React.useCallback(() => {
             const nextParams: {
                 details?: string;
                 path?: string;
                 sha?: string;
                 terminalInstanceId?: string;
+                discussionId?: string;
                 sourceSurface?: string;
             } = {
                 details: selectedDetailsParams.details,
                 path: selectedDetailsParams.path,
                 sha: selectedDetailsParams.sha,
                 terminalInstanceId: selectedDetailsParams.terminalInstanceId,
+                discussionId: selectedDetailsParams.discussionId,
             };
             if (selectedDetailsParams.sourceSurface) {
                 nextParams.sourceSurface = selectedDetailsParams.sourceSurface;
@@ -152,6 +162,7 @@ export default function SessionDetailsScreenRoute() {
             selectedDetailsParams.path,
             selectedDetailsParams.sha,
             selectedDetailsParams.terminalInstanceId,
+            selectedDetailsParams.discussionId,
             selectedDetailsParams.sourceSurface,
         ]),
     });

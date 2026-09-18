@@ -1,4 +1,6 @@
 import {
+    CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+    FeatureGatesSchema,
     DEFAULT_BROWSER_CAPABILITIES,
     DEFAULT_DEVICE_CAPABILITIES,
     DEFAULT_LOCAL_SERVICE_CAPABILITIES,
@@ -78,6 +80,7 @@ type RootLayoutFeaturesOverrides = Omit<Partial<RootLayoutFeatures>, 'features' 
 
 const BASE_ROOT_LAYOUT_FEATURES: RootLayoutFeatures = {
     features: {
+        teams: FeatureGatesSchema.shape.teams.parse(undefined),
         bugReports: { enabled: true },
         e2ee: {
             keylessAccounts: { enabled: false },
@@ -105,11 +108,21 @@ const BASE_ROOT_LAYOUT_FEATURES: RootLayoutFeatures = {
         automations: {
             enabled: true,
         },
+        workflows: {
+            enabled: true,
+        },
+        search: {
+            enabled: false,
+        },
         connectedServices: {
             enabled: true,
             quotas: { enabled: true },
             accountGroups: { enabled: false },
             accountFallback: { enabled: false },
+            autoQuotaReset: { enabled: false },
+            autoDisablePlanInvalid: { enabled: false },
+            subscription: { enabled: false },
+            poolQuotaLimitSelection: { enabled: false },
         },
         updates: {
             ota: { enabled: true },
@@ -121,46 +134,8 @@ const BASE_ROOT_LAYOUT_FEATURES: RootLayoutFeatures = {
             pendingQueueV2: { enabled: false },
             pendingDeliveryState: { enabled: false },
         },
-        sessions: {
-            enabled: false,
-            drafts: { enabled: false },
-            folders: { enabled: false },
-            handoff: {
-                enabled: false,
-            },
-            agentSwitching: { enabled: false },
-            usageLimitRecovery: { enabled: false },
-        },
-        machines: {
-            enabled: false,
-            peerMediation: {
-                enabled: false,
-                observability: { enabled: false },
-            },
-            transfer: {
-                enabled: false,
-                directPeer: {
-                    enabled: false,
-                },
-                serverRouted: {
-                    enabled: false,
-                },
-            },
-            tunnel: {
-                enabled: false,
-                directPeer: { enabled: false },
-                serverRouted: { enabled: false },
-            },
-            liveStream: {
-                enabled: false,
-                directPeer: { enabled: false },
-                serverRouted: { enabled: false },
-            },
-            rpc: {
-                enabled: false,
-                directPeer: { enabled: false },
-            },
-        },
+        sessions: FeatureGatesSchema.shape.sessions.parse(undefined),
+        machines: FeatureGatesSchema.shape.machines.parse(undefined),
         localServices: {
             enabled: false,
             inventory: { enabled: false },
@@ -246,6 +221,12 @@ const BASE_ROOT_LAYOUT_FEATURES: RootLayoutFeatures = {
         },
     },
     capabilities: {
+        accountStoredContentCompatibility: {
+            v: 1,
+            minimumProtocolVersion: 2,
+            currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+            declarationTransport: 'http-header-and-socket-auth-v1',
+        },
         connectedServices: { credentialDelete: { revisionGuard: false } },
         bugReports: {
             providerUrl: 'https://reports.happier.dev',
@@ -328,6 +309,21 @@ const BASE_ROOT_LAYOUT_FEATURES: RootLayoutFeatures = {
     },
 };
 
+/**
+ * Fixture responses are written in place by `tryWriteServerEnabledBitInPlace`,
+ * which walks to the owning gate object and assigns `enabled` on it. The
+ * override ladder below only re-spreads the subtrees it has explicit override
+ * keys for, so every other nested gate — `sessions.collaboration`,
+ * `sessions.conversations`, `sharing.session`, and their siblings — would still
+ * be the exact object held by the module-level base. One test enabling a gate
+ * would then silently enable it for every later fixture in the same worker.
+ * Handing out a structurally independent response keeps each test's primed
+ * server snapshot its own.
+ */
+function independentRootLayoutFeatures(response: RootLayoutFeatures): RootLayoutFeatures {
+    return structuredClone(response);
+}
+
 export function createRootLayoutFeaturesResponse(overrides?: RootLayoutFeaturesOverrides): RootLayoutFeatures {
     const next = overrides ?? {};
     const nextFeatures: NonNullable<RootLayoutFeaturesOverrides['features']> = next.features ?? {};
@@ -369,7 +365,7 @@ export function createRootLayoutFeaturesResponse(overrides?: RootLayoutFeaturesO
     const nextCapabilitiesAuthUi: Partial<RootLayoutFeatures['capabilities']['auth']['ui']> =
         nextCapabilitiesAuth.ui ?? {};
 
-    return {
+    return independentRootLayoutFeatures({
         features: {
             ...BASE_ROOT_LAYOUT_FEATURES.features,
             ...nextFeatures,
@@ -755,7 +751,7 @@ export function createRootLayoutFeaturesResponse(overrides?: RootLayoutFeaturesO
                 misconfig: nextCapabilitiesAuth.misconfig ?? BASE_ROOT_LAYOUT_FEATURES.capabilities.auth.misconfig,
             },
         },
-    };
+    });
 }
 
 export function createOkFetchResponse<T>(payload: T): Promise<Response> {

@@ -19,6 +19,8 @@ type VoiceAdapterRegistry = Readonly<{
 const OPENAI_PROVIDER_ID = 'happier.voice.openai/realtime-openai';
 const CODEX_PROVIDER_ID = 'happier.agent.codex/realtime-codex';
 
+const sessionAddress = (sessionId: string) => ({ serverId: 'server-1', sessionId });
+
 const logSpy = vi.hoisted(() => vi.fn());
 vi.mock('@/log', () => ({ log: { log: logSpy } }));
 
@@ -255,7 +257,7 @@ describe('createVoiceSessionLifecycleController', () => {
         const unsubscribe = controller.subscribe(published);
 
         try {
-            await controller.toggle('session-1');
+            await controller.toggle(sessionAddress('session-1'));
 
             expect(adapter.start).not.toHaveBeenCalled();
             expect(controller.getSnapshot()).toMatchObject({
@@ -300,7 +302,7 @@ describe('createVoiceSessionLifecycleController', () => {
         controller.setConfiguredProviderId('off');
         logSpy.mockClear();
 
-        await controller.toggle('session-1');
+        await controller.toggle(sessionAddress('session-1'));
 
         expect(logSpy.mock.calls.map((call) => String(call[0])).filter(
             (line) => line.includes('[voiceRuntimeFailure]'),
@@ -427,8 +429,11 @@ describe('createVoiceSessionLifecycleController', () => {
         expect(configured.start).not.toHaveBeenCalled();
         expect(configured.stop).not.toHaveBeenCalled();
 
-        await controller.toggle('session-2');
-        expect(configured.start).toHaveBeenCalledWith({ sessionId: 'session-2' });
+        await controller.toggle(sessionAddress('session-2'));
+        expect(configured.start).toHaveBeenCalledWith({
+            sessionId: 'session-2',
+            requestedTargetSessionAddress: sessionAddress('session-2'),
+        });
 
         configured.setSnapshot(authFailure);
         expect(controller.getSnapshot()).toEqual(authFailure);
@@ -507,7 +512,7 @@ describe('createVoiceSessionLifecycleController', () => {
         }) });
 
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
-        const preparation = controller.toggle('voice-session');
+        const preparation = controller.toggle(sessionAddress('voice-session'));
         controller.rearmAfterCredentialAuthorityChange({
             exactSessionAccountScopeChanged: false,
             globalBindingAuthorityChanged: false,
@@ -567,7 +572,7 @@ describe('createVoiceSessionLifecycleController', () => {
         }) });
 
         controller.setConfiguredProviderId(CODEX_PROVIDER_ID);
-        const preparation = controller.toggle(VOICE_AGENT_GLOBAL_SESSION_ID);
+        const preparation = controller.toggle(null);
         await vi.waitFor(() => expect(preparing.start).toHaveBeenCalledOnce());
         controller.rearmAfterCredentialAuthorityChange({ exactSessionAccountScopeChanged: true });
 
@@ -602,7 +607,7 @@ describe('createVoiceSessionLifecycleController', () => {
         }) });
 
         controller.setConfiguredProviderId(CODEX_PROVIDER_ID);
-        const preparation = controller.toggle(VOICE_AGENT_GLOBAL_SESSION_ID);
+        const preparation = controller.toggle(null);
         await vi.waitFor(() => expect(preparing.start).toHaveBeenCalledOnce());
         expect(controller.getSnapshot()).toMatchObject({
             sessionId: null,
@@ -771,7 +776,6 @@ describe('createVoiceSessionLifecycleController', () => {
     it('does not stop a later same-adapter attempt after delayed unsupported output focus', async () => {
         const { createVoiceSessionLifecycleController } = await import('./voiceSessionLifecycleController');
         const captureAdmission = createVoiceCaptureAdmissionController();
-        const focusApplication = createDeferred<'unsupported'>();
         const sessionId = 'session-1';
         let fixture!: ReturnType<typeof createAdapter>;
         fixture = createAdapter({
@@ -804,7 +808,7 @@ describe('createVoiceSessionLifecycleController', () => {
         });
         const adapter: VoiceAdapterController = {
             ...fixture.controller,
-            setOutputFocusState: vi.fn(() => focusApplication.promise),
+            setOutputFocusState: vi.fn((): 'unsupported' => 'unsupported'),
         };
         const controller = createVoiceSessionLifecycleController({
             captureAdmission,
@@ -815,18 +819,17 @@ describe('createVoiceSessionLifecycleController', () => {
         });
         controller.setConfiguredProviderId(adapter.id);
 
-        await controller.toggle(sessionId);
+        await controller.toggle(sessionAddress(sessionId));
         const applyOutputFocusState = controller.setOutputFocusState;
         if (!applyOutputFocusState) throw new Error('voice_output_focus_owner_missing');
         const staleApplication = applyOutputFocusState(sessionId, 'suspended');
         expect(adapter.setOutputFocusState).toHaveBeenCalledOnce();
 
         await controller.stop(sessionId);
-        await controller.toggle(sessionId);
+        await controller.toggle(sessionAddress(sessionId));
         expect(fixture.start).toHaveBeenCalledTimes(2);
         expect(fixture.stop).toHaveBeenCalledOnce();
 
-        focusApplication.resolve('unsupported');
         await expect(staleApplication).resolves.toBe('unsupported');
         expect(fixture.stop).toHaveBeenCalledOnce();
         expect(controller.getSnapshot()).toMatchObject({
@@ -1335,9 +1338,12 @@ describe('createVoiceSessionLifecycleController', () => {
         });
 
         controller.setConfiguredProviderId('local_conversation');
-        await controller.toggle('session-1');
+        await controller.toggle(sessionAddress('session-1'));
 
-        expect(targetAdapter.start).toHaveBeenCalledWith({ sessionId: 'session-1' });
+        expect(targetAdapter.start).toHaveBeenCalledWith({
+            sessionId: 'session-1',
+            requestedTargetSessionAddress: sessionAddress('session-1'),
+        });
         expect(targetAdapter.toggle).not.toHaveBeenCalled();
         expect(targetAdapter.stop).not.toHaveBeenCalled();
     });
@@ -1385,7 +1391,7 @@ describe('createVoiceSessionLifecycleController', () => {
         }) });
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
 
-        await expect(controller.toggle('session-1')).resolves.toBeUndefined();
+        await expect(controller.toggle(sessionAddress('session-1'))).resolves.toBeUndefined();
         expect(controller.getSnapshot()).toMatchObject({
             adapterId: OPENAI_PROVIDER_ID,
             sessionId: 'session-1',
@@ -1439,7 +1445,7 @@ describe('createVoiceSessionLifecycleController', () => {
         }) });
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
 
-        await expect(controller.toggle('')).resolves.toBeUndefined();
+        await expect(controller.toggle(null)).resolves.toBeUndefined();
         expect(controller.getSnapshot()).toMatchObject({
             sessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
             status: 'error',
@@ -1481,7 +1487,7 @@ describe('createVoiceSessionLifecycleController', () => {
         const controller = createVoiceSessionLifecycleController({ getRegistry: () => registry });
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
 
-        await expect(controller.toggle('session-1')).rejects.toBe(programmerFailure);
+        await expect(controller.toggle(sessionAddress('session-1'))).rejects.toBe(programmerFailure);
     });
 
     it('rethrows a blank global Start when a registry republish only carries a prior direct-session retryable error', async () => {
@@ -1518,8 +1524,11 @@ describe('createVoiceSessionLifecycleController', () => {
         const controller = createVoiceSessionLifecycleController({ getRegistry: () => registry });
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
 
-        await expect(controller.toggle('')).rejects.toBe(programmerFailure);
-        expect(adapter.start).toHaveBeenCalledWith({ sessionId: '' });
+        await expect(controller.toggle(null)).rejects.toBe(programmerFailure);
+        expect(adapter.start).toHaveBeenCalledWith({
+            sessionId: '',
+            requestedTargetSessionAddress: null,
+        });
         expect(controller.getSnapshot().sessionId).not.toBe(VOICE_AGENT_GLOBAL_SESSION_ID);
     });
 
@@ -1551,7 +1560,7 @@ describe('createVoiceSessionLifecycleController', () => {
         }) });
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
 
-        await expect(controller.toggle('session-1')).rejects.toBe(previousFailure);
+        await expect(controller.toggle(sessionAddress('session-1'))).rejects.toBe(previousFailure);
     });
 
     it('rethrows a current terminal failure without retryable recovery', async () => {
@@ -1590,7 +1599,7 @@ describe('createVoiceSessionLifecycleController', () => {
         }) });
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
 
-        await expect(controller.toggle('session-1')).rejects.toBe(credentialFailure);
+        await expect(controller.toggle(sessionAddress('session-1'))).rejects.toBe(credentialFailure);
     });
 
     it('rethrows a cancellation after the attempted adapter settles disconnected', async () => {
@@ -1623,7 +1632,7 @@ describe('createVoiceSessionLifecycleController', () => {
         }) });
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
 
-        await expect(controller.toggle('session-1')).rejects.toBe(cancelled);
+        await expect(controller.toggle(sessionAddress('session-1'))).rejects.toBe(cancelled);
     });
 
     it('rethrows an old adapter failure after the configured provider changes', async () => {
@@ -1678,7 +1687,7 @@ describe('createVoiceSessionLifecycleController', () => {
         }) });
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
 
-        await expect(controller.toggle('session-1')).rejects.toBe(staleFailure);
+        await expect(controller.toggle(sessionAddress('session-1'))).rejects.toBe(staleFailure);
     });
 
     it('rethrows a start rejection that published no terminal recovery', async () => {
@@ -1703,7 +1712,7 @@ describe('createVoiceSessionLifecycleController', () => {
         }) });
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
 
-        await expect(controller.toggle('session-1')).rejects.toBe(programmerFailure);
+        await expect(controller.toggle(sessionAddress('session-1'))).rejects.toBe(programmerFailure);
     });
 
     it('stops the owned adapter when toggled from an active state', async () => {
@@ -1740,7 +1749,7 @@ describe('createVoiceSessionLifecycleController', () => {
         });
 
         controller.setConfiguredProviderId('local_conversation');
-        await controller.toggle('session-1');
+        await controller.toggle(sessionAddress('session-1'));
 
         expect(sourceAdapter.stop).toHaveBeenCalledWith({ sessionId: 'session-1' });
         expect(sourceAdapter.start).not.toHaveBeenCalled();
@@ -1768,7 +1777,10 @@ describe('createVoiceSessionLifecycleController', () => {
         controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
         await controller.retry('stale-session-id');
 
-        expect(sourceAdapter.retry).toHaveBeenCalledWith({ sessionId: 'owned-reconnect' });
+        expect(sourceAdapter.retry).toHaveBeenCalledWith({
+            sessionId: 'owned-reconnect',
+            requestedTargetSessionAddress: null,
+        });
         expect(sourceAdapter.start).not.toHaveBeenCalled();
         expect(sourceAdapter.stop).not.toHaveBeenCalled();
         expect(sourceAdapter.toggle).not.toHaveBeenCalled();
@@ -1873,7 +1885,7 @@ describe('createVoiceSessionLifecycleController', () => {
             controller.setConfiguredProviderId(adapter.id);
             setMode('off');
             controller.setCurrentUiContextToolSetEnabled(false);
-            await controller.toggle('voice-session');
+            await controller.toggle(sessionAddress('voice-session'));
             expect(toolSetsSeenByProvider).toEqual([[]]);
 
             setMode('on_demand');
@@ -2166,7 +2178,7 @@ describe('createVoiceSessionLifecycleController', () => {
             controller.setConfiguredProviderId(adapter.id);
             setMode(restoredCurrentUiContextMode);
             controller.setCurrentUiContextToolSetEnabled(true);
-            await controller.toggle('local-session');
+            await controller.toggle(sessionAddress('local-session'));
 
             expect(seededModelSessions).toHaveLength(1);
             expect(seededModelSessions[0].disabledActionIds).not.toEqual(expect.arrayContaining(currentUiActionIds));
@@ -2379,7 +2391,7 @@ describe('createVoiceSessionLifecycleController', () => {
         try {
             controller.setConfiguredProviderId(adapter.id);
             await act(async () => {
-                await controller.toggle('voice-global');
+                await controller.toggle(sessionAddress('voice-global'));
             });
             expect(controller.getSnapshot()).toMatchObject({
                 adapterId: adapter.id,
@@ -2493,7 +2505,7 @@ describe('createVoiceSessionLifecycleController', () => {
 
             try {
                 controller.setConfiguredProviderId(providerId);
-                start = controller.toggle(sessionId);
+                start = controller.toggle(sessionAddress(sessionId));
                 await vi.waitFor(() => expect(adapter.start).toHaveBeenCalledOnce());
 
                 registered = false;
@@ -2605,7 +2617,7 @@ describe('createVoiceSessionLifecycleController', () => {
 
         try {
             controller.setConfiguredProviderId(adapterId);
-            await controller.toggle(sessionId);
+            await controller.toggle(sessionAddress(sessionId));
             expect(retired.listenerCount()).toBe(1);
 
             current = replacement.controller;
@@ -2682,13 +2694,13 @@ describe('createVoiceSessionLifecycleController', () => {
 
             try {
                 controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
-                start = controller.toggle('starting-session');
+                start = controller.toggle(sessionAddress('starting-session'));
                 await vi.waitFor(() => expect(adapter.start).toHaveBeenCalledOnce());
                 expect(captureAdmission.acquire('dictation')).toMatchObject({ status: 'busy' });
 
                 const endAttempt = operation === 'stop'
                     ? controller.stop('stale-session')
-                    : controller.toggle('stale-session');
+                    : controller.toggle(sessionAddress('stale-session'));
                 await expect(endAttempt).resolves.toBeUndefined();
 
                 expect(adapter.start).toHaveBeenCalledOnce();

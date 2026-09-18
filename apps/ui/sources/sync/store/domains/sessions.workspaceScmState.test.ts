@@ -27,7 +27,9 @@ import type { SessionListRenderableSession } from '@/sync/domains/session/listin
 function createHarness() {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
@@ -35,13 +37,13 @@ function createHarness() {
         sessionRepositoryTreeExpandedPathsBySessionId: {},
         workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey: {},
         reviewCommentsDraftsBySessionId: {},
-        actionDraftsBySessionId: {},
+        sessionActionDraftsByAddressKey: {},
         isDataReady: false,
         machines: {},
         machineDisplayById: {},
         sessionMessages: {},
         profile: { id: 'p1' },
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
     };
 
     const get = () => state;
@@ -82,16 +84,19 @@ function seedWorkspaceSessions(state: any, sessionIds: string[]) {
             },
         },
     ]));
-    state.sessionListRenderables = Object.fromEntries(sessionIds.map((sessionId) => [
-        sessionId,
-        {
-            id: sessionId,
-            metadata: {
-                machineId: 'm1',
-                path: '/repo',
-            },
-        } satisfies Partial<SessionListRenderableSession>,
-    ]));
+    state.sessionListRowsByServerId = {
+        s: Object.fromEntries(sessionIds.map((sessionId) => [
+            sessionId,
+            {
+                id: sessionId,
+                metadata: {
+                    machineId: 'm1',
+                    path: '/repo',
+                },
+            } satisfies Partial<SessionListRenderableSession>,
+        ])),
+    };
+    state.ordinarySessionListMembershipByServerId = { s: sessionIds };
 }
 
 describe('sessions domain: workspace-scoped SCM state', () => {

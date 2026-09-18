@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act } from 'react-test-renderer';
+import renderer, { act } from 'react-test-renderer';
 
 import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { buildSessionListRuntimePriorityRowKeys } from '@/sync/domains/session/listing/sessionListRuntimePriorityRows';
+import {
+    buildSessionListRowScopeKey,
+    buildSessionListServerScopedRowKey,
+} from '@/sync/domains/session/listing/sessionListKeyNormalization';
 import { storage } from '@/sync/domains/state/storageStore';
 import {
     useSessionListRenderableWithServerScope,
@@ -45,20 +49,28 @@ describe('useSessionListRenderableWithServerScope row projection', () => {
         vi.setSystemTime(new Date('2026-05-30T12:00:00.000Z'));
         const previousState = storage.getState();
         const sessionId = 'session-list-row-projection-fresh-heartbeat';
+        const serverId = 'server-a';
         const firstRenderable = buildActiveRenderable({ id: sessionId });
 
         try {
             storage.setState((state) => ({
                 ...state,
                 isDataReady: true,
-                sessionListRenderables: {
-                    ...state.sessionListRenderables,
-                    [sessionId]: firstRenderable,
+                sessionListRowsByServerId: {
+                    ...state.sessionListRowsByServerId,
+                    [serverId]: {
+                        ...(state.sessionListRowsByServerId[serverId] ?? {}),
+                        [sessionId]: firstRenderable,
+                    },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    ...state.ordinarySessionListMembershipByServerId,
+                    [serverId]: [sessionId],
                 },
             }));
 
             const hook = await renderHook(
-                () => useSessionListRenderableWithServerScope(null, sessionId),
+                () => useSessionListRenderableWithServerScope(serverId, sessionId),
                 { flushOptions: { cycles: 1, turns: 4 } },
             );
             const firstProjection = hook.getCurrent();
@@ -74,9 +86,12 @@ describe('useSessionListRenderableWithServerScope row projection', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRenderables: {
-                        ...state.sessionListRenderables,
-                        [sessionId]: freshProgressRenderable,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
+                        [serverId]: {
+                            ...state.sessionListRowsByServerId[serverId],
+                            [sessionId]: freshProgressRenderable,
+                        },
                     },
                 }));
             });
@@ -95,6 +110,7 @@ describe('useSessionListRenderableWithServerScope row projection', () => {
         vi.setSystemTime(new Date('2026-05-30T12:00:00.000Z'));
         const previousState = storage.getState();
         const sessionId = 'session-list-row-projection-stale-heartbeat';
+        const serverId = 'server-a';
         const firstRenderable = buildActiveRenderable({
             id: sessionId,
             activeAt: Date.now() - 119_000,
@@ -105,14 +121,21 @@ describe('useSessionListRenderableWithServerScope row projection', () => {
             storage.setState((state) => ({
                 ...state,
                 isDataReady: true,
-                sessionListRenderables: {
-                    ...state.sessionListRenderables,
-                    [sessionId]: firstRenderable,
+                sessionListRowsByServerId: {
+                    ...state.sessionListRowsByServerId,
+                    [serverId]: {
+                        ...(state.sessionListRowsByServerId[serverId] ?? {}),
+                        [sessionId]: firstRenderable,
+                    },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    ...state.ordinarySessionListMembershipByServerId,
+                    [serverId]: [sessionId],
                 },
             }));
 
             const hook = await renderHook(
-                () => useSessionListRenderableWithServerScope(null, sessionId),
+                () => useSessionListRenderableWithServerScope(serverId, sessionId),
                 { flushOptions: { cycles: 1, turns: 4 } },
             );
             const firstProjection = hook.getCurrent();
@@ -128,9 +151,12 @@ describe('useSessionListRenderableWithServerScope row projection', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRenderables: {
-                        ...state.sessionListRenderables,
-                        [sessionId]: heartbeatRefreshRenderable,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
+                        [serverId]: {
+                            ...state.sessionListRowsByServerId[serverId],
+                            [sessionId]: heartbeatRefreshRenderable,
+                        },
                     },
                 }));
             });
@@ -151,6 +177,7 @@ describe('useSessionListRenderableWithServerScope row projection', () => {
         const now = Date.now();
         const previousState = storage.getState();
         const sessionId = 'session-list-row-projection-runtime-revision';
+        const serverId = 'server-a';
         const firstRenderable = buildActiveRenderable({
             id: sessionId,
             active: false,
@@ -168,14 +195,21 @@ describe('useSessionListRenderableWithServerScope row projection', () => {
             storage.setState((state) => ({
                 ...state,
                 isDataReady: true,
-                sessionListRenderables: {
-                    ...state.sessionListRenderables,
-                    [sessionId]: firstRenderable,
+                sessionListRowsByServerId: {
+                    ...state.sessionListRowsByServerId,
+                    [serverId]: {
+                        ...(state.sessionListRowsByServerId[serverId] ?? {}),
+                        [sessionId]: firstRenderable,
+                    },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    ...state.ordinarySessionListMembershipByServerId,
+                    [serverId]: [sessionId],
                 },
             }));
 
             const hook = await renderHook(
-                () => useSessionListRenderableWithServerScope(null, sessionId),
+                () => useSessionListRenderableWithServerScope(serverId, sessionId),
                 { flushOptions: { cycles: 1, turns: 4 } },
             );
             const firstProjection = hook.getCurrent();
@@ -189,9 +223,12 @@ describe('useSessionListRenderableWithServerScope row projection', () => {
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRenderables: {
-                        ...state.sessionListRenderables,
-                        [sessionId]: revisionOnlyRenderable,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
+                        [serverId]: {
+                            ...state.sessionListRowsByServerId[serverId],
+                            [sessionId]: revisionOnlyRenderable,
+                        },
                     },
                 }));
             });
@@ -288,7 +325,7 @@ describe('buildSessionListRuntimePriorityRowKeys', () => {
             },
         });
 
-        expect(keys).toEqual(new Set(['server-a\u0000stale-in-progress']));
+        expect(keys).toEqual(new Set([buildSessionListRowScopeKey('server-a', 'stale-in-progress')]));
     });
 
     it('ignores unread-only row overlay updates when selecting runtime-priority rows', () => {
@@ -318,7 +355,7 @@ describe('buildSessionListRuntimePriorityRowKeys', () => {
                 'unread-only': unreadRenderable,
             },
         });
-        expect(firstKeys).toEqual(new Set(['server-a\u0000active']));
+        expect(firstKeys).toEqual(new Set([buildSessionListRowScopeKey('server-a', 'active')]));
 
         const unreadOnlyUpdatedKeys = buildSessionListRuntimePriorityRowKeys(items, {
             'server-a': {
@@ -345,9 +382,191 @@ describe('buildSessionListRuntimePriorityRowKeys', () => {
             },
         });
         expect(activeUnreadKeys).toEqual(new Set([
-            'server-a\u0000active',
-            'server-a\u0000unread-only',
+            buildSessionListRowScopeKey('server-a', 'active'),
+            buildSessionListRowScopeKey('server-a', 'unread-only'),
         ]));
+    });
+});
+
+/**
+ * Lane 07 R18 / 07.2 §11 measurement: the row-subscription cost of three Homes
+ * with fifty rows each. Every row owns its own canonical selector, so this also
+ * discriminates the intended per-row subscription from a plausible incorrect
+ * implementation that subscribes to the whole server-scoped row map and
+ * re-renders every loaded row for one patch. Timings are reported, never
+ * asserted: no latency threshold or corpus ceiling is invented here.
+ */
+describe('session list row subscription cost across three Homes', () => {
+    const HOME_COUNT = 3;
+    const ROWS_PER_HOME = 50;
+
+    function qualifiedRowKey(serverId: string, sessionId: string): string {
+        const key = buildSessionListServerScopedRowKey(serverId, sessionId);
+        if (!key) throw new Error(`Expected a qualified row key for ${serverId}/${sessionId}`);
+        return key;
+    }
+
+    function buildMeasurementCorpus() {
+        const rowsByServerId: Record<string, Record<string, SessionListRenderableSession>> = {};
+        const membershipByServerId: Record<string, string[]> = {};
+        const addresses: Array<Readonly<{ serverId: string; sessionId: string }>> = [];
+        for (let home = 0; home < HOME_COUNT; home += 1) {
+            const serverId = `row-subscription-home-${home}`;
+            const rows: Record<string, SessionListRenderableSession> = {};
+            const membership: string[] = [];
+            for (let index = 0; index < ROWS_PER_HOME; index += 1) {
+                const sessionId = `row-subscription-session-${home}-${index}`;
+                rows[sessionId] = buildActiveRenderable({
+                    id: sessionId,
+                    seq: index,
+                    latestTurnStatus: 'in_progress',
+                });
+                membership.push(sessionId);
+                addresses.push({ serverId, sessionId });
+            }
+            rowsByServerId[serverId] = rows;
+            membershipByServerId[serverId] = membership;
+        }
+        return { rowsByServerId, membershipByServerId, addresses };
+    }
+
+    it('re-renders only the patched row and keeps every unrelated Home row referentially stable', async () => {
+        const previousState = storage.getState();
+        const { rowsByServerId, membershipByServerId, addresses } = buildMeasurementCorpus();
+        const renderCounts = new Map<string, number>();
+        const latestProjection = new Map<string, SessionListRenderableSession | null>();
+
+        function MeasuredRow(props: Readonly<{ serverId: string; sessionId: string }>) {
+            const projected = useSessionListRenderableWithServerScope(props.serverId, props.sessionId);
+            const key = qualifiedRowKey(props.serverId, props.sessionId);
+            renderCounts.set(key, (renderCounts.get(key) ?? 0) + 1);
+            latestProjection.set(key, projected);
+            return null;
+        }
+        const expectedIdByKey = new Map(
+            addresses.map((address) => [
+                qualifiedRowKey(address.serverId, address.sessionId),
+                address.sessionId,
+            ]),
+        );
+
+        let tree: renderer.ReactTestRenderer | null = null;
+        try {
+            storage.setState((state) => ({
+                ...state,
+                isDataReady: true,
+                sessionListRowsByServerId: { ...state.sessionListRowsByServerId, ...rowsByServerId },
+                ordinarySessionListMembershipByServerId: {
+                    ...state.ordinarySessionListMembershipByServerId,
+                    ...membershipByServerId,
+                },
+            }));
+
+            const mountStartedAt = performance.now();
+            await act(async () => {
+                tree = renderer.create(
+                    <>
+                        {addresses.map((address) => (
+                            <MeasuredRow
+                                key={qualifiedRowKey(address.serverId, address.sessionId)}
+                                serverId={address.serverId}
+                                sessionId={address.sessionId}
+                            />
+                        ))}
+                    </>,
+                );
+            });
+            const mountMs = performance.now() - mountStartedAt;
+
+            expect(addresses).toHaveLength(HOME_COUNT * ROWS_PER_HOME);
+            expect(renderCounts.size).toBe(addresses.length);
+            expect([...renderCounts.values()].every((count) => count === 1)).toBe(true);
+
+            const target = addresses[HOME_COUNT * ROWS_PER_HOME - 20];
+            const targetKey = qualifiedRowKey(target.serverId, target.sessionId);
+            const unrelatedProjectionsBefore = new Map(
+                [...latestProjection].filter(([key]) => key !== targetKey),
+            );
+
+            const patchStartedAt = performance.now();
+            await act(async () => {
+                storage.setState((state) => ({
+                    ...state,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
+                        [target.serverId]: {
+                            ...state.sessionListRowsByServerId[target.serverId],
+                            [target.sessionId]: {
+                                ...rowsByServerId[target.serverId][target.sessionId],
+                                latestTurnStatus: 'completed',
+                                hasUnreadMessages: false,
+                            },
+                        },
+                    },
+                }));
+            });
+            const singlePatchMs = performance.now() - patchStartedAt;
+
+            expect(renderCounts.get(targetKey)).toBe(2);
+            expect(latestProjection.get(targetKey)).toMatchObject({
+                id: target.sessionId,
+                latestTurnStatus: 'completed',
+            });
+            const rerenderedUnrelatedKeys = [...unrelatedProjectionsBefore.keys()]
+                .filter((key) => renderCounts.get(key) !== 1);
+            expect(rerenderedUnrelatedKeys).toEqual([]);
+            const misprojectedUnrelatedKeys = [...unrelatedProjectionsBefore]
+                .filter(([key, projection]) => projection?.id !== expectedIdByKey.get(key))
+                .map(([key]) => key);
+            expect(misprojectedUnrelatedKeys).toEqual([]);
+
+            const RAPID_CHANGE_COUNT = 20;
+            const rapidStartedAt = performance.now();
+            for (let change = 0; change < RAPID_CHANGE_COUNT; change += 1) {
+                await act(async () => {
+                    storage.setState((state) => ({
+                        ...state,
+                        sessionListRowsByServerId: {
+                            ...state.sessionListRowsByServerId,
+                            [target.serverId]: {
+                                ...state.sessionListRowsByServerId[target.serverId],
+                                [target.sessionId]: {
+                                    ...rowsByServerId[target.serverId][target.sessionId],
+                                    seq: 1_000 + change,
+                                    latestTurnStatus: change % 2 === 0 ? 'in_progress' : 'completed',
+                                },
+                            },
+                        },
+                    }));
+                });
+            }
+            const rapidChangeMs = performance.now() - rapidStartedAt;
+
+            expect(renderCounts.get(targetKey)).toBe(2 + RAPID_CHANGE_COUNT);
+            const rerenderedAfterRapidChanges = [...unrelatedProjectionsBefore.keys()]
+                .filter((key) => renderCounts.get(key) !== 1);
+            expect(rerenderedAfterRapidChanges).toEqual([]);
+
+            const totalRowRenders = [...renderCounts.values()].reduce((sum, count) => sum + count, 0);
+            console.info([
+                'Lane07 R18 UI row subscriptions:',
+                `${HOME_COUNT} Homes x ${ROWS_PER_HOME} rows = ${addresses.length} subscribed selectors`,
+                `mount ${mountMs.toFixed(1)} ms`,
+                `single row patch ${singlePatchMs.toFixed(1)} ms`,
+                `${RAPID_CHANGE_COUNT} rapid changes ${rapidChangeMs.toFixed(1)} ms`,
+                `total row renders ${totalRowRenders}`,
+                `platform ${process.platform}/${process.arch}`,
+            ].join(', '));
+        } finally {
+            if (tree) {
+                const mounted = tree as renderer.ReactTestRenderer;
+                await act(async () => {
+                    mounted.unmount();
+                });
+            }
+            standardCleanup();
+            storage.setState(previousState);
+        }
     });
 });
 
@@ -363,10 +582,10 @@ describe('useSessionListRuntimePriorityRowKeysForItems', () => {
         try {
             storage.setState((state) => ({
                 ...state,
-                sessionListRowStateByServerId: {
-                    ...state.sessionListRowStateByServerId,
+                sessionListRowsByServerId: {
+                    ...state.sessionListRowsByServerId,
                     'server-a': {
-                        ...(state.sessionListRowStateByServerId['server-a'] ?? {}),
+                        ...(state.sessionListRowsByServerId['server-a'] ?? {}),
                         'runtime-active': buildActiveRenderable({
                             id: 'runtime-active',
                             active: false,
@@ -385,15 +604,17 @@ describe('useSessionListRuntimePriorityRowKeysForItems', () => {
 
             const hook = await renderHook(() => useSessionListRuntimePriorityRowKeysForItems(items));
 
-            expect(hook.getCurrent()).toEqual(new Set(['server-a\u0000runtime-active']));
+            expect(hook.getCurrent()).toEqual(new Set([
+                buildSessionListRowScopeKey('server-a', 'runtime-active'),
+            ]));
 
             await act(async () => {
                 storage.setState((state) => ({
                     ...state,
-                    sessionListRowStateByServerId: {
-                        ...state.sessionListRowStateByServerId,
+                    sessionListRowsByServerId: {
+                        ...state.sessionListRowsByServerId,
                         'server-a': {
-                            ...(state.sessionListRowStateByServerId['server-a'] ?? {}),
+                            ...(state.sessionListRowsByServerId['server-a'] ?? {}),
                             'runtime-active': buildActiveRenderable({
                                 id: 'runtime-active',
                                 active: false,

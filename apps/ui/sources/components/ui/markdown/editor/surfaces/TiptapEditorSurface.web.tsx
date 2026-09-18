@@ -440,6 +440,7 @@ export const TiptapEditorSurface = React.forwardRef<MarkdownEditorSurfaceRef, Ma
                 flushPendingChange: async () => {
                     flushPendingChange();
                 },
+                focus: () => editorRef.current?.commands.focus(),
                 runCommand: (command) => controllerRef.current?.runCommand(command),
                 subscribeSelection: (callback) =>
                     controllerRef.current?.subscribeSelection(callback) ?? (() => {}),

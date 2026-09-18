@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LiveActivityTargetRegistrationInput } from '@/sync/api/session/apiLiveActivityTargets';
 
 import type { LiveActivitySnapshot } from './buildLiveActivitySnapshots';
+import {
+    buildHappierFocusLiveActivityIdentity,
+    buildLiveActivityInstanceKey,
+} from './liveActivityIdentity';
 import type { LiveActivityPushSupport, LiveActivityPushSupportReason } from './resolveLiveActivityPushSupport';
 
 async function loadModule() {
@@ -335,5 +339,139 @@ describe('registerLiveActivityRemoteTarget', () => {
             targetId: 'target-background-1',
             mode: 'background_wake_best_effort',
         });
+    });
+
+    it('keeps replacement B current while failed-to-end A remains retryable, then removes only A', async () => {
+        const mod = await loadModule();
+        expect(mod).not.toBeNull();
+        if (!mod) return;
+
+        const activityInstanceKey = buildLiveActivityInstanceKey(
+            buildHappierFocusLiveActivityIdentity({ serverId: 'https://home.example/a', sessionId: 'b:c' }),
+        );
+        const registry = mod.createLiveActivityRemoteTargetRegistry();
+        registry.remember({
+            activityInstanceKey,
+            targetId: 'target-direct-a',
+            mode: 'direct_apns',
+            serverId: 'https://home.example/a',
+        });
+        registry.remember({
+            activityInstanceKey,
+            targetId: 'target-direct-b',
+            mode: 'direct_apns',
+            serverId: 'https://home.example/a',
+        });
+
+        const markTargetEnded = vi.fn()
+            .mockRejectedValueOnce(new Error('Failed to mark Live Activity target ended: 503'))
+            .mockResolvedValueOnce(undefined);
+
+        await expect(registry.retryPendingEnds({
+            activityInstanceKey,
+            markTargetEnded: (targetId) => markTargetEnded(targetId),
+        })).rejects.toThrow('503');
+        // The new target remains current while the old exact target stays pending in this registry.
+        expect(registry.getTarget(activityInstanceKey)).toEqual({
+            targetId: 'target-direct-b',
+            mode: 'direct_apns',
+        });
+        expect(registry.listTargets()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ targetId: 'target-direct-a' }),
+            expect.objectContaining({ targetId: 'target-direct-b' }),
+        ]));
+
+        await registry.retryPendingEnds({
+            activityInstanceKey,
+            markTargetEnded: (targetId) => markTargetEnded(targetId),
+        });
+
+        expect(markTargetEnded.mock.calls).toEqual([['target-direct-a'], ['target-direct-a']]);
+        expect(registry.getTarget(activityInstanceKey)).toEqual({
+            targetId: 'target-direct-b',
+            mode: 'direct_apns',
+        });
+        expect(registry.listTargets()).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ targetId: 'target-direct-a' }),
+        ]));
+    });
+
+    it('keeps the current target discoverable after a failed end and forgets it only once the retry succeeds', async () => {
+        const mod = await loadModule();
+        expect(mod).not.toBeNull();
+        if (!mod) return;
+
+        const activityInstanceKey = buildLiveActivityInstanceKey(
+            buildHappierFocusLiveActivityIdentity({ serverId: 'https://home.example/a', sessionId: 'session-1' }),
+        );
+        const registry = mod.createLiveActivityRemoteTargetRegistry();
+        registry.remember({
+            activityInstanceKey,
+            targetId: 'target-direct-a',
+            mode: 'direct_apns',
+            serverId: 'https://home.example/a',
+        });
+
+        const markTargetEnded = vi.fn()
+            .mockRejectedValueOnce(new Error('Failed to mark Live Activity target ended: 503'))
+            .mockResolvedValueOnce(undefined);
+
+        await expect(registry.markEnded({ activityInstanceKey, markTargetEnded }))
+            .rejects.toThrow('503');
+        // A transport failure is not proof the Home forgot this target. Keeping the exact qualified
+        // mapping is what lets the incumbent termination/reconnect reconciliation retry it, instead
+        // of leaving a remote Live Activity target alive with no local record (L07-I38).
+        expect(registry.getTarget(activityInstanceKey))
+            .toEqual({ targetId: 'target-direct-a', mode: 'direct_apns' });
+        expect(registry.listTargets()).toEqual([expect.objectContaining({ targetId: 'target-direct-a' })]);
+
+        await registry.markEnded({ activityInstanceKey, markTargetEnded });
+
+        expect(markTargetEnded.mock.calls).toEqual([['target-direct-a'], ['target-direct-a']]);
+        expect(registry.getTarget(activityInstanceKey)).toBeNull();
+        expect(registry.listTargets()).toEqual([]);
+    });
+
+    it('keeps delimiter-bearing Homes and an unbound Session distinct from a Home named local', async () => {
+        const mod = await loadModule();
+        expect(mod).not.toBeNull();
+        if (!mod) return;
+
+        const keys = [
+            { serverId: 'https://home.example/a', sessionId: 'b:c' },
+            { serverId: 'https://home.example/a:b', sessionId: 'c' },
+            { serverId: 'local', sessionId: 'session-1' },
+            { serverId: null, sessionId: 'session-1' },
+        ].map((address) => buildLiveActivityInstanceKey(buildHappierFocusLiveActivityIdentity(address)));
+
+        expect(new Set(keys).size).toBe(keys.length);
+
+        const registry = mod.createLiveActivityRemoteTargetRegistry();
+        keys.forEach((activityInstanceKey, index) => {
+            registry.remember({ activityInstanceKey, targetId: `target-${index}`, mode: 'direct_apns' });
+        });
+
+        expect(keys.map((key) => registry.getTargetId(key))).toEqual([
+            'target-0', 'target-1', 'target-2', 'target-3',
+        ]);
+    });
+
+    it('skips remote registration for a Session with no Home binding instead of inventing one', async () => {
+        const mod = await loadModule();
+        expect(mod).not.toBeNull();
+        if (!mod) return;
+
+        const registerTarget = vi.fn(async () => ({ targetId: 'target-x' }));
+        const result = await mod.registerLiveActivityRemoteTargetFromTokenEvent({
+            snapshot: createSnapshot({ serverId: null }),
+            event: { activityId: 'activity-a', pushToken: 'token-a' },
+            registrationPlan: { mode: 'direct_apns', status: 'remote_available', reasons: [] },
+            pushSupport: createPushSupport(),
+            clientMetadata: { deviceId: 'device-1', bundleId: 'dev.happier.custom', environment: 'sandbox' },
+            registerTarget,
+        });
+
+        expect(result).toEqual({ status: 'skipped', reason: 'home_binding_missing', mode: 'direct_apns' });
+        expect(registerTarget).not.toHaveBeenCalled();
     });
 });

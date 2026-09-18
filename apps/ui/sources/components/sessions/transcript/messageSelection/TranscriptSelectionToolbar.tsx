@@ -1,8 +1,9 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { useKeyboardShortcutHandlers } from '@/keyboard/KeyboardShortcutProvider';
 import type { KeyboardShortcutHandlers } from '@/keyboard/runtime';
 import { Modal } from '@/modal';
@@ -16,6 +17,7 @@ import { useTranscriptSelectionActions, useTranscriptSelectionState } from './Tr
 export type TranscriptSelectionToolbarMessage = TranscriptSelectableMessageText & Readonly<{ id: string }>;
 
 const TRANSCRIPT_SELECTION_COPY_FEEDBACK_MS = 1200;
+const MINIMUM_INTERACTIVE_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
 
 export function TranscriptSelectionToolbar(props: Readonly<{
     selectableMessagesInOrder: ReadonlyArray<TranscriptSelectionToolbarMessage>;
@@ -23,12 +25,21 @@ export function TranscriptSelectionToolbar(props: Readonly<{
     roleLabels: Readonly<{ user: string; assistant: string }>;
     sendToSessionEnabled: boolean;
     maxWidth?: number;
+    /** Allows another canonical message owner to supply the same neutral selection text. */
+    formatSelection?: (messages: ReadonlyArray<TranscriptSelectionToolbarMessage>) => string | null;
+    selectionUnavailableText?: string;
+    additionalAction?: Readonly<{
+        testID: string;
+        label: string;
+        accessibilityLabel?: string;
+        onPress: (messages: ReadonlyArray<TranscriptSelectionToolbarMessage>) => void | Promise<void>;
+    }>;
     onSendToSession?: (messages: ReadonlyArray<TranscriptSelectionToolbarMessage>) => void | Promise<void>;
 }>): React.ReactElement | null {
     const { theme } = useUnistyles();
     const state = useTranscriptSelectionState();
     const actions = useTranscriptSelectionActions();
-    const [busyAction, setBusyAction] = React.useState<'copy' | 'send' | null>(null);
+    const [busyAction, setBusyAction] = React.useState<'copy' | 'send' | 'additional' | null>(null);
     const [copySucceeded, setCopySucceeded] = React.useState(false);
     const copyFeedbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -42,16 +53,22 @@ export function TranscriptSelectionToolbar(props: Readonly<{
         () => props.selectableMessagesInOrder.filter((message) => state.selectedIds.has(message.id)),
         [props.selectableMessagesInOrder, state.selectedIds],
     );
+    const formattedSelection = React.useMemo(() => {
+        if (selectedMessages.length === 0) return null;
+        return props.formatSelection
+            ? props.formatSelection(selectedMessages)
+            : formatSelectedMessagesForClipboard(selectedMessages, {
+                format: props.bulkCopyFormat,
+                roleLabels: props.roleLabels,
+            });
+    }, [props.bulkCopyFormat, props.formatSelection, props.roleLabels, selectedMessages]);
+    const selectionUnavailable = selectedMessages.length > 0 && formattedSelection === null;
 
     const handleCopy = React.useCallback(async () => {
-        if (selectedMessages.length === 0 || busyAction) return;
-        const text = formatSelectedMessagesForClipboard(selectedMessages, {
-            format: props.bulkCopyFormat,
-            roleLabels: props.roleLabels,
-        });
+        if (formattedSelection === null || busyAction) return;
         setBusyAction('copy');
         try {
-            const ok = await setClipboardStringSafe(text);
+            const ok = await setClipboardStringSafe(formattedSelection);
             if (!ok) {
                 Modal.alert(t('common.error'), t('transcript.selection.copyFailed'));
                 return;
@@ -69,17 +86,27 @@ export function TranscriptSelectionToolbar(props: Readonly<{
         } finally {
             setBusyAction(null);
         }
-    }, [busyAction, props.bulkCopyFormat, props.roleLabels, selectedMessages]);
+    }, [busyAction, formattedSelection]);
+
+    const handleAdditionalAction = React.useCallback(async () => {
+        if (!props.additionalAction || selectedMessages.length === 0 || selectionUnavailable || busyAction) return;
+        setBusyAction('additional');
+        try {
+            await props.additionalAction.onPress(selectedMessages);
+        } finally {
+            setBusyAction(null);
+        }
+    }, [busyAction, props.additionalAction, selectedMessages, selectionUnavailable]);
 
     const handleSend = React.useCallback(async () => {
-        if (!props.onSendToSession || selectedMessages.length === 0 || busyAction) return;
+        if (!props.onSendToSession || selectedMessages.length === 0 || selectionUnavailable || busyAction) return;
         setBusyAction('send');
         try {
             await props.onSendToSession(selectedMessages);
         } finally {
             setBusyAction(null);
         }
-    }, [busyAction, props, selectedMessages]);
+    }, [busyAction, props.onSendToSession, selectedMessages, selectionUnavailable]);
 
     const shortcutHandlers = React.useMemo<KeyboardShortcutHandlers>(() => {
         if (!state.isSelectionMode) return {};
@@ -116,13 +143,18 @@ export function TranscriptSelectionToolbar(props: Readonly<{
                         {t('transcript.selection.copySuccess')}
                     </Text>
                 ) : null}
+                {selectionUnavailable && props.selectionUnavailableText ? (
+                    <Text testID="transcript-selection-unavailable" style={styles.feedbackText}>
+                        {props.selectionUnavailableText}
+                    </Text>
+                ) : null}
             </View>
-            <View style={styles.actions}>
+            <View testID="transcript-selection-toolbar-actions" style={styles.actions}>
                 <ToolbarButton
                     testID="transcript-selection-copy"
                     label={t('transcript.selection.copy')}
                     accessibilityLabel={t('transcript.selection.copyA11y', { count: state.count })}
-                    disabled={selectedMessages.length === 0 || busyAction != null}
+                    disabled={selectedMessages.length === 0 || selectionUnavailable || busyAction != null}
                     onPress={handleCopy}
                 />
                 {props.sendToSessionEnabled && props.onSendToSession ? (
@@ -130,8 +162,17 @@ export function TranscriptSelectionToolbar(props: Readonly<{
                         testID="transcript-selection-send"
                         label={t('transcript.selection.send')}
                         accessibilityLabel={t('transcript.selection.sendA11y', { count: state.count })}
-                        disabled={selectedMessages.length === 0 || busyAction != null}
+                        disabled={selectedMessages.length === 0 || selectionUnavailable || busyAction != null}
                         onPress={handleSend}
+                    />
+                ) : null}
+                {props.additionalAction ? (
+                    <ToolbarButton
+                        testID={props.additionalAction.testID}
+                        label={props.additionalAction.label}
+                        accessibilityLabel={props.additionalAction.accessibilityLabel}
+                        disabled={selectedMessages.length === 0 || selectionUnavailable || busyAction != null}
+                        onPress={handleAdditionalAction}
                     />
                 ) : null}
                 <ToolbarButton
@@ -175,6 +216,7 @@ function ToolbarButton(props: Readonly<{
 const styles = StyleSheet.create((theme) => ({
     container: {
         flexDirection: 'row',
+        flexWrap: 'wrap',
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 12,
@@ -185,6 +227,9 @@ const styles = StyleSheet.create((theme) => ({
         backgroundColor: theme.colors.surface.elevated,
     },
     statusTextGroup: {
+        flexGrow: 1,
+        flexShrink: 1,
+        minWidth: 0,
         gap: 2,
     },
     countText: {
@@ -194,14 +239,24 @@ const styles = StyleSheet.create((theme) => ({
         color: theme.colors.state.success.foreground,
     },
     actions: {
+        flexGrow: 1,
+        flexShrink: 1,
         flexDirection: 'row',
+        flexWrap: 'wrap',
         alignItems: 'center',
+        justifyContent: 'flex-end',
         gap: 8,
     },
     actionButton: {
+        flexShrink: 1,
+        maxWidth: '100%',
+        minHeight: MINIMUM_INTERACTIVE_TARGET_SIZE,
+        minWidth: MINIMUM_INTERACTIVE_TARGET_SIZE,
+        alignItems: 'center',
+        justifyContent: 'center',
         borderRadius: 10,
         paddingHorizontal: 10,
-        paddingVertical: 6,
+        paddingVertical: 8,
         backgroundColor: theme.colors.button.secondary.background,
     },
     actionButtonPressed: {
@@ -211,6 +266,8 @@ const styles = StyleSheet.create((theme) => ({
         opacity: 0.5,
     },
     actionButtonText: {
+        flexShrink: 1,
+        textAlign: 'center',
         color: theme.colors.button.secondary.tint,
     },
 }));

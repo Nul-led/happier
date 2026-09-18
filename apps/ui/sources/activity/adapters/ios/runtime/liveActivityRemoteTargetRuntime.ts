@@ -8,11 +8,11 @@ import {
     type LiveActivityRemoteUpdateMode,
 } from '@happier-dev/protocol';
 
+import type { ExactHomeAccountSettings } from '@/activity/delivery/useExactHomeAccountSettings';
 import { markLiveActivityTargetEnded, registerLiveActivityTarget } from '@/sync/api/session/apiLiveActivityTargets';
 import type { ServerFeaturesMainSelectionSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
 import { AttentionDeviceOverridesV1Schema } from '@/sync/domains/settings/attentionDeviceOverridesV1';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
-import type { Settings } from '@/sync/domains/settings/settings';
 import { loadLastRegisteredExpoPushToken } from '@/sync/domains/state/pushTokenRegistration';
 
 import type { LiveActivitySnapshot } from '../liveActivities/buildLiveActivitySnapshots';
@@ -52,20 +52,30 @@ function resolveServerRemoteUpdateDiagnostics(params: Readonly<{
     snapshot: LiveActivitySnapshot;
     serverFeaturesSnapshot: ServerFeaturesMainSelectionSnapshot;
 }>): LiveActivityRemoteUpdateCapabilityDiagnostics {
-    const serverSnapshot = params.serverFeaturesSnapshot.snapshotsByServerId[params.snapshot.serverId];
+    const serverSnapshot = params.snapshot.serverId
+        ? params.serverFeaturesSnapshot.snapshotsByServerId[params.snapshot.serverId]
+        : null;
     if (serverSnapshot?.status !== 'ready') {
         return DEFAULT_LIVE_ACTIVITY_REMOTE_UPDATE_CAPABILITY_DIAGNOSTICS;
     }
     return serverSnapshot.features.capabilities.liveActivities.remoteUpdates;
 }
 
+/**
+ * Remote enrollment is planned with the Account policy of the Home the snapshot
+ * belongs to. A Home whose Account settings this device cannot resolve enrolls
+ * nothing rather than borrowing whichever Home happens to be active.
+ */
 export function resolveLiveActivityRemoteRegistrationPlan(params: Readonly<{
     snapshot: LiveActivitySnapshot;
-    settings: Settings;
+    accountSettings: ExactHomeAccountSettings | null;
     localSettings: LocalSettings;
     serverFeaturesSnapshot: ServerFeaturesMainSelectionSnapshot;
 }>): LiveActivityRemoteRegistrationPlan {
-    const attentionPolicy = accountSettingsParse(params.settings).attentionDeliveryPolicyV1;
+    if (!params.accountSettings) {
+        return { mode: 'disabled', status: 'disabled', reasons: [] };
+    }
+    const attentionPolicy = accountSettingsParse(params.accountSettings).attentionDeliveryPolicyV1;
     const remotePolicy = attentionPolicy.liveActivityRemoteUpdates;
     const deviceOverrides = AttentionDeviceOverridesV1Schema.parse(
         (params.localSettings as Readonly<Record<string, unknown>>).attentionDeviceOverridesV1,
@@ -166,15 +176,29 @@ function markLiveActivityRemoteTargetEndedBestEffort(params: Readonly<{
     void markLiveActivityRemoteTargetEnded(params).catch(() => undefined);
 }
 
+function retryPendingLiveActivityRemoteTargetEndsBestEffort(params: Readonly<{
+    registry: ReturnType<typeof createLiveActivityRemoteTargetRegistry>;
+    activityInstanceKey: string;
+}>): void {
+    void params.registry.retryPendingEnds({
+        activityInstanceKey: params.activityInstanceKey,
+        markTargetEnded: (targetId, serverId) => markLiveActivityTargetEnded(targetId, {
+            ...(serverId ? { serverId } : {}),
+        }),
+    }).catch(() => undefined);
+}
+
 function rememberRegisteredRemoteTarget(
     registry: ReturnType<typeof createLiveActivityRemoteTargetRegistry>,
     result: Awaited<ReturnType<typeof registerLiveActivityRemoteTargetFromTokenEvent>>,
+    serverId: string | null,
 ): void {
     if (result.status !== 'registered') return;
     registry.remember({
         activityInstanceKey: result.activityInstanceKey,
         targetId: result.targetId,
         mode: result.mode,
+        serverId,
     });
 }
 
@@ -185,7 +209,6 @@ async function registerLiveActivityRemoteTargetEvent(params: Readonly<{
     pushSupport: ReturnType<typeof resolveCurrentLiveActivityPushSupport>;
     remoteTargetRegistry: ReturnType<typeof createLiveActivityRemoteTargetRegistry>;
 }>): Promise<void> {
-    const previousTarget = params.remoteTargetRegistry.getTarget(params.snapshot.activityInstanceKey);
     const result = await registerLiveActivityRemoteTargetFromTokenEvent({
         snapshot: params.snapshot,
         event: params.event,
@@ -195,16 +218,13 @@ async function registerLiveActivityRemoteTargetEvent(params: Readonly<{
         registerTarget: registerLiveActivityTarget,
     });
 
-    if (
-        result.status === 'registered'
-        && previousTarget
-        && previousTarget.targetId !== result.targetId
-    ) {
-        void markLiveActivityTargetEnded(previousTarget.targetId, {
-            serverId: params.snapshot.serverId,
-        }).catch(() => undefined);
+    rememberRegisteredRemoteTarget(params.remoteTargetRegistry, result, params.snapshot.serverId);
+    if (result.status === 'registered') {
+        retryPendingLiveActivityRemoteTargetEndsBestEffort({
+            registry: params.remoteTargetRegistry,
+            activityInstanceKey: params.snapshot.activityInstanceKey,
+        });
     }
-    rememberRegisteredRemoteTarget(params.remoteTargetRegistry, result);
 }
 
 function registerCurrentLiveActivityPushToken(params: Readonly<{
@@ -234,16 +254,22 @@ function registerCurrentLiveActivityPushToken(params: Readonly<{
 export function reconcileLiveActivityRemoteTargetRegistration(params: Readonly<{
     handle: LiveActivityHandleWithRemoteTargetSupport;
     snapshot: LiveActivitySnapshot;
-    settings: Settings;
+    accountSettings: ExactHomeAccountSettings | null;
     localSettings: LocalSettings;
     serverFeaturesSnapshot: ServerFeaturesMainSelectionSnapshot;
     pushTokenSubscriptions: Map<string, LiveActivityPushTokenSubscription>;
     remoteTargetRegistry: ReturnType<typeof createLiveActivityRemoteTargetRegistry>;
 }>): void {
     const activityKey = params.snapshot.activityInstanceKey;
+    // Reconciliation is the incumbent lifecycle/reconnect entry. Retired targets remain in this
+    // same registry after transient end failures and are retried without disturbing the current one.
+    retryPendingLiveActivityRemoteTargetEndsBestEffort({
+        registry: params.remoteTargetRegistry,
+        activityInstanceKey: activityKey,
+    });
     const plan = resolveLiveActivityRemoteRegistrationPlan({
         snapshot: params.snapshot,
-        settings: params.settings,
+        accountSettings: params.accountSettings,
         localSettings: params.localSettings,
         serverFeaturesSnapshot: params.serverFeaturesSnapshot,
     });
@@ -259,11 +285,6 @@ export function reconcileLiveActivityRemoteTargetRegistration(params: Readonly<{
 
     const existingTarget = params.remoteTargetRegistry.getTarget(activityKey);
     if (existingTarget && existingTarget.mode !== plan.mode) {
-        markLiveActivityRemoteTargetEndedBestEffort({
-            registry: params.remoteTargetRegistry,
-            activityInstanceKey: activityKey,
-            serverId: params.snapshot.serverId,
-        });
         removeLiveActivityPushTokenSubscription(params.pushTokenSubscriptions, activityKey);
     }
 
@@ -289,7 +310,11 @@ export function reconcileLiveActivityRemoteTargetRegistration(params: Readonly<{
                 expoPushToken: loadLastRegisteredExpoPushToken(),
                 registerTarget: registerLiveActivityTarget,
             });
-            rememberRegisteredRemoteTarget(params.remoteTargetRegistry, result);
+            rememberRegisteredRemoteTarget(params.remoteTargetRegistry, result, params.snapshot.serverId);
+            retryPendingLiveActivityRemoteTargetEndsBestEffort({
+                registry: params.remoteTargetRegistry,
+                activityInstanceKey: activityKey,
+            });
         })().catch(() => undefined);
         return;
     }
@@ -298,6 +323,9 @@ export function reconcileLiveActivityRemoteTargetRegistration(params: Readonly<{
     const pushSupport = resolveCurrentLiveActivityPushSupport({ tokenApisAvailable });
     if (!pushSupport.canRegisterRemoteTargets || !params.handle.addPushTokenListener) {
         removeLiveActivityPushTokenSubscription(params.pushTokenSubscriptions, activityKey);
+        if (existingTarget?.mode === plan.mode) {
+            return;
+        }
         markLiveActivityRemoteTargetEndedBestEffort({
             registry: params.remoteTargetRegistry,
             activityInstanceKey: activityKey,

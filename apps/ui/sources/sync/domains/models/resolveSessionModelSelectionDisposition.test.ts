@@ -5,6 +5,74 @@ import { MetadataSchema } from '@/sync/domains/state/storageTypes';
 import { resolveSessionModelSelectionDisposition } from './resolveSessionModelSelectionDisposition';
 
 describe('resolveSessionModelSelectionDisposition', () => {
+    it('projects exact V2 Team provenance while retaining the Team source', () => {
+        const metadata = MetadataSchema.parse({
+            path: '/tmp/project', host: 'localhost',
+            modelSelectionIntentV2: {
+                v: 2, updatedAt: 11,
+                ref: {
+                    source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
+                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'backend:claude', modelId: 'team-model',
+                },
+            },
+        });
+        expect(resolveSessionModelSelectionDisposition({
+            agentId: 'claude', agentTargetKey: 'backend:claude', metadata,
+            sessionActive: false, currentRunnerProcessIdentity: null,
+        }).proposedSelectionV2?.ref).toEqual({
+            source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
+            expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'backend:claude', modelId: 'team-model',
+        });
+    });
+
+    it('keeps a durable V2 Team proposal pending for an active Session after UI remount', () => {
+        const metadata = MetadataSchema.parse({
+            path: '/tmp/project', host: 'localhost',
+            modelSelectionIntentV2: {
+                v: 2, updatedAt: 11,
+                ref: {
+                    source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
+                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'backend:claude', modelId: 'team-model',
+                },
+            },
+        });
+
+        expect(resolveSessionModelSelectionDisposition({
+            agentId: 'claude', agentTargetKey: 'backend:claude', metadata,
+            sessionActive: true, currentRunnerProcessIdentity: null,
+        })).toMatchObject({
+            proposedSelectionV2: {
+                ref: { source: 'team_resource', modelId: 'team-model' },
+            },
+            activeSelection: null,
+            selectionTransitionPending: true,
+        });
+    });
+
+    it('stops presenting a Team restart after the exact runner was started from the durable intent', () => {
+        const metadata = MetadataSchema.parse({
+            path: '/tmp/project', host: 'localhost',
+            modelSelectionIntentV2: {
+                v: 2, updatedAt: 11,
+                ref: {
+                    source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
+                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'backend:claude', modelId: 'team-model',
+                },
+            },
+        });
+
+        expect(resolveSessionModelSelectionDisposition({
+            agentId: 'claude', agentTargetKey: 'backend:claude', metadata,
+            sessionActive: true,
+            currentRunnerProcessIdentity: { pid: 42, processStartTimeMs: 12 },
+        })).toMatchObject({
+            proposedSelectionV2: {
+                ref: { source: 'team_resource', modelId: 'team-model' },
+            },
+            selectionTransitionPending: false,
+        });
+    });
+
     it('keeps an active proposal pending until exact runner authority proves it active', () => {
         const metadata = MetadataSchema.parse({
             path: '/tmp/project',

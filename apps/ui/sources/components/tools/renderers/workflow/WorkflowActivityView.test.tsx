@@ -68,9 +68,18 @@ describe('WorkflowActivityView', () => {
 
     async function renderCard(): Promise<renderer.ReactTestRenderer> {
         const tool = makeToolCall({ name: 'Workflow', state: 'running', input: { name: 'Build feature' } });
-        const props = { ...makeToolViewProps(tool), sessionId: 'sess_1' };
+        const props = { ...makeToolViewProps(tool), sessionId: 'sess_1', serverId: 'home-exact' };
         return (await renderScreen(React.createElement(WorkflowActivityView, props))).tree;
     }
+
+    it('passes the transcript owner\'s exact Home to the workflow record observation', async () => {
+        useWorkflowRunForToolUseId.mockReturnValue({ runHeadline: null, detail: { state: 'loading', runId: 'wf_1' } });
+        await renderCard();
+        expect(useWorkflowRunForToolUseId).toHaveBeenLastCalledWith(expect.objectContaining({
+            sessionId: 'sess_1',
+            serverId: 'home-exact',
+        }));
+    });
 
     it('renders a minimal shell while detail is loading', async () => {
         useWorkflowRunForToolUseId.mockReturnValue({ runHeadline: null, detail: { state: 'loading', runId: 'wf_1' } });

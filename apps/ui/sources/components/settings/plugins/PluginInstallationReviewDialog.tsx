@@ -3,6 +3,9 @@ import { Platform, Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Switch } from '@/components/ui/forms/Switch';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { Item } from '@/components/ui/lists/Item';
+import { Icon } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Typography } from '@/constants/Typography';
@@ -95,11 +98,13 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     actions: {
         flexDirection: 'row',
+        flexWrap: 'wrap',
         justifyContent: 'flex-end',
         gap: 8,
     },
     action: {
         minHeight: 44,
+        flexShrink: 1,
         justifyContent: 'center',
         paddingHorizontal: 16,
         borderRadius: 12,
@@ -330,10 +335,11 @@ function ReviewSection(props: Readonly<{
 }
 
 export function PluginInstallationReviewDialog(props: PluginInstallationReviewDialogProps) {
-    useUnistyles();
+    const { theme } = useUnistyles();
     const styles = stylesheet;
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
     const [selectedByAccessId, setSelectedByAccessId] = React.useState<Readonly<Record<string, boolean>>>({});
+    const [evidenceExpanded, setEvidenceExpanded] = React.useState(false);
 
     const resolve = React.useCallback((resolution: PluginInstallationReviewResolution) => {
         props.onResolve(resolution);
@@ -384,6 +390,11 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                     server: props.target.server,
                 })}
             </Text>
+            {props.review.source.kind === 'archive' && /^https?:\/\//u.test(props.review.source.locator) ? (
+                <Text testID="settings.plugins.installReview.archiveUrlRetention" style={styles.reviewBody}>
+                    {t('settingsPlugins.installReviewSections.archiveUrlRetention')}
+                </Text>
+            ) : null}
             <ReviewSection
                 testID="settings.plugins.installReview.trustedCode"
                 title={t('settingsPlugins.installReviewSections.trustedCodeTitle')}
@@ -460,11 +471,25 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                 title={t('settingsPlugins.installReviewSections.rawCredentials')}
                 lines={props.review.rawCredentialAccess.flatMap(credentialSourceLines)}
             />
-            <ReviewSection
-                testID="settings.plugins.installReview.evidence"
-                title={t('settingsPlugins.installReviewSections.evidence')}
-                lines={sourceEvidence(props.review)}
-            />
+            <ExpandableItem
+                expanded={evidenceExpanded}
+                onExpandedChange={setEvidenceExpanded}
+                showDivider={false}
+                header={({ expanded, headerProps }) => (
+                    <Item
+                        {...headerProps}
+                        testID="settings.plugins.installReview.evidenceToggle"
+                        title={t('settingsPlugins.installReviewSections.evidence')}
+                        accessibilityExpanded={expanded}
+                        showChevron={false}
+                        rightElement={<Icon name={expanded ? 'caret-up' : 'caret-down'} size={20} color={theme.colors.text.secondary} />}
+                    />
+                )}
+            >
+                <View testID="settings.plugins.installReview.evidence" style={styles.section}>
+                    <Text style={styles.sectionBody}>{valueOrNone(sourceEvidence(props.review))}</Text>
+                </View>
+            </ExpandableItem>
             <ReviewSection
                 testID="settings.plugins.installReview.compatibility"
                 title={t('settingsPlugins.installReviewSections.compatibility')}

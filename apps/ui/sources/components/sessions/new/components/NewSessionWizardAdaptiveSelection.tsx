@@ -55,7 +55,10 @@ export function NewSessionWizardPopoverItem(props: Readonly<{
                         edgeFades={props.popover.edgeFades}
                         edgeIndicators={props.popover.edgeIndicators}
                         initialVisibility={props.popover.initialVisibility}
-                        onRequestClose={() => setOpen(false)}
+                        onRequestClose={() => {
+                            props.popover?.onRequestClose?.();
+                            setOpen(false);
+                        }}
                     />
                 ) : null}
             </View>

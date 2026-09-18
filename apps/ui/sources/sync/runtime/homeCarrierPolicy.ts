@@ -3,6 +3,8 @@ import {
     createOwnedHomeCarrierRelease,
     drainRetainedHomeCarrierReleases,
     resolveHomeCarrierPreferredTransport,
+    type HomeApplicationCarrierEligibility,
+    type HomeCarrierAcquisitionMode,
 } from '@happier-dev/cli-common/homeEnrollment';
 import { classifyIrohHomeCarrierFailure, IrohError } from '@happier-dev/iroh-native';
 import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
@@ -32,6 +34,8 @@ export type AcquiredHomeCarrier =
     | Readonly<{ kind: 'fail_closed'; error: unknown; fallbackAllowed: boolean }>;
 
 export type HomeCarrierAcquisitionInput = Readonly<{
+    mode: HomeCarrierAcquisitionMode;
+    applicationCarrierEligibility: HomeApplicationCarrierEligibility;
     descriptor: HomeConnectionDescriptorV1;
     verification: IrohHomeTunnelVerification;
     credentials?: AuthCredentials;
@@ -57,9 +61,11 @@ function browserRequestFor(input: HomeCarrierAcquisitionInput): BrowserIrohHomeC
         };
 }
 
-/** UI platform adapter for the one owner-neutral first-contact carrier policy. */
+/** UI platform adapter for the one owner-neutral carrier selection/recovery policy. */
 export async function acquireEligibleHomeCarrier(input: HomeCarrierAcquisitionInput): Promise<AcquiredHomeCarrier> {
     const result = await acquireHomeCarrierByPolicy<UiIrohCarrierValue>({
+        mode: input.mode,
+        applicationCarrierEligibility: input.applicationCarrierEligibility,
         descriptor: input.descriptor,
         preferredTransport: resolveHomeCarrierPreferredTransport(input.descriptor),
         classifyFailure: classifyIrohHomeCarrierFailure,

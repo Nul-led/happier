@@ -1,8 +1,15 @@
 import { act } from 'react-test-renderer';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderHook } from '@/dev/testkit';
-import { useSessionListScrollRetention } from './useSessionListScrollRetention';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
+import {
+    readSessionListScrollRetentionEntryCountForTests,
+    releaseSessionListScrollRetention,
+    resetSessionListScrollRetentionForTests,
+    useSessionListScrollRetention,
+} from './useSessionListScrollRetention';
+
+afterEach(() => resetSessionListScrollRetentionForTests());
 
 function layoutEvent(height: number) {
     return {
@@ -25,6 +32,23 @@ function scrollEvent(offsetY: number, viewportHeight: number, contentHeight = 12
 }
 
 describe('useSessionListScrollRetention', () => {
+    it('releases only the removed route retention entry', async () => {
+        const first = await renderHook(() => useSessionListScrollRetention({
+            retentionKey: 'route-a',
+            scrollToOffset: vi.fn(),
+        }));
+        const second = await renderHook(() => useSessionListScrollRetention({
+            retentionKey: 'route-b',
+            scrollToOffset: vi.fn(),
+        }));
+
+        expect(readSessionListScrollRetentionEntryCountForTests()).toBe(2);
+        expect(releaseSessionListScrollRetention('route-a')).toBe(true);
+        expect(readSessionListScrollRetentionEntryCountForTests()).toBe(1);
+
+        await first.unmount();
+        await second.unmount();
+    });
     it('restores the last visible scroll offset when a zero-height retained list becomes visible again', async () => {
         const scrollToOffset = vi.fn();
         const hook = await renderHook(() => useSessionListScrollRetention({
@@ -179,5 +203,134 @@ describe('useSessionListScrollRetention', () => {
         });
 
         expect(scrollToOffset).not.toHaveBeenCalled();
+    });
+
+    it('keeps the first visible qualified session at its measured viewport offset across membership replacement', async () => {
+        const scrollToOffset = vi.fn();
+        const scrollToIndex = vi.fn();
+        const measureNodeViewportOffset = vi.fn(async () => -12);
+        const hook = await renderHook(
+            (props: { nodeIds: readonly string[] }) => useSessionListScrollRetention({
+                retentionKey: 'membership-survives',
+                scrollToOffset,
+                scrollToIndex,
+                nodeIds: props.nodeIds,
+                measureNodeViewportOffset,
+            }),
+            { initialProps: { nodeIds: ['header:today', 'session:home:s1', 'session:home:s2'] } },
+        );
+
+        await act(async () => {
+            hook.getCurrent().handleViewableItemsChanged({
+                viewableItems: [
+                    { item: { id: 'header:today' }, index: 0, isViewable: true },
+                    { item: { id: 'session:home:s1' }, index: 1, isViewable: true },
+                    { item: { id: 'session:home:s2' }, index: 2, isViewable: true },
+                ],
+            });
+        });
+
+        await hook.rerender({ nodeIds: ['header:filtered', 'session:home:s2', 'session:home:s1'] });
+
+        expect(scrollToIndex).toHaveBeenCalledWith({
+            index: 2,
+            animated: false,
+            viewOffset: -12,
+            viewPosition: 0,
+        });
+        expect(scrollToOffset).not.toHaveBeenCalled();
+    });
+
+    it('returns to the list start when the visible qualified session does not survive replacement', async () => {
+        const scrollToOffset = vi.fn();
+        const hook = await renderHook(
+            (props: { nodeIds: readonly string[] }) => useSessionListScrollRetention({
+                retentionKey: 'membership-removed',
+                scrollToOffset,
+                scrollToIndex: vi.fn(),
+                nodeIds: props.nodeIds,
+                measureNodeViewportOffset: vi.fn(async () => 0),
+            }),
+            { initialProps: { nodeIds: ['session:home:s1', 'session:home:s2'] } },
+        );
+
+        await act(async () => {
+            hook.getCurrent().handleViewableItemsChanged({
+                viewableItems: [
+                    { item: { id: 'session:home:s1' }, index: 0, isViewable: true },
+                ],
+            });
+        });
+        await hook.rerender({ nodeIds: ['session:home:s2'] });
+
+        expect(scrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: false });
+    });
+
+    it('cancels a pending membership restore when the reader starts scrolling', async () => {
+        let resolveMeasurement: ((value: number) => void) | undefined;
+        const scrollToIndex = vi.fn();
+        const hook = await renderHook(
+            (props: { nodeIds: readonly string[] }) => useSessionListScrollRetention({
+                retentionKey: 'membership-user-takes-over',
+                scrollToOffset: vi.fn(),
+                scrollToIndex,
+                nodeIds: props.nodeIds,
+                measureNodeViewportOffset: () => new Promise<number>((resolve) => {
+                    resolveMeasurement = resolve;
+                }),
+            }),
+            { initialProps: { nodeIds: ['session:home:s1', 'session:home:s2'] } },
+        );
+
+        await act(async () => {
+            hook.getCurrent().handleViewableItemsChanged({
+                viewableItems: [
+                    { item: { id: 'session:home:s1' }, index: 0, isViewable: true },
+                ],
+            });
+        });
+        await hook.rerender({ nodeIds: ['session:home:s2', 'session:home:s1'] });
+        await act(async () => {
+            hook.getCurrent().handleScrollInteractionStart();
+            resolveMeasurement?.(-8);
+        });
+
+        expect(scrollToIndex).not.toHaveBeenCalled();
+    });
+
+    it('does not restore an anchor captured for a previous retention context', async () => {
+        let resolveMeasurement: ((value: number) => void) | undefined;
+        const scrollToIndex = vi.fn();
+        const hook = await renderHook(
+            (props: { retentionKey: string; nodeIds: readonly string[] }) => useSessionListScrollRetention({
+                retentionKey: props.retentionKey,
+                scrollToOffset: vi.fn(),
+                scrollToIndex,
+                nodeIds: props.nodeIds,
+                measureNodeViewportOffset: () => new Promise<number>((resolve) => {
+                    resolveMeasurement = resolve;
+                }),
+            }),
+            { initialProps: { retentionKey: 'context-a', nodeIds: ['session:home:s1', 'session:home:s2'] } },
+        );
+
+        await act(async () => {
+            hook.getCurrent().handleViewableItemsChanged({
+                viewableItems: [{ item: { id: 'session:home:s1' }, index: 0, isViewable: true }],
+            });
+        });
+        await hook.rerender({
+            retentionKey: 'context-a',
+            nodeIds: ['session:home:s2', 'session:home:s1'],
+        });
+        await hook.rerender({
+            retentionKey: 'context-b',
+            nodeIds: ['session:home:s2', 'session:home:s1'],
+        });
+        await act(async () => {
+            resolveMeasurement?.(-8);
+        });
+
+        expect(scrollToIndex).not.toHaveBeenCalled();
     });
 });

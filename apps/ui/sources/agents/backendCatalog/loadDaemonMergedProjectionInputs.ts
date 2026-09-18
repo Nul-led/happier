@@ -2,7 +2,11 @@ import {
     getMachineContributionRegistryProjectionRevision,
     machineContributionRegistryProjectionDescribe,
 } from '@/sync/ops/machineContributionRegistryProjection';
-import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import {
+    captureActiveServerAccountScopeLifetime,
+    type ActiveServerAccountScopeLifetime,
+} from '@/sync/domains/scope/activeServerAccountScope';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import {
     forgetPluginUiProjectionAdmissionSnapshot,
     pluginUiProjectionAdmissionTargetKey,
@@ -79,6 +83,8 @@ export type DaemonMergedProjectionInputs = Readonly<{
 
 type ProjectionCacheEntry = Readonly<{
     projectionRevision: number;
+    /** The exact routed Home credential that authorized this projection. */
+    accountCurrentness?: Readonly<{ isCurrent(): boolean }>;
     /**
      * Host-private exact-generation validator bindings. A drifted response can
      * fail closed at the renderer boundary without retiring a previously
@@ -223,6 +229,15 @@ export function entryIsFresh(entry: Readonly<{ fetchedAtMs: number }>, staleMs: 
     return ageMs >= 0 && ageMs <= staleMs;
 }
 
+function currentProjectionCacheEntry(cacheKey: string): ProjectionCacheEntry | null {
+    const entry = PROJECTION_CACHE.get(cacheKey) ?? null;
+    if (entry?.accountCurrentness && !entry.accountCurrentness.isCurrent()) {
+        PROJECTION_CACHE.delete(cacheKey);
+        return null;
+    }
+    return entry;
+}
+
 export function readCachedDaemonMergedProjectionCacheEntry(params: Readonly<{
     machineId: string | null | undefined;
     serverId?: string | null;
@@ -235,7 +250,8 @@ export function readCachedDaemonMergedProjectionCacheEntry(params: Readonly<{
     }
     const serverId = normalizeKeyPart(params.serverId);
     const cacheKey = buildCacheKey(machineId, serverId || null, params.mountedTarget, params.accountLifetime);
-    return cacheKey ? PROJECTION_CACHE.get(cacheKey) ?? null : null;
+    if (!cacheKey) return null;
+    return currentProjectionCacheEntry(cacheKey);
 }
 
 type TargetedSurfaceMountAuthority = Pick<DaemonPluginUiTargetedSurfaceMountV1,
@@ -458,9 +474,16 @@ export async function loadDaemonMergedProjectionCacheEntry(params: Readonly<{
     machineId: string;
     serverId?: string | null;
     mountedTarget?: DaemonContributionRegistryProjectionMountedTargetV1;
-    /** Required for an Account-scoped executable target projection. */
+    /** Exact routed Account lifetime; required for target execution and background descriptor publication. */
     accountLifetime?: ActiveServerAccountScopeLifetime | null;
 }>): Promise<ProjectionCacheEntry | null> {
+    const accountLifetime = params.accountLifetime ?? captureActiveServerAccountScopeLifetime();
+    const routedAccount = accountLifetime
+        && (!params.serverId || areServerProfileIdentifiersEquivalent(accountLifetime.scope.serverId, params.serverId))
+        ? { kind: 'bound' as const, scope: accountLifetime.scope, currentness: accountLifetime }
+        : null;
+    if (params.mountedTarget
+        && (!routedAccount || routedAccount.kind !== 'bound' || !routedAccount.currentness.isCurrent())) return null;
     const cacheKey = buildCacheKey(
         params.machineId,
         params.serverId,
@@ -491,15 +514,20 @@ export async function loadDaemonMergedProjectionCacheEntry(params: Readonly<{
     let requestOwner!: ProjectionRequest;
     const publishIfLatest = (entry: ProjectionCacheEntry): ProjectionCacheEntry => {
         if (LATEST_PROJECTION_REQUEST.get(cacheKey) !== requestOwner) {
-            return PROJECTION_CACHE.get(cacheKey) ?? entry;
+            return currentProjectionCacheEntry(cacheKey) ?? entry;
         }
         // A direct cold target read can consume its response, but it must not
         // pin a compiled validator. A mounted read can do so only while the
         // exact lifetime that admitted it remains current.
         if (!params.mountedTarget || targetCacheScopeIsCurrent(cacheKey, mountedTargetScopeAtRequest)) {
-            PROJECTION_CACHE.set(cacheKey, entry);
+            PROJECTION_CACHE.set(cacheKey, Object.freeze({
+                ...entry,
+                ...(routedAccount?.kind === 'bound'
+                    ? { accountCurrentness: routedAccount.currentness }
+                    : {}),
+            }));
         }
-        return entry;
+        return currentProjectionCacheEntry(cacheKey) ?? entry;
     };
     request = (async () => {
         const fetchedAtMs = Date.now();
@@ -508,14 +536,17 @@ export async function loadDaemonMergedProjectionCacheEntry(params: Readonly<{
             timeoutMs: 10_000,
             ...(params.mountedTarget ? { mountedTarget: params.mountedTarget } : {}),
         });
+        if (routedAccount?.kind === 'bound' && !routedAccount.currentness.isCurrent()) return null;
+        if (params.mountedTarget
+            && (routedAccount?.kind !== 'bound' || !routedAccount.currentness.isCurrent())) return null;
         if (params.mountedTarget && !targetAccountLifetimeIdentity(params.accountLifetime)) {
             return null;
         }
         // The cache entry keeps the transport's existing monotonic revision
         // with its target-local lifetime. Once H has published, a late G
         // response cannot compile a validator merely to be discarded.
-        const currentCacheEntry = PROJECTION_CACHE.get(cacheKey);
-        if (currentCacheEntry !== undefined && currentCacheEntry.projectionRevision > requestRevision) {
+        const currentCacheEntry = currentProjectionCacheEntry(cacheKey);
+        if (currentCacheEntry !== null && currentCacheEntry.projectionRevision > requestRevision) {
             return currentCacheEntry;
         }
         // A response has no authority to prepare an executable target-schema
@@ -539,7 +570,7 @@ export async function loadDaemonMergedProjectionCacheEntry(params: Readonly<{
             return null;
         }
         if (res.supported !== true) {
-            const previous = PROJECTION_CACHE.get(cacheKey);
+            const previous = currentProjectionCacheEntry(cacheKey);
             if (res.reason === 'not-supported') {
                 // Method-not-found is a machine fact, not a target one: this
                 // client sends one RPC and the endpoint that answered does not
@@ -570,16 +601,21 @@ export async function loadDaemonMergedProjectionCacheEntry(params: Readonly<{
         }
 
         const adapted = adaptDaemonContributionRegistryProjectionToMergedProjectionInputs(res.projection);
+        const projectedAgentDescriptors = readProjectedAgentUiBehaviorDescriptors(adapted.mergedProviderProjectionById);
         // The machine-wide read is the one place that sees every installed
         // Agent, so it owns this machine's descriptor set. A target-scoped
         // read sees one plugin and must not retire the rest.
         if (!params.mountedTarget) {
-            publishProjectedAgentUiBehaviorDescriptors({
-                machineId: normalizeKeyPart(params.machineId),
-                descriptorsByAgentId: readProjectedAgentUiBehaviorDescriptors(adapted.mergedProviderProjectionById),
-                pluginUiProjection: normalizePluginUiProjection(res.projection),
-                locale: getPreferredLanguage(),
-            });
+            if (routedAccount?.kind === 'bound') {
+                publishProjectedAgentUiBehaviorDescriptors({
+                    machineId: normalizeKeyPart(params.machineId),
+                    accountScope: routedAccount.scope,
+                    accountLifetime: routedAccount.currentness,
+                    descriptorsByAgentId: projectedAgentDescriptors,
+                    pluginUiProjection: normalizePluginUiProjection(res.projection),
+                    locale: getPreferredLanguage(),
+                });
+            }
         }
         // This is the one moment a target-scoped admission is confirmed, so it
         // is the only moment it is recorded for the next fresh process. The
@@ -593,7 +629,7 @@ export async function loadDaemonMergedProjectionCacheEntry(params: Readonly<{
                 targetedContributions: res.targetedContributions,
             });
         }
-        const previous = PROJECTION_CACHE.get(cacheKey);
+        const previous = currentProjectionCacheEntry(cacheKey);
         const targetedSurfaceMountPreparation = res.targetedSurfaceMounts === undefined
             ? undefined
             : prepareTargetedSurfaceMounts({
@@ -641,6 +677,7 @@ export async function loadDaemonMergedProjectionInputs(params: Readonly<{
     serverId?: string | null;
     staleMs?: number;
     mountedTarget?: DaemonContributionRegistryProjectionMountedTargetV1;
+    /** Exact routed Account lifetime; background Home descriptors never borrow focus. */
     accountLifetime?: ActiveServerAccountScopeLifetime | null;
 }>): Promise<DaemonMergedProjectionInputs | null> {
     const machineId = normalizeKeyPart(params.machineId);
@@ -654,7 +691,12 @@ export async function loadDaemonMergedProjectionInputs(params: Readonly<{
         : 60_000;
     const cacheKey = buildCacheKey(machineId, serverId || null, params.mountedTarget, params.accountLifetime);
     if (!cacheKey) return null;
-    const cached = PROJECTION_CACHE.get(cacheKey) ?? null;
+    const cached = readCachedDaemonMergedProjectionCacheEntry({
+        machineId,
+        serverId: serverId || null,
+        ...(params.mountedTarget ? { mountedTarget: params.mountedTarget } : {}),
+        ...(params.accountLifetime ? { accountLifetime: params.accountLifetime } : {}),
+    });
     if (cached?.kind === 'ready' && entryIsFresh(cached, staleMs)) {
         return cached.inputs;
     }

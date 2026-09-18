@@ -70,7 +70,11 @@ function resolveRelevanceScore(snapshot: Pick<LiveActivitySnapshot, 'attentionSt
     if (snapshot.attentionState === 'thinking') {
         return 50;
     }
-    if (snapshot.attentionState === 'pending' || snapshot.attentionState === 'unread') {
+    if (
+        snapshot.attentionState === 'pending'
+        || snapshot.attentionState === 'attention'
+        || snapshot.attentionState === 'unread'
+    ) {
         return 30;
     }
     return 10;

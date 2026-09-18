@@ -1,9 +1,16 @@
 import {
   readIngressComposerAttachmentSelectionV1,
+  SessionInputAdmissionRejectionCodeV1Schema,
   type PendingRequestedActionV1,
+  type ParticipantRecipientV1,
 } from '@happier-dev/protocol';
 
-import { createServerAccountScope, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { areServerAccountScopesEqual, createServerAccountScope, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
+import type { SessionMessageHostAdmissionOrigin } from '@/sync/domains/session/input/types';
+import { loadSessionModelModes, loadSessionModelModeUpdatedAts, loadSessionPermissionModes, loadSessionPermissionModeUpdatedAts } from '@/sync/domains/state/sessionPersistence';
+import { resolveSessionInputModes } from '@/sync/store/domains/resolveSessionInputModes';
+import { nowServerMs } from '@/sync/runtime/time';
 import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { enqueuePendingMessageV2 } from '@/sync/engine/pending/pendingQueueV2';
@@ -16,11 +23,15 @@ import { getServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeature
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import type { RawRecord } from '@/sync/typesRaw';
 import { randomUUID } from '@/platform/randomUUID';
+import { readMachineControlTargetForSession } from '@/sync/ops/sessionMachineTarget';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
 
-import { createSessionRequestForResolvedServerScope } from './createSessionRequestWithServerScope';
+import { createServerRequestForResolvedServerScope } from './createServerRequestWithServerScope';
 import { normalizeServerScopeId } from './localSessionRouteReadiness';
 import { resolveScopedSessionDataKey } from './resolveScopedSessionDataKey';
-import { resolveServerScopedSessionContext, type ResolvedServerSessionRpcContext } from './resolveServerScopedSessionContext';
+import { resolveServerAccountRequestContext, type ResolvedServerAccountRequestContext } from './resolveServerAccountRequestContext';
+import { fetchSessionByIdWithServerScope } from './fetchSessionByIdWithServerScope';
 
 type ScopedSessionEncryptionLike = Readonly<{
   encryptRawRecord: (record: RawRecord) => Promise<string>;
@@ -32,9 +43,9 @@ export type ServerScopedSessionSendMessageResult =
 
 export type ServerScopedSessionSendMessageDeps = Readonly<{
   getSession: (sessionId: string) => Session | null;
-  resolveContext: typeof resolveServerScopedSessionContext;
+  resolveContext: typeof resolveServerAccountRequestContext;
   getScopedSessionEncryption: (params: Readonly<{
-    context: Awaited<ReturnType<typeof resolveServerScopedSessionContext>>;
+    context: Awaited<ReturnType<typeof resolveServerAccountRequestContext>>;
     sessionId: string;
   }>) => Promise<ScopedSessionEncryptionLike>;
   enqueuePendingMessageActive: (
@@ -42,7 +53,7 @@ export type ServerScopedSessionSendMessageDeps = Readonly<{
     message: string,
     displayText: string | undefined,
     metaOverrides: Record<string, unknown> | undefined,
-    options: Readonly<{ localId: string; requestedAction: PendingRequestedActionV1 }>,
+    options: Readonly<{ localId: string; requestedAction: PendingRequestedActionV1; recipient?: ParticipantRecipientV1; hostAdmissionOrigin?: SessionMessageHostAdmissionOrigin }>,
   ) => Promise<Readonly<{ localId: string; accepted: boolean; cancelled?: true; terminal?: true }>>;
   schedulePendingOutboxRetry: (params: Readonly<{
     sessionId: string;
@@ -53,15 +64,17 @@ export type ServerScopedSessionSendMessageDeps = Readonly<{
 }>;
 
 async function defaultGetScopedSessionEncryption(params: Readonly<{
-  context: Awaited<ReturnType<typeof resolveServerScopedSessionContext>>;
+  context: Awaited<ReturnType<typeof resolveServerAccountRequestContext>>;
   sessionId: string;
 }>): Promise<ScopedSessionEncryptionLike> {
   if (params.context.scope !== 'scoped') throw new Error('Expected scoped context');
-  const context = params.context as Extract<ResolvedServerSessionRpcContext, { scope: 'scoped' }>;
+  const context = params.context as Extract<ResolvedServerAccountRequestContext, { scope: 'scoped' }>;
   const encryption = context.encryption;
   if (!encryption) {
     throw new Error(`Session encryption is unavailable for ${params.sessionId}`);
   }
+  const existing = encryption.getSessionEncryption(params.sessionId);
+  if (existing) return existing as unknown as ScopedSessionEncryptionLike;
   const sessionDataKey = await resolveScopedSessionDataKey({
     serverId: context.targetServerId,
     serverUrl: context.targetServerUrl,
@@ -122,11 +135,14 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
     messageLocalId?: string | null;
     providerDeliveryIntent?: 'immediate' | 'first_turn' | null;
     requestedAction?: PendingRequestedActionV1;
+    recipient?: ParticipantRecipientV1;
+    hostAdmissionOrigin?: SessionMessageHostAdmissionOrigin;
+    signal?: AbortSignal;
   }>) => Promise<ServerScopedSessionSendMessageResult>;
 }> {
   const d: ServerScopedSessionSendMessageDeps = {
     getSession: deps?.getSession ?? ((sessionId) => storage.getState().sessions[sessionId] ?? null),
-    resolveContext: deps?.resolveContext ?? resolveServerScopedSessionContext,
+    resolveContext: deps?.resolveContext ?? resolveServerAccountRequestContext,
     getScopedSessionEncryption: deps?.getScopedSessionEncryption ?? defaultGetScopedSessionEncryption,
     enqueuePendingMessageActive: deps?.enqueuePendingMessageActive ?? (async (sessionId, message, displayText, metaOverrides, options) =>
       await getSyncSingleton().enqueuePendingMessage(sessionId, message, displayText, metaOverrides, options)),
@@ -148,14 +164,18 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
       ) {
         return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
       }
+      if (args.signal?.aborted) {
+        return { ok: false, errorCode: 'tool_cancelled', error: 'tool_cancelled' };
+      }
 
       const context = await d.resolveContext({
         serverId: args.serverId,
         timeoutMs: typeof args.timeoutMs === 'number' && args.timeoutMs > 0 ? args.timeoutMs : 30_000,
       });
       try {
-      const session = d.getSession(sessionId);
-      if (!session) return { ok: false, errorCode: 'session_not_found', error: 'session_not_found' };
+      if (args.signal?.aborted) {
+        return { ok: false, errorCode: 'tool_cancelled', error: 'tool_cancelled' };
+      }
       const displayText = typeof args.displayText === 'string' ? args.displayText : undefined;
       const metaOverrides = { ...(args.metaOverrides ?? {}), ...(profileId ? { profileId } : {}) };
 
@@ -163,6 +183,8 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
       let result: Readonly<{ localId: string; accepted: boolean; cancelled?: true; terminal?: true }>;
       let outboxScope: ServerAccountScope | null = null;
       if (context.scope === 'active') {
+        const session = d.getSession(sessionId);
+        if (!session) return { ok: false, errorCode: 'session_not_found', error: 'session_not_found' };
         const serverWireMode = args.providerDeliveryIntent === 'first_turn'
           ? resolvePendingInputServerWireMode(await getServerFeaturesSnapshot({
               serverId: normalizeServerScopeId(session.serverId) || undefined,
@@ -177,11 +199,59 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
           message,
           displayText,
           Object.keys(metaOverrides).length > 0 ? metaOverrides : undefined,
-          { localId, requestedAction },
+          {
+            localId,
+            requestedAction,
+            ...(args.recipient ? { recipient: args.recipient } : {}),
+            ...(args.hostAdmissionOrigin ? { hostAdmissionOrigin: args.hostAdmissionOrigin } : {}),
+          },
         );
       } else {
         outboxScope = createServerAccountScope(context.targetServerId, context.targetAccountId);
         if (!outboxScope) throw new Error('Scoped pending delivery requires a server-account scope');
+        if (!context.credentials) throw new Error('Scoped pending delivery requires target Account credentials');
+        const request = createServerRequestForResolvedServerScope({
+          context,
+          activeRequest: async () => { throw new Error('Unexpected active request for scoped provider delivery'); },
+        });
+        const acquired: Session[] = [];
+        const fetched = await fetchSessionByIdWithServerScope({
+          sessionId,
+          serverId: context.targetServerId,
+          activeCredentials: context.credentials,
+          sessionDataKeys: new Map(),
+          sessionDataKeyEnvelopes: new Map(),
+          activeRequest: request,
+          authority: { scope: outboxScope, context, request, release: async () => {} },
+          applySessions: (sessions) => {
+            for (const session of sessions) acquired.push(session);
+          },
+          log: { log: () => {} },
+          timeoutMs: context.timeoutMs,
+        });
+        const acquiredSession = acquired.find((session) => session.id === sessionId && session.serverId === context.targetServerId);
+        if (!fetched.ok) return { ok: false, errorCode: fetched.errorCode, error: fetched.errorCode };
+        if (!acquiredSession) return { ok: false, errorCode: 'session_not_found', error: 'session_not_found' };
+        // Fetching exact-Home Session facts is read-only and can complete after
+        // the invoking Voice/Action was cancelled. Stop before creating local
+        // outbox custody or issuing the Pending mutation; cancellation must not
+        // become a delayed send merely because discovery already started.
+        if (args.signal?.aborted) {
+          return { ok: false, errorCode: 'tool_cancelled', error: 'tool_cancelled' };
+        }
+        const session: Session = {
+          ...acquiredSession,
+          ...resolveSessionInputModes({
+            session: acquiredSession,
+            saved: {
+              permissionMode: loadSessionPermissionModes(outboxScope)[sessionId],
+              permissionModeUpdatedAt: loadSessionPermissionModeUpdatedAts(outboxScope)[sessionId],
+              modelMode: loadSessionModelModes(outboxScope)[sessionId],
+              modelModeUpdatedAt: loadSessionModelModeUpdatedAts(outboxScope)[sessionId],
+            },
+            nowMs: nowServerMs(),
+          }),
+        };
         const serverWireMode = resolvePendingInputServerWireMode(
           await getServerFeaturesSnapshot({ serverId: outboxScope.serverId }),
         );
@@ -189,13 +259,21 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
           providerDeliveryIntent: args.providerDeliveryIntent,
           serverWireMode,
         });
-        d.markSessionLiveTailIntent(sessionId);
+        if (areServerAccountScopesEqual(getActiveServerAccountScope(), outboxScope)) d.markSessionLiveTailIntent(sessionId);
         result = await enqueuePendingMessageV2({
           sessionId,
+          session,
+          ...(args.recipient ? {
+            recipient: args.recipient,
+            targetMachineId: readMachineControlTargetForSession({ sessionId, ...outboxScope })?.machineId
+              ?? resolveSessionMachineId(readSessionOwnerMetadataView(session))
+              ?? undefined,
+          } : {}),
           text: message,
           displayText,
           localId,
           requestedAction,
+          hostAdmissionOrigin: args.hostAdmissionOrigin,
           metaOverrides: Object.keys(metaOverrides).length > 0 ? metaOverrides : undefined,
           encryption: {
             getSessionEncryption: async (candidateSessionId) => candidateSessionId === sessionId
@@ -204,10 +282,7 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
           },
           outboxScope,
           serverWireMode,
-          request: createSessionRequestForResolvedServerScope({
-            context,
-            activeRequest: async () => { throw new Error('Unexpected active request for scoped provider delivery'); },
-          }),
+          request,
         });
         if (
           !result.accepted
@@ -230,6 +305,16 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
           accepted: result.accepted,
         },
       };
+      } catch (error) {
+        const rejection = SessionInputAdmissionRejectionCodeV1Schema.safeParse(
+          error && typeof error === 'object' && 'code' in error
+            ? (error as Readonly<{ code?: unknown }>).code
+            : undefined,
+        );
+        if (rejection.success) {
+          return { ok: false, errorCode: rejection.data, error: rejection.data };
+        }
+        throw error;
       } finally {
         if (context.scope === 'scoped') await context.release?.();
       }

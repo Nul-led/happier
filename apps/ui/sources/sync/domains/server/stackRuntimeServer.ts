@@ -11,12 +11,12 @@ export function readStackRuntimeServerUrl(): string | null {
     return serverUrl || null;
 }
 
-export function activateStackRuntimeServer(params?: Readonly<{ scope?: 'device' | 'tab' }>) {
+export async function activateStackRuntimeServer(params?: Readonly<{ scope?: 'device' | 'tab' }>) {
     const serverUrl = readStackRuntimeServerUrl();
     if (!serverUrl) {
         return null;
     }
-    return upsertAndActivateServer({
+    return await upsertAndActivateServer({
         serverUrl,
         source: 'stack-env',
         scope: params?.scope ?? 'device',

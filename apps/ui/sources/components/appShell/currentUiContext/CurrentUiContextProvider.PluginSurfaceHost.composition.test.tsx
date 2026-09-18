@@ -655,11 +655,11 @@ afterEach(async () => {
 
 describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
     it('lends the current provider snapshot to a registered client Action through the real mounted Host API', async () => {
-        const profile = upsertServerProfile({
+        const profile = await upsertServerProfile({
             serverUrl: 'https://acme.current-ui-client-action.test',
             name: 'Current UI client Action',
         });
-        setActiveServerId(profile.id, { scope: 'device' });
+        await setActiveServerId(profile.id, { scope: 'device' });
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'acme.current-ui-client-action-account',
@@ -711,11 +711,11 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
     });
 
     it('publishes the packed external Voice artifact through the mounted SDK Host API and retires its opaque command with the mount', async () => {
-        const profile = upsertServerProfile({
+        const profile = await upsertServerProfile({
             serverUrl: 'https://packed-external-voice-current-context.test',
             name: 'Packed external Voice current context',
         });
-        setActiveServerId(profile.id, { scope: 'device' });
+        await setActiveServerId(profile.id, { scope: 'device' });
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'packed-external-voice-current-context-account',
@@ -795,13 +795,13 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
     });
 
     it('publishes through the real bound host, retires A before B, and leaves no reader or Voice port record after unmount', async () => {
-        const profile = upsertServerProfile({
+        const profile = await upsertServerProfile({
             serverUrl: 'https://acme.current-ui-composition.test',
             name: 'Current UI composition',
         });
         // This test's native host has no tab-scoped server selection, so use
         // the real device-default selection that the Account lifetime reads.
-        setActiveServerId(profile.id, { scope: 'device' });
+        await setActiveServerId(profile.id, { scope: 'device' });
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'acme.current-ui-composition-account',
@@ -879,11 +879,11 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
     });
 
     it('retires the exact mounted provider record on controller replacement and host removal without an insertion-effect update', async () => {
-        const profile = upsertServerProfile({
+        const profile = await upsertServerProfile({
             serverUrl: 'https://acme.current-ui-insertion-disposal.test',
             name: 'Current UI insertion disposal',
         });
-        setActiveServerId(profile.id, { scope: 'device' });
+        await setActiveServerId(profile.id, { scope: 'device' });
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'acme.current-ui-insertion-disposal-account',
@@ -948,11 +948,11 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
     });
 
     it('keeps the real bound publisher current across StrictMode effect replay', async () => {
-        const profile = upsertServerProfile({
+        const profile = await upsertServerProfile({
             serverUrl: 'https://acme.current-ui-strict-composition.test',
             name: 'Current UI StrictMode composition',
         });
-        setActiveServerId(profile.id, { scope: 'device' });
+        await setActiveServerId(profile.id, { scope: 'device' });
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'acme.current-ui-strict-composition-account',
@@ -984,11 +984,11 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
     });
 
     it('retires the real plugin command on native background and republishes it exactly once after focus returns', async () => {
-        const profile = upsertServerProfile({
+        const profile = await upsertServerProfile({
             serverUrl: 'https://acme.current-ui-native-composition.test',
             name: 'Current UI native composition',
         });
-        setActiveServerId(profile.id, { scope: 'device' });
+        await setActiveServerId(profile.id, { scope: 'device' });
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'acme.current-ui-native-composition-account',

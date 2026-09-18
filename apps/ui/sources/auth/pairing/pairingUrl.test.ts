@@ -9,6 +9,14 @@ describe('classifyLegacyPairingDeepLink', () => {
                 'happier:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test',
             ),
         ).toEqual({ kind: 'legacy_pairing_update_required' });
+
+        // Immutable server-v0.2.11 (98ea8fb76733b1dd785d38c31360179cafa84824)
+        // accepted this compact custom-scheme target by normalizing pathname `pair`.
+        const compactClassification = classifyLegacyPairingDeepLink(
+            'happier:pair?v=1&pairId=pid123&secret=sec_abc',
+        );
+        expect(compactClassification).toEqual({ kind: 'legacy_pairing_update_required' });
+        expect(JSON.stringify(compactClassification)).not.toContain('sec_abc');
     });
 
     it('rejects non-pair links', () => {

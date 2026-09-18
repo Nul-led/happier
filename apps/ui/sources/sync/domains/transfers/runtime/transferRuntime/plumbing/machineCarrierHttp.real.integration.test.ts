@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
+import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer } from 'node:http';
 import { type AddressInfo } from 'node:net';
 import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -23,12 +23,12 @@ import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
-import { probeIrohMachineHttpLifecycleAvailability } from '@/sync/runtime/nativeIrohTunnels/machineHttpLifecycle';
+import { probeIrohMachineTransferLifecycleAvailability } from '@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle';
 
 import { createBufferedTransferDestination } from '../carriers/createBufferedTransferDestination';
 import { downloadBulkPayloadViaDirectExportToDestination } from './directTransferExportDownload';
 import { resolveMachineCarrierRoute } from './machineCarrierHttpLease';
-import { uploadBulkPayloadFromFileWithCarrierFallbacks } from './uploadBulkPayloadFromFileWithCarrierFallbacks';
+import { uploadBulkPayloadFromFileViaMachineCarrier } from './uploadBulkPayloadFromFileViaMachineCarrier';
 
 import { FEATURE_ENV_KEYS } from '../../../../../../../../server/sources/app/features/catalog/featureEnvSchema';
 import { registerPeerMediationGrantRoutes } from '../../../../../../../../server/sources/app/api/routes/machines/peer/mediation/registerPeerMediationGrantRoutes';
@@ -131,29 +131,10 @@ async function close(server: HttpServer): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
-async function readRequestBody(request: Parameters<Parameters<typeof createHttpServer>[0]>[0]): Promise<unknown> {
+async function readRequestBody(request: IncomingMessage): Promise<unknown> {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
-}
-
-function createRelayFallbackProbe() {
-    return {
-        init: vi.fn(async () => ({
-            success: true as const,
-            uploadId: 'forbidden-standard-fallback',
-            chunkSizeBytes: 5,
-            recipientPublicKeyBase64: Buffer.alloc(32, 7).toString('base64'),
-        })),
-        sendChunk: vi.fn(async () => ({ success: true as const })),
-        finalize: vi.fn(async (): Promise<UploadResult> => ({
-            success: true,
-            path: '/repo/fallback.bin',
-            sizeBytes: 5,
-            sha256: 'sha256:fallback',
-        })),
-        abort: vi.fn(async () => ({ success: true as const })),
-    };
 }
 
 function buildMachine(machineId: string, endpoint: Readonly<{
@@ -213,7 +194,7 @@ function createWorkspaceFileExportPrepare(directTransferLifecycle: ReturnType<ty
     };
 }
 
-describeReal('production transfer caller over native MachineHttpTunnel into the production target transfer owner', () => {
+describeReal('production transfer caller over the raw native MachineTunnel into the production target transfer owner', () => {
     // A skipped Vitest suite still evaluates its declaration callback. Load the
     // optional native addon in the hook instead, so an ordinary UI integration
     // run can collect this file and skip it cleanly when the real-runner inputs
@@ -250,10 +231,10 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
                 applicationEndpointHandles.add(endpoint.endpointHandle);
                 return endpoint;
             },
-            startMachineHttpTunnel: async (input) => {
+            startMachineTunnel: async (input) => {
                 machineTunnelBoundary.calls.push(input);
                 try {
-                    const result = await native.startMachineHttpTunnel!(input);
+                    const result = await native.startMachineTunnel(input);
                     return result;
                 } catch (error) {
                     machineTunnelBoundary.errors.push(error instanceof Error
@@ -295,10 +276,11 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
         topology: 'direct' | 'relay';
         transferKind: 'file' | 'attachment';
         invalidateGrant?: boolean;
+        invalidatePreparedCapability?: boolean;
         declareShortSize?: boolean;
         cancelMidUpload?: boolean;
     }>) {
-        expect(await probeIrohMachineHttpLifecycleAvailability()).toBe(true);
+        expect(await probeIrohMachineTransferLifecycleAvailability()).toBe(true);
         if (input.topology === 'direct') await testController.forceDirectOnly();
         else await testController.forceRelayOnly();
         const relayUrl = input.topology === 'relay' ? testController.getTestRelayUrl() : null;
@@ -335,7 +317,22 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
             rpcHandlerManager,
             prepareExportSession: createWorkspaceFileExportPrepare(directTransferLifecycle),
         });
-        machineRpcBoundary.current = async (method, payload) => await rpcHandlerManager.invokeLocal(method, payload);
+        const invalidPreparedUploadId = 'unknown-import-upload-capability';
+        let actualPreparedUploadId: string | null = null;
+        machineRpcBoundary.current = async (method, payload) => {
+            const response = await rpcHandlerManager.invokeLocal(method, payload);
+            if (
+                input.invalidatePreparedCapability === true
+                && method === RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE
+                && typeof response === 'object'
+                && response !== null
+                && typeof (response as { uploadId?: unknown }).uploadId === 'string'
+            ) {
+                actualPreparedUploadId = (response as { uploadId: string }).uploadId;
+                return { ...response, uploadId: invalidPreparedUploadId };
+            }
+            return response;
+        };
 
         const endpointRequest = {
             relayPolicy: 'automatic' as const,
@@ -361,6 +358,7 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
             path: '/v1/machines/peer/mediation/route-grants',
             registerRoutes: (app) => registerPeerMediationGrantRoutes(app, {
                 env: {
+                    NODE_ENV: 'test',
                     [FEATURE_ENV_KEYS.machinesTransferDirectPeerEnabled]: 'true',
                     HAPPIER_FEATURE_MACHINES_RPC_DIRECT_PEER__ENABLED: 'true',
                     [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: signingKeyId,
@@ -414,7 +412,7 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
         openServers.push(grantServer);
         const grantPort = await listen(grantServer);
         const serverUrl = `http://127.0.0.1:${grantPort}`;
-        const profile = upsertAndActivateServer({ serverUrl, scope: 'device' });
+        const profile = await upsertAndActivateServer({ serverUrl, scope: 'device' });
         const serverId = profile.id;
         const credentialsStored = await TokenStorage.setCredentialsForServerUrl(
             serverUrl,
@@ -518,15 +516,13 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
             close: async () => {},
         };
 
-        const relay = createRelayFallbackProbe();
-        const result = await uploadBulkPayloadFromFileWithCarrierFallbacks<UploadResult>({
+        const result = await uploadBulkPayloadFromFileViaMachineCarrier<UploadResult>({
             machineId,
             serverId,
             fileReader,
             directImportRequest,
             timeoutMs: 15_000,
             signal: input.cancelMidUpload === true ? abortController.signal : null,
-            relay,
         });
 
         const acceptorStatus = await native.getMachineAcceptorStatus(target.endpointHandle);
@@ -538,7 +534,7 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
         try {
             expect(
                 grantRequests,
-                JSON.stringify({ result, standardFallbackStarted: relay.init.mock.calls.length > 0 }),
+                JSON.stringify({ result }),
             ).toHaveLength(1);
             expect(grantAuthorizationHeaders).toEqual([`Bearer ${accountToken}`]);
             expect(grantRequests[0]).toMatchObject({
@@ -553,11 +549,6 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
                     operationKind: 'finite_transfer',
                 },
             });
-            // Zero disallowed fallback after machine Iroh selection.
-            expect(relay.init).not.toHaveBeenCalled();
-            expect(relay.sendChunk).not.toHaveBeenCalled();
-            expect(relay.finalize).not.toHaveBeenCalled();
-
             if (input.invalidateGrant) {
                 expect(result).toMatchObject({ success: false, errorCode: 'machine_carrier_transport_failed' });
                 expect(verifiedHandshakes).toHaveLength(0);
@@ -589,6 +580,26 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
                 flow: 'finite_transfer',
             })));
             expect(acceptorStatus?.lastPath?.observedPath).toBe(input.topology);
+
+            if (input.invalidatePreparedCapability === true) {
+                // The production carrier admitted the stream, but the application owner rejected
+                // an upload id it never prepared. Carrier admission is intentionally not transfer
+                // authorization, and the uncorrupted prepared session remains distinct.
+                expect(actualPreparedUploadId).toEqual(expect.any(String));
+                expect(preparedUploadId).toBe(invalidPreparedUploadId);
+                expect(preparedUploadId).not.toBe(actualPreparedUploadId);
+                expect(result).toMatchObject({
+                    success: false,
+                    errorCode: 'machine_carrier_transport_failed',
+                });
+                expect(abortInvocations).toHaveLength(1);
+                expect(abortInvocations[0]?.payload).toEqual({ uploadId: invalidPreparedUploadId });
+                const unfinalizedDestination = input.transferKind === 'file'
+                    ? join(targetFileRoot, 'payload.bin')
+                    : join(targetAttachmentRoot, '.happier', 'uploads', 'messages', 'message-1');
+                await expect(stat(unfinalizedDestination)).rejects.toMatchObject({ code: 'ENOENT' });
+                return;
+            }
 
             if (input.declareShortSize === true || input.cancelMidUpload === true) {
                 // Size rejection / mid-upload cancellation: the production target refused the
@@ -636,13 +647,11 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
                 },
                 destination: bufferedDownloadDestination.destination,
                 timeoutMs: 15_000,
-                acquirePreparedCarrier: async ({ operationId: downloadOperationId, maxBytes }) => {
+                acquirePreparedCarrier: async ({ operationId: downloadOperationId }) => {
                     const machineRoute = await resolveMachineCarrierRoute(machineId, serverId);
                     if (machineRoute.kind !== 'iroh_peer') return null;
                     return await machineRoute.acquire({
                         operationId: downloadOperationId,
-                        maxBytes,
-                        flow: input.transferKind === 'file' ? 'file_transfer' : 'attachment_transfer',
                     });
                 },
             });
@@ -678,6 +687,10 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
     if (!selectedTopology || selectedTopology === 'direct') {
         it('rejects an invalid production-minted grant at admission without any standard fallback', { timeout: 120_000 }, async () => {
             await runComposedTransfer({ topology: 'direct', transferKind: 'file', invalidateGrant: true });
+        });
+
+        it('rejects an unknown prepared upload capability after valid carrier admission without finalizing a destination', { timeout: 120_000 }, async () => {
+            await runComposedTransfer({ topology: 'direct', transferKind: 'file', invalidatePreparedCapability: true });
         });
 
         it('rejects an oversize upload at the production target and aborts the owned session without fallback', { timeout: 120_000 }, async () => {

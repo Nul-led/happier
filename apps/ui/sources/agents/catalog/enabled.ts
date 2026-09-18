@@ -25,8 +25,9 @@ export function isAgentEnabled(params: {
 export function getEnabledAgentIds(params: {
     backendEnabledByTargetKey: Record<string, boolean> | null | undefined;
 }): AgentId[] {
-    return CANONICAL_AGENT_IDS.filter((agentId) =>
-        getAgentModelConfig(agentId).supportsSelection
-        && isAgentEnabled({ agentId, backendEnabledByTargetKey: params.backendEnabledByTargetKey }),
-    );
+    return CANONICAL_AGENT_IDS.filter((agentId) => {
+        const modelConfig = getAgentModelConfig(agentId);
+        return modelConfig?.supportsSelection !== false
+            && isAgentEnabled({ agentId, backendEnabledByTargetKey: params.backendEnabledByTargetKey });
+    });
 }

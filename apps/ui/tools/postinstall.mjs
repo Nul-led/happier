@@ -3,6 +3,7 @@ import path from 'node:path';
 import process from 'node:process';
 import url from 'node:url';
 import { resolveUiPostinstallTasks } from './resolveUiPostinstallTasks.mjs';
+import { buildPasswordKdfWorker } from './password/buildPasswordKdfWorker.mjs';
 import { ensureNohoistPeerLinks } from './ensureNohoistPeerLinks.mjs';
 import { createFilteredPatchDir } from './postinstall/filteredPatchDirectory.mjs';
 import { runCommandBestEffort, runCommandOrExit } from './postinstall/runCommand.mjs';
@@ -78,6 +79,12 @@ if (!patchPackageCliPath) {
 
 const tasks = resolveUiPostinstallTasks({ env: process.env });
 const wants = (id) => tasks.includes(id);
+
+// Expo serves public/ in development and copies it into web/Tauri exports.
+// Password unlock has no fallback: a failed bundle must fail asset preparation.
+if (wants('vendor-password-kdf-worker')) {
+    await buildPasswordKdfWorker();
+}
 
 if (wants('patch-package')) {
     // Note: this repo uses Yarn workspaces, so some dependencies are hoisted to the repo root.

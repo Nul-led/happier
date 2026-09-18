@@ -48,6 +48,136 @@ describe('pendingTerminalConnect', () => {
         })).toBeNull();
     });
 
+    it('rejects a pending record after its pairing deadline', () => {
+        const now = 1_800_000_000_000;
+        vi.spyOn(Date, 'now').mockReturnValue(now);
+        expect(fromRecord({
+            publicKeyB64Url: 'key',
+            serverUrl: 'https://stack.example.test',
+            serverIdentityId: 'srv_stack',
+            pairing: {
+                secretB64Url: 'pairing-secret',
+                createdAtMs: now - 60_000,
+                expiresAtMs: now - 1,
+            },
+            createdAtMs: now - 60_000,
+        })).toBeNull();
+    });
+
+    it('captures before authentication and promotes only to the target server account on native storage', async () => {
+        const { setPendingTerminalConnect, getPendingTerminalConnect } = await importFresh();
+        setPendingTerminalConnect({
+            publicKeyB64Url: 'native-pre-auth-key',
+            serverUrl: 'https://native-target.example.test',
+            serverIdentityId: 'srv_native_target',
+        });
+
+        await activateServerAccount('https://other.example.test', 'account-a');
+        expect(getPendingTerminalConnect()).toBeNull();
+        await activateServerAccount('https://native-target.example.test', 'account-a');
+        expect(getPendingTerminalConnect()).toMatchObject({ publicKeyB64Url: 'native-pre-auth-key' });
+        await activateServerAccount('https://native-target.example.test', 'account-b');
+        expect(getPendingTerminalConnect()).toBeNull();
+    });
+
+    it('cancels a native pre-auth capture before any account can claim it', async () => {
+        const { setPendingTerminalConnect, getPendingTerminalConnect, clearPendingTerminalConnect } = await importFresh();
+        setPendingTerminalConnect({
+            publicKeyB64Url: 'cancel-native-key',
+            serverUrl: 'https://cancel-native.example.test',
+            serverIdentityId: 'srv_cancel_native',
+        });
+        clearPendingTerminalConnect();
+        await activateServerAccount('https://cancel-native.example.test', 'account-a');
+        expect(getPendingTerminalConnect()).toBeNull();
+    });
+
+    it('retargets an unclaimed native pre-auth capture through the storage owner', async () => {
+        const {
+            setPendingTerminalConnect,
+            getPendingTerminalConnect,
+            retargetPendingTerminalConnectToServerUrl,
+        } = await importFresh();
+        setPendingTerminalConnect({
+            publicKeyB64Url: 'native-retarget-key',
+            serverUrl: 'https://native-old.example.test',
+            serverIdentityId: 'srv_native_target',
+        });
+        await activateServerAccount('https://native-new.example.test', 'account-a');
+        retargetPendingTerminalConnectToServerUrl('https://native-new.example.test');
+        expect(getPendingTerminalConnect()).toMatchObject({
+            publicKeyB64Url: 'native-retarget-key',
+            serverUrl: 'https://native-new.example.test',
+        });
+    });
+
+    it('keeps a failed native promotion claimed to its first account', async () => {
+        const pending = await importFresh();
+        const { MMKV } = await import('react-native-mmkv');
+        const originalSet = MMKV.prototype.set;
+        const setSpy = vi.spyOn(MMKV.prototype, 'set').mockImplementation(function (this: InstanceType<typeof MMKV>, key, value) {
+            if (key.startsWith('record:v2:')) throw new Error('scoped write unavailable');
+            return originalSet.call(this, key, value);
+        });
+        try {
+            pending.setPendingTerminalConnect({
+                publicKeyB64Url: 'native-claimed-key',
+                serverUrl: 'https://native-claimed.example.test',
+                serverIdentityId: 'srv_native_claimed',
+            });
+            await activateServerAccount('https://native-claimed.example.test', 'account-a');
+            expect(pending.getPendingTerminalConnect()).toMatchObject({ publicKeyB64Url: 'native-claimed-key' });
+
+            await activateServerAccount('https://native-claimed.example.test', 'account-b');
+            expect(pending.getPendingTerminalConnect()).toBeNull();
+        } finally {
+            setSpy.mockRestore();
+        }
+    });
+
+    it('invalidates a native unclaimed capture when persisting its account claim fails', async () => {
+        const pending = await importFresh();
+        const { MMKV } = await import('react-native-mmkv');
+        const originalSet = MMKV.prototype.set;
+        const setSpy = vi.spyOn(MMKV.prototype, 'set').mockImplementation(function (this: InstanceType<typeof MMKV>, key, value) {
+            if (key.startsWith('record:v2:') || (key === 'record:pre-auth:v1' && String(value).includes('claimedScope'))) {
+                throw new Error('claim persistence unavailable');
+            }
+            return originalSet.call(this, key, value);
+        });
+        try {
+            pending.setPendingTerminalConnect({
+                publicKeyB64Url: 'native-claim-write-failed-key',
+                serverUrl: 'https://native-claim-write-failed.example.test',
+                serverIdentityId: 'srv_native_claim_write_failed',
+            });
+            await activateServerAccount('https://native-claim-write-failed.example.test', 'account-a');
+            expect(pending.getPendingTerminalConnect()).toMatchObject({ publicKeyB64Url: 'native-claim-write-failed-key' });
+        } finally {
+            setSpy.mockRestore();
+        }
+
+        const reloaded = await importFresh();
+        await activateServerAccount('https://native-claim-write-failed.example.test', 'account-b');
+        expect(reloaded.getPendingTerminalConnect()).toBeNull();
+    });
+
+    it('keeps owner operations nonthrowing when native persistence reads fail', async () => {
+        const pending = await importFresh();
+        const { MMKV } = await import('react-native-mmkv');
+        const originalGetString = MMKV.prototype.getString;
+        const getSpy = vi.spyOn(MMKV.prototype, 'getString').mockImplementation(function (this: InstanceType<typeof MMKV>, key) {
+            if (key === 'record' || key.startsWith('record:')) throw new Error('native storage unavailable');
+            return originalGetString.call(this, key);
+        });
+        try {
+            expect(() => pending.getPendingTerminalConnect()).not.toThrow();
+            expect(() => pending.clearPendingTerminalConnect()).not.toThrow();
+        } finally {
+            getSpy.mockRestore();
+        }
+    });
+
     it('round-trips a pending terminal connect payload', async () => {
         const { setPendingTerminalConnect, getPendingTerminalConnect } = await importFresh();
 
@@ -61,8 +191,8 @@ describe('pendingTerminalConnect', () => {
             supportsTokenOnly: true,
             pairing: {
                 secretB64Url: 'pairing-secret',
-                createdAtMs: 1_000,
-                expiresAtMs: 61_000,
+                createdAtMs: 1_900_000_000_000,
+                expiresAtMs: 1_900_000_060_000,
             },
         });
 
@@ -73,8 +203,8 @@ describe('pendingTerminalConnect', () => {
             supportsTokenOnly: true,
             pairing: {
                 secretB64Url: 'pairing-secret',
-                createdAtMs: 1_000,
-                expiresAtMs: 61_000,
+                createdAtMs: 1_900_000_000_000,
+                expiresAtMs: 1_900_000_060_000,
             },
         });
     });
@@ -93,8 +223,8 @@ describe('pendingTerminalConnect', () => {
             serverIdentityId: 'srv_v4_pending',
             pairing: {
                 secretB64Url: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
-                createdAtMs: 1_000,
-                expiresAtMs: 61_000,
+                createdAtMs: 1_900_000_000_000,
+                expiresAtMs: 1_900_000_060_000,
             },
             supportsTokenOnly: true as const,
             homeConnectionDescriptor: descriptor,
@@ -104,6 +234,15 @@ describe('pendingTerminalConnect', () => {
         expect(toRecord({
             ...pending,
             serverIdentityId: 'srv_other_home',
+        })).toBeNull();
+        expect(toRecord({
+            ...pending,
+            serverUrl: 'https://different-home.example.test',
+        })).toBeNull();
+        expect(fromRecord({
+            ...pending,
+            serverUrl: 'https://different-home.example.test',
+            createdAtMs: Date.now(),
         })).toBeNull();
     });
 
@@ -213,7 +352,7 @@ describe('pendingTerminalConnect', () => {
             serverIdentityId: 'srv_identity_terminal',
         });
 
-        setServerProfileIdentityForUrl('https://identity-terminal.example.test', 'srv_identity_terminal');
+        await setServerProfileIdentityForUrl('https://identity-terminal.example.test', 'srv_identity_terminal');
         const legacyScope = createServerAccountScope('identity-terminal.example.test', 'account-a');
         const identityScope = createServerAccountScope('srv_identity_terminal', 'account-a');
         expect(legacyScope).not.toBeNull();
@@ -229,5 +368,38 @@ describe('pendingTerminalConnect', () => {
         });
         registerStorageStateReader(() => ({ profileScope: legacyScope } as unknown as StorageState));
         expect(getPendingTerminalConnect()).toBeNull();
+    });
+
+    it('retains a valid legacy scope when its canonical migration write fails', async () => {
+        const { createPendingTerminalConnectOwner } = await import('./pendingTerminalConnect.owner');
+        const { createServerAccountScope } = await import('@/sync/domains/scope/serverAccountScope');
+        const legacyScope = createServerAccountScope('legacy.example.test', 'account-a')!;
+        const canonicalScope = createServerAccountScope('srv_canonical', 'account-a')!;
+        const values = new Map<string, string>();
+        const key = (value: typeof legacyScope) => `${value.serverId}:${value.accountId}`;
+        values.set(key(legacyScope), JSON.stringify(toRecord({
+            publicKeyB64Url: 'migration-write-failure-key',
+            serverUrl: 'https://legacy.example.test',
+            serverIdentityId: 'srv_canonical',
+        })));
+        const owner = createPendingTerminalConnectOwner({
+            readPreAuth: () => null,
+            writePreAuth: () => true,
+            clearPreAuth: () => {},
+            readScoped: (value) => values.get(key(value)) ?? null,
+            writeScoped: (value, record) => {
+                if (value.serverId === canonicalScope.serverId) return false;
+                values.set(key(value), record);
+                return true;
+            },
+            clearScoped: (value) => { values.delete(key(value)); },
+            readLegacy: () => null,
+            clearLegacy: () => {},
+        });
+
+        owner.migratePendingTerminalConnectScopes(canonicalScope, [legacyScope]);
+
+        expect(values.has(key(legacyScope))).toBe(true);
+        expect(values.has(key(canonicalScope))).toBe(false);
     });
 });

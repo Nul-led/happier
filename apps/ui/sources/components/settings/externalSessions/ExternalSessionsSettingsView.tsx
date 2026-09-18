@@ -30,6 +30,7 @@ import { readSessionDisplayTitleField } from '@/sync/state/selectors';
 import { sync } from '@/sync/sync';
 import { useSettingsVersion } from '@/sync/store/hooks';
 import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 import { t } from '@/text';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import { supportsExternalSessionBackgroundFollow } from '@/components/sessions/external/browse/resolveExternalSessionBrowseSourceOptions';
@@ -184,6 +185,7 @@ const ExternalSessionFollowItem = React.memo(function ExternalSessionFollowItem(
                     value={props.row.enabled}
                     disabled={disabled}
                     onValueChange={(enabled) => {
+                        if (disabled) return;
                         void props.onSetEnabled(props.row, enabled);
                     }}
                 />
@@ -191,6 +193,7 @@ const ExternalSessionFollowItem = React.memo(function ExternalSessionFollowItem(
             rightElementOutsidePressable
             showChevron={false}
             onPress={() => {
+                if (disabled) return;
                 void props.onSetEnabled(props.row, !props.row.enabled);
             }}
         />
@@ -214,6 +217,7 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
     const acpCatalogSettingsV1 = useSetting('acpCatalogSettingsV1');
     const rawSettings = useSetting('externalSessionsSettingsV1');
     const settingsVersion = useSettingsVersion();
+    const expectedSettingsScope = useAccountSettingsScope();
     const settings = readExternalSessionsSettingsV1(rawSettings) ?? {
         v: 1 as const,
         keepPassivelyFollowingAfterRestart: false,
@@ -313,6 +317,7 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
             if (settingsVersion === null) throw new Error('Account settings version is unavailable');
             requireOneShotAccountSettingsMutationApplied(
                 await sync.mutateAccountSettingsOnce({
+                    expectedSettingsScope,
                     expectedSettingsVersion: settingsVersion,
                     mutate: (raw) => ({
                         settings: {
@@ -335,7 +340,7 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
             restartFollowMutationPendingRef.current = false;
             setRestartFollowMutationPending(false);
         }
-    }, [settingsVersion]);
+    }, [expectedSettingsScope, settingsVersion]);
 
     const setSessionFollowEnabled = React.useCallback(async (row: FollowRow, enabled: boolean) => {
         const link = readExternalSessionLink(readSessionOwnerMetadataView(row.session));

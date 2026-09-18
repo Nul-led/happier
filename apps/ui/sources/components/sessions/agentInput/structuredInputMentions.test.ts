@@ -294,6 +294,22 @@ describe('structured input mentions', () => {
         })).toEqual([vendorPluginMention]);
     });
 
+    it('keeps a later exact token when deleting an earlier reference with an overlapping suffix', () => {
+        const laterFile = {
+            kind: 'happier.file',
+            ref: 'file:src/b.ts',
+            tokenText: '@src/b.ts',
+            start: 21,
+            end: 30,
+        } satisfies ComposerStructuredInputMention;
+
+        expect(reconcileStructuredInputMentionsWithText({
+            previousText: 'Review @src/a.ts and @src/b.ts',
+            nextText: 'Review @src/b.ts',
+            mentions: [laterFile],
+        })).toEqual([{ ...laterFile, start: 7, end: 16 }]);
+    });
+
     it('matches a token containing an astral code point', () => {
         // React Native selections and String.slice both use UTF-16 offsets, so a surrogate pair
         // needs no alternate unit — but a token that differs only in its emoji must not match.
@@ -562,6 +578,26 @@ describe('structured input mentions', () => {
             happierStructuredInputV1: {
                 v: 1,
                 composerAttachments,
+                imageInputs: [{ type: 'image', url: 'https://example.test/a.png' }],
+            },
+        });
+    });
+
+    it('retains the exact Discussion selection source while composing other structured input', () => {
+        const source = {
+            kind: 'session_discussion' as const,
+            sessionId: 'session-a',
+            discussionId: 'discussion-a',
+            messageIds: ['message-a'],
+        };
+
+        expect(mergeMessageMetaOverrides(
+            buildStructuredInputMetaOverrides({ sessionDiscussionSelectionSourceV1: source }),
+            buildStructuredInputMetaOverrides({ attachments: [{ type: 'image', url: 'https://example.test/a.png' }] }),
+        )).toEqual({
+            happierStructuredInputV1: {
+                v: 1,
+                sessionDiscussionSelectionSourceV1: source,
                 imageInputs: [{ type: 'image', url: 'https://example.test/a.png' }],
             },
         });

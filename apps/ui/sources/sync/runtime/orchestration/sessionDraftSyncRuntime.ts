@@ -1,8 +1,11 @@
 import {
     SESSION_DRAFT_SOCKET_EVENT,
+    SESSION_DRAFT_V2_SOCKET_EVENT,
     SessionDraftSocketUpdateV1Schema,
-    type SessionDraftAddressV1,
+    SessionDraftSocketUpdateV2Schema,
+    type SessionDraftAddressV2,
     type SessionDraftSocketUpdateV1,
+    type SessionDraftSocketUpdateV2,
 } from '@happier-dev/protocol';
 
 import {
@@ -48,11 +51,16 @@ export class SessionDraftRuntimeHydrationGate {
     }
 }
 
-export function parseSessionDraftSocketWake(payload: unknown): SessionDraftSocketUpdateV1 | null {
+export function parseSessionDraftSocketWake(payload: unknown): SessionDraftSocketUpdateV1 | SessionDraftSocketUpdateV2 | null {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
     const { type, ...hint } = payload as Record<string, unknown>;
-    if (type !== SESSION_DRAFT_SOCKET_EVENT) return null;
-    const parsed = SessionDraftSocketUpdateV1Schema.safeParse(hint);
+    const schema = type === SESSION_DRAFT_SOCKET_EVENT
+        ? SessionDraftSocketUpdateV1Schema
+        : type === SESSION_DRAFT_V2_SOCKET_EVENT
+            ? SessionDraftSocketUpdateV2Schema
+            : null;
+    if (!schema) return null;
+    const parsed = schema.safeParse(hint);
     return parsed.success ? parsed.data : null;
 }
 
@@ -60,7 +68,7 @@ export async function materializeSessionDraftSocketWake(params: Readonly<{
     payload: unknown;
     capturedScope: ServerAccountScope;
     readActiveScope: () => ServerAccountScope | null;
-    materializeExact: (scope: ServerAccountScope, address: SessionDraftAddressV1) => Promise<void>;
+    materializeExact: (scope: ServerAccountScope, address: SessionDraftAddressV2) => Promise<void>;
 }>): Promise<boolean> {
     const update = parseSessionDraftSocketWake(params.payload);
     if (!update || !areServerAccountScopesEqual(params.readActiveScope(), params.capturedScope)) {
@@ -73,18 +81,13 @@ export async function materializeSessionDraftSocketWake(params: Readonly<{
 export async function materializeVisibleExistingSessionDraft(params: Readonly<{
     sessionId: string;
     capturedScope: ServerAccountScope;
-    readActiveScope: () => ServerAccountScope | null;
-    ensureRuntimeReady: () => Promise<void>;
-    materializeExact: (scope: ServerAccountScope, address: SessionDraftAddressV1) => Promise<void>;
+    isCurrent: () => boolean;
+    materializeExact: (scope: ServerAccountScope, address: SessionDraftAddressV2) => Promise<void>;
 }>): Promise<boolean> {
     const sessionId = params.sessionId.trim();
-    if (!sessionId || !areServerAccountScopesEqual(params.readActiveScope(), params.capturedScope)) {
-        return false;
-    }
-    await params.ensureRuntimeReady();
-    if (!areServerAccountScopesEqual(params.readActiveScope(), params.capturedScope)) {
+    if (!sessionId || !params.isCurrent()) {
         return false;
     }
     await params.materializeExact(params.capturedScope, { kind: 'session', sessionId });
-    return areServerAccountScopesEqual(params.readActiveScope(), params.capturedScope);
+    return params.isCurrent();
 }

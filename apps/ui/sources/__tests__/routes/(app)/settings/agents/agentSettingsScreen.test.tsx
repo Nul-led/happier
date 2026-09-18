@@ -610,19 +610,31 @@ vi.mock('@/sync/store/hooks', () => ({
 }));
 
 vi.mock('@/sync/store/settingsWriters', () => ({
+    useAccountSettingsScope: () => null,
     useApplySettings: () => applySettingsMock,
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    getServerProfilesGeneration: () => 0,
+    subscribeServerProfiles: () => () => undefined,
     getActiveServerSnapshot: () => activeServerSnapshot,
     loadHomeViewState: () => null,
     listServerProfiles: () => [{ id: 'server1', serverUrl: 'http://localhost:3000', webappUrl: 'http://localhost:8081', name: 'server1' }],
     getServerProfileById: (serverId: string) => {
-        const serverIdentityId = serverIdentityByProfileId[serverId];
-        return serverIdentityId
-            ? { id: serverId, serverIdentityId }
-            : null;
+        const serverIdentityId = serverIdentityByProfileId[serverId] ?? serverId;
+        return {
+            id: serverId,
+            name: serverId,
+            serverUrl: `https://${serverIdentityId}.example.test`,
+            serverIdentityId,
+            createdAt: 0,
+            updatedAt: 0,
+            lastUsedAt: 0,
+        };
     },
+    resolveServerProfileScopeIdForIdentifier: (serverId: string) => (
+        serverIdentityByProfileId[serverId] ?? serverId
+    ),
     // Mirrors the real owner: two identifiers are the same profile when one is the
     // other or both resolve to the same profile — including a device-local profile
     // id whose canonical identity is the other side.
@@ -642,6 +654,20 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
         };
     },
 }));
+
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: async (_serverUrl, options) => {
+                const accountId = `account:${options?.serverId ?? 'unknown'}`;
+                const payload = Buffer.from(JSON.stringify({ sub: accountId })).toString('base64');
+                return { token: `header.${payload}.signature` };
+            },
+        },
+    });
+});
 
 vi.mock('@/sync/domains/server/selection/serverSelectionResolution', () => ({
     getEffectiveServerSelectionFromRawSettings: () => ({ serverIds: ['server1'] }),
@@ -2586,13 +2612,24 @@ describe('PluginAgentSettingsScreen', () => {
 
     it('redirects the legacy custom ACP provider route to the canonical projected provider when merged projection resolves one', async () => {
         mockProviderId = 'customAcp';
-        machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
-            supported: true,
-            projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
-        });
+        let resolveProjection!: (value: Readonly<{
+            supported: true;
+            projection: PluginProjectionV2;
+        }>) => void;
+        machineContributionRegistryProjectionDescribeMock.mockImplementation(() => new Promise((resolve) => {
+            resolveProjection = resolve;
+        }));
 
         const screen = await renderPluginAgentSettingsScreen();
-        await act(async () => {});
+        await flushHookEffects();
+        expect(screen.findByTestId('settings.agents.projection.status')).toBeTruthy();
+
+        await act(async () => {
+            resolveProjection({
+                supported: true,
+                projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+            });
+        });
         await flushHookEffects();
 
         const redirect = screen.findByType('Redirect' as any);

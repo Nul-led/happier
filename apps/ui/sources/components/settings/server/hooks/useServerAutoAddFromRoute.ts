@@ -104,7 +104,7 @@ export function useServerAutoAddFromRoute(params: Readonly<{
                             && canonical.id !== created.id
                         ) {
                             try {
-                                removeServerProfile(created.id);
+                                await removeServerProfile(created.id);
                             } catch {
                                 // ignore; best-effort cleanup
                             }

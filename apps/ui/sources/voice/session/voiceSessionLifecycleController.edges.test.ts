@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createVoiceCaptureAdmissionController } from '@/voice/runtime/input/VoiceCaptureAdmissionController';
 
+import { createVoiceSessionLifecycleController } from './voiceSessionLifecycleController';
 import type { VoiceAdapterController, VoiceSessionSnapshot } from './types';
 
 const OPENAI_PROVIDER_ID = 'happier.voice.openai/realtime-openai';
+
+const sessionAddress = (sessionId: string) => ({ serverId: 'server-1', sessionId });
 
 vi.mock('@/log', () => ({ log: { log: vi.fn() } }));
 
@@ -35,7 +38,6 @@ function createSnapshotPublisher(initial: VoiceSessionSnapshot): Readonly<{
 
 describe('voice session lifecycle edge contracts', () => {
     it('holds routine connectivity through the exact active Voice attempt', async () => {
-        const { createVoiceSessionLifecycleController } = await import('./voiceSessionLifecycleController');
         const snapshots = createSnapshotPublisher({
             adapterId: 'local_direct',
             sessionId: null,
@@ -65,6 +67,7 @@ describe('voice session lifecycle edge contracts', () => {
             toggle: vi.fn(async () => {}),
             interrupt: vi.fn(async () => {}),
             setMuted: vi.fn(async () => {}),
+            sendContextUpdate: vi.fn(),
             getSnapshot: snapshots.getSnapshot,
             subscribe: snapshots.subscribe,
         };
@@ -78,7 +81,7 @@ describe('voice session lifecycle edge contracts', () => {
 
         try {
             controller.setConfiguredProviderId(adapter.id);
-            await controller.toggle('session-1');
+            await controller.toggle(sessionAddress('session-1'));
 
             expect(acquireConnectivityLease).toHaveBeenCalledTimes(1);
             expect(releaseConnectivity).not.toHaveBeenCalled();
@@ -91,7 +94,6 @@ describe('voice session lifecycle edge contracts', () => {
     });
 
     it('does not release connectivity for an initial disconnected snapshot while Start is still pending', async () => {
-        const { createVoiceSessionLifecycleController } = await import('./voiceSessionLifecycleController');
         const snapshots = createSnapshotPublisher({
             adapterId: 'local_direct',
             sessionId: null,
@@ -121,6 +123,7 @@ describe('voice session lifecycle edge contracts', () => {
             toggle: vi.fn(async () => {}),
             interrupt: vi.fn(async () => {}),
             setMuted: vi.fn(async () => {}),
+            sendContextUpdate: vi.fn(),
             getSnapshot: snapshots.getSnapshot,
             subscribe: snapshots.subscribe,
         };
@@ -134,7 +137,7 @@ describe('voice session lifecycle edge contracts', () => {
 
         try {
             controller.setConfiguredProviderId(adapter.id);
-            const start = controller.toggle('session-1');
+            const start = controller.toggle(sessionAddress('session-1'));
             await Promise.resolve();
             expect(releaseConnectivity).not.toHaveBeenCalled();
 
@@ -147,7 +150,6 @@ describe('voice session lifecycle edge contracts', () => {
     });
 
     it('publishes a retryable provider-unavailable snapshot before admitting microphone capture', async () => {
-        const { createVoiceSessionLifecycleController } = await import('./voiceSessionLifecycleController');
         const captureAdmission = createVoiceCaptureAdmissionController();
         const published = vi.fn();
         const controller = createVoiceSessionLifecycleController({
@@ -161,7 +163,7 @@ describe('voice session lifecycle edge contracts', () => {
         const unsubscribe = controller.subscribe(published);
 
         try {
-            await controller.toggle('session-1');
+            await controller.toggle(sessionAddress('session-1'));
 
             expect(controller.getSnapshot()).toEqual({
                 adapterId: OPENAI_PROVIDER_ID,
@@ -178,7 +180,7 @@ describe('voice session lifecycle edge contracts', () => {
 
             // Repeated Start on the same unavailable selection retains the
             // current refusal instead of publishing/erroring again.
-            await controller.toggle('session-1');
+            await controller.toggle(sessionAddress('session-1'));
             expect(published).toHaveBeenCalledTimes(1);
 
             const dictationAdmission = captureAdmission.acquire('dictation');
@@ -201,10 +203,58 @@ describe('voice session lifecycle edge contracts', () => {
         }
     });
 
+    it('retains the exact Home address when an unavailable same-id target is replaced before Retry', async () => {
+        const snapshots = createSnapshotPublisher({
+            adapterId: OPENAI_PROVIDER_ID,
+            sessionId: null,
+            status: 'disconnected',
+            mode: 'idle',
+            canStop: false,
+        });
+        const start = vi.fn(async () => undefined);
+        const adapter: VoiceAdapterController = {
+            id: OPENAI_PROVIDER_ID,
+            engineKind: 'realtime',
+            start,
+            stop: vi.fn(async () => undefined),
+            toggle: vi.fn(async () => undefined),
+            interrupt: vi.fn(async () => undefined),
+            setMuted: vi.fn(async () => undefined),
+            sendContextUpdate: vi.fn(),
+            getSnapshot: snapshots.getSnapshot,
+            subscribe: snapshots.subscribe,
+        };
+        let registered: VoiceAdapterController | null = null;
+        const controller = createVoiceSessionLifecycleController({
+            getRegistry: () => ({
+                get: (id) => id === OPENAI_PROVIDER_ID ? registered : null,
+                list: () => registered ? [registered] : [],
+            }),
+        });
+        controller.setConfiguredProviderId(OPENAI_PROVIDER_ID);
+
+        try {
+            await controller.toggle({ serverId: 'home-a', sessionId: 'same-session' });
+            await controller.toggle({ serverId: 'home-b', sessionId: 'same-session' });
+            registered = adapter;
+
+            await controller.retry('same-session');
+
+            expect(start).toHaveBeenCalledWith({
+                sessionId: 'same-session',
+                requestedTargetSessionAddress: {
+                    serverId: 'home-b',
+                    sessionId: 'same-session',
+                },
+            });
+        } finally {
+            await controller.dispose();
+        }
+    });
+
     it.each(['on_demand', 'automatic'] as const)(
         'reseeds the active Local Agent model session when disclosure returns from off to %s',
         async () => {
-            const { createVoiceSessionLifecycleController } = await import('./voiceSessionLifecycleController');
             const snapshots = createSnapshotPublisher({
                 adapterId: 'local_conversation',
                 sessionId: null,
@@ -252,7 +302,7 @@ describe('voice session lifecycle edge contracts', () => {
             try {
                 controller.setConfiguredProviderId(adapter.id);
                 controller.setCurrentUiContextToolSetEnabled(true);
-                await controller.toggle('local-session');
+                await controller.toggle(sessionAddress('local-session'));
                 controller.setCurrentUiContextToolSetEnabled(false);
                 await vi.waitFor(() => expect(starts).toHaveBeenCalledTimes(2));
 
@@ -273,7 +323,6 @@ describe('voice session lifecycle edge contracts', () => {
     );
 
     it('does not replace an active Local Direct attempt when disclosure returns from off', async () => {
-        const { createVoiceSessionLifecycleController } = await import('./voiceSessionLifecycleController');
         const snapshots = createSnapshotPublisher({
             adapterId: 'local_direct',
             sessionId: 'local-session',

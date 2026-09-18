@@ -14,10 +14,14 @@ import { SESSION_ACTION_RENAME_ID } from '@/components/sessions/actions/sessionA
 const sessionRenameSpy = vi.fn(async () => ({ success: true }));
 const modalPromptSpy = vi.fn(async () => 'Renamed Session');
 const openSessionForkStrategyFlowSpy = vi.fn();
+const sessionForkFlowModuleLoadedSpy = vi.fn();
 
-vi.mock('@/components/sessions/fork/openSessionForkStrategyFlow', () => ({
-    openSessionForkStrategyFlow: (...args: unknown[]) => openSessionForkStrategyFlowSpy(...args),
-}));
+vi.mock('@/components/sessions/fork/openSessionForkStrategyFlow', () => {
+    sessionForkFlowModuleLoadedSpy();
+    return {
+        openSessionForkStrategyFlow: (...args: unknown[]) => openSessionForkStrategyFlowSpy(...args),
+    };
+});
 
 
 vi.mock('react-native-gesture-handler', () => ({
@@ -615,9 +619,7 @@ describe('SessionItem context menu press suppression', () => {
         });
     });
 
-    it('opens the rename prompt after the native context menu close turn', async () => {
-        vi.useFakeTimers();
-
+    it('closes the native context menu before delegating rename to the shared action handler', async () => {
         const SessionItem = await importSessionItem();
         const session = createSessionFixture({
             id: 'sess_rename',
@@ -651,13 +653,6 @@ describe('SessionItem context menu press suppression', () => {
         });
 
         expect(onNativeContextMenuOpenChange).toHaveBeenCalledWith(false);
-        expect(modalPromptSpy).not.toHaveBeenCalled();
-        expect(sessionRenameSpy).not.toHaveBeenCalled();
-
-        await act(async () => {
-            vi.advanceTimersByTime(0);
-        });
-
         expect(modalPromptSpy).toHaveBeenCalled();
         expect(sessionRenameSpy).toHaveBeenCalledWith('sess_rename', 'Renamed Session', { serverId: 'server_a' });
     });
@@ -787,6 +782,7 @@ describe('SessionItem context menu press suppression', () => {
             title: 'sessionInfo.forkSession',
             subtitle: undefined,
         });
+        await vi.waitFor(() => expect(sessionForkFlowModuleLoadedSpy).toHaveBeenCalledTimes(1));
 
         await act(async () => {
             await dropdown.props.onSelect('session.fork');

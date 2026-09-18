@@ -203,6 +203,7 @@ async function ensureIrohHomeTunnelForActiveSwitch(
     snapshot: Readonly<ReturnType<typeof getActiveServerSnapshot>>,
     credentials: AuthCredentials | null,
     publicationTarget: ReturnType<typeof captureActiveServerRuntimeTarget>,
+    mode: 'initial_selection' | 'pinned_recovery',
 ): Promise<void> {
     const token = credentials?.token?.trim() ?? '';
     const profile = getServerProfileById(snapshot.serverId);
@@ -220,6 +221,8 @@ async function ensureIrohHomeTunnelForActiveSwitch(
     }
 
     const acquired = await acquireEligibleHomeCarrier({
+        mode,
+        applicationCarrierEligibility: 'automatic',
         descriptor,
         verification: { kind: 'authenticated', token },
         credentials,
@@ -293,7 +296,12 @@ export async function retryActiveServerConnection(): Promise<void> {
         const credentials = await resolveCredentialsForActiveServer(snapshot);
         const publicationTarget = capturePublicationTargetForSnapshot(snapshot);
         if (!publicationTarget) return;
-        await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials, publicationTarget);
+        await ensureIrohHomeTunnelForActiveSwitch(
+            snapshot,
+            credentials,
+            publicationTarget,
+            snapshot.carrier === 'iroh' ? 'pinned_recovery' : 'initial_selection',
+        );
         if (!isPublicationTargetCurrent(publicationTarget)) return;
         sync.retryNow();
     })();
@@ -321,7 +329,7 @@ async function applyPendingServerSwitches(): Promise<AuthCredentials | null> {
         if (!isActiveSwitchTargetCurrent(snapshot, targetGeneration)) continue;
         const publicationTarget = capturePublicationTargetForSnapshot(snapshot);
         if (!publicationTarget) continue;
-        await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials, publicationTarget);
+        await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials, publicationTarget, 'initial_selection');
         if (!isActiveSwitchTargetCurrent(snapshot, targetGeneration)) continue;
         const syncTarget = capturePreparedSyncTarget(snapshot);
         if (!syncTarget) continue;
@@ -365,7 +373,7 @@ export async function disconnectActiveServerConnection(): Promise<void> {
     if (!publicationTarget) return;
     requestedGeneration = Math.max(requestedGeneration, snapshot.generation);
     abortServerFetches();
-    await ensureIrohHomeTunnelForActiveSwitch(snapshot, null, publicationTarget);
+    await ensureIrohHomeTunnelForActiveSwitch(snapshot, null, publicationTarget, 'initial_selection');
     await syncSwitchServer(null);
     lastAppliedGeneration = Math.max(lastAppliedGeneration, snapshot.generation);
     publishAppliedActiveServerId(snapshot.serverId, snapshot.generation);
@@ -403,7 +411,7 @@ export async function restoreConnectionToActiveServer(credentials: AuthCredentia
     const publicationTarget = capturePublicationTargetForSnapshot(snapshot);
     if (!publicationTarget) throw new ServerScopedTransportUnavailableError();
     abortServerFetches();
-    await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials, publicationTarget);
+    await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials, publicationTarget, 'initial_selection');
     const syncTarget = capturePreparedSyncTarget(snapshot);
     if (!syncTarget) throw new ServerScopedTransportUnavailableError();
     await syncRestore(credentials, syncTarget);

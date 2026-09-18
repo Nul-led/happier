@@ -1,3 +1,5 @@
+import { encodeBase64 } from '@happier-dev/protocol';
+
 import type {
     PluginNativeArtifactResourceProfileIsolationCapability,
     PluginNativeArtifactResourceRegistrar,
@@ -103,9 +105,27 @@ export function createTauriPluginNativeArtifactResourceRegistrar(input: Readonly
                 return registrationFailed;
             }
             try {
+                const storage = registration.storage.kind === 'persistent'
+                    ? registration.storage
+                    : Object.freeze({
+                        kind: 'currentLoad' as const,
+                        resources: Object.freeze(registration.storage.resources.map((resource) => Object.freeze({
+                            resourceId: resource.resourceId,
+                            digest: resource.digest,
+                            byteSize: resource.byteSize,
+                            bytesBase64: encodeBase64(resource.bytes, 'base64'),
+                        }))),
+                    });
                 return readRegistrationResult(await dispatch(
                     'desktop_hosted_artifact_register',
-                    { input: registration },
+                    {
+                        input: {
+                            token: registration.token,
+                            storagePartitionId: registration.storagePartitionId,
+                            storage,
+                            policyTable: registration.policyTable,
+                        },
+                    },
                 ), registration.storagePartitionId);
             } catch {
                 return registrationFailed;

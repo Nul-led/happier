@@ -119,7 +119,7 @@ describe('migrateLegacySessionDrafts', () => {
                     value: { safe: true },
                 })],
                 authoring: expect.objectContaining({
-                    executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+                    executionTarget: { kind: 'machine', target: { serverId: 'server-a', machineId: 'machine-a' } },
                     directory: '/workspace/repo',
                     agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
                 }),
@@ -154,11 +154,7 @@ describe('migrateLegacySessionDrafts', () => {
     it('retires each legacy source only after the repository reports a remote acknowledgement', async () => {
         state.acknowledged = true;
         state.sessionDrafts = { 'session-a': 'legacy text' };
-        state.draftValues = {
-            'session-a': {
-                'routing.executionRunDelivery': { v: 1, lastEditedAt: 1, value: 'interrupt' },
-            },
-        };
+        state.draftValues = {};
         state.newDraft = {
             input: 'new legacy text', selectedMachineId: null, selectedPath: null, selectedProfileId: null,
             agentType: 'codex', permissionMode: 'default', modelMode: 'default', acpSessionModeId: null, updatedAt: 10,

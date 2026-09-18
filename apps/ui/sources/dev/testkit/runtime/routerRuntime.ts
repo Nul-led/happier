@@ -197,6 +197,19 @@ export function createExpoRouterRuntime(
         return trackedSetParams.method(value);
     };
     state.router.setParams = setParamsMock as typeof state.router.setParams;
+    /**
+     * Drops everything `router.setParams` wrote, returning the route to the
+     * supplied `params` input alone.
+     *
+     * A module-level router mock outlives every test in its file, and an
+     * override is a merge that even `undefined` cannot undo, so a consumed
+     * one-shot query key written by one test would otherwise still mask the
+     * same key that the next test supplies through `params`.
+     */
+    const resetParams = () => {
+        paramsOverrides = {};
+        return syncParams();
+    };
     spies.push.mockName?.('router.push');
     spies.back.mockName?.('router.back');
     spies.replace.mockName?.('router.replace');
@@ -207,6 +220,7 @@ export function createExpoRouterRuntime(
     return {
         state,
         spies,
+        resetParams,
         module: {
             Redirect: (props: Record<string, unknown>) => React.createElement('Redirect', props),
             Link: 'Link' as unknown,

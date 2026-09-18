@@ -73,10 +73,10 @@ function buildTree() {
         items,
         rowBoundsById: new Map([
             [treeRowId.workspaceRoot('project-a'), bounds(0)],
-            [treeRowId.folder('folder-a'), bounds(40)],
+            [treeRowId.folder('server-a', 'folder-a'), bounds(40)],
             [treeRowId.session('server-a', 'inside-a'), bounds(80)],
-            [treeRowId.folder('child-a'), bounds(120)],
-            [treeRowId.folder('folder-b'), bounds(160)],
+            [treeRowId.folder('server-a', 'child-a'), bounds(120)],
+            [treeRowId.folder('server-a', 'folder-b'), bounds(160)],
             [treeRowId.session('server-a', 'root-a'), bounds(200)],
         ]),
     });
@@ -111,8 +111,8 @@ describe('buildSessionListMoveSheetTargets', () => {
             result: {
                 instruction: {
                     kind: 'nest-into',
-                    targetId: treeRowId.folder('folder-b'),
-                    containerId: treeRowId.folder('folder-b'),
+                    targetId: treeRowId.folder('server-a', 'folder-b'),
+                    containerId: treeRowId.folder('server-a', 'folder-b'),
                 },
             },
         });
@@ -122,7 +122,7 @@ describe('buildSessionListMoveSheetTargets', () => {
         const tree = buildTree();
         const source = buildSessionListDragSource({
             tree,
-            sourceRowId: treeRowId.folder('folder-a'),
+            sourceRowId: treeRowId.folder('server-a', 'folder-a'),
         });
 
         const targets = buildSessionListMoveSheetTargets({ tree, source });

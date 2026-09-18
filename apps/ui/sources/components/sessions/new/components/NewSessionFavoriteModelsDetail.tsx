@@ -237,10 +237,10 @@ function FavoriteBackendModelsCollector(props: Readonly<{
         props.entry.catalogAgentId ? getAgentCore(props.entry.catalogAgentId) : null
     ), [props.entry.catalogAgentId]);
     const rawAvailabilityById = React.useMemo(() => buildFavoriteModelAvailabilityById({
-        mode: providerCore?.model.dynamicProbe === 'static-only' ? 'static-only' : 'dynamic',
+        mode: providerCore?.model?.dynamicProbe === 'static-only' ? 'static-only' : 'dynamic',
         modelOptions,
         preflightModels,
-    }), [modelOptions, preflightModels, providerCore?.model.dynamicProbe]);
+    }), [modelOptions, preflightModels, providerCore?.model?.dynamicProbe]);
     const providersFeatureEnabled = useFeatureEnabled('providers', {
         scopeKind: 'spawn',
         serverId: props.capabilityServerId,
@@ -352,7 +352,7 @@ function FavoriteBackendModelsCollector(props: Readonly<{
 
     const provisionalFavorites = React.useMemo((): readonly AvailableFavoriteModel[] => {
         const hasResolvedDynamicModels = (preflightModels?.availableModels.length ?? 0) > 0;
-        const canUseProvisionalFavorites = providerCore?.model.dynamicProbe !== 'static-only'
+        const canUseProvisionalFavorites = providerCore?.model?.dynamicProbe !== 'static-only'
             && !hasResolvedDynamicModels
             && modelProbe.phase !== 'idle';
         if (!canUseProvisionalFavorites) return [];
@@ -380,7 +380,7 @@ function FavoriteBackendModelsCollector(props: Readonly<{
             });
         }
         return out;
-    }, [availableFavorites, hiddenNativeKeys, matchingFavorites, modelProbe.phase, preflightModels?.availableModels.length, props.entry.title, providerCore?.model.dynamicProbe]);
+    }, [availableFavorites, hiddenNativeKeys, matchingFavorites, modelProbe.phase, preflightModels?.availableModels.length, props.entry.title, providerCore?.model?.dynamicProbe]);
 
     const selectableFavorites = React.useMemo(() => (
         provisionalFavorites.length > 0 ? [...availableFavorites, ...provisionalFavorites] : availableFavorites

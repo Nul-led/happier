@@ -1,5 +1,7 @@
 import type { ScmDiffArea } from '@happier-dev/protocol';
 
+import type { ScmDiffCache } from '@/scm/diffCache/scmDiffCache';
+
 import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 
 export type ScmReviewUnifiedDiffFetchResult =
@@ -7,6 +9,8 @@ export type ScmReviewUnifiedDiffFetchResult =
     | Readonly<{ success: false; error: string }>;
 
 export type ScmReviewUnifiedDiffFetcher = (input: Readonly<{
+    snapshotSignature?: string | null;
+    diffCache?: ScmDiffCache | null;
     path: string;
     diffArea: ScmDiffArea;
     file: ScmFileStatus | null;

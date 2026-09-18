@@ -95,7 +95,7 @@ describe('ChatList (SWR fallback)', () => {
             canApprovePermissions: true,
         } as any;
 
-        await renderScreen(<ChatList session={session} />);
+        await renderScreen(<ChatList session={session} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />);
 
         expect(preloadEnrichedMarkdownRuntimeSpy).toHaveBeenCalledOnce();
     });
@@ -111,7 +111,7 @@ describe('ChatList (SWR fallback)', () => {
             canApprovePermissions: true,
         } as any;
 
-        await renderScreen(<ChatList session={session} />);
+        await renderScreen(<ChatList session={session} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />);
 
         expect(buildChatListItemsCachedSpy).toHaveBeenCalled();
         const call = (buildChatListItemsCachedSpy.mock.calls[0] as any)?.[0];
@@ -130,7 +130,7 @@ describe('ChatList (SWR fallback)', () => {
             canApprovePermissions: true,
         } as any;
 
-        await renderScreen(<ChatList session={session} />);
+        await renderScreen(<ChatList session={session} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />);
 
         expect(buildChatListItemsCachedSpy).toHaveBeenCalled();
         const call = (buildChatListItemsCachedSpy.mock.calls[0] as any)?.[0];

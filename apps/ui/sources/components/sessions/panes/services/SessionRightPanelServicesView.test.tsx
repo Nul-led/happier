@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { FeatureDecision, FeatureId, RuntimeActionExecute } from '@happier-dev/protocol';
 import {
+    createMachineFixture,
+    createSessionFixture,
     buildLocalServiceInventoryRow,
     buildLocalServiceInventoryState,
     pressTestInstanceAsync,
@@ -20,6 +22,8 @@ import {
 } from '@/sync/domains/local/services/publicPreview/store';
 
 import { SessionRightPanelServicesView } from './SessionRightPanelServicesView';
+import { storage } from '@/sync/domains/state/storage';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
 const useFeatureDecisionMock = vi.hoisted(() => vi.fn((featureId: FeatureId, _scope?: unknown): FeatureDecision => ({
     featureId,
@@ -372,6 +376,35 @@ describe('SessionRightPanelServicesView', () => {
             expect(screen.findAllByTestId('session-rightpanel-services-row:managed:session-feed-start')).toHaveLength(0);
             expect(screen.findByTestId('session-rightpanel-services-row:managed:session-feed-status-starting')).toBeTruthy();
         });
+    });
+
+    it('reads launcher state from the explicit Home when the active Home contains the same Session id', async () => {
+        const before = storage.getState();
+        const ownMachine = createMachineFixture({ id: 'machine-a', active: true });
+        const otherMachine = createMachineFixture({ id: 'machine-other', active: true });
+        const ownSession = createSessionFixture({ id: 'session-a', serverId: 'server-a', active: true, metadata: { machineId: 'machine-a', path: '/a' } });
+        const otherSession = createSessionFixture({ id: 'session-a', serverId: 'server-other', active: true, metadata: { machineId: 'machine-other', path: '/other' } });
+        storage.setState({
+            sessions: { 'session-a': otherSession },
+            machines: { 'machine-a': ownMachine, 'machine-other': otherMachine },
+            machineListByServerId: { 'server-a': [ownMachine], 'server-other': [otherMachine] },
+            sessionListRowsByServerId: { 'server-a': { 'session-a': buildSessionListRenderableFromSession(ownSession) } },
+        });
+        const launcherSnapshotClient = vi.fn(async () => ({ ok: true as const, snapshot: liveStartSnapshot })) satisfies LocalServiceLauncherSnapshotClient;
+        try {
+            const screen = await renderScreen(<SessionRightPanelServicesView
+                sessionId="session-a" serverId="server-a"
+                inventoryState={buildLocalServiceInventoryState({ rows: [] })}
+                publicPreviewState={buildPublicPreviewState()}
+                launcherSnapshotClient={launcherSnapshotClient}
+            />);
+            expect(launcherSnapshotClient).toHaveBeenCalledWith(expect.objectContaining({
+                machineId: 'machine-a', serverId: 'server-a', sessionId: 'session-a',
+            }));
+            await screen.unmount();
+        } finally {
+            storage.setState(before);
+        }
     });
 
     it('creates public preview links through the session Services runtime action host', async () => {

@@ -130,6 +130,7 @@ type LeaseRecord = {
     leaseId: string;
     clientId: string;
     connections: Map<string, ConnectionIdentity>;
+    releaseRequested: boolean;
 };
 type StreamRecord = {
     streamId: string;
@@ -142,6 +143,7 @@ type StreamRecord = {
     rejectCancellation: (error: BrowserIrohOwnerError) => void;
     closing: Promise<void> | null;
     streamClosed: boolean;
+    releaseRequested: boolean;
 };
 
 function connectionKey(connection: ConnectionIdentity): string {
@@ -197,6 +199,7 @@ export function createBrowserIrohSharedEndpointOwner(
     }
 
     async function closeRecord(stream: StreamRecord): Promise<void> {
+        stream.releaseRequested = true;
         cancelRecord(stream);
         if (!stream.streamClosed) {
             if (stream.closing === null) {
@@ -241,6 +244,7 @@ export function createBrowserIrohSharedEndpointOwner(
     }
 
     async function releaseLeaseRecord(record: LeaseRecord): Promise<void> {
+        record.releaseRequested = true;
         await closeMatchingStreams((stream) => stream.leaseId === record.leaseId);
         if (leases.get(record.leaseId) !== record) return;
 
@@ -268,6 +272,23 @@ export function createBrowserIrohSharedEndpointOwner(
             throw new BrowserIrohOwnerError('cancelled');
         }
         return result;
+    }
+
+    async function retryReleaseRequestedCustody(clientId: string): Promise<void> {
+        const requestedStreamsWithoutRequestedLease = [...streams.values()].filter(
+            (stream) => stream.clientId === clientId
+                && stream.releaseRequested
+                && leases.get(stream.leaseId)?.releaseRequested !== true,
+        );
+        const requestedLeases = [...leases.values()].filter(
+            (lease) => lease.clientId === clientId && lease.releaseRequested,
+        );
+        const results = await Promise.allSettled([
+            ...requestedStreamsWithoutRequestedLease.map(closeRecord),
+            ...requestedLeases.map(releaseLeaseRecord),
+        ]);
+        const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+        if (failed !== undefined) throw failed.reason;
     }
 
     async function ensureEndpoint(relayUrls: readonly string[]): Promise<BrowserIrohEndpointHandle> {
@@ -330,7 +351,12 @@ export function createBrowserIrohSharedEndpointOwner(
                 throw new BrowserIrohOwnerError('cancelled');
             }
             const leaseId = newLeaseId();
-            leases.set(leaseId, { leaseId, clientId, connections: new Map() });
+            leases.set(leaseId, {
+                leaseId,
+                clientId,
+                connections: new Map(),
+                releaseRequested: false,
+            });
             return {
                 leaseId,
                 endpointId: bound.endpointId,
@@ -393,6 +419,15 @@ export function createBrowserIrohSharedEndpointOwner(
 
         openStream: async ({ clientId, leaseId, streamKind, endpointId, relayUrls, signal }) => {
             requireLease(clientId, leaseId);
+            if (streamKind === 'machine') {
+                // Finite-transfer callers attempt release once, then discard
+                // their operation-local handle. Before admitting the next
+                // Machine operation, retry only the
+                // custody whose release was already requested; live Home and
+                // sibling-client leases remain untouched.
+                await retryReleaseRequestedCustody(clientId);
+                requireLease(clientId, leaseId);
+            }
             if (signal?.aborted) throw new BrowserIrohOwnerError('cancelled');
             const bound = await ensureEndpoint(relayUrls);
             const lease = requireLease(clientId, leaseId);
@@ -432,6 +467,7 @@ export function createBrowserIrohSharedEndpointOwner(
                 rejectCancellation,
                 closing: null,
                 streamClosed: false,
+                releaseRequested: false,
             };
             streams.set(streamId, stream);
             if (signal?.aborted || leases.get(leaseId)?.clientId !== clientId) {

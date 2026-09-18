@@ -21,6 +21,7 @@
 
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { TreeContainerDropZoneRole } from '@/components/ui/treeDragDrop';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 import type {
     SessionListDragSnapshot,
@@ -37,23 +38,32 @@ import type {
     SessionListTreeModel,
     SessionListTreeRowMetadata,
 } from '../drop-resolution/sessionListTreeTypes';
-import { treeRowId } from '../drop-resolution/treeRowId';
+import { isFolderTreeRowId, isWorkspaceRootTreeRowId } from '../drop-resolution/treeRowId';
 
 let snapshotSequence = 0;
 
 /**
- * Maps a `useSessionInlineDrag` drag key to its stable tree row id. Folder and
- * workspace-root keys are already row ids; a `server:session` key is expanded to
- * a `session:` row id.
+ * Resolves a `useSessionInlineDrag` key against the frozen tree. Folder and
+ * workspace-root keys are already row ids. Session list keys are compatibility
+ * values and remain opaque here: compare them by construction against structured
+ * row metadata instead of parsing a Home id that may itself contain delimiters.
  */
-function resolveSourceRowIdFromDragKey(sessionKey: string): string {
-    if (sessionKey.startsWith('folder:')) return sessionKey;
-    if (sessionKey.startsWith('workspace-root:')) return sessionKey;
-    const separatorIndex = sessionKey.indexOf(':');
-    if (separatorIndex <= 0) return `session:${sessionKey}`;
-    const serverId = sessionKey.slice(0, separatorIndex);
-    const sessionId = sessionKey.slice(separatorIndex + 1);
-    return treeRowId.session(serverId, sessionId);
+function resolveSourceRowIdFromDragKey(
+    sessionKey: string,
+    tree: SessionListTreeModel,
+): string {
+    if (isFolderTreeRowId(sessionKey) || isWorkspaceRootTreeRowId(sessionKey)) return sessionKey;
+    const matches = Array.from(tree.rowMetadataById.values()).filter((metadata) =>
+        metadata.kind === 'session'
+        && metadata.serverId
+        && metadata.sessionId
+        && sessionAddressKey({ serverId: metadata.serverId, sessionId: metadata.sessionId }) === sessionKey
+    );
+    if (matches.length === 1) return matches[0]!.rowId;
+    if (matches.length > 1 && matches.every((metadata) => metadata.rowId === matches[0]!.rowId)) {
+        return matches[0]!.rowId;
+    }
+    return JSON.stringify(['session', null, sessionKey]);
 }
 
 /**
@@ -171,7 +181,7 @@ function buildSignature(params: Readonly<{
 
 export function buildSessionListDragSnapshot(input: SessionListDragSnapshotInput): SessionListDragSnapshot {
     const tree = buildSessionListTreeRows({ items: input.items });
-    const sourceRowId = resolveSourceRowIdFromDragKey(input.sessionDragKey);
+    const sourceRowId = resolveSourceRowIdFromDragKey(input.sessionDragKey, tree);
     const treeSource = buildSessionListDragSource({ tree, sourceRowId });
 
     const source: SessionListDragSnapshotSource = {

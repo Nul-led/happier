@@ -79,6 +79,7 @@ export type PluginUiProjectedClientExecutableVoiceProvider = Readonly<{
 export type PluginUiProjectedClientExecutableTarget = Readonly<{
     pluginId: string;
     pluginVersion?: string;
+    immutableGenerationId?: string;
     actions: readonly PluginUiProjectionModel['actionsById'][string][];
     voiceProviders: readonly PluginUiProjectedClientExecutableVoiceProvider[];
     contributes: Readonly<Record<string, unknown>>;
@@ -103,6 +104,7 @@ type ResolvedProjectedClientExecutableContribution = Readonly<{
     localId: string;
     pluginId: string;
     pluginVersion?: string;
+    immutableGenerationId?: string;
     target: PluginUiClientExecutableTarget;
     executionOrigin: PluginMachineExecutionOriginV1;
     projectionGeneration: number;
@@ -269,6 +271,7 @@ function targetTechnicalKey(candidate: ResolvedProjectedClientExecutableContribu
         identity.channel,
         identity.nativeCapabilitiesDigest,
         candidate.pluginVersion ?? '',
+        candidate.immutableGenerationId ?? '',
     ].join('\u0000');
 }
 
@@ -333,6 +336,7 @@ function readActionCandidate(input: Readonly<{
         family: 'actions',
         localId: action.id,
         pluginId: action.pluginId,
+        immutableGenerationId: input.source.projection.installedPackagesById[action.pluginId]?.immutableGenerationId,
         ...(readInstalledPluginVersion(input.source.projection, action.pluginId) === undefined
             ? {}
             : { pluginVersion: readInstalledPluginVersion(input.source.projection, action.pluginId) }),
@@ -424,6 +428,7 @@ function readVoiceCandidate(input: Readonly<{
         family: 'voiceProviders',
         localId: declaration.id,
         pluginId: entry.pluginId,
+        immutableGenerationId: input.source.projection.installedPackagesById[entry.pluginId]?.immutableGenerationId,
         ...(readInstalledPluginVersion(input.source.projection, entry.pluginId) === undefined
             ? {}
             : { pluginVersion: readInstalledPluginVersion(input.source.projection, entry.pluginId) }),
@@ -519,6 +524,7 @@ export function resolveProjectedPluginUiClientExecutables(input: Readonly<{
             return Object.freeze({
                 pluginId: first.pluginId,
                 ...(first.pluginVersion === undefined ? {} : { pluginVersion: first.pluginVersion }),
+                ...(first.immutableGenerationId === undefined ? {} : { immutableGenerationId: first.immutableGenerationId }),
                 actions,
                 voiceProviders,
                 contributes,

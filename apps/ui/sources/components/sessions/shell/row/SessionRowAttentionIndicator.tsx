@@ -31,7 +31,6 @@ export const SessionRowAttentionIndicator = React.memo(function SessionRowAttent
     indicator: SessionRowAttentionIndicatorKind;
     sessionId: string;
     attentionState: SessionRowAttentionState;
-    accessibilityLabel?: string;
     workingMode?: 'spinner' | 'pulse';
     workingSpinnerTone?: 'info' | 'neutral';
     animationEnabled?: boolean;
@@ -53,6 +52,7 @@ export const SessionRowAttentionIndicator = React.memo(function SessionRowAttent
                 return theme.colors.state.success.foreground;
             case 'failed':
                 return theme.colors.state.danger.foreground;
+            case 'attention':
             case 'unread':
                 return theme.colors.text.link;
             case 'pending':
@@ -79,8 +79,9 @@ export const SessionRowAttentionIndicator = React.memo(function SessionRowAttent
     return (
         <View
             testID={`session-row-attention-indicator-${props.sessionId}`}
-            accessibilityLabel={props.accessibilityLabel}
-            accessibilityRole={props.accessibilityLabel ? 'image' : undefined}
+            accessible={false}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
             style={stylesheet.container}
         >
             <View

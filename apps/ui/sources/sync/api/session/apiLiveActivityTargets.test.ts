@@ -221,4 +221,14 @@ describe('apiLiveActivityTargets', () => {
             expect.any(Object),
         );
     });
+
+    it.each([404, 410])('keeps non-canonical HTTP %s delete failures retryable', async (status) => {
+        const mod = await loadModule();
+        expect(mod).not.toBeNull();
+        if (!mod) return;
+        mocks.serverFetch.mockResolvedValueOnce(jsonResponse({ error: 'route_unavailable' }, status));
+
+        await expect(mod.markLiveActivityTargetEnded('target-retry'))
+            .rejects.toThrow(`Failed to mark Live Activity target ended: ${status}`);
+    });
 });

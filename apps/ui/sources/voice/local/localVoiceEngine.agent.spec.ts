@@ -110,9 +110,9 @@ describe('local voice engine agent behavior', () => {
 
         const targetState = useVoiceTargetStore.getState();
         targetState.setScope('global');
-        targetState.setPrimaryActionSessionId(null);
-        targetState.setTrackedSessionIds([]);
-        targetState.setLastFocusedSessionId(null);
+        targetState.setPrimaryActionSessionAddress(null);
+        targetState.setVoiceLiveContextSessionAddresses([]);
+        targetState.setLastFocusedSessionAddress(null);
         vi.restoreAllMocks();
     });
 

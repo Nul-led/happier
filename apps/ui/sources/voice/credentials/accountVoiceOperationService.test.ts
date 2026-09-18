@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createRecipientContractDigestV1,
   normalizeRecipientContractV1,
+  resolveRequiredRecipientContractApprovalDigestV1,
   VoiceProviderContributionSchema,
 } from '@happier-dev/protocol';
 import {
@@ -9,6 +10,13 @@ import {
   retireActiveServerAccountScopeLifetime,
 } from '@/sync/domains/scope/activeServerAccountScope';
 import { sync } from '@/sync/sync';
+import {
+  applySavedSecretCatalogPage,
+  invalidateSavedSecretCatalog,
+  resetSavedSecretCatalogSnapshotsForTests,
+  resolveSavedSecretReference,
+} from '@/sync/store/settings/savedSecretCatalogSnapshot';
+import { resolveAccountVoiceCredentialApprovalDigest } from './accountVoiceCredential';
 
 import {
   createAccountVoiceCredentialAuthorityLease,
@@ -443,6 +451,7 @@ function retireAndReenterSameAccount(): void {
 
 describe('account Voice operation service', () => {
   beforeEach(() => {
+    resetSavedSecretCatalogSnapshotsForTests();
     retireActiveServerAccountScopeLifetime();
     mocks.activeServerId = 'server-1';
     mocks.activeProfileScope = Object.freeze({ serverId: 'server-1', accountId: 'account-1' });
@@ -454,6 +463,73 @@ describe('account Voice operation service', () => {
         connectedServiceCredentialRevisionsV1: [],
       },
     };
+  });
+
+  it('uses a shared-only catalog ref and fails closed once that scoped material is stale', async () => {
+    const ref = 'happier:shared-secret:v1:resource-voice';
+    const scope = { serverId: 'server-1', accountId: 'account-1' } as const;
+    applySavedSecretCatalogPage({
+      scope,
+      entries: [{
+        ref,
+        source: 'shared_resource',
+        relationship: 'recipient',
+        name: 'Shared voice key',
+        kind: 'apiKey',
+        encryptionMode: 'e2ee',
+        owner: {
+          kind: 'account',
+          accountId: 'owner-1',
+          firstName: 'Owner',
+          lastName: null,
+          username: 'owner',
+          avatarUrl: null,
+        },
+        accessSources: [{ kind: 'account' }],
+        audience: null,
+        ownerAccountId: null,
+        revision: 7,
+        materialStatus: 'ready',
+        capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
+      }],
+      materializedSecrets: [{
+        id: ref,
+        name: 'Shared voice key',
+        kind: 'apiKey',
+        encryptedValue: { _isSecretValue: true, value: 'shared-opened-value' },
+        createdAt: 1,
+        updatedAt: 7,
+      }],
+      observedAt: 1,
+    });
+    const requiredApproval = resolveRequiredRecipientContractApprovalDigestV1(externalRecipientContract);
+    const approval = resolveAccountVoiceCredentialApprovalDigest({
+      requiredRecipientContractDigest: requiredApproval,
+      savedSecret: resolveSavedSecretReference(scope, [], ref),
+    });
+    if (!approval) throw new Error('expected shared approval');
+    mocks.state = {
+      ...mocks.state,
+      settings: {
+        ...createSettings(ref, 7, approval),
+        secrets: [],
+      },
+    };
+
+    const service = createAccountVoiceOperationService({
+      providerId: 'happier.voice.openai/realtime-openai',
+      recipientContract: externalRecipientContract,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      fetch: vi.fn(async () => new Response('{}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })),
+    });
+    await expect(service.inspectAvailability()).resolves.toBeUndefined();
+
+    invalidateSavedSecretCatalog(scope);
+    await expect(service.inspectAvailability()).rejects.toMatchObject({ code: 'voice_account_operation_cancelled' });
   });
 
   it('does not re-materialize a changed machine-scoped secret during one live raw invocation', async () => {

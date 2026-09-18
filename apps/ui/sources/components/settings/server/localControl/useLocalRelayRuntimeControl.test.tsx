@@ -268,6 +268,8 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
                 remainingOwnedPaths: [],
                 remainingUnknownPaths: [],
                 stoppedRunningHome: true,
+                inspectionComplete: true,
+                inspectionError: null,
                 error: null,
             },
         });
@@ -287,6 +289,8 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
                 remainingOwnedPaths: ['/data/files'],
                 remainingUnknownPaths: ['/data/operator-note'],
                 stoppedRunningHome: true,
+                inspectionComplete: true,
+                inspectionError: null,
                 error: 'The files directory could not be removed.',
             },
         });
@@ -300,6 +304,37 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
                 remainingUnknownPaths: ['/data/operator-note'],
                 stoppedRunningHome: true,
                 error: 'The files directory could not be removed.',
+            },
+        });
+    });
+
+    it('retains irreversible erase success when only post-delete inspection needs attention', async () => {
+        const harness = createScriptedRunnerHarness();
+        const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
+        const erase = await harness.start(() => getCurrent().erasePersonalHomeData());
+        await harness.settle(erase, true, {
+            data: {
+                outcome: 'completed_with_cleanup_attention',
+                removedPaths: ['/data/home.sqlite', '/data/files'],
+                remainingOwnedPaths: [],
+                remainingUnknownPaths: [],
+                stoppedRunningHome: true,
+                inspectionComplete: false,
+                inspectionError: 'Post-delete storage inspection failed.',
+            },
+        });
+
+        expect(getCurrent().lastOperation).toEqual({
+            operation: 'erase',
+            erase: {
+                outcome: 'completed_with_cleanup_attention',
+                removedPaths: ['/data/home.sqlite', '/data/files'],
+                remainingOwnedPaths: [],
+                remainingUnknownPaths: [],
+                stoppedRunningHome: true,
+                inspectionComplete: false,
+                inspectionError: 'Post-delete storage inspection failed.',
+                error: null,
             },
         });
     });
@@ -473,6 +508,16 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
         expect(backupSpec?.params.outputPath).toBeUndefined();
     });
 
+    it('can defer the lease-held inspection refresh while a caller composes backup with another operation', async () => {
+        const harness = createScriptedRunnerHarness();
+        const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
+
+        const backup = await harness.start(() => getCurrent().backupPersonalHome({ refreshAfterSuccess: false }));
+        await harness.settle(backup, true, { data: BACKUP_RESULT_DATA });
+
+        expect(harness.startedSpecs.filter((spec) => spec.kind === 'relay.runtime.personal_home.inspect.v1')).toHaveLength(0);
+    });
+
     it('parses inspection facts from the inspect task result', async () => {
         const harness = createScriptedRunnerHarness();
         const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
@@ -563,16 +608,16 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
         const harness = createScriptedRunnerHarness();
         const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
 
-        expect(getCurrent().activeOperationKind).toBeNull();
+        expect(getCurrent().activeOperationSpec).toBeNull();
         const backup = await harness.start(() => getCurrent().backupPersonalHome());
-        expect(getCurrent().activeOperationKind).toBe('relay.runtime.personal_home.backup.v1');
+        expect(getCurrent().activeOperationSpec?.kind).toBe('relay.runtime.personal_home.backup.v1');
         await harness.settle(backup, true, { data: BACKUP_RESULT_DATA });
         // The retained terminal snapshot keeps its kind so the progress card stays truthful.
-        expect(getCurrent().activeOperationKind).toBe('relay.runtime.personal_home.backup.v1');
+        expect(getCurrent().activeOperationSpec?.kind).toBe('relay.runtime.personal_home.backup.v1');
         await act(async () => {
             getCurrent().dismissOperationResult();
         });
-        expect(getCurrent().activeOperationKind).toBeNull();
+        expect(getCurrent().activeOperationSpec).toBeNull();
     });
 
     it('runs the safe runtime uninstall through the canonical task bridge and surfaces typed failure', async () => {

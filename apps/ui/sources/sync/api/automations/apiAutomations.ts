@@ -23,6 +23,7 @@ import {
     type AutomationDefinitionReconcileRequest,
     type AutomationV3RunDetail,
     type AutomationV3RunListItem,
+    type AutomationV3RunMutationResponse,
     type AutomationV3Settings,
     type AutomationV3SettingsUpdateRequest,
 } from '@happier-dev/protocol';
@@ -181,16 +182,26 @@ export async function replaceAutomationDefinitionAssignments(
     return AutomationDefinitionDetailSchema.parse(raw);
 }
 
+/**
+ * Admits one occurrence and returns the whole receipt.
+ *
+ * The receipt's optional `workflowRun` is the server's explicit statement that
+ * this admitted Run is a managed workflow, and the Protocol schema already
+ * proves its id is the returned Run's id. Keeping it here is what lets a caller
+ * open the exact managed Run instead of guessing from a recipe shape or
+ * reaching for the newest history row. A legacy receipt simply omits it, and
+ * callers must not synthesize one.
+ */
 export async function runAutomationDefinitionNow(
     credentials: AuthCredentials,
     automationId: string,
-): Promise<AutomationV3RunListItem> {
+): Promise<AutomationV3RunMutationResponse> {
     const response = await serverFetch(`/v3/automations/${encodeURIComponent(automationId)}/run-now`, {
         method: 'POST',
         headers: getAutomationAuthHeaders(credentials),
     }, { includeAuth: false });
     const raw = await readAutomationJsonOrThrow(response);
-    return AutomationV3RunMutationResponseSchema.parse(raw).run;
+    return AutomationV3RunMutationResponseSchema.parse(raw);
 }
 
 /** Direct Run detail stays route-owned; the bounded Run list never carries these private envelopes. */

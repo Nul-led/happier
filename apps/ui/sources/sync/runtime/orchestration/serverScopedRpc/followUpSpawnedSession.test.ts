@@ -306,6 +306,10 @@ describe('followUpSpawnedSessionWithServerScope', () => {
                     decryptEncryptionKey: async () => null,
                     initializeSessions: async () => {},
                     getSessionEncryption: () => null,
+                    // The real Account encryption owner answers both generation questions, so the
+                    // fixture does too rather than letting consumers probe for them.
+                    getCurrentEncryptionGenerationScope: () => ({ accountId: 'local', serverId: null, generation: 0 }),
+                    isCurrentEncryptionGenerationScope: () => true,
                 },
             }),
             fetchSessionById: async ({ applySessions }) => {
@@ -376,6 +380,10 @@ describe('followUpSpawnedSessionWithServerScope', () => {
                     decryptEncryptionKey: async () => null,
                     initializeSessions: async () => {},
                     getSessionEncryption: () => null,
+                    // The real Account encryption owner answers both generation questions, so the
+                    // fixture does too rather than letting consumers probe for them.
+                    getCurrentEncryptionGenerationScope: () => ({ accountId: 'local', serverId: null, generation: 0 }),
+                    isCurrentEncryptionGenerationScope: () => true,
                 },
             }),
             fetchSessionById: async ({ applySessions }) => {
@@ -468,6 +476,10 @@ describe('followUpSpawnedSessionWithServerScope', () => {
                     decryptEncryptionKey: async () => null,
                     initializeSessions: async () => {},
                     getSessionEncryption: () => null,
+                    // The real Account encryption owner answers both generation questions, so the
+                    // fixture does too rather than letting consumers probe for them.
+                    getCurrentEncryptionGenerationScope: () => ({ accountId: 'local', serverId: null, generation: 0 }),
+                    isCurrentEncryptionGenerationScope: () => true,
                 },
             }),
             fetchSessionById: async ({ applySessions }) => {
@@ -519,6 +531,10 @@ describe('followUpSpawnedSessionWithServerScope', () => {
                     decryptEncryptionKey: async () => null,
                     initializeSessions: async () => {},
                     getSessionEncryption: () => null,
+                    // The real Account encryption owner answers both generation questions, so the
+                    // fixture does too rather than letting consumers probe for them.
+                    getCurrentEncryptionGenerationScope: () => ({ accountId: 'local', serverId: null, generation: 0 }),
+                    isCurrentEncryptionGenerationScope: () => true,
                 },
             }),
             fetchSessionById: async () => ({
@@ -561,6 +577,10 @@ describe('followUpSpawnedSessionWithServerScope', () => {
                     decryptEncryptionKey: async () => null,
                     initializeSessions: async () => {},
                     getSessionEncryption: () => null,
+                    // The real Account encryption owner answers both generation questions, so the
+                    // fixture does too rather than letting consumers probe for them.
+                    getCurrentEncryptionGenerationScope: () => ({ accountId: 'local', serverId: null, generation: 0 }),
+                    isCurrentEncryptionGenerationScope: () => true,
                 },
             }),
             fetchSessionById: async () => {

@@ -27,6 +27,12 @@ const PATCHED_TYPE_DECLARATION = 'lib/typescript/src/types/MarkdownStyle.d.ts';
 const PATCHED_TYPE_MARKER = 'texMathBackslashDelimiters?: boolean';
 const PATCHED_PARSER_MODULE = 'lib/module/web/parseMarkdown.js';
 const PARSER_CACHE_DELETE_MARKER = 'parseCache.delete(cacheKey)';
+const VISIBILITY_MARKERS = [
+    ['src/web/EnrichedMarkdownText.tsx', 'if (syncAst) return;'],
+    ['lib/module/web/EnrichedMarkdownText.js', 'if (syncAst) return;'],
+    ['src/web/streamingReveal.ts', '.start <= start'],
+    ['lib/module/web/streamingReveal.js', '.start <= start'],
+];
 
 function createPatchedPackageFixture() {
     const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'enriched-markdown-patch-fixture-'));
@@ -150,7 +156,25 @@ test('DISCRIMINATES: the obsolete global parser cache reset remains forbidden', 
     }
 });
 
-test('repairs a missing generated streaming module when the remaining patch is already applied', () => {
+test('rejects stale visibility behavior independently in every consumed source and compiled owner', () => {
+    const fixtureDir = createPatchedPackageFixture();
+    try {
+        for (const [relativePath, marker] of VISIBILITY_MARKERS) {
+            const filePath = path.join(fixtureDir, relativePath);
+            const original = fs.readFileSync(filePath, 'utf8');
+            fs.writeFileSync(filePath, original.replaceAll(marker, ''), 'utf8');
+            const result = verifyReactNativeEnrichedMarkdownWebStreamingPatch({ packageDir: fixtureDir });
+            assert.equal(result.status, 'failed', relativePath);
+            assert.ok(result.missingMarkers.some(([file, missing]) => file === relativePath && missing === marker));
+            fs.writeFileSync(filePath, original, 'utf8');
+        }
+    } finally {
+        fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+});
+
+for (const scenario of ['missing module', 'stale overlapping implementation']) {
+test(`partial repair handles ${scenario} without certifying an incompatible dependency`, () => {
     const installedResult = verifyReactNativeEnrichedMarkdownWebStreamingPatch({ packageDir: INSTALLED_PACKAGE_DIR });
     assert.equal(installedResult.status, 'ok', formatReactNativeEnrichedMarkdownWebStreamingPatchFailure(installedResult));
 
@@ -166,7 +190,17 @@ test('repairs a missing generated streaming module when the remaining patch is a
             path.join(fixturePatchDir, 'react-native-enriched-markdown+0.5.0.patch'),
         );
         fs.writeFileSync(path.join(fixtureDir, 'package.json'), '{"name":"partial-repair-fixture","private":true}\n');
-        fs.rmSync(path.join(packageDir, 'lib', 'module', 'web', 'streamingReveal.js'));
+        if (scenario === 'missing module') {
+            fs.rmSync(path.join(packageDir, 'lib', 'module', 'web', 'streamingReveal.js'));
+        } else {
+            for (const [relativePath, marker] of VISIBILITY_MARKERS) {
+                const filePath = path.join(packageDir, relativePath);
+                const original = fs.readFileSync(filePath, 'utf8');
+                const stale = original.replaceAll(marker, marker.includes('syncAst') ? '' : '.start < end');
+                assert.notEqual(stale, original);
+                fs.writeFileSync(filePath, stale, 'utf8');
+            }
+        }
 
         const brokenResult = verifyReactNativeEnrichedMarkdownWebStreamingPatch({ packageDir });
         assert.equal(brokenResult.status, 'failed');
@@ -176,8 +210,11 @@ test('repairs a missing generated streaming module when the remaining patch is a
             patchPackageCliPath: path.join(UI_DIR, '..', '..', 'node_modules', 'patch-package', 'dist', 'index.js'),
             label: 'test',
         });
-        assert.equal(repairedResult.status, 'ok', formatReactNativeEnrichedMarkdownWebStreamingPatchFailure(repairedResult));
+        // --partial can restore a missing added file, but cannot rebase overlapping
+        // previously patched implementation hunks. The verifier must fail closed.
+        assert.equal(repairedResult.status, scenario === 'missing module' ? 'ok' : 'failed');
     } finally {
         fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
 });
+}

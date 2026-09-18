@@ -92,11 +92,11 @@ describe('sync.persistSessionTranscriptMessage', () => {
     beforeEach(async () => {
         await resetServerReachabilitySupervisors();
         storage.setState(storage.getInitialState(), true);
-        activeServerId = upsertServerProfile({
+        activeServerId = (await upsertServerProfile({
             serverUrl: 'https://voice-history-owner.example.test',
             name: 'Voice History owner',
-        }).id;
-        setActiveServerId(activeServerId, { scope: 'device' });
+        })).id;
+        await setActiveServerId(activeServerId, { scope: 'device' });
         storage.getState().activateProfileScope({
             serverId: activeServerId,
             accountId: 'voice-account-a',

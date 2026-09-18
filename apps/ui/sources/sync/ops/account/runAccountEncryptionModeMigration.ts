@@ -1,16 +1,16 @@
 import {
-  canonicalSessionDraftAddressV1,
+  canonicalSessionDraftAddressV2,
   pluginJsonValuesEqual,
   type AccountEncryptionMigrateRequest,
   type AccountEncryptionMigrateSuccessResponse,
-  type SessionDraftRecordV1,
+  type SessionDraftRecordV2,
 } from '@happier-dev/protocol';
 
 type Params = Readonly<{
   request: AccountEncryptionMigrateRequest;
   migrate(request: AccountEncryptionMigrateRequest): Promise<AccountEncryptionMigrateSuccessResponse>;
   activateTargetMode(): void | Promise<void>;
-  acknowledgeSessionDrafts(records: readonly SessionDraftRecordV1[]): void | Promise<void>;
+  acknowledgeSessionDrafts(records: readonly SessionDraftRecordV2[]): void | Promise<void>;
 }>;
 
 export async function runAccountEncryptionModeMigration(
@@ -18,18 +18,24 @@ export async function runAccountEncryptionModeMigration(
 ): Promise<AccountEncryptionMigrateSuccessResponse> {
   const result = await params.migrate(params.request);
   const expectedItems = params.request.sessionDrafts?.items ?? [];
-  let migratedRecords: readonly SessionDraftRecordV1[] = [];
+  let migratedRecords: readonly SessionDraftRecordV2[] = [];
+
+  if (params.request.sessionDrafts && "v" in params.request.sessionDrafts
+    && (!result.sessionDrafts || !("v" in result.sessionDrafts)
+      || result.sessionDrafts.v !== params.request.sessionDrafts.v)) {
+    throw new Error('Invalid session draft migration response');
+  }
 
   if (expectedItems.length > 0) {
     migratedRecords = result.sessionDrafts?.records ?? [];
     const expectedByAddress = new Map(expectedItems.map((item) => [
-      canonicalSessionDraftAddressV1(item.address),
+      canonicalSessionDraftAddressV2(item.address),
       item,
     ]));
     const responseAddresses = new Set<string>();
     const coverageIsExact = migratedRecords.length === expectedItems.length
       && migratedRecords.every((record) => {
-        const canonicalAddress = canonicalSessionDraftAddressV1(record.address);
+        const canonicalAddress = canonicalSessionDraftAddressV2(record.address);
         const expected = expectedByAddress.get(canonicalAddress);
         if (!expected || responseAddresses.has(canonicalAddress)) return false;
         responseAddresses.add(canonicalAddress);

@@ -1,0 +1,69 @@
+import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
+import * as React from 'react';
+
+import { Avatar } from '@/components/ui/avatar/Avatar';
+import { useSetting } from '@/sync/domains/state/storage';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
+import { getSessionAvatarId } from '@/utils/sessions/sessionUtils';
+
+import { SessionAgentCatalogIdentityIcon } from '../presentation/SessionAgentCatalogIdentityIcon';
+
+export type SessionListIdentityDisplay = 'avatar' | 'agentLogo' | 'none';
+
+export function normalizeSessionListIdentityDisplay(value: unknown): SessionListIdentityDisplay {
+    return value === 'agentLogo' || value === 'none' ? value : 'avatar';
+}
+
+/** The single reader/normalizer for the person's Session-list identity preference. */
+export function useSessionListIdentityDisplay(): SessionListIdentityDisplay {
+    return normalizeSessionListIdentityDisplay(useSetting('sessionListIdentityDisplay'));
+}
+
+/**
+ * Canonical leading identity used by Session-list-shaped rows.
+ * Consumers choose geometry, while avatar-vs-Agent-logo semantics stay here.
+ */
+export const SessionListIdentity = React.memo(function SessionListIdentity(props: Readonly<{
+    session: Session | SessionListRenderableSession;
+    display: SessionListIdentityDisplay;
+    serverId: string | null;
+    color: string;
+    avatarSize: number;
+    agentLogoSize: number;
+    connected: boolean;
+    testID?: string;
+}>) {
+    if (props.display === 'none') return null;
+    const metadata = 'agentState' in props.session
+        ? readSessionOwnerMetadataView(props.session)
+        : props.session.metadata;
+    const agentId = 'agentState' in props.session
+        ? readSessionPresentationAgentId(props.session)
+        : resolveAgentIdFromSessionMetadata(metadata);
+
+    if (props.display === 'avatar') {
+        return (
+            <Avatar
+                id={getSessionAvatarId(props.session)}
+                size={props.avatarSize}
+                monochrome={props.session.active !== true || !props.connected}
+                flavor={agentId}
+                hasUnreadMessages={false}
+            />
+        );
+    }
+
+    return (
+        <SessionAgentCatalogIdentityIcon
+            agentId={agentId ?? ''}
+            machineId={metadata?.machineId ?? null}
+            serverId={props.serverId}
+            color={props.color}
+            size={props.agentLogoSize}
+            testID={props.testID}
+        />
+    );
+});

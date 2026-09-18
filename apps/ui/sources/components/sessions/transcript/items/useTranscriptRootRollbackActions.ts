@@ -57,7 +57,10 @@ export function useTranscriptRootRollbackActions(params: Readonly<{
     const externalAgentId = declaredAgentId !== null && !isBundledAgentId(declaredAgentId)
         ? declaredAgentId
         : null;
-    const sessionServerId = usePreferredServerIdForSession(session.id, session.serverId ?? null);
+    const sessionServerId = usePreferredServerIdForSession({
+        serverId: session.serverId ?? null,
+        sessionId: session.id,
+    });
     const currentAgentCapabilities = useCurrentProjectedAgentCapabilities({
         agentId: externalAgentId,
         machineId: ownerMetadata?.machineId ?? null,
@@ -96,7 +99,7 @@ export function useTranscriptRootRollbackActions(params: Readonly<{
             currentAgentCapabilities,
         }),
         [
-            session.accessLevel,
+            session.access,
             session.active,
             session.rollbackEligibleTurnStarts,
             sessionMetadataSignature,

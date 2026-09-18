@@ -6,10 +6,14 @@ import type {
     SessionWorkflowRunSnapshotV1,
 } from '@happier-dev/protocol';
 
-import { fetchWorkflowRunSnapshot } from '@/sync/domains/sessionActivity/sessionWorkflowActivityRecords';
+import { observeWorkflowRunSnapshot } from '@/sync/ops/sessionWorkflowActivity';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
+import { storage } from '@/sync/domains/state/storage';
+import { areServerAccountScopesEqual } from '@/sync/domains/scope/serverAccountScope';
 
 import {
     readSessionWorkflowActivityHeadlineFromMetadata,
+    projectWorkflowRunDetail,
     resolveActiveWorkflowRunHeadlines,
 } from './sessionWorkflowActivityPresentation';
 import type { WorkflowRunDetailState } from './sessionWorkflowActivityTypes';
@@ -17,7 +21,7 @@ import type { WorkflowRunDetailState } from './sessionWorkflowActivityTypes';
 /**
  * Live workflow activity reader hook (UIW1).
  *
- * Reads the compact headline from session metadata (the only live invalidation pointer) and fetches
+ * Reads the compact headline from Session metadata and observes the shared System Record repository for
  * the matching durable `activity/workflow_run.v1` system record for each run whose
  * `recordRevision`/`recordUpdatedAt` changes. The fetch signature is narrow — keyed by
  * `runId:recordRevision:recordUpdatedAt` — so a progress tick that does not advance a run's record
@@ -33,6 +37,7 @@ export type SessionWorkflowActivityState = Readonly<{
 
 type WorkflowRunDetailEntry = Readonly<{
     fetchKey: string;
+    ownerKey: string;
     detail: WorkflowRunDetailState;
 }>;
 
@@ -42,9 +47,13 @@ function runFetchKey(run: SessionWorkflowRunHeadlineV1): string {
 
 export function useSessionWorkflowActivity(params: Readonly<{
     sessionId: string;
+    serverId?: string;
     metadata: unknown;
     enabled?: boolean;
 }>): SessionWorkflowActivityState {
+    const accountScope = storage((state) => state.profileScope);
+    const serverId = params.serverId;
+    const ownerKey = JSON.stringify([accountScope?.serverId, accountScope?.accountId, serverId, params.sessionId]);
     const enabled = params.enabled ?? true;
     const headline = React.useMemo(
         () => (enabled ? readSessionWorkflowActivityHeadlineFromMetadata(params.metadata) : null),
@@ -60,18 +69,25 @@ export function useSessionWorkflowActivity(params: Readonly<{
     );
 
     const [detailByRunId, setDetailByRunId] = React.useState<ReadonlyMap<string, WorkflowRunDetailEntry>>(new Map());
-    const detailByRunIdRef = React.useRef(detailByRunId);
-
+    const observers = React.useRef(new Map<string, Readonly<{ fetchKey: string; ownerKey: string; unsubscribe: () => void }>>());
+    React.useEffect(() => () => {
+        for (const observer of observers.current.values()) observer.unsubscribe();
+        observers.current.clear();
+    }, []);
     React.useEffect(() => {
-        detailByRunIdRef.current = detailByRunId;
-    }, [detailByRunId]);
-
-    React.useEffect(() => {
+        for (const [runId, observer] of observers.current) {
+            const run = activeRuns.find((candidate) => candidate.runId === runId);
+            if (!enabled || !run || observer.ownerKey !== ownerKey || observer.fetchKey !== runFetchKey(run)) {
+                observer.unsubscribe();
+                observers.current.delete(runId);
+            }
+        }
         if (!enabled || activeRuns.length === 0) {
             setDetailByRunId(new Map());
             return;
         }
-        let cancelled = false;
+        const session = normalizeSessionAddress(serverId, params.sessionId);
+        const capturedAccountScope = accountScope;
 
         // Seed by run id, not by revision key. A revision advance should keep the previous loaded
         // snapshot visible while the newer record is fetched (stale-while-revalidate), so workflow
@@ -83,7 +99,10 @@ export function useSessionWorkflowActivity(params: Readonly<{
                 const existing = prev.get(run.runId);
                 next.set(run.runId, {
                     fetchKey: key,
-                    detail: existing?.detail ?? { state: 'loading', runId: run.runId },
+                    ownerKey,
+                    detail: session
+                        ? (existing?.ownerKey === ownerKey ? existing.detail : null) ?? { state: 'loading', runId: run.runId }
+                        : { state: 'missing', runId: run.runId, reason: 'offline' },
                 });
             }
             return next;
@@ -91,53 +110,32 @@ export function useSessionWorkflowActivity(params: Readonly<{
 
         for (const run of activeRuns) {
             const key = runFetchKey(run);
-            const existing = detailByRunIdRef.current.get(run.runId);
-            if (existing?.fetchKey === key) continue;
-            void fetchWorkflowRunSnapshot({ sessionId: params.sessionId, runId: run.runId })
-                .then((snapshot) => {
-                    if (cancelled) return;
-                    setDetailByRunId((prev) => {
-                        const existingEntry = prev.get(run.runId);
-                        if (!existingEntry || existingEntry.fetchKey !== key) return prev;
-                        const next = new Map(prev);
-                        next.set(run.runId, {
-                            fetchKey: key,
-                            detail: snapshot
-                                ? { state: 'loaded', runId: run.runId, snapshot }
-                                : { state: 'missing', runId: run.runId },
-                        });
-                        return next;
-                    });
-                })
-                .catch(() => {
-                    if (cancelled) return;
-                    setDetailByRunId((prev) => {
-                        const existingEntry = prev.get(run.runId);
-                        if (!existingEntry || existingEntry.fetchKey !== key) return prev;
-                        const next = new Map(prev);
-                        next.set(run.runId, {
-                            fetchKey: key,
-                            detail: { state: 'missing', runId: run.runId },
-                        });
-                        return next;
-                    });
+            if (!session || observers.current.has(run.runId)) continue;
+            const unsubscribe = observeWorkflowRunSnapshot({ session, runId: run.runId, onChange: (result) => {
+                if (!areServerAccountScopesEqual(storage.getState().profileScope, capturedAccountScope)) return;
+                setDetailByRunId((prev) => {
+                    const existingEntry = prev.get(run.runId);
+                    if (!existingEntry || existingEntry.fetchKey !== key || existingEntry.ownerKey !== ownerKey) return prev;
+                    const detail = projectWorkflowRunDetail(run.runId, result, existingEntry.detail);
+                    if (detail === existingEntry.detail) return prev;
+                    const next = new Map(prev);
+                    next.set(run.runId, { fetchKey: key, ownerKey, detail });
+                    return next;
                 });
+            } });
+            observers.current.set(run.runId, { fetchKey: key, ownerKey, unsubscribe });
         }
-
-        return () => {
-            cancelled = true;
-        };
         // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchSignature is the narrow key
-    }, [enabled, fetchSignature, params.sessionId]);
+    }, [enabled, fetchSignature, ownerKey]);
 
     const runDetailById = React.useMemo(() => {
         const byRunId = new Map<string, WorkflowRunDetailState>();
         for (const run of activeRuns) {
             const entry = detailByRunId.get(run.runId);
-            byRunId.set(run.runId, entry?.detail ?? { state: 'loading', runId: run.runId });
+            byRunId.set(run.runId, (entry?.ownerKey === ownerKey ? entry.detail : null) ?? { state: 'loading', runId: run.runId });
         }
         return byRunId;
-    }, [activeRuns, detailByRunId]);
+    }, [activeRuns, detailByRunId, ownerKey]);
 
     const loadedRunsById = React.useMemo(() => {
         const byRunId = new Map<string, SessionWorkflowRunSnapshotV1>();
@@ -164,12 +162,16 @@ export function useSessionWorkflowActivity(params: Readonly<{
  */
 export function useWorkflowRunForToolUseId(params: Readonly<{
     sessionId: string;
+    serverId?: string;
     metadata: unknown;
     toolUseId: string | null | undefined;
 }>): Readonly<{
     runHeadline: SessionWorkflowRunHeadlineV1 | null;
     detail: WorkflowRunDetailState | null;
 }> {
+    const accountScope = storage((state) => state.profileScope);
+    const serverId = params.serverId;
+    const ownerKey = JSON.stringify([accountScope?.serverId, accountScope?.accountId, serverId, params.sessionId]);
     const headline = React.useMemo(
         () => readSessionWorkflowActivityHeadlineFromMetadata(params.metadata),
         [params.metadata],
@@ -189,31 +191,27 @@ export function useWorkflowRunForToolUseId(params: Readonly<{
     // durable record advances, not on unrelated headline churn.
     const fetchKey = runHeadline ? runFetchKey(runHeadline) : null;
     const runId = runHeadline?.runId ?? null;
-    const [detail, setDetail] = React.useState<WorkflowRunDetailState | null>(null);
+    const [detailState, setDetailState] = React.useState<Readonly<{ ownerKey: string; detail: WorkflowRunDetailState }> | null>(null);
+    const detail = detailState?.ownerKey === ownerKey ? detailState.detail : null;
 
     React.useEffect(() => {
         if (!runId || !fetchKey) {
-            setDetail(null);
+            setDetailState(null);
             return;
         }
-        let cancelled = false;
-        setDetail((prev) => (prev && prev.runId === runId ? prev : { state: 'loading', runId }));
-        void fetchWorkflowRunSnapshot({ sessionId: params.sessionId, runId })
-            .then((snapshot) => {
-                if (cancelled) return;
-                setDetail(snapshot
-                    ? { state: 'loaded', runId, snapshot }
-                    : { state: 'missing', runId });
-            })
-            .catch(() => {
-                if (cancelled) return;
-                setDetail({ state: 'missing', runId });
-            });
-        return () => {
-            cancelled = true;
-        };
+        const session = normalizeSessionAddress(serverId, params.sessionId);
+        if (!session) {
+            setDetailState({ ownerKey, detail: { state: 'missing', runId, reason: 'offline' } });
+            return;
+        }
+        const capturedAccountScope = accountScope;
+        setDetailState((prev) => (prev?.ownerKey === ownerKey && prev.detail.runId === runId ? prev : { ownerKey, detail: { state: 'loading', runId } }));
+        return observeWorkflowRunSnapshot({ session, runId, onChange: (result) => {
+            if (!areServerAccountScopesEqual(storage.getState().profileScope, capturedAccountScope)) return;
+            setDetailState((prev) => ({ ownerKey, detail: projectWorkflowRunDetail(runId, result, prev?.ownerKey === ownerKey ? prev.detail : null) }));
+        } });
         // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchKey is the narrow key
-    }, [fetchKey, params.sessionId]);
+    }, [fetchKey, ownerKey]);
 
     return { runHeadline, detail };
 }

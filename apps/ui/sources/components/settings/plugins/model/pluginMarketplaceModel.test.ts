@@ -244,7 +244,7 @@ describe('installed marketplace catalog formatting', () => {
         })).toEqual({ reason: 'projectionUnavailable' });
     });
 
-    it('still reports a disconnect when a reachable transport has no daemon capability answer yet', () => {
+    it('does not report a disconnect while a reachable transport is still reading plugin truth', () => {
         expect(resolvePluginReadOnlySnapshotNotice({
             daemonOperationsAvailable: false,
             daemonTransportOnline: true,
@@ -255,7 +255,7 @@ describe('installed marketplace catalog formatting', () => {
             hasCatalog: false,
             hasMarketplaceSourceRegistry: false,
             hasProjectionInputs: false,
-        })).toEqual({ reason: 'disconnected' });
+        })).toEqual({ reason: 'refreshing' });
     });
 
     it('shows no notice when daemon operations are available', () => {

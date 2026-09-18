@@ -13,6 +13,8 @@ import {
 } from '@/components/sessions/presentation/externalSessionRuntimePresentation';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import type { ItemAction } from '@/components/ui/lists/itemActions';
+import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { ITEM_SUBTITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';
 import { useResolvedItemDensity } from '@/components/ui/lists/useResolvedItemDensity';
 import { resolveOverlayPointerEvents } from '@/components/ui/overlays/resolveOverlayPointerEvents';
@@ -264,9 +266,20 @@ function renderBrowseCandidateSubtitle(
 
 function renderBrowseCandidateRightAccessory(
     candidate: ExternalSessionBrowseCandidate,
+    deleteAction?: Readonly<{
+        candidateKey: string;
+        candidateTitle: string;
+        deleting: boolean;
+        onDelete: (candidate: ExternalSessionBrowseCandidate) => void;
+    }> | null,
 ): React.ReactElement | null {
     const activity = candidate.activity;
-    if (activity === undefined && !candidate.linkedSessionId && !candidate.imported) return null;
+    if (
+        activity === undefined
+        && !candidate.linkedSessionId
+        && !candidate.imported
+        && !deleteAction
+    ) return null;
     const activityPresentation = activity === undefined
         ? null
         : resolveExternalSessionCandidateActivityPresentation(activity);
@@ -306,9 +319,56 @@ function renderBrowseCandidateRightAccessory(
                     testID={`external-session-candidate-imported:${candidate.remoteSessionId}`}
                 />
             ) : null}
+            {deleteAction ? (
+                <ExternalSessionBrowseCandidateActions
+                    candidateKey={deleteAction.candidateKey}
+                    candidateTitle={deleteAction.candidateTitle}
+                    deleting={deleteAction.deleting}
+                    onDelete={() => deleteAction.onDelete(candidate)}
+                />
+            ) : null}
         </View>
     );
 }
+
+/**
+ * The destructive Agent-side control for one listed candidate. It lives in an
+ * always-present row overflow — never a hover-only affordance — so touch and
+ * keyboard users reach it the same way, and it carries its own accessible name
+ * because a bare ellipsis says nothing about which session it acts on.
+ */
+const ExternalSessionBrowseCandidateActions = React.memo(
+    function ExternalSessionBrowseCandidateActions(props: Readonly<{
+        candidateKey: string;
+        candidateTitle: string;
+        deleting: boolean;
+        onDelete: () => void;
+    }>) {
+        const actions = React.useMemo((): ItemAction[] => [{
+            id: 'delete_agent_session',
+            title: t('common.delete'),
+            icon: 'trash',
+            destructive: true,
+            disabled: props.deleting,
+            onPress: props.onDelete,
+        }], [props.deleting, props.onDelete]);
+        return (
+            <ItemRowActions
+                title={props.candidateTitle}
+                actions={actions}
+                // One destructive control always behind the overflow: a compact
+                // row must not surface a delete icon under the user's thumb.
+                compactThreshold={Number.POSITIVE_INFINITY}
+                compactActionIds={[]}
+                overflowTriggerTestID={`external-session-candidate-actions:${props.candidateKey}`}
+                overflowTriggerAccessibilityLabel={t(
+                    'externalSessions.browseCandidateActionsAccessibilityLabel',
+                    { title: props.candidateTitle },
+                )}
+            />
+        );
+    },
+);
 
 const UNKNOWN_PROJECT_KEY = '<unknown-project>';
 
@@ -322,6 +382,8 @@ function buildCandidateVirtualizedSource(params: Readonly<{
     getInteractionState: () => Readonly<{
         candidateActionsDisabled: boolean;
         linkingSessionId: string | null;
+        deletingCandidateKey: string | null;
+        candidateDeleteSupported: boolean;
         offline: boolean;
         interaction: ExternalSessionsBrowseInteraction;
     }>;
@@ -333,6 +395,7 @@ function buildCandidateVirtualizedSource(params: Readonly<{
     machineHomeDir?: string | null;
     selectionAuthorityGeneration: number;
     onSelectCandidate: (candidate: ExternalSessionBrowseCandidate, selectionAuthorityGeneration: number) => void;
+    onDeleteCandidate: (candidate: ExternalSessionBrowseCandidate, selectionAuthorityGeneration: number) => void;
 }>): SelectionListVirtualizedOptionSource {
     const presentationContext: BrowseCandidatePresentationContext = {
         theme: params.theme,
@@ -378,6 +441,15 @@ function buildCandidateVirtualizedSource(params: Readonly<{
         readExternalSessionBrowseCandidateKey(getCandidate(candidateIndex))
     );
     /**
+     * Deletion is fenced by the same selection authority as activation: this
+     * source is rebuilt whenever the browse scope changes, so a control still
+     * reachable from the previous listing — a row overflow left open across the
+     * switch — carries the generation it was rendered for.
+     */
+    const deleteCandidateAtSelectionAuthority = (candidate: ExternalSessionBrowseCandidate): void => {
+        params.onDeleteCandidate(candidate, params.selectionAuthorityGeneration);
+    };
+    /**
      * Linking is single-flight at the screen owner: while one link is in flight it
      * drops every other candidate activation. A row that still looks pressable but
      * is silently ignored is a lie, so activation is withheld from the whole list —
@@ -405,6 +477,8 @@ function buildCandidateVirtualizedSource(params: Readonly<{
             return [
                 interaction.candidateActionsDisabled ? 'disabled' : 'enabled',
                 interaction.linkingSessionId ?? '',
+                interaction.candidateDeleteSupported ? 'deletable' : 'undeletable',
+                interaction.deletingCandidateKey ?? '',
                 interaction.offline ? 'offline' : 'online',
                 interaction.interaction,
             ].join('\u0000');
@@ -449,7 +523,26 @@ function buildCandidateVirtualizedSource(params: Readonly<{
                     candidate,
                     candidatePath,
                 ),
-                rightAccessory: () => renderBrowseCandidateRightAccessory(candidate),
+                rightAccessory: () => renderBrowseCandidateRightAccessory(
+                    candidate,
+                    interaction.candidateDeleteSupported
+                        ? {
+                            candidateKey,
+                            candidateTitle: resolveBrowseCandidateMatchingLabel(candidate),
+                            // One deletion at a time: the screen serializes on
+                            // a single pending key and silently drops a second
+                            // press, so while any candidate is being deleted
+                            // every delete control is suspended. Progress still
+                            // belongs to the row actually being deleted — see
+                            // `loading` below.
+                            deleting: interaction.deletingCandidateKey !== null,
+                            onDelete: deleteCandidateAtSelectionAuthority,
+                        }
+                        : null,
+                ),
+                // The overflow control is interactive, so it must not live inside
+                // the row's own activation target.
+                rightAccessoryOutsidePressable: interaction.candidateDeleteSupported,
                 onSelect: () => params.onSelectCandidate(candidate, params.selectionAuthorityGeneration),
                 disabled: interaction.candidateActionsDisabled
                     || interaction.linkingSessionId !== null
@@ -458,7 +551,7 @@ function buildCandidateVirtualizedSource(params: Readonly<{
                         interaction: interaction.interaction,
                         linkedSessionId: candidate.linkedSessionId,
                     }),
-                loading: isPending,
+                loading: isPending || interaction.deletingCandidateKey === candidateKey,
             };
         },
         getOptionId,
@@ -599,12 +692,18 @@ export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalS
     preparationStopped?: boolean;
     cancelled?: boolean;
     linkingSessionId: string | null;
+    deletingCandidateKey?: string | null;
+    candidateDeleteSupported?: boolean;
     candidateActionsDisabled?: boolean;
     interaction?: ExternalSessionsBrowseInteraction;
     searchQuery: string;
     onSearchQueryChange: (query: string) => void;
     selectionAuthorityGeneration: number;
     onSelectCandidate: (candidate: ExternalSessionBrowseCandidate, selectionAuthorityGeneration: number) => void;
+    onDeleteCandidate?: (
+        candidate: ExternalSessionBrowseCandidate,
+        selectionAuthorityGeneration: number,
+    ) => void;
     onLoadMore: () => void;
     onRetry?: () => void;
     onCancelPreparation?: () => void;
@@ -627,18 +726,34 @@ export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalS
         },
         [],
     );
+    const onDeleteCandidateRef = React.useRef(props.onDeleteCandidate);
+    onDeleteCandidateRef.current = props.onDeleteCandidate;
+    const handleDeleteCandidate = React.useCallback((
+        candidate: ExternalSessionBrowseCandidate,
+        selectionAuthorityGeneration: number,
+    ) => {
+        onDeleteCandidateRef.current?.(candidate, selectionAuthorityGeneration);
+    }, []);
     const candidateActionsDisabled = props.candidateActionsDisabled === true;
+    // The affordance needs both the listing's advertisement and a consumer that
+    // can actually perform it; either one missing keeps the row read-only.
+    const candidateDeleteSupported = props.candidateDeleteSupported === true
+        && props.onDeleteCandidate !== undefined;
     const offline = props.offline === true;
     const interaction: ExternalSessionsBrowseInteraction = props.interaction ?? 'openSession';
     const interactionStateRef = React.useRef({
         candidateActionsDisabled,
         linkingSessionId: props.linkingSessionId,
+        deletingCandidateKey: props.deletingCandidateKey ?? null,
+        candidateDeleteSupported,
         offline,
         interaction,
     });
     interactionStateRef.current = {
         candidateActionsDisabled,
         linkingSessionId: props.linkingSessionId,
+        deletingCandidateKey: props.deletingCandidateKey ?? null,
+        candidateDeleteSupported,
         offline,
         interaction,
     };
@@ -655,9 +770,11 @@ export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalS
             machineHomeDir: props.machineHomeDir,
             selectionAuthorityGeneration: props.selectionAuthorityGeneration,
             onSelectCandidate: handleSelectCandidate,
+            onDeleteCandidate: handleDeleteCandidate,
         }),
         [
             getInteractionState,
+            handleDeleteCandidate,
             handleSelectCandidate,
             itemDensity,
             props.agentIdentity,

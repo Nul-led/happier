@@ -40,17 +40,24 @@ export function encryptSecretBox(data: any, secret: Uint8Array): Uint8Array {
     return result;
 }
 
-export function decryptSecretBox(data: Uint8Array, secret: Uint8Array): any | null {
+export function decryptSecretBox(data: Uint8Array, secret: Uint8Array, onAuthenticationFailure?: () => void): any | null {
     const nonce = data.slice(0, sodium.crypto_secretbox_NONCEBYTES);
     const encrypted = data.slice(sodium.crypto_secretbox_NONCEBYTES);
 
+    let decrypted: Uint8Array;
     try {
-        const decrypted = sodium.crypto_secretbox_open_easy(encrypted, nonce, secret);
+        decrypted = sodium.crypto_secretbox_open_easy(encrypted, nonce, secret);
         if (!decrypted) {
+            onAuthenticationFailure?.();
             return null;
         }
-        return parseSerializedJsonValue(new TextDecoder().decode(decrypted));
     } catch (error) {
+        onAuthenticationFailure?.();
+        return null;
+    }
+    try {
+        return parseSerializedJsonValue(new TextDecoder().decode(decrypted));
+    } catch {
         return null;
     }
 }

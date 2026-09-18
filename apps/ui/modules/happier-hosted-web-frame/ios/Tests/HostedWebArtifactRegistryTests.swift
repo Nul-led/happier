@@ -6,8 +6,16 @@ import Foundation
 import XCTest
 
 final class HostedWebArtifactRegistryTests: XCTestCase {
+  func testInlineDocumentTokenIsProcessLocalAndSynchronouslyRevoked() throws {
+    try assertInlineDocumentTokenIsProcessLocalAndSynchronouslyRevoked()
+  }
+
   func testRejectsSameSizeResourceMutationAfterRegistration() throws {
     try assertSameSizeResourceMutationIsRejected()
+  }
+
+  func testCurrentLoadBytesRemainTokenScopedAndNeedNoPersistentCacheRecord() throws {
+    try assertCurrentLoadBytesRemainTokenScoped()
   }
 }
 #endif
@@ -20,6 +28,34 @@ private enum HostedWebArtifactRegistryTestFailure: Error, CustomStringConvertibl
     case .assertionFailed(let message):
       return message
     }
+  }
+}
+
+private func assertInlineDocumentTokenIsProcessLocalAndSynchronouslyRevoked() throws {
+  let token = "hpa_\(String(repeating: "a", count: 64))"
+  let html = "<!doctype html><main>current</main>"
+  let registry = HostedInlineDocumentRegistry.shared
+  registry.clear()
+
+  guard registry.register(["token": token, "html": html]) else {
+    throw HostedWebArtifactRegistryTestFailure.assertionFailed("inline registration must accept the exact opaque token")
+  }
+  guard registry.origin(for: token)?.serialized == "happier-hosted-artifact://\(token)" else {
+    throw HostedWebArtifactRegistryTestFailure.assertionFailed("inline registration must publish only its token-scoped origin")
+  }
+  let registeredResponse = registry.readResponse(token: token, requestPath: "/")
+  guard registeredResponse.status == 200,
+        registeredResponse.bytes == Data(html.utf8),
+        registeredResponse.headers["Cache-Control"] == "no-store" else {
+    throw HostedWebArtifactRegistryTestFailure.assertionFailed("registered inline bytes must be reachable only through the current token")
+  }
+
+  guard registry.unregister(token) else {
+    throw HostedWebArtifactRegistryTestFailure.assertionFailed("inline revocation must acknowledge synchronously")
+  }
+  guard registry.origin(for: token) == nil,
+        registry.readResponse(token: token, requestPath: "/").status == 404 else {
+    throw HostedWebArtifactRegistryTestFailure.assertionFailed("revoked inline tokens must reject every later read")
   }
 }
 
@@ -56,6 +92,70 @@ private func assertSameSizeResourceMutationIsRejected() throws {
     }
   }
 
+private func assertCurrentLoadBytesRemainTokenScoped() throws {
+  let cacheRoot = FileManager.default.temporaryDirectory
+    .appendingPathComponent("hosted-web-frame-current-load-test-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: cacheRoot) }
+  let registry = HostedWebArtifactRegistry(cacheDirectory: cacheRoot)
+  let bytes = Data("console.log('current load')".utf8)
+  let currentToken = "hpat_current_load_token"
+  let digest = sha256Digest(bytes)
+  let input: [String: Any] = [
+    "token": currentToken,
+    "storagePartitionId": "hpa_\(String(repeating: "e", count: 64))",
+    "storage": [
+      "kind": "currentLoad",
+      "resources": [[
+        "resourceId": "r0",
+        "digest": digest,
+        "byteSize": Int64(bytes.count),
+        "bytesBase64": bytes.base64EncodedString(),
+      ]],
+    ],
+    "policyTable": [
+      "version": 1,
+      "routes": [[
+        "path": "assets/app.js",
+        "outcome": [
+          "kind": "content",
+          "resourceId": "r0",
+          "contentType": "text/javascript; charset=utf-8",
+          "headers": [
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": "default-src 'none'",
+            "ETag": "\"\(digest)\"",
+            "X-Content-Type-Options": "nosniff",
+          ],
+        ],
+      ]],
+    ],
+  ]
+
+  var invalidInput = input
+  var invalidStorage = input["storage"] as! [String: Any]
+  var invalidResources = invalidStorage["resources"] as! [[String: Any]]
+  invalidResources[0]["digest"] = "sha256:\(String(repeating: "0", count: 64))"
+  invalidStorage["resources"] = invalidResources
+  invalidInput["storage"] = invalidStorage
+  guard !registry.register(invalidInput),
+        registry.readResponse(token: currentToken, requestPath: "/assets/app.js").status == 404 else {
+    throw HostedWebArtifactRegistryTestFailure.assertionFailed("current-load registration must reject bytes that do not match their digest")
+  }
+
+  guard registry.register(input) else {
+    throw HostedWebArtifactRegistryTestFailure.assertionFailed("current-load registration must accept verified bytes")
+  }
+  let response = registry.readResponse(token: currentToken, requestPath: "/assets/app.js")
+  guard response.status == 200,
+        response.bytes == bytes,
+        !FileManager.default.fileExists(atPath: cacheRoot.path) else {
+    throw HostedWebArtifactRegistryTestFailure.assertionFailed("current-load bytes must be served only from the token registration")
+  }
+  guard registry.unregister(currentToken), registry.readResponse(token: currentToken, requestPath: "/assets/app.js").status == 404 else {
+    throw HostedWebArtifactRegistryTestFailure.assertionFailed("unregister must synchronously retire current-load bytes")
+  }
+}
+
   private func writeResource(root: URL, bytes: Data) throws {
     let directory = root
       .appendingPathComponent("happier-plugin-ui-artifacts-v1", isDirectory: true)
@@ -69,17 +169,20 @@ private func assertSameSizeResourceMutationIsRejected() throws {
     [
       "token": token,
       "storagePartitionId": "hpa_\(String(repeating: "e", count: 64))",
-      "storageLocator": [
-        "namespace": "happier-plugin-ui-artifacts-v1",
-        "accountKeyHash": accountKeyHash,
-        "artifactKeyHash": artifactKeyHash,
+      "storage": [
+        "kind": "persistent",
+        "locator": [
+          "namespace": "happier-plugin-ui-artifacts-v1",
+          "accountKeyHash": accountKeyHash,
+          "artifactKeyHash": artifactKeyHash,
+        ],
+        "resources": [[
+          "resourceId": "r0",
+          "storedFileName": storedFileName,
+          "digest": digest,
+          "byteSize": Int64("console.log('frame')".utf8.count),
+        ]],
       ],
-      "resources": [[
-        "resourceId": "r0",
-        "storedFileName": storedFileName,
-        "digest": digest,
-        "byteSize": Int64("console.log('frame')".utf8.count),
-      ]],
       "policyTable": [
         "version": 1,
         "routes": [[
@@ -114,11 +217,15 @@ private let storedFileName = String(repeating: "c", count: 64) + ".bin"
 private struct HostedWebArtifactRegistryTestRunner {
   static func main() {
     do {
+      try assertInlineDocumentTokenIsProcessLocalAndSynchronouslyRevoked()
+      print("PASS HostedWebArtifactRegistryTests.testInlineDocumentTokenIsProcessLocalAndSynchronouslyRevoked")
       try assertSameSizeResourceMutationIsRejected()
       print("PASS HostedWebArtifactRegistryTests.testRejectsSameSizeResourceMutationAfterRegistration")
+      try assertCurrentLoadBytesRemainTokenScoped()
+      print("PASS HostedWebArtifactRegistryTests.testCurrentLoadBytesRemainTokenScopedAndNeedNoPersistentCacheRecord")
       exit(EXIT_SUCCESS)
     } catch {
-      fputs("FAIL HostedWebArtifactRegistryTests.testRejectsSameSizeResourceMutationAfterRegistration: \(error)\n", stderr)
+      fputs("FAIL HostedWebArtifactRegistryTests: \(error)\n", stderr)
       exit(EXIT_FAILURE)
     }
   }

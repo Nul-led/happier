@@ -2,11 +2,19 @@ import { buildActivityOverviewSnapshot } from '@/activity/attention/buildActivit
 import type { ActivityOverviewSnapshot, SessionActivityAttention } from '@/activity/attention/activityAttentionTypes';
 import type { ActivitySurfacePolicy } from '@/activity/attention/resolveActivitySurfacePolicy';
 import { ACTIVITY_SURFACE_TARGETS, createActivitySurfaceSessionTarget } from '@/activity/actions/activitySurfaceTargets';
-import { buildActivitySurfaceViewModels } from '@/activity/presentation/buildActivitySurfaceViewModel';
+import {
+    buildActivitySurfaceViewModels,
+    type ActivitySurfaceCandidatePrivacyModeResolver,
+} from '@/activity/presentation/buildActivitySurfaceViewModel';
 import type { ActivitySurfaceSessionViewModel } from '@/activity/presentation/activitySurfaceViewModels';
 import { createLiveActivitySelectionSpec } from '@/activity/selection/activitySurfaceSelectionTypes';
 import { resolveActivitySurfaceSlots } from '@/activity/selection/resolveActivitySurfaceSlots';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import {
+    MAX_SESSION_LIST_ATTENTION_RANK,
+    resolveSessionListAttentionRank,
+} from '@/sync/domains/session/listing/deriveSessionListActivity';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { t } from '@/text';
 
 import {
@@ -55,8 +63,9 @@ export function buildLiveActivitySnapshots(params: Readonly<{
     policy: ActivitySurfacePolicy;
     nowMs?: number;
     staleAfterMs?: number;
-    preferredPrimarySessionId?: string | null;
+    preferredPrimaryAddress?: SessionAddress | null;
     preferredPrimaryActivityInstanceKey?: string | null;
+    resolveCandidatePrivacyMode?: ActivitySurfaceCandidatePrivacyModeResolver;
 }>): readonly LiveActivitySnapshot[] {
     const nowMs = params.nowMs ?? Date.now();
     const staleAfterMs = typeof params.staleAfterMs === 'number' && Number.isFinite(params.staleAfterMs)
@@ -69,7 +78,7 @@ export function buildLiveActivitySnapshots(params: Readonly<{
     const slots = resolveActivitySurfaceSlots({
         overview,
         selection: createLiveActivitySelectionSpec(params.policy),
-        preferredPrimarySessionId: params.preferredPrimarySessionId ?? null,
+        preferredPrimaryAddress: params.preferredPrimaryAddress ?? null,
     });
     const selectedSessions = resolvePreferredPrimaryActivityInstances({
         selectedSessions: slots.selectedSessions,
@@ -82,6 +91,7 @@ export function buildLiveActivitySnapshots(params: Readonly<{
         showMachinePath: true,
         showPreviewText: params.policy.liveActivities.showPreviewText,
         nowMs,
+        resolveCandidatePrivacyMode: params.resolveCandidatePrivacyMode,
     });
 
     return cards.map((card) => {
@@ -103,7 +113,7 @@ export function buildLiveActivitySnapshots(params: Readonly<{
             activityName: identity.activityName,
             activityInstanceKey: buildLiveActivityInstanceKey(identity),
             title: card.title,
-            subtitle: card.subtitle,
+            subtitle: card.contextLine ?? card.subtitle,
             previewText: card.previewText,
             statusText: card.statusText,
             attentionState: card.attentionState,
@@ -177,19 +187,18 @@ function resolvePreferredPrimaryActivityInstances(params: Readonly<{
     ].slice(0, params.selectedSessions.length);
 }
 
+/**
+ * ActivityKit picks which Live Activity to surface by relevance, so this is an ordering of the
+ * same semantic states — not an independent judgement. It is scaled from the canonical rank
+ * rather than re-listed: the hand-written ladder it replaces scored a failed session lowest of
+ * all, hiding the one state a person most needs to see.
+ */
 function resolveLiveActivityRelevanceScore(
     attentionState: ActivitySurfaceSessionViewModel['attentionState'],
 ): number {
-    if (attentionState === 'permission_required' || attentionState === 'action_required') {
-        return 100;
-    }
-    if (attentionState === 'thinking') {
-        return 50;
-    }
-    if (attentionState === 'pending' || attentionState === 'unread') {
-        return 30;
-    }
-    return 10;
+    return Math.round(
+        (resolveSessionListAttentionRank(attentionState) / MAX_SESSION_LIST_ATTENTION_RANK) * 100,
+    );
 }
 
 export function buildStableLiveActivitySnapshotFingerprint(snapshot: LiveActivitySnapshot): string {

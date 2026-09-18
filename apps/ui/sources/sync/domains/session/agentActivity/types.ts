@@ -59,6 +59,40 @@ export type AgentActivityEntryKind =
     | 'execution_run'
     | 'agent_team_member';
 
+/**
+ * What a person is being asked for, when an entry is `waiting`.
+ *
+ * `waiting` says only "a person is the blocker" — and the two ways that happens are not
+ * interchangeable to the person: a `permission` request asks them to APPROVE a tool the agent wants
+ * to run, a `user_action` request asks them to ANSWER a question the agent posed. Collapsing them
+ * (which the predecessor `deriveSessionSubagentHasPendingPermission` did by discarding
+ * `user_action` outright) leaves a surface unable to say which one it is, so a question either goes
+ * unannounced or is announced as an approval.
+ *
+ * The two members are exactly the canonical `kind` vocabulary of a tool permission
+ * (`SessionPermissionRemoteAgentRequestSummaryV1`), so this is a projection of an existing wire
+ * fact, not a second attention taxonomy.
+ */
+export type SessionAgentActivityAttentionKind = 'permission' | 'user_action';
+
+/**
+ * The canonical order attention kinds are reported in.
+ *
+ * Fixed so two surfaces reading the same entry cannot render the same pair of facts in two orders,
+ * and so an equality check on the array is meaningful.
+ */
+export const SESSION_AGENT_ACTIVITY_ATTENTION_KINDS: readonly SessionAgentActivityAttentionKind[] =
+    Object.freeze(['permission', 'user_action'] as const);
+
+/**
+ * The shared "nothing is waiting on a person" value.
+ *
+ * One frozen instance so an entry that gained no attention keeps its previous array identity, which
+ * is what lets `React.memo` on a row survive an unrelated streamed token.
+ */
+export const NO_SESSION_AGENT_ACTIVITY_ATTENTION: readonly SessionAgentActivityAttentionKind[] =
+    Object.freeze([]);
+
 const WIRE_KIND_COVERAGE: Record<AgentActivityKindV1, AgentActivityEntryKind> = {
     workflow_run: 'workflow_run',
     workflow_agent: 'workflow_agent',
@@ -101,6 +135,13 @@ export type AgentActivityEntry = Readonly<{
     sidechainId: string | null;
     /** The local `SessionSubagent.id` behind this entry, when a local source contributed one. */
     subagentId: string | null;
+    /**
+     * What this entry is waiting on a person for, in canonical order, deduplicated.
+     *
+     * Empty whenever the entry is not `waiting` — including a headline-only entry, which has no
+     * local attention evidence at all and must not be drawn as if a prompt were on screen.
+     */
+    attentionKinds: readonly SessionAgentActivityAttentionKind[];
 }>;
 
 /**
@@ -127,6 +168,8 @@ export type AgentActivityLocalEntry = Readonly<{
     runId: string | null;
     sidechainId: string | null;
     subagentId: string | null;
+    /** Observed locally; see `AgentActivityEntry.attentionKinds`. */
+    attentionKinds: readonly SessionAgentActivityAttentionKind[];
 }>;
 
 /**

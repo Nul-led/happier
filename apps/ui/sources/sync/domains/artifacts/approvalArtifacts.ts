@@ -1,146 +1,160 @@
-import { ApprovalRequestV1Schema, type ApprovalRequestV1 } from '@happier-dev/protocol';
+import {
+    approvalArtifactBodyMatchesHeaderV1,
+    type ApprovalRequest,
+} from '@happier-dev/protocol';
 
 import type { DecryptedArtifact } from './artifactTypes';
-import { normalizeSessionListKeyParts } from '@/sync/domains/session/listing/sessionListKeyNormalization';
+import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export type OpenApprovalArtifactForSession = Readonly<{
     artifact: DecryptedArtifact;
-    approval: ApprovalRequestV1;
+    approval: ApprovalRequest;
 }>;
+
+export type OpenApprovalSessionReference = Readonly<
+    | { kind: 'exact'; address: SessionAddress }
+    | { kind: 'legacy_unscoped'; sessionId: string }
+>;
 
 function readString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
-function readTimestampMs(value: unknown): number {
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
-}
-
-function addNormalizedSessionId(ids: Set<string>, value: unknown, serverId?: unknown): void {
+function addSessionReference(
+    referencesByKey: Map<string, OpenApprovalSessionReference>,
+    value: unknown,
+    serverId?: unknown,
+): void {
     const sessionId = readString(value);
     if (!sessionId) return;
-    const scopedSessionKey = normalizeSessionListKeyParts(serverId, sessionId).sessionKey;
-    ids.add(scopedSessionKey ?? sessionId);
+    const normalizedServerId = readString(serverId);
+    const reference: OpenApprovalSessionReference = normalizedServerId
+        ? { kind: 'exact', address: { serverId: normalizedServerId, sessionId } }
+        : { kind: 'legacy_unscoped', sessionId };
+    referencesByKey.set(JSON.stringify(reference), reference);
 }
 
-function collectSessionIdsFromUnknownArray(ids: Set<string>, value: unknown, serverId?: unknown): void {
+function collectSessionReferencesFromUnknownArray(
+    referencesByKey: Map<string, OpenApprovalSessionReference>,
+    value: unknown,
+    serverId?: unknown,
+): void {
     if (!Array.isArray(value)) return;
     for (const entry of value) {
-        addNormalizedSessionId(ids, entry, serverId);
+        addSessionReference(referencesByKey, entry, serverId);
     }
 }
 
-function parseApprovalRequestBody(body: string): ApprovalRequestV1 | null {
-    try {
-        const parsed = ApprovalRequestV1Schema.safeParse(JSON.parse(body));
-        return parsed.success ? parsed.data : null;
-    } catch {
-        return null;
-    }
+function parseApprovalRequestArtifact(artifact: DecryptedArtifact): ApprovalRequest | null {
+    const parsed = approvalArtifactBodyMatchesHeaderV1(artifact.header ?? {}, artifact.body);
+    return parsed?.family === 'built_in' ? parsed.request : null;
 }
 
-function collectApprovalLinkedSessionIds(
+function collectApprovalLinkedSessionReferences(
     artifact: DecryptedArtifact,
-    approval?: ApprovalRequestV1 | null,
-): Set<string> {
-    const ids = new Set<string>();
+    approval?: ApprovalRequest | null,
+): readonly OpenApprovalSessionReference[] {
+    const referencesByKey = new Map<string, OpenApprovalSessionReference>();
     const serverId = readString(artifact.header?.serverId);
-    addNormalizedSessionId(ids, artifact.header?.sessionId, serverId);
-    collectSessionIdsFromUnknownArray(ids, artifact.sessions, serverId);
-    collectSessionIdsFromUnknownArray(ids, artifact.header?.sessions, serverId);
-    addNormalizedSessionId(ids, approval?.createdBy.sessionId, serverId);
-    return ids;
-}
-
-function isApprovalLinkedToSession(artifact: DecryptedArtifact, sessionId: string): boolean {
-    return collectApprovalLinkedSessionIds(artifact).has(sessionId);
-}
-
-function readCreatedBySurface(artifact: DecryptedArtifact): ApprovalRequestV1['createdBy']['surface'] {
-    const surface = readString(artifact.header?.createdBySurface);
-    if (
-        surface === 'voice' ||
-        surface === 'agent' ||
-        surface === 'mcp' ||
-        surface === 'cli' ||
-        surface === 'system'
-    ) {
-        return surface;
+    addSessionReference(referencesByKey, artifact.header?.sessionId, serverId);
+    collectSessionReferencesFromUnknownArray(referencesByKey, artifact.sessions, serverId);
+    collectSessionReferencesFromUnknownArray(referencesByKey, artifact.header?.sessions, serverId);
+    if (approval?.v === 2) {
+        addSessionReference(
+            referencesByKey,
+            approval.executionOriginV1.sessionId ?? approval.createdBy.sessionId,
+            approval.executionOriginV1.serverId,
+        );
+    } else {
+        addSessionReference(referencesByKey, approval?.createdBy.sessionId, serverId);
     }
-    return 'agent';
+    return [...referencesByKey.values()];
 }
 
-function createHeaderBackedApprovalRequest(
-    artifact: DecryptedArtifact,
-    sessionId: string,
-): ApprovalRequestV1 | null {
-    const actionId = readString(artifact.header?.actionId);
-    if (!actionId) return null;
-
-    const candidate = {
-        v: 1,
-        status: 'open',
-        createdAtMs: readTimestampMs(artifact.createdAt),
-        updatedAtMs: readTimestampMs(artifact.updatedAt),
-        createdBy: {
-            surface: readCreatedBySurface(artifact),
-            sessionId,
-        },
-        requestedSurface: readString(artifact.header?.requestedSurface) ?? undefined,
-        actionId,
-        actionArgs: artifact.header?.actionArgs ?? {},
-        summary: readString(artifact.header?.approvalSummary)
-            ?? readString(artifact.header?.summary)
-            ?? readString(artifact.title)
-            ?? readString(artifact.header?.title)
-            ?? actionId,
-        preview: artifact.header?.approvalPreview,
-    };
-
-    const parsed = ApprovalRequestV1Schema.safeParse(candidate);
-    return parsed.success ? parsed.data : null;
+function referenceMatchesTarget(
+    reference: OpenApprovalSessionReference,
+    target: SessionAddress | string,
+    knownSessionAddresses: readonly SessionAddress[],
+): boolean {
+    if (reference.kind === 'exact') {
+        const key = sessionAddressKey(reference.address);
+        return typeof target === 'string'
+            ? key === target.trim()
+            : key === sessionAddressKey(target);
+    }
+    if (typeof target === 'string') return false;
+    const candidates = new Map(
+        knownSessionAddresses
+            .filter((address) => address.sessionId === reference.sessionId)
+            .map((address) => [sessionAddressKey(address), address] as const),
+    );
+    return candidates.size === 1 && candidates.has(sessionAddressKey(target));
 }
 
 export function listOpenApprovalArtifactsForSession(
     artifacts: readonly DecryptedArtifact[],
-    sessionId: string,
+    target: SessionAddress | string,
+    options?: Readonly<{ knownSessionAddresses?: readonly SessionAddress[] }>,
 ): OpenApprovalArtifactForSession[] {
-    const normalizedSessionId = sessionId.trim();
-    if (!normalizedSessionId) return [];
+    if (typeof target === 'string' && !target.trim()) return [];
 
     return artifacts.flatMap((artifact) => {
         if (artifact.header?.kind !== 'approval_request.v1') return [];
         if (artifact.header?.approvalStatus !== 'open') return [];
-        if (!isApprovalLinkedToSession(artifact, normalizedSessionId)) return [];
-
-        const body = typeof artifact.body === 'string' ? artifact.body : null;
-        const approval = body
-            ? parseApprovalRequestBody(body)
-            : createHeaderBackedApprovalRequest(artifact, normalizedSessionId);
+        const approval = parseApprovalRequestArtifact(artifact);
         if (!approval) return [];
         if (approval.status !== 'open') return [];
+        if (!collectApprovalLinkedSessionReferences(artifact, approval).some((reference) => (
+            referenceMatchesTarget(reference, target, options?.knownSessionAddresses ?? [])
+        ))) return [];
 
         return [{ artifact, approval }];
     });
 }
 
-export function collectOpenApprovalSessionIds(
+export function collectOpenApprovalSessionReferences(
     artifacts: readonly DecryptedArtifact[],
-): ReadonlySet<string> {
-    const ids = new Set<string>();
+): readonly OpenApprovalSessionReference[] {
+    const referencesByKey = new Map<string, OpenApprovalSessionReference>();
 
     for (const artifact of artifacts) {
         if (artifact.header?.kind !== 'approval_request.v1') continue;
         if (artifact.header?.approvalStatus !== 'open') continue;
 
-        const body = typeof artifact.body === 'string' ? artifact.body : null;
-        const approval = body ? parseApprovalRequestBody(body) : null;
-        if (body && approval?.status !== 'open') continue;
+        const approval = parseApprovalRequestArtifact(artifact);
+        // The list badge is an index projection and must survive the normal
+        // header-before-body hydration window. Once a body is present it must
+        // validate and remain open; malformed or closed bodies fail closed.
+        if (artifact.body != null && approval?.status !== 'open') continue;
 
-        for (const sessionId of collectApprovalLinkedSessionIds(artifact, approval)) {
-            ids.add(sessionId);
+        for (const reference of collectApprovalLinkedSessionReferences(artifact, approval)) {
+            referencesByKey.set(JSON.stringify(reference), reference);
         }
     }
 
-    return ids;
+    return [...referencesByKey.values()].sort((left, right) => (
+        JSON.stringify(left).localeCompare(JSON.stringify(right))
+    ));
+}
+
+export function resolveOpenApprovalSessionKeys(
+    references: readonly OpenApprovalSessionReference[],
+    knownSessionAddresses: readonly SessionAddress[],
+): ReadonlySet<string> {
+    const keys = new Set<string>();
+    const addressesBySessionId = new Map<string, Map<string, SessionAddress>>();
+    for (const address of knownSessionAddresses) {
+        const candidates = addressesBySessionId.get(address.sessionId) ?? new Map<string, SessionAddress>();
+        candidates.set(sessionAddressKey(address), address);
+        addressesBySessionId.set(address.sessionId, candidates);
+    }
+    for (const reference of references) {
+        if (reference.kind === 'exact') {
+            keys.add(sessionAddressKey(reference.address));
+            continue;
+        }
+        const candidates = addressesBySessionId.get(reference.sessionId);
+        if (candidates?.size === 1) keys.add(candidates.keys().next().value!);
+    }
+    return keys;
 }

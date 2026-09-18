@@ -21,6 +21,8 @@ export type AgentInputPopoverContent =
 
 export type AgentInputContentPopoverConfig = Readonly<{
     renderContent: AgentInputPopoverContent;
+    /** Invoked before the shared overlay closes so content-owned async work can be invalidated. */
+    onRequestClose?: () => void;
     boundaryRef?: React.RefObject<any> | null;
     maxHeightCap?: number;
     maxWidthCap?: number;

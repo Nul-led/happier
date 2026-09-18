@@ -25,8 +25,8 @@ vi.mock('./resolvePreferredServerIdForSessionId', () => ({
         resolvePreferredServerIdForSessionIdSpy(sessionId),
 }));
 
-vi.mock('./resolveServerScopedSessionContext', () => ({
-    resolveServerScopedSessionContext: (params: unknown) =>
+vi.mock('./resolveServerAccountRequestContext', () => ({
+    resolveServerAccountRequestContext: (params: unknown) =>
         resolveContextSpy(params),
 }));
 
@@ -35,8 +35,8 @@ vi.mock('./createEphemeralServerSocketClient', () => ({
         createSocketSpy(params),
 }));
 
-vi.mock('./createSessionRequestWithServerScope', () => ({
-    createSessionRequestForResolvedServerScope: (params: unknown) =>
+vi.mock('./createServerRequestWithServerScope', () => ({
+    createServerRequestForResolvedServerScope: (params: unknown) =>
         createResolvedRequestSpy(params),
 }));
 

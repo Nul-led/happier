@@ -6,7 +6,48 @@ import type {
 import {
     ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
     ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION,
+    normalizePluginAccountCollectionContractV1,
 } from '@happier-dev/protocol';
+import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit';
+
+const privateProjectionContract = normalizePluginAccountCollectionContractV1({
+    pluginId: 'example.tasks',
+    contribution: {
+        id: 'tasks',
+        schemaVersion: 1,
+        rowIdField: 'id',
+        identityFields: [],
+        schema: {
+            type: 'object',
+            properties: {
+                id: { type: 'string', maxLength: 256 },
+                status: { type: 'string', maxLength: 16 },
+                title: { type: 'string', maxLength: 256 },
+            },
+            required: ['id', 'status', 'title'],
+            additionalProperties: false,
+        },
+        serverReadable: ['status'],
+        indexes: [{
+            id: 'by-status',
+            fields: [
+                { field: 'status', direction: 'asc' },
+                { field: 'id', direction: 'asc' },
+            ],
+        }],
+        uiQueries: [{
+            id: 'open',
+            indexId: 'by-status',
+            parameters: { status: { kind: 'string', maxUtf8Bytes: 16, enum: ['open'] } },
+            prefix: [{ kind: 'parameter', parameterId: 'status' }],
+            order: 'asc',
+            pageSize: 50,
+            projectedFields: ['status', 'title'],
+        }],
+        relations: [],
+        migrations: [],
+    },
+});
 
 const descriptor: NormalizedPluginCollectionUiQueryDescriptorV1 = {
     collection: { pluginId: 'example.tasks', collectionId: 'tasks' },
@@ -63,8 +104,17 @@ async function loadClient(params?: Readonly<{
     let current = true;
     let generation = 1;
     const retireCallbacks = new Set<() => void>();
-    const transport = vi.fn<(path: string, init: RequestInit) => Promise<Response>>(async () => {
+    const transport = vi.fn<(path: string, init: RequestInit) => Promise<Response>>(async (path) => {
         if (params?.retireOnRequest) current = false;
+        if (path === '/v1/account/encryption/currentness') {
+            return new Response(JSON.stringify(createPlainAccountEncryptionCurrentnessFixture({
+                version: 7,
+                updatedAt: 11,
+            })), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
         return new Response(JSON.stringify(response), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -97,10 +147,10 @@ async function loadClient(params?: Readonly<{
     vi.doMock('@/sync/api/session/apiSocket', () => ({
         apiSocket: { request: vi.fn() },
     }));
-    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
-        captureSessionRequestAuthorityForServerAccountScope: async () => ({
+    vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
+        captureServerRequestAuthorityForServerAccountScope: async () => ({
             scope: lifetime.scope,
-            context: {},
+            context: { token: 'account-token' },
             request: transport,
             release: releaseAuthority,
         }),
@@ -149,6 +199,60 @@ describe('queryActivePluginCollectionUiQuery', () => {
             ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
         )).toBe(String(ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION));
         expect(releaseAuthority).toHaveBeenCalledTimes(1);
+    });
+
+    it('opens private logical fields in the current Account and strips the transport envelope', async () => {
+        const client = await loadClient();
+        const privateRequest = {
+            ...request,
+            readerContext: {
+                pluginId: privateProjectionContract.pluginId,
+                collectionId: privateProjectionContract.collectionId,
+                schemaVersion: privateProjectionContract.schemaVersion,
+                contractDigest: privateProjectionContract.contractDigest,
+            },
+        };
+        client.transport.mockImplementation(async (path) => {
+            if (path === '/v1/account/encryption/currentness') {
+                return new Response(JSON.stringify(createPlainAccountEncryptionCurrentnessFixture({
+                    version: 7,
+                    updatedAt: 11,
+                })), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            return new Response(JSON.stringify({
+                rows: [{
+                    context: response.rows[0]!.context,
+                    fields: { status: 'open' },
+                    logicalRow: {
+                        content: {
+                            t: 'plain',
+                            v: { title: 'Private title' },
+                        },
+                        projection: { status: 'open' },
+                    },
+                }],
+                changeCursor: 42,
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        });
+
+        const result = await client.queryActivePluginCollectionUiQuery({
+            descriptor: privateProjectionContract.uiQueries[0]!,
+            contract: privateProjectionContract,
+            request: privateRequest,
+        });
+
+        expect(result).toEqual({
+            rows: [{
+                context: response.rows[0]!.context,
+                fields: { status: 'open', title: 'Private title' },
+            }],
+            changeCursor: 42,
+        });
+        expect(result).not.toHaveProperty('rows.0.logicalRow');
+        expect(client.transport.mock.calls.map(([path]) => path)).toEqual([
+            '/v1/account/encryption/currentness',
+            '/v1/plugins/data/ui-query',
+        ]);
     });
 
     it('returns the canonical invalid-query outcome from a 400 response', async () => {

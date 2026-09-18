@@ -113,7 +113,6 @@ export const PushNotificationTroubleshootingView = React.memo(function PushNotif
         try {
             const { registerPushTokenIfAvailable } = await import('@/sync/engine/account/syncAccount');
             await registerPushTokenIfAvailable({
-                credentials: auth.credentials,
                 log: { log: () => {} },
             });
         } catch {

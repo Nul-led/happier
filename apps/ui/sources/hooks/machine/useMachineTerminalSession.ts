@@ -66,6 +66,7 @@ type PendingRendererWrite = EmbeddedTerminalWriteCompleteEvent & Readonly<{
 
 export function useMachineTerminalSession(params: Readonly<{
     machineId: string | null;
+    serverId?: string | null;
     cwd: string | null;
     launch?: DaemonTerminalLaunchIntent | null;
     machineReachable?: boolean;
@@ -75,7 +76,10 @@ export function useMachineTerminalSession(params: Readonly<{
     initialCommand?: string | null;
     closeOnUnmount?: boolean;
 }>) {
-    const byteStreamEnabled = useFeatureEnabled('terminal.transport.byteStream');
+    const byteStreamEnabled = useFeatureEnabled(
+        'terminal.transport.byteStream',
+        params.serverId ? { scopeKind: 'spawn', serverId: params.serverId } : undefined,
+    );
     const initialSurfaceState = React.useMemo(
         () => readTerminalSurfaceState(params.terminalKey) ?? createEmptyTerminalSurfaceState(),
         [params.terminalKey],
@@ -351,8 +355,8 @@ export function useMachineTerminalSession(params: Readonly<{
                     initialCommand: params.initialCommand ?? undefined,
                 };
             const ensured = restartRequestedRef.current
-                ? await machineTerminalRestart(params.machineId, request)
-                : await machineTerminalEnsure(params.machineId, request);
+                ? await machineTerminalRestart(params.machineId, request, { serverId: params.serverId })
+                : await machineTerminalEnsure(params.machineId, request, { serverId: params.serverId });
             restartRequestedRef.current = false;
 
             if (canceled) return;
@@ -410,6 +414,7 @@ export function useMachineTerminalSession(params: Readonly<{
 
             const carrier = createMachineRpcTerminalStreamCarrier({
                 machineId: params.machineId,
+                serverId: params.serverId,
             });
             terminalStreamCarrierRef.current = carrier;
             terminalRendererAckDeliveryRef.current = createTerminalRendererAckDelivery({
@@ -663,6 +668,7 @@ export function useMachineTerminalSession(params: Readonly<{
         params.initialCommand,
         params.launch,
         params.machineId,
+        params.serverId,
         params.machineReachable,
         params.machineRpcTargetAvailable,
         params.terminalKey,
@@ -681,9 +687,9 @@ export function useMachineTerminalSession(params: Readonly<{
     React.useEffect(() => {
         return () => {
             if (!params.closeOnUnmount || !params.machineId || !terminalIdRef.current) return;
-            void machineTerminalClose(params.machineId, { terminalId: terminalIdRef.current });
+            void machineTerminalClose(params.machineId, { terminalId: terminalIdRef.current }, { serverId: params.serverId });
         };
-    }, [params.closeOnUnmount, params.machineId]);
+    }, [params.closeOnUnmount, params.machineId, params.serverId]);
 
     React.useEffect(() => {
         if (status !== 'connected' && status !== 'exited') {

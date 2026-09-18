@@ -1,3 +1,6 @@
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { resolveVoiceContextSessionFromState } from '@/voice/context/resolveVoiceContextSession';
 import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
 import { storage } from '@/sync/domains/state/storage';
 import {
@@ -12,11 +15,13 @@ function formatPendingRequestDebugLabel(ids: ReadonlyArray<string>): string {
     return ids.length > 0 ? ids.join(',') : 'none';
 }
 
-export function formatVoiceQaPendingRequestBreakdown(targetSessionId: string): string | null {
-    if (!targetSessionId || targetSessionId === '__voice_agent__') return null;
-    const session = (storage.getState() as any)?.sessions?.[targetSessionId] ?? null;
+export function formatVoiceQaPendingRequestBreakdown(targetSessionAddress: SessionAddress | null): string | null {
+    if (!targetSessionAddress) return null;
+    const session = resolveVoiceContextSessionFromState(targetSessionAddress, storage.getState());
     if (!session) return null;
-    const messages = readStoredSessionMessages(storage.getState(), targetSessionId) as ReadonlyArray<any>;
+    const messages = targetSessionAddress.serverId === getActiveServerSnapshot().serverId
+        ? readStoredSessionMessages(storage.getState(), targetSessionAddress.sessionId)
+        : [];
     const userActionIds = listPendingUserActionRequests(session, messages).map((request) => request.id);
     const permissionIds = listPendingPermissionRequests(session, messages).map((request) => request.id);
     const transcriptIds = listPendingTranscriptRequests(session, messages).map((request) => request.id);

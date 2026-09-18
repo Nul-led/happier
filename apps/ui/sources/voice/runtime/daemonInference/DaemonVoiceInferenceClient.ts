@@ -815,7 +815,7 @@ export class DaemonVoiceInferenceClient {
         payload: DaemonSpeechStreamTransportChunkRequest,
         signal: AbortSignal | null,
     ): Promise<DaemonVoiceInferenceSttStreamChunkResponse> {
-        if (payload.carrierFrame.kind !== 'json_base64_v1_fallback') {
+        if (payload.carrierFrame.kind !== 'machine_rpc_json_base64') {
             throw createDaemonVoiceInferenceClientError(
                 'internal_error',
                 'daemon_voice_inference_binary_stream_consumer_unavailable',

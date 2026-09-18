@@ -57,6 +57,7 @@ import {
     usePluginUiClientExecutableRegistrationRevision,
 } from '@/components/plugins/reactNative/clientExecutableContributions';
 import { useOptionalCurrentUiContextReader } from '@/components/appShell/currentUiContext/CurrentUiContextProvider';
+import { usePluginSurfaceDestinationNavigationBinding } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
 
 export function resolveLatestCommittedActivityKey(params: Readonly<{
     messageIdsOldestFirst: readonly string[];
@@ -81,8 +82,10 @@ export function resolveExternalSessionOperationMachineSubscriptionTarget(params:
 }
 
 export function useChatListRootState(props: ChatListProps) {
+    const sessionSurfaceKey = props.sessionSurfaceKey;
     const clientExecutableRegistrationRevision = usePluginUiClientExecutableRegistrationRevision();
     const currentUiContextReader = useOptionalCurrentUiContextReader();
+    const destinationNavigation = usePluginSurfaceDestinationNavigationBinding();
     const {
         fork,
         forkAwareMessageDescriptors,
@@ -92,11 +95,15 @@ export function useChatListRootState(props: ChatListProps) {
         messagesById,
     } = useTranscriptRootMessages(props.session.id);
     const { messages: pendingMessages, discarded: discardedPendingMessages } = useSessionPendingMessages(props.session.id);
-    const actionDrafts = useSessionActionDrafts(props.session.id);
+    const sessionServerId = usePreferredServerIdForSession({
+        serverId: props.session.serverId,
+        sessionId: props.session.id,
+    });
+    const actionDrafts = useSessionActionDrafts({ serverId: sessionServerId, sessionId: props.session.id });
     const transcriptGroupingMode = useSetting('transcriptGroupingMode');
     const transcriptGroupToolCalls = useSetting('transcriptGroupToolCalls');
     const transcriptTurnToolCallsGroupStrategy = useSetting('transcriptTurnToolCallsGroupStrategy');
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.session.id);
+    const transcriptSessionCommon = useTranscriptSessionCommon(props.session.id, props.session.serverId);
     const toolViewTimelineChromeMode = transcriptSessionCommon.toolChrome.toolViewTimelineChromeMode;
 
     const activeServerAccountScope = useActiveServerAccountScope();
@@ -155,11 +162,10 @@ export function useChatListRootState(props: ChatListProps) {
         operationMachineSubscriptionTarget ?? '',
         operationMachineSubscriptionTarget !== null,
     );
-    const sessionServerId = usePreferredServerIdForSession(props.session.id);
     // Only this store-owned server-backed deletion fact means the target is
     // permanently gone. Session cache eviction and archiving intentionally do
     // not retire its contextual Resource LKG.
-    const sessionReferenceTarget = useSessionReferenceTarget(props.session.id);
+    const sessionReferenceTarget = useSessionReferenceTarget(props.session.id, props.session.serverId);
     // A transcript activity is local, live Resource state. Bind it through the
     // same session machine/server authority as the existing session operation;
     // shared/read-only viewers do not probe a local plugin Resource.
@@ -260,12 +266,11 @@ export function useChatListRootState(props: ChatListProps) {
 
     const interaction = React.useMemo(() => {
         return deriveTranscriptInteractionFromSession({
-            accessLevel: props.session.accessLevel,
-            canApprovePermissions: props.session.canApprovePermissions,
+            access: props.session.access,
             active: props.session.active,
             presence: props.session.presence,
         });
-    }, [props.session.accessLevel, props.session.canApprovePermissions, props.session.active, props.session.presence]);
+    }, [props.session.access, props.session.active, props.session.presence]);
     // Whole-message Actions consume the generic normalized daemon projection,
     // but only while this transcript's existing local-owner projection remains
     // current. The generation agreement prevents an Action catalog refresh from
@@ -324,6 +329,7 @@ export function useChatListRootState(props: ChatListProps) {
                 sessionId: props.session.id,
                 signal: pluginMessageActionScope.signal,
                 accountLifetime: pluginActivityLifetime,
+                ...(destinationNavigation ? { openSurface: destinationNavigation.openSurface } : {}),
                 ...(currentUiContextReader
                     ? { readCurrentUiContext: currentUiContextReader.readCurrentUiContext }
                     : {}),
@@ -335,6 +341,7 @@ export function useChatListRootState(props: ChatListProps) {
         interaction.canSendMessages,
         isExactOwner,
         currentUiContextReader,
+        destinationNavigation,
         pluginActivityLifetime,
         pluginActivityProjection.interactionEnabled,
         pluginActivityProjection.machineId,
@@ -414,7 +421,7 @@ export function useChatListRootState(props: ChatListProps) {
     return {
         boundary: {
             eligibleMessageIdsInOrder: messageIdsOldestFirst,
-            key: props.session.id,
+            key: sessionSurfaceKey,
             sessionId: props.session.id,
             selectionEnabled: transcriptSessionCommon.messageDisplay.transcriptMessageSelectionEnabled === true,
         },
@@ -422,6 +429,8 @@ export function useChatListRootState(props: ChatListProps) {
         internalProps: {
             metadata: stableSessionMetadata,
             sessionId: props.session.id,
+            sessionServerId: props.session.serverId,
+            sessionSurfaceKey,
             sessionActive: props.session.active === true,
             sessionThinking: props.session.thinking === true,
             groupingMode,

@@ -11,6 +11,7 @@ import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeFor
 import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Icon } from '@/components/ui/icons/Icon';
+import type { FocusReturnTarget } from '@/keyboard/focusReturn';
 
 export interface ItemRowActionsProps {
     title: string;
@@ -62,6 +63,8 @@ export interface ItemRowActionsProps {
     actionControlSizePx?: number;
     gap?: number;
     onActionPressIn?: () => void;
+    /** Exposes the default overflow trigger to an incumbent modal focus-return owner. */
+    onOverflowTriggerFocusTargetChange?: (target: FocusReturnTarget) => void;
     /**
      * Optional explicit boundary ref for the popover. Useful when the row is rendered
      * inside a scroll container that should bound the popover sizing/placement.
@@ -138,9 +141,33 @@ export function ItemRowActions(props: ItemRowActionsProps) {
                 icon: iconNode,
                 onPress: onPress ? () => closeThen(onPress) : undefined,
                 disabled: action.disabled,
+                selected: action.selected,
             };
         });
     }, [closeThen, overflowActions, theme.colors.button.secondary.tint, theme.colors.state.danger.foreground]);
+
+    const overflowActionSections = React.useMemo(() => {
+        const sections: Array<Readonly<{
+            id: string;
+            title: string;
+            actions: ActionListItem[];
+        }>> = [];
+        const sectionById = new Map<string, (typeof sections)[number]>();
+
+        overflowActions.forEach((action, index) => {
+            // Ungrouped menus preserve their incumbent single heading and row order.
+            const group = action.group ?? { id: '__ungrouped__', title: props.title };
+            let section = sectionById.get(group.id);
+            if (!section) {
+                section = { id: group.id, title: group.title, actions: [] };
+                sectionById.set(group.id, section);
+                sections.push(section);
+            }
+            section.actions.push(overflowActionItems[index]!);
+        });
+
+        return sections;
+    }, [overflowActionItems, overflowActions, props.title]);
 
     const iconSize = props.iconSize ?? 20;
     const minimumActionTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
@@ -247,6 +274,14 @@ export function ItemRowActions(props: ItemRowActionsProps) {
                 }}
                 accessibilityRole="button"
                 accessibilityLabel={action.accessibilityLabel ?? action.title}
+                accessibilityState={{
+                    ...(action.disabled || !action.onPress ? { disabled: true } : null),
+                    ...(action.expanded !== undefined ? { expanded: action.expanded } : null),
+                    ...(action.selected !== undefined ? { selected: action.selected } : null),
+                }}
+                {...(Platform.OS === 'web' && action.selected !== undefined
+                    ? { 'aria-pressed': action.selected }
+                    : {})}
             >
                 {normalizeNodeForView(
                     iconNode,
@@ -273,6 +308,7 @@ export function ItemRowActions(props: ItemRowActionsProps) {
                         })
                         : (
                             <Pressable
+                                ref={(target) => props.onOverflowTriggerFocusTargetChange?.(target)}
                                 testID={props.overflowTriggerTestID}
                                 style={(interactionState) => {
                                     const webState = interactionState as typeof interactionState & { focused?: boolean };
@@ -333,17 +369,20 @@ export function ItemRowActions(props: ItemRowActionsProps) {
                                 edgeFades={{ top: true, bottom: true, size: 24 }}
                                 edgeIndicators={true}
                             >
-                                <ActionListSection
-                                    title={props.title}
-                                    actions={overflowActionItems}
-                                />
+                                {overflowActionSections.map((section) => (
+                                    <ActionListSection
+                                        key={section.id}
+                                        title={section.title}
+                                        actions={section.actions}
+                                    />
+                                ))}
                             </FloatingOverlay>
                         )}
                     </Popover>
                 ) : null}
             </View>
         );
-    }, [actionControlFrame, blurTintOnWeb, iconSize, overflowActionItems, overflowAnchorOverlay, overflowPlacement, overflowPortal, props, showOverflow, theme.colors.button.secondary.tint]);
+    }, [actionControlFrame, blurTintOnWeb, iconSize, overflowActionSections, overflowAnchorOverlay, overflowPlacement, overflowPortal, props, showOverflow, theme.colors.button.secondary.tint]);
 
     return (
         <View style={[styles.container, { gap }]}>

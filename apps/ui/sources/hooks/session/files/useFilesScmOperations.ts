@@ -24,6 +24,7 @@ import { useScmRemoteOperations } from '@/hooks/session/sourceControl/useScmRemo
 
 export function useFilesScmOperations(input: {
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     scmSnapshot: ScmWorkingSnapshot | null;
     scmWriteEnabled: boolean;
@@ -34,7 +35,7 @@ export function useFilesScmOperations(input: {
     loadCommitHistory: (opts?: { reset?: boolean }) => Promise<void>;
 }) {
     const {
-        sessionId,
+        sessionId, serverId,
         sessionPath,
         scmSnapshot,
         scmWriteEnabled,
@@ -57,8 +58,8 @@ export function useFilesScmOperations(input: {
         if (!mountedRef.current) return;
         setScmOperationStatus(value);
     }, [mountedRef]);
-    const commitSelectionPaths = useSessionProjectScmCommitSelectionPaths(sessionId);
-    const commitSelectionPatches = useSessionProjectScmCommitSelectionPatches(sessionId);
+    const commitSelectionPaths = useSessionProjectScmCommitSelectionPaths(sessionId, serverId);
+    const commitSelectionPatches = useSessionProjectScmCommitSelectionPatches(sessionId, serverId);
     const scmCommitMessageGeneratorEnabled = useSetting('scmCommitMessageGeneratorEnabled');
     const scmCommitMessageGeneratorBackendId = useSetting('scmCommitMessageGeneratorBackendId');
     const scmCommitMessageGeneratorInstructions = useSetting('scmCommitMessageGeneratorInstructions');
@@ -82,7 +83,7 @@ export function useFilesScmOperations(input: {
         }
 
         const res = await generateScmCommitMessage({
-            sessionId,
+            sessionId, serverId,
             backendId: commitMessageGeneratorBackendId,
             instructions: typeof scmCommitMessageGeneratorInstructions === 'string'
                 ? scmCommitMessageGeneratorInstructions
@@ -96,7 +97,7 @@ export function useFilesScmOperations(input: {
         commitSelectionPathHints,
         scmCommitMessageGeneratorEnabled,
         scmCommitMessageGeneratorInstructions,
-        sessionId,
+        sessionId, serverId,
     ]);
 
     const commitPreflight = React.useMemo(
@@ -123,7 +124,7 @@ export function useFilesScmOperations(input: {
         pushPreflight,
         runRemoteOperation,
     } = useScmRemoteOperations({
-        sessionId,
+        sessionId, serverId,
         sessionPath,
         scmSnapshot,
         scmWriteEnabled,
@@ -156,7 +157,7 @@ export function useFilesScmOperations(input: {
         }
 
         const result = await executeScmCommit({
-            sessionId,
+            sessionId, serverId,
             repoPath: sessionPath,
             commitMessage: validation.message,
             scmCommitStrategy,
@@ -184,7 +185,7 @@ export function useFilesScmOperations(input: {
         scmCommitStrategy,
         refreshScmData,
         loadCommitHistory,
-        sessionId,
+        sessionId, serverId,
         sessionPath,
         mountedRef,
         setScmOperationBusySafe,
@@ -225,7 +226,7 @@ export function useFilesScmOperations(input: {
         scmCommitMessageGeneratorBackendId,
         scmCommitMessageGeneratorEnabled,
         scmCommitMessageGeneratorInstructions,
-        sessionId,
+        sessionId, serverId,
         sessionPath,
         tracking,
         generateCommitMessageSuggestion,

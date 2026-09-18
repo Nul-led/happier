@@ -7,6 +7,7 @@ import {
     SESSION_ACTION_CLEAR_ATTENTION_STANDING_ID,
     SESSION_ACTION_DELETE_ID,
     SESSION_ACTION_EDIT_TAGS_ID,
+    SESSION_ACTION_FOLLOW_ID,
     SESSION_ACTION_MARK_READ_ID,
     SESSION_ACTION_MARK_UNREAD_ID,
     SESSION_ACTION_MOVE_TO_FOLDER_ID,
@@ -32,6 +33,10 @@ export type SessionActionMetadata = Readonly<{
 }>;
 
 const METADATA_BY_ACTION_ID: Readonly<Record<string, SessionActionMetadata>> = {
+    [SESSION_ACTION_FOLLOW_ID]: {
+        titleKey: 'session.follow.editor.title',
+        icon: 'bell',
+    },
     [SESSION_ACTION_MARK_READ_ID]: {
         titleKey: 'sessionInfo.markSessionRead',
         subtitleKey: 'sessionInfo.markSessionReadSubtitle',

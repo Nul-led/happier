@@ -441,6 +441,7 @@ describe('NewSessionSimplePanel', () => {
                 canCreate={false}
                 isCreating={true}
                 pendingLaunchAttempt={pendingLaunchAttempt}
+                launchPendingPreviewVisible
                 emptyAutocompleteKinds={[]}
                 emptyAutocompleteSuggestions={async () => []}
                 sessionPromptInputMaxHeight={200}

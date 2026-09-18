@@ -4,6 +4,8 @@ import {
 } from '@/agents/backendCatalog/backendTargetRouteParams';
 import { isBundledAgentId } from '@/agents/catalog/catalog';
 import { isLegacyCompatAgentType } from '@/agents/backendCatalog/legacyCompatAgents';
+import { peekTempData, storeTempData, type NewSessionData } from '@/utils/sessions/tempDataStore';
+import type { SessionAuthoringExecutionTargetV2 } from '@happier-dev/protocol';
 
 type RouteLike = Readonly<{
     key?: string;
@@ -45,6 +47,7 @@ const NEW_SESSION_PARAM_KEYS = new Set([
     'draftId',
     'draftOrigin',
     'machineId',
+    'machinePoolId',
     'path',
     'profileId',
     'previewMachineId',
@@ -189,13 +192,33 @@ export function setNewSessionPickerReturnParams(params: Readonly<{
     routeParams: RouteParams;
     currentParams?: RouteParams;
     replaceParams?: RouteParams;
+    /**
+     * Rich target selected by a nested picker. It rides the existing one-shot
+     * NewSessionData channel; route params remain routing/compatibility fields.
+     */
+    authoringExecutionTarget?: SessionAuthoringExecutionTargetV2;
 }>): 'dispatch' | 'replace' {
+    const currentDataId = isNonEmptyString(params.currentParams?.dataId)
+        ? params.currentParams.dataId
+        : null;
+    const currentTempData = currentDataId === null
+        ? null
+        : peekTempData<NewSessionData>(currentDataId);
+    const authoringDataId = params.authoringExecutionTarget === undefined
+        ? null
+        : storeTempData({
+            ...(currentTempData ?? {}),
+            executionTarget: params.authoringExecutionTarget,
+        } satisfies NewSessionData);
+    const routeParams = authoringDataId === null
+        ? params.routeParams
+        : { ...params.routeParams, dataId: authoringDataId };
     const navigationState = params.navigation.getState();
     const targetRouteKey = resolveNewSessionPickerReturnRouteKey(navigationState);
     if (targetRouteKey) {
         params.navigation.dispatch({
             type: 'SET_PARAMS',
-            payload: { params: params.routeParams },
+            payload: { params: routeParams },
             source: targetRouteKey,
         });
         return 'dispatch';
@@ -216,7 +239,7 @@ export function setNewSessionPickerReturnParams(params: Readonly<{
         ...pickRawNewSessionRouteParams((currentRouteParams ?? {}) as UnknownRouteParams),
         ...pickRawNewSessionRouteParams((params.currentParams ?? {}) as UnknownRouteParams),
         ...pickRawNewSessionRouteParams((params.replaceParams ?? {}) as UnknownRouteParams),
-        ...pickRawNewSessionRouteParams((params.routeParams ?? {}) as UnknownRouteParams),
+        ...pickRawNewSessionRouteParams((routeParams ?? {}) as UnknownRouteParams),
     };
 
     params.router.replace({

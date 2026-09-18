@@ -35,7 +35,10 @@ vi.mock('@/components/browser/surfaces/useBrowserSurfaceHostProps', () => ({
 }));
 
 vi.mock('@/components/sessions/model/useSessionMachineTarget', () => ({
-    useSessionMachineTarget: () => ({ machineId: ambientTarget.machineId, basePath: '/repo' }),
+    useSessionMachineTarget: (sessionId: string | null, serverId?: string | null) => sessionId === null ? null : ({
+        machineId: serverId === 'server-pane-driver' ? 'machine-pane-driver' : ambientTarget.machineId,
+        basePath: '/repo',
+    }),
 }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession', () => ({
@@ -107,6 +110,18 @@ describe('SessionRightPanelBrowserView pane scope', () => {
             machineId: 'machine-pane-driver',
             serverId: 'server-pane-driver',
         });
+    });
+
+    it('resolves a Home-only override before choosing the daemon machine', async () => {
+        const { SessionRightPanelBrowserView } = await import('./SessionRightPanelBrowserView');
+        await renderScreen(<SessionRightPanelBrowserView sessionId="session-1" overrides={{ serverId: 'server-pane-driver' }} />);
+        expect(daemonTransportInputs.at(-1)).toEqual({ machineId: 'machine-pane-driver', serverId: 'server-pane-driver' });
+    });
+
+    it('does not combine an unavailable Home-only override with the active machine', async () => {
+        const { SessionRightPanelBrowserView } = await import('./SessionRightPanelBrowserView');
+        await renderScreen(<SessionRightPanelBrowserView sessionId="session-1" overrides={{ serverId: null }} />);
+        expect(daemonTransportInputs.at(-1)).toEqual({ machineId: null, serverId: null });
     });
 
     it('keeps an explicit unavailable pane target unavailable rather than rebuilding ambient target state', async () => {

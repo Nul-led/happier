@@ -10,6 +10,7 @@ import {
 import {
     resolveSessionActivityStatusBadgePresentation,
     shouldRetainSessionActivityStatusBadge,
+    summarizeSessionManagedWorkflowRuns,
 } from './sessionActivityPresentation';
 import type { SessionWorkStateItem, SessionWorkStateSnapshot } from '@/sync/domains/session/workState/sessionWorkStateTypes';
 
@@ -34,6 +35,7 @@ const translateWorkflow = {
     workflowsPlural: ({ count }: { count: number }) => `${count} workflows`,
     workflowsPluralWithAgents: ({ count, agents }: { count: number; agents: number }) => `${count} workflows · ${agents} agents`,
     join: ({ left, right }: { left: string; right: string }) => `${left} · ${right}`,
+    managedNeedsYou: () => 'Needs you',
 };
 
 function workStateItem(over: Partial<SessionWorkStateItem> & { id: string; kind: SessionWorkStateItem['kind']; status: SessionWorkStateItem['status'] }): SessionWorkStateItem {
@@ -169,16 +171,15 @@ describe('resolveSessionActivityStatusBadgePresentation', () => {
         expect(result?.label).toBe('Goal: Ship goals');
     });
 
-    it('a completed task primary id does not pin over an active goal (G4 inheritance)', () => {
+    it('honors the published primary identity without rerunning writer priority', () => {
         const result = resolve({
             workStateSnapshot: workState([
                 workStateItem({ id: 'task:done', kind: 'task', status: 'complete', title: 'Done task' }),
                 workStateItem({ id: 'goal:1', kind: 'goal', status: 'active', title: 'Active goal' }),
             ], 'task:done'),
         });
-        // Protocol primary resolver must yield the active goal, not the stale completed task.
-        expect(result?.iconKind).toBe('goal');
-        expect(result?.label).toBe('Goal: Active goal');
+        expect(result?.iconKind).toBe('task');
+        expect(result?.label).toContain('Done task');
     });
 
     it('completed workflow does not hide an active goal', () => {
@@ -191,6 +192,65 @@ describe('resolveSessionActivityStatusBadgePresentation', () => {
         expect(result?.label).toBe('Goal: Ship');
     });
 
+    /**
+     * A managed Run this Session started is a different lifecycle contract from
+     * observed native activity, and it has no headline. Before the badge read
+     * it too, a Session whose only workflow was managed rendered no badge at
+     * all — which made the popover holding that Run's entry point, and its
+     * approval, unreachable from the Session.
+     */
+    it('creates the badge for a managed-only Session that has no observed activity', () => {
+        const result = resolve({
+            managedWorkflowRuns: { activeCount: 1, attentionCount: 0 },
+        });
+
+        expect(result?.iconKind).toBe('workflow');
+        expect(result?.label).toBe('Workflow');
+        expect(result?.tone).toBe('active');
+    });
+
+    it('leads with managed attention over every non-permission signal', () => {
+        const result = resolve({
+            workStateSnapshot: workState([workStateItem({ id: 'g', kind: 'goal', status: 'active', title: 'Ship' })]),
+            workflowHeadline: headline([runHeadline({ runId: 'a', totalAgents: 3, completedAgents: 1 })]),
+            managedWorkflowRuns: { activeCount: 2, attentionCount: 1 },
+        });
+
+        expect(result?.iconKind).toBe('workflow');
+        expect(result?.label).toBe('Workflow · Needs you');
+        expect(result?.tone).toBe('warning');
+        expect(result?.emphasis).toBe('prominent');
+    });
+
+    it('counts only the Runs the server attention predicate named', () => {
+        const result = resolve({
+            managedWorkflowRuns: { activeCount: 3, attentionCount: 2 },
+        });
+
+        expect(result?.label).toBe('2 workflows · Needs you');
+    });
+
+    it('keeps observed activity authoritative for its own lifecycle when managed work is merely active', () => {
+        const result = resolve({
+            workflowHeadline: headline([runHeadline({ runId: 'a', totalAgents: 4, completedAgents: 1 })]),
+            managedWorkflowRuns: { activeCount: 2, attentionCount: 0 },
+        });
+
+        // The observed segment still wins: the two lifecycles are never summed
+        // into one guessed count.
+        expect(result?.label).toBe('Workflow 1/4 agents');
+    });
+
+    it('combines an active goal with managed work exactly as it does with observed work', () => {
+        const result = resolve({
+            workStateSnapshot: workState([workStateItem({ id: 'g', kind: 'goal', status: 'active', title: 'Ship' })]),
+            managedWorkflowRuns: { activeCount: 2, attentionCount: 0 },
+        });
+
+        expect(result?.label).toBe('Goal active · 2 workflows');
+        expect(result?.iconKind).toBe('workflow');
+    });
+
     it('shows the empty "Set goal" chip when goal editing is available (QA-CHIP-1)', () => {
         const result = resolve({
             editableGoal: true,
@@ -201,6 +261,34 @@ describe('resolveSessionActivityStatusBadgePresentation', () => {
     });
 });
 
+describe('summarizeSessionManagedWorkflowRuns', () => {
+    it('reads active from the canonical Run state and attention from the server predicate', () => {
+        const summary = summarizeSessionManagedWorkflowRuns({
+            runs: [
+                { id: 'run-running', state: 'running' },
+                { id: 'run-interrupted', state: 'interrupted' },
+                { id: 'run-done', state: 'succeeded' },
+            ],
+            attentionRunIds: new Set(['run-interrupted', 'run-done']),
+        });
+
+        // `succeeded` is settled, so it is not active — but a terminal Run with
+        // unresolved delivery custody is still what the server called attention,
+        // and collapsing the two would be a second attention decision.
+        expect(summary).toEqual({ activeCount: 2, attentionCount: 2 });
+    });
+
+    it('returns one stable empty signal so an idle Session does not rerender its badge', () => {
+        const first = summarizeSessionManagedWorkflowRuns({ runs: [], attentionRunIds: new Set() });
+        const second = summarizeSessionManagedWorkflowRuns({
+            runs: [{ id: 'run-done', state: 'cancelled' }],
+            attentionRunIds: new Set(),
+        });
+
+        expect(first).toBe(second);
+    });
+});
+
 describe('shouldRetainSessionActivityStatusBadge', () => {
     it('keeps the activity popover open for workflow-only sessions with no work-state item', () => {
         expect(shouldRetainSessionActivityStatusBadge({
@@ -208,6 +296,22 @@ describe('shouldRetainSessionActivityStatusBadge', () => {
             hasPrimaryWorkStateItem: false,
             canShowEmptyGoalControls: false,
             hasActiveWorkflowRuns: true,
+            hasManagedWorkflowRuns: false,
+        })).toBe(true);
+    });
+
+    /**
+     * Retention has to read the managed signal too, or the popover the person
+     * just opened on a managed-only Session closes under them on the next
+     * render.
+     */
+    it('keeps the popover open for a managed-only Session', () => {
+        expect(shouldRetainSessionActivityStatusBadge({
+            activeStatusBadgeKey: 'work-state',
+            hasPrimaryWorkStateItem: false,
+            canShowEmptyGoalControls: false,
+            hasActiveWorkflowRuns: false,
+            hasManagedWorkflowRuns: true,
         })).toBe(true);
     });
 
@@ -217,6 +321,7 @@ describe('shouldRetainSessionActivityStatusBadge', () => {
             hasPrimaryWorkStateItem: false,
             canShowEmptyGoalControls: false,
             hasActiveWorkflowRuns: false,
+            hasManagedWorkflowRuns: false,
         })).toBe(false);
     });
 });

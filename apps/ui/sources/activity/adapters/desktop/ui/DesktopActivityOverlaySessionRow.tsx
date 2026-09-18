@@ -4,9 +4,11 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
 
+import { createDesktopActivityOverlayFocusRingStyle } from './DesktopActivityOverlayChrome';
+import { composeDesktopActivityOverlayAccessibilityLabel } from './desktopActivityOverlayAccessibilityLabel';
 import { desktopActivityOverlayChromeMetrics } from './DesktopActivityOverlayChromeMetrics';
-import type { DesktopActivityOverlayHoverablePressableState } from './DesktopActivityOverlayHoverablePressableState';
 import { DesktopActivityOverlayLeadingIndicator } from './DesktopActivityOverlayLeadingIndicator';
+import type { DesktopActivityOverlayPressableInteractionState } from './DesktopActivityOverlayPressableInteractionState';
 import type { DesktopActivityOverlayVisualMode } from './DesktopActivityOverlayVisualMode';
 
 export function DesktopActivityOverlaySessionRow(props: Readonly<{
@@ -17,22 +19,34 @@ export function DesktopActivityOverlaySessionRow(props: Readonly<{
     subtitle: string | null;
     statusText: string | null;
     previewText: string | null;
+    pressableRef?: React.Ref<View>;
     onPress: () => void;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
+    // Identity and state only: the preview repeats agent/session content and stays out of the name.
+    const accessibilityLabel = composeDesktopActivityOverlayAccessibilityLabel([
+        props.title,
+        props.subtitle,
+        props.statusText,
+    ]);
 
     return (
         <Pressable
+            ref={props.pressableRef}
             testID={props.testID}
+            accessibilityRole="button"
+            accessibilityLabel={accessibilityLabel}
             onPress={props.onPress}
             style={(state) => {
                 const { pressed } = state;
-                const hovered = (state as DesktopActivityOverlayHoverablePressableState).hovered === true;
+                const interaction = state as DesktopActivityOverlayPressableInteractionState;
+                const hovered = interaction.hovered === true;
 
                 return [
                     styles.container,
                     hovered ? [styles.hoveredSurface, { backgroundColor: theme.colors.overlay.scrimStrong }] : null,
                     pressed ? { opacity: 0.9 } : null,
+                    interaction.focused === true ? createDesktopActivityOverlayFocusRingStyle(theme) : null,
                 ];
             }}
         >
@@ -72,9 +86,10 @@ export function DesktopActivityOverlaySessionRow(props: Readonly<{
 const styles = StyleSheet.create({
     container: {
         position: 'relative',
+        // Carried on the base row so the hover wash and the keyboard focus outline share one shape.
+        borderRadius: 12,
     },
     hoveredSurface: {
-        borderRadius: 12,
         opacity: 0.98,
     },
     contentRow: {

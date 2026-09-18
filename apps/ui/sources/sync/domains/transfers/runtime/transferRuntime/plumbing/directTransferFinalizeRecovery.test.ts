@@ -5,28 +5,30 @@ import { createDeferred } from '@/dev/testkit';
 const finalizeDirectImportSessionMock = vi.hoisted(() => vi.fn());
 const abortPreparedDirectImportSessionViaMachineRpcMock = vi.hoisted(() => vi.fn());
 
-vi.mock('./directTransferImportClient', () => ({
+// Only the two network operations are replaced; the carrier request rule stays
+// real so a retry's endpoint resolution is exercised rather than restated here.
+vi.mock('./directTransferImportClient', async (importOriginal) => ({
+    ...await importOriginal<typeof import('./directTransferImportClient')>(),
     abortPreparedDirectImportSessionViaMachineRpc: (...args: unknown[]) =>
         abortPreparedDirectImportSessionViaMachineRpcMock(...args),
-    DIRECT_IMPORT_FINALIZE_OUTCOME_INDETERMINATE_ERROR_CODE:
-        'DIRECT_IMPORT_FINALIZE_OUTCOME_INDETERMINATE',
-    DIRECT_IMPORT_REMOTE_COMMITTED_RESULT_UNUSABLE_ERROR_CODE:
-        'DIRECT_IMPORT_REMOTE_COMMITTED_RESULT_UNUSABLE',
     finalizeDirectImportSession: (...args: unknown[]) =>
         finalizeDirectImportSessionMock(...args),
-    TRANSFER_FINALIZE_RECOVERY_REQUIRED_ERROR_CODE:
-        'TRANSFER_FINALIZE_RECOVERY_REQUIRED',
 }));
 
 import { createDirectTransferFinalizeRecovery } from './directTransferFinalizeRecovery';
+import type { MachineCarrierHttpLease } from './machineCarrierHttpLease';
 
-function createRecovery(expiresAt: number) {
+function createRecovery(
+    expiresAt: number,
+    acquireCarrier?: (prepared: Readonly<{ operationId: string }>) => Promise<MachineCarrierHttpLease | null>,
+) {
     return createDirectTransferFinalizeRecovery({
         machineId: 'machine-1',
         serverId: 'server-1',
         uploadId: 'upload-1',
         baseUrl: 'https://machine.example.test/direct/imports/upload-1',
         expiresAt,
+        ...(acquireCarrier ? { acquireCarrier } : {}),
         parseFinalizeResponse: (response) => response.finalized.path,
     });
 }
@@ -39,6 +41,53 @@ describe('createDirectTransferFinalizeRecovery', () => {
 
     afterEach(() => {
         vi.restoreAllMocks();
+    });
+
+    it('rebases the prepared endpoint onto a carrier reacquired for each retry', async () => {
+        // The upload hands carrier custody back before this continuation exists,
+        // so the origin captured with the prepared endpoint is already dead.
+        const held: string[] = [];
+        let leases = 0;
+        const acquireCarrier = async (prepared: Readonly<{ operationId: string }>) => {
+            leases += 1;
+            const localOrigin = `http://127.0.0.1:${49000 + leases}`;
+            held.push(`${prepared.operationId}@${localOrigin}`);
+            return {
+                kind: 'native_http' as const,
+                localOrigin,
+                release: async () => {
+                    held.splice(held.indexOf(`${prepared.operationId}@${localOrigin}`), 1);
+                },
+            } satisfies MachineCarrierHttpLease;
+        };
+        finalizeDirectImportSessionMock
+            .mockResolvedValueOnce({
+                success: false,
+                error: 'Destination rollback is still incomplete',
+                errorCode: 'TRANSFER_FINALIZE_RECOVERY_REQUIRED',
+                keepSession: true,
+            })
+            .mockResolvedValueOnce({
+                success: true,
+                finalized: { success: true, path: '/repo/file.txt', sizeBytes: 4 },
+                sha256: 'sha256:finalized',
+            });
+        const recovery = createRecovery(70_000, acquireCarrier);
+
+        await expect(recovery.invoke('retry_finalize')).resolves.toEqual({
+            status: 'recovery_required',
+            error: 'Destination rollback is still incomplete',
+        });
+        await expect(recovery.invoke('retry_finalize')).resolves.toEqual({
+            status: 'finalized',
+            response: '/repo/file.txt',
+        });
+
+        expect(finalizeDirectImportSessionMock.mock.calls.map(([call]) => (call as { baseUrl: string }).baseUrl)).toEqual([
+            'http://127.0.0.1:49001/direct/imports/upload-1',
+            'http://127.0.0.1:49002/direct/imports/upload-1',
+        ]);
+        expect(held).toEqual([]);
     });
 
     it('lets the daemon decide whether retry finalization is live when the client clock is ahead', async () => {

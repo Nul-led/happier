@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { V2SessionRecord } from '@happier-dev/protocol';
 import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 
 const boundary = vi.hoisted(() => ({
     captureAuthority: vi.fn(),
@@ -20,13 +22,13 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     };
 });
 
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', async (importOriginal) => {
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', async (importOriginal) => {
     const actual = await importOriginal<
-        typeof import('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope')
+        typeof import('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope')
     >();
     return {
         ...actual,
-        captureSessionRequestAuthorityForServerAccountScope: boundary.captureAuthority,
+        captureServerRequestAuthorityForServerAccountScope: boundary.captureAuthority,
     };
 });
 
@@ -98,7 +100,7 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
             activeAt: 10,
             archivedAt: null,
             encryptionMode: 'plain',
-            metadata: { name: 'Home A title', path: '/work/a' },
+            metadata: { name: 'Home A title', path: '/work/a', host: 'host-a' },
             metadataVersion: 1,
             agentState: {},
             agentStateVersion: 1,
@@ -136,7 +138,7 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
         });
 
         expect(storage.getState().sessions['session-1']).toBe(activeSession);
-        expect(storage.getState().sessionListRowStateByServerId['home-b']?.['session-1']).toMatchObject({
+        expect(storage.getState().sessionListRowsByServerId['home-b']?.['session-1']).toMatchObject({
             metadata: { name: 'Home B title', path: '/work/b' },
         });
     });
@@ -183,14 +185,14 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
             ['/v2/sessions/archived', null],
             ['/v2/sessions/archived', 'archived-next'],
         ]);
-        expect(Object.keys(storage.getState().sessionListRowStateByServerId['home-b'] ?? {}).sort()).toEqual([
+        expect(Object.keys(storage.getState().sessionListRowsByServerId['home-b'] ?? {}).sort()).toEqual([
             'archived-page-1',
             'archived-page-2',
             'current-page-1',
             'current-page-2',
         ]);
         expect(storage.getState().sessions).toEqual({});
-        expect(storage.getState().sessionListRowStateByServerId['home-b']?.['archived-page-2']).toMatchObject({
+        expect(storage.getState().sessionListRowsByServerId['home-b']?.['archived-page-2']).toMatchObject({
             metadata: { name: 'archived-page-2', path: '/work/archived-page-2' },
         });
         await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
@@ -226,7 +228,7 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
     });
 
     it('does not overwrite a newer scoped Sync create or update that lands while inventory is paging', async () => {
-        const archivedPage = Promise.withResolvers<Response>();
+        const archivedPage = createDeferred<Response>();
         const request = vi.fn(async (path: string) => {
             const pathname = new URL(path, 'https://home-b.example.test').pathname;
             if (pathname === '/v2/sessions/active') return response([], null);
@@ -245,18 +247,18 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
         });
         const account = createLifetime();
         storage.getState().mergeSessionListRowsForServerScope('home-b', [
-            {
+            createSessionListRenderableSessionFixture({
                 id: 'updated-during-inventory',
                 updatedAt: 5,
                 archivedAt: null,
-                metadata: { name: 'Before inventory', path: '/work/before' },
-            },
-            {
+                metadata: { name: 'Before inventory', path: '/work/before', host: 'home-b-host' },
+            }),
+            createSessionListRenderableSessionFixture({
                 id: 'unchanged-before-inventory',
                 updatedAt: 5,
                 archivedAt: null,
-                metadata: { name: 'Removed remotely', path: '/work/removed' },
-            },
+                metadata: { name: 'Removed remotely', path: '/work/removed', host: 'home-b-host' },
+            }),
         ]);
 
         const work = ensureSessionMetadataInventoryForServerAccountScope({
@@ -267,23 +269,23 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
         await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(3));
 
         storage.getState().mergeSessionListRowsForServerScope('home-b', [
-            {
+            createSessionListRenderableSessionFixture({
                 id: 'updated-during-inventory',
                 updatedAt: 20,
                 archivedAt: null,
-                metadata: { name: 'Newer Sync title', path: '/work/newer' },
-            },
-            {
+                metadata: { name: 'Newer Sync title', path: '/work/newer', host: 'home-b-host' },
+            }),
+            createSessionListRenderableSessionFixture({
                 id: 'created-during-inventory',
                 updatedAt: 20,
                 archivedAt: null,
-                metadata: { name: 'New Sync session', path: '/work/new' },
-            },
+                metadata: { name: 'New Sync session', path: '/work/new', host: 'home-b-host' },
+            }),
         ]);
         archivedPage.resolve(response([], null));
         await work;
 
-        const rows = storage.getState().sessionListRowStateByServerId['home-b'];
+        const rows = storage.getState().sessionListRowsByServerId['home-b'];
         expect(rows?.['updated-during-inventory']).toMatchObject({
             updatedAt: 20,
             metadata: { name: 'Newer Sync title' },
@@ -292,13 +294,15 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
             metadata: { name: 'New Sync session' },
         });
         expect(rows?.['unchanged-before-inventory']).toBeUndefined();
+        expect(storage.getState().ordinarySessionListMembershipByServerId['home-b']).toEqual([
+            'updated-during-inventory',
+            'created-during-inventory',
+        ]);
     });
 
     it('shares one scoped inventory across consumers while detaching a retired caller independently', async () => {
-        const archivedPage = Promise.withResolvers<Response>();
-        let sharedSignal: AbortSignal | null = null;
+        const archivedPage = createDeferred<Response>();
         const request = vi.fn(async (path: string, init: RequestInit) => {
-            sharedSignal = init.signal as AbortSignal;
             const pathname = new URL(path, 'https://home-b.example.test').pathname;
             if (pathname === '/v2/sessions/active') return response([], null);
             if (pathname === '/v2/sessions') return response([row('shared-row')], null);
@@ -325,11 +329,11 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
 
         first.retire();
         await expect(firstWork).rejects.toMatchObject({ name: 'AbortError' });
-        expect(sharedSignal?.aborted).toBe(false);
+        expect(request.mock.calls.at(-1)?.[1].signal?.aborted).toBe(false);
         archivedPage.resolve(response([], null));
         await secondWork;
 
         expect(boundary.captureAuthority).toHaveBeenCalledOnce();
-        expect(storage.getState().sessionListRowStateByServerId['home-b']?.['shared-row']).toBeDefined();
+        expect(storage.getState().sessionListRowsByServerId['home-b']?.['shared-row']).toBeDefined();
     });
 });

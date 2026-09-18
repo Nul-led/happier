@@ -79,12 +79,13 @@ vi.mock('@/sync/domains/state/storage', () => ({
         },
         ...(state.accountSettings ?? {}),
       },
-      settingsScope: state.accountSettings
-        ? { serverId: 'server-1', accountId: 'account-1' }
-        : null,
+      settingsScope: { serverId: 'server-1', accountId: 'account-1' },
       settingsVersion: state.settingsVersion,
     }),
   },
+}));
+vi.mock('@/sync/store/settingsWriters', () => ({
+  useAccountSettingsScope: () => ({ serverId: 'server-1', accountId: 'account-1' }),
 }));
 vi.mock('@/sync/domains/settings/voiceSettings', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/sync/domains/settings/voiceSettings')>();

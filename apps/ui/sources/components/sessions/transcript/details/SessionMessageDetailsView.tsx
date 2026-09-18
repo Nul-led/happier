@@ -1,5 +1,6 @@
 import { isSubAgentTranscriptToolName, type ParticipantRecipientV1 } from '@happier-dev/protocol';
 import * as React from 'react';
+import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { View } from 'react-native';
 import type { TextStyle, ViewStyle } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
@@ -22,7 +23,7 @@ import type { SessionParticipantTarget } from '@/sync/domains/session/participan
 import { shouldEnableExecutionRunPolling } from '@/sync/domains/session/participants/shouldEnableExecutionRunPolling';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
-import { useSessionMessages } from '@/sync/store/hooks';
+import { useSessionMessages, useSessionPendingMessages } from '@/sync/store/hooks';
 import { buildSessionTranscriptAgentAttributionIndex } from '@/components/sessions/transcript/attribution/sessionTranscriptAgentAttribution';
 import {
     SessionTranscriptAgentAttributionProvider,
@@ -34,6 +35,7 @@ import { Typography } from '@/constants/Typography';
 import { ToolFullView } from '@/components/tools/shell/views/ToolFullView';
 import { useSessionRecipientState } from '@/components/sessions/agentInput/routing/useSessionRecipientState';
 import { participantRecipientsMatch } from '@/sync/domains/input/participants/resolveParticipantRoutedSend';
+import type { BrowserContextState } from '@/sync/domains/browser/context';
 
 type SessionMessageDetailsTheme = Readonly<{
     colors: Readonly<{
@@ -134,10 +136,16 @@ function ToolCallDetailsView(props: Readonly<{
     session: Session;
     jumpChildId: string | null;
     showComposer: boolean;
+    recipientOverride?: ParticipantRecipientV1;
+    composerInitialLocalId?: string;
+    browserContextState?: BrowserContextState | null;
 }>) {
     const { theme } = useUnistyles();
     const styles = React.useMemo(() => createSessionMessageDetailsStyles(theme), [theme]);
     const ownerMetadata = readSessionOwnerMetadataView(props.session);
+    const accountScopeResolution = useServerCredentialAccountScopeResolution(props.session.serverId);
+    const accountScope = props.session.serverId === undefined ? undefined
+        : accountScopeResolution.kind === 'bound' ? accountScopeResolution.scope : null;
     const { messages: committedMessages } = useSessionMessages(props.sessionId);
     // This screen shows one row from the transcript in isolation. Without the
     // transcript's divider index it would fall back to the Session's current
@@ -146,7 +154,9 @@ function ToolCallDetailsView(props: Readonly<{
         () => buildSessionTranscriptAgentAttributionIndex(committedMessages),
         [committedMessages],
     );
-    const executionRunsEnabled = useFeatureEnabled('execution.runs');
+    const executionRunsEnabled = useFeatureEnabled('execution.runs', props.session.serverId
+        ? { scopeKind: 'spawn', serverId: props.session.serverId }
+        : undefined);
     const executionRunPollingEnabled = React.useMemo(() => {
         return shouldEnableExecutionRunPolling({
             executionRunsFeatureEnabled: executionRunsEnabled,
@@ -158,23 +168,24 @@ function ToolCallDetailsView(props: Readonly<{
     }, [committedMessages]);
     const runningExecutionRuns = useSessionRunningExecutionRuns({
         sessionId: props.sessionId,
+        serverId: props.session.serverId,
         enabled: executionRunPollingEnabled,
         refreshKey: executionRunPollingRefreshKey,
     });
     const externalSessionRuntime = useSessionExternalSessionRuntime({
         sessionId: props.sessionId,
         metadata: ownerMetadata,
+        serverId: props.session.serverId,
     });
     const canControlExecutionRuns = externalSessionRuntime.externalSessionLink === null || externalSessionRuntime.status?.runnerActive === true;
 
     const interaction = React.useMemo(() => {
         return deriveTranscriptInteractionFromSession({
-            accessLevel: props.session.accessLevel,
-            canApprovePermissions: props.session.canApprovePermissions,
+            access: props.session.access,
             active: props.session.active,
             presence: props.session.presence,
         });
-    }, [props.session.accessLevel, props.session.active, props.session.canApprovePermissions, props.session.presence]);
+    }, [props.session.access, props.session.active, props.session.presence]);
 
     const focusedTool = props.message.tool;
     const toolName = focusedTool?.name;
@@ -182,16 +193,18 @@ function ToolCallDetailsView(props: Readonly<{
 
     const baseParticipantTargets = React.useMemo(() => {
         return deriveSessionParticipantTargets({
+            accountScope,
             session: props.session,
             messages: committedMessages,
             activeExecutionRuns: runningExecutionRuns,
             canControlExecutionRuns,
         });
-    }, [canControlExecutionRuns, committedMessages, props.session, runningExecutionRuns]);
+    }, [accountScope, canControlExecutionRuns, committedMessages, props.session, runningExecutionRuns]);
 
-    const autoRecipient = React.useMemo(() => {
+    const inferredRecipient = React.useMemo(() => {
         if (!canShowComposer) return null;
         return deriveAutoRecipientFromFocusedToolTranscript({
+            accountScope,
             session: props.session,
             tool: focusedTool,
             messages: committedMessages,
@@ -199,21 +212,29 @@ function ToolCallDetailsView(props: Readonly<{
             focusedMessages: props.message.children,
             canControlExecutionRuns,
         });
-    }, [canControlExecutionRuns, canShowComposer, committedMessages, focusedTool, props.message.children, props.session, runningExecutionRuns]);
+    }, [accountScope, canControlExecutionRuns, canShowComposer, committedMessages, focusedTool, props.message.children, props.session, runningExecutionRuns]);
+
+    // A mounted Run Details surface already has an exact, server-loaded Run
+    // identity. It must not re-infer (and potentially retarget) that destination
+    // from a neighboring transcript/tool projection.
+    const autoRecipient = props.recipientOverride ?? inferredRecipient;
 
     const visibleFocusedMessages = React.useMemo(() => {
         return resolveSessionSubagentVisibleMessages({
+            accountScope,
             session: props.session,
             tool: focusedTool,
             messages: committedMessages,
             focusedMessages: props.message.children,
             activeExecutionRuns: runningExecutionRuns,
         });
-    }, [committedMessages, focusedTool, props.message.children, props.session, runningExecutionRuns]);
+    }, [accountScope, committedMessages, focusedTool, props.message.children, props.session, runningExecutionRuns]);
 
     const participantTargets = React.useMemo(() => {
-        return ensureAutoRecipientTarget(baseParticipantTargets, autoRecipient);
-    }, [autoRecipient, baseParticipantTargets]);
+        return props.recipientOverride
+            ? ensureAutoRecipientTarget([], props.recipientOverride)
+            : ensureAutoRecipientTarget(baseParticipantTargets, autoRecipient);
+    }, [autoRecipient, baseParticipantTargets, props.recipientOverride]);
 
     const recipientState = useSessionRecipientState({ targets: participantTargets, autoRecipient });
     const routingControls = useSessionAgentInputRoutingControls({
@@ -227,6 +248,16 @@ function ToolCallDetailsView(props: Readonly<{
     const shouldShowComposer = props.showComposer && canShowComposer && autoRecipient !== null;
     const forcePermissionFooterInTranscript = !shouldShowComposer;
 
+    // Exact-target pending rows for this Run only. Main, Run A and Run B queues stay
+    // isolated because the canonical pending owner filters by this recipient.
+    const executionRunRecipient = React.useMemo(
+        () => (autoRecipient?.kind === 'execution_run'
+            ? ({ kind: 'execution_run', runId: autoRecipient.runId } as const)
+            : undefined),
+        [autoRecipient],
+    );
+    const targetPending = useSessionPendingMessages(props.sessionId, executionRunRecipient);
+
     return (
         <SessionTranscriptAgentAttributionProvider value={agentAttributionIndex}>
         <TranscriptRowSeqProvider value={props.message.seq ?? null}>
@@ -236,19 +267,25 @@ function ToolCallDetailsView(props: Readonly<{
                 owningMessageId={props.message.id}
                 messages={[...visibleFocusedMessages]}
                 sessionId={props.sessionId}
+                serverId={props.session.serverId}
                 metadata={ownerMetadata}
                 interaction={interaction}
                 jumpChildId={props.jumpChildId}
                 forcePermissionFooterInTranscript={forcePermissionFooterInTranscript}
+                pendingMessages={executionRunRecipient ? targetPending.messages : null}
+                discardedMessages={executionRunRecipient ? targetPending.discarded : null}
+                pendingRecipient={executionRunRecipient}
             />
 
             {shouldShowComposer ? (
                 <SessionParticipantComposer
                     sessionId={props.sessionId}
+                    serverId={props.session.serverId}
                     canSendMessages={interaction.canSendMessages}
                     recipient={recipientState.recipient}
-                    executionRunDelivery={recipientState.executionRunDelivery}
-                    onExecutionRunUnavailable={() => recipientState.setManualRecipient(null)}
+                    executionRunRequestedAction={recipientState.executionRunRequestedAction}
+                    initialLocalId={props.composerInitialLocalId}
+                    browserContextState={props.browserContextState}
                     extraActionChips={extraActionChips}
                 />
             ) : null}
@@ -264,6 +301,9 @@ export const SessionMessageDetailsView = React.memo((props: Readonly<{
     message: Message;
     jumpChildId?: string | null;
     showComposer?: boolean;
+    recipientOverride?: ParticipantRecipientV1;
+    composerInitialLocalId?: string;
+    browserContextState?: BrowserContextState | null;
 }>) => {
     const { theme } = useUnistyles();
     const styles = React.useMemo(() => createSessionMessageDetailsStyles(theme), [theme]);
@@ -278,6 +318,9 @@ export const SessionMessageDetailsView = React.memo((props: Readonly<{
                         session={props.session}
                         jumpChildId={props.jumpChildId ?? null}
                         showComposer={props.showComposer ?? true}
+                        recipientOverride={props.recipientOverride}
+                        composerInitialLocalId={props.composerInitialLocalId}
+                        browserContextState={props.browserContextState}
                     />
                 ) : props.message.kind === 'agent-text' || props.message.kind === 'user-text' ? (
                     <TextFullView text={props.message.text} />

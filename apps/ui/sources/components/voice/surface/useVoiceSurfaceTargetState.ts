@@ -1,7 +1,7 @@
 import * as React from 'react';
 
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
-import { useFocusedSessionId } from '@/sync/domains/session/sessionSurfaceVisibility';
+import { useFocusedSessionAddress } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { useSessionListPreferredMetadata } from '@/sync/store/hooks';
 import { getVoiceAgentSessionTeleportAvailability } from '@/voice/agent/getVoiceAgentSessionTeleportAvailability';
 import { resolveVoiceSessionLabel } from '@/voice/context/resolveVoiceSessionLabel';
@@ -12,6 +12,7 @@ import {
 import { resolveVoiceAdapterSurfaceCapabilities } from '@/voice/session/voiceAdapterRegistry';
 
 import type { VoiceSurfaceVariant } from './voiceSurfaceTypes';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 function resolveSessionIdFromPathname(pathname: string | null | undefined): string | null {
     const normalized = String(pathname ?? '').trim();
@@ -28,7 +29,9 @@ type VoiceSurfacePrivacySettings = Readonly<{
 export function useVoiceSurfaceTargetState(params: Readonly<{
     pathname: string | null | undefined;
     providerId: string;
+    sessionAddress?: SessionAddress | null;
     sessionId: string | null | undefined;
+    serverId?: string | null;
     variant: VoiceSurfaceVariant;
     voice: any;
     voicePrivacy: VoiceSurfacePrivacySettings;
@@ -37,18 +40,23 @@ export function useVoiceSurfaceTargetState(params: Readonly<{
     const scopeDefault = ui.scopeDefault === 'session' ? 'session' : 'global';
     const surfaceLocation = ui.surfaceLocation === 'sidebar' || ui.surfaceLocation === 'session' ? ui.surfaceLocation : 'auto';
     const activityFeedEnabled = params.voice?.ui?.activityFeedEnabled === true;
-    const focusedSessionId = useFocusedSessionId();
-    const lastFocusedSessionId = useVoiceTargetStore((state) => state.lastFocusedSessionId);
+    const exactFocusedSessionAddress = useFocusedSessionAddress();
+    const lastFocusedSessionAddress = useVoiceTargetStore((state) => state.lastFocusedSessionAddress);
     const routeSessionId = params.variant === 'sidebar' ? resolveSessionIdFromPathname(params.pathname) : null;
     const surfaceCapabilities = resolveVoiceAdapterSurfaceCapabilities(params.providerId, params.voice);
     const allowsGlobalStart = surfaceCapabilities?.allowsGlobalStart === true;
-    const exactSessionId =
+    const statedSessionAddress = normalizeSessionAddress(
+        params.sessionAddress?.serverId,
+        params.sessionAddress?.sessionId,
+    );
+    const exactSessionAddress =
         params.variant === 'session'
-            ? (typeof params.sessionId === 'string' ? params.sessionId : null)
+            ? (params.sessionAddress !== undefined
+                ? statedSessionAddress
+                : normalizeSessionAddress(params.serverId, params.sessionId))
             : (
-                (typeof focusedSessionId === 'string' ? focusedSessionId : null)
-                ?? routeSessionId
-                ?? (typeof lastFocusedSessionId === 'string' ? lastFocusedSessionId : null)
+                exactFocusedSessionAddress
+                ?? lastFocusedSessionAddress
             );
     // An in-session composer always starts against the exact session it is rendered for. The
     // global default controls Voice Home/sidebar starts only; applying it here would discard the
@@ -59,8 +67,9 @@ export function useVoiceSurfaceTargetState(params: Readonly<{
             : scopeDefault === 'global' && allowsGlobalStart
                 ? 'global'
                 : 'session';
-    const startSessionId = bindingScope === 'global' ? null : exactSessionId;
-    const displayedBindingSessionMetadata = useSessionListPreferredMetadata(startSessionId);
+    const startSessionAddress = bindingScope === 'global' ? null : exactSessionAddress;
+    const startSessionId = startSessionAddress?.sessionId ?? null;
+    const displayedBindingSessionMetadata = useSessionListPreferredMetadata(startSessionAddress);
     const voiceAgentEnabled = useFeatureEnabled('voice.agent');
     const bargeInEnabled = surfaceCapabilities?.bargeInEnabled === true;
     const cancelResponseSupported = surfaceCapabilities?.cancelResponse === 'immediate';
@@ -84,7 +93,7 @@ export function useVoiceSurfaceTargetState(params: Readonly<{
     const targetLabel =
         startSessionId
             ? (
-                resolveVoiceSessionLabel(startSessionId, {
+                resolveVoiceSessionLabel(startSessionAddress!, {
                     voiceShareSessionSummary: params.voicePrivacy.shareSessionSummary,
                     voiceShareFilePaths: params.voicePrivacy.shareFilePaths,
                 }, displayedBindingSessionMetadata ? { metadata: displayedBindingSessionMetadata } : undefined)
@@ -103,6 +112,7 @@ export function useVoiceSurfaceTargetState(params: Readonly<{
         locationAllowsVariant,
         routeSessionId,
         startSessionId,
+        startSessionAddress,
         targetLabel,
     };
 }

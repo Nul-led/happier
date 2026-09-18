@@ -1,4 +1,4 @@
-import type { ActionSettingsActionId, ActionsSettingsV1 } from '@happier-dev/protocol';
+import { isApprovalRequiredByActionsSettings, setActionApprovalOverride, type ActionSettingsActionId, type ActionsSettingsV1 } from '@happier-dev/protocol';
 
 import { normalizeActionsSettings } from './normalizeActionsSettings';
 import {
@@ -7,11 +7,6 @@ import {
     type ActionSettingsTargetDefinition,
     type ActionSettingsTargetId,
 } from './actionSettingsTargetDefinitions';
-import {
-    getMutableActionSettingsEntry,
-    sortUniqueActionSettingsValues,
-    writeActionSettingsEntry,
-} from './actionSettingsTargetSelection';
 
 export function isActionSettingsApprovalAction(actionId: ActionSettingsActionId): boolean {
     return actionId === 'approval.request.create' || actionId === 'approval.request.decide';
@@ -41,17 +36,31 @@ export function getActionTargetApprovalRequired(params: Readonly<{
     target?: ActionSettingsTargetDefinition;
 }>): boolean {
     const normalizedSettings = normalizeActionsSettings(params.settings);
-    const entry = normalizedSettings.actions[params.actionId];
-    if (!entry) {
-        return false;
-    }
-
     const surface = resolveActionSettingsApprovalSurface(params.actionId, params.targetId, params.target);
     if (!surface) {
         return false;
     }
 
-    return entry.approvalRequiredSurfaces?.includes(surface) === true;
+    return isApprovalRequiredByActionsSettings(params.actionId, normalizedSettings, { surface });
+}
+
+/**
+ * Reads the persisted setting, rather than its effective policy result. The
+ * settings UI needs this distinction so a person can restore the canonical
+ * default after explicitly requiring or waiving approval.
+ */
+export function getActionTargetApprovalOverride(params: Readonly<{
+    settings: ActionsSettingsV1;
+    actionId: ActionSettingsActionId;
+    targetId: ActionSettingsTargetId;
+    target?: ActionSettingsTargetDefinition;
+}>): boolean | null {
+    const normalizedSettings = normalizeActionsSettings(params.settings);
+    const surface = resolveActionSettingsApprovalSurface(params.actionId, params.targetId, params.target);
+    if (!surface) return null;
+    if (normalizedSettings.actions[params.actionId]?.approvalRequiredSurfaces.includes(surface)) return true;
+    if (normalizedSettings.approvalWaivedSurfaces?.[params.actionId]?.includes(surface)) return false;
+    return null;
 }
 
 export function setActionTargetApprovalRequired(params: Readonly<{
@@ -59,18 +68,18 @@ export function setActionTargetApprovalRequired(params: Readonly<{
     actionId: ActionSettingsActionId;
     targetId: ActionSettingsTargetId;
     target?: ActionSettingsTargetDefinition;
-    approvalRequired: boolean;
+    approvalRequired: boolean | null;
 }>): ActionsSettingsV1 {
     const normalizedSettings = normalizeActionsSettings(params.settings);
-    const entry = getMutableActionSettingsEntry(normalizedSettings, params.actionId);
     const surface = resolveActionSettingsApprovalSurface(params.actionId, params.targetId, params.target);
     if (!surface) {
         return normalizedSettings;
     }
 
-    entry.approvalRequiredSurfaces = params.approvalRequired
-        ? sortUniqueActionSettingsValues([...entry.approvalRequiredSurfaces, surface])
-        : entry.approvalRequiredSurfaces.filter((value) => value !== surface);
-
-    return writeActionSettingsEntry(normalizedSettings, params.actionId, entry);
+    return setActionApprovalOverride({
+        settings: normalizedSettings,
+        actionId: params.actionId,
+        surface,
+        approvalRequired: params.approvalRequired,
+    });
 }

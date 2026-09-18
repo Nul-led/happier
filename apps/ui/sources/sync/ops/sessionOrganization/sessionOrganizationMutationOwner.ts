@@ -1,5 +1,9 @@
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
-import type { SessionFolderV1, SessionFoldersV1 } from '@/sync/domains/session/folders';
+import {
+    areSessionFolderDefinitionsEqual,
+    type SessionFolderV1,
+    type SessionFoldersV1,
+} from '@/sync/domains/session/folders/types';
 import {
     getServerProfileById,
     resolveServerProfileScopeId,
@@ -7,6 +11,7 @@ import {
 import {
     buildSessionOrganizationReorderRequestFromGroupOrder,
     buildSessionOrganizationReorderRequestFromWorkspaceOrder,
+    type SessionOrganizationOrderItemAddress,
 } from '@/sync/domains/session/organization/viewState';
 
 import { deleteSessionFolder } from './deleteSessionFolder';
@@ -124,20 +129,6 @@ function normalizeStringArray(values: readonly string[] | null | undefined): str
     return normalized;
 }
 
-function readSessionIdFromScopedKey(
-    scope: SessionOrganizationMutationScope,
-    sessionKeyRaw: unknown,
-): string | null {
-    const sessionKey = normalizeId(sessionKeyRaw);
-    if (!sessionKey) return null;
-    for (const serverId of [scope.serverId, ...scope.serverIdAliases]) {
-        const prefix = `${serverId}:`;
-        if (!sessionKey.startsWith(prefix)) continue;
-        return normalizeId(sessionKey.slice(prefix.length)) || null;
-    }
-    return null;
-}
-
 export async function writeSessionOrganizationPin(params: Readonly<{
     scope: SessionOrganizationMutationScope;
     sessionId: string;
@@ -146,20 +137,6 @@ export async function writeSessionOrganizationPin(params: Readonly<{
     await setSessionPin({
         ...params.scope,
         sessionId: params.sessionId,
-        pinned: params.pinned,
-    });
-}
-
-export async function writeSessionOrganizationPinForSessionKey(params: Readonly<{
-    scope: SessionOrganizationMutationScope;
-    sessionKey: string;
-    pinned: boolean;
-}>): Promise<void> {
-    const sessionId = readSessionIdFromScopedKey(params.scope, params.sessionKey);
-    if (!sessionId) return;
-    await writeSessionOrganizationPin({
-        scope: params.scope,
-        sessionId,
         pinned: params.pinned,
     });
 }
@@ -173,20 +150,6 @@ export async function writeSessionOrganizationTagLabels(params: Readonly<{
         ...params.scope,
         sessionId: params.sessionId,
         tags: normalizeStringArray(params.tags),
-    });
-}
-
-export async function writeSessionOrganizationTagLabelsForSessionKey(params: Readonly<{
-    scope: SessionOrganizationMutationScope;
-    sessionKey: string;
-    tags: readonly string[];
-}>): Promise<void> {
-    const sessionId = readSessionIdFromScopedKey(params.scope, params.sessionKey);
-    if (!sessionId) return;
-    await writeSessionOrganizationTagLabels({
-        scope: params.scope,
-        sessionId,
-        tags: params.tags,
     });
 }
 
@@ -205,6 +168,8 @@ export async function writeSessionOrganizationFolderAssignment(params: Readonly<
 export async function writeSessionOrganizationGroupOrder(params: Readonly<{
     scope: SessionOrganizationMutationScope;
     next: Readonly<Record<string, readonly string[] | undefined>>;
+    /** Exact owner for every list item key; keys it does not resolve never reach this Home. */
+    orderItemAddressByItemKey?: Readonly<Record<string, SessionOrganizationOrderItemAddress>>;
 }>): Promise<void> {
     const requests = Object.entries(params.next)
         .map(([scopeKey, itemKeys]) => buildSessionOrganizationReorderRequestFromGroupOrder({
@@ -212,6 +177,7 @@ export async function writeSessionOrganizationGroupOrder(params: Readonly<{
             serverIdAliases: params.scope.serverIdAliases,
             scopeKey,
             itemKeys: itemKeys ?? [],
+            orderItemAddressByItemKey: params.orderItemAddressByItemKey,
         }))
         .filter((request): request is NonNullable<typeof request> => request != null);
     await Promise.all(requests.map((request) => reorderSessionOrganization({
@@ -227,6 +193,7 @@ export async function writeSessionOrganizationWorkspaceOrder(params: Readonly<{
     const requests = Object.entries(params.next)
         .map(([scopeKey, itemKeys]) => buildSessionOrganizationReorderRequestFromWorkspaceOrder({
             serverId: params.scope.serverId,
+            serverIdAliases: params.scope.serverIdAliases,
             scopeKey,
             itemKeys: itemKeys ?? [],
         }))
@@ -249,13 +216,6 @@ function buildFolderDisplay(
     };
 }
 
-function areFolderDefinitionsEqual(left: SessionFolderV1, right: SessionFolderV1): boolean {
-    return left.name === right.name
-        && left.parentId === right.parentId
-        && (left.sortKey ?? null) === (right.sortKey ?? null)
-        && JSON.stringify(left.workspace) === JSON.stringify(right.workspace);
-}
-
 export async function writeSessionOrganizationFolders(params: Readonly<{
     scope: SessionOrganizationMutationScope;
     current: SessionFoldersV1;
@@ -267,7 +227,7 @@ export async function writeSessionOrganizationFolders(params: Readonly<{
 
     for (const folder of nextById.values()) {
         const current = currentById.get(folder.id);
-        if (current && areFolderDefinitionsEqual(current, folder)) continue;
+        if (current && areSessionFolderDefinitionsEqual(current, folder)) continue;
         writes.push(upsertSessionFolder({
             ...params.scope,
             request: {

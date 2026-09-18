@@ -144,6 +144,7 @@ export function HorizontalScrollableRow(props: HorizontalScrollableRowProps) {
                 alwaysBounceHorizontal={false}
                 directionalLockEnabled
                 keyboardShouldPersistTaps="handled"
+                contentContainerStyle={props.contentStyle}
                 onWheel={(event: any) => {
                     if (Platform.OS !== 'web') return;
                     const node = getScrollNode() as any;
@@ -192,9 +193,21 @@ export function HorizontalScrollableRow(props: HorizontalScrollableRowProps) {
                 }}
                 scrollEventThrottle={16}
             >
-                <View testID={props.contentTestID} style={props.contentStyle}>
-                    {props.children}
-                </View>
+                {props.contentTestID ? (
+                    <View
+                        testID={props.contentTestID}
+                        pointerEvents="none"
+                        accessible={false}
+                        style={{ position: 'absolute', width: 0, height: 0 }}
+                    />
+                ) : null}
+                {props.children}
+                <View
+                    testID={props.testID ? `${props.testID}-end-gutter` : undefined}
+                    pointerEvents="none"
+                    accessible={false}
+                    style={{ width: HORIZONTAL_SCROLL_END_GUTTER_WIDTH, flexShrink: 0 }}
+                />
             </ScrollViewWithWheel>
             <ScrollEdgeFades
                 color={props.fadeColor}

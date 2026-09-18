@@ -144,6 +144,7 @@ import {
     isRecoveredHistoryTranscriptObservation,
     type TranscriptObservationMetadata,
 } from '../domains/messages/transcriptObservationProvenance';
+import { applyTranscriptAccountActorMetadata, type TranscriptAccountActorMetadata } from '../domains/messages/transcriptAccountActor';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -260,7 +261,7 @@ export type ReducerMessage = {
     tool: ToolCall | null;
     meta?: MessageMeta;
     structuredPresentation?: MessageStructuredPresentationV1;
-} & TranscriptObservationMetadata;
+} & TranscriptObservationMetadata & TranscriptAccountActorMetadata;
 
 export type ReducerState = {
     toolIdToMessageId: Map<string, string>; // toolId/permissionId -> messageId (since they're the same now)
@@ -769,14 +770,16 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
             && state.messages.get(knownMessageId)?.messageActionReference !== undefined;
     });
     const shouldReconcileUnchangedMessageReferences = hasIncomingMessageActionReference
-        || hasIncomingReferenceRetraction;
+        || hasIncomingReferenceRetraction
+        || orderedIncomingMessages.some((message) => message.accountActor !== undefined);
     const applyIncomingObservationMetadata = (message: ReducerMessage): boolean => {
         const source = (message.realID ? incomingObservationMetadataById.get(message.realID) : undefined)
             ?? (message.localId ? incomingObservationMetadataByLocalId.get(message.localId) : undefined);
         if (!source) return false;
         const previousReference = message.messageActionReference;
         applyTranscriptObservationMetadata(message, source);
-        return !areMessageActionReferencesEqual(previousReference, message.messageActionReference);
+        const actorChanged = applyTranscriptAccountActorMetadata(message, source);
+        return actorChanged || !areMessageActionReferencesEqual(previousReference, message.messageActionReference);
     };
 
     // A server-issued reference can change or be revoked while the durable text
@@ -962,7 +965,11 @@ function processUsageData(state: ReducerState, usage: UsageData, timestamp: numb
 }
 
 
-function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: ReducerState): Message | null {
+function convertReducerMessageToMessage(
+    reducerMsg: ReducerMessage,
+    state: ReducerState,
+    ancestorMessageIds?: ReadonlySet<string>,
+): Message | null {
     const observationMetadata: TranscriptObservationMetadata = {
         ...(reducerMsg.sourceCreatedAt !== undefined ? { sourceCreatedAt: reducerMsg.sourceCreatedAt } : {}),
         ...(reducerMsg.sourceUpdatedAt !== undefined ? { sourceUpdatedAt: reducerMsg.sourceUpdatedAt } : {}),
@@ -993,6 +1000,7 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
                 ? { structuredPresentation: reducerMsg.structuredPresentation }
                 : {}),
             ...observationMetadata,
+            ...(reducerMsg.accountActor !== undefined ? { accountActor: reducerMsg.accountActor } : {}),
         };
     } else if (reducerMsg.role === 'agent' && reducerMsg.text !== null) {
         return {
@@ -1012,6 +1020,8 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             ...observationMetadata,
         };
     } else if (reducerMsg.role === 'agent' && reducerMsg.tool !== null) {
+        if (ancestorMessageIds?.has(reducerMsg.id)) return null;
+
         // Convert children recursively
         let childMessages: Message[] = [];
         const toolId = typeof reducerMsg.tool.id === 'string' ? reducerMsg.tool.id.trim() : '';
@@ -1020,10 +1030,14 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
                 ? (!state.sidechains.has(toolId) && reducerMsg.realID ? reducerMsg.realID : toolId)
                 : reducerMsg.realID ?? null;
         let children = sidechainKey ? state.sidechains.get(sidechainKey) || [] : [];
-        for (let child of children) {
-            let childMessage = convertReducerMessageToMessage(child, state);
-            if (childMessage) {
-                childMessages.push(childMessage);
+        if (children.length > 0) {
+            const childAncestorMessageIds = new Set(ancestorMessageIds);
+            childAncestorMessageIds.add(reducerMsg.id);
+            for (let child of children) {
+                let childMessage = convertReducerMessageToMessage(child, state, childAncestorMessageIds);
+                if (childMessage) {
+                    childMessages.push(childMessage);
+                }
             }
         }
 

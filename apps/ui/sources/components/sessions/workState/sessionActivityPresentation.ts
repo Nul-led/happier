@@ -1,8 +1,9 @@
 import {
-    resolveSessionWorkStatePrimaryItemId,
+    readSessionWorkStatePrimaryItemV1,
     type SessionWorkflowActivityHeadlineV1,
     type SessionWorkflowRunHeadlineV1,
     type SessionWorkflowRunSnapshotV1,
+    type WorkflowRunStateV1,
 } from '@happier-dev/protocol';
 
 import type {
@@ -10,11 +11,13 @@ import type {
     AgentInputStatusBadgeTone,
 } from '@/components/sessions/agentInput/agentInputContracts';
 
+import { isTerminalWorkflowRunState } from '@/components/workflows/presentation/workflowLifecyclePresentation';
+import { resolveWorkflowRunTone } from '@/components/workflows/presentation/workflowPresentation';
+
 import {
     formatWorkflowAgentFraction,
     resolveActiveWorkflowRunHeadlines,
     resolveActiveWorkflowPhasePosition,
-    resolveWorkflowRunTone,
 } from './sessionWorkflowActivityPresentation';
 import {
     formatSessionWorkStateBadgeLabel,
@@ -22,7 +25,7 @@ import {
     resolveSessionWorkStateBadgeTone,
     SESSION_WORK_STATE_STATUS_BADGE_KEY,
 } from './sessionWorkStatePresentation';
-import type { SessionWorkStateItem, SessionWorkStateSnapshot } from '@/sync/domains/session/workState/sessionWorkStateTypes';
+import type { SessionWorkStateSnapshot } from '@/sync/domains/session/workState/sessionWorkStateTypes';
 
 /**
  * UIW2 — the SINGLE compact above-AgentInput badge composer.
@@ -33,8 +36,8 @@ import type { SessionWorkStateItem, SessionWorkStateSnapshot } from '@/sync/doma
  * booleans), NOT the full `Session`.
  *
  * Critically, goal/task/todo primary selection is delegated to the protocol resolver
- * `resolveSessionWorkStatePrimaryItemId` (via the work-state reader), so this module never
- * reimplements the work-state priority list and inherits the G4 stability fix. Workflow priority is a
+ * `readSessionWorkStatePrimaryItemV1`, so this module honors the published identity
+ * and never reimplements the work-state priority list. Workflow priority is a
  * UI presentation choice layered ON TOP of normalized contracts — it does not mutate protocol
  * `primaryItemId` semantics, and it never parses Claude-native events.
  */
@@ -50,14 +53,62 @@ export type SessionActivityStatusBadgePresentation = Readonly<{
     popoverKind: 'workState';
 }>;
 
+/**
+ * The managed-Workflow half of the badge's reason to exist.
+ *
+ * Observed native activity and managed Runs are two different lifecycle
+ * contracts, and only the first has a headline. Keeping them as two counts
+ * rather than one total is what stops the badge from summing a Claude phase
+ * rollup with an admitted Run into a number neither owner reported.
+ */
+export type SessionManagedWorkflowBadgeSignal = Readonly<{
+    /** Managed Runs the canonical Run-state owner does not consider settled. */
+    activeCount: number;
+    /** Exactly the Runs the server's attention predicate returned. */
+    attentionCount: number;
+}>;
+
+const NO_MANAGED_WORKFLOW_RUNS: SessionManagedWorkflowBadgeSignal = Object.freeze({
+    activeCount: 0,
+    attentionCount: 0,
+});
+
+/**
+ * Project the Session's managed Runs onto that signal.
+ *
+ * Attention is never re-derived from Run state: an approval can be waiting in
+ * an invocation this client has never loaded, so the server predicate is the
+ * only owner of "this needs the person". A settled Run can still be in it —
+ * unresolved delivery custody is attention without being active.
+ */
+export function summarizeSessionManagedWorkflowRuns(input: Readonly<{
+    runs: readonly Readonly<{ id: string; state: WorkflowRunStateV1 }>[];
+    attentionRunIds: ReadonlySet<string>;
+}>): SessionManagedWorkflowBadgeSignal {
+    let activeCount = 0;
+    let attentionCount = 0;
+    for (const run of input.runs) {
+        if (!isTerminalWorkflowRunState(run.state)) activeCount += 1;
+        if (input.attentionRunIds.has(run.id)) attentionCount += 1;
+    }
+    // One shared empty value, so an idle Session's badge memo keeps its identity.
+    return activeCount === 0 && attentionCount === 0
+        ? NO_MANAGED_WORKFLOW_RUNS
+        : { activeCount, attentionCount };
+}
+
 export function shouldRetainSessionActivityStatusBadge(input: Readonly<{
     activeStatusBadgeKey: string | null;
     hasPrimaryWorkStateItem: boolean;
     canShowEmptyGoalControls: boolean;
     hasActiveWorkflowRuns: boolean;
+    hasManagedWorkflowRuns: boolean;
 }>): boolean {
     if (input.activeStatusBadgeKey !== SESSION_WORK_STATE_STATUS_BADGE_KEY) return false;
-    return input.hasPrimaryWorkStateItem || input.canShowEmptyGoalControls || input.hasActiveWorkflowRuns;
+    return input.hasPrimaryWorkStateItem
+        || input.canShowEmptyGoalControls
+        || input.hasActiveWorkflowRuns
+        || input.hasManagedWorkflowRuns;
 }
 
 type WorkflowComposerTranslate = Readonly<{
@@ -77,12 +128,20 @@ type WorkflowComposerTranslate = Readonly<{
     workflowsPluralWithAgents: (params: { count: number; agents: number }) => string;
     /** Join two compact segments, e.g. `Goal active · 2 workflows`. */
     join: (params: { left: string; right: string }) => string;
+    /** `Needs you` — the canonical Workflow attention word, reused verbatim. */
+    managedNeedsYou: () => string;
 }>;
 
 export type ResolveSessionActivityPresentationInput = Readonly<{
     workStateSnapshot: SessionWorkStateSnapshot | null;
     workflowHeadline: SessionWorkflowActivityHeadlineV1 | null;
     loadedWorkflowRunsById?: ReadonlyMap<string, SessionWorkflowRunSnapshotV1>;
+    /**
+     * Managed Runs this Session started. A managed-only Session has no
+     * headline, so without this the badge — and therefore the popover holding
+     * the Run's entry point and its approval — never existed.
+     */
+    managedWorkflowRuns?: SessionManagedWorkflowBadgeSignal;
     permissionBlocked?: boolean;
     /** Mirrors the legacy "show empty goal chip when active" affordance (QA-CHIP-1). */
     activeStatusBadgeKey?: string | null;
@@ -114,17 +173,6 @@ function workflowToneToInputTone(tone: ReturnType<typeof resolveSessionWorkflowR
 
 function resolveSessionWorkflowRunToneSafe(status: SessionWorkflowRunHeadlineV1['status']) {
     return resolveWorkflowRunTone(status);
-}
-
-/** Resolve the normalized work-state primary item via the protocol resolver (no UI reimplementation). */
-function resolvePrimaryWorkStateItem(snapshot: SessionWorkStateSnapshot | null): SessionWorkStateItem | null {
-    if (!snapshot || snapshot.items.length === 0) return null;
-    const primaryId = resolveSessionWorkStatePrimaryItemId(
-        snapshot.items,
-        typeof snapshot.primaryItemId === 'string' ? snapshot.primaryItemId : null,
-    );
-    if (!primaryId) return null;
-    return snapshot.items.find((item) => item.id === primaryId) ?? null;
 }
 
 /** Compact single-workflow label: active phase when detail loaded, else headline counts/title. */
@@ -174,13 +222,29 @@ function formatWorkflowSegment(
 }
 
 /**
+ * The compact managed-Run segment.
+ *
+ * It borrows the observed vocabulary — `Workflow`, `{n} workflows` — because
+ * the person is reading one badge, not two subsystems. What it never borrows
+ * is the other contract's numbers: no agent fraction, no phase, because a
+ * managed Run reports neither.
+ */
+function formatManagedWorkflowSegment(
+    count: number,
+    t: WorkflowComposerTranslate,
+): string {
+    return count > 1 ? t.workflowsPlural({ count }) : t.workflowBare();
+}
+
+/**
  * Resolve the single compact activity badge. Decision order (UIW2):
  *   1. permission/approval blocked.
- *   2. active goal + active workflow(s) combined.
- *   3. active goal alone.
- *   4. active workflow(s) alone.
- *   5. canonical work-state primary item (active task/todo/goal, blocked, paused, pending, fallback).
- *   6. recent completed workflow/goal only when not noisy (handled by work-state primary fallback).
+ *   2. managed Runs the server says need the person.
+ *   3. active goal + active observed workflow(s) combined.
+ *   4. active observed workflow(s) alone.
+ *   5. active managed Run(s), alone or combined with an active goal.
+ *   6. canonical work-state primary item (active task/todo/goal, blocked, paused, pending, fallback).
+ *   7. recent completed workflow/goal only when not noisy (handled by work-state primary fallback).
  */
 export function resolveSessionActivityStatusBadgePresentation(
     input: ResolveSessionActivityPresentationInput,
@@ -199,10 +263,27 @@ export function resolveSessionActivityStatusBadgePresentation(
 
     const activeRuns = resolveActiveWorkflowRunHeadlines(input.workflowHeadline);
     const primaryRun = activeRuns[0] ?? null;
-    const primaryItem = resolvePrimaryWorkStateItem(input.workStateSnapshot);
+    const managed = input.managedWorkflowRuns ?? NO_MANAGED_WORKFLOW_RUNS;
+    const primaryItem = readSessionWorkStatePrimaryItemV1(input.workStateSnapshot?.items ?? [], input.workStateSnapshot?.primaryItemId);
     const activeGoal = input.workStateSnapshot?.items.find((item) => item.kind === 'goal' && item.status === 'active') ?? null;
 
-    // 2. Active goal + active workflow(s) combined.
+    // 2. Managed attention. It is the only workflow signal that is actionable
+    // rather than informational, so it outranks progress of either kind.
+    if (managed.attentionCount > 0) {
+        return {
+            key: SESSION_WORK_STATE_STATUS_BADGE_KEY,
+            label: input.translateWorkflow.join({
+                left: formatManagedWorkflowSegment(managed.attentionCount, input.translateWorkflow),
+                right: input.translateWorkflow.managedNeedsYou(),
+            }),
+            tone: 'warning',
+            emphasis: 'prominent',
+            iconKind: 'workflow',
+            popoverKind: 'workState',
+        };
+    }
+
+    // 3. Active goal + active observed workflow(s) combined.
     if (activeGoal && primaryRun) {
         const workflowSegment = formatWorkflowSegment(activeRuns, primaryRun, input.loadedWorkflowRunsById, input.translateWorkflow);
         return {
@@ -218,7 +299,7 @@ export function resolveSessionActivityStatusBadgePresentation(
         };
     }
 
-    // 4. Active workflow(s) alone (3 — goal alone — falls through to work-state primary below).
+    // 4. Active observed workflow(s) alone (goal alone falls through below).
     if (!activeGoal && primaryRun) {
         return {
             key: SESSION_WORK_STATE_STATUS_BADGE_KEY,
@@ -230,7 +311,24 @@ export function resolveSessionActivityStatusBadgePresentation(
         };
     }
 
-    // 3/5. Canonical work-state primary item (active goal alone, tasks, todos, blocked, etc).
+    // 5. Active managed Run(s). Observed activity keeps the arms above, so a
+    // Session with both still reads its native agent's own progress; this arm
+    // is what a managed-only Session had instead of no badge at all.
+    if (managed.activeCount > 0) {
+        const segment = formatManagedWorkflowSegment(managed.activeCount, input.translateWorkflow);
+        return {
+            key: SESSION_WORK_STATE_STATUS_BADGE_KEY,
+            label: activeGoal
+                ? input.translateWorkflow.join({ left: input.translateWorkflow.goalActive(), right: segment })
+                : segment,
+            tone: 'active',
+            emphasis: 'quiet',
+            iconKind: 'workflow',
+            popoverKind: 'workState',
+        };
+    }
+
+    // 6. Canonical work-state primary item (active goal alone, tasks, todos, blocked, etc).
     if (primaryItem) {
         const label = formatSessionWorkStateBadgeLabel(primaryItem, input.translateWorkState);
         if (label) {

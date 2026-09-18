@@ -38,7 +38,7 @@ const state: any = {
 
 const voiceHomeDirectory = '/tmp/.happier/voice-agent';
 const exactConnectedServices = {
-  v: 1 as const,
+  v: 2 as const,
   bindingsByServiceId: {
     'openai-codex': {
       source: 'connected' as const,
@@ -246,7 +246,7 @@ describe('voiceConversationSession', () => {
     getActiveServerSnapshot.mockClear();
     loadDaemonMergedProjectionInputs.mockReset();
     loadDaemonMergedProjectionInputs.mockResolvedValue(null);
-    useVoiceTargetStore.setState({ scope: 'global', primaryActionSessionId: null, trackedSessionIds: [], lastFocusedSessionId: null } as any);
+    useVoiceTargetStore.setState({ scope: 'global', primaryActionSessionAddress: null, voiceLiveContextSessionAddresses: [], lastFocusedSessionAddress: null } as any);
 
     state.sessions = {};
     state.machines = {
@@ -1030,7 +1030,7 @@ describe('voiceConversationSession', () => {
       state.sessions[sessionId].metadata = updater(state.sessions[sessionId].metadata);
     });
 
-    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_user' })).resolves.toBe('sys_voice_repo');
+    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: { serverId: 'server-a', sessionId: 's_user' } })).resolves.toBe('sys_voice_repo');
     expect(executeSessionSpawnNewAction).toHaveBeenCalledWith(
       expect.objectContaining({
         creationKey: expect.stringMatching(/^voice-session-attempt:/),
@@ -1104,7 +1104,7 @@ describe('voiceConversationSession', () => {
     );
 
     await expect(ensureVoiceConversationSessionForSessionRoot({
-      sessionId: 's_user',
+      sessionRootAddress: { serverId: 'server-a', sessionId: 's_user' },
     })).resolves.toBe('exact_session_root_voice');
 
     expect(refreshSessions).not.toHaveBeenCalled();
@@ -1153,7 +1153,7 @@ describe('voiceConversationSession', () => {
     );
 
     await expect(ensureVoiceConversationSessionForSessionRoot({
-      sessionId: 's_user',
+      sessionRootAddress: { serverId: 'server-a', sessionId: 's_user' },
     })).resolves.toBe('windows_session_root_voice');
 
     expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -1201,7 +1201,7 @@ describe('voiceConversationSession', () => {
       state.sessions[sessionId].metadata = updater(state.sessions[sessionId].metadata);
     });
 
-    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_user' })).rejects.toMatchObject({
+    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: { serverId: 'server-a', sessionId: 's_user' } })).rejects.toMatchObject({
       code: 'spawn_failed',
     });
 
@@ -1256,7 +1256,7 @@ describe('voiceConversationSession', () => {
       state.sessions[sessionId].metadata = updater(state.sessions[sessionId].metadata);
     });
 
-    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_user_b' })).resolves.toBe('sys_voice_repo_b');
+    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: { serverId: 'server-a', sessionId: 's_user_b' } })).resolves.toBe('sys_voice_repo_b');
     expect(spawnSession).toHaveBeenCalledTimes(1);
   });
 
@@ -1288,7 +1288,7 @@ describe('voiceConversationSession', () => {
       state.sessions[sessionId].metadata = updater(state.sessions[sessionId].metadata);
     });
 
-    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_user' })).resolves.toBe('sys_voice_repo');
+    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: { serverId: 'server-a', sessionId: 's_user' } })).resolves.toBe('sys_voice_repo');
     expect(spawnSession).not.toHaveBeenCalled();
   });
 
@@ -1307,7 +1307,7 @@ describe('voiceConversationSession', () => {
       errorMessage: 'Daemon RPC is not available (RPC method not available).',
     });
 
-    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_user' })).rejects.toMatchObject({
+    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: { serverId: 'server-a', sessionId: 's_user' } })).rejects.toMatchObject({
       message: 'spawn_failed',
       code: 'spawn_failed',
     });
@@ -1337,7 +1337,7 @@ describe('voiceConversationSession', () => {
       daemonStateVersion: 0,
     };
 
-    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_user' })).rejects.toMatchObject({
+    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: { serverId: 'server-a', sessionId: 's_user' } })).rejects.toMatchObject({
       message: 'Target machine daemon is offline. Start or reconnect the daemon before starting local voice.',
       code: 'VOICE_AGENT_TARGET_MACHINE_OFFLINE',
     });
@@ -1404,7 +1404,7 @@ describe('voiceConversationSession', () => {
       state.sessions[sessionId].metadata = updater(state.sessions[sessionId].metadata);
     });
 
-    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_remote' })).resolves.toBe('sys_voice_remote');
+    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: { serverId: 'server-a', sessionId: 's_remote' } })).resolves.toBe('sys_voice_remote');
     expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith('s_remote');
     expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
       machineId: 'm1',
@@ -1451,7 +1451,7 @@ describe('voiceConversationSession', () => {
       state.sessions[sessionId].metadata = updater(state.sessions[sessionId].metadata);
     });
 
-    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_user' })).resolves.toBe('sys_voice_repo_fresh');
+    await expect(ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: { serverId: 'server-a', sessionId: 's_user' } })).resolves.toBe('sys_voice_repo_fresh');
     expect(spawnSession).toHaveBeenCalledTimes(1);
   });
 

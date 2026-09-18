@@ -11,7 +11,7 @@ import { buildSessionListRenderableFromSession } from '@/sync/domains/session/li
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { buildActivityOverviewFromSource } from '@/activity/source/buildActivityOverviewFromSource';
 import type { ActivityAttentionSource } from '@/activity/source/activityAttentionSourceTypes';
-import { buildInboxSessionState } from '@/hooks/inbox/buildInboxSessionState';
+import { buildInboxSessionPresentation } from '@/activity/presentation/buildInboxSessionPresentation';
 import { InboxSessionAttentionGroupCard } from './InboxSessionAttentionGroupCard';
 
 const NOW_MS = 1_000_000;
@@ -20,7 +20,7 @@ const REQUEST_ID = 'permission-after-end';
 const permissionRpc = vi.hoisted(() => vi.fn());
 const storageState = vi.hoisted(() => ({
     sessions: {} as Record<string, unknown>,
-    sessionListRenderables: {} as Record<string, unknown>,
+    sessionListRowsByServerId: {} as Record<string, Record<string, unknown>>,
 }));
 const routerPush = vi.hoisted(() => vi.fn());
 
@@ -61,7 +61,14 @@ vi.mock('@/sync/domains/state/storage', async () => {
         createUseSettingMock,
     } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleStub({
-        useMachine: () => null,
+        useMachine: (machineId: string) => machineId === 'shared-machine'
+            ? { id: machineId, metadata: { displayName: 'Home A machine' } }
+            : null,
+        useServerScopedMachine: (serverId: string | null | undefined, machineId: string) => (
+            serverId === 'server-b' && machineId === 'shared-machine'
+                ? { id: machineId, metadata: { displayName: 'Home B machine' } }
+                : null
+        ),
         useSetting: createUseSettingMock({
             values: {
                 toolViewDetailLevelDefault: 'title',
@@ -70,7 +77,8 @@ vi.mock('@/sync/domains/state/storage', async () => {
         storage: {
             getState: () => ({
                 sessions: storageState.sessions,
-                sessionListRenderables: storageState.sessionListRenderables,
+                sessionListRowsByServerId: storageState.sessionListRowsByServerId,
+                ordinarySessionListMembershipByServerId: {},
                 sessionListIndexByServerId: {
                     // Hidden system sessions are intentionally absent from the ordinary list.
                     'server-a': [],
@@ -100,6 +108,7 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 function createPendingPostEndSession(): Session {
     return createSessionFixture({
         id: SESSION_ID,
+        encryptionMode: 'plain',
         serverId: 'server-a',
         seq: 4,
         lastViewedSessionSeq: 4,
@@ -140,9 +149,8 @@ function createActivitySource(session: Session): ActivityAttentionSource {
     return {
         isDataReady: true,
         sessionsById: { [session.id]: session },
-        sessionListRenderablesById: {
-            [session.id]: buildSessionListRenderableFromSession(session),
-        },
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
         sessionListIndexByServerId: {
             // Hidden system sessions are intentionally absent from the ordinary list.
             'server-a': [],
@@ -171,7 +179,7 @@ describe('global Voice post-End permission custody', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         storageState.sessions = {};
-        storageState.sessionListRenderables = {};
+        storageState.sessionListRowsByServerId = {};
         permissionRpc.mockResolvedValue(undefined);
         routerPush.mockResolvedValue(undefined);
     });
@@ -194,19 +202,15 @@ describe('global Voice post-End permission custody', () => {
         async ({ actionTestId, approved, rpcDecision }) => {
             const session = createPendingPostEndSession();
             storageState.sessions = { [session.id]: session };
-            storageState.sessionListRenderables = {
-                [session.id]: buildSessionListRenderableFromSession(session),
+            storageState.sessionListRowsByServerId = {
+                'server-a': { [session.id]: buildSessionListRenderableFromSession(session) },
             };
             const activity = buildActivityOverviewFromSource({
                 source: createActivitySource(session),
                 nowMs: NOW_MS,
                 directActionsEnabled: true,
             });
-            const inbox = buildInboxSessionState({
-                sessions: [session],
-                sessionRows: [],
-                nowMs: NOW_MS,
-            });
+            const inbox = buildInboxSessionPresentation({ overview: activity });
 
             expect(activity.candidates).toEqual([
                 expect.objectContaining({
@@ -219,7 +223,10 @@ describe('global Voice post-End permission custody', () => {
             const attention = inbox.sessionsNeedingAttention[0]!;
             const screen = await renderScreen(
                 <InboxSessionAttentionGroupCard
-                    session={attention.session}
+                    identityDisplay="none"
+                    connected={false}
+                    session={attention.candidate.session}
+                    serverId={attention.candidate.address?.serverId ?? null}
                     permissionRequests={attention.pendingPermissions}
                     userActionRequests={attention.pendingUserActions}
                 />,
@@ -241,6 +248,7 @@ describe('global Voice post-End permission custody', () => {
             expect(permissionRpc).toHaveBeenCalledTimes(1);
             expect(permissionRpc).toHaveBeenCalledWith({
                 sessionId: SESSION_ID,
+                serverId: 'server-a',
                 method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
                 payload: {
                     id: REQUEST_ID,
@@ -251,4 +259,99 @@ describe('global Voice post-End permission custody', () => {
             expect(routerPush).toHaveBeenCalledTimes(1);
         },
     );
+
+    it('sends a secondary Home approval with its qualified scope when the active Home has the same session id', async () => {
+        const activeSession = createPendingPostEndSession();
+        const secondarySession = { ...activeSession, serverId: 'server-b' };
+        storageState.sessions = { [activeSession.id]: activeSession };
+        storageState.sessionListRowsByServerId = {
+            'server-a': { [activeSession.id]: buildSessionListRenderableFromSession(activeSession) },
+            'server-b': { [secondarySession.id]: buildSessionListRenderableFromSession(secondarySession) },
+        };
+        const activity = buildActivityOverviewFromSource({
+            source: createActivitySource(secondarySession),
+            nowMs: NOW_MS,
+            directActionsEnabled: true,
+        });
+        const inbox = buildInboxSessionPresentation({ overview: activity });
+        const attention = inbox.sessionsNeedingAttention[0]!;
+        const screen = await renderScreen(
+            <InboxSessionAttentionGroupCard
+                identityDisplay="none"
+                connected={false}
+                session={attention.candidate.session}
+                serverId="server-b"
+                permissionRequests={attention.pendingPermissions}
+                userActionRequests={attention.pendingUserActions}
+            />,
+        );
+
+        await screen.pressByTestIdAsync('permission-footer.allow');
+
+        expect(permissionRpc).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: SESSION_ID,
+            serverId: 'server-b',
+            method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
+            payload: { id: REQUEST_ID, approved: true, decision: 'approved' },
+        }));
+    });
+
+    it('uses the qualified Home when resolving Inbox machine context', async () => {
+        const session = createSessionFixture({
+            id: 'same-session',
+            encryptionMode: 'plain',
+            serverId: 'server-b',
+            metadata: {
+                name: 'Secondary Home session',
+                host: 'home-b-host',
+                path: '/Users/tester/project',
+                homeDir: '/Users/tester',
+                machineId: 'shared-machine',
+            },
+        });
+
+        const screen = await renderScreen(
+            <InboxSessionAttentionGroupCard
+                identityDisplay="none"
+                connected={false}
+                session={session}
+                serverId="server-b"
+                contextLine="Home B"
+                permissionRequests={[]}
+                userActionRequests={[]}
+            />,
+        );
+
+        expect(screen.getTextContent()).toContain('Home B machine');
+        expect(screen.getTextContent()).not.toContain('Home A machine');
+    });
+
+    it('does not invent raw path context when Activity supplies no resolved context line', async () => {
+        const session = createSessionFixture({
+            id: 'session-without-context',
+            encryptionMode: 'plain',
+            serverId: 'server-b',
+            metadata: {
+                name: 'Secondary Home session',
+                path: '/Users/tester/private-project',
+                homeDir: '/Users/tester',
+                machineId: 'shared-machine',
+            },
+        });
+
+        const screen = await renderScreen(
+            <InboxSessionAttentionGroupCard
+                identityDisplay="none"
+                connected={false}
+                session={session}
+                serverId="server-b"
+                contextLine={null}
+                permissionRequests={[]}
+                userActionRequests={[]}
+            />,
+        );
+
+        expect(screen.getTextContent()).not.toContain('private-project');
+        expect(screen.getTextContent()).not.toContain('/Users/tester/private-project');
+    });
 });

@@ -1,12 +1,18 @@
+import {
+    normalizeSessionAddress,
+    sessionAddressKey,
+    type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
+
 type Listener = () => void;
 
-const listenersBySessionId = new Map<string, Set<Listener>>();
+const listenersBySessionAddress = new Map<string, Set<Listener>>();
 
-export function notifyExecutionRunActivity(sessionId: string): void {
-    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!normalizedSessionId) return;
+export function notifyExecutionRunActivity(address: SessionAddress): void {
+    const normalizedAddress = normalizeSessionAddress(address.serverId, address.sessionId);
+    if (!normalizedAddress) return;
 
-    const listeners = listenersBySessionId.get(normalizedSessionId);
+    const listeners = listenersBySessionAddress.get(sessionAddressKey(normalizedAddress));
     if (!listeners || listeners.size === 0) return;
 
     // Defensive copy: listeners may add/remove subscriptions while handling the notification.
@@ -19,21 +25,21 @@ export function notifyExecutionRunActivity(sessionId: string): void {
     }
 }
 
-export function subscribeExecutionRunActivity(sessionId: string, listener: Listener): () => void {
-    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!normalizedSessionId) return () => {};
+export function subscribeExecutionRunActivity(address: SessionAddress, listener: Listener): () => void {
+    const normalizedAddress = normalizeSessionAddress(address.serverId, address.sessionId);
+    if (!normalizedAddress) return () => {};
 
-    const listeners = listenersBySessionId.get(normalizedSessionId) ?? new Set<Listener>();
+    const key = sessionAddressKey(normalizedAddress);
+    const listeners = listenersBySessionAddress.get(key) ?? new Set<Listener>();
     listeners.add(listener);
-    listenersBySessionId.set(normalizedSessionId, listeners);
+    listenersBySessionAddress.set(key, listeners);
 
     return () => {
-        const current = listenersBySessionId.get(normalizedSessionId);
+        const current = listenersBySessionAddress.get(key);
         if (!current) return;
         current.delete(listener);
         if (current.size === 0) {
-            listenersBySessionId.delete(normalizedSessionId);
+            listenersBySessionAddress.delete(key);
         }
     };
 }
-

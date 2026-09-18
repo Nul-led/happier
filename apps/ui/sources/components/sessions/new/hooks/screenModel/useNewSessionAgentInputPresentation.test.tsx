@@ -97,7 +97,7 @@ describe('useNewSessionAgentInputPresentation', () => {
 
     it('keeps connection status online while exact spawn readiness is unknown for an online machine', async () => {
         const { useNewSessionAgentInputPresentation } = await import('./useNewSessionAgentInputPresentation');
-        const machine: Machine = {
+        let machine: Machine | null = {
             id: 'm1',
             seq: 1,
             createdAt: 1,
@@ -142,20 +142,7 @@ describe('useNewSessionAgentInputPresentation', () => {
                     },
                 }],
             },
-            effectiveAutomationDraft: {
-                enabled: false,
-                name: '',
-                description: '',
-                triggers: [{
-                    clientId: 'schedule-half-hourly',
-                    definition: {
-                        kind: 'schedule',
-                        enabled: true,
-                        schedule: { kind: 'interval', everyMs: 30 * 60_000 },
-                    },
-                }],
-            },
-            setAutomationDraft: vi.fn(),
+            onOpenAutomationEditor: vi.fn(),
             repoScmSnapshot: null,
             checkoutChipModel: {
                 selectedOptionId: 'current_path',
@@ -204,6 +191,10 @@ describe('useNewSessionAgentInputPresentation', () => {
             dotColor: 'success',
             isPulsing: true,
         });
+        machine = null;
+        await hook.rerender();
+        expect(hook.getCurrent().connectionStatus).toMatchObject({ text: 'common.unavailable', isPulsing: false });
+        await hook.unmount();
     });
 
     it('keeps connection status stable when only machine heartbeat timestamps change', async () => {
@@ -253,20 +244,7 @@ describe('useNewSessionAgentInputPresentation', () => {
                     },
                 }],
             },
-            effectiveAutomationDraft: {
-                enabled: false,
-                name: '',
-                description: '',
-                triggers: [{
-                    clientId: 'schedule-half-hourly',
-                    definition: {
-                        kind: 'schedule',
-                        enabled: true,
-                        schedule: { kind: 'interval', everyMs: 30 * 60_000 },
-                    },
-                }],
-            },
-            setAutomationDraft: vi.fn(),
+            onOpenAutomationEditor: vi.fn(),
             repoScmSnapshot: null,
             checkoutChipModel: {
                 selectedOptionId: 'current_path',
@@ -362,20 +340,7 @@ describe('useNewSessionAgentInputPresentation', () => {
                     },
                 }],
             },
-            effectiveAutomationDraft: {
-                enabled: true,
-                name: 'Nightly',
-                description: 'Run nightly work',
-                triggers: [{
-                    clientId: 'schedule-half-hourly',
-                    definition: {
-                        kind: 'schedule',
-                        enabled: true,
-                        schedule: { kind: 'interval', everyMs: 30 * 60_000 },
-                    },
-                }],
-            },
-            setAutomationDraft: vi.fn(),
+            onOpenAutomationEditor: vi.fn(),
             repoScmSnapshot: null,
             checkoutChipModel: {
                 selectedOptionId: 'current_path',
@@ -475,20 +440,7 @@ describe('useNewSessionAgentInputPresentation', () => {
                     },
                 }],
             },
-            effectiveAutomationDraft: {
-                enabled: false,
-                name: '',
-                description: '',
-                triggers: [{
-                    clientId: 'schedule-half-hourly',
-                    definition: {
-                        kind: 'schedule',
-                        enabled: true,
-                        schedule: { kind: 'interval', everyMs: 30 * 60_000 },
-                    },
-                }],
-            },
-            setAutomationDraft: vi.fn(),
+            onOpenAutomationEditor: vi.fn(),
             repoScmSnapshot: null,
             checkoutChipModel: {
                 selectedOptionId: 'current_path',
@@ -629,20 +581,7 @@ describe('useNewSessionAgentInputPresentation', () => {
                     },
                 }],
             },
-            effectiveAutomationDraft: {
-                enabled: false,
-                name: '',
-                description: '',
-                triggers: [{
-                    clientId: 'schedule-half-hourly',
-                    definition: {
-                        kind: 'schedule',
-                        enabled: true,
-                        schedule: { kind: 'interval', everyMs: 30 * 60_000 },
-                    },
-                }],
-            },
-            setAutomationDraft: vi.fn(),
+            onOpenAutomationEditor: vi.fn(),
             repoScmSnapshot: null,
             checkoutChipModel: {
                 selectedOptionId: 'current_path',

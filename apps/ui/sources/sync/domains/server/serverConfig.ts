@@ -31,14 +31,14 @@ export function getServerUrl(): string {
     return getActiveServerUrl();
 }
 
-export function setServerUrl(url: string | null): void {
+export async function setServerUrl(url: string | null): Promise<void> {
     const normalized = normalizeUrl(String(url ?? ''));
     if (!normalized) {
-        setActiveServer({ serverId: getResetToDefaultServerId(), scope: 'device' });
+        await setActiveServer({ serverId: getResetToDefaultServerId(), scope: 'device' });
         return;
     }
 
-    upsertAndActivateServer({ serverUrl: normalized, scope: 'device' });
+    await upsertAndActivateServer({ serverUrl: normalized, scope: 'device' });
 }
 
 export function isUsingCustomServer(): boolean {

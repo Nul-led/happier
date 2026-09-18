@@ -4,7 +4,10 @@ import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { createReviewCommentsActionChip } from '@/components/sessions/agentInput/definitions/createReviewCommentsActionChip';
 import { resolveReviewCommentDraftAnchorsForPrompt } from '@/components/sessions/reviews/comments/resolveReviewCommentDraftAnchorsForPrompt';
 import { createAttachmentActionChip } from '@/components/sessions/agentInput/sessionActions/createAttachmentActionChip';
-import { readHappierStructuredInputV1FromMeta } from '@happier-dev/protocol';
+import {
+    readHappierStructuredInputV1FromMeta,
+    ReviewCommentDraftMessageV1Schema,
+} from '@happier-dev/protocol';
 
 import type {
     AgentInputAttachmentsRowItem,
@@ -13,12 +16,10 @@ import type {
 } from '@/components/sessions/agentInput/agentInputContracts';
 import type { AgentInputSendOptions } from '@/components/sessions/agentInput/agentInputSendOptions';
 import {
-    buildStructuredInputMetaOverrides,
     mergeMessageMetaOverrides,
 } from '@/components/sessions/agentInput/structuredInputMentions';
 import {
-    composerAttachmentViewToDraft,
-    composerStructuredMentionsFromReferences,
+    buildComposerSnapshotStructuredInputMetaOverrides,
 } from '@/components/sessions/composer/composerScopeAdapters';
 import {
     submitComposerSnapshot,
@@ -63,16 +64,7 @@ function buildDetachedComposerSnapshotMetaOverrides(input: Readonly<{
     snapshot: ComposerSubmissionSnapshot;
     options?: Record<string, unknown>;
 }>): Record<string, unknown> | undefined {
-    const snapshotMetaOverrides = buildStructuredInputMetaOverrides({
-        mentions: composerStructuredMentionsFromReferences({
-            references: input.snapshot.references,
-            existing: [],
-        }),
-        text: input.snapshot.text,
-        ...(input.snapshot.attachments.length > 0
-            ? { composerAttachments: input.snapshot.attachments.map(composerAttachmentViewToDraft) }
-            : {}),
-    });
+    const snapshotMetaOverrides = buildComposerSnapshotStructuredInputMetaOverrides(input.snapshot);
     const {
         // A mounted Composer document is the only authority for generic
         // references and attachments. Retaining this live envelope would
@@ -283,6 +275,16 @@ export function useNewSessionAttachmentsController(params: Readonly<{
 
         const draftSnapshot = getDraftsSnapshot();
         const hasAttachments = attachmentsUploadsEnabled && draftSnapshot.length > 0;
+        // One freeze at Send for both launch targets. The ordinary Machine path
+        // still settles while this owner is mounted and rebuilds from the live
+        // drafts; the Temporary-computer path may settle after a remount, so it
+        // carries this exact set in its prepared submission instead.
+        const frozenReviewComments = hasReviewCommentDrafts && discoverableReviewCommentsScope
+            ? {
+                workspace: discoverableReviewCommentsScope,
+                comments: ReviewCommentDraftMessageV1Schema.array().parse(includedReviewCommentDrafts),
+            }
+            : null;
         const submitAfterCreated = (input: Readonly<{
             initialPrompt: string;
             structuredInputMetaOverrides?: Record<string, unknown>;
@@ -290,6 +292,7 @@ export function useNewSessionAttachmentsController(params: Readonly<{
             deferAcceptedDraftClearToDocument?: boolean;
             hasComposerAttachments?: boolean;
             composerReferences?: HandleCreateSessionOptions['composerReferences'];
+            composerSnapshot?: import('@happier-dev/protocol').ComposerSnapshotV1;
         }>) => {
             submit({
                 initialMessage: 'skip',
@@ -305,7 +308,24 @@ export function useNewSessionAttachmentsController(params: Readonly<{
                 ...(input.composerReferences && input.composerReferences.length > 0
                     ? { composerReferences: input.composerReferences }
                     : {}),
-                afterCreated: async ({ sessionId, effectiveSpawnServerId, launchAttempt }) => {
+                ...(input.composerSnapshot ? {
+                    temporaryComputerSubmission: {
+                        composer: input.composerSnapshot,
+                        // Frozen here, never deleted here: the workspace drafts
+                        // stay intact until the materialized Session's follow-up
+                        // actually lands, so an abandoned launch loses nothing.
+                        reviewComments: frozenReviewComments,
+                        attachmentDrafts: draftSnapshot,
+                        attachmentDestination: {
+                            uploadLocation: attachmentsUploadConfig.uploadLocation,
+                            workspaceRelativeDir: attachmentsUploadConfig.workspaceRelativeDir,
+                            vcsIgnoreStrategy: attachmentsUploadConfig.vcsIgnoreStrategy,
+                            vcsIgnoreWritesEnabled: attachmentsUploadConfig.vcsIgnoreWritesEnabled,
+                        },
+                        maxFileBytes: attachmentsUploadConfig.maxFileBytes,
+                    },
+                } : {}),
+                afterCreated: async ({ sessionId, effectiveSpawnServerId, launchAttempt, preuploadedAttachments }) => {
                     const attachmentMessageLocalId = launchAttempt.attachmentMessageLocalId;
                     // A coordinator-submitted first turn has no upload/review
                     // envelope to supply a message id. Reuse the launch
@@ -319,13 +339,13 @@ export function useNewSessionAttachmentsController(params: Readonly<{
                     let attachmentsMetaOverrides: Record<string, unknown> | undefined;
 
                     if (hasAttachments) {
-                        const { uploaded } = await uploadAttachmentDraftsToSession({
+                        const uploaded = preuploadedAttachments ?? (await uploadAttachmentDraftsToSession({
                             sessionId,
                             drafts: draftSnapshot,
                             config: attachmentsUploadConfig,
                             applyDraftPatch,
                             messageLocalId: attachmentMessageLocalId,
-                        });
+                        })).uploaded;
                         attachmentsBlock = formatAttachmentsBlock(uploaded);
                         attachmentsMetaOverrides = buildAttachmentMessageMeta(uploaded);
                     }
@@ -433,6 +453,7 @@ export function useNewSessionAttachmentsController(params: Readonly<{
                             // refusal owner decides which of them a rendered
                             // Automation prompt can still carry.
                             composerReferences: admittedStructuredInput?.mentions ?? [],
+                            composerSnapshot: submittedSnapshot,
                             onAfterCreatedSettled: (settlement) => {
                                 resolve(settlement.status === 'accepted'
                                     ? { status: 'accepted' }

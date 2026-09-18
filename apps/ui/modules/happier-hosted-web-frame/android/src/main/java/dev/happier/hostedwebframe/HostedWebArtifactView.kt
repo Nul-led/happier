@@ -68,9 +68,9 @@ internal fun parseWebResourceResponseContentType(contentType: String): WebResour
 }
 
 /**
- * A dedicated native frame for one already-registered opaque Artifact token.
- * It never accepts byte paths, cache paths, a generic endpoint, or a URL from
- * JavaScript. The origin is derived from the token registry's opaque partition.
+ * A dedicated native frame for one already-registered opaque Artifact or
+ * inline-document token. It never accepts bytes, cache paths, a generic
+ * endpoint, or a URL from JavaScript. The selected registry owns the origin.
  */
 @SuppressLint("SetJavaScriptEnabled")
 internal class HostedWebArtifactView(
@@ -88,6 +88,7 @@ internal class HostedWebArtifactView(
   private val onHistoryStateChange by EventDispatcher<Map<String, Any>>()
 
   private var artifactHandleToken: String? = null
+  private var inlineDocumentHandleToken: String? = null
   private var initialPathAndQuery: String? = null
   private var activeOrigin: HostedWebOrigin? = null
   private var activeLoader: WebViewAssetLoader? = null
@@ -95,8 +96,10 @@ internal class HostedWebArtifactView(
   private var documentStartScript: ScriptHandler? = null
   private var activeProfileName: String? = null
   private var loadedKey: String? = null
+  private var activeInlineDocument = false
   private var disposed = false
   private var allowedNavigationOrigins = emptySet<HostedWebOrigin>()
+  private var externalHttpLinks = false
 
   init {
     orientation = VERTICAL
@@ -111,10 +114,26 @@ internal class HostedWebArtifactView(
     webView?.contentDescription = title
   }
 
+  fun setExternalHttpLinks(enabled: Boolean) {
+    externalHttpLinks = enabled
+  }
+
   fun setArtifactHandleToken(token: String?) {
-    if (artifactHandleToken == token) return
+    val normalized = token?.takeIf { it.isNotBlank() }
+    if (artifactHandleToken == normalized && (normalized == null || inlineDocumentHandleToken == null)) return
     clearCurrentFrameState()
-    artifactHandleToken = token?.takeIf { it.isNotBlank() }
+    artifactHandleToken = normalized
+    if (normalized != null) inlineDocumentHandleToken = null
+    loadedKey = null
+    loadIfReady()
+  }
+
+  fun setInlineDocumentHandleToken(token: String?) {
+    val normalized = token?.takeIf { it.isNotBlank() }
+    if (inlineDocumentHandleToken == normalized && (normalized == null || artifactHandleToken == null)) return
+    clearCurrentFrameState()
+    inlineDocumentHandleToken = normalized
+    if (normalized != null) artifactHandleToken = null
     loadedKey = null
     loadIfReady()
   }
@@ -133,7 +152,7 @@ internal class HostedWebArtifactView(
 
   fun postHostMessage(serializedMessage: String): Boolean {
     val currentWebView = webView ?: return false
-    if (!isActiveArtifactPage(currentWebView)) return false
+    if (!isActiveHostedPage(currentWebView)) return false
     // The bridge receives the same `MessageEvent.data` string as the existing
     // native WebView engine: host envelope JSON, encoded once as JavaScript.
     val script = """
@@ -149,7 +168,7 @@ internal class HostedWebArtifactView(
 
   fun goBack(): Boolean {
     val currentWebView = webView ?: return false
-    if (!isActiveArtifactPage(currentWebView) || !currentWebView.canGoBack()) return false
+    if (!isActiveHostedPage(currentWebView) || !currentWebView.canGoBack()) return false
     currentWebView.goBack()
     return true
   }
@@ -201,13 +220,13 @@ internal class HostedWebArtifactView(
             !isMainFrame ||
             !origin.matches(sourceOrigin) ||
             message.type != WebMessageCompat.TYPE_STRING ||
-            !isActiveArtifactPage(nextWebView)
+            !isActiveHostedPage(nextWebView)
           ) {
             return
           }
           val data = message.data ?: return
           post {
-            if (isActiveArtifactPage(nextWebView) && origin.matches(sourceOrigin)) {
+            if (isActiveHostedPage(nextWebView) && origin.matches(sourceOrigin)) {
               onMessage(mapOf("data" to data, "url" to sourceOrigin.toString()))
             }
           }
@@ -220,22 +239,31 @@ internal class HostedWebArtifactView(
   private fun loadIfReady() {
     if (disposed) return
     retryPendingProfileCleanup()
-    val token = artifactHandleToken ?: return
-    val pathAndQuery = initialPathAndQuery ?: return
+    val inlineDocument = inlineDocumentHandleToken != null
+    val token = inlineDocumentHandleToken ?: artifactHandleToken ?: return
+    val pathAndQuery = if (inlineDocument) "/" else initialPathAndQuery ?: return
     if (!isProfileIsolationSupported()) {
       onLoadError(profileIsolationUnavailableEvent())
       return
     }
-    val origin = HostedWebArtifactRegistryOwner.originFor(context, token)
+    val origin = (if (inlineDocument) {
+      HostedInlineDocumentRegistry.originFor(token)
+    } else {
+      HostedWebArtifactRegistryOwner.originFor(context, token)
+    })
       ?.let(::parseOrigin)
       ?: run {
-        onLoadError(mapOf("code" to "hosted_web_artifact_handle_unavailable"))
+        onLoadError(mapOf("code" to if (inlineDocument) {
+          "hosted_web_inline_document_handle_unavailable"
+        } else {
+          "hosted_web_artifact_handle_unavailable"
+        }))
         return
       }
-    val key = "$token\u001F$pathAndQuery"
+    val key = "${if (inlineDocument) "inline" else "artifact"}\u001F$token\u001F$pathAndQuery"
     if (loadedKey == key) return
 
-    val pathHandler = TokenPathHandler(context, token)
+    val pathHandler = TokenPathHandler(context, token, inlineDocument)
     val loader = WebViewAssetLoader.Builder()
       .setDomain(origin.host)
       .addPathHandler("/", pathHandler)
@@ -264,6 +292,7 @@ internal class HostedWebArtifactView(
     webView = nextWebView
     activeProfileName = profileName
     activeOrigin = origin
+    activeInlineDocument = inlineDocument
     activePathHandler = pathHandler
     activeLoader = loader
     documentStartScript = installedDocumentStartScript
@@ -283,6 +312,7 @@ internal class HostedWebArtifactView(
     webView = null
     activeProfileName = null
     activeOrigin = null
+    activeInlineDocument = false
     activePathHandler = null
     activeLoader = null
     runCatching { documentStartScript?.remove() }
@@ -328,12 +358,18 @@ internal class HostedWebArtifactView(
     deleteProfile(profileName)
   }
 
-  private fun isActiveArtifactPage(candidate: WebView? = webView): Boolean {
+  private fun isActiveHostedPage(candidate: WebView? = webView): Boolean {
     val currentWebView = candidate ?: return false
     if (currentWebView !== webView) return false
-    val token = artifactHandleToken ?: return false
+    val token = (if (activeInlineDocument) inlineDocumentHandleToken else artifactHandleToken)
+      ?: return false
     val origin = activeOrigin ?: return false
-    if (HostedWebArtifactRegistryOwner.originFor(context, token) != origin.asString()) return false
+    val currentOrigin = if (activeInlineDocument) {
+      HostedInlineDocumentRegistry.originFor(token)
+    } else {
+      HostedWebArtifactRegistryOwner.originFor(context, token)
+    }
+    if (currentOrigin != origin.asString()) return false
     val url = currentWebView.url ?: return false
     return parseOrigin(url) == origin
   }
@@ -393,7 +429,9 @@ internal class HostedWebArtifactView(
       val uri = request.url
       val active = activeOrigin
       if (active != null && active.matches(uri)) return false
-      if (allowedNavigationOrigins.any { it.matches(uri) }) {
+      val activatedExternalHttpLink = activeInlineDocument && externalHttpLinks && request.hasGesture()
+        && (uri.scheme == "http" || uri.scheme == "https")
+      if (activatedExternalHttpLink || allowedNavigationOrigins.any { it.matches(uri) }) {
         // Never let guest JavaScript navigate this WebView externally. The
         // React host receives this event and decides whether to open the
         // policy-approved destination through the platform handoff.
@@ -429,14 +467,14 @@ internal class HostedWebArtifactView(
     }
 
     override fun onPageFinished(view: WebView, url: String) {
-      if (isActiveArtifactPage(view)) {
+      if (isActiveHostedPage(view)) {
         onHistoryStateChange(mapOf("canGoBack" to view.canGoBack()))
         onLoadEnd(mapOf("url" to url))
       }
     }
 
     override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
-      if (isActiveArtifactPage(view)) {
+      if (isActiveHostedPage(view)) {
         onHistoryStateChange(mapOf("canGoBack" to view.canGoBack()))
       }
     }
@@ -459,10 +497,16 @@ internal class HostedWebArtifactView(
 
   private fun retireCurrentMainFrameAfterLoadFailure(view: WebView, request: WebResourceRequest) {
     if (!request.isForMainFrame || view !== webView) return
-    val token = artifactHandleToken ?: return
+    val token = (if (activeInlineDocument) inlineDocumentHandleToken else artifactHandleToken)
+      ?: return
     val origin = activeOrigin ?: return
     if (!origin.matches(request.url)) return
-    if (HostedWebArtifactRegistryOwner.originFor(context, token) != origin.asString()) return
+    val currentOrigin = if (activeInlineDocument) {
+      HostedInlineDocumentRegistry.originFor(token)
+    } else {
+      HostedWebArtifactRegistryOwner.originFor(context, token)
+    }
+    if (currentOrigin != origin.asString()) return
     // Android can publish a late page-finished callback after a main-document
     // failure. Retire the exact bound surface before the shared error event so
     // that callback cannot restore the pane to ready or leave its bridge live.
@@ -477,10 +521,11 @@ internal class HostedWebArtifactView(
 
   private class TokenPathHandler(
     private val context: Context,
-    private val token: String
+    private val token: String,
+    private val inlineDocument: Boolean
   ) : WebViewAssetLoader.PathHandler {
     override fun handle(path: String): WebResourceResponse {
-      return HostedWebArtifactRegistryOwner.withResolved(context, token, path) { response ->
+      val render: (HostedWebArtifactResponse) -> WebResourceResponse = { response ->
         if (response.status != 200 || response.bytes == null || response.contentType == null) {
           rejectionResponse(response.status)
         } else {
@@ -498,6 +543,11 @@ internal class HostedWebArtifactView(
             )
           }
         }
+      }
+      return if (inlineDocument) {
+        HostedInlineDocumentRegistry.withResolved(token, path, render)
+      } else {
+        HostedWebArtifactRegistryOwner.withResolved(context, token, path, render)
       }
     }
   }

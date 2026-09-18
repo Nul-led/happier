@@ -17,6 +17,7 @@ const AttentionDeviceOverrideLocalNotificationsSchema = z.object({
     enabled: z.boolean().default(true),
     events: AttentionDeviceOverrideEventTogglesSchema.default(AttentionDeviceOverrideEventTogglesSchema.parse({})),
     previewBehavior: AttentionDeviceOverridePreviewBehaviorSchema.default('account'),
+    requestPreviewBehavior: AttentionDeviceOverridePreviewBehaviorSchema.default('account'),
 }).passthrough();
 
 const AttentionDeviceOverrideBadgeSchema = z.object({
@@ -129,6 +130,7 @@ const LEGACY_ATTENTION_DEVICE_OVERRIDE_KEYS = [
     'localNotificationsEnabled',
     'localNotificationsShowReady',
     'localNotificationsShowReadyMessageText',
+    'localNotificationsShowRequestMessageText',
     'localNotificationsShowPendingPermissionRequests',
     'localNotificationsShowPendingUserActionRequests',
     'localNotificationsForegroundBehavior',
@@ -222,6 +224,9 @@ export function deriveAttentionDeviceOverridesV1FromLegacyLocalSettings(params: 
                 ),
             },
             previewBehavior: readyPreviewBehavior,
+            requestPreviewBehavior: readBoolean(legacy, 'localNotificationsShowRequestMessageText', true)
+                ? base.localNotifications.requestPreviewBehavior
+                : 'status_only',
         },
         badge: {
             ...base.badge,

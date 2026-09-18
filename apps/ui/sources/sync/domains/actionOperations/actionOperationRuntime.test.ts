@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
 
 import { createActionOperationStore } from './actionOperationStore';
+import { createActionOperationSelectors } from './actionOperationSelectors';
+import { actionOperationAddressKey, actionOperationMachineAddressKey } from './qualifiedActionOperation';
 import {
     bindActionOperationRuntimeToAccountLifetime,
     reconcileActionOperationsOnce,
@@ -65,15 +67,17 @@ describe('action operation observation runtime', () => {
             serverId: scope.serverId,
             request: { cursor: 'page-2' },
         });
-        expect([...store.getSnapshot().operationsById.keys()]).toEqual([accepted.operationId]);
-        expect(store.getSnapshot().operationsById.get(accepted.operationId)).toBe(accepted);
-        expect(store.getSnapshot().machineObservationById.get(scope.machineId)).toBe('available');
+        expect([...store.getSnapshot().operationsByKey.keys()]).toEqual([
+            actionOperationAddressKey({ serverId: scope.serverId, operationId: accepted.operationId }),
+        ]);
+        expect([...store.getSnapshot().operationsByKey.values()][0]).toEqual({ serverId: scope.serverId, snapshot: accepted });
+        expect([...store.getSnapshot().machineObservationByKey.values()]).toEqual(['available']);
     });
 
     it('retains cached active rows as unavailable when a complete post-restart list is empty', async () => {
         const store = createActionOperationStore();
         const cached = operation();
-        store.mergeSnapshots([cached]);
+        store.mergeSnapshots({ serverId: scope.serverId, snapshots: [cached] });
 
         await reconcileActionOperationsOnce({
             scope,
@@ -81,14 +85,18 @@ describe('action operation observation runtime', () => {
             list: async () => ({ items: [], nextCursor: null }),
         });
 
-        expect(store.getSnapshot().operationsById.get(cached.operationId)).toBe(cached);
-        expect(store.getSnapshot().machineObservationById.get(scope.machineId)).toBe('unavailable');
+        expect(store.getSnapshot().operationsByKey.get(actionOperationAddressKey({ serverId: scope.serverId, operationId: cached.operationId }))?.snapshot).toBe(cached);
+        expect(store.getSnapshot().machineObservationByKey.get(actionOperationMachineAddressKey({ serverId: scope.serverId, machineId: scope.machineId }))).toBe('available');
+        expect(createActionOperationSelectors().selectById(store.getSnapshot(), {
+            serverId: scope.serverId,
+            operationId: cached.operationId,
+        })?.observation).toBe('unavailable');
     });
 
     it('retains cached rows when pagination fails before the daemon projection is complete', async () => {
         const store = createActionOperationStore();
         const cached = operation();
-        store.mergeSnapshots([cached]);
+        store.mergeSnapshots({ serverId: scope.serverId, snapshots: [cached] });
         const list = vi.fn()
             .mockResolvedValueOnce({ items: [], nextCursor: 'page-2' })
             .mockRejectedValueOnce(new Error('connection lost'));
@@ -99,12 +107,12 @@ describe('action operation observation runtime', () => {
             list,
         })).rejects.toThrow('connection lost');
 
-        expect(store.getSnapshot().operationsById.get(cached.operationId)).toBe(cached);
+        expect(store.getSnapshot().operationsByKey.get(actionOperationAddressKey({ serverId: scope.serverId, operationId: cached.operationId }))?.snapshot).toBe(cached);
     });
 
     it('retires the singleton projection with the active server/account lifetime', () => {
         const store = createActionOperationStore();
-        store.mergeSnapshots([operation()]);
+        store.mergeSnapshots({ serverId: scope.serverId, snapshots: [operation()] });
         const stopAll = vi.fn();
         const retirement = { current: null as (() => void) | null };
         const lifetime = {
@@ -120,6 +128,6 @@ describe('action operation observation runtime', () => {
         retirement.current?.();
 
         expect(stopAll).toHaveBeenCalledTimes(1);
-        expect(store.getSnapshot().operationsById.size).toBe(0);
+        expect(store.getSnapshot().operationsByKey.size).toBe(0);
     });
 });

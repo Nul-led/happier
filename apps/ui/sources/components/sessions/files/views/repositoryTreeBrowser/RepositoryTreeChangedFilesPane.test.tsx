@@ -31,7 +31,7 @@ installSessionFilesViewCommonModuleMocks({
         return createStorageModuleStub({
             useProjectForSession: () => repositoryProject,
             useProjectSessions: () => ['s1'],
-            useSessionProjectScmTouchedPaths: () => ['session-changes-qa-root.txt'],
+            useWorkspaceScmTouchedPathsForSession: () => ['session-changes-qa-root.txt'],
             useSessionProjectScmOperationLog: () => [],
             useSetting: (key: string) => {
                 if (key === 'scmReviewMaxFiles') return 25;
@@ -48,7 +48,7 @@ vi.mock('@/hooks/session/files/useChangedFilesData', () => ({
 }));
 
 vi.mock('@/sync/domains/session/changes/hooks/useDerivedSessionChangeSet', () => ({
-    useDerivedSessionChangeSet: (sessionId: string) => derivedSessionChangeSetSpy(sessionId),
+    useDerivedSessionChangeSet: (address: unknown) => derivedSessionChangeSetSpy(address),
 }));
 
 vi.mock('@/components/sessions/files/content/ChangedFilesList', () => ({
@@ -61,19 +61,31 @@ vi.mock('@/components/workspaces/scm/review/ChangedFilesReview', () => ({
 
 describe('RepositoryTreeChangedFilesPane', () => {
     it('surfaces scoped view selection in the repository browser changed-files pane and can switch to review mode', async () => {
+        const attributedFile = {
+            file: { fullPath: 'session-changes-qa-root.txt', fileName: 'session-changes-qa-root.txt' },
+            content: { source: 'provider_tool', confidence: 'strong' },
+            attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+            checkpointOverlap: 'unknown',
+            evidence: [],
+        };
         changedFilesDataSpy.mockReturnValue({
-            attributionReliability: 'high',
+            sessionAttribution: { confidence: 'unknown', reason: 'unavailable' },
+            sessionCheckpointOverlap: 'unknown',
             showTurnViewToggle: true,
+            showTurnAgentReportedViewToggle: false,
+            showTurnCheckpointViewToggle: false,
+            turnCheckpointMetadata: null,
             showSessionViewToggle: true,
             scmStatusFiles: null,
             changedFilesCount: 1,
             shouldShowAllFiles: false,
             allRepositoryChangedFiles: [{ fullPath: 'session-changes-qa-root.txt', fileName: 'session-changes-qa-root.txt' }],
-            turnAttributedFiles: [{ file: { fullPath: 'session-changes-qa-root.txt', fileName: 'session-changes-qa-root.txt' }, confidence: 'high' }],
+            turnAttributedFiles: [attributedFile],
+            turnAgentReportedFiles: [],
+            turnCheckpointFiles: [],
             turnRepositoryOnlyFiles: [],
-            sessionAttributedFiles: [{ file: { fullPath: 'session-changes-qa-root.txt', fileName: 'session-changes-qa-root.txt' }, confidence: 'high' }],
+            sessionAttributedFiles: [attributedFile],
             repositoryOnlyFiles: [],
-            suppressedInferredCount: 0,
         });
         derivedSessionChangeSetSpy.mockReturnValue({
             latestTurnScopedChangeSet: { sessionId: 's1', files: [{ filePath: 'session-changes-qa-root.txt' }] },
@@ -87,12 +99,18 @@ describe('RepositoryTreeChangedFilesPane', () => {
 
         const screen = await renderScreen(<RepositoryTreeChangedFilesPane
                     sessionId="s1"
+                    serverId="server-a"
                     scmSnapshot={null}
                     searchQuery=""
                     onSearchQueryChange={vi.fn()}
                     onShowAllRepositoryFiles={onShowAllRepositoryFiles}
                     onOpenFile={vi.fn()}
                 />);
+
+        expect(derivedSessionChangeSetSpy).toHaveBeenCalledWith({
+            serverId: 'server-a',
+            sessionId: 's1',
+        });
 
         expect(screen.getTextContent()).toContain('files.toolbar.view');
         expect(screen.getTextContent()).not.toContain('files.toolbar.turnView');

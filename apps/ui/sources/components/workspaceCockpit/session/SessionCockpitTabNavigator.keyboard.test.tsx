@@ -41,9 +41,26 @@ const navigatorState = vi.hoisted(() => ({
         accountId: 'account-a',
     } as { serverId: string; accountId: string } | null,
     pluginProjection: null as null | Record<string, unknown>,
-    scopedProjectionCalls: [] as Array<Readonly<{ machineId?: string | null; serverId?: string | null }>>,
+    boardOwnerRenderIdentities: [] as symbol[],
+    boardOwnerProps: [] as Array<Readonly<{ sessionId: string; serverId?: string | null }>>,
+    boardOwnerPluginRuntimes: [] as object[],
+    canonicalPluginRuntime: null as object | null,
+    canonicalPluginRuntimeAddresses: [] as Array<Readonly<{ serverId: string; sessionId: string }> | null>,
+    activeBoardOwnerObservations: [] as Array<Readonly<{
+        surface: string;
+        controller: object;
+        drafts: Map<string, string>;
+        snapshot: object;
+    }>>,
+    boardFeatureEnabled: false,
     activeRouteName: 'chat',
 }));
+
+const BoardOwnerContext = React.createContext<Readonly<{
+    controller: object;
+    drafts: Map<string, string>;
+    snapshot: object;
+}> | null>(null);
 
 const BottomTabNavigationContext = React.createContext<{
     navigate: (name: string) => void;
@@ -182,8 +199,47 @@ vi.mock('@react-navigation/bottom-tabs', () => ({
 }));
 
 vi.mock('./SessionCockpitSurfaceScreen', () => ({
-    SessionCockpitSurfaceScreen: (props: Record<string, unknown>) =>
-        React.createElement('SessionCockpitSurfaceScreen', props),
+    SessionCockpitSurfaceScreen: (props: Record<string, unknown>) => {
+        const owner = React.useContext(BoardOwnerContext);
+        const surface = String(props.surface ?? '');
+        if (owner && surface === navigatorState.activeRouteName) {
+            navigatorState.activeBoardOwnerObservations.push({ surface, ...owner });
+        }
+        return React.createElement('SessionCockpitSurfaceScreen', props);
+    },
+}));
+
+vi.mock('@/components/sessions/board/SessionBoardControllerProvider', () => ({
+    SessionBoardControllerProvider: ({
+        children,
+        sessionId,
+        serverId,
+        pluginRuntime,
+    }: React.PropsWithChildren<Readonly<{
+        sessionId: string;
+        serverId?: string | null;
+        pluginRuntime?: object;
+    }>>) => {
+        const identity = React.useRef(Symbol('session-board-shell-owner')).current;
+        const owner = React.useRef(Object.freeze({
+            controller: {},
+            drafts: new Map<string, string>(),
+            snapshot: {},
+        })).current;
+        navigatorState.boardOwnerRenderIdentities.push(identity);
+        navigatorState.boardOwnerProps.push({ sessionId, serverId });
+        if (pluginRuntime) navigatorState.boardOwnerPluginRuntimes.push(pluginRuntime);
+        return React.createElement(
+            BoardOwnerContext.Provider,
+            { value: owner },
+            React.createElement('SessionBoardControllerProvider', { sessionId, serverId }, children),
+        );
+    },
+}));
+
+vi.mock('@/hooks/server/useFeatureEnabled', () => ({
+    useFeatureEnabled: (featureId: string) => featureId === 'sessions.board'
+        && navigatorState.boardFeatureEnabled,
 }));
 
 vi.mock('./SessionCockpitSurfaceNavigation', () => ({
@@ -218,24 +274,21 @@ vi.mock('./SessionCockpitChromeRegistry', () => ({
     },
 }));
 
-vi.mock('@/components/plugins/projection/useScopedPluginUiProjection', () => ({
-    useScopedPluginUiProjection: (args: { machineId?: string | null; serverId?: string | null }) => {
-        navigatorState.scopedProjectionCalls.push(args);
-        return {
+vi.mock('@/components/sessions/plugins/useSessionPluginRuntime', () => ({
+    useSessionPluginRuntime: ({ address }: { address: { serverId: string; sessionId: string } | null }) => {
+        navigatorState.canonicalPluginRuntimeAddresses.push(address);
+        const runtime = Object.freeze({
             pluginUiProjection: navigatorState.pluginProjection,
-            machineId: args.machineId ?? null,
-            serverId: args.serverId ?? null,
+            pluginBrowserProjection: null,
+            phase: navigatorState.pluginProjection ? 'ready' : 'loading',
+            interactionEnabled: Boolean(navigatorState.pluginProjection),
+            machineId: address ? 'machine-session' : null,
+            serverId: address?.serverId ?? null,
             platform: 'web',
-        };
+        });
+        navigatorState.canonicalPluginRuntime = runtime;
+        return runtime;
     },
-}));
-
-vi.mock('@/components/sessions/model/useSessionMachineTarget', () => ({
-    useSessionMachineTarget: () => ({
-        pluginUiProjection: navigatorState.pluginProjection,
-        machineId: 'machine-session',
-        basePath: '/repo',
-    }),
 }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession', () => ({
@@ -337,7 +390,13 @@ describe('SessionCockpitTabNavigator keyboard behavior', () => {
         };
         activeServerAccountScopeListeners.clear();
         navigatorState.pluginProjection = null;
-        navigatorState.scopedProjectionCalls = [];
+        navigatorState.boardOwnerRenderIdentities = [];
+        navigatorState.boardOwnerProps = [];
+        navigatorState.boardOwnerPluginRuntimes = [];
+        navigatorState.canonicalPluginRuntime = null;
+        navigatorState.canonicalPluginRuntimeAddresses = [];
+        navigatorState.activeBoardOwnerObservations = [];
+        navigatorState.boardFeatureEnabled = false;
         navigatorState.activeRouteName = 'chat';
         navigationFocusState.setFocused(true);
     });
@@ -357,6 +416,23 @@ describe('SessionCockpitTabNavigator keyboard behavior', () => {
         expect(navigatorState.navigationContainerLinking).toEqual({ enabled: false, prefixes: [] });
         expect(navigatorState.backBehavior).toBe('history');
         expect(navigatorState.screenOptions?.tabBarHideOnKeyboard).toBe(false);
+    });
+
+    it('passes the canonical exact-address plugin runtime to the shared Board owner', async () => {
+        const { SessionCockpitTabNavigator } = await import('./SessionCockpitTabNavigator');
+
+        await renderScreen(
+            <SessionCockpitTabNavigator
+                initialSurface="chat"
+                routeServerId="server-session"
+                scopeId="session:s1"
+                sessionId="s1"
+                terminalTabAvailable
+            />,
+        );
+
+        expect(navigatorState.boardOwnerPluginRuntimes.at(-1))
+            .toBe(navigatorState.canonicalPluginRuntime);
     });
 
     it('keeps nested navigation container and navigator options stable across rerenders', async () => {
@@ -398,6 +474,50 @@ describe('SessionCockpitTabNavigator keyboard behavior', () => {
 
         expect(navigatorState.localSettingReads).not.toContain('sessionLastMobileSurfaceBySessionId');
         expect(navigatorState.persistedSurfaces).toEqual([{ sessionId: 's1', surface: 'git' }]);
+    });
+
+    it('keeps one exact-Session Board controller, drafts, and snapshot through Chat → Board → Companion → Board', async () => {
+        navigatorState.boardFeatureEnabled = true;
+        const { SessionCockpitTabNavigator } = await import('./SessionCockpitTabNavigator');
+
+        await renderScreen(
+            <SessionCockpitTabNavigator
+                initialSurface="chat"
+                routeServerId="server-session"
+                scopeId="session:s1"
+                sessionId="s1"
+                terminalTabAvailable
+            />,
+        );
+        const initialOwner = navigatorState.boardOwnerRenderIdentities.at(-1);
+
+        await act(async () => {
+            navigatorState.registeredChrome?.switchSurface('board');
+        });
+        await act(async () => {
+            navigatorState.registeredChrome?.switchSurface('companion');
+        });
+        await act(async () => {
+            navigatorState.registeredChrome?.switchSurface('board');
+        });
+
+        expect(new Set(navigatorState.boardOwnerRenderIdentities)).toEqual(new Set([initialOwner]));
+        expect(navigatorState.boardOwnerProps.at(-1)).toEqual({
+            sessionId: 's1',
+            serverId: 'server-session',
+        });
+        const observations = navigatorState.activeBoardOwnerObservations
+            .filter((observation) => ['chat', 'board', 'companion'].includes(observation.surface));
+        expect(observations.map((observation) => observation.surface)).toEqual(expect.arrayContaining([
+            'chat',
+            'board',
+            'companion',
+        ]));
+        const first = observations[0];
+        expect(first).toBeDefined();
+        expect(observations.every((observation) => observation.controller === first?.controller)).toBe(true);
+        expect(observations.every((observation) => observation.drafts === first?.drafts)).toBe(true);
+        expect(observations.every((observation) => observation.snapshot === first?.snapshot)).toBe(true);
     });
 
     it('does not dedupe the same surface across a new session persistence realm', async () => {
@@ -597,6 +717,8 @@ describe('SessionCockpitTabNavigator keyboard behavior', () => {
 
         expect(
             screen.tree.findAllByType('BottomTabScreen' as never).map((node) => node.props.name),
+        // No `sessions.board` decision for this Home: neither the Board nor the
+        // Companion destination it carries is registered.
         ).toEqual(['chat', 'browse', 'git', 'tabs', 'navigation', 'browser', 'services']);
 
         await act(async () => {
@@ -623,12 +745,9 @@ describe('SessionCockpitTabNavigator keyboard behavior', () => {
         expect(
             screen.tree.findAllByType('BottomTabScreen' as never).map((node) => node.props.name),
         ).toEqual(['chat', 'browse', 'git', 'tabs', 'navigation', 'browser', 'services', `plugin:${REVIEW_PLUGIN_ID}:review-panel`]);
-        expect(navigatorState.scopedProjectionCalls.at(-1)).toEqual({
-            machineId: 'machine-session',
-            serverId: 'server-session',
+        await act(async () => {
+            navigatorState.registeredChrome?.switchSurface(`plugin:${REVIEW_PLUGIN_ID}:review-panel`);
         });
-
-        navigatorState.registeredChrome?.switchSurface(`plugin:${REVIEW_PLUGIN_ID}:review-panel`);
 
         expect(navigatorState.persistedSurfaces).toEqual([{ sessionId: 's1', surface: `plugin:${REVIEW_PLUGIN_ID}:review-panel` }]);
     });

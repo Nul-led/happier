@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { installRestoreRouteCommonModuleMocks } from './restoreRouteTestHelpers';
+import { createDirectoryHttpFixture } from '@/sync/ops/accountDirectory/accountDirectoryTestFixtures';
+import { adoptHomeProfile } from '@/sync/domains/server/serverProfiles';
 
 
 type ReactActEnvironmentGlobal = typeof globalThis & {
@@ -16,6 +18,7 @@ const routerDismissToSpy = vi.hoisted(() => vi.fn());
 const authLoginSpy = vi.hoisted(() => vi.fn(async () => ({ kind: 'completed' as const })));
 const guardCredentialMutationSpy = vi.hoisted(() => vi.fn(async () => ({ kind: 'allowed' as const })));
 const normalizeSecretKeySpy = vi.hoisted(() => vi.fn((input: string) => input.trim()));
+const routeParams = vi.hoisted(() => ({ current: {} as Record<string, string | undefined> }));
 
 vi.mock('@expo/vector-icons/Ionicons', () => ({
     default: 'Ionicons',
@@ -25,6 +28,7 @@ installRestoreRouteCommonModuleMocks({
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         const routerMock = createExpoRouterMock({
+            params: () => routeParams.current,
             router: { back: routerBackSpy, replace: routerReplaceSpy, dismissTo: routerDismissToSpy },
         });
         return routerMock.module;
@@ -66,6 +70,7 @@ vi.mock('@/components/ui/layout/layout', () => ({
 }));
 
 afterEach(() => {
+    routeParams.current = {};
     vi.restoreAllMocks();
     standardCleanup();
 });
@@ -77,6 +82,49 @@ async function renderManualRestoreScreen() {
 }
 
 describe('/restore/manual', () => {
+    it('fails closed instead of falling back to the active Home when an exact repair target is incomplete', async () => {
+        routeParams.current = {
+            returnTo: '/settings/account/api-tokens',
+            resumeCreate: '1',
+            targetServerId: 'home-a',
+        };
+
+        const screen = await renderManualRestoreScreen();
+
+        expect(screen.findByTestId('restore-manual-target-unavailable')).toBeTruthy();
+        expect(screen.findByTestId('restore-manual-secret-input')).toBeNull();
+    });
+
+    it('binds token-encryption repair to the captured Home and Account', async () => {
+        const fixture = createDirectoryHttpFixture();
+        const home = await adoptHomeProfile({
+            descriptor: fixture.home.connectionDescriptor,
+            source: 'account-directory',
+            descriptorAuthority: 'current_connection_observation',
+        });
+        routeParams.current = {
+            returnTo: '/settings/account/api-tokens',
+            resumeCreate: '1',
+            targetServerId: home.id,
+            expectedAccountId: 'account-a',
+        };
+
+        const screen = await renderManualRestoreScreen();
+        const exactLogin = screen.find((candidate) => (
+            candidate.props.target?.expectedAccountId === 'account-a'
+            && candidate.props.target?.serverId === home.id
+        ));
+
+        expect(exactLogin?.props.target).toMatchObject({
+            endpointUrl: home.serverUrl,
+            canonicalServerUrl: home.canonicalServerUrl ?? home.serverUrl,
+            serverId: home.id,
+            serverIdentityId: fixture.home.homeServerIdentityId,
+            expectedAccountId: 'account-a',
+            requireKeyChallengeV2: true,
+        });
+    });
+
     it('does not auto-capitalize secret key input (supports case-sensitive base64url input)', async () => {
         const screen = await renderManualRestoreScreen();
         expect(screen.findByTestId('restore-manual-wizard')).toBeTruthy();

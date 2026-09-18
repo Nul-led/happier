@@ -12,6 +12,11 @@ const collapsedSidebarState = vi.hoisted(() => ({
     setSidebarCollapsed: vi.fn(),
 }));
 
+const inboxState = vi.hoisted(() => ({
+    available: true,
+    model: { hasContent: true },
+}));
+
 const desktopWindowBridgeState = vi.hoisted(() => ({
     getDesktopWindowChromePolicy: vi.fn(),
     getDesktopWindowState: vi.fn(),
@@ -69,6 +74,18 @@ vi.mock('expo-image', () => ({
     Image: (props: Record<string, unknown>) => React.createElement('Image', props),
 }));
 
+vi.mock('@/hooks/inbox/useInboxAvailable', () => ({
+    useInboxAvailable: () => inboxState.available,
+}));
+
+vi.mock('@/hooks/inbox/useInboxModel', () => ({
+    useInboxModel: () => inboxState.model,
+}));
+
+vi.mock('@/components/inbox/InboxPopoverButton', () => ({
+    InboxPopoverButton: (props: Record<string, unknown>) => React.createElement('InboxPopoverButton', props),
+}));
+
 vi.mock('@/utils/platform/responsive', () => ({
     useHeaderHeight: () => 56,
 }));
@@ -95,6 +112,7 @@ function styleListHasExplicitFallbackDimensions(style: unknown, dimensions: Read
 
 describe('CollapsedSidebarView desktop chrome', () => {
     beforeEach(() => {
+        inboxState.available = true;
         collapsedSidebarState.setSidebarCollapsed.mockReset();
         desktopWindowBridgeState.getDesktopWindowChromePolicy.mockReset();
         desktopWindowBridgeState.getDesktopWindowState.mockReset();
@@ -171,17 +189,31 @@ describe('CollapsedSidebarView desktop chrome', () => {
         if (!minimizeButton) {
             throw new Error('minimize button should be present');
         }
-        const controlsGroup = minimizeButton.parent;
-        if (!controlsGroup) {
-            throw new Error('controls group should be present');
-        }
-
         expect(minimizeButton).toBeTruthy();
         expect(screen.findByTestId('desktop-window-controls-toggle-maximize')).toBeTruthy();
         expect(screen.findByTestId('desktop-window-controls-close')).toBeTruthy();
-        expect(controlsGroup.props.style).toEqual(
-            expect.objectContaining({ flexDirection: 'column' }),
-        );
+        expect(screen.findByTestId('desktop-window-controls-slot')).toBeTruthy();
+    });
+
+    it('renders the shared Inbox popover trigger in the collapsed rail', async () => {
+        const { CollapsedSidebarView } = await import('./CollapsedSidebarView');
+        const screen = await renderScreen(<CollapsedSidebarView />);
+
+        const inboxButton = screen.findByType('InboxPopoverButton' as never);
+        expect(inboxButton.props).toMatchObject({
+            model: inboxState.model,
+            testID: 'collapsed-sidebar-inbox-button',
+        });
+        expect(screen.findByTestId('collapsed-sidebar-action-operations')).toBeTruthy();
+    });
+
+    it('keeps action operations as the fallback when Inbox is unavailable', async () => {
+        inboxState.available = false;
+        const { CollapsedSidebarView } = await import('./CollapsedSidebarView');
+        const screen = await renderScreen(<CollapsedSidebarView />);
+
+        expect(screen.findAllByType('InboxPopoverButton' as never)).toHaveLength(0);
+        expect(screen.findByTestId('collapsed-sidebar-action-operations')).toBeTruthy();
     });
 
     // The rail is the sidebar's CLOSED state, so its button opens rather than closes. It used to

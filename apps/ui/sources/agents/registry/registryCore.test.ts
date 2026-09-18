@@ -233,35 +233,35 @@ describe('agents/registryCore', () => {
     });
 
     it('reads model selection config from @happier-dev/agents', () => {
-        const claude = getAgentModelConfig('claude');
+        const claude = getAgentModelConfig('claude')!;
         expect(claude.supportsSelection).toBe(true);
         expect(claude.nonAcpApplyScope).toBe('next_prompt');
         expect(claude.supportsFreeform).toBe(true);
         expect(claude.allowedModes.length).toBeGreaterThan(0);
 
         // ACP backends with supported model probing + overrides
-        const codex = getAgentModelConfig('codex');
+        const codex = getAgentModelConfig('codex')!;
         expect(codex.supportsSelection).toBe(true);
 
-        const opencode = getAgentModelConfig('opencode');
+        const opencode = getAgentModelConfig('opencode')!;
         expect(opencode.supportsSelection).toBe(true);
 
-        const kilo = getAgentModelConfig('kilo');
+        const kilo = getAgentModelConfig('kilo')!;
         expect(kilo.supportsSelection).toBe(true);
 
-        const kiro = getAgentModelConfig('kiro');
+        const kiro = getAgentModelConfig('kiro')!;
         expect(kiro.supportsSelection).toBe(true);
 
-        const auggie = getAgentModelConfig('auggie');
+        const auggie = getAgentModelConfig('auggie')!;
         expect(auggie.supportsSelection).toBe(true);
 
-        const qwen = getAgentModelConfig('qwen');
+        const qwen = getAgentModelConfig('qwen')!;
         expect(qwen.supportsSelection).toBe(true);
 
-        const kimi = getAgentModelConfig('kimi');
+        const kimi = getAgentModelConfig('kimi')!;
         expect(kimi.supportsSelection).toBe(true);
 
-        const pi = getAgentModelConfig('pi');
+        const pi = getAgentModelConfig('pi')!;
         expect(pi.supportsSelection).toBe(true);
     });
 

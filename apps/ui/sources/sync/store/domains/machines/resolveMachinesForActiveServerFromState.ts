@@ -1,4 +1,5 @@
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import { isMachineVisibleForSelection } from '@/sync/domains/machines/identity/filterVisibleMachines';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { normalizeNonEmptyString } from '@/utils/strings/normalizeNonEmptyString';
@@ -77,6 +78,6 @@ export function resolveVisibleMachinesForActiveServerFromState(state: any): Mach
 
     return sourceMachines
         .filter((machine): machine is Machine => Boolean(machine && typeof machine === 'object' && typeof machine.id === 'string'))
-        .filter(isVisibleMachine)
+        .filter(isMachineVisibleForSelection)
         .sort(sortVisibleMachines);
 }

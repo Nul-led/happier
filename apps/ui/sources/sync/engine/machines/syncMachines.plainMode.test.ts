@@ -13,6 +13,35 @@ afterEach(() => {
 });
 
 describe('fetchAndApplyMachines plaintext account storage', () => {
+    it('refreshes and withdraws the accepted Machine operation projection without depending on encrypted content changes', async () => {
+        let appliedMachines: Machine[] = [];
+        const hydrate = async (capabilities: unknown, revision: number) => fetchAndApplyMachines({
+            credentials: { token: 'token-only' }, encryption: null, machineDataKeys: new Map(),
+            request: async () => Response.json([{
+                id: 'machine-projection', metadata: encodePlainMachineStoredContent({ host: 'host' }),
+                metadataVersion: 1, dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
+                seq: 1, active: true, activeAt: 1, createdAt: 1, updatedAt: 1,
+                operationProtocolCapabilities: capabilities, operationProtocolCapabilitiesRevision: revision,
+            }]),
+            applyMachines: (machines) => {
+                appliedMachines = machines;
+            },
+        });
+        const supported = { sessionSpawnPlacementOrigin: { protocolVersions: [1] } };
+        await hydrate(supported, 1);
+        expect(appliedMachines[0]).toMatchObject({
+            operationProtocolCapabilities: supported, operationProtocolCapabilitiesRevision: 1,
+        });
+        await hydrate({}, 2);
+        expect(appliedMachines[0]).toMatchObject({
+            operationProtocolCapabilities: {}, operationProtocolCapabilitiesRevision: 2,
+        });
+        await hydrate({ sessionSpawnPlacementOrigin: { protocolVersions: [2] } }, 3);
+        expect(appliedMachines[0]).toMatchObject({
+            operationProtocolCapabilities: null, operationProtocolCapabilitiesRevision: null,
+        });
+    });
+
     it('hydrates machine metadata and daemon state without account encryption material', async () => {
         const applyMachines = vi.fn();
 

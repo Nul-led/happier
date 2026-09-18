@@ -58,6 +58,32 @@ beforeEach(() => {
     setCanonicalSessionTarget('m1', '/tmp');
 });
 
+/**
+ * Configured ACP resume is gated by the Account's own declaration that the
+ * backend supports `session/load`, so a configured-target expectation must
+ * declare the backend the Session names.
+ */
+function accountSettingsWithLoadCapableBackends(
+    backendIds: readonly string[],
+): Record<string, unknown> {
+    return {
+        acpCatalogSettingsV1: {
+            v: 2,
+            backends: backendIds.map((id) => ({
+                id,
+                name: id,
+                title: `Custom ${id}`,
+                command: 'custom-acp',
+                args: [],
+                env: {},
+                capabilities: { supportsLoadSession: true },
+                createdAt: 1,
+                updatedAt: 2,
+            })),
+        },
+    };
+}
+
 describe('buildResumeSessionBaseOptionsFromSession', () => {
     const connectedServices = {
         v: 1,
@@ -158,7 +184,9 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
                     connectedServicesUpdatedAt: 1357,
                 },
             } as any,
-            resumeCapabilityOptions: { accountSettings: {} },
+            resumeCapabilityOptions: {
+                accountSettings: accountSettingsWithLoadCapableBackends(['custom-claude']),
+            },
         })).toEqual({
             sessionId: 's1',
             machineId: 'm1',
@@ -411,7 +439,9 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
                     },
                 },
             } as any,
-            resumeCapabilityOptions: { accountSettings: {} },
+            resumeCapabilityOptions: {
+                accountSettings: accountSettingsWithLoadCapableBackends(['custom-backend', 'custom-kiro']),
+            },
         })).toEqual({
             sessionId: 's1',
             machineId: 'm1',
@@ -430,7 +460,9 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
                     flavor: 'acp:custom-kiro',
                 },
             } as any,
-            resumeCapabilityOptions: { accountSettings: {} },
+            resumeCapabilityOptions: {
+                accountSettings: accountSettingsWithLoadCapableBackends(['custom-kiro']),
+            },
         })).toEqual({
             sessionId: 's1',
             machineId: 'm1',
@@ -455,7 +487,9 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
                     },
                 },
             } as any,
-            resumeCapabilityOptions: { accountSettings: {} },
+            resumeCapabilityOptions: {
+                accountSettings: accountSettingsWithLoadCapableBackends(['custom-kiro']),
+            },
         })).toEqual({
             sessionId: 's1',
             machineId: 'm1',
@@ -485,7 +519,9 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
                     },
                 },
             } as any,
-            resumeCapabilityOptions: { accountSettings: {} },
+            resumeCapabilityOptions: {
+                accountSettings: accountSettingsWithLoadCapableBackends(['custom-backend', 'custom-kiro']),
+            },
         })).toEqual({
             sessionId: 's1',
             machineId: 'm1',
@@ -505,6 +541,55 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
                 },
             } as any,
             resumeCapabilityOptions: { accountSettings: {} },
+        })).toBeNull();
+    });
+
+    it('fails closed when the configured ACP backend does not declare load-session support', () => {
+        const configuredSession = {
+            metadata: {
+                machineId: 'm1',
+                path: '/tmp',
+                flavor: 'acp:custom-kiro',
+                acpConfiguredBackendV1: {
+                    v: 1,
+                    updatedAt: 123,
+                    backendId: 'custom-backend',
+                    title: 'Custom Kiro',
+                },
+            },
+        } as any;
+
+        // Undeclared backend: the Account catalog knows nothing about it.
+        expect(buildResumeSessionBaseOptionsFromSession({
+            sessionId: 's1',
+            session: configuredSession,
+            resumeCapabilityOptions: {
+                accountSettings: accountSettingsWithLoadCapableBackends(['custom-kiro']),
+            },
+        })).toBeNull();
+
+        // Declared, but explicitly without `session/load` support.
+        expect(buildResumeSessionBaseOptionsFromSession({
+            sessionId: 's1',
+            session: configuredSession,
+            resumeCapabilityOptions: {
+                accountSettings: {
+                    acpCatalogSettingsV1: {
+                        v: 2,
+                        backends: [{
+                            id: 'custom-backend',
+                            name: 'custom-backend',
+                            title: 'Custom Kiro',
+                            command: 'custom-acp',
+                            args: [],
+                            env: {},
+                            capabilities: { supportsLoadSession: false },
+                            createdAt: 1,
+                            updatedAt: 2,
+                        }],
+                    },
+                },
+            },
         })).toBeNull();
     });
 });

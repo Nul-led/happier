@@ -207,6 +207,7 @@ describe('createAccountPluginDataEraseAction', () => {
         expect(harness.eraseSettings).toHaveBeenCalledWith({
             pluginId: 'example.orphaned-plugin',
             target: { kind: 'account', serverIdentityId: 'server-identity-a' },
+            signal: expect.any(AbortSignal),
         });
         expect(harness.eraseData).toHaveBeenCalledWith(
             { pluginId: 'example.orphaned-plugin' },

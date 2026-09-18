@@ -16,6 +16,21 @@ describe('parseHappierMetaEnvelope', () => {
         expect(parsed).toEqual({ kind: 'review_comments.v1', payload: { ok: true } });
     });
 
+    it('projects a built-in execution-run completion input into the structured renderer envelope', () => {
+        const completion = {
+            v: 1,
+            runId: 'run_1',
+            status: 'succeeded',
+            finishedAtMs: 42,
+            canInspect: true,
+            summary: 'Done',
+        };
+
+        expect(parseHappierMetaEnvelope({
+            happierStructuredInputV1: { v: 1, executionRunCompletion: completion },
+        })).toEqual({ kind: 'execution_run_completion.v1', payload: completion });
+    });
+
     it('preserves optional qualified resource refs while accepting historical envelopes without them', () => {
         expect(parseHappierMetaEnvelope({
             happier: {

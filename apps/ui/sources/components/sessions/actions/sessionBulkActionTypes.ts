@@ -1,5 +1,6 @@
 import type { FeatureDecision } from '@happier-dev/protocol';
 import type { SessionStopRecovery } from '@/sync/ops/sessionStopContract';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import type { SessionFolderWorkspaceRefV1 } from '@/sync/domains/session/folders';
 
@@ -52,7 +53,7 @@ export type SessionBulkActionTarget = Readonly<{
     active?: boolean;
     archived?: boolean;
     pinned?: boolean;
-    hasAdminAccess?: boolean;
+    canUnarchive?: boolean;
     canStop?: boolean;
     canArchive?: boolean;
     canMoveToFolder?: boolean;
@@ -114,7 +115,7 @@ export type SessionBulkTagAssignmentOperation = (
 export type SessionBulkStopAndArchiveOperation = (
     params: Readonly<{
         target: SessionBulkActionTarget;
-        sessionId: string;
+        address: SessionAddress;
         hideInactiveSessions: boolean;
         isPinned: boolean;
         archiveAfterStop: 'always';

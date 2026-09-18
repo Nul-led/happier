@@ -352,6 +352,91 @@ describe('machine direct sessions ops server-scoped routing', () => {
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1);
     });
 
+    it('deletes one Agent-owned candidate through the released method after canonical method-not-found', async () => {
+        // A whitespace-bearing opaque identifier is the Agent's own bytes; the
+        // released hop must not normalize it, and exactly one deletion may reach
+        // the Agent.
+        const opaqueRemoteSessionId = ' provider\nsession-1 ';
+        machineRpcWithServerScopeMock
+            .mockRejectedValueOnce(new RpcError('Method not found', RPC_ERROR_CODES.METHOD_NOT_FOUND))
+            .mockResolvedValueOnce({ ok: true, deleted: true });
+        const { machineExternalSessionCandidateDelete } = await import('./machineExternalSessions');
+
+        await expect(machineExternalSessionCandidateDelete({
+            machineId: 'machine-1',
+            agentId: 'kimi',
+            source: directSource,
+            remoteSessionId: opaqueRemoteSessionId,
+        }, { serverId: 'server-a' })).resolves.toEqual({ ok: true, deleted: true });
+
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(2);
+        expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            method: 'daemon.externalSessions.candidate.delete',
+            payload: {
+                machineId: 'machine-1',
+                agentId: 'kimi',
+                source: directSource,
+                remoteSessionId: opaqueRemoteSessionId,
+            },
+        }));
+        expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
+            method: 'daemon.directSessions.candidate.delete',
+            payload: {
+                machineId: 'machine-1',
+                providerId: 'kimi',
+                source: directSource,
+                remoteSessionId: opaqueRemoteSessionId,
+            },
+        }));
+    });
+
+    it('normalizes the released provider-unavailable delete failure after legacy fallback', async () => {
+        machineRpcWithServerScopeMock
+            .mockRejectedValueOnce(new RpcError('Method not found', RPC_ERROR_CODES.METHOD_NOT_FOUND))
+            .mockResolvedValueOnce({
+                ok: false,
+                errorCode: 'provider_unavailable',
+                error: 'direct_session_provider_unavailable',
+            });
+        const { machineExternalSessionCandidateDelete } = await import('./machineExternalSessions');
+
+        await expect(machineExternalSessionCandidateDelete({
+            machineId: 'machine-1',
+            agentId: 'kimi',
+            source: directSource,
+            remoteSessionId: 'provider-session-1',
+        })).resolves.toEqual({
+            ok: false,
+            errorCode: 'agent_unavailable',
+            error: 'direct_session_provider_unavailable',
+        });
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+        new RpcError('Forbidden', RPC_ERROR_CODES.FORBIDDEN),
+        Object.assign(new Error('Machine RPC timed out'), { code: 'MACHINE_RPC_TIMEOUT' }),
+        new Error('ambiguous transport failure'),
+        createRpcCallError({
+            error: 'RPC method not available',
+            errorCode: 'RPC_METHOD_NOT_AVAILABLE',
+        }),
+    ])('never retries the destructive candidate delete after an inconclusive failure', async (canonicalError) => {
+        // Only METHOD_NOT_FOUND proves the canonical handler never ran. A relay
+        // that answers "method not available", a timeout, or any ambiguous
+        // failure could each have already deleted the Agent's session.
+        machineRpcWithServerScopeMock.mockRejectedValueOnce(canonicalError);
+        const { machineExternalSessionCandidateDelete } = await import('./machineExternalSessions');
+
+        await expect(machineExternalSessionCandidateDelete({
+            machineId: 'machine-1',
+            agentId: 'kimi',
+            source: directSource,
+            remoteSessionId: 'provider-session-1',
+        })).rejects.toBe(canonicalError);
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1);
+    });
+
     it('falls back to the released status method after the released relay reports method unavailable', async () => {
         machineRpcWithServerScopeMock
             .mockRejectedValueOnce(createRpcCallError({

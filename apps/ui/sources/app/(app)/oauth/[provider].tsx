@@ -1,6 +1,8 @@
 import React from 'react';
 import { Linking, Platform, Pressable, View } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import * as WebBrowser from 'expo-web-browser';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -15,9 +17,14 @@ import {
     TokenStorage,
     normalizeAccountDirectoryEndpoint,
     type PendingAccountDirectoryAuth,
+    type AccountHomeAuthenticationContinuation,
+    type PendingExternalAuth,
 } from '@/auth/storage/tokenStorage';
+import { createAccountServiceReturn } from '@/auth/accountDirectory/accountDirectoryNavigation';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { authChallenge } from '@/auth/flows/challenge';
+import { createAuthenticationFailure } from '@/auth/flows/authenticationFailure';
+import { authenticationErrorMessage } from '@/auth/flows/authenticationErrorMessage';
 import {
     createServerFetchAtEndpoint,
     serverFetch,
@@ -25,7 +32,7 @@ import {
 import { isSessionSharingSupported } from '@/sync/api/capabilities/sessionSharingSupport';
 import { getAuthProvider } from '@/auth/providers/registry';
 import { isSafeExternalAuthUrl } from '@/auth/providers/externalAuthUrl';
-import { accountDirectoryAuthClient } from '@/auth/accountDirectory/accountDirectoryAuthClient';
+import { accountDirectoryAuthClient, acquireAccountServiceAuthTransport } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import { buildContentKeyBinding } from '@/auth/oauth/contentKeyBinding';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
@@ -41,383 +48,54 @@ import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import {
-    createAccountDirectoryServiceKey,
-    createAccountDirectorySession,
-    parseAccountDirectoryCapability,
-} from '@/sync/domains/accountDirectory/accountDirectorySession';
-import {
-    cancelPendingPreferredHomeEnrollment,
-} from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
-import { completeAccountServicePostAuth } from '@/auth/accountDirectory/accountDirectoryKeyAuth';
-import {
-    getAccountServiceEndpointSnapshot,
     resolveServerProfileScopeId,
     resolveServerProfileForPortableIdentity,
 } from '@/sync/domains/server/serverProfiles';
 import {
+    cancelAccountPasswordEnrollmentExternalAuth,
+    clearAccountPasswordEnrollmentExternalAuthCustody,
     guardAccountEncryptionFirstKeyCredentialMutation,
+    readAccountPasswordEnrollmentExternalAuthCallbackContext,
+    resumeAccountPasswordEnrollmentExternalAuth,
     resumeAccountEncryptionFirstKeyExternalAuth,
 } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
 import {
     presentFirstKeyCredentialLifecycle,
 } from '@/components/account/presentFirstKeyCredentialLifecycle';
+import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { createManagedIdentityProviderClient } from '@/components/settings/home/identity/managedIdentityProviderClient';
 import {
-    AccountServiceOAuthJourney,
-    type AccountServiceOAuthFailure,
-    type AccountServiceOAuthJourneyState,
-    type AccountServiceOAuthStage,
-    type AccountServiceApprovalOutcome,
-} from '@/components/account/auth/AccountServiceOAuthJourney';
+    consumePendingIdentityProviderTest,
+    recordIdentityProviderTestReturn,
+} from '@/components/settings/home/identity/identityProviderTestReturn';
+import { consumePendingGitHubAppManifestSetup, consumePendingGitHubAppVerification } from '@/components/settings/home/githubApps/githubAppOAuthReturn';
+import { homeAdministrationGitHubAppPath } from '@/components/settings/home/governance/homeAdministrationRoutes';
+import { teamGitHubAppPath } from '@/components/settings/teams/teamsRoutes';
+import { teamSignInReturnPath } from '@/components/teams/entry/teamSignInHome';
+import {
+    isTeamAuthenticationFailureCode,
+    presentTeamAuthenticationFailure,
+    type TeamAuthenticationFailureCode,
+} from '@/components/teams/entry/teamAuthenticationFailure';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { TeamInvitationPostAuthContinuationV1Schema } from '@happier-dev/protocol/teams';
+type AccountDirectoryCallbackStage = 'signing_in';
+type AccountDirectoryCallbackState = Readonly<{ providerName: string; endpointUrl: string }> & (
+    | Readonly<{ kind: 'progress'; stage: AccountDirectoryCallbackStage }>
+    | Readonly<{ kind: 'error'; failure: string; signedIn: boolean }>
+);
 
 const ACCOUNT_ENCRYPTION_FIRST_KEY_PURPOSE =
     'account_encryption_first_key';
+const ACCOUNT_PASSWORD_ENROLLMENT_PURPOSE =
+    'account_password_enrollment';
 const ACCOUNT_DIRECTORY_PURPOSE = 'account_directory';
-
-type AccountDirectoryOAuthReturnInput = Readonly<{
-    providerId: string;
-    purpose: string | null;
-    credentialTarget: string | null;
-    endpointUrl: string | null;
-    serverIdentityId: string | null;
-    canonicalServerUrl: string | null;
-    pendingKey: string;
-    mode: string | null;
-    pending: PendingAccountDirectoryAuth | null;
-    signal?: AbortSignal;
-    onStage?: (stage: AccountServiceOAuthStage) => void;
-    onCredentialCommitStarted?: () => void;
-}>;
-
-type AccountDirectoryOAuthReturnResult = Readonly<{
-    ok: boolean;
-    returnTo: string;
-    error?: string;
-    preservePending?: boolean;
-    signedIn?: boolean;
-    /**
-     * The Home requires an approval decision and this requester holds only the restricted Account
-     * Service credential, so the entry journey keeps waiting here instead of routing to
-     * authenticated Home settings.
-     */
-    awaitingApproval?: true;
-    /** The authenticated Settings caller can continue in the existing Home approval surface. */
-    continueApprovalInSettings?: true;
-}>;
+const IDENTITY_CONNECTION_TEST_PURPOSE = 'identity_connection_test';
+const GITHUB_APP_INSTALLATION_VERIFICATION_PURPOSE = 'github_app_installation_verification';
+const GITHUB_APP_MANIFEST_SETUP_PURPOSE = 'github_app_manifest_setup';
 
 function normalizeAccountDirectoryIdentityParam(value: string | null): string | null {
-    const normalized = String(value ?? '').trim();
-    return normalized || null;
-}
-
-/**
- * Complete a Directory OAuth continuation against the endpoint captured in
- * the dedicated pending record.  This helper deliberately has no AuthContext,
- * active-server, or focus dependencies.
- */
-async function finalizeAccountDirectoryOAuthReturn(
-    input: AccountDirectoryOAuthReturnInput,
-): Promise<AccountDirectoryOAuthReturnResult> {
-    const cancelled = (): AccountDirectoryOAuthReturnResult => ({
-        ok: false,
-        returnTo: '/settings/account',
-        error: 'cancelled',
-        preservePending: true,
-    });
-    const pending = input.pending;
-    const endpoint = normalizeAccountDirectoryEndpoint(input.endpointUrl ?? '');
-    const callbackIdentity = normalizeAccountDirectoryIdentityParam(input.serverIdentityId);
-    const pendingEndpoint = pending
-        ? normalizeAccountDirectoryEndpoint(pending.endpoint)
-        : null;
-    const pendingIdentity = pending
-        ? normalizeAccountDirectoryIdentityParam(pending.serverIdentityId ?? null)
-        : null;
-    const callbackCanonicalServerUrl = normalizeAccountDirectoryEndpoint(input.canonicalServerUrl ?? '');
-    const pendingCanonicalServerUrl = pending
-        ? normalizeAccountDirectoryEndpoint(pending.canonicalServerUrl)
-        : null;
-    const callbackPendingKey = input.pendingKey.trim();
-    const persistedPendingKey = pending?.pending?.trim() ?? '';
-    const returnTo = normalizeInternalReturnPath(pending?.returnTo) ?? '/settings/account';
-    const callbackServiceKey = endpoint && callbackIdentity
-        ? createAccountDirectoryServiceKey({ endpoint, serverIdentityId: callbackIdentity })
-        : null;
-    const isSelectedService = () => {
-        const selected = getAccountServiceEndpointSnapshot();
-        return Boolean(
-            callbackServiceKey
-            && selected
-            && createAccountDirectoryServiceKey({
-                endpoint: selected.url,
-                serverIdentityId: selected.serverIdentityId,
-            }) === callbackServiceKey
-        );
-    };
-    const isCancelled = () => input.signal?.aborted === true || !isSelectedService();
-
-    // Purpose, endpoint, identity, provider, and pending handle are all bound
-    // to the server-created continuation.  Any mismatch is rejected before a
-    // request or credential write can occur.
-    if (
-        input.purpose !== ACCOUNT_DIRECTORY_PURPOSE
-        || input.credentialTarget !== ACCOUNT_DIRECTORY_PURPOSE
-        || !endpoint
-        || !pending
-        || !pendingEndpoint
-        || pendingEndpoint !== endpoint
-        || !pendingIdentity
-        || !callbackIdentity
-        || pendingIdentity !== callbackIdentity
-        || !callbackCanonicalServerUrl
-        || !pendingCanonicalServerUrl
-        || pendingCanonicalServerUrl !== callbackCanonicalServerUrl
-        || pending.provider.trim().toLowerCase() !== input.providerId
-        || pending.purpose !== ACCOUNT_DIRECTORY_PURPOSE
-        || (pending.entryIntent !== 'enter_preferred_home' && pending.entryIntent !== 'connect_service')
-        || (input.mode !== 'keyed' && input.mode !== 'keyless')
-        || pending.mode !== input.mode
-        || !callbackPendingKey
-        || (
-            persistedPendingKey.length > 0
-            && persistedPendingKey !== callbackPendingKey
-        )
-        || !isSelectedService()
-    ) {
-        return { ok: false, returnTo, error: 'invalid-pending', preservePending: true };
-    }
-    if (Date.now() >= pending.expiresAt) {
-        return { ok: false, returnTo, error: 'request-expired' };
-    }
-    if (isCancelled()) return cancelled();
-
-    // The callback can outlive endpoint reconfiguration. Re-probe the exact URL
-    // before exchanging or persisting authority and require the same stable
-    // Account Service identity captured by the pending continuation.
-    let observedCapability: ReturnType<typeof parseAccountDirectoryCapability> = null;
-    input.onStage?.('verifying_service');
-    try {
-        const observed = await accountDirectoryAuthClient.verifyEndpoint({
-            endpointUrl: endpoint,
-            expectedServerIdentityId: callbackIdentity,
-        });
-        if (observed.kind === 'identity_mismatch') {
-            return { ok: false, returnTo, error: 'identity-changed', preservePending: true };
-        }
-        if (observed.kind !== 'verified_endpoint') {
-            return { ok: false, returnTo, error: 'service-unavailable', preservePending: true };
-        }
-        if (observed.canonicalServerUrl !== callbackCanonicalServerUrl) {
-            return { ok: false, returnTo, error: 'canonical-url-changed', preservePending: true };
-        }
-        observedCapability = observed.capability;
-    } catch {
-        return { ok: false, returnTo, error: 'service-unavailable', preservePending: true };
-    }
-    if (isCancelled()) return cancelled();
-
-    const mode = pending.mode;
-    const fetchAtEndpoint = createServerFetchAtEndpoint({
-        endpointUrl: endpoint,
-        ...(callbackIdentity ? { serverId: callbackIdentity } : {}),
-        credentials: null,
-    });
-
-    let payload: Record<string, string>;
-    let path: string;
-    if (mode === 'keyless') {
-        if (!pending.proof) {
-            return { ok: false, returnTo, error: 'invalid-pending' };
-        }
-        path = `/v1/auth/external/${encodeURIComponent(input.providerId)}/finalize-keyless`;
-        payload = {
-            pending: callbackPendingKey,
-            proof: pending.proof,
-        };
-    } else {
-        if (!pending.secret) {
-            return { ok: false, returnTo, error: 'invalid-pending' };
-        }
-        let secretBytes: Uint8Array;
-        try {
-            secretBytes = decodeBase64(pending.secret, 'base64url');
-        } catch {
-            return { ok: false, returnTo, error: 'invalid-pending' };
-        }
-        const { challenge, signature, publicKey } = authChallenge(secretBytes);
-        path = `/v1/auth/external/${encodeURIComponent(input.providerId)}/finalize`;
-        payload = {
-            pending: callbackPendingKey,
-            publicKey: encodeBase64(publicKey),
-            challenge: encodeBase64(challenge),
-            signature: encodeBase64(signature),
-            ...(pending.proof ? { proof: pending.proof } : {}),
-        };
-    }
-
-    let response: Response;
-    input.onStage?.('signing_in');
-    try {
-        response = await fetchAtEndpoint(
-            path,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-                signal: input.signal,
-            },
-            { includeAuth: false, retry: 'none' },
-        );
-    } catch {
-        return { ok: false, returnTo, error: 'token-exchange-failed' };
-    }
-    if (isCancelled()) return cancelled();
-    const json = await response.json().catch(() => ({}));
-    if (isCancelled()) return cancelled();
-    const token =
-        json
-        && typeof json === 'object'
-        && !Array.isArray(json)
-        && typeof (json as { token?: unknown }).token === 'string'
-            ? (json as { token: string }).token.trim()
-            : '';
-    if (!response.ok || !token) {
-        const serverError =
-            json
-            && typeof json === 'object'
-            && !Array.isArray(json)
-            && typeof (json as { error?: unknown }).error === 'string'
-                ? (json as { error: string }).error
-                : 'token-exchange-failed';
-        return { ok: false, returnTo, error: serverError };
-    }
-
-    const target = {
-        endpoint,
-        serverIdentityId: callbackIdentity,
-    };
-    if (isCancelled()) return cancelled();
-    input.onCredentialCommitStarted?.();
-    input.onStage?.('saving_credentials');
-    const stored = await TokenStorage.accountDirectoryAuthCredentials
-        .set(target, { token });
-    if (!stored) {
-        return { ok: false, returnTo, error: 'credential-storage-failed' };
-    }
-    if (isCancelled()) return { ...cancelled(), signedIn: true };
-    await TokenStorage.clearPendingAccountDirectoryAuth(target);
-    // Credential persistence is the commit boundary. A failed best-effort
-    // cleanup must not misreport that successful sign-in as unsaved; the
-    // short-lived continuation remains unusable server-side and expires.
-    input.onStage?.('signed_in');
-    if (isCancelled()) return { ...cancelled(), signedIn: true };
-
-    // The callback is only the transitional Account Service UI coordinator;
-    // the shared post-auth owner performs discovery, linking, enrollment and
-    // approval continuation without giving this route a second domain owner.
-    if (observedCapability?.homeDirectory !== true) {
-        input.onStage?.('account_service_connected');
-        return { ok: true, returnTo, signedIn: true };
-    }
-    const session = createAccountDirectorySession(target, { capability: observedCapability });
-    input.onStage?.('finding_homes');
-    let postAuth: Awaited<ReturnType<typeof completeAccountServicePostAuth>>;
-    try {
-        postAuth = await completeAccountServicePostAuth(session, {
-            entryIntent: pending.entryIntent,
-            shouldCancel: isCancelled,
-            shouldInvalidateContinuation: () => !isSelectedService(),
-            ...(pending.homeServerIdentityId
-                ? {
-                    homeServerIdentityId: pending.homeServerIdentityId,
-                    issuerServerIdentityId: callbackIdentity,
-                    capability: observedCapability,
-                }
-                : {}),
-        });
-        if (isCancelled()) {
-            if (
-                postAuth.enrollment?.kind === 'approval_required'
-                && !isSelectedService()
-            ) {
-                await cancelPendingPreferredHomeEnrollment(postAuth.enrollment);
-            }
-            return { ...cancelled(), signedIn: true };
-        }
-        if (postAuth.failure === 'home_link_failed') {
-            return { ok: false, returnTo, error: 'home-link-provisioning-failed', signedIn: true };
-        }
-        if (postAuth.failure === 'directory_refresh_failed') {
-            return { ok: false, returnTo, error: 'directory-refresh-failed', signedIn: true };
-        }
-        if (postAuth.failure === 'home_enrollment_failed') {
-            return { ok: false, returnTo, error: 'home-enrollment-failed', signedIn: true };
-        }
-        if (postAuth.snapshot.status !== 'ready') {
-            return { ok: false, returnTo, error: 'directory-refresh-failed', signedIn: true };
-        }
-    } catch {
-        if (isCancelled()) return { ...cancelled(), signedIn: true };
-        return { ok: false, returnTo, error: 'directory-refresh-failed', signedIn: true };
-    }
-    if (isCancelled()) return { ...cancelled(), signedIn: true };
-    if (observedCapability.homeEnrollment !== true) {
-        input.onStage?.('account_service_connected');
-        return { ok: true, returnTo, signedIn: true };
-    }
-
-    input.onStage?.('connecting_home');
-    const enrollment = postAuth.enrollment;
-    if (!enrollment) {
-        return { ok: false, returnTo, error: 'home-enrollment-failed', signedIn: true };
-    }
-    if (enrollment.kind === 'approval_required') {
-        // The enrollment owner has already published a detached continuation.
-        // Normal callback unmount/abort must not discard it. A real Account
-        // Service change explicitly cancels the detached continuation.
-        if (!isSelectedService()) {
-            await cancelPendingPreferredHomeEnrollment(enrollment);
-            return { ...cancelled(), signedIn: true };
-        }
-        input.onStage?.('waiting_approval');
-        // An authenticated Settings requester continues in the Home approval surface it can
-        // already reach. An unauthenticated entry requester has no Home credential yet, so it
-        // waits and resumes here.
-        return pending.entryIntent === 'enter_preferred_home'
-            ? { ok: true, returnTo, signedIn: true, awaitingApproval: true }
-            : {
-                ok: true,
-                returnTo: '/settings/server',
-                signedIn: true,
-                continueApprovalInSettings: true,
-            };
-    }
-    if (enrollment.kind === 'enrolled') {
-        // Credential adoption has already completed for the immutable Home, but a superseded
-        // Account Service no longer owns the entry journey. Focus authority for the semantic
-        // intent belongs to the enrollment owner (which rechecks the bound service for the
-        // approval-resume path too); this attempt still stops reporting/navigating for a service
-        // it no longer represents.
-        if (!isSelectedService()) return { ...cancelled(), signedIn: true };
-        const applied = postAuth.entryIntentOutcome ?? 'blocked';
-        if (applied === 'superseded') return { ...cancelled(), signedIn: true };
-        if (applied === 'blocked') {
-            return { ok: false, returnTo, error: 'home-enrollment-failed', signedIn: true };
-        }
-        input.onStage?.('home_added');
-        return { ok: true, returnTo, signedIn: true };
-    }
-    if (enrollment.kind === 'partial_commit') {
-        return { ok: false, returnTo, error: 'home-enrollment-failed', signedIn: true };
-    }
-    if (isCancelled()) return { ...cancelled(), signedIn: true };
-    if (
-        enrollment.kind === 'unavailable'
-        && enrollment.reason === 'no_preferred_home'
-    ) {
-        input.onStage?.('account_service_connected');
-        return { ok: true, returnTo, signedIn: true };
-    }
-    return { ok: false, returnTo, error: 'home-enrollment-failed', signedIn: true };
+    return String(value ?? '').trim() || null;
 }
 
 async function guardOrdinaryAuthIngress(
@@ -492,20 +170,6 @@ export function sanitizeExternalOAuthCallbackError(
             return t('errors.oauthStateMismatch');
         default:
             return t('errors.operationFailed');
-    }
-}
-
-function mapAccountDirectoryFailure(code: string): AccountServiceOAuthFailure {
-    switch (code) {
-        case 'request-expired': return 'request_expired';
-        case 'identity-changed': return 'identity_changed';
-        case 'service-unavailable': return 'service_unavailable';
-        case 'credential-storage-failed': return 'credential_storage_failed';
-        case 'home-link-provisioning-failed': return 'home_link_failed';
-        case 'directory-refresh-failed': return 'directory_refresh_failed';
-        case 'home-enrollment-failed': return 'home_enrollment_failed';
-        case 'invalid-pending': return 'invalid_request';
-        default: return 'token_exchange_failed';
     }
 }
 
@@ -592,7 +256,7 @@ async function maybeActivateServerTarget(
     });
 }
 
-export default function OAuthProviderReturn() {
+function OAuthProviderReturnBody() {
     const router = useRouter();
     const params = useLocalSearchParams() as any;
     const auth = useAuth();
@@ -603,16 +267,22 @@ export default function OAuthProviderReturn() {
     const [usernameValue, setUsernameValue] = React.useState<string>('');
     const [provisioningChoiceOpen, setProvisioningChoiceOpen] = React.useState(false);
     const [accountDirectoryJourney, setAccountDirectoryJourney] =
-        React.useState<AccountServiceOAuthJourneyState | null>(null);
-    const [accountDirectoryCompletionReturnTo, setAccountDirectoryCompletionReturnTo] =
-        React.useState<string | null>(null);
-    const [accountDirectoryApprovalReturnTo, setAccountDirectoryApprovalReturnTo] =
-        React.useState<string | null>(null);
+        React.useState<AccountDirectoryCallbackState | null>(null);
     const [persistedAccountDirectoryReturn, setPersistedAccountDirectoryReturn] =
         React.useState(false);
+    /**
+     * A typed Team answer from finalize. It is presented in place, in Team
+     * terms, with the exact Home-qualified Team page as the way forward; the
+     * Team context is never collapsed into a generic alert and the Home root.
+     */
+    const [teamFailure, setTeamFailure] = React.useState<Readonly<{
+        code: TeamAuthenticationFailureCode;
+        returnTo: string;
+    }> | null>(null);
     const accountDirectoryAttemptRef = React.useRef<null | Readonly<{
         controller: AbortController;
         target: Readonly<{ endpoint: string; serverIdentityId: string }> | null;
+        pending: PendingAccountDirectoryAuth | null;
         returnTo: string;
     }>>(null);
     const accountDirectoryCredentialCommitStartedRef = React.useRef(false);
@@ -623,6 +293,9 @@ export default function OAuthProviderReturn() {
         proof: string | null;
         secret: string | null;
         intent: 'signup' | 'reset' | null;
+        accountContinuation?: AccountHomeAuthenticationContinuation;
+        teamContinuation?: NonNullable<PendingExternalAuth['teamContinuation']>;
+        continuationCustody?: Readonly<{ pending: PendingExternalAuth; signal: AbortSignal }>;
         returnTo: string;
         serverUrl?: string;
         serverId?: string;
@@ -644,12 +317,18 @@ export default function OAuthProviderReturn() {
     const resolvedPending = paramString(params, 'pending') ?? '';
     const resolvedLogin = paramString(params, 'login') ?? '';
     const resolvedReason = paramString(params, 'reason');
+    const resolvedAdmissionReference = paramString(params, 'admissionReference');
+    const resolvedConnectUsername = paramString(params, 'username');
     const resolvedMode = paramString(params, 'mode');
     const resolvedStoragePolicy = paramString(params, 'storagePolicy');
     const resolvedProvisioning = paramString(params, 'provisioning');
     const resolvedProvisioningModes = paramString(params, 'provisioningModes');
     const resolvedAccountMode = paramString(params, 'accountMode');
     const resolvedPurpose = paramString(params, 'purpose');
+    const resolvedResultHandle = paramString(params, 'resultHandle');
+    const resolvedRegistrationId = paramString(params, 'registrationId');
+    const resolvedInstallationVerified = paramString(params, 'verified');
+    const resolvedManifestCreated = paramString(params, 'created');
     const resolvedCredentialTarget = paramString(params, 'credentialTarget');
     const resolvedEndpointUrl =
         paramString(params, 'endpointUrl')
@@ -663,6 +342,22 @@ export default function OAuthProviderReturn() {
         resolvedPurpose === ACCOUNT_DIRECTORY_PURPOSE
         || resolvedCredentialTarget === ACCOUNT_DIRECTORY_PURPOSE;
 
+    const returnHomeAuthenticationRequired = React.useCallback(async (ctx: NonNullable<typeof pendingAuthContextRef.current>) => {
+        if (!ctx.accountContinuation || !ctx.continuationCustody) return false;
+        const custody = ctx.continuationCustody;
+        if (custody.signal.aborted || !await TokenStorage.isPendingExternalAuthContinuationCurrent(custody.pending)) return true;
+        const destination = createAccountServiceReturn(ctx.accountContinuation);
+        if (!destination) return true;
+        await TokenStorage.clearPendingExternalAuth({ serverUrl: custody.pending.serverUrl!, serverId: custody.pending.serverId });
+        if (custody.signal.aborted) return true;
+        if (!await TokenStorage.recordAccountDirectoryOAuthReturn({ ...ctx.accountContinuation,
+            homeAuthenticationFailure: { homeServerIdentityId: ctx.accountContinuation.homeServerIdentityId, code: 'restore_required' },
+        }, { expectedCredentialTokenDigest: ctx.accountContinuation.credentialTokenDigest })) return true;
+        pendingAuthContextRef.current = null;
+        router.replace(destination);
+        return true;
+    }, [router]);
+
     const finalizeAuth = React.useCallback((params: { mode: 'plain' | 'e2ee' }) => {
         const ctx = pendingAuthContextRef.current;
         if (!ctx) {
@@ -672,7 +367,24 @@ export default function OAuthProviderReturn() {
 
         const promise = (async () => {
             setBusy(true);
+            let closeTransport = async () => {};
+            let continuationPending = ctx.continuationCustody?.pending;
+            const ownsContinuation = async () => (!ctx.accountContinuation && !ctx.teamContinuation) || Boolean(
+                continuationPending && ctx.continuationCustody && !ctx.continuationCustody.signal.aborted
+                && await TokenStorage.isPendingExternalAuthContinuationCurrent(continuationPending),
+            );
+            // A Team-scoped attempt fails back to the exact Home-qualified Team
+            // page it started from; only an ordinary Home attempt falls to the root.
+            const failureReturnTo = ctx.teamContinuation ? ctx.returnTo : '/';
+            const clearTeamContinuationCustody = async () => {
+                await TokenStorage.clearPendingExternalAuth(continuationPending ? {
+                    removeExact: continuationPending,
+                    ...(ctx.serverUrl ? { serverUrl: ctx.serverUrl } : {}),
+                    ...(ctx.serverId ? { serverId: ctx.serverId } : {}),
+                } : {});
+            };
             try {
+                if (!await ownsContinuation()) return;
                 if (params.mode === 'plain' && !ctx.proof) {
                     await Modal.alert(t('common.error'), t('errors.oauthInitializationFailed'));
                     await TokenStorage.clearPendingExternalAuth();
@@ -694,6 +406,8 @@ export default function OAuthProviderReturn() {
                             ...(ctx.serverUrl ? { serverUrl: ctx.serverUrl } : {}),
                             ...(ctx.serverId ? { serverId: ctx.serverId } : {}),
                             ...(ctx.returnTo ? { returnTo: ctx.returnTo } : {}),
+                            ...(ctx.accountContinuation ? { accountContinuation: ctx.accountContinuation } : {}),
+                            ...(ctx.teamContinuation ? { teamContinuation: ctx.teamContinuation } : {}),
                         }, ctx.serverUrl ? {
                             serverUrl: ctx.serverUrl,
                             ...(ctx.serverId ? { serverId: ctx.serverId } : {}),
@@ -714,9 +428,18 @@ export default function OAuthProviderReturn() {
                         return;
                     }
                     pendingAuthContextRef.current = { ...ctx, secret };
+                    if (continuationPending) continuationPending = { ...continuationPending, secret };
                 }
 
                 const base = typeof ctx.serverUrl === 'string' ? ctx.serverUrl.trim().replace(/\/+$/, '') : '';
+                const acquired = ctx.accountContinuation
+                    ? await acquireAccountServiceAuthTransport({
+                        serverIdentityId: ctx.accountContinuation.homeServerIdentityId,
+                        canonicalServerUrl: base,
+                    })
+                    : null;
+                if (acquired) closeTransport = acquired.close;
+                if (!await ownsContinuation()) return;
                 const finalizePath =
                     params.mode === 'plain'
                         ? `/v1/auth/external/${encodeURIComponent(ctx.providerId)}/finalize-keyless`
@@ -724,6 +447,8 @@ export default function OAuthProviderReturn() {
                 const request = base
                     ? createServerFetchAtEndpoint({
                         endpointUrl: base,
+                        ...acquired?.transport,
+                        runtimeOrigin: acquired?.transport.runtimeOrigin ?? undefined,
                         ...(ctx.serverId ? { serverId: ctx.serverId } : {}),
                     })
                     : serverFetch;
@@ -755,7 +480,6 @@ export default function OAuthProviderReturn() {
                 if (params.mode === 'e2ee') {
                     const secretBytes = decodeBase64(secret!, 'base64url');
                     const supportsSharing = await isSessionSharingSupported({
-                        timeoutMs: 800,
                         ...(ctx.serverId ? { serverId: ctx.serverId } : {}),
                     });
                     if (supportsSharing) {
@@ -769,10 +493,51 @@ export default function OAuthProviderReturn() {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
+                    ...(ctx.continuationCustody ? { signal: ctx.continuationCustody.signal } : {}),
                 }, { includeAuth: false, retry: 'none' });
                 const json = await response.json().catch(() => ({}));
+                if (!await ownsContinuation()) return;
 
                 if (response.ok && json?.token) {
+                    // The invitation continuation is the exception: the Home sends
+                    // it only for a first-time invitation redemption. Every other
+                    // Team-scoped admission (existing member, JIT, provisioned)
+                    // answers with the credential alone, and that credential is
+                    // committed like any other. Same contract as the mTLS return.
+                    let retainPostAuthInvitation = false;
+                    if (json.teamInvitationContinuation !== undefined) {
+                        const parsed = TeamInvitationPostAuthContinuationV1Schema.safeParse(
+                            json.teamInvitationContinuation,
+                        );
+                        if (!ctx.teamContinuation
+                            || !parsed.success
+                            || parsed.data.reference !== ctx.pending
+                            || parsed.data.teamId !== ctx.teamContinuation.teamId
+                        ) {
+                            await Modal.alert(t('common.error'), t('errors.oauthStateMismatch'));
+                            await clearTeamContinuationCustody();
+                            pendingAuthContextRef.current = null;
+                            router.replace(failureReturnTo);
+                            return;
+                        }
+                        if (!ctx.serverUrl) return;
+                        const updatedPending = await TokenStorage.recordTeamInvitationPostAuthContinuation(
+                            continuationPending!,
+                            parsed.data,
+                            {
+                                serverUrl: ctx.serverUrl,
+                                ...(ctx.serverId ? { serverId: ctx.serverId } : {}),
+                            },
+                        );
+                        if (!updatedPending) {
+                            await Modal.alert(t('common.error'), t('errors.oauthStateMismatch'));
+                            pendingAuthContextRef.current = null;
+                            router.replace(failureReturnTo);
+                            return;
+                        }
+                        continuationPending = updatedPending;
+                        retainPostAuthInvitation = true;
+                    }
                     const persistenceOptions = base ? {
                         target: {
                             serverUrl: base,
@@ -792,20 +557,41 @@ export default function OAuthProviderReturn() {
                                     ? await auth.login(String(json.token), secret!, persistenceOptions)
                                     : await auth.login(String(json.token), secret!),
                         onCompleted: async () => {
-                            await TokenStorage.clearPendingExternalAuth();
+                            if (!await ownsContinuation()) return;
+                            // Only a retained invitation continuation keeps the
+                            // pending record; the Team page claims it exactly once.
+                            if (!ctx.teamContinuation) {
+                                await TokenStorage.clearPendingExternalAuth();
+                            } else if (!retainPostAuthInvitation) {
+                                await clearTeamContinuationCustody();
+                            }
                             pendingAuthContextRef.current = null;
                             setUsernameHint(null);
                             setProvisioningChoiceOpen(false);
-                            await maybeActivateServerTarget(
-                                ctx.serverUrl,
-                                ctx.serverId,
-                                auth.refreshFromActiveServer,
-                            );
+                            if (ctx.accountContinuation) {
+                                const destination = createAccountServiceReturn(ctx.accountContinuation);
+                                if (!destination) throw new Error('Invalid Home authentication return');
+                                if (!await TokenStorage.recordAccountDirectoryOAuthReturn({ ...ctx.accountContinuation,
+                                    authenticatedHome: { homeServerIdentityId: ctx.accountContinuation.homeServerIdentityId,
+                                        credentials: params.mode === 'plain' ? { token: String(json.token) } : { token: String(json.token), secret: secret! } },
+                                }, { expectedCredentialTokenDigest: ctx.accountContinuation.credentialTokenDigest })) {
+                                    throw new Error('Account Service credential custody changed');
+                                }
+                                router.replace(destination);
+                                return;
+                            }
+                            await maybeActivateServerTarget(ctx.serverUrl, ctx.serverId, auth.refreshFromActiveServer);
                             trackSuccessfulOAuthAuth({
                                 secret,
                                 intent: ctx.intent,
                             });
-                            router.replace(ctx.returnTo);
+                            router.replace(ctx.teamContinuation && retainPostAuthInvitation
+                                ? teamSignInReturnPath({
+                                    teamId: ctx.teamContinuation.destination.teamId,
+                                    carrier: ctx.teamContinuation.homeServerIdentityId,
+                                    postAuthInvitation: true,
+                                })
+                                : ctx.returnTo);
                         },
                     });
                     return;
@@ -819,6 +605,7 @@ export default function OAuthProviderReturn() {
                     return;
                 }
                 if (err === 'restore-required') {
+                    if (await returnHomeAuthenticationRequired(ctx)) return;
                     await TokenStorage.clearPendingExternalAuth();
                     pendingAuthContextRef.current = null;
                     router.replace('/restore');
@@ -833,21 +620,31 @@ export default function OAuthProviderReturn() {
                     await Modal.alert(t('common.error'), t('errors.oauthStateMismatch'));
                     await TokenStorage.clearPendingExternalAuth();
                     pendingAuthContextRef.current = null;
-                    router.replace('/');
+                    router.replace(failureReturnTo);
+                    return;
+                }
+                if (ctx.teamContinuation && isTeamAuthenticationFailureCode(err)) {
+                    await clearTeamContinuationCustody();
+                    pendingAuthContextRef.current = null;
+                    setTeamFailure({ code: err, returnTo: ctx.returnTo });
                     return;
                 }
 
-                await Modal.alert(t('common.error'), mapFinalizeErrorToMessage(err));
+                const failure = createAuthenticationFailure(response.status, json);
+                await Modal.alert(t('common.error'), failure.code
+                    ? authenticationErrorMessage(failure, ctx.serverUrl) ?? mapFinalizeErrorToMessage(err)
+                    : mapFinalizeErrorToMessage(err));
                 await TokenStorage.clearPendingExternalAuth();
                 pendingAuthContextRef.current = null;
-                router.replace('/');
+                router.replace(failureReturnTo);
             } finally {
+                await closeTransport();
                 setBusy(false);
             }
         })();
         fireAndForget(promise, { tag: 'OAuthProviderReturn.finalizeAuth' });
         return promise;
-    }, [auth, router]);
+    }, [auth, router, returnHomeAuthenticationRequired]);
 
     const submitUsername = React.useCallback(() => {
         const ctx = pendingAuthContextRef.current;
@@ -940,6 +737,22 @@ export default function OAuthProviderReturn() {
         const reasonFromParams = resolvedReason;
         const loginFn = auth.login;
         const credentialsFromAuth = auth.credentials;
+        // Claim the live ceremony during this effect setup, before the
+        // originating Settings screen's deferred unmount cleanup runs.
+        // No secret leaves the process-local owner.
+        const passwordEnrollmentCallbackContext =
+            flow === 'auth'
+                && providerId
+                && (
+                    resolvedPurpose === ACCOUNT_PASSWORD_ENROLLMENT_PURPOSE
+                    || resolvedPurpose === null
+                )
+                ? readAccountPasswordEnrollmentExternalAuthCallbackContext(
+                    providerId,
+                )
+                : null;
+        let retireClaimedPasswordEnrollmentOnDispose =
+            passwordEnrollmentCallbackContext !== null;
 
         let disposed = false;
         const controller = new AbortController();
@@ -959,9 +772,103 @@ export default function OAuthProviderReturn() {
         };
 
         fireAndForget((async () => {
-            const directoryCustody = providerId
-                ? await TokenStorage.resolvePendingAccountDirectoryAuthCustody(providerId)
-                : { kind: 'absent' as const };
+            if (resolvedPurpose === GITHUB_APP_MANIFEST_SETUP_PURPOSE) {
+                const pendingSetup = consumePendingGitHubAppManifestSetup();
+                if (!pendingSetup || !resolvedRegistrationId || resolvedManifestCreated !== '1' || error) {
+                    await Modal.alertAsync(t('common.error'), t('identityAdministration.error'));
+                    safeReplace('/settings');
+                    return;
+                }
+                safeReplace(pendingSetup.kind === 'home'
+                    ? homeAdministrationGitHubAppPath(pendingSetup.serverId, resolvedRegistrationId)
+                    : teamGitHubAppPath(
+                        { serverId: pendingSetup.serverId, teamId: pendingSetup.teamId },
+                        resolvedRegistrationId,
+                    ));
+                return;
+            }
+            if (resolvedPurpose === GITHUB_APP_INSTALLATION_VERIFICATION_PURPOSE) {
+                const pendingVerification = resolvedRegistrationId
+                    ? consumePendingGitHubAppVerification(resolvedRegistrationId)
+                    : null;
+                const fallback = pendingVerification?.returnTo ?? '/settings';
+                if (!pendingVerification || error || resolvedInstallationVerified !== '1') {
+                    await Modal.alertAsync(t('common.error'), t('identityAdministration.error'));
+                }
+                safeReplace(fallback);
+                return;
+            }
+            if (resolvedPurpose === IDENTITY_CONNECTION_TEST_PURPOSE) {
+                const pendingTest = consumePendingIdentityProviderTest(providerId);
+                const fallback = pendingTest?.returnTo ?? '/settings';
+                if (!pendingTest) {
+                    await Modal.alertAsync(t('common.error'), t('identityAdministration.error'));
+                    safeReplace(fallback);
+                    return;
+                }
+                if (!resolvedResultHandle || error) {
+                    recordIdentityProviderTestReturn(pendingTest, {
+                        kind: 'failed',
+                        code: error ?? 'identity_connection_test_invalid',
+                    });
+                    safeReplace(fallback);
+                    return;
+                }
+                const scope = createServerAccountScope(pendingTest.serverId, pendingTest.accountId);
+                if (!scope) {
+                    recordIdentityProviderTestReturn(pendingTest, {
+                        kind: 'failed',
+                        code: 'identity_connection_test_invalid',
+                    });
+                    safeReplace(fallback);
+                    return;
+                }
+                const actionInput = {
+                    owner: { kind: 'home' as const },
+                    id: pendingTest.providerId,
+                    resultHandle: resolvedResultHandle,
+                };
+                const result = await createManagedIdentityProviderClient(scope).execute(
+                    'identity.providers.test.consume',
+                    actionInput,
+                    { signal: controller.signal },
+                );
+                if (result.kind === 'failed') {
+                    recordIdentityProviderTestReturn(pendingTest, {
+                        kind: 'failed',
+                        code: result.failure.code,
+                    });
+                } else if (result.kind === 'approval_pending') {
+                    recordIdentityProviderTestReturn(pendingTest, {
+                        kind: 'approval_pending',
+                        artifactId: result.artifactId,
+                        actionId: 'identity.providers.test.consume',
+                        scope,
+                    });
+                } else {
+                    recordIdentityProviderTestReturn(pendingTest, {
+                        kind: 'completed',
+                        diagnostics: result.value.diagnostics ?? null,
+                    });
+                }
+                safeReplace(fallback);
+                return;
+            }
+            const callbackDirectoryEndpoint = normalizeAccountDirectoryEndpoint(resolvedEndpointUrl ?? '');
+            const callbackDirectoryIdentity = normalizeAccountDirectoryIdentityParam(resolvedEndpointIdentity);
+            const exactCallbackDirectoryTarget = callbackDirectoryEndpoint && callbackDirectoryIdentity
+                ? { endpoint: callbackDirectoryEndpoint, serverIdentityId: callbackDirectoryIdentity }
+                : null;
+            const exactCallbackPending = resolvedDirectoryReturn && exactCallbackDirectoryTarget
+                ? await TokenStorage.getPendingAccountDirectoryAuth(exactCallbackDirectoryTarget, { includeExpired: true })
+                : null;
+            const directoryCustody = exactCallbackPending
+                ? { kind: 'matched' as const, pending: exactCallbackPending }
+                : resolvedDirectoryReturn && !exactCallbackDirectoryTarget && providerId
+                    ? await TokenStorage.resolvePendingAccountDirectoryAuthCustody(providerId)
+                    : resolvedDirectoryReturn
+                        ? { kind: 'corrupt' as const }
+                        : { kind: 'absent' as const };
             const custodyPending = directoryCustody.kind === 'matched'
                 ? directoryCustody.pending
                 : null;
@@ -1005,18 +912,17 @@ export default function OAuthProviderReturn() {
                 accountDirectoryAttemptRef.current = {
                     controller,
                     target: directoryTarget,
+                    pending: pendingDirectoryAuth,
                     returnTo: directoryReturnTo,
                 };
                 accountDirectoryCredentialCommitStartedRef.current = false;
-                setAccountDirectoryCompletionReturnTo(null);
-                setAccountDirectoryApprovalReturnTo(null);
                 const safeSetDirectoryJourney = (
-                    state: AccountServiceOAuthJourneyState,
+                    state: AccountDirectoryCallbackState,
                 ) => {
                     if (disposed || controller.signal.aborted) return;
                     setAccountDirectoryJourney(state);
                 };
-                const setDirectoryStage = (stage: AccountServiceOAuthStage) => {
+                const setDirectoryStage = (stage: AccountDirectoryCallbackStage) => {
                     safeSetDirectoryJourney({
                         kind: 'progress',
                         stage,
@@ -1024,7 +930,7 @@ export default function OAuthProviderReturn() {
                         endpointUrl: directoryEndpoint ?? resolvedEndpointUrl ?? '',
                     });
                 };
-                setDirectoryStage('verifying_service');
+                setDirectoryStage('signing_in');
                 safeSetBusy(true);
                 try {
                     if (directoryCustodyFailure) {
@@ -1038,9 +944,11 @@ export default function OAuthProviderReturn() {
                         return;
                     }
                     if (error) {
-                        if (directoryTarget) {
+                        if (directoryTarget && pendingDirectoryAuth) {
                             await TokenStorage
-                                .clearPendingAccountDirectoryAuth(directoryTarget)
+                                .clearPendingAccountDirectoryAuth(directoryTarget, {
+                                    expected: pendingDirectoryAuth,
+                                })
                                 .catch(() => false);
                         }
                         safeSetDirectoryJourney({
@@ -1057,9 +965,11 @@ export default function OAuthProviderReturn() {
                         !providerId
                         || !directoryProvider
                     ) {
-                        if (directoryTarget) {
+                        if (directoryTarget && pendingDirectoryAuth) {
                             await TokenStorage
-                                .clearPendingAccountDirectoryAuth(directoryTarget)
+                                .clearPendingAccountDirectoryAuth(directoryTarget, {
+                                    expected: pendingDirectoryAuth,
+                                })
                                 .catch(() => false);
                         }
                         safeSetDirectoryJourney({
@@ -1072,7 +982,7 @@ export default function OAuthProviderReturn() {
                         return;
                     }
 
-                    const result = await finalizeAccountDirectoryOAuthReturn({
+                    const result = await accountDirectoryAuthClient.exchangeOAuth({
                         providerId,
                         purpose: resolvedPurpose ?? pendingDirectoryAuth?.purpose ?? null,
                         credentialTarget: resolvedCredentialTarget
@@ -1088,51 +998,60 @@ export default function OAuthProviderReturn() {
                         pendingKey: resolvedPending,
                         mode: resolvedMode,
                         pending: pendingDirectoryAuth,
-                        signal: controller.signal,
-                        onStage: setDirectoryStage,
                         onCredentialCommitStarted: () => {
                             accountDirectoryCredentialCommitStartedRef.current = true;
+                            setDirectoryStage('signing_in');
                         },
+                        signal: controller.signal,
                     });
-                    if (controller.signal.aborted) return;
-                    if (result.ok) {
-                        if (result.awaitingApproval) {
-                            setAccountDirectoryApprovalReturnTo(result.returnTo);
-                            return;
+                    if (controller.signal.aborted && (
+                        result.kind !== 'cancelled' || !result.accountCredentialCommitted
+                    )) return;
+                    if (result.kind === 'authenticated') {
+                        router.replace(result.destination);
+                        return;
+                    }
+                    if (result.kind === 'cancelled') {
+                        if (result.accountCredentialCommitted && pendingDirectoryAuth) {
+                            const destination = createAccountServiceReturn(pendingDirectoryAuth);
+                            if (destination) router.replace(destination);
                         }
-                        if (result.continueApprovalInSettings) {
-                            safeReplace(result.returnTo);
-                            return;
-                        }
-                        setAccountDirectoryCompletionReturnTo(result.returnTo);
                         return;
                     }
 
                     if (
-                        result.error === 'keyed-authentication-required'
+                        result.kind === 'failed' && result.code === 'keyed-authentication-required'
                         && pendingDirectoryAuth?.mode === 'keyless'
                         && directoryEndpoint
                         && directoryIdentity
+                        && pendingDirectoryAuth.returnTo
                     ) {
+                        let keyedStart: Awaited<ReturnType<typeof accountDirectoryAuthClient.startOAuth>> | null = null;
                         try {
-                            const keyedUrl = await accountDirectoryAuthClient.startOAuth({
+                            keyedStart = await accountDirectoryAuthClient.startOAuth({
                                 endpointUrl: directoryEndpoint,
                                 endpointServerIdentityId: directoryIdentity,
                                 canonicalServerUrl: pendingDirectoryAuth.canonicalServerUrl,
                                 providerId,
                                 mode: 'keyed',
                                 entryIntent: pendingDirectoryAuth.entryIntent,
-                                returnTo: result.returnTo,
-                                ...(pendingDirectoryAuth.homeServerIdentityId
-                                    ? { homeServerIdentityId: pendingDirectoryAuth.homeServerIdentityId }
-                                    : {}),
+                                returnTo: pendingDirectoryAuth.returnTo,
+                                ...(pendingDirectoryAuth.linkHomeServerIdentityId ? { linkHomeServerIdentityId: pendingDirectoryAuth.linkHomeServerIdentityId } : {}),
+                                ...(pendingDirectoryAuth.explicitHomeServerIdentityId ? { explicitHomeServerIdentityId: pendingDirectoryAuth.explicitHomeServerIdentityId } : {}),
+                                signal: controller.signal,
                             });
-                            if (!isSafeExternalAuthUrl(keyedUrl)) {
+                            if (!isSafeExternalAuthUrl(keyedStart.url)) {
                                 throw new Error('Invalid keyed Account Service OAuth URL');
                             }
-                            await Linking.openURL(keyedUrl);
+                            await Linking.openURL(keyedStart.url);
                             return;
                         } catch {
+                            if (keyedStart) {
+                                await TokenStorage.clearPendingAccountDirectoryAuth({
+                                    endpoint: keyedStart.pending.endpoint,
+                                    serverIdentityId: keyedStart.pending.serverIdentityId,
+                                }, { expected: keyedStart.pending }).catch(() => false);
+                            }
                             safeSetDirectoryJourney({
                                 kind: 'error',
                                 failure: 'token_exchange_failed',
@@ -1145,18 +1064,20 @@ export default function OAuthProviderReturn() {
                     }
 
                     // A failed or tampered continuation is single-use from the
-                    // client perspective. Clear only the target namespace.
-                    if (directoryTarget && result.preservePending !== true) {
+                    // client perspective. Never clear replacement custody that
+                    // a newer OAuth start already installed for the same target.
+                    if (directoryTarget && pendingDirectoryAuth
+                        && (result.kind === 'relink_required' || !result.retryable)) {
                         await TokenStorage
-                            .clearPendingAccountDirectoryAuth(directoryTarget)
+                            .clearPendingAccountDirectoryAuth(directoryTarget, {
+                                expected: pendingDirectoryAuth,
+                            })
                             .catch(() => false);
                     }
                     safeSetDirectoryJourney({
                         kind: 'error',
-                        failure: mapAccountDirectoryFailure(
-                            result.error ?? 'token-exchange-failed',
-                        ),
-                        signedIn: result.signedIn === true,
+                        failure: result.kind === 'relink_required' ? 'directory_link_conflict' : result.code,
+                        signedIn: result.kind === 'failed' && result.accountCredentialCommitted,
                         providerName,
                         endpointUrl: directoryEndpoint ?? resolvedEndpointUrl ?? '',
                     });
@@ -1175,30 +1096,46 @@ export default function OAuthProviderReturn() {
                 pendingAuthStateForFlow?.value
                     ?.accountEncryptionFirstKey,
             );
+            const hasProcessLocalPasswordEnrollmentContinuation =
+                passwordEnrollmentCallbackContext !== null;
+            const clearPendingPasswordEnrollmentAuth = async () => {
+                clearAccountPasswordEnrollmentExternalAuthCustody();
+            };
             const isFirstKeyReturn =
                 resolvedPurpose
                     === ACCOUNT_ENCRYPTION_FIRST_KEY_PURPOSE
                 || hasStoredFirstKeyContinuation;
+            const isPasswordEnrollmentReturn =
+                resolvedPurpose === ACCOUNT_PASSWORD_ENROLLMENT_PURPOSE
+                || hasProcessLocalPasswordEnrollmentContinuation;
 
             if (!providerId) {
-                if (isFirstKeyReturn) {
-                    await TokenStorage.clearPendingExternalAuth();
+                if (isFirstKeyReturn || isPasswordEnrollmentReturn) {
+                    if (isPasswordEnrollmentReturn) {
+                        await clearPendingPasswordEnrollmentAuth();
+                    } else {
+                        await TokenStorage.clearPendingExternalAuth();
+                    }
                     await Modal.alert(
                         t('common.error'),
                         t('errors.oauthInitializationFailed'),
                     );
                 }
-                safeReplace('/');
+                safeReplace(isPasswordEnrollmentReturn ? '/settings/account/security' : '/');
                 return;
             }
 
             const provider = getAuthProvider(providerId);
             if (!provider) {
-                if (isFirstKeyReturn) {
-                    await TokenStorage.clearPendingExternalAuth();
+                if (isFirstKeyReturn || isPasswordEnrollmentReturn) {
+                    if (isPasswordEnrollmentReturn) {
+                        await clearPendingPasswordEnrollmentAuth();
+                    } else {
+                        await TokenStorage.clearPendingExternalAuth();
+                    }
                 }
                 await Modal.alert(t('common.error'), t('errors.oauthInitializationFailed'));
-                safeReplace('/');
+                safeReplace(isPasswordEnrollmentReturn ? '/settings/account/security' : '/');
                 return;
             }
 
@@ -1206,22 +1143,91 @@ export default function OAuthProviderReturn() {
                 const providerName = provider.displayName ?? providerId;
                 const message = sanitizeExternalOAuthCallbackError(error, providerName);
                 await Modal.alert(t('common.error'), message);
+                let passwordEnrollmentReturnTo = '/settings/account/security';
                 if (flow !== 'auth') {
                     await TokenStorage.clearPendingExternalConnect();
+                } else if (isPasswordEnrollmentReturn) {
+                    const target = passwordEnrollmentCallbackContext?.target;
+                    const serverUrl = target?.serverUrl ?? '';
+                    const serverId = target?.serverId ?? '';
+                    const currentCredentials = serverUrl && serverId
+                        ? await TokenStorage.getCredentialsForServerUrl(serverUrl, { serverId }).catch(() => null)
+                        : null;
+                    if (serverUrl && serverId) {
+                        const cancelled = await cancelAccountPasswordEnrollmentExternalAuth({
+                            provider: providerId,
+                            currentCredentials,
+                            target: { serverUrl, serverId },
+                        });
+                        passwordEnrollmentReturnTo = cancelled.returnTo;
+                    } else {
+                        await clearPendingPasswordEnrollmentAuth();
+                    }
                 } else if (isFirstKeyReturn) {
                     await TokenStorage.clearPendingExternalAuth();
                 }
                 safeReplace(
                     flow === 'auth'
                     && !isFirstKeyReturn
+                    && !isPasswordEnrollmentReturn
                         ? '/'
-                        : '/settings/account',
+                        : isPasswordEnrollmentReturn
+                            ? passwordEnrollmentReturnTo
+                            : '/settings/account',
                 );
                 return;
             }
 
             if (flow === 'auth') {
                 const pending = pendingFromParams;
+                if (
+                    hasProcessLocalPasswordEnrollmentContinuation
+                    && resolvedPurpose
+                        !== ACCOUNT_PASSWORD_ENROLLMENT_PURPOSE
+                ) {
+                    await clearPendingPasswordEnrollmentAuth();
+                    await Modal.alert(
+                        t('common.error'),
+                        t('errors.oauthStateMismatch'),
+                    );
+                    safeReplace('/settings/account/security');
+                    return;
+                }
+                if (resolvedPurpose === ACCOUNT_PASSWORD_ENROLLMENT_PURPOSE) {
+                    const target = passwordEnrollmentCallbackContext?.target;
+                    const serverUrl = target?.serverUrl ?? '';
+                    const serverId = target?.serverId ?? '';
+                    const currentCredentials = serverUrl && serverId
+                        ? await TokenStorage.getCredentialsForServerUrl(serverUrl, { serverId }).catch(() => null)
+                        : null;
+                    if (!currentCredentials || !serverUrl || !serverId) {
+                        await clearPendingPasswordEnrollmentAuth();
+                        await Modal.alert(t('common.error'), t('errors.oauthInitializationFailed'));
+                        safeReplace('/settings/account/security');
+                        return;
+                    }
+                    try {
+                        safeSetBusy(true);
+                        const resumed = await resumeAccountPasswordEnrollmentExternalAuth({
+                            provider: providerId,
+                            pending,
+                            currentCredentials,
+                            target: { serverUrl, serverId },
+                        });
+                        // The Settings route now owns the same-process handoff
+                        // and consumes it exactly once. Every earlier route
+                        // disposal must retire the claimed ceremony instead.
+                        retireClaimedPasswordEnrollmentOnDispose = false;
+                        safeReplace(resumed.returnTo);
+                    } catch (callbackError) {
+                        await Modal.alert(t('common.error'), t('errors.oauthStateMismatch'));
+                        clearAccountPasswordEnrollmentExternalAuthCustody();
+                        safeReplace('/settings/account/security');
+                    } finally {
+                        safeSetBusy(false);
+                    }
+                    return;
+                }
                 if (
                     resolvedPurpose
                     === ACCOUNT_ENCRYPTION_FIRST_KEY_PURPOSE
@@ -1307,8 +1313,22 @@ export default function OAuthProviderReturn() {
                 const proof = typeof state?.proof === 'string' ? state.proof : null;
                 const serverUrlMismatch =
                     pendingAuthState.serverMismatch;
+                const teamAdmissionReferenceMismatch = state?.teamContinuation !== undefined
+                    && resolvedAdmissionReference !== state.teamContinuation.admissionReference;
 
-                if (!pending || !state || state.provider !== providerId || (!proof && !secret) || serverUrlMismatch) {
+                if (!pending || !state || state.provider !== providerId || (!proof && !secret) || serverUrlMismatch || teamAdmissionReferenceMismatch) {
+                    if (serverUrlMismatch || teamAdmissionReferenceMismatch) {
+                        const mismatchRecoveryPath = teamAdmissionReferenceMismatch && state?.teamContinuation
+                            ? teamSignInReturnPath({
+                                teamId: state.teamContinuation.destination.teamId,
+                                carrier: state.teamContinuation.homeServerIdentityId,
+                            })
+                            : '/';
+                        await TokenStorage.clearPendingExternalAuth();
+                        await Modal.alert(t('common.error'), t('errors.oauthStateMismatch'));
+                        safeReplace(mismatchRecoveryPath);
+                        return;
+                    }
                     // In dev (React strict-mode) or certain hydration paths, this screen can mount more than once.
                     // If another instance already completed the flow, pending state may have been cleared even
                     // though the user is now logged in. Avoid showing a false-negative OAuth error in that case.
@@ -1317,16 +1337,22 @@ export default function OAuthProviderReturn() {
                         safeReplace('/');
                         return;
                     }
-                    if (serverUrlMismatch) {
-                        await TokenStorage.clearPendingExternalAuth();
-                        await Modal.alert(t('common.error'), t('errors.oauthStateMismatch'));
-                    } else {
-                        await Modal.alert(t('common.error'), t('errors.oauthInitializationFailed'));
-                    }
+                    await Modal.alert(t('common.error'), t('errors.oauthInitializationFailed'));
                     safeReplace('/');
                     return;
                 }
-                const returnTo = normalizeInternalReturnPath(state.returnTo) ?? '/';
+                // The continuation stores the Home's *portable* identity. That is
+                // the Team entry page's `target` carrier, not its device-local
+                // `serverId` convenience: passing it as `serverId` resolved it
+                // through the local profile-id namespace, which can match an
+                // unrelated profile and cannot report an ambiguous Home. Build the
+                // URL through the one Team sign-in return owner.
+                const returnTo = state.teamContinuation
+                    ? teamSignInReturnPath({
+                        teamId: state.teamContinuation.destination.teamId,
+                        carrier: state.teamContinuation.homeServerIdentityId,
+                    })
+                    : normalizeInternalReturnPath(state.returnTo) ?? '/';
 
                 try {
                     const login = loginFromParams;
@@ -1337,6 +1363,11 @@ export default function OAuthProviderReturn() {
                         proof,
                         secret,
                         intent: (state.intent as any) ?? null,
+                        ...(state.accountContinuation ? { accountContinuation: state.accountContinuation } : {}),
+                        ...(state.teamContinuation ? { teamContinuation: state.teamContinuation } : {}),
+                        ...(state.accountContinuation || state.teamContinuation
+                            ? { continuationCustody: { pending: state, signal: controller.signal } }
+                            : {}),
                         returnTo,
                         serverUrl: state.serverUrl,
                         serverId: state.serverId,
@@ -1357,6 +1388,7 @@ export default function OAuthProviderReturn() {
                     }
 
                     if (resolvedAccountMode === 'e2ee') {
+                        if (await returnHomeAuthenticationRequired(pendingAuthContextRef.current)) return;
                         safeReplace('/restore');
                         return;
                     }
@@ -1422,7 +1454,43 @@ export default function OAuthProviderReturn() {
                 await TokenStorage.clearPendingExternalConnect();
                 safeReplace(connectReturnTo);
             };
+            const finalizeConnectAndAdoptCredential = async (input: Readonly<{
+                pending: string;
+                username: string;
+            }>): Promise<boolean> => {
+                if (!credentials) return false;
+                const replacement = await provider.finalizeConnect(credentials, input);
+                if (!replacement.token) return true;
+                const lifecycle = await auth.loginWithCredentials({ ...credentials, token: replacement.token });
+                return lifecycle.kind === 'completed';
+            };
             if (status === 'connected') {
+                const pending = paramString(params, 'pending');
+                const username = resolvedConnectUsername;
+                // Released Homes completed the identity mutation in the callback and
+                // returned no pending handle. Preserve that predecessor completion.
+                if (!pending) {
+                    await finalizeConnectNavigation();
+                    return;
+                }
+                if (!username || !credentials) {
+                    await Modal.alert(t('common.error'), t('errors.oauthStateMismatch'));
+                    await finalizeConnectNavigation();
+                    return;
+                }
+                try {
+                    safeSetBusy(true);
+                    if (!await finalizeConnectAndAdoptCredential({ pending, username })) return;
+                } catch (e) {
+                    await Modal.alert(
+                        t('common.error'),
+                        e instanceof HappyError
+                            ? mapFinalizeErrorToMessage(e.message)
+                            : t('errors.operationFailed'),
+                    );
+                } finally {
+                    safeSetBusy(false);
+                }
                 await finalizeConnectNavigation();
                 return;
             }
@@ -1469,7 +1537,7 @@ export default function OAuthProviderReturn() {
 
                 try {
                     safeSetBusy(true);
-                    await provider.finalizeConnect(credentials, { pending, username: next });
+                    if (!await finalizeConnectAndAdoptCredential({ pending, username: next })) return;
                     await finalizeConnectNavigation();
                     return;
                 } catch (e) {
@@ -1506,6 +1574,9 @@ export default function OAuthProviderReturn() {
         return () => {
             disposed = true;
             controller.abort('oauth-return-disposed');
+            if (retireClaimedPasswordEnrollmentOnDispose) {
+                clearAccountPasswordEnrollmentExternalAuthCustody();
+            }
         };
 	    // Keep deps primitive so we don't dispose mid-flight due to param identity changes.
 	    }, [
@@ -1517,7 +1588,10 @@ export default function OAuthProviderReturn() {
         resolvedPending,
         resolvedLogin,
         resolvedReason,
+        resolvedAdmissionReference,
+        resolvedConnectUsername,
         resolvedPurpose,
+        resolvedResultHandle,
         resolvedCredentialTarget,
         resolvedEndpointUrl,
         resolvedEndpointIdentity,
@@ -1548,9 +1622,9 @@ export default function OAuthProviderReturn() {
                 serverIdentityId: fallbackIdentity,
             }
             : null);
-        if (target) {
+        if (target && attempt?.pending) {
             await TokenStorage
-                .clearPendingAccountDirectoryAuth(target)
+                .clearPendingAccountDirectoryAuth(target, { expected: attempt.pending })
                 .catch(() => false);
         }
         accountDirectoryAttemptRef.current = null;
@@ -1565,23 +1639,6 @@ export default function OAuthProviderReturn() {
         accountDirectoryCredentialCommitStartedRef.current = false;
         router.replace(returnTo);
     }, [router]);
-
-    const completeAccountDirectoryJourney = React.useCallback(() => {
-        if (!accountDirectoryCompletionReturnTo) return;
-        setAccountDirectoryCompletionReturnTo(null);
-        router.replace(accountDirectoryCompletionReturnTo);
-    }, [accountDirectoryCompletionReturnTo, router]);
-
-    // Entering the preferred Home is applied by the canonical continuation owner before this
-    // resolves, so the entry destination is the ordinary shell root in every outcome; a
-    // non-entered outcome simply lands back on the unauthenticated welcome with the Account
-    // Service credential preserved.
-    const completeAccountDirectoryApproval = React.useCallback((
-        _outcome: AccountServiceApprovalOutcome,
-    ) => {
-        setAccountDirectoryApprovalReturnTo(null);
-        router.replace(accountDirectoryApprovalReturnTo ?? '/');
-    }, [accountDirectoryApprovalReturnTo, router]);
 
     const wizardTitle =
         provisioningChoiceOpen
@@ -1696,7 +1753,7 @@ export default function OAuthProviderReturn() {
     const visibleAccountDirectoryJourney = (resolvedDirectoryReturn || persistedAccountDirectoryReturn)
         ? accountDirectoryJourney ?? {
                 kind: 'progress' as const,
-                stage: 'verifying_service' as const,
+                stage: 'signing_in' as const,
                 providerName: getAuthProvider(resolvedProviderId)?.displayName
                     ?? resolvedProviderId,
                 endpointUrl: normalizeAccountDirectoryEndpoint(
@@ -1705,18 +1762,40 @@ export default function OAuthProviderReturn() {
             }
         : null;
 
+    if (teamFailure) {
+        const presentation = presentTeamAuthenticationFailure(teamFailure.code);
+        return (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                <SurfaceStateCard
+                    testID="oauth-team-failure"
+                    kind={presentation.kind}
+                    title={presentation.title}
+                    reason={presentation.body}
+                    diagnosticCode={teamFailure.code}
+                    action={{
+                        label: t('teams.entry.returnToTeamSignIn'),
+                        onPress: () => router.replace(teamFailure.returnTo),
+                    }}
+                    secondaryAction={{
+                        label: t('teams.entry.returnToHappier'),
+                        onPress: () => router.replace('/'),
+                    }}
+                    accessibilitySemantics="alert"
+                />
+            </View>
+        );
+    }
+
     if (visibleAccountDirectoryJourney) {
         const canCancel = visibleAccountDirectoryJourney.kind === 'progress'
-            && (
-                visibleAccountDirectoryJourney.stage === 'verifying_service'
-                || visibleAccountDirectoryJourney.stage === 'signing_in'
-            );
+            && visibleAccountDirectoryJourney.stage === 'signing_in'
+            && !accountDirectoryCredentialCommitStartedRef.current;
         return (
             <WizardModalShell
                 testID="oauth-return-wizard"
                 stepIndex={0}
                 stepCount={1}
-                title={t('settingsAccount.accountServiceOAuth.title')}
+                title={t('settingsAccount.accountServiceOAuth.stages.signingIn')}
                 showBack={false}
                 showSkip={false}
                 onSecondary={canCancel ? cancelAccountDirectoryJourney : undefined}
@@ -1727,13 +1806,14 @@ export default function OAuthProviderReturn() {
                     </Text>
                 ) : undefined}
             >
-                <AccountServiceOAuthJourney
-                    state={visibleAccountDirectoryJourney}
-                    onRecovery={recoverAccountDirectoryJourney}
-                    onTerminalPresented={completeAccountDirectoryJourney}
-                    approvalContinuation={accountDirectoryApprovalReturnTo !== null}
-                    onApprovalOutcome={completeAccountDirectoryApproval}
-                />
+                {visibleAccountDirectoryJourney.kind === 'progress' ? (
+                    <ActivitySpinner size="small" />
+                ) : (
+                    <View>
+                        <Text accessibilityRole="alert">{t('errors.operationFailed')}</Text>
+                        <RoundButton title={t('common.back')} onPress={recoverAccountDirectoryJourney} />
+                    </View>
+                )}
             </WizardModalShell>
         );
     }
@@ -1751,4 +1831,17 @@ export default function OAuthProviderReturn() {
             {body}
         </WizardModalShell>
     );
+}
+
+export default function OAuthProviderReturn() {
+    const completedParentAuthSession = React.useMemo(() => {
+        try {
+            return WebBrowser.maybeCompleteAuthSession().type === 'success';
+        } catch {
+            return false;
+        }
+    }, []);
+
+    if (completedParentAuthSession) return null;
+    return <OAuthProviderReturnBody />;
 }

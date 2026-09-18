@@ -31,22 +31,22 @@ describe('PluginUiArtifactAdoptionOwner', () => {
             ['context', 'readResource'],
             ['context'],
         ].flatMap(() => renderers.map(() => resolvePluginUiRendererTechnicalAdmission({
-            resolveArtifactAdmission: () => admittedArtifact,
+            resolveSourceAdmission: () => admittedArtifact,
             requiredHostMethods,
             structuralHostMethods,
         })));
 
         expect(eligibilityDuringLiveAvailabilityChanges).toEqual([
-            { kind: 'available', artifactAdmission: admittedArtifact },
-            { kind: 'available', artifactAdmission: admittedArtifact },
-            { kind: 'available', artifactAdmission: admittedArtifact },
-            { kind: 'available', artifactAdmission: admittedArtifact },
+            { kind: 'available', sourceAdmission: admittedArtifact },
+            { kind: 'available', sourceAdmission: admittedArtifact },
+            { kind: 'available', sourceAdmission: admittedArtifact },
+            { kind: 'available', sourceAdmission: admittedArtifact },
         ]);
 
         const blockedArtifactResolvers = renderers.map(() => vi.fn(() => admittedArtifact));
-        const blockedAdmissions = blockedArtifactResolvers.map((resolveArtifactAdmission) => (
+        const blockedAdmissions = blockedArtifactResolvers.map((resolveSourceAdmission) => (
             resolvePluginUiRendererTechnicalAdmission({
-                resolveArtifactAdmission,
+                resolveSourceAdmission,
                 requiredHostMethods: ['watchResource'],
                 structuralHostMethods,
             })

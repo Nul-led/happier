@@ -18,7 +18,7 @@ describe('useActionOperations', () => {
 
     it('imperatively reads the latest canonical operation snapshot at a decision point', () => {
         expect(readAllActionOperations()).toEqual([]);
-        actionOperationStore.mergeSnapshots([{
+        actionOperationStore.mergeSnapshots({ serverId: 'home-a', snapshots: [{
             version: 1,
             operationId: 'operation-a',
             revision: 1,
@@ -29,13 +29,13 @@ describe('useActionOperations', () => {
             title: 'Create session',
             createdAt: 100,
             cancellation: 'unsupported',
-        }]);
+        }] });
         expect(readAllActionOperations()).toHaveLength(1);
         expect(readAllActionOperations()[0]?.snapshot.requestId).toBe('launch-attempt-a');
     });
 
     it('keeps the shared attention hook bound to terminal seen state', async () => {
-        actionOperationStore.mergeSnapshots([{
+        actionOperationStore.mergeSnapshots({ serverId: 'home-a', snapshots: [{
             version: 1,
             operationId: 'operation-a',
             revision: 2,
@@ -46,7 +46,7 @@ describe('useActionOperations', () => {
             createdAt: 100,
             settledAt: 150,
             cancellation: 'unsupported',
-        }]);
+        }] });
         const observed: boolean[] = [];
 
         function AttentionObserver() {
@@ -67,7 +67,7 @@ describe('useActionOperations', () => {
         const observedTitles: string[] = [];
 
         function OperationObserver() {
-            const operation = useActionOperation('operation-a');
+            const operation = useActionOperation({ serverId: 'home-a', operationId: 'operation-a' });
             observedTitles.push(operation?.snapshot.title ?? 'missing');
             return React.createElement('View');
         }
@@ -75,7 +75,7 @@ describe('useActionOperations', () => {
         tree = (await renderScreen(React.createElement(OperationObserver))).tree;
         expect(observedTitles.at(-1)).toBe('missing');
 
-        act(() => actionOperationStore.mergeSnapshots([{
+        act(() => actionOperationStore.mergeSnapshots({ serverId: 'home-a', snapshots: [{
             version: 1,
             operationId: 'operation-a',
             revision: 1,
@@ -86,7 +86,7 @@ describe('useActionOperations', () => {
             createdAt: 100,
             startedAt: 110,
             cancellation: 'unsupported',
-        }]));
+        }] }));
 
         expect(observedTitles.at(-1)).toBe('Creating session');
     });

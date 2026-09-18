@@ -1,10 +1,25 @@
+import { sessionCollaborationTranslations } from './sessionCollaborationTranslations';
+import { sessionMessageAccountActorTranslations } from './sessionMessageAccountActorTranslations';
+import { sessionAccessTranslations } from './sessionAccessTranslations';
+import { nativePasswordTranslations } from './nativePasswordTranslations';
+import { sessionFollowTranslations } from './sessionFollowTranslations';
+import { sessionHomeFreshnessTranslations } from './sessionHomeFreshnessTranslations';
+import { sessionReminderTranslations } from './sessionReminderTranslations';
 import { settingsProvidersTranslations } from './settingsProvidersTranslations';
 import { providerSessionTranslations } from './providerSessionTranslations';
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
+import { machinePoolTranslations } from './machinePoolTranslations';
+import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
+import { sessionResponsibilityTranslations } from './sessionResponsibilityTranslations';
+import { sessionListFilterTranslations } from './sessionListFilterTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
+import { sessionBoardTranslations } from './sessionBoardTranslations';
 import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscoverTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
+import { sessionAgentActivityTranslations } from './sessionAgentActivityTranslations';
+import { changedFileEvidenceTranslations } from './changedFileEvidenceTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
 import { voiceProviderPrivacyTranslations } from './voiceProviderPrivacyTranslations';
@@ -20,9 +35,14 @@ import { pluginInvocationLogTranslations } from './pluginInvocationLogTranslatio
 import { eventAutomationComposerTranslations } from './eventAutomationComposerTranslations';
 import { automationTriggerSetTranslations } from './automationTriggerSetTranslations';
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
+import { actionConfirmationTranslations } from './actionConfirmationTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeGovernanceTranslations } from './homeGovernanceTranslations';
+import { workflowTranslations } from './workflowTranslations';
+import { teamsTranslations } from './teamsTranslations';
+import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
 import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
 
@@ -158,6 +178,8 @@ const newSessionMcpTranslationExtension = {
   mcpReasonBindingDisabled: 'Désactivé par la liaison du serveur',
   mcpReasonAvailablePortable: 'Portable vers cette session',
   mcpReasonNotPortable: 'Non portable vers cette session',
+  profileReasonNotPortable: 'Non portable vers cette session',
+  connectedServicesReasonNotPortable: 'Non portable vers cette session',
 } as const;
 
 const settingsAppearanceTranslationExtension = {
@@ -639,6 +661,7 @@ function plural({
  * Must match the exact structure of the English translations
  */
 export const fr = {
+    actionConfirmations: actionConfirmationTranslations.fr,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.fr, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.fr.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
@@ -651,6 +674,9 @@ export const fr = {
     },
     voice: voiceReadinessTranslations.fr,
     pluginPermissions: pluginPermissionTranslations.fr,
+    sessionBoard: sessionBoardTranslations.fr,
+    ...sessionAgentActivityTranslations,
+    ...changedFileEvidenceTranslations.fr,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.fr,
     pluginSurfaces: {
         state: {
@@ -737,6 +763,8 @@ export const fr = {
             transcriptScrollPageDown: 'Page suivante dans la transcription',
             transcriptScrollPageUp: 'Page précédente dans la transcription',
             transcriptScrollTop: 'Aller en haut de la transcription',
+            workflowSave: 'Enregistrer le flux de travail',
+            workflowRun: 'Exécuter le flux de travail',
 
             permissionCycle: "Changer de mode d’autorisation",
             splitCanvasCloseLeaf: "Fermer le split",
@@ -757,6 +785,7 @@ export const fr = {
     inbox: "Boîte de réception",
     friends: "Amis",
     sessions: "Séances",
+    sessionsNeedsAttention: "Séances, nécessite votre attention",
     settings: "Réglages",
 
     projects: "Projets",},
@@ -852,12 +881,16 @@ export const fr = {
   inbox: {
         ...actionOperationInboxTranslations,
     openSession: ({ session }: { session: string }) => `Ouvrir la session : ${session}`,
+    readySessionAccessibilityLabel: ({ session }: { session: string }) => `Prêt à vérifier : ${session}`,
     // Inbox screen
     emptyTitle: "Tu es à jour",
     emptyDescription: "Aucune demande ni mise à jour en attente.",
     approvals: "Approbations",
     permissions: "Autorisations",
-    unreadSessions: "Sessions non lues",
+    readySessions: "Prêtes à vérifier",
+    errors: "Erreurs",
+    markAllRead: "Tout marquer comme lu",
+    openInbox: "Ouvrir la boîte de réception",
     updates: "Activité",
   },
 
@@ -884,6 +917,7 @@ export const fr = {
     status: {
       open: "En attente",
       approved: "Approuvée",
+      executing: "En cours d’exécution",
       rejected: "Refusée",
       executed: "Exécutée",
       failed: "Échouée",
@@ -1017,6 +1051,7 @@ export const fr = {
       toggleFinished: "Afficher/masquer les runs terminés",
       refresh: "Actualiser les runs",
     },
+    openRun: "Ouvrir le run",
     openSession: "Ouvrir la session",
     sessionTitle: ({ sessionId }: { sessionId: string }) => `Session ${sessionId}`,
     runLabel: ({ runId }: { runId: string }) => `run ${runId}`,
@@ -1115,7 +1150,6 @@ export const fr = {
       title: "Modifier l’automatisation",
       saveAutomationLabel: "Enregistrer l’automatisation",
       messageLabel: "MESSAGE",
-      messagePlaceholder: "Message à envoyer",
       messageHelpText:
         "Ce message sera mis en file dans la session comme message utilisateur en attente.",
       updateFailed: "Échec de la mise à jour de l’automatisation.",
@@ -1389,7 +1423,6 @@ export const fr = {
       },
     },
     create: {
-      defaultName: "Message planifié",
       createFailed: "Échec de la création de l’automatisation.",
       unavailableGroupTitle: "Indisponible",
       cannotCreateForSession: "Impossible de créer une automatisation pour cette session",
@@ -1580,6 +1613,12 @@ export const fr = {
   },
 
   status: {
+    encryptedUnavailable: "Détails chiffrés indisponibles",
+    encryptedPreparing: "Préparation de l’accès chiffré",
+    encryptedRepairNeeded: "L’accès chiffré doit être réparé",
+    awaitingUpdates: "En attente de mises à jour",
+    queuedInput: "Saisie en attente",
+    unread: "Non lu",
     connected: "connecté",
     connecting: "connexion en cours",
     disconnected: "déconnecté",
@@ -1639,6 +1678,8 @@ export const fr = {
       pathRelay: "Relais sécurisé",
       publicIngressAbsent: "Non configuré",
       relayDisabled: "Désactivé",
+      relayNone: "Aucun",
+      relayDisabledWithDirect: ({ direct }: { direct: number }) => `Désactivé · ${direct} adresses directes`,
       relayAutomatic: ({ relays, direct }: { relays: string; direct: number }) =>
           `Automatique · ${relays} · ${direct} adresses directes`,
     },
@@ -1673,15 +1714,15 @@ export const fr = {
 
   connect: {
     restoreAccount: "Restaurer le compte",
-    enterSecretKey: "Saisis une clé secrète",
-    invalidSecretKey: "Clé secrète invalide. Vérifie-la et réessaie.",
+    enterSecretKey: "Saisis une clé de récupération",
+    invalidSecretKey: "Clé de récupération invalide. Vérifie-la et réessaie.",
     enterUrlManually: "Saisir l’URL manuellement",
     scanComputerQrUnavailableTitle: "Scan du QR desktop indisponible",
     scanComputerQrUnavailableBody:
       "Cette méthode de connexion est désactivée sur ce serveur. Utilise une autre option ci-dessous pour restaurer ton compte.",
     scanComputerQrInstructions: "Scanne le QR code affiché dans Happier sur ton ordinateur (Réglages → Ajouter ton téléphone).",
     scanComputerQrButton: "Scanner le QR pour se connecter",
-    scanExistingHomeQrTitle: "Scanner le QR d’un Home existant",
+    scanExistingHomeQrTitle: "Scannez un QR ou collez un lien Home",
     waitingForApproval: "En attente de validation…",
     securingCredentials: "Sécurisation des identifiants…",
     showQrInstead: "Afficher un QR code à la place",
@@ -1732,14 +1773,14 @@ export const fr = {
     externalAuthVerifiedTitle: ({ provider }: { provider: string }) =>
       `${provider} vérifié`,
     externalAuthVerifiedBody: ({ provider }: { provider: string }) =>
-      `Un compte Happier existant est lié à ${provider}. Pour terminer la connexion sur cet appareil, restaure la clé de ton compte avec le QR code ou ta clé secrète.`,
-    restoreWithSecretKeyInstead: "Restaurer plutôt avec la clé secrète",
+      `Un compte Happier existant est lié à ${provider}. Pour terminer la connexion sur cet appareil, restaure la clé de ton compte avec le QR code ou ta clé de récupération.`,
+    restoreWithSecretKeyInstead: "Restaurer plutôt avec la clé de récupération",
     restoreWithSecretKeyDescription:
-      "Saisis ta clé secrète pour retrouver l’accès à ton compte.",
+      "Saisis ta clé de récupération pour retrouver l’accès à ton compte.",
     lostAccessLink: "Accès perdu ?",
     lostAccessTitle: "Tu as perdu l’accès à ton compte ?",
     lostAccessBody:
-      "Si aucun appareil n’est plus lié à ce compte et que tu as perdu ta clé secrète, tu peux réinitialiser ton compte via ton provider d’identité. Cela crée un nouveau compte Happier. Ton ancien historique chiffré est irrécupérable.",
+      "Si aucun appareil n’est plus lié à ce compte et que tu as perdu ta clé de récupération, tu peux réinitialiser ton compte via ton provider d’identité. Cela crée un nouveau compte Happier. Ton ancien historique chiffré est irrécupérable.",
     lostAccessContinue: ({ provider }: { provider: string }) =>
       `Continuer avec ${provider}`,
     lostAccessConfirmTitle: "Réinitialiser le compte ?",
@@ -1747,7 +1788,7 @@ export const fr = {
       "Cela crée un nouveau compte et relie ton identité provider. Ton ancien historique chiffré est irrécupérable.",
     lostAccessConfirmButton: "Réinitialiser et continuer",
     secretKeyPlaceholder: "XXXXX-XXXXX-XXXXX...",
-    secretKeyInputLabel: "Clé secrète",
+    secretKeyInputLabel: "Clé de récupération",
     linkNewDeviceTitle: "Lier un nouvel appareil",
     linkNewDeviceSubtitle: "Scanne le QR code affiché sur ton nouvel appareil pour le lier à ce compte",
     linkNewDeviceQrInstructions: "Ouvre Happier sur ton nouvel appareil et affiche le QR code",
@@ -2198,7 +2239,8 @@ export const fr = {
         title: "Instructions des exécutions Happier",
         subtitle: "La désactivation retire le routage natif prioritaire et les mécanismes d’exécution Happier des prompts système des agents de code.",
       },
-      characterBudget: {
+              notifyParentOnCompletion: { title: 'Prévenir le parent à la fin des exécutions', subtitle: 'Envoie un événement de fin structuré à l’agent parent.' },
+              characterBudget: {
         title: "Budget des règles personnalisées",
         subtitle: ({ value }: { value: string }) => `${value} caractères`,
         promptTitle: "Budget des règles personnalisées",
@@ -2425,10 +2467,10 @@ export const fr = {
         actionsSubtitle: 'Choisis où chaque action apparaît dans l’app, la voix et les intégrations.',
     prompts: "Prompts et skills",
     promptsSubtitle: "Bibliothèque de prompts, modèles et stacks",
-    servers: "Relais",
-    serversSubtitle: "Relays enregistrés, groupes et valeurs par défaut",
+    servers: "Homes",
+    serversSubtitle: "Homes enregistrés, groupes et valeurs par défaut",
 		    systemStatus: "État du système",
-		    systemStatusSubtitle: "Relays, compte, machines, daemon",
+		    systemStatusSubtitle: "Homes, compte, machines, daemon",
 		    mcpServers: "Serveurs MCP",
 		    mcpServersSubtitle: "Gère les serveurs MCP et leurs bindings",
 		    mcpServersComingSoon: "Les réglages des serveurs MCP arrivent bientôt.",
@@ -2848,10 +2890,10 @@ export const fr = {
       application: "Demande",
       updates: "Mises à jour",
       appHealth: "Santé de l’app et de la sync",
-      currentServer: "Relay actuel",
+      currentServer: "Home actuel",
       identity: "Identité connectée",
-      configuredServers: "Relays configurés",
-      machinesActiveServer: "Machines (relay actif)",
+      configuredServers: "Homes configurés",
+      machinesActiveServer: "Machines (Home actif)",
       machinesOtherServer: ({ server }: { server: string }) => `Machines (${server})`,
       actions: "Actions",
     },
@@ -2896,13 +2938,18 @@ export const fr = {
     },
     server: {
       activeServer: "Home actif",
+      activeHomeHealth: "État du Home actif",
+    },
+    transport: {
+      irohCurrent: "Transport Iroh",
+      irohHistory: "Historique du transport Iroh",
     },
     identity: {
       accountId: "Id du compte",
       username: "Nom d’utilisateur",
     },
     servers: {
-      noneConfigured: "Aucun relay configuré",
+      noneConfigured: "Aucun Home configuré",
       active: "Actif",
     },
     machines: {
@@ -2932,9 +2979,9 @@ export const fr = {
     },
     actions: {
       runDiagnosis: "Lancer un diagnostic",
-      runDiagnosisSubtitle: "Détecte les incohérences relay/compte/daemon",
+      runDiagnosisSubtitle: "Détecte les incohérences Home/compte/daemon",
       refreshMachineAttribution: "Actualiser l’attribution des daemons",
-      refreshMachineAttributionSubtitle: "Récupère le relay/compte du daemon pour quelques machines en ligne",
+      refreshMachineAttributionSubtitle: "Récupère le Home/compte du daemon pour quelques machines en ligne",
       copyJson: "Copier le JSON de l’état système",
       copyJsonSubtitle: "Partage un snapshot expurgé pour le support",
     },
@@ -3563,6 +3610,7 @@ export const fr = {
         memberActive: "Membre actif",
         memberEnabled: "Activé",
         memberDisabled: "Désactivé",
+        memberAutoDisabledModelNotEntitled: "Désactivé automatiquement : modèle sélectionné indisponible",
         memberPriority: ({ priority }: { priority: number }) => `Priorité ${priority}`,
         memberExhaustedUntil: ({ time }: { time: string }) => `Épuisé jusqu’à ${time}`,
         memberQuotaExhaustedUntil: ({ time }: { time: string }) => `Limite d’utilisation jusqu’à ${time}`,
@@ -3621,8 +3669,25 @@ export const fr = {
         membersSubtitle: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} activés`,
         optionsTitle: "Possibilités",
         autoSwitchTitle: "Repli automatique",
+        autoQuotaResetTitle: "Utiliser automatiquement les resets de quota",
+        autoDisablePlanInvalidTitle: "Désactiver les comptes incompatibles avec le modèle sélectionné",
+        autoDisablePlanInvalidSubtitle: "Désactive automatiquement un compte du pool lorsque son offre ne permet pas d’utiliser le modèle sélectionné. Vous pouvez le réactiver manuellement. Désactivé par défaut.",
+        autoQuotaResetSubtitle: "Utilise un reset disponible uniquement si aucun compte du pool n’est prêt et que son quota épuisé peut être réinitialisé. Désactivé par défaut.",
         autoSwitchEnabledSubtitle: "Bascule vers un autre membre quand le compte actif a besoin d’une récupération.",
         autoSwitchDisabledSubtitle: "Continue d’utiliser le membre actif jusqu’à ce que tu changes manuellement.",
+        quotaLimitsTitle: "Limites d’utilisation",
+        quotaLimitsAllTitle: "Toutes les limites signalées",
+        quotaLimitsAllSubtitle: "Utilise toutes les allocations signalées par ce provider pour décider des changements.",
+        quotaLimitsAllLoadingSubtitle: ({ count }: { count: number }) => `La liste des limites peut être incomplète pendant le chargement de ${count} ${count === 1 ? "compte" : "comptes"}.`,
+        quotaLimitsSelectedSubtitle: ({ count }: { count: number }) => `${count} ${count === 1 ? "limite sélectionnée" : "limites sélectionnées"}`,
+        quotaLimitUnavailableSubtitle: "Non signalée actuellement · conservée dans la politique de ce pool",
+        quotaLimitProviderAllowanceTitle: "Allocation du provider",
+        quotaLimitTechnicalIdSubtitle: ({ providerLimitId }: { providerLimitId: string }) => `Identifiant de limite : ${providerLimitId}`,
+        quotaLimitModelSubtitle: ({ modelId }: { modelId: string }) => `Modèle : ${modelId}`,
+        quotaLimitModelsSubtitle: ({ count }: { count: number }) => `${count} portées de modèle`,
+        quotaLimitWindowsSubtitle: ({ count }: { count: number }) => `${count} fenêtres`,
+        quotaLimitReportingSubtitle: ({ reporting, total }: { reporting: number; total: number }) => `${reporting} comptes activés sur ${total} la signalent`,
+        quotaLimitsSearchPlaceholder: "Rechercher des limites d’utilisation",
         strategyTitle: "Stratégie de sélection",
         strategyPriorityTitle: "Ordre de priorité",
         strategyPrioritySubtitle: "Essaie d’abord les numéros de priorité les plus bas.",
@@ -4187,6 +4252,25 @@ export const fr = {
   },
 
   settingsNotifications: {
+        remoteAlerts: {
+            title: "Alertes de session lorsque l’app est fermée",
+            accountTitle: "Autoriser les alertes de session à distance",
+            disclosure: "Autorisez ce Home à lire vos catégories d’alertes, heures calmes et fuseau horaire, limites d’aperçu et préférences sonores pour envoyer les alertes autorisées lorsque l’app est fermée. Le contenu des sessions et les clés de chiffrement ne sont pas partagés.",
+            footer: "Sans ce consentement, les notifications existantes du propriétaire et les mises à jour au premier plan restent disponibles. Les modifications à distance nécessitent une connexion ; les alertes déjà envoyées ne peuvent pas être rappelées.",
+            deviceTitle: "Recevoir sur cet appareil",
+            deviceSubtitle: "Concerne uniquement les alertes de session à distance sur cet appareil.",
+            statusTitle: "Politique du Home",
+            current: "À jour lors de la dernière vérification",
+            disabled: "Non activé sur le Home",
+            stale: "Politique à synchroniser",
+            unavailable: "Alertes à distance indisponibles",
+            pending: "Les modifications locales attendent la synchronisation",
+            statusHelp: "L’état du Home reflète sa dernière politique confirmée, pas les modifications locales non synchronisées.",
+            deviceUnavailable: "Cette version de l’app ne peut pas inscrire cet appareil.",
+            deviceEnrolled: "Inscription de l’appareil confirmée",
+            deviceNotEnrolled: "Inscription de l’appareil non confirmée",
+            supportedEvents: "Cet appareil prend actuellement en charge les alertes de session prête. Leur réception dépend aussi de l’autorisation de notification du système.",
+        },
     badges: {
       title: 'Insignes',
       footer: 'Contrôle les compteurs de badges et les indicateurs desktop.',
@@ -4213,6 +4297,8 @@ export const fr = {
       readySubtitle: 'Afficher une notification locale quand un tour se termine',
       readyPreviewTitle: 'Aperçus des messages « prêt »',
       readyPreviewSubtitle: 'Inclure le dernier message de l’assistant dans les notifications de fin de tour sur cet appareil',
+            requestPreviewTitle: "Aperçu des demandes",
+            requestPreviewSubtitle: "Inclure les commandes à autoriser, les questions et les choix de réponse. Ils peuvent apparaître sur l’écran verrouillé.",
       permissionRequestsTitle: 'Demandes de permission',
       permissionRequestsSubtitle: 'Afficher une notification locale quand une session a besoin d’une approbation',
       userActionsTitle: 'Demandes d’action',
@@ -4347,6 +4433,8 @@ export const fr = {
       readySubtitle: 'Envoyer quand un tour se termine et que l’agent attend ta commande',
       readyPreviewTitle: 'Aperçus des messages « prêt »',
       readyPreviewSubtitle: 'Inclure le texte du dernier message de l’assistant dans les notifications de fin de tour pour ce webhook',
+            requestPreviewTitle: "Aperçu des demandes",
+            requestPreviewSubtitle: "Inclure les commandes à autoriser, les questions et les choix de réponse dans les données de ce webhook.",
       permissionRequestsTitle: 'Demandes de permission',
       permissionRequestsSubtitle: 'Envoyer quand une session est bloquée en attente d’approbation',
       userActionsTitle: 'Demandes d’action',
@@ -4379,6 +4467,10 @@ export const fr = {
         title: 'Aperçus des messages « prêt »',
         subtitle: 'Inclure le texte du dernier message de l’assistant dans les notifications push de fin de tour',
       },
+            requestPreview: {
+                title: "Aperçu des demandes",
+                subtitle: "Inclure les commandes à autoriser, les questions et les choix de réponse. Ils peuvent apparaître sur l’écran verrouillé.",
+            },
       permissionRequests: {
         title: "Demandes de permission",
         subtitle:
@@ -4522,6 +4614,15 @@ export const fr = {
         readyFallbackBody: 'Tour terminé. Ouvre la session pour continuer.',
         permissionFallbackBody: 'Approbation requise.',
         userActionFallbackBody: 'Cette session a besoin de ta réponse.',
+            requestLabels: {
+                command: "Commande",
+                file: "Fichier",
+                selectOne: "Choisissez une réponse",
+                selectMultiple: "Choisissez plusieurs réponses",
+                customAnswer: "Réponse personnalisée autorisée",
+                localMessages: "Messages locaux",
+                remoteMessages: "Messages distants",
+            },
       },
       channels: {
         default: 'Par défaut',
@@ -4916,31 +5017,6 @@ export const fr = {
             },
             kilo: {
                 title: "Kilo"
-            },
-            kimi: {
-                title: "Kimi",
-                sections: {
-                    compatibility: {
-                        title: 'Compatibilité',
-                        footer: 'N’utilise le mode compatibilité que sur les environnements Linux/conteneur où le démarrage de Kimi ACP se bloque.'
-                    }
-                },
-                fields: {
-                    kimiAcpPythonSelector: {
-                        title: 'Sélecteur stdio Python',
-                        subtitle: 'Choisis comment Happier démarre la boucle stdio Python de Kimi ACP.',
-                        options: {
-                            auto: {
-                                title: 'Automatique',
-                                subtitle: 'Utiliser le sélecteur Python par défaut de Kimi.'
-                            },
-                            poll: {
-                                title: 'Mode compatibilité',
-                                subtitle: 'Utiliser poll() au lieu de epoll() pour le stdio de Kimi ACP.'
-                            }
-                        }
-                    }
-                }
             },
             kiro: {
                 title: "Kiro"
@@ -5363,6 +5439,14 @@ export const fr = {
       invalidFormat: "Format invalide",
       operationFailed: "L’opération a échoué",
       signupDisabled: "Les inscriptions de nouveaux comptes sont désactivées sur ce serveur. Connecte-toi avec un compte existant ou demande à l’administrateur du serveur d’activer les inscriptions.",
+      accountDisabled: ({ home }: { home: string }) => `Ce compte est désactivé sur ${home}. Contacte un administrateur du Home.`,
+      homeIdentityMismatch: ({ home }: { home: string }) =>
+          `${home} a répondu comme un Home différent de celui enregistré ici. Aucune connexion n’a été établie. Vérifie l’adresse ou ajoute ce Home comme un nouveau.`,
+      homeAddressMismatchTitle: 'Est-ce le bon Home ?',
+      homeAddressMismatchBody: ({ claimed, reached }: { claimed: string; reached: string }) =>
+          `Tu as atteint ce Home à ${reached}, mais il indique ${claimed} comme adresse. Continue seulement si tu reconnais les deux adresses comme le même Home.`,
+      homeAddressNotConfirmed: ({ home }: { home: string }) =>
+          `La connexion à ${home} a été arrêtée car son adresse n’a pas été confirmée.`,
       failedToForkSession: "Impossible de forker la session",
       daemonUnavailableTitle: "Daemon indisponible",
       daemonUnavailableBody:
@@ -5617,6 +5701,94 @@ export const fr = {
       "Choisis une machine pour démarrer la session",
     noPathSelected:
       "Choisis un répertoire où démarrer la session",
+    temporaryComputer: {
+        title: 'Ordinateur temporaire',
+        subtitle: 'Préparer un paquet Runner vérifié pour un autre ordinateur.',
+        cancelConnectedTitle: 'Annuler cet ordinateur temporaire ?',
+        cancelConnectedBody: 'L’autre ordinateur est déjà connecté. Annuler ferme cette demande des deux côtés tout en conservant votre brouillon actuel ici.',
+        choosePlatform: 'Choisir la plateforme de l’ordinateur',
+        platformSubtitle: 'Paquet Happier Runner vérifié',
+        platform: {
+            'windows-x64': 'Windows · x64',
+            'darwin-arm64': 'macOS · Apple silicon',
+            'darwin-x64': 'macOS · Intel',
+            'linux-x64': 'Linux · x64',
+            'linux-arm64': 'Linux · ARM64',
+            unknown: 'Plateforme non reconnue',
+        },
+        destination: {
+            windows: 'Ordinateur Windows temporaire',
+            darwin: 'Ordinateur Mac temporaire',
+            linux: 'Ordinateur Linux temporaire',
+        },
+        exportPackage: 'Enregistrer ou partager le paquet',
+        exportClaimed: 'Un ordinateur a déjà ce paquet, il ne peut donc pas être renvoyé.',
+        target: {
+            home: ({ home }: { home: string }) => `Foyer : ${home}`,
+            account: ({ account }: { account: string }) => `Compte : ${account}`,
+            workspaceChoose: 'Ils choisissent le dossier',
+            workspaceHome: 'Leur dossier personnel',
+        },
+        endpointFacts: {
+            unreadable: 'Cet appareil ne peut pas lire les informations envoyées par cet ordinateur.',
+        },
+        createNewPackage: 'Créer un nouveau paquet',
+        returnToEditing: 'Revenir à l’édition',
+        unavailable: {
+            loading: 'Vérification des paquets disponibles…',
+            notAvailable: 'Les ordinateurs temporaires ne sont pas disponibles sur ce foyer.',
+            notPublished: 'Aucun paquet Happier Runner vérifié n’est encore publié pour ce foyer.',
+            unreachable: 'Impossible de vérifier les paquets Happier Runner. Vérifiez votre connexion et réessayez.',
+            automation: 'Un ordinateur temporaire a besoin de quelqu’un pour approuver la demande : les automatisations ne peuvent donc pas en utiliser.',
+            platformRetired: 'Cette plateforme n’est plus publiée. Choisissez-en une autre.',
+        },
+        blocked: {
+            agentUnsupported: 'Cet agent ne peut pas s’installer seul sur un ordinateur temporaire. Choisissez un autre agent.',
+            modelUnselected: 'Choisissez un modèle d’équipe pour cet agent avant d’envoyer.',
+            modelUnavailable: 'Le modèle d’équipe sélectionné n’est pas disponible pour cet agent. Choisissez-en un autre.',
+            brokerUnavailable: 'L’accès à l’IA pour cet ordinateur temporaire n’a pas pu être préparé. Réessayez.',
+        },
+        expiry: {
+            title: 'Expiration du paquet',
+            never: 'Jamais',
+            neverDetail: 'Par défaut · le paquet attend jusqu’à la connexion ou votre annulation',
+            inOneDay: 'Dans 24 heures',
+            inOneWeek: 'Dans 7 jours',
+            custom: 'Choisir une date et une heure…',
+            dateLabel: 'Date',
+            timeLabel: 'Heure',
+            pastInstant: 'Choisis une heure future.',
+            noExpiry: 'Aucune expiration',
+            expiresAt: ({ date }: { date: string }) => `Expire le ${date}`,
+        },
+        closed: {
+            canceled: 'Cette demande d’ordinateur temporaire a été annulée.',
+            declined: 'L’autre ordinateur a refusé cette demande. Rien n’a été créé.',
+            expired: 'Cette demande a expiré avant la connexion de l’ordinateur temporaire.',
+            revoked: 'L’accès a changé, ce paquet ne peut donc plus être utilisé.',
+            failed: 'L’ordinateur temporaire n’a pas pu terminer sa configuration. Rien n’a été créé.',
+        },
+        status: {
+            idle: 'Prêt',
+            reconciling: 'Vérification de cette demande…',
+            preparing: 'Préparation du paquet…',
+            waiting_for_computer: 'En attente de l’ordinateur',
+            review_unavailable: 'L’accès IA sélectionné ne peut pas encore être préparé pour cet ordinateur temporaire. Annulez cette demande et réessayez après avoir mis à jour Happier.',
+            materialization_unavailable: 'Cet ordinateur temporaire ne peut pas encore créer la session. Annulez cette demande et réessayez après avoir mis à jour Happier.',
+            waiting_for_approval: 'En attente d’approbation',
+            connected: 'Ordinateur connecté',
+            installing_agent: 'Installation de l’Agent sélectionné…',
+            checking_ai_access: 'Vérification de l’accès IA…',
+            preparing_encryption: 'Préparation de la Session chiffrée…',
+            creating_session: 'Création de la Session…',
+            canceling: 'Annulation…',
+            profile_changed: 'Le profil sélectionné a changé ou a été supprimé, cette demande n’a donc pas été envoyée. Vérifiez la configuration de cette session.',
+            profile_environment_unavailable: 'Un secret requis par ce profil n’est pas disponible pour ce compte, cette demande n’a donc pas été envoyée. Vérifiez la configuration de cette session.',
+            cancel_failed: 'Impossible d’annuler hors ligne. Cette demande reste visible.',
+            failed: 'La configuration de l’ordinateur temporaire demande votre attention.',
+            succeeded: 'La session est prête.',
+        },
+    },
     machinePicker: {
       searchPlaceholder: "Rechercher des machines…",
       recentTitle: "Récents",
@@ -5824,6 +5996,9 @@ export const fr = {
   sessionHandoff: sessionHandoffTranslationExtensions.fr,
 
   session: {
+        access: sessionAccessTranslations['fr'],
+        follow: sessionFollowTranslations['fr'],
+        homeFreshness: sessionHomeFreshnessTranslations['fr'],
     providerBinding: providerSessionTranslations.fr,
     transcriptNavigation: {
       title: "Naviguer",
@@ -5910,6 +6085,8 @@ export const fr = {
         statusPaused: "En pause",
         statusComplete: "Terminé",
         statusBudgetLimited: "Limité par le budget",
+        budgetReachedBody: "Cet objectif a atteint son budget de jetons. Retirez le budget pour continuer.",
+        removeBudgetAndResume: "Retirer le budget et continuer",
         statusInterrupted: "Interrompu",
         setTitle: "Définir un objectif",
         setSubtitle: "Donne un cap à cette session pour que l’agent reste sur les rails.",
@@ -5931,6 +6108,16 @@ export const fr = {
       },
     },
     usageLimitRecovery: {
+        overloadTitle: "Modèle surchargé",
+        overloadWaiting: "En attente du prochain essai.",
+        overloadDispatching: "Nouvel essai en cours.",
+        overloadAwaiting: "En attente d’une réponse du modèle.",
+        overloadStopped: "Les essais automatiques sont arrêtés. Vous pouvez réessayer.",
+        overloadExhausted: "Les essais automatiques sont épuisés. Vous pouvez réessayer.",
+        overloadOffline: "Reconnectez-vous à la machine de la session pour vérifier les essais.",
+        stopRetrying: "Arrêter les essais",
+        overloadCountdown: ({ seconds, attempt }: { seconds: number; attempt: number }) => `Modèle surchargé — nouvel essai dans ${seconds} secondes · tentative ${attempt}`,
+        overloadAttempt: ({ attempt }: { attempt: number }) => `Tentative ${attempt}`,
       banner: {
         title: "Limite d’utilisation atteinte",
         body: "Happier peut attendre la réinitialisation de la limite et reprendre cette session automatiquement.",
@@ -6179,6 +6366,8 @@ export const fr = {
 	    resuming: "Reprise…",
 	    resumeFailed: "Échec de la reprise de la session",
 	    invalidLinkTitle: "Lien de session invalide",
+        whichHomeTitle: "Quel Home ?",
+        whichHomeDescription: "Cette session est connue sur plusieurs Homes. Choisissez le Home à ouvrir.",
 	    invalidLinkDescription: "Le lien de session est manquant ou invalide. Vérifie l’URL et réessaie.",
 	    resumeSupportNoteChecking:
 	      "Note : Happier vérifie encore si cette machine peut reprendre la session du provider.",
@@ -6243,6 +6432,7 @@ export const fr = {
               groupCount: ({ count }: { count: number }) => `${count} agents`,
               launchExecutionRunsTitle: "Lancer des Subagents",
               launchExecutionRunsSubtitle: "Ouvre le lanceur de Subagents avec les backends review, plan ou delegate.",
+              newAgentConversation: "Nouvelle conversation avec un agent",
               launchExecutionRunsAdvanced: "Avancé…",
               launchClaudeTeamsTitle: "Lancer des équipes Claude",
               launchClaudeTeamsSubtitle: "Crée une équipe ou lance un équipier avec les commandes structurées d’équipe Claude.",
@@ -6284,7 +6474,7 @@ export const fr = {
           actionMenu: {
             openA11y: "Ouvrir les actions de session",
 
-            backgroundFollow: "Suivi en arrière-plan",},
+            backgroundFollow: "Synchronisation en arrière-plan",},
         detailsPanel: {
             emptyHint: "Ouvre un fichier ou un diff depuis le panneau de droite.",
             unsupportedTab: "Onglet de détails non pris en charge.",
@@ -6385,13 +6575,28 @@ export const fr = {
             ambiguousTerminalDelivery: 'L’état de livraison est ambigu',
             terminalHostUnreachable: 'L’hôte du terminal est injoignable',
             runtimeDisposedBeforeDelivery: 'Le runtime s’est fermé avant la livraison',
+            targetUnavailable: 'La conversation d’agent sélectionnée n’est plus disponible. Rien n’a été envoyé.',
             runtimeConfigBlocked: 'La configuration du runtime bloque la livraison',
             invalidPromptText: 'Le texte du message ne peut pas être livré',
             manualUserHandled: 'Marqué comme traité',
             attemptExpiredBeforeWrite: 'La tentative de livraison a expiré avant l’écriture',
             providerRejectedBeforeAcceptance: 'Le provider a rejeté le message',
             payloadTooLarge: 'Message trop volumineux',
+            deliveryOutcomeUncertain: 'Ce message a peut-être déjà atteint l’agent — vérifiez avant de le renvoyer',
             unknown: 'L’état de livraison doit être vérifié',
+          },
+          admissionRejected: {
+            invalid: 'Le message n’a pas pu être accepté tel quel.',
+            archived: 'Cette session est archivée et n’accepte plus de saisie.',
+            unauthorized: 'Vous n’avez pas la permission d’envoyer dans cette session.',
+            targetUnavailable: 'La conversation d’agent sélectionnée n’est plus disponible. Rien n’a été envoyé.',
+            targetUpdateRequired: 'L’envoi vers une conversation d’agent nécessite une Home et un ordinateur à jour. Rien n’a été envoyé.',
+            cancelled: 'L’envoi a été annulé avant d’être accepté.',
+            untrustedAssertion: 'L’origine du message n’a pas pu être vérifiée.',
+            idempotencyConflict: 'Ce message a déjà été mis en file pour une autre cible.',
+            sourceAuthorityMismatch: 'Ce message appartient à une autre source et ne peut pas être envoyé d’ici.',
+            permissionCeilingRejected: 'Les permissions demandées dépassent ce que cette session autorise.',
+            encryptionModeMismatch: 'Ce message ne correspond pas au mode de chiffrement de la session.',
           },
           empty: "Aucun message en attente.",
           decryptFailed: "Impossible de déchiffrer ce message en attente.",
@@ -6487,6 +6692,8 @@ export const fr = {
       },
 
 
+      ...sessionResponsibilityTranslations.fr,
+        collaboration: sessionCollaborationTranslations.fr,
       sharing: {
         title: "Partage",
         directSharing: "Partage direct",
@@ -6816,7 +7023,7 @@ export const fr = {
 
   server: {
     // Used by Server Configuration screen (app/(app)/server.tsx)
-    serverConfiguration: "Réglages du relay",
+    serverConfiguration: "Réglages de Home",
     enterServerUrl: "Saisis une URL de relay",
     notValidHappyServer: "Ce n’est pas un Relay Happier valide",
     changeServer: "Changer de Home",
@@ -6833,7 +7040,7 @@ export const fr = {
       "C’est une fonctionnalité avancée. Ne change le relay que si tu sais ce que tu fais. Tu devras te déconnecter puis te reconnecter après un changement de relay.",
     useThisServer: "Utiliser ce Relay",
     autoConfigHint:
-      "Si tu héberges toi-même : configure d’abord le relay, puis connecte-toi (ou crée un compte), puis connecte ton terminal.",
+      "Si tu héberges toi-même : configure d’abord ton Home, puis connecte-toi (ou crée un compte), puis connecte ton terminal.",
     renameServer: "Renommer le Relay",
     renameServerPrompt: "Saisis un nouveau nom pour ce Relay.",
     renameServerGroup: "Renommer le groupe de Relays",
@@ -6882,25 +7089,25 @@ export const fr = {
     serverGroupMustHaveServer:
       "Un groupe de Relays doit contenir au moins un relay.",
     relayDrift: {
-        bannerDifferentRelayTitle: 'Ton service en arrière-plan est connecté à un autre Relay',
+        bannerDifferentRelayTitle: 'Ton service en arrière-plan est connecté à un autre Home',
         bannerDifferentRelayDescription: ({ activeRelayUrl, daemonRelayUrl }: { activeRelayUrl: string; daemonRelayUrl: string }) =>
             `App : ${activeRelayUrl} · Service en arrière-plan : ${daemonRelayUrl}`,
-        bannerNeedsAuthTitle: 'Ton service en arrière-plan doit se connecter à ce Relay',
+        bannerNeedsAuthTitle: 'Ton service en arrière-plan doit se connecter à ce Home',
         bannerNeedsAuthDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
             `L’app utilise ${activeRelayUrl}, mais le service en arrière-plan a encore besoin d’une approbation ou d’une connexion.`,
-        bannerNotConfiguredTitle: 'Ton service en arrière-plan n’est pas encore connecté à ce Relay',
+        bannerNotConfiguredTitle: 'Ton service en arrière-plan n’est pas encore connecté à ce Home',
         bannerNotConfiguredDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
             `L’app utilise ${activeRelayUrl}, mais cet ordinateur n’a pas terminé la connexion du service en arrière-plan.`,
-        bannerNotInstalledTitle: 'Ton service en arrière-plan n’est pas installé pour ce Relay',
+        bannerNotInstalledTitle: 'Ton service en arrière-plan n’est pas installé pour ce Home',
         bannerNotInstalledDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
             `L’app utilise ${activeRelayUrl}, mais cet ordinateur doit encore installer le service en arrière-plan correspondant.`,
         bannerNotRunningTitle: 'Ton service en arrière-plan est installé mais ne tourne pas',
         bannerNotRunningDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
             `L’app utilise ${activeRelayUrl}, mais le service en arrière-plan est arrêté et doit être redémarré.`,
-        repairAction: 'Connecter le service en arrière-plan à ce Relay',
-        progressTitle: 'Connexion du service en arrière-plan à ce Relay',
+        repairAction: 'Connecter le service en arrière-plan à ce Home',
+        progressTitle: 'Connexion du service en arrière-plan à ce Home',
         progressStepPrepare: 'Préparer le service en arrière-plan',
-        progressStepConfigureRelay: 'Mettre à jour la connexion au Relay',
+        progressStepConfigureRelay: 'Mettre à jour la connexion au Home',
         progressStepAuthenticate: 'Terminer la connexion et l’approbation',
         progressStepFinish: 'Terminer la réparation',
         statusUnknown: 'Inconnu',
@@ -6912,12 +7119,12 @@ export const fr = {
       automaticDeletionEnabled: "La suppression automatique est activée",
       detailsUnavailable: "La suppression automatique est activée, mais ce client ne peut pas afficher toutes les politiques actives",
       singlePolicySummary: ({ domain, policy }: { domain: string; policy: string }) => `${domain} : ${policy}`,
-      relayCleanupSummary: ({ policies }: { policies: string }) => `Ce relay nettoie ${policies}.`,
+      relayCleanupSummary: ({ policies }: { policies: string }) => `Ce Home nettoie ${policies}.`,
       relayCleanupAfterDays: ({ domain, count }: { domain: string; count: number }) => `${domain} après ${count} ${plural({ count, singular: 'jour', plural: 'jours' })}`,
       relayCleanupInactiveSessionsAfterDays: ({ count }: { count: number }) => `les sessions inactives après ${count} ${plural({ count, singular: 'jour', plural: 'jours' })}`,
       deleteInactiveSessionsDays: ({ count }: { count: number }) => `Supprime les sessions inactives après ${count} ${plural({ count, singular: 'jour', plural: 'jours' })}.`,
       deleteOlderThanDays: ({ count }: { count: number }) => `Supprime les données après ${count} ${plural({ count, singular: 'jour', plural: 'jours' })}.`,
-      sessionNotice: ({ count }: { count: number }) => `Ce relay supprime les sessions inactives après ${count} ${plural({ count, singular: 'jour', plural: 'jours' })} d’inactivité.`,
+      sessionNotice: ({ count }: { count: number }) => `Ce Home supprime les sessions inactives après ${count} ${plural({ count, singular: 'jour', plural: 'jours' })} d’inactivité.`,
       sessions: "Séances",
       sidechainMessages: "Transcriptions des sous-agents",
       usageEvents: "Événements d’utilisation",
@@ -6935,23 +7142,23 @@ export const fr = {
       automationRunEvents: "Événements d’exécution d’automatisation",
     },
     multiServerView: {
-      title: "Vue multi-Relay simultanée",
+      title: "Vue multi-Home simultanée",
       footer:
-        "Choisis s’il faut combiner plusieurs relays dans une seule liste de sessions.",
+        "Choisis s’il faut combiner plusieurs Homes dans une seule liste de sessions.",
       presentationTitle: "Mode de présentation",
       presentation: {
-        flatWithBadges: "Liste plate avec badges de Relay",
-        groupedByServer: "Groupé par Relay",
+        flatWithBadges: "Liste plate avec badges de Home",
+        groupedByServer: "Groupé par Home",
       },
     },
 
     reachabilityRemediation: {
       failedToOpenInstallLink: "Impossible d’ouvrir la page d’installation de Tailscale.",
       tailscale: {
-        title: "Ce relay utilise Tailscale",
-        desktopBody: "Cet ordinateur n’a pas pu joindre le relay via Tailscale. Tailscale n’est peut-être pas installé, pas connecté, ou pas relié au bon tailnet sur cet ordinateur.",
-        webBody: "Ce navigateur n’a pas pu joindre le relay via Tailscale. Ouvre Tailscale sur cet appareil, vérifie qu’il est connecté au bon tailnet, puis réessaie.",
-        nativeBody: "Cet appareil n’a pas pu joindre le relay via Tailscale. Ouvre Tailscale, vérifie qu’il est connecté au bon tailnet, puis réessaie.",
+        title: "Ce Home utilise Tailscale",
+        desktopBody: "Cet ordinateur n’a pas pu joindre le Home via Tailscale. Tailscale n’est peut-être pas installé, pas connecté, ou pas relié au bon tailnet sur cet ordinateur.",
+        webBody: "Ce navigateur n’a pas pu joindre le Home via Tailscale. Ouvre Tailscale sur cet appareil, vérifie qu’il est connecté au bon tailnet, puis réessaie.",
+        nativeBody: "Cet appareil n’a pas pu joindre le Home via Tailscale. Ouvre Tailscale, vérifie qu’il est connecté au bon tailnet, puis réessaie.",
         installAction: "Installer Tailscale",
         desktopPrepareAction: "Préparer Tailscale",
       },
@@ -6967,7 +7174,9 @@ export const fr = {
     newTagConfirm: "Ajouter",
   },
 
-  sessionsList: {
+    sessionsList: {
+        reminders: sessionReminderTranslations['fr'],
+    ...sessionListFilterTranslations.fr,
     serverHeader: ({ server }: { server: string }) => `Serveur : ${server}`,
     storagePersistedTab: "Happier",
     storageAllFilter: "Tout",
@@ -7039,6 +7248,7 @@ export const fr = {
     showInactiveSessions: 'Afficher les sessions inactives',
     attentionSectionTitle: 'Nécessite ton attention',
     workingSectionTitle: 'En cours',
+    loadingSectionTitle: "Chargement",
         backgroundWorkingSectionTitle: 'Travail en arrière-plan',
     selectionSelectedCount: ({ count }: { count: number }) => count === 1 ? '1 session sélectionnée' : `${count} sessions sélectionnées`,
     selectionA11ySelectedCount: ({ count }: { count: number }) => count === 1 ? '1 session sélectionnée' : `${count} sessions sélectionnées`,
@@ -7104,6 +7314,10 @@ export const fr = {
     browseLoadMore: "Charger plus de sessions",
     browseFailedToLoad: "Échec du chargement des sessions externes.",
     browseLinkFailed: "Échec de la liaison de la session externe sélectionnée.",
+    browseCandidateActionsAccessibilityLabel: ({ title }: { title: string }) => `Plus d’actions pour ${title}`,
+    browseDeleteCandidateConfirmTitle: 'Supprimer la session du fournisseur ?',
+    browseDeleteCandidateConfirmMessage: ({ title, agent }: { title: string; agent: string }) => `Supprimer « ${title} » de ${agent} ? L’agent supprime sa propre session ; votre historique de sessions Happier est conservé.`,
+    browseDeleteCandidateFailed: 'Échec de la suppression de la session de l’agent.',
   },
 
     workspacePresentation: {
@@ -7399,6 +7613,8 @@ export const fr = {
       badgePlanMode: "Mode plan",
     },
     agent: {
+      sectionTitle: "Agent",
+      unselected: "Choisir un agent",
       claude: "Claude",
       codex: "Codex",
       cursor: "Cursor",
@@ -7712,6 +7928,7 @@ export const fr = {
       summaryEdits: ({ count }: { count: number }) =>
         `${count} modification${plural({ count, singular: "modification", plural: "modifications" })}`,
     },
+    subAgentTitle: ({ label }: { label: string }) => `${label} Agent`,
     names: {
       task: "Tâche",
       subAgent: "Sous-agent",
@@ -7806,6 +8023,8 @@ export const fr = {
   },
 
   files: {
+            revealInFiles: "Afficher dans Fichiers",
+            openChanges: "Ouvrir les modifications",
     searchPlaceholder: "Rechercher des fichiers…",
     clearSearchA11y: "Effacer la recherche",
     createFileA11y: "Créer un fichier",
@@ -8042,15 +8261,6 @@ export const fr = {
       "L’attribution du checkpoint n’a pas pu être déterminée.",
     otherRepositoryChanges: ({ count }: { count: number }) =>
       `Autres modifications du dépôt (${count})`,
-    attributionReliabilityHigh:
-      "Attribution au mieux. La vue dépôt reste la source de vérité.",
-    attributionReliabilityLimited:
-      "Fiabilité limitée : plusieurs sessions sont actives sur ce dépôt. Seule l’attribution directe est affichée.",
-    attributionLegendFull:
-      "direct = issu des opérations de cette session, inféré = attribution basée sur un snapshot",
-    attributionLegendDirectOnly: "direct = issu des opérations de cette session",
-    inferredSuppressed: ({ count }: { count: number }) =>
-      `${count} fichier inféré${count === 1 ? "" : "s"} dans les modifications propres au dépôt uniquement.${count === 1 ? "" : "s"} conservé${count === 1 ? "" : "s"} dans les modifications du dépôt uniquement.`,
     noSessionAttributedChanges:
       "Aucune modification attribuée à la session détectée pour l’instant.",
     noLatestTurnChanges:
@@ -8075,6 +8285,10 @@ export const fr = {
       noFilesInProject: "Aucun fichier dans le projet",
       repositoryFolderLoadFailed: "Impossible de charger le dossier",
       repositoryCollapseAll: "Tout replier",
+    commitCreated: "Commit créé",
+    commitRefreshFailed: ({ sha }: { sha: string }) => `Le commit ${sha} a été créé, mais l’actualisation du dépôt a échoué. Réessayez pour actualiser le suivi des modifications.`,
+    refreshingRepository: "Actualisation du dépôt…",
+    retryRefresh: "Réessayer l’actualisation",
     sourceControlOperationsLog: {
       title: "Opérations de gestion de version récentes",
       allSessions: "Toutes les sessions",
@@ -8090,8 +8304,11 @@ export const fr = {
       reviewNoMatches: "Aucun résultat",
       reviewLargeDiffOneAtATime: "Diff volumineux détecté ; les diffs se chargeront au défilement.",
       reviewDiffRequestFailed: "Impossible de charger le diff",
+          reviewPreviousHunk: "Bloc précédent",
+          reviewNextHunk: "Bloc suivant",
       reviewUnableToLoadDiff: "Impossible de charger le diff",
       tryDifferentTerm: "Essaie un autre terme de recherche",
+      previousSearchResults: "Résultats de la recherche précédente",
       searchResults: ({ count }: { count: number }) =>
         `Résultats de recherche (${count})`,
     projectRoot: "Racine du projet",
@@ -8114,7 +8331,9 @@ export const fr = {
         "Ce fichier a changé sur le disque pendant ton édition. Ton brouillon est resté inchangé ; relis la dernière version avant d’enregistrer.",
       selectionFailed: "Échec de la mise à jour de la sélection",
       openReviewCommentsFailed: "Échec de l’ouverture des commentaires de revue",
-          reviewComments: {
+          reviewPreviousFile: "Fichier précédent",
+                  reviewNextFile: "Fichier suivant",
+                  reviewComments: {
           title: ({ count }: { count: number }) =>
             `Commentaires de revue (${count})`,
             placeholder: "Ajouter un commentaire de revue…",
@@ -8125,6 +8344,7 @@ export const fr = {
           modalSubtitle: "Choisis les commentaires qui seront envoyés avec ton prochain message.",
           modalSummary: ({ included, count }: { included: number; count: number }) =>
             `${included} sur ${count} sélectionnés pour le prochain prompt`,
+          goToComposer: 'Aller au message',
           detachOrDiscardTitle: "Supprimer les commentaires de revue ?",
           detachOrDiscardBody:
             "Détacher conserve les commentaires enregistrés mais les exclut du prochain prompt. Abandonner les supprime.",
@@ -8254,6 +8474,7 @@ export const fr = {
       combined: "Combiné",
     },
     fileActions: {
+      selectLines: 'Sélectionner des lignes',
       selectForCommit: "Sélectionner pour le commit",
       selectFilesToCommit: "Choisir les fichiers à commiter",
       stageFile: "Indexer le fichier",
@@ -8274,6 +8495,9 @@ export const fr = {
       selectEntireFileForCommit: "Sélectionner tout le fichier pour le commit",},
     toolbar: {
       changedFiles: "Fichiers modifiés",
+                projectFiles: "Projet",
+                allFiles: "Tous les fichiers",
+                projectFilesUnavailable: "Le filtre du projet est indisponible ici. Tous les fichiers sont affichés.",
       hiddenFiles: "Afficher les fichiers cachés",
       details: "Détails",
       upload: "Envoyer",
@@ -8570,8 +8794,6 @@ export const fr = {
       confirm: "Supprimer le verrou et réessayer",
       failed: ({ error }: { error: string }) => `Échec de la récupération du verrou d’index : ${error}`,
     },
-    checkpointAttributionExclusive:
-      "Le contenu du checkpoint est exact pour cet intervalle de tour et le worktree était exclusif à cette session.",
     noAgentReportedTurnChanges:
       "Aucune modification rapportée par l’agent détectée pour ce tour.",
     noCheckpointTurnChanges:
@@ -9315,6 +9537,9 @@ export const fr = {
       },
     },
     details: {
+      launchOrigin: {
+        discussion: ({ discussionId }: { discussionId: string }) => `Démarré depuis la conversation ${discussionId}`,
+      },
       titles: {
         executionRun: "Sous-agent",
         executionRunWithIntent: ({ intent }: { intent: string }) => `${intent} (sous-agent)`,
@@ -9606,14 +9831,18 @@ settingsSession: {
 	          activeColorAttentionOnlySubtitle: 'Utilise la couleur active uniquement pour les sessions qui demandent ton attention.',
 	          activeColorAllActiveTitle: 'Toutes les sessions actives',
 	          activeColorAllActiveSubtitle: 'Utilise la couleur active pour toutes les sessions actives connectées.',
-	          sectionModeTitle: 'Sections de sessions',
-	          sectionModeSubtitle: 'Choisis si les sessions sont séparées par activité.',
-	          sectionModeActivitySelectedSubtitle: 'Sépare les sessions actives et inactives',
-	          sectionModeSingleSelectedSubtitle: 'Affiche une seule section de sessions groupée par workspace',
-	          sectionModeActivityTitle: 'Actives et inactives',
-	          sectionModeActivitySubtitle: 'Sépare les sessions par activité avant le groupement par workspace.',
-	          sectionModeSingleTitle: 'Toutes les sessions ensemble',
-	          sectionModeSingleSubtitle: 'Utilise une seule section de sessions et garde le groupement par workspace pour chacune.',
+	          layoutTitle: 'Disposition',
+	          layoutSubtitle: 'Organisez l’unique liste de sessions par projet, récence ou activité.',
+	          layoutProjectsTitle: 'Projets',
+	          layoutRecentActivityTitle: 'Activité récente',
+	          layoutActiveInactiveTitle: 'Actives et inactives',
+	          attentionPlacementTitle: 'Placement de l’attention',
+	          sectionsTitle: 'Sections',
+	          placementInPlaceTitle: 'En place',
+	          placementAtTopTitle: 'En haut',
+	          placementWithinGroupsTitle: 'Dans les groupes',
+	          sortWithinProjectsTitle: 'Trier dans les projets',
+	          folderDisplayOffTitle: 'Sans dossiers',
 	          menuSections: {
 	              sortBy: 'Trier par',
 	              show: 'Afficher',
@@ -11374,6 +11603,7 @@ settingsSession: {
   },
 
   settingsAccount: {
+        security: "Sécurité du compte",
     history: {
       title: "Historique des réglages",
       footer: "Restaure les préférences du compte depuis un instantané enregistré. Les données d'application, les secrets et les identifiants conservent leurs valeurs actuelles.",
@@ -11414,8 +11644,10 @@ settingsSession: {
       `Afficher ${provider} sur le profil`,
     tapToDisconnect: "Touche pour déconnecter",
       accountServiceOAuth: accountServiceOAuthTranslations.fr,
+        nativePassword: nativePasswordTranslations['fr'],
       accountHomeDiscoveryTitle: 'Compte et découverte des Homes',
       accountServiceSignInService: 'Service de connexion',
+      accountServiceSignedInTo: ({ accountService }: { accountService: string }) => `Connecté à ${accountService}`,
       accountServiceIdentity: 'Identité du service',
       accountServiceHomeDirectoryCapability: 'Capacité de découverte des Homes',
       accountServiceHomeEnrollmentCapability: 'Capacité de connexion aux Homes',
@@ -11425,42 +11657,47 @@ settingsSession: {
       accountServiceDiagnosticUnsupported: 'Non pris en charge',
       accountServiceDiagnosticUnavailable: 'Indisponible',
     accountServiceHomes: 'Homes du service de compte',
+    accountServiceFindHomes: 'Trouver vos Homes',
+        accountServiceFindHomesDescription: 'Trouve les Homes associés et ouvre le Home sélectionné ou préféré.',
         accountServiceCheckingConnection: 'Checking connection…',
-        accountServiceReconnectRequired: 'Reconnect Account Service',
-        accountServiceReconnectDescription: 'Your Account Service sign-in has expired. Sign in again to refresh or connect Homes.',
+        accountServiceReconnectRequired: ({ accountService }: { accountService?: string }) => accountService ? `Reconnecte-toi à ${accountService}` : 'Reconnecte-toi à ton compte',
+        accountServiceReconnectDescription: 'La connexion à ton compte a expiré. Reconnecte-toi pour actualiser ou connecter des Homes.',
         accountServiceDiscoveryDescription: 'Discovers and connects linked Homes automatically. Your existing Homes and current focus stay unchanged.',
         accountServiceDiscoveringHomes: 'Discovering linked Homes…',
         accountServiceDiscoveryUnsupported: 'Home discovery is not available',
-        accountServiceDiscoveryUnsupportedDescription: 'Choose another Account Service to discover linked Homes.',
+        accountServiceDiscoveryUnsupportedDescription: 'Utilise un autre compte pour trouver les Homes associés.',
         accountServiceDiscoveryUnavailable: 'Homes could not be refreshed',
         accountServiceDiscoveryUnavailableDescription: 'Your existing Homes and current focus are unchanged. Try again.',
         accountServiceHomesEmpty: 'No linked Homes yet',
-        accountServiceHomesEmptyDescription: 'Link a Home to this Account Service, then refresh.',
+        accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `Aucun Home n’est encore associé à ${accountService}. Associe un Home, puis actualise.` : 'Aucun Home n’est encore associé à ce compte. Associe un Home, puis actualise.',
         accountServiceConnectHome: 'Connect Home',
         accountServiceLinkThisHome: 'Link this Home',
-        accountServiceLinkThisHomeDescription: 'Let {accountService} help your other devices find this Home and request access.',
+        accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `Autorise ${accountService} à aider tes autres appareils à trouver ce Home et à demander l’accès.` : 'Autorise ton compte à aider tes autres appareils à trouver ce Home et à demander l’accès.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
         accountServiceHomeApprovalRequired: 'Approval needed',
         accountServiceHomeConnectionFailed: 'Connection failed',
     accountServicePreferredHome: 'Préféré',
     accountServiceSetPreferredHome: 'Définir comme préféré',
-    accountServiceRemoveHome: 'Retirer du service de compte',
-    accountServiceRemoveHomeConfirmTitle: 'Retirer ce Home ?',
-    accountServiceRemoveHomeConfirmBody: ({ label }: { label: string }) => `${label} sera retiré uniquement de l’annuaire du service de compte. Son profil local, ses identifiants, ses données et sa connexion actuelle resteront inchangés.`,
-    accountServiceRelinkConfirmTitle: 'Reconnecter ce service de compte ?',
-    accountServiceRelinkConfirmBody: 'Le compte ou la clé de signature du service de compte a changé. Continuez uniquement si ce changement est attendu. Happier remplacera la relation de confiance épinglée sur ce Home.',
+    accountServiceRemoveHome: ({ accountService }: { accountService?: string }) => accountService ? `Retirer de mes Homes ${accountService}` : 'Retirer de mes Homes',
+    accountServiceRemoveHomeConfirmTitle: ({ label, accountService }: { label: string; accountService?: string }) => accountService ? `Retirer ${label} de ${accountService} ?` : `Retirer ${label} de tes Homes associés ?`,
+    accountServiceRemoveHomeConfirmBody: ({ label, accountService }: { label: string; accountService?: string }) => `${label} sera retiré uniquement de ${accountService ? `tes Homes ${accountService}` : 'tes Homes associés'}. Son profil local, ses identifiants, ses données et sa connexion actuelle resteront inchangés.`,
+    accountServiceUnlinkHome: ({ accountService }: { accountService?: string }) => accountService ? `Empêcher ${accountService} de se connecter à ce Home` : 'Arrêter la connexion déléguée à ce Home',
+    accountServiceUnlinkHomeConfirmTitle: ({ label, accountService }: { label: string; accountService?: string }) => accountService ? `Empêcher ${accountService} de se connecter à ${label} ?` : `Arrêter la connexion déléguée à ${label} ?`,
+    accountServiceUnlinkHomeConfirmBody: ({ label, accountService }: { label: string; accountService?: string }) => `${label} refusera désormais les nouvelles connexions venant de ${accountService ?? 'ce compte'}. Les appareils déjà connectés à ${label} gardent leur accès jusqu’à ce que tu les déconnectes là-bas, et ${label} reste dans ${accountService ? `tes Homes ${accountService}` : 'tes Homes associés'}.`,
+    accountServiceUnlinkHomeConfirmAction: 'Arrêter la connexion',
+    accountServiceRelinkConfirmTitle: ({ accountService }: { accountService?: string }) => accountService ? `Reconnecter ${accountService} ?` : 'Reconnecter ton compte ?',
+    accountServiceRelinkConfirmBody: ({ accountService }: { accountService?: string }) => `Le compte ou la clé de signature${accountService ? ` de ${accountService}` : ''} a changé. Continue uniquement si ce changement est attendu. Happier remplacera les informations de connexion fiables enregistrées pour ce Home.`,
     server: "Serveur",
     backup: "Sauvegarde",
-    backupDescription:
-      "Ta clé secrète est le seul moyen de récupérer ton compte. Conserve-la dans un endroit sûr, comme un gestionnaire de mots de passe.",
-    secretKey: "Sauvegarde ta clé secrète",
+    backupDescription: "Votre clé de récupération rétablit l’accès à ce compte chiffré. Conservez-la dans un endroit sûr, comme un gestionnaire de mots de passe.",
+    secretKey: "Clé de récupération",
     tapToReveal: "Touche pour afficher",
     tapToHide: "Touche pour masquer",
-    secretKeyLabel: "CLÉ SECRÈTE (TOUCHE POUR COPIER)",
+    secretKeyLabel: "CLÉ DE RÉCUPÉRATION (TOUCHE POUR COPIER)",
     secretKeyCopied:
-      "Clé secrète copiée dans le presse-papiers. Range-la en lieu sûr !",
-    secretKeyCopyFailed: "Échec de la copie de la clé secrète",
+      "Clé de récupération copiée dans le presse-papiers. Range-la en lieu sûr !",
+    secretKeyCopyFailed: "Échec de la copie de la clé de récupération",
     privacy: "Confidentialité",
     privacyDescription:
       "Aide à améliorer l’app en partageant des données d’usage anonymes. Aucune information personnelle n’est collectée.",
@@ -11474,7 +11711,7 @@ settingsSession: {
     logout: "Déconnexion",
     logoutSubtitle: "Se déconnecter de ce Home sur cet appareil",
     logoutConfirm:
-      "Veux-tu vraiment te déconnecter ? Assure-toi d’avoir sauvegardé ta clé secrète !",
+      "Veux-tu vraiment te déconnecter ? Assure-toi d’avoir sauvegardé ta clé de récupération !",
     currentHome: "Home actuel",
     logoutHome: ({ home }: { home: string }) => `Se déconnecter de ${home}`,
     logoutHomeSubtitle: ({ home }: { home: string }) => `Se déconnecter de ${home} sur cet appareil. Les autres Homes enregistrés et le service de compte resteront connectés.`,
@@ -11493,10 +11730,14 @@ settingsSession: {
     deleteAccountCleanupFailedTitle: "Compte supprimé",
     deleteAccountCleanupFailed: "Le serveur a confirmé la suppression, mais cet appareil n’a pas pu terminer l’effacement des données locales. Rouvre Happier et déconnecte-toi si le compte apparaît encore.",
     encryptionUpdateFailed: "Échec de la mise à jour du réglage de chiffrement",
-    secretKeyMissing: "Clé secrète indisponible. Restaure d’abord ton compte.",
+    requireE2ee: "Exiger le chiffrement de bout en bout",
+    requireE2eeDescription: "Refuse les réglages de compte et les sessions en clair sur cet appareil et les démons synchronisés.",
+    requireE2eeNeedsEncryptionTitle: "Activez d’abord le chiffrement",
+    requireE2eeNeedsEncryptionDescription: "Activez le chiffrement de bout en bout pour ce compte avant de l’exiger.",
+    secretKeyMissing: "Clé de récupération indisponible. Restaure d’abord ton compte.",
     restoreRequiredTitle: "Restauration requise",
     restoreRequiredBody:
-      "Ce compte a un historique chiffré. Pour réactiver le chiffrement sur cet appareil, restaure ta clé secrète. Si tu as perdu ta clé, tu peux réinitialiser le compte pour repartir de zéro (l’ancien historique chiffré ne pourra pas être récupéré).",
+      "Ce compte a un historique chiffré. Pour réactiver le chiffrement sur cet appareil, restaure ta clé de récupération. Si tu as perdu ta clé, tu peux réinitialiser le compte pour repartir de zéro (l’ancien historique chiffré ne pourra pas être récupéré).",
   },
 
   settingsLanguage: {
@@ -11774,8 +12015,8 @@ settingsSession: {
     clientSideProcessing: "Traitement côté client",
     linkProcessedLocally: "Lien traité localement dans le navigateur",
     linkProcessedOnDevice: "Lien traité localement sur l’appareil",
-    switchServerToConnectTerminal: ({ serverUrl }: { serverUrl: string }) =>
-      `Cette connexion concerne ${serverUrl}. Changer de serveur et continuer ?`,
+    switchServerToConnectTerminal: ({ serverUrl, signedInServerUrl }: { serverUrl: string; signedInServerUrl: string }) =>
+      `Cette connexion concerne ${serverUrl}. Vous êtes connecté à ${signedInServerUrl}. Changer de Home et continuer ?`,
   },
 
   terminalEmbedded: {
@@ -11872,7 +12113,7 @@ settingsSession: {
     // Navigation titles and screen headers
     connectTerminal: "Connecter le terminal",
     linkNewDevice: "Lier un nouvel appareil",
-    restoreWithSecretKey: "Restaurer avec la clé secrète",
+    restoreWithSecretKey: "Restaurer avec la clé de récupération",
     whatsNew: "Nouveautés",
     friends: "Amis",
     automations: "Automatisations",
@@ -11926,20 +12167,26 @@ settingsSession: {
     welcomeQuestionSubtitle: "C’est ta première fois ?",
     welcomeQuestionBody: "Happier est la salle de contrôle de tes agents de code IA. Pas d’email. Ton compte, c’est une clé privée, générée sur cet appareil.",
 
-    welcomePrimaryButton: "Première fois ici — on commence",
+    welcomePrimaryButton: "Nouveau ici ?",
     welcomePrimarySubtitle: "Un geste. Aucun formulaire. Ta clé reste ici.",
+    newHereHomeSubtitle: ({ home }: { home: string }) => `Crée un compte privé sur ${home}.`,
+    newHereServiceSubtitle: ({ service }: { service: string }) => `Crée un compte avec ${service}, puis trouve ou ajoute ton Home.`,
 
     welcomeSecondaryButton: "Connexion — j’utilise déjà Happier",
     continueWithKey: "Utiliser une clé",
     chooseSignInService: "Choisir le service de connexion",
+    accountKeyDescription: ({ service }: { service: string }) => `Saisissez la clé sécurisée pour ${service}.`,
+    accountKeySubmit: "Continuer en toute sécurité",
     signInServiceUrlPrompt: "Avancé : saisissez l’adresse du service utilisé pour vous connecter et trouver vos Homes.",
     signInServiceInvalidAddress: "Saisissez une adresse http ou https valide.",
     signInServiceUnavailableTitle: "Service de connexion injoignable",
     signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Impossible de se connecter à ${serverUrl}. Réessayez ou choisissez un autre service de connexion.`,
     signInServiceUnsupportedTitle: "Service de connexion non pris en charge",
+    signInServiceMethodlessTitle: "Aucune méthode de connexion n’est disponible ici",
+    signInOptionsPartialTitle: "Certaines options de connexion n’ont pas pu être chargées",
     signInServiceUnsupportedBody: "Cette adresse correspond à un Home ou ne propose pas de connexion au compte. Choisissez un autre service.",
     useDifferentHome: "Utiliser un autre Home",
-    welcomeSecondarySubtitle: "Scanne un QR code, ou saisis ta clé secrète",
+    welcomeSecondarySubtitle: "Scanne un QR code, ou saisis ta clé de récupération",
 
     // Unified onboarding redesign — returning-user copy variants.
     // Shown when localSettings.hasCompletedAuthOnce === true, i.e. the
@@ -12156,8 +12403,8 @@ settingsSession: {
           authRestoreSubtitle: 'Utilise un QR code ou un lien pour connecter cet appareil',
           addHomeTitle: 'Ajouter un autre Home',
           addHomeSubtitle: 'Scanne un QR code pour ajouter un Home sans quitter le Home actuel',
-          authSecretKeyTitle: 'Se connecter avec la clé secrète',
-          authSecretKeySubtitle: 'Saisis ta clé secrète pour te connecter à Happier',
+          authSecretKeyTitle: 'Se connecter avec la clé de récupération',
+          authSecretKeySubtitle: 'Saisis ta clé de récupération pour te connecter à Happier',
           authLostAccessTitle: 'Accès perdu ?',
           authLostAccessSubtitle: 'Réinitialise ton compte auprès de ton provider d’identité',
           webDesktopOnlyTitle: 'App desktop requise',
@@ -12441,6 +12688,8 @@ settingsSession: {
     },
     repairBackgroundServiceAction: "Réparer le service en arrière-plan",
     repairBackgroundServiceProgressTitle: "Réparation du service en arrière-plan",
+    cliPath: cliPathExposureTranslations.fr,
+    cliTrust: cliTrustPromptTranslations.fr,
     runtimeInventory: 'Inventaire du runtime Happier',
     runtimeInventoryOverview: 'Vue d’ensemble',
     runtimeInventoryInstallations: 'Installations',
@@ -12478,6 +12727,8 @@ settingsSession: {
     },},
 
   message: {
+
+      ...sessionMessageAccountActorTranslations['fr'],
       sessionReferenceUnavailable: "Session indisponible",
       sessionReferenceOpen: ({ name }: { name: string }) => `Ouvrir la session ${name}`,
     switchedToMode: ({ mode }: { mode: string }) => `Mode ${mode} activé`,
@@ -12913,6 +13164,45 @@ settingsSession: {
   },
 
   secrets: {
+    catalog: {
+      unavailableName: "Secret partagé",
+      operationFailed: "Ce secret partagé a changé ou est momentanément indisponible. Actualise et réessaie.",
+      outcomeUnknown: "Happier n’a pas pu confirmer si ce secret a été partagé. Actualise la liste avant de réessayer.",
+      shareDisclosureTitle: "Partager ce secret ?",
+      shareDisclosureBody: "Les personnes avec qui tu le partages peuvent l’utiliser partout où Happier accepte les secrets enregistrés. Les apps et les outils locaux peuvent en recevoir la valeur.",
+      shareDisclosureTargetCount: ({ count }: { count: number }) =>
+        count === 1 ? "1 destinataire" : `${count} destinataires`,
+      shareDisclosureConfirm: ({ target }: { target: string }) => `Partager avec ${target}`,
+      approvalPending: "En attente d’approbation. Tes modifications sont conservées jusqu’à la décision.",
+      approvalDeclined: "Cette demande n’a pas été approuvée, donc rien n’a changé.",
+      createSharedTitle: "Nouveau secret partagé",
+      createSharedSubtitle: "Crée un secret à partager avec des personnes, des Équipes ou des Groupes. Il n’est pas ajouté à tes secrets personnels.",
+      createSharedAction: "Ajouter un secret partagé",
+      kindTitle: "Type de secret",
+      kinds: {
+        apiKey: "Clé API",
+        token: "Token",
+        password: "Mot de passe",
+        other: "Autre",
+      },
+      actions: {
+        manageAccess: "Gérer l’accès",
+      },
+      relationship: {
+        owner: "Les tiens",
+        recipient: "Partagés avec toi",
+      },
+      status: {
+        ready: "Prêt",
+        preparing_encrypted_access: "Préparation de l’accès chiffré",
+        recipient_mode_unsupported: "Indisponible pour ce mode de chiffrement du compte",
+        temporarily_unavailable: "Momentanément indisponible · réessaie quand ce Home se reconnecte",
+        access_removed: "Accès retiré · choisis un autre secret",
+        deleted: "Supprimé · choisis un autre secret",
+        update_required: "Mets Happier à jour pour utiliser ce secret partagé",
+        resource_corrupt: "Les données du secret doivent être réparées",
+      },
+    },
     addTitle: "Nouveau secret",
     savedTitle: "Secrets enregistrés",
     badgeReady: "Secrets",
@@ -13371,9 +13661,24 @@ settingsSession: {
     appPanelsTitle: "Panneaux de plugins",
     appPanelsSubtitle: "Ouvre les panneaux d’app fournis par les plugins installés.",
     executionOriginReleaseContentConflict: "Le contenu de la release ne correspond pas. Publie une nouvelle version.",
-    administrationMachineTitle: "Machine d’administration",
-    executionOriginTitle: "Origine d’exécution",
+    administrationMachineTitle: "Gérer sur",
+    executionOriginTitle: "Exécuter sur",
+    targetSelection: {
+      clear: "Effacer la sélection",
+      locked: "Les détails de la machine sont verrouillés. Choisissez une autre machine.",
+      missing: "Introuvable. Choisissez une autre machine.",
+      replaced: "Remplacé. Choisissez explicitement le remplacement.",
+      revoked: "Accès révoqué. Choisissez une autre machine.",
+      selectionRequired: "Choisissez où ce plugin s’exécute.",
+      differentVersions: "Versions différentes. Choisissez la version à exécuter.",
+      pluginMismatch: "Cette sélection appartient à un autre plugin. Effacez-la pour choisir à nouveau.",
+      noMaterialization: "Aucune installation de plugin disponible.",
+      unknown: "La disponibilité n’a pas pu être vérifiée.",
+    },
     readOnlyProjectionUnavailable: "Les détails de plugin en cache sont en lecture seule : cette machine est joignable, mais son registre de plugins n’a pas pu être chargé. Réessaie pour gérer les plugins.",
+      installedEmpty: "Aucun plugin installé sur cette machine",
+      installationReadUnavailable: "Impossible de lire les plugins installés sur cette machine. Réessayez pour vérifier leur état actuel.",
+      readOnlyRefreshing: "Actualisation des plugins. Les informations précédentes restent visibles ; les actions attendent l’état actuel.",
     readOnlyAccountRecovery: "Les détails de plugin du compte sont disponibles, mais les détails propres à la machine ne le seront pas tant qu’une installation de plugin compatible n’est pas disponible.",
     readOnlySnapshot: "Les détails de plugin en cache sont en lecture seule tant que cette machine est déconnectée. Reconnecte-toi pour gérer les plugins.",
     viewSelectorLabel: "Vues de gestion des plugins",
@@ -13584,6 +13889,7 @@ settingsSession: {
     cacheSubtitle:
       'Les résumés de checkpoint sont réutilisés par reçu ; les résumés du working tree restent temporaires.',
   },
+    machinePools: machinePoolTranslations.fr,
     externalSessions: {
         ...externalSessionOperationTranslations.fr,
         ...externalSessionSettingsTranslations.fr,
@@ -13591,29 +13897,29 @@ settingsSession: {
         settingsEntrySubtitle: 'Vois comment Happier gère les sessions démarrées en dehors de l’app.',
         settingsSafetyGroupTitle: 'Comment ça marche',
         settingsPassiveTitle: 'Lecture seule par défaut',
-        settingsPassiveSubtitle: 'Ouvrir cette page est passif. Cela ne démarre ni ne reprend jamais un Agent, ne modifie pas sa configuration, n’installe pas de hooks et ne commence pas à suivre une session.',
-        settingsFollowGroupTitle: 'Suivi passif',
-        settingsRestoreTitle: 'Continuer le suivi passif après un redémarrage',
-        settingsRestoreEnabledSubtitle: 'Se reconnecter aux sessions que tu suis explicitement quand le daemon redémarre.',
-        settingsRestoreDisabledSubtitle: 'Ne pas se reconnecter aux sessions suivies après un redémarrage du daemon.',
+        settingsPassiveSubtitle: "Ouvrir cette page est passif. Cela ne démarre ni ne reprend jamais un Agent, ne modifie pas sa configuration, n’installe pas de hooks et ne commence pas à synchroniser une session.",
+        settingsFollowGroupTitle: "Garder la session externe synchronisée",
+        settingsRestoreTitle: "Continuer la synchronisation en arrière-plan après un redémarrage",
+        settingsRestoreEnabledSubtitle: "Se reconnecter aux sessions que tu as explicitement choisi de synchroniser quand le daemon redémarre.",
+        settingsRestoreDisabledSubtitle: "Ne pas se reconnecter aux sessions synchronisationes après un redémarrage du daemon.",
         settingsRestoreFooter: 'La restauration se contente d’observer une source d’Agent existante. Elle ne démarre ni ne reprend jamais l’Agent.',
         settingsNotificationsTitle: 'Notifications',
         settingsNotificationsActiveSubtitle: 'Les notifications « prêt » ne concernent que les sessions dont le suivi passif est activé.',
         settingsNotificationsInactiveSubtitle: 'Active le suivi passif d’une session pour recevoir ses notifications « prêt ».',
-        settingsActiveFollowsGroupTitle: 'Suivis de sessions',
+        settingsActiveFollowsGroupTitle: "Synchronisation des sessions externes",
         settingsActiveFollowsFooter: 'Chaque choix ne s’applique qu’à cette session. Les autres sessions ne sont jamais activées automatiquement.',
         settingsActiveFollowsEmptyTitle: 'Pas encore de sessions externes',
-        settingsActiveFollowsEmptySubtitle: 'Les sessions externes liées apparaîtront ici avec leur statut de suivi actuel.',
-        settingsFollowToggleHint: 'Démarre ou arrête le suivi passif en arrière-plan pour cette session.',
-        followStatusDisabled: 'Pas de suivi',
-        followStatusPaused: 'Suivi en pause',
-        followStatusReacquiring: 'Reconnexion du suivi…',
-        followStatusActive: 'Suivi actif',
-        followStatusError: 'Le suivi demande ton attention',
-        followStatusUnknown: 'Statut de suivi indisponible',
-        followStatusMachineOffline: 'Machine hors ligne — le suivi passif reprendra à la reconnexion',
-        followStatusUnsupported: 'Le suivi passif n’est pas pris en charge pour cet Agent',
-        followUpdateFailed: 'Happier n’a pas pu mettre à jour le suivi passif de cette session. Réessaie.',
+        settingsActiveFollowsEmptySubtitle: "Les sessions externes liées apparaîtront ici avec leur statut de synchronisation actuel.",
+        settingsFollowToggleHint: "Démarre ou arrête la synchronisation en arrière-plan pour cette session.",
+        followStatusDisabled: "Pas de synchronisation",
+        followStatusPaused: "Synchronisation en pause",
+        followStatusReacquiring: "Reconnexion de la synchronisation…",
+        followStatusActive: "Synchronisation active",
+        followStatusError: "La synchronisation demande ton attention",
+        followStatusUnknown: "Statut de synchronisation indisponible",
+        followStatusMachineOffline: "Machine hors ligne — la synchronisation en arrière-plan reprendra à la reconnexion",
+        followStatusUnsupported: "Cet Agent ne prend pas en charge la synchronisation en arrière-plan",
+        followUpdateFailed: "Happier n’a pas pu mettre à jour la synchronisation en arrière-plan de cette session. Réessaie.",
     browseTitle: "Parcourir les sessions externes",
     browseOpenExisting: "Parcourir les sessions externes",
     browseActionSubtitle: "Choisis une machine, un Agent et une session pour l’ouvrir ici.",
@@ -13643,6 +13949,10 @@ settingsSession: {
     browseLoadMore: "Charger plus de sessions",
     browseFailedToLoad: "Échec du chargement des sessions externes.",
     browseLinkFailed: "Échec de la liaison de la session externe sélectionnée.",
+    browseCandidateActionsAccessibilityLabel: ({ title }: { title: string }) => `Plus d’actions pour ${title}`,
+    browseDeleteCandidateConfirmTitle: 'Supprimer la session du fournisseur ?',
+    browseDeleteCandidateConfirmMessage: ({ title, agent }: { title: string; agent: string }) => `Supprimer « ${title} » de ${agent} ? L’agent supprime sa propre session ; votre historique de sessions Happier est conservé.`,
+    browseDeleteCandidateFailed: 'Échec de la suppression de la session de l’agent.',
   },
     pluginReactNative: {
     unavailable: "UI de plugin React Native indisponible",
@@ -13681,6 +13991,10 @@ settingsSession: {
         hostedWebEndpointPolicyDenied: 'L’adresse de cette vue est bloquée par sa politique de sécurité. Vérifie les réglages du plugin ou utilise un hôte pris en charge.',
         missingRequirement: 'Il manque un prérequis à cette vue de plugin sur cet appareil.',
     },
+    workflows: workflowTranslations.fr,
+    homeGovernance: homeGovernanceTranslations.fr,
+    teams: teamsTranslations.fr.teams,
+    identityAdministration: identityAdministrationTranslations.fr.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.fr,
         bootstrap: {

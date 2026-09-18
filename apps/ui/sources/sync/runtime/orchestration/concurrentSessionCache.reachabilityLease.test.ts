@@ -37,7 +37,11 @@ async function installHarness() {
     ];
     let credentials = { token: 'token-b-old', secret: 'secret-b-old' };
     const profileListeners = new Set<(generation: number) => void>();
-    const credentialListeners = new Set<() => void>();
+    const credentialListeners = new Set<(event: {
+        kind: 'credentials_set';
+        serverId: string;
+        serverUrl: string;
+    }) => void>();
     let networkAllowedListener: ((allowed: boolean) => void) | null = null;
     const pendingAcquires: DeferredLease[] = [];
     const createSocketTransport = vi.fn();
@@ -61,10 +65,23 @@ async function installHarness() {
         resetServerReachabilitySupervisors: async () => {},
     }));
     vi.doMock('@/auth/storage/tokenStorage', () => ({
+        ACCOUNT_ENCRYPTION_FIRST_KEY_PENDING_TTL_MS: 10 * 60 * 1000,
+        accountDirectoryAuthCredentials: {
+            read: async () => ({ kind: 'absent' }),
+            get: async () => null,
+            set: async () => true,
+            remove: async () => true,
+            clear: async () => true,
+            logout: async () => true,
+        },
         TokenStorage: {
             getCredentialsForServerUrl: vi.fn(async () => credentials),
         },
-        subscribeHomeCredentialMutations: (listener: () => void) => {
+        subscribeHomeCredentialMutations: (listener: (event: {
+            kind: 'credentials_set';
+            serverId: string;
+            serverUrl: string;
+        }) => void) => {
             credentialListeners.add(listener);
             return () => credentialListeners.delete(listener);
         },
@@ -142,7 +159,11 @@ async function installHarness() {
         },
         replaceSecondaryCredentials: async () => {
             credentials = { token: 'token-b-new', secret: 'secret-b-new' };
-            for (const listener of credentialListeners) listener();
+            for (const listener of credentialListeners) listener({
+                kind: 'credentials_set',
+                serverId: 'server-b',
+                serverUrl: 'https://stack-b.example.test',
+            });
             await vi.advanceTimersByTimeAsync(0);
         },
         resumeNetworkTwice: () => {

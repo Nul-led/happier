@@ -1,7 +1,9 @@
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
+import { mergeTurnChangeSets } from '@happier-dev/protocol';
 import { renderScreen } from '@/dev/testkit';
+import { useChangedFilesData } from '@/hooks/session/files/useChangedFilesData';
 import {
     installFilesContentCommonModuleMocks,
 } from '@/components/workspaces/scm/review/filesContentTestHelpers';
@@ -33,9 +35,6 @@ installFilesContentCommonModuleMocks({
                 if (key === 'files.checkpointUnavailable') return 'Checkpoint evidence is unavailable.';
                 if (key === 'files.noCheckpointTurnChanges') return 'No checkpoint changes currently detected.';
                 if (key === 'files.noSessionAttributedChanges') return 'No session-attributed changes currently detected.';
-                if (key === 'files.attributionReliabilityLimited') {
-                    return 'Reliability limited: multiple sessions are active for this repository';
-                }
                 return key;
             },
         });
@@ -53,12 +52,6 @@ vi.mock('@/components/ui/text/Text', () => ({
 
 vi.mock('@/components/ui/media/FileIcon', () => ({
     FileIcon: 'FileIcon',
-}));
-
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
@@ -110,11 +103,11 @@ describe('ChangedFilesList', () => {
         const screen = await renderScreen(<ChangedFilesList
                     theme={testTheme as any}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[file as any, directoryLike as any]}
                     sessionAttributedFiles={[]}
                     repositoryOnlyFiles={[]}
-                    suppressedInferredCount={0}
+
                     onFilePress={vi.fn()}
                     rowDensity="compact"
                 />);
@@ -139,21 +132,21 @@ describe('ChangedFilesList', () => {
         const smallScreen = await renderScreen(<ChangedFilesList
                     theme={testTheme as any}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[file as any]}
                     sessionAttributedFiles={[]}
                     repositoryOnlyFiles={[]}
-                    suppressedInferredCount={0}
+
                     onFilePress={vi.fn()}
                 />);
         const mixedScreen = await renderScreen(<ChangedFilesList
                     theme={testTheme as any}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[file as any, largeStatsFile as any]}
                     sessionAttributedFiles={[]}
                     repositoryOnlyFiles={[]}
-                    suppressedInferredCount={0}
+
                     onFilePress={vi.fn()}
                 />);
 
@@ -170,11 +163,11 @@ describe('ChangedFilesList', () => {
         const screen = await renderScreen(<ChangedFilesList
                     theme={testTheme as any}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[file as any]}
                     sessionAttributedFiles={[]}
                     repositoryOnlyFiles={[]}
-                    suppressedInferredCount={0}
+
                     onFilePress={vi.fn()}
                     renderFileActions={(f) => React.createElement('Action', { path: f.fullPath })}
                 />);
@@ -194,11 +187,11 @@ describe('ChangedFilesList', () => {
         const screen = await renderScreen(<ChangedFilesList
                     theme={testTheme as any}
                     changedFilesViewMode="repository"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[file as any]}
                     sessionAttributedFiles={[]}
                     repositoryOnlyFiles={[]}
-                    suppressedInferredCount={0}
+
                     onFilePress={vi.fn()}
                     onFilePressPinned={onFilePressPinned}
                 />);
@@ -214,20 +207,21 @@ describe('ChangedFilesList', () => {
         expect(onFilePressPinned).toHaveBeenCalledWith(file);
     });
 
-    it('renders session reliability warning when attribution is limited', async () => {
+    it('keeps uncertain Session attribution visible without inferring active peers', async () => {
         const { ChangedFilesList } = await import('./ChangedFilesList');
         const screen = await renderScreen(<ChangedFilesList
                     theme={testTheme as any}
                     changedFilesViewMode="session"
-                    attributionReliability="limited"
+
                     allRepositoryChangedFiles={[file as any]}
                     sessionAttributedFiles={[]}
                     repositoryOnlyFiles={[file as any]}
-                    suppressedInferredCount={1}
+
                     onFilePress={vi.fn()}
                 />);
 
-        expect(screen.getTextContent()).toContain('Reliability limited: multiple sessions are active for this repository');
+        expect(screen.getTextContent()).not.toContain('Reliability limited: multiple sessions are active for this repository');
+        expect(screen.getTextContent()).toContain('No session-attributed changes currently detected.');
     });
 
     it('renders latest-turn copy and rows when turn view is selected', async () => {
@@ -240,13 +234,13 @@ describe('ChangedFilesList', () => {
         const screen = await renderScreen(<ChangedFilesList
                     theme={testTheme as any}
                     changedFilesViewMode="turn"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[file as any, repositoryOnlyFile as any]}
-                    turnAttributedFiles={[{ file: file as any, confidence: 'high' }]}
+                    turnAttributedFiles={[{ file: file as any, turns: ['turn-1'], content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }]}
                     turnRepositoryOnlyFiles={[repositoryOnlyFile as any]}
                     sessionAttributedFiles={[]}
                     repositoryOnlyFiles={[]}
-                    suppressedInferredCount={0}
+
                     onFilePress={vi.fn()}
                 />);
 
@@ -265,7 +259,7 @@ describe('ChangedFilesList', () => {
         const screen = await renderScreen(<ChangedFilesList
                     theme={testTheme as any}
                     changedFilesViewMode="turn_checkpoint"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[]}
                     turnCheckpointFiles={[]}
                     turnCheckpointMetadata={{
@@ -278,7 +272,7 @@ describe('ChangedFilesList', () => {
                     }}
                     sessionAttributedFiles={[]}
                     repositoryOnlyFiles={[]}
-                    suppressedInferredCount={0}
+
                     onFilePress={vi.fn()}
                 />);
 
@@ -302,11 +296,11 @@ describe('ChangedFilesList', () => {
         const screen = await renderScreen(<ChangedFilesList
                     theme={testTheme as any}
                     changedFilesViewMode="session"
-                    attributionReliability="high"
+
                     allRepositoryChangedFiles={[sessionFile as any, repositoryOnlyFile as any]}
-                    sessionAttributedFiles={[{ file: sessionFile as any, confidence: 'high' }]}
+                    sessionAttributedFiles={[{ file: sessionFile as any, turns: ['turn-1'], content: { source: 'provider_native', confidence: 'exact' }, attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'unknown', evidence: [] }]}
                     repositoryOnlyFiles={[repositoryOnlyFile as any]}
-                    suppressedInferredCount={0}
+
                     onFilePress={vi.fn()}
                 />);
 
@@ -317,5 +311,106 @@ describe('ChangedFilesList', () => {
         const rows = screen.findAllByType('ScmChangeRow' as any);
         expect(rows).toHaveLength(1);
         expect(rows[0]?.props.file?.fullPath).toBe('src/session.ts');
+        expect(rows[0]?.props.accessibilityQualification).toContain('changedFileEvidence.content.exact');
+        expect(rows[0]?.props.accessibilityQualification).toContain('changedFileEvidence.attribution.session_exact');
+        expect(screen.findByTestId('changed-file-evidence-trigger')).not.toBeNull();
+    });
+
+    it('retains edit-to-rename turn lineage through the hook into a mounted evidence disclosure without exposing ids', async () => {
+        const { ChangedFilesList } = await import('./ChangedFilesList');
+        const { ChangedFileEvidenceDisclosure } = await import('@/components/workspaces/scm/changes/ChangedFileEvidenceDisclosure');
+        const sessionChangeSet = mergeTurnChangeSets({
+            sessionId: 's1',
+            turns: [
+                {
+                    sessionId: 's1',
+                    turnId: 'private-turn-edit',
+                    seqRange: { startSeqInclusive: 1, endSeqInclusive: 2 },
+                    status: 'completed',
+                    provider: 'codex',
+                    derivedAt: 1,
+                    files: [{
+                        filePath: 'src/old.ts',
+                        changeKind: 'modified',
+                        source: 'provider_native',
+                        confidence: 'exact',
+                        provider: 'codex',
+                    }],
+                },
+                {
+                    sessionId: 's1',
+                    turnId: 'private-turn-rename',
+                    seqRange: { startSeqInclusive: 3, endSeqInclusive: 4 },
+                    status: 'completed',
+                    provider: 'codex',
+                    derivedAt: 2,
+                    files: [{
+                        filePath: 'src/new.ts',
+                        previousFilePath: 'src/old.ts',
+                        changeKind: 'renamed',
+                        source: 'provider_native',
+                        confidence: 'exact',
+                        provider: 'codex',
+                    }],
+                },
+            ],
+        });
+
+        function MountedChangedFiles() {
+            const changed = useChangedFilesData({
+                sessionId: 's1',
+                scmSnapshot: {
+                    projectKey: 'm:/repo',
+                    fetchedAt: 1,
+                    repo: { isRepo: true, rootPath: '/repo' },
+                    branch: { head: 'main', upstream: null, ahead: 0, behind: 0, detached: false },
+                    stashCount: 0,
+                    hasConflicts: false,
+                    entries: [{
+                        path: 'src/new.ts',
+                        previousPath: 'src/old.ts',
+                        kind: 'renamed',
+                        includeStatus: '.',
+                        pendingStatus: 'R',
+                        hasIncludedDelta: false,
+                        hasPendingDelta: true,
+                        stats: {
+                            includedAdded: 0,
+                            includedRemoved: 0,
+                            pendingAdded: 1,
+                            pendingRemoved: 1,
+                            isBinary: false,
+                        },
+                    }],
+                    totals: {
+                        includedFiles: 0,
+                        pendingFiles: 1,
+                        untrackedFiles: 0,
+                        includedAdded: 0,
+                        includedRemoved: 0,
+                        pendingAdded: 1,
+                        pendingRemoved: 1,
+                    },
+                },
+                workspaceTouchedPaths: [],
+                searchQuery: '',
+                showAllRepositoryFiles: false,
+                sessionChangeSet,
+            });
+            return <ChangedFilesList
+                theme={testTheme as any}
+                changedFilesViewMode="session"
+                allRepositoryChangedFiles={changed.allRepositoryChangedFiles}
+                sessionAttributedFiles={changed.sessionAttributedFiles}
+                repositoryOnlyFiles={changed.repositoryOnlyFiles}
+                onFilePress={vi.fn()}
+            />;
+        }
+
+        const screen = await renderScreen(<MountedChangedFiles />);
+        const disclosure = screen.tree.findByType(ChangedFileEvidenceDisclosure);
+        expect(disclosure.props.entry.turns).toEqual(['private-turn-edit', 'private-turn-rename']);
+        expect(screen.getTextContent()).not.toContain('private-turn-edit');
+        expect(screen.getTextContent()).not.toContain('private-turn-rename');
     });
 });

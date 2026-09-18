@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { captureSessionAutomationAuthority } from './sessionAutomationAuthority';
 
-const eligibleMetadata = {
+// Session metadata is an open record at this boundary: a later case adds the
+// hidden-Session marker to the same fixture.
+const eligibleMetadata: Record<string, unknown> = {
     flavor: 'claude',
     claudeSessionId: 'claude-session-1',
     claudeTranscriptPath: '/tmp/claude-session-1.jsonl',

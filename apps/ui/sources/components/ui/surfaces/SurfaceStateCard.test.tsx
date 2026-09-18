@@ -2,7 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { createDeferred, renderScreen } from '@/dev/testkit';
 
 const accessibilityPlatform = vi.hoisted(() => ({
     os: 'web' as 'web' | 'ios' | 'android',
@@ -166,7 +166,8 @@ describe('SurfaceStateCard', () => {
 
     it('fires the primary action and supports async pending', async () => {
         const { SurfaceStateCard } = await import('./SurfaceStateCard');
-        const onPress = vi.fn();
+        const deferred = createDeferred<void>();
+        const onPress = vi.fn(() => deferred.promise);
         const screen = await renderScreen(
             <SurfaceStateCard
                 testID="state-card"
@@ -176,10 +177,11 @@ describe('SurfaceStateCard', () => {
             />,
         );
         expect(screen.getTextContent()).toContain('Retry');
-        await act(async () => {
-            screen.pressByTestId('state-card-action');
-        });
+        screen.pressByTestId('state-card-action');
+        screen.pressByTestId('state-card-action');
         expect(onPress).toHaveBeenCalledTimes(1);
+        deferred.resolve();
+        await act(async () => deferred.promise);
     });
 
     it('fires the secondary action independently', async () => {

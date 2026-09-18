@@ -70,6 +70,10 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
 import { storage } from './domains/state/storage';
 import type { Session } from './domains/state/storageTypes';
 import type { NormalizedMessage } from './typesRaw/normalize';
+import { getForkedTranscriptSnapshotCached } from './domains/sessionFork/forkedTranscriptSnapshot';
+import { insertForkDividersIntoTranscriptItems } from '@/components/sessions/transcript/forkContext/insertForkDividersIntoTranscriptItems';
+import { setActiveServerId, upsertServerProfile } from './domains/server/serverProfiles';
+import type { ServerAccountRequestAuthority } from './runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
 function isMainMessagesPageRequest(path: string, params: {
     sessionId: string;
@@ -100,6 +104,8 @@ type SyncForkPagingTestAccess = {
     sessionMessagesBeforeSeqByKey: Map<string, number>;
     sessionMessagesHasMoreOlderByKey: Map<string, boolean>;
     disconnectServer: () => void;
+    fetchMessages: (sessionId: string) => Promise<void>;
+    replaceWithServerTranscript: (session: Session, authority: { kind: 'hosted' }) => Promise<boolean>;
     prefetchForkedTranscriptContext: (sessionId: string) => Promise<void>;
     loadOlderMessagesForkAware: (sessionId: string) => Promise<{
         loaded: number;
@@ -183,6 +189,180 @@ describe('sync forked transcript paging', () => {
         vi.unstubAllGlobals();
     });
 
+    it('publishes initial-page coverage only once that page has materialized', async () => {
+        applyChildForkSession();
+        storage.setState((state) => ({
+            sessionMessages: {
+                ...state.sessionMessages,
+                child: { ...state.sessionMessages.child!, isLoaded: false },
+            },
+        }));
+        requestMock.mockResolvedValue(new Response(JSON.stringify({
+            messages: [{
+                id: 'child-start', seq: 2, localId: null, sidechainId: null, messageRole: 'user',
+                content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'first visible row' } } },
+                createdAt: 2, updatedAt: 2,
+            }],
+            hasMore: false, nextBeforeSeq: null,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        const observedFirstSeqs: Array<number | undefined> = [];
+        const unsubscribe = storage.subscribe((state) => {
+            if (state.sessionMessagesHistoryStartLoaded?.child !== true) return;
+            const fork = getForkedTranscriptSnapshotCached(state, 'child')!;
+            observedFirstSeqs.push(fork.combinedMessagesById[fork.combinedMessageIdsOldestFirst[0]!]?.seq);
+        });
+        try {
+            const { sync } = await import('./sync');
+            await (sync as unknown as SyncForkPagingTestAccess).fetchMessages('child');
+            expect(observedFirstSeqs.length).toBeGreaterThan(0);
+            expect(observedFirstSeqs.every((seq) => seq === 2)).toBe(true);
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('publishes account-authority refresh coverage only after its first page materializes', async () => {
+        const server = await upsertServerProfile({ serverUrl: 'https://fork-coverage.example', name: 'Fork coverage' });
+        await setActiveServerId(server.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: server.id, accountId: 'fork-account' });
+        applyChildForkSession();
+        const authority = {
+            scope: { serverId: server.id, accountId: 'fork-account' },
+            context: {
+                scope: 'scoped', timeoutMs: 30_000, targetServerId: server.id,
+                targetServerUrl: server.serverUrl, targetAccountId: 'fork-account', token: 'test-token', encryption: null,
+            },
+            request: async () => Response.json({
+                messages: [{
+                    id: 'account-start', seq: 2, localId: null, sidechainId: null,
+                    content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'account start' } } },
+                    createdAt: 2, updatedAt: 2,
+                }], hasMore: false, nextBeforeSeq: null,
+            }),
+            release: async () => undefined,
+        } satisfies ServerAccountRequestAuthority;
+        const observedFirstSeqs: Array<number | undefined> = [];
+        const unsubscribe = storage.subscribe((state) => {
+            if (state.sessionMessagesHistoryStartLoaded.child !== true) return;
+            const transcript = state.sessionMessages.child!;
+            observedFirstSeqs.push(transcript.messagesById[transcript.messageIdsOldestFirst[0]!]!.seq);
+        });
+        try {
+            const { sync } = await import('./sync');
+            await sync.refreshSessionMessages('child', { authority });
+            expect(observedFirstSeqs.length).toBeGreaterThan(0);
+            expect(observedFirstSeqs.every((seq) => seq === 2)).toBe(true);
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it.each([true, false])('publishes server-authority replacement coverage after materialization (hasMore=%s)', async (hasMore) => {
+        applyChildForkSession();
+        const previousCoverage = hasMore;
+        if (previousCoverage) storage.getState().markSessionMessagesHistoryStartLoaded('child');
+        const before = getForkedTranscriptSnapshotCached(storage.getState(), 'child')!;
+        requestMock.mockResolvedValue(Response.json({
+            messages: [{
+                id: 'replacement', seq: 2, localId: null, sidechainId: null, messageRole: 'user',
+                content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'replacement' } } },
+                createdAt: 2, updatedAt: 2,
+            }],
+            hasMore, nextBeforeSeq: hasMore ? 2 : null,
+        }));
+        const firstSeqAtCoverage: Array<number | undefined> = [];
+        const unsubscribe = storage.subscribe((state, previous) => {
+            if (state.sessionMessagesHistoryStartLoaded.child !== true
+                || previous.sessionMessagesHistoryStartLoaded.child === true) return;
+            const transcript = state.sessionMessages.child!;
+            firstSeqAtCoverage.push(transcript.messagesById[transcript.messageIdsOldestFirst[0]!]!.seq);
+        });
+        try {
+            const { sync } = await import('./sync');
+            await (sync as unknown as SyncForkPagingTestAccess).replaceWithServerTranscript(storage.getState().sessions.child!, { kind: 'hosted' });
+            expect(storage.getState().sessionMessagesHistoryStartLoaded.child === true).toBe(!hasMore);
+            expect(firstSeqAtCoverage).toEqual(hasMore ? [] : [2]);
+            expect(Object.values(storage.getState().sessionMessages.child!.messagesById).map((message) => message.seq)).toEqual([2]);
+            const replaced = getForkedTranscriptSnapshotCached(storage.getState(), 'child')!;
+            expect(replaced).not.toBe(before);
+            expect(Object.values(replaced.combinedMessagesById).map((message) => message.seq)).toEqual([2]);
+            if (hasMore) {
+                storage.getState().replaceSessionMessages('child', [{
+                    role: 'user', id: 'next-authority', seq: 3, localId: null, createdAt: 3,
+                    isSidechain: false, content: { type: 'text', text: 'next authority' },
+                }]);
+                const nextAuthority = getForkedTranscriptSnapshotCached(storage.getState(), 'child')!;
+                expect(Object.values(nextAuthority.combinedMessagesById).map((message) => message.seq)).toEqual([3]);
+            }
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('retains reached history start when a later snapshot merges a partial tail into the cache', async () => {
+        applyChildForkSession();
+        const { sync } = await import('./sync');
+        const syncForTest = sync as unknown as SyncForkPagingTestAccess;
+        syncForTest.sessionMessagesHasMoreOlderByKey.set('child:main', true);
+        syncForTest.sessionMessagesBeforeSeqByKey.set('child:main', 9);
+        requestMock.mockResolvedValue(new Response(JSON.stringify({
+            messages: [], hasMore: false, nextBeforeSeq: null,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        await syncForTest.loadOlderMessagesForkAware('child');
+        expect(storage.getState().sessionMessagesHistoryStartLoaded?.child).toBe(true);
+
+        storage.setState((state) => ({
+            sessionMessages: {
+                ...state.sessionMessages,
+                child: { ...state.sessionMessages.child!, isLoaded: false },
+            },
+        }));
+        requestMock.mockResolvedValue(new Response(JSON.stringify({
+            messages: [{
+                id: 'new-tail', seq: 100, localId: null, sidechainId: null, messageRole: 'user',
+                content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'new tail' } } },
+                createdAt: 100, updatedAt: 100,
+            }],
+            hasMore: true, nextBeforeSeq: 100,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        await syncForTest.fetchMessages('child');
+
+        const cachedSeqs = Object.values(storage.getState().sessionMessages.child!.messagesById).map((message) => message.seq);
+        expect(cachedSeqs).toContain(10);
+        expect(cachedSeqs).toContain(100);
+        expect(storage.getState().sessionMessagesHistoryStartLoaded?.child).toBe(true);
+    });
+
+    it.each(['reset', 'evict', 'delete', 'disconnect'] as const)('publishes empty-final-page coverage and clears it on %s', async (cleanup) => {
+        applyChildForkSession();
+        storage.getState().applySessions([createSession('child', forkMetadata('parent', 0))]);
+        const { sync } = await import('./sync');
+        const syncForTest = sync as unknown as SyncForkPagingTestAccess;
+        syncForTest.sessionMessagesHasMoreOlderByKey.set('child:main', true);
+        syncForTest.sessionMessagesBeforeSeqByKey.set('child:main', 9);
+        const before = getForkedTranscriptSnapshotCached(storage.getState(), 'child')!;
+
+        requestMock.mockResolvedValue(new Response(JSON.stringify({
+            messages: [], hasMore: false, nextBeforeSeq: null,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        await syncForTest.loadOlderMessagesForkAware('child');
+
+        const reached = getForkedTranscriptSnapshotCached(storage.getState(), 'child')!;
+        expect(reached.segments.at(-1)).toMatchObject({ isHistoryStartLoaded: true });
+        expect(reached).not.toBe(before);
+        const items = reached.combinedMessageIdsOldestFirst.map((messageId) => ({
+            kind: 'message' as const, id: messageId, messageId, createdAt: 10, seq: 10,
+        }));
+        expect(insertForkDividersIntoTranscriptItems({ items, fork: reached }).map((item) => item.kind))
+            .toEqual(['fork-divider', 'message']);
+
+        if (cleanup === 'reset') storage.getState().resetSessionMessages('child');
+        if (cleanup === 'evict') storage.getState().evictSessionMessages('child');
+        if (cleanup === 'delete') storage.getState().deleteSession('child');
+        if (cleanup === 'disconnect') syncForTest.disconnectServer();
+        expect(storage.getState().sessionMessagesHistoryStartLoaded.child).toBeUndefined();
+    });
+
     it('does not prefetch ancestor context while the child still has older pages', async () => {
         applyChildForkSession();
         storage.getState().applySessions([createSession('parent')]);
@@ -202,6 +382,54 @@ describe('sync forked transcript paging', () => {
         await syncForTest.prefetchForkedTranscriptContext('child');
 
         expect(requestMock).not.toHaveBeenCalled();
+    });
+
+    it('pages from an empty child through a partial parent and known empty intermediate segment', async () => {
+        storage.getState().applySessions([
+            createSession('child', forkMetadata('parent', 3)),
+            { ...createSession('parent', forkMetadata('empty', 0)), seq: 3 },
+            createSession('empty', forkMetadata('root', 2)),
+            { ...createSession('root', { path: '/tmp', host: 'h' }), seq: 2 },
+        ]);
+        storage.getState().applyMessages('root', [{
+            role: 'user', content: { type: 'text', text: 'cached root' }, id: 'root-row',
+            seq: 2, localId: null, createdAt: 2, isSidechain: false,
+        }]);
+        const { sync } = await import('./sync');
+        const syncForTest = sync as unknown as SyncForkPagingTestAccess;
+        for (const id of ['parent', 'empty', 'root']) syncForTest.activeServerSessionIds.add(id);
+        requestMock.mockImplementation(async (path: string) => {
+            const url = new URL(path, 'https://test.invalid');
+            if (url.pathname === '/v1/sessions/child/messages') {
+                return new Response(JSON.stringify({ messages: [], hasMore: false }), { status: 200 });
+            }
+            if (url.pathname === '/v1/sessions/parent/messages') {
+                const seq = url.searchParams.get('beforeSeq') === '4' ? 3 : 1;
+                return new Response(JSON.stringify({
+                    messages: [{
+                        id: `parent-${seq}`, seq, localId: null, sidechainId: null, messageRole: 'user',
+                        content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: `parent ${seq}` } } },
+                        createdAt: seq, updatedAt: seq,
+                    }],
+                    hasMore: seq > 1, nextBeforeSeq: seq,
+                }), { status: 200 });
+            }
+            throw new Error(`Unexpected request ${path}`);
+        });
+
+        await syncForTest.fetchMessages('child');
+        expect(storage.getState().sessionMessages.child!.isLoaded).toBe(true);
+        expect(storage.getState().sessionMessagesHistoryStartLoaded?.child).toBe(true);
+        await syncForTest.prefetchForkedTranscriptContext('child');
+        const partial = getForkedTranscriptSnapshotCached(storage.getState(), 'child')!;
+        expect(Object.values(partial.combinedMessagesById).map((message) => message.seq)).toEqual([3]);
+
+        await syncForTest.loadOlderMessagesForkAware('child');
+        const reached = getForkedTranscriptSnapshotCached(storage.getState(), 'child')!;
+        expect(reached.segments.map((segment) => segment.sessionId)).toEqual(['root', 'empty', 'parent', 'child']);
+        expect(reached.combinedMessageIdsOldestFirst.map((id) => reached.combinedMessagesById[id]!.seq))
+            .toEqual([2, 1, 3]);
+        expect(storage.getState().sessionMessages.root!.messageIdsOldestFirst).toHaveLength(1);
     });
 
     it('hydrates an unknown parent before loading ancestor context after child pages are exhausted', async () => {

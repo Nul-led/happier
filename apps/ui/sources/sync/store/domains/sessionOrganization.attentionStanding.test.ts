@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionAttentionStanding, SessionOrganizationSnapshot } from '@happier-dev/protocol';
 
-import { buildSessionOrganizationServerKey } from '@/sync/domains/session/organization';
+import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
 
 import {
     createSessionOrganizationDomain,
@@ -59,8 +59,8 @@ describe('session organization attention standings in the store', () => {
         }));
 
         expect(harness.get().sessionOrganizationAttentionStandingsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-a', 's2')]: standing('s2', true, 2),
-            [buildSessionOrganizationServerKey('srv-b', 'other')]: standing('other', true),
+            [buildSessionOrganizationSessionKey('srv-a', 's2')]: standing('s2', true, 2),
+            [buildSessionOrganizationSessionKey('srv-b', 'other')]: standing('other', true),
         });
     });
 
@@ -78,7 +78,7 @@ describe('session organization attention standings in the store', () => {
 
         expect(harness.get().sessionOrganizationAttentionStandingsBySessionKey).toBe(afterFetch);
         expect(harness.get().sessionOrganizationAttentionStandingsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-a', 's1')]: standing('s1', true),
+            [buildSessionOrganizationSessionKey('srv-a', 's1')]: standing('s1', true),
         });
     });
 
@@ -92,14 +92,14 @@ describe('session organization attention standings in the store', () => {
         const failing = harness.get().setSessionAttentionStandingOptimistic('srv-a', 's1', null);
         const later = harness.get().setSessionAttentionStandingOptimistic('srv-a', 's2', standing('s2', false, 5));
         expect(harness.get().sessionOrganizationAttentionStandingsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-a', 's2')]: standing('s2', false, 5),
+            [buildSessionOrganizationSessionKey('srv-a', 's2')]: standing('s2', false, 5),
         });
 
         harness.get().rollbackSessionOrganizationOptimistic(failing);
 
         expect(harness.get().sessionOrganizationAttentionStandingsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-a', 's1')]: standing('s1', true),
-            [buildSessionOrganizationServerKey('srv-a', 's2')]: standing('s2', false, 5),
+            [buildSessionOrganizationSessionKey('srv-a', 's1')]: standing('s1', true),
+            [buildSessionOrganizationSessionKey('srv-a', 's2')]: standing('s2', false, 5),
         });
         expect(Object.keys(harness.get().sessionOrganizationOptimisticRecords)).toEqual([later]);
     });
@@ -118,7 +118,7 @@ describe('session organization attention standings in the store', () => {
         harness.get().clearSessionOrganizationForServer('srv-a');
 
         expect(harness.get().sessionOrganizationAttentionStandingsBySessionKey).toEqual({
-            [buildSessionOrganizationServerKey('srv-b', 'other')]: standing('other', false),
+            [buildSessionOrganizationSessionKey('srv-b', 'other')]: standing('other', false),
         });
     });
 });

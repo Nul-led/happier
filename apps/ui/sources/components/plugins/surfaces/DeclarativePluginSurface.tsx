@@ -24,6 +24,7 @@ import {
 } from '@happier-dev/plugin-ui/environment';
 
 import {
+    ActionIdSchema,
     buildQualifiedPluginContributionKey,
     PluginDeclarativeComposerApplyEffectV1Schema,
     PluginContributionIdentityV1Schema,
@@ -345,7 +346,7 @@ function readFieldValue(
 }
 
 type DeclarativeActionBinding = Readonly<{
-    identity: PluginContributionIdentityV1;
+    identity: Parameters<BoundPluginSurfaceController['dispatchAction']>[0];
     qualifiedActionId: string;
     input?: PluginUiJsonValueV1;
 }>;
@@ -355,15 +356,23 @@ type DeclarativeComposerApplyBinding = Readonly<{
 }>;
 
 function readActionBinding(node: RecordValue, generation: string | null): DeclarativeActionBinding | null {
-    const action = record(node.action);
-    const identity = PluginContributionIdentityV1Schema.safeParse(action?.identity);
     const input = Object.prototype.hasOwnProperty.call(node, 'input')
         ? PluginUiJsonValueV1Schema.safeParse(node.input)
         : null;
+    if (!generation || (input !== null && !input.success)) return null;
+    if (node.hostAction !== undefined) {
+        const hostAction = ActionIdSchema.safeParse(node.hostAction);
+        if (!hostAction.success || node.action !== undefined || node.effect !== undefined) return null;
+        return {
+            identity: hostAction.data,
+            qualifiedActionId: hostAction.data,
+            ...(input === null ? {} : { input: input.data }),
+        };
+    }
+    const action = record(node.action);
+    const identity = PluginContributionIdentityV1Schema.safeParse(action?.identity);
     if (
-        !generation
-        || !identity.success
-        || (input !== null && !input.success)
+        !identity.success
         || action?.generation !== generation
         || action.qualifiedId !== buildQualifiedPluginContributionKey(identity.data)
     ) {

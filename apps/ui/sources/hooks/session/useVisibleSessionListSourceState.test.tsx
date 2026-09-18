@@ -40,13 +40,25 @@ const sourceState = vi.hoisted(() => ({
             },
         ] as SessionListIndexItem[],
     } as Record<string, SessionListIndexItem[]>,
+    querySource: {
+        statesByServerId: {},
+        byServerId: {},
+        source: null as SessionListIndexItem[] | null,
+        coverageComplete: false,
+        loadNext: vi.fn(),
+        refresh: vi.fn(),
+    },
+    queryInputs: [] as unknown[],
 }));
 
 function equivalentPairKey(left: string, right: string): string {
     return [left, right].sort().join('\u0000');
 }
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    // The real storage module is imported below, so the whole runtime graph under it
+    // still needs every genuine profile export; only identity equivalence is stubbed.
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     areServerProfileIdentifiersEquivalent: (leftRaw: string | null | undefined, rightRaw: string | null | undefined) => {
         const left = String(leftRaw ?? '').trim();
         const right = String(rightRaw ?? '').trim();
@@ -71,6 +83,13 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
 
 vi.mock('./useSessionListSelectionState', () => ({
     useSessionListSelectionState: () => sourceState.selection,
+}));
+
+vi.mock('@/sync/domains/session/listing/useSessionListQuerySourceState', () => ({
+    useSessionListQuerySourceState: (input: unknown) => {
+        sourceState.queryInputs.push(input);
+        return sourceState.querySource;
+    },
 }));
 
 describe('useVisibleSessionListSourceState', () => {
@@ -112,6 +131,15 @@ describe('useVisibleSessionListSourceState', () => {
         } as Record<string, SessionListIndexItem[]>;
         sourceState.equivalentPairs.clear();
         sourceState.selectedIndexRequests = [];
+        sourceState.querySource = {
+            statesByServerId: {},
+            byServerId: {},
+            source: null,
+            coverageComplete: false,
+            loadNext: vi.fn(),
+            refresh: vi.fn(),
+        };
+        sourceState.queryInputs = [];
     });
 
     it('returns the canonical selection together with the resolved visible source', async () => {
@@ -181,5 +209,65 @@ describe('useVisibleSessionListSourceState', () => {
             'alias-created-session',
         ]);
         expect(sourceState.selectedIndexRequests).toEqual([['srv-active-identity']]);
+    });
+
+    it('uses qualified query membership as the list source when query Homes are supplied', async () => {
+        const queryHomes = [{
+            serverId: 'srv-b',
+            queryKey: 'query-b',
+            query: {
+                v: 1 as const,
+                storage: 'active' as const,
+                includeInactive: false,
+                scope: 'my_work' as const,
+                attention: 'any' as const,
+                audiences: [],
+                tagIds: [],
+            },
+        }];
+        sourceState.querySource = {
+            statesByServerId: {},
+            byServerId: { 'srv-b': [{ type: 'session', sessionId: 'query-only', serverId: 'srv-b' }] },
+            source: [{ type: 'session', sessionId: 'query-only', serverId: 'srv-b' }],
+            coverageComplete: true,
+            loadNext: vi.fn(),
+            refresh: vi.fn(),
+        };
+
+        const { useVisibleSessionListSourceState } = await import('./useVisibleSessionListSourceState');
+        const hook = await renderHook(() => useVisibleSessionListSourceState({ queryHomes }));
+        await flushHookEffects();
+
+        expect(hook.getCurrent().source).toEqual(sourceState.querySource.source);
+        expect(hook.getCurrent().activeIndex).toBeNull();
+        expect(hook.getCurrent().query).toMatchObject({ active: true, coverageComplete: true });
+        expect(sourceState.queryInputs).toEqual([{
+            enabled: true,
+            homes: queryHomes,
+            emptySelectionComplete: false,
+        }]);
+    });
+
+    it('treats an empty query Home set as an intentionally empty filtered corpus', async () => {
+        sourceState.querySource = {
+            statesByServerId: {},
+            byServerId: {},
+            source: [],
+            coverageComplete: false,
+            loadNext: vi.fn(),
+            refresh: vi.fn(),
+        };
+
+        const { useVisibleSessionListSourceState } = await import('./useVisibleSessionListSourceState');
+        const hook = await renderHook(() => useVisibleSessionListSourceState({ queryHomes: [] }));
+        await flushHookEffects();
+
+        expect(hook.getCurrent().source).toEqual([]);
+        expect(hook.getCurrent().query.active).toBe(true);
+        expect(sourceState.queryInputs).toEqual([{
+            enabled: true,
+            homes: [],
+            emptySelectionComplete: false,
+        }]);
     });
 });

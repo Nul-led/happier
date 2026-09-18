@@ -1,9 +1,13 @@
+import { normalizeSessionAccessProjection } from './normalizeSessionAccessProjection';
 import {
   SessionSharedMetadataV1Schema,
+  SessionCurrentProjectionRecordV1Schema,
   SessionTurnsProjectionV1Schema,
+  isSessionEncryptionModeAllowedByClientRequirement,
   type AccountEncryptionCurrentnessResponse,
   type SessionTurnsProjectionV1,
   type V2SessionByIdResponse,
+  type ClientEncryptionRequirement,
 } from '@happier-dev/protocol';
 import type {
   SessionMetadataTupleMutationSnapshotV1,
@@ -34,32 +38,54 @@ import {
   classifySessionTupleApplyCurrentness,
 } from '@/sync/store/domains/sessionTupleApplyCurrentness';
 import {
+  hasExplicitCurrentOrResponsibilitySessionProjection,
   looksLikeCurrentV2SessionNotFound404,
   looksLikeMissingV2SessionRoute404,
   parseCompatSessionByIdResponse,
   scanSessionByIdFromCompatList,
 } from './sessionHttpCompat';
 import {
-  hasSessionShareRecipientAuthority,
+  projectSessionLayout1LockedOwnerVisibility,
   projectSessionLayout1OwnerMetadata,
   readSessionLayout1OwnerMetadata,
 } from './readSessionLayout1OwnerProjection';
+import {
+  createSessionDataKeyHydrationPlan,
+  hydrateSessionDataKeys,
+  readSessionDataKeyCredentialKind,
+  type SessionDataKeyViewerRole,
+  type SessionDataKeyHydrationResult,
+} from '@/sync/encryption/sessionDataKeyHydration';
+import type {
+  EncryptionGenerationScope,
+  EncryptionGenerationScopeAuthority,
+} from '@/sync/encryption/encryption';
+import {
+  deriveSessionContentAvailability,
+  isSessionContentReadable,
+  type SessionContentAvailability,
+} from '@/sync/domains/session/encryptedContentAvailability';
+import {
+  AccountEncryptionCurrentnessReadinessError,
+  fetchAccountEncryptionCurrentness,
+} from '@/sync/api/account/apiAccountEncryptionMode';
 
 type SessionEncryption = {
   encryptRaw?: (payload: unknown) => Promise<string>;
   decryptAgentState: (version: number, value: string | null) => Promise<any>;
-  decryptMetadata: (version: number, value: string) => Promise<any>;
-  decryptMetadataPayload?: (version: number, value: string) => Promise<unknown | null>;
+  decryptMetadata: (version: number, value: string, options?: import('@/sync/encryption/encryptor').DecryptOptions) => Promise<any>;
+  decryptMetadataPayload?: (version: number, value: string, options?: import('@/sync/encryption/encryptor').DecryptOptions) => Promise<unknown | null>;
 };
 
 export type SessionByIdEncryption = {
   decryptEncryptionKey: (value: string) => Promise<Uint8Array | null>;
   initializeSessions: (
     sessionKeys: Map<string, Uint8Array | null>,
-    options?: Readonly<{ shouldContinue?: () => boolean }>,
-  ) => Promise<void>;
+    options?: import('@/sync/encryption/encryption').EncryptionScopeInput,
+  ) => Promise<EncryptionGenerationScope | null | void>;
   getSessionEncryption: (sessionId: string) => SessionEncryption | null;
-};
+  removeSessionEncryption?: (sessionId: string) => void;
+} & Partial<EncryptionGenerationScopeAuthority>;
 
 type SessionDataKeyEnvelopeCache = Map<string, string>;
 type SessionByIdRequest = (path: string, init: RequestInit) => Promise<Response>;
@@ -84,12 +110,14 @@ function buildSessionByIdHttpReadKey(params: Readonly<{
   sessionId: string;
   serverId?: string | null;
   token: string;
+  accessProjectionVersion?: 1;
 }>): string {
-  return [
+  return JSON.stringify([
     String(params.serverId ?? '').trim(),
     params.token,
     params.sessionId,
-  ].join('\u0000');
+    params.accessProjectionVersion ?? null,
+  ]);
 }
 
 async function readSessionByIdHttp(params: Readonly<{
@@ -99,6 +127,7 @@ async function readSessionByIdHttp(params: Readonly<{
   request: SessionByIdRequest;
   requestAuthority?: object;
   timeoutMs: number;
+  accessProjectionVersion?: 1;
 }>): Promise<SessionByIdHttpRead> {
   const key = buildSessionByIdHttpReadKey(params);
   const requestAuthority = params.requestAuthority ?? params.request;
@@ -124,14 +153,17 @@ async function readSessionByIdHttp(params: Readonly<{
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timeoutId = controller ? setTimeout(() => controller.abort(), Math.max(1, timeoutMs)) : null;
     try {
-      const response = await params.request(`/v2/sessions/${encodeURIComponent(params.sessionId)}`, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${params.token}`,
-          'Content-Type': 'application/json',
+      const response = await params.request(
+        `/v2/sessions/${encodeURIComponent(params.sessionId)}${params.accessProjectionVersion === 1 ? '?accessProjectionVersion=1' : ''}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${params.token}`,
+            'Content-Type': 'application/json',
+          },
+          ...(controller ? { signal: controller.signal } : null),
         },
-        ...(controller ? { signal: controller.signal } : null),
-      });
+      );
       const body = await response.json().catch(() => null);
       syncPerformanceTelemetry.count('sync.sessionById.http.coalesced', { miss: 1 });
       return {
@@ -205,6 +237,74 @@ async function fetchSessionTurnsProjection(params: Readonly<{
   return parsed.data;
 }
 
+/**
+ * A Session the viewer is authorized to see but cannot decrypt is still a real Session. Applying a
+ * safe shell keeps the row and its Collaboration access reachable with a truthful settled state,
+ * instead of retiring it behind a retryable-looking `session_encryption_not_found`.
+ *
+ * Metadata, owner projection and agent state stay null so no component can render undecrypted
+ * bytes. This content state does not establish whether the Session belongs in a visible list;
+ * that remains a separate visibility decision.
+ */
+function applyLockedSessionShell(params: Readonly<{
+  row: V2SessionByIdResponse['session'];
+  sessionId: string;
+  serverId?: string | null;
+  encryptionMode: 'e2ee' | 'plain';
+  contentAvailability: SessionContentAvailability;
+  sessionDataKeyHydration: SessionDataKeyHydrationResult;
+  applySessions: (sessions: Array<Omit<Session, 'presence'> & { presence?: 'online' | number }>) => void;
+  getExistingSession?: (sessionId: string) => Session | null | undefined;
+  includeMetadataTupleMutationSnapshot: boolean;
+  ownerMetadataView?: Session['ownerMetadataView'];
+}>): {
+  ok: boolean;
+  session: HydratedSessionById | null;
+  sessionDataKeyHydration?: SessionDataKeyHydrationResult;
+  metadataTupleMutationSnapshot?: HydratedSessionMetadataTupleMutationSnapshot | null;
+} {
+  const {
+    ownerMetadata: _ownerMetadataEnvelope,
+    ...rowWithoutOwnerMetadata
+  } = params.row;
+  const serverId = typeof params.serverId === 'string' && params.serverId.trim().length > 0
+    ? params.serverId.trim()
+    : undefined;
+  const access = normalizeSessionAccessProjection(params.row, { allowLegacy: true });
+  const lockedSession = {
+    ...rowWithoutOwnerMetadata,
+    serverId,
+    encryptionMode: params.encryptionMode,
+    thinking: false,
+    thinkingAt: 0,
+    metadata: null,
+    ownerMetadataView: params.ownerMetadataView ?? null,
+    agentState: null,
+    agentStateVersion: params.row.agentStateVersion ?? 0,
+    access,
+    accessLevel: access?.level === 'owner' ? undefined : access?.level,
+    canApprovePermissions: access?.capabilities.approveRuntimePermissions,
+    encryptedContentAvailability: params.contentAvailability,
+  };
+  const previousSession = params.getExistingSession?.(params.sessionId);
+  if (
+    !classifySessionTupleApplyCurrentness(previousSession, lockedSession).fullyCurrent
+  ) {
+    return {
+      ok: false,
+      session: null,
+      ...(params.includeMetadataTupleMutationSnapshot ? { metadataTupleMutationSnapshot: null } : {}),
+    };
+  }
+  params.applySessions([lockedSession as unknown as Omit<Session, 'presence'> & { presence?: 'online' | number }]);
+  return {
+    ok: true,
+    session: lockedSession as unknown as HydratedSessionById,
+    sessionDataKeyHydration: params.sessionDataKeyHydration,
+    ...(params.includeMetadataTupleMutationSnapshot ? { metadataTupleMutationSnapshot: null } : {}),
+  };
+}
+
 export async function fetchAndApplySessionById(params: Readonly<{
   sessionId: string;
   serverId?: string | null;
@@ -223,9 +323,12 @@ export async function fetchAndApplySessionById(params: Readonly<{
   includeTurnsProjection?: boolean;
   includeMetadataTupleMutationSnapshot?: boolean;
   isCurrent?: () => boolean;
+  accessProjectionVersion?: 1;
+  clientEncryptionRequirement?: ClientEncryptionRequirement;
 }>): Promise<{
   ok: boolean;
   session: HydratedSessionById | null;
+  sessionDataKeyHydration?: SessionDataKeyHydrationResult;
   metadataTupleMutationSnapshot?:
     | HydratedSessionMetadataTupleMutationSnapshot
     | null;
@@ -256,6 +359,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
       request: params.request,
       requestAuthority: params.requestAuthority,
       timeoutMs,
+      accessProjectionVersion: params.accessProjectionVersion,
     });
     responseOk = response.ok;
     responseStatus = response.status;
@@ -278,6 +382,9 @@ export async function fetchAndApplySessionById(params: Readonly<{
         return { ok: false, session: null, errorCode: 'not_found', httpStatus: 404 };
       }
       if (looksLikeMissingV2SessionRoute404(body, sessionId)) {
+        if (params.accessProjectionVersion === 1) {
+          return { ok: false, session: null, errorCode: 'invalid_response', httpStatus: 404 };
+        }
         const fallbackRow = await scanSessionByIdFromCompatList({
           request: params.request,
           token: params.credentials.token,
@@ -309,6 +416,9 @@ export async function fetchAndApplySessionById(params: Readonly<{
 
   const parsed = parseCompatSessionByIdResponse(body);
   if (!parsed?.session) {
+    if (hasExplicitCurrentOrResponsibilitySessionProjection(body)) {
+      return { ok: false, session: null, errorCode: 'invalid_response' };
+    }
     const fallbackRow = await scanSessionByIdFromCompatList({
       request: params.request,
       token: params.credentials.token,
@@ -326,59 +436,144 @@ export async function fetchAndApplySessionById(params: Readonly<{
     return { ok: false, session: null, errorCode: 'invalid_response', httpStatus: responseOk ? undefined : status };
   }
 
-  const row = reparsed.session;
+  const currentProjection = params.accessProjectionVersion === 1
+    ? SessionCurrentProjectionRecordV1Schema.safeParse(reparsed.session)
+    : null;
+  if (currentProjection && !currentProjection.success) {
+    return { ok: false, session: null, errorCode: 'invalid_response' };
+  }
+
+  const row = currentProjection?.success ? currentProjection.data : reparsed.session;
+  const access = normalizeSessionAccessProjection(row, { allowLegacy: true });
   if (String(row.id ?? '').trim() !== sessionId) {
     return { ok: false, session: null, errorCode: 'invalid_response' };
   }
 
   const encryptionMode: 'e2ee' | 'plain' = row.encryptionMode === 'plain' ? 'plain' : 'e2ee';
+  if (!isSessionEncryptionModeAllowedByClientRequirement(
+    params.clientEncryptionRequirement ?? 'follow_account',
+    encryptionMode,
+  )) {
+    return { ok: false, session: null, errorCode: 'client_e2ee_required' };
+  }
 
-  if (encryptionMode === 'plain') {
-    if (!isCurrent()) return staleResult();
+  // ── Lane 06 canonical Session data-key hydration block ────────────────────────
+  // Owns ONLY: envelope normalization, opening, cache writes and the derived content
+  // availability. The viewer role is an input produced above this block; this block never
+  // infers ownership from `share`. Everything below `── end` belongs to other owners.
+  // Lane 04's strict admission above is the role authority. An unavailable projection fails
+  // closed to `recipient`: owner-only Account material is never reached without a proven owner
+  // role, and this block never re-infers ownership from `share`.
+  const viewerRole: SessionDataKeyViewerRole = access?.role === 'owner' ? 'owner' : 'recipient';
+  const hydrationPlan = createSessionDataKeyHydrationPlan({
+    sessions: [{
+      id: sessionId,
+      encryptionMode,
+      dataEncryptionKey: row.dataEncryptionKey,
+      viewerRole,
+    }],
+    credentialKind: readSessionDataKeyCredentialKind(params.credentials),
+    sessionDataKeys: params.sessionDataKeys,
+    ...(params.sessionDataKeyEnvelopes ? { sessionDataKeyEnvelopes: params.sessionDataKeyEnvelopes } : {}),
+  });
+  // Keep this request's cache mutations private until both the crypto owner and
+  // the request authority are still current after initialization. A superseded
+  // by-ID request must neither publish its opened key nor delete a newer
+  // request's cache entry while unwinding.
+  const requestSessionDataKeys = new Map(params.sessionDataKeys);
+  const requestSessionDataKeyEnvelopes = params.sessionDataKeyEnvelopes
+    ? new Map(params.sessionDataKeyEnvelopes)
+    : undefined;
+  const hydrationScope = typeof params.serverId === 'string' && params.serverId.trim().length > 0
+    ? { serverId: params.serverId.trim() }
+    : {};
+  let capturedEncryptionGeneration = params.encryption.getCurrentEncryptionGenerationScope?.(
+    hydrationScope,
+  ) ?? null;
+  const isHydrationCurrent = () => (
+    isCurrent()
+    && (!capturedEncryptionGeneration
+      || params.encryption.isCurrentEncryptionGenerationScope?.(capturedEncryptionGeneration) !== false)
+  );
+  const hydration = await hydrateSessionDataKeys({
+    plan: hydrationPlan,
+    // By-ID resolves exactly one Session, so the batch the shared owner expects is this one
+    // envelope. Reusing the existing singular opener keeps one decision owner without
+    // duplicating the crypto routing this call site never needed.
+    encryption: {
+      decryptEncryptionKeys: async (values) => {
+        const opened: Array<Uint8Array | null> = [];
+        for (const value of values) {
+          opened.push(await params.encryption.decryptEncryptionKey(value));
+        }
+        return opened;
+      },
+      ...(params.encryption.getCurrentEncryptionGenerationScope ? {
+        getCurrentEncryptionGenerationScope: (scope) =>
+          params.encryption.getCurrentEncryptionGenerationScope!(scope),
+      } : {}),
+      ...(params.encryption.isCurrentEncryptionGenerationScope ? {
+        isCurrentEncryptionGenerationScope: (scope) =>
+          params.encryption.isCurrentEncryptionGenerationScope!(scope),
+      } : {}),
+    },
+    sessionDataKeys: requestSessionDataKeys,
+    ...(requestSessionDataKeyEnvelopes ? { sessionDataKeyEnvelopes: requestSessionDataKeyEnvelopes } : {}),
+    scope: hydrationScope,
+    shouldContinue: isHydrationCurrent,
+  });
+  if (hydration.stale || !isHydrationCurrent()) return staleResult();
+
+  if (hydration.sessionKeys.size > 0) {
+    const initializedScope = await params.encryption.initializeSessions(hydration.sessionKeys, {
+      ...hydrationScope,
+      shouldContinue: isHydrationCurrent,
+    });
+    if (initializedScope) capturedEncryptionGeneration = initializedScope;
+    if (!isHydrationCurrent()) return staleResult();
+  }
+  if (hydration.sessionEncryptionClears.includes(sessionId)) {
     params.sessionDataKeys.delete(sessionId);
     params.sessionDataKeyEnvelopes?.delete(sessionId);
+    params.encryption.removeSessionEncryption?.(sessionId);
   } else {
-    const sessionKeys = new Map<string, Uint8Array | null>();
-    if (typeof row.dataEncryptionKey === 'string' && row.dataEncryptionKey.length > 0) {
-      const cachedKey = params.sessionDataKeys.get(sessionId);
-      const decrypted = cachedKey && params.sessionDataKeyEnvelopes?.get(sessionId) === row.dataEncryptionKey
-        ? cachedKey
-        : await params.encryption.decryptEncryptionKey(row.dataEncryptionKey);
-      if (!isCurrent()) return staleResult();
-      if (decrypted) {
-        sessionKeys.set(sessionId, decrypted);
+    const hydratedKey = requestSessionDataKeys.get(sessionId);
+    if (hydratedKey) params.sessionDataKeys.set(sessionId, hydratedKey);
+    else params.sessionDataKeys.delete(sessionId);
+    const hydratedEnvelope = requestSessionDataKeyEnvelopes?.get(sessionId);
+    if (params.sessionDataKeyEnvelopes) {
+      if (hydratedEnvelope) params.sessionDataKeyEnvelopes.set(sessionId, hydratedEnvelope);
+      else params.sessionDataKeyEnvelopes.delete(sessionId);
+    }
+  }
+
+  const hydrationState = hydration.states.get(sessionId) ?? 'missing_envelope';
+  let accountCurrentness = params.accountCurrentness;
+  let recipientReadiness = accountCurrentness?.recipientEnvelopeReadiness;
+  if (hydrationState === 'missing_envelope' && !recipientReadiness) {
+    try {
+      accountCurrentness = params.fetchAccountCurrentness
+        ? await params.fetchAccountCurrentness()
+        : await fetchAccountEncryptionCurrentness(params.credentials, { request: params.request });
+      recipientReadiness = accountCurrentness.recipientEnvelopeReadiness;
+    } catch (error) {
+      if (error instanceof AccountEncryptionCurrentnessReadinessError) {
+        recipientReadiness = error.recipientEnvelopeReadiness;
       } else {
-        sessionKeys.set(sessionId, null);
+        if (isTerminalAuthError(error)) throw error;
+        return { ok: false, session: null, errorCode: 'account_currentness_unavailable' };
       }
-    } else {
-      sessionKeys.set(sessionId, null);
     }
-
-    await params.encryption.initializeSessions(sessionKeys, {
-      shouldContinue: isCurrent,
-    });
-    if (!isCurrent()) return staleResult();
-    const decrypted = sessionKeys.get(sessionId) ?? null;
-    if (decrypted) {
-      params.sessionDataKeys.set(sessionId, decrypted);
-      params.sessionDataKeyEnvelopes?.set(sessionId, row.dataEncryptionKey!);
-    } else {
-      params.sessionDataKeys.delete(sessionId);
-      params.sessionDataKeyEnvelopes?.delete(sessionId);
-    }
+    if (!isHydrationCurrent()) return staleResult();
   }
-
-  const sessionEncryption = encryptionMode === 'plain' ? null : params.encryption.getSessionEncryption(sessionId);
-  if (encryptionMode === 'e2ee' && !sessionEncryption) {
-    params.log.log(`[sessionById] Session encryption not found for ${sessionId}`);
-    return { ok: false, session: null, errorCode: 'session_encryption_not_found' };
-  }
+  const contentAvailability = deriveSessionContentAvailability({
+    hydrationState,
+    recipientReadiness,
+  });
 
   const metadataLayoutVersion = readSessionMetadataLayoutVersion(row.metadataLayoutVersion);
-  const agentStateVersion = row.agentStateVersion ?? 0;
   const recipientAuthority = metadataLayoutVersion === 1
-    && hasSessionShareRecipientAuthority(row.share);
-  let accountCurrentness = params.accountCurrentness;
+    && access?.role !== 'owner';
   if (
     metadataLayoutVersion === 1
     && !recipientAuthority
@@ -387,9 +582,46 @@ export async function fetchAndApplySessionById(params: Readonly<{
     && params.fetchAccountCurrentness
   ) {
     accountCurrentness = await params.fetchAccountCurrentness();
-    if (!isCurrent()) return staleResult();
+    if (!isHydrationCurrent()) return staleResult();
   }
   const accountMode = accountCurrentness?.mode;
+  const ownerMetadataRead = metadataLayoutVersion === 1
+    ? readSessionLayout1OwnerMetadata({
+        access,
+        accountMode,
+        ownerMetadataEnvelope: row.ownerMetadata,
+        credentials: params.credentials,
+      })
+    : null;
+  const lockedOwnerVisibility = projectSessionLayout1LockedOwnerVisibility(
+    ownerMetadataRead,
+  );
+
+  const sessionEncryption = encryptionMode === 'plain' ? null : params.encryption.getSessionEncryption(sessionId);
+  if (!isSessionContentReadable(contentAvailability)) {
+    // Settled: no reader exists and retrying cannot change that. Apply a safe Session shell so
+    // the route shows a truthful locked state instead of spinning on a retryable-looking error.
+    if (!isHydrationCurrent()) return staleResult();
+    return applyLockedSessionShell({
+      row,
+      sessionId,
+      serverId: params.serverId,
+      encryptionMode,
+      contentAvailability,
+      sessionDataKeyHydration: hydration,
+      applySessions: params.applySessions,
+      getExistingSession: params.getExistingSession,
+      includeMetadataTupleMutationSnapshot: params.includeMetadataTupleMutationSnapshot === true,
+      ownerMetadataView: lockedOwnerVisibility,
+    });
+  }
+  if (encryptionMode === 'e2ee' && !sessionEncryption) {
+    params.log.log(`[sessionById] Session encryption not found for ${sessionId}`);
+    return { ok: false, session: null, errorCode: 'session_encryption_not_found' };
+  }
+  // ── end Lane 06 canonical Session data-key hydration block ────────────────────
+
+  const agentStateVersion = row.agentStateVersion ?? 0;
   if (
     metadataLayoutVersion === 1
     && !recipientAuthority
@@ -403,26 +635,20 @@ export async function fetchAndApplySessionById(params: Readonly<{
       errorCode: 'account_currentness_unavailable',
     };
   }
-  const ownerMetadataRead = metadataLayoutVersion === 1
-      ? readSessionLayout1OwnerMetadata({
-          share: row.share,
-          accountMode,
-          ownerMetadataEnvelope: row.ownerMetadata,
-          credentials: params.credentials,
-        })
-    : null;
   if (ownerMetadataRead?.kind === 'unavailable') {
     params.log.log(`[sessionById] Owner metadata unavailable for ${sessionId}`);
     return { ok: false, session: null, errorCode: 'owner_metadata_unavailable' };
   }
+  let metadataAuthenticationFailed = false;
+  const metadataDecryptOptions = { onAuthenticationFailure: () => { metadataAuthenticationFailed = true; } };
   const decryptedMetadataPromise = encryptionMode === 'plain'
     ? Promise.resolve(parsePlainSessionMetadata(row.metadata, row.metadataLayoutVersion))
     : metadataLayoutVersion === 1
       ? (
-          sessionEncryption!.decryptMetadataPayload?.(row.metadataVersion, row.metadata)
+          sessionEncryption!.decryptMetadataPayload?.(row.metadataVersion, row.metadata, metadataDecryptOptions)
           ?? Promise.resolve(null)
         )
-      : sessionEncryption!.decryptMetadata(row.metadataVersion, row.metadata);
+      : sessionEncryption!.decryptMetadata(row.metadataVersion, row.metadata, metadataDecryptOptions);
   const agentStatePromise = metadataLayoutVersion === 1
     && ownerMetadataRead?.kind !== 'owner'
       ? Promise.resolve(null)
@@ -436,10 +662,27 @@ export async function fetchAndApplySessionById(params: Readonly<{
     decryptedMetadataPromise,
     agentStatePromise,
   ]);
-  if (!isCurrent()) return staleResult();
+  if (!isHydrationCurrent()) return staleResult();
   const metadata = encryptionMode === 'plain'
     ? decryptedMetadata
     : parseDecryptedSessionMetadata(decryptedMetadata, row.metadataLayoutVersion);
+  if (encryptionMode === 'e2ee' && metadataAuthenticationFailed) {
+    return applyLockedSessionShell({
+      row,
+      sessionId,
+      serverId: params.serverId,
+      encryptionMode,
+      contentAvailability: deriveSessionContentAvailability({
+        hydrationState,
+        contentAuthenticationFailed: true,
+      }),
+      sessionDataKeyHydration: hydration,
+      applySessions: params.applySessions,
+      getExistingSession: params.getExistingSession,
+      includeMetadataTupleMutationSnapshot: params.includeMetadataTupleMutationSnapshot === true,
+      ownerMetadataView: lockedOwnerVisibility,
+    });
+  }
   const strictSharedMetadata = metadataLayoutVersion === 1
     ? SessionSharedMetadataV1Schema.safeParse(decryptedMetadata)
     : null;
@@ -471,9 +714,9 @@ export async function fetchAndApplySessionById(params: Readonly<{
     : ownerProjection?.kind === 'owner'
       ? ownerProjection.ownerMetadataView
       : null;
-  if (!isCurrent()) return staleResult();
+  if (!isHydrationCurrent()) return staleResult();
 
-  const accessLevel = row.share?.accessLevel;
+  const accessLevel = access?.level;
   const normalizedAccessLevel = accessLevel === 'view' || accessLevel === 'edit' || accessLevel === 'admin' ? accessLevel : undefined;
   const sessionTurns = params.includeTurnsProjection === false
     ? null
@@ -483,7 +726,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
       request: params.request,
       log: params.log,
     });
-  if (!isCurrent()) return staleResult();
+  if (!isHydrationCurrent()) return staleResult();
   const rollbackEligibleTurnStarts = sessionTurns
     ? listRollbackEligibleTurnStarts(sessionTurns)
     : undefined;
@@ -605,8 +848,10 @@ export async function fetchAndApplySessionById(params: Readonly<{
     ownerMetadataView,
     agentState,
     agentStateVersion,
+    access,
     accessLevel: normalizedAccessLevel,
-    canApprovePermissions: row.share?.canApprovePermissions ?? undefined,
+    canApprovePermissions: access?.capabilities.approveRuntimePermissions,
+    encryptedContentAvailability: contentAvailability,
     ...(sessionTurns
       ? {
         sessionTurns,
@@ -624,12 +869,13 @@ export async function fetchAndApplySessionById(params: Readonly<{
   ) {
     return staleResult();
   }
-  if (!isCurrent()) return staleResult();
+  if (!isHydrationCurrent()) return staleResult();
   params.applySessions([nextSession]);
   reportNewAgentRequestsFromSessionTransition(previousSession, nextSession);
 
   return {
     ok: true,
+    sessionDataKeyHydration: hydration,
     session: {
       ...rowWithoutOwnerMetadata,
       serverId: typeof params.serverId === 'string' && params.serverId.trim().length > 0 ? params.serverId.trim() : undefined,

@@ -18,15 +18,27 @@ let sessionsById: Record<string, {
   ownerMetadataView?: any;
 }>;
 const writeExistingSessionDraftSpy = vi.fn();
+const writeExistingSessionDraftInputSpy = vi.fn();
 const flushSessionDraftSpy = vi.fn(async (_input: unknown) => ({ status: 'clean' as const }));
 const patchSessionMetadataWithRetrySpy = vi.fn();
-const materializeExistingSessionDraftSpy = vi.fn(async () => undefined);
+const materializeExistingSessionDraftSpy = vi.fn(async (
+  _sessionId: string,
+  _accountLifetime: unknown,
+) => undefined);
 const platformState = vi.hoisted(() => ({ os: 'web' as 'web' | 'ios' | 'android' }));
 const activeServerAccountScope = Object.freeze({ serverId: 'server-test', accountId: 'account-test' });
 const activeScopeState = vi.hoisted(() => ({
   value: null as Readonly<{ serverId: string; accountId: string }> | null,
 }));
+const scopedDraftsByOwner = new Map<string, string | null>();
 const sessionDraftListeners = new Set<() => void>();
+
+function scopedDraftKey(
+  scope: Readonly<{ serverId: string; accountId: string }>,
+  sessionId: string,
+): string {
+  return `${scope.serverId}\u0000${scope.accountId}\u0000${sessionId}`;
+}
 
 vi.mock('@react-navigation/native', () => ({
   useIsFocused: () => isFocused,
@@ -66,8 +78,11 @@ vi.mock('@/sync/store/hooks', () => ({
 
 vi.mock('@/sync/ops/sessionDrafts/sessionDraftRepository', () => ({
   flushSessionDraft: (input: unknown) => flushSessionDraftSpy(input),
-  getSessionDraftSnapshot: (_scope: unknown, address: { sessionId: string }) => {
-    const text = sessionsById[address.sessionId]?.draft;
+  getSessionDraftSnapshot: (scope: Readonly<{ serverId: string; accountId: string }>, address: { sessionId: string }) => {
+    const key = scopedDraftKey(scope, address.sessionId);
+    const text = scopedDraftsByOwner.has(key)
+      ? scopedDraftsByOwner.get(key)
+      : sessionsById[address.sessionId]?.draft;
     return typeof text === 'string'
       ? { document: { composer: { text: { value: text } } } }
       : null;
@@ -76,8 +91,17 @@ vi.mock('@/sync/ops/sessionDrafts/sessionDraftRepository', () => ({
     sessionDraftListeners.add(listener);
     return () => sessionDraftListeners.delete(listener);
   },
-  writeExistingSessionDraft: (input: { sessionId: string; patch: { text?: string } }) => {
+  writeExistingSessionDraft: (input: {
+    scope: Readonly<{ serverId: string; accountId: string }>;
+    sessionId: string;
+    patch: { text?: string };
+  }) => {
+    writeExistingSessionDraftInputSpy(input);
     writeExistingSessionDraftSpy(input.sessionId, input.patch.text?.trim() ? input.patch.text : null);
+    const key = scopedDraftKey(input.scope, input.sessionId);
+    if (scopedDraftsByOwner.has(key)) {
+      scopedDraftsByOwner.set(key, input.patch.text?.trim() ? input.patch.text : null);
+    }
     sessionsById = {
       ...sessionsById,
       [input.sessionId]: {
@@ -91,7 +115,8 @@ vi.mock('@/sync/ops/sessionDrafts/sessionDraftRepository', () => ({
 vi.mock('@/sync/sync', () => ({
   sync: {
     patchSessionMetadataWithRetry: (...args: any[]) => patchSessionMetadataWithRetrySpy(...args),
-    materializeExistingSessionDraft: (...args: any[]) => materializeExistingSessionDraftSpy(...args),
+    materializeExistingSessionDraft: (sessionId: string, accountLifetime: unknown) =>
+      materializeExistingSessionDraftSpy(sessionId, accountLifetime),
   },
 }));
 
@@ -197,7 +222,15 @@ type HarnessState = Readonly<{
   rerender: () => void;
 }>;
 
-async function renderHarness(params: { initialSessionId: string; active?: boolean }): Promise<{
+async function renderHarness(params: {
+  initialSessionId: string;
+  active?: boolean;
+  accountLifetime?: Readonly<{
+    scope: Readonly<{ serverId: string; accountId: string }>;
+    isCurrent: () => boolean;
+    onRetire: (cancel: () => void) => Readonly<{ dispose(): void }>;
+  }> | null;
+}): Promise<{
   getCurrent: () => HarnessState;
   unmount: () => void;
 }> {
@@ -207,6 +240,19 @@ async function renderHarness(params: { initialSessionId: string; active?: boolea
     const [sessionId, setSessionId] = React.useState(params.initialSessionId);
     const [value, setValue] = React.useState('');
     const [, setTick] = React.useState(0);
+    const fallbackScope = activeScopeState.value;
+    const fallbackAccountLifetime = React.useMemo(() => fallbackScope
+      ? Object.freeze({
+          scope: fallbackScope,
+          isCurrent: () => activeScopeState.value !== null
+            && activeScopeState.value.serverId === fallbackScope.serverId
+            && activeScopeState.value.accountId === fallbackScope.accountId,
+          onRetire: () => Object.freeze({ dispose(): void {} }),
+        })
+      : null, [
+        fallbackScope?.accountId,
+        fallbackScope?.serverId,
+      ]);
     const {
       clearDraft,
       clearDraftForSessionIfCurrentValueMatches,
@@ -218,6 +264,10 @@ async function renderHarness(params: { initialSessionId: string; active?: boolea
     } = useDraft(sessionId, value, setValue, {
       autoSaveInterval: 60_000,
       ...(typeof params.active === 'boolean' ? { active: params.active } : {}),
+      accountLifetime: params.accountLifetime === undefined
+        ? fallbackAccountLifetime
+        : params.accountLifetime,
+      session: (sessionsById[sessionId] ?? null) as any,
     });
     React.useLayoutEffect(() => {
       onHarnessLayoutEffect?.();
@@ -265,11 +315,89 @@ describe('useDraft', () => {
       s3: { draft: 'draft-3', metadata: {} },
     };
     writeExistingSessionDraftSpy.mockReset();
+    writeExistingSessionDraftInputSpy.mockReset();
     flushSessionDraftSpy.mockClear();
     patchSessionMetadataWithRetrySpy.mockReset();
     materializeExistingSessionDraftSpy.mockClear();
     sessionDraftListeners.clear();
+    scopedDraftsByOwner.clear();
     activeScopeState.value = activeServerAccountScope;
+  });
+
+  it('keeps an exact Home draft isolated while the active-Home switch fails and retires its mounted owner', async () => {
+    const homeAScope = Object.freeze({ serverId: 'home-a', accountId: 'account-a' });
+    const homeBScope = Object.freeze({ serverId: 'home-b', accountId: 'account-b' });
+    activeScopeState.value = homeAScope;
+    scopedDraftsByOwner.set(scopedDraftKey(homeAScope, 'same-session'), 'draft from Home A');
+    scopedDraftsByOwner.set(scopedDraftKey(homeBScope, 'same-session'), 'draft from Home B');
+    sessionsById = { 'same-session': { draft: null, metadata: {} } };
+
+    let current = true;
+    let retireMountedOwner: (() => void) | null = null;
+    const exactHomeBBinding = Object.freeze({
+      scope: homeBScope,
+      isCurrent: () => current,
+      onRetire: (cancel: () => void) => {
+        retireMountedOwner = cancel;
+        return Object.freeze({ dispose(): void { retireMountedOwner = null; } });
+      },
+    });
+
+    const harness = await renderHarness({
+      initialSessionId: 'same-session',
+      active: true,
+      accountLifetime: exactHomeBBinding,
+    });
+    await flushHookEffects({ cycles: 1, turns: 1 });
+
+    expect(harness.getCurrent().value).toBe('draft from Home B');
+    expect(materializeExistingSessionDraftSpy).toHaveBeenCalledWith(
+      'same-session',
+      exactHomeBBinding,
+    );
+
+    writeExistingSessionDraftInputSpy.mockClear();
+    act(() => harness.getCurrent().setDraftValue('edited exact Home B draft'));
+    expect(writeExistingSessionDraftInputSpy).toHaveBeenCalledWith(expect.objectContaining({
+      scope: homeBScope,
+      sessionId: 'same-session',
+      patch: { text: 'edited exact Home B draft' },
+    }));
+    expect(scopedDraftsByOwner.get(scopedDraftKey(homeAScope, 'same-session'))).toBe('draft from Home A');
+
+    writeExistingSessionDraftInputSpy.mockClear();
+    await act(async () => {
+      current = false;
+      retireMountedOwner?.();
+    });
+    act(() => harness.getCurrent().setDraftValue('must remain ephemeral after retirement'));
+
+    expect(writeExistingSessionDraftInputSpy).not.toHaveBeenCalled();
+    expect(scopedDraftsByOwner.get(scopedDraftKey(homeAScope, 'same-session'))).toBe('draft from Home A');
+    expect(scopedDraftsByOwner.get(scopedDraftKey(homeBScope, 'same-session'))).toBe('edited exact Home B draft');
+    harness.unmount();
+  });
+
+  it('keeps the composer ephemeral while the exact route credential binding is unresolved', async () => {
+    const homeAScope = Object.freeze({ serverId: 'home-a', accountId: 'account-a' });
+    activeScopeState.value = homeAScope;
+    scopedDraftsByOwner.set(scopedDraftKey(homeAScope, 'same-session'), 'ambient Home A draft');
+    sessionsById = { 'same-session': { draft: null, metadata: {} } };
+
+    const harness = await renderHarness({
+      initialSessionId: 'same-session',
+      active: true,
+      accountLifetime: null,
+    });
+    await flushHookEffects({ cycles: 1, turns: 1 });
+
+    expect(harness.getCurrent().value).toBe('');
+    expect(materializeExistingSessionDraftSpy).not.toHaveBeenCalled();
+    act(() => harness.getCurrent().setDraftValue('ephemeral text'));
+    expect(harness.getCurrent().value).toBe('ephemeral text');
+    expect(writeExistingSessionDraftInputSpy).not.toHaveBeenCalled();
+    expect(scopedDraftsByOwner.get(scopedDraftKey(homeAScope, 'same-session'))).toBe('ambient Home A draft');
+    harness.unmount();
   });
 
   it('materializes the exact server draft when account scope becomes ready for an active composer', async () => {
@@ -286,7 +414,10 @@ describe('useDraft', () => {
     await flushHookEffects({ cycles: 1, turns: 1 });
 
     expect(materializeExistingSessionDraftSpy).toHaveBeenCalledTimes(1);
-    expect(materializeExistingSessionDraftSpy).toHaveBeenCalledWith('s1');
+    expect(materializeExistingSessionDraftSpy).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ scope: activeServerAccountScope }),
+    );
     harness.unmount();
   });
 
@@ -461,6 +592,7 @@ describe('useDraft', () => {
     expect(patchSessionMetadataWithRetrySpy).toHaveBeenCalledWith(
       's_child',
       expect.any(Function),
+      expect.objectContaining({ serverId: 'server-test', accountLifetime: expect.any(Object) }),
     );
     harness.unmount();
   });
@@ -519,7 +651,7 @@ describe('useDraft', () => {
 
     expect(harness.getCurrent().value).toBe('selected transcript messages');
     expect(writeExistingSessionDraftSpy).toHaveBeenCalledWith('s_target', 'selected transcript messages');
-    expect(patchSessionMetadataWithRetrySpy).toHaveBeenCalledWith('s_target', expect.any(Function));
+    expect(patchSessionMetadataWithRetrySpy).toHaveBeenCalledWith('s_target', expect.any(Function), expect.objectContaining({ serverId: 'server-test', accountLifetime: expect.any(Object) }));
     harness.unmount();
   });
 
@@ -577,7 +709,46 @@ describe('useDraft', () => {
 
     expect(harness.getCurrent().value).toBe('existing destination draft\n\nselected transcript messages');
     expect(writeExistingSessionDraftSpy).toHaveBeenCalledWith('s_target', 'existing destination draft\n\nselected transcript messages');
-    expect(patchSessionMetadataWithRetrySpy).toHaveBeenCalledWith('s_target', expect.any(Function));
+    expect(patchSessionMetadataWithRetrySpy).toHaveBeenCalledWith('s_target', expect.any(Function), expect.objectContaining({ serverId: 'server-test', accountLifetime: expect.any(Object) }));
+    harness.unmount();
+  });
+
+  it('retains a Discussion selection source with the appended primary Session draft', async () => {
+    sessionsById = {
+      s_target: {
+        draft: 'existing destination draft',
+        metadata: {
+          sessionInitialPromptV1: {
+            v: 1,
+            text: 'selected messages',
+            mode: 'append',
+            createdAtMs: 1,
+            source: {
+              kind: 'session_discussion',
+              sessionId: 's_target',
+              discussionId: 'discussion-a',
+              messageIds: ['message-2'],
+            },
+          },
+        },
+      },
+    };
+
+    const harness = await renderHarness({ initialSessionId: 's_target' });
+
+    expect(writeExistingSessionDraftInputSpy).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 's_target',
+      patch: {
+        text: 'existing destination draft\n\nselected messages',
+        sessionDiscussionSelectionSourceV1: {
+          kind: 'session_discussion',
+          sessionId: 's_target',
+          discussionId: 'discussion-a',
+          messageIds: ['message-2'],
+        },
+      },
+      materializationIntent: 'seeded',
+    }));
     harness.unmount();
   });
 
@@ -605,7 +776,7 @@ describe('useDraft', () => {
 
     expect(harness.getCurrent().value).toBe('fork seed\n\nselected transcript messages');
     expect(writeExistingSessionDraftSpy).toHaveBeenCalledWith('s_child', 'fork seed\n\nselected transcript messages');
-    expect(patchSessionMetadataWithRetrySpy).toHaveBeenCalledWith('s_child', expect.any(Function));
+    expect(patchSessionMetadataWithRetrySpy).toHaveBeenCalledWith('s_child', expect.any(Function), expect.objectContaining({ serverId: 'server-test', accountLifetime: expect.any(Object) }));
     harness.unmount();
   });
 
@@ -642,7 +813,7 @@ describe('useDraft', () => {
     await flushHookEffects({ cycles: 1, turns: 1 });
 
     expect(harness.getCurrent().value).toBe('unsaved local edit\n\nselected transcript messages');
-    expect(patchSessionMetadataWithRetrySpy).toHaveBeenCalledWith('s_target', expect.any(Function));
+    expect(patchSessionMetadataWithRetrySpy).toHaveBeenCalledWith('s_target', expect.any(Function), expect.objectContaining({ serverId: 'server-test', accountLifetime: expect.any(Object) }));
     harness.unmount();
   });
 
@@ -666,6 +837,7 @@ describe('useDraft', () => {
     expect(patchSessionMetadataWithRetrySpy).toHaveBeenCalledWith(
       's_child',
       expect.any(Function),
+      expect.objectContaining({ serverId: 'server-test', accountLifetime: expect.any(Object) }),
     );
     harness.unmount();
   });
@@ -688,6 +860,60 @@ describe('useDraft', () => {
     });
 
         expect(harness.getCurrent().value).toBe('rollback restored prompt');
+        harness.unmount();
+    });
+
+    it('adopts an authoritative remote draft deletion and does not resurrect it on browser blur', async () => {
+        const fakeVisibilityDocument = installFakeVisibilityDocument();
+        const fakeWindowLifecycle = installFakeWindowLifecycleEvents();
+        const harness = await renderHarness({ initialSessionId: 's1' });
+
+        try {
+            expect(harness.getCurrent().value).toBe('draft-1');
+            writeExistingSessionDraftSpy.mockClear();
+            flushSessionDraftSpy.mockClear();
+
+            sessionsById = {
+                ...sessionsById,
+                s1: { draft: null, metadata: {} },
+            };
+            await act(async () => {
+                for (const listener of sessionDraftListeners) listener();
+            });
+            await flushHookEffects({ cycles: 1, turns: 1 });
+
+            expect(harness.getCurrent().value).toBe('');
+
+            fakeVisibilityDocument.setVisibilityState('visible');
+            await act(async () => {
+                fakeWindowLifecycle.dispatch('blur');
+            });
+            await flushHookEffects({ cycles: 1, turns: 1 });
+
+            expect(sessionsById.s1?.draft).toBeNull();
+            expect(writeExistingSessionDraftSpy).not.toHaveBeenCalledWith('s1', 'draft-1');
+        } finally {
+            harness.unmount();
+            fakeWindowLifecycle.restore();
+            fakeVisibilityDocument.restore();
+        }
+    });
+
+    it('adopts a remote text clear when another meaningful draft field keeps the document present', async () => {
+        const harness = await renderHarness({ initialSessionId: 's1' });
+        expect(harness.getCurrent().value).toBe('draft-1');
+
+        sessionsById = {
+            ...sessionsById,
+            // An empty string represents a still-materialized repository document in this harness.
+            s1: { draft: '', metadata: {} },
+        };
+        await act(async () => {
+            for (const listener of sessionDraftListeners) listener();
+        });
+        await flushHookEffects({ cycles: 1, turns: 1 });
+
+        expect(harness.getCurrent().value).toBe('');
         harness.unmount();
     });
 

@@ -140,7 +140,7 @@ export function ComposerPluginSurface(props: ComposerPluginSurfaceProps): React.
             throw new Error('composer_subscription_publisher_unavailable');
         }
     }, []);
-    const publisherCapable = mount?.renderer.kind === 'reactNative' || mount?.renderer.kind === 'hostedWeb';
+    const publisherCapable = mount?.renderer.kind === 'reactNative' || mount?.renderer.kind === 'hostedWeb' || mount?.renderer.kind === 'hostedHtml';
     const composerMediaExecutionTarget = React.useMemo<SessionExecutionTargetV1 | undefined>(() => (
         props.serverId && props.machineId
             ? Object.freeze({ serverId: props.serverId, machineId: props.machineId })

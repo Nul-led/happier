@@ -10,9 +10,11 @@ import { useSocketStatus, useSyncError, useLastSyncAt, useMachineListStatusBySer
 import { useHomeViewSelectionSettingsMutable } from '@/hooks/server/useHomeViewSelectionSettings';
 import {
     areServerProfileIdentifiersEquivalent,
+    getActiveServerHomeCarrier,
     listServerProfiles,
     resolveServerProfileScopeId,
 } from '@/sync/domains/server/serverProfiles';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { useAuth } from '@/auth/context/AuthContext';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { useRouter } from 'expo-router';
@@ -29,7 +31,8 @@ import { buildServerSelectionActiveTargetForServer } from '@/sync/domains/server
 import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { useConnectionTargetActions } from '@/components/navigation/connection/useConnectionTargetActions';
 import { Text } from '@/components/ui/text/Text';
-import { useConnectionHealth } from '@/components/navigation/connectionStatus/useConnectionHealth';
+import { useActiveHomeConnectionHealth } from '@/components/navigation/connectionStatus/useConnectionHealth';
+import type { ConnectionHealthKind } from '@/components/navigation/connectionStatus/connectionHealthTypes';
 import { resolveMachineConnectionSummary } from '@/components/navigation/connectionStatus/resolveMachineConnectionSummary';
 import {
     getAppliedActiveServerId,
@@ -54,10 +57,24 @@ import {
     readIrohHomeTransportDiagnosticsRevision,
     subscribeIrohHomeTransportDiagnostics,
 } from '@/sync/runtime/irohHomeTransportDiagnostics';
+import { formatIrohRelayConfiguration } from '@/components/navigation/connectionStatus/formatIrohRelayConfiguration';
 import { resolveHomeConnectionSummary } from '@/components/navigation/connectionStatus/resolveHomeConnectionSummary';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
-import type { DoctorSnapshotHomeTransportDiagnostics } from '@happier-dev/protocol';
+import {
+    sanitizeDoctorDiagnosticText,
+    type DoctorSnapshotHomeTransportDiagnostics,
+} from '@happier-dev/protocol';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
+import { ActionListSection } from '@/components/ui/lists/ActionListSection';
+import { useAccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
+import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
+import { buildAuthenticatedAccountEntryHref } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
+import { accountDirectoryCredentialStorage } from '@/auth/accountDirectory/accountDirectoryCredentialStorage';
+import {
+    createAccountDirectoryServiceKey,
+    createAccountDirectorySession,
+    type AccountDirectorySession,
+} from '@/sync/domains/accountDirectory/accountDirectorySession';
 
 type Variant = 'sidebar' | 'header';
 const RELAY_SETTINGS_ROUTE = '/settings/server';
@@ -396,18 +413,17 @@ function buildTransportDetailRows(params: Readonly<{
         });
     };
     if (diagnostics?.current) appendPathRow('currentPath', diagnostics.current);
-    if (diagnostics?.lastKnown) appendPathRow('lastKnownPath', diagnostics.lastKnown);
+    if (diagnostics?.lastKnown && (
+        !diagnostics.current
+        || diagnostics.lastKnown.carrier !== diagnostics.current.carrier
+        || diagnostics.lastKnown.observedPath !== diagnostics.current.observedPath
+    )) appendPathRow('lastKnownPath', diagnostics.lastKnown);
     const configuration = diagnostics?.effectiveConfiguration;
     if (configuration) {
         rows.push({
             key: 'relayConfiguration',
             label: t('connectionStatus.labels.relayConfiguration'),
-            value: configuration.policy === 'disabled'
-                ? t('connectionStatus.values.relayDisabled')
-                : t('connectionStatus.values.relayAutomatic', {
-                    relays: configuration.relayUrls.join(', ') || t('status.unknown'),
-                    direct: configuration.directAddressCount,
-                }),
+            value: formatIrohRelayConfiguration(configuration),
         });
     }
     if (diagnostics?.diagnosticError) {
@@ -425,7 +441,13 @@ function buildTransportDetailRows(params: Readonly<{
             value: formatTime(diagnostics.lastTransitionAtMs),
         });
     }
-    return rows;
+    // These rows are rendered and copied. Sanitize once at their shared owner
+    // so neither surface can disclose bearer material, URL credentials, or
+    // secret-shaped values emitted by a transport boundary.
+    return rows.map((row) => ({
+        ...row,
+        value: sanitizeDoctorDiagnosticText(row.value),
+    }));
 }
 
 function resolveStatusPresentation(
@@ -450,8 +472,16 @@ function resolveStatusPresentation(
 
 function resolveRelayStatusKey(params: Readonly<{
     endpointStatus: unknown;
-    connectionHealthKind: ReturnType<typeof useConnectionHealth>['kind'];
+    connectionHealthKind: ConnectionHealthKind;
+    transportState?: DoctorSnapshotHomeTransportDiagnostics['state'];
 }>): 'connected' | 'connecting' | 'disconnected' | 'error' | 'action_required' | 'unknown' {
+    switch (params.transportState) {
+        case 'connected': return 'connected';
+        case 'connecting':
+        case 'reconnecting': return 'connecting';
+        case 'unavailable': return 'error';
+        case 'disconnected': return 'disconnected';
+    }
     switch (params.endpointStatus) {
         case 'online':
             return 'connected';
@@ -603,7 +633,7 @@ const ConnectionPopoverTargets = React.memo(function ConnectionPopoverTargets(pr
             const result = await props.switchServer(target.serverId, routineSwitchScope);
             if (result === 'blocked') return;
             const nextTarget = buildServerSelectionActiveTargetForServer(target.serverId);
-            props.setHomeViewSelectionSettings(
+            await props.setHomeViewSelectionSettings(
                 (current) => ({ ...current, ...nextTarget }),
                 { targetScope: routineSwitchScope },
             );
@@ -623,7 +653,7 @@ const ConnectionPopoverTargets = React.memo(function ConnectionPopoverTargets(pr
             const result = await props.switchServer(nextServerId, routineSwitchScope);
             if (result === 'blocked') return;
         }
-        props.setHomeViewSelectionSettings((current) => ({
+        await props.setHomeViewSelectionSettings((current) => ({
             ...current,
             serverSelectionActiveTargetKind: 'group',
             serverSelectionActiveTargetId: target.groupId,
@@ -693,7 +723,7 @@ const ConnectionPopoverTargets = React.memo(function ConnectionPopoverTargets(pr
                     <Pressable
                         testID="connection-popover-relay-settings"
                         accessibilityRole="button"
-                        accessibilityLabel={t('server.changeServer')}
+                        accessibilityLabel={t('server.serverConfiguration')}
                         onPress={props.onManageRelay}
                         style={styles.popoverSectionIconButton}
                     >
@@ -711,6 +741,169 @@ const ConnectionPopoverTargets = React.memo(function ConnectionPopoverTargets(pr
     );
 });
 
+const ConnectionPopoverAccountEntryActions = React.memo(function ConnectionPopoverAccountEntryActions(props: Readonly<{
+    profile: ReturnType<typeof listServerProfiles>[number] | null;
+    runtimeOrigin: string | null;
+    homeCarrier: HomeCarrier | null;
+    onClose: () => void;
+}>) {
+    const router = useRouter();
+    const launchingRef = React.useRef(false);
+    const profile = props.profile;
+    const profileScopeId = profile ? resolveServerProfileScopeId(profile) : '';
+    const featuresSnapshot = useServerFeaturesSnapshotForServerId(profileScopeId, { enabled: Boolean(profile) });
+    const targetContext = React.useMemo(() => {
+        if (!profile) return { kind: 'none' as const };
+        return {
+            kind: 'home' as const,
+            target: { kind: 'saved_profile' as const, profileRef: profile.id },
+            ...(featuresSnapshot.status === 'ready' && featuresSnapshot.features.signInService
+                ? { policy: featuresSnapshot.features.signInService }
+                : {}),
+            selfService: {
+                endpointUrl: profile.canonicalServerUrl ?? profile.serverUrl,
+                ...(profile.serverIdentityId ? { expectedServerIdentityId: profile.serverIdentityId } : {}),
+                ...(props.runtimeOrigin ? { runtimeOrigin: props.runtimeOrigin } : {}),
+                ...(props.homeCarrier ? { homeCarrier: props.homeCarrier } : {}),
+            },
+        };
+    }, [featuresSnapshot, profile, props.homeCarrier, props.runtimeOrigin]);
+    const entry = useAccountServiceEntryOptions(targetContext);
+    const discovery = entry.status === 'ready' ? entry.discovery : null;
+    const currentHomeServerIdentityId = profile?.serverIdentityId?.trim() || null;
+    const discoveredServiceKey = discovery ? createAccountDirectoryServiceKey({
+        endpoint: discovery.endpointUrl,
+        serverIdentityId: discovery.serverIdentityId,
+    }) : null;
+    const [directorySessionBinding, setDirectorySessionBinding] = React.useState<Readonly<{
+        serviceKey: string;
+        session: AccountDirectorySession;
+    }> | null>(null);
+    const [signedIn, setSignedIn] = React.useState(false);
+    const directorySession = directorySessionBinding?.serviceKey === discoveredServiceKey
+        ? directorySessionBinding.session
+        : null;
+    const subscribeDirectorySession = React.useCallback((listener: () => void) => (
+        directorySession?.subscribe(() => listener()) ?? (() => {})
+    ), [directorySession]);
+    const getDirectorySnapshot = React.useCallback(() => directorySession?.snapshot ?? null, [directorySession]);
+    const directorySnapshot = React.useSyncExternalStore(
+        subscribeDirectorySession,
+        getDirectorySnapshot,
+        getDirectorySnapshot,
+    );
+
+    React.useEffect(() => {
+        let cancelled = false;
+        setSignedIn(false);
+        setDirectorySessionBinding(null);
+        if (!discovery || !discoveredServiceKey) return () => { cancelled = true; };
+
+        void (async () => {
+            try {
+                const target = {
+                    endpoint: discovery.endpointUrl,
+                    serverIdentityId: discovery.serverIdentityId,
+                };
+                const credentials = await accountDirectoryCredentialStorage.get(target);
+                if (cancelled || !credentials) return;
+                const session = createAccountDirectorySession(target, {
+                    capability: discovery.capability,
+                    transport: entry.transport,
+                });
+                setDirectorySessionBinding({ serviceKey: discoveredServiceKey, session });
+                setSignedIn(true);
+                await session.refresh();
+            } catch {
+                if (!cancelled) {
+                    setSignedIn(false);
+                    setDirectorySessionBinding(null);
+                }
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [discoveredServiceKey, discovery, entry.transport]);
+
+    const openEntry = React.useCallback((intent: Parameters<typeof buildAuthenticatedAccountEntryHref>[0]['intent']) => {
+        if (!discovery || launchingRef.current) return;
+        launchingRef.current = true;
+        const href = buildAuthenticatedAccountEntryHref({
+            service: {
+                endpointUrl: discovery.endpointUrl,
+                serverIdentityId: discovery.serverIdentityId,
+            },
+            intent,
+            returnTo: '/',
+        });
+        props.onClose();
+        const navigation = runGuardedNavigation(() => router.push(href));
+        if (navigation !== true) {
+            fireAndForget(navigation, { tag: 'ConnectionStatusControl.nav.accountEntry' });
+        }
+    }, [discovery, props, router]);
+
+    const signOut = React.useCallback(async () => {
+        if (!directorySession) return;
+        const removed = await directorySession.logout();
+        if (!removed) return;
+        setSignedIn(false);
+        setDirectorySessionBinding(null);
+    }, [directorySession]);
+
+    const serviceName = discovery?.accountServiceDisplayName?.trim()
+        || (discovery ? toServerUrlDisplay(discovery.endpointUrl) : '');
+    const currentHomeIsLinked = currentHomeServerIdentityId
+        ? directorySnapshot?.homes.some((home) => home.homeServerIdentityId === currentHomeServerIdentityId) === true
+        : false;
+    const serviceActions = React.useMemo(() => discovery ? [
+        signedIn ? {
+            id: 'account-service-status',
+            testID: 'connection-popover-account-service-status',
+            label: serviceName,
+            subtitle: t('settingsAccount.accountServiceSignedInTo', { accountService: serviceName }),
+        } : null,
+        {
+            id: 'account-find-homes',
+            testID: 'connection-popover-find-homes',
+            label: t('settingsAccount.accountServiceFindHomes'),
+            subtitle: t('settingsAccount.accountServiceFindHomesDescription'),
+            onPress: () => openEntry({ kind: 'enter', target: { kind: 'automatic' } }),
+        },
+        currentHomeServerIdentityId && (!signedIn || directorySnapshot?.status !== 'ready' || !currentHomeIsLinked) ? {
+            id: 'account-link-current-home',
+            testID: 'connection-popover-link-current-home',
+            label: t('settingsAccount.accountServiceLinkThisHome'),
+            subtitle: t('settingsAccount.accountServiceLinkThisHomeDescription', {
+                accountService: discovery.accountServiceDisplayName ?? undefined,
+            }),
+            onPress: () => openEntry({ kind: 'link', homeServerIdentityId: currentHomeServerIdentityId }),
+        } : null,
+        signedIn ? {
+            id: 'account-service-sign-out',
+            testID: 'connection-popover-account-service-sign-out',
+            label: t('settingsAccount.logoutHome', { home: serviceName }),
+            subtitle: t('settingsAccount.tapToDisconnect'),
+            onPress: signOut,
+        } : null,
+    ] : [], [currentHomeIsLinked, currentHomeServerIdentityId, directorySnapshot?.status, discovery, openEntry, serviceName, signOut, signedIn]);
+    const homeActions = React.useMemo(() => signedIn ? directorySnapshot?.homes.map((home) => ({
+        id: `account-directory-home-${home.homeServerIdentityId}`,
+        testID: `connection-popover-account-directory-home-${home.homeServerIdentityId}`,
+        label: home.label,
+        subtitle: home.canonicalServerUrl,
+    })) ?? [] : [], [directorySnapshot?.homes, signedIn]);
+
+    return (
+        <>
+            <ActionListSection actions={serviceActions} />
+            <ActionListSection title={t('settingsAccount.accountServiceHomes')} actions={homeActions} />
+        </>
+    );
+});
+
 export const ConnectionStatusControl = React.memo(function ConnectionStatusControl(props: {
     variant: Variant;
     textSize?: number;
@@ -725,7 +918,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
     const socketStatus = useSocketStatus();
     const syncError = useSyncError();
     const lastSyncAt = useLastSyncAt();
-    const connectionHealth = useConnectionHealth();
+    const connectionHealth = useActiveHomeConnectionHealth();
     const {
         serverSelectionGroups,
         serverSelectionActiveTargetKind,
@@ -771,6 +964,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
     const displayServerProfile = React.useMemo(() => {
         return servers.find((server) => server.id === displayServerId || resolveServerProfileScopeId(server) === displayServerId) ?? null;
     }, [displayServerId, servers]);
+    const displayHomeCarrier = displayUsesActiveSnapshot ? getActiveServerHomeCarrier() : null;
     const displayServerUrl = displayServerProfile?.serverUrl
         ?? (displayUsesActiveSnapshot ? activeServerSnapshot.serverUrl : '');
     const diagnosticsHomeIdentity = displayServerProfile?.serverIdentityId ?? displayServerId;
@@ -938,7 +1132,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
             `${t('connectionStatus.labels.lastSync')}: ${formatTime(lastSyncAt)}`,
             ...(syncErrorPresentation ? [`${t('connectionStatus.labels.lastError')}: ${syncErrorPresentation.message}`] : []),
         ].join('\n');
-        fireAndForget(setClipboardStringSafe(report).then((copied) => {
+        fireAndForget(setClipboardStringSafe(sanitizeDoctorDiagnosticText(report)).then((copied) => {
             if (copied) setDiagnosticsCopied(true);
         }), { tag: 'ConnectionStatusControl.copyDiagnostics' });
     }, [
@@ -976,6 +1170,22 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         setOpen(false);
         setDetailsExpanded(false);
     }, [router]);
+    const handleActivate = React.useCallback(() => {
+        if (props.variant === 'header') {
+            const result = runGuardedNavigation(() => router.push('/server'));
+            if (result !== true) {
+                fireAndForget(result, { tag: 'ConnectionStatusControl.nav.fullScreenHomes' });
+            }
+            return;
+        }
+        setOpen((currentOpen) => {
+            if (currentOpen) {
+                setDetailsExpanded(false);
+                setDiagnosticsCopied(false);
+            }
+            return !currentOpen;
+        });
+    }, [props.variant, router]);
     const popoverMinWidth = props.variant === 'sidebar' && Platform.OS === 'web' ? POPOVER_MIN_WIDTH : undefined;
     const collapsedStatusLabel = t(homeSummary.statusLabelKey);
     const collapsedStatusColor = connectionHealth.color;
@@ -998,16 +1208,10 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                 <Pressable
                     ref={triggerRef}
                     style={styles.statusContainer}
-                    onPress={() => setOpen((currentOpen) => {
-                        if (currentOpen) {
-                            setDetailsExpanded(false);
-                            setDiagnosticsCopied(false);
-                        }
-                        return !currentOpen;
-                    })}
+                    onPress={handleActivate}
                     accessibilityRole="button"
                     accessibilityLabel={`${activeServerLabel}, ${collapsedStatusLabel}`}
-                    accessibilityState={{ expanded: open }}
+                    accessibilityState={props.variant === 'sidebar' ? { expanded: open } : undefined}
                 >
                     {collapsedShowsAttentionCue ? (
                         <Icon
@@ -1032,13 +1236,13 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                         {activeServerLabel}
                     </Text>
                     <Icon
-                        name={open ? "caret-up" : "caret-down"}
+                        name={props.variant === 'header' ? 'caret-right' : open ? 'caret-up' : 'caret-down'}
                         size={chevronSize}
                         color={collapsedStatusColor}
                         style={styles.statusChevron}
                     />
                 </Pressable>
-                {open ? (
+                {props.variant === 'sidebar' && open ? (
                     <Popover
                         open={open}
                         anchorRef={anchorRef}
@@ -1125,6 +1329,16 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                     onManageRelay={handleManageRelay}
                                 />
 
+                                <ConnectionPopoverAccountEntryActions
+                                    profile={displayServerProfile}
+                                    runtimeOrigin={displayUsesActiveSnapshot && !displayHomeCarrier ? activeServerSnapshot.runtimeOrigin ?? null : null}
+                                    homeCarrier={displayHomeCarrier}
+                                    onClose={() => {
+                                        setOpen(false);
+                                        setDetailsExpanded(false);
+                                    }}
+                                />
+
                                 <Pressable
                                     testID="connection-details-disclosure"
                                     accessibilityRole="button"
@@ -1147,6 +1361,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                     const relayStatusKey = resolveRelayStatusKey({
                                         endpointStatus: connectionHealth.endpointStatus,
                                         connectionHealthKind: connectionHealth.kind,
+                                        transportState: transportDiagnostics?.state,
                                     });
                                     const endpointPresentation = resolveStatusPresentation(theme, relayStatusKey);
                                     const canRetryRelayConnection =
@@ -1180,17 +1395,19 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
 
                                     return (
                                         <View style={styles.popoverStatusList}>
-                                            <ConnectionPopoverStatusRow
-                                                testID="connection-popover-relay"
-                                                icon="hard-drives"
-                                                title={t('systemStatus.server.activeServer')}
-                                                subtitle={toServerUrlDisplay(displayServerUrl)}
-                                                statusLabel={t(endpointPresentation.labelKey)}
-                                                statusColor={endpointPresentation.color}
-                                                dotColor={endpointPresentation.dotColor}
-                                                statusVariant={endpointPresentation.pillVariant}
-                                                onRetry={canRetryRelayConnection ? handleRetry : undefined}
-                                            />
+                                            {(transportDiagnostics || (displayUsesActiveSnapshot && activeServerSnapshot.carrier === 'iroh')) ? (
+                                                <ConnectionPopoverStatusRow
+                                                    testID="connection-popover-relay"
+                                                    icon="hard-drives"
+                                                    title={t('systemStatus.transport.irohCurrent')}
+                                                    subtitle={toServerUrlDisplay(displayServerUrl)}
+                                                    statusLabel={t(endpointPresentation.labelKey)}
+                                                    statusColor={endpointPresentation.color}
+                                                    dotColor={endpointPresentation.dotColor}
+                                                    statusVariant={endpointPresentation.pillVariant}
+                                                    onRetry={canRetryRelayConnection ? handleRetry : undefined}
+                                                />
+                                            ) : null}
                                             <ConnectionPopoverStatusRow
                                                 testID="connection-popover-realtime"
                                                 icon="pulse"

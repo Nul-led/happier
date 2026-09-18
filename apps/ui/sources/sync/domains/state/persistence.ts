@@ -1,3 +1,4 @@
+import type { SessionInitialAccessDraftV1, SessionAuthoringExecutionTargetV2, TemporaryComputerActivationRefV1 } from '@happier-dev/protocol';
 import { z } from 'zod';
 import type { Settings } from '../settings/settings';
 import { voiceSettingsParse } from '../settings/voiceSettings';
@@ -46,6 +47,9 @@ import {
     SessionModelSelectionResolutionError,
     SessionMcpSelectionV1Schema,
     SessionExecutionTargetV1Schema,
+    SessionAuthoringExecutionTargetV2Schema,
+    TemporaryComputerActivationRefV1Schema,
+    MachinePoolSelectionOriginV1Schema,
     SessionOrganizationPlacementV1Schema,
     WindowsRemoteSessionLaunchModeSchema,
     readBackendTargetRefV2,
@@ -59,11 +63,11 @@ import {
     type SessionMcpSelectionV1,
     type SessionModelSelectionV1,
     type RuntimeDescriptorV1,
-    type SessionExecutionTargetV1,
     type SessionOrganizationPlacementV1,
     type WindowsRemoteSessionLaunchMode,
 } from '@happier-dev/protocol';
 import type { PluginUiSessionPlacementCandidateV1 } from '@happier-dev/protocol/plugins/ui';
+import type { SessionTeamCredentialBindingIntentListV1 } from '@happier-dev/protocol/teams';
 import { getPersistenceStorage } from './persistenceStorage';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import { prepareSessionPersistenceScopeForActivation } from './sessionPersistence';
@@ -90,7 +94,7 @@ export {
     saveSessionPermissionModes,
     saveSessionReviewCommentsDrafts,
     saveWorkspaceReviewCommentsDrafts,
-    type SessionActionDraftsBySessionId,
+    type SessionActionDraftsByAddressKey,
     type SessionReviewCommentDraftsBySessionId,
     type WorkspaceReviewCommentDraftsByWorkspaceCacheKey,
 } from './sessionPersistence';
@@ -165,6 +169,11 @@ export type NewSessionComposerAttachmentSeedV1 = Readonly<{
     value: ComposerAttachmentAuthorValueV1;
 }>;
 
+// Retained only to import the predecessor device-local singleton draft.
+const NewSessionDraftExecutionTargetSchema = SessionExecutionTargetV1Schema.extend({
+    selectionOrigin: MachinePoolSelectionOriginV1Schema.optional(),
+}).strict();
+
 export interface NewSessionDraft {
     input: string;
     /**
@@ -185,8 +194,13 @@ export interface NewSessionDraft {
     targetServerId?: string | null;
     /** Unresolved placement choices seeded by a host, owned by this draft. */
     placementCandidates?: readonly PluginUiSessionPlacementCandidateV1[];
-    executionTarget?: SessionExecutionTargetV1 | null;
+    executionTarget?: SessionAuthoringExecutionTargetV2 | null;
+    temporaryComputerActivationRef?: TemporaryComputerActivationRefV1 | null;
     organizationPlacement?: SessionOrganizationPlacementV1;
+    access?: SessionInitialAccessDraftV1 | null;
+    primaryTeamId?: string | null;
+    /** Device-local complete slot list of exact resource revision intents; never cached credentials. */
+    teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
     windowsRemoteSessionLaunchModeOverride?: Readonly<{
         machineId: string;
         mode: WindowsRemoteSessionLaunchMode;
@@ -619,12 +633,25 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
         const selectedMachineId = typeof parsed.selectedMachineId === 'string' ? parsed.selectedMachineId : null;
         const selectedPath = typeof parsed.selectedPath === 'string' ? parsed.selectedPath : null;
         const targetServerId = parseDraftTrimmedString((parsed as any).targetServerId);
-        const parsedExecutionTarget = SessionExecutionTargetV1Schema.safeParse((parsed as any).executionTarget);
-        const executionTarget = parsedExecutionTarget.success
+        const parsedExecutionTarget = NewSessionDraftExecutionTargetSchema.safeParse((parsed as any).executionTarget);
+        const legacyExecutionTarget: z.infer<typeof NewSessionDraftExecutionTargetSchema> | null = parsedExecutionTarget.success
             ? parsedExecutionTarget.data
             : targetServerId && selectedMachineId
                 ? SessionExecutionTargetV1Schema.parse({ serverId: targetServerId, machineId: selectedMachineId })
                 : null;
+        const parsedCurrentExecutionTarget = SessionAuthoringExecutionTargetV2Schema.nullable().safeParse(parsed.executionTarget);
+        const executionTarget: SessionAuthoringExecutionTargetV2 | null = parsedCurrentExecutionTarget.success
+            ? parsedCurrentExecutionTarget.data
+            : legacyExecutionTarget
+            ? {
+                kind: 'machine',
+                target: { serverId: legacyExecutionTarget.serverId, machineId: legacyExecutionTarget.machineId },
+                ...('selectionOrigin' in legacyExecutionTarget && legacyExecutionTarget.selectionOrigin
+                    ? { selectionOrigin: legacyExecutionTarget.selectionOrigin }
+                    : {}),
+            }
+            : null;
+        const parsedActivationRef = TemporaryComputerActivationRefV1Schema.nullable().safeParse(parsed.temporaryComputerActivationRef);
         const parsedOrganizationPlacement = SessionOrganizationPlacementV1Schema.safeParse((parsed as any).organizationPlacement);
         const organizationPlacement = parsedOrganizationPlacement.success
             ? parsedOrganizationPlacement.data
@@ -775,6 +802,7 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
             selectedPath,
             ...(targetServerId ? { targetServerId } : {}),
             executionTarget,
+            ...(parsedActivationRef.success ? { temporaryComputerActivationRef: parsedActivationRef.data } : {}),
             organizationPlacement,
             ...(windowsRemoteSessionLaunchModeOverride ? { windowsRemoteSessionLaunchModeOverride } : {}),
             ...(entryIntent ? { entryIntent } : {}),

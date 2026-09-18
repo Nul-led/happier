@@ -4,10 +4,12 @@ import { View } from 'react-native';
 import { describe, expect, it, vi } from 'vitest';
 import { createProviderErrorV1 } from '@happier-dev/protocol';
 
-import { renderHook } from '@/dev/testkit';
+import { renderHook, renderScreen } from '@/dev/testkit';
+import { createMachineActionChip } from '@/components/sessions/agentInput/definitions/createMachineActionChip';
 
 import type { NewSessionSimplePanelProps } from '../components/NewSessionSimplePanel';
 import { useNewSessionSimplePanelProps } from './useNewSessionSimplePanelProps';
+import { useNewSessionScreenSimplePanelProps } from './screenModel/useNewSessionScreenSimplePanelProps';
 
 function createPanelProps(
     overrides: Partial<NewSessionSimplePanelProps> = {},
@@ -49,6 +51,71 @@ function createPanelProps(
 }
 
 describe('useNewSessionSimplePanelProps', () => {
+    it('qualifies a restored exact destination with its Home and independently readable Pool', async () => {
+        const panel = createPanelProps({ selectedMachineId: 'machine-1' });
+        const poolId = '00000000-0000-4000-8000-000000000001';
+        const destination = {
+            selectionOrigin: { kind: 'machine_pool' as const, poolId },
+            machineGroups: [
+                { serverId: 'home-a', serverName: 'Work Home' },
+                { serverId: 'home-b', serverName: 'Personal Home' },
+            ],
+            poolGroups: [{ serverId: 'home-a', pools: [{ pool: { id: poolId, name: 'Development' } }] }],
+        };
+        const params = {
+            layout: panel,
+            creation: panel,
+            agent: { ...panel, selectedBackendTargetKey: 'codex' },
+            model: { ...panel, modelOptionsProbeState: { phase: 'idle' as const, onRefresh: () => {} } },
+            acp: {
+                ...panel,
+                acpSessionModeProbeState: { phase: 'idle' as const, onRefresh: () => {} },
+                acpConfigOptionsProbeState: { phase: 'idle' as const, onRefresh: () => {} },
+            },
+            machineAndResume: { ...panel, machineDisplayName: 'Mac Studio development rack', destination },
+            profile: panel,
+            targetServerId: 'home-a',
+            attachmentFlowId: undefined,
+        };
+        const hook = await renderHook((input: typeof params) => useNewSessionScreenSimplePanelProps(input), { initialProps: params });
+        expect(hook.getCurrent().machineName).toContain('Mac Studio development rack');
+        expect(hook.getCurrent().machineName).toContain('Work Home');
+        expect(hook.getCurrent().machineName).toContain('Development');
+        expect(hook.getCurrent().machineName).not.toContain('Personal Home');
+        expect(hook.getCurrent().machineName?.endsWith('Mac Studio development rack')).toBe(true);
+        const chip = await renderScreen(<>{createMachineActionChip({
+            anchorRef: React.createRef<View>(),
+            machineName: hook.getCurrent().machineName,
+            tint: 'black',
+            showLabel: true,
+            chipStyle: () => ({}),
+            textStyle: {},
+            onPress: () => {},
+        })}</>);
+        expect(chip.findByTestId('agent-input-machine-chip')?.props.accessibilityLabel).toBe(hook.getCurrent().machineName);
+
+        await hook.rerender({
+            ...params,
+            targetServerId: 'home-b',
+        });
+        expect(hook.getCurrent().machineName).toContain('Mac Studio development rack');
+        expect(hook.getCurrent().machineName).toContain('Personal Home');
+        expect(hook.getCurrent().machineName).not.toContain('Work Home');
+        expect(hook.getCurrent().machineName).not.toContain('Development');
+
+        await hook.rerender({
+            ...params,
+            machineAndResume: {
+                ...params.machineAndResume,
+                destination: { ...destination, poolGroups: [] },
+            },
+        });
+        expect(hook.getCurrent().machineName).toContain('Mac Studio development rack');
+        expect(hook.getCurrent().machineName).toContain('Work Home');
+        expect(hook.getCurrent().machineName).not.toContain('Development');
+        await hook.unmount();
+    });
+
     it('preserves the route-owned bottom-anchor decision across the memoized panel model', async () => {
         const hook = await renderHook((props: NewSessionSimplePanelProps) => useNewSessionSimplePanelProps(props), {
             initialProps: createPanelProps({ shouldBottomAnchor: true }),

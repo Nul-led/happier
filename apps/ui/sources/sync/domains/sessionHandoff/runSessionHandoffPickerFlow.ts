@@ -8,7 +8,12 @@ import { openSessionHandoffPicker } from '@/components/sessions/handoff/openSess
 import { openObservedSessionHandoffProgressModal } from '@/components/sessions/handoff/openSessionHandoffProgressModal';
 import { sync } from '@/sync/sync';
 import { randomUUID } from '@/platform/randomUUID';
+import { getStorage } from '@/sync/domains/state/storageStore';
 import { actionOperationPresentationCoordinator } from '@/components/inbox/actionOperations/actionOperationPresentationRuntime';
+import {
+    actionOperationStore,
+    type ActionOperationStore,
+} from '@/sync/domains/actionOperations/actionOperationStore';
 
 import {
     executeSessionHandoffAction,
@@ -20,6 +25,30 @@ type ExecuteAction = (
     input: unknown,
     context?: ActionExecutorContext,
 ) => Promise<ActionExecuteResult>;
+
+function readRetainedHandoffRequestId(input: Readonly<{
+    store: Pick<ActionOperationStore, 'getSnapshot'>;
+    serverId: string | null;
+    accountId: string;
+    sessionId: string;
+    sourceMachineId?: string | null;
+}>): string | null {
+    const serverId = input.serverId?.trim() ?? '';
+    const accountId = input.accountId.trim();
+    const sourceMachineId = input.sourceMachineId?.trim() ?? '';
+    if (!serverId || !accountId) return null;
+    const candidates = [...input.store.getSnapshot().operationsByKey.values()]
+        .filter((operation) => operation.serverId === serverId)
+        .map((operation) => operation.snapshot)
+        .filter((snapshot) => snapshot.actionId === 'session.handoff'
+            && snapshot.state === 'running'
+            && snapshot.scope.accountId === accountId
+            && snapshot.scope.sessionId === input.sessionId
+            && (!sourceMachineId || snapshot.scope.machineId === sourceMachineId)
+            && Boolean(snapshot.requestId))
+        .sort((left, right) => right.createdAt - left.createdAt);
+    return candidates[0]?.requestId ?? null;
+}
 
 /**
  * The destination confirmation belongs to the Action approval corridor: the
@@ -33,6 +62,7 @@ export async function runSessionHandoffPickerFlow(args: Readonly<{
     sourceMachineId?: string | null;
     serverId: string | null;
     placement: ActionUiPlacement;
+    operationStore?: Pick<ActionOperationStore, 'getSnapshot'>;
 }>): Promise<ExecuteSessionHandoffActionResult | null> {
     const selection = await openSessionHandoffPicker({
         sessionId: args.sessionId,
@@ -42,16 +72,30 @@ export async function runSessionHandoffPickerFlow(args: Readonly<{
     if (!selection) return null;
 
     const releaseUserRequestLease = sync.acquireUserRequestLease();
-    const requestId = randomUUID();
+    const profileScope = getStorage().getState().profileScope;
+    const accountId = profileScope?.serverId === args.serverId
+        ? profileScope.accountId ?? ''
+        : '';
+    const requestId = readRetainedHandoffRequestId({
+        store: args.operationStore ?? actionOperationStore,
+        serverId: args.serverId,
+        accountId,
+        sessionId: args.sessionId,
+        sourceMachineId: args.sourceMachineId,
+    }) ?? randomUUID();
     const workspaceSyncEnabled = selection.workspaceAction !== undefined
         && selection.workspaceAction.kind !== 'none';
     const openProgress = () => openObservedSessionHandoffProgressModal({
         requestId,
         sessionId: args.sessionId,
+        serverId: args.serverId,
+        accountId,
         workspaceSyncEnabled,
     });
     const progressPresentation = openProgress();
     actionOperationPresentationCoordinator.register({
+        serverId: args.serverId,
+        accountId: profileScope?.serverId === args.serverId ? profileScope.accountId : '',
         requestId,
         onStart: 'current',
         origin: {

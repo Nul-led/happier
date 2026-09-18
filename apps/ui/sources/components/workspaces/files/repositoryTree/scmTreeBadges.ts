@@ -5,6 +5,7 @@ export type ScmTreeBadge = Readonly<{
     added: number;
     removed: number;
     changedCount: number;
+    isComplete?: boolean;
 }>;
 
 function sumEntryAdded(entry: { stats: { includedAdded: number; pendingAdded: number } }): number {
@@ -55,6 +56,7 @@ type DirAggregate = {
     added: number;
     removed: number;
     changedCount: number;
+    isComplete?: boolean;
 };
 
 export type ScmTreeBadgeIndex = Readonly<{
@@ -72,6 +74,7 @@ export function buildScmTreeBadgeSignature(snapshot: ScmWorkingSnapshot | null |
             entry.stats.includedRemoved,
             entry.stats.pendingAdded,
             entry.stats.pendingRemoved,
+            entry.stats.isComplete === false ? 0 : 1,
         ].join(':'))
         .sort()
         .join('|');
@@ -100,7 +103,7 @@ export function createScmTreeBadgeIndex(snapshot: ScmWorkingSnapshot | null | un
     for (const entry of entries) {
         const added = sumEntryAdded(entry);
         const removed = sumEntryRemoved(entry);
-        fileMap.set(entry.path, { kindLetter: kindLetter(entry.kind), added, removed, changedCount: 1 });
+        fileMap.set(entry.path, { kindLetter: kindLetter(entry.kind), added, removed, changedCount: 1, ...(entry.stats.isComplete === false ? { isComplete: false } : {}) });
 
         const { priority, letter } = kindToDirPriority(entry.kind);
         const segments = entry.path.split('/').filter(Boolean);
@@ -109,6 +112,7 @@ export function createScmTreeBadgeIndex(snapshot: ScmWorkingSnapshot | null | un
         for (let i = 0; i < segments.length - 1; i++) {
             current = current ? `${current}/${segments[i]}` : segments[i]!;
             const agg = ensureDir(current);
+            if (entry.stats.isComplete === false) agg.isComplete = false;
             agg.added += added;
             agg.removed += removed;
             agg.changedCount += 1;
@@ -119,6 +123,7 @@ export function createScmTreeBadgeIndex(snapshot: ScmWorkingSnapshot | null | un
         }
         // Root aggregate (empty string) is used by callers that render the repo root.
         const rootAgg = ensureDir('');
+        if (entry.stats.isComplete === false) rootAgg.isComplete = false;
         rootAgg.added += added;
         rootAgg.removed += removed;
         rootAgg.changedCount += 1;
@@ -134,7 +139,7 @@ export function createScmTreeBadgeIndex(snapshot: ScmWorkingSnapshot | null | un
             const normalized = directoryPath.replace(/\/+$/, '');
             const agg = dirAgg.get(normalized) ?? null;
             if (!agg || agg.changedCount === 0) return null;
-            return { kindLetter: agg.kindLetter, added: agg.added, removed: agg.removed, changedCount: agg.changedCount };
+            return { kindLetter: agg.kindLetter, added: agg.added, removed: agg.removed, changedCount: agg.changedCount, ...(agg.isComplete === false ? { isComplete: false } : {}) };
         },
     } as const;
 
@@ -145,32 +150,9 @@ export function createScmTreeBadgeIndex(snapshot: ScmWorkingSnapshot | null | un
 }
 
 export function computeScmFileTreeBadge(snapshot: ScmWorkingSnapshot | null | undefined, fullPath: string): ScmTreeBadge | null {
-    if (!snapshot?.entries) return null;
-    const entry = snapshot.entries.find((e) => e.path === fullPath) ?? null;
-    if (!entry) return null;
-    const added = sumEntryAdded(entry);
-    const removed = sumEntryRemoved(entry);
-    return { kindLetter: kindLetter(entry.kind), added, removed, changedCount: 1 };
+    return createScmTreeBadgeIndex(snapshot).getFileBadge(fullPath);
 }
 
 export function computeScmDirectoryTreeBadge(snapshot: ScmWorkingSnapshot | null | undefined, directoryPath: string): ScmTreeBadge | null {
-    if (!snapshot?.entries) return null;
-    const prefix = directoryPath ? `${directoryPath.replace(/\/+$/, '')}/` : '';
-    const matching = prefix
-        ? snapshot.entries.filter((e) => e.path.startsWith(prefix))
-        : snapshot.entries.slice();
-    if (matching.length === 0) return null;
-
-    const added = matching.reduce((acc, e) => acc + sumEntryAdded(e), 0);
-    const removed = matching.reduce((acc, e) => acc + sumEntryRemoved(e), 0);
-    let bestPriority = 0;
-    let letter = 'M';
-    for (const entry of matching) {
-        const pr = kindToDirPriority(entry.kind);
-        if (pr.priority > bestPriority) {
-            bestPriority = pr.priority;
-            letter = pr.letter;
-        }
-    }
-    return { kindLetter: letter, added, removed, changedCount: matching.length };
+    return createScmTreeBadgeIndex(snapshot).getDirectoryBadge(directoryPath);
 }

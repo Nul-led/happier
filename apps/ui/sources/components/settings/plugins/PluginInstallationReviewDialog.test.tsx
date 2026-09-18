@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
 
@@ -172,23 +173,67 @@ describe('PluginInstallationReviewDialog', () => {
             })}`);
     });
 
-    it('renders protocol review facts semantically without certification claims', async () => {
+    it.each([
+        ['https://downloads.example.test/plugin.tgz?access_token=example', true],
+        ['https://downloads.example.test/plugin.tgz', true],
+        ['/tmp/plugin.tgz', false],
+    ])('discloses retained archive URL credentials before approval for %s', async (locator, expected) => {
         const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
         const screen = await renderScreen(
             <PluginInstallationReviewDialog
-                review={review}
-                target={{ machine: 'Build box', server: 'Server B' }}
+                review={createPluginInstallationReviewFixture({
+                    source: { kind: 'archive', locator, integrity: 'sha512-example', integrityBasis: 'observed' },
+                    updateChannel: { kind: 'archive', locator },
+                })}
+                target={{ machine: 'Laptop', server: 'Server A' }}
                 onResolve={vi.fn()}
                 onClose={vi.fn()}
             />,
         );
 
+        expect(Boolean(screen.findByTestId('settings.plugins.installReview.archiveUrlRetention'))).toBe(expected);
+        expect(screen.findByTestId('settings.plugins.installReview.confirm')).toBeTruthy();
+    });
+
+    it('renders protocol review facts semantically without certification claims', async () => {
+        const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
+        const onResolve = vi.fn();
+        const screen = await renderScreen(
+            <PluginInstallationReviewDialog
+                review={createPluginInstallationReviewFixture({
+                    ...review,
+                    optionalHostAccess: [{
+                        id: 'workspace', capability: 'Workspace files', reason: 'Read the selected workspace.',
+                        authorizationClass: 'hostResourceSelection', normalizedScope: { kind: 'workspace' },
+                    }],
+                })}
+                target={{ machine: 'Build box', server: 'Server B' }}
+                onResolve={onResolve}
+                onClose={vi.fn()}
+            />,
+        );
+
         expect(screen.findByTestId('settings.plugins.installReview.identity')).toBeTruthy();
+        expect(screen.findByTestId('settings.plugins.installReview.evidence')).toBeNull();
+        expect(screen.findByTestId('settings.plugins.installReview.trustedCode')).toBeTruthy();
+        expect(screen.findByTestId('settings.plugins.installReview.executableCode')).toBeTruthy();
+        expect(screen.findByTestId('settings.plugins.installReview.rawCredentials')).toBeTruthy();
+        expect(screen.findByTestId('settings.plugins.installReview.optional.workspace')?.props.value).toBe(false);
+        await act(async () => {
+            screen.findByTestId('settings.plugins.installReview.optional.workspace')?.props.onValueChange(true);
+        });
+        expect(screen.findByTestId('settings.plugins.installReview.evidenceToggle')?.props.accessibilityState).toEqual(expect.objectContaining({ expanded: false }));
+        await screen.pressByTestIdAsync('settings.plugins.installReview.evidenceToggle');
+        expect(screen.findByTestId('settings.plugins.installReview.evidenceToggle')?.props.accessibilityState).toEqual(expect.objectContaining({ expanded: true }));
         expect(screen.findByTestId('settings.plugins.installReview.evidence')).toBeTruthy();
         expect(screen.findByTestId('settings.plugins.installReview.requestInterceptors')).toBeTruthy();
         expect(screen.findByTestId('settings.plugins.installReview.rawCredentials')).toBeTruthy();
         expect(screen.findByTestId('settings.plugins.installReview.compatibility')).toBeTruthy();
         expect(JSON.stringify(screen.tree.toJSON())).not.toMatch(/certif/i);
+        await screen.pressByTestIdAsync('settings.plugins.installReview.evidenceToggle');
+        expect(screen.findByTestId('settings.plugins.installReview.optional.workspace')?.props.value).toBe(true);
+        await screen.pressByTestIdAsync('settings.plugins.installReview.confirm');
+        expect(onResolve).toHaveBeenCalledWith({ approved: true, optionalSelections: [{ accessId: 'workspace', selected: true }] });
     });
 
     it('uses navigable headings without merging section facts or optional access controls', async () => {
@@ -217,7 +262,6 @@ describe('PluginInstallationReviewDialog', () => {
             'requiredAccess',
             'requestInterceptors',
             'rawCredentials',
-            'evidence',
             'compatibility',
         ];
         for (const sectionId of sectionIds) {

@@ -1,13 +1,20 @@
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import type { ViewerReadStateV1 } from '@happier-dev/protocol';
 
 export type LastViewedSessionSeqInput = Readonly<{
     lastViewedSessionSeq?: number | null;
     metadata?: unknown;
     metadataLayoutVersion?: number;
     ownerMetadataView?: unknown;
+    viewer?: Readonly<{ readState: ViewerReadStateV1 }>;
 }>;
 
 export function resolveLastViewedSessionSeq(session: LastViewedSessionSeqInput): number | undefined {
+    if (session.viewer !== undefined) {
+        return session.viewer.readState.state === 'tracking'
+            ? session.viewer.readState.lastViewedSessionSeq
+            : undefined;
+    }
     if (typeof session.lastViewedSessionSeq === 'number' && Number.isFinite(session.lastViewedSessionSeq)) {
         return Math.max(0, Math.trunc(session.lastViewedSessionSeq));
     }

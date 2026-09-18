@@ -10,6 +10,7 @@ import {
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 import { TranscriptSendToSessionModal } from './TranscriptSendToSessionModal';
 
@@ -85,7 +86,10 @@ function createSessionListIndexItem(session: Session, serverId: string): Session
 }
 
 function createSessionListRowRenderableMap(sessions: ReadonlyArray<Session>, serverId: string): ReadonlyMap<string, SessionListRenderableSession> {
-    return new Map(sessions.map((session) => [`${serverId}:${session.id}`, session as SessionListRenderableSession]));
+    return new Map(sessions.map((session) => [
+        sessionAddressKey({ serverId, sessionId: session.id }),
+        session as SessionListRenderableSession,
+    ]));
 }
 
 function flattenStyle(style: unknown): Record<string, unknown> {

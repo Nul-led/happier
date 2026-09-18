@@ -8,8 +8,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { AccountStoredContentClientUpgradeRequiredError } from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import type {
-    ServerAccountSessionRequestAuthority,
-} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+    ServerAccountRequestAuthority,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
 import { createHostedSystemSessionEnsurer } from './hostedSystemSession';
 
@@ -26,7 +26,7 @@ const SERVER_BASIS = Object.freeze({ serverId: 'server-a', generation: 41 });
 const ACCOUNT_A_AUTHORITY = {
     scope: { serverId: 'server-a', accountId: 'account-a' },
     context: { token: 'account-a-token' },
-} as unknown as ServerAccountSessionRequestAuthority;
+} as unknown as ServerAccountRequestAuthority;
 
 function encodeBytes(bytes: Uint8Array): string {
     return btoa(String.fromCharCode(...bytes));

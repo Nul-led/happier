@@ -10,7 +10,7 @@ import {
   summarizeAgentRequestForVoiceHuman,
 } from './contextFormatters';
 import type { Message } from '@/sync/domains/messages/messageTypes';
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessagesForAddress } from '@/sync/domains/messages/readStoredSessionMessagesForAddress';
 import { storage } from '@/sync/domains/state/storage';
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
 import { VOICE_CONFIG } from '@/voice/runtime/voiceConfig';
@@ -19,12 +19,13 @@ import type { VoiceContextSink } from '@/voice/context/VoiceContextSink';
 import { resolveEffectiveVoiceTargetState } from '@/voice/context/resolveEffectiveVoiceTargetState';
 import { getVoiceContextFormatterPrefs } from '@/voice/context/voiceContextPrefs';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
-import { resolveVoiceSessionUpdatePolicy, type VoiceSessionUpdatePolicy } from '@/voice/runtime/voiceUpdatePolicy';
-import type { AgentRequestKind } from '@/utils/sessions/permissions/permissionPromptPolicy';
+import { readSessionIncludedInVoiceFromState, resolveVoiceSessionUpdatePolicy, type VoiceSessionUpdatePolicy } from '@/voice/runtime/voiceUpdatePolicy';
+import type { AgentRequestKind } from '@happier-dev/protocol';
 import { resolveVoiceContextSessionFromState } from '@/voice/context/resolveVoiceContextSession';
 import type { CurrentUiContextSnapshotV1 } from '@happier-dev/protocol/plugins/ui';
 import type { HostAuthoredContextClass, VoiceHostAuthoredContextScope } from '@/voice/session/types';
 import { resolveVoiceInitialContext } from '@/voice/context/buildVoiceInitialContext';
+import { areSessionAddressesEqual, normalizeSessionAddress, sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 /**
  * Centralized voice assistant hooks for multi-session context updates.
@@ -40,7 +41,7 @@ interface SessionMetadata {
 }
 
 /** Full session context already disclosed during the current Voice attempt. */
-const voiceAttemptShownSessionIds = new Set<string>();
+const voiceAttemptShownSessionAddresses = new Set<string>();
 
 type VoiceDebugEvent =
   | 'voice_contextual_update'
@@ -72,14 +73,21 @@ function emitVoiceDebugDiagnostic(
   });
 }
 
-function resolvePolicy(sessionId: string): VoiceSessionUpdatePolicy {
+function normalizeLifecycleAddress(address: SessionAddress): SessionAddress | null {
+  return normalizeSessionAddress(address?.serverId, address?.sessionId);
+}
+
+function resolvePolicy(address: SessionAddress): VoiceSessionUpdatePolicy {
   // NOTE: we deliberately avoid a session-scoped API here; global voice uses explicit target.
-  const targetState = resolveEffectiveVoiceTargetState(sessionId);
+  const targetState = resolveEffectiveVoiceTargetState(address);
+  const state = storage.getState();
 
   return resolveVoiceSessionUpdatePolicy({
-    sessionId,
-    settings: storage.getState().settings,
-    trackedSessionIds: targetState.trackedSessionIds,
+    sessionId: address.sessionId,
+    sessionAddress: address,
+    settings: state.settings,
+    includeInVoice: readSessionIncludedInVoiceFromState(state, address),
+    isCurrentAttemptTarget: areSessionAddressesEqual(targetState.primaryActionSessionAddress, address),
   });
 }
 
@@ -93,13 +101,15 @@ function isAmbientCurrentUiDisclosureEnabled(): boolean {
   return readVoicePrivacySettings(storage.getState().settings).currentUiContextMode === 'automatic';
 }
 
-function getVoiceContextPrefs(sessionId: string) {
+function getVoiceContextPrefs(address: SessionAddress) {
   const settings = storage.getState().settings;
-  const targetState = resolveEffectiveVoiceTargetState(sessionId);
+  const targetState = resolveEffectiveVoiceTargetState(address);
   return getVoiceContextFormatterPrefs({
-    sessionId,
+    sessionId: address.sessionId,
+    sessionAddress: address,
     settings,
-    trackedSessionIds: targetState.trackedSessionIds,
+    includeInVoice: readSessionIncludedInVoiceFromState(storage.getState(), address),
+    isCurrentAttemptTarget: areSessionAddressesEqual(targetState.primaryActionSessionAddress, address),
   });
 }
 
@@ -216,28 +226,33 @@ function announceAssistantText(sessionId: string, update: string | null | undefi
   sink.announceAssistantText?.(sessionId, update);
 }
 
-function reportSession(sessionId: string) {
-  const normalizedSessionId = String(sessionId ?? '').trim();
-  if (normalizedSessionId.length > 0 && voiceAttemptShownSessionIds.has(normalizedSessionId)) return;
-  const level = resolvePolicy(sessionId).level;
+function reportSession(address: SessionAddress) {
+  const key = sessionAddressKey(address);
+  if (voiceAttemptShownSessionAddresses.has(key)) return;
+  const level = resolvePolicy(address).level;
   if (level !== 'summaries' && level !== 'snippets') return;
-  const session = resolveVoiceContextSessionFromState(sessionId, storage.getState());
+  const session = resolveVoiceContextSessionFromState(address, storage.getState());
   if (!session) return;
-  const messages = readStoredSessionMessages(storage.getState(), sessionId);
-  const contextUpdate = formatSessionFull(session, messages, getVoiceContextPrefs(sessionId));
-  reportContextualUpdate(sessionId, contextUpdate, 'session_context');
-  // Mark as shown only once we've actually emitted the full context.
-  if (normalizedSessionId.length > 0) voiceAttemptShownSessionIds.add(normalizedSessionId);
+  const messages = readStoredSessionMessagesForAddress(storage.getState(), address, {
+    activeServerId: address.serverId,
+  });
+  const contextUpdate = formatSessionFull(session, messages, getVoiceContextPrefs(address), address);
+  if (reportContextualUpdate(address.sessionId, contextUpdate, 'session_context')) {
+    voiceAttemptShownSessionAddresses.add(key);
+  }
 }
 
-function formatNewMessagesActivity(sessionId: string, messages: Message[]): string {
+function formatNewMessagesActivity(address: SessionAddress, messages: Message[]): string {
   const count = Array.isArray(messages) ? messages.length : 0;
   const plural = count === 1 ? '' : 's';
-  return `New messages in session: ${sessionId}\n\n(${count} new message${plural})`;
+  return `New messages in session: ${address.sessionId}\n\n(${count} new message${plural})`;
 }
 
-function isPrimaryActionSession(sessionId: string): boolean {
-  return resolveEffectiveVoiceTargetState(sessionId).primaryActionSessionId === sessionId;
+function isPrimaryActionSession(address: SessionAddress): boolean {
+  return areSessionAddressesEqual(
+    resolveEffectiveVoiceTargetState(address).primaryActionSessionAddress,
+    address,
+  );
 }
 
 function filterMessagesForVoiceUpdate(messages: Message[], policy: VoiceSessionUpdatePolicy): Message[] {
@@ -249,15 +264,15 @@ function filterMessagesForVoiceUpdate(messages: Message[], policy: VoiceSessionU
 }
 
 function shouldInterruptForAssistantReply(
-  sessionId: string,
+  address: SessionAddress,
   messages: Message[],
   policy: VoiceSessionUpdatePolicy,
   shareRecentMessages: boolean,
 ): boolean {
   if (!shareRecentMessages) return false;
-  if (!isPrimaryActionSession(sessionId)) return false;
+  if (!isPrimaryActionSession(address)) return false;
   if (policy.level !== 'summaries' && policy.level !== 'snippets') return false;
-  return summarizeMessagesForVoiceHuman(Array.isArray(messages) ? messages : [], getVoiceContextPrefs(sessionId)) !== null;
+  return summarizeMessagesForVoiceHuman(Array.isArray(messages) ? messages : [], getVoiceContextPrefs(address)) !== null;
 }
 
 export const voiceHooks = {
@@ -275,29 +290,35 @@ export const voiceHooks = {
     automaticUpdateProjector.markDelivered(update);
   },
 
-  onSessionOnline(sessionId: string, metadata?: SessionMetadata) {
+  onSessionOnline(addressInput: SessionAddress, metadata?: SessionMetadata) {
+    const address = normalizeLifecycleAddress(addressInput);
+    if (!address) return;
     if (VOICE_CONFIG.DISABLE_SESSION_STATUS) return;
-    if (resolvePolicy(sessionId).level === 'none') return;
+    if (resolvePolicy(address).level === 'none') return;
 
-    reportSession(sessionId);
-    const contextUpdate = formatSessionOnline(sessionId, metadata, getVoiceContextPrefs(sessionId));
-    reportContextualUpdate(sessionId, contextUpdate, 'session_context');
+    reportSession(address);
+    const contextUpdate = formatSessionOnline(address, metadata, getVoiceContextPrefs(address));
+    reportContextualUpdate(address.sessionId, contextUpdate, 'session_context');
   },
 
-  onSessionOffline(sessionId: string, metadata?: SessionMetadata) {
+  onSessionOffline(addressInput: SessionAddress, metadata?: SessionMetadata) {
+    const address = normalizeLifecycleAddress(addressInput);
+    if (!address) return;
     if (VOICE_CONFIG.DISABLE_SESSION_STATUS) return;
-    if (resolvePolicy(sessionId).level === 'none') return;
+    if (resolvePolicy(address).level === 'none') return;
 
-    reportSession(sessionId);
-    const contextUpdate = formatSessionOffline(sessionId, metadata, getVoiceContextPrefs(sessionId));
-    reportContextualUpdate(sessionId, contextUpdate, 'session_context');
+    reportSession(address);
+    const contextUpdate = formatSessionOffline(address, metadata, getVoiceContextPrefs(address));
+    reportContextualUpdate(address.sessionId, contextUpdate, 'session_context');
   },
 
-  onSessionFocus(sessionId: string, _metadata?: SessionMetadata) {
+  onSessionFocus(addressInput: SessionAddress, _metadata?: SessionMetadata) {
+    const address = normalizeLifecycleAddress(addressInput);
+    if (!address) return;
     // Focus is a local target signal first: it selects this device's voice
     // target and does not override an explicit active target. That selection
     // never leaves the device, so no disclosure setting governs it.
-    useVoiceTargetStore.getState().setLastFocusedSessionId(sessionId);
+    useVoiceTargetStore.getState().setLastFocusedSessionAddress(address);
 
     // The CurrentUiContextProvider observes the same foreground transition
     // and is the sole automatic delivery owner. Do not turn a focus callback
@@ -305,26 +326,33 @@ export const voiceHooks = {
     // or machine identity to a provider.
   },
 
-  onAgentRequest(sessionId: string, requestId: string, requestKind: AgentRequestKind, toolName: string, toolArgs: any) {
+  onAgentRequest(addressInput: SessionAddress, requestId: string, requestKind: AgentRequestKind, toolName: string, toolArgs: any) {
+    const address = normalizeLifecycleAddress(addressInput);
+    if (!address) return;
     if (VOICE_CONFIG.DISABLE_PERMISSION_REQUESTS) return;
     if (!readVoicePrivacySettings(storage.getState().settings).sharePermissionRequests) return;
 
-    reportSession(sessionId);
+    if (resolvePolicy(address).level === 'none') return;
+    const sessionId = address.sessionId;
+    reportSession(address);
     announceAssistantText(
       sessionId,
-      summarizeAgentRequestForVoiceHuman(requestKind, requestId, toolName, toolArgs, getVoiceContextPrefs(sessionId)),
+      summarizeAgentRequestForVoiceHuman(requestKind, requestId, toolName, toolArgs, getVoiceContextPrefs(address)),
     );
     reportAnnouncedSessionUpdate(
       sessionId,
       requestKind === 'user_action'
-        ? formatUserActionRequest(sessionId, requestId, toolName, toolArgs, getVoiceContextPrefs(sessionId))
-        : formatPermissionRequest(sessionId, requestId, toolName, toolArgs, getVoiceContextPrefs(sessionId)),
+        ? formatUserActionRequest(address, requestId, toolName, toolArgs, getVoiceContextPrefs(address))
+        : formatPermissionRequest(address, requestId, toolName, toolArgs, getVoiceContextPrefs(address)),
     );
   },
 
-  onMessages(sessionId: string, messages: Message[]) {
+  onMessages(addressInput: SessionAddress, messages: Message[]) {
+    const address = normalizeLifecycleAddress(addressInput);
+    if (!address) return;
+    const sessionId = address.sessionId;
     if (VOICE_CONFIG.DISABLE_MESSAGES) return;
-    const policy = resolvePolicy(sessionId);
+    const policy = resolvePolicy(address);
     const level = policy.level;
     if (level === 'none') return;
 
@@ -332,38 +360,38 @@ export const voiceHooks = {
     const shareRecentMessages = readVoicePrivacySettings(storage.getState().settings).shareRecentMessages;
 
     if (level === 'activity') {
-      reportContextualUpdate(sessionId, formatNewMessagesActivity(sessionId, messages), 'session_context');
+      reportContextualUpdate(sessionId, formatNewMessagesActivity(address, messages), 'session_context');
       return;
     }
 
-    reportSession(sessionId);
-    if (shouldInterruptForAssistantReply(sessionId, messages, policy, shareRecentMessages)) {
+    reportSession(address);
+    if (shouldInterruptForAssistantReply(address, messages, policy, shareRecentMessages)) {
       const filtered = filterMessagesForVoiceUpdate(messages, policy);
       if (filtered.length > 0) {
-        announceAssistantText(sessionId, summarizeMessagesForVoiceHuman(filtered, getVoiceContextPrefs(sessionId)));
-        reportAnnouncedSessionUpdate(sessionId, formatNewMessages(sessionId, filtered, getVoiceContextPrefs(sessionId)));
+        announceAssistantText(sessionId, summarizeMessagesForVoiceHuman(filtered, getVoiceContextPrefs(address)));
+        reportAnnouncedSessionUpdate(sessionId, formatNewMessages(address, filtered, getVoiceContextPrefs(address)));
         return;
       }
     }
 
     if (level === 'summaries') {
-      reportContextualUpdate(sessionId, formatNewMessagesActivity(sessionId, messages), 'session_context');
+      reportContextualUpdate(sessionId, formatNewMessagesActivity(address, messages), 'session_context');
       return;
     }
 
     if (!shareRecentMessages) {
-      reportContextualUpdate(sessionId, formatNewMessagesActivity(sessionId, messages), 'session_context');
+      reportContextualUpdate(sessionId, formatNewMessagesActivity(address, messages), 'session_context');
       return;
     }
 
     const filtered = filterMessagesForVoiceUpdate(messages, policy);
 
     if (filtered.length === 0) {
-      reportContextualUpdate(sessionId, formatNewMessagesActivity(sessionId, messages), 'session_context');
+      reportContextualUpdate(sessionId, formatNewMessagesActivity(address, messages), 'session_context');
       return;
     }
 
-    reportContextualUpdate(sessionId, formatNewMessages(sessionId, filtered, getVoiceContextPrefs(sessionId)), 'session_context');
+    reportContextualUpdate(sessionId, formatNewMessages(address, filtered, getVoiceContextPrefs(address)), 'session_context');
   },
 
   /**
@@ -375,24 +403,29 @@ export const voiceHooks = {
    */
   onVoiceStarted(sessionId: string, scope: VoiceHostAuthoredContextScope): string {
     emitVoiceDebugDiagnostic('voice_session_started', { sessionId });
-    voiceAttemptShownSessionIds.clear();
+    voiceAttemptShownSessionAddresses.clear();
     const resolution = resolveVoiceInitialContext(sessionId, { scope });
     if (resolution.kind === 'session') {
-      voiceAttemptShownSessionIds.add(resolution.sessionId);
+      voiceAttemptShownSessionAddresses.add(sessionAddressKey(resolution.sessionAddress));
     }
     return resolution.initialContext;
   },
 
-  onReady(sessionId: string, messages?: Message[]) {
+  onReady(addressInput: SessionAddress, messages?: Message[]) {
+    const address = normalizeLifecycleAddress(addressInput);
+    if (!address) return;
+    const sessionId = address.sessionId;
     if (VOICE_CONFIG.DISABLE_READY_EVENTS) return;
 
-    reportSession(sessionId);
+    reportSession(address);
     const recentMessages = Array.isArray(messages) && messages.length > 0
       ? messages
-      : readStoredSessionMessages(storage.getState(), sessionId);
-    const formatterPrefs = getVoiceContextPrefs(sessionId);
+      : readStoredSessionMessagesForAddress(storage.getState(), address, {
+        activeServerId: address.serverId,
+      });
+    const formatterPrefs = getVoiceContextPrefs(address);
     const privacy = readVoicePrivacySettings(storage.getState().settings);
-    reportAnnouncedSessionUpdate(sessionId, formatReadyEvent(sessionId, recentMessages, {
+    reportAnnouncedSessionUpdate(sessionId, formatReadyEvent(address, recentMessages, {
       ...formatterPrefs,
       // Ready announcements are not snippet serialization. Preserve the raw
       // provider-bound privacy decision instead of the update-level projection.
@@ -402,6 +435,7 @@ export const voiceHooks = {
 
   onVoiceStopped() {
     emitVoiceDebugDiagnostic('voice_session_stopped', {});
-    voiceAttemptShownSessionIds.clear();
+    voiceAttemptShownSessionAddresses.clear();
+    useVoiceTargetStore.getState().setVoiceLiveContextSessionAddresses([]);
   },
 };

@@ -1,4 +1,5 @@
 import { t } from '@/text';
+import { activityInstanceKey, normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import type { DesktopActivityOverlayExpandedCard } from './desktopActivityOverlayModelTypes';
 import type { DesktopActivityOverlaySnapshot } from '../snapshot/desktopActivityOverlaySnapshotTypes';
@@ -12,6 +13,18 @@ function withServerScope(
 
 function formatAlwaysAllowLabel(toolLabel: string): string {
     return t('notifications.actions.alwaysAllowTool', { tool: toolLabel });
+}
+
+function buildSessionScopedCardId(
+    prefix: string,
+    sessionId: string,
+    serverId: string | null,
+): string {
+    const address = normalizeSessionAddress(serverId, sessionId);
+    return activityInstanceKey(
+        address ?? { serverId: null, sessionId },
+        prefix,
+    );
 }
 
 function buildPermissionActions(
@@ -146,7 +159,7 @@ export function buildDesktopActivityOverlayExpandedCards(
 
     for (const request of snapshot.permissionRequests) {
         cards.push({
-            id: `permission:${request.requestId}`,
+            id: request.activityInstanceId,
             kind: 'permission_request',
             requestId: request.requestId,
             ...(request.turnId ? { turnId: request.turnId } : {}),
@@ -172,7 +185,7 @@ export function buildDesktopActivityOverlayExpandedCards(
         const directOptions = Array.isArray(request.directOptions) ? request.directOptions : [];
 
         cards.push({
-            id: `question:${request.requestId}`,
+            id: request.activityInstanceId,
             kind: 'user_question',
             requestId: request.requestId,
             sessionId: request.sessionId,
@@ -203,7 +216,11 @@ export function buildDesktopActivityOverlayExpandedCards(
 
     for (const completionState of snapshot.completionStates) {
         cards.push({
-            id: `completion:${completionState.sessionId}`,
+            id: buildSessionScopedCardId(
+                'completion',
+                completionState.sessionId,
+                completionState.serverId,
+            ),
             kind: 'completion_state',
             sessionId: completionState.sessionId,
             serverId: completionState.serverId,
@@ -233,11 +250,12 @@ export function buildDesktopActivityOverlayExpandedCards(
     }
 
     if (snapshot.sessions.length === 1) {
+        const session = snapshot.sessions[0];
         cards.push({
-            id: `session:${snapshot.sessions[0].sessionId}`,
+            id: buildSessionScopedCardId('session', session.sessionId, session.serverId),
             kind: 'session_overview',
-            ...snapshot.sessions[0],
-            statusText: snapshot.sessions[0].statusText ?? null,
+            ...session,
+            statusText: session.statusText ?? null,
         });
     }
 

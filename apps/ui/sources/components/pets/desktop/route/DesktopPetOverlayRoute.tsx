@@ -312,6 +312,11 @@ function DesktopPetOverlayRouteContent(props: DesktopPetOverlayRouteContentProps
     const activity = props.activity;
     const [trayOpen, setTrayOpen] = React.useState(false);
     const [nativeHoveredSessionId, setNativeHoveredSessionId] = React.useState<string | null>(null);
+    const nativeHoveredItemId = React.useMemo(() => {
+        if (!nativeHoveredSessionId) return null;
+        const matches = activity.trayItems.filter((item) => item.sessionId === nativeHoveredSessionId);
+        return matches.length === 1 ? matches[0]?.id ?? null : null;
+    }, [activity.trayItems, nativeHoveredSessionId]);
     const trayItemCount = activity.trayItems.length;
     const actions = useDesktopPetOverlayActions();
     const petVisible = selectedPetPackage.enabled && selectedPetPackage.source !== null;
@@ -520,7 +525,7 @@ function DesktopPetOverlayRouteContent(props: DesktopPetOverlayRouteContentProps
                     onDismissItem={props.onDismissTrayItem}
                     onQuickReply={actions.quickReply}
                     onInteractionLayoutChange={invalidateNativeLayoutState}
-                    externalActiveSessionId={nativeHoveredSessionId}
+                    externalActiveItemId={nativeHoveredItemId}
                     style={trayStyle}
                 />
             ) : null}

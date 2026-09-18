@@ -120,15 +120,15 @@ export function useChangedFilesReviewPrefetch(input: Readonly<{
         fileStatusByPathRef.current = fileStatusByPath;
     }, [fileStatusByPath]);
 
-    const prefetchSchedulerRef = React.useRef<ScmDiffPrefetchScheduler | null>(null);
-    if (!prefetchSchedulerRef.current) {
-        prefetchSchedulerRef.current = new ScmDiffPrefetchScheduler({
+    const prefetchScheduler = React.useMemo(() => new ScmDiffPrefetchScheduler({
             cache: scmDiffCache,
-            fetchDiff: async ({ sessionId, diffArea, path }) => {
+            fetchDiff: async ({ sessionId, diffArea, path, snapshotSignature }) => {
                 const file = fileStatusByPathRef.current.get(path) ?? null;
                 const response = fetchUnifiedDiffForPath
                     ? await fetchUnifiedDiffForPath({
                         diffArea,
+                        snapshotSignature,
+                        diffCache: scmDiffCache,
                         path,
                         file,
                         normalizeError: (e) => normalizeErrorRef.current(e),
@@ -137,6 +137,8 @@ export function useChangedFilesReviewPrefetch(input: Readonly<{
                     : await fetchSessionUnifiedDiffForPath({
                         sessionId,
                         diffArea,
+                        snapshotSignature,
+                        diffCache: scmDiffCache,
                         path,
                         file,
                         normalizeError: (e) => normalizeErrorRef.current(e),
@@ -148,12 +150,11 @@ export function useChangedFilesReviewPrefetch(input: Readonly<{
             },
             now: () => Date.now(),
             maxConcurrency: Math.max(1, prefetchConcurrency || 1),
-        });
-    }
+        }), [fetchUnifiedDiffForPath]);
     React.useEffect(() => {
         if (!prefetchEnabled) return;
-        prefetchSchedulerRef.current?.setMaxConcurrency(prefetchConcurrency);
-    }, [prefetchConcurrency, prefetchEnabled]);
+        prefetchScheduler.setMaxConcurrency(prefetchConcurrency);
+    }, [prefetchConcurrency, prefetchEnabled, prefetchScheduler]);
 
     const reviewFilePaths = React.useMemo(() => {
         return input.reviewFiles.map((f) => f.fullPath).filter(Boolean);
@@ -183,13 +184,13 @@ export function useChangedFilesReviewPrefetch(input: Readonly<{
         const toPrefetch = prefetchWindowPaths.filter((p) => !visible.has(p));
         if (toPrefetch.length === 0) return;
 
-        prefetchSchedulerRef.current?.prefetch({
+        prefetchScheduler.prefetch({
             sessionId: input.sessionId,
             snapshotSignature: signature,
             diffArea: input.diffArea,
             paths: toPrefetch,
         });
-    }, [input.diffArea, input.sessionId, input.snapshotSignature, prefetchEnabled, prefetchWindowPaths, requestedPaths]);
+    }, [input.diffArea, input.sessionId, input.snapshotSignature, prefetchEnabled, prefetchWindowPaths, requestedPaths, prefetchScheduler]);
 
     const maxDiffLoadConcurrency = prefetchEnabled ? prefetchConcurrency : 1;
     return { prefetchEnabled, requestedPaths, prefetchWindowPaths, onViewableItemsChanged, viewableRowIndices, maxDiffLoadConcurrency };

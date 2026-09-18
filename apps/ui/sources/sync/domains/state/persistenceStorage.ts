@@ -25,10 +25,14 @@ function buildScopedStorageId(baseId: string, scope: string | null): string {
     return scope ? `${baseId}__${scope}` : baseId;
 }
 
+export function getPersistenceStorageId(): string {
+    return buildScopedStorageId('default', isWebRuntime() ? null : readScopedStorageScopeFromEnv());
+}
+
 export function getPersistenceStorage(): MMKV {
     if (persistedStorage) return persistedStorage;
     // Keep storage-scope bootstrap local here to avoid import-cycle TDZ hazards during Sync initialization.
     const storageScope = isWebRuntime() ? null : readScopedStorageScopeFromEnv();
-    persistedStorage = storageScope ? new MMKV({ id: buildScopedStorageId('default', storageScope) }) : new MMKV();
+    persistedStorage = storageScope ? new MMKV({ id: getPersistenceStorageId() }) : new MMKV();
     return persistedStorage;
 }

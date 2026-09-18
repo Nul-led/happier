@@ -2,6 +2,25 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseEphemeralUpdate, parseUpdateContainer } from './socketParse';
 
 describe('socketParse', () => {
+    it.each(['new-session', 'update-session'])('rejects malformed explicit viewers before %s ingestion can use legacy tracking', (type) => {
+        const viewer = {
+            readState: { state: 'tracking', lastViewedSessionSeq: 0, unreadSince: null },
+            relevance: { relevant: true, reasons: ['owned_by_me'] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+            follow: { follows: false, notificationLevel: null },
+            notification: { level: 'important', source: 'owner' },
+        };
+        const body = type === 'update-session' ? { t: type, id: 'private', viewer } : {
+            t: type, id: 'private', seq: 0, metadata: 'e30=', metadataVersion: 1,
+            agentState: null, agentStateVersion: 0, dataEncryptionKey: null,
+            encryptionMode: 'plain', active: true, activeAt: 1, createdAt: 1, updatedAt: 1,
+            viewer,
+        };
+        const envelope = { id: 'private-update', seq: 0, createdAt: 1, body };
+        expect(parseUpdateContainer(envelope)).not.toBeNull();
+        expect(parseUpdateContainer({ ...envelope, body: { ...body, viewer: { ...viewer, readState: { ...viewer.readState, lastViewedSessionSeq: '0' } } } })).toBeNull();
+    });
+
     it('parses a full update container (new-message)', () => {
         const res = parseUpdateContainer({
             id: 'u1',

@@ -14,6 +14,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 
 export const SessionSubagentQuickActions = React.memo((props: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     subagent: SessionSubagent;
     onOpenFull: (() => void) | null;
     onSend: (() => void) | null;
@@ -25,6 +26,7 @@ export const SessionSubagentQuickActions = React.memo((props: Readonly<{
 }>) => {
     const { theme } = useUnistyles();
     const [pendingAction, setPendingAction] = React.useState<'stop' | 'delete' | null>(null);
+    const exactServerId = props.serverId?.trim() || null;
     const stopPropagation = React.useCallback((event?: unknown) => {
         const maybeEvent = event as {
             stopPropagation?: () => void;
@@ -36,11 +38,15 @@ export const SessionSubagentQuickActions = React.memo((props: Readonly<{
 
     const stopRun = React.useCallback(() => {
         const runId = props.subagent.runRef?.runId?.trim();
-        if (!runId) return;
+        if (!runId || !exactServerId) return;
         setPendingAction('stop');
         fireAndForget((async () => {
             try {
-                const result = await sessionExecutionRunStop(props.sessionId, { runId });
+                const result = await sessionExecutionRunStop(
+                    props.sessionId,
+                    { runId },
+                    { serverId: exactServerId },
+                );
                 if ((result as any)?.ok === false) {
                     Modal.alert(t('common.error'), String((result as any)?.error ?? t('runs.stop.failedToStopRun')));
                 }
@@ -50,7 +56,7 @@ export const SessionSubagentQuickActions = React.memo((props: Readonly<{
                 setPendingAction(null);
             }
         })(), { tag: 'SessionSubagentQuickActions.stopRun' });
-    }, [props.sessionId, props.subagent.runRef?.runId]);
+    }, [exactServerId, props.sessionId, props.subagent.runRef?.runId]);
 
     const deleteTeammate = React.useCallback(() => {
         const recipient = props.subagent.recipient;
@@ -96,7 +102,7 @@ export const SessionSubagentQuickActions = React.memo((props: Readonly<{
                 </Pressable>
             ) : null}
 
-            {props.subagent.capabilities.canStop && props.subagent.runRef?.runId ? (
+            {exactServerId && props.subagent.capabilities.canStop && props.subagent.runRef?.runId ? (
                 <Pressable
                     testID={`session-subagent-stop:${props.subagent.id}`}
                     accessibilityRole="button"

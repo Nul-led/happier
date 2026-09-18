@@ -57,6 +57,21 @@ describe('buildSessionListIndexFromViewData', () => {
         }));
     });
 
+    it('keeps delimiter-bearing qualified Session node ids distinct', () => {
+        const first = buildSessionListIndexNodeId({
+            type: 'session',
+            serverId: 'https://home.example/a',
+            sessionId: 'b:c',
+        });
+        const second = buildSessionListIndexNodeId({
+            type: 'session',
+            serverId: 'https://home.example/a:b',
+            sessionId: 'c',
+        });
+
+        expect(first).not.toBe(second);
+    });
+
     it('reuses the previous index reference when inputs are semantically identical', () => {
         const session = makeRenderable('s1');
         const viewData: SessionListViewItem[] = [

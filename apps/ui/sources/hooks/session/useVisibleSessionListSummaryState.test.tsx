@@ -70,7 +70,7 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
         importOriginal,
         overrides: {
             useSessionListIndexByServerId: () => summaryState.byServerId,
-            useSessionListRowStateByServerId: () => summaryState.rowsByServerId,
+            useSessionListRowsByServerId: () => summaryState.rowsByServerId,
         },
     });
 });

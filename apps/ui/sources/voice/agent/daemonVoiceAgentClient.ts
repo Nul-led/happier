@@ -1,6 +1,5 @@
 import { createRpcCallError } from '@/sync/runtime/rpcErrors';
 import { sessionRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc';
-import { storage } from '@/sync/domains/state/storage';
 import { isSocketIoAckTimeoutError } from '@/sync/runtime/socketIoAckTimeout';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
@@ -15,10 +14,10 @@ import {
 import type { ExecutionRunUserTranscriptDirective, VoiceAssistantAction } from '@happier-dev/protocol';
 
 import type { VoiceAgentClient, VoiceAgentHandle, VoiceAgentStartParams, VoiceAgentStartResult, VoiceAgentTurnStreamEvent } from './types';
-import { resolveVoiceAgentBootstrapTimeoutMs } from './resolveVoiceAgentBootstrapTimeoutMs';
 import { streamVoiceAgentTurn } from './streamVoiceAgentTurn';
-import { readLocalConversationSettingsFromAccountSettings } from '@/voice/local/localVoiceSettings';
 import { requiresProviderSafeModelSelectionRpc } from '@/sync/ops/providerDaemonSessionCompatibility';
+
+const VOICE_AGENT_LIFECYCLE_RPC_TIMEOUT_MS = null;
 
 type SafeParseSuccess<T> = { success: true; data: T };
 type SafeParseFailure = { success: false; error: unknown };
@@ -53,20 +52,18 @@ function normalizeVoiceAgentProfileId(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-export class DaemonVoiceAgentClient implements VoiceAgentClient {
-  private resolveStartTimeoutMs(params: Readonly<{ bootstrapTimeoutMs?: number }>): number {
-    const settings: any = storage.getState().settings;
-    const localConversationSettings = readLocalConversationSettingsFromAccountSettings(settings);
-    const raw = Number(localConversationSettings?.networkTimeoutMs ?? NaN);
-    const networkTimeoutMs = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 15_000;
-    const explicitBootstrapTimeoutMs = Number(params.bootstrapTimeoutMs);
-    const bootstrapTimeoutMs =
-      Number.isFinite(explicitBootstrapTimeoutMs) && explicitBootstrapTimeoutMs > 0
-        ? Math.floor(explicitBootstrapTimeoutMs)
-        : resolveVoiceAgentBootstrapTimeoutMs(localConversationSettings);
-    return Math.max(networkTimeoutMs, bootstrapTimeoutMs, 30_000);
-  }
+export class VoiceAgentStartOutcomeUnknownError extends Error {
+  readonly code = 'VOICE_AGENT_START_OUTCOME_UNKNOWN';
+  readonly cause: unknown;
 
+  constructor(cause: unknown) {
+    super('Voice agent start acknowledgement was not received; outcome is unknown');
+    this.name = 'VoiceAgentStartOutcomeUnknownError';
+    this.cause = cause;
+  }
+}
+
+export class DaemonVoiceAgentClient implements VoiceAgentClient {
   async start(params: VoiceAgentStartParams): Promise<VoiceAgentStartResult> {
     const backendId = String(params.agentId ?? '').trim();
     if (!backendId) {
@@ -121,7 +118,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
       const res: any = await sessionRpcWithServerScope({
         sessionId: params.sessionId,
         method: ensureOrStartMethod,
-        timeoutMs: this.resolveStartTimeoutMs({ bootstrapTimeoutMs: params.bootstrapTimeoutMs }),
+        timeoutMs: VOICE_AGENT_LIFECYCLE_RPC_TIMEOUT_MS,
         payload: {
           runId: typeof params.existingRunId === 'string' ? params.existingRunId : null,
           resume: params.resumeWhenInactive !== false,
@@ -138,7 +135,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
       return await ensureOrStart();
     } catch (error) {
       if (isSocketIoAckTimeoutError(error)) {
-        return await ensureOrStart();
+        throw new VoiceAgentStartOutcomeUnknownError(error);
       }
       throw error;
     }
@@ -187,6 +184,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
     const res: any = await sessionRpcWithServerScope({
       sessionId: params.sessionId,
       method: SESSION_RPC_METHODS.EXECUTION_RUN_ACTION,
+      timeoutMs: VOICE_AGENT_LIFECYCLE_RPC_TIMEOUT_MS,
       payload: {
         runId: params.voiceAgentId,
         actionId: 'voice_agent.welcome',
@@ -217,6 +215,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
       method: params.userTranscript
         ? SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START_V2
         : SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START,
+      timeoutMs: VOICE_AGENT_LIFECYCLE_RPC_TIMEOUT_MS,
       payload: {
         runId: params.voiceAgentId,
         message: params.userText,
@@ -273,6 +272,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
     const res: any = await sessionRpcWithServerScope({
       sessionId: params.sessionId,
       method: SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_CANCEL,
+      timeoutMs: VOICE_AGENT_LIFECYCLE_RPC_TIMEOUT_MS,
       payload: { runId: params.voiceAgentId, streamId: params.streamId },
     });
     throwIfRpcError(res);
@@ -283,6 +283,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
     const res: any = await sessionRpcWithServerScope({
       sessionId: params.sessionId,
       method: SESSION_RPC_METHODS.EXECUTION_RUN_ACTION,
+      timeoutMs: VOICE_AGENT_LIFECYCLE_RPC_TIMEOUT_MS,
       payload: {
         runId: params.voiceAgentId,
         actionId: 'voice_agent.commit',

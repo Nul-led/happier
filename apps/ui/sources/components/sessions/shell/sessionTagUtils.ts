@@ -1,4 +1,5 @@
 import { LruMap } from '@/utils/cache/lruMap';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 import { readSessionListShellCacheMaxEntriesFromEnv } from './sessionListShellCacheConfig';
 
@@ -28,7 +29,7 @@ function areTagsEqual(left: ReadonlyArray<string>, right: ReadonlyArray<string>)
 }
 
 export function sessionTagKey(serverId: string, sessionId: string): string {
-    return `${serverId}:${sessionId}`;
+    return sessionAddressKey({ serverId: serverId.trim(), sessionId: sessionId.trim() });
 }
 
 export function getTagsForSession(

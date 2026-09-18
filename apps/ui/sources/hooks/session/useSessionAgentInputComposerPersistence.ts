@@ -22,8 +22,8 @@ import {
     areServerAccountScopesEqual,
     serverAccountScopeKeySuffix,
     type ServerAccountScope,
+    type ServerAccountScopeLifetime,
 } from '@/sync/domains/scope/serverAccountScope';
-import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import {
     getSessionDraftSnapshot,
     subscribeSessionDraft,
@@ -56,6 +56,7 @@ export type SessionAgentInputComposerPersistence = Readonly<{
 
 export type UseSessionAgentInputComposerPersistenceParams = Readonly<{
     sessionId: string | null | undefined;
+    accountLifetime?: ServerAccountScopeLifetime | null;
     text?: string;
     textLength?: number;
     fontScale?: number;
@@ -92,14 +93,6 @@ function areNullableScopesEqual(
 ): boolean {
     if (!left || !right) return left === right;
     return areServerAccountScopesEqual(left, right);
-}
-
-function useStableServerAccountScope(scope: ServerAccountScope | null): ServerAccountScope | null {
-    const stableScopeRef = React.useRef<ServerAccountScope | null>(scope);
-    if (!areNullableScopesEqual(stableScopeRef.current, scope)) {
-        stableScopeRef.current = scope;
-    }
-    return stableScopeRef.current;
 }
 
 function readExpanded(
@@ -219,25 +212,29 @@ function buildRestoreToken(
 
 export function useSessionAgentInputComposerPersistence({
     sessionId,
+    accountLifetime,
     text,
     textLength,
     fontScale,
 }: UseSessionAgentInputComposerPersistenceParams): SessionAgentInputComposerPersistence {
-    const scope = useStableServerAccountScope(useActiveServerAccountScope());
+    const scope = accountLifetime?.isCurrent() === true ? accountLifetime.scope : null;
+    const scopeIsCurrent = React.useCallback(() => (
+        accountLifetime === null || accountLifetime === undefined || accountLifetime.isCurrent()
+    ), [accountLifetime]);
     useAgentInputComposerDraftGarbageCollection(scope);
     const isFocused = useIsFocused();
     const owner = React.useMemo(() => createSessionDraftOwner(sessionId), [sessionId]);
     const subscribeToStructuredMentions = React.useCallback((listener: () => void) => {
-        if (!scope || owner?.kind !== 'session') return () => undefined;
+        if (!scope || !scopeIsCurrent() || owner?.kind !== 'session') return () => undefined;
         return subscribeSessionDraft(scope, { kind: 'session', sessionId: owner.sessionId }, listener);
-    }, [owner, scope]);
+    }, [owner, scope, scopeIsCurrent]);
     const readStructuredMentionsSignature = React.useCallback(() => {
-        if (!scope || owner?.kind !== 'session') return 'disabled';
+        if (!scope || !scopeIsCurrent() || owner?.kind !== 'session') return 'disabled';
         return JSON.stringify(
             getSessionDraftSnapshot(scope, { kind: 'session', sessionId: owner.sessionId })
                 ?.document.composer.mentions.value ?? [],
         );
-    }, [owner, scope]);
+    }, [owner, scope, scopeIsCurrent]);
     React.useSyncExternalStore(
         subscribeToStructuredMentions,
         readStructuredMentionsSignature,
@@ -286,6 +283,18 @@ export function useSessionAgentInputComposerPersistence({
     const pendingFlushScopeRef = React.useRef<ServerAccountScope | null | undefined>(undefined);
     const pendingFlushTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
+    React.useLayoutEffect(() => {
+        if (!accountLifetime) return;
+        const retirement = accountLifetime.onRetire(() => {
+            if (pendingFlushTimeoutRef.current) {
+                clearTimeout(pendingFlushTimeoutRef.current);
+                pendingFlushTimeoutRef.current = null;
+            }
+            pendingFlushScopeRef.current = undefined;
+        });
+        return () => retirement.dispose();
+    }, [accountLifetime]);
+
     const setScopedStateFromStore = React.useCallback((
         nextScope: ServerAccountScope | null,
         nextOwner: AgentInputDraftOwner | null,
@@ -330,11 +339,12 @@ export function useSessionAgentInputComposerPersistence({
             ? pendingFlushScopeRef.current
             : targetScope;
         if (typeof scopeToFlush === 'undefined') return;
+        if (scopeToFlush !== null && !scopeIsCurrent()) return;
         flushAgentInputLocalUiState(scopeToFlush);
         if (pendingFlushScopeRef.current === scopeToFlush) {
             pendingFlushScopeRef.current = undefined;
         }
-    }, []);
+    }, [scopeIsCurrent]);
 
     React.useEffect(() => {
         const previous = previousOwnerRef.current;
@@ -403,15 +413,15 @@ export function useSessionAgentInputComposerPersistence({
             ? nextValue(currentValue)
             : nextValue;
         const nextExpanded = resolvedValue === true;
-        if (owner) {
+        if (owner && scopeIsCurrent()) {
             patchAgentInputLocalUiState(scope, owner, { expanded: nextExpanded });
             flushAgentInputLocalUiState(scope);
         }
         setScopedStateWithExpanded(nextExpanded);
-    }, [owner, scope, setScopedStateWithExpanded]);
+    }, [owner, scope, scopeIsCurrent, setScopedStateWithExpanded]);
 
     const onScrollYChange = React.useCallback((scrollY: number) => {
-        if (!owner) return;
+        if (!owner || !scopeIsCurrent()) return;
         patchAgentInputLocalUiState(scope, owner, {
             scrollY,
             textLength,
@@ -419,10 +429,10 @@ export function useSessionAgentInputComposerPersistence({
         });
         setScopedStateWithInputState();
         scheduleUiStateFlush(scope);
-    }, [fontScale, owner, scheduleUiStateFlush, scope, setScopedStateWithInputState, textLength]);
+    }, [fontScale, owner, scheduleUiStateFlush, scope, scopeIsCurrent, setScopedStateWithInputState, textLength]);
 
     const onSelectionChangePersist = React.useCallback((selection: AgentInputTextSelection, nextTextLength: number) => {
-        if (!owner) return;
+        if (!owner || !scopeIsCurrent()) return;
         patchAgentInputLocalUiState(scope, owner, {
             selection,
             textLength: nextTextLength,
@@ -433,10 +443,10 @@ export function useSessionAgentInputComposerPersistence({
             fontScale,
         });
         scheduleUiStateFlush(scope);
-    }, [fontScale, owner, scheduleUiStateFlush, scope, setScopedStateWithInputState]);
+    }, [fontScale, owner, scheduleUiStateFlush, scope, scopeIsCurrent, setScopedStateWithInputState]);
 
     const clearTransientInputState = React.useCallback(() => {
-        if (!owner) return;
+        if (!owner || !scopeIsCurrent()) return;
 
         flushPendingUiState(scope);
         const shouldKeepExpanded = readExpanded(scope, owner);
@@ -463,16 +473,16 @@ export function useSessionAgentInputComposerPersistence({
                 };
             });
         }
-    }, [flushPendingUiState, inputStateReadContext, owner, scope, scopedStateReadContext]);
+    }, [flushPendingUiState, inputStateReadContext, owner, scope, scopeIsCurrent, scopedStateReadContext]);
 
     const captureTransientInputState = React.useCallback(() => {
-        if (!owner) return null;
+        if (!owner || !scopeIsCurrent()) return null;
         flushPendingUiState(scope);
         return readInputState(scope, owner, inputStateReadContext);
-    }, [flushPendingUiState, inputStateReadContext, owner, scope]);
+    }, [flushPendingUiState, inputStateReadContext, owner, scope, scopeIsCurrent]);
 
     const restoreTransientInputState = React.useCallback((state: AgentInputLocalUiStateV1 | null) => {
-        if (!owner || !state) return;
+        if (!owner || !state || !scopeIsCurrent()) return;
         patchAgentInputLocalUiState(scope, owner, {
             ...(typeof state.expanded === 'boolean' ? { expanded: state.expanded } : {}),
             ...(typeof state.scrollY === 'number' ? { scrollY: state.scrollY } : {}),
@@ -492,10 +502,10 @@ export function useSessionAgentInputComposerPersistence({
             };
         });
         setRestoreEpoch((epoch) => epoch + 1);
-    }, [inputStateReadContext, owner, scope, scopedStateReadContext]);
+    }, [inputStateReadContext, owner, scope, scopeIsCurrent, scopedStateReadContext]);
 
     const onStructuredMentionsChange = React.useCallback((mentions: readonly ComposerStructuredInputMention[]) => {
-        if (!scope || !owner || owner.kind !== 'session') return;
+        if (!scope || !scopeIsCurrent() || !owner || owner.kind !== 'session') return;
         const nextMentions = [...mentions];
         writeExistingSessionDraft({
             scope,
@@ -503,7 +513,7 @@ export function useSessionAgentInputComposerPersistence({
             patch: { mentions: JSON.parse(JSON.stringify(nextMentions)) },
             materializationIntent: 'userEdit',
         });
-    }, [owner, scope]);
+    }, [owner, scope, scopeIsCurrent]);
 
     const inputPersistence = React.useMemo(() => ({
         ...(typeof inputState?.scrollY === 'number' ? { initialScrollY: inputState.scrollY } : {}),

@@ -77,10 +77,34 @@ const nativeLifecycleState = vi.hoisted(() => {
     return state;
 });
 
-vi.mock('@/sync/runtime/nativeIrohTunnels/machineHttpLifecycle', () => ({
-    isIrohMachineHttpLifecycleAvailable: () => nativeLifecycleState.available,
-    probeIrohMachineHttpLifecycleAvailability: () => nativeLifecycleState.probe(),
-    subscribeIrohMachineHttpLifecycleAvailability: (listener: () => void) => {
+function declareCurrentFiniteTransferMachine(machine: any): any {
+    return {
+        ...machine,
+        kind: 'persistent',
+        active: true,
+        revokedAt: null,
+        operationProtocolCapabilities: {
+            finiteTransferRpc: { protocolVersions: [1] },
+        },
+        operationProtocolCapabilitiesRevision: 1,
+        daemonState: {
+            ...machine?.daemonState,
+            transfer: machine?.daemonState?.transfer ?? {
+                supported: { import: true, export: true },
+                listenerClasses: {
+                    loopback_http: { enabled: false, configured: false, active: false },
+                    tailscale_serve_https: { enabled: false, configured: false, active: false },
+                },
+                lifecycle: { mode: 'lazy_idle_shutdown', version: 1 },
+            },
+        },
+    };
+}
+
+vi.mock('@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle', () => ({
+    isIrohMachineTransferLifecycleAvailable: () => nativeLifecycleState.available,
+    probeIrohMachineTransferLifecycleAvailability: () => nativeLifecycleState.probe(),
+    subscribeIrohMachineTransferLifecycleAvailability: (listener: () => void) => {
         nativeLifecycleState.listeners.add(listener);
         return () => nativeLifecycleState.listeners.delete(listener);
     },
@@ -109,6 +133,7 @@ vi.mock('@/sync/ops/sessionMachineTarget', () => ({
 
 vi.mock('@/sync/domains/transfers/runtime/transferRouteCache', () => ({
     readCachedMachineRpcDirectRoute: () => state.cachedMachineRpcDirectRoute,
+    recordCachedMachineRpcDirectRouteUnavailable: vi.fn(),
     subscribeCachedMachineRpcDirectRoute: () => () => {},
 }));
 
@@ -134,6 +159,11 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSes
 
 describe('useSessionFileTransferAvailabilityResolver', () => {
     beforeEach(() => {
+        activeServerState.reset();
+        state.machine = null;
+        state.serverScopedMachine = null;
+        state.serverScopedMachineServerId = 'server-1';
+        state.cachedMachineRpcDirectRoute = { status: 'unknown' } as any;
         nativeLifecycleState.available = false;
         nativeLifecycleState.resolveProbe = null;
         nativeLifecycleState.listeners.clear();
@@ -157,6 +187,9 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
                 },
             },
         } as any;
+        state.serverScopedMachine = declareCurrentFiniteTransferMachine(state.serverScopedMachine);
+        state.serverScopedMachine.operationProtocolCapabilities = null;
+        state.serverScopedMachine.operationProtocolCapabilitiesRevision = null;
         state.cachedMachineRpcDirectRoute = { status: 'unknown' as const } as any;
         state.serverSnapshot = {
             status: 'ready' as const,
@@ -188,8 +221,16 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
     it('does not gate bulk file transfers by the total transfer size (chunked transfers)', async () => {
         state.session = { active: true } as any;
         state.machineReachability = { machineRpcTargetAvailable: true } as any;
-        state.machineTarget = { machineId: 'machine-1', basePath: '/repo' } as any;
-        state.serverScopedMachine = null as any;
+        state.machineTarget = { machineId: 'runner-1', basePath: '/repo' } as any;
+        state.serverScopedMachine = {
+            id: 'runner-1',
+            kind: 'ephemeral_session_runner',
+            active: true,
+            revokedAt: null,
+            operationProtocolCapabilities: { finiteTransferRpc: { protocolVersions: [1] } },
+            operationProtocolCapabilitiesRevision: 1,
+            daemonState: null,
+        } as any;
         state.cachedMachineRpcDirectRoute = { status: 'viable' as const, checkedAt: 10, expiresAt: 20 } as any;
         state.serverSnapshot = {
             status: 'ready' as const,
@@ -223,6 +264,50 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
 
         expect(hook.getCurrent()(64)).toBe(true);
         expect(hook.getCurrent()(512)).toBe(true);
+    });
+
+    it('makes a current Runner transfer available from its strict operation capability', async () => {
+        state.session = { active: true, serverId: 'server-1' } as any;
+        state.machineReachability = { machineRpcTargetAvailable: true } as any;
+        state.machineTarget = { machineId: 'runner-1', basePath: '/repo' } as any;
+        state.machine = null as any;
+        state.serverScopedMachine = {
+            id: 'runner-1',
+            kind: 'ephemeral_session_runner',
+            active: true,
+            revokedAt: null,
+            operationProtocolCapabilities: {
+                finiteTransferRpc: { protocolVersions: [1] },
+            },
+            operationProtocolCapabilitiesRevision: 1,
+            daemonState: null,
+        } as any;
+        state.cachedMachineRpcDirectRoute = { status: 'viable' as const, checkedAt: 10, expiresAt: 20 } as any;
+        state.serverSnapshot = {
+            status: 'ready' as const,
+            features: {
+                features: {
+                    machines: {
+                        enabled: true,
+                        transfer: {
+                            enabled: true,
+                            directPeer: { enabled: false },
+                            serverRouted: { enabled: false },
+                        },
+                    },
+                },
+                capabilities: {},
+            },
+        } as any;
+
+        const { useSessionFileTransferAvailabilityState } = await import('./useSessionFileTransferAvailability');
+        const hook = await renderHook(() => useSessionFileTransferAvailabilityState('s1'));
+
+        expect(hook.getCurrent().available).toBe(true);
+        expect(hook.getCurrent().decision).toMatchObject({
+            kind: 'selected',
+            preferredRouteKind: 'machine_rpc_direct',
+        });
     });
 
     it('keeps the resolver stable while availability inputs stay unchanged', async () => {
@@ -296,8 +381,9 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
                 },
             },
         } as any;
+        state.machine = declareCurrentFiniteTransferMachine(state.machine);
         state.serverScopedMachine = state.machine;
-        state.cachedMachineRpcDirectRoute = { status: 'unknown' as const } as any;
+        state.cachedMachineRpcDirectRoute = { status: 'viable' as const, checkedAt: 10, expiresAt: 20 } as any;
         state.serverSnapshot = {
             status: 'ready' as const,
             features: {
@@ -361,6 +447,7 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
                 },
             },
         } as any;
+        state.machine = declareCurrentFiniteTransferMachine(state.machine);
         state.serverScopedMachine = state.machine;
         state.cachedMachineRpcDirectRoute = { status: 'viable' as const, checkedAt: 20, expiresAt: 30 } as any;
         state.serverSnapshot = {
@@ -436,7 +523,8 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
                 },
             },
         } as any;
-        state.cachedMachineRpcDirectRoute = { status: 'unknown' as const } as any;
+        state.serverScopedMachine = declareCurrentFiniteTransferMachine(state.serverScopedMachine);
+        state.cachedMachineRpcDirectRoute = { status: 'viable' as const, checkedAt: 10, expiresAt: 20 } as any;
         state.serverSnapshot = {
             status: 'ready' as const,
             features: {
@@ -502,7 +590,8 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
                 },
             },
         } as any;
-        state.cachedMachineRpcDirectRoute = { status: 'unknown' as const } as any;
+        state.serverScopedMachine = declareCurrentFiniteTransferMachine(state.serverScopedMachine);
+        state.cachedMachineRpcDirectRoute = { status: 'viable' as const, checkedAt: 10, expiresAt: 20 } as any;
         state.serverSnapshot = {
             status: 'ready' as const,
             features: {
@@ -568,7 +657,8 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
                 },
             },
         } as any;
-        state.cachedMachineRpcDirectRoute = { status: 'unknown' as const } as any;
+        state.serverScopedMachine = declareCurrentFiniteTransferMachine(state.serverScopedMachine);
+        state.cachedMachineRpcDirectRoute = { status: 'viable' as const, checkedAt: 10, expiresAt: 20 } as any;
         state.serverSnapshot = {
             status: 'ready' as const,
             features: {
@@ -639,8 +729,9 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
                 },
             },
         } as any;
+        state.machine = declareCurrentFiniteTransferMachine(state.machine);
         state.serverScopedMachine = null as any;
-        state.cachedMachineRpcDirectRoute = { status: 'unknown' as const } as any;
+        state.cachedMachineRpcDirectRoute = { status: 'viable' as const, checkedAt: 10, expiresAt: 20 } as any;
         state.serverSnapshot = {
             status: 'ready' as const,
             features: {

@@ -129,7 +129,7 @@ vi.mock('@legendapp/list/react-native', () => ({
                 return Promise.resolve();
             });
             return {
-                cancelInitialScrollPreservation: vi.fn(),
+                cancelScroll: vi.fn(),
                 clearCaches: vi.fn(),
                 getNativeScrollRef: vi.fn(),
                 getScrollableNode: vi.fn(() => legendScrollableNodeOverride),
@@ -1638,9 +1638,9 @@ describe('Legend transcript renderer adapter', () => {
         expect(root.scrollTop).toBe(9_400);
 
         // Bottomward wheel at the clamp: nothing can move, no scroll event fires.
-        assignedLegendRef.cancelInitialScrollPreservation.mockClear();
+        assignedLegendRef.cancelScroll.mockClear();
         capturedLegendListProps.onWheel({ deltaY: 120 });
-        expect(assignedLegendRef.cancelInitialScrollPreservation).not.toHaveBeenCalled();
+        expect(assignedLegendRef.cancelScroll).not.toHaveBeenCalled();
 
         // Input quiets; a giant streaming commit grows the content far past the threshold.
         nowMs = 2_000;
@@ -1656,7 +1656,7 @@ describe('Legend transcript renderer adapter', () => {
         // Regression guard: an upward wheel is a genuine detach and must still release.
         nowMs = 3_000;
         capturedLegendListProps.onWheel({ deltaY: -120 });
-        expect(assignedLegendRef.cancelInitialScrollPreservation).toHaveBeenCalledTimes(1);
+        expect(assignedLegendRef.cancelScroll).toHaveBeenCalledTimes(1);
         root.scrollTop = 15_280;
         capturedLegendListProps.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 15_280 } } });
         nowMs = 4_000;
@@ -1705,12 +1705,12 @@ describe('Legend transcript renderer adapter', () => {
             />,
         );
 
-        assignedLegendRef.cancelInitialScrollPreservation.mockClear();
+        assignedLegendRef.cancelScroll.mockClear();
         getShellRef(listRef).notifyViewportInput?.({
             kind: 'keyboard',
             verticalDirection: 'toward-end',
         });
-        expect(assignedLegendRef.cancelInitialScrollPreservation).not.toHaveBeenCalled();
+        expect(assignedLegendRef.cancelScroll).not.toHaveBeenCalled();
         legendStateOverride = {
             ...legendStateOverride,
             contentLength: 16_000,
@@ -1726,7 +1726,7 @@ describe('Legend transcript renderer adapter', () => {
             kind: 'keyboard',
             verticalDirection: 'toward-start',
         });
-        expect(assignedLegendRef.cancelInitialScrollPreservation).toHaveBeenCalledTimes(1);
+        expect(assignedLegendRef.cancelScroll).toHaveBeenCalledTimes(1);
         expect(getShellRef(listRef).hasLiveWebHold?.({ kind: 'end' })).toBe(false);
         expect(capturedLegendListProps.maintainScrollAtEnd).toBe(false);
 
@@ -1744,7 +1744,7 @@ describe('Legend transcript renderer adapter', () => {
         capturedLegendListProps.onTouchMove(towardEndTouchMove);
         expect(onTouchStart).toHaveBeenCalledWith(touchStartEvent);
         expect(onTouchMove).toHaveBeenCalledWith(towardEndTouchMove);
-        expect(assignedLegendRef.cancelInitialScrollPreservation).toHaveBeenCalledTimes(1);
+        expect(assignedLegendRef.cancelScroll).toHaveBeenCalledTimes(1);
         expect(getShellRef(listRef).hasLiveWebHold?.({ kind: 'end' })).toBe(true);
 
         // A separate page-coordinate gesture moving downward moves content toward the
@@ -1754,10 +1754,10 @@ describe('Legend transcript renderer adapter', () => {
         capturedLegendListProps.onTouchStart(pageTouchStart);
         capturedLegendListProps.onTouchMove(towardStartTouchMove);
         expect(onTouchStart).toHaveBeenLastCalledWith(pageTouchStart);
-        expect(assignedLegendRef.cancelInitialScrollPreservation).toHaveBeenCalledTimes(2);
+        expect(assignedLegendRef.cancelScroll).toHaveBeenCalledTimes(2);
         expect(getShellRef(listRef).hasLiveWebHold?.({ kind: 'end' })).toBe(false);
         expect(onTouchMove).toHaveBeenLastCalledWith(towardStartTouchMove);
-        expect(assignedLegendRef.cancelInitialScrollPreservation.mock.invocationCallOrder[1])
+        expect(assignedLegendRef.cancelScroll.mock.invocationCallOrder[1])
             .toBeLessThan(onTouchMove.mock.invocationCallOrder[1]);
     });
 
@@ -2541,13 +2541,13 @@ describe('Legend transcript renderer adapter', () => {
         capturedLegendListProps.onPointerDown({
             nativeEvent: { offsetX: 5, offsetY: 300, target: root },
         });
-        expect(assignedLegendRef.cancelInitialScrollPreservation).not.toHaveBeenCalled();
+        expect(assignedLegendRef.cancelScroll).not.toHaveBeenCalled();
 
         // The measured axis still classifies exactly as before.
         capturedLegendListProps.onPointerDown({
             nativeEvent: { offsetX: 5, offsetY: 604, target: root },
         });
-        expect(assignedLegendRef.cancelInitialScrollPreservation).toHaveBeenCalledTimes(1);
+        expect(assignedLegendRef.cancelScroll).toHaveBeenCalledTimes(1);
     });
 
     it('leaves a parked reader alone when top-edge pagination refreshes the hold identity', async () => {
@@ -2664,7 +2664,7 @@ describe('Legend transcript renderer adapter', () => {
         capturedLegendListProps.onPointerDown({
             nativeEvent: { offsetX: 792, offsetY: 300, target: root },
         });
-        expect(assignedLegendRef.cancelInitialScrollPreservation).toHaveBeenCalledTimes(1);
+        expect(assignedLegendRef.cancelScroll).toHaveBeenCalledTimes(1);
 
         // The thumb drag moves the viewport away from the tail.
         nowMs = 2_100;
@@ -3468,7 +3468,7 @@ describe('Legend transcript renderer adapter', () => {
         expect(anchor.top).toBe(135);
     });
 
-    it('suppresses native held-end corrections during user fling momentum and resumes after it ends', async () => {
+    it('does not add native end corrections during or after user fling momentum', async () => {
         // Native leg of S-D: a command-armed hold must not fight decaying user momentum. The
         // command's own write lands, but verifyLanding's residual corrections wait until the
         // user's drag/momentum window is over, then land from settled geometry.
@@ -3533,89 +3533,14 @@ describe('Legend transcript renderer adapter', () => {
         capturedLegendListProps.onItemSizeChanged({ index: 4, previous: 240, size: 1_240 });
         expect(assignedLegendRef.scrollToOffset).not.toHaveBeenCalled();
 
-        // Momentum ends; after the input margin the same held-end transaction resumes and
-        // lands the measured tail residual.
+        // Momentum ends; the same held-end predicate remains Legend's maintenance authority.
         nowMs = 1_400;
         capturedLegendListProps.onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 0, y: 4_400 } } });
         nowMs = 1_700;
         capturedLegendListProps.onItemSizeChanged({ index: 4, previous: 1_240, size: 1_240 });
         act(() => animationFrames.shift()?.(nowMs));
-        expect(assignedLegendRef.scrollToOffset).toHaveBeenCalledWith({
-            animated: false,
-            offset: 5_400,
-        });
-    });
-
-    it('treats a clamp-boundary target with the viewport beyond it as settled by the platform spring', async () => {
-        // S-D boundary escalation (2026-07-11): overscrolling past the bottom rubber-bands
-        // back "in a very vibrating way" — the held-end corrector wrote scroll-up corrections
-        // against the overscrolled position, re-launching the spring each frame. A target
-        // already ON the physical clamp with the viewport beyond it settles by itself.
-        setPlatformOS('ios');
-        let nowMs = 1_000;
-        vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
-        const animationFrames = installAnimationFrameQueue();
-        const { legendListRenderer } = await import('./legendListRenderer');
-        const Renderer = legendListRenderer.Component;
-        const listRef = React.createRef<TranscriptListShellRef<{ id: string }>>();
-
-        legendStateOverride = {
-            contentLength: 5_000,
-            end: 4,
-            isAtEnd: true,
-            isNearEnd: true,
-            isWithinMaintainScrollAtEndThreshold: true,
-            scroll: 4_400,
-            scrollLength: 600,
-            start: 1,
-        };
-        await renderScreen(
-            <Renderer
-                webDomObservation={mountedWebDomObservation}
-                ref={listRef}
-                data={Array.from({ length: 5 }, (_value, index) => ({ id: `row-${index}` }))}
-                dataKey="session-test"
-                keyExtractor={(item: { id: string }) => item.id}
-                renderItem={({ item }: { item: { id: string } }) => React.createElement('Row', { id: item.id })}
-                frame={resolveMainTranscriptListShellFrame({
-                    legendInitialScrollAtEnd: false,
-                    nativeID: 'legend-main-native-id',
-                    platformOS: 'ios',
-                })}
-            />,
-        );
-
-        getShellRef(listRef).scrollToEnd?.({ animated: false });
-        assignedLegendRef.scrollToOffset.mockClear();
-
-        // Rubber-band overscroll past the bottom: current scroll sits BEYOND the clamp the
-        // held-end target is on. No quiet-margin input evidence — this isolates the clamp
-        // rule. The corrector must not write against the spring.
-        nowMs = 2_000;
-        legendStateOverride = {
-            ...legendStateOverride,
-            scroll: 4_460,
-        };
-        capturedLegendListProps.onItemSizeChanged({ index: 4, previous: 240, size: 240 });
-        act(() => animationFrames.shift()?.(nowMs));
         expect(assignedLegendRef.scrollToOffset).not.toHaveBeenCalled();
-
-        // A genuine undershoot below the clamp still corrects normally.
-        nowMs = 3_000;
-        legendStateOverride = {
-            ...legendStateOverride,
-            contentLength: 6_000,
-            isAtEnd: false,
-            isNearEnd: false,
-            isWithinMaintainScrollAtEndThreshold: false,
-            scroll: 4_400,
-        };
-        capturedLegendListProps.onItemSizeChanged({ index: 4, previous: 240, size: 1_240 });
-        act(() => animationFrames.shift()?.(nowMs));
-        expect(assignedLegendRef.scrollToOffset).toHaveBeenCalledWith({
-            animated: false,
-            offset: 5_400,
-        });
+        expect(capturedLegendListProps.maintainScrollAtEnd.isMaintainingScrollAtEnd()).toBe(true);
     });
 
     it('holds a driver-restored web entry anchor through post-restore remeasurement', async () => {
@@ -5048,7 +4973,7 @@ describe('Legend transcript renderer adapter', () => {
         expect(assignedLegendRef.scrollToOffset).not.toHaveBeenCalled();
     });
 
-    it('re-targets a held native tail when late footer growth exceeds the maintain threshold', async () => {
+    it('leaves native late-footer tail maintenance with Legend beyond the physical threshold', async () => {
         setPlatformOS('ios');
         const { legendListRenderer } = await import('./legendListRenderer');
         const Renderer = legendListRenderer.Component;
@@ -5084,10 +5009,8 @@ describe('Legend transcript renderer adapter', () => {
         });
         assignedLegendRef.scrollToEnd.mockClear();
 
-        // The session-open bootstrap race: Legend's initial tail placement completed before the
-        // composer inset footer measured. The late footer growth leaves the viewport short of the
-        // tail by MORE than the maintain threshold, so Legend will not repair it on its own. The
-        // adapter still holds the tail intent (no user scroll happened) and must re-target.
+        // Legend consumes the held-end predicate beyond its physical threshold. The composed
+        // real-native suite proves maintenance; this boundary checks no competing app command.
         legendStateOverride = {
             ...legendStateOverride,
             isAtEnd: false,
@@ -5100,10 +5023,10 @@ describe('Legend transcript renderer adapter', () => {
         });
 
         expect(assignedLegendRef.scrollToEnd).not.toHaveBeenCalled();
-        expect(assignedLegendRef.scrollToOffset).toHaveBeenCalledWith({ animated: false, offset: 600 });
+        expect(assignedLegendRef.scrollToOffset).not.toHaveBeenCalled();
     });
 
-    it('holds the tail through an explicit scrollToEnd command so late footer growth re-targets', async () => {
+    it('hands explicit scrollToEnd follow-up footer growth to Legend without a second command', async () => {
         setPlatformOS('ios');
         const { legendListRenderer } = await import('./legendListRenderer');
         const Renderer = legendListRenderer.Component;
@@ -5153,61 +5076,8 @@ describe('Legend transcript renderer adapter', () => {
         });
 
         expect(assignedLegendRef.scrollToEnd).toHaveBeenCalledTimes(1);
-        expect(assignedLegendRef.scrollToOffset).toHaveBeenCalledWith({ animated: false, offset: 600 });
-    });
-
-    it('repairs a native initial-bottom landing by only the measured Legend-state residual', async () => {
-        setPlatformOS('ios');
-        const animationFrames = installAnimationFrameQueue();
-        const { legendListRenderer } = await import('./legendListRenderer');
-        const Renderer = legendListRenderer.Component;
-
-        legendStateOverride = {
-            contentLength: 2_400,
-            end: 9,
-            isAtEnd: true,
-            isNearEnd: true,
-            isWithinMaintainScrollAtEndThreshold: true,
-            positionAtIndex: (index: number) => index * 240,
-            scroll: 1_800,
-            scrollLength: 600,
-            sizeAtIndex: () => 240,
-            start: 7,
-        };
-        await renderScreen(
-            <Renderer
-                webDomObservation={mountedWebDomObservation}
-                data={Array.from({ length: 10 }, (_value, index) => ({ id: `row-${index}` }))}
-                dataKey="session-test"
-                keyExtractor={(item: { id: string }) => item.id}
-                renderItem={({ item }: { item: { id: string } }) => React.createElement('Row', { id: item.id })}
-                frame={resolveMainTranscriptListShellFrame({
-                    nativeID: 'legend-main-native-id',
-                    platformOS: 'ios',
-                })}
-            />,
-        );
-        assignedLegendRef.scrollToEnd.mockClear();
-        assignedLegendRef.scrollToOffset.mockClear();
-
-        // Legend initially lands at the estimate-based tail. Giant rows then report their real
-        // sizes, moving the state-owned content end while the native offset remains pages short.
-        legendStateOverride = {
-            ...legendStateOverride,
-            contentLength: 9_000,
-            isAtEnd: false,
-            isNearEnd: false,
-            isWithinMaintainScrollAtEndThreshold: false,
-            scroll: 1_800,
-        };
-        capturedLegendListProps.onItemSizeChanged({ index: 2, previous: 240, size: 6_840 });
-        act(() => animationFrames.shift()?.(16));
-
-        expect(assignedLegendRef.scrollToEnd).not.toHaveBeenCalled();
-        expect(assignedLegendRef.scrollToOffset).toHaveBeenCalledWith({
-            animated: false,
-            offset: 8_400,
-        });
+        expect(assignedLegendRef.scrollToOffset).not.toHaveBeenCalled();
+        expect(capturedLegendListProps.maintainScrollAtEnd.isMaintainingScrollAtEnd()).toBe(true);
     });
 
     it('arms a native visible-anchor hold for an app height commit and keeps the first visible row still', async () => {
@@ -5721,12 +5591,9 @@ describe('Legend transcript renderer adapter', () => {
         };
         capturedLegendListProps.onItemSizeChanged({ index: 4, previous: 240, size: 1_040 });
         act(() => animationFrames.shift()?.(1_000));
-        // Beyond Legend's threshold, held-'end' corrects to the tail (1,400), not to a
-        // captured mid-list anchor.
-        expect(assignedLegendRef.scrollToOffset).toHaveBeenCalledWith({
-            animated: false,
-            offset: 1_400,
-        });
+        // The semantic predicate survives; no keyed mid-list correction competes with Legend.
+        expect(capturedLegendListProps.maintainScrollAtEnd.isMaintainingScrollAtEnd()).toBe(true);
+        expect(assignedLegendRef.scrollToOffset).not.toHaveBeenCalled();
     });
 
     it('keeps native held-end ownership through a bare touch and releases it only when a drag begins', async () => {
@@ -5768,10 +5635,10 @@ describe('Legend transcript renderer adapter', () => {
         );
 
         const touchEvent = { nativeEvent: { pageY: 300 } };
-        assignedLegendRef.cancelInitialScrollPreservation.mockClear();
+        assignedLegendRef.cancelScroll.mockClear();
         capturedLegendListProps.onTouchStart(touchEvent);
         expect(onTouchStart).toHaveBeenCalledWith(touchEvent);
-        expect(assignedLegendRef.cancelInitialScrollPreservation).not.toHaveBeenCalled();
+        expect(assignedLegendRef.cancelScroll).not.toHaveBeenCalled();
 
         nowMs = 2_000;
         assignedLegendRef.scrollToOffset.mockClear();
@@ -5784,16 +5651,14 @@ describe('Legend transcript renderer adapter', () => {
         };
         capturedLegendListProps.onItemSizeChanged({ index: 4, previous: 240, size: 1_040 });
         act(() => animationFrames.shift()?.(nowMs));
-        expect(assignedLegendRef.scrollToOffset).toHaveBeenCalledWith({
-            animated: false,
-            offset: 1_400,
-        });
+        expect(assignedLegendRef.scrollToOffset).not.toHaveBeenCalled();
+        expect(capturedLegendListProps.maintainScrollAtEnd.isMaintainingScrollAtEnd()).toBe(true);
         expect(capturedLegendListProps.maintainScrollAtEnd).toMatchObject({ animated: false });
 
         const dragEvent = { nativeEvent: { contentOffset: { x: 0, y: 600 } } };
         capturedLegendListProps.onScrollBeginDrag(dragEvent);
         expect(onScrollBeginDrag).toHaveBeenCalledWith(dragEvent);
-        expect(assignedLegendRef.cancelInitialScrollPreservation).toHaveBeenCalledTimes(1);
+        expect(assignedLegendRef.cancelScroll).toHaveBeenCalledTimes(1);
         expect(capturedLegendListProps.maintainScrollAtEnd).toBe(false);
     });
 
@@ -5987,70 +5852,6 @@ describe('Legend transcript renderer adapter', () => {
         };
         capturedLegendListProps.onItemSizeChanged({ index: 0, previous: 240, size: 7_800 });
         expect(assignedLegendRef.scrollToOffset).not.toHaveBeenCalled();
-    });
-
-    it('repairs a far native jump-to-bottom again when a later giant-row measurement moves the tail', async () => {
-        setPlatformOS('ios');
-        const animationFrames = installAnimationFrameQueue();
-        const { legendListRenderer } = await import('./legendListRenderer');
-        const Renderer = legendListRenderer.Component;
-        const listRef = React.createRef<TranscriptListShellRef<{ id: string }>>();
-
-        legendStateOverride = {
-            contentLength: 2_400,
-            end: 9,
-            isAtEnd: false,
-            isNearEnd: false,
-            isWithinMaintainScrollAtEndThreshold: false,
-            positionAtIndex: (index: number) => index * 240,
-            scroll: 200,
-            scrollLength: 600,
-            sizeAtIndex: () => 240,
-            start: 0,
-        };
-        await renderScreen(
-            <Renderer
-                webDomObservation={mountedWebDomObservation}
-                ref={listRef}
-                data={Array.from({ length: 10 }, (_value, index) => ({ id: `row-${index}` }))}
-                dataKey="session-test"
-                keyExtractor={(item: { id: string }) => item.id}
-                renderItem={({ item }: { item: { id: string } }) => React.createElement('Row', { id: item.id })}
-                frame={resolveMainTranscriptListShellFrame({
-                    legendInitialScrollAtEnd: false,
-                    nativeID: 'legend-main-native-id',
-                    platformOS: 'ios',
-                })}
-            />,
-        );
-
-        getShellRef(listRef).scrollToEnd?.({ animated: false });
-        assignedLegendRef.scrollToOffset.mockClear();
-        legendStateOverride = {
-            ...legendStateOverride,
-            contentLength: 12_000,
-            scroll: 1_800,
-        };
-        capturedLegendListProps.onLoad({ elapsedTimeInMs: 20 });
-        expect(assignedLegendRef.scrollToOffset).toHaveBeenLastCalledWith({
-            animated: false,
-            offset: 11_400,
-        });
-
-        // The transaction stays available for later measurement signals within its bounded
-        // window, but writes only the newly observed residual rather than replaying the jump.
-        legendStateOverride = {
-            ...legendStateOverride,
-            contentLength: 13_000,
-            scroll: 11_400,
-        };
-        capturedLegendListProps.onItemSizeChanged({ index: 8, previous: 240, size: 1_240 });
-        act(() => animationFrames.shift()?.(16));
-        expect(assignedLegendRef.scrollToOffset).toHaveBeenLastCalledWith({
-            animated: false,
-            offset: 12_400,
-        });
-        expect(assignedLegendRef.scrollToEnd).toHaveBeenCalledTimes(1);
     });
 
     it('does not re-target native geometry changes after a genuine user drag detach', async () => {
@@ -6259,10 +6060,10 @@ describe('Legend transcript renderer adapter', () => {
         assignedLegendRef.scrollToEnd.mockClear();
         listRef.current?.notifyViewportGeometryChanged?.();
         expect(assignedLegendRef.scrollToEnd).not.toHaveBeenCalled();
-        expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+        expect(requestAnimationFrame).not.toHaveBeenCalled();
 
         act(() => animationFrames.shift()?.(16));
-        expect(requestAnimationFrame).toHaveBeenCalledTimes(2);
+        expect(requestAnimationFrame).not.toHaveBeenCalled();
         legendStateOverride = {
             ...legendStateOverride,
             isAtEnd: false,
@@ -6277,7 +6078,7 @@ describe('Legend transcript renderer adapter', () => {
         act(() => animationFrames.shift()?.(32));
         expect(assignedLegendRef.scrollToEnd).not.toHaveBeenCalled();
         expect(getShellRef(listRef).hasLiveWebHold?.({ kind: 'end' })).toBe(true);
-        expect(requestAnimationFrame).toHaveBeenCalledTimes(3);
+        expect(requestAnimationFrame).not.toHaveBeenCalled();
 
         capturedLegendListProps.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 200 } } });
         expect(assignedLegendRef.scrollToEnd).not.toHaveBeenCalled();
@@ -6384,13 +6185,13 @@ describe('Legend transcript renderer adapter', () => {
         const secondOperation = Symbol('second-jump');
         let releaseFirstOperation: (() => void) | undefined;
         let releaseSecondOperation: (() => void) | undefined;
-        assignedLegendRef.cancelInitialScrollPreservation.mockClear();
+        assignedLegendRef.cancelScroll.mockClear();
         act(() => {
             releaseFirstOperation = (getShellRef(listRef).beginExplicitJumpTakeover as
                 | ((operation: symbol) => (() => void) | undefined)
                 | undefined)?.(firstOperation);
         });
-        expect(assignedLegendRef.cancelInitialScrollPreservation).toHaveBeenCalledTimes(1);
+        expect(assignedLegendRef.cancelScroll).toHaveBeenCalledTimes(1);
         expect(getShellRef(listRef).hasLiveWebHold?.({ kind: 'end' })).toBe(false);
         expect(capturedLegendListProps.maintainScrollAtEnd).toBe(false);
 

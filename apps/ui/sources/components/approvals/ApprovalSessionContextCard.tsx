@@ -7,6 +7,7 @@ import { Text } from '@/components/ui/text/Text';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import type { SessionContextPresentation } from '@/sync/domains/session/presentation/sessionContextPresentation';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { t } from '@/text';
 import { SessionContextChips } from '@/components/sessions/context/SessionContextChips';
@@ -17,16 +18,24 @@ export const ApprovalSessionContextCard = React.memo(function ApprovalSessionCon
     session: Session | SessionListRenderableSession | null;
     machine: Machine | null;
     serverId: string | null;
+    context: SessionContextPresentation | null;
+    /** Immutable, secret-free Home origin shown independently of the local route profile. */
+    homeDisplayId?: string | null;
     requesterAgentId: string | null;
     requesterSurface: string;
 }>) {
     const router = useRouter();
     const { theme } = useUnistyles();
-    const sessionTitle = props.session ? getSessionName(props.session) : null;
-    const { machineLabel, pathLabel } = readApprovalSessionEndpointLabels({
+    const sessionTitle = props.session && (!props.serverId || props.context?.mayShowDecryptedContent === true)
+        ? getSessionName(props.session)
+        : null;
+    const endpointLabels = readApprovalSessionEndpointLabels({
         session: props.session,
         machine: props.machine,
     });
+    const machineLabel = endpointLabels.machineLabel;
+    const pathLabel = props.serverId ? props.context?.workspace?.label ?? null : endpointLabels.pathLabel;
+    const homeDisplayId = props.homeDisplayId ?? props.serverId;
 
     if (!sessionTitle && !pathLabel && !machineLabel && !props.requesterAgentId && !props.requesterSurface) {
         return null;
@@ -40,6 +49,12 @@ export const ApprovalSessionContextCard = React.memo(function ApprovalSessionCon
                     <View style={styles.contextChips}>
                         <SessionContextChips machineLabel={machineLabel} pathLabel={pathLabel} />
                     </View>
+                    {props.context?.contextLine ? (
+                        <Text style={styles.homeLabel}>{props.context.contextLine}</Text>
+                    ) : null}
+                    {homeDisplayId ? (
+                        <Text style={styles.homeLabel}>{t('actionConfirmations.homeTarget', { serverId: homeDisplayId })}</Text>
+                    ) : null}
                 </View>
 
                 {props.session?.id ? (
@@ -99,6 +114,11 @@ const styles = StyleSheet.create((theme) => ({
     },
     contextChips: {
         marginTop: 8,
+    },
+    homeLabel: {
+        marginTop: 8,
+        fontSize: 12,
+        color: theme.colors.text.secondary,
     },
     metaText: {
         fontSize: 13,

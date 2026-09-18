@@ -144,22 +144,3 @@ export function readSessionWorkStateFromMetadata(metadata: unknown): SessionWork
     }
     return readLegacyGoalSnapshot(raw);
 }
-
-function firstItem(snapshot: SessionWorkStateSnapshot | null, predicate: (item: SessionWorkStateItem) => boolean): SessionWorkStateItem | null {
-    return snapshot?.items.find(predicate) ?? null;
-}
-
-export function resolvePrimarySessionWorkStateItem(snapshot: SessionWorkStateSnapshot | null): SessionWorkStateItem | null {
-    if (!snapshot || snapshot.items.length === 0) return null;
-    const primaryId = typeof snapshot.primaryItemId === 'string' ? snapshot.primaryItemId : null;
-    if (primaryId) {
-        const primary = snapshot.items.find((item) => item.id === primaryId);
-        if (primary) return primary;
-    }
-    return firstItem(snapshot, (item) => item.kind === 'task' && item.status === 'active')
-        ?? firstItem(snapshot, (item) => item.kind === 'todo' && item.status === 'active')
-        ?? firstItem(snapshot, (item) => item.kind === 'goal' && item.status === 'active')
-        ?? firstItem(snapshot, (item) => item.status === 'blocked')
-        ?? firstItem(snapshot, (item) => item.status === 'pending')
-        ?? null;
-}

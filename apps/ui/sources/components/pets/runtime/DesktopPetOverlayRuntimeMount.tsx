@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 
+import { createActivitySurfaceSessionRoute } from '@/activity/actions/activitySurfaceTargets';
 import {
     resolveDesktopPetOverlayGeometry,
 } from '@/components/pets/desktop/desktopPetOverlayGeometry';
@@ -37,8 +38,8 @@ function useDesktopPetOverlayMainWindowRequests(): void {
     const actionExecutor = React.useMemo(
         () => createDefaultActionExecutor({
             resolveServerIdForSessionId: resolveServerIdForSessionIdFromLocalCache,
-            openSession: (sessionId) => {
-                router.push((`/session/${sessionId}`) as never);
+            openSession: (sessionId, options) => {
+                router.push(createActivitySurfaceSessionRoute(sessionId, options?.serverId) as never);
             },
         }),
         [router],
@@ -51,11 +52,15 @@ function useDesktopPetOverlayMainWindowRequests(): void {
         listenDesktopPetOverlayShowMainWindowRequested((payload) => {
             const sessionId = typeof payload.targetSessionId === 'string' ? payload.targetSessionId.trim() : '';
             if (!sessionId) return;
+            const serverId = typeof payload.targetServerId === 'string' ? payload.targetServerId.trim() : '';
 
             fireAndForget(actionExecutor.execute(
                 'session.open',
                 { sessionId },
-                { defaultSessionId: sessionId },
+                {
+                    defaultSessionId: sessionId,
+                    ...(serverId ? { serverId } : {}),
+                },
             ), {
                 tag: 'DesktopPetOverlayRuntimeMount.openRequestedSession',
             });

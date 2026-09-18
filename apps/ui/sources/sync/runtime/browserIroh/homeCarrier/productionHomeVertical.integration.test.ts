@@ -150,6 +150,13 @@ describe('browser Iroh production Home vertical', () => {
                 response.end(JSON.stringify({ sessions: [{ id: 'session-1' }] }));
                 return;
             }
+            if (request.url === '/v1/delayed') {
+                setTimeout(() => {
+                    response.writeHead(200, { 'content-type': 'application/json' });
+                    response.end(JSON.stringify({ delayed: true }));
+                }, 25);
+                return;
+            }
             response.writeHead(404);
             response.end();
         });
@@ -190,6 +197,22 @@ describe('browser Iroh production Home vertical', () => {
         // Home-scoped bearer is what reached the Home.
         expect(authorizationHeaders).toEqual(['Bearer home-token']);
         expect(carrier.readObservedPath()).toBe('relay');
+    }, 30_000);
+
+    it('keeps the request stream open while an ordinary Home route responds asynchronously', async () => {
+        const carrier = await acquireCarrier(createLoopbackEndpointClient(() => port));
+        const request = createServerFetchAtEndpoint({
+            endpointUrl: CANONICAL_HOME_URL,
+            homeCarrier: carrier,
+            credentials: { token: 'home-token' },
+            serverId: 'srv_home_ingressless',
+        });
+
+        const response = await request('/v1/delayed', undefined, { retry: 'none' });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ delayed: true });
+        expect(authorizationHeaders).toEqual(['Bearer home-token']);
     }, 30_000);
 
     it('carries a live Socket.IO session through the same carrier without duplicating events', async () => {

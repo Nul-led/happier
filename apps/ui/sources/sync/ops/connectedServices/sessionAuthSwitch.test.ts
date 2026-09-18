@@ -24,7 +24,7 @@ describe('setSessionConnectedServiceAuthBinding', () => {
             ok: true,
             action: 'restart_requested',
             normalizedBindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     anthropic: {
                         source: 'connected',
@@ -45,7 +45,7 @@ describe('setSessionConnectedServiceAuthBinding', () => {
             machineId: 'machine-1',
             serverId: 'server-1',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     anthropic: {
                         source: 'connected',
@@ -59,7 +59,7 @@ describe('setSessionConnectedServiceAuthBinding', () => {
             ok: true,
             action: 'restart_requested',
             normalizedBindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     anthropic: {
                         source: 'connected',
@@ -82,7 +82,7 @@ describe('setSessionConnectedServiceAuthBinding', () => {
                 sessionId: 'session-1',
                 agentId: 'claude',
                 bindings: {
-                    v: 1,
+                    v: 2,
                     bindingsByServiceId: {
                         anthropic: {
                             source: 'connected',
@@ -115,7 +115,7 @@ describe('setSessionConnectedServiceAuthBinding', () => {
             agentId: 'claude',
             machineId: 'machine-1',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'openai-codex': {
                         source: 'connected',
@@ -142,7 +142,7 @@ describe('setSessionConnectedServiceAuthBinding', () => {
             ok: true,
             action: 'restart_requested',
             normalizedBindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {},
             },
             continuityByServiceId: {},
@@ -157,7 +157,7 @@ describe('setSessionConnectedServiceAuthBinding', () => {
             machineId: 'machine-1',
             serverId: 'server-1',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'openai-codex': {
                         source: 'connected',
@@ -182,7 +182,7 @@ describe('setSessionConnectedServiceAuthBinding', () => {
                 sessionId: 'session-1',
                 agentId: 'codex',
                 bindings: {
-                    v: 1,
+                    v: 2,
                     bindingsByServiceId: {
                         'openai-codex': {
                             source: 'connected',
@@ -201,7 +201,7 @@ describe('setSessionConnectedServiceAuthBinding', () => {
             ok: true,
             action: 'restart_requested',
             normalizedBindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     anthropic: {
                         source: 'connected',
@@ -222,7 +222,7 @@ describe('setSessionConnectedServiceAuthBinding', () => {
             machineId: 'machine-1',
             serverId: 'server-1',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     anthropic: {
                         source: 'connected',

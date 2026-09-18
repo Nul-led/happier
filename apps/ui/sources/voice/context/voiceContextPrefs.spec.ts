@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { getVoiceContextFormatterPrefs } from './voiceContextPrefs';
 
 describe('getVoiceContextFormatterPrefs', () => {
-  it('treats padded tracked session ids as tracked when resolving voice context prefs', () => {
+  it('uses canonical Include in Voice when resolving voice context prefs', () => {
     const prefs = getVoiceContextFormatterPrefs({
       settings: {
         voice: {
@@ -26,7 +26,8 @@ describe('getVoiceContextFormatterPrefs', () => {
         },
       },
       sessionId: ' session-1 ',
-      trackedSessionIds: [' session-1 '],
+      sessionAddress: { serverId: 'server-a', sessionId: 'session-1' },
+      includeInVoice: true,
     });
 
     expect(prefs.voiceShareSessionSummary).toBe(true);

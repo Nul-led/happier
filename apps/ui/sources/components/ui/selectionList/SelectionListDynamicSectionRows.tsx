@@ -221,7 +221,7 @@ const sectionWrapStyles = StyleSheet.create(() => ({
 export type SelectionListSectionRenderContext = Readonly<{
     rootTestID: string | undefined;
     stepId: string;
-    selectedOptionId: string | null | undefined;
+    selectedOptionIds: ReadonlySet<string>;
     focusedOptionId: string | null;
     onSelect: (id: string, option: SelectionListOption) => void;
     onPushStep: (step: SelectionListStep) => void;
@@ -354,7 +354,7 @@ function renderSelectionListSectionElement(
                         plan={sectionPlan}
                         rootTestID={ctx.rootTestID}
                         stepId={ctx.stepId}
-                        selectedOptionId={ctx.selectedOptionId}
+                        selectedOptionIds={ctx.selectedOptionIds}
                         focusedOptionId={ctx.focusedOptionId}
                         onSelect={ctx.onSelect}
                         onPushStep={ctx.onPushStep}
@@ -391,7 +391,7 @@ function renderSelectionListSectionElement(
                             plan={sectionPlan}
                             rootTestID={ctx.rootTestID}
                             stepId={ctx.stepId}
-                            selectedOptionId={ctx.selectedOptionId}
+                            selectedOptionIds={ctx.selectedOptionIds}
                             focusedOptionId={ctx.focusedOptionId}
                             onSelect={ctx.onSelect}
                             onPushStep={ctx.onPushStep}
@@ -477,7 +477,7 @@ function renderSelectionListSectionElement(
                 section={sectionForRender}
                 stepId={ctx.stepId}
                 rootTestID={ctx.rootTestID}
-                selectedOptionId={ctx.selectedOptionId ?? null}
+                selectedOptionIds={ctx.selectedOptionIds}
                 // F4 — thread the keyboard-driven focused option through
                 // so the virtualized renderer can mirror focused styling
                 // AND so it can scroll the focused row into view
@@ -567,7 +567,7 @@ function renderSelectionListSectionElement(
                     plan={sectionPlan}
                     rootTestID={ctx.rootTestID}
                     stepId={ctx.stepId}
-                    selectedOptionId={ctx.selectedOptionId}
+                    selectedOptionIds={ctx.selectedOptionIds}
                     focusedOptionId={ctx.focusedOptionId}
                     onSelect={ctx.onSelect}
                     onPushStep={ctx.onPushStep}
@@ -584,7 +584,7 @@ function renderSelectionListSectionElement(
                     plan={sectionPlan}
                     rootTestID={ctx.rootTestID}
                     stepId={ctx.stepId}
-                    selectedOptionId={ctx.selectedOptionId}
+                    selectedOptionIds={ctx.selectedOptionIds}
                     focusedOptionId={ctx.focusedOptionId}
                     onSelect={ctx.onSelect}
                     onPushStep={ctx.onPushStep}

@@ -8,6 +8,8 @@ import {
     type SessionSharedMetadataV1,
 } from '@happier-dev/protocol';
 
+import type { NormalizedSessionAccessProjection } from './normalizeSessionAccessProjection';
+
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { MetadataSchema, type Metadata } from '@/sync/domains/state/storageTypes';
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
@@ -23,6 +25,7 @@ export type SessionLayout1OwnerProjection =
     | Readonly<{
         kind: 'unavailable';
         reason:
+            | 'access_unavailable'
             | 'invalid_envelope'
             | 'account_mode_mismatch'
             | 'account_currentness_unavailable'
@@ -39,17 +42,33 @@ export type SessionLayout1OwnerMetadataRead =
       }>
     | Extract<SessionLayout1OwnerProjection, { kind: 'unavailable' }>;
 
-export function hasSessionShareRecipientAuthority(share: unknown): boolean {
-    return share !== null && share !== undefined;
+/**
+ * The owner-private visibility fact that remains usable when the Session DEK is unavailable.
+ *
+ * `systemSessionV1` lives in the Account-encrypted owner envelope, not in Session-encrypted shared
+ * metadata. An authenticated owner can therefore still classify a locked Session without making
+ * the fact Home-readable or publishing it to recipients. Absence in a successfully opened strict
+ * owner envelope proves this is not a hidden system Session.
+ */
+export function projectSessionLayout1LockedOwnerVisibility(
+    ownerMetadataRead: SessionLayout1OwnerMetadataRead | null,
+): Metadata | null {
+    if (ownerMetadataRead?.kind !== 'owner') return null;
+    const systemSessionV1 = ownerMetadataRead.ownerMetadata.system?.systemSessionV1;
+    const parsed = MetadataSchema.safeParse(
+        systemSessionV1 ? { systemSessionV1 } : {},
+    );
+    return parsed.success ? parsed.data : null;
 }
 
 export function readSessionLayout1OwnerMetadata(params: Readonly<{
-    share: unknown;
+    access: NormalizedSessionAccessProjection | null;
     accountMode?: AccountEncryptionCurrentnessResponse['mode'];
     ownerMetadataEnvelope: unknown;
     credentials: AuthCredentials;
 }>): SessionLayout1OwnerMetadataRead {
-    if (hasSessionShareRecipientAuthority(params.share)) {
+    if (!params.access) return { kind: 'unavailable', reason: 'access_unavailable' };
+    if (params.access.role === 'recipient') {
         return { kind: 'recipient' };
     }
     if (params.ownerMetadataEnvelope === null || params.ownerMetadataEnvelope === undefined) {
@@ -121,7 +140,7 @@ export function projectSessionLayout1OwnerMetadata(params: Readonly<{
 }
 
 export function readSessionLayout1OwnerProjection(params: Readonly<{
-    share: unknown;
+    access: NormalizedSessionAccessProjection | null;
     accountMode?: AccountEncryptionCurrentnessResponse['mode'];
     sharedMetadata: SessionSharedMetadataV1;
     ownerMetadataEnvelope: unknown;

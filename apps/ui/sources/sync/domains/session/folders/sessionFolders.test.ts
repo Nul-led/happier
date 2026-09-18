@@ -11,11 +11,13 @@ import {
     buildSessionFolderMoveTargets,
     buildSessionFolderWorkspaceTargets,
     moveSessionFolder,
+    renameSessionFolder,
     normalizeSessionFolderName,
     normalizeSessionFolders,
     resolveDurableWorkspaceRefForSessionListHeader,
     resolveSessionFolderDragIntent,
     resolveSessionFolderFocusScope,
+    sessionFolderAddressKey,
     SESSION_FOLDER_MAX_NAME_LENGTH,
 } from './index';
 import type { SessionFolderV1, SessionFoldersV1, SessionFolderWorkspaceRefV1 } from './types';
@@ -34,6 +36,13 @@ const workspaceB: SessionFolderWorkspaceRefV1 = {
     rootPath: '/Users/lee/other',
 };
 
+const workspaceHomeB: SessionFolderWorkspaceRefV1 = {
+    t: 'workspaceScope',
+    serverId: 'server-b',
+    machineId: 'machine-a',
+    rootPath: '/Users/lee/project',
+};
+
 function folder(overrides: Partial<SessionFolderV1>): SessionFolderV1 {
     return {
         id: 'folder-a',
@@ -48,6 +57,46 @@ function folder(overrides: Partial<SessionFolderV1>): SessionFolderV1 {
 }
 
 describe('session folder domain helpers', () => {
+    it('preserves and mutates duplicate Home-local folder ids by exact Home', () => {
+        const homeA = folder({ id: 'shared', name: 'Home A', workspace: workspaceA });
+        const homeB = folder({ id: 'shared', name: 'Home B', workspace: workspaceHomeB });
+        const childA = folder({ id: 'child-a', parentId: 'shared', name: 'Child A', workspace: workspaceA });
+        const childB = folder({ id: 'child-b', parentId: 'shared', name: 'Child B', workspace: workspaceHomeB });
+        const normalized = normalizeSessionFolders({ v: 1, folders: [homeA, childA, homeB, childB] });
+
+        expect(normalized.folders).toHaveLength(4);
+        const focus = resolveSessionFolderFocusScope(normalized, {
+            serverId: 'server-b',
+            folderId: 'shared',
+            workspace: workspaceHomeB,
+        });
+        expect(focus?.folder.name).toBe('Home B');
+        expect(focus?.folderIds).toEqual(new Set(['shared', 'child-b']));
+
+        const renamed = renameSessionFolder({
+            current: normalized,
+            serverId: 'server-b',
+            folderId: 'shared',
+            name: 'Renamed B',
+            now: 2,
+        });
+        expect(renamed.next.folders.map((item) => [item.workspace.serverId, item.name])).toEqual([
+            ['server-a', 'Home A'],
+            ['server-a', 'Child A'],
+            ['server-b', 'Renamed B'],
+            ['server-b', 'Child B'],
+        ]);
+
+        const deleted = deleteSessionFolder({
+            current: renamed.next,
+            serverId: 'server-b',
+            folderId: 'shared',
+        });
+        expect(deleted.next.folders.map((item) => [item.workspace.serverId, item.name])).toEqual([
+            ['server-a', 'Home A'],
+            ['server-a', 'Child A'],
+        ]);
+    });
     it('normalizes folder ownership without persisting render keys as identity', () => {
         const setting: SessionFoldersV1 = {
             v: 1,
@@ -55,7 +104,9 @@ describe('session folder domain helpers', () => {
         };
 
         const normalized = normalizeSessionFolders(setting, {
-            currentRenderWorkspaceKeysByFolderId: { root: 'wl_new' },
+            currentRenderWorkspaceKeysByFolderKey: {
+                [sessionFolderAddressKey({ serverId: 'server-a', folderId: 'root' })]: 'wl_new',
+            },
         });
 
         expect(normalized.folders[0]).toMatchObject({
@@ -113,6 +164,7 @@ describe('session folder domain helpers', () => {
                     folder({ id: 'child', name: 'Child', parentId: 'parent' }),
                 ],
             },
+            serverId: 'server-a',
             folderId: 'child',
         });
         expect(deleted.deletedFolderIds).toEqual(['child']);
@@ -132,6 +184,7 @@ describe('session folder domain helpers', () => {
 
         const movedToSibling = moveSessionFolder({
             current,
+            serverId: 'server-a',
             folderId: 'child',
             parentId: 'sibling',
             now: 20,
@@ -140,6 +193,7 @@ describe('session folder domain helpers', () => {
 
         const movedToRoot = moveSessionFolder({
             current: movedToSibling.next,
+            serverId: 'server-a',
             folderId: 'child',
             parentId: null,
             now: 30,
@@ -148,6 +202,7 @@ describe('session folder domain helpers', () => {
 
         const rejectedCycle = moveSessionFolder({
             current,
+            serverId: 'server-a',
             folderId: 'parent',
             parentId: 'child',
             now: 40,
@@ -169,6 +224,7 @@ describe('session folder domain helpers', () => {
 
         const moved = moveSessionFolder({
             current,
+            serverId: 'server-a',
             folderId: 'child',
             parentId: null,
             beforeFolderId: 'alpha',
@@ -193,6 +249,7 @@ describe('session folder domain helpers', () => {
 
         const moved = moveSessionFolder({
             current,
+            serverId: 'server-a',
             folderId: 'child',
             parentId: null,
             beforeFolderId: 'alpha',
@@ -209,7 +266,11 @@ describe('session folder domain helpers', () => {
     });
 
     it('resolves durable workspace refs and drag intents for assignment', () => {
-        expect(buildSessionFolderAssignmentKey('server-a', 'session-a')).toBe('server-a:session-a');
+        expect(buildSessionFolderAssignmentKey('server-a', 'session-a')).toBe('["server-a","session-a"]');
+        expect(buildSessionFolderAssignmentKey('https://home.example.test:8443', 'session:part'))
+            .not.toBe(buildSessionFolderAssignmentKey('https://home.example.test', '8443:session:part'));
+        expect(buildSessionFolderAssignmentKey(null, 'session-a'))
+            .not.toBe(buildSessionFolderAssignmentKey('local', 'session-a'));
         expect(resolveDurableWorkspaceRefForSessionListHeader({
             type: 'header',
             title: 'Project',
@@ -331,6 +392,7 @@ describe('session folder domain helpers', () => {
                 v: 1,
                 folders: [{
                     id: 'folder-locked',
+                    serverId: 'server-a',
                     workspace: null,
                     parentId: null,
                     name: '',
@@ -344,7 +406,7 @@ describe('session folder domain helpers', () => {
                 }],
             },
             assignmentsBySessionKey: {
-                'server-a:session-a': 'folder-locked',
+                [buildSessionFolderAssignmentKey('server-a', 'session-a')]: 'folder-locked',
             },
             collapsedGroupKeys: {},
             focusedFolder: null,
@@ -398,6 +460,7 @@ describe('session folder domain helpers', () => {
                 folders: [
                     {
                         id: 'locked-parent',
+                        serverId: 'server-a',
                         workspace: null,
                         parentId: null,
                         name: '',
@@ -408,6 +471,7 @@ describe('session folder domain helpers', () => {
                     },
                     {
                         id: 'locked-child',
+                        serverId: 'server-a',
                         workspace: null,
                         parentId: 'locked-parent',
                         name: '',

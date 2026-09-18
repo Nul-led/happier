@@ -2,6 +2,7 @@ import {
     SESSION_ACTION_ARCHIVE_ID,
     SESSION_ACTION_CLEAR_ATTENTION_STANDING_ID,
     SESSION_ACTION_DELETE_ID,
+    SESSION_ACTION_FOLLOW_ID,
     SESSION_ACTION_MARK_READ_ID,
     SESSION_ACTION_MARK_UNREAD_ID,
     SESSION_ACTION_MOVE_TO_FOLDER_ID,
@@ -33,6 +34,9 @@ export function listVisibleSessionActionIds(params: Readonly<{
 }>): SessionActionId[] {
     const { target, surface } = params;
     const ids: SessionActionId[] = [];
+    if (surface !== 'selectionActionBar' && target.followEnabled === true && target.serverId?.trim()) {
+        ids.push(SESSION_ACTION_FOLLOW_ID);
+    }
     const readStateId = resolveSessionReadStateActionId(target);
 
     if (readStateId) {
@@ -60,7 +64,7 @@ export function listVisibleSessionActionIds(params: Readonly<{
         ids.push(SESSION_ACTION_ARCHIVE_ID);
     }
 
-    if (target.isArchived && target.hasAdminAccess) {
+    if (target.isArchived && target.canUnarchive) {
         ids.push(SESSION_ACTION_UNARCHIVE_ID);
     }
 

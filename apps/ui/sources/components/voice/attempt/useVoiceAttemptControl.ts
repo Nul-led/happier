@@ -1,9 +1,13 @@
 import * as React from 'react';
 
 import { useRouter } from 'expo-router';
+import { Platform } from 'react-native';
 
 import { resolveVoiceConnectRecoveryTarget } from '@/components/voice/surface/resolveVoiceConnectRecoveryTarget';
-import { resolveVoiceStartAdmission } from '@/components/voice/surface/resolveVoiceStartAdmission';
+import {
+    resolveCurrentVoiceRuntimePlatform,
+    resolveVoiceStartAdmission,
+} from '@/components/voice/surface/resolveVoiceStartAdmission';
 import { resolveVoiceSurfaceRecovery } from '@/components/voice/surface/resolveVoiceSurfaceRecovery';
 import { resolveVoiceSurfaceState } from '@/components/voice/surface/resolveVoiceSurfaceState';
 import { resolveVoiceSurfaceStatusPresentation } from '@/components/voice/surface/resolveVoiceSurfaceStatusPresentation';
@@ -14,6 +18,7 @@ import { useProjectedConnectedServicesRegistry } from '@/components/appShell/plu
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { resolvePortableServerIdentityForRoutingId } from '@/sync/domains/server/resolvePortableServerIdentityForRoutingId';
 import { storage, useSetting } from '@/sync/domains/state/storage';
 import { readVoiceProviderSettingsConfig, voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
@@ -54,7 +59,7 @@ const voiceProviderRegistry = createDefaultVoiceProviderRegistry();
  */
 export type VoiceAttemptIdleTarget =
     | Readonly<{ kind: 'global' }>
-    | Readonly<{ kind: 'session'; sessionId: string }>;
+    | Readonly<{ kind: 'session'; sessionAddress: SessionAddress | null }>;
 
 /** The app-level target: no surface session, started through the canonical hidden owner. */
 export const VOICE_ATTEMPT_IDLE_TARGET_GLOBAL: VoiceAttemptIdleTarget = Object.freeze({ kind: 'global' });
@@ -137,9 +142,16 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
      * conversation from the one the surface named is exactly the retarget this contract forbids.
      */
     const bindingScope = idleTarget.kind === 'session' ? 'session' : 'global';
-    const startSessionId = idleTarget.kind === 'session'
-        ? (idleTarget.sessionId.trim() || null)
-        : null;
+    const startSessionAddress = React.useMemo(
+        () => idleTarget.kind === 'session'
+            ? normalizeSessionAddress(
+                idleTarget.sessionAddress?.serverId,
+                idleTarget.sessionAddress?.sessionId,
+            )
+            : null,
+        [idleTarget],
+    );
+    const startSessionId = startSessionAddress?.sessionId ?? null;
     const startAdmission = resolveVoiceStartAdmission({
         // Never inherited from `ui.scopeDefault` or `ui.surfaceLocation`: those are Horizon's
         // placement policy, and a floating companion that read them would delete itself the
@@ -151,6 +163,7 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         daemonLocalVoiceUnavailable:
             capabilities?.requiresVoiceAgentFeature === true && voiceAgentFeatureEnabled !== true,
         globalStartAuthorized: bindingScope === 'global' && capabilities?.allowsGlobalStart === true,
+        platform: resolveCurrentVoiceRuntimePlatform(Platform.OS),
         providerId,
         providerSettings: voiceProviderRegistry.get(providerId)?.providerSettings ?? null,
         registry: voiceProviderRegistry,
@@ -326,8 +339,8 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         if (!canStart) return;
         // The caller's stated target. The empty session id is the canonical global/hidden-owner start.
         voiceSurfaceHaptics.notify('start_stop');
-        fireAndForget(voiceSessionManager.toggle(startSessionId ?? ''), { tag: 'VoiceAttemptControl.toggle' });
-    }, [canStart, canStop, snapSessionId, startSessionId]);
+        fireAndForget(voiceSessionManager.toggle(startSessionAddress), { tag: 'VoiceAttemptControl.toggle' });
+    }, [canStart, canStop, snapSessionId, startSessionAddress]);
 
     const onToggleMute = React.useCallback(() => {
         const sessionId = snapSessionId?.trim() ?? '';
@@ -419,7 +432,7 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
             : null;
         // A global attempt is bound to no session, so there is nothing to return to; only an
         // attempt with a target session has a conversation the user came from.
-        const value = binding && binding.targetSessionId ? binding.conversationSessionId : null;
+        const value = binding?.targetSessionAddress ? binding.conversationSessionId : null;
         bindingCacheRef.current = {
             sessions,
             bindings,

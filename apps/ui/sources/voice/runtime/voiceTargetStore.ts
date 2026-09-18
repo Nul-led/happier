@@ -1,23 +1,29 @@
 import { create } from 'zustand';
 
+import {
+  areSessionAddressesEqual,
+  normalizeSessionAddress,
+  sessionAddressKey,
+  type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
+
 export type VoiceAssistantScope = 'session' | 'global';
 
 export type VoiceTargetState = Readonly<{
   scope: VoiceAssistantScope;
-  primaryActionSessionId: string | null;
-  trackedSessionIds: ReadonlyArray<string>;
-  lastFocusedSessionId: string | null;
+  primaryActionSessionAddress: SessionAddress | null;
+  voiceLiveContextSessionAddresses: ReadonlyArray<SessionAddress>;
+  lastFocusedSessionAddress: SessionAddress | null;
   setScope: (scope: VoiceAssistantScope) => void;
-  setPrimaryActionSessionId: (sessionId: string | null) => void;
-  setTrackedSessionIds: (sessionIds: ReadonlyArray<string>) => void;
-  addTrackedSessionId: (sessionId: string) => void;
-  removeTrackedSessionId: (sessionId: string) => void;
-  setLastFocusedSessionId: (sessionId: string | null) => void;
+  setPrimaryActionSessionAddress: (address: SessionAddress | null) => void;
+  setVoiceLiveContextSessionAddresses: (addresses: ReadonlyArray<SessionAddress>) => void;
+  addVoiceLiveContextSessionAddress: (address: SessionAddress) => void;
+  removeVoiceLiveContextSessionAddress: (address: SessionAddress) => void;
+  setLastFocusedSessionAddress: (address: SessionAddress | null) => void;
 }>;
 
-function normalizeSessionId(value: string | null): string | null {
-  const trimmed = String(value ?? '').trim();
-  return trimmed.length > 0 ? trimmed : null;
+function normalizeAddress(value: SessionAddress | null | undefined): SessionAddress | null {
+  return value ? normalizeSessionAddress(value.serverId, value.sessionId) : null;
 }
 
 /**
@@ -25,53 +31,69 @@ function normalizeSessionId(value: string | null): string | null {
  * Session-scoped Voice is bound to its admitted Session and must never fall
  * through to a retained global target.
  */
-export function resolveVoiceActionTargetSessionId(input: Readonly<{
+export function resolveVoiceActionTargetAddress(input: Readonly<{
   scope: VoiceAssistantScope;
-  currentSessionId?: string | null;
-  primaryActionSessionId?: string | null;
-  lastFocusedSessionId?: string | null;
-}>): string | null {
-  const currentSessionId = normalizeSessionId(input.currentSessionId ?? null);
-  if (currentSessionId) return currentSessionId;
+  currentSessionAddress?: SessionAddress | null;
+  primaryActionSessionAddress?: SessionAddress | null;
+  lastFocusedSessionAddress?: SessionAddress | null;
+}>): SessionAddress | null {
+  const currentSessionAddress = normalizeAddress(input.currentSessionAddress);
+  if (currentSessionAddress) return currentSessionAddress;
   if (input.scope !== 'global') return null;
-  return normalizeSessionId(input.primaryActionSessionId ?? null)
-    ?? normalizeSessionId(input.lastFocusedSessionId ?? null);
+  return normalizeAddress(input.primaryActionSessionAddress)
+    ?? normalizeAddress(input.lastFocusedSessionAddress);
 }
 
-function normalizeTrackedSessionIds(values: ReadonlyArray<string> | null | undefined): ReadonlyArray<string> {
+function normalizeVoiceLiveContextSessionAddresses(
+  values: ReadonlyArray<SessionAddress> | null | undefined,
+): ReadonlyArray<SessionAddress> {
   if (!Array.isArray(values)) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
+  const out = new Map<string, SessionAddress>();
   for (const raw of values) {
-    const id = normalizeSessionId(raw);
-    if (!id) continue;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    out.push(id);
+    const address = normalizeAddress(raw);
+    if (!address) continue;
+    out.set(sessionAddressKey(address), address);
   }
-  out.sort();
-  return out;
+  return [...out.values()].sort((left, right) => sessionAddressKey(left).localeCompare(sessionAddressKey(right)));
 }
 
 export const useVoiceTargetStore = create<VoiceTargetState>((set) => ({
   scope: 'global',
-  primaryActionSessionId: null,
-  trackedSessionIds: [],
-  lastFocusedSessionId: null,
+  primaryActionSessionAddress: null,
+  voiceLiveContextSessionAddresses: [],
+  lastFocusedSessionAddress: null,
   setScope: (scope) => set((state) => state.scope === scope ? state : { scope }),
-  setPrimaryActionSessionId: (sessionId) => set(() => ({ primaryActionSessionId: normalizeSessionId(sessionId) })),
-  setTrackedSessionIds: (sessionIds) => set(() => ({ trackedSessionIds: normalizeTrackedSessionIds(sessionIds) })),
-  addTrackedSessionId: (sessionId) =>
+  setPrimaryActionSessionAddress: (address) =>
     set((state) => {
-      const trackedSessionIds = Array.isArray(state.trackedSessionIds) ? state.trackedSessionIds : [];
-      return { trackedSessionIds: normalizeTrackedSessionIds([...trackedSessionIds, sessionId]) };
+      const primaryActionSessionAddress = normalizeAddress(address);
+      return areSessionAddressesEqual(state.primaryActionSessionAddress, primaryActionSessionAddress)
+        ? state
+        : { primaryActionSessionAddress };
     }),
-  removeTrackedSessionId: (sessionId) =>
+  setVoiceLiveContextSessionAddresses: (addresses) =>
+    set(() => ({ voiceLiveContextSessionAddresses: normalizeVoiceLiveContextSessionAddresses(addresses) })),
+  addVoiceLiveContextSessionAddress: (address) =>
+    set((state) => ({
+      voiceLiveContextSessionAddresses: normalizeVoiceLiveContextSessionAddresses([
+        ...state.voiceLiveContextSessionAddresses,
+        address,
+      ]),
+    })),
+  removeVoiceLiveContextSessionAddress: (address) =>
     set((state) => {
-      const trackedSessionIds = Array.isArray(state.trackedSessionIds) ? state.trackedSessionIds : [];
+      const normalized = normalizeAddress(address);
+      if (!normalized) return state;
       return {
-        trackedSessionIds: trackedSessionIds.filter((id) => id !== normalizeSessionId(sessionId)),
+        voiceLiveContextSessionAddresses: state.voiceLiveContextSessionAddresses.filter(
+          (candidate) => !areSessionAddressesEqual(candidate, normalized),
+        ),
       };
     }),
-  setLastFocusedSessionId: (sessionId) => set(() => ({ lastFocusedSessionId: normalizeSessionId(sessionId) })),
+  setLastFocusedSessionAddress: (address) =>
+    set((state) => {
+      const lastFocusedSessionAddress = normalizeAddress(address);
+      return areSessionAddressesEqual(state.lastFocusedSessionAddress, lastFocusedSessionAddress)
+        ? state
+        : { lastFocusedSessionAddress };
+    }),
 }));

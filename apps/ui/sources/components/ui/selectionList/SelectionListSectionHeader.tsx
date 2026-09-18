@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { View, Platform } from 'react-native';
+import { View, Platform, type StyleProp, type ViewStyle } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
@@ -33,8 +33,12 @@ export type SelectionListSectionHeaderProps = Readonly<{
      * width stays stable as numbers tick.
      */
     count?: number;
+    /** Optional section-owned action rendered at the trailing edge. */
+    rightAccessory?: React.ReactNode;
     /** Stable testID anchor (e.g. `<sectionTestId>:header`). */
     testID?: string;
+    /** Optional host-owned layout override; typography and accessory behavior remain canonical here. */
+    containerStyle?: StyleProp<ViewStyle>;
     /**
      * The header's identity as a GRID ROW, when the popup composes its rows
      * with the grid pattern. A grid may own only rows, and this header renders
@@ -115,13 +119,14 @@ export function SelectionListSectionHeader(
     const header = (
         <View
             testID={props.testID}
-            style={styles.container}
+            style={[styles.container, props.containerStyle]}
             {...(gridAria === null ? {} : (gridAria.cell as unknown as Record<string, never>))}
         >
             <Text style={styles.label}>{title}</Text>
             {typeof props.count === 'number' ? (
                 <Text style={[styles.count, Typography.tabular()]}>{String(props.count)}</Text>
             ) : null}
+            {props.rightAccessory}
         </View>
     );
     if (gridAria === null) return header;

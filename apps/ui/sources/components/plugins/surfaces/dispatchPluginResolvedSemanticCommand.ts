@@ -22,6 +22,7 @@ import type {
     PluginSurfaceOpenHandler,
     PluginSurfaceOpenOutcome,
 } from './openPluginSurface';
+import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
 /**
  * The one host router from an already-resolved plugin semantic command to its
@@ -118,6 +119,7 @@ export type DispatchPluginResolvedSemanticCommandInput = Readonly<{
     scopedLaunchFacts?: PluginSurfaceScopedLaunchFacts | null;
     /** Existing Account-lifetime predicate; never reconstructed by this router. */
     scopeIsCurrent?: (() => boolean) | null;
+    accountLifetime?: ActiveServerAccountScopeLifetime | null;
     sessionId?: string | null;
     execute?: PluginSurfaceContributedActionTransport;
     openSurface?: PluginSurfaceOpenHandler;
@@ -163,11 +165,12 @@ export async function dispatchPluginResolvedSemanticCommand(
     );
     const scopedMachineId = scopedAuthority?.machineId;
     const scopedGeneration = scopedAuthority?.generation;
-    const clientProjectionGeneration = isCurrentPluginSemanticCommandProjection(
-        projection,
-        input.scopedLaunchFacts,
-    )
-        ? input.scopedLaunchFacts?.generation
+    // App-scope projections may be unions whose generation fences the whole
+    // catalog but does not identify any member registration. The Action's
+    // resolved origin is the one address used by client executable activation,
+    // just as it already is for daemon dispatch.
+    const clientActionGeneration = projectedAction.execution.target === 'client'
+        ? scopedGeneration
         : null;
     if (
         projectedAction.execution.target === 'daemon'
@@ -177,13 +180,13 @@ export async function dispatchPluginResolvedSemanticCommand(
     }
     const isCurrent = input.scopeIsCurrent ?? (() => true);
     const requestCurrentIntent = projectedAction.execution.target === 'client'
-        && typeof clientProjectionGeneration === 'number'
+        && typeof clientActionGeneration === 'number'
         ? createPluginActionCurrentIntentHandler({
             requester: {
                 pluginId: projectedAction.pluginId,
                 contributionId: projectedAction.id,
-                generationId: String(clientProjectionGeneration),
-                invocationId: `ui-action:${clientProjectionGeneration}`,
+                generationId: String(clientActionGeneration),
+                invocationId: `ui-action:${clientActionGeneration}`,
             },
             isCurrent,
             pluginUiProjection: projection,
@@ -211,12 +214,13 @@ export async function dispatchPluginResolvedSemanticCommand(
             }
             : {}),
         ...(projectedAction.execution.target === 'client'
-            && typeof clientProjectionGeneration === 'number'
-            && Number.isInteger(clientProjectionGeneration)
-            && clientProjectionGeneration >= 0
+            && typeof clientActionGeneration === 'number'
+            && Number.isInteger(clientActionGeneration)
+            && clientActionGeneration >= 0
             ? {
                 clientAction: {
-                    projectionGeneration: clientProjectionGeneration,
+                    projectionGeneration: clientActionGeneration,
+                    ...(input.execute ? { execute: input.execute } : {}),
                     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
                     ...(input.openSurface ? { openSurface: input.openSurface } : {}),
                     ...(requestCurrentIntent ? { requestCurrentIntent } : {}),

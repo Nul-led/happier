@@ -221,7 +221,7 @@ export function createTauriPluginUiPersistentArtifactStore(input: Readonly<{
         },
         write: async (record) => {
             const dispatch = await resolveInvoke();
-            await dispatch('desktop_hosted_artifact_cache_write', {
+            const disposition = await dispatch<unknown>('desktop_hosted_artifact_cache_write', {
                 input: {
                     locator: locatorFor(record.persistentIdentity),
                     identityKeyHash: recordKeyHashFor(record.persistentIdentity),
@@ -234,6 +234,14 @@ export function createTauriPluginUiPersistentArtifactStore(input: Readonly<{
                     })),
                 },
             });
+            if (
+                disposition !== 'persisted'
+                && disposition !== 'notPersistedOversize'
+                && disposition !== 'notPersistedCapacity'
+            ) {
+                throw new Error('desktop_hosted_artifact_cache_write_result_invalid');
+            }
+            return disposition;
         },
         describeNativeResource: async ({ identity, files }) => {
             const locator = locatorFor(identity);

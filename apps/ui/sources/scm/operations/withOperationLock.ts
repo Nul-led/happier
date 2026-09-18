@@ -8,16 +8,18 @@ type ScmOperationLockState = {
     beginSessionProjectScmOperation: (
         sessionId: string,
         operation: ScmProjectOperationKind,
+        serverId?: string,
     ) => BeginScmProjectOperationResult;
-    finishSessionProjectScmOperation: (sessionId: string, operationId: string) => boolean;
+    finishSessionProjectScmOperation: (sessionId: string, operationId: string, serverId?: string) => boolean;
 };
 
 type ScmWorkspaceOperationLockState = {
     beginWorkspaceScmOperation: (
         scope: WorkspaceScopeBase,
         operation: ScmProjectOperationKind,
+        serverId?: string,
     ) => BeginScmProjectOperationResult;
-    finishWorkspaceScmOperation: (scope: WorkspaceScopeBase, operationId: string) => boolean;
+    finishWorkspaceScmOperation: (scope: WorkspaceScopeBase, operationId: string, serverId?: string) => boolean;
 };
 
 export type WithSessionProjectScmOperationResult<T> =
@@ -29,10 +31,11 @@ export type WithWorkspaceScmOperationResult<T> = WithSessionProjectScmOperationR
 export async function withSessionProjectScmOperationLock<T>(input: {
     state: ScmOperationLockState;
     sessionId: string;
+    serverId?: string;
     operation: ScmProjectOperationKind;
     run: () => Promise<T>;
 }): Promise<WithSessionProjectScmOperationResult<T>> {
-    const start = input.state.beginSessionProjectScmOperation(input.sessionId, input.operation);
+    const start = input.state.beginSessionProjectScmOperation(input.sessionId, input.operation, ...(input.serverId === undefined ? [] : [input.serverId]));
     if (!start.started) {
         return {
             started: false,
@@ -45,7 +48,7 @@ export async function withSessionProjectScmOperationLock<T>(input: {
         const value = await input.run();
         return { started: true, value };
     } finally {
-        input.state.finishSessionProjectScmOperation(input.sessionId, operationId);
+        input.state.finishSessionProjectScmOperation(input.sessionId, operationId, ...(input.serverId === undefined ? [] : [input.serverId]));
     }
 }
 

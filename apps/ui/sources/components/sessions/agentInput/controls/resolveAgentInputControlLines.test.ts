@@ -4,6 +4,13 @@ import { AGENT_INPUT_CONTROL_REGISTRY } from './agentInputControlRegistry';
 import { resolveAgentInputControlLines } from './resolveAgentInputControlLines';
 
 describe('resolveAgentInputControlLines', () => {
+    it('preserves Session access independently from recipient routing in the composer and overflow', () => {
+        const controlIds = ['recipient', 'sessionAccess'] as const;
+        expect(resolveAgentInputControlLines({ layout: 'wrap', controlIds }).primary)
+            .toEqual(['sessionAccess', 'recipient']);
+        expect(resolveAgentInputControlLines({ layout: 'collapsed', controlIds }).collapsed)
+            .toEqual(['sessionAccess', 'recipient']);
+    });
     it('keeps primary and secondary controls on separate lines in wrap layout', () => {
         const lines = resolveAgentInputControlLines({
             layout: 'wrap',
@@ -143,6 +150,7 @@ describe('resolveAgentInputControlLines', () => {
             'checkout',
             'automation',
             'stop',
+            'sessionAccess',
             'recipient',
             'delivery',
             'attachments',

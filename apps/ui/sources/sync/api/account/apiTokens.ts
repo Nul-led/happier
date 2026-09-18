@@ -30,7 +30,7 @@ import {
     type ActiveServerAccountScopeLifetime,
 } from '@/sync/domains/scope/activeServerAccountScope';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
 export type CurrentAccountApiTokensOptionsV1 = Readonly<{
     /** The host Action can abandon its pending request without changing Account scope. */
@@ -52,6 +52,14 @@ function unavailable(): never {
 
 function networkFailure(): ActionExecuteFailure {
     return { ok: false, errorCode: 'network_error', error: 'network_error' };
+}
+
+function outcomeUnknown(): ActionExecuteFailure {
+    return { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' };
+}
+
+function invalidResponse(): ActionExecuteFailure {
+    return { ok: false, errorCode: 'invalid_response', error: 'invalid_response' };
 }
 
 function isCurrent(captured: CapturedActiveAccountApiTokens): boolean {
@@ -78,6 +86,7 @@ async function requestCurrentAccountApiTokens<
     inputSchema: TInputSchema,
     outputSchema: TOutputSchema,
     options?: CurrentAccountApiTokensOptionsV1,
+    effect: 'read' | 'write' = 'read',
 ): Promise<CurrentAccountApiTokensResult<z.output<TOutputSchema>>> {
     const request = inputSchema.parse(input);
     if (options?.signal?.aborted) return unavailable();
@@ -90,11 +99,15 @@ async function requestCurrentAccountApiTokens<
     const retirement = captured.lifetime.onRetire(abort);
     options?.signal?.addEventListener('abort', abort, { once: true });
     if (options?.signal?.aborted) abort();
-    let authority: Awaited<ReturnType<typeof captureSessionRequestAuthorityForServerAccountScope>> | null = null;
+    let authority: Awaited<ReturnType<typeof captureServerRequestAuthorityForServerAccountScope>> | null = null;
+    let issued = false;
+
+    const transportFailure = (): ActionExecuteFailure =>
+        effect === 'write' && issued ? outcomeUnknown() : networkFailure();
 
     try {
         if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
-        authority = await captureSessionRequestAuthorityForServerAccountScope({
+        authority = await captureServerRequestAuthorityForServerAccountScope({
             scope: captured.lifetime.scope,
             activeRequest: (requestPath, init) => apiSocket.request(requestPath, init),
         });
@@ -107,23 +120,30 @@ async function requestCurrentAccountApiTokens<
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(request),
                 signal: controller.signal,
-            });
+            }, { onIssued: () => { issued = true; } });
         } catch {
-            if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
-            return networkFailure();
+            if ((controller.signal.aborted || !isCurrent(captured)) && !issued) return unavailable();
+            return transportFailure();
         }
-        if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
+        if (controller.signal.aborted || !isCurrent(captured)) {
+            return effect === 'write' && issued ? outcomeUnknown() : unavailable();
+        }
+        if (response.status === 404 || response.status === 405 || response.status === 501) {
+            return { ok: false, errorCode: 'unsupported', error: 'unsupported' };
+        }
 
         let body: unknown;
         try {
             body = await response.json();
         } catch {
-            return unavailable();
+            return effect === 'write' && response.ok ? outcomeUnknown() : invalidResponse();
         }
-        if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
+        if (controller.signal.aborted || !isCurrent(captured)) {
+            return effect === 'write' && issued ? outcomeUnknown() : unavailable();
+        }
         if (!response.ok) {
             const parsedError = AccountApiTokensServerErrorV1Schema.safeParse(body);
-            if (!parsedError.success) return unavailable();
+            if (!parsedError.success) return invalidResponse();
             return {
                 ok: false,
                 errorCode: parsedError.data.error,
@@ -131,10 +151,14 @@ async function requestCurrentAccountApiTokens<
             };
         }
         const parsed = outputSchema.safeParse(body);
-        if (controller.signal.aborted || !isCurrent(captured) || !parsed.success) return unavailable();
+        if (controller.signal.aborted || !isCurrent(captured)) {
+            return effect === 'write' && issued ? outcomeUnknown() : unavailable();
+        }
+        if (!parsed.success) return effect === 'write' ? outcomeUnknown() : invalidResponse();
         return parsed.data;
     } catch {
-        return unavailable();
+        if ((controller.signal.aborted || !isCurrent(captured)) && !issued) return unavailable();
+        return transportFailure();
     } finally {
         await authority?.release?.();
         options?.signal?.removeEventListener('abort', abort);
@@ -156,6 +180,7 @@ export async function createCurrentAccountApiToken(
         AccountApiTokensCreateActionInputV1Schema,
         AccountApiTokensCreateActionOutputV1Schema,
         options,
+        'write',
     );
 }
 
@@ -182,6 +207,7 @@ export async function revokeCurrentAccountApiToken(
         AccountApiTokensRevokeActionInputV1Schema,
         AccountApiTokensRevokeActionOutputV1Schema,
         options,
+        'write',
     );
 }
 
@@ -195,5 +221,6 @@ export async function revokeAllCurrentAccountApiTokens(
         AccountApiTokensRevokeAllActionInputV1Schema,
         AccountApiTokensRevokeAllActionOutputV1Schema,
         options,
+        'write',
     );
 }

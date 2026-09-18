@@ -65,7 +65,7 @@ const jsonResponse: PeerTcpTunnelOpenResponseV1 = {
     v: 1,
     tunnelId: 'tun_1',
     streamPath: '/peer-mediation/v1/tunnel/stream',
-    encoding: 'json_base64_v1',
+    encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
     initialWindowBytes: 1024,
     maxFrameBytes: 1024,
 };
@@ -206,41 +206,6 @@ describe('openPeerTcpTunnelLoopbackStream', () => {
         await expect(opening).rejects.toMatchObject({ name: 'AbortError' });
         expect(fixture.getSocket().close).toHaveBeenCalledOnce();
         expect(fixture.getSocket().onmessage).toBeUndefined();
-    });
-
-    it('opens the daemon loopback websocket and relays explicit JSON/base64 fallback frames', async () => {
-        const mod = await loadModule('./loopbackStream');
-        const openLoopbackStream = mod.openPeerTcpTunnelLoopbackStream;
-        expect(openLoopbackStream).toBeTypeOf('function');
-        if (typeof openLoopbackStream !== 'function') return;
-
-        const { getSocket, WebSocketCtor } = createWebSocketFixture();
-        const streamPromise = openLoopbackStream({
-            endpointUrl: 'http://127.0.0.1:1234/base',
-            open,
-            response: jsonResponse,
-            WebSocketCtor,
-        }) as Promise<TestStream>;
-        getSocket().onopen?.();
-        const stream = await streamPromise;
-        const seen: PeerTcpTunnelFrame[] = [];
-        stream.onFrame((frame) => seen.push(frame));
-
-        const frame: PeerTcpTunnelFrame = {
-            v: 1,
-            kind: 'ack',
-            tunnelId: 'tun_1',
-            direction: 'client_to_daemon',
-            nextSequence: 5,
-            windowBytes: 1024,
-        };
-        await stream.sendFrame(frame);
-        getSocket().onmessage?.({ data: JSON.stringify(frame) });
-
-        expect(getSocket().url).toBe('ws://127.0.0.1:1234/peer-mediation/v1/tunnel/stream');
-        expect(getSocket().binaryType).toBe('arraybuffer');
-        expect(getSocket().sent).toEqual([JSON.stringify(frame)]);
-        expect(seen).toEqual([frame]);
     });
 
     it('sends binary_frame_v2 loopback data as Uint8Array bytes without JSON/base64 on the websocket payload', async () => {

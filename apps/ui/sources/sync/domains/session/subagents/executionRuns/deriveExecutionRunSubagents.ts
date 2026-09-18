@@ -1,5 +1,5 @@
 import type { Message } from '@/sync/domains/messages/messageTypes';
-import { canSendMessagesToExecutionRun } from '@/sync/domains/executionRuns/canSendMessagesToExecutionRun';
+import { isExecutionRunAddressableRecipient } from '@/sync/domains/executionRuns/isExecutionRunAddressableRecipient';
 
 import type { SessionSubagent, SessionSubagentActiveExecutionRunState, SessionSubagentStatus } from '../types';
 import {
@@ -70,7 +70,7 @@ export function deriveExecutionRunSubagents(params: Readonly<{
                 );
         const displayTitle = transcriptState?.displayLabel ?? runId;
         const canOpen = Boolean(transcriptState?.sidechainId);
-        const canSend = canSendMessagesToExecutionRun({
+        const canSend = isExecutionRunAddressableRecipient({
             status: effectiveStatus,
             intent: transcriptState?.intent ?? null,
             runClass: transcriptState?.runClass ?? null,
@@ -93,6 +93,7 @@ export function deriveExecutionRunSubagents(params: Readonly<{
             },
             runRef: {
                 runId,
+                ...(transcriptState?.launchOrigin ? { launchOrigin: transcriptState.launchOrigin } : {}),
                 ...(backendLabel ? { backendId: backendLabel } : {}),
                 ...(transcriptState?.intent ? { intent: transcriptState.intent } : {}),
                 ...(transcriptState?.runClass ? { runClass: transcriptState.runClass } : {}),

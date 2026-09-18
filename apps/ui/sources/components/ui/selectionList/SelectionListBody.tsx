@@ -103,7 +103,8 @@ const stylesheet = StyleSheet.create(() => ({
 export type SelectionListBodyProps = Readonly<{
     step: SelectionListStep;
     rootTestID: string | undefined;
-    selectedOptionId: string | null | undefined;
+    selectedOptionIds: ReadonlySet<string>;
+    multiselectable?: boolean;
     plan: ReadonlyArray<SectionRenderPlan>;
     virtualizedOptionSource?: SelectionListVirtualizedOptionSource;
     focusedOptionId: string | null;
@@ -287,6 +288,7 @@ function SelectionListBodyPlannedContent(props: SelectionListBodyProps & Readonl
             rowCount: gridRowModel?.rowCount ?? optionPositions.setSize,
             columnCount,
             accessibilityLabel: props.accessibilityLabel,
+            multiselectable: props.multiselectable,
         });
     const bodyTestId = isMeasure
         ? undefined
@@ -370,7 +372,7 @@ function SelectionListBodyPlannedContent(props: SelectionListBodyProps & Readonl
                 listboxAria={listboxAria}
                 plan={plan}
                 stepId={props.step.id}
-                selectedOptionId={props.selectedOptionId ?? null}
+                selectedOptionIds={props.selectedOptionIds}
                 focusedOptionId={props.focusedOptionId}
                 onSelect={props.onSelect}
                 onPushStep={props.onPushStep}
@@ -395,7 +397,7 @@ function SelectionListBodyPlannedContent(props: SelectionListBodyProps & Readonl
     const sectionRenderCtx: SelectionListSectionRenderContext = {
         rootTestID: props.rootTestID,
         stepId: props.step.id,
-        selectedOptionId: props.selectedOptionId,
+        selectedOptionIds: props.selectedOptionIds,
         focusedOptionId: props.focusedOptionId,
         onSelect: props.onSelect,
         onPushStep: props.onPushStep,
@@ -474,6 +476,7 @@ function SelectionListBodyDirectVirtualizedSource(props: SelectionListBodyProps 
             rowCount: source.optionCount,
             columnCount: 1,
             accessibilityLabel: props.accessibilityLabel,
+            multiselectable: props.multiselectable,
         });
     const bodyTestId = isMeasure
         ? undefined
@@ -524,7 +527,7 @@ function SelectionListBodyDirectVirtualizedSource(props: SelectionListBodyProps 
             plan={props.plan}
             virtualizedOptionSource={source}
             stepId={props.step.id}
-            selectedOptionId={props.selectedOptionId ?? null}
+            selectedOptionIds={props.selectedOptionIds}
             focusedOptionId={props.focusedOptionId}
             focusedOptionIndex={props.focusedOptionIndex}
             onSelect={props.onSelect}

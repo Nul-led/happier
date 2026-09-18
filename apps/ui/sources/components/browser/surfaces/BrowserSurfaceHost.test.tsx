@@ -16,7 +16,7 @@ import {
     type CurrentUiContextSnapshotV1,
 } from '@happier-dev/protocol/plugins/ui';
 import { act } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AnnotationCaptureSurface } from '@/components/browser/annotation';
 import type { CurrentUiContextReader } from '@/components/appShell/currentUiContext/CurrentUiContextProvider';
@@ -55,6 +55,7 @@ vi.mock('@/text', async () => {
 vi.mock('@/components/browser/frame/engines/DesktopWebViewEngine', () => ({
     DesktopWebViewEngine: (props: Readonly<Record<string, unknown>>) => React.createElement('View', {
         testID: props.testID ?? 'desktop-webview',
+        lifecycleState: props.lifecycleState,
     }),
 }));
 
@@ -116,6 +117,7 @@ const accountEncryptionModeCredentials = vi.hoisted(() => ({
 const accountEncryptionModeFetch = vi.hoisted(() => vi.fn<
     typeof import('@/sync/api/account/apiAccountEncryptionMode').fetchAccountEncryptionMode
 >());
+let restoreCredentialBoundary: (() => void) | undefined;
 
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
     captureActiveServerAccountScopeLifetime: () => pluginSurfaceAccountLifetime.capture(),
@@ -143,29 +145,20 @@ vi.mock('@/modal', async () => {
     }).module;
 });
 
-vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) => {
-    const original = await importOriginal<typeof import('@/sync/api/account/apiAccountEncryptionMode')>();
+vi.mock('@/sync/http/client', async (importOriginal) => {
+    const original = await importOriginal<typeof import('@/sync/http/client')>();
     return {
         ...original,
-        fetchAccountEncryptionMode: (...args: Parameters<typeof original.fetchAccountEncryptionMode>) => (
-            accountEncryptionModeFetch(...args)
-        ),
-    };
-});
-
-vi.mock('@/sync/sync', async (importOriginal) => {
-    const original = await importOriginal<typeof import('@/sync/sync')>();
-    return {
-        ...original,
-        sync: new Proxy(original.sync, {
-            get(target, property) {
-                if (property === 'getCredentials') {
-                    return () => accountEncryptionModeCredentials.value;
-                }
-                const value = Reflect.get(target, property, target);
-                return typeof value === 'function' ? value.bind(target) : value;
-            },
-        }),
+        serverFetch: async (...args: Parameters<typeof original.serverFetch>) => {
+            if (args[0] === '/v1/account/encryption') {
+                const result = await accountEncryptionModeFetch(accountEncryptionModeCredentials.value!);
+                return new Response(JSON.stringify(result), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            return original.serverFetch(...args);
+        },
     };
 });
 
@@ -573,6 +566,18 @@ beforeEach(async () => {
         '@/sync/api/account/apiAccountEncryptionMode'
     );
     invalidateAccountEncryptionModeCache();
+    const credentialBoundary = vi.spyOn((await import('@/sync/sync')).sync, 'getCredentials')
+        .mockImplementation(() => {
+            const credentials = accountEncryptionModeCredentials.value;
+            if (!credentials) throw new Error('Account credentials unavailable in test boundary');
+            return credentials;
+        });
+    restoreCredentialBoundary = () => credentialBoundary.mockRestore();
+});
+
+afterEach(() => {
+    restoreCredentialBoundary?.();
+    restoreCredentialBoundary = undefined;
 });
 
 describe('BrowserSurfaceHost', () => {
@@ -807,7 +812,7 @@ describe('BrowserSurfaceHost', () => {
         expect(screen.findByTestId('browser-surface-diagnostics')).toBeNull();
     });
 
-    it('renders preview-proxy diagnostics for local-preview web iframes without a competing injected drawer', async () => {
+    it('renders preview-proxy diagnostics in the single diagnostics drawer for local-preview web iframes', async () => {
         const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
@@ -831,8 +836,8 @@ describe('BrowserSurfaceHost', () => {
             />,
         );
 
-        expect(screen.findByTestId('browser-surface-diagnostics')).toBeNull();
-        expect(screen.findByTestId('browser-surface-supplemental-diagnostics')).not.toBeNull();
+        expect(screen.findByTestId('browser-surface-diagnostics')).not.toBeNull();
+        expect(screen.findByTestId('browser-surface-supplemental-diagnostics')).toBeNull();
     });
 
     it('passes browser recording state into the reusable shell chrome', async () => {
@@ -943,6 +948,85 @@ describe('BrowserSurfaceHost', () => {
                 }),
             }),
         }));
+    });
+
+    it('forwards the reconciled presentation lifecycle to the desktop WebView owner', async () => {
+        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
+        const initialBrowserState = openBrowserTarget(createBrowserViewState(), externalTarget, {
+            browserSessionId: 'browser_session_default',
+            platform: 'desktop',
+            currentUrl: 'https://docs.happier.test/',
+            targetPolicyDecision: allowedExternalPolicy,
+            desktopWebViewAvailability: availableDesktopWebView,
+        });
+        const renderHost = (visible: boolean) => (
+            <BrowserSurfaceHost
+                browserSessionId="browser_session_default"
+                platform="desktop"
+                initialBrowserState={initialBrowserState}
+                policy={{
+                    browserEnabled: true,
+                    viewTargetsEnabled: true,
+                    diagnosticsEnabled: false,
+                    contextEnabled: false,
+                }}
+                presentationSlotId="details:primary"
+                visible={visible}
+                active={visible}
+                measuredRect={visible ? { x: 0, y: 0, width: 800, height: 600 } : null}
+                productModels={{
+                    browserProfile: {
+                        profile: sessionBrowserProfile,
+                        activePermissionGrantCount: 0,
+                    },
+                }}
+                browserFeatureDecision={enabledBrowserDecision}
+                desktopWebViewAvailability={availableDesktopWebView}
+                testID="browser-surface"
+            />
+        );
+
+        const screen = await renderScreen(renderHost(true));
+        expect(screen.findByTestId('browser-surface-view-frame')?.props.lifecycleState).toBe('visible');
+
+        await screen.update(renderHost(false));
+        expect(screen.findByTestId('browser-surface-view-frame')?.props.lifecycleState).toBe('hidden');
+    });
+
+    it('leaves inline desktop WebView lifetime unchanged without a presentation slot', async () => {
+        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
+        const initialBrowserState = openBrowserTarget(createBrowserViewState(), externalTarget, {
+            browserSessionId: 'browser_session_default',
+            platform: 'desktop',
+            currentUrl: 'https://docs.happier.test/',
+            targetPolicyDecision: allowedExternalPolicy,
+            desktopWebViewAvailability: availableDesktopWebView,
+        });
+
+        const screen = await renderScreen(
+            <BrowserSurfaceHost
+                browserSessionId="browser_session_default"
+                platform="desktop"
+                initialBrowserState={initialBrowserState}
+                policy={{
+                    browserEnabled: true,
+                    viewTargetsEnabled: true,
+                    diagnosticsEnabled: false,
+                    contextEnabled: false,
+                }}
+                productModels={{
+                    browserProfile: {
+                        profile: sessionBrowserProfile,
+                        activePermissionGrantCount: 0,
+                    },
+                }}
+                browserFeatureDecision={enabledBrowserDecision}
+                desktopWebViewAvailability={availableDesktopWebView}
+                testID="browser-surface"
+            />,
+        );
+
+        expect(screen.findByTestId('browser-surface-view-frame')?.props.lifecycleState).toBeUndefined();
     });
 
     it('reconciles lifecycle from the previous host snapshot when a presentation slot disappears', async () => {
@@ -1187,16 +1271,30 @@ describe('BrowserSurfaceHost', () => {
                 }}
                 localServicePreviewState={localServicePreviewState}
                 pluginUiProjection={hostedWebBrowserPanelProjection}
+                pluginBrowserActionContext={{
+                    machineId: 'machine_1',
+                    serverId: 'server-1',
+                    sessionId: 'session_1',
+                }}
                 testID="browser-surface"
             />,
         );
 
         expect(screen.findByTestId('browser-surface-plugin-placement-surfacePlacement:acme.browser:panel')).not.toBeNull();
-        expect(screen.findAllByType('iframe').some((frame) => {
-            const src = String(frame.props.src ?? '');
-            return src.startsWith('https://preview.happier.test/plugin/acme/')
-                && src.includes('happierBridgeNonce=');
-        })).toBe(true);
+        await vi.waitFor(() => {
+            const unavailableDiagnostics = screen.root.findAll((node) => (
+                typeof node.props.testID === 'string'
+                && node.props.testID.startsWith('plugin-surface-unavailable-diagnostic-')
+            )).map((node) => node.props.testID);
+            expect(
+                screen.findAllByType('iframe').map((frame) => String(frame.props.src ?? '')),
+                JSON.stringify(unavailableDiagnostics),
+            ).toEqual(
+                expect.arrayContaining([
+                    expect.stringMatching(/^https:\/\/preview\.happier\.test\/plugin\/acme\/.*happierBridgeNonce=/),
+                ]),
+            );
+        });
     });
 
     it('does not mount browser panel plugin placements without an active browser target', async () => {

@@ -58,6 +58,7 @@ export async function recoverUnavailableGlobalVoiceAutoMachine(): Promise<Recove
 
     const stickyMachineId = readVoiceAutoTargetMachineId(state);
     if (!stickyMachineId) return { kind: 'not_applicable' };
+    const expectedSettingsScope = state.settingsScope ?? null;
 
     let alternateMachineId = resolveAlternateOnlineMachineId(state, stickyMachineId);
     if (!alternateMachineId) {
@@ -104,7 +105,7 @@ export async function recoverUnavailableGlobalVoiceAutoMachine(): Promise<Recove
         );
     }
 
-    persistVoiceAutoTargetMachineId(alternateMachineId);
+    persistVoiceAutoTargetMachineId(alternateMachineId, expectedSettingsScope);
 
     return {
         kind: 'switch',

@@ -87,6 +87,7 @@ export function ActionListSection(props: {
             subtitle={action.subtitle}
             titleStyle={styles.label}
             selected={action.selected}
+            accessibilityButtonSelected={action.selected}
             variant="slim"
         />
     ), [renderActionIcon, styles.label]);

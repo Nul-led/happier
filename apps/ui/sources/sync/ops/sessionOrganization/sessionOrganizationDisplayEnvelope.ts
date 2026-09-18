@@ -98,9 +98,12 @@ export type OpenSessionOrganizationDisplayEnvelopeResult = Readonly<{
 export async function prepareSessionOrganizationDisplayEnvelope(params: Readonly<{
     credentials: AuthCredentials;
     value: unknown;
+    accountMode?: 'plain' | 'e2ee';
+    request?: (path: string, init?: RequestInit) => Promise<Response>;
 }>): Promise<SessionOrganizationContentEnvelope> {
-    const mode = await fetchAccountEncryptionMode(params.credentials);
-    if (mode.mode === 'plain') {
+    const accountMode = params.accountMode
+        ?? (await fetchAccountEncryptionMode(params.credentials, { request: params.request })).mode;
+    if (accountMode === 'plain') {
         return plainEnvelope(params.value);
     }
     const machineKey = await getAccountMachineKey(params.credentials);
@@ -113,12 +116,16 @@ export async function prepareSessionOrganizationDisplayEnvelope(params: Readonly
 export async function prepareSessionOrganizationDisplayEnvelopeForWrite(params: Readonly<{
     credentials: AuthCredentials;
     envelope: SessionOrganizationContentEnvelope | null | undefined;
+    accountMode?: 'plain' | 'e2ee';
+    request?: (path: string, init?: RequestInit) => Promise<Response>;
 }>): Promise<SessionOrganizationContentEnvelope | null> {
     if (!params.envelope) return null;
     if (params.envelope.t === 'encrypted') return params.envelope;
     return prepareSessionOrganizationDisplayEnvelope({
         credentials: params.credentials,
         value: params.envelope.v,
+        accountMode: params.accountMode,
+        request: params.request,
     });
 }
 

@@ -1,11 +1,16 @@
 import {
-    HomeConnectionEndpointV1Schema,
+    HomeConnectionDescriptorV1Schema,
     type HomeConnectionDescriptorV1,
-    type HomeConnectionEndpointV1,
 } from '@happier-dev/protocol';
 
 import type { SystemTaskPromptEnvelope } from '@/components/systemTasks/prompts/readLatestSystemTaskPrompt';
 import type { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
+import {
+    adoptHomeProfile,
+    buildHomeConnectionDescriptorForProfile,
+    getServerProfileById,
+    type ServerProfile,
+} from '@/sync/domains/server/serverProfiles';
 
 type RelocationDirectorySession = Pick<AccountDirectorySession, 'publishHomeDescriptor' | 'readHomeDescriptor'>;
 
@@ -13,9 +18,7 @@ export type PersonalHomeRelocationPublication = Readonly<{
     publish: (input: Readonly<{
         homeServerIdentityId: string;
         homeLabel: string;
-        minimumOuterRevisionExclusive: number;
-        canonicalServerUrl: string;
-        endpoints: readonly HomeConnectionEndpointV1[];
+        connectionDescriptor: HomeConnectionDescriptorV1;
     }>) => Promise<HomeConnectionDescriptorV1>;
     read: (homeServerIdentityId: string) => Promise<HomeConnectionDescriptorV1 | null>;
 }>;
@@ -31,15 +34,37 @@ type RelocationPromptResponderWithPublicationParams = Omit<RelocationPromptRespo
     publication: PersonalHomeRelocationPublication;
 }>;
 
+/** Without Directory only the initiating client's existing profile is updated. */
+export function createPersonalHomeRelocationProfilePublication(profile: ServerProfile): PersonalHomeRelocationPublication {
+    return {
+        publish: async (input) => {
+            if (input.connectionDescriptor.homeServerIdentityId !== profile.serverIdentityId) {
+                throw new Error('Personal Home relocation descriptor did not match the current Home.');
+            }
+            const adopted = await adoptHomeProfile({
+                descriptor: input.connectionDescriptor,
+                source: profile.source ?? 'manual',
+                preserveUserLabel: true,
+                preserveProfileSource: true,
+                descriptorAuthority: 'current_connection_observation',
+            });
+            const descriptor = buildHomeConnectionDescriptorForProfile(getServerProfileById(adopted.id) ?? adopted);
+            if (!descriptor) throw new Error('Personal Home relocation descriptor was not retained.');
+            return descriptor;
+        },
+        read: async (homeServerIdentityId) => {
+            if (homeServerIdentityId !== profile.serverIdentityId) throw new Error('Personal Home relocation read targeted another Home.');
+            const current = getServerProfileById(profile.id);
+            return current ? buildHomeConnectionDescriptorForProfile(current) : null;
+        },
+    };
+}
+
 function readString(value: unknown): string | null {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function readPositiveRevision(value: unknown): number | null {
-    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : null;
-}
-
-function assertExpectedOperation(prompt: SystemTaskPromptEnvelope, params: RelocationPromptResponderParams): void {
+function assertExpectedOperation(prompt: SystemTaskPromptEnvelope, params: Pick<RelocationPromptResponderParams, 'operationId' | 'homeServerIdentityId'>): void {
     const operationId = readString(prompt.data.operationId);
     const homeServerIdentityId = readString(prompt.data.homeServerIdentityId);
     if (operationId !== params.operationId || homeServerIdentityId !== params.homeServerIdentityId) {
@@ -65,9 +90,7 @@ export function createPersonalHomeRelocationPromptResponder(
                 const result = await params.session.publishHomeDescriptor({
                     homeServerIdentityId: input.homeServerIdentityId,
                     label: input.homeLabel,
-                    minimumOuterRevisionExclusive: input.minimumOuterRevisionExclusive,
-                    canonicalServerUrl: input.canonicalServerUrl,
-                    endpoints: input.endpoints,
+                    connectionDescriptor: input.connectionDescriptor,
                 });
                 return result.entry.connectionDescriptor;
             },
@@ -92,22 +115,14 @@ export function createPersonalHomeRelocationPromptResponderWithPublication(
         assertExpectedOperation(prompt, params);
 
         if (prompt.kind === 'personal_home.publish_relocation_descriptor.v1') {
-            const canonicalServerUrl = readString(prompt.data.canonicalServerUrl);
-            const minimumOuterRevisionExclusive = readPositiveRevision(prompt.data.minimumOuterRevisionExclusive);
-            if (!canonicalServerUrl || minimumOuterRevisionExclusive === null || !Array.isArray(prompt.data.endpoints)
-                || prompt.data.endpoints.length === 0) {
-                throw new Error('Personal Home relocation publication prompt contained invalid destination facts.');
-            }
-            const endpoints = prompt.data.endpoints.map((endpoint) => HomeConnectionEndpointV1Schema.safeParse(endpoint));
-            if (endpoints.some((endpoint) => !endpoint.success)) {
+            const descriptor = HomeConnectionDescriptorV1Schema.safeParse(prompt.data.connectionDescriptor);
+            if (!descriptor.success || descriptor.data.homeServerIdentityId !== params.homeServerIdentityId) {
                 throw new Error('Personal Home relocation publication prompt contained invalid destination facts.');
             }
             const published = await params.publication.publish({
                 homeServerIdentityId: params.homeServerIdentityId,
                 homeLabel: params.homeLabel,
-                minimumOuterRevisionExclusive,
-                canonicalServerUrl,
-                endpoints: endpoints.flatMap((endpoint) => endpoint.success ? [endpoint.data] : []),
+                connectionDescriptor: descriptor.data,
             });
             return { descriptor: published };
         }

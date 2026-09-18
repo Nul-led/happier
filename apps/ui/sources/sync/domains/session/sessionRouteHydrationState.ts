@@ -46,12 +46,14 @@ export type EnsureSessionVisibleForRouteResult =
         sessionId: string;
         serverId?: string;
         cause: SessionRouteHydrationMissingCause;
+        errorCode?: string;
     }>
     | Readonly<{
         kind: 'retryable_failure';
         sessionId: string;
         serverId?: string;
         cause: SessionRouteHydrationRetryCause;
+        errorCode?: string;
     }>;
 
 export function isSessionRouteHydrationAvailable(state: SessionRouteHydrationState): boolean {

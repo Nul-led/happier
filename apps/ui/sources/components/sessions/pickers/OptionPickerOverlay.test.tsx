@@ -32,6 +32,33 @@ vi.mock('@/text', async () => {
 });
 
 describe('OptionPickerOverlay', () => {
+    it('projects controlled multiple selections through the canonical selection list', async () => {
+        const onSelect = vi.fn();
+        const { OptionPickerOverlay } = await import('./OptionPickerOverlay');
+        const screen = await renderScreen(
+            <OptionPickerOverlay
+                title="Models"
+                options={[
+                    { value: 'model-a', label: 'Model A' },
+                    { value: 'model-b', label: 'Model B' },
+                ]}
+                selectedValue="model-a"
+                selectedValues={['model-a', 'model-b']}
+                emptyText="Empty"
+                canEnterCustomValue={false}
+                onSelect={onSelect}
+            />,
+        );
+
+        expect(screen.findByType(SelectionList).props.selection).toEqual({
+            kind: 'multiple',
+            selectedIds: new Set(['model-a', 'model-b']),
+        });
+        await act(async () => {
+            screen.findByType(SelectionList).props.onSelect('model-b');
+        });
+        expect(onSelect).toHaveBeenCalledWith('model-b');
+    });
     /**
      * Flattens NESTED style arrays, like `StyleSheet.flatten` does.
      *
@@ -530,6 +557,27 @@ describe('OptionPickerOverlay', () => {
         await screen.pressByTestIdAsync('model-picker-overlay-option:fast');
 
         expect(onSelect).toHaveBeenCalledWith('fast');
+    });
+
+    it('activates a recovery destination without committing the unavailable value', async () => {
+        const onSelect = vi.fn();
+        const onActivate = vi.fn();
+        const { OptionPickerOverlay } = await import('./OptionPickerOverlay');
+        const screen = await renderScreen(<OptionPickerOverlay
+            title="Model"
+            effectiveLabel="Default"
+            notes={[]}
+            options={[{ value: 'unavailable', label: 'Shared model', onActivate }]}
+            selectedValue="default"
+            emptyText="empty"
+            canEnterCustomValue={false}
+            onSelect={onSelect}
+        />);
+
+        await screen.pressByTestIdAsync('model-picker-overlay-option:unavailable');
+
+        expect(onActivate).toHaveBeenCalledOnce();
+        expect(onSelect).not.toHaveBeenCalled();
     });
 
     it('hides search input when option count is below threshold', async () => {

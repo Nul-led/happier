@@ -37,7 +37,7 @@ const session = (id: string, serverId?: string): SessionItem => ({
 
 describe('session navigation order helpers', () => {
     it('builds server-scoped keys without treating blank server ids as scope', () => {
-        expect(buildServerScopedSessionKey(' sess-a ', ' server-a ')).toBe('server-a:sess-a');
+        expect(buildServerScopedSessionKey(' sess-a ', ' server-a ')).toBe(buildServerScopedSessionKey('sess-a', 'server-a'));
         expect(buildServerScopedSessionKey(' sess-a ', '   ')).toBe('sess-a');
     });
 
@@ -51,9 +51,9 @@ describe('session navigation order helpers', () => {
         ];
 
         expect(buildVisibleSessionNavigationEntries(items)).toEqual([
-            { index: 1, sessionId: 'alpha', sessionKey: 'server-a:alpha', serverId: 'server-a' },
-            { index: 3, sessionId: 'beta', sessionKey: 'server-a:beta', serverId: 'server-a' },
-            { index: 4, sessionId: 'alpha', sessionKey: 'server-b:alpha', serverId: 'server-b' },
+            { index: 1, sessionId: 'alpha', sessionKey: buildServerScopedSessionKey('alpha', 'server-a'), serverId: 'server-a' },
+            { index: 3, sessionId: 'beta', sessionKey: buildServerScopedSessionKey('beta', 'server-a'), serverId: 'server-a' },
+            { index: 4, sessionId: 'alpha', sessionKey: buildServerScopedSessionKey('alpha', 'server-b'), serverId: 'server-b' },
         ]);
     });
 
@@ -66,17 +66,17 @@ describe('session navigation order helpers', () => {
 
         expect(resolveVisibleSessionNavigation({
             visibleEntries,
-            activeSessionKey: 'server-a:beta',
+            activeSessionKey: buildServerScopedSessionKey('beta', 'server-a'),
             cursorSessionKey: null,
             direction: 'next',
-        })?.sessionKey).toBe('server-a:gamma');
+        })?.sessionKey).toBe(buildServerScopedSessionKey('gamma', 'server-a'));
 
         expect(resolveVisibleSessionNavigation({
             visibleEntries,
-            activeSessionKey: 'server-a:beta',
+            activeSessionKey: buildServerScopedSessionKey('beta', 'server-a'),
             cursorSessionKey: null,
             direction: 'previous',
-        })?.sessionKey).toBe('server-a:alpha');
+        })?.sessionKey).toBe(buildServerScopedSessionKey('alpha', 'server-a'));
     });
 
     it('keeps repeated visible navigation anchored to the virtual cursor', () => {
@@ -88,18 +88,18 @@ describe('session navigation order helpers', () => {
 
         const first = resolveVisibleSessionNavigation({
             visibleEntries,
-            activeSessionKey: 'server-a:alpha',
+            activeSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             cursorSessionKey: null,
             direction: 'next',
         });
         const second = resolveVisibleSessionNavigation({
             visibleEntries,
-            activeSessionKey: 'server-a:alpha',
+            activeSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             cursorSessionKey: first?.sessionKey ?? null,
             direction: 'next',
         });
 
-        expect(second?.sessionKey).toBe('server-a:gamma');
+        expect(second?.sessionKey).toBe(buildServerScopedSessionKey('gamma', 'server-a'));
     });
 
     it('jumps to visible session list edges for Home and End', () => {
@@ -113,52 +113,96 @@ describe('session navigation order helpers', () => {
         expect(resolveVisibleSessionEdgeNavigation({
             visibleEntries,
             edge: 'first',
-        })?.sessionKey).toBe('server-a:alpha');
+        })?.sessionKey).toBe(buildServerScopedSessionKey('alpha', 'server-a'));
 
         expect(resolveVisibleSessionEdgeNavigation({
             visibleEntries,
             edge: 'last',
-        })?.sessionKey).toBe('server-a:gamma');
+        })?.sessionKey).toBe(buildServerScopedSessionKey('gamma', 'server-a'));
     });
 
     it('moves an active session key to the MRU front while pruning missing entries and capping the list', () => {
+        const knownSessionEntries = buildVisibleSessionNavigationEntries([
+            session('alpha', 'server-a'),
+            session('beta', 'server-a'),
+            session('gamma', 'server-a'),
+        ]);
         expect(moveSessionMruEntryToFront({
-            order: ['server-a:stale', 'server-a:beta', 'server-a:alpha', 'server-a:gamma'],
-            activeSessionKey: 'server-a:beta',
-            knownSessionKeys: ['server-a:alpha', 'server-a:beta', 'server-a:gamma'],
+            order: [buildServerScopedSessionKey('stale', 'server-a'), buildServerScopedSessionKey('beta', 'server-a'), buildServerScopedSessionKey('alpha', 'server-a'), buildServerScopedSessionKey('gamma', 'server-a')],
+            activeSessionKey: buildServerScopedSessionKey('beta', 'server-a'),
+            knownSessionEntries,
             maxEntries: 2,
-        })).toEqual(['server-a:beta', 'server-a:alpha']);
+        })).toEqual([buildServerScopedSessionKey('beta', 'server-a'), buildServerScopedSessionKey('alpha', 'server-a')]);
     });
 
     it('cycles MRU without reshuffling the front entry during repeated navigation', () => {
-        const order = ['server-a:alpha', 'server-a:beta', 'server-a:gamma'];
+        const knownSessionEntries = buildVisibleSessionNavigationEntries([
+            session('alpha', 'server-a'),
+            session('beta', 'server-a'),
+            session('gamma', 'server-a'),
+        ]);
+        const order = knownSessionEntries.map((entry) => entry.sessionKey);
         const first = resolveSessionMruNavigation({
             order,
-            activeSessionKey: 'server-a:alpha',
+            knownSessionEntries,
+            activeSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             cursorSessionKey: null,
             direction: 'previous',
         });
         const second = resolveSessionMruNavigation({
             order,
-            activeSessionKey: 'server-a:alpha',
+            knownSessionEntries,
+            activeSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             cursorSessionKey: first?.sessionKey ?? null,
             direction: 'previous',
         });
 
-        expect(first?.sessionKey).toBe('server-a:beta');
-        expect(second?.sessionKey).toBe('server-a:gamma');
+        expect(first?.sessionKey).toBe(buildServerScopedSessionKey('beta', 'server-a'));
+        expect(second?.sessionKey).toBe(buildServerScopedSessionKey('gamma', 'server-a'));
     });
 
     it('uses server-scoped MRU keys when the same session id appears on multiple servers', () => {
+        const knownSessionEntries = buildVisibleSessionNavigationEntries([
+            session('alpha', 'server-a'),
+            session('alpha', 'server-b'),
+            session('beta', 'server-a'),
+        ]);
         expect(resolveSessionMruNavigation({
-            order: ['server-a:alpha', 'server-b:alpha', 'server-a:beta'],
-            activeSessionKey: 'server-a:alpha',
+            order: knownSessionEntries.map((entry) => entry.sessionKey),
+            knownSessionEntries,
+            activeSessionKey: buildServerScopedSessionKey('alpha', 'server-a'),
             cursorSessionKey: null,
             direction: 'previous',
         })).toMatchObject({
             sessionId: 'alpha',
-            sessionKey: 'server-b:alpha',
+            sessionKey: buildServerScopedSessionKey('alpha', 'server-b'),
             serverId: 'server-b',
         });
+    });
+
+    it('reads an unambiguous legacy MRU key by comparing it with known addresses', () => {
+        const knownSessionEntries = buildVisibleSessionNavigationEntries([
+            session('alpha', 'https://home.example'),
+            session('beta', 'https://other.example'),
+        ]);
+
+        expect(moveSessionMruEntryToFront({
+            order: ['https://home.example:alpha'],
+            activeSessionKey: null,
+            knownSessionEntries,
+        })).toEqual([buildServerScopedSessionKey('alpha', 'https://home.example')]);
+    });
+
+    it('drops a legacy MRU key when two known addresses serialize to the same value', () => {
+        const knownSessionEntries = buildVisibleSessionNavigationEntries([
+            session('c', 'a:b'),
+            session('b:c', 'a'),
+        ]);
+
+        expect(moveSessionMruEntryToFront({
+            order: ['a:b:c'],
+            activeSessionKey: null,
+            knownSessionEntries,
+        })).toEqual([]);
     });
 });

@@ -5,6 +5,7 @@ import type { PluginUiSurfacePlacementProjection } from '@/sync/domains/plugins/
 
 import {
     resolveSessionCockpitMobileCatalog,
+    resolveSessionCockpitMobileNavigatorSurfaces,
     resolveSessionCockpitMobileTabVisibility,
 } from './sessionCockpitMobileCatalog';
 
@@ -44,6 +45,40 @@ function createMobilePluginPlacement(input: Readonly<{
 }
 
 describe('sessionCockpitMobileCatalog', () => {
+    it('publishes Board on mobile only when the exact Home enables it', () => {
+        expect(resolveSessionCockpitMobileCatalog({
+            terminalTabAvailable: false,
+        }).map((entry) => entry.id)).not.toContain('board');
+
+        expect(resolveSessionCockpitMobileCatalog({
+            terminalTabAvailable: false,
+            boardFeatureEnabled: true,
+        }).map((entry) => entry.id)).toContain('board');
+    });
+
+    it('publishes the Companion destination only through the same exact-Home Board decision', () => {
+        // One Lane 08 decision owns both destinations: a missing or refused
+        // `sessions.board` answer hides Companion exactly like it hides Board,
+        // and a stale retained Companion route never reaches the navigator.
+        for (const input of [
+            { terminalTabAvailable: false },
+            { terminalTabAvailable: false, boardFeatureEnabled: false },
+        ] as const) {
+            const catalog = resolveSessionCockpitMobileCatalog(input);
+            expect(catalog.map((entry) => entry.id)).not.toContain('companion');
+            expect(resolveSessionCockpitMobileNavigatorSurfaces({ catalog }))
+                .not.toContain('companion');
+        }
+
+        const enabledCatalog = resolveSessionCockpitMobileCatalog({
+            terminalTabAvailable: false,
+            boardFeatureEnabled: true,
+        });
+        expect(enabledCatalog.map((entry) => entry.id)).toContain('companion');
+        expect(resolveSessionCockpitMobileNavigatorSurfaces({ catalog: enabledCatalog }))
+            .toContain('companion');
+    });
+
     it('keeps a plugin in host-owned discovery and reveals an explicitly pinned plugin in the inline cap', () => {
         const plugin = createMobilePluginPlacement({
             pluginId: 'acme.review',
@@ -52,6 +87,7 @@ describe('sessionCockpitMobileCatalog', () => {
         });
         const catalog = resolveSessionCockpitMobileCatalog({
             terminalTabAvailable: true,
+            boardFeatureEnabled: true,
             pluginPlacements: [plugin],
             projectionGeneration: 7,
         });
@@ -61,7 +97,9 @@ describe('sessionCockpitMobileCatalog', () => {
             'browse',
             'git',
             'tabs',
+            'companion',
             'navigation',
+            'board',
             'browser',
             'services',
             'plugin:acme.review:session-review',

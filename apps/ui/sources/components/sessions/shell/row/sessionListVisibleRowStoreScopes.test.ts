@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
 
 import {
     buildSessionListRuntimePriorityRowKeys,
@@ -15,6 +16,12 @@ import {
     type SessionListRowStoreSubscriptionScope,
 } from './sessionListVisibleRowStoreScopes';
 
+function rowKey(serverId: string, sessionId: string): string {
+    const key = buildSessionListServerScopedRowKey(serverId, sessionId);
+    if (!key) throw new Error('Expected a canonical Session row key');
+    return key;
+}
+
 describe('session list visible row store scopes', () => {
     it('keeps only priority subscriptions for large lists until viewability is known', () => {
         const scopes = Array.from({ length: 75 }, (_, index) => ({
@@ -25,7 +32,7 @@ describe('session list visible row store scopes', () => {
         expect(resolveSessionListRowStoreSubscriptionScopes(
             scopes,
             null,
-            new Set(['server-a\u0000s2', 'server-a\u0000s50']),
+            new Set([rowKey('server-a', 's2'), rowKey('server-a', 's50')]),
         )).toEqual([
             { serverId: 'server-a', sessionId: 's2' },
             { serverId: 'server-a', sessionId: 's50' },
@@ -51,7 +58,7 @@ describe('session list visible row store scopes', () => {
 
         expect(resolveSessionListRowStoreSubscriptionScopes(
             scopes,
-            new Set(['server-a\u0000s1', 'server-b\u0000s1']),
+            new Set([rowKey('server-a', 's1'), rowKey('server-b', 's1')]),
         )).toEqual([
             { serverId: 'server-a', sessionId: 's1' },
             { serverId: 'server-b', sessionId: 's1' },
@@ -59,7 +66,7 @@ describe('session list visible row store scopes', () => {
     });
 
     it('uses the unscoped session id when a row has no server id', () => {
-        expect(resolveSessionListRowStoreScopeKey({ sessionId: 's1', serverId: 'server-a' })).toBe('server-a\u0000s1');
+        expect(resolveSessionListRowStoreScopeKey({ sessionId: 's1', serverId: 'server-a' })).toBe(rowKey('server-a', 's1'));
         expect(resolveSessionListRowStoreScopeKey({ sessionId: 'local-session', serverId: null })).toBe('local-session');
     });
 
@@ -82,9 +89,9 @@ describe('session list visible row store scopes', () => {
     });
 
     it('reuses row subscription key sets when membership is unchanged', () => {
-        const previous = new Set(['server-a\u0000s1', 'server-a\u0000s2']);
-        const nextEquivalent = new Set(['server-a\u0000s2', 'server-a\u0000s1']);
-        const nextChanged = new Set(['server-a\u0000s1']);
+        const previous = new Set([rowKey('server-a', 's1'), rowKey('server-a', 's2')]);
+        const nextEquivalent = new Set([rowKey('server-a', 's2'), rowKey('server-a', 's1')]);
+        const nextChanged = new Set([rowKey('server-a', 's1')]);
 
         expect(reuseSessionListRowStoreKeySet(previous, nextEquivalent)).toBe(previous);
         expect(reuseSessionListRowStoreKeySet(previous, nextChanged)).toBe(nextChanged);
@@ -92,24 +99,24 @@ describe('session list visible row store scopes', () => {
     });
 
     it('reuses visible subscription keys when priority keys are already visible', () => {
-        const visibleKeys = new Set(['server-a\u0000s1', 'server-a\u0000s2']);
+        const visibleKeys = new Set([rowKey('server-a', 's1'), rowKey('server-a', 's2')]);
 
         expect(resolveSessionListRowStoreSubscriptionKeys(
             visibleKeys,
-            new Set(['server-a\u0000s2']),
+            new Set([rowKey('server-a', 's2')]),
         )).toBe(visibleKeys);
     });
 
     it('keeps bounded native lists on all rendered row subscriptions when viewability changes', () => {
         const twentyVisibleRowKeys = new Set(
-            Array.from({ length: 20 }, (_, index) => `server-a\u0000s${index + 1}`),
+            Array.from({ length: 20 }, (_, index) => rowKey('server-a', `s${index + 1}`)),
         );
 
         expect(resolveSessionListRowStoreSubscriptionKeysForViewport({
             platformOS: 'ios',
             renderedSessionRows: 145,
             nativeAllRenderedMaxRows: 200,
-            visibleRowKeys: new Set(['server-a\u0000s1']),
+            visibleRowKeys: new Set([rowKey('server-a', 's1')]),
         })).toBeNull();
         expect(resolveSessionListRowStoreSubscriptionKeysForViewport({
             platformOS: 'ios',
@@ -132,7 +139,7 @@ describe('session list visible row store scopes', () => {
         expect(resolveSessionListRowStoreSubscriptionItems(
             items,
             null,
-            new Set(['server-a\u0000s2', 'server-a\u0000s50']),
+            new Set([rowKey('server-a', 's2'), rowKey('server-a', 's50')]),
         )).toEqual([
             { type: 'session', serverId: 'server-a', sessionId: 's2' },
             { type: 'session', serverId: 'server-a', sessionId: 's50' },
@@ -159,7 +166,7 @@ describe('session list visible row store scopes', () => {
 
         expect(resolveSessionListRowStoreSubscriptionItems(
             items,
-            new Set(['server-a\u0000s1', 'server-b\u0000s1']),
+            new Set([rowKey('server-a', 's1'), rowKey('server-b', 's1')]),
         )).toEqual([
             { type: 'session', serverId: 'server-a', sessionId: 's1' },
             { type: 'session', serverId: 'server-b', sessionId: 's1' },
@@ -178,13 +185,25 @@ describe('session list visible row store scopes', () => {
 
         expect(resolveSessionListRowStoreSubscriptionItems(
             items,
-            new Set(['server-a\u0000visible']),
+            new Set([rowKey('server-a', 'visible')]),
             priorityKeys,
         )).toEqual([
             { type: 'session', serverId: 'server-a', sessionId: 'visible' },
             { type: 'session', serverId: 'server-a', sessionId: 'working', workingPlacementReason: 'working' },
             { type: 'session', serverId: 'server-a', sessionId: 'ready', attentionPlacementReason: 'ready' },
         ]);
+    });
+
+    it('prioritizes only the exact selected Home when session ids collide', () => {
+        const items = [
+            { type: 'session', serverId: 'server-a', sessionId: 'shared-session' },
+            { type: 'session', serverId: 'server-b', sessionId: 'shared-session' },
+        ] satisfies ReadonlyArray<SessionListIndexItem>;
+
+        expect(buildSessionListRowStorePriorityKeys(items, {
+            selectedSessionId: 'shared-session',
+            selectedSessionServerId: 'server-b',
+        })).toEqual(new Set([rowKey('server-b', 'shared-session')]));
     });
 
     it('derives offscreen runtime-priority keys from row state without treating unread-only rows as priority', () => {
@@ -227,17 +246,17 @@ describe('session list visible row store scopes', () => {
         }, nowMs);
 
         expect(runtimePriorityKeys).toEqual(new Set([
-            'server-a\u0000active',
-            'server-a\u0000thinking',
-            'server-a\u0000in-progress',
-            'server-a\u0000permission',
-            'server-a\u0000action',
-            'server-a\u0000runtime-issue',
-            'server-a\u0000background',
+            rowKey('server-a', 'active'),
+            rowKey('server-a', 'thinking'),
+            rowKey('server-a', 'in-progress'),
+            rowKey('server-a', 'permission'),
+            rowKey('server-a', 'action'),
+            rowKey('server-a', 'runtime-issue'),
+            rowKey('server-a', 'background'),
         ]));
         expect(resolveSessionListRowStoreSubscriptionItems(
             items,
-            new Set(['server-a\u0000visible']),
+            new Set([rowKey('server-a', 'visible')]),
             runtimePriorityKeys,
         )).toEqual([
             { type: 'session', serverId: 'server-a', sessionId: 'visible' },

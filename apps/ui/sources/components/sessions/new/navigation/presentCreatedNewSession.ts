@@ -1,5 +1,3 @@
-import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
-
 import { getAgentCore, isBundledAgentId, resolveAgentIdFromFlavor } from '@/agents/catalog/catalog';
 import { actionOperationPresentationCoordinator } from '@/components/inbox/actionOperations/actionOperationPresentationRuntime';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
@@ -9,6 +7,7 @@ import {
 } from '@/sync/domains/messages/outgoingUserMessage';
 import type { ModelMode, PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import { storage } from '@/sync/domains/state/storage';
+import type { QualifiedActionOperation } from '@/sync/domains/actionOperations/qualifiedActionOperation';
 import { sync } from '@/sync/sync';
 import {
     isCreatedSessionUnavailableLocally,
@@ -35,7 +34,7 @@ export function projectAcceptedNewSessionFirstTurn(params: Readonly<{
     const agentId = sessionAgentId ?? params.fallbackAgentId ?? null;
     const modelMode = session?.modelMode
         || params.fallbackModelMode
-        || (agentId && isBundledAgentId(agentId) ? getAgentCore(agentId).model.defaultMode : null)
+        || (agentId && isBundledAgentId(agentId) ? getAgentCore(agentId).model?.defaultMode : null)
         || 'default';
     const permissionMode = session?.permissionMode || params.fallbackPermissionMode || 'default';
     const rawRecord = buildOutgoingUserTextRecord({
@@ -68,12 +67,13 @@ export function projectAcceptedNewSessionFirstTurn(params: Readonly<{
 export async function presentCreatedNewSession(params: Readonly<{
     sessionId: string;
     serverId: string;
+    accountId: string;
     requestId: string;
     router: CreatedNewSessionRouter;
     href?: string | null;
     isStillActive?: () => boolean;
     prepareDestination?: () => void;
-    operation?: ActionOperationSnapshotV1;
+    operation?: QualifiedActionOperation;
 }>): Promise<PresentCreatedNewSessionResult> {
     try {
         await requireSpawnedSessionVisibleForRoute({
@@ -104,10 +104,10 @@ export async function presentCreatedNewSession(params: Readonly<{
             return 'session';
         },
     });
-    if (params.operation) {
-        actionOperationPresentationCoordinator.acknowledgeRequestPresented(params.requestId, params.operation);
-    } else {
-        actionOperationPresentationCoordinator.acknowledgeRequestPresented(params.requestId);
-    }
+    actionOperationPresentationCoordinator.acknowledgeRequestPresented({
+        serverId: params.serverId,
+        accountId: params.accountId,
+        requestId: params.requestId,
+    }, params.operation);
     return 'opened';
 }

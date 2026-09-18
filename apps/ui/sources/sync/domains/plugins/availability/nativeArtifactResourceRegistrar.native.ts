@@ -1,14 +1,34 @@
 import { requireNativeModule } from 'expo-modules-core';
 
+import { encodeBase64 } from '@happier-dev/protocol';
+
 import type {
     PluginNativeArtifactResourceRegistrar,
     PluginNativeArtifactResourceProfileIsolationCapability,
     PluginNativeArtifactResourceRegistrationResult,
 } from './nativeArtifactResource';
 
+type ArtifactRegistrationInput = Parameters<PluginNativeArtifactResourceRegistrar['register']>[0];
+type PersistentArtifactRegistrationStorage = Extract<
+    ArtifactRegistrationInput['storage'],
+    Readonly<{ kind: 'persistent' }>
+>;
+type NativeArtifactRegistrationStorage =
+    | PersistentArtifactRegistrationStorage
+    | Readonly<{
+        kind: 'currentLoad';
+        resources: readonly Readonly<{
+            resourceId: string;
+            digest: string;
+            byteSize: number;
+            bytesBase64: string;
+        }>[];
+    }>;
 type NativeArtifactRegistrarModule = Readonly<{
     registerArtifact?: (
-        input: Parameters<PluginNativeArtifactResourceRegistrar['register']>[0],
+        input: Omit<ArtifactRegistrationInput, 'storage'> & Readonly<{
+            storage: NativeArtifactRegistrationStorage;
+        }>,
     ) => Promise<unknown>;
     /** Expo `Function`, not `AsyncFunction`: revocation must acknowledge now. */
     unregisterArtifact?: (token: string) => unknown;
@@ -88,7 +108,22 @@ export function createExpoPluginNativeArtifactResourceRegistrar(): PluginNativeA
             const module = getNativeModule();
             if (!module?.registerArtifact) return registrationFailed;
             try {
-                return readRegistrationResult(await module.registerArtifact(input));
+                return readRegistrationResult(await module.registerArtifact({
+                    token: input.token,
+                    storagePartitionId: input.storagePartitionId,
+                    storage: input.storage.kind === 'persistent'
+                        ? input.storage
+                        : Object.freeze({
+                            kind: 'currentLoad' as const,
+                            resources: Object.freeze(input.storage.resources.map((resource) => Object.freeze({
+                                resourceId: resource.resourceId,
+                                digest: resource.digest,
+                                byteSize: resource.byteSize,
+                                bytesBase64: encodeBase64(resource.bytes, 'base64'),
+                            }))),
+                        } satisfies NativeArtifactRegistrationStorage),
+                    policyTable: input.policyTable,
+                }));
             } catch {
                 return registrationFailed;
             }

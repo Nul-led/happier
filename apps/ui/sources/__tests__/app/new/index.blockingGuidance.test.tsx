@@ -13,7 +13,13 @@ const mockState = vi.hoisted(() => ({
     localSearchParams: {
         dataId: 'draft-data-id',
         draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
-    } as { dataId?: string; spawnServerId?: string; draftId?: string },
+    } as {
+        dataId?: string;
+        spawnServerId?: string;
+        draftId?: string;
+        draftServerId?: string;
+        draftAccountId?: string;
+    },
     serverListeners: new Set<() => void>(),
     guidanceModelListeners: new Set<() => void>(),
     guidanceKind: 'connect_machine' as 'connect_machine' | 'select_session',
@@ -23,6 +29,12 @@ const mockState = vi.hoisted(() => ({
     wizardRenders: 0,
     portalScopeRenders: 0,
     draftScopeEnabled: false,
+    requestedDraftScope: null as { serverId: string; accountId: string } | null,
+    draftReadScopes: [] as Array<{ serverId: string; accountId: string }>,
+    draftDeleteCalls: [] as Array<Readonly<{
+        scope: { serverId: string; accountId: string };
+        address: { kind: 'newSession'; draftId: string };
+    }>>,
     routerPush: vi.fn(),
     routerReplace: vi.fn(),
     routerSetParams: vi.fn(),
@@ -88,6 +100,9 @@ vi.mock('@/sync/store/hooks', () => ({
         serverSelectionActiveTargetKind: 'server',
         serverSelectionActiveTargetId: mockState.serverId,
     }),
+    useSetting: (key: string) => key === 'newSessionDraftEntryMode' ? 'alwaysFresh' : null,
+    useSettingMutable: () => [null, vi.fn()],
+    useLocalSettingMutable: () => [null, vi.fn()],
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -133,24 +148,75 @@ vi.mock('expo-router', async () => {
     return expoRouterMock.module;
 });
 
-vi.mock('@/sync/domains/state/persistence', () => ({
-    loadNewSessionDraft: () => {
-        if (!mockState.persistedDraft) {
-            return null;
-        }
-        return mockState.persistedDraft;
-    },
+vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
+    useServerCredentialAccountScopeResolution: (serverId: string | null | undefined) => (
+        serverId && mockState.requestedDraftScope?.serverId === serverId
+            ? { kind: 'bound', scope: mockState.requestedDraftScope }
+            : { kind: 'unknown_home' }
+    ),
+    useServerCredentialAccountScopeBindings: (serverIds: readonly string[]) => new Map(
+        serverIds.flatMap((serverId) => (
+            mockState.requestedDraftScope?.serverId === serverId
+                ? [[serverId, {
+                    scope: mockState.requestedDraftScope,
+                    isCurrent: () => true,
+                    serverId,
+                    accountId: mockState.requestedDraftScope.accountId,
+                    revision: 1,
+                }] as const]
+                : []
+        )),
+    ),
+}));
+
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>()),
+    getServerProfileById: (serverId: string) => ({ id: serverId, serverUrl: `https://${serverId}.test` }),
+}));
+
+vi.mock('@/sync/http/client', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/http/client')>()),
+    createServerFetchAtEndpoint: () => vi.fn(),
+}));
+
+vi.mock('@/sync/ops/sessionDrafts/runWithSessionDraftRepositoryScopedRuntime', () => ({
+    runWithSessionDraftRepositoryScopedRuntime: async ({ binding, operation }: {
+        binding: { scope: { serverId: string; accountId: string }; isCurrent: () => boolean };
+        operation: (input: unknown) => Promise<unknown>;
+    }) => operation({ scope: binding.scope, runtime: {}, isCurrent: binding.isCurrent }),
 }));
 
 vi.mock('@/sync/ops/sessionDrafts/sessionDraftRepository', () => ({
-    getSessionDraftSnapshot: () => mockState.persistedDraft,
+    getSessionDraftSnapshot: (scope: { serverId: string; accountId: string }) => {
+        mockState.draftReadScopes.push(scope);
+        return mockState.persistedDraft;
+    },
     subscribeSessionDraft: () => () => {},
-    deleteSessionDraft: vi.fn(async () => {}),
+    deleteSessionDraft: vi.fn(async (input: Readonly<{
+        scope: { serverId: string; accountId: string };
+        address: { kind: 'newSession'; draftId: string };
+    }>) => {
+        mockState.draftDeleteCalls.push(input);
+        return true;
+    }),
+    deleteSessionDraftWithScopedRuntime: vi.fn(async (input: Readonly<{
+        scope: { serverId: string; accountId: string };
+        address: { kind: 'newSession'; draftId: string };
+    }>) => {
+        mockState.draftDeleteCalls.push({ scope: input.scope, address: input.address });
+        return true;
+    }),
 }));
 
 vi.mock('@/sync/domains/actionOperations/useActionOperations', () => ({
     useAllActionOperations: () => [],
+    readAllActionOperations: () => [],
 }));
+
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: { confirm: async () => true } }).module;
+});
 
 vi.mock('@/components/sessions/new/modules/newSessionDraftLaunchCustody', () => ({
     isNewSessionDraftLaunchInCustody: () => false,
@@ -158,6 +224,11 @@ vi.mock('@/components/sessions/new/modules/newSessionDraftLaunchCustody', () => 
 
 vi.mock('@/components/sessions/drafts/SessionDraftConflictResolution', () => ({
     SessionDraftConflictResolution: () => React.createElement('ConflictNotice', { testID: 'draft-conflict-notice' }),
+    useSessionDraftConflictComposerBanner: () => ({ collapsed: false }),
+}));
+
+vi.mock('@/components/sessions/composerBanners/ComposerBannerCollapseProvider', () => ({
+    ComposerBannerCollapseProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
 vi.mock('@/components/sessions/drafts/NewSessionDraftComposerActions', () => ({
@@ -182,6 +253,7 @@ vi.mock('@/components/sessions/drafts/NewSessionDraftComposerActions', () => ({
 
 vi.mock('@/components/ui/icons/Icon', () => ({
     Icon: (props: Record<string, unknown>) => React.createElement('Icon', props),
+    ICON_SIZE: { xs: 14, sm: 16, md: 18, lg: 20, xl: 24 },
 }));
 
 vi.mock('@/components/ui/text/Text', () => ({
@@ -260,15 +332,21 @@ afterEach(() => {
     mockState.guidanceKind = 'connect_machine';
     mockState.shouldBlockNewSession = true;
     mockState.resolvedTargetServerId = undefined;
-    mockState.localSearchParams = {
+    for (const key of Object.keys(mockState.localSearchParams)) {
+        delete mockState.localSearchParams[key as keyof typeof mockState.localSearchParams];
+    }
+    Object.assign(mockState.localSearchParams, {
         dataId: 'draft-data-id',
         draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
-    };
+    });
     mockState.guidanceHookCalls = 0;
     mockState.newSessionBlockHookCalls = 0;
     mockState.wizardRenders = 0;
     mockState.portalScopeRenders = 0;
     mockState.draftScopeEnabled = false;
+    mockState.requestedDraftScope = null;
+    mockState.draftReadScopes = [];
+    mockState.draftDeleteCalls = [];
     mockState.routerPush.mockReset();
     mockState.routerReplace.mockReset();
     mockState.routerSetParams.mockReset();
@@ -392,7 +470,58 @@ describe('/new (blocking guidance)', () => {
             pathname: '/new',
             params: {
                 draftId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
+                draftOrigin: 'ordinary',
             },
         });
+    });
+
+    it('reopens and deletes a waiting draft through its route-qualified inactive Home Account', async () => {
+        const draftId = '8e0a5dd1-b1df-43dd-b51e-b7787b30362e';
+        mockState.draftScopeEnabled = true;
+        mockState.shouldBlockNewSession = false;
+        mockState.serverId = 'home-a';
+        mockState.requestedDraftScope = { serverId: 'home-b', accountId: 'account-b' };
+        for (const key of Object.keys(mockState.localSearchParams)) {
+            delete mockState.localSearchParams[key as keyof typeof mockState.localSearchParams];
+        }
+        Object.assign(mockState.localSearchParams, {
+            draftId,
+            spawnServerId: 'home-b',
+            draftServerId: 'home-b',
+            draftAccountId: 'account-b',
+        });
+        mockState.persistedDraft = {
+            address: { kind: 'newSession', draftId },
+            document: {
+                v: 2,
+                composer: {
+                    text: { mutationId: 'text-1', value: 'Waiting for computer' },
+                    mentions: { mutationId: 'mentions-1', value: [] },
+                    attachments: { mutationId: 'attachments-1', value: [] },
+                },
+                target: { kind: 'newSession', authoring: {} },
+                extensions: {},
+            },
+            status: 'clean',
+            conflict: null,
+            createdAt: 1,
+            updatedAt: 2,
+            materialized: true,
+            deleteWhenEmpty: false,
+            localSupplement: {},
+        };
+
+        const Screen = (await import('@/app/(app)/new')).default;
+        const screen = await renderScreen(React.createElement(Screen));
+
+        expect(mockState.draftReadScopes).toContainEqual({ serverId: 'home-b', accountId: 'account-b' });
+        expect(mockState.draftReadScopes).not.toContainEqual({ serverId: 'home-a', accountId: 'account-1' });
+
+        await pressTestInstanceAsync(screen.findByProps({ testID: 'new-session-draft-delete' }));
+
+        expect(mockState.draftDeleteCalls).toEqual([{
+            scope: { serverId: 'home-b', accountId: 'account-b' },
+            address: { kind: 'newSession', draftId },
+        }]);
     });
 });

@@ -134,6 +134,27 @@ describe('rightSidebarTabRegistry', () => {
         ]);
     });
 
+    it('publishes the Board destination only from the exact-Home feature decision, including an empty Board', () => {
+        expect(resolveRightSidebarTabs({
+            scope: 'session',
+            terminalTabAvailable: false,
+            boardFeatureEnabled: false,
+        }).map((tab) => tab.id)).not.toContain('board');
+
+        expect(resolveRightSidebarTabs({
+            scope: 'session',
+            terminalTabAvailable: false,
+            boardFeatureEnabled: true,
+        }).map((tab) => tab.id)).toEqual([
+            'git',
+            'files',
+            'agents',
+            'navigation',
+            'board',
+            'services',
+        ]);
+    });
+
     it('orders project built-in tabs without session-only entries', () => {
         // Browser is mobile-only after D1; desktop drops it, mobile keeps it.
         expect(resolveRightSidebarTabs({

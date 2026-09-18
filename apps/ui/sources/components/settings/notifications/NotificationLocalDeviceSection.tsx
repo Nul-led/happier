@@ -94,6 +94,21 @@ export function NotificationLocalDeviceSection({
                 showChevron={false}
             />
             <Item
+                title={t('settingsNotifications.local.requestPreviewTitle')}
+                subtitle={t('settingsNotifications.local.requestPreviewSubtitle')}
+                icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
+                rightElement={(
+                    <Switch
+                        value={localNotifications.requestPreviewBehavior !== 'status_only'}
+                        disabled={disabled || (localNotifications.events.permission_request === false && localNotifications.events.user_action_request === false)}
+                        onValueChange={(value) => setLocalNotifications({
+                            requestPreviewBehavior: Boolean(value) ? 'account' : 'status_only',
+                        })}
+                    />
+                )}
+                showChevron={false}
+            />
+            <Item
                 title={t('settingsNotifications.local.permissionRequestsTitle')}
                 subtitle={t('settingsNotifications.local.permissionRequestsSubtitle')}
                 icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}

@@ -1,5 +1,7 @@
 import type { LiveActivityApnsPriority, LiveActivityApnsTemplate } from '@happier-dev/protocol';
 
+import { isUrgentSessionListAttentionState } from '@/sync/domains/session/listing/deriveSessionListActivity';
+
 import type { LiveActivitySnapshot } from './buildLiveActivitySnapshots';
 import type { LiveActivityAuthorizationDiagnostics } from './readLiveActivityAuthorizationDiagnostics';
 
@@ -58,16 +60,12 @@ export function resolveLiveActivityRuntimeDiagnostics(params: Readonly<{
     };
 }
 
-function isUrgentAttentionState(attentionState: LiveActivitySnapshot['attentionState']): boolean {
-    return attentionState === 'permission_required' || attentionState === 'action_required';
-}
-
 export function resolveLiveActivityUpdateBudget(params: Readonly<{
     attentionState: LiveActivitySnapshot['attentionState'];
     runtimeVisibility: LiveActivityRuntimeVisibility;
     frequentUpdates?: LiveActivityAuthorizationDiagnostics['frequentUpdates'];
 }>): LiveActivityUpdateBudget {
-    const urgent = isUrgentAttentionState(params.attentionState);
+    const urgent = isUrgentSessionListAttentionState(params.attentionState);
     const urgentPriorityAllowed = params.frequentUpdates !== 'disabled';
 
     return {

@@ -65,10 +65,11 @@ export type SessionOpenLatchArmInput = Readonly<{
     sessionId: string;
     shouldFollowBottom: boolean;
     /**
-     * Hard bound on the whole web open phase: past `nowMs + delay`, the phase
-     * completes ('done') regardless of fill settlement, ending open-lifecycle
-     * authority. A starved settlement (aborted, failed, or hung fill
-     * executor) must not leave the open phase live forever. Ignored on native
+     * Bounds web positioning once its initial fill has started. Past `nowMs +
+     * delay`, a loaded entry completes ('done') regardless of fill settlement,
+     * ending open-lifecycle authority. An idle fill still waits for its first
+     * data/layout facts; a deadline is not data readiness. A starved settlement
+     * (aborted, failed, or hung fill executor) must not leave the open phase live forever. Ignored on native
      * (paint deadline owns that path).
      */
     webOpenPhaseDeadlineDelayMs: number;

@@ -1,9 +1,14 @@
 import * as React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { describe, expect, it } from 'vitest';
-import type { SessionChangeSet, TurnChangeSet } from '@happier-dev/protocol';
+import { mergeTurnChangeSets, type SessionChangeSet, type TurnChangeSet } from '@happier-dev/protocol';
 
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
+import type { Message } from '@/sync/domains/messages/messageTypes';
+import { filterPresentableSessionAttributedFiles } from '@/scm/scmAttribution';
+import { deriveTurnChangeSetsFromMessages } from '@/sync/domains/session/changes/derivation/deriveTurnChangeSetsFromMessages';
+import { buildTurnChangeSetDiffInput } from '../../../../../cli/src/agent/tools/diff/buildTurnChangeSetDiffInput';
+import { projectRepositoryCheckpointTurnChangeSet } from '../../../../../cli/src/scm/checkpoints/projection';
 
 import { useChangedFilesData, type UseChangedFilesDataResult } from './useChangedFilesData';
 import { renderScreen } from '@/dev/testkit';
@@ -72,11 +77,15 @@ function makeProviderChangeSet(filePath: string): SessionChangeSet {
             confidence: 'exact',
             provider: 'codex',
             turns: ['turn_1'],
+            attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+            checkpointOverlap: 'unknown',
         }],
         rolledBackTurnIds: [],
         confidenceSummary: {
             source: 'provider_native',
             confidence: 'exact',
+            attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+            checkpointOverlap: 'unknown',
         },
     };
 }
@@ -128,6 +137,68 @@ function makeMixedTurnChangeSet(): TurnChangeSet {
 }
 
 describe('useChangedFilesData', () => {
+    it('projects one real provider/checkpoint turn identically through mounted list, review, and right-panel adapters', async () => {
+        const projected = projectRepositoryCheckpointTurnChangeSet({
+            providerTurnChangeSet: {
+                sessionId: 's1', turnId: 'turn-composed', seqRange: { startSeqInclusive: 1, endSeqInclusive: 3 },
+                status: 'completed', provider: 'codex', derivedAt: 2,
+                files: [{
+                    filePath: 'src/a.ts', changeKind: 'modified', unifiedDiff: 'provider diff',
+                    source: 'provider_tool', confidence: 'strong', provider: 'codex',
+                    agentTurnId: 'provider-turn-composed', providerMessageId: 'provider-message-composed',
+                }],
+            },
+            checkpointDiff: {
+                success: true, kind: 'diff', baseRefSource: 'turn_start', contentConfidence: 'exact',
+                attributionScope: 'shared_worktree', receipts: [{ id: 'checkpoint.diff_computed' }],
+                files: [{
+                    filePath: 'src/a.ts', changeKind: 'modified', unifiedDiff: 'checkpoint diff', binary: false,
+                    source: 'scm_checkpoint', confidence: 'exact', provider: 'scm:git',
+                }],
+            },
+            scopeId: 's1:/repo', startRef: 'refs/happier/start', finalRef: 'refs/happier/final',
+        });
+        const message: Message = {
+            kind: 'tool-call', id: 'canonical-diff', localId: null, createdAt: 2, children: [],
+            tool: {
+                name: 'Diff', state: 'completed',
+                input: buildTurnChangeSetDiffInput({ turnChangeSet: projected, protocol: 'codex', rawToolName: 'RepositoryCheckpointDiff' }),
+                createdAt: 2, startedAt: 2, completedAt: 3, description: null, result: { status: 'completed' },
+            },
+        };
+        const turns = deriveTurnChangeSetsFromMessages([message]);
+        const sessionChangeSet = mergeTurnChangeSets({ sessionId: 's1', turns });
+        let latest: UseChangedFilesDataResult | null = null;
+        function Test() {
+            latest = useChangedFilesData({
+                sessionId: 's1', scmSnapshot: makeSnapshot(), workspaceTouchedPaths: [], searchQuery: '',
+                showAllRepositoryFiles: false, latestTurnEvidence: turns[0], sessionChangeSet,
+            });
+            return null;
+        }
+        const screen = await renderScreen(<Test />);
+        if (!latest) throw new Error('Expected hook result');
+
+        // These are the actual non-directory adapters used by the mounted list, review, and right panel.
+        const listModel = filterPresentableSessionAttributedFiles(latest.turnAttributedFiles);
+        const reviewModel = filterPresentableSessionAttributedFiles(latest.turnAttributedFiles);
+        const rightPanelModel = filterPresentableSessionAttributedFiles(latest.turnAttributedFiles);
+        expect(listModel).toEqual(reviewModel);
+        expect(reviewModel).toEqual(rightPanelModel);
+        expect(listModel[0]).toMatchObject({
+            content: { source: 'scm_checkpoint', confidence: 'exact' },
+            attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+            checkpointOverlap: 'observed',
+            evidence: expect.arrayContaining([
+                expect.objectContaining({ source: 'provider_tool', agentTurnId: 'provider-turn-composed' }),
+                expect.objectContaining({ source: 'scm_checkpoint' }),
+            ]),
+        });
+        expect(listModel[0]?.evidence).toBe(reviewModel[0]?.evidence);
+        expect(reviewModel[0]?.evidence).toBe(rightPanelModel[0]?.evidence);
+        act(() => screen.tree.unmount());
+    });
+
     it('can skip attribution computation for repository-only surfaces', async () => {
         let latest: UseChangedFilesDataResult | null = null;
 
@@ -135,18 +206,7 @@ describe('useChangedFilesData', () => {
             latest = useChangedFilesData({
                 sessionId: 's1',
                 scmSnapshot: makeSnapshot(),
-                touchedPaths: ['src/a.ts'],
-                operationLog: [
-                    {
-                        id: 'log-1',
-                        sessionId: 's1',
-                        operation: 'stage',
-                        status: 'success',
-                        timestamp: 1,
-                        path: 'src/a.ts',
-                    },
-                ],
-                projectSessionIds: ['s1'],
+                workspaceTouchedPaths: ['src/a.ts'],
                 searchQuery: '',
                 showAllRepositoryFiles: false,
                 computeAttribution: false,
@@ -165,22 +225,19 @@ describe('useChangedFilesData', () => {
         expect(result.showSessionViewToggle).toBe(false);
         expect(result.sessionAttributedFiles).toHaveLength(0);
         expect(result.repositoryOnlyFiles).toHaveLength(1);
-        expect(result.suppressedInferredCount).toBe(0);
         act(() => {
             root!.unmount();
         });
     });
 
-    it('includes inferred session attribution when reliability is high', async () => {
+    it('keeps workspace fallback visible and explicitly limited', async () => {
         let latest: UseChangedFilesDataResult | null = null;
 
         function Test() {
             latest = useChangedFilesData({
                 sessionId: 's1',
                 scmSnapshot: makeSnapshot(),
-                touchedPaths: ['src/a.ts'],
-                operationLog: [],
-                projectSessionIds: ['s1'],
+                workspaceTouchedPaths: ['src/a.ts'],
                 searchQuery: '',
                 showAllRepositoryFiles: false,
             });
@@ -195,88 +252,16 @@ describe('useChangedFilesData', () => {
             throw new Error('Expected hook result');
         }
         const result: UseChangedFilesDataResult = latest;
-        expect(result.attributionReliability).toBe('high');
+        expect(result.sessionAttribution).toEqual({ confidence: 'session_possible', reason: 'workspace_touched_path' });
         expect(result.shouldShowAllFiles).toBe(false);
         expect(result.showSessionViewToggle).toBe(true);
         expect(result.sessionAttributedFiles).toHaveLength(1);
-        expect(result.sessionAttributedFiles[0]?.confidence).toBe('inferred');
-        expect(result.suppressedInferredCount).toBe(0);
-        act(() => {
-            root!.unmount();
+        expect(result.sessionAttributedFiles[0]).toMatchObject({
+            content: { source: 'inferred', confidence: 'best_effort' },
+            attribution: { confidence: 'session_possible', reason: 'workspace_touched_path' },
+            checkpointOverlap: 'unknown',
+            evidence: [{ source: 'inferred', provider: 'workspace' }],
         });
-    });
-
-    it('suppresses inferred attribution when multiple sessions are active', async () => {
-        let latest: UseChangedFilesDataResult | null = null;
-
-        function Test() {
-            latest = useChangedFilesData({
-                sessionId: 's1',
-                scmSnapshot: makeSnapshot(),
-                touchedPaths: ['src/a.ts'],
-                operationLog: [],
-                projectSessionIds: ['s1', 's2'],
-                searchQuery: '',
-                showAllRepositoryFiles: false,
-            });
-            return null;
-        }
-
-        let root: renderer.ReactTestRenderer;
-        root = (await renderScreen(<Test />)).tree;
-
-        expect(latest).not.toBeNull();
-        if (!latest) {
-            throw new Error('Expected hook result');
-        }
-        const result: UseChangedFilesDataResult = latest;
-        expect(result.attributionReliability).toBe('limited');
-        expect(result.showSessionViewToggle).toBe(false);
-        expect(result.sessionAttributedFiles).toHaveLength(0);
-        expect(result.repositoryOnlyFiles).toHaveLength(1);
-        expect(result.suppressedInferredCount).toBe(1);
-        act(() => {
-            root!.unmount();
-        });
-    });
-
-    it('does not expose session scope for commit selection operations in limited mode', async () => {
-        let latest: UseChangedFilesDataResult | null = null;
-
-        function Test() {
-            latest = useChangedFilesData({
-                sessionId: 's1',
-                scmSnapshot: makeSnapshot(),
-                touchedPaths: ['src/a.ts'],
-                operationLog: [
-                    {
-                        id: 'log-1',
-                        sessionId: 's1',
-                        operation: 'stage',
-                        status: 'success',
-                        timestamp: 1,
-                        path: 'src/a.ts',
-                    },
-                ],
-                projectSessionIds: ['s1', 's2'],
-                searchQuery: '',
-                showAllRepositoryFiles: false,
-            });
-            return null;
-        }
-
-        let root: renderer.ReactTestRenderer;
-        root = (await renderScreen(<Test />)).tree;
-
-        expect(latest).not.toBeNull();
-        if (!latest) {
-            throw new Error('Expected hook result');
-        }
-        const result: UseChangedFilesDataResult = latest;
-        expect(result.attributionReliability).toBe('limited');
-        expect(result.showSessionViewToggle).toBe(false);
-        expect(result.sessionAttributedFiles).toHaveLength(0);
-        expect(result.repositoryOnlyFiles.map((entry) => entry.fullPath)).toEqual(['src/a.ts']);
         act(() => {
             root!.unmount();
         });
@@ -297,11 +282,15 @@ describe('useChangedFilesData', () => {
                 confidence: 'exact',
                 provider: 'codex',
                 turns: ['turn_1'],
+            attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+            checkpointOverlap: 'unknown',
             }],
             rolledBackTurnIds: [],
             confidenceSummary: {
                 source: 'provider_native',
                 confidence: 'exact',
+            attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+            checkpointOverlap: 'unknown',
             },
         };
 
@@ -309,9 +298,7 @@ describe('useChangedFilesData', () => {
             latest = useChangedFilesData({
                 sessionId: 's1',
                 scmSnapshot: makeSnapshot(),
-                touchedPaths: [],
-                operationLog: [],
-                projectSessionIds: ['s1', 's2'],
+                workspaceTouchedPaths: [],
                 searchQuery: '',
                 showAllRepositoryFiles: false,
                 sessionChangeSet,
@@ -326,7 +313,7 @@ describe('useChangedFilesData', () => {
         if (!latest) throw new Error('Expected hook result');
         const result: UseChangedFilesDataResult = latest;
         expect(result.sessionAttributedFiles).toHaveLength(1);
-        expect(result.sessionAttributedFiles[0]?.confidence).toBe('high');
+        expect(result.sessionAttributedFiles[0]?.attribution.confidence).toBe('session_exact');
         expect(result.repositoryOnlyFiles).toHaveLength(0);
         expect(result.showSessionViewToggle).toBe(true);
         act(() => {
@@ -349,11 +336,15 @@ describe('useChangedFilesData', () => {
                 confidence: 'exact',
                 provider: 'codex',
                 turns: ['turn_2'],
+                attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+                checkpointOverlap: 'unknown',
             }],
             rolledBackTurnIds: [],
             confidenceSummary: {
                 source: 'provider_native',
                 confidence: 'exact',
+            attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+            checkpointOverlap: 'unknown',
             },
         };
 
@@ -361,9 +352,7 @@ describe('useChangedFilesData', () => {
             latest = useChangedFilesData({
                 sessionId: 's1',
                 scmSnapshot: makeSnapshot(),
-                touchedPaths: [],
-                operationLog: [],
-                projectSessionIds: ['s1', 's2'],
+                workspaceTouchedPaths: [],
                 searchQuery: '',
                 showAllRepositoryFiles: false,
                 latestTurnChangeSet,
@@ -379,14 +368,14 @@ describe('useChangedFilesData', () => {
         const result: UseChangedFilesDataResult = latest;
         expect(result.showTurnViewToggle).toBe(true);
         expect(result.turnAttributedFiles).toHaveLength(1);
-        expect(result.turnAttributedFiles[0]?.confidence).toBe('high');
+        expect(result.turnAttributedFiles[0]?.attribution.confidence).toBe('session_exact');
         expect(result.turnRepositoryOnlyFiles).toHaveLength(0);
         act(() => {
             root!.unmount();
         });
     });
 
-    it('hides provider-backed scoped views when they cannot be projected onto repository changes', async () => {
+    it('keeps canonical Session evidence reachable when it cannot be projected onto repository changes', async () => {
         let latest: UseChangedFilesDataResult | null = null;
         const unprojectableChangeSet = makeProviderChangeSet('src/not-currently-changed.ts');
 
@@ -394,9 +383,7 @@ describe('useChangedFilesData', () => {
             latest = useChangedFilesData({
                 sessionId: 's1',
                 scmSnapshot: makeSnapshot(),
-                touchedPaths: [],
-                operationLog: [],
-                projectSessionIds: ['s1', 's2'],
+                workspaceTouchedPaths: [],
                 searchQuery: '',
                 showAllRepositoryFiles: false,
                 latestTurnChangeSet: unprojectableChangeSet,
@@ -412,13 +399,58 @@ describe('useChangedFilesData', () => {
         if (!latest) throw new Error('Expected hook result');
         const result: UseChangedFilesDataResult = latest;
         expect(result.showTurnViewToggle).toBe(false);
-        expect(result.showSessionViewToggle).toBe(false);
+        expect(result.showSessionViewToggle).toBe(true);
         expect(result.turnAttributedFiles).toHaveLength(0);
-        expect(result.sessionAttributedFiles).toHaveLength(0);
+        expect(result.sessionAttributedFiles).toEqual([
+            expect.objectContaining({
+                file: expect.objectContaining({ fullPath: 'src/not-currently-changed.ts' }),
+                content: { source: 'provider_native', confidence: 'exact' },
+                attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+            }),
+        ]);
         expect(result.repositoryOnlyFiles.map((entry) => entry.fullPath)).toEqual(['src/a.ts']);
         act(() => {
             root!.unmount();
         });
+    });
+
+    it('retains original change statistics for bounded unmatched evidence', async () => {
+        let latest: UseChangedFilesDataResult | null = null;
+        const bounded = makeProviderChangeSet('src/bounded.ts');
+        const sessionChangeSet: SessionChangeSet = {
+            ...bounded,
+            files: bounded.files.map((file) => ({
+                ...file,
+                confidence: 'best_effort',
+                truncated: true,
+                stats: { unifiedDiffBytes: 900_000, addedLines: 4000, removedLines: 3000 },
+            })),
+            confidenceSummary: { ...bounded.confidenceSummary, confidence: 'best_effort' },
+        };
+
+        function Test() {
+            latest = useChangedFilesData({
+                sessionId: 's1',
+                scmSnapshot: makeSnapshot(),
+                workspaceTouchedPaths: [],
+                searchQuery: '',
+                showAllRepositoryFiles: false,
+                sessionChangeSet,
+            });
+            return null;
+        }
+
+        const root = (await renderScreen(<Test />)).tree;
+        if (!latest) throw new Error('Expected hook result');
+        expect((latest as UseChangedFilesDataResult).sessionAttributedFiles[0]).toMatchObject({
+            file: { fullPath: 'src/bounded.ts', linesAdded: 4000, linesRemoved: 3000 },
+            content: { confidence: 'best_effort' },
+            evidence: [expect.objectContaining({
+                truncated: true,
+                stats: { unifiedDiffBytes: 900_000, addedLines: 4000, removedLines: 3000 },
+            })],
+        });
+        act(() => root.unmount());
     });
 
     it('projects provider absolute paths under the repository root onto changed files', async () => {
@@ -428,9 +460,7 @@ describe('useChangedFilesData', () => {
             latest = useChangedFilesData({
                 sessionId: 's1',
                 scmSnapshot: makeSnapshot(),
-                touchedPaths: [],
-                operationLog: [],
-                projectSessionIds: ['s1', 's2'],
+                workspaceTouchedPaths: [],
                 searchQuery: '',
                 showAllRepositoryFiles: false,
                 latestTurnChangeSet: makeProviderChangeSet('/repo/src/a.ts'),
@@ -461,12 +491,9 @@ describe('useChangedFilesData', () => {
             latest = useChangedFilesData({
                 sessionId: 's1',
                 scmSnapshot: makeSnapshot(),
-                touchedPaths: [],
-                operationLog: [],
-                projectSessionIds: ['s1'],
+                workspaceTouchedPaths: [],
                 searchQuery: '',
                 showAllRepositoryFiles: false,
-                latestTurnChangeSet: makeProviderChangeSet('src/a.ts'),
                 latestTurnEvidence: makeMixedTurnChangeSet(),
             });
             return null;
@@ -483,10 +510,84 @@ describe('useChangedFilesData', () => {
         expect(result.turnAgentReportedFiles.map((entry) => entry.file.fullPath)).toEqual(['src/a.ts']);
         expect(result.turnCheckpointFiles.map((entry) => entry.file.fullPath)).toEqual(['src/a.ts']);
         expect(result.turnCheckpointMetadata?.attributionScope).toBe('shared_worktree');
+        expect(result.turnAttributedFiles[0]).toMatchObject({
+            content: { source: 'scm_checkpoint', confidence: 'exact' },
+            attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+            checkpointOverlap: 'observed',
+        });
+        expect(result.turnAttributedFiles[0]?.evidence.map((entry) => entry.source)).toEqual(['provider_native', 'scm_checkpoint']);
+        expect(result.turnCheckpointFiles[0]).toMatchObject({
+            content: { source: 'scm_checkpoint', confidence: 'exact' },
+            attribution: { confidence: 'session_possible', reason: 'checkpoint_overlap_observed' },
+            checkpointOverlap: 'observed',
+        });
+        expect(result.turnAgentReportedFiles[0]?.attribution.confidence).toBe('session_exact');
+        expect(result.turnCheckpointFiles[0]?.evidence.map((entry) => entry.source)).toEqual(['scm_checkpoint']);
 
         act(() => {
             root.unmount();
         });
+    });
+
+    it('keeps exact checkpoint content visible when Session attribution is unknown', async () => {
+        let latest: UseChangedFilesDataResult | null = null;
+        const mixed = makeMixedTurnChangeSet();
+        const turn: TurnChangeSet = {
+            ...mixed,
+            files: mixed.files.filter((file) => file.source === 'scm_checkpoint'),
+            repositoryCheckpoint: { ...mixed.repositoryCheckpoint!, attributionScope: 'unknown' },
+        };
+        function Test() {
+            latest = useChangedFilesData({
+                sessionId: 's1', scmSnapshot: makeSnapshot(), workspaceTouchedPaths: ['src/a.ts'],
+                searchQuery: '', showAllRepositoryFiles: false, latestTurnEvidence: turn,
+            });
+            return null;
+        }
+        const screen = await renderScreen(<Test />);
+        if (!latest) throw new Error('Expected hook result');
+        const result: UseChangedFilesDataResult = latest;
+        expect(result.showTurnViewToggle).toBe(true);
+        expect(result.turnAttributedFiles[0]).toMatchObject({
+            content: { source: 'scm_checkpoint', confidence: 'exact' },
+            attribution: { confidence: 'unknown', reason: 'unavailable' },
+            checkpointOverlap: 'unknown',
+        });
+        act(() => screen.tree.unmount());
+    });
+
+    it('uses raw checkpoint evidence instead of a plausible UI-local attribution override', async () => {
+        let latest: UseChangedFilesDataResult | null = null;
+        const mixed = makeMixedTurnChangeSet();
+        const rawCheckpointTurn: TurnChangeSet = {
+            ...mixed,
+            files: mixed.files.filter((file) => file.source === 'scm_checkpoint'),
+            repositoryCheckpoint: { ...mixed.repositoryCheckpoint!, attributionScope: 'unknown' },
+        };
+        const overriddenProjection = makeProviderChangeSet('src/a.ts');
+
+        function Test() {
+            latest = useChangedFilesData({
+                sessionId: 's1',
+                scmSnapshot: makeSnapshot(),
+                workspaceTouchedPaths: ['src/a.ts'],
+                searchQuery: '',
+                showAllRepositoryFiles: false,
+                latestTurnChangeSet: overriddenProjection,
+                latestTurnEvidence: rawCheckpointTurn,
+            });
+            return null;
+        }
+
+        const screen = await renderScreen(<Test />);
+        if (!latest) throw new Error('Expected hook result');
+        const result: UseChangedFilesDataResult = latest;
+        expect(result.turnAttributedFiles[0]).toMatchObject({
+            content: { source: 'scm_checkpoint', confidence: 'exact' },
+            attribution: { confidence: 'unknown', reason: 'unavailable' },
+            checkpointOverlap: 'unknown',
+        });
+        act(() => screen.tree.unmount());
     });
 
     it('keeps source-specific turn evidence visible when it is not present in the current snapshot', async () => {
@@ -517,9 +618,7 @@ describe('useChangedFilesData', () => {
             latest = useChangedFilesData({
                 sessionId: 's1',
                 scmSnapshot: makeSnapshot(),
-                touchedPaths: [],
-                operationLog: [],
-                projectSessionIds: ['s1'],
+                workspaceTouchedPaths: [],
                 searchQuery: '',
                 showAllRepositoryFiles: false,
                 latestTurnChangeSet: null,
@@ -558,6 +657,8 @@ describe('useChangedFilesData', () => {
                 confidence: 'strong',
                 provider: 'codex',
                 turns: ['turn_2'],
+                attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+                checkpointOverlap: 'unknown',
                 unifiedDiff: 'agent-only diff',
             }],
         };
@@ -566,9 +667,7 @@ describe('useChangedFilesData', () => {
             latest = useChangedFilesData({
                 sessionId: 's1',
                 scmSnapshot: makeSnapshot(),
-                touchedPaths: [],
-                operationLog: [],
-                projectSessionIds: ['s1'],
+                workspaceTouchedPaths: [],
                 searchQuery: '',
                 showAllRepositoryFiles: false,
                 latestTurnChangeSet,
@@ -622,9 +721,7 @@ describe('useChangedFilesData', () => {
             latest = useChangedFilesData({
                 sessionId: 's1',
                 scmSnapshot: makeSnapshot(),
-                touchedPaths: [],
-                operationLog: [],
-                projectSessionIds: ['s1'],
+                workspaceTouchedPaths: [],
                 searchQuery: '',
                 showAllRepositoryFiles: false,
                 latestTurnChangeSet: makeProviderChangeSet('src/a.ts'),

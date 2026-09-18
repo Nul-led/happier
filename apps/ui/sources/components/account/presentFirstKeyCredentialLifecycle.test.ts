@@ -160,62 +160,7 @@ describe('presentFirstKeyCredentialLifecycle', () => {
         expect(onFinishCompleted).toHaveBeenCalledTimes(1);
     });
 
-    it('activates the exact retained server before routing the default Finish action', async () => {
-        mocks.profiles = [{
-            id: 'server-b',
-            serverUrl:
-                'https://server-b.example.test',
-        }];
-        const presented =
-            presentFirstKeyCredentialLifecycle({
-                run: async () => ({
-                    kind:
-                        'finish_encryption_setup',
-                    recovery: {
-                        serverId: 'server-b',
-                        serverUrl:
-                            'https://server-b.example.test',
-                    } as never,
-                }),
-            });
-        await vi.waitFor(() => {
-            expect(mocks.show).toHaveBeenCalledTimes(1);
-        });
-        const config = shownConfig();
-
-        await expect(
-            config.props.finish(),
-        ).resolves.toEqual({ kind: 'completed' });
-        expect(mocks.setActiveServerAndSwitch)
-            .toHaveBeenCalledWith({
-                serverId: 'server-b',
-                scope: 'device',
-                refreshAuth:
-                    mocks.refreshFromActiveServer,
-            });
-        expect(
-            mocks.setActiveServerAndSwitch
-                .mock.invocationCallOrder[0],
-        ).toBeLessThan(
-            mocks.push.mock.invocationCallOrder[0]!,
-        );
-        expect(
-            mocks.recoverRejectedCredential,
-        ).toHaveBeenCalledWith({
-            recovery:
-                expect.objectContaining({
-                    serverId: 'server-b',
-                    serverUrl:
-                        'https://server-b.example.test',
-                }),
-            persistCredentials:
-                expect.any(Function),
-        });
-        config.props.onSettled('finish');
-        await presented;
-    });
-
-    it('uses Account-bound recovery for rejected first-key credentials before routing to recovery-key setup', async () => {
+    it('uses Account-bound recovery for rejected first-key credentials without a Settings detour', async () => {
         mocks.profiles = [{
             id: 'server-b',
             serverUrl:
@@ -275,10 +220,8 @@ describe('presentFirstKeyCredentialLifecycle', () => {
             },
             expect.anything(),
         );
-        expect(mocks.push)
-            .toHaveBeenCalledWith(
-                '/settings/account',
-            );
+        expect(mocks.push).not.toHaveBeenCalled();
+        expect(mocks.setActiveServerAndSwitch).not.toHaveBeenCalled();
         shownConfig().onHostUnmount();
         await presented;
     });

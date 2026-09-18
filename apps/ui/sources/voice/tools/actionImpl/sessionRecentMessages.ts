@@ -1,12 +1,15 @@
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessagesForAddress } from '@/sync/domains/messages/readStoredSessionMessagesForAddress';
+import { listSessionAddressesForSessionIdFromLocalState } from '@/sync/domains/session/resolveSessionAddressFromLocalState';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import { storage } from '@/sync/domains/state/storage';
-import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
+import { readSessionIncludedInVoiceFromState } from '@/voice/runtime/voiceUpdatePolicy';
 import type { SessionTranscriptGetResult } from '@happier-dev/protocol/actions';
 
 import {
   clampInt,
   compareSessionKeyDesc,
   formatCursorKey,
+  normalizeNonEmptyString,
   parseCursorKey,
   resolveVoiceUpdatesPrefs,
   shouldIncludeAfterCursor,
@@ -15,7 +18,12 @@ import {
 
 type VoiceRecentMessagesParams = Readonly<{
   sessionId: string;
-  defaultSessionId?: string | null;
+  /**
+   * Home bound by the invoking Action host, which is never the currently focused UI
+   * Home. It is absent whenever the host could not bind one, so the projection falls
+   * back to unambiguous local knowledge rather than to focus.
+   */
+  serverId?: string | null;
   limit?: number;
   cursor?: string | null;
   includeUser?: boolean;
@@ -43,17 +51,30 @@ type VoiceRecentMessagesProjection =
 async function readSessionRecentMessagesForVoiceProjection(
   params: VoiceRecentMessagesParams,
 ): Promise<VoiceRecentMessagesProjection> {
-  const state: any = storage.getState();
-  const prefs = resolveVoiceUpdatesPrefs((state?.settings ?? {}) as any);
-  if (!prefs.shareRecentMessages) return { ok: false, errorCode: 'recent_messages_disabled', errorMessage: 'recent_messages_disabled' };
+  const state = storage.getState();
+  const prefs = resolveVoiceUpdatesPrefs(state.settings);
+  const refuse = (errorCode: string) => ({ ok: false as const, errorCode, errorMessage: errorCode });
+  if (!prefs.shareRecentMessages) return refuse('recent_messages_disabled');
 
   const requestedSessionId = String(params.sessionId ?? '').trim();
-  const activeSessionId = String(params.defaultSessionId ?? '').trim() || null;
-  const { trackedSessionIds } = useVoiceTargetStore.getState();
-  const isActive = requestedSessionId === activeSessionId || trackedSessionIds.includes(requestedSessionId);
+  if (!requestedSessionId) return refuse('invalid_parameters');
+
+  // The host binds the Home; an unqualified caller may only be resolved from
+  // unambiguous local knowledge, never from whichever Home the UI happens to show.
+  const boundServerId = normalizeNonEmptyString(params.serverId);
+  const knownAddresses = listSessionAddressesForSessionIdFromLocalState(state, requestedSessionId);
+  if (!boundServerId && knownAddresses.length > 1) return refuse('session_ambiguous');
+  const resolvedServerId = boundServerId ?? knownAddresses[0]?.serverId ?? null;
+  if (!resolvedServerId) return refuse('session_not_found');
+  const requestedAddress = normalizeSessionAddress(resolvedServerId, requestedSessionId);
+  if (!requestedAddress) return refuse('invalid_parameters');
+
+  // Durable Account Follow is the disclosure authority. Attempt-local Voice context and
+  // action-target state exist only for presentation/readback and cannot grant transcript access.
+  const isActive = readSessionIncludedInVoiceFromState(state, requestedAddress);
 
   if (!isActive && prefs.otherSessionsSnippetsMode === 'never') {
-    return { ok: false, errorCode: 'other_sessions_snippets_disabled', errorMessage: 'other_sessions_snippets_disabled' };
+    return refuse('other_sessions_snippets_disabled');
   }
 
   const defaultOnDemandLimit = clampInt(params.limit, { min: 1, max: 50, fallback: 20 });
@@ -64,7 +85,7 @@ async function readSessionRecentMessagesForVoiceProjection(
   const includeAssistant = params.includeAssistant ?? true;
   const includeUser = params.includeUser ?? true;
 
-  const messages = readStoredSessionMessages(state, requestedSessionId);
+  const messages = readStoredSessionMessagesForAddress(state, requestedAddress);
   const beforeCursor = parseCursorKey(cursor);
 
   const filtered = messages
@@ -108,7 +129,7 @@ async function readSessionRecentMessagesForVoiceProjection(
     : null;
   return {
     ok: true,
-    sessionId: requestedSessionId,
+    sessionId: requestedAddress.sessionId,
     messages: outMessages,
     nextCursor,
     rawRowsScanned: messages.length,
@@ -150,7 +171,7 @@ export async function getSessionTranscriptForVoiceTool(params: VoiceRecentMessag
   const roleSet = Array.isArray(params.roles) ? new Set(params.roles) : null;
   const result = await readSessionRecentMessagesForVoiceProjection({
     sessionId: params.sessionId,
-    ...(params.defaultSessionId !== undefined ? { defaultSessionId: params.defaultSessionId } : {}),
+    ...(params.serverId !== undefined ? { serverId: params.serverId } : {}),
     ...(params.limit !== undefined ? { limit: params.limit } : {}),
     ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
     includeUser: roleSet ? roleSet.has('user') : true,

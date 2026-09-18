@@ -5,6 +5,8 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Modal } from '@/modal';
 import type { PluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
+import { observePluginAccountPackageAssetPublication } from '@/sync/domains/plugins/availability/accountPackageAssetPublication';
+import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { t } from '@/text';
 
 import {
@@ -71,6 +73,7 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
     testID: string;
 }>): React.ReactElement | null {
     const [pending, setPending] = React.useState(false);
+    const [hasUiArtifactSlots, setHasUiArtifactSlots] = React.useState(false);
     const [hostedStatus, setHostedStatus] = React.useState<ReturnType<PluginAccountReleaseSelectionController['readHostedArtifactStatus']>>('unavailable');
     const controllerLifetimeRef = React.useRef<ControllerLifetime | null>(null);
 
@@ -80,12 +83,13 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
             current: true,
         };
         controllerLifetimeRef.current = lifetime;
+        setPending(false);
         return () => {
             lifetime.current = false;
             if (controllerLifetimeRef.current === lifetime) controllerLifetimeRef.current = null;
             lifetime.controller.retire();
         };
-    }, []);
+    }, [props.pluginId, props.reader]);
 
     React.useEffect(() => {
         const update = () => {
@@ -95,14 +99,38 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
                 pluginId: props.pluginId,
                 reader: props.reader,
             }));
+            const administration = props.reader?.readCurrentHostedArtifactAdministration({ pluginId: props.pluginId });
+            setHasUiArtifactSlots(administration?.kind === 'available' && administration.release.uiSlots.length > 0);
         };
         update();
         return props.reader?.subscribe(update);
     }, [props.pluginId, props.reader]);
 
+    React.useEffect(() => {
+        const reader = props.reader;
+        const projection = props.projection;
+        const { machineId, serverId, serverIdentityId } = props.daemon;
+        if (!reader || !projection || !machineId || !serverIdentityId) return;
+        const accountLifetime = captureActiveServerAccountScopeLifetime();
+        if (!accountLifetime?.isCurrent()) return;
+        let current = true;
+        const dispose = observePluginAccountPackageAssetPublication({
+            pluginId: props.pluginId,
+            reader,
+            accountLifetime,
+            projection,
+            daemon: { machineId, serverId, serverIdentityId },
+            isCurrent: () => current,
+        });
+        return () => {
+            current = false;
+            dispose();
+        };
+    }, [props.pluginId, props.reader, props.projection, props.daemon.machineId, props.daemon.serverId, props.daemon.serverIdentityId]);
+
     const runHostedAction = React.useCallback((action: (
         controller: PluginAccountReleaseSelectionController,
-    ) => Promise<Readonly<{ kind: 'updated' | 'conflict' | 'unavailable' }>>) => {
+    ) => Promise<Readonly<{ kind: 'updated' | 'conflict' | 'unavailable' | 'cancelled' }>>) => {
         const lifetime = controllerLifetimeRef.current;
         if (!lifetime || pending || lifetime.controller.isPending()) return;
         setPending(true);
@@ -189,11 +217,19 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
                         : hostedStatus === 'publicationPending'
                             ? t('settingsPlugins.accountReleaseSelection.hostedStatusPending')
                             : t('settingsPlugins.accountReleaseSelection.hostedStatusDisabled')}
-                    onPress={() => runHostedAction((controller) => controller.setHostedArtifactsEnabled({
-                        pluginId: props.pluginId,
-                        reader: props.reader,
-                        enabled: hostedStatus === 'notOptedIn' || hostedStatus === 'disabledHosted',
-                    }))}
+                    onPress={() => runHostedAction(async (controller) => {
+                        const enabled = hostedStatus === 'notOptedIn' || hostedStatus === 'disabledHosted';
+                        if (enabled && !await Modal.confirm(
+                            t('settingsPlugins.accountReleaseSelection.hostedEnableTitle'),
+                            t('settingsPlugins.accountReleaseSelection.hostedEnableBody'),
+                            { confirmText: t('common.enable') },
+                        )) return { kind: 'cancelled' as const };
+                        return await controller.setHostedArtifactsEnabled({
+                            pluginId: props.pluginId,
+                            reader: props.reader,
+                            enabled,
+                        });
+                    })}
                     disabled={pending || hostedStatus === 'unsupported' || hostedStatus === 'unsupportedHosted'}
                     loading={pending}
                     showChevron={false}
@@ -220,7 +256,7 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
                     showChevron={false}
                 />
             ) : null}
-            {hostedStatus !== 'unavailable' ? (
+            {hostedStatus !== 'unavailable' && hasUiArtifactSlots ? (
                 <Item
                     testID={`${props.testID}.clearCache`}
                     title={t('settingsPlugins.accountReleaseSelection.hostedClearCacheTitle')}

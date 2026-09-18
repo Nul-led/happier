@@ -26,7 +26,7 @@ function asPreviewList(input: unknown): HistoryPreviewItem[] {
     });
 }
 
-export const AcpHistoryImportView = React.memo<ToolViewProps>(({ tool, sessionId, interaction }) => {
+export const AcpHistoryImportView = React.memo<ToolViewProps>(({ tool, sessionId, serverId, interaction }) => {
   const { theme } = useUnistyles();
   const [loading, setLoading] = React.useState<'import' | 'skip' | null>(null);
 
@@ -59,7 +59,7 @@ export const AcpHistoryImportView = React.memo<ToolViewProps>(({ tool, sessionId
     if (!isPending || loading || !canApprovePermissions) return;
     setLoading('import');
     try {
-      await sessionAllow(sessionId, permissionId);
+      await sessionAllow(sessionId, permissionId, ...(serverId !== undefined ? [undefined, undefined, undefined, undefined, undefined, { serverId }] as const : [] as const));
     } catch (e) {
       Modal.alert(t('common.error'), e instanceof Error ? e.message : t('errors.failedToSendMessage'));
     } finally {
@@ -71,7 +71,7 @@ export const AcpHistoryImportView = React.memo<ToolViewProps>(({ tool, sessionId
     if (!isPending || loading || !canApprovePermissions) return;
     setLoading('skip');
     try {
-      await sessionDeny(sessionId, permissionId, undefined, undefined, 'denied');
+      await sessionDeny(sessionId, permissionId, undefined, undefined, 'denied', ...(serverId !== undefined ? [undefined, undefined, { serverId }] as const : [] as const));
     } catch (e) {
       Modal.alert(t('common.error'), e instanceof Error ? e.message : t('errors.failedToSendMessage'));
     } finally {

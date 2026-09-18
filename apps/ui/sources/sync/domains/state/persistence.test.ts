@@ -90,18 +90,18 @@ const sessionLocalScopeA: ServerAccountScope = { serverId: 'server-a', accountId
 const sessionLocalScopeB: ServerAccountScope = { serverId: 'server-a', accountId: 'account-b' };
 
 describe('persistence', () => {
-    beforeEach(() => {
-        clearPersistence();
+    beforeEach(async () => {
+        await clearPersistence();
     });
 
-    it('clears all persisted settings scopes and legacy settings state', () => {
+    it('clears all persisted settings scopes and legacy settings state', async () => {
         store.set('settings', JSON.stringify({ settings: settingsDefaults, version: 1 }));
         store.set('pending-settings', JSON.stringify({ analyticsOptOut: true }));
         store.set('account-settings:v2:8:server-a9:account-a', JSON.stringify({ settings: settingsDefaults, version: 2 }));
         store.set('pending-account-settings:v2:8:server-a9:account-a', JSON.stringify({ viewInline: true }));
         store.set('profile', JSON.stringify({ id: 'account-a' }));
 
-        clearPersistence();
+        await clearPersistence();
 
         expect([...store.keys()]).toEqual([]);
     });
@@ -687,28 +687,30 @@ describe('persistence', () => {
 
     describe('session action drafts', () => {
         it('returns an empty object when nothing is persisted', () => {
-            expect(loadSessionActionDrafts()).toEqual({});
+            expect(loadSessionActionDrafts(sessionLocalScopeA)).toEqual({});
         });
 
-        it('roundtrips session action drafts and drops invalid entries', () => {
+        it('roundtrips canonical addressed drafts and drops invalid entries', () => {
             saveSessionActionDrafts({
-                s1: [{
+                '["server-a","s1"]': [{
                     id: 'd1',
-                    sessionId: 's1',
+                    address: { serverId: 'server-a', sessionId: 's1' },
+                    accountId: 'account-a',
                     actionId: 'review.start',
                     createdAt: 1,
                     status: 'editing',
                     input: { a: 1 },
                     error: null,
                 }],
-            });
+            }, sessionLocalScopeA);
 
             // Inject invalid session id and invalid draft shape alongside the valid one.
-            store.set('session-action-drafts-v1', JSON.stringify({
-                s1: [
+            store.set('session-action-drafts-v1:scope:v2:8:server-a9:account-a', JSON.stringify({
+                '["server-a","s1"]': [
                     {
                         id: 'd1',
-                        sessionId: 's1',
+                        address: { serverId: 'server-a', sessionId: 's1' },
+                        accountId: 'account-a',
                         actionId: 'review.start',
                         createdAt: 1,
                         status: 'editing',
@@ -717,13 +719,14 @@ describe('persistence', () => {
                     },
                     { id: '', sessionId: 's1' },
                 ],
-                '   ': [{ id: 'x', sessionId: 'x', actionId: 'a', createdAt: 1, status: 'editing', input: {} }],
+                '   ': [{ id: 'x', address: { serverId: 'server-a', sessionId: 'x' }, accountId: 'account-a', actionId: 'a', createdAt: 1, status: 'editing', input: {} }],
             }));
 
-            expect(loadSessionActionDrafts()).toEqual({
-                s1: [{
+            expect(loadSessionActionDrafts(sessionLocalScopeA)).toEqual({
+                '["server-a","s1"]': [{
                     id: 'd1',
-                    sessionId: 's1',
+                    address: { serverId: 'server-a', sessionId: 's1' },
+                    accountId: 'account-a',
                     actionId: 'review.start',
                     createdAt: 1,
                     status: 'editing',
@@ -731,6 +734,37 @@ describe('persistence', () => {
                     error: null,
                 }],
             });
+        });
+
+        it('migrates a legacy bare-session map only inside its exact scoped Home partition', () => {
+            store.set('session-action-drafts-v1:scope:v2:8:server-a9:account-a', JSON.stringify({
+                s1: [{ id: 'd1', sessionId: 's1', actionId: 'review.start', createdAt: 1, status: 'editing', input: {}, error: null }],
+            }));
+
+            expect(loadSessionActionDrafts(sessionLocalScopeA)).toEqual({
+                '["server-a","s1"]': [{
+                    id: 'd1',
+                    address: { serverId: 'server-a', sessionId: 's1' },
+                    accountId: 'account-a',
+                    actionId: 'review.start',
+                    createdAt: 1,
+                    status: 'editing',
+                    input: {},
+                    error: null,
+                }],
+            });
+        });
+
+        it('retains ambiguous unscoped legacy drafts without guessing a Home', () => {
+            const legacy = JSON.stringify({
+                s1: [{ id: 'd1', sessionId: 's1', actionId: 'review.start', createdAt: 1, status: 'editing', input: {}, error: null }],
+            });
+            store.set('session-action-drafts-v1', legacy);
+
+            prepareSessionLocalStateScopeForActivation(sessionLocalScopeA);
+
+            expect(loadSessionActionDrafts(sessionLocalScopeA)).toEqual({});
+            expect(store.get('session-action-drafts-v1')).toBe(legacy);
         });
     });
 

@@ -12,6 +12,7 @@ import type {
     BrowserDiagnosticsEngineBridgeConfig,
     BrowserFrameNavigationCommand,
 } from '../frame/types';
+import type { BrowserSurfaceLifecycleState } from '../surfaces/browserSurfaceLifecycle';
 
 function resolveExternalUrl(view: BrowserControlViewState): string | null {
     if (view.target.kind !== 'externalUrl') {
@@ -33,6 +34,7 @@ export function ExternalUrlTarget(props: Readonly<{
     navigationKey?: string;
     navigationCommand?: BrowserFrameNavigationCommand;
     onLifecycle?: BrowserViewLifecycleEmitter;
+    lifecycleState?: BrowserSurfaceLifecycleState;
     nowMs?: () => number;
     reasonCode?: string;
 }>): React.ReactElement {

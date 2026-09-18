@@ -139,6 +139,35 @@ describe('setExternalSessionFollowPolicy', () => {
         );
     });
 
+    it('sends the exact provider-minted remote session id to the daemon RPC', async () => {
+        // The Agent minted this id and the daemon hands it straight back to
+        // that Agent. Surrounding whitespace, the embedded newline, `/`, `+`
+        // and `=` are part of the identity: a UI-side rewrite addresses a
+        // session the source never issued.
+        const remoteSessionId = '  provider\nses/AB+cd==  ';
+        const link = createLink({ remoteSessionId });
+        const { setExternalSessionFollowPolicy, setSessions } = await importOwner();
+        setSessions({ 'session-1': createLinkedSession(link) });
+
+        await expect(call(setExternalSessionFollowPolicy, link)).resolves.toEqual({ kind: 'applied' });
+
+        expect(machineExternalSessionFollowPolicySetSpy).toHaveBeenCalledTimes(1);
+        expect(machineExternalSessionFollowPolicySetSpy.mock.calls[0]?.[0].remoteSessionId)
+            .toBe(remoteSessionId);
+        expect(applySessionMetadataLocallySpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed on an all-whitespace remote session id without reaching the daemon', async () => {
+        const link = createLink({ remoteSessionId: ' \n\t ' });
+        const { setExternalSessionFollowPolicy, setSessions } = await importOwner();
+        setSessions({ 'session-1': createLinkedSession(link) });
+
+        await expect(call(setExternalSessionFollowPolicy, link)).resolves.toEqual({ kind: 'failed' });
+
+        expect(machineExternalSessionFollowPolicySetSpy).not.toHaveBeenCalled();
+        expect(applySessionMetadataLocallySpy).not.toHaveBeenCalled();
+    });
+
     it('retires a late settlement without publishing when the Account is no longer current', async () => {
         const link = createLink();
         const { setExternalSessionFollowPolicy, setSessions } = await importOwner();

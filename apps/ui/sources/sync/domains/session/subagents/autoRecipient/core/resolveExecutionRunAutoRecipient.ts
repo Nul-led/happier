@@ -1,4 +1,4 @@
-import { canSendMessagesToExecutionRun } from '@/sync/domains/executionRuns/canSendMessagesToExecutionRun';
+import { isExecutionRunAddressableRecipient } from '@/sync/domains/executionRuns/isExecutionRunAddressableRecipient';
 import { readExecutionRunIdFromToolPayload } from '@/sync/domains/session/participants/deriveExecutionRunPollingRefreshKey';
 import type { Message } from '@/sync/domains/messages/messageTypes';
 
@@ -52,7 +52,7 @@ function focusedMessagesContainRunningExecutionSignal(messages: readonly Message
  *
  * Liveness and addressability are separate questions with separate evidence, and conflating them
  * is what let a `voice_agent` run be auto-addressed here while the derived roster refused it: an
- * execution-run subagent's `recipient` is null whenever `canSendMessagesToExecutionRun` says no
+ * execution-run subagent's `recipient` is null whenever `isExecutionRunAddressableRecipient` says no
  * (`deriveExecutionRunSubagents.ts`), so the two owners answered the same question differently and
  * the composer believed this one.
  *
@@ -68,7 +68,7 @@ function focusedMessagesContainRunningExecutionSignal(messages: readonly Message
  * the transcript is to allow it — the same backward compatibility the roster gets.
  */
 function isExecutionRunAddressable(focusedRunSubagent: SessionSubagent | null): boolean {
-    return canSendMessagesToExecutionRun({
+    return isExecutionRunAddressableRecipient({
         status: 'running',
         intent: focusedRunSubagent?.runRef?.intent ?? null,
         runClass: focusedRunSubagent?.runRef?.runClass ?? null,

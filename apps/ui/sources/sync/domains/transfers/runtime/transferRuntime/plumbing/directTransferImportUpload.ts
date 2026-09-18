@@ -40,7 +40,13 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
     signal?: AbortSignal | null;
     onProgress?: ((progress: Readonly<{ uploadedBytes: number; totalBytes: number }>) => void) | null;
     httpOriginOverride?: string | null;
-    acquirePreparedCarrier?: ((prepared: Readonly<{ operationId: string; maxBytes: number }>) => Promise<MachineCarrierHttpLease | null>) | null;
+    /**
+     * Carrier acquisition pinned to the caller's selected machine/server route.
+     * Its cancellation scope travels with each invocation: the live prepare
+     * passes this operation's signal, the deferred finalize recovery passes
+     * none.
+     */
+    acquirePreparedCarrier?: ((prepared: Readonly<{ operationId: string; signal?: AbortSignal }>) => Promise<MachineCarrierHttpLease | null>) | null;
 }>): Promise<TResponse | BulkTransferFailureResponse | TransferFinalizeRecoveryFailure<TResponse>> {
     const prepared = await prepareDirectImportSession({
         machineId: params.machineId,
@@ -96,7 +102,6 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
                             encryptedDataKeyEnvelopeBase64: request.encryptedDataKeyEnvelopeBase64,
                             timeoutMs: params.timeoutMs ?? null,
                             signal: params.signal ?? null,
-                            requestHeaders: prepared.session.requestHeaders,
                             request: prepared.session.request,
                         });
                         if (response.success === true) {
@@ -109,7 +114,6 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
                             baseUrl,
                             timeoutMs: params.timeoutMs ?? null,
                             signal: params.signal ?? null,
-                            requestHeaders: prepared.session.requestHeaders,
                             request: prepared.session.request,
                         });
                         if (finalizeResponse.success !== true) {
@@ -148,6 +152,10 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
                                             : {}),
                                         uploadId: prepared.session.uploadId,
                                         baseUrl,
+                                        // Custody is handed back below, so every
+                                        // retry reacquires the same pinned
+                                        // machine/server carrier for itself.
+                                        acquireCarrier: params.acquirePreparedCarrier ?? null,
                                         expiresAt: finalizeResponse.expiresAt
                                             ?? prepared.session.expiresAt,
                                         timeoutMs: params.timeoutMs ?? null,
@@ -276,7 +284,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
         error: 'Direct import upload unavailable',
     };
     } finally {
-        // Hand carrier custody back to the machine HTTP lease owner. A failed
+        // Hand carrier custody back to the native transfer lease owner. A failed
         // release stays retained and retryable there, so this helper neither
         // retries it nor downgrades an already completed upload.
         await Promise.resolve(prepared.session.releaseCarrier?.()).catch(() => undefined);

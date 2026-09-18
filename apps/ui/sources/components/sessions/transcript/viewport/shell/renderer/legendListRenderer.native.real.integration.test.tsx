@@ -224,7 +224,7 @@ describe('Legend transcript renderer installed native-package cleanup', () => {
         ).toHaveLength(0);
 
         hasMaintainIntent = false;
-        listRef.current!.cancelInitialScrollPreservation();
+        listRef.current!.cancelScroll();
         const normalizedState = listRef.current!.getState();
         const normalizedEnd = Math.max(
             0,
@@ -928,11 +928,15 @@ describe('Legend transcript renderer installed native-package end follow (E-18)'
         nativeScroller: ReturnType<typeof createNativeScroller>;
         /** Append one row and let its late measurement land. */
         appendRow(measuredHeight: number): Promise<void>;
+        resizeViewport(height: number): Promise<void>;
+        reportDelayedScroll(): Promise<void>;
         readMaintainScrollAtEnd(): unknown;
     }>;
 
     async function mountFollowHarness(dataKey: string): Promise<FollowHarness> {
         const Renderer = legendListRenderer.Component;
+        const shellRef = React.createRef<TranscriptListShellRef<Row>>();
+        let viewportHeight = VIEWPORT_HEIGHT;
         const nativeScroller = createNativeScroller();
         const rowHeights = new Map<string, number>();
         let rows: readonly Row[] = Array.from({ length: 20 }, (_value, index): Row => {
@@ -942,11 +946,12 @@ describe('Legend transcript renderer installed native-package end follow (E-18)'
         });
         const render = () => (
             <Renderer
+                ref={shellRef}
                 webDomObservation={createWebDomScrollObservation()}
                 data={rows}
                 dataKey={dataKey}
                 frame={resolveMainTranscriptListShellFrame({
-                    legendInitialScrollAtEnd: true,
+                    legendInitialScrollAtEnd: false,
                     maintainScrollAtEndThreshold: 0.1,
                     nativeID: dataKey,
                     platformOS: 'ios',
@@ -961,12 +966,13 @@ describe('Legend transcript renderer installed native-package end follow (E-18)'
         });
         const resolveRowHeight = (rowId: string) => rowHeights.get(rowId) ?? VIEWPORT_HEIGHT;
         await flushRowLayouts(requireMountedScreen(screen), resolveRowHeight);
+        act(() => { void shellRef.current?.scrollToEnd?.({ animated: false }); });
         await act(async () => {
             await vi.advanceTimersByTimeAsync(200);
             await Promise.resolve();
         });
         await flushRowLayouts(requireMountedScreen(screen), resolveRowHeight);
-        // Settle the initial end placement the way the platform does: the scroller reports
+        // Settle the explicit end placement the way the platform does: the scroller reports
         // the landed offset back through onScroll.
         const emitScroll = (offsetY: number, contentHeight: number) => {
             act(() => {
@@ -975,7 +981,7 @@ describe('Legend transcript renderer installed native-package end follow (E-18)'
                         contentInset: { bottom: 0, left: 0, right: 0, top: 0 },
                         contentOffset: { x: 0, y: offsetY },
                         contentSize: { height: contentHeight, width: 800 },
-                        layoutMeasurement: { height: VIEWPORT_HEIGHT, width: 800 },
+                        layoutMeasurement: { height: viewportHeight, width: 800 },
                         zoomScale: 1,
                     },
                 });
@@ -990,6 +996,22 @@ describe('Legend transcript renderer installed native-package end follow (E-18)'
 
         return {
             nativeScroller,
+            async reportDelayedScroll() {
+                // A delayed old-offset callback updates Legend's cached physical threshold.
+                // The next geometry notification must still use its semantic end owner.
+                emitScroll(initialContentHeight - VIEWPORT_HEIGHT, rows.reduce((sum, row) => sum + resolveRowHeight(row.id), 0));
+                act(() => { shellRef.current?.notifyViewportGeometryChanged?.(); });
+                await act(async () => { await vi.advanceTimersByTimeAsync(64); });
+            },
+            async resizeViewport(height: number) {
+                viewportHeight = height;
+                await act(async () => {
+                    requireMountedScreen(screen).root.findByType('ScrollView').props.onLayout({
+                        nativeEvent: { layout: { height, width: 800, x: 0, y: 0 } },
+                    });
+                    await vi.advanceTimersByTimeAsync(64);
+                });
+            },
             async appendRow(measuredHeight: number) {
                 const id = `${ROW_TEST_ID_PREFIX}${dataKey}-${rows.length}`;
                 rowHeights.set(id, measuredHeight);
@@ -1128,12 +1150,28 @@ describe('Legend transcript renderer installed native-package end follow (E-18)'
         // app's residual writer uses scrollToOffset/scrollTo instead.
         expect(await probeLibraryTailFollow(nativeMaintainConfig)).toEqual({
             // Legend evaluates `withinThreshold || isMaintainingScrollAtEnd()`. With the
-            // predicate withheld on native, the beyond-threshold commit silently drops
-            // follow and the app corrector has to reposition a frame later - the send jiggle.
+            // predicate is required even outside the physical proximity band.
             maintained: true,
             // The commit really did leave the proximity band: Legend's own fact says so.
             withinThresholdAfterCommit: false,
         });
+    });
+
+    it.each(['row growth', 'viewport shrink'] as const)('does not issue an app absolute correction for %s while native maintenance awaits its scroll acknowledgement', async (change) => {
+        const harness = await mountFollowHarness('native-follow-composed');
+        const absoluteWriteStacks: string[] = [];
+        harness.nativeScroller.scrollTo.mockImplementation(() => {
+            absoluteWriteStacks.push(new Error('physical scroll writer').stack ?? '');
+        });
+        harness.nativeScroller.scrollTo.mockClear();
+        harness.nativeScroller.scrollToEnd.mockClear();
+        if (change === 'row growth') await harness.appendRow(1_200);
+        else await harness.resizeViewport(40);
+        await harness.reportDelayedScroll();
+        // The platform mock deliberately does not echo the maintained-end write: both owners
+        // see the same delayed physical acknowledgement, rather than testing each in isolation.
+        expect(absoluteWriteStacks).toEqual([]);
+        expect(harness.nativeScroller.scrollToEnd).toHaveBeenCalled();
     });
 
     it('does not let Legend re-pin a native hold the user took over inside the physical threshold', async () => {

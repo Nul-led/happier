@@ -61,6 +61,35 @@ vi.mock('@/components/ui/text/Text', async () => {
 });
 
 describe('SelectableMenuResults (React Native Web Pressable)', () => {
+    it('exposes the chosen option independently of keyboard highlight', async () => {
+        const { SelectableMenuResults } = await import('./SelectableMenuResults');
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const root = createRoot(container);
+        try {
+            await act(async () => {
+                root.render(<SelectableMenuResults
+                    categories={[{ id: 'layout', title: 'Layout', items: [
+                        { id: 'projects', title: 'Projects', checked: true },
+                        { id: 'recent', title: 'Recent activity', checked: false },
+                    ] }]}
+                    selectedIndex={1}
+                    onSelectionChange={() => {}}
+                    onPressItem={() => {}}
+                    rowVariant="slim"
+                />);
+            });
+            const projects = container.querySelector('[data-testid="dropdown-option-projects"]');
+            const recent = container.querySelector('[data-testid="dropdown-option-recent"]');
+            expect(projects?.getAttribute('role')).toBe('radio');
+            expect(projects?.getAttribute('aria-checked')).toBe('true');
+            expect(recent?.getAttribute('aria-checked')).toBe('false');
+        } finally {
+            await act(async () => { root.unmount(); });
+            container.remove();
+        }
+    });
+
     it('activates selectable rows through web mouse down capture before the Pressable click path', async () => {
         const { SelectableMenuResults } = await import('./SelectableMenuResults');
         const onPressItem = vi.fn();

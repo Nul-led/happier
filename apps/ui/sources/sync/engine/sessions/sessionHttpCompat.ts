@@ -1,7 +1,12 @@
 import {
+    PendingActivationAuthorizationV1Schema,
+    SessionAccessAccountSummaryV1Schema,
+    SessionListQueryResponseV1Schema,
     V2SessionListResponseSchema,
+    V2SessionRecordSchema,
     V2SessionByIdNotFoundSchema,
     parseSessionRuntimeActivityProjectionFields,
+    type SessionListQueryV1,
     type V2SessionListResponse,
 } from '@happier-dev/protocol';
 
@@ -13,6 +18,9 @@ import {
 import { HappyError } from '@/utils/errors/errors';
 
 type SessionRequest = (path: string, init: RequestInit) => Promise<Response>;
+export type SessionListPageSource =
+    | Readonly<{ kind: 'ordinary'; path: string; allowV1Fallback: boolean }>
+    | Readonly<{ kind: 'query'; body: SessionListQueryV1; allowV1Fallback: false }>;
 type V2SessionRecord = V2SessionListResponse['sessions'][number];
 type SessionListRequestHeadersOptions = Readonly<{
     includeSessionListTiming?: boolean;
@@ -71,6 +79,39 @@ async function readJsonSafe(response: Response, options?: ReadJsonSafeOptions): 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Current access is an explicit authority projection, even when its payload is malformed.
+ * Consumers use this marker — through the exported
+ * `hasExplicitCurrentOrResponsibilitySessionProjection` below — to fail closed instead of
+ * retrying the same response through a released-shape fallback that has no way to preserve
+ * or validate current access semantics.
+ */
+function hasCurrentSessionRecordMarker(value: unknown): boolean {
+    return isRecord(value) && (
+        Object.prototype.hasOwnProperty.call(value, 'effectiveAccess')
+        || Object.prototype.hasOwnProperty.call(value, 'viewer')
+        || value.metadataLayoutVersion === 1
+        || Object.prototype.hasOwnProperty.call(value, 'ownerMetadata')
+    );
+}
+
+function hasResponsibilityProjectionClaim(value: unknown): boolean {
+    return isRecord(value) && (
+        Object.prototype.hasOwnProperty.call(value, 'responsibleAccountId')
+        || Object.prototype.hasOwnProperty.call(value, 'responsibleAccount')
+    );
+}
+
+export function hasExplicitCurrentOrResponsibilitySessionProjection(value: unknown): boolean {
+    if (!isRecord(value) || !isRecord(value.session)) return false;
+    return hasCurrentSessionRecordMarker(value.session) || hasResponsibilityProjectionClaim(value.session);
+}
+
+function hasExplicitCurrentOrResponsibilitySessionListProjection(value: unknown): boolean {
+    return isRecord(value) && Array.isArray(value.sessions)
+        && value.sessions.some(entry => hasCurrentSessionRecordMarker(entry) || hasResponsibilityProjectionClaim(entry));
 }
 
 function readNumber(value: unknown): number | null {
@@ -243,6 +284,11 @@ function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
             && raw.metadataLayoutVersion !== 0
         )
         || raw.ownerMetadata !== undefined
+        // An explicit private projection is never a legacy row. In particular,
+        // malformed Follow/read facts cannot fall through and revive shared reads.
+        || raw.viewer !== undefined
+        // Marked access is current authority, never a candidate for legacy coercion.
+        || raw.effectiveAccess !== undefined
     ) {
         return null;
     }
@@ -276,6 +322,18 @@ function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
     const shareRecord = isRecord(raw.share) ? raw.share : null;
     const shareAccessLevel = readOptionalString(shareRecord?.accessLevel) ?? topLevelAccessLevel;
     const shareCanApprovePermissions = readOptionalBoolean(shareRecord?.canApprovePermissions) ?? topLevelCanApprovePermissions;
+    const pendingActivationAuthorization = PendingActivationAuthorizationV1Schema.safeParse(
+        raw.pendingActivationAuthorization,
+    );
+    // Absence is the released pre-mode Session shape and remains a supported
+    // E2EE compatibility input. An explicit unknown value is different: it is
+    // a malformed current producer claim and must not be collapsed into that
+    // legacy omission merely because a key-shaped field is also present.
+    if (Object.prototype.hasOwnProperty.call(raw, 'encryptionMode')
+        && raw.encryptionMode !== 'plain'
+        && raw.encryptionMode !== 'e2ee') {
+        return null;
+    }
 
     const coerced: V2SessionRecord = {
         id,
@@ -295,6 +353,7 @@ function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
         agentState: coerceStringPayload(raw.agentState),
         agentStateVersion,
         lastViewedSessionSeq: readNullableNumber(raw.lastViewedSessionSeq),
+        unreadSince: readNullableNumber(raw.unreadSince),
         pendingPermissionRequestCount: readNumber(raw.pendingPermissionRequestCount) ?? undefined,
         pendingUserActionRequestCount: readNumber(raw.pendingUserActionRequestCount) ?? undefined,
         // Attention EDGE facts. Dropping these does not fail loudly: the placement key
@@ -311,6 +370,21 @@ function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
         materializedThroughSourceAt: readNullableNumber(raw.materializedThroughSourceAt),
         publishedThroughServerSeq: readNullableNumber(raw.publishedThroughServerSeq),
         transcriptShareable: readOptionalBoolean(raw.transcriptShareable),
+        ...(pendingActivationAuthorization.success
+            ? { pendingActivationAuthorization: pendingActivationAuthorization.data }
+            : {}),
+        // Absent stays absent: a legacy record that never carried responsibility
+        // must not be coerced into an authoritative "unassigned".
+        ...(Object.prototype.hasOwnProperty.call(raw, 'responsibleAccountId')
+            ? { responsibleAccountId: raw.responsibleAccountId as string | null }
+            : {}),
+        // The paired summary is projected at read time; it is omitted exactly
+        // when the id is omitted and never persisted as a second source.
+        ...(Object.prototype.hasOwnProperty.call(raw, 'responsibleAccount')
+            ? {
+                responsibleAccount: SessionAccessAccountSummaryV1Schema.nullable().parse(raw.responsibleAccount),
+              }
+            : {}),
         latestTurnStatus: raw.latestTurnStatus === 'in_progress'
             || raw.latestTurnStatus === 'completed'
             || raw.latestTurnStatus === 'cancelled'
@@ -339,7 +413,9 @@ function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
                 }
                 : null,
     };
-    return mergeCompatSessionAdditiveFields(coerced, raw);
+    const merged = mergeCompatSessionAdditiveFields(coerced, raw);
+    const parsed = V2SessionRecordSchema.safeParse(merged);
+    return parsed.success ? parsed.data : null;
 }
 
 function parseCompatSessionListResponse(raw: unknown, telemetryFields?: SyncPerformanceTelemetryFields): V2SessionListResponse | null {
@@ -409,14 +485,29 @@ export function parseCompatSessionByIdResponse(raw: unknown): { session: V2Sessi
     return null;
 }
 
-function throwSessionListHttpError(status: number, routeLabel: string): never {
+function readSessionListHttpErrorCode(body: unknown): string | undefined {
+    if (!isRecord(body)) return undefined;
+    const code = readOptionalString(body.errorCode) ?? readOptionalString(body.code);
+    return code?.trim() || undefined;
+}
+
+function throwSessionListHttpError(status: number, routeLabel: string, body?: unknown): never {
     if (status === 401 || status === 403) {
-        throw createNotAuthenticatedError();
+        throw createNotAuthenticatedError(status);
     }
+    const code = readSessionListHttpErrorCode(body);
     if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
-        throw new HappyError(`Failed to fetch sessions (${status})`, false);
+        throw new HappyError(`Failed to fetch sessions (${status})`, false, {
+            status,
+            kind: 'server',
+            ...(code ? { code } : {}),
+        });
     }
-    throw new Error(`Failed to fetch ${routeLabel}: ${status}`);
+    throw new HappyError(`Failed to fetch ${routeLabel}: ${status}`, true, {
+        status,
+        kind: status >= 500 ? 'server' : 'network',
+        ...(code ? { code } : {}),
+    });
 }
 
 function looksLikeMissingV2SessionsListRoute(status: number, body: unknown): boolean {
@@ -458,6 +549,7 @@ export function looksLikeCurrentV2SessionNotFound404(body: unknown): boolean {
 export async function fetchSessionListPageCompat(params: Readonly<{
     request: SessionRequest;
     token: string;
+    source?: SessionListPageSource;
     sessionListPath?: string;
     cursor?: string | null;
     attentionCursor?: string | null;
@@ -472,25 +564,64 @@ export async function fetchSessionListPageCompat(params: Readonly<{
     attentionHasNext: boolean;
     source: 'v2' | 'v1';
 }> {
-    const allowLegacyV1Fallback = params.allowLegacyV1Fallback !== false;
-    const sessionListPath = typeof params.sessionListPath === 'string' && params.sessionListPath.trim().length > 0
-        ? params.sessionListPath.trim()
-        : '/v2/sessions';
-    const url = new URL(sessionListPath, 'http://placeholder.local');
-    url.searchParams.set('limit', String(params.limit));
-    if (params.cursor) {
-        url.searchParams.set('cursor', params.cursor);
-    }
-    if (params.attentionCursor) {
-        url.searchParams.set('attentionCursor', params.attentionCursor);
-    }
+    const source = params.source;
+    const isQuery = source?.kind === 'query';
+    const allowLegacyV1Fallback = isQuery
+        ? false
+        : source?.kind === 'ordinary'
+            ? source.allowV1Fallback
+            : params.allowLegacyV1Fallback !== false;
+    const sessionListPath = source?.kind === 'ordinary'
+        ? source.path.trim() || '/v2/sessions'
+        : typeof params.sessionListPath === 'string' && params.sessionListPath.trim().length > 0
+            ? params.sessionListPath.trim()
+            : '/v2/sessions';
+    const requestPath = (() => {
+        if (isQuery) return '/v2/sessions/query';
+        const url = new URL(sessionListPath, 'http://placeholder.local');
+        url.searchParams.set('limit', String(params.limit));
+        if (params.cursor) {
+            url.searchParams.set('cursor', params.cursor);
+        }
+        if (params.attentionCursor) {
+            url.searchParams.set('attentionCursor', params.attentionCursor);
+        }
+        return url.pathname + url.search;
+    })();
+    const requestInit = (() => {
+        if (!isQuery) {
+            return {
+                headers: buildSessionRequestHeaders(params.token, { includeSessionListTiming: true }),
+            } satisfies RequestInit;
+        }
+        const { cursor: _sourceCursor, attentionCursor: _sourceAttentionCursor, limit: _sourceLimit, ...queryBase } = source.body;
+        const cursor = params.cursor !== undefined ? params.cursor : _sourceCursor ?? null;
+        const attentionCursor = params.attentionCursor !== undefined
+            ? params.attentionCursor
+            : _sourceAttentionCursor ?? null;
+        if (cursor && attentionCursor) {
+            throw new HappyError('Session query cannot carry both cursor families', false, {
+                kind: 'config',
+                code: 'invalid_query',
+            });
+        }
+        const body: SessionListQueryV1 = {
+            ...queryBase,
+            ...(cursor ? { cursor } : {}),
+            ...(attentionCursor ? { attentionCursor } : {}),
+            limit: params.limit,
+        };
+        return {
+            method: 'POST',
+            headers: buildSessionRequestHeaders(params.token, { includeSessionListTiming: true }),
+            body: JSON.stringify(body),
+        } satisfies RequestInit;
+    })();
 
     const v2Response = await syncPerformanceTelemetry.measureAsync(
         'sync.sessions.snapshot.fetchPage.request',
         params.telemetryFields,
-        async () => params.request(url.pathname + url.search, {
-            headers: buildSessionRequestHeaders(params.token, { includeSessionListTiming: true }),
-        }),
+        async () => params.request(requestPath, requestInit),
     );
     const v2TelemetryFields = {
         ...(params.telemetryFields ?? {}),
@@ -509,6 +640,26 @@ export async function fetchSessionListPageCompat(params: Readonly<{
         : v2TelemetryFields;
 
     if (v2Response.ok) {
+        if (isQuery) {
+            const parsedQuery = syncPerformanceTelemetry.measure(
+                'sync.sessions.snapshot.fetchPage.responseSchema',
+                v2ParseFields,
+                () => SessionListQueryResponseV1Schema.safeParse(v2Body),
+            );
+            if (!parsedQuery.success) {
+                throw new HappyError('Invalid /v2/sessions/query response', false, {
+                    code: 'invalid_response',
+                });
+            }
+            return {
+                sessions: parsedQuery.data.sessions,
+                nextCursor: parsedQuery.data.nextCursor,
+                hasNext: parsedQuery.data.hasNext,
+                attentionNextCursor: parsedQuery.data.attentionNextCursor,
+                attentionHasNext: parsedQuery.data.attentionHasNext,
+                source: 'v2',
+            };
+        }
         const parsed = parseCompatSessionListResponse(v2Body, v2ParseFields);
         if (parsed) {
             return {
@@ -523,16 +674,19 @@ export async function fetchSessionListPageCompat(params: Readonly<{
             };
         }
         if (hasUnsupportedExplicitSessionMetadataLayout(v2Body)) {
-            throw new Error('Unsupported Session metadata layout');
+            throw new HappyError('Unsupported Session metadata layout', false, { code: 'invalid_response' });
         }
         if (hasExplicitNonLegacySessionMetadataEnvelope(v2Body)) {
-            throw new Error('Invalid layout-1 Session metadata response');
+            throw new HappyError('Invalid layout-1 Session metadata response', false, { code: 'invalid_response' });
+        }
+        if (hasExplicitCurrentOrResponsibilitySessionListProjection(v2Body)) {
+            throw new HappyError('Invalid current Session projection', false, { code: 'invalid_response' });
         }
         if (!allowLegacyV1Fallback) {
-            throw new Error('Invalid /v2/sessions response for session-by-id lookup');
+            throw new HappyError('Invalid /v2/sessions response for session-by-id lookup', false, { code: 'invalid_response' });
         }
-    } else if (!looksLikeMissingV2SessionsListRoute(v2Response.status, v2Body)) {
-        throwSessionListHttpError(v2Response.status, '/v2/sessions');
+    } else if (isQuery || !looksLikeMissingV2SessionsListRoute(v2Response.status, v2Body)) {
+        throwSessionListHttpError(v2Response.status, requestPath, v2Body);
     }
 
     if (!allowLegacyV1Fallback) {
@@ -542,10 +696,6 @@ export async function fetchSessionListPageCompat(params: Readonly<{
     const legacyResponse = await params.request('/v1/sessions', {
         headers: buildSessionRequestHeaders(params.token),
     });
-    if (!legacyResponse.ok) {
-        throwSessionListHttpError(legacyResponse.status, '/v1/sessions');
-    }
-
     let legacyResponseChars: number | undefined;
     const legacyBody = await readJsonSafe(legacyResponse, {
         telemetryNamePrefix: 'sync.sessions.snapshot.fetchPage',
@@ -554,12 +704,15 @@ export async function fetchSessionListPageCompat(params: Readonly<{
             legacyResponseChars = responseChars;
         },
     });
+    if (!legacyResponse.ok) {
+        throwSessionListHttpError(legacyResponse.status, '/v1/sessions', legacyBody);
+    }
     const legacyParseFields = typeof legacyResponseChars === 'number'
         ? { ...(params.telemetryFields ?? {}), responseChars: legacyResponseChars }
         : params.telemetryFields;
     const parsedLegacy = parseCompatSessionListResponse(legacyBody, legacyParseFields);
     if (!parsedLegacy) {
-        throw new Error('Invalid /v1/sessions response');
+        throw new HappyError('Invalid /v1/sessions response', false, { code: 'invalid_response' });
     }
 
     return {

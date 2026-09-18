@@ -288,6 +288,23 @@ export function NotificationWebhooksSection({
                             showChevron={false}
                         />
                         <Item
+                            title={t('settingsNotifications.webhooks.requestPreviewTitle')}
+                            subtitle={t('settingsNotifications.webhooks.requestPreviewSubtitle')}
+                            icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
+                            rightElement={(
+                                <Switch
+                                    value={channel.requestIncludeMessageText === true}
+                                    disabled={channel.enabled === false || (channel.topics.permissionRequest === false && channel.topics.userActionRequest === false)}
+                                    onValueChange={(value) => setWebhookChannels(updateNotificationChannelById({
+                                        channels: webhookChannels,
+                                        channelId: channel.id,
+                                        patch: { requestIncludeMessageText: Boolean(value) },
+                                    }))}
+                                />
+                            )}
+                            showChevron={false}
+                        />
+                        <Item
                             title={t('settingsNotifications.webhooks.permissionRequestsTitle')}
                             subtitle={t('settingsNotifications.webhooks.permissionRequestsSubtitle')}
                             icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}

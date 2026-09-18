@@ -6,6 +6,7 @@ import {
     parseQualifiedPluginContributionKey,
     type ConnectedAccountServiceKey,
 } from '@happier-dev/protocol';
+import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 
 import { useProjectedConnectedServicesRegistry } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { resolveQualifiedConnectedServiceRegistryDisplayName } from '@/components/settings/connectedServices/model/resolveConnectedServiceDisplayName';
@@ -31,6 +32,9 @@ export type NewSessionConnectedServicesSelectionContentProps = Readonly<{
     profileOptionsByServiceId: ConnectedServicesProfileOptionsByServiceId;
     groupOptionsByServiceId: ConnectedServicesAccountGroupOptionsByServiceId;
     bindingsByServiceId: Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>;
+    teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+    teamNameById?: Readonly<Record<string, string>>;
+    onRecoverTeamCredentialResource?: (resource: TeamCredentialResourceCatalogEntryV1) => void;
     setBindingForService: (serviceId: string, binding: ConnectedServicesServiceBinding) => void;
     defaultProfileIdByServiceId?: Readonly<Record<string, string | undefined>>;
     includeNativeAuthOption?: boolean;
@@ -72,7 +76,6 @@ function SettingsActionIcon() {
 
 export function NewSessionConnectedServicesSelectionContent(props: NewSessionConnectedServicesSelectionContentProps) {
     const styles = stylesheet;
-    const [bindingsByServiceId, setBindingsByServiceId] = React.useState(props.bindingsByServiceId);
     const connectedServicesRegistry = useProjectedConnectedServicesRegistry();
 
     /** Public applied-descriptor title; neutral fallback for an unknown service. */
@@ -82,10 +85,6 @@ export function NewSessionConnectedServicesSelectionContent(props: NewSessionCon
             ? resolveQualifiedConnectedServiceRegistryDisplayName(connectedServicesRegistry, service, t)
             : t('connectedServices.fallbackName');
     }, [connectedServicesRegistry]);
-
-    React.useEffect(() => {
-        setBindingsByServiceId(props.bindingsByServiceId);
-    }, [props.bindingsByServiceId]);
 
     const requestedProfiles = React.useMemo(() => {
         const next: Array<{ serviceId: string; profileId: string }> = [];
@@ -122,15 +121,16 @@ export function NewSessionConnectedServicesSelectionContent(props: NewSessionCon
         setBindingForService: props.setBindingForService,
         onOpenSettings: props.onOpenSettings,
         onReconnectProfile: props.onReconnectProfile,
+        onRecoverTeamCredentialResource: props.onRecoverTeamCredentialResource,
     });
     handlersRef.current = {
         setBindingForService: props.setBindingForService,
         onOpenSettings: props.onOpenSettings,
         onReconnectProfile: props.onReconnectProfile,
+        onRecoverTeamCredentialResource: props.onRecoverTeamCredentialResource,
     };
 
     const setBindingForService = React.useCallback((serviceId: string, binding: ConnectedServicesServiceBinding) => {
-        setBindingsByServiceId((prev) => ({ ...prev, [serviceId]: binding }));
         handlersRef.current.setBindingForService(serviceId, binding);
     }, []);
     const openSettings = React.useCallback((serviceId: string) => {
@@ -144,13 +144,22 @@ export function NewSessionConnectedServicesSelectionContent(props: NewSessionCon
     const reconnectProfile = typeof props.onReconnectProfile === 'function'
         ? reconnectProfileHandler
         : undefined;
+    const recoverTeamCredentialResourceHandler = React.useCallback((resource: TeamCredentialResourceCatalogEntryV1) => {
+        handlersRef.current.onRecoverTeamCredentialResource?.(resource);
+    }, []);
+    const recoverTeamCredentialResource = typeof props.onRecoverTeamCredentialResource === 'function'
+        ? recoverTeamCredentialResourceHandler
+        : undefined;
 
     const listModel = React.useMemo(() => {
         return buildNewSessionConnectedServicesSelectionListModel({
             supportedServiceIds: props.supportedServiceIds,
             profileOptionsByServiceId: props.profileOptionsByServiceId,
             groupOptionsByServiceId: props.groupOptionsByServiceId,
-            bindingsByServiceId,
+            bindingsByServiceId: props.bindingsByServiceId,
+            teamCredentialResources: props.teamCredentialResources,
+            teamNameById: props.teamNameById,
+            onRecoverTeamCredentialResource: recoverTeamCredentialResource,
             defaultProfileIdByServiceId: props.defaultProfileIdByServiceId,
             includeNativeAuthOption: props.includeNativeAuthOption,
             allowDefaultProfileFallback: props.allowDefaultProfileFallback,
@@ -173,13 +182,14 @@ export function NewSessionConnectedServicesSelectionContent(props: NewSessionCon
             resolveOptionAvailability: props.resolveOptionAvailability,
         });
     }, [
-        bindingsByServiceId,
+        props.bindingsByServiceId,
         openSettings,
         props.allowDefaultProfileFallback,
         props.defaultProfileIdByServiceId,
         props.includeNativeAuthOption,
-        props.groupOptionsByServiceId,
         props.profileOptionsByServiceId,
+        props.teamCredentialResources,
+        props.teamNameById,
         // Kept as a dependency on purpose: unlike the handlers above, these two
         // are INVOKED during the build and their results are baked into every
         // option's `disabled` / `subtitle` / icon variant / section title, so a
@@ -189,6 +199,7 @@ export function NewSessionConnectedServicesSelectionContent(props: NewSessionCon
         props.supportedServiceIds,
         quotaBadgesByKey,
         reconnectProfile,
+        recoverTeamCredentialResource,
         resolveServiceTitle,
         setBindingForService,
     ]);

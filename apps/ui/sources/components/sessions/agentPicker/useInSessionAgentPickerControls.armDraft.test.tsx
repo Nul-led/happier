@@ -124,6 +124,7 @@ async function renderControls(props: HookProps = {}) {
             : hookProps.featureDecision,
         source: hookProps.source ?? supportedSource,
         machine: hookProps.machine ?? onlineMachine,
+        projectionCurrent: true,
         detail: {
             settings: {} as never,
             capabilityServerId: 'server-1',
@@ -313,7 +314,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
                 .find((option) => option.id === 'engine:claude')
                 ?.onSelectImmediate?.();
         });
-        expect(readPersistedArm()).toBeUndefined();
+        expect(readPersistedArm()).toBeNull();
         await first.unmount();
 
         const second = await renderControls();
@@ -332,7 +333,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         const hook = await renderControls({ entries: [entry('claude'), entry('codex'), entry('gemini')] });
 
         expect(hook.getCurrent().armedContinuation).toBeNull();
-        expect(readPersistedArm()).toBeUndefined();
+        expect(readPersistedArm()).toBeNull();
     });
 
     it('clears a persisted arm formed against an Agent the Session no longer runs', async () => {
@@ -350,7 +351,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         });
 
         expect(hook.getCurrent().armedContinuation).toBeNull();
-        expect(readPersistedArm()).toBeUndefined();
+        expect(readPersistedArm()).toBeNull();
     });
 
     it('keeps the submitted snapshot when a successful switch makes its old arm ineligible', async () => {
@@ -462,7 +463,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
 
         expect(hook.getCurrent().armedContinuation).toBeNull();
         expect(hook.getCurrent().armedContinuationLocalId).toBeNull();
-        expect(readPersistedArm()).toBeUndefined();
+        expect(readPersistedArm()).toBeNull();
     });
 
     it('drops the persisted arm with the live one when the rail that could cancel it goes', async () => {
@@ -475,6 +476,6 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         await hook.rerender({ source: { ...supportedSource, machinePresence: 'offline' } });
 
         expect(hook.getCurrent().armedContinuation).toBeNull();
-        expect(readPersistedArm()).toBeUndefined();
+        expect(readPersistedArm()).toBeNull();
     });
 });

@@ -9,6 +9,7 @@ import {
     type ServerAccountScope,
 } from '@/sync/domains/scope/serverAccountScope';
 import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
+import type { AutomationRunNowAdmission } from '@/sync/domains/automations/automationTypes';
 
 export type AutomationRunNowState = 'idle' | 'submitting' | 'acknowledged';
 
@@ -21,9 +22,19 @@ export type AutomationRunNowState = 'idle' | 'submitting' | 'acknowledged';
  */
 export type AutomationRunNowController = Readonly<{
     stateFor: (automationId: string) => AutomationRunNowState;
+    /**
+     * Returns the exact admission receipt the server accepted. `null` means
+     * this invocation did not produce a current handle (unscoped, duplicate,
+     * failed, or retired Account lifetime).
+     *
+     * Managed-workflow navigation reads `workflowRun` from that receipt, which
+     * the Protocol schema already binds to the returned Run id. Consumers must
+     * not infer a managed Workflow Run from the legacy Run projection or pick
+     * the newest history row.
+     */
     runNow: (automationId: string, options?: Readonly<{
         isInvocationCurrent?: () => boolean;
-    }>) => Promise<void>;
+    }>) => Promise<AutomationRunNowAdmission | null>;
 }>;
 
 const ACKNOWLEDGEMENT_MS = 2500;
@@ -55,22 +66,23 @@ async function runAutomationNow(
         isInvocationCurrent?: () => boolean;
         isAuthorityCurrent?: () => boolean;
     }>,
-): Promise<void> {
-    if (inFlightIds.has(stateKey)) return;
+): Promise<AutomationRunNowAdmission | null> {
+    if (inFlightIds.has(stateKey)) return null;
     inFlightIds.add(stateKey);
     const isCurrent = options?.isInvocationCurrent ?? (() => true);
     const isAuthorityCurrent = options?.isAuthorityCurrent ?? (() => true);
     try {
         publishState(stateKey, 'submitting');
-        await sync.runAutomationNow(automationId);
+        const admitted = await sync.runAutomationNow(automationId);
         if (!isAuthorityCurrent()) {
             publishState(stateKey, 'idle');
-            return;
+            return null;
         }
         publishState(stateKey, 'acknowledged');
         setTimeout(() => {
             if (stateById.get(stateKey) === 'acknowledged') publishState(stateKey, 'idle');
         }, ACKNOWLEDGEMENT_MS);
+        return isCurrent() ? admitted : null;
     } catch (error) {
         publishState(stateKey, 'idle');
         if (isAuthorityCurrent() && isCurrent()) {
@@ -79,6 +91,7 @@ async function runAutomationNow(
                 formatAutomationErrorMessage(error, t('automations.detail.runFailed')),
             );
         }
+        return null;
     } finally {
         inFlightIds.delete(stateKey);
     }
@@ -94,8 +107,8 @@ export function useAutomationRunNowController(): AutomationRunNowController {
             ? 'idle'
             : stateById.get(resolveRunNowStateKey(scope, automationId)) ?? 'idle',
         runNow: async (automationId, options) => {
-            if (accountLifetime === null || !accountLifetime.isCurrent()) return;
-            await runAutomationNow(automationId, resolveRunNowStateKey(accountLifetime.scope, automationId), {
+            if (accountLifetime === null || !accountLifetime.isCurrent()) return null;
+            return await runAutomationNow(automationId, resolveRunNowStateKey(accountLifetime.scope, automationId), {
                 ...(options?.isInvocationCurrent
                     ? { isInvocationCurrent: options.isInvocationCurrent }
                     : {}),

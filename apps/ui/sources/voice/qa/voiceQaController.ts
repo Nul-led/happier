@@ -9,9 +9,11 @@ import {
   submitDurableVoiceTextTurn,
   type VoiceTextTurnPendingPort,
 } from '@/voice/binding/sendVoiceSessionComposerText';
+import { resolveVoiceContextSessionFromState } from '@/voice/context/resolveVoiceContextSession';
 import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoiceSessionOwnerMetadata';
 import type { VoiceAgentSendTurnOptions } from '@/voice/agent/types';
 import type { DaemonSpeechStreamQaRouteRequirement } from '@/voice/runtime/daemonInference/daemonSpeechStreamQaRouteRequirement';
+import { areSessionAddressesEqual, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { formatVoiceQaErrorMessage } from './formatVoiceQaErrorMessage';
 import { createDefaultVoiceQaControllerDeps } from './voiceQaRuntimeDeps';
@@ -30,8 +32,8 @@ import {
   formatVoiceQaPermissionModeLabel,
   normalizeVoiceQaText,
   resolveConfiguredVoiceQaProvider,
-  resolveEffectiveVoiceQaSessionId,
-  resolveEffectiveVoiceQaTargetSessionId,
+  resolveEffectiveVoiceQaSessionAddress,
+  resolveEffectiveVoiceQaTargetSessionAddress,
   resolveLocalVoiceQaControlSessionId,
   resolveLocalVoiceQaRuntimeSessionId,
   resolveVoiceQaRuntimeSessionId,
@@ -45,12 +47,15 @@ import {
 
 export type VoiceQaControllerDeps = Readonly<{
   getSettings: () => any;
-  getVoiceTargetState: () => Readonly<{ primaryActionSessionId: string | null; lastFocusedSessionId: string | null }>;
-  ensureLocalBinding: (params: Readonly<{ controlSessionId: string; requestedTargetSessionId?: string | null }>) => Promise<VoiceSessionBinding | null>;
+  getVoiceTargetState: () => Readonly<{
+    primaryActionSessionAddress: SessionAddress | null;
+    lastFocusedSessionAddress: SessionAddress | null;
+  }>;
+  ensureLocalBinding: (params: Readonly<{ controlSessionId: string; requestedTargetSessionAddress?: SessionAddress | null }>) => Promise<VoiceSessionBinding | null>;
   getLocalBinding?: (controlSessionId: string) => VoiceSessionBinding | null;
   ensureLocalRunningAndMaybeWelcome: (sessionId: string) => Promise<string | null>;
-  ensureSessionVisibleForMessageRoute?: (sessionId: string, options?: Readonly<{ forceRefresh?: boolean }>) => Promise<unknown> | void;
-  refreshSessionMessages?: (sessionId: string) => Promise<void> | void;
+  ensureSessionVisibleForMessageRoute?: (address: SessionAddress, options?: Readonly<{ forceRefresh?: boolean }>) => Promise<unknown> | void;
+  refreshSessionMessages?: (address: SessionAddress) => Promise<void> | void;
   pendingPort?: VoiceTextTurnPendingPort;
   commitLocalUserTranscript?: (sessionId: string, prompt: string, localId: string) => Promise<void>;
   sendLocalTurn: (
@@ -60,7 +65,12 @@ export type VoiceQaControllerDeps = Readonly<{
   ) => Promise<Readonly<{ assistantText: string; actions?: ReadonlyArray<unknown> }>>;
   stopLocal: (sessionId: string) => Promise<void>;
   appendLocalContextUpdate: (sessionId: string, update: string) => void;
-  startRealtime: (sessionId: string, initialContext?: string, options?: Readonly<{ textOnly?: boolean }>) => Promise<void>;
+  /**
+   * Startup, media and transport requirements address the exact Home-qualified target, or `null`
+   * for the global Voice agent. The runtime seam collapses that to its Home-local id; QA must not
+   * hand a bare id to a runtime that would resolve it against whichever Home is mounted.
+   */
+  startRealtime: (target: SessionAddress | null, initialContext?: string, options?: Readonly<{ textOnly?: boolean }>) => Promise<void>;
   isRealtimeStarted: () => boolean;
   stopRealtime: () => Promise<void>;
   getRealtimeSession: () => Readonly<{ sendTextMessage: (message: string) => void; sendContextualUpdate: (update: string) => void }> | null;
@@ -76,10 +86,10 @@ export type VoiceQaControllerDeps = Readonly<{
   }>) => Promise<string | null>;
   /** Dev-route media QA delegates to the same lifecycle owner as VoiceSurface. */
   installMediaTransportRouteRequirement?: (input: Readonly<{
-    sessionId: string;
+    target: SessionAddress | null;
     routeKind: DaemonSpeechStreamQaRouteRequirement;
   }>) => () => void;
-  startMedia?: (sessionId: string) => Promise<void>;
+  startMedia?: (target: SessionAddress | null) => Promise<void>;
   stopMedia?: (sessionId: string, adapterId: string | null) => Promise<void>;
   getMediaSnapshot?: () => VoiceSessionSnapshot;
   qaStore: typeof useVoiceQaStore;
@@ -89,6 +99,7 @@ export type VoiceQaStartMode = 'text' | 'media';
 
 type VoiceQaStartParams = Readonly<{
   sessionId?: string | null;
+  sessionAddress?: SessionAddress | null;
   initialContext?: string | null;
   mode?: VoiceQaStartMode;
   transportRouteRequirement?: DaemonSpeechStreamQaRouteRequirement;
@@ -113,11 +124,12 @@ export function createVoiceQaController(
   const startAttempt = async (params?: VoiceQaStartParams): Promise<VoiceQaStartResult> => {
     const settings = deps.getSettings();
     const provider = resolveConfiguredVoiceQaProvider(settings);
-    const targetSessionId = resolveEffectiveVoiceQaSessionId(params?.sessionId, deps.getVoiceTargetState);
+    const targetSessionAddress = resolveEffectiveVoiceQaSessionAddress(params?.sessionAddress ?? params?.sessionId, deps.getVoiceTargetState);
+    const targetSessionId = targetSessionAddress?.sessionId ?? VOICE_AGENT_GLOBAL_SESSION_ID;
     const controlSessionId = provider === 'local_voice_agent' ? resolveLocalVoiceQaControlSessionId() : targetSessionId;
-    beginVoiceQaRun(deps.qaStore, provider, controlSessionId);
-    deps.qaStore.getState().setResolvedSessions({ targetSessionId, runtimeSessionId: null });
-    deps.qaStore.getState().appendSystem(`Starting ${provider} QA session for ${formatVoiceQaTargetLabel(targetSessionId, settings)}`);
+    beginVoiceQaRun(deps.qaStore, provider, controlSessionId, targetSessionAddress);
+    deps.qaStore.getState().setResolvedSessions({ targetSessionAddress, runtimeSessionId: null });
+    deps.qaStore.getState().appendSystem(`Starting ${provider} QA session for ${formatVoiceQaTargetLabel(targetSessionAddress ?? targetSessionId, settings)}`);
     let pendingMediaTransportRouteRelease: (() => void) | null = null;
 
     try {
@@ -130,12 +142,12 @@ export function createVoiceQaController(
             throw new Error('voice_qa_media_transport_route_requirement_unavailable');
           }
           pendingMediaTransportRouteRelease = deps.installMediaTransportRouteRequirement({
-            sessionId: targetSessionId,
+            target: targetSessionAddress,
             routeKind: params.transportRouteRequirement,
           });
         }
 
-        await deps.startMedia(targetSessionId);
+        await deps.startMedia(targetSessionAddress);
         const snapshot = deps.getMediaSnapshot();
         if (
           snapshot.status === 'disconnected'
@@ -158,7 +170,7 @@ export function createVoiceQaController(
         };
         pendingMediaTransportRouteRelease = null;
         deps.qaStore.getState().setResolvedSessions({
-          targetSessionId,
+          targetSessionAddress,
           runtimeSessionId: snapshot.sessionId,
         });
         deps.qaStore
@@ -172,26 +184,26 @@ export function createVoiceQaController(
         assertLocalVoiceAgentSupportedForQa(settings);
         const binding = await deps.ensureLocalBinding({
           controlSessionId,
-          requestedTargetSessionId: targetSessionId === VOICE_AGENT_GLOBAL_SESSION_ID ? null : targetSessionId,
+          requestedTargetSessionAddress: targetSessionAddress,
         });
         if (targetSessionId !== VOICE_AGENT_GLOBAL_SESSION_ID) {
-          await Promise.resolve(deps.ensureSessionVisibleForMessageRoute?.(targetSessionId)).catch(() => {});
-          await Promise.resolve(deps.refreshSessionMessages?.(targetSessionId)).catch(() => {});
+          await Promise.resolve(deps.ensureSessionVisibleForMessageRoute?.(targetSessionAddress!)).catch(() => {});
+          await Promise.resolve(deps.refreshSessionMessages?.(targetSessionAddress!)).catch(() => {});
         }
         const runtimeSessionId = resolveLocalVoiceQaRuntimeSessionId(binding, controlSessionId);
         deps.qaStore.getState().setResolvedSessions({
-          targetSessionId,
+          targetSessionAddress,
           runtimeSessionId: resolveVoiceQaRuntimeSessionId(binding, runtimeSessionId),
         });
         let targetSessionContext =
           targetSessionId !== VOICE_AGENT_GLOBAL_SESSION_ID
-            ? normalizeVoiceQaText(buildVoiceInitialContext(runtimeSessionId, { targetSessionId }))
+            ? normalizeVoiceQaText(buildVoiceInitialContext(runtimeSessionId, { targetSessionAddress }))
             : '';
         let hasPendingRequestsInTargetContext = false;
         let pendingRequestBreakdown: string | null = null;
         if (targetSessionContext) {
           hasPendingRequestsInTargetContext = targetSessionContext.includes('## Pending Requests');
-          pendingRequestBreakdown = formatVoiceQaPendingRequestBreakdown(targetSessionId);
+          pendingRequestBreakdown = formatVoiceQaPendingRequestBreakdown(targetSessionAddress);
           appendVoiceQaPendingRequestContextDiagnostics(
             deps.qaStore,
             hasPendingRequestsInTargetContext,
@@ -200,8 +212,8 @@ export function createVoiceQaController(
         }
         if (targetSessionId !== VOICE_AGENT_GLOBAL_SESSION_ID) {
           const state = storage.getState() as any;
-          const targetSessionMetadata = readVoiceSessionOwnerMetadataFromState(state, targetSessionId);
-          const targetSession = state?.sessions?.[targetSessionId] ?? null;
+          const targetSessionMetadata = readVoiceSessionOwnerMetadataFromState(state, targetSessionAddress!);
+          const targetSession = resolveVoiceContextSessionFromState(targetSessionAddress!, state);
           const permissionMode = normalizeVoiceQaText(targetSessionMetadata?.permissionMode ?? targetSession?.permissionMode);
           if (permissionMode === 'read-only' || permissionMode === 'plan') {
             deps.qaStore
@@ -220,11 +232,11 @@ export function createVoiceQaController(
         if (targetSessionId !== VOICE_AGENT_GLOBAL_SESSION_ID && !hasPendingRequestsInTargetContext) {
           void (async () => {
             await Promise.resolve(
-              deps.ensureSessionVisibleForMessageRoute?.(targetSessionId, { forceRefresh: true }),
+              deps.ensureSessionVisibleForMessageRoute?.(targetSessionAddress!, { forceRefresh: true }),
             ).catch(() => {});
-            await Promise.resolve(deps.refreshSessionMessages?.(targetSessionId)).catch(() => {});
+            await Promise.resolve(deps.refreshSessionMessages?.(targetSessionAddress!)).catch(() => {});
             const refreshedTargetSessionContext = normalizeVoiceQaText(
-              buildVoiceInitialContext(runtimeSessionId, { targetSessionId }),
+              buildVoiceInitialContext(runtimeSessionId, { targetSessionAddress }),
             );
             if (!refreshedTargetSessionContext || refreshedTargetSessionContext === targetSessionContext) return;
             const refreshedHasPendingRequests = refreshedTargetSessionContext.includes('## Pending Requests');
@@ -232,7 +244,7 @@ export function createVoiceQaController(
             appendVoiceQaPendingRequestContextDiagnostics(
               deps.qaStore,
               refreshedHasPendingRequests,
-              formatVoiceQaPendingRequestBreakdown(targetSessionId),
+              formatVoiceQaPendingRequestBreakdown(targetSessionAddress),
               { refreshed: true },
             );
             deps.appendLocalContextUpdate(runtimeSessionId, refreshedTargetSessionContext);
@@ -247,13 +259,13 @@ export function createVoiceQaController(
         return { provider, sessionId: controlSessionId };
       }
 
-      await deps.startRealtime(targetSessionId, normalizeVoiceQaText(params?.initialContext) || undefined, { textOnly: true });
+      await deps.startRealtime(targetSessionAddress, normalizeVoiceQaText(params?.initialContext) || undefined, { textOnly: true });
       if (!deps.isRealtimeStarted()) {
         throw new Error('realtime_voice_session_not_started');
       }
       const realtimeBinding = deps.getRealtimeBinding(targetSessionId);
       deps.qaStore.getState().setResolvedSessions({
-        targetSessionId,
+        targetSessionAddress,
         runtimeSessionId: normalizeVoiceQaText(realtimeBinding?.conversationSessionId) || targetSessionId,
       });
       deps.qaStore.getState().setStatus('running');
@@ -294,23 +306,24 @@ export function createVoiceQaController(
     return mediaStart;
   };
 
-  const sendPrompt = async (params: Readonly<{ prompt: string; sessionId?: string | null; autoStart?: boolean }>) => {
+  const sendPrompt = async (params: Readonly<{ prompt: string; sessionId?: string | null; sessionAddress?: SessionAddress | null; autoStart?: boolean }>) => {
     const prompt = normalizeVoiceQaText(params.prompt);
     if (!prompt) return;
 
     const settings = deps.getSettings();
     const configuredProvider = resolveConfiguredVoiceQaProvider(settings);
-    const targetSessionId = resolveEffectiveVoiceQaTargetSessionId(
-      params.sessionId,
+    const targetSessionAddress = resolveEffectiveVoiceQaTargetSessionAddress(
+      params.sessionAddress ?? params.sessionId,
       configuredProvider,
       deps.getVoiceTargetState,
       deps.qaStore,
     );
+    const targetSessionId = targetSessionAddress?.sessionId ?? VOICE_AGENT_GLOBAL_SESSION_ID;
     const sessionId = configuredProvider === 'local_voice_agent' ? resolveLocalVoiceQaControlSessionId() : targetSessionId;
     const current = deps.qaStore.getState();
     const provider = resolveVoiceQaOperationalProvider(configuredProvider, current, sessionId);
-    if (params.autoStart !== false && (current.status === 'idle' || current.sessionId !== sessionId || current.provider !== provider)) {
-      await start({ sessionId: targetSessionId });
+    if (params.autoStart !== false && (current.status === 'idle' || current.sessionId !== sessionId || current.provider !== provider || (current.targetSessionAddress !== targetSessionAddress && !areSessionAddressesEqual(current.targetSessionAddress, targetSessionAddress)))) {
+      await start({ sessionAddress: targetSessionAddress, sessionId: targetSessionId });
     }
 
     deps.qaStore.getState().appendUser(prompt);
@@ -320,12 +333,12 @@ export function createVoiceQaController(
         assertLocalVoiceAgentSupportedForQa(settings);
         const binding = await deps.ensureLocalBinding({
           controlSessionId: sessionId,
-          requestedTargetSessionId: targetSessionId === VOICE_AGENT_GLOBAL_SESSION_ID ? null : targetSessionId,
+          requestedTargetSessionAddress: targetSessionAddress,
         });
         const runtimeSessionId = resolveLocalVoiceQaRuntimeSessionId(binding, sessionId);
         const conversationSessionId = normalizeVoiceQaText(binding?.conversationSessionId);
         deps.qaStore.getState().setResolvedSessions({
-          targetSessionId,
+          targetSessionAddress,
           runtimeSessionId: resolveVoiceQaRuntimeSessionId(binding, runtimeSessionId),
         });
         if (!conversationSessionId) throw new Error('voice_session_binding_required');
@@ -358,7 +371,7 @@ export function createVoiceQaController(
                   sessionId: runtimeSessionId,
                   userText: prompt,
                   durableLocalId: localId,
-                  currentToolSessionId: targetSessionId === VOICE_AGENT_GLOBAL_SESSION_ID ? null : targetSessionId,
+                  currentToolSessionAddress: targetSessionAddress,
                   voiceAgentSessions: {
                     ...(deps.commitLocalUserTranscript
                       ? { commitUserTranscript: deps.commitLocalUserTranscript }
@@ -448,7 +461,7 @@ export function createVoiceQaController(
       const binding = deps.getRealtimeBinding(sessionId);
       if (binding) {
         deps.qaStore.getState().setResolvedSessions({
-          targetSessionId,
+          targetSessionAddress,
           runtimeSessionId: normalizeVoiceQaText(binding.conversationSessionId) || targetSessionId,
         });
         await deps.sendRealtimeTextTurn({
@@ -470,33 +483,34 @@ export function createVoiceQaController(
     }
   };
 
-  const sendContextUpdate = async (params: Readonly<{ update: string; sessionId?: string | null; autoStart?: boolean }>) => {
+  const sendContextUpdate = async (params: Readonly<{ update: string; sessionId?: string | null; sessionAddress?: SessionAddress | null; autoStart?: boolean }>) => {
     const update = normalizeVoiceQaText(params.update);
     if (!update) return;
     const settings = deps.getSettings();
     const configuredProvider = resolveConfiguredVoiceQaProvider(settings);
-    const targetSessionId = resolveEffectiveVoiceQaTargetSessionId(
-      params.sessionId,
+    const targetSessionAddress = resolveEffectiveVoiceQaTargetSessionAddress(
+      params.sessionAddress ?? params.sessionId,
       configuredProvider,
       deps.getVoiceTargetState,
       deps.qaStore,
     );
+    const targetSessionId = targetSessionAddress?.sessionId ?? VOICE_AGENT_GLOBAL_SESSION_ID;
     const sessionId = configuredProvider === 'local_voice_agent' ? resolveLocalVoiceQaControlSessionId() : targetSessionId;
     const current = deps.qaStore.getState();
     const provider = resolveVoiceQaOperationalProvider(configuredProvider, current, sessionId);
-    if (params.autoStart !== false && (current.status === 'idle' || current.sessionId !== sessionId || current.provider !== provider)) {
-      await start({ sessionId: targetSessionId });
+    if (params.autoStart !== false && (current.status === 'idle' || current.sessionId !== sessionId || current.provider !== provider || (current.targetSessionAddress !== targetSessionAddress && !areSessionAddressesEqual(current.targetSessionAddress, targetSessionAddress)))) {
+      await start({ sessionAddress: targetSessionAddress, sessionId: targetSessionId });
     }
 
     if (provider === 'local_voice_agent') {
       assertLocalVoiceAgentSupportedForQa(settings);
       const binding = await deps.ensureLocalBinding({
         controlSessionId: sessionId,
-        requestedTargetSessionId: targetSessionId === VOICE_AGENT_GLOBAL_SESSION_ID ? null : targetSessionId,
+        requestedTargetSessionAddress: targetSessionAddress,
       });
       const runtimeSessionId = resolveLocalVoiceQaRuntimeSessionId(binding, sessionId);
       deps.qaStore.getState().setResolvedSessions({
-        targetSessionId,
+        targetSessionAddress,
         runtimeSessionId: resolveVoiceQaRuntimeSessionId(binding, runtimeSessionId),
       });
       deps.appendLocalContextUpdate(runtimeSessionId, update);
@@ -518,7 +532,10 @@ export function createVoiceQaController(
   const stop = async (params?: Readonly<{ sessionId?: string | null }>) => {
     const settings = deps.getSettings();
     const current = deps.qaStore.getState();
-    const targetSessionId = resolveEffectiveVoiceQaSessionId(params?.sessionId, deps.getVoiceTargetState);
+    const targetSessionAddress = current.status !== 'idle'
+      ? current.targetSessionAddress
+      : resolveEffectiveVoiceQaSessionAddress(params?.sessionId, deps.getVoiceTargetState);
+    const targetSessionId = targetSessionAddress?.sessionId ?? VOICE_AGENT_GLOBAL_SESSION_ID;
     const configuredProvider = resolveConfiguredVoiceQaProvider(settings);
     const activeLocalControlSessionId =
       current.status !== 'idle' && current.provider === 'local_voice_agent' && normalizeVoiceQaText(current.sessionId)

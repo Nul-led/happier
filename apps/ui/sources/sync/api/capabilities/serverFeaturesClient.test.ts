@@ -60,6 +60,10 @@ function createResponse(status: number, payload: unknown) {
     });
 }
 
+function createValidFeaturesPayload() {
+    return FeaturesResponseSchema.parse({ features: {}, capabilities: {} });
+}
+
 function useFrozenServerFeaturesClock(now = frozenServerFeaturesTime): void {
     vi.useFakeTimers();
     vi.setSystemTime(now);
@@ -166,6 +170,49 @@ describe('serverFeaturesClient', () => {
 
         expect(a.status).toBe('ready');
         expect(b.status).toBe('ready');
+    });
+
+    it('keeps caller wait budgets independent from the shared feature request', async () => {
+        useFrozenServerFeaturesClock();
+        let resolveFetch!: (response: Response) => void;
+        featuresFetchMock.mockImplementation(() => new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+        }));
+
+        const { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+
+        const impatient = getServerFeaturesSnapshot({ force: true, timeoutMs: 10 });
+        const patient = getServerFeaturesSnapshot({ force: true, timeoutMs: 100 });
+        await vi.advanceTimersByTimeAsync(10);
+        await expect(impatient).resolves.toEqual({ status: 'error', reason: 'timeout' });
+
+        resolveFetch(createResponse(200, createValidFeaturesPayload()));
+        await expect(patient).resolves.toMatchObject({ status: 'ready' });
+        expect(featuresFetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a last-ready snapshot visible while scheduling a transient refresh retry', async () => {
+        featuresFetchMock
+            .mockResolvedValueOnce(createResponse(200, createValidFeaturesPayload()))
+            .mockRejectedValueOnce(new TypeError('network unavailable'));
+
+        const {
+            getCachedServerFeaturesSnapshot,
+            getServerFeaturesSnapshot,
+            getServerFeaturesSnapshotRetryDelayMs,
+            resetServerFeaturesClientForTests,
+        } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+
+        await expect(getServerFeaturesSnapshot({ force: true })).resolves.toMatchObject({ status: 'ready' });
+        await expect(getServerFeaturesSnapshot({ force: true })).resolves.toMatchObject({ status: 'ready' });
+        const cached = getCachedServerFeaturesSnapshot();
+        expect(cached).toMatchObject({ status: 'ready' });
+        const retryDelayMs = getServerFeaturesSnapshotRetryDelayMs({ snapshot: cached! });
+        expect(retryDelayMs).not.toBeNull();
+        expect(retryDelayMs!).toBeGreaterThan(0);
+        expect(retryDelayMs!).toBeLessThanOrEqual(5_000);
     });
 
     it('uses a primed feature snapshot without issuing a feature request', async () => {
@@ -1033,12 +1080,6 @@ describe('serverFeaturesClient', () => {
             canonicalServerUrl: 'http://localhost:3010',
             publicServerUrl: null,
             serverIdentityId: 'srv_iroh_home',
-            irohEndpoint: {
-                endpointId: 'a'.repeat(64),
-                relayUrls: ['https://relay-old.example.test'],
-                directAddresses: ['192.0.2.90:443'],
-            },
-            connectionDescriptorRevision: 4,
             homeConnectionDescriptor: {
                 v: 1,
                 homeServerIdentityId: 'srv_iroh_home',
@@ -1048,6 +1089,7 @@ describe('serverFeaturesClient', () => {
                     kind: 'iroh',
                     endpointId: 'a'.repeat(64),
                     relayUrls: ['https://relay-old.example.test'],
+                    directAddresses: ['192.0.2.90:443'],
                 }],
             },
         };
@@ -1142,11 +1184,6 @@ describe('serverFeaturesClient', () => {
             canonicalServerUrl: 'http://localhost:3010',
             publicServerUrl: null,
             serverIdentityId: 'srv_iroh_home',
-            irohEndpoint: {
-                endpointId: 'iroh-home-endpoint',
-                relayUrls: ['https://relay.example.test'],
-            },
-            connectionDescriptorRevision: 4,
             homeConnectionDescriptor: {
                 v: 1,
                 homeServerIdentityId: 'srv_iroh_home',
@@ -1225,11 +1262,6 @@ describe('serverFeaturesClient', () => {
             canonicalServerUrl: 'http://localhost:3010',
             publicServerUrl: null,
             serverIdentityId: 'srv_iroh_home',
-            irohEndpoint: {
-                endpointId: 'iroh-home-endpoint',
-                relayUrls: ['https://relay.example.test'],
-            },
-            connectionDescriptorRevision: 4,
             homeConnectionDescriptor: {
                 v: 1,
                 homeServerIdentityId: 'srv_iroh_home',
@@ -1373,6 +1405,9 @@ describe('serverFeaturesClient', () => {
 
         expect(httpsResult.status).toBe('ready');
         expect(irohResult.status).toBe('ready');
+        if (httpsResult.status !== 'ready' || irohResult.status !== 'ready') {
+            throw new Error('Expected both endpoint observations to be ready');
+        }
         expect(httpsResult.serverIdentityId).toBe('srv_expected_home');
         expect(irohResult.serverIdentityId).toBe('srv_wrong_home');
         expect(featuresFetchMock).toHaveBeenCalledTimes(2);
@@ -1382,6 +1417,42 @@ describe('serverFeaturesClient', () => {
                 'http://127.0.0.1:43123/v1/features',
             ]),
         );
+    });
+
+    it('lets a short endpoint-probe waiter expire without aborting the shared request', async () => {
+        let requestSignal: AbortSignal | undefined;
+        let resolveRequest!: (response: Response) => void;
+        featuresFetchMock.mockImplementation(async (_input: unknown, init?: RequestInit) => {
+            requestSignal = init?.signal ?? undefined;
+            return await new Promise<Response>((resolve) => {
+                resolveRequest = resolve;
+            });
+        });
+
+        const { probeServerFeaturesAtUrl, resetServerFeaturesClientForTests } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+
+        const impatient = probeServerFeaturesAtUrl({
+            endpointUrl: 'https://home.example.test',
+            timeoutMs: 10,
+        });
+        const patient = probeServerFeaturesAtUrl({
+            endpointUrl: 'https://home.example.test',
+            timeoutMs: 2_000,
+        });
+
+        await vi.waitFor(() => expect(requestSignal).toBeDefined());
+        await expect(impatient).resolves.toEqual({ status: 'error', reason: 'timeout' });
+        expect(requestSignal?.aborted).toBe(false);
+        resolveRequest(createResponse(200, {
+            features: {},
+            capabilities: { serverIdentity: { serverIdentityId: 'srv_expected_home' } },
+        }));
+        await expect(patient).resolves.toMatchObject({
+            status: 'ready',
+            serverIdentityId: 'srv_expected_home',
+        });
+        expect(featuresFetchMock).toHaveBeenCalledOnce();
     });
 
     it('probes an explicit ingress-less Home through its semantic carrier', async () => {

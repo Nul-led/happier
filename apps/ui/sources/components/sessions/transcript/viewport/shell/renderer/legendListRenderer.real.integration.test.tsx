@@ -334,6 +334,39 @@ describe('Legend installed web-package cleanup', () => {
         vi.useRealTimers();
     });
 
+    it('revokes a pending tail command through the real wheel takeover before its commit', async () => {
+        const Renderer = legendListRenderer.Component;
+        const listRef = React.createRef<TranscriptListShellRef<Row>>();
+        await act(async () => {
+            root.render(<div id="installed-pinned-host"><Renderer
+                ref={listRef}
+                data={rows(20, 'cancel-tail')}
+                dataKey="cancel-tail"
+                frame={resolveMainTranscriptListShellFrame({
+                    legendInitialScrollAtEnd: false,
+                    nativeID: 'real-legend-host',
+                    platformOS: 'web',
+                })}
+                keyExtractor={(item: Row) => item.id}
+                renderItem={renderRow}
+                webDomObservation={createWebDomScrollObservation()}
+            /></div>);
+        });
+        await flushLegendWork();
+        const scrollElement = findInstalledScrollElement();
+        scrollElement.scrollTo({ top: 120 });
+        await flushLegendWork();
+        physicalScrollWrites.length = 0;
+        const before = scrollElement.scrollTop;
+        await act(async () => {
+            void listRef.current?.scrollToEnd?.({ animated: false });
+            scrollElement.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -100 }));
+        });
+        await flushLegendWork();
+        expect(scrollElement.scrollTop).toBe(before);
+        expect(physicalScrollWrites).toEqual([]);
+    });
+
     it('cancels preserved initial-end correction on user takeover while retaining the no-user correction', async () => {
         const listRef = React.createRef<LegendListRef>();
         useMeasuredLegendGeometry = true;
@@ -410,7 +443,7 @@ describe('Legend installed web-package cleanup', () => {
             await Promise.resolve();
         });
         expect(correctionFrames.length).toBeGreaterThan(0);
-        listRef.current!.cancelInitialScrollPreservation();
+        listRef.current!.cancelScroll();
 
         scrollElement!.__scrollTop = Math.max(0, scrollElement!.scrollTop - 80);
         scrollElement!.dispatchEvent(new Event('scroll'));
@@ -697,7 +730,7 @@ describe('Legend installed web-package cleanup', () => {
         expect(takeoverHandoffFrames[0]!.readyAtSchedule).toBe(true);
         hasMaintainIntent = false;
         await act(async () => {
-            listRef.current!.cancelInitialScrollPreservation();
+            listRef.current!.cancelScroll();
             await Promise.resolve();
         });
         physicalScrollWrites.length = 0;
@@ -871,15 +904,7 @@ describe('Legend installed web-package cleanup', () => {
         expect(
             adapterFrameIndex,
             scheduledFrames.map((frame) => frame.stack).join('\n---\n'),
-        ).toBeGreaterThanOrEqual(0);
-        expect(scheduledFrames.slice(0, adapterFrameIndex).some(
-            (frame) => frame.stack.includes('doMaintainScrollAtEnd'),
-        )).toBe(false);
-
-        const [adapterFrame] = scheduledFrames.splice(adapterFrameIndex, 1);
-        act(() => {
-            adapterFrame?.callback(Date.now());
-        });
+        ).toBe(-1);
 
         expect(readDiagnostics().heldIntents).not.toContainEqual(
             expect.objectContaining({ event: 'residual-write' }),
@@ -1857,6 +1882,8 @@ describe('Legend installed web-package cleanup', () => {
             });
             await act(async () => {
                 flushResizeObservers();
+                await vi.advanceTimersByTimeAsync(100);
+                expect(settled).not.toHaveBeenCalled();
                 vi.setSystemTime(Date.now() + 2_000);
                 for (let pass = 0; pass < 8; pass += 1) {
                     await vi.runOnlyPendingTimersAsync();

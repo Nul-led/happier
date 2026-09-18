@@ -28,6 +28,7 @@ export type BuildMachineSelectionBucketsParams = Readonly<{
     showRecent?: boolean;
     disableOfflineMachines?: boolean;
     favoriteGroupPlacement?: MachineSelectionFavoriteGroupPlacement;
+    includeSelectedUnavailableMachineId?: string | null;
 }>;
 
 function isMachineSelectableForLaunch(machine: Machine): boolean {
@@ -50,9 +51,11 @@ export function buildMachineSelectionBuckets(params: BuildMachineSelectionBucket
     const disableOfflineMachines = params.disableOfflineMachines ?? true;
     const favoriteGroupPlacement = params.favoriteGroupPlacement ?? 'afterRecent';
 
-    const visibleMachines = params.machines.filter(isMachineVisibleForLaunchSelection);
-    const visibleRecentMachines = (params.recentMachines ?? []).filter(isMachineVisibleForLaunchSelection);
-    const visibleFavoriteMachines = (params.favoriteMachines ?? []).filter(isMachineVisibleForLaunchSelection);
+    const isVisible = (machine: Machine) => isMachineVisibleForLaunchSelection(machine)
+        || machine.id === params.includeSelectedUnavailableMachineId;
+    const visibleMachines = params.machines.filter(isVisible);
+    const visibleRecentMachines = (params.recentMachines ?? []).filter(isVisible);
+    const visibleFavoriteMachines = (params.favoriteMachines ?? []).filter(isVisible);
 
     const launchPinnedRecentMachines = disableOfflineMachines
         ? visibleRecentMachines.filter(isMachineSelectableForLaunch)

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
@@ -8,13 +8,19 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
 export const ApprovalDecisionFooter = React.memo(function ApprovalDecisionFooter(props: Readonly<{
     disabled?: boolean;
+    decisionDisabled?: boolean;
+    approveDisabled?: boolean;
+    approveAccessibilityHint?: string;
     disabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
     isDeciding: boolean;
     onApprove: () => void;
     onReject: () => void;
+    testIDPrefix?: string;
 }>) {
     const { theme } = useUnistyles();
-    const disabled = props.disabled === true || props.isDeciding;
+    const disabled = props.disabled === true || props.decisionDisabled === true || props.isDeciding;
+    const approveDisabled = disabled || props.approveDisabled === true;
+    const testIDPrefix = props.testIDPrefix ?? 'approval-prompt';
 
     if (props.disabledReason === 'inactive') return null;
 
@@ -36,16 +42,17 @@ export const ApprovalDecisionFooter = React.memo(function ApprovalDecisionFooter
     return (
         <View style={styles.container}>
             <Pressable
-                testID="approval-prompt-approve"
+                testID={`${testIDPrefix}-approve`}
                 accessibilityRole="button"
                 accessibilityLabel={t('approvals.approve')}
-                disabled={disabled}
+                accessibilityHint={props.approveAccessibilityHint}
+                disabled={approveDisabled}
                 onPress={props.onApprove}
                 style={({ pressed }) => [
                     styles.button,
                     styles.approveButton,
-                    pressed && !disabled ? styles.buttonPressed : null,
-                    disabled ? styles.buttonDisabled : null,
+                    pressed && !approveDisabled ? styles.buttonPressed : null,
+                    approveDisabled ? styles.buttonDisabled : null,
                 ]}
             >
                 {props.isDeciding ? (
@@ -55,7 +62,7 @@ export const ApprovalDecisionFooter = React.memo(function ApprovalDecisionFooter
                 )}
             </Pressable>
             <Pressable
-                testID="approval-prompt-reject"
+                testID={`${testIDPrefix}-reject`}
                 accessibilityRole="button"
                 accessibilityLabel={t('approvals.reject')}
                 disabled={disabled}
@@ -81,7 +88,8 @@ const styles = StyleSheet.create((theme) => ({
         gap: 8,
     },
     button: {
-        minHeight: 32,
+        minHeight: Platform.select({ ios: 44, default: 48 }),
+        minWidth: Platform.select({ ios: 44, default: 48 }),
         paddingHorizontal: 12,
         borderRadius: 8,
         alignItems: 'center',

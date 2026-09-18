@@ -10,9 +10,27 @@ import {
     encryptSecretStringV1,
     openAccountScopedBlobCiphertext,
     sealAccountScopedBlobCiphertext,
+    type AccountSettingsStoredContentEnvelope,
 } from '@happier-dev/protocol';
 
 const mocks = vi.hoisted(() => {
+    const serverFetch = vi.fn();
+    const pushProjectionFetch = vi.fn();
+    const runtimeFetchWithServerReachability = vi.fn();
+    const createServerFetchAtEndpoint = vi.fn((params: Readonly<{
+        endpointUrl: string;
+        credentials?: AuthCredentials | null;
+    }>) => async (path: string, init?: RequestInit) => {
+        if (path.startsWith('/v2/session-organization')) {
+            return await runtimeFetchWithServerReachability({
+                serverUrl: params.endpointUrl,
+                token: params.credentials?.token ?? '',
+                url: `${params.endpointUrl.replace(/\/+$/, '')}${path}`,
+                init,
+            });
+        }
+        return await serverFetch(path, init);
+    });
     const settingsParse = vi.fn((value: unknown) => {
         const record =
             value && typeof value === 'object' && !Array.isArray(value)
@@ -27,8 +45,10 @@ const mocks = vi.hoisted(() => {
     return {
         createEncryptionFromAuthCredentials: vi.fn(),
         getRandomBytes: vi.fn((length: number) => new Uint8Array(length).fill(4)),
-        serverFetch: vi.fn(),
-        runtimeFetchWithServerReachability: vi.fn(),
+        serverFetch,
+        pushProjectionFetch,
+        createServerFetchAtEndpoint,
+        runtimeFetchWithServerReachability,
         applySettingsFn: vi.fn((base: Record<string, unknown>, delta: Record<string, unknown>) => ({
             ...base,
             ...delta,
@@ -42,9 +62,7 @@ const mocks = vi.hoisted(() => {
             } as Record<string, unknown>,
             settingsVersion: 9,
             applySettings: vi.fn(),
-            replaceSettings: vi.fn(),
             applySettingsForScope: vi.fn(),
-            replaceSettingsForScope: vi.fn(),
             applySettingsLocal: vi.fn(),
         },
         storageStoreState: {
@@ -91,11 +109,25 @@ vi.mock('@/sync/domains/settings/debugSettings', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({ serverUrl: 'http://127.0.0.1:3009' }),
+    getActiveServerSnapshot: () => ({
+        serverId: 'srv_identity',
+        serverUrl: 'http://127.0.0.1:3009',
+        generation: 1,
+    }),
+    getActiveServerHomeCarrier: () => null,
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    getServerProfileById: (serverId: string) => ({
+        id: serverId,
+        serverIdentityId: serverId,
+        serverUrl: 'http://127.0.0.1:3009',
+        canonicalServerUrl: 'http://127.0.0.1:3009',
+    }),
     getServerProfileLegacyServerIds: () => ['localhost-52753'],
+    resolveServerProfileScopeId: (profile: Readonly<{ serverIdentityId?: string; id: string }>) => (
+        profile.serverIdentityId ?? profile.id
+    ),
 }));
 
 vi.mock('@/sync/domains/state/storage', async () => {
@@ -178,6 +210,7 @@ vi.mock('@/sync/encryption/secretSettings', async (importOriginal) => {
 
 vi.mock('@/sync/http/client', () => ({
     serverFetch: mocks.serverFetch,
+    createServerFetchAtEndpoint: mocks.createServerFetchAtEndpoint,
 }));
 
 vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
@@ -210,6 +243,24 @@ describe('syncSettings account settings ciphertext', () => {
     beforeEach(() => {
         invalidateAccountEncryptionModeCache();
         mocks.serverFetch.mockReset();
+        mocks.pushProjectionFetch.mockReset();
+        mocks.pushProjectionFetch.mockImplementation(async () => new Response(JSON.stringify({ tokens: [] })));
+        mocks.createServerFetchAtEndpoint.mockReset();
+        mocks.createServerFetchAtEndpoint.mockImplementation((params: Readonly<{
+            endpointUrl: string;
+            credentials?: AuthCredentials | null;
+        }>) => async (path: string, init?: RequestInit) => {
+            if (path === '/v1/push-tokens?projectionVersion=2') return await mocks.pushProjectionFetch(path, init);
+            if (path.startsWith('/v2/session-organization')) {
+                return await mocks.runtimeFetchWithServerReachability({
+                    serverUrl: params.endpointUrl,
+                    token: params.credentials?.token ?? '',
+                    url: `${params.endpointUrl.replace(/\/+$/, '')}${path}`,
+                    init,
+                });
+            }
+            return await mocks.serverFetch(path, init);
+        });
         mocks.runtimeFetchWithServerReachability.mockReset();
         mocks.applySettingsFn.mockClear();
         mocks.settingsParse.mockClear();
@@ -225,9 +276,7 @@ describe('syncSettings account settings ciphertext', () => {
         };
         mocks.storageState.settingsVersion = 9;
         mocks.storageState.applySettings.mockReset();
-        mocks.storageState.replaceSettings.mockReset();
         mocks.storageState.applySettingsForScope.mockReset();
-        mocks.storageState.replaceSettingsForScope.mockReset();
         mocks.storageState.applySettingsLocal.mockReset();
         mocks.storageStoreState.setSessionOrganizationLoading.mockReset();
         mocks.storageStoreState.setSessionOrganizationError.mockReset();
@@ -236,6 +285,149 @@ describe('syncSettings account settings ciphertext', () => {
         mocks.storageStoreState.setSessionTagAssignmentsOptimistic.mockReturnValue('optimistic-tag-assignment');
         mocks.storageStoreState.commitSessionOrganizationOptimistic.mockReset();
         mocks.storageStoreState.rollbackSessionOrganizationOptimistic.mockReset();
+    });
+
+    it('refuses plaintext Account settings when the trusted local client pin requires E2EE', async () => {
+        mocks.storageState.settings = {
+            analyticsOptOut: false,
+            clientEncryptionRequirementLocalV1: 'require_e2ee',
+            clientEncryptionRequirementV1: 'follow_account',
+        };
+        mocks.serverFetch.mockImplementation(async (path: string) => {
+            if (path === '/v1/account/encryption') {
+                return new Response(JSON.stringify({ mode: 'plain', updatedAt: 1 }));
+            }
+            if (path === '/v2/account/settings') {
+                return new Response(JSON.stringify({
+                    content: { t: 'plain', v: { analyticsOptOut: false } },
+                    version: 10,
+                }));
+            }
+            throw new Error(`Unexpected request ${path}`);
+        });
+
+        await expect(syncSettings({
+            credentials: { token: 'token-only' },
+            encryption: null,
+            pendingSettings: {},
+            clearPendingSettings: vi.fn(),
+        })).rejects.toMatchObject({ code: 'CLIENT_E2EE_REQUIRED' });
+        expect(mocks.storageState.applySettings).not.toHaveBeenCalled();
+        expect(mocks.storageState.applySettingsForScope).not.toHaveBeenCalled();
+    });
+
+    it('rederives disclosed policy from every merged CAS winner after positive negotiation', async () => {
+        mocks.pushProjectionFetch.mockImplementation(async () => new Response(JSON.stringify({
+            v: 2, accountRemoteAlerts: { settingsVersion: 4, status: 'stale' }, tokens: [],
+        })));
+        let posts = 0;
+        const bodies: Array<{ remoteAlertPolicy?: { channels: { expo_push: { enabled: boolean } } }; expectedVersion: number }> = [];
+        mocks.serverFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'plain', updatedAt: 0 }));
+            if (path === '/v2/account/settings' && init?.method !== 'POST') return new Response(JSON.stringify({
+                content: { t: 'plain', v: { sessionRemoteAlertsEnabled: true } }, version: 4,
+            }));
+            if (path === '/v2/account/settings' && init?.method === 'POST') {
+                bodies.push(JSON.parse(String(init.body)));
+                posts += 1;
+                return new Response(JSON.stringify(posts === 1 ? {
+                    success: false, error: 'version-mismatch', currentVersion: 5,
+                    currentContent: { t: 'plain', v: { sessionRemoteAlertsEnabled: true,
+                        attentionDeliveryPolicyV1: { channels: { expo_push: { enabled: false } } } } },
+                } : { success: true, version: 6 }));
+            }
+            throw new Error(`Unexpected request ${path}`);
+        });
+        await syncSettings({ credentials: { token: 'token-only' }, encryption: null,
+            pendingSettings: { analyticsOptOut: true }, clearPendingSettings: vi.fn() });
+        expect(bodies.map((body) => body.expectedVersion)).toEqual([4, 5]);
+        expect(bodies.map((body) => body.remoteAlertPolicy?.channels.expo_push.enabled)).toEqual([true, false]);
+    });
+
+    it('republishes an opted-in stale remote-alert policy without an unrelated settings change', async () => {
+        mocks.pushProjectionFetch.mockImplementation(async () => new Response(JSON.stringify({
+            v: 2, accountRemoteAlerts: { settingsVersion: 3, status: 'stale' }, tokens: [],
+        })));
+        const posts: Array<{ expectedVersion: number; remoteAlertPolicy?: { channels: { expo_push: { enabled: boolean } } } }> = [];
+        mocks.serverFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'plain', updatedAt: 0 }));
+            if (path === '/v2/account/settings' && init?.method !== 'POST') return new Response(JSON.stringify({
+                content: { t: 'plain', v: { sessionRemoteAlertsEnabled: true } }, version: 4,
+            }));
+            if (path === '/v2/account/settings' && init?.method === 'POST') {
+                posts.push(JSON.parse(String(init.body)));
+                return new Response(JSON.stringify({ success: true, version: 5 }));
+            }
+            throw new Error(`Unexpected request ${path}`);
+        });
+
+        await syncSettings({
+            credentials: { token: 'token-only' },
+            encryption: null,
+            pendingSettings: {},
+            republishRemoteAlertPolicy: true,
+            clearPendingSettings: vi.fn(),
+        });
+
+        expect(posts).toHaveLength(1);
+        expect(posts[0]?.expectedVersion).toBe(4);
+        expect(posts[0]?.remoteAlertPolicy?.channels.expo_push.enabled).toBe(true);
+    });
+
+    it('does not rewrite settings when the remote-alert policy is already current', async () => {
+        mocks.pushProjectionFetch.mockImplementation(async () => new Response(JSON.stringify({
+            v: 2, accountRemoteAlerts: { settingsVersion: 4, status: 'current' }, tokens: [],
+        })));
+        let settingsPosts = 0;
+        mocks.serverFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'plain', updatedAt: 0 }));
+            if (path === '/v2/account/settings' && init?.method !== 'POST') return new Response(JSON.stringify({
+                content: { t: 'plain', v: { sessionRemoteAlertsEnabled: true } }, version: 4,
+            }));
+            if (path === '/v2/account/settings' && init?.method === 'POST') {
+                settingsPosts += 1;
+                return new Response(JSON.stringify({ success: true, version: 5 }));
+            }
+            throw new Error(`Unexpected request ${path}`);
+        });
+
+        await syncSettings({
+            credentials: { token: 'token-only' },
+            encryption: null,
+            pendingSettings: {},
+            republishRemoteAlertPolicy: true,
+            clearPendingSettings: vi.fn(),
+        });
+
+        expect(settingsPosts).toBe(0);
+    });
+
+    it('does not repeatedly publish a disabled projection for an opted-out account', async () => {
+        mocks.pushProjectionFetch.mockImplementation(async () => new Response(JSON.stringify({
+            v: 2, accountRemoteAlerts: { settingsVersion: 4, status: 'disabled' }, tokens: [],
+        })));
+        let settingsPosts = 0;
+        mocks.serverFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'plain', updatedAt: 0 }));
+            if (path === '/v2/account/settings' && init?.method !== 'POST') return new Response(JSON.stringify({
+                content: { t: 'plain', v: { sessionRemoteAlertsEnabled: false } }, version: 4,
+            }));
+            if (path === '/v2/account/settings' && init?.method === 'POST') {
+                settingsPosts += 1;
+                return new Response(JSON.stringify({ success: true, version: 5 }));
+            }
+            throw new Error(`Unexpected request ${path}`);
+        });
+
+        await syncSettings({
+            credentials: { token: 'token-only' },
+            encryption: null,
+            pendingSettings: {},
+            republishRemoteAlertPolicy: true,
+            clearPendingSettings: vi.fn(),
+        });
+
+        expect(settingsPosts).toBe(0);
     });
 
     it('fails closed instead of persisting plaintext-account settings locally without device secret custody', async () => {
@@ -284,7 +476,6 @@ describe('syncSettings account settings ciphertext', () => {
         });
 
         expect(mocks.storageState.applySettings).not.toHaveBeenCalled();
-        expect(mocks.storageState.replaceSettings).not.toHaveBeenCalled();
         expect(mocks.serverFetch).toHaveBeenCalledTimes(2);
         expect(mocks.serverFetch.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
     });
@@ -354,7 +545,6 @@ describe('syncSettings account settings ciphertext', () => {
         const postCalls = mocks.serverFetch.mock.calls.filter(([, init]) => init?.method === 'POST');
         expect(postCalls).toHaveLength(1);
         expect(mocks.storageState.applySettings).not.toHaveBeenCalled();
-        expect(mocks.storageState.replaceSettings).not.toHaveBeenCalled();
     });
 
     it('settles opposite one-shot mutations from the same version as one applied and one conflict without replay', async () => {
@@ -445,6 +635,7 @@ describe('syncSettings account settings ciphertext', () => {
             'applied',
             'conflict',
         ]);
+        expect(mocks.createServerFetchAtEndpoint).toHaveBeenCalledTimes(2);
         expect(firstMutation).toHaveBeenCalledOnce();
         expect(secondMutation).toHaveBeenCalledOnce();
         expect(mocks.serverFetch.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(2);
@@ -512,6 +703,7 @@ describe('syncSettings account settings ciphertext', () => {
             lastKnownSettingsVersion: 5,
             safeSnapshotVersion: 5,
         });
+        expect(mocks.createServerFetchAtEndpoint).toHaveBeenCalledOnce();
         expect(mutate).toHaveBeenCalledOnce();
         expect(mocks.serverFetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
         expect(mocks.serverFetch.mock.calls.filter(([path, init]) => (
@@ -520,6 +712,47 @@ describe('syncSettings account settings ciphertext', () => {
         expect(mocks.storageState.applySettings).toHaveBeenCalledWith(
             expect.objectContaining({ pluginEndpoint: 'https://possibly-applied.example.test' }),
             5,
+        );
+    });
+
+    it('lets one external transaction commit the canonically prepared Settings envelope', async () => {
+        const commitPrepared = vi.fn(async (prepared: Readonly<{
+            content: AccountSettingsStoredContentEnvelope;
+            expectedSettingsVersion: number;
+            accountMode: 'plain' | 'e2ee';
+        }>) => ({ status: 'applied' as const, settingsVersion: 8 }));
+        mocks.serverFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') {
+                return Response.json({ mode: 'plain', updatedAt: Date.now() });
+            }
+            if (path === '/v2/account/settings' && init?.method !== 'POST') {
+                return Response.json({ content: { t: 'plain', v: { keep: true } }, version: 7 });
+            }
+            throw new Error(`Unexpected settings request: ${path}`);
+        });
+
+        const result = await syncSettings({
+            credentials,
+            encryption: null,
+            pendingSettings: {},
+            clearPendingSettings: vi.fn(),
+            oneShotServerSettingsMutation: {
+                expectedSettingsVersion: 7,
+                mutate: (raw) => ({ settings: { ...raw, promoted: true }, value: 'resource-a' }),
+                commitPrepared,
+            },
+        });
+
+        expect(result).toEqual({ status: 'applied', settingsVersion: 8, value: 'resource-a' });
+        expect(commitPrepared).toHaveBeenCalledWith({
+            content: { t: 'plain', v: { keep: true, promoted: true } },
+            expectedSettingsVersion: 7,
+            accountMode: 'plain',
+        });
+        expect(mocks.serverFetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+        expect(mocks.storageState.applySettings).toHaveBeenCalledWith(
+            expect.objectContaining({ keep: true, promoted: true }),
+            8,
         );
     });
 
@@ -579,6 +812,7 @@ describe('syncSettings account settings ciphertext', () => {
             },
         });
 
+        expect(mocks.createServerFetchAtEndpoint).toHaveBeenCalledOnce();
         const postBodies = mocks.serverFetch.mock.calls
             .filter((call) => call[1]?.method === 'POST')
             .map((call) => JSON.parse(String(call[1]?.body)) as { content: { c: string }; expectedVersion: number });
@@ -1047,6 +1281,12 @@ describe('syncSettings account settings ciphertext', () => {
             clearPendingSettings: vi.fn(),
         });
 
+        expect(mocks.createServerFetchAtEndpoint).toHaveBeenCalledOnce();
+        expect(mocks.createServerFetchAtEndpoint).toHaveBeenCalledWith(expect.objectContaining({
+            serverId: 'srv_identity',
+            endpointUrl: 'http://127.0.0.1:3009',
+            credentials,
+        }));
         expect(mocks.serverFetch.mock.calls.map((call) => [call[0], call[1]?.method ?? 'GET'])).toEqual([
             ['/v1/account/encryption', 'GET'],
             ['/v2/account/settings', 'GET'],

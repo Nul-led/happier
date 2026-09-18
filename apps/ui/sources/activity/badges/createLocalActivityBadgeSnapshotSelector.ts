@@ -1,3 +1,4 @@
+import { readSessionViewerAttentionSignature } from '@/sync/domains/session/readState/sessionViewerAttention';
 import type { AccountSettings } from '@happier-dev/protocol';
 
 import { buildActivityOverviewFromSource } from '@/activity/source/buildActivityOverviewFromSource';
@@ -22,8 +23,10 @@ import {
 } from '@/sync/domains/session/pending/listPendingSessionRequests';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
+import type { ActivityAttentionDeliveryEventKind } from '@/activity/delivery/activityAttentionDeliveryPlanTypes';
 import { resolveActivityAttentionDeliveryPlan } from '@/activity/delivery/resolveActivityAttentionDeliveryPlan';
 import { AttentionDeviceOverridesV1Schema } from '@/sync/domains/settings/attentionDeviceOverridesV1';
 import type { StorageState } from '@/sync/store/types';
@@ -38,6 +41,15 @@ import {
 
 export type LocalActivityBadgeSnapshot = Readonly<{
     channelDisabled: boolean;
+    /**
+     * Whether any Home's exact Account badge policy is known yet.
+     *
+     * "No Home has answered" is not the same fact as "a Home answered no": writing 0 while the
+     * first answer is still outstanding clears a correct badge on every launch. Fail-closed is
+     * per Home — an unresolved Home contributes nothing — and this flag keeps the device from
+     * writing anything at all until at least one Home has spoken.
+     */
+    policyReady: boolean;
     hasLocalActivitySource: boolean;
     isDataReady: boolean;
     localBadgeState: Readonly<{
@@ -51,10 +63,20 @@ export type LocalActivityBadgeSnapshot = Readonly<{
 }>;
 
 export type LocalActivityBadgeSnapshotSelectorParams = Readonly<{
-    accountSettings: Partial<AccountSettings> | Readonly<Record<string, unknown>>;
+    /**
+     * Each Home's own persisted Account delivery policy, keyed by the `serverId` its Sessions carry.
+     *
+     * The badge aggregates Sessions from every Home onto one app icon, so one Account setting can
+     * never govern the corpus: an absent key fails closed for that Home, and switching the active
+     * Home cannot change what a sibling Home contributes.
+     */
+    accountSettingsByServerId: Readonly<Record<string, Partial<AccountSettings>>>;
     friendRequestCount: number;
     hasNonNumericInboxAttention: boolean;
     localSettings: Partial<LocalSettings> | Readonly<Record<string, unknown>>;
+    personalSessionListCoverageComplete?: ActivityAttentionSource['personalSessionListCoverageComplete'];
+    personalSessionListMembershipByServerId?: Readonly<Record<string, readonly string[]>>;
+    personalSessionListQueryStatesByServerId?: ActivityAttentionSource['personalSessionListQueryStatesByServerId'];
 }>;
 
 type SignatureCacheEntry<T> = Readonly<{
@@ -63,11 +85,17 @@ type SignatureCacheEntry<T> = Readonly<{
 }>;
 
 const EMPTY_INDEX_BY_SERVER_ID: ActivityAttentionSource['sessionListIndexByServerId'] = {};
-const EMPTY_RENDERABLES_BY_ID: ActivityAttentionSource['sessionListRenderablesById'] = {};
 const EMPTY_CONCURRENT_CACHE_BY_SERVER_ID: ActivityAttentionSource['concurrentSessionListCacheByServerId'] = {};
 
 function readNumber(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null;
+}
+
+function joinSignatureParts(parts: readonly unknown[]): string {
+    return parts.map((part) => {
+        const value = part == null ? '' : String(part);
+        return `${value.length}:${value}`;
+    }).join('');
 }
 
 function readFreshnessBit(
@@ -97,8 +125,9 @@ function buildSessionActivitySignature(session: Session): string {
     const metadata = readSessionOwnerMetadataView(session);
     const readState = metadata?.readStateV1;
     const agentState = session.agentState;
-    return [
+    return joinSignatureParts([
         session.id,
+        readSessionViewerAttentionSignature(session),
         session.active === true ? 1 : 0,
         readNumber(session.activeAt) ?? '',
         session.presence,
@@ -123,14 +152,15 @@ function buildSessionActivitySignature(session: Session): string {
         readNumber(session.pendingRequestObservedAt) ?? '',
         readPendingAgentStateRequestSignature(agentState?.requests),
         readPendingAgentStateCompletedRequestSignature(agentState?.completedRequests),
-    ].join('\u001f');
+    ]);
 }
 
 function buildRenderableActivitySignature(renderable: SessionListRenderableSession): string {
     const metadata = renderable.metadata;
     const readState = metadata?.readStateV1;
-    return [
+    return joinSignatureParts([
         renderable.id,
+        readSessionViewerAttentionSignature(renderable),
         readNumber(renderable.seq) ?? '',
         readNumber(renderable.pendingBlockedCount) ?? '',
         hasRenderablePendingRequestProjection(renderable) ? readNumber(renderable.updatedAt) ?? '' : '',
@@ -151,20 +181,20 @@ function buildRenderableActivitySignature(renderable: SessionListRenderableSessi
         renderable.hasPendingPermissionRequests === true ? 1 : 0,
         renderable.hasPendingUserActionRequests === true ? 1 : 0,
         readNumber(renderable.pendingRequestObservedAt) ?? '',
-    ].join('\u001f');
+    ]);
 }
 
 function buildSessionMessagesActivitySignature(
     sessionMessages: StorageState['sessionMessages'][string] | undefined,
 ): string {
     if (!sessionMessages) return '';
-    return [
+    return joinSignatureParts([
         sessionMessages.isLoaded === true ? 1 : 0,
         readNumber(sessionMessages.messagesVersion) ?? '',
         readNumber(sessionMessages.latestReadyEventSeq) ?? '',
         readNumber(sessionMessages.latestReadyEventAt) ?? '',
         sessionMessages.messageIdsOldestFirst.length,
-    ].join('\u001f');
+    ]);
 }
 
 function buildRuntimeFreshnessSignature(
@@ -178,26 +208,26 @@ function buildRuntimeFreshnessSignature(
         ?? readNumber(session.pendingRequestObservedAt)
         ?? transcriptPendingRequestObservedAt;
 
-    return [
+    return joinSignatureParts([
         readFreshnessBit(session.thinkingAt, nowMs),
         readFreshnessBit(session.optimisticThinkingAt, nowMs, SESSION_OPTIMISTIC_PENDING_THINKING_MS),
         readFreshnessBit(session.latestTurnStatusObservedAt, nowMs),
         readFreshnessBit(session.meaningfulActivityAt, nowMs),
         readFreshnessBit(pendingRequestObservedAt, nowMs),
-    ].join(':');
+    ]);
 }
 
 function buildRenderableRuntimeFreshnessSignature(
     renderable: SessionListRenderableSession,
     nowMs: number,
 ): string {
-    return [
+    return joinSignatureParts([
         readFreshnessBit(renderable.thinkingAt, nowMs),
         readFreshnessBit(renderable.optimisticThinkingAt, nowMs, SESSION_OPTIMISTIC_PENDING_THINKING_MS),
         readFreshnessBit(renderable.latestTurnStatusObservedAt, nowMs),
         readFreshnessBit(renderable.meaningfulActivityAt, nowMs),
         readFreshnessBit(renderable.pendingRequestObservedAt, nowMs),
-    ].join(':');
+    ]);
 }
 
 function buildCachedRecordSignature<T>(
@@ -211,7 +241,7 @@ function buildCachedRecordSignature<T>(
             cache.delete(cachedId);
         }
     }
-    return ids.map((id) => {
+    return joinSignatureParts(ids.map((id) => {
         const value = record[id];
         const cached = cache.get(id);
         const signature = cached !== undefined && cached.value === value
@@ -220,59 +250,69 @@ function buildCachedRecordSignature<T>(
         if (cached?.value !== value) {
             cache.set(id, { signature, value });
         }
-        return `${id}\u001e${signature}`;
-    }).join('\u001d');
+        return joinSignatureParts([id, signature]);
+    }));
 }
 
 function buildSessionListIndexSignature(
     indexByServerId: StorageState['sessionListIndexByServerId'],
 ): string {
-    return collectRecordIds(indexByServerId ?? {}).sort().map((serverId) => {
+    return joinSignatureParts(collectRecordIds(indexByServerId ?? {}).sort().map((serverId) => {
         const items = indexByServerId?.[serverId] ?? [];
-        return `${serverId}\u001e${Array.isArray(items)
-            ? items.map((item: SessionListIndexItem) => (
+        const itemSignature = Array.isArray(items)
+            ? joinSignatureParts(items.map((item: SessionListIndexItem) => (
                 item.type === 'session'
-                    ? ['s', item.sessionId, item.serverId ?? '', item.serverName ?? ''].join(':')
-                    : ['h', item.type].join(':')
-            )).join('|')
-            : ''}`;
-    }).join('\u001d');
+                    ? joinSignatureParts(['s', item.sessionId, item.serverId ?? '', item.serverName ?? ''])
+                    : joinSignatureParts(['h', item.type])
+            )))
+            : '';
+        return joinSignatureParts([serverId, itemSignature]);
+    }));
 }
 
 function buildConcurrentCacheSignature(
     cacheByServerId: StorageState['concurrentSessionListCacheByServerId'],
-    nowMs: number,
 ): string {
-    return collectRecordIds(cacheByServerId ?? {}).sort().map((serverId) => {
+    return joinSignatureParts(collectRecordIds(cacheByServerId ?? {}).sort().map((serverId) => {
         const entry = cacheByServerId?.[serverId];
-        const sessions = entry?.sessions ?? {};
-        const sessionSignature = collectRecordIds(sessions).sort().map((sessionId) => {
-            const session = sessions[sessionId];
-            if (!session) return `${sessionId}\u001e`;
-            return [
-                sessionId,
-                buildRenderableActivitySignature(session),
-                buildRenderableRuntimeFreshnessSignature(session, nowMs),
-            ].join('\u001e');
-        }).join('\u001d');
-        return [serverId, entry?.serverName ?? '', sessionSignature].join('\u001e');
-    }).join('\u001c');
+        return joinSignatureParts([serverId, entry?.serverName ?? '']);
+    }));
 }
 
-function collectPotentialSessionIds(state: StorageState): string[] {
+function buildOrdinaryRowsSignature(
+    state: StorageState,
+    cache: Map<string, SignatureCacheEntry<SessionListRenderableSession>>,
+    buildValueSignature: (row: SessionListRenderableSession) => string,
+): string {
+    const addresses = Object.entries(state.ordinarySessionListMembershipByServerId ?? {})
+        .flatMap(([serverId, membership]) => (membership ?? []).map((sessionId) => ({ serverId, sessionId })))
+        .sort((left, right) => sessionAddressKey(left).localeCompare(sessionAddressKey(right)));
+    const liveKeys = new Set(addresses.map(sessionAddressKey));
+    for (const key of cache.keys()) if (!liveKeys.has(key)) cache.delete(key);
+    return joinSignatureParts(addresses.map(({ serverId, sessionId }) => {
+        const key = sessionAddressKey({ serverId, sessionId });
+        const row = state.sessionListRowsByServerId?.[serverId]?.[sessionId];
+        if (!row) return joinSignatureParts([serverId, sessionId, '']);
+        const cached = cache.get(key);
+        const signature = cached?.value === row ? cached.signature : buildValueSignature(row);
+        if (cached?.value !== row) cache.set(key, { signature, value: row });
+        return joinSignatureParts([serverId, sessionId, signature]);
+    }));
+}
+
+function collectPotentialSessionIds(
+    state: StorageState,
+    personalSessionListMembershipByServerId: Readonly<Record<string, readonly string[]>>,
+): string[] {
     const ids = new Set<string>();
     for (const id of collectRecordIds(state.sessions)) ids.add(id);
-    for (const id of collectRecordIds(state.sessionListRenderables ?? {})) ids.add(id);
-    forEachRecordValue(state.sessionListIndexByServerId ?? {}, (items) => {
-        if (!Array.isArray(items)) return;
-        for (const item of items) {
-            if (item.type === 'session' && item.sessionId.trim()) {
-                ids.add(item.sessionId.trim());
-            }
-        }
+    forEachRecordValue(state.ordinarySessionListMembershipByServerId ?? {}, (membership) => {
+        if (!Array.isArray(membership)) return;
+        for (const id of membership) if (id.trim()) ids.add(id.trim());
     });
-    forEachRecordValue(state.concurrentSessionListCacheByServerId ?? {}, (entry) => {
-        for (const id of collectRecordIds(entry?.sessions ?? {})) ids.add(id);
+    forEachRecordValue(personalSessionListMembershipByServerId, (membership) => {
+        if (!Array.isArray(membership)) return;
+        for (const id of membership) if (id.trim()) ids.add(id.trim());
     });
     return Array.from(ids).sort();
 }
@@ -287,7 +327,7 @@ function buildSessionMessagesRecordSignature(
             cache.delete(cachedId);
         }
     }
-    return sessionIds.map((id) => {
+    return joinSignatureParts(sessionIds.map((id) => {
         const value = sessionMessages[id];
         const cached = cache.get(id);
         const signature = cached !== undefined && cached.value === value
@@ -298,8 +338,8 @@ function buildSessionMessagesRecordSignature(
         } else {
             cache.delete(id);
         }
-        return `${id}\u001e${signature}`;
-    }).join('\u001d');
+        return joinSignatureParts([id, signature]);
+    }));
 }
 
 function needsTranscriptPendingFreshnessProbe(
@@ -325,7 +365,7 @@ function buildRuntimeFreshnessRecordSignature(
     const ids = collectRecordIds(sessions).sort();
     prunePendingRequestObservedAtCache(pendingRequestObservedAtCache, new Set(ids));
 
-    return ids.map((id) => {
+    return joinSignatureParts(ids.map((id) => {
         const session = sessions[id];
         const sessionMessagesForSession = sessionMessages[id];
         const sessionSignature = sessionSignatureCache.get(id)?.signature
@@ -344,83 +384,153 @@ function buildRuntimeFreshnessRecordSignature(
                 sessionMessagesSignature,
             })
             : null;
-        return `${id}\u001e${buildRuntimeFreshnessSignature(
+        return joinSignatureParts([id, buildRuntimeFreshnessSignature(
             session,
             nowMs,
             transcriptPendingRequestObservedAt,
-        )}`;
-    }).join('\u001d');
+        )]);
+    }));
 }
 
-function hasLocalActivitySource(state: StorageState): boolean {
+function hasLocalActivitySource(
+    state: StorageState,
+    personalSessionListMembershipByServerId: Readonly<Record<string, readonly string[]>>,
+): boolean {
     let hasIndexedSession = false;
     forEachRecordValue(state.sessionListIndexByServerId ?? {}, (items) => {
         if (Array.isArray(items) && items.length > 0) {
             hasIndexedSession = true;
         }
     });
-    let hasCachedSession = false;
-    forEachRecordValue(state.concurrentSessionListCacheByServerId ?? {}, (entry) => {
-        if (hasRecordValues(entry?.sessions ?? {})) {
-            hasCachedSession = true;
-        }
+    let hasOrdinaryMembership = false;
+    forEachRecordValue(state.ordinarySessionListMembershipByServerId ?? {}, (membership) => {
+        if (Array.isArray(membership) && membership.length > 0) hasOrdinaryMembership = true;
+    });
+    let hasPersonalMembership = false;
+    forEachRecordValue(personalSessionListMembershipByServerId, (membership) => {
+        if (Array.isArray(membership) && membership.length > 0) hasPersonalMembership = true;
     });
     return hasRecordValues(state.sessions)
-        || hasRecordValues(state.sessionListRenderables ?? {})
         || hasIndexedSession
-        || hasCachedSession;
+        || hasOrdinaryMembership
+        || hasPersonalMembership;
 }
 
-function buildActivitySourceFromState(state: StorageState): ActivityAttentionSource {
+function buildActivitySourceFromState(
+    state: StorageState,
+    personalSource: Pick<
+        ActivityAttentionSource,
+        | 'personalSessionListCoverageComplete'
+        | 'personalSessionListMembershipByServerId'
+        | 'personalSessionListQueryStatesByServerId'
+    >,
+): ActivityAttentionSource {
     return {
         isDataReady: state.isDataReady,
         sessionsById: state.sessions,
-        sessionListRenderablesById: state.sessionListRenderables ?? EMPTY_RENDERABLES_BY_ID,
+        sessionListRowsByServerId: state.sessionListRowsByServerId,
+        ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
+        ...personalSource,
         sessionListIndexByServerId: state.sessionListIndexByServerId ?? EMPTY_INDEX_BY_SERVER_ID,
         concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId ?? EMPTY_CONCURRENT_CACHE_BY_SERVER_ID,
         sessionMessagesById: state.sessionMessages,
+        activeServerId: state.profileScope?.serverId ?? null,
         activeServer: null,
         serverProfilesById: {},
     };
 }
 
-function resolveBadgeModel(params: LocalActivityBadgeSnapshotSelectorParams, now: Date) {
-    const parsedLocalSettings = localSettingsParse(params.localSettings);
-    const readyPlan = resolveActivityAttentionDeliveryPlan({
-        accountSettings: params.accountSettings,
+type BadgeHomeSessionOptions = LocalActivityBadgeSnapshot['sessionOptions'];
+
+type BadgeHomeModel = Readonly<{
+    channelDisabled: boolean;
+    sessionOptions: BadgeHomeSessionOptions;
+}>;
+
+/** Nothing this Home could contribute, used wherever its exact Account policy is unknown. */
+const FAIL_CLOSED_BADGE_HOME_MODEL: BadgeHomeModel = Object.freeze({
+    channelDisabled: true,
+    sessionOptions: Object.freeze({
+        showUnread: false,
+        showPendingPermissionRequests: false,
+        showPendingUserActionRequests: false,
+    }),
+});
+
+function resolveBadgeHomeModel(
+    accountSettings: Partial<AccountSettings> | Readonly<Record<string, unknown>>,
+    parsedLocalSettings: ReturnType<typeof localSettingsParse>,
+    now: Date,
+): BadgeHomeModel {
+    const resolvePlan = (event: ActivityAttentionDeliveryEventKind) => resolveActivityAttentionDeliveryPlan({
+        accountSettings,
         localSettings: parsedLocalSettings,
-        event: 'ready',
+        event,
         channel: 'badge',
         now,
     });
-    const permissionPlan = resolveActivityAttentionDeliveryPlan({
-        accountSettings: params.accountSettings,
-        localSettings: parsedLocalSettings,
-        event: 'permission_request',
-        channel: 'badge',
-        now,
-    });
-    const userActionPlan = resolveActivityAttentionDeliveryPlan({
-        accountSettings: params.accountSettings,
-        localSettings: parsedLocalSettings,
-        event: 'user_action_request',
-        channel: 'badge',
-        now,
-    });
-    const channelDisabled =
-        readyPlan.reason === 'channel_disabled'
-        && permissionPlan.reason === 'channel_disabled'
-        && userActionPlan.reason === 'channel_disabled';
-    const deviceOverrides = AttentionDeviceOverridesV1Schema.parse(parsedLocalSettings.attentionDeviceOverridesV1);
+    const readyPlan = resolvePlan('ready');
+    const permissionPlan = resolvePlan('permission_request');
+    const userActionPlan = resolvePlan('user_action_request');
 
     return {
-        channelDisabled,
-        deviceOverrides,
+        channelDisabled: readyPlan.reason === 'channel_disabled'
+            && permissionPlan.reason === 'channel_disabled'
+            && userActionPlan.reason === 'channel_disabled',
         sessionOptions: {
             showUnread: readyPlan.badgeBehavior.include,
             showPendingPermissionRequests: permissionPlan.badgeBehavior.include,
             showPendingUserActionRequests: userActionPlan.badgeBehavior.include,
         },
+    };
+}
+
+function resolveBadgeModel(
+    params: LocalActivityBadgeSnapshotSelectorParams,
+    now: Date,
+    activeServerId: string | null,
+) {
+    const parsedLocalSettings = localSettingsParse(params.localSettings);
+    const homeServerIds = Object.keys(params.accountSettingsByServerId).sort();
+    const homeModels = new Map<string, BadgeHomeModel>(homeServerIds.map((serverId) => [
+        serverId,
+        resolveBadgeHomeModel(params.accountSettingsByServerId[serverId], parsedLocalSettings, now),
+    ]));
+    // Device-global inbox facts — friend requests and the update/changelog dot — belong to the
+    // Account this device is signed into, so the active Home's own policy governs them. Session
+    // candidates are governed one Home at a time, below.
+    const activeHomeModel = (activeServerId ? homeModels.get(activeServerId) : undefined)
+        ?? FAIL_CLOSED_BADGE_HOME_MODEL;
+    // The badge channel is off for this device only when every Home that answered said no.
+    const policyReady = homeModels.size > 0;
+    const channelDisabled = policyReady
+        && [...homeModels.values()].every((model) => model.channelDisabled);
+    const deviceOverrides = AttentionDeviceOverridesV1Schema.parse(parsedLocalSettings.attentionDeviceOverridesV1);
+
+    return {
+        channelDisabled,
+        policyReady,
+        deviceOverrides,
+        resolveSessionOptionsForServerId: (serverId: string): BadgeHomeSessionOptions | null => {
+            const model = homeModels.get(serverId);
+            if (!model || model.channelDisabled) return null;
+            return model.sessionOptions;
+        },
+        homeSignatureParts: homeServerIds.map((serverId) => {
+            const model = homeModels.get(serverId) ?? FAIL_CLOSED_BADGE_HOME_MODEL;
+            return joinSignatureParts([
+                serverId,
+                model.channelDisabled ? 1 : 0,
+                model.sessionOptions.showUnread ? 1 : 0,
+                model.sessionOptions.showPendingPermissionRequests ? 1 : 0,
+                model.sessionOptions.showPendingUserActionRequests ? 1 : 0,
+            ]);
+        }),
+        /** Exposed for the server-snapshot gate, which is an active-Account route. */
+        sessionOptions: activeHomeModel.channelDisabled
+            ? FAIL_CLOSED_BADGE_HOME_MODEL.sessionOptions
+            : activeHomeModel.sessionOptions,
+        includeInboxCounts: !activeHomeModel.channelDisabled,
     };
 }
 
@@ -430,22 +540,26 @@ function resolveBadgeModel(params: LocalActivityBadgeSnapshotSelectorParams, now
  * inside it changes.
  */
 type BadgeSnapshotSourceIdentity = Readonly<{
+    profileScope: StorageState['profileScope'];
     concurrentSessionListCacheByServerId: StorageState['concurrentSessionListCacheByServerId'];
     deltaRevision: number | null;
     isDataReady: boolean;
     sessionListIndexByServerId: StorageState['sessionListIndexByServerId'];
-    sessionListRenderables: StorageState['sessionListRenderables'];
+    sessionListRowsByServerId: StorageState['sessionListRowsByServerId'];
+    ordinarySessionListMembershipByServerId: StorageState['ordinarySessionListMembershipByServerId'];
     sessionMessages: StorageState['sessionMessages'];
     sessions: StorageState['sessions'];
 }>;
 
 function readBadgeSnapshotSourceIdentity(state: StorageState): BadgeSnapshotSourceIdentity {
     return {
+        profileScope: state.profileScope,
         concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId,
         deltaRevision: state.sessionListRenderableDelta?.revision ?? null,
         isDataReady: state.isDataReady,
         sessionListIndexByServerId: state.sessionListIndexByServerId,
-        sessionListRenderables: state.sessionListRenderables,
+        sessionListRowsByServerId: state.sessionListRowsByServerId,
+        ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
         sessionMessages: state.sessionMessages,
         sessions: state.sessions,
     };
@@ -455,8 +569,11 @@ function isSameBadgeSnapshotSourceIdentity(
     previous: BadgeSnapshotSourceIdentity,
     state: StorageState,
 ): boolean {
-    return previous.sessions === state.sessions
-        && previous.sessionListRenderables === state.sessionListRenderables
+    return previous.profileScope?.serverId === state.profileScope?.serverId
+        && previous.profileScope?.accountId === state.profileScope?.accountId
+        && previous.sessions === state.sessions
+        && previous.sessionListRowsByServerId === state.sessionListRowsByServerId
+        && previous.ordinarySessionListMembershipByServerId === state.ordinarySessionListMembershipByServerId
         && previous.sessionListIndexByServerId === state.sessionListIndexByServerId
         && previous.concurrentSessionListCacheByServerId === state.concurrentSessionListCacheByServerId
         && previous.sessionMessages === state.sessionMessages
@@ -478,7 +595,10 @@ export function createLocalActivityBadgeSnapshotSelector(
     let previousSourceIdentity: BadgeSnapshotSourceIdentity | null = null;
 
     return (state) => {
+        const personalSessionListMembershipByServerId = params.personalSessionListMembershipByServerId ?? {};
         const renderableDelta = state.sessionListRenderableDelta;
+        const profileScopeChanged = previousSourceIdentity?.profileScope?.serverId !== state.profileScope?.serverId
+            || previousSourceIdentity?.profileScope?.accountId !== state.profileScope?.accountId;
         // A store commit that moved none of this badge's sources cannot change its snapshot, so it
         // must cost O(1) rather than the full O(sessions) signature pass below. Every store slice the
         // derivation reads is listed here; narrowing the set would let a real change be skipped.
@@ -495,6 +615,7 @@ export function createLocalActivityBadgeSnapshotSelector(
         const nowMs = now.getTime();
         if (
             previousSnapshot
+            && !profileScopeChanged
             && renderableDelta
             && previousDeltaRevision !== null
             && renderableDelta.revision !== previousDeltaRevision
@@ -507,36 +628,37 @@ export function createLocalActivityBadgeSnapshotSelector(
             previousDeltaRevision = renderableDelta.revision;
             return previousSnapshot;
         }
-        const badgeModel = resolveBadgeModel(params, now);
-        const localSourceAvailable = hasLocalActivitySource(state)
+        const badgeModel = resolveBadgeModel(params, now, state.profileScope?.serverId ?? null);
+        const localSourceAvailable = hasLocalActivitySource(state, personalSessionListMembershipByServerId)
             || params.friendRequestCount > 0
             || params.hasNonNumericInboxAttention;
-        const sessionIds = collectPotentialSessionIds(state);
-        const snapshotSignature = badgeModel.channelDisabled
-            ? [
+        const sessionIds = collectPotentialSessionIds(state, personalSessionListMembershipByServerId);
+        const snapshotSignature = badgeModel.channelDisabled || !badgeModel.policyReady
+            ? joinSignatureParts([
                 badgeModel.channelDisabled ? 1 : 0,
+                badgeModel.policyReady ? 1 : 0,
                 state.isDataReady === true ? 1 : 0,
                 localSourceAvailable ? 1 : 0,
-            ].join('\u001c')
-            : [
+            ])
+            : joinSignatureParts([
                 badgeModel.channelDisabled ? 1 : 0,
+                badgeModel.policyReady ? 1 : 0,
                 state.isDataReady === true ? 1 : 0,
                 localSourceAvailable ? 1 : 0,
+                state.profileScope?.serverId ?? '',
+                state.profileScope?.accountId ?? '',
                 params.friendRequestCount,
                 params.hasNonNumericInboxAttention ? 1 : 0,
-                badgeModel.sessionOptions.showUnread ? 1 : 0,
-                badgeModel.sessionOptions.showPendingPermissionRequests ? 1 : 0,
-                badgeModel.sessionOptions.showPendingUserActionRequests ? 1 : 0,
+                // Per-Home policy, not one Account's: a sibling Home's toggles changing must move
+                // this signature even when the active Home's own policy did not change.
+                joinSignatureParts(badgeModel.homeSignatureParts),
+                badgeModel.includeInboxCounts ? 1 : 0,
                 badgeModel.deviceOverrides.badge.includeFriendRequestsInboxCount ? 1 : 0,
                 badgeModel.deviceOverrides.badge.includeDesktopNonNumericDot ? 1 : 0,
                 buildCachedRecordSignature(state.sessions, sessionSignatureCache, buildSessionActivitySignature),
-                buildCachedRecordSignature(
-                    state.sessionListRenderables ?? {},
-                    renderableSignatureCache,
-                    buildRenderableActivitySignature,
-                ),
+                buildOrdinaryRowsSignature(state, renderableSignatureCache, buildRenderableActivitySignature),
                 buildSessionListIndexSignature(state.sessionListIndexByServerId),
-                buildConcurrentCacheSignature(state.concurrentSessionListCacheByServerId, nowMs),
+                buildConcurrentCacheSignature(state.concurrentSessionListCacheByServerId),
                 buildSessionMessagesRecordSignature(sessionIds, state.sessionMessages, sessionMessagesSignatureCache),
                 buildRuntimeFreshnessRecordSignature(
                     state.sessions,
@@ -546,12 +668,12 @@ export function createLocalActivityBadgeSnapshotSelector(
                     sessionSignatureCache,
                     sessionMessagesSignatureCache,
                 ),
-                buildCachedRecordSignature(
-                    state.sessionListRenderables ?? {},
+                buildOrdinaryRowsSignature(
+                    state,
                     new Map(),
                     (renderable) => buildRenderableRuntimeFreshnessSignature(renderable, nowMs),
                 ),
-            ].join('\u001c');
+            ]);
 
         if (previousSignature === snapshotSignature && previousSnapshot) {
             previousDeltaRevision = renderableDelta?.revision ?? null;
@@ -562,9 +684,10 @@ export function createLocalActivityBadgeSnapshotSelector(
         previousSignature = snapshotSignature;
         previousDeltaRevision = renderableDelta?.revision ?? null;
         previousNowMs = nowMs;
-        if (badgeModel.channelDisabled) {
+        if (badgeModel.channelDisabled || !badgeModel.policyReady) {
             previousSnapshot = {
-                channelDisabled: true,
+                channelDisabled: badgeModel.channelDisabled,
+                policyReady: badgeModel.policyReady,
                 hasLocalActivitySource: localSourceAvailable,
                 isDataReady: state.isDataReady,
                 localBadgeState: { count: 0, showNonNumericDot: false },
@@ -574,24 +697,31 @@ export function createLocalActivityBadgeSnapshotSelector(
         }
 
         const overview = buildActivityOverviewFromSource({
-            source: buildActivitySourceFromState(state),
+            source: buildActivitySourceFromState(state, {
+                personalSessionListCoverageComplete: params.personalSessionListCoverageComplete,
+                personalSessionListMembershipByServerId,
+                personalSessionListQueryStatesByServerId: params.personalSessionListQueryStatesByServerId,
+            }),
             nowMs,
-            sessionOptions: badgeModel.sessionOptions,
+            resolveSessionOptionsForServerId: badgeModel.resolveSessionOptionsForServerId,
             includeWarmSourceWhenNotReady: true,
         });
 
         previousSnapshot = {
             channelDisabled: false,
+            policyReady: true,
             hasLocalActivitySource: localSourceAvailable,
             isDataReady: state.isDataReady,
             localBadgeState: buildActivityBadgeStateFromOverview({
                 overview,
                 numericInboxCount:
-                    !badgeModel.deviceOverrides.badge.includeFriendRequestsInboxCount
+                    !badgeModel.includeInboxCounts
+                    || !badgeModel.deviceOverrides.badge.includeFriendRequestsInboxCount
                         ? 0
                         : params.friendRequestCount,
                 hasNonNumericInboxAttention:
-                    badgeModel.deviceOverrides.badge.includeDesktopNonNumericDot
+                    badgeModel.includeInboxCounts
+                    && badgeModel.deviceOverrides.badge.includeDesktopNonNumericDot
                     && params.hasNonNumericInboxAttention,
                 sessionOptions: badgeModel.sessionOptions,
             }),

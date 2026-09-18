@@ -7,6 +7,7 @@ import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/ser
 import type { PluginUiProjectionCurrentness } from '@/sync/domains/plugins/ui/usePluginUiProjectionCurrentness';
 import { useScopedPluginUiProjection } from '@/components/plugins/projection/useScopedPluginUiProjection';
 import { resolveBrowserSurfacePlatform, useBrowserSurfaceHostProps } from './useBrowserSurfaceHostProps';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 
 import { BrowserScopedWorkspace } from './BrowserScopedWorkspace';
 
@@ -24,10 +25,13 @@ export function BrowserMobileSurfaceScreen(props: Readonly<{
      */
     pluginProjection?: PluginUiProjectionCurrentness;
 }>): React.ReactElement {
-    const machineTarget = useSessionMachineTarget(props.sessionId);
-    const serverId = usePreferredServerIdForSession(props.sessionId);
+    const serverId = usePreferredServerIdForSession({
+        serverId: props.pluginProjection?.serverId,
+        sessionId: props.sessionId,
+    });
+    const machineTarget = useSessionMachineTarget(props.sessionId, serverId);
     const machineId = machineTarget?.machineId ?? null;
-    const scopeId = props.scopeId ?? `session:${props.sessionId}:mobile-browser`;
+    const scopeId = props.scopeId ?? createSessionPaneScopeId(props.sessionId, serverId);
     const scopedPluginProjection = useScopedPluginUiProjection({
         machineId,
         serverId,
@@ -47,7 +51,7 @@ export function BrowserMobileSurfaceScreen(props: Readonly<{
     });
     const recordingRuntime = useSessionBrowserRecordingRuntime({
         enabled: true,
-        scopeKey: props.sessionId,
+        scopeKey: scopeId,
         sessionId: props.sessionId,
         machineId,
         serverId,

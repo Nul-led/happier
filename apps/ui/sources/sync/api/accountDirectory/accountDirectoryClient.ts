@@ -7,12 +7,13 @@ import {
     AccountDirectoryHomeDeleteResponseV1Schema,
     AccountDirectoryHomeDeleteRequestV1Schema,
     AccountDirectoryHomePutRequestV1Schema,
-    AccountDirectoryHomePublishRequestV2Schema,
     AccountDirectoryHomePutResponseV1Schema,
     AccountDirectoryHomesResponseV1Schema,
     AccountDirectoryMeResponseV1Schema,
     AccountDirectoryPreferredHomePatchResponseV1Schema,
     AccountDirectoryPreferredHomePatchRequestV1Schema,
+    AccountDirectoryLinkDeleteRequestV1Schema,
+    AccountDirectoryLinkDeleteResponseV1Schema,
     AccountDirectoryLinkPutRequestV1Schema,
     AccountDirectoryLinkPutResponseV1Schema,
     AccountDirectoryRouteErrorResponseV1Schema,
@@ -33,16 +34,18 @@ import {
     type HomeLoginAssertionV1,
     type HomeLoginRedemptionResponseV1,
     type HomeLoginRedemptionResultV1,
+    type AccountDirectoryLinkDeleteResponseV1,
     type AccountDirectoryLinkPutResponseV1,
     type AccountDirectoryErrorCodeV1,
 } from '@happier-dev/protocol';
 import { createServerFetchAtEndpoint } from '@/sync/http/client';
 import {
-    accountDirectoryCredentialStorage,
     normalizeAccountDirectoryEndpoint,
 } from '@/auth/accountDirectory/accountDirectoryCredentialStorage';
-import type { AccountDirectoryCredentialTarget, AuthCredentials } from '@/auth/storage/tokenStorage';
+import type { AccountDirectoryCredentialCustody, AccountDirectoryCredentialTarget, AuthCredentials } from '@/auth/storage/tokenStorage';
+import { captureAccountDirectoryCredentialCustody } from '@/auth/storage/tokenStorage';
 import type { HomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
+import type { AccountDirectoryAuthTransport } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 
 export const HomeLoginAssertionV1Schema = HomeLoginAssertionResponseV1Schema;
 export { HomeConnectionDescriptorV1Schema, HomeLoginAssertionResponseV1Schema as HomeLoginAssertionSchema };
@@ -107,20 +110,32 @@ async function readErrorCode(response: Response): Promise<AccountDirectoryErrorC
 
 export type AccountDirectoryClient = ReturnType<typeof createAccountDirectoryClient>;
 
-export function createAccountDirectoryClient(target: AccountDirectoryCredentialTarget) {
+export function createAccountDirectoryClient(
+    target: AccountDirectoryCredentialTarget,
+    transport: AccountDirectoryAuthTransport = {},
+    credentialCustody?: AccountDirectoryCredentialCustody,
+) {
     const { endpoint: baseUrl, serverIdentityId } = normalizeTarget(target);
     const credentialTarget = { endpoint: baseUrl, serverIdentityId };
+    const custody = credentialCustody ?? captureAccountDirectoryCredentialCustody(credentialTarget);
     const request = async <T>(path: string, init: RequestInit | undefined, schema: z.ZodType<T>): Promise<T> => {
         if (!path.startsWith('/v1/account-directory/')) throw new Error('Account Service path is not an Account Directory route');
-        const credentials = await accountDirectoryCredentialStorage.get(credentialTarget);
+        const credentials = await custody.read();
+        if (!custody.isCurrent()) throw new Error('Account Service credential custody superseded');
         const headers = new Headers(init?.headers);
         headers.set('Accept', 'application/json');
         const fetchAtEndpoint = createServerFetchAtEndpoint({
             endpointUrl: baseUrl,
+            ...(transport.runtimeOrigin ? { runtimeOrigin: transport.runtimeOrigin } : {}),
+            ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
             serverId: serverIdentityId,
             credentials,
         });
-        const response = await fetchAtEndpoint(path, { ...init, headers }, { includeAuth: Boolean(credentials), retry: 'none' });
+        const response = await custody.issue(async () => await fetchAtEndpoint(
+            path,
+            { ...init, headers },
+            { includeAuth: Boolean(credentials), retry: 'none' },
+        ));
         if (!response.ok) throw new AccountDirectoryRequestError(response.status, await readErrorCode(response));
         const payload: unknown = await response.json();
         const parsed = schema.safeParse(payload);
@@ -131,6 +146,8 @@ export function createAccountDirectoryClient(target: AccountDirectoryCredentialT
     return {
         endpoint: baseUrl,
         serverIdentityId,
+        isCurrent: custody.isCurrent,
+        logout: custody.logout,
         request,
         getMe: () => request(ACCOUNT_DIRECTORY_ME_HTTP_PATH_V1, undefined, AccountDirectoryMeResponseV1Schema),
         listHomes: () => request(ACCOUNT_DIRECTORY_HOMES_HTTP_PATH_V1, undefined, AccountDirectoryHomesResponseV1Schema),
@@ -142,29 +159,25 @@ export function createAccountDirectoryClient(target: AccountDirectoryCredentialT
         publishHomeDescriptor: async (home: Readonly<{
             homeServerIdentityId: string;
             label: string;
-            minimumOuterRevisionExclusive: number;
-            canonicalServerUrl: string;
-            endpoints: readonly HomeConnectionEndpointV1[];
+            connectionDescriptor: HomeConnectionDescriptorV1;
         }>) => {
-            const body = AccountDirectoryHomePublishRequestV2Schema.parse({
-                v: 2,
+            const body = AccountDirectoryHomePutRequestV1Schema.parse({
+                v: 1,
                 label: home.label,
-                minimumOuterRevisionExclusive: home.minimumOuterRevisionExclusive,
-                canonicalServerUrl: home.canonicalServerUrl,
-                endpoints: home.endpoints,
+                connectionDescriptor: home.connectionDescriptor,
             });
+            if (body.connectionDescriptor.homeServerIdentityId !== home.homeServerIdentityId) {
+                throw new AccountDirectoryResponseError('home_descriptor_publication');
+            }
             const entry = await request(
                 buildAccountDirectoryHomeHttpPathV1(home.homeServerIdentityId),
                 { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
                 AccountDirectoryHomePutResponseV1Schema,
             );
-            const expectedDescriptor = HomeConnectionDescriptorV1Schema.parse({
-                v: 1,
-                homeServerIdentityId: home.homeServerIdentityId,
-                canonicalServerUrl: body.canonicalServerUrl,
-                revision: body.minimumOuterRevisionExclusive + 1,
-                endpoints: body.endpoints,
-            });
+            const expectedDescriptor = body.connectionDescriptor;
+            if (entry.homeServerIdentityId !== home.homeServerIdentityId) {
+                throw new AccountDirectoryResponseError('home_descriptor_publication');
+            }
             if (entry.connectionDescriptor.revision > expectedDescriptor.revision) {
                 return { kind: 'current' as const, entry };
             }
@@ -260,5 +273,30 @@ export async function putHomeDirectoryLink(
     if (!response.ok) throw new AccountDirectoryRequestError(response.status, await readErrorCode(response));
     const parsed = AccountDirectoryLinkPutResponseV1Schema.safeParse(await response.json());
     if (!parsed.success) throw new AccountDirectoryResponseError('home_directory_link_put');
+    return parsed.data;
+}
+
+/**
+ * Home-targeted Account Directory link DELETE. Removes the Home's pinned trust in the issuer so
+ * future delegated sign-in assertions from that Account Service are refused; Home credentials the
+ * Home already issued stay valid until revoked on the Home. Authenticates with that Home's own
+ * full credential through the canonical enrollment transport, never an Account Service credential.
+ */
+export async function deleteHomeDirectoryLink(
+    target: HomeEnrollmentTransport,
+    issuerServerIdentityId: string,
+    options: Readonly<{ credentials: AuthCredentials }>,
+): Promise<AccountDirectoryLinkDeleteResponseV1> {
+    const response = await target.createRequest({
+        serverId: target.homeServerIdentityId,
+        credentials: options.credentials,
+    })(buildAccountDirectoryLinkHttpPathV1(issuerServerIdentityId), {
+        method: 'DELETE',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(AccountDirectoryLinkDeleteRequestV1Schema.parse({ v: 1 })),
+    }, { includeAuth: true, retry: 'none' });
+    if (!response.ok) throw new AccountDirectoryRequestError(response.status, await readErrorCode(response));
+    const parsed = AccountDirectoryLinkDeleteResponseV1Schema.safeParse(await response.json());
+    if (!parsed.success) throw new AccountDirectoryResponseError('home_directory_link_delete');
     return parsed.data;
 }

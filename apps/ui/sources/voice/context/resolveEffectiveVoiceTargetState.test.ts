@@ -1,25 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 
 describe('resolveEffectiveVoiceTargetState', () => {
-  it('treats malformed trackedSessionIds state as empty instead of throwing', async () => {
+  it('treats malformed attempt-local live-context state as empty instead of throwing', async () => {
     vi.resetModules();
     const { useVoiceTargetStore } = await import('@/voice/runtime/voiceTargetStore');
     const { resolveEffectiveVoiceTargetState } = await import('./resolveEffectiveVoiceTargetState');
 
     useVoiceTargetStore.setState({
       scope: 'global',
-      primaryActionSessionId: null,
-      trackedSessionIds: null,
-      lastFocusedSessionId: null,
+      primaryActionSessionAddress: null,
+      voiceLiveContextSessionAddresses: null,
+      lastFocusedSessionAddress: null,
     } as any);
 
     expect(
-      resolveEffectiveVoiceTargetState('s1', {
-        targetSessionId: 's1',
+      resolveEffectiveVoiceTargetState({ serverId: 'server-a', sessionId: 's1' }, {
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
       }),
     ).toEqual({
-      primaryActionSessionId: 's1',
-      trackedSessionIds: ['s1'],
+      primaryActionSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+      voiceLiveContextSessionAddresses: [{ serverId: 'server-a', sessionId: 's1' }],
     });
   });
 
@@ -33,14 +33,14 @@ describe('resolveEffectiveVoiceTargetState', () => {
 
     useVoiceTargetStore.setState({
       scope: 'global',
-      primaryActionSessionId: 'existing-session',
-      trackedSessionIds: ['existing-session'],
-      lastFocusedSessionId: null,
+      primaryActionSessionAddress: { serverId: 'server-a', sessionId: 'existing-session' },
+      voiceLiveContextSessionAddresses: [{ serverId: 'server-a', sessionId: 'existing-session' }],
+      lastFocusedSessionAddress: null,
     } as any);
 
     expect(resolveEffectiveVoiceTargetState('s1')).toEqual({
-      primaryActionSessionId: 'existing-session',
-      trackedSessionIds: ['existing-session'],
+      primaryActionSessionAddress: { serverId: 'server-a', sessionId: 'existing-session' },
+      voiceLiveContextSessionAddresses: [{ serverId: 'server-a', sessionId: 'existing-session' }],
     });
   });
 });

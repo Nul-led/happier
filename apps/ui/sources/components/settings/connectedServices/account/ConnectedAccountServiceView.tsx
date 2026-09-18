@@ -22,6 +22,8 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useQualifiedConnectedAccountGroups } from '@/hooks/server/connectedServices/useQualifiedConnectedAccountGroups';
+import { useConnectedServiceQuotaSnapshots } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshots';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { resolveQualifiedConnectedAccountSettingsRoute } from '@/sync/domains/connectedServices/connectedAccountSettingsRoute';
@@ -232,6 +234,10 @@ const ConnectedAccountServiceController = React.memo(
         ],
     );
     const serverId = executionTarget?.serverId ?? '';
+    const teamCredentialResourcesEnabled = useFeatureEnabled('teams.credentialResources', {
+        scopeKind: 'spawn',
+        serverId,
+    });
     const machineId = executionTarget?.machine.id ?? '';
     const expectedActiveServer = React.useMemo(
         () => serverId === activeServerId
@@ -345,6 +351,48 @@ const ConnectedAccountServiceController = React.memo(
         service,
         peer: accountPeer,
     });
+    const quotaLimitSelectionEnabled = useFeatureEnabled(
+        'connectedServices.poolQuotaLimitSelection',
+    );
+    const focusedGroupId = route?.focus?.kind === 'group'
+        ? route.focus.groupId
+        : null;
+    const focusedGroup = focusedGroupId
+        ? groups.groups.find(
+            (candidate) => candidate.ref.groupId === focusedGroupId,
+        ) ?? null
+        : null;
+    const focusedGroupQuotaRefs = React.useMemo(
+        () => quotaLimitSelectionEnabled && focusedGroup
+            ? focusedGroup.members
+                .filter((member) => member.enabled)
+                .map((member) => ({ ref: member.ref }))
+            : [],
+        [focusedGroup, quotaLimitSelectionEnabled],
+    );
+    const focusedGroupQuotas = useConnectedServiceQuotaSnapshots(
+        focusedGroupQuotaRefs,
+    );
+    const focusedGroupQuotaSnapshots = React.useMemo(
+        () => focusedGroupQuotas.profiles
+            .map((quotaProfile) => (
+                focusedGroupQuotas.snapshotsByKey[quotaProfile.key] ?? null
+            ))
+            .filter((snapshot) => snapshot !== null),
+        [focusedGroupQuotas.profiles, focusedGroupQuotas.snapshotsByKey],
+    );
+    const focusedGroupQuotaLoadingMemberCount = React.useMemo(
+        () => focusedGroupQuotas.profiles.reduce(
+            (count, quotaProfile) => count + (
+                focusedGroupQuotas.loadingByKey[quotaProfile.key] === true ? 1 : 0
+            ),
+            0,
+        ),
+        [focusedGroupQuotas.loadingByKey, focusedGroupQuotas.profiles],
+    );
+    const focusedGroupQuotaEnabledMemberCount = focusedGroup?.members.filter(
+        (member) => member.enabled,
+    ).length ?? 0;
     const visibleAccounts = React.useMemo<
         readonly ConnectedAccountServiceProfile[]
     >(() => {
@@ -1033,8 +1081,11 @@ const ConnectedAccountServiceController = React.memo(
             {description !== null
                 && !(route.focus !== null && authenticationFlowActive) ? (
                 <ConnectedAccountServiceContent
+                    serverId={serverId}
+                    teamCredentialResourcesEnabled={teamCredentialResourcesEnabled}
                     localize={localizeServiceText}
                     title={title}
+                    quotaResetSupported={description.descriptor.recoveryCredits?.supported === true}
                     service={service}
                     legacyServiceId={legacyServiceId}
                     legacyPeerClass={peerTransport?.protocol === 'legacy'
@@ -1049,6 +1100,9 @@ const ConnectedAccountServiceController = React.memo(
                     accountLabels={accountLabels}
                     defaultAccountId={defaultAccountId}
                     groups={groups}
+                    quotaSnapshots={focusedGroupQuotaSnapshots}
+                    quotaEnabledMemberCount={focusedGroupQuotaEnabledMemberCount}
+                    quotaLoadingMemberCount={focusedGroupQuotaLoadingMemberCount}
                     busy={busy}
                     onEditLabel={credentialWriteAllowed ? (account) => {
                         void editAccountLabel(account);

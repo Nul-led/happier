@@ -1,3 +1,4 @@
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { describe, expect, it, vi } from 'vitest';
 
 import { HappyError } from '@/utils/errors/errors';
@@ -23,7 +24,7 @@ function createTarget(overrides: Partial<SessionListRenderableSession> = {}) {
         active: false,
         archivedAt: null,
         owner: 'user_1',
-        accessLevel: undefined,
+        access: createSessionAccessFixture(),
         seq: 4,
         lastViewedSessionSeq: 3,
         latestTurnStatus: 'completed',
@@ -48,6 +49,15 @@ function createTarget(overrides: Partial<SessionListRenderableSession> = {}) {
 }
 
 describe('executeSessionAction', () => {
+    it('opens Follow for the captured Home and preserves archived state without permitting unqualified or disabled targets', async () => {
+        const opened: Array<{ address: { serverId: string; sessionId: string }; archived: boolean }> = [];
+        const context = { operations: { openFollowEditor: (target: typeof opened[number]) => { opened.push(target); } } };
+        const target = { ...createTarget({ archivedAt: 42 }), followEnabled: true, serverId: 'home_b' };
+        await executeSessionAction({ actionId: 'ui.session.follow', target, context });
+        await executeSessionAction({ actionId: 'ui.session.follow', target: { ...target, serverId: null }, context });
+        await executeSessionAction({ actionId: 'ui.session.follow', target: { ...target, followEnabled: false }, context });
+        expect(opened).toEqual([{ address: { serverId: 'home_b', sessionId: 'session_1' }, archived: true }]);
+    });
     it('archives an active session through the stop/archive flow', async () => {
         const stopArchiveFlow = vi.fn(async () => undefined);
         const archiveSession = vi.fn(async () => ({ success: true as const }));
@@ -67,12 +77,62 @@ describe('executeSessionAction', () => {
         });
 
         expect(stopArchiveFlow).toHaveBeenCalledWith(expect.objectContaining({
-            sessionId: 'session_1',
+            address: { serverId: 'server_1', sessionId: 'session_1' },
             archiveAfterStop: 'always',
             hideInactiveSessions: true,
             isPinned: true,
         }));
         expect(archiveSession).not.toHaveBeenCalled();
+    });
+
+    it('keeps stop/archive retention and archive cleanup qualified to the selected Home when Session ids collide', async () => {
+        const stopArchiveFlow = vi.fn(async () => undefined);
+        const clearSessionVisibleWhenInactive = vi.fn();
+        const archiveSession = vi.fn(async () => ({ success: true as const }));
+        const otherHomeTarget = { ...createTarget(), serverId: 'home_a', sessionId: 'shared_session' };
+        const selectedHomeTarget = { ...otherHomeTarget, serverId: 'home_b' };
+
+        await executeSessionAction({
+            actionId: SESSION_ACTION_STOP_ID,
+            target: { ...selectedHomeTarget, isActive: true },
+            context: {
+                hideInactiveSessions: true,
+                operations: {
+                    stopArchiveFlow,
+                    stopSession: vi.fn(async () => ({ success: true as const })),
+                    archiveSession,
+                    clearSessionVisibleWhenInactive,
+                },
+            },
+        });
+        await executeSessionAction({
+            actionId: SESSION_ACTION_ARCHIVE_ID,
+            target: { ...selectedHomeTarget, isActive: false },
+            context: {
+                hideInactiveSessions: true,
+                operations: {
+                    stopArchiveFlow,
+                    stopSession: vi.fn(async () => ({ success: true as const })),
+                    archiveSession,
+                    clearSessionVisibleWhenInactive,
+                },
+            },
+        });
+
+        expect(stopArchiveFlow).toHaveBeenCalledWith(expect.objectContaining({
+            address: { serverId: 'home_b', sessionId: 'shared_session' },
+        }));
+        expect(clearSessionVisibleWhenInactive).toHaveBeenCalledWith({
+            serverId: 'home_b',
+            sessionId: 'shared_session',
+        });
+        expect(stopArchiveFlow).not.toHaveBeenCalledWith(expect.objectContaining({
+            address: { serverId: 'home_a', sessionId: 'shared_session' },
+        }));
+        expect(clearSessionVisibleWhenInactive).not.toHaveBeenCalledWith({
+            serverId: 'home_a',
+            sessionId: 'shared_session',
+        });
     });
 
     it('stops a recoverable preserved host before archiving an inactive session', async () => {
@@ -103,7 +163,7 @@ describe('executeSessionAction', () => {
         });
 
         expect(stopArchiveFlow).toHaveBeenCalledWith(expect.objectContaining({
-            sessionId: 'session_1',
+            address: { serverId: 'server_1', sessionId: 'session_1' },
             archiveAfterStop: 'always',
         }));
         expect(archiveSession).not.toHaveBeenCalled();
@@ -132,7 +192,7 @@ describe('executeSessionAction', () => {
 
         expect(archiveSession).toHaveBeenCalledWith('session_1', { serverId: 'server_1' });
         expect(stopArchiveFlow).toHaveBeenCalledWith(expect.objectContaining({
-            sessionId: 'session_1',
+            address: { serverId: 'server_1', sessionId: 'session_1' },
             archiveAfterStop: 'always',
         }));
     });

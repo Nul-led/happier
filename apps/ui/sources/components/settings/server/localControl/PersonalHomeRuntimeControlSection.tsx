@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import type { SystemTaskSpec } from '@happier-dev/protocol';
+import { isHappierRuntimePathWithinRoot } from '@happier-dev/cli-common/happierRuntime/runtimePathMatching';
 
 import { Modal } from '@/modal';
 import { SystemTaskProgressCard } from '@/components/systemTasks';
@@ -107,13 +108,35 @@ async function runExternalOperation(run: () => Promise<void>): Promise<void> {
     }
 }
 
-export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHomeRuntimeControlSection(props: Readonly<{
+async function createPersonalHomeBackupAfterConfirmation<T>(create: () => Promise<T>): Promise<T | null> {
+    const accepted = await Modal.confirm(
+        copy('backupAction', 'Back Up Now'),
+        copy(
+            'backupDisclosureBody',
+            'This backup contains readable conversations, Home data, the Home access secret, and trusted-device state. Anyone who can restore the complete archive can operate a clone of this Home. Save it somewhere you trust.',
+        ),
+        { confirmText: copy('backupAction', 'Back Up Now') },
+    );
+    return accepted ? await create() : null;
+}
+
+type PersonalHomeRuntimeControlSectionProps = Readonly<{
     runner?: SystemTaskRunner;
+    controller?: ReturnType<typeof useLocalRelayRuntimeControl>;
     operations?: PersonalHomeRuntimeControlOperations;
     homeLabel?: string;
     onStatusChange?: (status: ReturnType<typeof useLocalRelayRuntimeControl>['status']) => void;
-}>) {
-    const control = useLocalRelayRuntimeControl({ ...(props.runner ? { runner: props.runner } : {}) });
+}>;
+
+function OwnedPersonalHomeRuntimeControlSection(props: PersonalHomeRuntimeControlSectionProps) {
+    const controller = useLocalRelayRuntimeControl({ ...(props.runner ? { runner: props.runner } : {}) });
+    return <PersonalHomeRuntimeControlSectionContent {...props} controller={controller} />;
+}
+
+const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHomeRuntimeControlSectionContent(
+    props: PersonalHomeRuntimeControlSectionProps & Readonly<{ controller: ReturnType<typeof useLocalRelayRuntimeControl> }>,
+) {
+    const control = props.controller;
     const personalHomeCanonicalServerUrl = control.status?.purpose?.kind === 'personal-home'
         ? control.status.purpose.canonicalServerUrl
         : null;
@@ -129,13 +152,15 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
     }, [control.status, props.onStatusChange]);
 
     const backup = React.useCallback(async () => {
-        return await control.backupPersonalHome() !== null;
+        return await createPersonalHomeBackupAfterConfirmation(() => control.backupPersonalHome()) !== null;
     }, [control]);
 
     const exportBackup = React.useCallback(async () => {
-        const outputPath = (await props.operations?.selectBackupExportDestination?.())?.trim();
-        if (!outputPath) return;
-        await control.backupPersonalHome({ outputPath });
+        await createPersonalHomeBackupAfterConfirmation(async () => {
+            const outputPath = (await props.operations?.selectBackupExportDestination?.())?.trim();
+            if (!outputPath) return null;
+            return await control.backupPersonalHome({ outputPath });
+        });
     }, [control, props.operations]);
 
     const restore = React.useCallback(async () => {
@@ -181,6 +206,86 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
     }, [control, props.operations]);
 
     const erase = React.useCallback(async () => {
+        let verifiedBackupHomeServerIdentityId: string | null = null;
+        let verifiedBackupPath: string | null = null;
+        let eraseChoice: 'backup_first' | 'without_backup' | 'cancel' = 'cancel';
+        await Modal.alertAsync(
+            copy('eraseDataTitle', 'Delete Personal Home data?'),
+            `${copy('backupSubtitle', 'Create and verify a plaintext Home archive.')}`
+                + `\n\n${copy('eraseDataSubtitle', 'Separate from uninstall. Permanently deletes the resolved Home data.')}`,
+            [
+                { text: t('common.cancel'), style: 'cancel', onPress: () => { eraseChoice = 'cancel'; } },
+                { text: copy('eraseDataAction', 'Delete Personal Home data permanently'), style: 'destructive', onPress: () => { eraseChoice = 'without_backup'; } },
+                { text: copy('backupAction', 'Back Up Now'), onPress: () => { eraseChoice = 'backup_first'; } },
+            ],
+        );
+        if (eraseChoice === 'cancel') return;
+        if (eraseChoice === 'backup_first') {
+            let requestedOutputPath: string | null = null;
+            const created = await createPersonalHomeBackupAfterConfirmation(async () => {
+                requestedOutputPath = (await props.operations?.selectBackupExportDestination?.())?.trim() || null;
+                if (!requestedOutputPath) return null;
+                // This safety composition owns the next fresh inspection. Suppress
+                // backup's passive refresh so it cannot race archive verification
+                // for the canonical fail-fast Home operation lease.
+                return await control.backupPersonalHome({
+                    outputPath: requestedOutputPath,
+                    refreshAfterSuccess: false,
+                });
+            });
+            if (!created || !requestedOutputPath) return;
+            const createdAtRequestedDestination = isHappierRuntimePathWithinRoot(created.path, requestedOutputPath)
+                && isHappierRuntimePathWithinRoot(requestedOutputPath, created.path);
+            if (!createdAtRequestedDestination) {
+                await Modal.alert(
+                    tLoose('common.error'),
+                    copy('backupDestinationMismatch', 'The backup was not created at the selected destination. Nothing was erased.'),
+                );
+                return;
+            }
+            const verified = await control.verifyPersonalHomeBackup({ archivePath: created.path });
+            if (!verified) return;
+            if (verified.identityMatchesCurrentHome !== 'match' || !verified.homeServerIdentityId) {
+                await Modal.alert(
+                    tLoose('common.error'),
+                    copy('identityComparisonUnavailable', 'Identity comparison unavailable'),
+                );
+                return;
+            }
+            verifiedBackupHomeServerIdentityId = verified.homeServerIdentityId;
+            verifiedBackupPath = created.path;
+            const reboundStatus = await control.readStatus();
+            if (reboundStatus?.purpose?.kind !== 'personal-home') {
+                await Modal.alert(
+                    tLoose('common.error'),
+                    copy('identityComparisonUnavailable', 'Identity comparison unavailable'),
+                );
+                return;
+            }
+        }
+        const inspectionOutcome = await control.refreshInspection();
+        if (inspectionOutcome.status === 'failed') {
+            await Modal.alert(tLoose('common.error'), inspectionOutcome.message);
+            return;
+        }
+        if (verifiedBackupHomeServerIdentityId !== null
+            && inspectionOutcome.inspection.homeServerIdentityId !== verifiedBackupHomeServerIdentityId) {
+            await Modal.alert(
+                tLoose('common.error'),
+                copy('identityComparisonUnavailable', 'Identity comparison unavailable'),
+            );
+            return;
+        }
+        if (verifiedBackupPath !== null
+            && inspectionOutcome.inspection.ownedErasePaths.some((ownedPath) => (
+                isHappierRuntimePathWithinRoot(verifiedBackupPath, ownedPath)
+            ))) {
+            await Modal.alert(
+                tLoose('common.error'),
+                copy('backupDestinationUnsafe', 'The selected backup destination is inside the Personal Home data that would be deleted. Nothing was erased.'),
+            );
+            return;
+        }
         const promptContinuation: SystemTaskPromptContinuation = async (prompt) => {
             if (prompt.kind !== 'personal_home.confirm_erase.v1') return undefined;
             const rawPaths = prompt.data.paths;
@@ -196,7 +301,14 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
                 || (typeof prompt.data.homeServerIdentityId === 'string' && prompt.data.homeServerIdentityId.trim().length > 0)
                 ? prompt.data.homeServerIdentityId : undefined;
             if (!Array.isArray(rawPaths) || paths.length === 0 || paths.length !== rawPaths.length
-                || !canonicalServerUrl || homeServerIdentityId === undefined) return { confirmed: false };
+                || !canonicalServerUrl || homeServerIdentityId === undefined
+                || prompt.data.previewComplete !== true || prompt.data.previewReason !== null) return { confirmed: false };
+            if (verifiedBackupHomeServerIdentityId !== null
+                && homeServerIdentityId !== verifiedBackupHomeServerIdentityId) return { confirmed: false };
+            if (verifiedBackupPath !== null
+                && paths.some((ownedPath) => isHappierRuntimePathWithinRoot(verifiedBackupPath, ownedPath))) {
+                return { confirmed: false };
+            }
             const confirmed = await Modal.confirm(
                 copy('eraseDataTitle', 'Delete Personal Home data?'),
                 `${copy('eraseHomeTarget', 'Home')}: ${canonicalServerUrl}\n${copy('identityTitle', 'Home identity')}: ${homeServerIdentityId ?? copy('identityUnavailable', 'Identity unavailable')}\n\n${copy('eraseDataBody', 'This is separate from uninstall and permanently deletes only these resolved Home paths:')}\n\n${paths.map((path) => `• ${path}`).join('\n')}\n\n${copy('estimatedSize', 'Estimated size')}: ${formatBytes(estimatedBytes)}`,
@@ -205,7 +317,7 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
             return { confirmed };
         };
         await control.erasePersonalHomeData(promptContinuation);
-    }, [control]);
+    }, [control, props.operations]);
 
     const repairSearch = React.useCallback(async () => {
         await props.operations?.repairSearch?.();
@@ -303,11 +415,15 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
         })) ?? []
     ), [operations?.relocation?.destinations]);
     const backupInventoryComplete = control.inspection?.backupsCountComplete !== false;
-    // A bounded inventory exposes a confirmed lower bound, but cannot prove that its newest
+    // A parser-limited inventory exposes a confirmed lower bound, but cannot prove that its newest
     // inspected manifest is the latest across every retained archive.
     const latestBackup = backupInventoryComplete ? control.inspection?.latestBackup ?? null : null;
     const canCancel = control.operationSnapshot?.result == null
-        && canCancelPersonalHomeOperationProgress(control.activeOperationKind, control.operationSnapshot?.currentStepId ?? null);
+        && canCancelPersonalHomeOperationProgress(
+            control.activeOperationSpec?.kind ?? null,
+            control.operationSnapshot?.currentStepId ?? null,
+            control.activeOperationSpec?.params,
+        );
     const operationPhase = control.operationSnapshot
         ? resolveSystemTaskStepLabel(control.operationSnapshot.currentStepId) ?? control.operationSnapshot.latestMessage
         : null;
@@ -337,7 +453,7 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
             <Item testID="settings.personalHomeRuntime.masterSecret" title={copy('masterSecretTitle', 'Home access secret')} subtitle={control.inspection?.masterSecretPresent ? copy('masterSecretPresent', 'Present') : copy('masterSecretUnavailable', 'Not available')} showChevron={false} mode="info" />
             <Item testID="settings.personalHomeRuntime.inspect" title={copy('inspectAction', 'Refresh Home details')} onPress={() => void control.refreshInspection()} disabled={disabled} />
         </ItemGroup>
-        <ItemGroup title={copy('actionsTitle', 'Backup & Restore')} footer={copy('backupsSectionFooter', 'Backups contain readable conversations, Home data, trusted-device state, and the Home access secret. Store them only in a location you trust.')}>
+        <ItemGroup title={copy('actionsTitle', 'Backup & Restore')} footer={copy('backupDisclosureBody', 'This backup contains readable conversations, Home data, the Home access secret, and trusted-device state. Anyone who can restore the complete archive can operate a clone of this Home. Save it somewhere you trust.')}>
             <Item testID="settings.personalHomeRuntime.backup" title={copy('backupAction', 'Back Up Now')} subtitle={copy('backupSubtitle', 'Creates and verifies a plaintext Home archive.')} onPress={() => void backup()} disabled={disabled} />
             {operations?.selectBackupExportDestination ? <Item testID="settings.personalHomeRuntime.exportBackup" title={copy('exportBackupAction', 'Export Backup…')} subtitle={copy('exportBackupSubtitle', 'Creates a verified backup in a location you choose.')} onPress={() => void runExternalOperation(exportBackup)} disabled={disabled} /> : null}
             {operations?.selectBackupArchive ? <Item testID="settings.personalHomeRuntime.verifyBackup" title={copy('verifyAction', 'Verify Backup…')} subtitle={copy('verifySubtitle', 'Checks an archive without restoring it.')} onPress={() => void runExternalOperation(verify)} disabled={disabled} /> : null}
@@ -374,7 +490,7 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
                 onPress={() => void runExternalOperation(() => recoverRelocation(returnRelocationRecovery))}
                 disabled={disabled}
             /> : null}
-            {backupResult ? <Item testID="settings.personalHomeRuntime.backupResult" title={copy('backupVerified', 'Backup verified')} subtitle={[formatTimestamp(backupResult.createdAt), formatBytes(backupResult.bytes), backupResult.homeNeedsAttention ? copy('backupNeedsAttention', 'Backup verified; Home restart needs attention') : copy('backupHomeReady', 'Home restarted')].join(' · ')} showChevron={false} mode="info" /> : null}
+            {backupResult ? <Item testID="settings.personalHomeRuntime.backupResult" title={copy('backupVerified', 'Backup verified')} subtitle={[formatTimestamp(backupResult.createdAt), formatBytes(backupResult.bytes), backupResult.cleanupRequired ? copy('backupCleanupRequired', 'Backup is safe; remove the protected staging path shown in Details') : backupResult.homeNeedsAttention ? copy('backupNeedsAttention', 'Backup verified; Home restart needs attention') : copy('backupHomeReady', 'Home restarted')].join(' · ')} showChevron={false} mode="info" /> : null}
             {backupResult ? <Item
                 testID="settings.personalHomeRuntime.backupResultDetails"
                 title={t('common.details')}
@@ -385,6 +501,10 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
                     `${copy('identityTitle', 'Home identity')}: ${backupResult.homeServerIdentityId}`,
                     `SHA-256: ${backupResult.sha256}`,
                     copy('backupVerified', 'Backup verified'),
+                    ...(backupResult.cleanupRequired ? [
+                        `${copy('backupCleanupPath', 'Protected staging path to remove')}: ${backupResult.cleanupRequired.path}`,
+                        `${copy('backupCleanupError', 'Cleanup error')}: ${backupResult.cleanupRequired.error}`,
+                    ] : []),
                 ].join('\n'))}
             /> : null}
             {backupResult && operations?.revealBackupOutput ? <Item testID="settings.personalHomeRuntime.backupReveal" title={copy('backupRevealAction', 'Reveal backup')} onPress={() => void runExternalOperation(() => operations.revealBackupOutput!(backupResult.path))} /> : null}
@@ -478,11 +598,13 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
             {operations?.uninstallRuntime ? <Item testID="settings.personalHomeRuntime.uninstallRuntime" title={copy('uninstallRuntimeAction', 'Uninstall runtime, keep data')} subtitle={copy('uninstallRuntimeSubtitle', 'Removes the service and binaries; Home data is preserved.')} onPress={() => void runExternalOperation(operations.uninstallRuntime!)} /> : null}
         </ItemGroup>
         <ItemGroup title={copy('deleteHomeDataTitle', 'Delete Home Data')} footer={copy('removeSectionFooter', 'Uninstall keeps Home data. Permanent deletion is a separate confirmed action.')}>
-            <Item testID="settings.personalHomeRuntime.eraseData" title={copy('eraseDataAction', 'Delete Personal Home data permanently')} subtitle={copy('eraseDataSubtitle', 'Separate from uninstall. Permanently deletes the resolved Home data.')} onPress={() => void erase()} disabled={disabled} destructive />
+            <Item testID="settings.personalHomeRuntime.eraseData" title={copy('eraseDataAction', 'Delete Personal Home data permanently')} subtitle={copy('eraseDataSubtitle', 'Separate from uninstall. Permanently deletes the resolved Home data.')} onPress={() => void runExternalOperation(erase)} disabled={disabled} destructive />
             {eraseResult ? <Item
                 testID="settings.personalHomeRuntime.eraseResult"
                 title={eraseResult.outcome === 'partial'
                     ? copy('eraseRemainingPaths', 'Could not remove')
+                    : eraseResult.outcome === 'completed_with_cleanup_attention'
+                        ? copy('eraseInspectionAttention', 'Home data deleted; verification needs attention')
                     : copy('eraseResultTitle', 'Home data deleted')}
                 subtitle={[
                     `${eraseResult.removedPaths.length} ${copy('pathsRemoved', 'paths removed')}`,
@@ -491,10 +613,20 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
                         ? [`${copy('eraseRemainingPaths', 'Could not remove')}: ${[...eraseResult.remainingOwnedPaths, ...eraseResult.remainingUnknownPaths].join(', ')}`]
                         : []),
                     ...(eraseResult.error ? [eraseResult.error] : []),
+                    ...(eraseResult.inspectionError ? [eraseResult.inspectionError] : []),
                 ].join('\n')}
                 showChevron={false}
                 mode="info"
             /> : null}
         </ItemGroup>
     </>;
+});
+
+export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHomeRuntimeControlSection(
+    props: PersonalHomeRuntimeControlSectionProps,
+) {
+    if (props.controller) {
+        return <PersonalHomeRuntimeControlSectionContent {...props} controller={props.controller} />;
+    }
+    return <OwnedPersonalHomeRuntimeControlSection {...props} />;
 });

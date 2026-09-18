@@ -56,8 +56,8 @@ describe('useRequireFriendsEnabled', () => {
 
         getStorage().setState(initialStorageState, true);
 
-        const profile = upsertServerProfile({ serverUrl: 'https://friends.test', name: 'Friends Test' });
-        setActiveServerId(profile.id, { scope: 'device' });
+        const profile = await upsertServerProfile({ serverUrl: 'https://friends.test', name: 'Friends Test' });
+        await setActiveServerId(profile.id, { scope: 'device' });
 
         getStorage().getState().applySettingsLocal({
             experiments: true,

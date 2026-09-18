@@ -1,7 +1,7 @@
 import type { ScmCommitSelectionPatch } from '@/sync/domains/state/storageTypes';
 
 export interface ScmSelectionWorkspaceState {
-    scmTouchedPaths?: Record<string, number>;
+    workspaceScmTouchedPaths?: Record<string, number>;
     scmCommitSelection?: Record<string, number>;
     scmCommitSelectionPatches?: Record<string, ScmCommitSelectionPatch & { selectedAt: number }>;
     updatedAt: number;
@@ -14,13 +14,13 @@ export function markWorkspaceScmTouchedPaths(
 ): void {
     if (paths.length === 0) return;
 
-    if (!workspace.scmTouchedPaths) {
-        workspace.scmTouchedPaths = {};
+    if (!workspace.workspaceScmTouchedPaths) {
+        workspace.workspaceScmTouchedPaths = {};
     }
 
     for (const path of paths) {
         if (!path) continue;
-        workspace.scmTouchedPaths[path] = touchedAt;
+        workspace.workspaceScmTouchedPaths[path] = touchedAt;
     }
     workspace.updatedAt = Date.now();
 }
@@ -28,7 +28,7 @@ export function markWorkspaceScmTouchedPaths(
 export function getWorkspaceScmTouchedPaths(
     workspace: ScmSelectionWorkspaceState | null | undefined,
 ): string[] {
-    const touched = workspace?.scmTouchedPaths;
+    const touched = workspace?.workspaceScmTouchedPaths;
     if (!touched) return [];
     return Object.keys(touched).sort((a, b) => a.localeCompare(b));
 }
@@ -37,7 +37,7 @@ export function pruneWorkspaceScmTouchedPaths(
     workspace: ScmSelectionWorkspaceState,
     activePaths: Set<string>,
 ): void {
-    const touched = workspace.scmTouchedPaths;
+    const touched = workspace.workspaceScmTouchedPaths;
     if (!touched) return;
 
     for (const path of Object.keys(touched)) {
@@ -47,7 +47,7 @@ export function pruneWorkspaceScmTouchedPaths(
     }
 
     if (Object.keys(touched).length === 0) {
-        delete workspace.scmTouchedPaths;
+        delete workspace.workspaceScmTouchedPaths;
     }
     workspace.updatedAt = Date.now();
 }

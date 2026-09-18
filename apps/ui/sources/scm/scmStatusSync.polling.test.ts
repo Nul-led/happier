@@ -15,7 +15,7 @@ const withBatchedScmPublish = vi.hoisted(() => (state: any) => {
             }
             state.applyScmStatus(sessionId, status);
             const activePaths = new Set((snapshot.entries ?? []).map((entry: any) => entry.path));
-            state.pruneSessionProjectScmTouchedPaths(sessionId, activePaths);
+            state.pruneWorkspaceScmTouchedPathsForSession(sessionId, activePaths);
             state.pruneSessionProjectScmCommitSelectionPaths(sessionId, activePaths);
             state.pruneSessionProjectScmCommitSelectionPatches(sessionId, activePaths);
         }
@@ -133,7 +133,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshot: updateSnapshotMock,
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     });
@@ -162,7 +162,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshot: updateSnapshotMock,
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     });
@@ -190,7 +190,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshot: updateSnapshotMock,
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     });
@@ -230,7 +230,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
       getSessionProjectScmSnapshot: (sessionId: string) => (hydratedSessionIds.has(sessionId) ? firstSnapshot : null),
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     }));
@@ -281,7 +281,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
       getSessionProjectScmSnapshot: (sessionId: string) => hydratedSnapshots.get(sessionId) ?? null,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     }));
@@ -317,7 +317,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshot: () => buildRepoSnapshot({ fetchedAt: 100 }),
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     });
@@ -349,7 +349,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshot: updateSnapshotMock,
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     });
@@ -378,7 +378,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshot: updateSnapshotMock,
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     });
@@ -412,7 +412,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshot: updateSnapshotMock,
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     });
@@ -437,7 +437,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshot: updateSnapshotMock,
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     });
@@ -468,7 +468,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshot: updateSnapshotMock,
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     });
@@ -511,7 +511,7 @@ describe('ScmStatusSync polling', () => {
       updateSessionProjectScmSnapshot: updateSnapshotMock,
       updateSessionProjectScmSnapshotError: updateSnapshotErrorMock,
       getSessionProjectScmSnapshotError: getSnapshotErrorMock,
-      pruneSessionProjectScmTouchedPaths: pruneTouchedPathsMock,
+      pruneWorkspaceScmTouchedPathsForSession: pruneTouchedPathsMock,
       pruneSessionProjectScmCommitSelectionPaths: pruneCommitSelectionPathsMock,
       pruneSessionProjectScmCommitSelectionPatches: pruneCommitSelectionPatchesMock,
     });

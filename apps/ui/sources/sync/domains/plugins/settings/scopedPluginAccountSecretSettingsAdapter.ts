@@ -1,6 +1,8 @@
 import {
     applyAccountSettingsSavedSecretMutation,
     eraseAccountSettingsPluginSecretBindings,
+    parseSavedSecretRefV1,
+    resolveAccountSettingsPluginSecretBinding,
     resolveAccountSettingsPluginSecret,
 } from '@happier-dev/protocol';
 
@@ -22,7 +24,7 @@ export type AccountPluginSecretSettingsSnapshot = Readonly<{
 }>;
 
 export type AccountPluginSecretSettingsWriteResult =
-    | Readonly<{ status: 'applied'; snapshot: AccountPluginSecretSettingsSnapshot }>
+    | Readonly<{ status: 'applied'; revision: number; snapshot: AccountPluginSecretSettingsSnapshot | null }>
     | Readonly<{ status: 'conflict'; snapshot: AccountPluginSecretSettingsSnapshot | null }>
     /** A one-shot write may have applied; this contains the owner's sole safe readback. */
     | Readonly<{ status: 'outcomeUnknown'; snapshot: AccountPluginSecretSettingsSnapshot | null }>
@@ -35,6 +37,7 @@ export type AccountPluginSecretSettingsWriteResult =
 export type AccountPluginSecretSettingsEraseResult =
     | Readonly<{ status: 'completed'; changed: boolean }>
     | Readonly<{ status: 'conflict' }>
+    | Readonly<{ status: 'outcomeUnknown' }>
     | Readonly<{ status: 'unavailable' }>;
 
 /**
@@ -82,6 +85,7 @@ export async function eraseAccountPluginSecretSettingsBindings(params: Readonly<
             mutate: () => ({ ...erased.settings }),
         });
         if (result.status === 'applied') return { status: 'completed', changed: true };
+        if (result.status === 'outcomeUnknown') return { status: 'outcomeUnknown' };
         return result.status === 'conflict'
             ? { status: 'conflict' }
             : { status: 'unavailable' };
@@ -119,7 +123,7 @@ function projectSecretSnapshot(input: ScopedPluginSettingsReadInput, snapshot: A
     const secretStates: Record<string, 'configured' | 'missing'> = {};
     try {
         for (const field of input.fields) {
-            secretStates[field.key] = resolveAccountSettingsPluginSecret(snapshot.settings, {
+            secretStates[field.key] = resolveAccountSettingsPluginSecretBinding(snapshot.settings, {
                 pluginId: input.pluginId,
                 localId: field.key,
             }) ? 'configured' : 'missing';
@@ -150,7 +154,7 @@ function projectSecretConflict(
     snapshot: AccountPluginSecretSettingsSnapshot,
 ): ScopedPluginSettingsWriteResult {
     const projected = projectSecretSnapshot(input, snapshot);
-    if (projected.status !== 'ready') return projected;
+    if (projected.status !== 'ready') return { status: 'conflict' };
     return { status: 'conflict', snapshot: projected.snapshot };
 }
 
@@ -212,28 +216,39 @@ export function createAccountPluginSecretSettingsAdapter(
                 : null;
 
             try {
-                const existing = resolveAccountSettingsPluginSecret(before.settings, {
+                const existingBinding = resolveAccountSettingsPluginSecretBinding(before.settings, {
                     pluginId: input.pluginId,
                     localId: input.fieldId,
                 });
-                if ((input.mutation.kind === 'delete' || input.mutation.kind === 'unbind') && !existing) {
+                if ((input.mutation.kind === 'delete' || input.mutation.kind === 'unbind') && !existingBinding) {
                     return projectSecretSnapshot(input, before);
                 }
                 const result = await boundary.writeOnce({
                     target: input.target,
                     expectedRevision: before.revision,
                     mutate: (settings) => {
-                        const resolved = resolveAccountSettingsPluginSecret(settings, {
+                        const binding = resolveAccountSettingsPluginSecretBinding(settings, {
                             pluginId: input.pluginId,
                             localId: input.fieldId,
                         });
+                        const parsedBinding = binding
+                            ? parseSavedSecretRefV1(binding.savedSecretId)
+                            : null;
+                        const resolved = parsedBinding?.kind === 'personal'
+                            ? resolveAccountSettingsPluginSecret(settings, {
+                                pluginId: input.pluginId,
+                                localId: input.fieldId,
+                            })
+                            : null;
+                        const expectedSecretId = binding?.savedSecretId ?? null;
+                        const expectedSecretUpdatedAt = resolved?.secret.updatedAt ?? null;
                         const target = { pluginId: input.pluginId, localId: input.fieldId };
                         const mutation = replacement !== null
                             ? {
                                 kind: 'replacePluginSecret' as const,
                                 target,
-                                expectedSecretId: resolved?.binding.savedSecretId ?? null,
-                                expectedSecretUpdatedAt: resolved?.secret.updatedAt ?? null,
+                                expectedSecretId,
+                                expectedSecretUpdatedAt,
                                 secret: {
                                     id: replacement.id,
                                     name: secretName(input.pluginId, input.fieldId),
@@ -249,22 +264,22 @@ export function createAccountPluginSecretSettingsAdapter(
                                 ? {
                                     kind: 'bindPluginSecret' as const,
                                     target,
-                                    expectedSecretId: resolved?.binding.savedSecretId ?? null,
-                                    expectedSecretUpdatedAt: resolved?.secret.updatedAt ?? null,
+                                    expectedSecretId,
+                                    expectedSecretUpdatedAt,
                                     secretId: input.mutation.savedSecretId,
                                 }
                                 : input.mutation.kind === 'unbind'
                                     ? {
                                         kind: 'unbindPluginSecret' as const,
                                         target,
-                                        expectedSecretId: resolved!.binding.savedSecretId,
-                                        expectedSecretUpdatedAt: resolved!.secret.updatedAt,
+                                        expectedSecretId: binding!.savedSecretId,
+                                        expectedSecretUpdatedAt,
                                     }
                                     : {
                                         kind: 'removePluginSecret' as const,
                                         target,
-                                        expectedSecretId: resolved!.binding.savedSecretId,
-                                        expectedSecretUpdatedAt: resolved!.secret.updatedAt,
+                                        expectedSecretId: binding!.savedSecretId,
+                                        expectedSecretUpdatedAt,
                                     };
                         return applyAccountSettingsSavedSecretMutation(settings, mutation).settings;
                     },
@@ -273,7 +288,7 @@ export function createAccountPluginSecretSettingsAdapter(
                 if (result.status === 'conflict') {
                     return result.snapshot
                         ? projectSecretConflict(input, result.snapshot)
-                        : unavailable('transport');
+                        : { status: 'conflict' };
                 }
                 if (result.status === 'outcomeUnknown') {
                     if (!result.snapshot) return { status: 'outcomeUnknown' };
@@ -282,7 +297,10 @@ export function createAccountPluginSecretSettingsAdapter(
                         ? { status: 'outcomeUnknown', snapshot: projected.snapshot }
                         : { status: 'outcomeUnknown' };
                 }
-                return projectSecretSnapshot(input, result.snapshot);
+                const projected = result.snapshot ? projectSecretSnapshot(input, result.snapshot) : null;
+                return projected?.status === 'ready'
+                    ? projected
+                    : { status: 'applied', revision: { kind: 'account-secret', value: result.revision } };
             } catch {
                 return unavailable('transport');
             }

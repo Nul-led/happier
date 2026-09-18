@@ -20,7 +20,7 @@ function getCacheKey(workspaceCacheKey: string, directoryPath: string): string {
     return `${workspaceCacheKey}:${directoryPath}`;
 }
 
-const workspaceRepositoryDirectoryCache = new Map<string, RepositoryDirectoryEntry[]>();
+const workspaceRepositoryDirectoryCache = new Map<string, { entries: RepositoryDirectoryEntry[]; gitIgnoreAvailable?: boolean }>();
 const workspaceRepositoryDirectoryWarmInFlight = new Map<string, Promise<ListRepositoryDirectoryEntriesResult>>();
 
 export function getCachedWorkspaceRepositoryDirectoryEntries(input: Readonly<{
@@ -29,16 +29,21 @@ export function getCachedWorkspaceRepositoryDirectoryEntries(input: Readonly<{
 }>): RepositoryDirectoryEntry[] | null {
     const key = getCacheKey(input.workspaceCacheKey, input.directoryPath);
     const cached = workspaceRepositoryDirectoryCache.get(key);
-    return cached ? cached.slice() : null;
+    return cached ? cached.entries.slice() : null;
+}
+
+export function getCachedWorkspaceRepositoryGitIgnoreAvailable(input: Readonly<{ workspaceCacheKey: string; directoryPath: string }>): boolean | undefined {
+    return workspaceRepositoryDirectoryCache.get(getCacheKey(input.workspaceCacheKey, input.directoryPath))?.gitIgnoreAvailable;
 }
 
 export function setCachedWorkspaceRepositoryDirectoryEntries(input: Readonly<{
     workspaceCacheKey: string;
     directoryPath: string;
     entries: RepositoryDirectoryEntry[];
+    gitIgnoreAvailable?: boolean;
 }>): void {
     const key = getCacheKey(input.workspaceCacheKey, input.directoryPath);
-    workspaceRepositoryDirectoryCache.set(key, input.entries.slice());
+    workspaceRepositoryDirectoryCache.set(key, { entries: input.entries.slice(), gitIgnoreAvailable: input.gitIgnoreAvailable });
 }
 
 export function clearCachedWorkspaceRepositoryDirectoryEntries(input: Readonly<{
@@ -91,7 +96,7 @@ export async function warmWorkspaceRepositoryDirectoryCache(input: Readonly<{
         directoryPath: input.directoryPath,
     });
     if (cached) {
-        return { ok: true, entries: cached };
+        return { ok: true, entries: cached, gitIgnoreAvailable: getCachedWorkspaceRepositoryGitIgnoreAvailable({ workspaceCacheKey, directoryPath: input.directoryPath }) };
     }
 
     const key = getCacheKey(workspaceCacheKey, input.directoryPath);
@@ -115,6 +120,7 @@ export async function listWorkspaceRepositoryDirectoryEntries(input: Readonly<{
         {
             path: absPath,
             includeFiles: true,
+            includeGitIgnore: true,
         },
         { serverId: input.scope.serverId },
     );
@@ -134,7 +140,9 @@ export async function listWorkspaceRepositoryDirectoryEntries(input: Readonly<{
         const modifiedMs = typeof entry.modified === 'number' && Number.isFinite(entry.modified) && entry.modified >= 0
             ? Math.floor(entry.modified)
             : undefined;
-        entries.push({ name, type: entry.type, sizeBytes, modifiedMs });
+        entries.push({ name, type: entry.type, sizeBytes, modifiedMs,
+            ...(response.gitIgnoreAvailable === true && typeof entry.gitIgnored === 'boolean' ? { gitIgnored: entry.gitIgnored } : {}),
+        });
     }
 
     const sorted = sortRepositoryDirectoryEntries(entries);
@@ -142,6 +150,7 @@ export async function listWorkspaceRepositoryDirectoryEntries(input: Readonly<{
         workspaceCacheKey,
         directoryPath: input.directoryPath,
         entries: sorted,
+        gitIgnoreAvailable: response.gitIgnoreAvailable === true,
     });
-    return { ok: true, entries: sorted };
+    return { ok: true, entries: sorted, gitIgnoreAvailable: response.gitIgnoreAvailable === true };
 }

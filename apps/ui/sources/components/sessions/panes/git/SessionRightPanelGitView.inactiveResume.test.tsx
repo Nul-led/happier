@@ -40,7 +40,7 @@ installSessionDetailsPanelCommonModuleMocks({
             useSessionProjectScmOperationLog: () => [],
             useSessionProjectScmSnapshot: () => null,
             useSessionProjectScmSnapshotError: () => ({ message: 'RPC method not available', at: 1 }),
-            useSessionProjectScmTouchedPaths: () => [],
+            useWorkspaceScmTouchedPathsForSession: () => [],
             useSessionRealtimeScmTranscriptConsumer: () => {},
         });
     },
@@ -52,8 +52,8 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
     }),
 }));
 
-vi.mock('./useSessionRightPanelGitTabState', () => ({
-    useSessionRightPanelGitTabState: () => ({
+vi.mock('@/components/workspaces/scm/useWorkspaceScmTabState', () => ({
+    useWorkspaceScmTabState: () => ({
         activeGitSubTab,
         setActiveGitSubTab: vi.fn(),
         commitDraftMessage: '',

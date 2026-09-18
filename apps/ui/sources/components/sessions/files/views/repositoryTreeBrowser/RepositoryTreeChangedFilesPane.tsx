@@ -14,11 +14,13 @@ import {
 } from '@/scm/scmAttribution';
 import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
-import { useProjectForSession, useProjectSessions, useSessionProjectScmOperationLog, useSessionProjectScmTouchedPaths, useSetting } from '@/sync/domains/state/storage';
+import { useWorkspaceScmTouchedPathsForSession, useSetting } from '@/sync/domains/state/storage';
 import { useDerivedSessionChangeSet } from '@/sync/domains/session/changes/hooks/useDerivedSessionChangeSet';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export type RepositoryTreeChangedFilesPaneProps = Readonly<{
     sessionId: string;
+    serverId?: string | null;
     scmSnapshot: ScmWorkingSnapshot | null;
     searchQuery: string;
     onSearchQueryChange: (value: string) => void;
@@ -45,10 +47,14 @@ function filterAttributedFilesByQuery(files: readonly SessionAttributedFile[], q
 
 export const RepositoryTreeChangedFilesPane = React.memo((props: RepositoryTreeChangedFilesPaneProps) => {
     const { theme } = useUnistyles();
-    const project = useProjectForSession(props.sessionId);
-    const projectSessionIds = useProjectSessions(project?.id ?? null);
-    const touchedPaths = useSessionProjectScmTouchedPaths(props.sessionId);
-    const operationLog = useSessionProjectScmOperationLog(props.sessionId);
+    const sessionAddress = React.useMemo(
+        () => normalizeSessionAddress(props.serverId, props.sessionId),
+        [props.serverId, props.sessionId],
+    );
+    // Qualified by the same Home the change-set address names: workspace touched paths are the
+    // low-confidence attribution fallback, and reading another Home's set would attribute its
+    // edits to this Session.
+    const touchedPaths = useWorkspaceScmTouchedPathsForSession(props.sessionId, props.serverId);
     const scmReviewMaxFiles = useSetting('scmReviewMaxFiles');
     const scmReviewMaxChangedLines = useSetting('scmReviewMaxChangedLines');
     const {
@@ -59,7 +65,7 @@ export const RepositoryTreeChangedFilesPane = React.memo((props: RepositoryTreeC
         latestTurnCheckpointDiffByPath,
         sessionChangeSet,
         providerDiffByPath,
-    } = useDerivedSessionChangeSet(props.sessionId);
+    } = useDerivedSessionChangeSet(sessionAddress);
 
     const [requestedChangedFilesViewMode, setRequestedChangedFilesViewMode] = React.useState<ChangedFilesViewMode | null>(null);
     const [changedFilesPresentation, setChangedFilesPresentation] = React.useState<ChangedFilesPresentation>('list');
@@ -67,9 +73,7 @@ export const RepositoryTreeChangedFilesPane = React.memo((props: RepositoryTreeC
     const changed = useChangedFilesData({
         sessionId: props.sessionId,
         scmSnapshot: props.scmSnapshot,
-        touchedPaths,
-        operationLog,
-        projectSessionIds,
+        workspaceTouchedPaths: touchedPaths,
         searchQuery: props.searchQuery,
         showAllRepositoryFiles: false,
         latestTurnChangeSet: latestTurnScopedChangeSet,
@@ -179,7 +183,6 @@ export const RepositoryTreeChangedFilesPane = React.memo((props: RepositoryTreeC
                     sessionId={props.sessionId}
                     snapshot={props.scmSnapshot}
                     changedFilesViewMode={changedFilesViewMode}
-                    attributionReliability={changed.attributionReliability}
                     allRepositoryChangedFiles={filteredChanged.allRepositoryChangedFiles}
                     turnAttributedFiles={filteredChanged.turnAttributedFiles}
                     turnAgentReportedFiles={filteredChanged.turnAgentReportedFiles}
@@ -188,7 +191,6 @@ export const RepositoryTreeChangedFilesPane = React.memo((props: RepositoryTreeC
                     turnRepositoryOnlyFiles={filteredChanged.turnRepositoryOnlyFiles}
                     sessionAttributedFiles={filteredChanged.sessionAttributedFiles}
                     repositoryOnlyFiles={filteredChanged.repositoryOnlyFiles}
-                    suppressedInferredCount={changed.suppressedInferredCount}
                     maxFiles={maxFiles}
                     maxChangedLines={maxChangedLines}
                     onFilePress={openFile}
@@ -200,7 +202,6 @@ export const RepositoryTreeChangedFilesPane = React.memo((props: RepositoryTreeC
                 <ChangedFilesList
                     theme={theme}
                     changedFilesViewMode={changedFilesViewMode}
-                    attributionReliability={changed.attributionReliability}
                     allRepositoryChangedFiles={filteredChanged.allRepositoryChangedFiles}
                     turnAttributedFiles={filteredChanged.turnAttributedFiles}
                     turnAgentReportedFiles={filteredChanged.turnAgentReportedFiles}
@@ -209,7 +210,6 @@ export const RepositoryTreeChangedFilesPane = React.memo((props: RepositoryTreeC
                     turnRepositoryOnlyFiles={filteredChanged.turnRepositoryOnlyFiles}
                     sessionAttributedFiles={filteredChanged.sessionAttributedFiles}
                     repositoryOnlyFiles={filteredChanged.repositoryOnlyFiles}
-                    suppressedInferredCount={changed.suppressedInferredCount}
                     onFilePress={openFile}
                     onFilePressPinned={openFilePinned}
                     rowDensity="compact"

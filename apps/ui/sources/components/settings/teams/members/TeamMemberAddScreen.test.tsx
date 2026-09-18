@@ -1,0 +1,134 @@
+import * as React from 'react';
+import { act } from 'react-test-renderer';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+    collectRenderedTestIds,
+    createHomeGovernanceHarness,
+    homeAccountPickerRowFixture,
+    installHomeGovernanceBoundaries,
+    renderScreen,
+    standardCleanup,
+    teamCapabilitiesFixture,
+    teamSummaryFixture,
+} from '@/dev/testkit';
+
+import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+installSettingsViewCommonModuleMocks({
+    router: async () => ({
+        useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
+        useNavigation: () => ({ setOptions: vi.fn() }),
+        useLocalSearchParams: () => ({}),
+    }),
+});
+
+const harness = createHomeGovernanceHarness();
+installHomeGovernanceBoundaries(harness);
+
+const TEAM_GET_PATH = '/v1/teams/get';
+const ACCOUNT_SEARCH_PATH = '/v1/home/accounts/search';
+
+async function renderAddMember(serverId: string) {
+    const { TeamMemberAddScreen } = await import('./TeamMemberAddScreen');
+    return renderScreen(<TeamMemberAddScreen serverId={serverId} teamId="team-1" />);
+}
+
+async function waitForTestId(
+    screen: Awaited<ReturnType<typeof renderAddMember>>,
+    testID: string,
+): Promise<void> {
+    await vi.waitFor(() => {
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(testID);
+    });
+}
+
+beforeEach(async () => {
+    const { resetTeamsSnapshotsForTests } = await import('@/sync/store/teams/teamsSnapshots');
+    const { resetTeamsDirectoryEngineForTests } = await import('@/sync/engine/teams/teamsDirectoryEngine');
+    resetTeamsSnapshotsForTests();
+    resetTeamsDirectoryEngineForTests();
+    await harness.reset();
+    await harness.selectHomes([]);
+});
+
+afterEach(() => {
+    standardCleanup();
+});
+
+describe('TeamMemberAddScreen search', () => {
+    it('distinguishes loading, empty, failure, and a successful retry', async () => {
+        const serverId = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            accountId: 'account-ada',
+            teamsEnabled: true,
+        });
+        await harness.selectHomes([serverId]);
+        harness.answer(serverId, TEAM_GET_PATH, {
+            body: teamSummaryFixture({ capabilities: teamCapabilitiesFixture({ manageMembers: true }) }),
+        });
+
+        let releaseEmpty!: () => void;
+        const emptyGate = new Promise<void>((resolve) => { releaseEmpty = resolve; });
+        harness.answer(serverId, ACCOUNT_SEARCH_PATH, {
+            body: { accounts: [] },
+            respondAfter: emptyGate,
+        });
+
+        const screen = await renderAddMember(serverId);
+        act(() => screen.changeTextByTestId('team-member-add-search', 'Grace'));
+        await waitForTestId(screen, 'team-member-add-search-loading');
+        releaseEmpty();
+        await waitForTestId(screen, 'team-member-add-search-empty');
+
+        harness.answer(serverId, ACCOUNT_SEARCH_PATH, { status: 503, body: { error: 'unavailable' } });
+        act(() => screen.changeTextByTestId('team-member-add-search', 'Ada'));
+        await waitForTestId(screen, 'team-member-add-search-retry');
+
+        harness.answer(serverId, ACCOUNT_SEARCH_PATH, {
+            body: { accounts: [homeAccountPickerRowFixture('account-grace', 'Grace')] },
+        });
+        await screen.pressByTestIdAsync('team-member-add-search-retry');
+        await waitForTestId(screen, 'team-member-add-candidate:account-grace');
+    });
+
+    it('says why a found Account cannot be chosen instead of silently disabling it', async () => {
+        const serverId = await harness.addHome({
+            name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'account-ada', teamsEnabled: true,
+        });
+        await harness.selectHomes([serverId]);
+        harness.answer(serverId, TEAM_GET_PATH, {
+            body: teamSummaryFixture({ capabilities: teamCapabilitiesFixture({ manageMembers: true }) }),
+        });
+        harness.answer(serverId, ACCOUNT_SEARCH_PATH, {
+            body: { accounts: [{ ...homeAccountPickerRowFixture('account-grace', 'Grace'), eligible: false }] },
+        });
+
+        const screen = await renderAddMember(serverId);
+        act(() => screen.changeTextByTestId('team-member-add-search', 'Grace'));
+        await waitForTestId(screen, 'team-member-add-candidate:account-grace');
+
+        expect(screen.getTextContent()).toContain('teams.members.ineligible');
+    });
+
+    it('does not offer retry for an authoritative search refusal', async () => {
+        const serverId = await harness.addHome({
+            name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'account-ada', teamsEnabled: true,
+        });
+        await harness.selectHomes([serverId]);
+        harness.answer(serverId, TEAM_GET_PATH, {
+            body: teamSummaryFixture({ capabilities: teamCapabilitiesFixture({ manageMembers: true }) }),
+        });
+        harness.answer(serverId, ACCOUNT_SEARCH_PATH, { status: 403, body: { error: 'forbidden' } });
+
+        const screen = await renderAddMember(serverId);
+        act(() => screen.changeTextByTestId('team-member-add-search', 'Ada'));
+        await waitForTestId(screen, 'team-member-add-search-unavailable');
+
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-member-add-search-retry');
+        expect(screen.getTextContent()).toContain('teams.errors.forbidden');
+    });
+});

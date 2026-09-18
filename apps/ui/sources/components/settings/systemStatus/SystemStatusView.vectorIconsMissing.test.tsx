@@ -126,11 +126,7 @@ vi.mock('./OtaUpdateStatusSection', () => ({
     OtaUpdateStatusSection: () => null,
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
+vi.mock('@/constants/Typography', async (importOriginal) => await importOriginal());
 
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
     useActiveServerSnapshot: () => ({ generation: 1, serverId: 'srv_1', serverUrl: 'https://api.happier.dev' }),

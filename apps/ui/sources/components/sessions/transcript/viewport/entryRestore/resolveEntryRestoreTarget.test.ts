@@ -223,6 +223,7 @@ describe('resolve entry restore target', () => {
         const underFilled = { contentHeight: 500, layoutHeight: 800 };
 
         expect(resolveEntryRestoreTarget(buildParams({
+            canMaterializeOlder: true,
             contentMeasured: underFilled,
             snapshot: {
                 shouldFollowBottom: false,

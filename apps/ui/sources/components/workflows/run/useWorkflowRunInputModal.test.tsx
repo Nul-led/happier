@@ -1,0 +1,86 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { renderHook } from '@/dev/testkit';
+
+import type { WorkflowRunInputModalProps } from './useWorkflowRunInputModal';
+
+const modalMock = vi.hoisted(() => {
+    const show = vi.fn(() => 'modal-1');
+    const update = vi.fn();
+    const hide = vi.fn();
+    return { show, update, hide };
+});
+
+vi.mock('@/modal', () => ({
+    Modal: { show: modalMock.show, update: modalMock.update, hide: modalMock.hide },
+}));
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock({ translate: (key: string) => key });
+});
+
+function sheetProps(overrides: Partial<WorkflowRunInputModalProps> = {}): WorkflowRunInputModalProps {
+    return {
+        inputs: [],
+        values: {},
+        onChangeValues: () => {},
+        onRun: () => {},
+        onCancel: () => {},
+        pending: false,
+        ...overrides,
+    } as WorkflowRunInputModalProps;
+}
+
+describe('useWorkflowRunInputModal', () => {
+    afterEach(() => {
+        modalMock.show.mockClear();
+        modalMock.update.mockClear();
+        modalMock.hide.mockClear();
+    });
+
+    it('presents through the canonical modal owner and updates in place instead of stacking', async () => {
+        const { useWorkflowRunInputModal } = await import('./useWorkflowRunInputModal');
+        const hook = await renderHook(
+            (input: Readonly<{ props: WorkflowRunInputModalProps }>) =>
+                useWorkflowRunInputModal({ open: true, props: input.props }),
+            { initialProps: { props: sheetProps() } },
+        );
+
+        expect(modalMock.show).toHaveBeenCalledTimes(1);
+
+        // A changed value must not open a second sheet over the first.
+        await hook.rerender({ props: sheetProps({ pending: true }) });
+        expect(modalMock.show).toHaveBeenCalledTimes(1);
+        expect(modalMock.update).toHaveBeenCalledWith('modal-1', expect.objectContaining({ pending: true }));
+    });
+
+    it('presents nothing until the caller has both intent and a read definition', async () => {
+        const { useWorkflowRunInputModal } = await import('./useWorkflowRunInputModal');
+        await renderHook(() => useWorkflowRunInputModal({ open: false, props: sheetProps() }));
+        expect(modalMock.show).not.toHaveBeenCalled();
+
+        await renderHook(() => useWorkflowRunInputModal({ open: true, props: null }));
+        expect(modalMock.show).not.toHaveBeenCalled();
+    });
+
+    it('hides the sheet when the caller closes it and when the surface unmounts', async () => {
+        const { useWorkflowRunInputModal } = await import('./useWorkflowRunInputModal');
+        const hook = await renderHook(
+            (input: Readonly<{ open: boolean }>) =>
+                useWorkflowRunInputModal({ open: input.open, props: sheetProps() }),
+            { initialProps: { open: true } },
+        );
+        expect(modalMock.show).toHaveBeenCalledTimes(1);
+
+        await hook.rerender({ open: false });
+        expect(modalMock.hide).toHaveBeenCalledWith('modal-1');
+
+        // Reopening presents again rather than reusing a hidden id.
+        modalMock.hide.mockClear();
+        await hook.rerender({ open: true });
+        expect(modalMock.show).toHaveBeenCalledTimes(2);
+
+        await hook.unmount();
+        expect(modalMock.hide).toHaveBeenCalledWith('modal-1');
+    });
+});

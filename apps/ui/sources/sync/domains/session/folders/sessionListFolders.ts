@@ -1,4 +1,5 @@
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import type { SessionListLayoutChoice } from '@/sync/domains/session/listing/sessionListLayout';
 
 import { buildSessionFolderAssignmentKey } from './assignmentKeys';
 import { buildSessionFolderCollapseKey } from './collapseKeys';
@@ -50,7 +51,12 @@ export function buildSessionFolderGroupKey(params: Readonly<{
     workspace: SessionFolderWorkspaceRefV1;
     folderId: string | null;
 }>): string {
-    return `folder:${String(params.serverId ?? params.workspace.serverId ?? 'local').trim() || 'local'}:${buildSessionFolderWorkspaceRefKey(params.workspace)}:${params.folderId ?? 'root'}`;
+    return JSON.stringify([
+        'folder-group',
+        String(params.serverId ?? params.workspace.serverId).trim(),
+        buildSessionFolderWorkspaceRefKey(params.workspace),
+        params.folderId,
+    ]);
 }
 
 function collectFolderIds(nodes: readonly SessionFolderTreeNode[], out: Set<string>): void {
@@ -146,6 +152,52 @@ function splitProjectGroups(source: ReadonlyArray<SessionListIndexItem>): Projec
     return groups;
 }
 
+/**
+ * Narrows a Session-list index to the focused folder subtree without building the
+ * folder tree.
+ *
+ * Chronological layouts keep the reader's folder focus as a corpus filter while
+ * suppressing folder/workspace presentation, so the narrowing has to happen before
+ * the layout rebuilds its own groups. Headers are dropped because the consuming
+ * layout owns grouping; a caller that wants the tree uses
+ * `applySessionFolderTreeToSessionListIndex` instead.
+ */
+function narrowSessionListIndexToFocusedFolder(params: Readonly<{
+    source: ReadonlyArray<SessionListIndexItem>;
+    folders: SessionFolderList;
+    assignmentsBySessionKey: Readonly<Record<string, string | null | undefined>>;
+    focusedFolder: Readonly<{
+        folderId: string;
+        workspace: SessionFolderWorkspaceRefV1;
+        serverId?: string | null;
+    }> | null;
+}>): FolderAwareSessionListIndexResult {
+    const focus = resolveSessionFolderFocusScope(
+        selectAvailableSessionFolders(params.folders),
+        params.focusedFolder,
+    );
+    if (!focus) {
+        return { items: params.source, folderFocus: null };
+    }
+
+    const items: Extract<SessionListIndexItem, { type: 'session' }>[] = [];
+    let headerServerId: string | null = null;
+    for (const item of params.source) {
+        if (item.type === 'header') {
+            headerServerId = item.serverId ?? headerServerId;
+            continue;
+        }
+        if (item.type !== 'session') continue;
+        const assignedFolderId = params.assignmentsBySessionKey[
+            buildSessionFolderAssignmentKey(item.serverId ?? headerServerId ?? null, item.sessionId)
+        ] ?? null;
+        if (!assignedFolderId || !focus.folderIds.has(assignedFolderId)) continue;
+        items.push(item);
+    }
+
+    return { items, folderFocus: focus };
+}
+
 export function applySessionFolderTreeToSessionListIndex(params: Readonly<{
     source: ReadonlyArray<SessionListIndexItem>;
     folders: SessionFolderList;
@@ -188,7 +240,9 @@ export function applySessionFolderTreeToSessionListIndex(params: Readonly<{
             if (folderId) assignedFolderIds.add(folderId);
         }
         const folderById = new Map(
-            params.folders.folders.map((folder) => [folder.id, folder] as const),
+            params.folders.folders
+                .filter((folder) => folder.serverId === group.workspace!.serverId)
+                .map((folder) => [folder.id, folder] as const),
         );
         for (const folderId of [...assignedFolderIds]) {
             let parentId = folderById.get(folderId)?.parentId ?? null;
@@ -205,7 +259,7 @@ export function applySessionFolderTreeToSessionListIndex(params: Readonly<{
         const knownFolderIds = new Set<string>();
         collectFolderIds(tree.rootNodes, knownFolderIds);
         for (const folderId of knownFolderIds) {
-            renderedFolderIds.add(folderId);
+            renderedFolderIds.add(JSON.stringify([group.workspace.serverId, folderId]));
         }
 
         const sessionsByFolderId = new Map<string, Array<Extract<SessionListIndexItem, { type: 'session' }>>>();
@@ -263,7 +317,7 @@ export function applySessionFolderTreeToSessionListIndex(params: Readonly<{
     const remainingLockedFolders = params.folders.folders
         .filter((folder) =>
             folder.displayState?.status === 'locked'
-            && !renderedFolderIds.has(folder.id))
+            && !renderedFolderIds.has(JSON.stringify([folder.serverId, folder.id])))
         .slice()
         .sort((left, right) => {
             const leftSort = left.sortKey ?? '';
@@ -272,41 +326,40 @@ export function applySessionFolderTreeToSessionListIndex(params: Readonly<{
                 || left.id.localeCompare(right.id);
         });
     const remainingIds = new Set(
-        remainingLockedFolders.map((folder) => folder.id),
+        remainingLockedFolders.map((folder) => JSON.stringify([folder.serverId, folder.id])),
     );
     const childrenByParentId = new Map<
         string | null,
         typeof remainingLockedFolders
     >();
     for (const folder of remainingLockedFolders) {
-        const parentId = folder.parentId && remainingIds.has(folder.parentId)
-            ? folder.parentId
+        const parentKey = folder.parentId ? JSON.stringify([folder.serverId, folder.parentId]) : null;
+        const parentId = parentKey && remainingIds.has(parentKey)
+            ? parentKey
             : null;
         const siblings = childrenByParentId.get(parentId) ?? [];
         siblings.push(folder);
         childrenByParentId.set(parentId, siblings);
     }
     const visited = new Set<string>();
-    const fallbackServerId = groups
-        .map((group) => group.header.serverId)
-        .find((serverId): serverId is string => Boolean(serverId));
     const appendLockedFolder = (
         folder: (typeof remainingLockedFolders)[number],
         depth: number,
     ) => {
-        if (visited.has(folder.id)) return;
-        visited.add(folder.id);
+        const folderKey = JSON.stringify([folder.serverId, folder.id]);
+        if (visited.has(folderKey)) return;
+        visited.add(folderKey);
         out.push({
             type: 'header',
             title: '',
             headerKind: 'folder',
-            groupKey: `locked-folder:${fallbackServerId ?? 'local'}:${folder.id}`,
-            serverId: fallbackServerId,
+            groupKey: JSON.stringify(['locked-folder', folder.serverId, folder.id]),
+            serverId: folder.serverId,
             folderId: folder.id,
             folderDepth: depth,
             displayState: folder.displayState,
         });
-        for (const child of childrenByParentId.get(folder.id) ?? []) {
+        for (const child of childrenByParentId.get(folderKey) ?? []) {
             appendLockedFolder(child, depth + 1);
         }
     };
@@ -318,4 +371,46 @@ export function applySessionFolderTreeToSessionListIndex(params: Readonly<{
     }
 
     return { items: out, folderFocus: focus };
+}
+
+/**
+ * Applies the reader's folder state to the list source for the selected layout.
+ *
+ * Folder state has two separable effects: the tree presentation, and the corpus
+ * narrowing a focused folder performs. Recent activity keeps the narrowing and drops
+ * the presentation, so a retained focus still filters the timeline while no
+ * folder/workspace section reappears and no saved folder preference is mutated.
+ */
+export function resolveFolderAwareSessionListSourceForLayout(params: Readonly<{
+    source: ReadonlyArray<SessionListIndexItem>;
+    layoutChoice: SessionListLayoutChoice;
+    foldersFeatureEnabled: boolean;
+    folderViewModeV1: unknown;
+    folders: SessionFolderList;
+    assignmentsBySessionKey: Readonly<Record<string, string | null | undefined>>;
+    collapsedGroupKeys: Readonly<Record<string, boolean>>;
+    focusedFolder: Readonly<{
+        folderId: string;
+        workspace: SessionFolderWorkspaceRefV1;
+        serverId?: string | null;
+    }> | null;
+}>): FolderAwareSessionListIndexResult {
+    if (!params.foldersFeatureEnabled || params.folderViewModeV1 !== 'tree') {
+        return { items: params.source, folderFocus: null };
+    }
+    if (params.layoutChoice === 'recent_activity') {
+        return narrowSessionListIndexToFocusedFolder({
+            source: params.source,
+            folders: params.folders,
+            assignmentsBySessionKey: params.assignmentsBySessionKey,
+            focusedFolder: params.focusedFolder,
+        });
+    }
+    return applySessionFolderTreeToSessionListIndex({
+        source: params.source,
+        folders: params.folders,
+        assignmentsBySessionKey: params.assignmentsBySessionKey,
+        collapsedGroupKeys: params.collapsedGroupKeys,
+        focusedFolder: params.focusedFolder,
+    });
 }

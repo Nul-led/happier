@@ -100,8 +100,8 @@ vi.mock('../../runtime/orchestration/projectManager', () => ({
         getSessionProjectScmSnapshotError: () => null,
         updateSessionProjectScmSnapshot: () => {},
         updateSessionProjectScmSnapshotError: () => {},
-        getSessionProjectScmTouchedPaths: () => [],
-        clearSessionProjectScmTouchedPaths: () => {},
+        getWorkspaceScmTouchedPathsForSession: () => [],
+        clearWorkspaceScmTouchedPathsForSession: () => {},
         touchSessionProjectScmPaths: () => {},
         clearScmOperationLogEntriesForSessionId: () => {},
         getScmOperationLogEntriesForProjectId: () => [],
@@ -135,8 +135,7 @@ import { createSessionsDomain } from './sessions';
 function createHarness() {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
-        sessionListRowStateByServerId: {},
+        sessionListRowsByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
@@ -145,12 +144,12 @@ function createHarness() {
         workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey: {},
         reviewCommentsDraftsBySessionId: {},
         reviewCommentsDraftsByWorkspaceCacheKey: {},
-        actionDraftsBySessionId: {},
+        sessionActionDraftsByAddressKey: {},
         isDataReady: false,
         machines: {},
         machineDisplayById: {},
         sessionMessages: {},
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
     };
 
     const get = () => state;

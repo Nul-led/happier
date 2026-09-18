@@ -117,12 +117,43 @@ function expectNoObjectKeysOrValuesOnRecords(action: () => void, guardedRecords:
 }
 
 describe('createFaviconPermissionSnapshotSelector', () => {
+    it('clears permission pressure on a viewer-only Unfollow update', () => {
+        const session = createSession({ id: 'shared', active: true, pendingPermissionRequestCount: 1,
+            pendingRequestObservedAt: Date.now(), viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+                relevance: { relevant: true, reasons: ['followed_by_me'] },
+                follow: { follows: true, notificationLevel: 'none' },
+                notification: { level: 'none', source: 'preference' },
+                attention: { needsAttention: true, reasons: ['permission_required'], primary: 'permission_required', presentation: 'full' },
+            },
+        });
+        const selector = createFaviconPermissionSnapshotSelector();
+        expect(selector(createState({ sessions: { shared: session } })).hasFreshPermission).toBe(true);
+        const unfollowed = createSession({ ...session, viewer: { ...session.viewer!,
+            readState: { state: 'not_started' }, follow: { follows: false, notificationLevel: 'none' },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+        } });
+        expect(selector(createState({ sessions: { shared: unfollowed } })).hasFreshPermission).toBe(false);
+    });
+
     beforeEach(() => {
         vi.useFakeTimers();
     });
 
     afterEach(() => {
         vi.useRealTimers();
+    });
+
+    it('does not schedule permission refresh from unrelated active timestamps', () => {
+        vi.setSystemTime(new Date(1_000));
+        const snapshot = createFaviconPermissionSnapshotSelector()(createState({
+            sessions: { permission: createSession({
+                id: 'permission', active: true, activeAt: 900,
+                pendingPermissionRequestCount: 1, pendingRequestObservedAt: 1_000,
+            }) },
+        }));
+        expect(snapshot.hasFreshPermission).toBe(true);
+        expect(snapshot.nextRefreshDelayMs).toBeNull();
     });
 
     it('reuses the previous snapshot for unrelated session updates', () => {

@@ -125,6 +125,8 @@ async function createProjectedClientExecutableActivation(input: Readonly<{
     const activation: PluginUiClientExecutableActivation = Object.freeze({
         pluginId: target.pluginId,
         ...(target.pluginVersion === undefined ? {} : { pluginVersion: target.pluginVersion }),
+        ...(target.immutableGenerationId === undefined ? {} : { immutableGenerationId: target.immutableGenerationId }),
+        accountLifetime,
         contributes: target.contributes,
         target: target.target,
         executionOrigin: target.executionOrigin,

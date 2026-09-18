@@ -26,7 +26,7 @@ import {
   type CurrentUiContextSnapshotV1,
 } from '@happier-dev/protocol/plugins/ui';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createPluginReactNativeBundleCache } from '@/components/plugins/reactNative/bundleCache';
 import {
@@ -62,10 +62,11 @@ import {
 } from '@/voice/runtime/connection/VoiceRealtimeConnection';
 import { createRealtimeToolBarrierForVoiceHandlers } from '@/voice/tools/defaultRealtimeToolBarrier';
 import { createVoiceToolHandlers } from '@/voice/tools/handlers';
-import type { VoiceSessionSnapshot } from '@/voice/session/types';
+import type { VoiceAdapterController, VoiceSessionSnapshot } from '@/voice/session/types';
 import { storage } from '@/sync/domains/state/storage';
 import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
 import { createVoiceClientRawCredentialAccess } from '@/voice/credentials/rawCredentialClient';
+import { createSessionFixture } from '@/dev/testkit';
 import { createBundledConversationRuntimeHostLease } from './bundledConversationRuntimeHost';
 
 import {
@@ -362,10 +363,10 @@ function createHostFixture(input: Readonly<{
       throw new Error('unexpected_pcm_media_creation');
     }),
     ensureBound: async () => {},
-    resolveAgentRealtimeVoiceConversationBinding: async ({ controlSessionId, requestedTargetSessionId }) => ({
-      conversationSessionId: controlSessionId,
+    resolveAgentRealtimeVoiceConversationBinding: async ({ controlSessionId, requestedTargetSessionAddress }) => ({
+      conversationSessionAddress: { serverId: 'server-a', sessionId: controlSessionId },
       transcriptMode: 'native_session' as const,
-      targetSessionId: requestedTargetSessionId,
+      targetSessionAddress: requestedTargetSessionAddress,
     }),
     resolveConversationSessionId: () => 'conversation-session-1',
     canPersistProviderConversationState: input.canPersistProviderConversationState ?? (() => true),
@@ -431,6 +432,32 @@ function createHostFixture(input: Readonly<{
     }),
   } satisfies BundledRealtimeProviderRuntimeHost;
   return Object.freeze(host);
+}
+
+function startAdapterAtKnownSession(
+  adapter: Pick<VoiceAdapterController, 'start'>,
+  sessionId: string,
+): Promise<void> {
+  const previousSession = storage.getState().sessions[sessionId];
+  storage.setState((current) => ({
+    ...current,
+    sessions: {
+      ...current.sessions,
+      [sessionId]: createSessionFixture({ id: sessionId, serverId: 'server-a' }),
+    } as never,
+  }));
+  onTestFinished(() => {
+    storage.setState((current) => {
+      const sessions = { ...current.sessions };
+      if (previousSession !== undefined) sessions[sessionId] = previousSession;
+      else delete sessions[sessionId];
+      return { ...current, sessions } as never;
+    });
+  });
+  return adapter.start({
+    sessionId,
+    requestedTargetSessionAddress: { serverId: 'server-a', sessionId },
+  });
 }
 
 describe('external Voice provider host composition', () => {
@@ -597,7 +624,7 @@ describe('external Voice provider host composition', () => {
     });
 
     try {
-      await runtime.adapter.start({ sessionId: 'raw-invocation-lifetime' });
+      await startAdapterAtKnownSession(runtime.adapter, 'raw-invocation-lifetime');
 
       expect(invocationSignals.prepare?.aborted).toBe(true);
       expect(invocationSignals.connection?.aborted).toBe(true);
@@ -939,7 +966,7 @@ describe('external Voice provider host composition', () => {
     const runtime = createExternalVoiceProviderRuntimeContribution(runtimeInput);
 
     expect(materializeAccountSecret).not.toHaveBeenCalled();
-    await runtime.adapter.start({ sessionId: 'account-operation-context' });
+    await startAdapterAtKnownSession(runtime.adapter, 'account-operation-context');
 
     expect(createInvocationAccountOperations).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledTimes(1);
@@ -1149,7 +1176,7 @@ describe('external Voice provider host composition', () => {
       await scope.commit();
       const registration = getExternalVoiceProviderRegistration(phaseProviderId);
       if (!registration?.adapter) throw new Error('expected external Voice registration');
-      await registration.adapter.start({ sessionId: `${declaredPhase}-account-operation-context` });
+      await startAdapterAtKnownSession(registration.adapter, `${declaredPhase}-account-operation-context`);
 
       expect(observedCredentialAccess).toEqual(declaredPhase === 'prepare'
         ? [{ phase: 'prepare', mediated: true }, { phase: 'connection', mediated: false }]
@@ -1240,7 +1267,7 @@ describe('external Voice provider host composition', () => {
       },
     });
 
-    await expect(runtime.adapter.start({ sessionId: 'account-readiness' }))
+    await expect(startAdapterAtKnownSession(runtime.adapter, 'account-readiness'))
       .rejects.toMatchObject({ code: 'voice_account_operation_unavailable' });
 
     expect(ensureMicActive).not.toHaveBeenCalled();
@@ -1327,7 +1354,7 @@ describe('external Voice provider host composition', () => {
       },
     });
 
-    await expect(runtime.adapter.start({ sessionId: 'missing-connected-account' }))
+    await expect(startAdapterAtKnownSession(runtime.adapter, 'missing-connected-account'))
       .resolves.toBeUndefined();
 
     expect(createMachineError).toHaveBeenCalledWith({
@@ -1523,7 +1550,7 @@ describe('external Voice provider host composition', () => {
       },
     });
 
-    await runtime.adapter.start({ sessionId: 'operation-context' });
+    await startAdapterAtKnownSession(runtime.adapter, 'operation-context');
     expect(createInvocationUi).toHaveBeenCalledTimes(1);
     expect(createConnection).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith('machine-1', expect.objectContaining({
@@ -1596,7 +1623,7 @@ describe('external Voice provider host composition', () => {
     await fixture.composition.unload();
     try {
       await fixture.composition.reconcile([fixture.activation]);
-      await runtime.adapter.start({ sessionId: 'operation-context' });
+      await startAdapterAtKnownSession(runtime.adapter, 'operation-context');
 
       expect(createInvocationUi).toHaveBeenCalledTimes(1);
       expect(createConnection).toHaveBeenCalledTimes(1);
@@ -1676,7 +1703,7 @@ describe('external Voice provider host composition', () => {
       },
     });
 
-    await runtime.adapter.start({ sessionId: 'stable-tool-attempt' });
+    await startAdapterAtKnownSession(runtime.adapter, 'stable-tool-attempt');
 
     expect(createConnection).toHaveBeenCalledTimes(1);
     expect(getAttemptTools).toHaveBeenCalledWith({ effectCalls: 'stable_ids', exposure: 'voice_assistant' });
@@ -1719,7 +1746,7 @@ describe('external Voice provider host composition', () => {
       },
     });
 
-    await runtime.adapter.start({ sessionId: 'operation-context' });
+    await startAdapterAtKnownSession(runtime.adapter, 'operation-context');
     expect(createConnection).toHaveBeenCalledTimes(1);
     await runtime.dispose();
   });
@@ -1793,7 +1820,7 @@ describe('external Voice provider host composition', () => {
       },
     });
 
-    await runtime.adapter.start({ sessionId: 'public-raw-pcm' });
+    await startAdapterAtKnownSession(runtime.adapter, 'public-raw-pcm');
 
     expect(lifecycleEvents).toEqual(expect.arrayContaining(['connecting', 'connected']));
     expect(lifecycleEvents).not.toContain('acquiring-mic');
@@ -2157,7 +2184,7 @@ describe('external Voice provider host composition', () => {
         signal: new AbortController().signal,
       })).resolves.toEqual({ patch: { profile: 'expressive' } });
 
-      await registration.adapter.start({ sessionId: 'control-session-1' });
+      await startAdapterAtKnownSession(registration.adapter, 'control-session-1');
       await vi.waitFor(() => {
         expect(fixtureEvents).toContainEqual(expect.objectContaining({
           kind: 'current_ui_context_invoked',
@@ -2283,7 +2310,7 @@ describe('external Voice provider host composition', () => {
       },
     });
 
-    await expect(runtime.adapter.start({ sessionId: 'malformed-connection' }))
+    await expect(startAdapterAtKnownSession(runtime.adapter, 'malformed-connection'))
       .rejects.toMatchObject({ code: 'invalid_external_voice_provider_connection' });
     expect(lifecycleEvents).toContain('error');
     expect(lifecycleEvents).not.toContain('connected');
@@ -2391,7 +2418,7 @@ describe('Agent-session realtime host-authored context and tool scoping', () => 
     });
 
     try {
-      await runtime.adapter.start({ sessionId: 'agent-realtime-scope' });
+      await startAdapterAtKnownSession(runtime.adapter, 'agent-realtime-scope');
 
       expect(lifecycleEvents).toContain('connected');
       expect(startedScopes).toEqual(['current_ui_only']);
@@ -2429,7 +2456,7 @@ describe('Agent-session realtime host-authored context and tool scoping', () => 
     });
 
     try {
-      await runtime.adapter.start({ sessionId: 'direct-media-scope' });
+      await startAdapterAtKnownSession(runtime.adapter, 'direct-media-scope');
 
       expect(startedScopes).toEqual(['session_context']);
       expect(exposures).toEqual(['voice_assistant']);

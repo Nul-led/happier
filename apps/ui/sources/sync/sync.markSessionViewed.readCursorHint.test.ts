@@ -61,7 +61,9 @@ vi.mock('@/voice/context/voiceHooks', () => ({
     },
 }));
 
-const emitWithAckMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({
+const requestMock = vi.hoisted(() => vi.fn());
+
+const emitWithAckMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<{ result: string; version?: number; metadata?: string; lastViewedSessionSeq?: number; viewer?: unknown }> => ({
     result: 'success',
     version: 2,
     metadata: JSON.stringify({
@@ -70,10 +72,15 @@ const emitWithAckMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({
         readStateV1: { v: 1, sessionSeq: 3, pendingActivityAt: 0, updatedAt: 0 },
     }),
 })));
+const emitReadCursorWithServerScopeMock = vi.hoisted(() => vi.fn(async () => ({ result: 'success' as const })));
+
+vi.mock('@/sync/api/session/emitSessionReadCursorUpdateWithServerScope', () => ({
+    emitSessionReadCursorUpdateWithServerScope: emitReadCursorWithServerScopeMock,
+}));
 
 vi.mock('@/sync/api/session/apiSocket', () => ({
     apiSocket: {
-        request: vi.fn(),
+        request: requestMock,
         emitWithAck: emitWithAckMock,
         send: vi.fn(),
         onMessage: vi.fn(),
@@ -86,8 +93,16 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
 
 import { storage } from './domains/state/storage';
 import type { Session } from './domains/state/storageTypes';
+import type { SessionListRenderableSession } from './domains/session/listing/sessionListRenderable';
+import { readSessionOwnerMetadataView } from './domains/session/readSessionOwnerMetadataView';
+import { getActiveServerSnapshot } from './domains/server/serverRuntime';
 
 const initialStorageState = storage.getState();
+
+const activeAddress = (sessionId: string) => ({
+    serverId: getActiveServerSnapshot().serverId,
+    sessionId,
+});
 
 function createPlainSession(params: { sessionId: string }): Session {
     const now = Date.now();
@@ -157,9 +172,129 @@ describe('sync.markSessionViewed (authoritative read cursor)', () => {
         kvStore.clear();
         appStateAddListener.mockClear();
         emitWithAckMock.mockClear();
+        emitReadCursorWithServerScopeMock.mockClear();
+        requestMock.mockReset();
 
         const { sync } = await import('./sync');
         sync.disconnectServer();
+        Object.assign(sync, { credentials: undefined });
+    });
+
+    it('does not write a read cursor or metadata when browsing an untracked viewer', async () => {
+        const sessionId = 'untracked';
+        const session = { ...createPlainSession({ sessionId }), viewer: {
+            readState: { state: 'not_started' as const },
+            relevance: { relevant: false, reasons: [] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' as const },
+            follow: { follows: false, notificationLevel: null },
+                notification: { level: 'none' as const, source: 'none' as const },
+        } };
+        storage.getState().applySessions([session]);
+        const { sync } = await import('./sync');
+        await sync.markSessionViewed(activeAddress(sessionId));
+        expect(emitReadCursorWithServerScopeMock).not.toHaveBeenCalled();
+        expect(emitWithAckMock).not.toHaveBeenCalled();
+        expect(storage.getState().sessions[sessionId]?.lastViewedSessionSeq).toBeUndefined();
+    });
+
+    it('does not maintain a second read frontier in owner metadata', async () => {
+        const sessionId = 'metadata-contraction';
+        storage.getState().applySessions([createPlainSession({ sessionId })]);
+        const { sync } = await import('./sync');
+        await expect(sync.markSessionViewed(activeAddress(sessionId))).resolves.toBeUndefined();
+        expect(emitWithAckMock.mock.calls.filter(([event]) => event === 'update-metadata')).toEqual([]);
+    });
+
+    it('uses the acknowledged viewer projection to clear personal attention', async () => {
+        const sessionId = 'viewer-ack';
+        const viewer = {
+            readState: { state: 'tracking' as const, lastViewedSessionSeq: 0, unreadSince: 1 },
+            relevance: { relevant: true, reasons: ['owned_by_me' as const] },
+            attention: { needsAttention: true, reasons: ['unread' as const], primary: 'unread' as const, presentation: 'full' as const },
+            follow: { follows: false as const, notificationLevel: null },
+            notification: { level: 'important' as const, source: 'owner' as const },
+        };
+        const acknowledgedViewer = {
+            ...viewer,
+            readState: { state: 'tracking' as const, lastViewedSessionSeq: 3, unreadSince: null },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' as const },
+        };
+        storage.getState().applySessions([{ ...createPlainSession({ sessionId }), viewer }]);
+        emitReadCursorWithServerScopeMock.mockResolvedValueOnce({ result: 'success', lastViewedSessionSeq: 3, viewer: acknowledgedViewer });
+        const { sync } = await import('./sync');
+        await sync.markSessionViewed(activeAddress(sessionId));
+        expect(storage.getState().sessions[sessionId]?.viewer).toEqual(acknowledgedViewer);
+    });
+
+    it.each(['automatic', 'manual'] as const)('keeps a %s read acknowledgement when an older in-flight list snapshot completes', async (readKind) => {
+        const { sync } = await import('./sync');
+        const sessionId = 'viewer-snapshot-race';
+        const viewer = {
+            readState: { state: 'tracking' as const, lastViewedSessionSeq: 0, unreadSince: 1 },
+            relevance: { relevant: true, reasons: ['owned_by_me' as const] },
+            attention: { needsAttention: true, reasons: ['unread' as const], primary: 'unread' as const, presentation: 'full' as const },
+            follow: { follows: false as const, notificationLevel: null },
+            notification: { level: 'important' as const, source: 'owner' as const },
+        };
+        const acknowledgedViewer = {
+            ...viewer,
+            readState: { state: 'tracking' as const, lastViewedSessionSeq: 3, unreadSince: null },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' as const },
+        };
+        const session = { ...createPlainSession({ sessionId }), viewer, lastViewedSessionSeq: 0 };
+        storage.getState().applySessions([session]);
+        Object.assign(sync, { credentials: { token: 'token', secret: 'secret' } });
+        let resolveSnapshot!: (response: Response) => void;
+        const delayedSnapshot = new Promise<Response>((resolve) => { resolveSnapshot = resolve; });
+        const fetchBoundary = vi.spyOn(await import('./http/client'), 'serverFetch').mockResolvedValue(new Response('{}', { status: 404 }));
+        requestMock.mockImplementation(async (path: string) => {
+            if (path.endsWith('/read-state')) return new Response(JSON.stringify({ success: true, state: 'read', lastViewedSessionSeq: 3, viewer: acknowledgedViewer }), { status: 200 });
+            if (path.startsWith('/v2/sessions')) return delayedSnapshot.then((response) => response.clone());
+            return new Response('{}', { status: 404 });
+        });
+        const refresh = sync.refreshSessions({ awaitSessionListHydration: true });
+        try {
+            await vi.waitFor(() => expect(requestMock.mock.calls.some(([path]) => String(path).startsWith('/v2/sessions'))).toBe(true));
+            if (readKind === 'automatic') {
+                emitReadCursorWithServerScopeMock.mockResolvedValueOnce({ result: 'success', lastViewedSessionSeq: 3, viewer: acknowledgedViewer });
+                await sync.markSessionViewed(activeAddress(sessionId));
+            } else {
+                const { sessionSetManualReadStateWithServerScope } = await import('./ops/sessionReadState');
+                await expect(sessionSetManualReadStateWithServerScope(sessionId, 'read')).resolves.toMatchObject({ success: true });
+            }
+            expect(storage.getState().sessions[sessionId]?.viewer).toEqual(acknowledgedViewer);
+            resolveSnapshot(new Response(JSON.stringify({
+                sessions: [{
+                    id: session.id, seq: session.seq, createdAt: session.createdAt,
+                    updatedAt: session.updatedAt, active: true, activeAt: session.activeAt,
+                    archivedAt: null, metadata: JSON.stringify(session.metadata), metadataVersion: session.metadataVersion,
+                    agentState: null, agentStateVersion: session.agentStateVersion,
+                    dataEncryptionKey: null, encryptionMode: 'plain', share: null,
+                    viewer, lastViewedSessionSeq: 0,
+                }], nextCursor: null, hasNext: false,
+            }), { status: 200 }));
+            await refresh;
+            expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows[sessionId]).find(Boolean)?.viewer).toEqual(acknowledgedViewer);
+            expect(storage.getState().sessions[sessionId]?.viewer).toEqual(acknowledgedViewer);
+        } finally {
+            resolveSnapshot(new Response('{}', { status: 404 }));
+            await refresh.catch(() => undefined);
+            fetchBoundary.mockRestore();
+        }
+    });
+
+    it('does not apply an old Account acknowledgement to a replacement Account session', async () => {
+        const sessionId = 'account-switch';
+        storage.getState().applySessions([createPlainSession({ sessionId })]);
+        const { sync } = await import('./sync');
+        emitReadCursorWithServerScopeMock.mockImplementationOnce(async () => {
+            Object.assign(sync, { credentials: { token: 'replacement-account', secret: 'secret' } });
+            storage.setState({ sessions: {} });
+            storage.getState().applySessions([{ ...createPlainSession({ sessionId }), lastViewedSessionSeq: 1 }]);
+            return { result: 'success', lastViewedSessionSeq: 3 };
+        });
+        await sync.markSessionViewed(activeAddress(sessionId));
+        expect(storage.getState().sessions[sessionId]?.lastViewedSessionSeq).toBe(1);
     });
 
     it('publishes the authoritative read cursor over the dedicated socket event', async () => {
@@ -168,45 +303,44 @@ describe('sync.markSessionViewed (authoritative read cursor)', () => {
 
         const { sync } = await import('./sync');
 
-        await sync.markSessionViewed(sessionId);
+        await sync.markSessionViewed(activeAddress(sessionId));
 
-        const updateReadCursorCall = (emitWithAckMock.mock.calls as unknown[][])
-            .map((call) => {
-                const [event, payload] = call;
-                if (
-                    event === 'update-read-cursor'
-                    && typeof payload === 'object'
-                    && payload !== null
-                    && typeof (payload as { sid?: unknown }).sid === 'string'
-                    && typeof (payload as { lastViewedSessionSeq?: unknown }).lastViewedSessionSeq === 'number'
-                ) {
-                    return [event, payload] as const;
-                }
-                return null;
-            })
-            .find(
-                (
-                    call,
-                ): call is readonly [
-                    event: 'update-read-cursor',
-                    payload: { sid: string; lastViewedSessionSeq: number },
-                ] => call !== null,
-            );
-        expect(updateReadCursorCall).toBeDefined();
-        expect(updateReadCursorCall?.[1]).toEqual({
-            sid: sessionId,
-            lastViewedSessionSeq: 3,
+        expect(emitReadCursorWithServerScopeMock).toHaveBeenCalledWith(
+            activeAddress(sessionId),
+            3,
+        );
+    });
+
+    it('updates only the captured Home row when two Homes cache the same Session ID', async () => {
+        const sessionId = 'same-session';
+        const activeSession = { ...createPlainSession({ sessionId }), lastViewedSessionSeq: 1 };
+        const homeBSession = { ...createPlainSession({ sessionId }), serverId: 'home-b', lastViewedSessionSeq: 0 };
+        storage.getState().applySessions([activeSession]);
+        // The test needs only the shared read-state row shape; production hydration owns the full renderable projection.
+        storage.getState().applyServerScopedSessionListRows('home-b', [homeBSession as unknown as SessionListRenderableSession], {
+            source: 'rowOnly',
+            mode: 'replace',
         });
+        const { sync } = await import('./sync');
+
+        await sync.markSessionViewed({ serverId: 'home-b', sessionId }, { sessionSeq: 2 });
+
+        expect(emitReadCursorWithServerScopeMock).toHaveBeenCalledWith(
+            { serverId: 'home-b', sessionId },
+            2,
+        );
+        expect(storage.getState().sessions[sessionId]?.lastViewedSessionSeq).toBe(1);
+        expect(storage.getState().sessionListRowsByServerId['home-b']?.[sessionId]?.lastViewedSessionSeq).toBe(2);
     });
 
     it('marks the session locally viewed even when the cursor publish fails', async () => {
         const sessionId = 's_read_hint_local_failure';
         storage.getState().applySessions([createPlainSession({ sessionId })]);
-        emitWithAckMock.mockRejectedValueOnce(new Error('socket offline'));
+        emitReadCursorWithServerScopeMock.mockRejectedValueOnce(new Error('socket offline'));
 
         const { sync } = await import('./sync');
 
-        await expect(sync.markSessionViewed(sessionId)).resolves.toBeUndefined();
+        await expect(sync.markSessionViewed(activeAddress(sessionId))).resolves.toBeUndefined();
 
         expect(storage.getState().sessions[sessionId]?.lastViewedSessionSeq).toBe(3);
     });
@@ -214,46 +348,36 @@ describe('sync.markSessionViewed (authoritative read cursor)', () => {
     it('marks the latest observed direct-session progress as viewed without persisting transcript bodies', async () => {
         const sessionId = 's_direct_attention_1';
         storage.getState().applySessions([createExternalSessionWithObservedAttention({ sessionId })]);
-        emitWithAckMock.mockImplementation(async (...args: unknown[]) => {
-            const [event, payload] = args;
-            if (event === 'update-metadata') {
-                const metadata = typeof payload === 'object' && payload !== null && typeof (payload as { metadata?: unknown }).metadata === 'string'
-                    ? (payload as { metadata: string }).metadata
-                    : '';
-                return {
-                    result: 'success',
-                    version: 2,
-                    metadata,
-                };
-            }
-            return {
-                result: 'success',
-                version: 1,
-                metadata: JSON.stringify({
-                    path: '',
-                    host: '',
-                }),
-            };
-        });
-
         const { sync } = await import('./sync');
 
-        await sync.markSessionViewed(sessionId);
-
-        const updateMetadataCall = (emitWithAckMock.mock.calls as unknown[][])
-            .find(([event]) => event === 'update-metadata');
-        expect(updateMetadataCall).toBeDefined();
-        const metadataPayload = updateMetadataCall?.[1] as { metadata?: string } | undefined;
-        const encodedMetadata = typeof metadataPayload?.metadata === 'string' ? metadataPayload.metadata : '';
-        expect(encodedMetadata).toContain('"externalSessionAttentionV1"');
-        expect(encodedMetadata).toContain('"observedProgressToken":"2:direct-msg-2"');
-        expect(encodedMetadata).toContain('"viewedProgressToken":"2:direct-msg-2"');
-
-        expect((storage.getState().sessions[sessionId]?.metadata as any)?.externalSessionV1?.followPolicyV1).toEqual({
-            v: 1,
-            policy: 'background_follow',
+        Object.assign(sync, { credentials: { token: 'test-token', secret: 'test-secret' } });
+        requestMock.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (init?.method === 'PATCH') return new Response(JSON.stringify({ success: true, metadataLayoutVersion: 1, sharedMetadata: { version: 2 }, agentState: { version: 2 } }));
+            if (path === '/v1/account/encryption/currentness') {
+                return new Response(JSON.stringify({ mode: 'plain', version: 0, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 0 }));
+            }
+            const session = createExternalSessionWithObservedAttention({ sessionId });
+            return new Response(JSON.stringify({ session: {
+                ...session,
+                metadata: JSON.stringify(session.metadata),
+                dataEncryptionKey: null,
+                metadataLayoutVersion: 0,
+            } }));
         });
-        expect((storage.getState().sessions[sessionId]?.metadata as any)?.externalSessionAttentionV1).toEqual({
+        await sync.markSessionViewed(activeAddress(sessionId));
+
+        const updateMetadataCall = requestMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+        expect(updateMetadataCall).toBeDefined();
+        const encodedMetadata = String(updateMetadataCall?.[1]?.body ?? '');
+        expect(encodedMetadata).toContain('externalSessionAttentionV1');
+        expect(encodedMetadata).toContain('observedProgressToken');
+        expect(encodedMetadata).toContain('viewedProgressToken');
+        const ownerMetadata = readSessionOwnerMetadataView(storage.getState().sessions[sessionId]);
+
+        expect(ownerMetadata?.externalSessionV1).toEqual(expect.objectContaining({
+            followPolicyV1: { v: 1, policy: 'background_follow' },
+        }));
+        expect(ownerMetadata?.externalSessionAttentionV1).toEqual({
             v: 1,
             observedProgressToken: '2:direct-msg-2',
             viewedProgressToken: '2:direct-msg-2',

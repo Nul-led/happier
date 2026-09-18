@@ -42,12 +42,12 @@ describe('buildSessionListDragIntent', () => {
         const result: TreeDropResult = {
             instruction: {
                 kind: 'nest-into',
-                targetId: treeRowId.folder('folder-b'),
-                containerId: treeRowId.folder('folder-b'),
-                parentId: treeRowId.folder('folder-b'),
+                targetId: treeRowId.folder('server-a', 'folder-b'),
+                containerId: treeRowId.folder('server-a', 'folder-b'),
+                parentId: treeRowId.folder('server-a', 'folder-b'),
                 depth: 1,
             },
-            visual: { kind: 'outline', targetId: treeRowId.folder('folder-b') },
+            visual: { kind: 'outline', targetId: treeRowId.folder('server-a', 'folder-b') },
         };
 
         const intent = buildSessionListDragIntent({
@@ -58,8 +58,8 @@ describe('buildSessionListDragIntent', () => {
         });
 
         expect(intent.instructionKind).toBe('nest-into');
-        expect(intent.targetRowId).toBe(treeRowId.folder('folder-b'));
-        expect(intent.parentRowId).toBe(treeRowId.folder('folder-b'));
+        expect(intent.targetRowId).toBe(treeRowId.folder('server-a', 'folder-b'));
+        expect(intent.parentRowId).toBe(treeRowId.folder('server-a', 'folder-b'));
         expect(intent.edge).toBeNull();
     });
 
@@ -92,7 +92,7 @@ describe('buildSessionListDragIntent', () => {
     it('returns a non-committing intent for blocked/idle results', () => {
         const blocked = buildSessionListDragIntent({
             result: { instruction: { kind: 'blocked', reason: 'descendant-cycle' }, visual: { kind: 'none' } },
-            sourceRowId: treeRowId.folder('folder-a'),
+            sourceRowId: treeRowId.folder('server-a', 'folder-a'),
             sourceKind: 'container',
             snapshotSignature: 'sig-4',
         });

@@ -1,5 +1,6 @@
 import { MMKV } from 'react-native-mmkv';
 import {
+    MachineKindFromLegacyProjectionSchema,
     ExternalSessionsSourceSchema,
     normalizeLinkedExternalSessionMetadataV1,
     parseSessionRuntimeActivityProjectionFields,
@@ -7,8 +8,11 @@ import {
     PluginProjectionV2Schema,
     PrimaryTurnStatusV1Schema,
     RuntimeDescriptorV1Schema,
+    SessionAccessAccountSummaryV1Schema,
+    SessionEffectiveAccessV1Schema,
     SessionRuntimeActivityStateSchema,
     SessionRuntimeIssueV1Schema,
+    SessionViewerProjectionV1Schema,
     PendingActivationAuthorizationV1Schema,
 } from '@happier-dev/protocol';
 import { PluginUiTargetedContributionsV1Schema } from '@happier-dev/protocol/plugins/ui';
@@ -238,6 +242,7 @@ export const SessionListCacheEntryV1Schema = z.object({
     activeAt: z.number(),
     archivedAt: z.number().nullable(),
     lastViewedSessionSeq: z.number().int().nonnegative().nullable().optional(),
+    viewer: SessionViewerProjectionV1Schema.optional(),
     pendingCount: z.number().int().nonnegative().optional(),
     pendingBlockedCount: z.number().int().nonnegative().optional(),
     pendingVersion: z.number().int().nonnegative().optional(),
@@ -254,8 +259,14 @@ export const SessionListCacheEntryV1Schema = z.object({
     latestReadyEventSeq: z.number().int().nonnegative().nullable().optional(),
     latestReadyEventAt: z.number().int().nonnegative().nullable().optional(),
     pendingRequestObservedAt: z.number().int().nonnegative().nullable().optional(),
+    // Additive current authority. Absence keeps old cache bytes readable and
+    // permits only the released flattened fallback; null preserves malformed
+    // current ingress as unavailable across a restart.
+    effectiveAccess: SessionEffectiveAccessV1Schema.nullable().optional(),
     accessLevel: z.enum(['view', 'edit', 'admin']).optional(),
     canApprovePermissions: z.boolean().optional(),
+    responsibleAccountId: z.string().min(1).nullable().optional(),
+    responsibleAccount: SessionAccessAccountSummaryV1Schema.nullable().optional(),
     name: z.string().optional(),
     summaryText: z.string().nullable().optional(),
     path: z.string(),
@@ -289,12 +300,22 @@ export const SessionListCacheEntryV1Schema = z.object({
             message: 'Runtime Activity must be absent or a complete validated tuple',
         });
     }
+    const hasId = Object.prototype.hasOwnProperty.call(entry, 'responsibleAccountId');
+    const hasSummary = Object.prototype.hasOwnProperty.call(entry, 'responsibleAccount');
+    if (hasId !== hasSummary) {
+        context.addIssue({ code: 'custom', message: 'Responsibility id and summary must be projected together' });
+    } else if (entry.responsibleAccountId === null && entry.responsibleAccount !== null) {
+        context.addIssue({ code: 'custom', message: 'Unassigned responsibility cannot carry an Account summary' });
+    } else if (typeof entry.responsibleAccountId === 'string' && entry.responsibleAccount?.accountId !== entry.responsibleAccountId) {
+        context.addIssue({ code: 'custom', message: 'Responsible Account summary must match its id' });
+    }
 });
 
 export type SessionListCacheEntryV1 = z.infer<typeof SessionListCacheEntryV1Schema>;
 
 export const MachineDisplayCacheEntryV1Schema = z.object({
     machineId: z.string().min(1),
+    kind: MachineKindFromLegacyProjectionSchema.optional(),
     metadataVersion: z.number().int().nonnegative(),
     updatedAt: z.number(),
     active: z.boolean(),

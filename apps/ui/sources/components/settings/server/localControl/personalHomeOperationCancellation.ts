@@ -7,7 +7,8 @@ export const PERSONAL_HOME_OPERATION_IRREVERSIBLE_BOUNDARY_STEP = Object.freeze(
     'relay.runtime.personal_home.backup.v1': 'stopping_home',
     'relay.runtime.personal_home.restore.v1': 'stopping_home',
     'relay.runtime.personal_home.erase.v1': 'erasing',
-} satisfies Record<CancellablePersonalHomeTaskKind, string>);
+    'remote.ssh.manageHost.v1:personalHome.relocate': 'publishing_destination',
+});
 
 const CANCELLABLE_STEPS: Readonly<Record<CancellablePersonalHomeTaskKind, ReadonlySet<string>>> = {
     'relay.runtime.personal_home.backup.v1': new Set([
@@ -27,6 +28,15 @@ const CANCELLABLE_STEPS: Readonly<Record<CancellablePersonalHomeTaskKind, Readon
     ]),
 };
 
+const RELOCATION_CANCELLABLE_STEPS: ReadonlySet<string> = new Set([
+    'preflight',
+    'stopping_source',
+    'creating_final_backup',
+    'staging_destination',
+    'quarantining_source',
+    'returning_to_source',
+]);
+
 function normalizeStepId(stepId: string | null): string | null {
     if (stepId === null) return null;
     const normalized = stepId.trim();
@@ -37,7 +47,16 @@ function normalizeStepId(stepId: string | null): string | null {
 export function canCancelPersonalHomeOperationProgress(
     kind: string | null,
     stepId: string | null,
+    params?: unknown,
 ): boolean {
+    if (kind === 'remote.ssh.manageHost.v1') {
+        if (!params || typeof params !== 'object' || Array.isArray(params)
+            || (params as Record<string, unknown>).action !== 'personalHome.relocate') return false;
+        if (stepId === null) return true;
+        if (stepId === 'remote.cli.install') return true;
+        const relocationStep = normalizeStepId(stepId);
+        return relocationStep !== null && RELOCATION_CANCELLABLE_STEPS.has(relocationStep);
+    }
     if (!kind || !(kind in CANCELLABLE_STEPS)) return false;
     if (stepId === null) return true;
     const normalizedStep = normalizeStepId(stepId);

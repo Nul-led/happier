@@ -8,18 +8,21 @@ import type { VoiceSessionBinding } from '@/voice/binding/voiceConversationBindi
 import { isVoiceConversationSystemSessionMetadata } from '@/voice/persistence/voiceConversationSystemSessionLookup';
 import { createDefaultVoiceProviderRegistry } from '@/voice/registry/defaultRegistry';
 import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoiceSessionOwnerMetadata';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+
+import { resolveVoiceSessionReference } from '@/voice/tools/actionImpl/sessionReference';
 
 import { useVoiceQaStore, type VoiceQaProvider } from './voiceQaStore';
 
 type VoiceQaTargetState = Readonly<{
-    primaryActionSessionId: string | null;
-    lastFocusedSessionId: string | null;
+    primaryActionSessionAddress: SessionAddress | null;
+    lastFocusedSessionAddress: SessionAddress | null;
 }>;
 
 type VoiceQaResolvedSessionsStore = Readonly<{
     getState: () => Readonly<{
         setResolvedSessions: (params: Readonly<{
-            targetSessionId: string;
+            targetSessionAddress: SessionAddress | null;
             runtimeSessionId: string | null;
         }>) => void;
     }>;
@@ -56,47 +59,48 @@ export function resolveConfiguredVoiceQaProvider(settings: any): VoiceQaProvider
     return 'local_voice_agent';
 }
 
-export function isHiddenVoiceQaConversationSessionId(sessionId: string | null | undefined): boolean {
-    const normalizedSessionId = normalizeVoiceQaText(sessionId);
+export function isHiddenVoiceQaConversationSessionId(target: SessionAddress | string | null | undefined): boolean {
+    const normalizedSessionId = normalizeVoiceQaText(typeof target === 'string' ? target : target?.sessionId);
     if (!normalizedSessionId) return false;
     const state = storage.getState() as any;
     return isVoiceConversationSystemSessionMetadata(
-        readVoiceSessionOwnerMetadataFromState(state, normalizedSessionId),
+        readVoiceSessionOwnerMetadataFromState(state, target && typeof target === 'object' ? target : normalizedSessionId),
     );
 }
 
-export function resolveEffectiveVoiceQaSessionId(
-    explicitSessionId: string | null | undefined,
+export function resolveEffectiveVoiceQaSessionAddress(
+    explicitTarget: SessionAddress | string | null | undefined,
     getVoiceTargetState: () => VoiceQaTargetState,
-): string {
-    const explicit = normalizeVoiceQaText(explicitSessionId);
-    if (explicit) return explicit;
+): SessionAddress | null {
+    if (explicitTarget && typeof explicitTarget === 'object') {
+        const address = normalizeSessionAddress(explicitTarget.serverId, explicitTarget.sessionId);
+        if (!address) throw new Error('voice_qa_target_session_unresolved');
+        return address;
+    }
+    const explicit = normalizeVoiceQaText(explicitTarget);
+    if (explicit === '__voice_agent__') return null;
+    if (explicit) {
+        const resolution = resolveVoiceSessionReference({ sessionId: explicit }, storage.getState());
+        if (resolution.kind !== 'unique') throw new Error('voice_qa_target_session_unresolved');
+        return resolution.address;
+    }
     const target = getVoiceTargetState();
-    const primaryActionSessionId = normalizeVoiceQaText(target.primaryActionSessionId);
-    if (primaryActionSessionId && !isHiddenVoiceQaConversationSessionId(primaryActionSessionId)) {
-        return primaryActionSessionId;
+    for (const address of [target.primaryActionSessionAddress, target.lastFocusedSessionAddress]) {
+        if (address && !isHiddenVoiceQaConversationSessionId(address)) return address;
     }
-    const lastFocusedSessionId = normalizeVoiceQaText(target.lastFocusedSessionId);
-    if (lastFocusedSessionId && !isHiddenVoiceQaConversationSessionId(lastFocusedSessionId)) {
-        return lastFocusedSessionId;
-    }
-    return '__voice_agent__';
+    return null;
 }
 
-export function resolveEffectiveVoiceQaTargetSessionId(
-    explicitSessionId: string | null | undefined,
+export function resolveEffectiveVoiceQaTargetSessionAddress(
+    explicitTarget: SessionAddress | string | null | undefined,
     configuredProvider: VoiceQaProvider,
     getVoiceTargetState: () => VoiceQaTargetState,
     qaStore: typeof useVoiceQaStore,
-): string {
-    const explicit = normalizeVoiceQaText(explicitSessionId);
-    if (explicit) return explicit;
+): SessionAddress | null {
+    if (explicitTarget) return resolveEffectiveVoiceQaSessionAddress(explicitTarget, getVoiceTargetState);
     const current = qaStore.getState();
-    const currentTargetSessionId = normalizeVoiceQaText(current.targetSessionId);
-    if (current.status !== 'idle' && current.provider === configuredProvider && currentTargetSessionId) {
-        return currentTargetSessionId;
-    }
-    return resolveEffectiveVoiceQaSessionId(explicitSessionId, getVoiceTargetState);
+    if (current.status !== 'idle' && current.provider === configuredProvider) return current.targetSessionAddress;
+    return resolveEffectiveVoiceQaSessionAddress(null, getVoiceTargetState);
 }
 
 export function assertLocalVoiceAgentSupportedForQa(settings: any): void {
@@ -127,27 +131,14 @@ export function syncLatestLocalVoiceQaResolvedSessions(
 ): VoiceSessionBinding | null {
     const normalizedControlSessionId = normalizeVoiceQaText(controlSessionId);
     const latestBinding = deps.getLocalBinding?.(normalizedControlSessionId || controlSessionId) ?? fallbackBinding;
-    const targetState = deps.getVoiceTargetState();
-    const activePrimaryTargetSessionId = normalizeVoiceQaText(targetState.primaryActionSessionId);
-    const activeFocusedTargetSessionId = normalizeVoiceQaText(targetState.lastFocusedSessionId);
-    const latestTargetSessionId =
-        normalizeVoiceQaText(latestBinding?.targetSessionId)
-        || (
-            normalizedControlSessionId === '__voice_agent__'
-                ? (
-                    (activePrimaryTargetSessionId && !isHiddenVoiceQaConversationSessionId(activePrimaryTargetSessionId)
-                        ? activePrimaryTargetSessionId
-                        : '')
-                    || (activeFocusedTargetSessionId && !isHiddenVoiceQaConversationSessionId(activeFocusedTargetSessionId)
-                        ? activeFocusedTargetSessionId
-                        : '')
-                    || controlSessionId
-                )
-                : controlSessionId
+    const latestTargetSessionAddress = latestBinding?.targetSessionAddress
+        ?? resolveEffectiveVoiceQaSessionAddress(
+            normalizedControlSessionId === '__voice_agent__' ? null : controlSessionId,
+            deps.getVoiceTargetState,
         );
     const latestRuntimeSessionId = resolveLocalVoiceQaRuntimeSessionId(latestBinding, controlSessionId);
     deps.qaStore.getState().setResolvedSessions({
-        targetSessionId: latestTargetSessionId,
+        targetSessionAddress: latestTargetSessionAddress,
         runtimeSessionId: resolveVoiceQaRuntimeSessionId(latestBinding, latestRuntimeSessionId),
     });
     return latestBinding;

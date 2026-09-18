@@ -1,4 +1,5 @@
 import { storage } from '@/sync/domains/state/storage';
+import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
 import {
     readLocalConversationVoiceSettings,
@@ -6,20 +7,22 @@ import {
     writeLocalConversationVoiceSettings,
 } from '@/sync/domains/settings/voiceSettings';
 import { normalizeVoiceSettingsLocalDelta } from '@/sync/domains/settings/voiceSettingsPersistence';
+import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 
-export function invalidatePersistentVoiceTranscript(): number | null {
+export function invalidatePersistentVoiceTranscript(
+    expectedSettingsScope: AccountSettingsScope | null,
+): number | null {
     const state: any = storage.getState();
     const voice = voiceSettingsParse(state?.settings?.voice);
     const localConversation = readLocalConversationVoiceSettings(voice);
     const transcriptCfg = localConversation.agent.transcript;
     if (normalizeNonEmptyString(transcriptCfg?.persistenceMode) !== 'persistent') return null;
-    if (typeof state?.applySettingsLocal !== 'function') return null;
 
     const currentEpochRaw = Number(transcriptCfg.epoch ?? 0);
     const currentEpoch = Number.isFinite(currentEpochRaw) && currentEpochRaw >= 0 ? Math.floor(currentEpochRaw) : 0;
     const nextEpoch = currentEpoch + 1;
 
-    state.applySettingsLocal(normalizeVoiceSettingsLocalDelta({
+    getSyncSingleton().applySettings(normalizeVoiceSettingsLocalDelta({
         voice: writeLocalConversationVoiceSettings(voice, {
             ...localConversation,
             agent: {
@@ -30,7 +33,10 @@ export function invalidatePersistentVoiceTranscript(): number | null {
                 },
             },
         }),
-    }, state.settings));
+    }, state.settings), {
+        expectedSettingsScope,
+        source: 'ui',
+    });
 
     return nextEpoch;
 }

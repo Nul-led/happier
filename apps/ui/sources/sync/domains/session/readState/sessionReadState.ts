@@ -1,3 +1,4 @@
+import { isSessionPersonallyTrackedForViewer } from './sessionViewer';
 import { computeHasUnreadActivity } from '@/sync/domains/messages/unread';
 import { summarizeSessionListReadableActivityFromMessageRecords } from '@/sync/domains/session/listing/sessionListRenderable';
 import { deriveExternalSessionAttentionHasUnread } from '@/sync/domains/session/external/readExternalSessionAttention';
@@ -11,6 +12,8 @@ import type { Metadata } from '@/sync/domains/state/storageTypes';
 import { readRegisteredStorageState } from '@/sync/domains/state/storageStateReaderBridge';
 import type { PrimaryTurnStatusV1 } from '@happier-dev/protocol';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { resolveSessionAddressFromLocalState } from '@/sync/domains/session/resolveSessionAddressFromLocalState';
+import { readSessionListRowForServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
 
 export type SessionReadState = 'read' | 'unread' | 'empty';
 
@@ -64,15 +67,23 @@ function readRenderableHasUnreadMessages(session: SessionReadStateInput): boolea
     if (!sessionId) return null;
 
     const storageState = readRegisteredStorageState();
-    const renderable = (storageState as {
-        sessionListRenderables?: Record<string, { hasUnreadMessages?: unknown } | undefined>;
-    } | null)?.sessionListRenderables?.[sessionId];
+    const address = resolveSessionAddressFromLocalState(storageState, sessionId);
+    const renderable = address
+        ? readSessionListRowForServerId(
+            storageState?.sessionListRowsByServerId,
+            address.serverId,
+            address.sessionId,
+        )
+        : null;
     if (renderable?.hasUnreadMessages === true) return true;
     if (renderable?.hasUnreadMessages === false) return false;
     return null;
 }
 
 export function deriveSessionReadState(session: SessionReadStateInput): SessionReadState {
+    if (session.viewer?.readState.state === 'not_started') {
+        return session.seq > 0 ? 'read' : 'empty';
+    }
     const metadata = readSessionOwnerMetadataView({
         metadataLayoutVersion: session.metadataLayoutVersion,
         metadata: session.metadata as Metadata | null | undefined,
@@ -84,7 +95,7 @@ export function deriveSessionReadState(session: SessionReadStateInput): SessionR
         if (externalSessionHasUnread === false) return 'read';
     }
 
-    if (readRenderableHasUnreadMessages(session) === true) {
+    if (session.viewer === undefined && readRenderableHasUnreadMessages(session) === true) {
         return 'unread';
     }
 
@@ -104,6 +115,7 @@ export function deriveSessionReadState(session: SessionReadStateInput): SessionR
 }
 
 export function resolveSessionReadStateAction(session: SessionReadStateInput): SessionReadStateAction {
+    if (!isSessionPersonallyTrackedForViewer(session)) return { kind: 'none', visible: false };
     const readState = deriveSessionReadState(session);
     if (readState === 'empty') {
         return { kind: 'none', visible: false };

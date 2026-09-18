@@ -5,13 +5,24 @@ import { FavoriteModelSelectionV1Schema } from '@/sync/domains/models/favoriteMo
 import { RememberedEngineSelectionsByScopeV1Schema } from '@/sync/domains/session/authoring/rememberedEngineSelections';
 
 const mutateAccountSettingsOnce = vi.hoisted(() => vi.fn());
+const settingsState = vi.hoisted(() => ({
+    settingsVersion: 7 as number | null,
+    settingsScope: { serverId: 'server-a', accountId: 'account-a' } as {
+        serverId: string;
+        accountId: string;
+    } | null,
+}));
 
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
     getSyncSingleton: () => ({ mutateAccountSettingsOnce }),
 }));
-vi.mock('@/sync/domains/state/storageStore', () => ({
-    getStorage: () => ({ getState: () => ({ settingsVersion: 7 }) }),
-}));
+vi.mock('@/sync/domains/state/storageStore', () => {
+    const store = Object.assign(
+        (selector: (value: typeof settingsState) => unknown) => selector(settingsState),
+        { getState: () => settingsState },
+    );
+    return { getStorage: () => store };
+});
 
 import {
     useApplyFavoriteModelSelectionReplacementIntent,
@@ -35,6 +46,8 @@ function favorite(modelId: string, updatedAt: number) {
 
 describe('session-authoring Settings writers', () => {
     beforeEach(() => {
+        settingsState.settingsVersion = 7;
+        settingsState.settingsScope = { serverId: 'server-a', accountId: 'account-a' };
         mutateAccountSettingsOnce.mockImplementation(async (input) => {
             const result = input.mutate({});
             return { status: 'applied', settingsVersion: 8, value: result.value };
@@ -55,6 +68,7 @@ describe('session-authoring Settings writers', () => {
 
         expect(mutateAccountSettingsOnce).toHaveBeenCalledOnce();
         const input = mutateAccountSettingsOnce.mock.calls[0]?.[0];
+        expect(input.expectedSettingsScope).toEqual({ serverId: 'server-a', accountId: 'account-a' });
         expect(input.expectedSettingsVersion).toBe(7);
         const result = input.mutate({
             favoriteModelSelectionsV1: [
@@ -93,6 +107,7 @@ describe('session-authoring Settings writers', () => {
 
         expect(mutateAccountSettingsOnce).toHaveBeenCalledOnce();
         const input = mutateAccountSettingsOnce.mock.calls[0]?.[0];
+        expect(input.expectedSettingsScope).toEqual({ serverId: 'server-a', accountId: 'account-a' });
         expect(input.expectedSettingsVersion).toBe(7);
         const result = input.mutate({
             lastEngineSelectionsByScopeV1: {
@@ -107,5 +122,21 @@ describe('session-authoring Settings writers', () => {
                 'server-a:backend:future': { v: 2, futureWriterField: 'opaque-remembered' },
             },
         });
+    });
+
+    it('keeps a retained writer bound to the Account scope and revision rendered before focus changes', async () => {
+        const base = [favorite('gpt-5.4', 1)];
+        const proposed = [...base, favorite('gpt-5.5', 2)];
+        const hook = await renderHook(() => useApplyFavoriteModelSelectionReplacementIntent());
+        const writerForAccountA = hook.getCurrent();
+
+        settingsState.settingsVersion = 19;
+        settingsState.settingsScope = { serverId: 'server-b', accountId: 'account-b' };
+        await writerForAccountA({ base, proposed });
+
+        expect(mutateAccountSettingsOnce).toHaveBeenCalledWith(expect.objectContaining({
+            expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
+            expectedSettingsVersion: 7,
+        }));
     });
 });

@@ -78,11 +78,19 @@ describe('githubAuthProvider', () => {
     });
 
     it('finalizeConnect resolves when response success is true', async () => {
+        stubFetch({ success: true, token: 'replacement-token' });
+
+        await expect(
+            githubAuthProvider.finalizeConnect(credentials, { pending: 'pending-1', username: 'octocat' }),
+        ).resolves.toEqual({ token: 'replacement-token' });
+    });
+
+    it('keeps predecessor connect success usable when no replacement token is returned', async () => {
         stubFetch({ success: true });
 
         await expect(
             githubAuthProvider.finalizeConnect(credentials, { pending: 'pending-1', username: 'octocat' }),
-        ).resolves.toBeUndefined();
+        ).resolves.toEqual({});
     });
 
     it.each([

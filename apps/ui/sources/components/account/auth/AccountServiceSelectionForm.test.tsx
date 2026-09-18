@@ -1,0 +1,350 @@
+import * as React from 'react';
+import { act } from 'react-test-renderer';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { createDeferred, createRootLayoutFeaturesResponse, renderScreen, standardCleanup } from '@/dev/testkit';
+import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
+
+const network = vi.hoisted(() => ({ request: vi.fn() }));
+
+vi.mock('@/sync/http/client', async () => {
+    const actual = await vi.importActual<typeof import('@/sync/http/client')>('@/sync/http/client');
+    return {
+        ...actual,
+        createServerFetchAtEndpoint: ({ endpointUrl }: { endpointUrl: string }) => (
+            path: string,
+            init?: RequestInit,
+            options?: unknown,
+        ) => network.request(endpointUrl, path, init, options),
+    };
+});
+
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock();
+});
+
+vi.mock('react-native-unistyles', async () => {
+    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+    return createUnistylesMock();
+});
+
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock({ translate: (key) => key });
+});
+
+describe('AccountServiceSelectionForm', () => {
+    afterEach(() => {
+        network.request.mockReset();
+        standardCleanup();
+    });
+
+    function supportedAccountService(serverIdentityId: string) {
+        return createRootLayoutFeaturesResponse({
+            capabilities: {
+                serverIdentity: { serverIdentityId },
+                server: { canonicalServerUrl: 'https://canonical-directory.example.test' },
+                accountDirectory: {
+                    version: 1,
+                    homeDirectory: true,
+                    homeEnrollment: true,
+                    homeLoginAssertion: {
+                        keyId: 'a'.repeat(64),
+                        publicKeyBase64Url: 'A'.repeat(43),
+                    },
+                },
+                auth: {
+                    methods: [
+                        {
+                            id: 'key_challenge',
+                            actions: [
+                                { id: 'provision', enabled: true, mode: 'keyed' },
+                                { id: 'login', enabled: true, mode: 'keyed' },
+                            ],
+                        },
+                    ],
+                    keyChallenge: { v2: true },
+                },
+            },
+        });
+    }
+
+    const authEntryOptions = {
+        authenticationCatalog: { provenance: 'structured' as const, methods: [] },
+        authenticationActions: [],
+        keyChallengeV2Available: true,
+        serverAvailability: 'ready' as const,
+        authEntryUnavailable: false,
+        serverUrlForCopy: 'https://home.example.test',
+        showAuthActions: false,
+        showProviderSignup: false,
+        showAnonymousSignup: false,
+        showMtlsLogin: false,
+        showKeylessProviderLogin: false,
+        providerId: null,
+        keylessProviderId: null,
+        providerSignupTitle: '',
+        providerKeylessTitle: '',
+        anonymousSignupTitle: '',
+        mtlsTitle: '',
+        primaryAction: null,
+        mtlsPrimary: false,
+        keylessPrimary: false,
+        autoRedirect: {
+            enabled: false,
+            providerId: null,
+            toKeyedProvision: false,
+            toKeylessLogin: false,
+            toMtls: false,
+            toLegacySignupProvider: false,
+        },
+        retryServerCheck: () => {},
+    } satisfies AuthEntryOptions;
+
+    it('retains an unsupported URL and reports the semantic result inline', async () => {
+        const onSelect = vi.fn(async () => ({ kind: 'unsupported' as const }));
+        const { AccountServiceSelectionForm } = await import('./AccountServiceSelectionForm');
+        const screen = await renderScreen(
+            <AccountServiceSelectionForm currentEndpoint={null} onBack={vi.fn()} onSelect={onSelect} />,
+        );
+        const input = screen.findByTestId('account-service-url-input');
+        const submit = screen.findByTestId('account-service-url-submit');
+        if (!input || !submit) throw new Error('Expected service URL form');
+
+        await act(async () => {
+            input.props.onChangeText('https://home.example.test');
+        });
+        await screen.pressByTestIdAsync('account-service-url-submit');
+
+        expect(onSelect).toHaveBeenCalledWith(
+            'https://home.example.test',
+            expect.objectContaining({
+                signal: expect.any(Object),
+            }),
+        );
+        expect(screen.findByTestId('account-service-url-input')?.props.value).toBe('https://home.example.test');
+        expect(screen.findByTestId('account-service-url-error')?.props.children).toBe('welcome.signInServiceUnsupportedBody');
+    });
+
+    it('returns the current-choice selection promise through the press wrappers', async () => {
+        const selection = createDeferred<{ kind: 'selected' }>();
+        const currentEndpoint = {
+            url: 'https://current.example.test',
+            serverIdentityId: 'srv_current_service',
+            source: 'user' as const,
+        };
+        const { AccountServiceSelectionForm } = await import('./AccountServiceSelectionForm');
+        const screen = await renderScreen(
+            <AccountServiceSelectionForm
+                currentEndpoint={currentEndpoint}
+                onBack={vi.fn()}
+                onSelect={async () => await selection.promise}
+            />,
+        );
+        const pressResult = screen.findByTestId('account-service-current-choice')?.props.onPress();
+
+        expect(pressResult).toBeInstanceOf(Promise);
+        selection.resolve({ kind: 'selected' });
+        await act(async () => {
+            await pressResult;
+        });
+    });
+
+    it('deduplicates sibling controls and prevents an older selection from overwriting its successor', async () => {
+        const priorEndpoint = {
+            url: 'https://prior.example.test',
+            serverIdentityId: 'srv_prior_service',
+            displayName: 'Prior Service',
+            source: 'user' as const,
+        };
+        const olderResponse = createDeferred<Response>();
+        const newerResponse = createDeferred<Response>();
+        network.request.mockImplementation(async (endpointUrl: string) => {
+            if (endpointUrl === 'https://next.example.test') return await olderResponse.promise;
+            if (endpointUrl === 'https://newest.example.test') return await newerResponse.promise;
+            throw new Error(`Unexpected endpoint ${endpointUrl}`);
+        });
+        const { setAccountServiceEndpoint, resolveSelectedAccountServiceEndpoint } = await import('@/sync/domains/server/serverProfiles');
+        const { selectAccountServiceEndpoint } = await import('@/sync/ops/accountDirectory/selectAccountServiceEndpoint');
+        const { AccountServiceSelectionForm } = await import('./AccountServiceSelectionForm');
+        await setAccountServiceEndpoint(priorEndpoint);
+        const screen = await renderScreen(
+            <AccountServiceSelectionForm
+                currentEndpoint={priorEndpoint}
+                onBack={vi.fn()}
+                onSelect={selectAccountServiceEndpoint}
+            />,
+        );
+        const input = screen.findByTestId('account-service-url-input');
+        if (!input) {
+            await screen.pressByTestIdAsync('account-service-another-choice');
+        }
+        const visibleInput = screen.findByTestId('account-service-url-input');
+        const submit = screen.findByTestId('account-service-url-submit');
+        if (!visibleInput || !submit) throw new Error('Expected all service selection controls');
+
+        await act(async () => {
+            visibleInput.props.onChangeText('https://next.example.test');
+        });
+        act(() => {
+            submit.props.onPress();
+            visibleInput.props.onSubmitEditing();
+        });
+
+        await vi.waitFor(() => expect(network.request).toHaveBeenCalledTimes(1));
+        await act(async () => {
+            visibleInput.props.onChangeText('https://newest.example.test');
+        });
+        const updatedInput = screen.findByTestId('account-service-url-input');
+        expect(updatedInput?.props.value).toBe('https://newest.example.test');
+        act(() => {
+            updatedInput?.props.onSubmitEditing();
+        });
+        await vi.waitFor(() => expect(network.request).toHaveBeenCalledTimes(2));
+        newerResponse.resolve(new Response(JSON.stringify(supportedAccountService('srv_newest_service')), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        await act(async () => {
+            await newerResponse.promise;
+        });
+        await vi.waitFor(() => expect(resolveSelectedAccountServiceEndpoint()).toMatchObject({
+            url: 'https://newest.example.test',
+            serverIdentityId: 'srv_newest_service',
+        }));
+        olderResponse.resolve(new Response(JSON.stringify(supportedAccountService('srv_next_service')), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        await act(async () => {
+            await olderResponse.promise;
+        });
+        expect(resolveSelectedAccountServiceEndpoint()).toMatchObject({
+            url: 'https://newest.example.test',
+            serverIdentityId: 'srv_newest_service',
+        });
+    });
+
+    it('does not persist an abandoned selection after Back', async () => {
+        const priorEndpoint = {
+            url: 'https://retained.example.test',
+            serverIdentityId: 'srv_retained_service',
+            displayName: 'Retained Service',
+            source: 'user' as const,
+        };
+        const response = createDeferred<Response>();
+        network.request.mockImplementation(async () => await response.promise);
+        const { setAccountServiceEndpoint, resolveSelectedAccountServiceEndpoint } = await import('@/sync/domains/server/serverProfiles');
+        const { selectAccountServiceEndpoint } = await import('@/sync/ops/accountDirectory/selectAccountServiceEndpoint');
+        const { AccountServiceSelectionForm } = await import('./AccountServiceSelectionForm');
+        await setAccountServiceEndpoint(priorEndpoint);
+        const onBack = vi.fn();
+        const screen = await renderScreen(
+            <AccountServiceSelectionForm
+                currentEndpoint={priorEndpoint}
+                onBack={onBack}
+                onSelect={selectAccountServiceEndpoint}
+            />,
+        );
+        await screen.pressByTestIdAsync('account-service-another-choice');
+        const input = screen.findByTestId('account-service-url-input');
+        const submit = screen.findByTestId('account-service-url-submit');
+        if (!input || !submit) throw new Error('Expected service URL form');
+        await act(async () => {
+            input.props.onChangeText('https://abandoned.example.test');
+        });
+        act(() => {
+            submit.props.onPress();
+        });
+        await vi.waitFor(() => expect(network.request).toHaveBeenCalledTimes(1));
+
+        await screen.pressByTestIdAsync('account-service-selection-back');
+        response.resolve(new Response(JSON.stringify(supportedAccountService('srv_abandoned_service')), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        await act(async () => {
+            await response.promise;
+        });
+
+        expect(onBack).toHaveBeenCalledTimes(1);
+        expect(resolveSelectedAccountServiceEndpoint()).toEqual(priorEndpoint);
+    });
+
+    it('persists a verified selection through the real onboarding surface and controller', async () => {
+        network.request.mockResolvedValue(new Response(JSON.stringify(supportedAccountService('srv_composed_service')), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        const { OnboardingWizardSurface } = await import('@/components/onboarding/surfaces/OnboardingWizardSurface');
+        const { selectAccountServiceEndpoint } = await import('@/sync/ops/accountDirectory/selectAccountServiceEndpoint');
+        const { resolveSelectedAccountServiceEndpoint } = await import('@/sync/domains/server/serverProfiles');
+        const screen = await renderScreen(
+            <OnboardingWizardSurface
+                layout="portrait"
+                isDesktopShell={false}
+                wizardChromeMode="bare"
+                initialStepId="auth_service_select"
+                authEntryOptions={authEntryOptions}
+                onSelectAccountService={selectAccountServiceEndpoint}
+            />,
+        );
+        const input = screen.findByTestId('account-service-url-input');
+        if (!input) throw new Error('Expected composed service URL form');
+        await act(async () => {
+            input.props.onChangeText('https://composed.example.test');
+        });
+        await screen.pressByTestIdAsync('account-service-url-submit');
+
+        expect(resolveSelectedAccountServiceEndpoint()).toMatchObject({
+            url: 'https://composed.example.test',
+            serverIdentityId: 'srv_composed_service',
+        });
+    });
+
+    it('retains the prior selection when Back abandons a composed onboarding request', async () => {
+        const priorEndpoint = {
+            url: 'https://composed-prior.example.test',
+            serverIdentityId: 'srv_composed_prior',
+            displayName: 'Composed Prior',
+            source: 'user' as const,
+        };
+        const response = createDeferred<Response>();
+        network.request.mockImplementation(async () => await response.promise);
+        const { OnboardingWizardSurface } = await import('@/components/onboarding/surfaces/OnboardingWizardSurface');
+        const { selectAccountServiceEndpoint } = await import('@/sync/ops/accountDirectory/selectAccountServiceEndpoint');
+        const { setAccountServiceEndpoint, resolveSelectedAccountServiceEndpoint } = await import('@/sync/domains/server/serverProfiles');
+        await setAccountServiceEndpoint(priorEndpoint);
+        const screen = await renderScreen(
+            <OnboardingWizardSurface
+                layout="portrait"
+                isDesktopShell={false}
+                wizardChromeMode="bare"
+                initialStepId="auth_service_select"
+                authEntryOptions={authEntryOptions}
+                onSelectAccountService={selectAccountServiceEndpoint}
+            />,
+        );
+        const input = screen.findByTestId('account-service-url-input');
+        if (!input) throw new Error('Expected composed service URL form');
+        await act(async () => {
+            input.props.onChangeText('https://composed-abandoned.example.test');
+        });
+        act(() => {
+            screen.findByTestId('account-service-url-submit')?.props.onPress();
+        });
+        await vi.waitFor(() => expect(network.request).toHaveBeenCalledTimes(1));
+
+        await screen.pressByTestIdAsync('account-service-selection-back');
+        response.resolve(new Response(JSON.stringify(supportedAccountService('srv_composed_abandoned')), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        await act(async () => {
+            await response.promise;
+        });
+
+        expect(resolveSelectedAccountServiceEndpoint()).toEqual(priorEndpoint);
+    });
+});

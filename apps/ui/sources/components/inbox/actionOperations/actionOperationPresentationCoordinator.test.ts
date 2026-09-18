@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
+import { qualifyActionOperationSnapshot } from '@/sync/domains/actionOperations/qualifiedActionOperation';
 
 import { createActionOperationPresentationCoordinator } from './actionOperationPresentationCoordinator';
 
@@ -22,6 +23,10 @@ function operation(overrides: Partial<ActionOperationSnapshotV1> = {}): ActionOp
     };
 }
 
+const qualified = (snapshot: ActionOperationSnapshotV1, serverId: string = 'home-a') => (
+    qualifyActionOperationSnapshot(serverId, snapshot)
+);
+
 describe('action operation presentation coordinator', () => {
     it.each([
         ['current', 0, 0],
@@ -31,10 +36,10 @@ describe('action operation presentation coordinator', () => {
         const openDetail = vi.fn();
         const collapse = vi.fn();
         const coordinator = createActionOperationPresentationCoordinator({ openDetail, openDestination: vi.fn(), markPresented: vi.fn() });
-        coordinator.register({ requestId: 'request-1', onStart, origin: { resolve: () => null, collapse } });
+        coordinator.register({ serverId: 'home-a', accountId: 'account-1', requestId: 'request-1', onStart, origin: { resolve: () => null, collapse } });
 
-        coordinator.observe(operation());
-        coordinator.observe(operation({ revision: 2 }));
+        coordinator.observe(qualified(operation()));
+        coordinator.observe(qualified(operation({ revision: 2 })));
 
         expect(openDetail).toHaveBeenCalledTimes(details);
         expect(collapse).toHaveBeenCalledTimes(collapses);
@@ -45,14 +50,16 @@ describe('action operation presentation coordinator', () => {
         const openDetail = vi.fn();
         const coordinator = createActionOperationPresentationCoordinator({ openDetail, openDestination: vi.fn(), markPresented: vi.fn() });
         coordinator.register({
+            serverId: 'home-a',
+            accountId: 'account-1',
             requestId: 'request-1',
             onStart: 'current',
             origin: { resolve: (snapshot) => () => openOrigin(snapshot) },
         });
         const running = operation();
-        coordinator.observe(running);
+        coordinator.observe(qualified(running));
 
-        coordinator.open(running);
+        coordinator.open(qualified(running));
 
         expect(openOrigin).toHaveBeenCalledWith(running);
         expect(openDetail).not.toHaveBeenCalled();
@@ -63,21 +70,21 @@ describe('action operation presentation coordinator', () => {
         const openDetail = vi.fn();
         const markPresented = vi.fn();
         const coordinator = createActionOperationPresentationCoordinator({ openDetail, openDestination, markPresented });
-        coordinator.register({ requestId: 'request-1', onStart: 'current' });
+        coordinator.register({ serverId: 'home-a', accountId: 'account-1', requestId: 'request-1', onStart: 'current' });
         const succeeded = operation({
             state: 'succeeded',
             revision: 2,
             settledAt: 3,
             result: { childSessionId: 'child-1' },
         });
-        coordinator.observe(succeeded);
+        coordinator.observe(qualified(succeeded));
 
-        coordinator.open(succeeded);
-        coordinator.open(operation({ requestId: undefined, operationId: 'unbound' }));
+        coordinator.open(qualified(succeeded));
+        coordinator.open(qualified(operation({ requestId: undefined, operationId: 'unbound' })));
 
-        expect(openDestination).toHaveBeenCalledWith('child-1', succeeded);
-        expect(markPresented).toHaveBeenCalledWith(succeeded);
-        expect(openDetail).toHaveBeenCalledWith('unbound');
+        expect(openDestination).toHaveBeenCalledWith('child-1', qualified(succeeded));
+        expect(markPresented).toHaveBeenCalledWith(qualified(succeeded));
+        expect(openDetail).toHaveBeenCalledWith({ serverId: 'home-a', operationId: 'unbound' });
     });
 
     it('acknowledges an exact terminal operation presented by its existing foreground flow', () => {
@@ -89,11 +96,70 @@ describe('action operation presentation coordinator', () => {
         });
         const succeeded = operation({ state: 'succeeded', revision: 2, settledAt: 3 });
 
-        coordinator.acknowledgePresented(succeeded);
-        coordinator.acknowledgePresented(operation());
+        coordinator.acknowledgePresented(qualified(succeeded));
+        coordinator.acknowledgePresented(qualified(operation()));
 
         expect(markPresented).toHaveBeenCalledTimes(1);
-        expect(markPresented).toHaveBeenCalledWith(succeeded);
+        expect(markPresented).toHaveBeenCalledWith(qualified(succeeded));
+    });
+
+    it('does not route an unqualified legacy success through an ambient Home', () => {
+        const openDestination = vi.fn();
+        const openDetail = vi.fn();
+        const coordinator = createActionOperationPresentationCoordinator({
+            openDetail,
+            openDestination,
+            markPresented: vi.fn(),
+        });
+        const succeeded = operation({
+            state: 'succeeded',
+            revision: 2,
+            settledAt: 3,
+            result: { childSessionId: 'same-session-id' },
+        });
+
+        coordinator.open({ serverId: null, snapshot: succeeded } as unknown as Parameters<typeof coordinator.open>[0]);
+
+        expect(openDestination).not.toHaveBeenCalled();
+        expect(openDetail).not.toHaveBeenCalled();
+    });
+
+    it('keeps identical request IDs isolated by authenticated Home and Account scope', () => {
+        const openHomeA = vi.fn();
+        const openHomeB = vi.fn();
+        const coordinator = createActionOperationPresentationCoordinator({
+            openDetail: vi.fn(),
+            openDestination: vi.fn(),
+            markPresented: vi.fn(),
+        });
+        const homeARegistration = {
+            serverId: 'home-a',
+            accountId: 'account-1',
+            requestId: 'request-1',
+            onStart: 'current' as const,
+            origin: { resolve: () => openHomeA },
+        };
+        const homeBRegistration = {
+            serverId: 'home-b',
+            accountId: 'account-2',
+            requestId: 'request-1',
+            onStart: 'current' as const,
+            origin: { resolve: () => openHomeB },
+        };
+        coordinator.register(homeARegistration);
+        coordinator.register(homeBRegistration);
+
+        const operationA = qualified(operation(), 'home-a');
+        const operationB = qualified(operation({
+            scope: { accountId: 'account-2', machineId: 'machine-1', sessionId: 'source-1' },
+        }), 'home-b');
+        coordinator.observe(operationA);
+        coordinator.observe(operationB);
+        coordinator.open(operationA);
+        coordinator.open(operationB);
+
+        expect(openHomeA).toHaveBeenCalledTimes(1);
+        expect(openHomeB).toHaveBeenCalledTimes(1);
     });
 
     it('reconciles presentation by durable request identity regardless of push ordering', () => {
@@ -103,14 +169,18 @@ describe('action operation presentation coordinator', () => {
             openDestination: vi.fn(),
             markPresented,
         });
-        coordinator.register({ requestId: 'request-1', onStart: 'current' });
+        coordinator.register({ serverId: 'home-a', accountId: 'account-1', requestId: 'request-1', onStart: 'current' });
         const succeeded = operation({ state: 'succeeded', revision: 2, settledAt: 3 });
 
-        coordinator.acknowledgeRequestPresented('request-1');
-        coordinator.observe(succeeded);
-        coordinator.observe(operation({ operationId: 'operation-2', requestId: 'request-2', state: 'succeeded', revision: 2, settledAt: 3 }));
+        coordinator.acknowledgeRequestPresented({
+            serverId: 'home-a',
+            accountId: 'account-1',
+            requestId: 'request-1',
+        });
+        coordinator.observe(qualified(succeeded));
+        coordinator.observe(qualified(operation({ operationId: 'operation-2', requestId: 'request-2', state: 'succeeded', revision: 2, settledAt: 3 })));
 
         expect(markPresented).toHaveBeenCalledTimes(1);
-        expect(markPresented).toHaveBeenCalledWith(succeeded);
+        expect(markPresented).toHaveBeenCalledWith(qualified(succeeded));
     });
 });

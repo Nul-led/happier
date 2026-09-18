@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { applyPlannedChangeActions } from './changesApplier';
-import type { PlannedChangeActions } from './changesPlanner';
+import { planSyncActionsFromChanges, type PlannedChangeActions } from './changesPlanner';
 import type { ApiChangeEntry } from '@/sync/api/types/apiTypes';
+import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol/changes';
 
 const credentials: AuthCredentials = { token: 't', secret: 's' };
 
@@ -15,6 +16,7 @@ type ExtendedPlannedChangeActions = Omit<PlannedChangeActions, 'invalidate'> & {
 
 function buildPlanned(partial: {
     changes?: ApiChangeEntry[];
+    workflowRunIdsToRefresh?: string[];
     sessionIdsToCatchUp?: string[];
     sessionTranscriptRepairs?: PlannedChangeActions['sessionTranscriptRepairs'];
     sessionFolderAssignmentSessionIds?: string[];
@@ -26,6 +28,7 @@ function buildPlanned(partial: {
 }): ExtendedPlannedChangeActions {
     return {
         changes: partial.changes ?? [],
+        workflowRunIdsToRefresh: partial.workflowRunIdsToRefresh ?? [],
         sessionIdsToCatchUp: partial.sessionIdsToCatchUp ?? [],
         sessionTranscriptRepairs: partial.sessionTranscriptRepairs ?? [],
         sessionFolderAssignmentSessionIds: partial.sessionFolderAssignmentSessionIds ?? [],
@@ -35,6 +38,7 @@ function buildPlanned(partial: {
             sessions: false,
             sessionFolderAssignments: false,
             machines: false,
+            machinePools: false,
             artifacts: false,
             settings: false,
             profile: false,
@@ -42,6 +46,7 @@ function buildPlanned(partial: {
             feed: false,
             automations: false,
             pets: false,
+            savedSecretResources: false,
             ...(partial.invalidate ?? {}),
         },
         kv: partial.kv ?? { type: 'none' },
@@ -65,6 +70,180 @@ function buildChange(params: {
 }
 
 describe('changesApplier', () => {
+    it('refreshes the exact workflow Run before advancing its Account change', async () => {
+        const refreshWorkflowRun = vi.fn(async () => {});
+        const change = buildChange({ cursor: 1, kind: 'account', entityId: 'workflow-run:run-42' });
+        const result = await applyPlannedChangeActions({
+            planned: planSyncActionsFromChanges([change]),
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {},
+            refreshWorkflowRun,
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(refreshWorkflowRun).toHaveBeenCalledWith('run-42');
+        expect(result).toMatchObject({ status: 'complete', safeAdvanceCursor: '1' });
+    });
+
+    it('holds a workflow Run change cursor when its exact refresh owner is unavailable', async () => {
+        const change = buildChange({ cursor: 1, kind: 'account', entityId: 'workflow-run:run-42' });
+
+        const result = await applyPlannedChangeActions({
+            planned: planSyncActionsFromChanges([change]),
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {},
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(result).toMatchObject({
+            status: 'partial',
+            safeAdvanceCursor: null,
+            blockedCursor: '1',
+            blockedReason: 'partial-materialization',
+        });
+    });
+
+    it('holds a workflow Run change cursor when its exact refresh fails', async () => {
+        const change = buildChange({ cursor: 1, kind: 'account', entityId: 'workflow-run:run-42' });
+
+        const result = await applyPlannedChangeActions({
+            planned: planSyncActionsFromChanges([change]),
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {},
+            refreshWorkflowRun: async () => { throw new Error('offline'); },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(result).toMatchObject({
+            status: 'partial',
+            safeAdvanceCursor: null,
+            blockedCursor: '1',
+            blockedReason: 'partial-materialization',
+        });
+    });
+
+    it('holds a Saved Secret resource cursor until the catalog refresh succeeds', async () => {
+        const planned = planSyncActionsFromChanges([buildChange({
+            cursor: 1,
+            kind: 'savedSecretResource',
+            entityId: 'resource-a',
+        })]);
+        let refreshFails = true;
+        const apply = () => applyPlannedChangeActions({
+            planned,
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {
+                savedSecretResources: async () => {
+                    if (refreshFails) throw new Error('offline');
+                },
+            },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(await apply()).toMatchObject({
+            status: 'partial',
+            safeAdvanceCursor: null,
+            blockedCursor: '1',
+            blockedReason: 'partial-materialization',
+        });
+        refreshFails = false;
+        expect(await apply()).toMatchObject({ status: 'complete', safeAdvanceCursor: '1' });
+    });
+
+    it('holds a Teams membership cursor until Saved Secret authorization is re-observed', async () => {
+        const planned = planSyncActionsFromChanges([buildChange({
+            cursor: 1,
+            kind: 'account',
+            entityId: TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1,
+        })]);
+
+        const result = await applyPlannedChangeActions({
+            planned,
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {
+                savedSecretResources: async () => { throw new Error('offline'); },
+            },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(result).toMatchObject({
+            status: 'partial',
+            safeAdvanceCursor: null,
+            blockedCursor: '1',
+            blockedReason: 'partial-materialization',
+        });
+    });
+
+    it('holds a Machine Pool change cursor until the exact Home projection refresh succeeds', async () => {
+        const planned = planSyncActionsFromChanges([buildChange({
+            cursor: 1,
+            kind: 'machinePool',
+            entityId: 'pool-a',
+        })]);
+        let refreshFails = true;
+        const apply = () => applyPlannedChangeActions({
+            planned,
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: { machinePools: async () => { if (refreshFails) throw new Error('offline'); } },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(await apply()).toMatchObject({
+            status: 'partial', safeAdvanceCursor: null, blockedCursor: '1', blockedReason: 'partial-materialization',
+        });
+        refreshFails = false;
+        expect(await apply()).toMatchObject({ status: 'complete', safeAdvanceCursor: '1' });
+    });
+
+    it('holds a Follow change cursor until Session relevance refresh succeeds', async () => {
+        const planned = planSyncActionsFromChanges([buildChange({
+            cursor: 1,
+            kind: 'account',
+            entityId: 'session-follows',
+            hint: { sessionFollows: true, full: true },
+        })]);
+        let refreshFails = true;
+        const apply = () => applyPlannedChangeActions({
+            planned,
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: { sessions: async () => { if (refreshFails) throw new Error('offline'); } },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+        expect(await apply()).toMatchObject({
+            status: 'partial', safeAdvanceCursor: null, blockedCursor: '1', blockedReason: 'partial-materialization',
+        });
+        refreshFails = false;
+        expect(await apply()).toMatchObject({ status: 'complete', safeAdvanceCursor: '1' });
+    });
+
     it('materializes an exact SessionDraft before advancing its AccountChange cursor', async () => {
         const address = { kind: 'session', sessionId: 'session-a' } as const;
         const change = buildChange({
@@ -88,6 +267,31 @@ describe('changesApplier', () => {
 
         expect(materializeSessionDraft).toHaveBeenCalledWith(address);
         expect(result).toMatchObject({ status: 'complete', safeAdvanceCursor: '1' });
+    });
+
+    it('keeps successful and failed sibling Run draft materialization distinct', async () => {
+        const first = { kind: 'run', sessionId: 'session-a', runId: 'run-a' } as const;
+        const second = { ...first, runId: 'run-b' };
+        const changes = [first, second].map((address, index) => buildChange({
+            cursor: index + 1, kind: 'account',
+            hint: { v: 2, sessionDraftV2: true, address, revision: 2, status: 'present' },
+        }));
+        const result = await applyPlannedChangeActions({
+            planned: planSyncActionsFromChanges(changes),
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {},
+            materializeSessionDraft: async (address) => {
+                if (address.kind === 'run' && address.runId === 'run-b') throw new Error('offline');
+            },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+        expect(result).toMatchObject({
+            status: 'partial', safeAdvanceCursor: '1', blockedCursor: '2', blockedReason: 'partial-materialization',
+        });
     });
 
     it('holds the cursor when exact SessionDraft materialization fails', async () => {
@@ -119,7 +323,7 @@ describe('changesApplier', () => {
     });
 
     it('hands closed plugin collection invalidations to the Data-owned direct-client producer before advancing the cursor', async () => {
-        const publishPluginCollectionChanges = vi.fn();
+        const publishAccountChanges = vi.fn();
         const change = buildChange({
             cursor: 1,
             kind: 'pluginDomain',
@@ -139,14 +343,14 @@ describe('changesApplier', () => {
             credentials,
             isSessionMessagesLoaded: () => false,
             invalidate: {},
-            publishPluginCollectionChanges,
+            publishAccountChanges,
             invalidateMessagesForSession: async () => {},
             invalidateScmStatusForSession: () => {},
             applyTodoSocketUpdates: async () => {},
             kvBulkGet: async () => ({ values: [] }),
         });
 
-        expect(publishPluginCollectionChanges).toHaveBeenCalledWith([change]);
+        expect(publishAccountChanges).toHaveBeenCalledWith([change]);
         expect(result).toMatchObject({ status: 'complete', safeAdvanceCursor: '1' });
     });
 
@@ -355,6 +559,7 @@ describe('changesApplier', () => {
 
     it('refreshes session organization snapshots and advances organization change cursors', async () => {
         const refreshSessionOrganization = vi.fn(async () => {});
+        const applyAuthoritativeSessionOrganizationDeletions = vi.fn();
 
         const result = await applyPlannedChangeActions({
             planned: buildPlanned({
@@ -371,6 +576,7 @@ describe('changesApplier', () => {
                     assignmentSessionIds: [],
                     folderIds: ['folder-a'],
                     tagIds: [],
+                    deletedTagIds: ['deleted-tag'],
                     orderScopes: [],
                     includeFolders: true,
                     includeTags: false,
@@ -381,6 +587,7 @@ describe('changesApplier', () => {
             isSessionMessagesLoaded: () => false,
             invalidate: {},
             refreshSessionOrganization,
+            applyAuthoritativeSessionOrganizationDeletions,
             invalidateMessagesForSession: async () => {},
             invalidateScmStatusForSession: () => {},
             applyTodoSocketUpdates: async () => {},
@@ -392,11 +599,62 @@ describe('changesApplier', () => {
             folderIds: ['folder-a'],
             includeFolders: true,
         }));
+        expect(applyAuthoritativeSessionOrganizationDeletions).toHaveBeenCalledWith(expect.objectContaining({
+            deletedTagIds: ['deleted-tag'],
+        }));
         expect(result).toEqual({
             status: 'complete',
             safeAdvanceCursor: '1',
             processedChanges: 1,
             blockedChanges: 0,
+        });
+    });
+
+    it('does not apply authoritative organization deletions when snapshot refresh fails', async () => {
+        const applyAuthoritativeSessionOrganizationDeletions = vi.fn();
+
+        const result = await applyPlannedChangeActions({
+            planned: buildPlanned({
+                changes: [buildChange({
+                    cursor: 1,
+                    kind: 'account',
+                    entityId: 'session-organization',
+                    hint: {
+                        sessionOrganization: true,
+                        scope: 'tags',
+                        tagIds: ['deleted-tag'],
+                        deletedTagIds: ['deleted-tag'],
+                    },
+                })],
+                sessionOrganization: {
+                    mode: 'snapshot',
+                    assignmentSessionIds: [],
+                    folderIds: [],
+                    tagIds: ['deleted-tag'],
+                    deletedTagIds: ['deleted-tag'],
+                    orderScopes: [],
+                    includeFolders: false,
+                    includeTags: true,
+                    includeLabels: false,
+                },
+            }),
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {},
+            refreshSessionOrganization: async () => {
+                throw new Error('offline');
+            },
+            applyAuthoritativeSessionOrganizationDeletions,
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(applyAuthoritativeSessionOrganizationDeletions).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+            status: 'partial',
+            blockedReason: 'partial-materialization',
         });
     });
 

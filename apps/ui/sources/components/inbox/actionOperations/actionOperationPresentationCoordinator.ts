@@ -1,6 +1,17 @@
 import type { ActionOperationDeclarationV1, ActionOperationSnapshotV1 } from '@happier-dev/protocol';
+import {
+    actionOperationAddress,
+    actionOperationAddressKey,
+    actionOperationRequestAddressKey,
+    normalizeActionOperationServerId,
+    type ActionOperationAddress,
+    type QualifiedActionOperation,
+} from '@/sync/domains/actionOperations/qualifiedActionOperation';
 
-import { readActionOperationDestinationSessionId } from './actionOperationPresentation';
+import {
+    readActionOperationDestinationServerId,
+    readActionOperationDestinationSessionId,
+} from './actionOperationPresentation';
 
 export type ActionOperationReentryOrigin = Readonly<{
     /** Returns a reconstructable presentation for this exact current snapshot. */
@@ -10,6 +21,8 @@ export type ActionOperationReentryOrigin = Readonly<{
 }>;
 
 export type ActionOperationPresentationRegistration = Readonly<{
+    serverId: string | null;
+    accountId: string;
     requestId: string;
     onStart: ActionOperationDeclarationV1['presentation']['onStart'];
     origin?: ActionOperationReentryOrigin;
@@ -18,39 +31,54 @@ export type ActionOperationPresentationRegistration = Readonly<{
 const MAX_REGISTRATIONS = 100;
 
 export function createActionOperationPresentationCoordinator(deps: Readonly<{
-    openDetail(operationId: string): void;
-    openDestination(sessionId: string, snapshot: ActionOperationSnapshotV1): void;
-    markPresented(snapshot: ActionOperationSnapshotV1): void;
+    openDetail(address: ActionOperationAddress): void;
+    openDestination(sessionId: string, operation: QualifiedActionOperation): void;
+    markPresented(operation: QualifiedActionOperation): void;
 }>) {
-    const registrations = new Map<string, ActionOperationPresentationRegistration>();
-    const requestIdByOperationId = new Map<string, string>();
-    const latestSnapshotByRequestId = new Map<string, ActionOperationSnapshotV1>();
-    const presentedRequestIds = new Set<string>();
+    const registrationsByRequestKey = new Map<string, ActionOperationPresentationRegistration>();
+    const requestKeyByOperationKey = new Map<string, string>();
+    const latestOperationByRequestKey = new Map<string, QualifiedActionOperation>();
+    const presentedRequestKeys = new Set<string>();
     const presentedOperationIds = new Set<string>();
     const acknowledgedOperationIds = new Set<string>();
 
     const retainBounded = () => {
-        while (registrations.size > MAX_REGISTRATIONS) {
-            const oldest = registrations.keys().next().value as string | undefined;
+        while (registrationsByRequestKey.size > MAX_REGISTRATIONS) {
+            const oldest = registrationsByRequestKey.keys().next().value as string | undefined;
             if (!oldest) return;
-            registrations.delete(oldest);
-            for (const [operationId, requestId] of requestIdByOperationId) {
-                if (requestId === oldest) {
-                    requestIdByOperationId.delete(operationId);
-                    acknowledgedOperationIds.delete(operationId);
+            registrationsByRequestKey.delete(oldest);
+            for (const [operationKey, requestKey] of requestKeyByOperationKey) {
+                if (requestKey === oldest) {
+                    requestKeyByOperationKey.delete(operationKey);
+                    acknowledgedOperationIds.delete(operationKey);
                 }
             }
-            latestSnapshotByRequestId.delete(oldest);
-            presentedRequestIds.delete(oldest);
+            latestOperationByRequestKey.delete(oldest);
+            presentedRequestKeys.delete(oldest);
         }
     };
 
-    const registrationFor = (snapshot: ActionOperationSnapshotV1) => {
-        const requestId = snapshot.requestId ?? requestIdByOperationId.get(snapshot.operationId);
-        return requestId ? registrations.get(requestId) ?? null : null;
+    const requestKeyForOperation = (operation: QualifiedActionOperation | undefined): string | null => {
+        if (!operation) return null;
+        if (!normalizeActionOperationServerId(operation.serverId)) return null;
+        const requestId = operation.snapshot.requestId;
+        return requestId ? actionOperationRequestAddressKey({
+            serverId: operation.serverId,
+            accountId: operation.snapshot.scope.accountId,
+            requestId,
+        }) : null;
     };
 
-    const acknowledgePresented = (snapshot: ActionOperationSnapshotV1): void => {
+    const registrationFor = (operation: QualifiedActionOperation) => {
+        const requestKey = requestKeyForOperation(operation) ?? requestKeyByOperationKey.get(actionOperationAddressKey(
+            actionOperationAddress(operation.serverId, operation.snapshot.operationId),
+        ));
+        return requestKey ? registrationsByRequestKey.get(requestKey) ?? null : null;
+    };
+
+    const acknowledgePresented = (operation: QualifiedActionOperation): void => {
+        if (!normalizeActionOperationServerId(operation.serverId)) return;
+        const { snapshot } = operation;
         if (
             snapshot.state !== 'succeeded'
             && snapshot.state !== 'failed'
@@ -58,64 +86,74 @@ export function createActionOperationPresentationCoordinator(deps: Readonly<{
         ) {
             return;
         }
-        if (acknowledgedOperationIds.has(snapshot.operationId)) return;
-        acknowledgedOperationIds.add(snapshot.operationId);
-        deps.markPresented(snapshot);
+        const operationKey = actionOperationAddressKey(actionOperationAddress(operation.serverId, snapshot.operationId));
+        if (acknowledgedOperationIds.has(operationKey)) return;
+        acknowledgedOperationIds.add(operationKey);
+        deps.markPresented(operation);
     };
 
     return Object.freeze({
         register(registration: ActionOperationPresentationRegistration): void {
-            registrations.delete(registration.requestId);
-            registrations.set(registration.requestId, registration);
+            const requestKey = actionOperationRequestAddressKey(registration);
+            registrationsByRequestKey.delete(requestKey);
+            registrationsByRequestKey.set(requestKey, registration);
             retainBounded();
         },
-        observe(snapshot: ActionOperationSnapshotV1): void {
-            if (!snapshot.requestId) return;
-            const registration = registrations.get(snapshot.requestId);
+        observe(operation: QualifiedActionOperation): void {
+            if (!normalizeActionOperationServerId(operation.serverId)) return;
+            const { snapshot } = operation;
+            const requestKey = requestKeyForOperation(operation);
+            if (!requestKey) return;
+            const registration = registrationsByRequestKey.get(requestKey);
             if (!registration) return;
-            requestIdByOperationId.set(snapshot.operationId, snapshot.requestId);
-            latestSnapshotByRequestId.set(snapshot.requestId, snapshot);
-            if (presentedRequestIds.has(snapshot.requestId)) acknowledgePresented(snapshot);
-            if (presentedOperationIds.has(snapshot.operationId)) return;
-            presentedOperationIds.add(snapshot.operationId);
-            if (registration.onStart === 'detail') deps.openDetail(snapshot.operationId);
+            const operationKey = actionOperationAddressKey(actionOperationAddress(operation.serverId, snapshot.operationId));
+            requestKeyByOperationKey.set(operationKey, requestKey);
+            latestOperationByRequestKey.set(requestKey, operation);
+            if (presentedRequestKeys.has(requestKey)) acknowledgePresented(operation);
+            if (presentedOperationIds.has(operationKey)) return;
+            presentedOperationIds.add(operationKey);
+            if (registration.onStart === 'detail') deps.openDetail(actionOperationAddress(operation.serverId, snapshot.operationId));
             if (registration.onStart === 'activity') registration.origin?.collapse?.();
         },
-        open(snapshot: ActionOperationSnapshotV1): void {
-            const registration = registrationFor(snapshot);
+        open(operation: QualifiedActionOperation): void {
+            if (!normalizeActionOperationServerId(operation.serverId)) return;
+            const { snapshot } = operation;
+            const registration = registrationFor(operation);
             const reopen = registration?.origin?.resolve(snapshot) ?? null;
             if (reopen) {
                 reopen();
-                acknowledgePresented(snapshot);
+                acknowledgePresented(operation);
                 return;
             }
             const destinationSessionId = readActionOperationDestinationSessionId(snapshot);
-            if (destinationSessionId) {
-                deps.openDestination(destinationSessionId, snapshot);
-                acknowledgePresented(snapshot);
+            if (destinationSessionId && readActionOperationDestinationServerId(snapshot, operation.serverId)) {
+                deps.openDestination(destinationSessionId, operation);
+                acknowledgePresented(operation);
                 return;
             }
-            deps.openDetail(snapshot.operationId);
-            acknowledgePresented(snapshot);
+            deps.openDetail(actionOperationAddress(operation.serverId, snapshot.operationId));
+            acknowledgePresented(operation);
         },
         acknowledgePresented,
-        acknowledgeRequestPresented(requestId: string, snapshot?: ActionOperationSnapshotV1): void {
-            const normalizedRequestId = requestId.trim();
-            if (!normalizedRequestId) return;
-            const exactSnapshot = snapshot?.requestId === normalizedRequestId
-                ? snapshot
-                : latestSnapshotByRequestId.get(normalizedRequestId);
-            if (!exactSnapshot && !registrations.has(normalizedRequestId)) return;
-            presentedRequestIds.add(normalizedRequestId);
-            if (exactSnapshot) acknowledgePresented(exactSnapshot);
+        acknowledgeRequestPresented(
+            request: Readonly<{ serverId: string | null; accountId: string; requestId: string }>,
+            operation?: QualifiedActionOperation,
+        ): void {
+            const requestKey = actionOperationRequestAddressKey(request);
+            const exactOperation = requestKeyForOperation(operation) === requestKey
+                ? operation
+                : latestOperationByRequestKey.get(requestKey);
+            if (!exactOperation && !registrationsByRequestKey.has(requestKey)) return;
+            presentedRequestKeys.add(requestKey);
+            if (exactOperation) acknowledgePresented(exactOperation);
         },
         reset(): void {
-            registrations.clear();
-            requestIdByOperationId.clear();
+            registrationsByRequestKey.clear();
+            requestKeyByOperationKey.clear();
             presentedOperationIds.clear();
             acknowledgedOperationIds.clear();
-            latestSnapshotByRequestId.clear();
-            presentedRequestIds.clear();
+            latestOperationByRequestKey.clear();
+            presentedRequestKeys.clear();
         },
     });
 }

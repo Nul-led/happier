@@ -186,6 +186,24 @@ describe('activitySurfacePresentation helpers', () => {
         ]);
     });
 
+    it('renders safe structural context even when private subtitle content is suppressed', () => {
+        const rendered = renderActivitySurfaceSessionCard(createSessionCard({
+            contextLine: 'Home B · Offline · Last updated 18m ago · Developers · Assigned to you · Encrypted access pending',
+            subtitle: null,
+            previewText: null,
+            statusText: null,
+        }), {
+            showPreviewText: false,
+            showStatus: false,
+            showSubtitle: false,
+        });
+
+        expect(collectTextValues(rendered)).toEqual([
+            'Review auth flow',
+            'Home B · Offline · Last updated 18m ago · Developers · Assigned to you · Encrypted access pending',
+        ]);
+    });
+
     it('renders count metrics as pill badges to match the compact premium family', () => {
         const snapshot = buildActivitySurfaceSnapshot({
             policy: resolveActivitySurfacePolicy({

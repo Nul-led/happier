@@ -1,0 +1,332 @@
+import * as React from 'react';
+import { View } from 'react-native';
+import { act } from 'react-test-renderer';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSessionListRenderableSessionFixture, renderScreen } from '@/dev/testkit';
+import { sessionHumanPresenceStore } from '@/sync/domains/session/humanPresence/sessionHumanPresenceStore';
+import { storage } from '@/sync/domains/state/storageStore';
+import {
+    createSessionCollaborationHeaderMenuItem,
+    resolveSessionCollaborationHeaderPlacement,
+    SessionCollaborationHeaderEntry,
+    useSessionCollaborationHeaderState,
+} from './SessionCollaborationHeaderEntry';
+import { STALE_PRESENCE_OPACITY } from './SessionViewerFacepile';
+import { SessionPresenceSection } from './SessionPresenceSection';
+
+const modal = vi.hoisted(() => ({ mock: null as ReturnType<typeof import('@/dev/testkit/mocks/modal').createModalModuleMock> | null }));
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    modal.mock = createModalModuleMock();
+    return modal.mock.module;
+});
+
+const target = { serverId: 'presence-test-home', sessionId: 'presence-test-session' };
+const account = (id: string) => ({ kind: 'account', accountId: id, firstName: id, lastName: null, username: null, avatarUrl: null });
+let home: ReturnType<typeof sessionHumanPresenceStore.attachHome> | undefined;
+let previousStorageState: ReturnType<typeof storage.getState>;
+beforeEach(() => { previousStorageState = storage.getState(); });
+afterEach(() => {
+    home?.dispose();
+    home = undefined;
+    storage.setState(previousStorageState, true);
+});
+
+function publishViewerAttention(reasons: readonly ('mentioned' | 'unread_discussion')[], tracked = true): void {
+    const row = createSessionListRenderableSessionFixture({
+        id: target.sessionId,
+        viewer: {
+            v: 1,
+            readState: tracked
+                ? { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null }
+                : { state: 'not_started' },
+            attention: {
+                needsAttention: reasons.length > 0,
+                reasons,
+                primary: reasons[0] ?? null,
+                presentation: 'full',
+            },
+        },
+    });
+    storage.setState((state) => ({
+        ...state,
+        sessionListRowsByServerId: {
+            ...state.sessionListRowsByServerId,
+            [target.serverId]: { [target.sessionId]: row },
+        },
+    }));
+}
+
+function HeaderEntryFromCanonicalState(props: Readonly<{ onPress: () => void }>) {
+    return <SessionCollaborationHeaderEntry target={target} onPress={props.onPress} />;
+}
+
+function HeaderPlacementFromCanonicalState(props: Readonly<{ compact: boolean }>) {
+    const state = useSessionCollaborationHeaderState(target, props.compact);
+    return <View testID="session-collaboration-placement" accessibilityLabel={state.direct ? 'direct' : state.overflow ? 'overflow' : 'none'} />;
+}
+
+describe('Session presence surfaces', () => {
+    it('places the compact collaboration entry exactly once as presence changes', () => {
+        expect(resolveSessionCollaborationHeaderPlacement({ compact: true, hasNamedViewers: false })).toEqual({
+            direct: false,
+            overflow: true,
+        });
+        expect(resolveSessionCollaborationHeaderPlacement({ compact: true, hasNamedViewers: true })).toEqual({
+            direct: true,
+            overflow: false,
+        });
+        expect(resolveSessionCollaborationHeaderPlacement({ compact: false, hasNamedViewers: false })).toEqual({
+            direct: true,
+            overflow: false,
+        });
+    });
+
+    it('preserves collaboration attention in the folded menu presentation', () => {
+        const item = createSessionCollaborationHeaderMenuItem({
+            iconColor: '#111111',
+            attentionColor: '#222222',
+            attentionLabel: '1 unread',
+        });
+
+        expect(item.accessibilityLabel).toContain('1 unread');
+        expect(item.rightElement).not.toBeNull();
+    });
+
+    it('uses one header action, bounded avatars, all accessible names and stale continuity', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        const open = vi.fn();
+        const screen = await renderScreen(<HeaderEntryFromCanonicalState onPress={open} />);
+        expect(screen.findByTestId('session-collaboration-header')).not.toBeNull();
+        expect(screen.findByTestId('session-viewer-facepile')).toBeNull();
+        await act(async () => home!.receiveSnapshot({ v: 1, sessionId: target.sessionId, observedAt: 1,
+            viewers: ['Alice', 'Bob', 'Charlie', 'Dana', 'self'].map((id) => ({ account: account(id), typing: id === 'Alice' })),
+        }));
+        expect(screen.findByTestId('session-viewer-facepile')).not.toBeNull();
+        expect(screen.findByTestId('session-collaboration-header')).toBeNull();
+        expect(screen.findAllByTestId('session-viewer-avatar')).toHaveLength(3);
+        expect(screen.findByTestId('session-viewer-overflow')?.props.children).toBe('+1');
+        expect(screen.findByTestId('session-viewer-facepile')?.props.accessibilityLabel).toContain('Dana');
+        await screen.pressByTestIdAsync('session-viewer-facepile');
+        expect(open).toHaveBeenCalledOnce();
+        await act(async () => home!.setStatus('unavailable'));
+        expect(screen.findByTestId('session-viewer-facepile')?.props.accessibilityLabel).toContain('May be out of date');
+    });
+
+    it('replaces the solo collaboration action with the compact facepile when another viewer arrives', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        const open = vi.fn();
+        const screen = await renderScreen(
+            <HeaderEntryFromCanonicalState onPress={open} />,
+        );
+
+        expect(screen.findByTestId('session-collaboration-header')).not.toBeNull();
+        expect(screen.findByTestId('session-viewer-facepile')).toBeNull();
+
+        await act(async () => home!.receiveSnapshot({
+            v: 1,
+            sessionId: target.sessionId,
+            observedAt: 4,
+            viewers: [{ account: account('Alice'), typing: false }],
+        }));
+
+        expect(screen.findByTestId('session-viewer-facepile')).not.toBeNull();
+        await screen.pressByTestIdAsync('session-viewer-facepile');
+        expect(open).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the facepile direct while allowing a folded solo action to stay in overflow', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        const open = vi.fn();
+        const screen = await renderScreen(
+            <SessionCollaborationHeaderEntry target={target} attentionLabel={null} compact onPress={open} />,
+        );
+
+        expect(screen.findByTestId('session-collaboration-header')).toBeNull();
+        expect(screen.findByTestId('session-viewer-facepile')).toBeNull();
+
+        await act(async () => home!.receiveSnapshot({
+            v: 1,
+            sessionId: target.sessionId,
+            observedAt: 5,
+            viewers: [{ account: account('Alice'), typing: false }],
+        }));
+
+        expect(screen.findByTestId('session-viewer-facepile')).not.toBeNull();
+        await screen.pressByTestIdAsync('session-viewer-facepile');
+        expect(open).toHaveBeenCalledOnce();
+    });
+
+    it('moves the compact action from overflow to direct without subscribing its parent', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        let parentRenderCount = 0;
+        function Parent() {
+            parentRenderCount += 1;
+            return <HeaderPlacementFromCanonicalState compact />;
+        }
+        const screen = await renderScreen(<Parent />);
+        expect(screen.findByTestId('session-collaboration-placement')?.props.accessibilityLabel).toBe('overflow');
+
+        await act(async () => home!.receiveSnapshot({
+            v: 1,
+            sessionId: target.sessionId,
+            observedAt: 6,
+            viewers: [{ account: account('Alice'), typing: false }],
+        }));
+
+        expect(screen.findByTestId('session-collaboration-placement')?.props.accessibilityLabel).toBe('direct');
+        expect(parentRenderCount).toBe(1);
+    });
+
+    it('distinguishes live-empty, unavailable and unsupported without dropping usable access chrome', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        const screen = await renderScreen(<SessionPresenceSection {...target} />);
+        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Connecting…');
+        await act(async () => home!.receiveSnapshot({ v: 1, sessionId: target.sessionId, observedAt: 2, viewers: [] }));
+        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Just you');
+        await act(async () => home!.setStatus('unsupported'));
+        expect(screen.findByTestId('session-presence-section')).toBeNull();
+    });
+
+    it('de-emphasizes the stale summary like the facepile and returns focus to it from the viewer list', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        // Warmed here so the assertion below measures the open, not this
+        // runner's first transform of the lazily imported viewer list.
+        await import('./SessionPresenceViewerList');
+        const nodes = new Map<string, object>();
+        const screen = await renderScreen(<SessionPresenceSection {...target} />, {
+            createNodeMock: (element) => {
+                const testID = (element as { props?: { testID?: string } }).props?.testID;
+                const node = { testID };
+                if (testID) nodes.set(testID, node);
+                return node;
+            },
+        });
+        await act(async () => home!.receiveSnapshot({
+            v: 1, sessionId: target.sessionId, observedAt: 7,
+            viewers: [{ account: account('Alice'), typing: false }],
+        }));
+        // Live rows carry no de-emphasis; only the retained last-known rows do.
+        expect(screen.findByTestId('session-presence-summary-anchor')?.props.style).toBeFalsy();
+
+        await act(async () => home!.setStatus('unavailable'));
+        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Alice · May be out of date');
+        expect(screen.findByTestId('session-presence-summary-anchor')?.props.style)
+            .toMatchObject({ opacity: STALE_PRESENCE_OPACITY });
+
+        await screen.pressByTestIdAsync('session-presence-summary');
+        // The viewer list is lazily imported, so the open is asynchronous.
+        await vi.waitFor(() => expect(modal.mock?.spies.show).toHaveBeenCalled(), { timeout: 10_000 });
+        const shown = modal.mock?.spies.show.mock.calls.at(-1)?.[0];
+        expect(shown?.focusReturnRef?.current).toBe(nodes.get('session-presence-summary-anchor'));
+    });
+
+    it('presents the complete viewer list as read-only identities, not activation targets', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        const { SessionPresenceViewerList } = await import('./SessionPresenceViewerList');
+        const screen = await renderScreen(<SessionPresenceViewerList target={target} onClose={vi.fn()} />);
+        await act(async () => home!.receiveSnapshot({
+            v: 1,
+            sessionId: target.sessionId,
+            observedAt: 9,
+            viewers: [
+                { account: account('Alice'), typing: true },
+                { account: account('Bob'), typing: false },
+            ],
+        }));
+
+        // Every named viewer is still presented with the live typing detail.
+        const content = screen.getTextContent();
+        expect(content).toContain('Alice');
+        expect(content).toContain('Bob');
+        expect(content).toContain('Typing');
+
+        // The list answers "who is here"; selecting a person does nothing, so a row
+        // must not present itself as a button, an option, or a keyboard tab stop.
+        const viewerRowProps = (node: { props: unknown }) => node.props as Readonly<{
+            title?: unknown;
+            onPress?: unknown;
+            accessibilityRole?: unknown;
+            role?: unknown;
+            tabIndex?: unknown;
+            disabled?: unknown;
+        }>;
+        const isViewerRow = (node: { props: unknown }) => {
+            const title = viewerRowProps(node).title;
+            return title === 'Alice' || title === 'Bob';
+        };
+        const activationTargets = screen.findAll((node) => {
+            if (!isViewerRow(node)) return false;
+            const props = viewerRowProps(node);
+            return typeof props.onPress === 'function'
+                || props.accessibilityRole === 'button'
+                || props.role === 'option'
+                || props.tabIndex === 0;
+        });
+        expect(activationTargets).toEqual([]);
+
+        // Read-only is not unavailable: a dimmed/disabled row would misdescribe a
+        // person who is present right now.
+        const disabledRows = screen.findAll((node) => isViewerRow(node) && viewerRowProps(node).disabled === true);
+        expect(disabledRows).toEqual([]);
+    });
+
+    it('decorates the existing header action from exact-Home canonical discussion attention', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        publishViewerAttention(['mentioned']);
+
+        const screen = await renderScreen(<HeaderEntryFromCanonicalState onPress={vi.fn()} />);
+        expect(screen.findByTestId('session-collaboration-attention')).not.toBeNull();
+        // A mention is the one targeted signal the feature adds; announcing the
+        // generic "1 unread" both hid it and stated a count this client never has.
+        expect(screen.findByTestId('session-collaboration-header')?.props.accessibilityLabel)
+            .toContain('You were mentioned');
+
+        await act(async () => home!.receiveSnapshot({
+            v: 1,
+            sessionId: target.sessionId,
+            observedAt: 3,
+            viewers: [{ account: account('Alice'), typing: false }],
+        }));
+        expect(screen.findByTestId('session-collaboration-attention')).not.toBeNull();
+        expect(screen.findByTestId('session-viewer-facepile')?.props.accessibilityLabel)
+            .toContain('You were mentioned');
+    });
+
+    it('announces ordinary unread discussion without the mention wording or a fabricated count', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        publishViewerAttention(['unread_discussion']);
+
+        const screen = await renderScreen(<HeaderEntryFromCanonicalState onPress={vi.fn()} />);
+        const label = screen.findByTestId('session-collaboration-header')?.props.accessibilityLabel as string;
+        expect(label).toContain('Unread conversations');
+        expect(label).not.toContain('mention');
+        expect(label).not.toContain('1 unread');
+    });
+
+    it('does not decorate untracked, unknown, or another Home Session state', async () => {
+        publishViewerAttention(['unread_discussion'], false);
+        const screen = await renderScreen(<HeaderEntryFromCanonicalState onPress={vi.fn()} />);
+        expect(screen.findByTestId('session-collaboration-attention')).toBeNull();
+
+        publishViewerAttention(['unread_discussion']);
+        storage.setState((state) => ({
+            ...state,
+            sessionListRowsByServerId: {
+                ...state.sessionListRowsByServerId,
+                [target.serverId]: {},
+                'another-home': state.sessionListRowsByServerId[target.serverId] ?? {},
+            },
+        }));
+        expect(screen.findByTestId('session-collaboration-attention')).toBeNull();
+    });
+});

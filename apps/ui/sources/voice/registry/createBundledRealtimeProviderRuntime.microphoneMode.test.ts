@@ -46,7 +46,9 @@ function createRuntimeForMode(
     resolveOutputInterruptionCandidate: vi.fn(),
   };
   const host = {
-    globalVoiceSessionId: 'voice-global',
+    // This focused microphone test has no Session-address fixture. Treat its
+    // synthetic control id as Global so address admission remains out of scope.
+    globalVoiceSessionId: 'voice-test',
     runCurrentGenerationEffect(callback: () => void) {
       callback();
       return true;
@@ -161,19 +163,19 @@ function createRuntimeForMode(
 describe('createBundledRealtimeProviderRuntime microphone mode', () => {
   it('chooses one declared microphone authority before connection creation', async () => {
     const webRtc = createRuntimeForMode('host_webrtc');
-    await webRtc.runtime.adapter.start({ sessionId: 'voice-test' });
+    await webRtc.runtime.adapter.start({ sessionId: 'voice-test', requestedTargetSessionAddress: null });
     expect(webRtc.mic.ensurePermission).toHaveBeenCalledTimes(1);
     expect(webRtc.mic.ensureActive).toHaveBeenCalledTimes(1);
     expect(webRtc.acquireAudioMode).toHaveBeenCalledTimes(1);
 
     const pcm = createRuntimeForMode('host_pcm');
-    await pcm.runtime.adapter.start({ sessionId: 'voice-test' });
+    await pcm.runtime.adapter.start({ sessionId: 'voice-test', requestedTargetSessionAddress: null });
     expect(pcm.mic.ensurePermission).toHaveBeenCalledTimes(1);
     expect(pcm.mic.ensureActive).not.toHaveBeenCalled();
     expect(pcm.acquireAudioMode).not.toHaveBeenCalled();
 
     const providerManaged = createRuntimeForMode('provider_managed');
-    await providerManaged.runtime.adapter.start({ sessionId: 'voice-test' });
+    await providerManaged.runtime.adapter.start({ sessionId: 'voice-test', requestedTargetSessionAddress: null });
     expect(providerManaged.mic.ensurePermission).not.toHaveBeenCalled();
     expect(providerManaged.mic.ensureActive).not.toHaveBeenCalled();
     expect(providerManaged.acquireAudioMode).toHaveBeenCalledTimes(1);
@@ -185,7 +187,7 @@ describe('createBundledRealtimeProviderRuntime microphone mode', () => {
 
   it('holds the audio-mode lease before host WebRTC capture opens its track', async () => {
     const webRtc = createRuntimeForMode('host_webrtc');
-    await webRtc.runtime.adapter.start({ sessionId: 'voice-test' });
+    await webRtc.runtime.adapter.start({ sessionId: 'voice-test', requestedTargetSessionAddress: null });
 
     // The platform decides the capture route and echo cancellation when the
     // track is created: Android reads `AudioManager.mode` and AEC availability
@@ -208,7 +210,7 @@ describe('createBundledRealtimeProviderRuntime microphone mode', () => {
         if (muted) throw new Error('secondary_capture_mute_rejected');
       },
     });
-    await webRtc.runtime.adapter.start({ sessionId: 'voice-test' });
+    await webRtc.runtime.adapter.start({ sessionId: 'voice-test', requestedTargetSessionAddress: null });
 
     await expect(webRtc.runtime.adapter.setMuted({
       sessionId: 'voice-test',
@@ -219,7 +221,7 @@ describe('createBundledRealtimeProviderRuntime microphone mode', () => {
     expect(webRtc.controller.fail).toHaveBeenCalledWith('voice_input_mute_failed');
   });
 
-  it('does not let a retired attempt mute operation block the fresh attempt', async () => {
+  it('fails a fresh mute closed until the retired provider mute operation settles', async () => {
     let releaseOldMute!: () => void;
     const oldMute = new Promise<void>((resolve) => { releaseOldMute = resolve; });
     const providerCalls: boolean[] = [];
@@ -229,7 +231,7 @@ describe('createBundledRealtimeProviderRuntime microphone mode', () => {
         if (muted && providerCalls.filter(Boolean).length === 1) await oldMute;
       },
     });
-    await providerManaged.runtime.adapter.start({ sessionId: 'voice-test' });
+    await providerManaged.runtime.adapter.start({ sessionId: 'voice-test', requestedTargetSessionAddress: null });
     const staleMute = providerManaged.runtime.adapter.setMuted({
       sessionId: 'voice-test',
       muted: true,
@@ -242,15 +244,17 @@ describe('createBundledRealtimeProviderRuntime microphone mode', () => {
       reason: { code: 'replaced' },
     });
     providerManaged.setOwnedAttemptId(2);
-    await providerManaged.runtime.adapter.start({ sessionId: 'voice-test' });
-    const currentMute = providerManaged.runtime.adapter.setMuted({
-      sessionId: 'voice-test',
-      muted: true,
-    });
-
-    await expect(currentMute).resolves.toBeUndefined();
-    expect(providerCalls).toEqual([false, true, false, true]);
+    await expect(providerManaged.runtime.adapter.start({ sessionId: 'voice-test', requestedTargetSessionAddress: null }))
+      .rejects.toMatchObject({ code: 'voice_input_mute_failed' });
+    expect(providerCalls).toEqual([false, true]);
     releaseOldMute();
     await expect(staleMute).resolves.toBeUndefined();
+    providerManaged.setOwnedAttemptId(3);
+    await providerManaged.runtime.adapter.start({ sessionId: 'voice-test', requestedTargetSessionAddress: null });
+    await expect(providerManaged.runtime.adapter.setMuted({
+      sessionId: 'voice-test',
+      muted: true,
+    })).resolves.toBeUndefined();
+    expect(providerCalls).toEqual([false, true, false, true]);
   });
 });

@@ -52,6 +52,11 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
               "newTurn",
               "steer"
             ],
+            "executionRunContext": {
+              "versions": [
+                1
+              ]
+            },
             "goals": {
               "active": {
                 "clear": true,
@@ -115,7 +120,6 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
             ]
           },
           "surfaces": [
-            "terminal",
             "externalSessions"
           ],
           "tools": {
@@ -454,6 +458,9 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
           ]
         },
         "id": "openai-codex",
+        "recoveryCredits": {
+          "supported": true
+        },
         "title": "Codex"
       }
     ],
@@ -864,10 +871,11 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
       {
         "capability": "network",
         "id": "openai-codex-quota",
-        "reason": "Read quota for the exact OpenAI Codex Connected Account.",
+        "reason": "Read quota and consume recovery credits for the exact OpenAI Codex Connected Account.",
         "scope": {
           "methods": [
-            "GET"
+            "GET",
+            "POST"
           ],
           "targets": [
             {
@@ -2507,6 +2515,9 @@ const OPENAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
           "defaultModeId": "api-key",
           "modes": [
             {
+              "directExport": {
+                "contractVersion": "happier.team-credential-manual-connected-account-direct.v1"
+              },
               "fields": [
                 {
                   "id": "token",

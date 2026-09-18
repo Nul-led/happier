@@ -57,6 +57,7 @@ function sortSubagents(subagents: readonly SessionSubagent[]): readonly SessionS
 }
 
 export function deriveSessionSubagents(params: Readonly<{
+    accountScope?: import('@/sync/domains/scope/serverAccountScope').ServerAccountScope | null;
     session: Pick<
         Session,
         'metadataLayoutVersion' | 'metadata' | 'ownerMetadataView' | 'active' | 'activeAt' | 'archivedAt' | 'presence'
@@ -79,6 +80,7 @@ export function deriveSessionSubagents(params: Readonly<{
         activeExecutionRuns: params.activeExecutionRuns,
     });
     const providerSubagents = deriveProviderSessionSubagents({
+        accountScope: params.accountScope,
         flavor,
         metadata,
         messages: params.messages,

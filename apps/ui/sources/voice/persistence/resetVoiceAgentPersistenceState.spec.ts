@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 
 const patchSessionMetadataWithRetry = vi.fn();
+const applySettings = vi.fn();
 const stateRef = {
     current: {
         settings: {
@@ -18,9 +19,10 @@ const stateRef = {
                 },
             },
         },
-        applySettingsLocal: vi.fn(),
+        settingsScope: { serverId: 'server-a', accountId: 'account-a' },
         sessions: {} as Record<string, any>,
-        sessionListRenderables: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
     } as any,
@@ -40,6 +42,10 @@ vi.mock('@/sync/sync', () => ({
         patchSessionMetadataWithRetry: (sessionId: string, updater: (metadata: any) => any) =>
             patchSessionMetadataWithRetry(sessionId, updater),
     },
+}));
+
+vi.mock('@/sync/runtime/getSyncSingleton', () => ({
+    getSyncSingleton: () => ({ applySettings }),
 }));
 
 function createVoiceConversationSession(params: Readonly<{
@@ -84,6 +90,7 @@ describe('resetVoiceAgentPersistenceState', () => {
     beforeEach(() => {
         vi.resetModules();
         patchSessionMetadataWithRetry.mockReset();
+        applySettings.mockReset();
         stateRef.current = {
             settings: {
                 voice: {
@@ -99,7 +106,7 @@ describe('resetVoiceAgentPersistenceState', () => {
                     },
                 },
             },
-            applySettingsLocal: vi.fn(),
+            settingsScope: { serverId: 'server-a', accountId: 'account-a' },
             sessions: {
                 sys_bound: createVoiceConversationSession({
                     id: 'sys_bound',
@@ -113,7 +120,8 @@ describe('resetVoiceAgentPersistenceState', () => {
                     runId: 'run_newer',
                 }),
             },
-            sessionListRenderables: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
             sessionListIndexByServerId: {},
             concurrentSessionListCacheByServerId: {},
         };
@@ -163,6 +171,21 @@ describe('resetVoiceAgentPersistenceState', () => {
         expect(stateRef.current.sessions.sys_newer.metadata.voiceAgentRunV1).toBeNull();
         expect(stateRef.current.sessions.sys_bound.metadata.voiceAgentRunV1).toMatchObject({
             runId: 'run_bound',
+        });
+    });
+
+    it('keeps transcript invalidation bound to the Account scope captured before stopping', async () => {
+        stateRef.current.settings.voice.providers.local_conversation.config.agent.transcript.persistenceMode = 'persistent';
+        const stop = vi.fn(async () => {
+            stateRef.current.settingsScope = { serverId: 'server-b', accountId: 'account-b' };
+        });
+        const { resetVoiceAgentPersistenceState } = await import('./resetVoiceAgentPersistenceState');
+
+        await resetVoiceAgentPersistenceState({ stop });
+
+        expect(applySettings).toHaveBeenCalledWith(expect.any(Object), {
+            expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
+            source: 'ui',
         });
     });
 

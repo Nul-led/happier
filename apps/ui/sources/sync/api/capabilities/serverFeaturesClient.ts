@@ -4,6 +4,7 @@ import { AsyncTtlCache } from '@happier-dev/protocol';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 
 import * as serverHttp from '@/sync/http/client';
+import type { ServerFetch } from '@/sync/http/client';
 import {
     ServerFetchAbortedForServerSwitchError,
     StaleServerGenerationError,
@@ -35,11 +36,26 @@ const TTL_ERROR_RESPONSE_STATUS_MS = 30 * 1000;
 const TTL_TRANSITIONAL_FEATURE_MS = TTL_ERROR_NETWORK_MS;
 
 const FORCE_COOLDOWN_ENDPOINT_MISSING_MS = 60 * 1000;
+// Individual UI callers may stop waiting earlier, but the shared probe owns a
+// longer attempt bound so an impatient caller cannot cancel or poison every
+// consumer coalesced onto the same request.
+const REQUEST_ATTEMPT_TIMEOUT_MS = 60 * 1000;
+// How long a foreground caller (login, endpoint discovery) waits for a public
+// feature observation before acting on its own fallback. The shared request
+// above keeps running for the consumers still waiting on it.
+export const FOREGROUND_FEATURE_PROBE_WAIT_BUDGET_MS = 800;
 
 export type ServerFeaturesSnapshot =
     | Readonly<{ status: 'ready'; features: ServerFeatures; serverIdentityId?: string | null }>
     | Readonly<{ status: 'unsupported'; reason: 'endpoint_missing' | 'invalid_payload' }>
-    | Readonly<{ status: 'error'; reason: 'network' | 'timeout' | 'response_status' | 'identity_conflict' }>;
+    | Readonly<{ status: 'error'; reason: 'network' | 'timeout' | 'response_status' | 'identity_conflict'; httpStatus?: number }>;
+
+export function isServerFeaturesProbeRetryable(snapshot: ServerFeaturesSnapshot): boolean {
+    if (snapshot.status !== 'error') return false;
+    if (snapshot.reason === 'network' || snapshot.reason === 'timeout') return true;
+    return snapshot.reason === 'response_status' && snapshot.httpStatus !== undefined
+        && (snapshot.httpStatus === 408 || snapshot.httpStatus === 429 || snapshot.httpStatus >= 500);
+}
 
 const cache = new AsyncTtlCache<ServerFeaturesSnapshot>({
     successTtlMs: TTL_READY_MS,
@@ -60,6 +76,7 @@ const endpointCache = new AsyncTtlCache<ServerFeaturesSnapshot>({
     errorTtlMs: TTL_ERROR_NETWORK_MS,
 });
 const snapshotListeners = new Set<() => void>();
+const transientRetryAtByProjectionKey = new Map<string, number>();
 
 function notifyServerFeaturesSnapshotChanged(): void {
     for (const listener of snapshotListeners) {
@@ -72,6 +89,7 @@ function writeServerFeaturesSnapshot(
     snapshot: ServerFeaturesSnapshot,
     ttlMs: number,
 ): void {
+    transientRetryAtByProjectionKey.delete(`public\u0000${cacheKey}`);
     cache.setSuccess(cacheKey, snapshot, { ttlMs });
     notifyServerFeaturesSnapshotChanged();
 }
@@ -87,12 +105,25 @@ function writeActiveProjectionSnapshot(
     cacheKey: string,
     snapshot: ServerFeaturesSnapshot,
     ttlMs: number,
-): void {
+): ServerFeaturesSnapshot {
+    const projectionCache = getActiveProjectionCache(projection);
+    const retryKey = `${projection}\u0000${cacheKey}`;
+    if (isServerFeaturesProbeRetryable(snapshot)) {
+        const previous = projectionCache.get(cacheKey);
+        if (previous?.kind === 'success' && previous.value.status === 'ready') {
+            projectionCache.setSuccess(cacheKey, previous.value, { ttlMs });
+            transientRetryAtByProjectionKey.set(retryKey, Date.now() + ttlMs);
+            if (projection === 'public') notifyServerFeaturesSnapshotChanged();
+            return previous.value;
+        }
+    }
+    transientRetryAtByProjectionKey.delete(retryKey);
     if (projection === 'public') {
         writeServerFeaturesSnapshot(cacheKey, snapshot, ttlMs);
-        return;
+        return snapshot;
     }
     authenticatedCache.setSuccess(cacheKey, snapshot, { ttlMs });
+    return snapshot;
 }
 
 function writeEndpointServerFeaturesSnapshot(
@@ -270,7 +301,7 @@ async function getServerFeaturesSnapshotWithRetry(
     remainingSwitchAbortRetries: number,
 ): Promise<ServerFeaturesSnapshot> {
     const force = params?.force ?? false;
-    const timeoutMs = params?.timeoutMs ?? 800;
+    const timeoutMs = REQUEST_ATTEMPT_TIMEOUT_MS;
     const projection = params?.projection ?? 'public';
     const projectionCache = getActiveProjectionCache(projection);
     const cacheKey = getCacheKey(params?.serverId);
@@ -297,7 +328,7 @@ async function getServerFeaturesSnapshotWithRetry(
     // the next explicit Iroh operation boundary, before a cached feature result
     // can bypass transport ownership entirely. A repeated cleanup failure stays
     // retained and does not invalidate an otherwise valid cached observation.
-    if (isExplicitServerRequest && explicitServerProfile?.irohEndpoint) {
+    if (isExplicitServerRequest && explicitServerProfile?.homeConnectionDescriptor?.endpoints.some((endpoint) => endpoint.kind === 'iroh')) {
         await drainExplicitServerFeatureTransportReleaseCustody();
     }
 
@@ -331,8 +362,7 @@ async function getServerFeaturesSnapshotWithRetry(
 
         if (isExplicitServerRequest && !explicitServerUrl) {
             const value: ServerFeaturesSnapshot = { status: 'error', reason: 'network' };
-            writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
-            return value;
+            return writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
         }
 
         let remainingRetries = remainingSwitchAbortRetries;
@@ -541,43 +571,38 @@ async function getServerFeaturesSnapshotWithRetry(
                     }
 
                     const value: ServerFeaturesSnapshot = { status: 'error', reason: timedOut ? 'timeout' : 'network' };
-                    writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
-                    return value;
+                    return writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                 }
 
                 if (!response.ok) {
                     const value: ServerFeaturesSnapshot = isEndpointMissing(response.status)
                         ? { status: 'unsupported', reason: 'endpoint_missing' }
-                        : { status: 'error', reason: 'response_status' };
-                    writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
-                    return value;
+                        : { status: 'error', reason: 'response_status', httpStatus: response.status };
+                    return writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                 }
 
                 const contentType = String(response.headers?.get?.('content-type') ?? '').toLowerCase();
                 if (contentType && !contentType.includes('application/json') && !contentType.includes('+json')) {
                     const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
-                    writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
-                    return value;
+                    return writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                 }
 
                 const parsed = await decodeServerFeaturesResponse(response);
                 if (!parsed) {
                     const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
-                    writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
-                    return value;
+                    return writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                 }
 
                 const serverIdentityId = parsed.capabilities.serverIdentity.serverIdentityId;
                 if (serverIdentityId) {
                     const observedServerUrl = isExplicitServerRequest ? explicitServerUrl! : activeSnapshot.serverUrl;
-                    const learnedProfile = setServerProfileIdentityForUrl(
+                    const learnedProfile = await setServerProfileIdentityForUrl(
                         observedServerUrl,
                         serverIdentityId,
                     );
                     if (!learnedProfile) {
                         const value: ServerFeaturesSnapshot = { status: 'error', reason: 'identity_conflict' };
-                        writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
-                        return value;
+                        return writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                     }
                     if (
                         learnedProfile.serverIdentityId === serverIdentityId
@@ -591,8 +616,7 @@ async function getServerFeaturesSnapshotWithRetry(
                         });
                         if (reconciliation.kind === 'conflict') {
                             const value: ServerFeaturesSnapshot = { status: 'error', reason: 'identity_conflict' };
-                            writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
-                            return value;
+                            return writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                         }
                     }
                 }
@@ -631,12 +655,93 @@ async function getServerFeaturesSnapshotWithRetry(
     });
 }
 
+async function waitForServerFeaturesSnapshot(
+    request: Promise<ServerFeaturesSnapshot>,
+    waitBudgetMs: number | undefined,
+    signal?: AbortSignal,
+): Promise<ServerFeaturesSnapshot> {
+    if (!signal && (typeof waitBudgetMs !== 'number' || !Number.isFinite(waitBudgetMs) || waitBudgetMs <= 0)) {
+        return await request;
+    }
+
+    return await new Promise<ServerFeaturesSnapshot>((resolve, reject) => {
+        let settled = false;
+        const finish = (snapshot: ServerFeaturesSnapshot) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+            resolve(snapshot);
+        };
+        const onAbort = () => finish({ status: 'error', reason: 'network' });
+        const timer = typeof waitBudgetMs === 'number' && Number.isFinite(waitBudgetMs) && waitBudgetMs > 0
+            ? setTimeout(() => finish({ status: 'error', reason: 'timeout' }), waitBudgetMs)
+            : null;
+        if (signal?.aborted) {
+            onAbort();
+            return;
+        }
+        signal?.addEventListener('abort', onAbort, { once: true });
+        void request.then(finish, (error) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+            reject(error);
+        });
+    });
+}
+
+/**
+ * Fresh authenticated observation used by enrollment and credential-verification transactions.
+ * It deliberately bypasses reusable feature caches while keeping endpoint ownership and decoding
+ * inside the canonical feature client.
+ */
+export async function observeAuthenticatedServerFeaturesFresh(params: Readonly<{
+    request: ServerFetch;
+    timeoutMs?: number;
+}>): Promise<ServerFeaturesSnapshot> {
+    const controller = new AbortController();
+    let didTimeout = false;
+    const timeoutMs = params.timeoutMs ?? REQUEST_ATTEMPT_TIMEOUT_MS;
+    const timer = timeoutMs > 0
+        ? setTimeout(() => {
+            didTimeout = true;
+            controller.abort('features-timeout');
+        }, timeoutMs)
+        : null;
+    try {
+        const response = await params.request(
+            '/v1/features/authenticated',
+            { method: 'GET', signal: controller.signal },
+            { includeAuth: true, retry: 'none' },
+        );
+        if (!response.ok) {
+            return isEndpointMissing(response.status)
+                ? { status: 'unsupported', reason: 'endpoint_missing' }
+                : { status: 'error', reason: 'response_status', httpStatus: response.status };
+        }
+        const parsed = await decodeServerFeaturesResponse(response);
+        if (!parsed) return { status: 'unsupported', reason: 'invalid_payload' };
+        return {
+            status: 'ready',
+            features: parsed,
+            serverIdentityId: parsed.capabilities.serverIdentity.serverIdentityId,
+        };
+    } catch {
+        return { status: 'error', reason: didTimeout ? 'timeout' : 'network' };
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 export async function getServerFeaturesSnapshot(params?: {
     timeoutMs?: number;
     force?: boolean;
     serverId?: string;
 }): Promise<ServerFeaturesSnapshot> {
-    return await getServerFeaturesSnapshotWithRetry({ ...params, projection: 'public' }, 2);
+    const request = getServerFeaturesSnapshotWithRetry({ ...params, projection: 'public' }, 2);
+    return await waitForServerFeaturesSnapshot(request, params?.timeoutMs);
 }
 
 /**
@@ -652,10 +757,11 @@ export async function refreshAuthenticatedServerFeaturesSnapshot(params: {
     /** Existing secondary-runtime transport; ownership remains with the caller. */
     scopedTransport?: ResolvedServerScopedTransport;
 }): Promise<ServerFeaturesSnapshot> {
-    return await getServerFeaturesSnapshotWithRetry({
+    const request = getServerFeaturesSnapshotWithRetry({
         ...params,
         projection: 'authenticated',
     }, 0);
+    return await waitForServerFeaturesSnapshot(request, params.timeoutMs);
 }
 
 export function getCachedServerFeaturesSnapshot(params?: { serverId?: string }): ServerFeaturesSnapshot | null {
@@ -668,6 +774,10 @@ export function getServerFeaturesSnapshotRetryDelayMs(params: {
     serverId?: string;
     snapshot: ServerFeaturesSnapshot;
 }): number | null {
+    const transientRetryAt = transientRetryAtByProjectionKey.get(`public\u0000${getCacheKey(params.serverId)}`);
+    if (transientRetryAt !== undefined) {
+        return Math.max(0, transientRetryAt - Date.now());
+    }
     const shouldRetry = params.snapshot.status === 'error'
         || (
             params.snapshot.status === 'ready'
@@ -694,7 +804,9 @@ export function primeServerFeaturesSnapshot(params: {
 }
 
 export function deleteServerFeaturesSnapshot(params?: { serverId?: string }): void {
-    cache.delete(getCacheKey(params?.serverId));
+    const cacheKey = getCacheKey(params?.serverId);
+    cache.delete(cacheKey);
+    transientRetryAtByProjectionKey.delete(`public\u0000${cacheKey}`);
     notifyServerFeaturesSnapshotChanged();
 }
 
@@ -764,9 +876,9 @@ export async function probeServerFeaturesAtUrl(
         String(input.serverId ?? '').trim() || undefined,
     );
     const force = input.force ?? false;
-    const timeoutMs = typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
+    const waitBudgetMs = typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
         ? Math.max(0, Math.trunc(input.timeoutMs))
-        : 800;
+        : FOREGROUND_FEATURE_PROBE_WAIT_BUDGET_MS;
 
     const cachedEntry = endpointCache.get(cacheKey);
     const cached = cachedEntry?.kind === 'success' ? cachedEntry.value : null;
@@ -776,7 +888,7 @@ export async function probeServerFeaturesAtUrl(
         if (ageMs < getForceCooldownMs(cached)) return cached;
     }
 
-    return await endpointCache.runDedupe(cacheKey, async (): Promise<ServerFeaturesSnapshot> => {
+    const request = endpointCache.runDedupe(cacheKey, async (): Promise<ServerFeaturesSnapshot> => {
         const cachedEntry2 = endpointCache.get(cacheKey);
         const cached2 = cachedEntry2?.kind === 'success' ? cachedEntry2.value : null;
         if (cached2 && cachedEntry2 && endpointCache.isFresh(cachedEntry2)) {
@@ -793,12 +905,10 @@ export async function probeServerFeaturesAtUrl(
 
         const controller = new AbortController();
         let didTimeout = false;
-        const timer = timeoutMs > 0
-            ? setTimeout(() => {
-                didTimeout = true;
-                controller.abort('features-timeout');
-            }, timeoutMs)
-            : null;
+        const timer = setTimeout(() => {
+            didTimeout = true;
+            controller.abort('features-timeout');
+        }, REQUEST_ATTEMPT_TIMEOUT_MS);
 
         try {
             recordAccountStoredContentServerRequirements({
@@ -814,7 +924,6 @@ export async function probeServerFeaturesAtUrl(
                 // also prevents a scoped credential lookup if a future caller
                 // omits includeAuth on the request adapter.
                 credentials: null,
-                signal: input.signal,
             });
 
             let response: Response;
@@ -835,7 +944,7 @@ export async function probeServerFeaturesAtUrl(
                 }
                 // An upstream cancellation is not a server observation. Keep the
                 // result uncached so a later owner can retry immediately.
-                if (input.signal?.aborted || controller.signal.aborted) {
+                if (controller.signal.aborted) {
                     return { status: 'error', reason: 'network' };
                 }
                 const value: ServerFeaturesSnapshot = { status: 'error', reason: 'network' };
@@ -846,7 +955,7 @@ export async function probeServerFeaturesAtUrl(
             if (!response.ok) {
                 const value: ServerFeaturesSnapshot = isEndpointMissing(response.status)
                     ? { status: 'unsupported', reason: 'endpoint_missing' }
-                    : { status: 'error', reason: 'response_status' };
+                    : { status: 'error', reason: 'response_status', httpStatus: response.status };
                 writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
                 return value;
             }
@@ -878,14 +987,16 @@ export async function probeServerFeaturesAtUrl(
             writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
             return value;
         } finally {
-            if (timer) clearTimeout(timer);
+            clearTimeout(timer);
         }
     });
+    return await waitForServerFeaturesSnapshot(request, waitBudgetMs, input.signal);
 }
 
 export function resetServerFeaturesClientForTests(): void {
     cache.clear();
     authenticatedCache.clear();
     endpointCache.clear();
+    transientRetryAtByProjectionKey.clear();
     notifyServerFeaturesSnapshotChanged();
 }

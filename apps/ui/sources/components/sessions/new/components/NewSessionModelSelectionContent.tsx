@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useRouter } from 'expo-router';
 import { View, type View as RNView } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 import type { ProviderErrorV1, SessionModelSelectionV1 } from '@happier-dev/protocol';
@@ -6,6 +7,10 @@ import type {
     DaemonProviderCurrentSelectionRecoveryV1,
     DaemonProviderModelProjectionRefreshFailureV1,
 } from '@happier-dev/protocol/rpc';
+import type {
+    TeamCredentialProviderModelSelectionV1,
+    TeamCredentialResourceCatalogEntryV1,
+} from '@happier-dev/protocol/teams';
 
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import { AgentInputContentPopover } from '@/components/sessions/agentInput/components/AgentInputContentPopover';
@@ -42,6 +47,7 @@ import {
 import type { ModelMode } from '@/sync/domains/permissions/permissionTypes';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { teamCredentialDetailPath } from '@/components/settings/teams/teamsRoutes';
 
 export type NewSessionModelOption = Readonly<{
     value: ModelMode;
@@ -62,6 +68,12 @@ export type NewSessionModelSelectionContentProps = Readonly<{
     popoverBoundaryRef?: React.RefObject<any> | null;
     favoriteModelSelections?: readonly FavoriteModelSelectionV1[];
     providerGroups?: readonly SessionModelProjectionGroup[];
+    teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+    teamNameById?: Readonly<Record<string, string>>;
+    homeNameByTeamId?: Readonly<Record<string, string>>;
+    currentTeamCredentialResourceKeys?: ReadonlySet<string>;
+    teamCredentialServerId?: string | null;
+    selectedTeamCredentialModel?: TeamCredentialProviderModelSelectionV1 | null;
     providerProjectionAuthoritative: boolean;
     providerProjectionError?: ProviderErrorV1 | null;
     providerProjectionFailures?: readonly DaemonProviderModelProjectionRefreshFailureV1[];
@@ -71,6 +83,7 @@ export type NewSessionModelSelectionContentProps = Readonly<{
     experimentalConfirmation?: SessionModelPickerExperimentalConfirmationController;
     onSelectModel: (modelId: ModelMode) => void;
     onSelectSelection?: (selection: SessionModelPickerValue) => void;
+    onSelectTeamCredentialModel?: (selection: TeamCredentialProviderModelSelectionV1) => void;
     onFavoriteModelSelectionsChange?: (favorites: FavoriteModelSelectionV1[]) => void;
 }>;
 
@@ -90,6 +103,7 @@ function selectedModelRef(props: NewSessionModelSelectionContentProps): SessionM
 
 export function NewSessionModelSelectionContent(props: NewSessionModelSelectionContentProps) {
     const { theme } = useUnistyles();
+    const router = useRouter();
     const [popoverOpen, setPopoverOpen] = React.useState(false);
     const anchorRef = React.useRef<RNView>(null);
     const providerGroups = props.providerGroups ?? [];
@@ -140,7 +154,25 @@ export function NewSessionModelSelectionContent(props: NewSessionModelSelectionC
             || selected.modelId;
     }, [favoriteEntries, props.modelOptions, selected]);
     const selectedPresentation = React.useMemo(() => (
-        buildSessionModelSelectedTriggerPresentation({
+        props.selectedTeamCredentialModel
+            ? (() => {
+                const resource = props.teamCredentialResources?.find((entry) => (
+                    entry.id === props.selectedTeamCredentialModel?.resourceId
+                    && entry.teamId === props.selectedTeamCredentialModel.teamId
+                ));
+                const model = resource?.providerModels.find((entry) => (
+                    entry.selection.modelId === props.selectedTeamCredentialModel?.modelId
+                ));
+                const teamName = resource ? props.teamNameById?.[resource.teamId] : null;
+                const modelName = model?.descriptor.name || props.selectedTeamCredentialModel.modelId;
+                return {
+                    subtitle: modelName,
+                    detail: [teamName, resource?.displayName].filter(Boolean).join(' · ') || undefined,
+                    accessibilityLabel: [modelFieldLabel, modelName, teamName, resource?.displayName]
+                        .filter(Boolean).join(', '),
+                };
+            })()
+            : buildSessionModelSelectedTriggerPresentation({
             agentTargetKey: agentTargetKey ?? '',
             nativeModels: agentTargetKey ? props.modelOptions : [],
             providerGroups,
@@ -161,6 +193,9 @@ export function NewSessionModelSelectionContent(props: NewSessionModelSelectionC
         selected,
         selectedFallbackLabel,
         modelFieldLabel,
+        props.selectedTeamCredentialModel,
+        props.teamCredentialResources,
+        props.teamNameById,
     ]);
 
     const commitSelection = React.useCallback((ref: SessionModelPickerValue) => {
@@ -217,6 +252,11 @@ export function NewSessionModelSelectionContent(props: NewSessionModelSelectionC
             agentTargetKey={agentTargetKey ?? ''}
             nativeModels={agentTargetKey ? props.modelOptions : []}
             providerGroups={providerGroups}
+            teamCredentialResources={props.teamCredentialResources}
+            teamNameById={props.teamNameById}
+            homeNameByTeamId={props.homeNameByTeamId}
+            currentTeamCredentialResourceKeys={props.currentTeamCredentialResourceKeys}
+            selectedTeamCredentialModel={props.selectedTeamCredentialModel}
             providerProjectionAuthoritative={props.providerProjectionAuthoritative}
             projectionError={props.providerProjectionError}
             projectionFailures={props.providerProjectionFailures}
@@ -242,6 +282,19 @@ export function NewSessionModelSelectionContent(props: NewSessionModelSelectionC
                 if (options.closeAfterSelect && options.onRequestClose) {
                     deferAgentInputPopoverClose(options.onRequestClose);
                 }
+            }}
+            onSelectTeamCredentialModel={(selection) => {
+                props.onSelectTeamCredentialModel?.(selection);
+                if (options.closeAfterSelect && options.onRequestClose) {
+                    deferAgentInputPopoverClose(options.onRequestClose);
+                }
+            }}
+            onRecoverTeamCredentialResource={(resource) => {
+                if (!props.teamCredentialServerId) return;
+                router.push(teamCredentialDetailPath({
+                    serverId: props.teamCredentialServerId,
+                    teamId: resource.teamId,
+                }, resource.id));
             }}
         />
     );

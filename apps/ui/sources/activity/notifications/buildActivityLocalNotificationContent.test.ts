@@ -13,13 +13,31 @@ installActivityNotificationRuntimeCommonModuleMocks({
 });
 
 describe('buildActivityLocalNotificationContent', () => {
+    it('preserves the exact Home through notification content and interaction parsing', async () => {
+        const { buildActivityLocalNotificationContent } = await import('./buildActivityLocalNotificationContent');
+        const { parseNotificationTap } = await import('./notificationRouting');
+        const notification = buildActivityLocalNotificationContent({
+            event: { kind: 'ready', event: 'ready', address: { serverId: 'server-b', sessionId: 'same-id' } },
+            session: null,
+            serverUrl: 'https://home-b.example.test',
+        });
+        const tap = parseNotificationTap({
+            defaultActionIdentifier: 'default',
+            response: { actionIdentifier: 'default', notification: { request: { content: { data: notification.data } } } },
+        });
+        expect(tap?.command).toMatchObject({
+            kind: 'openSession', serverId: 'server-b',
+            route: '/session/same-id?serverId=server-b',
+        });
+    });
+
     it('uses the latest assistant text for ready notifications when available', async () => {
         const { buildActivityLocalNotificationContent } = await import('./buildActivityLocalNotificationContent');
 
         const notification = buildActivityLocalNotificationContent({
             event: {
-                kind: 'ready',
-                sessionId: 'session-1',
+                kind: 'ready', event: 'ready',
+                address: { serverId: 'server-a', sessionId: 'session-1' },
                 messages: [
                     {
                         kind: 'agent-text',
@@ -59,8 +77,8 @@ describe('buildActivityLocalNotificationContent', () => {
 
         const notification = buildActivityLocalNotificationContent({
             event: {
-                kind: 'ready',
-                sessionId: 'session-1',
+                kind: 'ready', event: 'ready',
+                address: { serverId: 'server-a', sessionId: 'session-1' },
                 messages: [
                     {
                         kind: 'agent-text',
@@ -93,8 +111,8 @@ describe('buildActivityLocalNotificationContent', () => {
 
         const notification = buildActivityLocalNotificationContent({
             event: {
-                kind: 'agent-request',
-                sessionId: 'session-2',
+                kind: 'agent-request', event: 'permission_required',
+                address: { serverId: 'server-a', sessionId: 'session-2' },
                 requestId: 'req-1',
                 requestKind: 'permission',
                 toolName: 'Bash',
@@ -115,7 +133,7 @@ describe('buildActivityLocalNotificationContent', () => {
 
         expect(notification).toMatchObject({
             title: 'Repo status',
-            body: 'Run: git status',
+            body: 'Command: git status',
             data: {
                 sessionId: 'session-2',
                 requestId: 'req-1',
@@ -133,8 +151,8 @@ describe('buildActivityLocalNotificationContent', () => {
 
         const notification = buildActivityLocalNotificationContent({
             event: {
-                kind: 'agent-request',
-                sessionId: 'session-3',
+                kind: 'agent-request', event: 'user_action_required',
+                address: { serverId: 'server-a', sessionId: 'session-3' },
                 requestId: 'req-2',
                 requestKind: 'user_action',
                 toolName: 'AskUserQuestion',
@@ -156,7 +174,7 @@ describe('buildActivityLocalNotificationContent', () => {
 
         expect(notification).toMatchObject({
             title: 'Session',
-            body: 'Which branch should I use?',
+            body: expect.stringContaining('Which branch should I use?'),
             data: {
                 sessionId: 'session-3',
                 requestId: 'req-2',
@@ -174,8 +192,8 @@ describe('buildActivityLocalNotificationContent', () => {
 
         const notification = buildActivityLocalNotificationContent({
             event: {
-                kind: 'agent-request',
-                sessionId: 'session-4',
+                kind: 'agent-request', event: 'user_action_required',
+                address: { serverId: 'server-a', sessionId: 'session-4' },
                 requestId: 'req-3',
                 requestKind: 'user_action',
                 toolName: 'ask_user_question',
@@ -196,7 +214,65 @@ describe('buildActivityLocalNotificationContent', () => {
 
         expect(notification).toMatchObject({
             title: 'Session',
-            body: 'Which branch should I use?',
+            body: expect.stringContaining('Which branch should I use?'),
         });
+    });    it.each(['permission', 'user_action'] as const)('hides %s details when request previews are disabled', async (requestKind) => {
+        const { buildActivityLocalNotificationContent } = await import('./buildActivityLocalNotificationContent');
+        const notification = buildActivityLocalNotificationContent({
+            event: { kind: 'agent-request', event: requestKind === 'permission' ? 'permission_required' : 'user_action_required', address: { serverId: 'server-a', sessionId: 'session-1' }, requestId: 'req-private', requestKind,
+                toolName: requestKind === 'permission' ? 'Bash' : 'AskUserQuestion',
+                toolArgs: requestKind === 'permission' ? { command: 'cat private.txt' } : { questions: [{ question: 'Private question?', options: [{ label: 'Secret option' }] }] } },
+            session: null,
+            serverUrl: 'https://stack.example.test',
+            includeRequestMessageText: false,
+        });
+        expect(notification.body).toBe(requestKind === 'permission'
+            ? 'Approval required.'
+            : 'This session needs your input.');
+        expect(notification.data.requestId).toBe('req-private');
     });
+
+    it('includes question options in request previews', async () => {
+        const { buildActivityLocalNotificationContent } = await import('./buildActivityLocalNotificationContent');
+        const notification = buildActivityLocalNotificationContent({
+            event: { kind: 'agent-request', event: 'user_action_required', address: { serverId: 'server-a', sessionId: 'session-1' }, requestId: 'req-options', requestKind: 'user_action',
+                toolName: 'AskUserQuestion', toolArgs: { questions: [{ question: 'Which branch?', options: [{ label: 'Main' }, { label: 'Develop' }] }] } },
+            session: null,
+            serverUrl: 'https://stack.example.test',
+        });
+        expect(notification.body).toContain('Which branch?');
+        expect(notification.body).toContain('Main');
+        expect(notification.body).toContain('Develop');
+    });
+
+    it('keeps the already privacy-filtered context on a status-only notification while withholding private content', async () => {
+        const { buildActivityLocalNotificationContent } = await import('./buildActivityLocalNotificationContent');
+        // The runtime supplies this line from the shared context projection, which never contains
+        // content-derived facts. Only the Session title and message preview wait for readiness, so
+        // a locked/status-only alert still names its exact Home, audience, freshness and content
+        // state (Lane 07.4 §8, L07-R42/L07-I37).
+        const contextLine = 'Home A · Offline · Last updated 18m ago · Developers · Encrypted access pending';
+        const notification = buildActivityLocalNotificationContent({
+            event: {
+                kind: 'ready', event: 'ready',
+                address: { serverId: 'server-a', sessionId: 'session-locked' },
+                messages: [{
+                    kind: 'agent-text', id: 'message-1', createdAt: 1, text: 'PRIVATE-PREVIEW-SENTINEL',
+                }] as any,
+            },
+            session: {
+                id: 'session-locked',
+                metadata: { summary: { text: 'PRIVATE-TITLE-SENTINEL' } },
+            } as any,
+            serverUrl: 'https://home-a.example.test',
+            contextLine,
+            previewBehavior: 'status_only',
+            includeReadyMessageText: true,
+        });
+
+        expect(notification.title).toBe(`Session · ${contextLine}`);
+        expect(notification.body).toBe('Turn finished. Open the session to continue.');
+        expect(`${notification.title} ${notification.body}`).not.toContain('PRIVATE');
+    });
+
 });

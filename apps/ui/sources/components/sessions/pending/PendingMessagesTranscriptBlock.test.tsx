@@ -130,56 +130,6 @@ installPendingMessagesCommonModuleMocks({
     }),
 });
 
-const agentCatalogMocks = vi.hoisted(() => {
-    const resolveAgentIdFromFlavor = (flavor: unknown) => {
-        if (flavor === 'claude') return 'claude';
-        if (flavor === 'codex') return 'codex';
-        if (flavor === 'pi') return 'pi';
-        return null;
-    };
-    const getAgentCore = (agentId: string) => ({
-        id: agentId,
-        permissions: {
-            promptProtocol: agentId === 'codex' ? 'codexDecision' : 'claude',
-        },
-        sessionStorage: {
-            direct: true,
-            persisted: true,
-        },
-        model: {
-            defaultMode: 'default',
-            supportsSelection: false,
-        },
-        resume: {},
-        runtimeInput: {
-            inFlightSteerSupported: agentId === 'pi',
-        },
-    });
-    return { getAgentCore, resolveAgentIdFromFlavor };
-});
-
-vi.mock('@/agents/registry/registryCore', () => ({
-    AGENT_IDS: ['claude', 'codex', 'pi'],
-    CANONICAL_AGENT_IDS: ['claude', 'codex', 'pi'],
-    DEFAULT_AGENT_ID: 'codex',
-    getAgentCore: agentCatalogMocks.getAgentCore,
-    resolveAgentIdFromFlavor: agentCatalogMocks.resolveAgentIdFromFlavor,
-    resolveAgentIdFromSessionMetadata: (metadata: unknown) => {
-        if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
-        return agentCatalogMocks.resolveAgentIdFromFlavor((metadata as { flavor?: unknown }).flavor);
-    },
-}));
-
-vi.mock('@/agents/catalog/catalog', () => ({
-    getAgentCore: agentCatalogMocks.getAgentCore,
-    isBundledAgentId: (agentId: unknown) => typeof agentId === 'string' && ['claude', 'codex', 'pi'].includes(agentId),
-    resolveAgentIdFromFlavor: agentCatalogMocks.resolveAgentIdFromFlavor,
-    buildWakeResumeExtras: ({ session }: { session?: { metadata?: Record<string, unknown> } | null }) => {
-        const connectedServices = session?.metadata?.connectedServices;
-        return connectedServices ? { connectedServices } : {};
-    },
-}));
-
 vi.mock('@/sync/sync', () => ({
     sync: {
         sendPendingMessageNow: (...args: any[]) => sendPendingMessageNow(...args),
@@ -361,6 +311,21 @@ describe('PendingMessagesTranscriptBlock', () => {
         const list = screen.findByType('PendingMessagesDragReorderList');
         return list.props.messages.map((message: PendingMessage) => message.id);
     }
+
+    it.each([undefined, { kind: 'execution_run' as const, runId: 'run-a' }])('keeps main Pending presentation isolated from a Run row for recipient %j', async (recipient) => {
+        const PendingMessagesTranscriptBlock = await loadPendingMessagesTranscriptBlock();
+        const screen = await renderScreen(React.createElement(PendingMessagesTranscriptBlock, {
+            sessionId: 's1',
+            recipient,
+            pendingMessages: [
+                queuedMessage('main', 1),
+                { ...queuedMessage('run', 2), recipient: { kind: 'execution_run', runId: 'run-a' } },
+            ],
+            discardedMessages: [],
+        }));
+        expect(screen.findAllByTestId('pendingMessages.row:main')).toHaveLength(recipient ? 0 : 1);
+        expect(screen.findAllByTestId('pendingMessages.row:run')).toHaveLength(recipient ? 1 : 0);
+    });
 
     it('delegates send-now interrupt intent and deletes after commit', async () => {
         const PendingMessagesTranscriptBlock = await loadPendingMessagesTranscriptBlock();
@@ -616,6 +581,45 @@ describe('PendingMessagesTranscriptBlock', () => {
 
         expect(reorderPendingMessages).toHaveBeenCalledTimes(1);
         expect(reorderPendingMessages).toHaveBeenCalledWith('s1', ['p2', 'p1']);
+    });
+
+    it('keeps pending delete, reorder, and send-now on the mounted exact Home', async () => {
+        const PendingMessagesTranscriptBlock = await loadPendingMessagesTranscriptBlock();
+        modalConfirm.mockResolvedValue(true);
+        sendPendingMessageNow.mockResolvedValueOnce({ type: 'retry_scheduled' });
+        const screen = await renderScreen(React.createElement(PendingMessagesTranscriptBlock, {
+            serverId: 'home-b',
+            sessionId: 'same-session',
+            pendingMessages: [
+                queuedMessage('p1', 1),
+                queuedMessage('p2', 2),
+            ],
+            discardedMessages: [],
+        }));
+
+        const list = screen.findByType('PendingMessagesDragReorderList');
+        await act(async () => {
+            invokeTestInstanceHandler(list, 'onReorderIds', ['p2', 'p1'], 'PendingMessagesDragReorderList');
+        });
+        await screen.pressByTestIdAsync('pendingMessages.remove:p1');
+        await screen.pressByTestIdAsync('pendingMessages.sendNow:p2');
+
+        expect(reorderPendingMessages).toHaveBeenCalledWith(
+            'same-session',
+            ['p2', 'p1'],
+            undefined,
+            { serverId: 'home-b' },
+        );
+        expect(deletePendingMessage).toHaveBeenCalledWith(
+            'same-session',
+            'p1',
+            { serverId: 'home-b' },
+        );
+        expect(sendPendingMessageNow).toHaveBeenCalledWith(
+            'same-session',
+            expect.objectContaining({ localId: 'p2', deliveryIntent: 'interrupt_and_send' }),
+            { serverId: 'home-b' },
+        );
     });
 
     it('shows per-message action icons without hover on web', async () => {
@@ -1372,6 +1376,7 @@ describe('PendingMessagesTranscriptBlock', () => {
         };
 
         const screen = await renderScreen(React.createElement(PendingMessagesTranscriptBlock, {
+            serverId: 'home-b',
             sessionId: 's1',
             pendingMessages: [{
                 id: 'server-p-delivering',
@@ -1389,7 +1394,7 @@ describe('PendingMessagesTranscriptBlock', () => {
 
         expect(screen.findByTestId('pendingMessages.pendingAffordanceLabel:server-p-delivering')?.props.children)
             .toBe('Queued in Claude');
-        expect(resolvePreferredServerIdForSessionId).toHaveBeenCalledWith('s1');
+        expect(resolvePreferredServerIdForSessionId).not.toHaveBeenCalled();
 
         modalConfirm.mockResolvedValueOnce(true);
         await screen.pressByTestIdAsync('pendingMessages.message:server-p-delivering');
@@ -1398,7 +1403,7 @@ describe('PendingMessagesTranscriptBlock', () => {
         expect(executeDefaultAction).toHaveBeenCalledWith(
             'session.pendingInput.interruptAndRun',
             { sessionId: 's1', localId: 'p-delivering', expectedStateAtMs: 42 },
-            { defaultSessionId: 's1', surface: 'ui' },
+            { defaultSessionId: 's1', serverId: 'home-b', surface: 'ui' },
         );
         expect(sendPendingMessageNow).not.toHaveBeenCalled();
         expect(deletePendingMessage).not.toHaveBeenCalled();
@@ -1599,6 +1604,7 @@ describe('PendingMessagesTranscriptBlock', () => {
         };
 
         const screen = await renderScreen(React.createElement(PendingMessagesTranscriptBlock, {
+            serverId: 'home-b',
             sessionId: 's1',
             pendingMessages: [{ id: 'p1', text: 'hello', displayText: undefined, createdAt: 0, updatedAt: 0, localId: 'p1', rawRecord: {} }],
             discardedMessages: [],
@@ -1611,7 +1617,7 @@ describe('PendingMessagesTranscriptBlock', () => {
         expect(executeDefaultAction).toHaveBeenCalledWith(
             'session.terminalComposer.clear',
             { sessionId: 's1', expectedStateAtMs: 42 },
-            { defaultSessionId: 's1', surface: 'ui', placement: 'pending_messages' },
+            { defaultSessionId: 's1', serverId: 'home-b', surface: 'ui', placement: 'pending_messages' },
         );
         expect(modalAlert).not.toHaveBeenCalled();
     });

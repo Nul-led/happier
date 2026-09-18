@@ -83,7 +83,11 @@ vi.mock('expo-router', async () => {
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({
-        translate: (key: string) => key,
+        translate: (key: string, params?: Readonly<Record<string, unknown>>) => (
+            key === 'connectionStatus.values.relayAutomatic'
+                ? `${key} ${String(params?.relays ?? '')}`
+                : key
+        ),
         translateLoose: (key: string) => key,
     });
 });
@@ -105,14 +109,7 @@ vi.mock('expo-clipboard', () => ({
     setStringAsync: vi.fn(async () => {}),
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-        eyebrow: () => ({}),
-        keyHint: () => ({}),
-    },
-}));
+vi.mock('@/constants/Typography', async (importOriginal) => await importOriginal());
 
 const activeServerSnapshot = vi.hoisted(() => ({
     generation: 1,
@@ -133,6 +130,8 @@ const irohDiagnosticsState = vi.hoisted(() => ({
         effectiveConfiguration: {
             policy: 'automatic' as const,
             relayUrls: ['https://relay.example.test'],
+            relayUrlCount: 3,
+            relayUrlsTruncated: true,
             directAddressCount: 0,
         },
     }] as DoctorSnapshotHomeTransportDiagnostics[],
@@ -164,6 +163,7 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
 });
 
 vi.mock('@/sync/runtime/irohHomeTransportDiagnostics', () => ({
+    retireIrohHomeTransportDiagnostics: vi.fn(),
     readIrohHomeTransportDiagnostics: () => irohDiagnosticsState.values,
     readIrohHomeTransportDiagnosticsRevision: () => irohDiagnosticsState.revision,
     subscribeIrohHomeTransportDiagnostics: (listener: () => void) => {
@@ -184,8 +184,8 @@ vi.mock('@/sync/domains/state/storage', async () => {
     useRealtimeStatus: () => 'connected',
     useSocketStatus: () => ({ status: 'connected', lastError: null, lastErrorAt: null }),
     useEndpointConnectivity: () => ({
-            status: 'offline',
-            reason: 'server_unreachable',
+            status: 'online',
+            reason: null,
             attempt: 1,
             nextRetryAt: null,
             lastConnectedAt: null,
@@ -193,7 +193,13 @@ vi.mock('@/sync/domains/state/storage', async () => {
             lastErrorMessage: 'Network request failed',
         }),
     useLastSyncAt: () => null,
-    useAllMachines: () => [],
+    useAllMachines: () => [{
+        id: 'machine-1',
+        active: true,
+        activeAt: Date.now(),
+        updatedAt: Date.now(),
+        metadata: { host: 'machine-one' },
+    }],
     useMachineListByServerId: () => ({}),
     useMachineListStatusByServerId: () => ({}),
 });
@@ -212,9 +218,15 @@ describe('SystemStatusView (endpoint connectivity)', () => {
         expect(joined).toContain('connectionStatus.labels.effectiveCarrier');
         expect(joined).toContain('HTTPS');
         expect(joined).toContain('Iroh');
+        expect(joined).toContain('systemStatus.transport.irohHistory');
+        expect(joined).not.toContain('systemStatus.transport.irohCurrent');
+        expect(joined).toContain('systemStatus.server.activeHomeHealth');
+        expect(joined).toContain('status.connected');
         expect(joined).toContain('connectionStatus.labels.lastKnownPath');
         expect(joined).toContain('connectionStatus.values.pathRelay');
+        expect(joined).toContain('connectionStatus.summary.reconnecting');
         expect(joined).toContain('connectionStatus.labels.relayConfiguration');
+        expect(joined).toContain('1/3');
         expect(joined).not.toContain('connectionStatus.labels.currentPath');
 
         irohDiagnosticsState.values = [{
@@ -231,6 +243,7 @@ describe('SystemStatusView (endpoint connectivity)', () => {
         const updated = screen.getTextContent();
         expect(updated).toContain('connectionStatus.labels.currentPath');
         expect(updated).toContain('connectionStatus.values.pathDirect');
+        expect(updated).toContain('systemStatus.transport.irohCurrent');
         expect(updated).not.toContain('connectionStatus.labels.lastKnownPath');
     });
 

@@ -133,6 +133,13 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
 const activeServer = vi.hoisted(() => ({ serverId: 'srv_test' }));
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({ useActiveServerSnapshot: () => ({ serverId: activeServer.serverId }) }));
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    loadHomeViewState: () => null,
+    getServerProfilesGeneration: () => 0,
+    subscribeServerProfiles: () => () => {},
+    getServerProfileById: (id: string) => ({
+        id,
+        serverUrl: id === 'srv_b' ? 'https://server-b.example.test' : 'https://server-a.example.test',
+    }),
     getActiveServerSnapshot: () => ({
         serverId: activeServer.serverId,
         serverUrl: 'https://server-a.example.test',
@@ -152,6 +159,12 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         const rightId = profileIdByIdentifier[String(right ?? '').trim()];
         return Boolean(leftId && rightId && leftId === rightId);
     },
+    resolveServerProfileScopeIdForIdentifier: (value: unknown) => ({
+        'server-a': 'srv_test',
+        srv_test: 'srv_test',
+        'server-b': 'srv_b',
+        srv_b: 'srv_b',
+    } as const)[String(value ?? '').trim() as 'server-a' | 'srv_test' | 'server-b' | 'srv_b'] ?? String(value ?? '').trim(),
 }));
 vi.mock('@/sync/store/hooks', () => ({
     useProfile: () => ({
@@ -410,6 +423,29 @@ describe('ProviderConnectionDetailScreen', () => {
             expect(row?.props.subtitle).toBe('settingsProviders.local.accountScopeMismatchDescription');
         }
         expect(run).not.toHaveBeenCalled();
+    });
+
+    it('offers an Account Provider credential to an exact Team through the canonical source picker', async () => {
+        state.connection = connection({
+            credential: { required: true, accountBound: true, boundMachineIds: [] },
+            teamCredentialSourceOffer: {
+                connectionId: 'pc_a',
+                connectionSecurityFingerprint: 'connection-security:v1:current',
+                credentialSlotId: 'apiKey',
+                label: 'Acme',
+            },
+        });
+        const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
+        const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
+
+        const shareRow = screen.findAllByType('Item')
+            .find((item) => item.props.testID === 'provider-connection-share-with-team');
+        expect(shareRow).toBeDefined();
+        await pressAndFlush(shareRow);
+
+        expect(router.push).toHaveBeenCalledWith(
+            '/settings/teams?credentialSourceKind=provider_connection&credentialSourceServerId=server-a&credentialSourceConnectionId=pc_a&credentialSourceSlotId=apiKey&credentialSourceMachineId=machine-a&credentialSourceConnectionSecurityFingerprint=connection-security%3Av1%3Acurrent',
+        );
     });
 
     it('opens a website-only projected Provider destination without mutating connection state', async () => {

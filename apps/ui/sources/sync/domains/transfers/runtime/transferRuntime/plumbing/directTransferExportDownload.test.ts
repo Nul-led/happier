@@ -125,6 +125,10 @@ describe('directTransferExportDownload', () => {
             ok: true,
             payload,
         });
+        expect(callGuardedMachineRpcWithPolicyMock).toHaveBeenLastCalledWith(expect.objectContaining({
+            method: 'daemon.directTransfer.export.release',
+            payload: { transferId: 'transfer-1' },
+        }));
     });
 
     it('carries download requests through a browser machine stream and preserves integrity', async () => {
@@ -193,6 +197,10 @@ describe('directTransferExportDownload', () => {
             'http://127.0.0.1:46001/machine-transfers/direct/browser-transfer-1/chunks/0?grant=kept',
         ]);
         expect(release).toHaveBeenCalledTimes(1);
+        expect(callGuardedMachineRpcWithPolicyMock).toHaveBeenLastCalledWith(expect.objectContaining({
+            method: 'daemon.directTransfer.export.release',
+            payload: { transferId: 'browser-transfer-1' },
+        }));
     });
 
     it('owns the terminal selected-Iroh result after a browser export request fails', async () => {
@@ -379,7 +387,6 @@ describe('directTransferExportDownload', () => {
             acquirePreparedCarrier: async () => ({
                 kind: 'native_http' as const,
                 localOrigin: 'http://127.0.0.1:48126',
-                requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
                 release,
             }),
         });
@@ -772,6 +779,55 @@ describe('directTransferExportDownload', () => {
         });
         expect(cleanup).toHaveBeenCalledTimes(1);
         expect(close).not.toHaveBeenCalled();
+        expect(callGuardedMachineRpcWithPolicyMock).toHaveBeenLastCalledWith(expect.objectContaining({
+            method: 'daemon.directTransfer.export.release',
+            payload: { transferId: 'transfer-init-throws' },
+        }));
+    });
+
+    it('does not acquire the finite-transfer carrier until destination initialization completes', async () => {
+        callGuardedMachineRpcWithPolicyMock.mockResolvedValueOnce({
+            success: true,
+            transferId: 'transfer-deferred-init',
+            expiresAt: 5_000,
+            name: 'hello.txt',
+            sizeBytes: 5,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/transfer-deferred-init',
+                expiresAt: 5_000,
+            }],
+        });
+        let finishInit!: () => void;
+        const initPending = new Promise<void>((resolve) => {
+            finishInit = resolve;
+        });
+        const acquirePreparedCarrier = vi.fn(async () => {
+            throw new Error('stop after acquisition');
+        });
+
+        const resultPending = downloadBulkPayloadViaDirectExportToDestination({
+            machineId: 'machine-1',
+            request: {
+                t: 'workspace_file_download_v1',
+                workingDirectory: '/repo',
+                path: '/repo/hello.txt',
+                asZip: false,
+            },
+            destination: {
+                writeBytes: async () => {},
+                close: async () => {},
+                cleanup: async () => {},
+            },
+            onInit: async () => await initPending,
+            acquirePreparedCarrier,
+        });
+
+        await vi.waitFor(() => expect(callGuardedMachineRpcWithPolicyMock).toHaveBeenCalled());
+        expect(acquirePreparedCarrier).not.toHaveBeenCalled();
+        finishInit();
+        await expect(resultPending).resolves.toMatchObject({ ok: false });
+        expect(acquirePreparedCarrier).toHaveBeenCalledWith({ operationId: 'transfer-deferred-init' });
     });
 
     it('fails closed when a streamed direct-export payload manifest does not match the downloaded bytes', async () => {
@@ -851,6 +907,10 @@ describe('directTransferExportDownload', () => {
         });
         expect(cleanup).toHaveBeenCalledTimes(1);
         expect(close).not.toHaveBeenCalled();
+        expect(callGuardedMachineRpcWithPolicyMock).toHaveBeenLastCalledWith(expect.objectContaining({
+            method: 'daemon.directTransfer.export.release',
+            payload: { transferId: 'transfer-3' },
+        }));
     });
 
     it('returns a failure instead of throwing when direct-export prepare is unavailable for destination downloads', async () => {
@@ -1224,6 +1284,10 @@ describe('directTransferExportDownload', () => {
         expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
         expect(onInit).toHaveBeenCalledTimes(1);
         expect(cleanup).not.toHaveBeenCalled();
+        expect(callGuardedMachineRpcWithPolicyMock).toHaveBeenLastCalledWith(expect.objectContaining({
+            method: 'daemon.directTransfer.export.release',
+            payload: { transferId: 'transfer-canceled' },
+        }));
     });
 
     it('abandons a 500 direct-export open response and retries the next destination endpoint', async () => {

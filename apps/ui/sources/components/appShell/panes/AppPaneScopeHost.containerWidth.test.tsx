@@ -3,10 +3,12 @@ import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import { installAppPaneScopeHostCommonModuleMocks } from './appPaneScopeHostTestHelpers';
+import { useOptionalAppPaneScopeLayout } from './hooks/useAppPaneScopeLayout';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let lastMultiPaneLayout: any = null;
+let wrappedScopeWidth: number | null = null;
 const rightPaneBuiltinAdapter = {
     destinationIds: ['right'],
     defaultDestinationId: 'right',
@@ -61,6 +63,26 @@ vi.mock('./AppPaneProvider', () => ({
 }));
 
 describe('AppPaneScopeHost', () => {
+    it('wraps main and pane hosts inside the measured scope-layout context', async () => {
+        const { AppPaneScopeHost } = await import('./AppPaneScopeHost');
+        const ScopeProbe = ({ children }: React.PropsWithChildren) => {
+            wrappedScopeWidth = useOptionalAppPaneScopeLayout()?.containerWidthPx ?? null;
+            return <>{children}</>;
+        };
+
+        await renderScreen(
+            <AppPaneScopeHost
+                scopeId="scope1"
+                main={<div />}
+                rightPaneBuiltinAdapter={rightPaneBuiltinAdapter}
+                detailsPaneBuiltinAdapter={detailsPaneBuiltinAdapter}
+                wrapScopeContent={(content) => <ScopeProbe>{content}</ScopeProbe>}
+            />,
+        );
+
+        expect(wrappedScopeWidth).toBe(1200);
+    });
+
     it('uses measured container width (onLayout) when resolving multi-pane breakpoints', async () => {
         const { AppPaneScopeHost } = await import('./AppPaneScopeHost');
         lastMultiPaneLayout = null;

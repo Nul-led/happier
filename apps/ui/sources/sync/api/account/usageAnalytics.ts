@@ -345,7 +345,15 @@ const dimensionKeys: Record<UsageDimension, keyof UsageDataPoint> = {
     source: 'source',
 };
 
-function resolveDisplayCost(cost: ProtocolUsageAnalyticsTotals['cost']): number {
+/**
+ * The one cost a Happier surface shows for a usage total.
+ *
+ * Exported because Team credential usage answers with the same canonical cost
+ * observation and must reach the same number. A second surface picking its own
+ * field would make the same events read differently in two places, which is
+ * exactly the kind of divergence a shared usage owner exists to prevent.
+ */
+export function resolveDisplayCost(cost: ProtocolUsageAnalyticsTotals['cost']): number {
     if (cost.effectiveUsd !== undefined) {
         return cost.effectiveUsd;
     }

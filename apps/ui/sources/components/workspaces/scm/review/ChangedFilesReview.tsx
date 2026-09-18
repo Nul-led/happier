@@ -1,9 +1,17 @@
+import type { CodeLinesExternalScrollView } from '@/components/ui/code/view/CodeLinesViewCore';
 import * as React from 'react';
 import { Platform, Pressable, View, type ScrollViewProps } from 'react-native';
 
+import {
+    ChangedFileEvidenceDisclosure,
+    checkpointAttributionDescription,
+    sessionAttributedFileAccessibilityQualification,
+} from '@/components/workspaces/scm/changes/ChangedFileEvidenceDisclosure';
 import { Text } from '@/components/ui/text/Text';
+import { ChangedFilesReviewNavigation } from './ChangedFilesReviewNavigation';
+import { useChangedFilesReviewLineScroll } from './useChangedFilesReviewLineScroll';
 import { Typography } from '@/constants/Typography';
-import type { SessionAttributedFile, SessionAttributionReliability, ChangedFilesViewMode } from '@/scm/scmAttribution';
+import { filterPresentableSessionAttributedFiles, type SessionAttributedFile, type ChangedFilesViewMode } from '@/scm/scmAttribution';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 import { t } from '@/text';
@@ -15,12 +23,14 @@ import { useChangedFilesReviewPrefetch } from '@/components/workspaces/scm/revie
 import { useChangedFilesReviewFocusPath } from '@/components/workspaces/scm/review/useChangedFilesReviewFocusPath';
 import { entryToDelta, fileHasDeltaForArea, toAreaFileStatus, totalsChangedLines, type ScmEntryDelta } from '@/components/workspaces/scm/review/scmEntryDelta';
 import { ChangedFilesSectionHeader } from '@/components/workspaces/scm/review/ChangedFilesSectionHeader';
+import { HorizontalScrollableRow } from '@/components/ui/scroll/HorizontalScrollableRow';
 import { ChangedFilesReviewDiffAreaSelector } from '@/components/workspaces/scm/review/ChangedFilesReviewDiffAreaSelector';
 import { useChangedFilesReviewDiffBlockRenderer } from '@/components/workspaces/scm/review/useChangedFilesReviewDiffBlockRenderer';
 import { useInitialScrollRestore } from '@/components/workspaces/scm/review/useInitialScrollRestore';
 import type { ReviewCommentDraft } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 import { ScmChangeRow } from '@/components/workspaces/scm/changes/ScmChangeRow';
 import { buildSnapshotSignature } from '@/scm/statusSync/projectState';
+import { buildScmDiffSnapshotSignature } from '@/scm/diffCache/scmDiffCacheKey';
 import { scmDiffCache } from '@/scm/diffCache/scmDiffCacheSingleton';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 import { resolveDefaultDiffModeForFile } from '@/scm/diff/defaultMode';
@@ -36,6 +46,8 @@ import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScop
 import type { ScmReviewUnifiedDiffFetcher } from '@/components/workspaces/scm/review/scmReviewDiffFetcher';
 import type { Theme } from '@/theme';
 import { Icon } from '@/components/ui/icons/Icon';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { Tooltip } from '@/components/ui/overlays/Tooltip';
 import { preserveWebScrollAnchorAfterToggle } from './preserveWebScrollAnchorAfterToggle';
 
 const ViewWithClick = View as unknown as React.ComponentType<
@@ -53,19 +65,13 @@ export function resolveChangedFilesReviewCurrentWebScrollRoot<T>(params: Readonl
 
 type ChangedFilesReviewTheme = Theme;
 
-function resolveCheckpointAttributionCopy(metadata: RepositoryCheckpointTurnMetadata | null | undefined): string | null {
-    if (!metadata) return null;
-    if (metadata.contentConfidence === 'unavailable') return t('files.checkpointUnavailable');
-    if (metadata.attributionScope === 'shared_worktree') return t('files.checkpointAttributionShared');
-    return t('files.checkpointAttributionUnknown');
-}
 
 type ChangedFilesReviewProps = {
+    toolbarLeading?: React.ReactNode;
     theme: ChangedFilesReviewTheme;
     sessionId: string;
     snapshot: ScmWorkingSnapshot | null;
     changedFilesViewMode: ChangedFilesViewMode;
-    attributionReliability: SessionAttributionReliability;
     allRepositoryChangedFiles: ScmFileStatus[];
     turnAttributedFiles?: SessionAttributedFile[];
     turnAgentReportedFiles?: SessionAttributedFile[];
@@ -74,7 +80,6 @@ type ChangedFilesReviewProps = {
     turnRepositoryOnlyFiles?: ScmFileStatus[];
     sessionAttributedFiles: SessionAttributedFile[];
     repositoryOnlyFiles: ScmFileStatus[];
-    suppressedInferredCount: number;
     maxFiles: number;
     maxChangedLines: number;
     onFilePress: (file: ScmFileStatus) => void;
@@ -140,15 +145,13 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         sessionId,
         snapshot,
         changedFilesViewMode,
-        attributionReliability,
-        allRepositoryChangedFiles,
+            allRepositoryChangedFiles,
         turnAttributedFiles = [],
         turnAgentReportedFiles = [],
         turnCheckpointFiles = [],
         turnCheckpointMetadata = null,
         sessionAttributedFiles,
-        suppressedInferredCount,
-        maxFiles,
+            maxFiles,
         maxChangedLines,
         onFilePress,
         rowDensity = 'comfortable',
@@ -220,17 +223,13 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
 
     const baseSections = React.useMemo(() => {
         const repositoryChangedFiles = filterDirectoryLikeScmFileStatuses(allRepositoryChangedFiles);
-        const latestTurnFiles = turnAttributedFiles
-            .filter((entry) => entry?.file && !isDirectoryLikeScmFileStatus(entry.file))
+        const latestTurnFiles = filterPresentableSessionAttributedFiles(turnAttributedFiles)
             .map((entry) => entry.file);
-        const agentReportedTurnFiles = turnAgentReportedFiles
-            .filter((entry) => entry?.file && !isDirectoryLikeScmFileStatus(entry.file))
+        const agentReportedTurnFiles = filterPresentableSessionAttributedFiles(turnAgentReportedFiles)
             .map((entry) => entry.file);
-        const checkpointTurnFiles = turnCheckpointFiles
-            .filter((entry) => entry?.file && !isDirectoryLikeScmFileStatus(entry.file))
+        const checkpointTurnFiles = filterPresentableSessionAttributedFiles(turnCheckpointFiles)
             .map((entry) => entry.file);
-        const sessionChangedFiles = sessionAttributedFiles
-            .filter((entry) => entry?.file && !isDirectoryLikeScmFileStatus(entry.file))
+        const sessionChangedFiles = filterPresentableSessionAttributedFiles(sessionAttributedFiles)
             .map((entry) => entry.file);
 
         if (changedFilesViewMode === 'repository') {
@@ -432,6 +431,7 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         };
         return reviewFileEntries.map((entry) => ({
             key: entry.key,
+            isComplete: entry.file.isComplete,
             filePath: entry.key,
             added: typeof entry.file.linesAdded === 'number' ? entry.file.linesAdded : 0,
             removed: typeof entry.file.linesRemoved === 'number' ? entry.file.linesRemoved : 0,
@@ -452,10 +452,11 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         return typeof props.initialScrollTop === 'number' && props.initialScrollTop > 2;
     });
 
+    const snapshotShapeSignature = React.useMemo(() => snapshot ? buildSnapshotSignature(snapshot) : null, [snapshot]);
     const snapshotSignature = React.useMemo(() => {
         if (!snapshot) return null;
-        return buildSnapshotSignature(snapshot);
-    }, [snapshot]);
+        return buildScmDiffSnapshotSignature(snapshot, snapshotShapeSignature ?? undefined);
+    }, [snapshot, snapshotShapeSignature]);
 
     const collapsedKeysRef = React.useRef<ReadonlySet<string>>(new Set());
     const isCollapsed = React.useCallback((path: string) => collapsedKeysRef.current.has(path), []);
@@ -508,7 +509,7 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         tooLarge: tooLargeForExpansion,
         aheadCount: viewabilityConfig.aheadCount,
         behindCount: viewabilityConfig.behindCount,
-        resetKey: `${sessionId}:${snapshotSignature ?? 'nosig'}:${diffArea}`,
+        resetKey: `${sessionId}:${snapshotShapeSignature ?? 'nosig'}:${diffArea}`,
         initialCollapsedKeys: props.initialCollapsedPaths ?? null,
         onCollapsedKeysChange: props.onCollapsedPathsChange,
         viewableExpansionEnabled,
@@ -615,7 +616,7 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
 
         if ((beforeTop === null || !Number.isFinite(beforeTop)) && beforeAnchorTop === null) return;
 
-        const anchorY = beforeAnchorTop ?? beforeTop;
+        const anchorY = beforeAnchorTop ?? (beforeTop === null ? null : -beforeTop);
         if (anchorY === null || !Number.isFinite(anchorY)) return;
         preserveWebScrollAnchorAfterToggle({
             anchorY,
@@ -627,8 +628,8 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
                 });
                 if (!currentRoot || typeof (currentRoot as any).scrollTop !== 'number') return null;
                 const currentAnchorTop = beforeAnchorTop === null ? null : readWebAnchorTop(path);
-                const currentY = currentAnchorTop ?? Number((currentRoot as any).scrollTop);
-                return Number.isFinite(currentY)
+                const currentY = beforeAnchorTop === null ? -Number((currentRoot as any).scrollTop) : currentAnchorTop;
+                return typeof currentY === 'number' && Number.isFinite(currentY)
                     ? { scrollRoot: currentRoot, anchorY: currentY }
                     : null;
             },
@@ -791,12 +792,36 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         listRef.current?.scrollToIndex({ index, animated: Platform.OS !== 'web', viewPosition: 0 });
     }, [pathToRowIndex]);
 
-    const highlightedPath = useChangedFilesReviewFocusPath({
-        focusPath: typeof props.focusPath === 'string' ? props.focusPath : null,
+    const navigationPaths = React.useMemo(() => reviewListFiles.map((file) => file.fullPath), [reviewListFiles]);
+    const { highlightedPath, focus: focusReviewPath } = useChangedFilesReviewFocusPath({
+        focusPath: props.focusPath ?? null,
         reviewFiles: reviewListFiles,
         expandPath,
         scrollToPath,
     });
+    const [lineTarget, setLineTarget] = React.useState<Readonly<{ filePath: string; lineId: string }> | null>(null);
+    React.useEffect(() => { setLineTarget(null); }, [sessionId, changedFilesViewMode, diffArea]);
+    const visibleReviewPaths = React.useMemo(() => prefetch.viewableRowIndices.flatMap((index) => {
+        const file = reviewListFiles[index];
+        return file ? [file.fullPath] : [];
+    }), [prefetch.viewableRowIndices, reviewListFiles]);
+    const preferredReviewPath = lineTarget?.filePath ?? highlightedPath ?? props.focusPath ?? null;
+    const activeReviewPath = preferredReviewPath && navigationPaths.includes(preferredReviewPath) && (visibleReviewPaths.length === 0 || visibleReviewPaths.includes(preferredReviewPath))
+        ? preferredReviewPath
+        : (visibleReviewPaths[0] ?? navigationPaths[0] ?? null);
+    const expandReviewPathRef = React.useRef(expandPath);
+    expandReviewPathRef.current = expandPath;
+    const focusLine = React.useCallback((target: Readonly<{ filePath: string; lineId: string }> | null) => {
+        if (target) expandReviewPathRef.current(target.filePath);
+        setLineTarget(target);
+    }, []);
+    const focusFile = React.useCallback((path: string) => {
+        setLineTarget(null);
+        focusReviewPath(path);
+    }, [focusReviewPath]);
+    React.useEffect(() => {
+        setLineTarget((current) => current && current.filePath !== activeReviewPath ? null : current);
+    }, [activeReviewPath]);
 
     // Prefetch scheduling + viewability windowing is handled by useChangedFilesReviewPrefetch.
 
@@ -814,7 +839,25 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         return estimatedChangedLinesByPath.get(path) ?? null;
     }, [estimatedChangedLinesByPath]);
 
+    const reviewViewportRef = React.useRef<View | null>(null);
+    const onScrollToLine = useChangedFilesReviewLineScroll({
+        viewportRef: reviewViewportRef,
+        listRef,
+        scrollTopRef: lastScrollTopRef,
+    });
+
+    const externalScrollView = React.useMemo<CodeLinesExternalScrollView>(() => ({
+        viewportRef: reviewViewportRef,
+        offsetRef: lastScrollTopRef,
+        scrollRef: { current: { scrollTo: ({ y, animated }) => {
+            listRef.current?.scrollToOffset({ offset: y ?? 0, animated });
+        } } },
+    }), []);
+
     const renderDiffBlock = useChangedFilesReviewDiffBlockRenderer({
+        externalScrollView: Platform.OS === 'web' ? undefined : externalScrollView,
+        onScrollToLine,
+        lineTarget,
         theme,
         sessionId,
         snapshotSignature,
@@ -836,27 +879,10 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
     const ListHeaderComponent = React.useCallback(() => {
         return (
             <View>
-                <ChangedFilesReviewDiffAreaSelector
-                    theme={theme}
-                    diffArea={diffArea}
-                    availableModes={diffConfig.availableModes}
-                    labels={diffConfig.labels}
-                    onChange={setDiffArea}
-                    trailingElement={<WrapLinesToggleButton />}
-                />
-
                 {reviewFiles.length === 0 && !(changedFilesViewMode === 'turn_checkpoint' && turnCheckpointMetadata?.contentConfidence === 'unavailable') && (
                     <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6 }}>
                         <Text style={{ fontSize: 12, color: theme.colors.text.secondary, ...Typography.default() }}>
                             {t('files.noChanges')}
-                        </Text>
-                    </View>
-                )}
-
-                {tooLarge && reviewFiles.length > 0 && (
-                    <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6 }}>
-                        <Text style={{ fontSize: 12, color: theme.colors.text.secondary, ...Typography.default() }}>
-                            {t('files.reviewLargeDiffOneAtATime')}
                         </Text>
                     </View>
                 )}
@@ -872,44 +898,21 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
                         }}
                     >
                         <Text style={{ fontSize: 12, color: theme.colors.text.secondary, ...Typography.default() }}>
-                            {resolveCheckpointAttributionCopy(turnCheckpointMetadata)}
+                            {checkpointAttributionDescription(turnCheckpointMetadata)}
                         </Text>
                     </View>
                 )}
 
-                {changedFilesViewMode === 'session' && (
-                    <View
-                        style={{
-                            backgroundColor: theme.colors.surface.inset,
-                            paddingHorizontal: 16,
-                            paddingVertical: 12,
-                            borderBottomWidth: Platform.select({ ios: 0.33, default: 1 }),
-                            borderBottomColor: theme.colors.border.default,
-                        }}
-                    >
-                        <Text style={{ fontSize: 12, color: theme.colors.text.secondary, ...Typography.default() }}>
-                            {attributionReliability === 'high'
-                                ? t('files.attributionReliabilityHigh')
-                                : t('files.attributionReliabilityLimited')}
-                        </Text>
-                        {suppressedInferredCount > 0 && (
-                            <Text style={{ marginTop: 2, fontSize: 11, color: theme.colors.text.secondary, ...Typography.default() }}>
-                                {t('files.inferredSuppressed', { count: suppressedInferredCount })}
-                            </Text>
-                        )}
-                    </View>
-                )}
+
             </View>
         );
     }, [
-        attributionReliability,
         changedFilesViewMode,
         diffArea,
         diffConfig.availableModes,
         diffConfig.labels,
         reviewFiles.length,
         setDiffArea,
-        suppressedInferredCount,
         theme.colors.border.default,
         theme.colors.surface.inset,
         theme.colors.text.secondary,
@@ -918,6 +921,7 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
     ]);
 
     const renderBeforeFileRow = React.useCallback(({ file }: Readonly<{ file: any; index: number }>) => {
+        if (changedFilesViewMode === 'repository' || (props.toolbarLeading && sectionHeaderTitleByKey.size === 1)) return null;
         const title = sectionHeaderTitleByKey.get(file.key as string);
         if (!title) return null;
         return (
@@ -925,7 +929,15 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
                 {title}
             </ChangedFilesSectionHeader>
         );
-    }, [sectionHeaderTitleByKey, theme]);
+    }, [changedFilesViewMode, props.toolbarLeading, sectionHeaderTitleByKey, theme]);
+
+    const attributedEntriesByPath = React.useMemo(() => {
+        const entries = changedFilesViewMode === 'session' ? sessionAttributedFiles
+            : changedFilesViewMode === 'turn_agent_reported' ? turnAgentReportedFiles
+            : changedFilesViewMode === 'turn_checkpoint' ? turnCheckpointFiles
+            : changedFilesViewMode === 'turn' ? turnAttributedFiles : [];
+        return new Map(entries.map((entry) => [entry.file.fullPath, entry]));
+    }, [changedFilesViewMode, sessionAttributedFiles, turnAgentReportedFiles, turnCheckpointFiles, turnAttributedFiles]);
 
     const renderFileRow = React.useCallback((params: any) => {
         const meta = fileMetaByKey.get(params.file.key as string);
@@ -984,9 +996,13 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         );
 
         return (
+            <View>
             <ScmChangeRow
                 theme={theme}
                 file={file}
+                accessibilityQualification={attributedEntriesByPath.has(file.fullPath)
+                    ? sessionAttributedFileAccessibilityQualification(attributedEntriesByPath.get(file.fullPath)!)
+                    : undefined}
                 density={rowDensity}
                 highlighted={highlightedPath === file.fullPath}
                 onPressPinned={
@@ -999,8 +1015,11 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
                 showDivider={meta.showDivider}
                 onPress={params.onToggleExpanded}
             />
+            {attributedEntriesByPath.has(file.fullPath) ? <ChangedFileEvidenceDisclosure entry={attributedEntriesByPath.get(file.fullPath)!} /> : null}
+            </View>
         );
     }, [
+        attributedEntriesByPath,
         fileMetaByKey,
         highlightedPath,
         onFilePressPinned,
@@ -1019,29 +1038,56 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
 
     return (
         <View style={{ flex: 1, minHeight: 0 }}>
-            <DiffFilesListView
-                ref={listRef as any}
-                testID="scm-review-list"
-                files={diffFiles as any}
-                expandedKeys={expandedKeys}
-                onToggleExpanded={toggleCollapsedPreservingWebScroll}
-                canRenderInlineDiffs={true}
-                wrapLines={effectiveWrapLines}
-                showLineNumbers={effectiveShowLineNumbers}
-                showPrefix={effectiveShowLineNumbers}
-                virtualizeFileList
-                drawDistanceMultiplier={REVIEW_DIFF_LIST_DRAW_DISTANCE_MULTIPLIER}
-                inlineDiffContainerVariant="none"
-                renderBeforeFileRow={renderBeforeFileRow as any}
-                renderFileRow={renderFileRow as any}
-                renderInlineUnifiedDiff={renderInlineUnifiedDiff as any}
-                ListHeaderComponent={ListHeaderComponent as any}
-                onScroll={handleScroll}
-                onLayout={props.onLayout as any}
-                onContentSizeChange={props.onContentSizeChange as any}
-                onViewableItemsChanged={prefetch.onViewableItemsChanged as any}
-                scrollEventThrottle={16}
+            <HorizontalScrollableRow testID="scm-review-toolbar" fadeColor={theme.colors.surface.base ?? theme.colors.surface.inset} indicatorColor={theme.colors.text.secondary} containerStyle={{ flexGrow: 0, flexShrink: 0 }} contentStyle={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 4 }}>
+                {props.toolbarLeading}
+                <ChangedFilesReviewDiffAreaSelector
+                    theme={theme}
+                    diffArea={diffArea}
+                    availableModes={diffConfig.availableModes}
+                    labels={diffConfig.labels}
+                    onChange={setDiffArea}
+                    inline
+                />
+
+            <ChangedFilesReviewNavigation
+                paths={navigationPaths}
+                activePath={activeReviewPath}
+                onFocusPath={focusFile}
+                diffStateSource={diffStateSource}
+                onFocusLine={focusLine}
             />
+                <WrapLinesToggleButton />
+                {tooLarge && reviewFiles.length > 0 ? (
+                    <Tooltip label={t('files.reviewLargeDiffOneAtATime')} testID="scm-review-large-diff-info" style={{ width: Platform.OS === 'web' ? 28 : 48, height: Platform.OS === 'web' ? 28 : 48, alignItems: 'center', justifyContent: 'center' }}>
+                        <Icon name="info" size={16} color={theme.colors.text.secondary} />
+                    </Tooltip>
+                ) : null}
+            </HorizontalScrollableRow>
+            <View ref={reviewViewportRef} collapsable={false} style={{ flex: 1, minHeight: 0 }}>
+                <DiffFilesListView
+                    ref={listRef as any}
+                    testID="scm-review-list"
+                    files={diffFiles as any}
+                    expandedKeys={expandedKeys}
+                    onToggleExpanded={toggleCollapsedPreservingWebScroll}
+                    canRenderInlineDiffs={true}
+                    wrapLines={effectiveWrapLines}
+                    showLineNumbers={effectiveShowLineNumbers}
+                    showPrefix={effectiveShowLineNumbers}
+                    virtualizeFileList
+                    drawDistanceMultiplier={REVIEW_DIFF_LIST_DRAW_DISTANCE_MULTIPLIER}
+                    inlineDiffContainerVariant="none"
+                    renderBeforeFileRow={renderBeforeFileRow as any}
+                    renderFileRow={renderFileRow as any}
+                    renderInlineUnifiedDiff={renderInlineUnifiedDiff as any}
+                    ListHeaderComponent={ListHeaderComponent as any}
+                    onScroll={handleScroll}
+                    onLayout={props.onLayout as any}
+                    onContentSizeChange={props.onContentSizeChange as any}
+                    onViewableItemsChanged={prefetch.onViewableItemsChanged as any}
+                    scrollEventThrottle={16}
+                />
+            </View>
         </View>
     );
 }

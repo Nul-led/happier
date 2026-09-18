@@ -239,7 +239,7 @@ describe('createBundledRealtimeProviderRuntime mute ownership', () => {
     const runtime = createRuntime(providerId, setInputMuted);
 
     try {
-      await runtime.adapter.start({ sessionId: controlSessionId });
+      await runtime.adapter.start({ sessionId: controlSessionId, requestedTargetSessionAddress: null });
       expect(setInputMuted).toHaveBeenCalledWith(false);
       const initialMute = runtime.adapter.setMuted({ sessionId: controlSessionId, muted: true });
       expect(physicalTrack.enabled).toBe(true);
@@ -280,6 +280,7 @@ describe('createBundledRealtimeProviderRuntime mute ownership', () => {
       await capturedControllerDeps.current?.onConnectionReady?.({
         controlSessionId,
         attemptId: 1,
+        reason: 'initial',
         request: {},
         connection: createOpenConnection(),
         signal: new AbortController().signal,
@@ -292,7 +293,7 @@ describe('createBundledRealtimeProviderRuntime mute ownership', () => {
       // the same adapter. Stop must retire the old attempt without joining a
       // public provider hook that may remain pending indefinitely.
       await runtime.adapter.stop({ sessionId: controlSessionId });
-      const replacementStart = runtime.adapter.start({ sessionId: controlSessionId });
+      const replacementStart = runtime.adapter.start({ sessionId: controlSessionId, requestedTargetSessionAddress: null });
       await expect(replacementStart).rejects.toThrow('voice_input_mute_failed');
 
       // The replacement attempt must fail closed before entering the same
@@ -304,7 +305,7 @@ describe('createBundledRealtimeProviderRuntime mute ownership', () => {
 
       delayedReplacedUnmute.resolve();
       await replacedUnmute;
-      await runtime.adapter.start({ sessionId: controlSessionId });
+      await runtime.adapter.start({ sessionId: controlSessionId, requestedTargetSessionAddress: null });
 
       const replacementMute = runtime.adapter.setMuted({ sessionId: controlSessionId, muted: true });
       delayedReplacedMute.resolve();

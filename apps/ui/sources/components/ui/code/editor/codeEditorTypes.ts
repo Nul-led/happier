@@ -16,6 +16,8 @@ export type CodeEditorProps = Readonly<{
 export type CodeEditorHandle = Readonly<{
     getValue: () => string;
     flushPendingChange: () => Promise<void>;
+    /** Move editing focus into the incumbent platform surface. */
+    focus?: () => void;
 }>;
 
 export function resolveMonacoLanguageId(language: string | null): string {

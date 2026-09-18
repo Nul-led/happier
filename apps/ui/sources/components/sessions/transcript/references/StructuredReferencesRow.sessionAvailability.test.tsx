@@ -91,12 +91,13 @@ afterEach(() => {
     storage.setState(previousState);
 });
 
-async function renderSessionReference(sessionId: string, label: string | null) {
+async function renderSessionReference(sessionId: string, label: string | null, serverId?: string) {
     const { StructuredReferencesRow } = await import('./StructuredReferencesRow');
     return await renderScreen(
         <AppPaneProvider>
             <StructuredReferencesRow
                 sessionId="host-session"
+                serverId={serverId}
                 references={[{ kind: 'session', sessionId, label }]}
                 fileOpenEnabled
             />
@@ -109,7 +110,7 @@ describe('StructuredReferencesRow session availability', () => {
      * OBSERVED live on the running stack (2026-08-10), with a stack trace on the eviction:
      * archiving `cmsnniaiq1w1rtmp7pz3m1svh` left it in NEITHER store map — `resumeViaChanges →
      * fetchSessionsOnce → fetchAndApplySessions → applySessionListRenderables →
-     * replaceSessionListRenderables(468 rows, id omitted)` evicted its renderable because
+     * replacing a large ordinary Home corpus with the id omitted evicted its renderable because
      * `/v2/sessions` filters `archivedAt: null` server-side, and `state.sessions` never held it
      * (measured at that instant: `sessions \ renderables` = 0, `renderables \ sessions` = 97 —
      * `sessions` is a SUBSET of the renderables, so it can never rescue an evicted row).
@@ -122,7 +123,9 @@ describe('StructuredReferencesRow session availability', () => {
         storage.setState((state) => ({
             ...state,
             sessions: {},
-            sessionListRenderables: {},
+            sessionListRowsByServerId: {},
+            ordinarySessionListMembershipByServerId: {},
+            archivedSessionListMembershipByServerId: {},
         }));
 
         const screen = await renderSessionReference('archived-target', 'L22c QA archive-target');
@@ -146,7 +149,10 @@ describe('StructuredReferencesRow session availability', () => {
         storage.setState((state) => ({
             ...state,
             sessions: {},
-            sessionListRenderables: { 'deleted-target': renderableSession('deleted-target') },
+            sessionListRowsByServerId: {
+                'server-a': { 'deleted-target': renderableSession('deleted-target') },
+            },
+            ordinarySessionListMembershipByServerId: { 'server-a': ['deleted-target'] },
         }));
         storage.getState().deleteSession('deleted-target');
 
@@ -166,18 +172,51 @@ describe('StructuredReferencesRow session availability', () => {
         storage.setState((state) => ({
             ...state,
             sessions: {},
-            sessionListRenderables: {
-                'known-target': renderableSession('known-target', {
-                    metadata: { name: 'ZZ Renamed Target QQ', path: '/Users/dev/projects/app' },
-                }),
+            sessionListRowsByServerId: {
+                'server-a': {
+                    'known-target': renderableSession('known-target', {
+                        metadata: { name: 'ZZ Renamed Target QQ', path: '/Users/dev/projects/app' },
+                    }),
+                },
             },
+            ordinarySessionListMembershipByServerId: { 'server-a': ['known-target'] },
         }));
 
-        const screen = await renderSessionReference('known-target', 'Title at compose time');
+        const screen = await renderSessionReference('known-target', 'Title at compose time', 'server-a');
 
         const chip = screen.findByTestId('transcript-session-reference:known-target');
         expect(chip?.type).toBe('Pressable');
         expect(screen.getTextContent()).toContain('ZZ Renamed Target QQ');
+        expect(screen.getTextContent()).not.toContain('Title at compose time');
+    });
+
+    it('prefers the live title from the exact Home when ids collide', async () => {
+        storage.setState((state) => ({
+            ...state,
+            sessions: {},
+            sessionListRowsByServerId: {
+                'server-a': {
+                    'known-target': renderableSession('known-target', {
+                        metadata: { name: 'Wrong Home row', path: '/wrong' },
+                    }),
+                },
+                'server-b': {
+                    'known-target': renderableSession('known-target', {
+                        metadata: { name: 'Exact Home title', path: '/exact' },
+                    }),
+                },
+            },
+            ordinarySessionListMembershipByServerId: {
+                'server-a': ['known-target'],
+                'server-b': ['known-target'],
+            },
+        }));
+
+        const screen = await renderSessionReference('known-target', 'Title at compose time', 'server-b');
+
+        expect(screen.getTextContent()).toContain('Exact Home title');
+        expect(screen.getTextContent()).not.toContain('Wrong Home title');
+        expect(screen.getTextContent()).not.toContain('Wrong Home row');
         expect(screen.getTextContent()).not.toContain('Title at compose time');
     });
 });

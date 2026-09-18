@@ -9,11 +9,15 @@ import type {
 import {
     buildSessionOrganizationLabelKey,
     buildSessionOrganizationOrderScopeKey,
+    buildSessionOrganizationSessionKey,
     buildSessionOrganizationServerKey,
+    sessionOrganizationTupleKeyBelongsToServer,
 } from '@/sync/domains/session/organization';
 import type {
     SessionOrganizationSnapshotApplyOptions,
     SessionOrganizationDisplayState,
+    SessionOrganizationFolderAssignmentEntry,
+    SessionOrganizationTagAssignmentEntry,
     UiSessionOrganizationFolder,
     UiSessionOrganizationLabel,
     UiSessionOrganizationSnapshot,
@@ -61,9 +65,9 @@ export type SessionOrganizationDomain = {
     sessionOrganizationPinsBySessionKey: Record<string, SessionOrganizationPin>;
     sessionOrganizationAttentionStandingsBySessionKey: Record<string, SessionAttentionStanding>;
     sessionOrganizationFoldersByFolderKey: Record<string, UiSessionOrganizationFolder>;
-    sessionOrganizationFolderAssignmentsBySessionKey: Record<string, string | null>;
+    sessionOrganizationFolderAssignmentsBySessionKey: Record<string, SessionOrganizationFolderAssignmentEntry>;
     sessionOrganizationTagsByTagKey: Record<string, UiSessionOrganizationTag>;
-    sessionOrganizationTagAssignmentsBySessionKey: Record<string, readonly string[]>;
+    sessionOrganizationTagAssignmentsBySessionKey: Record<string, SessionOrganizationTagAssignmentEntry>;
     sessionOrganizationOrderEntriesByScopeKey: Record<string, readonly SessionOrganizationOrderEntry[]>;
     sessionOrganizationLabelsByLabelKey: Record<string, UiSessionOrganizationLabel>;
     sessionOrganizationLoadingByServerId: Record<string, boolean>;
@@ -176,15 +180,54 @@ function replaceServerRecord<T>(
     serverId: string,
     entries: Iterable<readonly [string, T]>,
 ): Record<string, T> {
-    const prefix = `${String(serverId).trim()}:`;
     const next: Record<string, T> = {};
     for (const [key, value] of Object.entries(current)) {
-        if (!key.startsWith(prefix)) {
+        if (!sessionOrganizationTupleKeyBelongsToServer(key, serverId)) {
             next[key] = value;
         }
     }
     for (const [id, value] of entries) {
         next[buildSessionOrganizationServerKey(serverId, id)] = value;
+    }
+    if (Object.keys(next).length !== Object.keys(current).length) return next;
+    for (const [key, value] of Object.entries(next)) {
+        if (!shallowEqualValue(current[key], value)) return next;
+    }
+    return current;
+}
+
+function replaceEntityRecord<T>(
+    current: Record<string, T>,
+    serverId: string,
+    entries: Iterable<readonly [string, T]>,
+    readId: (value: T) => string,
+): Record<string, T> {
+    const next: Record<string, T> = {};
+    for (const [key, value] of Object.entries(current)) {
+        if (key !== buildSessionOrganizationServerKey(serverId, readId(value))) next[key] = value;
+    }
+    for (const [id, value] of entries) next[buildSessionOrganizationServerKey(serverId, id)] = value;
+    if (Object.keys(next).length !== Object.keys(current).length) return next;
+    for (const [key, value] of Object.entries(next)) {
+        if (!shallowEqualValue(current[key], value)) return next;
+    }
+    return current;
+}
+
+function replaceSessionRecord<T>(
+    current: Record<string, T>,
+    serverId: string,
+    entries: Iterable<readonly [string, T]>,
+    readSessionId: (value: T) => string,
+): Record<string, T> {
+    const next: Record<string, T> = {};
+    for (const [key, value] of Object.entries(current)) {
+        if (key !== buildSessionOrganizationSessionKey(serverId, readSessionId(value))) {
+            next[key] = value;
+        }
+    }
+    for (const [sessionId, value] of entries) {
+        next[buildSessionOrganizationSessionKey(serverId, sessionId)] = value;
     }
     if (Object.keys(next).length !== Object.keys(current).length) return next;
     for (const [key, value] of Object.entries(next)) {
@@ -206,10 +249,11 @@ function replaceRequestedServerRecord<T>(
     serverId: string,
     requestedIds: readonly string[] | undefined,
     entries: Iterable<readonly [string, T]>,
+    readId: (value: T) => string,
 ): Record<string, T> {
     const requestedIdsSet = normalizeRequestedRecordIds(requestedIds);
     if (requestedIdsSet.size === 0) {
-        return replaceServerRecord(current, serverId, entries);
+        return replaceEntityRecord(current, serverId, entries, readId);
     }
 
     const next: Record<string, T> = { ...current };
@@ -242,11 +286,44 @@ function mergeRecordEntries<T>(
 }
 
 function removeServerRecordEntries<T>(current: Record<string, T>, serverId: string): Record<string, T> {
-    const prefix = `${String(serverId).trim()}:`;
     let changed = false;
     const next: Record<string, T> = {};
     for (const [key, value] of Object.entries(current)) {
-        if (key.startsWith(prefix)) {
+        if (sessionOrganizationTupleKeyBelongsToServer(key, serverId)) {
+            changed = true;
+            continue;
+        }
+        next[key] = value;
+    }
+    return changed ? next : current;
+}
+
+function removeSessionRecordEntries<T>(
+    current: Record<string, T>,
+    serverId: string,
+    readSessionId: (value: T) => string,
+): Record<string, T> {
+    let changed = false;
+    const next: Record<string, T> = {};
+    for (const [key, value] of Object.entries(current)) {
+        if (key === buildSessionOrganizationSessionKey(serverId, readSessionId(value))) {
+            changed = true;
+            continue;
+        }
+        next[key] = value;
+    }
+    return changed ? next : current;
+}
+
+function removeEntityRecordEntries<T>(
+    current: Record<string, T>,
+    serverId: string,
+    readId: (value: T) => string,
+): Record<string, T> {
+    let changed = false;
+    const next: Record<string, T> = {};
+    for (const [key, value] of Object.entries(current)) {
+        if (key === buildSessionOrganizationServerKey(serverId, readId(value))) {
             changed = true;
             continue;
         }
@@ -277,34 +354,35 @@ function setRecordValue<T>(current: Record<string, T>, key: string, value: T | u
 }
 
 function replaceRequestedAssignments(
-    current: Record<string, string | null>,
+    current: Record<string, SessionOrganizationFolderAssignmentEntry>,
     serverId: string,
     requestedSessionIds: readonly string[] | undefined,
     requestedFolderIds: readonly string[] | undefined,
     assignments: readonly SessionFolderAssignment[],
     replaceAll: boolean | undefined,
-): Record<string, string | null> {
+): Record<string, SessionOrganizationFolderAssignmentEntry> {
     if (replaceAll) {
         // A full snapshot lists ASSIGNMENTS, not sessions: a session with no folder simply has
         // no row server-side. Pruning this server's other known keys would erase the negative
         // cache `filterMissingAssignmentSessionIds` reads, so every full snapshot would re-arm
         // an O(sessions) single-id refetch. Re-value the known keys instead of dropping them.
-        const prefix = `${String(serverId).trim()}:`;
-        const entries = new Map<string, string | null>();
-        for (const key of Object.keys(current)) {
-            if (key.startsWith(prefix)) entries.set(key, null);
+        const entries = new Map<string, SessionOrganizationFolderAssignmentEntry>();
+        for (const [key, assignment] of Object.entries(current)) {
+            if (key === buildSessionOrganizationSessionKey(serverId, assignment.sessionId)) {
+                entries.set(key, { sessionId: assignment.sessionId, folderId: null });
+            }
         }
         for (const assignment of assignments) {
-            entries.set(buildSessionOrganizationServerKey(serverId, assignment.sessionId), assignment.folderId);
+            entries.set(buildSessionOrganizationSessionKey(serverId, assignment.sessionId), assignment);
         }
         return mergeRecordEntries(current, entries.entries());
     }
-    const entries = new Map<string, string | null>();
+    const entries = new Map<string, SessionOrganizationFolderAssignmentEntry>();
     for (const sessionId of requestedSessionIds ?? []) {
-        entries.set(buildSessionOrganizationServerKey(serverId, sessionId), null);
+        entries.set(buildSessionOrganizationSessionKey(serverId, sessionId), { sessionId, folderId: null });
     }
     for (const assignment of assignments) {
-        entries.set(buildSessionOrganizationServerKey(serverId, assignment.sessionId), assignment.folderId);
+        entries.set(buildSessionOrganizationSessionKey(serverId, assignment.sessionId), assignment);
     }
     let next = mergeRecordEntries(current, entries.entries());
     const requestedFolders = new Set(
@@ -313,12 +391,14 @@ function replaceRequestedAssignments(
             .filter(Boolean),
     );
     if (requestedFolders.size > 0) {
-        const returnedKeys = new Set(assignments.map((assignment) => buildSessionOrganizationServerKey(serverId, assignment.sessionId)));
-        const staleClears: Array<readonly [string, string | null]> = [];
-        const prefix = `${String(serverId).trim()}:`;
-        for (const [key, folderId] of Object.entries(next)) {
-            if (!key.startsWith(prefix) || !folderId || !requestedFolders.has(folderId) || returnedKeys.has(key)) continue;
-            staleClears.push([key, null] as const);
+        const returnedKeys = new Set(assignments.map((assignment) => buildSessionOrganizationSessionKey(serverId, assignment.sessionId)));
+        const staleClears: Array<readonly [string, SessionOrganizationFolderAssignmentEntry]> = [];
+        for (const [key, assignment] of Object.entries(next)) {
+            if (key !== buildSessionOrganizationSessionKey(serverId, assignment.sessionId)
+                || !assignment.folderId
+                || !requestedFolders.has(assignment.folderId)
+                || returnedKeys.has(key)) continue;
+            staleClears.push([key, { sessionId: assignment.sessionId, folderId: null }] as const);
         }
         next = mergeRecordEntries(next, staleClears);
     }
@@ -326,26 +406,27 @@ function replaceRequestedAssignments(
 }
 
 function replaceRequestedTagAssignments(
-    current: Record<string, readonly string[]>,
+    current: Record<string, SessionOrganizationTagAssignmentEntry>,
     serverId: string,
     requestedSessionIds: readonly string[] | undefined,
     requestedTagIds: readonly string[] | undefined,
     assignments: readonly { sessionId: string; tagIds: readonly string[] }[],
     replaceAll: boolean | undefined,
-): Record<string, readonly string[]> {
+): Record<string, SessionOrganizationTagAssignmentEntry> {
     if (replaceAll) {
-        return replaceServerRecord(
+        return replaceSessionRecord(
             current,
             serverId,
-            assignments.map((assignment) => [assignment.sessionId, assignment.tagIds] as const),
+            assignments.map((assignment) => [assignment.sessionId, assignment] as const),
+            (assignment) => assignment.sessionId,
         );
     }
-    const entries = new Map<string, readonly string[]>();
+    const entries = new Map<string, SessionOrganizationTagAssignmentEntry>();
     for (const sessionId of requestedSessionIds ?? []) {
-        entries.set(buildSessionOrganizationServerKey(serverId, sessionId), []);
+        entries.set(buildSessionOrganizationSessionKey(serverId, sessionId), { sessionId, tagIds: [] });
     }
     for (const assignment of assignments) {
-        entries.set(buildSessionOrganizationServerKey(serverId, assignment.sessionId), assignment.tagIds);
+        entries.set(buildSessionOrganizationSessionKey(serverId, assignment.sessionId), assignment);
     }
     let next = mergeRecordEntries(current, entries.entries());
     const requestedTags = new Set(
@@ -354,13 +435,14 @@ function replaceRequestedTagAssignments(
             .filter(Boolean),
     );
     if (requestedTags.size > 0) {
-        const returnedKeys = new Set(assignments.map((assignment) => buildSessionOrganizationServerKey(serverId, assignment.sessionId)));
-        const staleUpdates: Array<readonly [string, readonly string[]]> = [];
-        const prefix = `${String(serverId).trim()}:`;
-        for (const [key, tagIds] of Object.entries(next)) {
-            if (!key.startsWith(prefix) || returnedKeys.has(key)) continue;
-            const filtered = tagIds.filter((tagId) => !requestedTags.has(tagId));
-            if (filtered.length !== tagIds.length) staleUpdates.push([key, filtered] as const);
+        const returnedKeys = new Set(assignments.map((assignment) => buildSessionOrganizationSessionKey(serverId, assignment.sessionId)));
+        const staleUpdates: Array<readonly [string, SessionOrganizationTagAssignmentEntry]> = [];
+        for (const [key, assignment] of Object.entries(next)) {
+            if (key !== buildSessionOrganizationSessionKey(serverId, assignment.sessionId) || returnedKeys.has(key)) continue;
+            const filtered = assignment.tagIds.filter((tagId) => !requestedTags.has(tagId));
+            if (filtered.length !== assignment.tagIds.length) {
+                staleUpdates.push([key, { sessionId: assignment.sessionId, tagIds: filtered }] as const);
+            }
         }
         next = mergeRecordEntries(next, staleUpdates);
     }
@@ -391,10 +473,9 @@ function replaceOrderEntries(
         }
         return next;
     }
-    const prefix = `${String(serverId).trim()}:`;
     const next: Record<string, readonly SessionOrganizationOrderEntry[]> = {};
     for (const [key, value] of Object.entries(current)) {
-        if (!key.startsWith(prefix)) {
+        if (!sessionOrganizationTupleKeyBelongsToServer(key, serverId)) {
             next[key] = value;
         }
     }
@@ -523,8 +604,8 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             const nextAssignments = mergeRecordEntries(
                 state.sessionOrganizationFolderAssignmentsBySessionKey,
                 assignments.map((assignment) => [
-                    buildSessionOrganizationServerKey(serverId, assignment.sessionId),
-                    assignment.folderId,
+                    buildSessionOrganizationSessionKey(serverId, assignment.sessionId),
+                    assignment,
                 ] as const),
             );
             if (nextAssignments === state.sessionOrganizationFolderAssignmentsBySessionKey) return {} as Partial<S>;
@@ -556,19 +637,21 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
                 if (typeof currentVersion === 'number' && uiSnapshot.version < currentVersion) {
                     return {} as Partial<S>;
                 }
-                const pins = replaceServerRecord(
+                const pins = replaceSessionRecord(
                     state.sessionOrganizationPinsBySessionKey,
                     serverId,
                     uiSnapshot.pins.map((pin) => [pin.sessionId, pin] as const),
+                    (pin) => pin.sessionId,
                 );
                 // Standings only ride along when the request asked for them, so an absent
                 // array means "not fetched" and must not clear what the store already knows.
                 const attentionStandings = uiSnapshot.attentionStandings === undefined
                     ? state.sessionOrganizationAttentionStandingsBySessionKey
-                    : replaceServerRecord(
+                    : replaceSessionRecord(
                         state.sessionOrganizationAttentionStandingsBySessionKey,
                         serverId,
                         uiSnapshot.attentionStandings.map((entry) => [entry.sessionId, entry] as const),
+                        (entry) => entry.sessionId,
                     );
                 const folders = options?.includeFolders === false
                     ? state.sessionOrganizationFoldersByFolderKey
@@ -577,6 +660,7 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
                         serverId,
                         options?.folderIds,
                         uiSnapshot.folders.map((folder) => [folder.folderId, folder] as const),
+                        (folder) => folder.folderId,
                     );
                 const folderAssignments = replaceRequestedAssignments(
                     state.sessionOrganizationFolderAssignmentsBySessionKey,
@@ -593,6 +677,7 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
                         serverId,
                         options?.tagIds,
                         uiSnapshot.tags.map((tag) => [tag.tagId, tag] as const),
+                        (tag) => tag.tagId,
                     );
                 const tagAssignments = replaceRequestedTagAssignments(
                     state.sessionOrganizationTagAssignmentsBySessionKey,
@@ -655,7 +740,7 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             }) as Partial<S>);
         },
         setSessionPinOptimistic: (serverId, sessionId, pin) => {
-            const key = buildSessionOrganizationServerKey(serverId, sessionId);
+            const key = buildSessionOrganizationSessionKey(serverId, sessionId);
             const state = get();
             const afterPins = setRecordValue(state.sessionOrganizationPinsBySessionKey, key, pin ?? undefined);
             const record = createOptimisticRecord({
@@ -670,7 +755,7 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             return record.id;
         },
         setSessionAttentionStandingOptimistic: (serverId, sessionId, standing) => {
-            const key = buildSessionOrganizationServerKey(serverId, sessionId);
+            const key = buildSessionOrganizationSessionKey(serverId, sessionId);
             const state = get();
             const afterStandings = setRecordValue(state.sessionOrganizationAttentionStandingsBySessionKey, key, standing ?? undefined);
             const record = createOptimisticRecord({
@@ -685,9 +770,13 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             return record.id;
         },
         setSessionOrganizationFolderAssignmentOptimistic: (serverId, sessionId, folderId) => {
-            const key = buildSessionOrganizationServerKey(serverId, sessionId);
+            const key = buildSessionOrganizationSessionKey(serverId, sessionId);
             const state = get();
-            const afterAssignments = setRecordValue(state.sessionOrganizationFolderAssignmentsBySessionKey, key, folderId);
+            const afterAssignments = setRecordValue(
+                state.sessionOrganizationFolderAssignmentsBySessionKey,
+                key,
+                { sessionId, folderId },
+            );
             const record = createOptimisticRecord({
                 serverId,
                 before: {
@@ -704,12 +793,12 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             return record.id;
         },
         setSessionTagAssignmentsOptimistic: (serverId, sessionId, tagIds) => {
-            const key = buildSessionOrganizationServerKey(serverId, sessionId);
+            const key = buildSessionOrganizationSessionKey(serverId, sessionId);
             const state = get();
             const afterTagAssignments = setRecordValue(
                 state.sessionOrganizationTagAssignmentsBySessionKey,
                 key,
-                [...tagIds],
+                { sessionId, tagIds: [...tagIds] },
             );
             const record = createOptimisticRecord({
                 serverId,
@@ -841,11 +930,12 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             );
             if (deletedFolders.size === 0) return;
             set((state) => {
-                const prefix = `${String(serverId).trim()}:`;
-                const updates: Array<readonly [string, string | null]> = [];
-                for (const [key, folderId] of Object.entries(state.sessionOrganizationFolderAssignmentsBySessionKey)) {
-                    if (!key.startsWith(prefix) || !folderId || !deletedFolders.has(folderId)) continue;
-                    updates.push([key, assignmentTargetFolderId] as const);
+                const updates: Array<readonly [string, SessionOrganizationFolderAssignmentEntry]> = [];
+                for (const [key, assignment] of Object.entries(state.sessionOrganizationFolderAssignmentsBySessionKey)) {
+                    if (key !== buildSessionOrganizationSessionKey(serverId, assignment.sessionId)
+                        || !assignment.folderId
+                        || !deletedFolders.has(assignment.folderId)) continue;
+                    updates.push([key, { sessionId: assignment.sessionId, folderId: assignmentTargetFolderId }] as const);
                 }
                 if (updates.length === 0) return {} as Partial<S>;
                 const nextAssignments = mergeRecordEntries(state.sessionOrganizationFolderAssignmentsBySessionKey, updates);
@@ -858,11 +948,14 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             const deletedTagId = String(tagId ?? '').trim();
             if (!deletedTagId) return;
             set((state) => {
-                const prefix = `${String(serverId).trim()}:`;
-                const updates: Array<readonly [string, readonly string[]]> = [];
-                for (const [key, tagIds] of Object.entries(state.sessionOrganizationTagAssignmentsBySessionKey)) {
-                    if (!key.startsWith(prefix) || !tagIds.includes(deletedTagId)) continue;
-                    updates.push([key, tagIds.filter((candidate) => candidate !== deletedTagId)] as const);
+                const updates: Array<readonly [string, SessionOrganizationTagAssignmentEntry]> = [];
+                for (const [key, assignment] of Object.entries(state.sessionOrganizationTagAssignmentsBySessionKey)) {
+                    if (key !== buildSessionOrganizationSessionKey(serverId, assignment.sessionId)
+                        || !assignment.tagIds.includes(deletedTagId)) continue;
+                    updates.push([key, {
+                        sessionId: assignment.sessionId,
+                        tagIds: assignment.tagIds.filter((candidate) => candidate !== deletedTagId),
+                    }] as const);
                 }
                 if (updates.length === 0) return {} as Partial<S>;
                 return {
@@ -892,7 +985,11 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
         },
         clearSessionOrganizationForServer: (serverId) => {
             set((state) => {
-                const folderAssignments = removeServerRecordEntries(state.sessionOrganizationFolderAssignmentsBySessionKey, serverId);
+                const folderAssignments = removeSessionRecordEntries(
+                    state.sessionOrganizationFolderAssignmentsBySessionKey,
+                    serverId,
+                    (assignment) => assignment.sessionId,
+                );
                 return {
                     sessionOrganizationSnapshotVersionByServerId: Object.fromEntries(
                         Object.entries(state.sessionOrganizationSnapshotVersionByServerId).filter(([key]) => key !== serverId),
@@ -900,12 +997,32 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
                     sessionOrganizationSchemaVersionByServerId: Object.fromEntries(
                         Object.entries(state.sessionOrganizationSchemaVersionByServerId).filter(([key]) => key !== serverId),
                     ),
-                    sessionOrganizationPinsBySessionKey: removeServerRecordEntries(state.sessionOrganizationPinsBySessionKey, serverId),
-                    sessionOrganizationAttentionStandingsBySessionKey: removeServerRecordEntries(state.sessionOrganizationAttentionStandingsBySessionKey, serverId),
-                    sessionOrganizationFoldersByFolderKey: removeServerRecordEntries(state.sessionOrganizationFoldersByFolderKey, serverId),
+                    sessionOrganizationPinsBySessionKey: removeSessionRecordEntries(
+                        state.sessionOrganizationPinsBySessionKey,
+                        serverId,
+                        (pin) => pin.sessionId,
+                    ),
+                    sessionOrganizationAttentionStandingsBySessionKey: removeSessionRecordEntries(
+                        state.sessionOrganizationAttentionStandingsBySessionKey,
+                        serverId,
+                        (standing) => standing.sessionId,
+                    ),
+                    sessionOrganizationFoldersByFolderKey: removeEntityRecordEntries(
+                        state.sessionOrganizationFoldersByFolderKey,
+                        serverId,
+                        (folder) => folder.folderId,
+                    ),
                     sessionOrganizationFolderAssignmentsBySessionKey: folderAssignments,
-                    sessionOrganizationTagsByTagKey: removeServerRecordEntries(state.sessionOrganizationTagsByTagKey, serverId),
-                    sessionOrganizationTagAssignmentsBySessionKey: removeServerRecordEntries(state.sessionOrganizationTagAssignmentsBySessionKey, serverId),
+                    sessionOrganizationTagsByTagKey: removeEntityRecordEntries(
+                        state.sessionOrganizationTagsByTagKey,
+                        serverId,
+                        (tag) => tag.tagId,
+                    ),
+                    sessionOrganizationTagAssignmentsBySessionKey: removeSessionRecordEntries(
+                        state.sessionOrganizationTagAssignmentsBySessionKey,
+                        serverId,
+                        (assignment) => assignment.sessionId,
+                    ),
                     sessionOrganizationOrderEntriesByScopeKey: removeServerRecordEntries(state.sessionOrganizationOrderEntriesByScopeKey, serverId),
                     sessionOrganizationLabelsByLabelKey: removeServerRecordEntries(state.sessionOrganizationLabelsByLabelKey, serverId),
                     sessionOrganizationLoadingByServerId: Object.fromEntries(
@@ -922,10 +1039,14 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             get().setSessionOrganizationLoading(serverId, loading);
         },
         setSessionFolderAssignmentOptimistic: (serverId, sessionId, folderId) => {
-            const key = buildSessionOrganizationServerKey(serverId, sessionId);
-            const previous = get().sessionOrganizationFolderAssignmentsBySessionKey[key] ?? null;
+            const key = buildSessionOrganizationSessionKey(serverId, sessionId);
+            const previous = get().sessionOrganizationFolderAssignmentsBySessionKey[key]?.folderId ?? null;
             set((state) => {
-                const nextAssignments = setRecordValue(state.sessionOrganizationFolderAssignmentsBySessionKey, key, folderId);
+                const nextAssignments = setRecordValue(
+                    state.sessionOrganizationFolderAssignmentsBySessionKey,
+                    key,
+                    { sessionId, folderId },
+                );
                 return {
                     sessionOrganizationFolderAssignmentsBySessionKey: nextAssignments,
                 } as Partial<S>;
@@ -933,9 +1054,13 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             return previous;
         },
         rollbackSessionFolderAssignment: (serverId, sessionId, previousFolderId) => {
-            const key = buildSessionOrganizationServerKey(serverId, sessionId);
+            const key = buildSessionOrganizationSessionKey(serverId, sessionId);
             set((state) => {
-                const nextAssignments = setRecordValue(state.sessionOrganizationFolderAssignmentsBySessionKey, key, previousFolderId);
+                const nextAssignments = setRecordValue(
+                    state.sessionOrganizationFolderAssignmentsBySessionKey,
+                    key,
+                    { sessionId, folderId: previousFolderId },
+                );
                 return {
                     sessionOrganizationFolderAssignmentsBySessionKey: nextAssignments,
                 } as Partial<S>;

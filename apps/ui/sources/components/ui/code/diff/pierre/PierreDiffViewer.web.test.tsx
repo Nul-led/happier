@@ -66,9 +66,11 @@ vi.mock('@pierre/diffs/react', async () => {
     return {
         ...actual,
         WorkerPoolContext: { Provider: ({ children }: any) => children },
-        Virtualizer: ({ children }: any) => {
+        Virtualizer: ({ children, ...props }: any) => {
             virtualizerSpy();
-            return React.createElement('Virtualizer', null, children);
+            // Third-party scroll-container state must survive a patch refresh.
+            const [scrollTop, setScrollTop] = React.useState(0);
+            return React.createElement('Virtualizer', { ...props, scrollTop, onScroll: setScrollTop }, children);
         },
         FileDiff: (props: any) => {
             fileDiffSpy(props);
@@ -263,7 +265,7 @@ describe('PierreDiffViewer (web)', () => {
         }
     });
 
-    it('inherits maxHeight on the wrapper when virtualized', async () => {
+    it('keeps the owned virtualizer bounded by its pane when virtualized', async () => {
         fileDiffSpy.mockClear();
         virtualizerSpy.mockClear();
 
@@ -295,7 +297,20 @@ describe('PierreDiffViewer (web)', () => {
         });
 
         const wrapper = screen.findByProps({ 'data-testid': 'pierre-diff-viewer' });
-        expect(wrapper.props.style?.maxHeight).toBe('inherit');
+        expect(wrapper.props.style).toMatchObject({
+            display: 'flex',
+            flex: '1 1 0%',
+            flexDirection: 'column',
+            inset: 0,
+            minHeight: 0,
+            overflow: 'hidden',
+            position: 'absolute',
+        });
+        expect(screen.findByType('Virtualizer' as any).props.style).toMatchObject({
+            flex: '1 1 0%',
+            minHeight: 0,
+            overflowY: 'auto',
+        });
     });
 
     it('publishes scale-aware diff typography CSS variables', async () => {
@@ -487,6 +502,35 @@ describe('PierreDiffViewer (web)', () => {
         expect(fileDiff?.lang).toBe('dotenv');
     });
 
+    it('retains the scroll container when a refreshed patch changes', async () => {
+        const { PierreDiffViewer } = await import('./PierreDiffViewer.web');
+        const patch = 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-foo\n+bar\n';
+        const view = (unifiedDiff: string) => <PierreDiffViewer mode="unified" filePath="a.ts" unifiedDiff={unifiedDiff} virtualized />;
+        const { tree } = await renderScreen(view(patch));
+        await renderer.act(async () => {
+            tree.findByType('Virtualizer').props.onScroll(600);
+        });
+        await renderer.act(async () => { tree.update(view(patch.replace('+bar', '+updated'))); });
+        expect(tree.findByType('Virtualizer').props.scrollTop).toBe(600);
+    });
+
+    it('does not reapply a consumed jump target on a patch refresh', async () => {
+        const { PierreDiffViewer } = await import('./PierreDiffViewer.web');
+        const root = document.createElement('div');
+        const target = document.createElement('div');
+        target.dataset.lineType = 'change-addition';
+        target.dataset.line = '1';
+        target.scrollIntoView = () => { root.scrollTop = 100; };
+        root.append(target);
+        const patch = 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-foo\n+bar\n';
+        const view = (unifiedDiff: string) => <PierreDiffViewer mode="unified" filePath="a.ts" unifiedDiff={unifiedDiff} scrollToLineId="a:5" />;
+        const { tree } = await renderScreen(view(patch), { createNodeMock: () => root });
+        expect(root.scrollTop).toBe(100);
+        root.scrollTop = 600;
+        await renderer.act(async () => { tree.update(view(patch.replace('+bar', '+updated'))); });
+        expect(root.scrollTop).toBe(600);
+    });
+
     it('does not render an inner Virtualizer when a shared virtualizer context is already present', async () => {
         fileDiffSpy.mockClear();
         virtualizerSpy.mockClear();
@@ -494,12 +538,7 @@ describe('PierreDiffViewer (web)', () => {
         const { VirtualizerContext } = await import('@pierre/diffs/react');
         const { PierreDiffViewer } = await import('./PierreDiffViewer.web');
 
-        await renderer.act(async () => {
-            await renderScreen(<VirtualizerContext.Provider value={{} as any}>
-                    <PierreDiffViewer
-                        mode="unified"
-                        filePath="src/a.ts"
-                        unifiedDiff={[
+        const patch = [
                             'diff --git a/a.ts b/a.ts',
                             '--- a/a.ts',
                             '+++ b/a.ts',
@@ -507,16 +546,32 @@ describe('PierreDiffViewer (web)', () => {
                             '-foo',
                             '+bar',
                             '',
-                        ].join('\n')}
+                        ].join('\n');
+        const view = (unifiedDiff: string) => (
+            <VirtualizerContext.Provider value={{} as any}>
+                <PierreDiffViewer
+                        mode="unified"
+                        filePath="src/a.ts"
+                        unifiedDiff={unifiedDiff}
                         wrapLines={true}
                         showLineNumbers={true}
                         showPrefix={true}
                         virtualized={true}
                     />
-                </VirtualizerContext.Provider>);
+            </VirtualizerContext.Provider>
+        );
+        let screen!: Awaited<ReturnType<typeof renderScreen>>;
+        await renderer.act(async () => {
+            screen = await renderScreen(view(patch));
         });
 
         expect(virtualizerSpy).toHaveBeenCalledTimes(0);
+        expect(screen.findByProps({ 'data-testid': 'pierre-diff-viewer' }).props.style?.position).toBeUndefined();
+        const firstRenderedKey = screen.tree.findByType('FileDiff').props.renderedFileDiff.cacheKey;
+        await renderer.act(async () => {
+            screen.tree.update(view(patch.replace('+bar', '+updated')));
+        });
+        expect(screen.tree.findByType('FileDiff').props.renderedFileDiff.cacheKey).not.toBe(firstRenderedKey);
     });
 
     it('wires Pierre line clicks to onPressLine with a mapped CodeLine', async () => {
@@ -1284,7 +1339,11 @@ describe('PierreDiffViewer (web)', () => {
         const fallbackText = String((fallback.children ?? []).join(''));
         expect(fallbackText).toContain('--- a/a.ts');
         expect(fallbackText).toContain('+++ b/a.ts');
-    });
+        await renderer.act(async () => {
+            screen.tree.update(<PierreDiffViewer mode="unified" filePath="src/a.ts" unifiedDiff={patch.replace('+bar', '+recovered')} />);
+        });
+        expect(screen.findAllByProps({ 'data-testid': 'pierre-diff-fallback' })).toHaveLength(0);
+        expect(fileDiffSpy.mock.calls.at(-1)?.[0].fileDiff).toBeTruthy();    });
 
     it('sanitizes multi-file unified diffs to a single-file patch for Pierre', async () => {
         fileDiffSpy.mockClear();

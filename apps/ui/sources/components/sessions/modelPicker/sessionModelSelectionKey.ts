@@ -1,6 +1,14 @@
 import type { ProviderBoundModelRef } from '@happier-dev/protocol';
+import type { TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol/teams';
 
 export type SessionModelPickerValue = ProviderBoundModelRef | null;
+export type SessionModelPickerOptionValue = SessionModelPickerValue | TeamCredentialProviderModelSelectionV1;
+
+export function isTeamCredentialProviderModelPickerValue(
+    value: SessionModelPickerOptionValue,
+): value is TeamCredentialProviderModelSelectionV1 {
+    return value !== null && 'kind' in value && value.kind === 'team_credential_provider_model';
+}
 
 /**
  * Canonical UI identity for a session model selection.
@@ -9,8 +17,10 @@ export type SessionModelPickerValue = ProviderBoundModelRef | null;
  * equal vendor model ids from native, work, and personal connections never
  * collapse into one row or favorite.
  */
-export function sessionModelSelectionKey(value: SessionModelPickerValue): string {
+export function sessionModelSelectionKey(value: SessionModelPickerOptionValue): string {
     return value === null
         ? 'automatic'
-        : JSON.stringify([value.agentTargetKey, value.providerConnectionId, value.modelId]);
+        : isTeamCredentialProviderModelPickerValue(value)
+            ? JSON.stringify(['team_resource', value.teamId, value.resourceId, value.expectedResourceRevision, value.deliveryMode, value.agentTargetKey, value.modelId])
+            : JSON.stringify([value.agentTargetKey, value.providerConnectionId, value.modelId]);
 }

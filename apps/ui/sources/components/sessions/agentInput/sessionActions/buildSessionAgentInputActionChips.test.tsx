@@ -67,15 +67,16 @@ describe('buildSessionAgentInputActionChips', () => {
         actionIdsState.value = ['review.start', 'subagents.delegate.start'];
 
         const chips = buildSessionAgentInputActionChips({
-            sessionId: 'session-1',
+            accountScope: { serverId: 'server-a', accountId: 'account-a' },
+            address: { serverId: 'server-a', sessionId: 'session-1' },
             defaultBackendTarget: { kind: 'builtInAgent', agentId: 'claude' } as const,
             defaultBackendId: 'claude',
             instructionsText: '',
         });
 
         const expectations = [
-            { key: 'session-action:review.start', actionId: 'review.start', permissionMode: 'read-only' },
-            { key: 'session-action:subagents.delegate.start', actionId: 'subagents.delegate.start', permissionMode: 'safe-yolo' },
+            { key: 'session-action:review.start', actionId: 'review.start', permissionMode: 'read_only' },
+            { key: 'session-action:subagents.delegate.start', actionId: 'subagents.delegate.start', permissionMode: 'workspace_write' },
         ] as const;
 
         for (const expectation of expectations) {
@@ -102,7 +103,8 @@ describe('buildSessionAgentInputActionChips', () => {
             rendered.props.onPress?.();
 
             expect(createSessionActionDraftMock).toHaveBeenLastCalledWith(
-                'session-1',
+                { serverId: 'server-a', accountId: 'account-a' },
+                { serverId: 'server-a', sessionId: 'session-1' },
                 expect.objectContaining({
                     actionId: expectation.actionId,
                     input: expect.objectContaining({
@@ -111,5 +113,30 @@ describe('buildSessionAgentInputActionChips', () => {
                 }),
             );
         }
+    });
+
+    it('does not let a retired exact Account owner create an action draft', () => {
+        actionIdsState.value = ['review.start'];
+        let current = true;
+        const chips = buildSessionAgentInputActionChips({
+            accountScope: { serverId: 'server-a', accountId: 'account-a' },
+            accountScopeIsCurrent: () => current,
+            address: { serverId: 'server-a', sessionId: 'session-1' },
+            defaultBackendId: 'claude',
+            instructionsText: '',
+        });
+        const rendered = chips[0]?.render({
+            chipStyle: () => null,
+            showLabel: true,
+            iconColor: '#000',
+            textStyle: {},
+            countTextStyle: {},
+            popoverAnchorRef: { current: null },
+        }) as React.ReactElement<{ onPress?: () => void }>;
+
+        current = false;
+        rendered.props.onPress?.();
+
+        expect(createSessionActionDraftMock).not.toHaveBeenCalled();
     });
 });

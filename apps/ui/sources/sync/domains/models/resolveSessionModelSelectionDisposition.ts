@@ -3,12 +3,14 @@ import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessio
 import {
     readActiveSessionModelSelectionFromMetadata,
     resolveModelSelectionIntentFromSessionMetadata,
+    readSessionModelSelectionV2FromMetadata,
 } from '@happier-dev/agents';
 import {
     readSessionProviderBindingMetadataStateV1,
     sessionProviderBindingMetadataMatchesRuntimeBasisV1,
     type ProviderBoundModelRef,
     type SessionModelSelectionIntentV1,
+    type SessionModelSelectionV2,
 } from '@happier-dev/protocol';
 
 export type CurrentSessionRunnerProcessIdentity = Readonly<{
@@ -20,6 +22,7 @@ export type SessionModelSelectionDisposition = Readonly<{
     sessionDisposition: 'active' | 'next_launch';
     proposedIntent: SessionModelSelectionIntentV1 | null;
     proposedSelection: ProviderBoundModelRef | null;
+    proposedSelectionV2: SessionModelSelectionV2 | null;
     activeSelection: ProviderBoundModelRef | null;
     selectionTransitionPending: boolean;
     reportedSelection: ProviderBoundModelRef | null;
@@ -43,6 +46,7 @@ export function resolveSessionModelSelectionDisposition(params: Readonly<{
     currentRunnerProcessIdentity: CurrentSessionRunnerProcessIdentity | null;
 }>): SessionModelSelectionDisposition {
     let proposedIntent: SessionModelSelectionIntentV1 | null = null;
+    const proposedSelectionV2 = readSessionModelSelectionV2FromMetadata(params.metadata);
     try {
         proposedIntent = resolveModelSelectionIntentFromSessionMetadata(
             params.metadata,
@@ -51,7 +55,17 @@ export function resolveSessionModelSelectionDisposition(params: Readonly<{
     } catch {
         proposedIntent = null;
     }
-    const proposedSelection = proposedIntent?.selection ?? null;
+    const proposedSelection = proposedSelectionV2
+        ? proposedSelectionV2.ref.source === 'team_resource'
+            ? null
+            : {
+                agentTargetKey: proposedSelectionV2.ref.agentTargetKey,
+                providerConnectionId: proposedSelectionV2.ref.source === 'native'
+                    ? null
+                    : proposedSelectionV2.ref.providerConnectionId,
+                modelId: proposedSelectionV2.ref.modelId,
+            }
+        : proposedIntent?.selection ?? null;
 
     const providerBindingState = readSessionProviderBindingMetadataStateV1(params.metadata);
     const exactSelection = readActiveSessionModelSelectionFromMetadata(
@@ -93,14 +107,24 @@ export function resolveSessionModelSelectionDisposition(params: Readonly<{
             : providerFallbackSelection;
     const reportedSelection = exactSelection ?? fallbackSelection;
     const activeSelection = params.sessionActive ? exactSelection : null;
-    const selectionTransitionPending = params.sessionActive
-        && proposedIntent !== null
+    const teamSelectionTransitionPending = proposedSelectionV2?.ref.source === 'team_resource'
         && (
-            activeSelection === null
-            || proposedSelection === null
-            || activeSelection.agentTargetKey !== proposedSelection.agentTargetKey
-            || activeSelection.providerConnectionId !== proposedSelection.providerConnectionId
-            || activeSelection.modelId !== proposedSelection.modelId
+            params.currentRunnerProcessIdentity === null
+            || params.currentRunnerProcessIdentity.processStartTimeMs <= proposedSelectionV2.updatedAt
+        );
+    const selectionTransitionPending = params.sessionActive
+        && (
+            teamSelectionTransitionPending
+            || (
+                proposedIntent !== null
+                && (
+                    activeSelection === null
+                    || proposedSelection === null
+                    || activeSelection.agentTargetKey !== proposedSelection.agentTargetKey
+                    || activeSelection.providerConnectionId !== proposedSelection.providerConnectionId
+                    || activeSelection.modelId !== proposedSelection.modelId
+                )
+            )
         );
     const reportedSelectionStatus = reportedSelection === null
         ? null
@@ -112,6 +136,7 @@ export function resolveSessionModelSelectionDisposition(params: Readonly<{
         sessionDisposition: params.sessionActive ? 'active' : 'next_launch',
         proposedIntent,
         proposedSelection,
+        proposedSelectionV2,
         activeSelection,
         selectionTransitionPending,
         reportedSelection,

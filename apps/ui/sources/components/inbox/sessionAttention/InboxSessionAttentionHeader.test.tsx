@@ -36,6 +36,10 @@ vi.mock('@/components/ui/text/Text', () => ({
 vi.mock('@/components/sessions/context/SessionContextChips', () => ({
     SessionContextChips: () => null,
 }));
+vi.mock('@/components/sessions/shell/SessionListIdentity', () => ({ SessionListIdentity: () => null }));
+vi.mock('@/components/sessions/shell/resolveSessionListDensityViewState', () => ({
+    SESSION_LIST_ROW_IDENTITY_METRICS: { compact: { slotSize: 30, agentLogoSize: 23 } },
+}));
 
 vi.mock('@/text', () => ({
     t: (key: string, params?: Readonly<{ session?: string }>) =>
@@ -49,6 +53,10 @@ describe('InboxSessionAttentionHeader', () => {
         await act(async () => {
             renderer = create(
                 <InboxSessionAttentionHeader
+                    session={{ id: 'session-1' } as never}
+                    serverId={null}
+                    identityDisplay="none"
+                    connected={false}
                     sessionTitle="Fix login"
                     machineLabel={null}
                     pathLabel={null}

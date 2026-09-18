@@ -18,7 +18,7 @@ function isTerminalConnectPath(pathname: string): boolean {
  */
 export function bootstrapTerminalConnectWebHash(params: Readonly<{
     url: URL;
-    sessionStorage: Pick<Storage, 'getItem' | 'setItem'>;
+    sessionStorage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
     history: Pick<History, 'replaceState'>;
 }>): void {
     if (!isTerminalConnectPath(params.url.pathname)) return;
@@ -29,7 +29,8 @@ export function bootstrapTerminalConnectWebHash(params: Readonly<{
     try {
         params.sessionStorage.setItem(TERMINAL_CONNECT_WEB_BOOTSTRAP_STORAGE_KEY, hash);
     } catch {
-        // Best-effort only.
+        // Keep the hash visible when storage cannot take custody.
+        return;
     }
 
     try {
@@ -37,19 +38,23 @@ export function bootstrapTerminalConnectWebHash(params: Readonly<{
         const search = String(params.url.search ?? '');
         params.history.replaceState(null, '', `${normalizedPath}${search}`);
     } catch {
-        // Best-effort only.
+        invalidateTerminalConnectWebBootstrapHash(params.sessionStorage);
     }
 }
 
+function invalidateTerminalConnectWebBootstrapHash(
+    sessionStorage: Pick<Storage, 'setItem' | 'removeItem'>,
+): void {
+    try { sessionStorage.setItem(TERMINAL_CONNECT_WEB_BOOTSTRAP_STORAGE_KEY, ''); } catch { /* best-effort tombstone */ }
+    try { sessionStorage.removeItem(TERMINAL_CONNECT_WEB_BOOTSTRAP_STORAGE_KEY); } catch { /* tombstone remains */ }
+}
+
 export function consumeTerminalConnectWebBootstrapHash(
-    sessionStorage: Pick<Storage, 'getItem' | 'removeItem'>,
+    sessionStorage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>,
 ): string | null {
-    try {
-        const stored = sessionStorage.getItem(TERMINAL_CONNECT_WEB_BOOTSTRAP_STORAGE_KEY);
-        if (!stored) return null;
-        sessionStorage.removeItem(TERMINAL_CONNECT_WEB_BOOTSTRAP_STORAGE_KEY);
-        return stored;
-    } catch {
-        return null;
-    }
+    let stored: string | null;
+    try { stored = sessionStorage.getItem(TERMINAL_CONNECT_WEB_BOOTSTRAP_STORAGE_KEY); } catch { return null; }
+    if (!stored) return null;
+    invalidateTerminalConnectWebBootstrapHash(sessionStorage);
+    return stored;
 }

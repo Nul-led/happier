@@ -8,6 +8,8 @@ import {
     restoreAccountSettingsFromHistorySnapshot,
 } from '@/sync/engine/settings/accountSettingsHistoryRestore';
 import { storage } from '@/sync/domains/state/storageStore';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
+import { areAccountSettingsScopesEqual, type AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Modal } from '@/modal';
@@ -34,35 +36,44 @@ export const SettingsHistorySection = React.memo(function SettingsHistorySection
     credentials: AuthCredentials | null;
     encryption: Encryption | null;
 }>) {
-    const [snapshots, setSnapshots] = React.useState<
+    const [snapshots, setSnapshots] = React.useState<Readonly<{ scope: AccountSettingsScope | null }> & (
         | Readonly<{ owner: AuthCredentials | null; status: 'loading' }>
         | Readonly<{ owner: AuthCredentials; status: 'empty' }>
         | Readonly<{ owner: AuthCredentials; status: 'unavailable' }>
         | Readonly<{ owner: AuthCredentials; status: 'ready'; versions: readonly number[]; recordedAtByVersion: ReadonlyMap<number, string> }>
-    >({ owner: null, status: 'loading' });
+    )>({ owner: null, scope: null, status: 'loading' });
     const [restoringVersion, setRestoringVersion] = React.useState<number | null>(null);
+    const settingsScope = useAccountSettingsScope();
     const mountedRef = React.useRef(true);
     const credentialsRef = React.useRef(params.credentials);
     credentialsRef.current = params.credentials;
 
-    const refresh = React.useCallback(async (credentials: AuthCredentials, signal?: AbortSignal) => {
-        const result = await fetchAccountSettingsHistory(credentials, { signal });
-        if (signal?.aborted || !mountedRef.current || credentialsRef.current !== credentials) return;
+    const isCurrent = React.useCallback((credentials: AuthCredentials, scope: AccountSettingsScope) => (
+        mountedRef.current
+        && credentialsRef.current === credentials
+        && areAccountSettingsScopesEqual(storage.getState().settingsScope, scope)
+    ), []);
+
+    const refresh = React.useCallback(async (credentials: AuthCredentials, scope: AccountSettingsScope, signal?: AbortSignal) => {
+        if (signal?.aborted || !isCurrent(credentials, scope)) return;
+        const result = await fetchAccountSettingsHistory(credentials, { settingsScope: scope, signal });
+        if (signal?.aborted || !isCurrent(credentials, scope)) return;
         if (result.status !== 'ready' || result.snapshots.length === 0) {
             setSnapshots(result.status !== 'ready'
-                ? { owner: credentials, status: 'unavailable' }
-                : { owner: credentials, status: 'empty' });
+                ? { owner: credentials, scope, status: 'unavailable' }
+                : { owner: credentials, scope, status: 'empty' });
             return;
         }
         // Newest first: restore goes back to a previous point in time.
         const ordered = [...result.snapshots].sort((left, right) => right.version - left.version);
         setSnapshots({
             owner: credentials,
+            scope,
             status: 'ready',
             versions: ordered.map((snapshot) => snapshot.version),
             recordedAtByVersion: new Map(ordered.map((snapshot) => [snapshot.version, snapshot.createdAt])),
         });
-    }, []);
+    }, [isCurrent]);
 
     React.useEffect(() => {
         mountedRef.current = true;
@@ -74,31 +85,36 @@ export const SettingsHistorySection = React.memo(function SettingsHistorySection
     React.useEffect(() => {
         const credentials = params.credentials;
         setRestoringVersion(null);
-        if (!credentials) {
-            setSnapshots({ owner: null, status: 'loading' });
+        if (!credentials || !settingsScope) {
+            setSnapshots({ owner: null, scope: settingsScope, status: 'loading' });
             return;
         }
         const controller = new AbortController();
-        setSnapshots({ owner: credentials, status: 'loading' });
-        void refresh(credentials, controller.signal);
+        setSnapshots({ owner: credentials, scope: settingsScope, status: 'loading' });
+        void refresh(credentials, settingsScope, controller.signal);
         return () => controller.abort();
-    }, [params.credentials, refresh]);
+    }, [params.credentials, settingsScope, refresh]);
 
     if (!params.credentials) return null;
     const visibleSnapshots = snapshots.owner === params.credentials
+        && areAccountSettingsScopesEqual(snapshots.scope, settingsScope)
         ? snapshots
         : { owner: params.credentials, status: 'loading' as const };
 
     const handleRestore = (historyVersion: number): void => {
         void (async () => {
             const credentials = params.credentials;
-            if (!credentials) return;
+            const expectedSettingsScope = settingsScope;
+            if (!credentials || !expectedSettingsScope) return;
             const confirmed = await Modal.confirm(
                 t('settingsAccount.history.restoreConfirmTitle'),
                 t('settingsAccount.history.restoreConfirmBody'),
                 { confirmText: t('settingsAccount.history.restoreConfirmAction'), destructive: true },
             );
-            if (!confirmed || !mountedRef.current || credentialsRef.current !== credentials) return;
+            if (
+                !confirmed
+                || !isCurrent(credentials, expectedSettingsScope)
+            ) return;
             // Read at press time: the version being replaced is the current one.
             const expectedSettingsVersion = storage.getState().settingsVersion ?? 0;
             setRestoringVersion(historyVersion);
@@ -106,9 +122,11 @@ export const SettingsHistorySection = React.memo(function SettingsHistorySection
                 const result = await restoreAccountSettingsFromHistorySnapshot({
                     credentials,
                     encryption: params.encryption,
+                    settingsScope: expectedSettingsScope,
                     historyVersion,
                     expectedSettingsVersion,
                 });
+                if (!isCurrent(credentials, expectedSettingsScope)) return;
                 if (result.status === 'conflict') {
                     await Modal.alert(
                         t('settingsAccount.history.conflictTitle'),
@@ -130,6 +148,7 @@ export const SettingsHistorySection = React.memo(function SettingsHistorySection
                         : 'settingsAccount.history.restoredBody'),
                 );
             } catch (error) {
+                if (!isCurrent(credentials, expectedSettingsScope)) return;
                 if (error instanceof AccountSettingsHistoryRestoreInvalidError) {
                     await Modal.alert(
                         t('common.error'),
@@ -146,9 +165,9 @@ export const SettingsHistorySection = React.memo(function SettingsHistorySection
                 }
                 await Modal.alert(t('common.error'), t('settingsAccount.history.unavailableBody'));
             } finally {
-                if (mountedRef.current && credentialsRef.current === credentials) {
+                if (isCurrent(credentials, expectedSettingsScope)) {
                     setRestoringVersion(null);
-                    void refresh(credentials);
+                    void refresh(credentials, expectedSettingsScope);
                 }
             }
         })();

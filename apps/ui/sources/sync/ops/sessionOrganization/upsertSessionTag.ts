@@ -1,6 +1,6 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { upsertSessionOrganizationTag as upsertSessionOrganizationTagApi } from '@/sync/api/session/sessionOrganizationApi';
-import { readSessionOrganizationServerScopedId } from '@/sync/domains/session/organization';
+import { buildSessionOrganizationServerKey } from '@/sync/domains/session/organization';
 import type { UiSessionOrganizationTag } from '@/sync/domains/session/organization';
 import { getStorage } from '@/sync/domains/state/storageStore';
 import type { CreateOrUpdateSessionOrganizationTagRequest } from '@happier-dev/protocol';
@@ -17,9 +17,8 @@ type ConcreteSessionOrganizationTagRequest = CreateOrUpdateSessionOrganizationTa
 function readCurrentTagIds(serverId: string): Set<string> {
     const state = getStorage().getState();
     const ids = new Set<string>();
-    for (const key of Object.keys(state.sessionOrganizationTagsByTagKey)) {
-        const id = readSessionOrganizationServerScopedId(key, serverId);
-        if (id) ids.add(id);
+    for (const [key, tag] of Object.entries(state.sessionOrganizationTagsByTagKey)) {
+        if (key === buildSessionOrganizationServerKey(serverId, tag.tagId)) ids.add(tag.tagId);
     }
     return ids;
 }

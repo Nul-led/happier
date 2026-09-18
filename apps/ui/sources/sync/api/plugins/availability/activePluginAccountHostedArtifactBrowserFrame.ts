@@ -2,7 +2,7 @@ import { apiSocket } from '@/sync/api/session/apiSocket';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import {
     PluginAvailabilityActionHttpPathsV1,
     PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1Schema,
@@ -136,7 +136,7 @@ function defaultDependencies(): ActivePluginAccountHostedArtifactBrowserFrameIss
             };
         },
         captureRequestAuthority: async ({ scope, activeRequest }) => {
-            const authority = await captureSessionRequestAuthorityForServerAccountScope({
+            const authority = await captureServerRequestAuthorityForServerAccountScope({
                 scope,
                 activeRequest,
             });

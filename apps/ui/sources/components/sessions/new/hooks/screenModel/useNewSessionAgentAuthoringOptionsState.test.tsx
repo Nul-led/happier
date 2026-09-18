@@ -196,7 +196,7 @@ describe('useNewSessionAgentAuthoringOptionsState', () => {
             rememberedEngineSelection: null,
         }));
 
-        expect(hook.getCurrent().modelMode).toBe(getAgentCore('gemini').model.defaultMode);
+        expect(hook.getCurrent().modelMode).toBe(getAgentCore('gemini').model?.defaultMode);
         expect(hook.getCurrent().modelMode).not.toBe('gpt-5.5');
     });
 
@@ -368,7 +368,7 @@ describe('useNewSessionAgentAuthoringOptionsState', () => {
 
         await hook.rerender(buildProps('opencode', null));
 
-        expect(hook.getCurrent().modelMode).toBe(getAgentCore('opencode').model.defaultMode);
+        expect(hook.getCurrent().modelMode).toBe(getAgentCore('opencode').model?.defaultMode);
         expect(hook.getCurrent().modelMode).not.toBe('gpt-5.5');
         expect(hook.getCurrent().acpSessionModeId).toBeNull();
         expect(hook.getCurrent().sessionConfigOptionOverrides).toBeNull();
@@ -437,7 +437,7 @@ describe('useNewSessionAgentAuthoringOptionsState', () => {
             rememberedEngineSelection: null,
         }));
 
-        expect(mismatchedHook.getCurrent().modelMode).toBe(getAgentCore('opencode').model.defaultMode);
+        expect(mismatchedHook.getCurrent().modelMode).toBe(getAgentCore('opencode').model?.defaultMode);
         expect(mismatchedHook.getCurrent().modelMode).not.toBe('gpt-5.5');
         expect(mismatchedHook.getCurrent().acpSessionModeId).toBeNull();
         expect(mismatchedHook.getCurrent().sessionConfigOptionOverrides).toBeNull();
@@ -471,7 +471,7 @@ describe('useNewSessionAgentAuthoringOptionsState', () => {
             rememberedEngineSelection: null,
         }));
 
-        expect(matchingHook.getCurrent().modelMode).toBe(getAgentCore('codex').model.defaultMode);
+        expect(matchingHook.getCurrent().modelMode).toBe(getAgentCore('codex').model?.defaultMode);
         expect(matchingHook.getCurrent().acpSessionModeId).toBeNull();
 
         const mismatchedHook = await renderHook(() => useNewSessionAgentAuthoringOptionsState({

@@ -18,8 +18,11 @@ import {
   VoiceProviderContributionSchema,
 } from '@happier-dev/protocol';
 import { qualifyPluginContributionReferenceV1 } from '@happier-dev/protocol/plugins/contribution-identity';
+import { sha256 } from '@noble/hashes/sha2';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 
 import { settingsParse, type Settings } from '@/sync/domains/settings/settings';
+import type { SavedSecretReferenceResolution } from '@/sync/store/settings/savedSecretCatalogSnapshot';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 
 export type AccountVoiceCredentialSource = 'account' | 'machine_override';
@@ -39,7 +42,21 @@ export type AccountVoiceCredentialStatus = Readonly<{
     secretId: string;
     source: AccountVoiceCredentialSource;
   }> | null;
+  savedSecret?: SavedSecretReferenceResolution;
 }>;
+
+export function resolveAccountVoiceCredentialApprovalDigest(params: Readonly<{
+  requiredRecipientContractDigest: string | null | undefined;
+  savedSecret: SavedSecretReferenceResolution | null | undefined;
+}>): string | null {
+  const required = params.requiredRecipientContractDigest;
+  if (!required) return null;
+  if (params.savedSecret?.kind !== 'shared_resource') return required;
+  if (!params.savedSecret.fingerprint) return null;
+  return `sha256:${bytesToHex(sha256(utf8ToBytes(
+    `happier.voice.shared-secret-approval.v1\u0000${required}\u0000${params.savedSecret.fingerprint}`,
+  )))}`;
+}
 
 export type AccountVoiceCredentialSourceSelectionResolution = ReturnType<
   typeof resolveAccountSettingsVoiceCredentialSource
@@ -452,6 +469,7 @@ export function resolveAccountVoiceCredentialStatus(params: Readonly<{
   credentialSlotId: string;
   machineId?: string | null;
   requiredRecipientContractDigest?: string | null;
+  resolveSavedSecret?: (ref: string) => SavedSecretReferenceResolution;
 }>): AccountVoiceCredentialStatus {
   let reference: ReturnType<typeof resolveAccountVoiceCredential>;
   let binding: ReturnType<typeof resolveAccountSettingsVoiceCredentialSecret>;
@@ -473,12 +491,30 @@ export function resolveAccountVoiceCredentialStatus(params: Readonly<{
     return Object.freeze({ status: 'unknown', reference: null });
   }
   if (!reference) return Object.freeze({ status: 'missing', reference: null });
+  const savedSecret = params.resolveSavedSecret?.(reference.secretId);
+  if (reference.secretId.startsWith('happier:shared-secret:v1:')) {
+    if (!savedSecret || savedSecret.kind !== 'shared_resource' || savedSecret.status !== 'ready') {
+      return Object.freeze({
+        status: savedSecret?.status === 'access_removed' || savedSecret?.status === 'deleted'
+          ? 'missing'
+          : 'unknown',
+        reference,
+        ...(savedSecret ? { savedSecret } : {}),
+      });
+    }
+  }
+  const requiredApprovalDigest = resolveAccountVoiceCredentialApprovalDigest({
+    requiredRecipientContractDigest: params.requiredRecipientContractDigest,
+    savedSecret,
+  });
   return Object.freeze({
     status: params.requiredRecipientContractDigest
-      && binding.approvedRecipientContractDigest !== params.requiredRecipientContractDigest
+      && (!requiredApprovalDigest
+        || binding.approvedRecipientContractDigest !== requiredApprovalDigest)
       ? 'review_required'
       : 'ready',
     reference,
+    ...(savedSecret?.kind === 'shared_resource' ? { savedSecret } : {}),
   });
 }
 
@@ -556,8 +592,8 @@ export function createAccountVoiceCredentialReplacementMutation(params: Readonly
   secretId: string;
   mutation: Extract<AccountSettingsSavedSecretMutation, { kind: 'replaceVoiceCredentialSecret' }>;
 }> {
-  const value = params.value.trim();
-  if (!value) throw new TypeError('Voice credential value must not be empty');
+  const value = params.value;
+  if (value.length === 0) throw new TypeError('Voice credential value must not be empty');
   const secretId = params.generateId();
   const existing = params.expectedSecretId
     ? params.settings.secrets.find((secret) => secret.id === params.expectedSecretId)

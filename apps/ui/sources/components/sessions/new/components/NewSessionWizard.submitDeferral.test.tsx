@@ -108,6 +108,7 @@ vi.mock('@/components/sessions/attachments/useAttachmentDraftManager', () => ({
     useAttachmentDraftManager: () => ({
         filePickerRef: { current: null },
         drafts: [],
+        getDraftsSnapshot: () => [],
         hasSendableAttachments: false,
         agentInputAttachments: [],
         addWebFiles: () => {},

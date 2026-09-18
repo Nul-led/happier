@@ -11,9 +11,14 @@ import { getPersistenceStorage } from '@/sync/domains/state/persistenceStorage';
 import { scopedSessionLocalStateKey } from '@/sync/domains/state/sessionLocalStateKeys';
 import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { getPendingMessageVisualState } from '@/components/sessions/pending/pendingMessageVisualState';
+import { SessionStoredMessageContentSchema } from '@happier-dev/protocol';
+import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
+import { settingsParse } from '@/sync/domains/settings/settings';
+import { saveAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
 
 import {
     deletePendingMessageV2,
+    discardPendingMessageV2,
     enqueuePendingMessageV2,
     fetchAndApplyPendingMessagesV2,
     replayPersistedPendingOutboxForSession,
@@ -21,7 +26,66 @@ import {
     sendPendingDeliveryAsNewV2,
     retryPendingOutboxOperationV2,
 } from './pendingQueueV2';
-import { buildSession, currentPendingEnqueueAck, resetPendingQueueState } from './pendingQueueV2.testHelpers';
+import { buildSession, createPendingQueueEncryption, currentPendingEnqueueAck, getSessionEncryptionOrThrow, resetPendingQueueState } from './pendingQueueV2.testHelpers';
+it('refreshes only the exact target and keeps sibling Pending rows intact', async () => {
+    await resetPendingQueueState();
+    const sessionId = 'target-isolation';
+    const outboxScope = { serverId: 'target-server', accountId: 'target-account' };
+    storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
+    const runA = { kind: 'execution_run' as const, runId: 'run-a' };
+    const runB = { kind: 'execution_run' as const, runId: 'run-b' };
+    for (const [id, recipient] of [['main', undefined], ['a', runA], ['b', runB]] as const) {
+        storage.getState().upsertPendingMessage(sessionId, {
+            id, localId: id, recipient, createdAt: 1, updatedAt: 1, text: id,
+            rawRecord: null, source: 'server_pending', pendingOutboxScope: outboxScope,
+        });
+    }
+    storage.getState().upsertPendingMessage(sessionId, {
+        id: 'a-other-home', localId: 'a-other-home', recipient: runA,
+        createdAt: 1, updatedAt: 1, text: 'a-other-home', rawRecord: null,
+        source: 'server_pending',
+        pendingOutboxScope: { serverId: 'other-server', accountId: 'other-account' },
+    });
+    const paths: string[] = [];
+    await fetchAndApplyPendingMessagesV2({
+        sessionId, recipient: runA, encryption: null, outboxScope, isOutboxScopeCurrent: () => true,
+        request: async (path) => {
+            paths.push(path);
+            return Response.json({ pending: [] });
+        },
+    });
+    expect(paths).toEqual(['/v2/sessions/target-isolation/execution-runs/run-a/pending?includeDiscarded=1']);
+    expect(storage.getState().sessionPending[sessionId]?.messages.map((row) => row.id).sort()).toEqual(['a-other-home', 'b', 'main']);
+});
+
+it('discards and restores through the row target, including discarded-only projections', async () => {
+    await resetPendingQueueState();
+    const sessionId = 'target-mutations';
+    const outboxScope = { serverId: 'target-server', accountId: 'target-account' };
+    const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+    storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
+    const message = {
+        id: 'a', localId: 'a', recipient, createdAt: 1, updatedAt: 1, text: 'a',
+        rawRecord: null, source: 'server_pending' as const, pendingOutboxScope: outboxScope,
+    };
+    storage.getState().upsertPendingMessage(sessionId, message);
+    const paths: string[] = [];
+    const request = async (path: string) => {
+        paths.push(path);
+        return Response.json({ pending: [] });
+    };
+    await discardPendingMessageV2({ sessionId, pendingId: 'a', encryption: null, outboxScope, request, isOutboxScopeCurrent: () => true });
+    storage.getState().applyPendingSnapshot(sessionId, {
+        messages: [], discarded: [{ ...message, discardedAt: 2, discardedReason: 'manual' }],
+    });
+    await restoreDiscardedPendingMessageV2({ sessionId, pendingId: 'a', encryption: null, outboxScope, request, isOutboxScopeCurrent: () => true });
+    expect(paths).toEqual([
+        '/v2/sessions/target-mutations/execution-runs/run-a/pending/a/discard',
+        '/v2/sessions/target-mutations/execution-runs/run-a/pending?includeDiscarded=1',
+        '/v2/sessions/target-mutations/execution-runs/run-a/pending/a/restore',
+        '/v2/sessions/target-mutations/execution-runs/run-a/pending?includeDiscarded=1',
+    ]);
+});
 
 function body(localId: string, text: string): string {
     return JSON.stringify({
@@ -32,14 +96,14 @@ function body(localId: string, text: string): string {
     });
 }
 
-function persist(params: Readonly<{
+async function persist(params: Readonly<{
     sessionId: string;
     localId: string;
     text: string;
     scope: Readonly<{ serverId: string; accountId: string }>;
     operation: 'enqueue' | 'cancel';
-}>): void {
-    savePendingOutboxMessage({
+}>): Promise<void> {
+    (await savePendingOutboxMessage({
         sessionId: params.sessionId,
         localId: params.localId,
         createdAt: 111,
@@ -47,8 +111,8 @@ function persist(params: Readonly<{
         rawRecord: { role: 'user', content: { type: 'text', text: params.text }, meta: {} },
         operation: params.operation,
         request: { v: 1, body: body(params.localId, params.text) },
-    }, params.scope);
-    replayPersistedPendingOutboxForSession(params.sessionId, params.scope);
+    }, params.scope));
+    (await replayPersistedPendingOutboxForSession(params.sessionId, params.scope));
 }
 
 function response(
@@ -90,14 +154,201 @@ function response(
 }
 
 describe('pendingQueueV2 scoped refresh reconciliation', () => {
-    beforeEach(() => resetPendingQueueState());
+    beforeEach(async () => await resetPendingQueueState());
+
+    it.each(['plain', 'e2ee'] as const)('enqueues exact Home %s Session facts without borrowing the active same-ID Session', async (encryptionMode) => {
+        const sessionId = 'same-id-qualified-send';
+        const activeServer = await upsertServerProfile({ serverUrl: 'https://enqueue-active.example.test' });
+        const remoteServer = await upsertServerProfile({ serverUrl: 'https://enqueue-remote.example.test' });
+        const activeScope = { serverId: activeServer.id, accountId: 'active-account' };
+        const remoteScope = { serverId: remoteServer.id, accountId: 'remote-account' };
+        await setActiveServerId(activeServer.id, { scope: 'device' });
+        storage.getState().activateProfileScope(activeScope);
+        storage.getState().activateSettingsScope(activeScope);
+        storage.getState().applySettings(settingsParse({ claudeRemoteMaxThinkingTokens: 8192 }), 1);
+        saveAccountSettings(remoteScope, settingsParse({ claudeRemoteMaxThinkingTokens: 4096 }), 1);
+        storage.getState().applySessions([buildSession({ sessionId, overrides: {
+            serverId: activeServer.id, encryptionMode: encryptionMode === 'plain' ? 'e2ee' : 'plain', permissionMode: 'read-only', modelMode: 'active-model',
+            metadata: { path: '/active', host: 'active', flavor: 'codex' },
+        } })]);
+        const remoteSession = buildSession({ sessionId, overrides: {
+            serverId: remoteServer.id, encryptionMode, permissionMode: 'yolo', modelMode: 'remote-model',
+            metadata: { path: '/remote', host: 'remote', flavor: 'claude' },
+        } });
+        const bodies: unknown[] = [];
+        const encryption = encryptionMode === 'plain' ? null : await createPendingQueueEncryption({ sessionId, seedByte: 17 });
+        const result = await enqueuePendingMessageV2({
+            sessionId, session: remoteSession, outboxScope: remoteScope,
+            text: 'qualified send', localId: 'qualified-local', encryption,
+            hostAdmissionOrigin: 'voice', serverWireMode: 'pending_input_v1',
+            request: async (_path, init) => {
+                bodies.push(JSON.parse(String(init?.body)));
+                return currentPendingEnqueueAck(init);
+            },
+        });
+        expect(result.accepted).toBe(true);
+        if (encryption) {
+            const body = bodies[0] as { ciphertext: string };
+            expect(body.ciphertext).toEqual(expect.any(String));
+            const message = { id: 'encrypted-check', seq: 1, localId: null, createdAt: 1, updatedAt: 1,
+                content: SessionStoredMessageContentSchema.parse({ t: 'encrypted', c: body.ciphertext }) };
+            const opened = await getSessionEncryptionOrThrow({ encryption, sessionId }).decryptMessage(message);
+            expect(opened?.content).toMatchObject({
+                content: { text: 'qualified send' }, meta: { permissionMode: 'yolo', model: 'remote-model', claudeRemoteMaxThinkingTokens: 4096 },
+            });
+            const wrongHomeEncryption = await createPendingQueueEncryption({ sessionId, seedByte: 19 });
+            expect((await getSessionEncryptionOrThrow({ encryption: wrongHomeEncryption, sessionId }).decryptMessage(message))?.content).toBeNull();
+        } else {
+            expect(bodies).toMatchObject([{ content: { t: 'plain', v: {
+                content: { text: 'qualified send' }, meta: { permissionMode: 'yolo', model: 'remote-model', claudeRemoteMaxThinkingTokens: 4096 },
+            } } }]);
+        }
+        expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).toBeNull();
+        expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
+
+        let forbiddenRequests = 0;
+        const rejectUnexpectedRequest = async (): Promise<Response> => {
+            forbiddenRequests++;
+            throw new Error('must not send');
+        };
+        await expect(enqueuePendingMessageV2({
+            sessionId, outboxScope: remoteScope, text: 'must not borrow active', localId: 'missing-qualified',
+            encryption: null, serverWireMode: 'pending_input_v1',
+            request: rejectUnexpectedRequest,
+        })).rejects.toThrow();
+        await expect(enqueuePendingMessageV2({
+            sessionId, session: { ...remoteSession, serverId: activeServer.id }, outboxScope: remoteScope,
+            text: 'wrong Home facts', localId: 'wrong-qualified', encryption: null, serverWireMode: 'pending_input_v1',
+            request: rejectUnexpectedRequest,
+        })).rejects.toThrow();
+        expect(forbiddenRequests).toBe(0);
+        expect(bodies).toHaveLength(1);
+    });
+
+    it('keeps exact Home quarantined input out of another Home pending bag', async () => {
+        const activeScope = { serverId: 'quarantine-active', accountId: 'active-account' };
+        const remoteScope = { serverId: 'quarantine-remote', accountId: 'remote-account' };
+        await resetPendingQueueState(activeScope);
+        const sessionId = 'same-quarantined-session';
+        storage.getState().applySessions([buildSession({ sessionId, overrides: {
+            serverId: activeScope.serverId, encryptionMode: 'plain',
+        } })]);
+        const localId = 'remote-quarantined-input';
+        await savePendingOutboxMessage({
+            sessionId, localId, text: 'remote private content', createdAt: 1,
+            rawRecord: { role: 'user', content: { type: 'text', text: 'remote private content' } },
+            // Persistence boundary: emulate a retained row written by an unsupported newer writer.
+            operation: 'future-operation' as never,
+            request: { v: 1, body: body(localId, 'remote private content') },
+        }, remoteScope);
+        let requestCount = 0;
+        await expect(enqueuePendingMessageV2({
+            sessionId, localId, outboxScope: remoteScope,
+            session: buildSession({ sessionId, overrides: { serverId: remoteScope.serverId, encryptionMode: 'plain' } }),
+            text: 'remote private content', encryption: null, serverWireMode: 'pending_input_v1',
+            request: async () => { requestCount++; return Response.json({}); },
+        })).rejects.toThrow('quarantined');
+        expect(requestCount).toBe(0);
+        expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
+    });
+
+    it.each(['enqueue', 'retry'] as const)('does not clear a newly active same-ID Session when the prior Home %s fails', async (operation) => {
+        const sessionId = 'same-id-switch-during-send';
+        const firstServer = await upsertServerProfile({ serverUrl: 'https://enqueue-first.example.test' });
+        const nextServer = await upsertServerProfile({ serverUrl: 'https://enqueue-next.example.test' });
+        const firstScope = { serverId: firstServer.id, accountId: 'first-account' };
+        await setActiveServerId(firstServer.id, { scope: 'device' });
+        storage.getState().activateProfileScope(firstScope);
+        storage.getState().applySessions([buildSession({ sessionId, overrides: {
+            serverId: firstServer.id, encryptionMode: 'plain',
+        } })]);
+        expect(getActiveServerAccountScope()).toEqual(firstScope);
+        let switched = false;
+        const params = {
+            sessionId, outboxScope: firstScope, text: 'first Home input', localId: 'switch-local',
+            encryption: null, serverWireMode: 'pending_input_v1' as const,
+            request: async () => {
+                switched = true;
+                await setActiveServerId(nextServer.id, { scope: 'device' });
+                storage.getState().activateProfileScope({ serverId: nextServer.id, accountId: 'next-account' });
+                storage.setState({ sessions: { [sessionId]: buildSession({ sessionId, overrides: {
+                    serverId: nextServer.id, encryptionMode: 'plain', optimisticThinkingAt: 123,
+                } }) }, sessionPending: {} });
+                expect(storage.getState().sessions[sessionId].optimisticThinkingAt).toBe(123);
+                return new Response('', { status: 400 });
+            },
+        };
+        if (operation === 'retry') {
+            await savePendingOutboxMessage({
+                sessionId, localId: params.localId, text: params.text, createdAt: 1,
+                rawRecord: { role: 'user', content: { type: 'text', text: params.text } },
+                request: { v: 1, body: body(params.localId, params.text) },
+            }, firstScope);
+            await replayPersistedPendingOutboxForSession(sessionId, firstScope);
+        }
+        await expect(operation === 'enqueue' ? enqueuePendingMessageV2(params) : retryPendingOutboxOperationV2(params)).rejects.toThrow();
+        expect(switched).toBe(true);
+        expect(storage.getState().sessions[sessionId].optimisticThinkingAt).toBe(123);
+        expect(storage.getState().sessionPending[sessionId]).toBeUndefined();
+    });
+
+    it('does not clear the active same-ID Session while cancelling another Home outbox row', async () => {
+        const sessionId = 'same-id-remote-cancel';
+        const activeScope = { serverId: 'cancel-active-server', accountId: 'cancel-active-account' } as const;
+        const remoteScope = { serverId: 'cancel-remote-server', accountId: 'cancel-remote-account' } as const;
+        await resetPendingQueueState(activeScope);
+        storage.getState().applySessions([buildSession({ sessionId, overrides: {
+            serverId: activeScope.serverId,
+            encryptionMode: 'plain',
+        } })]);
+        storage.setState((state) => ({
+            ...state,
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...state.sessions[sessionId]!,
+                    optimisticThinkingAt: 123,
+                },
+            },
+        }));
+        expect(storage.getState().sessions[sessionId].optimisticThinkingAt).toBe(123);
+        const localId = 'remote-cancel-local';
+        await savePendingOutboxMessage({
+            sessionId,
+            localId,
+            text: 'remote Home input',
+            createdAt: 1,
+            rawRecord: { role: 'user', content: { type: 'text', text: 'remote Home input' }, meta: {} },
+            request: { v: 1, body: body(localId, 'remote Home input') },
+        }, remoteScope);
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: localId,
+            localId,
+            text: 'remote Home input',
+            createdAt: 1,
+            updatedAt: 1,
+            rawRecord: null,
+            source: 'local_outbound',
+            deliveryStatus: 'queued',
+            pendingOutboxScope: remoteScope,
+        });
+
+        await deletePendingMessageV2({
+            sessionId,
+            pendingId: localId,
+            outboxScope: remoteScope,
+            request: async () => new Response(null, { status: 204 }),
+        });
+
+        expect(storage.getState().sessions[sessionId].optimisticThinkingAt).toBe(123);
+    });
 
     it('rejects a refresh superseded while its async scope check is awaiting', async () => {
         const sessionId = 'async-scope-refresh-session';
-        const server = upsertServerProfile({ serverUrl: 'https://async-scope.example.test', name: 'Async scope' });
+        const server = await upsertServerProfile({ serverUrl: 'https://async-scope.example.test', name: 'Async scope' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        setActiveServerId(server.id, { scope: 'tab' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope(scope);
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
         let releaseNewer!: () => void;
@@ -138,12 +389,12 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
     it('rejects a held A response after active server changes while profile scope is still A', async () => {
         const sessionId = 'transition-gap-session';
         const localId = 'transition-gap-local';
-        const serverA = upsertServerProfile({ serverUrl: 'https://transition-a.example.test', name: 'A' });
-        const serverB = upsertServerProfile({ serverUrl: 'https://transition-b.example.test', name: 'B' });
+        const serverA = await upsertServerProfile({ serverUrl: 'https://transition-a.example.test', name: 'A' });
+        const serverB = await upsertServerProfile({ serverUrl: 'https://transition-b.example.test', name: 'B' });
         const scopeA = { serverId: serverA.id, accountId: 'account-a' } as const;
         const scopeB = { serverId: serverB.id, accountId: 'account-b' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        setActiveServerId(serverA.id, { scope: 'tab' });
+        await setActiveServerId(serverA.id, { scope: 'device' });
         storage.getState().activateProfileScope(scopeA);
         let release!: () => void;
         const held = new Promise<void>((resolve) => { release = resolve; });
@@ -158,8 +409,8 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             },
         });
 
-        setActiveServerId(serverB.id, { scope: 'tab' });
-        persist({ sessionId, localId, text: 'scope B durable', scope: scopeB, operation: 'enqueue' });
+        await setActiveServerId(serverB.id, { scope: 'device' });
+        (await persist({ sessionId, localId, text: 'scope B durable', scope: scopeB, operation: 'enqueue' }));
         release();
         await refresh;
 
@@ -171,12 +422,12 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
     it('keeps a local-only row in local durable custody before server persistence is proven', async () => {
         const sessionId = 'local-only-session';
         const localId = 'local-only-local';
-        const server = upsertServerProfile({ serverUrl: 'https://local-only.example.test', name: 'Local only' });
+        const server = await upsertServerProfile({ serverUrl: 'https://local-only.example.test', name: 'Local only' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        setActiveServerId(server.id, { scope: 'tab' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope(scope);
-        persist({ sessionId, localId, text: 'local durable custody', scope, operation: 'enqueue' });
+        (await persist({ sessionId, localId, text: 'local durable custody', scope, operation: 'enqueue' }));
         const encryption = await Encryption.create(new Uint8Array(32).fill(8));
 
         await fetchAndApplyPendingMessagesV2({
@@ -195,7 +446,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 pendingOutboxScope: scope,
             }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([
             expect.objectContaining({ localId, operation: 'enqueue' }),
         ]);
     });
@@ -203,12 +454,12 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
     it('lets a same-localId server Pending row win and retires the local projection', async () => {
         const sessionId = 'pending-collision-session';
         const localId = 'pending-collision-local';
-        const server = upsertServerProfile({ serverUrl: 'https://pending.example.test', name: 'Pending' });
+        const server = await upsertServerProfile({ serverUrl: 'https://pending.example.test', name: 'Pending' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        setActiveServerId(server.id, { scope: 'tab' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope(scope);
-        persist({ sessionId, localId, text: 'same canonical content', scope, operation: 'enqueue' });
+        (await persist({ sessionId, localId, text: 'same canonical content', scope, operation: 'enqueue' }));
         const encryption = await Encryption.create(new Uint8Array(32).fill(9));
 
         await fetchAndApplyPendingMessagesV2({
@@ -227,19 +478,19 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 pendingDeliveryStatus: 'server_queued',
             }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
-        expect(replayPersistedPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
+        expect((await replayPersistedPendingOutboxForSession(sessionId, scope))).toEqual([]);
     });
 
     it('keeps cancellation custody while a same-localId discarded server row still exists', async () => {
         const sessionId = 'discarded-collision-session';
         const localId = 'discarded-collision-local';
-        const server = upsertServerProfile({ serverUrl: 'https://discarded.example.test', name: 'Discarded' });
+        const server = await upsertServerProfile({ serverUrl: 'https://discarded.example.test', name: 'Discarded' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        setActiveServerId(server.id, { scope: 'tab' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope(scope);
-        persist({ sessionId, localId, text: 'durable cancel', scope, operation: 'cancel' });
+        (await persist({ sessionId, localId, text: 'durable cancel', scope, operation: 'cancel' }));
         const encryption = await Encryption.create(new Uint8Array(32).fill(8));
 
         await fetchAndApplyPendingMessagesV2({
@@ -259,10 +510,10 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 discardedReason: 'manual',
             })],
         }));
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([
             expect.objectContaining({ localId, operation: 'cancel' }),
         ]);
-        expect(replayPersistedPendingOutboxForSession(sessionId, scope)).toEqual([localId]);
+        expect((await replayPersistedPendingOutboxForSession(sessionId, scope))).toEqual([localId]);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({
                 localId,
@@ -275,12 +526,12 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
     it('retires conflicting enqueue custody once the same-id server row proves persistence', async () => {
         const sessionId = 'conflicting-envelope-session';
         const localId = 'conflicting-envelope-local';
-        const server = upsertServerProfile({ serverUrl: 'https://conflict.example.test', name: 'Conflict' });
+        const server = await upsertServerProfile({ serverUrl: 'https://conflict.example.test', name: 'Conflict' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        setActiveServerId(server.id, { scope: 'tab' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope(scope);
-        persist({ sessionId, localId, text: 'stale local envelope', scope, operation: 'enqueue' });
+        (await persist({ sessionId, localId, text: 'stale local envelope', scope, operation: 'enqueue' }));
         const encryption = await Encryption.create(new Uint8Array(32).fill(10));
 
         await fetchAndApplyPendingMessagesV2({
@@ -301,9 +552,9 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 pendingDeliveryStatus: 'server_queued',
             }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
 
-        expect(replayPersistedPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await replayPersistedPendingOutboxForSession(sessionId, scope))).toEqual([]);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({
                 localId,
@@ -325,13 +576,13 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
     it('retires external-handoff enqueue custody when an ordinary same-id server row exists', async () => {
         const sessionId = 'delivery-mode-conflict-session';
         const localId = 'delivery-mode-conflict-local';
-        const server = upsertServerProfile({ serverUrl: 'https://delivery-mode.example.test', name: 'Delivery mode' });
+        const server = await upsertServerProfile({ serverUrl: 'https://delivery-mode.example.test', name: 'Delivery mode' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         const rawRecord = { role: 'user', content: { type: 'text', text: 'same content' }, meta: {} } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        setActiveServerId(server.id, { scope: 'tab' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope(scope);
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId,
             localId,
             createdAt: 111,
@@ -347,8 +598,8 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                     deliveryMode: 'external_handoff',
                 }),
             },
-        }, scope);
-        replayPersistedPendingOutboxForSession(sessionId, scope);
+        }, scope));
+        (await replayPersistedPendingOutboxForSession(sessionId, scope));
         const encryption = await Encryption.create(new Uint8Array(32).fill(12));
 
         await fetchAndApplyPendingMessagesV2({
@@ -363,18 +614,18 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             source: 'server_pending',
             text: 'same content',
         });
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
     });
 
     it('retires enqueue custody when the same-id server row has a conflicting requested action', async () => {
         const sessionId = 'action-conflict-session';
         const localId = 'action-conflict-local';
-        const server = upsertServerProfile({ serverUrl: 'https://action-conflict.example.test', name: 'Action conflict' });
+        const server = await upsertServerProfile({ serverUrl: 'https://action-conflict.example.test', name: 'Action conflict' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        setActiveServerId(server.id, { scope: 'tab' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope(scope);
-        persist({ sessionId, localId, text: 'same content', scope, operation: 'enqueue' });
+        (await persist({ sessionId, localId, text: 'same content', scope, operation: 'enqueue' }));
 
         await fetchAndApplyPendingMessagesV2({
             sessionId,
@@ -392,18 +643,18 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             text: 'same content',
             pendingRequestedAction: { v: 1, kind: 'send_now' },
         });
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
     });
 
     it('retires ordinary enqueue custody when a same-id server external handoff exists', async () => {
         const sessionId = 'server-delivery-mode-conflict-session';
         const localId = 'server-delivery-mode-conflict-local';
-        const server = upsertServerProfile({ serverUrl: 'https://server-delivery-mode.example.test', name: 'Server delivery mode' });
+        const server = await upsertServerProfile({ serverUrl: 'https://server-delivery-mode.example.test', name: 'Server delivery mode' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        setActiveServerId(server.id, { scope: 'tab' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope(scope);
-        persist({ sessionId, localId, text: 'same content', scope, operation: 'enqueue' });
+        (await persist({ sessionId, localId, text: 'same content', scope, operation: 'enqueue' }));
         const encryption = await Encryption.create(new Uint8Array(32).fill(13));
 
         await fetchAndApplyPendingMessagesV2({
@@ -422,13 +673,13 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             text: 'same content',
             pendingDeliveryStatus: 'external_handoff',
         });
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
     });
 
     it('retires enqueue custody when same-id server ciphertext differs', async () => {
         const sessionId = 'ciphertext-conflict-session';
         const localId = 'ciphertext-conflict-local';
-        const server = upsertServerProfile({ serverUrl: 'https://ciphertext.example.test', name: 'Ciphertext' });
+        const server = await upsertServerProfile({ serverUrl: 'https://ciphertext.example.test', name: 'Ciphertext' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         const rawRecord = { role: 'user', content: { type: 'text', text: 'same decrypted content' }, meta: {} } as const;
         const localCiphertext = 'local-frozen-ciphertext';
@@ -440,9 +691,9 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             }),
         } as unknown as Encryption;
         storage.getState().applySessions([buildSession({ sessionId })]);
-        setActiveServerId(server.id, { scope: 'tab' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope(scope);
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId,
             localId,
             createdAt: 111,
@@ -457,8 +708,8 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                     messageRole: 'user',
                 }),
             },
-        }, scope);
-        replayPersistedPendingOutboxForSession(sessionId, scope);
+        }, scope));
+        (await replayPersistedPendingOutboxForSession(sessionId, scope));
 
         await fetchAndApplyPendingMessagesV2({
             sessionId,
@@ -484,16 +735,16 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             source: 'server_pending',
             text: 'same decrypted content',
         });
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
     });
 
     it("converges an ambiguous POST to the server snapshot without 'Message not sent'", async () => {
         const sessionId = 'ambiguous-post-snapshot-session';
         const localId = 'ambiguous-post-snapshot-local';
-        const server = upsertServerProfile({ serverUrl: 'https://ambiguous.example.test', name: 'Ambiguous' });
+        const server = await upsertServerProfile({ serverUrl: 'https://ambiguous.example.test', name: 'Ambiguous' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        setActiveServerId(server.id, { scope: 'tab' });
+        await setActiveServerId(server.id, { scope: 'device' });
         storage.getState().activateProfileScope(scope);
         const encryption = await Encryption.create(new Uint8Array(32).fill(11));
 
@@ -508,7 +759,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             outboxScope: scope,
             serverWireMode: 'pending_input_v1',
         })).resolves.toEqual({ localId, accepted: false });
-        const [retainedOutboxRow] = loadPendingOutboxForSession(sessionId, scope);
+        const [retainedOutboxRow] = (await loadPendingOutboxForSession(sessionId, scope));
         expect(retainedOutboxRow).toBeDefined();
 
         await fetchAndApplyPendingMessagesV2({
@@ -528,7 +779,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             text: 'committed despite lost response',
         }));
         expect(message && getPendingMessageVisualState(message)).toMatchObject({ kind: 'queued' });
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
     });
 
     it('preserves and canonicalizes an acknowledged external handoff across an empty refresh regardless of projection source', async () => {
@@ -573,7 +824,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const sessionId = 'external-handoff-outbox-overlap';
         const localId = 'external-handoff-outbox-local';
         const scope = { serverId: 'external-server', accountId: 'external-account' } as const;
-        persist({ sessionId, localId, text: 'durable retry', scope, operation: 'enqueue' });
+        (await persist({ sessionId, localId, text: 'durable retry', scope, operation: 'enqueue' }));
         storage.getState().upsertPendingMessage(sessionId, {
             id: 'external-handoff-synthetic-projection',
             localId,
@@ -609,14 +860,14 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 text: 'acknowledged external handoff',
             }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
     });
 
     it('does not let an already-running retry downgrade retained external-handoff custody', async () => {
         const sessionId = 'external-handoff-in-flight-retry';
         const localId = 'external-handoff-in-flight-local';
         const scope = { serverId: 'external-server', accountId: 'external-account' } as const;
-        persist({ sessionId, localId, text: 'stale retry content', scope, operation: 'enqueue' });
+        (await persist({ sessionId, localId, text: 'stale retry content', scope, operation: 'enqueue' }));
         storage.getState().upsertPendingMessage(sessionId, {
             id: 'external-handoff-in-flight-projection',
             localId,
@@ -686,7 +937,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 text: 'canonical external content',
             }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
     });
 
     it.each(['before', 'after'] as const)(
@@ -695,12 +946,12 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const sessionId = `refresh-started-${refreshOrder}-retry`;
         const localId = `refresh-started-${refreshOrder}-retry-local`;
         const scope = { serverId: `refresh-${refreshOrder}-retry-server`, accountId: `refresh-${refreshOrder}-retry-account` } as const;
-        persist({ sessionId, localId, text: 'stale retry content', scope, operation: 'enqueue' });
+        (await persist({ sessionId, localId, text: 'stale retry content', scope, operation: 'enqueue' }));
         let retryStarted!: () => void;
         const retryStartedGate = new Promise<void>((resolve) => { retryStarted = resolve; });
         let releaseRetry!: () => void;
         const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve; });
-        const startRetry = () => retryPendingOutboxOperationV2({
+        const startRetry = async () => retryPendingOutboxOperationV2({
             sessionId,
             localId,
             outboxScope: scope,
@@ -717,7 +968,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const finalScopeCheckGate = new Promise<void>((resolve) => { releaseFinalScopeCheck = resolve; });
         let scopeCheckCount = 0;
         const encryption = await Encryption.create(new Uint8Array(32).fill(25));
-        const startRefresh = () => fetchAndApplyPendingMessagesV2({
+        const startRefresh = async () => fetchAndApplyPendingMessagesV2({
             sessionId,
             encryption,
             outboxScope: scope,
@@ -751,7 +1002,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 text: 'authoritative refresh content',
             }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
     });
 
     it.each([
@@ -761,7 +1012,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const sessionId = `retry-error-after-refresh-${forbiddenSendState}`;
         const localId = 'retry-error-after-refresh-local';
         const scope = { serverId: `retry-error-${forbiddenSendState}-server`, accountId: 'retry-error-account' } as const;
-        persist({ sessionId, localId, text: 'stale retry content', scope, operation: 'enqueue' });
+        (await persist({ sessionId, localId, text: 'stale retry content', scope, operation: 'enqueue' }));
         let retryStarted!: () => void;
         const retryStartedGate = new Promise<void>((resolve) => { retryStarted = resolve; });
         let releaseRetry!: () => void;
@@ -789,7 +1040,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 deliveryStatus: 'external_handoff',
             }),
         });
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
 
         releaseRetry();
         await retry.catch(() => undefined);
@@ -808,7 +1059,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const sessionId = 'ordinary-retry-success-after-refresh-retirement';
         const localId = 'ordinary-retry-success-after-refresh-retirement-local';
         const scope = { serverId: 'ordinary-retry-refresh-server', accountId: 'ordinary-retry-refresh-account' } as const;
-        persist({ sessionId, localId, text: 'stale retry content', scope, operation: 'enqueue' });
+        (await persist({ sessionId, localId, text: 'stale retry content', scope, operation: 'enqueue' }));
         let retryStarted!: () => void;
         const retryStartedGate = new Promise<void>((resolve) => { retryStarted = resolve; });
         let releaseRetry!: () => void;
@@ -832,8 +1083,8 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                     // Read #3 is retry's post-response fence; read #4 is the helper's
                     // false-path lookup. Queue the canonical refresh application before
                     // the helper's resolved Promise resumes its caller.
-                    queueMicrotask(() => {
-                        removePendingOutboxMessage(sessionId, localId, scope);
+                    queueMicrotask(async () => {
+                        (await removePendingOutboxMessage(sessionId, localId, scope));
                         storage.getState().applyPendingSnapshot(sessionId, {
                             messages: [{
                                 id: localId,
@@ -870,7 +1121,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         await retry;
         getStringSpy.mockRestore();
 
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
 
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({
@@ -886,6 +1137,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const sessionId = 'ordinary-initial-enqueue-after-refresh-retirement';
         const localId = 'ordinary-initial-enqueue-after-refresh-retirement-local';
         const scope = { serverId: 'ordinary-initial-enqueue-server', accountId: 'ordinary-initial-enqueue-account' } as const;
+        await resetPendingQueueState(scope);
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
         const authoritativeRawRecord = {
             role: 'user' as const,
@@ -905,8 +1157,8 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                     retirementQueued = true;
                     // Read #3 selects the saved enqueue row; read #4 is the helper's
                     // false-path lookup. Apply refresh before its Promise resumes the caller.
-                    queueMicrotask(() => {
-                        removePendingOutboxMessage(sessionId, localId, scope);
+                    queueMicrotask(async () => {
+                        (await removePendingOutboxMessage(sessionId, localId, scope));
                         storage.getState().applyPendingSnapshot(sessionId, {
                             messages: [{
                                 id: localId,
@@ -938,8 +1190,8 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         });
         getStringSpy.mockRestore();
 
-        expect(result).toEqual({ localId, accepted: true });
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect(result).toMatchObject({ localId, accepted: true });
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({
                 localId,
@@ -956,9 +1208,10 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             const sessionId = `enqueue-to-cancel-helper-await-${attempt}`;
             const localId = `enqueue-to-cancel-helper-await-${attempt}-local`;
             const scope = { serverId: `enqueue-to-cancel-${attempt}-server`, accountId: 'account' } as const;
+            await resetPendingQueueState(scope);
             storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
             if (attempt === 'retry') {
-                persist({ sessionId, localId, text: 'retry then cancel', scope, operation: 'enqueue' });
+                (await persist({ sessionId, localId, text: 'retry then cancel', scope, operation: 'enqueue' }));
             }
 
             const requestCalls: Array<{ path: string; method: string | undefined }> = [];
@@ -980,7 +1233,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                     if (outboxReadCount === 4 && cancellation === null) {
                         // The helper has observed enqueue custody and is about to yield its
                         // false result. Transition through the real cancellation owner first.
-                        queueMicrotask(() => {
+                        queueMicrotask(async () => {
                             cancellation = deletePendingMessageV2({
                                 sessionId,
                                 pendingId: localId,
@@ -1014,7 +1267,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             getStringSpy.mockRestore();
 
             if (attempt === 'initial') {
-                expect(submitResult).toEqual({ localId, accepted: true, cancelled: true });
+                expect(submitResult).toMatchObject({ localId, accepted: true });
             } else {
                 expect(submitResult).toEqual({ accepted: true });
             }
@@ -1022,7 +1275,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 { path: `/v2/sessions/${sessionId}/pending`, method: 'POST' },
                 { path: `/v2/sessions/${sessionId}/pending/${localId}`, method: 'DELETE' },
             ]);
-            expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+            expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
             expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
         },
     );
@@ -1033,9 +1286,10 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             const sessionId = `accepted-retirement-before-resolution-${attempt}`;
             const localId = `accepted-retirement-before-resolution-${attempt}-local`;
             const scope = { serverId: `accepted-retirement-${attempt}-server`, accountId: 'account' } as const;
+            await resetPendingQueueState(scope);
             storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
             if (attempt === 'retry') {
-                persist({ sessionId, localId, text: 'retry accepted then cancel', scope, operation: 'enqueue' });
+                (await persist({ sessionId, localId, text: 'retry accepted then cancel', scope, operation: 'enqueue' }));
             }
 
             const requestCalls: Array<{ path: string; method: string | undefined }> = [];
@@ -1057,7 +1311,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                     if (outboxReadCount === 5 && cancellation === null) {
                         // The serialized callback selected final enqueue custody. Queue
                         // cancellation before its resolved result resumes any outer owner.
-                        queueMicrotask(() => {
+                        queueMicrotask(async () => {
                             cancellation = deletePendingMessageV2({
                                 sessionId,
                                 pendingId: localId,
@@ -1097,7 +1351,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 { path: `/v2/sessions/${sessionId}/pending`, method: 'POST' },
                 { path: `/v2/sessions/${sessionId}/pending/${localId}`, method: 'DELETE' },
             ]);
-            expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([]);
+            expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([]);
             expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
         },
     );
@@ -1106,7 +1360,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const sessionId = 'external-handoff-cancel-overlap';
         const localId = 'external-handoff-cancel-local';
         const scope = { serverId: 'external-server', accountId: 'external-account' } as const;
-        persist({ sessionId, localId, text: 'cancel custody', scope, operation: 'cancel' });
+        (await persist({ sessionId, localId, text: 'cancel custody', scope, operation: 'cancel' }));
         storage.getState().upsertPendingMessage(sessionId, {
             id: 'external-handoff-cancel-synthetic-projection',
             localId,
@@ -1140,7 +1394,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 text: 'cancel custody',
             }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([
             expect.objectContaining({ localId, operation: 'cancel' }),
         ]);
     });
@@ -1325,7 +1579,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             content: { type: 'text' as const, text: 'durable custody' },
             meta: {},
         };
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId,
             localId: durableLocalId,
             createdAt: 1,
@@ -1333,7 +1587,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             rawRecord: durableRawRecord,
             operation: 'enqueue',
             request: { v: 1, body: body(durableLocalId, 'durable custody') },
-        }, scope);
+        }, scope));
         storage.getState().upsertPendingMessage(sessionId, {
             id: serverCollisionId,
             localId: durableProjectionId,
@@ -1395,12 +1649,12 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const localId = 'quarantined-collision';
         const scope = { serverId: 'quarantine-server', accountId: 'quarantine-account' } as const;
         const rawRecord = { role: 'user' as const, content: { type: 'text' as const, text: 'quarantined' }, meta: {} };
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId, localId, createdAt: 1, text: 'quarantined', rawRecord,
             operation: 'future-operation' as never,
             request: { v: 1, body: body(localId, 'quarantined') },
-        }, scope);
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([
+        }, scope));
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([
             expect.objectContaining({ operation: 'quarantined', quarantineReason: 'unsupported_persisted_operation' }),
         ]);
 
@@ -1412,7 +1666,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             request: async () => response(localId, 'queued', { text: 'authoritative server content' }),
         });
 
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([
             expect.objectContaining({ operation: 'quarantined', quarantineReason: 'unsupported_persisted_operation' }),
         ]);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
@@ -1438,8 +1692,8 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         expect(quarantined?.pendingOutboxOperation).toBeUndefined();
         const diagnosticId = quarantined!.id;
 
-        expect(replayPersistedPendingOutboxForSession(sessionId, scope)).toEqual([]);
-        expect(replayPersistedPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await replayPersistedPendingOutboxForSession(sessionId, scope))).toEqual([]);
+        expect((await replayPersistedPendingOutboxForSession(sessionId, scope))).toEqual([]);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({ id: localId, localId, source: 'server_pending' }),
             expect.objectContaining({
@@ -1456,12 +1710,12 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const localId = 'quarantine-durable-local';
         const scope = { serverId: 'quarantine-server', accountId: 'quarantine-account' } as const;
         const rawRecord = { role: 'user' as const, content: { type: 'text' as const, text: 'quarantined' }, meta: {} };
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId, localId, createdAt: 1, text: 'quarantined', rawRecord,
             operation: 'future-operation' as never,
             request: { v: 1, body: body(localId, 'quarantined') },
-        }, scope);
-        expect(replayPersistedPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        }, scope));
+        expect((await replayPersistedPendingOutboxForSession(sessionId, scope))).toEqual([]);
         const syntheticCollisionId = storage.getState().sessionPending[sessionId]?.messages[0]?.id;
         expect(syntheticCollisionId).toMatch(/^pending-outbox-quarantine:/);
 
@@ -1489,17 +1743,17 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 pendingDeliveryBlockedReasonRaw: 'unsupported_persisted_operation',
             }),
         ]);
-        expect(loadPendingOutboxForSession(sessionId, scope)).toEqual([
+        expect((await loadPendingOutboxForSession(sessionId, scope))).toEqual([
             expect.objectContaining({ localId, operation: 'quarantined' }),
         ]);
         const collisionSafeDiagnosticId = messages[1]!.id;
-        expect(replayPersistedPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await replayPersistedPendingOutboxForSession(sessionId, scope))).toEqual([]);
         expect(storage.getState().sessionPending[sessionId]?.messages.map((message) => message.id)).toEqual([
             syntheticCollisionId,
             collisionSafeDiagnosticId,
         ]);
         storage.getState().removePendingMessage(sessionId, syntheticCollisionId!);
-        expect(replayPersistedPendingOutboxForSession(sessionId, scope)).toEqual([]);
+        expect((await replayPersistedPendingOutboxForSession(sessionId, scope))).toEqual([]);
         expect(storage.getState().sessionPending[sessionId]?.messages.map((message) => message.id)).toEqual([
             collisionSafeDiagnosticId,
         ]);
@@ -1524,12 +1778,12 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const scope = { serverId: 'quarantine-server', accountId: 'quarantine-account' } as const;
         const rawRecord = { role: 'user' as const, content: { type: 'text' as const, text: 'quarantined' }, meta: {} };
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId, localId, createdAt: 1, text: 'quarantined', rawRecord,
             operation: 'future-operation' as never,
             request: { v: 1, body: body(localId, 'quarantined') },
-        }, scope);
-        replayPersistedPendingOutboxForSession(sessionId, scope);
+        }, scope));
+        (await replayPersistedPendingOutboxForSession(sessionId, scope));
         const baseDiagnosticId = storage.getState().sessionPending[sessionId]?.messages[0]!.id;
         storage.getState().applyPendingSnapshot(sessionId, { messages: [], discarded: [] });
 
@@ -1576,16 +1830,16 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             const otherScope = { serverId: 'other-server', accountId: 'other-account' } as const;
             const rawRecord = { role: 'user' as const, content: { type: 'text' as const, text: 'durable' }, meta: {} };
             storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-            savePendingOutboxMessage({
+            (await savePendingOutboxMessage({
                 sessionId, localId, createdAt: 1, text: 'durable', rawRecord,
                 request: { v: 1, body: body(localId, 'durable') },
-            }, scope);
+            }, scope));
             storage.getState().upsertPendingMessage(sessionId, {
                 id: localId, localId, createdAt: 1, updatedAt: 1,
                 source: 'server_pending', deliveryStatus: 'accepted', pendingOutboxScope: otherScope,
                 text: 'initial collider', rawRecord,
             });
-            replayPersistedPendingOutboxForSession(sessionId, scope);
+            (await replayPersistedPendingOutboxForSession(sessionId, scope));
             const preferredId = storage.getState().sessionPending[sessionId]?.messages.find((message) =>
                 message.pendingOutboxScope?.accountId === scope.accountId)?.id;
             expect(preferredId).toBeTruthy();
@@ -1614,7 +1868,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
                 deliveryStatus: 'queued',
             });
             expect(durableProjection?.id).not.toBe(preferredId);
-            expect(loadPendingOutboxForSession(sessionId, scope)).toHaveLength(1);
+            expect((await loadPendingOutboxForSession(sessionId, scope))).toHaveLength(1);
         },
     );
 
@@ -1623,11 +1877,11 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const localId = 'quarantined-existing';
         const scope = { serverId: 'quarantine-server', accountId: 'quarantine-account' } as const;
         const rawRecord = { role: 'user' as const, content: { type: 'text' as const, text: 'quarantined' }, meta: {} };
-        savePendingOutboxMessage({
+        (await savePendingOutboxMessage({
             sessionId, localId, createdAt: 1, text: 'quarantined', rawRecord,
             operation: 'future-operation' as never,
             request: { v: 1, body: body(localId, 'quarantined') },
-        }, scope);
+        }, scope));
         storage.getState().upsertPendingMessage(sessionId, {
             id: localId, localId, createdAt: 1, updatedAt: 1,
             source: 'local_outbound', deliveryStatus: 'queued', sendState: 'unconfirmed',

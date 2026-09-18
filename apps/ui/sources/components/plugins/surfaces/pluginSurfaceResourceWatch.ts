@@ -1,7 +1,6 @@
 import {
     PluginUiDisposeHostResourceRequestV1Schema,
     PluginUiResourceSubscriptionRequestV1Schema,
-    type PluginUiHostApiRequestEnvelopeV1,
     type PluginUiJsonValueV1,
     type PluginUiResourceSubscriptionEventV1,
 } from '@happier-dev/protocol/plugins/ui';
@@ -19,6 +18,7 @@ import type { PluginUiResourceClient } from '@happier-dev/plugin-ui/advanced';
 import {
     readPluginSurfaceResourceReference,
     type PluginContextualResourceBinding,
+    type PluginResourceHostRequest,
 } from './pluginSurfaceResourceRead';
 import {
     createPluginSurfaceHostApiError,
@@ -468,7 +468,7 @@ export function createPluginSurfaceResourceWatchHandlers(input: Readonly<{
     const owner = createContextualResourceWatchOwner(input);
     return Object.freeze({
         watchResource: async (
-            request: PluginUiHostApiRequestEnvelopeV1,
+            request: PluginResourceHostRequest,
             options?: PluginSurfaceHostApiRequestOptions,
         ): Promise<PluginUiJsonValueV1> => {
             const payload = readJsonRecord(request.payload);
@@ -519,7 +519,7 @@ export function createPluginSurfaceResourceWatchHandlers(input: Readonly<{
                 mergedSignal.dispose();
             }
         },
-        disposeHostResource: async (request: PluginUiHostApiRequestEnvelopeV1): Promise<PluginUiJsonValueV1> => {
+        disposeHostResource: async (request: PluginResourceHostRequest): Promise<PluginUiJsonValueV1> => {
             const parsed = PluginUiDisposeHostResourceRequestV1Schema.safeParse(readJsonRecord(request.payload));
             if (!parsed.success) {
                 return errorPayload('invalid_payload', 'plugin_surface_resource_subscription_payload_invalid');

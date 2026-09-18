@@ -5,6 +5,13 @@ import {
   isAuthenticationResponseStatus,
   isTerminalAuthError,
 } from '@/sync/runtime/connectivity/authErrors';
+import {
+  createSessionDataKeyHydrationPlan,
+  hydrateSessionDataKeys,
+} from '@/sync/encryption/sessionDataKeyHydration';
+import { readSessionAccessRole } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
+import { buildSessionDetailAccessProjectionQuery } from '@/sync/api/session/sessionDetailAccessProjection';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { getOrCreateScopedCacheTokenKey, resetScopedCacheTokenKeysForTests } from './scopedCacheTokenKey';
 import { createScopedResolutionSingleFlight } from './scopedResolutionSingleFlight';
@@ -54,11 +61,10 @@ function setSessionCryptoContextCache(cacheKey: string, value: ScopedSessionCryp
   }
 }
 
-async function fetchSessionCryptoContext(params: Readonly<{
+async function fetchSessionCryptoContext(params: Readonly<SessionAddress & {
   serverUrl: string;
   runtimeOrigin?: string;
   token: string;
-  sessionId: string;
   decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
   timeoutMs: number;
 }>): Promise<ScopedSessionCryptoContext> {
@@ -69,7 +75,7 @@ async function fetchSessionCryptoContext(params: Readonly<{
     const response = await runtimeFetchWithServerReachability({
       serverUrl: params.serverUrl,
       token: params.token,
-      url: `${params.runtimeOrigin ?? params.serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}`,
+      url: `${params.runtimeOrigin ?? params.serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}${buildSessionDetailAccessProjectionQuery(params.serverId)}`,
       ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
       init: {
         method: 'GET',
@@ -99,14 +105,32 @@ async function fetchSessionCryptoContext(params: Readonly<{
       return { encryptionMode: 'plain', sessionDataKey: null };
     }
 
-    const dek = typeof session.dataEncryptionKey === 'string' ? session.dataEncryptionKey : null;
-    if (!dek) return { encryptionMode: 'unknown', sessionDataKey: null };
-
     if (!params.decryptEncryptionKey) {
       return { encryptionMode: 'unknown', sessionDataKey: null };
     }
-    const sessionDataKey = await params.decryptEncryptionKey(dek);
-    if (!sessionDataKey) return { encryptionMode: 'unknown', sessionDataKey: null };
+    const sessionDataKeys = new Map<string, Uint8Array>();
+    const hydration = await hydrateSessionDataKeys({
+      plan: createSessionDataKeyHydrationPlan({
+        sessions: [{
+          id: session.id,
+          encryptionMode: session.encryptionMode,
+          dataEncryptionKey: session.dataEncryptionKey,
+          viewerRole: readSessionAccessRole(session, { allowLegacy: true }) === 'owner' ? 'owner' : 'recipient',
+        }],
+        // This resolver returns standalone Session DEKs. It has no Account fallback reader;
+        // full Session hydration owns that compatibility path and its credential authority.
+        credentialKind: 'keyless',
+        sessionDataKeys,
+      }),
+      encryption: {
+        decryptEncryptionKeys: (values) => Promise.all(values.map((value) => params.decryptEncryptionKey!(value))),
+      },
+      sessionDataKeys,
+    });
+    const sessionDataKey = hydration.sessionKeys.get(session.id);
+    if (hydration.stale || hydration.states.get(session.id) !== 'ready' || !sessionDataKey) {
+      return { encryptionMode: 'unknown', sessionDataKey: null };
+    }
     return { encryptionMode: 'e2ee', sessionDataKey };
   } catch (error) {
     if (isTerminalAuthError(error)) {
@@ -118,12 +142,10 @@ async function fetchSessionCryptoContext(params: Readonly<{
   }
 }
 
-export async function resolveScopedSessionCryptoContext(params: Readonly<{
-  serverId: string;
+export async function resolveScopedSessionCryptoContext(params: Readonly<SessionAddress & {
   serverUrl: string;
   runtimeOrigin?: string;
   token: string;
-  sessionId: string;
   decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
   timeoutMs?: number;
 }>): Promise<ScopedSessionCryptoContext> {
@@ -145,6 +167,7 @@ export async function resolveScopedSessionCryptoContext(params: Readonly<{
   // joiner can only ever adopt a result computed from its own inputs.
   return await sessionCryptoContextResolutions.run(keyCacheKey, async () => {
     const context = await fetchSessionCryptoContext({
+      serverId,
       serverUrl: params.serverUrl,
       ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
       token,
@@ -160,12 +183,10 @@ export async function resolveScopedSessionCryptoContext(params: Readonly<{
   });
 }
 
-export async function resolveScopedSessionDataKey(params: Readonly<{
-  serverId: string;
+export async function resolveScopedSessionDataKey(params: Readonly<SessionAddress & {
   serverUrl: string;
   runtimeOrigin?: string;
   token: string;
-  sessionId: string;
   decryptEncryptionKey: (value: string) => Promise<Uint8Array | null>;
   timeoutMs?: number;
 }>): Promise<Uint8Array | null> {

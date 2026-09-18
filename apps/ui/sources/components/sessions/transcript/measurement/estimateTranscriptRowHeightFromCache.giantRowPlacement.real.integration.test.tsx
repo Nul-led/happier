@@ -291,6 +291,7 @@ describe('the installed Legend positions a transcript row from this owner\'s siz
     function renderList(
         data: readonly ProbeRow[],
         listRef: React.RefObject<LegendListRef | null>,
+        header?: React.ReactElement,
     ): React.ReactElement {
         return (
             <div id="giant-row-host" style={{ height: viewportPx }}>
@@ -301,6 +302,7 @@ describe('the installed Legend positions a transcript row from this owner\'s siz
                     getEstimatedItemSize={getEstimatedItemSize}
                     getItemSizeVersion={(item) => buildTranscriptItemHeightSignatureKey(item.signature)}
                     keyExtractor={(item) => item.id}
+                    ListHeaderComponent={header}
                     recycleItems={false}
                     ref={listRef}
                     renderItem={renderProbeRow}
@@ -308,6 +310,33 @@ describe('the installed Legend positions a transcript row from this owner\'s siz
             </div>
         );
     }
+
+    it('keeps keyed measurement identity when a moved row reports before data reconciliation', async () => {
+        viewportPx = 6000;
+        const listRef = React.createRef<LegendListRef>();
+        const base: ProbeRow[] = Array.from({ length: 60 }, (_, index) => ({
+            id: `move-${index}`, height: 56,
+            item: { kind: 'message', id: `move-${index}`, messageId: `msg:move-${index}` },
+            signature: messageSignature({ itemId: `move-${index}`, rowState: 'stable', structuralKey: `move-${index}` }),
+        }));
+        let measured: number | undefined;
+        let armed = false;
+        function MeasurementBoundary() {
+            React.useLayoutEffect(() => {
+                if (!armed) return;
+                armed = false;
+                listRef.current!.setItemSize('move-40', { height: 100, width: 800 });
+                measured = listRef.current!.getState().sizeAtIndex(41);
+            });
+            return null;
+        }
+        await act(async () => { root.render(renderList(base, listRef, <MeasurementBoundary />)); });
+        await flushLegendWork();
+        armed = true;
+        const next: ProbeRow[] = [{ id: 'inserted', height: 56, item: { kind: 'message', id: 'inserted', messageId: 'msg:inserted' }, signature: messageSignature({ itemId: 'inserted', rowState: 'stable', structuralKey: 'inserted' }) }, ...base];
+        await act(async () => { root.render(renderList(next, listRef, <MeasurementBoundary />)); });
+        expect(measured).toBe(100);
+    });
 
     function buildRows(replySignature: TranscriptItemHeightValiditySignature): ProbeRow[] {
         return [

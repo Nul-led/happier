@@ -1,6 +1,7 @@
 import { resolveTreeInstruction, type TreeDropResult, type WindowPointer } from '@/components/ui/treeDragDrop';
 import { resolveSessionListItemOrganizationEligibility } from '@/sync/domains/sessionList/sessionListIndex';
 import { SESSION_FOLDER_MAX_DEPTH } from '@/sync/domains/session/folders/constants';
+import { isSessionListSessionSiblingReorder } from '@/sync/domains/session/listing/sessionListLayout';
 
 import type {
     SessionListInstructionBlockReason,
@@ -49,11 +50,28 @@ function isSameContainerSessionReorder(params: Readonly<{
         && target.containerId === params.source.metadata.containerId;
 }
 
+function isSessionSiblingReorder(params: Readonly<{
+    tree: SessionListTreeModel;
+    source: SessionListTreeDragSource;
+    result: TreeDropResult;
+}>): boolean {
+    if (params.source.metadata.kind !== 'session') return false;
+    const instruction = params.result.instruction;
+    if (instruction.kind === 'blocked' || instruction.kind === 'idle') return false;
+    const destination = params.tree.containerMetadataById.get(instruction.containerId);
+    if (!destination) return false;
+    return isSessionListSessionSiblingReorder({
+        sourceFolderId: params.source.metadata.folderId,
+        destinationFolderId: destination.folderId,
+    });
+}
+
 export function resolveSessionListInstruction(params: Readonly<{
     tree: SessionListTreeModel;
     source: SessionListTreeDragSource;
     pointer: WindowPointer | null;
     foldersFeatureEnabled: boolean;
+    canReorderSessionSiblings?: boolean;
     maxDepth?: number;
 }>): SessionListTreeDropResult {
     const resolved: TreeDropResult = resolveTreeInstruction({
@@ -94,6 +112,14 @@ export function resolveSessionListInstruction(params: Readonly<{
         source: params.source,
         foldersFeatureEnabled: params.foldersFeatureEnabled,
     });
+    const isSiblingReorder = isSessionSiblingReorder({
+        tree: params.tree,
+        source: params.source,
+        result: resolved,
+    });
+    if (isSiblingReorder && params.canReorderSessionSiblings === false) {
+        return blocked('ordering-mode');
+    }
     if (
         eligibilityBlock
         && !isSameContainerSessionReorder({

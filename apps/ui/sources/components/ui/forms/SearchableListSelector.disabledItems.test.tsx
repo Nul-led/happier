@@ -62,10 +62,6 @@ vi.mock('@expo/vector-icons', () => ({
         mockEnv.iconsRenderAsText ? React.createElement(React.Fragment, null, '.') : React.createElement('Ionicons', props, null),
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: ({ children }: { children: React.ReactNode }) => React.createElement(React.Fragment, null, children),
 }));

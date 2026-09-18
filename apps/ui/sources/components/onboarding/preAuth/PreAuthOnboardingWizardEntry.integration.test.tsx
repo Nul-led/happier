@@ -8,6 +8,9 @@ import { localSettingsDefaults } from '@/sync/domains/settings/localSettings';
 import { storage } from '@/sync/domains/state/storageStore';
 import type { StorageState } from '@/sync/store/types';
 import { resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
+import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import type { IModal } from '@/modal';
 
 const reactNativeState = vi.hoisted(() => ({
     width: 390,
@@ -25,43 +28,37 @@ const authMock = vi.hoisted(() => ({
     loginWithCredentials: vi.fn(async () => ({
         kind: 'completed' as const,
     })),
+    refreshFromActiveServer: vi.fn(async () => {}),
 }));
 
 const serverFetchMock = vi.hoisted(() => vi.fn());
+const runtimeFetchMock = vi.hoisted(() => vi.fn());
 const modalAlertMock = vi.hoisted(() => vi.fn());
+const modalAlertAsyncMock = vi.hoisted(() => vi.fn<IModal['alertAsync']>(async () => {}));
+const modalShowMock = vi.hoisted(() => vi.fn<IModal['show']>(() => 'modal-id'));
+const trackAccountCreatedMock = vi.hoisted(() => vi.fn());
+const activeServerSwitchMock = vi.hoisted(() => vi.fn(async () => 'switched' as const));
+const generatedAsyncBytes = vi.hoisted(() => [] as Uint8Array[]);
 
-const authEntryOptionsState = vi.hoisted(() => ({
-    current: {
-        serverAvailability: 'ready',
-        serverUrlForCopy: 'https://relay.example.test',
-        showAuthActions: true,
-        showProviderSignup: false,
-        showAnonymousSignup: true,
-        showMtlsLogin: false,
-        showKeylessProviderLogin: false,
-        providerId: null,
-        keylessProviderId: null,
-        providerSignupTitle: '',
-        providerKeylessTitle: '',
-        anonymousSignupTitle: 'welcome.createAccount',
-        mtlsTitle: '',
-        primaryAction: {
-            kind: 'anonymous' as const,
-            title: 'welcome.createAccount',
+function buildWelcomeFeaturesResponse() {
+    const response = buildServerFeaturesResponse();
+    return {
+        ...response,
+        capabilities: {
+            ...response.capabilities,
+            server: { canonicalServerUrl: 'https://relay.example.test' },
+            serverIdentity: { serverIdentityId: 'srv_home_a' },
+            auth: {
+                ...response.capabilities.auth,
+                keyChallenge: { v2: false },
+                methods: [{
+                    id: 'key_challenge',
+                    actions: [{ id: 'provision' as const, enabled: true, mode: 'keyed' as const }],
+                }],
+            },
         },
-        mtlsPrimary: false,
-        keylessPrimary: false,
-        autoRedirect: {
-            enabled: false,
-            providerId: null,
-            toKeyedProvision: false,
-            toKeylessLogin: false,
-            toMtls: false,
-            toLegacySignupProvider: false,
-        },
-        retryServerCheck: vi.fn(),
-    },
-}));
+    };
+}
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -108,7 +105,15 @@ vi.mock('react-native-keyboard-controller', () => ({}));
 
 vi.mock('@/modal', async () => {
     const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
-    return createModalModuleMock({ spies: { alert: modalAlertMock } }).module;
+    return createModalModuleMock({ spies: { show: modalShowMock, alert: modalAlertMock, alertAsync: modalAlertAsyncMock } }).module;
+});
+
+vi.mock('@/sync/domains/server/activeServerSwitch', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/server/activeServerSwitch')>();
+    return {
+        ...actual,
+        setActiveServerAndSwitch: activeServerSwitchMock,
+    };
 });
 
 vi.mock('@/sync/http/client', async () => {
@@ -117,6 +122,11 @@ vi.mock('@/sync/http/client', async () => {
         ...actual,
         serverFetch: serverFetchMock,
     };
+});
+
+vi.mock('@/utils/system/runtimeFetch', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/utils/system/runtimeFetch')>();
+    return { ...actual, runtimeFetch: runtimeFetchMock };
 });
 
 vi.mock('@/assets/onboarding/planet-dark.jpg', () => ({ default: 'planet-dark.jpg' }));
@@ -132,21 +142,22 @@ vi.mock('@/auth/context/AuthContext', () => ({
         isAuthenticated: false,
         login: authMock.login,
         loginWithCredentials: authMock.loginWithCredentials,
+        refreshFromActiveServer: authMock.refreshFromActiveServer,
     }),
-}));
-
-vi.mock('@/components/account/auth/useAuthEntryOptions', () => ({
-    useAuthEntryOptions: () => authEntryOptionsState.current,
 }));
 
 vi.mock('@/platform/cryptoRandom', () => ({
     getRandomBytes: vi.fn((size: number) => new Uint8Array(size).fill(3)),
-    getRandomBytesAsync: vi.fn(async (size: number) => new Uint8Array(size).fill(7)),
+    getRandomBytesAsync: vi.fn(async (size: number) => {
+        const bytes = new Uint8Array(size).fill(7);
+        generatedAsyncBytes.push(bytes);
+        return bytes;
+    }),
 }));
 
 vi.mock('@/track', () => ({
     tracking: null,
-    trackAccountCreated: vi.fn(),
+    trackAccountCreated: trackAccountCreatedMock,
 }));
 
 vi.mock('@/utils/platform/responsive', () => ({
@@ -154,6 +165,7 @@ vi.mock('@/utils/platform/responsive', () => ({
 }));
 
 vi.mock('@/utils/platform/desktopHost', () => ({
+    desktopHostKind: () => null,
     isDesktopHost: () => false,
 }));
 
@@ -169,8 +181,23 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
         serverUrl: 'https://relay.example.test',
         generation: 1,
     }),
+    getActiveServerHomeCarrier: () => null,
     subscribeActiveServer: () => () => {},
 }));
+
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+    return {
+        ...actual,
+        getServerProfileById: (serverId: string) => serverId === 'server-a' ? {
+            id: 'server-a',
+            name: 'Example Home',
+            serverUrl: 'https://relay.example.test',
+            canonicalServerUrl: 'https://relay.example.test',
+            serverIdentityId: 'srv_home_a',
+        } : null,
+    };
+});
 
 vi.mock('@/sync/domains/server/readConfiguredServerUrlEnv', () => ({
     readConfiguredServerUrlEnv: () => '',
@@ -180,14 +207,14 @@ vi.mock('@/sync/domains/server/readConfiguredServerUrlEnv', () => ({
 vi.mock('@/encryption/libsodium.lib', () => ({
     default: {
         crypto_box_seed_keypair: () => ({
-            publicKey: new Uint8Array([1]),
-            privateKey: new Uint8Array([2]),
+            publicKey: new Uint8Array(32).fill(1),
+            privateKey: new Uint8Array(32).fill(2),
         }),
         crypto_sign_seed_keypair: () => ({
-            publicKey: new Uint8Array([1]),
-            privateKey: new Uint8Array([2]),
+            publicKey: new Uint8Array(32).fill(1),
+            privateKey: new Uint8Array(64).fill(2),
         }),
-        crypto_sign_detached: () => new Uint8Array([3]),
+        crypto_sign_detached: () => new Uint8Array(64).fill(3),
     },
 }));
 
@@ -200,8 +227,12 @@ describe('PreAuthOnboardingWizardEntry shell integration', () => {
     let previousStorageState: StorageState;
     let nowSpy: ReturnType<typeof vi.spyOn>;
 
-    beforeEach(() => {
+    beforeEach(async () => {
         resetServerFeaturesClientForTests();
+        await TokenStorage.clearPendingExternalAuth({
+            serverUrl: 'https://relay.example.test',
+            serverId: 'server-a',
+        });
         previousStorageState = storage.getState();
         act(() => {
             storage.setState((state) => ({
@@ -217,22 +248,177 @@ describe('PreAuthOnboardingWizardEntry shell integration', () => {
         reactNativeState.height = 844;
         authMock.login.mockClear();
         authMock.loginWithCredentials.mockClear();
+        authMock.refreshFromActiveServer.mockClear();
+        generatedAsyncBytes.length = 0;
         serverFetchMock.mockReset();
-        serverFetchMock.mockImplementation(async () => new Response(null, { status: 404 }));
+        serverFetchMock.mockImplementation(async (path: string) => (
+            path === '/v1/features'
+                ? new Response(JSON.stringify(buildWelcomeFeaturesResponse()), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+                : new Response(null, { status: 404 })
+        ));
+        runtimeFetchMock.mockReset();
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => (
+            await serverFetchMock(new URL(String(input)).pathname, init)
+        ));
         modalAlertMock.mockClear();
-        authEntryOptionsState.current.retryServerCheck.mockClear();
+        modalAlertAsyncMock.mockReset();
+        modalAlertAsyncMock.mockResolvedValue(undefined);
+        modalShowMock.mockClear();
+        trackAccountCreatedMock.mockClear();
+        activeServerSwitchMock.mockReset();
+        activeServerSwitchMock.mockResolvedValue('switched');
         routerMocks.push.mockClear();
         routerMocks.replace.mockClear();
         routerMocks.back.mockClear();
-        authEntryOptionsState.current = {
-            ...authEntryOptionsState.current,
-            serverAvailability: 'ready',
-            showAuthActions: true,
-            showAnonymousSignup: true,
-            showProviderSignup: false,
-            showMtlsLogin: false,
-            showKeylessProviderLogin: false,
+    });
+
+    it('holds the real Welcome E2EE provision destination behind the canonical recovery-key decision and skips it for Plain', async () => {
+        reactNativeState.width = 1100;
+        reactNativeState.height = 720;
+        const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
+        const screen = await renderScreen(<PreAuthOnboardingWizardEntry />);
+        const panel = screen.find((candidate) => (
+            candidate.props.authEntryOptions != null
+            && typeof candidate.props.onContinueWithHomeAuthentication === 'function'
+        ));
+        if (!panel?.props.authEntryOptions.homeTarget) throw new Error('Expected exact Home auth entry');
+        const target = panel.props.authEntryOptions.homeTarget;
+        const runProvision = async (mode: 'keyed' | 'keyless') => {
+            await panel.props.onContinueWithHomeAuthentication({
+                method: { id: 'email_password', enabledActions: [{ id: 'provision', mode }] },
+                action: { id: 'provision', mode },
+                execution: { kind: 'email_password', action: 'provision', mode },
+                authority: { purpose: 'home', target },
+                intendedHome: target,
+            }, { signal: new AbortController().signal });
+            const config = modalShowMock.mock.calls.at(-1)?.[0] as unknown as {
+                props?: { onAuthenticated?: (outcome: unknown) => Promise<void> };
+            };
+            if (!config.props?.onAuthenticated) throw new Error('Expected email/password modal');
+            return config.props.onAuthenticated;
         };
+
+        const recoverySecret = new Uint8Array(32).fill(9);
+        const finishE2ee = await runProvision('keyed');
+        let destinationCompleted = false;
+        const pending = finishE2ee({
+            credentials: { token: 'e2ee-token', secret: 'e2ee-secret' },
+            accountId: 'account-a',
+            teamId: null,
+            recoverySecret,
+        }).then(() => { destinationCompleted = true; });
+
+        await vi.waitFor(() => expect(modalShowMock).toHaveBeenCalledTimes(2));
+        expect(authMock.loginWithCredentials).toHaveBeenCalledWith(
+            { token: 'e2ee-token', secret: 'e2ee-secret' },
+            { target: { serverId: 'server-a', serverUrl: 'https://relay.example.test' } },
+        );
+        expect(destinationCompleted).toBe(false);
+        expect(trackAccountCreatedMock).not.toHaveBeenCalled();
+        const disclosure = modalShowMock.mock.calls.at(-1)?.[0] as unknown as {
+            dismissible?: boolean;
+            props?: { secret?: Uint8Array; onSaved?: () => Promise<void>; onDefer?: () => Promise<void> };
+        };
+        expect(disclosure.dismissible).toBe(false);
+        expect(disclosure.props?.onSaved).toBeTypeOf('function');
+        await disclosure.props!.onSaved!();
+        await pending;
+        expect(destinationCompleted).toBe(true);
+        expect(trackAccountCreatedMock).toHaveBeenCalledOnce();
+        expect([...recoverySecret]).toEqual(new Array(32).fill(0));
+        expect([...(disclosure.props?.secret ?? [])]).toEqual(new Array(32).fill(0));
+
+        modalShowMock.mockClear();
+        trackAccountCreatedMock.mockClear();
+        const deferredRecoverySecret = new Uint8Array(32).fill(8);
+        const finishDeferredE2ee = await runProvision('keyed');
+        let deferredDestinationCompleted = false;
+        const deferredPending = finishDeferredE2ee({
+            credentials: { token: 'deferred-e2ee-token', secret: 'deferred-e2ee-secret' },
+            accountId: 'account-deferred',
+            teamId: null,
+            recoverySecret: deferredRecoverySecret,
+        }).then(() => { deferredDestinationCompleted = true; });
+        await vi.waitFor(() => expect(modalShowMock).toHaveBeenCalledTimes(2));
+        const deferredDisclosure = modalShowMock.mock.calls.at(-1)?.[0] as unknown as {
+            props?: { secret?: Uint8Array; onDefer?: () => Promise<void> };
+        };
+        expect(deferredDestinationCompleted).toBe(false);
+        await deferredDisclosure.props!.onDefer!();
+        await deferredPending;
+        expect(deferredDestinationCompleted).toBe(true);
+        expect(trackAccountCreatedMock).toHaveBeenCalledOnce();
+        expect([...deferredRecoverySecret]).toEqual(new Array(32).fill(0));
+        expect([...(deferredDisclosure.props?.secret ?? [])]).toEqual(new Array(32).fill(0));
+
+        modalShowMock.mockClear();
+        trackAccountCreatedMock.mockClear();
+        const finishPlain = await runProvision('keyless');
+        await finishPlain({
+            credentials: { token: 'plain-token' },
+            accountId: 'account-b',
+            teamId: null,
+            recoverySecret: null,
+        });
+        expect(modalShowMock).toHaveBeenCalledOnce();
+        expect(trackAccountCreatedMock).toHaveBeenCalledOnce();
+    });
+
+    it('carries Welcome Connect through exact-Home login into Account Security enrollment', async () => {
+        reactNativeState.width = 1100;
+        reactNativeState.height = 720;
+        const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
+        const screen = await renderScreen(<PreAuthOnboardingWizardEntry />);
+        const panel = screen.find((candidate) => (
+            candidate.props.authEntryOptions != null
+            && typeof candidate.props.onContinueWithHomeAuthentication === 'function'
+        ));
+        if (!panel?.props.authEntryOptions.homeTarget) throw new Error('Expected exact Home auth entry');
+        const target = panel.props.authEntryOptions.homeTarget;
+        await panel.props.onContinueWithHomeAuthentication({
+            method: { id: 'email_password', enabledActions: [{ id: 'connect', mode: 'either' }] },
+            action: { id: 'connect', mode: 'either' },
+            execution: { kind: 'email_password', action: 'connect', mode: 'either' },
+            authority: { purpose: 'home', target },
+            intendedHome: target,
+        }, { signal: new AbortController().signal });
+        const config = modalShowMock.mock.calls.at(-1)?.[0] as unknown as {
+            props?: {
+                onAuthenticated?: (outcome: unknown) => Promise<void>;
+                reachExactHome?: () => Promise<boolean>;
+            };
+        };
+        if (!config.props?.onAuthenticated) throw new Error('Expected email/password modal');
+        // Welcome has no step of its own behind this modal, so Connect's
+        // exact-Home activation is handed to the modal as its arrival rather than
+        // run as a side effect of the login whose answer nobody reads.
+        if (!config.props.reachExactHome) throw new Error('Expected an exact-Home arrival for Connect');
+        await config.props.onAuthenticated({ credentials: { token: 'home-a-token' } });
+        expect(activeServerSwitchMock).not.toHaveBeenCalled();
+
+        let finishSwitch!: (result: 'switched') => void;
+        activeServerSwitchMock.mockImplementationOnce(async () => await new Promise<'switched'>((resolve) => {
+            finishSwitch = resolve;
+        }));
+        const pending = config.props.reachExactHome();
+
+        await vi.waitFor(() => expect(activeServerSwitchMock).toHaveBeenCalledOnce());
+        expect(activeServerSwitchMock).toHaveBeenCalledWith({
+            serverId: 'server-a',
+            scope: 'device',
+            refreshAuth: authMock.refreshFromActiveServer,
+            requireExactProfile: true,
+        });
+        expect(routerMocks.replace).not.toHaveBeenCalled();
+        finishSwitch('switched');
+        await expect(pending).resolves.toBe(true);
+        expect(routerMocks.replace).toHaveBeenCalledWith({
+            pathname: '/settings/account/security',
+            params: { serverId: 'server-a', intent: 'email_password_connect' },
+        });
     });
 
     afterEach(() => {
@@ -266,8 +452,18 @@ describe('PreAuthOnboardingWizardEntry shell integration', () => {
         reactNativeState.width = 1100;
         reactNativeState.height = 720;
         serverFetchMock.mockImplementation(async (path: string) => (
-            path === '/v1/auth'
+            path === '/v1/features'
+                ? new Response(JSON.stringify(buildWelcomeFeaturesResponse()), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+                : path === '/v1/auth'
                 ? new Response(JSON.stringify({ token: 'account-token' }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+                : path === '/v1/account/encryption'
+                ? new Response(JSON.stringify({ mode: 'plain', updatedAt: 0 }), {
                     status: 200,
                     headers: { 'Content-Type': 'application/json' },
                 })
@@ -283,17 +479,43 @@ describe('PreAuthOnboardingWizardEntry shell integration', () => {
         expect(screen.findByTestId('unauth-shell-workflow-pane')).toBeTruthy();
         expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
 
-        await screen.pressByTestIdAsync('welcome-primary-start');
+        const panel = screen.find((candidate) => (
+            candidate.props.authEntryOptions != null
+            && typeof candidate.props.onContinueWithHomeAuthentication === 'function'
+        ));
+        if (!panel) throw new Error('Expected welcome decision panel');
+        const projected = panel.props.authEntryOptions.authenticationActions.find(
+            (candidate: { execution: { kind: string } }) => candidate.execution.kind === 'generated_key',
+        );
+        if (!projected || !panel.props.authEntryOptions.homeTarget) throw new Error('Expected exact Home provision action');
+        await act(async () => {
+            await panel.props.onContinueWithHomeAuthentication({
+                ...projected,
+                authority: { purpose: 'home', target: panel.props.authEntryOptions.homeTarget },
+                intendedHome: panel.props.authEntryOptions.homeTarget,
+            }, { signal: new AbortController().signal });
+        });
         await flushHookEffects();
 
-        expect(authMock.login).toHaveBeenCalledWith('account-token', expect.any(String));
+        expect(modalAlertMock).not.toHaveBeenCalled();
+        await vi.waitFor(() => {
+            expect(authMock.loginWithCredentials).toHaveBeenCalledWith(
+                { token: 'account-token' },
+                { target: { serverId: 'server-a', serverUrl: 'https://relay.example.test' } },
+            );
+        });
     });
 
     it('surfaces raced signup policy and requests a capability refresh instead of a generic failure', async () => {
         reactNativeState.width = 1100;
         reactNativeState.height = 720;
         serverFetchMock.mockImplementation(async (path: string) => (
-            path === '/v1/auth'
+            path === '/v1/features'
+                ? new Response(JSON.stringify(buildWelcomeFeaturesResponse()), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+                : path === '/v1/auth'
                 ? new Response(JSON.stringify({ error: 'signup-disabled' }), {
                     status: 403,
                     headers: { 'Content-Type': 'application/json' },
@@ -304,12 +526,143 @@ describe('PreAuthOnboardingWizardEntry shell integration', () => {
         const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
         const screen = await renderScreen(<PreAuthOnboardingWizardEntry />);
 
-        await screen.pressByTestIdAsync('welcome-primary-start');
+        const panel = screen.find((candidate) => (
+            candidate.props.authEntryOptions != null
+            && typeof candidate.props.onContinueWithHomeAuthentication === 'function'
+        ));
+        if (!panel) throw new Error('Expected welcome decision panel');
+        const projected = panel.props.authEntryOptions.authenticationActions.find(
+            (candidate: { execution: { kind: string } }) => candidate.execution.kind === 'generated_key',
+        );
+        if (!projected || !panel.props.authEntryOptions.homeTarget) throw new Error('Expected exact Home provision action');
+        await act(async () => {
+            await panel.props.onContinueWithHomeAuthentication({
+                ...projected,
+                authority: { purpose: 'home', target: panel.props.authEntryOptions.homeTarget },
+                intendedHome: panel.props.authEntryOptions.homeTarget,
+            }, { signal: new AbortController().signal });
+        });
         await flushHookEffects({ cycles: 2, turns: 2 });
 
-        expect(authEntryOptionsState.current.retryServerCheck).toHaveBeenCalledTimes(1);
-        expect(modalAlertMock).toHaveBeenCalledWith('common.error', 'errors.signupDisabled');
+        await vi.waitFor(() => expect(modalAlertMock).toHaveBeenCalledWith('common.error', 'errors.signupDisabled'));
+        expect(serverFetchMock.mock.calls.some(([path]) => path === '/v1/features')).toBe(true);
         expect(authMock.login).not.toHaveBeenCalled();
+    });
+
+    it('retries encryption-mode resolution without provisioning a second account after authentication succeeded', async () => {
+        reactNativeState.width = 1100;
+        reactNativeState.height = 720;
+        let encryptionModeAttempts = 0;
+        modalAlertAsyncMock.mockImplementation(async (
+            _title: string,
+            _message?: string,
+            buttons?: Array<{ text?: string; style?: string; onPress?: () => void }>,
+        ) => {
+            buttons?.find((button: { text?: string }) => button.text === 'common.retry')?.onPress?.();
+        });
+        serverFetchMock.mockImplementation(async (path: string) => {
+            if (path === '/v1/features') {
+                return new Response(JSON.stringify(buildWelcomeFeaturesResponse()), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            if (path === '/v1/auth') {
+                return new Response(JSON.stringify({ token: 'retained-account-token' }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            if (path === '/v1/account/encryption') {
+                encryptionModeAttempts += 1;
+                return encryptionModeAttempts === 1
+                    ? new Response(null, { status: 503 })
+                    : new Response(JSON.stringify({ mode: 'plain', updatedAt: 0 }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+            }
+            return new Response(null, { status: 404 });
+        });
+
+        const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
+        const screen = await renderScreen(<PreAuthOnboardingWizardEntry />);
+        const panel = screen.find((candidate) => (
+            candidate.props.authEntryOptions != null
+            && typeof candidate.props.onContinueWithHomeAuthentication === 'function'
+        ));
+        if (!panel) throw new Error('Expected welcome decision panel');
+        const projected = panel.props.authEntryOptions.authenticationActions.find(
+            (candidate: { execution: { kind: string } }) => candidate.execution.kind === 'generated_key',
+        );
+        if (!projected || !panel.props.authEntryOptions.homeTarget) throw new Error('Expected exact Home provision action');
+        const request = {
+            ...projected,
+            authority: { purpose: 'home', target: panel.props.authEntryOptions.homeTarget },
+            intendedHome: panel.props.authEntryOptions.homeTarget,
+        };
+
+        await act(async () => {
+            await panel.props.onContinueWithHomeAuthentication(request, { signal: new AbortController().signal });
+        });
+
+        expect(serverFetchMock.mock.calls.filter(([path]) => path === '/v1/auth')).toHaveLength(1);
+        expect(serverFetchMock.mock.calls.filter(([path]) => path === '/v1/account/encryption')).toHaveLength(2);
+        expect(authMock.loginWithCredentials).toHaveBeenCalledWith(
+            { token: 'retained-account-token' },
+            { target: { serverId: 'server-a', serverUrl: 'https://relay.example.test' } },
+        );
+        expect(modalAlertAsyncMock).toHaveBeenCalledWith('common.error', 'errors.operationFailed', [
+            expect.objectContaining({ text: 'common.retry' }),
+            expect.objectContaining({ text: 'common.cancel', style: 'cancel' }),
+        ]);
+    });
+
+    it('releases retained generated-key material when the journey aborts during mode recovery', async () => {
+        reactNativeState.width = 1100;
+        reactNativeState.height = 720;
+        serverFetchMock.mockImplementation(async (path: string) => (
+            path === '/v1/features'
+                ? new Response(JSON.stringify(buildWelcomeFeaturesResponse()), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+                : path === '/v1/auth'
+                    ? new Response(JSON.stringify({ token: 'cancelled-account-token' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    })
+                    : path === '/v1/account/encryption'
+                        ? new Response(null, { status: 503 })
+                        : new Response(null, { status: 404 })
+        ));
+        modalAlertAsyncMock.mockImplementation(() => new Promise<void>(() => {}));
+
+        const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
+        const screen = await renderScreen(<PreAuthOnboardingWizardEntry />);
+        const panel = screen.find((candidate) => (
+            candidate.props.authEntryOptions != null
+            && typeof candidate.props.onContinueWithHomeAuthentication === 'function'
+        ));
+        if (!panel) throw new Error('Expected welcome decision panel');
+        const projected = panel.props.authEntryOptions.authenticationActions.find(
+            (candidate: { execution: { kind: string } }) => candidate.execution.kind === 'generated_key',
+        );
+        if (!projected || !panel.props.authEntryOptions.homeTarget) throw new Error('Expected exact Home provision action');
+        const controller = new AbortController();
+        const launch = panel.props.onContinueWithHomeAuthentication({
+            ...projected,
+            authority: { purpose: 'home', target: panel.props.authEntryOptions.homeTarget },
+            intendedHome: panel.props.authEntryOptions.homeTarget,
+        }, { signal: controller.signal });
+
+        await vi.waitFor(() => expect(modalAlertAsyncMock).toHaveBeenCalledTimes(1));
+        controller.abort();
+        await launch;
+
+        expect(authMock.loginWithCredentials).not.toHaveBeenCalled();
+        expect(generatedAsyncBytes).toHaveLength(1);
+        expect([...generatedAsyncBytes[0]!]).toEqual(new Array(32).fill(0));
     });
 
     it('keeps returning mobile users in workflow and navigates restore and relay through the shell', async () => {
@@ -342,7 +695,7 @@ describe('PreAuthOnboardingWizardEntry shell integration', () => {
 
         expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
 
-        await screen.pressByTestIdAsync('welcome-footer-relay-action');
+        await screen.pressByTestIdAsync('welcome-use-different-home');
         await flushHookEffects({ cycles: 2, turns: 2 });
 
         expect(screen.findByTestId('unauth-shell-route-setup-pre-auth')).toBeTruthy();

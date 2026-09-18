@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VoiceRealtimeJsonValue } from '@happier-dev/protocol';
 import type {
   BundledRetiringDirectMediaTranscriptDrain,
@@ -20,6 +20,8 @@ import { createVoiceConversationRuntimeMachine } from '@/voice/runtime/machine/V
 import type { VoiceMachineErrorKind } from '@/voice/runtime/machine/voiceConversationRuntimeTypes';
 import { createVoiceMachineError } from '@/voice/runtime/machine/voiceMachineError';
 import { useVoiceConversationRuntimeStore } from '@/voice/runtime/machine/voiceConversationRuntimeStore';
+import { createSessionFixture } from '@/dev/testkit';
+import { storage } from '@/sync/domains/state/storage';
 
 import { createBundledRealtimeProviderRuntime } from './createBundledRealtimeProviderRuntime';
 
@@ -45,6 +47,34 @@ function runCurrentGenerationEffect(callback: () => void): boolean {
 }
 
 describe('createBundledRealtimeProviderRuntime', () => {
+  const fixtureSessionIds = [
+    'shared-control-session',
+    'target-session',
+    'session-1',
+    'session-2',
+    'session-3',
+    'session-4',
+    'session-5',
+    'session-6',
+    'session-unsafe-code',
+  ] as const;
+  let previousSessions: ReturnType<typeof storage.getState>['sessions'];
+
+  beforeEach(() => {
+    previousSessions = storage.getState().sessions;
+    storage.setState((current) => ({
+      ...current,
+      sessions: Object.fromEntries(fixtureSessionIds.map((sessionId) => [
+        sessionId,
+        createSessionFixture({ id: sessionId, serverId: 'server-a' }),
+      ])),
+    }) as never);
+  });
+
+  afterEach(() => {
+    storage.setState((current) => ({ ...current, sessions: previousSessions }) as never);
+  });
+
   it('keeps same-session replacement B live while established A stop cleanup settles', async () => {
     const providerId = 'realtime_overlap';
     const controlSessionId = 'shared-control-session';
@@ -264,7 +294,10 @@ describe('createBundledRealtimeProviderRuntime', () => {
     let staleStop: Promise<void> | null = null;
 
     try {
-      const firstStart = runtime.adapter.start({ sessionId: controlSessionId });
+      const firstStart = runtime.adapter.start({
+        sessionId: controlSessionId,
+        requestedTargetSessionAddress: null,
+      });
       await vi.waitFor(() => expect(host.acquireDirectMediaConversation).toHaveBeenCalledTimes(1));
       expect(micActive).toBe(false);
       expect(host.beginTranscriptAttempt).not.toHaveBeenCalled();
@@ -273,7 +306,7 @@ describe('createBundledRealtimeProviderRuntime', () => {
       staleStop = runtime.adapter.stop({ sessionId: controlSessionId });
       await vi.waitFor(() => expect(connections.get(1)?.state()).toBe('open'));
 
-      await runtime.adapter.start({ sessionId: controlSessionId });
+      await runtime.adapter.start({ sessionId: controlSessionId, requestedTargetSessionAddress: null });
       expect(runtimeMachine.getSnapshot()).toMatchObject({
         adapterId: providerId,
         controlSessionId,
@@ -374,13 +407,12 @@ describe('createBundledRealtimeProviderRuntime', () => {
     const setInputMuted = vi.fn(async () => undefined);
     const resolveConversationBinding = vi.fn(async (input: Readonly<{
       controlSessionId: string;
-      requestedTargetSessionId: string | null;
+      requestedTargetSessionAddress: Readonly<{ serverId: string; sessionId: string }> | null;
       settings: unknown;
     }>) => ({
-      controlSessionId: input.controlSessionId,
-      conversationSessionId: input.controlSessionId,
+      conversationSessionAddress: { serverId: 'server-a', sessionId: input.controlSessionId },
       transcriptMode: 'native_session' as const,
-      targetSessionId: input.requestedTargetSessionId,
+      targetSessionAddress: input.requestedTargetSessionAddress,
     }));
     const releaseAudioMode = vi.fn(async () => undefined);
     const acquireAudioMode = vi.fn<BundledRealtimeProviderRuntimeHost['acquireAudioMode']>(
@@ -500,7 +532,7 @@ describe('createBundledRealtimeProviderRuntime', () => {
       resolveConversationBinding,
       resolveSurfaceCapabilities: vi.fn(() => null),
     });
-    await runtime.adapter.start({ sessionId: 'voice-global' });
+    await runtime.adapter.start({ sessionId: 'voice-global', requestedTargetSessionAddress: null });
     expect(openLevelWriter).toHaveBeenCalledWith({
       channel: 'input',
       sourceId: 'realtime_sdk:voice-global',
@@ -517,19 +549,18 @@ describe('createBundledRealtimeProviderRuntime', () => {
 
     await expect(runtime.adapter.resolveConversationBinding?.({
       controlSessionId: 'codex-session',
-      requestedTargetSessionId: 'target-session',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'target-session' },
       settings: { voice: true },
     })).resolves.toEqual({
-      controlSessionId: 'codex-session',
-      conversationSessionId: 'codex-session',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'codex-session' },
       transcriptMode: 'native_session',
-      targetSessionId: 'target-session',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 'target-session' },
     });
     expect(resolveConversationBinding).toHaveBeenCalledTimes(1);
 
     const resources = controllerInput!.resources;
     if (!resources) throw new Error('expected runtime resources');
-    await runtime.adapter.start({ sessionId: 'voice-global' });
+    await runtime.adapter.start({ sessionId: 'voice-global', requestedTargetSessionAddress: null });
     expect(controllerInput!.isSelectionCurrent()).toBe(true);
     providerConfig = {
       authentication: {
@@ -550,7 +581,7 @@ describe('createBundledRealtimeProviderRuntime', () => {
     });
     await resources.release({ controlSessionId: 'voice-global', attemptId: 1, reason: { code: 'user_stop' } });
     await runtime.adapter.stop({ sessionId: 'voice-global' });
-    await runtime.adapter.start({ sessionId: 'voice-global' });
+    await runtime.adapter.start({ sessionId: 'voice-global', requestedTargetSessionAddress: null });
 
     expect(mic.ensureActive).not.toHaveBeenCalled();
     expect(host.acquireAudioMode).toHaveBeenCalledWith('realtime_sdk');
@@ -774,11 +805,14 @@ describe('createBundledRealtimeProviderRuntime', () => {
       resolveSurfaceCapabilities: vi.fn(() => null),
     });
 
-    const starting = runtime.adapter.start({ sessionId: 'target-session' });
+    const starting = runtime.adapter.start({
+      sessionId: 'target-session',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'target-session' },
+    });
     await Promise.resolve();
     expect(host.applyTargetSelection).toHaveBeenCalledWith({
       controlSessionId: 'target-session',
-      targetSessionId: 'target-session',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 'target-session' },
       updateLastFocused: true,
     });
 
@@ -1058,10 +1092,16 @@ describe('createBundledRealtimeProviderRuntime', () => {
       cancelResponse: 'immediate',
     });
     expect(runtime.adapter.resolveSurfaceCapabilities?.({})).not.toHaveProperty('agentRuntime');
-    await runtime.adapter.start({ sessionId: 'session-1' });
+    await runtime.adapter.start({
+      sessionId: 'session-1',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'session-1' },
+    });
     expect(start).toHaveBeenCalledWith(expect.objectContaining({ controlSessionId: 'session-1' }));
     if (!runtime.adapter.retry) throw new Error('realtime retry route unavailable');
-    await runtime.adapter.retry({ sessionId: 'stale-session-id' });
+    await runtime.adapter.retry({
+      sessionId: 'stale-session-id',
+      requestedTargetSessionAddress: null,
+    });
     expect(requestReconnect).toHaveBeenCalledTimes(1);
     expect(stop).not.toHaveBeenCalled();
     expect(host.voiceHooks.onStarted).toHaveBeenCalledWith('session-1', 'session_context');
@@ -1524,10 +1564,13 @@ describe('createBundledRealtimeProviderRuntime', () => {
     expect(host.acquireDirectMediaConversation).toHaveBeenCalledWith({
       adapterId: 'realtime_example',
       controlSessionId: 'session-1',
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: null,
     });
     await runtime.adapter.stop({ sessionId: 'session-1' });
-    await runtime.adapter.start({ sessionId: 'session-1' });
+    await runtime.adapter.start({
+      sessionId: 'session-1',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'session-1' },
+    });
     let resolveLateMic!: () => void;
     mic.ensureActive.mockImplementationOnce(() => new Promise<void>((resolve) => {
       resolveLateMic = resolve;
@@ -1557,7 +1600,10 @@ describe('createBundledRealtimeProviderRuntime', () => {
     expect(releaseAudioMode).toHaveBeenCalledTimes(2);
 
     await runtime.adapter.stop({ sessionId: 'session-1' });
-    await runtime.adapter.start({ sessionId: 'session-1' });
+    await runtime.adapter.start({
+      sessionId: 'session-1',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'session-1' },
+    });
     mic.ensureActive.mockRejectedValueOnce(Object.assign(new Error('permission denied'), { name: 'NotAllowedError' }));
     await expect(resources.prepare({
       controlSessionId: 'session-1',
@@ -1737,7 +1783,10 @@ describe('createBundledRealtimeProviderRuntime', () => {
     ]);
 
     start.mockResolvedValueOnce({ status: 'failed', code: 'voice_context_update_failed' });
-    await expect(runtime.adapter.start({ sessionId: 'session-2' })).rejects.toMatchObject({
+    await expect(runtime.adapter.start({
+      sessionId: 'session-2',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'session-2' },
+    })).rejects.toMatchObject({
       message: 'voice_context_update_failed',
       code: 'voice_context_update_failed',
     });
@@ -1745,7 +1794,10 @@ describe('createBundledRealtimeProviderRuntime', () => {
     expect(host.voiceHooks.onStopped).toHaveBeenCalledTimes(4);
 
     start.mockResolvedValueOnce({ status: 'failed', code: 'machine unavailable at /Users/private/repository' });
-    await expect(runtime.adapter.start({ sessionId: 'session-unsafe-code' })).rejects.toMatchObject({
+    await expect(runtime.adapter.start({
+      sessionId: 'session-unsafe-code',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'session-unsafe-code' },
+    })).rejects.toMatchObject({
       message: 'voice_connection_failed',
       code: 'voice_connection_failed',
     });
@@ -1753,7 +1805,10 @@ describe('createBundledRealtimeProviderRuntime', () => {
     expect(host.voiceHooks.onStopped).toHaveBeenCalledTimes(5);
 
     start.mockResolvedValueOnce({ status: 'declined', code: 'credential_unavailable' });
-    await expect(runtime.adapter.start({ sessionId: 'session-3' })).resolves.toBeUndefined();
+    await expect(runtime.adapter.start({
+      sessionId: 'session-3',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'session-3' },
+    })).resolves.toBeUndefined();
     expect(stop).toHaveBeenCalledTimes(3);
     expect(host.voiceHooks.onStopped).toHaveBeenCalledTimes(6);
 
@@ -1768,7 +1823,10 @@ describe('createBundledRealtimeProviderRuntime', () => {
      */
     logSpy.mockClear();
     start.mockResolvedValueOnce({ status: 'declined', code: 'voice_provider_not_selected' });
-    await expect(runtime.adapter.start({ sessionId: 'session-4' })).resolves.toBeUndefined();
+    await expect(runtime.adapter.start({
+      sessionId: 'session-4',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'session-4' },
+    })).resolves.toBeUndefined();
     const unsettledDecline = String(logSpy.mock.calls.at(-1)?.[0]);
     expect(unsettledDecline).toContain('[voiceRuntimeFailure]');
     expect(unsettledDecline).toContain('voice_provider_not_selected');
@@ -1778,7 +1836,10 @@ describe('createBundledRealtimeProviderRuntime', () => {
     // unexplainable outcome and must be nameable once.
     logSpy.mockClear();
     start.mockResolvedValueOnce({ status: 'aborted' });
-    await expect(runtime.adapter.start({ sessionId: 'session-5' })).resolves.toBeUndefined();
+    await expect(runtime.adapter.start({
+      sessionId: 'session-5',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'session-5' },
+    })).resolves.toBeUndefined();
     expect(String(logSpy.mock.calls.at(-1)?.[0])).toContain('voice_start_not_settled');
 
     // A start the machine already named must not be reported twice.
@@ -1790,7 +1851,10 @@ describe('createBundledRealtimeProviderRuntime', () => {
       });
       return { status: 'declined', code: 'realtime_byo_not_configured' };
     });
-    await expect(runtime.adapter.start({ sessionId: 'session-6' })).resolves.toBeUndefined();
+    await expect(runtime.adapter.start({
+      sessionId: 'session-6',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'session-6' },
+    })).resolves.toBeUndefined();
     expect(logSpy.mock.calls.filter(
       (call) => String(call[0]).includes('[voiceRuntimeFailure]'),
     )).toHaveLength(1);
@@ -1965,7 +2029,10 @@ describe('createBundledRealtimeProviderRuntime', () => {
       // A targeted direct-media attempt whose carrier binding disappears mid-turn
       // cannot be re-acquired under a different identity. Refusing the write is
       // correct; destroying the user's authoritative words without a trace is not.
-      await runtime.adapter.start({ sessionId: 'target-session' });
+      await runtime.adapter.start({
+        sessionId: 'target-session',
+        requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'target-session' },
+      });
       const runtimeEvents = controllerInput as unknown as Readonly<{
         projectTranscript(input: Readonly<{
           controlSessionId: string; attemptId: number; connectionId: number; event: unknown;
@@ -1974,7 +2041,12 @@ describe('createBundledRealtimeProviderRuntime', () => {
       await controllerInput!.resources!.prepare({
         controlSessionId: 'target-session',
         attemptId: 1,
-        request: { requestedTargetSessionId: 'carrier-1' },
+        request: {
+          requestedTargetSessionAddress: {
+            serverId: 'server-a',
+            sessionId: 'carrier-1',
+          },
+        },
         signal: new AbortController().signal,
       });
       activeResourceAttemptId = 1;
@@ -2010,7 +2082,7 @@ describe('createBundledRealtimeProviderRuntime', () => {
       // not turn that already-received final into a superseded drop, and the
       // public stop cannot settle before the rebound carrier's admitted writes.
       resolvedConversationSessionId = 'carrier-1';
-      await runtime.adapter.start({ sessionId: '' });
+      await runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null });
       await controllerInput!.resources!.prepare({
         controlSessionId: 'voice-global',
         attemptId: 2,
@@ -2107,7 +2179,7 @@ describe('createBundledRealtimeProviderRuntime', () => {
       resolvedConversationSessionId = 'carrier-1';
       pendingCarrierRebind = null;
       carrierRebindStarted = null;
-      await runtime.adapter.start({ sessionId: '' });
+      await runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null });
       await controllerInput!.resources!.prepare({
         controlSessionId: 'voice-global',
         attemptId: 3,
@@ -2163,7 +2235,7 @@ describe('createBundledRealtimeProviderRuntime', () => {
       releaseDirectMediaConversation.mockClear();
       onStopped.mockClear();
       controllerStop.mockClear();
-      await runtime.adapter.start({ sessionId: '' });
+      await runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null });
       await controllerInput!.resources!.prepare({
         controlSessionId: 'voice-global',
         attemptId: 4,

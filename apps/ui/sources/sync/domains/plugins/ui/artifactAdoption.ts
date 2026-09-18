@@ -410,10 +410,10 @@ export function isPluginUiReactNativeArtifactTechnicallyAdmitted(input: Readonly
         && (input.artifactGraph.platform === 'web' || input.moduleReference !== undefined);
 }
 
-export type PluginUiRendererTechnicalAdmission<ArtifactAdmission> =
+export type PluginUiRendererTechnicalAdmission<SourceAdmission> =
     | Readonly<{
         kind: 'available';
-        artifactAdmission: ArtifactAdmission;
+        sourceAdmission: SourceAdmission;
     }>
     | Readonly<{
         kind: 'unavailable';
@@ -422,25 +422,25 @@ export type PluginUiRendererTechnicalAdmission<ArtifactAdmission> =
 
 /**
  * The one pure renderer-admission composition for the platform-specific
- * artifact facts and the mount's structural host-method contract. Live served
+ * source facts and the mount's structural host-method contract. Live served
  * methods remain transport facts: a transient daemon outage must not cause one
  * renderer family to de-admit while the other remains mounted.
  */
-export function resolvePluginUiRendererTechnicalAdmission<ArtifactAdmission>(input: Readonly<{
+export function resolvePluginUiRendererTechnicalAdmission<SourceAdmission>(input: Readonly<{
     requiredHostMethods: readonly PluginUiHostMethodV1[] | null;
     structuralHostMethods: readonly PluginUiHostMethodV1[];
     /** Evaluated only after the shared structural contract is satisfied. */
-    resolveArtifactAdmission: () => ArtifactAdmission | null;
-}>): PluginUiRendererTechnicalAdmission<ArtifactAdmission> {
+    resolveSourceAdmission: () => SourceAdmission | null;
+}>): PluginUiRendererTechnicalAdmission<SourceAdmission> {
     const requiredHostMethods = input.requiredHostMethods ?? [];
     if (!requiredHostMethods.every((method) => input.structuralHostMethods.includes(method))) {
         return Object.freeze({ kind: 'unavailable', code: 'required_host_methods_unavailable' });
     }
-    const artifactAdmission = input.resolveArtifactAdmission();
-    if (artifactAdmission === null) {
+    const sourceAdmission = input.resolveSourceAdmission();
+    if (sourceAdmission === null) {
         return Object.freeze({ kind: 'unavailable', code: 'artifact_technical_admission_unavailable' });
     }
-    return Object.freeze({ kind: 'available', artifactAdmission });
+    return Object.freeze({ kind: 'available', sourceAdmission });
 }
 
 export type PluginUiReactNativeInstalledArtifactLoadInput = Readonly<{

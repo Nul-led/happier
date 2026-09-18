@@ -12,15 +12,14 @@ import type { SessionPending } from './pending';
 type HarnessState = MessagesDomain & {
     sessions: Record<string, Session>;
     sessionPending: Record<string, SessionPending>;
-    sessionListRenderables: Record<string, SessionListRenderableSession>;
-    sessionListRowStateByServerId: Readonly<Record<string, Readonly<Record<string, SessionListRenderableSession>>>>;
+    sessionListRowsByServerId: Readonly<Record<string, Readonly<Record<string, SessionListRenderableSession>>>>;
+    ordinarySessionListMembershipByServerId: Readonly<Record<string, readonly string[] | undefined>>;
     sessionListIndexByServerId: Readonly<Record<string, SessionListIndexItem[] | null | undefined>>;
     concurrentSessionListCacheByServerId: ConcurrentSessionListCacheByServerId;
     machines: Record<string, never>;
     machineDisplayById: Record<string, never>;
     profile: { id?: string | null } | null;
     settings: {
-        groupInactiveSessionsByProject?: boolean;
         sessionListActiveGroupingV1?: 'project' | 'date';
         sessionListInactiveGroupingV1?: 'project' | 'date';
         sessionListSectionModeV1?: 'activity' | 'single';
@@ -117,38 +116,31 @@ async function createHarness() {
 
     const { createMessagesDomain } = await import('./messages');
     const renderable = createRenderable();
-    let state: HarnessState = {
-        sessions: { s1: createSession() },
-        sessionPending: {},
-        sessionMessages: {},
-        isMutableToolCall: () => false,
-        applyMessages: () => ({ changed: [], hasReadyEvent: false }),
-        replaceSessionMessages: () => ({ changed: [], hasReadyEvent: false }),
-        applyMessagesLoaded: () => {},
-        evictSessionMessages: () => {},
-        resetSessionMessages: () => {},
-        sessionListRenderables: { s1: renderable },
-        sessionListRowStateByServerId: { server_1: { s1: renderable } },
-        sessionListIndexByServerId: { server_1: null },
-        concurrentSessionListCacheByServerId: {},
-        machines: {},
-        machineDisplayById: {},
-        profile: null,
-        settings: {
-            groupInactiveSessionsByProject: false,
-            sessionListActiveGroupingV1: 'project',
-            sessionListInactiveGroupingV1: 'date',
-            sessionListSectionModeV1: 'activity',
-        },
-    };
-
+    let state: HarnessState;
     const get: StoreGet<HarnessState> = () => state;
     const set: StoreSet<HarnessState> = (updater, replace) => {
         const next = typeof updater === 'function' ? updater(state) : updater;
         state = replace ? (next as HarnessState) : { ...state, ...next };
     };
     const domain = createMessagesDomain({ get, set });
-    state = { ...state, ...domain };
+    state = {
+        ...domain,
+        sessions: { s1: createSession() },
+        sessionPending: {},
+        sessionListRowsByServerId: { server_1: { s1: renderable } },
+        ordinarySessionListMembershipByServerId: { server_1: ['s1'] },
+        sessionListIndexByServerId: { server_1: null },
+        concurrentSessionListCacheByServerId: {},
+        machines: {},
+        machineDisplayById: {},
+        profile: null,
+        settings: {
+            sessionListActiveGroupingV1: 'project',
+            sessionListInactiveGroupingV1: 'date',
+            sessionListSectionModeV1: 'activity',
+        },
+    };
+
     return { domain, get };
 }
 
@@ -196,7 +188,7 @@ describe('messages domain: transcript renderable aggregates', () => {
             (id: string) => sessionMessages.messagesById[id]!,
         );
         const groundTruth = buildSessionListRenderableFromSession(get().sessions.s1, undefined, messages);
-        const streamed = get().sessionListRenderables.s1;
+        const streamed = get().sessionListRowsByServerId.server_1?.s1;
 
         expect(streamed.meaningfulActivityAt).toBe(groundTruth.meaningfulActivityAt);
         expect(streamed.hasPendingPermissionRequests).toBe(groundTruth.hasPendingPermissionRequests);

@@ -7,12 +7,14 @@ import type { UseMachineEnvPresenceResult } from '@/hooks/machine/useMachineEnvP
 import type { NewSessionDraft } from '@/sync/domains/state/persistence';
 import type { AIBackendProfile } from '@/sync/domains/profiles/profileCompatibility';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
+import type { SavedSecretReferenceResolution } from '@/sync/store/settings/savedSecretCatalogSnapshot';
 import { getTempData } from '@/utils/sessions/tempDataStore';
 import type {
     SecretBindingsByProfileId,
     SecretChoiceByProfileIdByEnvVarName,
 } from '@/utils/secrets/secretRequirementApply';
 import { sync } from '@/sync/sync';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 
 type PersistedDraftLike = Readonly<{
     selectedSecretIdByProfileIdByEnvVarName?: unknown;
@@ -67,7 +69,9 @@ export function useNewSessionSecretSelectionState(params: Readonly<{
     activeSecretSource: 'sessionOnly' | 'saved' | 'machineEnv';
     secretRequirements: Array<{ name: string; required: boolean }>;
     shouldShowSecretSection: boolean;
+    resolveSavedSecretReference: (ref: string) => SavedSecretReferenceResolution;
 }> {
+    const savedSecretCatalog = useSavedSecretCatalog();
     const [selectedSecretIdByProfileIdByEnvVarName, setSelectedSecretIdByProfileIdByEnvVarName] = React.useState<SecretChoiceByProfileIdByEnvVarName>(() => {
         const raw = params.persistedDraft?.selectedSecretIdByProfileIdByEnvVarName;
         if (!raw || typeof raw !== 'object') return {};
@@ -113,9 +117,9 @@ export function useNewSessionSecretSelectionState(params: Readonly<{
         for (const [profileId, byEnv] of Object.entries(sessionOnlySecretValueByProfileIdByEnvVarName)) {
             if (!byEnv || typeof byEnv !== 'object') continue;
             for (const [envVarName, value] of Object.entries(byEnv)) {
-                const normalizedValue = typeof value === 'string' ? value.trim() : '';
-                if (!normalizedValue) continue;
-                const enc = sync.encryptSecretValue(normalizedValue);
+                const exactValue = typeof value === 'string' ? value : '';
+                if (exactValue.length === 0) continue;
+                const enc = sync.encryptSecretValue(exactValue);
                 if (!enc) continue;
                 if (!out[profileId]) out[profileId] = {};
                 out[profileId]![envVarName] = enc;
@@ -212,8 +216,10 @@ export function useNewSessionSecretSelectionState(params: Readonly<{
 
     const selectedSavedSecret = React.useMemo(() => {
         if (!selectedSecretId) return null;
-        return params.secrets.find((secret) => secret.id === selectedSecretId) ?? null;
-    }, [params.secrets, selectedSecretId]);
+        return params.secrets.find((secret) => secret.id === selectedSecretId)
+            ?? savedSecretCatalog.materializedSecrets.find((secret) => secret.id === selectedSecretId)
+            ?? null;
+    }, [params.secrets, savedSecretCatalog.materializedSecrets, selectedSecretId]);
 
     React.useEffect(() => {
         if (!params.selectedProfileId) return;
@@ -298,5 +304,6 @@ export function useNewSessionSecretSelectionState(params: Readonly<{
         activeSecretSource,
         secretRequirements,
         shouldShowSecretSection,
+        resolveSavedSecretReference: savedSecretCatalog.resolveReference,
     };
 }

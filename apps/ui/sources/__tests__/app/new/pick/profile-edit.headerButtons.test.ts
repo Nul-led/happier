@@ -29,7 +29,6 @@ type ProfileEditFormProps = Readonly<{
     saveRef: React.MutableRefObject<(() => boolean) | null>;
 }>;
 
-vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 
 vi.mock('expo-constants', () => ({
     default: { statusBarHeight: 0 },

@@ -106,7 +106,6 @@ export const resolveRuntimeFeatureDecision = vi.fn(async (args: any) => ({
         ...(args?.serverId ? { serverId: String(args.serverId) } : {}),
     },
 }));
-export const machineSpawnNewSession = vi.fn<(...args: any[]) => Promise<{ type: 'success'; sessionId: string }>>();
 export const machineContributionRegistryProjectionDescribe = vi.fn<MachineContributionRegistryProjectionDescribeFn>(
     async (_machineId: string, _opts?: Readonly<{ serverId?: string | null; timeoutMs?: number | null }>) => ({
         supported: false,
@@ -315,6 +314,55 @@ export async function getStorage() {
     return storage as any;
 }
 
+async function createVoiceConversationSessionFixture(args: any) {
+    const machineId = typeof args?.machineId === 'string' ? args.machineId : 'machine-1';
+    const directory = typeof args?.directory === 'string' ? args.directory : '/Users/test/.happier/voice-agent';
+    const agentTarget = args?.agentTarget ?? args?.backendTarget;
+    const spawnedAgentId = agentTarget?.kind === 'builtInAgent'
+        && typeof agentTarget.agentId === 'string'
+        ? agentTarget.agentId
+        : 'claude';
+    const sessionId = 'voice-home-session';
+    const storage = await getStorage();
+    const current: any = storage.getState();
+    if (typeof (storage as any).__setState === 'function') {
+        const existing = current.sessions?.[sessionId];
+        (storage as any).__setState({
+            ...current,
+            sessions: {
+                ...(current.sessions ?? {}),
+                [sessionId]: existing ?? {
+                    id: sessionId,
+                    serverId: typeof args?.serverId === 'string' ? args.serverId : 'server-a',
+                    active: true,
+                    updatedAt: Date.now(),
+                    metadata: {
+                        ...buildSystemSessionMetadataV1({ key: VOICE_CONVERSATION_SYSTEM_SESSION_KEY, hidden: true }),
+                        flavor: spawnedAgentId,
+                        agentRuntimeCapabilitiesV1: {
+                            localControl: { supported: true },
+                        },
+                        machineId,
+                        path: directory,
+                        host: 'test',
+                    },
+                },
+            },
+        });
+    }
+    return {
+        type: 'success' as const,
+        disposition: 'created' as const,
+        sessionId,
+        executionTarget: {
+            serverId: typeof args?.serverId === 'string' ? args.serverId : 'server-a',
+            machineId,
+        },
+        organizationPlacement: { folderId: null, tagIds: [] },
+        initialInput: { status: 'notRequested' as const },
+    };
+}
+
 export async function flushMicrotasks(turns: number = 1) {
     for (let i = 0; i < turns; i++) {
         await Promise.resolve();
@@ -439,7 +487,6 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 }));
 
 vi.mock('@/sync/ops/machines', () => ({
-    machineSpawnNewSession: (...args: any[]) => machineSpawnNewSession(...args),
     completePendingMachineSpawnAttemptCustodyForSession: async () => null,
 }));
 
@@ -853,6 +900,12 @@ export function registerLocalVoiceEngineHarnessHooks(options?: Readonly<{
         globalThis.fetch = vi.fn() as any;
         machineRpcWithServerScope.mockImplementation(async (request: any) => {
             switch (request?.method) {
+                case RPC_METHODS.SESSION_SPAWN_NEW:
+                    return await createVoiceConversationSessionFixture({
+                        ...request?.payload,
+                        serverId: request?.serverId,
+                        machineId: request?.machineId,
+                    });
                 case RPC_METHODS.DAEMON_VOICE_SPEECH_TRANSCRIBE_UPLOAD_INIT: {
                     const recipient = createTransferRecipientKeyPair();
                     return {
@@ -947,44 +1000,6 @@ export function registerLocalVoiceEngineHarnessHooks(options?: Readonly<{
         machinePluginSettingsGet.mockResolvedValue({ supported: false, reason: 'not-supported' });
         machinePluginSettingsSet.mockReset();
         machinePluginSettingsSet.mockResolvedValue({ supported: false, reason: 'not-supported' });
-        machineSpawnNewSession.mockReset();
-        machineSpawnNewSession.mockImplementation(async (args: any) => {
-            const machineId = typeof args?.machineId === 'string' ? args.machineId : 'machine-1';
-            const directory = typeof args?.directory === 'string' ? args.directory : '/Users/test/.happier/voice-agent';
-            const spawnedAgentId = args?.backendTarget?.kind === 'builtInAgent'
-                && typeof args.backendTarget.agentId === 'string'
-                ? args.backendTarget.agentId
-                : 'claude';
-            const sessionId = 'voice-home-session';
-            const storage = await getStorage();
-            const current: any = storage.getState();
-            if (typeof (storage as any).__setState === 'function') {
-                const existing = current.sessions?.[sessionId];
-                (storage as any).__setState({
-                    ...current,
-                    sessions: {
-                        ...(current.sessions ?? {}),
-                        [sessionId]: existing ?? {
-                            id: sessionId,
-                            active: true,
-                            updatedAt: Date.now(),
-                            metadata: {
-                                ...buildSystemSessionMetadataV1({ key: VOICE_CONVERSATION_SYSTEM_SESSION_KEY, hidden: true }),
-                                flavor: spawnedAgentId,
-                                agentRuntimeCapabilitiesV1: {
-                                    localControl: { supported: true },
-                                },
-                                machineId,
-                                path: directory,
-                                host: 'test',
-                            },
-                        },
-                    },
-                });
-            }
-            return { type: 'success' as const, sessionId };
-        });
-
         const storage = await getStorage();
         const machine = {
             id: 'machine-1',

@@ -1,53 +1,91 @@
 import * as React from 'react';
 
-import { subscribeHomeCredentialMutations, TokenStorage } from '@/auth/storage/tokenStorage';
 import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
 import {
     areServerProfileIdentifiersEquivalent,
-    getServerProfileById,
     resolveServerProfileScopeIdForIdentifier,
 } from '@/sync/domains/server/serverProfiles';
-import { parseToken } from '@/utils/auth/parseToken';
 import { storage } from '@/sync/domains/state/storage';
-import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
-import { areServerAccountScopesEqual, createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { subscribeHomeCredentialChange } from '@/sync/runtime/orchestration/homeAccountChange';
+import { captureActiveServerAccountScopeLifetime } from './activeServerAccountScope';
+import {
+    areServerAccountScopesEqual,
+    createServerAccountScope,
+    type ServerAccountScope,
+    type ServerAccountScopeLifetime,
+} from './serverAccountScope';
+import {
+    resolveServerCredentialAccountScope,
+    type ServerCredentialAccountScopeResolution,
+} from './serverCredentialAccountScope';
 
-export type ServerCredentialAccountScopeBinding = Readonly<{
+export type { ServerCredentialAccountScopeResolution } from './serverCredentialAccountScope';
+
+export type ServerCredentialAccountScopeBinding = ServerAccountScopeLifetime & Readonly<{
     serverId: string;
     accountId: string;
     revision: number;
-    /** False synchronously once this exact Home credential changes or unmounts. */
-    isCurrent(): boolean;
-    onRetire(cancel: () => void): Readonly<{ dispose(): void }>;
 }>;
 
+type UnboundScopeResolution =
+    | Readonly<{ kind: 'resolving' }>
+    | Readonly<{ kind: 'unknown_home' }>
+    | Readonly<{ kind: 'signed_out' }>;
+type BoundScopeResolution = Readonly<{ kind: 'bound'; scope: ServerAccountScope }>;
+
+type ScopeEntry =
+    | Readonly<{ resolution: UnboundScopeResolution }>
+    | Readonly<{ resolution: BoundScopeResolution; binding: ServerCredentialAccountScopeBinding }>;
+
+export type ServerCredentialAccountScopeProjectionLifecycle = Readonly<{
+    beforeBinding?: (binding: ServerCredentialAccountScopeBinding) => void;
+    onCredentialMutation?: (serverId: string) => void;
+}>;
+
+const RESOLVING = Object.freeze({ kind: 'resolving' } as const);
+const UNKNOWN_HOME = Object.freeze({ kind: 'unknown_home' } as const);
+const SIGNED_OUT = Object.freeze({ kind: 'signed_out' } as const);
+const RESOLVING_ENTRY: ScopeEntry = Object.freeze({ resolution: RESOLVING });
+const UNKNOWN_HOME_ENTRY: ScopeEntry = Object.freeze({ resolution: UNKNOWN_HOME });
+const SIGNED_OUT_ENTRY: ScopeEntry = Object.freeze({ resolution: SIGNED_OUT });
+
 /**
- * Component-local projection of exact Home credentials into Account identity.
- * Credential storage and its mutation event remain the authority; this hook
- * adds no persisted/global lifetime. A mutation invalidates captured bindings
- * before the replacement credential is read, fencing late Search publication.
+ * One credential-resolution and retirement lifecycle for every exact Home.
+ * Domain projections may clean up their own rows at the binding boundary;
+ * credential identity and currentness always remain owned here.
  */
-export function useServerCredentialAccountScopes(
+function useCredentialScopeEntries(
     serverIds: readonly (string | null | undefined)[],
-): ReadonlyMap<string, ServerCredentialAccountScopeBinding> {
+    projectionLifecycle?: ServerCredentialAccountScopeProjectionLifecycle,
+): ReadonlyMap<string, ScopeEntry> {
     const profilesGeneration = useServerProfilesGeneration();
     const normalizedServerIds = [...new Set(serverIds
         .map((serverId) => resolveServerProfileScopeIdForIdentifier(serverId))
         .filter(Boolean))].sort();
-    const serverIdsKey = normalizedServerIds.join('\u0000');
+    const serverIdsKey = JSON.stringify(normalizedServerIds);
     const revisionsRef = React.useRef(new Map<string, number>());
     const retirementCallbacksRef = React.useRef(new Map<string, Set<() => void>>());
     const mountedRef = React.useRef(true);
-    const [bindings, setBindings] = React.useState<ReadonlyMap<string, ServerCredentialAccountScopeBinding>>(
-        () => new Map(),
-    );
+    const [entries, setEntries] = React.useState<ReadonlyMap<string, ScopeEntry>>(() => new Map());
 
     React.useEffect(() => {
         mountedRef.current = true;
         const trackedServerIds = new Set(normalizedServerIds);
+        setEntries((current) => {
+            if ([...current.keys()].every((serverId) => trackedServerIds.has(serverId))) return current;
+            return new Map([...current].filter(([serverId]) => trackedServerIds.has(serverId)));
+        });
 
-        const invalidate = (serverId: string, publish = true, clearScopedRows = false): number => {
-            if (clearScopedRows) storage.getState().clearSessionListRowsForServerScope(serverId);
+        const publishEntry = (serverId: string, entry: ScopeEntry): void => {
+            setEntries((current) => {
+                if (current.get(serverId) === entry) return current;
+                const next = new Map(current);
+                next.set(serverId, entry);
+                return next;
+            });
+        };
+
+        const invalidate = (serverId: string, publish = true): number => {
             const retirements = retirementCallbacksRef.current.get(serverId);
             retirementCallbacksRef.current.delete(serverId);
             for (const retire of retirements ?? []) {
@@ -59,53 +97,28 @@ export function useServerCredentialAccountScopes(
             }
             const revision = (revisionsRef.current.get(serverId) ?? 0) + 1;
             revisionsRef.current.set(serverId, revision);
-            if (publish) {
-                setBindings((current) => {
-                    if (!current.has(serverId)) return current;
-                    const next = new Map(current);
-                    next.delete(serverId);
-                    return next;
-                });
-            }
+            if (publish) publishEntry(serverId, RESOLVING_ENTRY);
             return revision;
         };
 
         const resolveBinding = async (requestedServerId: string, revision: number): Promise<void> => {
-            const canonicalServerId = resolveServerProfileScopeIdForIdentifier(requestedServerId);
-            const profile = getServerProfileById(canonicalServerId);
-            if (!profile) return;
-            const credentials = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, {
-                serverId: canonicalServerId,
-            });
-            let accountId: string | null = null;
-            try {
-                accountId = credentials ? parseToken(credentials.token) : null;
-            } catch {
-                accountId = null;
+            const isCurrent = () => mountedRef.current
+                && revisionsRef.current.get(requestedServerId) === revision;
+            const resolution = await resolveServerCredentialAccountScope(requestedServerId);
+            if (!isCurrent()) return;
+            if (resolution.kind !== 'bound') {
+                publishEntry(requestedServerId, resolution.kind === 'unknown_home' ? UNKNOWN_HOME_ENTRY : SIGNED_OUT_ENTRY);
+                return;
             }
-            if (
-                !accountId
-                || !mountedRef.current
-                || revisionsRef.current.get(requestedServerId) !== revision
-            ) return;
-            const activeAccountScope = captureActiveServerAccountScopeLifetime()?.scope ?? null;
-            if (!activeAccountScope || !areServerAccountScopesEqual(
-                activeAccountScope,
-                createServerAccountScope(requestedServerId, accountId),
-            )) {
-                // Inactive-Home rows are an Account-scoped Search projection. No
-                // listener existed while this hook was unmounted, so clear any
-                // prior lifetime before publishing the newly resolved binding.
-                storage.getState().clearSessionListRowsForServerScope(requestedServerId);
-            }
+            const scope = resolution.scope;
             const binding: ServerCredentialAccountScopeBinding = Object.freeze({
                 serverId: requestedServerId,
-                accountId,
+                accountId: scope.accountId,
+                scope,
                 revision,
-                isCurrent: () => mountedRef.current
-                    && revisionsRef.current.get(requestedServerId) === revision,
+                isCurrent,
                 onRetire: (cancel) => {
-                    if (!mountedRef.current || revisionsRef.current.get(requestedServerId) !== revision) {
+                    if (!isCurrent()) {
                         cancel();
                         return Object.freeze({ dispose(): void {} });
                     }
@@ -120,10 +133,14 @@ export function useServerCredentialAccountScopes(
                     });
                 },
             });
-            setBindings((current) => {
+            projectionLifecycle?.beforeBinding?.(binding);
+            setEntries((current) => {
                 if (!binding.isCurrent()) return current;
                 const next = new Map(current);
-                next.set(requestedServerId, binding);
+                next.set(requestedServerId, Object.freeze({
+                    resolution: Object.freeze({ kind: 'bound' as const, scope }),
+                    binding,
+                }));
                 return next;
             });
         };
@@ -133,10 +150,11 @@ export function useServerCredentialAccountScopes(
             void resolveBinding(serverId, revision);
         }
 
-        const unsubscribe = subscribeHomeCredentialMutations((event) => {
+        const unsubscribe = subscribeHomeCredentialChange((event) => {
             for (const serverId of trackedServerIds) {
                 if (!areServerProfileIdentifiersEquivalent(event.serverId, serverId)) continue;
-                const revision = invalidate(serverId, true, true);
+                projectionLifecycle?.onCredentialMutation?.(serverId);
+                const revision = invalidate(serverId);
                 void resolveBinding(serverId, revision);
             }
         });
@@ -146,11 +164,74 @@ export function useServerCredentialAccountScopes(
             unsubscribe();
             for (const serverId of trackedServerIds) invalidate(serverId, false);
         };
-        // The sorted key is the identity of the requested set. The profile
-        // generation deliberately retriggers credential resolution after a
-        // profile URL/identity update without making profile data authoritative.
+        // The sorted key identifies the Home set. Profile changes retire and
+        // re-resolve bindings without making profile data Account authority.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [profilesGeneration, serverIdsKey]);
+    }, [profilesGeneration, serverIdsKey, projectionLifecycle]);
 
+    return entries;
+}
+
+const SESSION_PROJECTION_LIFECYCLE: ServerCredentialAccountScopeProjectionLifecycle = {
+    beforeBinding(binding) {
+        const activeAccountScope = captureActiveServerAccountScopeLifetime()?.scope ?? null;
+        if (!activeAccountScope || !areServerAccountScopesEqual(
+            activeAccountScope,
+            createServerAccountScope(binding.serverId, binding.accountId),
+        )) {
+            // A Search consumer may mount after missing a credential mutation.
+            // Clear its old inactive-Home rows before publishing the binding.
+            storage.getState().clearSessionListRowsForServerScope(binding.serverId);
+        }
+    },
+    onCredentialMutation(serverId) {
+        storage.getState().clearSessionListRowsForServerScope(serverId);
+    },
+};
+
+/** Cancellable bindings for the existing Session/Search projection consumers. */
+export function useServerCredentialAccountScopes(
+    serverIds: readonly (string | null | undefined)[],
+): ReadonlyMap<string, ServerCredentialAccountScopeBinding> {
+    const entries = useCredentialScopeEntries(serverIds, SESSION_PROJECTION_LIFECYCLE);
+    return React.useMemo(() => boundScopeEntries(entries), [entries]);
+}
+
+function boundScopeEntries(entries: ReadonlyMap<string, ScopeEntry>): ReadonlyMap<string, ServerCredentialAccountScopeBinding> {
+    const bindings = new Map<string, ServerCredentialAccountScopeBinding>();
+    for (const [serverId, entry] of entries) {
+        if ('binding' in entry) bindings.set(serverId, entry.binding);
+    }
     return bindings;
+}
+
+/** Exact Home credential lifetimes without Session-projection cleanup effects. */
+export function useServerCredentialAccountScopeBindings(
+    serverIds: readonly (string | null | undefined)[],
+): ReadonlyMap<string, ServerCredentialAccountScopeBinding> {
+    const entries = useCredentialScopeEntries(serverIds);
+    return React.useMemo(() => {
+        return boundScopeEntries(entries);
+    }, [entries]);
+}
+
+/** Exact Home identity states without Session projection side effects. */
+export function useServerCredentialAccountScopeResolutions(
+    serverIds: readonly (string | null | undefined)[],
+    projectionLifecycle?: ServerCredentialAccountScopeProjectionLifecycle,
+): ReadonlyMap<string, ServerCredentialAccountScopeResolution> {
+    const entries = useCredentialScopeEntries(serverIds, projectionLifecycle);
+    return React.useMemo(() => new Map(
+        [...entries].map(([serverId, entry]) => [serverId, entry.resolution] as const),
+    ), [entries]);
+}
+
+export function useServerCredentialAccountScopeResolution(
+    serverId: string | null | undefined,
+): ServerCredentialAccountScopeResolution {
+    const normalized = resolveServerProfileScopeIdForIdentifier(serverId);
+    const requested = React.useMemo(() => (normalized ? [normalized] : []), [normalized]);
+    const resolutions = useServerCredentialAccountScopeResolutions(requested);
+    if (!normalized) return UNKNOWN_HOME;
+    return resolutions.get(normalized) ?? RESOLVING;
 }

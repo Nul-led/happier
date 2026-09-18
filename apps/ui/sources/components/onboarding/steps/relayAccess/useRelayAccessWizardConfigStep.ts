@@ -4,6 +4,7 @@ import type { RelayAccessTaskSnapshot } from '@happier-dev/cli-common/systemTask
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
 import { setActiveShareableServerUrl, setServerProfileShareableUrl } from '@/sync/domains/server/serverRuntime';
 import { t } from '@/text';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 
 export type RelayAccessWizardPrimaryState = Readonly<{
     label: string;
@@ -97,14 +98,14 @@ export function useRelayAccessWizardConfigStep(params: UseRelayAccessWizardConfi
         const shareUrl = snapshot.status?.shareUrl ?? null;
         onShareUrlChange?.(shareUrl);
         if (serverProfileId) {
-            setServerProfileShareableUrl(serverProfileId, shareUrl, {
+            fireAndForget(setServerProfileShareableUrl(serverProfileId, shareUrl, {
                 validatedAgainstServerUrl: upstreamUrl ?? null,
-            });
+            }), { tag: 'useRelayAccessWizardConfigStep.persistShareableUrl' });
             return;
         }
-        setActiveShareableServerUrl(shareUrl, {
+        fireAndForget(setActiveShareableServerUrl(shareUrl, {
             validatedAgainstServerUrl: upstreamUrl ?? null,
-        });
+        }), { tag: 'useRelayAccessWizardConfigStep.persistActiveShareableUrl' });
     }, [control.snapshot, onShareUrlChange, serverProfileId, upstreamUrl]);
 
     React.useEffect(() => {

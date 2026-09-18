@@ -11,6 +11,12 @@ import { readMountedSessionRealtimeTranscriptConsumerSessionIds } from '@/sync/r
 import { storage } from '@/sync/domains/state/storage';
 import { voiceSessionBindingStore } from '@/voice/binding/voiceConversationBindingStore';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import {
+    areSessionAddressesEqual,
+    normalizeSessionAddress,
+    type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
 
 export type SessionLiveConsumption = Readonly<{
     isVisible: boolean;
@@ -22,10 +28,29 @@ function addTrimmedSessionId(ids: string[], value: unknown): void {
     if (trimmed) ids.push(trimmed);
 }
 
-function getVoiceBoundTargetSessionIds(): string[] {
+function resolveSourceSessionAddress(
+    sessionId: string,
+    sourceServerId?: string | null,
+): SessionAddress | null {
+    return normalizeSessionAddress(
+        sourceServerId ?? getActiveServerSnapshot().serverId,
+        sessionId,
+    );
+}
+
+function readMatchingSessionId(
+    address: SessionAddress | null | undefined,
+    source: SessionAddress | null,
+): string | null {
+    return areSessionAddressesEqual(address, source) ? source?.sessionId ?? null : null;
+}
+
+function getVoiceBoundTargetSessionIds(source: SessionAddress | null): string[] {
+    if (!source) return [];
     const ids: string[] = [];
     for (const binding of voiceSessionBindingStore.getState().list()) {
-        addTrimmedSessionId(ids, binding.targetSessionId);
+        if (binding.targetSessionAddress?.serverId !== source.serverId) continue;
+        addTrimmedSessionId(ids, binding.targetSessionAddress.sessionId);
         addTrimmedSessionId(ids, binding.conversationSessionId);
         addTrimmedSessionId(ids, binding.controlSessionId);
     }
@@ -45,15 +70,21 @@ export function resolveSessionLiveConsumption(
     sourceServerId?: string | null,
 ): SessionLiveConsumption {
     const visible = isSessionSurfaceVisible(sessionId, sourceServerId);
+    const source = resolveSourceSessionAddress(sessionId, sourceServerId);
     const targetState = useVoiceTargetStore.getState();
     const isFullContentConsumer = isSessionFullContentConsumerActive({
         sessionId,
         isVisible: visible,
         explicitTranscriptConsumerSessionIds: readMountedSessionRealtimeTranscriptConsumerSessionIds(sourceServerId),
-        voicePrimaryActionSessionId: targetState.primaryActionSessionId,
-        voiceTrackedSessionIds: targetState.trackedSessionIds,
-        voiceReadbackSessionIds: targetState.lastFocusedSessionId ? [targetState.lastFocusedSessionId] : [],
-        voiceBoundTargetSessionIds: getVoiceBoundTargetSessionIds(),
+        voicePrimaryActionSessionId: readMatchingSessionId(targetState.primaryActionSessionAddress, source),
+        // Account Follow Include in Voice is a background update/catch-up
+        // authority, never a full transcript-consumption reason. The retained
+        // compatibility projection likewise cannot hydrate content.
+        voiceTrackedSessionIds: [],
+        voiceReadbackSessionIds: readMatchingSessionId(targetState.lastFocusedSessionAddress, source)
+            ? [source!.sessionId]
+            : [],
+        voiceBoundTargetSessionIds: getVoiceBoundTargetSessionIds(source),
         scmMountedScopes: readMountedSessionRealtimeScmConsumerScopes(),
     });
     return { isVisible: visible, isFullContentConsumer };

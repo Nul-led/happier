@@ -1,5 +1,4 @@
 import {
-    buildSessionTranscriptMessageProvenanceV1,
     REALTIME_CONVERSATION_VOICE_TURN_ORIGIN_V1,
     deriveVoiceAgentTurnLocalId,
     deriveVoiceAgentTurnProvisionalLocalId,
@@ -103,9 +102,6 @@ function buildVoiceTurnMeta(turn: VoiceTranscriptTurn | null): NormalizedMessage
     const streamId = normalizeNonEmptyString(turn.streamId);
     const requestId = normalizeNonEmptyString(turn.requestId);
     return {
-        ...(turn.role === 'user'
-            ? { happierProvenanceV1: buildSessionTranscriptMessageProvenanceV1('executionRunVoice') }
-            : {}),
         happier: {
             kind: 'voice_agent_turn.v1',
             payload: {
@@ -123,26 +119,16 @@ function buildVoiceTurnMeta(turn: VoiceTranscriptTurn | null): NormalizedMessage
 }
 
 export function buildRealtimeConversationTurnMeta(
-    _retiredSource?: RealtimeConversationTurnSource,
+    source?: RealtimeConversationTurnSource,
 ): NormalizedMessage['meta'] {
     return {
-        happierProvenanceV1: buildSessionTranscriptMessageProvenanceV1('executionRunVoice'),
         happier: {
             kind: 'conversation_turn.v1',
             payload: { v: 1 },
             conversationTurnOriginV1: {
                 ...REALTIME_CONVERSATION_VOICE_TURN_ORIGIN_V1,
+                ...(source ? { source } : {}),
             },
-        },
-    };
-}
-
-function buildRealtimeConversationAssistantTurnMeta(): NormalizedMessage['meta'] {
-    return {
-        happier: {
-            kind: 'conversation_turn.v1',
-            payload: { v: 1 },
-            conversationTurnOriginV1: REALTIME_CONVERSATION_VOICE_TURN_ORIGIN_V1,
         },
     };
 }
@@ -153,9 +139,7 @@ export function buildRealtimeConversationRawRecord(params: Readonly<{
     text: string;
     source?: RealtimeConversationTurnSource;
 }>): RawRecord {
-    const meta = params.role === 'user'
-        ? buildRealtimeConversationTurnMeta(params.source)
-        : buildRealtimeConversationAssistantTurnMeta();
+    const meta = buildRealtimeConversationTurnMeta(params.source);
     return params.role === 'user'
         ? {
             role: 'user',
@@ -506,7 +490,7 @@ export function createVoiceTranscriptProjector(deps: VoiceTranscriptProjectorDep
                 content: [{ type: 'text', text, uuid: id, parentUUID: null }],
                 ...(
                     canonicalItem
-                        ? { meta: buildRealtimeConversationAssistantTurnMeta() }
+                        ? { meta: buildRealtimeConversationTurnMeta(params.source ?? undefined) }
                         : params.role === 'note'
                         ? { meta: buildVoiceTranscriptNoteMeta() }
                         : buildVoiceTurnMeta(turn)

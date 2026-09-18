@@ -14,6 +14,7 @@ function setCurrentConversationSession(conversationSessionId: string, metadata: 
             ...state.sessions,
             [conversationSessionId]: {
                 id: conversationSessionId,
+                serverId: 'server-a',
                 metadata,
             },
         },
@@ -32,8 +33,9 @@ describe('resolveVoiceSessionComposerRouting', () => {
             adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
             controlSessionId: 'voice-global',
             conversationSessionId: 'carrier-s1',
+            conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
             transcriptMode: 'synthetic',
-            targetSessionId: 's1',
+            targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
             updatedAt: 123,
         });
 
@@ -43,8 +45,9 @@ describe('resolveVoiceSessionComposerRouting', () => {
                 adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
                 controlSessionId: 'voice-global',
                 conversationSessionId: 'carrier-s1',
+                conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
                 transcriptMode: 'synthetic',
-                targetSessionId: 's1',
+                targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
                 updatedAt: 123,
             },
         });
@@ -57,8 +60,9 @@ describe('resolveVoiceSessionComposerRouting', () => {
             adapterId: 'local_conversation',
             controlSessionId: 'voice-global',
             conversationSessionId: 'carrier-s1',
+            conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
             transcriptMode: 'native_session',
-            targetSessionId: null,
+            targetSessionAddress: null,
             updatedAt: 123,
         });
 
@@ -68,8 +72,9 @@ describe('resolveVoiceSessionComposerRouting', () => {
                 adapterId: 'local_conversation',
                 controlSessionId: 'voice-global',
                 conversationSessionId: 'carrier-s1',
+                conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
                 transcriptMode: 'native_session',
-                targetSessionId: null,
+                targetSessionAddress: null,
                 updatedAt: 123,
             },
         });
@@ -83,8 +88,9 @@ describe('resolveVoiceSessionComposerRouting', () => {
                 adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
                 controlSessionId: 'voice-global',
                 conversationSessionId: 'carrier-s1',
+                conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
                 transcriptMode: 'synthetic',
-                targetSessionId: 's1',
+                targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
                 updatedAt: 123,
             },
         );
@@ -102,8 +108,9 @@ describe('resolveVoiceSessionComposerRouting', () => {
                 adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
                 controlSessionId: 'voice-global',
                 conversationSessionId: 'carrier-s1',
+                conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
                 transcriptMode: 'synthetic',
-                targetSessionId: 's1',
+                targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
                 updatedAt: 123,
             },
         });
@@ -123,8 +130,9 @@ describe('resolveVoiceSessionComposerRouting', () => {
                 adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
                 controlSessionId: 'voice-global',
                 conversationSessionId: 'carrier-memo',
+                conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-memo' },
                 transcriptMode: 'synthetic',
-                targetSessionId: 's1',
+                targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
                 updatedAt: 1,
             },
         );

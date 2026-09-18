@@ -631,6 +631,38 @@ describe('RootLayout restore navigation', () => {
     }, 30_000);
 });
 
+describe('RootLayout public capability entry routes', () => {
+    it('gives invitation and native-auth links the same full-viewport public shell as OAuth and restore', async () => {
+        stubFeatureFetch();
+
+        const { default: RootLayout } = await import('@/app/(app)/_layout');
+        const screen = await renderScreen(React.createElement(RootLayout));
+
+        const screens = screen.findAllByType('StackScreen' as any);
+        // Both are reached before a Home Account exists, so the surrounding app
+        // chrome would be answering for an Account the visitor does not have.
+        const join = screens.find((node) => node.props?.name === 'join/[token]');
+        expect(join?.props?.options?.headerShown).toBe(false);
+
+        const teamSignIn = screens.find((node) => node.props?.name === 'teams/[teamId]/sign-in');
+        expect(teamSignIn?.props?.options?.headerShown).toBe(false);
+
+        const emailVerification = screens.find((node) => node.props?.name === 'auth/email/verify/[token]');
+        expect(emailVerification?.props?.options?.headerShown).toBe(false);
+
+        const passwordReset = screens.find((node) => node.props?.name === 'auth/password/reset/[token]');
+        expect(passwordReset?.props?.options?.headerShown).toBe(false);
+
+        const recovery = screens.find((node) => node.props?.name === 'auth/password/recover');
+        expect(recovery?.props?.options?.headerShown).toBe(false);
+
+        // The ordinary Team surface beside it keeps its own chrome; only the
+        // exact entry leaf is a public destination.
+        const teamSessions = screens.find((node) => node.props?.name === 'teams/[teamId]/sessions');
+        expect(teamSessions?.props?.options?.headerShown).not.toBe(false);
+    }, 60_000);
+});
+
 describe('RootLayout settings routes', () => {
     it('registers only the settings navigator in the parent stack and keeps nested settings children out of it', async () => {
         stubFeatureFetch();

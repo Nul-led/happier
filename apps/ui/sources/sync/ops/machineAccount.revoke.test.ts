@@ -4,8 +4,30 @@ const { mockServerFetch } = vi.hoisted(() => ({
     mockServerFetch: vi.fn(),
 }));
 
+const activeAccountScopeState = vi.hoisted(() => ({
+    activeServerId: 'server-a',
+    profileScope: { serverId: 'server-a', accountId: 'account-a' } as null | {
+        serverId: string;
+        accountId: string;
+    },
+}));
+
 vi.mock('@/sync/http/client', () => ({
     serverFetch: (...args: any[]) => mockServerFetch(...args),
+}));
+
+vi.mock('@/sync/domains/server/serverRuntime', () => ({
+    getActiveServerSnapshot: () => ({
+        serverId: activeAccountScopeState.activeServerId,
+        serverUrl: 'https://home.example.test',
+        generation: 1,
+    }),
+}));
+
+vi.mock('@/sync/domains/state/storageStateReaderBridge', () => ({
+    readRegisteredStorageState: () => ({
+        profileScope: activeAccountScopeState.profileScope,
+    }),
 }));
 
 import {
@@ -57,6 +79,31 @@ describe('machineRevokeFromAccount', () => {
 });
 
 describe('machineRevokeWithProviderCleanup', () => {
+    beforeEach(() => {
+        activeAccountScopeState.activeServerId = 'server-a';
+        activeAccountScopeState.profileScope = { serverId: 'server-a', accountId: 'account-a' };
+    });
+
+    it('refuses the irreversible revoke when the rendered Account scope retired during confirmation', async () => {
+        activeAccountScopeState.activeServerId = 'server-b';
+        activeAccountScopeState.profileScope = { serverId: 'server-b', accountId: 'account-b' };
+        const revoke = vi.fn(async () => ({ ok: true as const }));
+        const mutateAccountSettingsOnce = vi.fn();
+
+        await expect(machineRevokeWithProviderCleanup(
+            'revoked',
+            { serverId: 'server-a', accountId: 'account-a' },
+            1,
+            { revoke, mutateAccountSettingsOnce },
+        )).resolves.toEqual({
+            ok: false,
+            status: 409,
+            error: 'account_settings_scope_changed',
+        });
+        expect(revoke).not.toHaveBeenCalled();
+        expect(mutateAccountSettingsOnce).not.toHaveBeenCalled();
+    });
+
     it('removes only the revoked machine Provider state through the settings CAS owner', async () => {
         let settings = ProviderSettingsV1Schema.parse({
             ...DEFAULT_PROVIDER_SETTINGS_V1,
@@ -83,7 +130,7 @@ describe('machineRevokeWithProviderCleanup', () => {
             settings = ProviderSettingsV1Schema.parse(next.settings.providerSettingsV1);
             return { status: 'applied' as const, settingsVersion: 2, value: next.value };
         });
-        await expect(machineRevokeWithProviderCleanup('revoked', 1, {
+        await expect(machineRevokeWithProviderCleanup('revoked', { serverId: 'server-a', accountId: 'account-a' }, 1, {
             revoke: vi.fn(async () => ({ ok: true as const })),
             mutateAccountSettingsOnce,
         })).resolves.toEqual({ ok: true, machineAlreadyRevoked: false, providerCleanup: 'complete' });
@@ -120,10 +167,10 @@ describe('machineRevokeWithProviderCleanup', () => {
             .mockResolvedValueOnce({ ok: true })
             .mockResolvedValueOnce({ ok: false, status: 410, error: 'machine_revoked' });
         const deps = { revoke, mutateAccountSettingsOnce };
-        await expect(machineRevokeWithProviderCleanup('revoked', 1, deps)).resolves.toEqual({
+        await expect(machineRevokeWithProviderCleanup('revoked', { serverId: 'server-a', accountId: 'account-a' }, 1, deps)).resolves.toEqual({
             ok: false, status: 503, error: 'provider_cleanup_pending', machineRevoked: true, providerCleanup: 'pending', retryable: true,
         });
-        await expect(machineRevokeWithProviderCleanup('revoked', 1, deps)).resolves.toEqual({
+        await expect(machineRevokeWithProviderCleanup('revoked', { serverId: 'server-a', accountId: 'account-a' }, 1, deps)).resolves.toEqual({
             ok: true, machineAlreadyRevoked: true, providerCleanup: 'complete',
         });
     });
@@ -155,7 +202,7 @@ describe('machineRevokeWithProviderCleanup', () => {
             return { status: 'conflict' as const, currentSettingsVersion: 2 };
         });
 
-        await expect(machineRevokeWithProviderCleanup('revoked', 1, {
+        await expect(machineRevokeWithProviderCleanup('revoked', { serverId: 'server-a', accountId: 'account-a' }, 1, {
             revoke: vi.fn(async () => ({ ok: true as const })),
             mutateAccountSettingsOnce,
         })).resolves.toEqual({
@@ -188,7 +235,7 @@ describe('machineRevokeWithProviderCleanup', () => {
             return { status: 'applied' as const, settingsVersion: 2, value: next.value };
         });
 
-        await expect(machineRevokeWithProviderCleanup('revoked', 1, {
+        await expect(machineRevokeWithProviderCleanup('revoked', { serverId: 'server-a', accountId: 'account-a' }, 1, {
             revoke: vi.fn(async () => ({ ok: true as const })),
             mutateAccountSettingsOnce,
         })).resolves.toMatchObject({
@@ -210,7 +257,7 @@ describe('machineRevokeWithProviderCleanup', () => {
             return { status: 'applied' as const, settingsVersion: 2, value: next.value };
         });
 
-        await expect(machineRevokeWithProviderCleanup('revoked', 1, {
+        await expect(machineRevokeWithProviderCleanup('revoked', { serverId: 'server-a', accountId: 'account-a' }, 1, {
             revoke: vi.fn(async () => ({ ok: true as const })),
             mutateAccountSettingsOnce,
         })).resolves.toMatchObject({

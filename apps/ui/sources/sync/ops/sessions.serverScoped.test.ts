@@ -7,6 +7,7 @@ import { createSessionFixture } from '@/dev/testkit';
 
 const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
 const sessionRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
+const sessionRpcWithServerAccountScopeMock = vi.hoisted(() => vi.fn());
 const readMachineTargetForSessionMock = vi.hoisted(() => vi.fn());
 const prepareAccountSettingsForDaemonSpawnIfNeededMock = vi.hoisted(() => vi.fn(async () => ({})));
 const apiRequestMock = vi.hoisted(() => vi.fn());
@@ -22,6 +23,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc', () => ({
     sessionRpcWithServerScope: sessionRpcWithServerScopeMock,
+    sessionRpcWithServerAccountScope: sessionRpcWithServerAccountScopeMock,
 }));
 
 vi.mock('./sessionMachineTarget', async () => {
@@ -92,6 +94,7 @@ describe('sessions ops server-scoped routing', () => {
         }, true);
         machineRpcWithServerScopeMock.mockReset();
         sessionRpcWithServerScopeMock.mockReset();
+        sessionRpcWithServerAccountScopeMock.mockReset();
         readMachineTargetForSessionMock.mockReset();
         prepareAccountSettingsForDaemonSpawnIfNeededMock.mockReset();
         prepareAccountSettingsForDaemonSpawnIfNeededMock.mockResolvedValue({});
@@ -180,6 +183,37 @@ describe('sessions ops server-scoped routing', () => {
         expect(result).toEqual({ type: 'success', sessionId: 'session-1' });
         expect(apiRequestMock).not.toHaveBeenCalled();
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits for nonce-correlated runtime readiness before completing a guarded resume', async () => {
+        machineRpcWithServerScopeMock
+            .mockResolvedValueOnce({
+                type: 'success',
+                sessionId: 'session-1',
+                spawnNonce: 'execution-run-host-op-1',
+                sessionIdStatus: 'pending',
+            })
+            .mockResolvedValueOnce({ status: 'success', sessionId: 'session-1' });
+        const { resumeSession } = await sessionsModulePromise;
+
+        await expect(resumeSession({
+            sessionId: 'session-1',
+            machineId: 'machine-1',
+            directory: '/tmp',
+            backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+            spawnNonce: 'execution-run-host-op-1',
+            waitForReady: true,
+        })).resolves.toEqual({ type: 'success', sessionId: 'session-1' });
+
+        expect(machineRpcWithServerScopeMock.mock.calls[0]?.[0]?.payload).toMatchObject({
+            type: 'resume-session',
+            sessionId: 'session-1',
+            spawnNonce: 'execution-run-host-op-1',
+        });
+        expect(machineRpcWithServerScopeMock.mock.calls[1]?.[0]).toMatchObject({
+            method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
+            payload: { spawnNonce: 'execution-run-host-op-1' },
+        });
     });
 
     it('uses one current-only Provider-safe RPC so an older daemon refuses resume before side effects', async () => {
@@ -533,6 +567,84 @@ describe('sessions ops server-scoped routing', () => {
             armSessionResumingFallbackSpy.mockRestore();
             clearSessionResumingSpy.mockRestore();
         }
+    });
+
+    it('fences an exact Account runtime ensure and never consults the same-id active Session owner', async () => {
+        let current = true;
+        const retireListeners = new Set<() => void>();
+        const accountLifetime = {
+            scope: { serverId: 'server-b', accountId: 'account-b' },
+            isCurrent: () => current,
+            onRetire: (listener: () => void) => {
+                retireListeners.add(listener);
+                return { dispose: () => retireListeners.delete(listener) };
+            },
+        };
+        readMachineTargetForSessionMock.mockReturnValue({ machineId: 'machine-a', basePath: '/home-a' });
+        machineRpcWithServerScopeMock.mockImplementationOnce(async (params) => {
+            current = false;
+            for (const listener of retireListeners) listener();
+            params.onIssued?.();
+            return { type: 'success', sessionId: 'session-1' };
+        });
+        const markSessionResumingSpy = vi.spyOn(storage.getState(), 'markSessionResuming');
+        try {
+            const { ensureSessionRuntimeForPendingInput } = await sessionsModulePromise;
+
+            await expect(ensureSessionRuntimeForPendingInput({
+                sessionId: 'session-1',
+                machineId: 'machine-b',
+                directory: '/home-b',
+                backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+                serverId: 'server-b',
+                accountLifetime,
+            })).resolves.toMatchObject({
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
+            });
+
+            expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+                machineId: 'machine-b',
+                serverId: 'server-b',
+                accountId: 'account-b',
+                preferScoped: true,
+                signal: expect.any(AbortSignal),
+                onIssued: expect.any(Function),
+            }));
+            expect(readMachineTargetForSessionMock).not.toHaveBeenCalled();
+            expect(prepareAccountSettingsForDaemonSpawnIfNeededMock).not.toHaveBeenCalled();
+            expect(markSessionResumingSpy).not.toHaveBeenCalled();
+        } finally {
+            markSessionResumingSpy.mockRestore();
+        }
+    });
+
+    it('uses the captured exact Account scope for a control switch and rejects replacement before issuance', async () => {
+        let current = true;
+        const accountLifetime = {
+            scope: { serverId: 'server-b', accountId: 'account-b' },
+            isCurrent: () => current,
+            onRetire: () => ({ dispose() {} }),
+        };
+        sessionRpcWithServerAccountScopeMock.mockImplementationOnce(async (params) => {
+            current = false;
+            params.onIssued?.();
+            return true;
+        });
+        const { sessionSwitch } = await sessionsModulePromise;
+
+        await expect(sessionSwitch('session-1', 'remote', {
+            serverId: 'server-b',
+            accountLifetime,
+        })).rejects.toMatchObject({ code: 'session_account_scope_retired' });
+
+        expect(sessionRpcWithServerAccountScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 'session-1',
+            scope: accountLifetime.scope,
+            method: 'switch',
+            onIssued: expect.any(Function),
+        }));
+        expect(sessionRpcWithServerScopeMock).not.toHaveBeenCalled();
     });
 
     it('presents a runtime ensure as resuming when the session is known inactive', async () => {

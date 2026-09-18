@@ -12,6 +12,7 @@ let wrapLinesSetting: boolean = true;
 let inlineVirtualizationThresholdSetting: number | undefined = undefined;
 let inlineVirtualizationByteThresholdSetting: number | undefined = undefined;
 let reviewCommentsFeatureEnabled = false;
+const workspaceScopeCalls: Array<readonly [string | null | undefined, string | null | undefined]> = [];
 
 installToolShellPresentationCommonModuleMocks({
     reactNative: async () => {
@@ -43,11 +44,14 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 }));
 
 vi.mock('@/sync/domains/session/resolveWorkspaceScopeForSession', () => ({
-    useWorkspaceScopeForSession: (sessionId?: string | null) => (
+    useWorkspaceScopeForSession: (sessionId?: string | null, serverId?: string | null) => {
+        workspaceScopeCalls.push([sessionId, serverId]);
+        return (
         sessionId === 'session-1'
             ? { serverId: 'server-1', machineId: 'machine-1', rootPath: '/tmp/repo' }
             : null
-    ),
+        );
+    },
 }));
 
 vi.mock('@/components/ui/code/diff/DiffViewer', () => ({
@@ -75,7 +79,22 @@ describe('ToolDiffView', () => {
         inlineVirtualizationThresholdSetting = undefined;
         inlineVirtualizationByteThresholdSetting = undefined;
         reviewCommentsFeatureEnabled = false;
+        workspaceScopeCalls.length = 0;
         diffViewerSpy.mockClear();
+    });
+
+    it('qualifies review-comment workspace reads with the mounted Home', async () => {
+        const { ToolDiffView } = await toolDiffViewModule;
+
+        await renderScreen(React.createElement(ToolDiffView, {
+            sessionId: 'session-1',
+            serverId: 'server-1',
+            filePath: 'src/foo.ts',
+            oldText: 'before',
+            newText: 'after',
+        }));
+
+        expect(workspaceScopeCalls).toContainEqual(['session-1', 'server-1']);
     });
 
     it('plumbs filePath and wrapLines into DiffViewer', async () => {

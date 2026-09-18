@@ -18,6 +18,8 @@ const state = vi.hoisted(() => ({
         },
     },
     concurrentSessionListCacheByServerId: {},
+    ordinarySessionListMembershipByServerId: {},
+    sessionListRowsByServerId: {},
 })) as {
     settings: {
         voice: {
@@ -27,6 +29,8 @@ const state = vi.hoisted(() => ({
         };
     };
     concurrentSessionListCacheByServerId: ConcurrentSessionListCacheByServerId;
+    ordinarySessionListMembershipByServerId: Record<string, readonly string[]>;
+    sessionListRowsByServerId: Record<string, Record<string, unknown>>;
 };
 
 function createCachedSession(sessionId: string) {
@@ -53,6 +57,8 @@ installVoiceToolActionImplCommonModuleMocks({
         const getSnapshot = () => ({
             settings: settingsParse(state.settings),
             concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId,
+            ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
+            sessionListRowsByServerId: state.sessionListRowsByServerId,
         } as StorageState);
 
         return createStorageModuleStub({
@@ -92,14 +98,9 @@ describe('listServersForVoiceTool', () => {
 
     it('prefers saved server profile names over raw server ids', async () => {
         state.settings.voice.privacy.shareDeviceInventory = true;
-        state.concurrentSessionListCacheByServerId = {
-            'server-b': {
-                serverName: 'Review Server',
-                sessions: {
-                    's-review': createCachedSession('s-review'),
-                },
-            },
-        };
+        state.concurrentSessionListCacheByServerId = { 'server-b': { serverName: 'Review Server' } };
+        state.ordinarySessionListMembershipByServerId = { 'server-b': ['s-review'] };
+        state.sessionListRowsByServerId = { 'server-b': { 's-review': createCachedSession('s-review') } };
         getActiveServerSnapshot.mockReturnValue({ serverId: 'server-a' });
         getServerProfileById.mockImplementation((serverId: string) => {
             if (serverId === 'server-a') {
@@ -129,18 +130,16 @@ describe('listServersForVoiceTool', () => {
     it('falls back to human-friendly generic labels instead of raw server ids', async () => {
         state.settings.voice.privacy.shareDeviceInventory = true;
         state.concurrentSessionListCacheByServerId = {
-            'server-b': {
-                serverName: null,
-                sessions: {
-                    's-review': createCachedSession('s-review'),
-                },
-            },
-            'server-c': {
-                serverName: null,
-                sessions: {
-                    's-mobile': createCachedSession('s-mobile'),
-                },
-            },
+            'server-b': { serverName: null },
+            'server-c': { serverName: null },
+        };
+        state.ordinarySessionListMembershipByServerId = {
+            'server-b': ['s-review'],
+            'server-c': ['s-mobile'],
+        };
+        state.sessionListRowsByServerId = {
+            'server-b': { 's-review': createCachedSession('s-review') },
+            'server-c': { 's-mobile': createCachedSession('s-mobile') },
         };
         getActiveServerSnapshot.mockReturnValue({ serverId: 'server-a' });
         getServerProfileById.mockReturnValue(null);

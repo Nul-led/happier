@@ -1,4 +1,5 @@
 const CONCURRENT_SESSION_CACHE_REFRESH_UPDATE_TYPES = new Set([
+    'account-change',
     'new-machine',
     'update-machine',
     'new-session',
@@ -28,6 +29,7 @@ export function shouldRefreshConcurrentSessionCacheForUpdate(raw: unknown): bool
     return updateType !== null && CONCURRENT_SESSION_CACHE_REFRESH_UPDATE_TYPES.has(updateType);
 }
 
-export function shouldSchedulePushTokenReconciliationForUpdate(raw: unknown): boolean {
-    return readConcurrentUpdateType(raw) === 'update-account';
+export function isAccountChangeUpdate(raw: unknown): boolean {
+    const type = readConcurrentUpdateType(raw);
+    return type === 'update-account' || type === 'account-change';
 }

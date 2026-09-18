@@ -14,39 +14,17 @@ export type IosActivitySurfacePolicies = Readonly<{
 
 type LocalSettingsLike = Readonly<Record<string, unknown>>;
 
-function resolvePrivacyMode(
-    override: IosActivitySurfacePrivacyOverride,
-    defaultMode: ActivitySurfacePrivacyMode,
-): ActivitySurfacePrivacyMode {
-    return override === 'account' ? defaultMode : override;
-}
-
-function applyLiveActivityPrivacy(
-    basePolicy: ActivitySurfacePolicy,
-    privacyMode: ActivitySurfacePrivacyMode,
-): ActivitySurfacePolicy {
-    return {
-        ...basePolicy,
-        privacyMode,
-        liveActivities: {
-            ...basePolicy.liveActivities,
-            showPreviewText: privacyMode === 'include_preview',
-        },
-    };
-}
-
-function applyWidgetPrivacy(
-    basePolicy: ActivitySurfacePolicy,
-    privacyMode: ActivitySurfacePrivacyMode,
-): ActivitySurfacePolicy {
-    return {
-        ...basePolicy,
-        privacyMode,
-        widgets: {
-            ...basePolicy.widgets,
-            showPreviewText: privacyMode === 'include_preview',
-        },
-    };
+/**
+ * Device-global surface policy only.
+ *
+ * `privacyMode` here is the device override plus a fail-closed fallback: the
+ * privacy a rendered card actually uses comes from its own Home's Account
+ * delivery plan, resolved per candidate before presentation. A candidate with no
+ * resolvable exact-Home plan is never presented, so this fallback discloses
+ * nothing.
+ */
+function resolvePrivacyMode(override: IosActivitySurfacePrivacyOverride): ActivitySurfacePrivacyMode {
+    return override === 'account' ? 'status_only' : override;
 }
 
 export function resolveIosActivitySurfacePolicies(params: Readonly<{
@@ -57,17 +35,14 @@ export function resolveIosActivitySurfacePolicies(params: Readonly<{
         params.localSettings.attentionDeviceOverridesV1,
     );
 
-    const liveActivityPrivacyMode = resolvePrivacyMode(
-        deviceOverrides.liveActivities.privacyMode,
-        'status_only',
-    );
-    const widgetPrivacyMode = resolvePrivacyMode(
-        deviceOverrides.widgets.privacyMode,
-        'title_only',
-    );
-
     return {
-        liveActivityPolicy: applyLiveActivityPrivacy(basePolicy, liveActivityPrivacyMode),
-        widgetPolicy: applyWidgetPrivacy(basePolicy, widgetPrivacyMode),
+        liveActivityPolicy: {
+            ...basePolicy,
+            privacyMode: resolvePrivacyMode(deviceOverrides.liveActivities.privacyMode),
+        },
+        widgetPolicy: {
+            ...basePolicy,
+            privacyMode: resolvePrivacyMode(deviceOverrides.widgets.privacyMode),
+        },
     };
 }

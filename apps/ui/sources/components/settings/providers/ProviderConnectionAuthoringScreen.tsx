@@ -46,6 +46,7 @@ import { useUnsavedChangesBeforeRemoveGuard } from '@/utils/navigation/useUnsave
 import { promptUnsavedChangesAlert } from '@/utils/ui/promptUnsavedChangesAlert';
 import { BuiltInProviderAuthoringView } from './authoring/BuiltInProviderAuthoringView';
 import { CustomProviderAuthoringView } from './authoring/CustomProviderAuthoringView';
+import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 
 const PRESETS: readonly CustomProviderPreset[] = ['openai-responses', 'openai-chat', 'anthropic'];
 
@@ -135,6 +136,7 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
     const { enabled, presentation: availabilityPresentation } = useProviderFeatureAvailability();
     const machines = useAllMachines();
     const savedSecrets = useSetting('secrets');
+    const savedSecretCatalog = useSavedSecretCatalog();
     const providerTarget = useProviderSettingsTarget();
     const {
         machineId,
@@ -143,9 +145,12 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
         serverId,
     } = providerTarget;
     const query = useProviderConnections({ enabled, machineId, serverId });
+    const refreshConnections = React.useCallback(async (): Promise<void> => {
+        await query.refresh();
+    }, [query.refresh]);
     const mutation = useProviderConnectionMutation({
         resolveTarget: resolveCurrentTarget,
-        refresh: query.refresh,
+        refresh: refreshConnections,
     });
     const connectionId = React.useRef(`pc_${randomUUID()}`).current;
     const [draft, setDraft] = React.useState<CustomProviderDraft>(() => createCustomProviderDraft('openai-responses'));
@@ -209,7 +214,17 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
     const selectedSecretObservation = React.useMemo(() => {
         if (!draftRequiresApiKey || effectiveSecretId === null) return null;
         const secret = savedSecrets.find((candidate) => candidate.id === effectiveSecretId);
-        if (!secret) return { status: 'missing' as const };
+        if (!secret) {
+            const shared = savedSecretCatalog.resolveReference(effectiveSecretId);
+            if (shared.status !== 'ready' || !shared.secret) {
+                return { status: 'missing' as const };
+            }
+            return {
+                status: 'present' as const,
+                hasPendingValue: false,
+                recordFingerprint: shared.fingerprint,
+            };
+        }
         const persistedEnvelope = secret.encryptedValue.encryptedValue;
         return {
             status: 'present' as const,
@@ -221,7 +236,7 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
                 })
                 : null,
         };
-    }, [draftRequiresApiKey, effectiveSecretId, savedSecrets]);
+    }, [draftRequiresApiKey, effectiveSecretId, savedSecretCatalog.resolveReference, savedSecrets]);
     // Unsaved work is the draft itself. The target machine is a persisted
     // Machine Administration preference that survives navigation and is
     // restored on return, and it can be initialized automatically from a sole
@@ -613,7 +628,7 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
                 previewCredential={previewCredential}
                 endpointTemplates={contributionEndpointTemplates}
                 endpointValues={contributionEndpointValues}
-                secretSelected={effectiveSecretId !== null}
+                secretSelected={selectedSecretObservation?.status === 'present'}
                 savedSecretSelectionEnabled={selectedTargetServerMatchesActiveAccount}
                 preview={authoringPreview}
                 previewLoading={authoringPreviewLoading}
@@ -656,7 +671,7 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
                 localEndpoint,
                 enableAfterSaving,
                 draftRequiresApiKey,
-                secretSelected: effectiveSecretId !== null,
+                secretSelected: selectedSecretObservation?.status === 'present',
                 savedSecretSelectionEnabled: selectedTargetServerMatchesActiveAccount,
                 manualModelsError,
                 draftHasProbe,

@@ -43,7 +43,7 @@ export function listSessionBulkActionDescriptors(params: Readonly<{
     if (targets.length === 0) return [];
     const hasStoppable = targets.some((target) => target.active === true && target.canStop === true);
     const hasArchivable = targets.some((target) => target.archived !== true && target.canArchive === true);
-    const hasUnarchivable = targets.some((target) => target.archived === true && target.hasAdminAccess === true);
+    const hasUnarchivable = targets.some((target) => target.archived === true && target.canUnarchive === true);
     const hasPinned = targets.some((target) => target.pinned === true);
     const hasUnpinned = targets.some((target) => target.pinned !== true);
     const hasTags = targets.some((target) => (target.tags?.length ?? 0) > 0);

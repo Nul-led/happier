@@ -56,11 +56,9 @@ export type SettingsDomain = {
     purchases: Purchases;
     applySettingsLocal: (delta: Partial<Settings>) => void;
     applySettings: (settings: Settings, version: number) => void;
-    replaceSettings: (settings: Settings, version: number) => void;
-    activateSettingsScope: (scope: AccountSettingsScope, legacyScopes?: readonly AccountSettingsScope[]) => void;
+    activateSettingsScope: (scope: AccountSettingsScope, legacyScopes?: readonly AccountSettingsScope[]) => Promise<void>;
     clearSettingsScope: () => void;
     applySettingsForScope: (scope: AccountSettingsScope, settings: Settings, version: number) => void;
-    replaceSettingsForScope: (scope: AccountSettingsScope, settings: Settings, version: number) => void;
     applyLocalSettings: (delta: Partial<LocalSettings>, options?: { source?: SettingsAnalyticsSource }) => void;
     applyPurchases: (customerInfo: CustomerInfo) => void;
 };
@@ -70,13 +68,26 @@ type SettingsDomainDependencies = Readonly<{
     machines: Record<string, Machine>;
     machineDisplayById: Record<string, MachineDisplayRenderable>;
     machineListByServerId: Record<string, Machine[] | null>;
-    sessionListRenderables: Record<string, SessionListRenderableSession>;
+    sessionListRowsByServerId: Readonly<Record<string, Readonly<Record<string, SessionListRenderableSession>>>>;
+    ordinarySessionListMembershipByServerId?: Readonly<Record<string, readonly string[] | undefined>>;
     sessionListIndexByServerId: Readonly<Record<string, SessionListIndexItem[] | null | undefined>>;
     concurrentSessionListCacheByServerId: ConcurrentSessionListCacheByServerId;
     getProjectForSession?: (sessionId: string) => { key?: { machineId?: string | null; rootPath?: string | null } | null } | null;
 }>;
 
 type SettingsDomainState = SettingsDomain & SettingsDomainDependencies;
+
+function readOrdinaryRowsForServer(
+    state: SettingsDomainState,
+    serverId: string,
+): Readonly<Record<string, SessionListRenderableSession>> {
+    const rows = state.sessionListRowsByServerId?.[serverId] ?? {};
+    const membership = state.ordinarySessionListMembershipByServerId?.[serverId] ?? [];
+    return Object.fromEntries(membership.flatMap((sessionId) => {
+        const row = rows[sessionId];
+        return row ? [[sessionId, row] as const] : [];
+    }));
+}
 
 function rebuildSessionListIndexesForSettingsChange(
     state: SettingsDomainState,
@@ -88,11 +99,10 @@ function rebuildSessionListIndexesForSettingsChange(
     if (activeServerId) {
         const previousActiveIndex = nextSessionListIndexByServerId[activeServerId] ?? null;
         const nextActiveIndex = buildActiveServerSessionListIndex({
-            sessions: state.sessionListRenderables,
+            sessions: readOrdinaryRowsForServer(state, activeServerId),
             sessionRecords: state.sessions,
             machines: state.machineDisplayById,
             machineRecords: state.machines,
-            groupInactiveSessionsByProject: nextSettings.groupInactiveSessionsByProject === true,
             activeGroupingV1: nextSettings.sessionListActiveGroupingV1,
             inactiveGroupingV1: nextSettings.sessionListInactiveGroupingV1,
             sectionModeV1: nextSettings.sessionListSectionModeV1,
@@ -104,23 +114,20 @@ function rebuildSessionListIndexesForSettingsChange(
         }
     }
 
-    const concurrent = state.concurrentSessionListCacheByServerId ?? {};
     let didUpdateConcurrent = false;
     const concurrentUpdates: Record<string, SessionListIndexItem[] | null> = {};
-    for (const serverId in concurrent) {
-        const entry = concurrent[serverId];
-        if (!entry || typeof entry !== 'object') continue;
-        if (!entry.sessions || typeof entry.sessions !== 'object') continue;
+    for (const serverId in state.ordinarySessionListMembershipByServerId ?? {}) {
+        if (serverId === activeServerId) continue;
+        const entry = state.concurrentSessionListCacheByServerId?.[serverId];
         concurrentUpdates[serverId] = buildSessionListIndexWithServerScope({
-            sessions: entry.sessions,
+            sessions: readOrdinaryRowsForServer(state, serverId),
             machines: buildMachineDisplaysByIdFromMachineList(state.machineListByServerId?.[serverId]),
-            groupInactiveSessionsByProject: nextSettings.groupInactiveSessionsByProject === true,
             activeGroupingV1: nextSettings.sessionListActiveGroupingV1,
             inactiveGroupingV1: nextSettings.sessionListInactiveGroupingV1,
             sectionModeV1: nextSettings.sessionListSectionModeV1,
             serverScope: {
                 serverId,
-                serverName: entry.serverName ?? undefined,
+                serverName: entry?.serverName ?? undefined,
             },
             previousIndex: nextSessionListIndexByServerId[serverId] ?? null,
         });
@@ -242,25 +249,17 @@ export function createSettingsDomain<S extends SettingsDomain & SettingsDomainDe
                 }
                 return state;
             }),
-        replaceSettings: (nextSettings, nextVersion) =>
+        activateSettingsScope: async (scope, legacyScopes = []) => {
+            await prepareAccountSettingsScopeForActivation(scope, legacyScopes);
+            prepareAccountProfileScopeForActivation(scope, legacyScopes);
             set((state) => {
-                if (state.settingsScope) {
-                    saveAccountSettings(state.settingsScope, nextSettings, nextVersion);
-                    return buildSettingsProjectionState(state, nextSettings, nextVersion, state.settingsScope);
-                }
-                saveSettings(nextSettings, nextVersion);
-                return buildSettingsProjectionState(state, nextSettings, nextVersion, null);
-            }),
-        activateSettingsScope: (scope, legacyScopes = []) =>
-            set((state) => {
-                prepareAccountSettingsScopeForActivation(scope, legacyScopes);
-                prepareAccountProfileScopeForActivation(scope, legacyScopes);
                 const loaded = loadParsedAccountSettings(scope);
                 return {
                     ...buildSettingsProjectionState(state, loaded.settings, loaded.version, scope),
                     purchases: loadAccountPurchases(scope),
                 };
-            }),
+            });
+        },
         clearSettingsScope: () =>
             set((state) => ({
                 ...buildSettingsProjectionState(state, { ...settingsDefaults }, null, null),
@@ -271,14 +270,6 @@ export function createSettingsDomain<S extends SettingsDomain & SettingsDomainDe
                 if (!shouldAcceptScopedSettings(scope, nextVersion)) {
                     return state;
                 }
-                saveAccountSettings(scope, nextSettings, nextVersion);
-                if (!areAccountSettingsScopesEqual(state.settingsScope, scope)) {
-                    return state;
-                }
-                return buildSettingsProjectionState(state, nextSettings, nextVersion, scope);
-            }),
-        replaceSettingsForScope: (scope, nextSettings, nextVersion) =>
-            set((state) => {
                 saveAccountSettings(scope, nextSettings, nextVersion);
                 if (!areAccountSettingsScopesEqual(state.settingsScope, scope)) {
                     return state;

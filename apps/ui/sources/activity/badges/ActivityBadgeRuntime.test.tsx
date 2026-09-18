@@ -1,11 +1,12 @@
 import * as React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
 import { accountSettingsParse } from '@happier-dev/protocol';
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import { localSettingsDefaults } from '@/sync/domains/settings/localSettings';
 import type { StorageState } from '@/sync/store/types';
 import { installActivityBadgeRuntimeCommonModuleMocks } from './activityBadgeRuntimeTestHelpers';
+import { persistBadgeHomeAccountSettings, resolveBadgeHomeServerUrl } from './activityBadgeRuntimeHomeFixtures';
 
 
 type ReactActEnvironmentGlobal = typeof globalThis & {
@@ -35,6 +36,10 @@ let localSettingsValue: Record<string, unknown> = {
 let accountSettingsValue = accountSettingsParse({});
 let updateAvailableValue = false;
 let changelogUnreadValue = false;
+// The canonical Activity Home set the badge reads its per-Home policy for. Empty would mean "no
+// Home has answered yet", which the runtime treats as "do not write the badge".
+const DEFAULT_BADGE_HOME_MEMBERSHIP: Readonly<Record<string, readonly string[]>> = { 'server-1': [] };
+let personalSessionMembershipValue: Readonly<Record<string, readonly string[]>> = DEFAULT_BADGE_HOME_MEMBERSHIP;
 let rejectBroadActivitySourceRead = false;
 let rejectBroadLocalSettingsRead = false;
 let rejectBroadAccountSettingsRead = false;
@@ -54,7 +59,12 @@ function createActivityAttentionSource(sessions: BadgeRuntimeSessionFixture[]) {
     return {
         isDataReady: true,
         sessionsById: Object.fromEntries(sessions.map((session) => [session.id, session])),
-        sessionListRenderablesById: Object.fromEntries(sessions.map((session) => [session.id, session])),
+        sessionListRowsByServerId: {
+            'server-1': Object.fromEntries(sessions.map((session) => [session.id, session])),
+        },
+        ordinarySessionListMembershipByServerId: {
+            'server-1': sessions.map((session) => session.id),
+        },
         sessionListIndexByServerId: {
             'server-1': sessions.map((session) => ({
                 type: 'session',
@@ -64,6 +74,7 @@ function createActivityAttentionSource(sessions: BadgeRuntimeSessionFixture[]) {
             })),
         },
         concurrentSessionListCacheByServerId: {},
+        activeServerId: 'server-1',
     };
 }
 
@@ -78,10 +89,12 @@ function createBadgeRuntimeStorageState(): StorageState {
         machines: {},
         sessionMessages: {},
         sessionPending: {},
-        sessionListRenderables: activityAttentionSourceValue.sessionListRenderablesById,
+        sessionListRowsByServerId: activityAttentionSourceValue.sessionListRowsByServerId,
+        ordinarySessionListMembershipByServerId: activityAttentionSourceValue.ordinarySessionListMembershipByServerId,
         sessionListIndexByServerId: activityAttentionSourceValue.sessionListIndexByServerId,
         concurrentSessionListCacheByServerId: activityAttentionSourceValue.concurrentSessionListCacheByServerId,
         isDataReady: activityAttentionSourceValue.isDataReady,
+        profileScope: { serverId: 'server-1', accountId: 'account-1' },
         localSettings: localSettingsDefaults,
     };
     // Test storage only needs the badge selector slice; missing domain methods are never read here.
@@ -163,6 +176,14 @@ vi.mock('@/activity/source/useActivityAttentionSource', () => ({
     },
 }));
 
+vi.mock('@/activity/source/activityPersonalSessionMembership', () => ({
+    useActivityPersonalSessionMembership: () => ({
+        membershipByServerId: personalSessionMembershipValue,
+        statesByServerId: {},
+        coverageComplete: true,
+    }),
+}));
+
 vi.mock('./channels/applyExpoNativeBadgeState', () => ({
     applyExpoNativeBadgeState,
 }));
@@ -179,7 +200,47 @@ vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
     useActiveServerSnapshot: () => activeServerSnapshot.value,
 }));
 
+// Each Home's reachable address, so the canonical credential-scope owner can bind it to an Account.
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+    return {
+        ...actual,
+        getServerProfileById: (serverId: string) => (serverId
+            ? {
+                id: serverId,
+                name: serverId,
+                serverUrl: resolveBadgeHomeServerUrl(serverId),
+                createdAt: 1,
+                updatedAt: 1,
+                lastUsedAt: 1,
+            }
+            : null),
+    };
+});
+
+// The device credential boundary: one Account per Home, which is what makes the per-Home policy
+// lookup meaningful instead of one Account answering for the whole corpus.
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    const { createAccountTokenForTests } = await import('@/dev/testkit/harness/homeGovernanceHarness');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: async (serverUrl: string) => ({
+                token: createAccountTokenForTests(serverUrl.includes('server-2') ? 'account-2' : 'account-1'),
+            }),
+        },
+    });
+});
+
 describe('ActivityBadgeRuntime', () => {
+    beforeEach(async () => {
+        // Every Home in the badge corpus starts with its own persisted Account settings; a Home
+        // without them fails closed, which several cases below assert deliberately.
+        await persistBadgeHomeAccountSettings('server-1');
+        await persistBadgeHomeAccountSettings('server-2');
+    });
+
     afterEach(() => {
         platformState.os = 'ios';
         isDesktopHostValue = false;
@@ -197,6 +258,7 @@ describe('ActivityBadgeRuntime', () => {
         accountSettingsValue = accountSettingsParse({});
         updateAvailableValue = false;
         changelogUnreadValue = false;
+        personalSessionMembershipValue = DEFAULT_BADGE_HOME_MEMBERSHIP;
         rejectBroadActivitySourceRead = false;
         rejectBroadLocalSettingsRead = false;
         rejectBroadAccountSettingsRead = false;
@@ -234,6 +296,7 @@ describe('ActivityBadgeRuntime', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyExpoNativeBadgeState).toHaveBeenCalledWith({
             count: 3,
@@ -250,8 +313,8 @@ describe('ActivityBadgeRuntime', () => {
         activityAttentionSourceValue = {
             ...createActivityAttentionSource([]),
             sessionsById: {},
-            sessionListRenderablesById: {
-                'session-renderable': {
+            sessionListRowsByServerId: {
+                'server-1': { 'session-renderable': {
                     id: 'session-renderable',
                     seq: 1,
                     createdAt: 1,
@@ -265,7 +328,10 @@ describe('ActivityBadgeRuntime', () => {
                     thinkingAt: 0,
                     presence: 1,
                     hasUnreadMessages: true,
-                },
+                } },
+            },
+            ordinarySessionListMembershipByServerId: {
+                'server-1': ['session-renderable'],
             },
             sessionListIndexByServerId: {
                 'server-1': [{
@@ -281,6 +347,7 @@ describe('ActivityBadgeRuntime', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyExpoNativeBadgeState).toHaveBeenCalledWith({
             count: 1,
@@ -319,8 +386,8 @@ describe('ActivityBadgeRuntime', () => {
             ...createActivityAttentionSource([]),
             isDataReady: false,
             sessionsById: {},
-            sessionListRenderablesById: {
-                'session-warm-unread': {
+            sessionListRowsByServerId: {
+                'server-1': { 'session-warm-unread': {
                     id: 'session-warm-unread',
                     seq: 4,
                     createdAt: 1,
@@ -334,7 +401,10 @@ describe('ActivityBadgeRuntime', () => {
                     thinkingAt: 0,
                     presence: 1,
                     hasUnreadMessages: true,
-                },
+                } },
+            },
+            ordinarySessionListMembershipByServerId: {
+                'server-1': ['session-warm-unread'],
             },
             sessionListIndexByServerId: {
                 'server-1': [{
@@ -467,6 +537,7 @@ describe('ActivityBadgeRuntime', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyExpoNativeBadgeState).toHaveBeenCalledWith({
             count: 0,
@@ -487,6 +558,7 @@ describe('ActivityBadgeRuntime', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyTauriBadgeState).toHaveBeenCalledWith({
             count: 0,
@@ -509,19 +581,20 @@ describe('ActivityBadgeRuntime', () => {
             },
         ]);
         friendRequestsValue = [{ id: 'friend-1' }];
-        accountSettingsValue = accountSettingsParse({
+        await persistBadgeHomeAccountSettings('server-1', {
             attentionDeliveryPolicyV1: {
                 v: 1,
                 channels: {
                     badge: { enabled: false },
                 },
             },
-        });
+        }, 2);
 
         const { ActivityBadgeRuntime } = await import('./ActivityBadgeRuntime');
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyExpoNativeBadgeState).toHaveBeenCalledWith({
             count: 0,
@@ -556,6 +629,7 @@ describe('ActivityBadgeRuntime', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyExpoNativeBadgeState).toHaveBeenCalledWith({
             count: 0,
@@ -571,6 +645,7 @@ describe('ActivityBadgeRuntime', () => {
         sessionsValue = [];
         activityAttentionSourceValue = {
             isDataReady: true,
+            activeServerId: 'server-1',
             sessionsById: {
                 'session-normalized': {
                     id: 'session-normalized',
@@ -580,14 +655,17 @@ describe('ActivityBadgeRuntime', () => {
                     metadata: { path: '', host: '' },
                 },
             },
-            sessionListRenderablesById: {
-                'session-normalized': {
+            sessionListRowsByServerId: {
+                'server-1': { 'session-normalized': {
                     id: 'session-normalized',
                     seq: 4,
                     latestReadyEventSeq: 4,
                     lastViewedSessionSeq: 1,
                     metadata: { path: '', host: '' },
-                },
+                } },
+            },
+            ordinarySessionListMembershipByServerId: {
+                'server-1': ['session-normalized'],
             },
             sessionListIndexByServerId: {
                 'server-1': [
@@ -606,6 +684,77 @@ describe('ActivityBadgeRuntime', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
+
+        expect(applyExpoNativeBadgeState).toHaveBeenCalledWith({
+            count: 1,
+            showNonNumericDot: false,
+        });
+
+        await act(async () => {
+            tree?.unmount();
+        });
+    });
+
+    it('counts a personal-query-only attention row across Homes while collective-only access stays quiet', async () => {
+        sessionsValue = [];
+        const quietCollective = {
+            id: 'quiet-collective',
+            serverId: 'server-1',
+            seq: 8,
+            metadata: { path: '', host: '' },
+            viewer: {
+                readState: { state: 'not_started' },
+                relevance: { relevant: false, reasons: [] },
+                follow: { follows: false, notificationLevel: null },
+                notification: { level: 'none', source: 'none' },
+                attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+            },
+        } as const;
+        const personalAttention = {
+            id: 'personal-attention',
+            serverId: 'server-2',
+            seq: 9,
+            metadata: { path: '', host: '' },
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 4, unreadSince: 100 },
+                relevance: { relevant: true, reasons: ['followed_by_me'] },
+                follow: { follows: true, notificationLevel: 'important' },
+                notification: { level: 'important', source: 'preference' },
+                attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'full' },
+            },
+        } as const;
+        activityAttentionSourceValue = {
+            ...createActivityAttentionSource([]),
+            sessionsById: {},
+            sessionListRowsByServerId: {
+                'server-1': { [quietCollective.id]: quietCollective },
+                'server-2': { [personalAttention.id]: personalAttention },
+            },
+            ordinarySessionListMembershipByServerId: {
+                'server-1': [quietCollective.id],
+                'server-2': [],
+            },
+            sessionListIndexByServerId: {
+                'server-1': [{
+                    type: 'session',
+                    sessionId: quietCollective.id,
+                    serverId: 'server-1',
+                    serverName: null,
+                }],
+                'server-2': [],
+            },
+        };
+        personalSessionMembershipValue = {
+            'server-1': [],
+            'server-2': [personalAttention.id],
+        };
+
+        const { ActivityBadgeRuntime } = await import('./ActivityBadgeRuntime');
+
+        let tree: renderer.ReactTestRenderer | null = null;
+        tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyExpoNativeBadgeState).toHaveBeenCalledWith({
             count: 1,
@@ -633,6 +782,7 @@ describe('ActivityBadgeRuntime', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyExpoNativeBadgeState).toHaveBeenCalledTimes(1);
         expect(applyExpoNativeBadgeState).toHaveBeenLastCalledWith({
@@ -666,6 +816,7 @@ describe('ActivityBadgeRuntime', () => {
         sessionsValue = [];
         activityAttentionSourceValue = {
             isDataReady: true,
+            activeServerId: 'server-1',
             sessionsById: {
                 'session-normalized': {
                     id: 'session-normalized',
@@ -675,14 +826,17 @@ describe('ActivityBadgeRuntime', () => {
                     metadata: { path: '', host: '' },
                 },
             },
-            sessionListRenderablesById: {
-                'session-normalized': {
+            sessionListRowsByServerId: {
+                'server-1': { 'session-normalized': {
                     id: 'session-normalized',
                     seq: 4,
                     lastViewedSessionSeq: 4,
                     metadata: { path: '', host: '' },
                     hasUnreadMessages: false,
-                },
+                } },
+            },
+            ordinarySessionListMembershipByServerId: {
+                'server-1': ['session-normalized'],
             },
             sessionListIndexByServerId: {
                 'server-1': [
@@ -701,6 +855,7 @@ describe('ActivityBadgeRuntime', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyExpoNativeBadgeState).toHaveBeenCalledWith({
             count: 1,
@@ -716,6 +871,7 @@ describe('ActivityBadgeRuntime', () => {
         sessionsValue = [];
         activityAttentionSourceValue = {
             isDataReady: true,
+            activeServerId: 'server-1',
             sessionsById: {
                 'session-normalized': {
                     id: 'session-normalized',
@@ -724,14 +880,17 @@ describe('ActivityBadgeRuntime', () => {
                     metadata: { path: '', host: '' },
                 },
             },
-            sessionListRenderablesById: {
-                'session-normalized': {
+            sessionListRowsByServerId: {
+                'server-1': { 'session-normalized': {
                     id: 'session-normalized',
                     seq: 4,
                     lastViewedSessionSeq: 1,
                     metadata: { path: '', host: '' },
                     hasUnreadMessages: true,
-                },
+                } },
+            },
+            ordinarySessionListMembershipByServerId: {
+                'server-1': ['session-normalized'],
             },
             sessionListIndexByServerId: {
                 'server-1': [
@@ -750,6 +909,7 @@ describe('ActivityBadgeRuntime', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyExpoNativeBadgeState).toHaveBeenCalledWith({
             count: 0,
@@ -776,7 +936,18 @@ describe('ActivityBadgeRuntime', () => {
                     metadata: { path: '', host: '' },
                 },
             },
-            sessionListRenderablesById: {},
+            sessionListRowsByServerId: {
+                'server-1': { 'session-normalized': {
+                    id: 'session-normalized',
+                    seq: 4,
+                    latestReadyEventSeq: 4,
+                    lastViewedSessionSeq: 1,
+                    metadata: { path: '', host: '' },
+                } },
+            },
+            ordinarySessionListMembershipByServerId: {
+                'server-1': ['session-normalized'],
+            },
             sessionListIndexByServerId: {
                 'server-1': [
                     {
@@ -793,6 +964,7 @@ describe('ActivityBadgeRuntime', () => {
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<ActivityBadgeRuntime />)).tree;
+        await flushHookEffects();
 
         expect(applyExpoNativeBadgeState).toHaveBeenCalledWith({
             count: 1,

@@ -10,13 +10,22 @@ const homeViewState = vi.hoisted(() => ({
         activeTargetKind: 'server' | 'group' | null;
         activeTargetId: string | null;
     },
+    /** Set by the device-local selection test so the writer has a real owner to save through. */
+    save: null as null | ((update: unknown, options: unknown) => unknown),
+}));
+
+const syncSingleton = vi.hoisted(() => ({ applySettings: vi.fn() }));
+
+vi.mock('@/sync/runtime/getSyncSingleton', () => ({
+    getSyncSingleton: () => syncSingleton,
 }));
 
 vi.mock('@/sync/domains/server/selection/homeViewSelectionState', () => ({
     loadEffectiveHomeViewState: () => homeViewState.value,
     subscribeEffectiveHomeViewState: () => () => {},
-    updateEffectiveHomeViewState: () => {
-        throw new Error('not exercised by this test');
+    updateEffectiveHomeViewState: (update: unknown, options: unknown) => {
+        if (!homeViewState.save) throw new Error('not exercised by this test');
+        return homeViewState.save(update, options);
     },
 }));
 
@@ -24,6 +33,8 @@ describe('useHomeViewSelectionSettings', () => {
     afterEach(() => {
         standardCleanup();
         homeViewState.value = null;
+        homeViewState.save = null;
+        syncSingleton.applySettings.mockClear();
     });
 
     it('reads the legacy Home-view fallback without subscribing to unrelated Account settings', async () => {
@@ -83,5 +94,40 @@ describe('useHomeViewSelectionSettings', () => {
             serverSelectionActiveTargetKind: 'server',
             serverSelectionActiveTargetId: 'srv-device-global',
         });
+    });
+
+    it('keeps Home selection device-local instead of entering the Account-settings writer', async () => {
+        const { getStorage } = await import('@/sync/domains/state/storageStore');
+        const { useHomeViewSelectionSettingsMutable } = await import('./useHomeViewSelectionSettings');
+
+        const saved = {
+            version: 1 as const,
+            groups: [] as readonly unknown[],
+            activeTargetKind: 'server' as const,
+            activeTargetId: 'srv-device-global',
+        };
+        homeViewState.value = saved;
+        const savedScopes: unknown[] = [];
+        homeViewState.save = (_update, options) => {
+            savedScopes.push(options);
+            return saved;
+        };
+
+        const hook = await renderHook(() => useHomeViewSelectionSettingsMutable());
+        await act(async () => {
+            hook.getCurrent().setHomeViewSelectionSettings({
+                serverSelectionGroups: [],
+                serverSelectionActiveTargetKind: 'server',
+                serverSelectionActiveTargetId: 'srv-device-global',
+            });
+        });
+
+        // The device-global owner saved it, and the Settings projection exists only so existing
+        // readers keep working. This is the one catalogued local-only exception: it must never
+        // reach the scoped Account-settings writer, which would seal, queue and sync it to a
+        // Home (Lane 07.6 §2, completion evidence 9).
+        expect(savedScopes).toEqual([{ scope: 'device' }]);
+        expect(getStorage().getState().settings.serverSelectionActiveTargetId).toBe('srv-device-global');
+        expect(syncSingleton.applySettings).not.toHaveBeenCalled();
     });
 });

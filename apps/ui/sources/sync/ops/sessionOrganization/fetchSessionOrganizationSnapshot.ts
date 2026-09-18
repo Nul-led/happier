@@ -8,6 +8,7 @@ export async function fetchAndApplySessionOrganizationSnapshot(params: Readonly<
     credentials: AuthCredentials;
     serverId: string;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
     request?: Partial<SessionOrganizationSnapshotRequest>;
     shouldContinue?: () => boolean;
 }>): Promise<void> {
@@ -18,6 +19,7 @@ export async function fetchAndApplySessionOrganizationSnapshot(params: Readonly<
         const response = await fetchSessionOrganizationSnapshot({
             credentials: params.credentials,
             serverUrl: params.serverUrl,
+            requestAtEndpoint: params.requestAtEndpoint,
             request: params.request,
         });
         if (params.shouldContinue && !params.shouldContinue()) return;

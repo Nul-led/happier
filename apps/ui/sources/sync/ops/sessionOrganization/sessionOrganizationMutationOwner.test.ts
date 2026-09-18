@@ -12,15 +12,23 @@ const mocks = vi.hoisted(() => ({
     upsertSessionOrganizationLabel: vi.fn(),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentialsForServerUrl: mocks.getCredentialsForServerUrl,
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return await createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: mocks.getCredentialsForServerUrl,
+        },
+    });
+});
 
-vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
-    fetchAccountEncryptionMode: mocks.fetchAccountEncryptionMode,
-}));
+vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) => {
+    const { createAccountEncryptionModeModuleMock } = await import('@/dev/testkit/mocks/accountEncryptionMode');
+    return await createAccountEncryptionModeModuleMock({
+        importOriginal,
+        overrides: { fetchAccountEncryptionMode: mocks.fetchAccountEncryptionMode },
+    });
+});
 
 vi.mock('@/sync/api/session/sessionOrganizationApi', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/api/session/sessionOrganizationApi')>();
@@ -76,14 +84,15 @@ describe('sessionOrganizationMutationOwner', () => {
         mocks.upsertSessionOrganizationLabel.mockReset();
     });
 
-    it('resolves profile and legacy identifiers to one canonical mutation scope with complete aliases', async () => {
+    it('keeps the established Home identity canonical when a conflicting identity is rejected', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const created = profiles.upsertServerProfile({
+        const created = await profiles.upsertServerProfile({
             serverUrl: 'https://relay.example.test',
             name: 'Relay',
         });
-        profiles.setServerProfileIdentityForUrl(created.serverUrl, 'srv_old_identity');
-        profiles.setServerProfileIdentityForUrl(created.serverUrl, 'srv_current_identity');
+        await profiles.setServerProfileIdentityForUrl(created.serverUrl, 'srv_old_identity');
+        await expect(profiles.setServerProfileIdentityForUrl(created.serverUrl, 'srv_current_identity'))
+            .resolves.toBeNull();
         mocks.getCredentialsForServerUrl.mockResolvedValue(credentials);
         const { resolveSessionOrganizationMutationScope } = await import('./sessionOrganizationMutationOwner');
 
@@ -93,48 +102,15 @@ describe('sessionOrganizationMutationOwner', () => {
             ok: true,
             scope: {
                 credentials,
-                serverId: 'srv_current_identity',
-                serverIdAliases: ['srv_old_identity', created.id],
+                serverId: 'srv_old_identity',
+                serverIdAliases: [created.id],
                 serverUrl: 'https://relay.example.test',
             },
         });
         expect(mocks.getCredentialsForServerUrl).toHaveBeenCalledWith(
             'https://relay.example.test',
-            { serverId: 'srv_current_identity' },
+            { serverId: 'srv_old_identity' },
         );
-    }, 120_000);
-
-    it('accepts canonical aliases in scoped session keys while writing through the canonical scope', async () => {
-        mocks.setSessionOrganizationPin.mockResolvedValue({
-            pin: {
-                sessionId: 'session-a',
-                sortKey: null,
-                pinnedAt: 1,
-            },
-        });
-        const { writeSessionOrganizationPinForSessionKey } = await import('./sessionOrganizationMutationOwner');
-        const scope = {
-            credentials,
-            serverId: 'srv_current_identity',
-            serverIdAliases: ['profile-a', 'srv_old_identity'],
-            serverUrl: 'https://relay.example.test',
-        };
-
-        await writeSessionOrganizationPinForSessionKey({
-            scope,
-            sessionKey: 'srv_old_identity:session-a',
-            pinned: true,
-        });
-
-        expect(mocks.setSessionOrganizationPin).toHaveBeenCalledWith({
-            credentials,
-            serverUrl: 'https://relay.example.test',
-            sessionId: 'session-a',
-            request: {
-                pinned: true,
-                sortKey: undefined,
-            },
-        });
     }, 120_000);
 
     it('reports stable unavailable reasons without throwing so UI adapters can choose their error policy', async () => {
@@ -152,11 +128,11 @@ describe('sessionOrganizationMutationOwner', () => {
             requestedServerId: 'missing-server',
         });
 
-        const created = profiles.upsertServerProfile({
+        const created = await profiles.upsertServerProfile({
             serverUrl: 'https://no-credentials.example.test',
             name: 'No credentials',
         });
-        profiles.setServerProfileIdentityForUrl(created.serverUrl, 'srv_no_credentials');
+        await profiles.setServerProfileIdentityForUrl(created.serverUrl, 'srv_no_credentials');
         mocks.getCredentialsForServerUrl.mockResolvedValue(null);
 
         await expect(resolveSessionOrganizationMutationScope(created.id)).resolves.toEqual({
@@ -164,6 +140,24 @@ describe('sessionOrganizationMutationOwner', () => {
             reason: 'credentialsUnavailable',
             requestedServerId: created.id,
             serverId: 'srv_no_credentials',
+        });
+    }, 120_000);
+
+    it('turns a typed unavailable scope into a retryable exact-Home UI error', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const created = await profiles.upsertServerProfile({
+            serverUrl: 'https://no-credentials-ui.example.test',
+            name: 'No credentials UI',
+        });
+        await profiles.setServerProfileIdentityForUrl(created.serverUrl, 'srv_no_credentials_ui');
+        mocks.getCredentialsForServerUrl.mockResolvedValue(null);
+        const { requireSessionOrganizationMutationScope } = await import('./requireSessionOrganizationMutationScope');
+
+        await expect(requireSessionOrganizationMutationScope(created.id)).rejects.toMatchObject({
+            name: 'HappyError',
+            canTryAgain: true,
+            code: 'session_organization_credentialsUnavailable',
+            message: expect.stringContaining(created.id),
         });
     }, 120_000);
 

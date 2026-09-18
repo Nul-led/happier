@@ -40,19 +40,36 @@ export type MachineAdministrationTargetSelectorProps = Readonly<{
     groupTitle?: string;
     /** Contextual copy for an unselected machine scope. */
     unselectedTitle?: string;
+    /** Domain-owned availability layered over the canonical Machine row. */
+    resolveCandidateAvailability?: (candidate: MachineAdministrationCandidateV1) => Readonly<{
+        detail: string;
+        selectable: boolean;
+    }>;
+    /** Safe domain presentation when opaque Machine ids must not be disclosed. */
+    resolveCandidatePresentation?: (candidate: MachineAdministrationCandidateV1) => Readonly<{
+        title: string;
+        subtitle?: string;
+    }>;
+    missingTargetTitle?: string;
+    /** Override or suppress the generic opaque-id subtitle for a missing target. */
+    missingTargetSubtitle?: string | null;
+    disabled?: boolean;
 }>;
 
-function targetStatusDetail(state: Exclude<MachineAdministrationTargetStateV1, { kind: 'unselected' }>): string {
-    switch (state.kind) {
+function targetStatusDetail(kind: Exclude<MachineAdministrationTargetStateV1['kind'], 'unselected'>): string {
+    switch (kind) {
         case 'online':
             return t('settingsProviders.detail.machineOnline');
         case 'offline':
             return t('settingsProviders.detail.machineOffline');
         case 'locked':
+            return t('settingsPlugins.targetSelection.locked');
         case 'missing':
+            return t('settingsPlugins.targetSelection.missing');
         case 'replaced':
+            return t('settingsPlugins.targetSelection.replaced');
         case 'revoked':
-            return t('common.unavailable');
+            return t('settingsPlugins.targetSelection.revoked');
     }
 }
 
@@ -73,6 +90,10 @@ function targetCandidate(state: Exclude<MachineAdministrationTargetStateV1, { ki
 function presentCurrentTarget(
     state: MachineAdministrationTargetStateV1,
     unselectedTitle: string | undefined,
+    missingTargetTitle: string | undefined,
+    missingTargetSubtitle: string | null | undefined,
+    resolveCandidatePresentation: MachineAdministrationTargetSelectorProps['resolveCandidatePresentation'],
+    resolveCandidateAvailability: MachineAdministrationTargetSelectorProps['resolveCandidateAvailability'],
 ): CurrentTargetPresentation {
     if (state.kind === 'unselected') {
         return {
@@ -83,10 +104,17 @@ function presentCurrentTarget(
     }
 
     const candidate = targetCandidate(state);
+    const presentation = candidate ? resolveCandidatePresentation?.(candidate) : undefined;
+    const availability = candidate ? resolveCandidateAvailability?.(candidate) : undefined;
+    const fallbackSubtitle = candidate
+        ? [candidate.serverLabel || state.target.serverIdentityId, state.target.machineId].join(' · ')
+        : missingTargetSubtitle === undefined
+            ? [state.target.serverIdentityId, state.target.machineId].join(' · ')
+            : missingTargetSubtitle ?? undefined;
     return {
-        title: candidate?.displayName ?? state.target.machineId,
-        ...(candidate?.serverLabel ? { subtitle: candidate.serverLabel } : { subtitle: state.target.serverIdentityId }),
-        detail: targetStatusDetail(state),
+        title: presentation?.title ?? candidate?.displayName ?? missingTargetTitle ?? state.target.machineId,
+        subtitle: presentation?.subtitle ?? fallbackSubtitle,
+        detail: availability?.detail ?? targetStatusDetail(state.kind),
         selected: true,
     };
 }
@@ -129,7 +157,7 @@ function resolvePickerAvailability(machine: MachineAdministrationPickerMachine):
     if (machine.candidate.availability === 'offline' || machine.candidate.observation === 'stale') {
         return { detail: t('settingsProviders.detail.machineOffline'), selectable: false };
     }
-    return { detail: t('common.unavailable'), selectable: false };
+    return { detail: targetStatusDetail(machine.candidate.availability), selectable: false };
 }
 
 /**
@@ -138,9 +166,17 @@ function resolvePickerAvailability(machine: MachineAdministrationPickerMachine):
  * only presents its snapshot rows and returns their already-portable target.
  */
 export function MachineAdministrationTargetSelector(props: MachineAdministrationTargetSelectorProps) {
+    const [pickerOpen, setPickerOpen] = React.useState(false);
     const testIDPrefix = props.testIDPrefix ?? 'machine-administration-target';
     const groupTitle = props.groupTitle ?? t('settingsProviders.detail.targetMachine');
-    const current = presentCurrentTarget(props.selection.state, props.unselectedTitle);
+    const current = presentCurrentTarget(
+        props.selection.state,
+        props.unselectedTitle,
+        props.missingTargetTitle,
+        props.missingTargetSubtitle,
+        props.resolveCandidatePresentation,
+        props.resolveCandidateAvailability,
+    );
     const groups = buildPickerGroups(props.selection);
     const selectedRow = props.selection.selectedTarget
         ? props.selection.pickerRows.find((row) => machineAdministrationTargetsEqual(
@@ -164,32 +200,46 @@ export function MachineAdministrationTargetSelector(props: MachineAdministration
                 <Item
                     testID={`${testIDPrefix}.current`}
                     title={current.title}
-                    subtitle={current.subtitle}
-                    detail={current.detail}
+                    subtitle={[current.subtitle, current.detail].filter(Boolean).join('\n')}
+                    subtitleLines={0}
+                    detail={groups.length > 0 ? t('common.change') : undefined}
                     selected={current.selected}
-                    mode="info"
-                    showChevron={false}
+                    mode={groups.length > 0 ? 'interactive' : 'info'}
+                    showChevron={groups.length > 0}
+                    disabled={props.disabled}
+                    accessibilityExpanded={groups.length > 0 ? pickerOpen : undefined}
+                    accessibilityHint={groups.length > 0 ? t('common.change') : undefined}
+                    onPress={groups.length > 0 && !props.disabled ? () => setPickerOpen((open) => !open) : undefined}
                     accessibilityLabel={accessibilityLabel}
                 />
                 {props.selection.selectedTarget ? (
                     <Item
                         testID={`${testIDPrefix}.clear`}
-                        title={t('common.remove')}
-                        accessibilityLabel={`${t('common.remove')}: ${groupTitle}`}
+                        title={t('settingsPlugins.targetSelection.clear')}
+                        accessibilityLabel={`${t('settingsPlugins.targetSelection.clear')}: ${groupTitle}`}
                         showChevron={false}
+                        disabled={props.disabled}
                         onPress={() => changeTarget(props.selection.clearTarget)}
                     />
                 ) : null}
             </ItemGroup>
-            {groups.length > 0 ? (
+            {pickerOpen && groups.length > 0 ? (
                 <ServerScopedMachineSelector
                     groups={groups}
                     selectedMachineId={props.selection.selectedTarget?.machineId ?? null}
                     selectedServerId={selectedRow?.serverId ?? null}
                     onSelect={(machine) => changeTarget(() => {
                         props.selection.selectTarget(machine.target);
+                        setPickerOpen(false);
                     })}
-                    resolveMachineAvailability={resolvePickerAvailability}
+                    resolveMachineAvailability={(machine) => {
+                        const availability = props.resolveCandidateAvailability?.(machine.candidate)
+                            ?? resolvePickerAvailability(machine);
+                        return props.disabled ? { ...availability, selectable: false } : availability;
+                    }}
+                    resolveMachinePresentation={props.resolveCandidatePresentation
+                        ? (machine) => props.resolveCandidatePresentation!(machine.candidate)
+                        : undefined}
                     testIdPrefix={`${testIDPrefix}.picker`}
                 />
             ) : null}

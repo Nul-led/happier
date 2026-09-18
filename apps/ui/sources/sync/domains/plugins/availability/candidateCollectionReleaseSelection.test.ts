@@ -125,6 +125,7 @@ const accountLifetime = Object.freeze({
 function createReader(input: Readonly<{ noIncumbent?: boolean }> = {}) {
     const response = PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
         availabilityCursor: 4,
+        packageAssets: [],
         hostingCapability: { enabled: false },
         intent: input.noIncumbent ? null : {
             pluginId,

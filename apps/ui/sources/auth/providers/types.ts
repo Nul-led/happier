@@ -31,6 +31,28 @@ export type HomeOAuthRequestContext = Readonly<{
     }>;
 }>;
 
+/** OAuth started from an explicit Team entry. The server resolves the current
+ * Team connection and mints the one-time admission continuation; the client
+ * carries only the immutable Team ID. */
+export type TeamOAuthRequestContext = Readonly<{
+    request: ExternalOAuthEndpointRequest;
+    purpose: 'team_admission';
+    teamId: string;
+    origin: 'home' | 'team';
+    invitationToken?: string;
+    target: Readonly<{
+        serverUrl: string;
+        serverId: string;
+    }>;
+}>;
+
+export type TeamOAuthStart = Readonly<{
+    url: string;
+    purpose: 'team_admission';
+    teamId: string;
+    admissionReference: string;
+}>;
+
 export type AccountDirectoryOAuthStart = Readonly<{
     url: string;
     purpose: 'account_directory';
@@ -47,6 +69,10 @@ export interface GetExternalAuthUrl {
         params: ExternalAuthStartInput,
         context: HomeOAuthRequestContext,
     ): Promise<string>;
+    (
+        params: ExternalAuthStartInput,
+        context: TeamOAuthRequestContext,
+    ): Promise<TeamOAuthStart>;
     (
         params: ExternalAuthStartInput,
         context: AccountDirectoryOAuthRequestContext,
@@ -69,7 +95,7 @@ export type AuthProvider = Readonly<{
     getRestoreRedirectNotice?: (params: { reason: RestoreRedirectReason }) => RestoreRedirectNotice | null;
     getExternalAuthUrl: GetExternalAuthUrl;
     getConnectUrl: (credentials: AuthCredentials) => Promise<string>;
-    finalizeConnect: (credentials: AuthCredentials, params: { pending: string; username: string }) => Promise<void>;
+    finalizeConnect: (credentials: AuthCredentials, params: { pending: string; username: string }) => Promise<{ token?: string }>;
     cancelConnectPending: (credentials: AuthCredentials, pending: string) => Promise<void>;
     disconnect: (credentials: AuthCredentials) => Promise<void>;
 }>;

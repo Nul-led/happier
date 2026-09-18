@@ -7,6 +7,7 @@ import { installSessionHandoffCommonModuleMocks } from './sessionHandoffTestHelp
 import type { CustomModalChromeConfig } from '@/modal';
 
 const refreshMachinesThrottledMock = vi.fn(async () => {});
+const listWorkspaceSyncStatusesMock = vi.hoisted(() => vi.fn(async (_input: unknown) => [] as unknown[]));
 const openMachinePathBrowserModalMock = vi.fn<(params: unknown) => Promise<string>>(async () => '/home/leeroy.guest/.happier-stack/workspace/0.3');
 const pathBrowserModuleLoadedMock = vi.fn();
 let credentialsReady = true;
@@ -123,6 +124,11 @@ vi.mock('@/sync/sync', () => ({
     },
 }));
 
+vi.mock('@/sync/ops/workspaceSync', () => ({
+    listWorkspaceSyncStatuses: (input: unknown) => listWorkspaceSyncStatusesMock(input),
+    getWorkspaceSyncStatus: async () => null,
+}));
+
 vi.mock('@/components/ui/pathBrowser/openMachinePathBrowserModal', () => {
     pathBrowserModuleLoadedMock();
     return {
@@ -137,6 +143,16 @@ describe('SessionHandoffPickerModal', () => {
         ));
         refreshMachinesThrottledMock.mockClear();
         openMachinePathBrowserModalMock.mockClear();
+        listWorkspaceSyncStatusesMock.mockReset();
+        listWorkspaceSyncStatusesMock.mockResolvedValue([]);
+        const readinessStore = await import('@/sync/domains/sessionHandoff/workspaceSyncEngineReadinessStore');
+        readinessStore.resetWorkspaceSyncEngineReadinessStoreForTests();
+        for (const machineId of ['machine_source', 'machine_target']) {
+            readinessStore.applyWorkspaceSyncEngineReadinessEvent({ serverId: 'server_a', machineId }, {
+                engine: { state: 'ready' },
+                carrier: { state: 'ready' },
+            });
+        }
         resetWorkspaceSyncStatusStoreForTests();
         credentialsReady = true;
         activeServerIdState = 'server_a';
@@ -215,6 +231,20 @@ describe('SessionHandoffPickerModal', () => {
         await import('./SessionHandoffPickerModal');
 
         expect(pathBrowserModuleLoadedMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps the advanced text fields reachable when the software keyboard is open', async () => {
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+        const screen = await renderScreen(<SessionHandoffPickerModal
+            onClose={vi.fn()}
+            setChrome={vi.fn()}
+            onResolve={vi.fn()}
+            sessionId="sess_1"
+            sourceMachineId="machine_source"
+            serverId="server_a"
+        />);
+
+        expect(screen.findByType('ItemList').props.keyboardAware).toBe(true);
     });
 
     it('uses one authoritative machine hydration request without a QA polling timer', async () => {
@@ -1121,5 +1151,114 @@ describe('SessionHandoffPickerModal', () => {
         expect(refreshMachinesThrottledMock).toHaveBeenCalledTimes(1);
         const machineSelector = tree.findByType('MachineSelector' as any);
         expect(machineSelector.props.machines.map((machine: any) => machine.id)).toEqual(['machine_target']);
+    });
+
+    it('explains the disabled start state with the exact next step instead of an inert button', async () => {
+        let chrome: CustomModalChromeConfig | null = null;
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+        const screen = await renderScreen(<SessionHandoffPickerModal
+            onClose={vi.fn()}
+            setChrome={(next) => { chrome = next; }}
+            onResolve={vi.fn()}
+            sessionId="sess_1"
+            sourceMachineId="machine_source"
+            serverId="server_a"
+        />);
+        await act(async () => {});
+
+        const startButton = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect((startButton!.props as { disabled?: boolean }).disabled).toBe(true);
+        expect((startButton!.props as { accessibilityHint?: string }).accessibilityHint)
+            .toBe('workspaceSync.start.blocked.targetMachine');
+        const reason = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start-blocked-reason');
+        expect((reason!.props as { children?: unknown }).children).toBe('workspaceSync.start.blocked.targetMachine');
+        expect((reason!.props as { accessibilityLiveRegion?: string }).accessibilityLiveRegion).toBe('polite');
+        screen.unmount();
+    });
+
+    it('uses daemon-state readiness and reports the exact projected engine failure', async () => {
+        const { applyWorkspaceSyncEngineReadinessEvent, resetWorkspaceSyncEngineReadinessStoreForTests } = await import(
+            '@/sync/domains/sessionHandoff/workspaceSyncEngineReadinessStore'
+        );
+        resetWorkspaceSyncEngineReadinessStoreForTests();
+        let chrome: CustomModalChromeConfig | null = null;
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+        const screen = await renderScreen(<SessionHandoffPickerModal
+            onClose={vi.fn()}
+            setChrome={(next) => { chrome = next; }}
+            onResolve={vi.fn()}
+            sessionId="sess_1"
+            sourceMachineId="machine_source"
+            serverId="server_a"
+        />);
+
+        await act(async () => {
+            invokeTestInstanceHandler(screen.tree.findByType('MachineSelector' as any), 'onSelect', {
+                id: 'machine_target',
+                metadata: { displayName: 'Target machine' },
+            });
+        });
+        await act(async () => {
+            const pathInput = screen.tree.find((node: any) => node.props?.testID === 'path-selection-list:header:input');
+            invokeTestInstanceHandler(pathInput, 'onChangeText', '/home/target/happier');
+        });
+        await act(async () => {});
+
+        expect(listWorkspaceSyncStatusesMock).not.toHaveBeenCalled();
+        let startButton = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect((startButton!.props as { disabled?: boolean }).disabled).toBe(true);
+        expect((startButton!.props as { accessibilityHint?: string }).accessibilityHint)
+            .toBe('workspaceSync.engine.checking');
+
+        await act(async () => {
+            applyWorkspaceSyncEngineReadinessEvent({ serverId: 'server_a', machineId: 'machine_source' }, {
+                engine: { state: 'ready' },
+                carrier: { state: 'ready' },
+            });
+            applyWorkspaceSyncEngineReadinessEvent({ serverId: 'server_a', machineId: 'machine_target' }, {
+                engine: { state: 'unavailable', errorCode: 'engine_unavailable' },
+                carrier: { state: 'ready' },
+            });
+        });
+
+        startButton = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect((startButton!.props as { disabled?: boolean }).disabled).toBe(true);
+        expect((startButton!.props as { accessibilityHint?: string }).accessibilityHint)
+            .toBe('workspaceSync.error.componentUnavailable');
+        screen.unmount();
+    });
+
+    it('never probes the engine when the chosen workspace action does not need it', async () => {
+        settingsState.sessionHandoffDefaultsV1 = {
+            v: 1,
+            workspaceSyncMode: 'none',
+            includeIgnoredMode: 'exclude',
+            ignoredIncludeGlobs: [],
+            directTargetMode: 'keep_direct',
+        };
+        let chrome: CustomModalChromeConfig | null = null;
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+        const screen = await renderScreen(<SessionHandoffPickerModal
+            onClose={vi.fn()}
+            setChrome={(next) => { chrome = next; }}
+            onResolve={vi.fn()}
+            sessionId="sess_1"
+            sourceMachineId="machine_source"
+            serverId="server_a"
+        />);
+
+        await act(async () => {
+            invokeTestInstanceHandler(screen.tree.findByType('MachineSelector' as any), 'onSelect', {
+                id: 'machine_target',
+                metadata: { displayName: 'Target machine' },
+            });
+        });
+        await act(async () => {});
+
+        expect(listWorkspaceSyncStatusesMock).not.toHaveBeenCalled();
+        const startButton = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect((startButton!.props as { disabled?: boolean }).disabled).toBe(false);
+        expect(findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start-blocked-reason')).toBeNull();
+        screen.unmount();
     });
 });

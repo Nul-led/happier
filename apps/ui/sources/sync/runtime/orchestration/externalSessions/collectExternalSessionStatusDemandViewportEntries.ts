@@ -41,13 +41,17 @@ export function collectExternalSessionStatusDemandViewportEntries(params: Readon
     };
 
     if (params.visibleRowKeys !== null) {
-        for (const rowKey of params.visibleRowKeys) {
+        // `renderedListItems` is already the exact viewport subset in this mode.
+        // Row keys are opaque canonical Session-address keys, so never parse them.
+        for (const item of params.renderedListItems) {
             if (entries.length >= EXTERNAL_SESSION_STATUS_DEMAND_MAX_ENTRIES_V1) break;
-            const separatorIndex = rowKey.indexOf('\u0000');
-            const serverId = separatorIndex >= 0 ? rowKey.slice(0, separatorIndex) : null;
-            const sessionId = separatorIndex >= 0 ? rowKey.slice(separatorIndex + 1) : rowKey;
-            if (!sessionId) continue;
-            appendRow(rowKey, sessionId, serverId, 'visible');
+            if (item.type !== 'session') continue;
+            const rowKey = resolveSessionListRowStoreScopeKey({
+                sessionId: item.sessionId,
+                serverId: item.serverId ?? null,
+            });
+            if (!params.visibleRowKeys.has(rowKey)) continue;
+            appendRow(rowKey, item.sessionId, item.serverId, 'visible');
         }
         return entries;
     }

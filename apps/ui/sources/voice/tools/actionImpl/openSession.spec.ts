@@ -26,21 +26,33 @@ const state: any = {
       },
     },
   },
-  sessionListRenderables: {
-    s_visible: {
-      id: 's_visible',
-      updatedAt: 321,
-      metadata: {
-        summaryText: 'Visible only in current list',
+  sessionListRowsByServerId: {
+    'server-a': {
+      s_visible: {
+        id: 's_visible',
+        updatedAt: 321,
+        metadata: {
+          summaryText: 'Visible only in current list',
+        },
+      },
+      s_matrix: {
+        id: 's_matrix',
+        updatedAt: 322,
+        metadata: {
+          summaryText: 'Session QA Voice Matrix',
+        },
       },
     },
-    s_matrix: {
-      id: 's_matrix',
-      updatedAt: 322,
-      metadata: {
-        summaryText: 'Session QA Voice Matrix',
+    'server-b': {
+      s_other: {
+        id: 's_other',
+        metadata: { summary: { text: 'Other summary' } },
       },
     },
+  },
+  ordinarySessionListMembershipByServerId: {
+    'server-a': ['s_visible', 's_matrix'],
+    'server-b': ['s_other'],
   },
   sessionListIndexByServerId: {
     'server-a': [
@@ -51,14 +63,6 @@ const state: any = {
   concurrentSessionListCacheByServerId: {
     'server-b': {
       serverName: 'Server B',
-      sessions: {
-        s_other: {
-          id: 's_other',
-          metadata: {
-            summary: { text: 'Other summary' },
-          },
-        },
-      },
     },
   },
 };
@@ -123,7 +127,7 @@ describe('openSessionForVoiceTool', () => {
       scope: 'device',
       refreshAuth: refreshFromActiveServer,
     });
-    expect(routerNavigate).toHaveBeenCalledWith('/session/s_other', expect.any(Object));
+    expect(routerNavigate).toHaveBeenCalledWith('/session/s_other?serverId=server-b', expect.any(Object));
     expect(result).toMatchObject({
       ok: true,
       sessionId: 's_other',
@@ -171,13 +175,14 @@ describe('openSessionForVoiceTool', () => {
 
     const result = await openSessionForVoiceTool({
       sessionTitle: 'Session Setup.',
+      corpus: { activeServerId: 'server-a', knownServerIds: ['server-a'], coverage: 'complete' },
       resolveServerIdForSessionId: () => null,
       resolveServerNameForSessionId: () => null,
     });
 
     expect(setActiveServerAndSwitch).not.toHaveBeenCalled();
-    expect(routerNavigate).toHaveBeenCalledWith('/session/s_setup', expect.any(Object));
-    expect(setPrimaryActionSessionForVoiceTool).toHaveBeenCalledWith({ sessionId: 's_setup', updateLastFocused: true });
+    expect(routerNavigate).toHaveBeenCalledWith('/session/s_setup?serverId=server-a', expect.any(Object));
+    expect(setPrimaryActionSessionForVoiceTool).toHaveBeenCalledWith({ sessionId: 's_setup', serverId: 'server-a', updateLastFocused: true });
     expect(result).toMatchObject({
       ok: true,
       sessionId: 's_setup',
@@ -193,12 +198,13 @@ describe('openSessionForVoiceTool', () => {
 
     const result = await openSessionForVoiceTool({
       sessionTitle: 'Session QA Voice Matrix',
+      corpus: { activeServerId: 'server-a', knownServerIds: ['server-a'], coverage: 'complete' },
       resolveServerIdForSessionId: () => null,
       resolveServerNameForSessionId: () => null,
     });
 
-    expect(routerNavigate).toHaveBeenCalledWith('/session/s_matrix', expect.any(Object));
-    expect(setPrimaryActionSessionForVoiceTool).toHaveBeenCalledWith({ sessionId: 's_matrix', updateLastFocused: true });
+    expect(routerNavigate).toHaveBeenCalledWith('/session/s_matrix?serverId=server-a', expect.any(Object));
+    expect(setPrimaryActionSessionForVoiceTool).toHaveBeenCalledWith({ sessionId: 's_matrix', serverId: 'server-a', updateLastFocused: true });
     expect(result).toMatchObject({
       ok: true,
       sessionId: 's_matrix',
@@ -214,12 +220,13 @@ describe('openSessionForVoiceTool', () => {
 
     const result = await openSessionForVoiceTool({
       sessionTitle: 'Session QA Voice Matrix',
+      corpus: { activeServerId: 'server-a', knownServerIds: ['server-a'], coverage: 'complete' },
       resolveServerIdForSessionId: () => null,
       resolveServerNameForSessionId: () => null,
     });
 
-    expect(routerNavigate).toHaveBeenCalledWith('/session/s_matrix', expect.any(Object));
-    expect(setPrimaryActionSessionForVoiceTool).toHaveBeenCalledWith({ sessionId: 's_matrix', updateLastFocused: true });
+    expect(routerNavigate).toHaveBeenCalledWith('/session/s_matrix?serverId=server-a', expect.any(Object));
+    expect(setPrimaryActionSessionForVoiceTool).toHaveBeenCalledWith({ sessionId: 's_matrix', serverId: 'server-a', updateLastFocused: true });
     expect(result).toMatchObject({
       ok: true,
       sessionId: 's_matrix',
@@ -235,12 +242,13 @@ describe('openSessionForVoiceTool', () => {
 
     const result = await openSessionForVoiceTool({
       sessionTitle: 'Visible only in current list',
+      corpus: { activeServerId: 'server-a', knownServerIds: ['server-a'], coverage: 'complete' },
       resolveServerIdForSessionId: () => null,
       resolveServerNameForSessionId: () => null,
     });
 
-    expect(routerNavigate).toHaveBeenCalledWith('/session/s_visible', expect.any(Object));
-    expect(setPrimaryActionSessionForVoiceTool).toHaveBeenCalledWith({ sessionId: 's_visible', updateLastFocused: true });
+    expect(routerNavigate).toHaveBeenCalledWith('/session/s_visible?serverId=server-a', expect.any(Object));
+    expect(setPrimaryActionSessionForVoiceTool).toHaveBeenCalledWith({ sessionId: 's_visible', serverId: 'server-a', updateLastFocused: true });
     expect(result).toMatchObject({
       ok: true,
       sessionId: 's_visible',
@@ -256,12 +264,14 @@ describe('openSessionForVoiceTool', () => {
 
     await openSessionForVoiceTool({
       sessionId: 's_setup',
+      serverId: 'server-a',
       resolveServerIdForSessionId: () => null,
       resolveServerNameForSessionId: () => null,
     });
 
     expect(setPrimaryActionSessionForVoiceTool).toHaveBeenCalledWith({
       sessionId: 's_setup',
+      serverId: 'server-a',
       updateLastFocused: true,
     });
   });

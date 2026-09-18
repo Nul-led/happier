@@ -283,7 +283,7 @@ export class DaemonSpeechStreamSender {
         generation: active.generation,
         seq: pending.seq,
         carrierFrame,
-        compatibilityTransport: carrierFrame.kind === 'json_base64_v1_fallback'
+        compatibilityTransport: carrierFrame.kind === 'machine_rpc_json_base64'
           ? describeDaemonSpeechStreamRpcCompatibilityTransport()
           : null,
       });

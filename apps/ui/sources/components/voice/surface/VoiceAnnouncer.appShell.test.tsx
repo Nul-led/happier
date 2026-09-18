@@ -126,7 +126,7 @@ describe('one Voice announcer for the whole app shell', () => {
                 <VoiceAnnouncer />
                 <VoiceHorizon model={buildHorizonModel()} />
                 <VoiceOrbAppShellMount />
-                <VoiceComposerPlanetMount sessionId="composer-session-1" />
+                <VoiceComposerPlanetMount target={{ kind: 'session', sessionAddress: { serverId: 'server-1', sessionId: 'composer-session-1' } }} />
             </VoiceEnergyProvider>,
         );
 
@@ -185,7 +185,7 @@ describe('one Voice announcer for the whole app shell', () => {
                 <VoiceAnnouncer />
                 <VoiceHorizon model={buildHorizonModel()} />
                 <VoiceOrbAppShellMount />
-                <VoiceComposerPlanetMount sessionId="composer-session-1" />
+                <VoiceComposerPlanetMount target={{ kind: 'session', sessionAddress: { serverId: 'server-1', sessionId: 'composer-session-1' } }} />
             </VoiceEnergyProvider>,
         );
 

@@ -5,6 +5,7 @@ import {
 } from '@/sync/api/plugins/availability/activePluginAccountReleaseRead';
 import { setActivePluginAccountAvailabilityIntent } from '@/sync/api/plugins/availability/setActivePluginAccountAvailabilityIntent';
 import { removeActivePluginAccountHostedArtifact } from '@/sync/api/plugins/availability/removeActivePluginAccountHostedArtifact';
+import { removeActivePluginAccountPackageAssets } from '@/sync/api/plugins/availability/removeActivePluginAccountPackageAssets';
 import { getInstalledPluginReactNativeBundleCache } from '@/components/plugins/reactNative/bundleCache';
 import {
     captureActiveServerAccountScopeLifetime,
@@ -42,6 +43,7 @@ export type PluginAccountReleaseSelectionControllerDependencies = Readonly<{
     select: typeof selectCandidateCollectionRelease;
     setIntent: typeof setActivePluginAccountAvailabilityIntent;
     removeHostedArtifact: typeof removeActivePluginAccountHostedArtifact;
+    removePackageAssets: typeof removeActivePluginAccountPackageAssets;
     removeCachedArtifact: ReturnType<typeof getInstalledPluginReactNativeBundleCache>['removePersistentArtifact'];
 }>;
 
@@ -103,6 +105,7 @@ const defaultDependencies: PluginAccountReleaseSelectionControllerDependencies =
     select: selectCandidateCollectionRelease,
     setIntent: setActivePluginAccountAvailabilityIntent,
     removeHostedArtifact: removeActivePluginAccountHostedArtifact,
+    removePackageAssets: removeActivePluginAccountPackageAssets,
     removeCachedArtifact: (identity, isCurrent) => getInstalledPluginReactNativeBundleCache().removePersistentArtifact(identity, isCurrent),
 });
 
@@ -261,7 +264,9 @@ export function createPluginAccountReleaseSelectionController(
 
     const updateHostingIntent: PluginAccountReleaseSelectionController['setHostedArtifactsEnabled'] = async (input) => {
         const selected = readHostedAdministration(input);
-        if (!selected || selected.release.uiSlots.length === 0 || (input.enabled && !selected.hostingCapability.enabled)) {
+        if (!selected
+            || (selected.release.uiSlots.length === 0 && selected.release.packageAssetArchive.resources.length === 0)
+            || (input.enabled && !selected.hostingCapability.enabled)) {
             return Object.freeze({ kind: 'unavailable' as const });
         }
         const result = await dependencies.setIntent({
@@ -307,6 +312,13 @@ export function createPluginAccountReleaseSelectionController(
                         tier: link.tier,
                         platform: link.platform,
                     },
+                });
+                if (removed.kind !== 'removed') return Object.freeze({ kind: 'unavailable' as const });
+            }
+            if (selected.packageAssets.length > 0) {
+                const removed = await dependencies.removePackageAssets({
+                    accountLifetime: lifetime,
+                    target: { release: selected.release.ref },
                 });
                 if (removed.kind !== 'removed') return Object.freeze({ kind: 'unavailable' as const });
             }

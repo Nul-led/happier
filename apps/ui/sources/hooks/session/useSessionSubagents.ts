@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 
 import type { Message } from '@/sync/domains/messages/messageTypes';
 import { shouldEnableExecutionRunPolling } from '@/sync/domains/session/participants/shouldEnableExecutionRunPolling';
@@ -87,6 +88,8 @@ function useStableValueBySignature<T>(value: T, signature: string): T {
 
 export function useSessionSubagents(params: Readonly<{
     sessionId: string;
+    /** Exact Home selected by the route/pane when the Session id is ambiguous. */
+    serverId?: string | null;
     session: Session | null;
     messages: readonly Message[];
     externalSessionRuntime?: UseExternalSessionRuntimeResult;
@@ -95,7 +98,13 @@ export function useSessionSubagents(params: Readonly<{
     participantTargets: ReturnType<typeof deriveSessionSubagentRecipients>;
     sidechainIds: readonly string[];
 }> {
-    const executionRunsEnabled = useFeatureEnabled('execution.runs');
+    const sessionServerId = params.serverId ?? params.session?.serverId ?? null;
+    const executionRunsEnabled = useFeatureEnabled('execution.runs', sessionServerId
+        ? { scopeKind: 'spawn', serverId: sessionServerId }
+        : undefined);
+    const accountScopeResolution = useServerCredentialAccountScopeResolution(sessionServerId);
+    const accountScope = sessionServerId === null ? undefined
+        : accountScopeResolution.kind === 'bound' ? accountScopeResolution.scope : null;
     const normalizedSessionId = React.useMemo(() => normalizeSessionId(params.sessionId), [params.sessionId]);
     const sessionMetadata = params.session
         ? readSessionOwnerMetadataView(params.session)
@@ -124,13 +133,18 @@ export function useSessionSubagents(params: Readonly<{
 
     const runningExecutionRuns = useSessionRunningExecutionRuns({
         sessionId: normalizedSessionId,
+        serverId: sessionServerId,
         enabled: executionRunPollingEnabled,
         refreshKey: executionRunPollingRefreshKey,
     });
     const internalExternalSessionRuntime = useSessionExternalSessionRuntime({
         sessionId: normalizedSessionId,
+        serverId: sessionServerId,
         metadata: stableSessionMetadata,
-        enabled: params.externalSessionRuntime == null,
+        // A Home-qualified activity caller deliberately gives us `null` when
+        // the legacy id-keyed live cache belongs to another Home.  It must not
+        // turn that cache miss into a raw-id external-runtime request.
+        enabled: params.externalSessionRuntime == null && params.session !== null,
     });
     const externalSessionRuntime = params.externalSessionRuntime ?? internalExternalSessionRuntime;
 
@@ -146,6 +160,7 @@ export function useSessionSubagents(params: Readonly<{
     const derivedSubagents = React.useMemo(() => {
         if (!params.session) return [] as const;
         const derivedSubagents = deriveSessionSubagents({
+            accountScope,
             session: {
                 metadataLayoutVersion: 0,
                 metadata: stableSessionMetadata,
@@ -163,6 +178,7 @@ export function useSessionSubagents(params: Readonly<{
                 || externalSessionRuntime.status?.runnerActive === true,
         });
     }, [
+        accountScope,
         externalSessionRuntime.externalSessionLink,
         externalSessionRuntime.status?.runnerActive,
         params.session != null,

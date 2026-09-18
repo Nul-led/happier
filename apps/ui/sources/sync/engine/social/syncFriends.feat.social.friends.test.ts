@@ -13,6 +13,7 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
         kind: 'custom',
         generation: 1,
     }),
+    getActiveServerHomeCarrier: () => null,
 }));
 
 const credentials: AuthCredentials = { token: 'token-1', secret: 'secret-1' };
@@ -27,6 +28,13 @@ function createFeaturesResponse(friendsEnabled: boolean): FeaturesResponse {
             social: { friends: { allowUsername: false, requiredIdentityProviderId: 'github' } },
             oauth: { providers: { github: { enabled: true, configured: true } } },
         },
+    });
+}
+
+function createFeatureHttpResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json' },
     });
 }
 
@@ -55,7 +63,7 @@ describe('syncFriends', () => {
                 return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
             }
             if (url.pathname === '/v1/features') {
-                return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+                return createFeatureHttpResponse({}, 404);
             }
             if (url.pathname === '/v1/friends') {
                 return { ok: true, status: 200, json: async () => ({ friends: [] }) } as unknown as Response;
@@ -81,11 +89,7 @@ describe('syncFriends', () => {
                 return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
             }
             if (url.pathname === '/v1/features') {
-                return {
-                    ok: true,
-                    status: 200,
-                    json: async () => createFeaturesResponse(false),
-                } as unknown as Response;
+                return createFeatureHttpResponse(createFeaturesResponse(false));
             }
             if (url.pathname === '/v1/friends') {
                 return { ok: true, status: 200, json: async () => ({ friends: [] }) } as unknown as Response;
@@ -111,11 +115,7 @@ describe('syncFriends', () => {
                 return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
             }
             if (url.pathname === '/v1/features') {
-                return {
-                    ok: true,
-                    status: 200,
-                    json: async () => createFeaturesResponse(true),
-                } as unknown as Response;
+                return createFeatureHttpResponse(createFeaturesResponse(true));
             }
             if (url.pathname === '/v1/friends') {
                 return { ok: true, status: 200, json: async () => ({ friends: [] }) } as unknown as Response;
@@ -132,6 +132,21 @@ describe('syncFriends', () => {
         expect(applyFriends).toHaveBeenCalledWith([]);
     });
 
+    it('rejects a transient feature probe failure so the sync owner retries it', async () => {
+        const { fetchAndApplyFriends } = await import('./syncFriends');
+
+        vi.stubGlobal('fetch', vi.fn(async () => {
+            throw new TypeError('network unavailable');
+        }) as unknown as typeof fetch);
+
+        const applyFriends = vi.fn();
+        await expect(fetchAndApplyFriends({ credentials, applyFriends })).rejects.toMatchObject({
+            name: 'RuntimeFeatureDecisionUnavailableError',
+            retryable: true,
+        });
+        expect(applyFriends).not.toHaveBeenCalled();
+    });
+
     it('drops fetched friends when the captured sync scope is stale before apply', async () => {
         const { fetchAndApplyFriends } = await import('./syncFriends');
 
@@ -141,11 +156,7 @@ describe('syncFriends', () => {
                 return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
             }
             if (url.pathname === '/v1/features') {
-                return {
-                    ok: true,
-                    status: 200,
-                    json: async () => createFeaturesResponse(true),
-                } as unknown as Response;
+                return createFeatureHttpResponse(createFeaturesResponse(true));
             }
             if (url.pathname === '/v1/friends') {
                 return {

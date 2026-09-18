@@ -1,105 +1,49 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-    createPersonalHomeRelocationPromptResponder,
-    createPersonalHomeRelocationPromptResponderWithPublication,
-} from './personalHomeRelocationPromptResponder';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { createDirectoryHttpFixture } from '@/sync/ops/accountDirectory/accountDirectoryTestFixtures';
+import { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
+import { createPersonalHomeRelocationPromptResponder } from './personalHomeRelocationPromptResponder';
 
-const descriptor = {
-    v: 1 as const,
-    homeServerIdentityId: 'home-1',
-    canonicalServerUrl: 'https://destination.example.test',
-    revision: 8,
-    endpoints: [{ kind: 'https' as const, url: 'https://destination.example.test' }],
-};
+const request = vi.hoisted(() => vi.fn());
+vi.mock('@/sync/http/client', () => ({ createServerFetchAtEndpoint: () => request }));
 
-function createResponder() {
-    const session = {
-        publishHomeDescriptor: vi.fn(async () => ({ kind: 'published' as const, entry: { connectionDescriptor: descriptor } })),
-        readHomeDescriptor: vi.fn(async () => ({ connectionDescriptor: descriptor })),
-    };
-    return {
-        session,
-        responder: createPersonalHomeRelocationPromptResponder({
-            operationId: 'relocation-1',
-            homeServerIdentityId: 'home-1',
-            homeLabel: 'Personal Home',
-            session,
-        }),
-    };
-}
+describe('task-bound relocation Directory publication', () => {
+    const fixture = createDirectoryHttpFixture();
+    const target = { endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId };
+    const descriptor = { ...fixture.home.connectionDescriptor, revision: 27,
+        endpoints: [{ kind: 'https' as const, url: 'https://destination.test' },
+            { kind: 'iroh' as const, endpointId: 'ab'.repeat(32), relayUrls: ['https://relay.test'] }] };
+    beforeEach(async () => {
+        request.mockReset();
+        await TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'directory-token' });
+    });
+    function responder() {
+        return createPersonalHomeRelocationPromptResponder({
+            operationId: 'move-1', homeServerIdentityId: descriptor.homeServerIdentityId, homeLabel: 'My Home',
+            session: new AccountDirectorySession(target, { capability: fixture.service.capability }),
+        });
+    }
 
-describe('createPersonalHomeRelocationPromptResponder', () => {
-    it('publishes only a task-bound destination descriptor through the canonical Directory session', async () => {
-        const { responder, session } = createResponder();
-
-        await expect(responder({
-            kind: 'personal_home.publish_relocation_descriptor.v1',
-            message: '',
-            data: {
-                operationId: 'relocation-1',
-                homeServerIdentityId: 'home-1',
-                canonicalServerUrl: 'https://destination.example.test',
-                minimumOuterRevisionExclusive: 7,
-                endpoints: descriptor.endpoints,
-            },
+    it('carries the exact descriptor through the real session to Directory PUT', async () => {
+        request.mockResolvedValueOnce(new Response(JSON.stringify({ ...fixture.home, label: 'My Home',
+            connectionDescriptor: descriptor })));
+        await expect(responder()({ kind: 'personal_home.publish_relocation_descriptor.v1', message: '',
+            data: { operationId: 'move-1', homeServerIdentityId: descriptor.homeServerIdentityId, connectionDescriptor: descriptor },
         })).resolves.toEqual({ descriptor });
-        expect(session.publishHomeDescriptor).toHaveBeenCalledWith({
-            homeServerIdentityId: 'home-1',
-            label: 'Personal Home',
-            minimumOuterRevisionExclusive: 7,
-            canonicalServerUrl: 'https://destination.example.test',
-            endpoints: descriptor.endpoints,
+        expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({
+            v: 1, label: 'My Home', connectionDescriptor: descriptor,
         });
     });
 
-    it('rejects a prompt for another operation before reading or publishing location data', async () => {
-        const { responder, session } = createResponder();
-
-        await expect(responder({
-            kind: 'personal_home.read_relocation_descriptor.v1',
-            message: '',
-            data: { operationId: 'another-operation', homeServerIdentityId: 'home-1' },
-        })).rejects.toThrow('did not match');
-        expect(session.publishHomeDescriptor).not.toHaveBeenCalled();
-        expect(session.readHomeDescriptor).not.toHaveBeenCalled();
-    });
-
-    it('uses an injected canonical current-client publication owner when Account Directory is unavailable', async () => {
-        const publication = {
-            publish: vi.fn(async () => descriptor),
-            read: vi.fn(async () => descriptor),
-        };
-        const responder = createPersonalHomeRelocationPromptResponderWithPublication({
-            operationId: 'relocation-1',
-            homeServerIdentityId: 'home-1',
-            homeLabel: 'Personal Home',
-            publication,
-        });
-
-        await expect(responder({
-            kind: 'personal_home.publish_relocation_descriptor.v1',
-            message: '',
-            data: {
-                operationId: 'relocation-1',
-                homeServerIdentityId: 'home-1',
-                canonicalServerUrl: 'https://destination.example.test',
-                minimumOuterRevisionExclusive: 7,
-                endpoints: descriptor.endpoints,
-            },
-        })).resolves.toEqual({ descriptor });
-        await expect(responder({
-            kind: 'personal_home.read_relocation_descriptor.v1',
-            message: '',
-            data: { operationId: 'relocation-1', homeServerIdentityId: 'home-1' },
-        })).resolves.toEqual({ descriptor });
-        expect(publication.publish).toHaveBeenCalledWith({
-            homeServerIdentityId: 'home-1',
-            homeLabel: 'Personal Home',
-            minimumOuterRevisionExclusive: 7,
-            canonicalServerUrl: 'https://destination.example.test',
-            endpoints: descriptor.endpoints,
-        });
-        expect(publication.read).toHaveBeenCalledWith('home-1');
+    it('rejects another operation and a descriptor for another Home before network mutation', async () => {
+        await expect(responder()({ kind: 'personal_home.read_relocation_descriptor.v1', message: '',
+            data: { operationId: 'other-operation', homeServerIdentityId: descriptor.homeServerIdentityId },
+        })).rejects.toThrow();
+        await expect(responder()({ kind: 'personal_home.publish_relocation_descriptor.v1', message: '',
+            data: { operationId: 'move-1', homeServerIdentityId: descriptor.homeServerIdentityId,
+                connectionDescriptor: { ...descriptor, homeServerIdentityId: 'srv_other' } },
+        })).rejects.toThrow();
+        expect(request).not.toHaveBeenCalled();
     });
 });

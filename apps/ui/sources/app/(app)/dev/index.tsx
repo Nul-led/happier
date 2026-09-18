@@ -43,7 +43,7 @@ export default function DevScreen() {
         if (newUrl && newUrl !== currentUrl) {
             const validation = validateServerUrl(newUrl);
             if (validation.valid) {
-                setServerUrl(newUrl);
+                await setServerUrl(newUrl);
                 Modal.alert('Success', 'Server URL updated. Please restart the app for changes to take effect.');
             } else {
                 Modal.alert('Invalid URL', validation.error || 'Please enter a valid URL');

@@ -9,6 +9,12 @@ import type {
     PluginProjectedComposerRegionEntryV1,
     PluginProjectionV2,
 } from '@happier-dev/protocol';
+import {
+    DaemonPluginUiComposerSurfaceCatalogEntryV1Schema,
+    PluginProjectedComposerControlEntryV1Schema,
+    PluginProjectedComposerRegionEntryV1Schema,
+    PluginProjectionV2Schema,
+} from '@happier-dev/protocol';
 import type { PluginSurfaceTarget } from '@happier-dev/plugin-sdk/ui';
 
 import { renderHook, renderScreen } from '@/dev/testkit';
@@ -18,7 +24,14 @@ import type {
     PluginContributedActionCurrentSnapshot,
 } from '@/components/plugins/actions/pluginContributedActionController';
 
-import type { ComposerScopePluginPresentation } from './useComposerScopePluginPresentation';
+// Imported statically, like every other owner under test here. A dynamic
+// `await import(...)` inside a test body bills this hook's whole module graph
+// to the FIRST test's timeout instead of to collection, which is why the
+// projection case alone accounted for 33s of a 33.4s file.
+import {
+    useComposerScopePluginPresentation,
+    type ComposerScopePluginPresentation,
+} from './useComposerScopePluginPresentation';
 
 const pluginSurfaceHostSpy = vi.hoisted(() => vi.fn());
 
@@ -44,6 +57,7 @@ const region = {
     definition: {
         id: 'summary',
         placement: 'beforeComposer',
+        renderer: { renderer: 'summary-renderer' },
     },
 };
 
@@ -61,7 +75,7 @@ const control = {
 };
 
 function createCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
-    return {
+    return DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
         contribution: region.identity,
         immutableGenerationId: 'generation-1',
         projectionGeneration: 7,
@@ -89,30 +103,31 @@ function createCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
             target: { pluginId: 'acme.compose', immutableGenerationId: 'generation-1' },
             points: [],
         },
-    } as DaemonPluginUiComposerSurfaceCatalogEntryV1;
+    });
 }
 
 function createProjection(): PluginProjectionV2 {
-    return {
+    return PluginProjectionV2Schema.parse({
         v: 2,
         generation: 7,
-        installedPackagesById: {},
         familiesById: {
             composerControls: {
+                family: 'composerControls',
                 entriesById: { [control.id]: control },
             },
             composerRegions: {
+                family: 'composerRegions',
                 entriesById: { [region.id]: region },
             },
         },
-    } as PluginProjectionV2;
+    });
 }
 
 function createOrderedControl(input: Readonly<{
     localId: string;
     order?: number;
 }>): PluginProjectedComposerControlEntryV1 {
-    return {
+    return PluginProjectedComposerControlEntryV1Schema.parse({
         id: `acme.compose/${input.localId}`,
         pluginId: 'acme.compose',
         identity: { pluginId: 'acme.compose', localId: input.localId },
@@ -124,14 +139,14 @@ function createOrderedControl(input: Readonly<{
             ...(input.order === undefined ? {} : { order: input.order }),
             interaction: { kind: 'action', action: 'refresh' },
         },
-    } as PluginProjectedComposerControlEntryV1;
+    });
 }
 
 function createOrderedRegion(input: Readonly<{
     localId: string;
     order?: number;
 }>): PluginProjectedComposerRegionEntryV1 {
-    return {
+    return PluginProjectedComposerRegionEntryV1Schema.parse({
         id: `acme.compose/${input.localId}`,
         pluginId: 'acme.compose',
         identity: { pluginId: 'acme.compose', localId: input.localId },
@@ -139,9 +154,10 @@ function createOrderedRegion(input: Readonly<{
         definition: {
             id: input.localId,
             placement: 'beforeComposer',
+            renderer: { renderer: `${input.localId}-renderer` },
             ...(input.order === undefined ? {} : { order: input.order }),
         },
-    } as PluginProjectedComposerRegionEntryV1;
+    });
 }
 
 function createPluginProjectionById(): Readonly<Record<string, PluginProjectionEntry>> {
@@ -228,7 +244,6 @@ const scopeCases: readonly Readonly<{
 
 describe('useComposerScopePluginPresentation', () => {
     it('projects admitted Composer controls and regions by declaration order, then qualified id', async () => {
-        const { useComposerScopePluginPresentation } = await import('./useComposerScopePluginPresentation');
         const controls = [
             createOrderedControl({ localId: 'late', order: 10 }),
             createOrderedControl({ localId: 'z-tie', order: 0 }),
@@ -239,19 +254,20 @@ describe('useComposerScopePluginPresentation', () => {
             createOrderedRegion({ localId: 'z-tie-region', order: 0 }),
             createOrderedRegion({ localId: 'a-tie-region', order: 0 }),
         ];
-        const projection = {
+        const projection = PluginProjectionV2Schema.parse({
             v: 2,
             generation: 7,
-            installedPackagesById: {},
             familiesById: {
                 composerControls: {
+                    family: 'composerControls',
                     entriesById: Object.fromEntries(controls.map((entry) => [entry.id, entry])),
                 },
                 composerRegions: {
+                    family: 'composerRegions',
                     entriesById: Object.fromEntries(regions.map((entry) => [entry.id, entry])),
                 },
             },
-        } as PluginProjectionV2;
+        });
         const presentationRef: { current: ComposerScopePluginPresentation | null } = { current: null };
         let tree!: ReturnType<typeof create>;
         function Harness(): null {
@@ -297,7 +313,6 @@ describe('useComposerScopePluginPresentation', () => {
 
     it.each(scopeCases)('mounts a region for $label through the shared host seam', async (scope) => {
         pluginSurfaceHostSpy.mockClear();
-        const { useComposerScopePluginPresentation } = await import('./useComposerScopePluginPresentation');
         const projection = createProjection();
         const hook = await renderHook(() => useComposerScopePluginPresentation({
             composer: scope.composer,
@@ -344,7 +359,6 @@ describe('useComposerScopePluginPresentation', () => {
     // scope resolved one.
     it('hands the enclosing scope navigation binding to every physical Composer surface', async () => {
         pluginSurfaceHostSpy.mockClear();
-        const { useComposerScopePluginPresentation } = await import('./useComposerScopePluginPresentation');
         const {
             PluginSurfaceDestinationNavigationBindingProvider,
         } = await import('@/components/plugins/surfaces/pluginSurfaceDestinationNavigation');
@@ -394,7 +408,6 @@ describe('useComposerScopePluginPresentation', () => {
     // cannot honour.
     it('installs no openSurface binding when the scope has no enclosing destination owner', async () => {
         pluginSurfaceHostSpy.mockClear();
-        const { useComposerScopePluginPresentation } = await import('./useComposerScopePluginPresentation');
         const projection = createProjection();
         const hook = await renderHook(() => useComposerScopePluginPresentation({
             composer: { kind: 'session', sessionId: 'session-1' },
@@ -426,7 +439,6 @@ describe('useComposerScopePluginPresentation', () => {
     });
 
     it('withdraws existing-Session controls and regions when its owner retires the scope', async () => {
-        const { useComposerScopePluginPresentation } = await import('./useComposerScopePluginPresentation');
         const projection = createProjection();
         const hook = await renderHook(({ current }: Readonly<{ current: boolean }>) => {
             const isScopeCurrent = React.useCallback(() => current, [current]);
@@ -461,7 +473,6 @@ describe('useComposerScopePluginPresentation', () => {
     });
 
     it('keeps the shared scope current for reordered equivalent Composer refs', async () => {
-        const { useComposerScopePluginPresentation } = await import('./useComposerScopePluginPresentation');
         const projection = createProjection();
         const initialComposer: ComposerRefV1 = {
             kind: 'pendingMessage',
@@ -521,7 +532,6 @@ describe('useComposerScopePluginPresentation', () => {
     });
 
     it('keeps the existing-Session action adapter on the shared current scope', async () => {
-        const { useComposerScopePluginPresentation } = await import('./useComposerScopePluginPresentation');
         const projection = createProjection();
         const pluginProjectionById = createPluginProjectionById();
         const hook = await renderHook(({ current }: Readonly<{ current: boolean }>) => {
@@ -577,7 +587,6 @@ describe('useComposerScopePluginPresentation', () => {
     // SECOND label and remove control inside the first one. One boundary owns
     // the row; the mounted child owns only body-level failure content.
     it('installs no nested attachment-row fallback on a custom attachment display mount', async () => {
-        const { useComposerScopePluginPresentation } = await import('./useComposerScopePluginPresentation');
         const projection = createProjection();
         const hook = await renderHook(() => useComposerScopePluginPresentation({
             composer: { kind: 'session', sessionId: 'session-1' },
@@ -611,18 +620,9 @@ describe('useComposerScopePluginPresentation', () => {
             catalog: {
                 identity: attachment.attachment,
                 immutableGenerationId: 'generation-1',
-                display: { kind: 'surface', sizing: 'content', renderer: { chain: [] } },
+                display: { kind: 'surface', sizing: 'content', renderer: { renderer: 'issue-display' } },
             },
-            // Exactly what the row projection offers today: a complete badge
-            // carrying this instance's label and its own remove control.
-            fallback: {
-                kind: 'badge',
-                key: 'composer-attachment:issue-42',
-                label: 'Issue #42',
-                availability: 'ready',
-                onRemove: () => undefined,
-            },
-        } as never);
+        });
 
         const mounted = surface?.renderedContent as React.ReactElement<Record<string, unknown>> | null;
         expect(mounted).not.toBeNull();

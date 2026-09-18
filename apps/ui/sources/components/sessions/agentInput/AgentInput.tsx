@@ -1,4 +1,6 @@
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
+import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { reportSessionTypingEdit, stopSessionTyping } from '@/sync/domains/session/humanPresence/sessionHumanPresenceRuntime';
 import * as React from 'react';
 import {
     View,
@@ -23,7 +25,6 @@ import {
     createBackdropWebStyle,
 } from '@/components/ui/overlays/createBackdropLayerStyle';
 import {
-    MultiTextInput,
     KeyPressEvent,
     type MultiTextInputSubmitBehavior,
 } from '@/components/ui/forms/MultiTextInput';
@@ -33,33 +34,14 @@ import type {
     PermissionMode,
     ModelMode,
 } from '@/sync/domains/permissions/permissionTypes';
+import type { ModelOption } from '@/sync/domains/models/modelOptions';
 import {
-    findModelOptionForEffectiveModelId,
-    getModelOptionsForSession,
-    supportsFreeformModelSelectionForSession,
-    type ModelOption,
-} from '@/sync/domains/models/modelOptions';
-import {
-    buildExtendedContextModelControl,
     EXTENDED_CONTEXT_MODEL_TOGGLE_OPTION_ID,
     resolveExtendedContextModelIdForToggle,
 } from '@/sync/domains/models/extendedContextModelControl';
-import { describeEffectiveModelMode } from '@/sync/domains/models/describeEffectiveModelMode';
 import type { CurrentSessionRunnerProcessIdentity } from '@/sync/domains/models/resolveSessionModelSelectionDisposition';
-import {
-    ReportedModelStatusIcon,
-    reportedModelSummary,
-    resolveReportedModelStatus,
-    type ReportedModelStatus,
-} from '@/components/sessions/modelPicker/reportedModelPresentation';
+import { ReportedModelStatusIcon } from '@/components/sessions/modelPicker/reportedModelPresentation';
 import { Modal } from '@/modal';
-import {
-    getPermissionModeBadgeLabelForAgentType,
-    getPermissionModeLabelForAgentType,
-    getPermissionModeOptionsForSession,
-} from '@/sync/domains/permissions/permissionModeOptions';
-import { describeEffectivePermissionMode } from '@/sync/domains/permissions/describeEffectivePermissionMode';
-import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessionControlMetadata';
 import {
     hapticsLight,
     hapticsError,
@@ -130,12 +112,15 @@ import {
     type AgentInputActionBarLayout,
 } from './layout/actionBarLogic';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
-import { useVoiceDictation } from '@/voice/dictation/useVoiceDictation';
 import {
-    resolveVoiceDictationFailureTranslationKey,
-    resolveVoiceDictationStartErrorTranslationKey,
-} from '@/voice/dictation/voiceDictationErrorCopy';
+    SessionAuthoringComposer,
+    useSessionAuthoringComposerDictation,
+} from '@/components/sessions/authoring/SessionAuthoringComposer';
 import { VoiceComposerPlanetMount } from '@/components/voice/composer/VoiceComposerPlanetMount';
+import {
+    VOICE_ATTEMPT_IDLE_TARGET_GLOBAL,
+    type VoiceAttemptIdleTarget,
+} from '@/components/voice/attempt/useVoiceAttemptControl';
 import {
     clampNumber,
     computeAgentInputDefaultMaxHeight,
@@ -159,27 +144,20 @@ import { AgentInputExpansionToggle } from './components/AgentInputExpansionToggl
 import { AgentInputPermissionRequests } from './components/AgentInputPermissionRequests';
 import { resolveArmedComposerContinuation } from './components/agentContinuationSubmitPresentation';
 import { AgentInputSubmitButton } from './components/AgentInputSubmitButton';
-import {
-    DEFAULT_OPTION_CHIP_CYCLE_MAX_OPTIONS,
-    resolveChipOptionInteraction,
-    shouldRenderChipForOptions,
-} from './chipOptionInteraction';
-import { resolveSessionModeChipPresentation } from './controls/resolveSessionModeChipPresentation';
 import { useAgentInputActionMenuControls } from './controls/useAgentInputActionMenuControls';
 import { useAgentInputCoreControlHandlers } from './controls/useAgentInputCoreControlHandlers';
 import { useRenderedAgentInputControlRows } from './controls/useRenderedAgentInputControlRows';
+import { useSessionAuthoringControls } from '@/components/sessions/authoring/controls/useSessionAuthoringControls';
 import { recordLargeTextInputDiagnostic } from '@/utils/system/userInteractionDiagnostics';
 import { buildAgentInputSelectionOverlayViewModel } from './selection/buildAgentInputSelectionOverlayViewModel';
 import { useAgentInputSelectionAnchors } from './selection/useAgentInputSelectionAnchors';
 import { useAgentInputSelectionOverlayController } from './selection/useAgentInputSelectionOverlayController';
+import type { AgentInputSelectionOverlayId } from './selection/agentInputSelectionOverlayTypes';
 import { deferAgentInputPopoverClose } from './selection/deferAgentInputPopoverClose';
 import { useAgentInputExternalPickerRequest } from './selection/useAgentInputExternalPickerRequest';
-import { computeSessionModePickerControl } from '@/sync/domains/sessionControl/sessionModeControl';
-import {
-    computeAcpConfigOptionControls,
-    computeAcpConfigOptionControlsFromOverride,
-    type AcpConfigOption,
-    type AcpConfigOptionValueId,
+import type {
+    AcpConfigOption,
+    AcpConfigOptionValueId,
 } from '@/sync/domains/sessionControl/configOptionsControl';
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
@@ -199,7 +177,7 @@ import {
 import { buildSessionMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { useLocalSetting } from '@/sync/store/hooks';
-import type { AcpConfigOptionOverridesV1 } from '@happier-dev/protocol';
+import type { AcpConfigOptionOverridesV1, ComposerRefV1 } from '@happier-dev/protocol';
 import { useWebFileDropZone } from '@/hooks/ui/useWebFileDropZone';
 import { WebDropTargetView } from '@/components/workspaces/files/repositoryTree/WebDropTargetView';
 import { extractWebAttachmentFilesFromDataTransfer } from '@/utils/files/webAttachmentDataTransfer';
@@ -216,7 +194,6 @@ import type { AgentInputSendIntentOptions, AgentInputSendOptions } from './agent
 import type { AgentInputChipPickerOption } from './components/AgentInputChipPickerTypes';
 import { isMobileLayoutWidth } from '@/components/sessions/layout/isMobileLayoutWidth';
 import { insertTextAtSelection } from './insertTextAtSelection';
-import { applyDictationToComposer } from './applyDictationToComposer';
 import { AgentInputDictationButton } from './components/AgentInputDictationButton';
 import { subscribeToIosHardwareShiftEnter } from './subscribeToIosHardwareShiftEnter';
 import {
@@ -352,6 +329,12 @@ interface AgentInputProps {
     /** Scope-local observer for this mounted input's resolved action-bar layout. */
     onComposerActionBarLayoutChange?: (layout: AgentInputActionBarLayout) => void;
     sessionId?: string;
+    /** Exact immutable Voice target for an existing Session; `null` fails that Session start closed. */
+    sessionAddress?: SessionAddress | null;
+    /** Exact Composer identity for origin-neutral authoring surfaces without a Session. */
+    composerRef?: ComposerRefV1;
+    /** The Session host supplies its normalized access capability and exact Home. */
+    sessionTypingPresence?: Readonly<{ serverId: string; canSubmitAgentInput: boolean }>;
     /** The retaining Session surface's existing presented fact; absent hosts are mounted/presented. */
     surfacePresented?: boolean;
     onSend: (options?: AgentInputSendOptions) => void;
@@ -1336,19 +1319,25 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     // hiding this retained composer cancels and releases the canonical capture admission.
     const composerInputEditLocked = props.composerInputLock?.mode === 'editAndSubmit';
     const dictationEditable = !props.disabled && !composerInputEditLocked;
-    const dictation = useVoiceDictation(
-        props.sessionId,
-        props.surfacePresented !== false,
-        dictationEditable,
+    const typingAddress = React.useMemo(
+        () => normalizeSessionAddress(props.sessionTypingPresence?.serverId, props.sessionId),
+        [props.sessionTypingPresence?.serverId, props.sessionId],
     );
-    const dictationComposerAuthorityRef = React.useRef({
-        editable: dictationEditable,
-        sessionId: props.sessionId ?? null,
-    });
-    dictationComposerAuthorityRef.current = {
-        editable: dictationEditable,
-        sessionId: props.sessionId ?? null,
-    };
+    const typingEditable = dictationEditable
+        && props.surfacePresented !== false
+        && props.sessionTypingPresence?.canSubmitAgentInput === true;
+    // Only this input's activity is ours to clear. An idle retained composer for
+    // the same Session must not stop another mounted input's typing intent.
+    const reportedTypingAddressRef = React.useRef<SessionAddress | null>(null);
+    const stopTyping = React.useCallback(() => {
+        const address = reportedTypingAddressRef.current;
+        reportedTypingAddressRef.current = null;
+        if (address) stopSessionTyping(address);
+    }, []);
+    React.useEffect(() => stopTyping, [typingAddress, stopTyping]);
+    React.useEffect(() => {
+        if (!typingEditable || !hasText) stopTyping();
+    }, [typingEditable, hasText, stopTyping]);
     const [fileDragActive, setFileDragActive] = React.useState(false);
     const handleFilesDroppedToComposer = React.useCallback((event: any) => {
         const onAttachmentsAdded = props.onAttachmentsAdded;
@@ -1390,54 +1379,53 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         ? resolvedSessionAgentId
         : DEFAULT_AGENT_ID;
     const sessionAgentId = resolvedSessionAgentId ?? agentId;
-    const lastNonEmptySessionModelOptionsRef = React.useRef<readonly ModelOption[] | null>(null);
-    React.useEffect(() => {
-        lastNonEmptySessionModelOptionsRef.current = null;
-    }, [props.sessionId, sessionAgentId]);
-
-    const sessionModelsState = React.useMemo(() => {
-        if (props.modelOptionsOverride) return { hasSessionModelsState: false, availableCount: 0 };
-        const raw = readSessionModelsState(props.metadata ?? null);
-        const stateAgentId = typeof raw?.agentId === 'string' ? raw.agentId.trim() : '';
-        if (!stateAgentId || stateAgentId !== (resolvedSessionAgentId ?? agentId)) {
-            return { hasSessionModelsState: false, availableCount: 0 };
-        }
-        const available = Array.isArray(raw?.availableModels) ? raw.availableModels : [];
-        return { hasSessionModelsState: true, availableCount: available.length };
-    }, [agentId, props.metadata, props.modelOptionsOverride, resolvedSessionAgentId]);
-
-    const baseModelOptions = React.useMemo(() => {
-        if (props.modelOptionsOverride) return props.modelOptionsOverride;
-        return getModelOptionsForSession(sessionAgentId, props.metadata ?? null);
-    }, [props.metadata, props.modelOptionsOverride, sessionAgentId]);
-
-    const modelOptions = React.useMemo(() => {
-        if (props.modelOptionsOverride) return baseModelOptions;
-        if (sessionModelsState.hasSessionModelsState && sessionModelsState.availableCount === 0) {
-            const sticky = lastNonEmptySessionModelOptionsRef.current;
-            if (sticky && sticky.length > 0) return sticky;
-        }
-        return baseModelOptions;
-    }, [baseModelOptions, props.modelOptionsOverride, sessionModelsState.availableCount, sessionModelsState.hasSessionModelsState]);
-
-    const sessionModelOptionsProbe = React.useMemo<OptionPickerProbeState | null>(() => {
-        if (props.modelOptionsOverride) return null;
-        if (!sessionModelsState.hasSessionModelsState) return null;
-        if (sessionModelsState.availableCount > 0) return null;
-        const phase: OptionPickerProbeState['phase'] = lastNonEmptySessionModelOptionsRef.current ? 'refreshing' : 'loading';
-        return { phase };
-    }, [props.modelOptionsOverride, sessionModelsState.availableCount, sessionModelsState.hasSessionModelsState]);
-
-    React.useEffect(() => {
-        if (props.modelOptionsOverride) return;
-        if (!sessionModelsState.hasSessionModelsState) {
-            lastNonEmptySessionModelOptionsRef.current = null;
-            return;
-        }
-        if (sessionModelsState.availableCount > 0 && modelOptions.length > 0) {
-            lastNonEmptySessionModelOptionsRef.current = modelOptions;
-        }
-    }, [modelOptions, props.modelOptionsOverride, sessionModelsState.availableCount, sessionModelsState.hasSessionModelsState]);
+    /**
+     * Effective Session-authoring policy, resolved by the shared owner.
+     *
+     * The composer keeps its own handlers and presentation; what is *selected*
+     * and what that selection actually resolves to is answered once, in
+     * `components/sessions/authoring/controls`, so the standalone authoring row
+     * and this composer cannot drift apart.
+     */
+    const {
+        modelOptions,
+        sessionModelOptionsProbe,
+        permissionModeOptions,
+        permissionModeOrder,
+        effectivePermissionPolicy,
+        effectivePermissionLabel,
+        permissionChipLabel,
+        effectiveModelPolicy,
+        selectedModelLabel,
+        appliedModelPresentation,
+        modelApplyTiming,
+        modelNotes,
+        canEnterCustomModel,
+        shouldShowModelOptionDescriptions,
+        selectedModelForControls,
+        selectedModelOptionControls,
+        acpConfigOptionControls,
+        sessionModeChipControl,
+        sessionModePickerOptions,
+        shouldRenderSessionModeChip,
+        sessionModeChipPresentation,
+        sessionModeChipInteraction,
+    } = useSessionAuthoringControls({
+        agentId: sessionAgentId,
+        metadata: props.metadata ?? null,
+        sessionId: props.sessionId,
+        sessionActive: props.sessionActive,
+        permissionMode: props.permissionMode ?? null,
+        modelMode: props.modelMode ?? null,
+        modelOptionsOverride: props.modelOptionsOverride ?? null,
+        canChangeModel: Boolean(props.onModelModeChange),
+        canChangeSessionMode: Boolean(props.onAcpSessionModeChange),
+        canChangeConfigOption: Boolean(props.onAcpConfigOptionChange),
+        acpSessionModeOptionsOverride: props.acpSessionModeOptionsOverride ?? null,
+        acpSessionModeSelectedIdOverride: props.acpSessionModeSelectedIdOverride ?? null,
+        acpConfigOptionsOverride: props.acpConfigOptionsOverride ?? null,
+        acpConfigOptionOverridesOverride: props.acpConfigOptionOverridesOverride ?? null,
+    });
 
     // Profile data
     const rawProfiles = useSetting('profiles');
@@ -1476,12 +1464,12 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const agentInputHistoryScope = useSetting('agentInputHistoryScope');
     const agentInputActionBarLayout = useSetting('agentInputActionBarLayout');
     const agentInputChipDensity = useSetting('agentInputChipDensity');
-    const sessionPermissionModeApplyTiming = useSetting('sessionPermissionModeApplyTiming');
 
     const historyScope = agentInputHistoryScope === 'global' ? 'global' : 'perSession';
     const messageHistory = useUserMessageHistory({
         scope: historyScope,
         sessionId: props.sessionId ?? null,
+        serverId: props.sessionTypingPresence?.serverId,
     });
 
     const inputRef = React.useRef<MultiTextInputHandle>(null);
@@ -1534,6 +1522,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             ));
         }
         if (props.sessionId) {
+            stopTyping();
             inputRef.current?.blur();
         }
         messageHistory.reset();
@@ -1559,6 +1548,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         props.sessionId,
         props.value,
         sendActionDisabled,
+        stopTyping,
     ]);
 
     const effectiveChipDensity = React.useMemo<'auto' | 'labels' | 'icons'>(() => {
@@ -1689,63 +1679,36 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         inputStateRef.current = newState;
         updateActiveWordState(newState);
         const nextStatus = resolveLiveInputTextStatus(newState.text);
+        if (newState.text !== previousText && !isProgrammaticHistoryApply) {
+            if (!nextStatus.hasText) {
+                stopTyping();
+            } else if (isInputFocused && typingEditable && typingAddress) {
+                reportedTypingAddressRef.current = typingAddress;
+                reportSessionTypingEdit(typingAddress, true);
+            }
+        }
         if (!areLiveInputTextStatusesEqual(liveTextStatusRef.current, nextStatus)) {
             liveTextStatusRef.current = nextStatus;
             setLiveTextStatus(nextStatus);
         }
         updateInputSelectionState(newState.selection);
         props.inputPersistence?.onSelectionChangePersist(newState.selection, newState.text.length);
-    }, [hasRetainedHistorySession, messageHistory, props.inputPersistence, updateActiveWordState, updateInputSelectionState, updateStructuredInputMentions]);
+    }, [hasRetainedHistorySession, isInputFocused, messageHistory, props.inputPersistence, stopTyping, typingAddress, typingEditable, updateActiveWordState, updateInputSelectionState, updateStructuredInputMentions]);
 
-    const handleDictationPress = React.useCallback(async () => {
-        const admittedSessionId = props.sessionId ?? null;
-        if (!admittedSessionId || !dictationComposerAuthorityRef.current.editable) return;
-        try {
-            const result = await dictation.toggle();
-            if (result.kind !== 'completed') return;
-            const currentAuthority = dictationComposerAuthorityRef.current;
-            if (
-                !currentAuthority.editable
-                || currentAuthority.sessionId !== admittedSessionId
-            ) {
-                return;
-            }
-            if (!result.text) {
-                Modal.alert(t('voiceAssistant.dictationNoSpeech'));
-                return;
-            }
-            applyDictationToComposer({
-                input: inputRef.current,
-                state: inputStateRef.current,
-                text: result.text,
-            });
-        } catch (error) {
-            if (
-                error instanceof Error
-                && error.message === 'mic_permission_denied'
-            ) {
-                return;
-            }
-            const busyTranslationKey =
-                resolveVoiceDictationStartErrorTranslationKey(error);
-            if (busyTranslationKey) {
-                Modal.alert(t('common.error'), t(busyTranslationKey));
-                return;
-            }
-            Modal.alert(t('common.error'), t('errors.dictationFailed'));
-        }
-    }, [dictation.toggle, props.sessionId]);
-
-    React.useEffect(() => {
-        if (!dictation.failure) return;
-        if (dictation.failure.kind !== 'mic_permission_denied') {
-            Modal.alert(
-                t('common.error'),
-                t(resolveVoiceDictationFailureTranslationKey(dictation.failure.reason)),
-            );
-        }
-        dictation.dismissFailure(dictation.failure.id);
-    }, [dictation.dismissFailure, dictation.failure]);
+    const composerRef = React.useMemo<ComposerRefV1 | null>(() => (
+        props.composerRef
+        ?? (props.sessionId ? { kind: 'session', sessionId: props.sessionId } : null)
+    ), [props.composerRef, props.sessionId]);
+    const dictation = useSessionAuthoringComposerDictation({
+        composerRef,
+        enabled: voiceEnabled && props.submitDictation !== false,
+        presented: props.surfacePresented !== false,
+        editable: dictationEditable,
+        transcriptionSessionId: props.sessionId ?? null,
+        inputRef,
+        stateRef: inputStateRef,
+    });
+    const handleDictationPress = dictation.onPress;
 
     /*
      * §2.3 — dictation and conversational Voice stop competing by **placement**.
@@ -1764,28 +1727,33 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
      * The two halves are gated on different facts, and conflating them is what left the New
      * Session composer with no Voice affordance at all (§2.5).
      *
-     * Dictation transcribes into *this* composer through a session-bound transcriber, so it stays
-     * session-scoped. A Voice conversation does not need a session to exist: New Session starts
-     * **Global**, and `VoiceComposerPlanetMount` states that target from the session id below.
+     * Dictation transcribes into *this* exact Composer through the shared authoring seam. A live
+     * Session keeps its released Session address; origin-neutral authoring callers provide their
+     * own Composer reference and never fabricate a Session. Conversational Voice remains separately
+     * Session-targeted by `VoiceComposerPlanetMount` below.
      */
     const mountsVoiceComposerPlanet = Boolean(voiceEnabled);
-    const ownsFieldDictation = Boolean(voiceEnabled && props.sessionId)
+    const ownsFieldDictation = Boolean(voiceEnabled && composerRef)
         && props.fieldAccessory == null
         && props.submitDictation !== false;
-    const dictationPressHandler = voiceEnabled && props.sessionId && props.submitDictation !== false && !ownsFieldDictation
+    const dictationPressHandler = voiceEnabled && composerRef && props.submitDictation !== false && !ownsFieldDictation
         ? handleDictationPress
         : undefined;
     const dictationStatus = voiceEnabled ? dictation.status : 'idle';
     const dictationActive = dictationStatus !== 'idle';
     // Only the button that *owns* dictation may have its enablement driven by it.
     const submitDictationActive = dictationActive && Boolean(dictationPressHandler);
-    const voiceComposerSessionId = props.sessionId ?? null;
+    const voiceComposerTarget = React.useMemo<VoiceAttemptIdleTarget>(() => (
+        props.sessionId === undefined
+            ? VOICE_ATTEMPT_IDLE_TARGET_GLOBAL
+            : { kind: 'session', sessionAddress: props.sessionAddress ?? null }
+    ), [props.sessionAddress, props.sessionId]);
     const voiceComposerPlanet = React.useMemo(
         () => <VoiceComposerPlanetMount
-            sessionId={voiceComposerSessionId}
+            target={voiceComposerTarget}
             isPresented={props.surfacePresented}
         />,
-        [props.surfacePresented, voiceComposerSessionId],
+        [props.surfacePresented, voiceComposerTarget],
     );
     const trailingAccessory = props.trailingAccessory
         ?? (mountsVoiceComposerPlanet ? voiceComposerPlanet : null);
@@ -1934,10 +1902,11 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
     const handleComposerBlur = React.useCallback(() => {
         inputRef.current?.flushPendingTextChange?.();
+        stopTyping();
         composerKeyboardLayoutForFocus?.setComposerInputFocused?.(false);
         setIsInputFocused(false);
         props.onComposerFocusChange?.(false);
-    }, [composerKeyboardLayoutForFocus, props.onComposerFocusChange]);
+    }, [composerKeyboardLayoutForFocus, props.onComposerFocusChange, stopTyping]);
 
     const applyHistoryInputText = React.useCallback((next: string) => {
         const nextState = { text: next, selection: { start: next.length, end: next.length } };
@@ -2202,230 +2171,15 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         </View>
     ) : null;
 
-            const permissionModeOptions = React.useMemo(() => {
-                return getPermissionModeOptionsForSession(sessionAgentId, props.metadata ?? null);
-            }, [props.metadata, sessionAgentId]);
-
-        const permissionModeOrder = React.useMemo(() => {
-            return permissionModeOptions.map((o) => o.value);
-        }, [permissionModeOptions]);
-
-    const effectivePermissionPolicy = React.useMemo(() => {
-                return describeEffectivePermissionMode({
-                    agentType: sessionAgentId,
-                    selectedMode: props.permissionMode ?? 'default',
-                metadata: props.metadata ?? null,
-                applyTiming: sessionPermissionModeApplyTiming ?? 'immediate',
-            });
-    }, [props.metadata, props.permissionMode, sessionAgentId, sessionPermissionModeApplyTiming]);
-
-    const effectiveModelPolicy = React.useMemo(() => {
-        return describeEffectiveModelMode({
-            agentType: sessionAgentId,
-            selectedModelId: props.modelMode ?? 'default',
-            metadata: props.metadata ?? null,
-        });
-    }, [props.metadata, props.modelMode, sessionAgentId]);
-
-    const selectedModelLabel = React.useMemo(() => {
-        const found = findModelOptionForEffectiveModelId(modelOptions, effectiveModelPolicy.selectedModelId);
-        if (found) return found.label;
-        return effectiveModelPolicy.selectedModelId === 'default'
-            ? t('agentInput.model.useCliSettings')
-            : effectiveModelPolicy.selectedModelId;
-    }, [effectiveModelPolicy.selectedModelId, modelOptions]);
-
-    const appliedModelPresentation = React.useMemo(() => {
-        const appliedModelId = effectiveModelPolicy.appliedModelId;
-        if (!appliedModelId) return null;
-        const found = findModelOptionForEffectiveModelId(modelOptions, appliedModelId);
-        const label = found?.label ?? appliedModelId;
-        const status: ReportedModelStatus = resolveReportedModelStatus(props.sessionActive);
-        return {
-            optionValue: found?.value ?? appliedModelId,
-            status,
-            summary: reportedModelSummary(status, label),
-        };
-    }, [effectiveModelPolicy.appliedModelId, modelOptions, props.sessionActive]);
-
-    // One line under the section label: what is running, and when a change to it
-    // takes effect. Anything a provider adds beyond that stays a note, so the
-    // ordinary case is a label, a line and the models — never a paragraph.
-    const modelApplyTiming = React.useMemo(() => (
-        effectiveModelPolicy.applyScope === 'spawn_only'
-            ? t('agentInput.model.applyTimingNewSession')
-            : t('agentInput.model.applyTimingNextMessage')
-    ), [effectiveModelPolicy.applyScope]);
-
-    const modelNotes = React.useMemo(() => {
-        if (props.sessionActive === false) {
-            return [t('agentInput.model.selectedForResume')];
-        }
-        return effectiveModelPolicy.notes;
-    }, [effectiveModelPolicy.notes, props.sessionActive]);
-
-    const canEnterCustomModel = React.useMemo(() => {
-        return supportsFreeformModelSelectionForSession(sessionAgentId, props.metadata ?? null);
-    }, [props.metadata, sessionAgentId]);
-
     const submitCustomModel = React.useCallback((value: string) => {
         const normalized = value.trim();
         if (!normalized) return;
         props.onModelModeChange?.(normalized);
     }, [props.onModelModeChange]);
 
-    const preflightAcpSessionModeOptions = React.useMemo(() => {
-        const raw = props.acpSessionModeOptionsOverride;
-        if (!Array.isArray(raw) || raw.length === 0) return null;
-        const cleaned = raw
-            .filter((m) => m && typeof m.id === 'string' && typeof m.name === 'string')
-            .map((m) => ({
-                id: String(m.id),
-                name: String(m.name),
-                ...(typeof m.description === 'string' ? { description: m.description } : {}),
-            }))
-            .filter((m) => m.id.trim().length > 0 && m.name.trim().length > 0);
-        return cleaned.length > 0 ? cleaned : null;
-    }, [props.acpSessionModeOptionsOverride]);
-
-    const sessionModePickerControl = React.useMemo(() => {
-        if (!props.onAcpSessionModeChange) return null;
-        // When preflight options are provided (e.g. New Session), prefer the override surface so
-        // selections can be reflected immediately without relying on session metadata updates.
-        if (preflightAcpSessionModeOptions) return null;
-        return computeSessionModePickerControl({ agentId: sessionAgentId, metadata: props.metadata ?? null });
-    }, [props.metadata, preflightAcpSessionModeOptions, props.onAcpSessionModeChange, sessionAgentId]);
-
-    const preflightAcpSessionModeEffective = React.useMemo(() => {
-        const selected = typeof props.acpSessionModeSelectedIdOverride === 'string'
-            ? props.acpSessionModeSelectedIdOverride.trim()
-            : '';
-        const effectiveId = selected || 'default';
-        const opt = preflightAcpSessionModeOptions?.find((o) => o.id === effectiveId) ?? null;
-        return { id: effectiveId, name: opt?.name ?? (effectiveId === 'default' ? t('common.default') : effectiveId) };
-    }, [preflightAcpSessionModeOptions, props.acpSessionModeSelectedIdOverride]);
     const sessionModeOptionsOverrideProbe = props.acpSessionModeOptionsOverrideProbe ?? null;
     const acpConfigOptionsOverrideProbe = props.acpConfigOptionsOverrideProbe ?? null;
 
-    const sessionModeChipControl = React.useMemo(() => {
-        if (!props.onAcpSessionModeChange) return null;
-        if (sessionModePickerControl) {
-            return {
-                options: sessionModePickerControl.options,
-                selectedId: (
-                    sessionModePickerControl.requestedModeId
-                    ?? sessionModePickerControl.effectiveModeId
-                    ?? 'default'
-                ),
-                label: sessionModePickerControl.effectiveModeName,
-                isPending: sessionModePickerControl.isPending,
-            };
-        }
-        if (preflightAcpSessionModeOptions) {
-            return {
-                options: preflightAcpSessionModeOptions,
-                selectedId: preflightAcpSessionModeEffective.id,
-                label: preflightAcpSessionModeEffective.name,
-                isPending: false,
-            };
-        }
-        return null;
-    }, [
-        preflightAcpSessionModeEffective.id,
-        preflightAcpSessionModeEffective.name,
-        preflightAcpSessionModeOptions,
-        props.onAcpSessionModeChange,
-        sessionModePickerControl,
-    ]);
-
-    const sessionModePickerOptions = React.useMemo<ReadonlyArray<AgentInputChipPickerOption>>(() => {
-        if (!sessionModeChipControl) return [];
-        const optionsById = new Map(sessionModeChipControl.options.map((option) => [option.id, option]));
-        const uniqueIds = Array.from(
-            new Set([
-                'default',
-                ...sessionModeChipControl.options.map((option) => option.id).filter((id) => id && id !== 'default'),
-            ]),
-        );
-        return uniqueIds.map((id) => ({
-            id,
-            label: optionsById.get(id)?.name ?? (id === 'default' ? t('common.default') : id),
-            subtitle: optionsById.get(id)?.description,
-        }));
-    }, [sessionModeChipControl]);
-
-    const shouldRenderSessionModeChip = React.useMemo(() => {
-        return shouldRenderChipForOptions({
-            optionCount: sessionModePickerOptions.length,
-            showWhenNoOptions: false,
-            showWhenSingleOption: false,
-        });
-    }, [sessionModePickerOptions.length]);
-
-    const sessionModeChipPresentation = React.useMemo(() => {
-        return sessionModeChipControl ? resolveSessionModeChipPresentation(sessionModeChipControl) : null;
-    }, [sessionModeChipControl]);
-
-    const sessionModeChipInteraction = React.useMemo(() => {
-        if (!sessionModeChipControl) return null;
-        const selectableOptionIds = Array.from(new Set(
-            sessionModeChipControl.options
-                .map((option) => option.id?.trim?.() ?? option.id)
-                .filter((id): id is string => typeof id === 'string' && id.length > 0),
-        ));
-        return resolveChipOptionInteraction({
-            currentOptionId: sessionModeChipControl.selectedId,
-            selectableOptionIds,
-            cycleMaxOptions: DEFAULT_OPTION_CHIP_CYCLE_MAX_OPTIONS,
-        });
-    }, [sessionModeChipControl]);
-
-    const acpConfigOptionControls = React.useMemo(() => {
-        if (!props.onAcpConfigOptionChange) return null;
-        if (props.acpConfigOptionsOverride) {
-            return computeAcpConfigOptionControlsFromOverride({
-                agentId: sessionAgentId,
-                configOptions: props.acpConfigOptionsOverride,
-                overrides: props.acpConfigOptionOverridesOverride?.overrides ?? null,
-            });
-        }
-        return computeAcpConfigOptionControls({ agentId: sessionAgentId, metadata: props.metadata ?? null });
-    }, [
-        sessionAgentId,
-        props.acpConfigOptionsOverride,
-        props.acpConfigOptionOverridesOverride,
-        props.metadata,
-        props.onAcpConfigOptionChange,
-    ]);
-
-    const selectedModelForControls = React.useMemo(() => (
-        findModelOptionForEffectiveModelId(modelOptions, effectiveModelPolicy.selectedModelId)
-    ), [effectiveModelPolicy.selectedModelId, modelOptions]);
-
-    const selectedModelOptionControls = React.useMemo(() => {
-        const baseControls = props.onAcpConfigOptionChange && selectedModelForControls?.modelOptions?.length
-            ? [...(computeAcpConfigOptionControlsFromOverride({
-                agentId: sessionAgentId,
-                configOptions: selectedModelForControls.modelOptions,
-                overrides: props.acpConfigOptionOverridesOverride?.overrides ?? null,
-            }) ?? [])]
-            : [];
-        const extendedContextControl = props.onModelModeChange
-            ? buildExtendedContextModelControl({
-                model: selectedModelForControls,
-                effectiveModelId: effectiveModelPolicy.selectedModelId,
-            })
-            : null;
-        if (extendedContextControl) baseControls.push(extendedContextControl);
-        return baseControls.length > 0 ? baseControls : null;
-    }, [
-        sessionAgentId,
-        effectiveModelPolicy.selectedModelId,
-        props.acpConfigOptionOverridesOverride,
-        props.onAcpConfigOptionChange,
-        props.onModelModeChange,
-        selectedModelForControls,
-    ]);
     const handleSelectModelOptionValue = React.useCallback((configId: string, valueId: string) => {
         if (configId === EXTENDED_CONTEXT_MODEL_TOGGLE_OPTION_ID) {
             const modelId = resolveExtendedContextModelIdForToggle({
@@ -2441,13 +2195,6 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         props.onAcpConfigOptionChange?.(configId, valueId);
     }, [props.onAcpConfigOptionChange, props.onModelModeChange, selectedModelForControls]);
     const hasSettingsAcpConfigSection = Boolean(acpConfigOptionControls);
-
-    const shouldShowModelOptionDescriptions = React.useMemo(() => {
-        return modelOptions.some((option) => {
-            if (option.value === 'default') return false;
-            return typeof option.description === 'string' && option.description.trim().length > 0;
-        });
-    }, [modelOptions]);
 
     const unifiedEnginePickerProbe = React.useMemo<OptionPickerProbeState | undefined>(() => {
         return mergeOptionPickerProbes([
@@ -2646,6 +2393,9 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const closeActionMenu = React.useCallback(() => {
         setShowActionMenu(false);
     }, []);
+    const onSelectionOverlayDismiss = React.useCallback((id: AgentInputSelectionOverlayId) => {
+        if (id === 'machine') props.machinePopover?.onRequestClose?.();
+    }, [props.machinePopover]);
     const {
         activeSelectionOverlay,
         activeExtraCollapsedPopoverChip,
@@ -2664,6 +2414,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         hasEnvVarsPopover: Boolean(props.envVarsPopover),
         hasAgentPickerOptions,
         retainKeyboardLift: props.retainKeyboardLift,
+        onSelectionOverlayDismiss,
     });
     useAgentInputExternalPickerRequest({
         requestKey: props.openModelPickerRequestKey,
@@ -2708,14 +2459,6 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     React.useEffect(() => {
         onAgentPickerVisibilityChange?.(showAgentPicker);
     }, [onAgentPickerVisibilityChange, showAgentPicker]);
-
-    const effectivePermissionLabel = React.useMemo(() => {
-        return getPermissionModeLabelForAgentType(sessionAgentId, effectivePermissionPolicy.effectiveMode);
-    }, [effectivePermissionPolicy.effectiveMode, sessionAgentId]);
-
-    const permissionChipLabel = React.useMemo(() => {
-        return getPermissionModeBadgeLabelForAgentType(sessionAgentId, effectivePermissionPolicy.effectiveMode);
-    }, [effectivePermissionPolicy.effectiveMode, sessionAgentId]);
 
     const instrumentStripPermission = React.useMemo<SessionInstrumentStripPermission | null>(() => {
         if (!shouldRenderPermissionChip(permissionChipLabel)) return null;
@@ -3479,6 +3222,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                     git ±, extension badges, permission chip. Subscribes to the store itself
                     (F-UI-11) so token ticks never re-render this memoized composer. */}
                 <SessionInstrumentStrip
+                    serverId={props.sessionTypingPresence?.serverId}
                     sessionId={props.sessionId}
                     agentId={sessionAgentId}
                     agentTargetKey={props.agentTargetKey}
@@ -3554,9 +3298,10 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                         updateNullableLayoutHeight(setInputContainerHeightPx, event.nativeEvent.layout.height);
                                     }}
                                 >
-                                    <MultiTextInput
+                                    <SessionAuthoringComposer
                                         {...composerInputComboboxProps}
                                         ref={inputRef}
+                                        composerRef={composerRef}
                                         testID={props.sessionId ? AGENT_INPUT_TEST_IDS.sessionInput : AGENT_INPUT_TEST_IDS.newSessionInput}
                                         textStyle={props.sessionId ? styles.sessionInputText : styles.newSessionInputText}
                                         value={props.value}
@@ -3758,9 +3503,10 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                         updateNullableLayoutHeight(setInputContainerHeightPx, event.nativeEvent.layout.height);
                                     }}
                                 >
-                                    <MultiTextInput
+                                    <SessionAuthoringComposer
                                         {...composerInputComboboxProps}
                                         ref={inputRef}
+                                        composerRef={composerRef}
                                         testID={props.sessionId ? AGENT_INPUT_TEST_IDS.sessionInput : AGENT_INPUT_TEST_IDS.newSessionInput}
                                         textStyle={props.sessionId ? styles.sessionInputText : styles.newSessionInputText}
                                         value={props.value}

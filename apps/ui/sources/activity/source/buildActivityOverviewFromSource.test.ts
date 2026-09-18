@@ -1,9 +1,18 @@
+import { buildStableActivityOverviewFingerprint } from '@/activity/attention/buildActivityOverviewSnapshot';
 import { describe, expect, it } from 'vitest';
 
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import type { SessionListQueryHomeState } from '@/sync/domains/session/listing/sessionListQueryController';
+import { buildSessionListQueryKey } from '@/sync/domains/session/listing/sessionListQueryKey';
 
-import { buildActivityOverviewFromSource, buildStableActivityOverviewFingerprint } from './buildActivityOverviewFromSource';
+import { activityInstanceKey } from '@/sync/domains/session/sessionAddress';
+import { ACTIVITY_PERSONAL_SESSION_QUERY } from './activityPersonalSessionMembership';
+
+import {
+    buildActivityOverviewFromSource,
+    readActivitySourceAttentionMessages,
+} from './buildActivityOverviewFromSource';
 import type { ActivityAttentionSource } from './activityAttentionSourceTypes';
 
 function pendingAgentState(kind: 'permission' | 'user_action', createdAt = 950) {
@@ -23,13 +32,25 @@ function pendingAgentState(kind: 'permission' | 'user_action', createdAt = 950) 
 function createSource(params: Readonly<{
     sessions: ReadonlyArray<ReturnType<typeof createSessionFixture>>;
     isDataReady?: boolean;
+    workspaceRefsV1?: ActivityAttentionSource['workspaceRefsV1'];
+    workspacePathDisplayModeV1?: ActivityAttentionSource['workspacePathDisplayModeV1'];
+    sessionListHomeObservationByServerId?: ActivityAttentionSource['sessionListHomeObservationByServerId'];
 }>): ActivityAttentionSource {
+    const sessionsByServerId = {
+        'server-a': params.sessions.filter((session) => session.serverId !== 'server-b'),
+        'server-b': params.sessions.filter((session) => session.serverId === 'server-b'),
+    };
     return {
         isDataReady: params.isDataReady ?? true,
         sessionsById: Object.fromEntries(params.sessions.map((session) => [session.id, session])),
-        sessionListRenderablesById: Object.fromEntries(
-            params.sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)]),
-        ),
+        sessionListRowsByServerId: Object.fromEntries(Object.entries(sessionsByServerId).map(([serverId, sessions]) => [
+            serverId,
+            Object.fromEntries(sessions.map((session) => [session.id, buildSessionListRenderableFromSession(session)])),
+        ])),
+        ordinarySessionListMembershipByServerId: Object.fromEntries(Object.entries(sessionsByServerId).map(([serverId, sessions]) => [
+            serverId,
+            sessions.map((session) => session.id),
+        ])),
         sessionListIndexByServerId: {
             'server-a': params.sessions.filter((session) => session.serverId !== 'server-b').map((session) => ({
                 type: 'session' as const,
@@ -45,6 +66,11 @@ function createSource(params: Readonly<{
             })),
         },
         concurrentSessionListCacheByServerId: {},
+        ...(params.sessionListHomeObservationByServerId
+            ? { sessionListHomeObservationByServerId: params.sessionListHomeObservationByServerId }
+            : {}),
+        workspaceRefsV1: params.workspaceRefsV1 ?? [],
+        workspacePathDisplayModeV1: params.workspacePathDisplayModeV1 ?? 'name',
         serverProfilesById: {
             'server-a': {
                 id: 'server-a',
@@ -64,7 +90,514 @@ function createSource(params: Readonly<{
     };
 }
 
+function withPersonalMembership(
+    source: ActivityAttentionSource,
+    membershipByServerId: Readonly<Record<string, readonly string[]>>,
+    statesByServerId?: Readonly<Record<string, SessionListQueryHomeState | undefined>>,
+): ActivityAttentionSource {
+    return {
+        ...source,
+        personalSessionListMembershipByServerId: membershipByServerId,
+        ...(statesByServerId ? { personalSessionListQueryStatesByServerId: statesByServerId } : {}),
+    } as ActivityAttentionSource;
+}
+
+function personalQueryState(
+    serverId: string,
+    overrides: Partial<SessionListQueryHomeState> = {},
+): SessionListQueryHomeState {
+    const queryKey = buildSessionListQueryKey(serverId, ACTIVITY_PERSONAL_SESSION_QUERY);
+    return {
+        requestedQueryKey: queryKey,
+        appliedQueryKey: queryKey,
+        addresses: [],
+        nextCursor: null,
+        hasNext: false,
+        attentionNextCursor: null,
+        attentionHasNext: false,
+        phase: 'ready',
+        freshnessAt: 1,
+        failureReason: null,
+        failureCode: null,
+        appliedSourceKind: 'query',
+        ...overrides,
+    };
+}
+
 describe('buildActivityOverviewFromSource', () => {
+    it('enumerates only canonical ordinary membership and excludes query-only rows', () => {
+        const ordinary = buildSessionListRenderableFromSession(createSessionFixture({
+            id: 'ordinary',
+            seq: 4,
+            lastViewedSessionSeq: 1,
+            updatedAt: 40,
+        }));
+        const queryOnlySession = createSessionFixture({
+            id: 'query-only',
+            seq: 5,
+            lastViewedSessionSeq: 1,
+            updatedAt: 50,
+        });
+        const queryOnly = buildSessionListRenderableFromSession(queryOnlySession);
+        const overview = buildActivityOverviewFromSource({
+            source: {
+                ...createSource({ sessions: [] }),
+                sessionsById: { 'query-only': queryOnlySession },
+                sessionListIndexByServerId: {
+                    'server-a': [{
+                        type: 'session',
+                        sessionId: 'query-only',
+                        serverId: 'server-a',
+                        serverName: 'Server A',
+                    }],
+                },
+                sessionListRowsByServerId: {
+                    'server-a': { ordinary, 'query-only': queryOnly },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    'server-a': ['ordinary'],
+                },
+            },
+            nowMs: 1_000,
+        });
+
+        expect(overview.candidates.map((candidate) => candidate.address)).toEqual([
+            { serverId: 'server-a', sessionId: 'ordinary' },
+        ]);
+    });
+
+    it('admits followed and assigned Team-only rows from the canonical personal query without ordinary membership', () => {
+        const followed = Object.assign(createSessionFixture({
+            id: 'team-followed',
+            serverId: 'server-a',
+            active: true,
+            seq: 4,
+            lastViewedSessionSeq: 4,
+        }), { viewer: {
+            readState: { state: 'tracking', lastViewedSessionSeq: 4, unreadSince: null },
+            relevance: { relevant: true, reasons: ['followed_by_me'] },
+            follow: { follows: true, notificationLevel: 'important' },
+            notification: { level: 'important', source: 'preference' },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+        } } as const);
+        const assigned = Object.assign(createSessionFixture({
+            id: 'team-assigned',
+            serverId: 'server-a',
+            active: true,
+            seq: 7,
+            lastViewedSessionSeq: 0,
+        }), { viewer: {
+            readState: { state: 'not_started' },
+            relevance: { relevant: true, reasons: ['responsible_for_me'] },
+            follow: { follows: false, notificationLevel: null },
+            notification: { level: 'important', source: 'assignment' },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+        } } as const);
+        const source = createSource({ sessions: [] });
+        const overview = buildActivityOverviewFromSource({
+            source: withPersonalMembership({
+                ...source,
+                sessionsById: {},
+                sessionListRowsByServerId: {
+                    'server-a': {
+                        [followed.id]: buildSessionListRenderableFromSession(followed),
+                        [assigned.id]: buildSessionListRenderableFromSession(assigned),
+                    },
+                },
+                ordinarySessionListMembershipByServerId: { 'server-a': [] },
+                sessionListIndexByServerId: { 'server-a': [] },
+            }, { 'server-a': [followed.id, assigned.id] }),
+            nowMs: 1_000,
+        });
+
+        expect(overview.candidates.map((candidate) => candidate.address)).toEqual([
+            { serverId: 'server-a', sessionId: 'team-assigned' },
+            { serverId: 'server-a', sessionId: 'team-followed' },
+        ]);
+        expect(overview.candidates.find((candidate) => candidate.sessionId === assigned.id)).toMatchObject({
+            attentionState: 'quiet',
+            hasAttention: false,
+        });
+    });
+
+    it('removes unfollowed or revoked collective rows when personal query membership disappears', () => {
+        const followed = Object.assign(createSessionFixture({
+            id: 'collective-followed',
+            serverId: 'server-a',
+            active: true,
+        }), { viewer: {
+            readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+            relevance: { relevant: true, reasons: ['followed_by_me'] },
+            follow: { follows: true, notificationLevel: 'important' },
+            notification: { level: 'important', source: 'preference' },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+        } } as const);
+        const retainedRow = buildSessionListRenderableFromSession(followed);
+        const retainedSource: ActivityAttentionSource = {
+            ...createSource({ sessions: [] }),
+            sessionsById: {},
+            sessionListRowsByServerId: { 'server-a': { [followed.id]: retainedRow } },
+            ordinarySessionListMembershipByServerId: { 'server-a': [] },
+            sessionListIndexByServerId: { 'server-a': [] },
+        };
+
+        expect(buildActivityOverviewFromSource({
+            source: withPersonalMembership(retainedSource, { 'server-a': [followed.id] }),
+            nowMs: 1_000,
+        }).candidates).toHaveLength(1);
+        expect(buildActivityOverviewFromSource({
+            source: withPersonalMembership(retainedSource, { 'server-a': [] }),
+            nowMs: 1_000,
+        }).candidates).toHaveLength(0);
+    });
+
+    it('clears only an exact Home after a complete empty snapshot while incomplete Homes retain stale truth', () => {
+        const tracked = (id: string, serverId: string) => Object.assign(createSessionFixture({
+            id,
+            serverId,
+            active: true,
+            seq: 4,
+            lastViewedSessionSeq: 1,
+        }), { viewer: {
+            readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: 2 },
+            relevance: { relevant: true, reasons: ['followed_by_me'] },
+            follow: { follows: true, notificationLevel: 'important' },
+            notification: { level: 'important', source: 'preference' },
+            attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'full' },
+        } } as const);
+        const sessionA = tracked('tracked-a', 'server-a');
+        const sessionB = tracked('tracked-b', 'server-b');
+        const retainedRows = createSource({ sessions: [sessionA, sessionB] });
+
+        const bothCurrent = buildActivityOverviewFromSource({
+            source: withPersonalMembership(retainedRows, {
+                'server-a': [sessionA.id],
+                'server-b': [sessionB.id],
+            }, {
+                'server-a': personalQueryState('server-a', {
+                    addresses: [{ serverId: 'server-a', sessionId: sessionA.id }],
+                }),
+                'server-b': personalQueryState('server-b', {
+                    addresses: [{ serverId: 'server-b', sessionId: sessionB.id }],
+                }),
+            }),
+            nowMs: 1_000,
+        });
+        expect(bothCurrent.candidates.map((candidate) => candidate.sessionId).sort())
+            .toEqual([sessionA.id, sessionB.id]);
+
+        const offlineB = buildActivityOverviewFromSource({
+            source: withPersonalMembership(retainedRows, {
+                'server-a': [sessionA.id],
+                'server-b': [sessionB.id],
+            }, {
+                'server-a': personalQueryState('server-a', {
+                    addresses: [{ serverId: 'server-a', sessionId: sessionA.id }],
+                }),
+                'server-b': personalQueryState('server-b', {
+                    phase: 'offline',
+                    addresses: [{ serverId: 'server-b', sessionId: sessionB.id }],
+                }),
+            }),
+            nowMs: 1_000,
+        });
+        expect(offlineB.candidates.map((candidate) => candidate.sessionId).sort())
+            .toEqual([sessionA.id, sessionB.id]);
+
+        const partialB = buildActivityOverviewFromSource({
+            source: withPersonalMembership(retainedRows, {
+                'server-a': [sessionA.id],
+                'server-b': [sessionB.id],
+            }, {
+                'server-a': personalQueryState('server-a', {
+                    addresses: [{ serverId: 'server-a', sessionId: sessionA.id }],
+                }),
+                'server-b': personalQueryState('server-b', {
+                    addresses: [{ serverId: 'server-b', sessionId: sessionB.id }],
+                    hasNext: true,
+                    nextCursor: 'more-b',
+                }),
+            }),
+            nowMs: 1_000,
+        });
+        expect(partialB.candidates.map((candidate) => candidate.sessionId).sort())
+            .toEqual([sessionA.id, sessionB.id]);
+
+        const failedB = buildActivityOverviewFromSource({
+            source: withPersonalMembership(retainedRows, {
+                'server-a': [sessionA.id],
+                'server-b': [sessionB.id],
+            }, {
+                'server-a': personalQueryState('server-a', {
+                    addresses: [{ serverId: 'server-a', sessionId: sessionA.id }],
+                }),
+                'server-b': personalQueryState('server-b', {
+                    phase: 'error',
+                    addresses: [{ serverId: 'server-b', sessionId: sessionB.id }],
+                    failureReason: 'network',
+                    failureCode: 'network_error',
+                }),
+            }),
+            nowMs: 1_000,
+        });
+        expect(failedB.candidates.map((candidate) => candidate.sessionId).sort())
+            .toEqual([sessionA.id, sessionB.id]);
+
+        const unsupportedB = buildActivityOverviewFromSource({
+            source: withPersonalMembership(retainedRows, {
+                'server-a': [sessionA.id],
+                'server-b': [],
+            }, {
+                'server-a': personalQueryState('server-a', {
+                    addresses: [{ serverId: 'server-a', sessionId: sessionA.id }],
+                }),
+                'server-b': personalQueryState('server-b', {
+                    phase: 'error',
+                    failureReason: 'unsupported',
+                    failureCode: 'filtered_session_listing_unavailable',
+                }),
+            }),
+            nowMs: 1_000,
+        });
+        expect(unsupportedB.candidates.map((candidate) => candidate.sessionId).sort())
+            .toEqual([sessionA.id, sessionB.id]);
+
+        const reconnectedEmptyB = buildActivityOverviewFromSource({
+            source: withPersonalMembership(retainedRows, {
+                'server-a': [sessionA.id],
+                'server-b': [],
+            }, {
+                'server-a': personalQueryState('server-a', {
+                    addresses: [{ serverId: 'server-a', sessionId: sessionA.id }],
+                }),
+                'server-b': personalQueryState('server-b'),
+            }),
+            nowMs: 1_000,
+        });
+        expect(reconnectedEmptyB.candidates.map((candidate) => candidate.sessionId))
+            .toEqual([sessionA.id]);
+    });
+
+    it('does not admit an archived collective row retained by stale personal-query membership', () => {
+        const archived = Object.assign(createSessionFixture({
+            id: 'collective-archived',
+            serverId: 'server-a',
+            active: false,
+            archivedAt: 900,
+        }), { viewer: {
+            readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+            relevance: { relevant: true, reasons: ['followed_by_me'] },
+            follow: { follows: true, notificationLevel: 'important' },
+            notification: { level: 'important', source: 'preference' },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+        } } as const);
+        const source: ActivityAttentionSource = {
+            ...createSource({ sessions: [] }),
+            sessionsById: {},
+            sessionListRowsByServerId: {
+                'server-a': { [archived.id]: buildSessionListRenderableFromSession(archived) },
+            },
+            ordinarySessionListMembershipByServerId: { 'server-a': [] },
+            sessionListIndexByServerId: { 'server-a': [] },
+        };
+
+        expect(buildActivityOverviewFromSource({
+            source: withPersonalMembership(source, { 'server-a': [archived.id] }),
+            nowMs: 1_000,
+        }).candidates).toEqual([]);
+    });
+
+    it('keeps personal-query membership qualified by exact Home for colliding Session IDs', () => {
+        const sharedId = 'collective-collision';
+        const rowA = buildSessionListRenderableFromSession(createSessionFixture({
+            id: sharedId,
+            serverId: 'server-a',
+            seq: 3,
+            lastViewedSessionSeq: 1,
+        }));
+        const rowB = buildSessionListRenderableFromSession(createSessionFixture({
+            id: sharedId,
+            serverId: 'server-b',
+            seq: 9,
+            lastViewedSessionSeq: 2,
+        }));
+        const source: ActivityAttentionSource = {
+            ...createSource({ sessions: [] }),
+            sessionsById: {},
+            sessionListRowsByServerId: {
+                'server-a': { [sharedId]: rowA },
+                'server-b': { [sharedId]: rowB },
+            },
+            ordinarySessionListMembershipByServerId: { 'server-a': [], 'server-b': [] },
+            sessionListIndexByServerId: { 'server-a': [], 'server-b': [] },
+        };
+
+        const overview = buildActivityOverviewFromSource({
+            source: withPersonalMembership(source, {
+                'server-a': [sharedId],
+                'server-b': [sharedId],
+            }),
+            nowMs: 1_000,
+        });
+
+        expect(overview.candidates.flatMap((candidate) => candidate.address ? [candidate.address] : [])
+            .sort((left, right) => left.serverId.localeCompare(right.serverId))).toEqual([
+            { serverId: 'server-a', sessionId: sharedId },
+            { serverId: 'server-b', sessionId: sharedId },
+        ]);
+    });
+
+    it('keeps locked viewer attention status-only without exposing retained metadata', () => {
+        const session = createSessionFixture({
+            id: 'locked',
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: 'encrypted_access_pending',
+            metadata: { path: '/private/location', host: 'private-host', name: 'Secret title' },
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 0, unreadSince: 1 },
+                relevance: { relevant: true, reasons: ['owned_by_me'] },
+                follow: { follows: false, notificationLevel: null },
+                notification: { level: 'important', source: 'owner' },
+                attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'status_only' },
+            },
+        });
+        const overview = buildActivityOverviewFromSource({ source: createSource({ sessions: [session] }), nowMs: 1_000 });
+        expect(overview.candidates).toHaveLength(1);
+        expect(overview.counts.unread).toBe(1);
+        expect(overview.candidates[0]?.title).not.toContain('Secret');
+        expect(overview.candidates[0]?.subtitle).toBe('');
+        expect(overview.candidates[0]?.context?.mayShowDecryptedContent).toBe(false);
+        expect(overview.candidates[0]?.context?.contextLine).not.toContain('private/location');
+        expect(overview.candidates[0]?.context?.workspace).toBeNull();
+    });
+
+    it('does not admit accessible Team history into Activity candidates', () => {
+        const sessions = Array.from({ length: 300 }, (_, index) => Object.assign(createSessionFixture({
+            id: `team-${index}`, seq: 50, lastViewedSessionSeq: 0,
+            active: true, presence: 'online', thinking: true, thinkingAt: 990,
+        }), { viewer: {
+            readState: { state: 'not_started' },
+            relevance: { relevant: false, reasons: [] },
+            follow: { follows: false, notificationLevel: null },
+            notification: { level: 'none', source: 'none' },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+        } } as const));
+        const overview = buildActivityOverviewFromSource({ source: createSource({ sessions }), nowMs: 1_000 });
+        expect(overview.candidates).toHaveLength(0);
+        expect(overview.counts.totalAttention).toBe(0);
+        expect(overview.counts.thinking).toBe(0);
+    });
+
+    it('admits an explicit due reminder without turning the unfollowed session into tracked unread', () => {
+        const session = Object.assign(createSessionFixture({
+            id: 'reminder-due',
+            seq: 50,
+            lastViewedSessionSeq: 0,
+        }), { viewer: {
+            readState: { state: 'not_started' },
+            relevance: { relevant: true, reasons: ['explicit_attention'] },
+            follow: { follows: false, notificationLevel: null },
+            notification: { level: 'none', source: 'none' },
+            attention: { needsAttention: true, reasons: ['reminder_due'], primary: 'reminder_due', presentation: 'full' },
+        } } as const);
+
+        const overview = buildActivityOverviewFromSource({ source: createSource({ sessions: [session] }), nowMs: 1_000 });
+
+        expect(overview.candidates).toHaveLength(1);
+        expect(overview.candidates[0]).toMatchObject({ sessionId: 'reminder-due', hasAttention: true });
+        expect(overview.counts.unread).toBe(0);
+    });
+
+    it('keeps same-id sessions on different Homes as distinct qualified candidates', () => {
+        const sharedId = 'same-session-id';
+        const renderableA = buildSessionListRenderableFromSession(createSessionFixture({
+            id: sharedId,
+            seq: 5,
+            latestReadyEventSeq: 5,
+            lastViewedSessionSeq: 1,
+            updatedAt: 50,
+        }));
+        const renderableB = buildSessionListRenderableFromSession(createSessionFixture({
+            id: sharedId,
+            seq: 8,
+            latestReadyEventSeq: 8,
+            lastViewedSessionSeq: 2,
+            updatedAt: 80,
+        }));
+
+        const overview = buildActivityOverviewFromSource({
+            source: {
+                ...createSource({ sessions: [] }),
+                sessionsById: {},
+                sessionListIndexByServerId: {
+                    'server-a': [{
+                        type: 'session',
+                        sessionId: sharedId,
+                        serverId: 'server-a',
+                        serverName: 'Home A',
+                    }],
+                    'server-b': [{
+                        type: 'session',
+                        sessionId: sharedId,
+                        serverId: 'server-b',
+                        serverName: 'Home B',
+                    }],
+                },
+                sessionListRowsByServerId: {
+                    'server-a': { [sharedId]: renderableA },
+                    'server-b': { [sharedId]: renderableB },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    'server-a': [sharedId],
+                    'server-b': [sharedId],
+                },
+                concurrentSessionListCacheByServerId: {
+                    'server-a': { serverName: 'Home A' },
+                    'server-b': { serverName: 'Home B' },
+                },
+                serverProfilesById: {
+                    'server-a': {
+                        id: 'server-a',
+                        name: 'Home A',
+                        serverUrl: 'https://a.example.test',
+                        createdAt: 1,
+                        updatedAt: 1,
+                        lastUsedAt: 1,
+                        source: 'manual',
+                    },
+                    'server-b': {
+                        id: 'server-b',
+                        name: 'Home B',
+                        serverUrl: 'https://b.example.test',
+                        createdAt: 1,
+                        updatedAt: 1,
+                        lastUsedAt: 1,
+                        source: 'manual',
+                    },
+                },
+            },
+            nowMs: 1_000,
+            activityName: 'desktop\u0000overlay',
+        });
+
+        expect(overview.candidates.map((candidate) => candidate.address)).toEqual([
+            { serverId: 'server-b', sessionId: sharedId },
+            { serverId: 'server-a', sessionId: sharedId },
+        ]);
+        expect(overview.counts.unread).toBe(2);
+        expect(overview.counts.totalAttention).toBe(2);
+        expect(overview.candidates.map((candidate) => candidate.activityInstanceKey)).toEqual([
+            activityInstanceKey(
+                { serverId: 'server-b', sessionId: sharedId },
+                'desktop\u0000overlay',
+            ),
+            activityInstanceKey(
+                { serverId: 'server-a', sessionId: sharedId },
+                'desktop\u0000overlay',
+            ),
+        ]);
+    });
+
     it('builds a deterministic multi-server attention overview from normalized session indexes', () => {
         const permission = createSessionFixture({
             id: 'permission',
@@ -104,7 +637,7 @@ describe('buildActivityOverviewFromSource', () => {
             unread: 1,
             permissionRequired: 1,
             thinking: 1,
-            totalAttention: 3,
+            totalAttention: 2,
         });
         expect(overview.candidates.map((candidate) => candidate.sessionId)).toEqual([
             'permission',
@@ -140,7 +673,10 @@ describe('buildActivityOverviewFromSource', () => {
             route: '/session/permission?serverId=server-b',
             target: 'open-session:permission?serverId=server-b',
             activityName: 'HappierFocusLiveActivity',
-            activityInstanceKey: 'server-b:HappierFocusLiveActivity:permission',
+            activityInstanceKey: activityInstanceKey(
+                { serverId: 'server-b', sessionId: 'permission' },
+                'HappierFocusLiveActivity',
+            ),
             serverFacts: {
                 isKnown: true,
                 isSaved: false,
@@ -186,35 +722,38 @@ describe('buildActivityOverviewFromSource', () => {
         expect(overview.candidates).toEqual([]);
     });
 
-    it('includes unread sessions that only exist in the concurrent server row cache', () => {
+    it('includes unread sessions from canonical secondary-Home row state', () => {
+        const unread = {
+            id: 'concurrent-unread',
+            seq: 5,
+            lastViewedSessionSeq: 1,
+            createdAt: 1,
+            updatedAt: 50,
+            active: false,
+            activeAt: 1,
+            archivedAt: null,
+            metadataVersion: 1,
+            agentStateVersion: 0,
+            metadata: { path: '/repo', host: 'remote' },
+            thinking: false,
+            thinkingAt: 0,
+            presence: 1 as const,
+            hasUnreadMessages: true,
+        };
         const overview = buildActivityOverviewFromSource({
             source: {
                 ...createSource({ sessions: [] }),
                 sessionsById: {},
-                sessionListRenderablesById: {},
                 sessionListIndexByServerId: {},
+                sessionListRowsByServerId: {
+                    'server-b': { 'concurrent-unread': unread },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    'server-b': ['concurrent-unread'],
+                },
                 concurrentSessionListCacheByServerId: {
                     'server-b': {
                         serverName: 'Server B',
-                        sessions: {
-                            'concurrent-unread': {
-                                id: 'concurrent-unread',
-                                seq: 5,
-                                lastViewedSessionSeq: 1,
-                                createdAt: 1,
-                                updatedAt: 50,
-                                active: false,
-                                activeAt: 1,
-                                archivedAt: null,
-                                metadataVersion: 1,
-                                agentStateVersion: 0,
-                                metadata: { path: '/repo', host: 'remote' },
-                                thinking: false,
-                                thinkingAt: 0,
-                                presence: 1,
-                                hasUnreadMessages: true,
-                            },
-                        },
                     },
                 },
             },
@@ -250,14 +789,16 @@ describe('buildActivityOverviewFromSource', () => {
             source: {
                 ...createSource({ sessions: [] }),
                 sessionsById: {},
-                sessionListRenderablesById: {},
                 sessionListIndexByServerId: {},
+                sessionListRowsByServerId: {
+                    'server-b': { [staleCompleted.id]: staleCompleted },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    'server-b': [staleCompleted.id],
+                },
                 concurrentSessionListCacheByServerId: {
                     'server-b': {
                         serverName: 'Server B',
-                        sessions: {
-                            [staleCompleted.id]: staleCompleted,
-                        },
                     },
                 },
             },
@@ -268,7 +809,7 @@ describe('buildActivityOverviewFromSource', () => {
         expect(overview.counts.totalAttention).toBe(0);
         expect(overview.candidates[0]).toMatchObject({
             sessionId: 'stale-completed',
-            attentionState: 'quiet',
+            attentionState: 'ready',
             hasAttention: false,
         });
     });
@@ -290,14 +831,16 @@ describe('buildActivityOverviewFromSource', () => {
             source: {
                 ...createSource({ sessions: [] }),
                 sessionsById: {},
-                sessionListRenderablesById: {},
                 sessionListIndexByServerId: {},
+                sessionListRowsByServerId: {
+                    'server-b': { [renderable.id]: renderable },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    'server-b': [renderable.id],
+                },
                 concurrentSessionListCacheByServerId: {
                     'server-b': {
                         serverName: 'Server B',
-                        sessions: {
-                            [renderable.id]: renderable,
-                        },
                     },
                 },
             },
@@ -330,7 +873,7 @@ describe('buildActivityOverviewFromSource', () => {
         });
         const source = createSource({ sessions: [canonicalSession] });
         const pendingRenderable = {
-            ...source.sessionListRenderablesById[canonicalSession.id]!,
+            ...source.sessionListRowsByServerId?.['server-a']?.[canonicalSession.id]!,
             agentStateVersion: 7,
             hasPendingPermissionRequests: true,
             hasPendingUserActionRequests: false,
@@ -340,8 +883,8 @@ describe('buildActivityOverviewFromSource', () => {
         const pendingOverview = buildActivityOverviewFromSource({
             source: {
                 ...source,
-                sessionListRenderablesById: {
-                    [canonicalSession.id]: pendingRenderable,
+                sessionListRowsByServerId: {
+                    'server-a': { [canonicalSession.id]: pendingRenderable },
                 },
             },
             nowMs: 1_000,
@@ -360,13 +903,13 @@ describe('buildActivityOverviewFromSource', () => {
         const clearedOverview = buildActivityOverviewFromSource({
             source: {
                 ...source,
-                sessionListRenderablesById: {
-                    [canonicalSession.id]: {
+                sessionListRowsByServerId: {
+                    'server-a': { [canonicalSession.id]: {
                         ...pendingRenderable,
                         agentStateVersion: 8,
                         hasPendingPermissionRequests: false,
                         pendingRequestObservedAt: null,
-                    },
+                    } },
                 },
             },
             nowMs: 1_000,
@@ -544,13 +1087,18 @@ describe('buildActivityOverviewFromSource', () => {
         const overview = buildActivityOverviewFromSource({
             source: {
                 ...createSource({ sessions: [visible, hidden, hiddenPermission, hiddenQuiet, unrelatedHiddenPermission] }),
-                sessionListRenderablesById: {
-                    [visible.id]: buildSessionListRenderableFromSession(visible),
-                    [hidden.id]: buildSessionListRenderableFromSession(hidden),
-                    [hiddenPermission.id]: buildSessionListRenderableFromSession(hiddenPermission),
-                    [hiddenQuiet.id]: buildSessionListRenderableFromSession(hiddenQuiet),
-                    [unrelatedHiddenPermission.id]: buildSessionListRenderableFromSession(unrelatedHiddenPermission),
-                    [unavailable.id]: unavailable,
+                sessionListRowsByServerId: {
+                    'server-a': {
+                        [visible.id]: buildSessionListRenderableFromSession(visible),
+                        [hidden.id]: buildSessionListRenderableFromSession(hidden),
+                        [hiddenPermission.id]: buildSessionListRenderableFromSession(hiddenPermission),
+                        [hiddenQuiet.id]: buildSessionListRenderableFromSession(hiddenQuiet),
+                        [unrelatedHiddenPermission.id]: buildSessionListRenderableFromSession(unrelatedHiddenPermission),
+                        [unavailable.id]: unavailable,
+                    },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    'server-a': [visible.id, hidden.id, hiddenPermission.id, hiddenQuiet.id, unrelatedHiddenPermission.id, unavailable.id],
                 },
                 sessionListIndexByServerId: {
                     'server-a': [
@@ -599,6 +1147,18 @@ describe('buildActivityOverviewFromSource', () => {
             pendingRequestObservedAt: 975,
             agentState: pendingAgentState('permission', 975),
             updatedAt: 45,
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 2, unreadSince: null },
+                relevance: { relevant: true, reasons: ['owned_by_me'] },
+                follow: { follows: false, notificationLevel: null },
+                notification: { level: 'important', source: 'owner' },
+                attention: {
+                    needsAttention: true,
+                    reasons: ['permission_required'],
+                    primary: 'permission_required',
+                    presentation: 'full',
+                },
+            },
             metadata: {
                 path: '/tmp/retired-permission',
                 host: 'test-host',
@@ -668,5 +1228,146 @@ describe('buildActivityOverviewFromSource', () => {
         const second = buildActivityOverviewFromSource({ source, nowMs: 2_000 });
 
         expect(buildStableActivityOverviewFingerprint(first)).toBe(buildStableActivityOverviewFingerprint(second));
+    });
+
+    it('projects the same canonical failed-query freshness as the Session row', () => {
+        const session = createSessionFixture({
+            id: 'permission',
+            pendingPermissionRequestCount: 1,
+            agentState: pendingAgentState('permission'),
+            serverId: 'server-b',
+            updatedAt: 20,
+            metadata: { path: '/home/alice/project', homeDir: '/home/alice', host: 'workstation' },
+        });
+        const overview = buildActivityOverviewFromSource({
+            source: createSource({
+                sessions: [session],
+                sessionListHomeObservationByServerId: {
+                    'server-b': { phase: 'error', lastSuccessAt: 1_000 },
+                },
+            }),
+            nowMs: 1_000 + 18 * 60_000,
+        });
+
+        const context = overview.candidates[0]?.context;
+        expect(context?.contextLine).toContain("Couldn't refresh");
+        expect(context?.contextLine).toContain('Last updated 18m ago');
+        // Activity consumes the same workspace-display owner as Session rows. Its default mode is
+        // the concise basename, while still proving the absolute Home path does not leak.
+        expect(context?.workspace).toEqual({ label: 'project' });
+        expect(context?.contextLine).not.toContain('/home/alice');
+    });
+
+    it('uses the canonical custom workspace label for a list-renderable-only Activity candidate', () => {
+        const session = createSessionFixture({
+            id: 'custom-workspace-label',
+            pendingPermissionRequestCount: 1,
+            agentState: pendingAgentState('permission'),
+            serverId: 'server-a',
+            metadata: {
+                path: '/home/alice/project',
+                homeDir: '/home/alice',
+                host: 'workstation',
+                machineId: 'machine-a',
+            },
+        });
+        const source = createSource({
+                sessions: [session],
+                workspaceRefsV1: [{
+                    id: 'workspace-a',
+                    serverId: 'server-a',
+                    machineId: 'machine-a',
+                    rootPath: '/home/alice/project',
+                    label: 'Happier Core',
+                    createdAtMs: 1,
+                    lastOpenedAtMs: 1,
+                }],
+            });
+        const overview = buildActivityOverviewFromSource({
+            source: {
+                ...source,
+                sessionsById: {},
+            },
+            nowMs: 1_000,
+        });
+
+        expect(overview.candidates[0]?.context?.workspace).toEqual({ label: 'Happier Core' });
+    });
+
+    it('gives two Homes sharing one Session id distinct Activity instance identities', () => {
+        const colliding = {
+            pendingPermissionRequestCount: 1,
+            agentState: pendingAgentState('permission'),
+            updatedAt: 10,
+        } as const;
+        const collidingA = createSessionFixture({ ...colliding, id: 'b:c', serverId: 'server-a' });
+        const collidingB = createSessionFixture({ ...colliding, id: 'b:c', serverId: 'server-b' });
+        const overview = buildActivityOverviewFromSource({
+            source: {
+                ...createSource({ sessions: [collidingA] }),
+                sessionsById: { 'b:c': collidingA },
+                sessionListRowsByServerId: {
+                    'server-a': { 'b:c': buildSessionListRenderableFromSession(collidingA) },
+                    'server-b': { 'b:c': buildSessionListRenderableFromSession(collidingB) },
+                },
+                ordinarySessionListMembershipByServerId: {
+                    'server-a': ['b:c'],
+                    'server-b': ['b:c'],
+                },
+            },
+            nowMs: 1_000,
+            activityName: 'HappierFocusLiveActivity',
+        });
+
+        const keys = overview.candidates.map((candidate) => candidate.activityInstanceKey);
+        expect(new Set(keys)).toEqual(new Set([
+            activityInstanceKey({ serverId: 'server-a', sessionId: 'b:c' }, 'HappierFocusLiveActivity'),
+            activityInstanceKey({ serverId: 'server-b', sessionId: 'b:c' }, 'HappierFocusLiveActivity'),
+        ]));
+        expect(keys).toHaveLength(2);
+    });
+});
+
+describe('readActivitySourceAttentionMessages', () => {
+    const storedMessages = { messages: [{ id: 'm1', localId: null, seq: 1 }] };
+    // Compatibility fixture: the reader intentionally accepts the released
+    // array-shaped transcript before store normalization.
+    const legacySessionMessages = {
+        'legacy-session': storedMessages,
+    } as unknown as NonNullable<ActivityAttentionSource['sessionMessagesById']>;
+
+    it('returns the exact stored transcript this overview decided a hydrated candidate with', () => {
+        const session = createSessionFixture({
+            id: 'legacy-session',
+            serverId: 'server-a',
+            active: true,
+            presence: 'online',
+            agentState: pendingAgentState('user_action'),
+        });
+        const source: ActivityAttentionSource = {
+            ...createSource({ sessions: [session] }),
+            sessionMessagesById: legacySessionMessages,
+        };
+
+        expect(readActivitySourceAttentionMessages(source, { serverId: 'server-a', sessionId: 'legacy-session' }))
+            .toEqual(storedMessages.messages);
+    });
+
+    it('returns nothing for another Home holding the same Session id, whose messages are not this row', () => {
+        const session = createSessionFixture({
+            id: 'legacy-session',
+            serverId: 'server-a',
+            active: true,
+            presence: 'online',
+            agentState: pendingAgentState('user_action'),
+        });
+        const source: ActivityAttentionSource = {
+            ...createSource({ sessions: [session] }),
+            sessionMessagesById: legacySessionMessages,
+        };
+
+        expect(readActivitySourceAttentionMessages(source, { serverId: 'server-b', sessionId: 'legacy-session' }))
+            .toBeUndefined();
+        expect(readActivitySourceAttentionMessages(source, null)).toBeUndefined();
     });
 });

@@ -14,11 +14,13 @@ const setWorkspaceFaviconsEnabled = vi.fn();
 const setWorkspaceMachineSubtitlesEnabled = vi.fn();
 const setSessionListWorkingIndicatorStyle = vi.fn();
 const setSessionListIdentityDisplay = vi.fn();
+const setSessionHeaderIdentityDisplay = vi.fn();
 const setSessionListActiveColorMode = vi.fn();
 const setSessionListAttentionPromotionMode = vi.fn();
 const setSessionListWorkingPlacementMode = vi.fn();
 const setSessionListSeparateBackgroundWork = vi.fn();
 const setSessionListSectionMode = vi.fn();
+const applySettings = vi.fn();
 let translationPrefix = 'en';
 let sessionListOrderingModeSetting: 'custom' | 'created' | 'updated' = 'custom';
 let sessionListFolderSortModeSetting: 'foldersFirst' | 'mixed' = 'foldersFirst';
@@ -41,12 +43,14 @@ installSessionSettingsEntryModuleMocks({
                     if (key === 'sessionTagsEnabled') return [true, vi.fn()];
                     if (key === 'sessionListDensity') return ['narrow', setSessionListDensity];
                     if (key === 'sessionListIdentityDisplay') return ['agentLogo', setSessionListIdentityDisplay];
+                    if (key === 'sessionHeaderIdentityDisplay') return ['avatar', setSessionHeaderIdentityDisplay];
                     if (key === 'sessionListActiveColorModeV1') return ['activityAndAttention', setSessionListActiveColorMode];
                     if (key === 'sessionListAttentionPromotionModeV1') return ['global', setSessionListAttentionPromotionMode];
                     if (key === 'sessionListWorkingPlacementModeV1') return ['off', setSessionListWorkingPlacementMode];
                     if (key === 'sessionListSeparateBackgroundWorkV1') return [false, setSessionListSeparateBackgroundWork];
                     if (key === 'sessionListOrderingModeV1') return [sessionListOrderingModeSetting, setSessionListOrderingMode];
                     if (key === 'sessionListFolderSortModeV1') return [sessionListFolderSortModeSetting, setSessionListFolderSortMode];
+                    if (key === 'sessionFolderViewModeV1') return ['tree', vi.fn()];
                     if (key === 'workspacePathDisplayModeV1') return ['name', setWorkspacePathDisplayMode];
                     if (key === 'workspaceFaviconsEnabled') return [true, setWorkspaceFaviconsEnabled];
                     if (key === 'workspaceMachineSubtitlesEnabled') return [true, setWorkspaceMachineSubtitlesEnabled];
@@ -85,6 +89,10 @@ installSessionSettingsEntryModuleMocks({
     },
 });
 
+vi.mock('@/sync/store/settingsWriters', () => ({
+    useApplySettings: () => applySettings,
+}));
+
 afterEach(() => {
     standardCleanup();
     setSessionListDensity.mockClear();
@@ -95,11 +103,13 @@ afterEach(() => {
     setWorkspaceMachineSubtitlesEnabled.mockClear();
     setSessionListWorkingIndicatorStyle.mockClear();
     setSessionListIdentityDisplay.mockClear();
+    setSessionHeaderIdentityDisplay.mockClear();
     setSessionListActiveColorMode.mockClear();
     setSessionListAttentionPromotionMode.mockClear();
     setSessionListWorkingPlacementMode.mockClear();
     setSessionListSeparateBackgroundWork.mockClear();
     setSessionListSectionMode.mockClear();
+    applySettings.mockClear();
     resetSessionSettingsEntryState();
     translationPrefix = 'en';
     sessionListOrderingModeSetting = 'custom';
@@ -117,19 +127,25 @@ describe('Session settings session list density', () => {
         const screen = await renderSettingsView(React.createElement(SessionSettingsScreen));
         const dropdowns = screen.findAllByType('DropdownMenu' as any);
         const densityDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.itemProps?.testID === 'settings-session-sessionListDensity-trigger');
+        const headerIdentityDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.itemProps?.testID === 'settings-session-sessionHeaderIdentityDisplay-trigger');
         const orderingDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.itemProps?.testID === 'settings-session-sessionListOrderingMode-trigger');
+        const folderDisplayDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.itemProps?.testID === 'settings-session-sessionFolderViewMode-trigger');
         const folderSortDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.itemProps?.testID === 'settings-session-sessionListFolderSortMode-trigger');
         expect(densityDropdown).toBeTruthy();
+        expect(headerIdentityDropdown).toBeTruthy();
         expect(densityDropdown?.props?.selectedId).toBe('narrow');
         expect(orderingDropdown).toBeTruthy();
-        expect(orderingDropdown?.props?.selectedId).toBe('custom');
+        expect(orderingDropdown?.props?.selectedId).toBe('ordering:custom');
+        expect(folderDisplayDropdown).toBeTruthy();
+        expect(folderDisplayDropdown?.props?.selectedId).toBe('folderDisplay:tree');
         expect(folderSortDropdown).toBeTruthy();
-        expect(folderSortDropdown?.props?.selectedId).toBe('foldersFirst');
+        expect(folderSortDropdown?.props?.selectedId).toBe('folderSort:foldersFirst');
 
         const itemIds = densityDropdown?.props?.items?.map((item: any) => item.id) ?? [];
         expect(itemIds).toEqual(['detailed', 'cozy', 'narrow']);
-        expect(orderingDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['custom', 'created', 'updated']);
-        expect(folderSortDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['foldersFirst', 'mixed']);
+        expect(orderingDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['ordering:custom', 'ordering:updated', 'ordering:created']);
+        expect(folderDisplayDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['folderDisplay:off', 'folderDisplay:tree']);
+        expect(folderSortDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['folderSort:foldersFirst', 'folderSort:mixed']);
 
         await act(async () => {
             densityDropdown!.props.onSelect('cozy');
@@ -138,16 +154,29 @@ describe('Session settings session list density', () => {
         expect(setSessionListDensity).toHaveBeenCalledWith('cozy');
 
         await act(async () => {
-            orderingDropdown!.props.onSelect('updated');
+            headerIdentityDropdown!.props.onSelect('agentLogo');
         });
 
-        expect(setSessionListOrderingMode).toHaveBeenCalledWith('updated');
+        expect(setSessionHeaderIdentityDisplay).toHaveBeenCalledTimes(1);
+        expect(setSessionHeaderIdentityDisplay).toHaveBeenCalledWith('agentLogo');
 
         await act(async () => {
-            folderSortDropdown!.props.onSelect('mixed');
+            orderingDropdown!.props.onSelect('ordering:updated');
         });
 
-        expect(setSessionListFolderSortMode).toHaveBeenCalledWith('mixed');
+        expect(applySettings).toHaveBeenCalledWith({ sessionListOrderingModeV1: 'updated' });
+
+        await act(async () => {
+            folderDisplayDropdown!.props.onSelect('folderDisplay:off');
+        });
+
+        expect(applySettings).toHaveBeenCalledWith({ sessionFolderViewModeV1: 'off' });
+
+        await act(async () => {
+            folderSortDropdown!.props.onSelect('folderSort:mixed');
+        });
+
+        expect(applySettings).toHaveBeenCalledWith({ sessionListFolderSortModeV1: 'mixed' });
     });
 
     it('refreshes the density, ordering, and grouping dropdown labels when the language changes and the screen rerenders', async () => {
@@ -175,8 +204,8 @@ describe('Session settings session list density', () => {
         ]);
         expect(readDropdowns().ordering?.props?.items?.map((item: { title: string }) => item.title)).toEqual([
             'en:settingsSession.sessionList.orderingOptions.custom',
-            'en:settingsSession.sessionList.orderingOptions.created',
             'en:settingsSession.sessionList.orderingOptions.updated',
+            'en:settingsSession.sessionList.orderingOptions.created',
         ]);
         expect(readDropdowns().folderSort?.props?.items?.map((item: { title: string }) => item.title)).toEqual([
             'en:settingsSession.sessionList.folderSortModeFoldersFirstTitle',
@@ -199,8 +228,8 @@ describe('Session settings session list density', () => {
         ]);
         expect(readDropdowns().ordering?.props?.items?.map((item: { title: string }) => item.title)).toEqual([
             'fr:settingsSession.sessionList.orderingOptions.custom',
-            'fr:settingsSession.sessionList.orderingOptions.created',
             'fr:settingsSession.sessionList.orderingOptions.updated',
+            'fr:settingsSession.sessionList.orderingOptions.created',
         ]);
         expect(readDropdowns().folderSort?.props?.items?.map((item: { title: string }) => item.title)).toEqual([
             'fr:settingsSession.sessionList.folderSortModeFoldersFirstTitle',
@@ -224,16 +253,16 @@ describe('Session settings session list density', () => {
         const screen = await renderSettingsView(React.createElement(SessionSettingsScreen));
         const dropdowns = screen.findAllByType('DropdownMenu' as any);
         const folderSortDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.itemProps?.testID === 'settings-session-sessionListFolderSortMode-trigger');
-        expect(folderSortDropdown?.props?.selectedId).toBe('foldersFirst');
+        expect(folderSortDropdown?.props?.selectedId).toBe('folderSort:foldersFirst');
 
-        const mixedItem = folderSortDropdown?.props?.items?.find((item: any) => item.id === 'mixed');
+        const mixedItem = folderSortDropdown?.props?.items?.find((item: any) => item.id === 'folderSort:mixed');
         expect(mixedItem?.disabled).toBe(true);
         expect(mixedItem?.subtitle).toBe('en:settingsSession.sessionList.folderSortModeMixedDisabledInDateModeSubtitle');
 
         await act(async () => {
-            folderSortDropdown!.props.onSelect('mixed');
+            folderSortDropdown!.props.onSelect('folderSort:mixed');
         });
-        expect(setSessionListFolderSortMode).not.toHaveBeenCalled();
+        expect(applySettings).not.toHaveBeenCalled();
     });
 
     it('exposes workspace name and favicon controls in the session list settings', async () => {
@@ -339,15 +368,15 @@ describe('Session settings session list density', () => {
         const attentionPromotionDropdown = dropdowns.find((node: any) =>
             node.props?.itemTrigger?.itemProps?.testID === 'settings-session-attentionPromotionMode-trigger');
         expect(attentionPromotionDropdown).toBeTruthy();
-        expect(attentionPromotionDropdown?.props?.selectedId).toBe('global');
+        expect(attentionPromotionDropdown?.props?.selectedId).toBe('attention:global');
         expect(attentionPromotionDropdown?.props?.itemTrigger?.title).toBe('en:settingsSession.sessionList.attentionPromotionModeTitle');
-        expect(attentionPromotionDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['off', 'global', 'withinGroups']);
+        expect(attentionPromotionDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['attention:off', 'attention:global', 'attention:withinGroups']);
 
         await act(async () => {
-            attentionPromotionDropdown!.props.onSelect('withinGroups');
+            attentionPromotionDropdown!.props.onSelect('attention:withinGroups');
         });
 
-        expect(setSessionListAttentionPromotionMode).toHaveBeenCalledWith('withinGroups');
+        expect(applySettings).toHaveBeenCalledWith({ sessionListAttentionPromotionModeV1: 'withinGroups' });
     });
 
     it('exposes the session list working placement selector', async () => {
@@ -361,18 +390,18 @@ describe('Session settings session list density', () => {
         const workingPlacementDropdown = dropdowns.find((node: any) =>
             node.props?.itemTrigger?.itemProps?.testID === 'settings-session-workingPlacementMode-trigger');
         expect(workingPlacementDropdown).toBeTruthy();
-        expect(workingPlacementDropdown?.props?.selectedId).toBe('off');
+        expect(workingPlacementDropdown?.props?.selectedId).toBe('working:off');
         expect(workingPlacementDropdown?.props?.itemTrigger?.title).toBe('en:settingsSession.sessionList.workingPlacementModeTitle');
-        expect(workingPlacementDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['off', 'global', 'withinGroups']);
+        expect(workingPlacementDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['working:off', 'working:global', 'working:withinGroups']);
 
         await act(async () => {
-            workingPlacementDropdown!.props.onSelect('global');
+            workingPlacementDropdown!.props.onSelect('working:global');
         });
 
-        expect(setSessionListWorkingPlacementMode).toHaveBeenCalledWith('global');
+        expect(applySettings).toHaveBeenCalledWith({ sessionListWorkingPlacementModeV1: 'global' });
     });
 
-    it('exposes the session list section mode selector', async () => {
+    it('exposes the derived layout selector and applies its atomic settings delta', async () => {
         const mod = await import('../../../../app/(app)/settings/session');
         const SessionSettingsScreen = (mod.default as unknown as {
             type: React.ComponentType<Record<string, never>>;
@@ -380,16 +409,23 @@ describe('Session settings session list density', () => {
 
         const screen = await renderSettingsView(React.createElement(SessionSettingsScreen));
         const dropdowns = screen.findAllByType('DropdownMenu' as any);
-        const sectionModeDropdown = dropdowns.find((node: any) =>
-            node.props?.itemTrigger?.itemProps?.testID === 'settings-session-sessionListSectionMode-trigger');
-        expect(sectionModeDropdown).toBeTruthy();
-        expect(sectionModeDropdown?.props?.selectedId).toBe('activity');
-        expect(sectionModeDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['activity', 'single']);
+        const layoutDropdown = dropdowns.find((node: any) =>
+            node.props?.itemTrigger?.itemProps?.testID === 'settings-session-sessionListLayout-trigger');
+        expect(layoutDropdown).toBeTruthy();
+        expect(layoutDropdown?.props?.selectedId).toBe('layout:active_inactive');
+        expect(layoutDropdown?.props?.items?.map((item: any) => item.id)).toEqual([
+            'layout:projects',
+            'layout:recent_activity',
+            'layout:active_inactive',
+        ]);
 
         await act(async () => {
-            sectionModeDropdown!.props.onSelect('single');
+            layoutDropdown!.props.onSelect('layout:recent_activity');
         });
 
-        expect(setSessionListSectionMode).toHaveBeenCalledWith('single');
+        expect(applySettings).toHaveBeenCalledWith({
+            sessionListSectionModeV1: 'single',
+            sessionListActiveGroupingV1: 'date',
+        });
     });
 });

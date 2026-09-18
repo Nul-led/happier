@@ -6,6 +6,8 @@ import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import { useSessionDebugInformationEnabled } from '@/sync/runtime/useSessionDebugInformationEnabled';
 import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { useSessionMessageAuthorshipScope } from './useSessionMessageAuthorshipScope';
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { SessionForkSupportSource } from '@/sync/domains/sessionFork/forkUiSupport';
 import type { CurrentProjectedAgentCapabilities } from '@/agents/backendCatalog/currentAgentCapabilities';
@@ -59,6 +61,8 @@ export type TranscriptMessageDisplayCommon = Pick<TranscriptSessionCommonSetting
      * themselves, as they already do for every other setting here.
      */
     debugInformationEnabled: boolean;
+    accountActorViewerScope?: ServerAccountScope | null;
+    hasOtherNamedCollaborator?: boolean;
 }>;
 
 export type TranscriptForkCommon = Pick<TranscriptSessionCommonSettings,
@@ -92,7 +96,10 @@ export type TranscriptToolChromeCommon = Pick<TranscriptSessionCommonSettings,
     | 'toolViewTimelineChromeMode'
     | 'transcriptToolCallsCollapsedPreviewCount'
     | 'transcriptToolCallsGroupShowBackground'
->;
+> & Readonly<{
+    /** Exact Home identity carried once by the mounted transcript host. */
+    serverId?: string | null;
+}>;
 
 export type TranscriptToolRouteCommon = Readonly<{
     messagesById: Readonly<Record<string, Message>>;
@@ -122,19 +129,33 @@ export function hasTranscriptSessionCommonProps(
         && props.toolRouteCommon != null;
 }
 
-export function useTranscriptSessionCommon(sessionId: string): TranscriptSessionCommon {
+export function useTranscriptSessionCommon(
+    sessionId: string,
+    sessionServerId?: string | null,
+): TranscriptSessionCommon {
+    // The exact Home identity the mounted transcript host resolved for this
+    // Session. It is carried once per host (not re-resolved per row or per
+    // callback) so every in-Session jump/link targets the same Home the
+    // transcript is rendering. Absent only when the host itself has no Home
+    // binding (legacy local state); no active-Home fallback is applied here.
+    const exactSessionServerId = sessionServerId ?? null;
+    // One exact-Home authorship owner, shared with the pending/discarded queue.
+    const authorship = useSessionMessageAuthorshipScope(sessionId, sessionServerId);
+    const accountActorViewerScope = authorship.viewerScope;
     const sessionForkSupportSource = useSessionForkSupportSource(sessionId);
-    const workspacePath = useSessionWorkspacePath(sessionId);
+    const workspacePath = useSessionWorkspacePath(sessionId, sessionServerId);
     const messagesById = useSessionMessagesById(sessionId);
     const reducerState = useSessionMessagesReducerState(sessionId);
-    const executionRunsEnabled = useFeatureEnabled('execution.runs');
     // The server the fork launchers spawn the child on, resolved through the one
     // owner they already use, so the decision below is scoped to that exact
     // server rather than to whatever the sidebar happens to have selected.
-    const forkSpawnServerId = usePreferredServerIdForSession(
+    const forkSpawnServerId = usePreferredServerIdForSession({
+        serverId: sessionForkSupportSource?.serverId ?? sessionServerId,
         sessionId,
-        sessionForkSupportSource?.serverId ?? null,
-    );
+    });
+    const executionRunsEnabled = useFeatureEnabled('execution.runs', forkSpawnServerId
+        ? { scopeKind: 'spawn', serverId: forkSpawnServerId }
+        : undefined);
     const forkOwnerMetadata = React.useMemo(
         () => sessionForkSupportSource ? readSessionOwnerMetadataView(sessionForkSupportSource) : null,
         [sessionForkSupportSource],
@@ -191,6 +212,8 @@ export function useTranscriptSessionCommon(sessionId: string): TranscriptSession
     ]);
 
     const messageDisplay = React.useMemo<TranscriptMessageDisplayCommon>(() => ({
+        accountActorViewerScope,
+        hasOtherNamedCollaborator: authorship.hasOtherNamedCollaborator,
         debugInformationEnabled,
         sessionThinkingDisplayMode,
         sessionThinkingInlineChrome,
@@ -204,6 +227,8 @@ export function useTranscriptSessionCommon(sessionId: string): TranscriptSession
         transcriptStreamingSmoothingEnabled,
         workspacePath,
     }), [
+        accountActorViewerScope,
+        authorship.hasOtherNamedCollaborator,
         sessionThinkingDisplayMode,
         sessionThinkingInlineChrome,
         sessionThinkingInlinePresentation,
@@ -219,10 +244,12 @@ export function useTranscriptSessionCommon(sessionId: string): TranscriptSession
     ]);
 
     const toolChrome = React.useMemo<TranscriptToolChromeCommon>(() => ({
+        serverId: exactSessionServerId,
         toolViewTimelineChromeMode,
         transcriptToolCallsCollapsedPreviewCount,
         transcriptToolCallsGroupShowBackground,
     }), [
+        exactSessionServerId,
         toolViewTimelineChromeMode,
         transcriptToolCallsCollapsedPreviewCount,
         transcriptToolCallsGroupShowBackground,

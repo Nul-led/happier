@@ -76,11 +76,17 @@ export function areStoredSessionsEqual(
         && previous.active === next.active
         && activeAtMatches
         && (previous.archivedAt ?? null) === (next.archivedAt ?? null)
+        // Compared without a null coalesce: an unsupported projection and an
+        // explicit "nobody is responsible" are different states.
+        && previous.responsibleAccountId === next.responsibleAccountId
+        && areSessionValueEqual(previous.responsibleAccount ?? null, next.responsibleAccount ?? null)
         && (previous.pendingVersion ?? null) === (next.pendingVersion ?? null)
         && (previous.pendingCount ?? null) === (next.pendingCount ?? null)
         && JSON.stringify(previous.pendingActivationAuthorization ?? null) === JSON.stringify(next.pendingActivationAuthorization ?? null)
         && (previous.pendingBlockedCount ?? null) === (next.pendingBlockedCount ?? null)
         && (previous.lastViewedSessionSeq ?? null) === (next.lastViewedSessionSeq ?? null)
+        && (previous.unreadSince ?? null) === (next.unreadSince ?? null)
+        && areSessionValueEqual(previous.viewer, next.viewer)
         && (previous.pendingPermissionRequestCount ?? null) === (next.pendingPermissionRequestCount ?? null)
         && (previous.pendingUserActionRequestCount ?? null) === (next.pendingUserActionRequestCount ?? null)
         && (previous.latestTurnStatus ?? null) === (next.latestTurnStatus ?? null)

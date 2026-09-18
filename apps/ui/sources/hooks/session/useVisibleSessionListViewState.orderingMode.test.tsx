@@ -12,6 +12,8 @@ const viewState = vi.hoisted(() => ({
     orderingMode: 'updated' as SessionListOrderingModeV1,
     attentionPromotionMode: 'off' as SessionListAttentionPromotionModeV1,
     workingPlacementMode: 'off' as SessionListWorkingPlacementModeV1,
+    sectionMode: 'single' as 'activity' | 'single',
+    activeGrouping: 'project' as 'project' | 'date',
     hideInactiveSessions: false,
     selection: {
         enabled: true,
@@ -34,9 +36,18 @@ const viewState = vi.hoisted(() => ({
     focusedSessionFolder: null as any,
     sessionFolderAssignmentsBySessionKey: {} as Record<string, string | null>,
     sessionOrganizationProjection: null as any,
-    openApprovalSessionIds: [] as ReadonlyArray<string>,
+    sessionOrganizationProjectionsByServerId: null as Record<string, any> | null,
+    openApprovalSessionReferences: [] as ReadonlyArray<
+        | { kind: 'exact'; address: { serverId: string; sessionId: string } }
+        | { kind: 'legacy_unscoped'; sessionId: string }
+    >,
     pathname: '/session/none',
     focusedSessionId: null as string | null,
+    sourceStateOptions: [] as Array<Record<string, unknown>>,
+    query: {
+        active: false,
+        statesByServerId: {} as Record<string, { appliedSourceKind: 'query' | 'ordinary' | null } | undefined>,
+    },
 }));
 
 function makeSessionRow(id: string, partial?: Partial<SessionListRenderableSession>): SessionListRenderableSession {
@@ -135,11 +146,11 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     return createStorageModuleMock({
         importOriginal,
         overrides: {
-            useSessionListRowStateByServerId: () => viewState.rowsByServerId,
+            useSessionListRowsByServerId: () => viewState.rowsByServerId,
             useArtifacts: () => {
-                throw new Error('session list view state must use open approval session ids instead of full artifacts');
+                throw new Error('session list view state must use canonical row state instead of full artifacts');
             },
-            useOpenApprovalSessionIds: () => viewState.openApprovalSessionIds,
+            useOpenApprovalSessionReferences: () => viewState.openApprovalSessionReferences,
             useSetting: ((key: string) => {
                 if (key === 'hideInactiveSessions') return viewState.hideInactiveSessions;
                 if (key === 'pinnedSessionKeysV1') return [];
@@ -149,6 +160,8 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
                 }
                 if (key === 'sessionListAttentionPromotionModeV1') return viewState.attentionPromotionMode;
                 if (key === 'sessionListWorkingPlacementModeV1') return viewState.workingPlacementMode;
+                if (key === 'sessionListSectionModeV1') return viewState.sectionMode;
+                if (key === 'sessionListActiveGroupingV1') return viewState.activeGrouping;
                 if (key === 'sessionFoldersV1') return viewState.sessionFolders;
                 if (key === 'sessionFolderViewModeV1') return viewState.sessionFolderViewMode;
                 return null;
@@ -165,14 +178,24 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
             }) as any,
             useSessionFolderAssignmentsBySessionKey: () => viewState.sessionFolderAssignmentsBySessionKey,
             useSessionOrganizationProjection: () => viewState.sessionOrganizationProjection,
+            useSessionOrganizationProjections: (serverIds: readonly string[]) => viewState.sessionOrganizationProjectionsByServerId
+                ? Object.fromEntries(serverIds.flatMap((serverId) => {
+                    const projection = viewState.sessionOrganizationProjectionsByServerId?.[serverId];
+                    return projection ? [[serverId, projection]] : [];
+                }))
+                : viewState.sessionOrganizationProjection
+                    ? Object.fromEntries(serverIds.map((serverId) => [serverId, viewState.sessionOrganizationProjection]))
+                    : {},
         },
     });
 });
 
-vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: (featureId: string) => featureId === 'sessions.folders'
-        ? viewState.sessionFoldersFeatureEnabled
-        : true,
+vi.mock('@/sync/domains/session/listing/useSessionListQuerySourceState', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/session/listing/useSessionListQuerySourceState')>()),
+    useSessionListFeatureHomeSupportByServerId: (
+        _featureId: string,
+        serverIds: readonly string[],
+    ) => Object.fromEntries(serverIds.map((serverId) => [serverId, viewState.sessionFoldersFeatureEnabled])),
 }));
 
 vi.mock('expo-router', () => ({
@@ -181,15 +204,22 @@ vi.mock('expo-router', () => ({
 
 vi.mock('@/sync/domains/session/sessionSurfaceVisibility', () => ({
     useFocusedSessionId: () => viewState.focusedSessionId,
+    useFocusedSessionAddress: () => viewState.focusedSessionId
+        ? { serverId: viewState.selection.activeServerId, sessionId: viewState.focusedSessionId }
+        : null,
 }));
 
 vi.mock('./useVisibleSessionListSourceState', () => ({
-    useVisibleSessionListSourceState: () => ({
-        selection: viewState.selection,
-        activeIndex: viewState.source,
-        byServerId: {},
-        source: viewState.source,
-    }),
+    useVisibleSessionListSourceState: (options: Record<string, unknown>) => {
+        viewState.sourceStateOptions.push(options);
+        return {
+            selection: viewState.selection,
+            activeIndex: viewState.source,
+            byServerId: {},
+            source: viewState.source,
+            query: viewState.query,
+        };
+    },
 }));
 
 describe('useVisibleSessionListViewState (index pipeline)', () => {
@@ -199,6 +229,8 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         viewState.orderingMode = 'updated';
         viewState.attentionPromotionMode = 'off';
         viewState.workingPlacementMode = 'off';
+        viewState.sectionMode = 'single';
+        viewState.activeGrouping = 'project';
         viewState.source = null;
         viewState.selection = {
             enabled: true,
@@ -221,9 +253,25 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         viewState.focusedSessionFolder = null;
         viewState.sessionFolderAssignmentsBySessionKey = {};
         viewState.sessionOrganizationProjection = null;
-        viewState.openApprovalSessionIds = [];
+        viewState.sessionOrganizationProjectionsByServerId = null;
+        viewState.openApprovalSessionReferences = [];
         viewState.pathname = '/session/none';
         viewState.focusedSessionId = null;
+        viewState.sourceStateOptions = [];
+        viewState.query = { active: false, statesByServerId: {} };
+    });
+
+    it('forwards authoritative empty-query completeness to the source owner', async () => {
+        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
+        await renderHook(() => useVisibleSessionListViewState('all', {
+            queryHomes: [],
+            emptyQuerySelectionComplete: true,
+        }));
+
+        expect(viewState.sourceStateOptions.at(-1)).toMatchObject({
+            queryHomes: [],
+            emptyQuerySelectionComplete: true,
+        });
     });
 
     it('keeps dormant manual group order data untouched when ordering mode is updated', async () => {
@@ -245,7 +293,8 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             .map((item) => (item as Extract<SessionListIndexItem, { type: 'session' }>).sessionId);
 
         expect(sessionIds).toEqual(['a', 'b']);
-        expect(viewState.observedOrderingMode).toEqual(['updated']);
+        expect(viewState.observedOrderingMode.length).toBeGreaterThan(0);
+        expect(viewState.observedOrderingMode.every((mode) => mode === 'updated')).toBe(true);
         expect(viewState.setGroupOrder).not.toHaveBeenCalled();
     });
 
@@ -381,6 +430,116 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         ]);
     });
 
+    it('uses each selected Home organization projection and restores its scoped state after removal and re-add', async () => {
+        viewState.sessionFolderViewMode = 'tree';
+        viewState.selection = {
+            enabled: true,
+            presentation: 'grouped',
+            activeServerId: 'home-a',
+            allowedServerIds: ['home-a', 'home-b'],
+            explicit: true,
+            activeTarget: { kind: 'group', id: 'both' },
+        };
+        const workspace = (serverId: string) => ({
+            t: 'workspaceScope' as const,
+            serverId,
+            machineId: `machine-${serverId}`,
+            rootPath: '/repo',
+        });
+        viewState.source = ['home-a', 'home-b'].flatMap((serverId) => {
+            const groupKey = `server:${serverId}:active:project:repo`;
+            return [
+                {
+                    type: 'header' as const,
+                    title: '/repo',
+                    headerKind: 'project' as const,
+                    groupKey,
+                    serverId,
+                    workspaceScopeHint: workspace(serverId),
+                },
+                {
+                    type: 'session' as const,
+                    sessionId: 'same-session',
+                    serverId,
+                    section: 'active' as const,
+                    groupKey,
+                    groupKind: 'project' as const,
+                },
+            ];
+        });
+        viewState.rowsByServerId = {
+            'home-a': { 'same-session': makeSessionRow('same-session', { active: true }) },
+            'home-b': { 'same-session': makeSessionRow('same-session', { active: true }) },
+        };
+        const projection = (serverId: string, pinned: boolean) => ({
+            schemaVersion: 1,
+            version: 1,
+            pinnedSessionIds: pinned ? ['same-session'] : [],
+            pinsBySessionId: pinned
+                ? { 'same-session': { sessionId: 'same-session', sortKey: '0001', pinnedAt: 1 } }
+                : {},
+            foldersById: {
+                [`folder-${serverId}`]: {
+                    folderId: `folder-${serverId}`,
+                    folderKey: `folder-${serverId}`,
+                    parentFolderId: null,
+                    parentFolderKey: null,
+                    sortKey: '0001',
+                    display: { t: 'plain', v: { name: `Folder ${serverId}`, workspace: workspace(serverId) } },
+                    displayState: { status: 'available', value: null },
+                    archivedAt: null,
+                    createdAt: 1,
+                    updatedAt: 1,
+                },
+            },
+            folderAssignmentsBySessionId: { 'same-session': `folder-${serverId}` },
+            tagsById: {},
+            tagAssignmentsBySessionId: {},
+            attentionStandingsBySessionId: {},
+            orderEntriesByScopeKey: {},
+            labelsByLabelKey: {},
+        });
+        viewState.sessionOrganizationProjectionsByServerId = {
+            'home-a': projection('home-a', false),
+            'home-b': projection('home-b', false),
+        };
+
+        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
+        let queryHomes = [{ serverId: 'home-a' }, { serverId: 'home-b' }] as any;
+        const hook = await renderHook(() => useVisibleSessionListViewState('all', { queryHomes }));
+        await flushHookEffects();
+        const readSessions = () => (hook.getCurrent().visibleSessionListIndex ?? [])
+            .filter((item): item is Extract<SessionListIndexItem, { type: 'session' }> => item.type === 'session')
+            .map((item) => ({ serverId: item.serverId, folderId: item.folderId, pinned: item.pinned === true }));
+
+        expect(readSessions()).toEqual(expect.arrayContaining([
+            { serverId: 'home-a', folderId: 'folder-home-a', pinned: false },
+            { serverId: 'home-b', folderId: 'folder-home-b', pinned: false },
+        ]));
+
+        viewState.sessionOrganizationProjectionsByServerId = {
+            ...viewState.sessionOrganizationProjectionsByServerId,
+            'home-b': projection('home-b', true),
+        };
+        await hook.rerender();
+        await flushHookEffects();
+        expect(readSessions()).toEqual(expect.arrayContaining([
+            { serverId: 'home-b', folderId: 'folder-home-b', pinned: true },
+        ]));
+
+        queryHomes = [{ serverId: 'home-a' }] as any;
+        await hook.rerender();
+        await flushHookEffects();
+        expect(readSessions().some((item) => item.serverId === 'home-b' && item.pinned)).toBe(false);
+
+        queryHomes = [{ serverId: 'home-a' }, { serverId: 'home-b' }] as any;
+        await hook.rerender();
+        await flushHookEffects();
+        expect(readSessions()).toEqual(expect.arrayContaining([
+            { serverId: 'home-b', folderId: 'folder-home-b', pinned: true },
+        ]));
+    });
+
     it('does not write normalized manual group order while the sessions surface is not data-active', async () => {
         viewState.orderingMode = 'custom';
         viewState.source = makeSourceIndex();
@@ -450,6 +609,42 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         expect(hook.getCurrent()?.hasHiddenInactiveSessions).toBe(true);
     });
 
+    it('does not re-apply the hidden-inactive rule to rows the strict query already filtered', async () => {
+        viewState.hideInactiveSessions = true;
+        viewState.source = [
+            { type: 'session', sessionId: 'served-inactive', serverId: 's1', section: 'inactive', groupKey: 'server:s1:day:2026-02-17', groupKind: 'date' },
+        ];
+        viewState.rowsByServerId = {
+            s1: {
+                'served-inactive': makeSessionRow('served-inactive', { active: false, keepVisibleWhenInactive: false }),
+            },
+        };
+        viewState.query = {
+            active: true,
+            statesByServerId: { s1: { appliedSourceKind: 'query' } },
+        };
+
+        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
+        const hook = await renderHook(() => useVisibleSessionListViewState('all', { queryHomes: [] }));
+        await flushHookEffects();
+
+        // The server returned this inactive row on purpose (it needs attention);
+        // the client must not run a second, weaker inactive rule over it.
+        expect(hook.getCurrent()?.visibleSessionListIndex?.filter((item) => item.type === 'session').map((item) => item.sessionId))
+            .toEqual(['served-inactive']);
+        expect(hook.getCurrent()?.hasHiddenInactiveSessions).toBe(false);
+
+        // The released GET adapter answered this Home, so the local rule still applies.
+        viewState.query = {
+            active: true,
+            statesByServerId: { s1: { appliedSourceKind: 'ordinary' } },
+        };
+        const ordinaryHook = await renderHook(() => useVisibleSessionListViewState('all', { queryHomes: [] }));
+        await flushHookEffects();
+        expect(ordinaryHook.getCurrent()?.visibleSessionListIndex).toEqual([]);
+        expect(ordinaryHook.getCurrent()?.hasHiddenInactiveSessions).toBe(true);
+    });
+
     it('uses the attention promotion setting while preserving the canonical index pipeline', async () => {
         viewState.orderingMode = 'custom';
         viewState.attentionPromotionMode = 'global';
@@ -491,9 +686,8 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         ]);
     });
 
-    it('promotes open approval artifacts through the index row-state resolver', async () => {
+    it('promotes a fresh pending-permission row through the index row-state resolver', async () => {
         viewState.attentionPromotionMode = 'global';
-        viewState.openApprovalSessionIds = ['approval-session'];
         viewState.source = [
             { type: 'header', headerKind: 'active', title: 'Active', serverId: 's1', groupKey: 'server:s1:active' },
             { type: 'session', sessionId: 'normal', serverId: 's1', section: 'active', groupKey: 'server:s1:active', groupKind: 'active' },
@@ -508,6 +702,8 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
                     presence: 'online',
                     latestTurnStatus: 'in_progress',
                     latestTurnStatusObservedAt: Date.now(),
+                    hasPendingPermissionRequests: true,
+                    pendingRequestObservedAt: Date.now(),
                     updatedAt: 200,
                 }),
             },
@@ -530,9 +726,40 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         ]);
     });
 
+    it('does not reconstruct permission attention from an open approval artifact', async () => {
+        viewState.attentionPromotionMode = 'global';
+        viewState.openApprovalSessionReferences = [{ kind: 'legacy_unscoped', sessionId: 'approval-session' }];
+        viewState.source = [
+            { type: 'header', headerKind: 'active', title: 'Active', serverId: 's1', groupKey: 'server:s1:active' },
+            { type: 'session', sessionId: 'approval-session', serverId: 's1', section: 'active', groupKey: 'server:s1:active', groupKind: 'active' },
+        ];
+        viewState.rowsByServerId = {
+            s1: {
+                'approval-session': makeSessionRow('approval-session', {
+                    active: true,
+                    presence: 'online',
+                    hasPendingPermissionRequests: false,
+                    pendingRequestObservedAt: Date.now(),
+                }),
+            },
+        };
+
+        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
+        const hook = await renderHook(() => useVisibleSessionListViewState('all'));
+        await flushHookEffects();
+
+        expect(hook.getCurrent()?.visibleSessionListIndex).toEqual([
+            expect.objectContaining({ type: 'header', headerKind: 'active' }),
+            expect.objectContaining({
+                type: 'session',
+                sessionId: 'approval-session',
+                groupKind: 'active',
+            }),
+        ]);
+    });
+
     it('promotes only the matching server-scoped row when approval session ids collide across servers', async () => {
         viewState.attentionPromotionMode = 'global';
-        viewState.openApprovalSessionIds = ['s2:approval-session'];
         viewState.source = [
             { type: 'header', headerKind: 'active', title: 'Active', serverId: 's1', groupKey: 'server:s1:active' },
             { type: 'session', sessionId: 'approval-session', serverId: 's1', section: 'active', groupKey: 'server:s1:active', groupKind: 'active' },
@@ -550,6 +777,8 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
                     presence: 'online',
                     latestTurnStatus: 'in_progress',
                     latestTurnStatusObservedAt: Date.now(),
+                    hasPendingPermissionRequests: true,
+                    pendingRequestObservedAt: Date.now(),
                     updatedAt: 200,
                 }),
             },
@@ -573,6 +802,32 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
                 type: 'session',
                 sessionId: 'approval-session',
                 serverId: 's1',
+                groupKind: 'attention',
+            }),
+        ]));
+    });
+
+    it('fails closed for a legacy unscoped approval when two Homes currently admit the same session id', async () => {
+        viewState.attentionPromotionMode = 'global';
+        viewState.openApprovalSessionReferences = [{ kind: 'legacy_unscoped', sessionId: 'approval-session' }];
+        viewState.source = ['s1', 's2'].flatMap((serverId) => [
+            { type: 'header' as const, headerKind: 'active' as const, title: 'Active', serverId, groupKey: `server:${serverId}:active` },
+            { type: 'session' as const, sessionId: 'approval-session', serverId, section: 'active' as const,
+                groupKey: `server:${serverId}:active`, groupKind: 'active' as const },
+        ]);
+        viewState.rowsByServerId = {
+            s1: { 'approval-session': makeSessionRow('approval-session', { active: true, presence: 'online' }) },
+            s2: { 'approval-session': makeSessionRow('approval-session', { active: true, presence: 'online' }) },
+        };
+
+        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
+        const hook = await renderHook(() => useVisibleSessionListViewState('all'));
+        await flushHookEffects();
+
+        expect(hook.getCurrent()?.visibleSessionListIndex).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                type: 'session',
+                sessionId: 'approval-session',
                 groupKind: 'attention',
             }),
         ]));
@@ -721,9 +976,8 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         ]);
     });
 
-    it('demotes approval artifact attention rows after the approval closes', async () => {
+    it('demotes pending-permission attention rows after the permission closes', async () => {
         viewState.attentionPromotionMode = 'global';
-        viewState.openApprovalSessionIds = ['approval-session'];
         viewState.source = [
             { type: 'header', headerKind: 'active', title: 'Active', serverId: 's1', groupKey: 'server:s1:active' },
             { type: 'session', sessionId: 'normal', serverId: 's1', section: 'active', groupKey: 'server:s1:active', groupKind: 'active' },
@@ -738,6 +992,8 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
                     presence: 'online',
                     latestTurnStatus: 'in_progress',
                     latestTurnStatusObservedAt: Date.now(),
+                    hasPendingPermissionRequests: true,
+                    pendingRequestObservedAt: Date.now(),
                     updatedAt: 200,
                 }),
             },
@@ -752,7 +1008,16 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             groupKind: 'attention',
         }));
 
-        viewState.openApprovalSessionIds = [];
+        viewState.rowsByServerId = {
+            ...viewState.rowsByServerId,
+            s1: {
+                ...viewState.rowsByServerId.s1,
+                'approval-session': {
+                    ...viewState.rowsByServerId.s1['approval-session'],
+                    hasPendingPermissionRequests: false,
+                },
+            },
+        };
         await hook.rerender();
         await flushHookEffects();
 
@@ -772,7 +1037,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         viewState.orderingMode = 'custom';
         viewState.attentionPromotionMode = 'global';
         viewState.pathname = '/session/approval-session';
-        viewState.openApprovalSessionIds = ['approval-session'];
         viewState.selection = {
             enabled: false,
             presentation: 'grouped',
@@ -795,6 +1059,8 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
                     latestTurnStatus: 'completed',
                     latestTurnStatusObservedAt: 200,
                     lastTurnCompletedAt: 200,
+                    hasPendingPermissionRequests: true,
+                    pendingRequestObservedAt: Date.now(),
                     updatedAt: 200,
                 }),
             },
@@ -812,7 +1078,14 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         }));
 
         // The user approves the permission while still on the session.
-        viewState.openApprovalSessionIds = [];
+        viewState.rowsByServerId = {
+            s1: {
+                'approval-session': {
+                    ...viewState.rowsByServerId.s1['approval-session'],
+                    hasPendingPermissionRequests: false,
+                },
+            },
+        };
         await hook.rerender();
         await flushHookEffects();
 
@@ -1349,8 +1622,20 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         const focusedDirectHook = await renderHook(() => useVisibleSessionListViewState('direct'));
         await flushHookEffects();
 
-        expect(focusedDirectHook.getCurrent()?.folderFocus).toEqual(expect.objectContaining({ folderId: 'folder-a' }));
+        expect(focusedDirectHook.getCurrent()?.folderFocus?.folder.id).toBe('folder-a');
         expect((focusedDirectHook.getCurrent()?.visibleSessionListIndex ?? [])
+            .filter((item) => item.type === 'session')
+            .map((item) => item.sessionId)).toEqual(['in-folder']);
+
+        viewState.activeGrouping = 'date';
+        const recentHook = await renderHook(() => useVisibleSessionListViewState('direct'));
+        await flushHookEffects();
+
+        expect(recentHook.getCurrent()?.folderFocus?.folder.id).toBe('folder-a');
+        expect((recentHook.getCurrent()?.visibleSessionListIndex ?? []).some((item) => (
+            item.type === 'header' && (item.headerKind === 'folder' || item.headerKind === 'project')
+        ))).toBe(false);
+        expect((recentHook.getCurrent()?.visibleSessionListIndex ?? [])
             .filter((item) => item.type === 'session')
             .map((item) => item.sessionId)).toEqual(['in-folder']);
     });

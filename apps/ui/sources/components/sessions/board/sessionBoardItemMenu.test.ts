@@ -1,0 +1,160 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+    createSessionSurfaceNoteDocumentV1,
+    SessionSurfaceDeclarativeDocumentV1Schema,
+} from '@happier-dev/protocol/sessions/board';
+
+import { t } from '@/text';
+
+import { buildSessionBoardItemActions } from './sessionBoardItemMenu';
+
+const item = {
+    v: 1 as const,
+    title: 'Release plan',
+    frame: 'card' as const,
+    height: { mode: 'fixed' as const, size: 'compact' as const },
+    source: { kind: 'declarative' as const, document: createSessionSurfaceNoteDocumentV1('Body') },
+};
+
+describe('buildSessionBoardItemActions', () => {
+    it('groups the complete item operation set by content, movement, geometry, and destruction', () => {
+        const actions = buildSessionBoardItemActions({
+            density: 'full',
+            canEdit: true,
+            item,
+            width: 'medium',
+            onReadFull: vi.fn(),
+            onEdit: vi.fn(),
+            onRename: vi.fn(),
+            onMove: vi.fn(),
+            moveDestinations: [{ id: 'research', title: 'Research' }],
+            onMoveToView: vi.fn(),
+            onResize: vi.fn(),
+            onSetHeight: vi.fn(),
+            onRemove: vi.fn(),
+        });
+
+        expect(actions.map((action) => [action.id, action.group?.id])).toEqual([
+            ['read-full', 'content'],
+            ['edit', 'content'],
+            ['rename', 'content'],
+            ['move-before', 'movement'],
+            ['move-after', 'movement'],
+            ['move-view-research', 'movement'],
+            ['resize-compact', 'geometry'],
+            ['resize-medium', 'geometry'],
+            ['resize-wide', 'geometry'],
+            ['resize-full', 'geometry'],
+            ['height-auto', 'geometry'],
+            ['height-compact', 'geometry'],
+            ['height-regular', 'geometry'],
+            ['height-tall', 'geometry'],
+            ['remove', 'destructive'],
+        ]);
+    });
+
+    // "Board views: Research" was assembled in code from an unrelated label and a
+    // hardcoded colon. It is not a phrase any locale authored, it names no verb,
+    // and a screen reader reads it as a heading rather than an operation.
+    it('names the destination board view through one authored phrase, not a code-joined label', () => {
+        const actions = buildSessionBoardItemActions({
+            density: 'full',
+            canEdit: true,
+            item,
+            width: 'medium',
+            moveDestinations: [{ id: 'research', title: 'Research' }],
+            onMoveToView: vi.fn(),
+        });
+
+        const destination = actions.find((action) => action.id === 'move-view-research');
+
+        expect(destination?.title).toBe(t('sessionBoard.item.actions.moveToView', { title: 'Research' }));
+        expect(destination?.title).not.toContain(`${t('sessionBoard.views.label')}:`);
+    });
+
+    it('maps Fit content to automatic height with the nearest semantic fallback, never pixels', () => {
+        const onSetHeight = vi.fn();
+        const actions = buildSessionBoardItemActions({
+            density: 'full',
+            canEdit: true,
+            item,
+            width: 'medium',
+            reportedHeight: 432,
+            onSetHeight,
+        });
+
+        actions.find((action) => action.id === 'height-auto')?.onPress?.();
+
+        expect(onSetHeight).toHaveBeenCalledWith({ mode: 'auto', fallback: 'tall' });
+        expect(onSetHeight).not.toHaveBeenCalledWith(expect.objectContaining({ height: expect.any(Number) }));
+    });
+
+    it('uses the canonical regular semantic fallback when no reliable measurement exists', () => {
+        const onSetHeight = vi.fn();
+        const actions = buildSessionBoardItemActions({
+            density: 'full',
+            canEdit: true,
+            item,
+            width: 'medium',
+            reportedHeight: Number.NaN,
+            onSetHeight,
+        });
+
+        actions.find((action) => action.id === 'height-auto')?.onPress?.();
+
+        expect(onSetHeight).toHaveBeenCalledWith({ mode: 'auto', fallback: 'regular' });
+    });
+
+    it('offers the same real editor for caller-hosted HTML but not installed plugin surfaces', () => {
+        const onEdit = vi.fn();
+        const hostedActions = buildSessionBoardItemActions({
+            density: 'full',
+            canEdit: true,
+            item: {
+                ...item,
+                source: { kind: 'hostedHtml', source: { kind: 'html', html: '<main />' } },
+            },
+            onEdit,
+        });
+        const installedActions = buildSessionBoardItemActions({
+            density: 'full',
+            canEdit: true,
+            item: {
+                ...item,
+                source: { kind: 'installedSurface', surface: { pluginId: 'acme.widget', localId: 'status' } },
+            },
+            onEdit,
+        });
+
+        expect(hostedActions.some((action) => action.id === 'edit')).toBe(true);
+        expect(installedActions.some((action) => action.id === 'edit')).toBe(false);
+    });
+
+    // The Note editor round-trips exactly one declarative shape. An Agent may
+    // author any admitted presentational document through the same Board Action,
+    // and the editor cannot open that: offering Edit there is a control that does
+    // nothing when pressed.
+    it('omits Edit for a declarative document the Note editor cannot open', () => {
+        const actions = buildSessionBoardItemActions({
+            density: 'full',
+            canEdit: true,
+            item: {
+                ...item,
+                source: {
+                    kind: 'declarative',
+                    document: SessionSurfaceDeclarativeDocumentV1Schema.parse({
+                        version: 1,
+                        root: { kind: 'stack', children: [{ kind: 'text', text: 'Build 42 is green' }] },
+                    }),
+                },
+            },
+            onEdit: vi.fn(),
+            onReadFull: vi.fn(),
+        });
+
+        expect(actions.some((action) => action.id === 'edit')).toBe(false);
+        // The item stays fully reachable; only the editor it has no editor for is absent.
+        expect(actions.some((action) => action.id === 'read-full')).toBe(true);
+    });
+});

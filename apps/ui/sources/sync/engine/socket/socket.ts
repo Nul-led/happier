@@ -1,3 +1,8 @@
+import { resolveSessionViewerProjectionUpdate } from '@/sync/domains/session/readState/sessionViewer';
+import {
+    isSessionAccessOwner,
+    normalizeSessionAccessProjection,
+} from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import type { ApiEphemeralActivityUpdate, ApiMessage, ApiUpdateContainer } from '@/sync/api/types/apiTypes';
 import type { Encryption } from '@/sync/encryption/encryption';
 import {
@@ -7,9 +12,15 @@ import {
 } from '@/sync/typesRaw';
 import type { EphemeralUpdate } from '@happier-dev/protocol/updates';
 import type { ActionOperationSnapshotEphemeralV1 } from '@happier-dev/protocol';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import {
+    isPlainMachineDataKeyMarker,
+    resolvePublishedMachineDataEncryptionKeyV1,
+} from '@happier-dev/protocol';
+import { normalizeActionOperationEphemeralIngress } from '@/sync/domains/actionOperations/actionOperationEphemeralIngress';
+import type { PendingMessage, Session } from '@/sync/domains/state/storageTypes';
 import type { Machine } from '@/sync/domains/state/storageTypes';
-import { buildPendingChangedSessionPatch } from './pendingChangedSessionPatch';
+import { fireAndForget } from '@/utils/system/fireAndForget';
+import { buildPendingChangedSessionPatch, readPendingChangedRecipient } from './pendingChangedSessionPatch';
 import {
     getSessionSurfaceVisibilitySnapshot,
     isSessionSurfaceVisible,
@@ -28,6 +39,12 @@ import {
 import { isRecoveredHistoryTranscriptObservation } from '@/sync/domains/messages/transcriptObservationProvenance';
 import type { MachineActivityUpdate } from '@/sync/reducer/machineActivityAccumulator';
 import { storage } from '@/sync/domains/state/storage';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import {
+    normalizeSessionAddress,
+    sessionAddressKey,
+    type SessionAddress,
+} from '@/sync/domains/session/sessionAddress';
 import { classifySessionTupleApplyCurrentness } from '@/sync/store/domains/sessionTupleApplyCurrentness';
 import { projectManager } from '@/sync/runtime/orchestration/projectManager';
 import { notifyExecutionRunActivity } from '@/sync/runtime/executionRuns/executionRunActivityBus';
@@ -59,6 +76,10 @@ import {
 } from '@/sync/engine/sessions/sessionMessageMaterializationBarrier';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
+import {
+    isUiSessionEncryptionModeAllowed,
+    resolveUiClientEncryptionRequirement,
+} from '@/sync/domains/settings/clientEncryptionRequirement';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 import {
     buildUpdatedSessionProjectionFromSocketUpdate,
@@ -98,6 +119,7 @@ import {
 } from '@/sync/engine/social/syncFeed';
 import { applyAutomationSocketUpdate } from '@/sync/engine/automations/automationSocketApply';
 import { normalizeRelationshipUpdatedUpdateBody } from '@/sync/engine/social/relationshipUpdate';
+import { notifySessionPublicLinkInvalidated } from '@/sync/domains/social/sessionPublicLinkInvalidation';
 import { parseEphemeralUpdate, parseUpdateContainer } from './socketParse';
 import type { ExternalSessionTranscriptUpdatedEphemeralUpdate } from './socketParse';
 import { FeedBodySchema } from '@/sync/domains/social/feedTypes';
@@ -135,6 +157,7 @@ export type SocketSessionHydrationReason =
     | 'socket-update-owner-metadata'
     | 'socket-update-attention-unknown'
     | 'socket-update-runtime-activity-conflict'
+    | 'socket-update-responsibility-invalid'
     | 'share-visibility-change';
 
 type ActivityRenderablePatch = Readonly<{
@@ -156,6 +179,43 @@ let socketMessageApplyHandlers: SocketMessageApplyHandlers | null = null;
 let socketSessionApplyHandlers: { applySessions: ApplySessions } | null = null;
 const socketSessionApplyTuning = loadSyncTuning();
 
+function resolveSocketProjectionServerId(sourceServerId?: string | null): string | null {
+    const declaredServerId = String(sourceServerId ?? '').trim();
+    if (declaredServerId) return declaredServerId;
+    return String(getActiveServerSnapshot().serverId ?? '').trim() || null;
+}
+
+function resolveSocketProjectionAddress(
+    sessionId: string,
+    sourceServerId?: string | null,
+): SessionAddress | null {
+    return normalizeSessionAddress(resolveSocketProjectionServerId(sourceServerId), sessionId);
+}
+
+function readSessionListRenderable(address: SessionAddress): SessionListRenderableSession | undefined {
+    return storage.getState().sessionListRowsByServerId[address.serverId]?.[address.sessionId];
+}
+
+function applySessionListRenderablePatches(
+    patches: ReadonlyArray<Readonly<{
+        address: SessionAddress;
+        patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
+    }>>,
+): void {
+    const patchesByServerId = new Map<string, Array<{
+        sessionId: string;
+        patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
+    }>>();
+    for (const { address, patch } of patches) {
+        const serverPatches = patchesByServerId.get(address.serverId) ?? [];
+        serverPatches.push({ sessionId: address.sessionId, patch });
+        patchesByServerId.set(address.serverId, serverPatches);
+    }
+    for (const [serverId, serverPatches] of patchesByServerId) {
+        storage.getState().applyServerScopedSessionListRowPatches(serverId, serverPatches);
+    }
+}
+
 const socketSessionApplyCoalescer = createSessionApplyCoalescer({
     getConfig: () => ({
         enabled: socketSessionApplyTuning.sessionSocketApplyCoalescingEnabled,
@@ -173,17 +233,17 @@ const durableMessageProjectionPatchCoalescer = createSessionListRenderableProjec
         windowMs: socketSessionApplyTuning.activityUpdateDebounceMs,
         maxBatchSize: socketSessionApplyTuning.sessionSocketApplyCoalescingMaxBatchSize,
     }),
-    readRenderable: (sessionId) => storage.getState().sessionListRenderables[sessionId],
+    readRenderable: readSessionListRenderable,
     buildPatch: ({ renderable, payload }) => buildCacheOnlyDurableMessageProjectionPatch({
         renderable,
         updateData: payload.updateData,
         rawMessage: payload.rawMessage,
         messageSeq: payload.messageSeq,
     }),
-    applyPatches: (patches) => storage.getState().applySessionListRenderablePatches(patches),
+    applyPatches: applySessionListRenderablePatches,
 });
 
-const cacheOnlySessionUpdateSeqBySession = new Map<string, number>();
+const cacheOnlySessionUpdateSeqByAddress = new Map<string, number>();
 
 const cacheOnlySessionUpdateProjectionPatchCoalescer = createSessionListRenderableProjectionPatchCoalescer<CacheOnlySessionUpdateProjectionPatchPayload>({
     getConfig: () => ({
@@ -191,13 +251,14 @@ const cacheOnlySessionUpdateProjectionPatchCoalescer = createSessionListRenderab
         windowMs: socketSessionApplyTuning.activityUpdateDebounceMs,
         maxBatchSize: socketSessionApplyTuning.sessionSocketApplyCoalescingMaxBatchSize,
     }),
-    readRenderable: (sessionId) => storage.getState().sessionListRenderables[sessionId],
-    buildPatch: ({ renderable, payload }) => {
-        const previousSeq = cacheOnlySessionUpdateSeqBySession.get(renderable.id) ?? 0;
-        cacheOnlySessionUpdateSeqBySession.set(renderable.id, Math.max(previousSeq, Math.trunc(payload.updateSeq)));
+    readRenderable: readSessionListRenderable,
+    buildPatch: ({ address, renderable, payload }) => {
+        const key = sessionAddressKey(address);
+        const previousSeq = cacheOnlySessionUpdateSeqByAddress.get(key) ?? 0;
+        cacheOnlySessionUpdateSeqByAddress.set(key, Math.max(previousSeq, Math.trunc(payload.updateSeq)));
         return payload.patch;
     },
-    applyPatches: (patches) => storage.getState().applySessionListRenderablePatches(patches),
+    applyPatches: applySessionListRenderablePatches,
 });
 
 const activityRenderableProjectionPatchCoalescer = createSessionListRenderableProjectionPatchCoalescer<ActivityRenderableProjectionPatchPayload>({
@@ -206,9 +267,9 @@ const activityRenderableProjectionPatchCoalescer = createSessionListRenderablePr
         windowMs: socketSessionApplyTuning.sessionSocketApplyCoalescingWindowMs,
         maxBatchSize: socketSessionApplyTuning.sessionSocketApplyCoalescingMaxBatchSize,
     }),
-    readRenderable: (sessionId) => storage.getState().sessionListRenderables[sessionId],
+    readRenderable: readSessionListRenderable,
     buildPatch: ({ payload }) => payload.patch,
-    applyPatches: (patches) => storage.getState().applySessionListRenderablePatches(patches),
+    applyPatches: applySessionListRenderablePatches,
 });
 
 function getSocketMessageApplyConfig() {
@@ -238,10 +299,7 @@ function setSocketSessionApplyHandler(applySessions: ApplySessions): void {
 }
 
 function normalizeSocketSession(session: SessionApplyCoalescerSession): Session {
-    return {
-        ...session,
-        presence: session.presence ?? 'online',
-    };
+    return { ...session };
 }
 
 function getSocketSessionApplyBase(sessionId: string): Session | undefined {
@@ -308,11 +366,12 @@ function shouldSkipFreshTimestampOnlyRenderableActivityPatch(
 }
 
 function shouldApplyCacheOnlyActivityRenderablePatch(
-    sessionId: string,
+    address: SessionAddress,
     patch: ActivityRenderablePatch,
 ): boolean {
-    if (storage.getState().sessions[sessionId]) return false;
-    const renderable = storage.getState().sessionListRenderables[sessionId];
+    const materializedSession = storage.getState().sessions[address.sessionId];
+    if (materializedSession?.serverId === address.serverId) return false;
+    const renderable = readSessionListRenderable(address);
     if (!renderable) return false;
 
     const isTimestampOnlyPatch = isTimestampOnlyActivityPatch(renderable, patch);
@@ -456,10 +515,13 @@ export function dropSocketSessionWork(sessionId: string, sourceServerId?: string
     socketSessionApplyCoalescer.dropSessionIds(sessionIds);
     socketMessageApplyCoalescer.dropSessionIds(sessionIds);
     dropSocketRawMessageNormalizationState(normalizedSessionId, sourceServerId);
-    durableMessageProjectionPatchCoalescer.dropSessionIds(sessionIds);
-    cacheOnlySessionUpdateProjectionPatchCoalescer.dropSessionIds(sessionIds);
-    activityRenderableProjectionPatchCoalescer.dropSessionIds(sessionIds);
-    cacheOnlySessionUpdateSeqBySession.delete(normalizedSessionId);
+    const address = resolveSocketProjectionAddress(normalizedSessionId, sourceServerId);
+    if (address) {
+        durableMessageProjectionPatchCoalescer.dropAddresses([address]);
+        cacheOnlySessionUpdateProjectionPatchCoalescer.dropAddresses([address]);
+        activityRenderableProjectionPatchCoalescer.dropAddresses([address]);
+        cacheOnlySessionUpdateSeqByAddress.delete(sessionAddressKey(address));
+    }
     transcriptStreamSegmentSocketQueueController.drop(normalizedSessionId);
 }
 
@@ -511,12 +573,31 @@ function readSocketSessionId(body: unknown): string | null {
     return typeof candidate === 'string' && candidate.trim().length > 0 ? candidate.trim() : null;
 }
 
-function buildShareSessionPatch(body: unknown): Partial<Pick<Session, 'accessLevel' | 'canApprovePermissions' | 'updatedAt'>> {
+function buildShareSessionPatch(
+    session: Pick<Session, 'access' | 'accessLevel' | 'canApprovePermissions'>,
+    body: unknown,
+): Partial<Pick<Session, 'access' | 'accessLevel' | 'canApprovePermissions' | 'updatedAt'>> {
     if (!body || typeof body !== 'object') return {};
     const shareBody = body as { accessLevel?: unknown; canApprovePermissions?: unknown; updatedAt?: unknown; createdAt?: unknown };
     const accessLevel = normalizeShareAccessLevel(shareBody.accessLevel);
+    const canApprovePermissions = typeof shareBody.canApprovePermissions === 'boolean'
+        ? shareBody.canApprovePermissions
+        : session.canApprovePermissions;
     const updatedAt = finiteTimestamp(shareBody.updatedAt) ?? finiteTimestamp(shareBody.createdAt);
+    // Released direct-share rows are normalized without `sources`. Keep that
+    // normalized projection current when a released share event supplies its
+    // replacement fields. A sourced current projection remains authoritative,
+    // and `null` remains the fail-closed marker for malformed current input.
+    const legacyAccess = session.access !== null && session.access?.sources === undefined
+        ? normalizeSessionAccessProjection({
+            share: {
+                accessLevel: accessLevel ?? session.accessLevel,
+                canApprovePermissions,
+            },
+        }, { allowLegacy: true })
+        : null;
     return {
+        ...(legacyAccess ? { access: legacyAccess } : {}),
         ...(accessLevel === undefined ? {} : { accessLevel }),
         ...(typeof shareBody.canApprovePermissions === 'boolean'
             ? { canApprovePermissions: shareBody.canApprovePermissions }
@@ -600,8 +681,15 @@ function shouldHydrateTurnsProjectionForSessionUpdate(params: Readonly<{
 }
 
 function hasSafeCacheOnlySessionProjectionFields(updateBody: any): boolean {
+    if (updateBody && typeof updateBody === 'object' && (
+        Object.prototype.hasOwnProperty.call(updateBody, 'responsibleAccountId')
+        || Object.prototype.hasOwnProperty.call(updateBody, 'responsibleAccount')
+    )) {
+        return false;
+    }
     return (
-        typeof updateBody.lastViewedSessionSeq === 'number'
+        updateBody.viewer !== undefined
+        || typeof updateBody.lastViewedSessionSeq === 'number'
         || typeof updateBody.pendingPermissionRequestCount === 'number'
         || typeof updateBody.pendingUserActionRequestCount === 'number'
         || typeof updateBody.pendingRequestObservedAt === 'number'
@@ -637,6 +725,7 @@ function buildCacheOnlySessionProjectionPatch(params: Readonly<{
     onRuntimeActivityResyncRequired?: SessionRuntimeActivityResyncHandler;
 }>): Partial<SessionListRenderableSession> {
     const { renderable, updateBody, updateSeq, updateCreatedAt } = params;
+    const viewer = resolveSessionViewerProjectionUpdate(updateBody.viewer, renderable.viewer);
     const nextSessionSeq = computeNextSessionSeqFromUpdate({
         currentSessionSeq: renderable.seq ?? 0,
         updateType: 'update-session',
@@ -677,6 +766,7 @@ function buildCacheOnlySessionProjectionPatch(params: Readonly<{
         || typeof updateBody.latestReadyEventSeq === 'number'
         || isTerminalProjectionStatus(updateBody.latestTurnStatus);
     return {
+        viewer,
         seq: nextSessionSeq,
         updatedAt: updateCreatedAt,
         meaningfulActivityAt:
@@ -734,6 +824,10 @@ function buildCacheOnlySessionProjectionPatch(params: Readonly<{
             params.onRuntimeActivityResyncRequired,
         ),
         hasUnreadMessages: deriveSessionListRenderableHasUnreadMessagesFromMetadataPatch({
+            viewer,
+            owner: renderable.owner,
+            access: renderable.access,
+            accessLevel: renderable.accessLevel,
             metadata: undefined,
             nextSessionSeq,
             nextLastViewedSessionSeq,
@@ -785,6 +879,10 @@ function buildCacheOnlyDurableMessageProjectionPatch(params: Readonly<{
         ...(advancesUpdatedAt ? { updatedAt: updateCreatedAt } : {}),
         ...(advancesMeaningfulActivityAt ? { meaningfulActivityAt: nextMeaningfulActivityAt } : {}),
         hasUnreadMessages: deriveSessionListRenderableHasUnreadMessagesFromMetadataPatch({
+            viewer: renderable.viewer,
+            owner: renderable.owner,
+            access: renderable.access,
+            accessLevel: renderable.accessLevel,
             metadata: undefined,
             nextSessionSeq,
             nextLastViewedSessionSeq: renderable.lastViewedSessionSeq ?? null,
@@ -860,6 +958,7 @@ function shouldApplyCacheOnlySessionUpdateProjectionPatchImmediately(params: Rea
         || hasPatchField(patch, 'metadataVersion')
         || patchBooleanFieldChanged(renderable, patch, 'active')
         || patchBooleanFieldChanged(renderable, patch, 'thinking')
+        || patchNullableFieldChanged(renderable, patch, 'viewer')
         || patchNullableFieldChanged(renderable, patch, 'archivedAt')
         || patchNullableFieldChanged(renderable, patch, 'lastRuntimeIssue')
         || patchNumberFieldChanged(renderable, patch, 'runtimeActivityActiveCount')
@@ -869,7 +968,7 @@ function shouldApplyCacheOnlySessionUpdateProjectionPatchImmediately(params: Rea
 }
 
 function applyCacheOnlySessionUpdateProjectionPatch(params: Readonly<{
-    sessionId: string;
+    address: SessionAddress;
     renderable: SessionListRenderableSession;
     patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
     updateSeq: number;
@@ -886,18 +985,18 @@ function applyCacheOnlySessionUpdateProjectionPatch(params: Readonly<{
     const shouldContinue = () => {
         if (params.shouldContinue && !params.shouldContinue()) return false;
         if (patchUpdatedAt === null) return true;
-        const currentRenderable = storage.getState().sessionListRenderables[params.sessionId];
+        const currentRenderable = readSessionListRenderable(params.address);
         const currentUpdatedAt = finiteNumber(currentRenderable?.updatedAt) ?? 0;
         if (currentUpdatedAt < patchUpdatedAt) return true;
         if (currentUpdatedAt > patchUpdatedAt) return false;
-        const currentUpdateSeq = cacheOnlySessionUpdateSeqBySession.get(params.sessionId) ?? 0;
+        const currentUpdateSeq = cacheOnlySessionUpdateSeqByAddress.get(sessionAddressKey(params.address)) ?? 0;
         if (currentUpdateSeq < params.updateSeq) return true;
         if (patchSeq === null) return false;
         const currentSeq = finiteNumber(currentRenderable?.seq) ?? 0;
         return currentSeq < patchSeq;
     };
     cacheOnlySessionUpdateProjectionPatchCoalescer.enqueue(
-        params.sessionId,
+        params.address,
         { patch, updateSeq: params.updateSeq },
         {
             shouldContinue,
@@ -908,7 +1007,7 @@ function applyCacheOnlySessionUpdateProjectionPatch(params: Readonly<{
 }
 
 function applyCacheOnlyDurableMessageProjectionPatch(params: Readonly<{
-    sessionId: string;
+    address: SessionAddress;
     updateData: ApiUpdateContainer;
     rawMessage: ApiMessage | undefined;
     messageSeq: number | null;
@@ -917,7 +1016,7 @@ function applyCacheOnlyDurableMessageProjectionPatch(params: Readonly<{
     if (storedSessionMessageAttentionImpactOrNull(params.rawMessage) === null) {
         return false;
     }
-    const renderable = storage.getState().sessionListRenderables[params.sessionId];
+    const renderable = readSessionListRenderable(params.address);
     if (!renderable) return false;
     const leadingPatch = buildCacheOnlyDurableMessageProjectionPatch({
         renderable,
@@ -926,7 +1025,7 @@ function applyCacheOnlyDurableMessageProjectionPatch(params: Readonly<{
         messageSeq: params.messageSeq,
     });
     durableMessageProjectionPatchCoalescer.enqueue(
-        params.sessionId,
+        params.address,
         {
             updateData: params.updateData,
             rawMessage: params.rawMessage,
@@ -1014,6 +1113,8 @@ export async function handleSocketUpdate(params: {
     invalidateAutomationsCoalesced?: () => void;
     invalidateTodos: () => void;
     onTaskLifecycleEvent?: (sessionId: string, event: import('@/sync/engine/sessions/taskLifecycle').TaskLifecycleEvent) => void;
+    /** Exact-target Pending refresh: the receipt for a Run-scoped `pending-changed` body. */
+    refreshPendingForRecipient?: (sessionId: string, recipient: NonNullable<PendingMessage['recipient']>) => Promise<void>;
     log: { log: (message: string) => void };
 }): Promise<void> {
     const {
@@ -1053,6 +1154,7 @@ export async function handleSocketUpdate(params: {
         invalidateAutomationsCoalesced,
         invalidateTodos,
         onTaskLifecycleEvent,
+        refreshPendingForRecipient,
         log,
     } = params;
 
@@ -1099,6 +1201,7 @@ export async function handleSocketUpdate(params: {
         invalidateAutomationsCoalesced,
         invalidateTodos,
         onTaskLifecycleEvent,
+        refreshPendingForRecipient,
         log,
     });
 }
@@ -1142,6 +1245,7 @@ export async function handleUpdateContainer(params: {
     invalidateAutomationsCoalesced?: () => void;
     invalidateTodos: () => void;
     onTaskLifecycleEvent?: (sessionId: string, event: import('@/sync/engine/sessions/taskLifecycle').TaskLifecycleEvent) => void;
+    refreshPendingForRecipient?: (sessionId: string, recipient: NonNullable<PendingMessage['recipient']>) => Promise<void>;
     log: { log: (message: string) => void };
 }): Promise<void> {
     const {
@@ -1181,10 +1285,34 @@ export async function handleUpdateContainer(params: {
         invalidateAutomationsCoalesced,
         invalidateTodos,
         onTaskLifecycleEvent,
+        refreshPendingForRecipient,
         log,
     } = params;
 
     if (!shouldContinue()) return;
+    const projectionServerId = resolveSocketProjectionServerId(sourceServerId);
+    const getProjectionAddress = (sessionId: string) => normalizeSessionAddress(projectionServerId, sessionId);
+    const getSessionProjection = (sessionId: string) => {
+        const address = getProjectionAddress(sessionId);
+        return address ? readSessionListRenderable(address) : undefined;
+    };
+    const isPlainSessionBlockedByClientRequirement = (
+        sessionId: string,
+        incomingMode?: 'e2ee' | 'plain',
+    ): boolean => {
+        const state = storage.getState();
+        const requirement = resolveUiClientEncryptionRequirement({
+            syncedSettings: state.settings,
+            localSettings: state.settings,
+        });
+        if (requirement !== 'require_e2ee') return false;
+        const session = getSocketSessionApplyBase(sessionId);
+        const projection = getSessionProjection(sessionId);
+        const mode = incomingMode
+            ?? (session?.encryptionMode === 'plain' ? 'plain' : session ? 'e2ee' : undefined)
+            ?? (projection?.encryptionMode === 'plain' ? 'plain' : projection ? 'e2ee' : undefined);
+        return mode !== 'e2ee';
+    };
 
     if (updateData.body.t === 'account-change') {
         onAccountChangeWake?.();
@@ -1192,6 +1320,7 @@ export async function handleUpdateContainer(params: {
     }
 
     if (updateData.body.t === 'new-message') {
+        if (isPlainSessionBlockedByClientRequirement(updateData.body.sid)) return;
         const getSessionMaterializedMaxSeqForGapDetection = (sessionId: string) =>
             Math.max(
                 getSessionMaterializedMaxSeq(sessionId),
@@ -1205,10 +1334,11 @@ export async function handleUpdateContainer(params: {
         };
         await trackSessionMessageMaterialization(updateData.body.sid, handleNewMessageSocketUpdate({
             updateData,
+            serverId: sourceServerId,
             shouldContinue,
             getSessionEncryption: (sessionId) => encryption?.getSessionEncryption(sessionId) ?? null,
             getSession: getSocketSessionApplyBase,
-            getSessionProjection: (sessionId) => storage.getState().sessionListRenderables[sessionId],
+            getSessionProjection,
             applySessions: (sessions) => {
                 if (!shouldContinue()) return;
                 enqueueSocketSessionApplyGuarded(applySessions, sessions, shouldContinue, {
@@ -1229,8 +1359,10 @@ export async function handleUpdateContainer(params: {
             },
             applyCacheOnlySessionProjectionPatch: ({ sessionId, updateData, rawMessage, messageSeq }) => {
                 if (!shouldContinue()) return false;
+                const address = getProjectionAddress(sessionId);
+                if (!address) return false;
                 return applyCacheOnlyDurableMessageProjectionPatch({
-                    sessionId,
+                    address,
                     updateData,
                     rawMessage,
                     messageSeq,
@@ -1274,6 +1406,7 @@ export async function handleUpdateContainer(params: {
                 : undefined,
         }));
     } else if (updateData.body.t === 'message-updated') {
+        if (isPlainSessionBlockedByClientRequirement(updateData.body.sid)) return;
         const getSessionMaterializedMaxSeqForGapDetection = (sessionId: string) =>
             Math.max(
                 getSessionMaterializedMaxSeq(sessionId),
@@ -1284,10 +1417,11 @@ export async function handleUpdateContainer(params: {
 
         await trackSessionMessageMaterialization(updateData.body.sid, handleMessageUpdatedSocketUpdate({
             updateData,
+            serverId: sourceServerId,
             shouldContinue,
             getSessionEncryption: (sessionId) => encryption?.getSessionEncryption(sessionId) ?? null,
             getSession: getSocketSessionApplyBase,
-            getSessionProjection: (sessionId) => storage.getState().sessionListRenderables[sessionId],
+            getSessionProjection,
             applySessions: (sessions) => {
                 if (!shouldContinue()) return;
                 const hiddenProjectionSessions = sessions.filter((session) => (
@@ -1319,8 +1453,10 @@ export async function handleUpdateContainer(params: {
             },
             applyCacheOnlySessionProjectionPatch: ({ sessionId, updateData, rawMessage, messageSeq }) => {
                 if (!shouldContinue()) return false;
+                const address = getProjectionAddress(sessionId);
+                if (!address) return false;
                 return applyCacheOnlyDurableMessageProjectionPatch({
-                    sessionId,
+                    address,
                     updateData,
                     rawMessage,
                     messageSeq,
@@ -1362,6 +1498,10 @@ export async function handleUpdateContainer(params: {
                 : undefined,
         }));
     } else if (updateData.body.t === 'new-session') {
+        if (isPlainSessionBlockedByClientRequirement(
+            updateData.body.id,
+            updateData.body.encryptionMode === 'plain' ? 'plain' : 'e2ee',
+        )) return;
         log.log('🆕 New session update received');
         if (!shouldContinue()) return;
         const socketSessionId = readSocketSessionId(updateData.body);
@@ -1372,6 +1512,7 @@ export async function handleUpdateContainer(params: {
             updateCreatedAt: updateData.createdAt,
             sourceServerId,
             encryption,
+            shouldContinue,
         });
         if (!shouldContinue()) return;
         if (nextSession) {
@@ -1391,7 +1532,7 @@ export async function handleUpdateContainer(params: {
         log.log('🗑️ Delete session update received');
         handleDeleteSessionSocketUpdate({
             sessionId: updateData.body.sid,
-            dropSocketSessionWork: (sessionId) => dropSocketSessionWork(sessionId, sourceServerId),
+            dropSocketSessionWork: (sessionId) => dropSocketSessionWork(sessionId, projectionServerId),
             invalidateSessionHydration,
             resetSessionTranscriptState,
             deleteSession: (sessionId) => storage.getState().deleteSession(sessionId),
@@ -1411,11 +1552,12 @@ export async function handleUpdateContainer(params: {
         const state = storage.getState();
         const session = getSocketSessionApplyBase(sessionId);
         if (!session) {
-            const cachedRenderable = state.sessionListRenderables[sessionId];
-            if (cachedRenderable) {
-                state.applySessionListRenderablePatches([
+            const address = getProjectionAddress(sessionId);
+            const cachedRenderable = address ? readSessionListRenderable(address) : undefined;
+            if (address && cachedRenderable) {
+                applySessionListRenderablePatches([
                     {
-                        sessionId,
+                        address,
                         patch: pendingPatch,
                     },
                 ]);
@@ -1440,6 +1582,17 @@ export async function handleUpdateContainer(params: {
             }], shouldContinue);
         }
 
+        // `pendingCount` is the MAIN queue's count; a Run-scoped body carries the target it speaks
+        // for, and that target's receipt is its own snapshot refresh (the store keeps Run rows out
+        // of the main-count prune below).
+        const pendingRecipient = readPendingChangedRecipient(updateData.body);
+        if (pendingRecipient && refreshPendingForRecipient) {
+            fireAndForget(refreshPendingForRecipient(sessionId, pendingRecipient), {
+                tag: 'socket.pendingChanged.refreshPendingForRecipient',
+                logError: false,
+            });
+        }
+
         if (pendingPatch.pendingCount === 0) {
             // An empty queue is the RECEIPT for messages this client may still be materializing.
             // Retiring the pending rows first publishes a transcript frame carrying neither the
@@ -1461,15 +1614,47 @@ export async function handleUpdateContainer(params: {
                 invalidateSessions,
             });
         };
+        const onResponsibilityResyncRequired = () => {
+            if (!shouldContinue()) return;
+            requestTargetedSessionHydration({
+                sessionId: runtimeActivitySessionId,
+                reason: 'socket-update-responsibility-invalid',
+                hydrateSessionById,
+                invalidateSessions,
+            });
+        };
         if (!session) {
-            const cachedRenderable = state.sessionListRenderables[updateData.body.id];
-            if (!cachedRenderable) {
+            const address = getProjectionAddress(updateData.body.id);
+            const cachedRenderable = address ? readSessionListRenderable(address) : undefined;
+            if (!address || !cachedRenderable) {
                 if (!shouldContinue()) return;
                 requestTargetedSessionHydration({
                     sessionId: updateData.body.id,
                     reason: 'socket-update-missing-session',
                     hydrateSessionById,
                     invalidateSessions,
+                });
+                return;
+            }
+
+            if (isPlainSessionBlockedByClientRequirement(
+                updateData.body.id,
+                cachedRenderable.encryptionMode === 'plain' ? 'plain' : 'e2ee',
+            )) {
+                if (!hasSafeCacheOnlySessionProjectionFields(updateData.body)) return;
+                const renderablePatch = buildCacheOnlySessionProjectionPatch({
+                    renderable: cachedRenderable,
+                    updateBody: updateData.body,
+                    updateSeq: updateData.seq,
+                    updateCreatedAt: updateData.createdAt,
+                    onRuntimeActivityResyncRequired,
+                });
+                applyCacheOnlySessionUpdateProjectionPatch({
+                    address,
+                    renderable: cachedRenderable,
+                    patch: renderablePatch,
+                    updateSeq: updateData.seq,
+                    shouldContinue,
                 });
                 return;
             }
@@ -1501,6 +1686,7 @@ export async function handleUpdateContainer(params: {
                     updateCreatedAt: updateData.createdAt,
                     sessionEncryption,
                     onRuntimeActivityResyncRequired,
+                    onResponsibilityResyncRequired,
                     hydrateState: sessionEncryption
                         ? {
                             metadata: updateData.body.metadata != null,
@@ -1511,7 +1697,7 @@ export async function handleUpdateContainer(params: {
             const readySeq = shouldReportReadyProjectionAdvance(cachedRenderable, updateData.body.latestReadyEventSeq);
             if (!shouldContinue()) return;
             applyCacheOnlySessionUpdateProjectionPatch({
-                sessionId: updateData.body.id,
+                address,
                 renderable: cachedRenderable,
                 patch: renderablePatch,
                 updateSeq: updateData.seq,
@@ -1534,17 +1720,26 @@ export async function handleUpdateContainer(params: {
 
         const fullContentConsumerActive = isSessionFullContentConsumerActiveForRealtime(updateData.body.id, sourceServerId);
         const sessionEncryptionMode: 'e2ee' | 'plain' = session.encryptionMode === 'plain' ? 'plain' : 'e2ee';
+        const clientAllowsSessionContent = isUiSessionEncryptionModeAllowed({
+            mode: sessionEncryptionMode,
+            requirement: resolveUiClientEncryptionRequirement({
+                syncedSettings: state.settings,
+                localSettings: state.settings,
+            }),
+        });
         const sessionEncryption = sessionEncryptionMode === 'plain'
             ? null
             : encryption?.getSessionEncryption(updateData.body.id) ?? null;
         const shouldHydrateMetadata =
-            updateData.body.metadata != null
+            clientAllowsSessionContent
+            && updateData.body.metadata != null
             && (
                 sessionEncryptionMode === 'plain'
                 || sessionEncryption != null
             );
         const shouldHydrateAgentState =
-            updateData.body.agentState != null
+            clientAllowsSessionContent
+            && updateData.body.agentState != null
             && (
                 sessionEncryptionMode === 'plain'
                 || (
@@ -1578,6 +1773,7 @@ export async function handleUpdateContainer(params: {
                 updateCreatedAt: updateData.createdAt,
                 sessionEncryption,
                 onRuntimeActivityResyncRequired,
+                onResponsibilityResyncRequired,
                 hydrateState: {
                     metadata: shouldHydrateMetadata,
                     agentState: shouldHydrateAgentState,
@@ -1590,6 +1786,7 @@ export async function handleUpdateContainer(params: {
                     updateSeq: updateData.seq,
                     updateCreatedAt: updateData.createdAt,
                     onRuntimeActivityResyncRequired,
+                    onResponsibilityResyncRequired,
                 }),
                 agentState: session.agentState,
             };
@@ -1603,7 +1800,7 @@ export async function handleUpdateContainer(params: {
         enqueueSocketSessionApplyGuarded(applySessions, [nextSession], shouldContinue);
         const shouldRefreshLayout1OwnerMetadata =
             updateData.body.metadata != null
-            && session.accessLevel === undefined
+            && isSessionAccessOwner(session.access, session.accessLevel)
             && (
                 session.metadataLayoutVersion === 1
                 || updateData.body.metadataLayoutVersion === 1
@@ -1640,7 +1837,10 @@ export async function handleUpdateContainer(params: {
         ) {
             for (const nextRequest of deriveNewAgentRequests(session.agentState?.requests, agentState?.requests)) {
                 notifyActivityAgentRequest({
-                    sessionId: updateData.body.id,
+                    address: {
+                        serverId: sourceServerId ?? '',
+                        sessionId: updateData.body.id,
+                    },
                     requestId: nextRequest.requestId,
                     ...(nextRequest.turnId ? { turnId: nextRequest.turnId } : {}),
                     requestKind: nextRequest.requestKind,
@@ -1651,8 +1851,8 @@ export async function handleUpdateContainer(params: {
 
             // Check for new permission requests and notify voice assistant
             reportNewAgentRequestsFromSessionTransition(
-                { id: updateData.body.id, agentState: session.agentState ?? null } as Session,
-                { id: updateData.body.id, agentState: agentState ?? null } as Session,
+                { id: updateData.body.id, serverId: sourceServerId ?? session.serverId, agentState: session.agentState ?? null },
+                { id: updateData.body.id, serverId: sourceServerId ?? session.serverId, agentState: agentState ?? null },
             );
 
             // Re-fetch messages when control returns to mobile (local -> remote mode switch)
@@ -1705,17 +1905,40 @@ export async function handleUpdateContainer(params: {
         //
         // NOTE: When the dataEncryptionKey is null, we still initialize with null so
         // the machine has a fallback encryptor available (legacy path).
+        const publishedDataEncryptionKey = machineUpdate.dataEncryptionKey;
         let decryptedDataKey: Uint8Array | null = null;
-        if (encryption && typeof (machineUpdate as any).dataEncryptionKey === 'string' && (machineUpdate as any).dataEncryptionKey.length > 0) {
+        if (
+            encryption
+            && typeof publishedDataEncryptionKey === 'string'
+            && !isPlainMachineDataKeyMarker(publishedDataEncryptionKey)
+        ) {
             try {
-                decryptedDataKey = await encryption.decryptEncryptionKey((machineUpdate as any).dataEncryptionKey);
-            } catch (error) {
-                console.error(`Failed to decrypt machine dataEncryptionKey for ${machineId}; falling back to legacy machine encryption.`, error);
+                decryptedDataKey = await encryption.decryptEncryptionKey(publishedDataEncryptionKey);
+            } catch {
+                // A present envelope is authoritative. The full Machine refresh
+                // may recover it, but this socket hint must never fall back.
             }
         }
+        const keyResolution = resolvePublishedMachineDataEncryptionKeyV1({
+            machine: {
+                id: machineId,
+                kind: machineUpdate.kind,
+                // The `new-machine` body is a passthrough envelope: the installation
+                // id is present only on Homes that publish it, and arrives untyped.
+                installationId: typeof machineUpdate.installationId === 'string' ? machineUpdate.installationId : null,
+                dataEncryptionKey: publishedDataEncryptionKey,
+                runnerContentKeyBinding: machineUpdate.runnerContentKeyBinding,
+            },
+            openedDataEncryptionKey: decryptedDataKey,
+        });
         if (!shouldContinue()) return;
         if (encryption) {
-            await encryption.initializeMachines(new Map([[machineId, decryptedDataKey]]));
+            const machineKeys = new Map<string, Uint8Array | null>();
+            const unavailableMachineIds = new Set<string>();
+            if (keyResolution.status === 'legacy') machineKeys.set(machineId, null);
+            if (keyResolution.status === 'e2ee') machineKeys.set(machineId, keyResolution.dataKey);
+            if (keyResolution.status === 'unavailable') unavailableMachineIds.add(machineId);
+            await encryption.initializeMachines(machineKeys, unavailableMachineIds);
         }
         if (!shouldContinue()) return;
 
@@ -1723,6 +1946,7 @@ export async function handleUpdateContainer(params: {
         // even if machine-activity ephemerals arrive before a full machines refresh.
         storage.getState().applyMachines([{
             id: machineId,
+            kind: machineUpdate.kind,
             seq: machineUpdate.seq,
             createdAt: machineUpdate.createdAt,
             updatedAt: machineUpdate.updatedAt,
@@ -1872,10 +2096,10 @@ export async function handleUpdateContainer(params: {
             return;
         }
 
-        const patch = buildShareSessionPatch(updateData.body);
         const hasPermissionProjection = hasSelfSufficientSharePermission(updateData.body);
         const session = getSocketSessionApplyBase(sessionId);
         if (session) {
+            const patch = buildShareSessionPatch(session, updateData.body);
             enqueueSocketSessionApplyGuarded(applySessions, [{
                 ...session,
                 ...patch,
@@ -1891,10 +2115,12 @@ export async function handleUpdateContainer(params: {
             return;
         }
 
-        const renderable = storage.getState().sessionListRenderables[sessionId];
-        if (renderable) {
-            storage.getState().applySessionListRenderablePatches([{
-                sessionId,
+        const address = getProjectionAddress(sessionId);
+        const renderable = address ? readSessionListRenderable(address) : undefined;
+        if (address && renderable) {
+            const patch = buildShareSessionPatch(renderable, updateData.body);
+            applySessionListRenderablePatches([{
+                address,
                 patch,
             }]);
             if (!hasPermissionProjection) {
@@ -1922,7 +2148,7 @@ export async function handleUpdateContainer(params: {
         }
         handleDeleteSessionSocketUpdate({
             sessionId,
-            dropSocketSessionWork: (targetSessionId) => dropSocketSessionWork(targetSessionId, sourceServerId),
+            dropSocketSessionWork: (targetSessionId) => dropSocketSessionWork(targetSessionId, projectionServerId),
             invalidateSessionHydration,
             resetSessionTranscriptState,
             deleteSession: (targetSessionId) => storage.getState().deleteSession(targetSessionId),
@@ -1936,9 +2162,11 @@ export async function handleUpdateContainer(params: {
         updateData.body.t === 'public-share-updated' ||
         updateData.body.t === 'public-share-deleted'
     ) {
-        // Sharing changes affect which sessions are visible/accessible and some metadata
-        // shown in UI. For now, refresh the session list; sharing screens fetch details
-        // via explicit endpoints.
+        const sessionId = updateData.body.sessionId;
+        const publicLinkServerId = String(sourceServerId ?? '').trim();
+        if (publicLinkServerId) {
+            notifySessionPublicLinkInvalidated({ serverId: publicLinkServerId, sessionId });
+        }
         invalidateSessions();
     }
 }
@@ -1952,10 +2180,11 @@ export function flushActivityUpdates(params: {
 }): void {
     const { updates, applySessions, sourceServerId, shouldContinue = () => true, hydrateSessionById } = params;
     if (!shouldContinue()) return;
+    const projectionServerId = resolveSocketProjectionServerId(sourceServerId);
 
     const sessions: Session[] = [];
     const renderablePatches: Array<{
-        sessionId: string;
+        address: SessionAddress;
         patch: ActivityRenderablePatch;
     }> = [];
     let renderableTimestampOnlyPatchCount = 0;
@@ -2032,8 +2261,9 @@ export function flushActivityUpdates(params: {
             continue;
         }
 
-        const renderable = storage.getState().sessionListRenderables[sessionId];
-        if (renderable) {
+        const address = normalizeSessionAddress(projectionServerId, sessionId);
+        const renderable = address ? readSessionListRenderable(address) : undefined;
+        if (address && renderable) {
             if (isCacheOnlySessionHydrationAnchorActive(sessionId, sourceServerId)) {
                 hydrateSessionById?.(sessionId, 'socket-update-missing-session');
             }
@@ -2069,7 +2299,7 @@ export function flushActivityUpdates(params: {
                 renderableTimestampOnlyPatchCount += 1;
             }
             renderablePatches.push({
-                sessionId,
+                address,
                 patch,
             });
         }
@@ -2091,13 +2321,13 @@ export function flushActivityUpdates(params: {
     }
     if (renderablePatches.length > 0) {
         if (!shouldContinue()) return;
-        for (const { sessionId, patch } of renderablePatches) {
+        for (const { address, patch } of renderablePatches) {
             activityRenderableProjectionPatchCoalescer.enqueue(
-                sessionId,
+                address,
                 { patch },
                 {
                     shouldContinue: () => shouldContinue()
-                        && shouldApplyCacheOnlyActivityRenderablePatch(sessionId, patch),
+                        && shouldApplyCacheOnlyActivityRenderablePatch(address, patch),
                     deferLeadingPatch: true,
                 },
             );
@@ -2178,13 +2408,20 @@ export function handleEphemeralSocketUpdate(params: {
         addMachineActivityUpdate({ id: updateData.id, active: updateData.active, activeAt: updateData.activeAt });
     } else if (updateData.type === 'execution-run-updated') {
         if (!shouldContinue()) return Promise.resolve();
-        notifyExecutionRunActivity(updateData.sessionId);
+        const address = normalizeSessionAddress(sourceServerId, updateData.sessionId);
+        if (address) notifyExecutionRunActivity(address);
     } else if (updateData.type === 'external-session-transcript-invalidated') {
         if (!shouldContinue()) return Promise.resolve();
         return Promise.resolve(updateExternalSessionTranscript?.(updateData as ExternalSessionTranscriptUpdatedEphemeralUpdate));
-    } else if (updateData.type === 'action-operation-snapshot') {
+    } else if (
+        updateData.type === 'action-operation-snapshot'
+        || updateData.type === 'action-operation-updated'
+    ) {
         if (!shouldContinue()) return Promise.resolve();
-        return Promise.resolve(updateActionOperationSnapshot?.(updateData));
+        const normalized = normalizeActionOperationEphemeralIngress(updateData);
+        return normalized
+            ? Promise.resolve(updateActionOperationSnapshot?.(normalized))
+            : Promise.resolve();
     } else if (updateData.type === 'transcript-stream-segment' || updateData.type === 'transcript-stream-segment-delta') {
         // Both live-stream forms route through the same queue controller: it drops deltas for
         // hidden sessions outright (checkpoints keep them fresh) and flushes deferred snapshots

@@ -9,10 +9,11 @@ import {
     type AgentActivityEvidenceSource,
 } from './agentActivityEvidence';
 import { deriveHeadlineAgentActivityEntries } from './sources/fromHeadline';
-import type {
-    AgentActivityEntry,
-    AgentActivityHeadlineEntry,
-    AgentActivityLocalEntry,
+import {
+    NO_SESSION_AGENT_ACTIVITY_ATTENTION,
+    type AgentActivityEntry,
+    type AgentActivityHeadlineEntry,
+    type AgentActivityLocalEntry,
 } from './types';
 
 /**
@@ -123,6 +124,10 @@ function toHeadlineOnlyEntry(entry: AgentActivityHeadlineEntry): AgentActivityEn
         runId: entry.runId,
         sidechainId: entry.sidechainId,
         subagentId: null,
+        // Nothing has been LOADED about this entry, so nothing was observed waiting on a person. An
+        // unloaded row that announced "needs your approval" would be inviting someone to answer a
+        // prompt this client has never seen.
+        attentionKinds: NO_SESSION_AGENT_ACTIVITY_ATTENTION,
     };
 }
 
@@ -144,6 +149,7 @@ function toLocalOnlyEntry(entry: AgentActivityLocalEntry): AgentActivityEntry {
         runId: entry.runId,
         sidechainId: entry.sidechainId,
         subagentId: entry.subagentId ?? entry.id,
+        attentionKinds: entry.attentionKinds,
     };
 }
 
@@ -151,12 +157,13 @@ function toMergedEntry(
     headline: AgentActivityHeadlineEntry,
     local: AgentActivityLocalEntry,
 ): AgentActivityEntry {
+    const status = resolveMergedStatus(headline.status, local.status);
     return {
         // The headline's id wins so one agent is keyed identically on every surface, whichever
         // source that surface happened to see first.
         id: headline.id,
         kind: headline.kind,
-        status: resolveMergedStatus(headline.status, local.status),
+        status,
         // The local title is the live one — it tracks the tool call as it is edited and is not
         // clamped by the headline's transport bound — so it wins when it says something.
         title: local.title.trim().length > 0 ? local.title : headline.title,
@@ -169,6 +176,10 @@ function toMergedEntry(
         runId: local.runId ?? headline.runId,
         sidechainId: local.sidechainId ?? headline.sidechainId,
         subagentId: local.subagentId ?? local.id,
+        // Tied to the RESOLVED status, not to the local observation alone. `resolveMergedStatus`
+        // already refuses to let a local `waiting` overrule a terminal headline; carrying the
+        // attention through anyway would leave a finished row still asking someone to answer.
+        attentionKinds: status === 'waiting' ? local.attentionKinds : NO_SESSION_AGENT_ACTIVITY_ATTENTION,
     };
 }
 

@@ -18,67 +18,22 @@ import {
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
-import { assertRpcResponseWithSuccess } from '@/sync/runtime/assertRpcResponseWithSuccess';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 
-import { uploadBulkPayloadFromFileViaDirectImport } from '../plumbing/directTransferImportUpload';
-import {
-    DIRECT_IMPORT_CLEANUP_FAILED_ERROR_CODE,
-    isDirectImportTerminalFinalizeErrorCode,
-} from '../plumbing/directTransferImportClient';
-import { prepareBulkJsonPayloadForUpload, uploadBulkJsonPayload } from '../plumbing/uploadBulkJsonPayload';
-import { downloadJsonPayloadViaMachineTransferCarriers } from '../carriers/createJsonMachineRpcCarrierDownloads';
+import { prepareBulkJsonPayloadForUpload } from '../plumbing/prepareBulkJsonPayloadForUpload';
+import { uploadBulkPayloadFromFileViaMachineCarrier } from '../plumbing/uploadBulkPayloadFromFileViaMachineCarrier';
+import { downloadJsonPayloadViaMachineCarrier } from '../carriers/downloadJsonPayloadViaMachineCarrier';
 import { throwUnsupportedMachineTransferResponse } from '../carriers/throwUnsupportedMachineTransferResponse';
 import { resolvePreferScopedMachineRpc } from '../routing/resolvePreferScopedMachineRpc';
 import {
     isTransferFinalizeRecoveryFailure,
     type TransferFinalizeRecoveryFailure,
 } from '../plumbing/directTransferFinalizeRecovery';
-import {
-    MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
-    resolveMachineCarrierRoute,
-    type MachineCarrierRoute,
-} from '../plumbing/machineCarrierHttpLease';
-import { resolveMachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
 
 type MachinePromptAssetsTransferOpts = Readonly<{
     serverId?: string | null;
     timeoutMs?: number | null;
 }>;
-
-type PromptAssetUploadInitResponse =
-    | Readonly<{
-        success: true;
-        uploadId: string;
-        chunkSizeBytes: number;
-        recipientPublicKeyBase64: string;
-    }>
-    | Readonly<{
-        success: false;
-        error: string;
-        errorCode?: string;
-    }>;
-
-type PromptAssetUploadChunkResponse =
-    | Readonly<{
-        success: true;
-    }>
-    | Readonly<{
-        success: false;
-        error: string;
-        errorCode?: string;
-    }>;
-
-type PromptAssetUploadFinalizeResponse =
-    | Readonly<{
-        success: true;
-        response?: unknown;
-    }>
-    | Readonly<{
-        success: false;
-        error: string;
-        errorCode?: string;
-    }>;
 
 export async function listDaemonPromptAssetTypes(
     machineId: string,
@@ -183,25 +138,21 @@ export async function downloadDaemonPromptAsset(
     opts?: MachinePromptAssetsTransferOpts,
 ): Promise<DaemonPromptAssetDownloadResponse> {
     const payload = PromptAssetReadRequestSchema.parse(input);
-    const preferScoped = await resolvePreferScopedMachineRpc({
-        machineId,
-        serverId: opts?.serverId,
-        timeoutMs: opts?.timeoutMs ?? null,
-    });
-    const result = await downloadJsonPayloadViaMachineTransferCarriers({
+    const result = await downloadJsonPayloadViaMachineCarrier({
         machineId,
         serverId: opts?.serverId,
         timeoutMs: opts?.timeoutMs ?? undefined,
-        preferScoped,
-        payloadWithRecipient: (recipientPublicKeyBase64) => ({
-            ...payload,
-            recipientPublicKeyBase64,
-        }),
-        initMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_INIT,
-        chunkMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_CHUNK,
-        finalizeMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_FINALIZE,
-        abortMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_ABORT,
         parsePayload: parsePromptAssetTransferPayload,
+        predecessorRpc: {
+            payloadWithRecipient: (recipientPublicKeyBase64) => ({
+                ...payload,
+                recipientPublicKeyBase64,
+            }),
+            initMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_INIT,
+            chunkMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_CHUNK,
+            finalizeMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_FINALIZE,
+            abortMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_ABORT,
+        },
         directExportRequest: {
             t: 'prompt_asset_download_v1',
             assetTypeId: payload.assetTypeId,
@@ -224,114 +175,30 @@ export async function uploadDaemonPromptAsset(
     | TransferFinalizeRecoveryFailure<PromptAssetMutationResponseV1>
 > {
     const payload = PromptAssetWriteRequestSchema.parse(input);
-    const preferScoped = await resolvePreferScopedMachineRpc({
+    const preparedPayload = prepareBulkJsonPayloadForUpload(payload);
+    if (!preparedPayload.ok) {
+        return { ok: false, errorCode: 'invalid_request', error: preparedPayload.error };
+    }
+    const result = await uploadBulkPayloadFromFileViaMachineCarrier<PromptAssetMutationResponseV1>({
         machineId,
         serverId: opts?.serverId,
-        timeoutMs: opts?.timeoutMs ?? null,
-    });
-    const preparedPayload = prepareBulkJsonPayloadForUpload(payload);
-    let machineRoute: MachineCarrierRoute | null = null;
-
-    if (preparedPayload.ok) {
-        const directImportRequest = {
+        fileReader: {
+            sizeBytes: preparedPayload.encodedPayload.byteLength,
+            readBytes: async (offset, length) => preparedPayload.encodedPayload.subarray(offset, offset + length),
+            close: async () => {},
+        },
+        directImportRequest: {
             t: 'prompt_asset_upload_v1',
             workingDirectory: '/',
             sizeBytes: preparedPayload.encodedPayload.byteLength,
-        } as const;
-        const directImportResult = await uploadBulkPayloadFromFileViaDirectImport<PromptAssetMutationResponseV1>({
-            machineId,
-            serverId: opts?.serverId,
-            fileReader: {
-                sizeBytes: preparedPayload.encodedPayload.byteLength,
-                readBytes: async (offset, length) => preparedPayload.encodedPayload.subarray(offset, offset + length),
-                close: async () => {},
-            },
-            request: directImportRequest,
-            parseFinalizeResponse: (response) => {
-                const parsed = PromptAssetMutationResponseV1Schema.safeParse(response.finalized.result);
-                return parsed.success ? parsed.data : null;
-            },
-            timeoutMs: opts?.timeoutMs ?? null,
-            acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
-                machineRoute ??= await resolveMachineCarrierRoute(machineId, opts?.serverId);
-                return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
-                    operationId,
-                    maxBytes,
-                    flow: resolveMachineCarrierTransferFlow(directImportRequest),
-                }) : null;
-            },
-        });
-
-        if ('ok' in directImportResult) {
-            return directImportResult;
-        }
-        if (isTransferFinalizeRecoveryFailure<PromptAssetMutationResponseV1>(directImportResult)) {
-            return directImportResult;
-        }
-        if (
-            directImportResult.errorCode === DIRECT_IMPORT_CLEANUP_FAILED_ERROR_CODE
-            || isDirectImportTerminalFinalizeErrorCode(directImportResult.errorCode)
-            || directImportResult.errorCode === MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE
-        ) {
-            return {
-                ok: false,
-                errorCode: 'internal_error',
-                error: directImportResult.error,
-            };
-        }
-    }
-
-    const result = await uploadBulkJsonPayload<PromptAssetUploadFinalizeResponse, PromptAssetMutationResponseV1>({
-        payload,
-        init: async (request): Promise<PromptAssetUploadInitResponse> => await assertRpcResponseWithSuccess<PromptAssetUploadInitResponse>(
-            await machineRpcWithServerScope<PromptAssetUploadInitResponse, Readonly<{ sizeBytes: number }>>({
-                machineId,
-                serverId: opts?.serverId,
-                timeoutMs: opts?.timeoutMs ?? undefined,
-                method: RPC_METHODS.DAEMON_PROMPT_ASSETS_UPLOAD_INIT,
-                preferScoped,
-                payload: request,
-            }),
-        ),
-        sendChunk: async (request): Promise<PromptAssetUploadChunkResponse> => await assertRpcResponseWithSuccess<PromptAssetUploadChunkResponse>(
-            await machineRpcWithServerScope<
-                PromptAssetUploadChunkResponse,
-                Readonly<{
-                    uploadId: string;
-                    index: number;
-                    payloadBase64: string;
-                    encryptedDataKeyEnvelopeBase64: string;
-                }>
-            >({
-                machineId,
-                serverId: opts?.serverId,
-                timeoutMs: opts?.timeoutMs ?? undefined,
-                method: RPC_METHODS.DAEMON_PROMPT_ASSETS_UPLOAD_CHUNK,
-                preferScoped,
-                payload: request,
-            }),
-        ),
-        finalize: async (request): Promise<PromptAssetUploadFinalizeResponse> => await assertRpcResponseWithSuccess<PromptAssetUploadFinalizeResponse>(
-            await machineRpcWithServerScope<PromptAssetUploadFinalizeResponse, Readonly<{ uploadId: string }>>({
-                machineId,
-                serverId: opts?.serverId,
-                timeoutMs: opts?.timeoutMs ?? undefined,
-                method: RPC_METHODS.DAEMON_PROMPT_ASSETS_UPLOAD_FINALIZE,
-                preferScoped,
-                payload: request,
-            }),
-        ),
-        parseResponse: (value) => {
-            const parsed = PromptAssetMutationResponseV1Schema.safeParse(
-                (value as { response?: unknown } | null)?.response,
-            );
+        },
+        parseDirectFinalizeResponse: (response) => {
+            const parsed = PromptAssetMutationResponseV1Schema.safeParse(response.finalized.result);
             return parsed.success ? parsed.data : null;
         },
+        timeoutMs: opts?.timeoutMs ?? null,
     });
-
-    if (!result.ok) {
-        throwUnsupportedMachineTransferResponse(RPC_METHODS.DAEMON_PROMPT_ASSETS_UPLOAD_FINALIZE);
-    }
-
-    return result.response;
+    if ('ok' in result) return result;
+    if (isTransferFinalizeRecoveryFailure<PromptAssetMutationResponseV1>(result)) return result;
+    return { ok: false, errorCode: 'internal_error', error: result.error };
 }

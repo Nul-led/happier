@@ -125,7 +125,7 @@ export function buildSessionViewShellSessionSignature(session: Session): string 
         meaningfulActivityAt: session.meaningfulActivityAt ?? null,
         lastRuntimeIssue: session.lastRuntimeIssue ?? null,
         owner: session.owner ?? null,
-        accessLevel: session.accessLevel ?? null,
+        access: session.access ?? null,
         canApprovePermissions: session.canApprovePermissions ?? null,
         pendingPermissionRequestCount: session.pendingPermissionRequestCount ?? null,
         pendingUserActionRequestCount: session.pendingUserActionRequestCount ?? null,
@@ -155,25 +155,8 @@ export function useStableSessionViewShellSession(session: Session | null): Sessi
     return ref.current.session;
 }
 
-const sessionViewShellSessionCache = new Map<string, { signature: string; session: Session }>();
-
-function buildSessionViewShellSessionCacheKey(sessionId: string, serverScopeId: string | null): string {
-    return `${serverScopeId ?? 'unscoped'}\u0000${sessionId}`;
-}
-
-function getStableSessionViewShellSession(session: Session, serverScopeId: string | null): Session {
-    const signature = buildSessionViewShellSessionSignature(session);
-    const cacheKey = buildSessionViewShellSessionCacheKey(session.id, serverScopeId);
-    const cached = sessionViewShellSessionCache.get(cacheKey);
-    if (cached?.signature === signature) {
-        return cached.session;
-    }
-    sessionViewShellSessionCache.set(cacheKey, { signature, session });
-    return session;
-}
-
 export function selectSessionViewShellSessionForRouteState(
-    state: Pick<StorageState, 'sessions' | 'sessionListIndexByServerId' | 'concurrentSessionListCacheByServerId'>,
+    state: Pick<StorageState, 'sessions' | 'sessionListIndexByServerId' | 'sessionListRowsByServerId'>,
     sessionId: string,
     expectedServerId?: string | null,
 ): Session | null {
@@ -183,10 +166,10 @@ export function selectSessionViewShellSessionForRouteState(
     const normalizedExpectedServerId = normalizeServerId(expectedServerId);
     let resolvedServerScopeId = normalizeServerId((session as { serverId?: unknown }).serverId);
     if (normalizedExpectedServerId) {
-        const cachedServerId = normalizeServerId(resolveServerIdForSessionIdFromLocalState({
+        const cachedServerId = resolvedServerScopeId ?? normalizeServerId(resolveServerIdForSessionIdFromLocalState({
             sessions: state.sessions as Record<string, { serverId?: unknown } | null>,
             sessionListIndexByServerId: state.sessionListIndexByServerId,
-            concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId,
+            sessionListRowsByServerId: state.sessionListRowsByServerId,
         }, sessionId));
         if (!cachedServerId || !areServerProfileIdentifiersEquivalent(cachedServerId, normalizedExpectedServerId)) {
             return null;
@@ -194,23 +177,24 @@ export function selectSessionViewShellSessionForRouteState(
         resolvedServerScopeId = cachedServerId;
     }
 
-    return getStableSessionViewShellSession(session, resolvedServerScopeId);
+    return session;
 }
 
 export function useSessionViewShellSession(sessionId: string, expectedServerId?: string | null): Session | null {
-    return storage(
+    const session = storage(
         useShallow((state) => {
             return selectSessionViewShellSessionForRouteState(
                 {
                     sessions: state.sessions,
                     sessionListIndexByServerId: state.sessionListIndexByServerId,
-                    concurrentSessionListCacheByServerId: state.concurrentSessionListCacheByServerId,
+                    sessionListRowsByServerId: state.sessionListRowsByServerId,
                 },
                 sessionId,
                 expectedServerId,
             );
         }),
     );
+    return useStableSessionViewShellSession(session);
 }
 
 export function useSessionViewShellSessionSeq(sessionId: string): number {

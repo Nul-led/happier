@@ -6,6 +6,7 @@ import type { Message } from '@/sync/domains/messages/messageTypes';
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const sessionState = vi.hoisted(() => ({ current: null as any }));
+const scopedRenderableState = vi.hoisted(() => ({ current: {} as Record<string, any> }));
 const sourceMessagesState = vi.hoisted(() => ({ current: [] as readonly any[] }));
 const transcriptState = vi.hoisted(() => ({ current: [] as readonly any[] }));
 const reducerStateHolder = vi.hoisted(() => ({
@@ -13,11 +14,15 @@ const reducerStateHolder = vi.hoisted(() => ({
 }));
 const useSessionMessagesSpy = vi.hoisted(() => vi.fn());
 const useSessionMessagesReducerStateSpy = vi.hoisted(() => vi.fn());
+const useExternalSessionRuntimeSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
     return createPartialStorageModuleMock(importOriginal, {
         useSession: () => sessionState.current,
+        useSessionListRenderableWithServerScope: (serverId: string | null | undefined, sessionId: string) => (
+            scopedRenderableState.current[`${serverId ?? 'active'}:${sessionId}`] ?? null
+        ),
         useSessionSubagentSourceMessages: () => sourceMessagesState.current,
         useSessionMessages: () => {
             useSessionMessagesSpy();
@@ -39,7 +44,10 @@ vi.mock('@/hooks/session/useSessionRunningExecutionRuns', () => ({
 }));
 
 vi.mock('@/components/sessions/model/useExternalSessionRuntime', () => ({
-    useExternalSessionRuntime: () => ({ externalSessionLink: null, status: null, refreshNow: async () => null }),
+    useExternalSessionRuntime: (params: unknown) => {
+        useExternalSessionRuntimeSpy(params);
+        return { externalSessionLink: null, status: null, refreshNow: async () => null };
+    },
 }));
 
 function toolCallMessage(overrides: Readonly<{
@@ -103,14 +111,107 @@ function sessionWithHeadline(updatedAt: number, status: 'running' | 'succeeded' 
 
 beforeEach(() => {
     sessionState.current = null;
+    scopedRenderableState.current = {};
     sourceMessagesState.current = [];
     transcriptState.current = [];
     reducerStateHolder.current = { sidechains: new Map(), permissions: new Map() };
     useSessionMessagesSpy.mockClear();
     useSessionMessagesReducerStateSpy.mockClear();
+    useExternalSessionRuntimeSpy.mockClear();
 });
 
 describe('useSessionAgentActivity — the narrow width', () => {
+    it('keeps two same-id Homes independently usable through the scoped list projection', async () => {
+        // Multi-Home list rows intentionally permit equal raw Session ids.  The
+        // raw transcript cache is active-Home scoped, while the concurrent list
+        // cache is address keyed. A qualified Home-A caller must therefore use
+        // Home A's cold-open headline rather than borrow (or hide behind) Home
+        // B's local transcript facts.
+        sessionState.current = {
+            ...sessionWithHeadline(4_000),
+            serverId: 'home-b',
+        };
+        sourceMessagesState.current = [toolCallMessage({
+            id: 'home-b-run',
+            toolId: 'toolu_1',
+            state: 'running',
+            createdAt: 1_000,
+        })];
+        scopedRenderableState.current = {
+            'home-a:s1': {
+                id: 's1',
+                agentActivityHeadline: {
+                    v: 1,
+                    backendId: 'claude',
+                    updatedAt: 3_000,
+                    activeEntries: [{
+                        entryId: 'workflow_agent:wf_a:toolu_a',
+                        kind: 'workflow_agent',
+                        title: 'Home A review',
+                        status: 'running',
+                        updatedAt: 3_000,
+                    }],
+                },
+            },
+        };
+
+        const { useSessionAgentActivityRoster } = await import('./useSessionAgentActivity');
+        const hook = await renderHook(() => ({
+            homeA: useSessionAgentActivityRoster({ sessionId: 's1', serverId: 'home-a' }),
+            homeB: useSessionAgentActivityRoster({ sessionId: 's1', serverId: 'home-b' }),
+        }));
+
+        expect(hook.getCurrent().homeA.entries).toEqual([
+            expect.objectContaining({
+                id: 'workflow_agent:wf_a:toolu_a',
+                title: 'Home A review',
+                provenance: 'headline',
+            }),
+        ]);
+        expect(hook.getCurrent().homeB.entries).toEqual([
+            expect.objectContaining({
+                id: 'workflow_agent:wf_1:toolu_1',
+                provenance: 'merged',
+            }),
+        ]);
+        expect(hook.getCurrent().homeA.readExecutionRunEntry('run_exact1111')).toBeNull();
+        expect(useExternalSessionRuntimeSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 's1',
+            enabled: false,
+        }));
+    });
+
+    it('resolves only the canonical execution-run entry for an exact run id', async () => {
+        sessionState.current = sessionWithHeadline(1_000);
+        sourceMessagesState.current = [{
+            kind: 'tool-call',
+            id: 'msg-run',
+            localId: null,
+            createdAt: 1_000,
+            tool: {
+                id: 'toolu_run',
+                name: 'SubAgentRun',
+                state: 'running',
+                input: { runId: 'run_exact1111', intent: 'review' },
+                createdAt: 1_000,
+                startedAt: 1_000,
+                completedAt: null,
+                description: null,
+            },
+            children: [],
+        } as unknown as Message];
+
+        const { useSessionAgentActivity } = await import('./useSessionAgentActivity');
+        const hook = await renderHook(() => useSessionAgentActivity({ sessionId: 's1' }));
+
+        expect(hook.getCurrent().readExecutionRunEntry('run_exact1111')).toMatchObject({
+            kind: 'execution_run',
+            runId: 'run_exact1111',
+        });
+        expect(hook.getCurrent().readExecutionRunEntry(' run_exact1111 ')).toBeNull();
+        expect(hook.getCurrent().readExecutionRunEntry('missing')).toBeNull();
+    });
+
     it('does not subscribe to the transcript, while the roster width does', async () => {
         sessionState.current = sessionWithHeadline(4_000);
 

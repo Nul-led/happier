@@ -131,6 +131,7 @@ installSessionDetailsPanelCommonModuleMocks({
         const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
             return createPartialStorageModuleMock(importOriginal, {
                 useSession: () => sessionState.session,
+                useSessionListRenderableWithServerScope: () => null,
                 useSetting: (key: string) => {
                     if (key === 'transcriptToolCallsCollapsedPreviewCount') {
                         return settingsState.transcriptToolCallsCollapsedPreviewCount;
@@ -138,6 +139,8 @@ installSessionDetailsPanelCommonModuleMocks({
                     return null;
                 },
                 useSettings: () => ({}),
+                useEndpointStatus: () => 'online',
+                useMachineCliDetectionTarget: () => ({ daemonStateVersion: 1, isOnline: true }),
             });
         },
 });
@@ -161,7 +164,16 @@ vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
     useSessionMachineReachability: () => sessionMachineReachabilityState,
 }));
 
+vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
+    useServerCredentialAccountScopeResolution: (serverId: string | null | undefined) => serverId
+        ? { kind: 'bound', scope: { serverId, accountId: 'account-1' } }
+        : { kind: 'resolving' },
+}));
+
 vi.mock('@/sync/store/hooks', () => ({
+    useSession: () => sessionState.session,
+    useEndpointStatus: () => 'online',
+    useMachineCliDetectionTarget: () => ({ daemonStateVersion: 1, isOnline: true }),
     useSessionServerId: () => 'server-1',
     useSessionMessages: () => ({ messages: [] }),
     useSessionMessagesReducerState: () => reducerState.current,
@@ -296,7 +308,7 @@ describe('SessionRightPanelAgentsView', () => {
         await act(async () => {
             screen.pressByTestId('session-subagent-open-full:execution_run:run_1');
         });
-        expect(routerPushSpy).toHaveBeenCalledWith('/session/s1/message/tool-msg-2');
+        expect(routerPushSpy).toHaveBeenCalledWith('/session/s1/runs/run_1');
 
         await act(async () => {
             screen.pressByTestId('session-subagent-open-advanced:execution_run:run_1');
@@ -316,6 +328,18 @@ describe('SessionRightPanelAgentsView', () => {
         });
 
         expect(screen.findByTestId('session-subagent-launch-execution-run')).toBeTruthy();
+        await act(async () => {
+            screen.pressByTestId('session-subagent-launch-execution-run:conversation');
+        });
+        expect(openDetailsTabSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+                key: 'execution-run-conversation-draft',
+                kind: 'executionRunLauncher',
+                resource: { kind: 'executionRunLauncher', mode: 'conversation' },
+            }),
+            { intent: 'preview' },
+        );
+
         await act(async () => {
             screen.pressByTestId('session-subagent-launch-execution-run:review');
         });
@@ -499,10 +523,14 @@ describe('SessionRightPanelAgentsView', () => {
         });
     });
 
-    it('marks subagent rows that are blocked waiting for permission', async () => {
+    it('marks subagent rows waiting on a person from the canonical roster attention, not a pane-local index', async () => {
         const screen = await renderScreen(<SessionRightPanelAgentsView sessionId="s1" scopeId="session:s1" />);
 
-        expect(screen.findByTestId('session-subagent-permission-blocked:agent_team_member:team-1:alpha')).toBeTruthy();
+        // The pane no longer reinterprets `waiting` as "needs approval": it hands the merged
+        // entry to the shared presentation resolver, which owns the attention wording.
+        const label = screen.findByTestId('session-subagent-summary:agent_team_member:team-1:alpha:state:label');
+        expect(label).toBeTruthy();
+        expect(label?.props.children).toBe('sessionAgentActivity.attention.permission');
     });
 
     it('keeps Subagent launch shortcuts available when the session is inactive but resumable', async () => {

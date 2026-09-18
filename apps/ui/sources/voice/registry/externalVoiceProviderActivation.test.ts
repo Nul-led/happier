@@ -374,15 +374,18 @@ describe('external Voice provider activation', () => {
         typeof hostLease.host.resolveAgentRealtimeVoiceConversationBinding
       >>[0],
     ): Promise<Readonly<{
-      conversationSessionId: string;
+      conversationSessionAddress: Readonly<{ serverId: string; sessionId: string }>;
       transcriptMode: 'native_session';
-      targetSessionId: string | null;
+      targetSessionAddress: Readonly<{ serverId: string; sessionId: string }> | null;
     }> | null> => Object.freeze({
-      conversationSessionId: input.controlSessionId === hostLease.host.globalVoiceSessionId
-        ? 'hidden-codex'
-        : input.controlSessionId,
+      conversationSessionAddress: {
+        serverId: 'server-a',
+        sessionId: input.controlSessionId === hostLease.host.globalVoiceSessionId
+          ? 'hidden-codex'
+          : input.controlSessionId,
+      },
       transcriptMode: 'native_session' as const,
-      targetSessionId: input.requestedTargetSessionId,
+      targetSessionAddress: input.requestedTargetSessionAddress,
     }));
     const host = Object.freeze({
       ...hostLease.host,
@@ -433,7 +436,7 @@ describe('external Voice provider activation', () => {
 
     await expect(contribution.adapter.resolveConversationBinding?.({
       controlSessionId: 'visible-codex-session',
-      requestedTargetSessionId: 'ignored-direct-target',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'ignored-direct-target' },
       settings: {
         voice: {
           providerId,
@@ -457,7 +460,7 @@ describe('external Voice provider activation', () => {
         },
       },
     })).resolves.toMatchObject({
-      conversationSessionId: 'visible-codex-session',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'visible-codex-session' },
       transcriptMode: 'native_session',
     });
     expect(resolveAgentBinding).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -471,7 +474,7 @@ describe('external Voice provider activation', () => {
     resolveAgentBinding.mockResolvedValueOnce(null);
     await expect(contribution.adapter.resolveConversationBinding?.({
       controlSessionId: 'mismatched-direct-session',
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: null,
       settings: {
         voice: {
           providerId,
@@ -489,7 +492,7 @@ describe('external Voice provider activation', () => {
     resolveAgentBinding.mockClear();
     await expect(contribution.adapter.resolveConversationBinding?.({
       controlSessionId: hostLease.host.globalVoiceSessionId,
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: null,
       settings: {
         voice: {
           providerId,
@@ -506,7 +509,7 @@ describe('external Voice provider activation', () => {
 
     await expect(contribution.adapter.resolveConversationBinding?.({
       controlSessionId: hostLease.host.globalVoiceSessionId,
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: null,
       settings: {
         voice: {
           providerId,
@@ -537,7 +540,7 @@ describe('external Voice provider activation', () => {
     })).resolves.toBeNull();
     expect(resolveAgentBinding).not.toHaveBeenCalled();
 
-    const connectedServices = Object.freeze({
+    const connectedServicesInput = Object.freeze({
       v: 1 as const,
       bindingsByServiceId: Object.freeze({
         'happier.agent.codex/openai-codex': Object.freeze({
@@ -549,23 +552,28 @@ describe('external Voice provider activation', () => {
     });
     await expect(contribution.adapter.resolveConversationBinding?.({
       controlSessionId: hostLease.host.globalVoiceSessionId,
-      requestedTargetSessionId: null,
+      requestedTargetSessionAddress: null,
       settings: {
         voice: {
           providerId,
           providers: {
             [providerId]: {
               schemaVersion: 2,
-              config: { globalConnectedServices: connectedServices },
+              config: { globalConnectedServices: connectedServicesInput },
             },
           },
         },
       },
-    })).resolves.toMatchObject({ conversationSessionId: 'hidden-codex' });
+    })).resolves.toMatchObject({
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'hidden-codex' },
+    });
     expect(resolveAgentBinding).toHaveBeenLastCalledWith(expect.objectContaining({
       provider: providerRef,
       agent,
-      connectedServices,
+      connectedServices: {
+        v: 2,
+        bindingsByServiceId: connectedServicesInput.bindingsByServiceId,
+      },
     }));
   });
 
@@ -591,9 +599,9 @@ describe('external Voice provider activation', () => {
         typeof hostLease.host.resolveAgentRealtimeVoiceConversationBinding
       >>[0],
     ) => Object.freeze({
-      conversationSessionId: input.controlSessionId,
+      conversationSessionAddress: { serverId: 'server-a', sessionId: input.controlSessionId },
       transcriptMode: 'native_session' as const,
-      targetSessionId: input.requestedTargetSessionId,
+      targetSessionAddress: input.requestedTargetSessionAddress,
     }));
     const providerRef = Object.freeze({
       pluginId: identity.pluginId,
@@ -617,11 +625,11 @@ describe('external Voice provider activation', () => {
 
     await expect(contribution.adapter.resolveConversationBinding?.({
       controlSessionId: 'visible-codex-session',
-      requestedTargetSessionId: 'requested-target',
+      requestedTargetSessionAddress: { serverId: 'server-a', sessionId: 'requested-target' },
       settings: {},
     })).resolves.toMatchObject({
-      conversationSessionId: 'visible-codex-session',
-      targetSessionId: 'requested-target',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'visible-codex-session' },
+      targetSessionAddress: { serverId: 'server-a', sessionId: 'requested-target' },
     });
     expect(resolveAgentBinding).toHaveBeenCalledWith(expect.objectContaining({
       provider: providerRef,
@@ -1383,7 +1391,10 @@ describe('external Voice provider activation', () => {
     expect(getCurrentBundledConversationRuntimeHost()).toBe(hostLease.host);
     expect(getVoiceAdapterRegistry().get(providerId)).toBeNull();
     expect(createDefaultVoiceProviderRegistry().get(providerId)).toBeNull();
-    await expect(adapter.start({ sessionId: 'voice-after-retirement' }))
+    await expect(adapter.start({
+      sessionId: 'voice-after-retirement',
+      requestedTargetSessionAddress: null,
+    }))
       .rejects.toThrow(/voice_runtime_generation_revoked/u);
     await expect(host.activate(activationInput)).resolves.toEqual({ ok: true });
     const replacementAdapter = getVoiceAdapterRegistry().get(providerId);
@@ -1394,7 +1405,10 @@ describe('external Voice provider activation', () => {
     expect(disposeProviderLeaf).toHaveBeenCalledTimes(2);
     expect(getVoiceAdapterRegistry().get(providerId)).toBeNull();
     expect(createDefaultVoiceProviderRegistry().get(providerId)).toBeNull();
-    await expect(replacementAdapter.start({ sessionId: 'voice-after-update' }))
+    await expect(replacementAdapter.start({
+      sessionId: 'voice-after-update',
+      requestedTargetSessionAddress: null,
+    }))
       .rejects.toThrow(/voice_runtime_generation_revoked/u);
     await expect(host.activate(activationInput)).resolves.toMatchObject({
       ok: false, code: 'stale_projection_generation',

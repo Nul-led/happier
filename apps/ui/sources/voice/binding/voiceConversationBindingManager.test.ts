@@ -16,9 +16,10 @@ describe('createVoiceSessionBindingManager', () => {
       nowMs: () => 123,
       resolveBinding: vi.fn(async () => ({
         conversationSessionId: 'carrier-s1',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
         controlSessionId: 'voice-global',
         transcriptMode: 'synthetic' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
       })),
       appendTargetSwitchNote: appendNote,
     });
@@ -45,21 +46,24 @@ describe('createVoiceSessionBindingManager', () => {
       .fn()
       .mockResolvedValue({
         conversationSessionId: 'carrier-s1',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
         controlSessionId: 'voice-global',
         transcriptMode: 'synthetic',
-        targetSessionId: 's1',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
       })
       .mockResolvedValueOnce({
         conversationSessionId: 'carrier-s1',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
         controlSessionId: 'voice-global',
         transcriptMode: 'synthetic',
-        targetSessionId: 's1',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
       })
       .mockResolvedValueOnce({
         conversationSessionId: 'carrier-s1',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
         controlSessionId: 'voice-global',
         transcriptMode: 'synthetic',
-        targetSessionId: 's2',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
       });
 
     const manager = createVoiceSessionBindingManager({
@@ -82,8 +86,8 @@ describe('createVoiceSessionBindingManager', () => {
 
     expect(appendNote).toHaveBeenCalledWith({
       conversationSessionId: 'carrier-s1',
-      previousTargetSessionId: 's1',
-      targetSessionId: 's2',
+      previousTargetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
     });
   });
 
@@ -95,9 +99,10 @@ describe('createVoiceSessionBindingManager', () => {
     const store = createVoiceSessionBindingStore();
     const resolveBinding = vi.fn(async () => ({
       conversationSessionId: 'carrier-s1',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
       controlSessionId: 'voice-global',
       transcriptMode: 'synthetic' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
     }));
 
     const manager = createVoiceSessionBindingManager({
@@ -115,21 +120,21 @@ describe('createVoiceSessionBindingManager', () => {
 
     const next = await manager.syncTargetSession({
       controlSessionId: 'voice-global',
-      targetSessionId: 's2',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
     });
 
     expect(resolveBinding).toHaveBeenCalledTimes(1);
     expect(next).toEqual(
       expect.objectContaining({
         conversationSessionId: 'carrier-s1',
-        targetSessionId: 's2',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
         updatedAt: 456,
       }),
     );
     expect(appendNote).toHaveBeenCalledWith({
       conversationSessionId: 'carrier-s1',
-      previousTargetSessionId: 's1',
-      targetSessionId: 's2',
+      previousTargetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
     });
   });
 
@@ -142,15 +147,17 @@ describe('createVoiceSessionBindingManager', () => {
       .fn()
       .mockResolvedValueOnce({
         conversationSessionId: 'carrier-s1',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
         controlSessionId: 'voice-global',
         transcriptMode: 'native_session' as const,
-        targetSessionId: null,
+        targetSessionAddress: null,
       })
       .mockResolvedValueOnce({
         conversationSessionId: 'carrier-s1',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
         controlSessionId: 'voice-global',
         transcriptMode: 'native_session' as const,
-        targetSessionId: null,
+        targetSessionAddress: null,
       });
 
     const manager = createVoiceSessionBindingManager({
@@ -186,9 +193,10 @@ describe('createVoiceSessionBindingManager', () => {
       .mockReturnValueOnce(456);
     const resolveBinding = vi.fn(async () => ({
       conversationSessionId: 'carrier-s1',
+      conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
       controlSessionId: 'voice-global',
       transcriptMode: 'synthetic' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
     }));
     const manager = createVoiceSessionBindingManager({
       store,
@@ -237,8 +245,9 @@ describe('createVoiceSessionBindingManager', () => {
           adapterId: 'happier.agent.codex/realtime-codex',
           controlSessionId: 'voice-global',
           conversationSessionId: 'hidden-codex-voice-a',
+          conversationSessionAddress: { serverId: 'server-a', sessionId: 'hidden-codex-voice-a' },
           transcriptMode: 'native_session',
-          targetSessionId: null,
+          targetSessionAddress: null,
           updatedAt: 1,
         }),
         resolveConversationTargeting: () => 'bound_conversation',
@@ -270,8 +279,9 @@ describe('createVoiceSessionBindingManager', () => {
           adapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
           controlSessionId: 'voice-global',
           conversationSessionId: 'carrier-s1',
+          conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
           transcriptMode: 'synthetic',
-          targetSessionId: 's1',
+          targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
           updatedAt: 1,
         }),
       });
@@ -282,6 +292,7 @@ describe('createVoiceSessionBindingManager', () => {
         activeAdapterId: 'happier.voice.elevenlabs/realtime-elevenlabs',
         providerId: 'happier.voice.elevenlabs/realtime-elevenlabs',
         requestedTargetSessionId: 's1',
+        requestedTargetServerId: 'server-a',
       });
 
       expect(resolveBinding).not.toHaveBeenCalled();
@@ -295,9 +306,10 @@ describe('createVoiceSessionBindingManager', () => {
       const store = createVoiceSessionBindingStore();
       const resolveBinding = vi.fn(async () => ({
         conversationSessionId: 'carrier-s2',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s2' },
         controlSessionId: 'voice-global',
         transcriptMode: 'native_session' as const,
-        targetSessionId: 's2',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's2' },
       }));
       const manager = createVoiceSessionBindingManager({
         store,
@@ -307,8 +319,9 @@ describe('createVoiceSessionBindingManager', () => {
           adapterId: 'local_conversation',
           controlSessionId: 'voice-global',
           conversationSessionId: 'carrier-s1',
+          conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-s1' },
           transcriptMode: 'native_session',
-          targetSessionId: 's1',
+          targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
           updatedAt: 1,
         }),
       });
@@ -319,12 +332,14 @@ describe('createVoiceSessionBindingManager', () => {
         activeAdapterId: 'local_conversation',
         providerId: 'local_conversation',
         requestedTargetSessionId: 's2',
+        requestedTargetServerId: 'server-a',
       });
 
       expect(resolveBinding).toHaveBeenCalledWith({
         adapterId: 'local_conversation',
         controlSessionId: 'voice-global',
         requestedTargetSessionId: 's2',
+        requestedTargetServerId: 'server-a',
       });
       expect(result).toEqual({ conversationSessionId: 'carrier-s2' });
     });
@@ -336,9 +351,10 @@ describe('createVoiceSessionBindingManager', () => {
       const store = createVoiceSessionBindingStore();
       const resolveBinding = vi.fn(async () => ({
         conversationSessionId: 'voice-root-s1',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'voice-root-s1' },
         controlSessionId: 'voice-global',
         transcriptMode: 'native_session' as const,
-        targetSessionId: 's1',
+        targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
       }));
       const manager = createVoiceSessionBindingManager({
         store,
@@ -353,12 +369,14 @@ describe('createVoiceSessionBindingManager', () => {
         activeAdapterId: null,
         providerId: 'local_conversation',
         requestedTargetSessionId: 's1',
+        requestedTargetServerId: 'server-a',
       });
 
       expect(resolveBinding).toHaveBeenCalledWith({
         adapterId: 'local_conversation',
         controlSessionId: 'voice-global',
         requestedTargetSessionId: 's1',
+        requestedTargetServerId: 'server-a',
       });
       expect(result).toEqual({ conversationSessionId: 'voice-root-s1' });
     });
@@ -397,15 +415,17 @@ describe('createVoiceSessionBindingManager', () => {
       .fn()
       .mockResolvedValueOnce({
         conversationSessionId: 'carrier-home',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-home' },
         controlSessionId: 'voice-global',
         transcriptMode: 'native_session' as const,
-        targetSessionId: null,
+        targetSessionAddress: null,
       })
       .mockResolvedValueOnce({
         conversationSessionId: 'carrier-root',
+        conversationSessionAddress: { serverId: 'server-a', sessionId: 'carrier-root' },
         controlSessionId: 'voice-global',
         transcriptMode: 'synthetic' as const,
-        targetSessionId: null,
+        targetSessionAddress: null,
       });
 
     const manager = createVoiceSessionBindingManager({

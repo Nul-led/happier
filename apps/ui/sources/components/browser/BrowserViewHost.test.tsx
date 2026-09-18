@@ -404,6 +404,7 @@ describe('BrowserViewHost', () => {
             <BrowserViewHost
                 view={view}
                 diagnosticsBridge={diagnostics}
+                lifecycleState="hidden"
                 browserProfile={{
                     profileId: 'profile_external_1',
                     storageMode: 'session',
@@ -422,6 +423,7 @@ describe('BrowserViewHost', () => {
             profileId: 'profile_external_1',
             testID: 'browser-view-frame',
             diagnostics,
+            lifecycleState: 'hidden',
         });
     });
 

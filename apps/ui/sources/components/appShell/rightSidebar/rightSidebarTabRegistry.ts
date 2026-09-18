@@ -33,6 +33,9 @@ export type {
 export type ResolveRightSidebarTabsInput = Readonly<{
     scope: RightSidebarScope;
     terminalTabAvailable?: boolean;
+    /** The exact Home's `sessions.board` decision; omitted means disabled. */
+    boardFeatureEnabled?: boolean;
+    sessionSharingAvailable?: boolean;
     presentation?: RightSidebarPresentation;
     pluginPlacements?: readonly PluginUiSurfacePlacementProjection[];
     projectionGeneration?: number | null;
@@ -41,7 +44,7 @@ export type ResolveRightSidebarTabsInput = Readonly<{
 }>;
 
 export type SessionRightSidebarTabId =
-    | Extract<RightSidebarBuiltInTabId, 'git' | 'files' | 'navigation' | 'agents' | 'terminal' | 'browser' | 'services'>
+    | Extract<RightSidebarBuiltInTabId, 'git' | 'files' | 'navigation' | 'agents' | 'collaboration' | 'board' | 'terminal' | 'browser' | 'services'>
     | `plugin:${string}`;
 
 export type ProjectRightSidebarTabId =
@@ -75,6 +78,8 @@ export function resolveRightSidebarTabs(
         scope: input.scope,
         terminalTabAvailable: input.terminalTabAvailable === true,
         presentation: input.presentation ?? 'desktop',
+        boardFeatureEnabled: input.boardFeatureEnabled === true,
+        sessionSharingAvailable: input.sessionSharingAvailable === true,
     };
     const builtInTabs = RIGHT_SIDEBAR_BUILTIN_TABS
         .filter((tab) => isTabAvailable(tab, availabilityInput))

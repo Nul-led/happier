@@ -1,20 +1,24 @@
 import * as React from 'react';
 import { Platform, View } from 'react-native';
 
+import {
+    ChangedFileEvidenceDisclosure,
+    checkpointAttributionDescription,
+    sessionAttributedFileAccessibilityQualification,
+} from '@/components/workspaces/scm/changes/ChangedFileEvidenceDisclosure';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
-import type { SessionAttributedFile, SessionAttributionReliability, ChangedFilesViewMode } from '@/scm/scmAttribution';
+import { filterPresentableSessionAttributedFiles, type SessionAttributedFile, type ChangedFilesViewMode } from '@/scm/scmAttribution';
 import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 import { t } from '@/text';
 import { ChangedFilesSectionHeader } from '@/components/workspaces/scm/review/ChangedFilesSectionHeader';
 import { ScmChangeRow, resolveScmChangeStatsColumnWidth } from '@/components/workspaces/scm/changes/ScmChangeRow';
-import { filterDirectoryLikeScmFileStatuses, isDirectoryLikeScmFileStatus } from '@/scm/isDirectoryLikeScmFileStatus';
+import { filterDirectoryLikeScmFileStatuses } from '@/scm/isDirectoryLikeScmFileStatus';
 import type { RepositoryCheckpointTurnMetadata } from '@happier-dev/protocol';
 
 type ChangedFilesListProps = {
     theme: any;
     changedFilesViewMode: ChangedFilesViewMode;
-    attributionReliability: SessionAttributionReliability;
     allRepositoryChangedFiles: ScmFileStatus[];
     turnAttributedFiles?: SessionAttributedFile[];
     turnAgentReportedFiles?: SessionAttributedFile[];
@@ -23,7 +27,6 @@ type ChangedFilesListProps = {
     turnRepositoryOnlyFiles?: ScmFileStatus[];
     sessionAttributedFiles: SessionAttributedFile[];
     repositoryOnlyFiles: ScmFileStatus[];
-    suppressedInferredCount: number;
     onFilePress: (file: ScmFileStatus) => void;
     onFilePressPinned?: (file: ScmFileStatus) => void;
     onToggleSelectionForFile?: (file: ScmFileStatus) => void;
@@ -33,24 +36,16 @@ type ChangedFilesListProps = {
     showSectionHeader?: boolean;
 };
 
-function resolveCheckpointAttributionCopy(metadata: RepositoryCheckpointTurnMetadata | null | undefined): string | null {
-    if (!metadata) return null;
-    if (metadata.contentConfidence === 'unavailable') return t('files.checkpointUnavailable');
-    if (metadata.attributionScope === 'shared_worktree') return t('files.checkpointAttributionShared');
-    return t('files.checkpointAttributionUnknown');
-}
 
 export function ChangedFilesList({
     theme,
     changedFilesViewMode,
-    attributionReliability,
     allRepositoryChangedFiles,
     turnAttributedFiles = [],
     turnAgentReportedFiles = [],
     turnCheckpointFiles = [],
     turnCheckpointMetadata = null,
     sessionAttributedFiles,
-    suppressedInferredCount,
     onFilePress,
     onFilePressPinned,
     onToggleSelectionForFile,
@@ -64,29 +59,17 @@ export function ChangedFilesList({
     }, [allRepositoryChangedFiles]);
 
     const filteredSessionAttributedFiles = React.useMemo(() => {
-        return sessionAttributedFiles.filter((entry) => {
-            if (!entry?.file) return false;
-            return !isDirectoryLikeScmFileStatus(entry.file);
-        });
+        return filterPresentableSessionAttributedFiles(sessionAttributedFiles);
     }, [sessionAttributedFiles]);
 
     const filteredTurnAttributedFiles = React.useMemo(() => {
-        return turnAttributedFiles.filter((entry) => {
-            if (!entry?.file) return false;
-            return !isDirectoryLikeScmFileStatus(entry.file);
-        });
+        return filterPresentableSessionAttributedFiles(turnAttributedFiles);
     }, [turnAttributedFiles]);
     const filteredTurnAgentReportedFiles = React.useMemo(() => {
-        return turnAgentReportedFiles.filter((entry) => {
-            if (!entry?.file) return false;
-            return !isDirectoryLikeScmFileStatus(entry.file);
-        });
+        return filterPresentableSessionAttributedFiles(turnAgentReportedFiles);
     }, [turnAgentReportedFiles]);
     const filteredTurnCheckpointFiles = React.useMemo(() => {
-        return turnCheckpointFiles.filter((entry) => {
-            if (!entry?.file) return false;
-            return !isDirectoryLikeScmFileStatus(entry.file);
-        });
+        return filterPresentableSessionAttributedFiles(turnCheckpointFiles);
     }, [turnCheckpointFiles]);
     const repositoryStatsColumnWidth = React.useMemo(
         () => resolveScmChangeStatsColumnWidth(repositoryChangedFiles),
@@ -166,7 +149,7 @@ export function ChangedFilesList({
                                 ...Typography.default(),
                             }}
                         >
-                            {resolveCheckpointAttributionCopy(turnCheckpointMetadata) ?? t('files.latestTurnDescription')}
+                            {checkpointAttributionDescription(turnCheckpointMetadata) ?? t('files.latestTurnDescription')}
                         </Text>
                     </View>
                 ) : null}
@@ -179,10 +162,11 @@ export function ChangedFilesList({
                     </View>
                 ) : (
                     filteredTurnAttributedFiles.map((entry, index) => (
+                        <View key={`turn-${entry.file.fullPath}-${index}`}>
                         <ScmChangeRow
-                            key={`turn-${entry.file.fullPath}-${index}`}
                             theme={theme}
                             file={entry.file}
+                            accessibilityQualification={sessionAttributedFileAccessibilityQualification(entry)}
                             density={rowDensity}
                             leadingElement={renderFileActions ? renderFileActions(entry.file) : null}
                             trailingElement={renderFileTrailingActions ? renderFileTrailingActions(entry.file) : null}
@@ -192,6 +176,8 @@ export function ChangedFilesList({
                             statsColumnWidth={turnStatsColumnWidth}
                             showDivider={index < filteredTurnAttributedFiles.length - 1}
                         />
+                        <ChangedFileEvidenceDisclosure entry={entry} />
+                        </View>
                     ))
                 )}
 
@@ -236,7 +222,7 @@ export function ChangedFilesList({
                             }}
                         >
                             {isCheckpointMode
-                                ? resolveCheckpointAttributionCopy(turnCheckpointMetadata)
+                                ? checkpointAttributionDescription(turnCheckpointMetadata)
                                 : t('files.agentReportedTurnDescription')}
                         </Text>
                     </View>
@@ -250,10 +236,11 @@ export function ChangedFilesList({
                     </View>
                 ) : files.length > 0 ? (
                     files.map((entry, index) => (
+                        <View key={`${isCheckpointMode ? 'turn-checkpoint' : 'turn-agent'}-${entry.file.fullPath}-${index}`}>
                         <ScmChangeRow
-                            key={`${isCheckpointMode ? 'turn-checkpoint' : 'turn-agent'}-${entry.file.fullPath}-${index}`}
                             theme={theme}
                             file={entry.file}
+                            accessibilityQualification={sessionAttributedFileAccessibilityQualification(entry)}
                             density={rowDensity}
                             leadingElement={renderFileActions ? renderFileActions(entry.file) : null}
                             trailingElement={renderFileTrailingActions ? renderFileTrailingActions(entry.file) : null}
@@ -263,6 +250,8 @@ export function ChangedFilesList({
                             statsColumnWidth={statsColumnWidth}
                             showDivider={index < files.length - 1}
                         />
+                        <ChangedFileEvidenceDisclosure entry={entry} />
+                        </View>
                     ))
                 ) : null}
             </>
@@ -290,42 +279,6 @@ export function ChangedFilesList({
                     >
                         {t('files.sessionAttributedChanges', { count: sessionAttributedFiles.length })}
                     </Text>
-                    <Text
-                        style={{
-                            marginTop: 4,
-                            fontSize: 12,
-                            color: theme.colors.text.secondary,
-                            ...Typography.default(),
-                        }}
-                    >
-                        {attributionReliability === 'high'
-                            ? t('files.attributionReliabilityHigh')
-                            : t('files.attributionReliabilityLimited')}
-                    </Text>
-                    <Text
-                        style={{
-                            marginTop: 2,
-                            fontSize: 11,
-                            color: theme.colors.text.secondary,
-                            ...Typography.default(),
-                        }}
-                    >
-                        {attributionReliability === 'high'
-                            ? t('files.attributionLegendFull')
-                            : t('files.attributionLegendDirectOnly')}
-                    </Text>
-                    {suppressedInferredCount > 0 && (
-                        <Text
-                            style={{
-                                marginTop: 2,
-                                fontSize: 11,
-                                color: theme.colors.text.secondary,
-                                ...Typography.default(),
-                            }}
-                        >
-                            {t('files.inferredSuppressed', { count: suppressedInferredCount })}
-                        </Text>
-                    )}
                 </View>
             ) : null}
 
@@ -337,10 +290,11 @@ export function ChangedFilesList({
                 </View>
             ) : (
                 filteredSessionAttributedFiles.map((entry, index) => (
+                    <View key={`session-${entry.file.fullPath}-${index}`}>
                     <ScmChangeRow
-                        key={`session-${entry.file.fullPath}-${index}`}
                         theme={theme}
                         file={entry.file}
+                        accessibilityQualification={sessionAttributedFileAccessibilityQualification(entry)}
                         density={rowDensity}
                         leadingElement={renderFileActions ? renderFileActions(entry.file) : null}
                         trailingElement={renderFileTrailingActions ? renderFileTrailingActions(entry.file) : null}
@@ -350,6 +304,8 @@ export function ChangedFilesList({
                         statsColumnWidth={sessionStatsColumnWidth}
                         showDivider={index < filteredSessionAttributedFiles.length - 1}
                     />
+                    <ChangedFileEvidenceDisclosure entry={entry} />
+                    </View>
                 ))
             )}
         </>

@@ -65,3 +65,24 @@ export function resolveSupportedDiffAreas(capabilities: ScmCapabilities | null |
         ? ['included', 'pending']
         : ['pending'];
 }
+
+export function resolveScmUiPolicy(capabilities: ScmCapabilities | null | undefined): ScmUiPolicy {
+    const supportsIncludeExclude = capabilities?.writeInclude === true
+        && capabilities?.writeExclude === true;
+    return {
+        supportsIncludeExclude,
+        supportsLineSelection: capabilities?.writeCommitLineSelection === true || supportsIncludeExclude,
+        changeSetModel: resolveChangeSetModel(capabilities),
+        supportedDiffAreas: resolveSupportedDiffAreas(capabilities),
+    };
+}
+
+export function resolveScmCommitSelectionPolicy(capabilities: ScmCapabilities | null | undefined): Readonly<{
+    supportsPathScopedCommit: boolean;
+    supportsLineSelection: boolean;
+}> {
+    return {
+        supportsPathScopedCommit: capabilities?.writeCommitPathSelection === true,
+        supportsLineSelection: capabilities?.writeCommitLineSelection === true,
+    };
+}

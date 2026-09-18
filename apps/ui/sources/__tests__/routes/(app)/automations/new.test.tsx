@@ -8,8 +8,7 @@ const routeState = vi.hoisted(() => ({ params: {} as ExpoRouterParams }));
 const setParams = vi.hoisted(() => vi.fn((next: ExpoRouterParams) => {
     Object.assign(routeState.params, next);
 }));
-const mounted = vi.hoisted(() => vi.fn());
-const storeTempDataSpy = vi.hoisted(() => vi.fn(() => 'automation-draft-seed'));
+const newSessionMounted = vi.hoisted(() => vi.fn());
 const surfaceStateCardProps = vi.hoisted(() => ({ value: null as any }));
 // Lifetime- and scope-sensitive Account state: a same-server Account A→B
 // switch retires the A-era authority exactly like the real scope owner.
@@ -20,8 +19,14 @@ const authorityCaptures = vi.hoisted(() => ({ list: [] as Array<{ serverId: stri
 // Live source-turn truth, independent of route params, so staleness can be
 // simulated while the mounted binding keeps the observed identity.
 const liveTurn = vi.hoisted(() => ({ value: 'turn-7' }));
-const composerMounts = vi.hoisted(() => ({ list: [] as Array<Record<string, unknown>> }));
-const retargetRequests = vi.hoisted(() => ({ list: [] as Array<Record<string, unknown> | null> }));
+const workflowScheduleSeedState = vi.hoisted(() => ({
+    value: null as null | Readonly<Record<string, unknown>>,
+}));
+const handoffSeedState = vi.hoisted(() => ({
+    value: null as null | Readonly<Record<string, unknown>>,
+}));
+const automationWrapperMounts = vi.hoisted(() => vi.fn());
+const automationWrapperLifetime = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
 
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
@@ -34,12 +39,9 @@ vi.mock('expo-router', async () => {
         useRouter: () => ({ ...harness.state.router, setParams }),
     };
 });
-vi.mock('@/app/(app)/new/index', () => ({ default: (props: any) => {
-    React.useEffect(() => {
-        composerMounts.list.push({ ...routeState.params });
-    }, []);
-    retargetRequests.list.push(props?.automationExactTurnRetarget ?? null);
-    mounted(routeState.params);
+// The New Session screen must no longer be an Automation authoring surface.
+vi.mock('@/app/(app)/new/index', () => ({ default: () => {
+    newSessionMounted(routeState.params);
     return React.createElement('NewSessionScreen');
 } }));
 vi.mock('@/components/automations/gating/AutomationsGate', () => ({
@@ -51,8 +53,21 @@ vi.mock('@/components/ui/surfaces/SurfaceStateCard', () => ({
         return React.createElement('SurfaceStateCard', props);
     },
 }));
-vi.mock('@/utils/sessions/tempDataStore', () => ({
-    storeTempData: storeTempDataSpy,
+vi.mock('@/sync/domains/workflows/workflowScheduleSeed', () => ({
+    readWorkflowScheduleSeed: () => workflowScheduleSeedState.value,
+}));
+vi.mock('@/sync/domains/workflows/newSessionAutomationHandoffSeed', () => ({
+    readNewSessionAutomationHandoffSeed: () => handoffSeedState.value,
+}));
+vi.mock('@/components/workflows/screens/WorkflowAutomationCreateScreen', () => ({
+    WorkflowAutomationCreateScreen: (props: Readonly<Record<string, unknown>>) => {
+        automationWrapperMounts(props);
+        React.useEffect(() => {
+            automationWrapperLifetime.mounts += 1;
+            return () => { automationWrapperLifetime.unmounts += 1; };
+        }, []);
+        return React.createElement('WorkflowAutomationCreateScreen');
+    },
 }));
 vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({ useHydrateSessionForRoute: () => ({ kind: 'ready' }) }));
 vi.mock('@/hooks/server/useAutomationsSupport', () => ({ useAutomationsSupport: () => ({ enabled: true }) }));
@@ -115,14 +130,72 @@ describe('/automations/new', () => {
     beforeEach(() => {
         routeState.params = {};
         setParams.mockClear();
-        mounted.mockClear();
-        storeTempDataSpy.mockClear();
+        newSessionMounted.mockClear();
         surfaceStateCardProps.value = null;
         accountScopeState.value = { serverId: 'server-1', accountId: 'account-1' };
         authorityCaptures.list.length = 0;
         liveTurn.value = 'turn-7';
-        composerMounts.list.length = 0;
-        retargetRequests.list.length = 0;
+        workflowScheduleSeedState.value = null;
+        handoffSeedState.value = null;
+        automationWrapperMounts.mockClear();
+        automationWrapperLifetime.mounts = 0;
+        automationWrapperLifetime.unmounts = 0;
+    });
+
+    it('mounts the one shared Automation editor for ordinary creation', async () => {
+        const { default: Route } = await import('@/app/(app)/automations/new');
+        await renderScreen(<Route />);
+
+        expect(automationWrapperMounts).toHaveBeenCalledWith({ handoff: null });
+        // The New Session screen is no longer a second Automation authoring
+        // surface, so ordinary creation never mounts it.
+        expect(newSessionMounted).not.toHaveBeenCalled();
+    });
+
+    it('consumes a reviewed workflow Schedule seed', async () => {
+        const seed = {
+            name: 'Release check',
+            project: { machineId: 'machine-1', directory: '/repo' },
+            definition: { version: 1, inputs: [], defaults: {}, blocks: [] },
+            origin: null,
+        };
+        workflowScheduleSeedState.value = seed;
+        routeState.params = { workflowSeedId: 'reviewed-seed' };
+
+        const { default: Route } = await import('@/app/(app)/automations/new');
+        await renderScreen(<Route />);
+
+        expect(automationWrapperMounts).toHaveBeenCalledWith({ seed });
+        expect(newSessionMounted).not.toHaveBeenCalled();
+    });
+
+    it('opens the composed New Session draft handed over by the Automation chip', async () => {
+        const handoff = {
+            name: 'Nightly notes',
+            description: null,
+            enabled: true,
+            draft: { draftId: 'handoff', name: 'Nightly notes', inputs: [], defaults: {}, blocks: [] },
+            project: { machineId: 'machine-1', directory: '/repo' },
+            triggers: [],
+        };
+        handoffSeedState.value = handoff;
+        routeState.params = { newSessionDraftSeedId: 'composed-draft' };
+
+        const { default: Route } = await import('@/app/(app)/automations/new');
+        await renderScreen(<Route />);
+
+        expect(automationWrapperMounts).toHaveBeenCalledWith({ handoff });
+        expect(newSessionMounted).not.toHaveBeenCalled();
+    });
+
+    it('still opens the editor when an expired handoff can no longer be read', async () => {
+        routeState.params = { newSessionDraftSeedId: 'expired' };
+
+        const { default: Route } = await import('@/app/(app)/automations/new');
+        await renderScreen(<Route />);
+
+        expect(automationWrapperMounts).toHaveBeenCalledWith({ handoff: null });
+        expect(surfaceStateCardProps.value).toBeNull();
     });
 
     it('fails a partial exact-turn tuple closed instead of composing generically', async () => {
@@ -136,28 +209,10 @@ describe('/automations/new', () => {
         expect(surfaceStateCardProps.value).toMatchObject({
             testID: 'new-automation-exact-turn-invalid',
         });
-        expect(mounted).not.toHaveBeenCalled();
-        expect(storeTempDataSpy).not.toHaveBeenCalled();
+        expect(automationWrapperMounts).not.toHaveBeenCalled();
     });
 
-    it('mounts the shared recipe composer directly with a zero-trigger plural draft', async () => {
-        const { default: Route } = await import('@/app/(app)/automations/new');
-        await renderScreen(<Route />);
-        await renderScreen(<Route />);
-
-        expect(setParams).toHaveBeenCalledWith(expect.objectContaining({ automation: '1', dataId: expect.any(String) }));
-        expect(mounted).toHaveBeenCalled();
-        expect(storeTempDataSpy).toHaveBeenCalledWith({
-            automationDraft: {
-                enabled: true,
-                name: '',
-                description: '',
-                triggers: [],
-            },
-        });
-    });
-
-    it('preserves exact observed Session and turn identity in the seeded draft path', async () => {
+    it('seeds the exact observed Session and turn as the wrapper trigger', async () => {
         routeState.params = {
             sourceSessionId: 'source-session',
             sourceTurnId: 'turn-7',
@@ -165,44 +220,17 @@ describe('/automations/new', () => {
         };
         const { default: Route } = await import('@/app/(app)/automations/new');
         await renderScreen(<Route />);
-        await renderScreen(<Route />);
 
-        expect(setParams).toHaveBeenCalledWith(expect.objectContaining({ automation: '1', dataId: expect.any(String) }));
-        expect(storeTempDataSpy).toHaveBeenCalledWith({
-            automationDraft: {
+        expect(automationWrapperMounts).toHaveBeenCalledWith(expect.objectContaining({
+            initialTriggers: [{
+                kind: 'sessionLifecycle',
                 enabled: true,
-                name: '',
-                description: '',
-                triggers: [{
-                    clientId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u),
-                    definition: {
-                        kind: 'sessionLifecycle',
-                        enabled: true,
-                        sourceSessionId: 'source-session',
-                        events: ['parentTurnCompleted'],
-                        policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' },
-                    },
-                }],
-            },
-        });
-    });
-
-    it('rehydrates an existing plural composer handoff without minting a competing draft', async () => {
-        routeState.params = {
-            automation: '1',
-            dataId: 'existing-plural-seed',
-            draftId: 'existing-draft',
-        };
-        const { default: Route } = await import('@/app/(app)/automations/new');
-        await renderScreen(<Route />);
-
-        expect(storeTempDataSpy).not.toHaveBeenCalled();
-        expect(setParams).not.toHaveBeenCalled();
-        expect(mounted).toHaveBeenCalledWith(expect.objectContaining({
-            automation: '1',
-            dataId: 'existing-plural-seed',
-            draftId: 'existing-draft',
+                sourceSessionId: 'source-session',
+                events: ['parentTurnCompleted'],
+                policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' },
+            }],
         }));
+        expect(newSessionMounted).not.toHaveBeenCalled();
     });
 
     it('rebinds the exact-turn authority under the new Account instead of staying retired', async () => {
@@ -213,12 +241,9 @@ describe('/automations/new', () => {
         };
         const { default: Route } = await import('@/app/(app)/automations/new');
         const screen = await renderScreen(<Route />);
-        // The first render creates the canonical composer handoff; the next
-        // render consumes that same handoff and mounts the shared composer.
-        await screen.update(<Route />);
+        expect(automationWrapperLifetime).toEqual({ mounts: 1, unmounts: 0 });
         await act(async () => {});
 
-        expect(composerMounts.list).toHaveLength(1);
         expect(surfaceStateCardProps.value).toBeNull();
 
         // Same server, Account B mounts: the A-era authority retires; the
@@ -229,47 +254,6 @@ describe('/automations/new', () => {
 
         expect(authorityCaptures.list.at(-1)).toMatchObject({ serverId: 'server-1', accountId: 'account-2' });
         expect(surfaceStateCardProps.value).toBeNull();
-        expect(composerMounts.list).toHaveLength(1);
-        expect(mounted).toHaveBeenLastCalledWith(expect.objectContaining({ automation: '1' }));
-    });
-
-    it('keeps the composer draft identity when explicitly adopting the current turn', async () => {
-        routeState.params = {
-            sourceSessionId: 'source-session',
-            sourceTurnId: 'turn-7',
-            sourceServerId: 'server-1',
-        };
-        const { default: Route } = await import('@/app/(app)/automations/new');
-        const screen = await renderScreen(<Route />);
-
-        const seededDraftId = routeState.params.draftId;
-        const seededDataId = routeState.params.dataId;
-        expect(seededDraftId).toEqual(expect.any(String));
-        expect(storeTempDataSpy).toHaveBeenCalledTimes(1);
-
-        // The source turn advances while composing: typed stale truth is
-        // offered instead of silently retargeting.
-        liveTurn.value = 'turn-8';
-        await screen.update(<Route />);
-        await act(async () => {});
-
-        const stale = screen.findByProps({ testID: 'new-automation-exact-turn-stale' });
-        expect(stale.props.kind).toBe('warning');
-        expect(stale.props.action.label).toBe('Use current turn');
-
-        await act(async () => stale.props.action.onPress());
-        await act(async () => {});
-
-        // Explicit adoption updates URL truth and re-mounts the composer on
-        // the SAME draft identity: no second minted draft, continuity stays
-        // with the incumbent draft owner, and the stale card clears.
-        expect(setParams).toHaveBeenCalledWith(expect.objectContaining({ sourceTurnId: 'turn-8' }));
-        expect(routeState.params.draftId).toBe(seededDraftId);
-        expect(routeState.params.dataId).toBe(seededDataId);
-        expect(storeTempDataSpy).toHaveBeenCalledTimes(1);
-        expect(composerMounts.list.at(-1)).toMatchObject({ draftId: seededDraftId, dataId: seededDataId });
-        expect(screen.findAllByProps({ testID: 'new-automation-exact-turn-stale' })).toHaveLength(0);
-        expect(mounted).toHaveBeenLastCalledWith(expect.objectContaining({ automation: '1' }));
     });
 
     it('keeps the chosen lifecycle events when explicitly adopting the current turn', async () => {
@@ -282,24 +266,33 @@ describe('/automations/new', () => {
         const { default: Route } = await import('@/app/(app)/automations/new');
         const screen = await renderScreen(<Route />);
 
+        // The source turn advances while composing: typed stale truth is
+        // offered instead of silently retargeting.
         liveTurn.value = 'turn-8';
         await screen.update(<Route />);
         await act(async () => {});
 
         const stale = screen.findByProps({ testID: 'new-automation-exact-turn-stale' });
+        expect(stale.props.kind).toBe('warning');
+        // Staleness is a review state over the mounted draft, not a reason to
+        // discard the person's Automation metadata, Workflow or extra triggers.
+        expect(automationWrapperLifetime).toEqual({ mounts: 1, unmounts: 0 });
         await act(async () => stale.props.action.onPress());
         await act(async () => {});
 
         // Adoption retargets the turn only. The event selection is the
-        // author's, so neither URL truth nor the retarget handed to the
-        // incumbent draft owner may fall back to the observation default.
+        // author's, so neither URL truth nor the seeded trigger may fall back
+        // to the observation default.
         expect(setParams).toHaveBeenCalledWith(expect.objectContaining({
             sourceTurnId: 'turn-8',
             sessionLifecycleEvents: 'parentTurnFailed,userActionRequired',
         }));
-        expect(retargetRequests.list.at(-1)).toMatchObject({
-            sourceTurnId: 'turn-8',
-            events: ['parentTurnFailed', 'userActionRequired'],
-        });
+        expect(automationWrapperMounts).toHaveBeenLastCalledWith(expect.objectContaining({
+            initialTriggers: [expect.objectContaining({
+                events: ['parentTurnFailed', 'userActionRequired'],
+                policy: { kind: 'currentTurn', sourceTurnId: 'turn-8' },
+            })],
+        }));
+        expect(automationWrapperLifetime).toEqual({ mounts: 1, unmounts: 0 });
     });
 });

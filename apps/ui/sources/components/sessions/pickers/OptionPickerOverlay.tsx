@@ -98,6 +98,8 @@ export type OptionPickerOption<TValue = string> = Readonly<{
     description?: string;
     accessibilityLabel?: string;
     disabled?: boolean;
+    /** Runs a row-owned recovery/navigation action instead of selecting its value. */
+    onActivate?: () => void;
 }>;
 
 export type OptionPickerSection<TValue = string> = Readonly<{
@@ -152,6 +154,12 @@ export type OptionPickerOverlayProps<TValue = string> = Readonly<{
     options: ReadonlyArray<OptionPickerOption<TValue>>;
     sections?: ReadonlyArray<OptionPickerSection<TValue>>;
     selectedValue: TValue;
+    /**
+     * Controlled multi-selection for policy/catalog surfaces. The incumbent
+     * `selectedValue` remains the single-selection/custom-value owner; callers
+     * that supply this list opt into SelectionList's canonical multiple mode.
+     */
+    selectedValues?: ReadonlyArray<TValue>;
     getValueKey?: (value: TValue) => string;
     emptyText: string;
     customLabel?: string;
@@ -363,6 +371,12 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
     const { theme } = useUnistyles();
     const getValueKey = props.getValueKey ?? defaultValueKey<TValue>;
     const selectedValueKey = getValueKey(props.selectedValue);
+    const selectedValueKeys = React.useMemo(
+        () => props.selectedValues === undefined
+            ? null
+            : new Set(props.selectedValues.map((value) => getValueKey(value))),
+        [getValueKey, props.selectedValues],
+    );
     const notes = props.notes ?? [];
     const optionTestIDPrefix = props.optionTestIDPrefix ?? 'model-picker-overlay-option';
     const refreshTestID = props.refreshTestID ?? 'model-picker-overlay-refresh';
@@ -532,7 +546,7 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
                 const valueKey = getValueKey(option.value);
                 if (seen.has(valueKey)) return [];
                 seen.add(valueKey);
-                const selected = valueKey === selectedValueKey;
+                const selected = selectedValueKeys?.has(valueKey) ?? valueKey === selectedValueKey;
                 const favorite = props.favoriteOptions?.values.has(valueKey) === true;
                 const canToggleFavorite = (
                     props.favoriteActionVisibility === 'all'
@@ -584,6 +598,7 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
         props.multiColumn,
         selectedControlsExpandedContent,
         selectedValueKey,
+        selectedValueKeys,
         sourceSections,
     ]);
     const optionByKey = React.useMemo(() => new Map(
@@ -713,6 +728,9 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
                     rootStep={selectionRootStep}
                     listAccessibilityLabel={props.title}
                     selectedOptionId={customEditorVisible ? null : selectedValueKey}
+                    selection={selectedValueKeys === null
+                        ? undefined
+                        : { kind: 'multiple', selectedIds: selectedValueKeys }}
                     onSelect={(id) => {
                         const option = optionByKey.get(id);
                         if (!option || option.disabled) return;
@@ -722,6 +740,10 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
                         // this picker inside onSelect, before passive effects can refresh.
                         abandonCustomDraft();
                         setCustomEditorVisible(false);
+                        if (option.onActivate) {
+                            option.onActivate();
+                            return;
+                        }
                         props.onSelect(option.value);
                     }}
                     onRequestClose={props.onRequestClose ?? (() => {})}

@@ -13,7 +13,7 @@ afterEach(() => {
 function mockSessionsDomainBoundaries(): void {
     vi.doMock('../../domains/state/persistence', () => ({
         loadSettings: () => ({
-            settings: { groupInactiveSessionsByProject: false },
+            settings: {},
             version: null,
         }),
         loadLocalSettings: () => ({}),
@@ -93,8 +93,9 @@ function mockSessionsDomainBoundaries(): void {
 function createHarness(createSessionsDomain: any, createReducer: any) {
     let state: any = {
         sessions: {},
-        sessionListRenderables: {},
-        sessionListRowStateByServerId: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
         sessionScmStatus: {},
@@ -110,7 +111,7 @@ function createHarness(createSessionsDomain: any, createReducer: any) {
                 isLoaded: true,
             },
         },
-        settings: { groupInactiveSessionsByProject: false },
+        settings: {},
     };
     storageStateRef.current = state;
 
@@ -286,7 +287,7 @@ describe('sessions domain: no voice side effects', () => {
             isLoaded: true,
         };
         state.sessionMessages.s1.messagesMap = state.sessionMessages.s1.messagesById;
-        state.sessionListRenderables.s1 = {
+        state.sessionListRowsByServerId.server_1 = { s1: {
             id: 's1',
             seq: 0,
             createdAt: 1,
@@ -304,7 +305,8 @@ describe('sessions domain: no voice side effects', () => {
             presence: 'online',
             hasPendingPermissionRequests: false,
             hasPendingUserActionRequests: false,
-        };
+        } };
+        state.ordinarySessionListMembershipByServerId.server_1 = ['s1'];
 
         domain.applySessions([
             {
@@ -340,7 +342,7 @@ describe('sessions domain: no voice side effects', () => {
         expect(updatedMessage.tool?.state).toBe('running');
         expect(updatedMessage.tool?.completedAt).toBeNull();
         expect(updatedMessage.tool?.result).toBeUndefined();
-        expect(nextState.sessionListRenderables.s1?.hasPendingPermissionRequests).toBe(false);
-        expect(nextState.sessionListRenderables.s1?.hasPendingUserActionRequests).toBe(true);
+        expect(nextState.sessionListRowsByServerId.server_1.s1?.hasPendingPermissionRequests).toBe(false);
+        expect(nextState.sessionListRowsByServerId.server_1.s1?.hasPendingUserActionRequests).toBe(true);
     });
 });

@@ -5,6 +5,7 @@ import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import {
     installRestoreRouteCommonModuleMocks,
 } from './restoreRouteTestHelpers';
+import { encodeBase64 } from '@/encryption/base64';
 
 type ReactActEnvironmentGlobal = typeof globalThis & {
     IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -62,6 +63,10 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => ({ state: 'enabled' }),
 }));
 
+vi.mock('@/auth/context/AuthContext', () => ({
+    useAuth: () => ({ login: vi.fn(async () => undefined) }),
+}));
+
 vi.mock('@/utils/platform/qrScannerSupport', () => ({
     isWebQrScannerSupported: () => true,
     canUseCurrentDeviceQrScanner: () => true,
@@ -100,10 +105,31 @@ describe('/restore (web phone)', () => {
         expect(restoreRouteIngressState.scannerProps?.entryIntent).toBe('enter_home');
     });
 
-    it('passes a routed V2 link unchanged to the embedded restore owner under its routed intent', async () => {
-        const pairingLink = 'happier:///pair?v=2&payload=opaque';
-        restoreRouteIngressState.params = { pairingLink, entryIntent: 'add_home' };
+    it('consumes a routed V2 handoff once and passes the link to the embedded restore owner', async () => {
         vi.resetModules();
+        const pairing = await import('@/auth/pairing/pairingUrl');
+        const pairingLink = pairing.buildHomeQrInviteDeepLink({
+            invite: {
+                v: 2,
+                intent: 'home_device',
+                direction: 'trusted_home_displays',
+                pairId: 'pair-route-handoff',
+                home: {
+                    v: 1,
+                    homeServerIdentityId: 'srv_route_handoff',
+                    canonicalServerUrl: 'https://route-handoff.test',
+                    revision: 1,
+                    endpoints: [{ kind: 'https', url: 'https://route-handoff.test' }],
+                },
+                qrSecretBase64Url: encodeBase64(new Uint8Array(32).fill(6), 'base64url'),
+                issuedAtMs: Date.now(),
+                expiresAtMs: Date.now() + 60_000,
+            },
+        });
+        const restorePath = pairing.buildHomeQrInviteRestoreRoutePath(pairingLink, 'add_home');
+        expect(restorePath).not.toContain(pairingLink);
+        const routeUrl = new URL(restorePath!, 'https://app.example.test');
+        restoreRouteIngressState.params = Object.fromEntries(routeUrl.searchParams.entries());
         const { default: Screen } = await import('@/app/(app)/restore/index');
 
         await renderScreen(<Screen />);
@@ -117,17 +143,17 @@ describe('/restore (web phone)', () => {
     it.each(['missing', 'malformed'] as const)(
         'refuses to consume a routed V2 link whose entry intent is %s',
         async (intentCase) => {
-            const pairingLink = 'happier:///pair?v=2&payload=opaque';
             restoreRouteIngressState.params = intentCase === 'missing'
-                ? { pairingLink }
-                : { pairingLink, entryIntent: 'focus_home' };
+                ? { pairingHandoff: 'home-qr-missing' }
+                : { pairingHandoff: 'home-qr-malformed', entryIntent: 'focus_home' };
             vi.resetModules();
             const { default: Screen } = await import('@/app/(app)/restore/index');
 
             const screen = await renderScreen(<Screen />);
 
-            expect(restoreRouteIngressState.scannerProps).toBeNull();
-            expect(screen.findAllByProps({ 'data-testid': 'RestoreQrView' })).toHaveLength(1);
+            expect(restoreRouteIngressState.scannerProps?.initialPairingLink).toBeNull();
+            expect(restoreRouteIngressState.scannerProps?.entryIntent).toBe('enter_home');
+            expect(screen.findAllByProps({ 'data-testid': 'RestoreQrView' })).toHaveLength(0);
         },
     );
 

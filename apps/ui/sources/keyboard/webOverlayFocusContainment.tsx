@@ -38,6 +38,10 @@ export type WebOverlayFocusReturnStrategy =
         kind: 'activation-time';
     }>
     | Readonly<{
+        kind: 'provided';
+        ref: FocusReturnRef;
+    }>
+    | Readonly<{
         kind: 'pre-mutation';
         ref: FocusReturnMutableRef;
         /** Clears a capture that opened docked before it can become an overlay. */
@@ -73,7 +77,9 @@ export function useWebOverlayFocusContainment(options: WebOverlayFocusContainmen
 
         returnTargetRef.current = options.focusReturn.kind === 'activation-time'
             ? readDocumentFocusReturnTarget(document)
-            : takePreMutationFocusReturnTarget(preMutationFocusReturnRef);
+            : options.focusReturn.kind === 'provided'
+                ? options.focusReturn.ref?.current
+                : takePreMutationFocusReturnTarget(preMutationFocusReturnRef);
         if (!focusElement(container)) {
             focusFirstElement(container);
         }

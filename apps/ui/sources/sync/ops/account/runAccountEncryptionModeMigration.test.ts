@@ -65,6 +65,28 @@ function success(
 }
 
 describe('runAccountEncryptionModeMigration', () => {
+  it('requires the selected draft response epoch before changing local encryption state', async () => {
+    const capableRequest = { ...request, sessionDrafts: { ...request.sessionDrafts, v: 2 as const } };
+    const activateTargetMode = vi.fn();
+    const acknowledgeSessionDrafts = vi.fn();
+    await expect(runAccountEncryptionModeMigration({
+      request: capableRequest,
+      migrate: async () => success({ sessionDrafts: { records: [migratedRecord] } }),
+      activateTargetMode,
+      acknowledgeSessionDrafts,
+    })).rejects.toThrow('draft migration response');
+    expect(activateTargetMode).not.toHaveBeenCalled();
+    expect(acknowledgeSessionDrafts).not.toHaveBeenCalled();
+
+    await expect(runAccountEncryptionModeMigration({
+      request: capableRequest,
+      migrate: async () => success({ sessionDrafts: { v: 2, records: [migratedRecord] } }),
+      activateTargetMode,
+      acknowledgeSessionDrafts,
+    })).resolves.toMatchObject({ sessionDrafts: { v: 2 } });
+    expect(acknowledgeSessionDrafts).toHaveBeenCalledWith([migratedRecord]);
+  });
+
   it('does not mutate the local cipher or repository before atomic server success', async () => {
     let resolve!: (value: AccountEncryptionMigrateSuccessResponse) => void;
     const serverResult = new Promise<AccountEncryptionMigrateSuccessResponse>((done) => { resolve = done; });

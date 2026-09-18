@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { encodeBase64 } from '@/encryption/base64';
+import { decodeBase64, encodeBase64 } from '@/encryption/base64';
+import { encryptAESGCMString } from '@/encryption/aes';
+import * as webAes from '@/encryption/aes.web';
 import { decodeHex } from '@/encryption/hex';
 import { parseSerializedJsonValue } from '@happier-dev/protocol';
 
@@ -43,6 +45,50 @@ function nativeBinding() {
 }
 
 describe('encryptor native base64 JSON decrypt', () => {
+    it('classifies wrong keys separately from authenticated null through the real WebCrypto adapter', async () => {
+        const adapter = { encryptString: webAes.encryptAESGCMString, decryptString: webAes.decryptAESGCMString };
+        const reader = new AES256Encryption(new Uint8Array(32).fill(17), adapter);
+        const wrongWriter = new AES256Encryption(new Uint8Array(32).fill(18), adapter);
+        const encrypted = await reader.encrypt([null, false, 0, '']);
+        const [wrong] = await wrongWriter.encrypt([null]);
+        const failures: number[] = [];
+        expect(await reader.decrypt([...encrypted, wrong], {
+            onAuthenticationFailure: (index) => failures.push(index),
+        })).toEqual([null, false, 0, '', null]);
+        expect(failures).toEqual([4]);
+    });
+
+    it('does not label authenticated non-JSON plaintext as an authentication failure', async () => {
+        const key = new Uint8Array(32).fill(17);
+        const sealed = decodeBase64(await encryptAESGCMString('{', encodeBase64(key)));
+        const ciphertext = new Uint8Array(sealed.length + 1);
+        ciphertext.set(sealed, 1);
+        for (const binding of [undefined, nativeBinding()]) {
+            const reader = new AES256Encryption(key, { nativeCryptoWorker: binding });
+            const failures: number[] = [];
+            expect(await reader.decrypt([ciphertext], {
+                onAuthenticationFailure: (index) => failures.push(index),
+            })).toEqual([null]);
+            expect(failures).toEqual([]);
+        }
+    });
+
+    it.each([AES256Encryption, SecretBoxEncryption])('classifies authentication before JSON parsing through JS and fake native (%s)', async (Cipher) => {
+        const key = new Uint8Array(32).fill(17);
+        const writer = new Cipher(key);
+        const values = [false, 0, '', null, { future: true }];
+        const ciphertexts = await writer.encrypt(values);
+        const [wrongCiphertext] = await new Cipher(new Uint8Array(32).fill(18)).encrypt([null]);
+        for (const binding of [undefined, nativeBinding()]) {
+            const reader = new Cipher(key, { nativeCryptoWorker: binding });
+            const failures: number[] = [];
+            expect(await reader.decrypt([...ciphertexts, wrongCiphertext], {
+                onAuthenticationFailure: (index) => failures.push(index),
+            })).toEqual([...values, null]);
+            expect(failures).toEqual([values.length]);
+        }
+    });
+
     it('exposes AES base64 JSON decrypt without native worker and preserves undefined', async () => {
         const key = decodeHex(UI_CRYPTO_GOLDEN_VECTORS.aesGcmJson.keyHex);
         const encryptor = new AES256Encryption(key);

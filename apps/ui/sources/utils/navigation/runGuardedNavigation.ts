@@ -6,6 +6,8 @@ export type ActiveUnsavedChangesGuard = Readonly<{
     isDirtyRef: RefLike<boolean>;
     ignoreRef?: RefLike<boolean> | null;
     requestDecision: () => Promise<UnsavedChangesDecision>;
+    /** Flush editor-owned pending input before this locked dirty decision. */
+    prepareGuard?: () => void | Promise<void>;
     onDiscard?: () => void | Promise<void>;
     onSave?: () => boolean | Promise<boolean>;
     continueOnSave?: boolean;
@@ -42,7 +44,7 @@ export function runUnsavedChangesGuard(
         return Promise.resolve(false);
     }
 
-    if (!guard.isDirtyRef.current) {
+    if (!guard.prepareGuard && !guard.isDirtyRef.current) {
         const continuation = navigate();
         return continuation
             ? continuation.then(() => true)
@@ -52,6 +54,21 @@ export function runUnsavedChangesGuard(
     guardsInFlight.add(guard.isDirtyRef);
 
     const run = async (): Promise<boolean> => {
+        try {
+            await guard.prepareGuard?.();
+        } catch {
+            return false;
+        }
+
+        if (!guard.isDirtyRef.current) {
+            try {
+                await navigate();
+            } catch {
+                return false;
+            }
+            return true;
+        }
+
         let decision: UnsavedChangesDecision;
         try {
             decision = await guard.requestDecision();

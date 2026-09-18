@@ -6,6 +6,7 @@ const fakeSink = vi.hoisted(() => ({
   sendContextualUpdate: vi.fn(),
   sendTextMessage: vi.fn(),
 }));
+const setVoiceLiveContextSessionAddresses = vi.hoisted(() => vi.fn());
 
 const voiceConfigState = vi.hoisted(() => ({
   DISABLE_PERMISSION_REQUESTS: false,
@@ -27,8 +28,8 @@ vi.mock('./contextFormatters', () => ({
   summarizeAgentRequestForVoiceHuman: vi.fn(() => null),
 }));
 
-vi.mock('@/sync/domains/messages/readStoredSessionMessages', () => ({
-  readStoredSessionMessages: vi.fn(() => []),
+vi.mock('@/sync/domains/messages/readStoredSessionMessagesForAddress', () => ({
+  readStoredSessionMessagesForAddress: vi.fn(() => []),
 }));
 
 const storageMock = createStorageModuleStub({
@@ -58,8 +59,8 @@ vi.mock('@/voice/context/getVoiceContextSinkForSession', () => ({
 
 vi.mock('@/voice/context/resolveEffectiveVoiceTargetState', () => ({
   resolveEffectiveVoiceTargetState: vi.fn(() => ({
-    trackedSessionIds: ['s1'],
-    primaryActionSessionId: 's1',
+    voiceLiveContextSessionAddresses: [{ serverId: 'server-a', sessionId: 's1' }],
+    primaryActionSessionAddress: { serverId: 'server-a', sessionId: 's1' },
   })),
 }));
 
@@ -72,11 +73,13 @@ vi.mock('@/voice/runtime/voiceTargetStore', () => ({
     getState: () => ({
       setPrimaryActionSessionId: vi.fn(),
       setTrackedSessionIds: vi.fn(),
+      setVoiceLiveContextSessionAddresses,
     }),
   },
 }));
 
 vi.mock('@/voice/runtime/voiceUpdatePolicy', () => ({
+  readSessionIncludedInVoiceFromState: vi.fn(() => true),
   resolveVoiceSessionUpdatePolicy: vi.fn(() => ({
     level: 'snippets',
     snippetsMaxMessages: 3,
@@ -88,6 +91,14 @@ vi.mock('@/voice/context/resolveVoiceContextSession', () => ({
   resolveVoiceContextSessionFromState: vi.fn(() => ({
     id: 's1',
     metadata: { summary: { text: 'Summary' } },
+  })),
+}));
+
+vi.mock('@/voice/tools/actionImpl/sessionReference', () => ({
+  resolveVoiceSessionRef: vi.fn((target: string | { serverId: string; sessionId: string }) => ({
+    address: typeof target === 'string'
+      ? { serverId: 'server-a', sessionId: target }
+      : target,
   })),
 }));
 
@@ -121,7 +132,7 @@ describe('voiceHooks debug diagnostics', () => {
     let output = '';
 
     try {
-      voiceHooks.onReady('s1');
+      voiceHooks.onReady({ serverId: 'server-a', sessionId: 's1' });
       output = collectConsoleOutput([
         ...consoleLogSpy.mock.calls,
         ...consoleDebugSpy.mock.calls,
@@ -133,5 +144,11 @@ describe('voiceHooks debug diagnostics', () => {
 
     expect(output).toContain('voice_contextual_update');
     expect(output).not.toContain('TOP_SECRET_CONTEXT');
+  });
+
+  it('retires the released tracked-target presentation with the Voice attempt', async () => {
+    const { voiceHooks } = await import('./voiceHooks');
+    voiceHooks.onVoiceStopped();
+    expect(setVoiceLiveContextSessionAddresses).toHaveBeenCalledWith([]);
   });
 });

@@ -22,9 +22,12 @@ import {
     acquireEligibleHomeCarrier,
     drainRetainedHomeCarrierReleases,
 } from './homeCarrierPolicy';
+import { createIrohHomeTunnelSupervisor } from './nativeIrohTunnels/supervisor';
 
 const endpoint = { endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test/'] };
 const baseInput = {
+    mode: 'initial_selection' as const,
+    applicationCarrierEligibility: 'automatic' as const,
     descriptor: {
         v: 1 as const,
         homeServerIdentityId: 'srv_home_a',
@@ -188,6 +191,109 @@ describe('acquireEligibleHomeCarrier', () => {
             kind: 'https',
             runtimeOrigin: 'https://public.example.test/api',
         });
+    });
+
+    it('fails closed after the native supervisor starts a tunnel whose health probe fails', async () => {
+        browserHostSpy.mockReturnValue({ eligible: false, reason: 'desktop_host' });
+        browserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'host_ineligible' });
+        const releaseHomeTunnel = vi.fn(async () => undefined);
+        const supervisor = createIrohHomeTunnelSupervisor({
+            native: {
+                ensureHomeTunnel: vi.fn(async (request: { homeServerIdentityId: string; endpointId: string }) => ({
+                    leaseId: 'native-started-before-health-failure',
+                    homeServerIdentityId: request.homeServerIdentityId,
+                    homeEndpointId: request.endpointId,
+                    runtimeOrigin: 'http://127.0.0.1:43124',
+                    carrier: 'iroh' as const,
+                    observedPath: 'direct' as const,
+                    startedAtMs: 1,
+                })),
+                releaseHomeTunnel,
+            },
+            probe: async () => ({ ok: false, reason: 'health-unavailable' }),
+        });
+
+        const result = await acquireEligibleHomeCarrier({
+            ...baseInput,
+            acquireNative: async (input) => {
+                const lease = await supervisor.ensureTunnel({
+                    remoteHostId: input.homeServerIdentityId,
+                    purpose: 'home',
+                    homeServerIdentityId: input.homeServerIdentityId,
+                    endpointId: input.endpoint.endpointId,
+                    canonicalServerUrl: input.canonicalServerUrl,
+                    policy: input.policy ?? 'automatic',
+                    ...(input.endpoint.relayUrls ? { relayUrls: input.endpoint.relayUrls } : {}),
+                    ...(input.endpoint.directAddresses ? { directAddresses: input.endpoint.directAddresses } : {}),
+                    verification: input.verification,
+                });
+                if (!lease.localUrl) throw new Error('test supervisor returned no local origin');
+                return {
+                    ...lease,
+                    runtimeOrigin: lease.localUrl,
+                    release: async () => await supervisor.releaseTunnel(lease.leaseId),
+                };
+            },
+        });
+
+        expect(result).toMatchObject({ kind: 'fail_closed', fallbackAllowed: false });
+        expect(releaseHomeTunnel).toHaveBeenCalledTimes(1);
+        expect(releaseHomeTunnel).toHaveBeenCalledWith('native-started-before-health-failure');
+        expect(supervisor.listTunnels().leases).toEqual([]);
+    });
+
+    it('does not let unavailable cleanup mask a post-acquisition health failure', async () => {
+        browserHostSpy.mockReturnValue({ eligible: false, reason: 'desktop_host' });
+        browserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'host_ineligible' });
+        const releaseHomeTunnel = vi.fn()
+            .mockRejectedValueOnce(new IrohError('unavailable', 'desktop stop command unavailable'))
+            .mockResolvedValueOnce(undefined);
+        const supervisor = createIrohHomeTunnelSupervisor({
+            native: {
+                ensureHomeTunnel: vi.fn(async (request: { homeServerIdentityId: string; endpointId: string }) => ({
+                    leaseId: 'native-started-before-cleanup-failure',
+                    homeServerIdentityId: request.homeServerIdentityId,
+                    homeEndpointId: request.endpointId,
+                    runtimeOrigin: 'http://127.0.0.1:43125',
+                    carrier: 'iroh' as const,
+                    observedPath: 'direct' as const,
+                    startedAtMs: 1,
+                })),
+                releaseHomeTunnel,
+            },
+            probe: async () => ({ ok: false, reason: 'health-unavailable' }),
+        });
+
+        const result = await acquireEligibleHomeCarrier({
+            ...baseInput,
+            acquireNative: async (input) => {
+                const lease = await supervisor.ensureTunnel({
+                    remoteHostId: input.homeServerIdentityId,
+                    purpose: 'home',
+                    homeServerIdentityId: input.homeServerIdentityId,
+                    endpointId: input.endpoint.endpointId,
+                    canonicalServerUrl: input.canonicalServerUrl,
+                    policy: input.policy ?? 'automatic',
+                    ...(input.endpoint.relayUrls ? { relayUrls: input.endpoint.relayUrls } : {}),
+                    ...(input.endpoint.directAddresses ? { directAddresses: input.endpoint.directAddresses } : {}),
+                    verification: input.verification,
+                });
+                if (!lease.localUrl) throw new Error('test supervisor returned no local origin');
+                return {
+                    ...lease,
+                    runtimeOrigin: lease.localUrl,
+                    release: async () => await supervisor.releaseTunnel(lease.leaseId),
+                };
+            },
+        });
+
+        expect(result).toMatchObject({ kind: 'fail_closed', fallbackAllowed: false });
+        expect(releaseHomeTunnel).toHaveBeenCalledTimes(1);
+        expect(supervisor.listTunnels().leases).toEqual([
+            expect.objectContaining({ status: 'failed' }),
+        ]);
+        await supervisor.dispose();
+        expect(releaseHomeTunnel).toHaveBeenCalledTimes(2);
     });
 
     it('treats missing browser carrier capability as unavailable without attempting the native carrier', async () => {

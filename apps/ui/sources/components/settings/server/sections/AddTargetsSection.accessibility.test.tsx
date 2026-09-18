@@ -2,6 +2,7 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { AddTargetsSection } from './AddTargetsSection';
 
 vi.mock('react-native-unistyles', async () => {
@@ -29,6 +30,10 @@ const commonProps = {
     activeServerId: '',
     onCreateServerGroup: vi.fn(() => true),
 } as const;
+
+function serverProfile(id: string, name: string, serverUrl: string): ServerProfile {
+    return { id, name, serverUrl, createdAt: 0, updatedAt: 0, lastUsedAt: 0 };
+}
 
 describe('AddTargetsSection accessibility', () => {
     it('associates persistent labels and announces add-Home validation state', async () => {
@@ -59,5 +64,64 @@ describe('AddTargetsSection accessibility', () => {
             accessibilityLabel: 'Home group name',
             accessibilityLabelledBy: 'server-settings-add-group-name-label',
         });
+    });
+
+    it('seeds a group from the requested Homes once without overwriting later edits', async () => {
+        const { act } = await import('react-test-renderer');
+        const servers = [
+            serverProfile('home-a', 'Home A', 'https://a.example'),
+            serverProfile('home-b', 'Home B', 'https://b.example'),
+            serverProfile('home-c', 'Home C', 'https://c.example'),
+        ];
+        const screen = await renderScreen(
+            <AddTargetsSection
+                {...commonProps}
+                error={null}
+                isValidating={false}
+                servers={servers}
+                activeServerId="home-a"
+                defaultExpanded="group"
+                initialGroupServerIds={['home-b', 'home-a', 'home-b']}
+            />,
+        );
+
+        expect(screen.findByTestId('server-group-add-member-home-a')?.props['aria-checked']).toBe(true);
+        expect(screen.findByTestId('server-group-add-member-home-b')?.props['aria-checked']).toBe(true);
+        expect(screen.findByTestId('server-group-add-member-home-c')?.props['aria-checked']).toBe(false);
+
+        await act(async () => {
+            screen.pressByTestId('server-group-add-member-home-b');
+        });
+        await screen.update(
+            <AddTargetsSection
+                {...commonProps}
+                error={null}
+                isValidating={false}
+                servers={servers}
+                activeServerId="home-a"
+                defaultExpanded="group"
+                initialGroupServerIds={['home-b', 'home-c']}
+            />,
+        );
+
+        expect(screen.findByTestId('server-group-add-member-home-a')?.props['aria-checked']).toBe(true);
+        expect(screen.findByTestId('server-group-add-member-home-b')?.props['aria-checked']).toBe(false);
+        expect(screen.findByTestId('server-group-add-member-home-c')?.props['aria-checked']).toBe(false);
+    });
+
+    it('keeps an explicit empty Home seed empty instead of falling back to the focused Home', async () => {
+        const screen = await renderScreen(
+            <AddTargetsSection
+                {...commonProps}
+                error={null}
+                isValidating={false}
+                servers={[serverProfile('home-a', 'Home A', 'https://a.example')]}
+                activeServerId="home-a"
+                defaultExpanded="group"
+                initialGroupServerIds={[]}
+            />,
+        );
+
+        expect(screen.findByTestId('server-group-add-member-home-a')?.props['aria-checked']).toBe(false);
     });
 });

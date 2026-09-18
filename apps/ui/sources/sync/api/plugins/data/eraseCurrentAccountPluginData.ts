@@ -17,7 +17,7 @@ import {
     resolveAccountStoredContentCompatibilityHeaders,
     withAccountStoredContentCompatibilityRequestDeclaration,
 } from '@/sync/http/accountStoredContentCompatibility';
-import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
 export type EraseCurrentAccountPluginDataOptionsV1 = Readonly<{
     /** The caller can abandon a pending request without changing its Account scope. */
@@ -61,8 +61,8 @@ async function parseServerOutput(response: Response) {
  * Erases only the current authenticated Account's Data-owned plugin records.
  * Account authority is captured from the active scope and passed only through
  * the scoped session request authority; callers can select a plugin, never an
- * Account. A retired Account scope aborts this request and resolves as a
- * retryable unavailable arm rather than publishing a stale result.
+ * Account. Retirement prevents issuance; after issuance, content-free settlement
+ * remains truthful even when the initiating Account is no longer active.
  */
 export async function eraseCurrentAccountPluginData(
     input: PluginAccountDataEraseActionInputV1,
@@ -86,16 +86,18 @@ export async function eraseCurrentAccountPluginData(
     const retirement = captured.lifetime.onRetire(abort);
     options?.signal?.addEventListener('abort', abort, { once: true });
     if (options?.signal?.aborted) abort();
-    let authority: Awaited<ReturnType<typeof captureSessionRequestAuthorityForServerAccountScope>> | null = null;
+    let authority: Awaited<ReturnType<typeof captureServerRequestAuthorityForServerAccountScope>> | null = null;
+    let issued = false;
     try {
         if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
 
-        authority = await captureSessionRequestAuthorityForServerAccountScope({
+        authority = await captureServerRequestAuthorityForServerAccountScope({
             scope: captured.lifetime.scope,
             activeRequest: (path, init) => apiSocket.request(path, init),
         });
         if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
 
+        issued = true;
         const response = await authority.request(
             PLUGIN_ACCOUNT_DATA_ERASE_HTTP_PATH_V1,
             withAccountStoredContentCompatibilityRequestDeclaration({
@@ -105,12 +107,10 @@ export async function eraseCurrentAccountPluginData(
                 signal: controller.signal,
             }, PLUGIN_DATA_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
         );
-        if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
-
-        if (response.status === 426 || response.status >= 500) return unavailable();
+        if (response.status === 426) return unavailable();
+        if (response.status >= 500) return { status: 'pending', reason: 'outcome-unknown' };
         if (response.status === 404) {
             const result = await parseServerOutput(response);
-            if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
             return result?.status === 'account-not-found'
                 ? { status: 'failed', reason: 'account-not-found' }
                 : { status: 'failed', reason: 'invalid-response' };
@@ -118,16 +118,15 @@ export async function eraseCurrentAccountPluginData(
         if (!response.ok) return { status: 'failed', reason: 'request-rejected' };
 
         const result = await parseServerOutput(response);
-        if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
         if (result?.status === 'erased') {
             return { status: 'completed', changed: result.changed };
         }
         if (result?.status === 'transition-cleanup-pending') {
             return { status: 'pending', reason: 'transition-cleanup' };
         }
-        return { status: 'failed', reason: 'invalid-response' };
+        return { status: 'pending', reason: 'outcome-unknown' };
     } catch {
-        return unavailable();
+        return issued ? { status: 'pending', reason: 'outcome-unknown' } : unavailable();
     } finally {
         await authority?.release?.();
         options?.signal?.removeEventListener('abort', abort);

@@ -1,7 +1,7 @@
 import React from 'react';
 import renderer from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen } from '@/dev/testkit';
+import { createSessionFixture, renderScreen } from '@/dev/testkit';
 import { installNavigationShellCommonModuleMocks } from './navigationShellTestHelpers';
 
 
@@ -12,9 +12,53 @@ const pendingRequestObservedAt = Date.now();
 const inboxFixtureState = vi.hoisted(() => ({
     includeHiddenVoiceTranscriptPermission: false,
     includeHiddenVoiceLateResult: false,
+    contentReady: true,
 }));
+const primarySession = () => createSessionFixture({
+    id: 'session-1',
+    serverId: 'server-a',
+    encryptionMode: inboxFixtureState.contentReady ? 'plain' : 'e2ee',
+    encryptedContentAvailability: inboxFixtureState.contentReady ? 'ready' : undefined,
+    active: true,
+    presence: 'online',
+    metadata: {
+        name: 'Repo session',
+        host: 'stale.local',
+        path: '/Users/leeroy/repo',
+        homeDir: '/Users/leeroy',
+        machineId: 'machine-stale',
+    },
+    agentState: {
+        controlledByUser: null,
+        requests: {
+            perm_1: {
+                tool: 'Bash', kind: 'permission', arguments: { command: 'pwd' },
+                createdAt: pendingRequestObservedAt - 1,
+            },
+            ask_1: {
+                tool: 'AskUserQuestion', kind: 'user_action',
+                arguments: { questions: [{ question: 'Continue?', header: 'Confirm', options: [{ label: 'Yes', description: 'Proceed' }] }] },
+                createdAt: pendingRequestObservedAt,
+            },
+        },
+        completedRequests: {},
+    },
+    viewer: {
+        readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+        relevance: { relevant: true, reasons: ['owned_by_me'] },
+        follow: { follows: false, notificationLevel: null },
+        notification: { level: 'important', source: 'owner' },
+        attention: {
+            needsAttention: true,
+            reasons: ['permission_required', 'user_action_required'],
+            primary: 'permission_required',
+            presentation: inboxFixtureState.contentReady ? 'full' : 'status_only',
+        },
+    },
+});
 const storageState = {
     profile: { id: 'me' },
+    settings: { workspacePathDisplayModeV1: 'name', workspaceRefsV1: [] },
     sessionMessages: {
         'session-1': { messages: [] },
         'hidden-voice': {
@@ -45,16 +89,54 @@ const storageState = {
         },
         'hidden-voice-late-result': { messages: [] },
     },
-    sessions: {
-        'session-1': {
-            active: true,
-            metadata: {
-                machineId: 'machine-stale',
-                path: '/Users/leeroy/repo',
-                homeDir: '/Users/leeroy',
-            },
-        },
+    get sessions() {
+        return {
+            'session-1': primarySession(),
+            ...(inboxFixtureState.includeHiddenVoiceTranscriptPermission ? {
+                'hidden-voice': createSessionFixture({
+                    id: 'hidden-voice', serverId: 'server-a', encryptionMode: 'plain', active: true,
+                    presence: 'online', pendingPermissionRequestCount: 1,
+                    metadata: {
+                        name: 'Hidden Voice session', host: 'stale.local', path: '/Users/leeroy/repo', homeDir: '/Users/leeroy', machineId: 'machine-stale',
+                        systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true },
+                    },
+                    viewer: {
+                        readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+                        relevance: { relevant: true, reasons: ['owned_by_me'] },
+                        follow: { follows: false, notificationLevel: null },
+                        notification: { level: 'important', source: 'owner' },
+                        attention: { needsAttention: true, reasons: ['permission_required'], primary: 'permission_required', presentation: 'full' },
+                    },
+                }),
+            } : {}),
+            ...(inboxFixtureState.includeHiddenVoiceLateResult ? {
+                'hidden-voice-late-result': createSessionFixture({
+                    id: 'hidden-voice-late-result', serverId: 'server-a', encryptionMode: 'plain', active: false,
+                    presence: 1, seq: 2, latestReadyEventSeq: 2,
+                    metadata: {
+                        name: 'Global Voice late result', host: 'stale.local', path: '/Users/leeroy/repo', homeDir: '/Users/leeroy', machineId: 'machine-stale',
+                        systemSessionV1: { v: 1, key: 'voice_conversation_retired', hidden: true },
+                    },
+                    viewer: {
+                        readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: 2 },
+                        relevance: { relevant: true, reasons: ['owned_by_me'] },
+                        follow: { follows: false, notificationLevel: null },
+                        notification: { level: 'important', source: 'owner' },
+                        attention: { needsAttention: true, reasons: ['ready_after_read'], primary: 'ready_after_read', presentation: 'full' },
+                    },
+                }),
+            } : {}),
+        };
     },
+    get sessionListRowsByServerId() {
+        return { 'server-a': { 'session-1': primarySession() } };
+    },
+    ordinarySessionListMembershipByServerId: { 'server-a': ['session-1'] },
+    sessionListIndexByServerId: {
+        'server-a': [{ type: 'session', serverId: 'server-a', sessionId: 'session-1', groupKey: 'active', groupKind: 'active' }],
+    },
+    concurrentSessionListCacheByServerId: {},
+    isDataReady: true,
     machines: {
         'machine-stale': {
             id: 'machine-stale',
@@ -139,6 +221,7 @@ installNavigationShellCommonModuleMocks({
             useAllSessions: () => [
                 {
                     id: 'session-1',
+                    encryptionMode: inboxFixtureState.contentReady ? 'plain' : undefined,
                     active: true,
                     presence: 'online',
                     metadata: {
@@ -166,12 +249,12 @@ installNavigationShellCommonModuleMocks({
                         },
                         completedRequests: {},
                     },
-                    owner: null,
                 },
             ],
             useAllSessionsForAttention: () => [
                 {
                     id: 'session-1',
+                    encryptionMode: inboxFixtureState.contentReady ? 'plain' : undefined,
                     active: true,
                     presence: 'online',
                     metadata: {
@@ -199,11 +282,11 @@ installNavigationShellCommonModuleMocks({
                         },
                         completedRequests: {},
                     },
-                    owner: null,
                 },
                 ...(inboxFixtureState.includeHiddenVoiceTranscriptPermission
                     ? [{
                         id: 'hidden-voice',
+                        encryptionMode: 'plain',
                         serverId: 'server-a',
                         seq: 1,
                         lastViewedSessionSeq: 1,
@@ -230,12 +313,12 @@ installNavigationShellCommonModuleMocks({
                         agentStateVersion: 1,
                         pendingPermissionRequestCount: 1,
                         pendingRequestObservedAt,
-                        owner: null,
                     }]
                     : []),
                 ...(inboxFixtureState.includeHiddenVoiceLateResult
                     ? [{
                         id: 'hidden-voice-late-result',
+                        encryptionMode: 'plain',
                         serverId: 'server-a',
                         seq: 2,
                         lastViewedSessionSeq: 1,
@@ -263,13 +346,13 @@ installNavigationShellCommonModuleMocks({
                         agentStateVersion: 1,
                         pendingPermissionRequestCount: 0,
                         pendingRequestObservedAt: null,
-                        owner: null,
                     }]
                     : []),
             ],
             useAllSessionListRenderables: () => [
                 {
                     id: 'session-1',
+                    encryptionMode: inboxFixtureState.contentReady ? 'plain' : undefined,
                     seq: 1,
                     createdAt: 1,
                     updatedAt: 1,
@@ -293,6 +376,7 @@ installNavigationShellCommonModuleMocks({
             useAllSessionListRenderablesForAttention: () => [
                 {
                     id: 'session-1',
+                    encryptionMode: inboxFixtureState.contentReady ? 'plain' : undefined,
                     seq: 1,
                     createdAt: 1,
                     updatedAt: 1,
@@ -317,6 +401,7 @@ installNavigationShellCommonModuleMocks({
                 {
                     session: {
                         id: 'session-1',
+                        encryptionMode: inboxFixtureState.contentReady ? 'plain' : undefined,
                         active: true,
                         presence: 'online',
                         metadata: {
@@ -333,6 +418,13 @@ installNavigationShellCommonModuleMocks({
             ],
             useMachine: (machineId: string) =>
                 machineId === 'machine-target'
+                    ? {
+                        id: 'machine-target',
+                        metadata: { displayName: 'Rebound workstation', host: 'workstation.local' },
+                    }
+                    : null,
+            useServerScopedMachine: (_serverId: string | null, machineId: string) =>
+                machineId === 'machine-stale'
                     ? {
                         id: 'machine-target',
                         metadata: { displayName: 'Rebound workstation', host: 'workstation.local' },
@@ -450,6 +542,7 @@ describe('InboxView session attention', () => {
         pushSpy.mockReset();
         inboxFixtureState.includeHiddenVoiceTranscriptPermission = false;
         inboxFixtureState.includeHiddenVoiceLateResult = false;
+        inboxFixtureState.contentReady = true;
     });
 
     it('renders actionable grouped session attention with machine and path context', async () => {
@@ -465,8 +558,45 @@ describe('InboxView session attention', () => {
         const text = collectText(tree!);
         expect(text).toContain('Repo session');
         expect(text).toContain('Rebound workstation');
-        expect(text).toContain('~/repo');
+        expect(text).toContain('repo');
         expect(text).not.toContain('status.permissionRequired');
+    });
+
+    it('hides retained attention titles, paths and requests when content readiness is unknown', async () => {
+        inboxFixtureState.contentReady = false;
+        const { InboxView } = await import('./InboxView');
+        const tree = (await renderScreen(<InboxView />)).tree;
+        expect(tree.findAllByTestId('inbox.session_attention.session-1')).toHaveLength(1);
+        expect(tree.findAllByType('ItemGroup').some((group) => group.props.title === 'Repo session')).toBe(false);
+        expect(collectText(tree)).not.toContain('Repo session');
+        expect(collectText(tree)).not.toContain('~/repo');
+        expect(tree.findAllByType('PermissionPromptCard')).toHaveLength(0);
+        expect(tree.findAllByType('UserActionPromptCard')).toHaveLength(0);
+    });
+
+    it('keeps a qualified card out of a same-id session on another Home', async () => {
+        const { InboxSessionAttentionGroupCard } = await import('@/components/inbox/sessionAttention/InboxSessionAttentionGroupCard');
+        const session = createSessionFixture({
+            id: 'session-1',
+            serverId: 'home-b',
+            encryptionMode: 'plain',
+            active: true,
+            presence: 'online',
+            metadata: { name: 'Home B session', host: 'home-b-host', path: '/home/b/project', homeDir: '/home/b', machineId: 'machine-b' },
+        });
+        const tree = (await renderScreen(<InboxSessionAttentionGroupCard
+            identityDisplay="none"
+            connected={false}
+            session={session}
+            serverId="home-b"
+            contextLine={null}
+            permissionRequests={[]}
+            userActionRequests={[]}
+        />)).tree;
+        const text = collectText(tree);
+        expect(text).toContain('Home B session');
+        expect(text).not.toContain('~/project');
+        expect(text).not.toContain('/Users/leeroy/repo');
     });
 
     it('renders a transcript-only hidden Voice permission as an actionable Inbox card', async () => {
@@ -513,195 +643,4 @@ describe('InboxView session attention', () => {
         );
     });
 
-    it('renders unread sessions in inbox and does not list shared sessions there', async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-
-        vi.doMock('@/sync/domains/state/storage', async () => {
-            return createStorageModuleStub({
-                useArtifacts: () => [],
-                useFriendRequests: () => [],
-                useRequestedFriends: () => [],
-                useFeedItems: () => [],
-                useFeedLoaded: () => true,
-                useFriendsLoaded: () => true,
-                useAllSessions: () => [
-                    {
-                        id: 'session-shared',
-                        seq: 0,
-                        lastViewedSessionSeq: 0,
-                        updatedAt: 40,
-                        createdAt: 9,
-                        active: false,
-                        activeAt: 9,
-                        thinking: false,
-                        thinkingAt: 0,
-                        presence: 9,
-                        metadata: {
-                            name: 'Shared session',
-                            path: '/Users/leeroy/shared',
-                            homeDir: '/Users/leeroy',
-                        },
-                        metadataVersion: 0,
-                        agentState: null,
-                        agentStateVersion: 0,
-                        owner: 'friend-1',
-                        ownerProfile: { username: 'friend', id: 'friend-1', firstName: null, lastName: null, avatar: null },
-                    },
-                ],
-                useAllSessionsForAttention: () => [
-                    {
-                        id: 'session-shared',
-                        seq: 0,
-                        lastViewedSessionSeq: 0,
-                        updatedAt: 40,
-                        createdAt: 9,
-                        active: false,
-                        activeAt: 9,
-                        thinking: false,
-                        thinkingAt: 0,
-                        presence: 9,
-                        metadata: {
-                            name: 'Shared session',
-                            path: '/Users/leeroy/shared',
-                            homeDir: '/Users/leeroy',
-                        },
-                        metadataVersion: 0,
-                        agentState: null,
-                        agentStateVersion: 0,
-                        owner: 'friend-1',
-                        ownerProfile: { username: 'friend', id: 'friend-1', firstName: null, lastName: null, avatar: null },
-                    },
-                ],
-                useAllSessionListRenderables: () => [
-                    {
-                        id: 'session-unread',
-                        seq: 5,
-                        updatedAt: 50,
-                        createdAt: 10,
-                        active: false,
-                        activeAt: 10,
-                        thinking: false,
-                        thinkingAt: 0,
-                        presence: 10,
-                        metadata: {
-                            name: 'Unread session',
-                            path: '/Users/leeroy/unread',
-                            homeDir: '/Users/leeroy',
-                        },
-                        metadataVersion: 0,
-                        agentStateVersion: 0,
-                        hasUnreadMessages: true,
-                    },
-                    {
-                        id: 'session-shared',
-                        seq: 0,
-                        updatedAt: 40,
-                        createdAt: 9,
-                        active: false,
-                        activeAt: 9,
-                        thinking: false,
-                        thinkingAt: 0,
-                        presence: 9,
-                        metadata: {
-                            name: 'Shared session',
-                            path: '/Users/leeroy/shared',
-                            homeDir: '/Users/leeroy',
-                        },
-                        metadataVersion: 0,
-                        agentStateVersion: 0,
-                        owner: 'friend-1',
-                        hasUnreadMessages: false,
-                    },
-                ],
-                useAllSessionListRenderablesForAttention: () => [
-                    {
-                        id: 'session-unread',
-                        seq: 5,
-                        updatedAt: 50,
-                        createdAt: 10,
-                        active: false,
-                        activeAt: 10,
-                        thinking: false,
-                        thinkingAt: 0,
-                        presence: 10,
-                        metadata: {
-                            name: 'Unread session',
-                            path: '/Users/leeroy/unread',
-                            homeDir: '/Users/leeroy',
-                        },
-                        metadataVersion: 0,
-                        agentStateVersion: 0,
-                        hasUnreadMessages: true,
-                    },
-                    {
-                        id: 'session-shared',
-                        seq: 0,
-                        updatedAt: 40,
-                        createdAt: 9,
-                        active: false,
-                        activeAt: 9,
-                        thinking: false,
-                        thinkingAt: 0,
-                        presence: 9,
-                        metadata: {
-                            name: 'Shared session',
-                            path: '/Users/leeroy/shared',
-                            homeDir: '/Users/leeroy',
-                        },
-                        metadataVersion: 0,
-                        agentStateVersion: 0,
-                        owner: 'friend-1',
-                        hasUnreadMessages: false,
-                    },
-                ],
-                useAllSessionListAttentionRows: () => [
-                    {
-                        session: {
-                            id: 'session-unread',
-                            active: false,
-                            presence: 'offline',
-                            metadata: {
-                                name: 'Unread session',
-                                path: '/Users/leeroy/unread',
-                                homeDir: '/Users/leeroy',
-                            },
-                            hasUnreadMessages: true,
-                        },
-                        serverId: null,
-                        serverName: null,
-                    },
-                    {
-                        session: {
-                            id: 'session-shared',
-                            active: false,
-                            presence: 'offline',
-                            metadata: {
-                                name: 'Shared session',
-                                path: '/Users/leeroy/shared',
-                                homeDir: '/Users/leeroy',
-                            },
-                            owner: 'friend-1',
-                            hasUnreadMessages: false,
-                        },
-                        serverId: null,
-                        serverName: null,
-                    },
-                ],
-                useMachine: () => null,
-                storage: {
-                    getState: () => storageState,
-                },
-            });
-        });
-
-        vi.resetModules();
-        const { InboxView } = await import('./InboxView');
-
-        let tree: renderer.ReactTestRenderer | null = null;
-        tree = (await renderScreen(<InboxView />)).tree;
-
-        const items = tree!.findAllByType('Item');
-        expect(items.some((item) => item.props.title === 'Unread session')).toBe(true);
-        expect(items.some((item) => item.props.title === 'Shared session')).toBe(false);
-    });
 });

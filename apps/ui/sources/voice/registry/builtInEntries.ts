@@ -24,6 +24,7 @@ export const BUILT_IN_VOICE_UI_ENTRIES: readonly VoiceUiRuntimeContribution[] = 
     settingsSectionId: 'voice.provider.local_conversation',
     roles: ['conversation_stt', 'conversation_tts', 'vad', 'endpointing'],
     requirements: ['server_feature', 'runtime', 'model', 'execution_machine', 'endpoint', 'credential'],
+    supportedPlatforms: ['web', 'ios', 'android'],
     selectionOptions: [{
       id: 'local',
       modeId: null,
@@ -60,6 +61,7 @@ export const BUILT_IN_VOICE_UI_ENTRIES: readonly VoiceUiRuntimeContribution[] = 
     settingsSectionId: 'voice.provider.local_direct',
     roles: ['conversation_stt', 'conversation_tts', 'vad', 'endpointing'],
     requirements: ['execution_machine'],
+    supportedPlatforms: ['web', 'ios', 'android'],
     projectSettings: (envelope: Readonly<{ schemaVersion: number; config: unknown }> | null) =>
       projectVersionOneSettings(envelope, VoiceLocalDirectSchema),
   } satisfies VoiceUiRuntimeContribution),
@@ -71,6 +73,7 @@ export const BUILT_IN_VOICE_UI_ENTRIES: readonly VoiceUiRuntimeContribution[] = 
     settingsSectionId: 'voice.speech.device',
     roles: ['dictation_stt', 'conversation_stt', 'conversation_tts'],
     requirements: [],
+    supportedPlatforms: ['web', 'ios', 'android'],
     localReadiness: { kind: 'device_speech' },
     processingDisclosures: {
       stt: {
@@ -91,6 +94,7 @@ export const BUILT_IN_VOICE_UI_ENTRIES: readonly VoiceUiRuntimeContribution[] = 
     settingsSectionId: 'voice.speech.local_neural',
     roles: ['dictation_stt', 'conversation_stt', 'conversation_tts'],
     requirements: ['runtime', 'model'],
+    supportedPlatforms: ['web', 'ios', 'android'],
   } satisfies VoiceUiRuntimeContribution),
   Object.freeze({
     kind: 'voice.turn-support.v1',
@@ -99,5 +103,6 @@ export const BUILT_IN_VOICE_UI_ENTRIES: readonly VoiceUiRuntimeContribution[] = 
     settingsSectionId: 'voice.turnDetection',
     roles: ['vad', 'endpointing'],
     requirements: ['runtime'],
+    supportedPlatforms: ['web', 'ios', 'android'],
   } satisfies VoiceUiRuntimeContribution),
 ]);

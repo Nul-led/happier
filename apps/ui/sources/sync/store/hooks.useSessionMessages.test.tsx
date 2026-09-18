@@ -3,15 +3,44 @@ import { act } from 'react-test-renderer';
 
 import { renderHook, standardCleanup } from '@/dev/testkit';
 
-import { useSessionMessages, useSessionSubagentSourceMessages, useSessionTranscriptIds, useSessionVisibleReadSeq } from '@/sync/domains/state/storage';
+import { useSessionPendingMessages, useSessionMessages, useSessionSubagentSourceMessages, useSessionTranscriptIds, useSessionVisibleReadSeq } from '@/sync/domains/state/storage';
 import { storage } from '@/sync/domains/state/storageStore';
 import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { NormalizedMessage } from '@/sync/typesRaw';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 afterEach(() => {
     standardCleanup();
 });
 
 describe('useSessionMessages', () => {
+    it('projects only the requested Pending target and ignores sibling row changes', async () => {
+        const previousState = storage.getState();
+        const main = { id: 'main', localId: 'main', text: 'main', createdAt: 1, updatedAt: 1, rawRecord: {} };
+        const run = { ...main, id: 'run', localId: 'run', recipient: { kind: 'execution_run' as const, runId: 'run-a' } };
+        try {
+            storage.setState({ sessionPending: { 's-targets': { messages: [main, run], discarded: [], isLoaded: true } } });
+            let renderCount = 0;
+            const mainHook = await renderHook(() => {
+                renderCount += 1;
+                return useSessionPendingMessages('s-targets');
+            });
+            const runHook = await renderHook(() => useSessionPendingMessages('s-targets', run.recipient));
+            expect(mainHook.getCurrent().messages).toEqual([main]);
+            expect(runHook.getCurrent().messages).toEqual([run]);
+            const before = renderCount;
+            await act(async () => {
+                storage.setState({ sessionPending: { 's-targets': { messages: [main, { ...run, text: 'updated' }], discarded: [], isLoaded: true } } });
+            });
+            expect(renderCount).toBe(before);
+            expect(runHook.getCurrent().messages[0]?.text).toBe('updated');
+            await mainHook.unmount();
+            await runHook.unmount();
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+
     it('keeps visible read seq stable when message content streams without seq changes', async () => {
         const previousState = storage.getState();
         try {
@@ -803,6 +832,42 @@ describe('useSessionMessages', () => {
 });
 
 describe('useSessionSubagentSourceMessages', () => {
+    it('refreshes a mounted projection on authority replacement and subsequent empty replacement', async () => {
+        const previousState = storage.getState();
+        const sessionId = 'subagent-authority-replacement';
+        const sourceRow = (id: string, runId: string): NormalizedMessage => ({
+            id, seq: 1, localId: null, createdAt: 1_000, isSidechain: false,
+            role: 'agent',
+            content: [{ type: 'text', text: `Execution run ${runId} started`, uuid: id, parentUUID: null }],
+        });
+        try {
+            storage.getState().applySessions([createSessionFixture({ id: sessionId })]);
+            storage.getState().replaceSessionMessages(sessionId, [sourceRow('old-source', 'run_12345678')]);
+            const hook = await renderHook(() => useSessionSubagentSourceMessages(sessionId));
+            try {
+                expect(hook.getCurrent()).toHaveLength(1);
+                expect(hook.getCurrent()[0]).toMatchObject({ text: 'Execution run run_12345678 started' });
+                await act(async () => {
+                    storage.getState().replaceSessionMessages(sessionId, [sourceRow('new-source', 'run_87654321')]);
+                });
+
+                expect(Object.values(storage.getState().sessionMessages[sessionId].messagesById)[0])
+                    .toMatchObject({ text: 'Execution run run_87654321 started' });
+                expect(hook.getCurrent()).toHaveLength(1);
+                expect(hook.getCurrent()[0]).toMatchObject({ text: 'Execution run run_87654321 started' });
+
+                await act(async () => {
+                    storage.getState().replaceSessionMessages(sessionId, []);
+                });
+                expect(hook.getCurrent()).toEqual([]);
+            } finally {
+                await hook.unmount();
+            }
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+
     it('does not scan ordered messages when the subagent source version is unchanged', async () => {
         const previousState = storage.getState();
         try {

@@ -12,6 +12,8 @@ export type SessionHandoffProgressPresentation = Readonly<{
 export function openObservedSessionHandoffProgressModal(params: Readonly<{
     requestId: string;
     sessionId: string;
+    serverId: string | null;
+    accountId: string;
     workspaceSyncEnabled?: boolean;
     store?: ActionOperationStore;
 }>): SessionHandoffProgressPresentation {
@@ -32,6 +34,8 @@ export function openObservedSessionHandoffProgressModal(params: Readonly<{
     });
     unsubscribe = subscribeActionOperationByRequestId({
         requestId: params.requestId,
+        serverId: params.serverId,
+        accountId: params.accountId,
         ...(params.store ? { store: params.store } : {}),
         onUpdate: (operation) => {
             if (attached) Modal.update(modalId, { operation });

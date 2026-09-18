@@ -73,6 +73,11 @@ vi.mock('@/sync/ops/actions/defaultActionExecutor', () => ({
 
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
     getActiveServerAccountScope: () => ({ serverId: 'server-explicit', accountId: 'account-test' }),
+    captureActiveServerAccountScopeLifetime: () => ({
+        scope: { serverId: 'server-explicit', accountId: 'account-test' },
+        isCurrent: () => true,
+        onRetire: () => ({ dispose() {} }),
+    }),
 }));
 
 vi.mock('@/sync/ops/sessionDrafts/sessionDraftRepository', () => ({

@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import type { MachineDataKeyCacheEntry } from './syncMachines';
+import tweetnacl from 'tweetnacl';
+import {
+    computeRunnerMachineContentKeyFingerprintV1,
+    encodePlainMachineStoredContent,
+    encodeBase64,
+    MACHINE_PLAIN_DATA_KEY_MARKER,
+    signRunnerMachineContentKeyBindingV1,
+} from '@happier-dev/protocol';
 
 vi.mock('@/log', () => ({ log: { log: vi.fn() } }));
 
@@ -11,6 +19,9 @@ type RawMachine = {
     daemonState: string | null;
     daemonStateVersion: number;
     dataEncryptionKey: string | null;
+    kind?: 'persistent' | 'ephemeral_session_runner';
+    installationId?: string | null;
+    runnerContentKeyBinding?: unknown;
     seq: number;
     active: boolean;
     activeAt: number;
@@ -80,6 +91,159 @@ async function loadFetchAndApplyMachines() {
 }
 
 describe('fetchAndApplyMachines machine data-key unwrapping', () => {
+    it('admits a Runner key only after its creator proof matches the exact row', async () => {
+        const fetchAndApplyMachines = await loadFetchAndApplyMachines();
+        const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(17));
+        const token = `e30.${encodeBase64(new TextEncoder().encode(JSON.stringify({ sub: 'account-1' })), 'base64url')}.signature`;
+        const dataKey = new Uint8Array(32).fill(19);
+        const binding = signRunnerMachineContentKeyBindingV1({
+            payload: {
+                v: 1,
+                purpose: 'happier.ephemeral-runner.machine-content-key',
+                homeServerIdentityId: 'home-1',
+                activationId: '11111111-1111-4111-8111-111111111111',
+                creatorAccountId: 'account-1',
+                machineId: 'runner-1',
+                installationId: 'installation-1',
+                machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(dataKey),
+            },
+            accountSigningPublicKey: signing.publicKey,
+            accountSigningSecretKey: signing.secretKey,
+        });
+        const runner = {
+            ...machineRow('runner-1', 'runner-envelope'),
+            kind: 'ephemeral_session_runner' as const,
+            installationId: 'installation-1',
+            runnerContentKeyBinding: binding,
+        };
+        const initializeMachines = vi.fn(async (
+            _keys: Map<string, Uint8Array | null>,
+            _unavailable?: ReadonlySet<string>,
+        ) => {});
+        const encryption = {
+            ...createEncryptionHarness(() => [dataKey]),
+            initializeMachines,
+        };
+
+        await fetchAndApplyMachines({
+            credentials: { token, secret: encodeBase64(new Uint8Array(32).fill(17), 'base64') },
+            encryption,
+            machineDataKeys: new Map(),
+            request: async () => jsonResponse([runner]),
+            applyMachines: () => {},
+            sourceServerId: 'home-1',
+        });
+        expect(initializeMachines.mock.calls[0]?.[0].get('runner-1')).toEqual(dataKey);
+
+        await fetchAndApplyMachines({
+            credentials: { token, secret: encodeBase64(new Uint8Array(32).fill(17), 'base64') },
+            encryption,
+            machineDataKeys: new Map(),
+            request: async () => jsonResponse([{ ...runner, installationId: 'substituted' }]),
+            applyMachines: () => {},
+            sourceServerId: 'home-1',
+        });
+        expect(initializeMachines.mock.calls[1]?.[0]).toEqual(new Map());
+        expect(initializeMachines.mock.calls[1]?.[1]).toEqual(new Set(['runner-1']));
+    });
+
+    it('keeps a DataKey Runner locked without independent creator signing authority', async () => {
+        const fetchAndApplyMachines = await loadFetchAndApplyMachines();
+        const signing = tweetnacl.sign.keyPair();
+        const dataKey = new Uint8Array(32).fill(19);
+        const token = `e30.${encodeBase64(new TextEncoder().encode(JSON.stringify({ sub: 'account-1' })), 'base64url')}.signature`;
+        const binding = signRunnerMachineContentKeyBindingV1({
+            payload: {
+                v: 1,
+                purpose: 'happier.ephemeral-runner.machine-content-key',
+                homeServerIdentityId: 'home-1',
+                activationId: '11111111-1111-4111-8111-111111111111',
+                creatorAccountId: 'account-1',
+                machineId: 'runner-1',
+                installationId: 'installation-1',
+                machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(dataKey),
+            },
+            accountSigningPublicKey: signing.publicKey,
+            accountSigningSecretKey: signing.secretKey,
+        });
+        const initializeMachines = vi.fn(async (
+            _keys: Map<string, Uint8Array | null>,
+            _unavailable?: ReadonlySet<string>,
+        ) => {});
+        const encryption = {
+            ...createEncryptionHarness(() => [dataKey]),
+            initializeMachines,
+        };
+
+        await fetchAndApplyMachines({
+            credentials: {
+                token,
+                encryption: {
+                    publicKey: encodeBase64(new Uint8Array(32).fill(1), 'base64'),
+                    machineKey: encodeBase64(new Uint8Array(32).fill(2), 'base64'),
+                },
+            },
+            encryption,
+            machineDataKeys: new Map(),
+            request: async () => jsonResponse([{
+                ...machineRow('runner-1', 'runner-envelope'),
+                kind: 'ephemeral_session_runner',
+                installationId: 'installation-1',
+                runnerContentKeyBinding: binding,
+            }]),
+            applyMachines: () => {},
+            sourceServerId: 'home-1',
+        });
+
+        expect(initializeMachines.mock.calls[0]?.[0]).toEqual(new Map());
+        expect(initializeMachines.mock.calls[0]?.[1]).toEqual(new Set(['runner-1']));
+    });
+
+    it('rejects a Home-published plain marker for an E2EE Machine even when Runner kind is omitted', async () => {
+        const fetchAndApplyMachines = await loadFetchAndApplyMachines();
+        const initializeMachines = vi.fn(async (
+            _keys: Map<string, Uint8Array | null>,
+            _unavailable?: ReadonlySet<string>,
+        ) => {});
+        const encryption = {
+            ...createEncryptionHarness(() => []),
+            initializeMachines,
+        };
+        const applied: import('@/sync/domains/state/storageTypes').Machine[][] = [];
+        const substituted = {
+            ...machineRow('machine-1', MACHINE_PLAIN_DATA_KEY_MARKER),
+            metadata: encodePlainMachineStoredContent({
+                host: 'home-readable-substitution',
+                platform: 'linux',
+                homeDir: '/tmp',
+                happyCliVersion: 'test',
+                happyHomeDir: '/tmp/.happier',
+            }),
+        };
+
+        await fetchAndApplyMachines({
+            credentials: {
+                token: 'token',
+                encryption: {
+                    publicKey: encodeBase64(new Uint8Array(32).fill(1), 'base64'),
+                    machineKey: encodeBase64(new Uint8Array(32).fill(2), 'base64'),
+                },
+            },
+            encryption,
+            machineDataKeys: new Map(),
+            request: async () => jsonResponse([substituted]),
+            applyMachines: (machines) => { applied.push(machines); },
+        });
+
+        expect(initializeMachines.mock.calls[0]?.[0]).toEqual(new Map());
+        expect(initializeMachines.mock.calls[0]?.[1]).toEqual(new Set(['machine-1']));
+        expect(applied.at(-1)?.[0]).toMatchObject({
+            metadata: null,
+            storageMode: 'e2ee',
+            availability: { kind: 'locked' },
+        });
+    });
+
     it('opens every machine envelope in one batch instead of one call per machine', async () => {
         const fetchAndApplyMachines = await loadFetchAndApplyMachines();
         const request = vi.fn(async () => jsonResponse([
@@ -179,36 +343,50 @@ describe('fetchAndApplyMachines machine data-key unwrapping', () => {
         expect(machineDataKeys.get('m2')).toEqual({ envelope: 'env-2-rotated', dataKey: new Uint8Array([22]) });
     });
 
-    it('drops the cached key when a rotated envelope fails to open', async () => {
-        const fetchAndApplyMachines = await loadFetchAndApplyMachines();
-        vi.spyOn(console, 'warn').mockImplementation(() => {});
-        let rotated = false;
-        const request = vi.fn(async () => jsonResponse([
-            machineRow('m1', rotated ? 'env-1-rotated' : 'env-1'),
-        ]));
-        const encryption = createEncryptionHarness((values) =>
-            values.map((value) => (value === 'env-1' ? new Uint8Array([1]) : null)));
+
+});
+
+
+describe('fetchAndApplyMachines real selected-envelope hydration', () => {
+    it('opens fresh scoped metadata, then locks and removes its cipher on a failed envelope replacement', async () => {
+        const { Encryption } = await import('@/sync/encryption/encryption');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { fetchAndApplyMachines } = await import('./syncMachines');
+        const encryption = await Encryption.create(new Uint8Array(32).fill(11));
+        const scopedKey = new Uint8Array(32).fill(29);
+        const metadata = {
+            host: 'temporary-host', platform: 'linux', homeDir: '/tmp/runner',
+            happyCliVersion: 'test', happyHomeDir: '/tmp/runner/.happier',
+        };
+        const scopedCipher = await encryption.openEncryption(scopedKey);
+        const envelope = encodeBase64(await encryption.encryptEncryptionKey(scopedKey), 'base64');
+        const scopedMetadata = encodeBase64((await scopedCipher.encrypt([metadata]))[0]!, 'base64');
+        const row = { ...machineRow('scoped', envelope), metadata: scopedMetadata };
         const machineDataKeys = new Map<string, MachineDataKeyCacheEntry>();
-        const initializedKeys: Array<Map<string, Uint8Array | null>> = [];
-        encryption.initializeMachines.mockImplementation(async (machineKeys) => {
-            initializedKeys.push(new Map(machineKeys));
+        const applied: import('@/sync/domains/state/storageTypes').Machine[][] = [];
+        const fetchRow = async () => fetchAndApplyMachines({
+            credentials: { token: 't', secret: 's' }, encryption, machineDataKeys,
+            request: async () => jsonResponse([row]),
+            applyMachines: (machines) => { applied.push(machines); },
         });
+        await fetchRow();
+        expect(applied.at(-1)?.[0]).toMatchObject({ metadata, availability: { kind: 'available' } });
 
-        const call = async () => fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
-            encryption,
-            machineDataKeys,
-            request,
-            applyMachines: () => {},
-        });
+        // Authenticated Account-fallback content must not be disclosed once the
+        // selected present envelope cannot be opened, even after prior hydration.
+        row.dataEncryptionKey = 'not-an-envelope';
+        row.metadata = await encryption.encryptRaw({ ...metadata, host: 'fallback-host' });
+        row.metadataVersion = 2;
+        await fetchRow();
+        expect(applied.at(-1)?.[0]).toMatchObject({ metadata: null, availability: { kind: 'locked' } });
+        expect(encryption.getMachineEncryption('scoped')).toBeNull();
+        expect(machineDataKeys.has('scoped')).toBe(false);
 
-        await call();
-        rotated = true;
-        await call();
-
-        // A stale key must never survive a failed re-open: the machine falls back exactly
-        // as it does on a first-fetch failure.
-        expect(machineDataKeys.has('m1')).toBe(false);
-        expect(initializedKeys[1]?.get('m1')).toBe(null);
+        // An exact later successful retry restores the real scoped cipher.
+        row.dataEncryptionKey = envelope;
+        row.metadata = scopedMetadata;
+        row.metadataVersion = 1;
+        await fetchRow();
+        expect(applied.at(-1)?.[0]).toMatchObject({ metadata, availability: { kind: 'available' } });
     });
 });

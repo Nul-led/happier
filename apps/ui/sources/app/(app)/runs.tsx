@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Pressable, View } from 'react-native';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useUnistyles } from 'react-native-unistyles';
 
 import type { DaemonExecutionRunEntry } from '@happier-dev/protocol';
@@ -23,13 +23,31 @@ import { Text } from '@/components/ui/text/Text';
 import { useMountedShouldContinue } from '@/hooks/ui/useMountedShouldContinue';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 
 
 type MachineRunsState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'loaded'; runsByMachineId: Record<string, readonly DaemonExecutionRunEntry[]> }
+  | { status: 'loaded'; runsByMachineAddressKey: Record<string, readonly DaemonExecutionRunEntry[]> }
   | { status: 'error'; error: string };
+
+/** Opaque Home-qualified machine identity. Never parse this key. */
+function executionRunMachineAddressKey(serverId: string, machineId: string): string {
+  return JSON.stringify([serverId, machineId]);
+}
+
+/** Exact pending-row identity for duplicate Run ids across Homes or machines. */
+function executionRunRowAddressKey(serverId: string, machineId: string, runId: string): string {
+  return JSON.stringify([serverId, machineId, runId]);
+}
+
+function readExactRouteIdentity(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value) && value.length !== 1) return null;
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw || raw !== raw.trim()) return null;
+  return raw;
+}
 
 function getMachineTitle(machine: any): string {
   const displayName = typeof machine?.metadata?.displayName === 'string' ? machine.metadata.displayName.trim() : '';
@@ -59,25 +77,57 @@ function formatRunDetails(run: DaemonExecutionRunEntry): string {
 export default function RunsScreen() {
   const { theme } = useUnistyles();
   const router = useRouter();
+  const routeParams = useLocalSearchParams<{
+    serverId?: string | string[];
+    machineId?: string | string[];
+    runId?: string | string[];
+  }>();
+  const routeServerId = readExactRouteIdentity(routeParams.serverId);
+  const routeMachineId = readExactRouteIdentity(routeParams.machineId);
+  const routeRunId = readExactRouteIdentity(routeParams.runId);
+  // A daemon Run is only exact as one Home + Machine + Run tuple. Treat a
+  // partial query as ordinary collection navigation so duplicate opaque ids on
+  // another Home cannot be selected, revealed, or acted on by accident.
+  const requestedTarget = routeServerId && routeMachineId && routeRunId
+    ? { serverId: routeServerId, machineId: routeMachineId, runId: routeRunId }
+    : null;
+  const requestedServerId = requestedTarget?.serverId ?? null;
+  const requestedMachineId = requestedTarget?.machineId ?? null;
+  const requestedRunId = requestedTarget?.runId ?? null;
   const shouldContinue = useMountedShouldContinue();
   const machineListByServerId = useMachineListByServerId();
   const machineListStatusByServerId = useMachineListStatusByServerId();
-  const [showFinished, setShowFinished] = React.useState(false);
-  const [stoppingRunId, setStoppingRunId] = React.useState<string | null>(null);
+  const [showFinished, setShowFinished] = React.useState(requestedRunId !== null);
+  const [stoppingRunAddressKey, setStoppingRunAddressKey] = React.useState<string | null>(null);
   const [state, setState] = React.useState<MachineRunsState>({ status: 'idle' });
   const headerTint = theme.colors.chrome.header.foreground ?? theme.colors.text.primary;
 
+  React.useEffect(() => {
+    if (requestedRunId !== null) setShowFinished(true);
+  }, [requestedRunId]);
+
   const serverEntries = React.useMemo(() => {
     const entries = Object.entries(machineListByServerId ?? {})
-      .filter(([serverId, machines]) => typeof serverId === 'string' && serverId.trim().length > 0 && Array.isArray(machines));
+      .filter(([serverId, machines]) => (
+        typeof serverId === 'string'
+        && serverId.trim().length > 0
+        && (requestedServerId === null || serverId === requestedServerId)
+        && Array.isArray(machines)
+      ))
+      .map(([serverId, machines]) => [
+        serverId,
+        requestedMachineId === null
+          ? machines
+          : machines.filter((machine) => String(machine?.id ?? '').trim() === requestedMachineId),
+      ] as const);
     entries.sort(([a], [b]) => a.localeCompare(b));
     return entries as Array<[string, any[]]>;
-  }, [machineListByServerId]);
+  }, [machineListByServerId, requestedMachineId, requestedServerId]);
 
   const load = React.useCallback(async () => {
     setState({ status: 'loading' });
 
-    const runsByMachineId: Record<string, readonly DaemonExecutionRunEntry[]> = {};
+    const runsByMachineAddressKey: Record<string, readonly DaemonExecutionRunEntry[]> = {};
 
     try {
       await Promise.all(
@@ -92,13 +142,13 @@ export default function RunsScreen() {
 
             const res = await machineExecutionRunsList(machineId, { serverId });
             if (res.ok) {
-              runsByMachineId[machineId] = res.runs;
+              runsByMachineAddressKey[executionRunMachineAddressKey(serverId, machineId)] = res.runs;
             }
           });
         }),
       );
 
-      setState({ status: 'loaded', runsByMachineId });
+      setState({ status: 'loaded', runsByMachineAddressKey });
     } catch (error) {
       setState({ status: 'error', error: error instanceof Error ? error.message : t('runs.failedToLoad') });
     }
@@ -180,11 +230,16 @@ export default function RunsScreen() {
                 const machineId = String(machine?.id ?? '').trim();
                 const title = getMachineTitle(machine);
 
-                const rawRuns = (state.status === 'loaded' ? state.runsByMachineId[machineId] : null) ?? [];
-                const runs = showFinished ? rawRuns : rawRuns.filter((r) => r.status === 'running');
+                const rawRuns = (state.status === 'loaded'
+                  ? state.runsByMachineAddressKey[executionRunMachineAddressKey(serverId, machineId)]
+                  : null) ?? [];
+                const visibleByStatus = showFinished ? rawRuns : rawRuns.filter((r) => r.status === 'running');
+                const runs = requestedRunId === null
+                  ? visibleByStatus
+                  : visibleByStatus.filter((run) => run.runId === requestedRunId);
 
                 return (
-                  <ItemGroup key={`machine:${serverId}:${machineId}`} title={title}>
+                  <ItemGroup key={executionRunMachineAddressKey(serverId, machineId)} title={title}>
                     <Item
                       title={machineId}
                       subtitle={t('runs.openMachine')}
@@ -201,10 +256,11 @@ export default function RunsScreen() {
                       runs.slice(0, 50).map((run) => {
                         const sessionId = readExecutionRunSessionAssociation(run);
                         const canStop = run.status === 'running' && sessionId !== null;
+                        const runAddressKey = executionRunRowAddressKey(serverId, machineId, run.runId);
                         const onStop = async () => {
                           if (!sessionId) return;
                           if (!canStop) return;
-                          setStoppingRunId(run.runId);
+                          setStoppingRunAddressKey(runAddressKey);
                           const stopSessionProcess = async () => {
                             const stopResult = await machineStopSession(machineId, sessionId, { serverId });
                             if (stopResult.ok) return;
@@ -248,7 +304,7 @@ export default function RunsScreen() {
                               Modal.alert(t('common.error'), error instanceof Error ? error.message : t('runs.stop.failedToStopRun'));
                             }
                           } finally {
-                            setStoppingRunId(null);
+                            setStoppingRunAddressKey(null);
                             await load();
                           }
                         };
@@ -257,17 +313,22 @@ export default function RunsScreen() {
                           <ExecutionRunRow
                             key={run.runId}
                             run={run as any}
+                            selected={run.runId === requestedRunId}
                             subtitle={formatRunDetails(run)}
-                            onPress={sessionId ? () => router.push(`/session/${sessionId}/runs/${run.runId}` as any) : undefined}
+                            onPress={sessionId ? () => router.push(buildScopedSessionRouteHref({
+                              sessionId,
+                              serverId,
+                              suffix: `/runs/${encodeURIComponent(run.runId)}`,
+                            }) as any) : undefined}
                             rightAccessory={canStop ? (
                               <Pressable
                                 accessibilityRole="button"
                                 accessibilityLabel={t('runs.stop.stopRunA11y')}
                                 onPress={onStop}
-                                disabled={stoppingRunId === run.runId}
+                                disabled={stoppingRunAddressKey === runAddressKey}
                                 style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
                               >
-                                {stoppingRunId === run.runId ? (
+                                {stoppingRunAddressKey === runAddressKey ? (
                                   <ActivitySpinner size="small" color={theme.colors.text.secondary} />
                                 ) : (
                                   <Icon name="stop-circle" size={20} color={theme.colors.accent.orange} />

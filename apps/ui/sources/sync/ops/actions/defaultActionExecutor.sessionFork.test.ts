@@ -1,7 +1,41 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
 
+import type { CurrentProjectedAgentCapabilities } from '@/agents/backendCatalog/currentAgentCapabilities';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+
 import { createDefaultActionExecutor } from './defaultActionExecutor';
+
+// Current ready-projection declarations, keyed by the Agent id each session's
+// metadata resolves to (legacy `flavor` aliases included). Lifecycle support is
+// answered only from a matching current declaration, never from flavor alone.
+const codexCurrentCapabilities: CurrentProjectedAgentCapabilities = {
+  agentId: 'codex',
+  identity: { pluginId: 'codex', localId: 'codex' },
+  generation: 1,
+  capabilities: {
+    sessions: {
+      open: ['fork'],
+      delivery: ['newTurn'],
+      cancel: false,
+      conversationRollback: true,
+    },
+  },
+};
+
+const grokCurrentCapabilities: CurrentProjectedAgentCapabilities = {
+  agentId: 'grok',
+  identity: { pluginId: 'grok', localId: 'grok' },
+  generation: 1,
+  capabilities: {
+    sessions: {
+      open: ['fork'],
+      delivery: ['newTurn'],
+      cancel: false,
+      conversationRollback: true,
+    },
+  },
+};
 
 const forkSessionOpMock = vi.hoisted(() => vi.fn());
 const rollbackSessionConversationOpMock = vi.hoisted(() => vi.fn());
@@ -349,7 +383,7 @@ describe('createDefaultActionExecutor (session.fork)', () => {
       settings: { sessionReplayEnabled: false },
     });
 
-    const executor = createDefaultActionExecutor();
+    const executor = createDefaultActionExecutor({ currentAgentCapabilities: codexCurrentCapabilities });
 
     const res = await executor.execute(
       'session.fork' as any,
@@ -358,7 +392,8 @@ describe('createDefaultActionExecutor (session.fork)', () => {
     );
 
     expect(res.ok).toBe(true);
-    // `auto` is what lets the daemon settle on Replay; the account turned Replay off.
+    // Native support comes from the Agent's current declaration; `auto` is what
+    // lets the daemon settle on Replay, and the account turned Replay off.
     expect(forkSessionOpMock).toHaveBeenCalledWith(expect.objectContaining({
       parentSessionId: 'sess_parent',
       strategy: 'native',
@@ -555,6 +590,7 @@ describe('createDefaultActionExecutor (session.fork)', () => {
       result: {
         handoffId: 'handoff_1',
         status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] },
+        workspace: { kind: 'none' },
       },
     });
 
@@ -598,18 +634,106 @@ describe('createDefaultActionExecutor (session.fork)', () => {
       sourceMachineId: 'machine_1',
       targetMachineId: 'machine_2',
       targetPath: '/home/guest/workspace',
-      sessionStorageMode: 'persisted',
+    }));
+    // Transcript-storage authority belongs to the source daemon, which derives
+    // it fresh from owner metadata before any stop or export. The client does
+    // not carry a second answer alongside the request.
+    expect(startSessionHandoffOpMock.mock.calls[0]?.[0]).not.toHaveProperty('sessionStorageMode');
+    // The daemon coordinator is the sole transport-strategy owner, and the UI
+    // request adapter deliberately serializes neither a preferred nor a
+    // negotiated strategy, so the executor must not advertise one either.
+    expect(startSessionHandoffOpMock.mock.calls[0]?.[0]).not.toHaveProperty('preferredTransportStrategies');
+    expect(startSessionHandoffOpMock.mock.calls[0]?.[0]).not.toHaveProperty('negotiatedTransportStrategy');
+  });
+
+  it('forwards the approved target receipt and exact Action input to the handoff adapter', async () => {
+    const approval = {
+      v: 1 as const,
+      consequences: ['replace_nonempty_workspace_target'] as const,
+      serverId: 'server-1',
+      machineId: 'machine_2',
+      canonicalRoot: '/target/repo',
+      rootFingerprint: 'a'.repeat(64),
+      operationId: 'handoff-action-1',
+    };
+    const policyFields = {
+      v: 1 as const,
+      selection: 'git_worktree' as const,
+      extraIgnorePatterns: [],
+      extraIncludePatterns: [],
+    };
+    const actionInput = {
+      sessionId: 'sess_parent',
+      targetMachineId: 'machine_2',
+      targetPath: '/target/repo',
+      workspaceAction: {
+        kind: 'create_relationship' as const,
+        mode: 'mirror_exactly' as const,
+        contentPolicy: {
+          ...policyFields,
+          policyDigest: computeWorkspaceSyncPolicyDigest(policyFields),
+        },
+        flushBeforeCommit: true,
+      },
+    };
+    machineRpcMock.mockResolvedValueOnce({ type: 'approval_required', approval });
+    startSessionHandoffOpMock.mockResolvedValueOnce({
+      ok: true,
+      result: {
+        handoffId: 'handoff_1',
+        status: { handoffId: 'handoff_1', status: 'completed', phase: 'finalizing', recoveryActions: [] },
+        workspace: { kind: 'relationship', relationshipId: 'relationship_1', created: false },
+      },
+    });
+    storageGetStateMock.mockReturnValue({
+      sessions: {
+        sess_parent: {
+          id: 'sess_parent', seq: 1, createdAt: 1, updatedAt: 1, active: false, activeAt: 0,
+          metadataVersion: 0, agentStateVersion: 0, thinking: false, thinkingAt: 0, presence: 0,
+          metadata: { machineId: 'machine_1', flavor: 'claude' },
+        },
+      },
+      settings: { sessionReplayEnabled: true },
+    });
+
+    const executor = createDefaultActionExecutor({
+      resolveServerIdForSessionId: () => 'server-1',
+    });
+    await expect(executor.execute(
+      'session.handoff' as any,
+      actionInput,
+      {
+        surface: 'ui',
+        actionRequestId: 'handoff-action-1',
+        handoffTargetReplacementApproval: approval,
+        handoffTargetReplacementApprovalReceiptId: 'approval-receipt-1',
+        bypassApprovals: true,
+      } as any,
+    )).resolves.toMatchObject({ ok: true });
+
+    expect(startSessionHandoffOpMock).toHaveBeenCalledWith(expect.objectContaining({
+      handoffTargetReplacementApproval: approval,
+      handoffTargetReplacementApprovalReceiptId: 'approval-receipt-1',
+      handoffTargetReplacementApprovalActionInput: actionInput,
     }));
   });
 
   /**
-   * The handoff request tells the TARGET daemon which storage to import the
-   * transcript into. On a layout-1 row whose owner projection has not landed,
-   * this device cannot see an owner-only external link at all — the lenient
-   * presentation projection answers `persisted` for it, and stamping that
-   * would import a live external Agent's transcript as if it were ours.
+   * Which storage the target imports into is decided by the SOURCE daemon, from
+   * the owner metadata it loads itself, before the operation claim and before
+   * any stop or export. A layout-1 row whose owner projection has not reached
+   * this device is therefore a cold client cache, not evidence that the handoff
+   * is invalid: the client must still reach that authority, and must not send a
+   * storage answer of its own for the daemon to agree with.
    */
-  it('refuses a session handoff instead of stamping a storage mode it cannot prove', async () => {
+  it('starts a session handoff through the daemon authority when this device cannot read the owner view', async () => {
+    sessionHandoffOpRuntime.useActual = true;
+    readMachineTargetForSessionMock.mockReturnValue({ machineId: 'machine_1', basePath: '/repo' });
+    machineRpcMock.mockResolvedValueOnce({
+      handoffId: 'handoff_3',
+      status: { handoffId: 'handoff_3', status: 'completed', phase: 'finalizing', recoveryActions: [] },
+      workspace: { kind: 'none' },
+    });
     storageGetStateMock.mockReturnValue({
       sessions: {
         sess_parent: {
@@ -640,8 +764,18 @@ describe('createDefaultActionExecutor (session.fork)', () => {
       { surface: 'ui', placement: 'session_action_menu' } as any,
     );
 
-    expect(res).toMatchObject({ ok: false, errorCode: 'session_owner_metadata_unavailable' });
-    expect(startSessionHandoffOpMock).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ ok: true });
+    expect(machineRpcMock).toHaveBeenCalledTimes(1);
+    expect(machineRpcMock).toHaveBeenCalledWith(expect.objectContaining({
+      machineId: 'machine_1',
+      method: 'daemon.sessionHandoff.start.v3',
+      payload: expect.objectContaining({
+        sessionId: 'sess_parent',
+        targetMachineId: 'machine_2',
+      }),
+    }));
+    expect(machineRpcMock.mock.calls[0]?.[0]?.payload)
+      .not.toHaveProperty('sessionStorageMode');
   });
 
   it('prefers the reachable machine target over stale session metadata for session handoff', async () => {
@@ -650,6 +784,7 @@ describe('createDefaultActionExecutor (session.fork)', () => {
       result: {
         handoffId: 'handoff_1',
         status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] },
+        workspace: { kind: 'none' },
       },
     });
     readMachineTargetForSessionMock.mockReturnValue({
@@ -702,6 +837,7 @@ describe('createDefaultActionExecutor (session.fork)', () => {
       result: {
         handoffId: 'handoff_2',
         status: { handoffId: 'handoff_2', status: 'completed', phase: 'finalizing', recoveryActions: [] },
+        workspace: { kind: 'relationship', relationshipId: 'relationship_1', created: false },
       },
     });
 
@@ -756,11 +892,11 @@ describe('createDefaultActionExecutor (session.fork)', () => {
     );
 
     expect(res.ok).toBe(true);
+    expect(startSessionHandoffOpMock.mock.calls[0]?.[0]).not.toHaveProperty('sessionStorageMode');
     expect(startSessionHandoffOpMock).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_parent',
       sourceMachineId: 'machine_1',
       targetMachineId: 'machine_2',
-      sessionStorageMode: 'direct',
       targetSessionStorageMode: 'persisted',
       workspaceAction: {
         kind: 'relationship',
@@ -887,12 +1023,13 @@ describe('createDefaultActionExecutor (session.fork)', () => {
             flavor: 'codex',
             codexBackendMode: 'appServer',
           },
+          access: createSessionAccessFixture(),
         },
       },
       settings: { sessionReplayEnabled: true },
     });
 
-    const executor = createDefaultActionExecutor();
+    const executor = createDefaultActionExecutor({ currentAgentCapabilities: codexCurrentCapabilities });
 
     const result = await executor.execute(
       'session.rollback' as any,
@@ -929,12 +1066,13 @@ describe('createDefaultActionExecutor (session.fork)', () => {
             flavor,
             codexBackendMode: 'appServer',
           },
+          access: createSessionAccessFixture(),
         },
       },
       settings: { sessionReplayEnabled: true },
     });
 
-    const executor = createDefaultActionExecutor();
+    const executor = createDefaultActionExecutor({ currentAgentCapabilities: codexCurrentCapabilities });
 
     const result = await executor.execute(
       'session.rollback' as any,
@@ -950,9 +1088,9 @@ describe('createDefaultActionExecutor (session.fork)', () => {
   });
 
   it.each([
-    ['Codex app-server', { flavor: 'codex', codexBackendMode: 'appServer' }],
-    ['Grok', { flavor: 'grok' }],
-  ])('delegates inactive %s rollback to a trusted completed turn start', async (_provider, metadata) => {
+    ['Codex app-server', { flavor: 'codex', codexBackendMode: 'appServer' }, codexCurrentCapabilities],
+    ['Grok', { flavor: 'grok' }, grokCurrentCapabilities],
+  ])('delegates inactive %s rollback to a trusted completed turn start', async (_provider, metadata, currentAgentCapabilities) => {
     rollbackSessionConversationOpMock.mockResolvedValueOnce({
       ok: true,
       rolledBack: true,
@@ -998,12 +1136,13 @@ describe('createDefaultActionExecutor (session.fork)', () => {
             machineId: 'machine_1',
             ...metadata,
           },
+          access: createSessionAccessFixture(),
         },
       },
       settings: { sessionReplayEnabled: true },
     });
 
-    const executor = createDefaultActionExecutor();
+    const executor = createDefaultActionExecutor({ currentAgentCapabilities });
 
     const result = await executor.execute(
       'session.rollback' as any,
@@ -1071,6 +1210,7 @@ describe('createDefaultActionExecutor (session.fork)', () => {
               agent: { providerSessionId: 'acme-session-1' },
             },
           },
+          access: createSessionAccessFixture(),
         },
       },
       settings: { sessionReplayEnabled: true },
@@ -1085,10 +1225,11 @@ describe('createDefaultActionExecutor (session.fork)', () => {
           sessions: {
             open: ['resume'],
             delivery: ['newTurn'],
+            cancel: false,
             conversationRollback: true,
           },
         },
-      } as any,
+      } satisfies CurrentProjectedAgentCapabilities,
     });
 
     const result = await executor.execute(
@@ -1107,28 +1248,37 @@ describe('createDefaultActionExecutor (session.fork)', () => {
     });
   });
 
+  // Each row holds a canonical access grant plus the current Agent declaration
+  // the session's Agent resolves to, so the rejection is decided by the row's
+  // named gate instead of an accidental missing-access short-circuit. The
+  // unsupported-Agent row deliberately carries a conversationRollback-capable
+  // declaration for a different Agent id.
   it.each([
     [
       'inactive latest-turn rollback',
-      { active: false, metadata: { flavor: 'codex', codexBackendMode: 'appServer' }, rollbackEligibleTurnStarts: [3] },
+      { active: false, access: createSessionAccessFixture(), metadata: { flavor: 'codex', codexBackendMode: 'appServer' }, rollbackEligibleTurnStarts: [3] },
       { type: 'latest_turn' },
+      codexCurrentCapabilities,
     ],
     [
       'an untrusted pending turn start',
-      { active: false, metadata: { flavor: 'grok' }, rollbackEligibleTurnStarts: [3] },
+      { active: false, access: createSessionAccessFixture(), metadata: { flavor: 'grok' }, rollbackEligibleTurnStarts: [3] },
       { type: 'before_user_message', userMessageSeq: 5 },
+      grokCurrentCapabilities,
     ],
     [
       'a view-only trusted turn start',
-      { active: false, accessLevel: 'view', metadata: { flavor: 'grok' }, rollbackEligibleTurnStarts: [3] },
+      { active: false, access: createSessionAccessFixture('view'), metadata: { flavor: 'grok' }, rollbackEligibleTurnStarts: [3] },
       { type: 'before_user_message', userMessageSeq: 3 },
+      grokCurrentCapabilities,
     ],
     [
       'an unsupported provider trusted turn start',
-      { active: false, metadata: { flavor: 'claude' }, rollbackEligibleTurnStarts: [3] },
+      { active: false, access: createSessionAccessFixture(), metadata: { flavor: 'claude' }, rollbackEligibleTurnStarts: [3] },
       { type: 'before_user_message', userMessageSeq: 3 },
+      codexCurrentCapabilities,
     ],
-  ])('rejects %s before invoking the rollback RPC', async (_scenario, sessionOverrides, target) => {
+  ])('rejects %s before invoking the rollback RPC', async (_scenario, sessionOverrides, target, currentAgentCapabilities) => {
     storageGetStateMock.mockReturnValue({
       sessions: {
         sess_parent: {
@@ -1148,7 +1298,7 @@ describe('createDefaultActionExecutor (session.fork)', () => {
       settings: { sessionReplayEnabled: true },
     });
 
-    const executor = createDefaultActionExecutor();
+    const executor = createDefaultActionExecutor({ currentAgentCapabilities });
     const result = await executor.execute(
       'session.rollback' as any,
       { sessionId: 'sess_parent', target },

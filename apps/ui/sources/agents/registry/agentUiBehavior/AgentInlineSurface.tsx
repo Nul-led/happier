@@ -1,47 +1,30 @@
 import * as React from 'react';
-import type { PluginUiJsonValueV1 } from '@happier-dev/protocol/plugins/ui';
+import type { PluginUiInlineSurfaceMountV1, PluginUiJsonValueV1 } from '@happier-dev/protocol/plugins/ui';
 
-import { PluginInlineSurfaceHost, type PluginInlineSurfaceMountV1 } from '@/components/plugins/surfaces';
-import { useScopedPluginUiProjection } from '@/components/plugins/projection/useScopedPluginUiProjection';
+import { PluginInlineSurfaceHost } from '@/components/plugins/surfaces';
 import { selectPluginInlineSurfacePlacementsBySurface } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
-import { useSessionMachineTarget } from '@/components/sessions/model/useSessionMachineTarget';
-import { usePluginUiSessionPolicyEvaluationContext } from '@/components/sessions/model/usePluginUiSessionPolicyEvaluationContext';
-import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
-import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
+import {
+    useSessionAddressForSessionId,
+    useSessionPluginRuntime,
+    type SessionPluginRuntimeState,
+} from '@/components/sessions/plugins/useSessionPluginRuntime';
+import { useSessionPluginPolicyContext } from '@/components/sessions/plugins/useSessionPluginPolicyContext';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { PluginUiInlineSurfacePlacementProjection } from '@/sync/domains/plugins/ui/projection';
-import { useSession, useSessionServerId, useSettings } from '@/sync/store/hooks';
-import { useSessionStatus } from '@/utils/sessions/sessionUtils';
+import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
 
 function MountedAgentInlineSurface(props: Readonly<{
     session: Session;
     placement: PluginUiInlineSurfacePlacementProjection;
-    current: ReturnType<typeof useScopedPluginUiProjection>;
+    current: SessionPluginRuntimeState;
     agentId?: string | null;
-    inlineMount: PluginInlineSurfaceMountV1;
+    inlineMount: PluginUiInlineSurfaceMountV1;
     launchInput?: PluginUiJsonValueV1;
 }>): React.ReactElement {
-    const sessionStatus = useSessionStatus(props.session, {
-        subscribeToSession: false,
-        subscribeToTranscript: false,
-    });
-    const settings = useSettings();
-    const serverFeaturesSnapshot = useServerFeaturesSnapshotForServerId(props.current.serverId, {
-        enabled: Boolean(props.current.serverId),
-    });
-    const policyContext = usePluginUiSessionPolicyEvaluationContext({
-        platform: props.current.platform,
-        serverId: props.current.serverId,
-        settings,
-        serverFeaturesSnapshot,
-        facts: {
-            pluginEnabled: true,
-            sessionAgentId: readSessionPresentationAgentId(props.session) ?? props.agentId ?? null,
-            sessionState: sessionStatus.state,
-            machineId: props.current.machineId,
-            projectId: null,
-            browserExists: false,
-        },
+    const policyContext = useSessionPluginPolicyContext({
+        session: props.session,
+        runtime: props.current,
+        agentId: props.agentId,
     });
 
     return (
@@ -68,21 +51,18 @@ export function AgentInlineSurface(props: Readonly<{
     /** Route-scoped server identity may be supplied by a details owner. */
     serverId?: string | null;
     agentId?: string | null;
-    inlineMount: PluginInlineSurfaceMountV1;
+    inlineMount: PluginUiInlineSurfaceMountV1;
     launchInput?: PluginUiJsonValueV1;
 }>): React.ReactElement | null {
     // Inline surfaces are children of the live Session owner. Never trust a
     // machine id serialized into a launch card/details resource: a Session can
-    // be handed off while a retained details tree remains mounted. The existing
-    // Session target hook is the canonical machine owner; the Session server
-    // hook provides the matching server scope.
-    const sessionTarget = useSessionMachineTarget(props.sessionId);
-    const sessionServerId = useSessionServerId(props.sessionId);
-    const session = useSession(props.sessionId);
-    const current = useScopedPluginUiProjection({
-        machineId: sessionTarget?.machineId ?? null,
-        serverId: sessionServerId ?? props.serverId,
-    });
+    // be handed off while a retained details tree remains mounted. The shared
+    // exact-Session runtime owner resolves the current machine, server and
+    // projection for one Home-qualified Session — this component keeps no
+    // second copy of that resolution.
+    const address = useSessionAddressForSessionId(props.sessionId, props.serverId);
+    const session = useSessionViewShellSession(props.sessionId, address?.serverId ?? null);
+    const current = useSessionPluginRuntime({ address });
     const placements = current.pluginUiProjection
         ? selectPluginInlineSurfacePlacementsBySurface(current.pluginUiProjection, {
             pluginId: props.pluginId,

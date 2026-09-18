@@ -14,7 +14,7 @@ export async function approveTerminalPairing(params: Readonly<{
     targetCredentials: AuthCredentials;
     supportsTokenOnly: boolean;
 }>): Promise<AuthApproveResult> {
-    const material = resolveProvisioningMaterial(params.targetCredentials);
+    const material = await resolveProvisioningMaterial(params.targetCredentials);
     let sealedResponse: Uint8Array;
     if (material.type === 'tokenOnly') {
         if (!params.supportsTokenOnly) {

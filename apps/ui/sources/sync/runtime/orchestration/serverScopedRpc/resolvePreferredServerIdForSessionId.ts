@@ -13,8 +13,7 @@ export function resolvePreferredServerIdForSessionId(sessionId: string): string 
     // (direct session record or session-list lookup rows). Otherwise return `undefined` so
     // call sites can apply an explicit fallback (e.g. active server, route server id, etc.).
     const cachedScope = resolveSessionListLookupSessionServerScopeFromState(state, sessionId);
-    const hasRenderableSession = Boolean(state?.sessionListRenderables?.[sessionId]);
-    if (!cachedScope?.serverId && !hasRenderableSession) {
+    if (!cachedScope?.serverId) {
         return undefined;
     }
     return (

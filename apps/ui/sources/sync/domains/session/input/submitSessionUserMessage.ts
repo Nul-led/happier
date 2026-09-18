@@ -1,6 +1,8 @@
 import {
     DEFAULT_SESSION_INACTIVE_RESUME_POLICY,
     readPendingLocalId,
+    normalizeParticipantRecipientRoutingIdentityV1,
+    withParticipantRecipientV1,
     withSessionUserMessageDeliveryIntentMeta,
     type PendingRequestedActionV1,
 } from '@happier-dev/protocol';
@@ -26,6 +28,7 @@ import type {
     SubmitSessionUserMessageResult,
 } from './types';
 import { SESSION_INPUT_TARGET_UPDATE_REQUIRED_ERROR_CODE } from './types';
+import { SESSION_INPUT_ACCOUNT_SCOPE_RETIRED_ERROR_CODE } from './types';
 import { recordSessionMessageDeliveryDecision } from './sessionMessageDeliveryTelemetry';
 import {
     canSendUserMessageToSession,
@@ -39,6 +42,20 @@ type ResolvedSubmitDecision = Readonly<{
     supportRefreshSucceeded: boolean;
     supportRefreshErrorMessage?: string;
 }>;
+
+function isSubmitAccountLifetimeCurrent(opts: SubmitSessionUserMessageOptions): boolean {
+    return opts.accountLifetime?.isCurrent() !== false;
+}
+
+function accountScopeRetiredResult(type: 'rejected' | 'send_failed' = 'rejected'): SubmitSessionUserMessageResult {
+    return {
+        type,
+        persistence: 'none',
+        wake: { attempted: false, state: 'not_needed' },
+        errorCode: SESSION_INPUT_ACCOUNT_SCOPE_RETIRED_ERROR_CODE,
+        errorMessage: 'Session Account authority is unavailable',
+    };
+}
 
 function getErrorMessage(error: unknown, fallback: string): string {
     return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
@@ -279,6 +296,7 @@ async function resolveSubmitDecisionWithSupportRefresh(
     try {
         const refreshedSession = await port.refreshSessionForSubmit(opts.sessionId, {
             serverId: opts.serverId ?? null,
+            ...(opts.accountLifetime ? { accountLifetime: opts.accountLifetime } : {}),
         });
         if (refreshedSession) {
             const refreshedOpts = {
@@ -332,7 +350,13 @@ async function switchRemoteAfterPendingEnqueueIfNeeded(
     }
 
     try {
-        await port.switchSessionControlToRemote(opts.sessionId);
+        await port.switchSessionControlToRemote(
+            opts.sessionId,
+            ...((opts.serverId || opts.accountLifetime) ? [{
+                ...(opts.serverId ? { serverId: opts.serverId } : {}),
+                ...(opts.accountLifetime ? { accountLifetime: opts.accountLifetime } : {}),
+            }] as const : [] as const),
+        );
     } catch {
         // Non-fatal: the message is already persisted in the pending queue.
     }
@@ -342,16 +366,21 @@ function requestedActionRequiresRuntimeActivation(action: PendingRequestedAction
     return action.kind === 'send_now' || action.kind === 'steer_now';
 }
 
-function shouldAttemptOnlineOnlyResume(
+function selectInactiveSessionResumePolicy(
     opts: SubmitSessionUserMessageOptions,
     decision: SessionMessageDeliveryDecision,
     requestedAction: PendingRequestedActionV1,
-): boolean {
-    return (opts.sessionInactiveResumePolicy ?? DEFAULT_SESSION_INACTIVE_RESUME_POLICY) === 'online_only'
-        && opts.requestedAction === undefined
+): 'when_available' | 'online_only' | null {
+    if (
+        opts.requestedAction === undefined
         && decision.intent === 'default'
         && requestedAction.kind === 'enqueue'
-        && (opts.session.active === false || opts.session.presence !== 'online');
+        && (opts.session.active === false || opts.session.presence !== 'online')
+    ) {
+        const policy = opts.sessionInactiveResumePolicy ?? DEFAULT_SESSION_INACTIVE_RESUME_POLICY;
+        return policy === 'when_available' || policy === 'online_only' ? policy : null;
+    }
+    return null;
 }
 
 async function shouldWakePendingInputFromUi(
@@ -359,8 +388,11 @@ async function shouldWakePendingInputFromUi(
     opts: SubmitSessionUserMessageOptions,
     machineId: string,
 ): Promise<boolean> {
+    if (!isSubmitAccountLifetimeCurrent(opts)) return false;
     if (!port.shouldDelegatePendingActivationToDaemon) return true;
-    return !(await port.shouldDelegatePendingActivationToDaemon(opts.session, opts.serverId, machineId));
+    const delegated = await port.shouldDelegatePendingActivationToDaemon(opts.session, opts.serverId, machineId);
+    if (!isSubmitAccountLifetimeCurrent(opts)) return false;
+    return !delegated;
 }
 
 async function directSend(
@@ -368,6 +400,7 @@ async function directSend(
     opts: SubmitSessionUserMessageOptions,
     bypassPendingQueueReason: DirectMessageBypassReason,
 ): Promise<SubmitSessionUserMessageResult> {
+    if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult();
     let handoffLocalId: string | undefined;
     let sawLocalPendingProjection = false;
     let reportedOutboundHandoff = false;
@@ -377,10 +410,15 @@ async function directSend(
             localId: opts.localId ?? undefined,
             ...(opts.hostAdmissionOrigin ? { hostAdmissionOrigin: opts.hostAdmissionOrigin } : {}),
             bypassPendingQueueReason,
+            ...(opts.serverId ? { serverId: opts.serverId } : {}),
+            ...(opts.accountLifetime ? { accountLifetime: opts.accountLifetime, session: opts.session } : {}),
             onLocalPendingProjectionCreated: opts.onOutboundHandoff
                 ? ({ localId }: { localId: string }) => {
                     sawLocalPendingProjection = true;
                     handoffLocalId = localId;
+                    // An exact routed submit keeps Composer custody until the
+                    // captured credential is still current after admission.
+                    if (opts.accountLifetime) return;
                     reportedOutboundHandoff = true;
                     opts.onOutboundHandoff?.({
                         persistence: 'pending',
@@ -398,6 +436,18 @@ async function directSend(
         );
         const localId = readLocalId(sendResult) ?? handoffLocalId ?? opts.localId ?? undefined;
         const persistence = resolveDirectSubmitPersistence(sendResult, sawLocalPendingProjection);
+        if (!isSubmitAccountLifetimeCurrent(opts)) {
+            // The transport result is the custody fact. Retirement after an ACK
+            // must not reinterpret an accepted prompt as a failed send, while
+            // the retired Composer owner remains fenced from clearing its draft.
+            return {
+                type: 'success',
+                persistence,
+                ...(sendResult?.providerAcceptancePending === true ? { providerAcceptancePending: true } : {}),
+                wake: { attempted: false, state: 'not_needed' },
+                localId,
+            };
+        }
         if (!reportedOutboundHandoff) {
             opts.onOutboundHandoff?.({
                 persistence,
@@ -425,11 +475,15 @@ async function directSend(
 async function enqueuePending(
     port: SessionSubmitPort,
     opts: SubmitSessionUserMessageOptions,
-    decision: SessionMessageDeliveryDecision,
+    decision?: SessionMessageDeliveryDecision,
 ): Promise<SubmitSessionUserMessageResult> {
-    const requestedAction = opts.requestedAction ?? decision.requestedAction ?? { v: 1, kind: 'enqueue' as const };
-    const attemptOnlineOnlyResume = shouldAttemptOnlineOnlyResume(opts, decision, requestedAction);
-    const wakeOpts = requestedActionRequiresRuntimeActivation(requestedAction) || attemptOnlineOnlyResume ? getPendingQueueWakeResumeOptions({
+    if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult();
+    const isExecutionRun = opts.recipient?.kind === 'execution_run';
+    const requestedAction = opts.requestedAction ?? decision?.requestedAction ?? { v: 1, kind: 'enqueue' as const };
+    const inactiveResumePolicy = !isExecutionRun && decision !== undefined
+        ? selectInactiveSessionResumePolicy(opts, decision, requestedAction)
+        : null;
+    const wakeOpts = !isExecutionRun && (requestedActionRequiresRuntimeActivation(requestedAction) || inactiveResumePolicy !== null) ? getPendingQueueWakeResumeOptions({
         sessionId: opts.sessionId,
         session: opts.session,
         resumeCapabilityOptions: opts.resumeCapabilityOptions,
@@ -440,16 +494,25 @@ async function enqueuePending(
 
     let enqueueResult: PendingMessageSubmitResult;
     let handoffLocalId: string | undefined;
+    let wakeFromUiForWhenAvailable: boolean | null = null;
     try {
+        wakeFromUiForWhenAvailable = inactiveResumePolicy === 'when_available' && wakeOpts
+            ? await shouldWakePendingInputFromUi(port, opts, wakeOpts.machineId)
+            : null;
+        if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult();
         enqueueResult = await port.enqueuePendingMessage(
             opts.sessionId,
             opts.text,
             opts.displayText,
-            withSessionUserMessageDeliveryIntentMeta(opts.metaOverrides, decision.intent),
+            decision ? withSessionUserMessageDeliveryIntentMeta(opts.metaOverrides, decision.intent) : opts.metaOverrides,
             {
                 localId: opts.localId,
+                ...(opts.serverId ? { serverId: opts.serverId } : {}),
+                ...(opts.accountLifetime ? { accountLifetime: opts.accountLifetime } : {}),
+                ...(opts.recipient ? { recipient: opts.recipient } : {}),
                 ...(opts.hostAdmissionOrigin ? { hostAdmissionOrigin: opts.hostAdmissionOrigin } : {}),
                 requestedAction,
+                ...(wakeFromUiForWhenAvailable === false ? { resumeWhenAvailable: true as const } : {}),
                 onLocalPendingProjectionCreated: opts.onOutboundHandoff
                     ? ({ localId }) => {
                         handoffLocalId = localId;
@@ -457,20 +520,30 @@ async function enqueuePending(
                     : undefined,
             },
         );
+        if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed');
     } catch (error) {
         return {
             type: 'send_failed',
             persistence: 'none',
             wake: { attempted: false, state: 'not_needed' },
-            errorMessage: getErrorMessage(error, 'Failed to enqueue message'),
+            ...getSubmitSendFailure(error, 'Failed to enqueue message'),
         };
     }
 
     const localId = readLocalId(enqueueResult) ?? handoffLocalId;
-    opts.onOutboundHandoff?.({
-        persistence: 'pending',
-        ...(localId ? { localId } : {}),
-    });
+    let handoffReported = false;
+    const reportHandoffIfCurrent = (): boolean => {
+        if (!isSubmitAccountLifetimeCurrent(opts)) return false;
+        if (!handoffReported) {
+            handoffReported = true;
+            opts.onOutboundHandoff?.({
+                persistence: 'pending',
+                ...(localId ? { localId } : {}),
+            });
+        }
+        return true;
+    };
+    if (!opts.accountLifetime) reportHandoffIfCurrent();
     if (enqueueResult && typeof enqueueResult === 'object' && enqueueResult.cancelled === true) {
         return {
             type: 'rejected',
@@ -482,6 +555,7 @@ async function enqueuePending(
         };
     }
     if (enqueueResult && typeof enqueueResult === 'object' && enqueueResult.accepted === false) {
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
         return {
             type: 'wake_pending',
             persistence: 'pending',
@@ -489,7 +563,8 @@ async function enqueuePending(
             localId,
         };
     }
-    if (enqueueResult && typeof enqueueResult === 'object' && enqueueResult.terminal === true) {
+    if (isExecutionRun || (enqueueResult && typeof enqueueResult === 'object' && enqueueResult.terminal === true)) {
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
         return {
             type: 'success',
             persistence: 'pending',
@@ -498,6 +573,7 @@ async function enqueuePending(
         };
     }
     if (!wakeOpts) {
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
         return {
             type: 'wake_pending',
             persistence: 'pending',
@@ -506,7 +582,8 @@ async function enqueuePending(
         };
     }
 
-    if (attemptOnlineOnlyResume && port.isMachineReachable?.(wakeOpts.machineId) !== true) {
+    if (inactiveResumePolicy === 'online_only' && port.isMachineReachable?.(wakeOpts.machineId) !== true) {
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
         return {
             type: 'wake_pending',
             persistence: 'pending',
@@ -515,7 +592,13 @@ async function enqueuePending(
         };
     }
 
-    if (!attemptOnlineOnlyResume && !(await shouldWakePendingInputFromUi(port, opts, wakeOpts.machineId))) {
+    const shouldWakeFromUi = wakeFromUiForWhenAvailable
+        ?? (inactiveResumePolicy === 'online_only'
+            ? true
+            : await shouldWakePendingInputFromUi(port, opts, wakeOpts.machineId));
+    if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed');
+    if (!shouldWakeFromUi) {
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
         return {
             type: 'success',
             persistence: 'pending',
@@ -527,12 +610,15 @@ async function enqueuePending(
     const resumeOptions = {
         ...wakeOpts,
         ...(opts.serverId ? { serverId: opts.serverId } : {}),
+        ...(opts.accountLifetime ? { accountLifetime: opts.accountLifetime } : {}),
     };
 
     try {
         const wakeResult = await port.ensureSessionRuntimeForPendingInput(resumeOptions);
+        if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed');
         if (wakeResult.type === 'error') {
             await switchRemoteAfterPendingEnqueueIfNeeded(port, opts);
+            if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
             return {
                 type: 'wake_failed',
                 persistence: 'pending',
@@ -547,8 +633,10 @@ async function enqueuePending(
             };
         }
     } catch (error) {
+        if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed');
         const errorMessage = getErrorMessage(error, 'Failed to resume session');
         await switchRemoteAfterPendingEnqueueIfNeeded(port, opts);
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
         return {
             type: 'wake_failed',
             persistence: 'pending',
@@ -563,6 +651,7 @@ async function enqueuePending(
     }
 
     await switchRemoteAfterPendingEnqueueIfNeeded(port, opts);
+    if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
     return {
         type: 'success',
         persistence: 'pending',
@@ -575,7 +664,43 @@ export async function submitSessionUserMessage(
     port: SessionSubmitPort,
     opts: SubmitSessionUserMessageOptions,
 ): Promise<SubmitSessionUserMessageResult> {
+    if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult();
+    if (opts.recipient) {
+        try {
+            const recipient = normalizeParticipantRecipientRoutingIdentityV1(opts.recipient);
+            opts = { ...opts, recipient };
+            if (recipient.kind === 'execution_run') {
+                // The caller selects intent from the exact Run projection; parent
+                // activity, direct-send compatibility and wake policy are unrelated.
+                if (usesExistingDurablePendingMessage(opts)) {
+                    const localId = opts.localId!;
+                    if (!port.updatePendingRequestedAction) throw new Error('Pending action mutation is unavailable');
+                    await port.updatePendingRequestedAction(
+                        opts.sessionId,
+                        localId,
+                        opts.requestedAction ?? { v: 1, kind: 'enqueue' },
+                        ...((opts.serverId || opts.accountLifetime) ? [{
+                            ...(opts.serverId ? { serverId: opts.serverId } : {}),
+                            ...(opts.accountLifetime ? { accountLifetime: opts.accountLifetime } : {}),
+                        }] as const : [] as const),
+                    );
+                    if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed');
+                    return { type: 'success', persistence: 'pending', wake: { attempted: false, state: 'not_needed' }, localId };
+                }
+                return await enqueuePending(port, opts);
+            }
+            opts = { ...opts, metaOverrides: withParticipantRecipientV1(opts.metaOverrides ?? {}, recipient) };
+        } catch (error) {
+            return {
+                type: 'send_failed',
+                persistence: usesExistingDurablePendingMessage(opts) ? 'pending' : 'none',
+                wake: { attempted: false, state: 'not_needed' },
+                ...getSubmitSendFailure(error, 'Failed to submit participant input'),
+            };
+        }
+    }
     const resolved = await resolveSubmitDecisionWithSupportRefresh(port, opts);
+    if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult();
     const decision = resolved.decision;
     const effectiveOpts = resolved.opts;
     const mode = decision.mode;
@@ -618,7 +743,16 @@ export async function submitSessionUserMessage(
             if (!port.updatePendingRequestedAction) {
                 throw new Error('Pending action mutation is unavailable');
             }
-            await port.updatePendingRequestedAction(effectiveOpts.sessionId, localId, requestedAction);
+            await port.updatePendingRequestedAction(
+                effectiveOpts.sessionId,
+                localId,
+                requestedAction,
+                ...((effectiveOpts.serverId || effectiveOpts.accountLifetime) ? [{
+                    ...(effectiveOpts.serverId ? { serverId: effectiveOpts.serverId } : {}),
+                    ...(effectiveOpts.accountLifetime ? { accountLifetime: effectiveOpts.accountLifetime } : {}),
+                }] as const : [] as const),
+            );
+            if (!isSubmitAccountLifetimeCurrent(effectiveOpts)) return accountScopeRetiredResult('send_failed');
         } catch (error) {
             const failure = getSubmitSendFailure(error, 'Failed to update pending action');
             return {
@@ -650,6 +784,7 @@ export async function submitSessionUserMessage(
                 };
             }
         } else if (await shouldWakePendingInputFromUi(port, effectiveOpts, wakeOpts.machineId)) {
+            if (!isSubmitAccountLifetimeCurrent(effectiveOpts)) return accountScopeRetiredResult('send_failed');
             try {
                 const wakeResult = await port.ensureSessionRuntimeForPendingInput({
                     ...wakeOpts,
@@ -658,7 +793,9 @@ export async function submitSessionUserMessage(
                         requestId: localId,
                     },
                     ...(effectiveOpts.serverId ? { serverId: effectiveOpts.serverId } : {}),
+                    ...(effectiveOpts.accountLifetime ? { accountLifetime: effectiveOpts.accountLifetime } : {}),
                 });
+                if (!isSubmitAccountLifetimeCurrent(effectiveOpts)) return accountScopeRetiredResult('send_failed');
                 if (wakeResult.type === 'error') {
                     return {
                         type: 'wake_pending',

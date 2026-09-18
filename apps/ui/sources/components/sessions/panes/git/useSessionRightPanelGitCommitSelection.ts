@@ -12,6 +12,7 @@ import { isFileSelectedForCommit as resolveFileSelectedForCommit } from '@/scm/o
 
 export type UseSessionRightPanelGitCommitSelectionInput = Readonly<{
     sessionId: string;
+    serverId?: string;
     sessionPath: string | null;
     scmSnapshot: ScmWorkingSnapshot | null;
     scmWriteEnabled: boolean;
@@ -58,7 +59,7 @@ export function useSessionRightPanelGitCommitSelection(
         if (!input.scmWriteEnabled) return;
         fireAndForget(
             applyFileStageAction({
-                sessionId: input.sessionId,
+                sessionId: input.sessionId, serverId: input.serverId,
                 sessionPath: input.sessionPath,
                 filePath: file.fullPath,
                 snapshot: input.scmSnapshot,
@@ -69,7 +70,7 @@ export function useSessionRightPanelGitCommitSelection(
             }),
             { tag: 'useSessionRightPanelGitCommitSelection.toggleCommitSelectionForFile' }
         );
-    }, [input.scmCommitStrategy, input.scmSnapshot, input.scmWriteEnabled, input.sessionId, input.sessionPath, isSelectedForCommit]);
+    }, [input.scmCommitStrategy, input.scmSnapshot, input.scmWriteEnabled, input.sessionId, input.serverId, input.sessionPath, isSelectedForCommit]);
 
     const allChangedPaths = React.useMemo(
         () => input.changedFiles.map((file) => file.fullPath),
@@ -80,7 +81,7 @@ export function useSessionRightPanelGitCommitSelection(
         if (!input.scmWriteEnabled) return;
         fireAndForget(
             applyBulkFileStageAction({
-                sessionId: input.sessionId,
+                sessionId: input.sessionId, serverId: input.serverId,
                 sessionPath: input.sessionPath,
                 snapshot: input.scmSnapshot,
                 scmWriteEnabled: input.scmWriteEnabled,
@@ -91,7 +92,7 @@ export function useSessionRightPanelGitCommitSelection(
             }),
             { tag }
         );
-    }, [input.scmCommitStrategy, input.scmSnapshot, input.scmWriteEnabled, input.sessionId, input.sessionPath]);
+    }, [input.scmCommitStrategy, input.scmSnapshot, input.scmWriteEnabled, input.sessionId, input.serverId, input.sessionPath]);
 
     const bulkSelectAll = React.useCallback(() => {
         bulkSelectPaths(allChangedPaths, 'useSessionRightPanelGitCommitSelection.bulkSelectAll');
@@ -107,14 +108,14 @@ export function useSessionRightPanelGitCommitSelection(
     const bulkSelectNone = React.useCallback(() => {
         if (!input.scmWriteEnabled) return;
         if (isAtomicCommitStrategy(input.scmCommitStrategy)) {
-            storage.getState().clearSessionProjectScmCommitSelectionPaths(input.sessionId);
-            storage.getState().clearSessionProjectScmCommitSelectionPatches(input.sessionId);
+            storage.getState().clearSessionProjectScmCommitSelectionPaths(input.sessionId, input.serverId);
+            storage.getState().clearSessionProjectScmCommitSelectionPatches(input.sessionId, input.serverId);
             return;
         }
 
         fireAndForget(
             applyBulkFileStageAction({
-                sessionId: input.sessionId,
+                sessionId: input.sessionId, serverId: input.serverId,
                 sessionPath: input.sessionPath,
                 snapshot: input.scmSnapshot,
                 scmWriteEnabled: input.scmWriteEnabled,
@@ -125,7 +126,7 @@ export function useSessionRightPanelGitCommitSelection(
             }),
             { tag: 'useSessionRightPanelGitCommitSelection.bulkSelectNone' }
         );
-    }, [allChangedPaths, input.scmCommitStrategy, input.scmSnapshot, input.scmWriteEnabled, input.sessionId, input.sessionPath]);
+    }, [allChangedPaths, input.scmCommitStrategy, input.scmSnapshot, input.scmWriteEnabled, input.sessionId, input.serverId, input.sessionPath]);
 
     const disableSelectAll = !input.scmWriteEnabled
         || !input.sessionPath

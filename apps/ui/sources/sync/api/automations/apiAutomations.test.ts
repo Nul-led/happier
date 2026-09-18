@@ -17,7 +17,8 @@ import {
     updateAutomationSettings,
 } from './apiAutomations';
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
+vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverRuntime')>(),
     getActiveServerSnapshot: () => ({
         serverId: 'test',
         serverUrl: 'https://api.example.test',
@@ -169,6 +170,35 @@ describe('apiAutomations', () => {
 
         expect(headers.get('Authorization')).toBe('Bearer token-1');
         expect(headers.get('Content-Type')).toBeNull();
+    });
+
+    it('preserves the exact workflow Run correspondence the admission receipt declared', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => ({
+            ok: true,
+            status: 200,
+            json: async () => ({
+                run: { ...runSummary, id: 'run-42', automationId: 'auto-1' },
+                workflowRun: { recipeKind: 'workflow-v2', workflowRunId: 'run-42' },
+            }),
+        })) as unknown as typeof fetch);
+
+        const admitted = await runAutomationDefinitionNow(credentials, 'auto-1');
+
+        expect(admitted.run.id).toBe('run-42');
+        expect(admitted.workflowRun).toEqual({ recipeKind: 'workflow-v2', workflowRunId: 'run-42' });
+    });
+
+    it('leaves a legacy admission receipt without a fabricated workflow correspondence', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => ({
+            ok: true,
+            status: 200,
+            json: async () => ({ run: { ...runSummary, id: 'run-7', automationId: 'auto-1' } }),
+        })) as unknown as typeof fetch);
+
+        const admitted = await runAutomationDefinitionNow(credentials, 'auto-1');
+
+        expect(admitted.run.id).toBe('run-7');
+        expect(admitted.workflowRun).toBeUndefined();
     });
 
     it('keeps current list summaries private-content-free and reads detail only by id', async () => {

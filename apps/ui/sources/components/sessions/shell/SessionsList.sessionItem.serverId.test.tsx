@@ -3,6 +3,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import {
     SESSION_ACTION_ARCHIVE_ID,
     SESSION_ACTION_RENAME_ID,
@@ -98,34 +99,37 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
     Octicons: 'Octicons',
 }));
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
+// Real `@/constants/Typography` is used: it depends only on the mocked
+// `react-native` Platform, and the row corridor evaluates `Typography.rowMeta()`
+// while module mocks initialize (browser/frame/styles.ts), so a partial
+// `default`-only mock fails mock-factory initialization.
 vi.mock('@/components/ui/text/Text', () => ({
     Text: 'Text',
     TextInput: 'TextInput',
 }));
-vi.mock('@/utils/sessions/sessionUtils', () => ({
-    getSessionName: () => 'Session',
-    getSessionSubtitle: () => 'Subtitle',
-    getSessionAvatarId: () => 'avatar',
-    getSessionStatus: () => ({
-        isConnected: true,
-        statusText: 'Connected',
-        statusColor: '#000',
-        statusDotColor: '#0f0',
-        isPulsing: false,
-    }),
-    useSessionStatus: () => ({
-        isConnected: true,
-        statusText: 'Connected',
-        statusColor: '#000',
-        statusDotColor: '#0f0',
-        isPulsing: false,
-    }),
-}));
+vi.mock('@/utils/sessions/sessionUtils', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/utils/sessions/sessionUtils')>();
+    return {
+        ...actual,
+        getSessionName: () => 'Session',
+        getSessionSubtitle: () => 'Subtitle',
+        getSessionAvatarId: () => 'avatar',
+        getSessionStatus: () => ({
+            isConnected: true,
+            statusText: 'Connected',
+            statusColor: '#000',
+            statusDotColor: '#0f0',
+            isPulsing: false,
+        }),
+        useSessionStatus: () => ({
+            isConnected: true,
+            statusText: 'Connected',
+            statusColor: '#000',
+            statusDotColor: '#0f0',
+            isPulsing: false,
+        }),
+    };
+});
 vi.mock('@/components/ui/avatar/Avatar', () => ({
     Avatar: (props: Record<string, unknown>) => React.createElement('Avatar', {
         ...props,
@@ -195,6 +199,9 @@ describe('SessionItem navigation', () => {
             thinking: false,
             thinkingAt: 0,
             presence: 'online',
+            // Row actions (rename/stop/archive) gate on the session's explicit
+            // access capabilities; an owning viewer keeps the full menu visible.
+            access: createSessionAccessFixture('owner'),
         } as any;
     }
 

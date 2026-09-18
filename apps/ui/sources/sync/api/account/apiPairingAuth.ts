@@ -1,26 +1,13 @@
 import type { ServerFetch } from '@/sync/http/client';
 import type { HomeQrEnrollmentTarget } from '@/auth/flows/qrStart';
+import { parseHomeQrPairingStatusV2, type HomeQrPairingStatusV2 } from '@happier-dev/protocol';
 
 export type PairingStartResponse = Readonly<{
     pairId: string;
     expiresAt: string;
 }>;
 
-export type PairingStatus =
-    | Readonly<{
-        state: 'pending';
-        pairId: string;
-        expiresAt: string;
-    }>
-    | Readonly<{
-        state: 'requested';
-        pairId: string;
-        expiresAt: string;
-        requestedPublicKey: string;
-        requestedDeviceLabel: string | null;
-        bindingProof: string;
-        homeServerIdentityId: string;
-    }>;
+export type PairingStatus = HomeQrPairingStatusV2;
 
 export type PairingRequestOk = Readonly<{ state: 'requested' }>;
 
@@ -98,7 +85,11 @@ export type PairingStartParams =
         expiresAtMs: number;
     }>;
 
-export async function pairingStart(params: PairingStartParams, target: PairingCallTarget): Promise<PairingStartResult> {
+export async function pairingStart(
+    params: PairingStartParams,
+    target: PairingCallTarget,
+    options: Readonly<{ signal?: AbortSignal }> = {},
+): Promise<PairingStartResult> {
     const request = resolvePairingRequest(target, true);
     if (!request) return { ok: false, reason: 'invalid_target', status: 0 };
     const res = await request(
@@ -107,6 +98,7 @@ export async function pairingStart(params: PairingStartParams, target: PairingCa
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(params),
+            ...(options.signal ? { signal: options.signal } : {}),
         },
         { includeAuth: true },
     );
@@ -147,48 +139,10 @@ export async function pairingStatus(
         }
         return { ok: false, reason: 'http_error', status: res.status };
     }
-    const json = await safeReadJson(res);
-    if (!isRecord(json) || (json.state !== 'pending' && json.state !== 'requested') || typeof json.pairId !== 'string') {
-        return { ok: false, reason: 'invalid_response', status: 502 };
-    }
-    if (json.state === 'pending' && (
-        typeof json.expiresAt !== 'string'
-        || !hasExactKeys(json, ['state', 'pairId', 'expiresAt'])
-    )) return { ok: false, reason: 'invalid_response', status: 502 };
-    if (json.state === 'requested' && (
-        typeof json.expiresAt !== 'string'
-        || typeof json.requestedPublicKey !== 'string'
-        || typeof json.bindingProof !== 'string'
-        || typeof json.homeServerIdentityId !== 'string'
-        || (json.requestedDeviceLabel !== null && typeof json.requestedDeviceLabel !== 'string')
-        || !hasExactKeys(json, [
-            'state',
-            'pairId',
-            'expiresAt',
-            'homeServerIdentityId',
-            'requestedPublicKey',
-            'bindingProof',
-            'requestedDeviceLabel',
-        ])
-    )) return { ok: false, reason: 'invalid_response', status: 502 };
-    if (json.state === 'pending') {
-        return {
-            ok: true,
-            data: { state: 'pending', pairId: json.pairId, expiresAt: json.expiresAt as string },
-        };
-    }
-    return {
-        ok: true,
-        data: {
-            state: 'requested',
-            pairId: json.pairId,
-            expiresAt: json.expiresAt as string,
-            requestedPublicKey: json.requestedPublicKey as string,
-            requestedDeviceLabel: json.requestedDeviceLabel as string | null,
-            bindingProof: json.bindingProof as string,
-            homeServerIdentityId: json.homeServerIdentityId as string,
-        },
-    };
+    const status = parseHomeQrPairingStatusV2(await safeReadJson(res));
+    return status
+        ? { ok: true, data: status }
+        : { ok: false, reason: 'invalid_response', status: 502 };
 }
 
 export async function pairingRequest(params: {

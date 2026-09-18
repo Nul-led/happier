@@ -56,6 +56,18 @@ test('the one harness opts into the real journey without losing the loaded-seam-
     );
 });
 
+test('the one browser journey keeps Chromium as the default while allowing explicit cross-engine QA', async () => {
+    const harness = await import(resolve(toolsIrohDir, 'runBrowserIrohSharedEndpointProof.mjs'));
+
+    assert.equal(harness.resolveProofBrowserEngine(undefined), 'chromium');
+    assert.equal(harness.resolveProofBrowserEngine('firefox'), 'firefox');
+    assert.equal(harness.resolveProofBrowserEngine('webkit'), 'webkit');
+    assert.throws(
+        () => harness.resolveProofBrowserEngine('safari'),
+        /unsupported Playwright browser engine/u,
+    );
+});
+
 test('the journey declares exactly the A7.3 observations the amendment requires', async () => {
     const journey = await import(resolve(toolsIrohDir, 'runRealHomeVerticalJourney.mjs'));
     assert.deepEqual([...journey.REQUIRED_A73_OBSERVATIONS].sort(), [...REQUIRED_OBSERVATIONS].sort());
@@ -105,4 +117,26 @@ test('every page command the journey drives really exists on the production seam
             `the seam page must expose the ${name} command the journey drives`,
         );
     }
+});
+
+test('Home journey evidence records authentication outcomes without logging bearer material', async () => {
+    const { summarizeHomeAuthenticationEvidence } = await import(
+        resolve(toolsIrohDir, 'runRealHomeVerticalJourney.mjs')
+    );
+
+    const summary = summarizeHomeAuthenticationEvidence({
+        authorizations: ['Bearer home-secret'],
+        handshakePackets: [
+            '0{"token":"socket-secret","clientType":"user-scoped"}',
+            '2["ping-me",{}]',
+        ],
+    });
+
+    assert.deepEqual(summary, {
+        authenticatedHttpRequestCount: 1,
+        socketHandshakePacketCount: 2,
+        socketConnectPacketCount: 1,
+        socketEventPacketCount: 1,
+    });
+    assert.doesNotMatch(JSON.stringify(summary), /home-secret|socket-secret|Bearer/u);
 });

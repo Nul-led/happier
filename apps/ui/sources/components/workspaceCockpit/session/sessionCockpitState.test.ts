@@ -10,10 +10,27 @@ import {
     resolveSessionCockpitRouteFromPathname,
     resolveSessionRoutePathForSurface,
     resolveSessionRightTabIdForSurface,
+    shouldUseSessionCockpitExperience,
     shouldRouteSessionCockpitSurfacePressThroughUrl,
 } from './sessionCockpitState';
 
 describe('sessionCockpitState', () => {
+    it('preserves Collaboration intent and exact Home through the root route', () => {
+        expect(resolveSessionMobileSurfaceIntent({ routeKind: 'index', persistedSurface: 'collaboration' })).toBe('collaboration');
+        expect(resolveSessionMobileSurfaceIntent({ routeKind: 'index', activeRightTabId: 'collaboration' })).toBe('collaboration');
+        expect(resolveSessionRoutePathForSurface('same-id', 'collaboration', { serverId: 'other-home' }))
+            .toBe('/session/same-id?mobileSurface=collaboration&serverId=other-home');
+        expect(resolveSessionRightTabIdForSurface('collaboration', false)).toBe('collaboration');
+    });
+
+    it('admits Collaboration through the shared registry only when this Home supports it', () => {
+        const tabs = resolveRightSidebarTabs({ scope: 'session', presentation: 'mobile', sessionSharingAvailable: true });
+        const collaboration = tabs.find((tab) => tab.id === 'collaboration');
+        expect(collaboration).toBeDefined();
+        expect(collaboration && resolveRightSidebarMobileSurface(collaboration, 'session')).toBe('collaboration');
+        expect(resolveRightSidebarTabs({ scope: 'session' }).some((tab) => tab.id === 'collaboration')).toBe(false);
+        expect(resolveRightSidebarTabs({ scope: 'project', sessionSharingAvailable: true }).some((tab) => tab.id === 'collaboration')).toBe(false);
+    });
     it('maps legacy fullscreen subroutes to cockpit surfaces', () => {
         expect(resolveSessionMobileSurfaceIntent({ routeKind: 'files' })).toBe('browse');
         expect(resolveSessionMobileSurfaceIntent({ routeKind: 'git' })).toBe('git');
@@ -39,6 +56,7 @@ describe('sessionCockpitState', () => {
         expect(resolveSessionMobileSurfaceIntent({ routeKind: 'index', persistedSurface: 'browser' })).toBe('browser');
         expect(resolveSessionMobileSurfaceIntent({ routeKind: 'index', persistedSurface: 'services' })).toBe('services');
         expect(resolveSessionMobileSurfaceIntent({ routeKind: 'index', persistedSurface: 'navigation' })).toBe('navigation');
+        expect(resolveSessionMobileSurfaceIntent({ routeKind: 'index', persistedSurface: 'companion' })).toBe('companion');
         expect(
             resolveSessionMobileSurfaceIntent({
                 routeKind: 'index',
@@ -47,6 +65,46 @@ describe('sessionCockpitState', () => {
                 terminalTabAvailable: true,
             }),
         ).toBe('chat');
+    });
+
+    it('opens the host-owned full Companion surface from a constrained classic layout', () => {
+        expect(shouldUseSessionCockpitExperience({
+            cockpitEnabled: false,
+            explicitSurface: 'companion',
+            companionDestinationAvailable: true,
+        })).toBe(true);
+        expect(shouldUseSessionCockpitExperience({
+            cockpitEnabled: false,
+            explicitSurface: 'chat',
+            companionDestinationAvailable: true,
+        })).toBe(false);
+        expect(shouldUseSessionCockpitExperience({
+            cockpitEnabled: false,
+            explicitSurface: 'unknown',
+            companionDestinationAvailable: true,
+        })).toBe(false);
+        expect(shouldUseSessionCockpitExperience({ cockpitEnabled: true, explicitSurface: null })).toBe(true);
+    });
+
+    it('refuses a stale Companion route hint when this Home does not serve the Board destination', () => {
+        // Companion has no feature of its own, so a retained or shared
+        // `?mobileSurface=companion` link must not pull a classic viewer into
+        // the Cockpit experience on a Home that serves no Board.
+        expect(shouldUseSessionCockpitExperience({
+            cockpitEnabled: false,
+            explicitSurface: 'companion',
+        })).toBe(false);
+        expect(shouldUseSessionCockpitExperience({
+            cockpitEnabled: false,
+            explicitSurface: 'companion',
+            companionDestinationAvailable: false,
+        })).toBe(false);
+        // An actual Cockpit viewer keeps the Cockpit; the incumbent navigator
+        // then normalizes the unavailable destination back to Chat.
+        expect(shouldUseSessionCockpitExperience({
+            cockpitEnabled: true,
+            explicitSurface: 'companion',
+        })).toBe(true);
     });
 
     it('falls back to chat when persisted mobile surface state is stale or unknown', () => {
@@ -84,6 +142,7 @@ describe('sessionCockpitState', () => {
         expect(resolveSessionRightTabIdForSurface('navigation', true)).toBe('navigation');
         expect(resolveSessionRightTabIdForSurface('chat', true)).toBeNull();
         expect(resolveSessionRightTabIdForSurface('tabs', true)).toBeNull();
+        expect(resolveSessionRightTabIdForSurface('companion', true)).toBeNull();
     });
 
     it('round-trips the navigation surface through its declared right-sidebar tab', () => {
@@ -112,6 +171,7 @@ describe('sessionCockpitState', () => {
         expect(resolveSessionRoutePathForSurface('session-1', 'browser')).toBe('/session/session-1?mobileSurface=browser');
         expect(resolveSessionRoutePathForSurface('session-1', 'services')).toBe('/session/session-1?mobileSurface=services');
         expect(resolveSessionRoutePathForSurface('session-1', 'navigation')).toBe('/session/session-1?mobileSurface=navigation');
+        expect(resolveSessionRoutePathForSurface('session-1', 'companion')).toBe('/session/session-1?mobileSurface=companion');
     });
 
     it('preserves scoped route params when building cockpit route paths', () => {

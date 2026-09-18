@@ -57,7 +57,7 @@ export async function removeServerProfileUiAction(params: Readonly<{
     }
 
     if (getServerProfileById(profileId)) {
-        removeServerProfile(profileId);
+        await removeServerProfile(profileId);
     }
     fireAndForget(Promise.allSettled(
         pushCleanupTargets.map(async (target) =>

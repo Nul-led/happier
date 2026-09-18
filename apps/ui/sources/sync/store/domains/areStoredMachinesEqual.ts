@@ -16,6 +16,7 @@ export function areStoredMachinesEqual(
     if (previous === next) return true;
     if (!previous || !next) return previous === next;
     return previous.id === next.id
+        && previous.kind === next.kind
         && previous.seq === next.seq
         && previous.createdAt === next.createdAt
         && previous.updatedAt === next.updatedAt
@@ -31,6 +32,8 @@ export function areStoredMachinesEqual(
         && (previous.replacementActorUserId ?? null) === (next.replacementActorUserId ?? null)
         && (previous.installationId ?? null) === (next.installationId ?? null)
         && (previous.contentPublicKeyFingerprint ?? null) === (next.contentPublicKeyFingerprint ?? null)
+        && (previous.operationProtocolCapabilitiesRevision ?? null) === (next.operationProtocolCapabilitiesRevision ?? null)
+        && areSessionValuesDeepEqual(previous.operationProtocolCapabilities ?? null, next.operationProtocolCapabilities ?? null)
         && (previous.storageMode ?? null) === (next.storageMode ?? null)
         && areSessionValuesDeepEqual(previous.availability ?? null, next.availability ?? null)
         && areSessionValuesDeepEqual(previous.metadata ?? null, next.metadata ?? null)

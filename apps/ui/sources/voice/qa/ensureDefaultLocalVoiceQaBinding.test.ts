@@ -20,8 +20,9 @@ describe('ensureDefaultLocalVoiceQaBinding', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       conversationSessionId: 'voice-hidden-s1',
+      conversationSessionAddress: { serverId: 'home-b', sessionId: 'voice-hidden-s1' },
       transcriptMode: 'native_session' as const,
-      targetSessionId: 's1',
+      targetSessionAddress: { serverId: 'home-b', sessionId: 's1' },
       updatedAt: 1,
     };
     ensureBound.mockResolvedValue(binding);
@@ -29,7 +30,7 @@ describe('ensureDefaultLocalVoiceQaBinding', () => {
     await expect(
       ensureDefaultLocalVoiceQaBinding({
         controlSessionId: '__voice_agent__',
-        requestedTargetSessionId: 's1',
+        requestedTargetSessionAddress: { serverId: 'home-b', sessionId: 's1' },
       }),
     ).resolves.toEqual(binding);
 
@@ -37,6 +38,7 @@ describe('ensureDefaultLocalVoiceQaBinding', () => {
       adapterId: 'local_conversation',
       controlSessionId: '__voice_agent__',
       requestedTargetSessionId: 's1',
+      requestedTargetServerId: 'home-b',
     });
   });
 });

@@ -92,7 +92,7 @@ describe('openPeerTcpTunnel', () => {
             v: 1,
             tunnelId: 'tun_1',
             streamPath: '/peer-mediation/v1/tunnel/stream',
-            encoding: 'json_base64_v1',
+            encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
             initialWindowBytes: 1024 * 1024,
             maxFrameBytes: 64 * 1024,
         } as const));
@@ -109,7 +109,7 @@ describe('openPeerTcpTunnel', () => {
             routeKind: 'loopback_direct',
             response: {
                 streamPath: '/peer-mediation/v1/tunnel/stream',
-                encoding: 'json_base64_v1',
+                encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
             },
             stream,
         });

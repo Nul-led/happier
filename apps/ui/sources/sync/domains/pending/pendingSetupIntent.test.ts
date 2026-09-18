@@ -360,7 +360,7 @@ describe('pendingSetupIntent', () => {
             relayUrl: 'https://identity-setup.example.test',
         });
 
-        setServerProfileIdentityForUrl('https://identity-setup.example.test', 'srv_identity_setup');
+        await setServerProfileIdentityForUrl('https://identity-setup.example.test', 'srv_identity_setup');
         const legacyScope = createServerAccountScope('identity-setup.example.test', 'account-a');
         const identityScope = createServerAccountScope('srv_identity_setup', 'account-a');
         expect(legacyScope).not.toBeNull();

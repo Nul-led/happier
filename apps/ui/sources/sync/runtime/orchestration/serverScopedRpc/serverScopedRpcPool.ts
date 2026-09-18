@@ -4,7 +4,11 @@ import {
     isAuthenticationResponseStatus,
     isTerminalAuthError,
 } from '@/sync/runtime/connectivity/authErrors';
-import { isPlainMachineDataKeyMarker } from '@happier-dev/protocol';
+import {
+    isPlainMachineDataKeyMarker,
+    resolvePublishedMachineDataEncryptionKeyV1,
+    type ExpectedRunnerMachineContentKeyBindingV1,
+} from '@happier-dev/protocol';
 
 import { getOrCreateScopedCacheTokenKey, resetScopedCacheTokenKeysForTests } from './scopedCacheTokenKey';
 import { createScopedResolutionSingleFlight } from './scopedResolutionSingleFlight';
@@ -58,6 +62,10 @@ async function fetchMachineTransport(params: Readonly<{
     runtimeOrigin?: string;
     token: string;
     machineId: string;
+    serverId: string;
+    accountId?: string;
+    expectedAccountMode?: 'plain' | 'e2ee';
+    expectedRunnerBinding?: ExpectedRunnerMachineContentKeyBindingV1;
     decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
     timeoutMs: number;
 }>): Promise<ScopedMachineTransport | null> {
@@ -92,27 +100,43 @@ async function fetchMachineTransport(params: Readonly<{
         const body = await response.json() as {
             machine?: {
                 id?: unknown;
+                kind?: 'persistent' | 'ephemeral_session_runner';
+                installationId?: string | null;
                 dataEncryptionKey?: unknown;
+                runnerContentKeyBinding?: unknown;
             };
         };
         const machine = body?.machine;
         if (normalizeId(machine?.id) !== params.machineId) {
             return null;
         }
-        if (!machine?.dataEncryptionKey) {
-            return null;
-        }
-        if (
-            typeof machine.dataEncryptionKey === 'string'
-            && isPlainMachineDataKeyMarker(machine.dataEncryptionKey)
-        ) {
-            return { mode: 'plain' };
-        }
-        if (typeof machine.dataEncryptionKey !== 'string') return null;
-        if (!params.decryptEncryptionKey) return null;
-
-        const dataKey = await params.decryptEncryptionKey(machine.dataEncryptionKey);
-        return dataKey ? { mode: 'e2ee', dataKey } : null;
+        const published = machine?.dataEncryptionKey;
+        const dataKey = typeof published === 'string'
+            && !isPlainMachineDataKeyMarker(published)
+            && params.decryptEncryptionKey
+            ? await params.decryptEncryptionKey(published)
+            : null;
+        const resolution = resolvePublishedMachineDataEncryptionKeyV1({
+            machine: {
+                id: params.machineId,
+                kind: machine?.kind,
+                installationId: machine?.installationId,
+                dataEncryptionKey: published,
+                runnerContentKeyBinding: machine?.runnerContentKeyBinding,
+            },
+            openedDataEncryptionKey: dataKey,
+            ...(params.expectedAccountMode
+                ? { expectedAccountMode: params.expectedAccountMode }
+                : {}),
+            ...(params.expectedRunnerBinding
+                ? { expectedRunnerBinding: params.expectedRunnerBinding }
+                : {}),
+        });
+        if (resolution.status === 'plain') return { mode: 'plain' };
+        if (resolution.status === 'legacy') return { mode: 'e2ee', dataKey: null };
+        return resolution.status === 'e2ee'
+            ? { mode: 'e2ee', dataKey: resolution.dataKey }
+            : null;
     } catch (error) {
         if (isTerminalAuthError(error)) {
             throw error;
@@ -129,6 +153,9 @@ export async function resolveScopedMachineTransport(params: Readonly<{
     runtimeOrigin?: string;
     token: string;
     machineId: string;
+    accountId?: string;
+    expectedAccountMode?: 'plain' | 'e2ee';
+    expectedRunnerBinding?: ExpectedRunnerMachineContentKeyBindingV1;
     decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
     timeoutMs?: number;
 }>): Promise<ScopedMachineTransport | null> {
@@ -152,10 +179,18 @@ export async function resolveScopedMachineTransport(params: Readonly<{
     // computed from its own inputs.
     const transport = await machineTransportResolutions.run(keyCacheKey, async () => {
         const resolved = await fetchMachineTransport({
+            serverId,
             serverUrl: params.serverUrl,
             ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
             token,
             machineId,
+            ...(params.accountId ? { accountId: params.accountId } : {}),
+            ...(params.expectedAccountMode
+                ? { expectedAccountMode: params.expectedAccountMode }
+                : {}),
+            ...(params.expectedRunnerBinding
+                ? { expectedRunnerBinding: params.expectedRunnerBinding }
+                : {}),
             decryptEncryptionKey: params.decryptEncryptionKey,
             timeoutMs,
         });

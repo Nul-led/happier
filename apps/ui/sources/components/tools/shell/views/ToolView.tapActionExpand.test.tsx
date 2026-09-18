@@ -328,6 +328,7 @@ describe('ToolView (tap action: expand)', () => {
                 tool,
                 metadata: null,
                 sessionId: 's1',
+                serverId: 'home-b',
                 messageId: 'server:server-msg-1',
             }),
         );
@@ -340,7 +341,7 @@ describe('ToolView (tap action: expand)', () => {
         });
 
         expect(navigateWithBlurOnWebSpy).toHaveBeenCalledTimes(1);
-        expect(pushSpy).toHaveBeenCalledWith('/session/s1/message/server%3Aserver-msg-1');
+        expect(pushSpy).toHaveBeenCalledWith('/session/s1/message/server%3Aserver-msg-1?serverId=home-b');
     });
 
     it('expands without hydrating the sidechain when tool navigation is disabled', async () => {

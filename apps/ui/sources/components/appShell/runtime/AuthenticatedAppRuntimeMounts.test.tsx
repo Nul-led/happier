@@ -10,6 +10,7 @@ import { storage } from '@/sync/domains/state/storageStore';
 
 const runtimeRenderCounts = vi.hoisted(() => ({
     activityBadge: 0,
+    attentionReminders: 0,
     activitySurfaces: 0,
     localNotifications: 0,
     desktopActivityOverlay: 0,
@@ -19,6 +20,13 @@ const runtimeRenderCounts = vi.hoisted(() => ({
     petCompanion: 0,
     onboardingShowcase: 0,
     releaseNotes: 0,
+}));
+
+vi.mock('@/activity/attention/runtime/SessionAttentionReminderRuntime', () => ({
+    SessionAttentionReminderRuntime: () => {
+        runtimeRenderCounts.attentionReminders += 1;
+        return React.createElement('SessionAttentionReminderRuntime');
+    },
 }));
 const reverseCaptureMockState = vi.hoisted(() => {
     const disposers = new Map<string, ReturnType<typeof vi.fn>>();
@@ -178,6 +186,23 @@ function setPlatformOS(value: 'android' | 'ios' | 'node' | 'web'): void {
 }
 
 describe('AuthenticatedAppRuntimeMounts', () => {
+    it.each([
+        { isDesktopShell: false, label: 'mobile' },
+        { isDesktopShell: true, label: 'desktop' },
+    ])('mounts the authenticated attention-reminder runtime for $label consumers', async ({ isDesktopShell }) => {
+        const { AuthenticatedAppRuntimeMounts } = await import('./AuthenticatedAppRuntimeMounts');
+
+        const screen = await renderScreen(
+            <AuthenticatedAppRuntimeMounts isAuthenticated={false} isDesktopShell={isDesktopShell} />,
+        );
+        expect(runtimeRenderCounts.attentionReminders).toBe(0);
+
+        await screen.update(
+            <AuthenticatedAppRuntimeMounts isAuthenticated={true} isDesktopShell={isDesktopShell} />,
+        );
+        expect(runtimeRenderCounts.attentionReminders).toBe(1);
+    });
+
     it('mounts first-open onboarding before auth while keeping release notes authenticated-only', async () => {
         const { AuthenticatedAppRuntimeMounts } = await import('./AuthenticatedAppRuntimeMounts');
 

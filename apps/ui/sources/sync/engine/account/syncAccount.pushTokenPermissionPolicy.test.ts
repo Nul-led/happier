@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { clearLastRegisteredExpoPushToken } from '@/sync/domains/state/pushTokenRegistration';
+import { clearLastRegisteredExpoPushToken, loadRegisteredExpoPushTokenState, saveLastRegisteredExpoPushToken } from '@/sync/domains/state/pushTokenRegistration';
 
 const mocks = vi.hoisted(() => ({
     registerPushToken: vi.fn(),
@@ -42,11 +42,14 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 }));
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
+    subscribeHomeCredentialMutations: () => () => undefined,
     TokenStorage: {
         getCredentialsForServerUrl: mocks.getCredentialsForServerUrl,
     },
     isLegacyAuthCredentials: (credentials: unknown) => Boolean(credentials),
 }));
+
+const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
 const pushToken = 'ExponentPushToken[policy-token]';
 const credentials: AuthCredentials = { token: 'active-token', secret: 'active-secret' };
@@ -61,7 +64,13 @@ async function notificationsMock() {
 }
 
 beforeEach(() => {
+    mocks.registerPushToken.mockReset();
+    mocks.deletePushToken.mockReset();
+    mocks.listServerProfiles.mockReset();
+    mocks.getActiveServerSnapshot.mockReset();
+    mocks.getCredentialsForServerUrl.mockReset();
     mocks.registerPushToken.mockResolvedValue({ ok: true });
+    mocks.deletePushToken.mockResolvedValue(undefined);
     mocks.listServerProfiles.mockReturnValue([{ id: 'active', serverUrl: 'https://active.example.test' }]);
     mocks.getActiveServerSnapshot.mockReturnValue({
         serverId: 'active',
@@ -88,7 +97,6 @@ describe('registerPushTokenIfAvailable push policy', () => {
         } as never);
         vi.mocked(notifications.getExpoPushTokenAsync).mockResolvedValue({ data: pushToken } as never);
         const { log } = collectLogs();
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({
             credentials,
@@ -125,7 +133,6 @@ describe('registerPushTokenIfAvailable push policy', () => {
             generation: 1,
         });
         const { log } = collectLogs();
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({
             credentials,
@@ -147,7 +154,7 @@ describe('registerPushTokenIfAvailable push policy', () => {
         );
     });
 
-    it('uses caller credentials inside the focused Home decision when stored credentials are missing', async () => {
+    it('does not substitute caller credentials when the focused Home has no stored credential', async () => {
         const notifications = await notificationsMock();
         vi.mocked(notifications.getPermissionsAsync).mockResolvedValue({
             status: 'granted', granted: true, canAskAgain: true,
@@ -166,7 +173,6 @@ describe('registerPushTokenIfAvailable push policy', () => {
         mocks.getCredentialsForServerUrl.mockImplementation(async (_url: string, options?: { serverId?: string }) => (
             options?.serverId === 'home-b' ? { token: 'home-b-token', secret: 'home-b-secret' } : null
         ));
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({
             credentials,
@@ -182,21 +188,16 @@ describe('registerPushTokenIfAvailable push policy', () => {
             pushToken,
             expect.objectContaining({ apiEndpoint: 'https://home-b.example.test' }),
         );
-        expect(mocks.deletePushToken).toHaveBeenCalledWith(
-            credentials,
-            pushToken,
-            { apiEndpoint: 'https://home-a.example.test', runtimeOrigin: 'https://home-a.example.test' },
-        );
+        expect(mocks.deletePushToken).not.toHaveBeenCalled();
     });
 
-    it('does not let the absent-profile compatibility path bypass focused Home consent', async () => {
+    it('does not mutate an absent-profile active Home outside the canonical profile cycle', async () => {
         const notifications = await notificationsMock();
         vi.mocked(notifications.getPermissionsAsync).mockResolvedValue({
             status: 'granted', granted: true, canAskAgain: true,
         } as never);
         vi.mocked(notifications.getExpoPushTokenAsync).mockResolvedValue({ data: pushToken } as never);
         mocks.listServerProfiles.mockReturnValue([]);
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({
             credentials,
@@ -207,11 +208,7 @@ describe('registerPushTokenIfAvailable push policy', () => {
         });
 
         expect(mocks.registerPushToken).not.toHaveBeenCalled();
-        expect(mocks.deletePushToken).toHaveBeenCalledWith(
-            credentials,
-            pushToken,
-            { apiEndpoint: 'https://active.example.test', runtimeOrigin: 'https://active.example.test' },
-        );
+        expect(mocks.deletePushToken).not.toHaveBeenCalled();
     });
 
     it('never triggers the OS permission prompt from background registration', async () => {
@@ -220,13 +217,44 @@ describe('registerPushTokenIfAvailable push policy', () => {
             status: 'undetermined', granted: false, canAskAgain: true,
         } as never);
         const { log } = collectLogs();
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({ credentials, log, getAccountSettings: () => ({}) });
 
         expect(notifications.requestPermissionsAsync).not.toHaveBeenCalled();
         expect(notifications.getExpoPushTokenAsync).not.toHaveBeenCalled();
         expect(mocks.registerPushToken).not.toHaveBeenCalled();
+    });
+
+    it('withdraws a previously registered token from every reachable Home after OS permission is denied', async () => {
+        const notifications = await notificationsMock();
+        vi.mocked(notifications.getPermissionsAsync).mockResolvedValue({
+            status: 'denied', granted: false, canAskAgain: false,
+        } as never);
+        saveLastRegisteredExpoPushToken(pushToken);
+
+        await registerPushTokenIfAvailable({ credentials, log: { log: vi.fn() } });
+
+        expect(notifications.getExpoPushTokenAsync).not.toHaveBeenCalled();
+        expect(mocks.deletePushToken).toHaveBeenCalledWith(
+            expect.objectContaining({ token: 'token-https://active.example.test' }),
+            pushToken,
+            { apiEndpoint: 'https://active.example.test', runtimeOrigin: 'https://active.example.test' },
+        );
+        expect(loadRegisteredExpoPushTokenState()).toEqual({ current: null, cleanupPending: null });
+    });
+
+    it('retains local cleanup state when permission is denied but a Home credential is unavailable', async () => {
+        const notifications = await notificationsMock();
+        vi.mocked(notifications.getPermissionsAsync).mockResolvedValue({
+            status: 'denied', granted: false, canAskAgain: false,
+        } as never);
+        saveLastRegisteredExpoPushToken(pushToken);
+        mocks.getCredentialsForServerUrl.mockResolvedValue(null);
+
+        await registerPushTokenIfAvailable({ credentials, log: { log: vi.fn() } });
+
+        expect(mocks.deletePushToken).not.toHaveBeenCalled();
+        expect(loadRegisteredExpoPushTokenState()).toEqual({ current: pushToken, cleanupPending: null });
     });
 
     it('registers the token when permission was already granted', async () => {
@@ -236,7 +264,6 @@ describe('registerPushTokenIfAvailable push policy', () => {
         } as never);
         vi.mocked(notifications.getExpoPushTokenAsync).mockResolvedValue({ data: pushToken } as never);
         const { log } = collectLogs();
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({ credentials, log, getAccountSettings: () => ({}) });
 
@@ -252,7 +279,6 @@ describe('registerPushTokenIfAvailable push policy', () => {
                 () => new Promise(() => {}) as never,
             );
             const { messages, log } = collectLogs();
-            const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
             let settled = false;
             const run = registerPushTokenIfAvailable({ credentials, log, getAccountSettings: () => ({}) })
@@ -278,7 +304,6 @@ describe('registerPushTokenIfAvailable push policy', () => {
             new Error('no valid "aps-environment" entitlement string found'),
         );
         const { log } = collectLogs();
-        const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
         await registerPushTokenIfAvailable({ credentials, log, getAccountSettings: () => ({}) });
 

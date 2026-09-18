@@ -75,8 +75,10 @@ afterEach(async () => {
 async function renderSecretsList(): Promise<Readonly<{
     container: HTMLElement;
     onSelectId: ReturnType<typeof vi.fn>;
+    onRenamePersonal: ReturnType<typeof vi.fn>;
 }>> {
     const onSelectId = vi.fn();
+    const onRenamePersonal = vi.fn(async () => true);
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -86,7 +88,7 @@ async function renderSecretsList(): Promise<Readonly<{
         root.render(
             <SecretsList
                 secrets={[SECRET]}
-                onChangeSecrets={() => {}}
+                onRenamePersonal={onRenamePersonal}
                 selectedId=""
                 onSelectId={onSelectId}
                 allowAdd={false}
@@ -94,7 +96,7 @@ async function renderSecretsList(): Promise<Readonly<{
         );
     });
 
-    return { container, onSelectId };
+    return { container, onSelectId, onRenamePersonal };
 }
 
 function requireNode(container: HTMLElement, testID: string): HTMLElement {
@@ -153,11 +155,12 @@ describe('SecretsList saved-secret rows (react-native-web)', () => {
     });
 
     it('runs a row action without selecting the row', async () => {
-        const { container, onSelectId } = await renderSecretsList();
+        const { container, onSelectId, onRenamePersonal } = await renderSecretsList();
 
         await act(async () => { pressWithPointer(requireNode(container, 'saved-secret:secret-a:rename')); });
 
-        expect(modalMock.prompt).toHaveBeenCalledTimes(1);
+        expect(onRenamePersonal).toHaveBeenCalledTimes(1);
+        expect(modalMock.prompt).not.toHaveBeenCalled();
         expect(onSelectId).not.toHaveBeenCalled();
     });
 });

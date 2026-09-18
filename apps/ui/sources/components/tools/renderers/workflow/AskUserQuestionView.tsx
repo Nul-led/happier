@@ -10,7 +10,7 @@ import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/ac
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { Text, TextInput } from '@/components/ui/text/Text';
-import { resolveAgentRequestKind } from '@/utils/sessions/permissions/permissionPromptPolicy';
+import { resolveAgentRequestKind } from '@happier-dev/protocol';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import {
     useOpenAttachedSessionTerminal,
@@ -26,6 +26,10 @@ import { getAgentBehavior } from '@/agents/catalog/catalog';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import type { PluginProjectionEditableSettingField } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
 import { getMachineContributionRegistryProjectionRevision } from '@/sync/ops/machineContributionRegistryProjection';
 import {
@@ -99,6 +103,7 @@ type DeclaredAskUserQuestionSettingMutation = Readonly<{
 }>;
 
 type AskUserQuestionDeclarationAuthority = Readonly<{
+    accountScope: ServerAccountScope | null | undefined;
     serverId: string;
     agentId: string | null;
     machineId: string | null;
@@ -190,7 +195,7 @@ async function persistDeclaredAskUserQuestionSetting(
         mutation: { kind: 'set', value: input.value },
         isCurrent: isTargetCurrent,
     });
-    if (result?.status !== 'ready') {
+    if (result?.status !== 'ready' && result?.status !== 'applied') {
         throw new Error('Unable to persist the selected setting.');
     }
 }
@@ -655,21 +660,30 @@ const styles = StyleSheet.create((theme) => ({
     },
 }));
 
-export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId, interaction }) => {
+export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId, serverId: explicitServerId, session: suppliedSession, interaction }) => {
     const { theme } = useUnistyles();
     const [selections, setSelections] = React.useState<Map<number, Set<number>>>(new Map());
     const [freeformAnswers, setFreeformAnswers] = React.useState<Map<number, string>>(new Map());
     const [isSubmitting, setIsSubmitting] = React.useState(false);
     const [isSubmitted, setIsSubmitted] = React.useState(false);
-    const attachedSessionTerminal = useOpenAttachedSessionTerminal(sessionId ?? null);
 
     // Parse input
     const rawInput = tool.input;
-    const session = sessionId ? storage.getState().sessions[sessionId] : undefined;
+    const readSession = () => {
+        if (!sessionId) return undefined;
+        if (suppliedSession?.id === sessionId) return suppliedSession;
+        if (explicitServerId !== undefined && !areServerProfileIdentifiersEquivalent(explicitServerId, getActiveServerSnapshot().serverId)) return undefined;
+        return storage.getState().sessions[sessionId];
+    };
+    const session = readSession();
+    const attachedSessionTerminal = useOpenAttachedSessionTerminal(sessionId ?? null, explicitServerId, session);
     const ownerMetadata = session ? readSessionOwnerMetadataView(session) : null;
     const agentId = resolveAgentIdFromSessionMetadata(ownerMetadata);
     const machineId = resolveSessionMachineId(ownerMetadata);
-    const serverId = typeof session?.serverId === 'string' ? session.serverId.trim() : '';
+    const serverId = explicitServerId ?? (typeof session?.serverId === 'string' ? session.serverId.trim() : '');
+    const accountScopeResolution = useServerCredentialAccountScopeResolution(explicitServerId);
+    const accountScope = explicitServerId === undefined ? undefined
+        : accountScopeResolution.kind === 'bound' ? accountScopeResolution.scope : null;
     const daemonMergedProjection = useDaemonMergedProjectionInputs({
         machineId,
         serverId: serverId || null,
@@ -687,13 +701,14 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
     // render its successor projection.
     const declarationAuthorityRef = React.useRef<AskUserQuestionDeclarationAuthority | null>(null);
     declarationAuthorityRef.current = {
+        accountScope,
         serverId,
         agentId,
         machineId,
         daemonProjection,
         projectionRevision,
     };
-    const agentBehavior = agentId ? getAgentBehavior(agentId, machineId) : null;
+    const agentBehavior = agentId ? getAgentBehavior(agentId, machineId, accountScope) : null;
     const normalizedInput = normalizeAskUserQuestionInput(rawInput);
     const declaredDialog = resolveDeclaredAskUserQuestionDialog(
         agentBehavior,
@@ -872,7 +887,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
                 return;
             }
 
-            const latestSession = storage.getState().sessions[sessionId];
+            const latestSession = readSession();
             const latestRequest = (latestSession as any)?.agentState?.requests?.[toolCallId];
             const hasLiveMatchingRequest =
                 latestRequest?.tool === 'AskUserQuestion' &&
@@ -897,6 +912,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
                         ? getAgentBehavior(
                             submittingDeclarationAuthority.agentId,
                             submittingDeclarationAuthority.machineId,
+                            submittingDeclarationAuthority.accountScope,
                         )
                         : null,
                     daemonProjection: submittingDeclarationAuthority.daemonProjection,
@@ -907,13 +923,13 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
                 : null;
             setIsSubmitting(true);
 
-            await sessionAllowWithAnswers(sessionId, toolCallId, answers);
+            await sessionAllowWithAnswers(sessionId, toolCallId, answers, ...(explicitServerId !== undefined ? [{ serverId: explicitServerId }] as const : [] as const));
             // The requester has accepted this answer, so the interaction is
             // terminal here. Remembering the choice is a SEPARATE outcome: a
             // failed preference write must be reported as such and must never
             // re-offer submit for a request that has already been answered.
             setIsSubmitted(true);
-            const currentSession = storage.getState().sessions[sessionId];
+            const currentSession = readSession();
             const currentOwnerMetadata = currentSession ? readSessionOwnerMetadataView(currentSession) : null;
             const currentServerId = typeof currentSession?.serverId === 'string' ? currentSession.serverId.trim() : '';
             const currentAgentId = resolveAgentIdFromSessionMetadata(currentOwnerMetadata);
@@ -936,7 +952,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
                                 agentId: currentAuthority.agentId,
                                 machineId: currentAuthority.machineId,
                                 behavior: currentAuthority.agentId
-                                    ? getAgentBehavior(currentAuthority.agentId, currentAuthority.machineId)
+                                    ? getAgentBehavior(currentAuthority.agentId, currentAuthority.machineId, currentAuthority.accountScope)
                                     : null,
                                 daemonProjection: currentAuthority.daemonProjection,
                                 projectionRevision: currentAuthority.projectionRevision,
@@ -962,6 +978,8 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
         }
     }, [
         sessionId,
+        explicitServerId,
+        suppliedSession,
         questions,
         selections,
         freeformAnswers,

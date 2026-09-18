@@ -7,5 +7,10 @@ export function buildSessionFolderCollapseKey(params: Readonly<{
     folderId: string;
 }>): string {
     const serverId = String(params.serverId ?? params.workspace.serverId ?? 'local').trim() || 'local';
-    return `folder:${serverId}:${buildSessionFolderWorkspaceRefKey(params.workspace)}:${params.folderId}`;
+    return JSON.stringify([
+        'folder-collapse',
+        serverId,
+        buildSessionFolderWorkspaceRefKey(params.workspace),
+        params.folderId.trim(),
+    ]);
 }

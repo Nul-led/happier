@@ -25,6 +25,7 @@ describe('voiceAutoTargetMachineSettings', () => {
     vi.resetModules();
     applySettings.mockReset();
     state = {
+      settingsScope: { serverId: 'server-a', accountId: 'account-a' },
       settings: {
         voice: {
           executionMachine: {
@@ -45,7 +46,10 @@ describe('voiceAutoTargetMachineSettings', () => {
   it('persists a sticky auto-target machine id when the mode is auto even if it is padded', async () => {
     const { persistVoiceAutoTargetMachineId } = await import('./voiceAutoTargetMachineSettings');
 
-    persistVoiceAutoTargetMachineId('  machine-2  ');
+    persistVoiceAutoTargetMachineId('  machine-2  ', {
+      serverId: 'server-a',
+      accountId: 'account-a',
+    });
 
     expect(applySettings).toHaveBeenCalledWith(expect.objectContaining({
       voice: expect.objectContaining({
@@ -55,6 +59,22 @@ describe('voiceAutoTargetMachineSettings', () => {
           autoMachineId: 'machine-2',
         },
       }),
-    }), { source: 'ui' });
+    }), {
+      expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' },
+      source: 'ui',
+    });
+  });
+
+  it('uses the pre-await captured scope for automatic machine persistence', async () => {
+    const { persistVoiceAutoTargetMachineId } = await import('./voiceAutoTargetMachineSettings');
+    const capturedScope = { serverId: 'server-a', accountId: 'account-a' };
+    state.settingsScope = { serverId: 'server-b', accountId: 'account-b' };
+
+    persistVoiceAutoTargetMachineId('machine-2', capturedScope);
+
+    expect(applySettings).toHaveBeenCalledWith(expect.any(Object), {
+      expectedSettingsScope: capturedScope,
+      source: 'ui',
+    });
   });
 });

@@ -19,6 +19,7 @@ describe('buildThisComputerChecklistDiagnosticsPayload', () => {
                 activeRelayUrl: rawRelayUrl,
                 activeWebappUrl: rawRelayUrl,
                 activeLocalRelayUrl: null,
+                activeServerId: 'srv_relay_example',
                 serviceInstalled: true,
                 daemonRunning: true,
                 machineId: rawMachineId,

@@ -20,11 +20,12 @@ vi.mock('@/components/plugins/surfaces', () => ({
 }));
 
 vi.mock('@/components/plugins/projection/useScopedPluginUiProjection', () => ({
+    // The scoped projection owner reports no platform; the shared Session
+    // runtime owner resolves it through the canonical preview-platform owner.
     useScopedPluginUiProjection: () => ({
-        machineId: 'machine-b',
-        serverId: 'server-b',
-        platform: 'desktop',
         interactionEnabled: true,
+        phase: 'current',
+        pluginBrowserProjection: null,
         pluginUiProjection: { surfacePlacementsById: {} },
     }),
 }));
@@ -47,6 +48,12 @@ vi.mock('@/sync/store/hooks', () => ({
     useSettings: () => ({}),
 }));
 
+vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
+    useSessionViewShellSession: (_sessionId: string, expectedServerId?: string | null) => (
+        state.session?.serverId === expectedServerId ? state.session : null
+    ),
+}));
+
 vi.mock('@/utils/sessions/sessionUtils', () => ({
     useSessionStatus: () => ({ state: 'waiting' }),
 }));
@@ -62,6 +69,7 @@ describe('AgentInlineSurface', () => {
         state.mountedProps = null;
         state.session = createSessionFixture({
             id: 'session-1',
+            serverId: 'server-b',
             metadataLayoutVersion: 1,
             metadata: {
                 path: '/repo',
@@ -83,6 +91,10 @@ describe('AgentInlineSurface', () => {
         }));
 
         expect(state.mountedProps).not.toBeNull();
+        // The exact Session's Home and machine, from the shared Session runtime
+        // owner — never the focused Home or a serialized launch-card machine.
+        expect(state.mountedProps?.serverId).toBe('server-b');
+        expect(state.mountedProps?.machineId).toBe('machine-b');
         const policyContext = state.mountedProps?.policyContext as PluginUiPolicyEvaluationContext | undefined;
         expect(policyContext).toBeDefined();
         if (!policyContext) throw new Error('fixture policy context must be projected');
@@ -102,5 +114,30 @@ describe('AgentInlineSurface', () => {
             visible: true,
             enabled: true,
         });
+    });
+
+    it('fails closed instead of borrowing a same-id Session from another Home', async () => {
+        state.session = createSessionFixture({
+            id: 'session-1',
+            serverId: 'server-b',
+            metadataLayoutVersion: 1,
+            metadata: {
+                path: '/repo',
+                host: 'fixture-host',
+                agentPresentation: { agentId: 'happier.agent.fixture' },
+            },
+        });
+        const { AgentInlineSurface } = await import('./AgentInlineSurface');
+
+        await renderScreen(React.createElement(AgentInlineSurface, {
+            pluginId: 'happier.agent.fixture',
+            surfaceId: 'subagent-launch',
+            sessionId: 'session-1',
+            serverId: 'server-a',
+            agentId: 'happier.agent.fixture',
+            inlineMount: { role: 'sessionSubagentLaunch', presentation: 'content' },
+        }));
+
+        expect(state.mountedProps).toBeNull();
     });
 });

@@ -1,0 +1,237 @@
+import {
+    RunnerPreparedAuthoringV1Schema,
+    computeRunnerAuthoringCommitmentV1,
+    type RunnerPreparedAuthoringV1,
+    type RunnerReviewedFileV1,
+} from '@happier-dev/protocol/ephemeralRunner/launchManifest';
+import type { VerifiedRunnerArtifactV1 } from '@happier-dev/protocol/ephemeralRunner/runnerArtifact';
+import {
+    computeContentPublicKeyFingerprint,
+    signAccountContentKeyBindingV1,
+    type ComposerSnapshotV1,
+    type ActionsSettingsV1,
+    type SessionAuthoringValueV1,
+} from '@happier-dev/protocol';
+import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
+import { RunnerEndpointFactsRecipientV1Schema, type RunnerEndpointFactsRecipientV1 } from '@happier-dev/protocol/ephemeralRunner/activation';
+import type { RunnerMcpMaterialV1 } from '@happier-dev/protocol/ephemeralRunner/runnerMcpMaterial';
+
+import {
+    isDataKeyAuthCredentials,
+    isLegacyAuthCredentials,
+    isTokenOnlyAuthCredentials,
+    type AuthCredentials,
+} from '@/auth/storage/tokenStorage';
+import { decodeBase64, encodeBase64 } from '@/encryption/base64';
+import sodium from '@/encryption/libsodium.lib';
+import type { RunnerActivationClient } from '@/sync/api/ephemeralRunner/runnerActivationClient';
+import { Encryption } from '@/sync/encryption/encryption';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { RunnerActivationKeyCustody } from './runnerActivationKeyCustody';
+import {
+    findRunnerUnsupportedAuthoringField,
+    type RunnerUnsupportedAuthoringField,
+} from './runnerAuthoringCompatibility';
+
+export type PreparedTemporaryComputerActivation = Readonly<{
+    request: Parameters<RunnerActivationClient['create']>[0];
+    custody: RunnerActivationKeyCustody;
+    preparedAuthoring: RunnerPreparedAuthoringV1;
+}>;
+
+export type RunnerCreatorRecipientAuthorityErrorCode =
+    | 'runner_creator_scope_mismatch'
+    | 'runner_creator_recipient_mismatch'
+    | 'runner_account_encryption_mismatch'
+    | 'runner_account_signing_authority_unavailable';
+
+export class RunnerCreatorRecipientAuthorityError extends Error {
+    constructor(readonly code: RunnerCreatorRecipientAuthorityErrorCode) {
+        super(code);
+        this.name = 'RunnerCreatorRecipientAuthorityError';
+    }
+}
+
+/**
+ * A selected ordinary authoring feature may reach Runner only after its
+ * canonical owner can produce exact activation-scoped runtime material. The
+ * endpoint deliberately has no Account settings or credential fallback.
+ */
+export class RunnerAuthoringIncompatibilityError extends Error {
+    constructor(readonly field: RunnerUnsupportedAuthoringField) {
+        super(`runner_authoring_${field}_unsupported`);
+        this.name = 'RunnerAuthoringIncompatibilityError';
+    }
+}
+
+function assertRunnerAuthoringMaterializationAvailable(
+    authoring: SessionAuthoringValueV1,
+    selectedAgentProviderOwnedEnvironmentKeys: readonly string[],
+): void {
+    const field = findRunnerUnsupportedAuthoringField(authoring, selectedAgentProviderOwnedEnvironmentKeys);
+    if (field !== null) throw new RunnerAuthoringIncompatibilityError(field);
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+async function deriveCreatorEndpointFactsRecipient(input: Readonly<{
+    scope: ServerAccountScope;
+    credentials: AuthCredentials;
+    encryption: Encryption | null;
+}>): Promise<RunnerEndpointFactsRecipientV1> {
+    // The three credential shapes are mutually exclusive, but token-only is a
+    // structural supertype of both key-bearing shapes, so only the exact
+    // key-bearing checks narrow. They therefore run before the token-only
+    // remainder; the accepted outcome per shape is unchanged.
+    if (isLegacyAuthCredentials(input.credentials)) {
+        if (!input.encryption) {
+            throw new RunnerCreatorRecipientAuthorityError('runner_account_encryption_mismatch');
+        }
+        const seed = decodeBase64(input.credentials.secret, 'base64url');
+        if (seed.length !== 32) {
+            seed.fill(0);
+            throw new RunnerCreatorRecipientAuthorityError('runner_account_signing_authority_unavailable');
+        }
+        try {
+            const rederivedEncryption = await Encryption.create(seed);
+            if (!equalBytes(input.encryption.contentDataKey, rederivedEncryption.contentDataKey)) {
+                throw new RunnerCreatorRecipientAuthorityError('runner_account_encryption_mismatch');
+            }
+            const signingKeyPair = sodium.crypto_sign_seed_keypair(seed);
+            try {
+                const signature = signAccountContentKeyBindingV1({
+                    accountSigningSecretKey: signingKeyPair.privateKey,
+                    contentPublicKey: rederivedEncryption.contentDataKey,
+                });
+                return RunnerEndpointFactsRecipientV1Schema.parse({
+                    mode: 'e2ee',
+                    creatorAccountId: input.scope.accountId,
+                    accountSigningPublicKey: encodeBase64(signingKeyPair.publicKey, 'base64url'),
+                    contentPublicKey: encodeBase64(rederivedEncryption.contentDataKey, 'base64url'),
+                    contentPublicKeySignature: encodeBase64(signature, 'base64url'),
+                    contentPublicKeyFingerprint: computeContentPublicKeyFingerprint(rederivedEncryption.contentDataKey),
+                });
+            } finally {
+                signingKeyPair.privateKey.fill(0);
+            }
+        } finally {
+            seed.fill(0);
+        }
+    }
+    if (isDataKeyAuthCredentials(input.credentials)) {
+        throw new RunnerCreatorRecipientAuthorityError('runner_account_signing_authority_unavailable');
+    }
+    if (!isTokenOnlyAuthCredentials(input.credentials) || input.encryption !== null) {
+        throw new RunnerCreatorRecipientAuthorityError('runner_account_encryption_mismatch');
+    }
+    return RunnerEndpointFactsRecipientV1Schema.parse({
+        mode: 'plain',
+        creatorAccountId: input.scope.accountId,
+    });
+}
+
+/** Builds the one protocol-owned reviewed submission and binds its device-local key. */
+export async function prepareTemporaryComputerActivation(input: Readonly<{
+    client: RunnerActivationClient;
+    /** Existing verified activation-local identity allocated before durable attachment staging. */
+    custody: RunnerActivationKeyCustody;
+    scope: ServerAccountScope;
+    credentials: AuthCredentials;
+    encryption: Encryption | null;
+    draftId: string;
+    homeServerIdentityId: string;
+    artifact: VerifiedRunnerArtifactV1;
+    authoring: SessionAuthoringValueV1;
+    composer: ComposerSnapshotV1;
+    reviewComments?: RunnerPreparedAuthoringV1['reviewComments'];
+    files: readonly RunnerReviewedFileV1[];
+    attachmentDestination: RunnerPreparedAuthoringV1['attachmentDestination'];
+    /** Exact normalized Account policy reviewed for this launch. */
+    actionsSettings: ActionsSettingsV1;
+    /** Explicit reviewed MCP material; null means no managed MCP servers. */
+    mcpMaterial: RunnerMcpMaterialV1 | null;
+    /** Canonical provider-owned keys declared by the exact selected Agent. */
+    selectedAgentProviderOwnedEnvironmentKeys: readonly string[];
+    /** One-shot explicit creator consent for this exact activation only. */
+    authorizeUnattendedTeamAccess?: boolean;
+    /** Preparation cancellation. It reaches only the safe Home currentness read. */
+    signal?: AbortSignal;
+}>): Promise<PreparedTemporaryComputerActivation> {
+    assertRunnerAuthoringMaterializationAvailable(
+        input.authoring,
+        input.selectedAgentProviderOwnedEnvironmentKeys,
+    );
+    const preparedAuthoring = RunnerPreparedAuthoringV1Schema.parse({
+        v: 1,
+        actionsSettings: input.actionsSettings,
+        mcpMaterial: input.mcpMaterial,
+        authoring: {
+            targetType: input.authoring.targetType,
+            executionTarget: input.authoring.executionTarget,
+            agentTarget: input.authoring.agentTarget,
+            permissionMode: input.authoring.permissionMode,
+            modelSelection: input.authoring.modelSelection,
+            transcriptStorage: input.authoring.transcriptStorage,
+            profileId: input.authoring.profileId,
+            environmentVariables: input.authoring.environmentVariables,
+            mcpSelection: input.authoring.mcpSelection,
+            connectedServices: input.authoring.connectedServices,
+            checkoutCreationDraft: input.authoring.checkoutCreationDraft,
+            resumeSessionId: input.authoring.resumeSessionId,
+            terminal: input.authoring.terminal,
+            windowsRemoteSessionLaunchMode: input.authoring.windowsRemoteSessionLaunchMode,
+            windowsRemoteSessionConsole: input.authoring.windowsRemoteSessionConsole,
+            windowsTerminalWindowName: input.authoring.windowsTerminalWindowName,
+            acpSessionModeId: input.authoring.acpSessionModeId,
+            sessionConfigOptionOverrides: input.authoring.sessionConfigOptionOverrides,
+            access: input.authoring.access,
+            primaryTeamId: input.authoring.primaryTeamId,
+            organizationPlacement: input.authoring.organizationPlacement,
+        },
+        composer: {
+            text: input.composer.text,
+            references: input.composer.references,
+            attachments: input.composer.attachments.map(({ availability: _availability, content: _content, ...reviewed }) => reviewed),
+        },
+        reviewComments: input.reviewComments ?? null,
+        files: input.files,
+        attachmentDestination: input.attachmentDestination,
+    });
+    const recipient = await deriveCreatorEndpointFactsRecipient(input);
+    // Home is only a currentness/equality witness. It never selects the
+    // recipient placed in creator-local activation custody.
+    const homeRecipient = RunnerEndpointFactsRecipientV1Schema.parse(await input.client.readCreatorRecipient(input.signal));
+    if (createCanonicalJsonSigningInput(homeRecipient) !== createCanonicalJsonSigningInput(recipient)) {
+        throw new RunnerCreatorRecipientAuthorityError('runner_creator_recipient_mismatch');
+    }
+    input.signal?.throwIfAborted();
+    const executionTarget = preparedAuthoring.authoring.executionTarget;
+    if (executionTarget?.kind !== 'temporary_computer') {
+        throw new Error('runner_temporary_computer_execution_target_required');
+    }
+    return {
+        custody: input.custody,
+        preparedAuthoring,
+        request: {
+            v: 1,
+            activationId: input.custody.activationId,
+            draftId: input.draftId,
+            ...(input.authorizeUnattendedTeamAccess ? { authorizeUnattendedTeamAccess: true as const } : {}),
+            homeServerIdentityId: input.homeServerIdentityId,
+            activationSigningPublicKey: input.custody.activationSigningPublicKey,
+            // Absent expiry is the product default (Never). The author's
+            // explicit absolute instant is carried by the reviewed
+            // execution target, so the activation row and the reviewed
+            // submission can never disagree about when the package dies.
+            activationExpiresAt: input.authoring.executionTarget?.kind === 'temporary_computer'
+                ? input.authoring.executionTarget.packageExpiresAt ?? null
+                : null,
+            workspace: executionTarget.workspace,
+            authoringCommitment: computeRunnerAuthoringCommitmentV1(preparedAuthoring),
+            artifact: input.artifact.identity,
+            endpointFactsRecipient: recipient,
+        },
+    };
+}

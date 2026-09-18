@@ -18,14 +18,11 @@ import { useLocalSettingMutable, useSettingMutable } from '@/sync/domains/state/
 import { useDeviceType } from '@/utils/platform/responsive';
 import { Icon } from '@/components/ui/icons/Icon';
 import {
-    normalizeSessionListAttentionPlacementMode,
-    normalizeSessionListWorkingPlacementMode,
-} from '@/sync/domains/session/listing/sessionListAttentionPlacement';
-import {
-    normalizeSessionListFolderSortModeV1,
-    normalizeSessionListOrderingModeV1,
-    resolveEffectiveSessionListFolderSortMode,
-} from '@/sync/domains/session/listing/sessionListOrderingRules';
+    resolveSessionListViewOptionSelectionDelta,
+    resolveSessionListViewOptionsPresentation,
+} from '@/components/sessions/shell/sessionListViewOptionsPresentation';
+import { useApplySettings } from '@/sync/store/settingsWriters';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 
 export default React.memo(function SessionSettingsScreen() {
     const { theme } = useUnistyles();
@@ -46,20 +43,25 @@ export default React.memo(function SessionSettingsScreen() {
     const [sessionListIdentityDisplay, setSessionListIdentityDisplay] = useSettingMutable('sessionListIdentityDisplay');
     const [sessionHeaderIdentityDisplay, setSessionHeaderIdentityDisplay] = useSettingMutable('sessionHeaderIdentityDisplay');
     const [sessionListActiveColorMode, setSessionListActiveColorMode] = useSettingMutable('sessionListActiveColorModeV1');
-    const [sessionListAttentionPromotionMode, setSessionListAttentionPromotionMode] = useSettingMutable('sessionListAttentionPromotionModeV1');
+    const [sessionListAttentionPromotionMode] = useSettingMutable('sessionListAttentionPromotionModeV1');
     const [sessionListAttentionStandingDefault, setSessionListAttentionStandingDefault] = useSettingMutable('sessionListAttentionStandingDefaultV1');
-    const [sessionListWorkingPlacementMode, setSessionListWorkingPlacementMode] = useSettingMutable('sessionListWorkingPlacementModeV1');
-    const [sessionListOrderingModeV1, setSessionListOrderingModeV1] = useSettingMutable('sessionListOrderingModeV1');
-    const [sessionListFolderSortModeV1, setSessionListFolderSortModeV1] = useSettingMutable('sessionListFolderSortModeV1');
+    const [sessionListWorkingPlacementMode] = useSettingMutable('sessionListWorkingPlacementModeV1');
+    const [sessionListOrderingModeV1] = useSettingMutable('sessionListOrderingModeV1');
+    const [sessionListFolderSortModeV1] = useSettingMutable('sessionListFolderSortModeV1');
+    const [sessionFolderViewModeV1] = useSettingMutable('sessionFolderViewModeV1');
     const [sessionListNarrowWorkingIndicatorStyle, setSessionListNarrowWorkingIndicatorStyle] = useSettingMutable('sessionListNarrowWorkingIndicatorStyle');
     const [sessionListWorkingStatusAnimatedTextEnabled, setSessionListWorkingStatusAnimatedTextEnabled] = useSettingMutable('sessionListWorkingStatusAnimatedTextEnabled');
     const [workspacePathDisplayModeV1, setWorkspacePathDisplayModeV1] = useSettingMutable('workspacePathDisplayModeV1');
     const [workspaceFaviconsEnabled, setWorkspaceFaviconsEnabled] = useSettingMutable('workspaceFaviconsEnabled');
     const [workspaceMachineSubtitlesEnabled, setWorkspaceMachineSubtitlesEnabled] = useSettingMutable('workspaceMachineSubtitlesEnabled');
     const [hideInactiveSessions, setHideInactiveSessions] = useSettingMutable('hideInactiveSessions');
-    const [sessionListActiveGroupingV1, setSessionListActiveGroupingV1] = useSettingMutable('sessionListActiveGroupingV1');
-    const [sessionListInactiveGroupingV1, setSessionListInactiveGroupingV1] = useSettingMutable('sessionListInactiveGroupingV1');
-    const [sessionListSectionModeV1, setSessionListSectionModeV1] = useSettingMutable('sessionListSectionModeV1');
+    const [sessionListActiveGroupingV1] = useSettingMutable('sessionListActiveGroupingV1');
+    const [sessionListInactiveGroupingV1] = useSettingMutable('sessionListInactiveGroupingV1');
+    const [sessionListSectionModeV1] = useSettingMutable('sessionListSectionModeV1');
+    const applySettings = useApplySettings();
+    // Account settings intentionally describe the currently selected Home set;
+    // exact Session/Team/list-row surfaces scope their own admission separately.
+    const sessionFoldersFeatureEnabled = useFeatureEnabled('sessions.folders', { scopeKind: 'main_selection' });
     const [mobileWorkspaceExperience, setMobileWorkspaceExperience] = useSettingMutable('mobileWorkspaceExperienceV1');
     const [sessionsRightPaneDefaultOpen, setSessionsRightPaneDefaultOpen] = useLocalSettingMutable('sessionsRightPaneDefaultOpen');
     const [uiMultiPanePanelsEnabled] = useLocalSettingMutable('uiMultiPanePanelsEnabled');
@@ -72,7 +74,8 @@ export default React.memo(function SessionSettingsScreen() {
     const [openSessionListAttentionPromotionModeMenu, setOpenSessionListAttentionPromotionModeMenu] = React.useState(false);
     const [openSessionListWorkingPlacementModeMenu, setOpenSessionListWorkingPlacementModeMenu] = React.useState(false);
     const [openSessionListOrderingModeMenu, setOpenSessionListOrderingModeMenu] = React.useState(false);
-    const [openSessionListSectionModeMenu, setOpenSessionListSectionModeMenu] = React.useState(false);
+    const [openSessionListLayoutMenu, setOpenSessionListLayoutMenu] = React.useState(false);
+    const [openSessionFolderDisplayMenu, setOpenSessionFolderDisplayMenu] = React.useState(false);
     const [openSessionListFolderSortModeMenu, setOpenSessionListFolderSortModeMenu] = React.useState(false);
     const [openWorkspacePathDisplayMenu, setOpenWorkspacePathDisplayMenu] = React.useState(false);
     const [openWorkingIndicatorMenu, setOpenWorkingIndicatorMenu] = React.useState(false);
@@ -131,47 +134,32 @@ export default React.memo(function SessionSettingsScreen() {
         [normalizedCodingPromptBehavior, setCodingPromptBehavior],
     );
 
-    const groupingMenuItems = React.useMemo(() => [
-        {
-            id: 'project',
-            title: t('settingsFeatures.sessionListGrouping.projectTitle'),
-            subtitle: t('settingsFeatures.sessionListGrouping.projectSubtitle'),
-        },
-        {
-            id: 'date',
-            title: t('settingsFeatures.sessionListGrouping.dateTitle'),
-            subtitle: t('settingsFeatures.sessionListGrouping.dateSubtitle'),
-        },
-    ], [preferredLanguage]);
-
-    const selectGrouping = React.useCallback((itemId: string, section: 'active' | 'inactive') => {
-        if (itemId !== 'project' && itemId !== 'date') return;
-        if (section === 'active') {
-            setSessionListActiveGroupingV1(itemId);
-            return;
-        }
-        setSessionListInactiveGroupingV1(itemId);
-    }, [setSessionListActiveGroupingV1, setSessionListInactiveGroupingV1]);
-
-    const sessionListSectionModeItems = React.useMemo(() => [
-        {
-            id: 'activity',
-            title: t('settingsSession.sessionList.sectionModeActivityTitle'),
-            subtitle: t('settingsSession.sessionList.sectionModeActivitySubtitle'),
-        },
-        {
-            id: 'single',
-            title: t('settingsSession.sessionList.sectionModeSingleTitle'),
-            subtitle: t('settingsSession.sessionList.sectionModeSingleSubtitle'),
-        },
-    ], [preferredLanguage]);
-
-    const normalizedSessionListSectionMode = sessionListSectionModeV1 === 'single' ? 'single' : 'activity';
-    const selectSessionListSectionMode = React.useCallback((itemId: string) => {
-        if (itemId !== 'activity' && itemId !== 'single') return;
-        setSessionListSectionModeV1(itemId);
-    }, [setSessionListSectionModeV1]);
-
+    const sessionListViewOptions = resolveSessionListViewOptionsPresentation({
+        sessionListSectionModeV1,
+        sessionListActiveGroupingV1,
+        sessionListInactiveGroupingV1,
+        sessionListOrderingModeV1,
+        sessionListAttentionPromotionModeV1: sessionListAttentionPromotionMode,
+        sessionListWorkingPlacementModeV1: sessionListWorkingPlacementMode,
+        sessionFolderViewModeV1,
+        sessionListFolderSortModeV1,
+        foldersFeatureEnabled: sessionFoldersFeatureEnabled,
+    });
+    const applySessionListViewOption = React.useCallback((itemId: string) => {
+        const delta = resolveSessionListViewOptionSelectionDelta(itemId, {
+            sessionListSectionModeV1,
+            sessionListActiveGroupingV1,
+            sessionListInactiveGroupingV1,
+            sessionListOrderingModeV1,
+        });
+        if (delta) applySettings(delta);
+    }, [
+        applySettings,
+        sessionListActiveGroupingV1,
+        sessionListInactiveGroupingV1,
+        sessionListOrderingModeV1,
+        sessionListSectionModeV1,
+    ]);
     const sessionListDensityItems = React.useMemo(() => [
         {
             id: 'detailed',
@@ -275,104 +263,35 @@ export default React.memo(function SessionSettingsScreen() {
         setSessionListActiveColorMode(itemId);
     }, [setSessionListActiveColorMode]);
 
-    const sessionListAttentionPromotionModeItems = React.useMemo(() => [
-        {
-            id: 'off',
-            title: t('settingsSession.sessionList.attentionPromotionModeOffTitle'),
-            subtitle: t('settingsSession.sessionList.attentionPromotionModeOffSubtitle'),
-        },
-        {
-            id: 'global',
-            title: t('settingsSession.sessionList.attentionPromotionModeGlobalTitle'),
-            subtitle: t('settingsSession.sessionList.attentionPromotionModeGlobalSubtitle'),
-        },
-        {
-            id: 'withinGroups',
-            title: t('settingsSession.sessionList.attentionPromotionModeWithinGroupsTitle'),
-            subtitle: t('settingsSession.sessionList.attentionPromotionModeWithinGroupsSubtitle'),
-        },
-    ], [preferredLanguage]);
-    const normalizedSessionListAttentionPromotionMode = normalizeSessionListAttentionPlacementMode(sessionListAttentionPromotionMode);
+    const sessionListAttentionPromotionModeItems = sessionListViewOptions.attentionItems;
+    const normalizedSessionListAttentionPromotionMode = sessionListViewOptions.selectedAttentionPlacement;
     // Standing only reaches the list through the attention placement lane, so with
     // "Sessions needing attention" left in normal position this switch would change
     // nothing. Lock it and name the prerequisite instead of letting it lie.
     const sessionListAttentionStandingUnavailable = normalizedSessionListAttentionPromotionMode === 'off';
     const handleSessionListAttentionPromotionModeSelect = React.useCallback((itemId: string) => {
-        if (itemId !== 'off' && itemId !== 'global' && itemId !== 'withinGroups') return;
-        setSessionListAttentionPromotionMode(itemId);
-    }, [setSessionListAttentionPromotionMode]);
+        applySessionListViewOption(itemId);
+    }, [applySessionListViewOption]);
 
-    const sessionListWorkingPlacementModeItems = React.useMemo(() => [
-        {
-            id: 'off',
-            title: t('settingsSession.sessionList.workingPlacementModeOffTitle'),
-            subtitle: t('settingsSession.sessionList.workingPlacementModeOffSubtitle'),
-        },
-        {
-            id: 'global',
-            title: t('settingsSession.sessionList.workingPlacementModeGlobalTitle'),
-            subtitle: t('settingsSession.sessionList.workingPlacementModeGlobalSubtitle'),
-        },
-        {
-            id: 'withinGroups',
-            title: t('settingsSession.sessionList.workingPlacementModeWithinGroupsTitle'),
-            subtitle: t('settingsSession.sessionList.workingPlacementModeWithinGroupsSubtitle'),
-        },
-    ], [preferredLanguage]);
-    const normalizedSessionListWorkingPlacementMode = normalizeSessionListWorkingPlacementMode(sessionListWorkingPlacementMode);
+    const sessionListWorkingPlacementModeItems = sessionListViewOptions.workingItems;
+    const normalizedSessionListWorkingPlacementMode = sessionListViewOptions.selectedWorkingPlacement;
     const handleSessionListWorkingPlacementModeSelect = React.useCallback((itemId: string) => {
-        const mode = normalizeSessionListWorkingPlacementMode(itemId);
-        setSessionListWorkingPlacementMode(mode);
-    }, [setSessionListWorkingPlacementMode]);
+        applySessionListViewOption(itemId);
+    }, [applySessionListViewOption]);
 
-    const normalizedSessionListOrderingMode = normalizeSessionListOrderingModeV1(sessionListOrderingModeV1);
-    const sessionListOrderingModeItems = React.useMemo(() => [
-        {
-            id: 'custom',
-            title: t('settingsSession.sessionList.orderingOptions.custom'),
-        },
-        {
-            id: 'created',
-            title: t('settingsSession.sessionList.orderingOptions.created'),
-        },
-        {
-            id: 'updated',
-            title: t('settingsSession.sessionList.orderingOptions.updated'),
-        },
-    ], [preferredLanguage]);
+    const normalizedSessionListOrderingMode = sessionListViewOptions.selectedOrdering;
+    const sessionListOrderingModeItems = sessionListViewOptions.orderingItems;
 
     const handleSessionListOrderingModeSelect = React.useCallback((itemId: string) => {
-        if (itemId !== 'custom' && itemId !== 'created' && itemId !== 'updated') return;
-        setSessionListOrderingModeV1(itemId);
-    }, [setSessionListOrderingModeV1]);
+        applySessionListViewOption(itemId);
+    }, [applySessionListViewOption]);
 
-    const normalizedSessionListFolderSortMode = normalizeSessionListFolderSortModeV1(sessionListFolderSortModeV1);
-    const effectiveSessionListFolderSortMode = resolveEffectiveSessionListFolderSortMode({
-        orderingMode: normalizedSessionListOrderingMode,
-        folderSortMode: normalizedSessionListFolderSortMode,
-    });
-    const isDateSessionListOrderingMode = normalizedSessionListOrderingMode !== 'custom';
-    const sessionListFolderSortModeItems = React.useMemo(() => [
-        {
-            id: 'foldersFirst',
-            title: t('settingsSession.sessionList.folderSortModeFoldersFirstTitle'),
-            subtitle: t('settingsSession.sessionList.folderSortModeFoldersFirstSubtitle'),
-        },
-        {
-            id: 'mixed',
-            title: t('settingsSession.sessionList.folderSortModeMixedTitle'),
-            subtitle: isDateSessionListOrderingMode
-                ? t('settingsSession.sessionList.folderSortModeMixedDisabledInDateModeSubtitle')
-                : t('settingsSession.sessionList.folderSortModeMixedSubtitle'),
-            disabled: isDateSessionListOrderingMode,
-        },
-    ], [isDateSessionListOrderingMode, preferredLanguage]);
+    const effectiveSessionListFolderSortMode = sessionListViewOptions.selectedFolderSort;
+    const sessionListFolderSortModeItems = sessionListViewOptions.folderSortItems;
 
     const handleSessionListFolderSortModeSelect = React.useCallback((itemId: string) => {
-        if (itemId !== 'foldersFirst' && itemId !== 'mixed') return;
-        if (itemId === 'mixed' && normalizedSessionListOrderingMode !== 'custom') return;
-        setSessionListFolderSortModeV1(itemId);
-    }, [normalizedSessionListOrderingMode, setSessionListFolderSortModeV1]);
+        applySessionListViewOption(itemId);
+    }, [applySessionListViewOption]);
 
     const workspacePathDisplayMode = workspacePathDisplayModeV1 === 'path' ? 'path' : 'name';
     const workspacePathDisplayItems = React.useMemo(() => [
@@ -535,12 +454,12 @@ export default React.memo(function SessionSettingsScreen() {
                     items={sessionListDensityItems}
                     onSelect={handleSessionListDensitySelect}
                 />
-                <DropdownMenu
+                {sessionListViewOptions.showProjectOrdering ? <DropdownMenu
                     open={openSessionListOrderingModeMenu}
                     onOpenChange={setOpenSessionListOrderingModeMenu}
                     variant="selectable"
                     search={false}
-                    selectedId={normalizedSessionListOrderingMode}
+                    selectedId={`ordering:${normalizedSessionListOrderingMode}`}
                     showCategoryTitles={false}
                     matchTriggerWidth={true}
                     connectToTrigger={true}
@@ -555,13 +474,33 @@ export default React.memo(function SessionSettingsScreen() {
                     }}
                     items={sessionListOrderingModeItems}
                     onSelect={handleSessionListOrderingModeSelect}
-                />
-                <DropdownMenu
+                /> : null}
+                {sessionListViewOptions.showFolderOptions ? <DropdownMenu
+                    open={openSessionFolderDisplayMenu}
+                    onOpenChange={setOpenSessionFolderDisplayMenu}
+                    variant="selectable"
+                    search={false}
+                    selectedId={`folderDisplay:${sessionListViewOptions.selectedFolderDisplay}`}
+                    showCategoryTitles={false}
+                    matchTriggerWidth={true}
+                    connectToTrigger={true}
+                    rowKind="item"
+                    popoverBoundaryRef={popoverBoundaryRef}
+                    itemTrigger={{
+                        title: t('settingsSession.sessionList.folderTreeView'),
+                        icon: <Icon name="folder-open" size={29} color={theme.colors.accent.blue} />,
+                        showSelectedSubtitle: false,
+                        itemProps: { testID: 'settings-session-sessionFolderViewMode-trigger' },
+                    }}
+                    items={sessionListViewOptions.folderDisplayItems}
+                    onSelect={applySessionListViewOption}
+                /> : null}
+                {sessionListViewOptions.showFolderOptions ? <DropdownMenu
                     open={openSessionListFolderSortModeMenu}
                     onOpenChange={setOpenSessionListFolderSortModeMenu}
                     variant="selectable"
                     search={false}
-                    selectedId={effectiveSessionListFolderSortMode}
+                    selectedId={`folderSort:${effectiveSessionListFolderSortMode}`}
                     showCategoryTitles={false}
                     matchTriggerWidth={true}
                     connectToTrigger={true}
@@ -576,34 +515,34 @@ export default React.memo(function SessionSettingsScreen() {
                     }}
                     items={sessionListFolderSortModeItems}
                     onSelect={handleSessionListFolderSortModeSelect}
-                />
+                /> : null}
                 <DropdownMenu
-                    open={openSessionListSectionModeMenu}
-                    onOpenChange={setOpenSessionListSectionModeMenu}
+                    open={openSessionListLayoutMenu}
+                    onOpenChange={setOpenSessionListLayoutMenu}
                     variant="selectable"
                     search={false}
-                    selectedId={normalizedSessionListSectionMode}
+                    selectedId={`layout:${sessionListViewOptions.selectedLayout}`}
                     showCategoryTitles={false}
                     matchTriggerWidth={true}
                     connectToTrigger={true}
                     rowKind="item"
                     popoverBoundaryRef={popoverBoundaryRef}
                     itemTrigger={{
-                        title: t('settingsSession.sessionList.sectionModeTitle'),
-                        subtitle: t('settingsSession.sessionList.sectionModeSubtitle'),
+                        title: t('settingsSession.sessionList.layoutTitle'),
+                        subtitle: t('settingsSession.sessionList.layoutSubtitle'),
                         icon: <Icon name="stack" size={29} color={theme.colors.accent.blue} />,
                         showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-sessionListSectionMode-trigger' },
+                        itemProps: { testID: 'settings-session-sessionListLayout-trigger' },
                     }}
-                    items={sessionListSectionModeItems}
-                    onSelect={selectSessionListSectionMode}
+                    items={sessionListViewOptions.layoutItems}
+                    onSelect={applySessionListViewOption}
                 />
-                <DropdownMenu
+                {sessionListViewOptions.showSectionGrouping ? <DropdownMenu
                     open={openGroupingMenu === 'active'}
                     onOpenChange={(next) => setOpenGroupingMenu(next ? 'active' : null)}
                     variant="selectable"
                     search={false}
-                    selectedId={sessionListActiveGroupingV1 as any}
+                    selectedId={sessionListViewOptions.selectedActiveGroupingId}
                     showCategoryTitles={false}
                     matchTriggerWidth={true}
                     connectToTrigger={true}
@@ -615,15 +554,15 @@ export default React.memo(function SessionSettingsScreen() {
                         icon: <Icon name="folder-open" size={29} color={theme.colors.accent.blue} />,
                         showSelectedSubtitle: false,
                     }}
-                    items={groupingMenuItems}
-                    onSelect={(itemId) => selectGrouping(itemId, 'active')}
-                />
-                <DropdownMenu
+                    items={sessionListViewOptions.activeGroupingItems}
+                    onSelect={applySessionListViewOption}
+                /> : null}
+                {sessionListViewOptions.showSectionGrouping ? <DropdownMenu
                     open={openGroupingMenu === 'inactive'}
                     onOpenChange={(next) => setOpenGroupingMenu(next ? 'inactive' : null)}
                     variant="selectable"
                     search={false}
-                    selectedId={sessionListInactiveGroupingV1 as any}
+                    selectedId={sessionListViewOptions.selectedInactiveGroupingId}
                     showCategoryTitles={false}
                     matchTriggerWidth={true}
                     connectToTrigger={true}
@@ -635,9 +574,9 @@ export default React.memo(function SessionSettingsScreen() {
                         icon: <Icon name="calendar" size={29} color={theme.colors.state.success.foreground} />,
                         showSelectedSubtitle: false,
                     }}
-                    items={groupingMenuItems}
-                    onSelect={(itemId) => selectGrouping(itemId, 'inactive')}
-                />
+                    items={sessionListViewOptions.inactiveGroupingItems}
+                    onSelect={applySessionListViewOption}
+                /> : null}
                 <Item
                     title={t('settingsFeatures.hideInactiveSessions')}
                     subtitle={t('settingsFeatures.hideInactiveSessionsSubtitle')}
@@ -821,7 +760,7 @@ export default React.memo(function SessionSettingsScreen() {
                     onOpenChange={setOpenSessionListAttentionPromotionModeMenu}
                     variant="selectable"
                     search={false}
-                    selectedId={normalizedSessionListAttentionPromotionMode}
+                    selectedId={`attention:${normalizedSessionListAttentionPromotionMode}`}
                     showCategoryTitles={false}
                     matchTriggerWidth={true}
                     connectToTrigger={true}
@@ -863,7 +802,7 @@ export default React.memo(function SessionSettingsScreen() {
                     onOpenChange={setOpenSessionListWorkingPlacementModeMenu}
                     variant="selectable"
                     search={false}
-                    selectedId={normalizedSessionListWorkingPlacementMode}
+                    selectedId={`working:${normalizedSessionListWorkingPlacementMode}`}
                     showCategoryTitles={false}
                     matchTriggerWidth={true}
                     connectToTrigger={true}

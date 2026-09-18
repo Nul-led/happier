@@ -27,31 +27,61 @@ describe('getNewSessionRelevantInstallableDepKeys', () => {
         })).toEqual([]);
     });
 
-    it('returns codex installable deps based on codex backend mode', () => {
-        const acp = makeSettings({ codexBackendMode: 'acp' });
+    it('returns codex installable deps based on the scoped codex backend mode', () => {
+        const settings = makeSettings();
+        const acp = { account: { codexBackendMode: 'acp' } };
         expect(getNewSessionRelevantInstallableDepKeys({
             agentId: 'codex',
-            settings: acp,
-            experiments: getAgentResumeExperimentsFromSettings('codex', acp),
+            settings,
+            pluginSettings: acp,
+            experiments: getAgentResumeExperimentsFromSettings('codex', settings, 'machine-a', acp),
+            resumeSessionId: '',
+            machineId: 'machine-a',
+        })).toEqual([INSTALLABLE_KEYS.CODEX_ACP]);
+
+        const mcp = { account: { codexBackendMode: 'mcp' } };
+        expect(getNewSessionRelevantInstallableDepKeys({
+            agentId: 'codex',
+            settings,
+            pluginSettings: mcp,
+            experiments: getAgentResumeExperimentsFromSettings('codex', settings, 'machine-a', mcp),
+            resumeSessionId: 'x1',
+            machineId: 'machine-a',
+        })).toEqual([]);
+    });
+
+    it('still honors a released flat account setting when no scoped record was loaded', () => {
+        // A released Account persisted this value as a flat Settings root, and
+        // availability is evaluated for Agents whose scoped record is not
+        // loaded. Dropping the released carrier would silently move an upgraded
+        // Account off ACP and hide the codex-acp installable.
+        const released = makeSettings({ codexBackendMode: 'acp' });
+        expect(getNewSessionRelevantInstallableDepKeys({
+            agentId: 'codex',
+            settings: released,
+            experiments: getAgentResumeExperimentsFromSettings('codex', released),
             resumeSessionId: '',
         })).toEqual([INSTALLABLE_KEYS.CODEX_ACP]);
 
-        const mcp = makeSettings({ codexBackendMode: 'mcp' });
+        const releasedMcp = makeSettings({ codexBackendMode: 'mcp' });
         expect(getNewSessionRelevantInstallableDepKeys({
             agentId: 'codex',
-            settings: mcp,
-            experiments: getAgentResumeExperimentsFromSettings('codex', mcp),
+            settings: releasedMcp,
+            experiments: getAgentResumeExperimentsFromSettings('codex', releasedMcp),
             resumeSessionId: 'x1',
         })).toEqual([]);
     });
 
     it('returns empty for non-codex agents', () => {
-        const settings = makeSettings({ codexBackendMode: 'acp' });
+        const settings = makeSettings();
+        const scoped = { account: { codexBackendMode: 'acp' } };
         expect(getNewSessionRelevantInstallableDepKeys({
             agentId: 'claude',
             settings,
-            experiments: getAgentResumeExperimentsFromSettings('claude', settings),
+            pluginSettings: scoped,
+            experiments: getAgentResumeExperimentsFromSettings('claude', settings, 'machine-a', scoped),
             resumeSessionId: 'x1',
+            machineId: 'machine-a',
         })).toEqual([]);
     });
 });

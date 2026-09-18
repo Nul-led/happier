@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 import type { Message } from '@/sync/domains/messages/messageTypes';
 import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
@@ -25,6 +26,7 @@ const projectedExternalRollbackCapabilities = {
 function createActiveSession(metadata: Metadata): Session {
     return {
         id: 'session-1',
+        access: createSessionAccessFixture(),
         seq: 4,
         createdAt: 1,
         updatedAt: 1,
@@ -61,6 +63,13 @@ function agentTextMessage(id: string, seq: number, text: string): Message {
         text,
     };
 }
+
+describe('rollback access projection', () => {
+    it('does not offer rollback while access is unavailable', () => {
+        const session = { ...createActiveSession({ path: '/tmp', host: 'test', runtimeDescriptorV1: { v: 1, agentId: 'acme-lifecycle', agent: { providerSessionId: 'external-1' } } }), access: null, rollbackEligibleTurnStarts: [1] };
+        expect(resolveTranscriptRollbackActions({ session, currentAgentCapabilities: projectedExternalRollbackCapabilities, messageIdsOldestFirst: ['u1'], messagesById: { u1: userTextMessage('u1', 1, 'hello') }, rollbackRanges: [] })).toEqual({});
+    });
+});
 
 describe('readSessionRollbackRangesV1', () => {
     it('reuses the empty rollback range list when no valid ranges are present', () => {

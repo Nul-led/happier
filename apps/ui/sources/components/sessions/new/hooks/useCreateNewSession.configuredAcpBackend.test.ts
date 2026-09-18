@@ -1,3 +1,5 @@
+import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import React from 'react';
 import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,7 +10,7 @@ import type { EnsureSessionVisibleForRouteResult } from '@/sync/domains/session/
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { UseMachineEnvPresenceResult } from '@/hooks/machine/useMachineEnvPresence';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
-import { installNewSessionScreenModelCommonModuleMocks } from './newSessionScreenModelTestHelpers';
+import { installNewSessionScreenModelCommonModuleMocks, selectNewSessionTestHome } from './newSessionScreenModelTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,6 +33,7 @@ type EnsureSessionVisibleForMessageRouteMock = (
 
 type ConfiguredBackendStorageState = Readonly<{
     settings: Record<string, unknown>;
+    settingsScope: AccountSettingsScope;
     machines: Record<string, Readonly<{ id: string }>>;
     sessions: Record<string, Readonly<{ id: string; active?: boolean }>>;
     updateSessionPermissionMode: ReturnType<typeof vi.fn>;
@@ -42,10 +45,10 @@ type ConfiguredBackendStorageState = Readonly<{
 const applySettingsMock = vi.hoisted(() => vi.fn());
 const clearNewSessionDraftMock = vi.hoisted(() => vi.fn());
 const prepareAccountSettingsForDaemonSpawnMock = vi.hoisted(() => vi.fn(async () => ({})));
-const executeSessionSpawnNewActionMock = vi.hoisted(() => vi.fn());
+const sessionCreationRequestSpy = vi.hoisted(() => vi.fn());
 const configuredBackendHarnessModuleState = vi.hoisted(() => ({
     captured: null as { value: SpawnPayloadCapture } | null,
-    createdAutomationTemplate: null as { value: Record<string, unknown> | null } | null,
+    createdAutomationRecipe: null as { value: Record<string, unknown> | null } | null,
     storageState: null as ConfiguredBackendStorageState | null,
     spawnSuccess: false,
     followUpPending: Promise.resolve() as Promise<void>,
@@ -57,10 +60,11 @@ const configuredBackendHarnessModuleState = vi.hoisted(() => ({
 
 async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
     const captured: { value: SpawnPayloadCapture } = { value: null };
-    const createdAutomationTemplate: { value: Record<string, unknown> | null } = { value: null };
+    const createdAutomationRecipe: { value: Record<string, unknown> | null } = { value: null };
     const routerReplaceSpy = vi.fn();
     const storageState: ConfiguredBackendStorageState = {
         settings: {},
+        settingsScope: { serverId: 'server-a', accountId: 'account-a' },
         machines: { m1: { id: 'm1' } },
         sessions: {},
         updateSessionPermissionMode: vi.fn(),
@@ -82,7 +86,7 @@ async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
         })
         : Promise.resolve();
     configuredBackendHarnessModuleState.captured = captured;
-    configuredBackendHarnessModuleState.createdAutomationTemplate = createdAutomationTemplate;
+    configuredBackendHarnessModuleState.createdAutomationRecipe = createdAutomationRecipe;
     configuredBackendHarnessModuleState.storageState = storageState;
     configuredBackendHarnessModuleState.spawnSuccess = options?.spawnSuccess === true;
     configuredBackendHarnessModuleState.followUpPending = followUpPending;
@@ -113,18 +117,19 @@ async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
             });
         },
     });
-    vi.doMock('@/sync/sync', () => ({
+    vi.doMock('@/sync/sync', async () => ({
         sync: {
+            acquireUserRequestLease: (await import('@/sync/runtime/connectivity/userRequestLease')).createUserRequestLeaseOwner().acquire,
             getCredentials: vi.fn(() => ({ token: 't' })),
             encryption: {
                 encryptRaw: vi.fn(async (value: unknown) => value),
                 encryptAutomationTemplateRaw: vi.fn(async (value: unknown) => value),
             },
             saveAutomationEditorDraft: vi.fn(async (input: {
-                executionRecipe: { template: { t: string; v?: Record<string, unknown> } };
+                executionRecipe: Record<string, unknown>;
             }) => {
-                if (configuredBackendHarnessModuleState.createdAutomationTemplate) {
-                    configuredBackendHarnessModuleState.createdAutomationTemplate.value = input.executionRecipe.template.v ?? null;
+                if (configuredBackendHarnessModuleState.createdAutomationRecipe) {
+                    configuredBackendHarnessModuleState.createdAutomationRecipe.value = input.executionRecipe;
                 }
                 return {};
             }),
@@ -185,20 +190,14 @@ async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
         saveProfile: vi.fn(),
         clearPersistence: vi.fn(),
     }));
-    vi.doMock('@/sync/domains/server/serverRuntime', () => ({
-        getActiveServerSnapshot: vi.fn(() => ({
-            serverId: 'server-a',
-            serverUrl: 'https://server-a.example.test',
-            kind: 'custom',
-            generation: 1,
-        })),
-    }));
-    vi.doMock('@/sync/domains/server/selection/serverSelectionResolver', () => ({
-        resolveNewSessionServerTarget: vi.fn((params: { requestedServerId?: string | null; allowedServerIds: string[] }) => ({
-            targetServerId: params.requestedServerId ?? params.allowedServerIds[0] ?? null,
-            rejectedRequestedServerId: null,
-        })),
-    }));
+    await selectNewSessionTestHome();
+    const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
+    setRuntimeFetch(async (input) => {
+        const url = String(input);
+        if (url.endsWith('/v1/auth/ping') || url.endsWith('/health')) return Response.json({ ok: true });
+        if (url.endsWith('/v1/account/encryption')) return Response.json({ mode: 'plain', updatedAt: 1 });
+        return Response.json({ error: 'not_found' }, { status: 404 });
+    });
     vi.doMock('@/sync/domains/features/featureLocalPolicy', () => ({
         resolveLocalFeaturePolicyEnabled: vi.fn(() => false),
     }));
@@ -229,9 +228,6 @@ async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
     vi.doMock('@/sync/domains/input/slashCommands/expandPromptTemplateInvocation', () => ({
         expandPromptTemplateInvocation: vi.fn(async () => 'expanded template'),
     }));
-    vi.doMock('@/utils/timing/time', () => ({
-        delay: vi.fn(async () => {}),
-    }));
     vi.doMock('@/utils/errors/daemonUnavailableAlert', () => ({
         showDaemonUnavailableAlert: vi.fn(),
     }));
@@ -253,36 +249,18 @@ async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
                 sessionModes: { kind: 'staticAgentModes' },
             })),
             buildSpawnEnvironmentVariablesFromUiState: vi.fn((opts: { environmentVariables?: Record<string, string> }) => opts.environmentVariables),
-            buildSpawnSessionExtrasFromUiState: vi.fn(() => ({})),
             getAgentResumeExperimentsFromSettings: vi.fn(() => ({})),
             getNewSessionPreflightIssues: vi.fn(() => []),
             buildResumeCapabilityOptionsFromUiState: vi.fn(() => ({})),
         };
     });
     vi.doMock('@/sync/ops', () => ({}));
-    vi.doMock('@/sync/ops/actions/sessionSpawnNewAction', () => ({
-        buildManualSessionCreationKey: (userAttemptId: string) => `manual:${userAttemptId}`,
-        executeManualSessionSpawnNewAction: async (input: any, context: unknown, params: any) => ({
-            status: 'executed',
-            action: await executeSessionSpawnNewActionMock(input, context),
-            custody: {
-                v: 3,
-                scope: params.scope,
-                machineId: input.executionTarget.machineId,
-                targetFingerprint: 'test-fingerprint',
-                userAttemptId: params.userAttemptId,
-                nonce: params.seedNonce,
-                submissionState: 'submitted',
-                createdSessionId: null,
-                firstTurnLocalId: `spawn-first-turn:${params.seedNonce}`,
-                attachmentMessageLocalId: `spawn-attachment:${params.seedNonce}`,
-            },
-        }),
-        completeManualSessionSpawnNewActionCustody: async () => true,
-        executeSessionSpawnNewAction: executeSessionSpawnNewActionMock,
-        resolveSessionSpawnNewActionFailureMessageKey: () => 'newSession.failedToStart',
-        resolveSessionSpawnNewResultFailureMessageKey: () => 'newSession.failedToStart',
-    }));
+    const { apiSocket } = await import('@/sync/api/session/apiSocket');
+    // The network adapter is the boundary; Action policy and launch custody stay real.
+    vi.spyOn(apiSocket, 'machineRPC').mockImplementation(async (_machineId, _method, input) => {
+        sessionCreationRequestSpy(input);
+        throw new Error('Unexpected Session creation request');
+    });
     vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/followUpSpawnedSession', () => ({
         followUpSpawnedSessionWithServerScope: vi.fn(async () => configuredBackendHarnessModuleState.followUpPending),
     }));
@@ -295,7 +273,7 @@ async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
     return {
         useCreateNewSession,
         captured,
-        createdAutomationTemplate,
+        createdAutomationRecipe,
         routerReplaceSpy,
         storageState,
         ensureSessionVisibleForMessageRouteSpy,
@@ -310,10 +288,12 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
         clearNewSessionDraftMock.mockClear();
         prepareAccountSettingsForDaemonSpawnMock.mockReset();
         prepareAccountSettingsForDaemonSpawnMock.mockResolvedValue({});
-        executeSessionSpawnNewActionMock.mockReset();
+        sessionCreationRequestSpy.mockReset();
     });
 
-    afterEach(() => {
+    afterEach(async () => {
+        const { resetRuntimeFetch } = await import('@/utils/system/runtimeFetch');
+        resetRuntimeFetch();
         standardCleanup();
         vi.clearAllMocks();
     });
@@ -340,7 +320,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
-                selectedMachine: { metadata: {} },
+                selectedMachine: createMachineFixture({ id: 'm1' }),
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
                 settings,
@@ -380,7 +360,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
         await handleCreateSession!();
 
         expect(captured.value).toBeNull();
-        expect(executeSessionSpawnNewActionMock).not.toHaveBeenCalled();
+        expect(sessionCreationRequestSpy).not.toHaveBeenCalled();
         expect(applySettingsMock).toHaveBeenCalledWith({
             recentMachinePaths: [{ machineId: 'm1', path: '/tmp' }],
             lastUsedBackendTarget: { kind: 'backend', backendId: 'custom-kiro-preset', configuredBackendId: 'custom-kiro-preset', sourceKind: 'configured' },
@@ -410,7 +390,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
-                selectedMachine: { metadata: {} },
+                selectedMachine: createMachineFixture({ id: 'm1' }),
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
                 settings,
@@ -436,7 +416,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 selectedSecretIdByProfileIdByEnvVarName: {},
                 sessionOnlySecretValueByProfileIdByEnvVarName: {},
                 selectedMachineCapabilities: null,
-                targetServerId: null,
+                targetServerId: undefined,
                 allowedTargetServerIds: ['server-a'],
             } as any);
 
@@ -451,7 +431,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
 
         expect(prepareAccountSettingsForDaemonSpawnMock).not.toHaveBeenCalled();
         expect(captured.value).toBeNull();
-        expect(executeSessionSpawnNewActionMock).not.toHaveBeenCalled();
+        expect(sessionCreationRequestSpy).not.toHaveBeenCalled();
         expect(captured.value).not.toEqual(expect.objectContaining({
             accountSettingsVersionHint: expect.any(Number),
         }));
@@ -479,7 +459,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
-                selectedMachine: { metadata: {} },
+                selectedMachine: createMachineFixture({ id: 'm1' }),
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
                 settings,
@@ -509,7 +489,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 selectedSecretIdByProfileIdByEnvVarName: {},
                 sessionOnlySecretValueByProfileIdByEnvVarName: {},
                 selectedMachineCapabilities: null,
-                targetServerId: null,
+                targetServerId: undefined,
                 allowedTargetServerIds: ['server-a'],
             } as any);
 
@@ -536,7 +516,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
             },
         });
         expect(captured.value).toBeNull();
-        expect(executeSessionSpawnNewActionMock).not.toHaveBeenCalled();
+        expect(sessionCreationRequestSpy).not.toHaveBeenCalled();
     });
 
     it('fails closed without private spawning for an unresolved plugin backend target', async () => {
@@ -561,7 +541,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
-                selectedMachine: { metadata: {} },
+                selectedMachine: createMachineFixture({ id: 'm1' }),
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
                 settings,
@@ -589,7 +569,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 selectedSecretIdByProfileIdByEnvVarName: {},
                 sessionOnlySecretValueByProfileIdByEnvVarName: {},
                 selectedMachineCapabilities: null,
-                targetServerId: null,
+                targetServerId: undefined,
                 allowedTargetServerIds: ['server-a'],
             } as any);
 
@@ -603,15 +583,15 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
         await handleCreateSession!();
 
         expect(captured.value).toBeNull();
-        expect(executeSessionSpawnNewActionMock).not.toHaveBeenCalled();
+        expect(sessionCreationRequestSpy).not.toHaveBeenCalled();
         expect(applySettingsMock).toHaveBeenCalledWith({
             recentMachinePaths: [{ machineId: 'm1', path: '/tmp' }],
             lastUsedBackendTarget: { kind: 'backend', backendId: 'acme.review.backend' },
         });
     });
 
-    it('passes a configured ACP backend target into new-session automation template building', async () => {
-        const { useCreateNewSession, createdAutomationTemplate } = await setupHarness();
+    it('does not save an automation for an unrepresentable configured ACP target', async () => {
+        const { useCreateNewSession, createdAutomationRecipe } = await setupHarness();
 
         let handleCreateSession: null | (() => Promise<void>) = null;
         const settings = {
@@ -632,7 +612,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
-                selectedMachine: { metadata: {} },
+                selectedMachine: createMachineFixture({ id: 'm1' }),
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
                 settings,
@@ -658,20 +638,16 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 selectedSecretIdByProfileIdByEnvVarName: {},
                 sessionOnlySecretValueByProfileIdByEnvVarName: {},
                 selectedMachineCapabilities: null,
-                targetServerId: null,
+                targetServerId: undefined,
                 allowedTargetServerIds: ['server-a'],
                 authoringDraft: buildNewSessionAuthoringDraft({
+                    executionTarget: null,
+                    organizationPlacement: { folderId: null, tagIds: [] },
                     directory: '/tmp',
                     checkoutCreationDraft: null,
                     prompt: '',
                     displayText: '',
-                    agentId: 'customAcp',
-                    backendTarget: {
-                        kind: 'backend',
-                        backendId: 'custom-kiro-preset',
-                        configuredBackendId: 'custom-kiro-preset',
-                        sourceKind: 'configured',
-                    },
+                    agentTarget: null,
                     transcriptStorage: null,
                     profileId: null,
                     environmentVariables: null,
@@ -685,7 +661,6 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                     terminal: null,
                     windowsRemoteSessionLaunchMode: null,
                     windowsRemoteSessionConsole: null,
-                    codexBackendMode: null,
                     acpSessionModeId: null,
                     sessionConfigOptionOverrides: null,
                     automation: {
@@ -719,10 +694,8 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
         expect(handleCreateSession).toBeTruthy();
         await handleCreateSession!();
 
-        expect(createdAutomationTemplate.value).toEqual(expect.objectContaining({
-            agent: 'codex',
-            backendTarget: { kind: 'backend', backendId: 'custom-kiro-preset', configuredBackendId: 'custom-kiro-preset' },
-        }));
+        expect(createdAutomationRecipe.value).toBeNull();
+        expect(sessionCreationRequestSpy).not.toHaveBeenCalled();
     });
 
     it('retains the configured backend selection state when only legacy customAcp carriers remain', async () => {
@@ -747,7 +720,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
-                selectedMachine: { metadata: {} },
+                selectedMachine: createMachineFixture({ id: 'm1' }),
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
                 settings,
@@ -773,7 +746,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 selectedSecretIdByProfileIdByEnvVarName: {},
                 sessionOnlySecretValueByProfileIdByEnvVarName: {},
                 selectedMachineCapabilities: null,
-                targetServerId: null,
+                targetServerId: undefined,
                 allowedTargetServerIds: ['server-a'],
             } as any);
 
@@ -825,7 +798,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 router: { push: vi.fn(), replace: routerReplaceSpy },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
-                selectedMachine: { metadata: {} },
+                selectedMachine: createMachineFixture({ id: 'm1' }),
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
                 settings,
@@ -851,7 +824,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 selectedSecretIdByProfileIdByEnvVarName: {},
                 sessionOnlySecretValueByProfileIdByEnvVarName: {},
                 selectedMachineCapabilities: null,
-                targetServerId: null,
+                targetServerId: undefined,
                 allowedTargetServerIds: ['server-a'],
                 disableDraftPersistence,
             } as any);
@@ -869,7 +842,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
         }
 
         expect(captured.value).toBeNull();
-        expect(executeSessionSpawnNewActionMock).not.toHaveBeenCalled();
+        expect(sessionCreationRequestSpy).not.toHaveBeenCalled();
         expect(ensureSessionVisibleForMessageRouteSpy).not.toHaveBeenCalled();
         expect(routerReplaceSpy).not.toHaveBeenCalled();
         expect(storageState.upsertPendingMessage).not.toHaveBeenCalled();
@@ -930,7 +903,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 router: { push: vi.fn(), replace: routerReplaceSpy },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
-                selectedMachine: { metadata: {} },
+                selectedMachine: createMachineFixture({ id: 'm1' }),
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
                 settings,
@@ -979,23 +952,14 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
         await createPromise;
 
         expect(captured.value).toBeNull();
-        expect(executeSessionSpawnNewActionMock).not.toHaveBeenCalled();
+        expect(sessionCreationRequestSpy).not.toHaveBeenCalled();
         expect(storageState.markSessionOptimisticThinking).not.toHaveBeenCalled();
         expect(storageState.upsertPendingMessage).not.toHaveBeenCalled();
         expect(routerReplaceSpy).not.toHaveBeenCalled();
     });
 
-    it('writes the canonical Codex runtime descriptor into automation templates', async () => {
-        const { useCreateNewSession, createdAutomationTemplate } = await setupHarness();
-
-        const { buildSpawnSessionExtrasFromUiState } = await import('@/agents/catalog/catalog');
-        (buildSpawnSessionExtrasFromUiState as any).mockReturnValue({
-            runtimeDescriptorV1: {
-                v: 1,
-                agentId: 'codex',
-                agent: { backendMode: 'appServer' },
-            },
-        });
+    it('saves Codex automations without synthesizing an Agent runtime descriptor', async () => {
+        const { useCreateNewSession, createdAutomationRecipe } = await setupHarness();
 
         let handleCreateSession: null | (() => Promise<void>) = null;
         const settings = { codexBackendMode: 'appServer' } as unknown as Settings;
@@ -1013,7 +977,7 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
-                selectedMachine: { metadata: {} },
+                selectedMachine: createMachineFixture({ id: 'm1' }),
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
                 settings,
@@ -1034,15 +998,16 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                 selectedSecretIdByProfileIdByEnvVarName: {},
                 sessionOnlySecretValueByProfileIdByEnvVarName: {},
                 selectedMachineCapabilities: null,
-                targetServerId: null,
+                targetServerId: undefined,
                 allowedTargetServerIds: ['server-a'],
                 authoringDraft: buildNewSessionAuthoringDraft({
+                    executionTarget: null,
+                    organizationPlacement: { folderId: null, tagIds: [] },
                     directory: '/tmp',
                     checkoutCreationDraft: null,
                     prompt: 'Review the repo',
                     displayText: 'Review the repo',
-                    agentId: 'codex',
-                    backendTarget: { kind: 'backend', backendId: 'codex' },
+                    agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
                     transcriptStorage: null,
                     profileId: null,
                     environmentVariables: null,
@@ -1056,7 +1021,6 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
                     terminal: null,
                     windowsRemoteSessionLaunchMode: null,
                     windowsRemoteSessionConsole: null,
-                    codexBackendMode: 'appServer',
                     acpSessionModeId: null,
                     sessionConfigOptionOverrides: null,
                     automation: {
@@ -1090,15 +1054,11 @@ describe('useCreateNewSession configured ACP backend spawning', () => {
         expect(handleCreateSession).toBeTruthy();
         await handleCreateSession!();
 
-        expect(createdAutomationTemplate.value).toEqual(expect.objectContaining({
-            backendTarget: { kind: 'backend', backendId: 'codex' },
-            runtimeDescriptorV1: {
-                v: 1,
-                agentId: 'codex',
-                agent: { backendMode: 'appServer' },
-            },
-        }));
-        expect(createdAutomationTemplate.value).not.toHaveProperty('codexBackendMode');
-        expect(createdAutomationTemplate.value).not.toHaveProperty('experimentalCodexAcp');
+        const { Modal } = await import('@/modal');
+        expect(Modal.alert).not.toHaveBeenCalled();
+        expect(createdAutomationRecipe.value).toMatchObject({ target: { kind: 'newSession' } });
+        expect(createdAutomationRecipe.value).not.toHaveProperty('target.spawn.runtimeDescriptorV1');
+        expect(createdAutomationRecipe.value).not.toHaveProperty('target.spawn.codexBackendMode');
+        expect(createdAutomationRecipe.value).not.toHaveProperty('target.spawn.experimentalCodexAcp');
     });
 });

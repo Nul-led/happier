@@ -112,6 +112,7 @@ function RichMarkdownEditorPanelImpl(props: Readonly<{
         parentRef.current = {
             getValue: () => reattachFrontMatter(frontmatterRef.current, instance.getValue()),
             flushPendingChange: () => instance.flushPendingChange(),
+            focus: () => instance.focus?.(),
         };
     }, [props.editorRef]);
 

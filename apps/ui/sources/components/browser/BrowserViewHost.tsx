@@ -36,6 +36,7 @@ import type {
     BrowserAutomationEngineBridgeConfig,
     BrowserDiagnosticsEngineBridgeConfig,
 } from './frame/types';
+import type { BrowserSurfaceLifecycleState } from './surfaces/browserSurfaceLifecycle';
 
 const stylesheet = StyleSheet.create(() => ({
     root: {
@@ -281,6 +282,7 @@ export function BrowserViewHost(props: Readonly<{
      * callbacks reach the control reducer as lifecycle signals (see `BrowserShell.onViewLifecycle`).
      */
     onViewLifecycle?: (target: BrowserViewLifecycleTarget, signal: BrowserViewLifecycleSignal) => void;
+    lifecycleState?: BrowserSurfaceLifecycleState;
     navigationEffect?: BrowserControlCommandEffect | null;
     localServicePreviewState?: LocalServicePreviewState | null;
     pluginUiProjection?: PluginUiProjectionModel | null;
@@ -378,6 +380,7 @@ export function BrowserViewHost(props: Readonly<{
                 navigationKey={frameNavigationKey}
                 navigationCommand={frameNavigationCommand}
                 onLifecycle={onViewLifecycle}
+                lifecycleState={props.lifecycleState}
                 nowMs={props.nowMs}
                 reasonCode={resolveBrowserViewUnavailableReasonCode(view)}
             />

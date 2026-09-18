@@ -11,7 +11,6 @@ import type { NewSessionComposerDocument } from '@/components/sessions/new/hooks
 import { useNewSessionComposerDocument } from '@/components/sessions/new/hooks/screenModel/useNewSessionComposerDocument';
 import type { HandleCreateSessionOptions } from '@/components/sessions/new/hooks/useCreateNewSession';
 import type { NewSessionLaunchAttempt } from '@/components/sessions/new/modules/newSessionLaunchAttempt';
-import type { ComposerSubmissionSnapshot } from '@/components/sessions/composer/composerSubmissionCoordinator';
 import { installNewSessionScreenModelCommonModuleMocks } from '@/components/sessions/new/hooks/newSessionScreenModelTestHelpers';
 import {
     clearAllNewSessionAttachmentDrafts,
@@ -219,7 +218,7 @@ function createComposerDocument(input: Readonly<{
     clearAcceptedSnapshot: ReturnType<typeof vi.fn>;
 }> {
     const captureSubmissionSnapshot = vi.fn((_inputTextOverride?: string) => input.snapshot);
-    const clearAcceptedSnapshot = vi.fn((_snapshot: ComposerSubmissionSnapshot) => true);
+    const clearAcceptedSnapshot = vi.fn((_snapshot: ComposerSnapshotV1) => true);
     return {
         composerDocument: {
             ref: { kind: 'newSession', instanceId: 'new-session-composer-scope' },
@@ -540,6 +539,11 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
                 availability: { status: 'ready' },
             }],
         }));
+        // The document owner associates its field-currentness capture with
+        // this exact object. Admission receives a detached clone, but accepted
+        // clearing must keep the original capture identity rather than feeding
+        // the clone back into that owner.
+        expect(clearAcceptedSnapshot.mock.calls[0]?.[0]).toBe(snapshot);
         await hook.unmount();
     });
 
@@ -1120,6 +1124,71 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
         expect(remounted.getCurrent().drafts).toHaveLength(0);
     });
 
+    it('consumes Runner-verified attachments without opening the mutable drafts a second time', async () => {
+        const { useNewSessionAttachmentsController } = await import('./useNewSessionAttachmentsController');
+        const handleCreateSession = vi.fn();
+        const hook = await renderHook(() => useNewSessionAttachmentsController({
+            flowId: 'flow-runner-preuploaded',
+            isCreating: false,
+            promptStore: createNewSessionPromptStore('Investigate this bug'),
+            handleCreateSession,
+            selectedProfileId: 'profile-work',
+            targetServerId: 'server-b',
+            baseActionChips: [],
+        }));
+
+        await act(async () => {
+            hook.getCurrent().addPickedAttachments([{
+                kind: 'native',
+                uri: 'file:///tmp/note.txt',
+                name: 'note.txt',
+                sizeBytes: 12,
+                mimeType: 'text/plain',
+            }]);
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+        await act(async () => {
+            hook.getCurrent().handleSend();
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+
+        const afterCreated = handleCreateSession.mock.calls[0]?.[0]?.afterCreated;
+        const verifiedAttachment = {
+            name: 'note.txt',
+            path: '.happier/uploads/note.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 12,
+            sha256: 'a'.repeat(64),
+        } as const;
+        await act(async () => {
+            await afterCreated({
+                sessionId: 'runner-session-1',
+                effectiveSpawnServerId: 'server-a',
+                launchAttempt: {
+                    attachmentMessageLocalId: 'runner-attachment-local-1',
+                    firstTurnLocalId: 'runner-first-turn-local-1',
+                },
+                preuploadedAttachments: [verifiedAttachment],
+            });
+        });
+
+        expect(uploadAttachmentDraftsToSessionSpy).not.toHaveBeenCalled();
+        expect(formatAttachmentsBlockSpy).toHaveBeenCalledWith([verifiedAttachment]);
+        expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 'runner-session-1',
+            targetServerId: 'server-a',
+            messageLocalId: 'runner-attachment-local-1',
+            metaOverrides: {
+                happier: {
+                    kind: 'attachments.v1',
+                    payload: { attachments: [verifiedAttachment] },
+                },
+            },
+        }));
+        expect(hook.getCurrent().drafts).toHaveLength(0);
+        await hook.unmount();
+    });
+
     it('automatically includes matching workspace review comments in the new-session follow-up flow and removes only sent workspace drafts after success', async () => {
         const { useNewSessionAttachmentsController } = await import('./useNewSessionAttachmentsController');
         const handleCreateSession = vi.fn();
@@ -1253,6 +1322,79 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
         expect(deleteWorkspaceReviewCommentDraftSpy).toHaveBeenCalledWith('draft-1');
         expect(deleteWorkspaceReviewCommentDraftSpy).not.toHaveBeenCalledWith('draft-2');
         expect(clearWorkspaceReviewCommentDraftsSpy).not.toHaveBeenCalled();
+    });
+
+    it('freezes included review comments into the serializable Temporary-computer submission before materialization', async () => {
+        const { useNewSessionAttachmentsController } = await import('./useNewSessionAttachmentsController');
+        const handleCreateSession = vi.fn();
+        featureEnabledSpy.mockImplementation((featureId: string) => featureId === 'files.reviewComments');
+        workspaceReviewDraftsState.draftsByRootPath.set('/repo/worktree-a', [{
+            id: 'draft-reviewed',
+            filePath: 'src/reviewed.ts',
+            source: 'diff',
+            anchor: {
+                kind: 'diffLine',
+                startLine: 4,
+                side: 'after',
+                oldLine: 4,
+                newLine: 4,
+            },
+            snapshot: {
+                selectedLines: ['+export const reviewed = true;'],
+                beforeContext: [],
+                afterContext: [],
+            },
+            body: 'Preserve this exact reviewed effect.',
+            createdAt: 1,
+        }, {
+            id: 'draft-excluded',
+            filePath: 'src/excluded.ts',
+            source: 'diff',
+            anchor: {
+                kind: 'diffLine',
+                startLine: 8,
+                side: 'after',
+                oldLine: 8,
+                newLine: 8,
+            },
+            snapshot: {
+                selectedLines: ['+export const excluded = true;'],
+                beforeContext: [],
+                afterContext: [],
+            },
+            body: 'Do not include this draft.',
+            includeInPrompt: false,
+            createdAt: 2,
+        }]);
+        const { composerDocument } = createComposerDocument({
+            attachments: [],
+            snapshot: createComposerSnapshot({ text: 'Review the selected change', attachments: [] }),
+        });
+        const hook = await renderHook(() => useNewSessionAttachmentsController({
+            flowId: 'flow-runner-review-comments',
+            isCreating: false,
+            promptStore: createNewSessionPromptStore('Review the selected change'),
+            handleCreateSession,
+            selectedProfileId: null,
+            selectedMachineId: 'machine-1',
+            selectedPath: '/repo/worktree-a',
+            targetServerId: 'server-b',
+            baseActionChips: [],
+            composerDocument,
+        }));
+
+        await act(async () => {
+            hook.getCurrent().handleSend();
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+
+        const createOptions = handleCreateSession.mock.calls[0]?.[0] as HandleCreateSessionOptions | undefined;
+        const frozenSubmission = JSON.stringify(createOptions?.temporaryComputerSubmission);
+        expect(frozenSubmission).toContain('draft-reviewed');
+        expect(frozenSubmission).toContain('Preserve this exact reviewed effect.');
+        expect(frozenSubmission).not.toContain('draft-excluded');
+        expect(deleteWorkspaceReviewCommentDraftSpy).not.toHaveBeenCalled();
+        await hook.unmount();
     });
 
     it('discovers workspace review comments when the selected path is home-relative', async () => {

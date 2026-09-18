@@ -1,9 +1,15 @@
+import { createActivitySurfaceSessionRoute } from '@/activity/actions/activitySurfaceTargets';
 import { router } from 'expo-router';
 import * as React from 'react';
 import { Platform } from 'react-native';
 
-import { normalizeServerUrl, setActiveServerAndSwitch, upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServerSwitch';
-import { getActiveServerUrl, listServerProfiles } from '@/sync/domains/server/serverProfiles';
+import { setActiveServerAndSwitch, upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServerSwitch';
+import {
+    areServerProfileIdentifiersEquivalent,
+    getActiveServerSnapshot,
+    getServerProfileById,
+    listServerProfiles,
+} from '@/sync/domains/server/serverProfiles';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { clearPendingNotificationNav, getPendingNotificationNav, setPendingNotificationNav } from '@/sync/domains/pending/pendingNotificationNav';
@@ -60,9 +66,10 @@ function resolveNotificationCommandRoute(command: ActivityInteractionCommand): s
         case 'openInbox':
         case 'focusComposer':
         case 'openSettings':
+        case 'openWorkflowRun':
             return command.route;
         case 'executeAction':
-            return `/session/${encodeURIComponent(command.defaultSessionId)}`;
+            return createActivitySurfaceSessionRoute(command.defaultSessionId, command.target.serverId);
         case 'ignore':
         default:
             return null;
@@ -73,6 +80,7 @@ function resolveNotificationCommandServerUrl(command: ActivityInteractionCommand
     switch (command.kind) {
         case 'openSession':
         case 'focusComposer':
+        case 'openWorkflowRun':
             return command.serverUrl;
         case 'executeAction':
             return command.target.serverUrl ?? null;
@@ -84,15 +92,69 @@ function resolveNotificationCommandServerUrl(command: ActivityInteractionCommand
     }
 }
 
-function findSavedServerProfileForUrl(serverUrl: string): { id: string; serverUrl: string } | null {
+function resolveNotificationCommandServerId(command: ActivityInteractionCommand): string | null {
+    switch (command.kind) {
+        case 'openSession':
+        case 'focusComposer':
+        case 'openWorkflowRun':
+            return command.serverId;
+        case 'executeAction':
+            return command.target.serverId;
+        case 'openInbox':
+        case 'openSettings':
+        case 'ignore':
+        default:
+            return null;
+    }
+}
+
+function findSavedServerProfile(params: Readonly<{
+    serverId: string | null | undefined;
+    serverUrl: string;
+}>): { id: string; serverUrl: string } | null {
+    const serverId = String(params.serverId ?? '').trim();
+    if (serverId) {
+        const profile = getServerProfileById(serverId);
+        if (!profile) return null;
+        return { id: profile.id, serverUrl: profile.serverUrl };
+    }
+
+    const serverUrl = params.serverUrl;
     const targetKey = createServerUrlComparableKey(serverUrl);
     if (!targetKey) return null;
-    for (const profile of listServerProfiles()) {
-        if (createServerUrlComparableKey(profile.serverUrl) === targetKey) {
-            return { id: profile.id, serverUrl: profile.serverUrl };
-        }
+    const matches = listServerProfiles().filter(
+        (profile) => createServerUrlComparableKey(profile.serverUrl) === targetKey,
+    );
+    return matches.length === 1
+        ? { id: matches[0]!.id, serverUrl: matches[0]!.serverUrl }
+        : null;
+}
+
+function isNotificationServerActive(params: Readonly<{
+    serverId?: string | null;
+    serverUrl: string;
+}>): boolean {
+    const active = getActiveServerSnapshot();
+    const serverId = String(params.serverId ?? '').trim();
+    const targetUrlKey = createServerUrlComparableKey(params.serverUrl);
+    const activeUrlKey = createServerUrlComparableKey(active.serverUrl);
+    if (serverId) {
+        return areServerProfileIdentifiersEquivalent(serverId, active.serverId);
     }
-    return null;
+
+    const saved = findSavedServerProfile({ serverId: null, serverUrl: params.serverUrl });
+    if (saved) {
+        return areServerProfileIdentifiersEquivalent(saved.id, active.serverId);
+    }
+
+    // Legacy URL-only records created before a profile was persisted can still
+    // complete once their URL is the active Home. Duplicate saved matches fail closed.
+    const matchingProfileCount = targetUrlKey
+        ? listServerProfiles().filter(
+            (profile) => createServerUrlComparableKey(profile.serverUrl) === targetUrlKey,
+        ).length
+        : 0;
+    return matchingProfileCount === 0 && Boolean(targetUrlKey && targetUrlKey === activeUrlKey);
 }
 
 export function useNotificationResponseRouting(params: Readonly<{
@@ -146,8 +208,7 @@ export function useNotificationResponseRouting(params: Readonly<{
 
         const pendingAction = getPendingNotificationAction();
         if (pendingAction) {
-            const active = normalizeServerUrl(getActiveServerUrl());
-            if (normalizeServerUrl(pendingAction.serverUrl) === active) {
+            if (isNotificationServerActive(pendingAction)) {
                 clearPendingNotificationAction();
                 fireAndForget((async () => {
                     try {
@@ -160,7 +221,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                     } catch {
                         // best-effort; navigation still proceeds
                     }
-                    router.push(`/session/${encodeURIComponent(pendingAction.sessionId)}`);
+                    router.push(createActivitySurfaceSessionRoute(pendingAction.sessionId, pendingAction.serverId));
                 })(), { tag: 'RootLayout.pendingNotificationAction' });
                 return;
             }
@@ -168,8 +229,7 @@ export function useNotificationResponseRouting(params: Readonly<{
 
         const pending = getPendingNotificationNav();
         if (pending) {
-            const active = normalizeServerUrl(getActiveServerUrl());
-            if (normalizeServerUrl(pending.serverUrl) === active) {
+            if (isNotificationServerActive(pending)) {
                 clearPendingNotificationNav();
                 router.push(pending.route);
                 return;
@@ -198,6 +258,7 @@ export function useNotificationResponseRouting(params: Readonly<{
             if (!route) return;
 
             const serverUrl = resolveNotificationCommandServerUrl(command);
+            const serverId = resolveNotificationCommandServerId(command);
             const routeToServerSettingsForUrl = (url: string) => {
                 router.push(`/server?url=${encodeURIComponent(url)}&source=notification`);
             };
@@ -217,9 +278,8 @@ export function useNotificationResponseRouting(params: Readonly<{
                     return;
                 }
 
-                const active = normalizeServerUrl(getActiveServerUrl());
-                if (serverUrl !== active) {
-                    const saved = findSavedServerProfileForUrl(serverUrl);
+                if (!isNotificationServerActive({ serverId, serverUrl })) {
+                    const saved = findSavedServerProfile({ serverId, serverUrl });
                     if (!saved) {
                         if (isUnsafeNotificationServerUrl(serverUrl)) {
                             router.push(route);
@@ -253,6 +313,7 @@ export function useNotificationResponseRouting(params: Readonly<{
 
                     setPendingNotificationAction({
                         serverUrl: saved.serverUrl,
+                        serverId: saved.id,
                         sessionId: actionSessionId,
                         requestId: actionRequestId,
                         ...(turnId ? { turnId } : {}),
@@ -271,7 +332,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                             } catch {
                                 // best-effort
                             }
-                            router.push(`/session/${encodeURIComponent(actionSessionId)}`);
+                            router.push(route);
                         } catch {
                             // keep pending notification action as fallback
                         }
@@ -281,11 +342,10 @@ export function useNotificationResponseRouting(params: Readonly<{
             }
 
             if (serverUrl) {
-                const active = normalizeServerUrl(getActiveServerUrl());
-                if (serverUrl !== active) {
-                    const saved = findSavedServerProfileForUrl(serverUrl);
+                if (!isNotificationServerActive({ serverId, serverUrl })) {
+                    const saved = findSavedServerProfile({ serverId, serverUrl });
                     if (saved) {
-                        setPendingNotificationNav({ serverUrl: saved.serverUrl, route });
+                        setPendingNotificationNav({ serverUrl: saved.serverUrl, serverId: saved.id, route });
                         fireAndForget((async () => {
                             try {
                                 await setActiveServerAndSwitch({
@@ -345,12 +405,18 @@ export function useNotificationResponseRouting(params: Readonly<{
                     } catch {
                         // best-effort
                     }
-                    router.push(`/session/${encodeURIComponent(actionSessionId)}`);
+                    router.push(route);
                 })(), { tag: 'RootLayout.notificationAction.activeServer' });
                 return;
             }
 
-            if (command.kind === 'openSession' || command.kind === 'openInbox' || command.kind === 'focusComposer' || command.kind === 'openSettings') {
+            if (
+                command.kind === 'openSession'
+                || command.kind === 'openInbox'
+                || command.kind === 'focusComposer'
+                || command.kind === 'openSettings'
+                || command.kind === 'openWorkflowRun'
+            ) {
                 router.push(route);
             }
         };

@@ -42,6 +42,7 @@ vi.mock('react-native-unistyles', () => ({
 vi.mock('@/text', () => ({ t: (key: string, params?: Record<string, unknown>) => `${key}:${JSON.stringify(params ?? {})}` }));
 
 import { GitDeltaInstrument } from './GitDeltaInstrument';
+import { Icon } from '@/components/ui/icons/Icon';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -72,6 +73,14 @@ describe('GitDeltaInstrument', () => {
         expect(nums[0]!.color).not.toBe(nums[1]!.color);
     });
 
+    it('shows changed files instead of incomplete line totals, including its accessible label', () => {
+        act(() => { tree = create(<GitDeltaInstrument git={git({ isComplete: false })} compact={false} />); });
+        expect(numbers(tree!)).toHaveLength(0);
+        const slot = tree!.root.findByProps({ testID: 'session-instrument-git' });
+        expect(slot.props.accessibilityLabel).toContain('changedFilesLabel');
+        expect(slot.props.accessibilityLabel).not.toContain('linesLabel');
+    });
+
     it('renders added-only when there are no removals', () => {
         act(() => { tree = create(<GitDeltaInstrument git={git({ linesRemoved: 0 })} compact={false} />); });
         expect(numbers(tree!).map((n) => n.text)).toEqual(['+12']);
@@ -93,9 +102,9 @@ describe('GitDeltaInstrument', () => {
 
     it('drops the branch icon in compact mode', () => {
         act(() => { tree = create(<GitDeltaInstrument git={git({})} compact />); });
-        expect(tree!.root.findAll((n) => String(n.type) === 'Octicons')).toHaveLength(0);
+        expect(tree!.root.findAll((n) => n.type === Icon)).toHaveLength(0);
         act(() => { tree!.unmount(); tree = create(<GitDeltaInstrument git={git({})} compact={false} />); });
-        expect(tree!.root.findAll((n) => String(n.type) === 'Octicons')).toHaveLength(1);
+        expect(tree!.root.findAll((n) => n.type === Icon)).toHaveLength(1);
     });
 
     it('renders the branch icon alone in a clean repo (no numbers, no files label)', () => {
@@ -109,7 +118,7 @@ describe('GitDeltaInstrument', () => {
                 />,
             );
         });
-        expect(tree!.root.findAll((n) => String(n.type) === 'Octicons')).toHaveLength(1);
+        expect(tree!.root.findAll((n) => n.type === Icon)).toHaveLength(1);
         expect(numbers(tree!)).toHaveLength(0);
         const texts = tree!.root.findAll((n) => String(n.type) === 'Text');
         expect(texts.some((n) => String(n.props.children).includes('changedFilesLabel'))).toBe(false);
@@ -124,7 +133,7 @@ describe('GitDeltaInstrument', () => {
                 />,
             );
         });
-        expect(tree!.root.findAll((n) => String(n.type) === 'Octicons')).toHaveLength(1);
+        expect(tree!.root.findAll((n) => n.type === Icon)).toHaveLength(1);
     });
 
     it('invokes onPress when pressed', () => {

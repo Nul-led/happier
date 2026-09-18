@@ -8,12 +8,12 @@ import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 
 import { machineCapabilitiesDetect } from '@/sync/ops/capabilities';
+import { readProtocolV2ExecutionRunSupport } from '@/sync/ops/actions/executionRunDetachedSupport';
 import { readMachineControlTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import {
     sessionExecutionRunAction,
     sessionExecutionRunGet,
     sessionExecutionRunList,
-    sessionExecutionRunSend,
     sessionExecutionRunStart,
     sessionExecutionRunStop,
 } from '@/sync/ops/sessionExecutionRuns';
@@ -25,7 +25,7 @@ type UiExecutionRunActionDeps = Pick<
     | 'executionRunStart'
     | 'executionRunList'
     | 'executionRunGet'
-    | 'executionRunSend'
+    | 'detachedExecutionRunSend'
     | 'executionRunStop'
     | 'executionRunAction'
     | 'executionRunWait'
@@ -74,19 +74,14 @@ function resolveExactExecutionRunMachineId(
     if (hostStampedMachineId) return hostStampedMachineId;
 
     const contextualSessionId = normalizeId(opts?.originSessionId) ?? sessionId;
+    const serverId = normalizeId(opts?.serverId);
     return contextualSessionId
-        ? normalizeId(readMachineControlTargetForSession(contextualSessionId)?.machineId)
+        ? normalizeId(readMachineControlTargetForSession(
+            serverId
+                ? { serverId, sessionId: contextualSessionId }
+                : contextualSessionId,
+        )?.machineId)
         : null;
-}
-
-function readProtocolV2ExecutionRunSupport(value: unknown): boolean {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-    const record = value as Readonly<Record<string, unknown>>;
-    if (record.protocolVersion !== 2) return false;
-    const features = record.features;
-    if (!features || typeof features !== 'object' || Array.isArray(features)) return false;
-    return (features as Readonly<Record<string, unknown>>).detachedScope === true
-        && (features as Readonly<Record<string, unknown>>).startAndWait === true;
 }
 
 async function callDetachedExecutionRunRpc(
@@ -120,7 +115,13 @@ async function callDetachedExecutionRunRpc(
 export function createUiExecutionRunActionDeps(): UiExecutionRunActionDeps {
     return {
         executionRunCheckProtocolV2: async (sessionId, requirement, opts) => {
-            if (!requirement.detachedScope && !requirement.startAndWait) {
+            if (
+                !requirement.detachedScope
+                && !requirement.startAndWait
+                && !requirement.exactInputResults
+                && !requirement.runScopedAgentBindings
+                && !requirement.secretReferenceOverlay
+            ) {
                 return { ok: true };
             }
             const machineId = resolveExactExecutionRunMachineId(sessionId, opts);
@@ -139,20 +140,31 @@ export function createUiExecutionRunActionDeps(): UiExecutionRunActionDeps {
             if (!executionRuns?.ok || !readProtocolV2ExecutionRunSupport(executionRuns.data)) {
                 return executionRunFailure('execution_run_protocol_unsupported');
             }
+            const data = executionRuns.data as Readonly<Record<string, unknown>>;
+            const features = data.features as Readonly<Record<string, unknown>>;
+            if (
+                (requirement.exactInputResults && features.exactInputResults !== true)
+                || (requirement.runScopedAgentBindings && features.runScopedAgentBindings !== true)
+                || (requirement.secretReferenceOverlay && features.secretReferenceOverlay !== true)
+            ) return executionRunFailure('execution_run_protocol_unsupported');
             return { ok: true, exactMachineId: machineId };
         },
         executionRunStart: async (sessionId, request, opts) => sessionId === null
             ? await callDetachedExecutionRunRpc(SESSION_RPC_METHODS.EXECUTION_RUN_START, request, opts)
-            : await sessionExecutionRunStart(sessionId, request, { serverId: opts?.serverId }),
+            : await sessionExecutionRunStart(sessionId, request, {
+                serverId: opts?.serverId,
+                ...(normalizeId(opts?.exactMachineId)
+                    ? { expectedMachineId: normalizeId(opts?.exactMachineId) }
+                    : {}),
+            }),
         executionRunList: async (sessionId, request, opts) => sessionId === null
             ? await callDetachedExecutionRunRpc(SESSION_RPC_METHODS.EXECUTION_RUN_LIST, request, opts)
             : await sessionExecutionRunList(sessionId, request, { serverId: opts?.serverId }),
         executionRunGet: async (sessionId, request, opts) => sessionId === null
             ? await callDetachedExecutionRunRpc(SESSION_RPC_METHODS.EXECUTION_RUN_GET, request, opts)
             : await sessionExecutionRunGet(sessionId, request, { serverId: opts?.serverId }),
-        executionRunSend: async (sessionId, request, opts) => sessionId === null
-            ? await callDetachedExecutionRunRpc(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, request, opts)
-            : await sessionExecutionRunSend(sessionId, request, { serverId: opts?.serverId }),
+        detachedExecutionRunSend: async (_sessionId, request, opts) =>
+            await callDetachedExecutionRunRpc(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, request, opts),
         executionRunStop: async (sessionId, request, opts) => sessionId === null
             ? await callDetachedExecutionRunRpc(SESSION_RPC_METHODS.EXECUTION_RUN_STOP, request, opts)
             : await sessionExecutionRunStop(sessionId, request, { serverId: opts?.serverId }),

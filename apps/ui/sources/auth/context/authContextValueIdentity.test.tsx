@@ -38,12 +38,16 @@ vi.mock('@/sync/store/settingsWriters', () => ({
 vi.mock('@/track', () => ({
     trackLogout: vi.fn(),
 }));
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        setCredentials: vi.fn(async () => true),
-        removeCredentials: vi.fn(async () => {}),
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            setCredentials: vi.fn(async () => true),
+            removeCredentials: vi.fn(async () => {}),
+        },
+    });
+});
 
 import { AuthProvider, useAuth } from './AuthContext';
 

@@ -81,6 +81,31 @@ describe('scmUiBackendRegistry', () => {
         });
     });
 
+    it('derives external backend UI policy from the same declared capabilities as first-party backends', () => {
+        const fallback = scmUiBackendRegistry.getPlugin('acme.scm/stacked');
+        const snapshot = {
+            capabilities: {
+                writeInclude: false,
+                writeExclude: false,
+                writeCommitPathSelection: false,
+                writeCommitLineSelection: true,
+                changeSetModel: 'index',
+                supportedDiffAreas: ['both'],
+            },
+        } as unknown as ScmWorkingSnapshot;
+
+        expect(fallback.mapCapabilitiesToUiPolicy(snapshot)).toEqual({
+            supportsIncludeExclude: false,
+            supportsLineSelection: true,
+            changeSetModel: 'index',
+            supportedDiffAreas: ['both'],
+        });
+        expect(fallback.commitActionConfig(snapshot)).toMatchObject({
+            supportsPathScopedCommit: false,
+            supportsLineSelection: true,
+        });
+    });
+
     it('validates plugin map invariants', () => {
         expect(() => scmUiBackendRegistry.assertRegistryValid()).not.toThrow();
     });

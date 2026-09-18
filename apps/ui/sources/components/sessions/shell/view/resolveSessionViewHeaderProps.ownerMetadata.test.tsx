@@ -1,10 +1,15 @@
 import * as React from 'react';
+import { Platform } from 'react-native';
 import { describe, expect, it } from 'vitest';
 import type { PluginProjectionV2 } from '@happier-dev/protocol';
 
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { SessionHeaderActionMenu } from '@/components/sessions/actions/SessionHeaderActionMenu';
 import { normalizePluginUiProjection } from '@/sync/domains/plugins/ui/projection';
+import { SESSION_BOARD_DESTINATION } from '@/components/sessions/board/sessionBoardDestination';
+import { t } from '@/text';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { SESSION_HEADER_ACTION_TAP_TARGET_PX } from '@/components/sessions/actions/sessionHeaderIconMetrics';
 
 import { resolveSessionViewHeaderProps } from './resolveSessionViewHeaderProps';
 
@@ -17,6 +22,16 @@ function findHeaderActionMenu(props: ReturnType<typeof resolveSessionViewHeaderP
     ));
     expect(menu).toBeDefined();
     return menu as React.ReactElement<any>;
+}
+
+function findBoardHeaderButton(props: ReturnType<typeof resolveSessionViewHeaderProps>): React.ReactElement<any> | undefined {
+    const children = React.Children.toArray(
+        (props.rightElement as React.ReactElement<{ children?: React.ReactNode }>).props.children,
+    );
+    return children.find((child) => (
+        React.isValidElement<{ testID?: string }>(child)
+        && child.props.testID === 'session-header-board-button'
+    )) as React.ReactElement<any> | undefined;
 }
 
 function createPluginHeaderProjection() {
@@ -216,11 +231,18 @@ describe('resolveSessionViewHeaderProps owner metadata', () => {
             pluginUiProjection: createManyPluginHeaderProjection(1),
             windowWidth: 390,
         }));
+        const oneWideBesideBoard = findHeaderActionMenu(resolveSessionViewHeaderProps({
+            ...input,
+            pluginUiProjection: createManyPluginHeaderProjection(1),
+            boardHeaderAction: { onPress: () => {}, preferDirect: true },
+            windowWidth: 800,
+        }));
 
         expect(wide.props.pluginHeaderActionPlacement).toBe('overflow');
         expect(narrow.props.pluginHeaderActionPlacement).toBe('overflow');
         expect(oneWide.props.pluginHeaderActionPlacement).toBe('direct');
         expect(oneNarrow.props.pluginHeaderActionPlacement).toBe('overflow');
+        expect(oneWideBesideBoard.props.pluginHeaderActionPlacement).toBe('overflow');
         expect(wide.props.pluginHeaderActions).toEqual(
             expect.arrayContaining(Array.from({ length: 12 }, (_value, index) => expect.objectContaining({
                 action: expect.objectContaining({
@@ -245,6 +267,170 @@ describe('resolveSessionViewHeaderProps owner metadata', () => {
         ]);
         expect(narrow.props.pluginHeaderActions).toEqual(wide.props.pluginHeaderActions);
         expect(oneWide.props.pluginHeaderActions.map((entry: any) => entry.action.descriptorId)).toEqual(['action-1']);
+    });
+
+    it('places Board through the shared optional-action budget', () => {
+        const session = createSessionFixture({ id: 'board-header-layout' });
+        const onPress = () => {};
+        const input = {
+            isDataReady: true,
+            session,
+            sessionId: session.id,
+            sessionInfoHref: '/session/board-header-layout/info',
+            sessionRunsHref: '/session/board-header-layout/runs',
+            sessionAutomationsHref: '/session/board-header-layout/automations',
+            paneScopeId: 'pane-1',
+            sessionAutomationsEnabledCount: 0,
+            sessionExecutionRunsSupported: false,
+            showAutomations: false,
+            shouldShowSubagentsButton: false,
+            subagentActiveCount: 0,
+            navigateWithBlurOnWeb: (action: () => void) => action(),
+            handleHeaderExtraItemSelect: () => false,
+            router: { push: () => {}, navigate: () => {} },
+            actionIconColor: '#000',
+            headerTintColor: '#000',
+            statusErrorColor: '#f00',
+            externalSessionRuntime: null,
+        } as const;
+
+        const emptyWide = resolveSessionViewHeaderProps({
+            ...input,
+            windowWidth: 800,
+            boardHeaderAction: { onPress, preferDirect: false },
+        });
+        const populatedWide = resolveSessionViewHeaderProps({
+            ...input,
+            windowWidth: 800,
+            boardHeaderAction: { onPress, preferDirect: true },
+        });
+        const populatedNarrow = resolveSessionViewHeaderProps({
+            ...input,
+            windowWidth: 390,
+            boardHeaderAction: { onPress, preferDirect: true },
+        });
+
+        expect(findBoardHeaderButton(emptyWide)).toBeUndefined();
+        expect(findHeaderActionMenu(emptyWide).props.extraItems).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'header.openBoard' }),
+        ]));
+        expect(findBoardHeaderButton(populatedWide)?.props).toEqual(expect.objectContaining({
+            onPress,
+            accessibilityRole: 'button',
+            accessibilityLabel: t(SESSION_BOARD_DESTINATION.labelKey),
+        }));
+        const boardButton = findBoardHeaderButton(populatedWide);
+        const boardButtonStyle = boardButton?.props.style({ pressed: false });
+        const expectedTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
+        expect(boardButtonStyle).toEqual(expect.objectContaining({
+            width: expectedTargetSize,
+            height: expectedTargetSize,
+        }));
+        expect(boardButton?.props.hitSlop).toBe(
+            expectedTargetSize > SESSION_HEADER_ACTION_TAP_TARGET_PX ? undefined : 15,
+        );
+        expect(findHeaderActionMenu(populatedWide).props.extraItems ?? []).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'header.openBoard' }),
+        ]));
+        expect(findBoardHeaderButton(populatedNarrow)).toBeUndefined();
+        expect(findHeaderActionMenu(populatedNarrow).props.extraItems).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'header.openBoard' }),
+        ]));
+    });
+
+    it('gives Board, Companion, and plugin actions one deterministic optional direct slot', () => {
+        const session = createSessionFixture({ id: 'shared-optional-header-slot' });
+        const result = resolveSessionViewHeaderProps({
+            isDataReady: true,
+            session,
+            sessionId: session.id,
+            sessionInfoHref: '/session/shared-optional-header-slot/info',
+            sessionRunsHref: '/session/shared-optional-header-slot/runs',
+            sessionAutomationsHref: '/session/shared-optional-header-slot/automations',
+            paneScopeId: 'pane-1',
+            windowWidth: 800,
+            sessionAutomationsEnabledCount: 0,
+            sessionExecutionRunsSupported: false,
+            showAutomations: false,
+            shouldShowSubagentsButton: false,
+            subagentActiveCount: 0,
+            navigateWithBlurOnWeb: (action) => action(),
+            handleHeaderExtraItemSelect: () => false,
+            router: { push: () => {}, navigate: () => {} },
+            actionIconColor: '#000',
+            headerTintColor: '#000',
+            statusErrorColor: '#f00',
+            externalSessionRuntime: null,
+            boardHeaderAction: { onPress: () => {}, preferDirect: true },
+            companionHeaderAction: {
+                availability: 'ready',
+                preferenceExists: true,
+                visible: true,
+                itemCount: 2,
+                placement: { kind: 'reserved_rail', edge: 'trailing', widthPx: 280 },
+                isPhone: false,
+            },
+            pluginUiProjection: createManyPluginHeaderProjection(1),
+        });
+        const menu = findHeaderActionMenu(result);
+
+        expect(findBoardHeaderButton(result)).toBeDefined();
+        expect(menu.props.companionHeaderActionPlacement).toBe('overflow');
+        expect(menu.props.pluginHeaderActionPlacement).toBe('overflow');
+        expect(menu.props.companionHeaderIntent).toMatchObject({
+            operation: 'hide',
+            checked: true,
+            expanded: true,
+        });
+    });
+
+    it('uses the same optional slot for Companion when Board does not claim it', () => {
+        const session = createSessionFixture({ id: 'companion-optional-header-slot' });
+        const result = resolveSessionViewHeaderProps({
+            isDataReady: true,
+            session,
+            sessionId: session.id,
+            sessionInfoHref: '/session/companion-optional-header-slot/info',
+            sessionRunsHref: '/session/companion-optional-header-slot/runs',
+            sessionAutomationsHref: '/session/companion-optional-header-slot/automations',
+            paneScopeId: 'pane-1',
+            windowWidth: 800,
+            sessionAutomationsEnabledCount: 0,
+            sessionExecutionRunsSupported: false,
+            showAutomations: false,
+            shouldShowSubagentsButton: false,
+            subagentActiveCount: 0,
+            navigateWithBlurOnWeb: (action) => action(),
+            handleHeaderExtraItemSelect: () => false,
+            router: { push: () => {}, navigate: () => {} },
+            actionIconColor: '#000',
+            headerTintColor: '#000',
+            statusErrorColor: '#f00',
+            externalSessionRuntime: null,
+            boardHeaderAction: { onPress: () => {}, preferDirect: false },
+            companionHeaderAction: {
+                availability: 'ready',
+                preferenceExists: true,
+                visible: true,
+                itemCount: 2,
+                placement: { kind: 'reserved_rail', edge: 'trailing', widthPx: 280 },
+                isPhone: false,
+            },
+            pluginUiProjection: createManyPluginHeaderProjection(1),
+        });
+        const menu = findHeaderActionMenu(result);
+
+        expect(findBoardHeaderButton(result)).toBeUndefined();
+        expect(menu.props.companionHeaderActionPlacement).toBe('direct');
+        expect(menu.props.pluginHeaderActionPlacement).toBe('overflow');
+        expect(menu.props.companionHeaderIntent).toMatchObject({
+            operation: 'hide',
+            checked: true,
+            expanded: true,
+        });
+        expect(menu.props.extraItems).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'header.openBoard' }),
+        ]));
     });
 
     it('forwards retained projection currentness through the shared direct and overflow header-action presentation', () => {

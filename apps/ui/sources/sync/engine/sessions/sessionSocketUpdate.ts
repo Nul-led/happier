@@ -1,4 +1,5 @@
 import type { NormalizedMessage, RawMessageNormalizationSequenceState } from '@/sync/typesRaw';
+import { applyTranscriptAccountActorMetadata, qualifyTranscriptAccountActor } from '@/sync/domains/messages/transcriptAccountActor';
 import { normalizeRawMessage, normalizeRawMessageInSequence } from '@/sync/typesRaw';
 import { computeNextSessionSeqFromUpdate } from '@/sync/domains/session/sequence/realtimeSessionSeq';
 import type { Session } from '@/sync/domains/state/storageTypes';
@@ -108,6 +109,7 @@ function shouldApplyLifecycleLatestTurnStatus(params: Readonly<{
 }
 
 type HandleSessionMessageSocketUpdateParams = {
+    serverId?: string | null;
     updateData: any;
     /** Captured server/account scope fence supplied by the socket owner. */
     shouldContinue?: () => boolean;
@@ -610,6 +612,9 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
 
             if (lastMessage) {
                 applyTranscriptObservationMetadata(lastMessage, rawMessage);
+                applyTranscriptAccountActorMetadata(lastMessage, {
+                    accountActor: qualifyTranscriptAccountActor(rawMessage?.accountActor, params.serverId),
+                });
                 if (updateType === 'message-updated') {
                     lastMessage.isAuthoritativeUpdate = true;
                 }

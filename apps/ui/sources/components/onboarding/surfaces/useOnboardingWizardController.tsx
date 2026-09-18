@@ -5,6 +5,11 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
 import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
+import type { AccountServiceSelectionFormProps } from '@/components/account/auth/AccountServiceSelectionForm';
+import type { AccountDirectoryKeyLoginOutcome } from '@/components/account/auth/AccountDirectoryKeyLoginForm';
+import type { AccountPostAuthInput, AccountPostAuthResult } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
+import type { AccountContinuationIntent } from '@happier-dev/cli-common/accountService';
+import type { WelcomeAuthenticationMethod } from '@/components/onboarding/preAuth/composeWelcomeEntryModel';
 import { Text } from '@/components/ui/text/Text';
 import { ActiveRelaySummary } from '@/components/onboarding/ui/ActiveRelaySummary';
 import {
@@ -33,6 +38,7 @@ import {
     type EndpointReachabilityRemediation,
 } from '@/components/serverReachability/remediation';
 import { isRunningOnMac } from '@/utils/platform/platform';
+import { desktopHostKind } from '@/utils/platform/desktopHost';
 import { isWebQrScannerSupported } from '@/utils/platform/qrScannerSupport';
 import { isWebMobileLikeQrScannerHost } from '@/utils/platform/webMobileHeuristics';
 import type { RelayHostLocalChecklistRuntimeStatus } from '../checklists/relayHostLocal/types';
@@ -88,18 +94,18 @@ export type OnboardingWizardSurfaceProps = Readonly<{
      * own an unauthenticated entry (the setup wizard reuses this surface while authenticated).
      */
     accountServiceEntry?: AccountServiceEntryOptions;
+    accountContinuationIntent?: AccountContinuationIntent;
+    accountEntryReturnTo?: string;
     initialStepId?: WizardStepId;
 
     /** Provider sign-in on the selected sign-in service. Never touches the focused Home. */
-    onContinueWithAccountServiceProvider?: (providerId: string) => Promise<void> | void;
-    /** Key sign-in on the selected sign-in service. Never touches the focused Home. */
-    onContinueWithAccountServiceKey?: () => Promise<void> | void;
-    onChooseAccountService?: () => Promise<void> | void;
-    onCreateAccount: () => Promise<void> | void;
-    onCreateAccountViaProvider: (providerId: string) => Promise<void> | void;
-    onLoginWithKeylessProvider: (providerId: string) => Promise<void> | void;
-    onLoginWithMtls: () => Promise<void> | void;
+    onContinueWithAccountServiceProvider?: (request: WelcomeAuthenticationMethod, context: WelcomeAuthenticationActionContext) => Promise<void> | void;
+    onContinueWithHomeAuthentication?: (request: WelcomeAuthenticationMethod, context: WelcomeAuthenticationActionContext) => Promise<void> | void;
+    onAccountDirectoryKeyResult?: (result: AccountDirectoryKeyLoginOutcome) => Promise<void> | void;
+    onSelectAccountService?: AccountServiceSelectionFormProps['onSelect'];
 }>;
+
+export type WelcomeAuthenticationActionContext = Readonly<{ signal: AbortSignal }>;
 
 export type OnboardingWizardController = Readonly<{
     stepId: WizardStepId;
@@ -190,6 +196,14 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
     const [localRelayRuntimeStatus, setLocalRelayRuntimeStatus] = React.useState<LocalRelayRuntimeStatus>(null);
     const [relayAccessTarget, setRelayAccessTarget] = React.useState<RelayAccessTaskTarget | null>(null);
     const [relayAccessShareUrl, setRelayAccessShareUrl] = React.useState<string | null>(null);
+    const [accountDirectoryKeyRequest, setAccountDirectoryKeyRequest] = React.useState<WelcomeAuthenticationMethod | null>(null);
+    const [accountDirectoryContinuationIntent, setAccountDirectoryContinuationIntent] = React.useState<AccountContinuationIntent | null>(null);
+    const [accountDirectoryHomeRecovery, setAccountDirectoryHomeRecovery] = React.useState<Readonly<{
+        kind: 'home_auth' | 'continuation';
+        input: AccountPostAuthInput;
+        previous: AccountPostAuthResult;
+        homeServerIdentityId: string;
+    }> | null>(null);
     const defaultRelayAccessTarget = React.useMemo<RelayAccessTaskTarget>(() => ({ kind: 'local' }), []);
     const [state, dispatch] = React.useReducer(
         wizardReducer,
@@ -224,8 +238,12 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
             });
         },
     );
+    const canCreatePersonalHome = desktopHostKind() === 'tauri'
+        && setupPolicy.relay.allowRelaySelection
+        && setupPolicy.relay.allowLocalRelayHost
+        && !state.context.relaySelection.locked;
 
-    const handleLocalRelayRuntimeStatusChange = React.useCallback((status: LocalRelayRuntimeStatus) => {
+    const handleLocalRelayRuntimeStatusChange = React.useCallback(async (status: LocalRelayRuntimeStatus) => {
         setLocalRelayRuntimeStatus(status);
         const relayUrl = typeof status?.relayUrl === 'string' ? status.relayUrl.trim() : '';
         if (!relayUrl) {
@@ -233,7 +251,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         }
         setRelayAccessTarget({ kind: 'local' });
         setRelayAccessShareUrl(null);
-        const profile = upsertServerProfileOnly({
+        const profile = await upsertServerProfileOnly({
             serverUrl: relayUrl,
             source: 'url',
         });
@@ -288,6 +306,32 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
     }, [dispatch]);
 
     const stepId = state.currentStepId;
+    const welcomeAuthenticationAbortControllerRef = React.useRef<AbortController | null>(null);
+    React.useEffect(() => {
+        if (stepId !== 'welcome') {
+            welcomeAuthenticationAbortControllerRef.current?.abort();
+            welcomeAuthenticationAbortControllerRef.current = null;
+        }
+    }, [stepId]);
+    React.useEffect(() => () => {
+        welcomeAuthenticationAbortControllerRef.current?.abort();
+        welcomeAuthenticationAbortControllerRef.current = null;
+    }, []);
+    const runWelcomeAuthenticationAction = React.useCallback(async (
+        request: WelcomeAuthenticationMethod,
+        action: ((request: WelcomeAuthenticationMethod, context: WelcomeAuthenticationActionContext) => Promise<void> | void) | undefined,
+    ) => {
+        if (!action || welcomeAuthenticationAbortControllerRef.current) return;
+        const controller = new AbortController();
+        welcomeAuthenticationAbortControllerRef.current = controller;
+        try {
+            await action(request, { signal: controller.signal });
+        } finally {
+            if (welcomeAuthenticationAbortControllerRef.current === controller) {
+                welcomeAuthenticationAbortControllerRef.current = null;
+            }
+        }
+    }, []);
     const [restoreNavigationLocked, setRestoreNavigationLocked] = React.useState(false);
     React.useEffect(() => {
         if (stepId !== 'auth_restore') setRestoreNavigationLocked(false);
@@ -687,7 +731,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         const selection = stateForAdvance.context.relaySelection;
         const selectedServerUrl = selection.serverUrl ? String(selection.serverUrl).trim() : '';
         const ensuredCloudProfile = stepId === 'relay_select' && selection.choiceId === 'cloud'
-            ? ensureCanonicalCloudRelayProfile()
+            ? await ensureCanonicalCloudRelayProfile()
             : null;
         const cloudRelay = ensuredCloudProfile
             ?? (canonicalCloudProfile?.serverId
@@ -719,7 +763,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         stepId,
     ]);
 
-    const handleRemoteRelayRuntimeCompletedChange = React.useCallback((payload: Readonly<{
+    const handleRemoteRelayRuntimeCompletedChange = React.useCallback(async (payload: Readonly<{
         machineId: string | null;
         relayRuntimeUrl: string | null;
         relayAccessTarget: RelayAccessTaskTarget | null;
@@ -733,7 +777,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         setRelaySwitchDecision('switch');
         setRelayAccessTarget(payload.relayAccessTarget);
         setRelayAccessShareUrl(null);
-        const relayProfile = upsertServerProfileOnly({
+        const relayProfile = await upsertServerProfileOnly({
             serverUrl: relayUrl,
             source: 'url',
         });
@@ -1079,7 +1123,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         if (canonicalCloudProfile && isSameServerUrl(canonicalCloudProfile.serverUrl, normalized)) {
             const ensuredCloudProfile = canonicalCloudProfile.serverId
                 ? { serverId: canonicalCloudProfile.serverId, serverUrl: canonicalCloudProfile.serverUrl }
-                : ensureCanonicalCloudRelayProfile();
+                : await ensureCanonicalCloudRelayProfile();
             if (ensuredCloudProfile) {
                 await setActiveServerAndSwitch({ serverId: ensuredCloudProfile.serverId, scope: 'device' });
                 return;
@@ -1108,8 +1152,85 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
     }, []);
 
     const handleOpenSecretKeyLogin = React.useCallback(() => {
+        setAccountDirectoryHomeRecovery(null);
+        setAccountDirectoryKeyRequest(null);
         dispatch({ type: 'wizard/goToStep', stepId: 'auth_secret_key' });
     }, []);
+
+    const handleOpenAccountDirectoryKeyLogin = React.useCallback((request: WelcomeAuthenticationMethod) => {
+        setAccountDirectoryHomeRecovery(null);
+        setAccountDirectoryKeyRequest(request);
+        setAccountDirectoryContinuationIntent(props.accountContinuationIntent ?? null);
+        dispatch({ type: 'wizard/goToStep', stepId: 'auth_secret_key' });
+    }, [props.accountContinuationIntent]);
+
+    const handleContinueWithHomeAuthentication = React.useCallback(async (request: WelcomeAuthenticationMethod) => {
+        if (request.authority.purpose !== 'home') return;
+        if (request.execution.kind === 'key_entry') {
+            setAccountDirectoryKeyRequest(request);
+            dispatch({ type: 'wizard/goToStep', stepId: 'auth_secret_key' });
+            return;
+        }
+        await runWelcomeAuthenticationAction(request, props.onContinueWithHomeAuthentication);
+    }, [dispatch, props.onContinueWithHomeAuthentication, runWelcomeAuthenticationAction]);
+
+    const handleContinueWithAccountServiceProvider = React.useCallback(async (request: WelcomeAuthenticationMethod) => {
+        await runWelcomeAuthenticationAction(request, props.onContinueWithAccountServiceProvider);
+    }, [props.onContinueWithAccountServiceProvider, runWelcomeAuthenticationAction]);
+
+    const handleAccountDirectoryKeyResult = React.useCallback(async (result: AccountDirectoryKeyLoginOutcome) => {
+        await props.onAccountDirectoryKeyResult?.(result);
+    }, [props.onAccountDirectoryKeyResult]);
+
+    const handleAccountServiceReauthenticate = React.useCallback((input: AccountPostAuthInput) => {
+        setAccountDirectoryHomeRecovery(null);
+        setAccountDirectoryKeyRequest(null);
+        setAccountDirectoryContinuationIntent(input.intent);
+        dispatch({ type: 'wizard/goToStep', stepId: 'welcome' });
+    }, []);
+
+    const handleOpenAccountDirectoryHomeAuthentication = React.useCallback((
+        input: AccountPostAuthInput,
+        homeServerIdentityId: string,
+        previous: AccountPostAuthResult,
+    ) => {
+        setAccountDirectoryHomeRecovery({ kind: 'home_auth', input, previous, homeServerIdentityId });
+    }, []);
+
+    const handleAccountDirectoryHomeAuthenticationResult = React.useCallback(async (
+        result: AccountPostAuthResult,
+        input?: AccountPostAuthInput,
+    ) => {
+        await props.onAccountDirectoryKeyResult?.(result);
+        if (result.kind === 'home_entered' || result.kind === 'home_enrolled' || result.kind === 'home_linked') {
+            setAccountDirectoryHomeRecovery(null);
+            return;
+        }
+        setAccountDirectoryHomeRecovery((current) => current ? {
+            ...current,
+            kind: 'continuation',
+            input: input ?? current.input,
+            previous: result,
+        } : current);
+    }, [props.onAccountDirectoryKeyResult]);
+
+    const handleAccountDirectoryHomeAuthenticationBack = React.useCallback(() => {
+        setAccountDirectoryHomeRecovery(null);
+        setAccountDirectoryKeyRequest(null);
+        dispatch({ type: 'wizard/goToStep', stepId: 'welcome' });
+    }, []);
+
+    const handleOpenAccountServiceSelection = React.useCallback(() => {
+        dispatch({ type: 'wizard/goToStep', stepId: 'auth_service_select' });
+    }, []);
+
+    const handleSelectAccountService = React.useCallback<AccountServiceSelectionFormProps['onSelect']>(async (url, options) => {
+        const result = await props.onSelectAccountService?.(url, options) ?? { kind: 'unavailable' as const };
+        if (result.kind === 'selected') {
+            dispatch({ type: 'wizard/goToStep', stepId: 'welcome' });
+        }
+        return result;
+    }, [props.onSelectAccountService]);
 
     const handleRelaySelectAdvance = React.useCallback(async () => {
         const isManualRelayEntry =
@@ -1346,11 +1467,18 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         isDesktopShell: props.isDesktopShell,
         authEntryOptions: props.authEntryOptions,
         accountServiceEntry: props.accountServiceEntry,
+        accountContinuationIntent: accountDirectoryContinuationIntent
+            ?? props.accountContinuationIntent
+            ?? { kind: 'enter', target: { kind: 'automatic' } },
+        accountDirectoryKeyRequest,
+        accountDirectoryHomeRecovery,
+        accountEntryReturnTo: props.accountEntryReturnTo,
         initialPairingLink,
         canScanQr,
         welcomeHasKnownRelay,
         welcomeHasAuthActions,
         allowRelaySelection: setupPolicy.relay.allowRelaySelection,
+        canCreatePersonalHome,
         relaySelectBody,
         urlDraft,
         onUrlDraftChange: setUrlDraft,
@@ -1375,29 +1503,24 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         onRelayAccessProviderDetailsRequested: handleRelayAccessProviderDetailsRequested,
         // Deliberately not preceded by `ensureActiveServerForAuth()`: sign-in-service
         // authentication is targeted at the selected service and must not touch the focused Home.
-        onContinueWithAccountServiceProvider: props.onContinueWithAccountServiceProvider,
-        onContinueWithAccountServiceKey: props.onContinueWithAccountServiceKey,
-        onChooseAccountService: props.onChooseAccountService,
-        onCreateAccount: async () => {
-            await ensureActiveServerForAuth();
-            await props.onCreateAccount();
+        onContinueWithAccountServiceProvider: handleContinueWithAccountServiceProvider,
+        onContinueWithAccountServiceKey: props.accountContinuationIntent && props.onAccountDirectoryKeyResult
+            ? handleOpenAccountDirectoryKeyLogin
+            : undefined,
+        onAccountDirectoryKeyResult: handleAccountDirectoryKeyResult,
+        onAccountServiceReauthenticate: handleAccountServiceReauthenticate,
+        onChooseAccountService: props.onSelectAccountService ? handleOpenAccountServiceSelection : undefined,
+        onContinueWithHomeAuthentication: handleContinueWithHomeAuthentication,
+        onSelectAccountService: handleSelectAccountService,
+        onAccountServiceSelectionBack: () => dispatch({ type: 'wizard/goToStep', stepId: 'welcome' }),
+        onAccountDirectoryKeyBack: () => {
+            setAccountDirectoryHomeRecovery(null);
+            setAccountDirectoryKeyRequest(null);
+            dispatch({ type: 'wizard/back' });
         },
-        onCreateAccountViaProvider: async (providerId: string) => {
-            await ensureActiveServerForAuth();
-            await props.onCreateAccountViaProvider(providerId);
-        },
-        onLoginWithKeylessProvider: async (providerId: string) => {
-            await ensureActiveServerForAuth();
-            await props.onLoginWithKeylessProvider(providerId);
-        },
-        onLoginWithMtls: async () => {
-            await ensureActiveServerForAuth();
-            await props.onLoginWithMtls();
-        },
-        onStartScan: () => {
-            dispatch({ type: 'wizard/setScanStepEnabled', enabled: true });
-            dispatch({ type: 'wizard/goToStep', stepId: 'scan_code' });
-        },
+        onOpenAccountDirectoryHomeAuthentication: handleOpenAccountDirectoryHomeAuthentication,
+        onAccountDirectoryHomeAuthenticationResult: handleAccountDirectoryHomeAuthenticationResult,
+        onAccountDirectoryHomeAuthenticationBack: handleAccountDirectoryHomeAuthenticationBack,
         onCancelScan: () => {
             dispatch({ type: 'wizard/setScanStepEnabled', enabled: false });
             dispatch({ type: 'wizard/goToStep', stepId: 'welcome' });
@@ -1406,6 +1529,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         onOpenRelaySelectionFromWelcome: handleOpenRelaySelectionFromWelcome,
         onOpenRelaySelectionFromAuth: handleOpenRelaySelectionPreservingSelection,
         onOpenSetup: handleOpenSetup,
+        onCreatePersonalHome: () => dispatch({ type: 'wizard/goToStep', stepId: 'host_relay_local' }),
         onOpenRestore: handleOpenRestore,
         onOpenLostAccess: handleOpenLostAccess,
         onOpenSecretKeyLogin: handleOpenSecretKeyLogin,

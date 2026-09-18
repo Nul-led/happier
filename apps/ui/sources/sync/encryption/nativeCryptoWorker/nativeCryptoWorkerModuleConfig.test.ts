@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -45,6 +45,20 @@ describe('happier crypto worker local Expo module config', () => {
         expect(existsSync(join(moduleRoot, 'ios/HappierCryptoWorkerModule.swift'))).toBe(true);
         expect(existsSync(join(moduleRoot, 'ios/HappierCryptoWorkerDataKeyEnvelope.swift'))).toBe(true);
         expect(existsSync(join(moduleRoot, 'ios/HappierCryptoWorker.podspec'))).toBe(true);
+    });
+
+    it('explicitly enumerates every iOS Swift source in the CocoaPods manifest', () => {
+        const iosRoot = join(moduleRoot, 'ios');
+        const podspec = readFileSync(join(iosRoot, 'HappierCryptoWorker.podspec'), 'utf8');
+        const sourceFilesAssignment = podspec.match(/s\.source_files\s*=\s*\[([\s\S]*?)\]/)?.[1] ?? '';
+        const declaredSwiftSources = [...sourceFilesAssignment.matchAll(/'([^']+\.swift)'/g)]
+            .map((match) => match[1])
+            .sort();
+        const actualSwiftSources = readdirSync(iosRoot)
+            .filter((fileName) => fileName.endsWith('.swift'))
+            .sort();
+
+        expect(declaredSwiftSources).toEqual(actualSwiftSources);
     });
 
     it('links Android against the app-shared libsodium library', () => {
